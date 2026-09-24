@@ -269,6 +269,110 @@ rc=$?
 assert_rc "(h) git-less source with no bundle marker halts" 2 "$rc"
 assert_has "(h) checkout identity unresolved" "checkout identity unresolved" "$out"
 
+# --- VERSIONED TARBALL LAYOUT (HIMMEL-3059 S6): [6/8] project-settings -----
+# --- identity resolution when himmel's OWN checkout is a tarball/versioned
+# --- install (no .git, no bundle.json — <base>/<version>/ plus a <base>/
+# --- current symlink, the layout S4 shipped). Before the fix,
+# --- project_is_himmel_checkout() only knew about a git checkout or a
+# --- standalone bundle, so ANY project run against a tarball-installed
+# --- himmel returned rc 2 (unresolved) and halted step [6/8] — this is what
+# --- the S6 guest run surfaced. The fix adds a third identity root: a
+# --- git-less source_root whose sibling `current` symlink resolves (by
+# --- inode, `-ef`) to source_root itself, AND which carries himmel's own
+# --- VERSION marker file — guarding against an arbitrary directory that
+# --- merely sits next to an unrelated `current` symlink.
+
+build_versioned() {
+    # $1 = the version directory to build scripts/lib into (source_root)
+    local ver_dir="$1"
+    mkdir -p "$ver_dir/scripts/lib" "$ver_dir/scripts/install" "$ver_dir/scripts/machine-setup" "$ver_dir/docs/setup"
+    cp "$SRC_SCRIPTS/uninstall.sh" "$ver_dir/scripts/uninstall.sh"
+    cp "$SRC_SCRIPTS/install/uninstall-manifest.tsv" "$ver_dir/scripts/install/uninstall-manifest.tsv"
+    for f in provenance-read.sh provenance-identity.sh provenance.sh canon-path.sh qmd-bin.sh \
+             unwire-statusline.sh unwire-himmel-repo.sh unwire-luna-vault.sh \
+             unwire-handover-dir.sh unwire-pretooluse-hooks.sh unwire-hud-config.sh \
+             unwire-user-claude-md.sh; do
+        cp "$SRC_SCRIPTS/lib/$f" "$ver_dir/scripts/lib/$f"
+    done
+    cp "$SRC_SCRIPTS/machine-setup/uninstall-plugins.sh" "$ver_dir/scripts/machine-setup/uninstall-plugins.sh"
+    cp "$SRC_ROOT/docs/setup/settings-template.json" "$ver_dir/docs/setup/settings-template.json"
+    chmod +x "$ver_dir/scripts/uninstall.sh"
+}
+
+run_versioned() {
+    # $1 = the version dir whose scripts/uninstall.sh to invoke, $2 = provenance dir, rest = args
+    local ver_dir="$1" prov_dir="$2"
+    shift 2
+    ( unset HIMMEL_UNINSTALL_REPO_ROOT
+      HIMMEL_PROVENANCE_DIR="$prov_dir" bash "$ver_dir/scripts/uninstall.sh" "$@" </dev/null 2>&1 )
+}
+
+new_unrelated_project() {
+    # $1 = project dir to create (its own git repo, unrecorded by any ledger)
+    local p="$1"
+    mkdir -p "$p/.claude"
+    echo '{}' > "$p/.claude/settings.json"
+    git init -q "$p"
+}
+
+# (i) positive: current -ef source_root AND VERSION present — an unrelated
+# project proceeds (unwired), it does not halt.
+V_BASE="$TMP/versioned-i/himmel"
+V_DIR="$V_BASE/0.3.0"
+build_versioned "$V_DIR"
+echo "0.3.0" > "$V_DIR/VERSION"
+ln -s "$V_DIR" "$V_BASE/current"
+PROJECT_I="$TMP/cwd-versioned-i"
+new_unrelated_project "$PROJECT_I"
+PROV_I="$TMP/prov-versioned-i"
+out=$( (cd "$PROJECT_I" && run_versioned "$V_DIR" "$PROV_I" --yes --skip-plugins --skip-hooks --skip-tasks) )
+rc=$?
+assert_rc "(i) versioned layout with VERSION marker resolves, exits 0" 0 "$rc"
+assert_has "(i) project settings unwired, not halted" "project settings: unwired" "$out"
+
+# (j) negative: current is a DANGLING symlink (points at nothing) — halts.
+V_BASE_J="$TMP/versioned-j/himmel"
+V_DIR_J="$V_BASE_J/0.3.0"
+build_versioned "$V_DIR_J"
+echo "0.3.0" > "$V_DIR_J/VERSION"
+ln -s "$V_BASE_J/9.9.9-missing" "$V_BASE_J/current"
+PROJECT_J="$TMP/cwd-versioned-j"
+new_unrelated_project "$PROJECT_J"
+PROV_J="$TMP/prov-versioned-j"
+out=$( (cd "$PROJECT_J" && run_versioned "$V_DIR_J" "$PROV_J" --yes --skip-plugins --skip-hooks --skip-tasks) )
+rc=$?
+assert_rc "(j) dangling current symlink halts" 2 "$rc"
+assert_has "(j) checkout identity unresolved" "checkout identity unresolved" "$out"
+
+# (k) negative: current points at a DIFFERENT version directory — halts.
+V_BASE_K="$TMP/versioned-k/himmel"
+V_DIR_K="$V_BASE_K/0.3.0"
+OTHER_VER_K="$V_BASE_K/0.2.0"
+build_versioned "$V_DIR_K"
+echo "0.3.0" > "$V_DIR_K/VERSION"
+mkdir -p "$OTHER_VER_K"
+ln -s "$OTHER_VER_K" "$V_BASE_K/current"
+PROJECT_K="$TMP/cwd-versioned-k"
+new_unrelated_project "$PROJECT_K"
+PROV_K="$TMP/prov-versioned-k"
+out=$( (cd "$PROJECT_K" && run_versioned "$V_DIR_K" "$PROV_K" --yes --skip-plugins --skip-hooks --skip-tasks) )
+rc=$?
+assert_rc "(k) current pointing at a different version halts" 2 "$rc"
+assert_has "(k) checkout identity unresolved" "checkout identity unresolved" "$out"
+
+# (l) negative: current -ef source_root but NO VERSION marker — halts.
+V_BASE_L="$TMP/versioned-l/himmel"
+V_DIR_L="$V_BASE_L/0.3.0"
+build_versioned "$V_DIR_L"
+ln -s "$V_DIR_L" "$V_BASE_L/current"
+PROJECT_L="$TMP/cwd-versioned-l"
+new_unrelated_project "$PROJECT_L"
+PROV_L="$TMP/prov-versioned-l"
+out=$( (cd "$PROJECT_L" && run_versioned "$V_DIR_L" "$PROV_L" --yes --skip-plugins --skip-hooks --skip-tasks) )
+rc=$?
+assert_rc "(l) missing VERSION marker halts" 2 "$rc"
+assert_has "(l) checkout identity unresolved" "checkout identity unresolved" "$out"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"

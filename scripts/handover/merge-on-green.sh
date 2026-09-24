@@ -152,11 +152,16 @@
 #   HIMMEL_CONSOLE_LEG     Exported (=1) by console-kit/headed-arm-leg.sh into
 #                          every console-spawned leg. Truthy => the merge needs
 #                          <handover_root>/.locks/go/<pr>.<certified head sha>
-#                          containing head=<that sha>, written by the console
-#                          via console-kit/go.sh (HIMMEL-2919). Unset/falsy =>
+#                          containing head=<that sha> and a verifying mac=
+#                          (HIMMEL-3543), written by the console via
+#                          console-kit/go.sh (HIMMEL-2919). Unset/falsy =>
 #                          no GO gate.
-#   HANDOVER_DIR           Where handover_root resolves that GO file
-#                          (scripts/lib/handover-path.sh); read only under
+#   HANDOVER_DIR           Where go_resolve_root (scripts/lib/go-gate.sh)
+#                          resolves that GO file; empty or the harness repo's
+#                          own stub => the anchor .env's HANDOVER_DIR
+#                          (HIMMEL-3572). Read only under HIMMEL_CONSOLE_LEG.
+#   HOME                   Locates the GO key (~/.config/himmel/go-hmac.key)
+#                          the mac is verified with; read only under
 #                          HIMMEL_CONSOLE_LEG.
 #   HIMMEL_REPO            The anchor (HIMMEL-3475, HIMMEL-3485): every script
 #                          and lib this gate sources or runs resolves from
@@ -650,7 +655,7 @@ fi
 # satisfy the declare -F checks that follow.
 is_leg=1
 if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
-    unset -f go_gate console_leg 2>/dev/null || true
+    unset -f go_gate console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
     # HIMMEL-3475: from the anchor, never this script's own worktree sibling —
     # a malicious go-gate.sh here (e.g. console_leg() always returning false)
     # would silently skip the console-GO requirement entirely.
@@ -672,11 +677,14 @@ if [ "$is_leg" -eq 1 ]; then
     # pre-planted fake GO file.
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
-    if . "$himmel_repo/scripts/lib/handover-path.sh" 2>/dev/null; then
-        go_root=$(handover_root 2>/dev/null) || go_root=""
+    # HIMMEL-3572 row 1: go_resolve_root is the same resolver go.sh writes
+    # through, so an empty or stub HANDOVER_DIR on either side still lands
+    # both on the anchor's .env-configured root.
+    if . "$himmel_repo/scripts/lib/handover-path.sh" 2>/dev/null && declare -F go_resolve_root >/dev/null 2>&1; then
+        go_root=$(go_resolve_root "$himmel_repo" 2>/dev/null) || go_root=""
     fi
     go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$sha"
-    if ! declare -F go_gate >/dev/null 2>&1; then
+    if ! declare -F go_gate >/dev/null 2>&1 || ! declare -F go_mac >/dev/null 2>&1; then
         echo "merge-on-green: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
         audit "REFUSED reason=policy-refused phase=console-go-symbol-missing repo=$nwo pr=#$pr_num sha=$sha"
         exit 17

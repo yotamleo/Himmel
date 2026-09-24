@@ -60,4 +60,5 @@ workspace-trust	code	claude-settings	file	-	{HOME}/.claude.json	6	Claude Code's 
 third-party-caches	keep	third-party-tools	file	-	-	-	caches other tools wrote while himmel ran (~/.npm/_cacache, ~/.cache/node-gyp, ~/.bun/install/cache, ~/.claude/plugins/cache, the qmd model store): theirs, never himmel-provenanced, so not removed (HIMMEL-3330)	none
 adopter-scripts	keep	project-repo	dir	-	{PWD}/scripts	-	himmel scripts copied into a project-scope adopter's scripts/ — code for recorded files; unrecorded copies kept (files copied before install recorded them cannot be told apart from your own edits, so they are not removed; drop them with git if unwanted)	file
 himmel-clone	keep	himmel-checkout	dir	-	{REPO_ROOT}	-	the himmel clone itself, its .env (Jira config) and worktrees	file
+aur-package	keep	pacman-package	dir	-	/opt/himmel	-	the AUR package payload (/opt/himmel, /usr/bin/himmelctl): pacman owns it; after himmelctl uninstall, remove it with pacman -R himmel (HIMMEL-3059 S5)	none
 foreign-settings	keep	claude-settings	settings	-	{HOME}/.claude/settings.json	-	non-himmel settings.json keys: MCP config, your own hooks, the rtk guard	none

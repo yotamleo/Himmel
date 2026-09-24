@@ -85,9 +85,9 @@ template_version: 3
 >    `Platforms tested: <os>` and `Security reviewed: manual — <what you
 >    checked>` (or `claude-code-security-review` / `pr-review-toolkit` /
 >    `ad-hoc` in place of `manual`). The PR body carries one line
->    `leg-burn: calls= avg-ctx= first-turn= compactions=` from
->    `bash scripts/lanes/leg-burn.sh <your session name>`, run just before
->    opening the PR. **`completes-ticket: yes|no`** — does this PR finish the
+>    `leg-burn: calls= avg-ctx= first-turn= compactions= cost-eq=` —
+>    `leg-pr-open.sh` computes and inserts it itself when the PR opens; never
+>    run `leg-burn.sh` by hand (HIMMEL-3572). **`completes-ticket: yes|no`** — does this PR finish the
 >    cited ticket? `yes` → the leg merges with `--jira-transition`; `no` (the
 >    ticket spans further PRs, sibling slices, or work owed outside any PR) →
 >    it omits the flag. <Anything else unusual: a PR body that must carry other

@@ -1,0 +1,59 @@
+# Maintainer: yotamleo <https://github.com/yotamleo>
+# shellcheck shell=bash disable=SC2034,SC2154  # a PKGBUILD: makepkg reads these variables and supplies pkgdir/srcdir
+#
+# himmel — the AUR package (HIMMEL-3059 S5). It repackages the checksummed
+# release tarball that release.yml publishes; it builds nothing and ships no
+# install logic. Per-user wiring (settings, hooks, plugins, jobs) is phase 2:
+# each user runs `himmelctl install` as themselves. The install hooks print and
+# never act (himmel.install).
+#
+# Prefix: /opt/himmel, a FLAT tree with no `current` link. Two reasons:
+#  - Design §1.4 canonicalisation: himmelRoot() is the realpath of the tree, so
+#    HIMMEL_REPO, the launcher and the ledger's himmel_root all record
+#    /opt/himmel, and pacman upgrades the files in place at that same path. No
+#    wiring is stranded by an upgrade, and versionedLayout() stays null, so
+#    `himmelctl update` defers to pacman instead of self-updating.
+#  - The tree is a self-contained application: it vendors its own production
+#    node_modules and runs its scripts in place. /opt is where Arch puts such a
+#    tree; /usr/share is for data, not executables. The tree carries no native
+#    objects (namcap: "No ELF files"), so the package is arch=any.
+#
+# Per-release bump (manual, per the ADR; the AUR SSH key stays off CI):
+#   1. set pkgver to the release tag with `-pre.N` written as `preN`
+#      (v0.3.0-pre.8 -> 0.3.0pre8; v0.3.0 -> 0.3.0); reset pkgrel=1
+#   2. copy the hash from the published
+#      himmel-<tag>-linux.tar.gz.sha256 into sha256sums (never `updpkgsums` on
+#      an unverified download, never SKIP)
+#   3. makepkg --printsrcinfo > .SRCINFO
+#   4. bash packaging/aur/test-pkgbuild.sh  (Arch container)
+#   5. operator only: commit PKGBUILD, himmel.install and .SRCINFO to
+#      ssh://aur@aur.archlinux.org/himmel.git and push
+
+pkgname=himmel
+pkgver=0.3.0pre8
+pkgrel=1
+_tag="${pkgver/pre/-pre.}"
+pkgdesc='Harness for running Claude Code as a managed agent: hooks, guardrails, commands, handover'
+arch=('any')
+url='https://github.com/yotamleo/Himmel'
+license=('MIT')
+depends=('bash' 'git' 'jq' 'nodejs' 'python')
+optdepends=('github-cli: gh attestation verify, PR workflow'
+            'bun: handover resume resolver, qmd, telegram bridge'
+            'python-yaml: obsidian-triage clip harvesting'
+            'python-numpy: voice scripts')
+options=('!strip' '!debug')
+install=himmel.install
+source=("https://github.com/yotamleo/Himmel/releases/download/v${_tag}/himmel-${_tag}-linux.tar.gz")
+sha256sums=('517ed66cea93d43063a3c9a1c8806149a2ca090ac6c589e32b3bd725b374bab7')
+
+package() {
+  install -d "$pkgdir/opt"
+  cp -a "$srcdir/himmel-${_tag}" "$pkgdir/opt/himmel"
+  # The wrapper runs the packaged entry point by absolute path; it sets and
+  # exports nothing, so it does not widen PATH or change the environment.
+  install -d "$pkgdir/usr/bin"
+  printf '%s\n' '#!/bin/sh' 'exec node /opt/himmel/scripts/himmelctl/bin.js "$@"' > "$pkgdir/usr/bin/himmelctl"
+  chmod 755 "$pkgdir/usr/bin/himmelctl"
+  install -Dm644 "$pkgdir/opt/himmel/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

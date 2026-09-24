@@ -410,32 +410,57 @@ export function resolveProfile(registry, name, opts = {}) {
   for (const id of (registry.floor ?? [])) enabledPlugins[id] = true;     // 5. floor forced on, LAST (inviolable)
   if (spec?.gateAllow === true) {
     const allow = [...registry.gateAllow];
-    const rule = opts.anchor === undefined ? null : anchorMergeRule(opts.anchor);
-    if (rule && !allow.includes(rule)) allow.push(rule);
+    if (opts.anchor !== undefined) {
+      for (const rule of [anchorMergeRule(opts.anchor), anchorClearCrMarkerRule(opts.anchor)]) {
+        if (rule && !allow.includes(rule)) allow.push(rule);
+      }
+    }
     return { enabledPlugins, permissions: { allow } };
   }
   return { enabledPlugins };
 }
 
-// HIMMEL-3567: the permission matcher compares literal command text, so a merge
-// typed with the anchor's ABSOLUTE path (`bash /abs/…/merge-on-green.sh …`, the
-// HIMMEL-3491 run-from-the-anchor spelling) matches neither the relative rule
-// nor the `$HIMMEL_REPO` one and falls to the auto-mode classifier. This emits
-// the one exact absolute literal for the PRIMARY checkout. It widens nothing:
-// the relative rule already admits merge-on-green.sh, and the GO gate inside it
-// (exit 17 without a GO file) stays the only authority on whether a merge runs.
-export function anchorMergeRule(anchor) {
+// HIMMEL-3567/HIMMEL-3572: the permission matcher compares literal command
+// text, so a gate script typed with the anchor's ABSOLUTE path (the
+// HIMMEL-3491 run-from-the-anchor spelling — merge-on-green.sh per
+// HIMMEL-3491, clear-cr-marker.sh per guard-pr-check-literal.sh's own printed
+// remedy, HIMMEL-3383/3495) matches neither the relative rule nor the
+// `$HIMMEL_REPO` one and falls to the auto-mode classifier. This validates the
+// anchor and returns the absolute path, or null when a matcher-unsafe
+// character (space, `*`, `)`, `$`, …) means no literal can be emitted safely.
+// A leg worktree's bytes are the leg's to change, so an anchor naming one
+// would let a leg approve its own edited gate script — refuse, never emit.
+function validatedAnchorPath(anchor, purpose) {
   const path = String(anchor).replace(/\/+$/, '');
-  // A leg worktree's bytes are the leg's to change, so a rule naming one would
-  // let a leg approve its own edited merge script. Refuse, never emit.
   if (!path.startsWith('/') || path.split('/').includes('..') || path.includes('/.claude/worktrees/')) {
-    throw new Error(`plugin-profiles: merge anchor "${anchor}" must be the absolute primary checkout, not a worktree or relative path`);
+    throw new Error(`plugin-profiles: ${purpose} anchor "${anchor}" must be the absolute primary checkout, not a worktree or relative path`);
   }
   // ponytail: a primary checkout whose path holds a character the matcher could
-  // read as syntax (space, `*`, `)`, `$`, …) gets no absolute rule and its merge
-  // still reaches the classifier; quote-aware emission if such a station appears.
-  if (!/^[A-Za-z0-9._/+-]+$/.test(path)) return null;
-  return `Bash(bash ${path}/scripts/handover/merge-on-green.sh:*)`;
+  // read as syntax gets no absolute rule and the gate script still reaches the
+  // classifier; quote-aware emission if such a station appears.
+  return /^[A-Za-z0-9._/+-]+$/.test(path) ? path : null;
+}
+
+// The one exact absolute literal for the PRIMARY checkout's merge-on-green.sh.
+// It widens nothing: the relative rule already admits merge-on-green.sh, and
+// the GO gate inside it (exit 17 without a GO file) stays the only authority
+// on whether a merge runs.
+export function anchorMergeRule(anchor) {
+  const path = validatedAnchorPath(anchor, 'merge');
+  return path ? `Bash(bash ${path}/scripts/handover/merge-on-green.sh:*)` : null;
+}
+
+// The one exact absolute literal for the PRIMARY checkout's
+// clear-cr-marker.sh. It widens nothing beyond the relative rule already in
+// registry.gateAllow: clear-cr-marker.sh's own gates (branch-identity check,
+// rename-claim + byte-for-byte re-check under a mutual-exclusion lock, per
+// plugin-profiles.json's gateAllow comment) stay the only authority on
+// whether a marker actually clears, and guard-pr-check-literal.sh still
+// refuses any compound shape naming this script before gateAllow is
+// consulted at all.
+export function anchorClearCrMarkerRule(anchor) {
+  const path = validatedAnchorPath(anchor, 'clear-cr-marker');
+  return path ? `Bash(bash ${path}/scripts/cr/clear-cr-marker.sh:*)` : null;
 }
 
 // The primary checkout that owns `dir` (its git common dir's parent), or null

@@ -41,6 +41,13 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOG="$SCRIPT_DIR/merge-on-green.sh"
 
+# HIMMEL-3543: console-kit/go.sh mints, and the console-GO gate verifies with,
+# a key under $HOME/.config/himmel — a scratch HOME keeps every GO this suite
+# writes off the operator's real key.
+MOG_HOME=$(mktemp -d "${TMPDIR:-/tmp}/mog-home.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+if [ -z "$MOG_HOME" ] || [ ! -d "$MOG_HOME" ]; then echo "FAIL: mktemp -d produced no HOME sandbox" >&2; exit 1; fi
+export HOME="$MOG_HOME"
+
 # RED-control contract (HIMMEL-2518) for the mutation controls added below
 # (HIMMEL-2544 PR-D): proves a mutant actually ran, produced output, and
 # produced the SPECIFIC predicted wrong value, not merely "differs from
@@ -2474,6 +2481,16 @@ mv "$GO_ROOT/.locks/go/77.$GO_OLD" "$GO_ROOT/.locks/go/77.$GO_SHA"
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
     run_mog 17 "2919-c2: a stale GO renamed to the certified path → exit 17"
 no_merge_call "2919-c2: no merge call"
+rm -f "$GO_ROOT/.locks/go/77.$GO_SHA"
+
+# 3543 — a leg-planted GO (the plain lines go.sh wrote before HIMMEL-3543, no
+# mac) for the certified head: refused, and the refusal names the mac.
+mkdir -p "$GO_ROOT/.locks/go"
+printf 'pr=77\nhead=%s\nby=leg\nat=2026-09-24T00:00:00Z\n' "$GO_SHA" > "$GO_ROOT/.locks/go/77.$GO_SHA"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
+    run_mog 17 "3543: console leg with a planted (mac-less) GO → exit 17"
+assert_err_has "3543: stderr names the missing mac" "has no/invalid mac"
+no_merge_call "3543: no merge call"
 rm -f "$GO_ROOT/.locks/go/77.$GO_SHA"
 
 # 2919-d — marker unset, no GO file: the operator path is unchanged, and the gate

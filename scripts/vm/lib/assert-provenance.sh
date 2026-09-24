@@ -257,7 +257,15 @@ fi
 #     itself is grouped with ~/.claude, ~/.ssh, ~/.gitconfig, ~/.config,
 #     ~/.local as an operator-owned dir uninstall.sh deliberately never
 #     deletes wholesale (uninstall.sh:43,615,1486,1492,1496).
-allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.npm/_update-notifier-last-checked|$H/\\.cache/node-gyp|$H/\\.bun/install/cache|$H/\\.claude/plugins/cache|$H/\\.cache/qmd|$H/proj/scripts/guardrails|$H/proj/scripts/lib|$H/\\.codex"
+#   - $H/.local/share/himmel: HIMMEL-3059 S6 (--install-from tarball). The
+#     versioned tree + `current` symlink the tarball recipe extracts. For a
+#     tarball tree, bin.js's himmelRoot() resolves to this `current` path and
+#     uninstall.sh:116 derives its own REPO_ROOT the same way (dirname of the
+#     running script's own tree) -- so the manifest's `himmel-clone` row
+#     (class keep, target {REPO_ROOT}: "the himmel clone itself ... uninstall
+#     never removes it") already covers it; this is that same keep, generalized
+#     from a git clone to a tarball-installed root, not a new exemption.
+allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.npm/_update-notifier-last-checked|$H/\\.cache/node-gyp|$H/\\.bun/install/cache|$H/\\.claude/plugins/cache|$H/\\.cache/qmd|$H/proj/scripts/guardrails|$H/proj/scripts/lib|$H/\\.codex|$H/\\.local/share/himmel"
 [ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance(\\.jsonl)?|$H/\\.himmel/uninstall|$H/\\.himmel/provenance-backups"
 # HIMMEL-3559: --profile all seeds a real vault at $H/luna (the adopter-<scope>
 # profile overlay's .vault.path — see provenance-roundtrip.sh's OVERLAY) so the

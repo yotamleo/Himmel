@@ -12,8 +12,17 @@
 #
 # Usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red]
 #            [--profile core|all] [--purge-state] [--clone-gone]
+#            [--install-from clone|tarball|aur]
 #   --expect-red   pass only when BOTH directions fail (the pre-fix RED); any
 #                  missing direction prints `RED incomplete: <dir> direction missing`
+#   --install-from clone (default) stages the ref's tree and installs from it,
+#                  byte-for-byte the pre-S6 behaviour. `tarball` builds the
+#                  release tarball for this ref via scripts/release/build-tarball.sh,
+#                  stages the two assets, then installs on the guest via the
+#                  README recipe (sha256 verify, extract into the versioned
+#                  dir + `current`), before running the same install/uninstall/
+#                  assert chain (HIMMEL-3059 S6). `aur` refuses today: it needs
+#                  S5 packaging (HIMMEL-3059 S5), a separate leg, not merged yet.
 #   --profile      the install profile (default core). `all` also arms the
 #                  pipeline, qmd and graphmap cadences: the seed step then puts
 #                  user-owned qmd/graphify stubs on the guest PATH (the arms
@@ -56,11 +65,11 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
-    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--clone-gone]" >&2
+    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--clone-gone] [--install-from clone|tarball|aur]" >&2
     exit 2
 }
 
-REF="" EXPECT_RED=0 PROFILE=core PURGE=0 CLONE_GONE=0
+REF="" EXPECT_RED=0 PROFILE=core PURGE=0 CLONE_GONE=0 INSTALL_FROM=clone
 while [ $# -gt 0 ]; do
     case "$1" in
         --expect-red) EXPECT_RED=1; shift ;;
@@ -68,6 +77,9 @@ while [ $# -gt 0 ]; do
         --clone-gone) CLONE_GONE=1; shift ;;
         --profile)
             case "${2:-}" in core|all) PROFILE="$2" ;; *) usage ;; esac
+            shift 2 ;;
+        --install-from)
+            case "${2:-}" in clone|tarball|aur) INSTALL_FROM="$2" ;; *) usage ;; esac
             shift 2 ;;
         -h|--help) usage ;;
         -*) usage ;;
@@ -80,6 +92,10 @@ fail() {
     echo "ERROR: provenance-roundtrip: $1" >&2
     exit 2
 }
+
+# aur mode: S5 (AUR packaging) has not landed yet; refuse before touching
+# VirtualBox at all, same posture as a usage error.
+[ "$INSTALL_FROM" != aur ] || fail "--install-from aur: needs S5 packaging (HIMMEL-3059 S5)"
 
 # The ref is resolved BEFORE anything touches VirtualBox.
 SHA=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$REF^{commit}") \
@@ -113,7 +129,12 @@ case "$GUEST_USER" in ''|*[!A-Za-z0-9._-]*) fail "invalid guest user '$GUEST_USE
 GHOME="/home/$GUEST_USER"
 SRC=/tmp/rt-src
 WORKDIR=/tmp/rt-work
-BIN="$SRC/scripts/himmelctl/bin.js"
+TARBALL_STAGE=/tmp/rt-tarball
+SHARE_HIMMEL="$GHOME/.local/share/himmel"
+case "$INSTALL_FROM" in
+    clone)   BIN="$SRC/scripts/himmelctl/bin.js" ;;
+    tarball) BIN="$SHARE_HIMMEL/current/scripts/himmelctl/bin.js" ;;
+esac
 
 # The exact environment every install and the uninstall run under (HIMMEL-3321:
 # printed, then passed — the printed line IS the argv).
@@ -160,7 +181,7 @@ case $? in
     *) fail "could not acquire the vm-lock on '$CLONE_NAME'" ;;
 esac
 
-echo "[run] ref=$REF sha=$SHA profile=$PROFILE purge-state=$PURGE clone-gone=$CLONE_GONE expect-red=$EXPECT_RED clone=$CLONE_NAME snapshot=$SNAPSHOT guest-user=$GUEST_USER"
+echo "[run] ref=$REF sha=$SHA install-from=$INSTALL_FROM profile=$PROFILE purge-state=$PURGE clone-gone=$CLONE_GONE expect-red=$EXPECT_RED clone=$CLONE_NAME snapshot=$SNAPSHOT guest-user=$GUEST_USER"
 vm_clone_ensure "$SNAPSHOT"
 vm_restore "$SNAPSHOT"
 vm_boot
@@ -177,12 +198,45 @@ step() {
 # 1. Stage the ref's tree (git archive: tracked files only) + the helpers.
 HOST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rt-src.XXXXXX") || fail "mktemp failed"
 git -C "$REPO_ROOT" archive "$SHA" | tar -x -C "$HOST_TMP" || fail "git archive $SHA failed"
-TOP=()
-while IFS= read -r f; do TOP+=("$f"); done < <(ls -A "$HOST_TMP")
-echo "[step] stage"
-rsync_e="ssh -i ${HIMMEL_VM_AR_SSH_KEY:-$HOME/.ssh/id_ed25519} -p $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
-vm_stage_tree "$HOST_TMP" "$SRC" vm_ssh "$rsync_e" "$GUEST_USER@127.0.0.1" "${TOP[@]}" || fail "step stage failed"
-step git-init "cd $SRC && git init -q && git add -A && git -c user.name=rt -c user.email=rt@invalid commit -qm 'rt $SHA'"
+if [ "$INSTALL_FROM" = tarball ]; then
+    # build-tarball.sh always archives HEAD of --src, so HOST_TMP (already the
+    # ref's tree) is turned into a one-commit git checkout AT $SHA on the
+    # HOST, mirroring the release job (reused unmodified, not re-implemented).
+    echo "[step] host-git-init"
+    if ! git -C "$HOST_TMP" init -q \
+        || ! git -C "$HOST_TMP" add -A \
+        || ! git -C "$HOST_TMP" -c user.name=rt -c user.email=rt@invalid commit -qm "rt $SHA"; then
+        fail "step host-git-init failed"
+    fi
+    VERSION="0.0.0-rt${SHA:0:12}"
+    TARBALL_OUT=$(mktemp -d "${TMPDIR:-/tmp}/rt-tarball-out.XXXXXX") || fail "mktemp failed"
+    echo "[step] build-tarball"
+    # HIMMEL_RT_TARBALL_NO_BUILD: a hermetic-test seam (test-provenance-roundtrip-dry.sh
+    # only), same class as HIMMELCTL_CACHE_DIR / HIMMEL_CAPTURE_REPO_ROOT — skips
+    # build-tarball.sh's `npm ci`/`npm run build` (network) so the dry twin still
+    # runs the REAL build-tarball.sh (archive, tar, gzip, sha256, self-verify)
+    # end to end. The station guest run never sets it: the tarball it installs
+    # must be the real, buildable release artifact.
+    BUILD_ARGS=()
+    [ "${HIMMEL_RT_TARBALL_NO_BUILD:-0}" != 1 ] || BUILD_ARGS=(--no-build)
+    bash "$REPO_ROOT/scripts/release/build-tarball.sh" --version "$VERSION" --src "$HOST_TMP" --out "$TARBALL_OUT" "${BUILD_ARGS[@]}" \
+        || fail "step build-tarball failed"
+    ASSET="himmel-$VERSION-linux.tar.gz"
+    echo "[step] stage-tarball"
+    tar -C "$TARBALL_OUT" -cf - "$ASSET" "$ASSET.sha256" \
+        | vm_ssh "rm -rf $TARBALL_STAGE && mkdir -p $TARBALL_STAGE && tar -C $TARBALL_STAGE -xf -" \
+        || fail "step stage-tarball failed"
+    # The README recipe verbatim: sha256 verify, extract into the versioned
+    # dir with --strip-components=1, `current` symlink.
+    step tarball-extract "cd $TARBALL_STAGE && sha256sum -c $ASSET.sha256 && mkdir -p $SHARE_HIMMEL/$VERSION && tar -xzf $ASSET -C $SHARE_HIMMEL/$VERSION --strip-components=1 && ln -sfn $VERSION $SHARE_HIMMEL/current"
+else
+    TOP=()
+    while IFS= read -r f; do TOP+=("$f"); done < <(ls -A "$HOST_TMP")
+    echo "[step] stage"
+    rsync_e="ssh -i ${HIMMEL_VM_AR_SSH_KEY:-$HOME/.ssh/id_ed25519} -p $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
+    vm_stage_tree "$HOST_TMP" "$SRC" vm_ssh "$rsync_e" "$GUEST_USER@127.0.0.1" "${TOP[@]}" || fail "step stage failed"
+    step git-init "cd $SRC && git init -q && git add -A && git -c user.name=rt -c user.email=rt@invalid commit -qm 'rt $SHA'"
+fi
 echo "[step] helpers"
 tar -C "$REPO_ROOT/scripts/vm/lib" -cf - seed-provenance.sh assert-provenance.sh inventory.sh invdiff.py \
     | vm_ssh "rm -rf $WORKDIR && mkdir -p $WORKDIR && tar -C $WORKDIR -xf -" || fail "step helpers failed"

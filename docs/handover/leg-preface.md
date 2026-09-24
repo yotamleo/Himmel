@@ -222,8 +222,21 @@ directories, goes to the classifier by design.
 ## Shipping
 
 - Every PR body carries one line `leg-burn: calls= avg-ctx= first-turn=
-  compactions= cost-eq=` from `bash scripts/lanes/leg-burn.sh <your session
-  name>`, run just before opening the PR.
+  compactions= cost-eq=`. **Never run `leg-burn.sh` yourself** — a leg typing
+  it as a standalone command was classifier-denied [Session Transcript
+  Tampering] (HIMMEL-3572). `scripts/lanes/leg-pr-open.sh` computes and
+  inserts the line itself when you open the PR; if it can't resolve your
+  session it writes `leg-burn: unavailable (<reason>)` instead and still
+  opens the PR — neither case is something to fix by hand.
+- **Clearing the CR marker** is typed with the primary checkout's ABSOLUTE
+  path, the same anchor shape as the merge: `bash <anchor>/scripts/cr/clear-cr-marker.sh`,
+  where `<anchor>` is the primary checkout's absolute path (as above, never
+  your worktree). Your leg settings carry that exact literal as an allow rule
+  (HIMMEL-3572, mirroring HIMMEL-3567); the relative spelling
+  (`bash scripts/cr/clear-cr-marker.sh`) also stays allowed, but the absolute
+  one is what `guard-pr-check-literal.sh` itself tells you to run once the
+  relative entry can't self-verify — typing it any other way falls to the
+  classifier, which denies it as [Out-of-Place Publication].
 - Conventional commit carrying the ticket ID. **Attestation trailers go in the
   FIRST commit** (`Platforms tested: <os>`; `Security reviewed: <token>`),
   written after genuinely testing and reviewing. The token is the FIRST word

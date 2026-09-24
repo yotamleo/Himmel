@@ -1111,15 +1111,33 @@ for (const file of ['.claude/commands/pr-check.md', '.agents/skills/pr-check/SKI
 const ANCHOR = '/home/u/himmel';
 const ANCHOR_RULE = 'Bash(bash /home/u/himmel/scripts/handover/merge-on-green.sh:*)';
 
+// HIMMEL-3572: clear-cr-marker.sh's own denial (guard-pr-check-literal.sh)
+// teaches a leg the identical absolute-anchor spelling once the relative
+// entry can't self-verify, and plugin-profiles.json's gateAllow comment
+// confirms that spelling matched no existing rule — so a leg running it fell
+// to the classifier and was denied [Out-of-Place Publication]. Mirror the
+// merge literal exactly: same anchor, same mechanism.
+const MARKER_ANCHOR_RULE = 'Bash(bash /home/u/himmel/scripts/cr/clear-cr-marker.sh:*)';
+
 for (const name of LEG_PROFILES) {
   test(`HIMMEL-3567: ${name} with an anchor adds exactly the absolute merge literal and keeps every gate rule`, () => {
     const { permissions } = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
-    assert.deepEqual(permissions.allow, [...REG.gateAllow, ANCHOR_RULE]);
+    assert.deepEqual(permissions.allow, [...REG.gateAllow, ANCHOR_RULE, MARKER_ANCHOR_RULE]);
+  });
+
+  test(`HIMMEL-3572: ${name} with an anchor also adds the absolute clear-cr-marker literal`, () => {
+    const { permissions } = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
+    assert.ok(permissions.allow.includes(MARKER_ANCHOR_RULE), permissions.allow.join('\n'));
   });
 }
 
 for (const name of ['operator', 'user', 'bare']) {
   test(`HIMMEL-3567: ${name} gets no permissions even with an anchor`, () => {
+    const out = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
+    assert.equal(out?.permissions, undefined);
+  });
+
+  test(`HIMMEL-3572: ${name} gets no clear-cr-marker literal even with an anchor (no permissions at all)`, () => {
     const out = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
     assert.equal(out?.permissions, undefined);
   });
