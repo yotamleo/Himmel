@@ -533,6 +533,34 @@ allow "branch -u main (main is -u's VALUE, not a branch operand)" "$W" \
 allow "branch -C main <new> (main is the SOURCE, not the target)" "$W" \
     "git branch -C main feat2"
 
+echo "== HIMMEL-3565 round-3 CR (B1): move SOURCE is a target too — <old> is deleted, not just read =="
+# Copy's source is read-only (residual 2's -C row above stays allow), but
+# move DELETES the source ref (refs/heads/<old> goes away, and if <old> was
+# checked out elsewhere its HEAD repoints) — that is a write, not a read.
+deny "branch -M main <new> (main is the MOVE SOURCE, uppercase)" "$W" \
+    "git branch -M main renamed"
+deny "branch -M master <new> (master is the MOVE SOURCE)" "$W" \
+    "git branch -M master renamed"
+deny "branch --move --force main <new> (long form, main is the SOURCE)" "$W" \
+    "git branch --move --force main renamed"
+# Bare -m (no force) is a real rename too — git only needs -f when <new>
+# already exists — so it was wrongly excluded from br_danger entirely; now
+# in the same danger bucket as -M.
+deny "branch -m main <new>, no force (main is the MOVE SOURCE)" "$W" \
+    "git branch -m main renamed"
+
+echo "== HIMMEL-3565 round-3 CR (B2): -u's value hides inside a bundled short cluster =="
+# The exact -u/-uVALUE forms above are matched, but a cluster like -fu bundles
+# -u with an unrelated boolean flag in one token; -u still consumes the NEXT
+# token as its mandatory value (never a branch-name operand), and the real
+# target is main, the operand after it.
+deny "branch -fu <upstream> main (u bundled with -f)" "$W" \
+    "git branch -fu origin/feat/x main"
+deny "branch -qu <upstream> main (u bundled with -q)" "$W" \
+    "git branch -qu origin/feat/x main"
+deny "branch -vu <upstream> main (u bundled with -v)" "$W" \
+    "git branch -vu origin/feat/x main"
+
 echo "== HIMMEL-3565 residual 4 (documented, not fixed): branch -D main is inert, not modelled =="
 # git itself refuses to delete the branch checked out in another worktree, so
 # this is inert in the exact scenario this arm defends. See the ponytail

@@ -2316,7 +2316,19 @@ _bwimc_git_clause() {
             # case every branch/git version's exact flag-value shape, revisit
             # if HIMMEL-3546's shared tokenizer lands and can replace this
             # scan outright.)
-            local br_danger=0 br_upstream=0 br_movecopy=0 br_want_val=0
+            # HIMMEL-3565 round-3 CR (B1, B2): a move (-m/-M/--move) DELETES
+            # its source ref (real git moves refs/heads/<old> to
+            # refs/heads/<new>, repointing HEAD if <old> was checked out
+            # elsewhere) — unlike copy, <old> is a write target too, and
+            # unlike -M, bare -m is a real rename whenever <new> does not
+            # already exist, so it belongs in br_danger even without -f.
+            # Track br_move separately from br_movecopy so the SOURCE check
+            # below applies only to move, never to copy (copy's <old> really
+            # is read-only). A bundled short cluster (-fu/-qu/-vu) hides -u
+            # the same way -M/-C hide inside -*[MC]* already handled below —
+            # -u still consumes the NEXT token as its mandatory value (never
+            # a branch-name operand) once found anywhere in the cluster.
+            local br_danger=0 br_upstream=0 br_movecopy=0 br_move=0 br_want_val=0
             local br_first="" br_last="" br_target
             for v in ${args[@]+"${args[@]}"}; do
                 if [ "$br_want_val" = 1 ]; then
@@ -2330,15 +2342,24 @@ _bwimc_git_clause() {
                         br_danger=1; br_upstream=1 ;;
                     --set-upstream-to=*|--set-upstream|--unset-upstream)
                         br_danger=1; br_upstream=1 ;;
-                    -M|-C)
+                    -M|--move)
+                        br_danger=1; br_movecopy=1; br_move=1 ;;
+                    -C|--copy)
                         br_danger=1; br_movecopy=1 ;;
-                    -m|-c|--move|--copy)
+                    -m)
+                        br_danger=1; br_movecopy=1; br_move=1 ;;
+                    -c)
                         br_movecopy=1 ;;
                     --*)
                         _bwimc_is_long_abbrev "force" "$v" && br_danger=1 ;;
                     -*)
-                        _bwimc_short_has "$v" ufMC && br_danger=1
-                        case "$v" in *[MC]*) br_movecopy=1 ;; esac ;;
+                        _bwimc_short_has "$v" ufmMC && br_danger=1
+                        case "$v" in *[mM]*) br_movecopy=1; br_move=1 ;; esac
+                        case "$v" in *[cC]*) br_movecopy=1 ;; esac
+                        case "$v" in
+                            *u) br_danger=1; br_upstream=1; br_want_val=1 ;;
+                            *u*) br_danger=1; br_upstream=1 ;;
+                        esac ;;
                     *)
                         [ -n "$br_first" ] || br_first="$v"
                         br_last="$v" ;;
@@ -2353,6 +2374,12 @@ _bwimc_git_clause() {
                 main|master)
                     [ "$br_danger" = 1 ] && _bwimc_git_check_common_owner "$gtarget" "branch clause $1" ;;
             esac
+            if [ "$br_move" = 1 ] && [ "$br_danger" = 1 ]; then
+                case "$br_first" in
+                    main|master)
+                        _bwimc_git_check_common_owner "$gtarget" "branch clause $1 (move source)" ;;
+                esac
+            fi
             ;;
         update-ref|symbolic-ref)
             # Adversarial review round 1 (HIGH, bypass): the old loop skipped
