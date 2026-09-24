@@ -518,7 +518,19 @@ mentions_dot_claude_dir_dest() {
     # worktree's OWN nested `.claude` (`…/worktrees/<wt>/.claude/settings.json`
     # keeps a SECOND, un-stripped `.claude` after the container segment), and
     # never touches rule 1 (`settings.json` is a distinct substring).
-    c=${1//.claude\/worktrees/CLAUDE_WORKTREES_PATH}
+    #
+    # Never stripped when `..` appears ANYWHERE in the text (HIMMEL-3555,
+    # third panel round on #1210): `cp -r x/. …/worktrees/..` (or a deeper
+    # `worktrees/wt/../../`) climbs back OUT of the worktrees container into
+    # `.claude` itself — the SAME "any `..` voids the strip" rule
+    # mentions_primary_or_home() already applies to its own-root blanking,
+    # for the identical reason (this hook does not resolve `..`, so it
+    # cannot tell how far a climb reaches; only refusing to strip at all
+    # keeps the mention visible to the live-check `..` rule below).
+    case "$1" in
+        *..*) c="$1" ;;
+        *) c=${1//.claude\/worktrees/CLAUDE_WORKTREES_PATH} ;;
+    esac
     # No LEADING boundary requirement (HIMMEL-3499/3555 panel round on
     # #1210): a short flag glued directly to its argument (`-C.claude`,
     # `-d.claude`, `-t.claude`) puts an alnum character immediately before
@@ -534,13 +546,30 @@ mentions_dot_claude_dir_dest() {
     [ -n "$out" ]
 }
 
+# _verb_segment TEXT VERB_GREP_PATTERN — the single shell "segment" of TEXT
+# containing a match for VERB_GREP_PATTERN, split on `;`, `&` (covers `&&`
+# too — each `&` is its own split point), `|` and `#` (HIMMEL-3555, third
+# panel round on #1210): a mode-check that scanned the WHOLE command let a
+# chained or commented trailing token spoof it via a coincidental
+# ` -t`/` -c`/` -l`/` -v` elsewhere in the text — `tar -xzf a.tgz -C
+# ~/.claude; ls -t` false-ALLOWED because `ls -t`'s `-t` read as tar's own
+# list-mode flag. Falls back to the whole text if no segment matches (should
+# not happen — the caller already matched the same pattern against the
+# whole text), never to an empty result.
+_verb_segment() {
+    local seg
+    seg=$(printf '%s' "$1" | tr ';&|#' '\n' | grep -E "$2" | head -1)
+    [ -n "$seg" ] && printf '%s' "$seg" || printf '%s' "$1"
+}
+
 # _tar_verb_mode CMD_N — CMD_N is the case-preserved command text. Returns
-# 0 (a candidate write) unless the text names tar's CREATE (`-c`/`--create`)
-# or LIST (`-t`/`--list`) mode, or an old-style clustered option (`tar cf …`,
+# 0 (a candidate write) unless the tar/gtar/bsdtar segment (see
+# _verb_segment above) names tar's CREATE (`-c`/`--create`) or LIST
+# (`-t`/`--list`) mode, or an old-style clustered option (`tar cf …`,
 # `tar tvf …`) whose first letter is `c`/`t` — none of those write into a
-# destination directory (HIMMEL-3499/3555 panel round on #1210: `tar -czf
-# out.tgz .claude` and `tar -tf a.tar .claude/` archive/list `.claude`'s
-# CONTENTS, they do not write into it, and were false-denied).
+# destination directory (HIMMEL-3499/3555: `tar -czf out.tgz .claude` and
+# `tar -tf a.tar .claude/` archive/list `.claude`'s CONTENTS, they do not
+# write into it, and were false-denied).
 #
 # Checked on the CASE-PRESERVED text, not the lowercased CMD_LC
 # has_write_verb_or_target_flag otherwise uses: tar's create flag is
@@ -549,24 +578,32 @@ mentions_dot_claude_dir_dest() {
 # them — a command using only `-C` (extract-into-a-dir) would then read as
 # `-c` (create) and be wrongly excluded, a bypass.
 _tar_verb_mode() {
-    case "$1" in
+    local seg
+    seg=$(_verb_segment "$1" '(^|[^a-zA-Z0-9_])(g?tar|bsdtar)([^a-zA-Z0-9_]|$)')
+    case "$seg" in
         *' -c'*|*'--create'*|*' -t'*|*'--list'*) return 1 ;;
     esac
-    case "$1" in
+    case "$seg" in
         *' tar '[ct]*|*' gtar '[ct]*|*' bsdtar '[ct]*) return 1 ;;
         'tar '[ct]*|'gtar '[ct]*|'bsdtar '[ct]*) return 1 ;;
     esac
     return 0
 }
 
-# _unzip_verb_mode CMD_LC — 0 (a candidate write) unless the text names
-# unzip's own LIST (`-l`), TEST (`-t`) or verbose-list (`-v`) mode
-# (HIMMEL-3499/3555 panel round on #1210: `unzip -l a.zip .claude/*` lists
-# archive entries, it does not write into `.claude`). Checked on CMD_LC —
-# unlike tar, none of unzip's own flag letters collide across case.
+# _unzip_verb_mode CMD_LC — 0 (a candidate write) unless the unzip segment
+# (see _verb_segment above) names unzip's own LIST (`-l`), TEST (`-t`) or
+# verbose-list (`-v`) mode AS ITS FIRST FLAG (HIMMEL-3499, HIMMEL-3555). The
+# first-flag requirement is deliberate: `unzip -o a.zip -d ~/.claude -x -v`
+# is a genuine extraction (destination `-d`, overwrite `-o`) that merely
+# also passes `-v` — a bare "anywhere in the segment" check read that
+# trailing `-v` as unzip's list mode and false-ALLOWED it. `unzip -l
+# a.zip .claude/*` (mode flag first) still excludes correctly. Unlike tar,
+# none of unzip's own flag letters collide across case, so CMD_LC is fine.
 _unzip_verb_mode() {
-    case "$1" in
-        *' -l'*|*'--list'*|*' -t'*|*' -v'*) return 1 ;;
+    local seg
+    seg=$(_verb_segment "$1" '(^|[^a-z0-9_])unzip([^a-z0-9_]|$)')
+    case "$seg" in
+        *' unzip '-[ltv]*|unzip' '-[ltv]*) return 1 ;;
     esac
     return 0
 }
@@ -600,17 +637,19 @@ _unzip_verb_mode() {
 # worktree's own `tar -x -C .claude` — an accepted, documented false deny
 # (test 136), the same shape as the cd/pushd precedent above.
 #
-# checkout/restore additionally require a `git` word somewhere in the same
-# text (HIMMEL-3555 panel round on #1210): unlike cp/mv/tar/unzip, these are
-# common English words that show up as ordinary filenames/arguments
-# (`~/.claude/commands/checkout.md`, `grep -rn restore ~/.claude/skills`),
-# and a bare-word match false-denied a plain read of one. Loose
-# co-occurrence, not adjacency — `git -C <dir> checkout` and
-# `git --work-tree=. checkout` both still count; the `.claude/worktrees/`
-# path-stripping above is what excludes an ordinary cross-worktree `-C`
-# reference, not this check.
+# checkout/restore additionally require a `git` word in the SAME segment
+# (see _verb_segment above; HIMMEL-3499, HIMMEL-3555): unlike cp/mv/tar/
+# unzip, these are common English words that show up as ordinary
+# filenames/arguments (`~/.claude/commands/checkout.md`, `grep -rn restore
+# ~/.claude/skills`), and a bare-word match false-denied a plain read of
+# one. Scoped to the segment, not just loose whole-text co-occurrence — `cat
+# ~/.claude/checkout.md && git status` has "git" only in a LATER, unrelated
+# segment and must stay allowed. `git -C <dir> checkout` and
+# `git --work-tree=. checkout` both still count (same segment); the
+# `.claude/worktrees/` path-stripping above is what excludes an ordinary
+# cross-worktree `-C` reference, not this check.
 has_write_verb_or_target_flag() {
-    local c="$1" n="$2" out
+    local c="$1" n="$2" out seg
     out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee)([^a-z0-9_]|$)') || true
     [ -n "$out" ] && return 0
 
@@ -626,7 +665,8 @@ has_write_verb_or_target_flag() {
 
     out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(checkout|restore)([^a-z0-9_]|$)') || true
     if [ -n "$out" ]; then
-        out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])git([^a-z0-9_]|$)') || true
+        seg=$(_verb_segment "$c" '(^|[^a-z0-9_])(checkout|restore)([^a-z0-9_]|$)')
+        out=$(printf '%s' "$seg" | grep -E '(^|[^a-z0-9_])git([^a-z0-9_]|$)') || true
         [ -n "$out" ] && return 0
     fi
 

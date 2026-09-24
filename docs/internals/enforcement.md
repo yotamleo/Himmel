@@ -1575,10 +1575,17 @@ verb (`cp`/`mv`/`install`/`rsync`/`ln`/`dd`/`tee`/`tar`/`gtar`/`bsdtar`/
 `unzip`/`checkout`/`restore`) or `-t`/`--target-directory` (rule 2). A
 `.claude/worktrees/<name>` mention (every linked worktree's own container
 path) is stripped before this match, so an ordinary cross-worktree
-`-C <other-worktree>` reference does not count; tar additionally excludes
-its own CREATE/LIST modes, and `checkout`/`restore` additionally require a
-`git` word somewhere in the text (both are common ordinary words/filenames
-otherwise). It then denies when the
+`-C <other-worktree>` reference does not count — unless `..` appears
+anywhere in the text, since the hook never resolves `..` and a
+`worktrees/../` (or deeper) climb can reach back into the primary's own
+`.claude`, so the strip is skipped and the mention stays visible. tar/unzip
+additionally exclude their own CREATE/LIST/TEST/verbose-list modes, and
+`checkout`/`restore` additionally require a `git` word — both checked
+against only the shell SEGMENT containing the verb (split on `;`, `&`, `|`,
+`#`, mirroring how a shell itself separates commands), not the whole
+command text, so a chained or commented trailing token cannot spoof the
+mode check and an unrelated later `git` cannot turn a plain
+`checkout.md` read into a match. It then denies when the
 mention is live: the cwd is a primary checkout or is in no repo at all; the
 text names the primary root or `$HOME`'s `.claude` (`<home>/.claude`,
 `$HOME/.claude`, `${HOME}/.claude`, `~/.claude`, `~user/.claude`, with or

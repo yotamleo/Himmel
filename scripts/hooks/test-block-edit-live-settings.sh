@@ -843,6 +843,46 @@ assert_rc "148 git --work-tree=. checkout -- .claude (non-adjacent git flag) sti
 assert_rc "149 git checkout <ref> -- .claude from primary still denies (probe 1 regression guard)" 2 \
     "$(bash_rc_of "$PRIMARY" "git checkout origin/x -- .claude")"
 
+# 150-153 (HIMMEL-3555, fourth panel round on #1210, F1 IMPORTANT): a `..`
+# after the `.claude/worktrees/` container-path strip climbs back OUT of the
+# worktrees container into the primary's own `.claude` — the strip must not
+# apply when `..` appears anywhere, mirroring mentions_primary_or_home()'s
+# own-root blanking rule for the identical reason (the hook never resolves
+# `..`, so refusing to strip is what keeps the climb visible to the
+# existing `..` live-check rule). All 4 gave rc=0 everywhere before this fix.
+assert_rc "150 cp -r x/. into <primary>/.claude/worktrees/.. denies" 2 \
+    "$(bash_rc_of "$WT2" "cp -r x/. $PRIMARY/.claude/worktrees/..")"
+assert_rc "151 rsync -a into <primary>/.claude/worktrees/../ denies" 2 \
+    "$(bash_rc_of "$WT2" "rsync -a x/ $PRIMARY/.claude/worktrees/../")"
+assert_rc "152 cp -r x/. into relative .claude/worktrees/.. from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp -r x/. .claude/worktrees/..")"
+assert_rc "153 cp -r x/. into <nested-worktree>/../../ denies" 2 \
+    "$(bash_rc_of "$WT2" "cp -r x/. $NESTED_WT/../../")"
+
+# 154-158 (HIMMEL-3555, fourth panel round on #1210, F2 MED): the tar/unzip
+# mode check is scoped to the shell SEGMENT containing the verb (split on
+# `;`, `&`, `|`, `#`) — a chained or commented trailing token used to spoof
+# it via a coincidental ` -t`/` -c`/` -l`/` -v` elsewhere in the command. All
+# 5 gave rc=0 everywhere before this fix, despite a genuine extraction into
+# a live $HOME/.claude target.
+assert_rc "154 tar -C \$HOME/.claude then a chained ls -t still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xzf a.tgz -C \$HOME/.claude; ls -t" HOME="$FAKEHOME")"
+assert_rc "155 tar -C \$HOME/.claude then && bash -c true still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xzf a.tgz -C \$HOME/.claude && bash -c true" HOME="$FAKEHOME")"
+assert_rc "156 tar --directory \$HOME/.claude with a trailing # -t comment still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xzf a.tgz --directory \$HOME/.claude # -t" HOME="$FAKEHOME")"
+assert_rc "157 unzip -d \$HOME/.claude then && ls -l still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "unzip -o a.zip -d \$HOME/.claude && ls -l" HOME="$FAKEHOME")"
+assert_rc "158 unzip -d \$HOME/.claude with a trailing -x -v still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "unzip -o a.zip -d \$HOME/.claude -x -v" HOME="$FAKEHOME")"
+
+# 159 (HIMMEL-3555, fourth panel round on #1210, F3 LOW): checkout/restore's
+# git-co-occurrence check is scoped to the same segment too — "git" in a
+# LATER, unrelated chained command must not make an unrelated read look like
+# a git-checkout write. Gave rc=2 everywhere before this fix.
+assert_rc "159 cat of a checkout.md file, then && git status (unrelated segment), allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "cat \$HOME/.claude/checkout.md && git status" HOME="$FAKEHOME")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
