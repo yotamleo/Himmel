@@ -175,18 +175,437 @@ case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 # them, so 'scripts/cr/x', scripts/cr/\x and $'scripts/cr/x' all read as
 # what they spell.
 # A backslash-newline is a line continuation: the shell joins it away first.
-# ponytail: this quote-strip is what lets a single-quoted backtick SPAN used
-# as inert markdown-style prose (a `sed -i 's/x/`bash scripts\/cr\/review-
-# round.sh`/'` replacement string, HIMMEL-3517 console repro 2026-09-23)
-# still deny below — once the quotes are gone, that backtick reads exactly
-# like a real command-substitution backtick, and `simple`'s split on backtick
-# (below) then treats the enclosed text as a command word of its own. A real
-# fix needs quote-aware tokenization (know which backtick was inside a
-# quote), not a wider text scan; same shared limitation as
-# block-edit-live-settings.sh's is_readonly_allowlisted() and a quoted `|`.
-# Upgrade path: HIMMEL-3517 follow-up, if this recurs.
 flat=${cmd//$'\\\n'/}
 flat=${flat//[\'\"\\]/}
+
+# >>> BEGIN shell-tokenize (HIMMEL-3546; canonical: scripts/hooks/lib/shell-tokenize.sh) >>>
+# st_tokenize CMD — split CMD into words and segments the way bash reads it,
+# expanding nothing. Returns 0 (ST_OK=1) on success, 1 (ST_OK=0) on anything
+# it does not model — an unterminated quote, an unmatched `)`, `;;`, a
+# backtick inside double quotes inside backticks, a `${…}` beyond a bare
+# name, a redirect with no target, more than 16 KiB — and the caller then
+# falls back to its older, stricter text scan.
+#   ST_N        number of words
+#   ST_W[i]     word i with quotes and escapes removed, nothing expanded
+#   ST_Q[i]     1 when any byte of word i was quoted or escaped
+#   ST_X[i]     1 when word i carries a live `$` (unquoted, or inside "…")
+#   ST_G[i]     1 when word i carries an unquoted * ? [ or { (a glob or
+#               brace expansion, which can become any word — even `-i`)
+#   ST_A[i]     1 when word i is assignment-shaped (an unquoted NAME=)
+#   ST_S[i]     segment index of word i
+#   ST_RO[i]    the redirect operator word i is the target of (`>`, `2>&`,
+#               `<<`, …), empty for an ordinary word
+#   ST_NSEG     number of segments
+#   ST_SEP[s]   operator ending segment s: ; & && | || |& nl ( ) $( ` <( >(
+#               or empty for the last one. A substitution's inner command is
+#               a segment of its own.
+#   ST_SUBST ST_HEREDOC ST_ANSIC ST_COMMENT — 1 when the command carries a
+#               live command/process substitution (including inside "…" and
+#               an unquoted heredoc body), a heredoc, a $'…' word, a comment.
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+st_tokenize() {
+    local LC_ALL=C
+    local s="$1" n i c c2 c3 ctx='' top w='' win=0 wq=0 wx=0 wg=0 wqpos=-1
+    local rop='' fd op rest body j bad=0 hd_n=0 hd_i=0
+    local -a hd_d hd_q hd_t
+    ST_OK=0 ST_N=0 ST_NSEG=0 ST_SUBST=0 ST_HEREDOC=0 ST_ANSIC=0 ST_COMMENT=0
+    ST_W=() ST_Q=() ST_X=() ST_G=() ST_A=() ST_S=() ST_RO=() ST_SEP=()
+    n=${#s}
+    [ "$n" -le 16384 ] || return 1
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        c=${s:i:1}
+        top=''
+        [ -z "$ctx" ] || top=${ctx:${#ctx}-1:1}
+        if [ "$top" = D ]; then
+            case "$c" in
+                '"') ctx=${ctx%?}; i=$((i + 1)) ;;
+                '\')
+                    c2=${s:i+1:1}
+                    case "$c2" in
+                        '$'|'`'|'"'|'\') _st_q; w=$w$c2; i=$((i + 2)) ;;
+                        $'\n') i=$((i + 2)) ;;
+                        *) _st_q; w=$w'\'; i=$((i + 1)) ;;
+                    esac
+                    ;;
+                '$')
+                    if [ "${s:i+1:1}" = '(' ]; then
+                        ST_SUBST=1; _st_seg '$('; ctx=${ctx}P; i=$((i + 2))
+                    else
+                        _st_q; wx=1; w=$w'$'; i=$((i + 1))
+                    fi
+                    ;;
+                '`')
+                    case "$ctx" in *B*) return 1 ;; esac
+                    ST_SUBST=1; _st_seg '`'; ctx=${ctx}B; i=$((i + 1))
+                    ;;
+                *) _st_q; w=$w$c; i=$((i + 1)) ;;
+            esac
+            continue
+        fi
+        case "$c" in
+            ' '|$'\t') _st_word; i=$((i + 1)) ;;
+            $'\n')
+                _st_seg nl; i=$((i + 1))
+                [ "$hd_i" -ge "$hd_n" ] || _st_heredocs
+                ;;
+            "'")
+                rest=${s:i+1}
+                case "$rest" in *"'"*) ;; *) return 1 ;; esac
+                body=${rest%%"'"*}
+                _st_q; w=$w$body; i=$((i + ${#body} + 2))
+                ;;
+            '"') _st_q; ctx=${ctx}D; i=$((i + 1)) ;;
+            '\')
+                c2=${s:i+1:1}
+                case "$c2" in
+                    $'\n') i=$((i + 2)) ;;
+                    '') _st_q; w=$w'\'; i=$((i + 1)) ;;
+                    *) _st_q; w=$w$c2; i=$((i + 2)) ;;
+                esac
+                ;;
+            '$')
+                c2=${s:i+1:1}
+                case "$c2" in
+                    "'")
+                        ST_ANSIC=1; body=''; j=$((i + 2))
+                        while [ "$j" -lt "$n" ]; do
+                            c3=${s:j:1}
+                            if [ "$c3" = '\' ]; then
+                                body=$body${s:j:2}; j=$((j + 2))
+                            elif [ "$c3" = "'" ]; then
+                                break
+                            else
+                                body=$body$c3; j=$((j + 1))
+                            fi
+                        done
+                        [ "$j" -lt "$n" ] || return 1
+                        _st_q; w=$w$body; i=$((j + 1))
+                        ;;
+                    '"') _st_q; ctx=${ctx}D; i=$((i + 2)) ;;
+                    '(') ST_SUBST=1; _st_seg '$('; ctx=${ctx}P; i=$((i + 2)) ;;
+                    '{')
+                        rest=${s:i+2}
+                        body=${rest%%\}*}
+                        [ "$body" != "$rest" ] || return 1
+                        case "$body" in ''|*[!A-Za-z0-9_#!@*?$-]*) return 1 ;; esac
+                        win=1; wx=1; w=$w'${'$body'}'; i=$((i + ${#body} + 3))
+                        ;;
+                    *) win=1; wx=1; w=$w'$'; i=$((i + 1)) ;;
+                esac
+                ;;
+            '`')
+                if [ "$top" = B ]; then
+                    _st_seg '`'; ctx=${ctx%?}; _st_resume
+                else
+                    ST_SUBST=1; _st_seg '`'; ctx=${ctx}B
+                fi
+                i=$((i + 1))
+                ;;
+            '#')
+                if [ "$win" = 0 ]; then
+                    ST_COMMENT=1; rest=${s:i}; body=${rest%%$'\n'*}; i=$((i + ${#body}))
+                else
+                    w=$w'#'; i=$((i + 1))
+                fi
+                ;;
+            ';')
+                [ "${s:i+1:1}" != ';' ] || return 1
+                _st_seg ';'; i=$((i + 1))
+                ;;
+            '&')
+                c2=${s:i+1:1}
+                case "$c2" in
+                    '&') _st_seg '&&'; i=$((i + 2)) ;;
+                    '>')
+                        _st_word
+                        [ -z "$rop" ] || return 1
+                        if [ "${s:i+2:1}" = '>' ]; then rop='&>>'; i=$((i + 3)); else rop='&>'; i=$((i + 2)); fi
+                        ;;
+                    *) _st_seg '&'; i=$((i + 1)) ;;
+                esac
+                ;;
+            '|')
+                c2=${s:i+1:1}
+                case "$c2" in
+                    '|') _st_seg '||'; i=$((i + 2)) ;;
+                    '&') _st_seg '|&'; i=$((i + 2)) ;;
+                    *) _st_seg '|'; i=$((i + 1)) ;;
+                esac
+                ;;
+            '(') _st_seg '('; ctx=${ctx}S; i=$((i + 1)) ;;
+            ')')
+                case "$top" in
+                    P|S) _st_seg ')'; ctx=${ctx%?}; _st_resume; i=$((i + 1)) ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            '<'|'>')
+                fd=''
+                if [ "$win" = 1 ] && [ "$wq" = 0 ] && [ -z "$rop" ]; then
+                    case "$w" in *[!0-9]*) ;; *) fd=$w; w=''; win=0; wqpos=-1 ;; esac
+                fi
+                _st_word
+                [ -z "$rop" ] || return 1
+                c2=${s:i+1:1}
+                c3=${s:i+2:1}
+                if [ "$c" = '<' ]; then
+                    case "$c2" in
+                        '<')
+                            if [ "$c3" = '<' ]; then op='<<<'
+                            elif [ "$c3" = '-' ]; then op='<<-'; ST_HEREDOC=1
+                            else op='<<'; ST_HEREDOC=1
+                            fi
+                            ;;
+                        '&') op='<&' ;;
+                        '>') op='<>' ;;
+                        '(') op='<(' ;;
+                        *) op='<' ;;
+                    esac
+                else
+                    case "$c2" in
+                        '>') op='>>' ;;
+                        '&') op='>&' ;;
+                        '|') op='>|' ;;
+                        '(') op='>(' ;;
+                        *) op='>' ;;
+                    esac
+                fi
+                case "$op" in
+                    '<('|'>(')
+                        [ -z "$fd" ] || return 1
+                        ST_SUBST=1; _st_seg "$op"; ctx=${ctx}P; i=$((i + 2))
+                        ;;
+                    *) rop=$fd$op; i=$((i + ${#op})) ;;
+                esac
+                ;;
+            *)
+                case "$c" in '*'|'?'|'['|'{') wg=1 ;; esac
+                win=1; w=$w$c; i=$((i + 1))
+                ;;
+        esac
+    done
+    [ -z "$ctx" ] || return 1
+    _st_word
+    [ -z "$rop" ] || return 1
+    ST_SEP[ST_NSEG]=''
+    ST_NSEG=$((ST_NSEG + 1))
+    [ "$bad" = 0 ] || return 1
+    ST_OK=1
+    return 0
+}
+
+# The helpers below run in st_tokenize's dynamic scope and share its locals.
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+_st_q() { # the next byte appended to the word is quoted or escaped
+    [ "$wqpos" -ge 0 ] || wqpos=${#w}
+    wq=1; win=1
+}
+
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+_st_word() { # flush the pending word, if one was started
+    local k e re='^[A-Za-z_][A-Za-z0-9_]*='
+    if [ "$win" = 1 ]; then
+        k=$ST_N
+        ST_W[k]=$w; ST_Q[k]=$wq; ST_X[k]=$wx; ST_G[k]=$wg
+        ST_S[k]=$ST_NSEG; ST_RO[k]=$rop; ST_A[k]=0
+        if [ -z "$rop" ] && [[ $w =~ $re ]]; then
+            e=${w%%=*}
+            if [ "$wqpos" -lt 0 ] || [ "$wqpos" -gt "${#e}" ]; then ST_A[k]=1; fi
+        fi
+        case "$rop" in
+            '<<'|'<<-'|[0-9]'<<'|[0-9]'<<-')
+                hd_d[hd_n]=$w; hd_q[hd_n]=$wq
+                case "$rop" in *-) hd_t[hd_n]=1 ;; *) hd_t[hd_n]=0 ;; esac
+                hd_n=$((hd_n + 1))
+                ;;
+        esac
+        ST_N=$((k + 1)); rop=''
+    fi
+    w=''; win=0; wq=0; wx=0; wg=0; wqpos=-1
+}
+
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+_st_seg() { # end the current segment with operator $1
+    _st_word
+    [ -z "$rop" ] || bad=1
+    ST_SEP[ST_NSEG]=$1
+    ST_NSEG=$((ST_NSEG + 1))
+}
+
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+_st_resume() { # back from a substitution: inside "…" the word goes on
+    case "$ctx" in *D) win=1; wq=1; [ "$wqpos" -ge 0 ] || wqpos=0 ;; esac
+}
+
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+_st_heredocs() { # skip the bodies of every heredoc queued on the line just ended
+    local d line
+    while [ "$hd_i" -lt "$hd_n" ]; do
+        d=${hd_d[hd_i]}
+        while [ "$i" -lt "$n" ]; do
+            rest=${s:i}
+            line=${rest%%$'\n'*}
+            i=$((i + ${#line} + 1))
+            if [ "${hd_t[hd_i]}" = 1 ]; then
+                while [ "${line:0:1}" = $'\t' ]; do line=${line:1}; done
+            fi
+            [ "$line" != "$d" ] || break
+            if [ "${hd_q[hd_i]}" = 0 ]; then
+                case "$line" in *'$('*|*'`'*) ST_SUBST=1 ;; esac
+            fi
+        done
+        hd_i=$((hd_i + 1))
+    done
+}
+
+# st_sed_inert SCRIPT — 0 when SCRIPT is one sed command that can neither
+# write a file nor run one: an optional line address, then `p`, `d`, or a
+# single `s` command whose flags are only g p i I m M and digits (no `w`, no
+# `e`). Anything else — a second command, `e`, `w`, `r`, a newline — is 1.
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+st_sed_inert() {
+    local LC_ALL=C s="$1" d n i c part=0 re='^([0-9]+(,([0-9]+|\$))?|\$)'
+    case "$s" in *$'\n'*) return 1 ;; esac
+    if [[ $s =~ $re ]]; then s=${s:${#BASH_REMATCH[0]}}; fi
+    case "$s" in p|d) return 0 ;; s?*) ;; *) return 1 ;; esac
+    d=${s:1:1}
+    case "$d" in '\'|' ') return 1 ;; esac
+    n=${#s}
+    i=2
+    while [ "$i" -lt "$n" ] && [ "$part" -lt 2 ]; do
+        c=${s:i:1}
+        if [ "$c" = '\' ]; then i=$((i + 2)); continue; fi
+        [ "$c" != "$d" ] || part=$((part + 1))
+        i=$((i + 1))
+    done
+    [ "$part" = 2 ] || return 1
+    case "${s:i}" in *[!gpiImM0-9]*) return 1 ;; esac
+    return 0
+}
+
+# st_sed_args K INPLACE_OK — the words after a sed at word K, up to the end
+# of its segment. 0 when every script it runs is inert (st_sed_inert), each
+# one a plain word (no live `$`, no unquoted glob), no script comes from a
+# file (-f/--file), and -i/--in-place appears only when INPLACE_OK is 1.
+# Sets ST_SED_SCRIPTS to the script words' indexes, space-separated.
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+st_sed_args() {
+    local k=$1 inpl=$2 j sg a have=0 eo=0 scripts=''
+    sg=${ST_S[k]}
+    j=$((k + 1))
+    while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
+        if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
+        a=${ST_W[j]}
+        if [ "$eo" = 0 ]; then
+            case "$a" in
+                -e|--expression)
+                    j=$((j + 1))
+                    [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ] || return 1
+                    _st_sed_script "$j" "${ST_W[j]}" || return 1
+                    ;;
+                --expression=*) _st_sed_script "$j" "${a#--expression=}" || return 1 ;;
+                -e?*) _st_sed_script "$j" "${a#-e}" || return 1 ;;
+                -f*|--file|--file=*) return 1 ;;
+                -i*|--in-place|--in-place=*) [ "$inpl" = 1 ] || return 1 ;;
+                -l|--line-length) j=$((j + 1)) ;;
+                --line-length=*|-l[0-9]*) ;;
+                --) eo=1 ;;
+                --posix|--debug|--sandbox|--quiet|--silent|--regexp-extended|--separate|--unbuffered|--null-data|--zero-terminated|--follow-symlinks) ;;
+                -*[!nErsuz]*) return 1 ;;
+                -?*) ;;
+                *)
+                    if [ "$have" = 0 ]; then
+                        _st_sed_script "$j" "$a" || return 1
+                    fi
+                    ;;
+            esac
+        elif [ "$have" = 0 ]; then
+            _st_sed_script "$j" "$a" || return 1
+        fi
+        j=$((j + 1))
+    done
+    [ "$have" = 1 ] || return 1
+    ST_SED_SCRIPTS=$scripts
+    return 0
+}
+
+# shellcheck disable=SC1003,SC2016,SC2034 # literal \ ` $ bytes; ST_* are read by the caller
+_st_sed_script() { # one sed script at word $1 with text $2, in st_sed_args's scope
+    [ "${ST_X[$1]}" = 0 ] && [ "${ST_G[$1]}" = 0 ] || return 1
+    st_sed_inert "$2" || return 1
+    have=1
+    scripts="$scripts $1"
+}
+# <<< END shell-tokenize <<<
+
+# Quoted text that is provably inert is data, not a command (HIMMEL-3546):
+# once the quote-strip above has run, a `|`, `;` or backtick inside a quoted
+# argument reads exactly like a real one, and `echo 'bash scripts/cr/x.sh'`
+# or `--reason "a; b"` denied as "not one simple command". When the command
+# is one simple command by its tokens — a single segment, no substitution,
+# heredoc, ANSI-C word or comment — $flat is rebuilt from its words with the
+# inert ones left out, and every check below reads that. A word is inert
+# only when it is quoted, carries no live `$` and no glob, is not a redirect
+# target, has no VAR= prefix in front of its command, and is:
+#   - an argument of echo, printf, grep, egrep, fgrep, jq, cat, head, tail
+#     or wc, none of which runs its arguments;
+#   - a sed script st_sed_args verified can neither write nor run (no `e`,
+#     no `w`, no second command) — the script, never a file operand;
+#   - an argument after an unquoted `.sh` path that `bash`/`sh` runs, or
+#     that is itself the command word: data handed to the script whose
+#     bytes the checks below verify.
+# Anything else keeps the old text, so every command that was not one
+# simple command still is not, and a redirect is re-emitted with its target.
+if st_tokenize "$cmd" && [ "$ST_NSEG" -eq 1 ] && [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ]; then
+    tk_cmd=-1 tk_path=-1 tk_pre=0 tk_dropped=0 tk_flat='' ST_SED_SCRIPTS=''
+    k=0
+    while [ "$k" -lt "$ST_N" ]; do
+        if [ -z "${ST_RO[k]}" ]; then
+            if [ "${ST_A[k]}" = 1 ]; then
+                tk_pre=1
+            else
+                tk_cmd=$k
+                break
+            fi
+        fi
+        k=$((k + 1))
+    done
+    if [ "$tk_pre" = 0 ] && [ "$tk_cmd" -ge 0 ] && [ "${ST_X[tk_cmd]}${ST_G[tk_cmd]}" = 00 ]; then
+        case "${ST_W[tk_cmd]}" in
+            bash|sh)
+                k=$((tk_cmd + 1))
+                while [ "$k" -lt "$ST_N" ] && [ -n "${ST_RO[k]}" ]; do k=$((k + 1)); done
+                if [ "$k" -lt "$ST_N" ] && [ "${ST_Q[k]}${ST_X[k]}${ST_G[k]}" = 000 ]; then
+                    case "${ST_W[k]}" in *.sh) tk_path=$k ;; esac
+                fi
+                ;;
+            *.sh) [ "${ST_Q[tk_cmd]}" = 1 ] || tk_path=$tk_cmd ;;
+            sed) st_sed_args "$tk_cmd" 1 || ST_SED_SCRIPTS='' ;;
+        esac
+        k=0
+        while [ "$k" -lt "$ST_N" ]; do
+            tk_inert=0
+            if [ "$k" -gt "$tk_cmd" ] && [ -z "${ST_RO[k]}" ] && [ "${ST_Q[k]}${ST_X[k]}${ST_G[k]}" = 100 ]; then
+                case "${ST_W[tk_cmd]}" in
+                    echo|printf|grep|egrep|fgrep|jq|cat|head|tail|wc) tk_inert=1 ;;
+                    sed) case "$ST_SED_SCRIPTS " in *" $k "*) tk_inert=1 ;; esac ;;
+                    *) [ "$tk_path" -lt 0 ] || [ "$k" -le "$tk_path" ] || tk_inert=1 ;;
+                esac
+            fi
+            if [ "$tk_inert" = 1 ]; then
+                tk_dropped=1
+            else
+                tk_flat="$tk_flat ${ST_RO[k]}${ST_W[k]}"
+            fi
+            k=$((k + 1))
+        done
+        if [ "$tk_dropped" = 1 ]; then
+            flat=${tk_flat# }
+            flat=${flat//[\'\"\\]/}
+        fi
+    fi
+fi
 # A glob or brace list can spell a guarded name without either substring
 # (scripts/c[r]/pr-chec[k]-context.sh), so it passes on to classification;
 # so does any case of the names, which a case-insensitive filesystem folds.
@@ -211,7 +630,9 @@ names_target() { # names_target <text> - mentions pr-check, a scripts/cr/
         # likely to be 1, which routes the command into the slower,
         # stricter classification path below rather than the early
         # fast-exit - the safe direction (a false-deny residual, not a
-        # hole). Upgrade path: HIMMEL-3546 (quote/token-aware matching).
+        # hole). HIMMEL-3546's tokenizer only drops provably inert quoted
+        # words from $flat; it does not change this match. Upgrade path:
+        # match the tokenized path word exactly, if the residual recurs.
         case "$1" in *[cC][rR]/"${t%.sh}"*) rc=0 ;; esac
     done
     # HIMMEL-3437: same prefix-stem match, keyed on each HTARGET's own

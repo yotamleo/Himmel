@@ -652,20 +652,60 @@ run "find -execdir awk system() (no -i, but system() executes) -> deny (HIMMEL-3
 run "control: bash scripts/cr/\$X (real unresolved target) -> still deny" 2 \
     "$(payload 'bash scripts/cr/$X' "$WT")" "$HR"
 
-# Documented residual (console FINDING, 2026-09-23, K-N431-7980c9b9): a
-# `sed -i` edit whose SINGLE-QUOTED sed script contains a backtick span
-# naming a gate-script stem as inert markdown-style prose (not a real
-# command substitution - the surrounding single quotes make the backtick
-# inert to the shell), targeting a literal (resolvable) path, still denies.
-# Quotes are stripped before classification (ponytail comment above
-# `flat=`), so the guard cannot tell that backtick was quoted; it reads
-# identically to a real one. A real fix needs quote-aware tokenization; not
-# attempted here - reported to the console rather than chased under a
-# narrow tightening. (Target is a literal path, not $TMP, so the deny is
+# Console FINDING 2026-09-23 (K-N431-7980c9b9), fixed by HIMMEL-3546: a
+# `sed -i` edit whose SINGLE-QUOTED sed script carries a backtick span naming
+# a gate-script stem as markdown-style prose used to deny, because the quote
+# strip made that backtick read like a real command substitution. The
+# tokenizer now sees the span is quoted and st_sed_args proves the script is
+# one `s` command with no `e`/`w` flag, so the script word is dropped as data
+# and the command allows. The replacement must be a well-formed `s` command:
+# with `/` as the delimiter, an unescaped `/` in the path ends the
+# replacement early and leaves garbage flags, which is not provably inert
+# and still denies. (Target is a literal path, not $TMP, so the deny is
 # provably the backtick-span misread and not the unrelated unresolved-var
 # check that a $VAR-suffixed path would also trip.)
-run "ponytail: sed-i backtick span in single-quoted replacement text still denies (HIMMEL-3517)" 2 \
+run "sed-i backtick span in single-quoted replacement text allows (HIMMEL-3546 quote-aware)" 0 \
+    "$(payload "sed -i 's|x|y \`bash scripts/cr/review-round.sh\` z|' handover.md" "$WT")" "$HR" # gnu-ok: fixture text fed to the hook as tool_input.command, never executed
+run "control: same span but a malformed s command (unescaped / ends it) -> still deny (HIMMEL-3546)" 2 \
     "$(payload "sed -i 's/x/y \`bash scripts/cr/review-round.sh\` z/' handover.md" "$WT")" "$HR" # gnu-ok: fixture text fed to the hook as tool_input.command, never executed
+# ---- HIMMEL-3546: quoted text that is provably inert is data, not a command.
+# pr-check-context.sh is branch-edited here; ledger-append.sh is clean.
+while IFS= read -r v; do
+    run "inert quoted text [$v] on an edited branch -> allow (HIMMEL-3546)" 0 "$(payload "$v" "$WT")" "$HR"
+done <<'INERT'
+echo 'bash scripts/cr/pr-check-context.sh'
+printf '%s\n' 'bash scripts/cr/pr-check-context.sh; x'
+grep -E 'a|bash scripts/cr/pr-check-context.sh' docs/a.md
+jq 'test("a|b") or .x == "scripts/cr/pr-check-context.sh"' docs/a.md
+bash scripts/cr/ledger-append.sh amend --head abc --id codex-1 --set verdict=deferred --deferred-to HIMMEL-3547 --reason "same gap as prior round, already tracked via Jira comment; deferred to S18"
+bash scripts/cr/ledger-append.sh --reason 'a|b & c > d'
+INERT
+# Controls: quoted text that reaches an interpreter, a substitution or a
+# second command is not inert - every one still denies.
+# HIMMEL-3458: the 2>&1 fd-dup forms stay denied too.
+while IFS= read -r v; do
+    run "not inert [$v] on an edited branch -> deny (HIMMEL-3546)" 2 "$(payload "$v" "$WT")" "$HR"
+done <<'NOTINERT'
+echo 'bash scripts/cr/pr-check-context.sh' | bash
+cat 'scripts/cr/pr-check-context.sh' | bash
+echo 'scripts/cr/pr-check-context.sh' && bash "$_"
+bash -c 'bash scripts/cr/pr-check-context.sh'
+sh -c 'bash scripts/cr/pr-check-context.sh; true'
+eval 'bash scripts/cr/pr-check-context.sh'
+bash scripts/cr/pr-check-context.sh 'a;b'
+bash scripts/cr/ledger-append.sh "$(bash scripts/cr/pr-check-context.sh)"
+bash scripts/cr/ledger-append.sh 'x'; bash scripts/cr/pr-check-context.sh
+echo "$(bash scripts/cr/pr-check-context.sh)"
+echo "`bash scripts/cr/pr-check-context.sh`"
+printf 'VERDICT x' | bash scripts/cr/write-verdicts.sh
+bash scripts/cr/ledger-append.sh --reason 'a;b' 2>&1
+bash scripts/cr/pr-check-context.sh 2>&1
+echo x 2>&1 && bash scripts/cr/pr-check-context.sh
+2>&1 bash scripts/cr/pr-check-context.sh
+1>&2 bash scripts/cr/pr-check-context.sh
+bash scripts/cr/pr-check-context.sh 2>&1 >/dev/null
+bash scripts/cr/ledger-append.sh --reason 'x' # ; y
+NOTINERT
 run "control: find -execdir bash <target> -> still deny" 2 \
     "$(payload "find . -maxdepth 0 -execdir bash scripts/cr/pr-check-context.sh +" "$WT")" "$HR" # gnu-ok: fixture text fed to the hook as tool_input.command, never executed
 

@@ -472,15 +472,16 @@ assert_rc "69 nested worktree abs write to its own settings.json allows" 0 \
 # not surprises. A cd anywhere voids the worktree-relative exemption even
 # when the cd is harmless (70); a heredoc whose PROSE names settings.json is
 # a write (`>>`) whose target the hook does not parse (71, the console's
-# FD-2); a read piped onward is no longer a bare allowlisted read (72, FD-1's
-# piped form).
+# FD-2). 72, FD-1's piped form, was a third accepted false deny until the
+# per-segment allowlist (HIMMEL-3546): a read piped into another read is a
+# chain of read-only segments, and allows.
 assert_rc "70 accepted false deny: harmless cd + worktree settings write denies" 2 \
     "$(bash_rc_of "$WT2" "cd . && echo x > .claude/settings.json")"
 assert_rc "71 accepted false deny: cat >> other file with settings.json in heredoc prose denies" 2 \
     "$(bash_rc_of "$PRIMARY" "cat >> /tmp/doc.md <<'EOF'
 - avoided .claude/settings.json
 EOF")"
-assert_rc "72 accepted false deny: piped grep naming settings.json from primary denies" 2 \
+assert_rc "72 piped grep naming settings.json from primary allows (HIMMEL-3546; was an accepted false deny)" 0 \
     "$(bash_rc_of "$PRIMARY" "grep -rl x scripts .claude/settings.json docs | head")"
 
 # 73-74 controls: FD-1's exact spelling stays a bare allowlisted read, and a
@@ -677,59 +678,50 @@ assert_rc "119 jq read of a scratchpad .leg-settings.json file allows" 0 \
 assert_rc "120 jq read redirected into primary settings.json still denies (control)" 2 \
     "$(bash_rc_of "$PRIMARY" "jq '{add:.permissions.additionalDirectories}' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json > .claude/settings.json")"
 
-# 121: pinned known residual (K ruling 2026-09-23 on K-N431-7980c9b9,
-# HALT-and-simplify). This is the console's OWN verbatim reproduction: a
-# `VAR=path;`-prefixed, `;`-compound, TWO-statement read-only `jq` command,
-# from a PRIMARY-checkout cwd. Two successive panel rounds each found a real
-# bypass in a per-segment allowlist narrow enough to let this shape through
-# (round 2: an assignment shortcut riding past a later write on a
-# newline-embedded segment; round 3: the same class of gap recurring one
-# round later) — rising severity on the same surface, so the per-segment
-# split was reverted back to the blunt "any bare `;` vetoes" behavior rather
-# than patched a third time. This harmless chain now denies too; documented
-# as a known residual rather than chased further (ponytail, upgrade path
-# HIMMEL-3546 — a real fix needs quote-aware tokenization of the whole
-# command, not another metacharacter scan).
-assert_rc "121 VAR=path; jq read; jq read (console repro) still denies (known residual, HIMMEL-3546)" 2 \
+# 121: the console's OWN verbatim reproduction (K ruling 2026-09-23 on
+# K-N431-7980c9b9): a `VAR=path;`-prefixed, `;`-compound, TWO-statement
+# read-only `jq` command, from a PRIMARY-checkout cwd. It denied from
+# HIMMEL-3465 until HIMMEL-3546: two panel rounds each found a real bypass in
+# a TEXT-split per-segment allowlist (an assignment shortcut riding past a
+# later write on a newline-embedded segment, then the same class one round
+# later), so the split was reverted to "any bare `;` vetoes". The per-segment
+# check is now done on tokens (_tok_readonly_ok): a newline is a separator
+# like `;`, every segment must be an assignment-only segment or one
+# allowlisted read, and an assignment to an exported or sensitive name
+# denies — so this harmless chain allows and 122-126 still deny.
+assert_rc "121 VAR=path; jq read; jq read (console repro) allows (HIMMEL-3546 per-segment allowlist)" 0 \
     "$(bash_rc_of "$PRIMARY" "SP=/tmp/claude-1000/somesession/scratchpad; jq '.permissions.additionalDirectories' \$SP/HIMMEL-3514-N424-bridge-hardening.leg-settings.json; jq '.permissions.additionalDirectories' \$SP/HIMMEL-3536-N425-step0-remainder.leg-settings.json")"
 
 # 122 control: the same VAR=path;-prefixed shape, this time with a genuine
-# WRITE (sed -i) as the chained statement — denies, same as 121, now simply
-# because ANY bare `;` vetoes the allowlist unconditionally.
+# WRITE (sed -i) as the chained statement — denies: the sed segment is not a
+# read (st_sed_args refuses -i in the read-only allowlist).
 assert_rc "122 VAR=path; write-in-place still denies (control)" 2 \
     "$(bash_rc_of "$PRIMARY" "X=/tmp/claude-1000/somesession/scratchpad; sed -i s/a/b/ \$X/settings.json")" # gnu-ok: fixture text parsed by the hook, never executed
 
 # 123 control: a `;`-joined write with NO leading assignment (`cat x; rm -rf
-# ~`-shaped) still denies — same blunt bare-`;` veto as 121/122.
+# ~`-shaped) still denies — every segment is judged, and the second is sed -i.
 assert_rc "123 jq read; write-in-place (no assignment) still denies (control)" 2 \
     "$(bash_rc_of "$PRIMARY" "jq '.permissions.additionalDirectories' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json; sed -i s/a/b/ /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")" # gnu-ok: fixture text parsed by the hook, never executed
 
-# 124: another known residual of the same class, documented rather than
-# chased (ponytail: this guard matches metacharacters on TEXT after quotes
-# are stripped for the primary/$HOME-path detection above — HIMMEL-3468 —
-# so a `|` INSIDE a quoted jq filter argument, e.g. `test("a|b")`, is
-# indistinguishable from a real shell pipe once quotes are gone; this
-# command also carries a bare `;`, so it denies twice over today). Fixing
-# either needs the same quote-aware tokenization as 121 — HIMMEL-3546.
-assert_rc "124 VAR=path; jq with a quoted-pipe regex filter still denies (ponytail, HIMMEL-3546)" 2 \
+# 124: a `|` INSIDE a quoted jq filter argument (`test("a|b")`) read as a
+# real shell pipe once quotes were stripped (HIMMEL-3468's text scan), and the
+# command also carried a bare `;`, so it denied twice over. The tokenizer
+# keeps the quoted `|` inside its word (HIMMEL-3546), so it allows.
+assert_rc "124 VAR=path; jq with a quoted-pipe regex filter allows (HIMMEL-3546 quote-aware)" 0 \
     "$(bash_rc_of "$PRIMARY" "SP=/tmp/claude-1000/somesession/scratchpad; jq '[.permissions.allow[]? | select(test(\"luna|handover\"))]' \$SP/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
 
 # 125: PATH-hijack shape (/pr-check critic panel round 1, Critical,
 # 2026-09-23) — `PATH=/tmp/evil; cat ~/.claude/settings.json` would run the
-# later `cat` under an attacker-controlled PATH if the chain were ever
-# allowlisted. The round-1 fix denylisted exec-influencing assignment names
-# inside the (now-reverted) per-segment split; after the revert this denies
-# for the blunter reason every `;`-joined command now denies for, so the
-# security property (still DENY) holds unchanged.
+# later `cat` under an attacker-controlled PATH if the chain were allowlisted.
+# Denies because PATH is a sensitive assignment name (_tok_sensitive_name),
+# and an exported one besides.
 assert_rc "125 PATH=/tmp/evil; cat live settings.json still denies (HIMMEL-3465)" 2 \
     "$(bash_rc_of "$PRIMARY" "PATH=/tmp/evil; cat \$PRIMARY/.claude/settings.json")"
 
 # 126: newline-in-segment write shape (/pr-check critic panel round 2,
 # Critical, 2026-09-23) — a `;`-segment that itself embeds a real newline.
-# The round-2 fix closed a gap specific to the (now-reverted) per-segment
-# assignment shortcut; after the revert this denies for the same blunter
-# bare-`;` veto reason as 121-125, so the security property (still DENY)
-# holds unchanged.
+# The tokenizer splits on the newline too, so `sed -i …` is its own segment
+# and denies as a write, whatever the assignment before it.
 CMD126=$'X=1\nsed -i s/a/b/ .claude/settings.json; jq \'.foo\' .claude/settings.json'
 assert_rc "126 newline-in-segment write still denies (HIMMEL-3465)" 2 \
     "$(bash_rc_of "$PRIMARY" "$CMD126")"
@@ -774,7 +766,7 @@ assert_rc "135 git restore --source=HEAD -- .claude from a worktree (own dir) al
 assert_rc "136 tar -x -C .claude from a worktree (own dir) denies (accepted false deny)" 2 \
     "$(bash_rc_of "$WT2" "tar -xf a.tar -C .claude")"
 
-# 137-149 (HIMMEL-3555, adversarial panel round on PR #1210): fixes for
+# 137-149 (HIMMEL-3499, adversarial panel round on PR #1210): fixes for
 # false-denies and false-positives the panel found in the HIMMEL-3499 fix
 # itself, verified against the panel's own probe corpus
 # (scratchpad/{run.sh,cases,cases2,cases3}.txt) before being written here.
@@ -843,7 +835,7 @@ assert_rc "148 git --work-tree=. checkout -- .claude (non-adjacent git flag) sti
 assert_rc "149 git checkout <ref> -- .claude from primary still denies (probe 1 regression guard)" 2 \
     "$(bash_rc_of "$PRIMARY" "git checkout origin/x -- .claude")"
 
-# 150-153 (HIMMEL-3555, fourth panel round on #1210, F1 IMPORTANT): a `..`
+# 150-153 (HIMMEL-3499, fourth panel round on #1210, F1 IMPORTANT): a `..`
 # after the `.claude/worktrees/` container-path strip climbs back OUT of the
 # worktrees container into the primary's own `.claude` — the strip must not
 # apply when `..` appears anywhere, mirroring mentions_primary_or_home()'s
@@ -859,7 +851,7 @@ assert_rc "152 cp -r x/. into relative .claude/worktrees/.. from primary denies"
 assert_rc "153 cp -r x/. into <nested-worktree>/../../ denies" 2 \
     "$(bash_rc_of "$WT2" "cp -r x/. $NESTED_WT/../../")"
 
-# 154-158 (HIMMEL-3555, fourth panel round on #1210, F2 MED): the tar/unzip
+# 154-158 (HIMMEL-3499, fourth panel round on #1210, F2 MED): the tar/unzip
 # mode check is scoped to the shell SEGMENT containing the verb (split on
 # `;`, `&`, `|`, `#`) — a chained or commented trailing token used to spoof
 # it via a coincidental ` -t`/` -c`/` -l`/` -v` elsewhere in the command. All
@@ -876,12 +868,74 @@ assert_rc "157 unzip -d \$HOME/.claude then && ls -l still denies" 2 \
 assert_rc "158 unzip -d \$HOME/.claude with a trailing -x -v still denies" 2 \
     "$(bash_rc_of "$PRIMARY" "unzip -o a.zip -d \$HOME/.claude -x -v" HOME="$FAKEHOME")"
 
-# 159 (HIMMEL-3555, fourth panel round on #1210, F3 LOW): checkout/restore's
+# 159 (HIMMEL-3499, fourth panel round on #1210, F3 LOW): checkout/restore's
 # git-co-occurrence check is scoped to the same segment too — "git" in a
 # LATER, unrelated chained command must not make an unrelated read look like
 # a git-checkout write. Gave rc=2 everywhere before this fix.
 assert_rc "159 cat of a checkout.md file, then && git status (unrelated segment), allows" 0 \
     "$(bash_rc_of "$PRIMARY" "cat \$HOME/.claude/checkout.md && git status" HOME="$FAKEHOME")"
+
+# 160-171 (HIMMEL-3564): the tar/unzip/checkout mode checks read ONE segment
+# (the first whose text matched the verb), so a later segment escaped them,
+# and a quote-stripped text scan read a flag inside a filename. Every segment
+# is now judged from quote-aware tokens (HIMMEL-3546). All must deny.
+assert_rc "160 tar -tf; then tar -xf -C ~/.claude (second segment) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -tf a.tar; tar -xf a.tar -C ~/.claude" HOME="$FAKEHOME")"
+assert_rc "161 unzip -l; then unzip -o -d ~/.claude (second segment) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "unzip -l a.zip; unzip -o a.zip -d ~/.claude" HOME="$FAKEHOME")"
+assert_rc "162 echo tar c; then tar -xf -C ~/.claude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo tar c; tar -xf a.tar -C ~/.claude" HOME="$FAKEHOME")"
+assert_rc "163 echo checkout; then git checkout -- .claude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo checkout; git checkout x -- .claude")"
+assert_rc "164 cat checkout.md; then git checkout -- .claude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat checkout.md; git checkout x -- .claude")"
+assert_rc "165 tar -xf my--list.tar (flag text inside a filename) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xf my--list.tar -C ~/.claude" HOME="$FAKEHOME")"
+assert_rc "166 tar -xf \"x -t.tar\" (flag text inside a quoted filename) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xf \"x -t.tar\" -C ~/.claude" HOME="$FAKEHOME")"
+assert_rc "167 tar -xf inside \$( ) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "x=\$(tar -xf a.tar -C ~/.claude)" HOME="$FAKEHOME")"
+assert_rc "168 tar -xf inside backticks denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "x=\`tar -xf a.tar -C ~/.claude\`" HOME="$FAKEHOME")"
+assert_rc "169 TAR (upper case) -xzf -C ~/.claude; ls -t denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "TAR -xzf a.tgz -C ~/.claude; ls -t" HOME="$FAKEHOME")"
+assert_rc "170 find -exec tar -tf, then -exec tar -xf -C ~/.claude (second tar word) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "find . -exec tar -tf {} \\; -exec tar -xf a.tar -C ~/.claude \\;" HOME="$FAKEHOME")"
+assert_rc "171 unzip -L (not list mode; case-folded to -l before) -d ~/.claude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "unzip -L a.zip -d ~/.claude" HOME="$FAKEHOME")"
+
+# 172-185 (HIMMEL-3546): the read-only allowlist is judged per segment from
+# quote-aware tokens. A metacharacter inside quotes is data; a chain of
+# read-only segments allows; every real write, redirect, subshell or
+# substitution, and every exec-influencing assignment, still denies.
+assert_rc "172 cat live settings | jq (a pipe of read-only segments) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/settings.json | jq '.permissions'")"
+assert_rc "173 tail | grep | sed s/// (verified inert s command) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "tail -5 .claude/settings.json | grep allow | sed 's/a/b/g'")"
+assert_rc "174 jq with a quoted > inside the filter allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "jq '.a > 1' .claude/settings.json")"
+assert_rc "175 cat live settings 2>&1 | grep (fd dup, no write) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/settings.json 2>&1 | grep x")"
+assert_rc "176 sed s///w (write flag) in a read-only pipe denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/settings.json | sed 's/a/b/w /tmp/x'")"
+assert_rc "177 sed e command (executes) denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "sed -n '1e touch x' .claude/settings.json")"
+assert_rc "178 LESSOPEN=...; less live settings denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "LESSOPEN='|touch x %s'; less .claude/settings.json")"
+assert_rc "179 GIT_PAGER=...; git log live settings denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "GIT_PAGER=x; git log .claude/settings.json")"
+assert_rc "180 cat live settings | tee denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/settings.json | tee /tmp/x")"
+assert_rc "181 jq read with a real > redirect denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "jq '.a' .claude/settings.json > /tmp/out")"
+assert_rc "182 cat live settings & (background separator) denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/settings.json & sed -i s/a/b/ x")" # gnu-ok: fixture text parsed by the hook, never executed
+assert_rc "183 cat; (subshell write) denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/settings.json; (sed -i s/a/b/ .claude/settings.json)")" # gnu-ok: fixture text parsed by the hook, never executed
+assert_rc "184 cat; X=\$(write) (command substitution) denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/settings.json; X=\$(sed -i s/a/b/ .claude/settings.json)")" # gnu-ok: fixture text parsed by the hook, never executed
+assert_rc "185 X=v; less \$X (assigned value reaches a less word) denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "X=+!touch; less \$X .claude/settings.json")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
