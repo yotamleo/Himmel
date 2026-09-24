@@ -2,6 +2,9 @@
 # converge-check.sh -- do two himmel installs end in the SAME state?
 # (HIMMEL-3059 ADR Q3: the tarball path and the clone path both end in
 # `himmelctl install`; that convergence is ASSERTED here, not assumed.)
+# An optional third side c (HIMMEL-3059 S5: the AUR package, prefix
+# /opt/himmel) is diffed against side a the same way; any pair that
+# differs fails the run.
 #
 # Snapshots each side's post-install state into normalized text and diffs it:
 #   settings   <home>/.claude/settings.json          (jq -S; statusLine, env.HIMMEL_REPO, hooks)
@@ -21,19 +24,22 @@
 #
 # USAGE:
 #   converge-check.sh --a-home <d> --a-prefix <d> --b-home <d> --b-prefix <d> \
-#                     [--a-target <repo> --b-target <repo>]
+#                     [--c-home <d> --c-prefix <d>] \
+#                     [--a-target <repo> --b-target <repo> [--c-target <repo>]]
+#   (with a side c and targets, --c-target is required too)
 # Exit: 0 identical | 1 differ (diff on stdout) | 2 usage | 3 vacuous snapshot
 # shellcheck disable=SC2015  # `A && B || usage` -- usage exits, so C never runs after a true A
 set -uo pipefail
 
 usage() { sed -n '/^# USAGE:/,/^# Exit:/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-ah="" ap="" bh="" bp="" at="" bt=""
+ah="" ap="" bh="" bp="" at="" bt="" ch="" cp="" ct=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
   case "$1" in
     --a-home) ah="$2" ;; --a-prefix) ap="$2" ;; --a-target) at="$2" ;;
     --b-home) bh="$2" ;; --b-prefix) bp="$2" ;; --b-target) bt="$2" ;;
+    --c-home) ch="$2" ;; --c-prefix) cp="$2" ;; --c-target) ct="$2" ;;
     *) usage ;;
   esac
   shift 2
@@ -41,6 +47,11 @@ done
 [ -n "$ah" ] && [ -n "$ap" ] && [ -n "$bh" ] && [ -n "$bp" ] || usage
 { [ -n "$at" ] && [ -z "$bt" ]; } && usage
 { [ -z "$at" ] && [ -n "$bt" ]; } && usage
+{ [ -n "$ch" ] && [ -z "$cp" ]; } && usage
+{ [ -z "$ch" ] && [ -n "$cp$ct" ]; } && usage
+{ [ -n "$ch" ] && [ -n "$at" ] && [ -z "$ct" ]; } && usage
+{ [ -z "$at" ] && [ -n "$ct" ]; } && usage
+sides="a b"; [ -n "$ch" ] && sides="a b c"
 command -v jq >/dev/null 2>&1 || { echo "converge-check: jq is required" >&2; exit 2; }
 
 # mask <line> <path> <token> -- sets REPLY: every occurrence of <path> that ends on
@@ -159,10 +170,11 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/himmel-converge.XXXXXX")" || { echo "converge-
 trap 'rm -rf "$tmp"' EXIT
 snapshot "$ah" "$ap" "$at" > "$tmp/a.txt"
 snapshot "$bh" "$bp" "$bt" > "$tmp/b.txt"
+[ -n "$ch" ] && snapshot "$ch" "$cp" "$ct" > "$tmp/c.txt"
 
-# Vacuous guard: settings.json must exist and carry hooks on BOTH sides.
-for side in a b; do
-  home="$ah"; [ "$side" = b ] && home="$bh"
+# Vacuous guard: settings.json must exist and carry hooks on EVERY side.
+for side in $sides; do
+  case "$side" in a) home="$ah" ;; b) home="$bh" ;; c) home="$ch" ;; esac
   if ! jq -e '[(.hooks // {}) | .[] | length] | add // 0 | . > 0' "$home/.claude/settings.json" >/dev/null 2>&1; then
     echo "converge-check: VACUOUS -- side $side has no hooks in $home/.claude/settings.json; an install that wired nothing cannot 'converge'" >&2
     exit 3
@@ -173,15 +185,16 @@ done
 # have not "converged" on the project gates, they have both done nothing. (One side
 # having a hook and the other not is a real difference -- the diff below reports it.)
 if [ -n "$at" ]; then
-  na="$(grep -c '^# hook: ' "$tmp/a.txt")"; nb="$(grep -c '^# hook: ' "$tmp/b.txt")"
-  if [ "$na" -eq 0 ] && [ "$nb" -eq 0 ]; then
+  nhooks=0
+  for side in $sides; do nhooks=$((nhooks + $(grep -c '^# hook: ' "$tmp/$side.txt"))); done
+  if [ "$nhooks" -eq 0 ]; then
     echo "converge-check: VACUOUS -- neither target repo has a git hook; a project install that wired no gate cannot 'converge'" >&2
     exit 3
   fi
 fi
 
 # Unusable snapshot guard: a file that would not parse is not state to compare.
-for side in a b; do
+for side in $sides; do
   if grep -q '^(unreadable' "$tmp/$side.txt"; then
     echo "converge-check: UNREADABLE -- side $side has a JSON file jq could not parse; a broken install cannot 'converge':" >&2
     grep '^(unreadable' "$tmp/$side.txt" >&2
@@ -189,7 +202,19 @@ for side in a b; do
   fi
 done
 
-if diff -u --label "side-a (${ap##*/})" --label "side-b (${bp##*/})" "$tmp/a.txt" "$tmp/b.txt"; then
+# Every other side is diffed against side a; one diverging pair fails the run.
+diverged=0
+for side in $sides; do
+  [ "$side" = a ] && continue
+  case "$side" in b) sp="$bp" ;; c) sp="$cp" ;; esac
+  if diff -u --label "side-a (${ap##*/})" --label "side-$side (${sp##*/})" "$tmp/a.txt" "$tmp/$side.txt"; then
+    echo "converge-check: side-a vs side-$side CONVERGED"
+  else
+    echo "converge-check: side-a vs side-$side DIVERGED" >&2
+    diverged=1
+  fi
+done
+if [ "$diverged" -eq 0 ]; then
   echo "converge-check: CONVERGED ($(wc -l < "$tmp/a.txt") snapshot lines identical after path normalization)"
   exit 0
 fi

@@ -3030,6 +3030,15 @@ project_is_himmel_checkout() {
     identity_root="$source_root"
   elif [ "${IS_STANDALONE_BUNDLE:-0}" -eq 1 ] && [ -n "${CLONE_ROOT:-}" ]; then
     identity_root="$CLONE_ROOT"
+  elif [ -f "$source_root/VERSION" ] \
+      && [ -L "$(dirname -- "$source_root")/current" ] \
+      && [ "$(dirname -- "$source_root")/current" -ef "$source_root" ]; then
+    # HIMMEL-3059 S6: a tarball/versioned install (no .git; <base>/current is
+    # a symlink resolving to this very dir; the same test himmelctl's JS
+    # versionedLayout() uses) is a valid himmel identity root too. The VERSION
+    # file requirement keeps this from matching an arbitrary directory that
+    # merely happens to sit next to an unrelated `current` symlink.
+    identity_root="$source_root"
   else
     return 2
   fi

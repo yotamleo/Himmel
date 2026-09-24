@@ -1992,7 +1992,7 @@ if [ "$rc23" -eq 0 ]; then
 else
   fail "23a: --list . expected exit 0 got $rc23; out: $o23"
 fi
-for tree23 in scripts templates marketplace; do
+for tree23 in scripts templates marketplace packaging; do
   if grepq "$o23" -E "^\[(RUN |SKIP)\] (\./)?${tree23}/"; then
     pass "23b: --list . lists a ${tree23}/ suite"
   else

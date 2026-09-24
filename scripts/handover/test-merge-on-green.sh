@@ -41,6 +41,13 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOG="$SCRIPT_DIR/merge-on-green.sh"
 
+# HIMMEL-3543: console-kit/go.sh mints, and the console-GO gate verifies with,
+# a key under $HOME/.config/himmel — a scratch HOME keeps every GO this suite
+# writes off the operator's real key.
+MOG_HOME=$(mktemp -d "${TMPDIR:-/tmp}/mog-home.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+if [ -z "$MOG_HOME" ] || [ ! -d "$MOG_HOME" ]; then echo "FAIL: mktemp -d produced no HOME sandbox" >&2; exit 1; fi
+export HOME="$MOG_HOME"
+
 # RED-control contract (HIMMEL-2518) for the mutation controls added below
 # (HIMMEL-2544 PR-D): proves a mutant actually ran, produced output, and
 # produced the SPECIFIC predicted wrong value, not merely "differs from
@@ -2429,6 +2436,22 @@ GO_ROOT=$(cd "$GO_ROOT" && pwd)
 GO_SHA=0123456789abcdef0123456789abcdef01234567
 GO_OLD=fedcba9876543210fedcba9876543210fedcba98
 GO_WRITER="$SCRIPT_DIR/console-kit/go.sh"
+# HIMMEL-3578: go.sh now resolves this repo's nwo via `gh repo view` to bind
+# the GO mac. The direct $GO_WRITER invocations below run outside run_mog's
+# own per-call fixture (which stubs gh only for merge-on-green.sh itself), so
+# without this they would hit the real ambient gh CLI. This stub always
+# answers "owner/repo" — the same default merge-on-green.sh's own gh stub
+# resolves to (STUB_CWD_NWO unset in every case below), so the GO the writer
+# signs and the mac the gate verifies agree.
+GO_WRITER_BIN=$(mktemp -d "${TMPDIR:-/tmp}/mog-go-bin.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+cat > "$GO_WRITER_BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "repo view") printf 'owner/repo' ;;
+    *) exit 91 ;;
+esac
+STUB
+chmod +x "$GO_WRITER_BIN/gh"
 no_merge_call() {
     if [ "$(grep -c '^pr merge ' "$LAST_GH_LOG")" -eq 0 ]; then pass; else fail "$1 (expected zero merge calls)"; fi
 }
@@ -2453,7 +2476,7 @@ no_merge_call "2919-a3: no merge call"
 
 # 2919-b — marker set, GO written by the console's own writer for the certified
 # head: proceeds exactly like the unmarked happy path (2919-d's gh log).
-HANDOVER_DIR="$GO_ROOT" bash "$GO_WRITER" 77 "$GO_SHA" >/dev/null 2>&1
+HANDOVER_DIR="$GO_ROOT" PATH="$GO_WRITER_BIN:$PATH" bash "$GO_WRITER" 77 "$GO_SHA" >/dev/null 2>&1
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
     run_mog 0 "2919-b: console leg with a GO for the certified head → merged"
 assert_merge_has "2919-b: merge pins the certified head" "--match-head-commit $GO_SHA"
@@ -2462,7 +2485,7 @@ GO_B_GHLOG=$(cat "$LAST_GH_LOG")
 
 # 2919-c — only a STALE GO (an older head) exists: refused.
 rm -f "$GO_ROOT/.locks/go/77.$GO_SHA"
-HANDOVER_DIR="$GO_ROOT" bash "$GO_WRITER" 77 "$GO_OLD" >/dev/null 2>&1
+HANDOVER_DIR="$GO_ROOT" PATH="$GO_WRITER_BIN:$PATH" bash "$GO_WRITER" 77 "$GO_OLD" >/dev/null 2>&1
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
     run_mog 17 "2919-c: console leg with only a stale GO → exit 17"
 assert_err_has "2919-c: stderr says a stale GO is never reused" "a GO for an older head is stale"
@@ -2474,6 +2497,16 @@ mv "$GO_ROOT/.locks/go/77.$GO_OLD" "$GO_ROOT/.locks/go/77.$GO_SHA"
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
     run_mog 17 "2919-c2: a stale GO renamed to the certified path → exit 17"
 no_merge_call "2919-c2: no merge call"
+rm -f "$GO_ROOT/.locks/go/77.$GO_SHA"
+
+# 3543 — a leg-planted GO (the plain lines go.sh wrote before HIMMEL-3543, no
+# mac) for the certified head: refused, and the refusal names the mac.
+mkdir -p "$GO_ROOT/.locks/go"
+printf 'pr=77\nhead=%s\nby=leg\nat=2026-09-24T00:00:00Z\n' "$GO_SHA" > "$GO_ROOT/.locks/go/77.$GO_SHA"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
+    run_mog 17 "3543: console leg with a planted (mac-less) GO → exit 17"
+assert_err_has "3543: stderr names the missing mac" "has no/invalid mac"
+no_merge_call "3543: no merge call"
 rm -f "$GO_ROOT/.locks/go/77.$GO_SHA"
 
 # 2919-d — marker unset, no GO file: the operator path is unchanged, and the gate

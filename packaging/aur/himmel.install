@@ -1,0 +1,21 @@
+# himmel.install — pacman install hooks (HIMMEL-3059 S5, design §4.3).
+# Every function here PRINTS and never acts. pacman runs them as root with no
+# invoking-user context, and every himmel side effect lives in some user's
+# $HOME, so root would guess wrong. They never look for users' homes and never
+# run himmelctl.
+
+post_install() {
+  echo '==> himmel is installed in /opt/himmel. No user home was touched.'
+  echo '==> Each user who wants it runs, as themselves:  himmelctl install --scope user'
+  echo '==> Removal order: himmelctl uninstall (each user), then pacman -R himmel.'
+}
+
+post_upgrade() {
+  echo '==> himmel upgraded in place at /opt/himmel. Existing per-user wiring already points there.'
+}
+
+pre_remove() {
+  echo '==> Removing the himmel payload (/opt/himmel, /usr/bin/himmelctl).'
+  echo '==> Per-user wiring stays until each user runs himmelctl uninstall. After removal, use ~/.local/bin/himmelctl uninstall (it falls back to ~/.himmel/uninstall/).'
+  echo '==> Documented order: himmelctl uninstall, then pacman -R himmel. See https://github.com/yotamleo/Himmel#support-matrix'
+}

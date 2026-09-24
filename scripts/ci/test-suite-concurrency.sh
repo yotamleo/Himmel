@@ -220,7 +220,7 @@ else
   fail "scoped run queued behind an unrelated scan root: expected rc 0 got $rc1b2; output: $out1b2"
 fi
 
-# HIMMEL-3193: root `.` is the whole-repo run (scripts + templates + marketplace)
+# HIMMEL-3193: root `.` is the whole-repo run (scripts + templates + marketplace + packaging)
 # and must take the SAME lock as a `scripts` run — a third key would let a
 # whole-repo run overlap a scripts run over the same trees. The runner cds to
 # ITS repo root, so drive a copy inside a throwaway root holding one trivial
@@ -232,7 +232,7 @@ cp "$RUNNER" "$fake1b/scripts/ci/run-shell-tests.sh"
 for lib1b in proc-tree git-test-env runtime-preflight; do
   cp "$(dirname "$RUNNER")/../lib/$lib1b.sh" "$fake1b/scripts/lib/$lib1b.sh"
 done
-for tree1b in scripts templates marketplace; do
+for tree1b in scripts templates marketplace packaging; do
   mkdir -p "$fake1b/$tree1b/t"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$fake1b/$tree1b/t/test-pass.sh"
 done
@@ -248,14 +248,14 @@ else
   fail "scan root '.' did not honour the scripts lock: expected rc 2 got $rc1b3; output: $out1b3"
 fi
 # Control: with the scripts lock released, the same fake-root `.` run proceeds
-# and covers all three trees — so the rc 2 above was the lock, not a broken root.
+# and covers all four trees — so the rc 2 above was the lock, not a broken root.
 rm -rf "$lock_scripts"
 out1b4=$(env -u SUITE_LOCK_DIR TMPDIR="$sb1b/tmp" bash "$fake1b/scripts/ci/run-shell-tests.sh" . 2>&1)
 rc1b4=$?
-if [ "$rc1b4" -eq 0 ] && [ "$(grep -c '^\[PASS\]' <<< "$out1b4")" -eq 3 ]; then
-  pass "scan root '.' free of the lock runs all three trees (3 PASS, rc 0)"
+if [ "$rc1b4" -eq 0 ] && [ "$(grep -c '^\[PASS\]' <<< "$out1b4")" -eq 4 ]; then
+  pass "scan root '.' free of the lock runs all four trees (4 PASS, rc 0)"
 else
-  fail "scan root '.' unlocked: expected rc 0 and 3 PASS, got rc $rc1b4; output: $out1b4"
+  fail "scan root '.' unlocked: expected rc 0 and 4 PASS, got rc $rc1b4; output: $out1b4"
 fi
 
 # --------------------------------------------------------------------------
