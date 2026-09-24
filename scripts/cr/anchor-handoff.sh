@@ -133,7 +133,22 @@ case "$_ah_self" in
             echo "$_ah_name: HIMMEL_REPO is unset or empty - refusing to let this relative-entry copy ($_ah_root) decide; export it non-empty (adopt/setup wires it into settings.json env), or run the anchored \"<himmel_dir>/$_ah_rel\" spelling" >&2
             exit 2
         fi
-        if ! [ "$_ah_root" -ef "$_ah_anchor" ]; then
+        # CodeRabbit (PR #1212): root -ef anchor alone is not proof this IS the
+        # anchor's own tracked copy. A directory with NO .git of its own (an
+        # orphaned worktree under $HIMMEL_REPO/.claude/worktrees/ whose gitlink
+        # was removed entirely, not merely broken - F2 above only catches a
+        # broken one) makes git's own ancestor walk resolve --show-toplevel to
+        # the ANCHOR itself even though this tree is not really its content.
+        # .claude/worktrees/ is gitignored, so requiring the anchor's OWN git
+        # index to track this literal relative path closes it: an orphaned
+        # worktree fails this and falls through to the real hand-off attempt
+        # below, which then correctly fails closed (not the anchor, and the
+        # anchor carries no file at this untracked-only relative path either).
+        _ah_is_anchor=0
+        if [ "$_ah_root" -ef "$_ah_anchor" ] && git -C "$_ah_anchor" ls-files --error-unmatch -- "$_ah_rel" >/dev/null 2>&1; then
+            _ah_is_anchor=1
+        fi
+        if [ "$_ah_is_anchor" -eq 0 ]; then
             if [ ! -f "$_ah_anchor/$_ah_rel" ]; then
                 echo "$_ah_name: entered through a non-anchor copy ($_ah_root) and the anchor carries no $_ah_rel ($_ah_anchor) - refusing to let this copy decide; fix HIMMEL_REPO, then re-run" >&2
                 exit 2
@@ -142,11 +157,24 @@ case "$_ah_self" in
                 echo "$_ah_name: already handed off once and still not the anchor's copy ($_ah_root vs $_ah_anchor) - refusing rather than hand off in a loop" >&2
                 exit 2
             fi
+            # CodeRabbit (PR #1212) follow-up: a nested worktree with no .git
+            # of its own, physically living INSIDE the anchor's tree (e.g.
+            # $HIMMEL_REPO/.claude/worktrees/<orphan>), resolves its hand-off
+            # target ($_ah_anchor/$_ah_rel) to this exact same file - execing
+            # an absolute path re-enters this file on the unconditional
+            # "already anchored" door (the case statement above), running the
+            # untrusted bytes with no further check. A genuine hand-off target
+            # is always a physically DIFFERENT file from the one deciding to
+            # hand off; refuse rather than exec a self-referential "hand-off".
+            if [ "$_ah_anchor/$_ah_rel" -ef "$_ah_dir/$_ah_name" ]; then
+                echo "$_ah_name: hand-off target ($_ah_anchor/$_ah_rel) is this same file - refusing rather than re-run it unchecked as an absolute entry" >&2
+                exit 2
+            fi
             export CR_ANCHOR_HANDED_OFF=1
             echo "$_ah_name: entered through a non-anchor copy ($_ah_root) - handing off to the anchor's copy ($_ah_anchor/$_ah_rel)" >&2
             exec bash "$_ah_anchor/$_ah_rel" "$@"
         fi
-        unset _ah_name _ah_dir _ah_root _ah_rel _ah_anchor _ah_prefix
+        unset _ah_name _ah_dir _ah_root _ah_rel _ah_anchor _ah_prefix _ah_is_anchor
         ;;
 esac
 unset _ah_self

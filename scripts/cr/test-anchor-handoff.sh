@@ -39,6 +39,11 @@ set -uo pipefail'
     fi
     rm -f "$1/scripts/cr/clear-cr-marker.sh.head"
     printf '%s\necho "RAN:%s"\n' "$head" "$2" > "$1/scripts/cr/clear-cr-marker.sh"
+    # HIMMEL-3437 (CodeRabbit, PR #1212): anchor-handoff.sh now requires the
+    # anchor's own git index to TRACK the resolved relative path before
+    # trusting a self-anchor match - stage every fixture file so the genuine
+    # self-anchor cases (T8) keep passing under that check.
+    git -C "$1" add -A
 }
 anchor="$tmp/anchor"; wt="$tmp/wt"; bare="$tmp/bare"
 make_tree "$anchor" anchor
@@ -78,6 +83,7 @@ check "$err" "" "T8 no hand-off message in the anchor"
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$SOURCE_LINE" > "$anchor/scripts/cr/known-findings.sh"
 printf '%s\n' 'printf '\''%s|'\'' "$#" "$@"' >> "$anchor/scripts/cr/known-findings.sh"
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "LOCAL"\n' "$SOURCE_LINE" > "$wt/scripts/cr/known-findings.sh"
+git -C "$anchor" add -A
 check "$(cd "$wt" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)" "2|--diff|a b|" "T9 args forwarded (argc + pipe-delimited, distinguishes 1 spaced arg from 2)"
 
 # 9c. RED control: a scratch copy of the hand-off whose exec line re-splits
@@ -126,6 +132,7 @@ make_d3_tree() {  # <root> <label>
     git init -q "$1"
     cp "$DIR/anchor-handoff.sh" "$1/scripts/handover/console-kit/anchor-handoff.sh"
     printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:%s"\n' "$D3_SOURCE_LINE" "$2" > "$1/scripts/handover/console-kit/go-stub.sh"
+    git -C "$1" add -A
 }
 d3_anchor="$tmp/d3_anchor"; d3_wt="$tmp/d3_wt"
 make_d3_tree "$d3_anchor" anchor
@@ -171,6 +178,24 @@ run_env_override() {  # <cwd> <HIMMEL_REPO> <entry path> <fake GIT_DIR/GIT_WORK_
     (cd "$1" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$2" GIT_DIR="$4/.git" GIT_WORK_TREE="$4" GIT_COMMON_DIR="$4/.git" bash "$3" 2>/dev/null; echo "rc=$?")
 }
 check "$(run_env_override "$wt" "$anchor" scripts/cr/clear-cr-marker.sh "$anchor" | tr '\n' ' ')" "RAN:anchor rc=0 " "T16 GIT_DIR/GIT_WORK_TREE override cannot fake anchor status (F4)"
+
+# 17 (CodeRabbit, PR #1212). Unlike T15's DANGLING .git file (git rev-parse
+# fails for a bad reason), a nested worktree whose .git entry is REMOVED
+# entirely has no .git at all between it and the anchor - the no-git walk-up
+# fallback's own `[ -e "$_ah_walk/.git" ]` guard never trips, so it reaches
+# and matches the anchor as an ancestor exactly like a genuine self-anchor
+# case. `_ah_root -ef _ah_anchor` alone is then satisfied even though this
+# tree's own (possibly tampered) bytes are not the anchor's tracked copy -
+# only requiring the anchor's git index to TRACK the resolved relative path
+# closes this: the untracked nested copy fails the self-anchor check and
+# falls through to the real hand-off attempt, which (after one redundant
+# self-referential hop, since the file also physically exists under the
+# anchor's own tree) refuses rather than running the nested bytes.
+nested_removed="$anchor/.claude/worktrees/nested_removed"
+mkdir -p "$nested_removed/scripts/cr"
+cp "$DIR/anchor-handoff.sh" "$nested_removed/scripts/cr/anchor-handoff.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:removed"\n' "$SOURCE_LINE" > "$nested_removed/scripts/cr/clear-cr-marker.sh"
+check "$(run "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T17 nested worktree with .git fully removed cannot fake anchor status via untracked ls-files"
 
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"
