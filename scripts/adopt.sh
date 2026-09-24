@@ -864,7 +864,7 @@ install_native_hooks() {
       hop=replace; hpre=(--pre-file "$backup")
       _native_hook_rec create file "$backup" git-hook-backups --pre-absent --post-file "$backup"
       echo "  git gate hooks — existing $hook backed up to $hook.himmel-backup (still runs: chained after the himmel gate)"
-    elif [[ -f "$hooks_dir/$hook" ]] && hsnap="$(mktemp)" && cp -p "$hooks_dir/$hook" "$hsnap"; then
+    elif [[ -f "$hooks_dir/$hook" ]] && hsnap="$(mktemp "${TMPDIR:-/tmp}/himmel-hook-pre.XXXXXX")" && cp -p "$hooks_dir/$hook" "$hsnap"; then
       # our own hook from an earlier run: the row's pre is its bytes before this rewrite
       hop=replace; hpre=(--pre-file "$hsnap")
     fi

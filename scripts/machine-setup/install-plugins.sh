@@ -363,7 +363,7 @@ while IFS= read -r NAME; do
   # operator's (autoUpdate is a HIMMEL-365 convenience, not needed to
   # function) -- leave it exactly as it was, so uninstall has nothing to undo.
   # ponytail: sh-only, install-plugins.ps1 still patches a pre-existing entry; port the skip under HIMMEL-3584
-  if printf '%s\n' "$AU_PRE_NAMES" | grep -Fqx -- "$NAME"; then
+  if grep -Fqx -- "$NAME" <<<"$AU_PRE_NAMES"; then
     echo "  skip: '$NAME' was already declared in $SETTINGS_FILE — left as it is"
     continue
   fi

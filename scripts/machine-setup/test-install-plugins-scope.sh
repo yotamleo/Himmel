@@ -77,7 +77,7 @@ assert_scope() {
 # A scratch HOME and cwd (HIMMEL-3541): install-plugins.sh leaves an autoUpdate
 # entry the settings file already declares alone, so on a machine where himmel
 # is installed the real ~/.claude/settings.json would hide the dry line.
-scratch=$(mktemp -d) || fail "mktemp failed"
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/himmel-scope-test.XXXXXX") || fail "mktemp failed"
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/home" "$scratch/proj"
 export HOME="$scratch/home"
