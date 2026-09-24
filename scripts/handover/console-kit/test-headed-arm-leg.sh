@@ -1737,13 +1737,34 @@ sha26="$(printf 'a%.0s' $(seq 1 40))"
 # the guard mirrors go_resolve_root itself, and a scratch HOME keeps go.sh
 # from minting its GO key in the operator's real ~/.config/himmel.
 home26="$tmp/home26"; mkdir -p "$home26"
+# HIMMEL-3578: go.sh now resolves this repo's nwo via `gh repo view` to bind
+# the GO mac. A gh stub on PATH keeps this e2e hermetic (no real gh/network
+# dependency), matching test-go.sh's own stub.
+bin26="$tmp/bin26"; mkdir -p "$bin26"
+cat > "$bin26/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "repo view")
+        json=""
+        while [ $# -gt 0 ]; do
+            case "$1" in --json) json="$2" ;; esac
+            shift
+        done
+        case "$json" in
+            nameWithOwner) printf '%s' "o/r" ;;
+            *) exit 90 ;;
+        esac ;;
+    *) exit 91 ;;
+esac
+STUB
+chmod +x "$bin26/gh"
 go_root26="$(cd "$primary26" && HANDOVER_DIR="$primary26/handovers" bash -c '. "$1/../../lib/handover-path.sh" && . "$1/../../lib/go-gate.sh" && go_resolve_root "$1/../../.."' _ "$HERE" 2>/dev/null)" || go_root26=""
 case "$go_root26" in
   "$tmp"/?*) echo "ok - HANDOVER_DIR e2e: resolved GO root [$go_root26] is inside the suite's temp dir"; go_root26_ok=1 ;;
   *) echo "FAIL - HANDOVER_DIR e2e: resolved GO root [$go_root26] is not inside the suite's temp dir [$tmp] - refusing to write a GO"; fails=$((fails+1)); go_root26_ok=0 ;;
 esac
 if [ "$go_root26_ok" -eq 1 ]; then
-  go_out26="$(cd "$primary26" && HOME="$home26" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
+  go_out26="$(cd "$primary26" && HOME="$home26" PATH="$bin26:$PATH" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
 else
   go_out26="SKIPPED: unsafe GO root"
 fi
@@ -1756,7 +1777,7 @@ set -u
 . "$HERE/../../lib/handover-path.sh"
 . "$HERE/../../lib/go-gate.sh"
 root="\$(handover_root)" || exit 9
-go_gate 26260 "$sha26" "\$root"
+go_gate 26260 "$sha26" "\$root" "o/r"
 EOF
 chmod 755 "$gate_script26"
 rc2=0
