@@ -49,9 +49,14 @@ for t in anchor-handoff.sh clear-cr-marker.sh codex-adv-harvest.sh codex-adv-kic
     echo "echo $t" >"$ORIGIN/scripts/cr/$t"
 done
 # HIMMEL-3437: the two scripts/handover/ gate-writer entries this hook also
-# targets, held to the entry + scripts/cr/anchor-handoff.sh (narrower family).
+# targets, held to the entry + scripts/cr/anchor-handoff.sh (narrower family) -
+# plus go.sh's own sibling-sourced libs (go-gate.sh, handover-path.sh), which
+# it reads via a branch-relative path even after the hand-off's re-exec lands
+# it in the anchor's own console-kit/, so they must be guarded too.
 echo 'echo mog' >"$ORIGIN/scripts/handover/merge-on-green.sh"
 echo 'echo go' >"$ORIGIN/scripts/handover/console-kit/go.sh"
+echo ': go-gate' >"$ORIGIN/scripts/lib/go-gate.sh"
+echo ': handover-path' >"$ORIGIN/scripts/lib/handover-path.sh"
 echo 'doc' >"$ORIGIN/docs/a.md"
 g -C "$ORIGIN" add -A
 g -C "$ORIGIN" commit -qm base
@@ -285,6 +290,45 @@ rm "$WT/scripts/handover/console-kit"
 mv "$WT/scripts/handover/console-kit-real" "$WT/scripts/handover/console-kit"
 run "handover writers restored, merge-on-green -> allow" 0 "$(payload "$MOG" "$WT")" "$HR"
 run "handover writers restored, go.sh -> allow" 0 "$(payload "$GO" "$WT")" "$HR"
+
+# ---- console-O NO-GO finding 1: the $HIMMEL_REPO-prefixed anchor spelling -----
+# HIMMEL-3491's documented anchored spelling for merge-on-green.sh, gate-
+# allowed at scripts/lanes/plugin-profiles.json:7 and .claude/settings.json,
+# is a LITERAL `$HIMMEL_REPO` (or `${HIMMEL_REPO}`) prefix - never evaluated
+# by this hook (it only sees the raw command text), so it is exactly as
+# trusted as any other absolute path once resolved: the shell, not a branch,
+# picks the anchor. Denying it left a leg with no allow-listed way to merge.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal $HIMMEL_REPO/ prefix, clean tree -> allow' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
+echo ': edited' >>"$WT/scripts/handover/merge-on-green.sh"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal $HIMMEL_REPO/ prefix, edited branch -> still allow (anchor spelling)' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `${HIMMEL_REPO}` text, never expanded here
+run 'literal ${HIMMEL_REPO}/ braced prefix, edited branch -> still allow' 0 \
+    "$(payload 'bash "${HIMMEL_REPO}/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/handover/merge-on-green.sh
+
+# ---- console-O NO-GO finding 2: go.sh's own sibling-sourced libs -------------
+# go.sh sources scripts/lib/go-gate.sh and scripts/lib/handover-path.sh via a
+# branch-relative $HERE, so they must be in its GUARDED set too - a byte-equal
+# go.sh (+ anchor-handoff.sh) with an edited sibling lib must still deny.
+echo ': edited' >>"$WT/scripts/lib/go-gate.sh"
+run "go-gate.sh edited, go.sh clean -> deny" 2 "$(payload "$GO" "$WT")" "$HR"
+need_in_err "deny names go-gate.sh" "scripts/lib/go-gate.sh"
+g -C "$WT" checkout -q -- scripts/lib/go-gate.sh
+echo ': edited' >>"$WT/scripts/lib/handover-path.sh"
+run "handover-path.sh edited, go.sh clean -> deny" 2 "$(payload "$GO" "$WT")" "$HR"
+need_in_err "deny names handover-path.sh" "scripts/lib/handover-path.sh"
+g -C "$WT" checkout -q -- scripts/lib/handover-path.sh
+run "go.sh's sibling libs restored -> allow" 0 "$(payload "$GO" "$WT")" "$HR"
+# Sibling-lib edit must not deny an unrelated target (merge-on-green.sh never
+# sources these two - it resolves its own helpers from $himmel_repo instead).
+echo ': edited' >>"$WT/scripts/lib/go-gate.sh"
+run "go-gate.sh edited, merge-on-green unaffected -> allow" 0 "$(payload "$MOG" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/lib/go-gate.sh
+
 # Classified by the script they run, not by the text - same spellings the
 # scripts/cr/ family is held to.
 echo ': edited' >>"$WT/scripts/handover/merge-on-green.sh"

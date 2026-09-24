@@ -428,7 +428,13 @@ glob_is_literal_elsewhere() {
 # a variable, a path outside the root, or a cd that moves what the path
 # resolves against) is unresolvable and denies. Absolute paths are left to the
 # permission layer: no allow rule matches them, and the runbook's
-# <himmel_dir> spelling is one.
+# <himmel_dir> spelling is one. A literal `$HIMMEL_REPO/` or `${HIMMEL_REPO}/`
+# prefix (HIMMEL-3437 console finding 1, HIMMEL-3491's documented anchored
+# merge-on-green.sh spelling) is exempted the same way: this hook only sees
+# the raw command TEXT, never evaluates the variable, so the word is exactly
+# as trusted as any other absolute path once the shell resolves it - the
+# anchor, never a branch, picks HIMMEL_REPO's value (a per-call HIMMEL_REPO=
+# re-point is a separate registered chokepoint, block-chokepoint-env-prefix.sh).
 # ponytail: text classification, so a name the shell assembles from pieces the
 # text never spells (a variable holding the whole path, with neither "cr/" nor
 # "pr-check" in sight) is not seen. The branch can run arbitrary code through any other
@@ -443,7 +449,9 @@ unresolved=""
 # Absolute words keep their case (an adopter's /Users/... anchor path).
 for word in $flat; do
     case "$word" in *[cC][rR]/*|*[hH]andover/*) ;; *) continue ;; esac
+    # shellcheck disable=SC2016 # literal text match, never expanded
     case "$word" in
+        '$HIMMEL_REPO/'*|'${HIMMEL_REPO}/'*) ;;
         *[][*?~\$\(\`]*|*'{'*|*'}'*) hit=1; unresolved=$word ;;
         /*) ;;
         *[[:upper:]]*) hit=1; unresolved=$word ;;
@@ -452,7 +460,8 @@ done
 entries=""
 hentries=""
 for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
-    case "$tok" in /*|'~'*) continue ;; esac
+    # shellcheck disable=SC2016 # literal text match, never expanded
+    case "$tok" in /*|'~'*|'$HIMMEL_REPO/'*|'${HIMMEL_REPO}/'*) continue ;; esac
     case "$tok" in
         *'$'[A-Za-z_'{']*) [ "$mentions" -eq 0 ] || { hit=1; unresolved=$tok; } ;;
     esac
@@ -513,6 +522,15 @@ for e in $hentries; do
         *) GUARDED="$GUARDED scripts/cr/anchor-handoff.sh" ;;
     esac
     GUARDED="$GUARDED $e"
+    # HIMMEL-3437 console finding 2: go.sh sources these two siblings via its
+    # own $HERE (branch-relative), unlike merge-on-green.sh, which resolves
+    # every helper it sources from the POST-hand-off $himmel_repo - so only
+    # go.sh's own copies of them can run unseen, and only they need listing
+    # here alongside its entry + the hand-off it shares with scripts/cr/.
+    case "$e" in
+        scripts/handover/console-kit/go.sh)
+            GUARDED="$GUARDED scripts/lib/go-gate.sh scripts/lib/handover-path.sh" ;;
+    esac
 done
 
 shown=${cmd//$'\n'/ }
