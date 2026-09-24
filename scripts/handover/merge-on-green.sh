@@ -691,7 +691,7 @@ if [ "$is_leg" -eq 1 ]; then
     fi
     go_reason=""
     go_rc=0
-    go_reason=$(go_gate "$pr_num" "$sha" "$go_root") || go_rc=$?
+    go_reason=$(go_gate "$pr_num" "$sha" "$go_root" "$nwo") || go_rc=$?
     if [ "$go_rc" -ne 0 ]; then
         if [ -z "$go_reason" ]; then
             go_reason="go_gate for PR #$pr_num at $sha returned an unexpected exit code ($go_rc) — this is a console-spawned leg; send READY to your console and wait for GO"

@@ -3,7 +3,8 @@
 # (HIMMEL-2919). The file IS the GO: merge-on-green.sh, run from a
 # console-spawned leg (HIMMEL_CONSOLE_LEG=1, exported by headed-arm-leg.sh),
 # refuses with exit 17 unless <handover_root>/.locks/go/<pr>.<head sha> exists
-# and carries head=<that sha> plus a mac= line: HMAC-SHA256 of pr|sha under
+# and carries head=<that sha> plus a mac= line: HMAC-SHA256 of
+# nwo|pr|sha (HIMMEL-3578: bound to the repo too) under
 # the key this script mints at ~/.config/himmel/go-hmac.key (HIMMEL-3543, see
 # scripts/lib/go-gate.sh). The console's SendMessage GO is only the
 # notification. A GO binds ONE head: a push after it needs a fresh GO.
@@ -110,6 +111,17 @@ if _go_in_harness "$ROOT" "$ANCHOR"; then
     echo "go: note - writing the GO under the harness repo's inline handovers/ ($ROOT): no external HANDOVER_DIR is configured, so this is Mode A" >&2
 fi
 
+# HIMMEL-3578: the mac binds the repo (himmel-go-v2|<nwo>|<pr>|<sha>) - a GO
+# minted for one repo's PR #N at a sha must not validate another repo's PR #N
+# at the same sha. Resolve nwo from the CURRENT checkout the same way
+# merge-on-green.sh's own cwd_nwo does, from the anchor so a worktree copy
+# cannot forge it.
+NWO=$(cd "$ANCHOR" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || NWO=""
+if [ -z "$NWO" ]; then
+    echo "go: cannot resolve this repo's owner/name (gh repo view failed) - no GO written; the mac binds the repo (HIMMEL-3578)" >&2
+    exit 1
+fi
+
 # HIMMEL-3543: sign the GO. The key is minted here, on the console's first GO
 # (umask 077 + noclobber: mode 0600, never overwrites an existing key);
 # go_gate verifies it and never mints one.
@@ -123,9 +135,28 @@ if [ ! -e "$KEY" ]; then
         echo "go: openssl is required to mint the GO key" >&2
         exit 1
     fi
-    ( umask 077; mkdir -p "$(dirname "$KEY")" && set -C && openssl rand -hex 32 > "$KEY" ) 2>/dev/null || true
+    # HIMMEL-3578: mint to a temp file in the same directory first and
+    # validate it as 64 lowercase hex BEFORE moving it into place - a failed
+    # `openssl rand` (disk full, killed mid-write) used to leave an
+    # empty/partial file at $KEY itself, which is sticky: every later run sees
+    # `-e "$KEY"` true and never re-mints, failing closed forever. mv -n never
+    # clobbers a key another process won the race to mint first.
+    KEYDIR=$(dirname "$KEY")
+    ( umask 077 && mkdir -p "$KEYDIR" ) 2>/dev/null || true
+    TMPKEY=$(umask 077 && mktemp "$KEYDIR/.go-hmac.XXXXXX" 2>/dev/null) || TMPKEY=""
+    if [ -n "$TMPKEY" ]; then
+        ( umask 077; openssl rand -hex 32 > "$TMPKEY" ) 2>/dev/null || true
+        if grep -qxE '[0-9a-f]{64}' "$TMPKEY" 2>/dev/null; then
+            mv -n "$TMPKEY" "$KEY" 2>/dev/null || true
+        fi
+        rm -f "$TMPKEY" 2>/dev/null || true
+    fi
 fi
-if ! MAC=$(go_mac "$PR" "$SHA"); then
+if [ -e "$KEY" ] && ! grep -qxE '[0-9a-f]{64}' "$KEY" 2>/dev/null; then
+    echo "go: the GO key at $KEY exists but is not 64 lowercase hex chars - remedy: remove $KEY (it was left behind by a previously failed mint) and re-run go.sh so it can mint a fresh one; no GO written" >&2
+    exit 1
+fi
+if ! MAC=$(go_mac "$PR" "$SHA" "$NWO"); then
     echo "go: cannot sign the GO - the key at $KEY is unreadable or not 64 hex chars, or openssl is missing; no GO written" >&2
     exit 1
 fi

@@ -220,7 +220,7 @@ if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
     # or an inherited `export -f` would otherwise survive the source below
     # undetected) so only the file's own definitions can satisfy the
     # declare -F checks below.
-    unset -f go_gate console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
+    unset -f go_gate console_leg 2>/dev/null || true
     # shellcheck source=scripts/lib/go-gate.sh
     # shellcheck disable=SC1091
     if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
@@ -259,40 +259,19 @@ if [ "$is_leg" -eq 1 ]; then
     go_root=""
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
-    # HIMMEL-3573 row 1: go_resolve_root is the same resolver go.sh writes
-    # through, so a leg running `gh pr merge` directly with no HANDOVER_DIR in
-    # its own env still lands on the anchor's .env-configured root, the one a
-    # valid console GO was actually written under — a plain handover_root()
-    # here fell back to the harness repo's inline stub instead and falsely
-    # refused a valid GO.
-    if . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null && declare -F go_resolve_root >/dev/null 2>&1; then
-        go_root=$(go_resolve_root "$SCRIPT_DIR/../.." 2>/dev/null) || go_root=""
+    if . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null; then
+        go_root=$(handover_root 2>/dev/null) || go_root=""
     fi
     # go-gate.sh is already sourced above (console_leg check) — only confirm
-    # go_gate and go_mac are defined (a truncated file could define
-    # console_leg but not the rest).
-    if ! declare -F go_gate >/dev/null 2>&1 || ! declare -F go_mac >/dev/null 2>&1; then
+    # go_gate itself is defined (a truncated file could define console_leg
+    # but not go_gate).
+    if ! declare -F go_gate >/dev/null 2>&1; then
         echo "block-unresolved-cr-merge: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
-        exit 2
-    fi
-    # HIMMEL-3578: the GO mac binds the repo, so resolve nwo the same way
-    # merge-on-green.sh does — from an explicit --repo/-R on the merge command
-    # itself when given (already extracted into $repo above), else the
-    # current checkout. `gh repo view` is timeout-bounded: this hook runs on
-    # a budget, and a hang here must read as a refusal, never as an allow.
-    go_nwo="$repo"
-    if [ -z "$go_nwo" ]; then
-        if command -v timeout >/dev/null 2>&1; then
-            go_nwo=$(timeout 5 gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
-        fi
-    fi
-    if [ -z "$go_nwo" ]; then
-        echo "block-unresolved-cr-merge: cannot resolve this repo's owner/name for PR #$go_num — refusing (GATE INTEGRITY: the GO mac binds the repo). Pass --repo <owner>/<name>, or run from a checkout gh can resolve." >&2
         exit 2
     fi
     go_reason=""
     go_rc=0
-    go_reason=$(go_gate "$go_num" "$go_sha" "$go_root" "$go_nwo") || go_rc=$?
+    go_reason=$(go_gate "$go_num" "$go_sha" "$go_root") || go_rc=$?
     if [ "$go_rc" -ne 0 ]; then
         if [ -z "$go_reason" ]; then
             go_reason="go_gate for PR #$go_num at $go_sha returned an unexpected exit code ($go_rc) — this is a console-spawned leg; send READY to your console and wait for GO"
