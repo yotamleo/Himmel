@@ -122,7 +122,7 @@ EXEMPT_ENTRIES=(
   "scripts/hooks/test-doc-guard.ps1|d0840fceda44|the Process capture is explicitly discarded via [void]\$proc.StandardOutput.ReadToEnd(); only \$proc.ExitCode is used"
   "scripts/hooks/test-end-session-wiki.ps1|d0840fceda44|same shape: captured stdout is [void]-discarded, only the exit code and the written file are asserted on"
   "scripts/hooks/test-gen-changelog.ps1|ab426cb2e589|pwsh captures are matched against fixed English gate messages; its non-ASCII case deliberately asserts via ReadAllBytes + UTF8.GetString, bypassing console capture on purpose"
-  "scripts/lib/test-detect-hook-dup.ps1|7a60fa4f32c2|captures are matched against hook basenames from detect-hook-dup.ps1's own hardcoded ASCII list"
+  "scripts/lib/test-detect-hook-dup.ps1|e9a575b5243c|captures are matched against hook basenames from detect-hook-dup.ps1's own hardcoded ASCII list (HIMMEL-3574 added SC5e, one more capture of the same class)"
   "scripts/machine-setup/win11.ps1|a2f586628b44|the one capture is node --version, a semver string, ASCII by construction"
   "scripts/observability/agent-runtime-census.ps1|052947551066|captures are --version strings; the poolmon dump is written by poolmon to a FILE and read with Get-Content (out of class)"
   "scripts/parity/test-ps-twin-oem-encoding.ps1|803fb1df1a65|the child-pwsh probe captures [Console]::OutputEncoding.CodePage, a numeric codepage string ASCII by construction, to check whether a fresh child even inherits cp437 before trusting the negative control -- nothing non-ASCII is ever captured"
