@@ -127,9 +127,16 @@ for (const command of TRUST_SPELLINGS.filter((c) => !/^bash scripts\/cr\/(clear-
 // each subcommand. Both scripts are TARGETS of guard-pr-check-literal.sh
 // (HIMMEL-3383/3495), which denies any command naming them that is not one
 // simple command - no `;`/`&`/`|`/backtick/`()`/redirect/embedded newline -
-// BEFORE gateAllow is ever consulted (guard-pr-check-literal.sh:451-457), so
-// a rider can never actually reach these two scripts' wildcard tail; the
-// full audit is in plugin-profiles.json's _comment_gateAllow, HIMMEL-3469/70.)
+// BEFORE gateAllow is ever consulted, IN A HIMMEL-PROJECT SESSION (the hook
+// is registered only in this repo's own hook chain, not at user scope - a
+// leg launched against a non-himmel target repo does not load it, tracked in
+// HIMMEL-3558) - so within a himmel-project session a rider can never
+// actually reach these two scripts' wildcard tail. This is a MODEL claim, not
+// proof: gate-allow-hook-survival.test.mjs spawns the real hook binary with
+// real rider payloads for both scripts and asserts its actual exit code. The
+// full audit is in plugin-profiles.json's _comment_gateAllow, HIMMEL-3469/70,
+// including the gate-evidence-forgery caveat (HIMMEL-3557) this rider-only
+// check does not cover.)
 const RIDERS = ['; evil', ' && evil', ' || evil', ' | sh', ' $(evil)', ' `evil`', '\nevil', ' & evil'];
 for (const literal of [...STEP0, ...EXACT_LITERALS].filter((c) => c.startsWith('bash scripts/cr/'))) {
   for (const rider of RIDERS) {

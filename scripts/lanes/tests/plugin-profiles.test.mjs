@@ -176,7 +176,7 @@ const BAD_GATE_RULES = [
   // blanket auto-approval, see CLAUDE.md's Claude-invocation-billing rule.
   ['claude-floor-review stays out', 'Bash(bash scripts/cr/claude-floor-review.sh:*)'],
   // HIMMEL-3469: --notes/--bugs are caller-supplied destination PATHS with no
-  // containment check (handover-bridge.sh:36; append-cr-findings.sh:17-21
+  // containment check (handover-bridge.sh:36; scripts/handover/append-cr-findings.sh:17-21
   // only checks the parent dir exists, never that it's under a handover
   // root) — a wildcard tail would be an arbitrary-file-write primitive.
   ['handover-bridge stays out', 'Bash(bash scripts/cr/handover-bridge.sh:*)'],
