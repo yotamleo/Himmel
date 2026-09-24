@@ -173,14 +173,19 @@ check_bump_required() {
   fi
   local rel="marketplace/plugins"
   local changed
+  local diff_rc
   if [ -n "$base_ref" ]; then
     if ! git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1; then
       echo "ERR check-plugin-drift --bump-required: cannot resolve base ref '$base_ref'" >&2
       return 1
     fi
-    changed="$(git diff --name-only --diff-filter=ACMRD "${base_ref}..HEAD" -- "$rel" 2>/dev/null)"
+    changed="$(git diff --name-only --diff-filter=ACMRD "${base_ref}..HEAD" -- "$rel")"; diff_rc=$?
   else
-    changed="$(git diff --cached --name-only --diff-filter=ACMRD -- "$rel" 2>/dev/null)"
+    changed="$(git diff --cached --name-only --diff-filter=ACMRD -- "$rel")"; diff_rc=$?
+  fi
+  if [ "$diff_rc" -ne 0 ]; then
+    echo "ERR check-plugin-drift --bump-required: git diff failed (rc=$diff_rc) — cannot determine changed plugin files" >&2
+    return 1
   fi
   if [ -z "$changed" ]; then
     echo "check-plugin-drift --bump-required: no plugin files changed"
