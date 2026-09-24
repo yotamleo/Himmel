@@ -259,6 +259,12 @@ fi
 #     deletes wholesale (uninstall.sh:43,615,1486,1492,1496).
 allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.npm/_update-notifier-last-checked|$H/\\.cache/node-gyp|$H/\\.bun/install/cache|$H/\\.claude/plugins/cache|$H/\\.cache/qmd|$H/proj/scripts/guardrails|$H/proj/scripts/lib|$H/\\.codex"
 [ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance(\\.jsonl)?|$H/\\.himmel/uninstall|$H/\\.himmel/provenance-backups"
+# HIMMEL-3559: --profile all seeds a real vault at $H/luna (the adopter-<scope>
+# profile overlay's .vault.path — see provenance-roundtrip.sh's OVERLAY) so the
+# adopter has second-brain content from the first run. It is the operator's
+# data, never himmel's: uninstall must never touch it, so it is a residue
+# allowance here, not a manifest removal row.
+[ "$PROFILE" = all ] && allow="$allow|$H/luna"
 allow="$allow)(/|\$)"
 # paths <a> <b> <mode>: new = in b not a; gone = in a not b; changed = regular
 # file in both with a different sha. Directories count only when new/gone.

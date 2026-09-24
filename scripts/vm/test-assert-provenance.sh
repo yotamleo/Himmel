@@ -212,6 +212,22 @@ hasnt "plain: emptied proj/scripts/guardrails is not residue" 'CHECK residue [a-
 hasnt "plain: emptied proj/scripts/lib is not residue" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/proj/scripts/lib'
 hasnt "plain: the ~/.codex directory itself is not residue" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/\.codex —'
 
+# ---- 6d. HIMMEL-3559: --profile all seeds a real vault at $H/luna (the
+# adopter-<scope> profile overlay's .vault.path) -- the operator's own data,
+# never himmel's to remove. It survives uninstall and must not be residue
+# under `all`, but the exemption is scoped to `all` only: under `core` the
+# same leftover is unclassified (no manifest row owns it either), so it
+# would otherwise be flagged.
+VLT="$H/luna"
+fresh
+inv C d "$VLT"; inv C f "$VLT/index.md" seed
+run_assert all 0
+hasnt "all: the seeded vault is not residue" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/luna'
+fresh
+inv C d "$VLT"; inv C f "$VLT/index.md" seed
+run_assert core 0
+has "core: the same leftover at ~/luna is not exempted" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/luna'
+
 # ---- 7. cadence-crontab-armed-at-B (profile all only).
 fresh
 printf '17 3 * * * /bin/true # seed\n' >"$LB/seed-state/crontab.txt"; cp "$LB/seed-state/crontab.txt" "$FAKE_CRON"
