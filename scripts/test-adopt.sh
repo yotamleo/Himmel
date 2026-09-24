@@ -546,7 +546,10 @@ aa=$(jq -r '.hooks.PreToolUse[].hooks[].command | select(test("auto-approve-safe
 [ "$(printf '%s\n' "$aa" | wc -l)" = "1" ] || fail "hookpath: expected exactly ONE auto-approve entry (got: $aa)"
 # shellcheck disable=SC1003  # '\' is a literal-backslash glob pattern, not a quote escape
 case "$aa" in *'\'*) fail "hookpath: auto-approve command still contains a backslash: $aa" ;; esac
-case "$aa" in 'bash "'*'/scripts/hooks/auto-approve-safe-bash.sh"') : ;; *) fail "hookpath: auto-approve not forward-slash+quoted: $aa" ;; esac
+# HIMMEL-3574: the wired command now guards a missing script (if [ -f ]; then
+# bash "..."; else warn+exit 0; fi) instead of a bare bash "...", so the
+# forward-slash+quoted check matches that shape.
+case "$aa" in 'if [ -f "'*'/scripts/hooks/auto-approve-safe-bash.sh" ]; then bash "'*'/scripts/hooks/auto-approve-safe-bash.sh"; else echo "himmel: hook script missing ('*'/scripts/hooks/auto-approve-safe-bash.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)" >&2; exit 0; fi') : ;; *) fail "hookpath: auto-approve not forward-slash+quoted: $aa" ;; esac
 jq -e '.hooks.PreToolUse[].hooks[].command | select(test("rtk-hook-guard"))' "$s9" >/dev/null || fail "hookpath: rtk-hook-guard not preserved"
 echo "ok: hooks forward-slash+quoted; broken entry replaced; rtk kept"
 
@@ -2113,8 +2116,10 @@ after_b=$(jq -Sc '.hooks.PreToolUse[1].hooks[1]' "$s2892")
   || fail "HIMMEL-2892 (c): the adopter's timeout was reset (got: $(jq -r '.hooks.PreToolUse[1].hooks[0].timeout' "$s2892"))"
 c2892=$(jq -r '.hooks.PreToolUse[1].hooks[0].command' "$s2892")
 # shellcheck disable=SC2016  # literal $CLAUDE_PROJECT_DIR (the project-scope prefix), not an expansion
+# HIMMEL-3574: the wired command now guards a missing script (if [ -f ]; then
+# bash "..."; else warn+exit 0; fi) instead of a bare bash "...".
 case "$c2892" in
-  'bash "$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh"') : ;;
+  'if [ -f "$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh" ]; then bash "$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh"; else echo "himmel: hook script missing ($CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)" >&2; exit 0; fi') : ;;
   *) fail "HIMMEL-2892 (c): the himmel-owned command was not repointed at this install's prefix (got: $c2892)" ;;
 esac
 
