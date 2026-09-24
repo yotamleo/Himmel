@@ -171,7 +171,20 @@ const BAD_GATE_RULES = [
   ['pr-check-env widened var set', 'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS CR_PROFILE)'],
   ['pr-check-env wildcard var tail', 'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS:*)'],
   ['pr-check-env other var', 'Bash(bash scripts/cr/pr-check-env.sh CR_PROFILE)'],
+  // HIMMEL-3107 (restated by the HIMMEL-3469/3470 audit): spawns a fresh
+  // BILLED headless claude session (claude-floor-review.sh:194) — never a
+  // blanket auto-approval, see CLAUDE.md's Claude-invocation-billing rule.
   ['claude-floor-review stays out', 'Bash(bash scripts/cr/claude-floor-review.sh:*)'],
+  // HIMMEL-3469: --notes/--bugs are caller-supplied destination PATHS with no
+  // containment check (handover-bridge.sh:36; append-cr-findings.sh:17-21
+  // only checks the parent dir exists, never that it's under a handover
+  // root) — a wildcard tail would be an arbitrary-file-write primitive.
+  ['handover-bridge stays out', 'Bash(bash scripts/cr/handover-bridge.sh:*)'],
+  // HIMMEL-3469: --input reads an arbitrary caller-named file and files
+  // matching lines as a live GitHub issue title+body
+  // (file-deferred-issues.sh:133-145,371-397) — an externally-visible,
+  // hard-to-reverse side effect on attacker-influenceable content.
+  ['file-deferred-issues stays out', 'Bash(bash scripts/cr/file-deferred-issues.sh:*)'],
   // HIMMEL-3359: the step-0 entry is admitted as an exact literal only.
   ['pr-check-context gains a wildcard', 'Bash(bash scripts/cr/pr-check-context.sh:*)'],
   ['pr-check-context gains an argument', 'Bash(bash scripts/cr/pr-check-context.sh --head)'],

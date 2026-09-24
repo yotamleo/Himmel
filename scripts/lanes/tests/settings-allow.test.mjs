@@ -121,8 +121,15 @@ for (const command of TRUST_SPELLINGS.filter((c) => !/^bash scripts\/cr\/(clear-
 
 // HIMMEL-3495: an exact scripts/cr literal with a second command riding
 // behind it must match no rule either - the literal grants that one command,
-// never a compound. (The `:*` gateAllow rules are left out: this model lets a
-// `:*` tail absorb anything, while the harness matches each subcommand.)
+// never a compound. (The `:*` gateAllow rules, including ledger-append.sh and
+// clear-cr-marker.sh, are left out: this text model lets a `:*` tail absorb
+// anything after a space, including a `; rider`, while the harness matches
+// each subcommand. Both scripts are TARGETS of guard-pr-check-literal.sh
+// (HIMMEL-3383/3495), which denies any command naming them that is not one
+// simple command - no `;`/`&`/`|`/backtick/`()`/redirect/embedded newline -
+// BEFORE gateAllow is ever consulted (guard-pr-check-literal.sh:451-457), so
+// a rider can never actually reach these two scripts' wildcard tail; the
+// full audit is in plugin-profiles.json's _comment_gateAllow, HIMMEL-3469/70.)
 const RIDERS = ['; evil', ' && evil', ' || evil', ' | sh', ' $(evil)', ' `evil`', '\nevil', ' & evil'];
 for (const literal of [...STEP0, ...EXACT_LITERALS].filter((c) => c.startsWith('bash scripts/cr/'))) {
   for (const rider of RIDERS) {
