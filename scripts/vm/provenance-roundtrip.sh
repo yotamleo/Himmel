@@ -439,6 +439,22 @@ if [ "$CLONE_GONE" = 1 ]; then
     fi
 fi
 
+# aur only: finish the real-world lifecycle BEFORE inventory C/assert
+# (himmelctl uninstall, then `pacman -R himmel`, per packaging/aur/
+# himmel.install's documented order). assert-provenance.sh's `himmelctl-gone`
+# check does a full-PATH `command -v himmelctl`, which reaches pacman's
+# /usr/bin/himmelctl wrapper too, not only $HOME's launcher -- so on aur,
+# running the assert BEFORE pacman -R always found the still-present package
+# wrapper and failed a check that has nothing to do with himmel's own
+# uninstall correctness. Running pacman -R first makes the assert observe
+# the same fully-uninstalled state a real adopter following the documented
+# order would have.
+if [ "$INSTALL_FROM" = aur ]; then
+    step pacman-remove "sudo pacman -R --noconfirm himmel >/tmp/pacman-remove.log 2>&1; rc=\$?; sed 's/^/[pacman-remove-log] /' /tmp/pacman-remove.log; exit \$rc"
+    PAYLOAD=$(guest_ssh "{ [ -e /opt/himmel ] && echo present || echo gone; } ; { [ -e /usr/bin/himmelctl ] && echo present || echo gone; }")
+    echo "[pacman-payload] /opt/himmel=$(printf '%s\n' "$PAYLOAD" | sed -n 1p) /usr/bin/himmelctl=$(printf '%s\n' "$PAYLOAD" | sed -n 2p)"
+fi
+
 # 7. Inventory C, the diff summaries, the named checks.
 step inventory-C "bash $WORKDIR/inventory.sh C"
 
@@ -448,17 +464,6 @@ echo "[step] assert"
 ASSERT_OUT=$(guest_ssh "HIMMEL_RT_GUEST=1 RT_PURGE=$PURGE RT_PROFILE=$PROFILE bash $WORKDIR/assert-provenance.sh") \
     || fail "step assert failed (rc=$?)"
 printf '%s\n' "$ASSERT_OUT"
-
-# aur only: complete the real-world lifecycle (himmelctl uninstall, then
-# `pacman -R himmel`, per packaging/aur/himmel.install's documented order) and
-# print explicit confirmation that pacman's own payload is gone. assert-provenance.sh
-# is $HOME-scoped only, so it never sees /opt/himmel or /usr/bin/himmelctl either
-# way — this is extra evidence beyond what the shared assertion checks.
-if [ "$INSTALL_FROM" = aur ]; then
-    step pacman-remove "sudo pacman -R --noconfirm himmel >/tmp/pacman-remove.log 2>&1; rc=\$?; sed 's/^/[pacman-remove-log] /' /tmp/pacman-remove.log; exit \$rc"
-    PAYLOAD=$(guest_ssh "{ [ -e /opt/himmel ] && echo present || echo gone; } ; { [ -e /usr/bin/himmelctl ] && echo present || echo gone; }")
-    echo "[pacman-payload] /opt/himmel=$(printf '%s\n' "$PAYLOAD" | sed -n 1p) /usr/bin/himmelctl=$(printf '%s\n' "$PAYLOAD" | sed -n 2p)"
-fi
 
 # 7b. --clone-gone --purge-state must leave no purge-owned ~/.himmel content
 # (design §5.2/§4: provenance.jsonl, provenance-backups/ and the standalone

@@ -693,7 +693,12 @@ fi
 AUR_REF=f8ef4333e3f0e03bc540da932a09a3eb84696d67
 HIMMEL_RT_TARBALL_NO_BUILD=1 run_rt "$ALL_PASS" "$AUR_REF" --install-from aur
 got=$(container_order "$LOG")
-want='seed invA install-project install-user invB uninstall invC assert pacman-remove '
+# pacman-remove runs BEFORE invC/assert (HIMMEL-3059 S6b follow-up): the
+# assert's himmelctl-gone check does a full-PATH `command -v himmelctl`,
+# which reaches pacman's own /usr/bin/himmelctl too, so the aur package must
+# already be removed by the time the assert observes state -- the real
+# round trip's guest run is what surfaced this ordering bug.
+want='seed invA install-project install-user invB uninstall pacman-remove invC assert '
 if [ "$RC" -eq 0 ] && [ "$got" = "$want" ] \
    && printf '%s\n' "$OUT" | grep -qE '^\[run\] .*install-from=aur .*runtime=docker image=archlinux:base-devel guest-user=builder$' \
    && printf '%s\n' "$OUT" | grep -qxF '[step] container-boot runtime=docker image=archlinux:base-devel' \
