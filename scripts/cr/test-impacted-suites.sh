@@ -270,6 +270,139 @@ YAML
 out="$(run_rc)"; rc=$?
 if [ "$rc" -eq 1 ] && grepq "$out" 'ambiguous'; then pass "a line naming two runner families fails closed as ambiguous"; else fail "ambiguous line: rc=$rc out=$out"; fi
 
+# --- 17. --run: a fresh worktree's missing npm deps install before the
+# suite runs (HIMMEL-3553: worktrees are created with --no-install, so a leg
+# running an impacted suite raw sees a false SKIP/FAIL it mislabels
+# "pre-existing" — N441/N440/N446 in one shift). -----------------------------
+mkdir -p "$FX/pkg-npm"
+cat > "$FX/pkg-npm/package.json" <<'JSON'
+{
+  "name": "fixture-npm",
+  "version": "1.0.0",
+  "dependencies": { "picocolors": "1.1.1" }
+}
+JSON
+cat > "$FX/pkg-npm/package-lock.json" <<'JSON'
+{
+  "name": "fixture-npm",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": { "name": "fixture-npm", "version": "1.0.0", "dependencies": { "picocolors": "1.1.1" } },
+    "node_modules/picocolors": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+      "license": "ISC"
+    }
+  }
+}
+JSON
+cat > "$FX/pkg-npm/script.mjs" <<'JS'
+import pc from 'picocolors';
+console.log(pc.red('ok'));
+JS
+cat > "$FX/pkg-npm/test-uses-dep.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+dir="$(cd "$(dirname "$0")" && pwd)"
+node "$dir/script.mjs"
+SH
+chmod +x "$FX/pkg-npm/test-uses-dep.sh"
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: add npm fixture package"
+
+# RED control: today (no --run), the suite run raw with no node_modules
+# fails MODULE_NOT_FOUND — the base bug, not something --check can rescue.
+if (cd "$FX" && bash pkg-npm/test-uses-dep.sh >/dev/null 2>&1); then
+    fail "RED control: raw suite should fail without node_modules installed"
+else
+    pass "RED control: raw suite fails without node_modules (base bug reproduced)"
+fi
+if [ ! -d "$FX/pkg-npm/node_modules" ]; then pass "RED control: node_modules absent before --run"; else fail "node_modules unexpectedly present before --run"; fi
+
+out="$( cd "$FX" && bash "$IS" --run pkg-npm/test-uses-dep.sh 2>&1 )"; rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" '^ok$'; then pass "--run installs missing npm deps then runs the suite (GREEN)"; else fail "--run npm install+run: rc=$rc out=$out"; fi
+if [ -d "$FX/pkg-npm/node_modules/picocolors" ]; then pass "--run left node_modules installed from the lockfile"; else fail "--run did not install node_modules"; fi
+if grepq "$out" 'installing deps for pkg-npm'; then pass "--run names the package dir it is installing"; else fail "--run install message missing: $out"; fi
+
+# idempotent second run: node_modules already present -> no reinstall.
+out2="$( cd "$FX" && bash "$IS" --run pkg-npm/test-uses-dep.sh 2>&1 )"; rc2=$?
+if [ "$rc2" -eq 0 ] && ! grepq "$out2" 'installing deps'; then pass "--run is idempotent: no reinstall once node_modules exists"; else fail "--run second run: rc=$rc2 out=$out2"; fi
+
+# --- 18. --run: a bun.lock package installs via bun, --ignore-scripts ------
+mkdir -p "$FX/pkg-bun"
+cat > "$FX/pkg-bun/package.json" <<'JSON'
+{
+  "name": "fixture-bun",
+  "version": "1.0.0",
+  "dependencies": { "picocolors": "1.1.1" }
+}
+JSON
+cat > "$FX/pkg-bun/bun.lock" <<'LOCK'
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "fixture-bun",
+      "dependencies": {
+        "picocolors": "1.1.1",
+      },
+    },
+  },
+  "packages": {
+    "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
+  }
+}
+LOCK
+cat > "$FX/pkg-bun/script.mjs" <<'JS'
+import pc from 'picocolors';
+console.log(pc.red('ok-bun'));
+JS
+cat > "$FX/pkg-bun/test-uses-dep.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+dir="$(cd "$(dirname "$0")" && pwd)"
+bun "$dir/script.mjs"
+SH
+chmod +x "$FX/pkg-bun/test-uses-dep.sh"
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: add bun fixture package"
+
+out="$( cd "$FX" && bash "$IS" --run pkg-bun/test-uses-dep.sh 2>&1 )"; rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" '^ok-bun$'; then pass "--run installs a bun.lock package via bun then runs the suite"; else fail "--run bun install+run: rc=$rc out=$out"; fi
+if [ -d "$FX/pkg-bun/node_modules/picocolors" ]; then pass "--run left node_modules installed from bun.lock"; else fail "--run did not install bun node_modules"; fi
+if grepq "$out" 'bun install --frozen-lockfile --ignore-scripts'; then pass "--run picks the frozen, script-ignoring bun install command"; else fail "--run bun install command not named: $out"; fi
+
+# --- 19. --run: a missing lockfile is a hard FAIL naming the package dir and
+# the suite never runs — never a SKIP, never a bare FAIL (HIMMEL-3553). ------
+mkdir -p "$FX/pkg-nolock"
+cat > "$FX/pkg-nolock/package.json" <<'JSON'
+{ "name": "fixture-nolock", "version": "1.0.0", "dependencies": { "left-pad": "1.0.0" } }
+JSON
+cat > "$FX/pkg-nolock/test-nolock.sh" <<'SH'
+#!/usr/bin/env bash
+echo should-not-run
+SH
+chmod +x "$FX/pkg-nolock/test-nolock.sh"
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: add nolock fixture package"
+out="$( cd "$FX" && bash "$IS" --run pkg-nolock/test-nolock.sh 2>&1 )"; rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" 'no lockfile' && grepq "$out" 'pkg-nolock'; then pass "--run: missing lockfile is a hard FAIL naming the package dir (rc2), never a SKIP"; else fail "--run missing-lockfile: rc=$rc out=$out"; fi
+if ! grepq "$out" 'should-not-run'; then pass "--run: the suite itself never ran after a failed install"; else fail "suite ran despite a missing lockfile: $out"; fi
+
+# --- 20. --run: a suite with no package.json ancestor runs unchanged -------
+# (fixture step 9 left a root-level package.json in $FX for a naming test;
+# drop it here so this suite genuinely has no package.json ancestor.)
+rm -f "$FX/package.json"
+mkf scripts/test-no-deps.sh 'echo unaffected'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: add no-deps suite, drop root package.json"
+out="$( cd "$FX" && bash "$IS" --run scripts/test-no-deps.sh 2>&1 )"; rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" 'unaffected'; then pass "--run: a suite with no package.json ancestor runs unchanged"; else fail "--run no-deps suite: rc=$rc out=$out"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"

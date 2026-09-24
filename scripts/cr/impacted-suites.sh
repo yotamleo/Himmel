@@ -49,14 +49,28 @@
 #       one runner family (cannot attribute one runner to it), reported
 #       distinctly and failed closed rather than guessed. Exit 0 when every
 #       matched line is mapped, in-kind, and unambiguous.
+#   impacted-suites.sh --run <path>
+#       Run ONE impacted suite (a test-*.sh, or a JS/TS suite via --runner),
+#       first installing its owning package's deps when the nearest
+#       package.json ancestor has no node_modules (HIMMEL-3553: a fresh
+#       worktree is created with --no-install, so every package but the jira
+#       CLI starts with no node_modules — a leg running a suite raw sees a
+#       false SKIP/FAIL it mislabels "pre-existing"). The install is frozen
+#       and offline-first (npm ci / bun install --frozen-lockfile) from
+#       whichever lockfile the package dir commits. A suite with no
+#       package.json ancestor, or whose node_modules already exists, runs
+#       unchanged. Exit 2, naming the package dir and the install command,
+#       on a missing lockfile or a failed install — never a SKIP, never a
+#       bare FAIL — before the suite itself ever runs.
 #
 # Exit codes: 0 ok / clean; 1 EITHER --check found a missing verdict OR
 # --runner-check found an unmapped/drifted/ambiguous invocation — these are
 # two distinct checks that never run in the same invocation, so the meaning
 # of exit 1 is fixed by which flag was passed; 2 usage, an unresolvable
-# range, a failed search, or --runner found no mapping; 3 --check found a
-# BLOCKED suite. A range that cannot be resolved (or searched) is an ERROR,
-# never an empty list: an empty impacted set reads as "nothing to run".
+# range, a failed search, --runner found no mapping, or --run's dep install
+# failed; 3 --check found a BLOCKED suite. A range that cannot be resolved
+# (or searched) is an ERROR, never an empty list: an empty impacted set reads
+# as "nothing to run". --run otherwise exits with the suite's own exit code.
 #
 # ponytail: references are DIRECT and textual. A suite that reaches a changed
 # file only through an intermediate script it calls (no mention of the changed
@@ -208,11 +222,95 @@ runner_check() {
     [ "$missing" -eq 0 ]
 }
 
+# pkg_dir_for <suite_path> — the nearest ancestor directory (repo-relative,
+# walking from the suite's own directory up to the repo root) that owns a
+# package.json. Prints it and returns 0; returns 1 with no output when the
+# suite has no package.json ancestor (a suite with no npm/bun deps at all).
+pkg_dir_for() {
+    local dir
+    dir=$(dirname -- "$1")
+    while :; do
+        if [ -f "$dir/package.json" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        [ "$dir" = "." ] && return 1
+        dir=$(dirname -- "$dir")
+    done
+}
+
+# install_cmd_for <pkg_dir> — the ONE offline-first, frozen-lockfile install
+# command for a package dir, chosen by the lockfile it commits
+# (package-lock.json -> npm ci; bun.lock/bun.lockb -> bun install
+# --frozen-lockfile). --ignore-scripts on both: a dependency's own postinstall
+# reaching the network (a Playwright browser download — HIMMEL-3553 N446) must
+# never block or slow a test-dep install; nothing this table maps needs its
+# own postinstall to run to be test-ready (HIMMEL-3553 investigation: every
+# mapped package.json builds its TS via an explicit `pretest`/`build` script,
+# never npm lifecycle). Exit 2, naming the dir, when NEITHER lockfile exists —
+# a missing lockfile is a hard fail, never a guessed install (HIMMEL-3553).
+install_cmd_for() {
+    local dir="$1"
+    if [ -f "$dir/package-lock.json" ]; then
+        printf 'npm ci --no-audit --no-fund --ignore-scripts\n'
+        return 0
+    fi
+    if [ -f "$dir/bun.lock" ] || [ -f "$dir/bun.lockb" ]; then
+        printf 'bun install --frozen-lockfile --ignore-scripts\n'
+        return 0
+    fi
+    echo "impacted-suites: no lockfile (package-lock.json or bun.lock) in '${dir}' — refusing to guess an install" >&2
+    return 2
+}
+
+# ensure_deps <suite_path> — install a suite's owning package's deps when its
+# node_modules is missing (HIMMEL-3553: a fresh worktree is created with
+# --no-install, so every package but the jira CLI starts with none). No-op
+# (exit 0, silent) for a suite with no package.json ancestor, or one whose
+# node_modules already exists — "no change to suites that need no npm deps".
+# Exit 2 on a missing lockfile or a failed install command: a loud, named
+# failure carrying the package dir and the install command, never a SKIP and
+# never a bare FAIL a leg could mislabel "pre-existing".
+ensure_deps() {
+    local suite="$1" dir cmd rc
+    dir=$(pkg_dir_for "$suite") || return 0
+    [ -d "$dir/node_modules" ] && return 0
+    cmd=$(install_cmd_for "$dir") || { echo "impacted-suites: FAIL_INSTALL ${suite} — no lockfile in ${dir}" >&2; return 2; }
+    echo "impacted-suites: installing deps for ${dir} (${cmd})" >&2
+    rc=0
+    (cd "$dir" && eval "$cmd") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "impacted-suites: FAIL_INSTALL ${suite} — '${cmd}' failed in ${dir} (rc=${rc})" >&2
+        return 2
+    fi
+    echo "impacted-suites: installed deps for ${dir}" >&2
+    return 0
+}
+
+# run_suite <suite_path> — ensure_deps, then run the suite: its own CI runner
+# command for a JS/TS path (via runner_for), or `bash <path>` for a
+# test-*.sh. Propagates ensure_deps's exit 2 (never runs a suite whose deps
+# failed to install) and otherwise the suite's own exit code.
+run_suite() {
+    local path="$1" cmd
+    ensure_deps "$path" || return 2
+    case "$path" in
+        *.test.mjs|*.test.js|*.test.ts)
+            cmd=$(runner_for "$path") || return 2
+            eval "$cmd"
+            return $? ;;
+        *)
+            bash "$path"
+            return $? ;;
+    esac
+}
+
 check=0
 shell_only=0
 range=""
 runner_path=""
 runner_check_mode=0
+run_path=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --check) check=1; shift ;;
@@ -221,6 +319,9 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { echo "impacted-suites.sh: --runner requires a path" >&2; exit 2; }
             runner_path="$2"; shift 2 ;;
         --runner-check) runner_check_mode=1; shift ;;
+        --run)
+            [ "$#" -ge 2 ] || { echo "impacted-suites.sh: --run requires a path" >&2; exit 2; }
+            run_path="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "impacted-suites.sh: unknown flag: $1" >&2; exit 2 ;;
         *)
@@ -243,6 +344,12 @@ if [ "$runner_check_mode" -eq 1 ]; then
     else
         exit 1
     fi
+fi
+if [ -n "$run_path" ]; then
+    top=$(git rev-parse --show-toplevel) || { echo "impacted-suites.sh: not inside a git work tree" >&2; exit 2; }
+    cd "$top" || exit 2
+    run_suite "$run_path"
+    exit $?
 fi
 
 case "$range" in
