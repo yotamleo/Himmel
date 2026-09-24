@@ -409,11 +409,14 @@ deny "config --unset, no -C"                "$W" "git config --unset branch.main
 deny "config set (new syntax), no -C"       "$W" "git config set core.hooksPath x"
 deny "remote add, no -C"                    "$W" "git remote add evil $W"
 deny_any "remote set-url, no -C"            "$W" "git remote set-url origin $W"
-deny "branch -u, no -C"                     "$W" "git branch -u origin/feat/x"
-deny "branch --set-upstream-to, no -C"      "$W" "git branch --set-upstream-to=origin/feat/x"
-deny "branch --unset-upstream, no -C"       "$W" "git branch --unset-upstream"
-deny "branch -f, no -C"                     "$W" "git branch -f other feat/x"
-deny "branch -uorigin/x attached, no -C"    "$W" "git branch -uorigin/feat/x"
+# Round 2 (N4) narrowed these to require an EXPLICIT main/master operand —
+# -u/-f/etc with NO branch name given targets the CURRENT branch, which in a
+# linked worktree is never main, so every row here now names main explicitly.
+deny "branch -u <upstream> main, no -C"     "$W" "git branch -u origin/feat/x main"
+deny "branch --set-upstream-to=<u> main, no -C" "$W" "git branch --set-upstream-to=origin/feat/x main"
+deny "branch --unset-upstream main, no -C"  "$W" "git branch --unset-upstream main"
+deny "branch -f main <start>, no -C"        "$W" "git branch -f main feat/x"
+deny "branch -uorigin/x attached main, no -C" "$W" "git branch -uorigin/feat/x main"
 deny "update-ref refs/heads/main, no -C"    "$W" "git update-ref refs/heads/main HEAD"
 deny "update-ref refs/heads/master, no -C"  "$W" "git update-ref refs/heads/master HEAD"
 deny "symbolic-ref refs/heads/main, no -C"  "$W" "git symbolic-ref refs/heads/main refs/heads/feat/x"
@@ -437,6 +440,26 @@ deny "branch -C <old> main, no -C"          "$W" "git branch -C feat/x main"
 deny "checkout -B main, no -C"              "$W" "git checkout --ignore-other-worktrees -B main"
 deny "switch -C main, no -C"                "$W" "git switch -C main"
 deny "checkout -Bmain attached, no -C"      "$W" "git checkout -Bmain"
+
+echo "== DENY: HIMMEL-3407 adversarial review round 2 =="
+# N1 (bypass): a glued -f<path> is a real git invocation and was not
+# recognised as the file flag at all, so its value was never checked.
+# cwd is a NON-repo directory (/tmp), not the leg worktree: the glued form
+# must be recognised and checked by ITS OWN resolved path regardless of cwd,
+# not fall through to the (here, repo-less and fail-open) common-owner check.
+deny "config -f<glued primary path>, cwd=/tmp" "/tmp" "git config -f$P/.git/config core.hooksPath /x"
+# N2 (fail-open): an unresolvable --file target used to be silently allowed;
+# every other arm denies an unresolved git target, this one now does too.
+deny "config --file \"\$DYNAMIC\", no -C"   "$W" "X=$P/.git/config; git config --file \"\$X\" core.hooksPath /x"
+# N3 (bypass): GIT_CONFIG_GLOBAL/SYSTEM repoint what --global/--system
+# actually write, voiding the scope exemption below.
+deny "GIT_CONFIG_GLOBAL= + config --global, no -C" "$W" "GIT_CONFIG_GLOBAL=$P/.git/config git config --global core.hooksPath /x"
+deny "GIT_CONFIG_SYSTEM= + config --system, no -C" "$W" "GIT_CONFIG_SYSTEM=$P/.git/config git config --system core.hooksPath /x"
+# N5 (cheap): switch's long form of -C, an unambiguous --force abbreviation
+# on branch, and a bundled short cluster on checkout.
+deny "switch --force-create main, no -C"    "$W" "git switch --force-create main"
+deny "branch --move --forc <old> main, no -C" "$W" "git branch --move --forc feat/x main"
+deny "checkout -fB main (bundled), no -C"   "$W" "git checkout -fB main"
 
 echo "== ALLOW: HIMMEL-3407 scope is bounded — ordinary worktree git use keeps working =="
 allow "branch <new>, no -C (no -u/-f)"      "$W" "git branch newbr"
@@ -462,6 +485,19 @@ deny "config --file=<primary>/.git/config, no -C" "$W" "git config --file=$P/.gi
 allow "remote update, no -C"                "$W" "git remote update"
 allow "remote prune origin, no -C"          "$W" "git remote prune origin"
 allow "remote show origin, no -C"           "$W" "git remote show origin"
+
+echo "== ALLOW: HIMMEL-3407 adversarial review round 2 -- N4 false-deny fixes =="
+# N4 (false deny): -u/--set-upstream*/-f/-M/-C implicitly target the CURRENT
+# branch when no branch-name operand is given — in a linked worktree that is
+# always the leg's own feature branch (git refuses to check main out in two
+# worktrees at once), never main. Only an EXPLICIT main/master operand makes
+# any of these dangerous, matching update-ref/symbolic-ref's own scoping.
+allow "branch -u origin/other (implicit target, not main)" "$W" "git branch -u origin/other"
+allow "branch -f other start (no main operand)" "$W" "git branch -f other start"
+allow "branch --set-upstream-to=<u> (implicit target)" "$W" "git branch --set-upstream-to=origin/other"
+allow "branch --unset-upstream (implicit target)" "$W" "git branch --unset-upstream"
+allow "branch -M old new (neither is main)" "$W" "git branch -M oldbr newbr2"
+allow "branch -uorigin/x attached (implicit target)" "$W" "git branch -uorigin/feat/x"
 
 echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="
 for raw in '' 'not json' '[]' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \

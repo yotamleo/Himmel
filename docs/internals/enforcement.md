@@ -1479,6 +1479,36 @@ they stay ordinary) and `checkout -B`/`switch -C` (force-create-or-reset a
 branch to a start-point, the same "move an existing ref" class spelled
 through a different verb) now trigger the check too.
 
+A second adversarial round found five more issues in that round-1 shape,
+against a differential run of this branch's hook vs main's on identical
+payloads:
+- (bypass) a GLUED `-f<path>` (`config -f<primary>/.git/config …`, no space)
+  is a real git invocation and was not recognised as the file flag at all —
+  the same value the separate-token `-f`/`--file` form already captures is
+  now captured from the glued form too.
+- (fail-open) an unresolvable `--file` target (a `"$VAR"` the scanner cannot
+  read) used to be silently allowed; it now denies as an unresolved git
+  target, like every other arm.
+- (bypass) `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` set as an env prefix or
+  export repoint what file `--global`/`--system` actually write, voiding the
+  scope exemption above — a raw substring scan of the clause for either name
+  now withholds the exemption when present (coarse, but only ever adds a
+  check, never removes one).
+- (false deny) `-u`/`--set-upstream-to`/`--unset-upstream`/`-f`/`-M`/`-C`
+  implicitly target the CURRENT branch when no branch-name operand is given
+  — in a linked worktree that is always the leg's own feature branch (git
+  refuses to check main out in two worktrees at once), never main, so `branch
+  -u origin/x` with no third operand is ordinary and matches the
+  already-allowed `push -u`. The branch arm now requires an EXPLICIT
+  `main`/`master` operand, mirroring update-ref/symbolic-ref's own scoping,
+  before any of these flags trigger the check.
+- (cheap) `switch`'s long form of `-C` is `--force-create`, not modelled
+  before; `--forc` (an unambiguous abbreviation of `--force` that real git
+  accepts) is now matched via the same `_bwimc_is_long_abbrev` helper the
+  option-value arms already use; and a BUNDLED short cluster (`checkout -fB
+  main`) is now recognised by scanning for the flag letter anywhere after a
+  leading dash, the same way `_bwimc_opt_scan`'s own `-t` handling works.
+
 Still unmodelled from a linked worktree's own cwd: `tag` and `reflog
 expire|delete` writes, and any other branch create/delete/rename — same
 residual class, narrower now. Spec:
