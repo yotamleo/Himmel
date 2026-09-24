@@ -2247,11 +2247,16 @@ fi
 #   --only pull / update  REFUSE (rc 1) and name the packaged update route; no
 #                         network, no git, no silent no-op
 #   --plugins-check, and the other --only items, need no git and run unchanged.
-# ponytail: the update itself is deferred, not attempted — there is no in-place
-# self-update of a tarball install; the route is the package manager (pacman),
-# or a manual download + sha256 verify + re-extract of the next release tarball.
+# ponytail: the update itself is not attempted here — a tarball install in the
+# versioned layout (<base>/<version>/ + <base>/current, HIMMEL-3059 S4) updates
+# through `himmelctl update` (download, verify, extract, swap current); any
+# other non-git install routes to its package manager or a manual re-extract.
 if [ ! -e "$ROOT/.git" ] && { [ "${1:-}" != "--plugins-check" ] && [ "${1:-}" != "--versions" ] && { [ "${1:-}" != "--only" ] || [ "${2:-}" = "pull" ]; }; }; then
-    NONGIT_ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball from the releases page, verify its sha256 checksum and extract it into a fresh directory (or remove $ROOT first) — extracting over the existing tree keeps files the new release deleted"
+    if [ -L "$(dirname "$ROOT")/current" ] && [ "$(dirname "$ROOT")/current" -ef "$ROOT" ]; then
+        NONGIT_ROUTE="run \`himmelctl update\` — this is a versioned release-tarball install ($(dirname "$ROOT")/current), which it updates by download, sha256 verify, extract into a new version directory and an atomic swap of current"
+    else
+        NONGIT_ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball from the releases page, verify its sha256 checksum and extract it into a fresh directory (or remove $ROOT first) — extracting over the existing tree keeps files the new release deleted"
+    fi
     if [ "${1:-}" != "--check" ] && [ "${1:-}" != "--dry-run" ]; then
         echo "update: $ROOT is not a git checkout (no .git), so there is no upstream to pull — nothing was changed." >&2
         echo "        To update it, $NONGIT_ROUTE." >&2
