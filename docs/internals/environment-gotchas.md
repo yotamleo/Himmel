@@ -1069,11 +1069,12 @@ next reboot. The old kernel's modules directory under `/usr/lib/modules` gets
 replaced by the update, so `modprobe` can no longer load the netfilter modules
 docker needs. Symptom: docker fails to create a network, with errors mentioning
 `iptables` or `nat` — e.g. `nf_nat` failing to load. This looks like a
-docker/iptables bug but is not; do not debug either.
+docker/iptables bug — confirm the diagnosis below before debugging either.
 
 Diagnosis: compare `uname -r` (the running kernel) against `ls
 /usr/lib/modules` (the installed kernels). If the running kernel has no
-matching modules directory, that is the cause.
+matching modules directory, that is the cause; otherwise keep troubleshooting
+docker/iptables normally.
 
 Fix: reboot into the new kernel.
 
