@@ -212,6 +212,16 @@ hasnt "plain: emptied proj/scripts/guardrails is not residue" 'CHECK residue [a-
 hasnt "plain: emptied proj/scripts/lib is not residue" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/proj/scripts/lib'
 hasnt "plain: the ~/.codex directory itself is not residue" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/\.codex —'
 
+# ---- 6d2. HIMMEL-3059 S6: a tarball-installed himmel's own versioned tree
+# ($H/.local/share/himmel, the `current` symlink's target root) is not
+# residue -- the same `himmel-clone` keep the manifest already grants a git
+# checkout, generalized to the tarball identity.
+LSH="$H/.local/share/himmel"
+fresh
+inv C d "$LSH"
+run_assert core 0
+hasnt "plain: the tarball-installed himmel tree is not residue" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/\.local/share/himmel'
+
 # ---- 6d. HIMMEL-3559: --profile all seeds a real vault at $H/luna (the
 # adopter-<scope> profile overlay's .vault.path) -- the operator's own data,
 # never himmel's to remove. It survives uninstall and must not be residue
