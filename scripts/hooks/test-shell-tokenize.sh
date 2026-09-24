@@ -46,7 +46,7 @@ in_sync() {
 sync_into() {
     local tmp blk
     markers_ok "$1" || { echo "sync: $1 lacks exactly one BEGIN/END pair" >&2; return 1; }
-    blk=$(mktemp) && tmp=$(mktemp) || return 1
+    blk=$(mktemp "${TMPDIR:-/tmp}/st-blk.XXXXXX") && tmp=$(mktemp "${TMPDIR:-/tmp}/st-hook.XXXXXX") || return 1
     block "$LIB" > "$blk"
     awk -v b="$BEGIN_LINE" -v e="$END_LINE" -v f="$blk" '
         $0 == b {while ((getline l < f) > 0) print l; skip = 1; next}
@@ -81,7 +81,7 @@ done
 
 # ---- RED control: a one-line change in an inlined copy is caught, and
 # --sync's rewrite repairs it.
-SCRATCH=$(mktemp -d) || exit 1
+SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/st-test.XXXXXX") || exit 1
 trap 'rm -rf "$SCRATCH"' EXIT
 awk -v b="$BEGIN_LINE" '{print} $0 == b {print "# drift"}' "${HOOKS[1]}" > "$SCRATCH/hook.sh"
 if in_sync "$SCRATCH/hook.sh"; then fail "control: a mutated copy is reported in sync"
@@ -135,8 +135,8 @@ check "an unescaped / in the replacement is not inert" "$(sed_inert 's/x/y a/b z
 sed_args() { st_tokenize "$1" >/dev/null; if st_sed_args 0 "$2"; then echo "ok[$ST_SED_SCRIPTS]"; else echo no; fi; }
 check "sed -n script file: script is word 2" "$(sed_args "sed -n 's/a/b/' f" 0)" "ok[ 2]"
 check "sed -e script: script is word 2" "$(sed_args "sed -e 's/a/b/' f" 0)" "ok[ 2]"
-check "sed -i refused when in-place is not allowed" "$(sed_args "sed -i 's/a/b/' f" 0)" no
-check "sed -i accepted when in-place is allowed" "$(sed_args "sed -i 's/a/b/' f" 1)" "ok[ 2]"
+check "sed -i refused when in-place is not allowed" "$(sed_args "sed -i 's/a/b/' f" 0)" no  # gnu-ok: literal tokenizer input, never run
+check "sed -i accepted when in-place is allowed" "$(sed_args "sed -i 's/a/b/' f" 1)" "ok[ 2]"  # gnu-ok: literal tokenizer input, never run
 check "sed -f is refused" "$(sed_args 'sed -f s.sed f' 0)" no
 check "a glob-built sed script is refused" "$(sed_args 'sed s/a/*/ f' 0)" no
 

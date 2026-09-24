@@ -1657,7 +1657,11 @@ against only the shell SEGMENT containing the verb (split on `;`, `&`, `|`,
 `#`, mirroring how a shell itself separates commands), not the whole
 command text, so a chained or commented trailing token cannot spoof the
 mode check and an unrelated later `git` cannot turn a plain
-`checkout.md` read into a match. It then denies when the
+`checkout.md` read into a match. That single-segment check is the
+PowerShell arm's; the Bash arm judges EVERY segment holding a
+tar/unzip/`checkout`/`restore` word, each by that word's own first argument
+(tar case-insensitively), from the shared tokenizer below — so a harmless
+first segment can no longer vouch for a later extraction (HIMMEL-3564). It then denies when the
 mention is live: the cwd is a primary checkout or is in no repo at all; the
 text names the primary root or `$HOME`'s `.claude` (`<home>/.claude`,
 `$HOME/.claude`, `${HOME}/.claude`, `~/.claude`, `~user/.claude`, with or
@@ -1669,6 +1673,22 @@ moves the real target: from `<primary>/.claude/worktrees/<wt>`,
 `../../settings.json` is the primary's file, whatever the verb. Rule 1 lets through a bare
 read (`cat`/`head`/`tail`/`grep`/`rg`/`diff`/`wc`/`less`/`jq`/`git
 diff|show|log|status|blame`) that has no chaining, pipe or redirect.
+
+**The Bash arm tokenizes (HIMMEL-3546, HIMMEL-3564).** A Bash command is split
+by a quote-aware, segment-wise tokenizer — canonical in
+`scripts/hooks/lib/shell-tokenize.sh`, inlined byte-for-byte into this hook and
+`guard-pr-check-literal.sh` (hook-integrity pins launched hooks, not sourced
+libs, so neither sources it; `scripts/hooks/test-shell-tokenize.sh` fails on
+drift and its `--sync` mode rewrites both copies). A quoted `|`, `;` or `>` is
+data, and `2>&1` is a redirect. Rule 1 then allows a chain (`;`, `&&`, `||`,
+`|`, newline) in which every segment is an assignment or one allowlisted read,
+and denies on a substitution, subshell, background `&`, `tee`, `<>`, an output
+redirect other than `/dev/null` or an fd dup, an exported or sensitive
+assignment name, a `$`/glob command word (any `$`/glob word for
+`less`/`git`/`rg`/`sed`), `sed -i`/`-f`/`w`/`e` or a second sed command,
+`rg --pre`, or `less +…`. A command the tokenizer does not model (a heredoc,
+`$'…'`, `case`, an unterminated quote) falls back to the text rules above, and
+the tar/unzip/checkout mode checks fail closed on it.
 
 Word boundaries around the verbs and around `cd` are the **complement of a
 word character**, not a list of shell metacharacters. An enumerated class
@@ -1694,7 +1714,8 @@ worktree-settings mention; any `..` beside a worktree-settings mention
 (`cp ../notes.txt .claude/settings.json`); any `$'` beside a `settings` or
 `claude` substring, even for the worktree's own copy; a `cat >> other.md` whose heredoc
 prose names `settings.json` (the hook does not parse where the bytes land);
-a read of the file piped or redirected onward; and a worktree's own
+a PowerShell read of the file piped or redirected onward (the Bash arm
+allows the read-only chains above); and a worktree's own
 `tar -x -C .claude` extraction (HIMMEL-3499) — tar's `-C` flag shares its
 spelling with the `cd`/`git -C` directory-move signal, which cannot tell
 tar's self-targeting `-C .claude` apart from an unrelated cwd shift.
@@ -2093,7 +2114,16 @@ not a walk of positions: a shell, `source`, `.`, `eval`, a wrapper, `-exec` or
 is a literal path other than `scripts/cr` (`scripts/hooks/*.sh`, `docs/*`,
 `./node_modules/*`) is not a candidate while no `cd` is present, and a bare `*`
 or `{}` is not one while nothing that could run it is present (HIMMEL-3433).
-Mentions (`grep`, `cat`, `git diff`, the test suites) are a no-op. Absolute paths, including the
+Mentions (`grep`, `cat`, `git diff`, the test suites) are a no-op.
+Before the quote-strip, one simple command (no substitution, heredoc, `$'…'`
+or comment) has its provably inert quoted words dropped from the text these
+checks read (HIMMEL-3546): a quoted word with no live `$`, glob or redirect,
+on a command with no `VAR=` prefix, that is an argument of
+`echo`/`printf`/`grep`/`egrep`/`fgrep`/`jq`/`cat`/`head`/`tail`/`wc`, a sed
+script the shared tokenizer verified, or an argument after an unquoted `.sh`
+target whose bytes this hook already checks. The tokenizer is the one
+`block-edit-live-settings.sh` uses (see that section); it reads `2>&1` as a
+redirect, never a separator (HIMMEL-3458). Absolute paths, including the
 anchor's, are a no-op too: no allow rule matches them, and the runbook's
 adopter lane depends on them. (A consequence: a settings allow rule spelled
 `bash "$HIMMEL_REPO/scripts/cr/<script>"` is dead. This hook denies the
