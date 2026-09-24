@@ -64,14 +64,17 @@ himmel's lean floor also carries `plugin-dev`, `agent-sdk-dev`, `hookify`,
 `playground`, and `atlassian` (all NOT INSTALLED) — see the full re-enable
 table in [new-machine.md §6](setup/new-machine.md#lean-profile--disabled-by-default-enable-on-need-himmel-816).
 
-`coderabbit`, `mattpocock-skills` and `superpowers` (all NOT INSTALLED —
-lean-skills vendors the closure this repo actually invokes, see above) are
-also on the lean floor as of HIMMEL-3551, tracked in `enabledPlugins` after
-they were found installed-but-untracked. Same tier, three other-marketplace
-plugins: `ponytail@ponytail`, `scroll-world@scroll-world` and
-`ui-ux-pro-max@ui-ux-pro-max-skill` (all NOT INSTALLED).
+`coderabbit`, `mattpocock-skills` and `superpowers` (installed but
+floor-disabled — lean-skills vendors the closure this repo actually invokes,
+see above) are also on the lean floor as of HIMMEL-3551, tracked in
+`enabledPlugins` after they were found installed-but-untracked. Same tier,
+three other-marketplace plugins: `ponytail@ponytail`, `scroll-world@scroll-world`
+and `ui-ux-pro-max@ui-ux-pro-max-skill` (all installed but floor-disabled).
 
-CodeRabbit is on **neither** tier — the CLI path is retired; the GitHub App
+The `coderabbit` plugin entry above is a Claude Code plugin install, tracked
+for the lean-floor reconcile like any other — it is unrelated to the
+CodeRabbit GitHub App review integration. That integration is on **neither**
+tier — the CLI path is retired; the GitHub App
 is the only CodeRabbit surface himmel uses (HIMMEL-2704).
 
 ---

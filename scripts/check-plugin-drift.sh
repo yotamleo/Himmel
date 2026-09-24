@@ -178,9 +178,9 @@ check_bump_required() {
       echo "ERR check-plugin-drift --bump-required: cannot resolve base ref '$base_ref'" >&2
       return 1
     fi
-    changed="$(git diff --name-only --diff-filter=ACMR "${base_ref}..HEAD" -- "$rel" 2>/dev/null)"
+    changed="$(git diff --name-only --diff-filter=ACMRD "${base_ref}..HEAD" -- "$rel" 2>/dev/null)"
   else
-    changed="$(git diff --cached --name-only --diff-filter=ACMR -- "$rel" 2>/dev/null)"
+    changed="$(git diff --cached --name-only --diff-filter=ACMRD -- "$rel" 2>/dev/null)"
   fi
   if [ -z "$changed" ]; then
     echo "check-plugin-drift --bump-required: no plugin files changed"
@@ -228,6 +228,14 @@ except Exception:
     fi
     if [ "$old_ver" = "$new_ver" ]; then
       echo "ERR check-plugin-drift --bump-required: $name's plugin.json changed but \"version\" is still $old_ver — bump it (HIMMEL-3551)" >&2
+      bad=1
+      continue
+    fi
+    if ! python3 -c 'import sys
+def key(v):
+    return [int(p) if p.isdigit() else p for p in v.replace("-", ".").split(".")]
+sys.exit(0 if key(sys.argv[2]) > key(sys.argv[1]) else 1)' "$old_ver" "$new_ver" 2>/dev/null; then
+      echo "ERR check-plugin-drift --bump-required: $name's plugin.json version went $old_ver -> $new_ver, which is not a bump (HIMMEL-3551)" >&2
       bad=1
     fi
   done <<< "$names"

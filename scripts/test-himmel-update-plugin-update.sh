@@ -124,7 +124,11 @@ rc=0
 out=$(USERPROFILE='' HOME="$fake_home" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub" HERMES_HOME="$TMP/no-hermes" \
       CLAUDE_USER_SETTINGS="$fake_home/.claude/settings.json" \
       bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
-assert_pass "run completed (rc=$rc)"
+if [ "$rc" -eq 0 ]; then
+    assert_pass "run completed (rc=$rc)"
+else
+    assert_fail "run completed (rc=$rc) — out: $out"
+fi
 
 log_content="$(cat "$log")"
 assert_contains "updates codex@openai-codex (floor-disabled but installed)" "plugin update codex@openai-codex" "$log_content"
