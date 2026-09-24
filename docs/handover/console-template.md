@@ -361,11 +361,22 @@ ticket checked by hand.
 Never merge with open review threads, and never read a handoff calling a PR
 clean as evidence — query that PR yourself.
 
+To cut a pre-release tag yourself (HIMMEL-3572), run
+`bash scripts/handover/console-kit/cut-tag.sh <version> <sha>` (`--dry-run`
+first to see the plan) — it creates the tag through the GitHub API, never
+`git tag`, so it needs no operator `!` step. It refuses unless `<sha>` is an
+ancestor of `origin/main`, every check-run at `<sha>` is green, the tag
+doesn't already exist, and `<version>` is the next `v0.3.0-pre.N` in
+sequence (or carries `--version-override <reason>`).
+
 ## Wrapping a leg
 
-On `WRAPPED`: confirm the lock is free at the ROOT sweep, close the leg's
-window (`kill <pid>` from its launch log), and prune ITS worktree once the PR
-is merged: `bash scripts/clean.sh --only <leg-worktree-path>`. Never run the
+On `WRAPPED`: confirm the lock is free at the ROOT sweep, then close the
+leg's window with `bash scripts/handover/console-kit/close-wrapped-leg.sh
+<leg-doc>` (HIMMEL-3572) — it verifies the lock is free and the doc's last
+Results marker is `WRAPPED`, signals the exactly-one live session that
+matches the leg (never a guess), and prunes ITS worktree once the PR is
+merged, all with no operator `!` step. Never run the
 bare `clean.sh` sweep for one leg — it is fleet-wide and removes every merged
 worktree, including another leg's that has merged but not yet wrapped (a live
 `claude` process's cwd is the primary checkout, so nothing marks that

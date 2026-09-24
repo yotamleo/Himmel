@@ -71,6 +71,8 @@
       "Bash(bash scripts/handover/console-kit/tick.sh:*)",
       "Bash(bash scripts/handover/console-kit/headed-arm-leg.sh:*)",
       "Bash(bash scripts/handover/console-kit/inbox-send.sh:*)",
+      "Bash(bash scripts/handover/console-kit/cut-tag.sh:*)",
+      "Bash(bash scripts/handover/console-kit/close-wrapped-leg.sh:*)",
       "Bash(bash scripts/lanes/leg-burn.sh:*)",
       "Bash(bash scripts/lanes/leg-pr-open.sh:*)",
       "Bash(bash scripts/lib/bank-preflight.sh:*)",
