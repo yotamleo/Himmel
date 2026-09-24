@@ -1562,6 +1562,16 @@ doc66A="$root/tester/cleanenv66/DEMO-nextleg-${today}A-console.md"
 
 cat > "$tmp/stub-arm-66.sh" <<STUB
 #!/usr/bin/env bash
+# HIMMEL-3568: dump whether each scrubbed name is still SET in this child's
+# own environment (not just absent from headed-arm.sh's printed output) --
+# the console's ruling asked for direct evidence on the child process, since
+# a text-scan of argv/output cannot tell "unset" from "set to a value that
+# happens not to print".
+{
+    printf 'LEG_PROFILE_SETTINGS=%s\n' "\${LEG_PROFILE_SETTINGS+set}"
+    printf 'HIMMEL_CONSOLE_LEG=%s\n' "\${HIMMEL_CONSOLE_LEG+set}"
+    printf 'HEADED_ARM_REQUIRED_AUTOCOMPACT=%s\n' "\${HEADED_ARM_REQUIRED_AUTOCOMPACT+set}"
+} > "$tmp/child-env-66.txt"
 exec "$REPO_REAL/scripts/handover/headed-arm.sh" --dry-run "\$@"
 STUB
 chmod +x "$tmp/stub-arm-66.sh"
@@ -1599,6 +1609,12 @@ check "66 dry-run resolves the real launcher, not the leaked shim; recorder not 
     "$(printf '%s\n' "$out66b" | grep -c '^headed-arm: launcher=claude recorder=0 ')" "1"
 check "66 no leaked leg-profile value reaches the armed console's argv/env" \
     "$(printf '%s\n' "$out66b" | grep -c 'leaked-66')" "0"
+check "66 armed child's OWN environment still lacks LEG_PROFILE_SETTINGS (not just unprinted)" \
+    "$(grep -c '^LEG_PROFILE_SETTINGS=set$' "$tmp/child-env-66.txt")" "0"
+check "66 armed child's OWN environment still lacks HIMMEL_CONSOLE_LEG (not just unprinted)" \
+    "$(grep -c '^HIMMEL_CONSOLE_LEG=set$' "$tmp/child-env-66.txt")" "0"
+check "66 armed child's OWN environment still lacks HEADED_ARM_REQUIRED_AUTOCOMPACT (not just unprinted)" \
+    "$(grep -c '^HEADED_ARM_REQUIRED_AUTOCOMPACT=set$' "$tmp/child-env-66.txt")" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc66A" "$token66a" >/dev/null 2>&1
 
 # --- 67: HIMMEL-3568 sync -- console_context_leg_env_unset_names must name
