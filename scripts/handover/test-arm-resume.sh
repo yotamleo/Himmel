@@ -813,7 +813,16 @@ fi
 #     slot and flow a concrete date into the scheduler line. SLOT_MAX_AGE=0
 #     skips the freshness guard; --force --dry-run isolates from the live
 #     scheduler dedup and touches nothing.
-# ---------------------------------------------------------------------------
+#
+# HIMMEL-3554: ARM_COLLISION_CANDIDATES="" on every call in this section
+# pins check_collision()'s HIMMEL-407 exact-minute check to an empty set.
+# Without it, check_collision shells out to the REAL `crontab -l` on Linux
+# (its only fail-safe test seam), so the "smart" slot -- whose HH:MM tracks
+# this station's real wall clock via SEVEN_RESET -- can exact-match one of
+# this station's own scheduled HIMMEL-* cadence jobs (several cluster in the
+# UTC 00:00-06:40 band) and HARD-REFUSE (rc=6). T9b2 is the only case here
+# that asserts rc=0 without --force, so it was the only one able to surface
+# the flake; the others silently demoted an exact hit to a WARN via --force.
 if _sec_selected "T9" "T9b" "T9b2" "T9c" "T9d"; then
 HO=$(make_handover "$WORK_REPO")
 SLOT_CACHE="$TMP/usage-free.json"
@@ -822,7 +831,7 @@ SEVEN_RESET=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime
 printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":15.0,"resets_at":"%s"}}' \
     "$FIVE_RESET" "$SEVEN_RESET" > "$SLOT_CACHE"
 # HIMMEL-966: host `at` must not be a dependency; pin the posix backend with the stub.
-out=$(RESUME_SLOT_CACHE="$SLOT_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
+out=$(ARM_COLLISION_CANDIDATES="" RESUME_SLOT_CACHE="$SLOT_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T9 --time smart exits 0 (force+dry)" 0 "$rc"
 assert_contains "T9 smart banner shows bank-free ASAP" "smart -> " "$out"
@@ -853,7 +862,7 @@ HO=$(make_handover "$WORK_REPO")
 BUSY_CACHE="$TMP/usage-95.json"
 printf '{"five_hour":{"utilization":10.0,"resets_at":"%s"},"seven_day":{"utilization":95.0,"resets_at":"%s"}}' \
     "$FIVE_RESET" "$SEVEN_RESET" > "$BUSY_CACHE"
-out=$(RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(ARM_COLLISION_CANDIDATES="" RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
     bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T9b default-wall park refuses fast (rc=19, HIMMEL-2113)" 19 "$rc"
@@ -861,7 +870,7 @@ assert_contains "T9b ERR names the park time + reason" "wait for seven-day reset
 assert_contains "T9b ERR names the --long-gap override" "--long-gap" "$out"
 
 HO=$(make_handover "$WORK_REPO")
-out=$(RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(ARM_COLLISION_CANDIDATES="" RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
     bash "$ARM" --time smart --handover "$HO" --force --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "T9b1 --long-gap overrides the park refusal (rc=0)" 0 "$rc"
@@ -874,14 +883,14 @@ assert_contains "T9b1 95% is exhausted under the shipped 90 default" "wait for s
 # --long-gap, so a future edit that dropped this exemption from the rc=19
 # guard (while keeping it on rc=9) would silently strand them parked.
 HO=$(make_handover "$WORK_REPO")
-out=$(ARM_RESUME_SAFETY_ARM=1 RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(ARM_COLLISION_CANDIDATES="" ARM_RESUME_SAFETY_ARM=1 RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
     bash "$ARM" --time smart --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T9b2 ARM_RESUME_SAFETY_ARM=1 exempts the park refusal, no --long-gap/--force (rc=0)" 0 "$rc"
 assert_contains "T9b2 95% is exhausted under the shipped 90 default" "wait for seven-day reset" "$out"
 
 HO=$(make_handover "$WORK_REPO")
-out=$(RESUME_SLOT_THRESHOLD=97 RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(ARM_COLLISION_CANDIDATES="" RESUME_SLOT_THRESHOLD=97 RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
     bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T9c env-97 wall exits 0" 0 "$rc"
@@ -896,7 +905,7 @@ assert_contains "T9c child applied the env threshold, not 90" "< 97%" "$out"
 HO=$(make_handover "$WORK_REPO")
 NEAR_CACHE="$TMP/usage-96.json"
 printf '{"five_hour":{"utilization":6.0,"resets_at":"%s"},"seven_day":{"utilization":96.0,"resets_at":"%s"}}'     "$FIVE_RESET" "$SEVEN_RESET" > "$NEAR_CACHE"
-out=$(RESUME_SLOT_THRESHOLD=97 RESUME_SLOT_CACHE="$NEAR_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH"     bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
+out=$(ARM_COLLISION_CANDIDATES="" RESUME_SLOT_THRESHOLD=97 RESUME_SLOT_CACHE="$NEAR_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH"     bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T9d 96% under env-97 still arms ASAP (rc 0)" 0 "$rc"
 assert_contains "T9d slot is ASAP by the rule" "bank free" "$out"

@@ -174,7 +174,15 @@ fi
 # tracked, so the invoking checkout's copy is the routing config actually
 # under test on that branch.
 # ---------------------------------------------------------------------------
-primary_root=$(git -C "$hook_dir" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p;1q')
+# A here-string, not `producer | sed -n '...;1q'`: sed's early quit on line 1
+# has no live writer process to SIGPIPE once the producer's output is already
+# captured (same class as HIMMEL-1115/check-platforms-tested.sh) — with many
+# worktrees registered, git's porcelain output can exceed the pipe buffer,
+# and `set -euo pipefail` above then promotes git's SIGPIPE exit (141) into
+# the script's own exit code, killing this hook before it ever evaluates a
+# call (HIMMEL-3555).
+worktree_porcelain=$(git -C "$hook_dir" worktree list --porcelain 2>/dev/null) || worktree_porcelain=""
+primary_root=$(sed -n 's/^worktree //p;1q' <<<"$worktree_porcelain")
 if [ -z "$primary_root" ] || [ ! -d "$primary_root" ]; then
     primary_common_dir=$(git -C "$hook_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
     if [ -n "$primary_common_dir" ]; then
