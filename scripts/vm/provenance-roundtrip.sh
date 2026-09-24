@@ -313,14 +313,20 @@ if [ "$INSTALL_FROM" = tarball ] || [ "$INSTALL_FROM" = aur ]; then
         cat >"$HOST_TMP/aur-setup.sh" <<'AURSETUP'
 #!/usr/bin/env bash
 set -euo pipefail
-GHOME="$1" ASSET="$2" PKGVER="$3" SUM="$4"
+GHOME="$1" ASSET="$2" PKGVER="$3" SUM="$4" TAG="$5"
 pacman -Syu --noconfirm --needed git jq nodejs python sudo cronie
 useradd -m -d "$GHOME" builder
 echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
 mkdir -p /build/pkg
 cp /art/PKGBUILD /art/himmel.install "/art/$ASSET" "/art/$ASSET.sha256" /build/pkg/
+# _tag normally reconstructs from pkgver via the "pre" substitution (real
+# releases only), which does nothing for a dashless rt-sha pkgver -- so _tag
+# would stay dashless while the tarball's own top-level dir keeps the dash
+# build-tarball.sh was given. Pin _tag straight to that dir name instead of
+# relying on the substitution to invert a string it does not recognize.
 sed -i \
     -e "s|^pkgver=.*|pkgver=$PKGVER|" \
+    -e "s|^_tag=.*|_tag=\"$TAG\"|" \
     -e "s|^source=.*|source=(\"$ASSET\")|" \
     -e "s|^sha256sums=.*|sha256sums=('$SUM')|" \
     /build/pkg/PKGBUILD
@@ -328,7 +334,7 @@ chown -R builder /build/pkg
 AURSETUP
         echo "[step] container-setup"
         if ! "$RUNTIME" cp "$HOST_TMP/aur-setup.sh" "$CONTAINER:/root/aur-setup.sh" \
-            || ! "$RUNTIME" exec "$CONTAINER" bash /root/aur-setup.sh "$GHOME" "$ASSET" "$AUR_PKGVER" "$SUM"; then
+            || ! "$RUNTIME" exec "$CONTAINER" bash /root/aur-setup.sh "$GHOME" "$ASSET" "$AUR_PKGVER" "$SUM" "$VERSION"; then
             fail "step container-setup failed"
         fi
         step makepkg "cd /build/pkg && makepkg -si --noconfirm --nocolor >/tmp/makepkg.log 2>&1; rc=\$?; sed 's/^/[makepkg-log] /' /tmp/makepkg.log; exit \$rc"
