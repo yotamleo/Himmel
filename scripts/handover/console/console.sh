@@ -204,12 +204,24 @@ do_arm() {
     # the environment is ignored.
     mkdir -p "$(dirname "$log")"
     arm="${CONSOLE_HEADED_ARM:-$HERE/../headed-arm.sh}"
+    # HIMMEL-3568: this process itself may BE a leg (console.sh next --arm run
+    # from inside one) -- a leg's own profile/launcher env stays live in its
+    # shell for its whole session (see console_context_leg_env_unset_names),
+    # and headed-arm.sh would otherwise resolve its ${HEADED_ARM_*:-default}
+    # fallbacks and leg-profile vars from that leaked env. Strip the whole
+    # canonical set before it ever runs, so a fresh console always arms clean
+    # regardless of what launched the process running this script.
+    local -a leg_env_unset=()
+    local leg_env_name
+    for leg_env_name in $(console_context_leg_env_unset_names); do
+        leg_env_unset+=(-u "$leg_env_name")
+    done
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
-        bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
+        env "${leg_env_unset[@]}" bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
-        setsid nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        setsid nohup env "${leg_env_unset[@]}" bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     else
-        nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        nohup env "${leg_env_unset[@]}" bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     fi
     echo "armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
     echo "arm-log: $log"

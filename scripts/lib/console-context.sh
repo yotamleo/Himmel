@@ -39,6 +39,9 @@
 #   console_context_write_record <session> <mode> <source> <autocompact>
 #                                             -- appends the durable launch-context
 #                                                row (HIMMEL-3279/3282), rc 0 iff written
+#   console_context_leg_env_unset_names      -- prints, one per line, every var a
+#                                                leg sets on itself that must never
+#                                                reach a console it arms (HIMMEL-3568)
 
 console_context_valid() {
     case "$1" in
@@ -162,4 +165,41 @@ console_context_write_record() {
         printf 'headed-arm: role=console session=%s context=%s source=%s autocompact=%s launched=%s\n' \
             "$1" "$2" "$3" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             >> "$CONSOLE_CONTEXT_RECORD_DIR/$1.log" ) 2>/dev/null
+}
+
+# console_context_leg_env_unset_names -- prints, one per line, every env var
+# name scripts/handover/console-kit/headed-arm-leg.sh sets on a leg itself,
+# via leg_propagate_env (crosses macOS's `open -a` boundary too) or a plain
+# `export` (crosses via ordinary fork/exec inheritance to every descendant of
+# the long-running leg process, not just its immediate child). A leg's own
+# shell keeps every one of these live for its whole session, so a later
+# `console.sh next --arm` run from inside that shell inherits them unless the
+# caller strips this exact set first (HIMMEL-3568) -- do_arm() in console.sh
+# is that caller. headed-arm-leg.sh is read-only (HIMMEL-3545 is queued on it
+# separately); test-console.sh asserts this list still names every
+# `leg_propagate_env NAME` call site there, so a name added to that file
+# without a matching line here fails the sync test instead of leaking silently.
+console_context_leg_env_unset_names() {
+    printf '%s\n' \
+        HANDOVER_DIR \
+        CR_TRIGGER_SUPPRESS \
+        IMPL_GUARD_OK \
+        INLINE_IMPL_OK \
+        HIMMEL_CONSOLE_LEG \
+        HIMMEL_CONSOLE_NAME \
+        HIMMEL_READ_CLAMP_LINES \
+        HIMMEL_CONSOLE_RELAY \
+        CLAUDE_CODE_EFFORT_LEVEL \
+        CLAUDEX_LANE_OK \
+        LEG_PROFILE_SETTINGS \
+        LEG_PROFILE_PREFACE \
+        LEG_PROFILE_MCP_CONFIG \
+        LEG_CLAUDE_BIN \
+        HIMMEL_LEAN_LEG \
+        LEG_EFFORT \
+        HEADED_ARM_UNAME \
+        HEADED_ARM_REQUIRED_AUTOCOMPACT \
+        HEADED_ARM_LAUNCHER \
+        HEADED_ARM_RECORDER \
+        HEADED_ARM_LAUNCHER_ENV
 }
