@@ -234,6 +234,14 @@ plugin_preexisted() {   # <spec> — the scope's enabledPlugins, or (user scope)
 }
 marketplace_preexisted() {   # <name> — this scope's settings, or the CLI's user-level registry (a marketplace is global)
   settings_declares extraKnownMarketplaces "$1" && return 0
+  # HIMMEL-3556: the two global signals below (marketplaces dir, known_marketplaces.json)
+  # are scope-independent, so a same-round second-scope check would otherwise see
+  # THIS run's own earlier-scope registration and misread it as pre-existing —
+  # mirroring HIMMEL-3541's plugin_preexisted() fix, but via the ledger (a
+  # marketplace carries no per-entry .scope field to filter to). A prior register
+  # row for this unit with preexisted=false means we put it there, not the
+  # operator, so the global signals below don't count as fresh evidence.
+  prov_ledger_registered_ours marketplace "$1" && return 1
   [[ -d "$PROV_CFG_DIR/plugins/marketplaces/$1" ]] && return 0
   # shellcheck disable=SC2016  # $a/$b are jq variables (--arg), not shell expansions
   json_declares "$PROV_CFG_DIR/plugins/known_marketplaces.json" 'has($a)' "$1"

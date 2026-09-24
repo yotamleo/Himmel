@@ -93,6 +93,52 @@ prov_last_himmel_root() {
     printf '%s\n' "$root"
 }
 
+# prov_ledger_registered_ours <kind> <unit> [ledger-path] -- rc=0 iff, since
+# the most recent wet uninstall-begin row (or since the ledger's start, if
+# none), the ledger holds a register row for this kind+unit with
+# preexisted=false -- i.e. himmel itself put it there in the current round
+# (an earlier scope in this same round, or an earlier run that nothing has
+# uninstalled since) rather than the operator. A raw scan, like
+# prov_last_himmel_root -- for a kind whose install-time state is scope-
+# independent (a marketplace: one shared known_marketplaces.json / marketplaces
+# dir regardless of --scope), a same-round second-scope pre-existence check
+# can't otherwise tell "we just registered this at the other scope" from "the
+# operator already had it" (HIMMEL-3556).
+#
+# The uninstall-begin boundary (not uninstall-end) is deliberate: a halted
+# uninstall still retires every register row before it, so at worst a
+# leftover marketplace reads as pre-existing again (the pre-3556 behavior,
+# fail-safe) -- it never lets a stale row cause an operator's marketplace to
+# be removed. A register row this run just wrote is always after the
+# boundary it itself may have crossed, since prov_read_session_begin (the
+# uninstall-begin writer) and marketplace_preexisted's caller never run in
+# the same process.
+#
+# ponytail: a standalone `uninstall-plugins.sh` invocation (run directly,
+# bypassing uninstall.sh -- scripts/machine-setup/test-uninstall-plugins-scope.sh
+# drives exactly this path) writes no uninstall-begin row at all, so a
+# marketplace it removes and an operator then manually re-adds would still
+# read as ours on the next install via this scan. Upgrade path: give
+# uninstall-plugins.sh its own minimal session marker if standalone
+# invocation becomes a documented operator workflow rather than a test/
+# rescue-only path.
+prov_ledger_registered_ours() {
+    local kind="$1" unit="$2" ledger="${3:-}" found
+    [ -n "$ledger" ] || ledger=$(prov_ledger_path) || return 1
+    [ -r "$ledger" ] || return 1
+    found=$(jq -R -s -r --arg k "$kind" --arg u "$unit" '
+        split("\n") | map(select(length>0))
+        | map(try fromjson catch null)
+        | map(select(. != null))
+        | to_entries
+        | (map(select(.value.op=="uninstall-begin")) | map(.key) | max // -1) as $last_ub
+        | map(select(.key > $last_ub and .value.op=="register"
+              and .value.kind==$k and .value.unit==$u and .value.preexisted==false))
+        | length > 0
+    ' "$ledger" 2>/dev/null)
+    [ "$found" = "true" ]
+}
+
 # _prov_canon_partial <path> -- canon_path_partial, except that climbing to a
 # Windows drive stops at the drive ROOT (C:/), never at the bare `C:` (= the
 # drive's current directory).
