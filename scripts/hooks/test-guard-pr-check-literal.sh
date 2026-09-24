@@ -309,6 +309,49 @@ run 'literal $HIMMEL_REPO/ prefix, edited branch -> still allow (anchor spelling
 run 'literal ${HIMMEL_REPO}/ braced prefix, edited branch -> still allow' 0 \
     "$(payload 'bash "${HIMMEL_REPO}/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/handover/merge-on-green.sh
+# The exemption is general (not handover-specific): a clean scripts/cr/
+# target and go.sh through the same literal prefix must also allow.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal $HIMMEL_REPO/ prefix onto a scripts/cr/ target -> allow' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal $HIMMEL_REPO/ prefix onto go.sh -> allow' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/handover/console-kit/go.sh"' "$WT")" "$HR"
+
+# ---- console-O NO-GO round 2: the exemption must not survive a re-point ------
+# A `$HIMMEL_REPO` re-point earlier in the SAME command, any wrapper, or any
+# separator must still deny - the exemption is sound only when HIMMEL_REPO
+# is the command's sole reference to itself, on a genuinely single simple
+# command (finding 1). A quoted or backslash-escaped `$HIMMEL_REPO` never
+# expands either, so it must deny too, decided from the RAW command text,
+# never the quote-stripped one (finding 2).
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'HIMMEL_REPO re-pointed with export; before the literal prefix -> deny' 2 \
+    "$(payload 'export HIMMEL_REPO=.; bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'bare HIMMEL_REPO=. before the literal prefix -> deny' 2 \
+    "$(payload 'HIMMEL_REPO=.; bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'env HIMMEL_REPO=. wrapper around the literal prefix -> deny' 2 \
+    "$(payload "env HIMMEL_REPO=. bash -c 'bash \"\$HIMMEL_REPO/scripts/cr/pr-check-context.sh\"'" "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'source before the literal prefix (compound) -> deny' 2 \
+    "$(payload 'source /dev/null; bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "single-quoted \$HIMMEL_REPO never expands -> deny" 2 \
+    "$(payload 'bash '"'"'$HIMMEL_REPO/scripts/cr/pr-check-context.sh'"'"'' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'backslash-escaped $HIMMEL_REPO never expands -> deny' 2 \
+    "$(payload 'bash \$HIMMEL_REPO/scripts/cr/pr-check-context.sh' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `${HIMMEL_REPO:-.}` text, never expanded here
+run '${HIMMEL_REPO:-.} default-value form is not the plain prefix -> deny' 2 \
+    "$(payload 'bash "${HIMMEL_REPO:-.}/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO_X` text, never expanded here
+run '$HIMMEL_REPO_X is a different variable, not a prefix match -> deny' 2 \
+    "$(payload 'bash "$HIMMEL_REPO_X/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal prefix followed by a second scripts/cr/ command -> deny (compound)' 2 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"; bash scripts/cr/review-round.sh start --branch feat/x' "$WT")" "$HR"
 
 # ---- console-O NO-GO finding 2: go.sh's own sibling-sourced libs -------------
 # go.sh sources scripts/lib/go-gate.sh and scripts/lib/handover-path.sh via a

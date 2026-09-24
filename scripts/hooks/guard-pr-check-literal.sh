@@ -395,6 +395,57 @@ done <<<"$simple"
 [[ "$flat" =~ -(exec|execdir|ok|okdir)[[:space:]]+[^[:space:]]*\{\} ]] && bare_runs=1
 [ "$runs" -eq 1 ] || exit 0
 
+# HIMMEL-3437 console NO-GO round 2: a "$HIMMEL_REPO/..." word is the anchor
+# spelling ONLY when the whole command is genuinely one simple command (no
+# separator, so nothing later in it can re-point the variable or hide a
+# second command behind it), carries no wrapper or VAR= assignment anywhere
+# ($wrapped, already computed above - a re-point earlier in the SAME command,
+# `HIMMEL_REPO=.; bash "$HIMMEL_REPO/..."`, must still deny), and HIMMEL_REPO
+# is referenced exactly once, in exactly that shape. Decided from the RAW,
+# unstripped $cmd - never $flat - so a single-quoted or backslash-escaped
+# `$HIMMEL_REPO` (which a real shell never expands either) is never exempted:
+# that spells a literal path through a directory a branch could create.
+himmel_anchor_prefix=0
+case "$flat" in
+    *[\;\&\|\(\)\<\>\`]*|*$'\n'*) ;;
+    *)
+        if [ "$wrapped" -eq 0 ]; then
+            case "$cmd" in
+                *HIMMEL_REPO*)
+                    rest=$cmd
+                    n=0
+                    while :; do
+                        case "$rest" in *HIMMEL_REPO*) ;; *) break ;; esac
+                        n=$((n + 1))
+                        rest=${rest#*HIMMEL_REPO}
+                    done
+                    if [ "$n" -eq 1 ]; then
+                        before=${cmd%%HIMMEL_REPO*}
+                        after=${cmd#*HIMMEL_REPO}
+                        # shellcheck disable=SC1003,SC2016 # literal backslash/quote/brace match, not an escape
+                        case "$before" in
+                            *'$')
+                                head=${before%?}
+                                case "$head" in
+                                    *'\'|*"'") ;;
+                                    *) case "$after" in /*) himmel_anchor_prefix=1 ;; esac ;;
+                                esac
+                                ;;
+                            *'${')
+                                head=${before%??}
+                                case "$head" in
+                                    *'\'|*"'") ;;
+                                    *) case "$after" in '}'/*) himmel_anchor_prefix=1 ;; esac ;;
+                                esac
+                                ;;
+                        esac
+                    fi
+                    ;;
+            esac
+        fi
+        ;;
+esac
+
 # glob_is_literal_elsewhere <raw-token> <normalised> - a glob operand that
 # cannot name a target (HIMMEL-3433): its directory part is literal (no glob,
 # brace, $, ~, .., // or /./) and is not scripts/cr, or it is a bare * (or
@@ -449,9 +500,11 @@ unresolved=""
 # Absolute words keep their case (an adopter's /Users/... anchor path).
 for word in $flat; do
     case "$word" in *[cC][rR]/*|*[hH]andover/*) ;; *) continue ;; esac
-    # shellcheck disable=SC2016 # literal text match, never expanded
+    if [ "$himmel_anchor_prefix" -eq 1 ]; then
+        # shellcheck disable=SC2016 # literal text match, never expanded
+        case "$word" in '$HIMMEL_REPO/'*|'${HIMMEL_REPO}/'*) continue ;; esac
+    fi
     case "$word" in
-        '$HIMMEL_REPO/'*|'${HIMMEL_REPO}/'*) ;;
         *[][*?~\$\(\`]*|*'{'*|*'}'*) hit=1; unresolved=$word ;;
         /*) ;;
         *[[:upper:]]*) hit=1; unresolved=$word ;;
@@ -460,8 +513,11 @@ done
 entries=""
 hentries=""
 for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
-    # shellcheck disable=SC2016 # literal text match, never expanded
-    case "$tok" in /*|'~'*|'$HIMMEL_REPO/'*|'${HIMMEL_REPO}/'*) continue ;; esac
+    if [ "$himmel_anchor_prefix" -eq 1 ]; then
+        # shellcheck disable=SC2016 # literal text match, never expanded
+        case "$tok" in '$HIMMEL_REPO/'*|'${HIMMEL_REPO}/'*) continue ;; esac
+    fi
+    case "$tok" in /*|'~'*) continue ;; esac
     case "$tok" in
         *'$'[A-Za-z_'{']*) [ "$mentions" -eq 0 ] || { hit=1; unresolved=$tok; } ;;
     esac
@@ -523,10 +579,14 @@ for e in $hentries; do
     esac
     GUARDED="$GUARDED $e"
     # HIMMEL-3437 console finding 2: go.sh sources these two siblings via its
-    # own $HERE (branch-relative), unlike merge-on-green.sh, which resolves
-    # every helper it sources from the POST-hand-off $himmel_repo - so only
-    # go.sh's own copies of them can run unseen, and only they need listing
-    # here alongside its entry + the hand-off it shares with scripts/cr/.
+    # own $HERE. Once entry + the hand-off it shares with scripts/cr/ byte-
+    # match the anchor's, the hand-off's own `exec` fully replaces the
+    # process before $HERE (or either sibling) is ever read, landing $HERE
+    # in the ANCHOR's own console-kit/ - a branch's edited siblings are
+    # provably never read (verified empirically with a toy fixture, not
+    # just reasoned). Listed anyway as defence in depth: for an anchor
+    # predating #1212 (no hand-off wired yet) and for N463's upcoming
+    # go.sh/go-gate.sh touch.
     case "$e" in
         scripts/handover/console-kit/go.sh)
             GUARDED="$GUARDED scripts/lib/go-gate.sh scripts/lib/handover-path.sh" ;;
