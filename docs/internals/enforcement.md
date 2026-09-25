@@ -1075,6 +1075,17 @@ Out-of-Place Publication and so parked the leg. Guards:
   `guard-pr-check-literal.sh`). The docs-audit lane's `origin/main..<head>`
   range is not accepted.
 
+**In practice, spell the `--check` submission with the `/`-rooted anchor path
+(`bash "<himmel_dir>/scripts/cr/impacted-suites.sh" --check … <<'IMPACTED_EOF'`),
+never the bare relative one (HIMMEL-3587).** This grant sits in
+`auto-approve-safe-bash.sh` and covers both spellings, but
+`guard-pr-check-literal.sh` runs in the same PreToolUse chain and denies the
+relative spelling of the heredoc form at its own "one simple command" check —
+a heredoc carries a `<` and a newline, so `bash scripts/cr/impacted-suites.sh
+--check <sha>..<sha> <<'IMPACTED_EOF' …` is refused there before this grant is
+ever reached, parking the leg. The no-heredoc listing command
+(`bash <path> <40hex>..<40hex>`) has no heredoc and is not affected either way.
+
 It fails toward a prompt, never toward approval. Spec:
 `scripts/hooks/test-auto-approve-safe-bash.sh`.
 

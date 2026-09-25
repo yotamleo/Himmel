@@ -416,7 +416,7 @@ Steps:
    - `SUITE <path> = SKIP <reason>` — it was not run, and the reason names WHY it does not apply to this diff (a host that lacks the tool, a suite that cannot exercise the changed lines). A bare `SKIP` is not a verdict.
    - `SUITE <path> = BLOCKED <denial>` — it could not be run, and the denial quotes the refusal (a hook/permission text, a lock wait that expired). Route the BLOCKED to your console/operator; it is not clean either, only *accounted for*: `--check` exits 3 on it, so the row stays open until the console/operator rules (re-run the suite, or re-record it `SKIP <reason>` quoting the ruling).
 
-   Then submit them. The heredoc delimiter is quoted so the pasted lines stay inert; write `<path>` and the reason as printed, one line per suite:
+   Then submit them. The heredoc delimiter is quoted so the pasted lines stay inert; write `<path>` and the reason as printed, one line per suite. **Keep the `<himmel_dir>` anchor spelling exactly as shown below — never a bare relative `bash scripts/cr/impacted-suites.sh`.** `guard-pr-check-literal.sh` denies the relative spelling of this heredoc at its "one simple command" check (a heredoc carries a `<` and a newline), parking the leg before `auto-approve-safe-bash.sh`'s grant is ever reached (HIMMEL-3587; see `docs/internals/enforcement.md`'s Third exception):
 
    ```bash
    bash "<himmel_dir>/scripts/cr/impacted-suites.sh" --check <db_sha>..<head> <<'IMPACTED_EOF'
