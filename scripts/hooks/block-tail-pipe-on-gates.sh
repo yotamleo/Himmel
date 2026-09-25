@@ -471,8 +471,10 @@ invoked_program() {
                     # value token to be misread as the invoked program. An
                     # abbreviation can ALSO carry its value attached (`--us=root`,
                     # same as the full `--user=root`) — that value is already
-                    # part of THIS token, so only a bare `--us`/`--user` (no `=`,
-                    # GUARD_LOPT_VAL empty) consumes a separate next word (panel
+                    # part of THIS token, so only a bare `--us`/`--user` (no `=`
+                    # at all, GUARD_LOPT_HAS_EQ=0 — NOT `[ -n GUARD_LOPT_VAL ]`,
+                    # which cannot tell "no =" from "=<empty>" like `--prompt=`,
+                    # panel r15 codex-1) consumes a separate next word (panel
                     # r14, codex-1: the unconditional skip_next stepped over the
                     # gate command itself on the attached-value spelling).
                     case $stripped in
@@ -487,7 +489,7 @@ invoked_program() {
                                 || guard_is_long_abbrev "chroot" "$stripped" \
                                 || guard_is_long_abbrev "command-timeout" "$stripped" \
                                 || guard_is_long_abbrev "other-user" "$stripped"; then
-                                [ -n "$GUARD_LOPT_VAL" ] || skip_next=1
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;
                     esac ;;
@@ -503,7 +505,7 @@ invoked_program() {
                                 || guard_is_long_abbrev "chdir" "$stripped" \
                                 || guard_is_long_abbrev "split-string" "$stripped" \
                                 || guard_is_long_abbrev "argv0" "$stripped"; then
-                                [ -n "$GUARD_LOPT_VAL" ] || skip_next=1
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;
                     esac ;;
@@ -512,7 +514,7 @@ invoked_program() {
                         -n) skip_next=1; continue ;;
                         --*)
                             if guard_is_long_abbrev "adjustment" "$stripped"; then
-                                [ -n "$GUARD_LOPT_VAL" ] || skip_next=1
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;
                     esac ;;
@@ -522,7 +524,7 @@ invoked_program() {
                         --*)
                             if guard_is_long_abbrev "signal" "$stripped" \
                                 || guard_is_long_abbrev "kill-after" "$stripped"; then
-                                [ -n "$GUARD_LOPT_VAL" ] || skip_next=1
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;
                     esac ;;
@@ -538,7 +540,7 @@ invoked_program() {
                                 || guard_is_long_abbrev "arg-file" "$stripped" \
                                 || guard_is_long_abbrev "max-chars" "$stripped" \
                                 || guard_is_long_abbrev "eof" "$stripped"; then
-                                [ -n "$GUARD_LOPT_VAL" ] || skip_next=1
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;
                     esac ;;
@@ -554,7 +556,7 @@ invoked_program() {
                         --*)
                             if guard_is_long_abbrev "format" "$stripped" \
                                 || guard_is_long_abbrev "output" "$stripped"; then
-                                [ -n "$GUARD_LOPT_VAL" ] || skip_next=1
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;
                     esac ;;

@@ -822,7 +822,7 @@ _clause_head_idx() {
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
                         --*)
                             if guard_is_long_abbrev "unset" "$w"; then
-                                if [ -n "$GUARD_LOPT_VAL" ]; then i=$((i+1)); else i=$((i+2)); fi
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
                             fi ;;
@@ -843,7 +843,7 @@ _clause_head_idx() {
                         -k|-s)                    i=$((i+2)) ;;
                         --*)
                             if guard_is_long_abbrev "kill-after" "$w" || guard_is_long_abbrev "signal" "$w"; then
-                                if [ -n "$GUARD_LOPT_VAL" ]; then i=$((i+1)); else i=$((i+2)); fi
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
                             fi ;;
@@ -874,7 +874,7 @@ _clause_head_idx() {
                                 || guard_is_long_abbrev "other-user" "$w" || guard_is_long_abbrev "prompt" "$w" \
                                 || guard_is_long_abbrev "close-from" "$w" || guard_is_long_abbrev "role" "$w" \
                                 || guard_is_long_abbrev "type" "$w" || guard_is_long_abbrev "host" "$w"; then
-                                if [ -n "$GUARD_LOPT_VAL" ]; then i=$((i+1)); else i=$((i+2)); fi
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
                             fi ;;

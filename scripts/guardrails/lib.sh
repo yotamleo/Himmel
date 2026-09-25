@@ -484,14 +484,20 @@ guard_cmdpos_grammar() {
 
 # guard_long_opt_name TOKEN — splits a long-option token into its name and
 # any attached `=VALUE`. Sets GUARD_LOPT_NAME (the part after `--`, before
-# any `=`) and GUARD_LOPT_VAL (the part after `=`, "" if there was none).
+# any `=`), GUARD_LOPT_VAL (the part after `=`, "" if there was none) and
+# GUARD_LOPT_HAS_EQ (1 if `=` was present, 0 otherwise). HIMMEL-2610 round 2
+# (codex-1): a caller cannot tell "no `=`" from "`=` with an empty value"
+# (`--prompt=`) from GUARD_LOPT_VAL alone — both are "". `--prompt=` already
+# carries its (empty) operand in this token, same as `--prompt=x`, so a
+# caller deciding whether to consume a SEPARATE next-word operand must test
+# GUARD_LOPT_HAS_EQ, never `[ -n "$GUARD_LOPT_VAL" ]`.
 guard_long_opt_name() {
     local tok="$1" rest
     rest="${tok#--}"
-    # shellcheck disable=SC2034 # GUARD_LOPT_VAL consumed by callers after sourcing, not in this file
+    # shellcheck disable=SC2034 # GUARD_LOPT_VAL/GUARD_LOPT_HAS_EQ consumed by callers after sourcing, not in this file
     case "$rest" in
-        *=*) GUARD_LOPT_NAME="${rest%%=*}"; GUARD_LOPT_VAL="${rest#*=}" ;;
-        *)   GUARD_LOPT_NAME="$rest"; GUARD_LOPT_VAL="" ;;
+        *=*) GUARD_LOPT_NAME="${rest%%=*}"; GUARD_LOPT_VAL="${rest#*=}"; GUARD_LOPT_HAS_EQ=1 ;;
+        *)   GUARD_LOPT_NAME="$rest"; GUARD_LOPT_VAL=""; GUARD_LOPT_HAS_EQ=0 ;;
     esac
 }
 

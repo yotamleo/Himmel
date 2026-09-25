@@ -1521,7 +1521,7 @@ classify_clause() {
                             # match missed them, under-consuming by one
                             # token (same misalignment class as HIMMEL-2592).
                             if guard_is_long_abbrev "adjustment" "$gf_w"; then
-                                if [ -n "$GUARD_LOPT_VAL" ]; then i=$((i+1)); else i=$((i+2)); fi
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
                             fi ;;
@@ -1541,7 +1541,7 @@ classify_clause() {
                             # unambiguous abbreviations of --output/--format;
                             # same under-consumption class as nice above.
                             if guard_is_long_abbrev "output" "$gf_w" || guard_is_long_abbrev "format" "$gf_w"; then
-                                if [ -n "$GUARD_LOPT_VAL" ]; then i=$((i+1)); else i=$((i+2)); fi
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
                             fi ;;
