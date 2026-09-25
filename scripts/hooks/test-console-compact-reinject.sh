@@ -190,7 +190,7 @@ esac
 echo "== HIMMEL_CONSOLE_DOC points at a nonexistent file (own name IS a console) -> fails safe, falls through to the (also empty) name search, one-line warning =="
 EMPTY_ROOT="$TMP/empty-handover-root"
 mkdir -p "$EMPTY_ROOT"
-out="$(sc_env env HANDOVER_DIR="$EMPTY_ROOT" HIMMEL_CONSOLE_DOC="$TMP/does-not-exist.md" bash "$HOOK")"; rc=$?
+out="$(sc_env env HANDOVER_DIR="$EMPTY_ROOT" HANDOVER_REGISTRY="$TMP/missing-registry.json" HIMMEL_CONSOLE_DOC="$TMP/does-not-exist.md" bash "$HOOK")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "missing doc path exits 0"; else bad "expected rc 0, got $rc"; fi
 case "$out" in
     *'NOT re-injected'*) ok "missing doc path falls through to the name search and warns, never trusting the stale path" ;;
