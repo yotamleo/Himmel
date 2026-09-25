@@ -141,8 +141,14 @@ write_note_to_file() {
 
 # _esw_sid_slug <session_id> — filesystem-safe marker filename for a session id
 # (session_id comes from hook stdin, not necessarily this repo's own JSON).
+# Collapsing every non-slug byte to `_` alone would let two DISTINCT session
+# ids collapse to the same marker (e.g. "abc:def" and "abc.def") and suppress
+# each other's note; the cksum suffix (derived from the raw, unsanitized
+# value) keeps them apart while the prefix stays human-readable for debugging.
 _esw_sid_slug() {
-    printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'
+    local safe
+    safe=$(printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_')
+    printf '%s-%s' "$safe" "$(printf '%s' "$1" | cksum | awk '{print $1}')"
 }
 
 # already_captured <session_id> — true iff a prior run of this hook (this

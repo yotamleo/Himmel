@@ -153,8 +153,11 @@ EOF
         if [ -n "$cap_cwd" ]; then
             cap_payload=$(jq -n --arg t "$TRANSCRIPT" --arg s "$cap_sid" --arg c "$cap_cwd" --arg r "leg-close" \
                 '{transcript_path:$t, session_id:$s, cwd:$c, reason:$r}')
-            printf '%s' "$cap_payload" | bash "$END_SESSION_WIKI" >/dev/null 2>&1
-            echo "close-wrapped-leg: captured session note for $cap_sid before signalling"
+            if printf '%s' "$cap_payload" | bash "$END_SESSION_WIKI" >/dev/null 2>&1; then
+                echo "close-wrapped-leg: captured session note for $cap_sid before signalling"
+            else
+                echo "close-wrapped-leg: end-session-wiki failed for $cap_sid - closing anyway, never blocking on it" >&2
+            fi
         else
             echo "close-wrapped-leg: resolved transcript $TRANSCRIPT has no 'cwd' field - skipping the pre-signal capture, never guessing" >&2
         fi
