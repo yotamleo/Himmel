@@ -41,9 +41,16 @@ const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.s
 // `$` (including a different var or a different path under the anchor) still
 // falls through to the ban.
 // HIMMEL-3548: the pre-existing relative rule
-// (`Bash(bash scripts/handover/merge-on-green.sh:*)`) was retired now that
-// Claude Code's `$VAR` permission-matcher semantics against literal typed
-// command text are confirmed — this anchor literal is the only admitted form.
+// (`Bash(bash scripts/handover/merge-on-green.sh:*)`) was retired because
+// legs type the ABSOLUTE spelling (HIMMEL-3491's anchor discipline), which
+// this anchor literal matches — the relative form is dead weight, not a
+// spelling any leg still needs. This is the only admitted form.
+// ponytail: whether the harness's own permission matcher accepts this
+// quoted "$HIMMEL_REPO/..." literal against literal typed command text is
+// unmeasured outside one manual auto-mode check (HIMMEL-3491's PR #1201
+// body); no automated regression coverage exists yet. Upgrade path:
+// HIMMEL-3549 (give this fact regression coverage beyond one leg manual
+// check).
 const GATE_ANCHOR_LITERAL = 'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)';
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
 

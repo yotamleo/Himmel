@@ -36,8 +36,11 @@ const EXACT_LITERALS = [
   'bash scripts/cr/cr-scores.sh',
 ];
 
-// HIMMEL-3548: the relative merge-on-green rules were retired — only the
-// anchored spelling (ANCHOR_LITERALS below) is pre-approved now.
+// HIMMEL-3548: the PROJECT and leg-profile relative merge-on-green rules
+// were retired — only the anchored spelling (ANCHOR_LITERALS below) is
+// pre-approved by those registries now. A user-scope settings rule (outside
+// this repo, per-station) may still admit the relative spelling; this test
+// asserts against the project/profile registries only.
 const RETIRED_LITERALS = [
   'bash scripts/handover/merge-on-green.sh',
   'bash scripts/handover/merge-on-green.sh --jira-transition',
