@@ -233,7 +233,6 @@ exit 0
 SH
 chmod +x "$b3dir/bin/uv"
 UV_CALLS_LOG="$uv_calls_log" HOME="$b3dir/home" PATH="$b3dir/bin:$PATH" bash -c '
-  set -e
   . "$1"
   _ensure_install_uv
   _ensure_install_precommit
@@ -338,8 +337,8 @@ HOME="$b6dir/home" PATH="$b6dir/home/.local/bin:$b6dir/bin:$PATH" UV_CALLS_LOG="
 ' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
 grepq "$(cat "$b6_uv_calls_log")" -F 'tool upgrade' \
   && fail "case b6: pre-commit is not uv-managed (uv tool list omits it) -- 'uv tool upgrade pre-commit' must NOT be called (calls: $(cat "$b6_uv_calls_log"))"
-grepq "$(cat "$b6_uv_calls_log")" -F 'tool install pre-commit' \
-  || fail "case b6: expected a fall-through to 'uv tool install pre-commit' when pre-commit is on PATH but not uv-managed (calls: $(cat "$b6_uv_calls_log"))"
+grepq "$(cat "$b6_uv_calls_log")" -F 'tool install --force pre-commit' \
+  || fail "case b6: expected a fall-through to 'uv tool install --force pre-commit' when pre-commit is on PATH but not uv-managed (calls: $(cat "$b6_uv_calls_log"))"
 echo "ok: case b6 — upgrade mode falls through to 'uv tool install pre-commit' when the on-PATH pre-commit is not uv-managed, instead of calling 'uv tool upgrade' on an install uv cannot upgrade"
 
 # ── case b7 (pr-check round 3 finding): upgrade mode must call 'uv tool
@@ -373,6 +372,44 @@ HOME="$b7dir/home" PATH="$b7dir/home/.local/bin:$b7dir/bin" UV_CALLS_LOG="$b7_uv
 grepq "$(cat "$b7_uv_calls_log")" -F 'tool upgrade' \
   || fail "case b7: uv manages pre-commit (uv tool list) but its shim is not on PATH -- 'uv tool upgrade pre-commit' must still be called (calls: $(cat "$b7_uv_calls_log"))"
 echo "ok: case b7 — upgrade mode calls 'uv tool upgrade pre-commit' when uv manages it even though its shim is not on PATH"
+
+# ── case b8 (CR round-4 finding): upgrade mode's fall-through 'uv tool
+# install pre-commit' must pass --force when pre-commit is on PATH but not
+# uv-managed -- a pip/pipx/manual pre-commit shim lives at the same
+# ~/.local/bin uv installs into, so a plain 'uv tool install' refuses to
+# overwrite it ("Executable already exists ... use --force"), and a genuine
+# failure's stderr must be surfaced, not swallowed. ─────────────────────────
+b8dir="$work/b8"; mkdir -p "$b8dir/bin" "$b8dir/home/.local/bin"
+cat > "$b8dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then exit 0; fi
+if [ "$1 $2" = "tool install" ] && [ "$3" = "pre-commit" ]; then
+  echo "error: Executable already exists at \`$HOME/.local/bin/pre-commit\` but is not managed by uv; use --force to replace it" >&2
+  exit 1
+fi
+if [ "$1 $2 $3" = "tool install --force" ] && [ "$4" = "pre-commit" ]; then exit 0; fi
+exit 1
+SH
+chmod +x "$b8dir/home/.local/bin/uv"
+# pre-commit on PATH via a pip/pipx/manual install -- not uv-managed (per
+# `uv tool list` above), same shape as case b6.
+cat > "$b8dir/home/.local/bin/pre-commit" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$b8dir/home/.local/bin/pre-commit"
+b8_uv_calls_log="$b8dir/uv-calls.log"; : > "$b8_uv_calls_log"
+b8_stderr=$(HOME="$b8dir/home" PATH="$b8dir/home/.local/bin:$b8dir/bin:$PATH" UV_CALLS_LOG="$b8_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" 2>&1 >/dev/null)
+b8_rc=$?
+[ "$b8_rc" -eq 0 ] \
+  || fail "case b8: _ensure_install_precommit upgrade should succeed once it retries with --force (rc=$b8_rc, stderr: $b8_stderr)"
+grepq "$(cat "$b8_uv_calls_log")" -F 'tool install --force pre-commit' \
+  || fail "case b8: expected a retry as 'uv tool install --force pre-commit' after the unforced install refused to overwrite the existing pip/pipx shim (calls: $(cat "$b8_uv_calls_log"))"
+echo "ok: case b8 — upgrade mode's fall-through install retries with --force when uv refuses to overwrite an existing unmanaged pre-commit shim"
 
 # ── case c: manager:"brew" (install vs upgrade) ─────────────────────────────
 outC1=$("$node_bin" -e "

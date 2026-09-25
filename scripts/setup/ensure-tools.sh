@@ -361,7 +361,18 @@ _ensure_install_precommit() {
     return 0
   fi
   echo "  ensure-tools: installing 'pre-commit' via 'uv tool install'..."
-  "$uv_bin" tool install pre-commit >/dev/null 2>&1 || { echo "  ensure-tools: 'uv tool install pre-commit' failed -- run it yourself: $uv_bin tool install pre-commit" >&2; return 1; }
+  # A pip/pipx/manual pre-commit shim already on PATH (e.g. left over from
+  # this dep's pre-HIMMEL-2521 pip route) lands in the same ~/.local/bin uv
+  # installs into, so a plain `uv tool install` refuses to overwrite it
+  # ("Executable already exists ... use --force"); upgrade mode replaces it
+  # (pr-check round 4 finding).
+  pc_force_flag=""
+  [ "$mode" = upgrade ] && pc_force_flag="--force"
+  pc_err=$("$uv_bin" tool install $pc_force_flag pre-commit 2>&1 >/dev/null) || {
+    pc_err=$(printf '%s\n' "$pc_err" | grep -v '^[[:space:]]*$' | tail -n1)
+    echo "  ensure-tools: 'uv tool install pre-commit' failed${pc_err:+ -- $pc_err} -- run it yourself: $uv_bin tool install $pc_force_flag pre-commit" >&2
+    return 1
+  }
   return 0
 }
 
