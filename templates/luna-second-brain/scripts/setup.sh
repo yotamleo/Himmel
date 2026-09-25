@@ -129,9 +129,14 @@ else
 fi
 
 echo "[4/6] Installing git hooks (pre-commit, pre-push, commit-msg)..."
-pre-commit install
+# pre-commit and commit-msg go through the stash-free wrapper (HIMMEL-2223):
+# `pre-commit install`'s generated hook stashes unstaged changes, and with
+# Obsidian live, its autosave rewriting tracked .obsidian/plugins/*/data.json
+# mid-hook can make the stash re-apply fail and revert OTHER unstaged files on
+# disk. pre-push stays on the framework installer — its two hooks are no-ops
+# on a .single-writer vault, so there's nothing to protect there.
+bash "$REPO_ROOT/scripts/hooks/install-nostash-hooks.sh"
 pre-commit install --hook-type pre-push
-pre-commit install --hook-type commit-msg
 
 # --- [5/6] env-template ---
 echo "[5/6] Checking .env..."

@@ -122,9 +122,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "[4/6] Installing git hooks (pre-commit, pre-push, commit-msg)..."
-python -m pre_commit install
+# pre-commit and commit-msg go through the stash-free wrapper (HIMMEL-2223):
+# `pre-commit install`'s generated hook stashes unstaged changes, and with
+# Obsidian live, its autosave rewriting tracked .obsidian/plugins/*/data.json
+# mid-hook can make the stash re-apply fail and revert OTHER unstaged files on
+# disk. pre-push stays on the framework installer -- its two hooks are no-ops
+# on a .single-writer vault, so there's nothing to protect there.
+& $GitBash "scripts/hooks/install-nostash-hooks.sh"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: install-nostash-hooks.sh failed (exit $LASTEXITCODE)." -ForegroundColor Red
+    exit 1
+}
 python -m pre_commit install --hook-type pre-push
-python -m pre_commit install --hook-type commit-msg
 
 # --- [5/6] env-template ---
 Write-Host "[5/6] Checking .env..."

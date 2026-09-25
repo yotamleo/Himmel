@@ -686,6 +686,53 @@ it, so keep working while you wait.
 
 ---
 
+## Symptom: a commit failed and files I never touched came back changed (HIMMEL-2223)
+
+`pre-commit install`'s generated `pre-commit` hook stashes every unstaged
+change to a tracked file to a patch (`~/.cache/pre-commit/patch<N>-<pid>`)
+before hooks run, then reapplies it after. In a vault with Obsidian open,
+Obsidian's autosave can rewrite a tracked `.obsidian/plugins/*/data.json`
+*during* that window, so the reapply no longer matches and fails; pre-commit
+then rolls back — silently reverting OTHER unstaged files on disk, including
+ones the committing session never touched. It is deterministic, not a race:
+it reproduces on the immediate retry, and the commit itself reports `exit 0`.
+A vault scaffolded from `templates/luna-second-brain/` on or after 0.4.55
+installs `scripts/hooks/install-nostash-hooks.sh`'s wrappers instead, which
+never stash (`pre-commit run --files <staged>` only touches the staged set),
+so this cannot happen there; an older vault, or any other stashing
+`pre-commit install` checkout, is still exposed.
+
+**Always run**, before and after a failed commit: `git status --short | wc -l`.
+A shrinking count means work was reverted.
+
+**What to do:**
+1. Recover the reverted files from the retained patch, excluding the volatile
+   plugin state (which the rollback already left at its latest, correct
+   content — reapplying it would stomp that):
+   ```
+   git -c core.autocrlf=false apply --whitespace=nowarn \
+     --exclude='.obsidian/plugins/*/data.json' \
+     ~/.cache/pre-commit/patch<N>-<pid>
+   ```
+2. Prove no loss: `git -c core.autocrlf=false apply --check --reverse --whitespace=nowarn <patch>` —
+   a clean check means every file the patch touches is byte-identical to its
+   pre-incident content on disk. This still works after some of those files
+   have been committed, since the reverse-check reads the worktree, not HEAD.
+   Loop with `--include=<file>` to isolate a single remaining diff.
+3. Do not try to park the volatile files with `git stash` — it is refused by
+   `block-git-stash` (HIMMEL-1755: the stash stack is shared across
+   worktrees). `git checkout -- <path>` on them may also be denied; copy the
+   file aside into the scratchpad instead if you need to compare it.
+4. Land the commit one of two ways, both needing an **operator OK**:
+   stage the volatile files first so pre-commit has nothing left to park, or
+   `--no-verify` only after seeing gitleaks + worktree-isolation pass
+   yourself on that exact staged set.
+
+Never re-run the failed commit as-is hoping it will go through — the same
+race is deterministic and will revert the same files again.
+
+---
+
 ## Why this is a playbook, not a `CLAUDE.md` rule
 
 Root `CLAUDE.md` is **state, not a prompt** — frame-shaping invariants only, paid

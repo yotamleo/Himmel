@@ -8,6 +8,18 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.55] — 2026-09-25
+
+### Fixed
+- `setup.sh` and `setup.ps1` ran `pre-commit install`, whose generated
+  `pre-commit`/`commit-msg` hooks stash unstaged changes before running and
+  reapply them after. With Obsidian live, its autosave rewriting tracked
+  `.obsidian/plugins/*/data.json` mid-hook can make that stash reapply fail
+  and silently revert OTHER unstaged files on disk. A freshly scaffolded
+  vault now installs `scripts/hooks/install-nostash-hooks.sh`'s stash-free
+  wrappers for `pre-commit`/`commit-msg` instead (`pre-push` is unaffected —
+  its two hooks are no-ops on a `.single-writer` vault). (HIMMEL-2223)
+
 ## [0.4.52] — 2026-09-22
 
 ### Fixed
