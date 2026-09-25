@@ -26,8 +26,11 @@ else
     abort_line=$(awk -v lo="$realhome_line" -v hi="$first_cli_line" \
         'NR > lo && NR < hi && /FAILED" -gt 0/ {print NR; exit}' "$SUITE")
     if [ -n "$abort_line" ]; then
+        # exit 1 must appear within the next 4 lines — i.e. inside the SAME
+        # `if [ "$FAILED" -gt 0 ]; then ... fi` block, not some unrelated
+        # later exit that would let this test PASS without the abort existing.
         exit_after=$(awk -v start="$abort_line" -v hi="$first_cli_line" \
-            'NR >= start && NR < hi && /exit 1/ {print NR; exit}' "$SUITE")
+            'NR > start && NR <= start + 4 && NR < hi && /exit 1/ {print NR; exit}' "$SUITE")
     fi
     if [ "$preflight_line" -le "$realhome_line" ]; then
         echo "FAIL the live-operator-marker check (line $preflight_line) does not follow the real-\$HOME-under-\$TMP check (line $realhome_line)"
@@ -35,7 +38,7 @@ else
     elif [ -n "${abort_line:-}" ] && [ -n "${exit_after:-}" ]; then
         echo "PASS a HOME-isolation preflight failure aborts (line $abort_line) before the first uninstall.sh invocation (line $first_cli_line)"
     else
-        echo "FAIL no hard abort between the HOME-isolation preflight (line $realhome_line) and the first uninstall.sh invocation (line $first_cli_line) — a failed preflight falls through to a wet row"
+        echo "FAIL no hard abort immediately following the HOME-isolation preflight (line $realhome_line) before the first uninstall.sh invocation (line $first_cli_line) — a failed preflight falls through to a wet row"
         FAILED=$((FAILED + 1))
     fi
 fi
