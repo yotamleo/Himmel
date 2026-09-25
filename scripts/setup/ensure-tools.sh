@@ -270,7 +270,10 @@ _ensure_install_bun() {
 # $1 (optional): "upgrade" -- the old pip-manager route supported
 # `--upgrade`; skip the idempotency early-return so `himmelctl deps upgrade`
 # re-runs the official installer (which itself overwrites in place) instead
-# of silently no-op'ing on an already-present uv.
+# of silently no-op'ing on an already-present uv. Only deps-engine.js's
+# built shell line ever passes it (this file's own bare calls never do), so
+# static analysis can't see a caller that supplies $1.
+# shellcheck disable=SC2120
 _ensure_install_uv() {
   if [ -x "$HOME/.local/bin/uv" ] && [ "${1:-}" != upgrade ]; then
     echo "  ensure-tools: uv is already installed at ~/.local/bin -- not on your PATH; add it (export PATH=\"\$HOME/.local/bin:\$PATH\") to your shell rc"
@@ -314,7 +317,10 @@ _ensure_install_uv() {
 #
 # $1 (optional): "upgrade" -- the old pip-manager route supported
 # `--upgrade`; when already installed, run `uv tool upgrade` instead of the
-# plain `uv tool install`, which is a no-op once pre-commit is present.
+# plain `uv tool install`, which is a no-op once pre-commit is present. Only
+# deps-engine.js's built shell line ever passes it (this file's own bare
+# calls never do), so static analysis can't see a caller that supplies $1.
+# shellcheck disable=SC2120
 _ensure_install_precommit() {
   local mode="${1:-}" uv_bin
   uv_bin=$(command -v uv 2>/dev/null) || uv_bin=""
