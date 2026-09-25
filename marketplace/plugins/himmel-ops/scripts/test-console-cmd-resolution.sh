@@ -40,16 +40,24 @@ clone="$td/clone-himmel"; mkdir -p "$clone/scripts/handover/console"; : > "$clon
 got="$( cd "$td" && HIMMEL_REPO="$clone" HOME="$empty_home" run_resolver )"
 check "(i) HIMMEL_REPO from arbitrary dir" "$clone" "$got"
 
-# (ii) HIMMEL_REPO unset, CWD inside a git clone with the script -> git toplevel.
+# (ii) HIMMEL_REPO unset, CWD inside a FOREIGN repo shipping its own
+#      scripts/handover/console/console.sh, no canonical himmel present ->
+#      the resolver must refuse, never run the foreign script just because
+#      the cwd's git toplevel has one (HIMMEL-3623 verdict J1268O change 5,
+#      F6 -- this is the vulnerability the fix closes).
 gitclone="$td/gitclone"; mkdir -p "$gitclone/scripts/handover/console"
 git init -q "$gitclone"; : > "$gitclone/scripts/handover/console/console.sh"
-top="$(git -C "$gitclone" rev-parse --show-toplevel)"
-got="$( cd "$gitclone" && HOME="$empty_home" run_resolver )"
-check "(ii) git-toplevel fallback (HIMMEL_REPO unset)" "$top" "$got"
+got="$( cd "$gitclone" && HOME="$empty_home" run_resolver )"; rc=$?
+check "(ii) foreign repo's own console.sh never wins (errored)" "" "$got"
+check "(ii) foreign repo's own console.sh never wins (non-zero exit)" "nonzero" "$( [ "$rc" -ne 0 ] && echo nonzero || echo zero )"
 
 # (iii) neither HIMMEL_REPO nor a git repo nor a canonical himmel -> clear error.
-got="$( cd "$td" && HOME="$empty_home" run_resolver )"
+# Empty stdout alone doesn't prove the snippet errored (a genuinely empty REPO
+# would print empty too) -- assert the subshell's exit status is non-zero as
+# well (HIMMEL-3623 verdict J1268O change 8, F9).
+got="$( cd "$td" && HOME="$empty_home" run_resolver )"; rc=$?
 check "(iii) none -> empty (errored)" "" "$got"
+check "(iii) none -> non-zero exit" "nonzero" "$( [ "$rc" -ne 0 ] && echo nonzero || echo zero )"
 
 # (iv) canonical default: HIMMEL_REPO unset, non-git CWD, himmel at the canonical
 #      $HOME/Himmel path (console.md's own extra candidate over himmel-update.md's
@@ -59,12 +67,19 @@ canon="$canon_home/Himmel"; mkdir -p "$canon/scripts/handover/console"; : > "$ca
 got="$( cd "$td" && HOME="$canon_home" run_resolver )"
 check "(iv) canonical default install path (\$HOME/Himmel)" "$canon" "$got"
 
+# (iv-b) canonical himmel present AND cwd is a foreign repo with its own
+#        console.sh -> the canonical install wins, the foreign toplevel is
+#        never even considered (change 5, F6, stronger form of (ii)).
+got="$( cd "$gitclone" && HOME="$canon_home" run_resolver )"
+check "(iv-b) canonical install wins over a foreign repo's own console.sh" "$canon" "$got"
+
 # (v) HIMMEL_REPO SET but STALE (points at a dir lacking the script): the `-f`
-#     re-check on the resolver's 2nd line must fall through to the git toplevel.
-#     Guards against a future edit dropping that re-check (cases i-iv wouldn't).
+#     re-check on the resolver's 2nd line must fall through to the canonical
+#     install candidates, NEVER to the cwd's git toplevel even when that
+#     toplevel ships its own console.sh (change 5, F6).
 bogus="$td/bogus"; mkdir -p "$bogus"   # no scripts/handover/console/console.sh inside
-got="$( cd "$gitclone" && HIMMEL_REPO="$bogus" HOME="$empty_home" run_resolver )"
-check "(v) stale HIMMEL_REPO -> git-toplevel fallback" "$top" "$got"
+got="$( cd "$gitclone" && HIMMEL_REPO="$bogus" HOME="$canon_home" run_resolver )"
+check "(v) stale HIMMEL_REPO -> canonical install, not the foreign git toplevel" "$canon" "$got"
 
 # The run line must pass --project AFTER $ARGUMENTS -- console.sh's first
 # positional is the subcommand (new|next), which is INSIDE $ARGUMENTS, so

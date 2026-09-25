@@ -6,31 +6,51 @@ argument-hint: new|next [--bucket <slug>] [--name <slug>] [--arm] [--dry-run] [-
 Starts or hands over a console (defined in `docs/glossary.md` in the himmel
 checkout). Background + the operating contract: `docs/handover/running-a-console.md`.
 
-This command runs from **any directory** (mirrors `himmel-update.md`,
-HIMMEL-459): first resolve the himmel checkout using the same
-checkout-resolution order — `$HIMMEL_REPO` → the current git toplevel →
-canonical install paths → error — then point `console.sh` at the PROJECT this
-session is actually running in via `--project`. That is the whole point of
-this plugin copy over the project-local `.claude/commands/console.md`: a
-console started from e.g. `~/Websites` or a Websites repo gets THAT project's
-own bucket/prefix derived from it — never himmel's own `JIRA_PROJECT_KEY` —
-and, when armed, opens the session in the project's own checkout, not in
-himmel's.
+This command runs from **any directory**: first resolve the himmel checkout —
+`$HIMMEL_REPO` → canonical install paths → error, never the cwd's own git
+toplevel (a foreign repo shipping its own `console.sh` must never win over
+himmel's) — then point `console.sh` at the PROJECT this session is actually
+running in via `--project`. That is the whole point of this plugin copy over
+the project-local `.claude/commands/console.md`: a console started from e.g.
+`~/Websites` or a Websites repo gets THAT project's own bucket/prefix derived
+from the handover registry (or its basename, unregistered) — never himmel's
+own `JIRA_PROJECT_KEY`. The console session itself always runs in the himmel
+checkout: `--project` is recorded as data in the console doc, and a leg for
+the project is dispatched into it explicitly with `LEG_REPO=<path>`.
 
 ```bash
-# Resolve the himmel checkout: $HIMMEL_REPO -> git toplevel -> canonical -> error.
+# Resolve the himmel checkout: $HIMMEL_REPO -> canonical paths -> error. Never
+# the cwd's own git toplevel: a foreign repo shipping its own
+# scripts/handover/console/console.sh would otherwise get ITS script executed
+# in preference to himmel's (HIMMEL-3623 verdict J1268O change 5, F6).
 REPO="${HIMMEL_REPO:-}"
-[ -n "$REPO" ] && [ -f "$REPO/scripts/handover/console/console.sh" ] || REPO="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$REPO" ] || [ ! -f "$REPO/scripts/handover/console/console.sh" ]; then
   for c in "$HOME/Documents/github/himmel" "$HOME/Documents/github/Himmel" "$HOME/github/himmel" "$HOME/github/Himmel" "$HOME/Himmel" "$HOME/himmel"; do
     [ -f "$c/scripts/handover/console/console.sh" ] && { REPO="$c"; break; }
   done
 fi
-[ -f "$REPO/scripts/handover/console/console.sh" ] || { echo "ERR: cannot locate himmel checkout — set HIMMEL_REPO to your himmel clone" >&2; exit 1; }
+[ -n "$REPO" ] && [ -f "$REPO/scripts/handover/console/console.sh" ] || { echo "ERR: cannot locate himmel checkout — set HIMMEL_REPO to your himmel clone" >&2; exit 1; }
 
-# The console opens in the directory this session runs in (its repo's primary checkout when inside git).
-PROJECT="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && PROJECT="$(dirname "$PROJECT")" || PROJECT="$PWD"
-cd "$REPO" && bash scripts/handover/console/console.sh $ARGUMENTS --project "$PROJECT"
+# The console is FOR the project this session runs in: git toplevel, mapped
+# from a linked worktree to its MAIN worktree (git worktree list's first
+# entry) so a worktree checkout still resolves to the repo's own registry
+# entry. --git-common-dir's dirname is wrong for submodules (yields
+# super/.git/modules/<name>) and --separate-git-dir checkouts (yields the
+# parent of the git dir) -- change 6, F7.
+PROJECT="$PWD"
+if TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  PROJECT="$TOPLEVEL"
+  MAIN_WT="$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -n1)"
+  [ -n "$MAIN_WT" ] && PROJECT="$MAIN_WT"
+fi
+
+# A bare /himmel-ops:console (no subcommand) must print usage, not
+# "unknown command: --project" (change 9, F11).
+if [ -n "$ARGUMENTS" ]; then
+  cd "$REPO" && bash scripts/handover/console/console.sh $ARGUMENTS --project "$PROJECT"
+else
+  cd "$REPO" && bash scripts/handover/console/console.sh
+fi
 ```
 
 - `/console new` — write `<handover-root>/<user>/<bucket>/<PREFIX>-nextleg-<date>A-console.md`
