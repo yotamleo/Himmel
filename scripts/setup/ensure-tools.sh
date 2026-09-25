@@ -337,7 +337,13 @@ _ensure_install_precommit() {
     echo "  ensure-tools: 'pre-commit' needs uv, and uv was just installed but is not on PATH -- add ~/.local/bin to your PATH, then run: uv tool install pre-commit" >&2
     return 1
   fi
-  if [ "$mode" = upgrade ] && command -v pre-commit >/dev/null 2>&1; then
+  # `uv tool upgrade` only works on a pre-commit uv itself installed --
+  # a pre-commit found on PATH via some other means (apt, pipx, a manual
+  # install) is not something uv can upgrade, so check `uv tool list` before
+  # taking that branch; anything else falls through to the plain install
+  # below, which places a uv-managed pre-commit on PATH (CR follow-up).
+  if [ "$mode" = upgrade ] && command -v pre-commit >/dev/null 2>&1 \
+    && "$uv_bin" tool list 2>/dev/null | grep -q '^pre-commit '; then
     echo "  ensure-tools: upgrading 'pre-commit' via 'uv tool upgrade'..."
     "$uv_bin" tool upgrade pre-commit >/dev/null 2>&1 || { echo "  ensure-tools: 'uv tool upgrade pre-commit' failed -- run it yourself: $uv_bin tool upgrade pre-commit" >&2; return 1; }
     return 0
