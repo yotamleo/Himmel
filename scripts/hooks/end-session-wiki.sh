@@ -68,6 +68,11 @@ LOG_OLD_PATH="${LOG_DIR}/${PROJECT_SLUG}.log.old"
 # session note failed to reach the live vault and went to disk only. A
 # SessionStart / where-are-we surface can pick this up; cleared on a healthy PUT.
 DEGRADED_MARKER_PATH="${LOG_DIR}/${PROJECT_SLUG}.degraded"
+# Per-session dedup marker (HIMMEL-3629): present ⟺ this session_id's note was
+# already captured (REST PUT or fs fallback) by SOME run of this hook. Guards
+# against a double write when close-wrapped-leg.sh's pre-signal capture and
+# this hook's own normal SessionEnd invocation both fire for the same session.
+CAPTURED_DIR="${LOG_DIR}/captured"
 
 log_msg() {
     local msg="$1"
@@ -134,6 +139,34 @@ write_note_to_file() {
     return 0
 }
 
+# _esw_sid_slug <session_id> — filesystem-safe marker filename for a session id
+# (session_id comes from hook stdin, not necessarily this repo's own JSON).
+_esw_sid_slug() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'
+}
+
+# already_captured <session_id> — true iff a prior run of this hook (this
+# invocation or a pre-signal capture from close-wrapped-leg.sh) already wrote
+# this session's note.
+already_captured() {
+    local sid="$1"
+    [ -n "$sid" ] || return 1
+    [ -f "${CAPTURED_DIR}/$(_esw_sid_slug "$sid")" ]
+}
+
+# mark_captured <session_id> — best-effort marker recording that this
+# session's note has been written, so a second run for the same session_id
+# skips instead of duplicating the note.
+mark_captured() {
+    local sid="$1"
+    [ -n "$sid" ] || return 0
+    {
+        (umask 077; mkdir -p "$CAPTURED_DIR") 2>/dev/null
+        : > "${CAPTURED_DIR}/$(_esw_sid_slug "$sid")"
+    } 2>/dev/null
+    return 0
+}
+
 # spawn_crystallizer — best-effort detached LLM crystallization (HIMMEL-576) of
 # the just-written note. Called before each successful-write exit. Ensures the
 # note is on disk first (a REST PUT flushes to disk asynchronously, so the
@@ -192,6 +225,23 @@ __on_exit() {
     exit 0
 }
 trap '__on_exit' EXIT
+
+# Signal traps (HIMMEL-3629): an untrapped TERM/INT/HUP still fires the EXIT
+# trap above (bash re-delivers on termination), which then logs the generic
+# "FAILED with exit N (unhandled - see prior log lines)" line with nothing
+# above it to explain — the hook was simply cancelled by its parent (e.g.
+# close-wrapped-leg.sh signalling a closed leg's claude process). Name the
+# real cause and short-circuit __on_exit's generic log via HOOK_OK=1.
+# shellcheck disable=SC2317  # invoked indirectly via `trap ... TERM/INT/HUP`
+__on_signal() {
+    local sig="$1"
+    log_msg "cancelled by signal $sig (session ${SESSION_ID:-unknown})"
+    HOOK_OK=1
+    exit 0
+}
+trap '__on_signal 15' TERM
+trap '__on_signal 2' INT
+trap '__on_signal 1' HUP
 
 # ---------- 0. Dependencies --------------------------------------------------
 
@@ -278,6 +328,16 @@ SESSION_CWD="$(echo "$PAYLOAD"     | jq -r '.cwd // empty')"
 SESSION_ID="$(echo "$PAYLOAD"      | jq -r '.session_id // empty')"
 # shellcheck disable=SC2034
 REASON="$(echo "$PAYLOAD"          | jq -r '.reason // "other"')"
+
+# ---------- Dedup guard (HIMMEL-3629) ----------------------------------------
+# A pre-signal capture (close-wrapped-leg.sh) and this hook's own normal
+# SessionEnd run can both fire for the same session_id; skip the second one
+# rather than writing or PUTting the note twice.
+if already_captured "$SESSION_ID"; then
+    log_msg "skipped: session $SESSION_ID already captured"
+    HOOK_OK=1
+    exit 0
+fi
 
 if [ -z "$SESSION_CWD" ]; then
     log_msg "ERROR: payload missing 'cwd'"
@@ -691,6 +751,7 @@ if [ -z "$API_KEY" ]; then
     # No REST API key — fall back to a direct on-disk write into the vault.
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "wrote (local fs, no api key) ${REL_PATH}"
+        mark_captured "$SESSION_ID"
         spawn_crystallizer
     else
         log_msg "ERROR: local fs write failed: $ABS_PATH"
@@ -767,6 +828,7 @@ if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "PUT $ENDPOINT returned HTTP $HTTP_CODE; wrote (local fs fallback) ${REL_PATH}"
         flag_degraded_fallback "$HTTP_CODE" "$REL_PATH" "$VAULT_ROOT" disk
+        mark_captured "$SESSION_ID"
         spawn_crystallizer
     else
         log_msg "ERROR: PUT $ENDPOINT HTTP $HTTP_CODE and local fs fallback failed: $ABS_PATH"
@@ -779,6 +841,7 @@ fi
 # Healthy REST push — clear any stale degradation marker from a prior session.
 rm -f "$DEGRADED_MARKER_PATH" 2>/dev/null || true
 log_msg "wrote ${REL_PATH} (${ELAPSED}ms)"
+mark_captured "$SESSION_ID"
 spawn_crystallizer
 HOOK_OK=1
 exit 0

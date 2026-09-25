@@ -129,10 +129,16 @@ mkdoc() { # mkdoc <last-marker-line> <extra-results-lines...>
 }
 
 run() { # run <doc> - runs the script under test with every stub wired
+    # END_SESSION_WIKI_BIN/CLOSE_WRAPPED_LEG_PROJECTS_DIR default to a no-op
+    # binary and a nonexistent dir, so cases 1-14 never exercise the
+    # pre-signal capture block (HIMMEL-3629) at all - only the cases below
+    # that set CWL_ESW_BIN/CWL_PROJECTS_DIR opt into it.
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
         CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
+        END_SESSION_WIKI_BIN="${CWL_ESW_BIN:-/bin/true}" \
+        CLOSE_WRAPPED_LEG_PROJECTS_DIR="${CWL_PROJECTS_DIR:-$W/no-such-projects-dir}" \
         bash "$SCRIPT" "$@"
 }
 reset_calls() { : > "$CALLS"; }
@@ -253,6 +259,55 @@ rc=0; out=$(CWL_KILL_FAIL="1" run "$DOC" 2>&1) || rc=$?
 check "kill-fail: rc 1" "$rc" "1"
 not_contains "kill-fail: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
 not_contains "kill-fail: never claims it sent TERM" "$out" "sent TERM"
+
+# --- 15: pre-signal session-note capture (HIMMEL-3629 direction 2) -----------
+# Before signalling, the script must resolve the ONE matching leg's transcript
+# (via a customTitle grep over CLOSE_WRAPPED_LEG_PROJECTS_DIR, like leg-burn.sh's
+# session lookup) and feed it to the REAL end-session-wiki.sh hook, which then
+# writes a session note into a scratch vault - all before the TERM in case 10
+# ever fires. This exercises the real hook end-to-end, never a stub, so the
+# assertion is the artifact (a note file), not a logged call.
+REAL_ESW="$HERE/../../hooks/end-session-wiki.sh"
+[ -r "$REAL_ESW" ] || { echo "FAIL - pre-signal-capture: real hook not found at $REAL_ESW"; fails=$((fails+1)); }
+
+ESW_SB="$W/esw-sb"
+mkdir -p "$ESW_SB/vault" "$ESW_SB/proj" "$ESW_SB/home"
+PROJDIR="$W/esw-projects"
+mkdir -p "$PROJDIR"
+TRANSCRIPT="$PROJDIR/sess-abc123.jsonl"
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB/proj\",\"timestamp\":\"2026-06-17T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2026-06-17T00:00:00Z\",\"cwd\":\"$ESW_SB/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
+} > "$TRANSCRIPT"
+
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB/home" LUNA_VAULT_PATH="$ESW_SB/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR" \
+    run "$DOC" 2>&1) || rc=$?
+check "pre-signal-capture: rc 0 (still closes)" "$rc" "0"
+exact_count "pre-signal-capture: kill still called exactly once (capture never blocks the signal)" "$(cat "$CALLS")" "kill -TERM 210" "1"
+note_count=$(find "$ESW_SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "pre-signal-capture: exactly one session note written before signalling" "$note_count" "1"
+
+# --- 16: ambiguous transcript match (0 candidates) skips the capture, never
+# guesses, and still closes normally (HIMMEL-3629 direction 2's "never guess").
+ESW_SB2="$W/esw-sb2"
+mkdir -p "$ESW_SB2/vault" "$ESW_SB2/proj" "$ESW_SB2/home"
+EMPTY_PROJDIR="$W/esw-projects-empty"
+mkdir -p "$EMPTY_PROJDIR"
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB2/home" LUNA_VAULT_PATH="$ESW_SB2/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB2/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$EMPTY_PROJDIR" \
+    run "$DOC" 2>&1) || rc=$?
+check "no-transcript-match: rc 0 (still closes)" "$rc" "0"
+contains "no-transcript-match: says it cannot resolve unambiguously" "$out" "cannot resolve unambiguously"
+exact_count "no-transcript-match: kill still called exactly once" "$(cat "$CALLS")" "kill -TERM 210" "1"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then

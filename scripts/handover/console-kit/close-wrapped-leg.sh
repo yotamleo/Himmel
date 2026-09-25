@@ -119,6 +119,50 @@ if [ "$match_count" -ne 1 ]; then
     exit 5
 fi
 
+# ---------- Pre-signal session-note capture (HIMMEL-3629) --------------------
+# A wrapped leg's SessionEnd hook never runs: Claude Code cancels it the
+# instant our TERM below lands, so no luna session note is written. Reproduce
+# the hook's input here, from what we already resolved above (the leg's
+# session names) - never a guess: resolve those names to EXACTLY ONE
+# transcript file (same customTitle-grep precedent as leg-burn.sh's
+# session-name lookup, but refusing instead of picking "newest" on
+# ambiguity), pull cwd straight from that transcript (every row carries a
+# "cwd" field), derive session_id from the transcript's own filename, and
+# feed end-session-wiki.sh the same SessionEnd JSON shape Claude Code would
+# have. 0 or >1 matching transcripts: say so on stderr and still close -
+# never guess which one. The hook itself dedups by session_id (HIMMEL-3629),
+# so it is harmless if the leg's own SessionEnd ALSO manages to fire.
+END_SESSION_WIKI="${END_SESSION_WIKI_BIN:-$HERE/../../hooks/end-session-wiki.sh}"
+PROJECTS_DIR="${CLOSE_WRAPPED_LEG_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
+if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
+    transcript_matches=""
+    while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        cand_matches=$(grep -rlF "\"customTitle\":\"$cand\"" "$PROJECTS_DIR" 2>/dev/null)
+        [ -n "$cand_matches" ] && transcript_matches="${transcript_matches}
+${cand_matches}"
+    done <<EOF
+$(printf '%s' "${ident#*$'\t'}" | tr ',' '\n')
+EOF
+    transcript_matches=$(printf '%s\n' "$transcript_matches" | sed '/^$/d' | sort -u)
+    tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
+    if [ "$tcount" -eq 1 ]; then
+        TRANSCRIPT="$transcript_matches"
+        cap_cwd=$(grep -o '"cwd":"[^"]*"' "$TRANSCRIPT" 2>/dev/null | head -1 | sed -E 's/^"cwd":"(.*)"$/\1/')
+        cap_sid=$(basename "$TRANSCRIPT" .jsonl)
+        if [ -n "$cap_cwd" ]; then
+            cap_payload=$(jq -n --arg t "$TRANSCRIPT" --arg s "$cap_sid" --arg c "$cap_cwd" --arg r "leg-close" \
+                '{transcript_path:$t, session_id:$s, cwd:$c, reason:$r}')
+            printf '%s' "$cap_payload" | bash "$END_SESSION_WIKI" >/dev/null 2>&1
+            echo "close-wrapped-leg: captured session note for $cap_sid before signalling"
+        else
+            echo "close-wrapped-leg: resolved transcript $TRANSCRIPT has no 'cwd' field - skipping the pre-signal capture, never guessing" >&2
+        fi
+    else
+        echo "close-wrapped-leg: $tcount transcript(s) matched leg names [${ident#*$'\t'}] - cannot resolve unambiguously, skipping the pre-signal capture, never guessing" >&2
+    fi
+fi
+
 if ! "$KILL" -TERM "$matched"; then
     echo "close-wrapped-leg: failed to send TERM to pid $matched" >&2
     exit 1

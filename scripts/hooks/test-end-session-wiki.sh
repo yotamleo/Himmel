@@ -740,6 +740,73 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 20: SIGTERM mid-run logs "cancelled by signal", not the generic
+# unhandled-FAILED line (HIMMEL-3629 direction 3). A PATH-stubbed curl blocks
+# so the hook is guaranteed to still be inside the REST PUT when the signal
+# arrives; the stub writes a marker file the instant it starts so the test
+# waits for real mid-run state instead of guessing a sleep duration. setsid is
+# NOT forked here (no enclosing subshell/pipe): $! is the setsid'd bash's own
+# pid, which is also the new process-group leader, so `kill -TERM -- -$!`
+# reaches both the hook and its blocked curl child directly (the direct
+# delivery is what makes bash dispatch the trap immediately instead of
+# deferring it until the blocked curl finishes).
+SB="$(make_sandbox)"
+CURL_MARKER="$SB/curl-started"
+CURL_STUB_DIR="$(mktemp -d)"
+cat > "$CURL_STUB_DIR/curl" <<'CURLSTUB'
+#!/usr/bin/env bash
+: > "$CURL_MARKER_FILE"
+sleep 2
+printf '000'
+CURLSTUB
+chmod +x "$CURL_STUB_DIR/curl"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"sigtest","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" > "$SB/payload.json"
+env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+    LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="dummy-key" \
+    CLAUDE_PROJECT_DIR="$SB/proj" CURL_MARKER_FILE="$CURL_MARKER" \
+    PATH="$CURL_STUB_DIR:$PATH" \
+    setsid bash "$HOOK" < "$SB/payload.json" &
+HOOK_PID=$!
+i=0
+while [ ! -e "$CURL_MARKER" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+if [ ! -e "$CURL_MARKER" ]; then
+    fail "HIMMEL-3629: curl stub never started (test setup broken, not a hook bug)"
+    kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    wait "$HOOK_PID" 2>/dev/null
+else
+    kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    wait "$HOOK_PID" 2>/dev/null
+    LOGP="$(log_path_for "$SB/home" "$SB/proj")"
+    if [ -r "$LOGP" ] && grep -q 'cancelled by signal 15 (session sigtest)' "$LOGP"; then
+        pass "HIMMEL-3629: SIGTERM mid-run logs cancelled-by-signal, not the generic FAILED line"
+    else
+        fail "HIMMEL-3629: SIGTERM mid-run did not log cancelled-by-signal ($([ -r "$LOGP" ] && tail -3 "$LOGP" | tr '\n' '|' || echo '<no log>'))"
+    fi
+fi
+rm -rf "$SB" "$CURL_STUB_DIR"
+
+# --- Case 21: dedup guard — two hook runs for the SAME session_id write
+# exactly one note (HIMMEL-3629 direction 2's "must not double-write" clause:
+# a pre-signal capture from close-wrapped-leg.sh and the hook's own normal
+# SessionEnd run can both fire for the same session). Without the guard the
+# second run's ABS_PATH collision handling (-2, -3, ...) means it takes a
+# DIFFERENT filename rather than silently overwriting — so an undeduped
+# double-write shows up as two note files, not one file written twice.
+SB="$(make_sandbox)"
+run_hook "$SB" >/dev/null
+run_hook "$SB" >/dev/null
+NOTE_COUNT="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT" = "1" ]; then
+    pass "HIMMEL-3629: two hook runs for the same session_id write exactly one note"
+else
+    fail "HIMMEL-3629: two hook runs for the same session_id wrote $NOTE_COUNT notes (want 1)"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0
