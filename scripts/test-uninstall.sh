@@ -2685,6 +2685,34 @@ assert_rc 'U21f wet run completes' 0 "$rc"
 u_same 'U21f legacy hud config kept (statusLine still wired, no ledger), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21f-legacy"
 assert_has 'U21f output names the kept legacy hud config' "kept (statusLine still wired, no ledger): $U_HOME/.claude/plugins/claude-hud/config.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
 
+# U21g (HIMMEL-3334 codex-1 round 2) — the ledger OWNS /statusLine (a real
+# "remove" verdict, same registration shape as RED18 in
+# test-uninstall-provenance.sh: noop json-key, no preexisted field -> defaults
+# false -> removed), and a legacy-path hud config is still present. A DRY-RUN
+# preview must match what the WET run would actually do: since unwire_settings
+# would remove the ledger-owned statusLine, the legacy config it still reads
+# today must preview as REMOVED, not "kept (statusLine still wired, no
+# ledger)" -- the old file-read check never sees --dry-run's untouched file
+# and always says "still wired" regardless of the ledger's real verdict.
+u_residue_fixture u21g
+printf '{"statusLine":{"type":"command","command":"bash \\"%s/scripts/statusline/bin/statusline.sh\\""}}\n' "$U17_SCRIPTS/.." > "$HIMMEL_USER_SETTINGS"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21g-legacy"
+(
+    export HOME="$U_HOME"
+    unset HIMMEL_PROVENANCE_DIR CLAUDE_CONFIG_DIR
+    prov_begin --writer install.sh -- seed-u21g >/dev/null
+    prov_record noop json-key "$HIMMEL_USER_SETTINGS" --unit /statusLine --scope user --class code --row user-settings \
+        --writer wire-statusline.sh --pre-json "$(jq -c .statusLine "$HIMMEL_USER_SETTINGS")" \
+        --post-json "$(jq -c .statusLine "$HIMMEL_USER_SETTINGS")" >/dev/null
+    prov_end ok >/dev/null
+)
+u_run --dry-run
+assert_rc 'U21g dry-run completes' 0 "$rc"
+assert_has 'U21g dry-run previews the legacy hud config as REMOVED, matching the ledger-owned statusLine strip' "DRY: would remove himmel hud config $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+assert_not_has 'U21g dry-run does NOT show the legacy config as kept' "kept (statusLine still wired, no ledger): $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+u_same 'U21g dry-run left the legacy hud config alone (preview only)' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21g-legacy"
+
 # U22 — dry and wet print the SAME number of user-settings unwire rows: one per
 # helper (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks).
 u_residue_fixture u22

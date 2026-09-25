@@ -2915,6 +2915,13 @@ EOF
       _mask_sl=1
     fi
   fi
+  # HIMMEL-3334 codex-1: exported so unwire_user_files can tell whether the
+  # statusLine THIS CALL just governed will actually survive, without
+  # re-reading $settings -- which under DRY_RUN is never mutated and would
+  # otherwise always read as "still wired" regardless of what a wet run
+  # would really do (ledger-owned strip included). Every path through this
+  # function reaches here with _mask_sl at its final value.
+  _UNWIRE_SETTINGS_SL_MASKED="$_mask_sl"
   if [ "$LEDGER_OK" -ne 1 ] || [ "$_seen_hd" -eq 0 ]; then
     _kept_as="no ledger"; [ "$LEDGER_OK" -eq 1 ] && _kept_as="not in ledger"
     if jq -e '((.env.HANDOVER_DIR? // "") | length) > 0' "$settings" >/dev/null 2>&1; then
@@ -3153,8 +3160,19 @@ unwire_user_files() {
       # HIMMEL-3334, the legacy path IS the config that still-active statusLine
       # reads, so deleting it here would break a HUD uninstall just reported
       # as left working. Kept, same as the new-path config's own no-ledger row.
+      # codex-1 round 2: prefer unwire_settings's own verdict for THIS run
+      # (_UNWIRE_SETTINGS_SL_MASKED, set right after it decides the
+      # statusLine's fate) over re-reading $USER_SETTINGS -- under DRY_RUN the
+      # file is never mutated, so a raw re-read would always say "still
+      # wired" even when a wet run's ledger-owned strip would actually remove
+      # it, mismatching the dry-run preview against real behaviour. Fall back
+      # to the file read only when unwire_settings was never called for this
+      # run (--skip-settings, a kept manifest class, or no file at all) --
+      # none of those touch the file either, so reading it is accurate there.
       _hud_sl_still_wired=0
-      if [ -n "$HIMMEL_SL_PAT" ] && [ -f "$USER_SETTINGS" ] && jq -e --arg sl "$HIMMEL_SL_PAT" \
+      if [ -n "$_UNWIRE_SETTINGS_SL_MASKED" ]; then
+        _hud_sl_still_wired="$_UNWIRE_SETTINGS_SL_MASKED"
+      elif [ -n "$HIMMEL_SL_PAT" ] && [ -f "$USER_SETTINGS" ] && jq -e --arg sl "$HIMMEL_SL_PAT" \
           '((.statusLine.command? // "") | test($sl))' "$USER_SETTINGS" >/dev/null 2>&1; then
         _hud_sl_still_wired=1
       fi
@@ -3251,6 +3269,12 @@ EOF
 
 _user_settings="$USER_SETTINGS"
 _project_settings="$(m_path "$_ix_pset")"
+# HIMMEL-3334 codex-1: reset before every call site that MAY skip
+# unwire_settings ($_user_settings) below (--skip-settings, a kept manifest
+# class, a missing file) -- unwire_user_files falls back to reading
+# $USER_SETTINGS directly in those cases, which is accurate precisely
+# because none of them mutate it either.
+_UNWIRE_SETTINGS_SL_MASKED=""
 if [ "$HALTED" -eq 1 ]; then
   echo "  skipped (halted after an earlier failure)"
   STEPS_INCOMPLETE+=("[6/8] settings unwire: skipped — halted after an earlier failure")
