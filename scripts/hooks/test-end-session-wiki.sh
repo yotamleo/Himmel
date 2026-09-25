@@ -818,6 +818,7 @@ extract_fn() {
     awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{" { p=1 } p { print } p && /^}/ { exit }' "$2"
 }
 RACE_DIR="$(mktemp -d)"
+# shellcheck disable=SC2034  # read by claim_capture/release_capture, extracted verbatim via eval below
 CAPTURED_DIR="$RACE_DIR/captured"
 eval "$(extract_fn _esw_sid_slug "$HOOK")"
 eval "$(extract_fn claim_capture "$HOOK")"
