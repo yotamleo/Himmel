@@ -24,8 +24,10 @@
 #      whole switch (exit 3, zero mutation — HIMMEL-2464, distinct from a real
 #      mid-switch error) and is named; the UNWIREABLE wire item is NOT named
 #      (correctly excluded).
+#   c2. the fail-closed pre-flight runs BEFORE the --dry-run check, so
+#      `--dry-run` predicting THIS refusal still exits 3, not 0.
 #   d. `--dry-run` prints the plan (unwire old, wire new, re-key) and changes
-#      nothing.
+#      nothing, for a switch that is not fail-closed.
 #   e. non-interactive without `--yes` refuses (exit 2, zero mutation).
 #   f. `scope get` / `scope status` print the current scope (the read path).
 
@@ -277,6 +279,32 @@ grepq "$outC" -i 'both scopes' || fail "case c: the refusal should explain the b
 snapCAfter=$(snapshot_dir "$work")
 [ "$snapCBefore" = "$snapCAfter" ] || fail "case c: fail-closed refusal should make ZERO mutations"
 echo "ok: case c — fail-closed names the unhandleable item, excludes the unwireable one, zero mutation"
+
+# ── case c2: the fail-closed pre-flight refuses BEFORE the --dry-run check
+# (HIMMEL-2464), so `--dry-run` predicting THIS refusal still exits 3, not 0 —
+# reuses case c's repoC manifest + stuck-item fixture, adding --dry-run. ───────
+targetC2="$work/targetC2"; mkdir -p "$targetC2/.claude"
+cacheC2="$work/cacheC2"; mkdir -p "$cacheC2"
+homeC2="$work/homeC2"; mkdir -p "$homeC2"
+write_cache "$cacheC2/install-profile.json" adopter project none "" inline "" lean
+printf '{"statusLine":{"command":"himmel"},"enabledPlugins":{"foo":"true"}}' > "$targetC2/.claude/settings.json"
+( cd "$targetC2" && HIMMELCTL_CACHE_DIR="$(winpath "$cacheC2")" "$node_bin" -e '
+  const fs = require("fs"), path = require("path");
+  const key = path.resolve(process.cwd());
+  const state = { schemaVersion: 1, harness: "claude", targets: { [key]: { profile: "core", scope: "project", items: { "wire-item": { enabled: true }, "stuck-item": { enabled: true } }, lastEnsured: null } } };
+  fs.writeFileSync(path.join(process.env.HIMMELCTL_CACHE_DIR, "state.json"), JSON.stringify(state));
+' )
+
+snapC2Before=$(snapshot_dir "$work")
+set +e
+outC2=$( cd "$targetC2" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC2")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC2")-luna-config.json" HOME="$homeC2" USERPROFILE="$(winpath "$homeC2")" \
+  "$node_bin" "$wizard" scope set user --dry-run 2>&1 </dev/null ); rcC2=$?
+set -e
+[ "$rcC2" -eq 3 ] || fail "case c2: --dry-run should still exit 3 on a fail-closed refusal (got rc=$rcC2): $outC2"
+grepq "$outC2" -F 'stuck-item' || fail "case c2: the refusal should name stuck-item (got: $outC2)"
+snapC2After=$(snapshot_dir "$work")
+[ "$snapC2Before" = "$snapC2After" ] || fail "case c2: a --dry-run fail-closed refusal should make ZERO mutations"
+echo "ok: case c2 — --dry-run predicting a fail-closed refusal still exits 3"
 
 # ── case d: --dry-run prints the plan, changes nothing ──────────────────────
 targetD="$work/targetD"; mkdir -p "$targetD"

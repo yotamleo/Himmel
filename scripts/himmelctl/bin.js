@@ -202,7 +202,9 @@ commands:
                           wired in BOTH scopes (fail-closed) — a refusal that
                           made ZERO mutation exits 3 (HIMMEL-2464), distinct
                           from exit 1/2 for a real error or a usage/consent
-                          problem; --dry-run predicting a refusal still exits 0
+                          problem; the fail-closed pre-flight runs BEFORE the
+                          --dry-run check, so --dry-run predicting THAT refusal
+                          also exits 3, not 0
   trust on|off|status     wire, unwire, or report the trust shadow ledger's hook
                           entries in this project's .claude/settings.json
                           (HIMMEL-1551; recorder HIMMEL-1529/1539/1547).
