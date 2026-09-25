@@ -148,7 +148,7 @@ EOF
     tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
     if [ "$tcount" -eq 1 ]; then
         TRANSCRIPT="$transcript_matches"
-        cap_cwd=$(grep -o '"cwd":"[^"]*"' "$TRANSCRIPT" 2>/dev/null | head -1 | sed -E 's/^"cwd":"(.*)"$/\1/')
+        cap_cwd=$(jq -r 'select(.cwd != null) | .cwd' "$TRANSCRIPT" 2>/dev/null | head -1)
         cap_sid=$(basename "$TRANSCRIPT" .jsonl)
         if [ -n "$cap_cwd" ]; then
             cap_payload=$(jq -n --arg t "$TRANSCRIPT" --arg s "$cap_sid" --arg c "$cap_cwd" --arg r "leg-close" \
