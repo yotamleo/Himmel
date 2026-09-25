@@ -367,7 +367,11 @@ verify_empty_diff_is_reviewed() {
     scrubbed_source=$(scrub_endpoint "$fetch_source")
 
     # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
-    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head "$fetch_source" "+${db}:${scratch_ref}" 2>/dev/null || fetch_rc=$?
+    # refs/heads/ qualifies the fetch source (CodeRabbit, HIMMEL-3634): a bare
+    # "$db" is subject to git's remote-ref DWIM order, which tries refs/tags/
+    # before refs/heads/ -- an origin tag sharing the default branch's name
+    # would silently redirect this authority to a ref a tag-pusher controls.
+    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head "$fetch_source" "+refs/heads/${db}:${scratch_ref}" 2>/dev/null || fetch_rc=$?
     if [ "$fetch_rc" -ne 0 ]; then
         echo "→ code-review: diff vs ${diff_base} was empty, but re-verifying against a FRESH fetch of ${scrubbed_source}'s ${db} failed (unreachable?) — refusing the push rather than trusting an unverifiable empty diff (bypass with SKIP_CR=1 or git push --no-verify)" >&2
         return 2

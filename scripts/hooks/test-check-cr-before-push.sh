@@ -1311,6 +1311,50 @@ else
     fail "control: normal push should still write a marker" "rc=$rc out=$out"
 fi
 
+echo "TEST: HIMMEL-3634 round-3 CodeRabbit — an origin tag sharing the default branch's name must not redirect the re-fetch authority"
+# git's remote-ref DWIM order for an unqualified fetch source tries
+# refs/tags/<name> before refs/heads/<name> (confirmed empirically: a bare
+# "main" fetch resolved to a same-named TAG, not the branch, in a scratch
+# probe). A tag pusher -- often a lower bar than branch-push rights -- could
+# otherwise redirect verify_empty_diff_is_reviewed's whole authority to
+# content they control, by pushing a tag named exactly "$db".
+R3_ORIGIN="$TMP_ROOT/r3-real-origin.git"
+git init -q --bare -b main "$R3_ORIGIN"
+R3_SEED="$TMP_ROOT/r3-seed"
+git init -q -b main "$R3_SEED"
+git -C "$R3_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$R3_SEED" push -q "$R3_ORIGIN" main
+R3_PUSHER="$TMP_ROOT/r3-pusher"
+git clone -q "$R3_ORIGIN" "$R3_PUSHER"
+git -C "$R3_PUSHER" branch -m main 2>/dev/null || true
+git -C "$R3_PUSHER" checkout -q -b feat/r3sneaky main
+echo 'function r3sneaky(){}' > "$R3_PUSHER/r3sneaky.sh"
+git -C "$R3_PUSHER" add r3sneaky.sh
+git -C "$R3_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "r3sneaky, never reviewed"
+r3_push_sha=$(git -C "$R3_PUSHER" rev-parse HEAD)
+# Attacker pushes their OWN unreviewed commit to origin as a same-named TAG --
+# a lower bar than pushing to the protected branch, and refs/heads/main on
+# origin never sees it. A DWIM-vulnerable re-fetch of the bare name "main"
+# would resolve to THIS tag (which trivially satisfies its own ancestor
+# check), not the real refs/heads/main.
+git -C "$R3_PUSHER" push -q "$R3_ORIGIN" "$r3_push_sha:refs/tags/main"
+# Falsify the LOCAL origin/main tracking ref to make resolve_diff_base see an
+# empty diff (same forging technique as P1(b)) -- what's under test here is
+# ONLY which ref verify_empty_diff_is_reviewed's re-fetch resolves to.
+git -C "$R3_PUSHER" update-ref refs/remotes/origin/main "$r3_push_sha"
+rc=0
+out=$(cd "$R3_PUSHER" && bash "$HOOK" origin "$R3_ORIGIN" <<< "refs/heads/feat/r3sneaky $r3_push_sha refs/heads/feat/r3sneaky $Z40" 2>&1) || rc=$?
+r3_marker="$R3_PUSHER/.git/cr-pending/feat/r3sneaky"
+if [ "$rc" -eq 2 ] && [ ! -f "$r3_marker" ]; then
+    pass "round-3 CodeRabbit: a same-named origin tag does not launder the empty-diff check -- refused, not skipped"
+else
+    fail "round-3 CodeRabbit: expected exit 2 + no marker" "rc=$rc marker=$([ -f "$r3_marker" ] && echo present || echo absent) / out: $out"
+fi
+case "$out" in
+    *"NOT reachable from"*"main"*) pass "round-3 CodeRabbit refusal names origin's main (the branch) as unreachable" ;;
+    *) fail "round-3 CodeRabbit refusal should name origin's main as unreachable" "out: $out" ;;
+esac
+
 # M1: the fork fetch (resolve_diff_base) and the new origin re-fetch
 # (verify_empty_diff_is_reviewed) must both be timeout-bounded. Prove the
 # wrap is actually wired by resolving $_TIMEOUT_BIN to a logging stub and
