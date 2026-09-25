@@ -107,8 +107,12 @@ run_race() {
       sleep 0.05
       waited=$((waited + 1))
     done
-    sleep 0.5
-    printf '{"external-write":true}\n' > "$repo/data.json"
+    if [ -e "$marker" ]; then
+      sleep 0.5
+      printf '{"external-write":true}\n' > "$repo/data.json"
+    else
+      echo "run_race: hold.sh never started within 5s; skipping the write (result is not a valid race)" >&2
+    fi
   ) & disown
   git -C "$repo" commit -qm race > "$repo/.race-commit.log" 2>&1
   wait 2>/dev/null
