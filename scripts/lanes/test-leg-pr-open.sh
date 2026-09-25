@@ -281,7 +281,7 @@ unset STUB_OPEN_PR 2>/dev/null || true
 GOOD_TITLE_FILE="$TMP_ROOT/good-title.txt"
 printf 'fix(x): [HIMMEL-1] foo\n' > "$GOOD_TITLE_FILE"
 out_m=$(JIRA_PROJECT_KEY=HIMMEL run_sut "$GOOD_TITLE_FILE" "$BODY_FILE"); rc_m=$?
-assert_eq "conventional title still opens the PR (rc=0)" "0" "$rc_m"
+assert_eq "conventional title still opens the PR (rc=0)" "0" "$rc_m" || echo "  (out=$out_m)" >&2
 argv_m=$(cat "$ARGV_LOG")
 contains "gh receives the conventional title" "$argv_m" "--title fix(x): [HIMMEL-1] foo"
 

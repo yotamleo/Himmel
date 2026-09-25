@@ -34,7 +34,7 @@ if [ "$rc_b" -eq 0 ]; then pass "conventional title passes (rc=0)"; else fail "c
 
 echo "TEST: a conventional title with no ticket is refused"
 err_c=$(bash "$SUT" "fix(x): foo with no ticket" 2>&1); rc_c=$?
-if [ "$rc_c" -ne 0 ]; then pass "ticketless title refused (rc!=0)"; else fail "ticketless title refused (rc!=0)" "got rc=$rc_c"; fi
+if [ "$rc_c" -ne 0 ]; then pass "ticketless title refused (rc!=0)"; else fail "ticketless title refused (rc!=0)" "got rc=$rc_c err=$err_c"; fi
 
 echo "TEST: usage error on no argument"
 err_d=$(bash "$SUT" 2>&1); rc_d=$?
