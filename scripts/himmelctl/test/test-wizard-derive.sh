@@ -1176,4 +1176,32 @@ diff <(printf '%s\n' "$directX") <(printf '%s\n' "$wizardAdoptBlockX") \
   || fail "caseX (HIMMEL-3308): install --dry-run's adopt.sh plan must agree LINE FOR LINE with a direct adopt.sh --dry-run invocation"
 echo "ok: caseX install --dry-run's adopt.sh plan agrees line for line with a direct adopt.sh --dry-run invocation"
 
+# ── Case Y (HIMMEL-3308 CR r2): a FAILING adopt.sh --dry-run must abort the
+# preview and propagate its rc, not print the rest of the plan as if the real
+# install would succeed.
+stubY="$work/caseY"; mkdir -p "$stubY"
+cY=$(build_path "$stubY" bash git jq python3 npm -- )
+hY="$work/hY"; mkdir -p "$hY"
+fixtureY="$work/caseY-fixture"; build_fixture "$fixtureY"
+cat > "$fixtureY/scripts/adopt.sh" <<STUB
+#!/usr/bin/env bash
+printf 'adopt.sh: %s\n' "\$*" >> "$fixtureY/adopt-calls.log"
+exit 3
+STUB
+chmod +x "$fixtureY/scripts/adopt.sh"
+cacheY="$work/caseY-profile.json"
+write_cache "$cacheY" adopter project none "" inline "" lean
+set +e
+outY=$(PATH="$cY" HOME="$hY" USERPROFILE="$(winpath "$hY")" HIMMELCTL_CACHE_DIR="$(winpath "$hY.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hY.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureY")" \
+       "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$cacheY")" \
+       </dev/null 2>&1); rcY=$?
+set -e
+[ "$rcY" -eq 3 ] || fail "caseY (HIMMEL-3308): a failing adopt.sh --dry-run should propagate its rc (got rc=$rcY): $outY"
+grepq "$outY" -F '3' \
+  || fail "caseY (HIMMEL-3308): expected the preview to name adopt.sh --dry-run's exit code (got: $outY)"
+grepq "$outY" -F 'would install (--dry-run' \
+  && fail "caseY (HIMMEL-3308): a failed adopt.sh --dry-run must abort before the rest of the preview prints (got: $outY)"
+echo "ok: caseY a failing adopt.sh --dry-run aborts the preview and propagates its rc"
+
 echo "PASS"

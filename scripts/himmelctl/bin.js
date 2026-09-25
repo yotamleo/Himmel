@@ -4147,7 +4147,11 @@ async function runPlan(answers, args) {
     // HIMMEL-3308: pass --dry-run through to adopt.sh itself and surface its
     // per-file plan, rather than stopping at the "derived: ..." line above,
     // which only restates the command instead of previewing its effect.
-    runSpawn({ argv: [...cmd.argv, '--dry-run'] });
+    const dryRunRc = runSpawn({ argv: [...cmd.argv, '--dry-run'] });
+    if (dryRunRc !== 0) {
+      console.error(`himmelctl: adopt.sh --dry-run exited ${dryRunRc}; preview incomplete`);
+      return dryRunRc;
+    }
     previewHandoverAndPlugins(answers);
     const lunaPreview = previewLunaSections(answers);
     applyHimmelctlPathShim(args);
