@@ -2725,6 +2725,56 @@ if [ "$(id -u)" -ne 0 ]; then
     bash "$LIB" release "$F_DOC" fenceA84 >/dev/null 2>&1
 fi
 
+# --- T85 (HIMMEL-3614 F1): a pre-HIMMEL-988 takeover mints no gen file. A
+# holder whose OWN lock also predates the gen fence (no gen/ at all) reads
+# gen "" both before AND after such a takeover -- the gen check alone can't
+# tell anything happened. The owner ARBITER file (`owner`, written O_EXCL by
+# every acquire, pre-988 copies included) must fence this instead.
+F_DOC="$F_HO/fence-t85.md"; : > "$F_DOC"
+F_LK="$(f_lockdir fence-t85)"
+bash "$LIB" acquire "$F_DOC" fenceOldA85 >/dev/null 2>&1
+rm -f "$F_LK/gen"   # simulate a lock minted before HIMMEL-988: no gen at all
+F_P="$TMPDIR_ROOT/pause-t85"; : > "$F_P"
+( QUEUE_LOCK_TEST_PAUSE_AT=heartbeat-verified QUEUE_LOCK_TEST_PAUSE_FILE="$F_P" \
+    bash "$LIB" heartbeat "$F_DOC" fenceOldA85 > "$F_P.out" 2>&1; echo $? > "$F_P.rc" ) &
+f_wait_reached "$F_P" || fail "T85: heartbeat never reached the pause point"
+# Simulate a PRE-988 takeover by hand: rm -rf + fresh mkdir + owner/owner.json,
+# exactly what a legacy copy of this script leaves behind -- crucially, no
+# gen/ file (m_lock_at, defined below, never writes one).
+rm -rf "$F_LK"
+m_lock_at "$F_LK" fenceNewB85 "$F_DOC" "$F_HO" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+rm -f "$F_P"; wait
+a_rc="$(cat "$F_P.rc" 2>/dev/null)"
+if [ "$a_rc" = 2 ] && grepq "$(cat "$F_P.out")" -i 'taken over' \
+    && grep -q '"session":"fenceNewB85"' "$F_LK/owner.json" 2>/dev/null; then
+    pass "T85: a pre-HIMMEL-988 takeover (no gen minted) still fences a stalled heartbeat via the owner arbiter"
+else
+    fail "T85: pre-988-style takeover not fenced: a_rc=$a_rc out=$(cat "$F_P.out") owner.json=$(cat "$F_LK/owner.json" 2>/dev/null)"
+fi
+
+# --- T86 (HIMMEL-3614 F2): an unreadable gen fails closed (T84, correct) but
+# every takeover then refuses SILENTLY -- status and the takeover refusal
+# must say WHY (the gen file is unreadable, not a real takeover) and name
+# QUEUE_LOCK_FORCE_RELEASE as the recovery.
+if [ "$(id -u)" -ne 0 ]; then
+    F_DOC="$F_HO/fence-t86.md"; : > "$F_DOC"
+    F_LK="$(f_lockdir fence-t86)"
+    bash "$LIB" acquire "$F_DOC" fenceA86 >/dev/null 2>&1
+    chmod 000 "$F_LK/gen"
+    status_out="$(bash "$LIB" status "$F_DOC" 2>&1)"
+    takeover_out="$(QUEUE_LOCK_TTL_SECONDS=0 bash "$LIB" acquire "$F_DOC" fenceB86 2>&1)"; takeover_rc=$?
+    chmod 644 "$F_LK/gen" 2>/dev/null
+    if grepq "$status_out" -i 'unreadable' && grepq "$status_out" -i 'QUEUE_LOCK_FORCE_RELEASE' \
+        && [ "$takeover_rc" = 2 ] && grepq "$takeover_out" -i 'unreadable' \
+        && grepq "$takeover_out" -i 'QUEUE_LOCK_FORCE_RELEASE' \
+        && grep -q '"session":"fenceA86"' "$F_LK/owner.json" 2>/dev/null; then
+        pass "T86: an unreadable gen names the cause in status + takeover output and points at QUEUE_LOCK_FORCE_RELEASE"
+    else
+        fail "T86: unreadable gen silent: status=$status_out takeover_rc=$takeover_rc takeover=$takeover_out owner.json=$(cat "$F_LK/owner.json" 2>/dev/null)"
+    fi
+    bash "$LIB" release "$F_DOC" fenceA86 >/dev/null 2>&1
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]
