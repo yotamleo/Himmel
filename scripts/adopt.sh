@@ -142,6 +142,14 @@ PORTABLE_FILES=(
   scripts/guardrails/lib.sh
   scripts/guardrails/guard-gh.sh
   scripts/lib/py-armor.sh
+  scripts/lib/forge.sh
+  scripts/lib/forge-github.sh
+  scripts/lib/forge-bitbucket.sh
+  scripts/lib/cr-trigger-ledger.sh
+  scripts/lib/cr-available.sh
+  scripts/lib/branch-shipped.sh
+  scripts/lib/worktree-inuse.sh
+  scripts/lib/worktree-fresh-lock.sh
   scripts/clean-garden.sh
   scripts/worktree.sh
   scripts/clean.sh

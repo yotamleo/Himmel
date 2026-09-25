@@ -537,8 +537,10 @@ claude --version</pre>
         <h4>What changes about how you work</h4>
         <ul>
           <li>Inside a Claude Code session, editing a file while you are on
-          the default branch is refused; you make a worktree first with the
-          <span class="mono">/worktree</span> command. That refusal is the
+          the default branch is refused; you make a worktree first by running
+          <span class="mono">bash scripts/worktree.sh feat/slug</span> (a
+          starter install doesn&rsquo;t ship the <span class="mono">/worktree</span>
+          slash command, only the script it wraps). That refusal is the
           point.</li>
           <li>Nothing else about committing or pushing changes by
           default. The git hooks are in place, but when the
@@ -854,13 +856,14 @@ bash ~/himmel/scripts/adopt.sh --profile core --scope project --dry-run</pre>
         refusal is the success signal. The refusal message contains
         <span class="mono">block-edit-on-main: refusing to edit</span> (we
         captured that by running the hook directly, not inside a live Claude
-        Code session, and did not capture what
-        <span class="mono">/worktree</span> prints). Then type
-        <span class="mono">/worktree feat/try-himmel</span> (a
-        <em>slash command</em>: a command you type inside a Claude Code
-        session, starting with <span class="mono">/</span>) and ask again;
-        the edit now goes through in the new worktree. Leave with
-        <span class="mono">/exit</span>.</p>
+        Code session). A starter install does not ship a
+        <span class="mono">/worktree</span> <em>slash command</em> (a command
+        you type inside a Claude Code session, starting with
+        <span class="mono">/</span>) &mdash; only the script it wraps. So
+        instead ask it to run
+        <span class="mono">bash scripts/worktree.sh feat/try-himmel</span>
+        and ask again; the edit now goes through in the new worktree. Leave
+        with <span class="mono">/exit</span>.</p>
       </li>
 
       <li>

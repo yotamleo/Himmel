@@ -374,6 +374,46 @@ grepq "$outC2435" -i "already in place" \
   && fail "HIMMEL-2435 negative control: a genuinely different target should NOT print the self-copy skip note (got: $outC2435)"
 echo "ok: HIMMEL-2435 negative control a genuinely different --target still gets its portable core copied (the guard does not over-skip)"
 
+# ── 1e. HIMMEL-3326: the adoption page's worktree step must resolve in a
+# --scope project install ────────────────────────────────────────────────────
+# A starter (--scope project) install ships scripts/worktree.sh + its
+# sourced lib/ closure but NO .claude/commands/worktree.md -- there is no
+# installed plugin that ships one either -- so the page's step must tell the
+# reader to run the SCRIPT, not the `/worktree` slash command (which cannot
+# resolve there). Prove it two ways: (a) the page's own text names the
+# working command, not the absent slash command, for the starter trail; (b)
+# that command, run inside a real starter install, actually creates a
+# worktree.
+page="$repo_root/docs/adoption-trail.html"
+[ -f "$page" ] || fail "HIMMEL-3326: $page not found"
+grepq "$(cat "$page")" 'bash scripts/worktree.sh feat/try-himmel' \
+  || fail "HIMMEL-3326: adoption-trail.html's starter walkthrough must tell the reader to run bash scripts/worktree.sh (the /worktree slash command does not exist in a --scope project install)"
+
+wtpage_bare="$work/wtpage-origin.git"
+git init -q --bare "$wtpage_bare" 2>/dev/null || git init -q --bare "$wtpage_bare"
+wtpage="$work/wtpage-repo"; mkdir -p "$wtpage"
+git init -q --initial-branch=main "$wtpage" 2>/dev/null || { git init -q "$wtpage"; git -C "$wtpage" symbolic-ref HEAD refs/heads/main || true; }
+git -C "$wtpage" config user.email t@test.com
+git -C "$wtpage" config user.name t
+git -C "$wtpage" config commit.gpgsign false
+printf 'base\n' > "$wtpage/README"
+git -C "$wtpage" add README
+git -C "$wtpage" commit -q -m base
+git -C "$wtpage" branch -m main 2>/dev/null || true
+git -C "$wtpage" remote add origin "$wtpage_bare"
+git -C "$wtpage" push -q origin main
+home1e="$work/home-1e"; mkdir -p "$home1e"
+HOME="$home1e" bash "$adopt" --profile core --scope project --target "$wtpage" >/dev/null
+[ -f "$wtpage/scripts/worktree.sh" ] || fail "HIMMEL-3326: starter install did not land scripts/worktree.sh"
+[ -f "$wtpage/.claude/commands/worktree.md" ] && fail "HIMMEL-3326 precondition: a starter install must NOT ship the /worktree slash command (test assumption broken)"
+set +e
+out1e=$(cd "$wtpage" && bash scripts/worktree.sh feat/try-himmel 2>&1); rc1e=$?
+set -e
+[ "$rc1e" -eq 0 ] || fail "HIMMEL-3326: the page's documented command (bash scripts/worktree.sh feat/try-himmel) failed in a real starter install (rc=$rc1e): $out1e"
+[ -d "$wtpage/.claude/worktrees/feat+try-himmel" ] \
+  || fail "HIMMEL-3326: bash scripts/worktree.sh feat/try-himmel did not create .claude/worktrees/feat+try-himmel: $out1e"
+echo "ok: HIMMEL-3326 the adoption page's starter-trail worktree step (bash scripts/worktree.sh) resolves and works in a real --scope project install"
+
 # ── 2. merge preserves existing settings ─────────────────────────────────────
 proj2="$work/proj2"; mkdir -p "$proj2/.claude"
 printf '%s' '{"permissions":{"allow":["Bash(ls)"]},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash /pre/existing.sh"}]}]}}' > "$proj2/.claude/settings.json"
@@ -2163,8 +2203,8 @@ p4bk="$(jq -r '.pre.backup' <<< "$row")"
 row="$(prov_row "$p4led/provenance.jsonl" /scripts/hooks/block-edit-on-main.sh)"
 [ "$(jq -r '[.op,.pre.state,.class]|join(",")' <<< "$row")" = "create,absent,code" ] \
   || fail "HIMMEL-3332 S4: a copy into a clean target must be a create row: $row"
-[ "$(jq -sr '[.[]|select(.kind=="file" and .manifest_row=="adopter-scripts")]|length' "$p4led/provenance.jsonl")" = "13" ] \
-  || fail "HIMMEL-3332 S4: expected 13 file rows (one per PORTABLE_FILES entry)"
+[ "$(jq -sr '[.[]|select(.kind=="file" and .manifest_row=="adopter-scripts")]|length' "$p4led/provenance.jsonl")" = "21" ] \
+  || fail "HIMMEL-3332 S4: expected 21 file rows (one per PORTABLE_FILES entry)"
 echo "ok: HIMMEL-3332 S4 copy_portable records create + replace rows; the user's bytes and mode are backed up"
 
 # a re-run finds our own bytes already there: noop rows, and NO new backups
