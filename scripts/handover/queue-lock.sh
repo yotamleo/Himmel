@@ -1329,8 +1329,13 @@ _ql_emit_close_evidence() {
 # _ql_new_gen -- a generation id unique per acquire on this host.
 _ql_new_gen() { printf 'g%s-%s-%s%s' "$(_ql_now_epoch)" "$$" "$RANDOM" "$RANDOM"; }
 
-# _ql_read_gen <lockdir> -- the lock's generation, "" when it has none.
-_ql_read_gen() { cat "$1/gen" 2>/dev/null || true; }
+# _ql_read_gen <lockdir> -- the lock's generation, "" when it has none. A gen
+# that exists but cannot be read fails CLOSED: each read yields a different
+# sentinel, so two reads never compare equal and the fence refuses.
+_ql_read_gen() {
+    [ -e "$1/gen" ] || return 0
+    cat "$1/gen" 2>/dev/null || printf '!unreadable-%s-%s%s' "$BASHPID" "$RANDOM" "$RANDOM"
+}
 
 # _ql_brand_gen <lockdir> -- write a fresh generation (O_EXCL). rc!=0 = not
 # written; the caller treats that like a failed owner.json write.

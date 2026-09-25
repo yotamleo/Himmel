@@ -2705,6 +2705,26 @@ else
 fi
 bash "$LIB" release "$F_DOC" fenceB83 >/dev/null 2>&1
 
+# T84: an unreadable gen fails CLOSED. Two failed reads must never compare
+# equal, or heartbeat/release would pass the fence without knowing the
+# generation. (Skipped as root: chmod 000 does not stop root reading.)
+if [ "$(id -u)" -ne 0 ]; then
+    F_DOC="$F_HO/fence-t84.md"; : > "$F_DOC"
+    F_LK="$(f_lockdir fence-t84)"
+    bash "$LIB" acquire "$F_DOC" fenceA84 >/dev/null 2>&1
+    chmod 000 "$F_LK/gen"
+    hb_out="$(bash "$LIB" heartbeat "$F_DOC" fenceA84 2>&1)"; hb_rc=$?
+    rel_out="$(bash "$LIB" release "$F_DOC" fenceA84 2>&1)"; rel_rc=$?
+    chmod 644 "$F_LK/gen" 2>/dev/null
+    if [ "$hb_rc" = 2 ] && [ "$rel_rc" = 2 ] && [ -d "$F_LK" ] \
+        && grep -q '"session":"fenceA84"' "$F_LK/owner.json" 2>/dev/null; then
+        pass "T84: an unreadable gen fails closed -- heartbeat and release refuse (rc=2), the lock is untouched"
+    else
+        fail "T84: unreadable gen: hb_rc=$hb_rc rel_rc=$rel_rc hb=$hb_out rel=$rel_out lock=$(ls -d "$F_LK" 2>/dev/null || echo GONE)"
+    fi
+    bash "$LIB" release "$F_DOC" fenceA84 >/dev/null 2>&1
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]
