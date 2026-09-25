@@ -384,8 +384,11 @@ if [ -n "${C2:-}" ]; then
   {
     printf '#!/usr/bin/env bash\n'
     printf 'for a in "$@"; do\n'
+    # shellcheck disable=SC2016  # writing the stub's own literal source; the stub's shell expands this, not this one
     printf '  if [ "$a" = --show-toplevel ]; then\n'
+    # shellcheck disable=SC2016  # same: literal source for the generated stub
     printf '    out=$(%q "$@") || exit $?\n' "$real_git"
+    # shellcheck disable=SC2016  # same: literal source for the generated stub
     printf '    printf '"'"'C:%%s\\n'"'"' "$out"\n'
     printf '    exit 0\n'
     printf '  fi\n'
@@ -405,7 +408,11 @@ if [ -n "${C2:-}" ]; then
   c2_commit_rc=$?
   check "C2: a real commit through the installed hook succeeds" "$c2_commit_rc" "0"
   [ "$c2_commit_rc" -ne 0 ] && echo "  C2 commit output: $c2_commit_out"
-  [ -e "$C2/.git-hook-hold/started" ] && check "C2: the always_run local hook actually ran" ran ran || check "C2: the always_run local hook actually ran" "did not run" ran
+  if [ -e "$C2/.git-hook-hold/started" ]; then
+    check "C2: the always_run local hook actually ran" ran ran
+  else
+    check "C2: the always_run local hook actually ran" "did not run" ran
+  fi
 fi
 
 # ---------------------------------------------------------------------------
