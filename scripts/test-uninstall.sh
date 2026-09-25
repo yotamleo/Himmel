@@ -2682,8 +2682,8 @@ printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/s
 cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21f-legacy"
 u_run_fx
 assert_rc 'U21f wet run completes' 0 "$rc"
-u_same 'U21f legacy hud config kept (statusLine still wired, no ledger), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21f-legacy"
-assert_has 'U21f output names the kept legacy hud config' "kept (statusLine still wired, no ledger): $U_HOME/.claude/plugins/claude-hud/config.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+u_same 'U21f legacy hud config kept (statusLine still wired), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21f-legacy"
+assert_has 'U21f output names the kept legacy hud config' "kept (statusLine still wired): $U_HOME/.claude/plugins/claude-hud/config.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
 
 # U21g (HIMMEL-3334 codex-1 round 2) — the ledger OWNS /statusLine (a real
 # "remove" verdict, same registration shape as RED18 in
@@ -2712,7 +2712,7 @@ cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21g-legacy"
 u_run --dry-run
 assert_rc 'U21g dry-run completes' 0 "$rc"
 assert_has 'U21g dry-run previews the legacy hud config as REMOVED, matching the ledger-owned statusLine strip' "DRY: would remove himmel hud config $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
-assert_not_has 'U21g dry-run does NOT show the legacy config as kept' "kept (statusLine still wired, no ledger): $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+assert_not_has 'U21g dry-run does NOT show the legacy config as kept' "kept (statusLine still wired): $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
 u_same 'U21g dry-run left the legacy hud config alone (preview only)' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21g-legacy"
 
 # U22 — dry and wet print the SAME number of user-settings unwire rows: one per

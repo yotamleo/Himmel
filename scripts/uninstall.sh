@@ -3178,7 +3178,7 @@ unwire_user_files() {
       fi
       _hud_legacy="${_p%/*}/plugins/claude-hud/config.json"
       if [ "$_hud_sl_still_wired" -eq 1 ] && [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ]; then
-        echo "  kept (statusLine still wired, no ledger): $_hud_legacy — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_hud_legacy"
+        echo "  kept (statusLine still wired): $_hud_legacy — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_hud_legacy"
       elif [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ] && command -v jq >/dev/null 2>&1; then
         # HIMMEL-3334: unwire-hud-config.sh sets `set -euo pipefail` when
         # sourced, so it is sourced in a subshell (same pattern as the
