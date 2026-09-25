@@ -342,8 +342,13 @@ _ensure_install_precommit() {
   # install) is not something uv can upgrade, so check `uv tool list` before
   # taking that branch; anything else falls through to the plain install
   # below, which places a uv-managed pre-commit on PATH (CR follow-up).
+  # Captured, not piped straight into grep -q: under this file's
+  # `set -o pipefail`, an early grep match SIGPIPEs `uv tool list` and the
+  # pipeline status becomes the producer's non-zero one, flipping a genuine
+  # match to look like a failure (grep-q-pipe-under-pipefail, HIMMEL-1430).
+  uv_tool_list=$("$uv_bin" tool list 2>/dev/null)
   if [ "$mode" = upgrade ] && command -v pre-commit >/dev/null 2>&1 \
-    && "$uv_bin" tool list 2>/dev/null | grep -q '^pre-commit '; then
+    && printf '%s\n' "$uv_tool_list" | grep -q '^pre-commit '; then
     echo "  ensure-tools: upgrading 'pre-commit' via 'uv tool upgrade'..."
     "$uv_bin" tool upgrade pre-commit >/dev/null 2>&1 || { echo "  ensure-tools: 'uv tool upgrade pre-commit' failed -- run it yourself: $uv_bin tool upgrade pre-commit" >&2; return 1; }
     return 0
