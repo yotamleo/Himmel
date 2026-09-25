@@ -23,7 +23,7 @@ if [ -z "$realhome_line" ] || [ -z "$preflight_line" ] || [ -z "$first_cli_line"
     echo "FAIL could not locate the real-\$HOME-under-\$TMP check, the live-operator-marker check, or the first uninstall.sh invocation in $SUITE"
     FAILED=$((FAILED + 1))
 else
-    abort_line=$(awk -v lo="$realhome_line" -v hi="$first_cli_line" \
+    abort_line=$(awk -v lo="$preflight_line" -v hi="$first_cli_line" \
         'NR > lo && NR < hi && /FAILED" -gt 0/ {print NR; exit}' "$SUITE")
     if [ -n "$abort_line" ]; then
         # exit 1 must appear within the next 4 lines — i.e. inside the SAME
