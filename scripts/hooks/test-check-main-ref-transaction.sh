@@ -633,6 +633,44 @@ else
     bad "sanity check failed: unreachable oid on main was allowed (rc=$unit_rc out=$out)"
 fi
 
+# ---------------------------------------------------------------------------
+# HIMMEL-2640: the override-log path is resolved via `git rev-parse
+# --git-common-dir`, same relative-to-cwd caveat as install-cr-pre-push-legacy.sh
+# and check-hookspath.sh. A thin `git` stub that makes the BARE
+# `--git-common-dir` call return a garbage relative value -- while every
+# other invocation, including the fixed code's `--path-format=absolute
+# --git-common-dir` call, passes straight through to the real git -- isolates
+# the join logic: the old code joined that bare (possibly relative) value
+# against repo_root by hand and could resolve the override log to the wrong
+# place; the fixed code validates a `--path-format=absolute` value instead
+# and gets the real common dir regardless of what the bare call would have
+# said. This does not depend on the station's git actually emitting a
+# relative --git-common-dir for this shape of repo (it doesn't, on git
+# 2.55) -- it exercises the SCRIPT's own handling of that documented,
+# version-dependent case directly.
+real_git_bin=$(command -v git) || bad "cannot resolve real git for the stub"
+stub_bin=$(mktemp -d "${TMPDIR:-/tmp}/himmel-mainref-stub.XXXXXX") || bad "cannot create stub bin dir"
+cat > "$stub_bin/git" <<STUBEOF
+#!/usr/bin/env bash
+if [ "\$1" = "rev-parse" ] && [ "\$2" = "--git-common-dir" ] && [ "\$#" -eq 2 ]; then
+    echo "not/really/relative/to/anything/.git"
+    exit 0
+fi
+exec "$real_git_bin" "\$@"
+STUBEOF
+chmod +x "$stub_bin/git"
+
+stub_rc=0
+stub_out=$(printf '%s %s %s\n' "$base_oid" "$unreachable_oid" "refs/heads/main" | ( cd "$work" && PATH="$stub_bin:$PATH" MAIN_REF_TRANSACTION_OK=1 bash "$CHECK" prepared 2>&1 )) || stub_rc=$?
+stub_log="$work/.git/main-ref-overrides.log"
+if [ "$stub_rc" -eq 0 ] && [ -f "$stub_log" ] && grep -q "ref=refs/heads/main" "$stub_log"; then
+    ok "override-log path resolves via the primary git-common-dir even when the bare --git-common-dir call returns a relative value"
+else
+    bad "override log did not resolve correctly under a relative bare --git-common-dir (rc=$stub_rc out=$stub_out log=$([ -f "$stub_log" ] && cat "$stub_log" || echo '<missing>'))"
+fi
+rm -rf "$stub_bin"
+rm -f "$stub_log"
+
 # ===========================================================================
 # Installer-only cases.
 # ===========================================================================
@@ -1187,6 +1225,102 @@ if [ ! -e "$BASE/multiwt2-b/.githooks/reference-transaction" ]; then
     ok "partial worktree-install failure: the location that genuinely could not be written to is genuinely absent (not silently reported as installed)"
 else
     bad "partial worktree-install failure: $BASE/multiwt2-b/.githooks/reference-transaction exists despite the read-only directory -- the failure was not real"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2644 (1): a reinstall used to `cat > hook_path` directly -- a plain
+# redirect opens the target O_TRUNC before a byte of the new content is
+# written, so a concurrent git process racing the reinstall (reference-
+# transaction fires on EVERY ref update) could observe an empty or
+# partially-written hook. Fixed by writing to a same-directory temp file and
+# `mv`-ing it over the target -- a rename within one filesystem is atomic,
+# so any reader sees either the complete old hook or the complete new one,
+# never a truncated file in between.
+#
+# Proven two ways, per the ticket's own explicit fallback: a deterministic
+# RACE is impractical to construct reliably in a shell test, so this asserts
+# the atomicity property directly instead of chasing a timing window.
+#   (a) inode evidence: truncate-in-place keeps the SAME inode; replacing
+#       the file via rename gets a NEW one.
+#   (b) writer-failure evidence: a hostile `mv` on PATH that always fails
+#       makes the FINAL rename step fail -- the previously-installed hook
+#       must be byte-identical and still executable afterwards (the write
+#       never reached it), and the installer itself must report failure.
+# ---------------------------------------------------------------------------
+atomic_inode() { stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1" 2>/dev/null; }
+
+work=$(mk_sandbox atomic1)
+install_hook "$work"
+atomic_hook="$work/.git/hooks/reference-transaction"
+atomic_before_inode=$(atomic_inode "$atomic_hook")
+install_hook "$work"
+atomic_after_inode=$(atomic_inode "$atomic_hook")
+if [ -n "$atomic_before_inode" ] && [ -n "$atomic_after_inode" ] && [ "$atomic_before_inode" != "$atomic_after_inode" ]; then
+    ok "atomic reinstall: a reinstall replaces the hook via rename (inode changed from $atomic_before_inode to $atomic_after_inode), never truncates the live file in place"
+else
+    bad "atomic reinstall: reinstall did not change the hook's inode (before=$atomic_before_inode after=$atomic_after_inode) -- it may still be truncating in place"
+fi
+
+work=$(mk_sandbox atomic2)
+install_hook "$work"
+atomic2_hook="$work/.git/hooks/reference-transaction"
+atomic2_before_content=$(cat "$atomic2_hook")
+atomic2_fake_bin="$BASE/atomic2-fake-mv-bin"
+mkdir -p "$atomic2_fake_bin"
+cat > "$atomic2_fake_bin/mv" <<'MVSHIM'
+#!/usr/bin/env bash
+exit 1
+MVSHIM
+chmod +x "$atomic2_fake_bin/mv"
+atomic2_rc=0
+atomic2_log="$BASE/atomic2-install.log"
+( cd "$work" && PATH="$atomic2_fake_bin:$PATH" bash "$INSTALL" ) >"$atomic2_log" 2>&1 || atomic2_rc=$?
+if [ "$atomic2_rc" -ne 0 ]; then
+    ok "atomic reinstall: a failed final rename makes the installer report non-zero (rc=$atomic2_rc)"
+else
+    bad "atomic reinstall: installer exited 0 despite the final rename failing (see $atomic2_log)"
+fi
+if [ -x "$atomic2_hook" ] && [ "$(cat "$atomic2_hook")" = "$atomic2_before_content" ]; then
+    ok "atomic reinstall: the previously-installed hook survives byte-identical and executable when the rename that would replace it fails"
+else
+    bad "atomic reinstall: the previously-installed hook was NOT left intact after a failed rename (see $atomic2_log)"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2644 (2): process substitution discarded `git worktree list
+# --porcelain -z`'s own exit status, so an enumeration that emits SOME
+# entries and then fails partway used to be indistinguishable from one that
+# completed -- the entries already seen install fine, so ok_count/fail_count
+# alone looked like full coverage. Reproduced with a REAL git shim (same
+# shape as the round-8 enumeration-failure case above) that prints exactly
+# ONE worktree entry and then exits non-zero, on a repo that has a SECOND,
+# real worktree the installer never gets a chance to see.
+# ---------------------------------------------------------------------------
+work=$(mk_sandbox partialenum)
+git -C "$work" worktree add -q -b feat/partialenum-a "$BASE/partialenum-a" >/dev/null 2>&1
+partial_fake_git_bin="$BASE/partialenum-fake-git-bin"
+mkdir -p "$partial_fake_git_bin"
+cat > "$partial_fake_git_bin/git" <<GITSHIM
+#!/usr/bin/env bash
+if [ "\$1" = "worktree" ] && [ "\$2" = "list" ]; then
+    printf 'worktree %s\0' "$work"
+    exit 1
+fi
+exec "$real_git" "\$@"
+GITSHIM
+chmod +x "$partial_fake_git_bin/git"
+partialenum_rc=0
+partialenum_log="$BASE/partialenum-install.log"
+( cd "$work" && PATH="$partial_fake_git_bin:$PATH" bash "$INSTALL" ) >"$partialenum_log" 2>&1 || partialenum_rc=$?
+if [ "$partialenum_rc" -ne 0 ]; then
+    ok "partial enumeration failure: installer's own exit code is non-zero (rc=$partialenum_rc) even though the one entry it DID see installed fine -- the second, unseen worktree's coverage is unknown, not silently reported as complete"
+else
+    bad "partial enumeration failure: installer exited 0 despite worktree enumeration emitting one entry and then genuinely failing on a repo with a second, real worktree (see $partialenum_log)"
+fi
+if [ -x "$work/.git/hooks/reference-transaction" ] && grep -Fq "himmel-main-ref-transaction-v1" "$work/.git/hooks/reference-transaction"; then
+    ok "partial enumeration failure: the entry that WAS seen before the failure still gets its hook installed"
+else
+    bad "partial enumeration failure: the entry seen before the failure did not get its hook installed"
 fi
 
 echo ""

@@ -39,6 +39,21 @@
 # PLATFORMS_TESTED_OK, EDIT_ON_MAIN_OK, READ_SECRETS_OK).
 set -uo pipefail
 
+# looks_like_absolute_path VALUE -- true only if VALUE is a plausible
+# absolute path. --path-format=absolute needs git >= 2.31, but this repo's
+# declared minimum is git 2.30 (docs/setup/new-machine.md); an unrecognised
+# --path-format is not rejected by `git rev-parse` -- it is echoed back as an
+# ordinary output line and the command still exits 0 with a garbage,
+# non-absolute value (see scripts/hooks/install-main-ref-transaction.sh's
+# GIT VERSION note, proven directly rather than assumed). Validate the VALUE,
+# never trust the exit status alone.
+looks_like_absolute_path() {
+    case "$1" in
+        /*|[A-Za-z]:[/\\]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # --- Capability checks (fail CLOSED on missing deps) ---
 if ! command -v git >/dev/null 2>&1; then
     echo "check-hookspath: git not on PATH — refusing to evaluate" >&2
@@ -84,21 +99,22 @@ fi
 # linked worktree dir but --git-common-dir returns the primary repo's
 # `.git` — that's where the canonical pre-commit hooks live. We accept
 # core.hooksPath pointing inside EITHER as valid.
-gitcommondir=$(git rev-parse --git-common-dir 2>/dev/null || true)
-if [ -z "$gitcommondir" ]; then
-    echo "check-hookspath: could not resolve git-common-dir — refusing to evaluate" >&2
+#
+# HIMMEL-2640: --git-common-dir is relative to CWD, not to toplevel — joining
+# it against toplevel (as this used to do) is only correct when cwd IS
+# toplevel. Invoked from a subdirectory, that join anchored the wrong number
+# of ".." segments and produced a gitcommondir that did not point at the
+# real .git at all. Direction: this makes the OR-check below spuriously miss
+# a legitimate git-common-dir match, so a CORRECTLY configured
+# core.hooksPath pointing at the shared .git could be reported as outside
+# the repo (exit 1) — a false REJECTION of a valid config, not a missed
+# misconfiguration; the fail-closed exit-1 behaviour itself is unaffected.
+# --path-format=absolute (git 2.31+) resolves correctly from any cwd.
+gitcommondir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+if ! looks_like_absolute_path "$gitcommondir"; then
+    echo "check-hookspath: could not resolve an absolute git-common-dir (got: '$gitcommondir'; this repo needs git >= 2.31 for --path-format) — refusing to evaluate" >&2
     exit 2
 fi
-# --git-common-dir returns a path relative to cwd in some git versions;
-# anchor it to toplevel if not absolute. Same drive-relative caveat as
-# below — require a path separator after the colon to count as absolute.
-case "$gitcommondir" in
-    /*|[A-Za-z]:[/\\]*)
-        ;;
-    *)
-        gitcommondir="$toplevel/$gitcommondir"
-        ;;
-esac
 
 # Drive-relative paths like "C:foo" (no separator after the colon) are
 # NOT absolute on Windows — they resolve against the per-drive cwd, not

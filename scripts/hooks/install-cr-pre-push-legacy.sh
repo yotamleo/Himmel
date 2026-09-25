@@ -3,18 +3,30 @@
 # raw ref stream before pre-commit collapses it to PRE_COMMIT_* for local hooks.
 set -uo pipefail
 
-repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
-    echo "install-cr-pre-push-legacy: not a git repository" >&2
-    exit 2
+# looks_like_absolute_path VALUE -- true only if VALUE is a plausible
+# absolute path. --path-format=absolute needs git >= 2.31, but this repo's
+# declared minimum is git 2.30 (docs/setup/new-machine.md); an unrecognised
+# --path-format is not rejected by `git rev-parse` -- it is echoed back as an
+# ordinary output line and the command still exits 0 with a garbage,
+# non-absolute value (see scripts/hooks/install-main-ref-transaction.sh's
+# GIT VERSION note, proven directly rather than assumed). Validate the VALUE,
+# never trust the exit status alone.
+looks_like_absolute_path() {
+    case "$1" in
+        /*|[A-Za-z]:[/\\]*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
-git_dir=$(git rev-parse --git-common-dir 2>/dev/null) || {
-    echo "install-cr-pre-push-legacy: cannot resolve git common dir" >&2
+
+# --path-format=absolute (git 2.31+) resolves the common dir correctly from
+# ANY cwd, including a subdirectory -- a manual join against --show-toplevel
+# is wrong there, since --git-common-dir is relative to the invoking dir, not
+# the repo root.
+git_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || git_dir=""
+if ! looks_like_absolute_path "$git_dir"; then
+    echo "install-cr-pre-push-legacy: cannot resolve an absolute git common dir (got: '$git_dir'; this repo needs git >= 2.31 for --path-format)" >&2
     exit 2
-}
-case "$git_dir" in
-    /*|[A-Za-z]:[/\\]*) ;;
-    *) git_dir="$repo_root/$git_dir" ;;
-esac
+fi
 
 legacy_hook="$git_dir/hooks/pre-push.legacy"
 owner_marker="# himmel-cr-ref-stream-v1"

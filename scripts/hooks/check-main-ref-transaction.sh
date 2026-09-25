@@ -142,12 +142,17 @@ origin_main_resolved=1
 git rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1 || origin_main_resolved=0
 
 # git-common-dir for the override log -- shared by every linked worktree.
-# Same relative/absolute normalisation as install-cr-pre-push-legacy.sh.
-common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || common_dir=""
+# HIMMEL-2640: --git-common-dir is relative to CWD, not to repo_root -- the
+# manual join this used to do (matching install-cr-pre-push-legacy.sh's old
+# bug) was wrong from a subdirectory. --path-format=absolute resolves
+# correctly from any cwd; git < 2.31 echoes an unrecognised --path-format
+# back as output and still exits 0 (see install-main-ref-transaction.sh's
+# GIT VERSION note), so the value is validated, never trusted on exit status
+# alone. Failure here is non-fatal (log_override below just skips logging).
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common_dir=""
 case "$common_dir" in
     /*|[A-Za-z]:[/\\]*) ;;
-    "") ;;
-    *) common_dir="${repo_root:-.}/$common_dir" ;;
+    *) common_dir="" ;;
 esac
 override_log="${common_dir:+$common_dir/main-ref-overrides.log}"
 

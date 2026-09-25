@@ -198,7 +198,22 @@ install_one_hook() {
         echo "install-main-ref-transaction: cannot create hooks directory for $hook_path" >&2
         return 2
     fi
-    if ! cat > "$hook_path" <<'HOOK'
+    # Write the shim to a SAME-DIRECTORY temp file, then `mv` it over
+    # hook_path -- never a direct `cat > hook_path` (a plain redirect opens
+    # the target O_TRUNC before a single byte of the new content is
+    # written, so a concurrent `git` operation racing this reinstall -- and
+    # reference-transaction fires on EVERY ref update -- can observe an
+    # empty or partially-written hook and proceed unprotected). A rename
+    # within one filesystem is atomic: any reader sees either the complete
+    # old hook or the complete new one, never a truncated file in between.
+    # Same directory (not $TMPDIR) so the rename cannot cross filesystems,
+    # which would make it a copy, not a rename.
+    local tmp_path
+    tmp_path=$(mktemp "$(dirname "$hook_path")/.himmel-main-ref-transaction.XXXXXX" 2>/dev/null) || {
+        echo "install-main-ref-transaction: cannot create a temp file next to $hook_path" >&2
+        return 2
+    }
+    if ! cat > "$tmp_path" <<'HOOK'
 #!/usr/bin/env bash
 # himmel-main-ref-transaction-v1
 # Shim installed by scripts/hooks/install-main-ref-transaction.sh
@@ -254,18 +269,28 @@ fi
 exec bash "$target" "$@"
 HOOK
     then
-        echo "install-main-ref-transaction: cannot write $hook_path" >&2
+        echo "install-main-ref-transaction: cannot write $tmp_path" >&2
+        rm -f "$tmp_path"
         return 2
     fi
-    if ! chmod +x "$hook_path"; then
-        echo "install-main-ref-transaction: cannot make $hook_path executable" >&2
+    if ! chmod +x "$tmp_path"; then
+        echo "install-main-ref-transaction: cannot make $tmp_path executable" >&2
+        rm -f "$tmp_path"
         return 2
     fi
     # Verify the bit actually took -- git silently ignores a non-executable
     # hook on Unix, so a chmod that reported success but didn't stick (an
-    # unusual filesystem/mount) must not be reported as installed.
-    if [ ! -x "$hook_path" ]; then
-        echo "install-main-ref-transaction: $hook_path is not executable after chmod +x -- refusing to report success" >&2
+    # unusual filesystem/mount) must not be reported as installed. Checked
+    # on the TEMP file, before the rename -- the live hook_path (if any)
+    # must never be touched by a write that ends up failing here.
+    if [ ! -x "$tmp_path" ]; then
+        echo "install-main-ref-transaction: $tmp_path is not executable after chmod +x -- refusing to report success" >&2
+        rm -f "$tmp_path"
+        return 2
+    fi
+    if ! mv -f "$tmp_path" "$hook_path"; then
+        echo "install-main-ref-transaction: cannot move $tmp_path into place at $hook_path -- any previously-installed hook there is untouched" >&2
+        rm -f "$tmp_path"
         return 2
     fi
     echo "Himmel main-branch reference-transaction guard installed at $hook_path"
@@ -312,6 +337,20 @@ enumeration_failed=0
 # variable first -- `x=$(cmd -z)` truncates at the first NUL byte (bash
 # cannot store one in a variable), which would silently re-break this the
 # same way capturing into a plain `worktree_list` variable used to.
+# Process substitution alone discards the producer's exit status (`$?`
+# after the loop would be `read`'s, not `git worktree list`'s) -- so an
+# enumeration that emits SOME entries and then fails partway (a transient
+# git error mid-listing) used to be indistinguishable from one that
+# completed: the entries already seen install fine, ok_count/fail_count
+# both end up looking like full coverage, and the caller never learns that
+# worktrees beyond the failure point were never even seen. Captured here by
+# appending the producer's own exit status as one more NUL-terminated field
+# after its real output, in the SAME process-substitution subshell that ran
+# it -- so the loop below sees it as an ordinary extra record, matched by
+# its own case arm. Process substitution is kept (not a `| while` pipe) so
+# ok_count/fail_count still mutate the caller's own shell variables rather
+# than a subshell's copy.
+wt_enum_status=""
 while IFS= read -r -d '' wt_field; do
     case "$wt_field" in
         "worktree "*)
@@ -331,8 +370,21 @@ while IFS= read -r -d '' wt_field; do
                 fail_count=$((fail_count + 1))
             fi
             ;;
+        wt_enum_status=*) wt_enum_status="${wt_field#wt_enum_status=}" ;;
     esac
-done < <(git worktree list --porcelain -z 2>/dev/null)
+done < <(git worktree list --porcelain -z 2>/dev/null; printf 'wt_enum_status=%s\0' "$?")
+
+if [ "$wt_enum_status" != "0" ]; then
+    # Some (possibly zero) entries were processed above, but the producer
+    # itself did not report success -- coverage of anything beyond what was
+    # actually seen is unknown, the same "partial reported as complete"
+    # class the ok_count/fail_count bookkeeping below already guards for
+    # the per-location case. Reusing enumeration_failed (rather than a new
+    # flag) folds this into the SAME non-zero-exit policy that flag already
+    # drives further down.
+    echo "install-main-ref-transaction: git worktree list --porcelain -z exited non-zero (status=${wt_enum_status:-unknown}) -- coverage of any worktree not already processed above is UNKNOWN" >&2
+    enumeration_failed=1
+fi
 
 if [ "$ok_count" -eq 0 ] && [ "$fail_count" -eq 0 ]; then
     # Enumeration itself produced nothing at all (old git without -z

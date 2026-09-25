@@ -212,6 +212,36 @@ else
     bad "status-fail case: rc=$rc6 out=[$out6] marker_present=$([ -f "$MARKER" ] && echo yes || echo no)"
 fi
 
+echo "== row (HIMMEL-2590): dirty -> clean -> re-dirty on the SAME file is reported the SECOND time =="
+reset_main
+SID=sess-redirty
+record_baseline "$SID" "$MAIN" >/dev/null
+printf 'A first dirtying\n' > "$MAIN/a.txt"
+out_r1="$(run_detect "$SID" "$MAIN" 2>&1)"
+rc_r1=$?
+if [ "$rc_r1" -eq 2 ] && [[ "$out_r1" == *a.txt* ]]; then
+    ok "redirty: first dirtying reported (rc=2, names a.txt)"
+else
+    bad "redirty: first dirtying: rc=$rc_r1 out=[$out_r1]"
+fi
+git -C "$MAIN" checkout -q -- a.txt
+out_r2="$(run_detect "$SID" "$MAIN" 2>&1)"
+rc_r2=$?
+if [ "$rc_r2" -eq 0 ] && [ -z "$out_r2" ]; then
+    ok "redirty: reverting to clean is silent (nothing NEW vs. the dirty baseline)"
+else
+    bad "redirty: revert-to-clean run: rc=$rc_r2 out=[$out_r2]"
+fi
+printf 'A second dirtying\n' > "$MAIN/a.txt"
+out_r3="$(run_detect "$SID" "$MAIN" 2>&1)"
+rc_r3=$?
+if [ "$rc_r3" -eq 2 ] && [[ "$out_r3" == *a.txt* ]]; then
+    ok "redirty: re-dirtying the SAME file after a clean transition is reported AGAIN (rc=2) -- the old code left the baseline stale after the revert-to-clean run and silently missed this"
+else
+    bad "redirty: re-dirtying after clean transition: rc=$rc_r3 out=[$out_r3]"
+fi
+reset_main
+
 echo "== row: run from a LINKED WORKTREE, dirt in the PRIMARY is still detected =="
 reset_main
 SID=sess-wt-detect

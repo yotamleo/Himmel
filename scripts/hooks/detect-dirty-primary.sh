@@ -116,11 +116,19 @@ new_lines="$(LC_ALL=C comm -13 \
     <(printf '%s\n' "$current_out" | LC_ALL=C sort) \
     2>/dev/null | sed '/^$/d')"
 
-[ -n "$new_lines" ] || exit 0
-
-# Rewrite the baseline to the CURRENT output BEFORE reporting, so the same
-# new path is reported once. Temp file + mv so a concurrent reader never
-# sees a partial file.
+# Rewrite the baseline to the CURRENT output whenever it differs from the
+# stored baseline in EITHER direction — not only when there's something new
+# to REPORT. HIMMEL-2590: the old code rewrote the baseline only on a
+# reporting run (gated behind the now-removed `[ -n "$new_lines" ] || exit 0`
+# above), so a dirty -> clean -> re-dirty sequence for the same path left a
+# stale baseline that still listed the FIRST dirtying; comm -13 then saw the
+# second dirtying's line as already-known and never reported it. Advancing
+# the baseline on every observed CHANGE (clean included) keeps that stale
+# state from surviving a clean transition, while the "reported once" contract
+# (below) is unaffected — new_lines is still computed from the OLD baseline,
+# so a run that finds nothing new still reports nothing.
+#
+# Temp file + mv so a concurrent reader never sees a partial file.
 #
 # codex-6 (HIMMEL-2526 CR round 3): the temp file must be created INSIDE
 # out_dir, not ${TMPDIR:-/tmp} — identical to the codex-9 fix in this file's
@@ -129,13 +137,17 @@ new_lines="$(LC_ALL=C comm -13 \
 # and often are, different filesystems (tmpfs vs btrfs on this station), in
 # which case `mv` silently falls back to copy+unlink and a concurrent reader
 # could see a partial file — exactly the guarantee the comment above claims.
-tmp="$(mktemp "$out_dir/.primary-baseline.XXXXXX" 2>/dev/null)"
-if [ -n "$tmp" ]; then
-    trap 'rm -f "$tmp"' EXIT
-    if printf '%s' "$current_out" > "$tmp" 2>/dev/null; then
-        mv -f "$tmp" "$baseline_file" 2>/dev/null || true
+if [ "$current_out" != "$baseline_out" ]; then
+    tmp="$(mktemp "$out_dir/.primary-baseline.XXXXXX" 2>/dev/null)"
+    if [ -n "$tmp" ]; then
+        trap 'rm -f "$tmp"' EXIT
+        if printf '%s' "$current_out" > "$tmp" 2>/dev/null; then
+            mv -f "$tmp" "$baseline_file" 2>/dev/null || true
+        fi
     fi
 fi
+
+[ -n "$new_lines" ] || exit 0
 
 {
     printf 'detect-dirty-primary: the PRIMARY checkout at %s went dirty during\n' "$primary"

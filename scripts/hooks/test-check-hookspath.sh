@@ -151,6 +151,46 @@ assert_rc "T7 linked worktree -> primary git-common-dir/hooks" 0 "$(run_in "$lin
 ( cd "$d" && { git worktree remove -f ../linked-wt >/dev/null 2>&1 || true; } )
 rm -rf "$d" "$linked_wt"
 
+# --- T7b: bare `--git-common-dir` returns a RELATIVE value (HIMMEL-2640) →
+# still OK (rc=0) ---
+# On the git installed on this station, --git-common-dir for a LINKED
+# worktree already comes back absolute regardless of cwd depth (confirmed by
+# direct probe — its worktree gitdir file records an absolute path), so T7
+# above cannot exercise the old bug live here. But `git rev-parse
+# --git-common-dir` is documented as relative-to-cwd in general (that is
+# exactly why install-main-ref-transaction.sh and install-cr-pre-push-legacy.sh
+# carry the same GIT VERSION caveat), and the old code in this script joined
+# whatever it got against toplevel by hand — correct only when cwd WAS
+# toplevel. A thin `git` stub that makes the BARE `--git-common-dir` call
+# return a relative value (while passing every other invocation, including
+# the fixed code's `--path-format=absolute --git-common-dir` call, straight
+# through to the real git) isolates exactly that join logic: the old code
+# used the bare call and joined it wrong; the fixed code uses the validated
+# absolute call and gets the real answer regardless.
+real_git=$(command -v git) || exit 1
+d=$(make_repo "") || exit 1
+mkdir -p "$d/.git/hooks"
+( cd "$d" && git worktree add -q ../linked-wt-sub -b feat/probe-sub >/dev/null 2>&1 )
+linked_wt_sub="$(dirname "$d")/linked-wt-sub"
+( cd "$linked_wt_sub" && git config core.hooksPath "$d/.git/hooks" )
+mkdir -p "$linked_wt_sub/deep/sub"
+stub_bin=$(fixture_mktemp_dir) || exit 1
+cat > "$stub_bin/git" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "rev-parse" ] && [ "\$2" = "--git-common-dir" ] && [ "\$#" -eq 2 ]; then
+    echo "not/really/relative/to/anything/.git"
+    exit 0
+fi
+exec "$real_git" "\$@"
+EOF
+chmod +x "$stub_bin/git"
+rc=0; out=$(cd "$linked_wt_sub/deep/sub" && PATH="$stub_bin:$PATH" bash "$HOOK" 2>&1) || rc=$?
+assert_rc "T7b bare --git-common-dir returns relative -> primary git-common-dir/hooks still resolves" 0 "$rc"
+[ "$rc" != "0" ] && echo "  out: $out"
+rm -rf "$stub_bin"
+( cd "$d" && { git worktree remove -f ../linked-wt-sub >/dev/null 2>&1 || true; } )
+rm -rf "$d" "$linked_wt_sub"
+
 # --- T8: hooksPath outside BOTH worktree toplevel AND git-common-dir → FAIL (rc=1) ---
 # Sanity check: a truly out-of-tree absolute path must still be rejected.
 # We construct: a real worktree at $d, a primary-style sibling repo, and

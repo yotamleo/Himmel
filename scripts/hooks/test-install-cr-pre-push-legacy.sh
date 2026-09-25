@@ -101,6 +101,23 @@ else
     fail "installer did not install the hook (rc=$rc)" "out: $out"
 fi
 
+echo "TEST: installer run from a SUBDIRECTORY still resolves the real .git/hooks (HIMMEL-2640)"
+# The old installer joined a RELATIVE `--git-common-dir` against
+# `--show-toplevel` by hand -- correct only when cwd IS the toplevel. One
+# level down, --git-common-dir returns "../.git" (relative to cwd), and the
+# manual join produced "$PRIMARY/../.git" -- the TMP_ROOT parent's .git, not
+# the primary's. Deleting the hook installed above and reinstalling from a
+# one-level subdirectory proves the fix resolves the SAME real .git/hooks
+# regardless of cwd.
+rm -f "$LEGACY"
+mkdir -p "$PRIMARY/sub"
+rc=0; out=$(cd "$PRIMARY/sub" && bash "$INSTALLER" 2>&1) || rc=$?
+if [ "$rc" -eq 0 ] && [ -x "$LEGACY" ] && grep -Fq '# himmel-cr-ref-stream-v1' "$LEGACY"; then
+    pass "installer invoked from a subdirectory still installs into the primary's real .git/hooks"
+else
+    fail "installer invoked from a subdirectory did not install into $LEGACY (rc=$rc)" "out: $out"
+fi
+
 # run_legacy_from DIR [env-assignments...] — invoke the installed shim the way
 # git does: cwd at a working tree, the ref stream on stdin.
 run_legacy_from() {
