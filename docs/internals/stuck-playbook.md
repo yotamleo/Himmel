@@ -714,11 +714,14 @@ A shrinking count means work was reverted.
      --exclude='.obsidian/plugins/*/data.json' \
      ~/.cache/pre-commit/patch<N>-<pid>
    ```
-2. Prove no loss: `git -c core.autocrlf=false apply --check --reverse --whitespace=nowarn <patch>` —
-   a clean check means every file the patch touches is byte-identical to its
-   pre-incident content on disk. This still works after some of those files
-   have been committed, since the reverse-check reads the worktree, not HEAD.
-   Loop with `--include=<file>` to isolate a single remaining diff.
+2. Prove no loss: `git -c core.autocrlf=false apply --check --reverse --whitespace=nowarn \
+   --exclude='.obsidian/plugins/*/data.json' <patch>` — the same exclusion as
+   step 1, since the plugin files were never reapplied and would show as a
+   mismatch otherwise. A clean check means every OTHER file the patch touches
+   is byte-identical to its pre-incident content on disk. This still works
+   after some of those files have been committed, since the reverse-check
+   reads the worktree, not HEAD. Loop with `--include=<file>` to isolate a
+   single remaining diff.
 3. Do not try to park the volatile files with `git stash` — it is refused by
    `block-git-stash` (HIMMEL-1755: the stash stack is shared across
    worktrees). `git checkout -- <path>` on them may also be denied; copy the
