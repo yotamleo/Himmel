@@ -16,7 +16,10 @@
 # /proc/<pid>/cmdline (Linux-only). On macOS/Windows session-name.sh
 # resolves to empty, this hook then finds no console doc, and — same as the
 # "not a console session" case below — prints nothing. Safe no-op, never a
-# wrong re-injection.
+# wrong re-injection. This now also means a genuine macOS/Windows console
+# gets no reinject either (HIMMEL-3599): its own identity cannot be proven
+# without /proc, so it fails closed like everything else unresolvable —
+# a missed convenience, never a leak.
 #
 # TRUST CLASS (docs/internals/retask-channel.md §3): SessionStart hook
 # stdout is harness-injected context — the harness writes it as a real turn,
@@ -31,9 +34,18 @@
 # SILENT NO-OP for every non-console session (exit 0, no output) — this
 # fires on every compaction fleet-wide, and a leg or ad-hoc session dumping
 # a console's authority state would be the exact failure this hook exists to
-# prevent, not a feature. Detection is deliberately layered: an explicit
-# `HIMMEL_CONSOLE_DOC` env var first, then a name-based fallback, because most
-# consoles are launched by a pasted line carrying no exported env at all.
+# prevent, not a feature. Detection: THE SESSION'S OWN `-n` NAME must be a
+# `*-console` name first — never a parent process, never inherited env — and
+# only then is `HIMMEL_CONSOLE_DOC` trusted, and only when it names exactly
+# `<own name>.md` (HIMMEL-3599: `HIMMEL_CONSOLE_DOC`/`HIMMEL_CONSOLE_WORKDIR`
+# are ambient env — a console's own launch sets them on ITS process, but a
+# leg or judge headed-arm-leg.sh then launches from a Bash subprocess of that
+# same console process inherits them same as any other env var unless a
+# launcher explicitly strips them, and not every launcher does. A leg/judge
+# whose own name confirms it is NOT a console must never honor a borrowed
+# `HIMMEL_CONSOLE_DOC`, no matter how it got there). A `HIMMEL_CONSOLE_DOC`
+# that fails the match falls through to the name-based search below, because
+# most consoles are launched by a pasted line carrying no exported env at all.
 #
 # FAIL-OPEN (workflow nudge, not a security fence, scripts/hooks/CLAUDE.md):
 # an unresolvable session, a missing/unreadable doc, or a doc with no
@@ -67,14 +79,13 @@ _find_doc_under_root() {
 
 resolve_console_doc() {
     _RESOLVED_DOC=""
-    if [ -n "${HIMMEL_CONSOLE_DOC:-}" ]; then
-        if [ -f "$HIMMEL_CONSOLE_DOC" ]; then
-            _RESOLVED_DOC="$HIMMEL_CONSOLE_DOC"
-            return 0
-        fi
-        return 1
-    fi
 
+    # HIMMEL-3599: the session's OWN `-n` name is the only identity this hook
+    # ever trusts — resolved BEFORE looking at HIMMEL_CONSOLE_DOC, never
+    # skipped by it. A leg or judge launched from a console's own Bash
+    # subprocess can inherit that console's HIMMEL_CONSOLE_DOC/WORKDIR as
+    # ordinary ambient env; only a name that is itself `*-console` may ever
+    # cash that env var in.
     # shellcheck source=scripts/lib/session-name.sh
     . "$REPO/scripts/lib/session-name.sh" || return 1
     local name
@@ -83,6 +94,16 @@ resolve_console_doc() {
         *-console) ;;
         *) return 1 ;;
     esac
+
+    if [ -n "${HIMMEL_CONSOLE_DOC:-}" ]; then
+        if [ -f "$HIMMEL_CONSOLE_DOC" ] && [ "$(basename -- "$HIMMEL_CONSOLE_DOC")" = "${name}.md" ]; then
+            _RESOLVED_DOC="$HIMMEL_CONSOLE_DOC"
+            return 0
+        fi
+        # Set, but not OUR OWN doc (stale/borrowed) -- ignore it and fall
+        # through to the name-based search below, which can only ever find
+        # a doc named after THIS session.
+    fi
 
     # shellcheck source=scripts/lib/handover-path.sh
     . "$REPO/scripts/lib/handover-path.sh" || return 1

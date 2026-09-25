@@ -43,10 +43,17 @@ Carry the queue and last GO forward verbatim.
 DOC
 }
 
-echo "== console doc via HIMMEL_CONSOLE_DOC -> emits Live state + Compact instructions + COMPACTED line =="
+# HIMMEL-3599: the HIMMEL_CONSOLE_DOC fast path is now gated on the
+# session's OWN -n name matching the doc's basename, never honored on its
+# own -- every fast-path case below runs as this fixed console identity.
+CMDLINE_SC="$TMP/cmdline-some-console"
+printf 'claude\0-n\0some-console\0' > "$CMDLINE_SC"
+sc_env() { env CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_SC" "$@"; }
+
+echo "== console doc via HIMMEL_CONSOLE_DOC (own name matches) -> emits Live state + Compact instructions + COMPACTED line =="
 DOC1="$TMP/some-console.md"
 mk_console_doc "$DOC1"
-out="$(env HIMMEL_CONSOLE_DOC="$DOC1" bash "$HOOK")"; rc=$?
+out="$(sc_env env HIMMEL_CONSOLE_DOC="$DOC1" bash "$HOOK")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "exits 0"; else bad "expected rc 0, got $rc"; fi
 case "$out" in
     *'## Live state'*) ok "output contains Live state heading" ;;
@@ -71,13 +78,13 @@ case "$out" in
 esac
 
 echo "== a ### subheading appended after ## Live state is NOT re-injected (only ## boundaries end a section) =="
-DOC1B="$TMP/some-console-with-milestone.md"
+DOC1B="$TMP/some-console.md"
 # shellcheck disable=SC2016  # backtick leg span, literal fixture text
 printf '%s\n' "# Some Console" "" "## Live state" "" \
     'legs: `N1:nonce-abc:lock-tok-1:1234`' "" \
     "### MILESTONE 1 -- appended after Live state, must not leak" "" \
     "## Results" "" "- LIVE 09:00" > "$DOC1B"
-out="$(env HIMMEL_CONSOLE_DOC="$DOC1B" bash "$HOOK")"; rc=$?
+out="$(sc_env env HIMMEL_CONSOLE_DOC="$DOC1B" bash "$HOOK")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "milestone-after-Live-state doc still exits 0"; else bad "expected rc 0, got $rc"; fi
 case "$out" in
     *'MILESTONE 1'*) bad "output leaked a ### subheading appended after ## Live state - got: $out" ;;
@@ -85,13 +92,13 @@ case "$out" in
 esac
 
 echo "== a fenced code block inside ## Live state containing its own ## line does not truncate the section (fence-aware terminator) =="
-DOC1C="$TMP/some-console-with-fenced-heading.md"
+DOC1C="$TMP/some-console.md"
 printf '%s\n' "# Some Console" "" "## Live state" "" \
     "legs: N1 token-abc" "" \
     '```markdown' "## Something else entirely" "example body" '```' "" \
     "CRITICAL: lock token lock-tok-XYZ" "" \
     "## Results" "" "- LIVE 09:00" > "$DOC1C"
-out="$(env HIMMEL_CONSOLE_DOC="$DOC1C" bash "$HOOK")"; rc=$?
+out="$(sc_env env HIMMEL_CONSOLE_DOC="$DOC1C" bash "$HOOK")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "fenced-heading doc still exits 0"; else bad "expected rc 0, got $rc"; fi
 case "$out" in
     *'lock-tok-XYZ'*) ok "output preserves content after a fenced ## line inside Live state" ;;
@@ -103,13 +110,13 @@ case "$out" in
 esac
 
 echo "== an UNTERMINATED fence inside ## Live state does not leak the doc tail to EOF (HIMMEL-3137) =="
-DOC1D="$TMP/some-console-with-unterminated-fence.md"
+DOC1D="$TMP/some-console.md"
 printf '%s\n' "# Some Console" "" "## Live state" "" \
     "legs: N1 token-abc" "" \
     '```unterminated' "fence never closes" "" \
     "## Results" "" "- LIVE 09:00" "" \
     "SECRET-TAIL-SHOULD-NOT-APPEAR" > "$DOC1D"
-out="$(env HIMMEL_CONSOLE_DOC="$DOC1D" bash "$HOOK" 2>"$TMP/stderr1d")"; rc=$?
+out="$(sc_env env HIMMEL_CONSOLE_DOC="$DOC1D" bash "$HOOK" 2>"$TMP/stderr1d")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "unterminated-fence doc still exits 0"; else bad "expected rc 0, got $rc"; fi
 case "$out" in
     *'SECRET-TAIL-SHOULD-NOT-APPEAR'*) bad "output leaked the doc tail past an unterminated fence - got: $out" ;;
@@ -129,13 +136,13 @@ case "$out" in
 esac
 
 echo "== an INDENTED fence inside ## Live state containing a ## line still toggles (HIMMEL-3137) =="
-DOC1E="$TMP/some-console-with-indented-fence.md"
+DOC1E="$TMP/some-console.md"
 printf '%s\n' "# Some Console" "" "## Live state" "" \
     "legs: N1 token-abc" "" \
     '  ```markdown' "## Something else entirely" "example body" '  ```' "" \
     "CRITICAL: lock token lock-tok-ABC" "" \
     "## Results" "" "- LIVE 09:00" > "$DOC1E"
-out="$(env HIMMEL_CONSOLE_DOC="$DOC1E" bash "$HOOK")"; rc=$?
+out="$(sc_env env HIMMEL_CONSOLE_DOC="$DOC1E" bash "$HOOK")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "indented-fence doc still exits 0"; else bad "expected rc 0, got $rc"; fi
 case "$out" in
     *'lock-tok-ABC'*) ok "output preserves content after an indented fence's ## line" ;;
@@ -147,13 +154,13 @@ case "$out" in
 esac
 
 echo "== a 4-backtick fence containing a nested 3-backtick line is NOT closed by the shorter marker (HIMMEL-3137) =="
-DOC1F="$TMP/some-console-with-longer-fence.md"
+DOC1F="$TMP/some-console.md"
 printf '%s\n' "# Some Console" "" "## Live state" "" \
     "legs: N1 token-abc" "" \
     '````markdown' '```' "## Nested example heading, inside the 3-backtick inner fence" '```' '````' "" \
     "CRITICAL: lock token lock-tok-NESTED" "" \
     "## Results" "" "- LIVE 09:00" > "$DOC1F"
-out="$(env HIMMEL_CONSOLE_DOC="$DOC1F" bash "$HOOK")"; rc=$?
+out="$(sc_env env HIMMEL_CONSOLE_DOC="$DOC1F" bash "$HOOK")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "longer-fence doc still exits 0"; else bad "expected rc 0, got $rc"; fi
 case "$out" in
     *'lock-tok-NESTED'*) ok "output preserves content after a 4-backtick fence with a nested 3-backtick line" ;;
@@ -167,7 +174,9 @@ esac
 echo "== doc has no ## Live state section -> one-line warning, still rc 0, no COMPACTED promise =="
 DOC2="$TMP/bare-console.md"
 printf '# Bare Console\n\n## Results\n\n- LIVE 09:00\n' > "$DOC2"
-out="$(env HIMMEL_CONSOLE_DOC="$DOC2" bash "$HOOK")"; rc=$?
+CMDLINE_BC="$TMP/cmdline-bare-console"
+printf 'claude\0-n\0bare-console\0' > "$CMDLINE_BC"
+out="$(env CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_BC" HIMMEL_CONSOLE_DOC="$DOC2" bash "$HOOK")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "no-Live-state doc still exits 0"; else bad "expected rc 0, got $rc"; fi
 case "$out" in
     *'no "## Live state" section'*) ok "warns about the missing section" ;;
@@ -178,10 +187,37 @@ case "$out" in
     *) ok "does not print the COMPACTED line when Live state is absent" ;;
 esac
 
-echo "== HIMMEL_CONSOLE_DOC points at a nonexistent file -> SILENT no-op (fail safe) =="
-out="$(env HIMMEL_CONSOLE_DOC="$TMP/does-not-exist.md" bash "$HOOK")"; rc=$?
+echo "== HIMMEL_CONSOLE_DOC points at a nonexistent file (own name IS a console) -> fails safe, falls through to the (also empty) name search, one-line warning =="
+EMPTY_ROOT="$TMP/empty-handover-root"
+mkdir -p "$EMPTY_ROOT"
+out="$(sc_env env HANDOVER_DIR="$EMPTY_ROOT" HIMMEL_CONSOLE_DOC="$TMP/does-not-exist.md" bash "$HOOK")"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "missing doc path exits 0"; else bad "expected rc 0, got $rc"; fi
-if [ -z "$out" ]; then ok "missing doc path prints nothing"; else bad "expected silence - got: $out"; fi
+case "$out" in
+    *'NOT re-injected'*) ok "missing doc path falls through to the name search and warns, never trusting the stale path" ;;
+    *) bad "expected the not-re-injected warning (stale doc must not print Live state) - got: $out" ;;
+esac
+case "$out" in
+    *'## Live state'*) bad "a stale/missing HIMMEL_CONSOLE_DOC must never emit Live state - got: $out" ;;
+    *) ok "no Live state leaks from a stale HIMMEL_CONSOLE_DOC path" ;;
+esac
+
+echo "== HIMMEL-3599: a LEG/JUDGE session (own name NOT *-console) inherits a console's ambient HIMMEL_CONSOLE_DOC/WORKDIR -- must stay SILENT, never trust it =="
+# Reproduces the leak: headed-arm-leg.sh launches a leg/judge from a Bash
+# subprocess of the console's own claude process, which had HIMMEL_CONSOLE_DOC
+# set on ITS OWN env (HIMMEL-2973 S3, headed-arm.sh CONSOLE_ENV). Nothing
+# strips that var for a non-console role, so it rides along as ordinary
+# ambient env into the leg/judge's process -- exactly the shape this hook
+# must refuse. At base (pre-fix) the hook honored HIMMEL_CONSOLE_DOC BEFORE
+# ever checking the session's own name, so this printed the console's real
+# Live state (the HIMMEL-3599 judge-session leak). Fixed: it must print
+# nothing.
+CMDLINE_LEG_LEAK="$TMP/cmdline-leg-leak"
+printf 'claude\0-n\0himmel-3599-legN1\0' > "$CMDLINE_LEG_LEAK"
+LEAK_DOC="$TMP/some-console.md"
+mk_console_doc "$LEAK_DOC"
+out="$(env CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_LEG_LEAK" HIMMEL_CONSOLE_DOC="$LEAK_DOC" bash "$HOOK")"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "leg with inherited HIMMEL_CONSOLE_DOC still exits 0"; else bad "expected rc 0, got $rc"; fi
+if [ -z "$out" ]; then ok "leg/judge with a leaked HIMMEL_CONSOLE_DOC prints NOTHING (no Live state, no token)"; else bad "SECURITY: leg/judge leaked the console's Live state via ambient HIMMEL_CONSOLE_DOC - got: $out"; fi
 
 echo "== non-console session (no HIMMEL_CONSOLE_DOC, session name has no -console suffix) -> SILENT no-op =="
 # Adversarial, not just absent: a doc named EXACTLY after this leg's session
