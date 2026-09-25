@@ -25,10 +25,11 @@
 // stateLib.load() already happening, no mutation, no save().
 //
 
-// The ONE sanctioned state.json WRITE (deriving + persisting a target's
-// FIRST entry) stays in cmdStatus, the CLI caller — this library only ever
-// calls stateLib.load() (read) and stateLib.deriveTarget() (pure, no fs
-// I/O), never stateLib.save() or stateLib.ensureTarget().
+// HIMMEL-2463: `status` never writes state.json, not even the target's
+// first derive — this library only ever calls stateLib.load() (read) and
+// stateLib.deriveTarget() (pure, no fs I/O), never stateLib.save() or
+// stateLib.ensureTarget(). Persisting a derived or migrated target entry
+// happens only as a side effect of `install`/`ensure`.
 //
 // Export: statusReport({ manifest, scope, targetPath, answers, itemIds?, state? })
 //   -> { schemaVersion, target, items:[{id,kind,desired,actual,severity,detail}],

@@ -21,8 +21,9 @@
 #      'user' and `scope get` returns 'user'.
 #   c. FAIL-CLOSED: a full-offboard-only item that exists in BOTH scopes with
 #      NO runnable unwire descriptor, present in the old scope, REFUSES the
-#      whole switch (exit 1, zero mutation) and is named; the UNWIREABLE wire
-#      item is NOT named (correctly excluded).
+#      whole switch (exit 3, zero mutation — HIMMEL-2464, distinct from a real
+#      mid-switch error) and is named; the UNWIREABLE wire item is NOT named
+#      (correctly excluded).
 #   d. `--dry-run` prints the plan (unwire old, wire new, re-key) and changes
 #      nothing.
 #   e. non-interactive without `--yes` refuses (exit 2, zero mutation).
@@ -252,7 +253,10 @@ set +e
 outC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC")-luna-config.json" HOME="$homeC" USERPROFILE="$(winpath "$homeC")" \
   "$node_bin" "$wizard" scope set user --yes 2>&1 </dev/null ); rcC=$?
 set -e
-[ "$rcC" -eq 1 ] || fail "case c: fail-closed should exit 1 (got rc=$rcC): $outC"
+# HIMMEL-2464: a fail-closed refusal (zero mutation) exits 3, distinct from a
+# real mid-switch error (1) — this fixture never mutates, so it always hits
+# the refusal path added by that fix.
+[ "$rcC" -eq 3 ] || fail "case c: fail-closed refusal should exit 3 (got rc=$rcC): $outC"
 grepq "$outC" -F 'stuck-item' || fail "case c: the refusal should name stuck-item (got: $outC)"
 if grepq "$outC" -F 'wire-item'; then
   fail "case c: the unwireable wire-item must NOT be listed as a fail-closed blocker (got: $outC)"

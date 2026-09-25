@@ -25,9 +25,10 @@
 #      summary.red equals the count of severity=="red" items, items sorted
 #      by id.
 #   f. no-prompt guard: stdin closed (</dev/null) does not hang or error.
-#   g. purity: beyond ensureTarget's ONE sanctioned first-derive write to
-#      state.json, a second run leaves the whole fixture tree (repo fixture,
-#      target, cache) byte-identical.
+#   g. purity: status NEVER writes state.json, not even a first derive
+#      (HIMMEL-2463) — a run against a target with no prior state.json entry
+#      leaves it absent, and a second run leaves the whole fixture tree (repo
+#      fixture, target, cache) byte-identical.
 
 set -euo pipefail
 
@@ -131,6 +132,14 @@ echo "$outB" | jq -e '.items[] | select(.id=="pre-commit-hooks") | .severity == 
 echo "$outB" | jq -e '.items[] | select(.id=="pre-commit-hooks") | .detail | contains("pre-commit") and contains("commit-msg") and contains("pre-push")' >/dev/null \
   || fail "case b: pre-commit-hooks detail should plainly name all missing hook types (got: $outB)"
 echo "ok: case b — known-missing enabled item (pre-commit-hooks) reads red, exit 0, names all hook types"
+
+# HIMMEL-2463: status is documented read-only. targetBE/cacheBE had NO prior
+# state.json entry before this run (a fresh target — the derive/migrate
+# comparison must happen purely in memory), so state.json must still be
+# ABSENT after a full status run with a valid install-profile cache — not
+# merely on the already-covered "no cache at all" early-exit (case d below).
+[ ! -f "$cacheBE/state.json" ] || fail "case b: status must NOT create state.json even on a full run with a valid cache (got: $(cat "$cacheBE/state.json")) [HIMMEL-2463]"
+echo "ok: case b — status leaves state.json absent even after deriving a full report"
 
 # ── case f: no-prompt guard — stdin closed must not hang or error ──────────
 set +e

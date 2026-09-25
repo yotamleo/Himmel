@@ -199,7 +199,10 @@ commands:
                           the target scope — wires the target scope AND unwires
                           the old scope (interactive confirm; --yes skips it;
                           --dry-run prints the plan); refuses to leave any item
-                          wired in BOTH scopes (fail-closed)
+                          wired in BOTH scopes (fail-closed) — a refusal that
+                          made ZERO mutation exits 3 (HIMMEL-2464), distinct
+                          from exit 1/2 for a real error or a usage/consent
+                          problem; --dry-run predicting a refusal still exits 0
   trust on|off|status     wire, unwire, or report the trust shadow ledger's hook
                           entries in this project's .claude/settings.json
                           (HIMMEL-1551; recorder HIMMEL-1529/1539/1547).
@@ -4967,12 +4970,12 @@ function cmdProfile(argvRest) {
 // A read-only severity diff: desired = the target's manifest-derived
 // `enabled` flags (lib/state.js), actual = a fresh probe run (lib/probes.js)
 // for every desired-enabled item. NEVER prompts (no readline anywhere in
-// this section) and NEVER mutates on its own — the ONLY sanctioned write is
-// deriving a target's FIRST entry when the install-profile cache exists but
-// state.json has no entry yet for this target (ensureTarget's own
-// documented derive-if-missing path); that derived entry is persisted here
-// via state.save() so it doesn't need re-deriving on every future run. An
-// already-present target entry is read as-is with zero writes.
+// this section) and NEVER mutates, ever (HIMMEL-2463) — a target with no
+// state.json entry yet, or one whose entry predates a manifest update, is
+// derived/migrated in memory only (statusReportLib's own stateLib.load()/
+// deriveTarget() fallback, never ensureTarget()/save()). Persisting that
+// derived-or-migrated entry is `install`'s and `ensure`'s job; `status`
+// never creates or touches state.json.
 //
 // Target resolution mirrors adopt.sh / state.js's own targetKeyForScope
 // (not exported — replicated here as the same one-line formula its module
@@ -4987,11 +4990,11 @@ function loadManifest() {
 }
 
 // cmdStatus is now a thin caller (HIMMEL-755 A2): it resolves scope/target
-// and performs the ONE sanctioned state.json write (deriving + persisting a
-// target's FIRST entry, unchanged from before the extraction) exactly as
-// before, then delegates the desired-vs-actual results loop to the
-// parameterized statusReportLib.statusReport() (lib/status-report.js) and
-// only renders/emits its output.
+// and delegates the desired-vs-actual results loop, including any
+// derive-or-migrate comparison, to the parameterized
+// statusReportLib.statusReport() (lib/status-report.js) — which does its own
+// state.json READ and never writes it (HIMMEL-2463) — then only
+// renders/emits its output.
 async function cmdStatus(args) {
   const manifest = loadManifest();
 
@@ -5013,22 +5016,14 @@ async function cmdStatus(args) {
   }
 
   const scope = cachedAnswers.scope;
-  const targetKey = scope === 'user' ? 'user' : path.resolve(process.cwd());
   const baseTargetPath = scope === 'user' ? repoRoot() : path.resolve(process.cwd());
 
-  const state = stateLib.load();
-  const existedBefore = Boolean(state.targets[targetKey]);
-  const itemCountBefore = existedBefore ? Object.keys(state.targets[targetKey].items).length : 0;
-  const target = stateLib.ensureTarget(state, manifest, cachedAnswers);
-  // HIMMEL-1017: persist not only a brand-new derive but also a migration —
-  // ensureTarget() now backfills manifest items an EXISTING target was
-  // missing (a manifest update since the target was last derived). Without
-  // this, the migrated items would live only in-memory for this one run and
-  // never make it into state.json, so the very next `status` invocation
-  // would silently re-migrate them (harmless, but the on-disk artifact would
-  // never catch up).
-  if (!existedBefore || Object.keys(target.items).length !== itemCountBefore) stateLib.save(state);
-
+  // HIMMEL-2463: status is documented read-only and must stay that way — the
+  // derive-or-migrate comparison lives entirely in statusReportLib's own
+  // in-memory stateLib.load()/deriveTarget() fallback (its module header),
+  // which never calls stateLib.save()/ensureTarget(). Persisting a
+  // newly-derived or migrated target entry is `install`'s and `ensure`'s
+  // job, not a side effect of asking for a read.
   const report = statusReportLib.statusReport({
     manifest, scope, targetPath: baseTargetPath, answers: cachedAnswers, itemIds: args.items,
   });
@@ -6422,7 +6417,11 @@ async function cmdScopeSet(args) {
     console.error(`himmelctl: cannot switch scope '${oldScope}' -> '${newScope}': the following item(s) are wired in the old scope '${oldScope}' and have no mechanical unwire path, so switching would leave them wired in BOTH scopes:`);
     for (const id of failClosed) console.error(`  - ${id}`);
     console.error("Handle each manually (or via 'himmelctl uninstall'), or wait for the per-item unwire extension (HIMMEL-1172).");
-    return 1;
+    // HIMMEL-2464: refused, ZERO mutation (this check runs before any spawn
+    // or write) — a distinct exit code from a real mid-switch error (1) so an
+    // unattended caller can tell "refused" from "failed" without parsing
+    // prose.
+    return 3;
   }
 
   // Step 2: re-project membership for the TARGET scope. reconcileTarget
@@ -6558,7 +6557,9 @@ async function cmdScopeSet(args) {
   if (wirePlanErrors.length > 0) {
     for (const p of wirePlanErrors) console.error(`himmelctl: ${p.id}: ${p.unrunnable}`);
     console.error(`himmelctl: scope switch aborted — the target scope '${newScope}' has ${wirePlanErrors.length} unrunnable item(s); old scope '${oldScope}' was NOT touched.`);
-    return 1;
+    // HIMMEL-2464: refused before any mutation (old scope untouched) — same
+    // distinct exit code as the pre-flight fail-closed check above.
+    return 3;
   }
 
   provOpen(args); // HIMMEL-3332 S5: past the dry-run and fail-closed returns, before Step 3's unwire

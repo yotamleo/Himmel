@@ -19,14 +19,14 @@
 # 'luna' + scope 'project' would ALSO enable claude-plugins-pluginSet).
 # state.json is himmelctl's OWN artifact (lib/state.js's module header: a
 # SEPARATE artifact from install-profile.json, read/written by a stable
-# public schema) — so the fixture runs ONE real `status` invocation to let
-# ensureTarget derive-and-save the target entry under its real key (however
-# path.resolve(cwd) stringifies on this platform — avoids reproducing that
-# string by hand), then patches the saved items map via jq to the exact
-# six-true/rest-false split the brief specifies. That patch (plus the one
-# ensureTarget write it rides on) is the ONE sanctioned mutation; the sha256
-# purity sweep (case d) snapshots AFTER it, so every read-only status
-# invocation in cases (a)/(b) is held to true zero-diff.
+# public schema) — so the fixture calls state.js directly (HIMMEL-2463:
+# `status` itself never writes state.json any more) to derive-and-save the
+# target entry under its real key (however path.resolve(cwd) stringifies on
+# this platform — avoids reproducing that string by hand), then patches the
+# saved items map via jq to the exact six-true/rest-false split the brief
+# specifies. That direct seed (plus its jq patch) is the ONE sanctioned
+# mutation; the sha256 purity sweep (case d) snapshots AFTER it, so every
+# `status` invocation in cases (a)/(b) is held to true zero-diff.
 #
 # Covers:
 #   a. `status --json --items <six-csv>` reports EXACTLY those six, all
@@ -221,13 +221,31 @@ assert_items_severity() {
   done
 }
 
-# ── seed state.json: run once to derive (ensureTarget's ONE sanctioned
-# first-write), then patch the saved items map to the exact six-true/
-# rest-false split. A cheap, spawn-free item (pre-commit-hooks) is used for
-# the seed run's own --items so this step never shells out to bash. ───────
-( cd "$targetGolden" && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HIMMEL_LUNA_CONFIG_PATH="$cacheDir_w-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" PATH="$basePath" \
-    "$node_bin" "$wizard" status --json --items pre-commit-hooks >/dev/null ) \
-  || fail "setup: seed status run failed"
+# ── seed state.json: HIMMEL-2463 made `status` genuinely read-only (it never
+# calls stateLib.save()/ensureTarget() any more), so this fixture can no
+# longer ride a `status` invocation to derive-and-persist the target entry —
+# it calls state.js directly instead (same out-of-band-seed idiom
+# test-wizard-statusreport.sh's case d uses), then patches the saved items
+# map to the exact six-true/rest-false split. ─────────────────────────────
+state_lib="$repo_root/scripts/himmelctl/lib/state.js"
+STATE_LIB_PATH="$(winpath "$state_lib")"
+export STATE_LIB_PATH
+MANIFEST_PATH_W="$(winpath "$fixtureRepo/scripts/install/manifest.json")"
+export MANIFEST_PATH_W
+( cd "$targetGolden" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" HIMMELCTL_CACHE_DIR="$cacheDir_w" \
+    "$node_bin" -e "
+const stateLib = require(process.env.STATE_LIB_PATH);
+const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_PATH_W, 'utf8'));
+const answers = {
+  role: 'adopter', tier: 'standard', scope: 'project',
+  vault: { mode: 'none', path: '' },
+  handover: { mode: 'inline', path: '' },
+  pluginSet: 'lean', lanes: [], lanesMeaningful: true, alwaysOn: false,
+};
+const state = stateLib.load();
+stateLib.ensureTarget(state, manifest, answers);
+stateLib.save(state);
+" ) || fail "setup: seed state.json derive failed"
 
 targetKey=$(jq -r '.targets | keys[0]' "$cacheDir/state.json")
 if [ -z "$targetKey" ] || [ "$targetKey" = "null" ]; then

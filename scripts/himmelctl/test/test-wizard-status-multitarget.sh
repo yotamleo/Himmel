@@ -111,14 +111,38 @@ runB() {
       "$node_bin" "$wizard" status --json --items "$1" )
 }
 
-# ── seed both target entries (ensureTarget's derive-and-save, once each),
-# then patch wiring-statusline desired-enabled directly on BOTH entries —
-# state.json is himmelctl's own documented-schema artifact (lib/state.js),
-# authored here independent of the manifest's scopes:["project"] gate
-# (which governs deriveTarget()'s natural derivation, not this hand-authored
-# read). ─────────────────────────────────────────────────────────────────
-runA wiring-statusline >/dev/null || fail "setup: seed run against A failed"
-runB wiring-statusline >/dev/null || fail "setup: seed run against B failed"
+# ── seed both target entries (derive-and-save, once each), then patch
+# wiring-statusline desired-enabled directly on BOTH entries — state.json is
+# himmelctl's own documented-schema artifact (lib/state.js), authored here
+# independent of the manifest's scopes:["project"] gate (which governs
+# deriveTarget()'s natural derivation, not this hand-authored read).
+# HIMMEL-2463 made `status` genuinely read-only (it never calls
+# stateLib.save()/ensureTarget() any more), so the seed calls state.js
+# directly instead of riding a `status` invocation. ────────────────────────
+state_lib="$repo_root/scripts/himmelctl/lib/state.js"
+STATE_LIB_PATH="$(winpath "$state_lib")"
+export STATE_LIB_PATH
+MANIFEST_PATH_W="$fixtureRepo_w/scripts/install/manifest.json"
+export MANIFEST_PATH_W
+
+seedTarget() { # <cwd-dir> <scope>
+  ( cd "$1" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" HIMMELCTL_CACHE_DIR="$cacheDir_w" \
+    "$node_bin" -e "
+const stateLib = require(process.env.STATE_LIB_PATH);
+const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_PATH_W, 'utf8'));
+const answers = {
+  role: 'adopter', tier: 'standard', scope: '$2',
+  vault: { mode: 'none', path: '' },
+  handover: { mode: 'inline', path: '' },
+  pluginSet: 'lean', lanes: [], lanesMeaningful: true, alwaysOn: false,
+};
+const state = stateLib.load();
+stateLib.ensureTarget(state, manifest, answers);
+stateLib.save(state);
+" )
+}
+seedTarget "$targetA" project || fail "setup: seed run against A failed"
+seedTarget "$targetA" user || fail "setup: seed run against B failed"
 
 targetKeys=$(jq -r '.targets | keys[]' "$cacheDir/state.json")
 [ "$(echo "$targetKeys" | wc -l)" -eq 2 ] || fail "setup: expected exactly 2 target entries in state.json (got: $targetKeys)"

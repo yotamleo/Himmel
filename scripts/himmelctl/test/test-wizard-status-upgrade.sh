@@ -10,12 +10,12 @@
 #   a. UPGRADE: a target's state.json was derived against an OLDER manifest
 #      missing an item ('pre-commit-hooks') that a later himmel-update's
 #      manifest.json gained. Re-running `status` against the CURRENT
-#      (full) manifest — simulating that update — must (1) surface the
+#      (full) manifest — simulating that update — must surface the
 #      previously-invisible item in the report instead of silently omitting
 #      it, with its genuinely-derived desired/severity (not a stale
-#      n/a-forever), and (2) persist that migration into state.json so the
-#      NEXT run doesn't need to re-migrate it, while leaving every
-#      already-tracked item's state byte-for-byte untouched.
+#      n/a-forever) — computed in memory only (HIMMEL-2463: `status` never
+#      writes state.json, so the migration is NOT persisted; every
+#      already-tracked item's on-disk state stays byte-for-byte untouched).
 #   b. OPT-IN: graphify-mcp carries profiles:["luna","all"] like any other
 #      luna-profile item, so a luna/all target reads it desired:true even
 #      though registering it is a genuinely opt-in, manual step (adopt.sh's
@@ -84,11 +84,30 @@ m.items = m.items.filter((i) => i.id !== 'pre-commit-hooks');
 fs.writeFileSync('$fixtureRepoA_w/scripts/install/manifest.json', JSON.stringify(m, null, 2) + '\n');
 " || fail "case a setup: failed to write the OLD (item-short) fixture manifest"
 
-# ── seed run: status against the OLD (item-short) manifest derives + saves
-# a target entry that never carries pre-commit-hooks at all.
-( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HIMMEL_LUNA_CONFIG_PATH="$cacheA_w-luna-config.json" HOME="$homeA" USERPROFILE="$(winpath "$homeA")" \
-    "$node_bin" "$wizard" status --json >/dev/null ) \
-  || fail "case a setup: seed status run (old manifest) failed"
+# ── seed: derive + save a target entry against the OLD (item-short) manifest
+# that never carries pre-commit-hooks at all. HIMMEL-2463 made `status`
+# genuinely read-only (it never calls stateLib.save()/ensureTarget() any
+# more), so this calls state.js directly instead of riding a `status`
+# invocation.
+state_lib="$repo_root/scripts/himmelctl/lib/state.js"
+STATE_LIB_PATH="$(winpath "$state_lib")"
+export STATE_LIB_PATH
+MANIFEST_A_OLD_W="$fixtureRepoA_w/scripts/install/manifest.json"
+export MANIFEST_A_OLD_W
+( cd "$targetA" && HOME="$homeA" USERPROFILE="$(winpath "$homeA")" HIMMELCTL_CACHE_DIR="$cacheA_w" \
+    "$node_bin" -e "
+const stateLib = require(process.env.STATE_LIB_PATH);
+const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_A_OLD_W, 'utf8'));
+const answers = {
+  role: 'adopter', tier: 'standard', scope: 'project',
+  vault: { mode: 'none', path: '' },
+  handover: { mode: 'inline', path: '' },
+  pluginSet: 'lean', lanes: [], lanesMeaningful: true, alwaysOn: false,
+};
+const state = stateLib.load();
+stateLib.ensureTarget(state, manifest, answers);
+stateLib.save(state);
+" ) || fail "case a setup: seed state.json derive (old manifest) failed"
 
 targetKeyA=$(jq -r '.targets | keys[0]' "$cacheA/state.json")
 if [ -z "$targetKeyA" ] || [ "$targetKeyA" = "null" ]; then
@@ -118,17 +137,21 @@ echo "$outA" | jq -e '.items[] | select(.id=="pre-commit-hooks") | .severity == 
   || fail "case a: pre-commit-hooks should be ACTIVELY PROBED (severity red — no .pre-commit-config.yaml here), not silently n/a (got: $outA)"
 echo "ok: case a — a manifest item gained after the target's last derive is surfaced (probed, not silently n/a) on the very next status run"
 
-jq -e --arg k "$targetKeyA" '.targets[$k].items | has("pre-commit-hooks")' "$cacheA/state.json" >/dev/null \
-  || fail "case a: the migration should be PERSISTED into state.json (got: $(cat "$cacheA/state.json"))"
-echo "ok: case a — the migration is persisted into state.json (not just reported in-memory for this one run)"
+# HIMMEL-2463: `status` never writes state.json, so the migration this
+# report surfaced stays IN MEMORY for this one run only — the on-disk entry
+# must still lack pre-commit-hooks, exactly as the seed left it. Persisting a
+# migration is `install`'s and `ensure`'s job now, not `status`'s.
+jq -e --arg k "$targetKeyA" '.targets[$k].items | has("pre-commit-hooks") | not' "$cacheA/state.json" >/dev/null \
+  || fail "case a: status must NOT persist the migration into state.json (got: $(cat "$cacheA/state.json"))"
+echo "ok: case a — the migration is reported in-memory only; state.json is left byte-untouched"
 
 wiringAfter=$(jq -e --arg k "$targetKeyA" '.targets[$k].items["wiring-pretooluse"].enabled' "$cacheA/state.json")
 [ "$wiringBefore" = "$wiringAfter" ] \
-  || fail "case a: an already-tracked item's enabled flag must survive the migration unchanged (before=$wiringBefore after=$wiringAfter)"
+  || fail "case a: an already-tracked item's enabled flag must survive the (unpersisted) migration unchanged (before=$wiringBefore after=$wiringAfter)"
 echo "ok: case a — an already-tracked item's state survives the migration unchanged"
 
 # ── a second post-upgrade run performs zero further state.json writes
-# (migration is idempotent — nothing left to backfill). ─────────────────────
+# (status never writes, migration or otherwise). ────────────────────────────
 before2=$(sha256sum "$cacheA/state.json")
 ( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HIMMEL_LUNA_CONFIG_PATH="$cacheA_w-luna-config.json" HOME="$homeA" USERPROFILE="$(winpath "$homeA")" \
     "$node_bin" "$wizard" status --json >/dev/null ) || fail "case a: second post-upgrade run failed"
