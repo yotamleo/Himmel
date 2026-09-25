@@ -2475,6 +2475,85 @@ check "$(fx_outcome "$out62b")" "delegated" "T62b a bare relative run of the gut
 rows62_after="$(grep -c '"kind":"delegation"' "$ledger62" 2>/dev/null || echo 0)"
 check "$rows62_after" "$((rows62_before + 1))" "T62b exactly one additional delegation row, still written through the anchor's own ledger-append.sh"
 
+# --- T63-T66: HIMMEL-2773 - /pr-check refuses a session resolved to the
+# default branch or a detached HEAD, and on success prints repo+branch FIRST.
+# ----------------------------------------------------------------------------
+
+# T63. A fixture checked out directly on `main` (no feature branch) is
+# refused, non-zero, with a clear diagnostic naming the fix, and produces NO
+# stdout (same fail-closed shape as T12's refusal).
+repo_main="$tmp/repo-main"
+mkdir -p "$repo_main"
+(
+  cd "$repo_main" || exit 1
+  git init -q -b main .
+  git config user.email t@t
+  git config user.name t
+  git config commit.gpgsign false
+  git commit -q --allow-empty -m init
+)
+out63="$(cd "$repo_main" && bash "$SCRIPT" 2>"$tmp/err63.txt")"
+rc63=$?
+check "$rc63" "4" "T63 rc (fail-closed, resolved branch is the default branch)"
+check "$out63" "" "T63 no stdout on the refusal path"
+grep -q "run it from the leg's own worktree branch" "$tmp/err63.txt" || { echo "FAIL: T63 missing default-branch diagnostic"; fail=1; }
+
+# T64. Same refusal for a `master`-default fixture (HIMMEL-297: both
+# protected names), proving T63 is not main-specific.
+repo_master63="$tmp/repo-master63"
+mkdir -p "$repo_master63"
+(
+  cd "$repo_master63" || exit 1
+  git init -q -b master .
+  git config user.email t@t
+  git config user.name t
+  git config commit.gpgsign false
+  git commit -q --allow-empty -m init
+)
+out64="$(cd "$repo_master63" && bash "$SCRIPT" 2>"$tmp/err64.txt")"
+rc64=$?
+check "$rc64" "4" "T64 rc (fail-closed, resolved branch is master)"
+check "$out64" "" "T64 no stdout on the refusal path"
+grep -q "run it from the leg's own worktree branch" "$tmp/err64.txt" || { echo "FAIL: T64 missing default-branch diagnostic (master)"; fail=1; }
+
+# T65. Detached HEAD is refused with its OWN clear diagnostic, not the
+# confusing write-verdicts.sh "cannot resolve the branch" message the
+# pre-fix behaviour fell through to.
+repo_detached="$tmp/repo-detached"
+mkdir -p "$repo_detached"
+(
+  cd "$repo_detached" || exit 1
+  git init -q -b main .
+  git config user.email t@t
+  git config user.name t
+  git config commit.gpgsign false
+  git commit -q --allow-empty -m init
+  git checkout -q -b feature/x65
+  git commit -q --allow-empty -m second
+  git checkout -q --detach
+)
+out65="$(cd "$repo_detached" && bash "$SCRIPT" 2>"$tmp/err65.txt")"
+rc65=$?
+check "$rc65" "4" "T65 rc (fail-closed, detached HEAD)"
+check "$out65" "" "T65 no stdout on the refusal path"
+grep -q "HEAD is detached" "$tmp/err65.txt" || { echo "FAIL: T65 missing detached-HEAD diagnostic"; fail=1; }
+
+# T65 negative control: the SAME fixture, checked back out onto its feature
+# branch, is accepted (exit 0) - proves T63-T65 cannot pass vacuously.
+(cd "$repo_detached" && git checkout -q feature/x65)
+out65b="$(cd "$repo_detached" && bash "$SCRIPT" 2>/dev/null)"
+check "$?" "0" "T65 negative control - a real feature branch on the same fixture is accepted"
+check "$(get_kv "$out65b" branch)" "feature/x65" "T65 negative control - feature branch resolved"
+
+# T66. On success, repo=/branch= are the FIRST TWO stdout lines (HIMMEL-2773:
+# "prints the resolved repo root and branch as its FIRST output line, so the
+# reviewer sees what it is certifying") - checked against T1's existing
+# fixture/output rather than minting a new one.
+first_line="$(printf '%s\n' "$out1" | sed -n '1p')"
+second_line="$(printf '%s\n' "$out1" | sed -n '2p')"
+check "$first_line" "pr-check-context: repo=$repo" "T66 repo= is the first stdout line"
+check "$second_line" "pr-check-context: branch=t1" "T66 branch= is the second stdout line"
+
 # --- Negative-control check: perturb T3's expectation to confirm the
 # assertion genuinely fails, then restore. This is asserted directly (not by
 # re-running check(), which only logs) so a broken assertion cannot pass

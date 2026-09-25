@@ -99,11 +99,13 @@ Steps:
 
    **`pr-check-context.sh` runs EXACTLY ONCE per run, in the repo under review** — a delegating re-exec REPLACES the anchor's own process (`exec`, not a second concurrent run), so only the run that actually produces the printed context below also performs its side effects. It is not a read-only probe: besides printing the context it performs the two HIMMEL-1219 verdict-scratch resets described below, truncating `cr-prior-blocking/<branch>` and `cr-aggregate-verdicts/<branch>` under the CURRENT repo's git-common-dir. With the retarget `cd` deleted (HIMMEL-2226), "the repo under review" is simply the cwd in every lane, so there is no ordering to get wrong.
 
-   The script prints one `key=value` line per datum on stdout, and **those printed values are what every later fence substitutes as literals**:
+   **Before printing anything, the script refuses a session resolved to the default branch or a detached HEAD (HIMMEL-2773).** `/pr-check` resolves the repo and branch from `$PWD` alone; a session whose cwd is the PRIMARY checkout (on `main`) would otherwise review `main` itself and could clear MAIN's own CR marker while certifying nothing about the leg's actual worktree branch. If the resolved `branch` equals `base` (main/master), or `git branch --show-current` is empty (detached HEAD), the script exits 4 with one stderr line naming the fix (check out the leg's own worktree branch) and prints NO stdout — never trust a context from a run that exited non-zero.
+
+   The script prints one `key=value` line per datum on stdout, `repo=`/`branch=` FIRST so the reviewer sees what this run is certifying before anything else, and **those printed values are what every later fence substitutes as literals**:
    ```text
-   pr-check-context: himmel_dir=<absolute path to the checkout THIS run's scripts/cr/ actually come from>
    pr-check-context: repo=<absolute path to the repo under review>
    pr-check-context: branch=<current branch>
+   pr-check-context: himmel_dir=<absolute path to the checkout THIS run's scripts/cr/ actually come from>
    pr-check-context: head=<full 40-char HEAD SHA>
    pr-check-context: base=<main|master>
    pr-check-context: marker=<path to the pending CR marker for this branch>

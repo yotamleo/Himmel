@@ -603,6 +603,28 @@ fi
 # prints a non-empty name on its own, this is defense in depth only.
 base=$(default_branch "$repo")
 [ -n "$base" ] || base=main
+
+# HIMMEL-2773 - refuse to certify a session whose CWD resolves to the default
+# branch (main/master) or a detached HEAD. /pr-check resolves the repo and
+# branch from $PWD alone; a session sitting in the PRIMARY checkout (on main)
+# would otherwise review main itself and could clear MAIN's own CR marker
+# while certifying nothing about the leg's actual worktree branch
+# (N472 audit, release-pipeline integrity, v1-blocker). Checked here - after
+# default_branch is resolved, before any side effect (delegation capability,
+# verdict-file truncation) runs - and BEFORE the first byte of stdout, so a
+# refused run never emits a context a caller could mistake for a real one.
+# Distinct exit code 4 - not 2 or 3 - for the same reason HIMMEL-2226 gave the
+# metachar refusal its own code: diagnosable apart from every other failure
+# this script can report.
+if [ -z "$branch" ]; then
+    echo "pr-check-context: HEAD is detached - refusing to certify a detached checkout; check out the leg's own worktree branch and re-run" >&2
+    exit 4
+fi
+if [ "$branch" = "$base" ]; then
+    echo "pr-check-context: resolved branch '$branch' is the default branch - refusing to run /pr-check from the primary checkout on $base; run it from the leg's own worktree branch instead" >&2
+    exit 4
+fi
+
 # Console adversarial round 1 (HIMMEL-3454 finding 2/5): a bare branch name
 # is ambiguous - `git merge-base HEAD main` can resolve a same-named TAG
 # ahead of the branch, silently shrinking the diff. Match the runbook's own
@@ -1039,9 +1061,11 @@ if [ -f "$marker" ]; then
     lane=$(awk -F' [|] ' '{print $3; exit}' "$marker" 2>/dev/null)
 fi
 
-printf 'pr-check-context: himmel_dir=%s\n' "$himmel_dir"
+# HIMMEL-2773 - repo + branch FIRST, so the reviewer sees what this run is
+# certifying before anything else (himmel_dir, delegation, etc.) scrolls by.
 printf 'pr-check-context: repo=%s\n' "$repo"
 printf 'pr-check-context: branch=%s\n' "$branch"
+printf 'pr-check-context: himmel_dir=%s\n' "$himmel_dir"
 printf 'pr-check-context: head=%s\n' "$head"
 printf 'pr-check-context: base=%s\n' "$base"
 printf 'pr-check-context: marker=%s\n' "$marker"
