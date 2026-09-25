@@ -34,7 +34,12 @@
 #     failure/error. check-runs is the authoritative read (HIMMEL-3572
 #     ruling: the combined-status endpoint alone can read `pending` with
 #     zero statuses while Actions check-runs are red) - the combined-status
-#     read is a second, belt-and-suspenders refusal, never the primary one.
+#     read is a second, belt-and-suspenders refusal, never the primary one;
+#   - the commit's `CI` workflow run (read via the Actions API, not
+#     check-runs) exists and is status=completed conclusion=success
+#     (HIMMEL-3627: on a commit whose CI run has not started, the only
+#     check-runs are the unrelated Pages ones, which check-runs above would
+#     pass vacuously).
 #
 # Every read that feeds a refusal decision (git remote/ls-remote, gh api) is
 # itself fail-closed: a transient failure of the READ refuses with a plain
@@ -50,7 +55,7 @@
 #      ls-remote, or the ref-create call itself)
 #   2  usage
 #   3  <sha> is not an ancestor of origin/main
-#   4  check-runs / combined status not green, or unreadable
+#   4  check-runs / combined status / CI workflow run not green, or unreadable
 #   5  <version> already exists as a tag on origin
 #   6  <version> is out of sequence and no --version-override was given
 #
@@ -253,6 +258,32 @@ if [ "${combined_count:-0}" -gt 0 ] 2>/dev/null; then
             exit 4 ;;
     esac
 fi
+
+# check-runs above can pass vacuously on a commit whose CI workflow run has
+# not started yet - e.g. only the Pages check-runs (build/deploy/
+# report-build-status) exist and are green (HIMMEL-3627). The CI workflow
+# run itself, read via the Actions API, is the authoritative signal.
+if ! ci_runs_json=$("$GH" api "repos/$NWO/actions/runs?head_sha=$SHA&per_page=100" 2>/dev/null); then
+    echo "cut-tag: refusing - gh api actions/runs failed at $SHA" >&2
+    exit 4
+fi
+if [ -z "$ci_runs_json" ]; then
+    echo "cut-tag: refusing - could not read the CI workflow run at $SHA" >&2
+    exit 4
+fi
+ci_run=$(printf '%s' "$ci_runs_json" | jq -r '
+    [.workflow_runs[]? | select(.name == "CI")] | sort_by(.run_number) | last
+    | if . == null then "missing/null" else "\(.status)/\(.conclusion // "null")" end
+' 2>/dev/null)
+case "$ci_run" in
+    completed/success) : ;;
+    missing/*)
+        echo "cut-tag: refusing - no CI workflow run found at $SHA" >&2
+        exit 4 ;;
+    *)
+        echo "cut-tag: refusing - CI workflow run at $SHA is $ci_run, not completed/success" >&2
+        exit 4 ;;
+esac
 
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "cut-tag: DRY RUN - would create refs/tags/$VERSION at $SHA on $NWO ($total check-runs green)"

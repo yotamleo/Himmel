@@ -48,6 +48,7 @@ cat > "$GH_STUB" <<'STUB'
 echo "gh $*" >> "$CALLS_LOG"
 RUNS_DEFAULT='{"total_count":1,"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}]}'
 STATUS_DEFAULT='{"state":"success","total_count":0}'
+CI_RUNS_DEFAULT='{"workflow_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}'
 case "$1 $2" in
   "repo view")
     [ "${CT_NWO_MISMATCH:-0}" = "1" ] && { echo "octo-other/demo"; exit 0; }
@@ -62,6 +63,10 @@ case "$*" in
   *"commits/$SHA_ENV/status"*)
     [ "${CT_STATUS_FAIL:-0}" = "1" ] && exit 1
     printf '%s' "${CT_STATUS_JSON:-$STATUS_DEFAULT}"
+    exit 0 ;;
+  *"actions/runs?head_sha=$SHA_ENV"*)
+    [ "${CT_CI_RUNS_FAIL:-0}" = "1" ] && exit 1
+    printf '%s' "${CT_CI_RUNS_JSON:-$CI_RUNS_DEFAULT}"
     exit 0 ;;
   *"git/refs -f"*)
     [ "${CT_CREATE_FAIL:-0}" = "1" ] && exit 1
@@ -114,6 +119,7 @@ run() { # run <version> <sha> [more args...] - runs the script under test
         CT_ANCESTOR_BAD="${CT_ANCESTOR_BAD:-0}" CT_TAG_EXISTS="${CT_TAG_EXISTS:-0}" \
         CT_SERIES_TAGS="${CT_SERIES_TAGS:-}" CT_FETCH_FAIL="${CT_FETCH_FAIL:-0}" \
         CT_RUNS_JSON="${CT_RUNS_JSON:-}" CT_STATUS_JSON="${CT_STATUS_JSON:-}" \
+        CT_CI_RUNS_JSON="${CT_CI_RUNS_JSON:-}" CT_CI_RUNS_FAIL="${CT_CI_RUNS_FAIL:-0}" \
         CT_CREATE_FAIL="${CT_CREATE_FAIL:-0}" \
         CT_ORIGIN_URL="${CT_ORIGIN_URL:-}" CT_ORIGIN_URL_FAIL="${CT_ORIGIN_URL_FAIL:-0}" \
         CT_NWO_MISMATCH="${CT_NWO_MISMATCH:-0}" CT_SERIES_LS_FAIL="${CT_SERIES_LS_FAIL:-0}" \
@@ -123,6 +129,7 @@ run() { # run <version> <sha> [more args...] - runs the script under test
 reset_calls() { : > "$CALLS"; }
 unset CT_ANCESTOR_BAD CT_TAG_EXISTS CT_SERIES_TAGS CT_FETCH_FAIL CT_RUNS_JSON CT_STATUS_JSON CT_CREATE_FAIL
 unset CT_ORIGIN_URL CT_ORIGIN_URL_FAIL CT_NWO_MISMATCH CT_SERIES_LS_FAIL CT_RUNS_FAIL CT_STATUS_FAIL
+unset CT_CI_RUNS_JSON CT_CI_RUNS_FAIL
 
 CLEAN_VERSION="v0.3.0-pre.9"
 CT_SERIES_TAGS_DEFAULT="aaaa1111	refs/tags/v0.3.0-pre.6
@@ -233,6 +240,41 @@ reset_calls
 rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_STATUS_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
 check "status-fail: rc 4" "$rc" "4"
 not_contains "status-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 17. Pages-only check-runs, no CI workflow run (HIMMEL-3627 vacuous-pass bug) ---
+reset_calls
+PAGES_ONLY_RUNS='{"total_count":3,"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"deploy","status":"completed","conclusion":"success"},{"name":"report-build-status","status":"completed","conclusion":"success"}]}'
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_RUNS_JSON="$PAGES_ONLY_RUNS" CT_CI_RUNS_JSON='{"workflow_runs":[]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "pages-only: rc 4" "$rc" "4"
+contains "pages-only: names the missing CI run" "$out" "CI workflow run"
+not_contains "pages-only: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 18. CI workflow run queued -------------------------------------------------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_CI_RUNS_JSON='{"workflow_runs":[{"name":"CI","status":"queued","conclusion":null}]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "ci-queued: rc 4" "$rc" "4"
+contains "ci-queued: names the status" "$out" "queued"
+not_contains "ci-queued: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 19. CI workflow run in_progress --------------------------------------------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_CI_RUNS_JSON='{"workflow_runs":[{"name":"CI","status":"in_progress","conclusion":null}]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "ci-in-progress: rc 4" "$rc" "4"
+contains "ci-in-progress: names the status" "$out" "in_progress"
+not_contains "ci-in-progress: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 20. CI workflow run completed/cancelled ------------------------------------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_CI_RUNS_JSON='{"workflow_runs":[{"name":"CI","status":"completed","conclusion":"cancelled"}]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "ci-cancelled: rc 4" "$rc" "4"
+contains "ci-cancelled: names the conclusion" "$out" "cancelled"
+not_contains "ci-cancelled: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 21. CI actions/runs gh api failure (RED: must NOT read as clean) -----------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_CI_RUNS_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "ci-runs-fail: rc 4" "$rc" "4"
+not_contains "ci-runs-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
 
 # --- 16. option-shaped / empty --version-override reason (RED: must not become the reason) ---
 reset_calls
