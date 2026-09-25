@@ -719,21 +719,45 @@ unchanged; only the launcher's own process count falls.
   sit at `60` for that reason (28× the measured p95, and no added worst-case wall
   clock: the `*`-matcher `auto-arm-on-cap.sh` entry already bounds every tool call
   at 60 s). See the SLO note below.
-- **Each member is bounded too, and the bound is budget-aware.** The entry
-  timeout alone still lets one hung member spend the whole thing, so the launcher
-  gives every member the smaller of the 15 s fast-guard bound and what is left of
-  its own 50 s whole-chain budget — floored at 500 ms, so a spent budget clamps
-  the tail without starving it to a 0 ms slice (`RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS`
-  / `RUN_HOOK_CHAIN_BUDGET_MS` override the first two). The floor is affordable by
-  construction: worst case is budget + members × floor, so the 10-member Bash
-  chain tops out at 55 s, still inside its 60 s entry. A member that outruns its bound is
-  killed, **named on stderr, and skipped** — the chain continues, which is what
-  happened before the collapse when Claude Code killed a hung *entry* and its
-  siblings ran on. Deliberately not a deny: turning a slow guard into a hard
-  block on the tool call is a worse failure than the one being bounded. The
-  budget is what keeps the chain inside the entry timeout, so even a pathological
-  run ends with the launcher reporting what it dropped rather than being killed
-  mid-chain with the tail skipped silently.
+- **Each member is bounded too, and the bound is budget-aware — advisory
+  members share the clock, must-run members get their own window capped by an
+  entry-safe deadline (HIMMEL-3080).** The entry timeout alone still lets one
+  hung member spend the whole thing, so the launcher gives every *advisory*
+  member the smaller of the 15 s fast-guard bound and what is left of the 50 s
+  whole-chain budget — floored at 500 ms, so a spent budget clamps the tail
+  without starving it to a 0 ms slice (`RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS` /
+  `RUN_HOOK_CHAIN_BUDGET_MS` override the first two). A member that outruns its
+  bound is killed, **named on stderr, and skipped** — the chain continues,
+  which is what happened before the collapse when Claude Code killed a hung
+  *entry* and its siblings ran on. Deliberately not a deny: turning a slow
+  advisory guard into a hard block on the tool call is a worse failure than the
+  one being bounded.
+
+  A `MUST_RUN_CHAIN_MEMBERS` security guard is different: it must never be
+  silently skipped just because an upstream advisory neighbour spent the
+  shared budget, so it gets its own full `memberTimeoutMs()` window regardless
+  of what the shared clock has left. Left uncapped, that exemption is its own
+  hazard — several must-run members (or one that hangs) can collectively
+  outrun the entry's own `timeout`, and a killed PreToolUse entry fails OPEN,
+  silently skipping every member that had not yet run, where the launcher
+  itself would have denied. So a must-run member's window is *also* capped, by
+  an entry-safe deadline: `min(memberTimeoutMs(), entryDeadline − now)`, where
+  `entryDeadline` is the entry's own `timeout` (`RUN_HOOK_CHAIN_ENTRY_TIMEOUT_MS`,
+  default 60 s) minus a safety margin
+  (`RUN_HOOK_CHAIN_ENTRY_SAFETY_MARGIN_MS`, default 5 s) for the launcher's own
+  start-up and exit overhead. When even the 500 ms floor cannot fit before that
+  deadline, the launcher denies **without spawning the member**, fail-closed,
+  naming whichever prior member actually spent the shared budget — the same
+  guarantee a real timeout/crash inside the window already gives (HIMMEL-2060 /
+  HIMMEL-3601), just reached one step earlier. That consumer note is scored by
+  how much of each prior member's run happened *before* the shared budget's own
+  deadline, not by raw elapsed time, so a must-run member that ran long inside
+  its own exempt window is never blamed for spend that happened after the
+  shared budget was already gone. This is what keeps the chain inside the entry
+  timeout even under HIMMEL-3080's must-run exemption: every path — advisory
+  clamp, must-run's own window, or the pre-spawn deadline-exhausted deny — ends
+  with the launcher reporting what it dropped or denied rather than being
+  killed mid-chain with the tail skipped silently.
 
 **SLO: p95 < 1 s per hook.** Claude Code runs matching *entries* concurrently, so
 the stack's cost is roughly the slowest matching entry, not their sum — but a
