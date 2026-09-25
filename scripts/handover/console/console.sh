@@ -327,6 +327,7 @@ esac
 if [ "$CMD" = next ] && [ -z "$PROJECT_ARG" ]; then
     _predecessor_doc_early="${DOC_ARG:-${CONSOLE_DOC:-}}"
     if [ -n "$_predecessor_doc_early" ] && [ -f "$_predecessor_doc_early" ]; then
+        # shellcheck disable=SC2016  # single-quoted sed pattern; no expansion wanted
         _predecessor_project_early="$(sed -n 's/.*The project this console is FOR is \*\*`\([^`]*\)`\*\*.*/\1/p' "$_predecessor_doc_early" | head -n1)"
         case "$_predecessor_project_early" in
             ''|none*) _predecessor_project_early="" ;;
