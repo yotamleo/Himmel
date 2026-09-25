@@ -319,28 +319,50 @@ resolve_diff_base() {
 # means. Fails CLOSED (2) when origin can't be fetched at all: an
 # unverifiable empty diff must not read as "reviewed" (HIMMEL-323 direction).
 #
-# Fetch by the resolved PUSH endpoint, never the bare name "origin" (HIMMEL-3634
-# round-2 codex-1): `git fetch origin` resolves through remote.origin.url (the
-# FETCH url), which can diverge from remote.origin.pushurl / a pushInsteadOf
-# rewrite (the URL this exact push actually uses) — a pusher whose fetch and
-# push URLs point at different repositories (or, equivalently, an ordinary
-# fork-workflow clone where "origin" names their own fork while pushurl or an
-# explicit remote points the actual push at the protected upstream) gets this
-# safety net validated against the WRONG repository's history. git's own
-# pre-push argv already carries the exact endpoint this push resolved to
-# (push_remote_url, "$2" — same trust-argv-over-config precedent as the mint
-# logic above), so that is the fetch source whenever it is known; reproduced
-# in a scratch repo: remote.origin.url pointed at an attacker fork seeded with
-# the exact pushed SHA, push argv naming the real origin as the destination —
-# fetching "origin" by name validated against the fork (bypass), fetching
-# push_remote_url correctly fetched the real origin and refused. Falls back to
-# the bare name only for the legacy manual/no-argv invocation, where no push
-# is actually in flight to pin to.
+# Fetch source (HIMMEL-3634 round-2 codex-1, corrected): this safety net's
+# whole job is to check the empty diff against an authority the PUSHER did
+# NOT just use to produce that empty diff. Which fetch source is trustworthy
+# therefore depends on WHICH resolve_diff_base branch ran:
+#   - Pushing nominally TO origin (push_remote_name unset or "origin"):
+#     `git fetch origin` resolves through remote.origin.url (the FETCH url),
+#     which can diverge from remote.origin.pushurl / a pushInsteadOf rewrite
+#     (the URL THIS push actually used) — a pusher whose fetch and push URLs
+#     point at different repositories gets this safety net validated against
+#     the WRONG repository's history. git's own pre-push argv already carries
+#     the exact endpoint this push resolved to (push_remote_url, "$2" — same
+#     trust-argv-over-config precedent as the mint logic above), so that is
+#     the fetch source here; reproduced in a scratch repo: remote.origin.url
+#     pointed at an attacker fork seeded with the exact pushed SHA, push argv
+#     naming the real origin as the destination — fetching "origin" by name
+#     validated against the fork (bypass), fetching push_remote_url correctly
+#     fetched the real origin and refused.
+#   - Pushing to any OTHER remote — a named non-origin remote, or an
+#     explicit-URL push (resolve_diff_base's HIMMEL-3477 branch, e.g. pushing
+#     to your own fork whose default branch already has the tip) — the empty
+#     diff was computed against push_remote_url itself (or a tracking ref
+#     for it). Re-fetching push_remote_url here re-validates against the
+#     SAME repository the pusher already fully controls and proves nothing:
+#     reproduced in a scratch repo — an attacker pushed their unreviewed
+#     commit straight to their own fork's main, then pushed explicitly to
+#     that fork; fetch_source=push_remote_url found it trivially "reachable"
+#     from itself and let the push through with NO marker (bypass). The only
+#     authority that proves "already reviewed" here is origin's own real
+#     default branch (HIMMEL-3477's legitimate case — content already merged
+#     to origin/$db but new to the target — is exactly "reachable from
+#     origin's $db"), so this branch keeps fetching the literal "origin"
+#     name, unchanged from pre-round-2 behavior.
+# Falls back to the bare name for the legacy manual/no-argv invocation too,
+# where no push is actually in flight to pin push_remote_url to.
 verify_empty_diff_is_reviewed() {
     local local_sha="$1"
     local fetch_rc=0
     local scratch_ref="refs/cr/verify-base/${db}"
-    local fetch_source="${push_remote_url:-origin}"
+    local fetch_source="origin"
+    local authority_desc="origin, independent of the push destination"
+    if [ -z "$push_remote_name" ] || [ "$push_remote_name" = "origin" ]; then
+        fetch_source="${push_remote_url:-origin}"
+        authority_desc="the actual push destination"
+    fi
     local scrubbed_source
     scrubbed_source=$(scrub_endpoint "$fetch_source")
 
@@ -353,7 +375,7 @@ verify_empty_diff_is_reviewed() {
     if git merge-base --is-ancestor "$local_sha" "$scratch_ref" 2>/dev/null; then
         return 0
     fi
-    echo "→ code-review: diff vs ${diff_base} was empty, but ${local_sha:0:8} is NOT reachable from ${scrubbed_source}'s ${db} (freshly fetched from the actual push destination) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, or a local tracking ref never re-fetched — so only the real push destination's history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+    echo "→ code-review: diff vs ${diff_base} was empty, but ${local_sha:0:8} is NOT reachable from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, or a local tracking ref never re-fetched — so only an independent, unrewritable history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
     return 2
 }
 

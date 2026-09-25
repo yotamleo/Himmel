@@ -1248,6 +1248,46 @@ case "$out" in
     *) fail "round-2 codex-1 refusal should name a fetch from the actual push destination" "out: $out" ;;
 esac
 
+echo "TEST: HIMMEL-3634 round-2.5 — explicit-URL push to a fork whose OWN default branch (not just HEAD) is forged to the tip -> refused, not skipped"
+# P1(a) above proves this shape for the fork's HEAD symref, but its fixture
+# clone-order makes HEAD and the fork's actual "main" branch agree by
+# accident. This row forges the fork's named default branch directly (an
+# ordinary push the attacker fully controls, no clone-order artifact) to
+# confirm verify_empty_diff_is_reviewed's safety net does not degrade to
+# re-checking the same attacker-controlled repository it already failed to
+# get an independent answer from (round-2 regression: an earlier fix that
+# always re-fetched push_remote_url reintroduced exactly this bypass).
+R25_ORIGIN="$TMP_ROOT/r25-real-origin.git"
+git init -q --bare -b main "$R25_ORIGIN"
+R25_SEED="$TMP_ROOT/r25-seed"
+git init -q -b main "$R25_SEED"
+git -C "$R25_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$R25_SEED" push -q "$R25_ORIGIN" main
+R25_PUSHER="$TMP_ROOT/r25-pusher"
+git clone -q "$R25_ORIGIN" "$R25_PUSHER"
+git -C "$R25_PUSHER" checkout -q -b feat/r25sneaky main
+echo 'function r25sneaky(){}' > "$R25_PUSHER/r25sneaky.sh"
+git -C "$R25_PUSHER" add r25sneaky.sh
+git -C "$R25_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "r25sneaky, never reviewed"
+r25_sha=$(git -C "$R25_PUSHER" rev-parse HEAD)
+R25_FORK="$TMP_ROOT/r25-fork.git"
+git init -q --bare -b main "$R25_FORK"
+# Attacker pushes their unreviewed branch straight onto the fork's OWN main --
+# an ordinary push to a repo they fully control, not a clone-order side effect.
+git -C "$R25_PUSHER" push -q "$R25_FORK" feat/r25sneaky:main
+rc=0
+out=$(cd "$R25_PUSHER" && bash "$HOOK" "$R25_FORK" "$R25_FORK" <<< "refs/heads/feat/r25sneaky $r25_sha refs/heads/feat/r25sneaky $Z40" 2>&1) || rc=$?
+r25_marker="$R25_PUSHER/.git/cr-pending/feat/r25sneaky"
+if [ "$rc" -eq 2 ] && [ ! -f "$r25_marker" ]; then
+    pass "round-2.5: explicit-URL push to a fork whose own main is forged to the tip is refused, not silently skipped"
+else
+    fail "round-2.5: expected exit 2 + no marker" "rc=$rc marker=$([ -f "$r25_marker" ] && echo present || echo absent) / out: $out"
+fi
+case "$out" in
+    *"NOT reachable from origin's main"*) pass "round-2.5 refusal names origin (not the push target) as the re-fetch authority" ;;
+    *) fail "round-2.5 refusal should name origin as the re-fetch authority, not the push target" "out: $out" ;;
+esac
+
 echo "TEST: control — a normal push with a real (non-empty) diff still reviews the same range"
 B3="$TMP_ROOT/p1-b3"
 git clone -q "$ORIGIN_P1" "$B3"
