@@ -488,6 +488,7 @@ guard_cmdpos_grammar() {
 guard_long_opt_name() {
     local tok="$1" rest
     rest="${tok#--}"
+    # shellcheck disable=SC2034 # GUARD_LOPT_VAL consumed by callers after sourcing, not in this file
     case "$rest" in
         *=*) GUARD_LOPT_NAME="${rest%%=*}"; GUARD_LOPT_VAL="${rest#*=}" ;;
         *)   GUARD_LOPT_NAME="$rest"; GUARD_LOPT_VAL="" ;;
