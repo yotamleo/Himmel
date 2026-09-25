@@ -590,7 +590,7 @@ bk33="$(printf '%s' "$row33" | jq -r .pre.backup)"
   || fail "33: behaviour changed — the install must still overwrite the config"
 echo "ok 33 a replaced hud config is recorded and its prior bytes are backed up"
 
-cfg34="$TMP/cfg34"; hud34="$cfg34/plugins/claude-hud"
+cfg34="$TMP/cfg34"
 proj34="$TMP/proj34"; mkdir -p "$proj34/.claude"
 CLAUDE_CONFIG_DIR="$cfg34" bash "$HELPER" "$proj34/.claude/settings.json" "$REPO_ROOT" >/dev/null
 row34="$(hud_rows "cfg34/claude-hud.json")"

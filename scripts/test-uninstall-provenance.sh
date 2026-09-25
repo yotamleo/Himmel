@@ -441,6 +441,7 @@ mkdir -p "$(dirname "$HUD13")"
 # HIMMEL-3334: a leftover legacy-path config, same reasoning as RED6 --
 # removed unconditionally regardless of the ledger's loaded-but-silent
 # state, since it is never one of the ledger-decided six-row fallbacks.
+# shellcheck disable=SC2031
 HUD13_LEGACY="$HOME/.claude/plugins/claude-hud/config.json"
 mkdir -p "$(dirname "$HUD13_LEGACY")"
 cat > "$CASE_SETTINGS" <<JSON
