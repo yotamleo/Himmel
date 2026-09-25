@@ -297,6 +297,16 @@ assert_rc "R2- rm -- --rfile (operand after --, not a flag)" 0 "$(run_case "$(j_
 # follows the terminator too -- the greedy scan used to bind to that later
 # operand and the terminator check then (wrongly) covered the earlier flag.
 assert_rc "R2+ rm --recursive -- --rfile (flag before --, operand after)" 2 "$(run_case "$(j_bash 'rm --recursive -- --rfile')")"
+# HIMMEL-2610 J1267O round-5 codex-1: excluding `(` from the gap (F3) must not
+# let an operand substitution BEFORE the flag hide a live `--recursive`.
+# shellcheck disable=SC2016 # the $(...) and backticks must stay literal -- they are the payload text under test
+assert_rc "R2+ rm \"\$(printf x)\" --recursive dir (operand substitution before flag)" 2 "$(run_case "$(j_bash 'rm "$(printf x)" --recursive dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm \`echo x\` --recursive dir (backtick operand before flag)" 2 "$(run_case "$(j_bash 'rm `echo x` --recursive dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm \"\$(foo -- )\" --recursive d (-- inside substitution is not rm's terminator)" 2 "$(run_case "$(j_bash 'rm "$(foo -- )" --recursive d')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ echo \$(rm --recursive x) (rm INSIDE a substitution still denies)" 2 "$(run_case "$(j_bash 'echo $(rm --recursive x)')")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
 # continuation but carries `-f` (no `r`), pinning the `\\` + `;+` escapes.
 cont_allow='rm \

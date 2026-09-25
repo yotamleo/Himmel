@@ -413,19 +413,33 @@ fi
 # finding the FIRST standalone `--` inside the match and testing for
 # `--r...` only in the text before it - text after a genuine terminator is
 # never a flag, but text before one always is.
+# HIMMEL-2610 J1267O round-5 codex-1: excluding `(` from the gap also hid a
+# live `--recursive` that FOLLOWS an operand substitution (`rm "$(printf x)"
+# --recursive d`). So scan twice: the raw text (catches an `rm` that sits
+# INSIDE a substitution) and a copy with each innermost `$(...)`/backtick span
+# collapsed to `X` (an operand substitution before the flag no longer stops the
+# gap, and a `--` inside it can no longer pose as rm's terminator). Deny if
+# either scan finds a live flag.
 RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&(`#]*--r[a-z-]*([^[:alnum:]_-]|$)'
-if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
-    _rm_recur_match="${BASH_REMATCH[0]}"
-    if [[ $_rm_recur_match =~ (^|[[:space:]])--([[:space:]]|$) ]]; then
-        _rm_recur_term="${BASH_REMATCH[0]}"
-        _rm_recur_pre_term="${_rm_recur_match%%"$_rm_recur_term"*}"
-    else
-        _rm_recur_pre_term="$_rm_recur_match"
+RM_SUBST_PAT='(\$\([^()]*\)|`[^`]*`)'
+_rm_recur_collapsed="$rm_scrub"
+while [[ $_rm_recur_collapsed =~ $RM_SUBST_PAT ]]; do
+    _rm_recur_collapsed="${_rm_recur_collapsed/"${BASH_REMATCH[0]}"/X}"
+done
+for _rm_recur_cand in "$rm_scrub" "$_rm_recur_collapsed"; do
+    if [[ $_rm_recur_cand =~ $RM_RECURSIVE_PAT ]]; then
+        _rm_recur_match="${BASH_REMATCH[0]}"
+        if [[ $_rm_recur_match =~ (^|[[:space:]])--([[:space:]]|$) ]]; then
+            _rm_recur_term="${BASH_REMATCH[0]}"
+            _rm_recur_pre_term="${_rm_recur_match%%"$_rm_recur_term"*}"
+        else
+            _rm_recur_pre_term="$_rm_recur_match"
+        fi
+        if [[ $_rm_recur_pre_term =~ --r[a-z-]*([^[:alnum:]_-]|$) ]]; then
+            deny "recursive rm"
+        fi
     fi
-    if [[ $_rm_recur_pre_term =~ --r[a-z-]*([^[:alnum:]_-]|$) ]]; then
-        deny "recursive rm"
-    fi
-fi
+done
 # Backslash-newline continuation: newlines are already folded to ';' above, so
 # `rm \<newline>-rf` becomes `rm \;-rf` here - the literal backslash before the
 # folded separator is the tell (HIMMEL-851 U3). `;+` (not a single `;`): on
