@@ -702,6 +702,14 @@ never stash (`pre-commit run --files <staged>` only touches the staged set),
 so this cannot happen there; an older vault, or any other stashing
 `pre-commit install` checkout, is still exposed.
 
+The wrapper preserves the concurrent write, but it does not make the racing
+commit *succeed*: pre-commit's own whole-tree modified-files check
+(`pre_commit/commands/run.py`) still fails the hook with "files were
+modified by this hook" whenever any tracked file changes during the hook's
+run, stash or no stash. Nothing is lost — `git status --short` still shows
+every unstaged edit — just re-stage (if the failed hook needs it) and retry
+the commit.
+
 **Always run**, before and after a failed commit: `git status --short | wc -l`.
 A shrinking count means work was reverted.
 

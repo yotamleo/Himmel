@@ -6,6 +6,19 @@
 #    production) makes the stash reapply fail and silently discards the
 #    committing session's own unstaged edit. The stash-free wrapper
 #    (`pre-commit run --files <staged>`) never stashes, so it cannot lose it.
+#    This exercises the REAL `pre-commit` binary and the REAL
+#    install-nostash-hooks.sh output -- not a hand-rolled stand-in for
+#    either -- so a regression in either one is actually caught.
+#
+#    Caveat that both RED and GREEN below demonstrate: pre-commit's own
+#    whole-tree `_get_diff()` check in pre_commit/commands/run.py reports
+#    "files were modified by this hook" and fails the commit whenever ANY
+#    tracked file changes during the hook's run, independent of the
+#    stash/no-stash mechanism. So the wrapper does not make the race-losing
+#    commit succeed -- it only stops the STASH from destroying the
+#    concurrent writer's edit. The adopter-facing behaviour is: the write
+#    survives, but the commit attempt fails and must be retried.
+#
 # 2. Wiring: a vault freshly scaffolded from templates/luna-second-brain/
 #    must install the wrapper for pre-commit/commit-msg, not the stashing
 #    `pre-commit install`.
@@ -17,6 +30,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 TEMPLATE="$REPO_ROOT/templates/luna-second-brain"
+INSTALLER="$TEMPLATE/scripts/hooks/install-nostash-hooks.sh"
 fails=0
 check() {
   if [ "$2" = "$3" ]; then echo "ok - $1"; else echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); fi
@@ -26,98 +40,122 @@ check() {
 # shellcheck disable=SC1091
 . "$HERE/lib/fixture-tempdir.sh"
 
-# ---------------------------------------------------------------------------
-# 1. Mechanism: stashing hook loses an unstaged edit under a mid-hook race;
-#    the no-stash wrapper cannot, because it never touches unstaged content.
-# ---------------------------------------------------------------------------
-mk_race_repo() {
-  R=$(fixture_mktemp_dir) || return 1
-  git -C "$R" init -q -b main
-  git -C "$R" config user.email t@t
-  git -C "$R" config user.name t
-  printf '{"pristine":true}\n' > "$R/data.json"
-  printf 'pristine\n' > "$R/commit-file.txt"
-  git -C "$R" add data.json commit-file.txt
-  git -C "$R" commit -qm seed
-  # git init does not reliably populate .git/hooks/ (observed absent on some
-  # CI runner images), so create it explicitly rather than assume it exists.
-  mkdir -p "$R/.git/hooks"
-  # The hook under test just sleeps, giving the race time to land; it makes
-  # no change of its own, so pre-commit's own fixer-rollback never fires.
-  mkdir -p "$R/.git-hook-hold"
-  cat > "$R/.git-hook-hold/hold.sh" <<'HOLD'
+if ! command -v pre-commit >/dev/null 2>&1 && ! python3 -c 'import pre_commit' >/dev/null 2>&1; then
+  echo "SKIP - pre-commit is not installed; cannot exercise the real stash/no-stash hooks"
+  exit 0
+fi
+
+# mk_seed_repo <dir> -- a git repo with a real pre-commit local hook (`hold`,
+# just sleeps) wired via .pre-commit-config.yaml, one commit in.
+mk_seed_repo() {
+  local dir="$1"
+  git -C "$dir" init -q -b main
+  git -C "$dir" config user.email t@t
+  git -C "$dir" config user.name t
+  touch "$dir/.single-writer"
+  printf '{"pristine":true}\n' > "$dir/data.json"
+  printf 'pristine\n' > "$dir/commit-file.txt"
+  mkdir -p "$dir/.git-hook-hold"
+  cat > "$dir/.git-hook-hold/hold.sh" <<'HOLD'
 #!/usr/bin/env bash
 sleep 1.5
 HOLD
-  chmod +x "$R/.git-hook-hold/hold.sh"
+  chmod +x "$dir/.git-hook-hold/hold.sh"
+  cat > "$dir/.pre-commit-config.yaml" <<'CFG'
+repos:
+  - repo: local
+    hooks:
+      - id: hold
+        name: hold
+        entry: bash .git-hook-hold/hold.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+CFG
+  git -C "$dir" add data.json commit-file.txt .git-hook-hold/hold.sh .pre-commit-config.yaml
+  git -C "$dir" commit -qm seed
 }
 
-# run_race <repo> <hook-installer> — dirty data.json (unstaged pending edit),
-# fire a background writer that clobbers it 0.5s into the hook window, then
-# commit commit-file.txt through the hook. Prints data.json's final content.
+# assert_toplevel_is <dir> -- confirms git resolves <dir> itself as the repo
+# toplevel before an installer is allowed to touch it (HIMMEL-2223 incident:
+# install-nostash-hooks.sh infers its target from cwd via
+# `git rev-parse --show-toplevel`, with no target argument -- a stray cd
+# elsewhere silently installs into the WRONG repo's shared .git/hooks/).
+assert_toplevel_is() {
+  local dir="$1" top
+  top=$(cd "$dir" && git rev-parse --show-toplevel 2>/dev/null)
+  [ "$top" = "$dir" ]
+}
+
+# run_race <repo> -- stage ONLY commit-file.txt, leave data.json dirty and
+# UNSTAGED, fire a background writer that clobbers it 0.5s into the hook's
+# 1.5s hold, commit through whatever hook is installed. Prints data.json's
+# final content and the tail of the commit's output.
 run_race() {
   local repo="$1"
   printf '{"pending-edit":true}\n' > "$repo/data.json"
   printf 'staged-change\n' > "$repo/commit-file.txt"
-  (sleep 0.5; printf '{"external-write":true}\n' > "$repo/data.json") & disown
   git -C "$repo" add commit-file.txt >/dev/null 2>&1
-  git -C "$repo" commit -qm race >/dev/null 2>&1
+  (sleep 0.5; printf '{"external-write":true}\n' > "$repo/data.json") & disown
+  git -C "$repo" commit -qm race > "$repo/.race-commit.log" 2>&1
   wait 2>/dev/null
   cat "$repo/data.json"
 }
 
-# RED: the stashing hook (what `pre-commit install` generates: stash unstaged
-# changes, run hooks, reapply).
-mk_race_repo || { echo "FAIL - could not build stashing fixture"; fails=$((fails+1)); }
-cat > "$R/.git/hooks/pre-commit" <<'HOOK'
-#!/usr/bin/env bash
-set -e
-stash_ref=$(git stash create)
-[ -n "$stash_ref" ] && git stash store -q -m "test-stash" "$stash_ref"
-git checkout -- . 2>/dev/null || true
-bash .git-hook-hold/hold.sh
-rc=0
-if [ -n "$stash_ref" ]; then
-  git apply --whitespace=nowarn "$(git stash show -p "$stash_ref" > /tmp/nostash-test-patch-$$; echo /tmp/nostash-test-patch-$$)" || rc=1
-  rm -f "/tmp/nostash-test-patch-$$"
+# ---------------------------------------------------------------------------
+# RED: stock `pre-commit install` (the stash/rollback installer) reverts a
+# concurrent writer's edit to an UNRELATED unstaged tracked file.
+# ---------------------------------------------------------------------------
+R=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate RED fixture dir"; fails=$((fails+1)); }
+if [ -n "${R:-}" ]; then
+  mk_seed_repo "$R"
+  if ! assert_toplevel_is "$R"; then
+    echo "FAIL - RED fixture toplevel is not [$R]; refusing to install into it"
+    fails=$((fails+1))
+  else
+    (cd "$R" && pre-commit install >/dev/null) || { echo "FAIL - stock pre-commit install failed"; fails=$((fails+1)); }
+    red_result=$(run_race "$R")
+    red_output=$(cat "$R/.race-commit.log" 2>/dev/null)
+    check "RED: stock pre-commit stash/rollback reverts the concurrent writer's edit" "$red_result" '{"pending-edit":true}'
+    red_msg=$(git -C "$R" log -1 --format=%s)
+    check "RED: commit did not land" "$red_msg" "seed"
+    case "$red_output" in
+      *"files were modified by this hook"*) check "RED: pre-commit reports files were modified by this hook" yes yes ;;
+      *) check "RED: pre-commit reports files were modified by this hook" no yes ;;
+    esac
+  fi
 fi
-exit "$rc"
-HOOK
-chmod +x "$R/.git/hooks/pre-commit"
-stashing_result=$(run_race "$R")
-check "RED: stashing hook loses the unstaged edit under a mid-hook race" "$stashing_result" '{"external-write":true}'
-# Content alone can't distinguish "stash-apply failed" from "nothing failed" --
-# both converge on the racer's write. The hook's own `exit "$rc"` means a
-# failed reapply fails `git commit`, so also assert the commit never landed.
-git -C "$R" log -1 --format=%s > /tmp/nostash-test-red-msg-$$ 2>/dev/null
-red_msg=$(cat /tmp/nostash-test-red-msg-$$ 2>/dev/null); rm -f /tmp/nostash-test-red-msg-$$
-check "RED: commit was rolled back (stash reapply failed, so the hook exits nonzero)" "$red_msg" "seed"
 
-# GREEN: the no-stash wrapper (mirrors install-nostash-hooks.sh: `pre-commit
-# run --files <staged>` never stashes, so it never touches data.json at all).
-mk_race_repo || { echo "FAIL - could not build wrapper fixture"; fails=$((fails+1)); }
-cat > "$R/.git/hooks/pre-commit" <<'HOOK'
-#!/usr/bin/env bash
-set -e
-bash .git-hook-hold/hold.sh
-exit 0
-HOOK
-chmod +x "$R/.git/hooks/pre-commit"
-wrapper_result=$(run_race "$R")
-check "GREEN: no-stash wrapper never touches the unstaged file, race writer wins cleanly" "$wrapper_result" '{"external-write":true}'
-# The wrapper result matching the race writer (not a stash artifact) proves
-# git never intervened: nothing to stash means nothing to fail to restore.
-# The real differentiator vs the stashing case is the exit code + git status,
-# not the file content (both can converge on the racer's write) -- assert it.
-git -C "$R" log -1 --format=%s > /tmp/nostash-test-msg-$$ 2>/dev/null
-msg=$(cat /tmp/nostash-test-msg-$$ 2>/dev/null); rm -f /tmp/nostash-test-msg-$$
-check "GREEN: commit landed (wrapper never blocks/rolls back on an untouched file)" "$msg" "race"
+# ---------------------------------------------------------------------------
+# GREEN: the real install-nostash-hooks.sh wrapper (--files, no stash) never
+# touches data.json, so the concurrent writer's edit survives. The commit
+# STILL does not land -- pre-commit's own whole-tree modified-files check
+# fires regardless of the stash mechanism -- but nothing is lost.
+# ---------------------------------------------------------------------------
+G=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate GREEN fixture dir"; fails=$((fails+1)); }
+if [ -n "${G:-}" ]; then
+  mk_seed_repo "$G"
+  if ! assert_toplevel_is "$G"; then
+    echo "FAIL - GREEN fixture toplevel is not [$G]; refusing to install into it"
+    fails=$((fails+1))
+  else
+    (cd "$G" && bash "$INSTALLER" >/dev/null) || { echo "FAIL - install-nostash-hooks.sh failed"; fails=$((fails+1)); }
+    green_result=$(run_race "$G")
+    green_output=$(cat "$G/.race-commit.log" 2>/dev/null)
+    check "GREEN: the real no-stash wrapper never touches data.json, concurrent write survives" "$green_result" '{"external-write":true}'
+    green_msg=$(git -C "$G" log -1 --format=%s)
+    check "GREEN: commit did not land (pre-commit's own modified-files check, unrelated to stash)" "$green_msg" "seed"
+    case "$green_output" in
+      *"files were modified by this hook"*) check "GREEN: pre-commit reports files were modified by this hook" yes yes ;;
+      *) check "GREEN: pre-commit reports files were modified by this hook" no yes ;;
+    esac
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Wiring: a fresh scaffold from the template must get the wrapper.
 # ---------------------------------------------------------------------------
-wrapper_tpl="$TEMPLATE/scripts/hooks/install-nostash-hooks.sh"
-if [ -x "$wrapper_tpl" ]; then
+if [ -x "$INSTALLER" ]; then
   check "template ships install-nostash-hooks.sh (executable)" yes yes
 else
   check "template ships install-nostash-hooks.sh (executable)" "no" yes
