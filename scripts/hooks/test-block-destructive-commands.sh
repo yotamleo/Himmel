@@ -289,6 +289,7 @@ assert_rc "R2- grep --rec pattern src/"     0 "$(run_case "$(j_bash 'grep --rec 
 # crosses into a trailing comment, a `$(...)` substitution body, or past a
 # literal `--` operand terminator -- none of those are rm's own option list.
 assert_rc "R2- rm -f x.log # --really (comment, not a flag)" 0 "$(run_case "$(j_bash 'rm -f x.log # --really')")"
+# shellcheck disable=SC2016 # the $(...) must stay literal -- it is the payload text under test, not a real substitution
 assert_rc "R2- rm -f x \$(ls --reverse) (subshell arg, not rm's flag)" 0 "$(run_case "$(j_bash 'rm -f x $(ls --reverse)')")"
 assert_rc "R2- rm -- --rfile (operand after --, not a flag)" 0 "$(run_case "$(j_bash 'rm -- --rfile')")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the

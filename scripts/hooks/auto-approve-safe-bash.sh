@@ -1044,6 +1044,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 guard_long_opt_name() {
     local tok="$1" rest
     rest="${tok#--}"
+    # shellcheck disable=SC2034 # GUARD_LOPT_VAL/GUARD_LOPT_HAS_EQ kept for parity with lib.sh's real guard_long_opt_name; this file's caller only needs GUARD_LOPT_NAME
     case "$rest" in
         *=*) GUARD_LOPT_NAME="${rest%%=*}"; GUARD_LOPT_VAL="${rest#*=}"; GUARD_LOPT_HAS_EQ=1 ;;
         *)   GUARD_LOPT_NAME="$rest"; GUARD_LOPT_VAL=""; GUARD_LOPT_HAS_EQ=0 ;;
