@@ -1125,6 +1125,7 @@ write_standalone_bundle_core() {
     echo "DRY: standalone uninstall bundle (from $HIMMEL_ROOT)"
     return 0
   fi
+  # shellcheck disable=SC2016 # single-quoted on purpose: values pass via process.argv, not shell expansion
   node -e '
 const path = require("path");
 const bundleLib = require(process.argv[1]);
