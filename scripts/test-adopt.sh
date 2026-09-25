@@ -423,7 +423,7 @@ proj1f="$work/proj1f"; mkdir -p "$proj1f"
 out1f=$(HOME="$home1f" bash "$adopt" --profile core --scope project --target "$proj1f")
 grepq "$out1f" "Machine-level footprint" \
   || fail "HIMMEL-3303 (b): adopt.sh did not print a machine-level footprint block"
-grepq "$out1f" "qmd embedding/rerank models" \
+grepq "$out1f" "qmd models + search index" \
   || fail "HIMMEL-3303 (b): footprint block missing the qmd models line"
 grepq "$out1f" "$home1f/.bun" \
   || fail "HIMMEL-3303 (b): footprint block missing the bun line"
@@ -462,6 +462,12 @@ grepq "$out1f" "plugins/marketplaces" \
 grepq "$out1f" "known_marketplaces.json" \
   || fail "HIMMEL-3303 R1: footprint block does not name the global marketplace registry"
 echo "ok: HIMMEL-3303 R1 footprint names the marketplace clones dir and the global registry"
+
+# J1274S S1: with bun present, a bare adopt registers the clone as a qmd
+# collection in the machine-wide qmd config, not just the fork clone dir.
+grepq "$out1fb" "qmd/index.yml" \
+  || fail "HIMMEL-3303 S1: with bun present the footprint block does not name the qmd collection registry (qmd/index.yml)"
+echo "ok: HIMMEL-3303 S1 footprint names the qmd collection registry when bun is present"
 
 # ── 1g. HIMMEL-3303 item (4): bare adopt.sh leaves a standalone uninstaller ──
 # scripts/himmelctl/bin.js's PATH-shim step already writes this bundle

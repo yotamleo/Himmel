@@ -1105,10 +1105,11 @@ print_machine_footprint() {
   echo "  himmel state dir (~350 KB + backups):  $himmel_dir -- install ledger, backups of files this adopt overwrites, uninstall bundle"
   if command -v bun >/dev/null 2>&1; then
     echo "  qmd-fork clone (bun present, ~1 GB):   ${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"
+    echo "  qmd collection registry (bun present): ${QMD_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/qmd}/index.yml -- adds a himmel collection machine-wide"
   fi
-  echo "  qmd embedding/rerank models (~2.1 GB): ${XDG_CACHE_HOME:-$HOME/.cache}/qmd"
+  echo "  qmd models + search index (~2.1 GB):   ${XDG_CACHE_HOME:-$HOME/.cache}/qmd"
   echo "  bun runtime + global installs:         ${BUN_INSTALL:-$HOME/.bun}"
-  echo "  claude-hud status-line config:         $claude_cfg/plugins/claude-hud/config.json"
+  echo "  claude-hud status-line config:         $claude_cfg/plugins/claude-hud/config.json -- config.json written; hud cache purged when the config differs"
   echo "  workspace-trust entry (himmelctl only): ${WORKSPACE_TRUST_CONFIG:-$HOME/.claude.json} -- the himmelctl wizard writes it; this bare adopt.sh does not"
   echo "  plugin content cache + install ledger: $claude_cfg/plugins/cache/<marketplace>/…, $claude_cfg/plugins/installed_plugins.json"
   echo "  marketplace clones + global registry:  $claude_cfg/plugins/marketplaces/<name>/, $claude_cfg/plugins/known_marketplaces.json -- a --scope project marketplace add still writes both machine-wide"
