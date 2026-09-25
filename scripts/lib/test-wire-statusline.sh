@@ -691,4 +691,24 @@ unwire_statusline "$s39u" >/dev/null || fail "39: unwire failed (user)"
 [ "$(jq -r .statusLine.command "$s39u")" = '[ -f ~/mine.js ] && exec node ~/mine.js || true' ] || fail "39: a user's own statusLine was touched"
 echo "ok 39 unwire removes the bare and guarded forms, keeps a user statusLine"
 
+# 40. HIMMEL-3334 codex-1 (suggestion): starting from ONLY a legacy-path hud
+# config (no new-path file at all — the pre-migration state), a rewire must
+# publish the new-path config carrying the previous config's
+# HIMMEL_STATUSLINE_ECON prefix forward, and remove the legacy file since its
+# customLineCommand matches himmel's own shape.
+cfg40="$TMP/cfg40"; hud40="$cfg40/plugins/claude-hud"
+proj40="$TMP/proj40"; mkdir -p "$proj40/.claude" "$hud40"
+s40="$proj40/.claude/settings.json"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud40/config.json"
+[ ! -f "$cfg40/claude-hud.json" ] || fail "40 precondition: new-path config must not pre-exist"
+CLAUDE_CONFIG_DIR="$cfg40" bash "$HELPER" "$s40" "$REPO_ROOT" >/dev/null
+[ -f "$cfg40/claude-hud.json" ] || fail "40: migration did not publish the new-path config"
+newcmd40="$(jq -r .display.customLineCommand "$cfg40/claude-hud.json")"
+case "$newcmd40" in
+  "HIMMEL_STATUSLINE_ECON=off "*) : ;;
+  *) fail "40: HIMMEL_STATUSLINE_ECON=off prefix was not carried forward from the legacy-only config" ;;
+esac
+[ ! -f "$hud40/config.json" ] || fail "40: himmel-owned legacy config was not removed after migration"
+echo "ok 40 a legacy-only starting config migrates to the new path with its ECON prefix and the legacy file is removed"
+
 echo "ALL PASS"
