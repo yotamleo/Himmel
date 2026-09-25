@@ -54,15 +54,28 @@ fi
 # recorded project when none is passed, and an operator's own explicit
 # --project in $ARGUMENTS is passed through untouched either way (codex-1,
 # pr-check round 1, HIMMEL-3623).
+#
+# Two more fixes here (codex-1, codex-2, pr-check round 2, HIMMEL-3623):
+# the derived --project is appended only when $ARGUMENTS carries none of its
+# own, so an operator's explicit `/console new --project <dir>` still wins
+# (console.sh keeps the LAST --project, so appending ours unconditionally
+# always clobbered theirs); and console.sh is invoked by absolute path with
+# no `cd "$REPO"` first, since it resolves its own script dir from
+# `${BASH_SOURCE[0]}` and never needs cwd == $REPO, and a `cd` before
+# expanding $ARGUMENTS resolved any relative --doc/--project the operator
+# passed against the himmel checkout instead of their own cwd.
 case "$ARGUMENTS" in
   new|"new "*)
-    cd "$REPO" && bash scripts/handover/console/console.sh $ARGUMENTS --project "$PROJECT"
+    case "$ARGUMENTS" in
+      *--project*) bash "$REPO/scripts/handover/console/console.sh" $ARGUMENTS ;;
+      *) bash "$REPO/scripts/handover/console/console.sh" $ARGUMENTS --project "$PROJECT" ;;
+    esac
     ;;
   "")
-    cd "$REPO" && bash scripts/handover/console/console.sh
+    bash "$REPO/scripts/handover/console/console.sh"
     ;;
   *)
-    cd "$REPO" && bash scripts/handover/console/console.sh $ARGUMENTS
+    bash "$REPO/scripts/handover/console/console.sh" $ARGUMENTS
     ;;
 esac
 ```
@@ -84,13 +97,15 @@ esac
   (e.g. `/console new --arm --bucket websites`); the resolved `--project`
   above only supplies the DEFAULT bucket/prefix, it never forces one.
 - `--project <dir>` — this plugin copy derives one from the cwd this session
-  is running in, but ONLY for `new`, AFTER your own arguments (so it still
-  wins over a `--project` you pass yourself to `new`; console.sh keeps the
-  last one). `next` derives nothing here: with no `--project` of your own,
-  console.sh inherits the predecessor doc's own recorded project instead
-  (codex-1, HIMMEL-3623); an explicit `--project`/`--bucket`/`--prefix` on
-  `next` still wins. To target a different repo on `new`, start the session
-  there, or override just the naming with `--bucket`/`--prefix`.
+  is running in, but ONLY for `new`, and only when your own arguments carry
+  no `--project` of their own — an explicit `/console new --project <dir>`
+  always wins over the derived one (codex-1, pr-check round 2, HIMMEL-3623).
+  `next` derives nothing here: with no `--project` of your own, console.sh
+  inherits the predecessor doc's own recorded project instead (codex-1,
+  pr-check round 1, HIMMEL-3623); an explicit `--project`/`--bucket`/`--prefix`
+  on `next` still wins. To target a different repo on `new` without passing
+  `--project`, start the session there, or override just the naming with
+  `--bucket`/`--prefix`.
 
 Record the printed `release-token: ` line — now backticked around the token
 itself (HIMMEL-2910) — in the console's first Results bullet verbatim:

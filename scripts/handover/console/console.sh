@@ -96,8 +96,11 @@ into AA, AB, ... as needed) regardless of whether the calendar day has
 rolled over since.
 --project points console.sh at a repo that is NOT this himmel checkout
 (plugin /console from any repo); bucket/prefix derive from it instead of
-himmel's own repo basename/JIRA_PROJECT_KEY, and an --arm session opens
-there. --bucket/--prefix still override it when given.
+himmel's own repo basename/JIRA_PROJECT_KEY. The console session itself
+always stays in this himmel checkout -- --project is recorded as data in
+the console doc, and a leg for the project is dispatched into it explicitly
+with LEG_REPO=<path> (codex-4, pr-check round 2, HIMMEL-3623).
+--bucket/--prefix still override it when given.
 USAGE
 }
 

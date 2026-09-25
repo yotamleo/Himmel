@@ -81,12 +81,28 @@ bogus="$td/bogus"; mkdir -p "$bogus"   # no scripts/handover/console/console.sh 
 got="$( cd "$gitclone" && HIMMEL_REPO="$bogus" HOME="$canon_home" run_resolver )"
 check "(v) stale HIMMEL_REPO -> canonical install, not the foreign git toplevel" "$canon" "$got"
 
-# The run line must pass --project AFTER $ARGUMENTS -- console.sh's first
-# positional is the subcommand (new|next), which is INSIDE $ARGUMENTS, so
-# --project has to come after it, not before.
-run_line="$(grep -n 'console.sh \$ARGUMENTS' "$cmd")"
-[ -n "$run_line" ] || { echo "FAIL - run line: console.sh \$ARGUMENTS not found in $cmd"; fails=$((fails+1)); }
+# The run line that appends the derived --project must pass it AFTER
+# $ARGUMENTS -- console.sh's first positional is the subcommand (new|next),
+# which is INSIDE $ARGUMENTS, so --project has to come after it, not before.
+run_line="$(grep -n 'console.sh" \$ARGUMENTS' "$cmd")"
+[ -n "$run_line" ] || { echo "FAIL - run line: console.sh\" \$ARGUMENTS not found in $cmd"; fails=$((fails+1)); }
 check "run line: --project comes after \$ARGUMENTS" \
     "$(printf '%s\n' "$run_line" | grep -c -- '\$ARGUMENTS --project "\$PROJECT"')" "1"
+
+# codex-1 (pr-check round 2, HIMMEL-3623): a `new` whose own $ARGUMENTS
+# already carries a --project must NOT also get the derived one appended --
+# console.sh keeps the LAST --project, so appending unconditionally always
+# clobbered an operator's own explicit --project on `new`. Assert the guard
+# branch exists AND that it never itself appends the derived --project.
+check "codex-1: a *--project* guard branch exists on new" \
+    "$(grep -c -- '\*--project\*)' "$cmd")" "1"
+check "codex-1: the *--project* new branch never appends the derived --project" \
+    "$(printf '%s\n' "$run_line" | grep -c -- '\*--project\*.*--project "\$PROJECT"')" "0"
+
+# codex-2 (pr-check round 2, HIMMEL-3623): no dispatch line may `cd "$REPO"`
+# before expanding $ARGUMENTS -- that resolved any relative --doc/--project
+# the operator passed against the himmel checkout instead of their own cwd.
+check "codex-2: no cd \"\$REPO\" before dispatching console.sh" \
+    "$(grep -v '^\s*#' "$cmd" | grep -c 'cd "\$REPO"')" "0"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
