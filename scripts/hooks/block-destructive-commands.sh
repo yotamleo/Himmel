@@ -398,84 +398,34 @@ fi
 # verbose/help/version all start elsewhere), so getopt_long accepts any
 # unambiguous prefix from `--r` up - `--rec`, `--recu`, etc. all spell
 # --recursive and must trip this the same as the full word.
-# HIMMEL-2610 J1267O F3: the gap between `rm` and the flag excludes `(`
-# (also blocks `` ` ``) and `#` so the scan cannot cross into a `$(...)`/
-# backtick substitution body (that `--r...` belongs to the NESTED command,
-# not rm) or a trailing `# comment`. A standalone `--` token (bash's own
-# operand terminator - `rm -- --rfile` names a file, getopt never sees it
-# as a flag) ahead of the flag skips the deny.
-# HIMMEL-2610 J1267O round-4 codex-1: checking the WHOLE match text
-# (BASH_REMATCH[0]) for a `--` was wrong - POSIX leftmost-longest binds the
-# greedy gap to the LAST `--r...` in the matched text, so `rm --recursive --
-# --rfile` matched through to `--rfile`, and the `--` terminator sitting
-# between the two `--r...`s made the whole match look post-terminator even
-# though `--recursive` itself precedes it and is a live flag. Fixed by
-# finding the FIRST standalone `--` inside the match and testing for
-# `--r...` only in the text before it - text after a genuine terminator is
-# never a flag, but text before one always is.
-# HIMMEL-2610 J1267O rounds 5-7 codex-1: the gap exclusions also hid a live
-# flag that FOLLOWS an operand carrying one of those characters (`rm "$(x)"
-# --rec d`, `rm 'a#b' --rec d`, `rm a#b --rec d`, `rm <(true) --rec d`).
-# Patching one shape per round was whack-a-mole, so the scan runs on the raw
-# text (catches an `rm` INSIDE a substitution) AND on one normalised copy built
-# in a fixed order: (1) inside each quoted span turn `# ( ) ; & |` and backtick
-# into `_` (text kept, so a quoted `"--rec"` still matches; an unbalanced quote
-# only makes the copy stricter - a false DENY, never a hide); (2) collapse each
-# innermost unquoted `$(..)`/`<(..)`/`>(..)`/`(..)` group and backtick span to
-# `X`, repeatedly; (3) turn every `#` that does not start a word (preceded by
-# anything but whitespace or a separator) into `_` - `#` is a comment only at a
-# word start. Deny if either scan finds a live flag. Quoted whitespace also
-# becomes `_` (a quoted ` -- ` is operand text, not the terminator - round-8
-# codex-1 `rm "x -- y" --rec dir`).
-# The order is load-bearing (bash semantics): a SINGLE-quoted span is literal,
-# so it is neutralised FIRST; a `$(..)`/backtick group is live even inside
-# double quotes (`"$(x -- )"`), so those collapse to `X` BEFORE the double-quoted
-# spans are neutralised; whatever `(`/`)` is left (process substitution,
-# arithmetic, unbalanced) is turned into `_` so the gap runs on - a stricter
-# copy, never a hiding one.
-RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&(`#]*--r[a-z-]*([^[:alnum:]_-]|$)'
-RM_QUOTE_PAT=$'^([^\'"]*)(\'[^\']*\'|"[^"]*")(.*)$'
-# shellcheck disable=SC2016 # a literal ERE: the `$(` and backticks must not expand
-RM_SUBST_PAT='(\$\([^()]*\)|`[^`]*`)'
-RM_HASH_PAT='^(.*[^[:space:];&|(])#(.*)$'
-_rm_recur_neut="$rm_scrub"
-for _rm_recur_pass in single collapse double; do
-    if [[ $_rm_recur_pass == collapse ]]; then
-        while [[ $_rm_recur_neut =~ $RM_SUBST_PAT ]]; do
-            _rm_recur_neut="${_rm_recur_neut/"${BASH_REMATCH[0]}"/X}"
-        done
-        continue
-    fi
-    _rm_recur_rest="$_rm_recur_neut"
-    _rm_recur_neut=""
-    while [[ $_rm_recur_rest =~ $RM_QUOTE_PAT ]]; do
-        _rm_recur_span="${BASH_REMATCH[2]}"
-        if [[ $_rm_recur_pass == double || $_rm_recur_span == \'* ]]; then
-            _rm_recur_span="${_rm_recur_span//[#();&|\`[:space:]]/_}"
-        fi
-        _rm_recur_neut+="${BASH_REMATCH[1]}${_rm_recur_span}"
-        _rm_recur_rest="${BASH_REMATCH[3]}"
-    done
-    _rm_recur_neut+="$_rm_recur_rest"
-done
-while [[ $_rm_recur_neut =~ $RM_HASH_PAT ]]; do
-    _rm_recur_neut="${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"
-done
-_rm_recur_neut="${_rm_recur_neut//[()]/_}"
-for _rm_recur_cand in "$rm_scrub" "$_rm_recur_neut"; do
-    if [[ $_rm_recur_cand =~ $RM_RECURSIVE_PAT ]]; then
-        _rm_recur_match="${BASH_REMATCH[0]}"
-        if [[ $_rm_recur_match =~ (^|[[:space:]])--([[:space:]]|$) ]]; then
-            _rm_recur_term="${BASH_REMATCH[0]}"
-            _rm_recur_pre_term="${_rm_recur_match%%"$_rm_recur_term"*}"
-        else
-            _rm_recur_pre_term="$_rm_recur_match"
-        fi
-        if [[ $_rm_recur_pre_term =~ --r[a-z-]*([^[:alnum:]_-]|$) ]]; then
-            deny "recursive rm"
-        fi
-    fi
-done
+# HIMMEL-2610 J1267S S1: this used to run a two-pronged scan - a gap
+# excluding `( ` `` ` `` and `#` (F3), plus a "neutralised copy" that tried to
+# tell a live `--r...` flag apart from one hidden inside a comment, quote,
+# substitution or `--` operand terminator. Three rounds of shape-specific
+# patches to that distinction (F3, then J1267R's R1 backslash fix, then this)
+# each closed one bypass while the underlying approach kept producing another:
+# F3's own quote-pairing pass could be fooled by a substitution whose OUTPUT
+# text contained a quote character (`rm "$(echo "'")" --recursive ... d`),
+# hiding a live `--recursive` from both the raw and the neutralised scan.
+# There is no bounded set of shapes to enumerate here, so stop trying to
+# decide whether a `--r...` token is reachable and fail closed instead: deny
+# on the token alone, wherever it sits after `rm`, matched against the raw
+# text with no exclusions and no quote/comment/substitution/`--`-terminator
+# carve-out. The gap is unbounded (not `[^|;&]*`) on purpose - excluding `;`/
+# `&`/`|` from the gap was itself a shape-specific assumption (a QUOTED `;`,
+# as in `rm 'a;b' --recursive dir`, is not a real command separator, but the
+# exclusion could not tell the difference and would have let this hide the
+# flag again). An unbounded gap also denies a genuinely later, unrelated
+# command that happens to carry a `--r...`-shaped token after an `rm` earlier
+# in the same line - broader than base, deliberately, and strictly more
+# conservative. This reopens F3's three false DENYs (`rm -f x.log # --really`,
+# `rm -f x $(ls --reverse)` and `rm -- --rfile` all deny again) plus a few of
+# its later false-DENY-avoidance rounds (comment-vs-mid-word-# among them) -
+# the false-DENY relief is deferred to HIMMEL-3636, not re-fixed here.
+RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$).*--r[a-z-]*([^[:alnum:]_-]|$)'
+if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
+    deny "recursive rm"
+fi
 # HIMMEL-2610 J1267R R1: the quote/comment/`--`-terminator scan above has no
 # model of backslash escaping, so an escaped char can fake any of its
 # boundaries - an escaped space can pose as the real space around a `--`
