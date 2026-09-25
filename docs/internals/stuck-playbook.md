@@ -720,7 +720,7 @@ to actually confirm.
 1. Recover the reverted files from the retained patch, excluding the volatile
    plugin state (which the rollback already left at its latest, correct
    content — reapplying it would stomp that):
-   ```
+   ```bash
    git -c core.autocrlf=false apply --whitespace=nowarn \
      --exclude='.obsidian/plugins/*/data.json' \
      ~/.cache/pre-commit/patch<N>-<pid>

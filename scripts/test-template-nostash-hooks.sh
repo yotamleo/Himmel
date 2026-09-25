@@ -241,6 +241,8 @@ if [ -n "${F3:-}" ]; then
   else
     (cd "$F3" && bash "$F3/scripts/hooks/install-nostash-hooks.sh" >/dev/null) || { echo "FAIL - F3 install-nostash-hooks.sh failed"; fails=$((fails+1)); }
     f3_bashenv=$(mktemp "${TMPDIR:-/tmp}/himmel-f3-bashenv.XXXXXX") || { echo "FAIL - could not allocate F3 BASH_ENV file"; fails=$((fails+1)); }
+    # "mapfile" here is a string literal disabling the builtin via BASH_ENV
+    # (the bash-3.2 simulation) -- not an actual mapfile call in this script.
     printf 'enable -n mapfile\n' > "$f3_bashenv"
     printf 'staged-change\n' > "$F3/commit-file.txt"
     git -C "$F3" add commit-file.txt
@@ -308,9 +310,13 @@ for twin in scripts/setup.sh scripts/setup.ps1; do
   fi
   # The stashing installer must not still be used for pre-commit/commit-msg
   # (pre-push staying on the framework installer is correct and expected).
-  if grep -vE '^[[:space:]]*#' "$f" 2>/dev/null \
+  # Captured into a variable rather than piped into a terminal `grep -q`:
+  # under `pipefail`, `grep -q`'s early exit on first match can SIGPIPE an
+  # upstream grep stage and flip the pipeline's exit status (HIMMEL-1430).
+  stashing_calls=$(grep -vE '^[[:space:]]*#' "$f" 2>/dev/null \
       | grep -E "(pre_commit|pre-commit) install( |$)" \
-      | grep -v -- "--hook-type pre-push" | grep -q .; then
+      | grep -v -- "--hook-type pre-push")
+  if [ -n "$stashing_calls" ]; then
     check "$twin does not call the stashing installer for pre-commit/commit-msg" "still present" "removed"
   else
     check "$twin does not call the stashing installer for pre-commit/commit-msg" "removed" "removed"
