@@ -52,17 +52,20 @@ template_version: 1
 > `queue-lock.sh` prints it — in backticks, never bare in prose and never
 > followed by punctuation.
 
-> **Tier:** fable — <category>: <free text>, where `<category>` is exactly
-> one of `design` (a multi-step design question), `unverified-finding` (a
-> finding the console could not verify at Sonnet), or `tier-return` (a
-> Sonnet leg returned the question as above its tier), e.g. `design: a
-> disputed finding needs an independent read`.
+> **Tier:** opus — <category>: <free text>, matching whichever tier this
+> judge actually launches at: `opus` for the native-lane `--judge` default
+> (HIMMEL-3630) or `fable` when explicitly routed to Fable instead. The gate
+> matches by MODEL PREFIX, not by default-vs-explicit, so this line is never
+> optional. `<category>` is exactly one of `design` (a multi-step design
+> question), `unverified-finding` (a finding the console could not verify at
+> Sonnet), `tier-return` (a Sonnet leg returned the question as above its
+> tier), or `operator-ruling` (a standing operator ruling on model choice,
+> e.g. `operator-ruling: HIMMEL-3630 default`).
 > `headed-arm-leg.sh:239-282` refuses the launch without this exact line —
-> match by MODEL PREFIX, `<category>: <free text>` must sit on this ONE
-> physical line (the gate reads one matched line, so wrapping the reason
-> across a second markdown line truncates it silently), the category tag is
-> exact-lowercase, and the free text after `: ` must be non-blank. Every
-> judge dispatch is a Fable dispatch, so this line is never optional.
+> `<category>: <free text>` must sit on this ONE physical line (the gate
+> reads one matched line, so wrapping the reason across a second markdown
+> line truncates it silently), the category tag is exact-lowercase, and the
+> free text after `: ` must be non-blank.
 
 > **The question (verbatim, one line):** <the single question this verdict
 > answers — a finding to confirm or reject, a disposition to choose among
@@ -138,7 +141,7 @@ gathering, per the rule below.>
 |---|---|
 | Blind-not-thin | A judge given the console's conclusion has nothing to independently confirm or reject — its verdict becomes a rubber stamp, defeating the reason a judge call or session exists. |
 | `## Evidence` as a real, numbered section | A judge whose evidence is scattered through prose cannot cite it by number in its verdict's `## Evidence checked`, breaking the verdict template's contract. |
-| Tier line | `headed-arm-leg.sh:239-282` refuses to launch a Fable session without an exact-lowercase category tag and non-blank free text after it (HIMMEL-2976/HIMMEL-2997) — every judge dispatch is a Fable dispatch, so this line is never optional. |
+| Tier line | `headed-arm-leg.sh:239-282` refuses to launch an Opus or Fable session without an exact-lowercase category tag and non-blank free text after it (HIMMEL-2976/HIMMEL-2997) — every judge dispatch launches at one tier or the other (Opus by default since HIMMEL-3630), so this line is never optional. |
 | Completion condition | Without a stated shape for "done", a judge can return a verdict too vague to act on, or keep gathering evidence past the point the question needed — and a condition that only admits one answer produces a judge that cannot say no. |
 | RETASK block | The same asymmetry as a leg's: a narrowing needs no token, an EXPANSION does, and no revision from anyone widens what the judge may act with — which for a judge is nothing to begin with. |
 | Lifecycle rule | A judge that does not end its turn after writing its verdict holds a fleet slot the console cannot reclaim without killing the window itself. |

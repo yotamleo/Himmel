@@ -84,8 +84,8 @@
 # otherwise lost and a silent claudex death is undiagnosable), and exports
 # CLAUDEX_LANE_OK=1 + CLAUDE_CODE_EFFORT_LEVEL=${LEG_EFFORT:-medium} into the
 # launched process via HEADED_ARM_LAUNCHER_ENV. An empty/omitted MODEL
-# defaults to gpt-6-sol for this lane (native's own default,
-# claude-fable-5-1, is a Claude tier and would defeat the point of
+# defaults to gpt-6-sol for this lane (native's own --judge default,
+# claude-opus-5-5, is a Claude tier and would defeat the point of
 # switching lanes). Context stays this wrapper's standard pin:
 # --autocompact 200000 is the leg's ceiling; scripts/claude-codex's
 # own CLAUDE_CODE_AUTO_COMPACT_WINDOW=272000 default never applies because
@@ -166,8 +166,9 @@
 # --judge (HIMMEL-3133 / design §3.2 "the judge is a leg"): launches a judge
 # session through this SAME launcher rather than a separate mechanism. Forces
 # --profile console-judge (a real --profile conflicts, exit 2, same shape as
-# --relay above); an empty MODEL defaults to claude-fable-5-1 but only on the
-# native lane. No new HIMMEL_CONSOLE_JUDGE marker: HIMMEL_CONSOLE_LEG=1 is
+# --relay above); an empty MODEL defaults to claude-opus-5-5 at high effort
+# (HIMMEL-3630), but only on the native lane. No new HIMMEL_CONSOLE_JUDGE
+# marker: HIMMEL_CONSOLE_LEG=1 is
 # already exported for every leg, so Guard E (go.sh refuses under it,
 # merge-on-green.sh demands a console GO) already covers a judge - it is a
 # leg, not a new role the guards need to learn. What DOES differ from a
@@ -435,13 +436,23 @@ if [ "$RELAY" -eq 1 ]; then
     export LEG_EFFORT
 fi
 
-# --judge defaults MODEL to the Fable tier, but ONLY on the native lane - the
-# tier gate below matches a claude-* prefix, so a claudex judge would carry no
-# cost gate at all under a borrowed default. --judge --lane claudex is left to
-# fall through to the claudex lane's own gpt-6-sol default further down,
-# unchanged: a known gap (design §3.2 P1), not this ticket's to close.
+# --judge defaults MODEL to the Opus tier at high effort, but ONLY on the
+# native lane - the tier gate below matches a claude-* prefix, so a claudex
+# judge would carry no cost gate at all under a borrowed default. --judge
+# --lane claudex is left to fall through to the claudex lane's own gpt-6-sol
+# default further down, unchanged: a known gap (design §3.2 P1), not this
+# ticket's to close. HIMMEL-3630: Fable is retired as the judge DEFAULT (Opus
+# 5.5 high measured ~2.7x cheaper per verdict than Fable 5.1 with comparable
+# wall time and zero missed findings in the HIMMEL-3595 dataset); the effort
+# default is set here, before the native-lane effort resolver below, so that
+# resolver's own "an explicit CLAUDE_CODE_EFFORT_LEVEL wins" check treats it
+# exactly like a caller-set value and never falls through to lanes.json's
+# opus row (medium) instead. An explicit model or effort from the caller
+# still wins over either default; Fable stays available as an explicit,
+# tier-gated choice.
 if [ "$JUDGE" -eq 1 ] && [ "$LANE" = "native" ]; then
-    [ -z "$MODEL" ] && MODEL=claude-fable-5-1
+    [ -z "$MODEL" ] && MODEL=claude-opus-5-5
+    [ -z "${CLAUDE_CODE_EFFORT_LEVEL:-}" ] && CLAUDE_CODE_EFFORT_LEVEL=high
 fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
