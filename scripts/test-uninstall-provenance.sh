@@ -1274,8 +1274,11 @@ echo "==== RED34 (HIMMEL-3334 F1, judge J1269O): a legacy-path replace backup su
 # consulted the ledger for the NEW path ($_p), so the legacy path's own
 # `replace` unit was never applied and the operator's bytes stayed lost.
 new_case red34
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
 mkdir -p "$HOME/.claude/plugins/claude-hud"
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
 HUD_LEGACY34="$HOME/.claude/plugins/claude-hud/config.json"
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
 HUD_NEW34="$HOME/.claude/claude-hud.json"
 printf '{"custom":"operator-pre-himmel-hud-config"}\n' > "$HUD_LEGACY34"
 ORIG34_BYTES=$(cat "$HUD_LEGACY34")
