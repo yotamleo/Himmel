@@ -266,8 +266,13 @@ _ensure_install_bun() {
 # $HOME/.local/bin, which is NOT on PATH in this subprocess -- same honest
 # "not on your PATH" notice as bun's own idempotency branch. No pip anywhere
 # in this path.
+#
+# $1 (optional): "upgrade" -- the old pip-manager route supported
+# `--upgrade`; skip the idempotency early-return so `himmelctl deps upgrade`
+# re-runs the official installer (which itself overwrites in place) instead
+# of silently no-op'ing on an already-present uv.
 _ensure_install_uv() {
-  if [ -x "$HOME/.local/bin/uv" ]; then
+  if [ -x "$HOME/.local/bin/uv" ] && [ "${1:-}" != upgrade ]; then
     echo "  ensure-tools: uv is already installed at ~/.local/bin -- not on your PATH; add it (export PATH=\"\$HOME/.local/bin:\$PATH\") to your shell rc"
     return 0
   fi
@@ -306,12 +311,16 @@ _ensure_install_uv() {
 # the official installer above uses (this subprocess's PATH was not updated
 # by a uv install that just ran in the same `ensure_tools` loop), bootstraps
 # uv via _ensure_install_uv when neither is found, then re-resolves once.
+#
+# $1 (optional): "upgrade" -- the old pip-manager route supported
+# `--upgrade`; when already installed, run `uv tool upgrade` instead of the
+# plain `uv tool install`, which is a no-op once pre-commit is present.
 _ensure_install_precommit() {
-  local uv_bin
+  local mode="${1:-}" uv_bin
   uv_bin=$(command -v uv 2>/dev/null) || uv_bin=""
   [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ] && uv_bin="$HOME/.local/bin/uv"
   if [ -z "$uv_bin" ]; then
-    if ! _ensure_install_uv; then
+    if ! _ensure_install_uv "$mode"; then
       echo "  ensure-tools: 'pre-commit' needs uv, and uv could not be installed -- install uv manually (https://astral.sh/uv/install.sh), then run: uv tool install pre-commit" >&2
       return 1
     fi
@@ -321,6 +330,11 @@ _ensure_install_precommit() {
   if [ -z "$uv_bin" ]; then
     echo "  ensure-tools: 'pre-commit' needs uv, and uv was just installed but is not on PATH -- add ~/.local/bin to your PATH, then run: uv tool install pre-commit" >&2
     return 1
+  fi
+  if [ "$mode" = upgrade ] && command -v pre-commit >/dev/null 2>&1; then
+    echo "  ensure-tools: upgrading 'pre-commit' via 'uv tool upgrade'..."
+    "$uv_bin" tool upgrade pre-commit >/dev/null 2>&1 || { echo "  ensure-tools: 'uv tool upgrade pre-commit' failed -- run it yourself: $uv_bin tool upgrade pre-commit" >&2; return 1; }
+    return 0
   fi
   echo "  ensure-tools: installing 'pre-commit' via 'uv tool install'..."
   "$uv_bin" tool install pre-commit >/dev/null 2>&1 || { echo "  ensure-tools: 'uv tool install pre-commit' failed -- run it yourself: $uv_bin tool install pre-commit" >&2; return 1; }

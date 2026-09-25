@@ -311,7 +311,7 @@ function buildDepEntry(dep, ctx, opts) {
       // which needs no pip either.
       const BESPOKE_INSTALLER = { bun: '_ensure_install_bun', uv: '_ensure_install_uv', 'pre-commit': '_ensure_install_precommit' };
       if (BESPOKE_INSTALLER[dep.id]) {
-        const line = upgrade ? `. "$1" && ${BESPOKE_INSTALLER[dep.id]}` : `. "$1" && ensure_tools ${dep.id}`;
+        const line = upgrade ? `. "$1" && ${BESPOKE_INSTALLER[dep.id]} upgrade` : `. "$1" && ensure_tools ${dep.id}`;
         return { id: dep.id, type: 'dep', cmd: 'bash', args: ['-c', line, 'himmel-dep', ensureToolsPath] };
       }
       if (!upgrade) {

@@ -251,6 +251,53 @@ grepq "$pc_out" -F 'needs uv, and uv could not be installed' \
   || fail "case b4 (pre-commit): expected the message to name uv as the cause (got: $pc_out)"
 echo "ok: case b4 — a genuinely unavailable uv (no curl) makes ensure-tools.sh name the cause and the fix, for both uv and pre-commit"
 
+# ── case b5 (HIMMEL-2521 CR follow-up): "upgrade" mode actually upgrades an
+# already-present uv/pre-commit, instead of the idempotency early-return
+# (ensure-mode's) silently no-op'ing -- the old manager:pip route supported
+# `--upgrade`; the bespoke-installer route must not regress that. ──────────
+b5dir="$work/b5"; mkdir -p "$b5dir/bin" "$b5dir/home/.local/bin"
+# A pre-existing (fake) uv already at ~/.local/bin -- ensure-mode's early
+# return would normally fire here and skip the installer entirely.
+cat > "$b5dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool upgrade" ]; then exit 0; fi
+if [ "$1 $2" = "tool install" ]; then exit 0; fi
+exit 0
+SH
+chmod +x "$b5dir/home/.local/bin/uv"
+# A pre-existing (fake) pre-commit shim, standing in for the one a prior
+# `uv tool install pre-commit` would have already placed on PATH -- this is
+# what makes _ensure_install_precommit's "already installed" check see it as
+# present, and so choose the upgrade verb over the plain install one.
+cat > "$b5dir/home/.local/bin/pre-commit" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$b5dir/home/.local/bin/pre-commit"
+uv_calls_log="$b5dir/uv-calls.log"; : > "$uv_calls_log"
+b5curl_log="$b5dir/curl-called"
+cat > "$b5dir/bin/curl" <<SH
+#!/usr/bin/env bash
+echo called > "$b5curl_log"
+exit 1
+SH
+chmod +x "$b5dir/bin/curl"
+HOME="$b5dir/home" PATH="$b5dir/home/.local/bin:$b5dir/bin:$PATH" UV_CALLS_LOG="$uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_uv upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+[ -e "$b5curl_log" ] \
+  || fail "case b5 (uv upgrade): expected the official installer to be re-invoked (curl called) instead of the idempotency early-return"
+rm -f "$b5curl_log"
+HOME="$b5dir/home" PATH="$b5dir/home/.local/bin:$b5dir/bin:$PATH" UV_CALLS_LOG="$uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+grepq "$(cat "$uv_calls_log")" -F 'tool upgrade' \
+  || fail "case b5 (pre-commit upgrade): expected 'uv tool upgrade pre-commit', got calls: $(cat "$uv_calls_log")"
+echo "ok: case b5 — upgrade mode re-runs the uv installer and calls 'uv tool upgrade pre-commit' instead of silently no-op'ing on an already-present install"
+
 # ── case c: manager:"brew" (install vs upgrade) ─────────────────────────────
 outC1=$("$node_bin" -e "
 const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);
