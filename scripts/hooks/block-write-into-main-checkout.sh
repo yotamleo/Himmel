@@ -466,7 +466,7 @@ _bwimc_extract_subst_bodies() {
                 i=$((i+1))
             done
             if [ "$i" -ge "$len" ]; then
-                _bwimc_deny "unresolved-substitution" '`...` (unterminated)' "" ""
+                _bwimc_deny "unresolved-substitution" "backtick substitution (unterminated)" "" ""
             fi
             out="${out}${text:$start:$((i-start))}"$'\n'
             i=$((i+1))
@@ -489,7 +489,7 @@ _bwimc_extract_subst_bodies() {
                 i=$((i+1))
             done
             if [ "$depth" -gt 0 ]; then
-                _bwimc_deny "unresolved-substitution" '$(...) (unbalanced)' "" ""
+                _bwimc_deny "unresolved-substitution" "command substitution (unbalanced)" "" ""
             fi
             out="${out}${text:$start:$((i-1-start))}"$'\n'
             continue

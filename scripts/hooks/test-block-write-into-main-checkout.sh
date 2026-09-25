@@ -1789,7 +1789,7 @@ check_both_reason "73c double-quoted backtick substitution with an inner redirec
 
 # 73d: an UNBALANCED \$(...) — the substitution is never closed, so its body
 # cannot be safely classified. Fail CLOSED rather than silently ignored.
-UNB_CMD='echo $(echo hi'
+UNB_CMD="echo \$(echo hi"
 UNB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UNB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both_reason "73d unbalanced \$(...) denies closed" "$UNB_JSON" "was never closed"
 
@@ -1801,7 +1801,7 @@ check_both_reason "73e unterminated backtick substitution denies closed" "$UNT_J
 # 73f REGRESSION CONTROL: a NESTED quoted `(` inside a \$(...) substitution
 # is not a real paren — the extractor re-scans each substitution's body with
 # FRESH quote state, so this must not misdetect as unbalanced.
-NQ_CMD='echo $(echo "the (opening")'
+NQ_CMD="echo \$(echo \"the (opening\")"
 NQ_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$NQ_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "73f REGRESSION CONTROL: a quoted '(' inside \$(...) does not misdetect as unbalanced" allow "$NQ_JSON"
 
