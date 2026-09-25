@@ -39,6 +39,9 @@ mk_race_repo() {
   printf 'pristine\n' > "$R/commit-file.txt"
   git -C "$R" add data.json commit-file.txt
   git -C "$R" commit -qm seed
+  # git init does not reliably populate .git/hooks/ (observed absent on some
+  # CI runner images), so create it explicitly rather than assume it exists.
+  mkdir -p "$R/.git/hooks"
   # The hook under test just sleeps, giving the race time to land; it makes
   # no change of its own, so pre-commit's own fixer-rollback never fires.
   mkdir -p "$R/.git-hook-hold"
