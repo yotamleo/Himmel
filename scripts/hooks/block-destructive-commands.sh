@@ -435,6 +435,7 @@ fi
 # copy, never a hiding one.
 RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&(`#]*--r[a-z-]*([^[:alnum:]_-]|$)'
 RM_QUOTE_PAT=$'^([^\'"]*)(\'[^\']*\'|"[^"]*")(.*)$'
+# shellcheck disable=SC2016 # a literal ERE: the `$(` and backticks must not expand
 RM_SUBST_PAT='(\$\([^()]*\)|`[^`]*`)'
 RM_HASH_PAT='^(.*[^[:space:];&|(])#(.*)$'
 _rm_recur_neut="$rm_scrub"
