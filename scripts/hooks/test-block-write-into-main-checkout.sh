@@ -1675,6 +1675,47 @@ check_both "68f class: echo x\\ <<|primary| allows (heredoc OPENER never writes 
 check_both "68f class: echo x\\ <<|wt| allows (heredoc opener, worktree twin)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo x\\\\ <<$FIX/wt/ew-heredoc.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-2656/2679/2645: three fail-open bypasses =="
+
+# 69 (HIMMEL-2656): `sed -i --expr=...` — the ABBREVIATED long option matched
+# neither the exact-name case nor follow-symlinks/in-place, so `_bwimc_saw_ef`
+# stayed 0 and the trailing file operand was mistaken for the sed PROGRAM —
+# no file token was ever checked, so the write was allowed outright.
+check_both_reason "69a sed -i --expr='s/x/y/' primary/a.txt denies (abbreviated --expression)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sed -i --expr='s/x/y/' $FIX/primary/a.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary/a.txt"
+check_both "69b NEGATIVE CONTROL: sed -i --expr='s/x/y/' |wt|/wtfile.txt still ALLOWS" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sed -i --expr='s/x/y/' $FIX/wt/wtfile.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 70 (HIMMEL-2679): `cp --remove-destination` unlinks the destination ENTRY
+# and creates a fresh regular file in its place — it does not write through a
+# symlink referent. The fence's destination resolution only checked the
+# resolved referent (worktree-owned, allow); `$FIX/primary/link-to-wt.txt` is
+# a symlink ENTRY inside the primary pointing at `$FIX/wt/wtfile.txt`
+# (fixture set up above, row "HIMMEL-2592 fixtures").
+check_both_reason "70a cp --remove-destination wt/z.txt primary/link-to-wt.txt denies (entry replaced, not the referent)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp --remove-destination $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary/link-to-wt.txt"
+check_both "70b NEGATIVE CONTROL: plain cp (no --remove-destination) onto the same symlink writes THROUGH to the wt referent — still ALLOWS" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 71 (HIMMEL-2645): a heredoc OPENER that itself ends in a line continuation
+# (`cat <<EOF \` then a newline) is not yet a complete command line — bash
+# joins the next physical line onto it before the command ends, so a real
+# redirect there is still COMMAND text, not heredoc body. The old
+# `_bwimc_blank_heredocs` started body-blanking on the very next physical
+# line unconditionally, erasing the real `> primary/a.txt` redirect.
+HC_CMD=$(printf 'cat <<EOF \\\n> %s/a.txt\nbody\nEOF' "$FIX/primary")
+HC_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HC_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "71a cat <<EOF \\ + newline + > primary/a.txt denies (continued opener's redirect is command text)" \
+    "$HC_JSON" "$FIX/primary/a.txt"
+HC_WT_CMD=$(printf 'cat <<EOF \\\n> %s/z.txt\nbody\nEOF' "$FIX/wt")
+HC_WT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HC_WT_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "71b NEGATIVE CONTROL: same shape into |wt|/z.txt still ALLOWS" allow "$HC_WT_JSON"
+HC_BODY_CMD=$(printf "cat <<EOF\nif a > b:\n    pass\nEOF")
+HC_BODY_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HC_BODY_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "71c REGRESSION CONTROL: a heredoc body line containing '>' (no continuation) still ALLOWS" allow "$HC_BODY_JSON"
+
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
 # WHY THIS EXISTS: three CR rounds each found one more cell of the SAME finite

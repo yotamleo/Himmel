@@ -333,7 +333,7 @@ _bwimc_scan_step() {
 _bwimc_blank_heredocs() {
     local text="$1"
     local out="" line
-    local active=0 dashmode=0 term=""
+    local active=0 dashmode=0 term="" pend_term="" pend_dash=0
     local i len c prev rest check tab
     tab=$(printf '\t')
     # Quote/escape state is carried ACROSS lines (the scanner is initialised
@@ -367,7 +367,7 @@ _bwimc_blank_heredocs() {
                         esac
                         ;;
                     '<')
-                        if [ "$active" = 0 ] && [ "$prev" != '<' ] \
+                        if [ "$active" = 0 ] && [ -z "$pend_term" ] && [ "$prev" != '<' ] \
                            && [ "${line:$((i+1)):1}" = '<' ] && [ "${line:$((i+2)):1}" != '<' ]; then
                             rest="${line:$((i+2))}"
                             if [[ "$rest" =~ ^(-)?[[:space:]]*(\"([A-Za-z_][A-Za-z0-9_]*)\"|\'([A-Za-z_][A-Za-z0-9_]*)\'|([A-Za-z_][A-Za-z0-9_]*)) ]]; then
@@ -382,6 +382,28 @@ _bwimc_blank_heredocs() {
             prev="$c"
             i=$((i+1))
         done
+        # HIMMEL-2645: an opener that ITSELF ends in a line continuation
+        # (`cat <<EOF \` then a newline) is not yet a complete command line —
+        # bash joins the next physical line onto it before the command ends,
+        # so a real redirect there (`> <primary>/f`) is still COMMAND text,
+        # not heredoc body. Defer: un-set `active` and remember the matched
+        # term/dashmode in `pend_term`/`pend_dash` instead of letting the
+        # very next line be read as body.
+        if [ "$active" = 1 ] && [ "$_BWIMC_ESC" = 1 ]; then
+            pend_term="$term"
+            pend_dash="$dashmode"
+            active=0
+        elif [ -n "$pend_term" ] && [ "$_BWIMC_ESC" != 1 ]; then
+            # The continuation just ended (this line, itself scanned as
+            # ordinary command text above, has no trailing backslash): the
+            # deferred opener now takes effect and body-blanking starts on
+            # the NEXT line. A line that ALSO ends in `\` (chained
+            # continuation) falls through here unchanged and stays pending.
+            active=1
+            term="$pend_term"
+            dashmode="$pend_dash"
+            pend_term=""
+        fi
         # Step the line's own newline through the scanner: a trailing
         # backslash is line continuation, and consuming the newline here is
         # what stops the NEXT line's first character being read as escaped.
@@ -766,18 +788,25 @@ _bwimc_is_long_abbrev() {
 #                     abbreviation of the latter) was seen
 #   _BWIMC_OPT_SMALLN 1 when `-n` / `--no-dereference` (or an abbreviation)
 #                     was seen
+#   _BWIMC_OPT_RMDEST 1 when `--remove-destination` (or an abbreviation) was
+#                     seen. cp-only (HIMMEL-2679): it has no short form, so it
+#                     is caught only here, not in the bundled-short-option
+#                     loop below.
 _bwimc_opt_scan() {
     local tok="$1" fl fc
     _BWIMC_OPT_TDIR=""
     _BWIMC_OPT_TWANT=0
     _BWIMC_OPT_BIGT=0
     _BWIMC_OPT_SMALLN=0
+    _BWIMC_OPT_RMDEST=0
     case "$tok" in
         --*)
             if _bwimc_is_long_abbrev "no-target-directory" "$tok"; then
                 _BWIMC_OPT_BIGT=1
             elif _bwimc_is_long_abbrev "no-dereference" "$tok"; then
                 _BWIMC_OPT_SMALLN=1
+            elif _bwimc_is_long_abbrev "remove-destination" "$tok"; then
+                _BWIMC_OPT_RMDEST=1
             elif _bwimc_is_long_abbrev "target-directory" "$tok"; then
                 # HIMMEL-2592 CR round 4, codex-2: the SEPARATED long form
                 # takes its value from the NEXT token, exactly like a bare
@@ -2645,7 +2674,24 @@ while IFS= read -r _bwimc_clause; do
                 # against real sed), IS the in-place indicator and is
                 # matched via the SAME prefix helper.
                 --*)
-                    if _bwimc_is_long_abbrev "follow-symlinks" "$_bwimc_t"; then
+                    # HIMMEL-2656: an ABBREVIATED `--expression`/`--file`
+                    # (`--expr=...`, `--exp foo.sed`) fell through this case
+                    # entirely — matched neither the exact-name case above nor
+                    # follow-symlinks/in-place below — so `_bwimc_saw_ef`
+                    # stayed 0 and the real trailing file operand was
+                    # mistaken for the implicit sed program (measured: the
+                    # target file was skipped and could be rewritten
+                    # unchecked). Same prefix helper as follow-symlinks/
+                    # in-place below; the attached (`=value`) vs separate
+                    # (next token) forms mirror the exact-match case's
+                    # `_bwimc_i+1` vs `_bwimc_i+2` split.
+                    if _bwimc_is_long_abbrev "expression" "$_bwimc_t" || _bwimc_is_long_abbrev "file" "$_bwimc_t"; then
+                        _bwimc_saw_ef=1
+                        case "$_bwimc_t" in
+                            *=*) : ;;
+                            *) _bwimc_i=$((_bwimc_i+1)) ;;
+                        esac
+                    elif _bwimc_is_long_abbrev "follow-symlinks" "$_bwimc_t"; then
                         _bwimc_saw_follow_symlinks=1
                     elif _bwimc_is_long_abbrev "in-place" "$_bwimc_t"; then
                         _bwimc_saw_inplace=1
@@ -2769,6 +2815,14 @@ while IFS= read -r _bwimc_clause; do
         # `--no-dereference`, which is why _bwimc_opt_scan reports the two
         # separately and this arm consults only the `-T` one.
         _bwimc_nodrf=0
+        # HIMMEL-2679: `--remove-destination` (cp only) unlinks the
+        # destination ENTRY and creates a fresh regular file in its place,
+        # rather than writing through a symlink referent. Ground-truthed
+        # against GNU cp 9.11 at `<primary>/link -> <worktree>/file`: both
+        # the direct-destination form and the directory-destination
+        # (child-of-`-t`/positional-dir) form replace the ENTRY, so both
+        # `_bwimc_dest_mode` and `_bwimc_child_mode` below need it.
+        _bwimc_rmdest=0
         _bwimc_dd=0
         _bwimc_ntoks=${#_bwimc_toks[@]}
         _bwimc_i=1
@@ -2798,6 +2852,7 @@ while IFS= read -r _bwimc_clause; do
                     _bwimc_opt_scan "$_bwimc_t"
                     [ -n "$_BWIMC_OPT_TDIR" ] && _bwimc_tdir_raw="$_BWIMC_OPT_TDIR"
                     [ "$_BWIMC_OPT_BIGT" = 1 ] && _bwimc_nodrf=1
+                    [ "$_BWIMC_OPT_RMDEST" = 1 ] && _bwimc_rmdest=1
                     if [ "$_BWIMC_OPT_TWANT" = 1 ]; then
                         # HIMMEL-2592 round 6 codex-1: the value is the next
                         # REAL token, skipping any redirection (and its
@@ -2813,6 +2868,8 @@ while IFS= read -r _bwimc_clause; do
         done
         # `-T` only changes DESTINATION semantics for mv; cp writes nothing.
         [ "$_bwimc_verb" = "mv" ] || _bwimc_nodrf=0
+        # `--remove-destination` is a cp-only GNU option; mv has no such flag.
+        [ "$_bwimc_verb" = "cp" ] || _bwimc_rmdest=0
         # INDEPENDENCE (HIMMEL-2592, acceptance criterion 1): operands are
         # COLLECTED with their roles above, then EVERY statically-resolvable
         # one is checked below — never nested inside a sibling's resolution
@@ -2841,6 +2898,10 @@ while IFS= read -r _bwimc_clause; do
         # `ln` gets ENTRY for the same reason (round 3, codex-3).
         _bwimc_child_mode=follow
         [ "$_bwimc_verb" = "mv" ] && _bwimc_child_mode=entry
+        # HIMMEL-2679: `cp --remove-destination` unlinks the child entry and
+        # recreates it, the same as mv's rename(2) — ground-truthed at
+        # `<dir>/link -> <worktree>/file`: the child became a REGULAR file.
+        [ "$_bwimc_rmdest" = 1 ] && _bwimc_child_mode=entry
         if [ -n "$_bwimc_tdir_raw" ]; then
             # -t/--target-directory mode: EVERY remaining operand is a
             # SOURCE; the sink for each is <target-dir>/<basename(source)>.
@@ -2887,10 +2948,12 @@ while IFS= read -r _bwimc_clause; do
                         _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)
                     else
                         [ -d "$_bwimc_dest_abs" ] && _bwimc_dest_is_dir=1
-                        if [ "$_bwimc_dest_is_dir" = 0 ] && [ "$_bwimc_verb" = "mv" ]; then
+                        if [ "$_bwimc_dest_is_dir" = 0 ] && { [ "$_bwimc_verb" = "mv" ] || [ "$_bwimc_rmdest" = 1 ]; }; then
                             # rename(2) replaces the ENTRY, so a destination
                             # that is a symlink to a NON-directory is written
                             # AT, not through (codex-2, ground-truthed).
+                            # `cp --remove-destination` unlinks+recreates the
+                            # same way (HIMMEL-2679, ground-truthed).
                             _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)
                         fi
                     fi
