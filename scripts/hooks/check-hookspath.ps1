@@ -58,15 +58,21 @@ $toplevel = $toplevel.Trim()
 # worktree dir but --git-common-dir returns the primary repo's `.git` —
 # that's where the canonical pre-commit hooks live. Accept core.hooksPath
 # pointing inside EITHER as valid (mirrors the bash sibling).
-$gitCommonDir = (& git rev-parse --git-common-dir 2>$null)
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitCommonDir)) {
-    [Console]::Error.WriteLine("check-hookspath: could not resolve git-common-dir — refusing to evaluate")
+# HIMMEL-2640: --git-common-dir is relative to CWD, not to toplevel — joining
+# it against toplevel (as this used to do) is only correct when cwd IS
+# toplevel. --path-format=absolute (git 2.31+) resolves correctly from any
+# cwd; this repo's declared minimum is git 2.30, and an unrecognized
+# --path-format is echoed back verbatim by older git rather than rejected
+# (still exit 0), so the result is validated as a plausible absolute path
+# rather than trusted outright. A false rejection here is a false REJECTION
+# of a legitimately-configured core.hooksPath, not a missed misconfiguration
+# — the fail-closed exit 2 below is unaffected either way.
+$gitCommonDir = (& git rev-parse --path-format=absolute --git-common-dir 2>$null)
+if ($LASTEXITCODE -ne 0) { $gitCommonDir = $null }
+if ($null -ne $gitCommonDir) { $gitCommonDir = $gitCommonDir.Trim() }
+if ([string]::IsNullOrWhiteSpace($gitCommonDir) -or -not [System.IO.Path]::IsPathRooted($gitCommonDir)) {
+    [Console]::Error.WriteLine("check-hookspath: could not resolve an absolute git-common-dir (got: '$gitCommonDir'; this repo needs git >= 2.31 for --path-format) — refusing to evaluate")
     exit 2
-}
-$gitCommonDir = $gitCommonDir.Trim()
-# Anchor relative git-common-dir against toplevel (git versions differ).
-if (-not [System.IO.Path]::IsPathRooted($gitCommonDir)) {
-    $gitCommonDir = Join-Path $toplevel $gitCommonDir
 }
 
 # Resolve relative path against worktree top (matches git semantics).
