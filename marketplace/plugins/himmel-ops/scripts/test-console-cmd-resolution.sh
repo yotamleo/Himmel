@@ -3,7 +3,8 @@
 # test-console-cmd-resolution.sh -- plugin /console from any repo. The
 # himmel-ops plugin's console.md carries an embedded REPO-resolution snippet
 # (modeled on himmel-update.md's, HIMMEL-459) so it runs from ANY directory
-# ($HIMMEL_REPO -> git toplevel -> canonical install path -> error), then
+# ($HIMMEL_REPO -> canonical install paths -> error; never the cwd's own git
+# toplevel, which could ship a hostile console.sh), then
 # passes the session's own cwd to console.sh as --project. This test
 # EXTRACTS that snippet from the command file (single source of truth, so
 # the test can't drift from the prose) and exercises every branch, plus

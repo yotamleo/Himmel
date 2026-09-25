@@ -32,7 +32,9 @@ bash scripts/handover/console/console.sh $ARGUMENTS
 - `--dry-run` — print what it would write, prefixed `would-`, and touch nothing.
 - `--project <dir>` — a repo other than this himmel checkout: bucket/prefix
   derive from it instead of himmel's own repo basename/`JIRA_PROJECT_KEY`, and
-  an `--arm` session opens there. `--bucket`/`--prefix` still override it.
+  it is recorded in the console doc as data; the console session itself still
+  opens in this himmel checkout, also under `--arm`. `--bucket`/`--prefix`
+  still override it.
 
 Record the printed `release-token: ` line — now backticked around the token
 itself (HIMMEL-2910) — in the console's first Results bullet verbatim:

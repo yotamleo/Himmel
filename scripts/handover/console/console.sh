@@ -114,9 +114,12 @@ slugify() {
 
 # resolve_repo -- the primary checkout root (parent of the shared git-common
 # dir), which resolves correctly from a plain checkout OR a linked worktree.
+# Anchored on THIS script's own location ($HERE), never the cwd: the plugin
+# /console runs it with the cwd in a FOREIGN repo, and the template, kit and
+# queue-lock.sh below must be himmel's, not that repo's (HIMMEL-3623 J1271O C1).
 resolve_repo() {
     local common
-    if common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    if common="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
         (cd "$(dirname "$common")" && pwd)
         return 0
     fi
@@ -335,7 +338,23 @@ if [ "$CMD" = next ] && [ -z "$PROJECT_ARG" ]; then
         case "$_predecessor_project_early" in
             ''|none*) _predecessor_project_early="" ;;
         esac
-        [ -n "$_predecessor_project_early" ] && [ -d "$_predecessor_project_early" ] && PROJECT_ARG="$_predecessor_project_early"
+        # A recorded project that is not an absolute, existing directory is
+        # refused exactly as --project would refuse it (HIMMEL-3623 J1271O
+        # I2): dropping it would silently turn a foreign chain into a himmel
+        # one. A relative value is refused too -- it would resolve against
+        # whatever cwd this run happens to have.
+        if [ -n "$_predecessor_project_early" ]; then
+            case "$_predecessor_project_early" in
+                /*) [ -d "$_predecessor_project_early" ] || _predecessor_project_bad=1 ;;
+                *) _predecessor_project_bad=1 ;;
+            esac
+            if [ -n "${_predecessor_project_bad:-}" ]; then
+                err "--project must be an existing directory, got '$_predecessor_project_early'"
+                err "(recorded as the project in the predecessor doc $_predecessor_doc_early)"
+                exit 1
+            fi
+            PROJECT_ARG="$_predecessor_project_early"
+        fi
     fi
     unset _predecessor_doc_early _predecessor_project_early
 fi
@@ -399,21 +418,16 @@ registry_lookup_for_project() {
                 process.exit(0);
             }
         }
-        for (const k of Object.keys(repos)) {
-            const aliases = (repos[k].aliases || []).map(a => String(a).toLowerCase());
-            if (aliases.includes(e.BN)) {
-                process.stdout.write([k, repos[k].jira_project || ""].join("\t"));
-                process.exit(0);
-            }
-        }
-        // A key-NAME match (no path/alias confirmation) is only a coincidence
-        // unless it is the registered projects own path too -- checked above
-        // and already returned. Treat it as a collision, not a match: an
-        // unrelated project sharing a basename must not silently inherit
-        // another projects bucket/prefix.
+        // A key-NAME or ALIAS match (no path confirmation) is only a
+        // coincidence unless it is the registered projects own path too --
+        // checked above and already returned. Treat it as a collision, not a
+        // match: an unrelated project sharing a basename (a repo named
+        // himmel, internal or docs at another path) must not silently inherit
+        // another projects bucket/prefix (HIMMEL-3623 J1271O I1).
         const display = p => String(p || "").replace(/\\/g, "/").replace(/\/+$/, "");
         for (const k of Object.keys(repos)) {
-            if (k.toLowerCase() === e.BN) {
+            const aliases = (repos[k].aliases || []).map(a => String(a).toLowerCase());
+            if (k.toLowerCase() === e.BN || aliases.includes(e.BN)) {
                 process.stdout.write([k, display(repos[k].path)].join("\t"));
                 process.exit(3);
             }
@@ -582,9 +596,13 @@ console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MO
 # `;` not `&&`: a row that cannot be written must not stop the console.
 # An --arm console is launched by headed-arm.sh, which writes its own row; the
 # line printed beside it is informational and is not pasted.
+# The line opens with `cd <himmel checkout> && { ...; }` (HIMMEL-3623 J1271O
+# I3): the plugin prints it to an operator sitting in a FOREIGN repo, and the
+# console must start in himmel for its project hooks and GO gate. The group
+# keeps a failed cd from falling through to claude in the wrong directory.
 launch_cmd() {
-    printf 'bash %q %s %s %s %s; %s claude --model %s --autocompact %s -n %s "load %s and continue"' \
-        "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label 0)" "$console_autocompact" \
+    printf 'cd %q && { bash %q %s %s %s %s; %s claude --model %s --autocompact %s -n %s "load %s and continue"; }' \
+        "$repo" "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label 0)" "$console_autocompact" \
         "$CONSOLE_LAUNCH_ENV" "$model" "$console_autocompact" "$1" "$2"
 }
 
