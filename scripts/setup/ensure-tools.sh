@@ -322,7 +322,7 @@ _ensure_install_uv() {
 # calls never do), so static analysis can't see a caller that supplies $1.
 # shellcheck disable=SC2120
 _ensure_install_precommit() {
-  local mode="${1:-}" uv_bin
+  local mode="${1:-}" uv_bin uv_tool_list uv_tool_list_rc pc_installed pc_force_flag pc_err
   uv_bin=$(command -v uv 2>/dev/null) || uv_bin=""
   [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ] && uv_bin="$HOME/.local/bin/uv"
   if [ -z "$uv_bin" ]; then
@@ -353,7 +353,17 @@ _ensure_install_precommit() {
   # pre-commit whose shim isn't on PATH fell through to `uv tool install`,
   # which no-ops on an already-installed tool, silently skipping the upgrade
   # (pr-check round 3 finding).
+  #
+  # A FAILING `uv tool list` (uv present but broken/corrupt) must not be
+  # read the same as an EMPTY one (uv fine, pre-commit just not installed
+  # yet) -- the former reports the failure and bails; only the latter falls
+  # through to the install/upgrade below (HIMMEL-3628).
   uv_tool_list=$("$uv_bin" tool list 2>/dev/null)
+  uv_tool_list_rc=$?
+  if [ "$uv_tool_list_rc" -ne 0 ]; then
+    echo "  ensure-tools: '$uv_bin tool list' failed (exit $uv_tool_list_rc) -- cannot tell whether 'pre-commit' is installed; run it yourself: $uv_bin tool list" >&2
+    return 1
+  fi
   pc_installed=$(printf '%s\n' "$uv_tool_list" | grep '^pre-commit ') || true
   if [ "$mode" = upgrade ] && [ -n "$pc_installed" ]; then
     echo "  ensure-tools: upgrading 'pre-commit' via 'uv tool upgrade'..."
