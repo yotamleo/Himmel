@@ -333,6 +333,18 @@ assert_rc "R2+ rm \"x -- y\" --rec dir (quoted -- is operand text, not the termi
 assert_rc "R2+ rm 'x -- y' --rec dir (single-quoted -- is operand text)" 2 "$(run_case "$(j_bash "rm 'x -- y' --rec dir")")"
 # shellcheck disable=SC2016 # payload text under test
 assert_rc "R2+ rm \$(( (1) )) --rec d (nested-paren arithmetic before flag)" 2 "$(run_case "$(j_bash 'rm $(( (1) )) --rec d')")"
+# HIMMEL-2610 J1267R R1: the F3 quote/comment/`--`-terminator scan above is
+# blind to backslash escapes, so an escaped char can fake a `--` terminator,
+# a `#` comment, or a substitution opener/quote that the scan does not model
+# -- each shape below was ALLOW (rc=0) at 750d5e24 and must DENY.
+assert_rc 'R2+ rm x\ -- --recursive dir (escaped space fakes -- terminator)' 2 "$(run_case "$(j_bash 'rm x\ -- --recursive dir')")"
+assert_rc 'R2+ rm a\ #b --recursive dir (escaped space fakes a comment)' 2 "$(run_case "$(j_bash 'rm a\ #b --recursive dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc 'R2+ rm a\`b --recursive dir (escaped backtick stops the gap)' 2 "$(run_case "$(j_bash 'rm a\`b --recursive dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc 'R2+ rm "a\`" --recursive "\`b" dir (paired escaped backticks fake a substitution span)' 2 "$(run_case "$(j_bash 'rm "a\`" --recursive "\`b" dir')")"
+assert_rc 'R2+ rm a\( \"x --recursive y\" dir (escaped paren + quote fake spans)' 2 "$(run_case "$(j_bash 'rm a\( \"x --recursive y\" dir')")"
+assert_rc 'R2+ rm x\ -- --rec dir (escaped space + abbreviation)' 2 "$(run_case "$(j_bash 'rm x\ -- --rec dir')")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
 # continuation but carries `-f` (no `r`), pinning the `\\` + `;+` escapes.
 cont_allow='rm \

@@ -476,6 +476,19 @@ for _rm_recur_cand in "$rm_scrub" "$_rm_recur_neut"; do
         fi
     fi
 done
+# HIMMEL-2610 J1267R R1: the quote/comment/`--`-terminator scan above has no
+# model of backslash escaping, so an escaped char can fake any of its
+# boundaries - an escaped space can pose as the real space around a `--`
+# terminator or before a `#` comment, and an escaped backtick/paren/quote can
+# pose as (or falsely pair up to collapse) a substitution or quote span. Each
+# of those hides a live `--recursive`/`--rec...` that follows. Rather than
+# extend the scan to model every escape shape (whack-a-mole across the rounds
+# above), fail closed: a backslash anywhere between `rm` and a `--r...` flag
+# in the same command segment is denied outright.
+RM_RECURSIVE_ESC_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*\\[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
+if [[ $rm_scrub =~ $RM_RECURSIVE_ESC_PAT ]]; then
+    deny "recursive rm (escaped)"
+fi
 # Backslash-newline continuation: newlines are already folded to ';' above, so
 # `rm \<newline>-rf` becomes `rm \;-rf` here - the literal backslash before the
 # folded separator is the tell (HIMMEL-851 U3). `;+` (not a single `;`): on
