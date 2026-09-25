@@ -253,5 +253,67 @@ else
     bad "unrelated command: rc=$rc out=$out"
 fi
 
+# HIMMEL-2094 regression pin: the six transparent wrappers above (command/
+# exec/builtin/nohup/time/nice) were spliced into CMDPOS as BARE literals --
+# a flag-bearing form of any of them stopped the wrapper walk at the flag
+# token and never reached EXEPFX, so the hook let it through unfenced.
+out="$(run_hook "nice -n 5 graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a nice -n 5-wrapped invocation reaches the fence"
+else
+    bad "nice -n 5-wrapped invocation: rc=$rc out=$out"
+fi
+
+out="$(run_hook "nice -5 graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a nice -5-wrapped invocation reaches the fence"
+else
+    bad "nice -5-wrapped invocation: rc=$rc out=$out"
+fi
+
+out="$(run_hook "time -p graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a time -p-wrapped invocation reaches the fence"
+else
+    bad "time -p-wrapped invocation: rc=$rc out=$out"
+fi
+
+out="$(run_hook "nohup -- graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a nohup ---wrapped invocation reaches the fence"
+else
+    bad "nohup ---wrapped invocation: rc=$rc out=$out"
+fi
+
+out="$(run_hook "command -p graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a command -p-wrapped invocation reaches the fence"
+else
+    bad "command -p-wrapped invocation: rc=$rc out=$out"
+fi
+
+out="$(run_hook "exec -a name graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "an exec -a name-wrapped invocation reaches the fence"
+else
+    bad "exec -a name-wrapped invocation: rc=$rc out=$out"
+fi
+
+# Negative controls: a flag-bearing wrapper on an unrelated command must not
+# start reaching the fence just because the wrapper now consumes flags.
+out="$(run_hook "nice -n 5 ls -la $T" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a nice -n 5-wrapped non-graphify command does not reach the fence"
+else
+    bad "nice -n 5 non-graphify: rc=$rc out=$out"
+fi
+
+out="$(run_hook "time -p echo graphify" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<< "$out"; then
+    ok "graphify as an echo argument under time -p does not reach the fence"
+else
+    bad "time -p echo graphify: rc=$rc out=$out"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -815,6 +815,55 @@ run_fence deny no "$HIMMEL" "quiet-run.sh adjacent-quoted-segments label '\"'\"a
 run_fence deny no "$HIMMEL" "quiet-run.sh adjacent-quoted-segments label \"'\"'a -- b' -> deny (fail-closed, types swapped) [codex-1 round-2]" \
     "bash scripts/quiet-run.sh \"'\"'a -- b' -- graphify update $SALUS/notes/patient.md --backend glm"
 
+echo "== HIMMEL-2094: flag-bearing transparent wrappers (nice/time/nohup/command/exec/builtin) =="
+
+# Before the fix, classify_clause matched command/exec/builtin/nohup/time/nice
+# as BARE literals with no flag-consuming loop -- a flag-bearing form of any
+# of them (e.g. `nice -n 5 graphify ...`) stopped the wrapper walk at the
+# flag token instead of reaching graphify, and the clause was left
+# unclassified (allow). Each DENY row below is a flag-bearing form of one of
+# the six wrappers; the ALLOW rows are negative controls proving the fix does
+# not widen what counts as a flag or misclassify a wrapper used on an
+# unrelated command.
+
+# (F1) nice with a separate-value flag -> deny
+run_fence deny no "$HIMMEL" "nice -n 5 graphify salus -> deny" \
+    "nice -n 5 graphify update $SALUS/notes/patient.md --backend glm"
+
+# (F2) nice with a combined-adjustment flag -> deny
+run_fence deny no "$HIMMEL" "nice -5 graphify salus -> deny" \
+    "nice -5 graphify update $SALUS/notes/patient.md --backend glm"
+
+# (F3) time with its POSIX-format flag -> deny
+run_fence deny no "$HIMMEL" "time -p graphify salus -> deny" \
+    "time -p graphify update $SALUS/notes/patient.md --backend glm"
+
+# (F4) nohup with its `--` end-of-options marker -> deny
+run_fence deny no "$HIMMEL" "nohup -- graphify salus -> deny" \
+    "nohup -- graphify update $SALUS/notes/patient.md --backend glm"
+
+# (F5) command with its -p flag -> deny
+run_fence deny no "$HIMMEL" "command -p graphify salus -> deny" \
+    "command -p graphify update $SALUS/notes/patient.md --backend glm"
+
+# (F6) exec with its -a NAME flag -> deny
+run_fence deny no "$HIMMEL" "exec -a name graphify salus -> deny" \
+    "exec -a name graphify update $SALUS/notes/patient.md --backend glm"
+
+# (F7) builtin, bare (no flags of its own) -> deny, unchanged regression guard
+run_fence deny no "$HIMMEL" "builtin graphify salus -> deny" \
+    "builtin graphify update $SALUS/notes/patient.md --backend glm"
+
+# (F8) negative control: nice on an unrelated command -> allow (no graphify
+# mention at all)
+run_fence allow no "$HIMMEL" "nice -n 5 ls -> allow (not graphify)" \
+    "nice -n 5 ls"
+
+# (F9) negative control: graphify appears only as an ARGUMENT to a command
+# wrapped by time -p, not at command position -> allow
+run_fence allow no "$HIMMEL" "time -p echo graphify -> allow (not command position)" \
+    "time -p echo graphify"
+
 echo "== HIMMEL-621: xargs / find -exec fail-closed deny =="
 
 # (X1) graphify as xargs command -> deny outright (not statically fenceable)

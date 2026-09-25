@@ -90,6 +90,18 @@ guard_cmdpos_grammar
 # `command`/`exec`/`builtin`/`nohup`/`time`/`nice` -- graphify-fence.sh's own
 # classify_clause already treats these as pass-through (HIMMEL-621), the
 # shared CMDPOS never did, and the old substring match caught them too.
+# HIMMEL-2094: those six were spliced in as BARE literals below (no
+# flag-consuming loop), so a flag-bearing form (`nice -n 5 graphify ...`,
+# `time -p graphify ...`, `nohup -- graphify ...`) fell through the wrapper
+# alternation at the flag token and never reached EXEPFX -- the same
+# regression class `timeout` above was already fixed for. Give each its own
+# grammar, matching classify_clause's per-wrapper loop above: nice's -n /
+# time's -o and -f / exec's -a take a SEPARATE value, any other flag on
+# those three is bare (no value) -- generic optional-value like sudo's would
+# swallow the next positional word (`time -p echo graphify` would consume
+# `echo` as -p's "value" and still reach graphify). nohup takes only an
+# optional `--` end-of-options marker, command/builtin take no-value flags
+# only (`-p`/`-v`/`-V` for command; builtin has none).
 # HIMMEL-2615: same shape as the `timeout`/`nohup` splices above -- `setsid`
 # is a transparent wrapper the shared CMDPOS grammar never had either
 # (block-destructive-commands.sh never wrapped it), and the old naive
@@ -103,7 +115,7 @@ guard_cmdpos_grammar
 # function, since widening block-destructive-commands.sh's own grammar is a
 # bigger, separately-reviewed change against its own 1000+-case suite, not
 # something this ticket's diff should risk.
-CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|setsid([[:space:]]+-[^[:space:]]+)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|timeout([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?))*[[:space:]]+[^-[:space:]][^[:space:]]*|command|exec|builtin|nohup|time|nice|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
+CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|setsid([[:space:]]+-[^[:space:]]+)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|timeout([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?))*[[:space:]]+[^-[:space:]][^[:space:]]*|nice([[:space:]]+(-n[[:space:]]+[^-[:space:]][^[:space:]]*|--adjustment[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|time([[:space:]]+(-[of][[:space:]]+[^-[:space:]][^[:space:]]*|--output[[:space:]]+[^-[:space:]][^[:space:]]*|--format[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|exec([[:space:]]+(-a[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|command([[:space:]]+-[^[:space:]]+)*|nohup([[:space:]]+--)?|builtin|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
 cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;')
 
 # HIMMEL-2615: the repo's own quiet runner (`scripts/quiet-run.sh <label> --
