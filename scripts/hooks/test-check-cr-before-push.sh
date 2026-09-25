@@ -754,6 +754,18 @@ case "$out" in
         fail "unexpected refusal message" "out: $out" ;;
 esac
 
+echo "TEST: explicit-URL push to an unreachable fork with embedded credentials -> refusal does not leak them"
+rc=0; out=$(cd "$FX" && bash "$HOOK" "https://x-access-token:sekrit456@example.com/no-such-fork.git" "https://x-access-token:sekrit456@example.com/no-such-fork.git" <<< "refs/heads/feat/urlpush $fx_feat_sha refs/heads/feat/urlpush $Z40" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then pass "unreachable credentialed fork URL -> exit 2 (fail closed)"; else fail "unreachable credentialed fork URL -> expected exit 2 got $rc" "out: $out"; fi
+case "$out" in
+    *"sekrit456"*)
+        fail "refusal message leaks the embedded credential" "out: $out" ;;
+    *"could not fetch the default branch from"*)
+        pass "refusal names the scrubbed endpoint, not the raw credentialed URL" ;;
+    *)
+        fail "unexpected refusal message" "out: $out" ;;
+esac
+
 echo "TEST: http(s) credentials are scrubbed from the marker endpoint"
 git -C "$REPO" checkout -q -b feat/scrub main
 echo 'function s(){}' > "$REPO/scrub.sh"

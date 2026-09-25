@@ -201,9 +201,10 @@ resolve_diff_base() {
         # ref rather than accumulating one per push. No shared-config write,
         # no git remote add — fail CLOSED if the fetch itself fails.
         if [ "$push_remote_name" = "$push_remote_url" ]; then
-            local url_hash scratch_ref
+            local url_hash scratch_ref scrubbed_url
+            scrubbed_url=$(scrub_endpoint "$push_remote_url")
             if ! url_hash=$(printf '%s' "$push_remote_url" | git hash-object --stdin 2>/dev/null) || [ -z "$url_hash" ]; then
-                echo "→ code-review: cannot hash the push URL '$push_remote_url' — refusing the push (cannot compute diff for review; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+                echo "→ code-review: cannot hash the push URL '$scrubbed_url' — refusing the push (cannot compute diff for review; bypass with SKIP_CR=1 or git push --no-verify)" >&2
                 return 2
             fi
             scratch_ref="refs/cr/${url_hash}/fork-head"
@@ -211,7 +212,7 @@ resolve_diff_base() {
                 diff_base="$scratch_ref"
                 return 0
             fi
-            echo "→ code-review: could not fetch the default branch from '$push_remote_url' — refusing the push (the review diff must use the TARGET's own base, not origin's; the fork may be unreachable — retry, or bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            echo "→ code-review: could not fetch the default branch from '$scrubbed_url' — refusing the push (the review diff must use the TARGET's own base, not origin's; the fork may be unreachable — retry, or bypass with SKIP_CR=1 or git push --no-verify)" >&2
             return 2
         fi
         if git rev-parse --verify --quiet "refs/remotes/$push_remote_name/$db" >/dev/null; then
