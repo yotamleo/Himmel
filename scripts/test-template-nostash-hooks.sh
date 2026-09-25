@@ -456,6 +456,34 @@ if [ -n "${I1:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# codex-1 (/pr-check round-10 critic panel, important): the backup check used
+# `-e` alone, which is FALSE for a DANGLING symlink, so a pre-planted dangling
+# symlink at the hook path bypassed the backup and let the later `cat > "$f"`
+# follow it and write the generated hook wherever it points -- possibly
+# outside the vault.
+# ---------------------------------------------------------------------------
+CODEX1=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate codex-1 fixture dir"; fails=$((fails+1)); }
+if [ -n "${CODEX1:-}" ]; then
+  mk_seed_repo "$CODEX1"
+  codex1_outside_target="$CODEX1.outside-pre-commit"
+  ln -s "$codex1_outside_target" "$CODEX1/.git/hooks/pre-commit"
+  codex1_out=$(bash "$CODEX1/scripts/hooks/install-nostash-hooks.sh" 2>&1)
+  codex1_rc=$?
+  check "codex-1: installer succeeds with a dangling symlink pre-planted at the hook path" "$codex1_rc" "0"
+  [ "$codex1_rc" -ne 0 ] && echo "  codex-1 output: $codex1_out"
+  if [ -e "$codex1_outside_target" ]; then
+    check "codex-1: the generated hook is NOT leaked to the dangling symlink's outside target" "leaked" "not-leaked"
+  else
+    check "codex-1: the generated hook is NOT leaked to the dangling symlink's outside target" "not-leaked" "not-leaked"
+  fi
+  if [ -L "$CODEX1/.git/hooks/pre-commit" ]; then
+    check "codex-1: .git/hooks/pre-commit is a real file, not still the dangling symlink" "still-a-symlink" "real-file"
+  else
+    check "codex-1: .git/hooks/pre-commit is a real file, not still the dangling symlink" "real-file" "real-file"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 2. Wiring: a fresh scaffold from the template must get the wrapper.
 # ---------------------------------------------------------------------------
 if [ -x "$INSTALLER" ]; then
