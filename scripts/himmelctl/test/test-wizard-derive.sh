@@ -1168,7 +1168,7 @@ outX=$(HOME="$hX" USERPROFILE="$(winpath "$hX")" HIMMELCTL_CACHE_DIR="$(winpath 
        </dev/null 2>&1); rcX=$?
 set -e
 [ "$rcX" -eq 0 ] || fail "caseX: dry-run should succeed (got rc=$rcX): $outX"
-directX=$(HOME="$hX" bash "$repo_root/scripts/adopt.sh" --profile core --scope user --dry-run 2>&1)
+directX=$(HOME="$hX" USERPROFILE="$(winpath "$hX")" bash "$repo_root/scripts/adopt.sh" --profile core --scope user --dry-run 2>&1)
 wizardAdoptBlockX=$(printf '%s\n' "$outX" | awk '/^==> himmel adopt —/{f=1} f{print} /──── Done ────/{if(f) exit}')
 [ -n "$wizardAdoptBlockX" ] \
   || fail "caseX (HIMMEL-3308): expected an embedded 'adopt.sh --dry-run' plan in the wizard's output (got: $outX)"
