@@ -423,8 +423,13 @@ if [ -n "$project_dir" ]; then
             exit 2
             ;;
         3)
-            err "resolved bucket '$(slugify "$(basename "$project_dir")")' for --project '$project_dir' collides with the registered project at '${_reg_match#*$'\t'}' — pass --bucket to disambiguate, or register this path: /handover register"
-            exit 1
+            # An explicit --bucket already disambiguates the collision the
+            # message below is warning about -- refusing anyway would make
+            # the documented remedy unusable (codex-2 pr-check round 1).
+            if [ -z "$BUCKET" ]; then
+                err "resolved bucket '$(slugify "$(basename "$project_dir")")' for --project '$project_dir' collides with the registered project at '${_reg_match#*$'\t'}' — pass --bucket to disambiguate, or register this path: /handover register"
+                exit 1
+            fi
             ;;
         *)
             err "'$project_dir' is not in the handover registry — using its basename for bucket/prefix. Register it for stable naming: /handover register"

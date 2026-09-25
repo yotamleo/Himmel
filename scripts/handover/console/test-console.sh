@@ -1714,4 +1714,20 @@ if [ "$HOST_SYMLINKS_REAL" = "1" ]; then
         "$(printf '%s\n' "$out68g" | grep -c '^would-doc: .*/DEMO-nextleg-')" "1"
 fi
 
+# --- 68h (codex-2, pr-check round 1 on HIMMEL-3623): the 68f collision
+# message itself says "pass --bucket to disambiguate", but the collision
+# exit used to fire unconditionally -- an explicit --bucket could never
+# reach the bucket-resolution code below it. RED against the pre-fix
+# collision-exit (always refuses), GREEN after (only refuses when --bucket
+# was not given).
+collideproj68h="$tmp/collideproj68h"; mkdir -p "$collideproj68h"
+cat > "$reg68" <<JSON
+{"repos":{"collideproj68h":{"path":"$tmp/some-other-real-project","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"COLL"}}}
+JSON
+rc68h=0
+out68h="$( HANDOVER_REGISTRY="$reg68" console new --project "$collideproj68h" --bucket disambig68h --dry-run 2>&1 )" || rc68h=$?
+check "68h an explicit --bucket disambiguates a registry collision (no refusal)" "$rc68h" "0"
+check "68h the disambiguated doc uses the explicit --bucket" \
+    "$(printf '%s\n' "$out68h" | grep -c "^would-doc: $root/tester/disambig68h/")" "1"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
