@@ -357,6 +357,7 @@ registry_lookup_for_project() {
     local dir="$1" reg rr_canon bn_slug out rc
     reg="${HANDOVER_REGISTRY:-$HOME/.claude/handover/registry.json}"
     [ -f "$reg" ] || return 1
+    # shellcheck disable=SC1003  # '\\' is a literal backslash for tr, not a quote escape
     rr_canon="$(printf '%s' "$dir" | tr '\\' '/' | sed 's:/*$::' | tr '[:upper:]' '[:lower:]')"
     bn_slug="$(slugify "$(basename "$dir")")"
     out="$(REG="$reg" RR="$rr_canon" BN="$bn_slug" node -e '
