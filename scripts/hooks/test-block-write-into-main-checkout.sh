@@ -1699,6 +1699,20 @@ check_both_reason "70a cp --remove-destination wt/z.txt primary/link-to-wt.txt d
 check_both "70b NEGATIVE CONTROL: plain cp (no --remove-destination) onto the same symlink writes THROUGH to the wt referent — still ALLOWS" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+# 70c (HIMMEL-2679): `-f`/`--force` folds into the SAME entry-mode trigger as
+# `--remove-destination` — GNU cp's `-f` falls back to unlinking the
+# destination ENTRY when a FOLLOW-mode write to the referent fails on
+# permissions (ground-truthed against real coreutils), the same
+# entry-replacing effect, just conditional rather than unconditional.
+check_both_reason "70c cp --force wt/z.txt primary/link-to-wt.txt denies (entry replaced, not the referent)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp --force $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary/link-to-wt.txt"
+check_both_reason "70d cp -f wt/z.txt primary/link-to-wt.txt denies (bundled short form of --force)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -f $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary/link-to-wt.txt"
+check_both "70e NEGATIVE CONTROL: cp -P wt/z.txt primary/link-to-wt.txt (no-dereference) still ALLOWS" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -P $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}"
+
 # 71 (HIMMEL-2645): a heredoc OPENER that itself ends in a line continuation
 # (`cat <<EOF \` then a newline) is not yet a complete command line — bash
 # joins the next physical line onto it before the command ends, so a real
@@ -1715,6 +1729,81 @@ check_both "71b NEGATIVE CONTROL: same shape into |wt|/z.txt still ALLOWS" allow
 HC_BODY_CMD=$(printf "cat <<EOF\nif a > b:\n    pass\nEOF")
 HC_BODY_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HC_BODY_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "71c REGRESSION CONTROL: a heredoc body line containing '>' (no continuation) still ALLOWS" allow "$HC_BODY_JSON"
+
+# 71d (HIMMEL-2645 sibling): `<<-EOF` (tab-strip opener) with the SAME
+# opener-ends-in-a-continuation shape as 71a — the continued redirect is
+# still command text, not body, regardless of the `-` variant.
+HCD_CMD=$(printf 'cat <<-EOF \\\n> %s/a.txt\nbody\n\tEOF' "$FIX/primary")
+HCD_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HCD_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "71d cat <<-EOF \\ + newline + > primary/a.txt denies (tab-strip opener, continued redirect is command text)" \
+    "$HCD_JSON" "$FIX/primary/a.txt"
+
+# 71e (HIMMEL-2645 sibling): a QUOTED opener (`<<'EOF'`) ending in a line
+# continuation — the quoting of the delimiter word must not suppress the
+# continuation check.
+HCQ_CMD=$(printf "cat <<'EOF' \\\\\n> %s/a.txt\nbody\nEOF" "$FIX/primary")
+HCQ_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HCQ_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "71e cat <<'EOF' \\ + newline + > primary/a.txt denies (quoted opener, continued redirect is command text)" \
+    "$HCQ_JSON" "$FIX/primary/a.txt"
+
+# 71f REGRESSION CONTROL (HIMMEL-2645 sibling): a line continuation that
+# occurs INSIDE an already-active heredoc BODY (not on the opener line
+# itself) must stay body text — it is not a second opener-continuation.
+HCI_CMD=$(printf 'cat <<EOF\nline with \\\n> not-a-real-redirect\nEOF')
+HCI_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HCI_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "71f REGRESSION CONTROL: a continuation INSIDE an active heredoc body still ALLOWS (stays body)" allow "$HCI_JSON"
+
+echo "== HIMMEL-3621: a heredoc terminator that is never matched fails CLOSED =="
+
+# 72a (HIMMEL-3621): the heredoc delimiter word itself is split by a line
+# continuation (`<<EO\` + newline + `F`), so the real bash delimiter is
+# `EOF` split across two physical lines and no single following LINE can
+# ever equal it — the terminator is never found. The old walk blanked to
+# end-of-input on that guess, hiding the real write below. Fail CLOSED.
+UT_CMD=$(printf 'cat <<EO\\\nF\nbody\nEOF\necho hi > %s/pwned.txt' "$FIX/primary")
+UT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UT_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "72a heredoc delimiter split by continuation (terminator never matches) denies closed" \
+    "$UT_JSON" "terminator was never found"
+
+echo "== HIMMEL-3622: \$(...) / backtick command-substitution bodies are scanned =="
+
+# 73a: a redirect inside a DOUBLE-QUOTED \$(...) substitution. Outer quoting
+# gave the whole \"\$(...)\" span ACT=0 and collapsed it into one unsplittable
+# token, hiding the inner `>` from the redirect scan entirely.
+DQS_CMD="x=\"\$(echo hi > $FIX/primary/a.txt)\""
+DQS_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$DQS_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "73a double-quoted \$(...) with an inner redirect denies" "$DQS_JSON" "$FIX/primary/a.txt"
+
+# 73b: an UNQUOTED backtick substitution. The closing backtick glues onto the
+# redirect target token with no separating whitespace, classifying it
+# DYNAMIC (still carries a backtick) and failing open on itself alone.
+BTU_CMD="x=\`echo hi > $FIX/primary/a.txt\`"
+BTU_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$BTU_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "73b unquoted backtick substitution with an inner redirect denies" "$BTU_JSON" "$FIX/primary/a.txt"
+
+# 73c: a DOUBLE-QUOTED backtick substitution — both fail-open mechanisms
+# (outer quoting AND the glued delimiter) stacked on the same command.
+BTQ_CMD="x=\"\`echo hi > $FIX/primary/a.txt\`\""
+BTQ_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$BTQ_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "73c double-quoted backtick substitution with an inner redirect denies" "$BTQ_JSON" "$FIX/primary/a.txt"
+
+# 73d: an UNBALANCED \$(...) — the substitution is never closed, so its body
+# cannot be safely classified. Fail CLOSED rather than silently ignored.
+UNB_CMD='echo $(echo hi'
+UNB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UNB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "73d unbalanced \$(...) denies closed" "$UNB_JSON" "was never closed"
+
+# 73e: an UNTERMINATED backtick substitution — same fail-closed direction.
+UNT_CMD='echo `echo hi'
+UNT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UNT_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "73e unterminated backtick substitution denies closed" "$UNT_JSON" "was never closed"
+
+# 73f REGRESSION CONTROL: a NESTED quoted `(` inside a \$(...) substitution
+# is not a real paren — the extractor re-scans each substitution's body with
+# FRESH quote state, so this must not misdetect as unbalanced.
+NQ_CMD='echo $(echo "the (opening")'
+NQ_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$NQ_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "73f REGRESSION CONTROL: a quoted '(' inside \$(...) does not misdetect as unbalanced" allow "$NQ_JSON"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 

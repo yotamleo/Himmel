@@ -118,10 +118,21 @@
 #     UNQUOTED and inside a DOUBLE-quoted span; inside a SINGLE-quoted span
 #     a backslash is LITERAL and does not prevent the closing quote, because
 #     bash has no escape there. That asymmetry is deliberate and is pinned by
-#     the suite's MIRROR rows. Not modelled: `$'...'` ANSI-C quoting, and
-#     `$(...)`/backtick nesting — a command substitution's body is scanned as
-#     ordinary text, so a redirect inside one is seen (fails toward MORE
-#     candidates, never fewer).
+#     the suite's MIRROR rows. Not modelled: `$'...'` ANSI-C quoting. A
+#     `$(...)`/backtick substitution's body is NOT scanned in place as
+#     ordinary text — outer quoting (`"$(...)"`) would hide a `>` inside it
+#     from the outer scanner entirely, and a target token glued to the
+#     closing delimiter (`` `cmd > f` ``) would misclassify as a dynamic
+#     operand and fail open on itself alone. HIMMEL-3622 instead extracts
+#     each substitution's body as its own synthetic clause
+#     (_bwimc_extract_subst_bodies, quote-blind at the outer level, then
+#     re-scanned with FRESH quote/paren state so the body's own quoting is
+#     honoured), appended alongside the real clauses so a redirect or verb
+#     inside it is seen; an unterminated/unbalanced substitution fails
+#     CLOSED rather than being silently ignored. A doubly-nested
+#     substitution inside an extracted body is not itself re-extracted
+#     (single pass; fails toward MORE candidates via the outer clause it
+#     still appears in, never fewer).
 #   - Interpreter bodies (heredoc payloads, `python3 -c '...'`) are NOT parsed
 #     for writes — heredoc bodies are blanked before scanning specifically so
 #     a `>` inside one (`if a > b:`) cannot produce a phantom target; the
@@ -410,6 +421,81 @@ _bwimc_blank_heredocs() {
         [ "$active" = 1 ] || _bwimc_scan_step "$_BWIMC_NL"
         out="${out}${line}"$'\n'
     done <<< "$text"
+    # HIMMEL-3621: a heredoc opener whose terminator was never matched
+    # (`active=1` at end of input) or whose opener continuation never
+    # resolved (`pend_term` still set) means every line since the opener was
+    # blindly blanked on a guess that never panned out — a real write after
+    # it would be silently hidden. Fail CLOSED instead of returning $out.
+    if [ "$active" = 1 ] || [ -n "$pend_term" ]; then
+        _bwimc_deny "unresolved-heredoc" "<<${term:-$pend_term} (terminator not found)" "" ""
+    fi
+    printf '%s' "$out"
+}
+
+# HIMMEL-3622: quote-blind extraction of $(...) and backtick command-
+# substitution BODIES as extra synthetic clauses, appended by the caller to
+# the text fed through _bwimc_split_clauses. Real bash restarts parsing
+# fresh inside a substitution regardless of what quotes it, so this walk
+# looks for the OPENING delimiter irrespective of the outer scanner's quote
+# state — deliberately quote-blind at THAT level, the same "extra fragment,
+# never fewer candidates" precedent the git arm's backtick split already
+# uses (HIMMEL-2526) — then tracks the substitution's OWN quote/paren state
+# with a FRESH _bwimc_scan_init, so a quoted `(` inside it (real bash: not a
+# real paren) does not miscount as unbalanced.
+#
+# Extracting the body WITHOUT its delimiters also closes a second,
+# independent fail-open: an unquoted `` `cmd > target` `` glues the closing
+# backtick onto the target token (no separating whitespace) — that token
+# then carries a literal backtick and is classified DYNAMIC (still carries
+# `$`/backtick after expansion), which fails OPEN on itself alone, by
+# design. The extracted copy has no such delimiter attached, so it resolves
+# statically. An unbalanced $(...) or an unterminated `...` fails CLOSED —
+# a truncated substitution cannot be safely ignored (ground-truthed
+# fail-opens: HIMMEL-3622).
+_bwimc_extract_subst_bodies() {
+    local text="$1"
+    local out="" i len c depth start
+    len=${#text}
+    i=0
+    while [ "$i" -lt "$len" ]; do
+        c="${text:$i:1}"
+        if [ "$c" = '`' ]; then
+            start=$((i+1))
+            i=$((i+1))
+            while [ "$i" -lt "$len" ] && [ "${text:$i:1}" != '`' ]; do
+                i=$((i+1))
+            done
+            if [ "$i" -ge "$len" ]; then
+                _bwimc_deny "unresolved-substitution" '`...` (unterminated)' "" ""
+            fi
+            out="${out}${text:$start:$((i-start))}"$'\n'
+            i=$((i+1))
+            continue
+        fi
+        if [ "$c" = '$' ] && [ "${text:$((i+1)):1}" = '(' ]; then
+            start=$((i+2))
+            i=$((i+2))
+            depth=1
+            _bwimc_scan_init
+            while [ "$i" -lt "$len" ] && [ "$depth" -gt 0 ]; do
+                c="${text:$i:1}"
+                _bwimc_scan_step "$c"
+                if [ "$_BWIMC_ACT" = 1 ]; then
+                    case "$c" in
+                        '(') depth=$((depth+1)) ;;
+                        ')') depth=$((depth-1)) ;;
+                    esac
+                fi
+                i=$((i+1))
+            done
+            if [ "$depth" -gt 0 ]; then
+                _bwimc_deny "unresolved-substitution" '$(...) (unbalanced)' "" ""
+            fi
+            out="${out}${text:$start:$((i-1-start))}"$'\n'
+            continue
+        fi
+        i=$((i+1))
+    done
     printf '%s' "$out"
 }
 
@@ -792,6 +878,13 @@ _bwimc_is_long_abbrev() {
 #                     seen. cp-only (HIMMEL-2679): it has no short form, so it
 #                     is caught only here, not in the bundled-short-option
 #                     loop below.
+#   _BWIMC_OPT_FORCE  1 when `-f` / `--force` (or an abbreviation of the
+#                     latter) was seen. HIMMEL-2679: on cp, a FOLLOW-mode
+#                     write that fails on the referent's permissions falls
+#                     back to unlinking the destination ENTRY (ground-truthed
+#                     against real GNU coreutils) — the same entry-replacing
+#                     effect as `--remove-destination`, just conditional on a
+#                     permission failure rather than unconditional.
 _bwimc_opt_scan() {
     local tok="$1" fl fc
     _BWIMC_OPT_TDIR=""
@@ -799,6 +892,7 @@ _bwimc_opt_scan() {
     _BWIMC_OPT_BIGT=0
     _BWIMC_OPT_SMALLN=0
     _BWIMC_OPT_RMDEST=0
+    _BWIMC_OPT_FORCE=0
     case "$tok" in
         --*)
             if _bwimc_is_long_abbrev "no-target-directory" "$tok"; then
@@ -807,6 +901,8 @@ _bwimc_opt_scan() {
                 _BWIMC_OPT_SMALLN=1
             elif _bwimc_is_long_abbrev "remove-destination" "$tok"; then
                 _BWIMC_OPT_RMDEST=1
+            elif _bwimc_is_long_abbrev "force" "$tok"; then
+                _BWIMC_OPT_FORCE=1
             elif _bwimc_is_long_abbrev "target-directory" "$tok"; then
                 # HIMMEL-2592 CR round 4, codex-2: the SEPARATED long form
                 # takes its value from the NEXT token, exactly like a bare
@@ -834,6 +930,7 @@ _bwimc_opt_scan() {
         case "$fc" in
             T) _BWIMC_OPT_BIGT=1 ;;
             n) _BWIMC_OPT_SMALLN=1 ;;
+            f) _BWIMC_OPT_FORCE=1 ;;
             t)
                 # `-t` takes a VALUE, so it consumes the rest of the token
                 # (`-sft/dir`) or the next one (`-sft /dir`) and ENDS the
@@ -880,6 +977,8 @@ _bwimc_deny() {
         cannot-canonicalise) why="the target path could not be canonicalised (failing closed)" ;;
         unresolved-git-target) why="a git -C/--git-dir/--work-tree/GIT_* env or cd target could not be resolved (failing closed)" ;;
         repointed-remote) why="it runs a remote operation in a command that repoints a remote (a -c remote/url/protocol/core.sshCommand key, a GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, or git remote add|set-url), which can reach the primary under an innocent name (failing closed)" ;;
+        unresolved-heredoc) why="a heredoc opener's terminator was never found in the command (failing closed — text after it cannot be safely classified)" ;;
+        unresolved-substitution) why="a \$(...) or \`...\` command substitution was never closed (failing closed — its body cannot be safely classified)" ;;
     esac
     {
         echo "⛔ block-write-into-main-checkout: refusing a write-shaped command — $why."
@@ -1158,6 +1257,11 @@ _bwimc_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/
 [ -n "$_bwimc_cwd" ] || _bwimc_cwd="$PWD"
 
 _bwimc_hb=$(_bwimc_blank_heredocs "$cmd")
+# HIMMEL-3622: append extracted $(...)/backtick substitution bodies as extra
+# synthetic clauses, so every downstream consumer of $_bwimc_hb (the
+# redirect/tee scan and the verb-dispatch arms alike) sees them without
+# duplicating the extraction at each call site.
+_bwimc_hb="${_bwimc_hb}"$'\n'"$(_bwimc_extract_subst_bodies "$_bwimc_hb")"
 
 # ---- (a) redirect / tee, per-clause quote-aware token walk ----
 #
@@ -2852,7 +2956,19 @@ while IFS= read -r _bwimc_clause; do
                     _bwimc_opt_scan "$_bwimc_t"
                     [ -n "$_BWIMC_OPT_TDIR" ] && _bwimc_tdir_raw="$_BWIMC_OPT_TDIR"
                     [ "$_BWIMC_OPT_BIGT" = 1 ] && _bwimc_nodrf=1
-                    [ "$_BWIMC_OPT_RMDEST" = 1 ] && _bwimc_rmdest=1
+                    # HIMMEL-2679: `-f`/`--force` folds into the SAME
+                    # `_bwimc_rmdest` trigger as `--remove-destination` — cp
+                    # ground-truthed (real coreutils + this session's own
+                    # guarding hook, live): when a FOLLOW-mode write to an
+                    # existing destination's referent fails on permissions,
+                    # `-f` falls back to unlinking the destination ENTRY and
+                    # creating a fresh regular file, the same entry-replacing
+                    # effect as `--remove-destination` (conditional on a
+                    # permission failure rather than unconditional — treated
+                    # identically here per the fail-toward-more-candidates
+                    # rule: an unconditional deny on a sometimes-safe flag is
+                    # the accepted over-deny cost, never the reverse).
+                    { [ "$_BWIMC_OPT_RMDEST" = 1 ] || [ "$_BWIMC_OPT_FORCE" = 1 ]; } && _bwimc_rmdest=1
                     if [ "$_BWIMC_OPT_TWANT" = 1 ]; then
                         # HIMMEL-2592 round 6 codex-1: the value is the next
                         # REAL token, skipping any redirection (and its
@@ -2868,7 +2984,9 @@ while IFS= read -r _bwimc_clause; do
         done
         # `-T` only changes DESTINATION semantics for mv; cp writes nothing.
         [ "$_bwimc_verb" = "mv" ] || _bwimc_nodrf=0
-        # `--remove-destination` is a cp-only GNU option; mv has no such flag.
+        # `--remove-destination`'s unlink-fallback trigger is cp-only: mv
+        # already replaces the entry unconditionally via rename(2), so `-f`/
+        # `--force` there changes only the overwrite PROMPT, never the mode.
         [ "$_bwimc_verb" = "cp" ] || _bwimc_rmdest=0
         # INDEPENDENCE (HIMMEL-2592, acceptance criterion 1): operands are
         # COLLECTED with their roles above, then EVERY statically-resolvable
