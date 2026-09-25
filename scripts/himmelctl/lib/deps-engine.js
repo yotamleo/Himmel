@@ -300,12 +300,18 @@ function buildDepEntry(dep, ctx, opts) {
   switch (recipe.manager) {
     case 'ensure-tools': {
       const ensureToolsPath = path.join(ctx.repoRoot, 'scripts', 'setup', 'ensure-tools.sh');
-      if (dep.id === 'bun') {
-        // bun has no ensure_tools() dispatch by cmd name (it's special-cased
-        // inside that function) — its own upgrade path is simply re-running
-        // the official installer, which always fetches latest and overwrites
-        // the existing install in place.
-        const line = upgrade ? '. "$1" && _ensure_install_bun' : '. "$1" && ensure_tools bun';
+      // bun/uv/pre-commit have no ensure_tools() dispatch by package-manager
+      // identity (each is special-cased inside that function) — their own
+      // upgrade path re-runs the bespoke installer directly, since
+      // ensure_tools() itself SKIPS an already-present tool and can't
+      // upgrade one. uv is bootstrapped via its official installer
+      // (HIMMEL-2521, option 2: no system pip on stock Ubuntu/Debian —
+      // PEP 668 — so the pip manager below is never routed to on linux for
+      // uv or pre-commit); pre-commit is then `uv tool install pre-commit`,
+      // which needs no pip either.
+      const BESPOKE_INSTALLER = { bun: '_ensure_install_bun', uv: '_ensure_install_uv', 'pre-commit': '_ensure_install_precommit' };
+      if (BESPOKE_INSTALLER[dep.id]) {
+        const line = upgrade ? `. "$1" && ${BESPOKE_INSTALLER[dep.id]}` : `. "$1" && ensure_tools ${dep.id}`;
         return { id: dep.id, type: 'dep', cmd: 'bash', args: ['-c', line, 'himmel-dep', ensureToolsPath] };
       }
       if (!upgrade) {

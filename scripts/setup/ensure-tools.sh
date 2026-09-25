@@ -258,6 +258,75 @@ _ensure_install_bun() {
   return 1
 }
 
+# uv bootstrap (HIMMEL-2521): uv has no apt/dnf package on stock Ubuntu/
+# Debian, and routing pre-commit/uv through `python3 -m pip` fails on those
+# same distros -- python3 ships without pip, and PEP 668 marks the system
+# interpreter externally-managed even when pip IS present. The official
+# installer (mirrors _ensure_install_bun's shape exactly) lands the binary in
+# $HOME/.local/bin, which is NOT on PATH in this subprocess -- same honest
+# "not on your PATH" notice as bun's own idempotency branch. No pip anywhere
+# in this path.
+_ensure_install_uv() {
+  if [ -x "$HOME/.local/bin/uv" ]; then
+    echo "  ensure-tools: uv is already installed at ~/.local/bin -- not on your PATH; add it (export PATH=\"\$HOME/.local/bin:\$PATH\") to your shell rc"
+    return 0
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    :
+  else
+    echo "  ensure-tools: 'uv' needs curl to bootstrap (curl not found) -- install uv manually: https://astral.sh/uv/install.sh" >&2
+    return 1
+  fi
+  echo "  ensure-tools: installing 'uv' via the official installer (https://astral.sh/uv/install.sh)..."
+  local installer errfile lastline
+  installer=$(curl -fsSL https://astral.sh/uv/install.sh 2>/dev/null) || installer=""
+  errfile=$(mktemp "${TMPDIR:-/tmp}/ensure-tools-uv.XXXXXX" 2>/dev/null) || errfile=""
+  if [ -n "$installer" ]; then
+    if [ -n "$errfile" ]; then
+      printf '%s' "$installer" | sh >/dev/null 2>"$errfile" && { rm -f "$errfile"; return 0; }
+    else
+      printf '%s' "$installer" | sh >/dev/null 2>&1 && return 0
+    fi
+  fi
+  lastline=""
+  [ -n "$errfile" ] && [ -s "$errfile" ] && lastline=$(grep -v '^[[:space:]]*$' "$errfile" | tail -n1)
+  [ -n "$errfile" ] && rm -f "$errfile"
+  if [ -n "$lastline" ]; then
+    echo "  ensure-tools: uv official installer failed -- $lastline -- install uv manually: https://astral.sh/uv/install.sh" >&2
+  else
+    echo "  ensure-tools: uv official installer failed -- install uv manually: https://astral.sh/uv/install.sh" >&2
+  fi
+  return 1
+}
+
+# pre-commit bootstrap (HIMMEL-2521): `uv tool install pre-commit` instead of
+# `python3 -m pip install --user pre-commit` -- same PEP 668 / missing-pip
+# reason as uv above, and uv is what this repo already standardizes on. Looks
+# for uv on the CURRENT PATH first, then at the fixed ~/.local/bin location
+# the official installer above uses (this subprocess's PATH was not updated
+# by a uv install that just ran in the same `ensure_tools` loop), bootstraps
+# uv via _ensure_install_uv when neither is found, then re-resolves once.
+_ensure_install_precommit() {
+  local uv_bin
+  uv_bin=$(command -v uv 2>/dev/null) || uv_bin=""
+  [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ] && uv_bin="$HOME/.local/bin/uv"
+  if [ -z "$uv_bin" ]; then
+    if ! _ensure_install_uv; then
+      echo "  ensure-tools: 'pre-commit' needs uv, and uv could not be installed -- install uv manually (https://astral.sh/uv/install.sh), then run: uv tool install pre-commit" >&2
+      return 1
+    fi
+    uv_bin=$(command -v uv 2>/dev/null) || uv_bin=""
+    [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ] && uv_bin="$HOME/.local/bin/uv"
+  fi
+  if [ -z "$uv_bin" ]; then
+    echo "  ensure-tools: 'pre-commit' needs uv, and uv was just installed but is not on PATH -- add ~/.local/bin to your PATH, then run: uv tool install pre-commit" >&2
+    return 1
+  fi
+  echo "  ensure-tools: installing 'pre-commit' via 'uv tool install'..."
+  "$uv_bin" tool install pre-commit >/dev/null 2>&1 || { echo "  ensure-tools: 'uv tool install pre-commit' failed -- run it yourself: $uv_bin tool install pre-commit" >&2; return 1; }
+  return 0
+}
+
 # Non-interactive privilege probe (HIMMEL-2438): echoes the prefix to use for
 # an apt/dnf call ("" when already root, "sudo -n" when passwordless sudo is
 # configured) on stdout with rc 0, or nothing with rc 1 when neither holds.
@@ -284,6 +353,17 @@ ensure_tools() {
     # independent of any package manager.
     if [ "$t" = bun ]; then
       _ensure_install_bun
+      continue
+    fi
+    # uv/pre-commit: bootstrapped via the official installer / uv tool
+    # install (HIMMEL-2521) -- never routed through the package-manager
+    # branch below, same bypass as bun above.
+    if [ "$t" = uv ]; then
+      _ensure_install_uv
+      continue
+    fi
+    if [ "$t" = "pre-commit" ]; then
+      _ensure_install_precommit
       continue
     fi
     if [ -z "$pm" ]; then

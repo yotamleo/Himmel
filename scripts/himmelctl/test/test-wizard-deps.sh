@@ -159,6 +159,98 @@ grepq "$(echo "$outB2" | jq -er '.args[1]')" -F '_ensure_install_bun' \
   || fail "case b (upgrade): expected '_ensure_install_bun' (got: $outB2)"
 echo "ok: case b — bun ensure-tools: install -> ensure_tools bun, upgrade -> _ensure_install_bun"
 
+# ── case b2 (HIMMEL-2521): manager:"ensure-tools" for uv/pre-commit ────────
+# uv and pre-commit have no apt/dnf package on stock Ubuntu/Debian, and
+# python3 -m pip is unreliable there (PEP 668 + often no pip at all) -- both
+# route through the SAME bespoke-installer dispatch bun already uses, never
+# the generic pip manager on linux.
+for _dep2521 in uv pre-commit; do
+  out2521a=$("$node_bin" -e "
+const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);
+const dep = { id: '$_dep2521', cmd: '$_dep2521', install: { linux: { manager: 'ensure-tools' } } };
+const ctx = { repoRoot: '/fake/repo', platform: 'linux' };
+console.log(JSON.stringify(buildDepEntry(dep, ctx)));
+")
+  grepq "$(echo "$out2521a" | jq -er '.args[1]')" -F "ensure_tools $_dep2521" \
+    || fail "case b2 ($_dep2521 install): expected 'ensure_tools $_dep2521' (got: $out2521a)"
+  out2521b=$("$node_bin" -e "
+const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);
+const dep = { id: '$_dep2521', cmd: '$_dep2521', install: { linux: { manager: 'ensure-tools' } } };
+const ctx = { repoRoot: '/fake/repo', platform: 'linux' };
+console.log(JSON.stringify(buildDepEntry(dep, ctx, { upgrade: true })));
+")
+  _installer_fn="_ensure_install_uv"
+  [ "$_dep2521" = "pre-commit" ] && _installer_fn="_ensure_install_precommit"
+  grepq "$(echo "$out2521b" | jq -er '.args[1]')" -F "$_installer_fn" \
+    || fail "case b2 ($_dep2521 upgrade): expected '$_installer_fn' (got: $out2521b)"
+done
+echo "ok: case b2 — uv/pre-commit ensure-tools: install -> ensure_tools <id>, upgrade -> the bespoke installer, never manager:pip on linux"
+
+# ── case b3 (HIMMEL-2521): ensure-tools.sh installs uv/pre-commit without
+# ever invoking python3 -m pip, and names the cause when uv cannot be
+# bootstrapped ────────────────────────────────────────────────────────────
+b3dir="$work/b3"; mkdir -p "$b3dir/bin" "$b3dir/home"
+pip_called_marker="$b3dir/python3-pip-was-called"
+# A python3 stub that would prove itself CALLED (for -m pip specifically) --
+# it must never be invoked by the new uv/pre-commit path. Any other args
+# succeed quietly so the stub does not itself break something unrelated.
+cat > "$b3dir/bin/python3" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = "-m" ] && [ "\$2" = "pip" ]; then
+  echo called > "$pip_called_marker"
+  echo "python3: no module named pip" >&2
+  exit 1
+fi
+exit 0
+SH
+chmod +x "$b3dir/bin/python3"
+# A curl stub that, regardless of URL, returns a canned "installer" script
+# writing a fake uv binary -- no network. The fake uv binary itself answers
+# `tool install pre-commit` as a no-op success, standing in for the real
+# `uv tool install pre-commit` this path shells out to.
+cat > "$b3dir/bin/curl" <<'SH'
+#!/usr/bin/env bash
+cat <<'INSTALLER'
+#!/bin/sh
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/uv" <<'UVBIN'
+#!/usr/bin/env bash
+exit 0
+UVBIN
+chmod +x "$HOME/.local/bin/uv"
+INSTALLER
+SH
+chmod +x "$b3dir/bin/curl"
+HOME="$b3dir/home" PATH="$b3dir/bin:$PATH" bash -c '
+  set -e
+  . "$1"
+  _ensure_install_uv
+  _ensure_install_precommit
+' _ "$repo_root/scripts/setup/ensure-tools.sh"
+[ -x "$b3dir/home/.local/bin/uv" ] \
+  || fail "case b3: _ensure_install_uv should have landed uv at \$HOME/.local/bin/uv via the stubbed installer"
+[ -e "$pip_called_marker" ] \
+  && fail "case b3: python3 -m pip must NEVER be invoked by the uv/pre-commit bootstrap path"
+echo "ok: case b3 — ensure-tools.sh installs uv (stubbed official installer) then pre-commit (stubbed uv tool install), without ever calling python3 -m pip"
+
+# ── case b4 (HIMMEL-2521): a genuinely unavailable uv names the cause ──────
+b4dir="$work/b4"; mkdir -p "$b4dir/bin" "$b4dir/home"
+# No curl on PATH at all -- uv cannot be bootstrapped; the message must name
+# the cause (curl missing) and the fix (the manual install URL).
+# A dedicated dir holding only a bash symlink goes on PATH so the isolated
+# PATH can still resolve `bash` itself without exposing curl.
+b4bashdir="$work/b4bashbin"; mkdir -p "$b4bashdir"
+ln -s "$(command -v bash)" "$b4bashdir/bash"
+uv_out=$(HOME="$b4dir/home" PATH="$b4bashdir:$b4dir/bin" bash -c '. "$1"; _ensure_install_uv' _ "$repo_root/scripts/setup/ensure-tools.sh" 2>&1) || true
+grepq "$uv_out" -F 'curl not found' \
+  || fail "case b4 (uv): expected the message to name curl as the cause (got: $uv_out)"
+grepq "$uv_out" -F 'https://astral.sh/uv/install.sh' \
+  || fail "case b4 (uv): expected the message to name the manual-install fix (got: $uv_out)"
+pc_out=$(HOME="$b4dir/home" PATH="$b4bashdir:$b4dir/bin" bash -c '. "$1"; _ensure_install_precommit' _ "$repo_root/scripts/setup/ensure-tools.sh" 2>&1) || true
+grepq "$pc_out" -F 'needs uv, and uv could not be installed' \
+  || fail "case b4 (pre-commit): expected the message to name uv as the cause (got: $pc_out)"
+echo "ok: case b4 — a genuinely unavailable uv (no curl) makes ensure-tools.sh name the cause and the fix, for both uv and pre-commit"
+
 # ── case c: manager:"brew" (install vs upgrade) ─────────────────────────────
 outC1=$("$node_bin" -e "
 const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);

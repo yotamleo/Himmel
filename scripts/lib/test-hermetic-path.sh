@@ -187,6 +187,51 @@ else
 fi
 check "composed PATH excludes the scrubbed tool" hermetic_path_excludes "$composed" bun
 
+echo "[test-hermetic-path] HIMMEL-2538: PATH splitting must not glob-expand a segment"
+# A PATH segment containing *, ? or [ is unquoted inside the IFS=':' split
+# loop -- without a noglob guard it undergoes pathname expansion against
+# whatever happens to be on disk. A real dir that MATCHES the glob (but is
+# not the literal segment itself) makes the bug observable: the literal
+# segment names a dir that does not exist, so the correct answer never sees
+# the tool; the buggy, glob-expanded answer accidentally lands on the real
+# match instead.
+globdir="$tmpdir/globdir"; mkdir -p "$globdir"
+realmatch="$globdir/xAAA"; mkdir -p "$realmatch"
+printf '#!/bin/sh\nexit 0\n' > "$realmatch/bun$HERMETIC_EXE_SUFFIX"
+chmod +x "$realmatch/bun$HERMETIC_EXE_SUFFIX"
+globseg="$globdir/x*"
+check "sanity: the literal glob-metacharacter path does not exist as a real dir" \
+  test ! -e "$globseg"
+check "hermetic_path_excludes must not glob-expand the segment into a real match (correctly EXCLUDED: the literal segment does not exist)" \
+  hermetic_path_excludes "$globseg" bun
+check "scrub_path must not drop a dir it glob-expanded into by accident" \
+  test "$(scrub_path "$globseg" bun)" = "$globseg"
+
+echo "[test-hermetic-path] HIMMEL-2538: the caller's noglob (\$-'s f flag) state is restored"
+set +f
+hermetic_path_excludes "$tmpdir" bun >/dev/null 2>&1
+case "$-" in
+  *f*) bad "hermetic_path_excludes leaves noglob ON when the caller had it OFF" ;;
+  *) ok "hermetic_path_excludes restores noglob OFF" ;;
+esac
+scrub_path "$tmpdir" bun >/dev/null 2>&1
+case "$-" in
+  *f*) bad "scrub_path leaves noglob ON when the caller had it OFF" ;;
+  *) ok "scrub_path restores noglob OFF" ;;
+esac
+set -f
+hermetic_path_excludes "$tmpdir" bun >/dev/null 2>&1
+case "$-" in
+  *f*) ok "hermetic_path_excludes leaves noglob ON when the caller had it ON" ;;
+  *) bad "hermetic_path_excludes turned noglob OFF when the caller had it ON" ;;
+esac
+scrub_path "$tmpdir" bun >/dev/null 2>&1
+case "$-" in
+  *f*) ok "scrub_path leaves noglob ON when the caller had it ON" ;;
+  *) bad "scrub_path turned noglob OFF when the caller had it ON" ;;
+esac
+set +f
+
 echo
 if [ "$fails" -eq 0 ]; then echo "[test-hermetic-path] pass=$pass fail=0"; exit 0; fi
 echo "[test-hermetic-path] pass=$pass fail=$fails"; exit 1

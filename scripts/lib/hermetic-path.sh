@@ -193,7 +193,18 @@ hermetic_path_excludes() {
   # HIMMEL-2524's fixture believed it had excluded bun and had not, and nothing
   # checked. Call it right after composing the PATH a case will run under.
   local _path="$1"; shift
-  local _t _d _save_ifs3 _norm
+  local _t _d _save_ifs3 _norm _had_noglob
+  # Disable pathname expansion for the unquoted `for _d in $_norm` split below
+  # (HIMMEL-2538) -- with IFS=':' the split itself is correct, but the
+  # resulting words then undergo glob expansion, so a PATH segment
+  # containing *, ?, or [ is silently replaced by whatever it matches on disk. A
+  # false "excluded" in THIS direction is the one that matters (the function
+  # exists to PROVE unreachability), so this is not cosmetic. Save/restore
+  # the caller's own `-f` state via `$-` rather than unconditionally
+  # `set +f` on the way out -- a caller that already had globbing disabled
+  # must see that unchanged afterward.
+  case "$-" in *f*) _had_noglob=1 ;; *) _had_noglob=0 ;; esac
+  set -f
   # NORMALISE every empty segment to "." before splitting (HIMMEL-2535).
   # Word splitting alone cannot see them all, and each one it misses is a false
   # "excluded" about a PATH the shell WOULD resolve the tool on:
@@ -219,16 +230,26 @@ hermetic_path_excludes() {
       # design, but this checker is handed arbitrary paths and must model what a
       # shell actually does, not what a well-formed path would contain.
       [ -n "$_d" ] || _d="."
-      if path_dir_has_scrubbed_tool "$_d" "$_t"; then IFS="$_save_ifs3"; return 1; fi
+      if path_dir_has_scrubbed_tool "$_d" "$_t"; then
+        IFS="$_save_ifs3"
+        [ "$_had_noglob" = 1 ] || set +f
+        return 1
+      fi
     done
     IFS="$_save_ifs3"
   done
+  [ "$_had_noglob" = 1 ] || set +f
   return 0
 }
 
 scrub_path() {
   local _in="$1"; shift
-  local _out="" _d _save_ifs2
+  local _out="" _d _save_ifs2 _had_noglob
+  # Same glob-expansion exposure as hermetic_path_excludes above (HIMMEL-2538)
+  # -- disable pathname expansion around the unquoted split, restore the
+  # caller's own `-f` state on every exit path (there is only one here).
+  case "$-" in *f*) _had_noglob=1 ;; *) _had_noglob=0 ;; esac
+  set -f
   _save_ifs2="$IFS"; IFS=':'
   for _d in $_in; do
     [ -n "$_d" ] || continue
@@ -236,5 +257,6 @@ scrub_path() {
     _out="${_out:+$_out:}$_d"
   done
   IFS="$_save_ifs2"
+  [ "$_had_noglob" = 1 ] || set +f
   printf '%s' "$_out"
 }

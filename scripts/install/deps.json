@@ -82,7 +82,7 @@
       "minVersion": "3.5",
       "bootstrap": false,
       "install": {
-        "linux": { "manager": "pip", "pkg": "pre-commit" },
+        "linux": { "manager": "ensure-tools" },
         "macos": { "manager": "pip", "pkg": "pre-commit" },
         "win32": { "manager": "pip", "pkg": "pre-commit" }
       }
@@ -118,7 +118,7 @@
       "minVersion": null,
       "bootstrap": false,
       "install": {
-        "linux": { "manager": "pip", "pkg": "uv" },
+        "linux": { "manager": "ensure-tools" },
         "macos": { "manager": "pip", "pkg": "uv" },
         "win32": { "manager": "pip", "pkg": "uv" }
       }
