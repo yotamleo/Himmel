@@ -58,9 +58,9 @@ TEMPLATE="$REPO_ROOT/docs/setup/settings-template.json"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)   DRY_RUN=1; shift ;;
-    --scope)     SCOPE="$2"; shift 2 ;;
-    --settings)  SETTINGS="$2"; shift 2 ;;
-    --template)  TEMPLATE="$2"; shift 2 ;;
+    --scope)     [[ $# -ge 2 ]] || { echo "ERROR: --scope requires a value" >&2; exit 2; }; SCOPE="$2"; shift 2 ;;
+    --settings)  [[ $# -ge 2 ]] || { echo "ERROR: --settings requires a value" >&2; exit 2; }; SETTINGS="$2"; shift 2 ;;
+    --template)  [[ $# -ge 2 ]] || { echo "ERROR: --template requires a value" >&2; exit 2; }; TEMPLATE="$2"; shift 2 ;;
     # sed '$d' (not GNU-only `head -n -1`): drop the final line portably on
     # macOS/BSD too — path instruction: scripts run cross-platform.
     -h|--help)   sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;

@@ -82,6 +82,20 @@ script="$repo_root/scripts/machine-setup/reconcile-enabled-plugins.sh"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename "$0"): SKIPPED — 0 cases ran (jq not on PATH)"; exit 0; }
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# RED (HIMMEL-2699): a trailing value-taking flag with no value must reach the
+# script's own usage diagnostic and exit 2, never an unbound-variable death
+# from `set -u`.
+for flag in --scope --settings --template; do
+    set +e
+    out=$(bash "$script" "$flag" 2>&1); rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "trailing $flag should exit 2, got $rc (out: $out)"
+    grepq "$out" -- "$flag requires a value" || fail "trailing $flag missing usage diagnostic (out: $out)"
+    grepq "$out" -- "unbound variable" && fail "trailing $flag leaked an unbound-variable death (out: $out)"
+    echo "ok: trailing $flag exits 2 with its own diagnostic"
+done
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
