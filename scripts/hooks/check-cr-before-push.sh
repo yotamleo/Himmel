@@ -84,6 +84,17 @@ if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails
     echo "→ code-review: cannot source guardrails/lib.sh — refusing the push (fix the guardrail lib or bypass with SKIP_CR=1)" >&2
     exit 2
 fi
+# _TIMEOUT_BIN (degrades to unbounded when neither timeout nor gtimeout is on
+# PATH — see the lib's own header) bounds the two network fetches below: the
+# fork-base fetch in resolve_diff_base and the real-origin re-fetch in
+# verify_empty_diff_is_reviewed (HIMMEL-3634 M1). Not a security fence (unlike
+# guardrails/lib.sh above) — a missing lib degrades to the same unbounded
+# fetch as a missing timeout/gtimeout binary, it does not refuse the push.
+# shellcheck source=../lib/timeout-bin.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$SCRIPT_DIR/../lib/timeout-bin.sh" ] && . "$SCRIPT_DIR/../lib/timeout-bin.sh"; } 2>/dev/null; then
+    _TIMEOUT_BIN=""
+fi
 
 db=$(default_branch)
 diff_base=""
@@ -192,11 +203,19 @@ resolve_diff_base() {
         # Explicit-URL push (HIMMEL-3477): git's pre-push hook passes the SAME
         # string for both the remote's name and its location when no named
         # remote is used (see `git help githooks`), so this is the signal
-        # that no refs/remotes/<name>/$db can ever exist to require. Resolve
-        # the target's own base ourselves instead: fetch the pushed URL's
+        # that no refs/remotes/<name>/$db can ever exist to require.
+        # ponytail: a NAMED remote whose name happens to equal its own URL
+        # (unusual, but legal) is indistinguishable at this boundary from an
+        # anonymous URL push and takes this branch too (HIMMEL-3634 M3) — git
+        # itself gives the hook no way to tell the two apart (same argv
+        # convention for both), so there is no smaller fix than accepting the
+        # ambiguity; harmless here since either branch still resolves a real,
+        # fetchable base for that same URL. Upgrade path: none known short of
+        # a git hook-API change.
+        # Resolve the target's own base ourselves instead: fetch the pushed URL's
         # HEAD (its default branch, whatever it is named) into a scratch ref
         # this hook owns — never refs/remotes/*, so it can't collide with, or
-        # be mistaken for, a real remote-tracking ref, and it is never pushed.
+        # be mistaken for, a real remote-tracking ref.
         # Deterministic per-URL name, so a re-push reuses (refreshes) the same
         # ref rather than accumulating one per push. No shared-config write,
         # no git remote add — fail CLOSED if the fetch itself fails.
@@ -208,6 +227,11 @@ resolve_diff_base() {
                 return 2
             fi
             scratch_ref="refs/cr/${url_hash}/fork-head"
+            # Never pushed by an ordinary `git push` (not under refs/heads or
+            # refs/tags) — but `git push --mirror` publishes every local ref
+            # verbatim, this one included (HIMMEL-3634 M2); a caller relying
+            # on --mirror must exclude refs/cr/* itself, since this hook has
+            # no hook point into --mirror's own ref selection.
             # Force (+): this ref is reused across pushes to the same fork, and
             # a rewound/rebased fork default branch is a non-fast-forward
             # update of our OWN prior fetch, not a real history-loss risk — we
@@ -216,8 +240,10 @@ resolve_diff_base() {
             # docs/adoption-trail.html): this hook's caller may have their
             # own FETCH_HEAD from a real manual fetch moments earlier, and
             # our scratch-ref fetch must not clobber it (HIMMEL-3477 CR
-            # round 4, CodeRabbit).
-            if git fetch --no-tags --quiet --no-write-fetch-head "$push_remote_url" "+HEAD:${scratch_ref}" 2>/dev/null; then
+            # round 4, CodeRabbit). Timeout-bounded (HIMMEL-3634 M1): the
+            # fork URL is pusher-supplied and may be unreachable/slow.
+            # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
+            if ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --no-tags --quiet --no-write-fetch-head "$push_remote_url" "+HEAD:${scratch_ref}" 2>/dev/null; then
                 diff_base="$scratch_ref"
                 return 0
             fi
@@ -259,6 +285,42 @@ resolve_diff_base() {
         echo "→ code-review: no '$db' or 'origin/$db' ref — refusing the push (cannot compute diff for review; bypass with SKIP_CR=1 or git push --no-verify)" >&2
         return 2
     fi
+}
+
+# verify_empty_diff_is_reviewed LOCAL_SHA — HIMMEL-3634 P1.
+# An empty diff(base...local) only proves local_sha needs no review when the
+# base itself is trustworthy — but every base resolve_diff_base can choose is
+# something the PUSHER controls: a fork's fetched HEAD (they can push their
+# own tip to their fork's default branch first), or a refs/remotes/*/$db
+# tracking ref (never re-fetched by resolve_diff_base — a plain `git
+# update-ref` overwrites it locally, no network needed). Either lets a pusher
+# make the diff empty for code origin has never seen, skipping the marker and
+# leaving `gh pr create` ungated.
+# The one base no pusher can rewrite is origin's REAL default branch, fetched
+# FRESH right now — a cached refs/remotes/origin/$db is exactly what the
+# local-rewrite attack falsifies, so this never trusts it unrefreshed. Skip
+# stays safe (return 0) only when local_sha is an ancestor of that
+# freshly-fetched ref — the legitimate case (HIMMEL-3477: pushing to a
+# companion/target remote where content is already merged to origin/$db but
+# new to the target) always satisfies this, since "already merged to
+# origin/$db" is exactly what it means. Fails CLOSED (2) when origin can't be
+# fetched at all: an unverifiable empty diff must not read as "reviewed"
+# (HIMMEL-323 direction).
+verify_empty_diff_is_reviewed() {
+    local local_sha="$1"
+    local fetch_rc=0
+
+    # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
+    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head origin "$db" 2>/dev/null || fetch_rc=$?
+    if [ "$fetch_rc" -ne 0 ]; then
+        echo "→ code-review: diff vs ${diff_base} was empty, but re-verifying against a FRESH fetch of origin/${db} failed (origin unreachable?) — refusing the push rather than trusting an unverifiable empty diff (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    if git merge-base --is-ancestor "$local_sha" "refs/remotes/origin/${db}" 2>/dev/null; then
+        return 0
+    fi
+    echo "→ code-review: diff vs ${diff_base} was empty, but ${local_sha:0:8} is NOT reachable from origin/${db} (freshly fetched) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, or a local tracking ref never re-fetched — so only origin's real history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+    return 2
 }
 
 write_marker_for_branch() {
@@ -409,6 +471,7 @@ write_marker_for_branch() {
         return 2
     fi
     if [ -z "$changed" ]; then
+        verify_empty_diff_is_reviewed "$local_sha" || return $?
         echo "→ code-review: no diff vs ${diff_base} for ${branch} — skipping" >&2
         return 0
     fi

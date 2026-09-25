@@ -1098,6 +1098,140 @@ else
 fi
 git -C "$REPO" checkout -q main
 
+# ── HIMMEL-3634 P1: the CR pre-push gate must judge against origin's REAL
+#    default branch, never a base the pusher can make empty ────────────────
+#
+# resolve_diff_base's bases (an explicit-URL fork's fetched HEAD, or a local
+# refs/remotes/<remote>/$db tracking ref) are both values the pusher
+# controls. An empty diff(base...local_sha) only proves the content needs no
+# review when the base itself is trustworthy. verify_empty_diff_is_reviewed
+# closes this: before honoring an empty-diff skip it freshly fetches
+# origin's real default branch and refuses unless local_sha is reachable
+# from it.
+
+echo "TEST: HIMMEL-3634 P1(a) — fork base already contains the tip -> refused, not skipped"
+ORIGIN_P1="$TMP_ROOT/p1-origin.git"
+git init -q --bare -b main "$ORIGIN_P1"
+ATT="$TMP_ROOT/p1-attacker"
+git init -q -b main "$ATT"
+git -C "$ATT" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$ATT" push -q "$ORIGIN_P1" main
+git -C "$ATT" remote add origin "$ORIGIN_P1"
+git -C "$ATT" fetch -q origin
+# Checked out on feat/sneaky itself (not main) so the pushed branch name
+# matches the linted working tree -- a mismatch trips the UNRELATED
+# HIMMEL-1809 foreign-ref refusal before resolve_diff_base ever runs.
+git -C "$ATT" checkout -q -b feat/sneaky main
+echo 'function sneaky(){}' > "$ATT/sneaky.sh"
+git -C "$ATT" add sneaky.sh
+git -C "$ATT" -c user.email=a@t -c user.name=a commit -q -m "sneaky, never sent to origin"
+sneaky_sha=$(git -C "$ATT" rev-parse HEAD)
+# The pusher's own fork already has this exact commit as its default-branch
+# HEAD (they pushed it there first) -- diffing against the FORK's base is
+# empty even though origin has never seen it. Cloning while feat/sneaky is
+# checked out makes the bare fork's HEAD symref point at feat/sneaky too, so
+# `git fetch <fork> HEAD:scratch_ref` (resolve_diff_base) lands exactly on
+# sneaky_sha.
+P1_FORK="$TMP_ROOT/p1-fork.git"
+git clone -q --bare "$ATT" "$P1_FORK"
+P1_FORK_URL="file://$P1_FORK"
+rc=0
+out=$(cd "$ATT" && bash "$HOOK" "$P1_FORK_URL" "$P1_FORK_URL" <<< "refs/heads/feat/sneaky $sneaky_sha refs/heads/feat/sneaky $Z40" 2>&1) || rc=$?
+sneaky_marker="$ATT/.git/cr-pending/feat/sneaky"
+if [ "$rc" -eq 2 ] && [ ! -f "$sneaky_marker" ]; then
+    pass "P1(a): fork-base-contains-tip is refused, not silently skipped"
+else
+    fail "P1(a): expected exit 2 + no marker" "rc=$rc marker=$([ -f "$sneaky_marker" ] && echo present || echo absent) / out: $out"
+fi
+case "$out" in
+    *"NOT reachable from origin/main"*) pass "P1(a) refusal names the real reason (unreachable from origin)" ;;
+    *) fail "P1(a) refusal should name origin-unreachability" "out: $out" ;;
+esac
+
+echo "TEST: HIMMEL-3634 P1(b) — locally rewritten refs/remotes/origin/main -> refused, not skipped"
+B2="$TMP_ROOT/p1-b2"
+git clone -q "$ORIGIN_P1" "$B2"
+git -C "$B2" branch -m main 2>/dev/null || true
+# Checked out on feat/sneaky2 itself so the pushed branch name matches the
+# linted working tree (see the feat/sneaky note above).
+git -C "$B2" checkout -q -b feat/sneaky2 main
+echo 'function sneaky2(){}' > "$B2/sneaky2.sh"
+git -C "$B2" add sneaky2.sh
+git -C "$B2" -c user.email=b@t -c user.name=b commit -q -m "sneaky2, never sent to origin"
+sneaky2_sha=$(git -C "$B2" rev-parse HEAD)
+# Falsify the LOCAL cache of origin/main to make it look like origin already
+# has this commit -- no network call needed to do this.
+git -C "$B2" update-ref refs/remotes/origin/main "$sneaky2_sha"
+rc=0
+out=$(cd "$B2" && bash "$HOOK" origin "$ORIGIN_P1" <<< "refs/heads/feat/sneaky2 $sneaky2_sha refs/heads/feat/sneaky2 $Z40" 2>&1) || rc=$?
+sneaky2_marker="$B2/.git/cr-pending/feat/sneaky2"
+if [ "$rc" -eq 2 ] && [ ! -f "$sneaky2_marker" ]; then
+    pass "P1(b): locally-rewritten origin/main tracking ref is refused, not silently skipped"
+else
+    fail "P1(b): expected exit 2 + no marker" "rc=$rc marker=$([ -f "$sneaky2_marker" ] && echo present || echo absent) / out: $out"
+fi
+case "$out" in
+    *"NOT reachable from origin/main"*) pass "P1(b) refusal names the real reason (unreachable from origin, after a fresh re-fetch)" ;;
+    *) fail "P1(b) refusal should name origin-unreachability" "out: $out" ;;
+esac
+
+echo "TEST: control — a normal push with a real (non-empty) diff still reviews the same range"
+B3="$TMP_ROOT/p1-b3"
+git clone -q "$ORIGIN_P1" "$B3"
+git -C "$B3" branch -m main 2>/dev/null || true
+git -C "$B3" checkout -q -b feat/p1-control main
+echo 'function control(){}' > "$B3/control.sh"
+git -C "$B3" add control.sh
+git -C "$B3" -c user.email=c@t -c user.name=c commit -q -m "control code"
+control_sha=$(git -C "$B3" rev-parse HEAD)
+rc=0
+out=$(cd "$B3" && bash "$HOOK" origin "$ORIGIN_P1" <<< "refs/heads/feat/p1-control $control_sha refs/heads/feat/p1-control $Z40" 2>&1) || rc=$?
+control_marker="$B3/.git/cr-pending/feat/p1-control"
+if [ "$rc" -eq 0 ] && [ -f "$control_marker" ]; then
+    marker_sha_ctl=$(awk -F' [|] ' '{print $2; exit}' "$control_marker" 2>/dev/null || true)
+    if [ "$marker_sha_ctl" = "$control_sha" ]; then
+        pass "control: normal non-empty-diff push is unaffected -- marker written, correct SHA"
+    else
+        fail "control: marker SHA mismatch" "expected $control_sha got $marker_sha_ctl / out: $out"
+    fi
+else
+    fail "control: normal push should still write a marker" "rc=$rc out=$out"
+fi
+
+# M1: the fork fetch (resolve_diff_base) and the new origin re-fetch
+# (verify_empty_diff_is_reviewed) must both be timeout-bounded. Prove the
+# wrap is actually wired by resolving $_TIMEOUT_BIN to a logging stub and
+# replaying the P1(a) fixture, which exercises both call sites in one push
+# (the fork fetch resolves the base, then the empty diff triggers the
+# origin re-fetch).
+echo "TEST: HIMMEL-3634 M1 — fork fetch and origin re-fetch both run through \$_TIMEOUT_BIN"
+M1_BIN="$TMP_ROOT/m1-bin"
+mkdir -p "$M1_BIN"
+M1_LOG="$TMP_ROOT/m1-timeout-calls.log"
+: > "$M1_LOG"
+cat > "$M1_BIN/timeout" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "--version" ]; then
+    echo "timeout (stub) 1.0"
+    exit 0
+fi
+echo "called: \$*" >> "$M1_LOG"
+shift
+exec "\$@"
+STUB
+chmod +x "$M1_BIN/timeout"
+out=$(cd "$ATT" && PATH="$M1_BIN:$PATH" bash "$HOOK" "$P1_FORK_URL" "$P1_FORK_URL" <<< "refs/heads/feat/sneaky $sneaky_sha refs/heads/feat/sneaky $Z40" 2>&1) || true
+call_count=$(grep -c "git fetch" "$M1_LOG" 2>/dev/null || true)
+if [ "${call_count:-0}" -ge 2 ]; then
+    pass "M1: both the fork fetch and the origin re-fetch ran through the resolved timeout binary"
+else
+    fail "M1: expected >=2 timeout-wrapped git-fetch calls (fork fetch + origin re-fetch), got ${call_count:-0}" "log: $(cat "$M1_LOG" 2>/dev/null) / out: $out"
+fi
+
+# M2 (refs/cr/* scratch-ref comment correction) and M3 (named-remote-equals-
+# own-URL ponytail note) are comment-only changes with no behavioural delta
+# -- no test row, per the contract's "where testable".
+
 # Summary ------------------------------------------------------------
 
 echo
