@@ -413,33 +413,52 @@ fi
 # finding the FIRST standalone `--` inside the match and testing for
 # `--r...` only in the text before it - text after a genuine terminator is
 # never a flag, but text before one always is.
-# HIMMEL-2610 J1267O round-5 codex-1: excluding `(` from the gap also hid a
-# live `--recursive` that FOLLOWS an operand substitution (`rm "$(printf x)"
-# --recursive d`). So scan twice: the raw text (catches an `rm` that sits
-# INSIDE a substitution) and a copy with each innermost `$(...)`/backtick span
-# collapsed to `X` (an operand substitution before the flag no longer stops the
-# gap, and a `--` inside it can no longer pose as rm's terminator). Deny if
-# either scan finds a live flag.
+# HIMMEL-2610 J1267O rounds 5-7 codex-1: the gap exclusions also hid a live
+# flag that FOLLOWS an operand carrying one of those characters (`rm "$(x)"
+# --rec d`, `rm 'a#b' --rec d`, `rm a#b --rec d`, `rm <(true) --rec d`).
+# Patching one shape per round was whack-a-mole, so the scan runs on the raw
+# text (catches an `rm` INSIDE a substitution) AND on one normalised copy built
+# in a fixed order: (1) inside each quoted span turn `# ( ) ; & |` and backtick
+# into `_` (text kept, so a quoted `"--rec"` still matches; an unbalanced quote
+# only makes the copy stricter - a false DENY, never a hide); (2) collapse each
+# innermost unquoted `$(..)`/`<(..)`/`>(..)`/`(..)` group and backtick span to
+# `X`, repeatedly; (3) turn every `#` that does not start a word (preceded by
+# anything but whitespace or a separator) into `_` - `#` is a comment only at a
+# word start. Deny if either scan finds a live flag.
+# The order is load-bearing (bash semantics): a SINGLE-quoted span is literal,
+# so it is neutralised FIRST; a `$(..)`/backtick group is live even inside
+# double quotes (`"$(x -- )"`), so those collapse to `X` BEFORE the double-quoted
+# spans are neutralised; whatever `(`/`)` is left (process substitution,
+# arithmetic, unbalanced) is turned into `_` so the gap runs on - a stricter
+# copy, never a hiding one.
 RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&(`#]*--r[a-z-]*([^[:alnum:]_-]|$)'
-RM_SUBST_PAT='(\$\([^()]*\)|`[^`]*`)'
-_rm_recur_collapsed="$rm_scrub"
-while [[ $_rm_recur_collapsed =~ $RM_SUBST_PAT ]]; do
-    _rm_recur_collapsed="${_rm_recur_collapsed/"${BASH_REMATCH[0]}"/X}"
-done
-# HIMMEL-2610 J1267O round-6 codex-1: a QUOTED operand can carry the same
-# gap-stopping metacharacters (`rm 'a#b' --recursive d`). Neutralise them
-# inside each quoted span to `_` - the text is kept, so a quoted flag
-# (`"--recursive"`) still matches. An unbalanced quote only ever makes this
-# copy MORE permissive about crossing the gap (a false DENY, never a hide).
 RM_QUOTE_PAT=$'^([^\'"]*)(\'[^\']*\'|"[^"]*")(.*)$'
-_rm_recur_neut=""
-_rm_recur_rest="$_rm_recur_collapsed"
-while [[ $_rm_recur_rest =~ $RM_QUOTE_PAT ]]; do
-    _rm_recur_span="${BASH_REMATCH[2]}"
-    _rm_recur_neut+="${BASH_REMATCH[1]}${_rm_recur_span//[#();&|\`]/_}"
-    _rm_recur_rest="${BASH_REMATCH[3]}"
+RM_SUBST_PAT='(\$\([^()]*\)|`[^`]*`)'
+RM_HASH_PAT='^(.*[^[:space:];&|(])#(.*)$'
+_rm_recur_neut="$rm_scrub"
+for _rm_recur_pass in single collapse double; do
+    if [[ $_rm_recur_pass == collapse ]]; then
+        while [[ $_rm_recur_neut =~ $RM_SUBST_PAT ]]; do
+            _rm_recur_neut="${_rm_recur_neut/"${BASH_REMATCH[0]}"/X}"
+        done
+        continue
+    fi
+    _rm_recur_rest="$_rm_recur_neut"
+    _rm_recur_neut=""
+    while [[ $_rm_recur_rest =~ $RM_QUOTE_PAT ]]; do
+        _rm_recur_span="${BASH_REMATCH[2]}"
+        if [[ $_rm_recur_pass == double || $_rm_recur_span == \'* ]]; then
+            _rm_recur_span="${_rm_recur_span//[#();&|\`]/_}"
+        fi
+        _rm_recur_neut+="${BASH_REMATCH[1]}${_rm_recur_span}"
+        _rm_recur_rest="${BASH_REMATCH[3]}"
+    done
+    _rm_recur_neut+="$_rm_recur_rest"
 done
-_rm_recur_neut+="$_rm_recur_rest"
+while [[ $_rm_recur_neut =~ $RM_HASH_PAT ]]; do
+    _rm_recur_neut="${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"
+done
+_rm_recur_neut="${_rm_recur_neut//[()]/_}"
 for _rm_recur_cand in "$rm_scrub" "$_rm_recur_neut"; do
     if [[ $_rm_recur_cand =~ $RM_RECURSIVE_PAT ]]; then
         _rm_recur_match="${BASH_REMATCH[0]}"

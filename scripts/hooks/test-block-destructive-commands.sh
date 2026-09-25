@@ -315,6 +315,22 @@ assert_rc "R2+ rm \"a(b\" --recursive dir (quoted ( before flag)" 2 "$(run_case 
 assert_rc "R2+ rm 'a;b' --recursive dir (quoted ; before flag)" 2 "$(run_case "$(j_bash "rm 'a;b' --recursive dir")")"
 assert_rc "R2+ rm 'a#b' \"--recursive\" d (quoted operand + quoted flag)" 2 "$(run_case "$(j_bash "rm 'a#b' \"--recursive\" d")")"
 assert_rc "R2- rm -f 'a#b' # --really (quoted # then a real comment)" 0 "$(run_case "$(j_bash "rm -f 'a#b' # --really")")"
+# HIMMEL-2610 J1267O round-7 codex-1 (+ sweep of the same gap-stopper class): `#`
+# only starts a comment at a WORD start, and unquoted paren groups other than
+# `$(...)` (process substitution, arithmetic) must not stop the gap either.
+assert_rc "R2+ rm a#b --rec dir (mid-word # is not a comment)" 2 "$(run_case "$(j_bash 'rm a#b --rec dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm <(true) --rec d (process substitution before flag)" 2 "$(run_case "$(j_bash 'rm <(true) --rec d')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm \$((1+2)) --rec d (arithmetic before flag)" 2 "$(run_case "$(j_bash 'rm $((1+2)) --rec d')")"
+assert_rc "R2+ rm 'a(' --rec 'b)' d (quoted parens must not swallow the flag)" 2 "$(run_case "$(j_bash "rm 'a(' --rec 'b)' d")")"
+assert_rc "R2- rm -f x #b --really (word-initial # IS a comment)" 0 "$(run_case "$(j_bash 'rm -f x #b --really')")"
+# Single-quoted `$(` is literal text: it must not collapse a live flag away.
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm '\$(' --rec ')' d (single-quoted \$( is literal)" 2 "$(run_case "$(j_bash "rm '\$(' --rec ')' d")")"
+assert_rc "R2+ rm \"a(\" --rec \")\" d (double-quoted parens are literal)" 2 "$(run_case "$(j_bash 'rm "a(" --rec ")" d')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm \$(( (1) )) --rec d (nested-paren arithmetic before flag)" 2 "$(run_case "$(j_bash 'rm $(( (1) )) --rec d')")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
 # continuation but carries `-f` (no `r`), pinning the `\\` + `;+` escapes.
 cont_allow='rm \
