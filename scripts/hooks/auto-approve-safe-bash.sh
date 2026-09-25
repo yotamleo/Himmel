@@ -1033,17 +1033,35 @@ emit_deny() {
 
 # --- Fail open on anything we cannot evaluate ---
 command -v jq >/dev/null 2>&1 || exit 0
-# HIMMEL-2610: guard_is_long_abbrev (GNU getopt_long-style unambiguous
-# long-option abbreviation matching, shared via lib.sh) lets is_safe_bin's
-# write-flag checks (sort/tree/base64 --output, file --compile) recognize an
-# abbreviated spelling the same as the full one. Fail OPEN like every other
-# capability check in this file (see header CONTRACT) — this hook only ever
-# emits "allow" or silence, so an unsourceable lib.sh must not change that;
-# it just means the extra abbreviation recognition is unavailable this run.
+# HIMMEL-2610 F2 (J1267O): is_safe_bin's write-flag checks (sort/tree/base64
+# --output, file --compile) call guard_is_long_abbrev/guard_long_opt_name to
+# recognize an abbreviated OR full long option the same way GNU getopt_long
+# does. The HIMMEL-2121 root-walk `find` DENY below does NOT need lib.sh, so
+# an `|| exit 0` on a missing lib.sh used to withdraw that DENY too, not just
+# abbreviation recognition. Define local fallbacks first — sourcing lib.sh,
+# when it succeeds, simply overwrites them with its own (identical) copies —
+# so a missing lib.sh only narrows abbreviation recognition, never DENY.
+guard_long_opt_name() {
+    local tok="$1" rest
+    rest="${tok#--}"
+    case "$rest" in
+        *=*) GUARD_LOPT_NAME="${rest%%=*}"; GUARD_LOPT_VAL="${rest#*=}"; GUARD_LOPT_HAS_EQ=1 ;;
+        *)   GUARD_LOPT_NAME="$rest"; GUARD_LOPT_VAL=""; GUARD_LOPT_HAS_EQ=0 ;;
+    esac
+}
+guard_is_long_abbrev() {
+    local full="$1" tok="$2"
+    guard_long_opt_name "$tok"
+    [ -n "$GUARD_LOPT_NAME" ] || return 1
+    case "$full" in
+        "$GUARD_LOPT_NAME"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
-{ [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null || exit 0
+[ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null
 # HIMMEL-2123: bash builtin `read` instead of `$(cat)` drops one spawn.
 input=""
 IFS= read -r -d '' input 2>/dev/null || true

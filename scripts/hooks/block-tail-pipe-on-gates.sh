@@ -128,20 +128,36 @@ set -fuo pipefail   # -f: the token walk word-splits, and must not glob `*.sh`
 input=""
 IFS= read -r -d '' input 2>/dev/null || true
 command -v jq >/dev/null 2>&1 || exit 0
-# HIMMEL-2610: guard_is_long_abbrev (GNU getopt_long-style unambiguous
-# long-option abbreviation matching, shared via lib.sh) lets invoked_program's
-# per-launcher operand tables (sudo/env/nice/timeout/xargs/time) recognize an
-# abbreviated spelling the same as the full one — an unrecognized abbreviation
-# left its VALUE token to be misread as the invoked program, letting a gate
-# invocation piped to tail/head slip past undetected. Fail OPEN like every
-# other capability check in this file (see header CONTRACT): this hook only
-# ever DENIES a specific recognized shape, so an unsourceable lib.sh must not
-# change that — it just means the extra abbreviation recognition is
-# unavailable this run.
+# HIMMEL-2610 F2 (J1267O): invoked_program's per-launcher operand tables
+# (sudo/env/nice/timeout/xargs/time) call guard_is_long_abbrev/
+# guard_long_opt_name to recognize an abbreviated OR full long option the
+# same way GNU getopt_long does. This hook DENIES via the GATE_RE/pipeline
+# scan below, which does not itself need lib.sh, so an `|| exit 0` on a
+# missing lib.sh used to withdraw EVERY denial, not just abbreviation
+# recognition. Define local fallbacks first — sourcing lib.sh, when it
+# succeeds, simply overwrites them with its own (identical) copies — so the
+# hook's DENY paths never depend on lib.sh being present.
+guard_long_opt_name() {
+    local tok="$1" rest
+    rest="${tok#--}"
+    case "$rest" in
+        *=*) GUARD_LOPT_NAME="${rest%%=*}"; GUARD_LOPT_VAL="${rest#*=}"; GUARD_LOPT_HAS_EQ=1 ;;
+        *)   GUARD_LOPT_NAME="$rest"; GUARD_LOPT_VAL=""; GUARD_LOPT_HAS_EQ=0 ;;
+    esac
+}
+guard_is_long_abbrev() {
+    local full="$1" tok="$2"
+    guard_long_opt_name "$tok"
+    [ -n "$GUARD_LOPT_NAME" ] || return 1
+    case "$full" in
+        "$GUARD_LOPT_NAME"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
-{ [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null || exit 0
+[ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null
 [ -n "$input" ] || exit 0
 
 # `// ""` (empty STRING), not `// empty` (a zero-output jq GENERATOR): in a
@@ -532,14 +548,21 @@ invoked_program() {
                     case $stripped in
                         -I | -n | -P | -L | -d | -a | -s | -E) skip_next=1; continue ;;
                         --*)
+                            # --replace/--eof/--max-lines are OPTIONAL-argument
+                            # long options (--replace[=R], --eof[=E],
+                            # --max-lines[=N]): GNU xargs never consumes a
+                            # separate next word for them, so skip_next must
+                            # never be set here regardless of `=`.
                             if guard_is_long_abbrev "replace" "$stripped" \
-                                || guard_is_long_abbrev "max-args" "$stripped" \
-                                || guard_is_long_abbrev "max-procs" "$stripped" \
                                 || guard_is_long_abbrev "max-lines" "$stripped" \
+                                || guard_is_long_abbrev "eof" "$stripped"; then
+                                continue
+                            fi
+                            if guard_is_long_abbrev "max-args" "$stripped" \
+                                || guard_is_long_abbrev "max-procs" "$stripped" \
                                 || guard_is_long_abbrev "delimiter" "$stripped" \
                                 || guard_is_long_abbrev "arg-file" "$stripped" \
-                                || guard_is_long_abbrev "max-chars" "$stripped" \
-                                || guard_is_long_abbrev "eof" "$stripped"; then
+                                || guard_is_long_abbrev "max-chars" "$stripped"; then
                                 [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;

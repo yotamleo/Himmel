@@ -284,6 +284,13 @@ assert_rc "R2+ rm --r build (min abbrev)"   2 "$(run_case "$(j_bash 'rm --r buil
 assert_rc "R2- rm --verbose x (unrelated)"  0 "$(run_case "$(j_bash 'rm --verbose x')")"
 assert_rc "R2- rm --v x (unrelated abbrev)" 0 "$(run_case "$(j_bash 'rm --v x')")"
 assert_rc "R2- grep --rec pattern src/"     0 "$(run_case "$(j_bash 'grep --rec pattern src/')")"
+# HIMMEL-2610 J1267O F3: the `--r[a-z-]*` scan (added above for the abbrev
+# case) used an unbounded `[^|;&]*` gap between `rm` and the flag, which
+# crosses into a trailing comment, a `$(...)` substitution body, or past a
+# literal `--` operand terminator -- none of those are rm's own option list.
+assert_rc "R2- rm -f x.log # --really (comment, not a flag)" 0 "$(run_case "$(j_bash 'rm -f x.log # --really')")"
+assert_rc "R2- rm -f x \$(ls --reverse) (subshell arg, not rm's flag)" 0 "$(run_case "$(j_bash 'rm -f x $(ls --reverse)')")"
+assert_rc "R2- rm -- --rfile (operand after --, not a flag)" 0 "$(run_case "$(j_bash 'rm -- --rfile')")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
 # continuation but carries `-f` (no `r`), pinning the `\\` + `;+` escapes.
 cont_allow='rm \

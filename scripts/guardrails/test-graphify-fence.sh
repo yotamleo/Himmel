@@ -911,6 +911,59 @@ run_fence deny no "$HIMMEL" "time --o /tmp/x graphify salus -> deny (abbrev)" \
 run_fence deny no "$HIMMEL" "time --verbose graphify salus -> deny (unrelated flag not swallowed)" \
     "time --verbose graphify update $SALUS/notes/patient.md --backend glm"
 
+# (G7) env --u (abbreviation of --unset) -> deny
+run_fence deny no "$HIMMEL" "env --u FOO graphify salus -> deny (abbrev)" \
+    "env --u FOO graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G8) env --unset=FOO (attached value, single token) -> deny
+run_fence deny no "$HIMMEL" "env --unset=FOO graphify salus -> deny (attached)" \
+    "env --unset=FOO graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G9) negative control: env --ignore-environment does not take a value and
+# is not a prefix of --unset - must not swallow the next token.
+run_fence deny no "$HIMMEL" "env --ignore-environment graphify salus -> deny (unrelated flag not swallowed)" \
+    "env --ignore-environment graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G10) timeout --k (abbreviation of --kill-after) -> deny
+run_fence deny no "$HIMMEL" "timeout --k 5 10 graphify salus -> deny (abbrev)" \
+    "timeout --k 5 10 graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G11) timeout --kill-after=5 (attached value, single token) -> deny
+run_fence deny no "$HIMMEL" "timeout --kill-after=5 10 graphify salus -> deny (attached)" \
+    "timeout --kill-after=5 10 graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G12) negative control: timeout --preserve-status does not take a value and
+# is not a prefix of --kill-after/--signal - must not swallow the next token.
+run_fence deny no "$HIMMEL" "timeout --preserve-status 10 graphify salus -> deny (unrelated flag not swallowed)" \
+    "timeout --preserve-status 10 graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G13) stdbuf --outp (abbreviation of --output) -> deny
+run_fence deny no "$HIMMEL" "stdbuf --outp L graphify salus -> deny (abbrev)" \
+    "stdbuf --outp L graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G14) stdbuf --in=L (abbreviation of --input, attached value) -> deny
+run_fence deny no "$HIMMEL" "stdbuf --in=L graphify salus -> deny (abbrev, attached)" \
+    "stdbuf --in=L graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G15) negative control: stdbuf --version does not take a value and is not a
+# prefix of --input/--output/--error - must not swallow the next token.
+run_fence deny no "$HIMMEL" "stdbuf --version graphify salus -> deny (unrelated flag not swallowed)" \
+    "stdbuf --version graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G16) sudo --us (abbreviation of --user) -> deny
+run_fence deny no "$HIMMEL" "sudo --us root graphify salus -> deny (abbrev)" \
+    "sudo --us root graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G17) sudo --user=root (attached value, single token) -> deny
+run_fence deny no "$HIMMEL" "sudo --user=root graphify salus -> deny (attached)" \
+    "sudo --user=root graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G18) negative control: sudo --reset-timestamp is not a prefix of any of
+# sudo's value-taking long options (user/group/other-user/prompt/close-from/
+# role/type/host) - must not swallow the next token.
+run_fence deny no "$HIMMEL" "sudo --reset-timestamp graphify salus -> deny (unrelated flag not swallowed)" \
+    "sudo --reset-timestamp graphify update $SALUS/notes/patient.md --backend glm"
+
 echo "== HIMMEL-621: xargs / find -exec fail-closed deny =="
 
 # (X1) graphify as xargs command -> deny outright (not statically fenceable)
@@ -1148,6 +1201,73 @@ payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"nice --adjustment
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: nice --adjustment (unabbreviated) graphify salus -> delegated deny rc=2 (unchanged)"; else fail "hook: nice --adjustment expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# env --u (abbreviation of --unset) wrapping a salus deny -> rc=2 (hook's
+# generic env alternative already matched this; pins the fence-side fix too)
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"env --u FOO graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: env --u graphify salus -> delegated deny rc=2 (abbrev reaches fence)"; else fail "hook: env --u expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# timeout --k (abbreviation of --kill-after) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"timeout --k 5 10 graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: timeout --k graphify salus -> delegated deny rc=2 (abbrev reaches fence)"; else fail "hook: timeout --k expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# sudo --us (abbreviation of --user) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"sudo --us root graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: sudo --us graphify salus -> delegated deny rc=2 (abbrev reaches fence)"; else fail "hook: sudo --us expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# HIMMEL-2610: stdbuf was MISSING from the hook's CMDPOS pre-filter wrapper
+# alternation entirely (unlike sudo/env/timeout/nice/time above) - ANY
+# stdbuf-wrapped graphify call, regardless of flag spelling (even a bare
+# short option), never matched CMDPOS and the hook exited 0 WITHOUT EVER
+# INVOKING THE FENCE. This is a routing-layer bypass, distinct from and
+# broader than the abbreviation gap inside graphify-fence.sh's own stdbuf arm
+# (operator-applied one-line CMDPOS fix, HIMMEL-2610).
+
+# stdbuf -o (short option, was already correct fence-side, but blocked at the
+# routing layer pre-fix) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"stdbuf -o L graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: stdbuf -o graphify salus -> delegated deny rc=2 (routing reaches fence)"; else fail "hook: stdbuf -o expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# stdbuf --output (long spelling) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"stdbuf --output L graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: stdbuf --output graphify salus -> delegated deny rc=2 (routing reaches fence)"; else fail "hook: stdbuf --output expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# stdbuf --outp= (abbreviated, attached value) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"stdbuf --outp=L graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: stdbuf --outp= graphify salus -> delegated deny rc=2 (routing reaches fence)"; else fail "hook: stdbuf --outp= expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# stdbuf -oL (combined short flag) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"stdbuf -oL graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: stdbuf -oL graphify salus -> delegated deny rc=2 (routing reaches fence)"; else fail "hook: stdbuf -oL expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# negative control: stdbuf -o L echo graphify -> allow (graphify is only an
+# ARGUMENT to echo here, not at command position; the looser stdbuf
+# pre-filter must still fall through correctly once the fence classifies it)
+payload='{"tool_name":"Bash","tool_input":{"command":"stdbuf -o L echo graphify"}}'
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then pass "hook: stdbuf -o L echo graphify -> allow rc=0 (not command position)"; else fail "hook: stdbuf -o L echo graphify expected rc=0 got rc=$rc out=$out"; fi
 
 # (16) malformed hook JSON that mentions a graphify command + jq present -> deny
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list

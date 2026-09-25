@@ -398,9 +398,23 @@ fi
 # verbose/help/version all start elsewhere), so getopt_long accepts any
 # unambiguous prefix from `--r` up - `--rec`, `--recu`, etc. all spell
 # --recursive and must trip this the same as the full word.
-RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
+# HIMMEL-2610 J1267O F3: the gap between `rm` and the flag excludes `(`
+# (also blocks `` ` ``) and `#` so the scan cannot cross into a `$(...)`/
+# backtick substitution body (that `--r...` belongs to the NESTED command,
+# not rm) or a trailing `# comment`. The whole match is then checked for a
+# standalone `--` token (bash's own operand terminator - `rm -- --rfile`
+# names a file, getopt never sees it as a flag) and the deny is skipped when
+# one is found ahead of the flag - checked against BASH_REMATCH[0] (the
+# match text) rather than a numbered subgroup, since CMDPOS's own group
+# count is an implementation detail of guardrails/lib.sh, not a contract
+# this file should index into.
+RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&(`#]*--r[a-z-]*([^[:alnum:]_-]|$)'
 if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
-    deny "recursive rm"
+    if [[ ${BASH_REMATCH[0]} =~ (^|[[:space:]])--([[:space:]]|$) ]]; then
+        :
+    else
+        deny "recursive rm"
+    fi
 fi
 # Backslash-newline continuation: newlines are already folded to ';' above, so
 # `rm \<newline>-rf` becomes `rm \;-rf` here - the literal backslash before the

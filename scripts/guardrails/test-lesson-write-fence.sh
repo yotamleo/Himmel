@@ -725,6 +725,21 @@ run_hook deny "20: timeout --foreground 5 cp x scripts/hooks/a.sh (unrelated no-
 run_hook deny "20: sudo --preserve-env cp x scripts/hooks/a.sh (unrelated no-value flag)" \
     "$(bash_json "sudo --preserve-env cp x scripts/hooks/a.sh" "$REPO")" 1
 
+# HIMMEL-2610 J1267O F4: every row above already expects deny=1 for the
+# UNABBREVIATED control too, so a build with the abbreviation fix reverted
+# (env's -u/--unset case falling through to the generic `-*` -> i+=1 arm)
+# still ends up denying — the misaligned walk lands on `cp x
+# scripts/hooks/a.sh` one token early, at `x`, which is still inside a
+# guarded prefix and still denies for an unrelated reason. None of the rows
+# above are a RED control (verified: all 10 PASS against the pre-#1267 base,
+# 6af02685). A row only pins the fix when the swallowed VALUE itself names a
+# proven READ-ONLY verb (`cat`) — that is what the base code's misaligned
+# walk resolves to as the "clause head", so base ALLOWs (the real `cp` write
+# is never scanned) while a build with the fix denies (the value is
+# correctly skipped as `--unset`'s argument, and `cp` is found).
+run_hook deny "20: env --u cat cp x scripts/hooks/a.sh (swallowed value names a read-only verb)" \
+    "$(bash_json "env --u cat cp x scripts/hooks/a.sh" "$REPO")" 1
+
 # reason assertion (not just rc): the abbreviated exploit must deny for the
 # SAME enforcement-path reason as the unabbreviated control, not some other
 # unrelated denial.

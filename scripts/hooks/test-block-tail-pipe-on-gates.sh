@@ -423,6 +423,23 @@ allow "sudo --us operand does not make a non-gate look like one" \
 allow "sudo --E (not a prefix of any operand-taking sudo option) allows" \
       'sudo --E grep x f | head -5'
 
+# --- HIMMEL-2610 J1267O F1: xargs --replace/--eof/--max-lines are
+# OPTIONAL-argument long options (GNU xargs never consumes a separate next
+# word for them) — the gate must not be swallowed as their operand, in either
+# the abbreviated or full spelling. ---
+deny "xargs --rep (abbrev of optional-arg --replace) before the gate" \
+     'xargs --rep scripts/check-ci.sh | tail -20'
+deny "xargs --replace (optional-arg, full spelling) before the gate" \
+     'xargs --replace scripts/check-ci.sh | tail -20'
+deny "xargs --eo (abbrev of optional-arg --eof) before the gate" \
+     'xargs --eo scripts/check-ci.sh | tail -20'
+deny "xargs --eof (optional-arg, full spelling) before the gate" \
+     'xargs --eof scripts/check-ci.sh | tail -20'
+deny "xargs --max-l (abbrev of optional-arg --max-lines) before the gate" \
+     'xargs --max-l scripts/check-ci.sh | tail -20'
+deny "xargs --max-lines (optional-arg, full spelling) before the gate" \
+     'xargs --max-lines scripts/check-ci.sh | tail -20'
+
 # --- BYPASS: the documented same-line marker --------------------------------
 allow "same-line tail-pipe-ok marker" \
       'bash scripts/cr/clear-cr-marker.sh x | tail -20  # tail-pipe-ok: rc irrelevant, output only'
@@ -482,6 +499,24 @@ if grep -q 'jq__absent__' "$NOJQ_HOOK"; then
     fi
 else
     fail "jq-absent fixture did not patch the hook — the probe line changed shape"
+fi
+
+# --- HIMMEL-2610 J1267O F2: the gate DENY must survive a missing
+# guardrails/lib.sh — this hook had no lib.sh dependency before HIMMEL-2610,
+# and a fail-open here silently withdraws every DENY, not just the
+# abbreviation-recognition lib.sh adds. ---
+NOLIB_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/btpog-nolib.XXXXXX")" || { fail "mktemp for the no-lib fixture"; NOLIB_ROOT=""; }
+if [ -n "$NOLIB_ROOT" ]; then
+    mkdir -p "$NOLIB_ROOT/scripts/hooks"
+    cp "$HOOK" "$NOLIB_ROOT/scripts/hooks/block-tail-pipe-on-gates.sh"
+    out=$(printf '%s' "$(j_bash 'bash scripts/check-ci.sh | tail -20')" | bash "$NOLIB_ROOT/scripts/hooks/block-tail-pipe-on-gates.sh" 2>/dev/null)
+    rc=$?
+    if [ "$rc" = "2" ]; then
+        pass "check-ci piped to tail still denies with NO lib.sh present"
+    else
+        fail "check-ci piped to tail did not deny with NO lib.sh present (rc=$rc)"
+    fi
+    rm -rf "$NOLIB_ROOT"
 fi
 
 # --- The scanned command string is DATA, never code ------------------------

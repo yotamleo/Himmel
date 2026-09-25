@@ -343,6 +343,26 @@ assert "real -maxdepth still ALLOW" ALLOW "$(decide "$(j_bash 'find / -maxdepth 
 # guard handles it, not the rootwalk deny).
 assert "find . -delete still PASS2" PASS  "$(decide "$(j_bash 'find . -delete')")"
 
+# --- HIMMEL-2610 J1267O F2: the root-walk DENY (HIMMEL-2121) predates this
+# hook's guardrails/lib.sh dependency and must survive lib.sh being missing —
+# a fail-open here silently drops the ONLY thing this hook ever denies. ---
+NOLIB_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/aasb-nolib.XXXXXX")" || { echo "FAIL mktemp for the no-lib fixture"; exit 1; }
+mkdir -p "$NOLIB_ROOT/scripts/hooks"
+cp "$HOOK" "$NOLIB_ROOT/scripts/hooks/auto-approve-safe-bash.sh"
+decide_nolib() {
+    local out
+    out=$(printf '%s' "$1" | bash "$NOLIB_ROOT/scripts/hooks/auto-approve-safe-bash.sh" 2>/dev/null)
+    if grepq "$out" '"permissionDecision":"deny"'; then
+        echo "DENY"
+    elif grepq "$out" '"permissionDecision":"allow"'; then
+        echo "ALLOW"
+    else
+        echo "PASS"
+    fi
+}
+assert "find / no maxdepth, NO lib.sh present" DENY "$(decide_nolib "$(j_bash 'find / -iname harvest-clips -not -path /node_modules/')")"
+rm -rf "$NOLIB_ROOT"
+
 # --- Round-5 locks (cross-model critic panel, round 4): root-equivalent
 # canonicalization, `--` option terminator, and resuming the -maxdepth scan
 # after an action primary's payload ---

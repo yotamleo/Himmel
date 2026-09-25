@@ -1681,13 +1681,24 @@ classify_clause() {
             env)
                 i=$((i+1))                                 # env [-i|-|-u VAR|X=y]... CMD
                 while [ "$i" -lt "$n" ]; do
-                    case "$(_strip_cmd "${toks[$i]}")" in
-                        -u|--unset)   i=$((i+2)) ;;        # flag + VAR value
+                    gf_w="$(_strip_cmd "${toks[$i]}")"
+                    case "$gf_w" in
+                        -u)   i=$((i+2)) ;;                # flag + VAR value
+                        --*)
+                            # HIMMEL-2610: --u/--uns/... are unambiguous GNU
+                            # abbreviations of env's only value-taking long
+                            # option, --unset; the old literal-only match
+                            # missed them (same under-consumption class as
+                            # nice/time above).
+                            if guard_is_long_abbrev "unset" "$gf_w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
+                            else
+                                i=$((i+1))
+                            fi ;;
                         [A-Za-z_]*=*)
-                            case "$(_strip_cmd "${toks[$i]}")" in
+                            case "$gf_w" in
                                 ANTHROPIC_BASE_URL=*|CLAUDE_CODE_USE_BEDROCK=*|CLAUDE_CODE_USE_VERTEX=*|ANTHROPIC_API_KEY=*|ANTHROPIC_AUTH_TOKEN=*)
-                                    _GF_ENDPOINT_OVERRIDE="$(_strip_cmd "${toks[$i]}")"
-                                    _GF_ENDPOINT_OVERRIDE="${_GF_ENDPOINT_OVERRIDE%%=*}" ;;
+                                    _GF_ENDPOINT_OVERRIDE="${gf_w%%=*}" ;;
                             esac
                             i=$((i+1)) ;;                  # env-local assignment
                         -*)           i=$((i+1)) ;;        # -i / - / --ignore-environment / ...
@@ -1698,10 +1709,22 @@ classify_clause() {
             timeout)
                 i=$((i+1))                                 # timeout [flags] DURATION CMD
                 while [ "$i" -lt "$n" ]; do
-                    case "$(_strip_cmd "${toks[$i]}")" in
-                        -k|-s|--kill-after|--signal) i=$((i+2)) ;;  # flag + value
-                        -*)                          i=$((i+1)) ;;  # -v / --preserve-status / =-form
-                        *)                           break ;;
+                    gf_w="$(_strip_cmd "${toks[$i]}")"
+                    case "$gf_w" in
+                        -k|-s) i=$((i+2)) ;;               # flag + value
+                        --*)
+                            # HIMMEL-2610: --k/--ki/... and --s/--si/... are
+                            # unambiguous abbreviations of timeout's two
+                            # value-taking long options, --kill-after and
+                            # --signal; same under-consumption class as
+                            # nice/time above.
+                            if guard_is_long_abbrev "kill-after" "$gf_w" || guard_is_long_abbrev "signal" "$gf_w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
+                            else
+                                i=$((i+1))
+                            fi ;;
+                        -*)    i=$((i+1)) ;;               # -v / --preserve-status / =-form
+                        *)     break ;;
                     esac
                 done
                 [ "$i" -lt "$n" ] && i=$((i+1))            # consume the DURATION positional
@@ -1709,8 +1732,23 @@ classify_clause() {
             stdbuf)
                 i=$((i+1))                                 # stdbuf [-i|-o|-e MODE]... CMD
                 while [ "$i" -lt "$n" ]; do
-                    case "$(_strip_cmd "${toks[$i]}")" in
+                    gf_w="$(_strip_cmd "${toks[$i]}")"
+                    case "$gf_w" in
                         -i|-o|-e) i=$((i+2)) ;;            # bare short opt + separate MODE value
+                        --*)
+                            # HIMMEL-2610: stdbuf had NO long-option handling
+                            # at all - --input/--output/--error (and any
+                            # unambiguous abbreviation of each) take a
+                            # SEPARATE value exactly like their short forms
+                            # above; falling to the generic bare -* arm left
+                            # the value token misaligned as the next "clause
+                            # head".
+                            if guard_is_long_abbrev "input" "$gf_w" || guard_is_long_abbrev "output" "$gf_w" \
+                                || guard_is_long_abbrev "error" "$gf_w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
+                            else
+                                i=$((i+1))
+                            fi ;;
                         -*)       i=$((i+1)) ;;            # -oL combined / other flag
                         *)        break ;;
                     esac
@@ -1719,9 +1757,24 @@ classify_clause() {
             sudo)
                 i=$((i+1))                                 # sudo [flags] CMD
                 while [ "$i" -lt "$n" ]; do
-                    case "$(_strip_cmd "${toks[$i]}")" in
+                    gf_w="$(_strip_cmd "${toks[$i]}")"
+                    case "$gf_w" in
                         -u|-g|-U|-p|-C|-r|-t|-h) i=$((i+2)) ;;       # flag + value
                         --)                      i=$((i+1)); break ;;  # end of sudo options
+                        --*)
+                            # HIMMEL-2610: sudo had NO long-option handling
+                            # at all - --user/--group/--other-user/--prompt/
+                            # --close-from/--role/--type/--host (and any
+                            # unambiguous abbreviation of each) each take a
+                            # SEPARATE value, same as their short forms above.
+                            if guard_is_long_abbrev "user" "$gf_w" || guard_is_long_abbrev "group" "$gf_w" \
+                                || guard_is_long_abbrev "other-user" "$gf_w" || guard_is_long_abbrev "prompt" "$gf_w" \
+                                || guard_is_long_abbrev "close-from" "$gf_w" || guard_is_long_abbrev "role" "$gf_w" \
+                                || guard_is_long_abbrev "type" "$gf_w" || guard_is_long_abbrev "host" "$gf_w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
+                            else
+                                i=$((i+1))
+                            fi ;;
                         [A-Za-z_]*=*)            i=$((i+1)) ;;        # sudo-local VAR=val
                         -*)                      i=$((i+1)) ;;        # -n / -E / -H / -i / -s / ...
                         *)                       break ;;
