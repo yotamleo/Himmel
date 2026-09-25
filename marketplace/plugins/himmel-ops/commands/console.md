@@ -83,11 +83,14 @@ esac
 - `--bucket <slug>` / `--prefix <P>` — override the project-derived defaults
   (e.g. `/console new --arm --bucket websites`); the resolved `--project`
   above only supplies the DEFAULT bucket/prefix, it never forces one.
-- `--project <dir>` — this plugin copy always passes one, derived from the
-  cwd this session is running in, AFTER your arguments — so it wins over a
-  `--project` you pass yourself (console.sh keeps the last one). To target a
-  different repo, start the session there, or override just the naming with
-  `--bucket`/`--prefix`.
+- `--project <dir>` — this plugin copy derives one from the cwd this session
+  is running in, but ONLY for `new`, AFTER your own arguments (so it still
+  wins over a `--project` you pass yourself to `new`; console.sh keeps the
+  last one). `next` derives nothing here: with no `--project` of your own,
+  console.sh inherits the predecessor doc's own recorded project instead
+  (codex-1, HIMMEL-3623); an explicit `--project`/`--bucket`/`--prefix` on
+  `next` still wins. To target a different repo on `new`, start the session
+  there, or override just the naming with `--bucket`/`--prefix`.
 
 Record the printed `release-token: ` line — now backticked around the token
 itself (HIMMEL-2910) — in the console's first Results bullet verbatim:
