@@ -520,6 +520,17 @@ assert_rc "71f bash python3 open(...,'w') on \$HOME settings.json denies" 2 \
 assert_rc "71g bash jq redirect into \$HOME settings.json denies" 2 \
     "$(bash_rc_of "$SANDBOX" "jq . ~/.claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
 
+# 71h (codex-1, panel round 1 on #1282): a heredoc fed to a NESTED
+# interpreter (`bash <<'EOF'`) whose body embeds a real write to the live
+# settings file. The outer command carries no recognized write-verb (`echo`
+# isn't cp/mv/tee/etc.) and the settings.json mention lives only in the
+# heredoc body, so without the interpreter guard this cleared to ALLOW —
+# the exact gap the 71/71b/71c rescan opened. Must stay DENY.
+assert_rc "71h heredoc body run by a nested bash writes to settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "bash <<'EOF'
+echo x > .claude/settings.json
+EOF")"
+
 # 73-74 controls: FD-1's exact spelling stays a bare allowlisted read, and a
 # worktree's own relative write with no cd stays open.
 assert_rc "73 bare grep with settings.json as a search path allows (FD-1)" 0 \

@@ -1369,7 +1369,27 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # Trust ST_LW over the raw text for THIS question only, and only when a
     # heredoc is actually present, so a command with no heredoc takes the
     # exact path it always has.
+    #
+    # codex-1 (panel round 1 on #1282): "prose/data" only holds when nothing
+    # RUNS the body. `bash <<'EOF'` / `sh` / `python3` / etc. reading a
+    # heredoc execute it as a script, so a write inside the body (`echo x >
+    # ~/.claude/settings.json`) is a real write the outer command's own verb
+    # list never sees (no cp/mv/tee word, no dir_dest match — `echo` isn't in
+    # either). Fail closed on that shape: if any OUTER word names an
+    # interpreter that reads stdin as a script, the body is code, not prose,
+    # and the mention stays live. Accepted over-match — an interpreter word
+    # anywhere in the command, not proven to be the heredoc's own consumer —
+    # matching this file's stated preference for a false deny over a bypass.
+    interp_present=0
     if [ "$mentions_settings" = "1" ] && [ "$LWOK" = "1" ] && [ "$LW_HEREDOC" = "1" ]; then
+        for _lw in "${ST_LW[@]}"; do
+            case "$_lw" in
+                bash|*/bash|sh|*/sh|dash|*/dash|zsh|*/zsh|ksh|*/ksh|mksh|*/mksh|csh|*/csh|tcsh|*/tcsh|python|*/python|python2|*/python2|python3|*/python3|perl|*/perl|ruby|*/ruby|node|*/node|nodejs|*/nodejs|php|*/php|osascript|*/osascript|lua|*/lua|tclsh|*/tclsh|expect|*/expect)
+                    interp_present=1; break ;;
+            esac
+        done
+    fi
+    if [ "$mentions_settings" = "1" ] && [ "$LWOK" = "1" ] && [ "$LW_HEREDOC" = "1" ] && [ "$interp_present" = "0" ]; then
         tok_mention=0
         for _lw in "${ST_LW[@]}"; do
             case "$_lw" in
