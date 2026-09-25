@@ -2699,6 +2699,8 @@ printf '{"statusLine":{"type":"command","command":"bash \\"%s/scripts/statusline
 printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
 cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21g-legacy"
 (
+    # shellcheck disable=SC2030,SC2031 # confined to this subshell, same as
+    # seed_plugin_ledger above; never leaks to the parent script.
     export HOME="$U_HOME"
     unset HIMMEL_PROVENANCE_DIR CLAUDE_CONFIG_DIR
     prov_begin --writer install.sh -- seed-u21g >/dev/null
