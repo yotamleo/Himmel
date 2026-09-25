@@ -21,5 +21,16 @@
 # no-op on an already-clean PATH.
 
 dedupe_path() {
-    printf '%s' "${1-}" | awk -v RS=':' '!seen[$0]++ { printf "%s%s", (NR>1 ? ":" : ""), $0 }'
+    awk -F: '
+    {
+        cnt = 0
+        for (i = 1; i <= NF; i++) {
+            entry = $i
+            if (!(entry in seen)) {
+                seen[entry] = 1
+                if (cnt++ > 0) printf ":"
+                printf "%s", entry
+            }
+        }
+    }' <<< "${1-}"
 }

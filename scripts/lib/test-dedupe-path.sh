@@ -88,6 +88,16 @@ done
 deduped_dupes=$(count_dupe_groups "$deduped")
 assert_eq "T8b with fix: 5 hops stay capped at 0 dupe groups" "0" "$deduped_dupes"
 
+# T9 (RED for codex-1): a trailing empty PATH entry (PATH ending in ":",
+# conventionally "look in cwd") must round-trip, not be silently dropped.
+got=$(dedupe_path "/usr/bin:")
+assert_eq "T9 trailing empty entry preserved" "/usr/bin:" "$got"
+
+# T10: a leading empty PATH entry (PATH starting with ":") must also
+# round-trip.
+got=$(dedupe_path ":/usr/bin")
+assert_eq "T10 leading empty entry preserved" ":/usr/bin" "$got"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "All dedupe-path tests passed."
