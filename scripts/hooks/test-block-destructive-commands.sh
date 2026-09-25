@@ -307,6 +307,14 @@ assert_rc "R2+ rm \`echo x\` --recursive dir (backtick operand before flag)" 2 "
 assert_rc "R2+ rm \"\$(foo -- )\" --recursive d (-- inside substitution is not rm's terminator)" 2 "$(run_case "$(j_bash 'rm "$(foo -- )" --recursive d')")"
 # shellcheck disable=SC2016 # payload text under test
 assert_rc "R2+ echo \$(rm --recursive x) (rm INSIDE a substitution still denies)" 2 "$(run_case "$(j_bash 'echo $(rm --recursive x)')")"
+# HIMMEL-2610 J1267O round-6 codex-1: a quoted operand carrying a gap-stopping
+# metacharacter (`#`, `(`, `;`, `&`, `|`) must not hide a live flag after it,
+# and a QUOTED flag itself must still deny.
+assert_rc "R2+ rm 'a#b' --recursive dir (quoted # before flag)" 2 "$(run_case "$(j_bash "rm 'a#b' --recursive dir")")"
+assert_rc "R2+ rm \"a(b\" --recursive dir (quoted ( before flag)" 2 "$(run_case "$(j_bash 'rm "a(b" --recursive dir')")"
+assert_rc "R2+ rm 'a;b' --recursive dir (quoted ; before flag)" 2 "$(run_case "$(j_bash "rm 'a;b' --recursive dir")")"
+assert_rc "R2+ rm 'a#b' \"--recursive\" d (quoted operand + quoted flag)" 2 "$(run_case "$(j_bash "rm 'a#b' \"--recursive\" d")")"
+assert_rc "R2- rm -f 'a#b' # --really (quoted # then a real comment)" 0 "$(run_case "$(j_bash "rm -f 'a#b' # --really")")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
 # continuation but carries `-f` (no `r`), pinning the `\\` + `;+` escapes.
 cont_allow='rm \

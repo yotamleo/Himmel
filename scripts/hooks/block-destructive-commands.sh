@@ -426,7 +426,21 @@ _rm_recur_collapsed="$rm_scrub"
 while [[ $_rm_recur_collapsed =~ $RM_SUBST_PAT ]]; do
     _rm_recur_collapsed="${_rm_recur_collapsed/"${BASH_REMATCH[0]}"/X}"
 done
-for _rm_recur_cand in "$rm_scrub" "$_rm_recur_collapsed"; do
+# HIMMEL-2610 J1267O round-6 codex-1: a QUOTED operand can carry the same
+# gap-stopping metacharacters (`rm 'a#b' --recursive d`). Neutralise them
+# inside each quoted span to `_` - the text is kept, so a quoted flag
+# (`"--recursive"`) still matches. An unbalanced quote only ever makes this
+# copy MORE permissive about crossing the gap (a false DENY, never a hide).
+RM_QUOTE_PAT=$'^([^\'"]*)(\'[^\']*\'|"[^"]*")(.*)$'
+_rm_recur_neut=""
+_rm_recur_rest="$_rm_recur_collapsed"
+while [[ $_rm_recur_rest =~ $RM_QUOTE_PAT ]]; do
+    _rm_recur_span="${BASH_REMATCH[2]}"
+    _rm_recur_neut+="${BASH_REMATCH[1]}${_rm_recur_span//[#();&|\`]/_}"
+    _rm_recur_rest="${BASH_REMATCH[3]}"
+done
+_rm_recur_neut+="$_rm_recur_rest"
+for _rm_recur_cand in "$rm_scrub" "$_rm_recur_neut"; do
     if [[ $_rm_recur_cand =~ $RM_RECURSIVE_PAT ]]; then
         _rm_recur_match="${BASH_REMATCH[0]}"
         if [[ $_rm_recur_match =~ (^|[[:space:]])--([[:space:]]|$) ]]; then
