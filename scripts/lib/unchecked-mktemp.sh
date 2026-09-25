@@ -533,7 +533,16 @@ unchecked_mktemp_scan() {
             # regex below by accident -- this whole awk program is itself
             # single-quoted by its caller, so the one quote the regex needs
             # is spelled with the close/escaped-quote/reopen idiom instead.)
-            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+((-[a-zA-Z]+|--)[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp(""|'\'''\'')*([^A-Za-z0-9_./'\''"\\-]|\\$|$)/)
+            # HIMMEL-3624: the `/` in this negated class is escaped as `\/`.
+            # macOS /usr/bin/awk (one-true-awk) does not track bracket
+            # nesting while scanning for a regex literal closing `/` --
+            # a bare `/` inside `[...]` ends the literal early, so the class
+            # is (from that parser point of view) never closed with a `]`,
+            # and it fails "nonterminated character class" on every staged
+            # .sh. Escaping the delimiter is a no-op for the byte matched (a
+            # bracket expression gives `\` no escaping role under POSIX, and
+            # both gawk and BWK read `\/` as the same literal `/` as before).
+            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+((-[a-zA-Z]+|--)[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp(""|'\'''\'')*([^A-Za-z0-9_.\/'\''"\\-]|\\$|$)/)
                 continue
 
             # A declaration builtin (local/export/declare/typeset/readonly)
