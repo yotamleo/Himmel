@@ -25,6 +25,7 @@ set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CADENCE="$SCRIPT_DIR/upstream-watch-cadence.sh"
+HIMMEL_REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
 
 fails=0
 pass() { echo "  ok   — $1"; }
@@ -121,6 +122,32 @@ FAKE
   printf '%s' "$f"
 }
 
+# make_anchor <state> — a stub `.env`-bearing anchor for HANDOVER_DIR
+# resolution (HIMMEL-2619): symlinks the REAL scripts/lib/load-dotenv.sh (a
+# static utility, never mutated by this suite) so go_resolve_root's `.env`
+# read works, then points its .env at an external scratch handover dir —
+# never inside $state/root, the stub payload cd's into.
+make_anchor() {
+  local state="$1" anchor="$1/anchor"
+  mkdir -p "$anchor/scripts/lib" "$state/external-handover"
+  ln -sf "$HIMMEL_REPO_ROOT/scripts/lib/load-dotenv.sh" "$anchor/scripts/lib/load-dotenv.sh"
+  printf 'HANDOVER_DIR=%s\n' "$state/external-handover" > "$anchor/.env"
+  printf '%s' "$anchor"
+}
+
+# make_bare_anchor <state> — a real (git-init'd) anchor with NO .env and a
+# pre-existing <anchor>/handovers, for the RED case: no external
+# HANDOVER_DIR is configured anywhere, so resolution must fall through to
+# the Mode A inline stub and the cadence script must refuse to arm rather
+# than silently bake that stub in.
+make_bare_anchor() {
+  local state="$1" anchor="$1/anchor-bare"
+  mkdir -p "$anchor/scripts/lib" "$anchor/handovers"
+  ln -sf "$HIMMEL_REPO_ROOT/scripts/lib/load-dotenv.sh" "$anchor/scripts/lib/load-dotenv.sh"
+  ( cd "$anchor" && git init -q && git config user.email t@t.test && git config user.name t && git add -A && git commit -q -m init )
+  printf '%s' "$anchor"
+}
+
 new_scratch() {
   local state
   state=$(mktemp -d "${TMPDIR:-/tmp}/upstream-watch-cadence-test.XXXXXX")
@@ -150,16 +177,38 @@ run_cadence() {
 
 # run_cadence_posix — same contract as run_cadence but the POSIX/crontab arm
 # path (UPSTREAMWATCH_CRONTAB), never touching a real cygpath/wscript
-# dependency the Windows path needs.
+# dependency the Windows path needs. HANDOVER_DIR resolution (HIMMEL-2619) is
+# pinned to a scratch external anchor so this stays hermetic regardless of
+# this station's own real HANDOVER_DIR/`.env` — see make_anchor.
 run_cadence_posix() {
   local state="$1"; shift
-  UPSTREAMWATCH_CRONTAB="$state/crontab" \
+  local anchor; anchor=$(make_anchor "$state")
+  env -u HANDOVER_DIR \
+    UPSTREAMWATCH_CRONTAB="$state/crontab" \
     UPSTREAMWATCH_BAT_DIR="$state/bat" \
     UPSTREAMWATCH_HIMMEL_ROOT="$state/root" \
+    UPSTREAMWATCH_ANCHOR_ROOT="$anchor" \
     UPSTREAMWATCH_PLATFORM=posix \
     HIMMEL_OBSERVABILITY_CONFIG="$state/observability.json" \
     HIMMEL_PROVENANCE_DIR="$state/provenance" \
     bash "$CADENCE" "$@"
+}
+
+# run_cadence_posix_anchor <state> <anchor> <args...> — like run_cadence_posix
+# but with an EXPLICIT anchor (e.g. make_bare_anchor's no-`.env` stub), for
+# exercising HANDOVER_DIR resolution itself rather than the default
+# always-succeeds anchor above.
+run_cadence_posix_anchor() {
+  local state="$1" anchor="$2"; shift 2
+  ( cd "$anchor" && env -u HANDOVER_DIR \
+      UPSTREAMWATCH_CRONTAB="$state/crontab" \
+      UPSTREAMWATCH_BAT_DIR="$state/bat" \
+      UPSTREAMWATCH_HIMMEL_ROOT="$state/root" \
+      UPSTREAMWATCH_ANCHOR_ROOT="$anchor" \
+      UPSTREAMWATCH_PLATFORM=posix \
+      HIMMEL_OBSERVABILITY_CONFIG="$state/observability.json" \
+      HIMMEL_PROVENANCE_DIR="$state/provenance" \
+      bash "$CADENCE" "$@" )
 }
 
 registry_has_task() {
@@ -359,6 +408,39 @@ if [ -f "$pstate3/tab" ]; then
 else
   pass "posix dry-run arm: no cron entry installed"
 fi
+
+# --- HANDOVER_DIR resolution (HIMMEL-2619) — a cron-fired shell has no
+# interactive/login env, so the generated runner must bake in an external
+# HANDOVER_DIR at arm time rather than let the payload's own handover_root()
+# fall back to <repo>/handovers at fire time.
+echo "== test: POSIX arm refuses when no external HANDOVER_DIR resolves =="
+pstate4=$(new_scratch_posix); proot4=$(make_root); mv "$proot4" "$pstate4/root"
+bare4=$(make_bare_anchor "$pstate4")
+out=$(run_cadence_posix_anchor "$pstate4" "$bare4" arm 2>&1); rc=$?
+if [ "$rc" -eq 2 ]; then pass "posix arm no-handover: rc=2"; else fail "posix arm no-handover: expected rc=2 got rc=$rc; output: $out"; fi
+assert_has "$out" "refusing to arm into the inline handovers/ stub" "posix arm no-handover: reports the refusal reason"
+if [ -f "$pstate4/bat/upstream-watch.sh" ]; then
+  fail "posix arm no-handover: runner should not have been published"
+else
+  pass "posix arm no-handover: no runner published"
+fi
+if [ -f "$pstate4/tab" ]; then
+  fail "posix arm no-handover: no cron entry should have been installed"
+else
+  pass "posix arm no-handover: no cron entry installed"
+fi
+
+echo "== test: POSIX generated runner exports the resolved external HANDOVER_DIR =="
+pstate5=$(new_scratch_posix); proot5=$(make_root); mv "$proot5" "$pstate5/root"
+out=$(run_cadence_posix "$pstate5" arm 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then pass "posix arm with handover: rc=0"; else fail "posix arm with handover: expected rc=0 got rc=$rc; output: $out"; fi
+runner_body=$(cat "$pstate5/bat/upstream-watch.sh" 2>/dev/null || echo "<missing>")
+assert_has "$runner_body" "HANDOVER_DIR=$pstate5/external-handover" "posix arm with handover: runner exports the resolved external root"
+assert_has "$runner_body" "export HANDOVER_DIR" "posix arm with handover: HANDOVER_DIR is exported before the payload runs"
+case "$runner_body" in
+  *"$pstate5/root/handovers"*) fail "posix arm with handover: runner still references the inline <repo>/handovers stub" ;;
+  *) pass "posix arm with handover: never references the inline <repo>/handovers stub" ;;
+esac
 
 echo
 if [ "$fails" -eq 0 ]; then

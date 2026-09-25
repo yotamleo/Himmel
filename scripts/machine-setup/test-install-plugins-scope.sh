@@ -27,7 +27,12 @@ set -euo pipefail
 # PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
 # the match lands early in a large input. A here-string is not a pipeline,
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
-grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+grepq() {
+    local _t="$1"; shift
+    local _n=$#
+    local _pat="${!_n}"
+    grep -q "${@:1:$((_n-1))}" -- "$_pat" <<< "$_t"
+}
 
 repo_root=$(git rev-parse --show-toplevel)
 script="$repo_root/scripts/machine-setup/install-plugins.sh"
@@ -43,6 +48,19 @@ set -e
 [ "$rc" -eq 2 ] || fail "invalid scope should exit 2, got $rc"
 grepq "$out" "invalid --scope: bogus" || fail "missing invalid-scope diagnostic"
 echo "ok: invalid scope rejected (exit 2)"
+
+# RED (HIMMEL-2699): a trailing value-taking flag with no value must reach
+# the script's own usage diagnostic and exit 2, never an unbound-variable
+# death from `set -u`.
+for flag in --scope --template --himmel-path --settings; do
+    set +e
+    out=$(bash "$script" "$flag" 2>&1); rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "trailing $flag should exit 2, got $rc (out: $out)"
+    grepq "$out" "$flag requires a value" || fail "trailing $flag missing usage diagnostic (out: $out)"
+    grepq "$out" "unbound variable" && fail "trailing $flag leaked an unbound-variable death (out: $out)"
+    echo "ok: trailing $flag exits 2 with its own diagnostic"
+done
 
 # Tests 1 + 2 need the claude + jq preflight to pass.
 if ! command -v jq >/dev/null 2>&1 || ! command -v claude >/dev/null 2>&1; then

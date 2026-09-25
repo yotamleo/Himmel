@@ -61,10 +61,10 @@ ORIG_ARGS=("$@")
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)       DRY_RUN=1; shift ;;
-    --scope)         SCOPE="$2"; shift 2 ;;
-    --template)      TEMPLATE="$2"; shift 2 ;;
-    --himmel-path)   HIMMEL_PATH="$2"; shift 2 ;;
-    --settings)      SETTINGS="$2"; shift 2 ;;
+    --scope)         [[ $# -ge 2 ]] || { echo "ERROR: --scope requires a value" >&2; exit 2; }; SCOPE="$2"; shift 2 ;;
+    --template)      [[ $# -ge 2 ]] || { echo "ERROR: --template requires a value" >&2; exit 2; }; TEMPLATE="$2"; shift 2 ;;
+    --himmel-path)   [[ $# -ge 2 ]] || { echo "ERROR: --himmel-path requires a value" >&2; exit 2; }; HIMMEL_PATH="$2"; shift 2 ;;
+    --settings)      [[ $# -ge 2 ]] || { echo "ERROR: --settings requires a value" >&2; exit 2; }; SETTINGS="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | head -n -1
       exit 0
