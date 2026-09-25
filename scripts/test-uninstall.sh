@@ -2670,6 +2670,21 @@ u_run_fx
 assert_rc 'U21e wet run completes' 0 "$rc"
 u_same 'U21e operator legacy hud config left alone' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21e-legacy"
 
+# U21f (HIMMEL-3334 codex-1) — a box upgraded but not yet re-wired: the
+# statusLine is still wired to the hud renderer, the ledger has no unit for it
+# (so unwire_settings keeps it, "no ledger"), and the legacy-path hud config is
+# what that still-live statusLine actually reads. Deleting the legacy config
+# here would break a HUD uninstall just reported as left working, so it must
+# be kept too -- unlike U21d, where no statusLine is wired at all.
+u_residue_fixture u21f
+printf '{"statusLine":{"type":"command","command":"bash \\"%s/scripts/statusline/bin/statusline.sh\\""}}\n' "$U17_SCRIPTS/.." > "$HIMMEL_USER_SETTINGS"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21f-legacy"
+u_run_fx
+assert_rc 'U21f wet run completes' 0 "$rc"
+u_same 'U21f legacy hud config kept (statusLine still wired, no ledger), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21f-legacy"
+assert_has 'U21f output names the kept legacy hud config' "kept (statusLine still wired, no ledger): $U_HOME/.claude/plugins/claude-hud/config.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+
 # U22 — dry and wet print the SAME number of user-settings unwire rows: one per
 # helper (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks).
 u_residue_fixture u22

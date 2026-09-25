@@ -3129,7 +3129,7 @@ EOF
 # ledger-or-kept fallback -- so the computation is dropped as an orphan of
 # that fix rather than left unused.
 unwire_user_files() {
-  local _ix _p _dry=0 _probe_rc _hud_units _hu _hud_legacy _fc_args _block_unit _fc _trust_units _tu
+  local _ix _p _dry=0 _probe_rc _hud_units _hu _hud_legacy _hud_sl_still_wired _fc_args _block_unit _fc _trust_units _tu
   [ "$DRY_RUN" -eq 1 ] && _dry=1
   for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud" "$_ix_trust"; do
     # A failure on one file halts the step: never edit the next file after it.
@@ -3147,9 +3147,21 @@ unwire_user_files() {
       # this FIRST, before either ledger branch below can `continue` past it.
       # Best effort, ledger-independent: unwire_hud_config's own safety check
       # (the customLineCommand pattern match) is what makes this safe
-      # unconditionally, same as wire-statusline.sh's own migration cleanup.
+      # unconditionally, same as wire-statusline.sh's own migration cleanup —
+      # EXCEPT when unwire_settings just KEPT (no-ledger) a statusLine still
+      # wired to the hud renderer (codex-1): on a box not yet re-wired since
+      # HIMMEL-3334, the legacy path IS the config that still-active statusLine
+      # reads, so deleting it here would break a HUD uninstall just reported
+      # as left working. Kept, same as the new-path config's own no-ledger row.
+      _hud_sl_still_wired=0
+      if [ -n "$HIMMEL_SL_PAT" ] && [ -f "$USER_SETTINGS" ] && jq -e --arg sl "$HIMMEL_SL_PAT" \
+          '((.statusLine.command? // "") | test($sl))' "$USER_SETTINGS" >/dev/null 2>&1; then
+        _hud_sl_still_wired=1
+      fi
       _hud_legacy="${_p%/*}/plugins/claude-hud/config.json"
-      if [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ] && command -v jq >/dev/null 2>&1; then
+      if [ "$_hud_sl_still_wired" -eq 1 ] && [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ]; then
+        echo "  kept (statusLine still wired, no ledger): $_hud_legacy — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_hud_legacy"
+      elif [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ] && command -v jq >/dev/null 2>&1; then
         # HIMMEL-3334: unwire-hud-config.sh sets `set -euo pipefail` when
         # sourced, so it is sourced in a subshell (same pattern as the
         # HIMMEL-3058 comment below) to avoid leaking strict-mode into this
