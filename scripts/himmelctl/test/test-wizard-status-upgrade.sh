@@ -117,9 +117,12 @@ jq -e --arg k "$targetKeyA" '.targets[$k].items | has("pre-commit-hooks") | not'
   || fail "case a setup: fixture drift — pre-change state.json should NOT carry pre-commit-hooks yet (got: $(cat "$cacheA/state.json"))"
 echo "ok: case a (setup) — seed state.json derived against the OLD manifest never carries pre-commit-hooks"
 
-# Snapshot another item's enabled flag from the pre-migration state, to
-# prove the migration below leaves it untouched.
+# Snapshot another item's enabled flag AND the whole file's bytes from the
+# pre-migration state, to prove the migration below leaves both untouched
+# (the has()|not check below only asserts one key stays absent; this proves
+# nothing else in the file moved either).
 wiringBefore=$(jq -e --arg k "$targetKeyA" '.targets[$k].items["wiring-pretooluse"].enabled' "$cacheA/state.json")
+stateHashBeforeA=$(sha256sum "$cacheA/state.json")
 
 # ── the "upgrade": swap in the REAL (current, full) manifest and re-run
 # status — this is the exact scenario a himmel-update delivers.
@@ -143,6 +146,9 @@ echo "ok: case a — a manifest item gained after the target's last derive is su
 # migration is `install`'s and `ensure`'s job now, not `status`'s.
 jq -e --arg k "$targetKeyA" '.targets[$k].items | has("pre-commit-hooks") | not' "$cacheA/state.json" >/dev/null \
   || fail "case a: status must NOT persist the migration into state.json (got: $(cat "$cacheA/state.json"))"
+stateHashAfterA=$(sha256sum "$cacheA/state.json")
+[ "$stateHashBeforeA" = "$stateHashAfterA" ] \
+  || fail "case a: state.json must be byte-untouched by the migration-surfacing run (before=$stateHashBeforeA after=$stateHashAfterA)"
 echo "ok: case a — the migration is reported in-memory only; state.json is left byte-untouched"
 
 wiringAfter=$(jq -e --arg k "$targetKeyA" '.targets[$k].items["wiring-pretooluse"].enabled' "$cacheA/state.json")
