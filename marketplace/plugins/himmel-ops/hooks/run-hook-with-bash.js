@@ -647,6 +647,9 @@ function runChain(members, lifecycle = false) {
       process.stderr.write(
         `run-hook-with-bash: DENY ${path.basename(member)} (${reason}) — must-run guard crashed instead of deciding; failing closed.\n`,
       );
+      if (stderr.trim()) {
+        process.stderr.write(`run-hook-with-bash: ${path.basename(member)} stderr: ${stderr.trim()}\n`);
+      }
       return 2;
     }
     const status = typeof result.status === 'number' ? result.status : 2;
