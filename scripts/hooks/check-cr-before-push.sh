@@ -318,21 +318,42 @@ resolve_diff_base() {
 # satisfies this, since "already merged to origin/$db" is exactly what it
 # means. Fails CLOSED (2) when origin can't be fetched at all: an
 # unverifiable empty diff must not read as "reviewed" (HIMMEL-323 direction).
+#
+# Fetch by the resolved PUSH endpoint, never the bare name "origin" (HIMMEL-3634
+# round-2 codex-1): `git fetch origin` resolves through remote.origin.url (the
+# FETCH url), which can diverge from remote.origin.pushurl / a pushInsteadOf
+# rewrite (the URL this exact push actually uses) — a pusher whose fetch and
+# push URLs point at different repositories (or, equivalently, an ordinary
+# fork-workflow clone where "origin" names their own fork while pushurl or an
+# explicit remote points the actual push at the protected upstream) gets this
+# safety net validated against the WRONG repository's history. git's own
+# pre-push argv already carries the exact endpoint this push resolved to
+# (push_remote_url, "$2" — same trust-argv-over-config precedent as the mint
+# logic above), so that is the fetch source whenever it is known; reproduced
+# in a scratch repo: remote.origin.url pointed at an attacker fork seeded with
+# the exact pushed SHA, push argv naming the real origin as the destination —
+# fetching "origin" by name validated against the fork (bypass), fetching
+# push_remote_url correctly fetched the real origin and refused. Falls back to
+# the bare name only for the legacy manual/no-argv invocation, where no push
+# is actually in flight to pin to.
 verify_empty_diff_is_reviewed() {
     local local_sha="$1"
     local fetch_rc=0
     local scratch_ref="refs/cr/verify-base/${db}"
+    local fetch_source="${push_remote_url:-origin}"
+    local scrubbed_source
+    scrubbed_source=$(scrub_endpoint "$fetch_source")
 
     # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
-    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head origin "+${db}:${scratch_ref}" 2>/dev/null || fetch_rc=$?
+    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head "$fetch_source" "+${db}:${scratch_ref}" 2>/dev/null || fetch_rc=$?
     if [ "$fetch_rc" -ne 0 ]; then
-        echo "→ code-review: diff vs ${diff_base} was empty, but re-verifying against a FRESH fetch of origin/${db} failed (origin unreachable?) — refusing the push rather than trusting an unverifiable empty diff (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        echo "→ code-review: diff vs ${diff_base} was empty, but re-verifying against a FRESH fetch of ${scrubbed_source}'s ${db} failed (unreachable?) — refusing the push rather than trusting an unverifiable empty diff (bypass with SKIP_CR=1 or git push --no-verify)" >&2
         return 2
     fi
     if git merge-base --is-ancestor "$local_sha" "$scratch_ref" 2>/dev/null; then
         return 0
     fi
-    echo "→ code-review: diff vs ${diff_base} was empty, but ${local_sha:0:8} is NOT reachable from origin/${db} (freshly fetched) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, or a local tracking ref never re-fetched — so only origin's real history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+    echo "→ code-review: diff vs ${diff_base} was empty, but ${local_sha:0:8} is NOT reachable from ${scrubbed_source}'s ${db} (freshly fetched from the actual push destination) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, or a local tracking ref never re-fetched — so only the real push destination's history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
     return 2
 }
 

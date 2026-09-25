@@ -1144,7 +1144,7 @@ else
     fail "P1(a): expected exit 2 + no marker" "rc=$rc marker=$([ -f "$sneaky_marker" ] && echo present || echo absent) / out: $out"
 fi
 case "$out" in
-    *"NOT reachable from origin/main"*) pass "P1(a) refusal names the real reason (unreachable from origin)" ;;
+    *"NOT reachable from"*"main"*) pass "P1(a) refusal names the real reason (unreachable from origin)" ;;
     *) fail "P1(a) refusal should name origin-unreachability" "out: $out" ;;
 esac
 
@@ -1171,7 +1171,7 @@ else
     fail "P1(b): expected exit 2 + no marker" "rc=$rc marker=$([ -f "$sneaky2_marker" ] && echo present || echo absent) / out: $out"
 fi
 case "$out" in
-    *"NOT reachable from origin/main"*) pass "P1(b) refusal names the real reason (unreachable from origin, after a fresh re-fetch)" ;;
+    *"NOT reachable from"*"main"*"freshly fetched"*) pass "P1(b) refusal names the real reason (unreachable from origin, after a fresh re-fetch)" ;;
     *) fail "P1(b) refusal should name origin-unreachability" "out: $out" ;;
 esac
 
@@ -1201,6 +1201,52 @@ if [ "$rc" -eq 2 ] && [ ! -f "$sneaky2c_marker" ]; then
 else
     fail "P1(c)/codex-1: expected exit 2 + no marker" "rc=$rc marker=$([ -f "$sneaky2c_marker" ] && echo present || echo absent) / out: $out"
 fi
+
+echo "TEST: HIMMEL-3634 round-2 codex-1 — fetchurl/pushurl divergence: refreshing origin/main via a repointed FETCH url must not launder a push whose real destination is untouched -> refused, not skipped"
+# repro shape: remote.origin.url (what `git fetch origin` resolves) is
+# repointed at an attacker fork pre-seeded with the exact unreviewed SHA on
+# its default branch; an ordinary `git fetch origin` then makes the LOCAL
+# origin/main tracking ref agree with that SHA too. But the actual PUSH
+# destination -- git's own pre-push argv $2, which honors
+# remote.origin.pushurl / url.<base>.pushInsteadOf and can diverge from the
+# fetch url -- is the real, untouched origin. verify_empty_diff_is_reviewed
+# must re-fetch by the argv-attested push destination, not by the mutable
+# "origin" name, or this empty-diff safety net re-validates against the
+# wrong repository's history.
+R2_ORIGIN="$TMP_ROOT/r2-real-origin.git"
+git init -q --bare -b main "$R2_ORIGIN"
+R2_SEED="$TMP_ROOT/r2-seed"
+git init -q -b main "$R2_SEED"
+git -C "$R2_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$R2_SEED" push -q "$R2_ORIGIN" main
+PUSHER="$TMP_ROOT/r2-pusher"
+git clone -q "$R2_ORIGIN" "$PUSHER"
+git -C "$PUSHER" checkout -q -b feat/r2sneaky main
+echo 'function r2sneaky(){}' > "$PUSHER/r2sneaky.sh"
+git -C "$PUSHER" add r2sneaky.sh
+git -C "$PUSHER" -c user.email=b@t -c user.name=b commit -q -m "r2sneaky, never reviewed"
+r2_sha=$(git -C "$PUSHER" rev-parse HEAD)
+R2_FORK="$TMP_ROOT/r2-fork.git"
+git init -q --bare -b main "$R2_FORK"
+git -C "$PUSHER" push -q "$R2_FORK" feat/r2sneaky:main
+# Repoint the FETCH url at the fork and refresh the local tracking ref --
+# an ordinary, unremarkable local action, no network trust required.
+git -C "$PUSHER" remote set-url origin "$R2_FORK"
+git -C "$PUSHER" fetch -q origin
+# But git's own pre-push argv $2 for THIS push is the real, untouched
+# origin (a pushurl/pushInsteadOf override, or an explicit destination).
+rc=0
+out=$(cd "$PUSHER" && bash "$HOOK" origin "$R2_ORIGIN" <<< "refs/heads/feat/r2sneaky $r2_sha refs/heads/feat/r2sneaky $Z40" 2>&1) || rc=$?
+r2_marker="$PUSHER/.git/cr-pending/feat/r2sneaky"
+if [ "$rc" -eq 2 ] && [ ! -f "$r2_marker" ]; then
+    pass "round-2 codex-1: fetchurl(fork)/pushurl(real-origin) divergence is refused, not silently skipped"
+else
+    fail "round-2 codex-1: expected exit 2 + no marker" "rc=$rc marker=$([ -f "$r2_marker" ] && echo present || echo absent) / out: $out"
+fi
+case "$out" in
+    *"NOT reachable from"*"main (freshly fetched from the actual push destination)"*) pass "round-2 codex-1 refusal names re-fetch from the actual push destination, not the mutable origin name" ;;
+    *) fail "round-2 codex-1 refusal should name a fetch from the actual push destination" "out: $out" ;;
+esac
 
 echo "TEST: control — a normal push with a real (non-empty) diff still reviews the same range"
 B3="$TMP_ROOT/p1-b3"
