@@ -437,6 +437,24 @@ grepq "$out1f" "installed_plugins.json" \
   || fail "HIMMEL-3303 (b): footprint block missing the plugin install ledger"
 echo "ok: HIMMEL-3303 (b) --scope project prints the machine-level footprint block before installing"
 
+# J1274O F1: himmel's own state dir (ledger, backups of overwritten user files,
+# the uninstall bundle) is machine-level too; qmd-fork lives there when bun is present.
+grepq "$out1f" "$HIMMEL_PROVENANCE_DIR" \
+  || fail "HIMMEL-3303 F1: footprint block does not name the himmel state dir ($HIMMEL_PROVENANCE_DIR)"
+grepq "$out1f" "backups" \
+  || fail "HIMMEL-3303 F1: footprint block does not say the state dir holds the backups of overwritten files"
+grepq "$out1f" "qmd-fork" \
+  && fail "HIMMEL-3303 F1: footprint block names qmd-fork although bun is absent"
+# J1274O F3: a bare adopt.sh never writes ~/.claude.json (applyWorkspaceTrust is himmelctl-only)
+grepq "$out1f" "workspace-trust.*himmelctl" \
+  || fail "HIMMEL-3303 F3: the workspace-trust line does not say it is himmelctl-only (a bare adopt.sh never writes it)"
+bun1f="$work/bun1f"; mkdir -p "$bun1f"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$bun1f/bun"; chmod +x "$bun1f/bun"
+out1fb=$(PATH="$bun1f:$work/bin:$qmd_free_path" HOME="$home1f" bash "$adopt" --profile core --scope project --target "$proj1f" --dry-run 2>&1)
+grepq "$out1fb" "qmd-fork" \
+  || fail "HIMMEL-3303 F1: with bun present the footprint block does not name qmd-fork"
+echo "ok: HIMMEL-3303 F1/F3 footprint names the himmel state dir (+ qmd-fork with bun) and words the trust line accurately"
+
 # ── 1g. HIMMEL-3303 item (4): bare adopt.sh leaves a standalone uninstaller ──
 # scripts/himmelctl/bin.js's PATH-shim step already writes this bundle
 # (bin.js:4847) so `uninstall` survives deleting the clone -- but only inside
@@ -480,6 +498,9 @@ grepq "$out1g" "the fallback still works" \
   || fail "HIMMEL-3303 (4): adopt.sh did not print the delete-the-clone fallback line"
 grepq "$out1g" "$prov1g/uninstall/standalone.js uninstall" \
   || fail "HIMMEL-3303 (4): the printed fallback command does not point at the standalone bundle"
+# J1274O F2: the uninstaller is cwd-scoped -- the printed line must say where to run it
+grepq "$out1g" "run from the adopted project directory.*$proj1g" \
+  || fail "HIMMEL-3303 F2: the printed uninstall line does not say to run it from the adopted project directory ($proj1g)"
 echo "ok: HIMMEL-3303 (4) a bare adopt.sh run writes the same standalone uninstall bundle himmelctl's PATH-shim step builds"
 
 # ── 2. merge preserves existing settings ─────────────────────────────────────
