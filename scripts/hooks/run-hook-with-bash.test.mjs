@@ -639,6 +639,99 @@ test('a must-run member over its budget DENIES the chain instead of being skippe
   });
 });
 
+// HIMMEL-3080: a must-run member starved by the SHARED chain budget (an
+// upstream non-must-run member ate it) must get its own dedicated evaluation
+// window rather than being denied unevaluated at whatever floor was left. The
+// guard here needs 900ms to decide — more than the MIN_MEMBER_TIMEOUT_MS
+// floor (500ms) the old clamp would have left it, less than its own full
+// per-member timeout (2000ms). hog.sh's bound is deliberately tighter than
+// its own sleep, so it ALWAYS overruns and eats the whole 600ms chain budget,
+// making the tail's shared-budget remainder land on the floor deterministically
+// (Math.max's floor, not a race) — this fixture never depends on the retry
+// wrapper the two timing-sensitive tests above need.
+test('a must-run member starved by the shared chain budget gets its own window and still decides (HIMMEL-3080)', () => {
+  const dir = makeTmpDir('hook-bash-starve-');
+  try {
+    writeFileSync(join(dir, 'hog.sh'), `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-hog.sh"\nsleep 3\n`);
+    chmodSync(join(dir, 'hog.sh'), 0o755);
+    // Named like the real must-run tail from the ticket's own incident.
+    writeFileSync(
+      join(dir, 'block-chokepoint-env-prefix.sh'),
+      `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-tail.sh"\nsleep 0.9\nprintf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"fast"}}'\n`,
+    );
+    chmodSync(join(dir, 'block-chokepoint-env-prefix.sh'), 0o755);
+
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'hog.sh'), join(dir, 'block-chokepoint-env-prefix.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: {
+          ...process.env,
+          RUN_HOOK_CHAIN_BUDGET_MS: '600',
+          RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '2000',
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(dir, 'ran-tail.sh')), true, 'the must-run tail must actually run, not be denied unevaluated');
+    assert.equal(
+      JSON.parse(result.stdout).hookSpecificOutput.permissionDecision,
+      'allow',
+      'a must-run tail starved of shared budget must still get to decide on its own window',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// HIMMEL-3080: the denial message for a genuinely starved-and-still-timed-out
+// must-run member must NAME the upstream member that ate the shared budget,
+// not merely the starved tail — the ticket's DONE WHEN instrumentation ask.
+// hog.sh's bound is clamped to the MIN_MEMBER_TIMEOUT_MS floor (500ms,
+// deterministic regardless of jitter — see the comment on the test above),
+// which always leaves the tail's shared remainder starved below its own
+// 900ms window. The tail's body (1.3s) is longer even than that full 900ms
+// window, so it denies on a REAL timeout of its OWN window, not the shared
+// clamp — proving the consumer note reports upstream starvation that
+// happened regardless of the ultimate cause of this member's own denial.
+test('a starved-then-still-timed-out must-run member names the upstream budget consumer (HIMMEL-3080)', () => {
+  const dir = makeTmpDir('hook-bash-starve-consumer-');
+  try {
+    writeFileSync(join(dir, 'hog.sh'), `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-hog.sh"\nsleep 3\n`);
+    chmodSync(join(dir, 'hog.sh'), 0o755);
+    writeFileSync(
+      join(dir, 'block-chokepoint-env-prefix.sh'),
+      `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-tail.sh"\nsleep 1.3\nprintf 'allow'\n`,
+    );
+    chmodSync(join(dir, 'block-chokepoint-env-prefix.sh'), 0o755);
+
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'hog.sh'), join(dir, 'block-chokepoint-env-prefix.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: {
+          ...process.env,
+          RUN_HOOK_CHAIN_BUDGET_MS: '300',
+          RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '900',
+        },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    // hog.sh's OWN skip line always names hog.sh (that is not the point being
+    // tested) — the DENY line ITSELF, for the starved tail, must also name
+    // hog.sh as the budget consumer, not just report the tail's own elapsed.
+    const denyLine = result.stderr.split('\n').find((l) => l.includes('DENY block-chokepoint-env-prefix.sh'));
+    assert.ok(denyLine, `expected a DENY line for the tail:\n${result.stderr}`);
+    assert.match(denyLine, /hog\.sh/, 'the DENY line must name the member that ate the shared budget');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // HIMMEL-3383: a starved guard-pr-check-literal.sh must deny, never let the
 // bare scripts/cr literal fall through to the allow rule unchecked.
 test('a starved guard-pr-check-literal.sh DENIES the chain instead of being skipped', () => {
