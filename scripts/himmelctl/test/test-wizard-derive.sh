@@ -237,10 +237,12 @@ echo "ok: caseA flag-assertion guard -- adopt.sh/wire-luna-vault.sh/luna-upgrade
 stubB="$work/caseB"; mkdir -p "$stubB"
 cB=$(build_path "$stubB" bash git jq python3 npm -- )
 hB="$work/hB"; mkdir -p "$hB"
+fixtureB="$work/caseB-fixture"; build_fixture "$fixtureB"
 cacheB="$work/caseB-profile.json"
 write_cache "$cacheB" adopter project none "" inline "" lean
 set +e
 out=$(PATH="$cB" HOME="$hB" USERPROFILE="$(winpath "$hB")" HIMMELCTL_CACHE_DIR="$(winpath "$hB.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hB.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureB")" \
       "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$cacheB")" \
       </dev/null 2>&1); rc=$?
 set -e
@@ -249,17 +251,22 @@ grepq "$out" -E 'derived:.*adopt\.sh --profile core --scope project$' \
   || fail "caseB: expected 'adopt.sh --profile core --scope project' (got: $out)"
 grepq "$out" -- '--luna-target' \
   && fail "caseB: vault=none must not derive --luna-target (got: $out)"
+# HIMMEL-3308: --dry-run now shells out to adopt.sh itself with --dry-run.
+grep -q -- '--profile core --scope project --dry-run' "$fixtureB/adopt-calls.log" \
+  || fail "caseB (HIMMEL-3308): adopt.sh should have been called with --profile core --scope project --dry-run (got: $(cat "$fixtureB/adopt-calls.log" 2>&1))"
 echo "ok: caseB adopter + vault=none -> --profile core --scope project, no --luna-target"
 
 # ── Case C: adopter + vault=default-template -> all + --luna-target ────────
 stubC="$work/caseC"; mkdir -p "$stubC"
 cC=$(build_path "$stubC" bash git jq python3 npm -- )
 hC="$work/hC"; mkdir -p "$hC"
+fixtureC="$work/caseC-fixture"; build_fixture "$fixtureC"
 lunaC="$work/caseC-luna"
 cacheC="$work/caseC-profile.json"
 write_cache "$cacheC" adopter project default-template "$(winpath "$lunaC")" inline "" lean
 set +e
 out=$(PATH="$cC" HOME="$hC" USERPROFILE="$(winpath "$hC")" HIMMELCTL_CACHE_DIR="$(winpath "$hC.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hC.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureC")" \
       "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$cacheC")" \
       </dev/null 2>&1); rc=$?
 set -e
@@ -272,6 +279,11 @@ grepq "$out" -i 'luna-upgrade-all\.sh' \
   && fail "caseC: default-template must NOT call luna-upgrade-all.sh (got: $out)"
 grepq "$out" -i 'wire-luna-vault\.sh' \
   && fail "caseC: default-template must NOT call wire-luna-vault.sh (got: $out)"
+# HIMMEL-3308: --dry-run now shells out to adopt.sh itself with --dry-run.
+grep -q -- '--profile all --scope project --luna-target' "$fixtureC/adopt-calls.log" \
+  || fail "caseC (HIMMEL-3308): adopt.sh should have been called with --profile all --scope project --luna-target ... (got: $(cat "$fixtureC/adopt-calls.log" 2>&1))"
+grep -q -- '--dry-run' "$fixtureC/adopt-calls.log" \
+  || fail "caseC (HIMMEL-3308): adopt.sh should have been called with --dry-run (got: $(cat "$fixtureC/adopt-calls.log" 2>&1))"
 echo "ok: caseC adopter + vault=default-template -> --profile all --luna-target, no luna-upgrade-all/wire-luna-vault"
 
 # ── Case D: adopter + vault=existing, UNSTAMPED -> refuse, zero shell-outs ──
@@ -345,8 +357,13 @@ grepq "$out" -- '--force-unstamped' \
   && fail "caseL: --dry-run must NOT execute wire-luna-vault.sh (got: $(cat "$fixtureL/wire-luna-vault-calls.log"))"
 [ -f "$fixtureL/luna-upgrade-all-calls.log" ] \
   && fail "caseL: --dry-run must NOT execute luna-upgrade-all.sh (got: $(cat "$fixtureL/luna-upgrade-all-calls.log"))"
+# HIMMEL-3308: --dry-run now shells out to adopt.sh itself (with --dry-run
+# appended) so the plan reflects adopt.sh's own per-file preview, rather than
+# stopping at the "derived:" line above.
 [ -f "$fixtureL/adopt-calls.log" ] \
-  && fail "caseL: --dry-run must NOT execute adopt.sh (got: $(cat "$fixtureL/adopt-calls.log"))"
+  || fail "caseL (HIMMEL-3308): --dry-run should invoke adopt.sh --dry-run (no adopt-calls.log; out: $out)"
+grep -q -- '--profile core --scope user --dry-run' "$fixtureL/adopt-calls.log" \
+  || fail "caseL (HIMMEL-3308): adopt.sh should have been called with --profile core --scope user --dry-run (got: $(cat "$fixtureL/adopt-calls.log"))"
 # HIMMEL-2460: the epilogue must name the command that actually installs
 # himmel (adopt.sh) — not luna-upgrade-all.sh's apply command, which only
 # upgrades the vault.
@@ -495,10 +512,12 @@ echo "ok: caseQ T5b existing-vault STAMPED honors handover.mode=external (dry-ru
 stubE="$work/caseE"; mkdir -p "$stubE"
 cE=$(build_path "$stubE" bash git jq python3 npm -- pwsh)
 hE="$work/hE"; mkdir -p "$hE"
+fixtureE="$work/caseE-fixture"; build_fixture "$fixtureE"
 cacheE="$work/caseE-profile.json"
 write_cache "$cacheE" contributor user none "" inline "" lean
 set +e
 out=$(PATH="$cE" HOME="$hE" USERPROFILE="$(winpath "$hE")" HIMMELCTL_CACHE_DIR="$(winpath "$hE.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hE.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureE")" \
       "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$cacheE")" \
       </dev/null 2>&1); rc=$?
 set -e
@@ -519,6 +538,9 @@ case "$(uname -s)" in
       || fail "caseE(posix): expected an overlay 'bash .../setup.sh' line (got: $out)"
     ;;
 esac
+# HIMMEL-3308: --dry-run now shells out to adopt.sh itself with --dry-run.
+grep -q -- '--profile core --scope user --dry-run' "$fixtureE/adopt-calls.log" \
+  || fail "caseE (HIMMEL-3308): adopt.sh should have been called with --profile core --scope user --dry-run (got: $(cat "$fixtureE/adopt-calls.log" 2>&1))"
 echo "ok: caseE a migrated legacy contributor cache (devOverlay=true) derives adopt.sh AS the primary command plus the setup.sh/ps1 overlay"
 
 # ── Case E2 (HIMMEL-2126): the dev overlay on win32 prefers pwsh when
@@ -529,10 +551,12 @@ case "$(uname -s)" in
     stubE2="$work/caseE2"; mkdir -p "$stubE2"
     cE2=$(build_path "$stubE2" bash git jq python3 npm pwsh -- )
     hE2="$work/hE2"; mkdir -p "$hE2"
+    fixtureE2="$work/caseE2-fixture"; build_fixture "$fixtureE2"
     cacheE2="$work/caseE2-profile.json"
     write_cache "$cacheE2" contributor user none "" inline "" lean
     set +e
     outE2=$(PATH="$cE2" HOME="$hE2" USERPROFILE="$(winpath "$hE2")" HIMMELCTL_CACHE_DIR="$(winpath "$hE2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hE2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+          HIMMELCTL_REPO_ROOT="$(winpath "$fixtureE2")" \
           "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$cacheE2")" \
           </dev/null 2>&1); rcE2=$?
     set -e
@@ -985,8 +1009,14 @@ out=$(PATH="$cK" HOME="$hK" USERPROFILE="$(winpath "$hK")" HIMMELCTL_CACHE_DIR="
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseK: dry-run should exit 0 (got rc=$rc): $out"
+# HIMMEL-3308: --dry-run now shells out to adopt.sh itself (with --dry-run
+# appended) so the plan reflects adopt.sh's own per-file preview.
 [ -f "$fixtureK/adopt-calls.log" ] \
-  && fail "caseK: dry-run must NOT execute adopt.sh (got: $(cat "$fixtureK/adopt-calls.log"))"
+  || fail "caseK (HIMMEL-3308): --dry-run should invoke adopt.sh --dry-run (no adopt-calls.log; out: $out)"
+grep -q -- '--profile all --scope project --luna-target' "$fixtureK/adopt-calls.log" \
+  || fail "caseK (HIMMEL-3308): adopt.sh should have been called with --profile all --scope project --luna-target ... (got: $(cat "$fixtureK/adopt-calls.log"))"
+grep -q -- '--dry-run' "$fixtureK/adopt-calls.log" \
+  || fail "caseK (HIMMEL-3308): adopt.sh should have been called with --dry-run (got: $(cat "$fixtureK/adopt-calls.log"))"
 [ -f "$stubK/claude-calls.log" ] \
   && fail "caseK: dry-run must NOT invoke claude (got: $(cat "$stubK/claude-calls.log"))"
 [ -f "$fixtureK/.env" ] \
@@ -1121,5 +1151,29 @@ grepq "$outW" -F -- '--contribute requires a himmel checkout' \
 grepq "$outW" -E '^\? ' \
   && fail "caseW: the checkout-validity refusal must happen before any question is asked (got: $outW)"
 echo "ok: caseW --contribute outside a himmel checkout -> clear error, nothing runs"
+
+# ── Case X (HIMMEL-3308): install --dry-run's adopt.sh plan agrees line for
+# line with a direct `adopt.sh --dry-run` invocation. Deliberately the one
+# other case (besides caseA's --help reads) that exercises the REAL
+# scripts/adopt.sh instead of a fixture stub -- the ticket's own acceptance
+# criterion is that the wizard surfaces adopt.sh's ACTUAL per-file plan, so a
+# stub that just logs argv cannot verify it. Both invocations share the same
+# fake HOME so their absolute-path output lines line up exactly.
+hX="$work/hX"; mkdir -p "$hX"
+cacheX="$work/caseX-profile.json"
+write_cache "$cacheX" adopter user none "" inline "" lean
+set +e
+outX=$(HOME="$hX" USERPROFILE="$(winpath "$hX")" HIMMELCTL_CACHE_DIR="$(winpath "$hX.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hX.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+       "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$cacheX")" \
+       </dev/null 2>&1); rcX=$?
+set -e
+[ "$rcX" -eq 0 ] || fail "caseX: dry-run should succeed (got rc=$rcX): $outX"
+directX=$(HOME="$hX" bash "$repo_root/scripts/adopt.sh" --profile core --scope user --dry-run 2>&1)
+wizardAdoptBlockX=$(printf '%s\n' "$outX" | awk '/^==> himmel adopt —/{f=1} f{print} /──── Done ────/{if(f) exit}')
+[ -n "$wizardAdoptBlockX" ] \
+  || fail "caseX (HIMMEL-3308): expected an embedded 'adopt.sh --dry-run' plan in the wizard's output (got: $outX)"
+diff <(printf '%s\n' "$directX") <(printf '%s\n' "$wizardAdoptBlockX") \
+  || fail "caseX (HIMMEL-3308): install --dry-run's adopt.sh plan must agree LINE FOR LINE with a direct adopt.sh --dry-run invocation"
+echo "ok: caseX install --dry-run's adopt.sh plan agrees line for line with a direct adopt.sh --dry-run invocation"
 
 echo "PASS"

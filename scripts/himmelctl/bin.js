@@ -4144,6 +4144,10 @@ async function runPlan(answers, args) {
   // --dry-run prints the plan (+ T4.5 side effects) and exits WITHOUT
   // executing or mutating anything.
   if (args.dryRun) {
+    // HIMMEL-3308: pass --dry-run through to adopt.sh itself and surface its
+    // per-file plan, rather than stopping at the "derived: ..." line above,
+    // which only restates the command instead of previewing its effect.
+    runSpawn({ argv: [...cmd.argv, '--dry-run'] });
     previewHandoverAndPlugins(answers);
     const lunaPreview = previewLunaSections(answers);
     applyHimmelctlPathShim(args);
@@ -4808,7 +4812,11 @@ function sameFsEntry(a, b) {
   try {
     const sa = fs.statSync(a);
     const sb = fs.statSync(b);
-    return sa.dev === sb.dev && sa.ino === sb.ino;
+    // HIMMEL-2501: a filesystem that does not report inode numbers can
+    // return ino===0 (and dev===0) for every entry, which would otherwise
+    // make this compare equal for ANY two paths. Reject that degenerate
+    // case explicitly rather than letting a false identity match through.
+    return sa.ino !== 0 && sa.dev === sb.dev && sa.ino === sb.ino;
   } catch (_e) {
     return false;
   }
@@ -7780,4 +7788,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { augmentPathForRun, gitGateHooksState, userSlugState, applyWorkspaceTrust, offeredCadenceRows };
+module.exports = { augmentPathForRun, gitGateHooksState, userSlugState, applyWorkspaceTrust, offeredCadenceRows, sameFsEntry };
