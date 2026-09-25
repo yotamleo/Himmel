@@ -189,6 +189,31 @@ resolve_diff_base() {
     # PR. No network call — the tracking ref is local; missing/unfetched fails
     # CLOSED.
     if [ -n "$push_remote_name" ] && [ "$push_remote_name" != "origin" ]; then
+        # Explicit-URL push (HIMMEL-3477): git's pre-push hook passes the SAME
+        # string for both the remote's name and its location when no named
+        # remote is used (see `git help githooks`), so this is the signal
+        # that no refs/remotes/<name>/$db can ever exist to require. Resolve
+        # the target's own base ourselves instead: fetch the pushed URL's
+        # HEAD (its default branch, whatever it is named) into a scratch ref
+        # this hook owns — never refs/remotes/*, so it can't collide with, or
+        # be mistaken for, a real remote-tracking ref, and it is never pushed.
+        # Deterministic per-URL name, so a re-push reuses (refreshes) the same
+        # ref rather than accumulating one per push. No shared-config write,
+        # no git remote add — fail CLOSED if the fetch itself fails.
+        if [ "$push_remote_name" = "$push_remote_url" ]; then
+            local url_hash scratch_ref
+            if ! url_hash=$(printf '%s' "$push_remote_url" | git hash-object --stdin 2>/dev/null) || [ -z "$url_hash" ]; then
+                echo "→ code-review: cannot hash the push URL '$push_remote_url' — refusing the push (cannot compute diff for review; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+                return 2
+            fi
+            scratch_ref="refs/cr/${url_hash}/fork-head"
+            if git fetch --no-tags --quiet "$push_remote_url" "HEAD:${scratch_ref}" 2>/dev/null; then
+                diff_base="$scratch_ref"
+                return 0
+            fi
+            echo "→ code-review: could not fetch the default branch from '$push_remote_url' — refusing the push (the review diff must use the TARGET's own base, not origin's; the fork may be unreachable — retry, or bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
         if git rev-parse --verify --quiet "refs/remotes/$push_remote_name/$db" >/dev/null; then
             diff_base="refs/remotes/$push_remote_name/$db"
             return 0

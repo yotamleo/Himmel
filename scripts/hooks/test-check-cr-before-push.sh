@@ -705,6 +705,55 @@ case "$out" in
         fail "refusal must name refs/remotes/nowhere/main" "out: $out" ;;
 esac
 
+echo "TEST: explicit-URL push (no named remote) resolves the FORK's OWN base (HIMMEL-3477)"
+FX="$TMP_ROOT/forkbase"
+git init -q -b main "$FX"
+touch "$FX/.single-writer"
+(
+    cd "$FX"
+    git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "shared init"
+    echo 'function forkonly(){}' > fork.sh
+    git -c user.email=t@t -c user.name=t add fork.sh
+    git -c user.email=t@t -c user.name=t commit -q -m "fork-only commit"
+)
+fx_fork_tip=$(git -C "$FX" rev-parse --verify main)
+fx_origin_tip=$(git -C "$FX" rev-parse --verify main^)
+git -C "$FX" update-ref refs/remotes/origin/main "$fx_origin_tip"
+FORK_BARE="$TMP_ROOT/fork-explicit.git"
+git clone -q --bare "$FX" "$FORK_BARE"
+FORK_URL="file://$FORK_BARE"
+git -C "$FX" checkout -q -b feat/urlpush main
+echo 'leg change' > "$FX/urlfeature.txt"
+git -C "$FX" add urlfeature.txt
+git -C "$FX" -c user.email=t@t -c user.name=t commit -q -m "leg feature on top of fork base"
+fx_feat_sha=$(git -C "$FX" rev-parse --verify feat/urlpush)
+
+rc=0; out=$(cd "$FX" && bash "$HOOK" "$FORK_URL" "$FORK_URL" <<< "refs/heads/feat/urlpush $fx_feat_sha refs/heads/feat/urlpush $Z40" 2>&1) || rc=$?
+fxm="$FX/.git/cr-pending/feat/urlpush"
+if [ "$rc" -eq 0 ] && [ -f "$fxm" ]; then
+    pass "explicit-URL fork push: marker written (no named remote, no refs/remotes/<url>/main required)"
+    fxm_base=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$7); print $7; exit}' "$fxm" 2>/dev/null || true)
+    if [ "$fxm_base" = "$fx_fork_tip" ]; then
+        pass "explicit-URL fork push: marker base pins the FORK's own HEAD, not origin's"
+    else
+        fail "explicit-URL fork push: marker base '$fxm_base' != fork tip ($fx_fork_tip)" "out: $out"
+    fi
+else
+    fail "explicit-URL fork push: expected exit 0 + marker at $fxm (got rc=$rc)" "out: $out"
+fi
+
+echo "TEST: explicit-URL push to an UNREACHABLE fork -> fail CLOSED naming a satisfiable remedy"
+rc=0; out=$(cd "$FX" && bash "$HOOK" "file://$TMP_ROOT/no-such-fork.git" "file://$TMP_ROOT/no-such-fork.git" <<< "refs/heads/feat/urlpush $fx_feat_sha refs/heads/feat/urlpush $Z40" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then pass "unreachable explicit-URL fork -> exit 2 (fail closed)"; else fail "unreachable explicit-URL fork -> expected exit 2 got $rc" "out: $out"; fi
+case "$out" in
+    *"git fetch file://"*", then retry"*)
+        fail "refusal still prints the broken remedy (git fetch <url> can never create refs/remotes/<url>/*)" "out: $out" ;;
+    *"could not fetch the default branch from"*)
+        pass "refusal names a satisfiable remedy (retry / SKIP_CR / --no-verify), not the broken one" ;;
+    *)
+        fail "unexpected refusal message" "out: $out" ;;
+esac
+
 echo "TEST: http(s) credentials are scrubbed from the marker endpoint"
 git -C "$REPO" checkout -q -b feat/scrub main
 echo 'function s(){}' > "$REPO/scrub.sh"
