@@ -192,6 +192,12 @@ seed_config_dir() {
   else
     rm -f "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
   fi
+  # HIMMEL-3334: the un-swept claude-hud config path, alongside the legacy one above.
+  if [ -f "$SRC/claude-hud.json" ]; then
+    cp "$SRC/claude-hud.json" "$CONFIG_DIR/claude-hud.json" || seed_fail "copy claude-hud.json"
+  else
+    rm -f "$CONFIG_DIR/claude-hud.json" || seed_fail "remove stale claude-hud.json"
+  fi
   : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
 }
 
@@ -209,7 +215,7 @@ seed_config_dir() {
 # launch in your setup (e.g. seed re-runs surfacing a broken node).
 config_seed_stale() { # rc=0 when any tracked source is newer than the sentinel, or gone but still mirrored
   [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
-  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json; do
+  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json claude-hud.json; do
     if [ -f "${HOME}/.claude/$s" ]; then
       if [ "${HOME}/.claude/$s" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
     elif [ -f "$CONFIG_DIR/$s" ]; then
