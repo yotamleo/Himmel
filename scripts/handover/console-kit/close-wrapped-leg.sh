@@ -161,7 +161,7 @@ if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
         hit=$(head -n "$head_window" "$f" 2>/dev/null)
         while IFS= read -r cand; do
             [ -n "$cand" ] || continue
-            if printf '%s' "$hit" | grep -qF "\"customTitle\":\"$cand\""; then
+            if printf '%s' "$hit" | grep -qF "\"customTitle\":\"$cand\""; then  # pipefail-ok: no pipefail here (set -u only); $hit is an already-captured small string, not a live producer
                 transcript_matches="${transcript_matches}
 ${f}"
                 break

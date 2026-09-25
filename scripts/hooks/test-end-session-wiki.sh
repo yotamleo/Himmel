@@ -817,7 +817,7 @@ rm -rf "$SB"
 extract_fn() {
     awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{" { p=1 } p { print } p && /^}/ { exit }' "$2"
 }
-RACE_DIR="$(mktemp -d)"
+RACE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/esw-race.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
 # shellcheck disable=SC2034  # read by claim_capture/release_capture, extracted verbatim via eval below
 CAPTURED_DIR="$RACE_DIR/captured"
 eval "$(extract_fn _esw_sid_slug "$HOOK")"

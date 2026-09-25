@@ -345,7 +345,7 @@ PROJDIR3="$W/esw-projects3"
 mkdir -p "$PROJDIR3"
 STALE_TRANSCRIPT="$PROJDIR3/sess-stale.jsonl"
 printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB3/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}" > "$STALE_TRANSCRIPT"
-touch -d '10 days ago' "$STALE_TRANSCRIPT" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$STALE_TRANSCRIPT" 2>/dev/null || true
+touch -d '10 days ago' "$STALE_TRANSCRIPT" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$STALE_TRANSCRIPT" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
 FRESH_TRANSCRIPT="$PROJDIR3/sess-fresh.jsonl"
 {
     printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB3/proj\",\"timestamp\":\"2026-06-17T00:00:00Z\"}"
@@ -373,7 +373,7 @@ mkdir -p "$PROJDIR4"
 for i in $(seq 1 10); do
     stale="$PROJDIR4/stale-$i.jsonl"
     yes '{"customTitle":"not-this-leg","timestamp":"2020-01-01T00:00:00Z"}' 2>/dev/null | head -c 300000 > "$stale" || true
-    touch -d '30 days ago' "$stale" 2>/dev/null || touch -t "$(date -d '30 days ago' +%Y%m%d0000 2>/dev/null)" "$stale" 2>/dev/null || true
+    touch -d '30 days ago' "$stale" 2>/dev/null || touch -t "$(date -d '30 days ago' +%Y%m%d0000 2>/dev/null)" "$stale" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
 done
 ESW_SB4="$W/esw-sb4"
 mkdir -p "$ESW_SB4/vault" "$ESW_SB4/proj" "$ESW_SB4/home"
