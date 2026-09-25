@@ -257,7 +257,6 @@ echo "ok: caseC --luna-remote -> fail-closed error before any provisioning, boot
 # ── Case E (HIMMEL-2699): trailing --luna-remote with no value must reach the
 #    script's own usage diagnostic and exit 2, never an unbound-variable death
 #    from `set -u`. ────────────────────────────────────────────────────────
-logE="$work/run-luna-remote-trailing.log"
 set +e
 out=$(bash "$target" --luna-remote 2>&1); rcE=$?
 set -e
