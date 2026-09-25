@@ -3150,9 +3150,12 @@ unwire_user_files() {
       # unconditionally, same as wire-statusline.sh's own migration cleanup.
       _hud_legacy="${_p%/*}/plugins/claude-hud/config.json"
       if [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ] && command -v jq >/dev/null 2>&1; then
+        # HIMMEL-3334: unwire-hud-config.sh sets `set -euo pipefail` when
+        # sourced, so it is sourced in a subshell (same pattern as the
+        # HIMMEL-3058 comment below) to avoid leaking strict-mode into this
+        # script's own shell.
         # shellcheck source=lib/unwire-hud-config.sh
-        . "$SCRIPT_DIR/lib/unwire-hud-config.sh"
-        unwire_hud_config "$_hud_legacy" "$_dry" || true
+        ( . "$SCRIPT_DIR/lib/unwire-hud-config.sh"; unwire_hud_config "$_hud_legacy" "$_dry" ) || true
       fi
       if [ "$LEDGER_OK" -ne 1 ]; then
         # ponytail (HIMMEL-3332 S6, spec §4 six rows): no ledger to tell a
