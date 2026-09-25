@@ -903,15 +903,18 @@ if [ -n "$PROFILE" ]; then
         fi
     fi
     unset -v _leg_doc_dir _leg_doc_is_root_or_ancestor
-    # Belt and braces: even scoped to the doc's own directory, deny Edit/
-    # Write/MultiEdit/NotebookEdit on the handover root's .locks/** outright.
-    # Deny wins over additionalDirectories, so this holds even if a future
-    # change widens the grant back toward the root. Gated the same as the
-    # EnterWorktree deny above: the relay never works in a worktree and
+    # Belt and braces: even scoped to the doc's own directory, deny Edit on
+    # the handover root's .locks/** outright. Only Edit is emitted: Claude
+    # Code applies an Edit(path) rule to every file-editing tool now, and
+    # warns on every leg exit that Write/MultiEdit/NotebookEdit rules on the
+    # same path are dead code (HIMMEL-3645) - so seeding them protects
+    # nothing. Deny wins over additionalDirectories, so this holds even if a
+    # future change widens the grant back toward the root. Gated the same as
+    # the EnterWorktree deny above: the relay never works in a worktree and
     # keeps its settings as they are.
     if [ "$RELAY" -eq 0 ] && [ -n "$_leg_handover_dir_norm" ]; then
         if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_handover_dir_norm" \
-            '.permissions.deny = ((.permissions.deny // []) + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $dir + "/.locks/**)")))')"; then
+            '.permissions.deny = ((.permissions.deny // []) + (["Edit"] | map(. + "(" + $dir + "/.locks/**)")))')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the .locks deny to settings JSON" >&2
             exit 2
         fi

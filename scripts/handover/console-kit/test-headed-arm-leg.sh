@@ -1098,12 +1098,18 @@ check "full launch --profile: additionalDirectories never contains the handover 
   "$(jq --arg d "$HANDOVER_DIR" '(.permissions.additionalDirectories // []) | any(. == $d)' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
   "false"
 
-# Belt and braces: Edit/Write/MultiEdit/NotebookEdit are denied on the
-# handover root's .locks/** outright, regardless of what additionalDirectories
-# grants - deny wins over additionalDirectories.
-check "full launch --profile: seeded settings deny Edit/Write/MultiEdit/NotebookEdit on .locks/**" \
+# Belt and braces: Edit is denied on the handover root's .locks/** outright,
+# regardless of what additionalDirectories grants - deny wins over
+# additionalDirectories. HIMMEL-3645: only Edit is emitted - Claude Code
+# applies an Edit(path) rule to every file-editing tool now, and warns on
+# every leg exit that Write/MultiEdit/NotebookEdit rules on the same path
+# are dead, so seeding them protects nothing.
+check "full launch --profile: seeded settings deny Edit on .locks/**, naming the resolved handover root" \
   "$(jq -c '.permissions.deny' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
+  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree", ("Edit(" + $d + "/.locks/**)")]')"
+check "full launch --profile: seeded settings deny NOTHING for Write/MultiEdit/NotebookEdit on .locks/** (dead rules dropped)" \
+  "$(jq -c '(.permissions.deny // []) | map(select(startswith("Write(") or startswith("MultiEdit(") or startswith("NotebookEdit(")))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "[]"
 
 # A handover root containing a space must still resolve correctly -
 # HANDOVER_DIR reaches this wrapper's own process as a plain export
@@ -1136,7 +1142,7 @@ check "full launch --profile (space in handover root): additionalDirectories nev
   "false"
 check "full launch --profile (space in handover root): .locks deny resolves with the space intact" \
   "$(jq -c '.permissions.deny' "$d17s/HIMMEL-3333-space.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$space_root" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
+  "$(jq -cn --arg d "$space_root" '["EnterWorktree", ("Edit(" + $d + "/.locks/**)")]')"
 
 # HIMMEL-3285 (CR round 2, codex-1; behaviour changed CR round 4/5, codex-1,
 # HIMMEL-3544): a doc placed directly AT the handover root (dirname(doc) ==
@@ -1251,7 +1257,7 @@ HANDOVER_DIR="$slash_root" \
 check "full launch --profile (trailing slash on HANDOVER_DIR, doc under it): exit 0" "$rc" "0"
 check "full launch --profile (trailing slash on HANDOVER_DIR): .locks deny normalizes, no double slash" \
   "$(jq -c '.permissions.deny' "$d17slash2/HIMMEL-3333-slash2.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
+  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree", ("Edit(" + $d + "/.locks/**)")]')"
 
 # HIMMEL-3285 (CR round 5, codex-1): when HANDOVER_DIR cannot be resolved at
 # all, the root/ancestor comparison has nothing to compare against - an
@@ -1372,9 +1378,11 @@ const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings
 assert.ok(settings.permissions.allow.includes('Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)'));
 // HIMMEL-3285: HANDOVER_DIR is exported suite-wide (line ~105), so this
 // non-relay launch also seeds the .locks deny alongside EnterWorktree.
+// HIMMEL-3645: only Edit is seeded now - the other three tools' rules were
+// dead (Claude Code applies an Edit(path) rule to every file-editing tool).
 assert.deepStrictEqual(settings.permissions.deny, [
   'EnterWorktree',
-  ...['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].map((t) => `${t}(${process.env.HANDOVER_DIR}/.locks/**)`),
+  `Edit(${process.env.HANDOVER_DIR}/.locks/**)`,
 ]);
 assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-mcp.json`, 'utf8')),
   {mcpServers: {qmd: {type: 'http', url: 'http://localhost:8181/mcp'}}});
