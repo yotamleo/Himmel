@@ -85,6 +85,15 @@ else
     echo "PASS the suite HOME fixture carries no live-operator marker"
 fi
 
+# HIMMEL-2502: the two checks above are this suite's OWN protection,
+# independent of uninstall.sh's guard — a soft FAIL here must not fall
+# through to the wet rows below. Abort now, before any uninstall.sh
+# invocation, rather than merely counting the failure.
+if [ "$FAILED" -gt 0 ]; then
+    echo "FAIL aborting: HOME-isolation preflight failed — refusing to run any uninstall.sh row"
+    exit 1
+fi
+
 # HIMMEL-2505/HIMMEL-874: build a hermetic PATH ONCE, before the first case,
 # and thread it through EVERY invocation below (moved up from its old home
 # near the SC7 section, which now just adds FAKE_HOME/EMPTY_HOME on top of
