@@ -144,6 +144,12 @@
 #       fall back to resolving check-ci.sh (or go-gate.sh / handover-path.sh,
 #       below) as its own sibling — that sibling is the branch under review.
 #       Set HIMMEL_REPO to the primary himmel checkout in the launching shell.
+#   20  PR title fails the conventional-commit + ticket gate (HIMMEL-3616),
+#       checked immediately before merging (same staleness class as the
+#       base-branch re-verification above — the title can be edited in the
+#       GitHub UI any time up to the merge) — refused: this title would land
+#       as main's commit subject verbatim on the squash merge. Also returned
+#       if the title cannot be re-queried at all.
 #
 # Environment:
 #   ARMAUTOMERGE           Must be truthy (1/true/on/yes) to enable at all.
@@ -838,6 +844,24 @@ if [ "$fresh_base" != "$fresh_default" ] || [ "$fresh_base" != "$pr_base" ]; the
     echo "merge-on-green: PR #$pr_num base branch changed since the gate (was '$pr_base', now '$fresh_base', repo default '$fresh_default') — refusing. The base binding must hold from certification to merge." >&2
     audit "REFUSED reason=base-branch-changed pr_base_at_gate=$pr_base pr_base_now=$fresh_base default_branch_now=$fresh_default repo=$nwo pr=#$pr_num"
     exit 12
+fi
+
+# 3c. Title re-verification (HIMMEL-3616) — the squash merge below makes the
+# PR TITLE main's commit subject verbatim, but leg-pr-open.sh only checked it
+# at open time; the title can still be edited in the GitHub UI any time up to
+# (and during) the check-ci.sh watch above. Re-query it fresh, right before
+# merging, same staleness class as fresh_base above, and refuse rather than
+# land a non-conventional subject on main.
+fresh_title=$("$GH" pr view "$pr_num" --repo "$nwo" --json title --jq '.title' 2>/dev/null || true)
+if [ -z "$fresh_title" ]; then
+    echo "merge-on-green: cannot re-verify PR #$pr_num's title right before merging — refusing. Re-run." >&2
+    audit "REFUSED reason=title-undeterminable repo=$nwo pr=#$pr_num"
+    exit 20
+fi
+if ! title_err=$("$himmel_repo/scripts/lib/check-pr-title.sh" "$fresh_title" 2>&1); then
+    echo "merge-on-green: PR #$pr_num's title fails the conventional-commit + ticket gate — refusing (this would land as main's commit subject verbatim). $title_err" >&2
+    audit "REFUSED reason=title-gate-failed title=$fresh_title repo=$nwo pr=#$pr_num"
+    exit 20
 fi
 
 # Audit-sink preflight — an unauditable merge must not proceed. Runs after the

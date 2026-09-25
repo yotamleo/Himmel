@@ -96,8 +96,12 @@ chmod +x "$GH_STUB"
 run_sut() {  # args passed straight through to the SUT
     (
         cd "$REPO" || exit 99
+        # HIMMEL-3616: JIRA_PROJECT_KEY drives check-commit-msg.sh's ticket
+        # pattern (HIMMEL-N) via the new title gate — the fixture title below
+        # carries a HIMMEL-style ticket, so this must be set for every run,
+        # not just the title-gate-specific cases.
         FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
-            HEAD_SHA_STUB="$HEAD_SHA" \
+            HEAD_SHA_STUB="$HEAD_SHA" JIRA_PROJECT_KEY=HIMMEL \
             bash "$SUT" "$@"
     )
 }
@@ -210,7 +214,7 @@ printf '## Summary\n\n%s\n' "$BODY_MARKER" > "$NO_BURN_BODY"
     cd "$REPO" || exit 99
     unset CLAUDE_CODE_SESSION_ID CLAUDE_PID
     FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
-        HEAD_SHA_STUB="$HEAD_SHA" \
+        HEAD_SHA_STUB="$HEAD_SHA" JIRA_PROJECT_KEY=HIMMEL \
         bash "$SUT" "$TITLE_FILE" "$NO_BURN_BODY"
 ) >/dev/null; rc_i=$?
 assert_eq "leg-burn-insertion path exits 0" "0" "$rc_i"
@@ -226,7 +230,7 @@ unset STUB_OPEN_PR 2>/dev/null || true
     cd "$REPO" || exit 99
     unset CLAUDE_CODE_SESSION_ID CLAUDE_PID
     FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
-        HEAD_SHA_STUB="$HEAD_SHA" \
+        HEAD_SHA_STUB="$HEAD_SHA" JIRA_PROJECT_KEY=HIMMEL \
         bash "$SUT" "$TITLE_FILE" "$NO_BURN_BODY"
 ) >/dev/null; rc_j=$?
 assert_eq "unavailable-fallback path still exits 0" "0" "$rc_j"
@@ -249,7 +253,7 @@ printf 'not valid jsonl\n' > "$FAKE_CLAUDE_HOME/projects/-fake-project/$FAKE_SID
     unset CLAUDE_PID
     CLAUDE_CODE_SESSION_ID="$FAKE_SID" CLAUDE_CONFIG_DIR="$FAKE_CLAUDE_HOME" \
         FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
-        HEAD_SHA_STUB="$HEAD_SHA" \
+        HEAD_SHA_STUB="$HEAD_SHA" JIRA_PROJECT_KEY=HIMMEL \
         bash "$SUT" "$TITLE_FILE" "$NO_BURN_BODY"
 ) >/dev/null; rc_k=$?
 assert_eq "resolvable-but-broken-transcript path still exits 0" "0" "$rc_k"
@@ -257,6 +261,29 @@ argv_k=$(cat "$ARGV_LOG")
 contains "gh receives a generic unavailable reason" "$argv_k" "leg-burn: unavailable (leg-burn.sh failed for"
 not_contains "gh never receives the fake claude home path" "$argv_k" "$FAKE_CLAUDE_HOME"
 not_contains "gh never receives the session ID as a path fragment" "$argv_k" "$FAKE_SID.jsonl"
+
+# ── (l) HIMMEL-3616: refuses a type-less title before ever calling gh ──────
+echo "TEST: refuses a title with no conventional-commit type prefix"
+: > "$ARGV_LOG"
+unset STUB_OPEN_PR 2>/dev/null || true
+BAD_TITLE_FILE="$TMP_ROOT/bad-title.txt"
+printf '[HIMMEL-1] foo\n' > "$BAD_TITLE_FILE"
+err_l=$(JIRA_PROJECT_KEY=HIMMEL run_sut "$BAD_TITLE_FILE" "$BODY_FILE" 2>&1 >/dev/null); rc_l=$?
+if [ "$rc_l" -ne 0 ]; then pass "type-less title refused (rc!=0)"; else fail "type-less title refused (rc!=0)" "got rc=$rc_l"; fi
+contains "refusal names the expected shape" "$err_l" "type(scope)"
+argv_l=$(cat "$ARGV_LOG")
+assert_eq "gh is never invoked when the title gate refuses" "" "$argv_l"
+
+# ── (m) HIMMEL-3616: a conventional title with a ticket still opens the PR ──
+echo "TEST: a conventional title with a ticket still opens the PR"
+: > "$ARGV_LOG"
+unset STUB_OPEN_PR 2>/dev/null || true
+GOOD_TITLE_FILE="$TMP_ROOT/good-title.txt"
+printf 'fix(x): [HIMMEL-1] foo\n' > "$GOOD_TITLE_FILE"
+out_m=$(JIRA_PROJECT_KEY=HIMMEL run_sut "$GOOD_TITLE_FILE" "$BODY_FILE"); rc_m=$?
+assert_eq "conventional title still opens the PR (rc=0)" "0" "$rc_m"
+argv_m=$(cat "$ARGV_LOG")
+contains "gh receives the conventional title" "$argv_m" "--title fix(x): [HIMMEL-1] foo"
 
 echo
 echo "===================================="
