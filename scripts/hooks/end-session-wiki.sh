@@ -151,25 +151,28 @@ _esw_sid_slug() {
     printf '%s-%s' "$safe" "$(printf '%s' "$1" | cksum | awk '{print $1}')"
 }
 
-# already_captured <session_id> — true iff a prior run of this hook (this
-# invocation or a pre-signal capture from close-wrapped-leg.sh) already wrote
-# this session's note.
-already_captured() {
-    local sid="$1"
-    [ -n "$sid" ] || return 1
-    [ -f "${CAPTURED_DIR}/$(_esw_sid_slug "$sid")" ]
-}
-
-# mark_captured <session_id> — best-effort marker recording that this
-# session's note has been written, so a second run for the same session_id
-# skips instead of duplicating the note.
-mark_captured() {
+# claim_capture <session_id> — atomically test-and-set: returns success (and
+# takes ownership of the slot) only for the FIRST caller for this session_id.
+# A prior run of this hook (this invocation or a pre-signal capture from
+# close-wrapped-leg.sh) racing the same session_id must never both write the
+# note (HIMMEL-3633: the old check-then-mark `already_captured`/`mark_captured`
+# pair left a TOCTOU window between the two). `mkdir` is the atomic primitive:
+# exactly one concurrent caller sees it succeed. The claim IS the marker — no
+# separate mark step on the success path.
+claim_capture() {
     local sid="$1"
     [ -n "$sid" ] || return 0
-    {
-        (umask 077; mkdir -p "$CAPTURED_DIR") 2>/dev/null
-        : > "${CAPTURED_DIR}/$(_esw_sid_slug "$sid")"
-    } 2>/dev/null
+    (umask 077; mkdir -p "$CAPTURED_DIR") 2>/dev/null
+    mkdir "${CAPTURED_DIR}/$(_esw_sid_slug "$sid")" 2>/dev/null
+}
+
+# release_capture <session_id> — undo a claim that did not end in a written
+# note, so a legitimate retry for the same session_id is not permanently
+# blocked by a claim nothing came of (an early-exit skip, not a duplicate).
+release_capture() {
+    local sid="$1"
+    [ -n "$sid" ] || return 0
+    rmdir "${CAPTURED_DIR}/$(_esw_sid_slug "$sid")" 2>/dev/null
     return 0
 }
 
@@ -339,7 +342,7 @@ REASON="$(echo "$PAYLOAD"          | jq -r '.reason // "other"')"
 # A pre-signal capture (close-wrapped-leg.sh) and this hook's own normal
 # SessionEnd run can both fire for the same session_id; skip the second one
 # rather than writing or PUTting the note twice.
-if already_captured "$SESSION_ID"; then
+if ! claim_capture "$SESSION_ID"; then
     log_msg "skipped: session $SESSION_ID already captured"
     HOOK_OK=1
     exit 0
@@ -347,6 +350,7 @@ fi
 
 if [ -z "$SESSION_CWD" ]; then
     log_msg "ERROR: payload missing 'cwd'"
+    release_capture "$SESSION_ID"
     HOOK_OK=1
     exit 0
 fi
@@ -394,6 +398,7 @@ compute_duration "$FIRST_TS" "$NOW_EPOCH"
 # can't compute duration and the cautious choice is to capture rather than drop).
 if [ -n "$FIRST_TS" ] && [ "$DURATION_SECONDS" -lt "$CFG_MIN_DUR" ] 2>/dev/null; then
     log_msg "skipped: duration ${DURATION_SECONDS}s < min ${CFG_MIN_DUR}s"
+    release_capture "$SESSION_ID"
     HOOK_OK=1
     exit 0
 fi
@@ -404,6 +409,7 @@ fi
 # also empty). Skip the write entirely — there is nothing to capture.
 if [ "${HAS_CONTENT:-0}" -eq 0 ] && [ "${FILES_COUNT:-0}" -eq 0 ]; then
     log_msg "skipped: husk (no content)"
+    release_capture "$SESSION_ID"
     HOOK_OK=1
     exit 0
 fi
@@ -594,6 +600,7 @@ _VR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/vault-resolve.sh"
 VAULT_ROOT="$(resolve_vault_root "$CONFIG_PATH" "$HOME/.claude/luna-vaults.json" "$CFG_DRY_RUN")"
 if [ -z "$VAULT_ROOT" ]; then
     log_msg "skipped: vault unresolved (invalid name / no real vault / unparseable config) — no write"
+    release_capture "$SESSION_ID"
     HOOK_OK=1   # clean intentional skip — keep the EXIT trap from logging a phantom FAILED
     exit 0
 fi
@@ -679,6 +686,7 @@ if [ "$CFG_DRY_RUN" = "true" ]; then
         printf '%s\n' "$MARKDOWN"
         printf '%s\n' "$SEP"
     } >> "$LOG_PATH" 2>/dev/null
+    release_capture "$SESSION_ID"
     HOOK_OK=1
     exit 0
 fi
@@ -757,10 +765,10 @@ if [ -z "$API_KEY" ]; then
     # No REST API key — fall back to a direct on-disk write into the vault.
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "wrote (local fs, no api key) ${REL_PATH}"
-        mark_captured "$SESSION_ID"
         spawn_crystallizer
     else
         log_msg "ERROR: local fs write failed: $ABS_PATH"
+        release_capture "$SESSION_ID"
     fi
     HOOK_OK=1
     exit 0
@@ -834,11 +842,11 @@ if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "PUT $ENDPOINT returned HTTP $HTTP_CODE; wrote (local fs fallback) ${REL_PATH}"
         flag_degraded_fallback "$HTTP_CODE" "$REL_PATH" "$VAULT_ROOT" disk
-        mark_captured "$SESSION_ID"
         spawn_crystallizer
     else
         log_msg "ERROR: PUT $ENDPOINT HTTP $HTTP_CODE and local fs fallback failed: $ABS_PATH"
         flag_degraded_fallback "$HTTP_CODE" "$REL_PATH" "$VAULT_ROOT" lost
+        release_capture "$SESSION_ID"
     fi
     HOOK_OK=1
     exit 0
@@ -847,7 +855,6 @@ fi
 # Healthy REST push — clear any stale degradation marker from a prior session.
 rm -f "$DEGRADED_MARKER_PATH" 2>/dev/null || true
 log_msg "wrote ${REL_PATH} (${ELAPSED}ms)"
-mark_captured "$SESSION_ID"
 spawn_crystallizer
 HOOK_OK=1
 exit 0

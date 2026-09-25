@@ -807,6 +807,55 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 22: claim_capture is atomic under real concurrency (HIMMEL-3633) ----
+# The old already_captured()/mark_captured() pair was check-then-mark: two
+# concurrent hook runs for the same session_id could both pass the check
+# before either marked, and both write. Extract the ACTUAL functions verbatim
+# from the hook (not a reimplementation) and race N parallel callers for the
+# same session_id on a scratch CAPTURED_DIR: mkdir is atomic, so exactly one
+# must win regardless of scheduling.
+extract_fn() {
+    awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{" { p=1 } p { print } p && /^}/ { exit }' "$2"
+}
+RACE_DIR="$(mktemp -d)"
+CAPTURED_DIR="$RACE_DIR/captured"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+eval "$(extract_fn claim_capture "$HOOK")"
+eval "$(extract_fn release_capture "$HOOK")"
+RESULT_DIR="$RACE_DIR/results"
+mkdir -p "$RESULT_DIR"
+N=20
+for i in $(seq 1 "$N"); do
+    ( if claim_capture "race-sid"; then echo win > "$RESULT_DIR/$i"; else echo lose > "$RESULT_DIR/$i"; fi ) &
+done
+wait
+WINS="$(grep -l win "$RESULT_DIR"/* 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$WINS" = "1" ]; then
+    pass "HIMMEL-3633: $N concurrent claim_capture callers for one session_id — exactly 1 won"
+else
+    fail "HIMMEL-3633: $N concurrent claim_capture callers for one session_id — $WINS won (want 1)"
+fi
+rm -rf "$RACE_DIR"
+
+# --- Case 23: a claim that produced NO note does not block a legitimate retry
+# (HIMMEL-3633's release_capture: claim_capture now runs up front, before any
+# skip check, so an early-exit path that leaves the claim in place would wrongly
+# stick "captured" on a session that was never written). First run is a husk
+# (no content, no files touched) -> claims, then must skip AND release. Second
+# run for the SAME session_id has real content -> must still be free to write.
+SB="$(make_sandbox)"
+printf '%s\n' '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"hi"}}' > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+printf '%s\n' '{"timestamp":"2026-06-17T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"line one\nline two"}]}}' > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE_COUNT23="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT23" = "1" ]; then
+    pass "HIMMEL-3633: a husk-skip claim releases, so a same-session_id retry with real content still writes"
+else
+    fail "HIMMEL-3633: a husk-skip claim wrongly stuck — retry wrote $NOTE_COUNT23 notes (want 1)"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0
