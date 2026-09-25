@@ -321,6 +321,15 @@ run_claude_review() {
         echo "hermes-critic.sh: native-auth pin unavailable — refusing the claude route" >&2
         return 1
     fi
+    # HIMMEL-3640: dedupe PATH before this direct `claude -p` launch — Claude
+    # Code prepends each enabled plugin's bin/ dir at startup without
+    # checking for an existing copy, so an already-duplicated inherited PATH
+    # compounds across critic passes in a long-lived session.
+    # shellcheck source=../lib/dedupe-path.sh
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/dedupe-path.sh"
+    local deduped_path
+    deduped_path="$(dedupe_path "$PATH")"
     # Removed below rather than via the EXIT trap: this function always runs
     # inside a command substitution, whose subshell resets the parent's trap.
     scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/hermes-critic-cwd.XXXXXX")"
@@ -331,7 +340,7 @@ run_claude_review() {
         return 1
     fi
     # headless-claude-ok: CR critic pass — this invocation IS the product (HIMMEL-2017).
-    out="$(cd "$scratch_dir" && claude -p --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
+    out="$(cd "$scratch_dir" && PATH="$deduped_path" claude -p --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
     crc=$?
     [ -n "$scratch_dir" ] && rm -rf "$scratch_dir"
     printf '%s' "$out" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(j.result??"")}catch(e){console.log(d)}})'
