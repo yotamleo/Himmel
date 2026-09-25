@@ -1309,9 +1309,13 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # ST_LW holds the lowercased words: the lowercased text tokenizes to the
     # same words and segments (case never changes how bash splits), so a
     # second pass over it costs no fork, where a `tr` per word did (J1242).
+    LWOK=0
+    LW_HEREDOC=0
     if [ "$tool_name" = Bash ]; then
         st_lower "$cmd"
         if st_tokenize "$ST_LOWER"; then
+            LWOK=1
+            LW_HEREDOC=$ST_HEREDOC
             ST_LW=("${ST_W[@]}") lw_n=$ST_N lw_nseg=$ST_NSEG
             if st_tokenize "$cmd" && [ "$ST_HEREDOC" = 0 ] && [ "$ST_ANSIC" = 0 ] \
                 && [ "$ST_N" = "$lw_n" ] && [ "$ST_NSEG" = "$lw_nseg" ]; then
@@ -1357,6 +1361,23 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     case "$cmd_lc" in
         *settings.json*|*settings.local.json*) mentions_settings=1 ;;
     esac
+
+    # HIMMEL-3615: a heredoc BODY is prose/data, not a command word — the
+    # tokenizer already excludes it from ST_LW (a heredoc body is skipped
+    # outright, never flushed as a word), so a mention that survives only
+    # inside the body is not a mention of a live file by the command itself.
+    # Trust ST_LW over the raw text for THIS question only, and only when a
+    # heredoc is actually present, so a command with no heredoc takes the
+    # exact path it always has.
+    if [ "$mentions_settings" = "1" ] && [ "$LWOK" = "1" ] && [ "$LW_HEREDOC" = "1" ]; then
+        tok_mention=0
+        for _lw in "${ST_LW[@]}"; do
+            case "$_lw" in
+                *settings.json*|*settings.local.json*) tok_mention=1; break ;;
+            esac
+        done
+        [ "$tok_mention" = "1" ] || mentions_settings=0
+    fi
 
     # ANSI-C quoting (`$'\x2e\x2e'`, `settings$'\x2e'json`) spells any byte,
     # so the text above cannot say what it names. Not decoded: a `$'` beside

@@ -468,21 +468,57 @@ assert_rc "68 powershell backslash path into \$HOME settings.json denies" 2 \
 assert_rc "69 nested worktree abs write to its own settings.json allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "echo x > $NESTED_WT/.claude/settings.json")"
 
-# 70-72: accepted false denies, asserted so they are documented behaviour,
-# not surprises. A cd anywhere voids the worktree-relative exemption even
-# when the cd is harmless (70); a heredoc whose PROSE names settings.json is
-# a write (`>>`) whose target the hook does not parse (71, the console's
-# FD-2). 72, FD-1's piped form, was a third accepted false deny until the
+# 70-72: 70 is an accepted false deny, asserted so it is documented
+# behaviour, not a surprise — a `cd` anywhere voids the worktree-relative
+# exemption even when the cd is harmless. 71 was a second accepted false
+# deny (a heredoc whose PROSE names settings.json, writing `>>` to an
+# unrelated file — the console's FD-2) until HIMMEL-3615: the heredoc BODY
+# never becomes a tokenized word, so it no longer counts as a mention: the
+# command's real words decide, and this one doesn't touch a live settings
+# file. 72, FD-1's piped form, was a third accepted false deny until the
 # per-segment allowlist (HIMMEL-3546): a read piped into another read is a
 # chain of read-only segments, and allows.
 assert_rc "70 accepted false deny: harmless cd + worktree settings write denies" 2 \
     "$(bash_rc_of "$WT2" "cd . && echo x > .claude/settings.json")"
-assert_rc "71 accepted false deny: cat >> other file with settings.json in heredoc prose denies" 2 \
+assert_rc "71 cat >> other file with settings.json only in heredoc prose allows (HIMMEL-3615; was an accepted false deny)" 0 \
     "$(bash_rc_of "$PRIMARY" "cat >> /tmp/doc.md <<'EOF'
 - avoided .claude/settings.json
 EOF")"
 assert_rc "72 piped grep naming settings.json from primary allows (HIMMEL-3546; was an accepted false deny)" 0 \
     "$(bash_rc_of "$PRIMARY" "grep -rl x scripts .claude/settings.json docs | head")"
+
+# 71b (HIMMEL-3615 RED): the negative control — a heredoc whose BODY mentions
+# settings.json AND whose real redirect target IS the live settings file ->
+# stays DENY. Proves the fix narrows the false deny on the body text only; it
+# never lets an actual write through.
+assert_rc "71b heredoc body mentions settings.json AND writes to it still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat >> .claude/settings.json <<'EOF'
+hello
+EOF")"
+
+# 71c (HIMMEL-3615 RED): a heredoc whose BODY mentions settings.json, but
+# where the command AROUND the heredoc fails to tokenize at all (a stray
+# unterminated quote outside the body) -> stays DENY (fail-closed: the
+# tokenizer can't vouch for the real words, so the raw-text scan still
+# applies).
+assert_rc "71c heredoc mention + unparseable trailing quote still denies (fail-closed)" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat >> /tmp/doc.md <<'EOF'
+- avoided .claude/settings.json
+EOF
+echo 'unterminated")"
+
+# 71d-71g (HIMMEL-3615 ticket rows, user-scope \$HOME): the ticket's own
+# repro list, run against \$HOME's live settings.json rather than the
+# primary's (36-38 already cover the primary). 71d/71e are read-only
+# controls that must ALLOW; 71f/71g are write shapes that must stay DENY.
+assert_rc "71d bash grep of \$HOME settings.json allows" 0 \
+    "$(bash_rc_of "$SANDBOX" "grep x ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "71e bash jq of \$HOME settings.json allows" 0 \
+    "$(bash_rc_of "$SANDBOX" "jq . ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "71f bash python3 open(...,'w') on \$HOME settings.json denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "python3 -c \"open('$FAKEHOME/.claude/settings.json','w')\"" HOME="$FAKEHOME")"
+assert_rc "71g bash jq redirect into \$HOME settings.json denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "jq . ~/.claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
 
 # 73-74 controls: FD-1's exact spelling stays a bare allowlisted read, and a
 # worktree's own relative write with no cd stays open.
