@@ -198,6 +198,9 @@ if [ -n "${F1_HOME:-}" ]; then
   mkdir -p "$F1_GLOBAL_HOOKS"
   printf '#!/bin/sh\necho pre-existing global hook\n' > "$F1_GLOBAL_HOOKS/pre-commit"
   chmod +x "$F1_GLOBAL_HOOKS/pre-commit"
+  # shellcheck disable=SC2030,SC2031 # each ( ) below deliberately re-exports
+  # its own HOME/GIT_CONFIG_NOSYSTEM into its own subshell; nothing here
+  # expects the export to survive past the subshell that set it.
   ( export HOME="$F1_HOME" GIT_CONFIG_NOSYSTEM=1
     git config --global core.hooksPath "$F1_GLOBAL_HOOKS"
     git config --global user.email t@t
@@ -206,8 +209,10 @@ if [ -n "${F1_HOME:-}" ]; then
   f1_before_listing=$(ls -A "$F1_GLOBAL_HOOKS")
   F1_V="$F1_HOME/vault"
   mkdir -p "$F1_V"
+  # shellcheck disable=SC2030,SC2031
   ( export HOME="$F1_HOME" GIT_CONFIG_NOSYSTEM=1; cd "$F1_V" && git init -q -b main )
   installer_copy_into "$F1_V"
+  # shellcheck disable=SC2030,SC2031
   f1_out=$( ( export HOME="$F1_HOME" GIT_CONFIG_NOSYSTEM=1
     cd "$F1_V" && bash "$F1_V/scripts/hooks/install-nostash-hooks.sh" ) 2>&1 )
   f1_rc=$?
