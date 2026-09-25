@@ -127,7 +127,13 @@ files=()
 while IFS= read -r -d '' f; do
   files+=("\$f")
 done < <(git diff --cached --name-only --diff-filter=ACMR -z)
-[ "\${#files[@]}" -eq 0 ] && exit 0
+# A deletion-only commit leaves \$files empty. Some hooks (e.g.
+# worktree-isolation) are always_run/pass_filenames:false and must still run
+# even then -- exiting here would silently skip them. --all-files only on
+# this empty-list branch; the common --files path is unchanged.
+if [ "\${#files[@]}" -eq 0 ]; then
+  exec "\${pc[@]}" run --hook-stage pre-commit --all-files
+fi
 exec "\${pc[@]}" run --hook-stage pre-commit --files "\${files[@]}"
 HOOK
 

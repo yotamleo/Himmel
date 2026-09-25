@@ -698,8 +698,12 @@ ones the committing session never touched. It is deterministic, not a race:
 it reproduces on the immediate retry, and the commit itself reports `exit 0`.
 A vault scaffolded from `templates/luna-second-brain/` on or after 0.4.55
 installs `scripts/hooks/install-nostash-hooks.sh`'s wrappers instead, which
-never stash (`pre-commit run --files <staged>` only touches the staged set),
-so this cannot happen there; an older vault, or any other stashing
+never stash (`pre-commit run --files <staged>` never invokes the stash at
+all — `pre_commit/commands/run.py`'s `stash = not args.all_files and not
+args.files`). `--files` only selects which PATHNAMES run hooks; it does not
+isolate staged CONTENT — a hook can still read or rewrite the unstaged
+portion of a partially-staged file. So this specific stash/reapply race
+cannot happen there; an older vault, or any other stashing
 `pre-commit install` checkout, is still exposed.
 
 The wrapper preserves the concurrent write, but it does not make the racing
@@ -741,9 +745,14 @@ to actually confirm.
    worktrees). `git checkout -- <path>` on them may also be denied; copy the
    file aside into the scratchpad instead if you need to compare it.
 4. Land the commit one of two ways, both needing an **operator OK**:
-   stage the volatile files first so pre-commit has nothing left to park, or
-   `--no-verify` only after seeing gitleaks + worktree-isolation pass
-   yourself on that exact staged set.
+   stage the volatile files first so pre-commit has nothing left to park for
+   *them* — this only closes the race for the files you staged: any OTHER
+   unstaged tracked file is still stashed by stock `pre-commit install`, and
+   a fresh Obsidian write after you stage can still hit one of those, or
+   even the file you just staged if it accepts further mid-hook writes; it
+   is a narrowing, not a guarantee. The reliable fix is installing the
+   no-stash wrapper (above) first. Or: `--no-verify` only after seeing
+   gitleaks + worktree-isolation pass yourself on that exact staged set.
 
 Never re-run the failed commit as-is hoping it will go through — the same
 race is deterministic and will revert the same files again.

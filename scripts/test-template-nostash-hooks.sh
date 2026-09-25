@@ -205,7 +205,12 @@ if [ -n "${F1_HOME:-}" ]; then
     git config --global core.hooksPath "$F1_GLOBAL_HOOKS"
     git config --global user.email t@t
     git config --global user.name t )
-  f1_before_sha=$(sha256sum "$F1_GLOBAL_HOOKS/pre-commit" | awk '{print $1}')
+  # git hash-object, not sha256sum: sha256sum is not on stock macOS, and a
+  # missing binary would make BOTH hashes empty and pass the byte-integrity
+  # check vacuously; a failed hash command must fail the test instead.
+  if ! f1_before_sha=$(git hash-object --no-filters "$F1_GLOBAL_HOOKS/pre-commit"); then
+    echo "FAIL - could not hash F1 pre-existing global hook"; fails=$((fails+1)); f1_before_sha="hash-error-before"
+  fi
   f1_before_listing=$(ls -A "$F1_GLOBAL_HOOKS")
   F1_V="$F1_HOME/vault"
   mkdir -p "$F1_V"
@@ -221,7 +226,9 @@ if [ -n "${F1_HOME:-}" ]; then
     *core.hooksPath*) check "F1: refusal message names core.hooksPath" yes yes ;;
     *) check "F1: refusal message names core.hooksPath" no yes ;;
   esac
-  f1_after_sha=$(sha256sum "$F1_GLOBAL_HOOKS/pre-commit" | awk '{print $1}')
+  if ! f1_after_sha=$(git hash-object --no-filters "$F1_GLOBAL_HOOKS/pre-commit"); then
+    echo "FAIL - could not hash F1 global hook after install attempt"; fails=$((fails+1)); f1_after_sha="hash-error-after"
+  fi
   f1_after_listing=$(ls -A "$F1_GLOBAL_HOOKS")
   check "F1: global hook file byte-unchanged" "$f1_after_sha" "$f1_before_sha"
   check "F1: global hooks dir listing unchanged" "$f1_after_listing" "$f1_before_listing"
