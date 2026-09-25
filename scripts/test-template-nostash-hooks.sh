@@ -40,8 +40,8 @@ check() {
 # shellcheck disable=SC1091
 . "$HERE/lib/fixture-tempdir.sh"
 
-if ! command -v pre-commit >/dev/null 2>&1 && ! python3 -c 'import pre_commit' >/dev/null 2>&1; then
-  echo "SKIP - pre-commit is not installed; cannot exercise the real stash/no-stash hooks"
+if ! command -v pre-commit >/dev/null 2>&1; then
+  echo "SKIP - the pre-commit COMMAND is not on PATH (a python3 -c 'import pre_commit' pass is not enough: this test invokes bare \`pre-commit\`); cannot exercise the real stash/no-stash hooks"
   exit 0
 fi
 
@@ -58,6 +58,7 @@ mk_seed_repo() {
   mkdir -p "$dir/.git-hook-hold"
   cat > "$dir/.git-hook-hold/hold.sh" <<'HOLD'
 #!/usr/bin/env bash
+touch "$(dirname "$0")/started"
 sleep 1.5
 HOLD
   chmod +x "$dir/.git-hook-hold/hold.sh"
@@ -88,15 +89,27 @@ assert_toplevel_is() {
 }
 
 # run_race <repo> -- stage ONLY commit-file.txt, leave data.json dirty and
-# UNSTAGED, fire a background writer that clobbers it 0.5s into the hook's
-# 1.5s hold, commit through whatever hook is installed. Prints data.json's
-# final content and the tail of the commit's output.
+# UNSTAGED, fire a background writer that waits for hold.sh to actually
+# START (its own "started" marker, not a fixed timer -- a slow hook
+# startup must not be able to put the write outside the hold window) and
+# then clobbers data.json partway into the 1.5s hold, commit through
+# whatever hook is installed. Prints data.json's final content and the
+# tail of the commit's output.
 run_race() {
   local repo="$1"
+  local marker="$repo/.git-hook-hold/started" waited=0
+  rm -f "$marker"
   printf '{"pending-edit":true}\n' > "$repo/data.json"
   printf 'staged-change\n' > "$repo/commit-file.txt"
   git -C "$repo" add commit-file.txt >/dev/null 2>&1
-  (sleep 0.5; printf '{"external-write":true}\n' > "$repo/data.json") & disown
+  (
+    while [ ! -e "$marker" ] && [ "$waited" -lt 100 ]; do
+      sleep 0.05
+      waited=$((waited + 1))
+    done
+    sleep 0.5
+    printf '{"external-write":true}\n' > "$repo/data.json"
+  ) & disown
   git -C "$repo" commit -qm race > "$repo/.race-commit.log" 2>&1
   wait 2>/dev/null
   cat "$repo/data.json"
