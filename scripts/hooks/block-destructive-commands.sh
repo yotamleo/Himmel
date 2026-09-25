@@ -424,7 +424,9 @@ fi
 # innermost unquoted `$(..)`/`<(..)`/`>(..)`/`(..)` group and backtick span to
 # `X`, repeatedly; (3) turn every `#` that does not start a word (preceded by
 # anything but whitespace or a separator) into `_` - `#` is a comment only at a
-# word start. Deny if either scan finds a live flag.
+# word start. Deny if either scan finds a live flag. Quoted whitespace also
+# becomes `_` (a quoted ` -- ` is operand text, not the terminator - round-8
+# codex-1 `rm "x -- y" --rec dir`).
 # The order is load-bearing (bash semantics): a SINGLE-quoted span is literal,
 # so it is neutralised FIRST; a `$(..)`/backtick group is live even inside
 # double quotes (`"$(x -- )"`), so those collapse to `X` BEFORE the double-quoted
@@ -448,7 +450,7 @@ for _rm_recur_pass in single collapse double; do
     while [[ $_rm_recur_rest =~ $RM_QUOTE_PAT ]]; do
         _rm_recur_span="${BASH_REMATCH[2]}"
         if [[ $_rm_recur_pass == double || $_rm_recur_span == \'* ]]; then
-            _rm_recur_span="${_rm_recur_span//[#();&|\`]/_}"
+            _rm_recur_span="${_rm_recur_span//[#();&|\`[:space:]]/_}"
         fi
         _rm_recur_neut+="${BASH_REMATCH[1]}${_rm_recur_span}"
         _rm_recur_rest="${BASH_REMATCH[3]}"

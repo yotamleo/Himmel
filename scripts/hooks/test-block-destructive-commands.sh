@@ -329,6 +329,8 @@ assert_rc "R2- rm -f x #b --really (word-initial # IS a comment)" 0 "$(run_case 
 # shellcheck disable=SC2016 # payload text under test
 assert_rc "R2+ rm '\$(' --rec ')' d (single-quoted \$( is literal)" 2 "$(run_case "$(j_bash "rm '\$(' --rec ')' d")")"
 assert_rc "R2+ rm \"a(\" --rec \")\" d (double-quoted parens are literal)" 2 "$(run_case "$(j_bash 'rm "a(" --rec ")" d')")"
+assert_rc "R2+ rm \"x -- y\" --rec dir (quoted -- is operand text, not the terminator)" 2 "$(run_case "$(j_bash 'rm "x -- y" --rec dir')")"
+assert_rc "R2+ rm 'x -- y' --rec dir (single-quoted -- is operand text)" 2 "$(run_case "$(j_bash "rm 'x -- y' --rec dir")")"
 # shellcheck disable=SC2016 # payload text under test
 assert_rc "R2+ rm \$(( (1) )) --rec d (nested-paren arithmetic before flag)" 2 "$(run_case "$(j_bash 'rm $(( (1) )) --rec d')")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
