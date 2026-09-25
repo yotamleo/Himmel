@@ -8,6 +8,38 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.58] — 2026-09-25
+
+### Fixed
+- `install-nostash-hooks.sh`: refuses to install when `core.hooksPath` is set
+  (matching stock `pre-commit install`'s "Cowardly refusing…"), instead of
+  silently writing hooks into that path — which, when it's a global path,
+  could disable another repo's hook and break every future commit there.
+  `backup_foreign_hook` and the hooks directory are now both derived from
+  `git rev-parse --git-common-dir`, never from `--git-path hooks` (which
+  follows `core.hooksPath`).
+- `install-nostash-hooks.sh`: the generated `pre-commit` hook's `mapfile -d
+  ''` needs bash ≥4.4 and fails outright on stock macOS bash 3.2 (`mapfile:
+  command not found`); replaced with a portable `while IFS= read -r -d ''`
+  loop.
+- `install-nostash-hooks.sh`: `pre-commit` (or `python`/`python3 -m
+  pre_commit`) is now resolved and verified once, at install time, and baked
+  into the generated hooks — the way pre-commit's own hook bakes
+  `INSTALL_PYTHON` — instead of re-resolving from PATH on every commit, which
+  broke commits made with a minimal PATH (GUI/Obsidian-Git commits) and could
+  pick the Microsoft Store's `python3` stub on Windows.
+- `install-nostash-hooks.sh`: derives its target repo from its own script
+  location, not the caller's working directory, so running it with a cwd
+  inside a different repo can no longer install hooks there.
+- `.vault-template.json` and `marketplace.json` are back in lockstep at
+  `0.4.58` (0.4.57 only bumped one of the two).
+
+### Changed
+- An already-scaffolded vault does not get the no-stash hooks automatically
+  from `/luna-upgrade` — it delivers the updated `install-nostash-hooks.sh`
+  but does not run it. After upgrading, run
+  `bash scripts/hooks/install-nostash-hooks.sh` once to install them.
+
 ## [0.4.57] — 2026-09-25
 
 ### Fixed

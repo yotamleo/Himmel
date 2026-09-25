@@ -711,7 +711,10 @@ every unstaged edit — just re-stage (if the failed hook needs it) and retry
 the commit.
 
 **Always run**, before and after a failed commit: `git status --short | wc -l`.
-A shrinking count means work was reverted.
+A shrinking count means work was reverted. An unchanged count is not proof
+there was none — a concurrent write (e.g. Obsidian autosave) can add a dirty
+line while the rollback removes one, netting to the same count; run step 2
+to actually confirm.
 
 **What to do:**
 1. Recover the reverted files from the retained patch, excluding the volatile
