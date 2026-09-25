@@ -14,24 +14,28 @@ set -uo pipefail
 SUITE="$(cd "$(dirname "$0")" && pwd)/test-uninstall.sh"
 FAILED=0
 
+realhome_line=$(grep -n "operator's real .*HOME resolved under this suite" "$SUITE" | head -1 | cut -d: -f1)
 preflight_line=$(grep -n 'suite HOME fixture carries no live-operator marker' "$SUITE" | head -1 | cut -d: -f1)
 # shellcheck disable=SC2016 # literal $CLI text in the source file, not expansion
 first_cli_line=$(grep -n 'bash "\$CLI"' "$SUITE" | head -1 | cut -d: -f1)
 
-if [ -z "$preflight_line" ] || [ -z "$first_cli_line" ]; then
-    echo "FAIL could not locate the HOME-isolation preflight or the first uninstall.sh invocation in $SUITE"
+if [ -z "$realhome_line" ] || [ -z "$preflight_line" ] || [ -z "$first_cli_line" ]; then
+    echo "FAIL could not locate the real-\$HOME-under-\$TMP check, the live-operator-marker check, or the first uninstall.sh invocation in $SUITE"
     FAILED=$((FAILED + 1))
 else
-    abort_line=$(awk -v lo="$preflight_line" -v hi="$first_cli_line" \
+    abort_line=$(awk -v lo="$realhome_line" -v hi="$first_cli_line" \
         'NR > lo && NR < hi && /FAILED" -gt 0/ {print NR; exit}' "$SUITE")
     if [ -n "$abort_line" ]; then
         exit_after=$(awk -v start="$abort_line" -v hi="$first_cli_line" \
             'NR >= start && NR < hi && /exit 1/ {print NR; exit}' "$SUITE")
     fi
-    if [ -n "${abort_line:-}" ] && [ -n "${exit_after:-}" ]; then
+    if [ "$preflight_line" -le "$realhome_line" ]; then
+        echo "FAIL the live-operator-marker check (line $preflight_line) does not follow the real-\$HOME-under-\$TMP check (line $realhome_line)"
+        FAILED=$((FAILED + 1))
+    elif [ -n "${abort_line:-}" ] && [ -n "${exit_after:-}" ]; then
         echo "PASS a HOME-isolation preflight failure aborts (line $abort_line) before the first uninstall.sh invocation (line $first_cli_line)"
     else
-        echo "FAIL no hard abort between the HOME-isolation preflight (line $preflight_line) and the first uninstall.sh invocation (line $first_cli_line) — a failed preflight falls through to a wet row"
+        echo "FAIL no hard abort between the HOME-isolation preflight (line $realhome_line) and the first uninstall.sh invocation (line $first_cli_line) — a failed preflight falls through to a wet row"
         FAILED=$((FAILED + 1))
     fi
 fi
