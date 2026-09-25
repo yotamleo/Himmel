@@ -1263,6 +1263,38 @@ for sub in created control; do
 done
 unset ENTRY33
 
+echo "==== RED34 (HIMMEL-3334 F1, judge J1269O): a legacy-path replace backup survives a rewire's bare rm -f, restored by uninstall ===="
+# Scenario from the verdict: an operator has their own (non-himmel) config at
+# the pre-HIMMEL-3334 swept path; a pre-PR install REPLACES it there and
+# records a ledger `replace` row with a backup of the original bytes -- the
+# only place those bytes still exist once wire-statusline.sh's own
+# HIMMEL-3334 migration later `rm -f`s that path with no provenance of its
+# own (scripts/lib/wire-statusline.sh ~406-411) while publishing the new
+# un-swept claude-hud.json. Before this fix, uninstall's hud branch only ever
+# consulted the ledger for the NEW path ($_p), so the legacy path's own
+# `replace` unit was never applied and the operator's bytes stayed lost.
+new_case red34
+mkdir -p "$HOME/.claude/plugins/claude-hud"
+HUD_LEGACY34="$HOME/.claude/plugins/claude-hud/config.json"
+HUD_NEW34="$HOME/.claude/claude-hud.json"
+printf '{"custom":"operator-pre-himmel-hud-config"}\n' > "$HUD_LEGACY34"
+ORIG34_BYTES=$(cat "$HUD_LEGACY34")
+SNAP34=$(mktemp "$SUITE_TMP/SNAP34.XXXXXX") || exit 1
+cp -p "$HUD_LEGACY34" "$SNAP34"
+printf '{"display":{"customLineCommand":"bash \\"%s/scripts/statusline/hud-custom-lines.sh\\""}}\n' "$repo_root" > "$HUD_LEGACY34"
+( prov_begin --writer wire-statusline.sh -- seed-red34 >/dev/null
+  prov_record replace file "$HUD_LEGACY34" --scope user --class code --row hud-config \
+    --writer wire-statusline.sh --pre-file "$SNAP34" --backup --post-file "$HUD_LEGACY34" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP34"
+# The rewire's migration: publish the new path, then blow away the legacy one.
+printf '{"display":{"customLineCommand":"bash \\"%s/scripts/statusline/hud-custom-lines.sh\\""}}\n' "$repo_root" > "$HUD_NEW34"
+rm -f "$HUD_LEGACY34"
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+AFTER34_BYTES=$([ -f "$HUD_LEGACY34" ] && cat "$HUD_LEGACY34" || echo "ABSENT")
+check "RED34 uninstall: legacy-path replace backup restored after a rewire's bare rm -f" \
+  "$AFTER34_BYTES" "$ORIG34_BYTES"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \

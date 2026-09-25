@@ -3137,6 +3137,7 @@ EOF
 # that fix rather than left unused.
 unwire_user_files() {
   local _ix _p _dry=0 _probe_rc _hud_units _hu _hud_legacy _hud_sl_still_wired _fc_args _block_unit _fc _trust_units _tu
+  local _hud_legacy_unit _hud_legacy_backup _hud_legacy_args
   [ "$DRY_RUN" -eq 1 ] && _dry=1
   for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud" "$_ix_trust"; do
     # A failure on one file halts the step: never edit the next file after it.
@@ -3186,6 +3187,33 @@ unwire_user_files() {
         # script's own shell.
         # shellcheck source=lib/unwire-hud-config.sh
         ( . "$SCRIPT_DIR/lib/unwire-hud-config.sh"; unwire_hud_config "$_hud_legacy" "$_dry" ) || true
+      elif [ "$_hud_legacy" != "$_p" ] && [ ! -e "$_hud_legacy" ] && [ "$LEDGER_OK" -eq 1 ] && command -v jq >/dev/null 2>&1; then
+        # HIMMEL-3334 F1 (judge J1269O verdict): a re-wire on THIS box already
+        # migrated the legacy path away (wire-statusline.sh's own migration
+        # `rm -f`s it once the new path is live, with no provenance record of
+        # its own) -- so the file is gone before this branch ever runs, and
+        # neither branch above fires. If an operator's own pre-himmel config
+        # once lived there, ITS ledger row (a `replace` unit recorded back
+        # when this box's config.json still wrote to the legacy path) is the
+        # only place its backup survives. prov_read_verdict would just answer
+        # "keep already-absent" here -- true of the CURRENT file, but blind to
+        # that backup -- so this restores straight from the unit via
+        # prov_read_apply, the same primitive ledger_apply_unit itself calls.
+        _hud_legacy_unit="$(prov_read_units --path "$_hud_legacy" --kind file | head -n1)"
+        _hud_legacy_backup=""
+        [ -n "$_hud_legacy_unit" ] && _hud_legacy_backup="$(printf '%s' "$_hud_legacy_unit" | jq -r '.eff_pre.backup // empty')"
+        if [ -n "$_hud_legacy_backup" ]; then
+          _hud_legacy_args=()
+          [ "$_dry" -eq 1 ] && _hud_legacy_args=(--dry-run)
+          if prov_read_apply "$_hud_legacy_unit" restore ${_hud_legacy_args[@]+"${_hud_legacy_args[@]}"}; then
+            [ "$_dry" -eq 0 ] && echo "  restored $_hud_legacy (from $_hud_legacy_backup)"
+            prov_read_outcome restored "$_hud_legacy_unit" migrated-away "$_hud_legacy_backup"
+          else
+            echo "  WARN: could not restore $_hud_legacy" >&2
+            fail_step "[6/8] hud-config legacy restore: $_hud_legacy"
+            prov_read_outcome failed "$_hud_legacy_unit" step-failed "$_hud_legacy_backup"
+          fi
+        fi
       fi
       if [ "$LEDGER_OK" -ne 1 ]; then
         # ponytail (HIMMEL-3332 S6, spec §4 six rows): no ledger to tell a
