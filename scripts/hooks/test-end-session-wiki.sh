@@ -752,7 +752,7 @@ rm -rf "$SB"
 # deferring it until the blocked curl finishes).
 SB="$(make_sandbox)"
 CURL_MARKER="$SB/curl-started"
-CURL_STUB_DIR="$(mktemp -d)"
+CURL_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/esw-curl-stub.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
 cat > "$CURL_STUB_DIR/curl" <<'CURLSTUB'
 #!/usr/bin/env bash
 : > "$CURL_MARKER_FILE"
