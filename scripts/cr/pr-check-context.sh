@@ -724,9 +724,16 @@ gitd() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache
 # direction). merge-on-green.sh in turn sources queue-lock.sh and execs
 # clean-garden.sh, clean.sh, scripts/_new-worktree.sh, the observability
 # session-run-{hook,ledger} scripts and unlanded-work.sh.
+#
+# HIMMEL-3616 added scripts/lib/check-pr-title.sh (already guarded, under
+# scripts/lib/), which sources scripts/hooks/check-commit-msg.sh to reuse its
+# conventional-commit regex rather than copy it - both merge-on-green.sh and
+# leg-pr-open.sh reach it through that one file, so check-commit-msg.sh is
+# guarded too.
 cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh
 scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh
 scripts/handover/merge-on-green.sh scripts/handover/queue-lock.sh
+scripts/hooks/check-commit-msg.sh
 scripts/clean-garden.sh scripts/clean.sh scripts/_new-worktree.sh scripts/unlanded-work.sh
 scripts/observability/session-run-hook.ts scripts/observability/session-run-ledger.ts
 scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh
@@ -748,6 +755,7 @@ cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails
     ':(top)scripts/handover/resolve-active-item.sh'
     ':(top)scripts/handover/append-cr-findings.sh' ':(top)scripts/handover/append-cr-bugs.sh' ':(top)scripts/handover/bug.sh'
     ':(top)scripts/handover/merge-on-green.sh' ':(top)scripts/handover/queue-lock.sh'
+    ':(top)scripts/hooks/check-commit-msg.sh'
     ':(top)scripts/clean-garden.sh' ':(top)scripts/clean.sh' ':(top)scripts/_new-worktree.sh' ':(top)scripts/unlanded-work.sh'
     ':(top)scripts/observability/session-run-hook.ts' ':(top)scripts/observability/session-run-ledger.ts'
     ':(top)scripts/hermes/invoke.sh' ':(top)scripts/hermes/egress-gate.sh'
