@@ -65,6 +65,7 @@ installer_copy_into() {
 mk_seed_repo() {
   local dir="$1"
   git -C "$dir" init -q -b main
+  mkdir -p "$dir/.git/hooks"
   git -C "$dir" config user.email t@t
   git -C "$dir" config user.name t
   touch "$dir/.single-writer"
