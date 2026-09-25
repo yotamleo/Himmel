@@ -414,6 +414,74 @@ set -e
   || fail "HIMMEL-3326: bash scripts/worktree.sh feat/try-himmel did not create .claude/worktrees/feat+try-himmel: $out1e"
 echo "ok: HIMMEL-3326 the adoption page's starter-trail worktree step (bash scripts/worktree.sh) resolves and works in a real --scope project install"
 
+# ── 1f. HIMMEL-3303 item (b): machine-level footprint block ─────────────────
+# Printed BEFORE any install step, naming the paths that stay shared/machine-
+# level regardless of --scope (qmd models, bun, claude-hud config,
+# workspace-trust entry, plugin content cache + ledger).
+home1f="$work/home-1f"; mkdir -p "$home1f"
+proj1f="$work/proj1f"; mkdir -p "$proj1f"
+out1f=$(HOME="$home1f" bash "$adopt" --profile core --scope project --target "$proj1f")
+grepq "$out1f" "Machine-level footprint" \
+  || fail "HIMMEL-3303 (b): adopt.sh did not print a machine-level footprint block"
+grepq "$out1f" "qmd embedding/rerank models" \
+  || fail "HIMMEL-3303 (b): footprint block missing the qmd models line"
+grepq "$out1f" "$home1f/.bun" \
+  || fail "HIMMEL-3303 (b): footprint block missing the bun line"
+grepq "$out1f" "claude-hud/config.json" \
+  || fail "HIMMEL-3303 (b): footprint block missing the claude-hud config line"
+grepq "$out1f" "$home1f/.claude.json" \
+  || fail "HIMMEL-3303 (b): footprint block missing the workspace-trust entry line"
+grepq "$out1f" "plugins/cache" \
+  || fail "HIMMEL-3303 (b): footprint block missing the plugin content cache line"
+grepq "$out1f" "installed_plugins.json" \
+  || fail "HIMMEL-3303 (b): footprint block missing the plugin install ledger"
+echo "ok: HIMMEL-3303 (b) --scope project prints the machine-level footprint block before installing"
+
+# ── 1g. HIMMEL-3303 item (4): bare adopt.sh leaves a standalone uninstaller ──
+# scripts/himmelctl/bin.js's PATH-shim step already writes this bundle
+# (bin.js:4847) so `uninstall` survives deleting the clone -- but only inside
+# the himmelctl wizard flow. A bare (non-himmelctl) `adopt.sh` run must
+# produce the SAME bundle via the SAME writer (standalone-bundle.js), never a
+# forked copy.
+# node is scrubbed from the suite-wide PATH (line ~248) so the NODE_AVAILABLE=0
+# soft-degrade path (no node on the box) is the default everywhere else; this
+# one case needs a REAL node to exercise write_standalone_bundle_core's happy
+# path, so it gets its own dir prepended to PATH (resolved against the
+# pre-scrub $saved_path, same shape as the wizard suites at the bottom of this
+# file), rather than the qmd/bun/npm/node-scrubbed base every other case runs on.
+nodebin1g="$work/nodebin1g"; mkdir -p "$nodebin1g"
+ln -sf "$(PATH="$saved_path" command -v node)" "$nodebin1g/node"
+# require_tools' pre-existing npm-less-node hard fail (adopt.sh's node/npm/bun
+# preflight, unrelated to this ticket) fires when node is present but neither
+# npm nor bun is -- this dev box's real node has no npm. Stub npm here (a
+# no-op, same shape as build_jira_cli's npm stub elsewhere in this file) to
+# clear that unrelated gate; leave bun genuinely absent so BUN_AVAILABLE stays
+# 0 and wire_qmd_core takes its documented clean-skip branch (a bun stub here
+# would instead look "real" to it and trigger an actual network qmd install).
+printf '#!/usr/bin/env bash\nexit 0\n' > "$nodebin1g/npm"; chmod +x "$nodebin1g/npm"
+home1g="$work/home-1g"; mkdir -p "$home1g"
+proj1g="$work/proj1g"; mkdir -p "$proj1g"
+# HIMMEL_PROVENANCE_DIR is pinned suite-wide to $work/prov (see the top of this
+# file) so every adopt.sh call's ledger lands off the real machine -- give this
+# one its own subdir so the bundle path below is unambiguous, same as the P4
+# provenance tests further down do with $p4led.
+prov1g="$work/prov1g"
+out1g=$(PATH="$nodebin1g:$work/bin:$qmd_free_path" HOME="$home1g" HIMMEL_PROVENANCE_DIR="$prov1g" bash "$adopt" --profile core --scope project --target "$proj1g")
+bundle1g="$prov1g/uninstall/bundle.json"
+[ -f "$bundle1g" ] \
+  || fail "HIMMEL-3303 (4): a bare adopt.sh run did not write a standalone uninstall bundle ($bundle1g absent)"
+[ "$(jq -r '.marker' "$bundle1g")" = "himmel-standalone-uninstaller/1" ] \
+  || fail "HIMMEL-3303 (4): $bundle1g has the wrong marker"
+[ -f "$prov1g/uninstall/standalone.js" ] \
+  || fail "HIMMEL-3303 (4): the bundle is missing standalone.js (the delete-the-clone fallback entry point)"
+[ -f "$prov1g/uninstall/scripts/uninstall.sh" ] \
+  || fail "HIMMEL-3303 (4): the bundle is missing scripts/uninstall.sh"
+grepq "$out1g" "the fallback still works" \
+  || fail "HIMMEL-3303 (4): adopt.sh did not print the delete-the-clone fallback line"
+grepq "$out1g" "$prov1g/uninstall/standalone.js uninstall" \
+  || fail "HIMMEL-3303 (4): the printed fallback command does not point at the standalone bundle"
+echo "ok: HIMMEL-3303 (4) a bare adopt.sh run writes the same standalone uninstall bundle himmelctl's PATH-shim step builds"
+
 # ── 2. merge preserves existing settings ─────────────────────────────────────
 proj2="$work/proj2"; mkdir -p "$proj2/.claude"
 printf '%s' '{"permissions":{"allow":["Bash(ls)"]},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash /pre/existing.sh"}]}]}}' > "$proj2/.claude/settings.json"
