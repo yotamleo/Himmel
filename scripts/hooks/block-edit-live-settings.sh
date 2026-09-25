@@ -1380,14 +1380,36 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # and the mention stays live. Accepted over-match — an interpreter word
     # anywhere in the command, not proven to be the heredoc's own consumer —
     # matching this file's stated preference for a false deny over a bypass.
+    # codex-1 (panel round 2 on #1282): the same gap, a different consumer.
+    # `git apply <<'EOF'` / `patch <<'EOF'` never RUN the body as a script,
+    # but they parse it as a unified diff and write the file its header
+    # names — a real write the outer verb list never sees (`git`/`apply`/
+    # `patch` are none of cp/mv/tee, and dir_dest only matches that same
+    # list). Same fix shape as the interpreter guard above: fail closed when
+    # the outer words show a diff/patch consumer, whether or not it also
+    # runs anything as a script. `patch` is unambiguous alone; `git apply`
+    # needs both words present (bare `apply` is too common a filename/arg
+    # word on its own — same reasoning as this file's existing git+checkout/
+    # restore co-occurrence rule).
     interp_present=0
     if [ "$mentions_settings" = "1" ] && [ "$LWOK" = "1" ] && [ "$LW_HEREDOC" = "1" ]; then
         for _lw in "${ST_LW[@]}"; do
             case "$_lw" in
-                bash|*/bash|sh|*/sh|dash|*/dash|zsh|*/zsh|ksh|*/ksh|mksh|*/mksh|csh|*/csh|tcsh|*/tcsh|python|*/python|python2|*/python2|python3|*/python3|perl|*/perl|ruby|*/ruby|node|*/node|nodejs|*/nodejs|php|*/php|osascript|*/osascript|lua|*/lua|tclsh|*/tclsh|expect|*/expect)
+                bash|*/bash|sh|*/sh|dash|*/dash|zsh|*/zsh|ksh|*/ksh|mksh|*/mksh|csh|*/csh|tcsh|*/tcsh|python|*/python|python2|*/python2|python3|*/python3|perl|*/perl|ruby|*/ruby|node|*/node|nodejs|*/nodejs|php|*/php|osascript|*/osascript|lua|*/lua|tclsh|*/tclsh|expect|*/expect|patch|*/patch)
                     interp_present=1; break ;;
             esac
         done
+        if [ "$interp_present" = "0" ]; then
+            _git_word=0
+            _apply_word=0
+            for _lw in "${ST_LW[@]}"; do
+                case "$_lw" in
+                    git|*/git) _git_word=1 ;;
+                    apply) _apply_word=1 ;;
+                esac
+            done
+            [ "$_git_word" = "1" ] && [ "$_apply_word" = "1" ] && interp_present=1
+        fi
     fi
     if [ "$mentions_settings" = "1" ] && [ "$LWOK" = "1" ] && [ "$LW_HEREDOC" = "1" ] && [ "$interp_present" = "0" ]; then
         tok_mention=0

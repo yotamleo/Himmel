@@ -531,6 +531,33 @@ assert_rc "71h heredoc body run by a nested bash writes to settings.json, denies
 echo x > .claude/settings.json
 EOF")"
 
+# 71i (codex-1, panel round 2 on #1282): the same gap, a different consumer.
+# `git apply <<'EOF'` never RUNS the body as a script — it parses it as a
+# unified diff and writes the file its header names. No cp/mv/tee word, no
+# dir_dest match, and (pre-fix) no interpreter word either, so this cleared
+# to ALLOW the same way 71h did before the interpreter guard existed. Must
+# stay DENY.
+assert_rc "71i heredoc git-apply patch writing settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "git apply <<'EOF'
+diff --git a/.claude/settings.json b/.claude/settings.json
+index e69de29..0000000 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+
+# 71j: the standalone `patch` command has the identical exposure as
+# `git apply` (both parse a unified diff from stdin and write the file its
+# header names), so it gets the same fail-closed treatment.
+assert_rc "71j heredoc bare patch writing settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "patch -p1 <<'EOF'
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+
 # 73-74 controls: FD-1's exact spelling stays a bare allowlisted read, and a
 # worktree's own relative write with no cd stays open.
 assert_rc "73 bare grep with settings.json as a search path allows (FD-1)" 0 \
