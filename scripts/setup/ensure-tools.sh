@@ -348,7 +348,7 @@ _ensure_install_precommit() {
   # the producer's non-zero one, flipping a genuine match to look like a
   # failure (grep-q-pipe-under-pipefail, HIMMEL-1430).
   uv_tool_list=$("$uv_bin" tool list 2>/dev/null)
-  pc_installed=$(printf '%s\n' "$uv_tool_list" | grep '^pre-commit ')
+  pc_installed=$(printf '%s\n' "$uv_tool_list" | grep '^pre-commit ') || true
   if [ "$mode" = upgrade ] && command -v pre-commit >/dev/null 2>&1 \
     && [ -n "$pc_installed" ]; then
     echo "  ensure-tools: upgrading 'pre-commit' via 'uv tool upgrade'..."
