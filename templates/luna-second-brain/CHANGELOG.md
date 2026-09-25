@@ -8,6 +8,17 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.56] — 2026-09-25
+
+### Fixed
+- `install-nostash-hooks.sh`: the commit-msg wrapper no longer skips message
+  validation on a deletion-only commit (its `--diff-filter=ACMR` staged-file
+  list is empty then); `hooks_dir` is resolved to an absolute path before use
+  (`git rev-parse --git-path hooks` can return one relative to the script's
+  cwd); and the `pre-commit install-hooks` warm-up now falls back to
+  `python3 -m pre_commit` / `python -m pre_commit` when bare `pre-commit`
+  isn't on PATH, matching `setup.ps1`'s own pre-push install.
+
 ## [0.4.55] — 2026-09-25
 
 ### Fixed

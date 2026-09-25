@@ -86,6 +86,12 @@ HOOK
 chmod +x "$R/.git/hooks/pre-commit"
 stashing_result=$(run_race "$R")
 check "RED: stashing hook loses the unstaged edit under a mid-hook race" "$stashing_result" '{"external-write":true}'
+# Content alone can't distinguish "stash-apply failed" from "nothing failed" --
+# both converge on the racer's write. The hook's own `exit "$rc"` means a
+# failed reapply fails `git commit`, so also assert the commit never landed.
+git -C "$R" log -1 --format=%s > /tmp/nostash-test-red-msg-$$ 2>/dev/null
+red_msg=$(cat /tmp/nostash-test-red-msg-$$ 2>/dev/null); rm -f /tmp/nostash-test-red-msg-$$
+check "RED: commit was rolled back (stash reapply failed, so the hook exits nonzero)" "$red_msg" "seed"
 
 # GREEN: the no-stash wrapper (mirrors install-nostash-hooks.sh: `pre-commit
 # run --files <staged>` never stashes, so it never touches data.json at all).
