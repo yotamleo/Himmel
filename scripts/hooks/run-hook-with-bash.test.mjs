@@ -260,6 +260,13 @@ const MEMBERS = {
   'block-read-secrets.sh': `sleep 3`,
   // HIMMEL-3383: the /pr-check literal guard is must-run too.
   'guard-pr-check-literal.sh': `sleep 3`,
+  // HIMMEL-3601: a must-run member that CRASHES (not a timeout) — named like
+  // a real must-run guard so MUST_RUN_CHAIN_MEMBERS fires, exits 1 the way a
+  // `set -u` abort or a failed `.` source would.
+  'block-jira-compound-write.sh': `printf 'boom\\n' >&2; exit 1`,
+  // HIMMEL-3601: a must-run member killed by a signal (null status), not via
+  // our own timeout path.
+  'block-git-stash.sh': `kill -9 "$$"`,
   // The LEGACY PreToolUse block spelling — valid output, and not a shape the
   // merge allowlist could carry, so it has to short-circuit.
   'deny-legacy.sh': `printf '{"decision":"block","reason":"legacy block"}'`,
@@ -648,6 +655,28 @@ test('a starved guard-pr-check-literal.sh DENIES the chain instead of being skip
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /DENY guard-pr-check-literal\.sh \(budget=500ms/);
     assert.equal(ran(dir, 'allow.sh'), false, 'a starved literal guard must deny, not skip past it');
+  });
+});
+
+// HIMMEL-3601: a must-run member that crashes (exits with anything other
+// than 0 or 2) must deny the chain the same as one that times out, not fall
+// to the generic non-blocking error path.
+test('a must-run member that crashes DENIES the chain instead of falling open', () => {
+  withChain((dir) => {
+    const result = runChain(dir, ['block-jira-compound-write.sh', 'allow.sh']);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY block-jira-compound-write\.sh \(rc=1\)/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a crashed must-run guard must deny, not fall open');
+  });
+});
+
+// HIMMEL-3601: same, for a must-run member killed by a signal (null status).
+test('a must-run member killed by a signal DENIES the chain and names the signal', () => {
+  withChain((dir) => {
+    const result = runChain(dir, ['block-git-stash.sh', 'allow.sh']);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY block-git-stash\.sh \(signal SIGKILL\)/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a signal-killed must-run guard must deny, not fall open');
   });
 });
 

@@ -635,6 +635,20 @@ function runChain(members, lifecycle = false) {
     }
     const stdout = result.stdout || '';
     const stderr = result.stderr || '';
+    // HIMMEL-3601: a must-run member that CRASHES — any status other than 0
+    // or 2, or killed by a signal (null status) — is exactly as unevaluated
+    // as one that times out, so it denies the same way the ETIMEDOUT branch
+    // above does, instead of falling to the generic non-blocking error path
+    // below (which would let a later member decide in its place).
+    const rawStatus = result.status;
+    const crashed = rawStatus === null || (typeof rawStatus === 'number' && rawStatus !== 0 && rawStatus !== 2);
+    if (crashed && MUST_RUN_CHAIN_MEMBERS.has(path.basename(member))) {
+      const reason = rawStatus === null ? `signal ${result.signal}` : `rc=${rawStatus}`;
+      process.stderr.write(
+        `run-hook-with-bash: DENY ${path.basename(member)} (${reason}) — must-run guard crashed instead of deciding; failing closed.\n`,
+      );
+      return 2;
+    }
     const status = typeof result.status === 'number' ? result.status : 2;
     const output = parseJsonObject(stdout);
 
