@@ -353,7 +353,16 @@ run_hermes() {
 import os, sys, io
 with io.open(os.environ["HERMES_PROMPT_FILE"], encoding="utf-8") as fh:
     prompt = fh.read()
-argv = ["hermes", "--cli"]
+# HIMMEL-3639: the hermes venv-sync relaunch (hermes_cli/venv_sync.py) does
+# runpy.run_path(Path(argv[0]).absolute()), which resolves a bare "hermes"
+# against the caller cwd -- from a worktree that is <cwd>/hermes (absent), so
+# the relaunched process dies rc=1 and the codex critic reads "unavailable".
+# Hand it the checkout launcher by absolute path instead; fall back to the
+# bare name when the layout is not the expected one.
+import importlib.util
+spec = importlib.util.find_spec("hermes_cli")
+entry = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(spec.origin))), "hermes") if spec and spec.origin else ""
+argv = [entry if os.path.isfile(entry) else "hermes", "--cli"]
 model = os.environ.get("HERMES_ONESHOT_MODEL", "")
 provider = os.environ.get("HERMES_ONESHOT_PROVIDER", "")
 profile = os.environ.get("HERMES_ONESHOT_PROFILE", "")

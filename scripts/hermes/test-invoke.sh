@@ -254,6 +254,38 @@ rc=$?
 grep -q '"outcome":"complete"' "$LEDGER" || fail "normal response: expected outcome=complete in ledger"
 echo "  ok" >&2
 
+# 6b. HIMMEL-3639: argv[0] handed to hermes must be an existing ABSOLUTE path,
+# never a bare "hermes". hermes' venv-sync relaunch does
+# runpy.run_path(Path(argv[0]).absolute()), which resolves a bare name against
+# the caller's cwd -- from a worktree that is <cwd>/hermes, absent, rc=1. Runs
+# the REAL -c snippet under a real python3 against a fake hermes_cli checkout
+# whose main() records sys.argv[0]; the caller cwd deliberately holds no hermes.
+echo "test: argv[0] is an absolute existing launcher (HIMMEL-3639)" >&2
+py3="$(command -v python3 || command -v python || true)"
+if [ -z "$py3" ]; then
+    echo "  skip: no python3 on PATH" >&2
+else
+    fake_co="$stub_dir/fake-checkout"
+    mkdir -p "$fake_co/hermes_cli" "$stub_dir/elsewhere"
+    : > "$fake_co/hermes_cli/__init__.py"
+    printf '#!/usr/bin/env python3\n' > "$fake_co/hermes"
+    cat > "$fake_co/hermes_cli/main.py" <<'PYEOF'
+import os, sys
+def main():
+    with open(os.environ["ARGV0_CAPTURE"], "w") as fh:
+        fh.write(sys.argv[0])
+PYEOF
+    real_py_stub="$stub_dir/real-python"
+    printf '#!/usr/bin/env bash\nPYTHONPATH="%s" exec "%s" "$@"\n' "$fake_co" "$py3" > "$real_py_stub"
+    chmod +x "$real_py_stub"
+    argv0_cap="$stub_dir/argv0"
+    ( cd "$stub_dir/elsewhere" && ARGV0_CAPTURE="$argv0_cap" HERMES_PY="$real_py_stub" bash "$INVOKE" "x" >/dev/null 2>&1 ) \
+        || fail "argv[0]: invoke.sh exited non-zero"
+    got="$(cat "$argv0_cap" 2>/dev/null)"
+    [ "$got" = "$fake_co/hermes" ] || fail "argv[0]: expected the absolute launcher '$fake_co/hermes', got '$got'"
+    echo "  ok" >&2
+fi
+
 # 7. Optional live smoke (one NIM free-tier call) — opt-in only.
 if [ "${HERMES_LIVE_TEST:-0}" = "1" ]; then
     echo "test: LIVE one-shot (nemotron nano)" >&2
