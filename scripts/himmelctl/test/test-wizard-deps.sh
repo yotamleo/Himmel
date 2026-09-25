@@ -342,6 +342,38 @@ grepq "$(cat "$b6_uv_calls_log")" -F 'tool install pre-commit' \
   || fail "case b6: expected a fall-through to 'uv tool install pre-commit' when pre-commit is on PATH but not uv-managed (calls: $(cat "$b6_uv_calls_log"))"
 echo "ok: case b6 — upgrade mode falls through to 'uv tool install pre-commit' when the on-PATH pre-commit is not uv-managed, instead of calling 'uv tool upgrade' on an install uv cannot upgrade"
 
+# ── case b7 (pr-check round 3 finding): upgrade mode must call 'uv tool
+# upgrade pre-commit' when uv manages pre-commit (per `uv tool list`) even
+# though its shim is NOT on PATH -- gating the upgrade verb on `command -v
+# pre-commit` (PATH) as well as `uv tool list` made this fall through to
+# 'uv tool install', which no-ops on an already-installed tool and silently
+# skips the upgrade. ─────────────────────────────────────────────────────────
+b7dir="$work/b7"; mkdir -p "$b7dir/bin" "$b7dir/home/.local/bin"
+cat > "$b7dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then echo "pre-commit v0.0.0"; exit 0; fi
+exit 0
+SH
+chmod +x "$b7dir/home/.local/bin/uv"
+# grep and bash itself are the only external commands this isolated PATH
+# needs besides uv -- symlinked in rather than appending the host's own
+# $PATH, which would leak the STATION's real /usr/bin/pre-commit into
+# `command -v` and mask the exact bug this case exists to catch.
+ln -s "$(command -v grep)" "$b7dir/bin/grep"
+ln -s "$(command -v bash)" "$b7dir/bin/bash"
+# No pre-commit shim anywhere on PATH -- uv manages it (per `uv tool list`
+# above) but the shim itself is missing, standing in for a PATH not yet
+# updated after a prior `uv tool install pre-commit`.
+b7_uv_calls_log="$b7dir/uv-calls.log"; : > "$b7_uv_calls_log"
+HOME="$b7dir/home" PATH="$b7dir/home/.local/bin:$b7dir/bin" UV_CALLS_LOG="$b7_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+grepq "$(cat "$b7_uv_calls_log")" -F 'tool upgrade' \
+  || fail "case b7: uv manages pre-commit (uv tool list) but its shim is not on PATH -- 'uv tool upgrade pre-commit' must still be called (calls: $(cat "$b7_uv_calls_log"))"
+echo "ok: case b7 — upgrade mode calls 'uv tool upgrade pre-commit' when uv manages it even though its shim is not on PATH"
+
 # ── case c: manager:"brew" (install vs upgrade) ─────────────────────────────
 outC1=$("$node_bin" -e "
 const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);

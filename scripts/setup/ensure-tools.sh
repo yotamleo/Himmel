@@ -347,10 +347,15 @@ _ensure_install_precommit() {
   # early grep match SIGPIPEs the producer, and the pipeline status becomes
   # the producer's non-zero one, flipping a genuine match to look like a
   # failure (grep-q-pipe-under-pipefail, HIMMEL-1430).
+  #
+  # `uv tool list` alone -- not a `command -v pre-commit` PATH check -- is
+  # what proves uv manages it: gating on PATH too meant a uv-managed
+  # pre-commit whose shim isn't on PATH fell through to `uv tool install`,
+  # which no-ops on an already-installed tool, silently skipping the upgrade
+  # (pr-check round 3 finding).
   uv_tool_list=$("$uv_bin" tool list 2>/dev/null)
   pc_installed=$(printf '%s\n' "$uv_tool_list" | grep '^pre-commit ') || true
-  if [ "$mode" = upgrade ] && command -v pre-commit >/dev/null 2>&1 \
-    && [ -n "$pc_installed" ]; then
+  if [ "$mode" = upgrade ] && [ -n "$pc_installed" ]; then
     echo "  ensure-tools: upgrading 'pre-commit' via 'uv tool upgrade'..."
     "$uv_bin" tool upgrade pre-commit >/dev/null 2>&1 || { echo "  ensure-tools: 'uv tool upgrade pre-commit' failed -- run it yourself: $uv_bin tool upgrade pre-commit" >&2; return 1; }
     return 0
