@@ -212,7 +212,12 @@ resolve_diff_base() {
             # a rewound/rebased fork default branch is a non-fast-forward
             # update of our OWN prior fetch, not a real history-loss risk — we
             # never read the ref's old value, only its freshest fetch.
-            if git fetch --no-tags --quiet "$push_remote_url" "+HEAD:${scratch_ref}" 2>/dev/null; then
+            # --no-write-fetch-head (git 2.29+; repo minimum is 2.30, see
+            # docs/adoption-trail.html): this hook's caller may have their
+            # own FETCH_HEAD from a real manual fetch moments earlier, and
+            # our scratch-ref fetch must not clobber it (HIMMEL-3477 CR
+            # round 4, CodeRabbit).
+            if git fetch --no-tags --quiet --no-write-fetch-head "$push_remote_url" "+HEAD:${scratch_ref}" 2>/dev/null; then
                 diff_base="$scratch_ref"
                 return 0
             fi
@@ -264,7 +269,7 @@ write_marker_for_branch() {
     local git_dir marker_path short_sha now_ts
     local endpoint="" base_sha=""
     local lock_lib lock_wait lock_rc=0 write_rc=0 lock_owner release_rc=0
-    local prev_marker marker_line rollback_claim
+    local prev_marker marker_line rollback_claim marker_remote
 
     # Skip on the protected default (main OR master) / detached HEAD — pushing the
     # default branch is blocked elsewhere and there's no meaningful diff to review.
@@ -495,7 +500,17 @@ write_marker_for_branch() {
     # own certificate, and refusing this push without undoing the overwrite
     # would leave ITS marker replaced by ours.
     prev_marker=$(cat "${marker_path}" 2>/dev/null || true)
-    marker_line=$(printf '%s | %s | %s | %s | %s | %s | %s\n' "${now_ts}" "${local_sha}" "${audit_kind}" "${push_remote_name}" "${remote_ref}" "${endpoint}" "${base_sha}")
+    # Explicit-URL push (HIMMEL-3477 CR round 4, CodeRabbit): git passes the
+    # SAME string for push_remote_name and push_remote_url in that case (see
+    # resolve_diff_base above), so an embedded credential lands in field 4
+    # raw unless scrubbed here too — scrub_endpoint above only covers field 6.
+    # Field 4 is a display/audit identity only (clear-cr-marker.sh never
+    # resolves the endpoint through it), so scrubbing it costs nothing.
+    marker_remote="$push_remote_name"
+    if [ "$push_remote_name" = "$push_remote_url" ]; then
+        marker_remote=$(scrub_endpoint "$push_remote_name")
+    fi
+    marker_line=$(printf '%s | %s | %s | %s | %s | %s | %s\n' "${now_ts}" "${local_sha}" "${audit_kind}" "${marker_remote}" "${remote_ref}" "${endpoint}" "${base_sha}")
     printf '%s\n' "${marker_line}" > "${marker_path}" || write_rc=$?
     # Releasing tells us whether we STILL held the lock while writing (CR round
     # 2, codex-2): the TTL that keeps a dead holder from wedging the branch can

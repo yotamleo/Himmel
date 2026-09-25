@@ -769,6 +769,17 @@ else
     fail "rewound fork -> expected exit 0 + base=$fx_origin_tip, got rc=$rc base='$fxm_rewind_base'" "out: $out"
 fi
 
+echo "TEST: explicit-URL push does not clobber the caller's own FETCH_HEAD (HIMMEL-3477 CR round 4, CodeRabbit)"
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\t\tsentinel from a real manual fetch moments earlier\n' > "$FX/.git/FETCH_HEAD"
+fetch_head_before=$(cat "$FX/.git/FETCH_HEAD")
+rc=0; out=$(cd "$FX" && bash "$HOOK" "$FORK_URL" "$FORK_URL" <<< "refs/heads/feat/urlpush $fx_feat_sha refs/heads/feat/urlpush $Z40" 2>&1) || rc=$?
+fetch_head_after=$(cat "$FX/.git/FETCH_HEAD" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$fetch_head_after" = "$fetch_head_before" ]; then
+    pass "explicit-URL push preserves the caller's own FETCH_HEAD"
+else
+    fail "explicit-URL push clobbered FETCH_HEAD (before='$fetch_head_before' after='$fetch_head_after' rc=$rc)" "out: $out"
+fi
+
 echo "TEST: explicit-URL push to an unreachable fork with embedded credentials -> refusal does not leak them"
 # Loopback + a closed port (not example.com): a real DNS-resolving host makes
 # this suite depend on network availability and can hang (codex-1 CR finding).
@@ -802,6 +813,12 @@ if [ -f "$sm" ] && grep -q "sekrit123" "$sm"; then
     fail "marker leaks the credential into plaintext under .git"
 else
     pass "marker carries no credential material"
+fi
+sm_remote=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4; exit}' "$sm" 2>/dev/null || true)
+if [ "$sm_remote" = "origin" ]; then
+    pass "named-remote push: marker field 4 stays the remote NAME (guards the ticket's byte-for-byte-unaffected requirement against the explicit-URL scrub branch scope-creeping onto named remotes)"
+else
+    fail "named-remote push: field 4 changed to '$sm_remote', expected 'origin' unchanged" "out: $out"
 fi
 
 echo "TEST: ref push without an endpoint URL -> fail CLOSED naming the missing binding"
