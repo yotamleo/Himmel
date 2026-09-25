@@ -79,3 +79,6 @@ graphify-out/
 # Obsidian graph cache + per-chat asset dumps (machine-local)
 .obsidian/graph.json
 chats/*/_assets/
+
+# Judge/leg scratch dirs (probe scripts, extracted repo trees) — never vault content.
+handovers/**/verdicts/*/scratch/

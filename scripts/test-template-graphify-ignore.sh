@@ -66,6 +66,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 1b. .gitignore: judge/leg scratch dirs (HIMMEL-3598) are ignored, verdicts
+# themselves are not.
+# ---------------------------------------------------------------------------
+if git -C "$WORK/repo" check-ignore -q handovers/u/b/verdicts/J1/scratch/x.sh; then
+    ok "template .gitignore matches handovers/**/verdicts/*/scratch/"
+else
+    bad "template .gitignore does NOT match handovers/**/verdicts/*/scratch/"
+fi
+if git -C "$WORK/repo" check-ignore -q handovers/u/b/verdicts/J1/verdict.md; then
+    bad "template .gitignore wrongly ignores a verdict file (handovers/**/verdicts/*/verdict.md)"
+else
+    ok "template .gitignore does not ignore verdict files"
+fi
+
+# ---------------------------------------------------------------------------
 # 2-4. gitleaks: baseline leaks, allowlisted nonce doesn't, suffixed does.
 # ---------------------------------------------------------------------------
 if ! command -v gitleaks >/dev/null 2>&1; then
