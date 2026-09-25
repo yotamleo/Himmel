@@ -8,6 +8,18 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.57] — 2026-09-25
+
+### Fixed
+- `install-nostash-hooks.sh`: the 0.4.56 commit-msg fix dropped `--files`
+  entirely, which reintroduced pre-commit's own full-repo stash on every
+  commit (`stash = not args.all_files and not args.files`) -- exactly the
+  bug this wrapper exists to prevent. Now passes `--all-files` instead,
+  which still avoids the stash without gating on the staged-file list. The
+  generated `pre-commit`/`commit-msg` runtime hooks also now resolve
+  `pre-commit` vs `python3`/`python -m pre_commit` at hook-run time, not
+  just the install-hooks warm-up step.
+
 ## [0.4.56] — 2026-09-25
 
 ### Fixed
