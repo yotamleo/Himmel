@@ -2627,6 +2627,84 @@ else
     fail "T80: a different doc's namesake lock changed this doc's status (rc=$rc): $out"
 fi
 
+# --- T81-T83: HIMMEL-988 generation fence -----------------------------------
+# A caller that verified ownership and then stalled must not act on the lock
+# generation a takeover minted in the meantime. Each test freezes one caller
+# at its verify->act boundary (the _ql_test_pause seam), lets a second session
+# take the lock over, then resumes the first: it must be REFUSED (rc=2, naming
+# the takeover) and the new holder's lock must be left exactly as it was.
+f_wait_reached() {
+    local i=0
+    while [ ! -e "$1.reached" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+    [ -e "$1.reached" ]
+}
+# The suite-wide root; a named copy so shellcheck does not track the subshell
+# export of HANDOVER_DIR in the T71-T78 block into this one (SC2031).
+F_HO="$TMPDIR_ROOT/handovers"
+f_lockdir() { printf '%s/.locks/queue/%s.lock' "$F_HO" "$1"; }
+
+# T81: holder A frozen mid-heartbeat; B force-takes over; A resumes.
+F_DOC="$F_HO/fence-t81.md"; : > "$F_DOC"
+F_LK="$(f_lockdir fence-t81)"
+bash "$LIB" acquire "$F_DOC" fenceA81 >/dev/null 2>&1
+F_P="$TMPDIR_ROOT/pause-t81"; : > "$F_P"
+( QUEUE_LOCK_TEST_PAUSE_AT=heartbeat-verified QUEUE_LOCK_TEST_PAUSE_FILE="$F_P" \
+    bash "$LIB" heartbeat "$F_DOC" fenceA81 > "$F_P.out" 2>&1; echo $? > "$F_P.rc" ) &
+f_wait_reached "$F_P" || fail "T81: heartbeat never reached the pause point"
+QUEUE_LOCK_TAKEOVER=1 bash "$LIB" acquire "$F_DOC" fenceB81 >/dev/null 2>&1; b_rc=$?
+rm -f "$F_P"; wait
+a_rc="$(cat "$F_P.rc" 2>/dev/null)"
+if [ "$b_rc" -eq 0 ] && [ "$a_rc" = 2 ] && grepq "$(cat "$F_P.out")" -i 'taken over' \
+    && grep -q '"session":"fenceB81"' "$F_LK/owner.json" 2>/dev/null \
+    && [ "$(cat "$F_LK/owner" 2>/dev/null)" = fenceB81 ]; then
+    pass "T81: a heartbeat stalled across a takeover is refused (rc=2) and the new holder's owner.json is intact"
+else
+    fail "T81: stalled heartbeat after takeover: b_rc=$b_rc a_rc=$a_rc out=$(cat "$F_P.out") owner.json=$(cat "$F_LK/owner.json" 2>/dev/null)"
+fi
+bash "$LIB" release "$F_DOC" fenceB81 >/dev/null 2>&1
+
+# T82: holder A frozen mid-release; B force-takes over; A resumes.
+F_DOC="$F_HO/fence-t82.md"; : > "$F_DOC"
+F_LK="$(f_lockdir fence-t82)"
+bash "$LIB" acquire "$F_DOC" fenceA82 >/dev/null 2>&1
+F_P="$TMPDIR_ROOT/pause-t82"; : > "$F_P"
+( QUEUE_LOCK_TEST_PAUSE_AT=release-verified QUEUE_LOCK_TEST_PAUSE_FILE="$F_P" \
+    bash "$LIB" release "$F_DOC" fenceA82 > "$F_P.out" 2>&1; echo $? > "$F_P.rc" ) &
+f_wait_reached "$F_P" || fail "T82: release never reached the pause point"
+QUEUE_LOCK_TAKEOVER=1 bash "$LIB" acquire "$F_DOC" fenceB82 >/dev/null 2>&1; b_rc=$?
+rm -f "$F_P"; wait
+a_rc="$(cat "$F_P.rc" 2>/dev/null)"
+if [ "$b_rc" -eq 0 ] && [ "$a_rc" = 2 ] && grepq "$(cat "$F_P.out")" -i 'taken over' \
+    && grep -q '"session":"fenceB82"' "$F_LK/owner.json" 2>/dev/null; then
+    pass "T82: a release stalled across a takeover is refused (rc=2) and does not delete the new holder's lock"
+else
+    fail "T82: stalled release after takeover: b_rc=$b_rc a_rc=$a_rc out=$(cat "$F_P.out") owner.json=$(cat "$F_LK/owner.json" 2>/dev/null || echo GONE)"
+fi
+bash "$LIB" release "$F_DOC" fenceB82 >/dev/null 2>&1
+
+# T83 (the ticket's scenario): taker A verifies a stale lock under its claim,
+# stalls past the 120s claim TTL; taker B reclaims the expired claim and takes
+# over; A resumes at Step 3. A must not delete B's live generation.
+F_DOC="$F_HO/fence-t83.md"; : > "$F_DOC"
+F_LK="$(f_lockdir fence-t83)"
+bash "$LIB" acquire "$F_DOC" fenceOld83 >/dev/null 2>&1
+F_P="$TMPDIR_ROOT/pause-t83"; : > "$F_P"
+( QUEUE_LOCK_TTL_SECONDS=0 QUEUE_LOCK_TEST_PAUSE_AT=takeover-verified QUEUE_LOCK_TEST_PAUSE_FILE="$F_P" \
+    bash "$LIB" acquire "$F_DOC" fenceA83 > "$F_P.out" 2>&1; echo $? > "$F_P.rc" ) &
+f_wait_reached "$F_P" || fail "T83: taker A never reached the pause point"
+_t_touch_at "$(( $(date -u +%s) - 300 ))" "$F_LK.claim"
+QUEUE_LOCK_TTL_SECONDS=0 bash "$LIB" acquire "$F_DOC" fenceB83 >/dev/null 2>&1; b_rc=$?
+rm -f "$F_P"; wait
+a_rc="$(cat "$F_P.rc" 2>/dev/null)"
+if [ "$b_rc" -eq 0 ] && [ "$a_rc" = 2 ] && grepq "$(cat "$F_P.out")" -i 'taken over' \
+    && grep -q '"session":"fenceB83"' "$F_LK/owner.json" 2>/dev/null \
+    && [ "$(cat "$F_LK/owner" 2>/dev/null)" = fenceB83 ] && [ ! -e "$F_LK.claim" ]; then
+    pass "T83: a taker stalled past its claim TTL is fenced (rc=2) and B's new generation survives"
+else
+    fail "T83: stalled taker after claim reclaim: b_rc=$b_rc a_rc=$a_rc out=$(cat "$F_P.out") owner.json=$(cat "$F_LK/owner.json" 2>/dev/null || echo GONE) claim=$(ls -d "$F_LK.claim" 2>/dev/null)"
+fi
+bash "$LIB" release "$F_DOC" fenceB83 >/dev/null 2>&1
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

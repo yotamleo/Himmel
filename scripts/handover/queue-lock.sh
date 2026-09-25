@@ -389,6 +389,11 @@ _ql_slug() {
 # Returns 1 on any failure; callers MUST check and never report a
 # successful acquire/heartbeat over a failed write -- a torn/absent
 # owner.json parses as CORRUPT-held (fail-closed) forever otherwise.
+#
+# [expect-gen] (HIMMEL-988): when given, the generation the caller verified.
+# It is re-read after the tmp write and right before the mv, and a mismatch
+# returns 3 (tmp removed, owner.json untouched): the lock was taken over and
+# this write would land in the NEW holder's generation.
 _ql_write_owner() {
     local lockdir="$1" session="$2" host="$3" ho="$4" started="$5" heartbeat="$6"
     local tmp="$lockdir/owner.json.tmp.$$"
@@ -400,6 +405,10 @@ _ql_write_owner() {
         > "$tmp" 2>/dev/null; then
         rm -f "$tmp" 2>/dev/null
         return 1
+    fi
+    if [ "$#" -ge 7 ] && [ "$(_ql_read_gen "$lockdir")" != "$7" ]; then
+        rm -f "$tmp" 2>/dev/null
+        return 3
     fi
     if ! mv -f "$tmp" "$lockdir/owner.json" 2>/dev/null; then
         rm -f "$tmp" 2>/dev/null
@@ -1292,6 +1301,59 @@ _ql_emit_close_evidence() {
     fi
 }
 
+# LOCK GENERATION FENCE (HIMMEL-988) ----------------------------------------
+#
+# WHY: every acquire -- fresh or takeover -- recreates the lock dir at the SAME
+# path, so a caller that verified ownership and then stalled (GC pause,
+# suspend, a slow host) acted on whatever lived at that path when it resumed:
+# a stalled heartbeat wrote its owner.json into the NEW holder's lock, a
+# stalled release rm'd it, and a taker stalled past its 120s claim TTL deleted
+# the generation a reclaiming taker had just acquired. Two sessions then both
+# believed they held the queue.
+#
+# FIX: each acquire mints a generation id into <lockdir>/gen (O_EXCL, like the
+# `owner` arbiter), and every destructive or rewriting act re-verifies it at
+# the act boundary: heartbeat and release capture the generation BEFORE they
+# check the token and refuse (rc=2, "taken over") if it changed before they
+# write or delete; a taker re-verifies its claim brand, the lock's bytes and
+# the generation right before its Step-3 delete. `gen` is a separate file on
+# purpose: owner.json (what `status` prints) keeps its exact format. A lock
+# written before this change has no `gen`; it reads as "" and is fenced the
+# moment a takeover gives the path a real one.
+# ponytail: the re-check and the act are two syscalls, so a stall of
+# microseconds exactly between them is still unfenced (the window shrank from
+# "anywhere after verify" to that gap); closing it needs an atomic
+# compare-and-rename of the lock dir, which MSYS rename is not trusted to be
+# (see ATOMIC TAKEOVER). Revisit if a dual-owner incident is ever traced to it.
+
+# _ql_new_gen -- a generation id unique per acquire on this host.
+_ql_new_gen() { printf 'g%s-%s-%s%s' "$(_ql_now_epoch)" "$$" "$RANDOM" "$RANDOM"; }
+
+# _ql_read_gen <lockdir> -- the lock's generation, "" when it has none.
+_ql_read_gen() { cat "$1/gen" 2>/dev/null || true; }
+
+# _ql_brand_gen <lockdir> -- write a fresh generation (O_EXCL). rc!=0 = not
+# written; the caller treats that like a failed owner.json write.
+_ql_brand_gen() { ( set -C; _ql_new_gen > "$1/gen" ) 2>/dev/null; }
+
+# _ql_test_pause <point> -- TEST SEAM (HIMMEL-988). Inert unless BOTH
+# QUEUE_LOCK_TEST_PAUSE_AT names this point and QUEUE_LOCK_TEST_PAUSE_FILE is
+# set: then it creates <file>.reached and waits (bounded, ~30s) while <file>
+# exists. It lets a test freeze one caller between its ownership check and
+# its act, so an interleaving can be replayed deterministically instead of
+# hoped for. The seam only ever delays; it never changes a decision.
+_ql_test_pause() {
+    [ "${QUEUE_LOCK_TEST_PAUSE_AT:-}" = "$1" ] || return 0
+    local f="${QUEUE_LOCK_TEST_PAUSE_FILE:-}" i=0
+    [ -n "$f" ] || return 0
+    : > "$f.reached" 2>/dev/null
+    while [ -e "$f" ] && [ "$i" -lt 600 ]; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    return 0
+}
+
 # Drop a takeover claim only while its atomic owner brand still names us.
 # A taker that outlives the 120s claim TTL must not remove a reclaimer's
 # newly created generation.
@@ -1361,11 +1423,12 @@ queue_lock_acquire() {
     # open(O_CREAT|O_EXCL), so only its winner may brand owner.json.
     if mkdir "$lockdir" 2>/dev/null; then
         if ( set -C; printf '%s' "$session" > "$lockdir/owner" ) 2>/dev/null; then
-            if ! _ql_write_owner "$lockdir" "$session" "$host" "$ho" "$now" "$now"; then
+            if ! _ql_brand_gen "$lockdir" \
+                || ! _ql_write_owner "$lockdir" "$session" "$host" "$ho" "$now" "$now"; then
                 # C3: never report acquired over a failed owner write -- the
                 # torn lock would parse as CORRUPT-held (fail-closed) forever.
                 rm -rf "$lockdir" 2>/dev/null
-                echo "queue-lock: acquire FAILED -- owner.json could not be written; the lock dir was removed, nothing is acquired" >&2
+                echo "queue-lock: acquire FAILED -- owner.json (or its generation) could not be written; the lock dir was removed, nothing is acquired" >&2
                 return 1
             fi
             _ql_write_root_marker "$lockdir" "$lock_root"
@@ -1407,7 +1470,8 @@ queue_lock_acquire() {
 
     # ONE raw read; every field (and the CAS verify in the takeover branch)
     # derives from this single captured generation.
-    local o_raw o_session o_host o_started o_heartbeat
+    local o_raw o_gen o_session o_host o_started o_heartbeat
+    o_gen=$(_ql_read_gen "$lockdir")
     o_raw=$(cat "$lockdir/owner.json" 2>/dev/null) || o_raw=""
     o_session=$(_ql_json_field_str "$o_raw" session)
     o_host=$(_ql_json_field_str "$o_raw" host)
@@ -1497,13 +1561,30 @@ queue_lock_acquire() {
         # CAS re-verify under the claim (step 2).
         local v_raw
         v_raw=$(cat "$lockdir/owner.json" 2>/dev/null) || v_raw=""
-        if [ "$v_raw" != "$o_raw" ]; then
+        if [ "$v_raw" != "$o_raw" ] || [ "$(_ql_read_gen "$lockdir")" != "$o_gen" ]; then
             _ql_takeover_claim_release "$claim" "$claim_token" || true
             local n_session n_host
             n_session=$(_ql_json_field_str "$v_raw" session)
             n_host=$(_ql_json_field_str "$v_raw" host)
             {
                 echo "queue-lock: takeover aborted -- the lock changed hands since it was read; now held by session=${n_session:-unknown} host=${n_host:-unknown}"
+                echo "Work is owned elsewhere. Pick a different queue, or check again with: queue-lock.sh status"
+            } >&2
+            return 2
+        fi
+        _ql_test_pause takeover-verified
+        # HIMMEL-988 fence: a taker that stalled here past the 120s claim TTL
+        # may find the claim reclaimed and the lock re-acquired by another
+        # taker. Re-verify the claim brand, the verified bytes and the
+        # generation at the delete boundary; any change = hands off.
+        local f_claim f_raw
+        f_claim=$(cat "$claim/owner" 2>/dev/null) || f_claim=""
+        f_raw=$(cat "$lockdir/owner.json" 2>/dev/null) || f_raw=""
+        if [ "$f_claim" != "$claim_token" ] || [ "$f_raw" != "$o_raw" ] \
+            || [ "$(_ql_read_gen "$lockdir")" != "$o_gen" ]; then
+            _ql_takeover_claim_release "$claim" "$claim_token" || true
+            {
+                echo "queue-lock: takeover fenced -- this taker stalled and the lock was taken over meanwhile (claim reclaimed or generation changed); now held by session=$(_ql_json_field_str "$f_raw" session). Nothing was deleted."
                 echo "Work is owned elsewhere. Pick a different queue, or check again with: queue-lock.sh status"
             } >&2
             return 2
@@ -1528,12 +1609,13 @@ queue_lock_acquire() {
             fi
         fi
         if [ "$takeover_owner_ok" -eq 1 ]; then
-            if ! _ql_write_owner "$lockdir" "$session" "$host" "$ho" "$now" "$now"; then
+            if ! _ql_brand_gen "$lockdir" \
+                || ! _ql_write_owner "$lockdir" "$session" "$host" "$ho" "$now" "$now"; then
                 # C3: same contract as the fresh path -- never report a
                 # takeover over a failed owner write.
                 rm -rf "$lockdir" 2>/dev/null
                 _ql_takeover_claim_release "$claim" "$claim_token" || true
-                echo "queue-lock: takeover FAILED -- owner.json could not be written; the lock dir was removed, nothing is acquired" >&2
+                echo "queue-lock: takeover FAILED -- owner.json (or its generation) could not be written; the lock dir was removed, nothing is acquired" >&2
                 return 1
             fi
             printf '%s took over from session=%s host=%s started=%s heartbeat=%s reason=%s new_session=%s new_host=%s\n' \
@@ -1629,7 +1711,10 @@ queue_lock_heartbeat() {
         # lives in any other root -- fall through to the holder check below
         # for the unchanged rc=2 "held by session=..." refusal.
     fi
-    local o_session o_host o_started
+    # HIMMEL-988: the generation is read BEFORE the token check, so the write
+    # below can only land in the generation that check verified.
+    local o_session o_host o_started hb_gen hb_rc
+    hb_gen=$(_ql_read_gen "$lockdir")
     o_session=$(_ql_json_field "$lockdir/owner.json" session)
     o_host=$(_ql_json_field "$lockdir/owner.json" host)
     o_started=$(_ql_json_field "$lockdir/owner.json" started)
@@ -1643,7 +1728,14 @@ queue_lock_heartbeat() {
         return 2
     fi
     session="$o_session"
-    if ! _ql_write_owner "$lockdir" "$o_session" "$o_host" "$ho" "$o_started" "$(_ql_now_iso)"; then
+    _ql_test_pause heartbeat-verified
+    _ql_write_owner "$lockdir" "$o_session" "$o_host" "$ho" "$o_started" "$(_ql_now_iso)" "$hb_gen"
+    hb_rc=$?
+    if [ "$hb_rc" -eq 3 ]; then
+        echo "queue-lock: heartbeat refused -- the lock was taken over after this heartbeat verified it (generation changed; now held by session=$(_ql_json_field "$lockdir/owner.json" session)); nothing was written" >&2
+        return 2
+    fi
+    if [ "$hb_rc" -ne 0 ]; then
         echo "queue-lock: heartbeat FAILED -- owner.json could not be rewritten atomically (the previous heartbeat stays in effect)" >&2
         return 1
     fi
@@ -1752,6 +1844,9 @@ queue_lock_release() {
         # (or, for a lock dir with no readable owner.json, the unchanged
         # corrupt-lock cleanup).
     fi
+    # HIMMEL-988: generation read BEFORE the token check -- see heartbeat.
+    local rel_gen
+    rel_gen=$(_ql_read_gen "$lockdir")
     if [ -f "$lockdir/owner.json" ]; then
         local o_session
         o_session=$(_ql_json_field "$lockdir/owner.json" session)
@@ -1765,6 +1860,11 @@ queue_lock_release() {
             return 2
         fi
         [ -n "$o_session" ] && session="$o_session"
+    fi
+    _ql_test_pause release-verified
+    if [ "$(_ql_read_gen "$lockdir")" != "$rel_gen" ]; then
+        echo "queue-lock: release refused -- the lock was taken over after this release verified it (generation changed; now held by session=$(_ql_json_field "$lockdir/owner.json" session)); nothing was released" >&2
+        return 2
     fi
     rm -rf "$lockdir" 2>/dev/null
     if [ -d "$lockdir" ]; then
