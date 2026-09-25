@@ -1175,6 +1175,33 @@ case "$out" in
     *) fail "P1(b) refusal should name origin-unreachability" "out: $out" ;;
 esac
 
+echo "TEST: HIMMEL-3634 P1(c)/codex-1 — forged origin/main tracking ref survives a fetch whose remote.origin.fetch has been cleared -> still refused"
+B2C="$TMP_ROOT/p1-b2c"
+git clone -q "$ORIGIN_P1" "$B2C"
+git -C "$B2C" branch -m main 2>/dev/null || true
+git -C "$B2C" checkout -q -b feat/sneaky2c main
+echo 'function sneaky2c(){}' > "$B2C/sneaky2c.sh"
+git -C "$B2C" add sneaky2c.sh
+git -C "$B2C" -c user.email=b@t -c user.name=b commit -q -m "sneaky2c, never sent to origin"
+sneaky2c_sha=$(git -C "$B2C" rev-parse HEAD)
+git -C "$B2C" update-ref refs/remotes/origin/main "$sneaky2c_sha"
+# The codex-1 vector: a bare `git fetch origin main` only refreshes
+# refs/remotes/origin/main as a side effect of a MATCHING
+# remote.origin.fetch refspec. Clearing it (no network needed, same
+# tampering class as the update-ref forgery above) makes that refresh a
+# silent no-op, leaving the forged tracking ref untouched -- unless the
+# fetch targets a dedicated scratch ref via an explicit destination
+# refspec, which git always writes regardless of configured refspecs.
+git -C "$B2C" config --unset-all remote.origin.fetch || true
+rc=0
+out=$(cd "$B2C" && bash "$HOOK" origin "$ORIGIN_P1" <<< "refs/heads/feat/sneaky2c $sneaky2c_sha refs/heads/feat/sneaky2c $Z40" 2>&1) || rc=$?
+sneaky2c_marker="$B2C/.git/cr-pending/feat/sneaky2c"
+if [ "$rc" -eq 2 ] && [ ! -f "$sneaky2c_marker" ]; then
+    pass "P1(c)/codex-1: cleared remote.origin.fetch does not resurrect the forged-tracking-ref bypass"
+else
+    fail "P1(c)/codex-1: expected exit 2 + no marker" "rc=$rc marker=$([ -f "$sneaky2c_marker" ] && echo present || echo absent) / out: $out"
+fi
+
 echo "TEST: control — a normal push with a real (non-empty) diff still reviews the same range"
 B3="$TMP_ROOT/p1-b3"
 git clone -q "$ORIGIN_P1" "$B3"

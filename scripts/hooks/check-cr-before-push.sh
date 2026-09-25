@@ -298,25 +298,38 @@ resolve_diff_base() {
 # leaving `gh pr create` ungated.
 # The one base no pusher can rewrite is origin's REAL default branch, fetched
 # FRESH right now — a cached refs/remotes/origin/$db is exactly what the
-# local-rewrite attack falsifies, so this never trusts it unrefreshed. Skip
-# stays safe (return 0) only when local_sha is an ancestor of that
-# freshly-fetched ref — the legitimate case (HIMMEL-3477: pushing to a
-# companion/target remote where content is already merged to origin/$db but
-# new to the target) always satisfies this, since "already merged to
-# origin/$db" is exactly what it means. Fails CLOSED (2) when origin can't be
-# fetched at all: an unverifiable empty diff must not read as "reviewed"
-# (HIMMEL-323 direction).
+# local-rewrite attack falsifies, so this never trusts it unrefreshed. The
+# fetch destination must be a scratch ref THIS hook owns, never
+# refs/remotes/origin/$db itself (HIMMEL-3634 codex-1): a bare `git fetch
+# origin $db` only updates that remote-tracking ref as a side effect of a
+# MATCHING remote.origin.fetch refspec — a pusher who locally clears or
+# repoints remote.origin.fetch (same "no network needed" tampering class as
+# the update-ref attack this function exists to close) makes the fetch a
+# silent no-op against that ref, leaving a forged refs/remotes/origin/$db
+# untouched and the bypass wide open again (reproduced in a scratch repo:
+# unset remote.origin.fetch, fetch rc=0, tracking ref unchanged). An explicit
+# destination refspec (+$db:refs/cr/verify-base/$db) has no such dependency —
+# git always writes the named destination for an explicit refspec, config or
+# no config — confirmed the same scratch repo resolves to origin's real tip
+# through the dedicated ref regardless. Skip stays safe (return 0) only when
+# local_sha is an ancestor of that freshly-fetched scratch ref — the
+# legitimate case (HIMMEL-3477: pushing to a companion/target remote where
+# content is already merged to origin/$db but new to the target) always
+# satisfies this, since "already merged to origin/$db" is exactly what it
+# means. Fails CLOSED (2) when origin can't be fetched at all: an
+# unverifiable empty diff must not read as "reviewed" (HIMMEL-323 direction).
 verify_empty_diff_is_reviewed() {
     local local_sha="$1"
     local fetch_rc=0
+    local scratch_ref="refs/cr/verify-base/${db}"
 
     # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
-    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head origin "$db" 2>/dev/null || fetch_rc=$?
+    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head origin "+${db}:${scratch_ref}" 2>/dev/null || fetch_rc=$?
     if [ "$fetch_rc" -ne 0 ]; then
         echo "→ code-review: diff vs ${diff_base} was empty, but re-verifying against a FRESH fetch of origin/${db} failed (origin unreachable?) — refusing the push rather than trusting an unverifiable empty diff (bypass with SKIP_CR=1 or git push --no-verify)" >&2
         return 2
     fi
-    if git merge-base --is-ancestor "$local_sha" "refs/remotes/origin/${db}" 2>/dev/null; then
+    if git merge-base --is-ancestor "$local_sha" "$scratch_ref" 2>/dev/null; then
         return 0
     fi
     echo "→ code-review: diff vs ${diff_base} was empty, but ${local_sha:0:8} is NOT reachable from origin/${db} (freshly fetched) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, or a local tracking ref never re-fetched — so only origin's real history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
