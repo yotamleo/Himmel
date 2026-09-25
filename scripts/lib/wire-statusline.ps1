@@ -315,12 +315,27 @@ function Set-HimmelStatusLine {
         if ($hudTmp -and (Test-Path $hudTmp)) {
             Move-Item -Path $hudTmp -Destination $hudConfigPath -Force -ErrorAction Stop
             # HIMMEL-3334 migration: the new config just published supersedes
-            # a pre-HIMMEL-3334 config left in the swept plugin dir -- drop it
-            # so nothing himmel wrote still squats there. Best-effort: a
-            # failed removal is not fatal (the new, un-swept config is
-            # already live and takes precedence).
+            # a pre-HIMMEL-3334 config left in the swept plugin dir -- drop it,
+            # but only when its customLineCommand matches himmel's own shape
+            # (the same check unwire-hud-config.sh uses on the bash side), so
+            # a file an operator or another tool left at that exact path is
+            # never silently destroyed. Best-effort: a failed removal is not
+            # fatal (the new, un-swept config is already live and takes
+            # precedence).
             if (Test-Path $hudOldConfigPath) {
-                Remove-Item -LiteralPath $hudOldConfigPath -Force -ErrorAction SilentlyContinue
+                $hudOldIsHimmels = $false
+                try {
+                    $hudOldJson = Get-Content $hudOldConfigPath -Raw | ConvertFrom-Json
+                    $hudOldLineCmd = $hudOldJson.display.customLineCommand
+                    if ($hudOldLineCmd -and $hudOldLineCmd -match '^(HIMMEL_STATUSLINE_ECON=[A-Za-z0-9]+ )?bash "[^"]*/scripts/statusline/hud-custom-lines\.sh"$') {
+                        $hudOldIsHimmels = $true
+                    }
+                } catch {
+                    $hudOldIsHimmels = $false
+                }
+                if ($hudOldIsHimmels) {
+                    Remove-Item -LiteralPath $hudOldConfigPath -Force -ErrorAction SilentlyContinue
+                }
             }
         }
         Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force -ErrorAction Stop

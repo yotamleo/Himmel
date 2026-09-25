@@ -400,10 +400,15 @@ wire_statusline() {
     [ "$hud_rec" = 1 ] || echo "wire-statusline: warning: provenance record failed (the hud config is written; uninstall will keep it)" >&2
     rm -f "$hud_snap"
     # HIMMEL-3334 migration: the new config just published supersedes a
-    # pre-HIMMEL-3334 config left in the swept plugin dir — drop it so nothing
-    # himmel wrote still squats there. Best-effort: a failed removal is not
-    # fatal (the new, un-swept config is already live and takes precedence).
-    [ -f "$hud_old_cfg" ] && rm -f "$hud_old_cfg"
+    # pre-HIMMEL-3334 config left in the swept plugin dir — drop it, but only
+    # when its customLineCommand matches himmel's own shape (the same check
+    # unwire-hud-config.sh uses), so a file an operator or another tool left
+    # at that exact path is never silently destroyed. Best-effort: a failed
+    # removal is not fatal (the new, un-swept config is already live and
+    # takes precedence).
+    if [ -f "$hud_old_cfg" ] && jq -e '((.display.customLineCommand? // "") | test("^(HIMMEL_STATUSLINE_ECON=[A-Za-z0-9]+ )?bash \"[^\"]*/scripts/statusline/hud-custom-lines[.]sh\"$"))' "$hud_old_cfg" >/dev/null 2>&1; then
+      rm -f "$hud_old_cfg"
+    fi
   fi
 
   mv "$settings.statusline.tmp" "$settings" \
