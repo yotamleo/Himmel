@@ -608,7 +608,8 @@ segment_is_safe() {
             sort)                          # `sort -o FILE` writes a file — guard it
                 for k in "${a[@]}"; do
                     case "$k" in
-                        -o|--output|-o*|--output=*) return 1 ;;
+                        -o|-o*) return 1 ;;
+                        --*) guard_is_long_abbrev "output" "$k" && return 1 ;;
                     esac
                 done ;;
             xxd)                           # `xxd in out` / `xxd -r in out` writes
@@ -624,15 +625,24 @@ segment_is_safe() {
                 [ "$xops" -ge 2 ] && return 1 ;;         # infile + outfile = write
             tree)                          # `tree -o FILE` / `--output FILE` writes
                 for k in "${a[@]}"; do
-                    case "$k" in -o|--output|-o*|--output=*) return 1 ;; esac
+                    case "$k" in
+                        -o|-o*) return 1 ;;
+                        --*) guard_is_long_abbrev "output" "$k" && return 1 ;;
+                    esac
                 done ;;
             base64)                        # BSD `base64 -o FILE` writes a file
                 for k in "${a[@]}"; do
-                    case "$k" in -o|--output|-o*|--output=*) return 1 ;; esac
+                    case "$k" in
+                        -o|-o*) return 1 ;;
+                        --*) guard_is_long_abbrev "output" "$k" && return 1 ;;
+                    esac
                 done ;;
             file)                          # `file -C [-m mf]` compiles/writes <mf>.mgc
                 for k in "${a[@]}"; do
-                    case "$k" in -C|--compile) return 1 ;; esac
+                    case "$k" in
+                        -C) return 1 ;;
+                        --*) guard_is_long_abbrev "compile" "$k" && return 1 ;;
+                    esac
                 done ;;
         esac
         return 0
@@ -1023,6 +1033,17 @@ emit_deny() {
 
 # --- Fail open on anything we cannot evaluate ---
 command -v jq >/dev/null 2>&1 || exit 0
+# HIMMEL-2610: guard_is_long_abbrev (GNU getopt_long-style unambiguous
+# long-option abbreviation matching, shared via lib.sh) lets is_safe_bin's
+# write-flag checks (sort/tree/base64 --output, file --compile) recognize an
+# abbreviated spelling the same as the full one. Fail OPEN like every other
+# capability check in this file (see header CONTRACT) — this hook only ever
+# emits "allow" or silence, so an unsourceable lib.sh must not change that;
+# it just means the extra abbreviation recognition is unavailable this run.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+{ [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null || exit 0
 # HIMMEL-2123: bash builtin `read` instead of `$(cat)` drops one spawn.
 input=""
 IFS= read -r -d '' input 2>/dev/null || true

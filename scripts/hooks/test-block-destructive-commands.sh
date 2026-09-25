@@ -273,6 +273,17 @@ assert_rc "R1- rmzexe -rf x (literal-dot pin)" 0 "$(run_case "$(j_bash 'rmzexe -
 # R2 recursive rm (`--recursive` long form).
 assert_rc "R2+ rm --recursive build"        2 "$(run_case "$(j_bash 'rm --recursive build')")"
 assert_rc "R2- grep --recursive rm src/"    0 "$(run_case "$(j_bash 'grep --recursive rm src/')")"
+# HIMMEL-2610: `--recursive` is the only GNU rm long option starting with
+# `r`, so getopt_long accepts any unambiguous prefix from `--r` up - a
+# spelling the R2 literal-word match used to miss entirely (confirmed ALLOW
+# at base, rc=0).
+assert_rc "R2+ rm --rec build (abbrev)"     2 "$(run_case "$(j_bash 'rm --rec build')")"
+assert_rc "R2+ rm --r build (min abbrev)"   2 "$(run_case "$(j_bash 'rm --r build')")"
+# negative control: an unrelated rm long option (and its own abbreviation)
+# must not be swept in by the broadened prefix match.
+assert_rc "R2- rm --verbose x (unrelated)"  0 "$(run_case "$(j_bash 'rm --verbose x')")"
+assert_rc "R2- rm --v x (unrelated abbrev)" 0 "$(run_case "$(j_bash 'rm --v x')")"
+assert_rc "R2- grep --rec pattern src/"     0 "$(run_case "$(j_bash 'grep --rec pattern src/')")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
 # continuation but carries `-f` (no `r`), pinning the `\\` + `;+` escapes.
 cont_allow='rm \

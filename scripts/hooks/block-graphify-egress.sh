@@ -115,7 +115,24 @@ guard_cmdpos_grammar
 # function, since widening block-destructive-commands.sh's own grammar is a
 # bigger, separately-reviewed change against its own 1000+-case suite, not
 # something this ticket's diff should risk.
-CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|setsid([[:space:]]+-[^[:space:]]+)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|timeout([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?))*[[:space:]]+[^-[:space:]][^[:space:]]*|nice([[:space:]]+(-n[[:space:]]+[^-[:space:]][^[:space:]]*|--adjustment[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|time([[:space:]]+(-[of][[:space:]]+[^-[:space:]][^[:space:]]*|--output[[:space:]]+[^-[:space:]][^[:space:]]*|--format[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|exec([[:space:]]+(-a[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|command([[:space:]]+-[^[:space:]]+)*|nohup([[:space:]]+--)?|builtin|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
+# HIMMEL-2610: the nice/time alternatives below matched --adjustment/
+# --output/--format as BARE LITERALS, so a GNU-unambiguous abbreviation
+# (`nice --adj 5 graphify ...`) fell through to the generic bare-flag
+# alternative (`-[^[:space:]]+`, no value consumed), leaving the flag's
+# VALUE token where this regex next expects `graphify` - the whole
+# alternation fails to match and this PRE-FILTER routes nothing to the real
+# fence: a full, silent bypass of the entire egress guard for that shape
+# (confirmed empirically; see scripts/guardrails/test-graphify-fence.sh
+# HIMMEL-2610 block for the classify_clause-side twin of this same fix).
+# `--a[a-z-]*` / `--o[a-z-]*` / `--f[a-z-]*` cover every unambiguous
+# abbreviation of nice's only value-taking long option (--adjustment, the
+# only nice long option starting with 'a') and time's two (--output/
+# --format, the only time long options starting with 'o'/'f') - this is a
+# PRE-FILTER, so over-matching (e.g. an ambiguous or nonexistent spelling)
+# only costs one extra fence call, never a false block; exec/command/nohup
+# have no long-option forms in bash's builtins, so those alternatives are
+# unchanged.
+CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|setsid([[:space:]]+-[^[:space:]]+)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|timeout([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?))*[[:space:]]+[^-[:space:]][^[:space:]]*|nice([[:space:]]+(-n[[:space:]]+[^-[:space:]][^[:space:]]*|--a[a-z-]*[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|time([[:space:]]+(-[of][[:space:]]+[^-[:space:]][^[:space:]]*|--o[a-z-]*[[:space:]]+[^-[:space:]][^[:space:]]*|--f[a-z-]*[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|exec([[:space:]]+(-a[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]+))*|command([[:space:]]+-[^[:space:]]+)*|nohup([[:space:]]+--)?|builtin|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
 cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;')
 
 # HIMMEL-2615: the repo's own quiet runner (`scripts/quiet-run.sh <label> --

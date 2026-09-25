@@ -694,6 +694,48 @@ run_hook deny "19: standalone Move-to (no preceding Update File) -> deny (malfor
 run_hook deny "19: Move-to after Delete File -> deny (malformed, fail-closed)" \
     "$(apply_patch_json "$(printf '*** Begin Patch\n*** Delete File: %s/scripts/foo.sh\n*** Move to: %s/scripts/bar.sh\n*** End Patch\n' "$REPO" "$REPO")" "$REPO")" 1
 
+echo "== 20: HIMMEL-2610 - env/timeout/sudo wrapper arms recognize abbreviated long options =="
+# _clause_head_idx's env/timeout/sudo wrapper arms used to match only the
+# LITERAL full spelling of each flag that takes a separate value
+# (--unset/--kill-after/--signal). An unrecognized abbreviated spelling fell
+# to the generic `-*` catch-all, which skips only ONE token instead of the
+# two the flag+value pair needs - the value token then gets misread as the
+# wrapper's resolved clause head, hiding the real write verb behind it.
+# `guard_is_long_abbrev` (scripts/guardrails/lib.sh) now recognizes any
+# unambiguous getopt_long-style prefix, same as HIMMEL-2592's precedent.
+run_hook deny "20: env --unset FOO cp x scripts/hooks/a.sh (control, unabbreviated)" \
+    "$(bash_json "env --unset FOO cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "20: env --u FOO cp x scripts/hooks/a.sh (abbrev of --unset)" \
+    "$(bash_json "env --u FOO cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "20: timeout --kill-after 99 cp x scripts/hooks/a.sh (control, unabbreviated)" \
+    "$(bash_json "timeout --kill-after 99 cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "20: timeout --k 99 cp x scripts/hooks/a.sh (abbrev of --kill-after)" \
+    "$(bash_json "timeout --k 99 cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "20: sudo --user root cp x scripts/hooks/a.sh (sudo had NO long-option handling at all)" \
+    "$(bash_json "sudo --user root cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "20: sudo --us root cp x scripts/hooks/a.sh (abbrev of --user)" \
+    "$(bash_json "sudo --us root cp x scripts/hooks/a.sh" "$REPO")" 1
+
+# negative controls: an unrelated wrapper flag (and its own abbreviation)
+# that takes NO value must not eat the next token either.
+run_hook deny "20: env --version cp x scripts/hooks/a.sh (unrelated no-value flag)" \
+    "$(bash_json "env --version cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "20: timeout --foreground 5 cp x scripts/hooks/a.sh (unrelated no-value flag)" \
+    "$(bash_json "timeout --foreground 5 cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "20: sudo --preserve-env cp x scripts/hooks/a.sh (unrelated no-value flag)" \
+    "$(bash_json "sudo --preserve-env cp x scripts/hooks/a.sh" "$REPO")" 1
+
+# reason assertion (not just rc): the abbreviated exploit must deny for the
+# SAME enforcement-path reason as the unabbreviated control, not some other
+# unrelated denial.
+out=$(printf '%s' "$(bash_json "env --u FOO cp x scripts/hooks/a.sh" "$REPO")" \
+    | env HIMMEL_LESSON_LOOP=1 LESSON_FENCE_POLICY="$POLICY_COPY" "$BASH_BIN" "$FENCE" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "class=hooks"; then
+    pass "20: env --u abbreviation denies with the enforcement-path (class=hooks) reason"
+else
+    fail "20: env --u expected rc=2 + class=hooks reason, got rc=$rc out=$out"
+fi
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

@@ -397,6 +397,32 @@ allow "xargs -I{} does not make a non-gate look like one" \
 allow "EXPECTED RESIDUAL: gate inside a -c payload is not scanned" \
       "bash -c 'scripts/check-ci.sh' | tail -20"
 
+# --- HIMMEL-2610: an ABBREVIATED long option must be recognized the same as
+# the full spelling (GNU getopt_long-style unambiguous abbreviation) — an
+# unrecognized abbreviation left its operand token to be misread as the
+# invoked program, so the gate behind it went unseen. sudo/env/nice/timeout/
+# xargs/time all real getopt_long tools; bash/sh/zsh's own long options are
+# NOT abbreviation-aware (empirically confirmed) so that arm is untouched. ---
+deny "sudo --us (abbrev of --user) before the gate" \
+     'sudo --us root bash scripts/check-ci.sh | tail -20'
+deny "env --u (abbrev of --unset) before the gate" \
+     'env --u FOO bash scripts/check-ci.sh | tail -20'
+deny "nice --adj (abbrev of --adjustment) before the gate" \
+     'nice --adj 10 bash scripts/check-ci.sh | tail -20'
+deny "timeout --k (abbrev of --kill-after) before the gate" \
+     'timeout --k 5 30s bash scripts/check-ci.sh | tail -20'
+deny "xargs --max-p (abbrev of --max-procs, split operand) before the gate" \
+     'xargs --max-p 1 bash scripts/check-ci.sh | tail -20'
+deny "GNU time --o (abbrev of --output) before the gate" \
+     'time --o log scripts/check-ci.sh | tail -20'
+# negative controls: an abbreviation that does NOT prefix any operand-taking
+# long option in the launcher's table must not be swallowed, and a non-gate
+# program behind a real abbreviation still allows.
+allow "sudo --us operand does not make a non-gate look like one" \
+      'sudo --us root grep x f | head -5'
+allow "sudo --E (not a prefix of any operand-taking sudo option) allows" \
+      'sudo --E grep x f | head -5'
+
 # --- BYPASS: the documented same-line marker --------------------------------
 allow "same-line tail-pipe-ok marker" \
       'bash scripts/cr/clear-cr-marker.sh x | tail -20  # tail-pipe-ok: rc irrelevant, output only'

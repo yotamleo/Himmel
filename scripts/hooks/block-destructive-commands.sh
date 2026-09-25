@@ -393,7 +393,12 @@ RM_R_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})[
 if [[ $rm_scrub =~ $RM_R_PAT ]]; then
     deny "recursive rm"
 fi
-RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*--recursive([^[:alnum:]_-]|$)'
+# HIMMEL-2610: `--recursive` is the only GNU rm long option starting with
+# `r` (force/interactive/one-file-system/no-preserve-root/preserve-root/dir/
+# verbose/help/version all start elsewhere), so getopt_long accepts any
+# unambiguous prefix from `--r` up - `--rec`, `--recu`, etc. all spell
+# --recursive and must trip this the same as the full word.
+RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
 if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
     deny "recursive rm"
 fi

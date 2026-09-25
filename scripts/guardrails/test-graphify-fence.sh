@@ -873,6 +873,44 @@ run_fence allow no "$HIMMEL" "nice -n 5 ls -> allow (not graphify)" \
 run_fence allow no "$HIMMEL" "time -p echo graphify -> allow (not command position)" \
     "time -p echo graphify"
 
+echo "== HIMMEL-2610: nice/time abbreviated long options =="
+
+# Before the fix, the nice/time arms matched their value-taking long option
+# (--adjustment / --output / --format) as a BARE LITERAL with no abbreviation
+# support. An unrecognized spelling (any GNU-unambiguous abbreviation of that
+# option, e.g. --adj) fell to the generic `-*` catch-all, which consumes only
+# the flag TOKEN itself and not its separate value - the wrapper walk then
+# resolved the option's VALUE token as the wrapper's head, never reaching
+# `graphify` at all, and the whole clause went unclassified (allow). Same
+# misalignment mechanism as HIMMEL-2592 / HIMMEL-2610's other sites.
+
+# (G1) nice --adj (unambiguous abbreviation of --adjustment) -> deny
+run_fence deny no "$HIMMEL" "nice --adj 5 graphify salus -> deny (abbrev)" \
+    "nice --adj 5 graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G2) nice --adjustment=N (attached value, single token) -> deny
+run_fence deny no "$HIMMEL" "nice --adjustment=5 graphify salus -> deny (attached)" \
+    "nice --adjustment=5 graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G3) negative control: nice --version does NOT take a value and is not a
+# prefix of --adjustment - it must not swallow the next token (which would
+# eat `graphify` itself as a bogus adjustment value and hide the clause).
+run_fence deny no "$HIMMEL" "nice --version graphify salus -> deny (unrelated flag not swallowed)" \
+    "nice --version graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G4) time --for (unambiguous abbreviation of --format) -> deny
+run_fence deny no "$HIMMEL" "time --for %e graphify salus -> deny (abbrev)" \
+    "time --for %e graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G5) time --o (unambiguous abbreviation of --output) -> deny
+run_fence deny no "$HIMMEL" "time --o /tmp/x graphify salus -> deny (abbrev)" \
+    "time --o /tmp/x graphify update $SALUS/notes/patient.md --backend glm"
+
+# (G6) negative control: time --verbose does not take a value and is not a
+# prefix of --output/--format - must not swallow the next token.
+run_fence deny no "$HIMMEL" "time --verbose graphify salus -> deny (unrelated flag not swallowed)" \
+    "time --verbose graphify update $SALUS/notes/patient.md --backend glm"
+
 echo "== HIMMEL-621: xargs / find -exec fail-closed deny =="
 
 # (X1) graphify as xargs command -> deny outright (not statically fenceable)
@@ -1073,6 +1111,43 @@ payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"graphify update %
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "hook: graphify himmel -> delegated allow rc=0"; else fail "hook: expected rc=0 got rc=$rc out=$out"; fi
+
+# HIMMEL-2610: the hook's CMDPOS pre-filter regex must recognize abbreviated
+# nice/time long options (not just their literal full spellings), or the
+# wrapped clause under-consumes a token, CMDPOS never matches "graphify" at
+# command position, and the hook exits 0 WITHOUT EVER INVOKING THE FENCE — a
+# full silent bypass, more severe than a classify_clause-side miss since
+# there is no downstream fail-closed catch-all at this layer.
+
+# nice --adj (abbreviation of --adjustment) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"nice --adj 5 graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: nice --adj graphify salus -> delegated deny rc=2 (abbrev reaches fence)"; else fail "hook: nice --adj expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# time --for (abbreviation of --format) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"time --for %%e graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: time --for graphify salus -> delegated deny rc=2 (abbrev reaches fence)"; else fail "hook: time --for expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# time --o (abbreviation of --output) wrapping a salus deny -> rc=2
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"time --o /tmp/x graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: time --o graphify salus -> delegated deny rc=2 (abbrev reaches fence)"; else fail "hook: time --o expected rc=2 + DENY got rc=$rc out=$out"; fi
+
+# negative control: nice --adjustment (unabbreviated, separate value) still
+# denies for the real reason -- confirms the fix didn't change the
+# already-working literal-spelling path
+rm -f "$LEDGER"
+payload=$(printf '{"tool_name":"Bash","tool_input":{"command":"nice --adjustment 5 graphify update %s --backend glm"}}' "$SALUS/notes/patient.md")
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$(printf '%s' "$payload" | env $CLEAN_ENV HOME="$HOME" LUNA_VAULT_PATH="$LUNA" HANDOVER_DIR="$HANDDIR" CLAUDE_GLM_CONFIG_DIR="$PHI" GRAPHIFY_HIMMEL_ROOT="$HIMMEL" "$BASH_BIN" "$HOOK" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" -i "DENY"; then pass "hook: nice --adjustment (unabbreviated) graphify salus -> delegated deny rc=2 (unchanged)"; else fail "hook: nice --adjustment expected rc=2 + DENY got rc=$rc out=$out"; fi
 
 # (16) malformed hook JSON that mentions a graphify command + jq present -> deny
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list

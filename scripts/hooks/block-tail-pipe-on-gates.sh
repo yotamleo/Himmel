@@ -128,6 +128,20 @@ set -fuo pipefail   # -f: the token walk word-splits, and must not glob `*.sh`
 input=""
 IFS= read -r -d '' input 2>/dev/null || true
 command -v jq >/dev/null 2>&1 || exit 0
+# HIMMEL-2610: guard_is_long_abbrev (GNU getopt_long-style unambiguous
+# long-option abbreviation matching, shared via lib.sh) lets invoked_program's
+# per-launcher operand tables (sudo/env/nice/timeout/xargs/time) recognize an
+# abbreviated spelling the same as the full one — an unrecognized abbreviation
+# left its VALUE token to be misread as the invoked program, letting a gate
+# invocation piped to tail/head slip past undetected. Fail OPEN like every
+# other capability check in this file (see header CONTRACT): this hook only
+# ever DENIES a specific recognized shape, so an unsourceable lib.sh must not
+# change that — it just means the extra abbreviation recognition is
+# unavailable this run.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+{ [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null || exit 0
 [ -n "$input" ] || exit 0
 
 # `// ""` (empty STRING), not `// empty` (a zero-output jq GENERATOR): in a
@@ -451,31 +465,63 @@ invoked_program() {
                     # operand-taking option the retired flat list covered stays
                     # covered (panel r1, codex-1): dropping `-D`/`-R`/`-T`/`-U`
                     # would have REGRESSED shapes the hook already caught.
+                    # HIMMEL-2610: guard_is_long_abbrev also catches sudo's real
+                    # getopt_long unambiguous abbreviations of these long names
+                    # (`--us`/`--user`), so a shortened spelling can't leave its
+                    # value token to be misread as the invoked program.
                     case $stripped in
-                        -u | --user | -g | --group | -C | --close-from | \
-                        -h | --host | -p | --prompt | -D | --chdir | \
-                        -R | --chroot | -T | --command-timeout | \
-                        -U | --other-user) skip_next=1; continue ;;
+                        -u | -g | -C | -h | -p | -D | -R | -T | -U) skip_next=1; continue ;;
+                        --*)
+                            guard_is_long_abbrev "user" "$stripped" \
+                                || guard_is_long_abbrev "group" "$stripped" \
+                                || guard_is_long_abbrev "close-from" "$stripped" \
+                                || guard_is_long_abbrev "host" "$stripped" \
+                                || guard_is_long_abbrev "prompt" "$stripped" \
+                                || guard_is_long_abbrev "chdir" "$stripped" \
+                                || guard_is_long_abbrev "chroot" "$stripped" \
+                                || guard_is_long_abbrev "command-timeout" "$stripped" \
+                                || guard_is_long_abbrev "other-user" "$stripped" \
+                                && { skip_next=1; continue; } ;;
                     esac ;;
                 env)
                     # `env`'s VAR=val assignments are already stepped over by the
                     # assignment arm above; `-S` DOES take an operand here, which
                     # is exactly what a launcher-agnostic table could not express.
                     case $stripped in
-                        -u | --unset | -C | --chdir | -S | --split-string | \
-                        -a | --argv0) skip_next=1; continue ;;
+                        -u | -C | -S | -a) skip_next=1; continue ;;
+                        --*)
+                            guard_is_long_abbrev "unset" "$stripped" \
+                                || guard_is_long_abbrev "chdir" "$stripped" \
+                                || guard_is_long_abbrev "split-string" "$stripped" \
+                                || guard_is_long_abbrev "argv0" "$stripped" \
+                                && { skip_next=1; continue; } ;;
                     esac ;;
                 nice)
-                    case $stripped in -n | --adjustment) skip_next=1; continue ;; esac ;;
+                    case $stripped in
+                        -n) skip_next=1; continue ;;
+                        --*) guard_is_long_abbrev "adjustment" "$stripped" && { skip_next=1; continue; } ;;
+                    esac ;;
                 timeout)
                     case $stripped in
-                        -s | --signal | -k | --kill-after) skip_next=1; continue ;;
+                        -s | -k) skip_next=1; continue ;;
+                        --*)
+                            guard_is_long_abbrev "signal" "$stripped" \
+                                || guard_is_long_abbrev "kill-after" "$stripped" \
+                                && { skip_next=1; continue; } ;;
                     esac ;;
                 xargs)
                     case $stripped in
-                        -I | -n | -P | -L | -d | -a | -s | -E | \
-                        --replace | --max-args | --max-procs | --max-lines | \
-                        --delimiter | --arg-file | --max-chars | --eof) skip_next=1; continue ;;
+                        -I | -n | -P | -L | -d | -a | -s | -E) skip_next=1; continue ;;
+                        --*)
+                            guard_is_long_abbrev "replace" "$stripped" \
+                                || guard_is_long_abbrev "max-args" "$stripped" \
+                                || guard_is_long_abbrev "max-procs" "$stripped" \
+                                || guard_is_long_abbrev "max-lines" "$stripped" \
+                                || guard_is_long_abbrev "delimiter" "$stripped" \
+                                || guard_is_long_abbrev "arg-file" "$stripped" \
+                                || guard_is_long_abbrev "max-chars" "$stripped" \
+                                || guard_is_long_abbrev "eof" "$stripped" \
+                                && { skip_next=1; continue; } ;;
                     esac ;;
                 exec)
                     case $stripped in -a) skip_next=1; continue ;; esac ;;
@@ -485,7 +531,11 @@ invoked_program() {
                     # operand, and the retired flat list already covered `-o`
                     # (panel r1, codex-2).
                     case $stripped in
-                        -f | --format | -o | --output) skip_next=1; continue ;;
+                        -f | -o) skip_next=1; continue ;;
+                        --*)
+                            guard_is_long_abbrev "format" "$stripped" \
+                                || guard_is_long_abbrev "output" "$stripped" \
+                                && { skip_next=1; continue; } ;;
                     esac ;;
                 # `nohup` and `command` have no operand-taking options:
                 # `command -v` is a bare flag.

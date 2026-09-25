@@ -179,6 +179,20 @@ assert "tree plain"               ALLOW "$(decide "$(j_bash 'tree -L 2 src')")"
 assert "base64 decode stdout"     ALLOW "$(decide "$(j_bash 'cat f | base64 -d')")"
 assert "file plain"               ALLOW "$(decide "$(j_bash 'file README.md')")"
 
+# --- Round-6 locks: HIMMEL-2610 — abbreviated long-option write flags must
+# be caught the same as the full spelling (GNU getopt_long-style unambiguous
+# abbreviation; `sort`/`file` empirically confirmed to accept it). ---
+assert "sort --outp abbrev write" PASS  "$(decide "$(j_bash 'sort --outp=/tmp/pwned f')")"
+assert "tree --outp abbrev write" PASS  "$(decide "$(j_bash 'tree --outp=out.html .')")"
+assert "base64 --outp abbrev"     PASS  "$(decide "$(j_bash 'base64 --outp=/tmp/x in')")"
+assert "file --comp abbrev write" PASS  "$(decide "$(j_bash 'file --comp -m mymagic')")"
+# negative controls: an unrelated long option on the same binary must not be
+# swallowed by the abbreviation check (only a genuine prefix of the write
+# flag's own name resolves).
+assert "sort --buffer-size ctrl"  ALLOW "$(decide "$(j_bash 'sort --buffer-size=1M f')")"
+assert "tree --dirsfirst ctrl"    ALLOW "$(decide "$(j_bash 'tree --dirsfirst .')")"
+assert "file --mime-type ctrl"    ALLOW "$(decide "$(j_bash 'file --mime-type f')")"
+
 # --- Correctness-CR locks: false-negatives that should ALLOW ---
 assert "xxd file + redirect"      ALLOW "$(decide "$(j_bash 'xxd file 2>/dev/null')")"
 assert "git --git-dir= equals"    ALLOW "$(decide "$(j_bash 'git --git-dir=/repo log --oneline')")"
