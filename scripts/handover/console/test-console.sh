@@ -47,6 +47,13 @@ trap 'rm -rf "$tmp"' EXIT
 # (session DEMO-nextleg-...) in the operator's real launch-record directory.
 export HIMMELCTL_CACHE_DIR="$tmp/himmelctl-cache"
 
+# HIMMEL-3623 verdict J1268O change 4: registry_lookup_for_project() falls back
+# to $HOME/.claude/handover/registry.json when HANDOVER_REGISTRY is unset. Pin
+# it to a path that never exists for the WHOLE suite, so every --project case
+# that doesn't set its own scratch registry stays hermetic -- never reads the
+# operator's real registry (Do-Not: tests use scratch copies only).
+export HANDOVER_REGISTRY="$tmp/no-registry-for-this-suite.json"
+
 fails=0
 check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
@@ -1655,11 +1662,56 @@ cat > "$tmp/stub-arm-68.sh" <<'STUB'
 echo "stub-arm-68: HEADED_ARM_REPO=${HEADED_ARM_REPO:-<unset>}"
 STUB
 out68d="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HANDOVER_REGISTRY="$tmp/no-such-registry-68.json" \
     CONSOLE_HEADED_ARM="$tmp/stub-arm-68.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work68" \
     bash "$C" new --project "$proj68" --arm --deadline-min 0 ) 2>&1 )"
-check "68 --project --arm opens the session in the project (HEADED_ARM_REPO)" \
-    "$(printf '%s\n' "$out68d" | grep -c "^stub-arm-68: HEADED_ARM_REPO=$proj68\$")" "1"
+# 68d (HIMMEL-3623 verdict J1268O change 2): the console session itself stays
+# in the himmel checkout -- --project is data recorded in the doc, never an
+# exported HEADED_ARM_REPO for the ARMED CONSOLE (a leg for the project is
+# dispatched separately via LEG_REPO). RED against the imported commit (which
+# exported HEADED_ARM_REPO=$proj68 here), GREEN after the fix.
+check "68d --project --arm does NOT export HEADED_ARM_REPO for the console" \
+    "$(printf '%s\n' "$out68d" | grep -c "^stub-arm-68: HEADED_ARM_REPO=<unset>\$")" "1"
 doc68="$root/tester/web-sites68/WEBSITES68-nextleg-${today}A-console.md"
+check "68d the doc records the project (not just the dry-run line)" \
+    "$(grep -c "The project this console is FOR is \*\*\`$proj68\`\*\*" "$doc68" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc68" "$(token_of "$out68d")" >/dev/null 2>&1
+
+# --- 68e/68f (change 4): project -> bucket/prefix through the handover
+# registry, via a SCRATCH registry file only -- never ~/.claude/handover/registry.json.
+reg68="$tmp/registry-68.json"
+regproj68="$tmp/Widget Co 68"; mkdir -p "$regproj68"
+regproj68_canon="$(cd "$regproj68" && pwd -P)"
+cat > "$reg68" <<JSON
+{"repos":{"widgets68":{"path":"$regproj68_canon","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"WIDG68"}}}
+JSON
+out68e="$( HANDOVER_REGISTRY="$reg68" console new --project "$regproj68" --dry-run 2>&1 )"
+check "68e a registered path resolves to its registry key + jira_project" \
+    "$(printf '%s\n' "$out68e" | grep -c "^would-doc: $root/tester/widgets68/WIDG68-nextleg-${today}A-console.md\$")" "1"
+
+collideproj68="$tmp/collideproj68"; mkdir -p "$collideproj68"
+cat > "$reg68" <<JSON
+{"repos":{"collideproj68":{"path":"$tmp/some-other-real-project","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"COLL"}}}
+JSON
+rc68f=0
+out68f="$( HANDOVER_REGISTRY="$reg68" console new --project "$collideproj68" --dry-run 2>&1 )" || rc68f=$?
+check "68f a basename collision with an unrelated registered key is refused" "$rc68f" "1"
+check "68f collision refusal names the conflicting registered path" \
+    "$(printf '%s\n' "$out68f" | grep -c "collides with the registered project at '$tmp/some-other-real-project'")" "1"
+check "68f no doc written on a collision refusal" \
+    "$([ -e "$root/tester/collideproj68" ] && echo yes || echo no)" "no"
+
+# --- 68g (change 7): a SYMLINK to the himmel checkout given as --project is
+# canonicalized with pwd -P and recognized as himmel itself, not a foreign
+# project (skips on hosts where a real symlink doesn't stick, e.g. Git Bash).
+if [ "$HOST_SYMLINKS_REAL" = "1" ]; then
+    himmel_link68="$tmp/himmel-link-68"
+    ln -s "$fixture_repo" "$himmel_link68"
+    out68g="$( HANDOVER_REGISTRY="$tmp/no-such-registry-68.json" console new --project "$himmel_link68" --dry-run 2>&1 )"
+    check "68g a symlink to himmel is treated as himmel (no would-project)" \
+        "$(printf '%s\n' "$out68g" | grep -c '^would-project:')" "0"
+    check "68g a symlink to himmel keeps himmel's own JIRA key" \
+        "$(printf '%s\n' "$out68g" | grep -c '^would-doc: .*/DEMO-nextleg-')" "1"
+fi
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

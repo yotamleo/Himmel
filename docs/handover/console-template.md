@@ -7,7 +7,9 @@
 > wins over this file where the two differ. Your session name is
 > **`{{SESSION_NAME}}`**. Your handover root is **`{{HANDOVER_ROOT}}`**; your
 > bucket is **`{{BUCKET}}`** (at `{{STATE_DIR}}`); the repo you ship from is
-> **`{{REPO}}`**.
+> **`{{REPO}}`**. The project this console is FOR is **`{{PROJECT}}`** — you
+> (the console) always run in `{{REPO}}`, never in the project; dispatch a leg
+> into the project explicitly with `LEG_REPO=<path>` (`headed-arm-leg.sh`).
 > Handover line for consoles: **{{FILL_PERCENT}} % context fill, or 90 k input
 > tokens in one turn** — whichever comes first. Report at MILESTONES only.
 
