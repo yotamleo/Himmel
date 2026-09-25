@@ -32,7 +32,7 @@
       "scopes": ["project", "user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "statusLine.command", "verifyScript": true },
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "statusLine.command", "verifyScript": true, "verifyHudConfig": true },
       "install": { "type": "wire", "target": "statusline" },
       "unwire": { "type": "wire", "target": "statusline" },
       "removable": "per-item",

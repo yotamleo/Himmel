@@ -3129,7 +3129,7 @@ EOF
 # ledger-or-kept fallback -- so the computation is dropped as an orphan of
 # that fix rather than left unused.
 unwire_user_files() {
-  local _ix _p _dry=0 _probe_rc _hud_units _hu _fc_args _block_unit _fc _trust_units _tu
+  local _ix _p _dry=0 _probe_rc _hud_units _hu _hud_legacy _fc_args _block_unit _fc _trust_units _tu
   [ "$DRY_RUN" -eq 1 ] && _dry=1
   for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud" "$_ix_trust"; do
     # A failure on one file halts the step: never edit the next file after it.
@@ -3140,6 +3140,20 @@ unwire_user_files() {
       continue
     fi
     if [ "$_ix" = "$_ix_hud" ]; then
+      # HIMMEL-3334: $_p is the NEW un-swept path; a box upgraded but not yet
+      # re-wired since this fix may still have a pre-HIMMEL-3334 config at the
+      # OLD swept plugins/ path, with no ledger entry under $_p to key on (the
+      # ledger only ever recorded whichever path was live at write time). Run
+      # this FIRST, before either ledger branch below can `continue` past it.
+      # Best effort, ledger-independent: unwire_hud_config's own safety check
+      # (the customLineCommand pattern match) is what makes this safe
+      # unconditionally, same as wire-statusline.sh's own migration cleanup.
+      _hud_legacy="${_p%/*}/plugins/claude-hud/config.json"
+      if [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ] && command -v jq >/dev/null 2>&1; then
+        # shellcheck source=lib/unwire-hud-config.sh
+        . "$SCRIPT_DIR/lib/unwire-hud-config.sh"
+        unwire_hud_config "$_hud_legacy" "$_dry" || true
+      fi
       if [ "$LEDGER_OK" -ne 1 ]; then
         # ponytail (HIMMEL-3332 S6, spec §4 six rows): no ledger to tell a
         # pre-existing claude-hud config from himmel's own — kept, with a

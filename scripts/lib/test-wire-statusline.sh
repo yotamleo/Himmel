@@ -6,7 +6,7 @@
 # HIMMEL-2892: the hud config now lands under ${CLAUDE_CONFIG_DIR:-~/.claude},
 # never beside the settings file — so every case that can reach the drop pins
 # CLAUDE_CONFIG_DIR at a throwaway dir. Without that pin this suite would write
-# into the RUNNER'S real ~/.claude/plugins/claude-hud/config.json.
+# into the RUNNER'S real ~/.claude/claude-hud.json.
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$HERE/wire-statusline.sh"
@@ -89,14 +89,16 @@ echo "ok 9 nested parent dir created"
 sdir="$TMP/cfgdrop"
 cfgdir="$TMP/cfgdrop-config"
 CLAUDE_CONFIG_DIR="$cfgdir" bash "$HELPER" "$sdir/settings.json" "$REPO_ROOT" >/dev/null
-dropped="$cfgdir/plugins/claude-hud/config.json"
+dropped="$cfgdir/claude-hud.json"
 [ -f "$dropped" ] || fail "hud config not dropped under CLAUDE_CONFIG_DIR"
 jq -e . "$dropped" >/dev/null 2>&1 || fail "dropped config not valid JSON"
 grep -q '<himmel-path>' "$dropped" && fail "placeholder <himmel-path> left in dropped config"
 grep -qF "$REPO_ROOT" "$dropped" || fail "real himmel path not substituted into dropped config"
 [ "$(jq -r .statusLine.command "$sdir/settings.json")" = "$(guarded_cmd "$REPO_ROOT")" ] || fail "command not node w/ real path"
 [ "$(jq -r .display.showPromptCache "$dropped")" = "true" ] || fail "dropped config missing showPromptCache: true"
-echo "ok 10 hud config dropped under CLAUDE_CONFIG_DIR + substituted"
+[ ! -f "$cfgdir/plugins/claude-hud/config.json" ] \
+  || fail "HIMMEL-3334: a fresh wire also (or instead) wrote the swept plugins/claude-hud/config.json path"
+echo "ok 10 hud config dropped under CLAUDE_CONFIG_DIR + substituted, nothing under plugins/"
 
 # 11. config drop is idempotent too (deterministic)
 B="$(cat "$dropped")"
@@ -108,14 +110,14 @@ echo "ok 11 config drop idempotent"
 # the project dir — the hud config is per-user config and belongs in the config
 # dir even when the caller hands us a repo-local settings.json. This is the
 # 2026-09-09 dogfood incident: `himmelctl install --scope project` dropped an
-# untracked .claude/plugins/claude-hud/config.json inside the himmel repo.
+# untracked .claude/claude-hud.json inside the himmel repo.
 proj12="$TMP/proj12"
 cfg12="$TMP/cfg12"
 mkdir -p "$proj12/.claude"
 CLAUDE_CONFIG_DIR="$cfg12" bash "$HELPER" "$proj12/.claude/settings.json" "$REPO_ROOT" >/dev/null
 [ ! -e "$proj12/.claude/plugins" ] \
   || fail "hud config dropped INSIDE the project dir ($proj12/.claude/plugins) — it belongs under the config dir"
-[ -f "$cfg12/plugins/claude-hud/config.json" ] \
+[ -f "$cfg12/claude-hud.json" ] \
   || fail "hud config not written under CLAUDE_CONFIG_DIR ($cfg12) for a project settings path"
 [ "$(jq -r .statusLine.type "$proj12/.claude/settings.json")" = "command" ] \
   || fail "project settings.json did not get its statusLine"
@@ -126,7 +128,7 @@ echo "ok 12 project settings path: hud config lands under the config dir, nothin
 home13="$TMP/home13"; mkdir -p "$home13"
 proj13="$TMP/proj13"; mkdir -p "$proj13/.claude"
 env -u CLAUDE_CONFIG_DIR HOME="$home13" bash "$HELPER" "$proj13/.claude/settings.json" "$REPO_ROOT" >/dev/null
-[ -f "$home13/.claude/plugins/claude-hud/config.json" ] \
+[ -f "$home13/.claude/claude-hud.json" ] \
   || fail "with CLAUDE_CONFIG_DIR unset the hud config should land under \$HOME/.claude"
 [ ! -e "$proj13/.claude/plugins" ] || fail "hud config leaked into the project dir with CLAUDE_CONFIG_DIR unset"
 echo "ok 13 CLAUDE_CONFIG_DIR unset falls back to \$HOME/.claude"
@@ -138,7 +140,7 @@ echo "ok 13 CLAUDE_CONFIG_DIR unset falls back to \$HOME/.claude"
 padded_cfg="$TMP/cfg14"
 proj14="$TMP/proj14"; mkdir -p "$proj14/.claude"
 CLAUDE_CONFIG_DIR="   $padded_cfg   " bash "$HELPER" "$proj14/.claude/settings.json" "$REPO_ROOT" >/dev/null
-[ -f "$padded_cfg/plugins/claude-hud/config.json" ] \
+[ -f "$padded_cfg/claude-hud.json" ] \
   || fail "a PADDED CLAUDE_CONFIG_DIR must resolve to the same dir the hud reads (expected $padded_cfg)"
 [ ! -e "$TMP/   $padded_cfg" ] || fail "padded CLAUDE_CONFIG_DIR leaked its whitespace into the path"
 echo "ok 14 padded CLAUDE_CONFIG_DIR is trimmed"
@@ -149,16 +151,17 @@ echo "ok 14 padded CLAUDE_CONFIG_DIR is trimmed"
 home15="$TMP/home15"; mkdir -p "$home15"
 proj15="$TMP/proj15"; mkdir -p "$proj15/.claude"
 CLAUDE_CONFIG_DIR="   " HOME="$home15" bash "$HELPER" "$proj15/.claude/settings.json" "$REPO_ROOT" >/dev/null
-[ -f "$home15/.claude/plugins/claude-hud/config.json" ] \
+[ -f "$home15/.claude/claude-hud.json" ] \
   || fail "a whitespace-only CLAUDE_CONFIG_DIR must fall back to \$HOME/.claude"
 [ ! -e "$proj15/.claude/plugins" ] || fail "whitespace-only CLAUDE_CONFIG_DIR leaked the hud config into the project dir"
 echo "ok 15 whitespace-only CLAUDE_CONFIG_DIR falls back to \$HOME/.claude"
 
 # ── HIMMEL-3065: the hud's RUNTIME cache state is dropped when the wiring
 # CHANGES, and only then. The dir under test is the hud's own plugin dir
-# (${CLAUDE_CONFIG_DIR}/plugins/claude-hud) — config.json is settings this
-# script owns; everything beside it is per-session snapshot state that must not
-# survive a migration onto a different install.
+# (${CLAUDE_CONFIG_DIR}/plugins/claude-hud) — HIMMEL-3334 moved the config this
+# script owns to a sibling path (${CLAUDE_CONFIG_DIR}/claude-hud.json), never
+# inside this dir; everything still under it is per-session snapshot state that
+# must not survive a migration onto a different install.
 
 # Seed the three cache dirs + the two ledgers the hud writes, with one file
 # under each dir, so a purge is observable per-entry rather than only per-dir.
@@ -187,8 +190,8 @@ CLAUDE_CONFIG_DIR="$cfg16" bash "$HELPER" "$s16" "$REPO_ROOT" >/dev/null
 [ ! -e "$hud16/config-cache" ]     || fail "16: config-cache survived a changed wiring"
 [ ! -e "$hud16/cache-economics-all.json" ] || fail "16: cache-economics ledger survived a changed wiring"
 [ ! -e "$hud16/daily-cost.json" ]  || fail "16: daily-cost ledger survived a changed wiring"
-[ -f "$hud16/config.json" ] || fail "16: config.json must SURVIVE the purge — this script owns it"
-jq -e . "$hud16/config.json" >/dev/null 2>&1 || fail "16: surviving config.json is not valid JSON"
+[ -f "$cfg16/claude-hud.json" ] || fail "16: config.json must SURVIVE the purge — this script owns it"
+jq -e . "$cfg16/claude-hud.json" >/dev/null 2>&1 || fail "16: surviving config.json is not valid JSON"
 echo "ok 16 changed wiring drops the hud cache state, keeps config.json"
 
 # 17. steady state: the SAME clone re-wired over its own wiring changes nothing,
@@ -205,11 +208,11 @@ echo "ok 17 unchanged re-wire preserves the hud cache state"
 # the earlier install's. An older himmel instance ships an older
 # himmel-config.json, so this is the migration case where the clone path
 # happens to be unchanged.
-printf '{"display":{"showPromptCache":false}}\n' > "$hud16/config.json"
+printf '{"display":{"showPromptCache":false}}\n' > "$cfg16/claude-hud.json"
 seed_hud_cache "$hud16"
 CLAUDE_CONFIG_DIR="$cfg16" bash "$HELPER" "$s16" "$REPO_ROOT" >/dev/null
 [ ! -e "$hud16/transcript-cache" ] || fail "18: a stale hud config did not trigger the purge"
-[ "$(jq -r .display.showPromptCache "$hud16/config.json")" = "true" ] || fail "18: hud config not refreshed"
+[ "$(jq -r .display.showPromptCache "$cfg16/claude-hud.json")" = "true" ] || fail "18: hud config not refreshed"
 echo "ok 18 a changed hud config drops the cache state"
 
 # 19. a MOVED/renamed clone (the command half on its own), with the hud config
@@ -261,7 +264,7 @@ echo "ok 21 a second project on the same install preserves the hud cache state"
 cfg22="$TMP/cfg22"; hud22="$cfg22/plugins/claude-hud"
 proj22="$TMP/proj22"; mkdir -p "$proj22/.claude"
 mkdir -p "$hud22"
-printf '{"display":{"showPromptCache":true},"customLineCommand":"/old/clone/x.sh"}\n' > "$hud22/config.json"
+printf '{"display":{"showPromptCache":true},"customLineCommand":"/old/clone/x.sh"}\n' > "$cfg22/claude-hud.json"
 seed_hud_cache "$hud22"
 CLAUDE_CONFIG_DIR="$cfg22" bash "$HELPER" "$proj22/.claude/settings.json" "$REPO_ROOT" >/dev/null
 [ ! -e "$hud22/transcript-cache" ] \
@@ -277,11 +280,13 @@ echo "ok 22 an old clone's hud config still purges on a fresh project wire"
 # cache entries and delegates everything else to the real rm (CodeRabbit, PR
 # #772). An earlier version made the hud dir read-only instead, which stopped
 # being a control the moment round 6 moved staging ahead of the purge: staging
-# writes .config.json.tmp INTO that dir, so the wire failed before the purge was
-# ever reached and the case passed without exercising the path it names. The
-# stub also keeps the case meaningful as root and on Git Bash, where directory
-# permissions do not bind the same way. The asserted precondition is that the
-# staged config was cleaned up — that only happens on the purge-failure path.
+# used to write .config.json.tmp INTO that dir, so the wire failed before the
+# purge was ever reached and the case passed without exercising the path it
+# names (HIMMEL-3334 moved the staged config out to the config dir root, but
+# the stub stays the more direct control either way). The stub also keeps the
+# case meaningful as root and on Git Bash, where directory permissions do not
+# bind the same way. The asserted precondition is that the staged config was
+# cleaned up — that only happens on the purge-failure path.
 rm_bin23="$TMP/rm23-bin"; mkdir -p "$rm_bin23"
 real_rm23="$(command -v rm)"
 cfg23="$TMP/cfg23"; hud23="$cfg23/plugins/claude-hud"
@@ -291,7 +296,7 @@ old23='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
 # An earlier install: its command is wired, its config and snapshots are on disk.
 printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old23" | sed 's/"/\\"/g')\"" > "$s23"
 mkdir -p "$hud23"
-printf '{"display":{"showPromptCache":false}}\n' > "$hud23/config.json"
+printf '{"display":{"showPromptCache":false}}\n' > "$cfg23/claude-hud.json"
 seed_hud_cache "$hud23"
 
 # The stub TOUCHES a marker before refusing, so the case can assert the purge
@@ -319,12 +324,12 @@ PATH="$rm_bin23:$PATH" CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_R
 [ "$rc23" -ne 0 ] || fail "23: a failed purge must fail the wire, not report success"
 [ -e "$rm_marker23" ] \
   || fail "23: precondition — the purge was never reached; this case proves nothing about a failed purge"
-[ ! -e "$hud23/.config.json.tmp" ] \
+[ ! -e "$cfg23/claude-hud.json.tmp" ] \
   || fail "23: the staged config was left behind after the failed purge"
 [ ! -e "$s23.statusline.tmp" ] || fail "23: the staged settings file was left behind"
 [ "$(jq -r .statusLine.command "$s23")" = "$old23" ] \
   || fail "23: the settings file was published despite the failed purge — the retry will see no change"
-[ "$(jq -r .display.showPromptCache "$hud23/config.json")" = "false" ] \
+[ "$(jq -r .display.showPromptCache "$cfg23/claude-hud.json")" = "false" ] \
   || fail "23: the hud config was published despite the failed purge"
 [ -e "$hud23/transcript-cache" ] || fail "23: the seeded cache dir should have survived the failed purge"
 [ -e "$hud23/daily-cost.json" ] || fail "23: the seeded ledger should have survived the failed purge"
@@ -337,13 +342,16 @@ echo "ok 23 a failed purge aborts the wire and the retry still purges"
 
 # 24. CR round 3 [codex-2]: this library is SOURCED (himmel-update.sh does), so
 # the purge cannot rely on the caller's glob settings to skip the staged config.
-# With `shopt -s dotglob`, `"$hud_dir"/*` matches .config.json.tmp — and the
-# purge runs before the publish, so eating it would leave the config unwritten.
+# With `shopt -s dotglob`, `"$hud_dir"/*` used to match .config.json.tmp before
+# HIMMEL-3334 moved staging to the config-dir root (a sibling of $hud_dir, never
+# inside it) — the purge-skip guard for config.json/.* stays as belt-and-braces
+# for a leftover pre-migration file, and this case still proves dotglob can't
+# make the purge eat live config, staged or not.
 cfg24="$TMP/cfg24"; hud24="$cfg24/plugins/claude-hud"
 proj24="$TMP/proj24"; mkdir -p "$proj24/.claude"
 s24="$proj24/.claude/settings.json"
 mkdir -p "$hud24"
-printf '{"display":{"showPromptCache":false}}\n' > "$hud24/config.json"
+printf '{"display":{"showPromptCache":false}}\n' > "$cfg24/claude-hud.json"
 seed_hud_cache "$hud24"
 (
   shopt -s dotglob
@@ -354,8 +362,8 @@ seed_hud_cache "$hud24"
   export CLAUDE_CONFIG_DIR="$cfg24"
   wire_statusline "$s24" "$REPO_ROOT"
 ) >/dev/null || fail "24: sourced wire_statusline failed under dotglob"
-[ -f "$hud24/config.json" ] || fail "24: the staged config was purged under dotglob — nothing published"
-[ "$(jq -r .display.showPromptCache "$hud24/config.json")" = "true" ] \
+[ -f "$cfg24/claude-hud.json" ] || fail "24: the staged config was purged under dotglob — nothing published"
+[ "$(jq -r .display.showPromptCache "$cfg24/claude-hud.json")" = "true" ] \
   || fail "24: the published config under dotglob is not this clone's"
 [ ! -e "$hud24/transcript-cache" ] || fail "24: the purge itself did not run under dotglob"
 echo "ok 24 the purge skips the staged config even with dotglob set"
@@ -368,9 +376,9 @@ echo "ok 24 the purge skips the staged config even with dotglob set"
 cfg25="$TMP/cfg25"; hud25="$cfg25/plugins/claude-hud"
 proj25="$TMP/proj25"; mkdir -p "$proj25/.claude"
 mkdir -p "$hud25"
-printf '{"display":{"showPromptCache":"STALE-STAGED"}}\n' > "$hud25/.config.json.tmp"
+printf '{"display":{"showPromptCache":"STALE-STAGED"}}\n' > "$cfg25/claude-hud.json.tmp"
 CLAUDE_CONFIG_DIR="$cfg25" bash "$HELPER" "$proj25/.claude/settings.json" "/synthetic/himmel" >/dev/null
-[ ! -e "$hud25/config.json" ] \
+[ ! -e "$cfg25/claude-hud.json" ] \
   || fail "25: a source-absent wire published a temp file a previous call left behind"
 [ "$(jq -r .statusLine.type "$proj25/.claude/settings.json")" = "command" ] \
   || fail "25: the source-absent wire should still do its statusLine/env half"
@@ -394,7 +402,7 @@ CLAUDE_CONFIG_DIR="$cfg26" bash "$HELPER" "$s26" "$REPO_ROOT" >/dev/null 2>&1 ||
 [ -f "$hud26/transcript-cache/deadbeef.json" ] \
   || fail "26: live cache state was purged for a wire that could never publish"
 [ "$(jq -r .statusLine.command "$s26")" = "$old26" ] || fail "26: the settings file was modified"
-[ ! -e "$hud26/.config.json.tmp" ] || fail "26: the staged config was left behind"
+[ ! -e "$cfg26/claude-hud.json.tmp" ] || fail "26: the staged config was left behind"
 echo "ok 26 an untransformable settings file aborts before the purge"
 
 # 27. CodeRabbit round 2: the two publishes are two renames, not one atomic
@@ -411,7 +419,7 @@ s27="$proj27/.claude/settings.json"
 old27='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
 printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old27" | sed 's/"/\\"/g')\"" > "$s27"
 mkdir -p "$hud27"
-printf '{"display":{"showPromptCache":false}}\n' > "$hud27/config.json"
+printf '{"display":{"showPromptCache":false}}\n' > "$cfg27/claude-hud.json"
 seed_hud_cache "$hud27"
 
 cat > "$mv_bin27/mv" <<EOF
@@ -429,7 +437,7 @@ PATH="$mv_bin27:$PATH" CLAUDE_CONFIG_DIR="$cfg27" bash "$HELPER" "$s27" "$REPO_R
 [ "$(jq -r .statusLine.command "$s27")" = "$old27" ] \
   || fail "27: precondition — the settings publish is what failed, so the OLD command must still be wired"
 [ ! -e "$s27.statusline.tmp" ] || fail "27: the staged settings file was left behind"
-[ "$(jq -r .display.showPromptCache "$hud27/config.json")" = "true" ] \
+[ "$(jq -r .display.showPromptCache "$cfg27/claude-hud.json")" = "true" ] \
   || fail "27: the config publish ran first, so it should have landed"
 [ ! -e "$hud27/transcript-cache" ] || fail "27: the purge runs before either publish and should have happened"
 
@@ -457,7 +465,7 @@ mkdir -p "$hud28"
   wire_statusline "$s28" "$REPO_ROOT"
 ) >/dev/null || fail "28: sourced wire_statusline failed under failglob"
 
-[ -f "$hud28/config.json" ] || fail "28: the config was not published under failglob"
+[ -f "$cfg28/claude-hud.json" ] || fail "28: the config was not published under failglob"
 [ "$(jq -r .statusLine.type "$s28")" = "command" ] || fail "28: the statusLine was not wired under failglob"
 echo "ok 28 the purge survives a caller's failglob on an otherwise-empty hud dir"
 
@@ -468,9 +476,9 @@ echo "ok 28 the purge survives a caller's failglob on an otherwise-empty hud dir
 cfg29="$TMP/cfg29"; hud29="$cfg29/plugins/claude-hud"
 proj29="$TMP/proj29"; mkdir -p "$proj29/.claude" "$hud29"
 s29="$proj29/.claude/settings.json"
-printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud29/config.json"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$cfg29/claude-hud.json"
 CLAUDE_CONFIG_DIR="$cfg29" bash "$HELPER" "$s29" "$REPO_ROOT" >/dev/null
-newcmd29="$(jq -r .display.customLineCommand "$hud29/config.json")"
+newcmd29="$(jq -r .display.customLineCommand "$cfg29/claude-hud.json")"
 case "$newcmd29" in
   "HIMMEL_STATUSLINE_ECON=off "*) : ;;
   *) fail "29: HIMMEL_STATUSLINE_ECON=off prefix was not carried forward" ;;
@@ -486,10 +494,10 @@ echo "ok 29 HIMMEL_STATUSLINE_ECON prefix carried forward across a rewire"
 cfg30="$TMP/cfg30"; hud30="$cfg30/plugins/claude-hud"
 proj30="$TMP/proj30"; mkdir -p "$proj30/.claude" "$hud30"
 s30="$proj30/.claude/settings.json"
-printf '{"display":{"customLineCommand":"bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud30/config.json"
+printf '{"display":{"customLineCommand":"bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$cfg30/claude-hud.json"
 CLAUDE_CONFIG_DIR="$cfg30" bash "$HELPER" "$s30" "$REPO_ROOT" >/dev/null
 expected30="bash \"$REPO_ROOT/scripts/statusline/hud-custom-lines.sh\""
-[ "$(jq -r .display.customLineCommand "$hud30/config.json")" = "$expected30" ] \
+[ "$(jq -r .display.customLineCommand "$cfg30/claude-hud.json")" = "$expected30" ] \
   || fail "30: no-prefix rewire should yield the bare template command"
 echo "ok 30 no prefix on the previous config leaves the bare template command"
 
@@ -498,10 +506,10 @@ echo "ok 30 no prefix on the previous config leaves the bare template command"
 cfg31="$TMP/cfg31"; hud31="$cfg31/plugins/claude-hud"
 proj31="$TMP/proj31"; mkdir -p "$proj31/.claude" "$hud31"
 s31="$proj31/.claude/settings.json"
-printf '{"display":{"customLineCommand":"FOO=1 bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud31/config.json"
+printf '{"display":{"customLineCommand":"FOO=1 bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$cfg31/claude-hud.json"
 CLAUDE_CONFIG_DIR="$cfg31" bash "$HELPER" "$s31" "$REPO_ROOT" >/dev/null
 expected31="bash \"$REPO_ROOT/scripts/statusline/hud-custom-lines.sh\""
-[ "$(jq -r .display.customLineCommand "$hud31/config.json")" = "$expected31" ] \
+[ "$(jq -r .display.customLineCommand "$cfg31/claude-hud.json")" = "$expected31" ] \
   || fail "31: a foreign FOO=1 prefix must not be carried"
 echo "ok 31a a foreign prefix is not carried"
 
@@ -509,9 +517,9 @@ cfg31b="$TMP/cfg31b"; hud31b="$cfg31b/plugins/claude-hud"
 proj31b="$TMP/proj31b"; mkdir -p "$proj31b/.claude" "$hud31b"
 s31b="$proj31b/.claude/settings.json"
 # shellcheck disable=SC2016  # literal $(x) fixture text, not meant to expand
-printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=$(x) bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud31b/config.json"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=$(x) bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$cfg31b/claude-hud.json"
 CLAUDE_CONFIG_DIR="$cfg31b" bash "$HELPER" "$s31b" "$REPO_ROOT" >/dev/null
-[ "$(jq -r .display.customLineCommand "$hud31b/config.json")" = "$expected31" ] \
+[ "$(jq -r .display.customLineCommand "$cfg31b/claude-hud.json")" = "$expected31" ] \
   || fail "31b: a malformed HIMMEL_STATUSLINE_ECON=\$(x) prefix must not be carried"
 echo "ok 31b a malformed HIMMEL_STATUSLINE_ECON value is not carried"
 
@@ -528,7 +536,7 @@ s32="$proj32/.claude/settings.json"
 old32='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
 printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old32" | sed 's/"/\\"/g')\"" > "$s32"
 mkdir -p "$hud32"
-printf '{"display":{"showPromptCache":false}}\n' > "$hud32/config.json"
+printf '{"display":{"showPromptCache":false}}\n' > "$cfg32/claude-hud.json"
 seed_hud_cache "$hud32"
 chmod 300 "$hud32"
 if ls "$hud32" >/dev/null 2>&1; then
@@ -543,11 +551,11 @@ else
     *"$hud32"*) : ;;
     *) fail "32: the failure must name the unreadable directory (got: $err32)" ;;
   esac
-  [ ! -e "$hud32/.config.json.tmp" ] || fail "32: the staged config was left behind after the failed purge"
+  [ ! -e "$cfg32/claude-hud.json.tmp" ] || fail "32: the staged config was left behind after the failed purge"
   [ ! -e "$s32.statusline.tmp" ] || fail "32: the staged settings file was left behind"
   [ "$(jq -r .statusLine.command "$s32")" = "$old32" ] \
     || fail "32: the settings file was published despite the failed purge — the retry will see no change"
-  [ "$(jq -r .display.showPromptCache "$hud32/config.json")" = "false" ] \
+  [ "$(jq -r .display.showPromptCache "$cfg32/claude-hud.json")" = "false" ] \
     || fail "32: the hud config was published despite the failed purge"
   [ -e "$hud32/transcript-cache" ] || fail "32: the seeded cache dir should still be there"
   # Readable again, the retry sees the same changed wiring and purges.
@@ -565,49 +573,49 @@ cfg33="$TMP/cfg33"; hud33="$cfg33/plugins/claude-hud"
 proj33="$TMP/proj33"; mkdir -p "$proj33/.claude" "$hud33"
 s33="$proj33/.claude/settings.json"
 # a user-edited config: their own customLineCommand, plus a display key of theirs
-printf '{"display":{"customLineCommand":"echo mine","showPromptCache":false}}\n' > "$hud33/config.json"
-chmod 640 "$hud33/config.json"
-seed33="$(sha_of "$hud33/config.json")"
+printf '{"display":{"customLineCommand":"echo mine","showPromptCache":false}}\n' > "$cfg33/claude-hud.json"
+chmod 640 "$cfg33/claude-hud.json"
+seed33="$(sha_of "$cfg33/claude-hud.json")"
 CLAUDE_CONFIG_DIR="$cfg33" bash "$HELPER" "$s33" "$REPO_ROOT" >/dev/null
-row33="$(hud_rows "cfg33/plugins/claude-hud/config.json")"
+row33="$(hud_rows "cfg33/claude-hud.json")"
 [ "$(printf '%s\n' "$row33" | grep -c .)" = 1 ] || fail "33: want exactly one hud config file row, got: $row33"
 [ "$(printf '%s' "$row33" | jq -r '[.op, .scope, .class, .manifest_row, .pre.state, .pre.sha, .pre.mode] | join(",")')" \
   = "replace,user,code,hud-config,present,$seed33,0640" ] \
   || fail "33: the hud config replace row is wrong: $row33"
 bk33="$(printf '%s' "$row33" | jq -r .pre.backup)"
 [ "$([ -f "$bk33" ] && sha_of "$bk33")" = "$seed33" ] || fail "33: the backup does not hold the user's prior config bytes ($bk33)"
-[ "$(printf '%s' "$row33" | jq -r .post.sha)" = "$(sha_of "$hud33/config.json")" ] \
+[ "$(printf '%s' "$row33" | jq -r .post.sha)" = "$(sha_of "$cfg33/claude-hud.json")" ] \
   || fail "33: post.sha does not match the config that was published"
-[ "$(jq -r .display.customLineCommand "$hud33/config.json")" != "echo mine" ] \
+[ "$(jq -r .display.customLineCommand "$cfg33/claude-hud.json")" != "echo mine" ] \
   || fail "33: behaviour changed — the install must still overwrite the config"
 echo "ok 33 a replaced hud config is recorded and its prior bytes are backed up"
 
 cfg34="$TMP/cfg34"; hud34="$cfg34/plugins/claude-hud"
 proj34="$TMP/proj34"; mkdir -p "$proj34/.claude"
 CLAUDE_CONFIG_DIR="$cfg34" bash "$HELPER" "$proj34/.claude/settings.json" "$REPO_ROOT" >/dev/null
-row34="$(hud_rows "cfg34/plugins/claude-hud/config.json")"
-[ "$(printf '%s' "$row34" | jq -r '[.op, .pre.state, .post.sha] | join(",")')" = "create,absent,$(sha_of "$hud34/config.json")" ] \
+row34="$(hud_rows "cfg34/claude-hud.json")"
+[ "$(printf '%s' "$row34" | jq -r '[.op, .pre.state, .post.sha] | join(",")')" = "create,absent,$(sha_of "$cfg34/claude-hud.json")" ] \
   || fail "34: a first drop must record create/absent: $row34"
 # 35. an unchanged re-wire is a noop, with no backup and no second purge
 CLAUDE_CONFIG_DIR="$cfg34" bash "$HELPER" "$proj34/.claude/settings.json" "$REPO_ROOT" >/dev/null
-[ "$(hud_rows "cfg34/plugins/claude-hud/config.json" | tail -n 1 | jq -r '[.op, .pre.sha == .post.sha, .pre.backup] | map(tostring) | join(",")')" = "noop,true,null" ] \
+[ "$(hud_rows "cfg34/claude-hud.json" | tail -n 1 | jq -r '[.op, .pre.sha == .post.sha, .pre.backup] | map(tostring) | join(",")')" = "noop,true,null" ] \
   || fail "35: an unchanged hud config must record noop with pre.sha == post.sha and no backup"
 echo "ok 34-35 a first hud config drop records create/absent and an unchanged re-wire records noop"
 
 # 35b. same bytes, different mode: the publish resets the mode, so it is not a
 # noop — the prior mode must be recoverable from a backup (copy_recorded parity).
-mode35b="$(stat -c %a "$hud34/config.json" 2>/dev/null || stat -f %Lp "$hud34/config.json")"
+mode35b="$(stat -c %a "$cfg34/claude-hud.json" 2>/dev/null || stat -f %Lp "$cfg34/claude-hud.json")"
 if [ "$mode35b" = 640 ]; then want35b=600; else want35b=640; fi
-chmod "$want35b" "$hud34/config.json"
+chmod "$want35b" "$cfg34/claude-hud.json"
 CLAUDE_CONFIG_DIR="$cfg34" bash "$HELPER" "$proj34/.claude/settings.json" "$REPO_ROOT" >/dev/null
-[ "$(hud_rows "cfg34/plugins/claude-hud/config.json" | tail -n 1 | jq -r '[.op, .pre.mode, (.pre.backup != null)] | map(tostring) | join(",")')" = "replace,0$want35b,true" ] \
-  || fail "35b: a mode-only change must record replace with a backup, not noop: $(hud_rows "cfg34/plugins/claude-hud/config.json" | tail -n 1)"
+[ "$(hud_rows "cfg34/claude-hud.json" | tail -n 1 | jq -r '[.op, .pre.mode, (.pre.backup != null)] | map(tostring) | join(",")')" = "replace,0$want35b,true" ] \
+  || fail "35b: a mode-only change must record replace with a backup, not noop: $(hud_rows "cfg34/claude-hud.json" | tail -n 1)"
 echo "ok 35b a same-bytes hud config with a different mode records replace and a backup"
 
 # 36. the purge, when the wiring changed, is one tree row class state
 cfg36="$TMP/cfg36"; hud36="$cfg36/plugins/claude-hud"
 proj36="$TMP/proj36"; mkdir -p "$proj36/.claude" "$hud36"
-printf '{"display":{"showPromptCache":false}}\n' > "$hud36/config.json"
+printf '{"display":{"showPromptCache":false}}\n' > "$cfg36/claude-hud.json"
 seed_hud_cache "$hud36"
 CLAUDE_CONFIG_DIR="$cfg36" bash "$HELPER" "$proj36/.claude/settings.json" "$REPO_ROOT" >/dev/null
 [ ! -e "$hud36/transcript-cache" ] || fail "36: precondition — the purge did not run"
@@ -628,7 +636,7 @@ mk_bin37="$TMP/mktemp37-bin"; mkdir -p "$mk_bin37"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$mk_bin37/mktemp"; chmod +x "$mk_bin37/mktemp"
 cfg37="$TMP/cfg37"; hud37="$cfg37/plugins/claude-hud"
 proj37="$TMP/proj37"; mkdir -p "$proj37/.claude" "$hud37"
-printf '{"display":{"showPromptCache":false}}\n' > "$hud37/config.json"
+printf '{"display":{"showPromptCache":false}}\n' > "$cfg37/claude-hud.json"
 seed_hud_cache "$hud37"
 rc37=0
 err37="$(PATH="$mk_bin37:$PATH" CLAUDE_CONFIG_DIR="$cfg37" bash "$HELPER" "$proj37/.claude/settings.json" "$REPO_ROOT" 2>&1 >/dev/null)" || rc37=$?

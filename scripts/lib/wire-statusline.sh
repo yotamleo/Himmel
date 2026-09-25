@@ -17,9 +17,18 @@
 #   3. Drops the hud config: reads
 #      marketplace/plugins/claude-hud/config/himmel-config.json from the himmel
 #      clone, substitutes every <himmel-path> with this clone's path, and writes
-#      it to ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json
-#      (CLAUDE_CONFIG_DIR trimmed, whitespace-only treated as unset — matching
-#      the hud's own getClaudeConfigDir).
+#      it to ${CLAUDE_CONFIG_DIR:-~/.claude}/claude-hud.json (CLAUDE_CONFIG_DIR
+#      trimmed, whitespace-only treated as unset — matching the hud's own
+#      getClaudeConfigDir).
+#      HIMMEL-3334: that is the hud's own CONFIG OVERRIDE path
+#      (getConfigOverridePath() in marketplace/plugins/claude-hud/src/config.ts),
+#      a sibling of `plugins/`, not a file inside it — Claude Code's
+#      plugin-manager sweep (`.last_inuse_sweep`) only reaps `plugins/`, so a
+#      file living beside it is never reaped. The hud deep-merges this override
+#      on top of ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json
+#      (the hud's own default/base path), so this script never has to write
+#      inside the swept plugin dir at all. A pre-HIMMEL-3334 config left at that
+#      OLD path is removed once the new one publishes successfully (migration).
 #      That path is the CONFIG DIR, always — never derived from the settings
 #      file's own directory (HIMMEL-2892). The hud config is per-USER config,
 #      not per-project: deriving it relative to the settings path dropped an
@@ -223,10 +232,16 @@ wire_statusline() {
   # The hud's plugin dir is per-USER (the config dir), never derived from the
   # settings path — see (3) below. Resolved up here because the previous hud
   # config is read from it BEFORE the write, to decide whether the wiring
-  # changed (4).
+  # changed (4). $hud_dir still hosts the hud's RUNTIME cache (purged below on
+  # a wiring change) and, pre-HIMMEL-3334, the config itself — $hud_cfg_path is
+  # the new, un-swept location the config is written to now.
   local hud_dir; hud_dir="$(claude_config_dir)/plugins/claude-hud"
+  local hud_old_cfg="$hud_dir/config.json"
+  local hud_cfg_path; hud_cfg_path="$(claude_config_dir)/claude-hud.json"
   local prev_hud_cfg=""
-  [ -f "$hud_dir/config.json" ] && prev_hud_cfg="$(cat "$hud_dir/config.json")"
+  if [ -f "$hud_cfg_path" ]; then prev_hud_cfg="$(cat "$hud_cfg_path")"
+  elif [ -f "$hud_old_cfg" ]; then prev_hud_cfg="$(cat "$hud_old_cfg")"
+  fi
 
   # HIMMEL-3157: an operator suppressing the HUD economics rows prefixes
   # .display.customLineCommand with an env var, e.g. `HIMMEL_STATUSLINE_ECON=off `
@@ -275,8 +290,9 @@ wire_statusline() {
   # someone's repo (observed on the himmel checkout itself, 2026-09-09).
   local hud_src="${himmel_fwd}/marketplace/plugins/claude-hud/config/himmel-config.json"
   local hud_cfg=""
+  local hud_cfg_tmp="${hud_cfg_path}.tmp"
   if [ -f "$hud_src" ]; then
-    mkdir -p "$hud_dir"
+    mkdir -p "$(claude_config_dir)"
     hud_cfg="$(cat "$hud_src")"
     hud_cfg="${hud_cfg//<himmel-path>/$himmel_fwd}"
     # Carry the operator's HIMMEL_STATUSLINE_ECON prefix forward onto the
@@ -290,13 +306,13 @@ wire_statusline() {
           2>/dev/null || true)"
       [ -n "$hud_cfg_prefixed" ] && hud_cfg="$hud_cfg_prefixed"
     fi
-    printf '%s\n' "$hud_cfg" > "$hud_dir/.config.json.tmp" \
-      || { rm -f "$hud_dir/.config.json.tmp"; return 1; }
+    printf '%s\n' "$hud_cfg" > "$hud_cfg_tmp" \
+      || { rm -f "$hud_cfg_tmp"; return 1; }
     # Validate the substituted config is still JSON before publishing it — a
     # JSON-breaking himmel path (e.g. an embedded quote) would otherwise yield a
     # config.json the renderer fails on silently at render time.
-    if ! jq -e . "$hud_dir/.config.json.tmp" >/dev/null 2>&1; then
-      rm -f "$hud_dir/.config.json.tmp"
+    if ! jq -e . "$hud_cfg_tmp" >/dev/null 2>&1; then
+      rm -f "$hud_cfg_tmp"
       echo "wire-statusline: substituted hud config is not valid JSON — refusing to write" >&2
       return 1
     fi
@@ -314,7 +330,7 @@ wire_statusline() {
     '.statusLine = { type: "command", command: $cmd }
      | .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"' \
     > "$settings.statusline.tmp" \
-    || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
+    || { rm -f "$settings.statusline.tmp" "$hud_cfg_tmp"; return 1; }
 
   # (3) HIMMEL-3065: the wiring CHANGED when either half differs from what was
   # already on this machine — a different hud config, or an EXISTING statusLine
@@ -346,7 +362,7 @@ wire_statusline() {
     [ -n "$purge_list" ] \
       || echo "wire-statusline: warning: provenance record skipped (no temp file for the purge listing; the hud cache is still purged, uninstall will keep it)" >&2
     _wire_statusline_purge_hud_cache "$hud_dir" "$purge_list" \
-      || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp" "$purge_list"; return 1; }
+      || { rm -f "$settings.statusline.tmp" "$hud_cfg_tmp" "$purge_list"; return 1; }
     if [ -s "$purge_list" ]; then
       _wire_statusline_record_purge "$hud_dir" "$purge_list" \
         || echo "wire-statusline: warning: provenance record failed (the hud cache was purged; uninstall will keep it)" >&2
@@ -377,12 +393,17 @@ wire_statusline() {
     # settings with it, so no failure path leaves either one staged (parity
     # with the ps1 twin's finally; CodeRabbit, PR #772).
     local hud_snap="" hud_rec=1
-    if [ -f "$hud_dir/config.json" ]; then hud_snap="$(_wire_statusline_hud_snapshot "$hud_dir/config.json")" || hud_rec=0; fi
-    mv "$hud_dir/.config.json.tmp" "$hud_dir/config.json" \
-      || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp" "$hud_snap"; return 1; }
-    if [ "$hud_rec" = 1 ]; then _wire_statusline_record_hud "$hud_dir/config.json" "$hud_snap" || hud_rec=0; fi
+    if [ -f "$hud_cfg_path" ]; then hud_snap="$(_wire_statusline_hud_snapshot "$hud_cfg_path")" || hud_rec=0; fi
+    mv "$hud_cfg_tmp" "$hud_cfg_path" \
+      || { rm -f "$settings.statusline.tmp" "$hud_cfg_tmp" "$hud_snap"; return 1; }
+    if [ "$hud_rec" = 1 ]; then _wire_statusline_record_hud "$hud_cfg_path" "$hud_snap" || hud_rec=0; fi
     [ "$hud_rec" = 1 ] || echo "wire-statusline: warning: provenance record failed (the hud config is written; uninstall will keep it)" >&2
     rm -f "$hud_snap"
+    # HIMMEL-3334 migration: the new config just published supersedes a
+    # pre-HIMMEL-3334 config left in the swept plugin dir — drop it so nothing
+    # himmel wrote still squats there. Best-effort: a failed removal is not
+    # fatal (the new, un-swept config is already live and takes precedence).
+    [ -f "$hud_old_cfg" ] && rm -f "$hud_old_cfg"
   fi
 
   mv "$settings.statusline.tmp" "$settings" \

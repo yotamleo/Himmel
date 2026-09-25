@@ -63,8 +63,9 @@ Check ((Get-Content "$tmp\s5.json" -Raw).Trim() -eq '{not valid') "5b invalid js
 # Uses the REAL himmel clone so the source himmel-config.json exists.
 $sdir = Join-Path $tmp 'cfgdrop'
 Wire (Join-Path $sdir 'settings.json') $repoRoot | Out-Null
-$dropped = Join-Path $cfgDir 'plugins/claude-hud/config.json'
+$dropped = Join-Path $cfgDir 'claude-hud.json'
 Check (Test-Path $dropped) "6a hud config dropped under CLAUDE_CONFIG_DIR"
+Check (-not (Test-Path (Join-Path $cfgDir 'plugins/claude-hud/config.json'))) "6a2 HIMMEL-3334: nothing written under the swept plugins/ dir"
 if (Test-Path $dropped) {
     $body = Get-Content $dropped -Raw
     Check (-not ($body -match '<himmel-path>')) "6b placeholder substituted"
@@ -77,20 +78,21 @@ if (Test-Path $dropped) {
 
 # 7 HIMMEL-2892: a PROJECT settings path leaves NOTHING under the project dir.
 # The 2026-09-09 dogfood incident: a project-scope install dropped an untracked
-# .claude/plugins/claude-hud/config.json inside the repo.
+# .claude/claude-hud.json inside the repo.
 $proj7 = Join-Path $tmp 'proj7'
 New-Item -ItemType Directory -Force (Join-Path $proj7 '.claude') | Out-Null
 $cfg7 = Join-Path $tmp 'cfg7'
 $env:CLAUDE_CONFIG_DIR = $cfg7
 Wire (Join-Path $proj7 '.claude/settings.json') $repoRoot | Out-Null
 Check (-not (Test-Path (Join-Path $proj7 '.claude/plugins'))) "7a nothing dropped inside the project dir"
-Check (Test-Path (Join-Path $cfg7 'plugins/claude-hud/config.json')) "7b hud config landed under CLAUDE_CONFIG_DIR"
+Check (Test-Path (Join-Path $cfg7 'claude-hud.json')) "7b hud config landed under CLAUDE_CONFIG_DIR"
 $env:CLAUDE_CONFIG_DIR = $cfgDir
 
 # 8 HIMMEL-3065: the hud's RUNTIME cache state is dropped when the wiring
-# CHANGES, and only then -- parity with bash cases 16-20. config.json is
-# settings this script owns; everything beside it is per-session snapshot state
-# that must not survive a migration onto a different install.
+# CHANGES, and only then -- parity with bash cases 16-20. HIMMEL-3334 moved the
+# config this script owns to a sibling path (claude-hud.json in the config dir
+# root), never inside $hud8; everything still under $hud8 is per-session
+# snapshot state that must not survive a migration onto a different install.
 function Seed-HudCache([string]$dir) {
     foreach ($sub in @('transcript-cache', 'context-cache', 'config-cache')) {
         New-Item -ItemType Directory -Force (Join-Path $dir $sub) | Out-Null
@@ -114,7 +116,7 @@ Wire $s8 $repoRoot | Out-Null
 Check (-not (Test-Path (Join-Path $hud8 'transcript-cache'))) "8a changed wiring drops transcript-cache"
 Check (-not (Test-Path (Join-Path $hud8 'context-cache'))) "8b changed wiring drops context-cache"
 Check (-not (Test-Path (Join-Path $hud8 'daily-cost.json'))) "8c changed wiring drops the daily-cost ledger"
-Check (Test-Path (Join-Path $hud8 'config.json')) "8d config.json survives the purge"
+Check (Test-Path (Join-Path $cfg8 'claude-hud.json')) "8d claude-hud.json survives the purge -- this script owns it"
 
 # 9 steady state: the SAME clone re-wired over its own wiring changes nothing,
 # so the caches stay -- otherwise every update would throw away the context
@@ -126,11 +128,11 @@ Check (Test-Path (Join-Path $hud8 'daily-cost.json')) "9b unchanged re-wire keep
 
 # 10 the CONFIG half on its own: same command, but an earlier install's hud
 # config on disk (the migration case where the clone path is unchanged).
-'{"display":{"showPromptCache":false}}' | Set-Content (Join-Path $hud8 'config.json')
+'{"display":{"showPromptCache":false}}' | Set-Content (Join-Path $cfg8 'claude-hud.json')
 Seed-HudCache $hud8
 Wire $s8 $repoRoot | Out-Null
 Check (-not (Test-Path (Join-Path $hud8 'transcript-cache'))) "10a a changed hud config drops the cache state"
-$c10 = Get-Content (Join-Path $hud8 'config.json') -Raw | ConvertFrom-Json
+$c10 = Get-Content (Join-Path $cfg8 'claude-hud.json') -Raw | ConvertFrom-Json
 Check ($c10.display.showPromptCache -eq $true) "10b hud config refreshed"
 
 # 11 a MOVED/renamed clone (the command half on its own): a synthetic himmel
@@ -188,9 +190,9 @@ New-Item -ItemType Directory -Force (Join-Path $proj14 '.claude') | Out-Null
 New-Item -ItemType Directory -Force $hud14 | Out-Null
 $s14 = Join-Path $proj14 '.claude/settings.json'
 $env:CLAUDE_CONFIG_DIR = $cfg14
-'{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $hud14 'config.json')
+'{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $cfg14 'claude-hud.json')
 Wire $s14 $repoRoot | Out-Null
-$c14 = Get-Content (Join-Path $hud14 'config.json') -Raw | ConvertFrom-Json
+$c14 = Get-Content (Join-Path $cfg14 'claude-hud.json') -Raw | ConvertFrom-Json
 Check ($c14.display.customLineCommand.StartsWith('HIMMEL_STATUSLINE_ECON=off ')) "14a HIMMEL_STATUSLINE_ECON=off prefix carried forward"
 Check ($c14.display.customLineCommand.Contains("$repoRoot/scripts/statusline/hud-custom-lines.sh")) "14b carried prefix still points at the new himmel path"
 
@@ -202,9 +204,9 @@ New-Item -ItemType Directory -Force (Join-Path $proj14c '.claude') | Out-Null
 New-Item -ItemType Directory -Force $hud14c | Out-Null
 $s14c = Join-Path $proj14c '.claude/settings.json'
 $env:CLAUDE_CONFIG_DIR = $cfg14c
-'{"display":{"customLineCommand":"bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $hud14c 'config.json')
+'{"display":{"customLineCommand":"bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $cfg14c 'claude-hud.json')
 Wire $s14c $repoRoot | Out-Null
-$c14c = Get-Content (Join-Path $hud14c 'config.json') -Raw | ConvertFrom-Json
+$c14c = Get-Content (Join-Path $cfg14c 'claude-hud.json') -Raw | ConvertFrom-Json
 Check ($c14c.display.customLineCommand -eq "bash `"$repoRoot/scripts/statusline/hud-custom-lines.sh`"") "14c no prefix leaves the bare template command"
 
 # 14d a foreign or malformed prefix is never carried.
@@ -215,9 +217,9 @@ New-Item -ItemType Directory -Force (Join-Path $proj14d '.claude') | Out-Null
 New-Item -ItemType Directory -Force $hud14d | Out-Null
 $s14d = Join-Path $proj14d '.claude/settings.json'
 $env:CLAUDE_CONFIG_DIR = $cfg14d
-'{"display":{"customLineCommand":"FOO=1 bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $hud14d 'config.json')
+'{"display":{"customLineCommand":"FOO=1 bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $cfg14d 'claude-hud.json')
 Wire $s14d $repoRoot | Out-Null
-$c14d = Get-Content (Join-Path $hud14d 'config.json') -Raw | ConvertFrom-Json
+$c14d = Get-Content (Join-Path $cfg14d 'claude-hud.json') -Raw | ConvertFrom-Json
 Check ($c14d.display.customLineCommand -eq "bash `"$repoRoot/scripts/statusline/hud-custom-lines.sh`"") "14d a foreign FOO=1 prefix is not carried"
 $env:CLAUDE_CONFIG_DIR = $cfgDir
 

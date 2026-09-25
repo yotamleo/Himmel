@@ -631,6 +631,63 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 done
 echo "ok: settings-key dot-path + verifyScript (wiring-statusline) — present/absent, missing script degrades"
 
+# ── settings-key: verifyHudConfig (wiring-statusline, HIMMEL-3334) ──
+# HIMMEL-3334: statusLine.command wired to the hud renderer used to read
+# green (via verifyScript alone) even when the hud's OWN config — the
+# separate file wire-statusline.sh drops at
+# ${CLAUDE_CONFIG_DIR:-~/.claude}/claude-hud.json — is missing or lacks
+# display.customLineCommand. Per HIMMEL-3307 that must degrade, never read
+# n/a/green. The guarded form below is the shape wire-statusline.sh writes,
+# pointed at the real vendored dist/index.js (present, so verifyScript alone
+# would pass) so only verifyHudConfig is exercised.
+sk1h_js="$repo_root/marketplace/plugins/claude-hud/dist/index.js"
+[ -f "$sk1h_js" ] || fail "fixture precondition: vendored claude-hud dist/index.js missing at $sk1h_js"
+sk1h_js_w="$(winpath "$sk1h_js")"
+sk1h_settings_dir="$work/sk1h-settings"; mkdir -p "$sk1h_settings_dir/.claude"
+jq -n --arg js "$sk1h_js_w" '{statusLine:{command:("[ -f \"" + $js + "\" ] && exec node \"" + $js + "\" || true")}}' \
+  > "$sk1h_settings_dir/.claude/settings.json"
+
+# RED: hud renderer wired, config absent entirely -> degraded (never green/n-a).
+sk1h_cfgdir_absent="$work/sk1h-cfg-absent"; mkdir -p "$sk1h_cfgdir_absent"
+outSK1hAbsent=$(CLAUDE_CONFIG_DIR="$(winpath "$sk1h_cfgdir_absent")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'wiring-statusline');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk1h_settings_dir")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK1hAbsent" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "settings-key verifyHudConfig: hud wired + config file absent must NOT read green/n-a (got: $outSK1hAbsent)"
+echo "$outSK1hAbsent" | jq -e -r '.detail // ""' | grep -q "hud config missing" \
+  || fail "settings-key verifyHudConfig: absent-config detail should name the missing hud config (got: $outSK1hAbsent)"
+
+# RED: hud renderer wired, config present but missing display.customLineCommand -> degraded.
+sk1h_cfgdir_nokey="$work/sk1h-cfg-nokey"; mkdir -p "$sk1h_cfgdir_nokey"
+printf '{"display":{"showPromptCache":true}}' > "$sk1h_cfgdir_nokey/claude-hud.json"
+outSK1hNoKey=$(CLAUDE_CONFIG_DIR="$(winpath "$sk1h_cfgdir_nokey")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'wiring-statusline');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk1h_settings_dir")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK1hNoKey" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "settings-key verifyHudConfig: hud config present without display.customLineCommand must NOT read green (got: $outSK1hNoKey)"
+
+# GREEN control: hud renderer wired + config present with display.customLineCommand -> present.
+sk1h_cfgdir_ok="$work/sk1h-cfg-ok"; mkdir -p "$sk1h_cfgdir_ok"
+printf '{"display":{"customLineCommand":"echo hi","showPromptCache":true}}' > "$sk1h_cfgdir_ok/claude-hud.json"
+outSK1hOk=$(CLAUDE_CONFIG_DIR="$(winpath "$sk1h_cfgdir_ok")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'wiring-statusline');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk1h_settings_dir")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK1hOk" | jq -e '.actual == "present"' >/dev/null \
+  || fail "settings-key verifyHudConfig: hud config present with display.customLineCommand should read present (got: $outSK1hOk)"
+echo "ok: settings-key verifyHudConfig (wiring-statusline, HIMMEL-3334) — hud-wired + config missing/no customLineCommand degrades, present with customLineCommand reads present"
+
 # ── settings-key: simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) ──
 # HIMMEL-3322: a non-empty enabledPlugins map used to read green regardless
 # of whether it matched the recorded pluginSet or was actually installed.

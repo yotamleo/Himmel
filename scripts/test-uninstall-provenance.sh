@@ -269,7 +269,7 @@ kept_line5=$(printf '%s\n' "$out5" | grep -c -E 'kept.*bar\.sh.*user-modified')
 check "RED5 uninstall: user-modified adopter-script kept as-is + reported user-modified" \
   "$AFTER5_BYTES|$kept_line5" "$USER_MODIFIED5_BYTES|1"
 
-echo "==== RED6: missing ledger -- six overwrite-prone rows protected, plugins skipped ===="
+echo "==== RED6: missing ledger -- six overwrite-prone rows protected (hud-config's own path), plugins skipped; a legacy pre-HIMMEL-3334 swept-path leftover is removed regardless ===="
 new_case red6
 mkdir -p "$HOME/.claude/plugins/claude-hud"
 cat > "$CASE_SETTINGS" <<JSON
@@ -279,6 +279,15 @@ cat > "$CASE_SETTINGS" <<JSON
 }
 JSON
 printf '{"display":{"customLineCommand":"bash \\"/fake/scripts/statusline/hud-custom-lines.sh\\""}}\n' \
+  > "$HOME/.claude/claude-hud.json"
+# HIMMEL-3334: a leftover config at the pre-migration swept path
+# (plugins/claude-hud/config.json, inside Claude Code's plugin-manager
+# sweep) is removed unconditionally -- ledger-independent, gated only by
+# unwire_hud_config's customLineCommand shape check -- since leaving it
+# there defeats the whole point of the fix. It is not one of the six
+# overwrite-prone rows the no-ledger branch otherwise protects; the row's
+# OWN (new, un-swept) path still is, asserted separately below.
+printf '{"display":{"customLineCommand":"bash \\"/fake/scripts/statusline/hud-custom-lines.sh\\""}}\n' \
   > "$HOME/.claude/plugins/claude-hud/config.json"
 printf '[{"id":"himmel-ops@himmel","scope":"user"}]\n' > "$CASE_PLUGINS_JSON"
 printf '[{"name":"himmel"}]\n' > "$CASE_MARKETPLACES_JSON"
@@ -287,10 +296,11 @@ out6=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-hooks)
 warn6=$(printf '%s\n' "$out6" | grep -c -F "provenance: no ledger at $LEDGER_PATH6; pre-existing units cannot be told from himmel's — the six overwrite-prone rows are kept")
 statusline_kept6=$(jq -r 'has("statusLine")' "$CASE_SETTINGS")
 handover_kept6=$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$CASE_SETTINGS")
-hud_kept6=$([ -f "$HOME/.claude/plugins/claude-hud/config.json" ] && echo yes || echo no)
+hud_kept6=$([ -f "$HOME/.claude/claude-hud.json" ] && echo yes || echo no)
+hud_legacy_removed6=$([ -f "$HOME/.claude/plugins/claude-hud/config.json" ] && echo no || echo yes)
 plugin_kept6=$(jq -r '[.[] | select(.id=="himmel-ops@himmel")] | length>0' "$CASE_PLUGINS_JSON")
-check "RED6 uninstall: no ledger -> warning printed + statusLine/HANDOVER_DIR/hud-config/plugins all protected" \
-  "$warn6|$statusline_kept6|$handover_kept6|$hud_kept6|$plugin_kept6" "1|true|/opt/red6-handover|yes|true"
+check "RED6 uninstall: no ledger -> warning printed + statusLine/HANDOVER_DIR/hud-config(new path)/plugins protected, legacy swept-path leftover always removed" \
+  "$warn6|$statusline_kept6|$handover_kept6|$hud_kept6|$hud_legacy_removed6|$plugin_kept6" "1|true|/opt/red6-handover|yes|yes|true"
 
 echo "==== RED7: foreign ledger (recorded home != current home) -- same warning + statusLine protected ===="
 new_case red7
@@ -421,13 +431,18 @@ AFTER12B=$(cat "$DEST12B")
 check "RED12 codex-9: second adopter-scripts unit untouched after the first failed" \
   "$AFTER12B" "$B12B_INSTALLED"
 
-echo "==== RED13 (codex-4): ledger loaded but silent on statusLine/HANDOVER_DIR/hud -- kept like no-ledger, not stripped ===="
+echo "==== RED13 (codex-4): ledger loaded but silent on statusLine/HANDOVER_DIR/hud -- kept like no-ledger, not stripped; a legacy swept-path leftover is still removed regardless ===="
 new_case red13
 # RED7's HOME override, `( HOME set inside a subshell )`, closed long before this line; HOME here is the
 # suite's own scratch HOME, exactly as intended.
 # shellcheck disable=SC2031
-HUD13="$HOME/.claude/plugins/claude-hud/config.json"
+HUD13="$HOME/.claude/claude-hud.json"
 mkdir -p "$(dirname "$HUD13")"
+# HIMMEL-3334: a leftover legacy-path config, same reasoning as RED6 --
+# removed unconditionally regardless of the ledger's loaded-but-silent
+# state, since it is never one of the ledger-decided six-row fallbacks.
+HUD13_LEGACY="$HOME/.claude/plugins/claude-hud/config.json"
+mkdir -p "$(dirname "$HUD13_LEGACY")"
 cat > "$CASE_SETTINGS" <<JSON
 {
   "statusLine": {"type":"command","command":"bash \"$repo_root/marketplace/plugins/claude-hud/dist/index.js\""},
@@ -436,6 +451,8 @@ cat > "$CASE_SETTINGS" <<JSON
 JSON
 printf '{"display":{"customLineCommand":"bash \\"/fake/scripts/statusline/hud-custom-lines.sh\\""}}\n' \
   > "$HUD13"
+printf '{"display":{"customLineCommand":"bash \\"/fake/scripts/statusline/hud-custom-lines.sh\\""}}\n' \
+  > "$HUD13_LEGACY"
 # a REAL, loaded ledger (LEDGER_OK=1) that records only an UNRELATED unit --
 # never a json-key unit for /statusLine or /env/HANDOVER_DIR, and never a
 # file unit for the hud config path -- so every one of these six-row
@@ -448,12 +465,13 @@ out13=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --
 statusline_kept13=$(jq -r 'has("statusLine")' "$CASE_SETTINGS")
 handover_kept13=$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$CASE_SETTINGS")
 hud_kept13=$([ -f "$HUD13" ] && echo yes || echo no)
+hud_legacy_removed13=$([ -f "$HUD13_LEGACY" ] && echo no || echo yes)
 notinledger13=$(printf '%s\n' "$out13" | grep -c 'kept (not in ledger)')
 # HIMMEL-3332 S6 slice2: workspace-trust is now ledger-decided too, so a
 # loaded-but-silent ledger also keeps it "not in ledger" -- a 4th line,
 # alongside statusLine, env.HANDOVER_DIR and the hud config.
-check "RED13 codex-4: loaded-but-silent ledger keeps statusLine/HANDOVER_DIR/hud-config like the no-ledger branch" \
-  "$statusline_kept13|$handover_kept13|$hud_kept13|$notinledger13" "true|/opt/red13-handover|yes|4"
+check "RED13 codex-4: loaded-but-silent ledger keeps statusLine/HANDOVER_DIR/hud-config(new path) like the no-ledger branch, legacy swept-path leftover still removed" \
+  "$statusline_kept13|$handover_kept13|$hud_kept13|$hud_legacy_removed13|$notinledger13" "true|/opt/red13-handover|yes|yes|4"
 
 echo "==== RED14 (codex-5): a halted per-unit settings loop must not fall through to the legacy helper for a unit it never reached ===="
 new_case red14
