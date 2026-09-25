@@ -401,18 +401,28 @@ fi
 # HIMMEL-2610 J1267O F3: the gap between `rm` and the flag excludes `(`
 # (also blocks `` ` ``) and `#` so the scan cannot cross into a `$(...)`/
 # backtick substitution body (that `--r...` belongs to the NESTED command,
-# not rm) or a trailing `# comment`. The whole match is then checked for a
-# standalone `--` token (bash's own operand terminator - `rm -- --rfile`
-# names a file, getopt never sees it as a flag) and the deny is skipped when
-# one is found ahead of the flag - checked against BASH_REMATCH[0] (the
-# match text) rather than a numbered subgroup, since CMDPOS's own group
-# count is an implementation detail of guardrails/lib.sh, not a contract
-# this file should index into.
+# not rm) or a trailing `# comment`. A standalone `--` token (bash's own
+# operand terminator - `rm -- --rfile` names a file, getopt never sees it
+# as a flag) ahead of the flag skips the deny.
+# HIMMEL-2610 J1267O round-4 codex-1: checking the WHOLE match text
+# (BASH_REMATCH[0]) for a `--` was wrong - POSIX leftmost-longest binds the
+# greedy gap to the LAST `--r...` in the matched text, so `rm --recursive --
+# --rfile` matched through to `--rfile`, and the `--` terminator sitting
+# between the two `--r...`s made the whole match look post-terminator even
+# though `--recursive` itself precedes it and is a live flag. Fixed by
+# finding the FIRST standalone `--` inside the match and testing for
+# `--r...` only in the text before it - text after a genuine terminator is
+# never a flag, but text before one always is.
 RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&(`#]*--r[a-z-]*([^[:alnum:]_-]|$)'
 if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
-    if [[ ${BASH_REMATCH[0]} =~ (^|[[:space:]])--([[:space:]]|$) ]]; then
-        :
+    _rm_recur_match="${BASH_REMATCH[0]}"
+    if [[ $_rm_recur_match =~ (^|[[:space:]])--([[:space:]]|$) ]]; then
+        _rm_recur_term="${BASH_REMATCH[0]}"
+        _rm_recur_pre_term="${_rm_recur_match%%"$_rm_recur_term"*}"
     else
+        _rm_recur_pre_term="$_rm_recur_match"
+    fi
+    if [[ $_rm_recur_pre_term =~ --r[a-z-]*([^[:alnum:]_-]|$) ]]; then
         deny "recursive rm"
     fi
 fi

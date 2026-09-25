@@ -292,6 +292,11 @@ assert_rc "R2- rm -f x.log # --really (comment, not a flag)" 0 "$(run_case "$(j_
 # shellcheck disable=SC2016 # the $(...) must stay literal -- it is the payload text under test, not a real substitution
 assert_rc "R2- rm -f x \$(ls --reverse) (subshell arg, not rm's flag)" 0 "$(run_case "$(j_bash 'rm -f x $(ls --reverse)')")"
 assert_rc "R2- rm -- --rfile (operand after --, not a flag)" 0 "$(run_case "$(j_bash 'rm -- --rfile')")"
+# HIMMEL-2610 J1267O round-4 codex-1: a genuine `--recursive` BEFORE the `--`
+# terminator must still deny even though a later `--r...`-shaped OPERAND
+# follows the terminator too -- the greedy scan used to bind to that later
+# operand and the terminator check then (wrongly) covered the earlier flag.
+assert_rc "R2+ rm --recursive -- --rfile (flag before --, operand after)" 2 "$(run_case "$(j_bash 'rm --recursive -- --rfile')")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
 # continuation but carries `-f` (no `r`), pinning the `\\` + `;+` escapes.
 cont_allow='rm \
