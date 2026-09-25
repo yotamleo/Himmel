@@ -2775,6 +2775,29 @@ if [ "$(id -u)" -ne 0 ]; then
     bash "$LIB" release "$F_DOC" fenceA86 >/dev/null 2>&1
 fi
 
+# --- T87 (HIMMEL-3614 F1, codex-1 suggestion): same pre-988 takeover as T85,
+# but against RELEASE rather than heartbeat -- the release path re-verifies
+# gen+arbiter independently (see _ql_read_arbiter's call site above release's
+# rm -rf) and must refuse just as heartbeat does.
+F_DOC="$F_HO/fence-t87.md"; : > "$F_DOC"
+F_LK="$(f_lockdir fence-t87)"
+bash "$LIB" acquire "$F_DOC" fenceOldA87 >/dev/null 2>&1
+rm -f "$F_LK/gen"   # simulate a lock minted before HIMMEL-988: no gen at all
+F_P="$TMPDIR_ROOT/pause-t87"; : > "$F_P"
+( QUEUE_LOCK_TEST_PAUSE_AT=release-verified QUEUE_LOCK_TEST_PAUSE_FILE="$F_P" \
+    bash "$LIB" release "$F_DOC" fenceOldA87 > "$F_P.out" 2>&1; echo $? > "$F_P.rc" ) &
+f_wait_reached "$F_P" || fail "T87: release never reached the pause point"
+rm -rf "$F_LK"
+m_lock_at "$F_LK" fenceNewB87 "$F_DOC" "$F_HO" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+rm -f "$F_P"; wait
+a_rc="$(cat "$F_P.rc" 2>/dev/null)"
+if [ "$a_rc" = 2 ] && grepq "$(cat "$F_P.out")" -i 'taken over' \
+    && grep -q '"session":"fenceNewB87"' "$F_LK/owner.json" 2>/dev/null; then
+    pass "T87: a pre-HIMMEL-988 takeover (no gen minted) still fences a stalled release via the owner arbiter"
+else
+    fail "T87: pre-988-style takeover not fenced on release: a_rc=$a_rc out=$(cat "$F_P.out") owner.json=$(cat "$F_LK/owner.json" 2>/dev/null)"
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]
