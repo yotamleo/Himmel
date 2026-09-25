@@ -754,6 +754,21 @@ case "$out" in
         fail "unexpected refusal message" "out: $out" ;;
 esac
 
+echo "TEST: explicit-URL push after the fork REWINDS its default branch -> scratch ref still refreshes (HIMMEL-3477 codex-1 round 3)"
+# The scratch ref refs/cr/<hash>/fork-head is reused across pushes to the SAME
+# fork URL. Rewind the fork's bare "main" backwards (non-fast-forward from the
+# ref's currently-fetched value) and push again: an unforced fetch refspec
+# would reject this and fail the push closed even though the fork is perfectly
+# reachable.
+git -C "$FORK_BARE" update-ref refs/heads/main "$fx_origin_tip"
+rc=0; out=$(cd "$FX" && bash "$HOOK" "$FORK_URL" "$FORK_URL" <<< "refs/heads/feat/urlpush $fx_feat_sha refs/heads/feat/urlpush $Z40" 2>&1) || rc=$?
+fxm_rewind_base=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$7); print $7; exit}' "$fxm" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$fxm_rewind_base" = "$fx_origin_tip" ]; then
+    pass "rewound fork -> scratch ref force-refreshes to the fork's NEW tip, push still succeeds"
+else
+    fail "rewound fork -> expected exit 0 + base=$fx_origin_tip, got rc=$rc base='$fxm_rewind_base'" "out: $out"
+fi
+
 echo "TEST: explicit-URL push to an unreachable fork with embedded credentials -> refusal does not leak them"
 # Loopback + a closed port (not example.com): a real DNS-resolving host makes
 # this suite depend on network availability and can hang (codex-1 CR finding).

@@ -208,7 +208,11 @@ resolve_diff_base() {
                 return 2
             fi
             scratch_ref="refs/cr/${url_hash}/fork-head"
-            if git fetch --no-tags --quiet "$push_remote_url" "HEAD:${scratch_ref}" 2>/dev/null; then
+            # Force (+): this ref is reused across pushes to the same fork, and
+            # a rewound/rebased fork default branch is a non-fast-forward
+            # update of our OWN prior fetch, not a real history-loss risk — we
+            # never read the ref's old value, only its freshest fetch.
+            if git fetch --no-tags --quiet "$push_remote_url" "+HEAD:${scratch_ref}" 2>/dev/null; then
                 diff_base="$scratch_ref"
                 return 0
             fi
