@@ -1277,6 +1277,7 @@ adopt_ran="$work/R-ADOPT-RAN"
 cat > "$fR/scripts/adopt.sh" <<STUB
 #!/usr/bin/env bash
 printf 'ran\n' > "$adopt_ran"
+printf '%s\n' "\$*" >> "$adopt_ran.argv"
 exit 0
 STUB
 chmod +x "$fR/scripts/adopt.sh"
@@ -1341,8 +1342,13 @@ for _mode in flag interactive; do
     && fail "caseR3/$_mode: a preview must not claim a scaffold adopt.sh would skip: $out"
   grepq "$out" 'no scaffolding ran' \
     || fail "caseR3/$_mode: the preview should say the stamped vault is reused: $out"
+  # HIMMEL-3308: --dry-run now shells out to adopt.sh itself (with --dry-run
+  # appended) so the preview reflects adopt.sh's own per-file plan.
   [ -f "$adopt_ran" ] \
-    && fail "caseR3/$_mode: --dry-run must not run adopt.sh at all: $out"
+    || fail "caseR3/$_mode: --dry-run should invoke adopt.sh --dry-run: $out"
+  grepq "$(cat "$adopt_ran.argv")" -- '--dry-run' \
+    || fail "caseR3/$_mode: adopt.sh should have been called with --dry-run (argv: $(cat "$adopt_ran.argv"))"
+  rm -f "$adopt_ran" "$adopt_ran.argv"
 done
 echo "ok: caseR occupied vault destination -> unstamped refused, stamped reused (applied AND both previews)"
 
