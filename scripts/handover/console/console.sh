@@ -21,7 +21,12 @@
 # CONSOLE_ARM_FOREGROUND (test seam: run the arm in the foreground instead of
 # detaching it).
 # Flag seams: --name (both commands; on next it selects which console
-# succession to continue) --arm --dry-run --model --bucket --prefix --deadline-min --doc
+# succession to continue) --arm --dry-run --model --bucket --prefix --project
+# --deadline-min --doc
+# --project (both commands; plugin /console from any repo -- points at a repo
+# that is NOT this himmel checkout, e.g. run from ~/Websites: bucket/prefix
+# derive from it instead of himmel's own repo basename/JIRA_PROJECT_KEY, and
+# an --arm session opens there, not in himmel)
 # --date (next only; overrides the day used for the SUCCESSOR's own name --
 # HIMMEL-2984 -- letting a 23:5x console pre-mint tomorrow's A without
 # waiting for midnight; passing --date always starts that day's succession at A,
@@ -74,10 +79,11 @@ ALPHABET="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 usage() {
     cat <<'USAGE'
 usage: console.sh new  [--name <slug>] [--arm] [--dry-run] [--model <m>]
-                       [--bucket <b>] [--prefix <P>] [--deadline-min <n>]
+                       [--bucket <b>] [--prefix <P>] [--project <dir>]
+                       [--deadline-min <n>]
        console.sh next [--doc <path>] [--date <YYYY-MM-DD>] [--name <slug>]
                        [--arm] [--dry-run] [--model <m>] [--bucket <b>]
-                       [--prefix <P>] [--deadline-min <n>]
+                       [--prefix <P>] [--project <dir>] [--deadline-min <n>]
        console.sh -h|--help
 
 --name on next selects which console succession to continue; defaults to the name
@@ -88,6 +94,10 @@ starts that day's succession at letter A; without --date the successor
 continues the predecessor's own bijective letter sequence (rolling past Z
 into AA, AB, ... as needed) regardless of whether the calendar day has
 rolled over since.
+--project points console.sh at a repo that is NOT this himmel checkout
+(plugin /console from any repo); bucket/prefix derive from it instead of
+himmel's own repo basename/JIRA_PROJECT_KEY, and an --arm session opens
+there. --bucket/--prefix still override it when given.
 USAGE
 }
 
@@ -220,6 +230,14 @@ do_arm() {
         leg_env_names+=("$leg_env_name")
     done
     unset "${leg_env_names[@]}"
+    # plugin /console from any repo: a foreign --project means the console is
+    # FOR that project, not for himmel -- the armed session must open there.
+    # headed-arm.sh reads HEADED_ARM_REPO as the directory the session opens
+    # in; deliberately not added to console_context_leg_env_unset_names above
+    # (it is not leg-launcher state to scrub, it is this launch's own target).
+    if [ -n "$project_dir" ]; then
+        export HEADED_ARM_REPO="$project_dir"
+    fi
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
         bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
@@ -246,6 +264,7 @@ DRY_RUN=0
 MODEL=""
 BUCKET=""
 PREFIX=""
+PROJECT_ARG=""
 DEADLINE_MIN=480
 DOC_ARG=""
 DATE_ARG=""
@@ -280,6 +299,8 @@ while [ "$#" -gt 0 ]; do
         --bucket=*) BUCKET="${1#--bucket=}"; shift ;;
         --prefix) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; PREFIX="$2"; shift 2 ;;
         --prefix=*) PREFIX="${1#--prefix=}"; shift ;;
+        --project) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; PROJECT_ARG="$2"; shift 2 ;;
+        --project=*) PROJECT_ARG="${1#--project=}"; shift ;;
         --deadline-min) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; DEADLINE_MIN="$2"; shift 2 ;;
         --deadline-min=*) DEADLINE_MIN="${1#--deadline-min=}"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -301,16 +322,35 @@ if ! slug="$(user_slug)"; then
     exit 2
 fi
 repo="$(resolve_repo)"
-# bucket: --bucket, else $CONSOLE_BUCKET, else derived from the repo
-# basename — every branch already goes through `slugify` uniformly, so no
-# ONE source can bypass sanitization the others get (the class codex-3
-# round 5 flagged for --prefix). The only gap slugify itself doesn't close
-# is a source that slugifies to nothing (e.g. CONSOLE_BUCKET='###') —
-# refused once, after precedence settles, same principle as prefix below.
+# plugin /console from any repo -- himmel's own JIRA_PROJECT_KEY and repo
+# aren't the project's. --project marks the session as being for a DIFFERENT
+# checkout than this one: when it resolves to somewhere other than $repo,
+# bucket/prefix below derive from the PROJECT instead of from himmel, and
+# do_arm opens the armed session there rather than in the himmel checkout.
+# Canonicalized (`cd ... && pwd`) the same way resolve_repo canonicalizes
+# $repo, so two spellings of the SAME repo (a trailing slash, a relative
+# path) still compare equal and count as "not foreign".
+project_dir=""
+if [ -n "$PROJECT_ARG" ]; then
+    [ -d "$PROJECT_ARG" ] || { err "--project must be an existing directory, got '$PROJECT_ARG'"; exit 1; }
+    project_canon="$(cd "$PROJECT_ARG" && pwd)"
+    if [ "$project_canon" != "$repo" ]; then
+        project_dir="$project_canon"
+    fi
+fi
+# bucket: --bucket, else $CONSOLE_BUCKET, else basename of a foreign
+# --project, else derived from the repo basename — every branch already goes
+# through `slugify` uniformly, so no ONE source can bypass sanitization the
+# others get (the class codex-3 round 5 flagged for --prefix). The only gap
+# slugify itself doesn't close is a source that slugifies to nothing (e.g.
+# CONSOLE_BUCKET='###') — refused once, after precedence settles, same
+# principle as prefix below.
 if [ -n "$BUCKET" ]; then
     bucket="$(slugify "$BUCKET")"
 elif [ -n "${CONSOLE_BUCKET:-}" ]; then
     bucket="$(slugify "$CONSOLE_BUCKET")"
+elif [ -n "$project_dir" ]; then
+    bucket="$(slugify "$(basename "$project_dir")")"
 else
     bucket="$(slugify "$(basename "$repo")")"
 fi
@@ -318,19 +358,20 @@ if [ -z "$bucket" ]; then
     err "resolved --bucket is empty after slugifying — pass an explicit --bucket with at least one alphanumeric character"
     exit 1
 fi
-# prefix: --prefix, else $JIRA_PROJECT_KEY, else derived from bucket.
-# Validated ONCE here, on the RESOLVED value, after precedence settles —
-# not per-branch — so no source (flag, env, or a future derivation change)
-# can bypass it. Round 4 only validated the --prefix flag branch;
-# JIRA_PROJECT_KEY reached the same path construction unvalidated, the
-# exact asymmetry this round's codex-3 caught. Unlike --name/--bucket
-# (slugified), a malformed prefix is refused rather than silently
-# rewritten: a Jira-style project key is uppercase alphanumerics, and
-# '../OTHER' copied verbatim would escape the selected bucket entirely.
+# prefix: --prefix, else $JIRA_PROJECT_KEY (only when NOT a foreign
+# --project — himmel's own key doesn't belong to another project), else
+# derived from bucket. Validated ONCE here, on the RESOLVED value, after
+# precedence settles — not per-branch — so no source (flag, env, or a
+# future derivation change) can bypass it. Round 4 only validated the
+# --prefix flag branch; JIRA_PROJECT_KEY reached the same path construction
+# unvalidated, the exact asymmetry this round's codex-3 caught. Unlike
+# --name/--bucket (slugified), a malformed prefix is refused rather than
+# silently rewritten: a Jira-style project key is uppercase alphanumerics,
+# and '../OTHER' copied verbatim would escape the selected bucket entirely.
 if [ -n "$PREFIX" ]; then
     prefix="$PREFIX"
     prefix_source="--prefix"
-elif [ -n "${JIRA_PROJECT_KEY:-}" ]; then
+elif [ -z "$project_dir" ] && [ -n "${JIRA_PROJECT_KEY:-}" ]; then
     prefix="$JIRA_PROJECT_KEY"
     prefix_source="JIRA_PROJECT_KEY"
 else
@@ -725,6 +766,9 @@ cmd_new() {
         echo "would-doc: $doc"
         echo "would-session: $session"
         echo "would-kit: $kit"
+        if [ -n "$project_dir" ]; then
+            echo "would-project: $project_dir"
+        fi
         echo "would-launch: $(launch_cmd "$session" "$doc")"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
@@ -998,6 +1042,9 @@ cmd_next() {
             echo "would-handoff: $predecessor_handoff (exists — left unchanged)"
         else
             echo "would-handoff: $predecessor_handoff"
+        fi
+        if [ -n "$project_dir" ]; then
+            echo "would-project: $project_dir"
         fi
         echo "would-launch: $(launch_cmd "$session" "$doc")"
         if [ "$ARM" -eq 1 ]; then

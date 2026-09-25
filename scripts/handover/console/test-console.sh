@@ -1628,4 +1628,38 @@ strip_list67="$( ( . "$REPO_REAL/scripts/lib/console-context.sh"; console_contex
 missing67="$(comm -23 <(printf '%s\n' "$propagated67") <(printf '%s\n' "$strip_list67"))"
 check "67 every leg_propagate_env name in headed-arm-leg.sh is in the strip list" "$missing67" ""
 
+# --- 68: --project <dir> -- a console for a repo that is NOT this himmel
+# checkout (the himmel-ops plugin's /console, run from e.g. ~/Websites). The
+# bucket and prefix come from the project, never from himmel's own
+# JIRA_PROJECT_KEY, and the armed session opens in the project, not in himmel.
+proj68="$tmp/Web Sites68"; mkdir -p "$proj68"
+out68="$(console new --project "$proj68" --dry-run 2>&1)"
+check "68 --project: bucket derived from the project dir" \
+    "$(printf '%s\n' "$out68" | grep -c "^would-doc: $root/tester/web-sites68/WEBSITES68-nextleg-${today}A-console.md\$")" "1"
+check "68 --project: himmel's JIRA_PROJECT_KEY is not the prefix" \
+    "$(printf '%s\n' "$out68" | grep -c 'DEMO-nextleg')" "0"
+check "68 --project: dry-run names the project the session opens in" \
+    "$(printf '%s\n' "$out68" | grep -c "^would-project: $proj68\$")" "1"
+out68b="$(console new --project "$proj68" --bucket other68 --prefix OTH --dry-run 2>&1)"
+check "68 --project: explicit --bucket/--prefix still win" \
+    "$(printf '%s\n' "$out68b" | grep -c "^would-doc: $root/tester/other68/OTH-nextleg-")" "1"
+out68c="$(console new --project "$fixture_repo" --dry-run 2>&1)"
+check "68 --project at the himmel checkout itself changes nothing (JIRA key kept)" \
+    "$(printf '%s\n' "$out68c" | grep -c '^would-doc: .*/DEMO-nextleg-')" "1"
+check "68 --project at the himmel checkout prints no would-project" \
+    "$(printf '%s\n' "$out68c" | grep -c '^would-project:')" "0"
+rc68=0; console new --project "$tmp/no-such-68" --dry-run >/dev/null 2>&1 || rc68=$?
+check "68 --project on a missing dir is a usage error" "$rc68" "1"
+cat > "$tmp/stub-arm-68.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-arm-68: HEADED_ARM_REPO=${HEADED_ARM_REPO:-<unset>}"
+STUB
+out68d="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-68.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work68" \
+    bash "$C" new --project "$proj68" --arm --deadline-min 0 ) 2>&1 )"
+check "68 --project --arm opens the session in the project (HEADED_ARM_REPO)" \
+    "$(printf '%s\n' "$out68d" | grep -c "^stub-arm-68: HEADED_ARM_REPO=$proj68\$")" "1"
+doc68="$root/tester/web-sites68/WEBSITES68-nextleg-${today}A-console.md"
+HANDOVER_DIR="$root" bash "$QL" release "$doc68" "$(token_of "$out68d")" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
