@@ -505,14 +505,25 @@ function isHudRendererScript(scriptPath) {
     && /(^|[\\/])marketplace[\\/]plugins[\\/]claude-hud[\\/]dist[\\/]index\.js$/.test(scriptPath);
 }
 
+// A candidate that EXISTS but fails to parse is the active config, broken —
+// never silently skipped in favor of the next candidate (HIMMEL-3334
+// codex-1: that used to mask a malformed new-path config behind a healthy
+// legacy one). Only an absent file (ENOENT) falls through.
 function readHudConfig(ctx) {
   const dir = getClaudeConfigDirForHud(ctx);
   const candidates = [path.join(dir, 'claude-hud.json'), path.join(dir, 'plugins', 'claude-hud', 'config.json')];
   for (const p of candidates) {
+    let raw;
     try {
-      return { path: p, data: JSON.parse(fs.readFileSync(p, 'utf8')) };
+      raw = fs.readFileSync(p, 'utf8');
+    } catch (e) {
+      if (e && e.code === 'ENOENT') continue;
+      return { path: p, data: null };
+    }
+    try {
+      return { path: p, data: JSON.parse(raw) };
     } catch (_e) {
-      continue;
+      return { path: p, data: null };
     }
   }
   return null;

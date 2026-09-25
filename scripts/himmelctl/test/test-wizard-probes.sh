@@ -688,6 +688,23 @@ echo "$outSK1hOk" | jq -e '.actual == "present"' >/dev/null \
   || fail "settings-key verifyHudConfig: hud config present with display.customLineCommand should read present (got: $outSK1hOk)"
 echo "ok: settings-key verifyHudConfig (wiring-statusline, HIMMEL-3334) — hud-wired + config missing/no customLineCommand degrades, present with customLineCommand reads present"
 
+# RED (HIMMEL-3334 codex-1): a malformed new-path config must not be silently
+# skipped in favor of a valid legacy-path one -- the active override is
+# broken and the probe must say so, never fall through to a healthy fallback.
+sk1h_cfgdir_malformed="$work/sk1h-cfg-malformed"; mkdir -p "$sk1h_cfgdir_malformed/plugins/claude-hud"
+printf '{not valid json' > "$sk1h_cfgdir_malformed/claude-hud.json"
+printf '{"display":{"customLineCommand":"echo legacy"}}' > "$sk1h_cfgdir_malformed/plugins/claude-hud/config.json"
+outSK1hMalformed=$(CLAUDE_CONFIG_DIR="$(winpath "$sk1h_cfgdir_malformed")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'wiring-statusline');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk1h_settings_dir")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK1hMalformed" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "settings-key verifyHudConfig: malformed new-path hud config must degrade, not fall through to a valid legacy config (got: $outSK1hMalformed)"
+echo "ok: settings-key verifyHudConfig (HIMMEL-3334 codex-1) — malformed new-path config degrades even when a valid legacy-path config exists"
+
 # ── settings-key: simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) ──
 # HIMMEL-3322: a non-empty enabledPlugins map used to read green regardless
 # of whether it matched the recorded pluginSet or was actually installed.
