@@ -65,28 +65,29 @@ claude_start_inject() {  # $1 = inherited PATH — simulates Claude Code's own i
     printf '%s:%s' "$PLUGIN_BINS" "$1"
 }
 
-count_dupe_groups() {  # number of PATH entries that appear more than once
-    printf '%s' "$1" | tr ':' '\n' | sort | uniq -c | awk '$1 > 1' | wc -l
+occurrence_count() {  # how many times $2 appears as a PATH entry of $1
+    printf '%s' "$1" | tr ':' '\n' | grep -c -x -- "$2"
 }
 
 # Without the fix: N hops, each feeding its (undeduped) output straight to
-# the next hop's inherited PATH — duplicate groups grow with hop count.
+# the next hop's inherited PATH — a plugin bin's occurrence count grows one
+# per hop (a dupe-GROUP count would saturate after hop 2 and hide this).
 undeduped="$BASE_PATH"
 for _ in 1 2 3 4 5; do
     undeduped="$(claude_start_inject "$undeduped")"
 done
-undeduped_dupes=$(count_dupe_groups "$undeduped")
-assert_eq "T8a without fix: 5 hops grow past 1 dupe group" "true" "$([ "$undeduped_dupes" -gt 1 ] && echo true || echo false)"
+undeduped_occurrences=$(occurrence_count "$undeduped" "/plugins/a/bin")
+assert_eq "T8a without fix: 5 hops grow one plugin bin to 5 occurrences" "5" "$undeduped_occurrences"
 
 # With the fix: dedupe the inherited PATH before each hop's injection —
-# every hop starts clean, so the duplicate count stays at zero after any
+# every hop starts clean, so the occurrence count stays at 1 after any
 # number of hops, instead of growing without bound.
 deduped="$BASE_PATH"
 for _ in 1 2 3 4 5; do
     deduped="$(dedupe_path "$(claude_start_inject "$deduped")")"
 done
-deduped_dupes=$(count_dupe_groups "$deduped")
-assert_eq "T8b with fix: 5 hops stay capped at 0 dupe groups" "0" "$deduped_dupes"
+deduped_occurrences=$(occurrence_count "$deduped" "/plugins/a/bin")
+assert_eq "T8b with fix: 5 hops stay capped at 1 occurrence" "1" "$deduped_occurrences"
 
 # T9 (RED for codex-1): a trailing empty PATH entry (PATH ending in ":",
 # conventionally "look in cwd") must round-trip, not be silently dropped.
