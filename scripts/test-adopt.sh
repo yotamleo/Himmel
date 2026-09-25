@@ -455,6 +455,14 @@ grepq "$out1fb" "qmd-fork" \
   || fail "HIMMEL-3303 F1: with bun present the footprint block does not name qmd-fork"
 echo "ok: HIMMEL-3303 F1/F3 footprint names the himmel state dir (+ qmd-fork with bun) and words the trust line accurately"
 
+# J1274R R1: a --scope project marketplace add still clones into the machine-
+# wide marketplaces dir and registers in the global known_marketplaces.json.
+grepq "$out1f" "plugins/marketplaces" \
+  || fail "HIMMEL-3303 R1: footprint block does not name the marketplace clones dir"
+grepq "$out1f" "known_marketplaces.json" \
+  || fail "HIMMEL-3303 R1: footprint block does not name the global marketplace registry"
+echo "ok: HIMMEL-3303 R1 footprint names the marketplace clones dir and the global registry"
+
 # ── 1g. HIMMEL-3303 item (4): bare adopt.sh leaves a standalone uninstaller ──
 # scripts/himmelctl/bin.js's PATH-shim step already writes this bundle
 # (bin.js:4847) so `uninstall` survives deleting the clone -- but only inside

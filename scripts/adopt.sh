@@ -1111,6 +1111,7 @@ print_machine_footprint() {
   echo "  claude-hud status-line config:         $claude_cfg/plugins/claude-hud/config.json"
   echo "  workspace-trust entry (himmelctl only): ${WORKSPACE_TRUST_CONFIG:-$HOME/.claude.json} -- the himmelctl wizard writes it; this bare adopt.sh does not"
   echo "  plugin content cache + install ledger: $claude_cfg/plugins/cache/<marketplace>/…, $claude_cfg/plugins/installed_plugins.json"
+  echo "  marketplace clones + global registry:  $claude_cfg/plugins/marketplaces/<name>/, $claude_cfg/plugins/known_marketplaces.json -- a --scope project marketplace add still writes both machine-wide"
   echo "  these are shared machine tooling, same as any package manager cache -- --scope project only keeps THIS repo's own settings.json project-local."
 }
 
