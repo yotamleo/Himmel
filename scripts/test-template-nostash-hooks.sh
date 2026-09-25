@@ -300,6 +300,155 @@ if [ -n "${F4:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# C1 (judge J1255R finding 1): on an empty ACMR-staged-files list, the
+# e9abfdf9 --all-files branch runs every fixer over the WHOLE vault --
+# rewriting an unstaged tracked file and re-triggering the very stash-loss
+# failure mode this wrapper exists to avoid. Stock pre-commit on an empty
+# diff only runs always_run hooks; file-pattern hooks see nothing. Fixtures
+# use the REAL template config (as the judge's own exp-e8.sh did), not the
+# synthetic mk_seed_repo above, so a regression in the template's actual
+# fixer hooks (trailing-whitespace, end-of-file-fixer, check-json) is caught.
+# ---------------------------------------------------------------------------
+mk_c1_repo() {
+  local dir="$1"
+  cp -a "$TEMPLATE"/. "$dir"/
+  git -C "$dir" init -q -b main
+  git -C "$dir" config user.email t@t
+  git -C "$dir" config user.name t
+  touch "$dir/.single-writer"
+  mkdir -p "$dir/20-Areas" "$dir/00-Inbox" "$dir/40-Archive"
+  printf '{"k": 1}\n' > "$dir/20-Areas/settings.json"
+  printf 'note to delete\n' > "$dir/00-Inbox/gone.md"
+  git -C "$dir" add -A >/dev/null
+  git -C "$dir" commit -qm "chore: scaffold" --no-verify >/dev/null
+  (cd "$dir" && bash "$dir/scripts/hooks/install-nostash-hooks.sh" >/dev/null 2>&1)
+}
+
+# E8a: --allow-empty commit with an UNSTAGED edit to a tracked .json.
+C1A=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate C1a fixture dir"; fails=$((fails+1)); }
+if [ -n "${C1A:-}" ]; then
+  mk_c1_repo "$C1A"
+  printf '{"k": 2}   ' > "$C1A/20-Areas/settings.json"
+  c1a_before=$(git -C "$C1A" hash-object --no-filters "$C1A/20-Areas/settings.json")
+  c1a_out=$(cd "$C1A" && git commit --allow-empty -m "chore: empty" 2>&1)
+  c1a_rc=$?
+  c1a_after=$(git -C "$C1A" hash-object --no-filters "$C1A/20-Areas/settings.json")
+  check "C1a: --allow-empty commit with an unstaged dirty tracked file succeeds" "$c1a_rc" "0"
+  check "C1a: unstaged tracked file stays byte-unchanged (not widened to --all-files)" "$c1a_after" "$c1a_before"
+  c1a_msg=$(git -C "$C1A" log -1 --format=%s)
+  check "C1a: --allow-empty commit landed" "$c1a_msg" "chore: empty"
+  [ "$c1a_rc" -ne 0 ] && echo "  C1a output: $c1a_out"
+fi
+
+# E8b: deletion-only commit next to an UNRELATED tracked file with a
+# pre-existing (already-committed) JSON violation.
+C1B=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate C1b fixture dir"; fails=$((fails+1)); }
+if [ -n "${C1B:-}" ]; then
+  mk_c1_repo "$C1B"
+  printf '{not json\n' > "$C1B/40-Archive/legacy.json"
+  git -C "$C1B" add 40-Archive/legacy.json
+  git -C "$C1B" commit -qm "chore: legacy attachment" --no-verify
+  git -C "$C1B" rm -q 00-Inbox/gone.md
+  c1b_out=$(cd "$C1B" && git commit -m "chore: delete a note" 2>&1)
+  c1b_rc=$?
+  check "C1b: deletion-only commit succeeds next to an unrelated pre-existing bad JSON" "$c1b_rc" "0"
+  c1b_msg=$(git -C "$C1B" log -1 --format=%s)
+  check "C1b: deletion-only commit landed" "$c1b_msg" "chore: delete a note"
+  [ "$c1b_rc" -ne 0 ] && echo "  C1b output: $c1b_out"
+
+  # E8c: message-only amend (nothing staged), same repo, chained on E8b's
+  # commit -- also next to the same unrelated pre-existing bad JSON.
+  c1c_out=$(cd "$C1B" && git commit --amend -m "chore: reworded" 2>&1)
+  c1c_rc=$?
+  check "C1c: message-only amend (nothing staged) succeeds despite the unrelated bad JSON" "$c1c_rc" "0"
+  c1c_msg=$(git -C "$C1B" log -1 --format=%s)
+  check "C1c: reworded commit landed" "$c1c_msg" "chore: reworded"
+  [ "$c1c_rc" -ne 0 ] && echo "  C1c output: $c1c_out"
+fi
+
+# ---------------------------------------------------------------------------
+# C2 (judge J1255R finding 2): installer:37 compared a `pwd -P` path against
+# `git rev-parse --show-toplevel`'s own output as strings -- on Git-Bash
+# these spell the identical directory differently (`/c/...` vs `C:/...`),
+# so the comparison falsely refuses a legitimate install. There is no
+# Windows host here, so a stubbed `git` simulates the mismatch: it leaves
+# every real git operation alone except `rev-parse --show-toplevel`, whose
+# output it re-spells with a `C:` prefix, exactly like Git-Bash would.
+# ---------------------------------------------------------------------------
+C2=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate C2 fixture dir"; fails=$((fails+1)); }
+if [ -n "${C2:-}" ]; then
+  mk_seed_repo "$C2"
+  real_git=$(command -v git)
+  c2_stub_bin="$C2.stubbin"
+  mkdir -p "$c2_stub_bin"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'for a in "$@"; do\n'
+    printf '  if [ "$a" = --show-toplevel ]; then\n'
+    printf '    out=$(%q "$@") || exit $?\n' "$real_git"
+    printf '    printf '"'"'C:%%s\\n'"'"' "$out"\n'
+    printf '    exit 0\n'
+    printf '  fi\n'
+    printf 'done\n'
+    printf 'exec %q "$@"\n' "$real_git"
+  } > "$c2_stub_bin/git"
+  chmod +x "$c2_stub_bin/git"
+  c2_out=$(PATH="$c2_stub_bin:$PATH" bash "$C2/scripts/hooks/install-nostash-hooks.sh" 2>&1)
+  c2_rc=$?
+  check "C2: installer succeeds under a stubbed git that re-spells --show-toplevel (C:/... vs pwd -P's /...)" "$c2_rc" "0"
+  [ "$c2_rc" -ne 0 ] && echo "  C2 output: $c2_out"
+  # Prove the hooks actually landed where git will look for them, and work:
+  # a real commit through the generated hook must run it, not silently skip.
+  printf 'staged-change\n' > "$C2/commit-file.txt"
+  git -C "$C2" add commit-file.txt
+  c2_commit_out=$(cd "$C2" && git commit -qm "feat: stubbed-git commit" 2>&1)
+  c2_commit_rc=$?
+  check "C2: a real commit through the installed hook succeeds" "$c2_commit_rc" "0"
+  [ "$c2_commit_rc" -ne 0 ] && echo "  C2 commit output: $c2_commit_out"
+  [ -e "$C2/.git-hook-hold/started" ] && check "C2: the always_run local hook actually ran" ran ran || check "C2: the always_run local hook actually ran" "did not run" ran
+fi
+
+# ---------------------------------------------------------------------------
+# I1 (judge J1255R finding 3, important): installer:137 passed every staged
+# path on ONE argv. A large commit (Windows' ~32K command-line limit; Linux
+# ARG_MAX is bigger but still finite) must not overflow it.
+# ---------------------------------------------------------------------------
+mk_argv_repo() {
+  local dir="$1"
+  git -C "$dir" init -q -b main
+  git -C "$dir" config user.email t@t
+  git -C "$dir" config user.name t
+  touch "$dir/.single-writer"
+  printf 'repos:\n  - repo: local\n    hooks:\n      - id: nope\n        name: nope\n        entry: DO-NOT-COMMIT\n        language: pygrep\n' > "$dir/.pre-commit-config.yaml"
+  installer_copy_into "$dir"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm seed --no-verify
+  (cd "$dir" && bash "$dir/scripts/hooks/install-nostash-hooks.sh" >/dev/null 2>&1)
+}
+I1=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate I1 fixture dir"; fails=$((fails+1)); }
+if [ -n "${I1:-}" ]; then
+  mk_argv_repo "$I1"
+  i1_dir="$I1/30-Resources/a-reasonably-long-folder-name-for-bulk-imported-web-clippings-2026"
+  mkdir -p "$i1_dir"
+  i=0
+  while [ "$i" -lt 14000 ]; do
+    printf 'x\n' > "$i1_dir/clipping-$i-some-long-descriptive-article-title-as-obsidian-web-clipper-names-it.md"
+    i=$((i + 1))
+  done
+  git -C "$I1" add -A
+  i1_out=$(cd "$I1" && git commit -qm "feat: bulk clip import" 2>&1)
+  i1_rc=$?
+  check "I1: a 14000-file commit does not overflow the hook's argv" "$i1_rc" "0"
+  case "$i1_out" in
+    *"Argument list too long"*) check "I1: no E2BIG in hook output" "argument-list-too-long" "clean" ;;
+    *) check "I1: no E2BIG in hook output" "clean" "clean" ;;
+  esac
+  i1_msg=$(git -C "$I1" log -1 --format=%s)
+  check "I1: bulk-import commit landed" "$i1_msg" "feat: bulk clip import"
+  [ "$i1_rc" -ne 0 ] && echo "  I1 output (truncated): $(printf '%s' "$i1_out" | head -c 300)"
+fi
+
+# ---------------------------------------------------------------------------
 # 2. Wiring: a fresh scaffold from the template must get the wrapper.
 # ---------------------------------------------------------------------------
 if [ -x "$INSTALLER" ]; then

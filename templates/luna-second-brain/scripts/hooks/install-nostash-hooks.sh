@@ -28,17 +28,25 @@ if ! git -C "$computed_root" rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "error: $computed_root (derived from this script's own location) is not a git repository" >&2
   exit 1
 fi
-root=$(git -C "$computed_root" rev-parse --show-toplevel)
 
-# `rev-parse --show-toplevel` accepts an ENCLOSING repo, not only one rooted
-# exactly at $computed_root -- a copy of this script nested inside some other
-# repo (no .git of its own where the vault expects one) would otherwise
-# resolve here and install this vault's hooks into that unrelated repo.
-if [ "$root" != "$computed_root" ]; then
-  echo "error: $computed_root (derived from this script's own location) is not itself a git repository root -- it resolved to the enclosing repository $root instead." >&2
+# `--show-prefix` is empty exactly when $computed_root IS the repo's own
+# toplevel -- unlike comparing `--show-toplevel`'s own output against
+# $computed_root as strings (the previous approach), this doesn't depend on
+# both sides spelling the same directory the same way: on Git-Bash, `pwd -P`
+# prints `/c/...` while git's own toplevel output prints `C:/...` for that
+# identical directory, so the old string compare failed there even when
+# $computed_root genuinely was the toplevel. A non-empty prefix means
+# `--show-toplevel` resolved an ENCLOSING repo instead -- a copy of this
+# script nested inside some other repo (no .git of its own where the vault
+# expects one) -- which would otherwise install this vault's hooks into that
+# unrelated repo.
+prefix=$(git -C "$computed_root" rev-parse --show-prefix)
+if [ -n "$prefix" ]; then
+  echo "error: $computed_root (derived from this script's own location) is not itself a git repository root -- it resolved to an enclosing repository instead (prefix: $prefix)." >&2
   echo "hint: run this installer from its own vault's checked-out copy, not a copy nested inside an unrelated repo." >&2
   exit 1
 fi
+root="$computed_root"
 
 # Match stock `pre-commit install`'s own refusal. `core.hooksPath` can point
 # anywhere -- a global one hijacks every repo for that user -- and honoring
@@ -52,11 +60,12 @@ fi
 
 # Derived from git-common-dir (never --git-path hooks, which follows
 # core.hooksPath) so this can never write outside this vault's own hooks dir.
-hooks_dir=$(git -C "$root" rev-parse --git-common-dir)
-case "$hooks_dir" in
-  /*) ;;
-  *) hooks_dir="$root/$hooks_dir" ;;
-esac
+# `--path-format=absolute` makes git itself emit an absolute path in
+# whatever spelling it uses on this platform, instead of this script
+# sniffing whether the (unqualified) output already looked absolute by
+# checking for a leading `/` -- a check that silently misfires on Windows,
+# where an absolute path spells `C:/...`, not `/...`.
+hooks_dir=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)
 hooks_dir="$hooks_dir/hooks"
 mkdir -p "$hooks_dir"
 
@@ -95,6 +104,14 @@ if ! resolve_pre_commit; then
   exit 1
 fi
 
+# Resolved and baked the same way as pre-commit above (not left to a
+# runtime PATH lookup): a restricted commit-time PATH (GUI/Obsidian-Git)
+# must still find it.
+if ! xargs_bin=$(command -v xargs); then
+  echo "error: no working xargs found (needed to batch a large commit's staged-file list)." >&2
+  exit 1
+fi
+
 # Back up a pre-existing hook we didn't generate, instead of silently
 # discarding it -- a re-run over our OWN generated hook still overwrites
 # freely (that's the idempotency this script promises). Done only AFTER
@@ -116,6 +133,7 @@ for _tok in "${pc[@]}"; do
   pc_cmd="$pc_cmd $_q"
 done
 pc_cmd="${pc_cmd# }"
+printf -v xargs_q '%q' "$xargs_bin"
 
 cat >"$hooks_dir/pre-commit" <<HOOK
 #!/usr/bin/env bash
@@ -127,14 +145,24 @@ files=()
 while IFS= read -r -d '' f; do
   files+=("\$f")
 done < <(git diff --cached --name-only --diff-filter=ACMR -z)
-# A deletion-only commit leaves \$files empty. Some hooks (e.g.
-# worktree-isolation) are always_run/pass_filenames:false and must still run
-# even then -- exiting here would silently skip them. --all-files only on
-# this empty-list branch; the common --files path is unchanged.
+# A deletion-only, --allow-empty, or message-only-amend commit leaves \$files
+# empty. pre-commit only skips its stash when --all-files or --files is
+# given (see the top-of-file comment) -- an empty --files array is the same
+# as omitting it (an empty args.files is falsy) and silently re-enables the
+# stash, while --all-files (the previous approach here) runs every fixer
+# over the WHOLE vault, touching unrelated unstaged files and reintroducing
+# the exact stash-loss failure this wrapper exists to avoid. A single
+# --files path that cannot exist keeps args.files truthy (no stash) while
+# pre-commit's own Classifier drops it via a lexists() check before any
+# hook's file pattern is matched, so file-pattern hooks see zero files --
+# and always_run/pass_filenames:false hooks (e.g. worktree-isolation) still
+# run, exactly like stock pre-commit on an empty diff.
 if [ "\${#files[@]}" -eq 0 ]; then
-  exec "\${pc[@]}" run --hook-stage pre-commit --all-files
+  files=(".git/NOSTASH-EMPTY-SENTINEL")
 fi
-exec "\${pc[@]}" run --hook-stage pre-commit --files "\${files[@]}"
+# Batched via xargs, not one argv -- a large commit's staged-file list can
+# exceed the platform's command-line length limit (Windows: ~32K chars).
+printf '%s\0' "\${files[@]}" | $xargs_q -0 "\${pc[@]}" run --hook-stage pre-commit --files
 HOOK
 
 cat >"$hooks_dir/commit-msg" <<HOOK
