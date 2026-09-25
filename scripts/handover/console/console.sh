@@ -319,6 +319,63 @@ case "$DEADLINE_MIN" in
     ''|*[!0-9]*) err "--deadline-min must be a positive integer, got '$DEADLINE_MIN'"; exit 1 ;;
 esac
 
+# --- resolve root / slug / repo (moved ahead of the project-inheritance
+# block below, HIMMEL-3631): the cross-bucket auto-discovery block that
+# follows needs root/slug to search with, and nothing between here and the
+# old position depended on the previous ordering.
+if ! root="$(handover_root)"; then
+    err "set HANDOVER_DIR or run /handover-setup."
+    exit 2
+fi
+if ! slug="$(user_slug)"; then
+    err "cannot resolve USER_SLUG. Set USER_SLUG or configure your forge login / git user.name."
+    exit 2
+fi
+repo="$(resolve_repo)"
+
+# HIMMEL-3631: a bare `next` with nothing pinning down where to search (no
+# --doc, no $CONSOLE_DOC, no --bucket/$CONSOLE_BUCKET/--prefix/--project)
+# cannot resolve state_dir before searching for a predecessor -- state_dir
+# derives from bucket, which derives from the project this block is trying
+# to discover in the first place. Widen the search across every bucket this
+# operator has ever used, rank candidates by the same date+letter key
+# resolve_predecessor's own cross-date branch uses below (never a raw name
+# sort -- AA sorts before B lexically despite being the later letter), and
+# hand the winner to DOC_ARG so the EXISTING --doc-given machinery (the
+# project-inheritance block right after this one, the --name-from-doc
+# inference further down, resolve_predecessor itself) does the rest
+# unmodified -- including refusing a poisoned recorded project exactly as
+# --project would (J1271R). Any of --doc/$CONSOLE_DOC/--bucket/
+# $CONSOLE_BUCKET/--prefix/--project pins the search on its own and skips
+# this block entirely, so explicit flags always still win.
+if [ "$CMD" = next ] && [ -z "$PROJECT_ARG" ] && [ -z "$DOC_ARG" ] && [ -z "${CONSOLE_DOC:-}" ] && [ -z "$BUCKET" ] && [ -z "${CONSOLE_BUCKET:-}" ] && [ -z "$PREFIX" ]; then
+    _auto_name="$(slugify "$NAME")"
+    if [ -n "$_auto_name" ]; then
+        _auto_newest="" _auto_newest_key=""
+        for _auto_cand in "$root/$slug/"*/*"-nextleg-"*"-${_auto_name}.md"; do
+            [ -f "$_auto_cand" ] || continue
+            _auto_base="$(basename "$_auto_cand")"
+            _auto_stem="${_auto_base%.md}"
+            _auto_prefix_part="${_auto_stem%-"$_auto_name"}"
+            [ "$_auto_prefix_part" = "$_auto_stem" ] && continue
+            if [[ "$_auto_prefix_part" =~ ^[A-Z0-9]+-nextleg-([0-9]{4}-[0-9]{2}-[0-9]{2})([A-Z]{1,2})$ ]]; then
+                _auto_cdate="${BASH_REMATCH[1]}"
+                _auto_cletter="${BASH_REMATCH[2]}"
+            else
+                continue
+            fi
+            _auto_key="${_auto_cdate}-$(printf '%03d' "$(letter_value "$_auto_cletter")")"
+            if [ -z "$_auto_newest_key" ] || [[ "$_auto_key" > "$_auto_newest_key" ]]; then
+                _auto_newest_key="$_auto_key"
+                _auto_newest="$_auto_cand"
+            fi
+        done
+        [ -n "$_auto_newest" ] && DOC_ARG="$_auto_newest"
+        unset _auto_cand _auto_base _auto_stem _auto_prefix_part _auto_cdate _auto_cletter _auto_key _auto_newest _auto_newest_key
+    fi
+    unset _auto_name
+fi
+
 # codex-1 (pr-check round 1, HIMMEL-3623): a `next` with no explicit
 # --project must not silently record the successor as running "in the
 # himmel checkout itself" for a chain that is FOR a foreign project -- the
@@ -326,10 +383,9 @@ esac
 # wrapper never derives --project from cwd for `next` (only for `new`), and
 # without one this defaults PROJECT_ARG from the predecessor doc's own
 # recorded project line, feeding the SAME bucket/prefix/registry resolution
-# below as an explicit --project would. Only possible when the predecessor
-# doc is known up front (--doc / $CONSOLE_DOC) -- state_dir, needed for
-# next's OWN auto-discovery of a predecessor, is not resolved yet at this
-# point in the script, and an explicit --project always still wins.
+# below as an explicit --project would. Possible either when the predecessor
+# doc is known up front (--doc / $CONSOLE_DOC) or once the auto-discovery
+# block above has populated DOC_ARG; an explicit --project always still wins.
 if [ "$CMD" = next ] && [ -z "$PROJECT_ARG" ]; then
     _predecessor_doc_early="${DOC_ARG:-${CONSOLE_DOC:-}}"
     if [ -n "$_predecessor_doc_early" ] && [ -f "$_predecessor_doc_early" ]; then
@@ -358,17 +414,6 @@ if [ "$CMD" = next ] && [ -z "$PROJECT_ARG" ]; then
     fi
     unset _predecessor_doc_early _predecessor_project_early
 fi
-
-# --- resolve root / slug / bucket / repo / prefix / state dir -------------
-if ! root="$(handover_root)"; then
-    err "set HANDOVER_DIR or run /handover-setup."
-    exit 2
-fi
-if ! slug="$(user_slug)"; then
-    err "cannot resolve USER_SLUG. Set USER_SLUG or configure your forge login / git user.name."
-    exit 2
-fi
-repo="$(resolve_repo)"
 # plugin /console from any repo -- himmel's own JIRA_PROJECT_KEY and repo
 # aren't the project's. --project marks the session as being FOR a DIFFERENT
 # checkout than this one: when it resolves to somewhere other than $repo,
