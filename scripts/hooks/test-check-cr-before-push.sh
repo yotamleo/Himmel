@@ -755,7 +755,10 @@ case "$out" in
 esac
 
 echo "TEST: explicit-URL push to an unreachable fork with embedded credentials -> refusal does not leak them"
-rc=0; out=$(cd "$FX" && bash "$HOOK" "https://x-access-token:sekrit456@example.com/no-such-fork.git" "https://x-access-token:sekrit456@example.com/no-such-fork.git" <<< "refs/heads/feat/urlpush $fx_feat_sha refs/heads/feat/urlpush $Z40" 2>&1) || rc=$?
+# Loopback + a closed port (not example.com): a real DNS-resolving host makes
+# this suite depend on network availability and can hang (codex-1 CR finding).
+# 127.0.0.1 refuses the connection immediately with no external network use.
+rc=0; out=$(cd "$FX" && bash "$HOOK" "https://x-access-token:sekrit456@127.0.0.1:1/no-such-fork.git" "https://x-access-token:sekrit456@127.0.0.1:1/no-such-fork.git" <<< "refs/heads/feat/urlpush $fx_feat_sha refs/heads/feat/urlpush $Z40" 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then pass "unreachable credentialed fork URL -> exit 2 (fail closed)"; else fail "unreachable credentialed fork URL -> expected exit 2 got $rc" "out: $out"; fi
 case "$out" in
     *"sekrit456"*)
