@@ -1730,4 +1730,46 @@ check "68h an explicit --bucket disambiguates a registry collision (no refusal)"
 check "68h the disambiguated doc uses the explicit --bucket" \
     "$(printf '%s\n' "$out68h" | grep -c "^would-doc: $root/tester/disambig68h/")" "1"
 
+# --- 69a/69b/69c (codex-1, pr-check round 1 EXPANSION ruling on HIMMEL-3623):
+# `next` with no --project must not silently record the successor as "the
+# himmel checkout itself" for a chain that is FOR a foreign project -- the
+# plugin console.md no longer derives --project for `next` (only for `new`,
+# see marketplace/plugins/himmel-ops/commands/console.md), so without this a
+# foreign-project chain's successor would fall back into himmel's own DEMO
+# bucket. RED against the pre-codex-1 console.sh (PROJECT_ARG never seeded
+# from the predecessor doc), GREEN after.
+reg69="$tmp/registry-69.json"
+foreignproj69="$tmp/Acme Co 69"; mkdir -p "$foreignproj69"
+foreignproj69_canon="$(cd "$foreignproj69" && pwd -P)"
+cat > "$reg69" <<JSON
+{"repos":{"acme69":{"path":"$foreignproj69_canon","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"ACME69"}}}
+JSON
+out69a_new="$( HANDOVER_REGISTRY="$reg69" console new --project "$foreignproj69" )"
+token69a_new="$(token_of "$out69a_new")"
+doc69A="$root/tester/acme69/ACME69-nextleg-${today}A-console.md"
+check "69 setup: predecessor doc written under the foreign project's registry bucket" "$([ -f "$doc69A" ] && echo yes)" "yes"
+
+out69a="$( HANDOVER_REGISTRY="$reg69" console next --doc "$doc69A" --dry-run )"
+check "69a next --doc with no --project derives the foreign bucket/prefix from the predecessor's recorded project" \
+    "$(printf '%s\n' "$out69a" | grep -c "^would-doc: $root/tester/acme69/ACME69-nextleg-${today}B-console.md\$")" "1"
+check "69a next --doc with no --project inherits the predecessor's recorded project" \
+    "$(printf '%s\n' "$out69a" | grep -c "^would-project: $foreignproj69\$")" "1"
+
+# --- 69b: an explicit --project/--bucket/--prefix on next still overrides
+# the inherited value (same predecessor doc as 69a -- --dry-run never claims
+# the successor letter, so it stays reusable across these sub-cases).
+otherproj69="$tmp/Other Co 69"; mkdir -p "$otherproj69"
+out69b="$( HANDOVER_REGISTRY="$reg69" console next --doc "$doc69A" --project "$otherproj69" --bucket otherdst69 --prefix OTH69 --dry-run )"
+check "69b an explicit --project/--bucket/--prefix on next overrides the inherited project" \
+    "$(printf '%s\n' "$out69b" | grep -c "^would-doc: $root/tester/otherdst69/OTH69-nextleg-${today}B-console.md\$")" "1"
+check "69b overridden would-project reflects the explicit --project, not the inherited one" \
+    "$(printf '%s\n' "$out69b" | grep -c "^would-project: $otherproj69\$")" "1"
+HANDOVER_DIR="$root" bash "$QL" release "$doc69A" "$token69a_new" >/dev/null 2>&1
+
+# --- 69c: a predecessor doc with no recorded project (a native himmel-only
+# chain, e.g. case 1's docA) keeps today's fallback -- no project inherited.
+out69c="$( console next --bucket demorepo --doc "$docA" --dry-run )"
+check "69c a predecessor doc with no recorded project prints no would-project (native fallback unchanged)" \
+    "$(printf '%s\n' "$out69c" | grep -c '^would-project:')" "0"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

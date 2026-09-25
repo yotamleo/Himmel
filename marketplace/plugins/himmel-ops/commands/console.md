@@ -46,11 +46,25 @@ fi
 
 # A bare /himmel-ops:console (no subcommand) must print usage, not
 # "unknown command: --project" (change 9, F11).
-if [ -n "$ARGUMENTS" ]; then
-  cd "$REPO" && bash scripts/handover/console/console.sh $ARGUMENTS --project "$PROJECT"
-else
-  cd "$REPO" && bash scripts/handover/console/console.sh
-fi
+#
+# --project is only ever DERIVED for `new`. A running console always lives
+# in $REPO by design (see above), so deriving it the same way for `next`
+# would force --project=$REPO on every handover of a foreign-project chain
+# -- console.sh's `next` already inherits the predecessor doc's own
+# recorded project when none is passed, and an operator's own explicit
+# --project in $ARGUMENTS is passed through untouched either way (codex-1,
+# pr-check round 1, HIMMEL-3623).
+case "$ARGUMENTS" in
+  new|"new "*)
+    cd "$REPO" && bash scripts/handover/console/console.sh $ARGUMENTS --project "$PROJECT"
+    ;;
+  "")
+    cd "$REPO" && bash scripts/handover/console/console.sh
+    ;;
+  *)
+    cd "$REPO" && bash scripts/handover/console/console.sh $ARGUMENTS
+    ;;
+esac
 ```
 
 - `/console new` — write `<handover-root>/<user>/<bucket>/<PREFIX>-nextleg-<date>A-console.md`

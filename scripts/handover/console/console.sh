@@ -313,6 +313,29 @@ case "$DEADLINE_MIN" in
     ''|*[!0-9]*) err "--deadline-min must be a positive integer, got '$DEADLINE_MIN'"; exit 1 ;;
 esac
 
+# codex-1 (pr-check round 1, HIMMEL-3623): a `next` with no explicit
+# --project must not silently record the successor as running "in the
+# himmel checkout itself" for a chain that is FOR a foreign project -- the
+# console session always lives in $REPO by design, so the plugin /console
+# wrapper never derives --project from cwd for `next` (only for `new`), and
+# without one this defaults PROJECT_ARG from the predecessor doc's own
+# recorded project line, feeding the SAME bucket/prefix/registry resolution
+# below as an explicit --project would. Only possible when the predecessor
+# doc is known up front (--doc / $CONSOLE_DOC) -- state_dir, needed for
+# next's OWN auto-discovery of a predecessor, is not resolved yet at this
+# point in the script, and an explicit --project always still wins.
+if [ "$CMD" = next ] && [ -z "$PROJECT_ARG" ]; then
+    _predecessor_doc_early="${DOC_ARG:-${CONSOLE_DOC:-}}"
+    if [ -n "$_predecessor_doc_early" ] && [ -f "$_predecessor_doc_early" ]; then
+        _predecessor_project_early="$(sed -n 's/.*The project this console is FOR is \*\*`\([^`]*\)`\*\*.*/\1/p' "$_predecessor_doc_early" | head -n1)"
+        case "$_predecessor_project_early" in
+            ''|none*) _predecessor_project_early="" ;;
+        esac
+        [ -n "$_predecessor_project_early" ] && [ -d "$_predecessor_project_early" ] && PROJECT_ARG="$_predecessor_project_early"
+    fi
+    unset _predecessor_doc_early _predecessor_project_early
+fi
+
 # --- resolve root / slug / bucket / repo / prefix / state dir -------------
 if ! root="$(handover_root)"; then
     err "set HANDOVER_DIR or run /handover-setup."
