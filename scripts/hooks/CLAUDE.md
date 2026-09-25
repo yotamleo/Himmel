@@ -27,9 +27,31 @@ is how to safely edit a hook.
   blocks.
 
 ## Adding a NEW hook (the non-obvious part)
-`.claude/settings.json` is **not** the source of truth. Hand-wiring it produces
-a hook that either never dispatches or breaks `wire-hook-bash.test.mjs`. Three
-places must agree:
+
+**A misfiled hook is not inert — it INSTALLS.** A script listed in a wirer's
+inventory with zero corresponding target entries is not "legitimately
+missing": `installMissingEntries` (HIMMEL-1643) adds the missing entry on the
+next real wirer run. Filing a plugin-delivered hook into the wrong inventory
+does not sit there doing nothing — it gets wired into BOTH targets, and the
+hook then runs TWICE per session (HIMMEL-2593).
+
+There are **TWO wirers**, with two separate, disjoint inventories. Pick the
+one that matches how the hook is delivered — never assume there is only one:
+
+| wirer | inventory | target | entries (2026-09-25) |
+|---|---|---|---|
+| `scripts/hooks/wire-hook-bash.mjs` | `EXPECTED_SCRIPT_ORDER` | `.claude/settings.json` | 46 |
+| `scripts/hooks/wire-plugin-hook-bash.mjs` | `EXPECTED_HOOKS` (frozen; length-checked against `EXPECTED_COUNTS`) | `marketplace/plugins/himmel-ops/hooks/hooks.json` | 21 |
+
+A `scripts/hooks/*.sh` file may also belong to **neither** inventory — a
+support library sourced by a hook rather than dispatched as one (e.g.
+`hook-integrity-lock.sh`). Neither wirer globs `scripts/hooks/`; both
+inventories are hand-maintained, so don't "fix" an unlisted support script by
+adding it to either list.
+
+`.claude/settings.json` is **not** the source of truth for the PROJECT lane.
+Hand-wiring it produces a hook that either never dispatches or breaks
+`wire-hook-bash.test.mjs`. For a PROJECT-lane hook, three places must agree:
 
 1. `scripts/hooks/<name>.sh` — the script.
 2. `EXPECTED_SCRIPT_ORDER` in `wire-hook-bash.mjs` — the **frozen ordered
@@ -40,6 +62,12 @@ places must agree:
    **impostor** and refused (HIMMEL-1552) — deliberately: it is a command the
    wirer would otherwise route and execute.
 3. `.claude/settings.json` — in the **same relative order** as the inventory.
+
+For a PLUGIN-lane hook (delivered via `marketplace/plugins/himmel-ops`), the
+equivalent three places are the script, `EXPECTED_HOOKS` in
+`wire-plugin-hook-bash.mjs`, and `marketplace/plugins/himmel-ops/hooks/hooks.json`
+— **not** `EXPECTED_SCRIPT_ORDER`. Filing it there is exactly the misfile this
+section opens with.
 
 Edit all three **in your own worktree** — the copy there is yours to change and
 rides your PR. The LIVE copies (the primary checkout's `.claude/settings.json`
