@@ -1528,12 +1528,17 @@ classify_clause() {
                 continue ;;
             command)
                 i=$((i+1))                                 # command [-pvV] NAME [arg...]
+                cmd_lookup=0
                 while [ "$i" -lt "$n" ]; do
                     case "$(_strip_cmd "${toks[$i]}")" in
-                        -*) i=$((i+1)) ;;                   # -p / -v / -V
+                        -v|-V) cmd_lookup=1; i=$((i+1)) ;;  # identify-only (type/which), never invokes NAME
+                        -*) i=$((i+1)) ;;                   # -p
                         *)  break ;;
                     esac
                 done
+                if [ "$cmd_lookup" -eq 1 ]; then
+                    return 0                                # command -v/-V NAME is a lookup, not an execution
+                fi
                 continue ;;
             exec)
                 i=$((i+1))                                 # exec [-cl] [-a NAME] CMD

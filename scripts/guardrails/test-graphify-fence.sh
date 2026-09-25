@@ -850,6 +850,15 @@ run_fence deny no "$HIMMEL" "command -p graphify salus -> deny" \
 run_fence deny no "$HIMMEL" "exec -a name graphify salus -> deny" \
     "exec -a name graphify update $SALUS/notes/patient.md --backend glm"
 
+# (F7) codex-1 CR finding (round 1): `command -v`/`command -V` are identify-only
+# lookups (type/which), never an invocation of NAME - unlike `command -p`,
+# which does invoke. Both must skip past the flag the same way, but only -v/-V
+# make the whole clause a no-op.
+run_fence allow no "$HIMMEL" "command -v graphify salus -> allow (lookup, not invocation)" \
+    "command -v graphify update $SALUS/notes/patient.md --backend glm"
+run_fence allow no "$HIMMEL" "command -V graphify salus -> allow (lookup, not invocation)" \
+    "command -V graphify update $SALUS/notes/patient.md --backend glm"
+
 # (F7) builtin, bare (no flags of its own) -> deny, unchanged regression guard
 run_fence deny no "$HIMMEL" "builtin graphify salus -> deny" \
     "builtin graphify update $SALUS/notes/patient.md --backend glm"
