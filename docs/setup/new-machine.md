@@ -13,11 +13,24 @@ Complete checklist for getting a new machine to full working state.
 | **Supported** | Linux, macOS | Linux is CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified on both. macOS CI runs nightly/dispatch only (same trigger as Alpha below), not yet a per-PR required check. |
 | **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — a nightly `schedule` run, or a manual `workflow_dispatch` with `force_all_os=true` (a plain dispatch alone stays `ubuntu-latest`-only). Bug reports welcome; no round-trip guarantee. |
 
-**Install channels (HIMMEL-3059):** release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`, Linux) — **supported**, steps in the [README](../../README.md#quickstart); `git clone` + `himmelctl install` — supported; plugin marketplace (`marketplace/plugins/*`) — supported, through the Claude Code plugin marketplace (`claude plugin install/update/uninstall`), not `himmelctl`; AUR — pending (slice 5), reopens when that slice lands; brew — not supported, reopens only if a shared macOS/Linux tap becomes worthwhile; nix / deb / rpm — not supported, reopen on user-driven demand. The tarball's fresh-guest run is green (HIMMEL-3252, done).
+**Install channels (HIMMEL-3059):** release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`, Linux) — **supported**, steps in the [README](../../README.md#quickstart); `git clone` + `himmelctl install` — supported; plugin marketplace (`marketplace/plugins/*`) — supported, through the Claude Code plugin marketplace (`claude plugin install/update/uninstall`), not `himmelctl`; AUR — **landed** (HIMMEL-3059 slice 5+6, 2026-09-24/25; recipe in [`packaging/aur/`](../../packaging/aur/)); brew — not supported, reopens only if a shared macOS/Linux tap becomes worthwhile; nix / deb / rpm — not supported, reopen on user-driven demand. The tarball's fresh-guest run is green (HIMMEL-3252, done).
 
 Windows sections below stay accurate for the alpha tier, but nothing in them
 is CI-verified per-PR. See [`docs/internals/harness-compat.md`](../internals/harness-compat.md)
 for the same tiering applied to hook/skill/agent compatibility.
+
+### Verified floors, by platform (HIMMEL-3603)
+
+One row per platform, each floor linked to the run that actually proves it.
+A cell reading `unverified` means: no floor is declared/enforced anywhere in
+the repo for that tool, or no green run exists to cite — never assume a
+value that isn't backed by one of these links.
+
+| OS/distro | Shell | Claude Code CLI floor | git floor | node / bun | Install channels | Proof |
+|---|---|---|---|---|---|---|
+| Linux (Ubuntu/Debian/Arch/Fedora) | bash 3.2+ | `unverified` — no minimum declared or enforced anywhere in the repo | **2.31**, not the declared 2.30 (`git rev-parse --path-format` needs 2.31+; HIMMEL-2650 is open to fix the declared floor in this doc and `scripts/install/deps.json`) | node 18+ to build, 20.17+ to push · bun 1.0+ | tarball, `git clone` + `himmelctl install`, plugin marketplace, AUR | [green CI run 36242601145](https://github.com/yotamleo/Himmel/actions/runs/36242601145) — `headSha` `1658f5ce34e3ff6c518ab2e83bc0ba0af7207da7`, per-PR required check |
+| macOS | bash 3.2 (4+ via `brew install bash`) | `unverified` | same real/declared gap as Linux (HIMMEL-2650) | node 18+ / bun 1.0+ (same floors; not build-verified on this platform — see Proof) | `git clone` + `himmelctl install`, plugin marketplace (no tarball — Linux-only artifact, HIMMEL-3059) | `unverified` — nightly `shell-unit-shard`/`bun-suites` macOS jobs have failed on every run for 3+ consecutive nights (2026-09-24 run `36000748819`, 09-25 run `36136707263`, 09-26 run `36241207599`), masked from the workflow-run rollup by `continue-on-error`; tracked in HIMMEL-3699 |
+| Windows (Git Bash / WSL) — Alpha | Git Bash 4.4+ | `unverified` | same real/declared gap as Linux (HIMMEL-2650) | node 18+ / bun 1.0+ (same floors; not build-verified on this platform — see Proof) | `git clone` + `himmelctl install`, plugin marketplace | `unverified` — same 3 nightly runs above show every Windows `shell-unit-shard`/`bun-suites` job as `failure`, masked by `continue-on-error`; tracked in HIMMEL-3699 |
 
 ---
 
