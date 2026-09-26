@@ -551,13 +551,25 @@ invoked_program() {
                             # this bundle carries -S too (operand-letter
                             # bundles like `-uS`/`-CS`/`-aS` never enter this
                             # arm — they start with a letter outside [iv0]).
+                            # HIMMEL-3671 (J1299R): if instead the bundle ENDS
+                            # in a value-taking letter (`-iu`, `-vC`, `-0a`),
+                            # that letter's value is the NEXT word, same as
+                            # the bare `-u`/`-C`/`-a` case above — skip it so
+                            # the walk lands on the real command instead of
+                            # misreading the value as one. A value letter NOT
+                            # last in the bundle (`-uS`, `-uX`) is unchanged:
+                            # the rest of the token is already its value.
                             guard_bundle=${stripped#-}
                             guard_idx=0
                             guard_is_split=0
+                            guard_last=$((${#guard_bundle} - 1))
                             while [ "$guard_idx" -lt "${#guard_bundle}" ]; do
                                 case ${guard_bundle:$guard_idx:1} in
                                     S) guard_is_split=1; break ;;
                                     i | v | 0) ;;
+                                    u | C | a)
+                                        [ "$guard_idx" -eq "$guard_last" ] && skip_next=1
+                                        break ;;
                                     *) break ;;
                                 esac
                                 guard_idx=$((guard_idx + 1))

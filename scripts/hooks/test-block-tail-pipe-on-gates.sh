@@ -520,6 +520,29 @@ allow "env -uS ls | tail (operand-letter bundle, NOT split-string)" \
 allow "env FOO=1 before a non-gate (no -S, unaffected)" \
       'env FOO=1 ls | tail'
 
+# --- HIMMEL-3671 (judge J1299R on #1299): a short-option bundle whose LAST
+# letter is a value-taking option (-u/--unset, -C/--chdir, -a/--argv0) did not
+# set skip_next past that value, so the value word itself (not the gate one
+# token further along) was returned as the invoked program — a false ALLOW.
+# ---
+deny "env -iu X <gate> | tail (bundle ending in -u)" \
+     'env -iu X bash scripts/check-ci.sh | tail'
+deny "env -iu X -S '<gate>' | tail (bundle ending in -u, then -S)" \
+     "env -iu X -S 'bash scripts/check-ci.sh' | tail"
+deny "env -vC /tmp -S <gate> | tail (bundle ending in -C, then -S)" \
+     "env -vC /tmp -S 'bash scripts/check-ci.sh' | tail"
+deny "env -0a name <gate> | head (bundle ending in -a)" \
+     'env -0a name bash scripts/check-ci.sh | head'
+# Control: the same bundle shape with no gate behind it still allows.
+allow "env -iu X ls | tail (bundle ending in -u, no gate, unaffected)" \
+      'env -iu X ls | tail'
+# Control (J1299R Minor 1): the value letter NOT last in the bundle keeps
+# today's behaviour — the rest of the token is the value, GNU-correct
+# (already covered above as "env -uS ls | tail", restated here for the
+# ticket's exact shape).
+allow "env -uS ls | tail (value letter not last, unchanged)" \
+      'env -uS ls | tail'
+
 # --- BYPASS: the documented same-line marker --------------------------------
 allow "same-line tail-pipe-ok marker" \
       'bash scripts/cr/clear-cr-marker.sh x | tail -20  # tail-pipe-ok: rc irrelevant, output only'
