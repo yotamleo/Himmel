@@ -219,6 +219,12 @@ ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3679: any case below that fails to stub crontab/at must not be able
+# to silently touch the operator's REAL scheduler. Snapshot now, before any
+# case runs, and diff again right before the summary -- a change either way
+# fails the suite outright, regardless of --only.
+CRONTAB_SNAPSHOT_BEFORE=$(crontab -l 2>/dev/null || true)
+ATQ_SNAPSHOT_BEFORE=$(atq 2>/dev/null || true)
 # HIMMEL-3103: every non-dry-run arm reserves a FLEET_CAP slot; redirect it off
 # the production dir the live fleet counts, and fail the suite if it could leak.
 # This file is also the body of test-arm-resume-fast.sh / -1879.sh (`--only`).
@@ -1370,6 +1376,18 @@ case "\${1:-}" in
     *) cat > /dev/null 2>&1 || true; exit 0 ;;
 esac
 EOF
+# HIMMEL-3679: file-backed, like the mac cron suite's stub -- never touches
+# the real crontab, even on a Linux host where arm-resume.sh would otherwise
+# prefer `at` but a case still lists/reads via `crontab -l` first.
+cat > "$ARMED_STUB/crontab" <<EOF
+#!/usr/bin/env bash
+store="$TMP/armed-stub.crontab"
+case "\${1:-}" in
+    -l) [ -s "\$store" ] && cat "\$store" || exit 1 ;;
+    -)  cat > "\$store" ;;
+    *)  exit 0 ;;
+esac
+EOF
 cat > "$ARMED_STUB/claude" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -1383,7 +1401,7 @@ cat > "$ARMED_STUB/powershell" <<'EOF'
 # Probe "unavailable" -> verify fail-opens (see SCHED_STUB_T17 note).
 exit 1
 EOF
-chmod +x "$ARMED_STUB/schtasks" "$ARMED_STUB/atq" "$ARMED_STUB/at" "$ARMED_STUB/claude" "$ARMED_STUB/powershell"
+chmod +x "$ARMED_STUB/schtasks" "$ARMED_STUB/atq" "$ARMED_STUB/at" "$ARMED_STUB/crontab" "$ARMED_STUB/claude" "$ARMED_STUB/powershell"
 
 if _sec_selected "T23"; then
 TELEMETRY_T23="$TMP/telemetry-t23"
@@ -4668,12 +4686,12 @@ touch "$R1330/vault/.single-writer"
 HO_1330="$R1330/vault/handovers/no-resume-cwd.md"
 printf -- '---\nsession_kind: test\n---\n\n# no resume_cwd handover\n' > "$HO_1330"
 
-out=$(bash "$ARM" --time "$(future_time)" --handover "$HO_1330" --dry-run 2>&1)
+out=$(PATH="$ARMED_STUB:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO_1330" --dry-run 2>&1)
 rc=$?
 assert_rc "1330 dry-run does not hard-fail (preview only)" 0 "$rc"
 assert_contains "1330 dry-run warns about the vault refusal" "would REFUSE to arm" "$out"
 
-out=$(bash "$ARM" --time "$(future_time)" --handover "$HO_1330" 2>&1)
+out=$(PATH="$ARMED_STUB:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO_1330" 2>&1)
 rc=$?
 assert_rc "1330 real arm refuses into a single-writer repo (rc=14)" 14 "$rc"
 # The ERR text names the cwd as the script resolved it, which on Git-Bash is
@@ -6441,6 +6459,23 @@ _ft_last_target=0; _ft_last_value=""
 if [ -f "$_FT_STALE_FILE" ] || { [ -n "$_ft_last_value" ] && [ "$(date +%s)" -ge "$_ft_last_target" ]; }; then
     echo "WARN test-arm-resume.sh: the run outlived its own fixture window -- a future_time() target (last: $_ft_last_value) went PAST during the run, so any rc=9 above is suite shelf life (HIMMEL-1579), not a code defect. Re-run on an idle box before believing this list."
 fi
+# HIMMEL-3679: the real crontab/at queue must be byte-identical to what this
+# run started with -- any case that reached the real scheduler despite its
+# stub is a leak into the operator's own crontab/at, not a test failure to
+# shrug off.
+CRONTAB_SNAPSHOT_AFTER=$(crontab -l 2>/dev/null || true)
+if [ "$CRONTAB_SNAPSHOT_AFTER" != "$CRONTAB_SNAPSHOT_BEFORE" ]; then
+    echo "FAIL the real crontab changed during this run -- a case leaked into the operator's live crontab:"
+    diff <(printf '%s\n' "$CRONTAB_SNAPSHOT_BEFORE") <(printf '%s\n' "$CRONTAB_SNAPSHOT_AFTER") || true
+    FAILED=$((FAILED + 1))
+fi
+ATQ_SNAPSHOT_AFTER=$(atq 2>/dev/null || true)
+if [ "$ATQ_SNAPSHOT_AFTER" != "$ATQ_SNAPSHOT_BEFORE" ]; then
+    echo "FAIL the real at queue changed during this run -- a case leaked into the operator's live at queue:"
+    diff <(printf '%s\n' "$ATQ_SNAPSHOT_BEFORE") <(printf '%s\n' "$ATQ_SNAPSHOT_AFTER") || true
+    FAILED=$((FAILED + 1))
+fi
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
