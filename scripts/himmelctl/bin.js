@@ -38,6 +38,11 @@ const standaloneBundleLib = require('./lib/standalone-bundle.js');
 const tarballUpdateLib = require('./lib/tarball-update.js');
 const stateLib = require('./lib/state.js');
 const statusReportLib = require('./lib/status-report.js');
+// Expand a leading `~` to an absolute home path (adopt.sh/set-handover-dir.sh
+// receive an already-expanded path — a literal `~` would never expand inside
+// a quoted spawn arg). Reused from status-report.js's copy (HIMMEL-2646)
+// rather than kept as a second implementation to drift out of sync with.
+const { expandHome } = statusReportLib;
 const installEngineLib = require('./lib/install-engine.js');
 const probesLib = require('./lib/probes.js');
 const depsEngineLib = require('./lib/deps-engine.js');
@@ -2355,16 +2360,6 @@ function deriveExistingVaultPlan(answers) {
   };
 }
 
-// Expand a leading `~` to an absolute home path (adopt.sh/set-handover-dir.sh
-// receive an already-expanded path — a literal `~` would never expand inside
-// a quoted spawn arg). Honors $HOME first (tests fake it), else os.homedir().
-function expandHome(p) {
-  if (typeof p !== 'string' || p === '') return p;
-  const home = process.env.HOME || os.homedir();
-  if (p === '~') return home;
-  if (p.slice(0, 2) === '~/') return path.join(home, p.slice(2));
-  return p;
-}
 
 // Derive { argv } for the answer object. argv[0] is the launcher, the rest
 // are its args, sized for spawnSync. HIMMEL-2308: ONE engine — always

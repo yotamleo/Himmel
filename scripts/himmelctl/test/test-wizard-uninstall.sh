@@ -461,6 +461,30 @@ JSON
     > "$_d/scripts/install/uninstall-manifest.tsv"
 }
 
+# Same fixture as build_fixture_qmd, but the tsv row's {HOME} token resolves
+# through a backslash separator ({HOME}\.himmel\qmd-fork) — the Windows-shaped
+# vault-path convention HIMMEL-2646 brings bin.js's expandHome() in line with
+# (case I5 below).
+build_fixture_qmd_backslash() {
+  local _d="$1"
+  build_fixture "$_d"
+  cat > "$_d/scripts/install/manifest.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "harness": "claude",
+  "items": [
+    { "id": "fixture-unwire", "kind": "wiring", "scopes": ["project"], "profiles": ["core", "all"], "deps": [], "probe": { "type": "file-exists", "path": "untracked.marker" }, "removable": "full-offboard-only" },
+    { "id": "fixture-advise", "kind": "dep", "scopes": ["user"], "profiles": ["core", "all"], "deps": [], "probe": { "type": "dep", "cmd": "node" }, "removable": "full-offboard-only", "offboard": "advise" },
+    { "id": "qmd-binary", "kind": "dep", "scopes": ["user"], "profiles": ["luna", "all"], "deps": [], "probe": { "type": "cmd:has_qmd" }, "removable": "full-offboard-only", "offboard": "advise" },
+    { "id": "qmd-index", "kind": "vault", "scopes": ["user"], "profiles": ["luna", "all"], "deps": ["qmd-binary"], "probe": { "type": "qmd-index", "collections": ["himmel"] }, "removable": "full-offboard-only" },
+    { "id": "fixture-keep", "kind": "vault", "scopes": ["user"], "profiles": ["luna", "all"], "deps": [], "probe": { "type": "file-exists", "path": "{vaultPath}/.marker" }, "removable": "full-offboard-only", "offboard": "keep" }
+  ]
+}
+JSON
+  printf 'qmd-fork\tstate\tqmd\tfile\t-\t{HOME}\\.himmel\\qmd-fork\t8\tthe qmd fork checkout, its bun-global symlink and its index collection\tsymlink,file,collection\n' \
+    > "$_d/scripts/install/uninstall-manifest.tsv"
+}
+
 # I1: the qmd-fork dir exists with a known 10-byte payload -> both qmd ids
 # show the resolved path and '10 B'; the non-qmd ids are untouched.
 stubI="$work/caseI"; mkdir -p "$stubI"
@@ -551,5 +575,26 @@ set -e
 grepq "$outI4" -E -- "qmd-binary \\(${hI4}[/\\\\]\\.himmel[/\\\\]qmd-fork, size unknown\\)" \
   || fail "caseI4: expected qmd-binary to print 'size unknown' once the walk exceeds its entry bound (got: $outI4)"
 echo "ok: caseI4 dry-run advisory plan prints 'size unknown' (not a byte count) once the qmd-fork tree exceeds the walk's entry bound"
+
+# I5 (HIMMEL-2646): a manifest row whose {HOME} token resolves through a
+# backslash separator ({HOME}\.himmel\qmd-fork) must land on the real nested
+# qmd-fork dir, same as the forward-slash row in caseI1 — not the mangled
+# single-segment literal a pre-fix expandHome() leaves unexpanded (which then
+# reads as 'absent' since no file on disk is literally named that segment).
+hI5="$work/hI5"; mkdir -p "$hI5/.himmel/qmd-fork"
+printf '0123456789' > "$hI5/.himmel/qmd-fork/payload"
+fixtureI5="$work/caseI5-fixture"; build_fixture_qmd_backslash "$fixtureI5"
+set +e
+outI5=$(PATH="$cI" HOME="$hI5" USERPROFILE="$(winpath "$hI5")" HIMMELCTL_CACHE_DIR="$(winpath "$hI5.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hI5.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureI5")" \
+       "$node_bin" "$wizard" uninstall --dry-run \
+       </dev/null 2>&1); rcI5=$?
+set -e
+[ "$rcI5" -eq 0 ] || fail "caseI5: dry-run should exit 0 (got rc=$rcI5): $outI5"
+grepq "$outI5" -E -- "qmd-binary \\(${hI5}[/\\\\]\\.himmel[/\\\\]qmd-fork, 10 B\\)" \
+  || fail "caseI5: expected qmd-binary's backslash-separated {HOME} row to resolve to the real nested path + size (got: $outI5)"
+grepq "$outI5" -E -- "qmd-index \\(${hI5}[/\\\\]\\.himmel[/\\\\]qmd-fork, 10 B\\)" \
+  || fail "caseI5: expected qmd-index's backslash-separated {HOME} row to resolve to the real nested path + size (got: $outI5)"
+echo "ok: caseI5 dry-run advisory plan resolves a {HOME}\\.himmel\\qmd-fork manifest row (backslash separator) to the real nested path + size, matching the forward-slash row in caseI1"
 
 echo "PASS"
