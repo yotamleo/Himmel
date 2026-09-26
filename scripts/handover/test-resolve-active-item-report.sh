@@ -43,4 +43,15 @@ case "$err" in
   *) echo "FAIL - rc 2 -> stderr lacks 'errored (rc=2)': $err"; fails=$((fails+1)) ;;
 esac
 
+out="$( ( cd "$tmp" && HANDOVER_DIR="$root" HANDOVER_REGISTRY="$reg" bash "$R" --bogus-flag --branch feat/himmel-389-vault-upgrade 2>"$tmp/err2" ) )"; rc=$?
+check "unknown arg -> still exits 0 (best-effort)" "$rc" "0"
+err2="$(cat "$tmp/err2" 2>/dev/null)"
+case "$err2" in
+  *"unknown arg --bogus-flag"*) echo "ok - unknown arg -> stderr names it, never exit 2" ;;
+  *) echo "FAIL - unknown arg -> stderr missing the notice: $err2"; fails=$((fails+1)) ;;
+esac
+
+out="$( ( cd "$tmp" && HANDOVER_DIR="$root" HANDOVER_REGISTRY="$reg" bash "$R" --branch 2>/dev/null ) )"; rc=$?
+check "trailing --branch with no value -> still exits 0 (no set -u crash)" "$rc" "0"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
