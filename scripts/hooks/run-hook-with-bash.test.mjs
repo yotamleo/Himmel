@@ -2551,7 +2551,7 @@ function extractNonLifecycleChainMembers(command) {
   const chainPart = command.slice(idx);
   if (chainPart.startsWith('--chain --lifecycle')) return [];
   const members = [];
-  for (const m of chainPart.matchAll(/([A-Za-z0-9_.-]+\.sh)"/g)) {
+  for (const m of chainPart.matchAll(/([A-Za-z0-9_.-]+\.sh)(?![A-Za-z0-9_.-])/g)) {
     members.push(m[1]);
   }
   return members;
@@ -2580,6 +2580,7 @@ function unclassifiedChainMembers(members, mustRunSet, advisoryMap) {
 }
 
 test('every non-lifecycle --chain member wired in settings.json and every plugin hooks.json is must-run or explicitly advisory', () => {
+  assert.ok(existsSync(SETTINGS_PATH), `sanity: ${SETTINGS_PATH} must exist for this test to mean anything`);
   const members = enumerateNonLifecycleChainMembers([SETTINGS_PATH, ...findPluginHooksJsonFiles(REPO_ROOT)]);
   assert.ok(members.size > 0, 'sanity: expected at least one wired non-lifecycle --chain member');
   const unclassified = unclassifiedChainMembers(members, MUST_RUN_CHAIN_MEMBERS, ADVISORY_CHAIN_MEMBERS);
