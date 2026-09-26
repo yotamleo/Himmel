@@ -773,12 +773,29 @@ update_marketplace() {
         STATUS_marketplace="skipped"; DETAIL_marketplace="check mode — re-sync deferred to apply"
         return 0
     fi
-    if "$claude_bin" plugin marketplace update himmel; then
-        STATUS_marketplace="updated"; DETAIL_marketplace="re-synced from local dir"
+    local update_rc=0
+    "$claude_bin" plugin marketplace update himmel || update_rc=$?
+
+    # HIMMEL-1846: temp_git_* clone dirs left in the plugin cache by past
+    # marketplace re-syncs accumulate (~48/day). -mtime +1 spares anything from
+    # an install still in flight.
+    local cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache"
+    local swept=0
+    if [ -d "$cache" ]; then
+        while IFS= read -r -d '' stale; do
+            rm -rf "$stale"
+            swept=$((swept + 1))
+        done < <(find "$cache" -maxdepth 1 -name 'temp_git_*' -mtime +1 -print0 2>/dev/null)
+    fi
+    local sweep_detail=""
+    [ "$swept" -eq 0 ] || sweep_detail="; swept $swept stale temp_git_* dir(s) from plugin cache"
+
+    if [ "$update_rc" -eq 0 ]; then
+        STATUS_marketplace="updated"; DETAIL_marketplace="re-synced from local dir$sweep_detail"
         return 0
     fi
     STATUS_marketplace="failed"
-    DETAIL_marketplace="$claude_bin plugin marketplace update himmel failed — run it yourself"
+    DETAIL_marketplace="$claude_bin plugin marketplace update himmel failed — run it yourself$sweep_detail"
     return 1
 }
 

@@ -168,6 +168,71 @@ else
     assert_fail "check mode: never invoked claude plugin update — log: $check_log_content"
 fi
 
+echo "Test: apply mode sweeps stale (>24h) temp_git_* dirs from the plugin cache, spares fresh ones (HIMMEL-1846)"
+make_mock_clone
+fake_home_sweep="$TMP/fake-home-sweep"
+mkdir -p "$fake_home_sweep/.claude"
+cat > "$fake_home_sweep/.claude/settings.json" <<'EOF'
+{
+  "enabledPlugins": {
+    "qmd@himmel": true
+  }
+}
+EOF
+cache_sweep="$fake_home_sweep/.claude/plugins/cache"
+mkdir -p "$cache_sweep/temp_git_old" "$cache_sweep/temp_git_new"
+touch -t 202001010000 "$cache_sweep/temp_git_old"
+log_sweep="$TMP/claude-invocations-sweep.log"
+: > "$log_sweep"
+claude_stub_sweep="$TMP/claude-logging-stub-sweep"
+make_claude_logging_stub "$claude_stub_sweep" "$log_sweep"
+
+rc=0
+out_sweep=$(USERPROFILE='' HOME="$fake_home_sweep" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_sweep" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_sweep/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+
+if [ ! -d "$cache_sweep/temp_git_old" ]; then
+    assert_pass "apply mode removes the >24h-old temp_git_* dir"
+else
+    assert_fail "apply mode removes the >24h-old temp_git_* dir — still present — out: $out_sweep"
+fi
+if [ -d "$cache_sweep/temp_git_new" ]; then
+    assert_pass "apply mode spares the fresh temp_git_* dir"
+else
+    assert_fail "apply mode spares the fresh temp_git_* dir — was removed"
+fi
+
+echo "Test: check mode never sweeps the plugin cache"
+make_mock_clone
+fake_home_sweep_check="$TMP/fake-home-sweep-check"
+mkdir -p "$fake_home_sweep_check/.claude"
+cat > "$fake_home_sweep_check/.claude/settings.json" <<'EOF'
+{
+  "enabledPlugins": {
+    "qmd@himmel": true
+  }
+}
+EOF
+cache_sweep_check="$fake_home_sweep_check/.claude/plugins/cache"
+mkdir -p "$cache_sweep_check/temp_git_old"
+touch -t 202001010000 "$cache_sweep_check/temp_git_old"
+log_sweep_check="$TMP/claude-invocations-sweep-check.log"
+: > "$log_sweep_check"
+claude_stub_sweep_check="$TMP/claude-logging-stub-sweep-check"
+make_claude_logging_stub "$claude_stub_sweep_check" "$log_sweep_check"
+
+rc=0
+out_sweep_check=$(USERPROFILE='' HOME="$fake_home_sweep_check" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_sweep_check" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_sweep_check/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
+
+if [ -d "$cache_sweep_check/temp_git_old" ]; then
+    assert_pass "check mode never removes plugin-cache temp_git_* dirs"
+else
+    assert_fail "check mode never removes plugin-cache temp_git_* dirs — was removed — out: $out_sweep_check"
+fi
+
 echo ""
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]
