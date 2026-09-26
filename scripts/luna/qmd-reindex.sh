@@ -99,6 +99,11 @@
 #                    --qmd-bin (HIMMEL-1283).
 #   --dry-run        Print the two commands that would run, execute neither.
 #
+# HIMMEL-1307: on verified success (see the completeness assert below) this
+# writes a refresh stamp to QMD_REFRESH_STAMP (default: alongside
+# QMD_INDEX_PATH, default $HOME/.cache/qmd/index.sqlite) that qmd-staleness.sh
+# prefers over its MAX(mtime) proxy. Never written on any failure path.
+#
 # Exit codes:
 #   0  index refreshed and verified complete
 #   1  usage / input error
@@ -113,6 +118,10 @@ set -euo pipefail
 QMD_BIN=""
 QMD_JS=""
 DRY_RUN=0
+# HIMMEL-1307: a durable timestamp written ONLY on the verified-success path
+# below, next to the index data qmd-staleness.sh already reads.
+QMD_INDEX_PATH="${QMD_INDEX_PATH:-$HOME/.cache/qmd/index.sqlite}"
+QMD_REFRESH_STAMP="${QMD_REFRESH_STAMP:-$(dirname "$QMD_INDEX_PATH")/refresh-stamp}"
 
 # --- completeness-assert sentinels (HIMMEL-1282) -----------------------------
 #
@@ -303,6 +312,30 @@ fi
 
 stamp() { date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?'; }
 
+# HIMMEL-1307: durable refresh timestamp, written ONLY from the verified-success
+# path below. Best-effort and non-fatal on purpose — a stamp-write failure means
+# qmd-staleness.sh falls back to its existing proxy, not that a genuinely
+# complete reindex should now report failure over a side-channel write.
+write_refresh_stamp() {
+    local dir tmp
+    dir=$(dirname "$QMD_REFRESH_STAMP")
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        echo "WARN qmd-reindex: could not create $dir for the refresh stamp; qmd-staleness.sh will fall back to its proxy." >&2
+        return 0
+    fi
+    tmp="$QMD_REFRESH_STAMP.tmp.$$"
+    if ! printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(date -u '+%s')" >"$tmp" 2>/dev/null; then
+        echo "WARN qmd-reindex: could not write the refresh stamp; qmd-staleness.sh will fall back to its proxy." >&2
+        rm -f "$tmp" 2>/dev/null || true
+        return 0
+    fi
+    if ! mv -f "$tmp" "$QMD_REFRESH_STAMP" 2>/dev/null; then
+        echo "WARN qmd-reindex: could not install the refresh stamp; qmd-staleness.sh will fall back to its proxy." >&2
+        rm -f "$tmp" 2>/dev/null || true
+    fi
+    return 0
+}
+
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY qmd-reindex: would run: $(qmd_desc) update"
     echo "DRY qmd-reindex: would run: $(qmd_desc) embed"
@@ -388,4 +421,5 @@ else
     exit 6
 fi
 
+write_refresh_stamp
 echo "qmd-reindex: OK $(stamp) — index refreshed, all content hashes embedded"

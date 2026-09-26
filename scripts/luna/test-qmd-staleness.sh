@@ -58,6 +58,9 @@ summary() {
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/qmd-staleness-test.XXXXXX")
 FAKE="$TMP_ROOT/fake-qmd.sh"
 FIXTURE="$TMP_ROOT/status.txt"
+# Fixed scratch path, absent by default -- every existing test below stays on
+# the proxy fallback unchanged; only the new stamp-specific tests create it.
+STAMP_FILE="$TMP_ROOT/refresh-stamp"
 
 # The fake ignores its args and prints the current fixture. QMD_FAKE_RC lets a
 # case make `qmd status` itself fail, which must be distinguishable from a
@@ -80,7 +83,7 @@ chmod +x "$FAKE"
 # Run the guard against a fixture. Captures stdout+stderr together: the notice
 # is deliberately on stderr and the all-clear on stdout, and callers see both.
 run_guard() {
-    QMD_FIXTURE="$FIXTURE" bash "$SCRIPT" --qmd-bin "$FAKE" "$@" 2>&1
+    QMD_FIXTURE="$FIXTURE" QMD_REFRESH_STAMP="$STAMP_FILE" bash "$SCRIPT" --qmd-bin "$FAKE" "$@" 2>&1
 }
 
 set_fixture() { printf '%s\n' "$1" >"$FIXTURE"; }
@@ -137,6 +140,44 @@ out=$(run_guard) && rc=0 || rc=$?
 assert_rc "host fixture is fresh+complete -> rc 0" 0 "$rc"
 assert_contains "prints the all-clear" "OK qmd-staleness: newest indexed doc edited" "$out"
 assert_contains "all-clear cites the real age" "2h ago" "$out"
+
+echo "== no refresh stamp present falls back to the proxy, naming it (HIMMEL-1307) =="
+rm -f "$STAMP_FILE"
+set_fixture "$HOST_FRESH"
+out=$(run_guard) && rc=0 || rc=$?
+assert_rc "absent stamp falls back to proxy -> rc 0" 0 "$rc"
+assert_contains "names the proxy as the source" "source: proxy" "$out"
+
+echo "== a valid refresh stamp is preferred over the proxy (HIMMEL-1307) =="
+set_fixture "$HOST_FRESH"
+# The stamp says ~25h old -- older than the fixture's "2h ago" proxy, so a
+# source flip is unambiguous: if the stamp were ignored the verdict would
+# still show "2h ago" from the proxy.
+STAMP_EPOCH=$(( $(date -u +%s) - 90000 ))
+printf '2026-09-25T04:00:00Z %s\n' "$STAMP_EPOCH" >"$STAMP_FILE"
+out=$(run_guard) && rc=0 || rc=$?
+assert_rc "valid stamp within budget -> rc 0" 0 "$rc"
+assert_contains "names the stamp as the source" "source: stamp" "$out"
+assert_not_contains "does not fall back to the proxy age when a stamp is present" "2h ago" "$out"
+rm -f "$STAMP_FILE"
+
+echo "== a stale refresh stamp is honored even when the proxy looks fresh (HIMMEL-1307) =="
+set_fixture "$HOST_FRESH"
+STAMP_EPOCH=$(( $(date -u +%s) - 200000 ))  # ~55.5h, over the 36h default budget
+printf '2026-09-23T12:00:00Z %s\n' "$STAMP_EPOCH" >"$STAMP_FILE"
+out=$(run_guard) && rc=0 || rc=$?
+assert_rc "stale stamp overrides a fresh-looking proxy -> rc 3" 3 "$rc"
+assert_contains "names the stamp as the source" "source: stamp" "$out"
+rm -f "$STAMP_FILE"
+
+echo "== a malformed refresh stamp falls back to the proxy, naming it (HIMMEL-1307) =="
+set_fixture "$HOST_FRESH"
+printf 'not-a-stamp\n' >"$STAMP_FILE"
+out=$(run_guard) && rc=0 || rc=$?
+assert_rc "malformed stamp falls back to proxy -> rc 0" 0 "$rc"
+assert_contains "falls back to the proxy" "source: proxy" "$out"
+assert_contains "still reports the proxy's real age" "2h ago" "$out"
+rm -f "$STAMP_FILE"
 
 echo "== the top-level Updated: is not confused with a collection's =="
 # RUN it rather than re-asserting the previous case's $rc — that variable was
