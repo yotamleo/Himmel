@@ -775,6 +775,18 @@ resolve_repo_context() {
     fi
 }
 
+# has_traversal_dots TEXT — true when a literal `..` is an actual
+# path-traversal component: a non-path-name character (`/`, quote, space,
+# start/end of string) on BOTH sides, never a bare substring anywhere in the
+# text. A `<sha>..<sha>` git range has a hex digit on each side of the `..`
+# and never matches; `../.claude`, `worktrees/wt/../../x` and a bare `cd ..`
+# all still match (HIMMEL-3675: the three `*..*` glob checks below treated a
+# benign SHA range identically to a real climb-out, false-DENYing
+# `impacted-suites.sh --check <base>..<head>` run from a linked worktree).
+has_traversal_dots() {
+    [[ "$1" =~ (^|[^a-z0-9_])\.\.([^a-z0-9_]|$) ]]
+}
+
 # mentions_primary_or_home CMD_LC — true when the command text contains the
 # resolved primary checkout's own path, the resolved $HOME, or an
 # unexpanded $HOME/~ literal immediately before .claude — i.e. the mention
@@ -790,15 +802,16 @@ mentions_primary_or_home() {
     # A linked worktree nested under the primary (`<primary>/.claude/
     # worktrees/<wt>`) contains the primary root in its own absolute path, so
     # its OWN settings write matched below (HIMMEL-3468 codex-1). Blank out
-    # this worktree's own root first — never when `..` appears anywhere, since
-    # `<wt>/../../settings.json` climbs back into the primary. Only the root
-    # followed by `/` is removed: a bare string prefix would also eat the
-    # front of a sibling path (`<dir>/prim` inside `<dir>/primary/...`).
+    # this worktree's own root first — never when a real traversal `..`
+    # (has_traversal_dots) appears anywhere, since `<wt>/../../settings.json`
+    # climbs back into the primary; a `<sha>..<sha>` git range never counts
+    # (HIMMEL-3675). Only the root followed by `/` is removed: a bare string
+    # prefix would also eat the front of a sibling path (`<dir>/prim` inside
+    # `<dir>/primary/...`).
     if [ "$is_primary_cwd" = "0" ] && [ -n "$own_root_lc" ]; then
-        case "$c_noquotes" in
-            *..*) ;;
-            *) c_noquotes=${c_noquotes//"$own_root_lc/"/} ;;
-        esac
+        if ! has_traversal_dots "$c_noquotes"; then
+            c_noquotes=${c_noquotes//"$own_root_lc/"/}
+        fi
     fi
     # Only the primary root's OWN .claude counts as live — matching
     # primary_root_lc as a bare substring anywhere also matched any command
@@ -1096,18 +1109,23 @@ mentions_dot_claude_dir_dest() {
     # keeps a SECOND, un-stripped `.claude` after the container segment), and
     # never touches rule 1 (`settings.json` is a distinct substring).
     #
-    # Never stripped when `..` appears ANYWHERE in the text (HIMMEL-3499,
-    # third panel round on #1210): `cp -r x/. …/worktrees/..` (or a deeper
-    # `worktrees/wt/../../`) climbs back OUT of the worktrees container into
-    # `.claude` itself — the SAME "any `..` voids the strip" rule
-    # mentions_primary_or_home() already applies to its own-root blanking,
-    # for the identical reason (this hook does not resolve `..`, so it
-    # cannot tell how far a climb reaches; only refusing to strip at all
-    # keeps the mention visible to the live-check `..` rule below).
-    case "$1" in
-        *..*) c="$1" ;;
-        *) c=${1//.claude\/worktrees/CLAUDE_WORKTREES_PATH} ;;
-    esac
+    # Never stripped when a real traversal `..` (has_traversal_dots) appears
+    # ANYWHERE in the text (HIMMEL-3499, third panel round on #1210):
+    # `cp -r x/. …/worktrees/..` (or a deeper `worktrees/wt/../../`) climbs
+    # back OUT of the worktrees container into `.claude` itself — the SAME
+    # "any traversal `..` voids the strip" rule mentions_primary_or_home()
+    # already applies to its own-root blanking, for the identical reason
+    # (this hook does not resolve `..`, so it cannot tell how far a climb
+    # reaches; only refusing to strip at all keeps the mention visible to
+    # the live-check `..` rule below). A `<sha>..<sha>` git range (hex on
+    # both sides of the `..`) is not a traversal and never voids the strip
+    # (HIMMEL-3675 — this was the false-DENY on `impacted-suites.sh --check
+    # <base>..<head>` run from a `.claude/worktrees/<name>` worktree).
+    if has_traversal_dots "$1"; then
+        c="$1"
+    else
+        c=${1//.claude\/worktrees/CLAUDE_WORKTREES_PATH}
+    fi
     # No LEADING boundary requirement (HIMMEL-3499/3555 panel round on
     # #1210): a short flag glued directly to its argument (`-C.claude`,
     # `-d.claude`, `-t.claude`) puts an alnum character immediately before
@@ -1401,15 +1419,15 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # deny).
         live=1
     else
-        case "$cmd_lc" in
-            *..*)
-                # A `..` climbs out of the worktree the exemption covers —
-                # from `<primary>/.claude/worktrees/<wt>`, `../../settings.json`
-                # IS the primary's file — whatever the verb. The worktree's own
-                # copy never needs `..` to name it (HIMMEL-3468).
-                live=1
-                ;;
-        esac
+        if has_traversal_dots "$cmd_lc"; then
+            # A real traversal `..` climbs out of the worktree the exemption
+            # covers — from `<primary>/.claude/worktrees/<wt>`,
+            # `../../settings.json` IS the primary's file — whatever the verb.
+            # The worktree's own copy never needs `..` to name it
+            # (HIMMEL-3468). A `<sha>..<sha>` git range never counts
+            # (HIMMEL-3675).
+            live=1
+        fi
         if [ "$live" = "0" ] && mentions_primary_or_home "$cmd_lc"; then
             live=1
         elif [ "$live" = "0" ] && [ -z "$primary_root_lc" ]; then

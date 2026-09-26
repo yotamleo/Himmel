@@ -1208,6 +1208,44 @@ else
     echo "SKIP 186-190 (node not installed)"
 fi
 
+# 191-196 (HIMMEL-3675): a literal `..` inside a benign `<base>..<head>` git
+# SHA range must not be treated as directory traversal. Real-world trigger:
+# /pr-check step 3.6's canonical `impacted-suites.sh --check <base>..<head>`
+# submission, run from inside a linked worktree nested under the primary's
+# `.claude/worktrees/<name>`, with a heredoc body listing impacted suites —
+# one of which coincidentally contains a write-verb WORD ("install") as part
+# of an unrelated filename (test-wizard-install-engine.sh). Two real SHAs
+# from the sandbox's own history exercise a genuine-looking range.
+SHA_BASE=$(git -C "$SANDBOX/primary" rev-parse HEAD)
+git -C "$SANDBOX/primary" -c user.email=t@t -c user.name=t commit -q --allow-empty -m second
+SHA_HEAD=$(git -C "$SANDBOX/primary" rev-parse HEAD)
+
+HIMMEL_3675_CMD="bash \"$NESTED_WT/scripts/cr/impacted-suites.sh\" --check ${SHA_BASE}..${SHA_HEAD} <<'IMPACTED_EOF'
+SUITE scripts/himmelctl/test/test-wizard-install-engine.sh reason
+IMPACTED_EOF"
+
+# 191: the exact N558/HIMMEL-3675 shape -> ALLOW (FAILS at base with a false
+# DENY: the `..` in the SHA range voids the .claude/worktrees container-path
+# strip, compounding with the heredoc body's coincidental "install" match).
+assert_rc "191 impacted-suites --check <base>..<head> heredoc from a worktree allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "$HIMMEL_3675_CMD")"
+
+# 192: a plain worktree-relative script run, no heredoc -> ALLOW (already
+# passed at base; kept alongside 191 as a non-regression guard).
+assert_rc "192 no-heredoc worktree script run allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "bash \"$NESTED_WT/scripts/foo.sh\"")"
+
+# 193-196: controls that must stay DENY at base AND head — the 191/192 fix
+# must never let a genuine write into the primary's live .claude/ through.
+assert_rc "193 cp into primary settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp x \"$PRIMARY/.claude/settings.json\"")"
+assert_rc "194 tee via worktrees/.. traversal into settings.local.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "tee \"$PRIMARY/.claude/worktrees/../settings.local.json\"")"
+assert_rc "195 cp into primary settings.json (double slash) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp x \"$PRIMARY/.claude//settings.json\"")"
+assert_rc "196 mv into primary .claude dir denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "mv x \"$PRIMARY/.claude/\"")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
