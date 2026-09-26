@@ -28,9 +28,17 @@ make -C "$build_dir" >/dev/null
 shim_dir="$(mktemp -d "${TMPDIR:-/tmp}/bwk-awk-shim.XXXXXX")" || exit 1
 ln -s "$build_dir/a.out" "$shim_dir/awk"
 
-# Confirm the built binary is genuinely BWK before trusting it: BWK is the
-# only awk that fails "nonterminated character class" on a bare `/` inside a
-# bracket expression (the exact HIMMEL-3624 trigger) — gawk accepts it.
+# Confirm the built binary is genuinely BWK before trusting it. Positive
+# control first: a trivial well-formed program must actually run (rules out
+# a broken/crashing binary masquerading as "reproduced the parse error").
+# Then the negative probe: BWK is the only awk that fails "nonterminated
+# character class" on a bare `/` inside a bracket expression (the exact
+# HIMMEL-3624 trigger) — gawk accepts it.
+if ! echo x | "$shim_dir/awk" '{ print }' >/dev/null 2>&1; then
+  echo "run-unchecked-mktemp-under-bwk: built awk failed on a trivial well-formed program at $BWK_COMMIT -- build is broken, not a real one-true-awk build" >&2
+  exit 1
+fi
+
 if echo x | "$shim_dir/awk" '{ if ($0 ~ /^[^A-Za-z0-9_./-]/) print }' >/dev/null 2>&1; then
   echo "run-unchecked-mktemp-under-bwk: built awk did not reproduce the BWK bracket-class parse error at $BWK_COMMIT -- not a real one-true-awk build" >&2
   exit 1
