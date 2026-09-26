@@ -364,3 +364,28 @@ for (const config of CONFIGS) {
     assert.ok(Math.min(...ALLOWED) >= SLO_P95_MS * MIN_TIMEOUT_HEADROOM / 1000);
   });
 }
+
+// ------------------------------------------- HIMMEL-1843: the Bash matcher count
+
+// A Bash tool call fires every PreToolUse group whose matcher pattern matches
+// Bash — not just the literal `Bash` matcher. Verified against
+// .claude/settings.json at 92ee89588 (2026-09-26): FOUR groups match — the
+// `Bash` chain (15 members, one node process), the `*` catch-all
+// (auto-arm-on-cap.sh), `Bash|Edit|Write|MultiEdit|NotebookEdit`
+// (shadow-ledger.mjs, invoked directly — not through the chain dispatcher),
+// and `Bash|Monitor` (block-subagent-park.sh) — each its own cold node
+// process, so the real per-Bash-call cost is 4 process starts, not the 1 a
+// reader of only the `Bash` chain would assume. Docs:
+// docs/internals/hook-cost-baseline.md. Pins the count so a future matcher
+// edit that silently drops or adds Bash coverage is caught here.
+test('exactly 4 PreToolUse matcher groups in .claude/settings.json match the Bash tool', (t) => {
+  const config = join(REPO, '.claude', 'settings.json');
+  if (!existsSync(config)) return t.skip('config not present in this checkout');
+  const settings = JSON.parse(readFileSync(config, 'utf8'));
+  const groups = (settings.hooks && settings.hooks.PreToolUse) || [];
+  const bashGroups = groups.filter((g) => toolNamesFor(g.matcher).includes('Bash'));
+  assert.deepEqual(
+    bashGroups.map((g) => g.matcher),
+    ['Bash', '*', 'Bash|Edit|Write|MultiEdit|NotebookEdit', 'Bash|Monitor'],
+  );
+});
