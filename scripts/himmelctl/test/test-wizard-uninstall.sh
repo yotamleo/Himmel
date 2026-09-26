@@ -502,4 +502,27 @@ grepq "$outI2" -F -- "qmd-index ($hI2/.himmel/qmd-fork, absent)" \
   || fail "caseI2: expected qmd-index to print 'absent' for a missing path (got: $outI2)"
 echo "ok: caseI2 dry-run advisory plan prints 'absent' when the qmd-fork path does not exist"
 
+# I3: qmd-fork dir exists but is unreadable (EACCES, not ENOENT) -> 'size
+# unknown', never 'absent' — a permission error is not a missing path.
+if [ "$(id -u)" = 0 ]; then
+  echo "SKIP - caseI3 needs a non-root permission error (root reads mode-000 dirs)"
+else
+  hI3="$work/hI3"; mkdir -p "$hI3/.himmel/qmd-fork"
+  printf '0123456789' > "$hI3/.himmel/qmd-fork/payload"
+  chmod 000 "$hI3/.himmel"
+  set +e
+  outI3=$(PATH="$cI" HOME="$hI3" USERPROFILE="$(winpath "$hI3")" HIMMELCTL_CACHE_DIR="$(winpath "$hI3.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hI3.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+         HIMMELCTL_REPO_ROOT="$(winpath "$fixtureI")" \
+         "$node_bin" "$wizard" uninstall --dry-run \
+         </dev/null 2>&1); rcI3=$?
+  set -e
+  chmod 700 "$hI3/.himmel"
+  [ "$rcI3" -eq 0 ] || fail "caseI3: dry-run should exit 0 (got rc=$rcI3): $outI3"
+  grepq "$outI3" -F -- "qmd-binary ($hI3/.himmel/qmd-fork, size unknown)" \
+    || fail "caseI3: expected qmd-binary to print 'size unknown' for a permission error (got: $outI3)"
+  grepq "$outI3" -F -- "qmd-binary ($hI3/.himmel/qmd-fork, absent)" \
+    && fail "caseI3: a permission error must not print 'absent' (got: $outI3)"
+  echo "ok: caseI3 dry-run advisory plan prints 'size unknown' (not 'absent') when the qmd-fork path exists but is unreadable"
+fi
+
 echo "PASS"

@@ -4561,7 +4561,7 @@ function qmdOffboardLocation() {
   try {
     top = fs.lstatSync(resolved);
   } catch (e) {
-    return { path: resolved, size: 'absent' };
+    return { path: resolved, size: e.code === 'ENOENT' ? 'absent' : 'size unknown' };
   }
   const walk = (p, st) => {
     if (st.isSymbolicLink()) return 0;
@@ -4587,7 +4587,7 @@ function qmdOffboardLocation() {
 
 function printOffboardPlan(unwireItems, adviseItems, keepItems) {
   const qmdLoc = qmdOffboardLocation();
-  const withLoc = (id) => (id.startsWith('qmd') && qmdLoc) ? `${id} (${qmdLoc.path}, ${qmdLoc.size})` : id;
+  const withLoc = (id) => ((id === 'qmd-binary' || id === 'qmd-index') && qmdLoc) ? `${id} (${qmdLoc.path}, ${qmdLoc.size})` : id;
   console.log(`himmel-owned wiring & repo-local artifacts (${unwireItems.length}) — uninstall.sh removes himmel's machine-level wiring (settings.json hooks/statusline, working-principles rule-file blocks, hud config, scheduled jobs, plugins, git hooks, telegram bridge); artifacts in this list that live in the himmel clone go away when the clone is deleted, but what adopt copied into a project-scope adopter's own repo (scripts/) and Claude's workspace-trust entry STAY until you remove them — uninstall.sh lists them under "NOT touched": ${unwireItems.map((i) => withLoc(i.id)).join(', ')}`);
   console.log("Shared tools himmel installed or requires (NOT removed — remove any you don't use elsewhere):");
   console.log(`  ${adviseItems.map((i) => withLoc(i.id)).join(', ')}`);
