@@ -228,6 +228,7 @@ run_test "(4b) producer(Branch B) -> bank-preflight: SKIPPED-BANK above threshol
 
 run_test "(4c) HIMMEL-1866: partial fetch cannot make stale seven_day fresh" '
   W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4c.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-4c\"}}" > "$HOME/.claude.json";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
   old=$(( $(date +%s) - 3600 ));
   printf "%s" "{\"five_hour\":{\"utilization\":40},\"seven_day\":{\"utilization\":8},\"primaries_refreshed_at\":$old}" > "$CLAUDE_USAGE_CACHE";
@@ -239,6 +240,58 @@ run_test "(4c) HIMMEL-1866: partial fetch cannot make stale seven_day fresh" '
   v=$(CADENCE_BANK_CACHE="$CLAUDE_USAGE_CACHE" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_MAX_AGE=60 CADENCE_BANK_LEDGER="$W/l.jsonl" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" HIMMEL_FLEET_SLOTS="$W/slots" HIMMEL_FLEET_CAP=4 bash "$PREFLIGHT" </dev/null 2>"$W/pf.err");
   [ "$v" = "BANK-STALE" ] || exit 1;
   grep -q "FLEET native=0 claudex=0 reserved=0 total=0/4" "$W/pf.err" || exit 1;
+'
+
+# --- HIMMEL-1712: account-mismatched cache -> every DECISION consumer treats it as UNKNOWN, preserving its own existing missing/unusable-cache contract exactly ---
+
+run_test "(7a) HIMMEL-1712: cap-reset-time.sh treats an account-mismatched cache as UNKNOWN (same exit 3 as a missing resets_at)" '
+  W=$(mktemp -d); export HOME="$W/home-a"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 63.4 12.7 || exit 1;
+  export HOME="$W/home-b"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  out=$(bash "$CAP_RESET" --cache "$W/cache.json" --max-age 0 2>"$W/stderr.log"); rc=$?;
+  [ "$rc" -eq 3 ] || exit 1;
+  [ -z "$out" ] || exit 1;
+  grep -qi "account" "$W/stderr.log" || exit 1;
+'
+
+run_test "(7b) HIMMEL-1712: auto-arm-on-cap.sh treats an account-mismatched cache as unreadable usage -> quiet no-op, never arms" '
+  W=$(mktemp -d); export HOME="$W/home-a"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 95 12.7 || exit 1;
+  export HOME="$W/home-b"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  S="$W/state"; mkdir -p "$S"; H="$W/handovers"; mkdir -p "$H";
+  run_arm_hook "$S" "$W/cache.json" "$W/arm.log" "$H" "$W/stderr.log";
+  rc=$?; [ "$rc" -eq 0 ] || exit 1;
+  grep -q "MALFUNCTION" "$W/stderr.log" && exit 1;
+  [ -e "$W/arm.log" ] && exit 1;
+  exit 0;
+'
+
+run_test "(7c) HIMMEL-1712: resume-slot.sh treats an account-mismatched cache as unusable (same exit 2/empty-stdout shape as its die() contract)" '
+  W=$(mktemp -d); export HOME="$W/home-a"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 63.4 12.7 || exit 1;
+  export HOME="$W/home-b"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  out=$(bash "$RESUME_SLOT" --cache "$W/cache.json" --max-age 0 2>"$W/stderr.log"); rc=$?;
+  [ "$rc" -eq 2 ] || exit 1;
+  [ -z "$out" ] || exit 1;
+  grep -q "ERR resume-slot: usage cache account does not match the current session" "$W/stderr.log" || exit 1;
+'
+
+run_test "(7d) HIMMEL-1712: bank-preflight.sh treats an account-mismatched cache as BANK-UNKNOWN (same emit() shape as no usable primary)" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-7d.XXXXXX"); export HOME="$W/home-a"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  produce_cache_oauth "$W" 10 20;
+  export HOME="$W/home-b"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  mk_empty_fleet_stub "$W";
+  v=$(CADENCE_BANK_CACHE="$W/cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/l.jsonl" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" HIMMEL_FLEET_SLOTS="$W/slots" HIMMEL_FLEET_CAP=4 bash "$PREFLIGHT" </dev/null 2>"$W/pf.err");
+  [ "$v" = "BANK-UNKNOWN" ] || exit 1;
+  grep -q "account" "$W/pf.err" || exit 1;
 '
 
 # --- HIMMEL-718 Task 2.3: same contract, via the REAL composer driver ---------

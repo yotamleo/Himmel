@@ -14,8 +14,25 @@ W="$(mktemp -d -t bank-preflight.XXXXXX)"; trap 'rm -rf "$W"' EXIT
 # down, with a real stub feeding FLEET_PS_CMD.
 NO_FLEET="$W/no-fleet-ps.sh"; printf '%s\n' '#!/usr/bin/env bash' 'true' > "$NO_FLEET"; chmod +x "$NO_FLEET"
 
+# HIMMEL-1712: hermetic identity so every fixture below can stamp the SAME
+# matching account hash -- this suite is about verdict logic, not identity,
+# and a dedicated account-mismatch case is added separately below. A test
+# further down explicitly unsets HOME for one call to cover that path; it
+# uses env -u HOME on that one subshell only, so this export is unaffected.
+export HOME="$W/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-bank-preflight-test"}}' > "$HOME/.claude.json"
+IDLIB="$REPO/scripts/lib/usage-cache-identity.sh"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$IDLIB"
+ACCT="$(current_account_hash)"
+# Injects "account":"$ACCT" into a JSON object literal (every fixture below
+# starts with '{'), so a single call site stamps ad-hoc JSON without every
+# caller repeating the field.
+stamp_account() { printf '{"account":"%s",%s' "$ACCT" "${1#\{}"; }
+
 verdict() {
-  printf '%s' "$1" > "$W/c.json"
+  printf '%s' "$(stamp_account "$1")" > "$W/c.json"
   CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
   CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
   FLEET_PS_CMD="$NO_FLEET" \
@@ -56,6 +73,17 @@ check "non-integer stamp -> BANK-STALE" BANK-STALE \
 check "missing cache -> BANK-UNKNOWN" BANK-UNKNOWN \
  "$(CADENCE_BANK_CACHE="$W/gone.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" FLEET_PS_CMD="$NO_FLEET" bash "$SUT" </dev/null 2>/dev/null)"
 
+# HIMMEL-1712: a cache stamped for a different account is distrusted exactly
+# like a missing one -- the number is never attributed to this session.
+printf '%s' "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW,\"account\":\"deadbeefdeadbeef\"}" > "$W/mismatch.json"
+mismatch_out=$(CADENCE_BANK_CACHE="$W/mismatch.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" FLEET_PS_CMD="$NO_FLEET" bash "$SUT" </dev/null 2>"$W/mismatch.err")
+check "account-mismatched cache -> BANK-UNKNOWN" BANK-UNKNOWN "$mismatch_out"
+if grep -q 'account does not match' "$W/mismatch.err"; then
+  PASS=$((PASS+1)); echo "ok - account mismatch surfaces the reason on stderr"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - no account-mismatch reason on stderr"
+fi
+
 home_unset_out=$(env -u HOME -u CADENCE_BANK_LEDGER CADENCE_BANK_CACHE="$W/gone-home.json" \
   CADENCE_BANK_SKIP_REFRESH=1 FLEET_PS_CMD="$NO_FLEET" bash "$SUT" </dev/null 2>/dev/null)
 home_unset_rc=$?
@@ -90,7 +118,7 @@ else
 fi
 
 future=$(( $(date +%s) + 86400 ))
-printf '%s' "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$future}" > "$W/c.json"
+printf '%s' "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$future,\"account\":\"$ACCT\"}" > "$W/c.json"
 future_out=$(CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
   CADENCE_BANK_LEDGER="$W/ledger.jsonl" FLEET_PS_CMD="$NO_FLEET" bash "$SUT" 2>/dev/null || true)
 if [ "$future_out" = "BANK-STALE" ]; then
@@ -116,7 +144,7 @@ watchdog_after_25s() {
 }
 
 stub="$W/prod.sh"; printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' > "$stub"; chmod +x "$stub"
-printf '%s' "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}" > "$W/c.json"
+printf '%s' "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW,\"account\":\"$ACCT\"}" > "$W/c.json"
 # Monitor mode gives the SUT a dedicated process group so the watchdog also
 # terminates a blocked producer descendant, not just its waiting parent shell.
 set -m
@@ -175,7 +203,7 @@ mk_ps_stub() {
   chmod +x "$dir/ps"
 }
 
-HEALTHY_CACHE="{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}"
+HEALTHY_CACHE="{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW,\"account\":\"$ACCT\"}"
 
 # fleet_verdict <ps-stub-dir> [extra env assignments...] - same shape as
 # verdict(), but with FLEET_PS_CMD/FLEET_PROC pointed at the given stub
@@ -491,7 +519,7 @@ check "claudex lane, CADENCE_BANK_STATUS_CMD path contains a space -> SKIPPED-BA
 # shellcheck source=scripts/lib/timeout-bin.sh
 . "$REPO/scripts/lib/timeout-bin.sh"
 native_codex_run() {
-  printf '%s' "${2:-$HEALTHY_CACHE}" > "$W/c.json"
+  if [ -n "${2:-}" ]; then printf '%s' "$(stamp_account "$2")" > "$W/c.json"; else printf '%s' "$HEALTHY_CACHE" > "$W/c.json"; fi
   CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
   CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
   FLEET_PS_CMD="$NO_FLEET" CADENCE_BANK_STATUS_CMD="$1" \
@@ -557,7 +585,7 @@ fi
 
 # No timeout binary at all -> the codex read is skipped (codex=?), never unbounded.
 NOTO_BIN="$W/no-timeout-bin"; mkdir -p "$NOTO_BIN"
-for _t in bash env cat grep head sed awk date jq mkdir dirname tr rm ps printf sleep; do
+for _t in bash env cat grep head sed awk date jq mkdir dirname tr rm ps printf sleep cut sha256sum shasum; do
   _p="$(command -v "$_t" 2>/dev/null)"; case "$_p" in /*) ln -sf "$_p" "$NOTO_BIN/$_t" ;; esac
 done
 printf '%s' "$HEALTHY_CACHE" > "$W/c.json"

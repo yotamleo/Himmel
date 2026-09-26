@@ -35,6 +35,15 @@ sleep 300 & A_PID=$!
 trap 'kill "$A_PID" 2>/dev/null; rm -rf "$W"' EXIT
 NOW="$(date +%s)"
 
+# HIMMEL-1712: hermetic identity so the cache fixture below matches the
+# current session -- this suite is about the admit-gate lock, not identity.
+export HOME="$W/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-admit-gate-test"}}' > "$HOME/.claude.json"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$REPO/scripts/lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
+
 # count_glob <pattern...> — how many of the (already glob-expanded) paths exist;
 # a bash-glob count, so no GNU/BSD `find -maxdepth` divergence.
 count_glob() { local n=0 f; for f in "$@"; do [ -e "$f" ] && n=$((n+1)); done; echo "$n"; }
@@ -351,7 +360,7 @@ fi
 slots_i="$W/slots-i"; mkdir -p "$slots_i/.admit.reclaim" "$slots_i/.admit.stale.1.2" "$slots_i/.admit.reclaim.broken.1.2"
 printf '%s\n' "$NOW" > "$slots_i/.admit.reclaim/acquired"
 mkdir -p "$W/ps/proc"; printf '%s\n' '#!/usr/bin/env bash' 'true' > "$W/ps/ps"; chmod +x "$W/ps/ps"
-printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}' "$NOW" > "$W/c.json"
+printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s,"account":"%s"}' "$NOW" "$ACCT" > "$W/c.json"
 env -u FLEET_ADMIT_TEST_HOOK FLEET_ADMIT_GATE_STALE_SECS=0 FLEET_CAP_OK= CADENCE_BANK_LAUNCH= HIMMEL_FLEET_SLOTS="$slots_i" FLEET_PS_CMD="$W/ps/ps" FLEET_PROC="$W/ps/proc" \
   CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" HIMMEL_FLEET_CAP=4 \
   bash "$SUT" </dev/null >"$W/i.out" 2>"$W/i.err"

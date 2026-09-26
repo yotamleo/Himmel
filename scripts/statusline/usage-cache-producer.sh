@@ -43,6 +43,14 @@ OAUTH_TTL="${USAGE_OAUTH_TTL:-3540}"
 
 command -v jq >/dev/null 2>&1 || { echo "WARN usage-cache-producer: jq not found" >&2; exit 0; }
 
+# HIMMEL-1712: shared account-identity helper (current_account_hash). A
+# missing/unreadable lib degrades to an empty hash — the same UNKNOWN that a
+# consumer sees for any other undeterminable identity, never a script exit.
+IDLIB="$(cd "$(dirname "$0")" && pwd)/../lib/usage-cache-identity.sh"
+if ! { [ -r "$IDLIB" ] && . "$IDLIB"; } 2>/dev/null; then
+  current_account_hash() { :; }
+fi
+
 now_epoch=$(date +%s 2>/dev/null || echo 0)
 iso_now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
 
@@ -99,6 +107,45 @@ build_hud() {
   ' 2>/dev/null
 }
 
+# HIMMEL-1712: the account a WRITE stamps must describe whose numbers they
+# are, not whatever ~/.claude.json says right now — an old session, still
+# authenticated as A, must keep stamping A even after the operator switches
+# the disk identity to B mid-session (a live re-read on every write would
+# mislabel A's stale numbers as B's and hide the mismatch). Key it by the
+# statusline stdin's session_id: first render of a session snapshots the
+# CURRENT identity into a sidecar map; every later render by that session
+# replays the snapshot. No account field exists on stdin itself to shortcut
+# this (checked: only session_id is present).
+session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+SESSION_MAP_FILE="${CACHE_FILE}.sessions.json"
+account_for_session() {
+  local sid="$1" mapped hash prevmap newmap
+  if [ -z "$sid" ]; then
+    current_account_hash
+    return
+  fi
+  if [ -f "$SESSION_MAP_FILE" ]; then
+    mapped=$(jq -r --arg sid "$sid" '.[$sid] // empty' "$SESSION_MAP_FILE" 2>/dev/null)
+  fi
+  if [ -n "${mapped:-}" ]; then
+    printf '%s' "$mapped"
+    return
+  fi
+  hash=$(current_account_hash)
+  if [ -n "$hash" ]; then
+    prevmap="{}"
+    if [ -f "$SESSION_MAP_FILE" ]; then
+      prevmap=$(cat "$SESSION_MAP_FILE" 2>/dev/null)
+      printf '%s' "$prevmap" | jq -e 'type=="object"' >/dev/null 2>&1 || prevmap="{}"
+    fi
+    newmap=$(printf '%s' "$prevmap" | jq --arg sid "$sid" --arg h "$hash" '.[$sid] = $h' 2>/dev/null)
+    [ -n "$newmap" ] && write_atomic "$SESSION_MAP_FILE" "$newmap"
+  fi
+  printf '%s' "$hash"
+}
+account_hash=$(account_for_session "$session_id")
+produced_by=$$
+
 # Load the previous consumer cache as a JSON object, or "null". Requires an
 # object (statusline.sh:368-374 shape guard) — a bare string/number would make
 # the merge a type error.
@@ -130,7 +177,8 @@ if [ -n "$stdin_five" ] || [ -n "$stdin_seven" ]; then
 
   new_cache=$(jq -n --argjson prev "$prev" --argjson ts "$now_epoch" \
     --arg fh "$stdin_five" --arg fhr "$stdin_five_reset" \
-    --arg sh "$stdin_seven" --arg shr "$stdin_seven_reset" '
+    --arg sh "$stdin_seven" --arg shr "$stdin_seven_reset" \
+    --arg acct "$account_hash" --arg pby "$produced_by" '
     ($prev // {}) as $p |
     (if $fh == "" then null else ($fh | tonumber? // null) end) as $fhn |
     (if $sh == "" then null else ($sh | tonumber? // null) end) as $shn |
@@ -142,7 +190,10 @@ if [ -n "$stdin_five" ] || [ -n "$stdin_seven" ]; then
                   else { utilization: $shn,
                          resets_at: (if $shr == "" then null else $shr end) } end),
       extra_usage: ($p.extra_usage // {}),
-      oauth_checked_at: ($p.oauth_checked_at // null)
+      oauth_checked_at: ($p.oauth_checked_at // null),
+      account: (if $acct == "" then null else $acct end),
+      derived_at: $ts,
+      produced_by: $pby
     }
     # HIMMEL-3364: same provenance rule as Branch B — stamp only when BOTH
     # stdin windows carry a numeric utilization; a one-window payload carries
@@ -207,7 +258,8 @@ if [ -z "$fetched" ] || ! printf '%s' "$fetched" | jq -e 'type=="object"' >/dev/
   exit 0
 fi
 
-new_cache=$(jq -n --argjson prev "$prev" --argjson f "$fetched" --argjson ts "$now_epoch" '
+new_cache=$(jq -n --argjson prev "$prev" --argjson f "$fetched" --argjson ts "$now_epoch" \
+  --arg acct "$account_hash" --arg pby "$produced_by" '
   ($prev // {}) as $p |
   ($f // {}) as $ff |
   # HIMMEL-1841: fetched primaries WIN; $p is the fallback only when the
@@ -219,7 +271,10 @@ new_cache=$(jq -n --argjson prev "$prev" --argjson f "$fetched" --argjson ts "$n
     five_hour:   ($fh // $p.five_hour // {}),
     seven_day:   ($sd // $p.seven_day // {}),
     extra_usage: ($ff.extra_usage // $p.extra_usage // {}),
-    oauth_checked_at: $ts
+    oauth_checked_at: $ts,
+    account: (if $acct == "" then null else $acct end),
+    derived_at: $ts,
+    produced_by: $pby
   }
   # Provenance: refresh the aggregate stamp ONLY when both fetched primaries
   # were taken. A partial fetch preserves the prior stamp so a carried-forward
