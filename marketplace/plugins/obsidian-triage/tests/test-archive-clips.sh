@@ -400,7 +400,8 @@ for rb in triage-clips.md synthesize-clips.md archive-clips.md; do
     assert "$rb checks .harvest.done" "yes" "$found"
     if grep -qiF "upstream harvest incomplete" "$f"; then found=yes; else found=no; fi
     assert "$rb aborts with 'upstream harvest incomplete'" "yes" "$found"
-    if printf '%s' "$g8_section" | grep -qE "Exit 2"; then found=yes; else found=no; fi
+    out=$(printf '%s' "$g8_section" | grep -E "Exit 2")
+    if [ -n "$out" ]; then found=yes; else found=no; fi
     assert "$rb documents Exit 2 on the gate" "yes" "$found"
 done
 
