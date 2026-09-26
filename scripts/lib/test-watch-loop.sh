@@ -46,6 +46,14 @@ cleanup() {
     for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
         [ -n "$_p" ] && kill "$_p" 2>/dev/null
     done
+    sleep 1
+    # codex-1 (round 3, Suggestion): plain TERM never reaped GC8, which traps
+    # and ignores it on purpose (case 8's fixture) -- escalate to KILL for
+    # anything still alive after the grace period, same as the fallback tier
+    # under test.
+    for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
+        [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null && kill -9 "$_p" 2>/dev/null
+    done
     wait 2>/dev/null
     rm -rf "$TMP"
 }
