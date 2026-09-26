@@ -495,7 +495,8 @@ if [ "$rc" -eq 0 ]; then pass "posix arm with nasty handover: rc=0"; else fail "
 runner6="$pstate6/bat/upstream-watch.sh"
 if [ -f "$runner6" ]; then pass "posix arm with nasty handover: runner published"; else fail "posix arm with nasty handover: runner missing"; fi
 SH_BIN=$(command -v dash 2>/dev/null || command -v sh)
-"$SH_BIN" "$runner6" >/dev/null 2>&1
+"$SH_BIN" "$runner6" >/dev/null 2>&1; runner6_rc=$?
+if [ "$runner6_rc" -eq 0 ]; then pass "posix arm with nasty handover: $SH_BIN runner exits 0"; else fail "posix arm with nasty handover: $SH_BIN runner exited $runner6_rc"; fi
 printf '%s' "$nasty_dir" > "$pstate6/expected-handover"
 if cmp -s "$pstate6/expected-handover" "$pstate6/captured-handover" 2>/dev/null; then
   pass "posix arm with nasty handover: $SH_BIN exports the value byte-exact"

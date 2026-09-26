@@ -616,9 +616,11 @@ cron_escape() {
 # posix_sh_quote <value> — single-quote-wrap (POSIX `'\''` escaping) for the
 # generated runner's own `#!/bin/sh` (HIMMEL-3619): `printf '%q'` is a
 # bash-only escaping that can emit `$'...'` ANSI-C quoting, which a stricter
-# /bin/sh does not reliably parse the same way bash does. HANDOVER_DIR is
-# externally supplied (unlike the runner's other repo-internal paths), so it
-# is the one value baked in here worth the extra safety.
+# /bin/sh does not reliably parse the same way bash does. Every value baked
+# into the runner is externally overridable (HANDOVER_DIR, HIMMEL_ROOT via
+# UPSTREAMWATCH_HIMMEL_ROOT, the BAT_DIR log path via UPSTREAMWATCH_BAT_DIR),
+# so this is the one quoting the generated `#!/bin/sh` runner ever uses
+# (codex CR round 3).
 posix_sh_quote() {
     local s
     # trailing sentinel survives $(...)'s trailing-newline stripping so a
@@ -791,11 +793,11 @@ cron_arm() {
     fi
 
     local q_himmel q_handover q_bash q_script q_log payload
-    q_himmel=$(printf '%q' "$HIMMEL_ROOT")
+    q_himmel=$(posix_sh_quote "$HIMMEL_ROOT")
     q_handover=$(posix_sh_quote "$handover_dir")
-    q_bash=$(printf '%q' "$bash_bin")
-    q_script=$(printf '%q' "$WATCH_SCRIPT")
-    q_log=$(printf '%q' "$BAT_DIR/upstream-watch.log")
+    q_bash=$(posix_sh_quote "$bash_bin")
+    q_script=$(posix_sh_quote "$WATCH_SCRIPT")
+    q_log=$(posix_sh_quote "$BAT_DIR/upstream-watch.log")
     payload="$q_bash $q_script"
 
     local runner="$BAT_DIR/upstream-watch.sh"
