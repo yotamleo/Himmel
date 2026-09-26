@@ -90,7 +90,8 @@ Before processing any clip:
    - **PID dead** (`kill -0 <PID>` fails — the prior run was SIGKILLed, or the machine lost power, before its exit trap could run): log `harvest-clips: removing stale lock (PID=<X> not running, written <ts>)`, remove `<vault>/.harvest.lock`, and acquire a fresh lock.
    - **Unparseable / no PID** (the lockfile content doesn't yield a PID, or liveness can't be determined): treat as **alive** — fail closed. Abort with the same message as the alive case (`harvest-clips: another harvest run is active (PID=<X>); wait for it OR delete <vault>/.harvest.lock if stale.`). Exit 2.
 2. Check obsidian-github-sync sync state. If `<vault>/.obsidian/plugins/obsidian-github-sync/data.json` exists, parse `lastSync` ISO timestamp. If within ±30s of now: WARN once and proceed (heuristic — Windows file-locking semantics may be unreliable; refine during calibration per replan trigger §17). If `lastSync` cannot be parsed: skip the check.
-3. Clean up: register a trap to remove `<vault>/.harvest.lock` on exit (including signals).
+3. **Invalidate the completion marker (HIMMEL-1137).** `rm -f "<vault>/.harvest.done"`. Do this now, right after acquiring the lock — a run that dies before reaching G-8 below must not leave an OLDER run's marker in place for downstream stages to trust.
+4. Clean up: register a trap to remove `<vault>/.harvest.lock` on exit (including signals).
 
 ### Resolve vault path (cross-platform: Linux / macOS / Windows-Git-Bash)
 
@@ -313,6 +314,22 @@ After the run, append one line to `<vault>/log.md` (if it exists):
 ```
 ## [$TODAY] harvest-clips | N harvested ok, M partial, K failed, S skipped. State file: .harvest-run-state-$TODAY.jsonl
 ```
+
+### G-8 — Completion marker (HIMMEL-1137) — write LAST, clean runs only
+
+Downstream stages (`/triage-clips`, `/synthesize-clips`, `/archive-clips`) refuse to run against a harvest that never finished cleanly. This is the run's final step, after the Tracking append.
+
+If this run is exiting 0 — a clean run: every unharvested clip landed at `ok` or was skipped, no `partial`, no `failed`, no catastrophic abort — write `<vault>/.harvest.done` atomically:
+
+```bash
+marker_tmp="<vault>/.harvest.done.tmp.$$"
+printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$batch_hash" > "$marker_tmp"
+mv "$marker_tmp" "<vault>/.harvest.done"
+```
+
+`$batch_hash` is the same clip-batch hash G-2 wrote into `<vault>/.harvest.lock` for this run.
+
+On any other exit path (1/2/3/4/5) MUST NOT write or touch the marker — a partial/failed/interrupted run leaves downstream gated closed until a clean harvest completes. No operator override flag — keep it minimal.
 
 ### Notes for the agent
 

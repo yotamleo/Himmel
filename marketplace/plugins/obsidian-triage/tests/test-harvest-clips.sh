@@ -680,6 +680,37 @@ else
 fi
 assert "G-2 live-PID abort message + exit 2 unchanged" "yes" "$live_abort"
 
+echo "Test 15: G-2 invalidates the completion marker at run start (HIMMEL-1137)"
+out=$(printf '%s' "$g2_section" | grep -F ".harvest.done")
+out2=$(printf '%s' "$g2_section" | grep -iE "invalidat")
+if [ -n "$out" ] && [ -n "$out2" ]; then
+    marker_invalidate=yes
+else
+    marker_invalidate=no
+fi
+assert "G-2 removes/invalidates .harvest.done at start" "yes" "$marker_invalidate"
+
+echo "Test 16: G-8 completion marker written LAST, only on a clean run (HIMMEL-1137)"
+g8_section=$(awk '/^### G-8/{p=1;next} /^### /{if(p) exit} p' "$CMD")
+
+out=$(printf '%s' "$g8_section" | grep -F ".harvest.done")
+out2=$(printf '%s' "$g8_section" | grep -iE "atomic|\bmv\b")
+if [ -n "$out" ] && [ -n "$out2" ]; then
+    marker_write=yes
+else
+    marker_write=no
+fi
+assert "G-8 documents atomic write of .harvest.done" "yes" "$marker_write"
+
+out=$(printf '%s' "$g8_section" | grep -iE "MUST NOT write")
+out2=$(printf '%s' "$g8_section" | grep -iE "exiting 0|exit(s|ing)? 0|clean run")
+if [ -n "$out" ] && [ -n "$out2" ]; then
+    marker_clean_only=yes
+else
+    marker_clean_only=no
+fi
+assert "G-8 marker written only on a clean (exit 0) run" "yes" "$marker_clean_only"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 if [ "$fail" -gt 0 ]; then

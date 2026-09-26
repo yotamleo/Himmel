@@ -31,6 +31,15 @@ Wherever `YYYY-MM-DD` appears in instructions below (including YAML examples and
 
 Same as `/triage-clips`. Look at `$1`, then `$OBSIDIAN_VAULT_PATH`, then `~/Documents/luna` (canonical Luna vault path). Verify `<vault>/Clippings/` exists; exit 0 with `synthesize-clips: no Clippings/ — nothing to synthesize` if not.
 
+### G-8 — Harvest-completion gate (HIMMEL-1137) — run FIRST after vault resolution
+
+synthesize-clips consumes processed clips that trace back to harvest output. A hard-killed `/harvest-clips` mid-run leaves that state partial — synthesizing over it produces patterns from corrupted evidence. Before scanning:
+
+1. If `<vault>/.harvest.done` does not exist: abort with `synthesize-clips: upstream harvest incomplete — <vault>/.harvest.done not found; run /harvest-clips first.` Exit 2.
+2. If it exists, read its ISO timestamp (the marker's first field). It is fresh if its date is `$TODAY`, or — for a harvest that started before midnight and finished after — if it is newer than the start timestamp recorded in a still-present `<vault>/.harvest.lock`. Otherwise it is stale: abort with `synthesize-clips: upstream harvest incomplete — <vault>/.harvest.done is stale; run /harvest-clips first.` Exit 2.
+
+No operator override flag — keep it minimal; re-running `/harvest-clips` clears the gate.
+
 ### Input validation (run for every candidate clip)
 
 Only consider clips with `processed: true` in frontmatter. Reason: unprocessed clips lack inferred tags and Related Notes, so synthesis would over-fit on raw author wording. Run `/triage-clips` first if needed.
