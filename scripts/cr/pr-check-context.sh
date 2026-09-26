@@ -731,6 +731,7 @@ gitd() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache
 # leg-pr-open.sh reach it through that one file, so check-commit-msg.sh is
 # guarded too.
 cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh
+scripts/handover/resolve-active-item-report.sh
 scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh
 scripts/handover/merge-on-green.sh scripts/handover/queue-lock.sh
 scripts/hooks/check-commit-msg.sh
@@ -753,6 +754,7 @@ scripts/telegram/lane-args.ts scripts/telegram/phi-egress-guard.ts scripts/teleg
 scripts/lanes/plugin-profiles.mjs"
 cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails/lib.sh' ':(top)scripts/check-ci.sh'
     ':(top)scripts/handover/resolve-active-item.sh'
+    ':(top)scripts/handover/resolve-active-item-report.sh'
     ':(top)scripts/handover/append-cr-findings.sh' ':(top)scripts/handover/append-cr-bugs.sh' ':(top)scripts/handover/bug.sh'
     ':(top)scripts/handover/merge-on-green.sh' ':(top)scripts/handover/queue-lock.sh'
     ':(top)scripts/hooks/check-commit-msg.sh'
