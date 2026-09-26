@@ -49,6 +49,7 @@ PHI="$WS/phicfg";       mkdir -p "$PHI"
 PHI_BADROOTS="$WS/phicfg2"; mkdir -p "$PHI_BADROOTS/phi-roots"   # phi-roots is a DIR -> unreadable
 DENYROOT="$WS/secretvault"; mkdir -p "$DENYROOT/x"
 NOWHERE="$WS/nowhere";  mkdir -p "$NOWHERE"
+HIMMEL_UPPER="$HIMMEL/CorpusDir"; mkdir -p "$HIMMEL_UPPER"      # HIMMEL-3641 codex-1: uppercase-C path, non-PHI
 
 # an egress-denylist root (path-list membership -> salus corpus)
 printf '%s\n' "$DENYROOT" > "$PHI/egress-denylist"
@@ -66,6 +67,7 @@ LEDGER="$HOME/.claude/graphify-egress.jsonl"
 : > "$HIMMEL/scripts/thing.sh"
 : > "$DENYROOT/x/leak.md"
 : > "$NOWHERE/loose.md"
+: > "$HIMMEL_UPPER/thing.sh"
 
 # env vars scrubbed on every fence call so the outer shell cannot leak state in.
 CLEAN_ENV="-u GRAPHIFY_SALUS_LOCAL_OK -u GRAPHIFY_CLIPPINGS_GLM_OK -u GRAPHIFY_LEDGER \
@@ -2310,6 +2312,40 @@ run_fence allow no "$HIMMEL" "env -C DIR make (no graphify) -> allow (control)" 
 # graphify-free bundled command alone.
 run_fence allow no "$HIMMEL" "env -iC DIR make (bundled, no graphify) -> allow (control)" \
     "env -iC $NOWHERE make"
+
+echo "== HIMMEL-3641 codex-1 (J1290R): --* long options checked before the -*C*/-*D* bundled-short-opt glob =="
+
+# (C33) codex-1: env --chdir=DIR where DIR contains an uppercase C must be
+# handled as the long option it is, not misrouted into the F4 bundled-short-
+# opt scan just because the token contains "-C" as a substring. Non-PHI
+# target -> allow (this DENYed before the fix, on the F4 bundled-opt
+# message, even though env --chdir= is fully resolvable here).
+run_fence allow no "$HIMMEL" "env --chdir=DIR (uppercase-C path) non-PHI -> allow (codex-1)" \
+    "env --chdir=$HIMMEL_UPPER graphify update $HIMMEL_UPPER/thing.sh"
+
+# (C34) codex-1: env --unset=VAR where VAR's name contains an uppercase C
+# (CLAUDE_CODE_USE_BEDROCK) must also stay on the --* long-option arm; it
+# never chdirs at all, so a non-PHI target must allow.
+run_fence allow no "$HIMMEL" "env --unset=CLAUDE_CODE_USE_BEDROCK non-PHI -> allow (codex-1)" \
+    "env --unset=CLAUDE_CODE_USE_BEDROCK graphify update $HIMMEL/scripts/thing.sh"
+
+# (C35) codex-1 sudo twin: sudo --chdir=DIR where DIR contains an uppercase D
+# must stay on the --* long-option arm, not the F4 bundled-opt scan.
+mkdir -p "$HIMMEL/DataDir"
+: > "$HIMMEL/DataDir/thing.sh"
+run_fence allow no "$HIMMEL" "sudo --chdir=DIR (uppercase-D path) non-PHI -> allow (codex-1)" \
+    "sudo --chdir=$HIMMEL/DataDir graphify update $HIMMEL/DataDir/thing.sh"
+
+# (C36) codex-1 regression control: env --chdir=DIR into SALUS (PHI), where
+# the path also contains an uppercase C, must still deny - on the real
+# chdir-into-PHI reason, not the (now bypassed) bundled-opt reason.
+run_fence deny no "$HIMMEL" "env --chdir=DIR (uppercase-C path) into salus -> still deny (codex-1 control)" \
+    "env --chdir=$SALUS graphify update notes/patient.md --backend glm"
+
+# (C37) codex-1 regression control: a TRUE bundled short option containing
+# -C's letter must still fail closed (F4 unchanged for real bundled opts).
+run_fence deny no "$HIMMEL" "env -iC DIR salus (true bundled) -> still deny (codex-1 control)" \
+    "env -iC $SALUS graphify update notes/patient.md --backend glm"
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"

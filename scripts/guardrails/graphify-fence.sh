@@ -1760,26 +1760,6 @@ classify_clause() {
                         # them, so env -C$X / env -C"$X" silently resolved
                         # instead of failing closed.
                         -C?*) _gf_apply_chdir "${toks[$i]#-C}"; i=$((i+1)) ;;        # HIMMEL-3641: -CDIR attached
-                        # HIMMEL-3641 J1290O F4: a bundled short option
-                        # containing -C's letter (-iC, -vC, -i0C, ...) cannot
-                        # be positionally resolved without modelling GNU
-                        # getopt bundling - which flag in the bundle actually
-                        # consumes the DIR value is ambiguous from lexical
-                        # inspection alone, and misresolving it misaligns the
-                        # walk so graphify is never reached (silent ALLOW).
-                        # Fail closed the same way xargs/find -exec do above:
-                        # scan the rest of the clause for graphify and deny
-                        # if present, leave any other command alone.
-                        -*C*)
-                            k=$((i+1))
-                            while [ "$k" -lt "$n" ]; do
-                                case "$(_strip_cmd "${toks[$k]}")" in
-                                    graphify|*/graphify)
-                                        deny "graphify via a bundled env short option containing -C (env -iC/-vC/...) is not statically fenceable; invoke graphify directly, or spell -C separately" ;;
-                                esac
-                                k=$((k+1))
-                            done
-                            return 0 ;;
                         --*)
                             # HIMMEL-2610: --u/--uns/... are unambiguous GNU
                             # abbreviations of env's only value-taking long
@@ -1790,6 +1770,16 @@ classify_clause() {
                             # long option and is checked first so an
                             # ambiguous-with-neither abbreviation still falls
                             # through to the generic -*) arm below.
+                            # HIMMEL-3641 codex-1 (J1290R): this arm is checked
+                            # BEFORE -*C* below - a long option's raw token
+                            # starts with `--` and can contain an uppercase C
+                            # anywhere in its name or value (--chdir=/tmp/CorpusDir,
+                            # --unset=CLAUDE_CODE_USE_BEDROCK); testing -*C*
+                            # first would misclassify it as an unresolvable
+                            # bundled short option and could deny a legitimate
+                            # invocation that should be allowed. `--` never
+                            # matches a bundled short option, so ordering the
+                            # arms this way changes no *correct* -*C* match.
                             if guard_is_long_abbrev "chdir" "$gf_w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then
                                     # HIMMEL-3641 J1290O F2: raw value after
@@ -1806,6 +1796,28 @@ classify_clause() {
                             else
                                 i=$((i+1))
                             fi ;;
+                        # HIMMEL-3641 J1290O F4: a bundled short option
+                        # containing -C's letter (-iC, -vC, -i0C, ...) cannot
+                        # be positionally resolved without modelling GNU
+                        # getopt bundling - which flag in the bundle actually
+                        # consumes the DIR value is ambiguous from lexical
+                        # inspection alone, and misresolving it misaligns the
+                        # walk so graphify is never reached (silent ALLOW).
+                        # Fail closed the same way xargs/find -exec do above:
+                        # scan the rest of the clause for graphify and deny
+                        # if present, leave any other command alone. Checked
+                        # AFTER --* above (HIMMEL-3641 codex-1/J1290R) so a
+                        # long option is never routed here.
+                        -*C*)
+                            k=$((i+1))
+                            while [ "$k" -lt "$n" ]; do
+                                case "$(_strip_cmd "${toks[$k]}")" in
+                                    graphify|*/graphify)
+                                        deny "graphify via a bundled env short option containing -C (env -iC/-vC/...) is not statically fenceable; invoke graphify directly, or spell -C separately" ;;
+                                esac
+                                k=$((k+1))
+                            done
+                            return 0 ;;
                         [A-Za-z_]*=*)
                             case "$gf_w" in
                                 ANTHROPIC_BASE_URL=*|CLAUDE_CODE_USE_BEDROCK=*|CLAUDE_CODE_USE_VERTEX=*|ANTHROPIC_API_KEY=*|ANTHROPIC_AUTH_TOKEN=*)
@@ -1876,19 +1888,6 @@ classify_clause() {
                         # HIMMEL-3641 J1290O F2: raw suffix, not $gf_w - see
                         # the env -CDIR note above.
                         -D?*) _gf_apply_chdir "${toks[$i]#-D}"; i=$((i+1)) ;;        # HIMMEL-3641: -DDIR attached
-                        # HIMMEL-3641 J1290O F4: bundled short option
-                        # containing -D's letter (-nD, -EHD, ...) - see the
-                        # env -*C* note above; same fail-closed shape.
-                        -*D*)
-                            k=$((i+1))
-                            while [ "$k" -lt "$n" ]; do
-                                case "$(_strip_cmd "${toks[$k]}")" in
-                                    graphify|*/graphify)
-                                        deny "graphify via a bundled sudo short option containing -D (sudo -nD/-EHD/...) is not statically fenceable; invoke graphify directly, or spell -D separately" ;;
-                                esac
-                                k=$((k+1))
-                            done
-                            return 0 ;;
                         --)                      i=$((i+1)); break ;;  # end of sudo options
                         --*)
                             # HIMMEL-2610: sudo had NO long-option handling
@@ -1898,6 +1897,10 @@ classify_clause() {
                             # SEPARATE value, same as their short forms above.
                             # HIMMEL-3641: --chdir (-D's long form) is checked
                             # first, same rationale as env's --chdir above.
+                            # HIMMEL-3641 codex-1 (J1290R): checked BEFORE
+                            # -*D* below - see the env --* note above; same
+                            # ordering rationale (a --chdir=/tmp/DataDir or
+                            # --host=DBhost value can contain -D's letter).
                             if guard_is_long_abbrev "chdir" "$gf_w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then
                                     # HIMMEL-3641 J1290O F2: raw value, not
@@ -1915,6 +1918,21 @@ classify_clause() {
                             else
                                 i=$((i+1))
                             fi ;;
+                        # HIMMEL-3641 J1290O F4: bundled short option
+                        # containing -D's letter (-nD, -EHD, ...) - see the
+                        # env -*C* note above; same fail-closed shape. Checked
+                        # AFTER --* above (HIMMEL-3641 codex-1/J1290R) so a
+                        # long option is never routed here.
+                        -*D*)
+                            k=$((i+1))
+                            while [ "$k" -lt "$n" ]; do
+                                case "$(_strip_cmd "${toks[$k]}")" in
+                                    graphify|*/graphify)
+                                        deny "graphify via a bundled sudo short option containing -D (sudo -nD/-EHD/...) is not statically fenceable; invoke graphify directly, or spell -D separately" ;;
+                                esac
+                                k=$((k+1))
+                            done
+                            return 0 ;;
                         [A-Za-z_]*=*)            i=$((i+1)) ;;        # sudo-local VAR=val
                         -*)                      i=$((i+1)) ;;        # -n / -E / -H / -i / -s / ...
                         *)                       break ;;
