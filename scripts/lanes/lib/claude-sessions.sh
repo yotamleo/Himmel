@@ -11,11 +11,17 @@
 # Sourced, not run (house shape: see burn-weights.sh).
 #
 # Where /proc is absent (macOS, git-bash) there is no real-argv source to
-# read, so this falls back to the old flattened `pgrep -af` scan and prints a
-# leading "# lossy" comment line so callers can flag the degraded read.
-# CLAUDE_SESSIONS_PROC overrides the procfs root (default: /proc), same seam
-# shape as HEADED_ARM_PROC in headed-arm.sh; CLAUDE_SESSIONS_PGREP overrides
-# the pgrep binary, for hermetic PATH-stub tests.
+# read, so this falls back to `pgrep -x claude` (bare pids, comm-exact -- the
+# same flag the primary path above uses) plus `ps -o pid=,args= -p <pids>`
+# for each matched pid's full argv, and prints a leading "# lossy" comment
+# line so callers can flag the degraded read. #1335: the previous
+# fallback (`pgrep -af`) relied on GNU pgrep's `-a`, which prints the full
+# argument list -- BSD pgrep (macOS) defines `-a` as "include ancestors"
+# instead and never prints args at all, so the old awk filter matched
+# nothing and a live fleet silently read as empty. CLAUDE_SESSIONS_PROC
+# overrides the procfs root (default: /proc), same seam shape as
+# HEADED_ARM_PROC in headed-arm.sh; CLAUDE_SESSIONS_PGREP overrides the
+# pgrep binary, for hermetic PATH-stub tests.
 #
 # claude_sessions - prints one TAB-separated "pid<TAB>name<TAB>model<TAB>
 # autocompact" line per live claude session (a field is empty when the flag
@@ -39,8 +45,9 @@
 # alone (see ceiling-conformance.sh).
 #
 # Platform guard: no .ps1 twin, by design -- Linux-only when /proc exists;
-# the lossy fallback keeps the previous cross-platform pgrep -af behavior.
-# Bash 3.2-compatible: no mapfile, no associative arrays.
+# the lossy fallback (pgrep -x + ps -o pid=,args=) is the cross-platform
+# path, verified on both BSD (macOS) and GNU. Bash 3.2-compatible: no
+# mapfile, no associative arrays.
 
 _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <pid>
     # Reads NUL-delimited argv elements directly (`read -d ''`) rather than
@@ -195,21 +202,37 @@ _tsv_field() { # _tsv_field <value> - CR round 2 (codex-2, Suggestion): a
     printf '%s' "${v//$'\n'/ }"
 }
 
-_claude_sessions_lossy() { # _claude_sessions_lossy <pgrep-bin> - the old
-                            # pre-HIMMEL-2999 flattened-line scan, kept
-                            # verbatim as the no-/proc fallback. NOT in scope
-                            # for HIMMEL-3002: `pgrep -af` itself can't tell a
-                            # permission-denied process from a vanished one
-                            # either (a line it can't read just isn't in its
-                            # output), so this path has the same blind spot
-                            # the /proc reader used to have -- undetected here.
-    local pgrep_bin="$1" proc_out pg_rc
-    proc_out="$("$pgrep_bin" -af 'claude' 2>/dev/null)"
+_claude_sessions_lossy() { # _claude_sessions_lossy <pgrep-bin> - #1335:
+                            # the no-/proc fallback, made to work on BSD pgrep
+                            # (macOS) as well as GNU. `pgrep -x claude`
+                            # (comm-exact, the same flag the primary path
+                            # above uses) yields bare pids; `ps -o
+                            # pid=,args= -p <pids>` reads each one's full argv
+                            # -- the old `pgrep -af` relied on GNU's -a
+                            # ("print args"), which BSD pgrep defines as
+                            # "include ancestors" instead and never prints
+                            # args, so the fallback always found zero rows on
+                            # macOS regardless of how many sessions were live.
+                            # NOT in scope for HIMMEL-3002: this path can't
+                            # tell a permission-denied process from a vanished
+                            # one either (a pid ps can't read just isn't in
+                            # its output), the same blind spot the /proc
+                            # reader used to have -- undetected here.
+    local pgrep_bin="$1" pids pg_rc pidlist rows ps_rc
+    pids="$("$pgrep_bin" -x claude 2>/dev/null)"
     pg_rc=$?
     [ "$pg_rc" -gt 1 ] && return "$pg_rc"
     echo '# lossy'
-    printf '%s\n' "$proc_out" | awk '
-/claude / {
+    [ -n "$pids" ] || return 0
+    pidlist="$(printf '%s\n' "$pids" | tr '\n' ',' | sed 's/,$//')"
+    rows="$(ps -o pid=,args= -p "$pidlist" 2>/dev/null)"
+    ps_rc=$?
+    # rc>1 from ps mirrors the pgrep_bin convention above: a real scan
+    # failure, not just "every pid pgrep found had already exited before ps
+    # could read it" (BSD ps returns 1 with no rows for that race).
+    [ "$ps_rc" -gt 1 ] && return "$ps_rc"
+    printf '%s\n' "$rows" | awk '
+NF >= 1 {
     pid = $1; name = ""; model = ""; ceiling = ""
     for (i = 2; i <= NF; i++) {
         if ($i == "-n" && (i + 1) <= NF) name = $(i + 1)

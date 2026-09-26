@@ -5,9 +5,11 @@
 #
 # HIMMEL-2999: the primary-path scenarios below drive claude_sessions() via a
 # fake /proc root (CLAUDE_SESSIONS_PROC) with real NUL-separated
-# <pid>/cmdline files, not a flattened `pgrep -af` line. The ORIGINAL `pgrep
-# -af` stub is kept verbatim (see "lossy fallback" below) as the dedicated
-# regression test for the no-/proc degraded path.
+# <pid>/cmdline files, not a flattened `pgrep -af` line. The "lossy fallback"
+# scenario below is the dedicated regression test for the no-/proc degraded
+# path; #1335 reshaped its stubs to the real BSD binaries (`pgrep -x`
+# bare pids + `ps -o pid=,args=`), since the old GNU-only `pgrep -af` stub
+# masked the macOS bug it was supposed to catch.
 #
 # PLATFORM GUARD: no .ps1 twin, by design. The console kit is Linux-only
 # (pgrep, atq, /tmp suite locks, and claudex/konsole); this Bash 3.2 suite
@@ -365,22 +367,75 @@ contains 'a console doc name with no parseable letter reads nonces=unknown' "$(b
 
 rm -f "$W/handover/console.md" "$kdoc" "$aadoc"
 
-# HIMMEL-2999: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls back
-# to the old flattened `pgrep -af` parse, kept byte-identical, plus a
-# `(lossy)` suffix on models= flagging the degraded read.
+# #1335: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls
+# back to `pgrep -x claude` (bare pids) + `ps -o pid=,args= -p <pids>` (full
+# argv), the BSD-safe replacement for the old GNU-only `pgrep -af` scan. The
+# stubs are shaped like the REAL binaries -- pgrep prints only bare pids for
+# `-x claude` (BSD pgrep's `-a` means "include ancestors", not "print args",
+# so a stub (or a real macOS box) that still expected `-af` to hand back full
+# argv lines would silently produce zero rows here, exactly the reported
+# bug). A `(lossy)` suffix still flags the degraded read on models=.
 mkdir -p "$W/bin-lossy"
-cat > "$W/bin-lossy/pgrep" <<'STUB'
+mk_pgrep_x "$W/bin-lossy" 101 102 103
+cat > "$W/bin-lossy/ps" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' \
-  '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work' \
-  '102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work' \
-  '103 claude --model claude-sonnet-5 -n HIMMEL-next-console work'
+case "$*" in
+  "-o pid=,args= -p "*)
+    printf '%s\n' \
+      '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work' \
+      '102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work' \
+      '103 claude --model claude-sonnet-5 -n HIMMEL-next-console work'
+    ;;
+  *) exit 1 ;;
+esac
 STUB
-chmod +x "$W/bin-lossy/pgrep"
+chmod +x "$W/bin-lossy/ps"
 lossy_out="$(CLAUDE_SESSIONS_PROC="$W/no-such-proc" PATH="$W/bin-lossy:$PATH" bash "$SUT")"
 contains 'the /proc-absent fallback still counts the dispatched leg (HIMMEL-3145)' "$lossy_out" 'procs=1'
 contains 'the /proc-absent fallback flags the degraded read' "$lossy_out" 'models=sonnet:1(lossy)'
 contains 'the /proc-absent fallback still reports ceiling=ok' "$lossy_out" 'ceiling=ok'
+
+# #1335 (ticket cause a): a console managing a DIFFERENT repo exports
+# REPO as that repo's checkout -- tick.sh must still resolve
+# claude-sessions.sh from its OWN directory, not $REPO, or the source fails
+# (claude_sessions: command not found) and the census silently reads as a
+# scan failure on every repo but himmel's own. This fixture deliberately has
+# no scripts/lanes/lib/ at all.
+mkdir -p "$W/foreign-repo/scripts/handover" "$W/foreign-repo/scripts/lib" "$W/foreign-repo/scripts/lanes"
+cp "$W/repo/scripts/handover/queue-lock.sh" "$W/foreign-repo/scripts/handover/queue-lock.sh"
+cp "$W/repo/scripts/context-fill.sh" "$W/foreign-repo/scripts/context-fill.sh"
+cp "$W/repo/scripts/lanes/leg-burn.sh" "$W/foreign-repo/scripts/lanes/leg-burn.sh"
+cp "$W/repo/scripts/lib/bank-preflight.sh" "$W/foreign-repo/scripts/lib/bank-preflight.sh"
+foreign_out="$(REPO="$W/foreign-repo" PATH="$W/bin:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61')"
+contains 'a foreign REPO (no scripts/lanes/lib/) still counts a live leg (#1335)' "$foreign_out" 'procs=1'
+contains 'a foreign REPO still buckets its model' "$foreign_out" 'models=sonnet:1'
+case "$foreign_out" in
+    *procs=unknown*) fail 'a foreign REPO does not fall back to procs=unknown' ;;
+    *) pass 'a foreign REPO does not fall back to procs=unknown' ;;
+esac
+
+# #1335 (ticket cause c): with no --legs armed at all, a census that
+# cannot run (pgrep itself broken, not merely lossy) must not render the
+# same legs=none a genuinely healthy empty fleet gets -- there is no way to
+# back up "no legs" when the instrument that would have caught an unarmed
+# live leg cannot run in the first place.
+mkdir -p "$W/bin-nopgrep"
+cat > "$W/bin-nopgrep/pgrep" <<'STUB'
+#!/usr/bin/env bash
+exit 2
+STUB
+chmod +x "$W/bin-nopgrep/pgrep"
+unsupported_out="$(CLAUDE_SESSIONS_PROC="$W/no-such-proc" PATH="$W/bin-nopgrep:$PATH" bash "$SUT" --legs '')"
+contains 'no working census + no --legs reads legs=unsupported, not legs=none (#1335)' "$unsupported_out" 'legs=unsupported'
+case "$unsupported_out" in
+    *' legs=none '*) fail 'legs=none is not reused for an unsupported census' ;;
+    *) pass 'legs=none is not reused for an unsupported census' ;;
+esac
+
+# The healthy empty-fleet legs=none meaning is unchanged: no --legs, and the
+# census runs fine (finds nothing to contradict it).
+healthy_empty_out="$(bash "$SUT" --legs '')"
+contains 'a healthy, census-confirmed empty fleet still reads legs=none' "$healthy_empty_out" 'legs=none'
 
 # codex-2 (HIMMEL-2976 round 1 CR): a leg process matched by the leg filter
 # but with no --model token at all must still show up (an "unknown" bucket),
