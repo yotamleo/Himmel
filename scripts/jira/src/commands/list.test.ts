@@ -163,6 +163,7 @@ describe('list --labels display flag (HIMMEL-3610)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.JIRA_PROJECT_KEY = 'HIMMEL';
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
