@@ -1192,7 +1192,11 @@ _bwimc_ecwd_track() {
         cd|pushd)
             i=$((i+1))
             while [ "$i" -lt "$n" ]; do
-                case "$(_bwimc_unq "${toks[$i]}")" in -L|-P|-e|-@) i=$((i+1)) ;; *) break ;; esac
+                case "$(_bwimc_unq "${toks[$i]}")" in
+                    -L|-P|-e|-@) i=$((i+1)) ;;
+                    --) i=$((i+1)); break ;;
+                    *) break ;;
+                esac
             done
             if [ "$i" -ge "$n" ]; then
                 [ -n "${HOME:-}" ] && { _bwimc_ecwd="$HOME"; _bwimc_ecwd_unres=0; } || _bwimc_ecwd_unres=1
@@ -2327,7 +2331,11 @@ _bwimc_git_clause() {
         cd|pushd)
             i=$((i+1))
             while [ "$i" -lt "$n" ]; do
-                case "$(_bwimc_unq "${toks[$i]}")" in -L|-P|-e|-@) i=$((i+1)) ;; *) break ;; esac
+                case "$(_bwimc_unq "${toks[$i]}")" in
+                    -L|-P|-e|-@) i=$((i+1)) ;;
+                    --) i=$((i+1)); break ;;
+                    *) break ;;
+                esac
             done
             if [ "$i" -ge "$n" ]; then
                 [ -n "${HOME:-}" ] && { _bwimc_gcwd="$HOME"; _bwimc_gcwd_unres=0; } || _bwimc_gcwd_unres=1

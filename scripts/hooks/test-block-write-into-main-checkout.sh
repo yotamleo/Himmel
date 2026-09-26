@@ -2619,6 +2619,28 @@ check_both "29 bash -c 'cd primary; echo x > a.txt; cd wt' denies (codex-1 round
 check_both "29b bash -c 'cd wt; echo x > a.txt; cd wt' allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c 'cd $FIX/wt; echo x > a.txt; cd $FIX/wt'\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-3648 CR round 5 (codex-1 on 'cd --' handling) =="
+
+# 30 (codex-1, round 5): the cd/pushd flag-skip loop (both _bwimc_ecwd_track
+# and _bwimc_git_clause) recognized -L/-P/-e/-@ but not the POSIX option
+# terminator `--`. Given `cd -- <dir>`, the loop left its index pointing at
+# the `--` token itself, which was then misread as the cd TARGET (a relative
+# path fragment against the tracked cwd) — the real target after it was
+# never consumed, so the tracked cwd went stale and a later relative write
+# was checked against the wrong directory.
+check_both "30 cd -- primary; echo x > a.txt' denies (codex-1 round 5)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd -- $FIX/primary; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "30b cd -- wt; echo x > a.txt' allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd -- $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 30c/30d: the same `--` gap in _bwimc_git_clause (arm g's own cd tracking,
+# a separate code path from _bwimc_ecwd_track above) — direct top-level
+# `cd -- <dir> && git commit`, no bash -c wrapper.
+check_both "30c cd -- primary && git commit denies (codex-1 round 5, git-arm)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd -- $FIX/primary && git commit --allow-empty -m x\",\"cwd\":\"$FIX/wt\"}}"
+check_both "30d cd -- wt && git commit allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd -- $FIX/wt && git commit --allow-empty -m x\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
