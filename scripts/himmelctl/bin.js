@@ -4534,11 +4534,64 @@ function partitionOffboard(manifest) {
 // clone never touches those, and uninstall.sh names them as kept in its own
 // footer. The header below must not claim otherwise; it states what
 // uninstall.sh's machine-level steps do and where the rest stays.
+// HIMMEL-3589: the ids manifest.json prints for qmd (qmd-binary, qmd-index)
+// carry no path of their own — the resolved on-disk location only lives in
+// scripts/install/uninstall-manifest.tsv's one 'qmd'-surface row (qmd-fork:
+// the checkout + bun-global symlink + index collection both ids point at).
+// Reuses expandHome() for the {HOME} token, the same convention bin.js
+// already uses for a literal '~', instead of a second home-resolution
+// helper. Never throws: an unreadable tsv or no 'qmd' row -> null (caller
+// falls back to the bare id); a resolved path that doesn't exist -> size
+// 'absent'; any stat/readdir error walking the tree (permissions, races) ->
+// 'size unknown'. The walk never follows symlinks, so a symlink cycle inside
+// the tree cannot recurse forever.
+function qmdOffboardLocation() {
+  let resolved;
+  try {
+    const file = process.env.HIMMEL_UNINSTALL_MANIFEST
+      || path.join(repoRoot(), 'scripts', 'install', 'uninstall-manifest.tsv');
+    const row = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+      .find((line) => line && !line.startsWith('#') && line.split('\t')[2] === 'qmd');
+    if (!row) return null;
+    resolved = expandHome(row.split('\t')[5].replace('{HOME}', '~'));
+  } catch (e) {
+    return null;
+  }
+  let top;
+  try {
+    top = fs.lstatSync(resolved);
+  } catch (e) {
+    return { path: resolved, size: 'absent' };
+  }
+  const walk = (p, st) => {
+    if (st.isSymbolicLink()) return 0;
+    if (st.isFile()) return st.size;
+    if (!st.isDirectory()) return 0;
+    let total = 0;
+    for (const entry of fs.readdirSync(p)) {
+      const child = path.join(p, entry);
+      total += walk(child, fs.lstatSync(child));
+    }
+    return total;
+  };
+  try {
+    const bytes = walk(resolved, top);
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let n = bytes, u = 0;
+    while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+    return { path: resolved, size: `${u === 0 ? n : n.toFixed(1)} ${units[u]}` };
+  } catch (e) {
+    return { path: resolved, size: 'size unknown' };
+  }
+}
+
 function printOffboardPlan(unwireItems, adviseItems, keepItems) {
-  console.log(`himmel-owned wiring & repo-local artifacts (${unwireItems.length}) — uninstall.sh removes himmel's machine-level wiring (settings.json hooks/statusline, working-principles rule-file blocks, hud config, scheduled jobs, plugins, git hooks, telegram bridge); artifacts in this list that live in the himmel clone go away when the clone is deleted, but what adopt copied into a project-scope adopter's own repo (scripts/) and Claude's workspace-trust entry STAY until you remove them — uninstall.sh lists them under "NOT touched": ${unwireItems.map((i) => i.id).join(', ')}`);
+  const qmdLoc = qmdOffboardLocation();
+  const withLoc = (id) => (id.startsWith('qmd') && qmdLoc) ? `${id} (${qmdLoc.path}, ${qmdLoc.size})` : id;
+  console.log(`himmel-owned wiring & repo-local artifacts (${unwireItems.length}) — uninstall.sh removes himmel's machine-level wiring (settings.json hooks/statusline, working-principles rule-file blocks, hud config, scheduled jobs, plugins, git hooks, telegram bridge); artifacts in this list that live in the himmel clone go away when the clone is deleted, but what adopt copied into a project-scope adopter's own repo (scripts/) and Claude's workspace-trust entry STAY until you remove them — uninstall.sh lists them under "NOT touched": ${unwireItems.map((i) => withLoc(i.id)).join(', ')}`);
   console.log("Shared tools himmel installed or requires (NOT removed — remove any you don't use elsewhere):");
-  console.log(`  ${adviseItems.map((i) => i.id).join(', ')}`);
-  console.log(`left untouched (your data): ${keepItems.map((i) => i.id).join(', ')}`);
+  console.log(`  ${adviseItems.map((i) => withLoc(i.id)).join(', ')}`);
+  console.log(`left untouched (your data): ${keepItems.map((i) => withLoc(i.id)).join(', ')}`);
 }
 
 // Post-teardown completeness check (the manifest-driven "converge" value-
