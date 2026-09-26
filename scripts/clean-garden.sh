@@ -511,6 +511,32 @@ EOF
     echo "disposable"; return 0
 }
 
+# HIMMEL-3688 — a quarantined husk with no .git marker has no `git ls-files`
+# to ask, so the reap pass below skipped content inspection for it entirely
+# (unlike a git-marker husk, which re-runs stray_ignored_verdict above before
+# reap). This walks the husk's own files directly and reuses the same
+# disposable-class allowlist, so a no-.git husk is reaped only when it holds
+# nothing but known tool-churn (or nothing at all). Echoes one verdict (rc
+# always 0; a scan failure -> "scanfail"):
+#   disposable         empty, or every file is on the allowlist
+#   user-data <paths>  at least one file is NOT on the allowlist
+nongit_husk_reap_verdict() {
+    local dir="$1" out rel nonign=""
+    if ! out=$(find "$dir" -mindepth 1 -type f 2>/dev/null); then
+        echo "scanfail"; return 0
+    fi
+    if [ -z "$out" ]; then echo "disposable"; return 0; fi
+    while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        rel="${rel#"$dir"/}"
+        is_ignorable_ignored_stray "$rel" || nonign="${nonign:+$nonign }$rel"
+    done <<EOF
+$out
+EOF
+    if [ -n "$nonign" ]; then echo "user-data $nonign"; return 0; fi
+    echo "disposable"; return 0
+}
+
 # Classify a worktree's working-tree state for the merged-prune decision.
 # Echoes exactly one verdict token (rc always 0; git failures -> "scanfail"):
 #   scanfail            a git status/ls-files call failed
@@ -1235,7 +1261,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
         STRAY_FAILED=0
         STRAY_REFUSED=0
         STRAY_RECLAIMED_KIB=0
-        while IFS= read -r stray_dir; do
+        while IFS= read -r -d '' stray_dir; do
             [ -n "$stray_dir" ] || continue
             stray_norm=$(cd "$stray_dir" 2>/dev/null && pwd || echo "$stray_dir")
             if [ "$stray_norm" = "$PRIMARY_WORKTREE" ]; then
@@ -1378,7 +1404,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 esac
             fi
 
-            stray_kib=$(du -sk "$stray_dir" 2>/dev/null | awk '{ print $1 }') || stray_kib=0
+            stray_kib=$(du -sk "$stray_dir" 2>/dev/null | awk 'NR==1{ print $1 }') || stray_kib=0
             stray_kib=${stray_kib:-0}
 
             if [ "$DRY_RUN" -eq 1 ]; then
@@ -1427,7 +1453,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 note_stuck "$stray_dir" "stray husk sweep failed (quarantine move did not complete)"
                 STRAY_FAILED=$((STRAY_FAILED+1))
             fi
-        done < <(find "$STRAY_HOME" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+        done < <(find "$STRAY_HOME" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
         if [ "$STRAY_FOUND" -gt 0 ]; then
             STRAY_SIZE=$(human_kib "$STRAY_RECLAIMED_KIB")
             echo "clean-garden: stray-sweep — $STRAY_SWEPT swept, $STRAY_FAILED failed, $STRAY_REFUSED refused ($STRAY_SIZE reclaimed)"
@@ -1446,7 +1472,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
     # real user data) is left in quarantine rather than guessed away.
     if [ -d "$STRAY_QUARANTINE_DIR" ]; then
         QUAR_REAPED=0
-        while IFS= read -r quar_dir; do
+        while IFS= read -r -d '' quar_dir; do
             [ -n "$quar_dir" ] || continue
             quar_sidecar="$quar_dir.himmel-quarantined-at"
             if [ ! -f "$quar_sidecar" ]; then
@@ -1476,6 +1502,21 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                             esac
                             ;;
                         *) continue ;;
+                    esac
+                else
+                    quar_nongit=$(nongit_husk_reap_verdict "$quar_dir") || quar_nongit="scanfail"
+                    case "$quar_nongit" in
+                        disposable) : ;;
+                        scanfail)
+                            echo "WARN clean-garden: quarantined no-.git husk's content scan could not be completed — refusing to reap, keeping in quarantine $quar_dir (inspect by hand, then rm -rf it yourself once satisfied)" >&2
+                            note_stuck "$quar_dir" "quarantined no-.git husk refused: content scan failed"
+                            continue
+                            ;;
+                        "user-data "*)
+                            echo "WARN clean-garden: quarantined no-.git husk has content that is not a known disposable class (${quar_nongit#user-data }) — refusing to reap, keeping in quarantine $quar_dir" >&2
+                            note_stuck "$quar_dir" "quarantined no-.git husk refused: real content present"
+                            continue
+                            ;;
                     esac
                 fi
             else
@@ -1510,7 +1551,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             else
                 echo "WARN clean-garden: failed to delete quarantined stray husk $quar_dir" >&2
             fi
-        done < <(find "$STRAY_QUARANTINE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+        done < <(find "$STRAY_QUARANTINE_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
         if [ "$QUAR_REAPED" -gt 0 ]; then
             echo "clean-garden: stray-quarantine — $QUAR_REAPED reaped"
         fi
