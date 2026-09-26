@@ -1093,7 +1093,7 @@ _report_leftover_scratches() {
 # GRAPHIFY_OUT marker-file check above).
 _prune_graphify_backups() {
   local out="$1" keep="${GRAPHIFY_BACKUP_KEEP:-3}"
-  local entry name pruned=0 total drop idx=0
+  local entry name pruned=0 total=0 drop idx=0
   local -a dirs=() sorted=()
   # codex-1: a digit-only value longer than 4 digits (e.g. a fat-fingered
   # 99999999999999999999) overflows bash's 64-bit `[ -gt ]` integer test below
@@ -1126,10 +1126,17 @@ _prune_graphify_backups() {
         [ -L "$entry" ] && continue
         [ -d "$entry" ] || continue
         dirs+=("$name")
+        total=$((total + 1))
         ;;
     esac
   done
-  total="${#dirs[@]}"
+  # codex-1 (round 2): a plain counter, not `${#dirs[@]}` -- on bash <4.4
+  # (macOS's stock 3.2, still in the wild) expanding an EMPTY array under
+  # `set -u` can raise "unbound variable" and abort the whole refresh when an
+  # out dir simply has no dated backups yet (the common case on a first
+  # promote). The `-gt` check below still runs BEFORE any "${dirs[@]}"/
+  # "${sorted[@]}" expansion, so those arrays are only ever expanded once
+  # $total is known to be > $keep (i.e. non-empty).
   [ "$total" -gt "$keep" ] || return 0
   while IFS= read -r name; do
     sorted+=("$name")

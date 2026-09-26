@@ -223,5 +223,25 @@ done
 [ "$n9" -eq 9 ] && pass "T9 all 9 backups survive ('010' read as decimal 10, not octal 8)" \
   || fail "T9 expected all 9 to survive under keep=10, only $n9 did (leading zero misread as octal?)"
 
+# --- T10: codex-1 (round 2) -- an out dir with only cache/ and a non-date
+# dir (NO dated backups at all) is a clean no-op: return 0, print nothing,
+# touch nothing. This is exactly the shape (dirs=() stays empty) that could
+# raise "unbound variable" on bash <4.4 (e.g. macOS's stock 3.2) expanding an
+# EMPTY array under `set -u`, silently aborting the whole refresh -- this
+# suite already runs under `set -u` (see top of file), and the call below
+# additionally runs in its own subshell under `set -euo pipefail` so it
+# would ABORT here, loudly (non-zero rc10, non-empty err10), if that
+# regression were ever reintroduced. ---
+echo "T10: an out dir with no dated backups at all is a clean no-op"
+OUT10="$WS/t10/graphify-out"; mkdir -p "$OUT10/cache" "$OUT10/wiki"
+printf 'x' > "$OUT10/cache/semantic.bin"
+err10="$( ( set -euo pipefail; unset GRAPHIFY_BACKUP_KEEP; _prune_graphify_backups "$OUT10" ) 2>&1 1>/dev/null )"; rc10=$?
+[ "$rc10" -eq 0 ] && pass "T10 returns 0 with zero dated backups (no unbound-variable abort)" \
+  || fail "T10 should return 0 with zero dated backups (got rc=$rc10): $err10"
+[ -z "$err10" ] && pass "T10 prints nothing to stderr" || fail "T10 should print nothing to stderr: $err10"
+[ -d "$OUT10/cache" ] && [ -f "$OUT10/cache/semantic.bin" ] && pass "T10 cache/ untouched" \
+  || fail "T10 cache/ should be untouched"
+[ -d "$OUT10/wiki" ] && pass "T10 non-date dir untouched" || fail "T10 wiki/ should be untouched"
+
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"
