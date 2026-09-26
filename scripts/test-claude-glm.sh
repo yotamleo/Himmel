@@ -199,6 +199,23 @@ t "explicit reseed wins over opt-out" 0 --reseed
 unset CLAUDE_LANE_AUTO_RESEED
 grep -q "tamper2" "$FAKEHOME/.claude-glm/settings.json" && { echo "FAIL: --reseed under opt-out did not reseed"; FAILS=$((FAILS+1)); }
 
+# --- T7h (HIMMEL-3334 F2): the un-swept claude-hud.json path (new, alongside
+# the legacy plugins/claude-hud/config.json) is seeded, staleness-tracked and
+# mirror-deleted too — a lane must not lose the HUD after an operator's box
+# has migrated off the legacy path.
+setup; KEY="zai-test-123"
+printf '{"display":{"customLineCommand":"new-path"}}\n' > "$FAKEHOME/.claude/claude-hud.json"
+t "seed mirrors the new hud path" 0
+[ -f "$FAKEHOME/.claude-glm/claude-hud.json" ] || { echo "FAIL: claude-hud.json (new path) not seeded"; FAILS=$((FAILS+1)); }
+grep -q "new-path" "$FAKEHOME/.claude-glm/claude-hud.json" || { echo "FAIL: seeded claude-hud.json content mismatch"; FAILS=$((FAILS+1)); }
+touch -t 202001010000 "$FAKEHOME/.claude-glm/.seeded"
+printf '{"display":{"customLineCommand":"new-path-updated"}}\n' > "$FAKEHOME/.claude/claude-hud.json"
+t "new hud path staleness triggers reseed" 0
+grep -q "new-path-updated" "$FAKEHOME/.claude-glm/claude-hud.json" || { echo "FAIL: new-path hud change did not trigger reseed"; FAILS=$((FAILS+1)); }
+rm -f "$FAKEHOME/.claude/claude-hud.json"
+t "deleted new-path hud source mirrors removal" 0
+[ ! -f "$FAKEHOME/.claude-glm/claude-hud.json" ] || { echo "FAIL: stale claude-hud.json (new path) survived source deletion"; FAILS=$((FAILS+1)); }
+
 # --- T8: .salus marker -> refuse exit 3, --force does NOT override
 setup; KEY="zai-test-123"; touch "$WORK/.salus"
 t "salus refuses" 3

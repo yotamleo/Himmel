@@ -463,4 +463,33 @@ set -e
 [ "$rcW" -eq 1 ] || fail "case w: a malformed provenance on an advise item should still exit 1 (got rc=$rcW): $errW"
 echo "ok: case w — provenance is shape-checked wherever it appears"
 
+# ── case x (HIMMEL-3334): probe type 'settings-key' field 'verifyHudConfig'
+# shape — non-boolean -> exit 1; paired with 'keys' -> exit 1 (same key XOR
+# keys constraint as verifyPluginSet/verifyScript) ─────────────────────────
+caseX_bool="$work/case-x-bool.json"
+mutate_base "$caseX_bool" "m.items[0].probe = { type: 'settings-key', file: '.claude/settings.json', key: 'A', verifyHudConfig: 'yes' };"
+set +e
+errX1=$(run_lint "$caseX_bool" 2>&1); rcX1=$?
+set -e
+[ "$rcX1" -eq 1 ] || fail "case x: a non-boolean verifyHudConfig should exit 1 (got rc=$rcX1): $errX1"
+grepq "$errX1" -F "'verifyHudConfig', when present, must be a boolean" || fail "case x: error should name the boolean requirement (got: $errX1)"
+echo "ok: case x (part 1) — a non-boolean verifyHudConfig exits 1"
+
+caseX_keys="$work/case-x-keys.json"
+mutate_base "$caseX_keys" "m.items[0].probe = { type: 'settings-key', file: '.claude/settings.json', keys: ['A', 'B'], verifyHudConfig: true };"
+set +e
+errX2=$(run_lint "$caseX_keys" 2>&1); rcX2=$?
+set -e
+[ "$rcX2" -eq 1 ] || fail "case x: verifyHudConfig paired with 'keys' should exit 1 (got rc=$rcX2): $errX2"
+grepq "$errX2" -F "'verifyHudConfig' requires singular 'key', not 'keys'" || fail "case x: error should name the key XOR keys requirement (got: $errX2)"
+echo "ok: case x (part 2) — verifyHudConfig paired with 'keys' exits 1"
+
+caseX_valid="$work/case-x-valid.json"
+mutate_base "$caseX_valid" "m.items[0].probe = { type: 'settings-key', file: '.claude/settings.json', key: 'A', expect: true, verifyHudConfig: true };"
+set +e
+errX3=$(run_lint "$caseX_valid" 2>&1); rcX3=$?
+set -e
+[ "$rcX3" -eq 0 ] || fail "case x: a valid boolean verifyHudConfig with a singular 'key' should lint clean (got rc=$rcX3): $errX3"
+echo "ok: case x (part 3) — a valid verifyHudConfig probe lints clean"
+
 echo "PASS"

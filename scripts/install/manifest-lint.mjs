@@ -65,7 +65,11 @@
 //                     | proof it matches docs/setup/settings-template.json's
 //                     | recorded set or that those plugins are actually
 //                     | installed per ~/.claude/plugins/installed_plugins.json;
-//                     | any gap downgrades to 'degraded')
+//                     | any gap downgrades to 'degraded') OPTIONAL
+//                     | verifyHudConfig: boolean (HIMMEL-3334 — a statusLine
+//                     | command wired to claude-hud isn't proof its config
+//                     | file exists or carries display.customLineCommand;
+//                     | any gap downgrades to 'degraded', never 'absent'/n-a)
 //   settings-hooks    | file: string; key: string
 //   cmd:has_qmd       | resolver: string
 //   qmd-index         | collections: non-empty string[]
@@ -368,7 +372,18 @@ function checkProbeShape(probe, label, errors) {
           errors.push(`${label}: probe type 'settings-key' field 'verifyPluginSet' requires singular 'key', not 'keys'`);
         }
       }
-      reportExtra(['file', 'key', 'keys', 'expect', 'verifyScript', 'verifyPluginSet']);
+      // HIMMEL-3334: same opt-in deepening shape — an absent/invalid hud
+      // config on a claude-hud-wired statusLine degrades rather than reading
+      // 'present' from the command string alone.
+      if (Object.prototype.hasOwnProperty.call(probe, 'verifyHudConfig')) {
+        if (typeof probe.verifyHudConfig !== 'boolean') {
+          errors.push(`${label}: probe type 'settings-key' field 'verifyHudConfig', when present, must be a boolean`);
+        }
+        if (hasKeys) {
+          errors.push(`${label}: probe type 'settings-key' field 'verifyHudConfig' requires singular 'key', not 'keys'`);
+        }
+      }
+      reportExtra(['file', 'key', 'keys', 'expect', 'verifyScript', 'verifyPluginSet', 'verifyHudConfig']);
       break;
     }
     case 'settings-hooks': {

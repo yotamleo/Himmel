@@ -12,9 +12,16 @@
 #        command: 'node "<himmel>/marketplace/plugins/claude-hud/dist/index.js"' }
 #   2. .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"  (merged, other env keys preserved)
 #   3. Drops the hud config (himmel-config.json with <himmel-path> substituted)
-#      to ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json --
-#      the config dir, always, never the settings file's own directory
-#      (HIMMEL-2892: it is per-user config, not per-project).
+#      to ${CLAUDE_CONFIG_DIR:-~/.claude}/claude-hud.json -- the hud's own
+#      override path (marketplace/plugins/claude-hud/src/config.ts's
+#      getConfigOverridePath, deep-merged over the base config), a sibling of
+#      the swept plugins/ dir rather than a file inside it (HIMMEL-3334: the
+#      plugin-manager's reaper sweeps plugins/, silently dropping a config
+#      parked at the old plugins/claude-hud/config.json path). The config dir,
+#      always, never the settings file's own directory (HIMMEL-2892: it is
+#      per-user config, not per-project). A pre-HIMMEL-3334 install's old
+#      config.json is migrated: read as the previous value if the new path
+#      has none yet, and removed once the new path is published.
 #   4. Drops the hud's RUNTIME cache state in that same dir whenever the wiring
 #      actually CHANGED (HIMMEL-3065) -- see Remove-HimmelHudCacheState.
 # Idempotent, atomic (temp + move), non-destructive (other keys preserved;
@@ -114,10 +121,20 @@ function Set-HimmelStatusLine {
         # the settings path -- see (3) below. Resolved up here because both
         # halves of the changed-wiring test in (4) are read BEFORE the write.
         $hudDir = Join-Path (Get-ClaudeConfigDir) 'plugins/claude-hud'
-        $hudConfigPath = Join-Path $hudDir 'config.json'
+        $hudOldConfigPath = Join-Path $hudDir 'config.json'
+        # HIMMEL-3334: the config now lives at the hud's own override path (a
+        # sibling of plugins/, never swept by the plugin-manager reaper),
+        # never the old plugins/claude-hud/config.json.
+        $hudConfigPath = Join-Path (Get-ClaudeConfigDir) 'claude-hud.json'
         # [string] cast: Get-Content -Raw returns $null for a 0-byte file, and
-        # $null.TrimEnd() would throw in the comparison below.
-        $prevHudCfg = if (Test-Path $hudConfigPath) { [string](Get-Content $hudConfigPath -Raw) } else { '' }
+        # $null.TrimEnd() would throw in the comparison below. A pre-existing
+        # new-path config wins; otherwise fall back to a pre-HIMMEL-3334 old
+        # config so an un-migrated install's econ prefix still carries forward.
+        $prevHudCfg = if (Test-Path $hudConfigPath) {
+            [string](Get-Content $hudConfigPath -Raw)
+        } elseif (Test-Path $hudOldConfigPath) {
+            [string](Get-Content $hudOldConfigPath -Raw)
+        } else { '' }
 
         # HIMMEL-3157: an operator suppressing the HUD economics rows prefixes
         # .display.customLineCommand with an env var, e.g.
@@ -204,7 +221,7 @@ function Set-HimmelStatusLine {
         $hudCfg = ''
         $hudTmp = ''
         if (Test-Path $hudSrc) {
-            New-Item -ItemType Directory -Force $hudDir | Out-Null
+            New-Item -ItemType Directory -Force (Get-ClaudeConfigDir) | Out-Null
             $hudCfg = (Get-Content $hudSrc -Raw).Replace('<himmel-path>', $himmelFwd).Replace("`r`n", "`n")
             # Carry the operator's HIMMEL_STATUSLINE_ECON prefix forward onto
             # the freshly substituted command, before the JSON validation
@@ -228,9 +245,10 @@ function Set-HimmelStatusLine {
                     # (or the source config being malformed) surfaces it.
                 }
             }
-            # Staged as a DOTFILE so the purge below (which runs before
-            # anything is published) skips it — see the bash twin's comment.
-            $hudTmp = Join-Path $hudDir '.config.json.tmp'
+            # Staged beside the destination (not under $hudDir, which the
+            # purge below may empty of everything but config.json — a name
+            # that no longer exists at the new path).
+            $hudTmp = "$hudConfigPath.tmp"
             # UTF-8 without BOM; single trailing LF (matches the bash twin's printf).
             [System.IO.File]::WriteAllText($hudTmp, $hudCfg.TrimEnd("`n") + "`n")
             # Validate the substituted config is still JSON before publishing it — a
@@ -296,6 +314,29 @@ function Set-HimmelStatusLine {
         # twin's (4) for the full reasoning.
         if ($hudTmp -and (Test-Path $hudTmp)) {
             Move-Item -Path $hudTmp -Destination $hudConfigPath -Force -ErrorAction Stop
+            # HIMMEL-3334 migration: the new config just published supersedes
+            # a pre-HIMMEL-3334 config left in the swept plugin dir -- drop it,
+            # but only when its customLineCommand matches himmel's own shape
+            # (the same check unwire-hud-config.sh uses on the bash side), so
+            # a file an operator or another tool left at that exact path is
+            # never silently destroyed. Best-effort: a failed removal is not
+            # fatal (the new, un-swept config is already live and takes
+            # precedence).
+            if (Test-Path $hudOldConfigPath) {
+                $hudOldIsHimmels = $false
+                try {
+                    $hudOldJson = Get-Content $hudOldConfigPath -Raw | ConvertFrom-Json
+                    $hudOldLineCmd = $hudOldJson.display.customLineCommand
+                    if ($hudOldLineCmd -and $hudOldLineCmd -match '^(HIMMEL_STATUSLINE_ECON=[A-Za-z0-9]+ )?bash "[^"]*/scripts/statusline/hud-custom-lines\.sh"$') {
+                        $hudOldIsHimmels = $true
+                    }
+                } catch {
+                    $hudOldIsHimmels = $false
+                }
+                if ($hudOldIsHimmels) {
+                    Remove-Item -LiteralPath $hudOldConfigPath -Force -ErrorAction SilentlyContinue
+                }
+            }
         }
         Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force -ErrorAction Stop
         Write-Host "  wired statusLine → $SettingsPath"

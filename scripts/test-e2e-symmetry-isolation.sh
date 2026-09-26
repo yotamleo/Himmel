@@ -34,20 +34,23 @@ mkdir -p "$td/cwd"
 # shellcheck source=lib/user-claude-md.sh
 . "$lib/user-claude-md.sh"
 seed_home() {
-  mkdir -p "$1/.claude/plugins/claude-hud" "$1/.codex"
+  mkdir -p "$1/.claude" "$1/.codex"
   printf 'my own rules\n' > "$1/.claude/CLAUDE.md"
   wire_user_claude_md "$repo_root/docs/setup/user-scope-claude-md-template.md" "$1/.claude/CLAUDE.md" >/dev/null
   wire_user_claude_md "$repo_root/docs/setup/user-scope-claude-md-template.md" "$1/.codex/AGENTS.md" >/dev/null
+  # HIMMEL-3334: the real writer (wire-statusline.sh) now drops this at
+  # claude-hud.json, a sibling of plugins/ never swept by Claude Code's
+  # plugin-manager reaper -- the shape this fixture models is that path.
   sed 's#<himmel-path>#/fixture/himmel#g' "$repo_root/marketplace/plugins/claude-hud/config/himmel-config.json" \
-    > "$1/.claude/plugins/claude-hud/config.json"
+    > "$1/.claude/claude-hud.json"
 }
 
 opshome="$td/opshome"
 seed_home "$opshome"
 mkdir -p "$td/before"
-cp "$opshome/.claude/CLAUDE.md"                      "$td/before/CLAUDE.md"
-cp "$opshome/.codex/AGENTS.md"                       "$td/before/AGENTS.md"
-cp "$opshome/.claude/plugins/claude-hud/config.json" "$td/before/hud-config.json"
+cp "$opshome/.claude/CLAUDE.md"        "$td/before/CLAUDE.md"
+cp "$opshome/.codex/AGENTS.md"         "$td/before/AGENTS.md"
+cp "$opshome/.claude/claude-hud.json"  "$td/before/hud-config.json"
 
 # The scratch HOME is the ONLY home the e2e suite is ever handed. Refuse to go on
 # if it somehow is the real one: this suite exists to prevent that run.
@@ -74,7 +77,7 @@ printf '%s\n' "$ctl_out" | grep -q '\[6/8\] Unwiring' && check "control: [6/8] r
 # it with a hand command instead of stripping it unconditionally like before
 # S6; assert the new (kept) behaviour, and that it fired on purpose rather
 # than vacuously (the hand-command line actually printed).
-check "control: hud config kept (no ledger)" "$([ -e "$ctl/.claude/plugins/claude-hud/config.json" ] && echo present || echo gone)" "present"
+check "control: hud config kept (no ledger)" "$([ -e "$ctl/.claude/claude-hud.json" ] && echo present || echo gone)" "present"
 printf '%s\n' "$ctl_out" | grep -q 'kept (no ledger).*unwire-hud-config\.sh' && check "control: hud config hand-command printed" yes yes || check "control: hud config hand-command printed" no yes
 check "control: AGENTS.md (block only) removed from the fixture" "$([ -e "$ctl/.codex/AGENTS.md" ] && echo present || echo gone)" "gone"
 check "control: CLAUDE.md block stripped, operator text kept"    "$(cat "$ctl/.claude/CLAUDE.md" 2>/dev/null)" "my own rules"
@@ -90,7 +93,7 @@ printf '%s\n' "$suite_out" | grep -q '^ok - uninstall: \[6/8\] ran' && check "e2
 # not stripped -- the renamed RED1 check is this suite's unwire assertion now.
 printf '%s\n' "$suite_out" | grep -q '^ok - RED1 uninstall: user statusLine byte-identical after round trip' && check "e2e suite still asserts the unwire" yes yes || check "e2e suite still asserts the unwire" no yes
 
-same "hud config (~/.claude/plugins/claude-hud/config.json) survived" "$td/before/hud-config.json" "$opshome/.claude/plugins/claude-hud/config.json"
+same "hud config (~/.claude/claude-hud.json) survived" "$td/before/hud-config.json" "$opshome/.claude/claude-hud.json"
 same "user CLAUDE.md (~/.claude/CLAUDE.md) survived"                  "$td/before/CLAUDE.md"       "$opshome/.claude/CLAUDE.md"
 same "Codex AGENTS.md (~/.codex/AGENTS.md) survived"                  "$td/before/AGENTS.md"       "$opshome/.codex/AGENTS.md"
 

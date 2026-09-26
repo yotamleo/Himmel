@@ -475,6 +475,85 @@ function verifyStatusLineCommand(command, ctx) {
   return problems.length > 0 ? problems.join('; ') : null;
 }
 
+// ── settings-key deepening: verifyHudConfig (wiring-statusline, HIMMEL-3334) ─
+
+// The statusLine command alone says nothing about whether the hud's OWN
+// config exists — wire-statusline.sh drops it as a separate file, at
+// ${CLAUDE_CONFIG_DIR:-~/.claude}/claude-hud.json (the hud's own upstream
+// override path; a pre-HIMMEL-3334 install may still have it at the old,
+// swept ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json).
+// Mirrors getClaudeConfigDir() in marketplace/plugins/claude-hud/src/
+// claude-config-dir.ts and scripts/lib/claude-config-dir.sh's
+// claude_config_dir(): CLAUDE_CONFIG_DIR wins, TRIMMED, `~` expanded;
+// otherwise <home>/.claude.
+function getClaudeConfigDirForHud(ctx) {
+  const home = (ctx.env && ctx.env.HOME) || os.homedir();
+  const envVal = ctx.env && typeof ctx.env.CLAUDE_CONFIG_DIR === 'string' ? ctx.env.CLAUDE_CONFIG_DIR.trim() : '';
+  if (!envVal) return path.join(home, '.claude');
+  if (envVal === '~') return home;
+  if (envVal.startsWith('~/')) return path.join(home, envVal.slice(2));
+  return path.resolve(envVal);
+}
+
+// Only the `node "<...>/marketplace/plugins/claude-hud/dist/index.js"` shape
+// (the guarded form is already reduced to this by verifyStatusLineCommand's
+// caller before this runs) is "wired to claude-hud" — the vendored bash
+// fallback bar has no config file to check, so it is left alone rather than
+// flagged absent.
+function isHudRendererScript(scriptPath) {
+  return typeof scriptPath === 'string'
+    && /(^|[\\/])marketplace[\\/]plugins[\\/]claude-hud[\\/]dist[\\/]index\.js$/.test(scriptPath);
+}
+
+// A candidate that EXISTS but fails to parse is the active config, broken —
+// never silently skipped in favor of the next candidate (HIMMEL-3334
+// codex-1: that used to mask a malformed new-path config behind a healthy
+// legacy one). Only an absent file (ENOENT) falls through.
+function readHudConfig(ctx) {
+  const dir = getClaudeConfigDirForHud(ctx);
+  const candidates = [path.join(dir, 'claude-hud.json'), path.join(dir, 'plugins', 'claude-hud', 'config.json')];
+  for (const p of candidates) {
+    let raw;
+    try {
+      raw = fs.readFileSync(p, 'utf8');
+    } catch (e) {
+      if (e && e.code === 'ENOENT') continue;
+      return { path: p, data: null };
+    }
+    try {
+      return { path: p, data: JSON.parse(raw) };
+    } catch (_e) {
+      return { path: p, data: null };
+    }
+  }
+  return null;
+}
+
+// HIMMEL-3307: a hud-wired statusLine with no config, or a config missing
+// display.customLineCommand, is never a clean "n/a" — the wiring itself says
+// it should be there. Returns a problem string (→ degraded), or null when
+// the command isn't wired to claude-hud at all (nothing to check) or the
+// config checks out.
+function verifyHudConfig(command, ctx) {
+  if (typeof command !== 'string') return null;
+  const g = command.trim().match(STATUSLINE_GUARDED_RE);
+  const normalized = g && g[1] === g[3] ? `${g[2]} "${g[3]}"` : command;
+  const m = normalized.trim().match(STATUSLINE_COMMAND_RE);
+  if (!m) return null;
+  const scriptPath = m[2];
+  const resolved = path.isAbsolute(scriptPath) ? scriptPath : path.resolve(ctx.repoRoot, scriptPath);
+  if (!isHudRendererScript(resolved)) return null;
+  const found = readHudConfig(ctx);
+  if (!found) {
+    return `hud config missing at ${path.join(getClaudeConfigDirForHud(ctx), 'claude-hud.json')}`;
+  }
+  const lineCmd = found.data && found.data.display && found.data.display.customLineCommand;
+  if (typeof lineCmd !== 'string' || lineCmd.trim() === '') {
+    return `hud config at ${found.path} has no display.customLineCommand`;
+  }
+  return null;
+}
+
 // ── settings-key deepening: verifyPluginSet (claude-plugins-pluginSet) ───
 
 // A project path can arrive spelled two ways for the same install: with or
@@ -634,6 +713,10 @@ function probeSettingsKey(item, ctx) {
       const result = verifyPluginSet(getVal(item.probe.key), ctx);
       if (result.problem) return { actual: 'degraded', detail: `${filePath}: ${result.problem}` };
       if (result.note) return { actual: 'present', detail: `${filePath} (${result.note})` };
+    }
+    if (item.probe.verifyHudConfig) {
+      const problem = verifyHudConfig(getVal(item.probe.key), ctx);
+      if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
     }
     return { actual: 'present', detail: filePath };
   }

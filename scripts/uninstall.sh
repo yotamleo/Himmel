@@ -2915,6 +2915,13 @@ EOF
       _mask_sl=1
     fi
   fi
+  # HIMMEL-3334 codex-1: exported so unwire_user_files can tell whether the
+  # statusLine THIS CALL just governed will actually survive, without
+  # re-reading $settings -- which under DRY_RUN is never mutated and would
+  # otherwise always read as "still wired" regardless of what a wet run
+  # would really do (ledger-owned strip included). Every path through this
+  # function reaches here with _mask_sl at its final value.
+  _UNWIRE_SETTINGS_SL_MASKED="$_mask_sl"
   if [ "$LEDGER_OK" -ne 1 ] || [ "$_seen_hd" -eq 0 ]; then
     _kept_as="no ledger"; [ "$LEDGER_OK" -eq 1 ] && _kept_as="not in ledger"
     if jq -e '((.env.HANDOVER_DIR? // "") | length) > 0' "$settings" >/dev/null 2>&1; then
@@ -3129,7 +3136,8 @@ EOF
 # ledger-or-kept fallback -- so the computation is dropped as an orphan of
 # that fix rather than left unused.
 unwire_user_files() {
-  local _ix _p _dry=0 _probe_rc _hud_units _hu _fc_args _block_unit _fc _trust_units _tu
+  local _ix _p _dry=0 _probe_rc _hud_units _hu _hud_legacy _hud_sl_still_wired _fc_args _block_unit _fc _trust_units _tu
+  local _hud_legacy_unit _hud_legacy_backup _hud_legacy_args
   [ "$DRY_RUN" -eq 1 ] && _dry=1
   for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud" "$_ix_trust"; do
     # A failure on one file halts the step: never edit the next file after it.
@@ -3140,6 +3148,73 @@ unwire_user_files() {
       continue
     fi
     if [ "$_ix" = "$_ix_hud" ]; then
+      # HIMMEL-3334: $_p is the NEW un-swept path; a box upgraded but not yet
+      # re-wired since this fix may still have a pre-HIMMEL-3334 config at the
+      # OLD swept plugins/ path, with no ledger entry under $_p to key on (the
+      # ledger only ever recorded whichever path was live at write time). Run
+      # this FIRST, before either ledger branch below can `continue` past it.
+      # Best effort, ledger-independent: unwire_hud_config's own safety check
+      # (the customLineCommand pattern match) is what makes this safe
+      # unconditionally, same as wire-statusline.sh's own migration cleanup —
+      # EXCEPT when unwire_settings just KEPT (no-ledger) a statusLine still
+      # wired to the hud renderer (codex-1): on a box not yet re-wired since
+      # HIMMEL-3334, the legacy path IS the config that still-active statusLine
+      # reads, so deleting it here would break a HUD uninstall just reported
+      # as left working. Kept, same as the new-path config's own no-ledger row.
+      # codex-1 round 2: prefer unwire_settings's own verdict for THIS run
+      # (_UNWIRE_SETTINGS_SL_MASKED, set right after it decides the
+      # statusLine's fate) over re-reading $USER_SETTINGS -- under DRY_RUN the
+      # file is never mutated, so a raw re-read would always say "still
+      # wired" even when a wet run's ledger-owned strip would actually remove
+      # it, mismatching the dry-run preview against real behaviour. Fall back
+      # to the file read only when unwire_settings was never called for this
+      # run (--skip-settings, a kept manifest class, or no file at all) --
+      # none of those touch the file either, so reading it is accurate there.
+      _hud_sl_still_wired=0
+      if [ -n "$_UNWIRE_SETTINGS_SL_MASKED" ]; then
+        _hud_sl_still_wired="$_UNWIRE_SETTINGS_SL_MASKED"
+      elif [ -n "$HIMMEL_SL_PAT" ] && [ -f "$USER_SETTINGS" ] && jq -e --arg sl "$HIMMEL_SL_PAT" \
+          '((.statusLine.command? // "") | test($sl))' "$USER_SETTINGS" >/dev/null 2>&1; then
+        _hud_sl_still_wired=1
+      fi
+      _hud_legacy="${_p%/*}/plugins/claude-hud/config.json"
+      if [ "$_hud_sl_still_wired" -eq 1 ] && [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ]; then
+        echo "  kept (statusLine still wired): $_hud_legacy — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_hud_legacy"
+      elif [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ] && command -v jq >/dev/null 2>&1; then
+        # HIMMEL-3334: unwire-hud-config.sh sets `set -euo pipefail` when
+        # sourced, so it is sourced in a subshell (same pattern as the
+        # HIMMEL-3058 comment below) to avoid leaking strict-mode into this
+        # script's own shell.
+        # shellcheck source=lib/unwire-hud-config.sh
+        ( . "$SCRIPT_DIR/lib/unwire-hud-config.sh"; unwire_hud_config "$_hud_legacy" "$_dry" ) || true
+      elif [ "$_hud_legacy" != "$_p" ] && [ ! -e "$_hud_legacy" ] && [ "$LEDGER_OK" -eq 1 ] && command -v jq >/dev/null 2>&1; then
+        # HIMMEL-3334 F1 (judge J1269O verdict): a re-wire on THIS box already
+        # migrated the legacy path away (wire-statusline.sh's own migration
+        # `rm -f`s it once the new path is live, with no provenance record of
+        # its own) -- so the file is gone before this branch ever runs, and
+        # neither branch above fires. If an operator's own pre-himmel config
+        # once lived there, ITS ledger row (a `replace` unit recorded back
+        # when this box's config.json still wrote to the legacy path) is the
+        # only place its backup survives. prov_read_verdict would just answer
+        # "keep already-absent" here -- true of the CURRENT file, but blind to
+        # that backup -- so this restores straight from the unit via
+        # prov_read_apply, the same primitive ledger_apply_unit itself calls.
+        _hud_legacy_unit="$(prov_read_units --path "$_hud_legacy" --kind file | head -n1)"
+        _hud_legacy_backup=""
+        [ -n "$_hud_legacy_unit" ] && _hud_legacy_backup="$(printf '%s' "$_hud_legacy_unit" | jq -r '.eff_pre.backup // empty')"
+        if [ -n "$_hud_legacy_backup" ]; then
+          _hud_legacy_args=()
+          [ "$_dry" -eq 1 ] && _hud_legacy_args=(--dry-run)
+          if prov_read_apply "$_hud_legacy_unit" restore ${_hud_legacy_args[@]+"${_hud_legacy_args[@]}"}; then
+            [ "$_dry" -eq 0 ] && echo "  restored $_hud_legacy (from $_hud_legacy_backup)"
+            prov_read_outcome restored "$_hud_legacy_unit" migrated-away "$_hud_legacy_backup"
+          else
+            echo "  WARN: could not restore $_hud_legacy" >&2
+            fail_step "[6/8] hud-config legacy restore: $_hud_legacy"
+            prov_read_outcome failed "$_hud_legacy_unit" step-failed "$_hud_legacy_backup"
+          fi
+        fi
+      fi
       if [ "$LEDGER_OK" -ne 1 ]; then
         # ponytail (HIMMEL-3332 S6, spec §4 six rows): no ledger to tell a
         # pre-existing claude-hud config from himmel's own — kept, with a
@@ -3222,6 +3297,12 @@ EOF
 
 _user_settings="$USER_SETTINGS"
 _project_settings="$(m_path "$_ix_pset")"
+# HIMMEL-3334 codex-1: reset before every call site that MAY skip
+# unwire_settings ($_user_settings) below (--skip-settings, a kept manifest
+# class, a missing file) -- unwire_user_files falls back to reading
+# $USER_SETTINGS directly in those cases, which is accurate precisely
+# because none of them mutate it either.
+_UNWIRE_SETTINGS_SL_MASKED=""
 if [ "$HALTED" -eq 1 ]; then
   echo "  skipped (halted after an earlier failure)"
   STEPS_INCOMPLETE+=("[6/8] settings unwire: skipped — halted after an earlier failure")

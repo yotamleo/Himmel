@@ -442,6 +442,12 @@ EOF
   else
     rm -f "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
   fi
+  # HIMMEL-3334: the un-swept claude-hud config path, alongside the legacy one above.
+  if [ -f "$SRC/claude-hud.json" ]; then
+    cp "$SRC/claude-hud.json" "$CONFIG_DIR/claude-hud.json" || seed_fail "copy claude-hud.json"
+  else
+    rm -f "$CONFIG_DIR/claude-hud.json" || seed_fail "remove stale claude-hud.json"
+  fi
   # HIMMEL-1927: the stamp is SEED_VERSION + the sanitized model, '|'-separated —
   # codex_stanza_model()'s output never contains '|' (it's either a plain
   # A-Za-z0-9._- slug or the fixed degraded phrase), so a single-line split on
@@ -476,7 +482,7 @@ config_seed_stale() { # rc=0 when any tracked source is newer than the sentinel,
   # asserting the previous backend's identity until an unrelated reseed occurs.
   [ "$(cat "$CONFIG_DIR/.seeded" 2>/dev/null)" = "${SEED_VERSION}|$(codex_stanza_model)" ] || return 0
   [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
-  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json; do
+  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json claude-hud.json; do
     if [ -f "${HOME}/.claude/$s" ]; then
       if [ "${HOME}/.claude/$s" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
     elif [ -f "$CONFIG_DIR/$s" ]; then

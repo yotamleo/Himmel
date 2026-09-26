@@ -2523,7 +2523,7 @@ u_residue_fixture() {
     printf 'my own rules\n' > "$TMP/u-$1-claude-md-before"
     wire_user_claude_md "$U17_TEMPLATE" "$U_HOME/.claude/CLAUDE.md" >/dev/null
     wire_user_claude_md "$U17_TEMPLATE" "$U_HOME/.codex/AGENTS.md" >/dev/null
-    sed 's#<himmel-path>#/fixture/himmel#g' "$U17_HUD_TEMPLATE" > "$U_HOME/.claude/plugins/claude-hud/config.json"
+    sed 's#<himmel-path>#/fixture/himmel#g' "$U17_HUD_TEMPLATE" > "$U_HOME/.claude/claude-hud.json"
     printf '{"projects":{"/x":{"hasTrustDialogAccepted":true}}}\n' > "$U_HOME/.claude.json"
     cp "$U_HOME/.claude.json" "$TMP/u-$1-trust-before"
 }
@@ -2544,12 +2544,12 @@ u_run_fx() { export HIMMEL_UNINSTALL_REAL_HOME=1; u_run "$@"; unset HIMMEL_UNINS
 u_residue_fixture u17
 cp "$U_HOME/.claude/CLAUDE.md" "$TMP/u17-claude-md-full"
 cp "$U_HOME/.codex/AGENTS.md" "$TMP/u17-agents-md-full"
-cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u17-hud-full"
+cp "$U_HOME/.claude/claude-hud.json" "$TMP/u17-hud-full"
 u_run --dry-run
 assert_rc 'U17 dry-run completes' 0 "$rc"
 assert_has 'U17 footprint lists ~/.claude/CLAUDE.md block' "$U_HOME/.claude/CLAUDE.md — " "$out"
 assert_has 'U17 footprint lists ~/.codex/AGENTS.md block' "$U_HOME/.codex/AGENTS.md — " "$out"
-assert_has 'U17 footprint lists the hud config' "$U_HOME/.claude/plugins/claude-hud/config.json — " "$out"
+assert_has 'U17 footprint lists the hud config' "$U_HOME/.claude/claude-hud.json — " "$out"
 assert_has 'U17 footprint lists the trust entry' "$U_HOME/.claude.json — " "$out"
 assert_has 'U17 footprint names the adopter scripts/ as NEVER' "scripts — himmel scripts copied into" "$out"
 assert_has 'U17 dry-run previews the CLAUDE.md strip' "DRY: would strip himmel working-principles block from $U_HOME/.claude/CLAUDE.md" "$out"
@@ -2559,14 +2559,14 @@ assert_has 'U17 dry-run previews the AGENTS.md strip' "DRY: would strip himmel w
 # this hud-config path, so a loaded-but-silent ledger keeps it with a hand
 # command, the same as the no-ledger branch, instead of the round-1
 # pattern-matched strip this case used to hit.
-assert_has 'U17 dry-run shows the hud config kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude/plugins/claude-hud/config.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+assert_has 'U17 dry-run shows the hud config kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude/claude-hud.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/claude-hud.json" "$out"
 # HIMMEL-3332 S6 slice2: workspace-trust is ledger-decided too now; u_fixture's
 # ledger never records a unit for it, so it lands in the same "not in ledger"
 # fallback as the hud config above.
 assert_has 'U17 dry-run shows the trust entry kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude.json — revoke it in Claude Code if you want it gone" "$out"
 u_same 'U17 dry-run left CLAUDE.md alone' "$U_HOME/.claude/CLAUDE.md" "$TMP/u17-claude-md-full"
 u_same 'U17 dry-run left AGENTS.md alone' "$U_HOME/.codex/AGENTS.md" "$TMP/u17-agents-md-full"
-u_same 'U17 dry-run left the hud config alone' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u17-hud-full"
+u_same 'U17 dry-run left the hud config alone' "$U_HOME/.claude/claude-hud.json" "$TMP/u17-hud-full"
 u_same 'U17 dry-run left the trust entry alone' "$U_HOME/.claude.json" "$TMP/u-u17-trust-before"
 
 # U18 — wet run: the block goes and the operator's own text is byte-identical;
@@ -2574,13 +2574,13 @@ u_same 'U17 dry-run left the trust entry alone' "$U_HOME/.claude.json" "$TMP/u-u
 # lacking a ledger unit, is kept with a hand command (HIMMEL-3332 S6
 # R2-codex4); the keep rows stay and the footer names them.
 u_residue_fixture u18
-cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u-u18-hud-before"
+cp "$U_HOME/.claude/claude-hud.json" "$TMP/u-u18-hud-before"
 u_run_fx
 assert_rc 'U18 wet run completes' 0 "$rc"
 u_same 'U18 CLAUDE.md is the operator text again, byte-identical' "$U_HOME/.claude/CLAUDE.md" "$TMP/u-u18-claude-md-before"
 u_absent 'U18 install-created AGENTS.md removed' "$U_HOME/.codex/AGENTS.md"
-u_same 'U18 hud config kept (not in ledger), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u-u18-hud-before"
-assert_has 'U18 footer names the hud config kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+u_same 'U18 hud config kept (not in ledger), byte-identical' "$U_HOME/.claude/claude-hud.json" "$TMP/u-u18-hud-before"
+assert_has 'U18 footer names the hud config kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude/claude-hud.json" "$out"
 u_same 'U18 workspace-trust entry untouched (not in ledger)' "$U_HOME/.claude.json" "$TMP/u-u18-trust-before"
 assert_has 'U18 footer names the trust entry kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude.json — revoke it in Claude Code if you want it gone" "$out"
 assert_has 'U18 footer names the adopter scripts as not touched' "scripts — himmel scripts copied into" "$out"
@@ -2605,14 +2605,14 @@ u_residue_fixture u20
 { cat "$U_HOME/.claude/CLAUDE.md"; printf '%s\n' "$U17_BEGIN"; } > "$TMP/u20-doubled"
 cp "$TMP/u20-doubled" "$U_HOME/.claude/CLAUDE.md"
 cp "$U_HOME/.codex/AGENTS.md" "$TMP/u20-agents"
-cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u20-hud"
+cp "$U_HOME/.claude/claude-hud.json" "$TMP/u20-hud"
 u_run_fx
 assert_rc 'U20 doubled marker halts the run' 2 "$rc"
 u_same 'U20 doubled-marker file left byte-identical' "$U_HOME/.claude/CLAUDE.md" "$TMP/u20-doubled"
 assert_has 'U20 refusal names the file' "$U_HOME/.claude/CLAUDE.md" "$out"
 # the halt is honoured inside the step: later files are not touched after it
 u_same 'U20 AGENTS.md not touched after the halt' "$U_HOME/.codex/AGENTS.md" "$TMP/u20-agents"
-u_same 'U20 hud config not touched after the halt' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u20-hud"
+u_same 'U20 hud config not touched after the halt' "$U_HOME/.claude/claude-hud.json" "$TMP/u20-hud"
 u_residue_fixture u20b
 printf 'notes mention HIMMEL:working-principles in prose only\n' > "$U_HOME/.claude/CLAUDE.md"
 cp "$U_HOME/.claude/CLAUDE.md" "$TMP/u20b-prose"
@@ -2627,27 +2627,93 @@ u_same 'U20b no-block file untouched' "$U_HOME/.claude/CLAUDE.md" "$TMP/u20b-pro
 # (operator's own, a mention-only command, and himmel's own ECON-prefixed
 # command) are kept identically.
 u_residue_fixture u21
-printf '{"display":{"customLineCommand":"echo mine"}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
-cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21-hud"
+printf '{"display":{"customLineCommand":"echo mine"}}\n' > "$U_HOME/.claude/claude-hud.json"
+cp "$U_HOME/.claude/claude-hud.json" "$TMP/u21-hud"
 u_run_fx
 assert_rc 'U21 wet run completes' 0 "$rc"
-u_same 'U21 operator hud config kept byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21-hud"
+u_same 'U21 operator hud config kept byte-identical' "$U_HOME/.claude/claude-hud.json" "$TMP/u21-hud"
 assert_has 'U21 kept hud config is explained' "kept (not in ledger)" "$out"
 # A command that merely MENTIONS himmel's script is kept the same way.
 u_residue_fixture u21b
-printf '{"display":{"customLineCommand":"echo scripts/statusline/hud-custom-lines.sh"}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
-cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21b-hud"
+printf '{"display":{"customLineCommand":"echo scripts/statusline/hud-custom-lines.sh"}}\n' > "$U_HOME/.claude/claude-hud.json"
+cp "$U_HOME/.claude/claude-hud.json" "$TMP/u21b-hud"
 u_run_fx
 assert_rc 'U21b wet run completes' 0 "$rc"
-u_same 'U21b mention-only hud config kept byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21b-hud"
+u_same 'U21b mention-only hud config kept byte-identical' "$U_HOME/.claude/claude-hud.json" "$TMP/u21b-hud"
 # ...and so is himmel's own command behind the ECON prefix, absent a ledger
 # unit for it: no more content-based removal without ledger evidence.
 u_residue_fixture u21c
-printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
-cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21c-hud"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/claude-hud.json"
+cp "$U_HOME/.claude/claude-hud.json" "$TMP/u21c-hud"
 u_run_fx
 assert_rc 'U21c wet run completes' 0 "$rc"
-u_same 'U21c ECON-prefixed himmel hud config kept (not in ledger), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21c-hud"
+u_same 'U21c ECON-prefixed himmel hud config kept (not in ledger), byte-identical' "$U_HOME/.claude/claude-hud.json" "$TMP/u21c-hud"
+
+# U21d (HIMMEL-3334) — a leftover config at the OLD, swept plugin-manager path is
+# removed unconditionally (ledger-independent, gated only by
+# unwire-hud-config.sh's own customLineCommand shape check), while the NEW-path
+# config beside it keeps following the ledger-decided kept/removed policy above.
+u_residue_fixture u21d
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+cp "$U_HOME/.claude/claude-hud.json" "$TMP/u21d-hud"
+u_run_fx
+assert_rc 'U21d wet run completes' 0 "$rc"
+u_absent 'U21d legacy swept-path hud config removed unconditionally' "$U_HOME/.claude/plugins/claude-hud/config.json"
+assert_has 'U21d output names the removed legacy hud config' "removed himmel hud config -> $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+u_same 'U21d new-path hud config still kept (not in ledger), byte-identical' "$U_HOME/.claude/claude-hud.json" "$TMP/u21d-hud"
+# A legacy file that is NOT himmel's own (an operator's own customLineCommand) is
+# left alone, same as unwire-hud-config.sh's existing safety check.
+u_residue_fixture u21e
+printf '{"display":{"customLineCommand":"echo mine"}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21e-legacy"
+u_run_fx
+assert_rc 'U21e wet run completes' 0 "$rc"
+u_same 'U21e operator legacy hud config left alone' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21e-legacy"
+
+# U21f (HIMMEL-3334 codex-1) — a box upgraded but not yet re-wired: the
+# statusLine is still wired to the hud renderer, the ledger has no unit for it
+# (so unwire_settings keeps it, "no ledger"), and the legacy-path hud config is
+# what that still-live statusLine actually reads. Deleting the legacy config
+# here would break a HUD uninstall just reported as left working, so it must
+# be kept too -- unlike U21d, where no statusLine is wired at all.
+u_residue_fixture u21f
+printf '{"statusLine":{"type":"command","command":"bash \\"%s/scripts/statusline/bin/statusline.sh\\""}}\n' "$U17_SCRIPTS/.." > "$HIMMEL_USER_SETTINGS"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21f-legacy"
+u_run_fx
+assert_rc 'U21f wet run completes' 0 "$rc"
+u_same 'U21f legacy hud config kept (statusLine still wired), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21f-legacy"
+assert_has 'U21f output names the kept legacy hud config' "kept (statusLine still wired): $U_HOME/.claude/plugins/claude-hud/config.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+
+# U21g (HIMMEL-3334 codex-1 round 2) — the ledger OWNS /statusLine (a real
+# "remove" verdict, same registration shape as RED18 in
+# test-uninstall-provenance.sh: noop json-key, no preexisted field -> defaults
+# false -> removed), and a legacy-path hud config is still present. A DRY-RUN
+# preview must match what the WET run would actually do: since unwire_settings
+# would remove the ledger-owned statusLine, the legacy config it still reads
+# today must preview as REMOVED, not "kept (statusLine still wired, no
+# ledger)" -- the old file-read check never sees --dry-run's untouched file
+# and always says "still wired" regardless of the ledger's real verdict.
+u_residue_fixture u21g
+printf '{"statusLine":{"type":"command","command":"bash \\"%s/scripts/statusline/bin/statusline.sh\\""}}\n' "$U17_SCRIPTS/.." > "$HIMMEL_USER_SETTINGS"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21g-legacy"
+(
+    # shellcheck disable=SC2030,SC2031 # confined to this subshell, same as
+    # seed_plugin_ledger above; never leaks to the parent script.
+    export HOME="$U_HOME"
+    unset HIMMEL_PROVENANCE_DIR CLAUDE_CONFIG_DIR
+    prov_begin --writer install.sh -- seed-u21g >/dev/null
+    prov_record noop json-key "$HIMMEL_USER_SETTINGS" --unit /statusLine --scope user --class code --row user-settings \
+        --writer wire-statusline.sh --pre-json "$(jq -c .statusLine "$HIMMEL_USER_SETTINGS")" \
+        --post-json "$(jq -c .statusLine "$HIMMEL_USER_SETTINGS")" >/dev/null
+    prov_end ok >/dev/null
+)
+u_run --dry-run
+assert_rc 'U21g dry-run completes' 0 "$rc"
+assert_has 'U21g dry-run previews the legacy hud config as REMOVED, matching the ledger-owned statusLine strip' "DRY: would remove himmel hud config $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+assert_not_has 'U21g dry-run does NOT show the legacy config as kept' "kept (statusLine still wired): $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+u_same 'U21g dry-run left the legacy hud config alone (preview only)' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21g-legacy"
 
 # U22 — dry and wet print the SAME number of user-settings unwire rows: one per
 # helper (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks).
@@ -2666,7 +2732,7 @@ cp "$U_HOME/.claude/CLAUDE.md" "$TMP/u23-claude-md-full"
 u_run_fx --skip-settings
 assert_rc 'U23 --skip-settings completes' 0 "$rc"
 u_same 'U23 --skip-settings keeps CLAUDE.md' "$U_HOME/.claude/CLAUDE.md" "$TMP/u23-claude-md-full"
-if [ -f "$U_HOME/.claude/plugins/claude-hud/config.json" ]; then echo 'PASS U23 --skip-settings keeps the hud config'
+if [ -f "$U_HOME/.claude/claude-hud.json" ]; then echo 'PASS U23 --skip-settings keeps the hud config'
 else echo 'FAIL U23 hud config removed under --skip-settings'; FAILED=$((FAILED + 1)); fi
 
 # U24 — a failed write-through never destroys the only copy of the operator's

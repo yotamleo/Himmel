@@ -199,6 +199,24 @@ done
 # (verified 2026-08-15; every OpenRouter Claude Code example carries this shape).
 grep -qxF "ANTHROPIC_API_KEY=" "$WORK/child-env.txt" || { echo "FAIL: ANTHROPIC_API_KEY not exported empty"; FAILS=$((FAILS+1)); }
 
+# --- T3a (HIMMEL-3334 F2): the un-swept claude-hud.json path (new, alongside
+# the legacy plugins/claude-hud/config.json) is seeded, staleness-tracked and
+# mirror-deleted too — a lane must not lose the HUD after an operator's box
+# has migrated off the legacy path.
+setup; KEY="or-test-123"
+write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"
+printf '{"display":{"customLineCommand":"new-path"}}\n' > "$FAKEHOME/.claude/claude-hud.json"
+t "seed mirrors the new hud path" 0
+[ -f "$FAKEHOME/.claude-openrouter/claude-hud.json" ] || { echo "FAIL: claude-hud.json (new path) not seeded"; FAILS=$((FAILS+1)); }
+grep -q "new-path" "$FAKEHOME/.claude-openrouter/claude-hud.json" || { echo "FAIL: seeded claude-hud.json content mismatch"; FAILS=$((FAILS+1)); }
+touch -t 202001010000 "$FAKEHOME/.claude-openrouter/.seeded"
+printf '{"display":{"customLineCommand":"new-path-updated"}}\n' > "$FAKEHOME/.claude/claude-hud.json"
+t "new hud path staleness triggers reseed" 0
+grep -q "new-path-updated" "$FAKEHOME/.claude-openrouter/claude-hud.json" || { echo "FAIL: new-path hud change did not trigger reseed"; FAILS=$((FAILS+1)); }
+rm -f "$FAKEHOME/.claude/claude-hud.json"
+t "deleted new-path hud source mirrors removal" 0
+[ ! -f "$FAKEHOME/.claude-openrouter/claude-hud.json" ] || { echo "FAIL: stale claude-hud.json (new path) survived source deletion"; FAILS=$((FAILS+1)); }
+
 # --- T3b: model pin — the pinned model is a Claude slug AND the window is the 1M
 # tier (the HIMMEL-1774 §5 requirement).
 setup; KEY="or-test-123"
