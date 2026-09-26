@@ -504,7 +504,12 @@ echo "ok: caseI2 dry-run advisory plan prints 'absent' when the qmd-fork path do
 
 # I3: qmd-fork dir exists but is unreadable (EACCES, not ENOENT) -> 'size
 # unknown', never 'absent' — a permission error is not a missing path.
-if [ "$(id -u)" = 0 ]; then
+# chmod 000 is a POSIX-only way to force that error: on Windows (MSYS/MINGW)
+# it does not restrict access the same way, so this case would false-red a
+# platform quirk rather than test the code (codex-1 round 2).
+if is_win32; then
+  echo "ok: caseI3 -> (skipped: chmod 000 does not deny access on win32, covered by caseI1/I2's non-error paths)"
+elif [ "$(id -u)" = 0 ]; then
   echo "SKIP - caseI3 needs a non-root permission error (root reads mode-000 dirs)"
 else
   hI3="$work/hI3"; mkdir -p "$hI3/.himmel/qmd-fork"
