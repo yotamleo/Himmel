@@ -48,7 +48,6 @@
 #   IMPL_GUARD_BANK_BUDGET_SECS    funded-bank probe wall-clock budget (default 4)
 #   IMPL_GUARD_READINESS_CMD       override the lane-readiness probe command (tests stub it; default `node scripts/lanes/lane-readiness.mjs`)
 #   IMPL_GUARD_READINESS_BUDGET_SECS  lane-readiness probe wall-clock budget (default 4)
-#   IMPL_GUARD_ROUND_CMD           override the round-guard probe command (tests stub it; default `bun scripts/telegram/round-guard.ts check ...`)
 #   IMPL_GUARD_ROUND_BUDGET_SECS   round-guard probe wall-clock budget (default 4)
 #
 # HIMMEL-1568: this hook is also the Agent-dispatch chokepoint for the
@@ -480,9 +479,7 @@ if [ -n "$round_cwd" ]; then
     fi
     round_cmd=""
     if [ -n "$round_task_file" ]; then
-        if [ -n "${IMPL_GUARD_ROUND_CMD:-}" ]; then
-            round_cmd="$IMPL_GUARD_ROUND_CMD"
-        elif command -v bun >/dev/null 2>&1 && [ -f "$repo_root/scripts/telegram/round-guard.ts" ]; then
+        if command -v bun >/dev/null 2>&1 && [ -f "$repo_root/scripts/telegram/round-guard.ts" ]; then
             round_cmd="bun $(printf '%q' "$repo_root/scripts/telegram/round-guard.ts") check --cwd $(printf '%q' "$round_cwd") --task-file $(printf '%q' "$round_task_file")"
         fi
     fi

@@ -1003,6 +1003,40 @@ FILES:
 RC_RG_E=$(run_hook round-avail-nonok-excluded "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9004' "$RG_INVARIANT_E" "$RG_REPO_E")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
 assert_rc "(e) a non-ok avail row does not count toward the trailing round total" 0 "$RC_RG_E"
 
+# --- (g), console ruling 2026-09-26 (judge J1305O finding 6): pin "2 blocking
+# rounds, no INVARIANT -> refuse" through THIS chokepoint. checkRoundGuard
+# already does this (round-guard.test.ts covers it directly); nothing here
+# exercised it through the hook until now.
+RG_REPO_G="$TMP/round-repo-g"
+RG_BRANCH_G="fix/himmel-9005-round-g"
+mk_round_repo "$RG_REPO_G" "$RG_BRANCH_G"
+RG_H11=$(round_head h11); RG_H12=$(round_head h12)
+{
+    finding_row "$RG_BRANCH_G" "$RG_H11" crit open f11
+    finding_row "$RG_BRANCH_G" "$RG_H12" imp open f12
+} > "$(round_ledger_path "$RG_REPO_G")/cr-critic-scores.jsonl"
+
+RC_RG_G=$(run_hook round-2-no-invariant "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9005' 'Write the code and commit it.' "$RG_REPO_G")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(g) 2 blocking rounds, no INVARIANT: refuses (self-serviceable)" 2 "$RC_RG_G"
+assert_contains "(g) refusal tells the dispatcher to add an INVARIANT: section" "INVARIANT:" "$(combined_output round-2-no-invariant)"
+
+# --- (h), console ruling 2026-09-26 (judge J1305O finding 6): pin fail-CLOSED
+# on a runtime failure of the predicate itself. Stub `bun` via PATH (never an
+# env seam -- IMPL_GUARD_ROUND_CMD was removed for exactly this reason) to
+# exit 1 unconditionally, standing in for a throwing round-guard.ts; this must
+# refuse a real implementor dispatch rather than silently allow it.
+BUN_THROW_DIR="$TMP/stub-bun-throw"
+mkdir -p "$BUN_THROW_DIR"
+cat > "$BUN_THROW_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$BUN_THROW_DIR/bun"
+
+RC_RG_H=$(run_hook round-runtime-failure "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9001' 'Write the code and commit it.' "$RG_REPO_AD")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$BUN_THROW_DIR:$PATH")
+assert_rc "(h) round-guard probe crashing (rc=1) fails CLOSED on an implementor dispatch" 2 "$RC_RG_H"
+assert_contains "(h) refusal says it is failing CLOSED" "failing CLOSED" "$(combined_output round-runtime-failure)"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

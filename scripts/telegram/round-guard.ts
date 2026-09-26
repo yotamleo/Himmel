@@ -258,13 +258,27 @@ export function checkRoundGuard(
     return { note: `${lane}: round guard OVERRIDE (HIMMEL-1553): ${ticket} is on review round ${rounds + 1} (${rounds} consecutive blocking reviews) — cheap-lane dispatch proceeding on recorded operator authority: "${override}"` };
   }
   if (rounds >= ROUND_ESCALATE_THRESHOLD) {
+    // HIMMEL-1568: the Agent-tool hook chokepoint (lane "agent-dispatch") has
+    // no --rounds-override wired and no way to "re-dispatch" through the same
+    // tool call — the escalation options that are genuinely actionable for
+    // spawn-glm/spawn-claudex's own CLI-driven callers are not for this one,
+    // so it gets its own accurate advice rather than inheriting theirs.
+    const permittedPaths = lane === "agent-dispatch"
+      ? [
+          `Permitted paths (this chokepoint has no --rounds-override — the flag is not wired here, and there is no way to re-dispatch through the Agent tool with it):`,
+          `  (a) ESCALATE: stop dispatching this ticket's implementation through the Agent tool here and hand it to a judgment-tier lane instead (see /lanes) — give it the abstraction as the task: "state the invariant all ${rounds} rounds' defects violated, then fix to it," never the newest defect;`,
+          `  (b) an operator-launched leg (e.g. via headed-arm-leg.sh) can still call spawn-glm/spawn-claudex directly with --rounds-override "<reason>" (>= ${ROUNDS_OVERRIDE_MIN_CHARS} chars) if another cheap round is genuinely justified — that path does not go through this hook.`,
+        ]
+      : [
+          `Permitted paths:`,
+          `  (a) ESCALATE: route this to a judgment-tier lane (see /lanes) with the abstraction as the task — "state the invariant all ${rounds} rounds' defects violated, then fix to it" — never the newest defect;`,
+          `  (b) OPERATOR OVERRIDE: re-dispatch with --rounds-override "<why another cheap round is justified>" (>= ${ROUNDS_OVERRIDE_MIN_CHARS} chars${override ? `; the reason given was too short` : ""}). Appropriate for a purely mechanical batch of nit/sug fixes with no open crit/imp design question. The reason is recorded in the transcript.`,
+        ];
     return {
       refusal: [
         `${lane}: REFUSED (round guard, HIMMEL-1553): ${ticket} already has ${rounds} consecutive blocking reviews on the active branch (heads: ${heads.join(", ")}) — buying another cheap-lane round is the failure mode itself, not a fix for it.`,
         `Evidence class (HIMMEL-1540): four rounds of competent workers with increasingly detailed briefs each fixed the symptom and exposed the next seam; what broke the loop was a JUDGMENT-TIER pass given the abstraction as the task. At this round the thing that must change is the model, not the brief.`,
-        `Permitted paths:`,
-        `  (a) ESCALATE: route this to a judgment-tier lane (see /lanes) with the abstraction as the task — "state the invariant all ${rounds} rounds' defects violated, then fix to it" — never the newest defect;`,
-        `  (b) OPERATOR OVERRIDE: re-dispatch with --rounds-override "<why another cheap round is justified>" (>= ${ROUNDS_OVERRIDE_MIN_CHARS} chars${override ? `; the reason given was too short` : ""}). Appropriate for a purely mechanical batch of nit/sug fixes with no open crit/imp design question. The reason is recorded in the transcript.`,
+        ...permittedPaths,
       ].join("\n"),
     };
   }
