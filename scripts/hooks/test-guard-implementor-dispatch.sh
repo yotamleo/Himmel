@@ -1037,6 +1037,172 @@ RC_RG_H=$(run_hook round-runtime-failure "$REG_NONE" "$(payload_cwd general-purp
 assert_rc "(h) round-guard probe crashing (rc=1) fails CLOSED on an implementor dispatch" 2 "$RC_RG_H"
 assert_contains "(h) refusal says it is failing CLOSED" "failing CLOSED" "$(combined_output round-runtime-failure)"
 
+# --- (j), HIMMEL-3676: the dispatch TEXT (not the payload cwd) is the
+# ground truth for which branch this round belongs to whenever it names a
+# worktree -- a dispatching session's own cwd is routinely the primary
+# checkout (on main, or another branch entirely) while the real implementor
+# work happens IN the worktree it names by path. Real linked worktrees
+# (`git worktree add`) are required here, not two independent scratch
+# repos: production's whole "wrong attribution" bug is that a worktree and
+# its primary SHARE one git-common-dir/ledger file, and an independent-repo
+# fixture would not exercise that at all.
+RG_REPO_W="$TMP/round-repo-w"
+mk_round_repo "$RG_REPO_W" "main"
+RG_WT_BRANCH_W="fix/himmel-9006-round-w"
+RG_WT_DIR_W="$TMP/.claude/worktrees/fix-himmel-9006-round-w"
+git -C "$RG_REPO_W" worktree add -q -b "$RG_WT_BRANCH_W" "$RG_WT_DIR_W" main
+RG_H13=$(round_head h13); RG_H14=$(round_head h14); RG_H15=$(round_head h15)
+{
+    finding_row "$RG_WT_BRANCH_W" "$RG_H13" crit open f13
+    finding_row "$RG_WT_BRANCH_W" "$RG_H14" imp open f14
+    finding_row "$RG_WT_BRANCH_W" "$RG_H15" crit open f15
+} > "$(round_ledger_path "$RG_REPO_W")/cr-critic-scores.jsonl"
+
+RC_RG_W=$(run_hook round-worktree-branch-attribution "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9006' "Write the code and commit it in $RG_WT_DIR_W." "$RG_REPO_W")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(j) cwd on the primary (0 rounds) but text names a 3-round worktree: attributes to the worktree branch and refuses" 2 "$RC_RG_W"
+assert_contains "(j) refusal names the ticket on the worktree's own branch" "HIMMEL-9006" "$(combined_output round-worktree-branch-attribution)"
+
+# --- control: the same worktree-naming shape but 0 rounds on that branch
+# must still allow -- the attribution fix must not itself become a new
+# false-positive source.
+RG_REPO_M="$TMP/round-repo-m"
+mk_round_repo "$RG_REPO_M" "main"
+RG_WT_BRANCH_M="fix/himmel-9009-round-m"
+RG_WT_DIR_M="$TMP/.claude/worktrees/fix-himmel-9009-round-m"
+git -C "$RG_REPO_M" worktree add -q -b "$RG_WT_BRANCH_M" "$RG_WT_DIR_M" main
+
+RC_RG_M=$(run_hook round-worktree-zero-rounds-allows "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9009' "Write the code and commit it in $RG_WT_DIR_M." "$RG_REPO_M")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(control) 0-round implementor dispatch naming a worktree still allows" 0 "$RC_RG_M"
+
+# --- (k), HIMMEL-3676: the named worktree path does not exist on disk at
+# all -- fail CLOSED rather than silently falling back to the (allowing)
+# payload cwd.
+RG_REPO_K="$TMP/round-repo-k"
+mk_round_repo "$RG_REPO_K" "main"
+RG_WT_DIR_K="$TMP/.claude/worktrees/does-not-exist-9007"
+
+RC_RG_K=$(run_hook round-worktree-missing-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9007' "Write the code and commit it in $RG_WT_DIR_K." "$RG_REPO_K")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(k) text names a worktree path that does not exist: refuses rather than falling back to 0 rounds" 2 "$RC_RG_K"
+assert_contains "(k) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-missing-refuses)"
+
+# --- (l), HIMMEL-3676: the named worktree exists but is DETACHED -- git
+# resolves HEAD to the literal string "HEAD", not a branch name, and this
+# must also refuse rather than silently falling back to 0 rounds.
+RG_REPO_L="$TMP/round-repo-l"
+mk_round_repo "$RG_REPO_L" "main"
+RG_WT_DIR_L="$TMP/.claude/worktrees/fix-himmel-9008-round-l"
+git -C "$RG_REPO_L" worktree add -q --detach "$RG_WT_DIR_L" main
+
+RC_RG_L=$(run_hook round-worktree-detached-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9008' "Write the code and commit it in $RG_WT_DIR_L." "$RG_REPO_L")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(l) text names a DETACHED worktree: refuses rather than falling back to 0 rounds" 2 "$RC_RG_L"
+assert_contains "(l) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-detached-refuses)"
+
+# --- (m), HIMMEL-3676 (CR round, codex-1): the named directory EXISTS but
+# has no .git of its own -- git -C would walk UP to the enclosing repo's
+# .git and resolve ITS branch, silently mis-attributing the round to an
+# ancestor repo rather than refusing. Nest the fake "worktree" directly
+# inside the primary's own tree so an unguarded `git -C` would resolve to
+# the primary's own (0-round) branch.
+RG_REPO_N="$TMP/round-repo-n"
+mk_round_repo "$RG_REPO_N" "main"
+RG_WT_DIR_N="$RG_REPO_N/.claude/worktrees/fake-slug-9012"
+mkdir -p "$RG_WT_DIR_N"
+
+RC_RG_N=$(run_hook round-worktree-not-own-repo-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9012' "Write the code and commit it in $RG_WT_DIR_N." "$RG_REPO_N")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(m) named worktree directory has no .git of its own (git -C would walk up to the enclosing repo): refuses rather than silently attributing to the ANCESTOR's branch" 2 "$RC_RG_N"
+assert_contains "(m) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-not-own-repo-refuses)"
+
+# --- (n), HIMMEL-3676 (CR round, codex-2): a RELATIVE worktree match
+# resolves against the hook process's own cwd, not the payload's -- must
+# refuse rather than guessing.
+RG_REPO_O="$TMP/round-repo-o"
+mk_round_repo "$RG_REPO_O" "main"
+RG_WT_REL_O=".claude/worktrees/fix-himmel-9013-relative"
+
+RC_RG_O=$(run_hook round-worktree-relative-path-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9013' "Write the code and commit it in $RG_WT_REL_O." "$RG_REPO_O")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(n) text names a RELATIVE worktree path: refuses rather than resolving it against the hook process's own cwd" 2 "$RC_RG_O"
+assert_contains "(n) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-relative-path-refuses)"
+
+# --- (o), HIMMEL-3676 (CR round 2, codex-1 CRITICAL): the named worktree
+# resolves to a real branch in a DIFFERENT repository than the payload cwd --
+# round-guard.ts always reads the ledger from --cwd's OWN git-common-dir, so
+# --branch only filters rows within that (unrelated) ledger. A foreign repo's
+# zero-round branch name therefore matches nothing in the TARGET repo's own
+# 3-round ledger and the predicate wrongly returns "0 rounds" -- an unrelated
+# worktree must never be trusted for round attribution unless it shares the
+# payload cwd's git-common-dir.
+RG_REPO_P="$TMP/round-repo-p"
+mk_round_repo "$RG_REPO_P" "fix/himmel-9014-round-p"
+RG_H16=$(round_head h16); RG_H17=$(round_head h17); RG_H18=$(round_head h18)
+{
+    finding_row "fix/himmel-9014-round-p" "$RG_H16" crit open f16
+    finding_row "fix/himmel-9014-round-p" "$RG_H17" crit open f17
+    finding_row "fix/himmel-9014-round-p" "$RG_H18" crit open f18
+} > "$(round_ledger_path "$RG_REPO_P")/cr-critic-scores.jsonl"
+
+RG_REPO_Q="$TMP/round-repo-q"
+mk_round_repo "$RG_REPO_Q" "main"
+RG_WT_BRANCH_Q="fix/himmel-9015-round-q"
+RG_WT_DIR_Q="$TMP/.claude/worktrees/fix-himmel-9015-round-q"
+git -C "$RG_REPO_Q" worktree add -q -b "$RG_WT_BRANCH_Q" "$RG_WT_DIR_Q" main
+
+RC_RG_P=$(run_hook round-worktree-cross-repo-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9014' "Write the code and commit it in $RG_WT_DIR_Q." "$RG_REPO_P")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(o) text names a real worktree belonging to an UNRELATED repo (different git-common-dir than payload cwd): refuses rather than trusting a foreign branch name to filter the TARGET's own ledger" 2 "$RC_RG_P"
+assert_contains "(o) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-cross-repo-refuses)"
+
+# --- (p), HIMMEL-3676 (CR round 2, codex-2 Suggestion): a worktree
+# directory name containing a "." must still be recognized and correctly
+# attributed (0 rounds -> allow), not refused as an unresolved/truncated
+# path.
+RG_REPO_R="$TMP/round-repo-r"
+mk_round_repo "$RG_REPO_R" "main"
+RG_WT_BRANCH_R="fix/himmel-9016-round-r"
+RG_WT_DIR_R="$TMP/.claude/worktrees/fix.himmel-9016-round-r"
+git -C "$RG_REPO_R" worktree add -q -b "$RG_WT_BRANCH_R" "$RG_WT_DIR_R" main
+
+RC_RG_R=$(run_hook round-worktree-dotted-name-allows "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9016' "Write the code and commit it in $RG_WT_DIR_R." "$RG_REPO_R")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(p) worktree directory name contains a dot: still recognized and attributed (0 rounds) rather than refused as an unresolved/truncated path" 0 "$RC_RG_R"
+
+# --- (i), HIMMEL-3681: the probe's CLI stdout/stderr on exit 0 must carry
+# its version sentinel ("round-guard-cli: v1"); a stub standing in for a
+# stale/version-skewed round-guard.ts that exits 0 silently must NOT be
+# trusted. This is a PATH-based test stub exactly like fixture (h)'s crash
+# stub, never a new env bypass seam.
+RG_REPO_I="$TMP/round-repo-i"
+mk_round_repo "$RG_REPO_I" "main"
+BUN_SKEW_DIR="$TMP/stub-bun-skew"
+mkdir -p "$BUN_SKEW_DIR"
+cat > "$BUN_SKEW_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$BUN_SKEW_DIR/bun"
+
+RC_RG_I=$(run_hook round-sentinel-missing-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9010' 'Write the code and commit it.' "$RG_REPO_I")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$BUN_SKEW_DIR:$PATH")
+assert_rc "(i) probe exits 0 with no version sentinel: fails CLOSED (version skew)" 2 "$RC_RG_I"
+assert_contains "(i) refusal names the sentinel" "sentinel" "$(combined_output round-sentinel-missing-refuses)"
+
+# --- latency, judge J1305O finding 4: a fast probe must return fast -- the
+# 1 s sleep-poll in _run_bounded added ~1 s of fixed overhead to every
+# dispatch reaching this block regardless of how quickly round-guard.ts
+# itself finished (measured 1028-1031ms at head vs 56-57ms at main). 700ms
+# leaves a wide margin below that head measurement while comfortably
+# clearing CI jitter above the fixed probe's actual (tens-of-ms) cost.
+RG_REPO_LAT="$TMP/round-repo-lat"
+mk_round_repo "$RG_REPO_LAT" "main"
+RG_LAT_START=$(date +%s%N)
+RC_RG_LAT=$(run_hook round-latency "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9011' 'Write the code and commit it.' "$RG_REPO_LAT")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+RG_LAT_END=$(date +%s%N)
+RG_LAT_MS=$(( (RG_LAT_END - RG_LAT_START) / 1000000 ))
+assert_rc "(latency) fast probe still allows a 0-round dispatch" 0 "$RC_RG_LAT"
+if [ "$RG_LAT_MS" -lt 700 ]; then
+    echo "ok   (latency) round-guard probe returns well under 1 s (${RG_LAT_MS}ms)"
+    pass=$((pass + 1))
+else
+    echo "FAIL (latency) round-guard probe took ${RG_LAT_MS}ms, expected well under 1000ms"
+    fail=$((fail + 1))
+fi
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

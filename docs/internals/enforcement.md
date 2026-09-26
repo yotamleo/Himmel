@@ -3060,6 +3060,20 @@ predicate itself (bun/script missing, unclean exit) fails **CLOSED** —
 `IMPL_GUARD_DISABLE=1` is the only bypass, there is no INVARIANT-shaped
 escape for this failure mode.
 
+**Branch attribution and version skew (HIMMEL-3676/3681):** the payload
+`cwd` is routinely the dispatching session's own checkout (often the primary,
+on `main`), not the worktree the actual implementor round happens in. If the
+dispatch text names a `.claude/worktrees/<dir>` path, this hook resolves
+*that* worktree's own branch (`git -C <path> rev-parse --abbrev-ref HEAD`) and
+passes it as `--branch` — attributing the round count to the real branch
+instead of the dispatcher's own. A named worktree whose branch cannot be
+resolved (missing directory, not a git repo, detached HEAD) refuses (fail
+CLOSED) rather than silently falling back to the `cwd`'s branch. Separately,
+an exit-0 CLI run is only trusted if its stdout/stderr carries the version
+sentinel `round-guard-cli: v1`; a version-skewed build that exits 0
+without it refuses too (predicate not evaluated), guarding against a stale
+round-guard.ts silently allowing everything.
+
 Spec: `scripts/hooks/test-guard-implementor-dispatch.sh`.
 
 ### `guard-console-dispatch.sh` — console/leg dispatch fence (HIMMEL-2323)
