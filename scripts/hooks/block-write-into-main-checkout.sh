@@ -1694,7 +1694,18 @@ _bwimc_check_interp_body() {
                 continue
             fi
             case "$t" in
-                -*) : ;;
+                -*)
+                    # HIMMEL-3648 (CodeRabbit #1307 thread, "Heavy lift"
+                    # finding, partial fix): a long option's value is
+                    # ATTACHED with `=` (`--target-directory=PATH`) and is
+                    # itself a write destination — the bare `-*` skip
+                    # dropped it unchecked. Same coarse `=`-value check as
+                    # the non-flag branch below, just not excluded by the
+                    # leading `-`.
+                    case "$t" in
+                        *=*) _bwimc_cd_guard "${t#*=}"; _bwimc_check_target "${t#*=}" "$_bwimc_ecwd" ;;
+                    esac
+                    ;;
                 *)
                     _bwimc_cd_guard "$t"; _bwimc_check_target "$t" "$_bwimc_ecwd"
                     # HIMMEL-3648 (CR #1307): a bare key=value token inside a
@@ -3227,7 +3238,7 @@ while IFS= read -r _bwimc_clause; do
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*eval([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
         _bwimc_check_interp_body "$_bwimc_clause_sp" eval
 
-    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?(bash|sh|zsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?(bash|sh|zsh|dash|ksh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
         # HIMMEL-3648 (CR #1307): allow an optional path prefix (`/bin/sh`,
         # `./bash`, …) before the shell name — an anchor on the bare name
         # only let a path-qualified invocation bypass body scanning entirely.
@@ -3346,7 +3357,7 @@ while IFS= read -r _bwimc_clause; do
             # operand" gap the comment above already covers for the rest.
             if [ "$_bwimc_verb" = "rsync" ]; then
                 case "$_bwimc_t" in
-                    -e|-f|--filter|--exclude|--exclude-from|--include|--include-from|--files-from|--temp-dir|-T|--backup-dir|--link-dest|--compare-dest|--copy-dest|--partial-dir|--log-file|--log-file-format|--out-format|--password-file|--bwlimit|--timeout|--contimeout|--port|--address|--sockopts|--usermap|--groupmap|--chown|--rsync-path|--rsh|--protocol|--checksum-seed|--max-size|--min-size|--modify-window|--skip-compress|--chmod|-B|--block-size|-M|--remote-option|--suffix)
+                    -e|-f|--filter|--exclude|--exclude-from|--include|--include-from|--files-from|--temp-dir|-T|--backup-dir|--link-dest|--compare-dest|--copy-dest|--partial-dir|--log-file|--log-file-format|--out-format|--password-file|--bwlimit|--timeout|--contimeout|--port|--address|--sockopts|--usermap|--groupmap|--chown|--rsync-path|--rsh|--protocol|--checksum-seed|--max-size|--min-size|--modify-window|--skip-compress|--chmod|-B|--block-size|-M|--remote-option|--suffix|--max-delete|--iconv|--compress-level|--checksum-choice|--write-batch|--only-write-batch|--read-batch|--stop-after)
                         _bwimc_i=$(_bwimc_next_optval_idx "$_bwimc_i")
                         _bwimc_i=$((_bwimc_i+1))
                         continue
@@ -3371,8 +3382,25 @@ while IFS= read -r _bwimc_clause; do
             done
         elif [ "${#_bwimc_ops[@]}" -ge 2 ]; then
             _bwimc_dest_raw="${_bwimc_ops[$((${#_bwimc_ops[@]}-1))]}"
-            _bwimc_cd_guard "$_bwimc_dest_raw"
-            _bwimc_check_target "$_bwimc_dest_raw" "$_bwimc_ecwd"
+            # HIMMEL-3648 (CodeRabbit #1307): a REMOTE rsync destination
+            # (`user@host:/path`, `rsync://host/mod`) never writes into the
+            # LOCAL primary checkout — resolving it as a local path (as the
+            # generic destination check below does) can only mis-DENY it,
+            # never mis-allow a real local write, but it is a genuine
+            # functional-correctness bug CodeRabbit flagged, so skip the
+            # local resolution for it. A bare drive letter (`C:/path`) is
+            # excluded from the "has a colon" test so it is not misread as
+            # a remote host.
+            _bwimc_dest_remote=0
+            case "$_bwimc_dest_raw" in
+                [A-Za-z]:[/\\]*) ;;
+                rsync://*) _bwimc_dest_remote=1 ;;
+                *) case "${_bwimc_dest_raw%%/*}" in *:*) _bwimc_dest_remote=1 ;; esac ;;
+            esac
+            if [ "$_bwimc_dest_remote" = 0 ]; then
+                _bwimc_cd_guard "$_bwimc_dest_raw"
+                _bwimc_check_target "$_bwimc_dest_raw" "$_bwimc_ecwd"
+            fi
         fi
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*dd(\.exe)?([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then

@@ -2732,6 +2732,49 @@ F38B_CMD="bash -c 'dd if=/dev/zero of=$FIX/wt/dd.img'"
 F38B_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F38B_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "38b bash -c dd of=wt/dd.img allows" allow "$F38B_JSON"
 
+echo "== HIMMEL-3648 CR round 8 (CodeRabbit review threads, PR #1307) =="
+
+# 39/39b (CodeRabbit #1307): the interpreter-body shell-name match added in
+# row 35 covered a path-qualified bash/sh/zsh, but not dash/ksh — the most
+# common alternate shells this same regex is meant to close off.
+F39_CMD="dash -c \"echo hi > $FIX/primary/a.txt\""
+F39_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F39_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "39 dash -c denies a primary body write (CodeRabbit #1307)" block "$F39_JSON"
+F39B_CMD="dash -c \"echo hi > $FIX/wt/a.txt\""
+F39B_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F39B_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "39b dash -c allows a worktree body write" allow "$F39B_JSON"
+
+# 40/40b (CodeRabbit #1307): rows 31/37's rsync value-option skip-list was
+# still missing several long-form value-taking options (--iconv among them)
+# — a value after the real destination masked it the same way as row 31.
+check_both "40 rsync SRC primary/dest --iconv utf8 denies (CodeRabbit #1307)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/src.txt $FIX/primary/dest.txt --iconv utf8\",\"cwd\":\"$FIX/wt\"}}"
+check_both "40b rsync SRC wt/dest --iconv utf8 allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/src.txt $FIX/wt/dest.txt --iconv utf8\",\"cwd\":\"$FIX/wt\"}}"
+
+# 41/41b (CodeRabbit #1307): a REMOTE rsync destination (`user@host:/path`)
+# never writes into the LOCAL primary checkout, but the destination check
+# resolved it as a local relative path against the tracked cwd and denied
+# it — a false deny, not a security gap, but the finding's exact functional
+# defect. 41b is the regression control: a genuinely LOCAL rsync
+# destination inside the primary must still deny.
+check_both "41 rsync ./ user@host:/srv/app from primary cwd allows (remote dest, CodeRabbit #1307)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a ./ user@host:/srv/app\",\"cwd\":\"$FIX/primary\"}}"
+check_both "41b rsync SRC primary/dest (local) still denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/src.txt $FIX/primary/dest.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 42/42b (CodeRabbit #1307, partial fix on the "Heavy lift" interp-body
+# finding): a long option's value is ATTACHED with `=`
+# (`--target-directory=PATH`) inside an eval/bash -c body — the bare `-*`
+# skip in the interp-body scan dropped it unchecked, same "of=PATH" shape
+# row 38 already fixed for a non-flag token, just not yet for a `-*` one.
+F42_CMD="bash -c 'install --target-directory=$FIX/primary $FIX/wt/src.txt'"
+F42_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F42_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "42 bash -c install --target-directory=primary denies (CodeRabbit #1307)" block "$F42_JSON"
+F42B_CMD="bash -c 'install --target-directory=$FIX/wt $FIX/wt/src.txt'"
+F42B_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F42B_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "42b bash -c install --target-directory=wt allows" allow "$F42B_JSON"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
