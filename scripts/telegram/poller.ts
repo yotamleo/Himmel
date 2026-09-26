@@ -887,8 +887,13 @@ export async function handleBatch(
       // specific message, so a post-mortem cannot tell WHICH message was lost.
       console.error(`[poller] handleInbound failed for update ${rec.update_id} chat ${rec.chat_id} — record dropped, batch continues: ${e}`);
       if (onDrop) {
-        try { onDrop(rec, e); }
-        catch (e2) { console.error(`[poller] drop notice could not be raised for update ${rec.update_id}: ${e2}`); }
+        try {
+          const r: unknown = onDrop(rec, e);
+          if (r && typeof (r as Promise<unknown>).catch === "function") {
+            (r as Promise<unknown>).catch((e2) =>
+              console.error(`[poller] drop notice rejected for update ${rec.update_id}: ${e2}`));
+          }
+        } catch (e2) { console.error(`[poller] drop notice could not be raised for update ${rec.update_id}: ${e2}`); }
       }
     }
   }

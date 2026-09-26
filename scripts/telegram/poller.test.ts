@@ -812,6 +812,53 @@ test("a drop notifier that never settles does not stall later records (HIMMEL-12
   expect(handled).toEqual(["later", "later still"]);
 });
 
+// onDrop is typed `=> void` (fire-and-forget), but void says "don't await",
+// not "can't reject" — a caller passing an async callback that rejects must
+// not let that rejection escape the seam as an unhandled rejection (HIMMEL-1311).
+test("handleBatch contains an onDrop that rejects asynchronously, without an unhandled rejection (HIMMEL-1311)", async () => {
+  const rejections: unknown[] = [];
+  const handler = (reason: unknown) => { rejections.push(reason); };
+  process.on("unhandledRejection", handler);
+
+  const handled: string[] = [];
+  const logs: string[] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => { logs.push(args.join(" ")); };
+  try {
+    await handleBatch(
+      [inbound("poison", 1), inbound("later", 2)],
+      async (rec) => { if (rec.text === "poison") throw new Error("EISDIR"); handled.push(rec.text); },
+      () => Promise.reject(new Error("send failed")),
+    );
+    await Bun.sleep(50);   // give the runtime a turn to surface any late throw
+  } finally {
+    console.error = origError;
+    process.off("unhandledRejection", handler);
+  }
+
+  expect(rejections).toEqual([]);
+  expect(handled).toEqual(["later"]);
+  expect(logs.some((l) => l.includes("drop notice rejected for update 1"))).toBe(true);
+});
+
+// A resolving async onDrop is the common case (main()'s real notifier) and must
+// stay silent: no drop-notice log fires just because onDrop returned a thenable.
+test("handleBatch logs nothing for a resolving async onDrop (HIMMEL-1311)", async () => {
+  const logs: string[] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => { logs.push(args.join(" ")); };
+  try {
+    await handleBatch(
+      [inbound("poison", 1)],
+      async (rec) => { if (rec.text === "poison") throw new Error("EISDIR"); },
+      () => Promise.resolve(),
+    );
+    await Bun.sleep(50);
+  } finally { console.error = origError; }
+
+  expect(logs.some((l) => l.includes("drop notice"))).toBe(false);
+});
+
 test("handleBatch handles every record when none throw (HIMMEL-1296)", async () => {
   const handled: string[] = [];
   await handleBatch(
