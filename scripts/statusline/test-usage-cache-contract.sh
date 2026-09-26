@@ -157,7 +157,9 @@ chmod +x "$ARM_STUB"
 # --- cases --------------------------------------------------------------------
 
 run_test "(1) cap-reset-time.sh reads the produced cache -> valid HH:MM (five-hour + seven-day)" '
-  W=$(mktemp -d); produce_cache "$W" 63.4 12.7 || exit 1;
+  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-contract-test\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 63.4 12.7 || exit 1;
   out=$(bash "$CAP_RESET" --cache "$W/cache.json" --max-age 0) || exit 1;
   grepq "$out" -E "^([01][0-9]|2[0-3]):[0-5][0-9]$" || exit 1;
   out7=$(bash "$CAP_RESET" --window seven-day --cache "$W/cache.json" --max-age 0) || exit 1;
@@ -179,7 +181,9 @@ run_test "(2a) auto-arm-on-cap.sh below threshold: utilization read is non-null,
 '
 
 run_test "(2b) auto-arm-on-cap.sh above threshold: utilization parsed from produced cache -> arm fires (rc=2 one-shot block)" '
-  W=$(mktemp -d); produce_cache "$W" 95 12.7 || exit 1;
+  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-contract-test\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 95 12.7 || exit 1;
   S="$W/state"; mkdir -p "$S"; H="$W/handovers"; mkdir -p "$H";
   run_arm_hook "$S" "$W/cache.json" "$W/arm.log" "$H" "$W/stderr.log";
   rc=$?;
@@ -193,7 +197,9 @@ run_test "(2b) auto-arm-on-cap.sh above threshold: utilization parsed from produ
 '
 
 run_test "(3) resume-slot.sh --cache --max-age 0: shape guard passes, emits a slot" '
-  W=$(mktemp -d); produce_cache "$W" 63.4 12.7 || exit 1;
+  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-contract-test\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 63.4 12.7 || exit 1;
   out=$(bash "$RESUME_SLOT" --cache "$W/cache.json" --max-age 0 2>"$W/stderr.log") || exit 1;
   [ -n "$out" ] || exit 1;
   grep -q "schema mismatch" "$W/stderr.log" && exit 1;
@@ -201,7 +207,9 @@ run_test "(3) resume-slot.sh --cache --max-age 0: shape guard passes, emits a sl
 '
 
 run_test "(4) consumers UNCHANGED premise: cache byte-identical across all three consumer reads" '
-  W=$(mktemp -d); produce_cache "$W" 63.4 12.7 || exit 1;
+  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-contract-test\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 63.4 12.7 || exit 1;
   before=$(cat "$W/cache.json");
   bash "$CAP_RESET" --cache "$W/cache.json" --max-age 0 >/dev/null || exit 1;
   S="$W/state"; mkdir -p "$S"; H="$W/handovers"; mkdir -p "$H";
@@ -211,7 +219,9 @@ run_test "(4) consumers UNCHANGED premise: cache byte-identical across all three
 '
 
 run_test "(4a) producer(Branch B) -> bank-preflight: PROCEED below threshold" '
-  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4a.XXXXXX"); produce_cache_oauth "$W" 10 20;
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4a.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-contract-test\"}}" > "$HOME/.claude.json";
+  produce_cache_oauth "$W" 10 20;
   mk_empty_fleet_stub "$W";
   v=$(CADENCE_BANK_CACHE="$W/cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/l.jsonl" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" HIMMEL_FLEET_SLOTS="$W/slots" HIMMEL_FLEET_CAP=4 bash "$PREFLIGHT" </dev/null 2>"$W/pf.err");
   [ "$v" = "PROCEED" ] || exit 1;
@@ -219,7 +229,9 @@ run_test "(4a) producer(Branch B) -> bank-preflight: PROCEED below threshold" '
 '
 
 run_test "(4b) producer(Branch B) -> bank-preflight: SKIPPED-BANK above threshold" '
-  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4b.XXXXXX"); produce_cache_oauth "$W" 95 20;
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4b.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-contract-test\"}}" > "$HOME/.claude.json";
+  produce_cache_oauth "$W" 95 20;
   mk_empty_fleet_stub "$W";
   v=$(CADENCE_BANK_CACHE="$W/cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/l.jsonl" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" HIMMEL_FLEET_SLOTS="$W/slots" HIMMEL_FLEET_CAP=4 bash "$PREFLIGHT" </dev/null 2>"$W/pf.err");
   [ "$v" = "SKIPPED-BANK" ] || exit 1;
@@ -228,6 +240,7 @@ run_test "(4b) producer(Branch B) -> bank-preflight: SKIPPED-BANK above threshol
 
 run_test "(4c) HIMMEL-1866: partial fetch cannot make stale seven_day fresh" '
   W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4c.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-4c\"}}" > "$HOME/.claude.json";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
   old=$(( $(date +%s) - 3600 ));
   printf "%s" "{\"five_hour\":{\"utilization\":40},\"seven_day\":{\"utilization\":8},\"primaries_refreshed_at\":$old}" > "$CLAUDE_USAGE_CACHE";
@@ -241,9 +254,63 @@ run_test "(4c) HIMMEL-1866: partial fetch cannot make stale seven_day fresh" '
   grep -q "FLEET native=0 claudex=0 reserved=0 total=0/4" "$W/pf.err" || exit 1;
 '
 
+# --- HIMMEL-1712: account-mismatched cache -> every DECISION consumer treats it as UNKNOWN, preserving its own existing missing/unusable-cache contract exactly ---
+
+run_test "(7a) HIMMEL-1712: cap-reset-time.sh treats an account-mismatched cache as UNKNOWN (same exit 3 as a missing resets_at)" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-7a.XXXXXX"); export HOME="$W/home-a"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 63.4 12.7 || exit 1;
+  export HOME="$W/home-b"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  out=$(bash "$CAP_RESET" --cache "$W/cache.json" --max-age 0 2>"$W/stderr.log"); rc=$?;
+  [ "$rc" -eq 3 ] || exit 1;
+  [ -z "$out" ] || exit 1;
+  grep -qi "account" "$W/stderr.log" || exit 1;
+'
+
+run_test "(7b) HIMMEL-1712: auto-arm-on-cap.sh treats an account-mismatched cache as unreadable usage -> quiet no-op, never arms" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-7b.XXXXXX"); export HOME="$W/home-a"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 95 12.7 || exit 1;
+  export HOME="$W/home-b"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  S="$W/state"; mkdir -p "$S"; H="$W/handovers"; mkdir -p "$H";
+  run_arm_hook "$S" "$W/cache.json" "$W/arm.log" "$H" "$W/stderr.log";
+  rc=$?; [ "$rc" -eq 0 ] || exit 1;
+  grep -q "MALFUNCTION" "$W/stderr.log" && exit 1;
+  [ -e "$W/arm.log" ] && exit 1;
+  exit 0;
+'
+
+run_test "(7c) HIMMEL-1712: resume-slot.sh treats an account-mismatched cache as unusable (same exit 2/empty-stdout shape as its die() contract)" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-7c.XXXXXX"); export HOME="$W/home-a"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  produce_cache "$W" 63.4 12.7 || exit 1;
+  export HOME="$W/home-b"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  out=$(bash "$RESUME_SLOT" --cache "$W/cache.json" --max-age 0 2>"$W/stderr.log"); rc=$?;
+  [ "$rc" -eq 2 ] || exit 1;
+  [ -z "$out" ] || exit 1;
+  grep -q "ERR resume-slot: usage cache account does not match the current session" "$W/stderr.log" || exit 1;
+'
+
+run_test "(7d) HIMMEL-1712: bank-preflight.sh treats an account-mismatched cache as BANK-UNKNOWN (same emit() shape as no usable primary)" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-7d.XXXXXX"); export HOME="$W/home-a"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  produce_cache_oauth "$W" 10 20;
+  export HOME="$W/home-b"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  mk_empty_fleet_stub "$W";
+  v=$(CADENCE_BANK_CACHE="$W/cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/l.jsonl" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" HIMMEL_FLEET_SLOTS="$W/slots" HIMMEL_FLEET_CAP=4 bash "$PREFLIGHT" </dev/null 2>"$W/pf.err");
+  [ "$v" = "BANK-UNKNOWN" ] || exit 1;
+  grep -q "account" "$W/pf.err" || exit 1;
+'
+
 # --- HIMMEL-718 Task 2.3: same contract, via the REAL composer driver ---------
 run_test "(5) composer-DRIVEN cache satisfies the full cap-guard contract (real 2.3 driver)" '
-  W=$(mktemp -d); produce_cache_via_composer "$W" 55.5 22.2 || exit 1;
+  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-contract-test\"}}" > "$HOME/.claude.json";
+  produce_cache_via_composer "$W" 55.5 22.2 || exit 1;
   [ -f "$W/cache.json" ] || exit 1;
   # five_hour/seven_day are JSON objects with numeric utilization (schema).
   [ "$(jq -r ".five_hour.utilization" "$W/cache.json")" = "55.5" ] || exit 1;

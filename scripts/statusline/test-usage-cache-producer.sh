@@ -217,6 +217,7 @@ run_test "(8) seven_day-only rate_limits still mirrors (CR codex-1), five_hour p
 
 run_test "(9) HIMMEL-3364: both stdin windows stamp primaries_refreshed_at=now, and bank-preflight PROCEEDs on the result" '
   W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-9.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-9\"}}" > "$HOME/.claude.json";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
   unset USAGE_OAUTH_CMD;
   before=$(date +%s);
@@ -252,6 +253,101 @@ run_test "(9c) HIMMEL-3364: one stdin window carries the prior stamp; with no pr
   printf "%s" "{\"rate_limits\":{\"seven_day\":{\"utilization\":21.5}}}" | bash "$PRODUCER";
   jq -e "has(\"primaries_refreshed_at\") | not" "$CLAUDE_USAGE_CACHE" >/dev/null || exit 1;
   exit 0;
+'
+
+run_test "(10) HIMMEL-1712: rates path stamps account (16-hex hash, never the raw uuid)/derived_at/produced_by" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-10.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD;
+  before=$(date +%s);
+  printf "%s" "{\"session_id\":\"sess-10\",\"rate_limits\":{\"five_hour\":{\"utilization\":63.4,\"resets_at\":\"Z\"}}}" | bash "$PRODUCER";
+  acct=$(jq -r ".account // empty" "$CLAUDE_USAGE_CACHE"); [ -n "$acct" ] || exit 1;
+  [ "$acct" != "uuid-account-A" ] || exit 1;
+  [[ "$acct" =~ ^[0-9a-f]{16}$ ]] || exit 1;
+  derived=$(jq -r ".derived_at // empty" "$CLAUDE_USAGE_CACHE");
+  [ -n "$derived" ] && [ "$derived" -ge "$before" ] || exit 1;
+  produced_by=$(jq -r ".produced_by // empty" "$CLAUDE_USAGE_CACHE");
+  [[ "$produced_by" =~ ^[0-9]+$ ]] || exit 1;
+'
+
+run_test "(11) HIMMEL-1712: oauth path stamps account/derived_at/produced_by too" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-11.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  stub="$W/stub.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20}}" "JSON" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
+  printf "%s" "{\"session_id\":\"sess-11\",\"model\":{}}" | bash "$PRODUCER";
+  acct=$(jq -r ".account // empty" "$CLAUDE_USAGE_CACHE"); [ -n "$acct" ] || exit 1;
+  [[ "$acct" =~ ^[0-9a-f]{16}$ ]] || exit 1;
+  jq -e ".derived_at" "$CLAUDE_USAGE_CACHE" >/dev/null || exit 1;
+  jq -e ".produced_by" "$CLAUDE_USAGE_CACHE" >/dev/null || exit 1;
+'
+
+run_test "(12) HIMMEL-1712: a session keeps stamping its FIRST-seen identity after ~/.claude.json flips mid-session; a NEW session picks up the current one" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-12.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"session_id\":\"sess-S\",\"rate_limits\":{\"five_hour\":{\"utilization\":10,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  acct_first=$(jq -r ".account" "$CLAUDE_USAGE_CACHE");
+  [ -n "$acct_first" ] && [ "$acct_first" != "null" ] || exit 1;
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  printf "%s" "{\"session_id\":\"sess-S\",\"rate_limits\":{\"five_hour\":{\"utilization\":11,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  acct_second=$(jq -r ".account" "$CLAUDE_USAGE_CACHE");
+  [ "$acct_second" = "$acct_first" ] || exit 1;
+  printf "%s" "{\"session_id\":\"sess-T\",\"rate_limits\":{\"five_hour\":{\"utilization\":12,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  acct_new_session=$(jq -r ".account" "$CLAUDE_USAGE_CACHE");
+  [ "$acct_new_session" != "$acct_first" ] || exit 1;
+'
+
+run_test "(13) HIMMEL-1712: no readable ~/.claude.json -> account stamped null (UNKNOWN), never fabricated" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-13.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD;
+  printf "%s" "{\"session_id\":\"sess-13\",\"rate_limits\":{\"five_hour\":{\"utilization\":10,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  jq -e "has(\"account\")" "$CLAUDE_USAGE_CACHE" >/dev/null || exit 1;
+  [ "$(jq -r ".account" "$CLAUDE_USAGE_CACHE")" = "null" ] || exit 1;
+'
+
+run_test "(14) HIMMEL-1712 CR (panel round 1, codex-1): a partial window is NOT carried forward from a cache stamped for a DIFFERENT known account" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-14.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"session_id\":\"sess-A\",\"rate_limits\":{\"five_hour\":{\"utilization\":33,\"resets_at\":\"R5\"}}}" | bash "$PRODUCER";
+  acct_a=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct_a" ] && [ "$acct_a" != "null" ] || exit 1;
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  printf "%s" "{\"session_id\":\"sess-B\",\"rate_limits\":{\"seven_day\":{\"utilization\":21.5,\"resets_at\":\"R7\"}}}" | bash "$PRODUCER";
+  acct_b=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ "$acct_b" != "$acct_a" ] || exit 1;
+  [ "$(jq -r ".seven_day.utilization" "$CLAUDE_USAGE_CACHE")" = "21.5" ] || exit 1;
+  [ "$(jq -r ".five_hour" "$CLAUDE_USAGE_CACHE")" = "{}" ] || exit 1;
+'
+
+run_test "(15) HIMMEL-1712 CR (panel round 2, codex-1): a legacy cache with NO account field is not relabeled under a known current identity" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-15.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-C\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"five_hour\":{\"utilization\":33,\"resets_at\":\"R5\"},\"seven_day\":{\"utilization\":1,\"resets_at\":\"old\"},\"extra_usage\":{}}" > "$CLAUDE_USAGE_CACHE";
+  printf "%s" "{\"session_id\":\"sess-C\",\"rate_limits\":{\"seven_day\":{\"utilization\":21.5,\"resets_at\":\"R7\"}}}" | bash "$PRODUCER";
+  acct=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct" ] && [ "$acct" != "null" ] || exit 1;
+  [ "$(jq -r ".seven_day.utilization" "$CLAUDE_USAGE_CACHE")" = "21.5" ] || exit 1;
+  [ "$(jq -r ".five_hour" "$CLAUDE_USAGE_CACHE")" = "{}" ] || exit 1;
+'
+
+run_test "(16) HIMMEL-1712 CR (panel round 4, codex-1): a session whose FIRST render finds no identity stays pinned UNKNOWN even after the identity becomes available; a NEW session picks up the now-available one" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-16.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"session_id\":\"sess-U\",\"rate_limits\":{\"five_hour\":{\"utilization\":10,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  [ "$(jq -r ".account" "$CLAUDE_USAGE_CACHE")" = "null" ] || exit 1;
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-D\"}}" > "$HOME/.claude.json";
+  printf "%s" "{\"session_id\":\"sess-U\",\"rate_limits\":{\"five_hour\":{\"utilization\":11,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  [ "$(jq -r ".account" "$CLAUDE_USAGE_CACHE")" = "null" ] || exit 1;
+  printf "%s" "{\"session_id\":\"sess-V\",\"rate_limits\":{\"five_hour\":{\"utilization\":12,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  acct_new=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct_new" ] && [ "$acct_new" != "null" ] || exit 1;
 '
 
 # --- summary ------------------------------------------------------------------

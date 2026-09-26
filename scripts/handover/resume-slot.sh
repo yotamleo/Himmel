@@ -173,6 +173,22 @@ if [ "$MAX_AGE_SEC" -gt 0 ]; then
     fi
 fi
 
+# HIMMEL-1712: a cache stamped by a different account is unusable here for
+# the same reason a stale cache is — don't arm/wait on someone else's
+# numbers. Mirrors the python die() contract below (exit 2, "ERR
+# resume-slot: ..." on stderr, empty stdout) without touching the python
+# block. A missing/unreadable helper degrades to "can't tell", which this
+# treats the same as a mismatch.
+IDLIB="$SCRIPT_DIR/../lib/usage-cache-identity.sh"
+# shellcheck source=../lib/usage-cache-identity.sh
+if ! { [ -r "$IDLIB" ] && . "$IDLIB"; } 2>/dev/null; then
+    usage_cache_account_mismatch() { return 0; }
+fi
+if usage_cache_account_mismatch "$CACHE_PATH"; then
+    echo "ERR resume-slot: usage cache account does not match the current session" >&2
+    exit 2
+fi
+
 # All the decision logic lives in one python3 block: parse the two windows,
 # compare utilization (floats) to the threshold, and emit the chosen target.
 # python3 is a required-env tool (HIMMEL-123); keeping ISO parsing + float

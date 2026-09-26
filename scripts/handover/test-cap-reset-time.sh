@@ -38,10 +38,21 @@ assert_match() {
 
 FAILED=0
 
+# HIMMEL-1712: hermetic identity so every fixture below can stamp the SAME
+# matching account hash — this suite is about resets_at parsing, not
+# identity, and a dedicated account-mismatch case is added separately below.
+export HOME="$TMP/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-cap-reset-test"}}' > "$HOME/.claude.json"
+IDLIB="$(cd "$(dirname "$0")" && pwd)/../lib/usage-cache-identity.sh"
+# shellcheck source=../lib/usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$IDLIB"
+ACCT="$(current_account_hash)"
+
 # Build a fresh fixture cache file.
 FIXTURE="$TMP/cache.json"
-cat > "$FIXTURE" <<'EOF'
-{"five_hour":{"utilization":42.0,"resets_at":"2026-05-25T11:40:01.173252+00:00"},"seven_day":{"utilization":15.0,"resets_at":"2026-05-30T09:00:00+00:00"},"seven_day_oauth_apps":null}
+cat > "$FIXTURE" <<EOF
+{"five_hour":{"utilization":42.0,"resets_at":"2026-05-25T11:40:01.173252+00:00"},"seven_day":{"utilization":15.0,"resets_at":"2026-05-30T09:00:00+00:00"},"seven_day_oauth_apps":null,"account":"$ACCT"}
 EOF
 
 # T1: default (HH:MM) — should print a valid 24h time
@@ -110,8 +121,8 @@ assert_rc "T12 underscore window form rc=0" 0 "$?"
 # windows. Default HH:MM, --epoch, and --raw must all resolve it; the ISO
 # cases above (T1-T4) stay green for backward compat with older builds.
 EPOCH_FIXTURE="$TMP/cache-epoch.json"
-cat > "$EPOCH_FIXTURE" <<'EOF'
-{"five_hour":{"utilization":42.0,"resets_at":"1783760400"},"seven_day":{"utilization":93.0,"resets_at":"1783760400"},"seven_day_oauth_apps":null}
+cat > "$EPOCH_FIXTURE" <<EOF
+{"five_hour":{"utilization":42.0,"resets_at":"1783760400"},"seven_day":{"utilization":93.0,"resets_at":"1783760400"},"seven_day_oauth_apps":null,"account":"$ACCT"}
 EOF
 
 # T14: epoch-form five-hour default (HH:MM)
@@ -185,6 +196,17 @@ EOF
 else
     echo "SKIP T13 (no GNU coreutils timeout on this runner)"
 fi
+
+# T20: HIMMEL-1712 — a cache stamped for a DIFFERENT account is UNKNOWN,
+# same exit 3 / stderr shape as a missing resets_at (T9).
+MISMATCH_FIXTURE="$TMP/cache-mismatch.json"
+cat > "$MISMATCH_FIXTURE" <<'EOF'
+{"five_hour":{"utilization":42.0,"resets_at":"2026-05-25T11:40:01.173252+00:00"},"seven_day":{"utilization":15.0,"resets_at":"2026-05-30T09:00:00+00:00"},"account":"uuid-hash-of-a-different-account"}
+EOF
+out=$(bash "$CAP" --cache "$MISMATCH_FIXTURE" --max-age 0 2>&1)
+rc=$?
+assert_rc "T20 account-mismatched cache rc=3" 3 "$rc"
+assert_match "T20 account-mismatched cache ERR line" 'does not match the current session' "$out"
 
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
