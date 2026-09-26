@@ -18,10 +18,11 @@
 #
 # Bounded start: the daemon start is wrapped in timeout(1) when available so
 # a hung qmd/bun start cannot stall every new session at SessionStart.
-# Worst case ~29s (QMD_START_TIMEOUT 20 + kill grace 5 + wait loop ~4), under
-# Claude Code's default 60s hook timeout - do not raise the defaults past
-# that budget. Note: a malformed QMD_MCP_URL override looks identical to
-# daemon-dead (curl stderr is discarded by design).
+# Worst case ~34s (QMD_START_TIMEOUT 20 + kill grace 5 + port-release wait 5 +
+# post-start wait loop ~4), under Claude Code's default 60s hook timeout - do
+# not raise the defaults past that budget. Note: a malformed QMD_MCP_URL
+# override looks identical to daemon-dead (curl stderr is discarded by
+# design).
 #
 # qmd resolution is inlined (bun + the bun-global qmd.js FIRST, then the bun
 # bin shim, then PATH; .exe variant on Windows) - self-contained mirror of the
@@ -31,7 +32,8 @@
 #
 # Test seams (used only by scripts/qmd/test-ensure-qmd-daemon.sh in the
 # himmel repo; default to production):
-#   QMD_MCP_URL         probe URL           (default http://localhost:8181/mcp)
+#   QMD_MCP_URL         probe URL AND raw-TCP-probe host:port (default
+#                        http://localhost:8181/mcp)
 #   QMD_CURL            curl binary         (default curl)
 #   QMD_START_TIMEOUT   daemon-start bound  (default 20 seconds)
 set -u
@@ -45,6 +47,7 @@ QMD_CURL="${QMD_CURL:-curl}"
 QMD_START_TIMEOUT="${QMD_START_TIMEOUT:-20}"
 PROBE_TIMEOUT=2
 WAIT_TRIES=5
+PORT_WAIT_TRIES=5
 
 INIT_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ensure-qmd-daemon","version":"1"}}}'
 
@@ -127,6 +130,30 @@ if ! resolve_qmd; then
   echo "  Install it: bash <himmel-repo>/scripts/lib/qmd-bin.sh install (HIMMEL-877)" >&2
   exit 1
 fi
+
+# A killed daemon can take ~15s to unwind (bun stops 46 threads) before it
+# actually releases the port. If the MCP probe above found the endpoint dead
+# but a previous daemon is still mid-unwind, racing straight to start here
+# would launch a second daemon contending with the first for the same port
+# (HIMMEL-3062). Poll a raw TCP connect - distinct from the qmd-shaped MCP
+# probe above, this only asks "is anything listening", not "is it qmd" - and
+# wait for the port to fully free before starting. Bounded to PORT_WAIT_TRIES
+# * 1s so a port stuck for some unrelated reason still falls through to the
+# normal start attempt rather than hanging. On a bash build without /dev/tcp
+# support, the connect always "fails" and this loop is a silent no-op - same
+# behavior as before this fix.
+port_host="${QMD_MCP_URL#*://}"
+port_host="${port_host%%/*}"
+port_num="${port_host##*:}"
+port_host="${port_host%%:*}"
+port_held() {
+  (exec 3<>"/dev/tcp/$port_host/$port_num") 2>/dev/null
+}
+p=0
+while [ "$p" -lt "$PORT_WAIT_TRIES" ] && port_held; do
+  p=$((p + 1))
+  sleep 1
+done
 
 # qmd mcp --http --daemon is idempotent: already-running prints
 # "Already running (PID N)" and exits 0. Bound the start with timeout(1)
