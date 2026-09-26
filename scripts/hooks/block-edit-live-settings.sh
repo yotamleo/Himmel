@@ -1564,9 +1564,26 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                 widx=$((widx + 1))
             done
         else
+            # CodeRabbit (HIMMEL-3686): unquoted `for w in $cmd_n` is subject
+            # to pathname expansion against the HOOK PROCESS's own real cwd —
+            # unrelated to the command's cwd — so a glob-containing operand
+            # could reach _check_write_operand as an unrelated expanded path
+            # instead of its literal text. `set -f` for exactly this loop
+            # keeps the fallback textual, restoring the prior noglob state
+            # after (mirrors lex_resolve's own set -f/set +f bracket).
+            case $- in
+                *f*) _had_noglob=1 ;;
+                *) _had_noglob=0 ;;
+            esac
+            set -f
             for w in $cmd_n; do
                 _check_write_operand "$w"
             done
+            if [ "$_had_noglob" = 1 ]; then
+                set -f
+            else
+                set +f
+            fi
         fi
     fi
 

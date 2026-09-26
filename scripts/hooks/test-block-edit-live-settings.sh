@@ -1409,6 +1409,41 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# 218: HIMMEL-3686 CodeRabbit (round-6) — the TOK=0 fallback's own
+# `for w in $cmd_n; do _check_write_operand "$w"; done` (used whenever the
+# tokenizer can't fully vouch for the command text, e.g. a heredoc is
+# present) is UNQUOTED, so it is also subject to pathname (glob) expansion
+# against the HOOK SUBPROCESS'S OWN real cwd — unrelated to tool_input.cwd.
+# A write-destination operand containing a glob metacharacter can therefore
+# be silently replaced depending on what files happen to exist wherever the
+# hook process is launched from. Build a real symlink into a live settings
+# file at a fixed relative path inside a worktree, then run the SAME
+# heredoc-bearing (TOK=0) command with that symlink addressed via a glob
+# operand from two different real launch cwds: one with no matching decoy,
+# one with a same-named decoy that makes the glob expand successfully. The
+# verdict must be identical in both cases.
+mkdir -p "$WT2/wtlink"
+ln -s "$PRIMARY/.claude/settings.json" "$WT2/wtlink/s"
+TOK0_GLOB_CMD='cat <<HEREDOC_BODY
+x
+HEREDOC_BODY
+cp y wtlink/*'
+TOK0_GLOB_JSON=$(jq -n --arg cmd "$TOK0_GLOB_CMD" --arg cwd "$WT2" \
+    '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}')
+TRAP_EMPTY="$SANDBOX/tok0-glob-trap-empty"
+mkdir -p "$TRAP_EMPTY"
+TRAP_MATCH="$SANDBOX/tok0-glob-trap-match"
+mkdir -p "$TRAP_MATCH/wtlink"
+touch "$TRAP_MATCH/wtlink/s"
+RC_TRAP_EMPTY=$(cd "$TRAP_EMPTY" && printf '%s' "$TOK0_GLOB_JSON" | bash "$HOOK" >/dev/null 2>&1; echo $?)
+RC_TRAP_MATCH=$(cd "$TRAP_MATCH" && printf '%s' "$TOK0_GLOB_JSON" | bash "$HOOK" >/dev/null 2>&1; echo $?)
+if [ "$RC_TRAP_EMPTY" = "$RC_TRAP_MATCH" ]; then
+    echo "PASS 218 TOK=0 fallback's glob write operand gives the same verdict regardless of a same-named decoy in the hook process's real cwd (rc=$RC_TRAP_EMPTY both)"
+else
+    echo "FAIL 218 TOK=0 fallback's glob write operand verdict depends on the hook process's real cwd contents — got rc=$RC_TRAP_EMPTY with no decoy, rc=$RC_TRAP_MATCH with a same-named decoy present (should be identical)"
+    FAILED=$((FAILED + 1))
+fi
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
