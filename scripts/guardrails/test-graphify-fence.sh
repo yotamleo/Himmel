@@ -2536,6 +2536,7 @@ run_fence allow no "$HIMMEL" "no substitution, himmel-code x glm -> allow (X9 co
 # (X10) a substitution with NO separator inside -> judged exactly as at base
 # (still denied, but via the pre-existing unresolved-chdir reason, not the
 # new hidden-separator one).
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "env -C \$(pwd) graphify update notes/patient.md --backend glm" 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ] && ! printf '%s' "$out" | grep -q 'clause separator'; then
     pass "env -C \$(pwd) (no separator inside) -> deny via pre-existing chdir reason, unchanged (X10 control)"
