@@ -308,7 +308,11 @@ export function checkRoundGuard(
 //
 // Usage: bun round-guard.ts check --cwd <dir> [--branch <name>] --task-file <path> [--rounds-override <text>]
 // Exit 0 = allow (a note, if any, on stderr). Exit 2 = refuse (message on
-// stderr). Any other exit means the predicate could not be evaluated at all —
+// stderr) — this covers both a genuine round-guard policy refusal AND a CLI
+// usage/argument/task-file-read error (the message on stderr distinguishes
+// them; the one real call site always passes well-formed args and an
+// already-written task file, so those paths are unreached in practice). Any
+// other exit means the predicate could not be evaluated at all —
 // the hook's own contract (HIMMEL-1568) treats that as a fail-CLOSED case for
 // a real implementor dispatch, unlike this guard's own fail-open posture on a
 // missing ledger or an unkeyed dispatch (both handled above, inside

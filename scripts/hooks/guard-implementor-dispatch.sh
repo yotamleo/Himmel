@@ -474,6 +474,7 @@ lane_ready() {
 round_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
 if [ -n "$round_cwd" ]; then
     round_task_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_task_file=""
+    round_task_path="$round_task_file"
     if [ -n "$round_task_file" ]; then
         printf '%s' "$text" > "$round_task_file" 2>/dev/null || round_task_file=""
     fi
@@ -485,12 +486,12 @@ if [ -n "$round_cwd" ]; then
     fi
     if [ -z "$round_cmd" ]; then
         printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate could not be evaluated for this implementor dispatch (bun missing, scripts/telegram/round-guard.ts missing, or a temp file could not be created; dispatch cwd: %s) — fix the environment and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_cwd" >&2
-        [ -n "$round_task_file" ] && rm -f "$round_task_file" 2>/dev/null
+        [ -n "$round_task_path" ] && rm -f "$round_task_path" 2>/dev/null
         exit 2
     fi
     round_rc=0
     round_out=$(_run_bounded "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$round_cmd") || round_rc=$?
-    rm -f "$round_task_file" 2>/dev/null
+    rm -f "$round_task_path" 2>/dev/null
     case "$round_rc" in
         0)
             [ -n "$round_out" ] && warn "$round_out"
