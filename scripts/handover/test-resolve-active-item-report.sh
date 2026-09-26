@@ -2,7 +2,8 @@
 # shellcheck disable=SC2015
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; R="$HERE/resolve-active-item-report.sh"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-resolve-active-item-report.XXXXXX")" || exit 1
+trap 'rm -rf "$tmp"' EXIT
 fails=0; check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
 # tmp itself is the fixture repo root: resolve-active-item.sh derives
