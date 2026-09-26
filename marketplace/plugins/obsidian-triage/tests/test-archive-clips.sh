@@ -403,6 +403,8 @@ for rb in triage-clips.md synthesize-clips.md archive-clips.md; do
     out=$(printf '%s' "$g8_section" | grep -E "Exit 2")
     if [ -n "$out" ]; then found=yes; else found=no; fi
     assert "$rb documents Exit 2 on the gate" "yes" "$found"
+    if grep -qiF "fresh only if" "$f"; then found=yes; else found=no; fi
+    assert "$rb has no date-freshness wording (marker presence alone gates, since G-2 invalidates at harvest start)" "no" "$found"
 done
 
 echo ""

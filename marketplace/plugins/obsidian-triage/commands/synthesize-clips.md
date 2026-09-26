@@ -35,8 +35,7 @@ Same as `/triage-clips`. Look at `$1`, then `$OBSIDIAN_VAULT_PATH`, then `~/Docu
 
 synthesize-clips consumes processed clips that trace back to harvest output. A hard-killed `/harvest-clips` mid-run leaves that state partial — synthesizing over it produces patterns from corrupted evidence. Before scanning:
 
-1. If `<vault>/.harvest.done` does not exist: abort with `synthesize-clips: upstream harvest incomplete — <vault>/.harvest.done not found; run /harvest-clips first.` Exit 2.
-2. If it exists, read its ISO timestamp (the marker's first field; UTC, per G-8). It is fresh only if that UTC date equals `$(date -u +%Y-%m-%d)` — compare in UTC, not against the local `$TODAY` captured above: near local midnight the UTC and local dates can differ, and comparing against local `$TODAY` would wrongly reject a harvest that just completed cleanly. Do not fall back to comparing against a `<vault>/.harvest.lock` start time: a leftover lock from a killed run would let an old marker pass the check indefinitely. Otherwise it is stale: abort with `synthesize-clips: upstream harvest incomplete — <vault>/.harvest.done is stale; run /harvest-clips first.` Exit 2.
+If `<vault>/.harvest.done` does not exist: abort with `synthesize-clips: upstream harvest incomplete — <vault>/.harvest.done not found; run /harvest-clips first.` Exit 2. No date-freshness check: G-2 invalidates the marker at the START of every harvest run, so its mere presence already means "the most recent harvest that started finished cleanly" — a night where harvest exits early without running (bank-threshold skip) leaves yesterday's marker valid, and that is correct.
 
 No operator override flag — keep it minimal; re-running `/harvest-clips` clears the gate.
 
