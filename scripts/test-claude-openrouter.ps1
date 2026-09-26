@@ -172,6 +172,25 @@ try {
     Where-Object { Select-String -LiteralPath $_.FullName -SimpleMatch -Quiet -Pattern 'or-test-123' }  # gitleaks:allow
   if ($leaked) { Fail 'key leaked into config dir' } else { Pass 'no key material in config dir' }
 
+  # --- T3b (HIMMEL-3334 F2): the un-swept claude-hud.json path (new, alongside
+  # the legacy plugins\claude-hud\config.json) is seeded and staleness-tracked
+  # too — a lane must not lose the HUD after an operator's box has migrated off
+  # the legacy path.
+  New-Sandbox; $script:KEY = 'or-test-123'  # gitleaks:allow
+  Write-AllowMatrix (Join-Path $WORK 'matrix.json'); $script:MATRIX = Join-Path $WORK 'matrix.json'
+  '{"display":{"customLineCommand":"new-path"}}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\claude-hud.json') -NoNewline
+  Assert-Exit (Invoke-Launcher) 0 'seed mirrors the new hud path'
+  $hudNew = Join-Path $FAKEHOME '.claude-openrouter\claude-hud.json'
+  if (Test-Path -LiteralPath $hudNew) { Pass 'claude-hud.json (new path) seeded' } else { Fail 'claude-hud.json (new path) not seeded' }
+  if (FileHas $hudNew 'new-path') { Pass 'seeded claude-hud.json content matches source' } else { Fail 'seeded claude-hud.json content mismatch' }
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-openrouter\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  '{"display":{"customLineCommand":"new-path-updated"}}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\claude-hud.json') -NoNewline
+  Assert-Exit (Invoke-Launcher) 0 'new hud path staleness triggers reseed'
+  if (FileHas $hudNew 'new-path-updated') { Pass 'new-path hud change triggered reseed' } else { Fail 'new-path hud change did not trigger reseed' }
+  Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude\claude-hud.json') -Force
+  Assert-Exit (Invoke-Launcher) 0 'deleted new-path hud source mirrors removal'
+  if (Test-Path -LiteralPath $hudNew) { Fail 'stale claude-hud.json (new path) survived source deletion' } else { Pass 'claude-hud.json (new path) removed on source deletion' }
+
   # --- T4: the full env contract reaches the child. ANTHROPIC_API_KEY must
   # arrive EXPLICITLY EMPTY (whole-line match) — the empty key is load-bearing:
   # it is what forces the SDK onto the OpenRouter route. ---

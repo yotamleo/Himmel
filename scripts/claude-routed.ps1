@@ -268,6 +268,14 @@ function Copy-SeedConfig {
     } elseif (Test-Path -LiteralPath $hudDst) {
       Remove-Item -LiteralPath $hudDst -Force
     }
+    # HIMMEL-3334: the un-swept claude-hud config path, alongside the legacy one above.
+    $hudNewSrc = Join-Path $src 'claude-hud.json'
+    $hudNewDst = Join-Path $ConfigDir 'claude-hud.json'
+    if (Test-Path -LiteralPath $hudNewSrc) {
+      Copy-Item -LiteralPath $hudNewSrc -Destination $hudNewDst -Force
+    } elseif (Test-Path -LiteralPath $hudNewDst) {
+      Remove-Item -LiteralPath $hudNewDst -Force
+    }
     # sentinel LAST: only a fully-populated seed reads as "seeded"
     New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
   } catch {
@@ -299,7 +307,7 @@ function Test-ConfigSeedStale {
     if (-not (Test-Path -LiteralPath $sentinel)) { return $false }
     $sentinelTime = (Get-Item -LiteralPath $sentinel).LastWriteTimeUtc
     $src = Join-Path $HomeDir '.claude'
-    foreach ($rel in @('settings.json', 'CLAUDE.md', 'RTK.md', (Join-Path 'plugins' 'installed_plugins.json'), (Join-Path 'plugins' 'known_marketplaces.json'), (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json')))) {
+    foreach ($rel in @('settings.json', 'CLAUDE.md', 'RTK.md', (Join-Path 'plugins' 'installed_plugins.json'), (Join-Path 'plugins' 'known_marketplaces.json'), (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json')), 'claude-hud.json')) {
       $s = Join-Path $src $rel
       $d = Join-Path $ConfigDir $rel
       if (Test-Path -LiteralPath $s) {

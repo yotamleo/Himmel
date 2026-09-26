@@ -166,6 +166,27 @@ try {
   $count9 = ([regex]::Matches($seeded8Content, '(?m)^## Claudex lane model identity \(HIMMEL-1927\)$')).Count
   if ($count9 -eq 1) { Pass 'same-model relaunch does not reseed again' } else { Fail "same-model relaunch produced $count9 identity stanzas (expected 1)" }
 
+  # --- HIMMEL-3334 F2: the un-swept claude-hud.json path (new, alongside the
+  # legacy plugins\claude-hud\config.json) is seeded and staleness-tracked too —
+  # a lane must not lose the HUD after an operator's box has migrated off the
+  # legacy path.
+  New-Sandbox
+  $env:CODEX_MODEL = 'gpt-5.6-sol'
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\claude-hud.json') -Value '{"display":{"customLineCommand":"new-path"}}' -NoNewline
+  Invoke-Launcher
+  $hudSeeded = Join-Path $FAKEHOME '.claude-codex\claude-hud.json'
+  if (Test-Path -LiteralPath $hudSeeded) { Pass 'claude-hud.json (new path) seeded' } else { Fail 'claude-hud.json (new path) not seeded' }
+  $hudSeededContent = Get-Content -LiteralPath $hudSeeded -Raw
+  if ($hudSeededContent -match 'new-path') { Pass 'seeded claude-hud.json content matches source' } else { Fail 'seeded claude-hud.json content mismatch' }
+  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-codex\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\claude-hud.json') -Value '{"display":{"customLineCommand":"new-path-updated"}}' -NoNewline
+  Invoke-Launcher
+  $hudSeededContent = Get-Content -LiteralPath $hudSeeded -Raw
+  if ($hudSeededContent -match 'new-path-updated') { Pass 'new hud path staleness triggers reseed' } else { Fail 'new-path hud change did not trigger reseed' }
+  Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude\claude-hud.json') -Force
+  Invoke-Launcher
+  if (-not (Test-Path -LiteralPath $hudSeeded)) { Pass 'deleted new-path hud source mirrors removal' } else { Fail 'stale claude-hud.json (new path) survived source deletion' }
+
   # --- .salus marker -> refuse exit 3 before any seeding happens (HIMMEL-2173)
   New-Sandbox
   $env:CODEX_MODEL = 'gpt-5.6-sol'
