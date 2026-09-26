@@ -85,7 +85,10 @@ If `gh auth status` is non-zero AND the batch contains any github URL: abort wit
 
 Before processing any clip:
 
-1. Acquire sentinel lockfile at `<vault>/.harvest.lock` containing PID + ISO timestamp + clip-batch hash. If the lockfile exists and its PID is alive: abort with `harvest-clips: another harvest run is active (PID=<X>); wait for it OR delete <vault>/.harvest.lock if stale.` Exit 2.
+1. Acquire sentinel lockfile at `<vault>/.harvest.lock` containing PID + ISO timestamp + clip-batch hash. If the lockfile exists, parse its PID:
+   - **PID alive** (`kill -0 <PID>` succeeds): abort with `harvest-clips: another harvest run is active (PID=<X>); wait for it OR delete <vault>/.harvest.lock if stale.` Exit 2.
+   - **PID dead** (`kill -0 <PID>` fails — the prior run was SIGKILLed, or the machine lost power, before its exit trap could run): log `harvest-clips: removing stale lock (PID=<X> not running, written <ts>)`, remove `<vault>/.harvest.lock`, and acquire a fresh lock.
+   - **Unparseable / no PID** (the lockfile content doesn't yield a PID, or liveness can't be determined): treat as **alive** — fail closed. Abort with the same message as the alive case (`harvest-clips: another harvest run is active (PID=<X>); wait for it OR delete <vault>/.harvest.lock if stale.`). Exit 2.
 2. Check obsidian-github-sync sync state. If `<vault>/.obsidian/plugins/obsidian-github-sync/data.json` exists, parse `lastSync` ISO timestamp. If within ±30s of now: WARN once and proceed (heuristic — Windows file-locking semantics may be unreliable; refine during calibration per replan trigger §17). If `lastSync` cannot be parsed: skip the check.
 3. Clean up: register a trap to remove `<vault>/.harvest.lock` on exit (including signals).
 
