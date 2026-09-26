@@ -521,7 +521,7 @@ EOF
 #   disposable         empty, or every file is on the allowlist
 #   user-data <paths>  at least one file is NOT on the allowlist
 nongit_husk_reap_verdict() {
-    local dir="$1" rel nonign="" tmpf
+    local dir="$1" entry rel nonign="" tmpf
     # NUL-delimited via a temp file, not `out=$(find ... -print0)`: bash
     # command substitution silently drops NUL bytes, which would merge every
     # entry into one unsplit blob — worse than the newline-splitting this
@@ -529,13 +529,20 @@ nongit_husk_reap_verdict() {
     # (lost across a `while ... done < <(find ...)` process substitution)
     # so a scan failure still fails closed instead of reading as "empty".
     tmpf=$(mktemp 2>/dev/null) || { echo "scanfail"; return 0; }
-    if ! find "$dir" -mindepth 1 -not -type d -print0 2>/dev/null >"$tmpf"; then
+    # Directories are included (not just files/symlinks): an empty
+    # user-created subdirectory has no file entry at all, so excluding
+    # directories here would read it as "nothing found" -> disposable and
+    # silently delete the directory the user made. A real directory (not a
+    # symlink to one) is matched with a trailing slash so it still lines up
+    # with the allowlist's `node_modules/`-style patterns.
+    if ! find "$dir" -mindepth 1 -print0 2>/dev/null >"$tmpf"; then
         rm -f "$tmpf"
         echo "scanfail"; return 0
     fi
-    while IFS= read -r -d '' rel; do
-        [ -z "$rel" ] && continue
-        rel="${rel#"$dir"/}"
+    while IFS= read -r -d '' entry; do
+        [ -z "$entry" ] && continue
+        rel="${entry#"$dir"/}"
+        [ -L "$entry" ] || [ ! -d "$entry" ] || rel="$rel/"
         is_ignorable_ignored_stray "$rel" || nonign="${nonign:+$nonign }$rel"
     done <"$tmpf"
     rm -f "$tmpf"
