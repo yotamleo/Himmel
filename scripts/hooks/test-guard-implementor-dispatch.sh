@@ -1097,6 +1097,32 @@ RC_RG_L=$(run_hook round-worktree-detached-refuses "$REG_NONE" "$(payload_cwd ge
 assert_rc "(l) text names a DETACHED worktree: refuses rather than falling back to 0 rounds" 2 "$RC_RG_L"
 assert_contains "(l) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-detached-refuses)"
 
+# --- (m), HIMMEL-3676 (CR round, codex-1): the named directory EXISTS but
+# has no .git of its own -- git -C would walk UP to the enclosing repo's
+# .git and resolve ITS branch, silently mis-attributing the round to an
+# ancestor repo rather than refusing. Nest the fake "worktree" directly
+# inside the primary's own tree so an unguarded `git -C` would resolve to
+# the primary's own (0-round) branch.
+RG_REPO_N="$TMP/round-repo-n"
+mk_round_repo "$RG_REPO_N" "main"
+RG_WT_DIR_N="$RG_REPO_N/.claude/worktrees/fake-slug-9012"
+mkdir -p "$RG_WT_DIR_N"
+
+RC_RG_N=$(run_hook round-worktree-not-own-repo-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9012' "Write the code and commit it in $RG_WT_DIR_N." "$RG_REPO_N")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(m) named worktree directory has no .git of its own (git -C would walk up to the enclosing repo): refuses rather than silently attributing to the ANCESTOR's branch" 2 "$RC_RG_N"
+assert_contains "(m) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-not-own-repo-refuses)"
+
+# --- (n), HIMMEL-3676 (CR round, codex-2): a RELATIVE worktree match
+# resolves against the hook process's own cwd, not the payload's -- must
+# refuse rather than guessing.
+RG_REPO_O="$TMP/round-repo-o"
+mk_round_repo "$RG_REPO_O" "main"
+RG_WT_REL_O=".claude/worktrees/fix-himmel-9013-relative"
+
+RC_RG_O=$(run_hook round-worktree-relative-path-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9013' "Write the code and commit it in $RG_WT_REL_O." "$RG_REPO_O")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(n) text names a RELATIVE worktree path: refuses rather than resolving it against the hook process's own cwd" 2 "$RC_RG_O"
+assert_contains "(n) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-relative-path-refuses)"
+
 # --- (i), HIMMEL-3681: the probe's CLI stdout/stderr on exit 0 must carry
 # its version sentinel ("round-guard-cli: v1"); a stub standing in for a
 # stale/version-skewed round-guard.ts that exits 0 silently must NOT be

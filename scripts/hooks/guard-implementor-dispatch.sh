@@ -484,7 +484,22 @@ if [ -n "$round_cwd" ]; then
     round_branch_args=""
     round_wt_path=$(printf '%s' "$text" | grep -oE '[A-Za-z0-9_./+-]*\.claude/worktrees/[A-Za-z0-9_+-]+' | head -1 || true)
     if [ -n "$round_wt_path" ]; then
-        round_wt_branch=$(git -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        # HIMMEL-3676 (codex-1/codex-2 CR round): `git -C` walks UP to an
+        # enclosing .git when the named path is not itself a repo root, so a
+        # match that exists but has no .git of its own would silently
+        # attribute to an ancestor's branch instead of refusing — and a
+        # relative match would resolve against the hook process's own cwd,
+        # not the payload's. Require an absolute path with its own .git entry
+        # before ever calling git -C on it; anything else falls through to
+        # the same "could not be resolved" refusal below.
+        round_wt_branch=""
+        case "$round_wt_path" in
+            /*)
+                if [ -e "$round_wt_path/.git" ]; then
+                    round_wt_branch=$(git -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+                fi
+                ;;
+        esac
         case "$round_wt_branch" in
             ""|HEAD)
                 printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch names worktree %s but its branch could not be resolved (missing directory, not a git repo, or detached HEAD) — the reviewed-round predicate cannot be safely attributed. Fix the worktree reference and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_wt_path" >&2
