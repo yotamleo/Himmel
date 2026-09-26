@@ -2420,16 +2420,41 @@ run_fence deny no "$SALUS" "env -S \"true graphify ...\" (hidden invocation) fro
 run_fence deny no "$HIMMEL" "env -C\`pwd\` (backtick-wrapped value) -> deny (R3, fail-closed)" \
     "env -C\`pwd\` graphify update notes/patient.md --backend glm"
 
-# (R4) documentation row, not a fix target: J1290R rated this an acceptable
-# over-deny, so no code change was made for it. Before this round, an
-# UNQUOTED, SEPARATE-token `~/x` (real bash *would* shell-expand this one,
+# (R1 consequence) documentation row, not a fix target: J1290R rated this an
+# acceptable over-deny, so no code change was made for it. Before this round,
+# an UNQUOTED, SEPARATE-token `~/x` (real bash *would* shell-expand this one,
 # since the tilde is the first character of its own word) was correctly
 # allowed via $HOME/x. The "stop modelling shell expansion" fix in this round
 # denies ALL `~` forms without exception, so this previously-correct case now
 # also fails closed - a deliberate, accepted trade documented here so a
-# future reader does not mistake it for a regression.
-run_fence deny no "$HIMMEL" "env -C ~/x (unquoted separate-token tilde, previously-correct case) -> deny (R4, accepted over-deny)" \
+# future reader does not mistake it for a regression. HIMMEL-3641 J1290S M2:
+# this row used to be tagged "(R4, ...)" - J1290R's own R1-R3 findings never
+# included a fourth item (its actual fourth contribution was the codex-1
+# --*-vs--*C*/-*D* ordering fix above, not this one), so the tag is corrected
+# to what it actually is: a consequence of R1 (the unquoted-tilde finding).
+run_fence deny no "$HIMMEL" "env -C ~/x (unquoted separate-token tilde, previously-correct case) -> deny (R1 consequence, accepted over-deny)" \
     "env -C ~/x graphify update notes/patient.md --backend glm" "HOME=$HIMMEL"
+
+# HIMMEL-3641 J1290S S1: a separate-token chdir DIR argument that the
+# tokenizer splits across multiple raw tokens ($(...) command substitution,
+# a backtick form, or a double-quoted "$(...)") sets
+# _GF_CHDIR_DENY_REASON inside _gf_apply_chdir, but the walk used to step
+# past it with i+=2 regardless, landing on the substitution's leftover tail
+# token, misclassifying it as the wrapped command, and never reaching
+# graphify's own command-position check - so the deny reason was recorded
+# but never enforced. Net effect: a real chdir into salus (PHI) via one of
+# these forms silently ALLOWed. Same defect, applies to all 4 separate-token
+# DIR arms (env -C, env --chdir, sudo -D, sudo --chdir).
+run_fence deny no "$HIMMEL" "env -C \$(echo salus) (tokenizer-split \$(...) value) -> deny (S1)" \
+    "env -C \$(echo $SALUS) graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env -C \`echo salus\` (tokenizer-split backtick value) -> deny (S1)" \
+    "env -C \`echo $SALUS\` graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env -C \"\$(echo salus)\" (tokenizer-split quoted \$(...) value) -> deny (S1)" \
+    "env -C \"\$(echo $SALUS)\" graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env --chdir \$(echo salus) (long-option twin) -> deny (S1)" \
+    "env --chdir \$(echo $SALUS) graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "sudo -D \$(echo salus) (sudo twin) -> deny (S1)" \
+    "sudo -D \$(echo $SALUS) graphify update notes/patient.md --backend glm"
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"

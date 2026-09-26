@@ -1790,7 +1790,22 @@ classify_clause() {
                     esac
                     case "$gf_w" in
                         -u)   i=$((i+2)) ;;                # flag + VAR value
-                        -C)   _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2)) ;;  # HIMMEL-3641: -C DIR
+                        -C)
+                            _gf_apply_chdir "${toks[$((i+1))]:-}"
+                            if [ -n "${_GF_CHDIR_DENY_REASON:-}" ]; then
+                                # HIMMEL-3641 J1290S S1: a separate-token DIR
+                                # argument _gf_apply_chdir could not resolve
+                                # (e.g. a tokenizer-split $(...)/`...`/"..."
+                                # fragment) must not let the walk step past it
+                                # with the usual i+=2 - that lands on the
+                                # substitution's leftover tail token,
+                                # misclassifies it as the wrapped command, and
+                                # never reaches graphify's own command-position
+                                # check. Fail closed now instead.
+                                _gf_deny_if_graphify_follows $((i+1)) "$_GF_CHDIR_DENY_REASON"
+                                return 0
+                            fi
+                            i=$((i+2)) ;;                                    # HIMMEL-3641: -C DIR
                         # HIMMEL-3641 J1290O F2: pass the RAW token's suffix
                         # (${toks[$i]}), not $gf_w - $gf_w is already
                         # _strip_cmd'd, which deletes $/`/quotes/() before
@@ -1827,7 +1842,16 @@ classify_clause() {
                                     # note above).
                                     _gf_apply_chdir "${toks[$i]#*=}"; i=$((i+1))
                                 else
-                                    _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2))
+                                    _gf_apply_chdir "${toks[$((i+1))]:-}"
+                                    if [ -n "${_GF_CHDIR_DENY_REASON:-}" ]; then
+                                        # HIMMEL-3641 J1290S S1: see the -C DIR
+                                        # arm's comment above - same
+                                        # fail-closed fix for --chdir DIR's
+                                        # separate-token form.
+                                        _gf_deny_if_graphify_follows $((i+1)) "$_GF_CHDIR_DENY_REASON"
+                                        return 0
+                                    fi
+                                    i=$((i+2))
                                 fi
                             elif guard_is_long_abbrev "unset" "$gf_w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
@@ -1969,7 +1993,16 @@ classify_clause() {
                     esac
                     case "$gf_w" in
                         -u|-g|-U|-p|-C|-r|-t|-h) i=$((i+2)) ;;       # flag + value
-                        -D)   _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2)) ;;  # HIMMEL-3641: -D DIR
+                        -D)
+                            _gf_apply_chdir "${toks[$((i+1))]:-}"
+                            if [ -n "${_GF_CHDIR_DENY_REASON:-}" ]; then
+                                # HIMMEL-3641 J1290S S1: see env -C's arm
+                                # comment above - same fail-closed fix, sudo's
+                                # -D DIR twin.
+                                _gf_deny_if_graphify_follows $((i+1)) "$_GF_CHDIR_DENY_REASON"
+                                return 0
+                            fi
+                            i=$((i+2)) ;;                                    # HIMMEL-3641: -D DIR
                         # HIMMEL-3641 J1290O F2: raw suffix, not $gf_w - see
                         # the env -CDIR note above.
                         -D?*) _gf_apply_chdir "${toks[$i]#-D}"; i=$((i+1)) ;;        # HIMMEL-3641: -DDIR attached
@@ -1993,7 +2026,15 @@ classify_clause() {
                                     # note above.
                                     _gf_apply_chdir "${toks[$i]#*=}"; i=$((i+1))
                                 else
-                                    _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2))
+                                    _gf_apply_chdir "${toks[$((i+1))]:-}"
+                                    if [ -n "${_GF_CHDIR_DENY_REASON:-}" ]; then
+                                        # HIMMEL-3641 J1290S S1: see env -C's
+                                        # arm comment above - same fail-closed
+                                        # fix, sudo --chdir DIR's twin.
+                                        _gf_deny_if_graphify_follows $((i+1)) "$_GF_CHDIR_DENY_REASON"
+                                        return 0
+                                    fi
+                                    i=$((i+2))
                                 fi
                             elif guard_is_long_abbrev "user" "$gf_w" || guard_is_long_abbrev "group" "$gf_w" \
                                 || guard_is_long_abbrev "other-user" "$gf_w" || guard_is_long_abbrev "prompt" "$gf_w" \
