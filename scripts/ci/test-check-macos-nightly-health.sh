@@ -95,8 +95,24 @@ JSON
 out_none="$(FAKE_GH_JOBS_JSON="$TMP/jobs-none.json" PATH="$TMP:$PATH" REPO=owner/repo RUN_ID=1 bash "$SCRIPT" 2>&1)"
 rc_none=$?
 if [ "$rc_none" -eq 1 ]; then ok "no-macOS-jobs fixture -> exit 1 (not silent OK)"; else bad "no-macOS-jobs fixture exit=$rc_none (want 1): $out_none"; fi
-if grep -q "no macOS job found" <<< "$out_none"; then ok "no-macOS-jobs -> error banner"; else bad "no-macOS-jobs missing error banner: $out_none"; fi
+if grep -q "no macOS job actually passed" <<< "$out_none"; then ok "no-macOS-jobs -> error banner"; else bad "no-macOS-jobs missing error banner: $out_none"; fi
 if grep -q "OK: no failing macOS job" <<< "$out_none"; then bad "no-macOS-jobs wrongly reported OK: $out_none"; else ok "no-macOS-jobs -> no false OK"; fi
+
+# HIMMEL-3699 (CR round 2, codex-1): every macOS job SKIPPED (none passed, none
+# failed) must not read as an all-clear OK either — nothing was actually tested.
+cat > "$TMP/jobs-all-skipped.json" <<'JSON'
+{"jobs":[
+  {"name":"shell-unit-shard (macos-latest, 1)","conclusion":"skipped"},
+  {"name":"shell-unit-shard (macos-latest, 2)","conclusion":"skipped"},
+  {"name":"shell-unit-shard (ubuntu-latest, 1)","conclusion":"success"}
+]}
+JSON
+
+out_skip="$(FAKE_GH_JOBS_JSON="$TMP/jobs-all-skipped.json" PATH="$TMP:$PATH" REPO=owner/repo RUN_ID=1 bash "$SCRIPT" 2>&1)"
+rc_skip=$?
+if [ "$rc_skip" -eq 1 ]; then ok "all-macOS-skipped fixture -> exit 1 (not silent OK)"; else bad "all-macOS-skipped fixture exit=$rc_skip (want 1): $out_skip"; fi
+if grep -q "no macOS job actually passed" <<< "$out_skip"; then ok "all-macOS-skipped -> error banner"; else bad "all-macOS-skipped missing error banner: $out_skip"; fi
+if grep -q "OK: no failing macOS job" <<< "$out_skip"; then bad "all-macOS-skipped wrongly reported OK: $out_skip"; else ok "all-macOS-skipped -> no false OK"; fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then
