@@ -482,7 +482,16 @@ if [ -n "$round_cwd" ]; then
     # refuse rather than silently fall back to the payload cwd's own (0-round)
     # branch — that fallback is exactly the wrong-attribution bug this fixes.
     round_branch_args=""
-    round_wt_path=$(printf '%s' "$text" | grep -oE '[A-Za-z0-9_./+-]*\.claude/worktrees/[A-Za-z0-9_+-]+' | head -1 || true)
+    # HIMMEL-3676 (codex-2, CR round 2): the trailing worktree-name class
+    # excluded "." (e.g. "fix.himmel-9016"), which rejected the match
+    # entirely instead of recognizing it -- a false-positive refusal, not a
+    # bypass, since every downstream check (absolute path, own .git,
+    # matching git-common-dir) still gates the resolved branch either way.
+    # A dot is allowed INSIDE the name but the match may not END on one --
+    # dispatch prose routinely ends the sentence naming the path with a
+    # literal "." right after it, and a trailing-dot class would swallow
+    # that punctuation into the path, making a real worktree unresolvable.
+    round_wt_path=$(printf '%s' "$text" | grep -oE '[A-Za-z0-9_./+-]*\.claude/worktrees/([A-Za-z0-9_+-]+\.)*[A-Za-z0-9_+-]+' | head -1 || true)
     if [ -n "$round_wt_path" ]; then
         # HIMMEL-3676 (codex-1/codex-2 CR round): `git -C` walks UP to an
         # enclosing .git when the named path is not itself a repo root, so a
@@ -492,11 +501,23 @@ if [ -n "$round_cwd" ]; then
         # not the payload's. Require an absolute path with its own .git entry
         # before ever calling git -C on it; anything else falls through to
         # the same "could not be resolved" refusal below.
+        #
+        # HIMMEL-3676 (codex-1, CR round 2): round-guard.ts always reads the
+        # CR ledger from --cwd's own git-common-dir and uses --branch only to
+        # filter rows within it — so a worktree belonging to an UNRELATED
+        # repository resolves to a real, valid branch name that simply has no
+        # rows in the TARGET repo's ledger, wrongly reporting 0 rounds. Trust
+        # round_wt_branch only when the named worktree shares the payload
+        # cwd's git-common-dir.
         round_wt_branch=""
         case "$round_wt_path" in
             /*)
                 if [ -e "$round_wt_path/.git" ]; then
-                    round_wt_branch=$(git -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+                    round_wt_common=$(git -C "$round_wt_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+                    round_cwd_common=$(git -C "$round_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+                    if [ -n "$round_wt_common" ] && [ "$round_wt_common" = "$round_cwd_common" ]; then
+                        round_wt_branch=$(git -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+                    fi
                 fi
                 ;;
         esac

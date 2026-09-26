@@ -1123,6 +1123,46 @@ RC_RG_O=$(run_hook round-worktree-relative-path-refuses "$REG_NONE" "$(payload_c
 assert_rc "(n) text names a RELATIVE worktree path: refuses rather than resolving it against the hook process's own cwd" 2 "$RC_RG_O"
 assert_contains "(n) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-relative-path-refuses)"
 
+# --- (o), HIMMEL-3676 (CR round 2, codex-1 CRITICAL): the named worktree
+# resolves to a real branch in a DIFFERENT repository than the payload cwd --
+# round-guard.ts always reads the ledger from --cwd's OWN git-common-dir, so
+# --branch only filters rows within that (unrelated) ledger. A foreign repo's
+# zero-round branch name therefore matches nothing in the TARGET repo's own
+# 3-round ledger and the predicate wrongly returns "0 rounds" -- an unrelated
+# worktree must never be trusted for round attribution unless it shares the
+# payload cwd's git-common-dir.
+RG_REPO_P="$TMP/round-repo-p"
+mk_round_repo "$RG_REPO_P" "fix/himmel-9014-round-p"
+RG_H16=$(round_head h16); RG_H17=$(round_head h17); RG_H18=$(round_head h18)
+{
+    finding_row "fix/himmel-9014-round-p" "$RG_H16" crit open f16
+    finding_row "fix/himmel-9014-round-p" "$RG_H17" crit open f17
+    finding_row "fix/himmel-9014-round-p" "$RG_H18" crit open f18
+} > "$(round_ledger_path "$RG_REPO_P")/cr-critic-scores.jsonl"
+
+RG_REPO_Q="$TMP/round-repo-q"
+mk_round_repo "$RG_REPO_Q" "main"
+RG_WT_BRANCH_Q="fix/himmel-9015-round-q"
+RG_WT_DIR_Q="$TMP/.claude/worktrees/fix-himmel-9015-round-q"
+git -C "$RG_REPO_Q" worktree add -q -b "$RG_WT_BRANCH_Q" "$RG_WT_DIR_Q" main
+
+RC_RG_P=$(run_hook round-worktree-cross-repo-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9014' "Write the code and commit it in $RG_WT_DIR_Q." "$RG_REPO_P")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(o) text names a real worktree belonging to an UNRELATED repo (different git-common-dir than payload cwd): refuses rather than trusting a foreign branch name to filter the TARGET's own ledger" 2 "$RC_RG_P"
+assert_contains "(o) refusal explains the unresolved worktree" "could not be resolved" "$(combined_output round-worktree-cross-repo-refuses)"
+
+# --- (p), HIMMEL-3676 (CR round 2, codex-2 Suggestion): a worktree
+# directory name containing a "." must still be recognized and correctly
+# attributed (0 rounds -> allow), not refused as an unresolved/truncated
+# path.
+RG_REPO_R="$TMP/round-repo-r"
+mk_round_repo "$RG_REPO_R" "main"
+RG_WT_BRANCH_R="fix/himmel-9016-round-r"
+RG_WT_DIR_R="$TMP/.claude/worktrees/fix.himmel-9016-round-r"
+git -C "$RG_REPO_R" worktree add -q -b "$RG_WT_BRANCH_R" "$RG_WT_DIR_R" main
+
+RC_RG_R=$(run_hook round-worktree-dotted-name-allows "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9016' "Write the code and commit it in $RG_WT_DIR_R." "$RG_REPO_R")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(p) worktree directory name contains a dot: still recognized and attributed (0 rounds) rather than refused as an unresolved/truncated path" 0 "$RC_RG_R"
+
 # --- (i), HIMMEL-3681: the probe's CLI stdout/stderr on exit 0 must carry
 # its version sentinel ("round-guard-cli: v1"); a stub standing in for a
 # stale/version-skewed round-guard.ts that exits 0 silently must NOT be
