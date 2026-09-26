@@ -289,6 +289,57 @@ else
     pass "probe's background child was reaped along with the probe (no-timeout fallback)"
 fi
 
+# --- Case 8: the no-timeout/gtimeout fallback's KILL escalation is
+#             group-scoped, not direct-pid-scoped (HIMMEL-2110, codex-1
+#             critic finding). At base, the escalation only sends KILL
+#             when `kill -0 "$cpid"` (the probe's OWN pid) still succeeds;
+#             if the probe dies from the TERM (no trap of its own) while a
+#             grandchild ignores TERM (SIG_IGN surviving an exec, so not
+#             just a shell trap) and stays in the same process group, the
+#             escalation check sees the probe gone and skips KILL, leaving
+#             that grandchild running forever.
+echo "== case 8: no-timeout fallback KILL escalation reaps a TERM-ignoring child even after the probe itself has already died =="
+BIN8="$TMP/bin8"
+mkdir -p "$BIN8"
+for t in bash sh sleep kill printf cat; do
+    t_path="$(command -v "$t" 2>/dev/null)"
+    [ -n "$t_path" ] && ln -s "$t_path" "$BIN8/$t"
+done
+GCHELPER8="$TMP/gchelper8.sh"
+GCPID8="$TMP/gcpid8"
+cat > "$GCHELPER8" <<'GCHELPER_EOF'
+trap '' TERM
+echo $$ > "$1"
+exec sleep 30
+GCHELPER_EOF
+sleep 30 &
+P8=$!
+LOG8="$TMP/log8"
+PATH="$BIN8" bash "$WATCH_LOOP" --parent-pid "$P8" --ttl 2 --interval 1 \
+    -- sh -c "sh '$GCHELPER8' '$GCPID8' & wait" > "$LOG8" 2>&1
+rc8=$?
+kill "$P8" 2>/dev/null
+wait "$P8" 2>/dev/null
+P8=""
+i=0
+while [ ! -s "$GCPID8" ] && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+if [ -s "$GCPID8" ]; then
+    pass "TERM-ignoring grandchild recorded its pid before the fallback fired"
+else
+    fail "TERM-ignoring grandchild never recorded a pid"
+fi
+GC8="$(cat "$GCPID8" 2>/dev/null || true)"
+if [ "$rc8" -eq 0 ] && grep -q 'watch-loop: exiting (ttl)' "$LOG8"; then
+    pass "no-timeout fallback loop still exited 0 naming ttl (case 8)"
+else
+    fail "case 8 rc=$rc8 log: $(cat "$LOG8")"
+fi
+if [ -n "$GC8" ] && kill -0 "$GC8" 2>/dev/null; then
+    fail "TERM-ignoring grandchild (pid $GC8) survived the no-timeout fallback KILL escalation"
+else
+    pass "TERM-ignoring grandchild was reaped by the group-scoped KILL escalation"
+fi
+
 echo "---"
 printf 'PASSED=%d FAILED=%d\n' "$PASSED" "$FAILED"
 [ "$FAILED" = 0 ]

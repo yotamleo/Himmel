@@ -75,6 +75,13 @@ usage() {
 # instead, so `kill -TERM -- -"$cpid"` reaps the probe AND any children it
 # spawned before hanging -- falling back to the direct pid if the group
 # signal fails (e.g. `set -m` did not take, so cpid never became a pgid).
+# The KILL-escalation check is group-scoped too (critic-panel round 1,
+# codex-1, Important): if the probe itself dies from TERM (no trap) while a
+# child ignores it (SIG_IGN, e.g. surviving an exec), `kill -0 "$cpid"` alone
+# reports the probe gone and skips KILL entirely, leaving that child running
+# forever -- confirmed by reproduction. `kill -0 -- -"$cpid"` reports alive
+# if ANY group member still is; the direct-pid check stays as the fallback
+# for the same non-pgid case as the TERM line above.
 _wl_timeout() {
     local secs="$1"; shift
     [ "$secs" -lt 1 ] 2>/dev/null && secs=1
@@ -92,7 +99,7 @@ _wl_timeout() {
         if [ "$waited" -ge "$secs" ]; then
             kill -TERM -- -"$cpid" 2>/dev/null || kill "$cpid" 2>/dev/null
             sleep 1
-            kill -0 "$cpid" 2>/dev/null && { kill -KILL -- -"$cpid" 2>/dev/null || kill -9 "$cpid" 2>/dev/null; }
+            { kill -0 -- -"$cpid" 2>/dev/null || kill -0 "$cpid" 2>/dev/null; } && { kill -KILL -- -"$cpid" 2>/dev/null || kill -9 "$cpid" 2>/dev/null; }
             wait "$cpid" 2>/dev/null
             return 124
         fi
