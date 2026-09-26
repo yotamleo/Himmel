@@ -2497,3 +2497,95 @@ test('bypass audit line carries the session name resolved from CLAUDE_PID (null 
     rmSync(fx.root, { recursive: true, force: true });
   }
 });
+
+// HIMMEL-3678 (J1310O F4): MUST_RUN_CHAIN_MEMBERS is a hardcoded basename set
+// with nothing cross-checking it against the chains actually wired, so a new
+// or renamed deny-capable hook could silently join a chain as advisory. These
+// tests enumerate every hook wired into a --chain in .claude/settings.json and
+// every marketplace/plugins/*/hooks/hooks.json, and require each one to be
+// either in MUST_RUN_CHAIN_MEMBERS or in the explicit ADVISORY_CHAIN_MEMBERS
+// allowlist below (each entry carrying its own one-line reason).
+const REPO_ROOT = join(HERE, '..', '..');
+const SETTINGS_PATH = join(REPO_ROOT, '.claude', 'settings.json');
+
+// --lifecycle chains are out of scope: runChain's lifecycle branch never
+// consults MUST_RUN_CHAIN_MEMBERS at all (see run-hook-with-bash.js's
+// runChain — "a --lifecycle chain is advisory BY DEFINITION"), so requiring
+// its members to be must-run-or-advisory-classified would test a distinction
+// the runner itself does not apply to them.
+const ADVISORY_CHAIN_MEMBERS = new Map([
+  ['auto-approve-safe-bash.sh', 'fail-open nudge by design (J1310O F1)'],
+  ['read-clamp.sh', 'fail-open nudge by design (J1310O F1)'],
+  ['require-quiet-run.sh', 'fail-open nudge by design (J1310O F1)'],
+]);
+
+function findPluginHooksJsonFiles(repoRoot) {
+  const pluginsDir = join(repoRoot, 'marketplace', 'plugins');
+  const out = [];
+  if (!existsSync(pluginsDir)) return out;
+  for (const entry of readdirSync(pluginsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const candidate = join(pluginsDir, entry.name, 'hooks', 'hooks.json');
+    if (existsSync(candidate)) out.push(candidate);
+  }
+  return out;
+}
+
+function collectChainCommandStrings(node, out) {
+  if (typeof node === 'string') {
+    if (node.includes('run-hook-with-bash.js') && node.includes('--chain')) out.push(node);
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const value of node) collectChainCommandStrings(value, out);
+    return;
+  }
+  if (node && typeof node === 'object') {
+    for (const value of Object.values(node)) collectChainCommandStrings(value, out);
+  }
+}
+
+function extractNonLifecycleChainMembers(command) {
+  const idx = command.indexOf('--chain');
+  if (idx === -1) return [];
+  const chainPart = command.slice(idx);
+  if (chainPart.startsWith('--chain --lifecycle')) return [];
+  const members = [];
+  for (const m of chainPart.matchAll(/([A-Za-z0-9_.-]+\.sh)"/g)) {
+    members.push(m[1]);
+  }
+  return members;
+}
+
+function enumerateNonLifecycleChainMembers(files) {
+  const members = new Set();
+  for (const file of files) {
+    if (!existsSync(file)) continue;
+    const commands = [];
+    collectChainCommandStrings(JSON.parse(readFileSync(file, 'utf8')), commands);
+    for (const command of commands) {
+      for (const basename of extractNonLifecycleChainMembers(command)) members.add(basename);
+    }
+  }
+  return members;
+}
+
+function unclassifiedChainMembers(members, mustRunSet, advisoryMap) {
+  const unclassified = [];
+  for (const basename of members) {
+    if (mustRunSet.has(basename) || advisoryMap.has(basename)) continue;
+    unclassified.push(basename);
+  }
+  return unclassified.sort();
+}
+
+test('every non-lifecycle --chain member wired in settings.json and every plugin hooks.json is must-run or explicitly advisory', () => {
+  const members = enumerateNonLifecycleChainMembers([SETTINGS_PATH, ...findPluginHooksJsonFiles(REPO_ROOT)]);
+  assert.ok(members.size > 0, 'sanity: expected at least one wired non-lifecycle --chain member');
+  const unclassified = unclassifiedChainMembers(members, MUST_RUN_CHAIN_MEMBERS, ADVISORY_CHAIN_MEMBERS);
+  assert.deepEqual(
+    unclassified,
+    [],
+    `unclassified --chain member(s) — add to MUST_RUN_CHAIN_MEMBERS or to ADVISORY_CHAIN_MEMBERS with a reason: ${unclassified.join(', ')}`,
+  );
+});
