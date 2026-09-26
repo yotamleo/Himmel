@@ -123,6 +123,10 @@ case "$*" in
           exit 6
       fi
       echo "SHIP-REMOTE: verified=ok" ;;
+  *refresh-stamp*)
+      # the receipt-stamp write (HIMMEL-1307): a separate ssh call issued only
+      # after a verified receipt.
+      if [ -e "$STATE/remote-stamp-fail" ]; then exit 1; fi ;;
 esac
 exit 0'
 
@@ -491,6 +495,10 @@ assert_contains "reports the shipped counts" "14782 docs / 50698 vectors" "$out"
 # restore the HTTP-singleton MCP daemon if the stop sweep kills it.
 assert_contains "uploaded ensure-qmd-daemon.ps1 alongside the receiver script" "ensure-qmd-daemon" "$(calls)"
 assert_contains "passed -EnsureScript to the receiver invocation" "-EnsureScript" "$(calls)"
+# ssh-only lines: the local scp/node-prepare calls above log this repo's OWN
+# worktree path, which for this ticket's branch already contains the literal
+# substring "refresh-stamp" -- checking raw $(calls) would pass vacuously.
+assert_contains "wrote a remote refresh stamp after verified receipt (HIMMEL-1307)" "refresh-stamp" "$(calls | grep '^ssh ' || true)"
 
 echo "TEST: remote paths are DERIVED from the receiver, never hardcoded"
 # A baked C:/Users/<name>/... default would tie the script to one operator's
@@ -598,6 +606,7 @@ touch "$STATE/remote-fail"
 rc=0; out=$(run_ship --no-reindex --no-graph 2>&1) || rc=$?
 assert_rc "receiver failure rc 6" 6 "$rc"
 assert_contains "points at the receiver's own output" "SHIP-REMOTE" "$out"
+assert_not_contains "a failed receiver-side ship writes NO remote stamp (HIMMEL-1307)" "refresh-stamp" "$(calls | grep '^ssh ' || true)"
 
 # ============================================================================
 echo "TEST: receiver rc 6 (HTTP restore failed) still runs the graph leg and exits 8 (HIMMEL-1416 round 4 [codex-adv-6])"

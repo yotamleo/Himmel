@@ -53,12 +53,14 @@
 #     partial coverage.
 #
 # The honest fix is a durable timestamp written ONLY after a verified refresh
-# (host) or a verified receipt (station) — HIMMEL-1307. That spans
-# qmd-reindex.sh and the receiver leg, so it is not this script's to invent;
-# what this script owes in the meantime is to claim no more than it can see.
-# The signal is still worth having: for the RECEIVING station this was written
-# for, an index that stopped arriving while the source corpus kept moving is
-# exactly the case the proxy detects correctly.
+# (host, qmd-reindex.sh) or a verified receipt (station, ship-index.sh) —
+# HIMMEL-1307. This script now prefers that stamp (QMD_REFRESH_STAMP) when one
+# is present and readable, and falls back to the MAX(mtime) proxy below when it
+# is absent or malformed — printing which source it used either way, since the
+# two are not equally trustworthy. The signal is still worth having on the
+# fallback path: for the RECEIVING station this was written for, an index that
+# stopped arriving while the source corpus kept moving is exactly the case the
+# proxy detects correctly.
 #
 # PARSING IS COUPLED TO HUMAN-READABLE OUTPUT, ON PURPOSE AND UNDER PROTEST:
 # `qmd status` has no machine format. `--format json` is a SEARCH option; there
@@ -144,6 +146,11 @@ QUIET=0
 QMD_BIN=""
 QMD_JS=""
 REQUIRE_COLLECTIONS=""
+# HIMMEL-1307: same path convention ship-index.sh/qmd-reindex.sh use for their
+# own index default, so the stamp lands next to the index data without a
+# separate env var to keep in sync on a station that never overrides either.
+QMD_INDEX_PATH_DEFAULT="${QMD_INDEX_PATH:-$HOME/.cache/qmd/index.sqlite}"
+QMD_REFRESH_STAMP="${QMD_REFRESH_STAMP:-$(dirname "$QMD_INDEX_PATH_DEFAULT")/refresh-stamp}"
 
 # Anchored on the END of the comment header (the `set -euo` line, then dropped)
 # rather than on the last exit code's number: the old `/^#   6 /` form ended the
@@ -410,13 +417,34 @@ age_hours() {
     esac
 }
 
+# --- refresh stamp (HIMMEL-1307), preferred over the MAX(mtime) proxy above --
+# A durable timestamp is a DIRECT measurement of "when was this index last
+# verified refreshed/received", not a proxy for it — so it wins when present
+# and readable. Same strict-format discipline as the rest of this script:
+# anything not exactly `<ISO-8601Z> <epoch>` is treated as absent, not
+# partially trusted, and falls back to the proxy below.
 AGE_HOURS=""
-if ! AGE_HOURS=$(age_hours "$UPDATED_RAW"); then
-    {
-        echo "ERR qmd-staleness: could not parse the index age from 'Updated: $UPDATED_RAW'."
-        echo "    Treat the index as UNVERIFIED until this parser is updated (HIMMEL-1286)."
-    } >&2
-    exit 6
+AGE_SOURCE="proxy"
+if [ -r "$QMD_REFRESH_STAMP" ]; then
+    stamp_line=$(cat "$QMD_REFRESH_STAMP" 2>/dev/null || true)
+    stamp_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z [0-9]+$'
+    if [[ $stamp_line =~ $stamp_re ]]; then
+        stamp_epoch="${stamp_line##* }"
+        now_epoch=$(date -u +%s)
+        AGE_HOURS=$(( (now_epoch - stamp_epoch) / 3600 ))
+        [ "$AGE_HOURS" -ge 0 ] || AGE_HOURS=0
+        AGE_SOURCE="stamp"
+    fi
+fi
+
+if [ "$AGE_SOURCE" != "stamp" ]; then
+    if ! AGE_HOURS=$(age_hours "$UPDATED_RAW"); then
+        {
+            echo "ERR qmd-staleness: could not parse the index age from 'Updated: $UPDATED_RAW'."
+            echo "    Treat the index as UNVERIFIED until this parser is updated (HIMMEL-1286)."
+        } >&2
+        exit 6
+    fi
 fi
 
 # --- pending ----------------------------------------------------------------
@@ -504,10 +532,17 @@ MISSING=0
 if [ -n "$MISSING_COLLECTIONS" ]; then MISSING=1; fi
 
 if [ "$STALE" -eq 0 ] && [ "$INCOMPLETE" -eq 0 ] && [ "$MISSING" -eq 0 ]; then
-    # "newest doc edited ${UPDATED_RAW}" rather than "index fresh (${UPDATED_RAW})":
-    # the all-clear must not assert more than the banner does. Within budget is
-    # the strongest honest statement this field supports.
-    [ "$QUIET" -eq 1 ] || echo "OK qmd-staleness: newest indexed doc edited ${UPDATED_RAW} (within ${MAX_AGE_HOURS}h), complete (${TOTAL_RAW}, ${VECTORS_RAW})."
+    if [ "$AGE_SOURCE" = "stamp" ]; then
+        # A direct measurement, not the MAX(mtime) proxy -- report the stamp's
+        # own age rather than $UPDATED_RAW, which is a different field.
+        AGE_DESC="refresh stamp ${AGE_HOURS}h old"
+    else
+        # "newest doc edited ${UPDATED_RAW}" rather than "index fresh
+        # (${UPDATED_RAW})": the all-clear must not assert more than the proxy
+        # supports. Within budget is the strongest honest statement it can make.
+        AGE_DESC="newest indexed doc edited ${UPDATED_RAW}"
+    fi
+    [ "$QUIET" -eq 1 ] || echo "OK qmd-staleness: ${AGE_DESC} (within ${MAX_AGE_HOURS}h), complete (${TOTAL_RAW}, ${VECTORS_RAW}) (source: ${AGE_SOURCE})."
     exit 0
 fi
 
@@ -521,6 +556,9 @@ fi
         echo "  qmd index may be STALE — budget ${MAX_AGE_HOURS}h"
     elif [ "$INCOMPLETE" -eq 1 ]; then
         echo "  qmd index is INCOMPLETE — ${PENDING} chunks still need embedding"
+    fi
+    if [ "$STALE" -eq 1 ]; then
+        echo "  age source: ${AGE_SOURCE}"
     fi
     # Named on its OWN line, never folded into the stale/incomplete sentence: a
     # missing collection is a different failure with a different fix (register

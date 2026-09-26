@@ -113,6 +113,10 @@ REMOTE_HOME=""                              # resolved in preflight (see below)
 REMOTE_INDEX="${SHIP_REMOTE_INDEX:-}"
 REMOTE_GRAPH="${SHIP_REMOTE_GRAPH:-}"
 REMOTE_TMP="${SHIP_REMOTE_TMP:-}"
+# HIMMEL-1307: the receipt stamp, next to the index data on the receiver.
+# Derived from REMOTE_INDEX once it is known (default or override alike) —
+# see just after resolve_remote_paths below.
+REMOTE_STAMP="${SHIP_REMOTE_STAMP:-}"
 
 usage() {
     cat <<'EOF'
@@ -131,6 +135,14 @@ there was measured at ~17 hours).
 The receiver's own `qmd collection list` decides what is shipped, so the ship
 can never create an orphan collection there; and it refuses outright if the
 receiver expects a collection the source does not have.
+
+HIMMEL-1307: after a verified receipt (rc 0, or rc 6 remapped for a
+HTTP-restore-only failure — see below) this writes a receipt stamp on the
+receiver, next to its index (default: alongside REMOTE_INDEX, override with
+SHIP_REMOTE_STAMP), that qmd-staleness.sh there prefers over its MAX(mtime)
+proxy. Never written on a genuine receiver-side failure. Best-effort: a
+stamp-write failure only warns, it never turns a verified receipt into a
+reported failure.
 
 Exit: 0 ok | 1 usage | 2 prereq | 3 reindex | 4 prepare | 5 upload
       6 receiver | 7 graph leg | 8 shipped+verified but HTTP restore failed
@@ -189,6 +201,22 @@ done
 
 say() { printf 'ship-index: %s\n' "$*"; }
 die() { local c="$1"; shift; printf 'ERR ship-index: %s\n' "$*" >&2; exit "$c"; }
+
+# HIMMEL-1307: a durable receipt timestamp, written ONLY after the receiver's
+# verified receipt below (remote_rc 0, or 6 remapped to 0 — the HTTP-singleton
+# daemon restore is a separate, best-effort concern, not part of the receipt
+# itself). Same non-fatal contract as qmd-reindex.sh's write_refresh_stamp():
+# failure here means qmd-staleness.sh on the receiver falls back to its
+# MAX(mtime) proxy, not that a verified receipt should now be reported as an
+# unshipped one.
+write_remote_stamp() {
+    local ps_cmd
+    ps_cmd="\$iso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); \$epoch = [long](Get-Date -UFormat %s); Set-Content -NoNewline -Path '$REMOTE_STAMP.tmp' -Value \"\$iso \$epoch\"; Move-Item -Force -Path '$REMOTE_STAMP.tmp' -Destination '$REMOTE_STAMP'"
+    # shellcheck disable=SC2029  # client-side expansion is intended (paths resolved here)
+    if ! ssh "$HOST" "powershell -NoProfile -Command \"$ps_cmd\"" >/dev/null 2>&1; then
+        echo "WARN ship-index: could not write the receiver's refresh stamp at $REMOTE_STAMP -- qmd-staleness.sh there will fall back to its proxy." >&2
+    fi
+}
 
 # --- staging + cleanup -------------------------------------------------------
 # The staging copy is reaped on EVERY exit path, success or failure. Stale
@@ -390,6 +418,10 @@ fi
 # --- 2. resolve the receiver's collection set --------------------------------
 say "[2/5] resolving the receiver's paths + collection set"
 resolve_remote_paths
+# HIMMEL-1307: next to the index data, default or override alike — dirname of
+# whatever REMOTE_INDEX ended up being, so a station override still lands the
+# stamp where qmd-staleness.sh there will look for it.
+REMOTE_STAMP="${REMOTE_STAMP:-$(dirname "$REMOTE_INDEX")/refresh-stamp}"
 say "      receiver index: $REMOTE_INDEX"
 if [ -z "$COLLECTIONS" ]; then
     COLLECTIONS="$(remote_collections)"
@@ -488,6 +520,8 @@ fi
 # invoked in place, never moved).
 # shellcheck disable=SC2029  # client-side expansion is intended (paths resolved here)
 ssh "$HOST" "cmd /c del /q \"${REMOTE_PS1//\//\\}\" \"${REMOTE_ENSURE//\//\\}\"" >/dev/null 2>&1 || true
+
+write_remote_stamp
 
 say "index shipped + verified on $HOST (${SHIP_DOCS} docs / ${SHIP_VECS} vectors)"
 

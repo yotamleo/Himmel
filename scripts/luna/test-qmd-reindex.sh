@@ -278,6 +278,26 @@ else
     fail "wrong call sequence" "got: $got_calls"
 fi
 
+echo "TEST: a successful reindex writes a refresh stamp (HIMMEL-1307)"
+reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
+touch "$STATE/did-work"
+rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "stamp-write happy path rc 0" 0 "$rc"
+STAMP="$HOME/.cache/qmd/refresh-stamp"
+if [ -f "$STAMP" ]; then
+    pass "refresh stamp written on verified success"
+else
+    fail "refresh stamp written on verified success" "no file at $STAMP"
+fi
+stamp_line=$(cat "$STAMP" 2>/dev/null || true)
+stamp_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z [0-9]+$'
+if [[ $stamp_line =~ $stamp_re ]]; then
+    pass "refresh stamp shape is ISO-8601 UTC + epoch"
+else
+    fail "refresh stamp shape is ISO-8601 UTC + epoch" "got: $stamp_line"
+fi
+
 echo "TEST: happy path passes NO -c flag (all collections is the default scope)"
 # Collection scope is deliberately not hardcoded: `qmd update`/`qmd embed`
 # default to every configured collection and take -c only to NARROW, so a
@@ -354,20 +374,56 @@ assert_not_contains "the PATH qmd was NOT what ran" "$FAKE_QMD" "$(calls)"
 
 echo "TEST: 'qmd update' failure exits 3 and never embeds"
 reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
 touch "$STATE/fail-update"
 rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
 assert_rc "update failure rc 3" 3 "$rc"
 assert_contains "update failure is explicit" "'qmd update' failed" "$out"
 assert_contains "update failure surfaces qmd stderr" "update exploded" "$out"
 assert_not_contains "no embed attempted after a failed update" "embed" "$(calls)"
+if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then
+    pass "failed update writes no refresh stamp"
+else
+    fail "failed update writes no refresh stamp" "stamp exists after a failed update"
+fi
 
 echo "TEST: 'qmd embed' failure exits 4 and says vectors are stale"
 reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
 touch "$STATE/fail-embed"
 rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
 assert_rc "embed failure rc 4" 4 "$rc"
 assert_contains "embed failure names the half-state" "lex index is fresh but vectors are NOT" "$out"
+if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then
+    pass "failed embed writes no refresh stamp"
+else
+    fail "failed embed writes no refresh stamp" "stamp exists after a failed embed"
+fi
 
+echo "TEST: a successful reindex invalidates a stale stamp it fails to overwrite (HIMMEL-1307 codex-2)"
+reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
+mkdir -p "$HOME/.cache/qmd"
+printf '%s %s\n' "2020-01-01T00:00:00Z" "1577836800" >"$HOME/.cache/qmd/refresh-stamp"
+FAKE_MV_DIR="$TMP_ROOT/fakemv"
+mkdir -p "$FAKE_MV_DIR"
+cat >"$FAKE_MV_DIR/mv" <<'FAKE'
+#!/bin/sh
+echo "mv: simulated failure installing the refresh stamp" >&2
+exit 1
+FAKE
+chmod +x "$FAKE_MV_DIR/mv"
+rc=0; out=$(PATH="$FAKE_MV_DIR:$PATH" bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "reindex still succeeds when the stamp mv fails" 0 "$rc"
+assert_contains "the write failure is WARNed, not silent" "refresh stamp" "$out"
+old_stamp=$(cat "$HOME/.cache/qmd/refresh-stamp" 2>/dev/null || true)
+if [ "$old_stamp" != "2020-01-01T00:00:00Z 1577836800" ]; then
+    pass "a successful reindex's failed stamp write does not leave the OLD stamp readable"
+else
+    fail "a successful reindex's failed stamp write does not leave the OLD stamp readable" "qmd-staleness.sh would read the 2020 stamp as this run's freshness, not fall back to the proxy"
+fi
+
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
 echo "TEST: an INCOMPLETE embed exits 5 (this is the whole point of HIMMEL-568)"
 # A `qmd embed` that hits its session cap exits 0 having embedded only PART of
 # the pending set. Without the completeness assert the cadence would report
@@ -381,6 +437,11 @@ assert_contains "incomplete embed is named as such" "embed INCOMPLETE" "$out"
 assert_contains "incomplete embed explains the likely cause" "session" "$out"
 assert_contains "incomplete embed offers the manual escape" "embed --timeout 0" "$out"
 assert_not_contains "incomplete embed never claims success" "index refreshed, all content hashes embedded" "$out"
+if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then
+    pass "incomplete embed writes no refresh stamp"
+else
+    fail "incomplete embed writes no refresh stamp" "stamp exists after an incomplete embed"
+fi
 
 # HIMMEL-1282: a REWORDED verifier is not an incomplete index -----------------
 #
@@ -394,6 +455,7 @@ assert_not_contains "incomplete embed never claims success" "index refreshed, al
 # verifier — and it must NOT claim the index is stale.
 echo "TEST: a REWORDED verifier exits 6 (unreadable), NOT 5 (incomplete)"
 reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
 touch "$STATE/reworded"
 rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
 assert_rc "reworded verifier rc 6" 6 "$rc"
@@ -404,13 +466,24 @@ assert_contains "names the version the sentinels were checked against" "qmd 2.6.
 assert_contains "shows what qmd actually printed" "Nothing to embed" "$out"
 assert_not_contains "does NOT misreport it as incomplete" "embed INCOMPLETE" "$out"
 assert_not_contains "reworded verifier never claims success" "index refreshed, all content hashes embedded" "$out"
+if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then
+    pass "reworded verifier writes no refresh stamp"
+else
+    fail "reworded verifier writes no refresh stamp" "stamp exists after a reworded verifier"
+fi
 
 echo "TEST: a failing verify pass exits 4 (not silently treated as complete)"
 reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
 touch "$STATE/fail-verify"
 rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
 assert_rc "verify failure rc 4" 4 "$rc"
 assert_contains "verify failure is explicit" "completeness re-check" "$out"
 assert_not_contains "verify failure never claims success" "index refreshed, all content hashes embedded" "$out"
+if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then
+    pass "failing verify pass writes no refresh stamp"
+else
+    fail "failing verify pass writes no refresh stamp" "stamp exists after a failing verify pass"
+fi
 
 summary
