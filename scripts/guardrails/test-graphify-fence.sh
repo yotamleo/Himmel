@@ -2456,6 +2456,19 @@ run_fence deny no "$HIMMEL" "env --chdir \$(echo salus) (long-option twin) -> de
 run_fence deny no "$HIMMEL" "sudo -D \$(echo salus) (sudo twin) -> deny (S1)" \
     "sudo -D \$(echo $SALUS) graphify update notes/patient.md --backend glm"
 
+# HIMMEL-3641 J1290S codex-1 (round-5 critic panel): the raw-vs-stripped
+# mismatch guard (added in the same R2 round as env -S handling) only scans
+# LATER tokens for a literal "graphify" via _gf_deny_if_graphify_follows -
+# but env -S"graphify ..." (the flag glued to its double-quoted value, no
+# space) puts the literal word "graphify" INSIDE the very token that
+# mismatched (_strip_cmd turns -S"graphify into -Sgraphify by removing the
+# quote), so the later-tokens-only scan never sees it and the walk fell
+# through untouched - even though env -S's split-string argv really does
+# invoke graphify. sudo has no -S/--split-string, so only env's mismatch
+# guard is exposed to this shape.
+run_fence deny no "$SALUS" "env -S\"graphify ...\" (glued double-quoted value) from salus -> deny (codex-1)" \
+    "env -S\"graphify update notes/patient.md --backend glm\""
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

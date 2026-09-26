@@ -1783,6 +1783,16 @@ classify_clause() {
                     case "$gf_w" in
                         -*)
                             if [ "${toks[$i]}" != "$gf_w" ]; then
+                                # HIMMEL-3641 J1290S codex-1: "graphify" can be
+                                # embedded INSIDE this same mismatched token
+                                # (env -S"graphify ..." splits into a token
+                                # whose stripped form never equals the raw
+                                # one) - _gf_deny_if_graphify_follows only
+                                # scans LATER tokens, so check this one first.
+                                case "$gf_w" in
+                                    *graphify*)
+                                        deny "graphify via a wrapper option token containing a quote, backtick, backslash or substitution character is not statically fenceable; invoke graphify directly" ;;
+                                esac
                                 _gf_deny_if_graphify_follows $((i+1)) \
                                     "graphify via a wrapper option token containing a quote, backtick, backslash or substitution character is not statically fenceable; invoke graphify directly"
                                 return 0
@@ -1986,6 +1996,14 @@ classify_clause() {
                     case "$gf_w" in
                         -*)
                             if [ "${toks[$i]}" != "$gf_w" ]; then
+                                # HIMMEL-3641 J1290S codex-1: same fix as
+                                # env's wrapper walk above - check THIS token
+                                # for an embedded "graphify" before scanning
+                                # only the later ones.
+                                case "$gf_w" in
+                                    *graphify*)
+                                        deny "graphify via a wrapper option token containing a quote, backtick, backslash or substitution character is not statically fenceable; invoke graphify directly" ;;
+                                esac
                                 _gf_deny_if_graphify_follows $((i+1)) \
                                     "graphify via a wrapper option token containing a quote, backtick, backslash or substitution character is not statically fenceable; invoke graphify directly"
                                 return 0
