@@ -824,6 +824,17 @@ run_hook deny "22b: env --split-string 'tee scripts/hooks/a.sh' (long-form spell
 run_hook allow "22b: env -S 'echo hi' (split-string value, no enforcement signal)" \
     "$(bash_json "env -S 'echo hi'" "$REPO")" 1
 
+echo "== 22c: round-6 CR fix (codex-1, round 2) - env -S accepts its value glued onto the letter =="
+# codex critic panel, round 2 (Suggestion): the round-1 fix above matched
+# only the exact `-S` token, missing GNU env's glued short-option form
+# `-SSTRING` (empirically verified: `env -S'echo hi'` behaves identically to
+# `env -S 'echo hi'`, coreutils 9.11) - `env -Stee scripts/hooks/a.sh` still
+# ALLOWed under the exact-`-S` match.
+run_hook deny "22c: env -Stee scripts/hooks/a.sh (glued -S form names a protected path)" \
+    "$(bash_json "env -Stee scripts/hooks/a.sh" "$REPO")" 1
+run_hook allow "22c: env -Secho hi (glued -S form, no enforcement signal)" \
+    "$(bash_json "env -Secho hi" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

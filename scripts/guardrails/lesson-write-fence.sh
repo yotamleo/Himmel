@@ -1093,7 +1093,9 @@ _deny_env_split_string() {
 # _env_split_string_used <head_idx> <tok...> -> 0 iff an `env` token appears
 # among tok[0..head_idx-1] (the wrapper prefix `_clause_head_idx` walked
 # through) followed later in that same range by a case-sensitive `-S` token
-# or a long-option abbreviation of `--split-string`. Round-6 CR fix (codex
+# (bare or with its value glued on, e.g. `-Stee ...` - GNU env accepts both
+# spellings identically) or a long-option abbreviation of `--split-string`.
+# Round-6 CR fix (codex
 # critic panel, Critical): unlike `-a`/`-u`/`-C`, whose values are opaque
 # data safe to skip, `-S`'s value is CODE - GNU env parses it as a
 # whitespace-separated command line and executes the resulting words, so
@@ -1120,7 +1122,12 @@ _env_split_string_used() {
         w="$(_lc "$s")"
         if [ "$in_env" = 1 ]; then
             case "$s" in
-                -S) return 0 ;;
+                # round-6 CR fix (codex-1, round 2): `-S*` (not the exact
+                # `-S`) - GNU env accepts the value glued directly onto the
+                # letter (`-Stee...` behaves identically to `-S tee...`,
+                # empirically verified), and a glued token still carries the
+                # same executable split-string value.
+                -S*) return 0 ;;
                 --*) guard_is_long_abbrev "split-string" "$w" && return 0 ;;
             esac
         elif [ "$w" = env ]; then
