@@ -42,8 +42,15 @@ not_contains() { if grep -q -F -e "$3" <<< "$2"; then echo "FAIL - $1: output un
 # call fails the assertion.
 exact_count() { local n; n=$(grep -c -F -x -e "$3" <<< "$2"); if [ "$n" = "$4" ]; then echo "ok - $1"; else echo "FAIL - $1: expected $4 occurrence(s) of [$3], got $n"; fails=$((fails+1)); fi; }
 
-mkdir -p "$W/proc" "$W/bin" "$W/wt"
+mkdir -p "$W/proc" "$W/bin" "$W/wt" "$W/handover-root"
 CALLS="$W/calls.log"
+
+# no-leak baseline (HIMMEL-3667): record whether the real repo already had a
+# handovers/ dir BEFORE any test below runs, so the end-of-suite assertion
+# catches this suite CREATING one, not an unrelated pre-existing one.
+REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT=""
+pre_handovers=absent
+[ -n "$REPO_ROOT" ] && [ -e "$REPO_ROOT/handovers" ] && pre_handovers=present
 
 # mkcmdline <pid> <argv...> - a real NUL-separated /proc/<pid>/cmdline.
 mkcmdline() {
@@ -133,7 +140,14 @@ run() { # run <doc> - runs the script under test with every stub wired
     # binary and a nonexistent dir, so cases 1-14 never exercise the
     # pre-signal capture block (HIMMEL-3629) at all - only the cases below
     # that set CWL_ESW_BIN/CWL_PROJECTS_DIR opt into it.
+    #
+    # HANDOVER_DIR is pinned to a scratch dir under $W - close-wrapped-leg.sh
+    # calls queue-lock.sh status, which resolves handover_root(); with
+    # HANDOVER_DIR unset that falls through to the Mode A inline fallback
+    # <repo-root>/handovers, creating REAL handovers/.locks/ state in
+    # whatever checkout this suite runs from (HIMMEL-3667).
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
+        HANDOVER_DIR="$W/handover-root" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
         CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
@@ -154,13 +168,16 @@ rc=0; run "$W/no-such-doc.md" >/dev/null 2>&1 || rc=$?
 check "usage: unreadable doc -> rc 2" "$rc" "2"
 
 # --- 2. held lock --------------------------------------------------------------
+# HANDOVER_DIR pinned to the same scratch root run() uses below, so this
+# direct acquire and the script-under-test's own `queue-lock.sh status`
+# (invoked via run()) resolve the SAME lock root.
 mkdoc "- 10:00 WRAPPED - done"
 reset_calls
-acq_out="$(bash "$QL" acquire "$DOC" "cwl-test-holder" 2>&1)"
+acq_out="$(HANDOVER_DIR="$W/handover-root" bash "$QL" acquire "$DOC" "cwl-test-holder" 2>&1)"
 token="$(printf '%s' "$acq_out" | sed -n "s/.*release-token: \`\([^\`]*\)\`.*/\\1/p")"
 rc=0; out=$(run "$DOC" 2>&1) || rc=$?
 check "held-lock: rc 3" "$rc" "3"
-[ -n "$token" ] && bash "$QL" release "$DOC" "$token" >/dev/null 2>&1
+[ -n "$token" ] && HANDOVER_DIR="$W/handover-root" bash "$QL" release "$DOC" "$token" >/dev/null 2>&1
 
 # --- 3. not WRAPPED ------------------------------------------------------------
 mkdoc "- 10:00 LIVE - still going"
@@ -308,6 +325,11 @@ out=$(HOME="$ESW_SB2/home" LUNA_VAULT_PATH="$ESW_SB2/vault" OBSIDIAN_API_KEY="" 
 check "no-transcript-match: rc 0 (still closes)" "$rc" "0"
 contains "no-transcript-match: says it cannot resolve unambiguously" "$out" "cannot resolve unambiguously"
 exact_count "no-transcript-match: kill still called exactly once" "$(cat "$CALLS")" "kill -TERM 210" "1"
+
+# --- 17: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
+post_handovers=absent
+[ -n "$REPO_ROOT" ] && [ -e "$REPO_ROOT/handovers" ] && post_handovers=present
+check "no-leak: this suite left no handovers/ dir behind in the repo root" "$post_handovers" "$pre_handovers"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then
