@@ -777,15 +777,15 @@ update_marketplace() {
     "$claude_bin" plugin marketplace update himmel || update_rc=$?
 
     # HIMMEL-1846: temp_git_* clone dirs left in the plugin cache by past
-    # marketplace re-syncs accumulate (~48/day). -mtime +1 spares anything from
-    # an install still in flight.
+    # marketplace re-syncs accumulate (~48/day). -mmin +1440 (>24h) spares
+    # anything from an install still in flight; -mtime +1 would need ~48h
+    # (day-truncated), missing dirs in the 24-48h range.
     local cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache"
     local swept=0
     if [ -d "$cache" ]; then
         while IFS= read -r -d '' stale; do
-            rm -rf "$stale"
-            swept=$((swept + 1))
-        done < <(find "$cache" -maxdepth 1 -name 'temp_git_*' -mtime +1 -print0 2>/dev/null)  # gnu-ok: -maxdepth/-mtime/-print0 are all supported by BSD find (macOS) too, not GNU-only
+            rm -rf "$stale" && swept=$((swept + 1))
+        done < <(find "$cache" -maxdepth 1 -name 'temp_git_*' -mmin +1440 -print0 2>/dev/null)  # gnu-ok: -maxdepth/-mmin/-print0 are all supported by BSD find (macOS) too, not GNU-only
     fi
     local sweep_detail=""
     [ "$swept" -eq 0 ] || sweep_detail="; swept $swept stale temp_git_* dir(s) from plugin cache"

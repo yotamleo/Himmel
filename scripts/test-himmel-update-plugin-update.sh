@@ -180,8 +180,11 @@ cat > "$fake_home_sweep/.claude/settings.json" <<'EOF'
 }
 EOF
 cache_sweep="$fake_home_sweep/.claude/plugins/cache"
-mkdir -p "$cache_sweep/temp_git_old" "$cache_sweep/temp_git_new"
+mkdir -p "$cache_sweep/temp_git_old" "$cache_sweep/temp_git_new" "$cache_sweep/temp_git_boundary"
 touch -t 202001010000 "$cache_sweep/temp_git_old"
+# 30h old: past the 24h cutoff but short of the ~48h a day-truncated -mtime
+# +1 would actually require — pins the boundary -mtime +1 missed (HIMMEL-178).
+touch -d '30 hours ago' "$cache_sweep/temp_git_boundary"
 log_sweep="$TMP/claude-invocations-sweep.log"
 : > "$log_sweep"
 claude_stub_sweep="$TMP/claude-logging-stub-sweep"
@@ -201,6 +204,11 @@ if [ -d "$cache_sweep/temp_git_new" ]; then
     assert_pass "apply mode spares the fresh temp_git_* dir"
 else
     assert_fail "apply mode spares the fresh temp_git_* dir — was removed"
+fi
+if [ ! -d "$cache_sweep/temp_git_boundary" ]; then
+    assert_pass "apply mode removes a 30h-old temp_git_* dir (24-48h boundary)"
+else
+    assert_fail "apply mode removes a 30h-old temp_git_* dir (24-48h boundary) — still present — out: $out_sweep"
 fi
 
 echo "Test: check mode never sweeps the plugin cache"
