@@ -118,16 +118,16 @@
 # temp git repo (whose git-common-dir IS the temp repo) with a stub `gh` on
 # PATH — never via a caller-settable seam.
 set -uo pipefail
+# HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
+# NOT set -e: this script inspects sub-call exit codes explicitly and must fail
+# CLOSED with its own codes, never abort mid-gate.
 # HIMMEL-3666: every git call below (ls-remote, ancestry/base checks) resolves
 # objects through the store, which honours refs/replace/* by default — a
 # `git replace <tip> <fake>` forgery would let this script re-derive its
 # clean verdict from the fake's content. Disable replacement so resolution
 # always uses the real object.
 export GIT_NO_REPLACE_OBJECTS=1
-# HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
-# NOT set -e: this script inspects sub-call exit codes explicitly and must fail
-# CLOSED with its own codes, never abort mid-gate.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK_CI="$SCRIPT_DIR/../check-ci.sh"
