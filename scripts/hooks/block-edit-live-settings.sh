@@ -1309,13 +1309,9 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # ST_LW holds the lowercased words: the lowercased text tokenizes to the
     # same words and segments (case never changes how bash splits), so a
     # second pass over it costs no fork, where a `tr` per word did (J1242).
-    LWOK=0
-    LW_HEREDOC=0
     if [ "$tool_name" = Bash ]; then
         st_lower "$cmd"
         if st_tokenize "$ST_LOWER"; then
-            LWOK=1
-            LW_HEREDOC=$ST_HEREDOC
             ST_LW=("${ST_W[@]}") lw_n=$ST_N lw_nseg=$ST_NSEG
             if st_tokenize "$cmd" && [ "$ST_HEREDOC" = 0 ] && [ "$ST_ANSIC" = 0 ] \
                 && [ "$ST_N" = "$lw_n" ] && [ "$ST_NSEG" = "$lw_nseg" ]; then
@@ -1361,65 +1357,6 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     case "$cmd_lc" in
         *settings.json*|*settings.local.json*) mentions_settings=1 ;;
     esac
-
-    # HIMMEL-3615: a heredoc BODY is prose/data, not a command word — the
-    # tokenizer already excludes it from ST_LW (a heredoc body is skipped
-    # outright, never flushed as a word), so a mention that survives only
-    # inside the body is not a mention of a live file by the command itself.
-    # Trust ST_LW over the raw text for THIS question only, and only when a
-    # heredoc is actually present, so a command with no heredoc takes the
-    # exact path it always has.
-    #
-    # codex-1 (panel round 1 on #1282): "prose/data" only holds when nothing
-    # RUNS the body. `bash <<'EOF'` / `sh` / `python3` / etc. reading a
-    # heredoc execute it as a script, so a write inside the body (`echo x >
-    # ~/.claude/settings.json`) is a real write the outer command's own verb
-    # list never sees (no cp/mv/tee word, no dir_dest match — `echo` isn't in
-    # either). Fail closed on that shape: if any OUTER word names an
-    # interpreter that reads stdin as a script, the body is code, not prose,
-    # and the mention stays live. Accepted over-match — an interpreter word
-    # anywhere in the command, not proven to be the heredoc's own consumer —
-    # matching this file's stated preference for a false deny over a bypass.
-    # codex-1 (panel round 2 on #1282): the same gap, a different consumer.
-    # `git apply <<'EOF'` / `patch <<'EOF'` never RUN the body as a script,
-    # but they parse it as a unified diff and write the file its header
-    # names — a real write the outer verb list never sees (`git`/`apply`/
-    # `patch` are none of cp/mv/tee, and dir_dest only matches that same
-    # list). Same fix shape as the interpreter guard above: fail closed when
-    # the outer words show a diff/patch consumer, whether or not it also
-    # runs anything as a script. `patch` is unambiguous alone; `git apply`
-    # needs both words present (bare `apply` is too common a filename/arg
-    # word on its own — same reasoning as this file's existing git+checkout/
-    # restore co-occurrence rule).
-    interp_present=0
-    if [ "$mentions_settings" = "1" ] && [ "$LWOK" = "1" ] && [ "$LW_HEREDOC" = "1" ]; then
-        for _lw in "${ST_LW[@]}"; do
-            case "$_lw" in
-                bash|*/bash|sh|*/sh|dash|*/dash|zsh|*/zsh|ksh|*/ksh|mksh|*/mksh|csh|*/csh|tcsh|*/tcsh|python|*/python|python2|*/python2|python3|*/python3|perl|*/perl|ruby|*/ruby|node|*/node|nodejs|*/nodejs|php|*/php|osascript|*/osascript|lua|*/lua|tclsh|*/tclsh|expect|*/expect|patch|*/patch)
-                    interp_present=1; break ;;
-            esac
-        done
-        if [ "$interp_present" = "0" ]; then
-            _git_word=0
-            _apply_word=0
-            for _lw in "${ST_LW[@]}"; do
-                case "$_lw" in
-                    git|*/git) _git_word=1 ;;
-                    apply) _apply_word=1 ;;
-                esac
-            done
-            [ "$_git_word" = "1" ] && [ "$_apply_word" = "1" ] && interp_present=1
-        fi
-    fi
-    if [ "$mentions_settings" = "1" ] && [ "$LWOK" = "1" ] && [ "$LW_HEREDOC" = "1" ] && [ "$interp_present" = "0" ]; then
-        tok_mention=0
-        for _lw in "${ST_LW[@]}"; do
-            case "$_lw" in
-                *settings.json*|*settings.local.json*) tok_mention=1; break ;;
-            esac
-        done
-        [ "$tok_mention" = "1" ] || mentions_settings=0
-    fi
 
     # ANSI-C quoting (`$'\x2e\x2e'`, `settings$'\x2e'json`) spells any byte,
     # so the text above cannot say what it names. Not decoded: a `$'` beside
