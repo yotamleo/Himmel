@@ -813,8 +813,8 @@ assert "rootwalk \${X} survives cook-fail" DENY "$(decide "$(j_bash 'find / -nam
 assert "rootwalk \$f in -newer survives cook-fail" DENY "$(decide "$(j_bash 'find / -newer $f')")"
 assert "rootwalk loop-variable survives cook-fail" DENY "$(decide "$(j_bash 'for f in a b; do find / -name $f; done')")"
 assert "rootwalk \$Y after -o survives cook-fail" DENY "$(decide "$(j_bash 'find / -name x -o -name $Y')")"
-assert "rootwalk \$N maxdepth-value survives cook-fail" DENY "$(decide "$(j_bash 'find / -maxdepth $N -name x')")"
-assert "rootwalk brace maxdepth-value survives cook-fail" DENY "$(decide "$(j_bash 'find / -maxdepth {1,2} -name x')")"
+assert "rootwalk \$N maxdepth-value survives cook-fail" DENY "$(decide "$(j_bash 'find / -maxdepth $N -name x')")" # gnu-ok: fixture string fed to the hook under test, never executed as a shell command
+assert "rootwalk brace maxdepth-value survives cook-fail" DENY "$(decide "$(j_bash 'find / -maxdepth {1,2} -name x')")" # gnu-ok: fixture string fed to the hook under test, never executed as a shell command
 assert "rootwalk brace path-operand survives cook-fail" DENY "$(decide "$(j_bash 'find / -name *.{md,txt}')")"
 # Control: the $(...) rootwalk DENY (round-3 lock, :346) must still hold.
 assert "rootwalk \$(...)  still DENY"  DENY "$(decide "$(j_bash 'find / -iname $(hostname)')")"
