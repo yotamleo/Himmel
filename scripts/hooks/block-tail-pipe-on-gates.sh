@@ -182,6 +182,10 @@ cmd=${cmd//$'\r'/}
 
 # Registered gate paths, anchored: the token must END with one, at a `/` boundary.
 GATE_RE='(^|/)scripts/(cr/clear-cr-marker\.sh|ci/run-shell-tests\.sh|check-ci\.sh|handover/merge-on-green\.sh|handover/pr-merge\.sh|[A-Za-z0-9._-]+/test-[A-Za-z0-9._-]*\.sh)$'
+# HIMMEL-3661: invoked_program's env case returns this instead of a real
+# program name when it sees -S/--split-string — see that case's comment.
+# scan_line treats it as a gate match without consulting GATE_RE.
+ENV_SPLIT_SENTINEL='<env-split-string>'
 NL=$'\n'
 TAB=$'\t'
 MARK='#tail-pipe-ok:'      # the opt-out, reduced to one operator-free token
@@ -512,25 +516,62 @@ invoked_program() {
                     esac ;;
                 env)
                     # `env`'s VAR=val assignments are already stepped over by the
-                    # assignment arm above; `-S`/`--split-string` DOES take an
-                    # operand here, which is exactly what a launcher-agnostic
-                    # table could not express. Same attached-value carve-out as
-                    # sudo above.
+                    # assignment arm above. `-u`/`-C`/`-a` (--unset/--chdir/
+                    # --argv0) take an ordinary operand — a value to skip past,
+                    # same attached-value carve-out as sudo above.
                     #
-                    # HIMMEL-3632 known limitation: GNU env's `-S`/
-                    # `--split-string` operand is NOT a value to skip past like
-                    # `-u`/`-C`/`-a`'s — it is itself split into a NEW argv and
-                    # run, so the word this skip_next steps over is not
-                    # necessarily the invoked program, and the walk can land on
-                    # a following word instead. That is a false DENY (the
-                    # fail-closed direction, never a bypass) and is left
-                    # uncorrected here on purpose — relaxing it needs its own
-                    # judged change; see the PR/ticket for the accepted shape.
+                    # HIMMEL-3661 (corrects HIMMEL-3632's comment here, which
+                    # was WRONG): `-S`/`--split-string` is NOT like those
+                    # three. GNU env SPLITS its operand into a brand-new argv
+                    # and RUNS it, so treating that operand as a value to skip
+                    # past let the walk land on nothing at all — an ALLOW, not
+                    # a false DENY: a real bypass (`env -S 'bash
+                    # scripts/check-ci.sh' | tail` reached tail with the gate's
+                    # real exit code lost, undetected). The split string is
+                    # never parsed here; instead the clause is treated as
+                    # invoking an unknown program that MAY be a gate, via
+                    # ENV_SPLIT_SENTINEL, for every spelling — bare,
+                    # abbreviated, attached (`-Sfoo`), `=`-attached
+                    # (`--split-string=foo`), or bundled behind env's other
+                    # BARE flags (`-iS`, `-vS`, `-ivS`: `-i`/`-v`/`-0` take no
+                    # operand of their own, so a leading run of only those
+                    # letters followed by `S` is still a split-string clause —
+                    # J1299O finding 2). This does trade in a genuine false
+                    # DENY of its own — a legitimate `env -S '<non-gate
+                    # command>' | tail` now also denies — which is the
+                    # accepted fail-closed direction.
                     case $stripped in
-                        -S | -u | -C | -a) skip_next=1; continue ;;
+                        -u | -C | -a) skip_next=1; continue ;;
+                        -S | -S*)
+                            printf '%s' "$ENV_SPLIT_SENTINEL"
+                            return 0 ;;
+                        -[iv0]*)
+                            # Bare-flag bundle: walk the letters after the
+                            # leading `-`; if only `i`/`v`/`0` precede an `S`,
+                            # this bundle carries -S too (operand-letter
+                            # bundles like `-uS`/`-CS`/`-aS` never enter this
+                            # arm — they start with a letter outside [iv0]).
+                            guard_bundle=${stripped#-}
+                            guard_idx=0
+                            guard_is_split=0
+                            while [ "$guard_idx" -lt "${#guard_bundle}" ]; do
+                                case ${guard_bundle:$guard_idx:1} in
+                                    S) guard_is_split=1; break ;;
+                                    i | v | 0) ;;
+                                    *) break ;;
+                                esac
+                                guard_idx=$((guard_idx + 1))
+                            done
+                            if [ "$guard_is_split" = 1 ]; then
+                                printf '%s' "$ENV_SPLIT_SENTINEL"
+                                return 0
+                            fi ;;
                         --*)
-                            if guard_is_long_abbrev "split-string" "$stripped" \
-                                || guard_is_long_abbrev "unset" "$stripped" \
+                            if guard_is_long_abbrev "split-string" "$stripped"; then
+                                printf '%s' "$ENV_SPLIT_SENTINEL"
+                                return 0
+                            fi
+                            if guard_is_long_abbrev "unset" "$stripped" \
                                 || guard_is_long_abbrev "chdir" "$stripped" \
                                 || guard_is_long_abbrev "argv0" "$stripped"; then
                                 [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
@@ -623,14 +664,24 @@ scan_line() {
         case "$pipeline" in *'|'*) ;; *) continue ;; esac
         prog=$(invoked_program "${pipeline%%|*}")
         [ -n "$prog" ] || continue
-        printf '%s' "$prog" | grep -Eq "$GATE_RE" || continue
+        # HIMMEL-3661: ENV_SPLIT_SENTINEL means "unknown program that may be a
+        # gate" — treat it as a match without consulting GATE_RE.
+        if [ "$prog" != "$ENV_SPLIT_SENTINEL" ]; then
+            gate_match=$(printf '%s' "$prog" | grep -E "$GATE_RE")
+            [ -n "$gate_match" ] || continue
+        fi
         # Last stage, same command-position walk — so `| env tail`, `| command
         # head` and `| FOO=1 tail` are recognised too (panel r2, codex-1). The
         # leading `&` is the tail of a `|&` operator, not a word.
+        # J1299O finding 1: the last stage can ALSO be an env -S/--split-string
+        # clause (`| env -S env tail`, `| env -Snice head`) — the walk returns
+        # ENV_SPLIT_SENTINEL there too, and since the split string is never
+        # parsed, it may itself be a tail/head invocation. Treat the sentinel
+        # as tail/head rather than falling through to ALLOW.
         last=${pipeline##*|}
         last=${last#&}
         case $(invoked_program "$last") in
-            tail | head | */tail | */head) ;;
+            tail | head | */tail | */head | "$ENV_SPLIT_SENTINEL") ;;
             *) continue ;;
         esac
         offender=$pipeline

@@ -781,11 +781,16 @@ for seg in "${SEGMENTS[@]}"; do
 done
 ENDPOINT="${BASE_URL}/vault/${ENCODED_REL}"
 
+# HIMMEL-3646: bound every REST call so an endpoint that accepts the TCP
+# connection but never answers cannot hang SessionEnd indefinitely.
+CURL_TIMEOUT_OPTS=(--connect-timeout 5 --max-time 30)
+
 # _esw_put_note <key> — PUT the note with the given bearer key; echoes the HTTP
-# status code (000 on connection failure). -k: self-signed cert on loopback is
-# acceptable (127.0.0.1 only; any local process can already read the vault).
+# status code (000 on connection failure or timeout). -k: self-signed cert on
+# loopback is acceptable (127.0.0.1 only; any local process can already read
+# the vault).
 _esw_put_note() {
-    curl -sk -o /dev/null -w '%{http_code}' \
+    curl -sk "${CURL_TIMEOUT_OPTS[@]}" -o /dev/null -w '%{http_code}' \
         -X PUT \
         -H "Authorization: Bearer $1" \
         -H "Content-Type: text/markdown" \

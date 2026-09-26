@@ -647,6 +647,39 @@ else
     unset ASSERT_LOG
 fi
 
+echo "Test 14: G-2 dead-PID lock recovery documented (HIMMEL-1138)"
+g2_section=$(awk '/^### G-2/{p=1;next} /^### /{if(p) exit} p' "$CMD")
+
+out=$(printf '%s' "$g2_section" | grep -E "kill -0")
+out2=$(printf '%s' "$g2_section" | grep -iE "not running")
+out3=$(printf '%s' "$g2_section" | grep -iE "removing stale lock")
+if [ -n "$out" ] && [ -n "$out2" ] && [ -n "$out3" ]; then
+    dead_pid=yes
+else
+    dead_pid=no
+fi
+assert "G-2 documents dead-PID recovery (kill -0 fails -> remove stale lock + re-acquire)" "yes" "$dead_pid"
+
+out=$(printf '%s' "$g2_section" | grep -iE "unparseable")
+out2=$(printf '%s' "$g2_section" | grep -iE "no PID")
+out3=$(printf '%s' "$g2_section" | grep -iE "treat as.*alive")
+out4=$(printf '%s' "$g2_section" | grep -iE "fail closed")
+if [ -n "$out" ] && [ -n "$out2" ] && [ -n "$out3" ] && [ -n "$out4" ]; then
+    unparse=yes
+else
+    unparse=no
+fi
+assert "G-2 documents unparseable/no-PID lock treated as alive (fail closed)" "yes" "$unparse"
+
+out=$(printf '%s' "$g2_section" | grep -F "another harvest run is active")
+out2=$(printf '%s' "$g2_section" | grep -E "Exit 2")
+if [ -n "$out" ] && [ -n "$out2" ]; then
+    live_abort=yes
+else
+    live_abort=no
+fi
+assert "G-2 live-PID abort message + exit 2 unchanged" "yes" "$live_abort"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 if [ "$fail" -gt 0 ]; then

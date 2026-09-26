@@ -335,6 +335,7 @@ _bwimc_blank_heredocs() {
     local out="" line
     local active=0 dashmode=0 term="" pend_term="" pend_dash=0
     local i len c prev rest check tab
+    local arith_pfx arith_open arith_close arith_scan
     tab=$(printf '\t')
     # Quote/escape state is carried ACROSS lines (the scanner is initialised
     # once, here) but is FROZEN while a heredoc body is active — the body-line
@@ -369,11 +370,32 @@ _bwimc_blank_heredocs() {
                     '<')
                         if [ "$active" = 0 ] && [ -z "$pend_term" ] && [ "$prev" != '<' ] \
                            && [ "${line:$((i+1)):1}" = '<' ] && [ "${line:$((i+2)):1}" != '<' ]; then
+                            # J1285R Minor: `<<` inside an unclosed `((`/`$((`
+                            # arithmetic context on this line (`$((1 << n))`,
+                            # `(( x = y << z ))`) is a left-shift operator, not
+                            # a heredoc opener. Count literal `((`/`))` pairs
+                            # in the prefix up to here; an odd (unbalanced,
+                            # open) depth means we are still inside one.
+                            arith_pfx="${line:0:$i}"
+                            arith_open=0; arith_scan="$arith_pfx"
+                            while [[ "$arith_scan" == *'(('* ]]; do
+                                arith_scan="${arith_scan#*((}"
+                                arith_open=$((arith_open+1))
+                            done
+                            arith_close=0; arith_scan="$arith_pfx"
+                            while [[ "$arith_scan" == *'))'* ]]; do
+                                arith_scan="${arith_scan#*))}"
+                                arith_close=$((arith_close+1))
+                            done
+                            if [ "$arith_open" -gt "$arith_close" ]; then
+                                : # inside arithmetic context — not an opener
+                            else
                             rest="${line:$((i+2))}"
                             if [[ "$rest" =~ ^(-)?[[:space:]]*(\"([A-Za-z_][A-Za-z0-9_]*)\"|\'([A-Za-z_][A-Za-z0-9_]*)\'|([A-Za-z_][A-Za-z0-9_]*)) ]]; then
                                 term="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
                                 if [ -n "${BASH_REMATCH[1]}" ]; then dashmode=1; else dashmode=0; fi
                                 active=1
+                            fi
                             fi
                         fi
                         ;;
@@ -410,6 +432,14 @@ _bwimc_blank_heredocs() {
         [ "$active" = 1 ] || _bwimc_scan_step "$_BWIMC_NL"
         out="${out}${line}"$'\n'
     done <<< "$text"
+    # HIMMEL-3621: a heredoc opener whose terminator was never matched
+    # (`active=1` at end of input) or whose opener continuation never
+    # resolved (`pend_term` still set) means every line since the opener was
+    # blindly blanked on a guess that never panned out — a real write after
+    # it would be silently hidden. Fail CLOSED instead of returning $out.
+    if [ "$active" = 1 ] || [ -n "$pend_term" ]; then
+        _bwimc_deny "unresolved-heredoc" "<<${term:-$pend_term} (terminator not found)" "" ""
+    fi
     printf '%s' "$out"
 }
 
@@ -792,6 +822,13 @@ _bwimc_is_long_abbrev() {
 #                     seen. cp-only (HIMMEL-2679): it has no short form, so it
 #                     is caught only here, not in the bundled-short-option
 #                     loop below.
+#   _BWIMC_OPT_FORCE  1 when `-f` / `--force` (or an abbreviation of the
+#                     latter) was seen. HIMMEL-2679: on cp, a FOLLOW-mode
+#                     write that fails on the referent's permissions falls
+#                     back to unlinking the destination ENTRY (ground-truthed
+#                     against real GNU coreutils) — the same entry-replacing
+#                     effect as `--remove-destination`, just conditional on a
+#                     permission failure rather than unconditional.
 _bwimc_opt_scan() {
     local tok="$1" fl fc
     _BWIMC_OPT_TDIR=""
@@ -799,6 +836,7 @@ _bwimc_opt_scan() {
     _BWIMC_OPT_BIGT=0
     _BWIMC_OPT_SMALLN=0
     _BWIMC_OPT_RMDEST=0
+    _BWIMC_OPT_FORCE=0
     case "$tok" in
         --*)
             if _bwimc_is_long_abbrev "no-target-directory" "$tok"; then
@@ -807,6 +845,8 @@ _bwimc_opt_scan() {
                 _BWIMC_OPT_SMALLN=1
             elif _bwimc_is_long_abbrev "remove-destination" "$tok"; then
                 _BWIMC_OPT_RMDEST=1
+            elif _bwimc_is_long_abbrev "force" "$tok"; then
+                _BWIMC_OPT_FORCE=1
             elif _bwimc_is_long_abbrev "target-directory" "$tok"; then
                 # HIMMEL-2592 CR round 4, codex-2: the SEPARATED long form
                 # takes its value from the NEXT token, exactly like a bare
@@ -834,6 +874,7 @@ _bwimc_opt_scan() {
         case "$fc" in
             T) _BWIMC_OPT_BIGT=1 ;;
             n) _BWIMC_OPT_SMALLN=1 ;;
+            f) _BWIMC_OPT_FORCE=1 ;;
             t)
                 # `-t` takes a VALUE, so it consumes the rest of the token
                 # (`-sft/dir`) or the next one (`-sft /dir`) and ENDS the
@@ -880,6 +921,7 @@ _bwimc_deny() {
         cannot-canonicalise) why="the target path could not be canonicalised (failing closed)" ;;
         unresolved-git-target) why="a git -C/--git-dir/--work-tree/GIT_* env or cd target could not be resolved (failing closed)" ;;
         repointed-remote) why="it runs a remote operation in a command that repoints a remote (a -c remote/url/protocol/core.sshCommand key, a GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, or git remote add|set-url), which can reach the primary under an innocent name (failing closed)" ;;
+        unresolved-heredoc) why="a heredoc opener's terminator was never found in the command (failing closed — text after it cannot be safely classified)" ;;
     esac
     {
         echo "⛔ block-write-into-main-checkout: refusing a write-shaped command — $why."
@@ -2823,6 +2865,7 @@ while IFS= read -r _bwimc_clause; do
         # (child-of-`-t`/positional-dir) form replace the ENTRY, so both
         # `_bwimc_dest_mode` and `_bwimc_child_mode` below need it.
         _bwimc_rmdest=0
+        _bwimc_force=0
         _bwimc_dd=0
         _bwimc_ntoks=${#_bwimc_toks[@]}
         _bwimc_i=1
@@ -2852,7 +2895,19 @@ while IFS= read -r _bwimc_clause; do
                     _bwimc_opt_scan "$_bwimc_t"
                     [ -n "$_BWIMC_OPT_TDIR" ] && _bwimc_tdir_raw="$_BWIMC_OPT_TDIR"
                     [ "$_BWIMC_OPT_BIGT" = 1 ] && _bwimc_nodrf=1
+                    # HIMMEL-2679/J1285R: `-f`/`--force` is NOT the same as
+                    # `--remove-destination`. `cp -f` does not unlink first —
+                    # it opens the destination and FOLLOWS a symlink referent,
+                    # falling back to unlink-and-recreate (ENTRY) only when
+                    # that open fails on permissions (ground-truthed against
+                    # real GNU coreutils 9.11). So the referent is the NORMAL
+                    # write target and must be checked FOLLOW as well as
+                    # ENTRY — `_bwimc_force` gets its own flag and is checked
+                    # in `both` mode below, never folded into `_bwimc_rmdest`
+                    # (which stays ENTRY-only, correct for the unconditional
+                    # unlink `--remove-destination` performs).
                     [ "$_BWIMC_OPT_RMDEST" = 1 ] && _bwimc_rmdest=1
+                    [ "$_BWIMC_OPT_FORCE" = 1 ] && _bwimc_force=1
                     if [ "$_BWIMC_OPT_TWANT" = 1 ]; then
                         # HIMMEL-2592 round 6 codex-1: the value is the next
                         # REAL token, skipping any redirection (and its
@@ -2868,8 +2923,12 @@ while IFS= read -r _bwimc_clause; do
         done
         # `-T` only changes DESTINATION semantics for mv; cp writes nothing.
         [ "$_bwimc_verb" = "mv" ] || _bwimc_nodrf=0
-        # `--remove-destination` is a cp-only GNU option; mv has no such flag.
+        # `--remove-destination`'s unlink-fallback trigger and `-f`/`--force`
+        # are cp-only: mv already replaces the entry unconditionally via
+        # rename(2), so `-f`/`--force` there changes only the overwrite
+        # PROMPT, never the mode.
         [ "$_bwimc_verb" = "cp" ] || _bwimc_rmdest=0
+        [ "$_bwimc_verb" = "cp" ] || _bwimc_force=0
         # INDEPENDENCE (HIMMEL-2592, acceptance criterion 1): operands are
         # COLLECTED with their roles above, then EVERY statically-resolvable
         # one is checked below — never nested inside a sibling's resolution
@@ -2902,6 +2961,10 @@ while IFS= read -r _bwimc_clause; do
         # recreates it, the same as mv's rename(2) — ground-truthed at
         # `<dir>/link -> <worktree>/file`: the child became a REGULAR file.
         [ "$_bwimc_rmdest" = 1 ] && _bwimc_child_mode=entry
+        # HIMMEL-2679/J1285R: `-f`/`--force` (without `--remove-destination`)
+        # normally still writes THROUGH the child symlink referent (FOLLOW),
+        # falling back to ENTRY only on a permission failure — check both.
+        [ "$_bwimc_rmdest" = 0 ] && [ "$_bwimc_force" = 1 ] && _bwimc_child_mode=both
         if [ -n "$_bwimc_tdir_raw" ]; then
             # -t/--target-directory mode: EVERY remaining operand is a
             # SOURCE; the sink for each is <target-dir>/<basename(source)>.
@@ -2955,6 +3018,13 @@ while IFS= read -r _bwimc_clause; do
                             # `cp --remove-destination` unlinks+recreates the
                             # same way (HIMMEL-2679, ground-truthed).
                             _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)
+                        elif [ "$_bwimc_dest_is_dir" = 0 ] && [ "$_bwimc_force" = 1 ]; then
+                            # HIMMEL-2679/J1285R: `-f`/`--force` normally
+                            # writes THROUGH the referent (FOLLOW) and falls
+                            # back to unlink+recreate (ENTRY) only when that
+                            # open fails on permissions — check both, never
+                            # ENTRY-only (that missed the real write target).
+                            _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" both)
                         fi
                     fi
                     _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" "$_bwimc_dest_mode"

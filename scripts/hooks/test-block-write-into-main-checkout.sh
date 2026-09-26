@@ -1699,6 +1699,39 @@ check_both_reason "70a cp --remove-destination wt/z.txt primary/link-to-wt.txt d
 check_both "70b NEGATIVE CONTROL: plain cp (no --remove-destination) onto the same symlink writes THROUGH to the wt referent — still ALLOWS" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+# 70c (HIMMEL-2679): `-f`/`--force` folds into the SAME entry-mode trigger as
+# `--remove-destination` — GNU cp's `-f` falls back to unlinking the
+# destination ENTRY when a FOLLOW-mode write to the referent fails on
+# permissions (ground-truthed against real coreutils), the same
+# entry-replacing effect, just conditional rather than unconditional.
+check_both_reason "70c cp --force wt/z.txt primary/link-to-wt.txt denies (entry replaced, not the referent)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp --force $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary/link-to-wt.txt"
+check_both_reason "70d cp -f wt/z.txt primary/link-to-wt.txt denies (bundled short form of --force)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -f $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary/link-to-wt.txt"
+check_both "70e NEGATIVE CONTROL: cp -P wt/z.txt primary/link-to-wt.txt (no-dereference) still ALLOWS" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -P $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 70f/70g (J1285R Critical, regression against THIS PR's own 2679 change):
+# `-f`/`--force` does NOT unlink first like `--remove-destination` — GNU cp
+# opens the destination and FOLLOWS a symlink referent, falling back to
+# unlink-and-recreate only when that open fails on permissions (ground-truthed
+# against real GNU coreutils 9.11). Folding `-f` into the SAME entry-only
+# check as `--remove-destination` (rows 70c/70d) swapped FOLLOW for ENTRY
+# instead of checking both, so a WORKTREE-side symlink whose referent is in
+# the PRIMARY (the opposite direction from 70c/70d's primary-side symlink)
+# stopped being checked at all: `$FIX/wt/link-to-primary.txt` ->
+# `$FIX/primary/existing.txt` (fixture set up above) is exactly this shape.
+# These DENY against main's hook (real primary write via the FOLLOWED
+# referent) and must keep denying here — regression rows, not new coverage.
+check_both_reason "70f cp -f wt/z.txt wt/link-to-primary.txt denies (force follows the referent into the primary)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -f $FIX/wt/z.txt $FIX/wt/link-to-primary.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/wt/link-to-primary.txt"
+check_both_reason "70g cp -f -t wt/childdir wt/z.txt denies (force follows the -t child's referent into the primary)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -f -t $FIX/wt/childdir $FIX/wt/z.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/wt/childdir"
+
 # 71 (HIMMEL-2645): a heredoc OPENER that itself ends in a line continuation
 # (`cat <<EOF \` then a newline) is not yet a complete command line — bash
 # joins the next physical line onto it before the command ends, so a real
@@ -1715,6 +1748,117 @@ check_both "71b NEGATIVE CONTROL: same shape into |wt|/z.txt still ALLOWS" allow
 HC_BODY_CMD=$(printf "cat <<EOF\nif a > b:\n    pass\nEOF")
 HC_BODY_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HC_BODY_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "71c REGRESSION CONTROL: a heredoc body line containing '>' (no continuation) still ALLOWS" allow "$HC_BODY_JSON"
+
+# 71d COVERAGE (HIMMEL-2645 sibling, `<<-EOF` tab-strip opener variant): the
+# same opener-ends-in-a-continuation shape as 71a, dashed variant. NOT a RED
+# control — this shape already denies against main's (pre-fix) hook too, so
+# it doesn't demonstrate a bug this PR fixes; it pins that the fix doesn't
+# regress the dashed-opener case either.
+HCD_CMD=$(printf 'cat <<-EOF \\\n> %s/a.txt\nbody\n\tEOF' "$FIX/primary")
+HCD_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HCD_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "71d COVERAGE: cat <<-EOF \\ + newline + > primary/a.txt denies (tab-strip opener, continued redirect is command text)" \
+    "$HCD_JSON" "$FIX/primary/a.txt"
+
+# 71e COVERAGE (HIMMEL-2645 sibling, quoted opener `<<'EOF'` variant): same
+# shape, quoted delimiter word. NOT a RED control, same reason as 71d — pins
+# that quoting the delimiter doesn't suppress the continuation check.
+HCQ_CMD=$(printf "cat <<'EOF' \\\\\n> %s/a.txt\nbody\nEOF" "$FIX/primary")
+HCQ_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HCQ_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "71e COVERAGE: cat <<'EOF' \\ + newline + > primary/a.txt denies (quoted opener, continued redirect is command text)" \
+    "$HCQ_JSON" "$FIX/primary/a.txt"
+
+# 71f REGRESSION CONTROL (HIMMEL-2645 sibling): a line continuation that
+# occurs INSIDE an already-active heredoc BODY (not on the opener line
+# itself) must stay body text — it is not a second opener-continuation.
+HCI_CMD=$(printf 'cat <<EOF\nline with \\\n> not-a-real-redirect\nEOF')
+HCI_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HCI_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "71f REGRESSION CONTROL: a continuation INSIDE an active heredoc body still ALLOWS (stays body)" allow "$HCI_JSON"
+
+echo "== HIMMEL-3621: a heredoc terminator that is never matched fails CLOSED =="
+
+# 72a (HIMMEL-3621): the heredoc delimiter word itself is split by a line
+# continuation (`<<EO\` + newline + `F`), so the real bash delimiter is
+# `EOF` split across two physical lines and no single following LINE can
+# ever equal it — the terminator is never found. The old walk blanked to
+# end-of-input on that guess, hiding the real write below. Fail CLOSED.
+UT_CMD=$(printf 'cat <<EO\\\nF\nbody\nEOF\necho hi > %s/pwned.txt' "$FIX/primary")
+UT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UT_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both_reason "72a heredoc delimiter split by continuation (terminator never matches) denies closed" \
+    "$UT_JSON" "terminator was never found"
+
+# 72b/72c (J1285R Minor): an unquoted arithmetic left-shift by a NAME
+# (`$((1 << n))`, `(( x = y << z ))`) was misread as a heredoc opener `<<`
+# followed by delimiter word `n`/`z` — no line ever equals that "delimiter",
+# so it failed closed as unresolved-heredoc, a new false DENY vs main. Fixed
+# by excluding `<<` that sits inside an unclosed `((`/`$((` on the same line.
+check_both "72b echo \$((1 << n)) ALLOWS (arithmetic shift by a name is not a heredoc opener)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo \$((1 << n))\",\"cwd\":\"$FIX/wt\"}}"
+check_both "72c (( x = y << z )) ALLOWS (same shift-by-name shape, arithmetic COMMAND form)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"(( x = y << z ))\",\"cwd\":\"$FIX/wt\"}}"
+
+# HIMMEL-3622 (command-substitution body scanning) was pulled from this PR by
+# judge ruling J1285O: the extractor it added both left a real fail-open
+# (backtick nested inside $(...)) and introduced a new false DENY on the
+# fleet's own `git commit -m "$(cat <<'EOF' … EOF)"` / `gh pr create --body`
+# idiom whenever the message has an apostrophe, a lone `(` or a `"`. 3622
+# goes back to To Do for its own leg; rows 74a-74g below pin that this PR
+# does not regress that idiom (ALLOW, ground-truthed against the real
+# interpreter in a scratch worktree).
+
+echo "== HIMMEL-2645/2679/3621 regression: the commit/PR-create heredoc idiom must still ALLOW =="
+
+# 74a: `git commit -m "$(cat <<'EOF' ... EOF)"` with an apostrophe in the
+# message. This is the fleet's standard commit idiom; must ALLOW.
+CHA_CMD="git commit -m \"\$(cat <<'EOF'
+fix: don't break things
+EOF
+)\""
+CHA_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHA_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "74a REGRESSION CONTROL: commit heredoc message with an apostrophe still ALLOWS" allow "$CHA_JSON"
+
+# 74b: same idiom, a lone `(` in the message.
+CHB_CMD="git commit -m \"\$(cat <<'EOF'
+fix: (see ticket)
+EOF
+)\""
+CHB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "74b REGRESSION CONTROL: commit heredoc message with a lone '(' still ALLOWS" allow "$CHB_JSON"
+
+# 74c: same idiom, a `"` in the message.
+CHC_CMD="git commit -m \"\$(cat <<'EOF'
+fix: says \"hello\"
+EOF
+)\""
+CHC_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHC_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "74c REGRESSION CONTROL: commit heredoc message with a double-quote still ALLOWS" allow "$CHC_JSON"
+
+# 74d: `gh pr create --body "$(cat <<'EOF' ... EOF)"` with an apostrophe —
+# same idiom, PR-body form. Direct-exec only, same rationale as row 27:
+# block-terminal-write-fence.sh has its own separate, pre-existing HIMMEL-745
+# policy that hard-blocks ALL `gh pr create` in the codex-direct lane
+# regardless of content (external-write class) — unrelated to this hook's
+# substitution/heredoc scanning, so sourced mode is out of scope here.
+PRB_CMD="gh pr create --body \"\$(cat <<'EOF'
+it's done
+EOF
+)\""
+PRB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$PRB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_one "74d REGRESSION CONTROL: gh pr create --body heredoc with an apostrophe — direct-exec ALLOWS (not the external-write fence)" \
+    "$DIRECT" allow "$PRB_JSON"
+
+# 74e/74f: read-only \$(...)-shaped TEXT in a grep/sed pattern (not a real
+# substitution at all — a literal string the command never evaluates) must
+# not be misread as an opener.
+GDP_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"grep -n '\$(' f\",\"cwd\":\"$FIX/wt\"}}"
+check_both "74e REGRESSION CONTROL: grep -n '\$(' f still ALLOWS" allow "$GDP_JSON"
+SDP_CMD="sed -n '/\$(/p' f"
+SDP_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$SDP_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "74f REGRESSION CONTROL: sed -n '/\\\$(/p' f still ALLOWS" allow "$SDP_JSON"
+
+# 74g: a backtick inside a single-quoted word — plain literal text, not a
+# substitution.
+BTQ_LIT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo 'don\`t'\",\"cwd\":\"$FIX/wt\"}}"
+check_both "74g REGRESSION CONTROL: echo 'don\`t' still ALLOWS" allow "$BTQ_LIT_JSON"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
