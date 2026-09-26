@@ -27,6 +27,16 @@ if [ -z "$TITLE" ]; then
     exit 2
 fi
 
+# HIMMEL-3616 (judge J1284O F5/minor): accept GitHub's own revert-button
+# title shape, e.g. `Revert "fix(x): [HIMMEL-1] foo"`. check-commit-msg.sh's
+# own revert exemption requires a `This reverts commit <hash>.` line whose
+# hash resolves to a real commit object -- a bare title never has one, so
+# that exemption can never fire here; refusing a legitimate merge path is
+# worse than accepting this shape without ticket traceability.
+if printf '%s\n' "$TITLE" | grep -Eq '^Revert ".+"$'; then
+    exit 0
+fi
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK_MSG="$HERE/../hooks/check-commit-msg.sh"
 if [ ! -f "$CHECK_MSG" ]; then

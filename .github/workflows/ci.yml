@@ -103,16 +103,14 @@ jobs:
           else
             bash scripts/ci/check-commit-range.sh
           fi
-      # HIMMEL-3616: the squash merge makes the PR TITLE main's commit
-      # subject, so a title edited later in the GitHub UI (after the commits
-      # themselves passed lint) must be caught too. PR_TITLE goes through
-      # env: rather than inline ${{ }} interpolation into the run: shell,
-      # since the title is attacker-controlled text.
-      - name: Lint the PR title
-        if: github.event_name == 'pull_request'
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: bash scripts/lib/check-pr-title.sh "$PR_TITLE"
+      # HIMMEL-3616: the PR-title lint (the squash merge makes the title
+      # main's commit subject) lives in its own workflow,
+      # .github/workflows/pr-title-lint.yml — not here. commit-lint's
+      # `pull_request:` trigger has no `edited` type, so a step here would
+      # never re-run when a title is fixed via `gh pr edit --title`
+      # (judge J1284O F2); it also never threaded the PR author into
+      # TICKET_ID_AUTHOR, so the dependabot[bot] exemption never applied to
+      # a title (judge J1284O F1).
 
   # Plugin-version-bump governance (HIMMEL-3551): mirrors the local
   # plugin-version-bump-required pre-commit hook (--bump-required), which only

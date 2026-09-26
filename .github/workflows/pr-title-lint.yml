@@ -1,0 +1,43 @@
+name: PR Title Lint
+
+# HIMMEL-3616 (judge J1284O F1/F2): split out of ci.yml's required
+# commit-lint job. Two problems the split fixes:
+#
+# F1 - commit-lint's PR-title step never threaded TICKET_ID_AUTHOR, so the
+#      dependabot[bot] exemption that already applies to a commit
+#      (scripts/ci/check-commit-range.sh:86 threads the commit's own author)
+#      never applied to a title, and every Dependabot PR went red.
+# F2 - commit-lint's `pull_request:` trigger has no `edited` type, so a bad
+#      title fixed via `gh pr edit --title` never re-ran the check. Adding
+#      `edited` to ci.yml's own trigger would also re-run (and, through its
+#      shared ci-pr-<N> concurrency group, cancel) the whole required CI
+#      matrix on every `gh pr edit` of the BODY too (leg-pr-open.sh does this
+#      right after opening a PR) - hence a dedicated workflow with its own
+#      trigger and concurrency group instead of a job inside ci.yml.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title-lint:
+    runs-on: ubuntu-latest
+    env:
+      TICKET_ID_REQUIRED: '1'
+      JIRA_PROJECT_KEY: HIMMEL
+      TICKET_ID_AUTHOR: ${{ github.event.pull_request.user.login }}
+      TICKET_ID_TRUSTED_AUTHOR: ${{ github.event.pull_request.user.login }}
+    steps:
+      - uses: actions/checkout@v7
+      # PR_TITLE goes through env: rather than inline ${{ }} interpolation
+      # into the run: shell, since the title is attacker-controlled text.
+      - name: Lint the PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: bash scripts/lib/check-pr-title.sh "$PR_TITLE"
