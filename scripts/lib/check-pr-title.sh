@@ -33,7 +33,7 @@ fi
 # hash resolves to a real commit object -- a bare title never has one, so
 # that exemption can never fire here; refusing a legitimate merge path is
 # worse than accepting this shape without ticket traceability.
-if printf '%s\n' "$TITLE" | grep -Eq '^Revert ".+"$'; then
+if grep -Eq '^Revert ".+"$' <<< "$TITLE"; then
     exit 0
 fi
 
