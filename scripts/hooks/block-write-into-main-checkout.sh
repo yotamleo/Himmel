@@ -1548,7 +1548,7 @@ _bwimc_is_shc_cflag() {
 # accepts for every other arm (HIMMEL-3648).
 _bwimc_check_interp_body() {
     local kind="$2" toks=() t t2 n i cidx body="" _bwimc_ibody_clause="" \
-        _bwimc_ibody_git=0 _bwimc_ibody_commit=0 \
+        _bwimc_ibody_clause_sp="" _bwimc_ibc_toks=() _bwimc_ibc_n=0 _bwimc_m="" \
         _bwimc_ibody_saved_ecwd="" _bwimc_ibody_saved_unres=""
     toks=()
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
@@ -1577,80 +1577,76 @@ _bwimc_check_interp_body() {
                *) return 0 ;;
            esac ;;
     esac
-    toks=()
-    while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$body")
-    n=${#toks[@]}
-    i=0
-    while [ "$i" -lt "$n" ]; do
-        case "$(_bwimc_unq "${toks[$i]}")" in
-            git|git.exe) _bwimc_ibody_git=1 ;;
-            commit) _bwimc_ibody_commit=1 ;;
-        esac
-        i=$((i+1))
-    done
-    # HIMMEL-3648 round 3 (codex-1/codex-2): `git … commit` inside the body is
-    # a CWD predicate the token/redirect loop below never checks (it only
-    # checks token PATHS, and neither "git" nor "commit" is one), and an
-    # intra-body cd/pushd can move that cwd before the commit runs. Reuse the
-    # existing per-clause _bwimc_split_clauses + _bwimc_ecwd_track idiom the
-    # main loop already runs per outer clause (line ~2941) — split the body
-    # itself into clauses and track cwd across them in order — rather than
-    # growing a separate tracker. _bwimc_ecwd_track expects ONE clause at a
-    # time (it only inspects the clause's FIRST token): passing it the whole
-    # unsplit body let a trailing `;`/`&&` glue onto a cd's target token and
-    # silently break resolution (round-3 self-review). Save/restore both
-    # globals so this stays scoped to THIS interp body and never leaks to a
-    # sibling outer clause.
+    # HIMMEL-3648 round 4 (codex-1): the round-3 fix tracked cwd across the
+    # WHOLE body first and only then checked every token/`git … commit`
+    # against that final cwd — correct for a body that never cd's again
+    # after its last write, wrong otherwise: `bash -c 'cd <primary>; echo x
+    # > a.txt; cd <wt>'` tracked to <wt> (the body's END state) and checked
+    # "a.txt" against <wt>, allowing a real write into <primary>. A write (or
+    # a `git … commit`) must be checked against the cwd AS OF THAT POINT in
+    # the body, not wherever the body cd's to afterwards. Fix: track AND
+    # check PER CLAUSE, in order, exactly like the main outer loop already
+    # does for the top-level command (line ~1663 tracks, line ~3706 checks
+    # git-commit, both inside the SAME per-clause iteration) — do not
+    # re-derive body-wide flags/tokens first and check them once the cwd has
+    # moved on. Save/restore both globals so this stays scoped to THIS
+    # interp body and never leaks to a sibling outer clause.
     _bwimc_ibody_saved_ecwd="$_bwimc_ecwd"
     _bwimc_ibody_saved_unres="$_bwimc_ecwd_unres"
     while IFS= read -r _bwimc_ibody_clause; do
-        _bwimc_ecwd_track "$(_bwimc_space_before_redirects "$_bwimc_ibody_clause")"
-    done < <(_bwimc_split_clauses "$body")
-    if [ "$_bwimc_ibody_git" = 1 ] && [ "$_bwimc_ibody_commit" = 1 ]; then
-        if [ "$_bwimc_ecwd_unres" = 1 ]; then
-            _bwimc_deny "unresolved-git-target" "$1" "$_bwimc_ecwd" ""
-        fi
-        if [ "$_bwimc_sourced" = 1 ]; then
-            _bwimc_cwd_check_sourced "$_bwimc_ecwd"
-        else
-            _bwimc_cwd_check_direct "$_bwimc_ecwd"
-        fi
-    fi
-    i=0
-    while [ "$i" -lt "$n" ]; do
-        t="${toks[$i]}"
-        if _bwimc_redirect_op_of "$t"; then
-            # HIMMEL-3648 (codex-1): an attached target (`>/primary/f`, one
-            # token) was ignored — this loop unconditionally advanced to the
-            # NEXT token and checked THAT, the same false-negative shape the
-            # main clause loop's own _bwimc_op_rest handling (line ~1693)
-            # exists to close. Mirrors that idiom, including the write-only
-            # gate so a read redirect stays allowed.
-            if [ -n "$_bwimc_op_rest" ]; then
-                case "$_bwimc_op_rest" in
-                    '&'*) : ;;
-                    *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$_bwimc_op_rest"; _bwimc_check_target "$_bwimc_op_rest" "$_bwimc_ecwd"; } ;;
-                esac
-                i=$((i+1))
-            else
-                i=$((i+1))
-                if [ "$i" -lt "$n" ]; then
-                    t2="${toks[$i]}"
-                    case "$t2" in
-                        '&'*) : ;;
-                        *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$t2"; _bwimc_check_target "$t2" "$_bwimc_ecwd"; } ;;
-                    esac
-                fi
-                i=$((i+1))
+        [ -n "$(printf '%s' "$_bwimc_ibody_clause" | tr -d '[:space:]')" ] || continue
+        _bwimc_ibody_clause_sp=$(_bwimc_space_before_redirects "$_bwimc_ibody_clause")
+        _bwimc_ecwd_track "$_bwimc_ibody_clause_sp"
+        if _bwimc_m=$(printf '%s' "$_bwimc_ibody_clause_sp" | tr '[:upper:]' '[:lower:]' | grep -E '^[[:space:]]*git(\.exe)?([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+            _bwimc_git_commit_target "$_bwimc_ibody_clause_sp" "$_bwimc_ecwd"
+            if [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ]; then
+                _bwimc_deny "unresolved-git-target" "$1" "$_BWIMC_GIT_TARGET_DIR" ""
             fi
-            continue
+            if [ "$_bwimc_sourced" = 1 ]; then
+                _bwimc_cwd_check_sourced "$_BWIMC_GIT_TARGET_DIR"
+            else
+                _bwimc_cwd_check_direct "$_BWIMC_GIT_TARGET_DIR"
+            fi
         fi
-        case "$t" in
-            -*) : ;;
-            *) _bwimc_cd_guard "$t"; _bwimc_check_target "$t" "$_bwimc_ecwd" ;;
-        esac
-        i=$((i+1))
-    done
+        _bwimc_ibc_toks=()
+        while IFS= read -r t; do _bwimc_ibc_toks+=("$t"); done < <(_bwimc_tokenize "$_bwimc_ibody_clause_sp")
+        _bwimc_ibc_n=${#_bwimc_ibc_toks[@]}
+        i=0
+        while [ "$i" -lt "$_bwimc_ibc_n" ]; do
+            t="${_bwimc_ibc_toks[$i]}"
+            if _bwimc_redirect_op_of "$t"; then
+                # HIMMEL-3648 (codex-1): an attached target (`>/primary/f`, one
+                # token) was ignored — this loop unconditionally advanced to the
+                # NEXT token and checked THAT, the same false-negative shape the
+                # main clause loop's own _bwimc_op_rest handling (line ~1693)
+                # exists to close. Mirrors that idiom, including the write-only
+                # gate so a read redirect stays allowed.
+                if [ -n "$_bwimc_op_rest" ]; then
+                    case "$_bwimc_op_rest" in
+                        '&'*) : ;;
+                        *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$_bwimc_op_rest"; _bwimc_check_target "$_bwimc_op_rest" "$_bwimc_ecwd"; } ;;
+                    esac
+                    i=$((i+1))
+                else
+                    i=$((i+1))
+                    if [ "$i" -lt "$_bwimc_ibc_n" ]; then
+                        t2="${_bwimc_ibc_toks[$i]}"
+                        case "$t2" in
+                            '&'*) : ;;
+                            *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$t2"; _bwimc_check_target "$t2" "$_bwimc_ecwd"; } ;;
+                        esac
+                    fi
+                    i=$((i+1))
+                fi
+                continue
+            fi
+            case "$t" in
+                -*) : ;;
+                *) _bwimc_cd_guard "$t"; _bwimc_check_target "$t" "$_bwimc_ecwd" ;;
+            esac
+            i=$((i+1))
+        done
+    done < <(_bwimc_split_clauses "$body")
     _bwimc_ecwd="$_bwimc_ibody_saved_ecwd"
     _bwimc_ecwd_unres="$_bwimc_ibody_saved_unres"
 }

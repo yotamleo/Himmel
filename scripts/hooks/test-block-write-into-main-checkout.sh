@@ -2606,6 +2606,19 @@ check_both "28 bash -c 'cd primary; echo x > a.txt' denies (codex-2 round 3)" bl
 check_both "28b bash -c 'cd wt; echo x > a.txt' allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c 'cd $FIX/wt; echo x > a.txt'\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-3648 CR round 4 (codex-1 on the interp-body scan) =="
+
+# 29 (codex-1, round 4): the round-3 fix tracked cwd across the WHOLE body
+# first and only then checked every token against that FINAL cwd — correct
+# when the body never cd's again after its last write, wrong when it does: a
+# write that happens WHILE cd'd into the primary, followed by a LATER cd back
+# out, was checked against the body's END state (the later cd's target) and
+# allowed even though the write itself landed in the primary.
+check_both "29 bash -c 'cd primary; echo x > a.txt; cd wt' denies (codex-1 round 4)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c 'cd $FIX/primary; echo x > a.txt; cd $FIX/wt'\",\"cwd\":\"$FIX/wt\"}}"
+check_both "29b bash -c 'cd wt; echo x > a.txt; cd wt' allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c 'cd $FIX/wt; echo x > a.txt; cd $FIX/wt'\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
