@@ -331,11 +331,32 @@ resolve_diff_base() {
 #     the WRONG repository's history. git's own pre-push argv already carries
 #     the exact endpoint this push resolved to (push_remote_url, "$2" — same
 #     trust-argv-over-config precedent as the mint logic above), so that is
-#     the fetch source here; reproduced in a scratch repo: remote.origin.url
+#     one fetch source here; reproduced in a scratch repo: remote.origin.url
 #     pointed at an attacker fork seeded with the exact pushed SHA, push argv
 #     naming the real origin as the destination — fetching "origin" by name
 #     validated against the fork (bypass), fetching push_remote_url correctly
 #     fetched the real origin and refused.
+#       Round 4 (J1277O C2): that fix alone is one-sided — it stops trusting a
+#     repointed remote.origin.url, but a pusher can just as easily repoint
+#     the OTHER field instead (remote.origin.pushurl, or a
+#     url.<fork>.pushInsteadOf rewrite) while leaving remote.origin.url
+#     pointing at the real origin. push_remote_url then names an
+#     attacker-controlled fork the pusher pre-seeded with the exact pushed
+#     SHA, and fetching ONLY push_remote_url validates against it — bypass,
+#     confirmed in a scratch repo (origin.pushurl -> fork, argv $2 -> fork).
+#     Neither field is unilaterally trustworthy for an origin-nominal push,
+#     so both must independently confirm local_sha is already reviewed: fetch
+#     push_remote_url AND the literal "origin" name (which resolves through
+#     remote.origin.url, untouched by a pushurl/pushInsteadOf rewrite) and
+#     require local_sha to be an ancestor of BOTH, refusing on any
+#     disagreement. This still catches the original round-2 divergence (fetch
+#     url -> fork, push url -> real origin: the "origin" fetch fails to find
+#     local_sha, so the AND fails) and the new round-4 one (fetch url -> real,
+#     push url -> fork: same). The one shape it cannot catch is a genuine
+#     fork-workflow clone where url AND pushurl both name the same fork —
+#     there both fetches resolve to the identical repository and agree, and
+#     there is no independent local datum left to check against (ponytail:
+#     HIMMEL-3634 residual, HIMMEL-3654).
 #   - Pushing to any OTHER remote — a named non-origin remote, or an
 #     explicit-URL push (resolve_diff_base's HIMMEL-3477 branch, e.g. pushing
 #     to your own fork whose default branch already has the tip) — the empty
@@ -359,9 +380,20 @@ verify_empty_diff_is_reviewed() {
     local scratch_ref="refs/cr/verify-base/${db}"
     local fetch_source="origin"
     local authority_desc="origin, independent of the push destination"
+    local dual_scratch_ref="" dual_source="" dual_desc=""
     if [ -z "$push_remote_name" ] || [ "$push_remote_name" = "origin" ]; then
         fetch_source="${push_remote_url:-origin}"
         authority_desc="the actual push destination"
+        # Round 4 (J1277O C2): argv $2 alone is not enough for an
+        # origin-nominal push either — check the header comment above. When
+        # it differs from the literal name "origin" (the only case where a
+        # pushurl/pushInsteadOf divergence is even possible), fetch that too
+        # and require BOTH to agree below.
+        if [ "$fetch_source" != "origin" ]; then
+            dual_scratch_ref="refs/cr/verify-base-origin/${db}"
+            dual_source="origin"
+            dual_desc="origin's own fetch URL"
+        fi
     fi
     local scrubbed_source
     scrubbed_source=$(scrub_endpoint "$fetch_source")
@@ -376,11 +408,93 @@ verify_empty_diff_is_reviewed() {
         echo "→ code-review: diff vs ${diff_base} was empty, but re-verifying against a FRESH fetch of ${scrubbed_source}'s ${db} failed (unreachable?) — refusing the push rather than trusting an unverifiable empty diff (bypass with SKIP_CR=1 or git push --no-verify)" >&2
         return 2
     fi
-    if git merge-base --is-ancestor "$local_sha" "$scratch_ref" 2>/dev/null; then
+    if ! git merge-base --is-ancestor "$local_sha" "$scratch_ref" 2>/dev/null; then
+        echo "→ code-review: diff vs ${diff_base} was empty, but ${local_sha:0:8} is NOT reachable from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, or a local tracking ref never re-fetched — so only an independent, unrewritable history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    if [ -n "$dual_scratch_ref" ]; then
+        fetch_rc=0
+        ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head "$dual_source" "+refs/heads/${db}:${dual_scratch_ref}" 2>/dev/null || fetch_rc=$?
+        if [ "$fetch_rc" -ne 0 ]; then
+            echo "→ code-review: diff vs ${diff_base} was empty and ${scrubbed_source} confirmed it, but a FRESH fetch of ${dual_desc}'s ${db} failed (unreachable?) — refusing the push rather than trusting a single, possibly-repointed authority (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
+        if ! git merge-base --is-ancestor "$local_sha" "$dual_scratch_ref" 2>/dev/null; then
+            echo "→ code-review: diff vs ${diff_base} was empty and ${scrubbed_source} confirmed it, but ${local_sha:0:8} is NOT reachable from ${dual_desc}'s ${db} — refusing the push (this push's argv destination and its remote.origin.url disagree about whether the content is already reviewed; a pushurl/pushInsteadOf rewrite to a fork is exactly this shape, so neither authority alone is trusted; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
+    fi
+    return 0
+}
+
+# classify_independent_range LOCAL_SHA — HIMMEL-3634 round 4 (J1277O C1/I1).
+# Sets CLASSIFY_KIND to "full" / "docs-audit" / "skip" and CLASSIFY_RC to the
+# function's own return code (0 on success, 2 on a fetch/diff failure).
+#
+# The classification below (audit_kind: full / docs-audit / skip) decides the
+# CR lane from a diff against $base_sha — but $base_sha is whatever
+# resolve_diff_base picked, and EVERY branch it can pick is something the
+# pusher controls (a local main, a local tracking ref never re-fetched, or
+# their own fork's default branch). A pusher who tails their real change
+# with a handover-only or docs-only commit, then forges the base to sit just
+# before that tail, gets the WEAKER lane (skip / docs-audit) for a range
+# that, against origin's actual default branch, is anything but — verified
+# for all three resolve_diff_base branches (local main forged, tracking ref
+# forged, fork's own default branch forged) in scratch repros.
+#
+# The one base no pusher can rewrite is origin's own default branch, fetched
+# FRESH right now via an explicit scratch-ref destination — a bare
+# `git fetch origin $db` into the ordinary tracking ref depends on
+# remote.origin.fetch matching and can land on a stale local ref; this always
+# talks to the network. Fails CLOSED (CLASSIFY_RC=2) when origin IS configured
+# but unreachable or the diff can't be computed: a doubtful classification
+# must never read as the weaker lane. When no "origin" remote is configured
+# at all, there is no PR/CR relationship this push could even be laundering a
+# base against, so CLASSIFY_KIND="" + CLASSIFY_RC=0 tells the caller to trust
+# the local classification unchanged — every round-4 repro (C1/I1) clones
+# from a real origin.git first, so "origin" is always present in the actual
+# threat scenario; this only spares a repo that never had one (bare local
+# dev, or a test fixture unrelated to remotes) an unearned refusal.
+classify_independent_range() {
+    local local_sha="$1"
+    local scratch_ref="refs/cr/verify-base/${db}"
+    local fetch_rc=0
+    local real_changed real_non_docs real_reviewable_docs
+
+    if ! git remote get-url origin >/dev/null 2>&1; then
+        CLASSIFY_KIND=""
+        CLASSIFY_RC=0
         return 0
     fi
-    echo "→ code-review: diff vs ${diff_base} was empty, but ${local_sha:0:8} is NOT reachable from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, or a local tracking ref never re-fetched — so only an independent, unrewritable history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
-    return 2
+    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head origin "+refs/heads/${db}:${scratch_ref}" 2>/dev/null || fetch_rc=$?
+    if [ "$fetch_rc" -ne 0 ]; then
+        CLASSIFY_KIND=""
+        CLASSIFY_RC=2
+        return 2
+    fi
+    if ! real_changed=$(git diff --name-only "${scratch_ref}...${local_sha}" 2>/dev/null); then
+        CLASSIFY_KIND=""
+        CLASSIFY_RC=2
+        return 2
+    fi
+    if [ -z "$real_changed" ]; then
+        CLASSIFY_KIND="skip"
+        CLASSIFY_RC=0
+        return 0
+    fi
+    real_non_docs=$(echo "$real_changed" | grep -Ev '\.(md|txt)$|^docs/|^handovers/' || true)
+    if [ -n "$real_non_docs" ]; then
+        CLASSIFY_KIND="full"
+    else
+        real_reviewable_docs=$(echo "$real_changed" | grep -Ev '^handovers/' | grep -E '\.(md|txt)$|^docs/' || true)
+        if [ -z "$real_reviewable_docs" ]; then
+            CLASSIFY_KIND="skip"
+        else
+            CLASSIFY_KIND="docs-audit"
+        fi
+    fi
+    CLASSIFY_RC=0
+    return 0
 }
 
 write_marker_for_branch() {
@@ -549,10 +663,33 @@ write_marker_for_branch() {
     else
         reviewable_docs=$(echo "$changed" | grep -Ev '^handovers/' | grep -E '\.(md|txt)$|^docs/' || true)
         if [ -z "$reviewable_docs" ]; then
-            echo "→ code-review: handover-state-only change — skipping marker write" >&2
-            return 0
+            audit_kind="skip"
+        else
+            audit_kind="docs-audit"
         fi
-        audit_kind="docs-audit"
+    fi
+
+    # HIMMEL-3634 round 4 (J1277O C1/I1): $base_sha above can be
+    # pusher-forged — resolve_diff_base's every branch is — so a WEAKER lane
+    # here (skip or docs-audit) is not trustworthy on its own. Reclassify
+    # against origin's own default branch, freshly fetched, and take the
+    # STRONGER of the two lanes. A local classification of "full" is already
+    # the strongest lane there is, so skip the extra fetch (and its network
+    # dependency) in the common, untampered case.
+    if [ "$audit_kind" != "full" ]; then
+        classify_independent_range "$local_sha"
+        if [ "$CLASSIFY_RC" -ne 0 ]; then
+            echo "→ code-review: diff vs ${diff_base} (${base_sha:0:8}) classified as '${audit_kind}', but re-classifying against a FRESH fetch of origin's ${db} failed (unreachable?) — refusing the push rather than trusting a weaker lane against a pusher-controlled base (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
+        case "$CLASSIFY_KIND" in
+            full) audit_kind="full" ;;
+            docs-audit) [ "$audit_kind" = "skip" ] && audit_kind="docs-audit" ;;
+        esac
+    fi
+    if [ "$audit_kind" = "skip" ]; then
+        echo "→ code-review: handover-state-only change — skipping marker write" >&2
+        return 0
     fi
 
     # Write marker. .git/ is never tracked, so this is safe to scribble in.

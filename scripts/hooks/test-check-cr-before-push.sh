@@ -329,6 +329,11 @@ echo "TEST: empty-stdin up-to-date push mints marker binding from upstream (HIMM
 BARE_ORIGIN="$TMP_ROOT/bare-origin.git"
 git init -q --bare "$BARE_ORIGIN"
 git -C "$REPO" remote add origin "$BARE_ORIGIN" 2>/dev/null || git -C "$REPO" remote set-url origin "$BARE_ORIGIN"
+# HIMMEL-3634 round 4 (J1277O I1): classify_independent_range re-fetches
+# origin's own main to reclassify a weak local lane -- push REPO's current
+# main to it now (main never moves again in this file after this point) so
+# that fetch finds a real, matching main instead of failing closed.
+git -C "$REPO" push -q origin main
 git -C "$REPO" checkout -q -b feat/uptodate-2104 main
 printf 'function uptodate() {}\n' > "$REPO/uptodate.sh"
 git -C "$REPO" -c user.email=t@test.com -c user.name=test add uptodate.sh
@@ -1354,6 +1359,190 @@ case "$out" in
     *"NOT reachable from"*"main"*) pass "round-3 CodeRabbit refusal names origin's main (the branch) as unreachable" ;;
     *) fail "round-3 CodeRabbit refusal should name origin's main as unreachable" "out: $out" ;;
 esac
+
+echo "TEST: HIMMEL-3634 round-4 (J1277O C2) — pushurl/pushInsteadOf divergence: repointing the PUSH url at a fork, while leaving remote.origin.url untouched, must not launder an empty-diff push"
+# Mirror image of round-2: there, the FETCH url was repointed at a
+# pre-seeded fork while the push destination (argv $2) stayed real. Here the
+# PUSH destination is repointed instead (remote.origin.pushurl, or
+# equivalently a url.<fork>.pushInsteadOf rewrite -- both resolve to the
+# same argv $2 from the hook's own point of view, since the hook never reads
+# git config, only argv) while remote.origin.url (what a bare "origin" fetch
+# resolves through) stays real. Before round 4, verify_empty_diff_is_reviewed
+# fetched ONLY push_remote_url for an origin-nominal push -- validating this
+# empty diff against the attacker's own fork.
+R4C2_ORIGIN="$TMP_ROOT/r4c2-real-origin.git"
+git init -q --bare -b main "$R4C2_ORIGIN"
+R4C2_SEED="$TMP_ROOT/r4c2-seed"
+git init -q -b main "$R4C2_SEED"
+git -C "$R4C2_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$R4C2_SEED" push -q "$R4C2_ORIGIN" main
+R4C2_PUSHER="$TMP_ROOT/r4c2-pusher"
+git clone -q "$R4C2_ORIGIN" "$R4C2_PUSHER"
+git -C "$R4C2_PUSHER" checkout -q -b feat/r4c2sneaky main
+echo 'function r4c2sneaky(){}' > "$R4C2_PUSHER/r4c2sneaky.sh"
+git -C "$R4C2_PUSHER" add r4c2sneaky.sh
+git -C "$R4C2_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "r4c2sneaky, never reviewed"
+r4c2_sha=$(git -C "$R4C2_PUSHER" rev-parse HEAD)
+R4C2_FORK="$TMP_ROOT/r4c2-fork.git"
+git init -q --bare -b main "$R4C2_FORK"
+git -C "$R4C2_PUSHER" push -q "$R4C2_FORK" feat/r4c2sneaky:main
+# remote.origin.url is left untouched (real origin); only the PUSH url is
+# repointed -- this is what makes the empty diff look already-reviewed if
+# push_remote_url is the only authority checked.
+git -C "$R4C2_PUSHER" config remote.origin.pushurl "$R4C2_FORK"
+git -C "$R4C2_PUSHER" update-ref refs/heads/main "$r4c2_sha"
+rc=0
+out=$(cd "$R4C2_PUSHER" && bash "$HOOK" origin "$R4C2_FORK" <<< "refs/heads/feat/r4c2sneaky $r4c2_sha refs/heads/feat/r4c2sneaky $Z40" 2>&1) || rc=$?
+r4c2_marker="$R4C2_PUSHER/.git/cr-pending/feat/r4c2sneaky"
+if [ "$rc" -eq 2 ] && [ ! -f "$r4c2_marker" ]; then
+    pass "round-4 C2: pushurl-repointed-to-fork divergence is refused, not silently skipped"
+else
+    fail "round-4 C2: expected exit 2 + no marker" "rc=$rc marker=$([ -f "$r4c2_marker" ] && echo present || echo absent) / out: $out"
+fi
+case "$out" in
+    *"disagree"*|*"NOT reachable from"*"main"*) pass "round-4 C2 refusal names the disagreement between the two authorities" ;;
+    *) fail "round-4 C2 refusal should name the fetch/push authority disagreement" "out: $out" ;;
+esac
+
+echo "TEST: HIMMEL-3634 round-4 residual (ponytail, J1277O) — a fork-workflow clone where url AND pushurl both name the same fork has no independent local datum -- documented gap, not a regression"
+# Unlike the row above, here remote.origin.url is ALSO the fork (no pushurl
+# override at all) -- an ordinary fork-workflow clone, indistinguishable at
+# git's hook boundary from any other origin-nominal push. Both the argv $2
+# fetch and the literal "origin" fetch resolve to the identical repository
+# and trivially agree, so the round-4 dual-authority check cannot catch this
+# shape. Locked in here as documented, not silently improved-on or
+# regressed without updating the ponytail comment + its ticket.
+R4RES_ORIGIN="$TMP_ROOT/r4res-real-origin.git"
+git init -q --bare -b main "$R4RES_ORIGIN"
+R4RES_SEED="$TMP_ROOT/r4res-seed"
+git init -q -b main "$R4RES_SEED"
+git -C "$R4RES_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$R4RES_SEED" push -q "$R4RES_ORIGIN" main
+R4RES_PUSHER="$TMP_ROOT/r4res-pusher"
+git clone -q "$R4RES_ORIGIN" "$R4RES_PUSHER"
+git -C "$R4RES_PUSHER" checkout -q -b feat/r4ressneaky main
+echo 'function r4ressneaky(){}' > "$R4RES_PUSHER/r4ressneaky.sh"
+git -C "$R4RES_PUSHER" add r4ressneaky.sh
+git -C "$R4RES_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "r4ressneaky, never reviewed"
+r4res_sha=$(git -C "$R4RES_PUSHER" rev-parse HEAD)
+R4RES_FORK="$TMP_ROOT/r4res-fork.git"
+git init -q --bare -b main "$R4RES_FORK"
+git -C "$R4RES_PUSHER" push -q "$R4RES_FORK" feat/r4ressneaky:main
+git -C "$R4RES_PUSHER" config remote.origin.url "$R4RES_FORK"
+git -C "$R4RES_PUSHER" update-ref refs/heads/main "$r4res_sha"
+rc=0
+out=$(cd "$R4RES_PUSHER" && bash "$HOOK" origin "$R4RES_FORK" <<< "refs/heads/feat/r4ressneaky $r4res_sha refs/heads/feat/r4ressneaky $Z40" 2>&1) || rc=$?
+r4res_marker="$R4RES_PUSHER/.git/cr-pending/feat/r4ressneaky"
+if [ "$rc" -eq 0 ] && [ ! -f "$r4res_marker" ]; then
+    pass "round-4 residual (ponytail): url+pushurl-both-fork is documented as still bypassed, unchanged"
+else
+    fail "round-4 residual: documented gap changed shape -- update the ponytail comment/ticket if this is now fixed" "rc=$rc marker=$([ -f "$r4res_marker" ] && echo present || echo absent) / out: $out"
+fi
+
+echo "TEST: HIMMEL-3634 round-4 (J1277O C1/I1) — a handover-only TAIL on a forged local main gets the FULL lane, not skipped"
+# resolve_diff_base's local-main branch is exactly as pusher-controlled as
+# the tracking-ref/fork-HEAD branches P1(a)/P1(b) already cover: a locally
+# rewritten refs/heads/main puts the diff base just before an unreviewed
+# code commit (A), so the (non-empty) diff against it only ever shows the
+# handover-only TAIL (B) -- the code in A never appears. Before round 4 this
+# read as "handover-state-only" and wrote NO marker at all.
+R4I1H_ORIGIN="$TMP_ROOT/r4i1h-real-origin.git"
+git init -q --bare -b main "$R4I1H_ORIGIN"
+R4I1H_SEED="$TMP_ROOT/r4i1h-seed"
+git init -q -b main "$R4I1H_SEED"
+git -C "$R4I1H_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$R4I1H_SEED" push -q "$R4I1H_ORIGIN" main
+R4I1H_PUSHER="$TMP_ROOT/r4i1h-pusher"
+git clone -q "$R4I1H_ORIGIN" "$R4I1H_PUSHER"
+git -C "$R4I1H_PUSHER" checkout -q -b feat/r4i1h main
+echo 'rm -rf / # unreviewed' > "$R4I1H_PUSHER/evil.sh"
+git -C "$R4I1H_PUSHER" add evil.sh
+git -C "$R4I1H_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: unreviewed code"
+r4i1h_A=$(git -C "$R4I1H_PUSHER" rev-parse HEAD)
+mkdir -p "$R4I1H_PUSHER/handovers"
+echo note > "$R4I1H_PUSHER/handovers/n.md"
+git -C "$R4I1H_PUSHER" add handovers/n.md
+git -C "$R4I1H_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: handover-only tail"
+r4i1h_B=$(git -C "$R4I1H_PUSHER" rev-parse HEAD)
+# Forge local main to A, just before the tail -- no network needed.
+git -C "$R4I1H_PUSHER" update-ref refs/heads/main "$r4i1h_A"
+rc=0
+out=$(cd "$R4I1H_PUSHER" && bash "$HOOK" origin "$R4I1H_ORIGIN" <<< "refs/heads/feat/r4i1h $r4i1h_B refs/heads/feat/r4i1h $Z40" 2>&1) || rc=$?
+r4i1h_marker="$R4I1H_PUSHER/.git/cr-pending/feat/r4i1h"
+r4i1h_lane=$(awk -F' [|] ' '{print $3; exit}' "$r4i1h_marker" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$r4i1h_lane" = "full" ]; then
+    pass "round-4 C1/I1: handover-only tail on a forged local main gets the full lane, not skipped"
+else
+    fail "round-4 C1/I1: expected rc=0 + full-lane marker" "rc=$rc lane=${r4i1h_lane:-NONE} out: $out"
+fi
+
+echo "TEST: HIMMEL-3634 round-4 (J1277O I1) — a docs-only TAIL on a forged local main gets the FULL lane, not downgraded to docs-audit"
+R4I1D_ORIGIN="$TMP_ROOT/r4i1d-real-origin.git"
+git init -q --bare -b main "$R4I1D_ORIGIN"
+R4I1D_SEED="$TMP_ROOT/r4i1d-seed"
+git init -q -b main "$R4I1D_SEED"
+git -C "$R4I1D_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$R4I1D_SEED" push -q "$R4I1D_ORIGIN" main
+R4I1D_PUSHER="$TMP_ROOT/r4i1d-pusher"
+git clone -q "$R4I1D_ORIGIN" "$R4I1D_PUSHER"
+git -C "$R4I1D_PUSHER" checkout -q -b feat/r4i1d main
+echo 'rm -rf / # unreviewed' > "$R4I1D_PUSHER/evil.sh"
+git -C "$R4I1D_PUSHER" add evil.sh
+git -C "$R4I1D_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: unreviewed code"
+r4i1d_A=$(git -C "$R4I1D_PUSHER" rev-parse HEAD)
+echo doc > "$R4I1D_PUSHER/NOTES.md"
+git -C "$R4I1D_PUSHER" add NOTES.md
+git -C "$R4I1D_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: docs-only tail"
+r4i1d_B=$(git -C "$R4I1D_PUSHER" rev-parse HEAD)
+git -C "$R4I1D_PUSHER" update-ref refs/heads/main "$r4i1d_A"
+rc=0
+out=$(cd "$R4I1D_PUSHER" && bash "$HOOK" origin "$R4I1D_ORIGIN" <<< "refs/heads/feat/r4i1d $r4i1d_B refs/heads/feat/r4i1d $Z40" 2>&1) || rc=$?
+r4i1d_marker="$R4I1D_PUSHER/.git/cr-pending/feat/r4i1d"
+r4i1d_lane=$(awk -F' [|] ' '{print $3; exit}' "$r4i1d_marker" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$r4i1d_lane" = "full" ]; then
+    pass "round-4 I1: docs-only tail on a forged local main gets the full lane, not downgraded to docs-audit"
+else
+    fail "round-4 I1: expected rc=0 + full-lane marker" "rc=$rc lane=${r4i1d_lane:-NONE} out: $out"
+fi
+
+echo "TEST: HIMMEL-3634 round-4 (J1277O C1) — a handover-only TAIL, pushed explicit-URL to a fork whose own main is forged, still gets the FULL lane"
+# Same shape as round-2.5's explicit-URL-fork-push branch of resolve_diff_base,
+# but with a non-empty (handover-only) diff instead of an empty one -- the
+# attacker's own fork's main is forged to A directly (an ordinary push to a
+# repo they fully control), so the pusher-supplied diff never shows the tip's
+# real code commit. The pusher's real "origin" remote is untouched by any of
+# this and still has only the shared base -- classify_independent_range's
+# fetch of it must surface the real diff.
+R4C1F_ORIGIN="$TMP_ROOT/r4c1f-real-origin.git"
+git init -q --bare -b main "$R4C1F_ORIGIN"
+R4C1F_SEED="$TMP_ROOT/r4c1f-seed"
+git init -q -b main "$R4C1F_SEED"
+git -C "$R4C1F_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$R4C1F_SEED" push -q "$R4C1F_ORIGIN" main
+R4C1F_PUSHER="$TMP_ROOT/r4c1f-pusher"
+git clone -q "$R4C1F_ORIGIN" "$R4C1F_PUSHER"
+git -C "$R4C1F_PUSHER" checkout -q -b feat/r4c1f main
+echo 'rm -rf / # unreviewed' > "$R4C1F_PUSHER/evil.sh"
+git -C "$R4C1F_PUSHER" add evil.sh
+git -C "$R4C1F_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: unreviewed code"
+r4c1f_A=$(git -C "$R4C1F_PUSHER" rev-parse HEAD)
+mkdir -p "$R4C1F_PUSHER/handovers"
+echo note > "$R4C1F_PUSHER/handovers/n.md"
+git -C "$R4C1F_PUSHER" add handovers/n.md
+git -C "$R4C1F_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: handover-only tail"
+r4c1f_B=$(git -C "$R4C1F_PUSHER" rev-parse HEAD)
+R4C1F_FORK="$TMP_ROOT/r4c1f-fork.git"
+git init -q --bare -b main "$R4C1F_FORK"
+git -C "$R4C1F_PUSHER" push -q "$R4C1F_FORK" "$r4c1f_A:refs/heads/main"
+rc=0
+out=$(cd "$R4C1F_PUSHER" && bash "$HOOK" "$R4C1F_FORK" "$R4C1F_FORK" <<< "refs/heads/feat/r4c1f $r4c1f_B refs/heads/feat/r4c1f $Z40" 2>&1) || rc=$?
+r4c1f_marker="$R4C1F_PUSHER/.git/cr-pending/feat/r4c1f"
+r4c1f_lane=$(awk -F' [|] ' '{print $3; exit}' "$r4c1f_marker" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$r4c1f_lane" = "full" ]; then
+    pass "round-4 C1: explicit-URL fork push with a forged fork-main and a handover-only tail gets the full lane"
+else
+    fail "round-4 C1: expected rc=0 + full-lane marker" "rc=$rc lane=${r4c1f_lane:-NONE} out: $out"
+fi
 
 # M1: the fork fetch (resolve_diff_base) and the new origin re-fetch
 # (verify_empty_diff_is_reviewed) must both be timeout-bounded. Prove the
