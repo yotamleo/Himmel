@@ -894,7 +894,7 @@ round_ledger_path() {
     git -C "$1" rev-parse --path-format=absolute --git-common-dir
 }
 
-round_head() { printf '%s' "$1" | sha1sum | cut -d' ' -f1; }
+round_head() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
 
 finding_row() {
     jq -nc --arg b "$1" --arg h "$2" --arg sev "$3" --arg v "$4" --arg id "$5" \
