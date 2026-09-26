@@ -5022,7 +5022,7 @@ rm -rf "$c42_t"
 # HIMMEL-241. Read-only detection only, mirrors C6-hooks' settings.json fixture
 # shape.
 echo "== C43: bare 'rtk hook claude' PreToolUse entry -> WARN =="
-t="$(mktemp -d)"; mkdir -p "$t/claude"
+t="$(mktemp -d "${TMPDIR:-/tmp}/c43-bare.XXXXXX")"; mkdir -p "$t/claude"
 cat > "$t/claude/settings.json" <<'EOF'
 { "mcpServers": {}, "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "rtk hook claude" } ] } ] } }
 EOF
@@ -5035,7 +5035,7 @@ fi
 rm -rf "$t"
 
 echo "== C43: guard-wrapped rtk hook (rtk-hook-guard.sh) -> OK =="
-t="$(mktemp -d)"; mkdir -p "$t/claude"
+t="$(mktemp -d "${TMPDIR:-/tmp}/c43-guarded.XXXXXX")"; mkdir -p "$t/claude"
 cat > "$t/claude/settings.json" <<'EOF'
 { "mcpServers": {}, "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"/himmel/scripts/hooks/rtk-hook-guard.sh\"" } ] } ] } }
 EOF
@@ -5048,7 +5048,7 @@ fi
 rm -rf "$t"
 
 echo "== C43: no hooks at all -> OK =="
-t="$(mktemp -d)"; mkdir -p "$t/claude"
+t="$(mktemp -d "${TMPDIR:-/tmp}/c43-nohooks.XXXXXX")"; mkdir -p "$t/claude"
 cat > "$t/claude/settings.json" <<'EOF'
 { "mcpServers": {} }
 EOF
