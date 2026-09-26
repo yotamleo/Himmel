@@ -2299,7 +2299,7 @@ _gf_deny_on_hidden_clause_separator() {
                 ;;
             *d)
                 case "$c" in
-                    '\') esc=1 ;;
+                    "\\") esc=1 ;;
                     '"') stack="${stack%d}" ;;
                     '`') stack="${stack}b" ;;
                     '$') [ "${cmd:$((i+1)):1}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
@@ -2307,7 +2307,7 @@ _gf_deny_on_hidden_clause_separator() {
                 ;;
             *b)
                 case "$c" in
-                    '\') esc=1 ;;
+                    "\\") esc=1 ;;
                     "'") stack="${stack}q" ;;
                     '"') stack="${stack}d" ;;
                     '`') stack="${stack%b}" ;;
@@ -2316,7 +2316,7 @@ _gf_deny_on_hidden_clause_separator() {
                 ;;
             *p)
                 case "$c" in
-                    '\') esc=1 ;;
+                    "\\") esc=1 ;;
                     "'") stack="${stack}q" ;;
                     '"') stack="${stack}d" ;;
                     '(') stack="${stack}p" ;;
@@ -2326,7 +2326,7 @@ _gf_deny_on_hidden_clause_separator() {
                 ;;
             *)
                 case "$c" in
-                    '\') esc=1 ;;
+                    "\\") esc=1 ;;
                     "'") stack="${stack}q" ;;
                     '"') stack="${stack}d" ;;
                     '`') stack="${stack}b" ;;
