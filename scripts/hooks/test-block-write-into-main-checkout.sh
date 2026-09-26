@@ -1780,17 +1780,26 @@ echo "== HIMMEL-2645/2679/3621 regression: the commit/PR-create heredoc idiom mu
 
 # 74a: `git commit -m "$(cat <<'EOF' ... EOF)"` with an apostrophe in the
 # message. This is the fleet's standard commit idiom; must ALLOW.
-CHA_CMD=$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: don'"'"'t break things\nEOF\n)"')
+CHA_CMD="git commit -m \"\$(cat <<'EOF'
+fix: don't break things
+EOF
+)\""
 CHA_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHA_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "74a REGRESSION CONTROL: commit heredoc message with an apostrophe still ALLOWS" allow "$CHA_JSON"
 
 # 74b: same idiom, a lone `(` in the message.
-CHB_CMD=$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: (see ticket)\nEOF\n)"')
+CHB_CMD="git commit -m \"\$(cat <<'EOF'
+fix: (see ticket)
+EOF
+)\""
 CHB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "74b REGRESSION CONTROL: commit heredoc message with a lone '(' still ALLOWS" allow "$CHB_JSON"
 
 # 74c: same idiom, a `"` in the message.
-CHC_CMD=$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: says "hello"\nEOF\n)"')
+CHC_CMD="git commit -m \"\$(cat <<'EOF'
+fix: says \"hello\"
+EOF
+)\""
 CHC_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHC_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "74c REGRESSION CONTROL: commit heredoc message with a double-quote still ALLOWS" allow "$CHC_JSON"
 
@@ -1800,7 +1809,10 @@ check_both "74c REGRESSION CONTROL: commit heredoc message with a double-quote s
 # policy that hard-blocks ALL `gh pr create` in the codex-direct lane
 # regardless of content (external-write class) — unrelated to this hook's
 # substitution/heredoc scanning, so sourced mode is out of scope here.
-PRB_CMD=$(printf 'gh pr create --body "$(cat <<'"'"'EOF'"'"'\nit'"'"'s done\nEOF\n)"')
+PRB_CMD="gh pr create --body \"\$(cat <<'EOF'
+it's done
+EOF
+)\""
 PRB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$PRB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_one "74d REGRESSION CONTROL: gh pr create --body heredoc with an apostrophe — direct-exec ALLOWS (not the external-write fence)" \
     "$DIRECT" allow "$PRB_JSON"
@@ -1810,7 +1822,7 @@ check_one "74d REGRESSION CONTROL: gh pr create --body heredoc with an apostroph
 # not be misread as an opener.
 GDP_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"grep -n '\$(' f\",\"cwd\":\"$FIX/wt\"}}"
 check_both "74e REGRESSION CONTROL: grep -n '\$(' f still ALLOWS" allow "$GDP_JSON"
-SDP_CMD='sed -n '"'"'/\$(/p'"'"' f'
+SDP_CMD="sed -n '/\$(/p' f"
 SDP_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$SDP_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "74f REGRESSION CONTROL: sed -n '/\\\$(/p' f still ALLOWS" allow "$SDP_JSON"
 
