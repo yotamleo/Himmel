@@ -43,7 +43,9 @@ current_account_hash() {
 usage_cache_account_mismatch() {
   local cache="$1" cached current
   command -v jq >/dev/null 2>&1 || return 0
-  cached=$(jq -r '.account // empty' "$cache" 2>/dev/null)
+  # codex-1 (panel round 7): a non-string account field must not be
+  # silently stringified into something that could collide with a hash.
+  cached=$(jq -r 'if (.account | type) == "string" then .account else empty end' "$cache" 2>/dev/null)
   [ -n "$cached" ] || return 0
   # shellcheck disable=SC2119 # default $1 (no override) is intended here
   current=$(current_account_hash)
