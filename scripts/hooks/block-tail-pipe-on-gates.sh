@@ -398,7 +398,7 @@ normalise() {
 # leading `VAR=value` assignment, a grouping/negation prefix, nor a known
 # launcher or compound-command keyword. Empty when there is none.
 invoked_program() {
-    local tok stripped base skip_next=0 pending='' dq sq launcher='' pos_skip=0 redirect_char
+    local tok stripped base skip_next=0 pending='' dq sq launcher='' pos_skip=0
     for tok in $1; do
         if [ -n "$pending" ]; then pending="$pending $tok"; else pending=$tok; fi
         # A quoted span containing spaces arrives as SEVERAL whitespace-split
@@ -409,26 +409,13 @@ invoked_program() {
         # apostrophe inside double quotes (`FOO="it's fine"`) is data, and
         # counting it left the word permanently "open", swallowing the rest of
         # the stage and hiding the gate (panel r12, codex-1).
-        #
-        # A `<`/`>` is only a REAL redirect when it appears OUTSIDE quotes —
-        # real bash never treats a quoted one as an operator, so the same walk
-        # tracks `redirect_char` alongside quote balance (panel r1, codex-1/2
-        # on HIMMEL-3677): checking the quote-STRIPPED word instead let a
-        # quoted option value that merely contains `>` (`env -C '/tmp/a>b'
-        # bash <gate>`) be misread as a redirect and dropped, leaving a stale
-        # pending `skip_next` to swallow the NEXT real word instead (the
-        # launcher itself, or another option's real operand) rather than the
-        # value it was actually sent to consume.
-        dq=''; sq=0; redirect_char=0
+        dq=''; sq=0
         while [ "$sq" -lt "${#pending}" ]; do
             case ${pending:$sq:1} in
                 "'" | '"')
                     if [ -z "$dq" ]; then dq=${pending:$sq:1}
                     elif [ "$dq" = "${pending:$sq:1}" ]; then dq=''
                     fi
-                    ;;
-                '>' | '<')
-                    [ -z "$dq" ] && redirect_char=1
                     ;;
             esac
             sq=$((sq + 1))
@@ -437,21 +424,21 @@ invoked_program() {
         stripped=${pending//\"/}
         stripped=${stripped//\'/}
         pending=''
-        # A redirection word is dropped BEFORE a pending skip_next can consume
-        # it (HIMMEL-3677, J1311O): real bash strips redirections at parse
-        # time, before argv ever reaches the invoked program, so `env -u
-        # 2>/dev/null X <gate>` really runs `env -u X <gate>` with stderr
-        # redirected. Checking this FIRST, ahead of skip_next, means a
-        # redirect landing in an option's value slot is stripped as a
-        # redirect, not swallowed as the option's value — skip_next stays
-        # pending until the next word that is NOT itself a redirection.
         # A LEADING redirection is not the command (panel r4, codex-1). A bare
         # operator token (`2>`) also swallows the target word that follows it.
-        if [ "$redirect_char" = 1 ]; then
-            case $stripped in *'>' | *'<') skip_next=1 ;; esac
-            continue
-        fi
+        # HIMMEL-3677 (J1314O): this word-walk cannot reliably tell a redirect
+        # from an escaped, glued or process-substitution word that merely
+        # CONTAINS `<`/`>` — scan_line's stage-level fail-closed check now
+        # owns that distinction for the first stage of a tail/head pipeline;
+        # this stays exactly as it was pre-HIMMEL-3677 for every other case
+        # (the last-stage tail/head check, and any stage with no pipe at all).
         if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+        case $stripped in
+            *'>'* | *'<'*)
+                case $stripped in *'>' | *'<') skip_next=1 ;; esac
+                continue
+                ;;
+        esac
         # `(`/`{`/`!` glue onto the command they introduce (panel r3, codex-1),
         # and a compact subshell closes onto the LAST word — `(gate|tail)` leaves
         # `tail)` (panel r6, codex-2). Strip both ends.
@@ -679,8 +666,54 @@ invoked_program() {
     done
 }
 
+# HIMMEL-3677 (J1314O): whether STAGE contains an unquoted `<`/`>` ANYWHERE —
+# real redirect, escaped (`normalise()` already un-escapes `\>`/`\<` to a bare
+# character before this text is ever seen), glued (`2>/dev/null`), spaced
+# (`2> /dev/null`), or process substitution (`>(cat)`, which is a real bash
+# WORD, not a redirect, but still spelled with a bare `>`). Rather than try to
+# tell these forms apart with a flag that can only remember ONE pending skip,
+# scan_line treats ANY of them as reason enough to stop trusting invoked_program's
+# word walk for this stage and decide by scanning the raw text instead
+# (fail-closed: J1314O findings 1-3, and the pre-existing `>'out>'` class).
+# `$(...)`/backtick bodies are already lifted out to a separate `SUBST`-marked
+# line by normalise(), and `$((...))` bodies to an `ARITH`-marked line, so
+# neither is present in STAGE here — no extra placeholder-skipping needed.
+stage_has_unquoted_angle() {
+    local str=$1 i=0 n dq=''
+    n=${#str}
+    while [ "$i" -lt "$n" ]; do
+        case ${str:$i:1} in
+            "'" | '"')
+                if [ -z "$dq" ]; then dq=${str:$i:1}
+                elif [ "$dq" = "${str:$i:1}" ]; then dq=''
+                fi
+                ;;
+            '<' | '>')
+                [ -z "$dq" ] && return 0 ;;
+        esac
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# HIMMEL-3677 (J1314O fail-closed rule): does ANY word of STAGE match
+# GATE_RE, quote-stripped — used only once stage_has_unquoted_angle says the
+# stage's real invoked program cannot be trusted, so this does not try to
+# resolve WHICH word is the command; it denies if a gate name appears
+# anywhere in the stage's text at all.
+stage_mentions_gate() {
+    local w stripped
+    for w in $1; do
+        stripped=${w//\"/}
+        stripped=${stripped//\'/}
+        [ -n "$stripped" ] || continue
+        printf '%s' "$stripped" | grep -qE "$GATE_RE" && return 0
+    done
+    return 1
+}
+
 scan_line() {
-    local line=$1 stmts pipeline prog last
+    local line=$1 stmts pipeline first prog last
     # The opt-out survived normalisation only if it was a real shell comment.
     case "$line" in *"$MARK"*) return 0 ;; esac
 
@@ -693,7 +726,21 @@ scan_line() {
 
     while IFS= read -r pipeline; do
         case "$pipeline" in *'|'*) ;; *) continue ;; esac
-        prog=$(invoked_program "${pipeline%%|*}")
+        # Last stage first (cheap filter): if it isn't tail/head, nothing in
+        # this pipeline can trip the guard regardless of the first stage.
+        last=${pipeline##*|}
+        last=${last#&}
+        case $(invoked_program "$last") in
+            tail | head | */tail | */head | "$ENV_SPLIT_SENTINEL") ;;
+            *) continue ;;
+        esac
+        first=${pipeline%%|*}
+        if stage_has_unquoted_angle "$first"; then
+            stage_mentions_gate "$first" || continue
+            offender=$pipeline
+            return 0
+        fi
+        prog=$(invoked_program "$first")
         [ -n "$prog" ] || continue
         # HIMMEL-3661: ENV_SPLIT_SENTINEL means "unknown program that may be a
         # gate" — treat it as a match without consulting GATE_RE.
@@ -701,20 +748,6 @@ scan_line() {
             gate_match=$(printf '%s' "$prog" | grep -E "$GATE_RE")
             [ -n "$gate_match" ] || continue
         fi
-        # Last stage, same command-position walk — so `| env tail`, `| command
-        # head` and `| FOO=1 tail` are recognised too (panel r2, codex-1). The
-        # leading `&` is the tail of a `|&` operator, not a word.
-        # J1299O finding 1: the last stage can ALSO be an env -S/--split-string
-        # clause (`| env -S env tail`, `| env -Snice head`) — the walk returns
-        # ENV_SPLIT_SENTINEL there too, and since the split string is never
-        # parsed, it may itself be a tail/head invocation. Treat the sentinel
-        # as tail/head rather than falling through to ALLOW.
-        last=${pipeline##*|}
-        last=${last#&}
-        case $(invoked_program "$last") in
-            tail | head | */tail | */head | "$ENV_SPLIT_SENTINEL") ;;
-            *) continue ;;
-        esac
         offender=$pipeline
         return 0
     done <<EOF
