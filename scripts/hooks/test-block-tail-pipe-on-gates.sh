@@ -595,8 +595,15 @@ deny "env -C '/tmp/a>b' bash -o /tmp/foo <gate> | tail (quoted -C value containi
 # resolve which word is the actual command. invoked_program()'s own
 # redirect-handling block was reverted to base (d3ef4b3a) semantics since
 # the new stage-level check now owns every case with an unquoted redirect
-# character. Every row below ALLOWed at 664a143d1eb2d13bca109753f90e953c85c7d756
-# per J1314O's own probe (verdict.md, findings 1-3).
+# character. Most rows below ALLOWed at 664a143d1eb2d13bca109753f90e953c85c7d756
+# per J1314O's own probe (verdict.md, findings 1-3) — EXCEPT the 13 rows below
+# that route the gate through a `bash `/`sudo ` launcher prefix (all of finding
+# 2, all of finding 3, and both folded `>'out>'` rows): at 664a143d the stale
+# skip_next eats the LAUNCHER word instead of the gate, so those 13 rows
+# already DENY there for the wrong reason and do not pin the regression they
+# claim to (J1314R finding 3). The gate-direct round-4 rows further below,
+# with no launcher prefix, are what actually FAILS at 664a143d for those
+# classes.
 
 # Finding 1: a SPACED bare redirect operator + its target in a launcher's
 # value slot — skip_next is a 0/1 flag and cannot track a redirect target
@@ -694,6 +701,39 @@ allow "env -C /tmp/a\>b ls | tail (escaped >, no gate, control)" \
       'env -C /tmp/a\>b ls | tail'
 allow "env -u >(cat) ls | tail (process substitution, no gate, control)" \
       'env -u >(cat) ls | tail'
+
+# Round 4 (J1314R): the fail-closed check must be ADDITIVE to invoked_program(),
+# not a replacement — a stage with an unquoted angle bracket but no literal
+# GATE_RE word match must still fall through to invoked_program()'s own
+# word-walk rather than ALLOW outright.
+#
+# (a) finding 1 + finding 2: main DENYs these, and 1bb2700b ALLOWed them
+# because stage_mentions_gate's anchored match misses a gate name that
+# normalise glued to an escaped space (env -S) or that sits behind a bare
+# subshell paren invoked_program() would have stripped. env -S is fail-closed
+# by DESIGN (HIMMEL-3661): a split-string clause with no literal gate word at
+# all must still deny once it carries an unquoted redirect, the same as it
+# denies without one.
+deny "env -S 'foo' 2>/dev/null | tail (env -S split-string, no gate word at all, still fail-closed, J1314R f1)" \
+     "env -S 'foo' 2>/dev/null | tail"
+deny "env -Sbash\\ <gate> 2>&1 | tail (attached env -S, escaped space becomes _, J1314R f1)" \
+     'env -Sbash\ scripts/check-ci.sh 2>&1 | tail'
+deny "(<gate> 2>&1) | tail (subshell-glued gate, leading paren defeats GATE_RE anchor, J1314R f2)" \
+     '(scripts/check-ci.sh 2>&1) | tail'
+deny "(bash <gate>) 2>&1 | tail (subshell-glued bash+gate, trailing paren defeats GATE_RE anchor, J1314R f2)" \
+     '(bash scripts/check-ci.sh) 2>&1 | tail'
+
+# (b) finding 3: the round-3 rows above route the gate through a `bash `/
+# `sudo -u <(...)`/`>` launcher prefix, so at 664a143d the stale skip_next
+# eats the LAUNCHER word and these rows DENY there for the wrong reason —
+# they don't pin the regression they claim to. These gate-direct rows (no
+# launcher prefix) genuinely ALLOW at 664a143d and must DENY at head.
+deny "env -C /tmp/a\\>b <gate> | tail (gate-direct escaped >, J1314R f3)" \
+     'env -C /tmp/a\>b scripts/check-ci.sh | tail'
+deny "env -u >(cat) <gate> | tail (gate-direct process substitution, J1314R f3)" \
+     'env -u >(cat) scripts/check-ci.sh | tail'
+deny ">'out>' <gate> | tail (gate-direct folded quoted-target ending in >, J1314R f3)" \
+     ">'out>' scripts/check-ci.sh | tail"
 
 # --- BYPASS: the documented same-line marker --------------------------------
 allow "same-line tail-pipe-ok marker" \

@@ -735,8 +735,7 @@ scan_line() {
             *) continue ;;
         esac
         first=${pipeline%%|*}
-        if stage_has_unquoted_angle "$first"; then
-            stage_mentions_gate "$first" || continue
+        if stage_has_unquoted_angle "$first" && stage_mentions_gate "$first"; then
             offender=$pipeline
             return 0
         fi
