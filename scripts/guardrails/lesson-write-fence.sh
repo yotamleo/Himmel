@@ -339,6 +339,17 @@ _on_exit() {
 _init_paths() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     POLICY="${LESSON_FENCE_POLICY:-$SCRIPT_DIR/enforcement-paths.json}"
+    # HIMMEL-2610: guard_is_long_abbrev (GNU getopt_long-style unambiguous
+    # long-option abbreviation matching, the same rule HIMMEL-2592 used in
+    # block-write-into-main-checkout.sh) is shared via lib.sh rather than
+    # forked, so _clause_head_idx's wrapper arms below can recognize an
+    # abbreviated `env --u`/`timeout --k`/`sudo --u` the same as the full
+    # spelling. Fail-closed like every other lib.sh sourcing site.
+    # shellcheck source=./lib.sh
+    # shellcheck disable=SC1091
+    if ! { [ -r "$SCRIPT_DIR/lib.sh" ] && . "$SCRIPT_DIR/lib.sh"; } 2>/dev/null; then
+        deny "cannot source guardrails/lib.sh — refusing to evaluate (fail-closed)"
+    fi
 }
 
 _require_jq() {
@@ -785,7 +796,7 @@ _scan_redirects() {
 # that was already covered by the pre-lowering.
 _clause_head_idx() {
     local -a tok=("$@")
-    local n=${#tok[@]} i=0 s
+    local n=${#tok[@]} i=0 s w
     while [ "$i" -lt "$n" ]; do
         s="$(_lc "$(_strip_wrap "${tok[$i]}")")"
         case "$s" in
@@ -795,35 +806,83 @@ _clause_head_idx() {
                 i=$((i+1)); continue ;;
             env)
                 i=$((i+1))
+                # HIMMEL-2610: `--u`/`--uns`/... are unambiguous GNU
+                # abbreviations of env's only value-taking long option,
+                # --unset (empirically verified: `env --u FOO true` behaves
+                # identically to `env --unset FOO true`). The old literal
+                # `--unset` match missed every shorter spelling, under-
+                # consuming by one token and misaligning the walk onto
+                # --unset's VALUE as the resolved verb - if that value is
+                # crafted to name a proven-read-only verb (e.g. `cat`), the
+                # real wrapped write command was never scanned at all.
                 while [ "$i" -lt "$n" ]; do
-                    case "$(_lc "$(_strip_wrap "${tok[$i]}")")" in
-                        -u|--unset)   i=$((i+2)) ;;
-                        [A-Za-z_][A-Za-z0-9_]*=*)    i=$((i+1)) ;;
-                        -*)           i=$((i+1)) ;;
-                        *)            break ;;
+                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+                    case "$w" in
+                        -u|-c)                    i=$((i+2)) ;;
+                        [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
+                        --*)
+                            if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
+                                || guard_is_long_abbrev "argv0" "$w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
+                            else
+                                i=$((i+1))
+                            fi ;;
+                        -*)                       i=$((i+1)) ;;
+                        *)                        break ;;
                     esac
                 done
                 continue ;;
             timeout)
                 i=$((i+1))
+                # HIMMEL-2610: same shape as env's --unset above - --k/--s
+                # are unambiguous abbreviations of --kill-after/--signal
+                # (empirically verified: `timeout --k 5 10 true` behaves
+                # identically to `timeout --kill-after 5 10 true`).
                 while [ "$i" -lt "$n" ]; do
-                    case "$(_lc "$(_strip_wrap "${tok[$i]}")")" in
-                        -k|-s|--kill-after|--signal) i=$((i+2)) ;;
-                        -*)                          i=$((i+1)) ;;
-                        *)                           break ;;
+                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+                    case "$w" in
+                        -k|-s)                    i=$((i+2)) ;;
+                        --*)
+                            if guard_is_long_abbrev "kill-after" "$w" || guard_is_long_abbrev "signal" "$w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
+                            else
+                                i=$((i+1))
+                            fi ;;
+                        -*)                       i=$((i+1)) ;;
+                        *)                        break ;;
                     esac
                 done
                 [ "$i" -lt "$n" ] && i=$((i+1))
                 continue ;;
             sudo)
                 i=$((i+1))
+                # HIMMEL-2610: this arm's short flags never had a matching
+                # long-option literal at all (not even the full spelling),
+                # the same under-consumption shape as env/timeout above -
+                # `sudo --user cat cp x scripts/hooks/a.sh` fell through to
+                # the generic bare-flag branch, one token short, and
+                # resolved verb=`cat` (allow-listed) instead of `cp`. Long
+                # names per `sudo --help` on this station (-r/-t are
+                # SELinux-only and not compiled into this build, so those two
+                # are taken from upstream sudo.ws docs, unverified locally).
                 while [ "$i" -lt "$n" ]; do
-                    case "$(_lc "$(_strip_wrap "${tok[$i]}")")" in
-                        -u|-g|-U|-p|-C|-r|-t|-h) i=$((i+2)) ;;
-                        --)                      i=$((i+1)); break ;;
+                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+                    case "$w" in
+                        -u|-g|-U|-p|-C|-r|-t|-h|-d) i=$((i+2)) ;;
+                        --)                       i=$((i+1)); break ;;
+                        --*)
+                            if guard_is_long_abbrev "user" "$w" || guard_is_long_abbrev "group" "$w" \
+                                || guard_is_long_abbrev "other-user" "$w" || guard_is_long_abbrev "prompt" "$w" \
+                                || guard_is_long_abbrev "close-from" "$w" || guard_is_long_abbrev "role" "$w" \
+                                || guard_is_long_abbrev "type" "$w" || guard_is_long_abbrev "host" "$w" \
+                                || guard_is_long_abbrev "chdir" "$w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
+                            else
+                                i=$((i+1))
+                            fi ;;
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
-                        -*)                      i=$((i+1)) ;;
-                        *)                       break ;;
+                        -*)                       i=$((i+1)) ;;
+                        *)                        break ;;
                     esac
                 done
                 continue ;;

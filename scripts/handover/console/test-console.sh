@@ -1870,4 +1870,51 @@ out72ok="$( HANDOVER_REGISTRY="$reg72" console next --doc "$doc72" --dry-run 2>&
 check "72 (control) an intact recorded project still inherits" "$(printf '%s\n' "$out72ok" | grep -c "^would-project: $proj72\$")" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc72" "$(token_of "$out72")" >/dev/null 2>&1
 
+# --- 73 (HIMMEL-3631): a bare `next` with NOTHING pinning down where to
+# search (no --doc, no CONSOLE_DOC, no --bucket/--project/--prefix) must
+# still find a foreign predecessor and inherit ITS bucket/prefix/project --
+# not silently fall back to himmel's own DEMO bucket. RED against pre-fix
+# console.sh (state_dir, needed to search, can only ever resolve to himmel's
+# own bucket when nothing pins the project down), GREEN after. An isolated
+# root avoids any letter/name collision with the rest of this suite.
+root73="$tmp/root73"; mkdir -p "$root73"
+reg73="$tmp/registry-73.json"
+foreignproj73="$tmp/Acme Co 73"; mkdir -p "$foreignproj73"
+cat > "$reg73" <<JSON
+{"repos":{"acme73":{"path":"$foreignproj73","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"ACME73"}}}
+JSON
+out73_new="$( HANDOVER_REGISTRY="$reg73" console_root "$root73" new --project "$foreignproj73" )"
+token73_new="$(token_of "$out73_new")"
+doc73A="$root73/tester/acme73/ACME73-nextleg-${today}A-console.md"
+check "73 setup: predecessor doc written under the foreign project's registry bucket" "$([ -f "$doc73A" ] && echo yes)" "yes"
+HANDOVER_DIR="$root73" bash "$QL" release "$doc73A" "$token73_new" >/dev/null 2>&1
+
+out73="$( HANDOVER_REGISTRY="$reg73" console_root "$root73" next --dry-run )"
+check "73 a bare next with nothing pinning the search finds the foreign predecessor's would-doc" \
+    "$(printf '%s\n' "$out73" | grep -c "^would-doc: $root73/tester/acme73/ACME73-nextleg-${today}B-console.md\$")" "1"
+check "73 a bare next inherits the foreign predecessor's recorded project" \
+    "$(printf '%s\n' "$out73" | grep -c "^would-project: $foreignproj73\$")" "1"
+
+# --- 74 (HIMMEL-3631, mirrors 72 for the auto-discovery path): a poisoned
+# recorded PROJECT reached through auto-discovery (no --doc) is refused
+# exactly like --project would refuse it -- never silently dropped so the
+# successor falls back to himmel's own bucket.
+root74="$tmp/root74"; mkdir -p "$root74"
+reg74="$tmp/registry-74.json"
+proj74="$tmp/Proj 74"; mkdir -p "$proj74"
+printf '{"repos":{}}\n' > "$reg74"
+out74_new="$( HANDOVER_REGISTRY="$reg74" console_root "$root74" new --project "$proj74" )"
+token74_new="$(token_of "$out74_new")"
+doc74A="$root74/tester/proj-74/PROJ74-nextleg-${today}A-console.md"
+check "74 setup: a foreign chain doc records its project" \
+    "$(grep -c "The project this console is FOR is \*\*\`$proj74\`\*\*" "$doc74A" 2>/dev/null)" "1"
+HANDOVER_DIR="$root74" bash "$QL" release "$doc74A" "$token74_new" >/dev/null 2>&1
+cp "$doc74A" "$doc74A.orig"
+sed "s|The project this console is FOR is \*\*\`$proj74\`\*\*|The project this console is FOR is **\`$tmp/no-such-dir-74\`**|" "$doc74A.orig" > "$doc74A"
+rc74=0; out74="$( HANDOVER_REGISTRY="$reg74" console_root "$root74" next --dry-run 2>&1 )" || rc74=$?
+check "74 a bare next refuses a poisoned recorded project (rc=1, like --project)" "$rc74" "1"
+check "74 the refusal is --project's own message" \
+    "$(printf '%s\n' "$out74" | grep -c "^console: --project must be an existing directory, got '$tmp/no-such-dir-74'\$")" "1"
+check "74 nothing falls back to himmel's bucket" "$(printf '%s\n' "$out74" | grep -c '^would-doc:')" "0"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -394,6 +394,12 @@ _ql_slug() {
 # It is re-read after the tmp write and right before the mv, and a mismatch
 # returns 3 (tmp removed, owner.json untouched): the lock was taken over and
 # this write would land in the NEW holder's generation.
+#
+# [expect-arbiter] (HIMMEL-3614 F1): when given (8th arg), the owner ARBITER
+# the caller verified, re-checked the same way. A takeover by a copy of this
+# script that predates the generation fence mints no gen file, so gen alone
+# can read "" both before and after; the arbiter (written O_EXCL by every
+# acquire, pre-988 copies included) still changes and catches it.
 _ql_write_owner() {
     local lockdir="$1" session="$2" host="$3" ho="$4" started="$5" heartbeat="$6"
     local tmp="$lockdir/owner.json.tmp.$$"
@@ -407,6 +413,10 @@ _ql_write_owner() {
         return 1
     fi
     if [ "$#" -ge 7 ] && [ "$(_ql_read_gen "$lockdir")" != "$7" ]; then
+        rm -f "$tmp" 2>/dev/null
+        return 3
+    fi
+    if [ "$#" -ge 8 ] && [ "$(_ql_read_arbiter "$lockdir")" != "$8" ]; then
         rm -f "$tmp" 2>/dev/null
         return 3
     fi
@@ -1341,6 +1351,25 @@ _ql_read_gen() {
 # written; the caller treats that like a failed owner.json write.
 _ql_brand_gen() { ( set -C; _ql_new_gen > "$1/gen" ) 2>/dev/null; }
 
+# _ql_read_arbiter <lockdir> -- the lock's owner ARBITER (HIMMEL-856): a
+# plain-text file written O_EXCL by every acquire, including copies that
+# predate the HIMMEL-988 generation fence (HIMMEL-3614 F1). "" when it has
+# none. Fails CLOSED the same way _ql_read_gen does: an existing-but-unreadable
+# arbiter yields a fresh sentinel on every read, so two failed reads never
+# compare equal.
+_ql_read_arbiter() {
+    [ -e "$1/owner" ] || return 0
+    cat "$1/owner" 2>/dev/null || printf '!unreadable-%s-%s%s' "$BASHPID" "$RANDOM" "$RANDOM"
+}
+
+# _ql_gen_unreadable <lockdir> -- true when a gen file exists but cannot be
+# read right now (permissions). HIMMEL-3614 F2: this fails closed exactly
+# like a real takeover (two failed reads never compare equal), but it is not
+# one -- callers use this to say so instead of reporting a silent takeover.
+_ql_gen_unreadable() {
+    [ -e "$1/gen" ] && ! cat "$1/gen" >/dev/null 2>&1
+}
+
 # _ql_test_pause <point> -- TEST SEAM (HIMMEL-988). Inert unless BOTH
 # QUEUE_LOCK_TEST_PAUSE_AT names this point and QUEUE_LOCK_TEST_PAUSE_FILE is
 # set: then it creates <file>.reached and waits (bounded, ~30s) while <file>
@@ -1568,6 +1597,14 @@ queue_lock_acquire() {
         v_raw=$(cat "$lockdir/owner.json" 2>/dev/null) || v_raw=""
         if [ "$v_raw" != "$o_raw" ] || [ "$(_ql_read_gen "$lockdir")" != "$o_gen" ]; then
             _ql_takeover_claim_release "$claim" "$claim_token" || true
+            # HIMMEL-3614 F2: an unreadable gen fails closed exactly like a
+            # real takeover, but when the owner.json bytes are UNCHANGED it
+            # is not one -- say so and name the recovery instead of a
+            # generic (and here misleading) "changed hands".
+            if [ "$v_raw" = "$o_raw" ] && _ql_gen_unreadable "$lockdir"; then
+                echo "queue-lock: takeover aborted -- the lock's generation file is unreadable (permissions?), so ownership could not be re-verified even though nothing else changed; this is NOT a confirmed takeover. If the lock is actually dead: QUEUE_LOCK_FORCE_RELEASE=1 queue-lock.sh release '$ho'" >&2
+                return 2
+            fi
             local n_session n_host
             n_session=$(_ql_json_field_str "$v_raw" session)
             n_host=$(_ql_json_field_str "$v_raw" host)
@@ -1588,6 +1625,13 @@ queue_lock_acquire() {
         if [ "$f_claim" != "$claim_token" ] || [ "$f_raw" != "$o_raw" ] \
             || [ "$(_ql_read_gen "$lockdir")" != "$o_gen" ]; then
             _ql_takeover_claim_release "$claim" "$claim_token" || true
+            # HIMMEL-3614 F2: see the identical check in the CAS re-verify
+            # above -- an unreadable gen with an unchanged claim and
+            # owner.json is not a real takeover.
+            if [ "$f_claim" = "$claim_token" ] && [ "$f_raw" = "$o_raw" ] && _ql_gen_unreadable "$lockdir"; then
+                echo "queue-lock: takeover fenced -- the lock's generation file is unreadable (permissions?), so ownership could not be re-verified even though nothing else changed; this is NOT a confirmed takeover. If the lock is actually dead: QUEUE_LOCK_FORCE_RELEASE=1 queue-lock.sh release '$ho'" >&2
+                return 2
+            fi
             {
                 echo "queue-lock: takeover fenced -- this taker stalled and the lock was taken over meanwhile (claim reclaimed or generation changed); now held by session=$(_ql_json_field_str "$f_raw" session). Nothing was deleted."
                 echo "Work is owned elsewhere. Pick a different queue, or check again with: queue-lock.sh status"
@@ -1717,9 +1761,11 @@ queue_lock_heartbeat() {
         # for the unchanged rc=2 "held by session=..." refusal.
     fi
     # HIMMEL-988: the generation is read BEFORE the token check, so the write
-    # below can only land in the generation that check verified.
-    local o_session o_host o_started hb_gen hb_rc
+    # below can only land in the generation that check verified. HIMMEL-3614
+    # F1: the arbiter is read alongside it -- see _ql_write_owner's header.
+    local o_session o_host o_started hb_gen hb_arbiter hb_rc
     hb_gen=$(_ql_read_gen "$lockdir")
+    hb_arbiter=$(_ql_read_arbiter "$lockdir")
     o_session=$(_ql_json_field "$lockdir/owner.json" session)
     o_host=$(_ql_json_field "$lockdir/owner.json" host)
     o_started=$(_ql_json_field "$lockdir/owner.json" started)
@@ -1734,10 +1780,10 @@ queue_lock_heartbeat() {
     fi
     session="$o_session"
     _ql_test_pause heartbeat-verified
-    _ql_write_owner "$lockdir" "$o_session" "$o_host" "$ho" "$o_started" "$(_ql_now_iso)" "$hb_gen"
+    _ql_write_owner "$lockdir" "$o_session" "$o_host" "$ho" "$o_started" "$(_ql_now_iso)" "$hb_gen" "$hb_arbiter"
     hb_rc=$?
     if [ "$hb_rc" -eq 3 ]; then
-        echo "queue-lock: heartbeat refused -- the lock was taken over after this heartbeat verified it (generation changed; now held by session=$(_ql_json_field "$lockdir/owner.json" session)); nothing was written" >&2
+        echo "queue-lock: heartbeat refused -- the lock was taken over after this heartbeat verified it (ownership changed; now held by session=$(_ql_json_field "$lockdir/owner.json" session)); nothing was written" >&2
         return 2
     fi
     if [ "$hb_rc" -ne 0 ]; then
@@ -1850,8 +1896,11 @@ queue_lock_release() {
         # corrupt-lock cleanup).
     fi
     # HIMMEL-988: generation read BEFORE the token check -- see heartbeat.
-    local rel_gen
+    # HIMMEL-3614 F1: the arbiter is read alongside it -- see
+    # _ql_write_owner's header.
+    local rel_gen rel_arbiter
     rel_gen=$(_ql_read_gen "$lockdir")
+    rel_arbiter=$(_ql_read_arbiter "$lockdir")
     if [ -f "$lockdir/owner.json" ]; then
         local o_session
         o_session=$(_ql_json_field "$lockdir/owner.json" session)
@@ -1867,8 +1916,8 @@ queue_lock_release() {
         [ -n "$o_session" ] && session="$o_session"
     fi
     _ql_test_pause release-verified
-    if [ "$(_ql_read_gen "$lockdir")" != "$rel_gen" ]; then
-        echo "queue-lock: release refused -- the lock was taken over after this release verified it (generation changed; now held by session=$(_ql_json_field "$lockdir/owner.json" session)); nothing was released" >&2
+    if [ "$(_ql_read_gen "$lockdir")" != "$rel_gen" ] || [ "$(_ql_read_arbiter "$lockdir")" != "$rel_arbiter" ]; then
+        echo "queue-lock: release refused -- the lock was taken over after this release verified it (ownership changed; now held by session=$(_ql_json_field "$lockdir/owner.json" session)); nothing was released" >&2
         return 2
     fi
     rm -rf "$lockdir" 2>/dev/null
@@ -1957,6 +2006,12 @@ queue_lock_status() {
         return 11
     fi
     cat "$lockdir/owner.json"
+    # HIMMEL-3614 F2: an unreadable gen fails every future takeover closed
+    # SILENTLY (two failed reads never compare equal) -- say why here, once,
+    # rather than leaving every refusal to explain itself from scratch.
+    if _ql_gen_unreadable "$lockdir"; then
+        echo "WARN queue-lock: this lock's generation file ($lockdir/gen) is unreadable (permissions?) -- every takeover attempt will be refused as if the lock changed hands, even when it did not; recover with QUEUE_LOCK_FORCE_RELEASE=1 queue-lock.sh release '$ho'" >&2
+    fi
     local ttl="${QUEUE_LOCK_TTL_SECONDS:-21600}"
     case "$ttl" in ''|*[!0-9]*) ttl=21600 ;; esac
     local o_heartbeat hb_epoch now_epoch age=-1 stale=0

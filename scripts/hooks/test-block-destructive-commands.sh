@@ -273,6 +273,88 @@ assert_rc "R1- rmzexe -rf x (literal-dot pin)" 0 "$(run_case "$(j_bash 'rmzexe -
 # R2 recursive rm (`--recursive` long form).
 assert_rc "R2+ rm --recursive build"        2 "$(run_case "$(j_bash 'rm --recursive build')")"
 assert_rc "R2- grep --recursive rm src/"    0 "$(run_case "$(j_bash 'grep --recursive rm src/')")"
+# HIMMEL-2610: `--recursive` is the only GNU rm long option starting with
+# `r`, so getopt_long accepts any unambiguous prefix from `--r` up - a
+# spelling the R2 literal-word match used to miss entirely (confirmed ALLOW
+# at base, rc=0).
+assert_rc "R2+ rm --rec build (abbrev)"     2 "$(run_case "$(j_bash 'rm --rec build')")"
+assert_rc "R2+ rm --r build (min abbrev)"   2 "$(run_case "$(j_bash 'rm --r build')")"
+# negative control: an unrelated rm long option (and its own abbreviation)
+# must not be swept in by the broadened prefix match.
+assert_rc "R2- rm --verbose x (unrelated)"  0 "$(run_case "$(j_bash 'rm --verbose x')")"
+assert_rc "R2- rm --v x (unrelated abbrev)" 0 "$(run_case "$(j_bash 'rm --v x')")"
+assert_rc "R2- grep --rec pattern src/"     0 "$(run_case "$(j_bash 'grep --rec pattern src/')")"
+# HIMMEL-2610 J1267O F3 (REVERTED by J1267S S1): F3 added a comment/quote/
+# substitution/`--`-terminator-aware scan so these three stayed ALLOW. That
+# scan's own quote-pairing could be fooled by a substitution whose OUTPUT
+# text contained a quote character, hiding a live `--recursive` (S1) - three
+# rounds of shape-specific patches to the same distinction is what the fix
+# below stops doing, at the cost of these three false DENYs. deferred HIMMEL-3636.
+assert_rc "R2+ rm -f x.log # --really (comment, not a flag - false DENY, deferred HIMMEL-3636)" 2 "$(run_case "$(j_bash 'rm -f x.log # --really')")"
+# shellcheck disable=SC2016 # the $(...) must stay literal -- it is the payload text under test, not a real substitution
+assert_rc "R2+ rm -f x \$(ls --reverse) (subshell arg, not rm's flag - false DENY, deferred HIMMEL-3636)" 2 "$(run_case "$(j_bash 'rm -f x $(ls --reverse)')")"
+assert_rc "R2+ rm -- --rfile (operand after --, not a flag - false DENY, deferred HIMMEL-3636)" 2 "$(run_case "$(j_bash 'rm -- --rfile')")"
+# HIMMEL-2610 J1267O round-4 codex-1: a genuine `--recursive` BEFORE the `--`
+# terminator must still deny even though a later `--r...`-shaped OPERAND
+# follows the terminator too -- the greedy scan used to bind to that later
+# operand and the terminator check then (wrongly) covered the earlier flag.
+assert_rc "R2+ rm --recursive -- --rfile (flag before --, operand after)" 2 "$(run_case "$(j_bash 'rm --recursive -- --rfile')")"
+# HIMMEL-2610 J1267O round-5 codex-1: excluding `(` from the gap (F3) must not
+# let an operand substitution BEFORE the flag hide a live `--recursive`.
+# shellcheck disable=SC2016 # the $(...) and backticks must stay literal -- they are the payload text under test
+assert_rc "R2+ rm \"\$(printf x)\" --recursive dir (operand substitution before flag)" 2 "$(run_case "$(j_bash 'rm "$(printf x)" --recursive dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm \`echo x\` --recursive dir (backtick operand before flag)" 2 "$(run_case "$(j_bash 'rm `echo x` --recursive dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm \"\$(foo -- )\" --recursive d (-- inside substitution is not rm's terminator)" 2 "$(run_case "$(j_bash 'rm "$(foo -- )" --recursive d')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ echo \$(rm --recursive x) (rm INSIDE a substitution still denies)" 2 "$(run_case "$(j_bash 'echo $(rm --recursive x)')")"
+# HIMMEL-2610 J1267O round-6 codex-1: a quoted operand carrying a gap-stopping
+# metacharacter (`#`, `(`, `;`, `&`, `|`) must not hide a live flag after it,
+# and a QUOTED flag itself must still deny.
+assert_rc "R2+ rm 'a#b' --recursive dir (quoted # before flag)" 2 "$(run_case "$(j_bash "rm 'a#b' --recursive dir")")"
+assert_rc "R2+ rm \"a(b\" --recursive dir (quoted ( before flag)" 2 "$(run_case "$(j_bash 'rm "a(b" --recursive dir')")"
+assert_rc "R2+ rm 'a;b' --recursive dir (quoted ; before flag)" 2 "$(run_case "$(j_bash "rm 'a;b' --recursive dir")")"
+assert_rc "R2+ rm 'a#b' \"--recursive\" d (quoted operand + quoted flag)" 2 "$(run_case "$(j_bash "rm 'a#b' \"--recursive\" d")")"
+assert_rc "R2+ rm -f 'a#b' # --really (quoted # then a real comment - false DENY, deferred HIMMEL-3636)" 2 "$(run_case "$(j_bash "rm -f 'a#b' # --really")")"
+# HIMMEL-2610 J1267O round-7 codex-1 (+ sweep of the same gap-stopper class): `#`
+# only starts a comment at a WORD start, and unquoted paren groups other than
+# `$(...)` (process substitution, arithmetic) must not stop the gap either.
+assert_rc "R2+ rm a#b --rec dir (mid-word # is not a comment)" 2 "$(run_case "$(j_bash 'rm a#b --rec dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm <(true) --rec d (process substitution before flag)" 2 "$(run_case "$(j_bash 'rm <(true) --rec d')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm \$((1+2)) --rec d (arithmetic before flag)" 2 "$(run_case "$(j_bash 'rm $((1+2)) --rec d')")"
+assert_rc "R2+ rm 'a(' --rec 'b)' d (quoted parens must not swallow the flag)" 2 "$(run_case "$(j_bash "rm 'a(' --rec 'b)' d")")"
+assert_rc "R2+ rm -f x #b --really (word-initial # IS a comment - false DENY, deferred HIMMEL-3636)" 2 "$(run_case "$(j_bash 'rm -f x #b --really')")"
+# Single-quoted `$(` is literal text: it must not collapse a live flag away.
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm '\$(' --rec ')' d (single-quoted \$( is literal)" 2 "$(run_case "$(j_bash "rm '\$(' --rec ')' d")")"
+assert_rc "R2+ rm \"a(\" --rec \")\" d (double-quoted parens are literal)" 2 "$(run_case "$(j_bash 'rm "a(" --rec ")" d')")"
+assert_rc "R2+ rm \"x -- y\" --rec dir (quoted -- is operand text, not the terminator)" 2 "$(run_case "$(j_bash 'rm "x -- y" --rec dir')")"
+assert_rc "R2+ rm 'x -- y' --rec dir (single-quoted -- is operand text)" 2 "$(run_case "$(j_bash "rm 'x -- y' --rec dir")")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "R2+ rm \$(( (1) )) --rec d (nested-paren arithmetic before flag)" 2 "$(run_case "$(j_bash 'rm $(( (1) )) --rec d')")"
+# HIMMEL-2610 J1267R R1: the F3 quote/comment/`--`-terminator scan above is
+# blind to backslash escapes, so an escaped char can fake a `--` terminator,
+# a `#` comment, or a substitution opener/quote that the scan does not model
+# -- each shape below was ALLOW (rc=0) at 750d5e24 and must DENY.
+assert_rc 'R2+ rm x\ -- --recursive dir (escaped space fakes -- terminator)' 2 "$(run_case "$(j_bash 'rm x\ -- --recursive dir')")"
+assert_rc 'R2+ rm a\ #b --recursive dir (escaped space fakes a comment)' 2 "$(run_case "$(j_bash 'rm a\ #b --recursive dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc 'R2+ rm a\`b --recursive dir (escaped backtick stops the gap)' 2 "$(run_case "$(j_bash 'rm a\`b --recursive dir')")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc 'R2+ rm "a\`" --recursive "\`b" dir (paired escaped backticks fake a substitution span)' 2 "$(run_case "$(j_bash 'rm "a\`" --recursive "\`b" dir')")"
+assert_rc 'R2+ rm a\( \"x --recursive y\" dir (escaped paren + quote fake spans)' 2 "$(run_case "$(j_bash 'rm a\( \"x --recursive y\" dir')")"
+assert_rc 'R2+ rm x\ -- --rec dir (escaped space + abbreviation)' 2 "$(run_case "$(j_bash 'rm x\ -- --rec dir')")"
+# HIMMEL-2610 J1267S S1: F3's quote-pairing pass could be fooled by a
+# substitution whose OUTPUT text contains a literal quote character, hiding a
+# live `--recursive` from both the raw and the neutralised scan. These three
+# are p1.txt lines 24, 30 and 36 (base=2, r=0 at 750d5e24, head=0 at 4599b5c1).
+assert_rc "S1a rm \"\$(echo \"'\")\" --recursive \"\$(echo \"'\")\" d (subst output contains a dquote)" 2 "$(run_case "$(j_bash "rm \"\$(echo \"'\")\" --recursive \"\$(echo \"'\")\" d")")"
+# shellcheck disable=SC2016 # payload text under test
+assert_rc "S1b rm \"\`echo \"'\"\`\" --recursive \"\`echo \"'\"\`\" d (backtick subst output contains a dquote)" 2 "$(run_case "$(j_bash "rm \"\`echo \"'\"\`\" --recursive \"\`echo \"'\"\`\" d")")"
+assert_rc "S1c rm \"\$(echo '\"')\" --recursive d '\"' (subst output contains a squote-wrapped dquote)" 2 "$(run_case "$(j_bash "rm \"\$(echo '\"')\" --recursive d '\"'")")"
 # R3 recursive rm across a backslash line-continuation. The near-miss keeps the
 # continuation but carries `-f` (no `r`), pinning the `\\` + `;+` escapes.
 cont_allow='rm \

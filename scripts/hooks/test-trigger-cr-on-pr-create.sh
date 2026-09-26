@@ -79,6 +79,10 @@ TMP_ROOT=$(mktemp -d)
 # ─── stubbed gh (no network) ────────────────────────────────────────────────
 # Dispatches on the subcommand the hook issues:
 #   gh api repos/<o>/<r>/issues/<n>/comments   -> dump $FAKE_GH_COMMENTS_FILE
+#   gh api repos/<o>/<r>/commits/<sha>/statuses -> dump $FAKE_GH_STATUSES_FILE
+#                                                  (cr-signal.sh's reader, used
+#                                                  by cr_trigger_rate_limited —
+#                                                  HIMMEL-3319)
 #   gh pr view <n> --repo <o>/<r> --json headRefOid --jq .headRefOid
 #                                               -> $FAKE_GH_HEAD_SHA (exit 1 if unset,
 #                                                  simulating an unresolvable head —
@@ -92,7 +96,10 @@ cat > "$GHSTUB_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "api" ]; then
-    cat "${FAKE_GH_COMMENTS_FILE:-/dev/null}" 2>/dev/null || true
+    case "${2:-}" in
+        */statuses*) cat "${FAKE_GH_STATUSES_FILE:-/dev/null}" 2>/dev/null || true ;;
+        *) cat "${FAKE_GH_COMMENTS_FILE:-/dev/null}" 2>/dev/null || true ;;
+    esac
     exit 0
 fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
@@ -124,8 +131,10 @@ export PATH="$GHSTUB_DIR:$PATH"
 
 COMMENT_LOG="$TMP_ROOT/comment.log"
 COMMENTS_FILE="$TMP_ROOT/existing.txt"
+STATUSES_FILE="$TMP_ROOT/statuses.json"
 export FAKE_GH_COMMENT_LOG="$COMMENT_LOG"
 export FAKE_GH_COMMENTS_FILE="$COMMENTS_FILE"
+export FAKE_GH_STATUSES_FILE="$STATUSES_FILE"
 
 # Per-head-SHA ledger (HIMMEL-1906): point cr-trigger-ledger.sh at a throwaway
 # file instead of this repo's real .git/ — see cr_trigger_ledger_path's
@@ -154,6 +163,8 @@ git_test_env_pin_perf
 reset_state() {
     : > "$COMMENT_LOG"
     : > "$COMMENTS_FILE"
+    : > "$STATUSES_FILE"
+    echo "[]" > "$STATUSES_FILE"
     export FAKE_GH_COMMENT_FAIL=0
     rm -f "$LEDGER_PATH"
     unset FAKE_GH_HEAD_SHA 2>/dev/null || true
@@ -289,6 +300,72 @@ if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
 else
     fail "expected rc=0 and 1 post with CR_TRIGGER_SUPPRESS unset, got rc=$rc posted=$(posted_count)" "out: $out"
 fi
+
+# Test 4f: a rate-limited PRIOR head for this repo -> no post for the NEW head,
+# logged why (HIMMEL-3319). The account-wide limit is invisible on a brand new
+# PR's own head (it has no CodeRabbit status yet), so the signal is the LAST
+# head we asked CodeRabbit to review for this repo: seed the ledger with that
+# prior (repo, PR, sha) directly — exactly what a real prior trigger would have
+# written — and stub ITS commit status as CodeRabbit's own rate-limit wording
+# (state=success description="Review rate limited", the SAME vocabulary
+# cr-signal.sh already parses for the HIMMEL-3360 rate-limited=NOTE gate — no
+# new parser here, just the existing reader pointed at the prior head).
+echo "TEST: a rate-limited PRIOR head for this repo -> no post for the NEW head, logged why"
+reset_state
+printf 'acme/widget 300 deadbeef00000000000000000000000000000300\n' >> "$LEDGER_PATH"
+printf '[{"state":"success","description":"Review rate limited","context":"CodeRabbit","creator":{"id":136622811,"type":"Bot","login":"coderabbitai[bot]"},"created_at":"%s"}]\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUSES_FILE"
+export FAKE_GH_HEAD_SHA="cafef00d00000000000000000000000000000301"
+run_hook "gh pr create --base main --title t --body b" "https://github.com/acme/widget/pull/301"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] \
+   && ! grep -qF "cafef00d00000000000000000000000000000301" "$LEDGER_PATH" 2>/dev/null \
+   && grepq "$out" -iE 'rate.?limit'; then
+    pass "skipped the post while the account reads rate-limited, and logged why"
+else
+    fail "expected rc=0, 0 posts, no new ledger row, and a rate-limit warning" \
+        "out: $out; ledger: $(cat "$LEDGER_PATH" 2>/dev/null)"
+fi
+unset FAKE_GH_HEAD_SHA
+
+# Test 4g: a CLEAN prior head -> the new check must not fire on ordinary
+# evidence (regression guard alongside 4f).
+echo "TEST: a CLEAN prior head for this repo -> the new head still posts"
+reset_state
+printf 'acme/widget 300 deadbeef00000000000000000000000000000300\n' >> "$LEDGER_PATH"
+cat > "$STATUSES_FILE" <<'JSON'
+[{"state":"success","description":"Review completed","context":"CodeRabbit","creator":{"id":136622811,"type":"Bot","login":"coderabbitai[bot]"},"created_at":"2026-09-26T00:00:00Z"}]
+JSON
+export FAKE_GH_HEAD_SHA="cafef00d00000000000000000000000000000302"
+run_hook "gh pr create --base main --title t --body b" "https://github.com/acme/widget/pull/303"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+    pass "a clean prior head does not suppress the new trigger"
+else
+    fail "expected rc=0 and 1 post with a clean prior head, got rc=$rc posted=$(posted_count)" "out: $out"
+fi
+unset FAKE_GH_HEAD_SHA
+
+# Test 4h: a rate-limited PRIOR head whose status is OLDER than the TTL -> the
+# new head posts anyway (HIMMEL-3319 follow-up, codex-1). Without a staleness
+# bound, this status would never change (nothing ever asks CodeRabbit to
+# re-review that old, orphaned SHA), so an unbounded read would skip every
+# later head for this repo forever — the "retry once the window clears"
+# promise above would never be kept. A status this old must be treated as
+# stale, not as current evidence.
+echo "TEST: a rate-limited PRIOR head older than the TTL -> the new head posts (unstuck)"
+reset_state
+printf 'acme/widget 300 deadbeef00000000000000000000000000000300\n' >> "$LEDGER_PATH"
+cat > "$STATUSES_FILE" <<'JSON'
+[{"state":"success","description":"Review rate limited","context":"CodeRabbit","creator":{"id":136622811,"type":"Bot","login":"coderabbitai[bot]"},"created_at":"2020-01-01T00:00:00Z"}]
+JSON
+export FAKE_GH_HEAD_SHA="cafef00d00000000000000000000000000000304"
+run_hook "gh pr create --base main --title t --body b" "https://github.com/acme/widget/pull/305"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+    pass "a stale (past-TTL) rate-limited status no longer suppresses the trigger"
+else
+    fail "expected rc=0 and 1 post once the prior head's status is past the TTL" \
+        "out: $out; posted=$(posted_count)"
+fi
+unset FAKE_GH_HEAD_SHA
 
 # Test 5: anchoring — echo string literal -> no post -------------------------
 echo "TEST: echo \"gh pr create …\" (string literal, not command position) -> no post"

@@ -393,9 +393,51 @@ RM_R_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})[
 if [[ $rm_scrub =~ $RM_R_PAT ]]; then
     deny "recursive rm"
 fi
-RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*--recursive([^[:alnum:]_-]|$)'
+# HIMMEL-2610: `--recursive` is the only GNU rm long option starting with
+# `r` (force/interactive/one-file-system/no-preserve-root/preserve-root/dir/
+# verbose/help/version all start elsewhere), so getopt_long accepts any
+# unambiguous prefix from `--r` up - `--rec`, `--recu`, etc. all spell
+# --recursive and must trip this the same as the full word.
+# HIMMEL-2610 J1267S S1: this used to run a two-pronged scan - a gap
+# excluding `( ` `` ` `` and `#` (F3), plus a "neutralised copy" that tried to
+# tell a live `--r...` flag apart from one hidden inside a comment, quote,
+# substitution or `--` operand terminator. Three rounds of shape-specific
+# patches to that distinction (F3, then J1267R's R1 backslash fix, then this)
+# each closed one bypass while the underlying approach kept producing another:
+# F3's own quote-pairing pass could be fooled by a substitution whose OUTPUT
+# text contained a quote character (`rm "$(echo "'")" --recursive ... d`),
+# hiding a live `--recursive` from both the raw and the neutralised scan.
+# There is no bounded set of shapes to enumerate here, so stop trying to
+# decide whether a `--r...` token is reachable and fail closed instead: deny
+# on the token alone, wherever it sits after `rm`, matched against the raw
+# text with no exclusions and no quote/comment/substitution/`--`-terminator
+# carve-out. The gap is unbounded (not `[^|;&]*`) on purpose - excluding `;`/
+# `&`/`|` from the gap was itself a shape-specific assumption (a QUOTED `;`,
+# as in `rm 'a;b' --recursive dir`, is not a real command separator, but the
+# exclusion could not tell the difference and would have let this hide the
+# flag again). An unbounded gap also denies a genuinely later, unrelated
+# command that happens to carry a `--r...`-shaped token after an `rm` earlier
+# in the same line - broader than base, deliberately, and strictly more
+# conservative. This reopens F3's three false DENYs (`rm -f x.log # --really`,
+# `rm -f x $(ls --reverse)` and `rm -- --rfile` all deny again) plus a few of
+# its later false-DENY-avoidance rounds (comment-vs-mid-word-# among them) -
+# the false-DENY relief is deferred to HIMMEL-3636, not re-fixed here.
+RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$).*--r[a-z-]*([^[:alnum:]_-]|$)'
 if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
     deny "recursive rm"
+fi
+# HIMMEL-2610 J1267R R1: the quote/comment/`--`-terminator scan above has no
+# model of backslash escaping, so an escaped char can fake any of its
+# boundaries - an escaped space can pose as the real space around a `--`
+# terminator or before a `#` comment, and an escaped backtick/paren/quote can
+# pose as (or falsely pair up to collapse) a substitution or quote span. Each
+# of those hides a live `--recursive`/`--rec...` that follows. Rather than
+# extend the scan to model every escape shape (whack-a-mole across the rounds
+# above), fail closed: a backslash anywhere between `rm` and a `--r...` flag
+# in the same command segment is denied outright.
+RM_RECURSIVE_ESC_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*\\[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
+if [[ $rm_scrub =~ $RM_RECURSIVE_ESC_PAT ]]; then
+    deny "recursive rm (escaped)"
 fi
 # Backslash-newline continuation: newlines are already folded to ';' above, so
 # `rm \<newline>-rf` becomes `rm \;-rf` here - the literal backslash before the

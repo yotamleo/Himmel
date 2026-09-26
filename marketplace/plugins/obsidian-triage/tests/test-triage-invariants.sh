@@ -909,6 +909,27 @@ else
     echo "  SKIP  js-yaml not installed under tools/ — behavioural YAML asserts skipped"
 fi
 
+echo "Test 11: Phase 7 stale-read guard compares against this run's own post-write hash, not the Phase 1 pre-mutation baseline (HIMMEL-1140)"
+# Phases 2-6 legitimately mutate the clip before Phase 7 runs, so a guard that
+# compares Phase 7's re-read against the Phase 1 (pre-mutation) baseline would
+# abort EVERY clip as "stale" — it must compare against the hash recorded
+# after this run's own most recent write instead.
+grep -q "LAST_WRITE_SHA" "$CMD" && r=ok || r=missing
+assert "runbook tracks a last-write hash across Phases 1-6" "ok" "$r"
+
+guard_block="$(grep -A2 "Stale-read guard" "$CMD" | head -3)"
+case "$guard_block" in
+    *LAST_WRITE_SHA*) r=ok ;;
+    *) r=missing ;;
+esac
+assert "Phase 7 guard names the tracked last-write hash" "ok" "$r"
+
+case "$guard_block" in
+    *"differs from the Phase 1"*) r=wrong_baseline ;;
+    *) r=ok ;;
+esac
+assert "Phase 7 guard no longer cites the pre-mutation Phase 1 baseline as its comparison point" "ok" "$r"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 if [ "$fail" -gt 0 ]; then

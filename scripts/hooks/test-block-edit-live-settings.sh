@@ -475,6 +475,23 @@ assert_rc "69 nested worktree abs write to its own settings.json allows" 0 \
 # FD-2). 72, FD-1's piped form, was a third accepted false deny until the
 # per-segment allowlist (HIMMEL-3546): a read piped into another read is a
 # chain of read-only segments, and allows.
+#
+# HIMMEL-3615/J1282O: row 71 briefly ALLOWed (trusting the tokenizer's word
+# list to drop a heredoc-body-only mention) across this ticket's first three
+# commits, on the theory that a heredoc body is prose/data, not a command
+# word. Judge J1282O found that relaxation unsound in three ways at once —
+# the tokenizer's heredoc model diverges from real bash's on `<<` inside an
+# arithmetic context and on a backslash-newline-joined delimiter (so a real
+# top-level write hides inside what the tokenizer thinks is body text), and
+# no denylist of heredoc CONSUMERS that read the body as code can ever be
+# complete (any stdin reader can turn a body into a write). 28 shapes that
+# write, truncate or redirect into a live settings file ALLOWed at that head
+# where base correctly denies all of them. Per the console's ruling, heredoc-
+# body parsing leaves this hook entirely rather than trying to patch the
+# tokenizer or extend the consumer list further: row 71 goes back to being an
+# accepted false deny, and mentions_settings is a plain raw-text scan again,
+# with no ST_LW rescan overriding it. The 28 shapes are pinned as DENY rows
+# below (J1282O-F1 through J1282O-F3).
 assert_rc "70 accepted false deny: harmless cd + worktree settings write denies" 2 \
     "$(bash_rc_of "$WT2" "cd . && echo x > .claude/settings.json")"
 assert_rc "71 accepted false deny: cat >> other file with settings.json in heredoc prose denies" 2 \
@@ -483,6 +500,204 @@ assert_rc "71 accepted false deny: cat >> other file with settings.json in hered
 EOF")"
 assert_rc "72 piped grep naming settings.json from primary allows (HIMMEL-3546; was an accepted false deny)" 0 \
     "$(bash_rc_of "$PRIMARY" "grep -rl x scripts .claude/settings.json docs | head")"
+
+# 71d-71g (HIMMEL-3615 ticket rows, user-scope \$HOME): the ticket's own
+# repro list, run against \$HOME's live settings.json rather than the
+# primary's (36-38 already cover the primary). 71d/71e are read-only
+# controls that must ALLOW; 71f/71g are write shapes that must stay DENY.
+assert_rc "71d bash grep of \$HOME settings.json allows" 0 \
+    "$(bash_rc_of "$SANDBOX" "grep x ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "71e bash jq of \$HOME settings.json allows" 0 \
+    "$(bash_rc_of "$SANDBOX" "jq . ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "71f bash python3 open(...,'w') on \$HOME settings.json denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "python3 -c \"open('$FAKEHOME/.claude/settings.json','w')\"" HOME="$FAKEHOME")"
+assert_rc "71g bash jq redirect into \$HOME settings.json denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "jq . ~/.claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
+
+# 71h-71j: a heredoc whose CONSUMER runs or parses the body (nested bash,
+# git apply, bare patch) rather than reading it as inert prose. These used to
+# be caught by a dedicated interpreter/diff-consumer denylist (removed per
+# J1282O below); with row 71's relaxation gone, they now DENY the same way
+# every other heredoc-body mention does — the raw text still names
+# settings.json, and none of these outer verbs is on the read-only
+# allowlist. Kept as regression pins for the specific consumer classes two
+# earlier /pr-check rounds found bypassing the (now-removed) denylist.
+assert_rc "71h heredoc body run by a nested bash writes to settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "bash <<'EOF'
+echo x > .claude/settings.json
+EOF")"
+assert_rc "71i heredoc git-apply patch writing settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "git apply <<'EOF'
+diff --git a/.claude/settings.json b/.claude/settings.json
+index e69de29..0000000 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+assert_rc "71j heredoc bare patch writing settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "patch -p1 <<'EOF'
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+
+# J1282O-F1 (verdict F1, Critical): the tokenizer treats `<<` as a heredoc
+# operator even inside an arithmetic context, where bash reads it as a left
+# shift — so a real top-level write on the next line used to vanish into what
+# the (now-removed) tokenizer-trust mechanism thought was heredoc body.
+# mentions_settings is a raw-text scan again, so these deny regardless of how
+# the tokenizer parses `<<`.
+assert_rc "J1282O-F1a arithmetic \$((1<<2)) then a real write to primary settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo \$((1<<2))
+echo x > .claude/settings.json")"
+assert_rc "J1282O-F1b arithmetic (( x = 1 << 2 )) then a real write to primary settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "(( x = 1 << 2 ))
+echo x > .claude/settings.json")"
+assert_rc "J1282O-F1c for ((i=1<<0;...)) then a truncate of primary settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "for ((i=1<<0; i<1; i++)); do :; done
+truncate -s0 .claude/settings.json")"
+assert_rc "J1282O-F1d arithmetic << then a real write to \$HOME settings.json, denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "echo \$((1<<2))
+echo x > ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "J1282O-F1e arithmetic << then a real write to the primary's settings.json by absolute path, denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "echo \$((1<<2))
+echo x > $PRIMARY/.claude/settings.json")"
+
+# J1282O-F2 (verdict F2, Critical): for an unquoted heredoc delimiter, bash
+# joins a backslash-newline before matching the delimiter; the tokenizer
+# compared raw, unjoined lines, so it kept reading real commands as heredoc
+# body past the point bash had already ended the heredoc.
+assert_rc "J1282O-F2 backslash-newline-joined heredoc delimiter hides a real write, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat <<EOF
+EO\\
+F
+echo x > .claude/settings.json
+EOF")"
+
+# J1282O-F3 (verdict F3, Critical): the consumer denylist this ticket's first
+# two /pr-check rounds built up (interpreters, git apply, patch) is
+# structurally incomplete — any program that reads the heredoc body from
+# stdin can turn it into a write, so the list can never enumerate all of
+# them. Six of these were confirmed to write in real bash by the judge; the
+# rest are pinned on the hook's own documented stdin semantics. All 16+6
+# stay DENY now that no consumer list decides the outcome at all.
+assert_rc "J1282O-F3a xargs truncate reading the target path from a heredoc, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "xargs truncate -s0 <<EOF
+.claude/settings.json
+EOF")"
+assert_rc "J1282O-F3b . /dev/stdin sources a heredoc that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" ". /dev/stdin <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3c read -r reads a path from a heredoc, then a write to it, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "read -r f <<EOF
+.claude/settings.json
+EOF
+echo x > \"\$f\"")"
+assert_rc "J1282O-F3d awk -f /dev/stdin runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "awk -f /dev/stdin <<EOF
+BEGIN { print \"x\" > \".claude/settings.json\" }
+EOF")"
+assert_rc "J1282O-F3e sed -n -f /dev/stdin with a w command writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "sed -n -f /dev/stdin README.md <<EOF
+w .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3f \$SHELL run against a heredoc that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "\$SHELL <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3g source /dev/stdin runs a heredoc that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "source /dev/stdin <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3h while read loop truncates every path named in a heredoc, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "while read -r f; do : > \"\$f\"; done <<EOF
+.claude/settings.json
+EOF")"
+assert_rc "J1282O-F3i ed -s runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ed -s <<EOF
+a
+echo x > .claude/settings.json
+.
+w
+q
+EOF")"
+assert_rc "J1282O-F3j ex -s runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ex -s <<EOF
+a
+echo x > .claude/settings.json
+.
+:wq
+EOF")"
+assert_rc "J1282O-F3k gawk -f /dev/stdin runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "gawk -f /dev/stdin <<EOF
+BEGIN { print \"x\" > \".claude/settings.json\" }
+EOF")"
+assert_rc "J1282O-F3l python3.12 - (versioned name) runs a heredoc that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "python3.12 - <<EOF
+open('.claude/settings.json', 'w').write('x')
+EOF")"
+assert_rc "J1282O-F3m sqlite3 .output redirects a heredoc's query results into settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "sqlite3 <<EOF
+.output .claude/settings.json
+select 1;
+EOF")"
+assert_rc "J1282O-F3n make -f - runs a heredoc Makefile that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "make -f - <<EOF
+all:
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3o fish runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "fish <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3p pwsh -Command - runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "pwsh -Command - <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3q bun run - runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "bun run - <<EOF
+require('fs').writeFileSync('.claude/settings.json', 'x')
+EOF")"
+assert_rc "J1282O-F3r git am applies a heredoc mailbox patch writing settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "git am <<EOF
+From: a <a@example.com>
+Subject: pwned
+
+---
+ .claude/settings.json | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/.claude/settings.json b/.claude/settings.json
+index e69de29..0000000 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+assert_rc "J1282O-F3s absolute /usr/lib/git-core/git-apply spelling has no git+apply word pair, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "/usr/lib/git-core/git-apply <<EOF
+diff --git a/.claude/settings.json b/.claude/settings.json
+index e69de29..0000000 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+assert_rc "J1282O-F3t at now schedules a heredoc job that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "at now <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3u busybox ash runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "busybox ash <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3v xargs truncate reading a \$HOME settings.json path from a heredoc, denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "xargs truncate -s0 <<EOF
+$FAKEHOME/.claude/settings.json
+EOF" HOME="$FAKEHOME")"
 
 # 73-74 controls: FD-1's exact spelling stays a bare allowlisted read, and a
 # worktree's own relative write with no cd stays open.

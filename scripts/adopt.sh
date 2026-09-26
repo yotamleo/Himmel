@@ -183,6 +183,15 @@ require_tools() {
     echo "WARN: 'bun' not found — qmd search will be skipped;" >&2
     echo "      install: https://bun.sh (runs handover armed-resume, qmd search, the Telegram bridge, obsidian-triage tools)" >&2
   fi
+  # `node` is SOFT (same posture as claude/bun above): the harness-agnostic
+  # core + git gates run without it, and build_jira_cli already tolerates a
+  # bun-only machine. Only the standalone uninstall bundle (HIMMEL-3303 item
+  # 4) needs a real node to require() standalone-bundle.js.
+  if ! command -v node >/dev/null 2>&1; then
+    NODE_AVAILABLE=0
+    echo "WARN: 'node' not found — skipping the standalone uninstall bundle;" >&2
+    echo "      $HIMMEL_ROOT/scripts/uninstall.sh still works; only the delete-the-clone fallback needs node." >&2
+  fi
   # HIMMEL-842 adopter preflight: the shared advisory checks (uv/pipx,
   # npm-less-node, jira-dist) live in scripts/lib/preflight-adopter.sh and are
   # also run by the standalone scripts/preflight-adopter.sh runner. Each returns
@@ -1078,7 +1087,73 @@ install_precommit_hooks() {
   fi
 }
 
+# HIMMEL-3303 item (b): named BEFORE any install step runs. --scope project
+# keeps this repo's own settings.json project-local (HIMMEL-3309), but a
+# handful of things are genuinely machine-level shared tooling and land under
+# $HOME regardless of scope by design -- qmd's models, bun, the claude-hud
+# config wire-statusline.sh writes, the ~/.claude.json workspace-trust entry
+# applyWorkspaceTrust sets (bin.js), and the plugin content cache/ledger a
+# `claude plugin install` writes even for a --scope project install (verified
+# HIMMEL-3303: the install itself is already project-scoped -- only the
+# downloaded plugin files and its tracking ledger are shared, same as any
+# other package manager cache). This just names them; none of these paths are
+# touched by this function.
+print_machine_footprint() {
+  local claude_cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  local himmel_dir="${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}"
+  echo "──── Machine-level footprint (shared tooling, not scoped by --scope) ────"
+  echo "  himmel state dir (~350 KB + backups):  $himmel_dir -- install ledger, backups of files this adopt overwrites, uninstall bundle"
+  if command -v bun >/dev/null 2>&1; then
+    echo "  qmd-fork clone (bun present, ~1 GB):   ${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"
+    echo "  qmd collection registry (bun present): ${QMD_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/qmd}/index.yml -- adds a himmel collection machine-wide"
+  fi
+  echo "  qmd models + search index (~2.1 GB):   ${XDG_CACHE_HOME:-$HOME/.cache}/qmd"
+  echo "  bun runtime + global installs:         ${BUN_INSTALL:-$HOME/.bun}"
+  echo "  claude-hud status-line config:         $claude_cfg/plugins/claude-hud/config.json -- config.json written; hud cache purged when the config differs"
+  echo "  workspace-trust entry (himmelctl only): ${WORKSPACE_TRUST_CONFIG:-$HOME/.claude.json} -- the himmelctl wizard writes it; this bare adopt.sh does not"
+  echo "  plugin content cache + install ledger: $claude_cfg/plugins/cache/<marketplace>/…, $claude_cfg/plugins/installed_plugins.json"
+  echo "  marketplace clones + global registry:  $claude_cfg/plugins/marketplaces/<name>/, $claude_cfg/plugins/known_marketplaces.json -- a --scope project marketplace add still writes both machine-wide"
+  echo "  these are shared machine tooling, same as any package manager cache -- --scope project only keeps THIS repo's own settings.json project-local."
+}
+
+# HIMMEL-3303 item (4): scripts/himmelctl/bin.js's PATH-shim step already
+# writes the same standalone uninstall bundle (bin.js:4847) so the uninstaller
+# survives deleting the clone -- but that step only runs inside the himmelctl
+# wizard flow, never from a bare `adopt.sh`. Reuse standalone-bundle.js's own
+# writer via a node shell-out rather than forking its bundling logic; the
+# printed line mirrors bin.js's printUninstallFooter() (bin.js:2490)
+# verbatim. Soft: NODE_AVAILABLE mirrors the CLAUDE_AVAILABLE/BUN_AVAILABLE
+# degrade-not-fail pattern above.
+write_standalone_bundle_core() {
+  if [[ "${NODE_AVAILABLE:-1}" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: standalone uninstall bundle (from $HIMMEL_ROOT)"
+    return 0
+  fi
+  # shellcheck disable=SC2016 # single-quoted on purpose: values pass via process.argv, not shell expansion
+  node -e '
+const path = require("path");
+const bundleLib = require(process.argv[1]);
+const { nodeScriptCmd } = require(process.argv[2]);
+const repoRoot = process.argv[3];
+const targetDir = path.resolve(process.argv[4]);
+bundleLib.writeStandaloneBundle(repoRoot);
+const bundleDir = bundleLib.bundleDir();
+let bundleOk = false;
+try {
+  const meta = JSON.parse(require("fs").readFileSync(path.join(bundleDir, "bundle.json"), "utf8"));
+  bundleOk = meta && meta.marker === bundleLib.BUNDLE_MARKER;
+} catch (_e) { /* no bundle, or not ours */ }
+if (bundleOk) {
+  console.log(`To uninstall later, run from the adopted project directory (${targetDir}): ${nodeScriptCmd(path.join(repoRoot, "scripts", "himmelctl", "bin.js"))} uninstall (if you delete ${repoRoot} first, the fallback still works: ${nodeScriptCmd(path.join(bundleDir, "standalone.js"))} uninstall)`);
+}
+' "$HIMMEL_ROOT/scripts/himmelctl/lib/standalone-bundle.js" "$HIMMEL_ROOT/scripts/himmelctl/lib/helpers.js" "$HIMMEL_ROOT" "$TARGET"
+}
+
 do_core() {
+  print_machine_footprint
   require_tools
   if [[ "$SCOPE" == "project" ]]; then
     copy_portable
@@ -1122,6 +1197,7 @@ do_core() {
   [[ $WITH_GRAPHIFY -eq 1 ]] && wire_graphify_core
   wire_statusline_core
   wire_himmel_repo_core
+  write_standalone_bundle_core
   if [[ $FILL_ENV -eq 1 ]]; then fill_env_core; fi
 }
 
