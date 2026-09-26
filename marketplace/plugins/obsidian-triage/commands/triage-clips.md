@@ -329,7 +329,7 @@ For a vault with N notes and K unprocessed clips, the Phase 4 (Related Notes) li
 For each unprocessed clip:
 
 **Phase 1 — Read + baseline capture.**
-- Read the full file. Compute a baseline SHA256 (e.g., `sha256sum <clip>` → store).
+- Read the full file. Compute a baseline SHA256 (e.g., `sha256sum <clip>` → store as `PHASE1_SHA`). Initialize `LAST_WRITE_SHA=$PHASE1_SHA` — every phase below that writes to this file (Phases 2-6) recomputes the SHA256 immediately after its write and updates `LAST_WRITE_SHA` to the new value; a phase that makes no write leaves it unchanged. This is what Phase 7's stale-read guard compares against.
 - Parse frontmatter: identify all top-level keys, distinguish flow-style (`tags: []`, `tags: [a, b]`) from block-style (`tags:\n  - a\n  - b`).
 - Parse body sections — locate `## Action Items`, `## Related Notes`, and the type-specific summary section: `## Summary` (article/research/reddit/newsletter), `## The Idea` (tweet), `## What This Video Is About` (youtube).
 - If frontmatter fails to parse: log `⊘ <clip> — skipped (frontmatter): YAML parse error: <reason>`. Do not mutate. Move to next clip.
@@ -420,7 +420,7 @@ The flag (and its `harvest_flag_detail:` sibling) is never written or cleared by
 
 **Phase 7 — Mark processed (with stale-read guard + placement contract).**
 
-- **Stale-read guard:** before any mutation, re-read the file and re-compute the SHA256. If it differs from the Phase 1 baseline, the user edited the clip mid-pass (Obsidian sync, manual edit, another tool). ABORT this clip with: `⊘ <clip> — skipped (phase-7-mark): user-edit detected mid-pass (stale read), skipping to avoid clobbering manual edits`. Do NOT mark `processed: true`.
+- **Stale-read guard:** before any mutation, re-read the file and re-compute the SHA256. If it differs from `LAST_WRITE_SHA` (the hash recorded after this run's own most recent write in Phases 2-6 — NOT the Phase 1 pre-mutation baseline, which Phases 2-6 legitimately diverge from), the user edited the clip mid-pass (Obsidian sync, manual edit, another tool). ABORT this clip with: `⊘ <clip> — skipped (phase-7-mark): user-edit detected mid-pass (stale read), skipping to avoid clobbering manual edits`. Do NOT mark `processed: true`.
 
 - **Frontmatter parse-before-write:** simulate the post-mutation frontmatter as a string, attempt to parse it as YAML, and only write if parse succeeds. If it fails: abort with `⊘ <clip> — skipped (phase-7-mark): proposed frontmatter would be invalid YAML; aborting (NOTE: if Phase 5 already wrote action items, they are now in today's daily note WITHOUT a processed marker on the clip; the dedup-by-backreference rule in Phase 5 will prevent duplicates on next run)`.
 
