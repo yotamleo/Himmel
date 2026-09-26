@@ -8,9 +8,10 @@
 # <pid>/cmdline files, not a flattened `pgrep -af` line -- this is what makes
 # scenario (h) below a real regression test for the argv-boundary spoof
 # (a pgrep -af-only stub cannot tell "free-text -p value" from "a real -n/
-# --autocompact flag" in the first place). Scenario (i) keeps the OLD
-# `pgrep -af` stub verbatim to prove the no-/proc fallback path is
-# byte-identical.
+# --autocompact flag" in the first place). Scenario (i) is the no-/proc
+# fallback regression test; #1335 reshaped its stubs to the real BSD
+# binaries (`pgrep -x` bare pids + `ps -o pid=,args=`), since the old
+# GNU-only `pgrep -af` stub masked the macOS bug it was supposed to catch.
 #
 # PLATFORM GUARD: no .ps1 twin, by design -- the SUT is Linux-only (pgrep).
 set -uo pipefail
@@ -127,17 +128,27 @@ out_h="$(run_primary)"
 contains 'a spoofed --autocompact in free-text argv does not override the real value' "$out_h" 'HIMMEL-555-legN70-2026-09-13 auto'
 contains 'the spoofed leg still reports its real DRIFT' "$out_h" 'ceiling=DRIFT:HIMMEL-555-legN70-2026-09-13'
 
-# (i) HIMMEL-2999: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls
-# back to the old flattened `pgrep -af` parse -- same scenario as (a), old
-# stub shape, kept byte-identical.
-cat > "$W/bin/pgrep" <<'STUB'
+# (i) #1335: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls
+# back to `pgrep -x claude` (bare pids) + `ps -o pid=,args= -p <pids>` (full
+# argv) -- the BSD-safe replacement for the old GNU-only `pgrep -af` scan.
+# The stubs are shaped like the real binaries: pgrep hands back only bare
+# pids for `-x claude` (BSD pgrep's `-a` means "include ancestors", never
+# "print args"), so a regression back to expecting `-af` to return full argv
+# lines fails here again.
+pgrep_x_stub 101 102 103
+cat > "$W/bin/ps" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' \
-  '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61-2026-09-13 work' \
-  '102 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-222-legN62-2026-09-13 work' \
-  '103 claude --model claude-fable-5-1 --autocompact auto -n HIMMEL-nextleg-2026-09-13A-console work'
+case "$*" in
+  "-o pid=,args= -p "*)
+    printf '%s\n' \
+      '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61-2026-09-13 work' \
+      '102 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-222-legN62-2026-09-13 work' \
+      '103 claude --model claude-fable-5-1 --autocompact auto -n HIMMEL-nextleg-2026-09-13A-console work'
+    ;;
+  *) exit 1 ;;
+esac
 STUB
-chmod +x "$W/bin/pgrep"
+chmod +x "$W/bin/ps"
 out_i="$(CLAUDE_SESSIONS_PROC="$W/no-such-proc" PATH="$W/bin:$PATH" bash "$SUT")"
 contains 'the /proc-absent fallback still reports ceiling=ok' "$out_i" 'ceiling=ok'
 contains 'the /proc-absent fallback still prints a pinned leg line' "$out_i" 'HIMMEL-111-legN61-2026-09-13 200000'
