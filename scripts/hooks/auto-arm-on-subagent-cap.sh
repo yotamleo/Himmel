@@ -46,6 +46,17 @@ set -euo pipefail
 
 warn() { echo "auto-arm-on-subagent-cap: $*" >&2; }
 
+# ─── read the full PostToolUse payload ─────────────────────────────────────
+# Bounded read, done before every early-exit branch below: the harness sends
+# one JSON line and closes stdin, but a fast exit here (kill switch,
+# MALFUNCTION) can close our read end while the harness is still mid-write on
+# a large payload, SIGPIPE'ing it under pipefail (HIMMEL-2345). Draining
+# stdin first — even on paths that discard $payload — makes every exit below
+# safe regardless of payload size. py_armor enforces its own timeout on the
+# python parse so even a pathological input cannot hang the tool-call loop.
+payload=""
+IFS= read -t 5 -r payload 2>/dev/null || true
+
 [ "${AUTO_ARM_DISABLE:-0}" = "1" ] && exit 0
 [ "${AUTO_ARM_SUBAGENT_DISABLE:-0}" = "1" ] && exit 0
 
@@ -66,13 +77,6 @@ fi
 STATE_DIR="${AUTO_ARM_STATE_DIR:-/tmp/claude}"
 ARM_BIN="${AUTO_ARM_BIN:-$hook_dir/../handover/arm-resume.sh}"
 
-# ─── read the full PostToolUse payload ─────────────────────────────────────
-# Bounded read: the harness sends one JSON line and closes stdin. The hook
-# must not hang on an open stdin (manual invocation, test stub). py_armor
-# enforces a timeout on the python parse so even a pathological input cannot
-# hang the tool-call loop.
-payload=""
-IFS= read -t 5 -r payload 2>/dev/null || true
 [ -z "$payload" ] && exit 0   # no payload — quiet pass (not a hook invocation)
 
 # ─── extract tool_name + tool_response content via python ──────────────────
