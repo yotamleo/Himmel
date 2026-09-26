@@ -103,9 +103,9 @@ gathering, per the rule below.>
 > **Scratch lives outside the handover root.** Put every scratch file —
 > yours and each child's (repo extracts, probe trees, tarballs) — under
 > `~/.cache/himmel/verdicts/<qid>/`, never under `<handover root>`: the
-> handover root sits inside an Obsidian vault, which indexes every file
-> regardless of `.gitignore` (HIMMEL-3705: 843k scratch files froze the
-> vault). Not `/tmp` either — it can be tmpfs, so a full tree sits in RAM.
+> handover root commonly lives inside an Obsidian vault, which indexes
+> every file regardless of `.gitignore` (HIMMEL-3705: 843k scratch files
+> froze the vault). Not `/tmp` either — it can be tmpfs, so a full tree sits in RAM.
 > Only your verdict file belongs under `verdicts/<qid>/`.
 
 > **Per-child scratch subdirectory.** If this question needs bulk
@@ -153,4 +153,5 @@ gathering, per the rule below.>
 | RETASK block | The same asymmetry as a leg's: a narrowing needs no token, an EXPANSION does, and no revision from anyone widens what the judge may act with — which for a judge is nothing to begin with. |
 | Lifecycle rule | A judge that does not end its turn after writing its verdict holds a fleet slot the console cannot reclaim without killing the window itself. |
 | "Checkpoint to disk as you go" | The standard `--autocompact 200000` pin is too small for a design-grade question (design spec §3.2); a judge holding its reasoning only in context loses it at compaction. |
+| Scratch lives outside the handover root | Judges extract whole repo trees; under a vault-resident handover root they are indexed by Obsidian despite `.gitignore` (HIMMEL-3705: 843k files, 16 GB). `/tmp` is ruled out because it can be tmpfs. |
 | Per-child scratch subdirectory | Parallel evidence-gatherers sharing one directory overwrite or interleave each other's output. |
