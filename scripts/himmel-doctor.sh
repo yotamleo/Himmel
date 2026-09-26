@@ -3121,9 +3121,11 @@ check_c43_rtk_bare_hook() {
     # shellcheck source=scripts/lib/reconcile-rtk-hook.sh
     # shellcheck disable=SC1091
     . "$REPO_ROOT/scripts/lib/reconcile-rtk-hook.sh"
-    local n
-    n="$(jq -r --arg re "$BARE_RTK_RE" '[(.hooks.PreToolUse[]?.hooks[]? | select((.command // "") | test($re)))] | length' "$SETTINGS" 2>/dev/null)"
-    if [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null; then
+    local n rc
+    n="$(jq -r --arg re "$BARE_RTK_RE" '[(.hooks.PreToolUse[]?.hooks[]? | select((.command // "") | test($re)))] | length' "$SETTINGS" 2>/dev/null)"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+        emit INFO C43-rtk-hook "could not parse $SETTINGS -- bare rtk hook scan skipped"
+    elif [ "$n" -gt 0 ] 2>/dev/null; then
         emit WARN C43-rtk-hook "bare 'rtk hook claude' PreToolUse entry present ($n) -- bypasses rtk-hook-guard.sh and regresses HIMMEL-241 (rtk find silently mishandles -not/-exec/-o/-a/-delete/!/(...)/-prune, breaking LUNA runbook clip scans)" "bash scripts/lib/reconcile-rtk-hook.sh ~/.claude/settings.json <himmel-path>  # do NOT re-run rtk init -g -- it just re-adds the bare entry the reconcile removes"
     else
         emit OK C43-rtk-hook "no bare rtk hook entry (guard-wrapped or absent)"
