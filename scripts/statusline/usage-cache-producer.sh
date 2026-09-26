@@ -155,6 +155,7 @@ account_for_session() {
   if [ -f "$SESSION_MAP_FILE" ] && jq -e --arg sid "$sid" 'has($sid)' "$SESSION_MAP_FILE" >/dev/null 2>&1; then
     mapped=$(jq -r --arg sid "$sid" '.[$sid]' "$SESSION_MAP_FILE" 2>/dev/null)
     printf '%s' "$mapped"
+    exec 9>&- 2>/dev/null
     return
   fi
   hash=$(current_account_hash)
@@ -165,6 +166,7 @@ account_for_session() {
   fi
   newmap=$(printf '%s' "$prevmap" | jq --arg sid "$sid" --arg h "$hash" '.[$sid] = $h' 2>/dev/null)
   [ -n "$newmap" ] && write_atomic "$SESSION_MAP_FILE" "$newmap"
+  exec 9>&- 2>/dev/null
   printf '%s' "$hash"
 }
 account_hash=$(account_for_session "$session_id")
