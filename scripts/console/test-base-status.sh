@@ -523,6 +523,43 @@ else
     fail "CHANGED-SINCE report" "rc=$rc out='$out' err='$(cat "$TMP_ROOT/err20")'"
 fi
 
+# HIMMEL-2500: gh rejects `--comments` combined with `--json` — the stub
+# mimics that real rejection (the other stubs above match on args loosely
+# and never actually enforce it). Certification must reach a real verdict,
+# not a QUERY-ERROR fallback, once the fix drops `--comments`.
+GH_STUB_FLAGPAIR="$TMP_ROOT/gh-stub-flagpair.sh"
+cat > "$GH_STUB_FLAGPAIR" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "$args" in
+    *"repo view"*defaultBranchRef*) echo "main" ;;
+    *"pr list"*"state merged"*)
+        echo '[{"number":601,"headRefOid":"qqq601","files":[{"path":"scripts/hooks/foo.sh"}]}]' ;;
+    *"pr view 601"*)
+        case "$args" in
+            *" --comments "*"--json comments"*|*"--json comments"*" --comments "*)
+                echo "gh: Specify one of --comments or --json" >&2
+                exit 1
+                ;;
+        esac
+        echo '{"comments":[{"body":"== Summary ==\n head: qqq601\n scope: scripts/hooks\n PASS: 5\n SKIP: 0\n FAIL: 0\n"}]}'
+        ;;
+    *) echo "stub: unhandled gh args: $*" >&2; exit 99 ;;
+esac
+STUB
+chmod +x "$GH_STUB_FLAGPAIR"
+
+echo "TEST: gh rejects --comments+--json — certification must reach a real verdict, not QUERY-ERROR (HIMMEL-2500)"
+out=$(GH_CMD="$GH_STUB_FLAGPAIR" "$BASE_STATUS" scripts/hooks 2>"$TMP_ROOT/err_flagpair")
+rc=$?
+err=$(cat "$TMP_ROOT/err_flagpair")
+m_qerr=$(printf '%s\n' "$err" | grep -F "QUERY-ERROR")
+if [ "$rc" -eq 0 ] && [ -z "$m_qerr" ]; then
+    pass "flag pair gh accepts reaches a real verdict, not QUERY-ERROR"
+else
+    fail "flag-pair rejection" "rc=$rc out='$out' err='$err'"
+fi
+
 echo "TEST: no fence args -> usage error"
 rc=0
 out=$(GH_CMD="$GH_STUB1" "$BASE_STATUS" 2>"$TMP_ROOT/err5") || rc=$?
