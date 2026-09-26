@@ -411,6 +411,64 @@ grepq "$(cat "$b8_uv_calls_log")" -F 'tool install --force pre-commit' \
   || fail "case b8: expected a retry as 'uv tool install --force pre-commit' after the unforced install refused to overwrite the existing pip/pipx shim (calls: $(cat "$b8_uv_calls_log"))"
 echo "ok: case b8 — upgrade mode's fall-through install retries with --force when uv refuses to overwrite an existing unmanaged pre-commit shim"
 
+# ── case b9 (HIMMEL-3628): a FAILING `uv tool list` (uv present but broken)
+# must not be read the same as an EMPTY one -- the function reports the uv
+# failure and returns non-zero WITHOUT attempting an install/upgrade. ──────
+b9dir="$work/b9"; mkdir -p "$b9dir/bin" "$b9dir/home/.local/bin"
+cat > "$b9dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then echo "uv: internal error" >&2; exit 1; fi
+exit 0
+SH
+chmod +x "$b9dir/home/.local/bin/uv"
+b9_uv_calls_log="$b9dir/uv-calls.log"; : > "$b9_uv_calls_log"
+set +e
+b9_out=$(HOME="$b9dir/home" PATH="$b9dir/home/.local/bin:$b9dir/bin:$PATH" UV_CALLS_LOG="$b9_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit
+' _ "$repo_root/scripts/setup/ensure-tools.sh" 2>&1)
+b9_rc=$?
+set -e
+[ "$b9_rc" -ne 0 ] \
+  || fail "case b9: a failing 'uv tool list' should make _ensure_install_precommit return non-zero (rc=$b9_rc, out: $b9_out)"
+grepq "$b9_out" -F 'tool list' \
+  || fail "case b9: expected the failure message to name 'uv tool list' as the cause (got: $b9_out)"
+grepq "$(cat "$b9_uv_calls_log")" -F 'tool install' \
+  && fail "case b9: a failing 'uv tool list' must NOT be treated as 'absent' -- no 'uv tool install' call should follow (calls: $(cat "$b9_uv_calls_log"))"
+grepq "$(cat "$b9_uv_calls_log")" -F 'tool upgrade' \
+  && fail "case b9: a failing 'uv tool list' must NOT be treated as 'absent' -- no 'uv tool upgrade' call should follow (calls: $(cat "$b9_uv_calls_log"))"
+echo "ok: case b9 — a failing 'uv tool list' reports the uv failure and returns non-zero without attempting an install"
+
+# ── case b10 (HIMMEL-3628): an EMPTY-but-successful `uv tool list` is still
+# treated as 'pre-commit absent' (install proceeds), and _ensure_install_
+# precommit's locals (uv_tool_list, pc_installed, ...) must not leak into
+# the caller's scope of the same name. ──────────────────────────────────────
+b10dir="$work/b10"; mkdir -p "$b10dir/bin" "$b10dir/home/.local/bin"
+cat > "$b10dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then exit 0; fi
+exit 0
+SH
+chmod +x "$b10dir/home/.local/bin/uv"
+b10_uv_calls_log="$b10dir/uv-calls.log"; : > "$b10_uv_calls_log"
+HOME="$b10dir/home" PATH="$b10dir/home/.local/bin:$b10dir/bin:$PATH" UV_CALLS_LOG="$b10_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+grepq "$(cat "$b10_uv_calls_log")" -F 'tool install pre-commit' \
+  || fail "case b10: an empty (but successful) 'uv tool list' should still be treated as 'absent' -- expected a 'uv tool install pre-commit' call (calls: $(cat "$b10_uv_calls_log"))"
+b10_leak=$(HOME="$b10dir/home" PATH="$b10dir/home/.local/bin:$b10dir/bin:$PATH" UV_CALLS_LOG="$b10_uv_calls_log" bash -c '
+  . "$1"
+  uv_tool_list="SENTINEL"; pc_installed="SENTINEL"; pc_force_flag="SENTINEL"; pc_err="SENTINEL"
+  _ensure_install_precommit >/dev/null 2>&1
+  echo "uv_tool_list=[$uv_tool_list] pc_installed=[$pc_installed] pc_force_flag=[$pc_force_flag] pc_err=[$pc_err]"
+' _ "$repo_root/scripts/setup/ensure-tools.sh")
+[ "$b10_leak" = "uv_tool_list=[SENTINEL] pc_installed=[SENTINEL] pc_force_flag=[SENTINEL] pc_err=[SENTINEL]" ] \
+  || fail "case b10: _ensure_install_precommit's internals must not leak into caller variables of the same name (got: $b10_leak)"
+echo "ok: case b10 — an empty-but-successful 'uv tool list' is still treated as absent, and the function's internals stay local to the caller"
+
 # ── case c: manager:"brew" (install vs upgrade) ─────────────────────────────
 outC1=$("$node_bin" -e "
 const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);

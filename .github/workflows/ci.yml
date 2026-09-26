@@ -612,6 +612,15 @@ jobs:
       # unrelated suite reds. Pinned by test-run-shell-tests.sh Case 23f.
       - name: Install obsidian-triage tool deps (marketplace suites)
         run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh
+      # HIMMEL-2223 codex-3: scripts/test-template-nostash-hooks.sh hard-SKIPs
+      # (exit 0) without pre-commit on PATH — the exact vacuous-SKIP shape
+      # called out for the Windows vault suites above (LUNA-131) — so without
+      # this install the suite is a permanent no-op here, never exercising the
+      # real fixer hooks. `shell: bash` matches the Windows install pattern
+      # above: python -m pip works identically on every OS in this matrix.
+      - name: Install pre-commit (scripts/test-template-nostash-hooks.sh)
+        shell: bash
+        run: python -m pip install --disable-pip-version-check pre-commit
       # Explicit `bash` prefix: on windows-latest the default run shell is pwsh,
       # but Git Bash is preinstalled + on PATH, so `bash …` runs under MSYS2.
       # FAIL_LOG_DIR: full failed-suite logs land there and upload as an

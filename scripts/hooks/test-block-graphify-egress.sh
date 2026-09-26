@@ -299,6 +299,41 @@ else
     bad "exec -a name-wrapped invocation: rc=$rc out=$out"
 fi
 
+# HIMMEL-2610 (G1): nice/time's long-option alternatives used to be bare
+# literals (--adjustment/--output/--format), so a GNU-unambiguous abbreviation
+# fell through to the generic bare-flag alternative and left the flag's VALUE
+# token where the grammar next expects the wrapped command -- a silent
+# bypass. --a[a-z-]*/--o[a-z-]*/--f[a-z-]* must still reach the fence.
+out="$(run_hook "nice --adj 5 graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a nice --adj 5 (abbreviated --adjustment)-wrapped invocation reaches the fence"
+else
+    bad "nice --adj 5-wrapped invocation: rc=$rc out=$out"
+fi
+
+out="$(run_hook "time --o $T/timing.out graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a time --o (abbreviated --output)-wrapped invocation reaches the fence"
+else
+    bad "time --o-wrapped invocation: rc=$rc out=$out"
+fi
+
+out="$(run_hook "time --for %e graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a time --for (abbreviated --format)-wrapped invocation reaches the fence"
+else
+    bad "time --for-wrapped invocation: rc=$rc out=$out"
+fi
+
+# HIMMEL-2610 (G1): stdbuf was missing from the wrapper set entirely -- a
+# routing bypass, not an abbreviation-matching gap.
+out="$(run_hook "stdbuf -oL graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a stdbuf -oL-wrapped invocation reaches the fence"
+else
+    bad "stdbuf -oL-wrapped invocation: rc=$rc out=$out"
+fi
+
 # Negative controls: a flag-bearing wrapper on an unrelated command must not
 # start reaching the fence just because the wrapper now consumes flags.
 out="$(run_hook "nice -n 5 ls -la $T" 2>&1)"; rc=$?
@@ -306,6 +341,20 @@ if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<< "$out"; then
     ok "a nice -n 5-wrapped non-graphify command does not reach the fence"
 else
     bad "nice -n 5 non-graphify: rc=$rc out=$out"
+fi
+
+out="$(run_hook "nice --adj 5 ls -la $T" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a nice --adj 5-wrapped non-graphify command does not reach the fence"
+else
+    bad "nice --adj 5 non-graphify: rc=$rc out=$out"
+fi
+
+out="$(run_hook "stdbuf -oL ls -la $T" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a stdbuf -oL-wrapped non-graphify command does not reach the fence"
+else
+    bad "stdbuf -oL non-graphify: rc=$rc out=$out"
 fi
 
 out="$(run_hook "time -p echo graphify" 2>&1)"; rc=$?

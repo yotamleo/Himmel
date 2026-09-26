@@ -8,6 +8,73 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.58] — 2026-09-25
+
+### Fixed
+- `install-nostash-hooks.sh`: refuses to install when `core.hooksPath` is set
+  (matching stock `pre-commit install`'s "Cowardly refusing…"), instead of
+  silently writing hooks into that path — which, when it's a global path,
+  could disable another repo's hook and break every future commit there.
+  `backup_foreign_hook` and the hooks directory are now both derived from
+  `git rev-parse --git-common-dir`, never from `--git-path hooks` (which
+  follows `core.hooksPath`).
+- `install-nostash-hooks.sh`: the generated `pre-commit` hook's `mapfile -d
+  ''` needs bash ≥4.4 and fails outright on stock macOS bash 3.2 (`mapfile:
+  command not found`); replaced with a portable `while IFS= read -r -d ''`
+  loop.
+- `install-nostash-hooks.sh`: `pre-commit` (or `python`/`python3 -m
+  pre_commit`) is now resolved and verified once, at install time, and baked
+  into the generated hooks — the way pre-commit's own hook bakes
+  `INSTALL_PYTHON` — instead of re-resolving from PATH on every commit, which
+  broke commits made with a minimal PATH (GUI/Obsidian-Git commits) and could
+  pick the Microsoft Store's `python3` stub on Windows.
+- `install-nostash-hooks.sh`: derives its target repo from its own script
+  location, not the caller's working directory, so running it with a cwd
+  inside a different repo can no longer install hooks there.
+- `.vault-template.json` and `marketplace.json` are back in lockstep at
+  `0.4.58` (0.4.57 only bumped one of the two).
+
+### Changed
+- An already-scaffolded vault does not get the no-stash hooks automatically
+  from `/luna-upgrade` — it delivers the updated `install-nostash-hooks.sh`
+  but does not run it. After upgrading, run
+  `bash scripts/hooks/install-nostash-hooks.sh` once to install them.
+
+## [0.4.57] — 2026-09-25
+
+### Fixed
+- `install-nostash-hooks.sh`: the 0.4.56 commit-msg fix dropped `--files`
+  entirely, which reintroduced pre-commit's own full-repo stash on every
+  commit (`stash = not args.all_files and not args.files`) -- exactly the
+  bug this wrapper exists to prevent. Now passes `--all-files` instead,
+  which still avoids the stash without gating on the staged-file list. The
+  generated `pre-commit`/`commit-msg` runtime hooks also now resolve
+  `pre-commit` vs `python3`/`python -m pre_commit` at hook-run time, not
+  just the install-hooks warm-up step.
+
+## [0.4.56] — 2026-09-25
+
+### Fixed
+- `install-nostash-hooks.sh`: the commit-msg wrapper no longer skips message
+  validation on a deletion-only commit (its `--diff-filter=ACMR` staged-file
+  list is empty then); `hooks_dir` is resolved to an absolute path before use
+  (`git rev-parse --git-path hooks` can return one relative to the script's
+  cwd); and the `pre-commit install-hooks` warm-up now falls back to
+  `python3 -m pre_commit` / `python -m pre_commit` when bare `pre-commit`
+  isn't on PATH, matching `setup.ps1`'s own pre-push install.
+
+## [0.4.55] — 2026-09-25
+
+### Fixed
+- `setup.sh` and `setup.ps1` ran `pre-commit install`, whose generated
+  `pre-commit`/`commit-msg` hooks stash unstaged changes before running and
+  reapply them after. With Obsidian live, its autosave rewriting tracked
+  `.obsidian/plugins/*/data.json` mid-hook can make that stash reapply fail
+  and silently revert OTHER unstaged files on disk. A freshly scaffolded
+  vault now installs `scripts/hooks/install-nostash-hooks.sh`'s stash-free
+  wrappers for `pre-commit`/`commit-msg` instead (`pre-push` is unaffected —
+  its two hooks are no-ops on a `.single-writer` vault). (HIMMEL-2223)
+
 ## [0.4.52] — 2026-09-22
 
 ### Fixed

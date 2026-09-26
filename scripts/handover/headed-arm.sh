@@ -379,6 +379,8 @@ fi
 # override at a synthetic tmp repo with no scripts/lib of its own, and this
 # script's own source location never moves with it.
 . "$(cd "$(dirname "$0")" && pwd)/../lib/console-context.sh"
+# shellcheck source=../lib/dedupe-path.sh
+. "$(cd "$(dirname "$0")" && pwd)/../lib/dedupe-path.sh"
 
 # HIMMEL-3079: the console parent defaults to Opus (default parent tier);
 # Fable is the escalation target, reached only via an explicit [model].
@@ -1440,6 +1442,13 @@ if [ "$RECORDER" = "1" ] && [ "$KONSOLE_IS_RESOLVED_SHIM" = "1" ]; then
     rm -rf "$LOCK" 2>/dev/null
     exit 2
 fi
+# HIMMEL-3640: Claude Code prepends each enabled plugin's bin/ dir onto PATH
+# at process startup without checking for an existing copy, so handing this
+# inherited (already-duplicated) PATH straight to the nested claude lets the
+# duplication compound across every himmel-driven relaunch. Dedupe it here,
+# order-preserving, so the child always starts from a clean baseline.
+DEDUPED_PATH="$(dedupe_path "$PATH")"
+
 if [ "$RECORDER" = "1" ]; then
     # HIMMEL-2782: give the launcher a real tty via `script` rather than
     # execing it straight under konsole -e (see the RECORDER seam doc
@@ -1472,7 +1481,7 @@ if [ "$RECORDER" = "1" ]; then
     # deliberately unquoted, same word-split contract as LAUNCHER_ENV above.
     "$KONSOLE" --separate --workdir "$REPO" -p "tabtitle=$NAME" \
         -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID $ROLE_ENV_UNSET \
-            CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} SHELL="$BASH_BIN" $LAUNCHER_ENV \
+            CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} SHELL="$BASH_BIN" $LAUNCHER_ENV PATH="$DEDUPED_PATH" \
             script -q -a -f "$LOG" -c "$LAUNCH_CMD" \
         >> "$LOG" 2>&1 &
 else
@@ -1482,7 +1491,7 @@ else
     # recorder branch above (HIMMEL-2975).
     "$KONSOLE" --separate --workdir "$REPO" -p "tabtitle=$NAME" \
         -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID $ROLE_ENV_UNSET \
-            CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} $LAUNCHER_ENV \
+            CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} $LAUNCHER_ENV PATH="$DEDUPED_PATH" \
             "${LAUNCH_ARGV[@]}" \
         >> "$LOG" 2>&1 &
 fi

@@ -128,6 +128,37 @@ set -fuo pipefail   # -f: the token walk word-splits, and must not glob `*.sh`
 input=""
 IFS= read -r -d '' input 2>/dev/null || true
 command -v jq >/dev/null 2>&1 || exit 0
+# HIMMEL-2610 F2 (J1267O): invoked_program's per-launcher operand tables
+# (sudo/env/nice/timeout/xargs/time) call guard_is_long_abbrev/
+# guard_long_opt_name to recognize an abbreviated OR full long option the
+# same way GNU getopt_long does. This hook DENIES via the GATE_RE/pipeline
+# scan below, which does not itself need lib.sh, so an `|| exit 0` on a
+# missing lib.sh used to withdraw EVERY denial, not just abbreviation
+# recognition. Define local fallbacks first — sourcing lib.sh, when it
+# succeeds, simply overwrites them with its own (identical) copies — so the
+# hook's DENY paths never depend on lib.sh being present.
+guard_long_opt_name() {
+    local tok="$1" rest
+    rest="${tok#--}"
+    # shellcheck disable=SC2034 # GUARD_LOPT_VAL kept for parity with lib.sh's real guard_long_opt_name; this file's callers only test GUARD_LOPT_HAS_EQ
+    case "$rest" in
+        *=*) GUARD_LOPT_NAME="${rest%%=*}"; GUARD_LOPT_VAL="${rest#*=}"; GUARD_LOPT_HAS_EQ=1 ;;
+        *)   GUARD_LOPT_NAME="$rest"; GUARD_LOPT_VAL=""; GUARD_LOPT_HAS_EQ=0 ;;
+    esac
+}
+guard_is_long_abbrev() {
+    local full="$1" tok="$2"
+    guard_long_opt_name "$tok"
+    [ -n "$GUARD_LOPT_NAME" ] || return 1
+    case "$full" in
+        "$GUARD_LOPT_NAME"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+[ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null
 [ -n "$input" ] || exit 0
 
 # `// ""` (empty STRING), not `// empty` (a zero-output jq GENERATOR): in a
@@ -451,31 +482,91 @@ invoked_program() {
                     # operand-taking option the retired flat list covered stays
                     # covered (panel r1, codex-1): dropping `-D`/`-R`/`-T`/`-U`
                     # would have REGRESSED shapes the hook already caught.
+                    # HIMMEL-2610: guard_is_long_abbrev also catches sudo's real
+                    # getopt_long unambiguous abbreviations of these long names
+                    # (`--us`/`--user`), so a shortened spelling can't leave its
+                    # value token to be misread as the invoked program. An
+                    # abbreviation can ALSO carry its value attached (`--us=root`,
+                    # same as the full `--user=root`) — that value is already
+                    # part of THIS token, so only a bare `--us`/`--user` (no `=`
+                    # at all, GUARD_LOPT_HAS_EQ=0 — NOT `[ -n GUARD_LOPT_VAL ]`,
+                    # which cannot tell "no =" from "=<empty>" like `--prompt=`,
+                    # panel r15 codex-1) consumes a separate next word (panel
+                    # r14, codex-1: the unconditional skip_next stepped over the
+                    # gate command itself on the attached-value spelling).
                     case $stripped in
-                        -u | --user | -g | --group | -C | --close-from | \
-                        -h | --host | -p | --prompt | -D | --chdir | \
-                        -R | --chroot | -T | --command-timeout | \
-                        -U | --other-user) skip_next=1; continue ;;
+                        -u | -g | -C | -h | -p | -D | -R | -T | -U) skip_next=1; continue ;;
+                        --*)
+                            if guard_is_long_abbrev "user" "$stripped" \
+                                || guard_is_long_abbrev "group" "$stripped" \
+                                || guard_is_long_abbrev "close-from" "$stripped" \
+                                || guard_is_long_abbrev "host" "$stripped" \
+                                || guard_is_long_abbrev "prompt" "$stripped" \
+                                || guard_is_long_abbrev "chdir" "$stripped" \
+                                || guard_is_long_abbrev "chroot" "$stripped" \
+                                || guard_is_long_abbrev "command-timeout" "$stripped" \
+                                || guard_is_long_abbrev "other-user" "$stripped"; then
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
+                                continue
+                            fi ;;
                     esac ;;
                 env)
                     # `env`'s VAR=val assignments are already stepped over by the
                     # assignment arm above; `-S` DOES take an operand here, which
                     # is exactly what a launcher-agnostic table could not express.
+                    # Same attached-value carve-out as sudo above.
                     case $stripped in
-                        -u | --unset | -C | --chdir | -S | --split-string | \
-                        -a | --argv0) skip_next=1; continue ;;
+                        -u | -C | -S | -a) skip_next=1; continue ;;
+                        --*)
+                            if guard_is_long_abbrev "unset" "$stripped" \
+                                || guard_is_long_abbrev "chdir" "$stripped" \
+                                || guard_is_long_abbrev "split-string" "$stripped" \
+                                || guard_is_long_abbrev "argv0" "$stripped"; then
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
+                                continue
+                            fi ;;
                     esac ;;
                 nice)
-                    case $stripped in -n | --adjustment) skip_next=1; continue ;; esac ;;
+                    case $stripped in
+                        -n) skip_next=1; continue ;;
+                        --*)
+                            if guard_is_long_abbrev "adjustment" "$stripped"; then
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
+                                continue
+                            fi ;;
+                    esac ;;
                 timeout)
                     case $stripped in
-                        -s | --signal | -k | --kill-after) skip_next=1; continue ;;
+                        -s | -k) skip_next=1; continue ;;
+                        --*)
+                            if guard_is_long_abbrev "signal" "$stripped" \
+                                || guard_is_long_abbrev "kill-after" "$stripped"; then
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
+                                continue
+                            fi ;;
                     esac ;;
                 xargs)
                     case $stripped in
-                        -I | -n | -P | -L | -d | -a | -s | -E | \
-                        --replace | --max-args | --max-procs | --max-lines | \
-                        --delimiter | --arg-file | --max-chars | --eof) skip_next=1; continue ;;
+                        -I | -n | -P | -L | -d | -a | -s | -E) skip_next=1; continue ;;
+                        --*)
+                            # --replace/--eof/--max-lines are OPTIONAL-argument
+                            # long options (--replace[=R], --eof[=E],
+                            # --max-lines[=N]): GNU xargs never consumes a
+                            # separate next word for them, so skip_next must
+                            # never be set here regardless of `=`.
+                            if guard_is_long_abbrev "replace" "$stripped" \
+                                || guard_is_long_abbrev "max-lines" "$stripped" \
+                                || guard_is_long_abbrev "eof" "$stripped"; then
+                                continue
+                            fi
+                            if guard_is_long_abbrev "max-args" "$stripped" \
+                                || guard_is_long_abbrev "max-procs" "$stripped" \
+                                || guard_is_long_abbrev "delimiter" "$stripped" \
+                                || guard_is_long_abbrev "arg-file" "$stripped" \
+                                || guard_is_long_abbrev "max-chars" "$stripped"; then
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
+                                continue
+                            fi ;;
                     esac ;;
                 exec)
                     case $stripped in -a) skip_next=1; continue ;; esac ;;
@@ -485,7 +576,13 @@ invoked_program() {
                     # operand, and the retired flat list already covered `-o`
                     # (panel r1, codex-2).
                     case $stripped in
-                        -f | --format | -o | --output) skip_next=1; continue ;;
+                        -f | -o) skip_next=1; continue ;;
+                        --*)
+                            if guard_is_long_abbrev "format" "$stripped" \
+                                || guard_is_long_abbrev "output" "$stripped"; then
+                                [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
+                                continue
+                            fi ;;
                     esac ;;
                 # `nohup` and `command` have no operand-taking options:
                 # `command -v` is a bare flag.

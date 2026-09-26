@@ -686,6 +686,79 @@ it, so keep working while you wait.
 
 ---
 
+## Symptom: a commit failed and files I never touched came back changed (HIMMEL-2223)
+
+`pre-commit install`'s generated `pre-commit` hook stashes every unstaged
+change to a tracked file to a patch (`~/.cache/pre-commit/patch<N>-<pid>`)
+before hooks run, then reapplies it after. In a vault with Obsidian open,
+Obsidian's autosave can rewrite a tracked `.obsidian/plugins/*/data.json`
+*during* that window, so the reapply no longer matches and fails; pre-commit
+then rolls back — silently reverting OTHER unstaged files on disk, including
+ones the committing session never touched. It is deterministic, not a race:
+it reproduces on the immediate retry, and the commit itself reports `exit 0`.
+A vault scaffolded from `templates/luna-second-brain/` on or after 0.4.55
+installs `scripts/hooks/install-nostash-hooks.sh`'s wrappers instead, which
+never stash (`pre-commit run --files <staged>` never invokes the stash at
+all — `pre_commit/commands/run.py`'s `stash = not args.all_files and not
+args.files`). `--files` only selects which PATHNAMES run hooks; it does not
+isolate staged CONTENT — a hook can still read or rewrite the unstaged
+portion of a partially-staged file. So this specific stash/reapply race
+cannot happen there; an older vault, or any other stashing
+`pre-commit install` checkout, is still exposed.
+
+The wrapper preserves the concurrent write, but it does not make the racing
+commit *succeed*: pre-commit's own whole-tree modified-files check
+(`pre_commit/commands/run.py`) still fails the hook with "files were
+modified by this hook" whenever any tracked file changes during the hook's
+run, stash or no stash. Nothing is lost — `git status --short` still shows
+every unstaged edit — just re-stage (if the failed hook needs it) and retry
+the commit.
+
+**Always run**, before and after a failed commit: `git status --short | wc -l`.
+A shrinking count means work was reverted. An unchanged count is not proof
+there was none — a concurrent write (e.g. Obsidian autosave) can add a dirty
+line while the rollback removes one, netting to the same count; run step 2
+to actually confirm.
+
+**What to do:**
+1. Recover the reverted files from the retained patch, excluding the volatile
+   plugin state (which the rollback already left at its latest, correct
+   content — reapplying it would stomp that):
+   ```bash
+   git -c core.autocrlf=false apply --whitespace=nowarn \
+     --exclude='.obsidian/plugins/*/data.json' \
+     ~/.cache/pre-commit/patch<N>-<pid>
+   ```
+2. Prove no loss: `git -c core.autocrlf=false apply --check --reverse --whitespace=nowarn \
+   --exclude='.obsidian/plugins/*/data.json' <patch>` — the same exclusion as
+   step 1, since the plugin files were never reapplied and would show as a
+   mismatch otherwise. A clean check means every OTHER file the patch touches
+   matches its pre-incident content within the patch's own diff context —
+   not a full-file byte compare, since `apply --check` only verifies the
+   hunk context and changed lines, so a stray edit outside that context on an
+   otherwise-clean file would not be caught. This still works after some of
+   those files have been committed, since the reverse-check reads the
+   worktree, not HEAD. Loop with `--include=<file>` to isolate a single
+   remaining diff.
+3. Do not try to park the volatile files with `git stash` — it is refused by
+   `block-git-stash` (HIMMEL-1755: the stash stack is shared across
+   worktrees). `git checkout -- <path>` on them may also be denied; copy the
+   file aside into the scratchpad instead if you need to compare it.
+4. Land the commit one of two ways, both needing an **operator OK**:
+   stage the volatile files first so pre-commit has nothing left to park for
+   *them* — this only closes the race for the files you staged: any OTHER
+   unstaged tracked file is still stashed by stock `pre-commit install`, and
+   a fresh Obsidian write after you stage can still hit one of those, or
+   even the file you just staged if it accepts further mid-hook writes; it
+   is a narrowing, not a guarantee. The reliable fix is installing the
+   no-stash wrapper (above) first. Or: `--no-verify` only after seeing
+   gitleaks + worktree-isolation pass yourself on that exact staged set.
+
+Never re-run the failed commit as-is hoping it will go through — the same
+race is deterministic and will revert the same files again.
+
+---
+
 ## Why this is a playbook, not a `CLAUDE.md` rule
 
 Root `CLAUDE.md` is **state, not a prompt** — frame-shaping invariants only, paid
