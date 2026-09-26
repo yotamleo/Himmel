@@ -287,6 +287,67 @@ rc=0; out=$(run "$CLEAN_VERSION" "$SHA" --version-override "" 2>&1) || rc=$?
 check "override-reason-empty: rc 2" "$rc" "2"
 check "override-reason-empty: nothing called" "$(cat "$CALLS")" ""
 
+# --- 22. bare release: no matching pre-release tag, no override -> rc 6 (HIMMEL-3701) ---
+BARE_VERSION="v1.0.0"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="" run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-no-pre: rc 6" "$rc" "6"
+contains "bare-no-pre: names the reason" "$out" "no v1.0.0-pre"
+not_contains "bare-no-pre: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 23. bare release: --version-override with no pre-release tag -> rc 0 -----
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="" run "$BARE_VERSION" "$SHA" --version-override "no pre-release cut" 2>&1) || rc=$?
+check "bare-override: rc 0" "$rc" "0"
+contains "bare-override: reason echoed" "$out" "no pre-release cut"
+contains "bare-override: ref created" "$(cat "$CALLS")" "git/refs -f ref=refs/tags/v1.0.0 "
+
+# --- 24. bare release: an existing pre-release tag for the same X.Y.Z, no override -> rc 0 ---
+reset_calls
+BARE_SERIES_TAGS="aaaa1111	refs/tags/v1.0.0-pre.3"
+rc=0; out=$(CT_SERIES_TAGS="$BARE_SERIES_TAGS" run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-has-pre: rc 0" "$rc" "0"
+contains "bare-has-pre: created message" "$out" "created refs/tags/$BARE_VERSION"
+
+# --- 24b. bare release: an origin tag with an EMPTY -pre. suffix does not count
+# as a matching pre-release (HIMMEL-3701 codex-1 round 2) ---------------------
+reset_calls
+BARE_SERIES_TAGS_EMPTY="aaaa1111	refs/tags/v1.0.0-pre."
+rc=0; out=$(CT_SERIES_TAGS="$BARE_SERIES_TAGS_EMPTY" run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-empty-pre-suffix: rc 6" "$rc" "6"
+contains "bare-empty-pre-suffix: names the reason" "$out" "no v1.0.0-pre"
+
+# --- 25. bare release: the bare tag itself already exists on origin -> rc 5 ---
+reset_calls
+rc=0; out=$(CT_TAG_EXISTS=1 run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-exists: rc 5" "$rc" "5"
+contains "bare-exists: names the reason" "$out" "already exists"
+
+# --- 26. bare release: a red check-run -> rc 4 (same gate as pre) ------------
+reset_calls
+BARE_SERIES_TAGS_26="aaaa1111	refs/tags/v1.0.0-pre.1"
+rc=0; out=$(CT_SERIES_TAGS="$BARE_SERIES_TAGS_26" CT_RUNS_JSON='{"total_count":1,"check_runs":[{"name":"unit","status":"completed","conclusion":"failure"}]}' run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-red-run: rc 4" "$rc" "4"
+contains "bare-red-run: names the failing run" "$out" "unit="
+
+# --- 27. bare release: malformed shapes stay refused, exit 2, nothing called --
+for args in "v1a.0.0 $SHA" "v1.0 $SHA" "v1.0.0.1 $SHA" "v1.0.0-rc1 $SHA" "v.1.2 $SHA" "v1..2 $SHA" "v1.2. $SHA"; do
+    reset_calls
+    rc=0
+    # shellcheck disable=SC2086
+    run $args >/dev/null 2>&1 || rc=$?
+    check "bare-malformed: [$args] -> exit 2" "$rc" "2"
+    check "bare-malformed: [$args] -> nothing called" "$(cat "$CALLS")" ""
+done
+
+# --- 28. leading zeros: the bare path mirrors whatever the pre path does -----
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="" run "v01.0.0-pre.1" "$SHA" 2>&1) || rc=$?
+check "pre-leading-zero: not refused as usage" "$( [ "$rc" != "2" ] && echo yes || echo no )" "yes"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="" run "v01.0.0" "$SHA" --version-override "leading zero" 2>&1) || rc=$?
+check "bare-leading-zero: mirrors pre path (not refused as usage)" "$( [ "$rc" != "2" ] && echo yes || echo no )" "yes"
+
 echo "----"
 if [ "$fails" -eq 0 ]; then
     echo "ALL OK"
