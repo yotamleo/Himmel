@@ -3,6 +3,17 @@ import { request } from '../client.js';
 import { formatIssue, formatIssueWithDescription, printJson } from '../output.js';
 import type { JiraIssue } from '../types.js';
 
+// Local widening: the get.ts fields query includes `labels` (HIMMEL-3610),
+// but the shared JiraIssue type does not declare it — kept local rather than
+// touching types.ts, which this ticket's scope excludes.
+type IssueWithLabels = JiraIssue & { fields: JiraIssue['fields'] & { labels?: string[] } };
+
+function labelsLine(issue: IssueWithLabels): string | undefined {
+  const labels = issue.fields.labels;
+  if (!labels || labels.length === 0) return undefined;
+  return `Labels: ${labels.join(', ')}`;
+}
+
 export function registerGet(program: Command): void {
   program
     .command('get <key>')
@@ -17,11 +28,11 @@ export function registerGet(program: Command): void {
       // display only, so --short still gets the field for --json
       // round-tripping (consistent --json payload shape regardless of
       // which display flag was used).
-      let issue: JiraIssue;
+      let issue: IssueWithLabels;
       try {
-        issue = await request<JiraIssue>(
+        issue = await request<IssueWithLabels>(
           'GET',
-          `/issue/${key}?fields=summary,status,issuetype,parent,assignee,description`,
+          `/issue/${key}?fields=summary,status,issuetype,parent,assignee,description,labels`,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -32,6 +43,8 @@ export function registerGet(program: Command): void {
         printJson(issue);
       } else if (options.short) {
         console.log(formatIssue(issue));
+        const ll = labelsLine(issue);
+        if (ll) console.log(ll);
       } else {
         // Distinguish "field not returned by API" (undefined — possible
         // when field-level perms hide description from this user) from
@@ -44,6 +57,8 @@ export function registerGet(program: Command): void {
           );
         }
         console.log(formatIssueWithDescription(issue));
+        const ll = labelsLine(issue);
+        if (ll) console.log(ll);
       }
     });
 }

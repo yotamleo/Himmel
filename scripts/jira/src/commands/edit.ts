@@ -12,9 +12,16 @@ export interface EditOptions {
   description?: string;
   parent?: string;
   labels?: string;
+  addLabels?: string;
 }
 
 export function buildEditFields(opts: EditOptions): Record<string, unknown> {
+  if (opts.labels !== undefined && opts.addLabels !== undefined) {
+    throw new Error(
+      'Edit --labels and --add-labels are mutually exclusive: --labels replaces the full ' +
+        'label set, --add-labels appends to it — pick one.',
+    );
+  }
   const fields: Record<string, unknown> = {};
   if (opts.priority) fields['priority'] = { name: opts.priority };
   if (opts.severity) {
@@ -44,12 +51,20 @@ export function buildEditFields(opts: EditOptions): Record<string, unknown> {
   // the issue's complete label list — any existing label not in the set is
   // removed. Deliberately no --add-label/--remove-label incremental ops.
   if (opts.labels !== undefined) fields['labels'] = parseLabels(opts.labels);
-  if (Object.keys(fields).length === 0) {
+  if (Object.keys(fields).length === 0 && opts.addLabels === undefined) {
     throw new Error(
-      'Edit requires at least one of --priority, --severity, --title, --desc, --parent, or --labels',
+      'Edit requires at least one of --priority, --severity, --title, --desc, --parent, ' +
+        '--labels, or --add-labels',
     );
   }
   return fields;
+}
+
+// Jira's atomic `update` operation for labels (HIMMEL-3610): unlike `fields.labels`
+// (full-replace), `update.labels: [{ add: '<label>' }, ...]` appends without ever
+// reading or replacing the issue's existing label set.
+export function buildAddLabelsUpdate(addLabels: string): { labels: Array<{ add: string }> } {
+  return { labels: parseLabels(addLabels).map((label) => ({ add: label })) };
 }
 
 export function registerEdit(program: Command): void {
@@ -77,6 +92,11 @@ export function registerEdit(program: Command): void {
       'REPLACE the issue labels with this comma-separated set (full-replace: ' +
         'existing labels not listed are removed)',
     )
+    .option(
+      '--add-labels <labels>',
+      'APPEND these comma-separated labels without touching existing ones ' +
+        '(mutually exclusive with --labels)',
+    )
     .action(async (key: string, options: EditOptions & { desc?: string; descFile?: string }) => {
       // `--desc` and `--description` are aliases; whichever the operator
       // passed wins (and if both, --description wins because it's parsed
@@ -88,7 +108,10 @@ export function registerEdit(program: Command): void {
         options.description = options.desc;
       }
       const fields = buildEditFields(options);
-      await request('PUT', `/issue/${key}`, { fields });
+      const body: { fields?: Record<string, unknown>; update?: ReturnType<typeof buildAddLabelsUpdate> } = {};
+      if (Object.keys(fields).length > 0) body.fields = fields;
+      if (options.addLabels !== undefined) body.update = buildAddLabelsUpdate(options.addLabels);
+      await request('PUT', `/issue/${key}`, body);
       writeJiraBreadcrumb(key);
       console.log(`${key} edited`);
     });
