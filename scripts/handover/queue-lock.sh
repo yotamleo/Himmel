@@ -1344,7 +1344,7 @@ _ql_new_gen() { printf 'g%s-%s-%s%s' "$(_ql_now_epoch)" "$$" "$RANDOM" "$RANDOM"
 # sentinel, so two reads never compare equal and the fence refuses.
 _ql_read_gen() {
     [ -e "$1/gen" ] || return 0
-    cat "$1/gen" 2>/dev/null || printf '!unreadable-%s-%s%s' "$BASHPID" "$RANDOM" "$RANDOM"
+    cat "$1/gen" 2>/dev/null || printf '!unreadable-%s-%s%s' "${BASHPID:-$$}" "$RANDOM" "$RANDOM"
 }
 
 # _ql_brand_gen <lockdir> -- write a fresh generation (O_EXCL). rc!=0 = not
@@ -1359,7 +1359,7 @@ _ql_brand_gen() { ( set -C; _ql_new_gen > "$1/gen" ) 2>/dev/null; }
 # compare equal.
 _ql_read_arbiter() {
     [ -e "$1/owner" ] || return 0
-    cat "$1/owner" 2>/dev/null || printf '!unreadable-%s-%s%s' "$BASHPID" "$RANDOM" "$RANDOM"
+    cat "$1/owner" 2>/dev/null || printf '!unreadable-%s-%s%s' "${BASHPID:-$$}" "$RANDOM" "$RANDOM"
 }
 
 # _ql_gen_unreadable <lockdir> -- true when a gen file exists but cannot be

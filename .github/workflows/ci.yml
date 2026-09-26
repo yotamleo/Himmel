@@ -760,6 +760,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      actions: read
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -776,6 +777,25 @@ jobs:
             exit 1
           fi
           echo "OK: every gating shell-unit shard passed."
+      # HIMMEL-3699: shell-unit-shard sets `continue-on-error: true` for
+      # macOS/windows so a red nightly leg stays advisory (point 2 above) —
+      # but that also means the matrix ROLLUP this job reads never reflects a
+      # macOS failure, so the nightly run can read "success" while every
+      # macOS shard is red. scripts/ci/check-macos-nightly-health.sh queries
+      # the Jobs API directly (it reports each job's real `conclusion`,
+      # unaffected by continue-on-error) so a red macOS job is never silently
+      # masked on the leg that is supposed to catch it. Scoped to the
+      # schedule/force_all_os leg only — the only leg where a macOS shard
+      # runs at all. A repo script (not an inline run: block) so it is
+      # unit-testable with a stubbed `gh` — see
+      # scripts/ci/test-check-macos-nightly-health.sh.
+      - name: macOS nightly jobs must have passed (continue-on-error can't mask this)
+        if: always() && (github.event_name == 'schedule' || inputs.force_all_os)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/ci/check-macos-nightly-health.sh
       # Scoped to the schedule/force_all_os leg: that is the only leg where
       # SUITE_TIER_MODE=all actually exercises the extended tier (see
       # shell-unit-shard above), so only there does a red here plausibly mean
