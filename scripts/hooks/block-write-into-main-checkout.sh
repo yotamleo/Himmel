@@ -1216,6 +1216,7 @@ _bwimc_ecwd_track() {
                 _bwimc_ecwd_unres=1
             else
                 craw="${toks[$i]}"
+                # shellcheck disable=SC2016
                 case "$craw" in
                     *'`'*|*'$('*)
                         # HIMMEL-3648 (CR #1307): a command-substitution
