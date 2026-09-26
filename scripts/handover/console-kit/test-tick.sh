@@ -380,7 +380,7 @@ mk_pgrep_x "$W/bin-lossy" 101 102 103
 cat > "$W/bin-lossy/ps" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
-  "-o pid=,args= -p "*)
+  "-ww -o pid=,args= -p "*)
     printf '%s\n' \
       '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work' \
       '102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work' \

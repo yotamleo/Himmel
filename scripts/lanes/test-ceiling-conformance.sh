@@ -139,7 +139,7 @@ pgrep_x_stub 101 102 103
 cat > "$W/bin/ps" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
-  "-o pid=,args= -p "*)
+  "-ww -o pid=,args= -p "*)
     printf '%s\n' \
       '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61-2026-09-13 work' \
       '102 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-222-legN62-2026-09-13 work' \

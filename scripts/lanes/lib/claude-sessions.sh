@@ -225,7 +225,7 @@ _claude_sessions_lossy() { # _claude_sessions_lossy <pgrep-bin> - #1335:
     echo '# lossy'
     [ -n "$pids" ] || return 0
     pidlist="$(printf '%s\n' "$pids" | tr '\n' ',' | sed 's/,$//')"
-    rows="$(ps -o pid=,args= -p "$pidlist" 2>/dev/null)"
+    rows="$(ps -ww -o pid=,args= -p "$pidlist" 2>/dev/null)"
     ps_rc=$?
     # rc>1 from ps mirrors the pgrep_bin convention above: a real scan
     # failure, not just "every pid pgrep found had already exited before ps
