@@ -19,10 +19,14 @@
 # Without a pid the session is the nearest ancestor of this script whose argv0
 # is `claude`. The subtree is every descendant of that session EXCEPT this
 # script's own chain (its tool-call wrapper, itself, and its own children) and
-# harness MCP servers: a non-shell-wrapper process whose full argv matches
-# WRAP_SUBTREE_HARNESS_RE (ERE; default: an `mcp-server*` path/word, or a
-# `…qmd[.ext] mcp` invocation), or a DIRECT child of the session that is not a
-# shell-tool wrapper and forked within WRAP_SUBTREE_START_WINDOW seconds
+# harness processes: a non-shell-wrapper process whose full argv matches
+# WRAP_SUBTREE_HARNESS_RE (ERE; default: an `mcp-server*` path/word, a
+# `…qmd[.ext] mcp` invocation, the session's `caffeinate` keep-awake, or the
+# `claude-hud` statusline tree — a descendant of a name-matched process
+# inherits the ignore by walking up to that match, the same rule that already
+# carries an MCP launcher's ignore down to its children (HIMMEL-3265)), or a
+# DIRECT child of the session that is not a shell-tool wrapper and forked
+# within WRAP_SUBTREE_START_WINDOW seconds
 # (default 10; 0 turns the rule off) of the session itself — the servers a
 # session starts with it (`uv tool uvx … mcp-obsidian`, `graphify-mcp`,
 # `uv run … server.py`) share no name but all fork ~1s after `claude`
@@ -89,7 +93,7 @@ case "$window" in
         printf 'WITHHELD: WRAP_SUBTREE_START_WINDOW must be a non-negative integer (got %s) — not declaring CLOSABLE\n' "$window"
         exit 2 ;;
 esac
-harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp)( |\$)}"
+harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp|caffeinate|claude-hud[^ ]*)( |\$)}"
 
 ps_out="$(ps -eo pid=,ppid=,etime=,args= 2>/dev/null)" || ps_out=""
 if [ -z "$ps_out" ]; then
