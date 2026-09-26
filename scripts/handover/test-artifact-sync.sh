@@ -24,6 +24,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/artifact-sync.sh"
+. "$SCRIPT_DIR/../lib/timeout-bin.sh"
 
 PASS=0; FAIL=0; TMP_ROOT=""
 
@@ -110,11 +111,11 @@ else
 fi
 
 rc=0
-if command -v timeout >/dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
     # A generous budget: this guards against a genuine infinite loop, not
     # normal runtime -- git-bash/MSYS process-spawn overhead alone can eat
     # several seconds here, so a tight timeout produces a false failure.
-    timeout 30 bash "$SCRIPT" record "https://claude.ai/artifact/ccc" "$local1" --title >/dev/null 2>"$TMP_ROOT/rec4.err" || rc=$?
+    "$_TIMEOUT_BIN" 30 bash "$SCRIPT" record "https://claude.ai/artifact/ccc" "$local1" --title >/dev/null 2>"$TMP_ROOT/rec4.err" || rc=$?
 else
     bash "$SCRIPT" record "https://claude.ai/artifact/ccc" "$local1" --title >/dev/null 2>"$TMP_ROOT/rec4.err" || rc=$?
 fi
@@ -186,8 +187,8 @@ else
 fi
 
 rc=0
-if command -v timeout >/dev/null 2>&1; then
-    timeout 30 bash "$SCRIPT" check --registry >/dev/null 2>"$TMP_ROOT/check6.err" || rc=$?
+if [ -n "$_TIMEOUT_BIN" ]; then
+    "$_TIMEOUT_BIN" 30 bash "$SCRIPT" check --registry >/dev/null 2>"$TMP_ROOT/check6.err" || rc=$?
 else
     bash "$SCRIPT" check --registry >/dev/null 2>"$TMP_ROOT/check6.err" || rc=$?
 fi

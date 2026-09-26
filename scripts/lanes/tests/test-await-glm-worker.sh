@@ -5,6 +5,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUT="$HERE/../await-glm-worker.sh"
+. "$HERE/../../lib/timeout-bin.sh"
 TMP="$(mktemp -d -t await-glm-test.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 export BRIDGE_ROOT="$TMP/bridge"
@@ -96,11 +97,7 @@ check "unknown-arg rc" 2 $?
 
 # 10. value-taking flag with no value -> rc 2, not an infinite loop (HIMMEL-883
 # codex-adv). timeout-guard so a regression to `shift 2` hangs the check, not CI.
-if command -v timeout >/dev/null 2>&1; then
-    timeout 5 bash "$SUT" --slug >/dev/null 2>&1
-else
-    bash "$SUT" --slug >/dev/null 2>&1
-fi
+${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 5} bash "$SUT" --slug >/dev/null 2>&1
 check "missing-value rc" 2 $?
 
 # 11. unrecognized / partial status -> NOT terminal (rc 3). Guards against false

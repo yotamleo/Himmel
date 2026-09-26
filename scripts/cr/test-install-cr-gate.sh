@@ -51,7 +51,9 @@ sed_inplace() {
 # run_bounded <secs> <cmd...> -- `timeout` where present (GNU coreutils, or
 # `gtimeout`), else a bash watchdog: stock macOS has neither (HIMMEL-3182). A
 # hang still fails the case (rc 124 from timeout, 143 from the watchdog).
-_TIMEOUT_BIN="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+# shellcheck source=scripts/lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/timeout-bin.sh"
 run_bounded() {
     if [ -n "$_TIMEOUT_BIN" ]; then "$_TIMEOUT_BIN" "$@"; return; fi
     local secs="$1" pid wd rc

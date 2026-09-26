@@ -183,8 +183,8 @@ check "$cli_out" trivial
 # this way, so a plain `timeout 30` would never return either; `-k 5 30` sends
 # TERM at 30s and a guaranteed SIGKILL 5s later. `timeout` is GNU/Linux-only;
 # macOS coreutils ships it as `gtimeout` (both accept `-k` the same way).
-tbin="$(command -v timeout 2>/dev/null)" || tbin=""
-[ -n "$tbin" ] || tbin="$(command -v gtimeout 2>/dev/null)" || tbin=""
+. "$DIR/../lib/timeout-bin.sh"
+tbin="$_TIMEOUT_BIN"
 if [ -z "$tbin" ]; then
   echo "SKIP: HIMMEL-2420 deadlock sweep needs 'timeout' or 'gtimeout' (macOS: brew install coreutils) -- skipped"
 else

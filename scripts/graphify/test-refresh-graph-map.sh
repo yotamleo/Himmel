@@ -346,6 +346,7 @@ fi
 # shellcheck source=../lib/hermetic-path.sh
 # shellcheck disable=SC1091
 . "$HERE/../lib/hermetic-path.sh"
+. "$HERE/../lib/timeout-bin.sh"
 HBIN="$WS/hbin"; mkdir -p "$HBIN"
 # grep (HIMMEL-2642): HIMMEL-1960 (PR #1756, commit 2d94dcb2) added an
 # unconditional `grep -Eq` validation of GRAPHIFY_OUT_NAME that runs on EVERY
@@ -2298,7 +2299,7 @@ fi
 # background it, poll+kill on a deadline) but is a materially bigger diff
 # for the same coverage this probe+skip already gets on the CI platforms
 # that actually run this suite. ---
-if ! command -v timeout >/dev/null 2>&1; then
+if [ -z "$_TIMEOUT_BIN" ]; then
   skip "T35a SKIPPED (no 'timeout' binary -- GNU coreutils, not present by default on macOS; loop-termination is still guarded on Linux/Windows CI)"
   skip "T35b SKIPPED (no 'timeout' binary -- GNU coreutils, not present by default on macOS; loop-termination is still guarded on Linux/Windows CI)"
   skip "T35c SKIPPED (no 'timeout' binary -- GNU coreutils, not present by default on macOS; loop-termination is still guarded on Linux/Windows CI)"
@@ -2322,7 +2323,7 @@ printf '# n\ncontent\n' > "$T35_CORPUS/notes/n.md"
 # T35a: non-existent drive-absolute maps-dir -- the walk must shrink down
 # to a bare "Q:" (no "/" left) and stop, not spin.
 out=$( cd "$T35_CORPUS" && GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
-  timeout -k 5 20 bash "$SCRIPT" --name t35a --corpus-root "$T35_CORPUS" --backend claude-cli \
+  "$_TIMEOUT_BIN" -k 5 20 bash "$SCRIPT" --name t35a --corpus-root "$T35_CORPUS" --backend claude-cli \
   --maps-dir "Q:/nope-1421/deeply/nested" --title "T35a Map" --slug t35a-map --corpus-tag t35a 2>&1 ); rc=$?
 if [ "$rc" -eq 124 ]; then
   fail "T35a HUNG (timeout killed it, rc=124) on a non-existent drive-absolute --maps-dir"
@@ -2345,7 +2346,7 @@ fi
 # backslash -> forward-slash normalization this never shrinks and spins
 # forever.
 out=$( cd "$T35_CORPUS" && GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
-  timeout -k 5 20 bash "$SCRIPT" --name t35b --corpus-root "$T35_CORPUS" --backend claude-cli \
+  "$_TIMEOUT_BIN" -k 5 20 bash "$SCRIPT" --name t35b --corpus-root "$T35_CORPUS" --backend claude-cli \
   --maps-dir 'C:\nonexistent-1421-backslash\deep\path' --title "T35b Map" --slug t35b-map --corpus-tag t35b 2>&1 ); rc=$?
 if [ "$rc" -eq 124 ]; then
   fail "T35b HUNG (timeout killed it, rc=124) on a backslash-form --maps-dir"
@@ -2359,7 +2360,7 @@ fi
 # round (the walk always had forward slashes to strip via $PWD); pinned
 # here so a future change to the walk can't silently regress it.
 out=$( cd "$T35_CORPUS" && GRAPHIFY_MAP_BIN="$T35BIN/graphify" PATH="$T35BIN:$PATH" \
-  timeout -k 5 20 bash "$SCRIPT" --name t35c --corpus-root . --backend claude-cli \
+  "$_TIMEOUT_BIN" -k 5 20 bash "$SCRIPT" --name t35c --corpus-root . --backend claude-cli \
   --maps-dir "nonexistent-1421-rel/deeply/nested" --title "T35c Map" --slug t35c-map --corpus-tag t35c 2>&1 ); rc=$?
 if [ "$rc" -eq 124 ]; then
   fail "T35c HUNG (timeout killed it, rc=124) on a relative non-existent --maps-dir"

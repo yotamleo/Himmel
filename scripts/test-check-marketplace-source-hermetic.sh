@@ -7,6 +7,8 @@
 set -euo pipefail
 HERE="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD="$HERE/check-marketplace-source-hermetic.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$HERE/lib/timeout-bin.sh"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/check-marketplace-source-hermetic-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -189,18 +191,19 @@ cat > "$tmp/tmpl.json" <<JSON
 }
 JSON
 self_rc=0
-if command -v timeout >/dev/null 2>&1; then
-  # gnu-ok: guarded by command -v above, with an unbounded fallback in the
-  # else branch below when timeout is absent (e.g. bare macOS/BSD) — same
-  # graceful-degrade convention as test-himmel-update-hermes.sh.
+if [ -n "$_TIMEOUT_BIN" ]; then
+  # gnu-ok: guarded by _TIMEOUT_BIN above, with an unbounded fallback in the
+  # else branch below when timeout/gtimeout is absent (e.g. bare macOS/BSD) —
+  # same graceful-degrade convention as test-himmel-update-hermes.sh.
   # shellcheck disable=SC2016 # $1/$2 expand inside the bash -c subshell, not here
-  timeout 10 bash -c 'HIMMEL_SETTINGS_TEMPLATE="$1" bash "$2"' _ "$tmp/tmpl.json" "$GUARD" >/dev/null 2>&1 || self_rc=$?
+  "$_TIMEOUT_BIN" 10 bash -c 'HIMMEL_SETTINGS_TEMPLATE="$1" bash "$2"' _ "$tmp/tmpl.json" "$GUARD" >/dev/null 2>&1 || self_rc=$?
   if [ "$self_rc" -eq 124 ]; then
     echo "FAIL: guard hung on a self-referential directory-sourced marketplace"; exit 1
   fi
 else
-  # timeout not on PATH (e.g. bare macOS/BSD) — fall back to an unbounded
-  # direct call, same graceful-degrade convention as test-himmel-update-hermes.sh.
+  # timeout/gtimeout not on PATH (e.g. bare macOS/BSD) — fall back to an
+  # unbounded direct call, same graceful-degrade convention as
+  # test-himmel-update-hermes.sh.
   # shellcheck disable=SC2016 # $1/$2 expand inside the bash -c subshell, not here
   bash -c 'HIMMEL_SETTINGS_TEMPLATE="$1" bash "$2"' _ "$tmp/tmpl.json" "$GUARD" >/dev/null 2>&1 || self_rc=$?
 fi

@@ -15,6 +15,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/dead-parts.sh"
+. "$HERE/../../../lib/timeout-bin.sh"
 fails=0
 
 check_contains() {
@@ -342,16 +343,20 @@ while [ "$i" -lt 20000 ]; do
     i=$((i + 1))
 done
 export SCORECARD_PROJECTS_DIR="$BIGTS"
-OUTBIG=$(timeout 10 "$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>&1)
-rcbig=$?
-if [ "$rcbig" -eq 0 ]; then
-    echo "ok - pathological scale: dead-parts.sh completes well inside 10s on a 20000-timestamp transcript"
+if [ -n "$_TIMEOUT_BIN" ]; then
+    OUTBIG=$("$_TIMEOUT_BIN" 10 "$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>&1)
+    rcbig=$?
+    if [ "$rcbig" -eq 0 ]; then
+        echo "ok - pathological scale: dead-parts.sh completes well inside 10s on a 20000-timestamp transcript"
+    else
+        echo "FAIL - pathological scale: dead-parts.sh rc=$rcbig (expected 0, 124=timeout means the per-line date-fork hang is back): $OUTBIG"
+        fails=$((fails + 1))
+    fi
+    check_contains "pathological scale: the report still prints (not silently empty)" \
+        "$OUTBIG" "--- entry-point classification"
 else
-    echo "FAIL - pathological scale: dead-parts.sh rc=$rcbig (expected 0, 124=timeout means the per-line date-fork hang is back): $OUTBIG"
-    fails=$((fails + 1))
+    echo "SKIP pathological-scale (no GNU coreutils timeout on this runner)"
 fi
-check_contains "pathological scale: the report still prints (not silently empty)" \
-    "$OUTBIG" "--- entry-point classification"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then
