@@ -19,7 +19,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 branch=""
 while [ $# -gt 0 ]; do case "$1" in
-  --branch) branch="${2-}"; [ $# -gt 1 ] && shift 2 || shift;;
+  --branch) branch="${2-}"; if [ $# -gt 1 ]; then shift 2; else shift; fi;;
   *) echo "resolve-active-item-report.sh: unknown arg $1 — ignoring, best-effort" >&2; shift;;
 esac; done
 
