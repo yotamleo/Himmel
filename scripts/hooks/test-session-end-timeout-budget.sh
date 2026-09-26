@@ -55,6 +55,7 @@ REPO_ROOT="$(cd "$HOOKS_DIR/../.." && pwd)"
 PLUGIN_ROOT="$REPO_ROOT/marketplace/plugins/himmel-ops"
 PLUGIN_HOOKS="$PLUGIN_ROOT/hooks/hooks.json"
 CODEX_HOOKS="$REPO_ROOT/.codex/hooks.json"
+. "$HOOKS_DIR/../lib/timeout-bin.sh"
 
 # codex-cli 0.153 clamps SessionEnd to this many seconds and warns above it.
 CODEX_SESSION_END_CLAMP=3
@@ -145,7 +146,7 @@ assert_declared_within_clamp "plugin hooks.json" "$PLUGIN_HOOKS"
 assert_declared_within_clamp ".codex/hooks.json" "$CODEX_HOOKS"
 
 # --- Case 3: each SessionEnd command returns inside the clamp ----------------
-if ! command -v timeout >/dev/null 2>&1; then
+if [ -z "$_TIMEOUT_BIN" ]; then
     echo "SKIP session-end-command-budget (no GNU coreutils timeout on this runner)"
 else
     # Pin the shape of $T before arming any trap or touching the filesystem
@@ -221,7 +222,7 @@ else
                 else
                     t0=$(date +%s)
                 fi
-                printf '%s' "$PAYLOAD" | timeout $((CHILD_DELAY + 10)) env \
+                printf '%s' "$PAYLOAD" | "$_TIMEOUT_BIN" $((CHILD_DELAY + 10)) env \
                     CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
                     CLAUDE_PROJECT_DIR="$REPO_ROOT" \
                     PATH="$T/stub:$PATH" \

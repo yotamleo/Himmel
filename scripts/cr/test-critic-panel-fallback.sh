@@ -27,6 +27,7 @@ unset CR_PROFILE CRITIC_PANEL_TIERS CRITIC_LEDGER_APPEND CR_LEDGER \
     CR_TRIVIALITY_OVERRIDE 2>/dev/null || true
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/../lib/timeout-bin.sh"
 PANEL="$HERE/critic-panel.sh"
 tmp="$(mktemp -d -t critic-panel-fallback-test.XXXXXX)"
 # shellcheck disable=SC2064
@@ -426,12 +427,12 @@ check_contains "10: chain-exhausted keeps the PRIMARY's reason=quota-5h" "$stder
 # threading is parallel-path wiring). Guarded on the timeout binary like the
 # panel suite's parallel tests, to bound CI if something hangs.
 # ===========================================================================
-if command -v timeout > /dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
     # 9p: first fails, second succeeds (parallel).
     : > "$tmp/cap9p"
     printf '%s' "$DIFF" | CRITICS_JSON="$CHAIN_JSON" CRITIC_FIRST_PASS="$CHAIN_STUB" \
         FB_CAPTURE="$tmp/cap9p" FB1_FAIL=1 CRITIC_PARALLEL=1 \
-        timeout 30 bash "$PANEL" >"$tmp/out9p" 2>"$tmp/err9p"
+        "$_TIMEOUT_BIN" 30 bash "$PANEL" >"$tmp/out9p" 2>"$tmp/err9p"
     stderr9p="$(cat "$tmp/err9p")"; out9p="$(cat "$tmp/out9p")"
     check_contains "9p: parallel first fallback fails -> fallback-failed($FB1)" "$stderr9p" \
         "panel-availability: qwen3coder fallback-failed($FB1) (rc=1)"
@@ -445,7 +446,7 @@ if command -v timeout > /dev/null 2>&1; then
     : > "$tmp/cap10p"
     printf '%s' "$DIFF" | CRITICS_JSON="$CHAIN_JSON" CRITIC_FIRST_PASS="$CHAIN_STUB" \
         FB_CAPTURE="$tmp/cap10p" FB1_FAIL=1 FB2_FAIL=1 CRITIC_PARALLEL=1 \
-        timeout 30 bash "$PANEL" >"$tmp/out10p" 2>"$tmp/err10p"
+        "$_TIMEOUT_BIN" 30 bash "$PANEL" >"$tmp/out10p" 2>"$tmp/err10p"
     rc10p=$?
     stderr10p="$(cat "$tmp/err10p")"
     check_contains "10p: parallel exhausted -> fallback-failed($FB1)" "$stderr10p" \

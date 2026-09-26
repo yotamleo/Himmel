@@ -225,10 +225,12 @@ HOST_PS_O_WHY="this host's ps has no working per-pid '-o' columns (etimes/lstart
 # a genuine hang never wedges the whole suite. Uses GNU `timeout` when
 # present; otherwise a portable background+poll fallback (never assumes
 # `timeout` exists — absent by default on macOS).
+# shellcheck source=../lib/timeout-bin.sh
+. "$REPO_ROOT/scripts/lib/timeout-bin.sh"
 run_with_timeout() {
   local secs="$1"; shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@"
+  if [ -n "$_TIMEOUT_BIN" ]; then
+    "$_TIMEOUT_BIN" "$secs" "$@"
     return $?
   fi
   "$@" &

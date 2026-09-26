@@ -9,6 +9,7 @@ test_dir="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$test_dir/../../.." && pwd)"
 # shellcheck source=_hermetic-home.sh
 . "$test_dir/_hermetic-home.sh"
+. "$root/scripts/lib/timeout-bin.sh"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/uninstall-confirm.XXXXXX") || exit 1
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/home" "$tmp/repo/scripts" "$tmp/cache" "$tmp/bin"
@@ -90,14 +91,14 @@ for confirm_case in C6 C7; do
 done
 
 # C8 — WHY (HIMMEL-2755): an open, silent pipe must not stall teardown.
-if command -v timeout >/dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
     # WHY (HIMMEL-2755): an open pipe that never sends a byte and never closes.
     # No PID capture: $! is not set by a process substitution before bash 5.1,
     # so the producer cannot be reaped portably — instead it is given a short
     # lifetime and its stderr, the only fd it inherits, is discarded, so a
     # lingering producer holds nothing the test harness is reading.
     exec 3< <(sleep 10 2>/dev/null)
-    timeout 2 node "$root/scripts/himmelctl/bin.js" uninstall <&3 >"$tmp/out" 2>"$tmp/err"; rc=$?  # gnu-ok: the whole C8 block is gated by `command -v timeout` and skips where it is absent
+    "$_TIMEOUT_BIN" 2 node "$root/scripts/himmelctl/bin.js" uninstall <&3 >"$tmp/out" 2>"$tmp/err"; rc=$?  # gnu-ok: the whole C8 block is gated by `_TIMEOUT_BIN` and skips where it is absent
     exec 3<&-
     if (
         check_rc 2 "$rc" C8

@@ -16,6 +16,8 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 HIMMEL_UPDATE_LIB=1 . "$HERE/himmel-update.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$HERE/lib/timeout-bin.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fail=0
 
@@ -37,9 +39,9 @@ check() {  # <description> <expected-substring> <actual-output>
 # falls back to an unbounded direct call when `timeout` isn't available
 # (same graceful-degrade convention as check-plugin-drift.sh).
 run_hermes_check_bounded() {
-  if command -v timeout >/dev/null 2>&1; then
+  if [ -n "$_TIMEOUT_BIN" ]; then
     export -f update_hermes
-    HERMES_HOME="$1" timeout 60 bash -c 'update_hermes check' 2>&1
+    HERMES_HOME="$1" "$_TIMEOUT_BIN" 60 bash -c 'update_hermes check' 2>&1
   else
     HERMES_HOME="$1" update_hermes check 2>&1
   fi
