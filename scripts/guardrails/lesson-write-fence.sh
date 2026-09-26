@@ -794,9 +794,36 @@ _scan_redirects() {
 # character class anyway, as a defensive/self-documenting POSIX env-var-name
 # grammar (letter/underscore then word chars), not a case-insensitivity fix
 # that was already covered by the pre-lowering.
+#
+# _bundle_value_at_end <chars-after-dash> <flag-chars> <value-chars> -> 0
+# iff <chars-after-dash> is 2+ characters, every character except the LAST
+# is a member of <flag-chars> (that arm's known no-value short options), and
+# the last character is a member of <value-chars> (that arm's known
+# value-taking short options) - i.e. a getopt-style bundled short-option
+# cluster (`env -ia`, `sudo -Ep`) whose value-taking option is the FINAL
+# letter, so its value is the NEXT token (a glued value would extend the
+# same token past that letter instead - judge J1298O C3: the old walk fell
+# through to the generic bare-flag case for any 2+-letter cluster, advancing
+# by only one token, so the value-taking letter's value became the
+# misresolved head verb instead of the real wrapped command one token
+# further on).
+_bundle_value_at_end() {
+    local chars="$1" flags="$2" values="$3"
+    local len=${#chars} i c last
+    [ "$len" -ge 2 ] || return 1
+    last="${chars: -1}"
+    case "$values" in *"$last"*) : ;; *) return 1 ;; esac
+    i=0
+    while [ "$i" -lt "$((len-1))" ]; do
+        c="${chars:$i:1}"
+        case "$flags" in *"$c"*) : ;; *) return 1 ;; esac
+        i=$((i+1))
+    done
+    return 0
+}
 _clause_head_idx() {
     local -a tok=("$@")
-    local n=${#tok[@]} i=0 s w
+    local n=${#tok[@]} i=0 s w sw
     while [ "$i" -lt "$n" ]; do
         s="$(_lc "$(_strip_wrap "${tok[$i]}")")"
         case "$s" in
@@ -816,13 +843,34 @@ _clause_head_idx() {
                 # crafted to name a proven-read-only verb (e.g. `cat`), the
                 # real wrapped write command was never scanned at all.
                 while [ "$i" -lt "$n" ]; do
-                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
-                    case "$w" in
-                        -u|-c)                    i=$((i+2)) ;;
+                    sw="$(_strip_wrap "${tok[$i]}")"
+                    w="$(_lc "$sw")"
+                    # HIMMEL-3658: short-option letters match the RAW
+                    # (case-preserved) `$sw`, never the lowered `$w` - GNU
+                    # env's short options are case-sensitive and none of its
+                    # value-taking letters (-a/--argv0, -u/--unset,
+                    # -C/--chdir, -S/--split-string) has a distinct lowercase
+                    # short option of its own, so matching against `$w`
+                    # missed `-a`/`-S` outright and only reached `-C` by
+                    # accident via the folded literal `-c`. `$w` stays lowered
+                    # for the long-option-abbreviation arm below, where env's
+                    # own long names are already lowercase.
+                    case "$sw" in
+                        -a|-u|-C|-S)              i=$((i+2)) ;;
+                        # judge J1298O C3: a bundled cluster (`-ia`, `-va`,
+                        # `-0a`) ending in a value-taking letter (a/u/C) with
+                        # only known no-value flags (i/0/v) before it - GNU
+                        # env bundling, the value is the next token.
+                        -[A-Za-z0-9][A-Za-z0-9]*)
+                            if _bundle_value_at_end "${sw#-}" "i0v" "auC"; then
+                                i=$((i+2))
+                            else
+                                i=$((i+1))
+                            fi ;;
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
                         --*)
                             if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
-                                || guard_is_long_abbrev "argv0" "$w"; then
+                                || guard_is_long_abbrev "argv0" "$w" || guard_is_long_abbrev "split-string" "$w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
@@ -866,16 +914,58 @@ _clause_head_idx() {
                 # SELinux-only and not compiled into this build, so those two
                 # are taken from upstream sudo.ws docs, unverified locally).
                 while [ "$i" -lt "$n" ]; do
-                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
-                    case "$w" in
-                        -u|-g|-U|-p|-C|-r|-t|-h|-d) i=$((i+2)) ;;
+                    sw="$(_strip_wrap "${tok[$i]}")"
+                    w="$(_lc "$sw")"
+                    # HIMMEL-3659: short-option letters match the RAW
+                    # (case-preserved) `$sw`, never the lowered `$w` - sudo's
+                    # -H (--set-home) and -P (--preserve-groups) are no-arg
+                    # FLAGS, but lowering folded them onto the value-taking
+                    # -h/-p (host/prompt) and made this walk consume the next
+                    # token - the real wrapped command - as a bogus option
+                    # value (`sudo -H tee <protected>` resolved head past the
+                    # end of the clause and ALLOWed). `-C`/`-D` (close-from/
+                    # chdir, real, uppercase-only) and `-U` (other-user, real,
+                    # uppercase-only) are likewise distinct letters with no
+                    # lowercase counterpart of their own; matching them
+                    # case-sensitively also fixes `-C` (previously dead: the
+                    # lowered token never matched the old literal uppercase
+                    # `-C` pattern, and no `-c` entry existed either) and
+                    # keeps `-D` live (previously reached only via the folded
+                    # literal `-d`, which is not a real sudo option). `-h`
+                    # alone stays value-taking and unchanged: sudo overloads
+                    # it for `--help` XOR `--host` depending on invocation
+                    # shape, ambiguous, so this keeps main's existing
+                    # (fail-closed) treatment rather than picking a side. `$w`
+                    # stays lowered for the long-option-abbreviation arm
+                    # below, where sudo's own long names are already
+                    # lowercase.
+                    case "$sw" in
+                        # judge J1298O C2: -R (--chroot) and -T
+                        # (--command-timeout) are real value-taking sudo
+                        # options this arm's case-sensitive letter set
+                        # missed outright (main's old case-INsensitive match
+                        # folded them onto -r/-t by accident; this arm's
+                        # move to case-sensitive matching dropped that
+                        # accidental coverage without replacing it).
+                        -u|-g|-U|-p|-C|-r|-t|-h|-D|-R|-T) i=$((i+2)) ;;
+                        # judge J1298O C3: a bundled cluster (`-Ep`, `-Eu`,
+                        # `-HD`, `-nC`) ending in a value-taking letter with
+                        # only known no-value flags before it - same
+                        # bundling gap as the env arm above.
+                        -[A-Za-z][A-Za-z]*)
+                            if _bundle_value_at_end "${sw#-}" "AbBEeHikKlnPsvV" "ugUpCrthDRT"; then
+                                i=$((i+2))
+                            else
+                                i=$((i+1))
+                            fi ;;
                         --)                       i=$((i+1)); break ;;
                         --*)
                             if guard_is_long_abbrev "user" "$w" || guard_is_long_abbrev "group" "$w" \
                                 || guard_is_long_abbrev "other-user" "$w" || guard_is_long_abbrev "prompt" "$w" \
                                 || guard_is_long_abbrev "close-from" "$w" || guard_is_long_abbrev "role" "$w" \
                                 || guard_is_long_abbrev "type" "$w" || guard_is_long_abbrev "host" "$w" \
-                                || guard_is_long_abbrev "chdir" "$w"; then
+                                || guard_is_long_abbrev "chdir" "$w" || guard_is_long_abbrev "chroot" "$w" \
+                                || guard_is_long_abbrev "command-timeout" "$w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
@@ -959,6 +1049,68 @@ _git_is_read_only() {
 # verbs either (it would not catch the target, for the same quoting reason)
 # - it instead runs `_clause_has_enforcement_signal` over the RAW clause
 # text and denies on a hit, allows otherwise.
+#
+# _normalize_scan_text <raw-text> -> squeezes repeated `/` down to one,
+# drops `/./ ` segments, collapses `seg/../` hops, and strips quote/backslash
+# characters - the raw-TEXT counterpart to `_normalize`'s path-SEGMENT
+# collapsing, for callers (below) that substring-scan whole clause text
+# rather than resolve a single path.
+# Judge J1298R N1 (Critical): the collapse above stopped at `//` and `/./ `
+# and never stripped backslashes, so `env -S 'tee scripts/x/../hooks/a.sh'`,
+# a backslash-escaped `scripts/\hooks/a.sh`, and the same `../` hop against
+# `.claude/settings.json` all evaded the scan.
+# Judge J1298O C1 (Critical, NEW ALLOW vs main): `_clause_has_enforcement_signal`
+# matched the literal substring only, so a policy value written with a
+# single slash (`scripts/hooks/`) missed the identical write spelled
+# `scripts//hooks/a.sh` or `scripts/./hooks/a.sh` - GNU coreutils resolve
+# both exactly as the plain path, so the fence must scan as if normalized
+# too. Text-level only (no filesystem access, no anchoring) since the
+# caller has no single resolved path to normalize.
+# /pr-check critic panel (codex-1, this branch): the `seg/../` loop below
+# used to walk left-to-right and, on hitting an unresolvable leading `..`
+# (no real parent segment to consume), `break` out of the WHOLE loop rather
+# than skip just that one hop - so `env -S 'tee /../../../tmp/f
+# scripts/ci/../hooks/a.sh'` left the later, independently-resolvable
+# `scripts/ci/../hooks/` hop uncollapsed and the raw-text scan missed the
+# `scripts/hooks/` prefix entirely. Fixed: an unresolvable hop is moved,
+# uncollapsed, into `out` and the loop continues scanning the remainder for
+# further `/../` occurrences instead of abandoning the pass.
+_normalize_scan_text() {
+    local t="$1" before after seg out
+    t="${t//\'/}"; t="${t//\"/}"; t="${t//\`/}"; t="${t//\\/}"
+    while case "$t" in *//*) true ;; *) false ;; esac; do
+        t="${t//\/\//\/}"
+    done
+    while case "$t" in *"/./"*) true ;; *) false ;; esac; do
+        t="${t//\/.\//\/}"
+    done
+    out=''
+    while case "$t" in */../*) true ;; *) false ;; esac; do
+        before="${t%%/../*}"
+        after="${t#*/../}"
+        case "$before" in
+            */*) seg="${before##*/}" ;;
+            *)   seg="$before" ;;
+        esac
+        case "$seg" in
+            ..|'')
+                out="$out$before/../"
+                t="$after"
+                continue
+                ;;
+        esac
+        case "$before" in
+            */*) before="${before%/*}" ;;
+            *)   before="" ;;
+        esac
+        if [ -n "$before" ]; then
+            t="$before/$after"
+        else
+            t="$after"
+        fi
+    done
+    printf '%s' "$out$t"
+}
 _interpreter_is_read_only() {
     local verb="$1"; shift
     local -a tok=("$@")
@@ -996,7 +1148,7 @@ _interpreter_is_read_only() {
 # -exec`/`xargs`'s deferred arguments, called out in the header's ACCEPTED
 # section.
 _clause_has_enforcement_signal() {
-    local raw_lc; raw_lc="$(_lc "$1")"
+    local raw_lc; raw_lc="$(_lc "$(_normalize_scan_text "$1")")"
     local i v_lc
     i=0
     while [ "$i" -lt "$ENTRY_COUNT" ]; do
@@ -1043,6 +1195,110 @@ _clause_has_procsub() {
 # signal.
 _deny_procsub() {
     deny "process-substitution write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
+}
+
+# _deny_env_split_string <raw-clause-text> -> denies (exit 2): an `env
+# -S`/`--split-string` clause whose raw text names an enforcement-path
+# signal. Same rationale as `_deny_inline_eval`/`_deny_procsub`: `-S`'s value
+# is not a clean operand, it is a shell-like command line env itself
+# word-splits and executes (`env -S 'tee scripts/hooks/a.sh'` runs `tee
+# scripts/hooks/a.sh` directly) - see `_env_split_string_used`.
+_deny_env_split_string() {
+    deny "env -S/--split-string write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
+}
+
+# _env_split_string_used <head_idx> <tok...> -> 0 iff an `env` token appears
+# among tok[0..head_idx-1] (the wrapper prefix `_clause_head_idx` walked
+# through) followed later in that same range by a case-sensitive `-S` token
+# (bare or with its value glued on, e.g. `-Stee ...` - GNU env accepts both
+# spellings identically) or a long-option abbreviation of `--split-string`.
+# Round-6 CR fix (codex
+# critic panel, Critical): unlike `-a`/`-u`/`-C`, whose values are opaque
+# data safe to skip, `-S`'s value is CODE - GNU env parses it as a
+# whitespace-separated command line and executes the resulting words, so
+# `_clause_head_idx` treating it as an ordinary value-taking option to skip
+# hides the real wrapped write command from every downstream check (the
+# skipped value never reaches `_verb_is_read_only` OR `_operand_targets`).
+# This is a coarse PRESENCE check, not a re-parse of env's own option
+# grammar (deliberately - duplicating that grammar here is exactly the kind
+# of drift HIMMEL-3659 already burned once): it does not care whether `-S`
+# was the token that actually consumed a value or not, only whether the verb
+# resolved through `env` and the wrapper's option region names `-S`/
+# `--split-string` at all. A false-positive match (e.g. some other flag's
+# OWN value happens to spell "-S") only routes the clause to
+# `_clause_has_enforcement_signal`'s raw-text scan instead of the normal
+# verb/operand path - the same safe-direction fallback `process_clause_for_write`
+# already uses for procsub and interpreter inline-eval, never a new gap.
+_env_split_string_used() {
+    local head_idx="$1"; shift
+    local -a t=("$@")
+    local n=${#t[@]} i=0 s w in_env=0
+    [ "$head_idx" -le "$n" ] || head_idx="$n"
+    while [ "$i" -lt "$head_idx" ]; do
+        s="$(_strip_wrap "${t[$i]}")"
+        w="$(_lc "$s")"
+        if [ "$in_env" = 1 ]; then
+            case "$s" in
+                # round-6 CR fix (codex-1, round 2): `-S*` (not the exact
+                # `-S`) - GNU env accepts the value glued directly onto the
+                # letter (`-Stee...` behaves identically to `-S tee...`,
+                # empirically verified), and a glued token still carries the
+                # same executable split-string value.
+                -S*) return 0 ;;
+                --*) guard_is_long_abbrev "split-string" "$w" && return 0 ;;
+            esac
+        elif [ "$w" = env ]; then
+            in_env=1
+        fi
+        i=$((i+1))
+    done
+    return 1
+}
+
+# _deny_wrapper_enforcement_signal <raw-clause-text> -> denies (exit 2): an
+# env/sudo-headed clause whose raw text names an enforcement-path signal. Same
+# rationale as `_deny_env_split_string`/`_deny_procsub`/`_deny_inline_eval`.
+_deny_wrapper_enforcement_signal() {
+    deny "env/sudo-wrapped write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
+}
+
+# _wrapper_is_env_or_sudo <head_idx> <tok...> -> 0 iff any token in
+# tok[0..head_idx-1] (the wrapper-prefix range `_clause_head_idx` walks) is,
+# once stripped and lowered, exactly `env` or `sudo`.
+# Judge J1298R (Critical, ruling item 1): every prior fix in this file
+# (round after round of HIMMEL-2610/HIMMEL-3632/HIMMEL-3658/HIMMEL-3659/
+# J1298O) patched `_clause_head_idx`'s env/sudo option-cluster walk to
+# resolve one more bundled/glued/case-folded shape correctly - a losing
+# enumeration game, since a NEW option-cluster shape (N2: `-Sp`/`-Np`/`-Su`/
+# `-SD`/`-NC`; N3: glued bundled `-iS'...'`) always resolves the walk to
+# *some* verb, correct or not, and the option tables must never grow again
+# (ruling item 2). This check does not try to resolve the wrapper's options
+# at all: it fires on the mere PRESENCE of `env`/`sudo` anywhere in the
+# wrapper range, independent of whether the cluster walk parsed the rest
+# correctly, and pairs with `_clause_has_enforcement_signal`'s raw-text scan
+# below exactly like `_env_split_string_used` does - no parse result can
+# turn a hit here into an ALLOW. Accepted cost (ruling item 1, pinned in
+# tests): a READ through env/sudo of a path matching a policy signal (e.g.
+# `sudo cat scripts/hooks/a.sh`) now DENIES even though `cat` is proven
+# read-only and the cluster walk resolves it correctly - stricter than main,
+# deliberately. A false-positive match (some OTHER wrapper's own option
+# VALUE token happens to spell "sudo" or "env" literally, e.g. `sudo -u
+# sudo cat ...`) only routes the clause to the raw-text scan unnecessarily -
+# never a new gap, the same false-positive-is-safe reasoning already used
+# for `_env_split_string_used` above.
+_wrapper_is_env_or_sudo() {
+    local head_idx="$1"; shift
+    local -a t=("$@")
+    local n=${#t[@]} i=0 w
+    [ "$head_idx" -le "$n" ] || head_idx="$n"
+    while [ "$i" -lt "$head_idx" ]; do
+        w="$(_lc "$(_strip_wrap "${t[$i]}")")"
+        case "$w" in
+            env|sudo) return 0 ;;
+        esac
+        i=$((i+1))
+    done
+    return 1
 }
 
 # _verb_is_read_only <verb_lc> <verb-onward-tok...> -> 0 iff the
@@ -1158,15 +1414,26 @@ _operand_targets() {
 # must run before step (4)'s read-only-verb short-circuit, since that is
 # exactly the shape that let a writer hidden inside `>(...)` slip past a
 # proven-read-only outer verb (`echo`/`cat`); (2) resolve the command-position
-# verb, after wrapper stripping (_clause_head_idx); (3) if that verb is an
-# interpreter, delegate to `_interpreter_is_read_only` +
+# verb, after wrapper stripping (_clause_head_idx); (2a) J1298R - if the
+# wrapper-prefix range names `env`/`sudo` at all, ANYWHERE, the same
+# `_clause_has_enforcement_signal` raw-text scan runs and denies on a hit,
+# UNCONDITIONALLY, regardless of whether the option-cluster walk resolved
+# the rest of the wrapper correctly (_wrapper_is_env_or_sudo) - a miss falls
+# through unchanged; (2b) round 6 - if that
+# resolution walked through an `env -S`/`--split-string`, the same
+# `_clause_has_enforcement_signal` raw-text scan runs and denies on a hit,
+# UNCONDITIONALLY, before the resolved "verb" (which is `-S`'s value, not a
+# real command) is ever checked - `-S`'s value is code env itself
+# word-splits and executes, not a clean operand (_env_split_string_used); (3)
+# if that verb is an interpreter, delegate to `_interpreter_is_read_only` +
 # `_clause_has_enforcement_signal` (round 5 - see those functions); (4) if
 # that verb is otherwise proven read-only, allow outright - its operands are
 # reads; (5) otherwise scan every operand as a write-target candidate
 # (_operand_targets). <clause-raw> is the clause's own pre-tokenization text
-# (round 5 addition), needed by steps (1b) and (3) - a process-substitution
-# or inline-eval writer's target is not a clean token, so those steps scan
-# the raw text instead of the split <tok...> array.
+# (round 5 addition), needed by steps (1b), (2a), (2b) and (3) - a
+# process-substitution, split-string or inline-eval writer's target is not a
+# clean token, so those steps scan the raw text instead of the split
+# <tok...> array.
 process_clause_for_write() {
     local cwd="$1" clause_raw="$2"; shift 2
     local -a tok=("$@")
@@ -1181,6 +1448,20 @@ process_clause_for_write() {
     fi
 
     local head_idx; head_idx="$(_clause_head_idx "${tok[@]}")"
+
+    # J1298R ruling item 1: this check is UNCONDITIONAL - it runs whether or
+    # not the option-cluster walk above resolved the wrapper correctly, and a
+    # miss falls through unchanged to the existing checks below (ruling item
+    # 2: the parser stays an ADDITIONAL deny path, never grown further).
+    if _wrapper_is_env_or_sudo "$head_idx" "${tok[@]}"; then
+        _clause_has_enforcement_signal "$clause_raw" && _deny_wrapper_enforcement_signal "$clause_raw"
+    fi
+
+    if _env_split_string_used "$head_idx" "${tok[@]}"; then
+        _clause_has_enforcement_signal "$clause_raw" && _deny_env_split_string "$clause_raw"
+        return 0
+    fi
+
     [ "$head_idx" -lt "$n" ] || return 0
 
     local -a vtok=()
