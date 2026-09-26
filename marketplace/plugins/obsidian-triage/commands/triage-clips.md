@@ -64,7 +64,7 @@ Verify `<vault>/Clippings/` exists (using the same path form throughout the run)
 triage-clips consumes harvest output (`harvested_at` + the `## Harvested content` body). A hard-killed `/harvest-clips` mid-run leaves that state partial — running triage against it corrupts downstream output. Before scanning:
 
 1. If `<vault>/.harvest.done` does not exist: abort with `triage-clips: upstream harvest incomplete — <vault>/.harvest.done not found; run /harvest-clips first.` Exit 2.
-2. If it exists, read its ISO timestamp (the marker's first field). It is fresh if its date is `$TODAY`, or — for a harvest that started before midnight and finished after — if it is newer than the start timestamp recorded in a still-present `<vault>/.harvest.lock`. Otherwise it is stale: abort with `triage-clips: upstream harvest incomplete — <vault>/.harvest.done is stale; run /harvest-clips first.` Exit 2.
+2. If it exists, read its ISO timestamp (the marker's first field). It is fresh only if its date is `$TODAY` — the marker is always written at completion (G-8), so a harvest that started before midnight and finished after still stamps today's date. Do not fall back to comparing against a `<vault>/.harvest.lock` start time: a leftover lock from a killed run would let an old marker pass the check indefinitely. Otherwise it is stale: abort with `triage-clips: upstream harvest incomplete — <vault>/.harvest.done is stale; run /harvest-clips first.` Exit 2.
 
 No operator override flag — keep it minimal; re-running `/harvest-clips` clears the gate.
 
