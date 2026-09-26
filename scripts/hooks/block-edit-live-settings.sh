@@ -1341,6 +1341,15 @@ lex_resolve() {
 has_unquoted_brace_group() {
     [[ "$1" =~ \{[^{}]*,[^{}]*\} ]]
 }
+# ponytail: matching against already quote-stripped text means a genuinely
+# quoted brace-containing filename (e.g. a file literally named `.{,.}`,
+# passed as `'.{,.}'`) is denied the same as a real unquoted, expandable
+# `{…,…}` — ST_Q[] only tracks "any byte of this word was quoted", and bash
+# still brace-expands an unquoted `{...}` segment even when another part of
+# the SAME word is quoted, so that per-word flag cannot safely exempt this
+# check. Accepted false-deny, same fail-closed direction as this file's other
+# documented residuals. Upgrade path: HIMMEL-3696 (per-character quote
+# tracking in the tokenizer).
 
 # changes_directory CMD_LC CMD_N — a cd/pushd/popd word anywhere in the
 # command, with the same complement-of-a-word-character boundary as the verb

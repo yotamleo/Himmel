@@ -1437,10 +1437,10 @@ mkdir -p "$TRAP_MATCH/wtlink"
 touch "$TRAP_MATCH/wtlink/s"
 RC_TRAP_EMPTY=$(cd "$TRAP_EMPTY" && printf '%s' "$TOK0_GLOB_JSON" | bash "$HOOK" >/dev/null 2>&1; echo $?)
 RC_TRAP_MATCH=$(cd "$TRAP_MATCH" && printf '%s' "$TOK0_GLOB_JSON" | bash "$HOOK" >/dev/null 2>&1; echo $?)
-if [ "$RC_TRAP_EMPTY" = "$RC_TRAP_MATCH" ]; then
-    echo "PASS 218 TOK=0 fallback's glob write operand gives the same verdict regardless of a same-named decoy in the hook process's real cwd (rc=$RC_TRAP_EMPTY both)"
+if [ "$RC_TRAP_EMPTY" = "$RC_TRAP_MATCH" ] && [ "$RC_TRAP_EMPTY" = 0 ]; then
+    echo "PASS 218 TOK=0 fallback's glob write operand gives the same, correct ALLOW verdict regardless of a same-named decoy in the hook process's real cwd (rc=$RC_TRAP_EMPTY both)"
 else
-    echo "FAIL 218 TOK=0 fallback's glob write operand verdict depends on the hook process's real cwd contents — got rc=$RC_TRAP_EMPTY with no decoy, rc=$RC_TRAP_MATCH with a same-named decoy present (should be identical)"
+    echo "FAIL 218 TOK=0 fallback's glob write operand verdict depends on the hook process's real cwd contents, or is not ALLOW — got rc=$RC_TRAP_EMPTY with no decoy, rc=$RC_TRAP_MATCH with a same-named decoy present (expected 0 both)"
     FAILED=$((FAILED + 1))
 fi
 
