@@ -313,9 +313,8 @@ fi
 echo "TEST: a rate-limited PRIOR head for this repo -> no post for the NEW head, logged why"
 reset_state
 printf 'acme/widget 300 deadbeef00000000000000000000000000000300\n' >> "$LEDGER_PATH"
-cat > "$STATUSES_FILE" <<'JSON'
-[{"state":"success","description":"Review rate limited","context":"CodeRabbit","creator":{"id":136622811,"type":"Bot","login":"coderabbitai[bot]"},"created_at":"2026-09-26T00:00:00Z"}]
-JSON
+printf '[{"state":"success","description":"Review rate limited","context":"CodeRabbit","creator":{"id":136622811,"type":"Bot","login":"coderabbitai[bot]"},"created_at":"%s"}]\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUSES_FILE"
 export FAKE_GH_HEAD_SHA="cafef00d00000000000000000000000000000301"
 run_hook "gh pr create --base main --title t --body b" "https://github.com/acme/widget/pull/301"
 if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] \
@@ -342,6 +341,29 @@ if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
     pass "a clean prior head does not suppress the new trigger"
 else
     fail "expected rc=0 and 1 post with a clean prior head, got rc=$rc posted=$(posted_count)" "out: $out"
+fi
+unset FAKE_GH_HEAD_SHA
+
+# Test 4h: a rate-limited PRIOR head whose status is OLDER than the TTL -> the
+# new head posts anyway (HIMMEL-3319 follow-up, codex-1). Without a staleness
+# bound, this status would never change (nothing ever asks CodeRabbit to
+# re-review that old, orphaned SHA), so an unbounded read would skip every
+# later head for this repo forever — the "retry once the window clears"
+# promise above would never be kept. A status this old must be treated as
+# stale, not as current evidence.
+echo "TEST: a rate-limited PRIOR head older than the TTL -> the new head posts (unstuck)"
+reset_state
+printf 'acme/widget 300 deadbeef00000000000000000000000000000300\n' >> "$LEDGER_PATH"
+cat > "$STATUSES_FILE" <<'JSON'
+[{"state":"success","description":"Review rate limited","context":"CodeRabbit","creator":{"id":136622811,"type":"Bot","login":"coderabbitai[bot]"},"created_at":"2020-01-01T00:00:00Z"}]
+JSON
+export FAKE_GH_HEAD_SHA="cafef00d00000000000000000000000000000304"
+run_hook "gh pr create --base main --title t --body b" "https://github.com/acme/widget/pull/305"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+    pass "a stale (past-TTL) rate-limited status no longer suppresses the trigger"
+else
+    fail "expected rc=0 and 1 post once the prior head's status is past the TTL" \
+        "out: $out; posted=$(posted_count)"
 fi
 unset FAKE_GH_HEAD_SHA
 

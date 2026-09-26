@@ -214,12 +214,19 @@ cr_trigger_repo_armed() {
 # EXISTING reader (no new parser): the same rate-limit wording check-ci.sh
 # already trusts for the HIMMEL-3360 rate-limited=NOTE gate.
 #
+# That status is only ever trusted for CR_TRIGGER_RATE_LIMIT_TTL_SECONDS
+# (default 3600) past its own created_at, never indefinitely: nothing here
+# ever asks CodeRabbit to re-review that exact old SHA, so an unbounded read
+# would skip every later head forever the first time a repo hit the limit
+# once — a stale status past the TTL is treated as "not rate-limited",
+# letting the next real head take its own shot.
+#
 # Fail-OPEN (rc 1, "not rate-limited") on anything short of a positive match:
 # no prior ledger entry for this repo, an unreadable/malformed ledger, a gh
-# query failure, or a clean/absent status. This is a workflow nudge, not a
-# security fence (scripts/hooks/CLAUDE.md) — treating "cannot tell" as
-# "proceed" is what keeps a transient gh hiccup from silently stranding a PR
-# with NO trigger ever posted.
+# query failure, a clean/absent status, or a status too old to trust. This is
+# a workflow nudge, not a security fence (scripts/hooks/CLAUDE.md) — treating
+# "cannot tell" as "proceed" is what keeps a transient gh hiccup from
+# silently stranding a PR with NO trigger ever posted.
 cr_trigger_rate_limited() {
     local repo_path="${1:-}" path last_line prior_sha owner name desc
     [ -n "$repo_path" ] || return 1
@@ -247,12 +254,38 @@ cr_trigger_rate_limited() {
 
     desc=$(cr_signal_description "$owner" "$name" "$prior_sha") || return 1
     case "$desc" in
-        *[Rr]ate*[Ll]imit*)
-            printf '%s %s\n' "$prior_sha" "$desc"
-            return 0
-            ;;
+        *[Rr]ate*[Ll]imit*) ;;
+        *) return 1 ;;
     esac
-    return 1
+
+    # HIMMEL-3319 follow-up (codex-1, pr-check round 1): the status on
+    # prior_sha is frozen the instant CodeRabbit posts it — nothing here ever
+    # asks CodeRabbit to re-review that exact old SHA, so trusting this
+    # signal forever would skip every later head permanently the first time
+    # a repo hits the limit, never actually retrying "once the window
+    # clears" as promised above. Bound trust in it to a TTL, read from the
+    # SAME status object's own created_at: past that age treat the signal as
+    # stale and let the caller attempt a real post, which either succeeds
+    # (the window genuinely cleared) or earns a FRESH rate-limited status on
+    # its own head next time.
+    local uid ctx json created_at posted_epoch now_epoch
+    uid=$(cr_signal_bot_id)
+    ctx=$(cr_signal_context)
+    json=$("${GH_CMD:-gh}" api "repos/$owner/$name/commits/$prior_sha/statuses?per_page=100" 2>/dev/null) || return 1
+    created_at=$(printf '%s' "$json" | jq -r --arg ctx "$ctx" --argjson uid "$uid" '
+        [ .[]?
+          | select(.creator.id == $uid)
+          | select(.creator.type == "Bot")
+          | select(.context == $ctx)
+        ] | first | (.created_at // "")' 2>/dev/null) || return 1
+    [ -n "$created_at" ] || return 1
+    # gnu-ok: GNU -d paired with the BSD -j -f fallback (macOS date has no -d; HIMMEL-3177)
+    posted_epoch=$(date -u -d "$created_at" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$created_at" +%s 2>/dev/null) || return 1
+    now_epoch=$(date -u +%s) || return 1
+    [ $(( now_epoch - posted_epoch )) -lt "${CR_TRIGGER_RATE_LIMIT_TTL_SECONDS:-3600}" ] || return 1
+
+    printf '%s %s\n' "$prior_sha" "$desc"
+    return 0
 }
 
 # cr_trigger_post_review <sha> <num> <repo_path> <scan_existing 0|1>
