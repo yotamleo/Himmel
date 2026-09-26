@@ -21,10 +21,10 @@
 # script's own chain (its tool-call wrapper, itself, and its own children) and
 # harness processes: a non-shell-wrapper process whose full argv matches
 # WRAP_SUBTREE_HARNESS_RE (ERE; default: an `mcp-server*` path/word, a
-# `…qmd[.ext] mcp` invocation, the session's `caffeinate` keep-awake, or the
-# `claude-hud` statusline tree — a descendant of a name-matched process
-# inherits the ignore by walking up to that match, the same rule that already
-# carries an MCP launcher's ignore down to its children (HIMMEL-3265)), or a
+# `…qmd[.ext] mcp` invocation, or the session's `caffeinate` keep-awake —
+# a descendant of a name-matched process inherits the ignore by walking up
+# to that match, the same rule that already carries an MCP launcher's ignore
+# down to its children (HIMMEL-3265)), or a
 # DIRECT child of the session that is not a shell-tool wrapper and forked
 # within WRAP_SUBTREE_START_WINDOW seconds
 # (default 10; 0 turns the rule off) of the session itself — the servers a
@@ -64,18 +64,25 @@
 # ponytail: the default harness match is a heuristic over argv, so a leaked
 # process literally named like an MCP server (`node …/mcp-server-x/y.js`) would
 # be exempt; the leak class this gate exists for is a tool-call shell, which
-# is never exempt. `caffeinate` and `claude-hud` (HIMMEL-3712) are anchored
-# more tightly than mcp-server/qmd: caffeinate only matches as the PROGRAM
-# itself (optionally path-prefixed) followed by nothing but flags, never a
-# job argument, and claude-hud only matches a node/bun process running a
-# script under a literal `/claude-hud/` directory — so `caffeinate
-# ./long-job.sh`, `sleep 999 caffeinate` and `grep -r claude-hud .` withhold
-# (a regression the word-anywhere match let through, caught by an Opus judge
-# on this ticket's own PR before merge) where the original match exempted
-# them. The same tradeoff as mcp-server remains at the narrower anchor: a
-# genuine `caffeinate` binary invoked with no job, or a real `claude-hud`
-# process under that path but not spawned by this session, is still exempt
-# by name/path alone, no new mechanism to fix it here.
+# is never exempt. `caffeinate` (HIMMEL-3712) is anchored more tightly than
+# mcp-server/qmd: it only matches as the PROGRAM itself (optionally
+# path-prefixed) followed by nothing but flags, never a job argument — so
+# `caffeinate ./long-job.sh` and `sleep 999 caffeinate` withhold (a regression
+# the word-anywhere match let through, caught by an Opus judge on this
+# ticket's own PR before merge) where the original match exempted them. The
+# same tradeoff as mcp-server remains at the narrower anchor: a genuine
+# `caffeinate` binary invoked with no job is still exempt by name alone, no
+# new mechanism to fix it here.
+# ponytail: GH #1337 also reported a `claude-hud` statusline tree false
+# WITHHELD. A `claude-hud`-by-path exemption was tried and rejected on this
+# same PR's re-judge: `^([^ ]*/)?(node|bun) [^ ]*/claude-hud/[^ ]*` exempted
+# ANY node/bun script under any directory merely named claude-hud (and all
+# its descendants) — `node /repo/claude-hud/server.js`, a claude-hud checkout
+# running its own test suite, etc. — a false-CLOSABLE regression, not a
+# narrower anchor. The claude-hud half is deliberately NOT fixed here;
+# tracked as HIMMEL-3723 (path-anchored to the actual `.claude` install,
+# rejecting `..`, and checking the real statusLine launch shape) linked to
+# #1337, which stays open until that follow-up lands.
 #
 # READ-ONLY: this script never signals a process. Bash 3.2-compatible.
 # WRAP_SUBTREE_SELF overrides the pid treated as "this script" (test seam).
@@ -104,7 +111,7 @@ case "$window" in
         printf 'WITHHELD: WRAP_SUBTREE_START_WINDOW must be a non-negative integer (got %s) — not declaring CLOSABLE\n' "$window"
         exit 2 ;;
 esac
-harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp)( |\$)|^([^ ]*/)?caffeinate( -[a-z]+( [0-9]+)?)*\$|^([^ ]*/)?(node|bun) [^ ]*/claude-hud/[^ ]*( |\$)}"
+harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp)( |\$)|^([^ ]*/)?caffeinate( -[a-z]+( [0-9]+)?)*\$}"
 
 ps_out="$(ps -eo pid=,ppid=,etime=,args= 2>/dev/null)" || ps_out=""
 if [ -z "$ps_out" ]; then
