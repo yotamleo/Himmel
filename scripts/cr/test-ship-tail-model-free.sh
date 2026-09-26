@@ -56,6 +56,22 @@ else
 fi
 check "$got" "matched" "T1 injected headless call in fixture is caught"
 
+# --- RED proof: a headless call split across a backslash-continued line
+# (`claude \` / `  -p ...`) is invisible to line-based grep, so the per-line
+# check alone would pass it vacuously; the continuation-joined fallback below
+# must catch it. ------------------------------------------------------------
+fixture2="$tmp/tick.sh"
+cp "$REPO/scripts/handover/console-kit/tick.sh" "$fixture2"
+printf '\nclaude \\\n  -p "drive the merge"\n' >>"$fixture2"
+
+joined2="$(sed ':a;N;$!ba;s/\\\n/ /g' -- "$fixture2")"
+if printf '%s\n' "$joined2" | grep -Eq "$PATTERN"; then
+    got2="matched"
+else
+    got2="no-match"
+fi
+check "$got2" "matched" "T3 line-continuation-split headless call in fixture is caught"
+
 # --- Real assertion: none of the named ship-tail files contain a headless
 # call today. -----------------------------------------------------------
 violations=()
@@ -74,6 +90,16 @@ for f in "${SHIP_TAIL_FILES[@]}"; do
             [ -z "$line_no" ] && continue
             violations+=("$f:$line_no")
         done <<<"$grep_out"
+    else
+        # rc=1 (no single-line match): a call can still be split across a
+        # backslash-continued line, invisible to line-based grep — collapse
+        # only genuine continuations (not every line) and re-check, so
+        # unrelated `claude`/`-p` mentions elsewhere in the file can't pair up
+        # into a false positive.
+        joined="$(sed ':a;N;$!ba;s/\\\n/ /g' -- "$path")"
+        if printf '%s\n' "$joined" | grep -Eq "$PATTERN"; then
+            violations+=("$f:line-continuation-split")
+        fi
     fi
 done
 

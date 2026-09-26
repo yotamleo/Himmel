@@ -31,7 +31,9 @@ judgment.
 `scripts/cr/test-ship-tail-model-free.sh` names the four files above and
 asserts none of them contain a headless call, independent of
 `scripts/hooks/check-no-headless-claude.sh`'s general billing gate. The two
-overlap in mechanism (same detection pattern) but not in purpose: the billing
+overlap in mechanism (both a word-bounded grep for `claude -p`/`--print`/
+`--bg`, though this test's pattern is broadened to also catch the flag
+appearing after other flags on the same invocation) but not in purpose: the billing
 gate is opt-in-markable (`# headless-claude-ok: <reason>`) and covers every
 staged file; this test has no opt-in escape, because the ship tail staying
 model-free is a purity invariant, not a billing decision. A future PR that
