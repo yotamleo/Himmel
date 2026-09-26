@@ -554,7 +554,8 @@ out=$(GH_CMD="$GH_STUB_FLAGPAIR" "$BASE_STATUS" scripts/hooks 2>"$TMP_ROOT/err_f
 rc=$?
 err=$(cat "$TMP_ROOT/err_flagpair")
 m_qerr=$(printf '%s\n' "$err" | grep -F "QUERY-ERROR")
-if [ "$rc" -eq 0 ] && [ -z "$m_qerr" ]; then
+m601=$(printf '%s\n' "$out" | grep -F "601")
+if [ "$rc" -eq 0 ] && [ -z "$m_qerr" ] && [ -z "$m601" ]; then
     pass "flag pair gh accepts reaches a real verdict, not QUERY-ERROR"
 else
     fail "flag-pair rejection" "rc=$rc out='$out' err='$err'"
