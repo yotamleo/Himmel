@@ -2775,6 +2775,53 @@ F42B_CMD="bash -c 'install --target-directory=$FIX/wt $FIX/wt/src.txt'"
 F42B_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F42B_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "42b bash -c install --target-directory=wt allows" allow "$F42B_JSON"
 
+echo "== HIMMEL-3648 CR round 9 (judge J1307O verdict — union fix: cd tracking may only ADD denies, C1) =="
+
+# 43-54 (J1307O C1): from a PRIMARY payload cwd, _bwimc_ecwd_track treats
+# every cd/pushd clause as though it ran in the CURRENT shell — it has no
+# model of a nonexistent target, ||/&&-short-circuiting, a subshell, a
+# pipeline, a background &, an if/while body that never runs, or a $(...)
+# command substitution. Each shape below has the REAL cwd stay in the
+# primary while the tracker's cd resolves to <wt>, so the relative write
+# that follows is checked against <wt> and wrongly ALLOWED at the pre-fix
+# head — while the write really lands in the primary. main DENIES every
+# one of these; so must head, post-fix.
+check_both "43 fromP: cd wt/nope; echo x > a.txt (nonexistent cd target, HIMMEL-3695 shape) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/nope; echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "44 fromP: cd wt/nope; touch b.txt (same shape, touch) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/nope; touch b.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "45 fromP: cd wt/nope; cp wt/src.txt b.txt (same shape, cp dest) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/nope; cp $FIX/wt/src.txt b.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "46 fromP: cd primary || cd wt; echo x > a.txt (HIMMEL-3685 primary-cwd half — first cd succeeds so the || never runs) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "47 fromP: (cd wt && true); echo x > a.txt (subshell cd never escapes) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"(cd $FIX/wt && true); echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "48 fromP: false && cd wt; echo x > a.txt (short-circuited cd never runs) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"false && cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "49 fromP: true || cd wt; echo x > a.txt (short-circuited cd never runs) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"true || cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "50 fromP: cd wt | cat; echo x > a.txt (pipeline component runs in its own subshell) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "51 fromP: cd wt & echo x > a.txt (backgrounded cd runs in its own subshell) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt & echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "52 fromP: if false; then cd wt; fi; echo x > a.txt (never-entered if body) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "53 fromP: while false; do cd wt; done; echo x > a.txt (never-entered while body) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"while false; do cd $FIX/wt; done; echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "54 fromP: x=\$(cd wt); echo x > a.txt (cd inside a command substitution is its own subshell) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"x=\$(cd $FIX/wt); echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+
+# 55 (J1307O C1, relaxation-loss control): base has no cd tracking at all,
+# so it DENIES `cd <wt> && echo x > a.txt` from a primary cwd outright
+# (documented in base's header as correct-by-policy), even though this ONE
+# shape is a genuine, unconditional cd and runtime lands safely in wt. The
+# strict superset rule (cd tracking may only ADD denies relative to a
+# payload-cwd-only check, never remove one) takes this relaxation back:
+# post-fix, the union check fires on every _bwimc_ecwd/_bwimc_cwd
+# divergence unconditionally, so this row denies again too.
+check_both "55 fromP: cd wt && echo x > a.txt (genuine, runtime-safe cd — still denies post-fix under the strict superset rule)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

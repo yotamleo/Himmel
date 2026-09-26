@@ -157,13 +157,28 @@
 #     used to be: `_bwimc_ecwd_track` re-tracks it per clause, and
 #     `_bwimc_cd_guard` denies a RELATIVE write candidate outright once a
 #     `cd`/`pushd` target could not be resolved statically or a `popd` left it
-#     unknown — fail-closed on the unresolvable case, not fail-open). Arm (g)
-#     (git subcommands) keeps its own separate, pre-existing `_bwimc_git_clause`
-#     tracking, unaffected by this. Not modelled: an absolute or dynamic write
-#     candidate is checked against the tracked cwd exactly like before, and a
-#     `cd` performed by an EARLIER, separate command (a prior Bash call in the
-#     same session) is still invisible — this hook only ever sees one command
-#     at a time. Documented bypass: EDIT_ON_MAIN_OK=1 in the LAUNCHING shell.
+#     unknown). `_bwimc_ecwd_track` has NO model of a nonexistent cd/pushd
+#     target, `||`/`&&` short-circuiting, a subshell, a pipeline, a background
+#     `&`, an if/while body that never runs, or a `$(...)` command
+#     substitution — every one of those can leave the tracked cwd pointing
+#     somewhere the cd never actually took the shell (HIMMEL-3648 CR round 9,
+#     judge J1307O C1). Rather than model each shape, `_bwimc_cd_guard` closes
+#     the gap structurally: whenever the tracked cwd has diverged from the
+#     real payload cwd at all, the write candidate is ALSO checked against the
+#     real payload cwd, and denied if THAT resolves inside the primary — so
+#     cd tracking can only ADD denies relative to a payload-cwd-only check,
+#     never remove one, regardless of how wrong its own clause-connective
+#     modelling turns out to be (the "strict superset rule"; one documented,
+#     deliberate exception: a genuine, unconditional `cd <worktree> &&
+#     <relative write>` issued from a primary cwd also denies under this rule,
+#     even though it is runtime-safe — the rule does not distinguish "safe"
+#     divergence from "unsafe" divergence). Arm (g) (git subcommands) keeps
+#     its own separate, pre-existing `_bwimc_git_clause` tracking, unaffected
+#     by this. Not modelled: an absolute or dynamic write candidate is checked
+#     against the tracked cwd exactly like before, and a `cd` performed by an
+#     EARLIER, separate command (a prior Bash call in the same session) is
+#     still invisible — this hook only ever sees one command at a time.
+#     Documented bypass: EDIT_ON_MAIN_OK=1 in the LAUNCHING shell.
 #
 # Exit codes: 0/return allow (see mode note above); 2 block. Bash 3.2-safe.
 
@@ -1280,11 +1295,28 @@ _bwimc_ecwd_track() {
 # this same command left the modelled cwd unresolved (HIMMEL-3648) — an
 # absolute or dynamic ($/backtick) candidate is untouched: those already
 # resolve (or fail open on themselves alone) regardless of cwd.
+#
+# HIMMEL-3648 (J1307O C1): _bwimc_ecwd_track has no model of a cd/pushd
+# target that doesn't exist, ||/&&-short-circuiting, a subshell, a
+# pipeline, a background &, an if/while body that never runs, or a $(...)
+# command substitution — every one of those can leave _bwimc_ecwd pointing
+# somewhere the cd never actually took the shell, while the REAL cwd stays
+# wherever it started (often the primary). Modelling every one of those
+# shapes correctly is out of scope for this fix; instead, once the tracked
+# cwd has diverged from the real payload cwd at all, ALSO check this same
+# candidate against the real payload cwd and deny if THAT resolves inside
+# the primary — cd tracking may only ADD denies relative to a
+# payload-cwd-only check, never remove one, regardless of how wrong its
+# own clause-connective modelling turns out to be. _bwimc_check_target
+# itself calls _bwimc_deny (which exits) on a DENY verdict, so this runs
+# before the call site's own _bwimc_ecwd-based check ever gets a chance to
+# allow.
 _bwimc_cd_guard() {
     case "$1" in
         /*|[A-Za-z]:/*|[A-Za-z]:\\*|*'$'*|*'`'*) return 0 ;;
     esac
     [ "$_bwimc_ecwd_unres" = 1 ] && _bwimc_deny "unresolved-cd" "$1" "" ""
+    [ "$_bwimc_ecwd" != "$_bwimc_cwd" ] && _bwimc_check_target "$1" "$_bwimc_cwd"
     return 0
 }
 
