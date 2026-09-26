@@ -931,6 +931,54 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 26: codex-1 -- a duplicate caller (claim_capture fails because
+# another run already holds the claim) must NOT release that claim on its own
+# exit. Pre-claim the slot as if a real winning run is still in flight, then
+# run the hook for the SAME session_id (a duplicate loser) and confirm the
+# pre-existing claim survives the duplicate's own EXIT trap — otherwise a
+# third caller could re-claim and double-write.
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/.claude/logs/end-session-wiki"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+SLUG26="$(_esw_sid_slug "codex1test")"
+CLAIM_DIR26="$SB/home/.claude/logs/end-session-wiki/captured"
+mkdir -p "$CLAIM_DIR26/$SLUG26"
+payload26=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"codex1test","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload26" | \
+    env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+        LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    bash "$HOOK" >/dev/null
+if [ -d "$CLAIM_DIR26/$SLUG26" ]; then
+    pass "codex-1: a duplicate caller (already-captured) does not release the winner's claim"
+else
+    fail "codex-1: a duplicate caller's own exit released a claim it never won"
+fi
+rm -rf "$SB"
+
+# --- Case 27: codex-2 -- a pre-upgrade FILE marker (main wrote a plain file,
+# not a directory) at the capture slot must still be honored as
+# "already captured": claim_capture must not treat a non-directory occupant
+# as "no genuine claim" and let the note be written again.
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/.claude/logs/end-session-wiki"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+SLUG27="$(_esw_sid_slug "codex2test")"
+CLAIM_DIR27="$SB/home/.claude/logs/end-session-wiki/captured"
+mkdir -p "$CLAIM_DIR27"
+: > "$CLAIM_DIR27/$SLUG27"
+payload27=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"codex2test","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload27" | \
+    env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+        LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    bash "$HOOK" >/dev/null
+NOTE_COUNT27="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT27" = "0" ]; then
+    pass "codex-2: a pre-upgrade FILE marker is honored as already-captured"
+else
+    fail "codex-2: a pre-upgrade FILE marker was NOT honored — wrote $NOTE_COUNT27 notes (want 0)"
+fi
+rm -rf "$SB"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

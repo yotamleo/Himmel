@@ -165,10 +165,12 @@ claim_capture() {
     (umask 077; mkdir -p "$CAPTURED_DIR") 2>/dev/null
     slot="${CAPTURED_DIR}/$(_esw_sid_slug "$sid")"
     mkdir "$slot" 2>/dev/null && return 0
-    # Only an EXISTING claim is genuine dedup. Any other mkdir failure (e.g.
-    # CAPTURED_DIR itself could not be created) must fall through and let the
-    # note write proceed uncaptured, best-effort, as main did (HIMMEL-3638/F2).
-    [ -d "$slot" ] && return 1
+    # Only an EXISTING marker is genuine dedup - a directory claim from this
+    # code, OR a plain FILE marker from main (pre-upgrade). Either way `-e`
+    # catches it; anything else (e.g. CAPTURED_DIR itself could not be
+    # created) must fall through and let the note write proceed uncaptured,
+    # best-effort, as main did (HIMMEL-3638/F2, codex-2).
+    [ -e "$slot" ] && return 1
     return 0
 }
 
@@ -230,8 +232,12 @@ HOOK_OK=0
 # WROTE is set to 1 immediately after a successful note write (local fs or
 # REST PUT). Any exit before that point — including a claimed-but-cancelled
 # run — must release its claim so a retry for the same session_id is not
-# wedged forever (HIMMEL-3629/F1).
+# wedged forever (HIMMEL-3629/F1). CLAIMED is set to 1 only by THIS process's
+# own successful claim_capture call, so a duplicate caller that never won the
+# claim (claim_capture returned failure) cannot release the winner's active
+# claim out from under it on its own exit (codex-1).
 WROTE=0
+CLAIMED=0
 # shellcheck disable=SC2317  # invoked indirectly via `trap ... EXIT`
 __on_exit() {
     local rc=$?
@@ -241,7 +247,7 @@ __on_exit() {
         # AND set HOOK_OK=1 before exit to avoid double-logging.
         log_msg "FAILED with exit $rc (unhandled - see prior log lines)"
     fi
-    [ "$WROTE" -eq 0 ] && release_capture "${SESSION_ID:-}"
+    [ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture "${SESSION_ID:-}"
     # Override the actual exit code: hook MUST NEVER exit non-zero.
     exit 0
 }
@@ -257,7 +263,7 @@ trap '__on_exit' EXIT
 __on_signal() {
     local sig="$1"
     log_msg "cancelled by signal $sig (session ${SESSION_ID:-unknown})"
-    [ "$WROTE" -eq 0 ] && release_capture "${SESSION_ID:-}"
+    [ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture "${SESSION_ID:-}"
     HOOK_OK=1
     exit 0
 }
@@ -360,6 +366,7 @@ if ! claim_capture "$SESSION_ID"; then
     HOOK_OK=1
     exit 0
 fi
+CLAIMED=1
 
 if [ -z "$SESSION_CWD" ]; then
     log_msg "ERROR: payload missing 'cwd'"

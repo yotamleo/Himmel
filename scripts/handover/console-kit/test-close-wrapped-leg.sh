@@ -428,6 +428,34 @@ check "mtime-window-fallback: rc 0 (still closes)" "$rc" "0"
 note_count21=$(find "$ESW_SB5/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 check "mtime-window-fallback: exactly one note written (0 matches under the mtime window, found via all-time fallback)" "$note_count21" "1"
 
+# --- 22: codex-3 -- the mtime-scoped search is NON-empty (an unrelated, recent
+# decoy transcript exists) but contains 0 MATCHES for this leg; the actual
+# target transcript is older than the window. An empty-scan_files check alone
+# never retries here (scan_files has the decoy in it), so this must fall back
+# on 0 MATCHES, not 0 files.
+ESW_SB6="$W/esw-sb6"
+mkdir -p "$ESW_SB6/vault" "$ESW_SB6/proj" "$ESW_SB6/home"
+PROJDIR6="$W/esw-projects6"
+mkdir -p "$PROJDIR6"
+DECOY_TRANSCRIPT="$PROJDIR6/sess-decoy.jsonl"
+printf '%s\n' "{\"customTitle\":\"not-this-leg\",\"timestamp\":\"2026-06-17T00:00:00Z\"}" > "$DECOY_TRANSCRIPT"
+OLD_TRANSCRIPT6="$PROJDIR6/sess-old.jsonl"
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB6/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB6/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
+} > "$OLD_TRANSCRIPT6"
+touch -d '10 days ago' "$OLD_TRANSCRIPT6" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT6" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB6/home" LUNA_VAULT_PATH="$ESW_SB6/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB6/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR6" CLOSE_WRAPPED_LEG_MTIME_DAYS=1 \
+    run "$DOC" 2>&1) || rc=$?
+check "mtime-scoped-decoy-fallback: rc 0 (still closes)" "$rc" "0"
+note_count22=$(find "$ESW_SB6/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "mtime-scoped-decoy-fallback: exactly one note written (an unrelated recent decoy must not suppress the all-time retry)" "$note_count22" "1"
+
 echo "----"
 if [ "$fails" -eq 0 ]; then
     echo "ALL OK"
