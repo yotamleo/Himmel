@@ -859,5 +859,150 @@ RC61=$(run_hook readonly-auto-fix "$REG_CLAUDEX" "$(payload general-purpose sonn
 assert_rc "read-only declaration with 'Auto fix the parser' still refuses" 2 "$RC61"
 
 echo ""
+echo "=== HIMMEL-1568: round guard at the Agent dispatch chokepoint ==="
+# Exercises scripts/telegram/round-guard.ts's `check` CLI through THIS hook,
+# never through spawn-glm.ts/spawn-claudex.ts — the whole point of HIMMEL-1568.
+# Each case gets its own scratch git repo (own git-common-dir, own ledger) so
+# nothing here touches the real/shared worktree ledger. `PATH="$PATH"` on
+# every call restores the suite's genuine PATH over run_hook's default
+# STUB_BUN_DIR stub (HIMMEL-1567): the round-guard probe actually EXECUTES
+# bun against the fixture ledger, so it must see a real bun, not the no-op.
+#
+# NOTE on (b)/(c) below: the ticket brief glosses these as "3 reviewed heads +
+# INVARIANT -> allow" / "2 reviewed heads -> allow", but the shipped,
+# untouched HIMMEL-1553 predicate (checkRoundGuard, round-guard.ts) only
+# allows-with-INVARIANT at exactly ROUND_WARN_THRESHOLD=2 trailing BLOCKING
+# rounds -- at ROUND_ESCALATE_THRESHOLD=3 it refuses regardless of INVARIANT
+# (only a --rounds-override text unblocks it, which this chokepoint does not
+# wire -- the brief says the unblock here is the INVARIANT section, no bypass
+# var). "Reviewed heads" is also not the same count as "trailing blocking
+# rounds" (a clean/disproved head is reviewed but not blocking). These cases
+# are built against the REAL predicate's actual thresholds rather than the
+# brief's shorthand, since guard PRs never relax an existing DENY and this
+# ticket forbids changing round-guard.ts's decision semantics; flagged to the
+# console as a FINDING.
+
+mk_round_repo() {
+    local dir="$1" branch="$2"
+    mkdir -p "$dir"
+    git -C "$dir" init -q
+    git -C "$dir" symbolic-ref HEAD "refs/heads/$branch"
+    git -C "$dir" -c user.email=t@t.invalid -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m init
+}
+
+round_ledger_path() {
+    git -C "$1" rev-parse --path-format=absolute --git-common-dir
+}
+
+round_head() { printf '%s' "$1" | sha1sum | cut -d' ' -f1; }
+
+finding_row() {
+    jq -nc --arg b "$1" --arg h "$2" --arg sev "$3" --arg v "$4" --arg id "$5" \
+        '{kind:"finding",branch:$b,head:$h,finding_id:$id,severity:$sev,verdict:$v}'
+}
+
+avail_row() {
+    jq -nc --arg b "$1" --arg h "$2" --arg s "$3" \
+        '{kind:"avail",branch:$b,head:$h,status:$s}'
+}
+
+payload_cwd() {
+    jq -nc --arg st "$1" --arg m "$2" --arg d "$3" --arg p "$4" --arg c "$5" \
+        '{tool_name:"Agent",session_id:"sess-test",tool_input:{subagent_type:$st,description:$d,prompt:$p,model:$m,cwd:$c}}'
+}
+
+# --- (a)/(d) fixture: 3 trailing blocking rounds on one branch (ESCALATE).
+RG_REPO_AD="$TMP/round-repo-ad"
+RG_BRANCH_AD="fix/himmel-9001-round-a"
+mk_round_repo "$RG_REPO_AD" "$RG_BRANCH_AD"
+RG_H1=$(round_head h1); RG_H2=$(round_head h2); RG_H3=$(round_head h3)
+{
+    finding_row "$RG_BRANCH_AD" "$RG_H1" crit open f1
+    finding_row "$RG_BRANCH_AD" "$RG_H2" imp open f2
+    finding_row "$RG_BRANCH_AD" "$RG_H3" crit open f3
+} > "$(round_ledger_path "$RG_REPO_AD")/cr-critic-scores.jsonl"
+
+RC_RG_A=$(run_hook round-3-no-invariant "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9001' 'Write the code and commit it.' "$RG_REPO_AD")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(a) 3 blocking rounds, no INVARIANT: implementor dispatch refuses" 2 "$RC_RG_A"
+assert_contains "(a) refusal names the ticket" "HIMMEL-9001" "$(combined_output round-3-no-invariant)"
+assert_contains "(a) refusal cites the round guard" "round guard" "$(combined_output round-3-no-invariant)"
+
+# --- (a2), console ruling 2026-09-26: pin the escalate threshold through this
+# chokepoint too. At ROUND_ESCALATE_THRESHOLD (3) checkRoundGuard refuses
+# BEFORE it ever looks for an INVARIANT section, and this chokepoint does not
+# wire --rounds-override — so a substantive INVARIANT must NOT unblock a
+# 3-round dispatch. If this ever starts passing, either round-guard.ts's
+# escalate branch moved (forbidden: never relax an existing DENY) or the hook
+# started swallowing --rounds-override some other way.
+RG_INVARIANT_A2='Write the code and commit it.
+INVARIANT:
+  Every prior round left the same retry loop uninstrumented; the fix must add a bounded retry with a logged cause on every exit path.
+FILES:
+  scripts/example.sh'
+RC_RG_A2=$(run_hook round-3-invariant-still-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9001' "$RG_INVARIANT_A2" "$RG_REPO_AD")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(a2) 3 blocking rounds + substantive INVARIANT still refuses (escalate, no override wired)" 2 "$RC_RG_A2"
+assert_contains "(a2) refusal names the escalation" "consecutive blocking reviews" "$(combined_output round-3-invariant-still-refuses)"
+
+RC_RG_D=$(run_hook round-3-research-exempt "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Research HIMMEL-9001' 'Investigate how to fix the routing drift; report findings only, read-only.' "$RG_REPO_AD")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(d) research-shaped dispatch at 3 blocking rounds stays exempt" 0 "$RC_RG_D"
+assert_empty "(d) research-shaped dispatch is silent (round-guard block never reached)" "$(combined_output round-3-research-exempt)"
+
+# --- (b) fixture: 2 trailing blocking rounds (WARN threshold) + a substantive
+# INVARIANT section -- the only unblock this chokepoint offers.
+RG_REPO_B="$TMP/round-repo-b"
+RG_BRANCH_B="fix/himmel-9002-round-b"
+mk_round_repo "$RG_REPO_B" "$RG_BRANCH_B"
+RG_H4=$(round_head h4); RG_H5=$(round_head h5)
+{
+    finding_row "$RG_BRANCH_B" "$RG_H4" crit open f4
+    finding_row "$RG_BRANCH_B" "$RG_H5" imp open f5
+} > "$(round_ledger_path "$RG_REPO_B")/cr-critic-scores.jsonl"
+
+RG_INVARIANT_B='Write the code and commit it.
+INVARIANT:
+  Every prior round left the same retry loop uninstrumented; the fix must add a bounded retry with a logged cause on every exit path.
+FILES:
+  scripts/example.sh'
+RC_RG_B=$(run_hook round-2-invariant "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9002' "$RG_INVARIANT_B" "$RG_REPO_B")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(b) 2 blocking rounds + substantive INVARIANT: allows" 0 "$RC_RG_B"
+assert_contains "(b) round-guard note reaches the transcript" "round guard" "$(combined_output round-2-invariant)"
+
+# --- (c) fixture: 2 REVIEWED heads, neither blocking (clean + disproved) --
+# the guard counts trailing BLOCKING rounds, not raw reviewed-head count.
+RG_REPO_C="$TMP/round-repo-c"
+RG_BRANCH_C="fix/himmel-9003-round-c"
+mk_round_repo "$RG_REPO_C" "$RG_BRANCH_C"
+RG_H6=$(round_head h6); RG_H7=$(round_head h7)
+{
+    avail_row "$RG_BRANCH_C" "$RG_H6" ok
+    finding_row "$RG_BRANCH_C" "$RG_H7" crit disproved f6
+} > "$(round_ledger_path "$RG_REPO_C")/cr-critic-scores.jsonl"
+
+RC_RG_C=$(run_hook round-2-clean "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9003' 'Write the code and commit it.' "$RG_REPO_C")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(c) 2 reviewed, non-blocking heads allow without an INVARIANT" 0 "$RC_RG_C"
+
+# --- (e) fixture: 2 real blocking rounds plus a THIRD, more recent avail row
+# with a non-`ok` status. If it wrongly counted as a 3rd trailing round this
+# would refuse outright (ESCALATE, invariant or not); it allows only because
+# the guard excludes it.
+RG_REPO_E="$TMP/round-repo-e"
+RG_BRANCH_E="fix/himmel-9004-round-e"
+mk_round_repo "$RG_REPO_E" "$RG_BRANCH_E"
+RG_H8=$(round_head h8); RG_H9=$(round_head h9); RG_H10=$(round_head h10)
+{
+    finding_row "$RG_BRANCH_E" "$RG_H8" crit open f8
+    finding_row "$RG_BRANCH_E" "$RG_H9" imp open f9
+    avail_row "$RG_BRANCH_E" "$RG_H10" timeout
+} > "$(round_ledger_path "$RG_REPO_E")/cr-critic-scores.jsonl"
+
+RG_INVARIANT_E='Write the code and commit it.
+INVARIANT:
+  Every prior round left the same retry loop uninstrumented; the fix must add a bounded retry with a logged cause on every exit path.
+FILES:
+  scripts/example.sh'
+RC_RG_E=$(run_hook round-avail-nonok-excluded "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9004' "$RG_INVARIANT_E" "$RG_REPO_E")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(e) a non-ok avail row does not count toward the trailing round total" 0 "$RC_RG_E"
+
+echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
