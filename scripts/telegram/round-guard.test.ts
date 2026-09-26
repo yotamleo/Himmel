@@ -321,3 +321,27 @@ test("CLI: `check` without --cwd/--task-file exits 2 naming both as required", (
   expect(r.exitCode).toBe(2);
   expect(r.stderr.toString()).toContain("round-guard.ts check: --cwd and --task-file are required");
 });
+
+// HIMMEL-3681: guard-implementor-dispatch.sh treats an exit-0 CLI run
+// without this sentinel as version skew and refuses. An explicit
+// non-ticket-shaped --branch keeps this deterministic regardless of this
+// worktree's own real ledger history (its actual branch carries a genuine
+// HIMMEL-3676 ticket key whose round count changes as THIS PR is reviewed).
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+test("CLI: a clean exit-0 `check` run always prints the version sentinel", () => {
+  const dir = mkdtempSync(join(tmpdir(), "round-guard-sentinel-"));
+  const taskFile = join(dir, "task.txt");
+  writeFileSync(taskFile, "no ticket key in this task text");
+  try {
+    const r = Bun.spawnSync(
+      ["bun", CLI_PATH, "check", "--cwd", ".", "--branch", "test/no-ticket-here", "--task-file", taskFile],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr.toString()).toContain("round-guard-cli: v1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

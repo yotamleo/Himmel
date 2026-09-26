@@ -286,7 +286,7 @@ lane_runnable() {
 # this hook sometimes runs under, and the process-group kill reaps the helper's
 # children so a wedged reader leaves nothing behind.
 _run_bounded() {
-    local budget_secs="$1" cmd="$2"
+    local budget_secs="$1" cmd="$2" poll_secs="${3:-1}"
     local cap pid start rc
     cap=$(mktemp "${TMPDIR:-/tmp}/himmel-bank-status.XXXXXX" 2>/dev/null) || cap=""
     set -m
@@ -295,7 +295,7 @@ _run_bounded() {
     set +m
     start=$SECONDS
     while [ $((SECONDS - start)) -lt "$budget_secs" ] && kill -0 "$pid" 2>/dev/null; do
-        sleep 1
+        sleep "$poll_secs"
     done
     rc=0
     if kill -0 "$pid" 2>/dev/null; then
@@ -473,6 +473,28 @@ lane_ready() {
 # section spawn-glm/spawn-claudex already honour).
 round_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
 if [ -n "$round_cwd" ]; then
+    # HIMMEL-3676: the dispatch text (not the payload cwd) is the ground truth
+    # for WHICH branch this implementor round belongs to whenever it names a
+    # worktree — a dispatching session's own cwd is routinely the primary
+    # checkout (on main, or another branch entirely) while the actual work
+    # happens in a linked worktree it names by path. Naming one and failing to
+    # resolve its branch (missing dir, not a git repo, detached HEAD) must
+    # refuse rather than silently fall back to the payload cwd's own (0-round)
+    # branch — that fallback is exactly the wrong-attribution bug this fixes.
+    round_branch_args=""
+    round_wt_path=$(printf '%s' "$text" | grep -oE '[A-Za-z0-9_./+-]*\.claude/worktrees/[A-Za-z0-9_+-]+' | head -1 || true)
+    if [ -n "$round_wt_path" ]; then
+        round_wt_branch=$(git -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        case "$round_wt_branch" in
+            ""|HEAD)
+                printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch names worktree %s but its branch could not be resolved (missing directory, not a git repo, or detached HEAD) — the reviewed-round predicate cannot be safely attributed. Fix the worktree reference and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_wt_path" >&2
+                exit 2
+                ;;
+            *)
+                round_branch_args=" --branch $(printf '%q' "$round_wt_branch")"
+                ;;
+        esac
+    fi
     round_task_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_task_file=""
     round_task_path="$round_task_file"
     if [ -n "$round_task_file" ]; then
@@ -481,7 +503,7 @@ if [ -n "$round_cwd" ]; then
     round_cmd=""
     if [ -n "$round_task_file" ]; then
         if command -v bun >/dev/null 2>&1 && [ -f "$repo_root/scripts/telegram/round-guard.ts" ]; then
-            round_cmd="bun $(printf '%q' "$repo_root/scripts/telegram/round-guard.ts") check --cwd $(printf '%q' "$round_cwd") --task-file $(printf '%q' "$round_task_file")"
+            round_cmd="bun $(printf '%q' "$repo_root/scripts/telegram/round-guard.ts") check --cwd $(printf '%q' "$round_cwd") --task-file $(printf '%q' "$round_task_file")$round_branch_args"
         fi
     fi
     if [ -z "$round_cmd" ]; then
@@ -490,10 +512,20 @@ if [ -n "$round_cwd" ]; then
         exit 2
     fi
     round_rc=0
-    round_out=$(_run_bounded "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$round_cmd") || round_rc=$?
+    round_out=$(_run_bounded "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$round_cmd" 0.05) || round_rc=$?
     rm -f "$round_task_path" 2>/dev/null
     case "$round_rc" in
         0)
+            # HIMMEL-3681: a version-skewed/stale round-guard.ts build could
+            # exit 0 having never actually evaluated the predicate; the
+            # sentinel is the only signal this hook has that it did.
+            case "$round_out" in
+                *"round-guard-cli: v1"*) ;;
+                *)
+                    printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3681): the reviewed-round probe exited 0 without its version sentinel ("round-guard-cli: v1") — a version-skewed or stale round-guard.ts cannot be trusted to have evaluated the predicate for this implementor dispatch. Output: %s\n' "$round_out" >&2
+                    exit 2
+                    ;;
+            esac
             [ -n "$round_out" ] && warn "$round_out"
             ;;
         2)

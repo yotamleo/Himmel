@@ -332,6 +332,10 @@ if (import.meta.main) {
     console.error("usage: round-guard.ts check --cwd <dir> [--branch <name>] --task-file <path> [--rounds-override <text>]");
     process.exit(2);
   }
+  // HIMMEL-3681: a version sentinel every real `check` run prints, so a
+  // caller can tell a genuine exit 0 from one produced by a stale/skewed
+  // build of this file that no longer evaluates the predicate at all.
+  console.error("round-guard-cli: v1");
   let cwd: string | undefined;
   let branch: string | undefined;
   let taskFile: string | undefined;
