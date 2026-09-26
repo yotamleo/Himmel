@@ -799,7 +799,7 @@ rm -rf "$SB" "$CURL_STUB_DIR"
 # run against the unfixed hook terminates instead of hanging the suite.
 SB="$(make_sandbox)"
 PORT_FILE="$SB/listener-port"
-python3 - "$PORT_FILE" > /dev/null 2>&1 <<'PYEOF' &
+setsid python3 - "$PORT_FILE" > /dev/null 2>&1 <<'PYEOF' &
 import socket, sys, time
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
