@@ -725,6 +725,21 @@ else
     fail "sshremote push: expected exit 0 + marker at $pm_ssh (got rc=$rc)" "out: $out"
 fi
 
+echo "TEST: HIMMEL-1565 -- scrub_endpoint leaves a bare scp/ssh username (no password) untouched, since it carries no credential"
+git -C "$PB" update-ref refs/remotes/sshbareuser/main "$pb_init"
+rc=0; out=$(cd "$PB" && bash "$HOOK" sshbareuser "ssh://git@example.com/repo.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+pm_ssh_bare="$PB/.git/cr-pending/feat/pub"
+if [ "$rc" -eq 0 ] && [ -f "$pm_ssh_bare" ]; then
+    pm_ssh_bare_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$pm_ssh_bare" 2>/dev/null || true)
+    if [ "$pm_ssh_bare_endpoint" = "ssh://git@example.com/repo.git" ]; then
+        pass "bare ssh:// username preserved -- later ls-remote must resolve identity as the pushed endpoint did (HIMMEL-1565)"
+    else
+        fail "bare ssh:// username was altered: '$pm_ssh_bare_endpoint'" "out: $out"
+    fi
+else
+    fail "sshbareuser push: expected exit 0 + marker at $pm_ssh_bare (got rc=$rc)" "out: $out"
+fi
+
 echo "TEST: HIMMEL-1565 -- a relative push endpoint is canonicalized to an absolute path before the marker binds to it"
 git init -q --bare "$TMP_ROOT/relremote.git" >/dev/null
 git -C "$PB" update-ref refs/remotes/relremote/main "$pb_init"
@@ -740,6 +755,23 @@ if [ "$rc" -eq 0 ] && [ -f "$pm_rel" ]; then
     esac
 else
     fail "relremote push: expected exit 0 + marker at $pm_rel (got rc=$rc)" "out: $out"
+fi
+
+echo "TEST: HIMMEL-1565 -- a relative endpoint whose path contains a colon after a slash is still canonicalized (not mistaken for scp-style)"
+git init -q --bare "$PB/a:b.git" >/dev/null
+git -C "$PB" update-ref refs/remotes/colonrel/main "$pb_init"
+rc=0; out=$(cd "$PB" && bash "$HOOK" colonrel "./a:b.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+pm_colonrel="$PB/.git/cr-pending/feat/pub"
+if [ "$rc" -eq 0 ] && [ -f "$pm_colonrel" ]; then
+    pm_colonrel_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$pm_colonrel" 2>/dev/null || true)
+    case "$pm_colonrel_endpoint" in
+        /*a:b.git)
+            pass "relative path with a post-slash colon canonicalized, not mistaken for scp-style (HIMMEL-1565)" ;;
+        *)
+            fail "relative path with a post-slash colon persisted verbatim: '$pm_colonrel_endpoint'" "out: $out" ;;
+    esac
+else
+    fail "colonrel push: expected exit 0 + marker at $pm_colonrel (got rc=$rc)" "out: $out"
 fi
 
 echo "TEST: HIMMEL-1565 -- an uncanonicalizable relative endpoint fails CLOSED rather than persisting verbatim"

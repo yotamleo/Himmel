@@ -190,10 +190,15 @@ REF_LINES
 # under .git. HIMMEL-1565: covers every scheme, not just http(s) — ssh://
 # and git:// both accept a user:pass@ userinfo component too (scp-style
 # user@host:path, e.g. git@, is a bare username with no `://` and no
-# password position, so it is left untouched: nothing there to scrub).
+# password position, so it is left untouched: nothing there to scrub). Only a
+# userinfo with a `:` password separator before the `@` is stripped — a bare
+# `scheme://user@host` carries no credential, and the username there is load
+# -bearing (clear-cr-marker.sh's later ls-remote resolves identity from the
+# persisted endpoint, so blanking a plain `git@` would change which account
+# it connects as).
 scrub_endpoint() {
     case "$1" in
-        *://*@*) printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' ;;
+        *://*:*@*) printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' ;;
         *) printf '%s\n' "$1" ;;
     esac
 }
@@ -202,22 +207,33 @@ scrub_endpoint() {
 # persisted verbatim in the marker resolves against WHATEVER cwd a later
 # reader (clear-cr-marker.sh) happens to run from, not the pushing repo's
 # cwd — a different, potentially pusher-influenced target. A URL
-# (scheme://...), an already-absolute path (/...) or an scp-style
-# host:path / user@host:path form (anything else containing a ':') carries
-# its own unambiguous location and passes through; only a bare relative
-# filesystem path is resolved, against THIS process's cwd (the pre-push
-# hook's cwd is the repo's own worktree root). Prints nothing and returns 1
-# if resolution fails — the caller must fail closed rather than persist an
-# endpoint that could not be pinned to an absolute location.
+# (scheme://...) or an already-absolute path (/...) carries its own
+# unambiguous location and passes through. An scp-style host:path /
+# user@host:path form also passes through — recognized the same way git
+# itself disambiguates it: a ':' with no '/' before it. A ':' that first
+# appears AFTER a '/' (e.g. `./a:b`, `sub/dir:with:colon`) is just a colon
+# inside an ordinary relative path, not scp syntax, so that still falls
+# through to resolution. Only a bare relative filesystem path is resolved,
+# against THIS process's cwd (the pre-push hook's cwd is the repo's own
+# worktree root). Prints nothing and returns 1 if resolution fails — the
+# caller must fail closed rather than persist an endpoint that could not be
+# pinned to an absolute location.
 canonicalize_endpoint() {
-    local ep="$1" abs
+    local ep="$1" abs before_colon
     case "$ep" in
-        *://*|/*|*:*) printf '%s\n' "$ep"; return 0 ;;
-        *)
-            abs=$(cd "$ep" 2>/dev/null && pwd -P) && [ -n "$abs" ] || return 1
-            printf '%s\n' "$abs"
+        *://*|/*) printf '%s\n' "$ep"; return 0 ;;
+    esac
+    case "$ep" in
+        *:*)
+            before_colon="${ep%%:*}"
+            case "$before_colon" in
+                */*) ;;
+                *) printf '%s\n' "$ep"; return 0 ;;
+            esac
             ;;
     esac
+    abs=$(cd "$ep" 2>/dev/null && pwd -P) && [ -n "$abs" ] || return 1
+    printf '%s\n' "$abs"
 }
 
 resolve_diff_base() {
