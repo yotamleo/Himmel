@@ -543,15 +543,42 @@ _is_abs_target() {
 # classify_clause has actually confirmed graphify is the command being run.
 _gf_apply_chdir() {
     local raw; raw="$(_strip_wrap "$1")"
+    # HIMMEL-3641 J1290O F1: a SECOND chdir inside one wrapper invocation
+    # (env -C a -C ., --chdir=a --chdir=., sudo -D a -D .) stacks each
+    # relative DIR onto the already-mutated TOOL_CWD from the first one; GNU
+    # env/sudo instead take the LAST flag and resolve it against the
+    # invocation's ORIGINAL cwd. Modelling that last-wins-from-origin
+    # semantics correctly would need a second saved cwd; failing closed on
+    # the second chdir is the simplest safe shape and never falsely denies
+    # an invocation with only one chdir. _GF_CHDIR_APPLIED is reset once per
+    # wrapper invocation (env)/sudo) arm entry below), never once per clause,
+    # so nested wrappers (sudo -D a env -C b - two DIFFERENT invocations)
+    # each still get their own single chdir.
+    if [ "${_GF_CHDIR_APPLIED:-0}" = 1 ]; then
+        _GF_CHDIR_DENY_REASON="chdir wrapper (env -C/--chdir, sudo -D/--chdir) given more than once in one invocation: $raw"
+        return 0
+    fi
     case "$raw" in
         '') _GF_CHDIR_DENY_REASON="chdir wrapper (env -C/--chdir, sudo -D/--chdir) with a missing/empty directory argument"; return 0 ;;
         *'$'*|*'`'*) _GF_CHDIR_DENY_REASON="chdir wrapper directory argument is unresolvable (unexpanded shell substitution): $raw"; return 0 ;;
+    esac
+    # HIMMEL-3641 J1290O F3: _abs only expands a bare `~` or `~/...`. A
+    # `~user`/`~-`/`~+` DIR really expands (to that user's home, or
+    # OLDPWD/PWD) to something this fence cannot know lexically, so anchoring
+    # it under TOOL_CWD the way _abs's fallback arm would is a silent
+    # wrong-directory ALLOW. Fail closed instead.
+    case "$raw" in
+        '~'|'~/'*) : ;;
+        '~'*)
+            _GF_CHDIR_DENY_REASON="chdir wrapper directory argument is an unresolvable tilde form (only ~ and ~/... are expanded): $raw"
+            return 0 ;;
     esac
     if [ "$CD_SEEN" = 1 ] && ! _is_abs_target "${raw//\\//}"; then
         _GF_CHDIR_DENY_REASON="chdir wrapper directory argument is relative after an earlier cd/pushd/popd: $raw"
         return 0
     fi
     TOOL_CWD="$(_abs "$raw")"
+    _GF_CHDIR_APPLIED=1
 }
 
 # _gf_deny_on_chdir_unresolved -> HIMMEL-3641. Called right before a graphify
@@ -1719,12 +1746,39 @@ classify_clause() {
                 return 0 ;;
             env)
                 i=$((i+1))                                 # env [-i|-|-u VAR|X=y]... CMD
+                _GF_CHDIR_APPLIED=0                        # HIMMEL-3641 J1290O F1: scope to THIS invocation
                 while [ "$i" -lt "$n" ]; do
                     gf_w="$(_strip_cmd "${toks[$i]}")"
                     case "$gf_w" in
                         -u)   i=$((i+2)) ;;                # flag + VAR value
                         -C)   _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2)) ;;  # HIMMEL-3641: -C DIR
-                        -C?*) _gf_apply_chdir "${gf_w#-C}"; i=$((i+1)) ;;           # HIMMEL-3641: -CDIR attached
+                        # HIMMEL-3641 J1290O F2: pass the RAW token's suffix
+                        # (${toks[$i]}), not $gf_w - $gf_w is already
+                        # _strip_cmd'd, which deletes $/`/quotes/() before
+                        # _gf_apply_chdir's own substitution check ever sees
+                        # them, so env -C$X / env -C"$X" silently resolved
+                        # instead of failing closed.
+                        -C?*) _gf_apply_chdir "${toks[$i]#-C}"; i=$((i+1)) ;;        # HIMMEL-3641: -CDIR attached
+                        # HIMMEL-3641 J1290O F4: a bundled short option
+                        # containing -C's letter (-iC, -vC, -i0C, ...) cannot
+                        # be positionally resolved without modelling GNU
+                        # getopt bundling - which flag in the bundle actually
+                        # consumes the DIR value is ambiguous from lexical
+                        # inspection alone, and misresolving it misaligns the
+                        # walk so graphify is never reached (silent ALLOW).
+                        # Fail closed the same way xargs/find -exec do above:
+                        # scan the rest of the clause for graphify and deny
+                        # if present, leave any other command alone.
+                        -*C*)
+                            k=$((i+1))
+                            while [ "$k" -lt "$n" ]; do
+                                case "$(_strip_cmd "${toks[$k]}")" in
+                                    graphify|*/graphify)
+                                        deny "graphify via a bundled env short option containing -C (env -iC/-vC/...) is not statically fenceable; invoke graphify directly, or spell -C separately" ;;
+                                esac
+                                k=$((k+1))
+                            done
+                            return 0 ;;
                         --*)
                             # HIMMEL-2610: --u/--uns/... are unambiguous GNU
                             # abbreviations of env's only value-taking long
@@ -1737,7 +1791,12 @@ classify_clause() {
                             # through to the generic -*) arm below.
                             if guard_is_long_abbrev "chdir" "$gf_w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then
-                                    _gf_apply_chdir "$GUARD_LOPT_VAL"; i=$((i+1))
+                                    # HIMMEL-3641 J1290O F2: raw value after
+                                    # the FIRST `=` in the raw token, not
+                                    # $GUARD_LOPT_VAL (parsed from $gf_w,
+                                    # already _strip_cmd'd - see the -CDIR
+                                    # note above).
+                                    _gf_apply_chdir "${toks[$i]#*=}"; i=$((i+1))
                                 else
                                     _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2))
                                 fi
@@ -1807,12 +1866,28 @@ classify_clause() {
                 continue ;;
             sudo)
                 i=$((i+1))                                 # sudo [flags] CMD
+                _GF_CHDIR_APPLIED=0                        # HIMMEL-3641 J1290O F1: scope to THIS invocation
                 while [ "$i" -lt "$n" ]; do
                     gf_w="$(_strip_cmd "${toks[$i]}")"
                     case "$gf_w" in
                         -u|-g|-U|-p|-C|-r|-t|-h) i=$((i+2)) ;;       # flag + value
                         -D)   _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2)) ;;  # HIMMEL-3641: -D DIR
-                        -D?*) _gf_apply_chdir "${gf_w#-D}"; i=$((i+1)) ;;           # HIMMEL-3641: -DDIR attached
+                        # HIMMEL-3641 J1290O F2: raw suffix, not $gf_w - see
+                        # the env -CDIR note above.
+                        -D?*) _gf_apply_chdir "${toks[$i]#-D}"; i=$((i+1)) ;;        # HIMMEL-3641: -DDIR attached
+                        # HIMMEL-3641 J1290O F4: bundled short option
+                        # containing -D's letter (-nD, -EHD, ...) - see the
+                        # env -*C* note above; same fail-closed shape.
+                        -*D*)
+                            k=$((i+1))
+                            while [ "$k" -lt "$n" ]; do
+                                case "$(_strip_cmd "${toks[$k]}")" in
+                                    graphify|*/graphify)
+                                        deny "graphify via a bundled sudo short option containing -D (sudo -nD/-EHD/...) is not statically fenceable; invoke graphify directly, or spell -D separately" ;;
+                                esac
+                                k=$((k+1))
+                            done
+                            return 0 ;;
                         --)                      i=$((i+1)); break ;;  # end of sudo options
                         --*)
                             # HIMMEL-2610: sudo had NO long-option handling
@@ -1824,7 +1899,10 @@ classify_clause() {
                             # first, same rationale as env's --chdir above.
                             if guard_is_long_abbrev "chdir" "$gf_w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then
-                                    _gf_apply_chdir "$GUARD_LOPT_VAL"; i=$((i+1))
+                                    # HIMMEL-3641 J1290O F2: raw value, not
+                                    # $GUARD_LOPT_VAL - see env's --chdir=
+                                    # note above.
+                                    _gf_apply_chdir "${toks[$i]#*=}"; i=$((i+1))
                                 else
                                     _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2))
                                 fi
@@ -2036,6 +2114,7 @@ while IFS= read -r clause || [ -n "$clause" ]; do
     # inner call ever reaches the graphify token.
     _GF_ENDPOINT_OVERRIDE=""
     _GF_CHDIR_DENY_REASON=""
+    _GF_CHDIR_APPLIED=0
     TOOL_CWD="$_GF_TOOL_CWD_BASE"
     classify_clause "$@"
     # Same _strip_cmd normalization as the graphify command-position match
