@@ -898,6 +898,92 @@ test('a starved denial names the member that actually spent the shared budget, n
   }
 });
 
+// HIMMEL-3620 (N1, J1259R residual): mustRunWindow used to be
+// `Math.min(memberTimeoutMs(), entryDeadline - Date.now())` with no floor, so
+// a RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS override below MIN_MEMBER_TIMEOUT_MS
+// (500ms) always landed under the floor regardless of how much of the real
+// entry deadline was left — every must-run member was denied pre-spawn as
+// "entry deadline exhausted", even a chain that would decide in a few ms. The
+// fixture here decides instantly; the fix must let it actually run.
+test('a must-run member with a sub-floor RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS still gets a real window (HIMMEL-3620 N1)', () => {
+  const dir = makeTmpDir('hook-bash-subfloor-member-');
+  try {
+    writeFileSync(
+      join(dir, 'block-read-secrets.sh'),
+      `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-tail.sh"\nprintf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"fast"}}'\n`,
+    );
+    chmodSync(join(dir, 'block-read-secrets.sh'), 0o755);
+
+    const result = spawnSync(process.execPath, [LAUNCHER, '--chain', join(dir, 'block-read-secrets.sh')], {
+      encoding: 'utf8',
+      input: PAYLOAD,
+      env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '400' },
+    });
+    assert.equal(
+      existsSync(join(dir, 'ran-tail.sh')),
+      true,
+      'the must-run member must actually spawn, not be denied pre-spawn',
+    );
+    assert.doesNotMatch(
+      result.stderr,
+      /entry deadline exhausted/,
+      'a fast must-run member must not be denied as entry-deadline-exhausted merely because the override is below the 500ms floor',
+    );
+    assert.equal(result.status, 0, `expected allow, got: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'allow');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// HIMMEL-3620 (N2, J1259R residual, latent): an advisory member's bound used
+// to be floored at MIN_MEMBER_TIMEOUT_MS (500ms) against the SHARED chain
+// budget only, never capped by the entry-safe deadline — several advisory
+// members after a slow must-run member could each add a floored 500ms slice
+// past the point where the real settings.json entry timeout fires, and a
+// killed entry fails the whole chain OPEN. Six advisory members that each
+// hang past their bound, with an entry deadline tight enough that only ~2 of
+// them fit inside it: at base, every one still gets the full 500ms floor
+// (~3s total), outrunning the outer harness stand-in for the real entry
+// timeout; the fix must shrink each member's bound as the entry deadline is
+// approached so the chain decides (with SKIPs) well inside it instead.
+test('advisory members are bounded by the entry deadline, not just the shared chain budget (HIMMEL-3620 N2)', () => {
+  const dir = makeTmpDir('hook-bash-advisory-entry-deadline-');
+  try {
+    const names = ['hang1.sh', 'hang2.sh', 'hang3.sh', 'hang4.sh', 'hang5.sh', 'hang6.sh'];
+    for (const name of names) {
+      writeFileSync(join(dir, name), `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-${name}"\nsleep 100\n`);
+      chmodSync(join(dir, name), 0o755);
+    }
+
+    const HARNESS_MS = 2200;
+    const t0 = Date.now();
+    const result = spawnSync(process.execPath, [LAUNCHER, '--chain', ...names.map((n) => join(dir, n))], {
+      encoding: 'utf8',
+      input: PAYLOAD,
+      timeout: HARNESS_MS,
+      killSignal: 'SIGKILL',
+      env: {
+        ...process.env,
+        RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '2000',
+        RUN_HOOK_CHAIN_BUDGET_MS: '50',
+        RUN_HOOK_CHAIN_ENTRY_TIMEOUT_MS: '1000',
+        RUN_HOOK_CHAIN_ENTRY_SAFETY_MARGIN_MS: '200',
+      },
+    });
+    const wall = Date.now() - t0;
+    assert.notEqual(
+      result.signal,
+      'SIGKILL',
+      `advisory members must decide (with SKIPs) before the entry timeout, not be killed by it (stderr: ${result.stderr})`,
+    );
+    assert.ok(wall < HARNESS_MS, `chain took ${wall}ms, must stay under the ${HARNESS_MS}ms harness stand-in for the entry timeout`);
+    assert.equal(typeof result.status, 'number', 'the chain must actually decide, not be killed mid-run');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // HIMMEL-3383: a starved guard-pr-check-literal.sh must deny, never let the
 // bare scripts/cr literal fall through to the allow rule unchecked.
 test('a starved guard-pr-check-literal.sh DENIES the chain instead of being skipped', () => {
