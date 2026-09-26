@@ -337,6 +337,19 @@ run_test "(15) HIMMEL-1712 CR (panel round 2, codex-1): a legacy cache with NO a
   [ "$(jq -r ".five_hour" "$CLAUDE_USAGE_CACHE")" = "{}" ] || exit 1;
 '
 
+run_test "(16) HIMMEL-1712 CR (panel round 4, codex-1): a session whose FIRST render finds no identity stays pinned UNKNOWN even after the identity becomes available; a NEW session picks up the now-available one" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-16.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"session_id\":\"sess-U\",\"rate_limits\":{\"five_hour\":{\"utilization\":10,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  [ "$(jq -r ".account" "$CLAUDE_USAGE_CACHE")" = "null" ] || exit 1;
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-D\"}}" > "$HOME/.claude.json";
+  printf "%s" "{\"session_id\":\"sess-U\",\"rate_limits\":{\"five_hour\":{\"utilization\":11,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  [ "$(jq -r ".account" "$CLAUDE_USAGE_CACHE")" = "null" ] || exit 1;
+  printf "%s" "{\"session_id\":\"sess-V\",\"rate_limits\":{\"five_hour\":{\"utilization\":12,\"resets_at\":\"R\"}}}" | bash "$PRODUCER";
+  acct_new=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct_new" ] && [ "$acct_new" != "null" ] || exit 1;
+'
+
 # --- summary ------------------------------------------------------------------
 if [ "$_failures" -eq 0 ]; then
   echo "OK: all cases passed"

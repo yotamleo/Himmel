@@ -144,23 +144,27 @@ account_for_session() {
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$lockfile" 2>/dev/null && flock -x 9 2>/dev/null
   fi
-  if [ -f "$SESSION_MAP_FILE" ]; then
-    mapped=$(jq -r --arg sid "$sid" '.[$sid] // empty' "$SESSION_MAP_FILE" 2>/dev/null)
-  fi
-  if [ -n "${mapped:-}" ]; then
+  # HIMMEL-1712 CR (panel round 4, codex-1): a first render that finds NO
+  # identity (hash empty) used to skip the snapshot entirely, so a later
+  # render by the SAME session fell through to a live current_account_hash()
+  # call and could adopt whatever identity is on disk BY THEN — exactly the
+  # live-re-read hazard the session-keyed design exists to avoid. Snapshot
+  # every first render, hash empty or not, keyed on whether the sid is
+  # PRESENT in the map (an empty snapshotted value is a pinned "unknown",
+  # distinct from "never rendered").
+  if [ -f "$SESSION_MAP_FILE" ] && jq -e --arg sid "$sid" 'has($sid)' "$SESSION_MAP_FILE" >/dev/null 2>&1; then
+    mapped=$(jq -r --arg sid "$sid" '.[$sid]' "$SESSION_MAP_FILE" 2>/dev/null)
     printf '%s' "$mapped"
     return
   fi
   hash=$(current_account_hash)
-  if [ -n "$hash" ]; then
-    prevmap="{}"
-    if [ -f "$SESSION_MAP_FILE" ]; then
-      prevmap=$(cat "$SESSION_MAP_FILE" 2>/dev/null)
-      printf '%s' "$prevmap" | jq -e 'type=="object"' >/dev/null 2>&1 || prevmap="{}"
-    fi
-    newmap=$(printf '%s' "$prevmap" | jq --arg sid "$sid" --arg h "$hash" '.[$sid] = $h' 2>/dev/null)
-    [ -n "$newmap" ] && write_atomic "$SESSION_MAP_FILE" "$newmap"
+  prevmap="{}"
+  if [ -f "$SESSION_MAP_FILE" ]; then
+    prevmap=$(cat "$SESSION_MAP_FILE" 2>/dev/null)
+    printf '%s' "$prevmap" | jq -e 'type=="object"' >/dev/null 2>&1 || prevmap="{}"
   fi
+  newmap=$(printf '%s' "$prevmap" | jq --arg sid "$sid" --arg h "$hash" '.[$sid] = $h' 2>/dev/null)
+  [ -n "$newmap" ] && write_atomic "$SESSION_MAP_FILE" "$newmap"
   printf '%s' "$hash"
 }
 account_hash=$(account_for_session "$session_id")
