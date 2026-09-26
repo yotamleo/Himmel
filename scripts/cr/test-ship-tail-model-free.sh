@@ -62,10 +62,16 @@ for f in "${SHIP_TAIL_FILES[@]}"; do
         violations+=("$f:missing")
         continue
     fi
-    while IFS=: read -r line_no _; do
-        [ -z "$line_no" ] && continue
-        violations+=("$f:$line_no")
-    done < <(grep -En "$PATTERN" -- "$path" 2>/dev/null)
+    grep_out="$(grep -En "$PATTERN" -- "$path" 2>&1)"
+    grep_rc=$?
+    if [ "$grep_rc" -eq 2 ]; then
+        violations+=("$f:grep-error:$grep_out")
+    elif [ "$grep_rc" -eq 0 ]; then
+        while IFS=: read -r line_no _; do
+            [ -z "$line_no" ] && continue
+            violations+=("$f:$line_no")
+        done <<<"$grep_out"
+    fi
 done
 
 if [ "${#violations[@]}" -eq 0 ]; then
