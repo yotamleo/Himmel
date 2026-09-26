@@ -64,10 +64,18 @@
 # ponytail: the default harness match is a heuristic over argv, so a leaked
 # process literally named like an MCP server (`node …/mcp-server-x/y.js`) would
 # be exempt; the leak class this gate exists for is a tool-call shell, which
-# is never exempt. The same is true of `caffeinate` and `claude-hud`
-# (HIMMEL-3712): a leg-started `caffeinate` not spawned by the session's own
-# keep-awake would also be exempt by name alone, same tradeoff, no new
-# mechanism to fix it here.
+# is never exempt. `caffeinate` and `claude-hud` (HIMMEL-3712) are anchored
+# more tightly than mcp-server/qmd: caffeinate only matches as the PROGRAM
+# itself (optionally path-prefixed) followed by nothing but flags, never a
+# job argument, and claude-hud only matches a node/bun process running a
+# script under a literal `/claude-hud/` directory — so `caffeinate
+# ./long-job.sh`, `sleep 999 caffeinate` and `grep -r claude-hud .` withhold
+# (a regression the word-anywhere match let through, caught by an Opus judge
+# on this ticket's own PR before merge) where the original match exempted
+# them. The same tradeoff as mcp-server remains at the narrower anchor: a
+# genuine `caffeinate` binary invoked with no job, or a real `claude-hud`
+# process under that path but not spawned by this session, is still exempt
+# by name/path alone, no new mechanism to fix it here.
 #
 # READ-ONLY: this script never signals a process. Bash 3.2-compatible.
 # WRAP_SUBTREE_SELF overrides the pid treated as "this script" (test seam).
@@ -96,7 +104,7 @@ case "$window" in
         printf 'WITHHELD: WRAP_SUBTREE_START_WINDOW must be a non-negative integer (got %s) — not declaring CLOSABLE\n' "$window"
         exit 2 ;;
 esac
-harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp|caffeinate|claude-hud(/[^ ]*)?)( |\$)}"
+harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp)( |\$)|^([^ ]*/)?caffeinate( -[a-z]+( [0-9]+)?)*\$|^([^ ]*/)?(node|bun) [^ ]*/claude-hud/[^ ]*( |\$)}"
 
 ps_out="$(ps -eo pid=,ppid=,etime=,args= 2>/dev/null)" || ps_out=""
 if [ -z "$ps_out" ]; then

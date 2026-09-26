@@ -278,6 +278,55 @@ contains 'the statusline root is name-matched (#1337)' "$out" 'ignored pid=310 p
 contains 'the statusline script inherits the ignore from its claude-hud parent (#1337)' "$out" 'ignored pid=311 ppid=310 etime=00:01 why=name-match via=310'
 contains 'the jq leaf inherits the ignore transitively (#1337)' "$out" 'ignored pid=313 ppid=312 etime=00:00 why=name-match via=310'
 
+# J1355O (Opus judge, round 2): the #1337 fix above matched `caffeinate` and
+# `claude-hud` as a WORD anywhere in argv, so a leg running a real job named
+# `caffeinate ./long-job.sh`, or a `sleep`/`grep` invocation that merely
+# mentions either word, got falsely exempted too. Anchor caffeinate to the
+# PROGRAM position (only flags may follow) and claude-hud to a node/bun
+# process under a literal /claude-hud/ directory; the legit rows from #1337
+# above (300/310/311) must stay exempt alongside the new decoys withholding.
+cat > "$W/decoys.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  300   101       00:05 /usr/bin/caffeinate -i -t 300
+  310   101       00:01 node /Users/u/.claude/claude-hud/dist/index.js
+  311   310       00:01 /bin/bash /Users/u/Himmel/scripts/statusline/hud-custom-lines.sh
+  330   101    00:10:00 caffeinate -i ./long-job.sh
+  331   330    00:10:00 /bin/bash ./long-job.sh
+  332   101    00:10:00 sleep 999 caffeinate
+  333   101    00:10:00 grep -r claude-hud .
+FIX
+out="$(run "$W/decoys.txt" 101 2>&1)"; rc=$?
+eq 'decoys withhold, legit harness trees stay exempt: rc 1 (J1355O)' 1 "$rc"
+contains 'exactly the four decoys withhold (J1355O)' "$out" 'WITHHELD: 4 process(es) still alive under claude pid 101'
+contains 'a real job named like caffeinate withholds (J1355O)' "$out" '  pid=330 ppid='
+contains "the job's own child withholds too (J1355O)" "$out" '  pid=331 ppid='
+contains '"sleep 999 caffeinate" is not exempt by the word alone (J1355O)' "$out" '  pid=332 ppid='
+contains '"grep -r claude-hud ." is not exempt by the word alone (J1355O)' "$out" '  pid=333 ppid='
+lacks 'a withheld run never prints CLOSABLE (J1355O)' "$out" 'CLOSABLE:'
+contains 'the legit caffeinate keep-awake stays exempt (J1355O)' "$out" 'ignored pid=300 '
+contains 'the legit claude-hud tree root stays exempt (J1355O)' "$out" 'ignored pid=310 '
+contains "the legit claude-hud tree's child stays exempt (J1355O)" "$out" 'ignored pid=311 '
+
+# fx3: the SAME tool call that starts a background job also runs the check —
+# a shell wrapper backgrounds `caffeinate -i ./long-job.sh` and the check
+# itself with `&`, both children of one wrapper. The job must withhold even
+# though it shares a wrapper with the check being run.
+cat > "$W/same-tool-call.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  950   101       00:05 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-9-z.sh && eval 'caffeinate -i ./long-job.sh & bash scripts/handover/wrap-subtree-check.sh'
+  951   950       00:05 caffeinate -i ./long-job.sh
+  952   951       00:05 /bin/bash ./long-job.sh
+  953   950       00:00 bash scripts/handover/wrap-subtree-check.sh
+  954   953       00:00 ps -eo pid=,ppid=,etime=,args=
+FIX
+out="$(PATH="$W/bin:$PATH" PS_FIXTURE="$W/same-tool-call.txt" WRAP_SUBTREE_SELF=953 bash "$SUT" 101 2>&1)"; rc=$?
+eq 'a caffeinate job started in the SAME tool call as the check still withholds: rc 1 (J1355O, fx3)' 1 "$rc"
+contains 'the same-tool-call caffeinate job withholds (fx3)' "$out" '  pid=951 ppid='
+contains "the job's own child withholds too (fx3)" "$out" '  pid=952 ppid='
+lacks 'a withheld run never prints CLOSABLE (fx3)' "$out" 'CLOSABLE:'
+
 # Weakening controls (HIMMEL-3265, contract item 3). Each weakened check must RUN
 # and lose the leg-left loop for the specific reason — a check that merely
 # crashes would "fail" every assertion and prove nothing.
