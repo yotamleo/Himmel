@@ -4570,10 +4570,16 @@ function qmdOffboardLocation() {
     if (st.isFile()) return st.size;
     if (!st.isDirectory()) return 0;
     let total = 0;
-    for (const entry of fs.readdirSync(p)) {
-      if (++entriesVisited > QMD_WALK_ENTRY_BOUND) throw new Error('qmd size walk exceeded entry bound');
-      const child = path.join(p, entry);
-      total += walk(child, fs.lstatSync(child));
+    const dir = fs.opendirSync(p);
+    try {
+      let entry;
+      while ((entry = dir.readSync()) !== null) {
+        if (++entriesVisited > QMD_WALK_ENTRY_BOUND) throw new Error('qmd size walk exceeded entry bound');
+        const child = path.join(p, entry.name);
+        total += walk(child, fs.lstatSync(child));
+      }
+    } finally {
+      dir.closeSync();
     }
     return total;
   };

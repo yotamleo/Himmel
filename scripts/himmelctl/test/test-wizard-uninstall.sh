@@ -475,9 +475,11 @@ outI1=$(PATH="$cI" HOME="$hI" USERPROFILE="$(winpath "$hI")" HIMMELCTL_CACHE_DIR
        </dev/null 2>&1); rcI1=$?
 set -e
 [ "$rcI1" -eq 0 ] || fail "caseI1: dry-run should exit 0 (got rc=$rcI1): $outI1"
-grepq "$outI1" -F -- "qmd-binary ($hI/.himmel/qmd-fork, 10 B)" \
+# separator-tolerant: node's path.join on the printed path may use '\' on
+# win32 even though $hI is a forward-slash MSYS path (codex/coderabbit).
+grepq "$outI1" -E -- "qmd-binary \\(${hI}[/\\\\]\\.himmel[/\\\\]qmd-fork, 10 B\\)" \
   || fail "caseI1: expected qmd-binary's resolved path + size (got: $outI1)"
-grepq "$outI1" -F -- "qmd-index ($hI/.himmel/qmd-fork, 10 B)" \
+grepq "$outI1" -E -- "qmd-index \\(${hI}[/\\\\]\\.himmel[/\\\\]qmd-fork, 10 B\\)" \
   || fail "caseI1: expected qmd-index's resolved path + size (got: $outI1)"
 grepq "$outI1" -F -- 'fixture-unwire,' \
   || fail "caseI1: fixture-unwire must print bare, unchanged (got: $outI1)"
@@ -496,9 +498,9 @@ outI2=$(PATH="$cI" HOME="$hI2" USERPROFILE="$(winpath "$hI2")" HIMMELCTL_CACHE_D
        </dev/null 2>&1); rcI2=$?
 set -e
 [ "$rcI2" -eq 0 ] || fail "caseI2: dry-run should exit 0 (got rc=$rcI2): $outI2"
-grepq "$outI2" -F -- "qmd-binary ($hI2/.himmel/qmd-fork, absent)" \
+grepq "$outI2" -E -- "qmd-binary \\(${hI2}[/\\\\]\\.himmel[/\\\\]qmd-fork, absent\\)" \
   || fail "caseI2: expected qmd-binary to print 'absent' for a missing path (got: $outI2)"
-grepq "$outI2" -F -- "qmd-index ($hI2/.himmel/qmd-fork, absent)" \
+grepq "$outI2" -E -- "qmd-index \\(${hI2}[/\\\\]\\.himmel[/\\\\]qmd-fork, absent\\)" \
   || fail "caseI2: expected qmd-index to print 'absent' for a missing path (got: $outI2)"
 echo "ok: caseI2 dry-run advisory plan prints 'absent' when the qmd-fork path does not exist"
 
@@ -546,7 +548,7 @@ outI4=$(PATH="$cI" HOME="$hI4" USERPROFILE="$(winpath "$hI4")" HIMMELCTL_CACHE_D
        </dev/null 2>&1); rcI4=$?
 set -e
 [ "$rcI4" -eq 0 ] || fail "caseI4: dry-run should exit 0 (got rc=$rcI4): $outI4"
-grepq "$outI4" -F -- "qmd-binary ($hI4/.himmel/qmd-fork, size unknown)" \
+grepq "$outI4" -E -- "qmd-binary \\(${hI4}[/\\\\]\\.himmel[/\\\\]qmd-fork, size unknown\\)" \
   || fail "caseI4: expected qmd-binary to print 'size unknown' once the walk exceeds its entry bound (got: $outI4)"
 echo "ok: caseI4 dry-run advisory plan prints 'size unknown' (not a byte count) once the qmd-fork tree exceeds the walk's entry bound"
 
