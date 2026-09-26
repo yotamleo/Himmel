@@ -79,13 +79,13 @@ plant_attack_link() {
 repo_root=$(git rev-parse --show-toplevel)
 script="$repo_root/scripts/machine-setup/reconcile-enabled-plugins.sh"
 [ -f "$script" ] || { echo "FAIL: $script not found" >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename "$0"): SKIPPED — 0 cases ran (jq not on PATH)"; exit 0; }
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 # RED (HIMMEL-2699): a trailing value-taking flag with no value must reach the
 # script's own usage diagnostic and exit 2, never an unbound-variable death
-# from `set -u`.
+# from `set -u`. This is CLI arg parsing, not jq-dependent, so it runs ahead
+# of the jq preflight (HIMMEL-3619) and still executes when jq is absent.
 for flag in --scope --settings --template; do
     set +e
     out=$(bash "$script" "$flag" 2>&1); rc=$?
@@ -95,6 +95,8 @@ for flag in --scope --settings --template; do
     grepq "$out" -- "unbound variable" && fail "trailing $flag leaked an unbound-variable death (out: $out)"
     echo "ok: trailing $flag exits 2 with its own diagnostic"
 done
+
+command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename "$0"): SKIPPED — 0 cases ran (jq not on PATH)"; exit 0; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

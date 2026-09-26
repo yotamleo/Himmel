@@ -435,12 +435,73 @@ pstate5=$(new_scratch_posix); proot5=$(make_root); mv "$proot5" "$pstate5/root"
 out=$(run_cadence_posix "$pstate5" arm 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "posix arm with handover: rc=0"; else fail "posix arm with handover: expected rc=0 got rc=$rc; output: $out"; fi
 runner_body=$(cat "$pstate5/bat/upstream-watch.sh" 2>/dev/null || echo "<missing>")
-assert_has "$runner_body" "HANDOVER_DIR=$pstate5/external-handover" "posix arm with handover: runner exports the resolved external root"
+assert_has "$runner_body" "HANDOVER_DIR='$pstate5/external-handover'" "posix arm with handover: runner exports the resolved external root"
 assert_has "$runner_body" "export HANDOVER_DIR" "posix arm with handover: HANDOVER_DIR is exported before the payload runs"
 case "$runner_body" in
   *"$pstate5/root/handovers"*) fail "posix arm with handover: runner still references the inline <repo>/handovers stub" ;;
   *) pass "posix arm with handover: never references the inline <repo>/handovers stub" ;;
 esac
+
+# HIMMEL-3619: the generated runner's shebang is `#!/bin/sh`, but the value it
+# bakes HANDOVER_DIR in with was `printf '%q'` — a bash-only escaping that can
+# emit `$'...'` ANSI-C quoting a stricter /bin/sh does not reliably parse the
+# same way bash does. Prove it round-trips byte-exact under `sh` for a value
+# containing a single quote, a space, a `$` and a newline.
+make_capture_root() {
+  local capture="$1" root
+  root=$(mktemp -d "${TMPDIR:-/tmp}/upstream-watch-cadence-test-root.XXXXXX")
+  mkdir -p "$root/scripts/upstreams"
+  cat > "$root/scripts/upstreams/upstream-watch.sh" <<CAPEOF
+#!/usr/bin/env bash
+printf '%s' "\$HANDOVER_DIR" > "$capture"
+exit 0
+CAPEOF
+  chmod +x "$root/scripts/upstreams/upstream-watch.sh"
+  printf '%s' "$root"
+}
+
+# run_cadence_posix_handover <state> <handover> <anchor> <args...> — like
+# run_cadence_posix_anchor but with a LIVE HANDOVER_DIR env var (go_resolve_root
+# priority 1: a live HANDOVER_DIR outside the harness wins unchanged), so a
+# value the anchor's line-oriented `.env` could never carry (embedded newline)
+# reaches the runner intact.
+run_cadence_posix_handover() {
+  local state="$1" handover="$2" anchor="$3"; shift 3
+  ( cd "$anchor" && HANDOVER_DIR="$handover" \
+      UPSTREAMWATCH_CRONTAB="$state/crontab" \
+      UPSTREAMWATCH_BAT_DIR="$state/bat" \
+      UPSTREAMWATCH_HIMMEL_ROOT="$state/root" \
+      UPSTREAMWATCH_ANCHOR_ROOT="$anchor" \
+      UPSTREAMWATCH_PLATFORM=posix \
+      HIMMEL_OBSERVABILITY_CONFIG="$state/observability.json" \
+      HIMMEL_PROVENANCE_DIR="$state/provenance" \
+      bash "$CADENCE" "$@" )
+}
+
+echo "== test: POSIX generated runner exports a quote/space/\$/newline HANDOVER_DIR byte-exact under sh =="
+pstate6=$(new_scratch_posix)
+capture6="$pstate6/captured-handover"
+proot6=$(make_capture_root "$capture6"); mv "$proot6" "$pstate6/root"
+# \x1b (ESC): bash's `printf %q` emits the bash-only `\E` escape for this byte
+# inside its `$'...'` output, which dash's ANSI-C-quote parser does not
+# recognize and passes through as the literal two bytes `\E` instead of ESC —
+# the concrete, verified corruption `%q` risks on a stricter /bin/sh.
+nasty_leaf=$'it\'s $weird\x1bdir'
+nasty_dir="$pstate6/handover-parent/$nasty_leaf"
+mkdir -p "$nasty_dir"
+anchor6=$(make_bare_anchor "$pstate6")
+out=$(run_cadence_posix_handover "$pstate6" "$nasty_dir" "$anchor6" arm 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then pass "posix arm with nasty handover: rc=0"; else fail "posix arm with nasty handover: expected rc=0 got rc=$rc; output: $out"; fi
+runner6="$pstate6/bat/upstream-watch.sh"
+if [ -f "$runner6" ]; then pass "posix arm with nasty handover: runner published"; else fail "posix arm with nasty handover: runner missing"; fi
+SH_BIN=$(command -v dash 2>/dev/null || command -v sh)
+"$SH_BIN" "$runner6" >/dev/null 2>&1
+printf '%s' "$nasty_dir" > "$pstate6/expected-handover"
+if cmp -s "$pstate6/expected-handover" "$pstate6/captured-handover" 2>/dev/null; then
+  pass "posix arm with nasty handover: $SH_BIN exports the value byte-exact"
+else
+  fail "posix arm with nasty handover: $SH_BIN exported a corrupted HANDOVER_DIR"
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then

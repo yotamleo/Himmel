@@ -613,6 +613,18 @@ cron_escape() {
     printf '%s' "${s//%/\\%}"
 }
 
+# posix_sh_quote <value> — single-quote-wrap (POSIX `'\''` escaping) for the
+# generated runner's own `#!/bin/sh` (HIMMEL-3619): `printf '%q'` is a
+# bash-only escaping that can emit `$'...'` ANSI-C quoting, which a stricter
+# /bin/sh does not reliably parse the same way bash does. HANDOVER_DIR is
+# externally supplied (unlike the runner's other repo-internal paths), so it
+# is the one value baked in here worth the extra safety.
+posix_sh_quote() {
+    local s
+    s=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+    printf "'%s'" "$s"
+}
+
 CRON_TAB=""
 cron_read() {
     local err_file rc
@@ -777,7 +789,7 @@ cron_arm() {
 
     local q_himmel q_handover q_bash q_script q_log payload
     q_himmel=$(printf '%q' "$HIMMEL_ROOT")
-    q_handover=$(printf '%q' "$handover_dir")
+    q_handover=$(posix_sh_quote "$handover_dir")
     q_bash=$(printf '%q' "$bash_bin")
     q_script=$(printf '%q' "$WATCH_SCRIPT")
     q_log=$(printf '%q' "$BAT_DIR/upstream-watch.log")
