@@ -2498,6 +2498,121 @@ run_fence deny no "$HIMMEL" "find -exec env -S\"graphify ...\" glued token -> de
 run_fence deny no "$HIMMEL" "quiet-run.sh unparsable label, tail env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
     "bash scripts/quiet-run.sh \"a -- b\" -- env -S\"graphify update notes/patient.md --backend glm\""
 
+echo "== HIMMEL-3683: a clause separator INSIDE a command substitution must not =="
+echo "== split the substitution across two false top-level clauses =="
+
+# (X1) env -C \$(cd ..; pwd)/salus - the original repro: a ; inside \$(...)
+# used to become a clause boundary, so clause 1 was "env -C \$(cd .." and
+# clause 2 "pwd)/salus graphify ..." and the real chdir target (salus) was
+# never classified.
+run_fence deny no "$HIMMEL" "env -C \$(cd ..; pwd)/salus (; inside \$(...)) -> deny (X1)" \
+    "env -C \$(cd ..; pwd)/salus graphify update notes/patient.md --backend glm"
+# (X2) same shape via echo \$PWD/salus instead of pwd.
+run_fence deny no "$HIMMEL" "env -C \$(cd ..; echo \$PWD/salus) -> deny (X2)" \
+    "env -C \$(cd ..; echo \$PWD/salus) graphify update notes/patient.md --backend glm"
+# (X3) sudo -D twin of X1.
+run_fence deny no "$HIMMEL" "sudo -D \$(cd ..; pwd)/salus (; inside \$(...)) -> deny (X3)" \
+    "sudo -D \$(cd ..; pwd)/salus graphify update notes/patient.md --backend glm"
+# (X4) a leading no-op clause (true;) ahead of the real value inside \$(...).
+run_fence deny no "$HIMMEL" "env -C \$(true; echo salus) -> deny (X4)" \
+    "env -C \$(true; echo $SALUS) graphify update notes/patient.md --backend glm"
+# (X5) && inside \$(...) - collapses to the same newline split as ; and |.
+run_fence deny no "$HIMMEL" "env -C \$(true && echo salus) -> deny (X5)" \
+    "env -C \$(true && echo $SALUS) graphify update notes/patient.md --backend glm"
+# (X6) a pipe AND a ; both inside the same \$(...).
+run_fence deny no "$HIMMEL" "env -C \$(true | cat; echo salus) -> deny (X6)" \
+    "env -C \$(true | cat; echo $SALUS) graphify update notes/patient.md --backend glm"
+# (X7) backtick form of X4, not \$(...).
+run_fence deny no "$HIMMEL" "env -C \`true; echo salus\` (; inside backticks) -> deny (X7)" \
+    "env -C \`true; echo $SALUS\` graphify update notes/patient.md --backend glm"
+# (X8) J1290S w06 shape: cd .. then a bare relative echo (no absolute path).
+run_fence deny no "$HIMMEL" "env -C \$(cd ..; echo salus) relative echo -> deny (X8, w06)" \
+    "env -C \$(cd ..; echo salus) graphify update notes/patient.md --backend glm"
+
+# Controls: clause-splitting for every OTHER shape must stay exactly as before.
+# (X9) no substitution at all -> unaffected.
+run_fence allow no "$HIMMEL" "no substitution, himmel-code x glm -> allow (X9 control)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend glm"
+# (X10) a substitution with NO separator inside -> judged exactly as at base
+# (still denied, but via the pre-existing unresolved-chdir reason, not the
+# new hidden-separator one).
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "env -C \$(pwd) graphify update notes/patient.md --backend glm" 2>&1 ); rc=$?
+hit=$(printf '%s' "$out" | grep -F 'clause separator')
+if [ "$rc" -eq 2 ] && [ -z "$hit" ]; then
+    pass "env -C \$(pwd) (no separator inside) -> deny via pre-existing chdir reason, unchanged (X10 control)"
+else
+    fail "env -C \$(pwd) (no separator inside) unchanged (X10 control) (rc=$rc) out=$out"
+fi
+# (X11) a REAL top-level separator (not inside any substitution) -> unaffected.
+run_fence allow no "$HIMMEL" "echo a; graphify update . (real top-level ;, not inside \$(...)) -> allow (X11 control)" \
+    "echo a; graphify update . --backend glm"
+# (X12) codex-1 (PR #1323 round 1): a LITERAL newline inside \$(...) instead of
+# a ; is just as much a clause boundary to the pre-existing split (which reads
+# clauses with `while IFS= read -r`, splitting on any real newline) - deny it
+# the same way as X1.
+X12_CMD=$'env -C $(cd ..\npwd)/salus graphify update notes/patient.md --backend glm'
+run_fence deny no "$HIMMEL" "env -C \$(cd ..<newline>pwd)/salus (newline inside \$(...)) -> deny (X12)" \
+    "$X12_CMD"
+
+# (X13/X14) codex-1 (PR #1323 round 2): a quoted ')' inside \$(...) prematurely
+# closed the naive paren-depth counter (a single/double-quoted string is data
+# to bash, not a real close-paren), so the REAL separator that followed was
+# scanned under the top-level branch, which never checked for one at all -
+# a hidden separator that reached the old scan undetected. Deny both quote
+# flavors.
+run_fence deny no "$HIMMEL" "env -C \$(x=')'; echo salus) quoted ')' in single quotes -> deny (X13)" \
+    "env -C \$(x=')'; echo $SALUS) graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env -C \$(x=\")\"; echo salus) quoted ')' in double quotes -> deny (X14)" \
+    "env -C \$(x=\")\"; echo $SALUS) graphify update notes/patient.md --backend glm"
+
+# (X15) the symmetric false-positive control: a clause-separator CHARACTER
+# quoted inside \$(...) is data to bash, not a real separator, and must not
+# itself trip the new hidden-separator deny.
+# round-5 codex-1: checking only that the diagnostic text is absent lets any
+# OTHER failure (a crash, an unrelated deny) pass silently too - assert rc
+# along with the text, the way X17's control already does.
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "env -C \$(echo ';')/salus graphify update notes/patient.md --backend glm" 2>&1 ); rc=$?
+hit=$(printf '%s' "$out" | grep -F 'clause separator')
+if [ "$rc" -eq 0 ] && [ -z "$hit" ]; then
+    pass "quoted ';' inside \$(...) does not trigger hidden-separator deny (X15 control)"
+else
+    fail "quoted ';' inside \$(...) wrongly triggered hidden-separator deny (X15 control) (rc=$rc) out=$out"
+fi
+
+
+# (X16) codex-1 (PR #1323 round 3): the outer double quotes around
+# \$(...)/backticks (not a quote INSIDE the substitution, as X13/X14 cover,
+# but the substitution's own enclosing quote) made the dq-scan swallow
+# everything up to the closing quote, never noticing the ; hidden inside -
+# even though bash still evaluates \$(...) and backticks inside "..." and a
+# separator there is just as live. Deny it the same way as X1.
+run_fence deny no "$HIMMEL" "env -C \"\$(cd ..; echo salus)\" (; inside a dq-wrapped \$(...)) -> deny (X16)" \
+    "env -C \"\$(cd ..; echo $SALUS)\" graphify update notes/patient.md --backend glm"
+
+# (X17) the symmetric control: a dq-wrapped \$(...) with NO separator inside
+# must be judged exactly as X10 - still denied, but via the pre-existing
+# unresolved-chdir reason, not the new hidden-separator one.
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "env -C \"\$(pwd)\" graphify update notes/patient.md --backend glm" 2>&1 ); rc=$?
+hit=$(printf '%s' "$out" | grep -F 'clause separator')
+if [ "$rc" -eq 2 ] && [ -z "$hit" ]; then
+    pass "env -C \"\$(pwd)\" (dq-wrapped, no separator inside) -> deny via pre-existing chdir reason, unchanged (X17 control)"
+else
+    fail "env -C \"\$(pwd)\" (dq-wrapped, no separator inside) unchanged (X17 control) (rc=$rc) out=$out"
+fi
+
+# (X18) codex-1 (PR #1323 round 4): a backslash-escaped ')' inside \$(...)
+# is literal data to bash, not a real close-paren, but the paren-depth stack
+# popped on it anyway - closing the tracked substitution early so the REAL
+# separator that followed (still logically inside the still-open
+# substitution) fell through to the top-level branch, which never checks
+# for one - a hidden separator reaching the old scan undetected, same class
+# as X13/X14/X16 but via an escape instead of a nested quote.
+run_fence deny no "$HIMMEL" "env -C \$(echo \\); echo salus) escaped ')' hides a real ; -> deny (X18)" \
+    "env -C \$(echo \\); echo $SALUS) graphify update notes/patient.md --backend glm"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

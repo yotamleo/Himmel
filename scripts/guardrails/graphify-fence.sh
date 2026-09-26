@@ -2252,6 +2252,97 @@ if [ "$#" -eq 5 ] && [ "$1" = "--eval" ]; then
     exit 0
 fi
 
+# HIMMEL-3683: the clause split just below is a blind textual replace of
+# ;/|/& to newlines - it has no notion of $( )/backtick nesting, so a
+# separator genuinely INSIDE a command substitution (e.g.
+# `env -C $(cd ..; pwd)/salus graphify ...`) becomes a false top-level clause
+# boundary: clause 1 is `env -C $(cd ..` and clause 2 is `pwd)/salus
+# graphify ...`, so the real chdir target ($(cd ..; pwd)/salus, i.e. salus)
+# is never classified while real bash resolves the whole $(...) to ONE word
+# before env/sudo ever sees it. Rather than write a real shell parser, fail
+# closed: deny before splitting if any $(...) or `...` span (tracked by
+# paren depth / backtick-open, nested or left unbalanced at end of string)
+# contains an unescaped separator, and the command mentions graphify
+# anywhere - a substitution with NO separator inside (env -C $(pwd) ...) is
+# untouched and still reaches the existing per-clause chdir handling below.
+_gf_deny_on_hidden_clause_separator() {
+    # HIMMEL-3683 round-3 codex-1: bash still evaluates $(...)/`...` INSIDE a
+    # "..." string, so a quote can be nested either way - a substitution can
+    # wrap a quote (env -C $(x=")"; ...) - round 2) or a quote can wrap a
+    # substitution (env -C "$(cd ..; pwd)" - round 3). A flat set of
+    # mutually-exclusive states can only give one of those nestings priority
+    # at a time, so track a tiny stack instead: one char pushed per open
+    # quote/substitution (q=single, d=double, b=backtick, p=paren/$(...)
+    # level), popped on its matching close. Still no tokenizing, word
+    # splitting or globbing - just paired-delimiter matching.
+    #
+    # HIMMEL-3683 round-4 codex-1: a backslash-escaped delimiter
+    # (env -C $(echo \); echo salus) ...) is literal data to bash, not a
+    # real close-paren, but the stack popped on it anyway - closing the
+    # substitution early so the real, still-open separator that followed
+    # fell through to the top-level branch, which never sets hit. esc
+    # marks "the next char is escaped, skip all state matching for it" in
+    # every state except single-quote (the one context where bash gives
+    # backslash no meaning at all).
+    local cmd="$1" i=0 len c hit=0 stack='' esc=0
+    len=${#cmd}
+    while [ "$i" -lt "$len" ]; do
+        c="${cmd:$i:1}"
+        if [ "$esc" -eq 1 ]; then
+            esc=0
+            i=$((i+1))
+            continue
+        fi
+        case "$stack" in
+            *q)
+                [ "$c" = "'" ] && stack="${stack%q}"
+                ;;
+            *d)
+                case "$c" in
+                    "\\") esc=1 ;;
+                    '"') stack="${stack%d}" ;;
+                    '`') stack="${stack}b" ;;
+                    '$') [ "${cmd:$((i+1)):1}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
+                esac
+                ;;
+            *b)
+                case "$c" in
+                    "\\") esc=1 ;;
+                    "'") stack="${stack}q" ;;
+                    '"') stack="${stack}d" ;;
+                    '`') stack="${stack%b}" ;;
+                    ';'|'|'|'&'|$'\n') hit=1 ;;
+                esac
+                ;;
+            *p)
+                case "$c" in
+                    "\\") esc=1 ;;
+                    "'") stack="${stack}q" ;;
+                    '"') stack="${stack}d" ;;
+                    '(') stack="${stack}p" ;;
+                    ')') stack="${stack%p}" ;;
+                    ';'|'|'|'&'|$'\n') hit=1 ;;
+                esac
+                ;;
+            *)
+                case "$c" in
+                    "\\") esc=1 ;;
+                    "'") stack="${stack}q" ;;
+                    '"') stack="${stack}d" ;;
+                    '`') stack="${stack}b" ;;
+                    '$') [ "${cmd:$((i+1)):1}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
+                esac
+                ;;
+        esac
+        i=$((i+1))
+    done
+    { [ "$hit" -eq 1 ] || [ -n "$stack" ]; } || return 0
+    case "$cmd" in
+        *graphify*) deny "cannot resolve a command substitution containing a clause separator; rewrite without it" ;;
+    esac
+}
+_gf_deny_on_hidden_clause_separator "$CMD"
+
 # --- main: split into clauses, evaluate every graphify command-position clause -
 # Separators ;  |  &  (and && / ||, which collapse) and newlines become clause
 # boundaries. Any denied clause exits 2 immediately; reaching the end = allow.
