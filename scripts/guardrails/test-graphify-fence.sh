@@ -2600,6 +2600,16 @@ else
     fail "env -C \"\$(pwd)\" (dq-wrapped, no separator inside) unchanged (X17 control) (rc=$rc) out=$out"
 fi
 
+# (X18) codex-1 (PR #1323 round 4): a backslash-escaped ')' inside \$(...)
+# is literal data to bash, not a real close-paren, but the paren-depth stack
+# popped on it anyway - closing the tracked substitution early so the REAL
+# separator that followed (still logically inside the still-open
+# substitution) fell through to the top-level branch, which never checks
+# for one - a hidden separator reaching the old scan undetected, same class
+# as X13/X14/X16 but via an escape instead of a nested quote.
+run_fence deny no "$HIMMEL" "env -C \$(echo \\); echo salus) escaped ')' hides a real ; -> deny (X18)" \
+    "env -C \$(echo \\); echo $SALUS) graphify update notes/patient.md --backend glm"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

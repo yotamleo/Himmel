@@ -2275,16 +2275,31 @@ _gf_deny_on_hidden_clause_separator() {
     # quote/substitution (q=single, d=double, b=backtick, p=paren/$(...)
     # level), popped on its matching close. Still no tokenizing, word
     # splitting or globbing - just paired-delimiter matching.
-    local cmd="$1" i=0 len c hit=0 stack=''
+    #
+    # HIMMEL-3683 round-4 codex-1: a backslash-escaped delimiter
+    # (env -C $(echo \); echo salus) ...) is literal data to bash, not a
+    # real close-paren, but the stack popped on it anyway - closing the
+    # substitution early so the real, still-open separator that followed
+    # fell through to the top-level branch, which never sets hit. esc
+    # marks "the next char is escaped, skip all state matching for it" in
+    # every state except single-quote (the one context where bash gives
+    # backslash no meaning at all).
+    local cmd="$1" i=0 len c hit=0 stack='' esc=0
     len=${#cmd}
     while [ "$i" -lt "$len" ]; do
         c="${cmd:$i:1}"
+        if [ "$esc" -eq 1 ]; then
+            esc=0
+            i=$((i+1))
+            continue
+        fi
         case "$stack" in
             *q)
                 [ "$c" = "'" ] && stack="${stack%q}"
                 ;;
             *d)
                 case "$c" in
+                    '\') esc=1 ;;
                     '"') stack="${stack%d}" ;;
                     '`') stack="${stack}b" ;;
                     '$') [ "${cmd:$((i+1)):1}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
@@ -2292,6 +2307,7 @@ _gf_deny_on_hidden_clause_separator() {
                 ;;
             *b)
                 case "$c" in
+                    '\') esc=1 ;;
                     "'") stack="${stack}q" ;;
                     '"') stack="${stack}d" ;;
                     '`') stack="${stack%b}" ;;
@@ -2300,6 +2316,7 @@ _gf_deny_on_hidden_clause_separator() {
                 ;;
             *p)
                 case "$c" in
+                    '\') esc=1 ;;
                     "'") stack="${stack}q" ;;
                     '"') stack="${stack}d" ;;
                     '(') stack="${stack}p" ;;
@@ -2309,6 +2326,7 @@ _gf_deny_on_hidden_clause_separator() {
                 ;;
             *)
                 case "$c" in
+                    '\') esc=1 ;;
                     "'") stack="${stack}q" ;;
                     '"') stack="${stack}d" ;;
                     '`') stack="${stack}b" ;;
