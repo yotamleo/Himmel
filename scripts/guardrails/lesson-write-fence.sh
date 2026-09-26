@@ -1051,9 +1051,17 @@ _git_is_read_only() {
 # text and denies on a hit, allows otherwise.
 #
 # _normalize_scan_text <raw-text> -> squeezes repeated `/` down to one,
-# drops `/./ ` segments, and strips quote characters - the raw-TEXT
-# counterpart to `_normalize`'s path-SEGMENT collapsing, for callers (below)
-# that substring-scan whole clause text rather than resolve a single path.
+# drops `/./ ` segments, collapses `seg/../` hops, and strips quote/backslash
+# characters - the raw-TEXT counterpart to `_normalize`'s path-SEGMENT
+# collapsing, for callers (below) that substring-scan whole clause text
+# rather than resolve a single path.
+# Judge J1298R N1 (Critical): the collapse above stopped at `//` and `/./ `
+# and never stripped backslashes, so `env -S 'tee scripts/x/../hooks/a.sh'`,
+# a backslash-escaped `scripts/\hooks/a.sh`, and the same `../` hop against
+# `.claude/settings.json` all evaded the scan. The `seg/../` loop below walks
+# left-to-right and gives up (breaks, does not loop forever) on an
+# unresolvable leading `..` with no parent segment to remove - documented
+# coarseness, not a regression, since it can only ADD matching power.
 # Judge J1298O C1 (Critical, NEW ALLOW vs main): `_clause_has_enforcement_signal`
 # matched the literal substring only, so a policy value written with a
 # single slash (`scripts/hooks/`) missed the identical write spelled
@@ -1062,13 +1070,33 @@ _git_is_read_only() {
 # too. Text-level only (no filesystem access, no anchoring) since the
 # caller has no single resolved path to normalize.
 _normalize_scan_text() {
-    local t="$1"
-    t="${t//\'/}"; t="${t//\"/}"; t="${t//\`/}"
+    local t="$1" before after seg
+    t="${t//\'/}"; t="${t//\"/}"; t="${t//\`/}"; t="${t//\\/}"
     while case "$t" in *//*) true ;; *) false ;; esac; do
         t="${t//\/\//\/}"
     done
     while case "$t" in *"/./"*) true ;; *) false ;; esac; do
         t="${t//\/.\//\/}"
+    done
+    while case "$t" in */../*) true ;; *) false ;; esac; do
+        before="${t%%/../*}"
+        after="${t#*/../}"
+        case "$before" in
+            */*) seg="${before##*/}" ;;
+            *)   seg="$before" ;;
+        esac
+        case "$seg" in
+            ..|'') break ;;
+        esac
+        case "$before" in
+            */*) before="${before%/*}" ;;
+            *)   before="" ;;
+        esac
+        if [ -n "$before" ]; then
+            t="$before/$after"
+        else
+            t="$after"
+        fi
     done
     printf '%s' "$t"
 }
@@ -1216,6 +1244,52 @@ _env_split_string_used() {
     return 1
 }
 
+# _deny_wrapper_enforcement_signal <raw-clause-text> -> denies (exit 2): an
+# env/sudo-headed clause whose raw text names an enforcement-path signal. Same
+# rationale as `_deny_env_split_string`/`_deny_procsub`/`_deny_inline_eval`.
+_deny_wrapper_enforcement_signal() {
+    deny "env/sudo-wrapped write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
+}
+
+# _wrapper_is_env_or_sudo <head_idx> <tok...> -> 0 iff any token in
+# tok[0..head_idx-1] (the wrapper-prefix range `_clause_head_idx` walks) is,
+# once stripped and lowered, exactly `env` or `sudo`.
+# Judge J1298R (Critical, ruling item 1): every prior fix in this file
+# (round after round of HIMMEL-2610/HIMMEL-3632/HIMMEL-3658/HIMMEL-3659/
+# J1298O) patched `_clause_head_idx`'s env/sudo option-cluster walk to
+# resolve one more bundled/glued/case-folded shape correctly - a losing
+# enumeration game, since a NEW option-cluster shape (N2: `-Sp`/`-Np`/`-Su`/
+# `-SD`/`-NC`; N3: glued bundled `-iS'...'`) always resolves the walk to
+# *some* verb, correct or not, and the option tables must never grow again
+# (ruling item 2). This check does not try to resolve the wrapper's options
+# at all: it fires on the mere PRESENCE of `env`/`sudo` anywhere in the
+# wrapper range, independent of whether the cluster walk parsed the rest
+# correctly, and pairs with `_clause_has_enforcement_signal`'s raw-text scan
+# below exactly like `_env_split_string_used` does - no parse result can
+# turn a hit here into an ALLOW. Accepted cost (ruling item 1, pinned in
+# tests): a READ through env/sudo of a path matching a policy signal (e.g.
+# `sudo cat scripts/hooks/a.sh`) now DENIES even though `cat` is proven
+# read-only and the cluster walk resolves it correctly - stricter than main,
+# deliberately. A false-positive match (some OTHER wrapper's own option
+# VALUE token happens to spell "sudo" or "env" literally, e.g. `sudo -u
+# sudo cat ...`) only routes the clause to the raw-text scan unnecessarily -
+# never a new gap, the same false-positive-is-safe reasoning already used
+# for `_env_split_string_used` above.
+_wrapper_is_env_or_sudo() {
+    local head_idx="$1"; shift
+    local -a t=("$@")
+    local n=${#t[@]} i=0 w
+    [ "$head_idx" -le "$n" ] || head_idx="$n"
+    while [ "$i" -lt "$head_idx" ]; do
+        w="$(_lc "$(_strip_wrap "${t[$i]}")")"
+        case "$w" in
+            env|sudo) return 0 ;;
+        esac
+        i=$((i+1))
+    done
+    return 1
+}
+
 # _verb_is_read_only <verb_lc> <verb-onward-tok...> -> 0 iff the
 # command-position verb is on the round-4 PROVEN-READ-ONLY allow-list (see
 # the `4.` header section for the full list + rationale per entry) - the
@@ -1329,7 +1403,12 @@ _operand_targets() {
 # must run before step (4)'s read-only-verb short-circuit, since that is
 # exactly the shape that let a writer hidden inside `>(...)` slip past a
 # proven-read-only outer verb (`echo`/`cat`); (2) resolve the command-position
-# verb, after wrapper stripping (_clause_head_idx); (2b) round 6 - if that
+# verb, after wrapper stripping (_clause_head_idx); (2a) J1298R - if the
+# wrapper-prefix range names `env`/`sudo` at all, ANYWHERE, the same
+# `_clause_has_enforcement_signal` raw-text scan runs and denies on a hit,
+# UNCONDITIONALLY, regardless of whether the option-cluster walk resolved
+# the rest of the wrapper correctly (_wrapper_is_env_or_sudo) - a miss falls
+# through unchanged; (2b) round 6 - if that
 # resolution walked through an `env -S`/`--split-string`, the same
 # `_clause_has_enforcement_signal` raw-text scan runs and denies on a hit,
 # UNCONDITIONALLY, before the resolved "verb" (which is `-S`'s value, not a
@@ -1340,7 +1419,7 @@ _operand_targets() {
 # that verb is otherwise proven read-only, allow outright - its operands are
 # reads; (5) otherwise scan every operand as a write-target candidate
 # (_operand_targets). <clause-raw> is the clause's own pre-tokenization text
-# (round 5 addition), needed by steps (1b), (2b) and (3) - a
+# (round 5 addition), needed by steps (1b), (2a), (2b) and (3) - a
 # process-substitution, split-string or inline-eval writer's target is not a
 # clean token, so those steps scan the raw text instead of the split
 # <tok...> array.
@@ -1358,6 +1437,14 @@ process_clause_for_write() {
     fi
 
     local head_idx; head_idx="$(_clause_head_idx "${tok[@]}")"
+
+    # J1298R ruling item 1: this check is UNCONDITIONAL - it runs whether or
+    # not the option-cluster walk above resolved the wrapper correctly, and a
+    # miss falls through unchanged to the existing checks below (ruling item
+    # 2: the parser stays an ADDITIONAL deny path, never grown further).
+    if _wrapper_is_env_or_sudo "$head_idx" "${tok[@]}"; then
+        _clause_has_enforcement_signal "$clause_raw" && _deny_wrapper_enforcement_signal "$clause_raw"
+    fi
 
     if _env_split_string_used "$head_idx" "${tok[@]}"; then
         _clause_has_enforcement_signal "$clause_raw" && _deny_env_split_string "$clause_raw"

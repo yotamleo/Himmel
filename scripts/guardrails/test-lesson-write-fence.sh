@@ -740,15 +740,21 @@ run_hook deny "20: sudo --preserve-env cp x scripts/hooks/a.sh (unrelated no-val
 run_hook deny "20: env --u cat cp x scripts/hooks/a.sh (swallowed value names a read-only verb)" \
     "$(bash_json "env --u cat cp x scripts/hooks/a.sh" "$REPO")" 1
 
-# reason assertion (not just rc): the abbreviated exploit must deny for the
-# SAME enforcement-path reason as the unabbreviated control, not some other
-# unrelated denial.
+# reason assertion (not just rc): the abbreviated exploit must deny for an
+# enforcement-path reason, not some other unrelated denial. J1298R: this used
+# to assert the specific `class=hooks` operand-classification reason (proof
+# the abbreviation fix let the walk resolve onto the real `cp` write and
+# classify its target); the new unconditional env/sudo wrapper check (24,
+# below) now intercepts this clause FIRST, before the option-cluster walk
+# ever runs, and denies via its own coarser raw-text-signal reason instead -
+# still an enforcement-path denial, just a different one, and a strictly
+# EARLIER deny is not a relaxation.
 out=$(printf '%s' "$(bash_json "env --u FOO cp x scripts/hooks/a.sh" "$REPO")" \
     | env HIMMEL_LESSON_LOOP=1 LESSON_FENCE_POLICY="$POLICY_COPY" "$BASH_BIN" "$FENCE" 2>&1); rc=$?
-if [ "$rc" -eq 2 ] && grepq "$out" -i "class=hooks"; then
-    pass "20: env --u abbreviation denies with the enforcement-path (class=hooks) reason"
+if [ "$rc" -eq 2 ] && grepq "$out" -i "enforcement-path signal"; then
+    pass "20: env --u abbreviation denies with an enforcement-path-signal reason"
 else
-    fail "20: env --u expected rc=2 + class=hooks reason, got rc=$rc out=$out"
+    fail "20: env --u expected rc=2 + enforcement-path-signal reason, got rc=$rc out=$out"
 fi
 
 echo "== 21: HIMMEL-3632 - env/sudo value-taking options this hook's arms still missed =="
@@ -889,19 +895,76 @@ run_hook deny "23: sudo -nC cat cp x scripts/hooks/a.sh (bundle: -n flag + -C va
 
 # controls: a bundle of ALL flags (no value-taking letter at the end) must
 # still resolve the head onto the real verb and ALLOW a genuine read; a lone
-# value-taking option must still correctly ALLOW its own read.
-run_hook allow "23: env -iv cat scripts/hooks/a.sh (all-flags bundle, no value-taking tail: real read)" \
-    "$(bash_json "env -iv cat scripts/hooks/a.sh" "$REPO")" 1
-run_hook allow "23: sudo -in cat scripts/hooks/a.sh (all-flags bundle, no value-taking tail: real read)" \
-    "$(bash_json "sudo -in cat scripts/hooks/a.sh" "$REPO")" 1
-run_hook allow "23: sudo -C 3 cat scripts/hooks/a.sh (-C value consumed, real read)" \
-    "$(bash_json "sudo -C 3 cat scripts/hooks/a.sh" "$REPO")" 1
-run_hook allow "23: env -a foo cat scripts/hooks/a.sh (-a value consumed, real read)" \
-    "$(bash_json "env -a foo cat scripts/hooks/a.sh" "$REPO")" 1
-run_hook allow "23: sudo -R / cat scripts/hooks/a.sh (-R value consumed, real read)" \
-    "$(bash_json "sudo -R / cat scripts/hooks/a.sh" "$REPO")" 1
-run_hook allow "23: sudo -T 10 cat scripts/hooks/a.sh (-T value consumed, real read)" \
-    "$(bash_json "sudo -T 10 cat scripts/hooks/a.sh" "$REPO")" 1
+# value-taking option must still correctly ALLOW its own read. J1298R: these
+# six were retargeted from `scripts/hooks/a.sh` to the unguarded `README.md`
+# - the new unconditional env/sudo wrapper check (24, below) now denies ANY
+# env/sudo-headed clause naming an enforcement-path signal regardless of
+# parse success, so a policy-matching target here would deny for THAT
+# reason and no longer prove these option letters resolve correctly. An
+# unguarded target keeps these controls testing what they always tested:
+# the option-cluster walk landing on the real verb.
+run_hook allow "23: env -iv cat README.md (all-flags bundle, no value-taking tail: real read)" \
+    "$(bash_json "env -iv cat README.md" "$REPO")" 1
+run_hook allow "23: sudo -in cat README.md (all-flags bundle, no value-taking tail: real read)" \
+    "$(bash_json "sudo -in cat README.md" "$REPO")" 1
+run_hook allow "23: sudo -C 3 cat README.md (-C value consumed, real read)" \
+    "$(bash_json "sudo -C 3 cat README.md" "$REPO")" 1
+run_hook allow "23: env -a foo cat README.md (-a value consumed, real read)" \
+    "$(bash_json "env -a foo cat README.md" "$REPO")" 1
+run_hook allow "23: sudo -R / cat README.md (-R value consumed, real read)" \
+    "$(bash_json "sudo -R / cat README.md" "$REPO")" 1
+run_hook allow "23: sudo -T 10 cat README.md (-T value consumed, real read)" \
+    "$(bash_json "sudo -T 10 cat README.md" "$REPO")" 1
+
+echo "== 24: J1298R re-judge - unconditional env/sudo wrapper scan, N1/N2/N3 =="
+# N1: `_normalize_scan_text` stopped at `//` and `/./ ` and never stripped
+# backslashes or collapsed `seg/../` - a `..`-hop or a backslash-escaped
+# path evaded the raw-text signal scan the `env -S` fallback (22b/23 C1)
+# already relies on.
+run_hook deny "24: env -S 'tee scripts/x/../hooks/a.sh' (dotdot hop to hooks evades raw-text scan)" \
+    "$(bash_json "env -S 'tee scripts/x/../hooks/a.sh'" "$REPO")" 1
+run_hook deny "24: env -S 'tee .claude/x/../settings.json' (dotdot hop to settings entry)" \
+    "$(bash_json "env -S 'tee .claude/x/../settings.json'" "$REPO")" 1
+run_hook deny "24: env -S 'tee scripts/\\hooks/a.sh' (backslash-escaped path evades raw-text scan)" \
+    "$(bash_json "env -S 'tee scripts/\\hooks/a.sh'" "$REPO")" 1
+
+# N2/N3: no enumeration of `_clause_head_idx`'s env/sudo option tables can
+# keep up with every bundled-cluster or glued-split-string shape (ruling
+# item 2: do not grow those tables further). `_wrapper_is_env_or_sudo` fires
+# on the mere PRESENCE of `env`/`sudo` in the wrapper prefix, independent of
+# how (or whether) the cluster walk resolves the rest, so these DENY
+# regardless of whether `-Sp`/`-Np`/`-Su`/`-SD`/`-NC` or a glued `-iS'...'`
+# would have resolved correctly on their own.
+run_hook deny "24: sudo -Sp cat cp x scripts/hooks/a.sh (bundled cluster ending in -p, unconditional scan)" \
+    "$(bash_json "sudo -Sp cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "24: sudo -Np cat cp x scripts/hooks/a.sh (bundled cluster ending in -p, unconditional scan)" \
+    "$(bash_json "sudo -Np cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "24: sudo -Su cat cp x scripts/hooks/a.sh (bundled cluster ending in -u, unconditional scan)" \
+    "$(bash_json "sudo -Su cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "24: sudo -SD cat cp x scripts/hooks/a.sh (bundled cluster ending in -D, unconditional scan)" \
+    "$(bash_json "sudo -SD cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "24: sudo -NC cat cp x scripts/hooks/a.sh (bundled cluster ending in -C, unconditional scan)" \
+    "$(bash_json "sudo -NC cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "24: env -iS'tee scripts/hooks/a.sh' (glued bundled split-string, unconditional scan)" \
+    "$(bash_json "env -iS'tee scripts/hooks/a.sh'" "$REPO")" 1
+run_hook deny "24: env -vS'tee scripts/hooks/a.sh' (glued bundled split-string, unconditional scan)" \
+    "$(bash_json "env -vS'tee scripts/hooks/a.sh'" "$REPO")" 1
+
+# accepted cost (ruling item 1, pinned): a genuine READ of an enforcement
+# path through env/sudo now DENIES even though the wrapped verb is proven
+# read-only and the cluster walk resolves it correctly - stricter than main,
+# deliberately, since no parse result can turn a wrapper-scan hit into an
+# ALLOW.
+run_hook deny "24: sudo cat scripts/hooks/a.sh (accepted cost: proven-read-only verb under sudo now denies)" \
+    "$(bash_json "sudo cat scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "24: env cat scripts/hooks/a.sh (accepted cost: proven-read-only verb under env now denies)" \
+    "$(bash_json "env cat scripts/hooks/a.sh" "$REPO")" 1
+
+# controls: env/sudo wrapping an unrelated read must still ALLOW.
+run_hook allow "24: sudo cat README.md (control: unrelated read under sudo still allows)" \
+    "$(bash_json "sudo cat README.md" "$REPO")" 1
+run_hook allow "24: env -S 'echo hi' (control: split-string value with no enforcement signal still allows)" \
+    "$(bash_json "env -S 'echo hi'" "$REPO")" 1
 
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
