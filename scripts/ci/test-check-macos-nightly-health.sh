@@ -66,6 +66,24 @@ if [ "$rc_red" -eq 1 ]; then ok "red fixture (one macOS job failed) -> exit 1"; 
 if grep -q "macOS nightly job(s) failed" <<< "$out_red"; then ok "red -> error banner"; else bad "red missing error banner: $out_red"; fi
 if grep -q "shell-unit-shard (macos-latest, 3)" <<< "$out_red"; then ok "red -> names the failing job"; else bad "red does not name the failing job: $out_red"; fi
 
+# HIMMEL-3699 (CR round 1, codex-1): a failed `gh api` call must fail loudly,
+# not read as an empty (all-clear) job list.
+cat > "$TMP/gh-fail" <<'EOF'
+#!/usr/bin/env bash
+echo "fake-gh: simulated API failure" >&2
+exit 1
+EOF
+chmod +x "$TMP/gh-fail"
+gfdir="$TMP/ghfaildir"
+mkdir -p "$gfdir"
+cp "$TMP/gh-fail" "$gfdir/gh"
+
+out_apifail="$(PATH="$gfdir:$PATH" REPO=owner/repo RUN_ID=1 bash "$SCRIPT" 2>&1)"
+rc_apifail=$?
+if [ "$rc_apifail" -eq 1 ]; then ok "gh api failure -> exit 1 (not silent OK)"; else bad "gh api failure exit=$rc_apifail (want 1): $out_apifail"; fi
+if grep -q "gh api call failed" <<< "$out_apifail"; then ok "gh api failure -> error banner"; else bad "gh api failure missing error banner: $out_apifail"; fi
+if grep -q "OK: no failing macOS job" <<< "$out_apifail"; then bad "gh api failure wrongly reported OK: $out_apifail"; else ok "gh api failure -> no false OK"; fi
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASSED"

@@ -18,8 +18,11 @@ set -uo pipefail
 REPO="${REPO:?REPO required}"
 RUN_ID="${RUN_ID:?RUN_ID required}"
 
-FAILED=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
-  --jq '.jobs[] | select(.name | test("macos-latest")) | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != null) | .name')
+if ! FAILED=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+  --jq '.jobs[] | select(.name | test("macos-latest")) | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != null) | .name'); then
+  echo "::error::gh api call failed — cannot determine macOS job health for run $RUN_ID" >&2
+  exit 1
+fi
 if [ -n "$FAILED" ]; then
   echo "::error::macOS nightly job(s) failed (continue-on-error hid this from the shell-unit-shard rollup):"
   echo "$FAILED"
