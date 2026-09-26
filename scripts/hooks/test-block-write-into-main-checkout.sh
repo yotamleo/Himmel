@@ -2475,6 +2475,72 @@ if [ "$R9_A" -gt 0 ]; then ok "r9 matrix class A is non-empty ($R9_A cells)"; el
 if [ "$R9_B" -gt 0 ]; then ok "r9 matrix class B is non-empty ($R9_B cells)"; else bad "r9 matrix class B is EMPTY — the false-positive guard would be vacuous"; fi
 fi
 
+echo "== HIMMEL-3648: install/rsync/dd/cd-then-relative/eval-bash-c pre-existing gaps =="
+
+# 13. install: last non-option operand is the destination.
+check_both "13 install SRC into primary (last operand)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install $FIX/wt/src.txt $FIX/primary/dest.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "13b install SRC into wt (last operand) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install $FIX/wt/src.txt $FIX/wt/dest.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 14. install -t/--target-directory DIR.
+check_both "14 install -t primary" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install -t $FIX/primary $FIX/wt/src.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "14b install -t wt allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install -t $FIX/wt $FIX/wt/src.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "14c install --target-directory=primary" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install --target-directory=$FIX/primary $FIX/wt/src.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 15. rsync: destination operand (last non-option operand).
+check_both "15 rsync SRC into primary" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/src.txt $FIX/primary/dest.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "15b rsync SRC into wt allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/src.txt $FIX/wt/dest.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 16. dd: of=PATH is a write destination.
+check_both "16 dd of=primary" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"dd if=/dev/zero of=$FIX/primary/dd.img\",\"cwd\":\"$FIX/wt\"}}"
+check_both "16b dd of=wt allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"dd if=/dev/zero of=$FIX/wt/dd.img\",\"cwd\":\"$FIX/wt\"}}"
+
+# 17. cd <primary> && <relative write> — the git-arm cd tracking never reached
+# the redirect arm; a && segment after a cd into the primary must now deny.
+check_both "17 cd primary && echo x > a.txt (relative write after cd)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "17b cd wt && echo x > a.txt (relative write after cd) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 18. Same shape with `;` instead of `&&`.
+check_both "18 cd primary; echo x > a.txt (relative write after cd)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "18b cd wt; echo x > a.txt (relative write after cd) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 19. eval '<write-shaped body>' — a write-shaped token inside the eval string
+# was never scanned at all.
+check_both "19 eval redirect into primary" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"eval \\\"echo hi > $FIX/primary/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+check_both "19b eval redirect into wt (provably scratch) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"eval \\\"echo hi > $FIX/wt/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+
+# 20. bash -c '<write-shaped body>'.
+check_both "20 bash -c redirect into primary" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c \\\"echo hi > $FIX/primary/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+check_both "20b bash -c redirect into wt (provably scratch) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c \\\"echo hi > $FIX/wt/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+
+# 21. sh -c '<write-shaped body>' (cp verb, not a redirect).
+check_both "21 sh -c cp into primary" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sh -c \\\"cp $FIX/wt/src.txt $FIX/primary/dest.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+check_both "21b sh -c cp into wt (provably scratch) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sh -c \\\"cp $FIX/wt/src.txt $FIX/wt/dest.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+
+# 22. zsh -c '<write-shaped body>' (rm verb).
+check_both "22 zsh -c rm into primary" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"zsh -c \\\"rm $FIX/primary/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+check_both "22b zsh -c rm into wt (provably scratch) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"zsh -c \\\"rm $FIX/wt/wtfile.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
