@@ -262,6 +262,23 @@ describe('edit --fix-version / --add-fix-version (HIMMEL-3713)', () => {
     expect((putCall?.[2] as { fields?: unknown }).fields).toBeUndefined();
   });
 
+  it('validates against the ISSUE KEY\'s own project, not the configured default (HIMMEL-3713 CR fix)', async () => {
+    const { registerEdit } = await import('./edit.js');
+    const p = freshProgram(registerEdit);
+    await p.parseAsync(['node', 'jira', 'edit', 'OTHER-1', '--fix-version', 'v1.0.0']);
+    const getCall = mockRequest.mock.calls.find((c) => c[0] === 'GET');
+    expect(getCall?.[1]).toBe('/project/OTHER/versions');
+  });
+
+  it('rejects an unknown --fix-version naming the ISSUE KEY\'s project on a cross-project issue', async () => {
+    const { registerEdit } = await import('./edit.js');
+    const p = freshProgram(registerEdit);
+    await expect(
+      p.parseAsync(['node', 'jira', 'edit', 'OTHER-1', '--fix-version', 'v9.9.9']),
+    ).rejects.toThrow(/no version named "v9\.9\.9" in project OTHER/);
+    expect(mockRequest.mock.calls.some((c) => c[0] === 'PUT')).toBe(false);
+  });
+
   it('rejects an unknown --fix-version naming the project, without ever PUTting', async () => {
     const { registerEdit } = await import('./edit.js');
     const p = freshProgram(registerEdit);

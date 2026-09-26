@@ -91,6 +91,16 @@ export async function assertVersionExists(project: string, name: string): Promis
   if (!found) throw new Error(`no version named "${name}" in project ${project}`);
 }
 
+// A Jira project key never contains a hyphen, so the project is everything
+// before the LAST one — used to validate `edit <key> --fix-version` against
+// the issue's own project rather than the configured default (HIMMEL-3713:
+// `edit` has no `--project` flag, unlike `create`).
+export function projectFromKey(key: string): string {
+  const idx = key.lastIndexOf('-');
+  if (idx <= 0) throw new Error(`"${key}" is not a valid issue key (expected PROJECT-NUMBER)`);
+  return key.slice(0, idx);
+}
+
 export async function setFixVersion(
   key: string,
   op: 'add' | 'remove',

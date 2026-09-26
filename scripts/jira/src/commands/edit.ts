@@ -1,10 +1,10 @@
 import type { Command } from 'commander';
-import { request, severityField, projectKey } from '../client.js';
+import { request, severityField } from '../client.js';
 import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import { markdownToAdf } from '../adf.js';
 import { readBodyFile } from './body-file.js';
 import { parseLabels } from './labels.js';
-import { assertVersionExists, buildFixVersionBody } from './versions.js';
+import { assertVersionExists, buildFixVersionBody, projectFromKey } from './versions.js';
 
 export interface EditOptions {
   priority?: string;
@@ -137,10 +137,10 @@ export function registerEdit(program: Command): void {
       }
       const fields = buildEditFields(options);
       if (options.fixVersion !== undefined) {
-        await assertVersionExists(projectKey(), options.fixVersion);
+        await assertVersionExists(projectFromKey(key), options.fixVersion);
       }
       if (options.addFixVersion !== undefined) {
-        await assertVersionExists(projectKey(), options.addFixVersion);
+        await assertVersionExists(projectFromKey(key), options.addFixVersion);
       }
       const body: { fields?: Record<string, unknown>; update?: Record<string, unknown> } = {};
       if (Object.keys(fields).length > 0) body.fields = fields;
