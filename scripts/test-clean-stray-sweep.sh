@@ -58,10 +58,8 @@ make_repo() {
 # Age a husk RECURSIVELY: the sweep's freshness gate treats ANY entry modified
 # in the last 24h as in-flight, so fixtures must age the dir and its contents.
 touch_old() {
-    local entry
-    while IFS= read -r entry; do
-        touch -d '2 days ago' "$entry" 2>/dev/null || touch -t 202001010000 "$entry"
-    done < <(find "$1" -print 2>/dev/null)
+    find "$1" -exec touch -d '2 days ago' {} + 2>/dev/null \
+        || find "$1" -exec touch -t 202001010000 {} +
 }
 
 run_clean() {
@@ -438,6 +436,131 @@ else
     fail "1738-d-setup: expected both husks in quarantine" "$out_l1"
     fail "1738-d: skipped (setup did not quarantine both husks)"
     fail "1738-d: skipped (setup did not quarantine both husks)"
+fi
+
+echo "RUN M: HIMMEL-3688 — a husk dir name containing a newline is swept as ONE path; a decoy at its first-line fragment (relative to cwd) survives"
+REPO_M=$(make_repo repo-m)
+mkdir -p "$REPO_M/victim"
+printf 'important\n' > "$REPO_M/victim/keep.txt"
+touch_old "$REPO_M/victim"
+HNAME_M=$'x\nvictim'
+mkdir -p "$REPO_M/.claude/worktrees/$HNAME_M"
+printf 'stray\n' > "$REPO_M/.claude/worktrees/$HNAME_M/file.txt"
+touch_old "$REPO_M/.claude/worktrees/$HNAME_M"
+out_m=$(run_clean "$REPO_M") || fail "run_clean exited nonzero (repo-m)" "$out_m"
+if [ -f "$REPO_M/victim/keep.txt" ] && [ "$(cat "$REPO_M/victim/keep.txt" 2>/dev/null)" = "important" ]; then
+    pass "3688-a: decoy at the husk name's first-line fragment survived untouched"
+else
+    fail "3688-a: decoy was swept or altered (newline in husk name split the loop)" "$out_m"
+fi
+if [ -d "$REPO_M/.claude/worktrees/$HNAME_M" ]; then
+    fail "3688-a: newline-named husk was not swept" "$out_m"
+else
+    pass "3688-a: newline-named husk swept from its original path"
+fi
+QDIR_M="$(cd "$REPO_M/.git" && pwd)/stray-quarantine"
+QUAR_M_COUNT=0
+QUAR_M_HIT=""
+while IFS= read -r -d '' qm; do
+    QUAR_M_COUNT=$((QUAR_M_COUNT+1))
+    case "$(basename "$qm")" in
+        x$'\n'victim.*) QUAR_M_HIT="$qm" ;;
+    esac
+done < <(find "$QDIR_M" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+if [ "$QUAR_M_COUNT" -eq 1 ] && [ -n "$QUAR_M_HIT" ] && [ -f "$QUAR_M_HIT/file.txt" ]; then
+    pass "3688-a: newline-named husk landed in quarantine as ONE intact entry"
+else
+    fail "3688-a: expected exactly one intact quarantine entry for the newline-named husk (count=$QUAR_M_COUNT)" "$out_m"
+fi
+
+echo "RUN N: HIMMEL-3688 — a quarantined no-.git husk holding real content is kept, not reaped blindly; an empty or node_modules-only one is still reaped"
+REPO_N=$(make_repo repo-n)
+mkdir -p "$REPO_N/.claude/worktrees"
+
+HUSK_N_NOTES="$REPO_N/.claude/worktrees/feat+notes-husk"
+mkdir -p "$HUSK_N_NOTES"
+printf 'do not lose me\n' > "$HUSK_N_NOTES/notes.txt"
+touch_old "$HUSK_N_NOTES"
+
+HUSK_N_EMPTY="$REPO_N/.claude/worktrees/feat+empty-husk"
+mkdir -p "$HUSK_N_EMPTY"
+touch_old "$HUSK_N_EMPTY"
+
+HUSK_N_CHURN="$REPO_N/.claude/worktrees/feat+churn-husk"
+mkdir -p "$HUSK_N_CHURN/node_modules/pkg"
+printf 'x\n' > "$HUSK_N_CHURN/node_modules/pkg/index.js"
+touch_old "$HUSK_N_CHURN"
+
+HUSK_N_SYMLINK="$REPO_N/.claude/worktrees/feat+symlink-husk"
+mkdir -p "$HUSK_N_SYMLINK"
+SYMLINK_TARGET="$REPO_N/dummy-symlink-target"
+printf 'target\n' > "$SYMLINK_TARGET"
+ln -s "$SYMLINK_TARGET" "$HUSK_N_SYMLINK/link-to-target"
+touch_old "$HUSK_N_SYMLINK"
+# touch_old's `find -exec touch {} +` follows the symlink (touching its
+# TARGET's mtime, not its own) — age the symlink's own timestamp too, or the
+# freshness gate sees a "just created" entry and skips the husk as in-flight.
+touch -h -d '2 days ago' "$HUSK_N_SYMLINK/link-to-target" 2>/dev/null \
+    || touch -h -t 202001010000 "$HUSK_N_SYMLINK/link-to-target"
+
+HUSK_N_EMPTYDIR="$REPO_N/.claude/worktrees/feat+emptydir-husk"
+mkdir -p "$HUSK_N_EMPTYDIR/important-plans"
+touch_old "$HUSK_N_EMPTYDIR"
+
+out_n1=$(run_clean "$REPO_N") || fail "run_clean (quarantine pass) exited nonzero (repo-n)" "$out_n1"
+QDIR_N="$(cd "$REPO_N/.git" && pwd)/stray-quarantine"
+QN_NOTES=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+notes-husk.*' 2>/dev/null | head -1) || true
+QN_EMPTY=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+empty-husk.*' 2>/dev/null | head -1) || true
+QN_CHURN=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+churn-husk.*' 2>/dev/null | head -1) || true
+QN_SYMLINK=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+symlink-husk.*' 2>/dev/null | head -1) || true
+QN_EMPTYDIR=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+emptydir-husk.*' 2>/dev/null | head -1) || true
+if [ -n "$QN_NOTES" ] && [ -n "$QN_EMPTY" ] && [ -n "$QN_CHURN" ] && [ -n "$QN_SYMLINK" ] && [ -n "$QN_EMPTYDIR" ]; then
+    pass "3688-b-setup: all five no-.git husks quarantined"
+
+    touch_old "$QN_NOTES"
+    touch_old "$QN_EMPTY"
+    touch_old "$QN_CHURN"
+    touch_old "$QN_SYMLINK"
+    touch_old "$QN_EMPTYDIR"
+    touch -d '2 days ago' "$QN_NOTES.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_NOTES.himmel-quarantined-at"
+    touch -d '2 days ago' "$QN_EMPTY.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_EMPTY.himmel-quarantined-at"
+    touch -d '2 days ago' "$QN_CHURN.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_CHURN.himmel-quarantined-at"
+    touch -d '2 days ago' "$QN_SYMLINK.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_SYMLINK.himmel-quarantined-at"
+    touch -d '2 days ago' "$QN_EMPTYDIR.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_EMPTYDIR.himmel-quarantined-at"
+
+    out_n2=$(run_clean "$REPO_N") || fail "run_clean (reap pass) exited nonzero (repo-n)" "$out_n2"
+    if [ -d "$QN_NOTES" ]; then
+        pass "3688-b: no-.git husk holding notes.txt was KEPT, not reaped"
+    else
+        fail "3688-b: no-.git husk holding real content was reaped (data loss)" "$out_n2"
+    fi
+    if [ ! -d "$QN_EMPTY" ]; then
+        pass "3688-b: empty no-.git husk was reaped"
+    else
+        fail "3688-b: empty no-.git husk was NOT reaped" "$out_n2"
+    fi
+    if [ ! -d "$QN_CHURN" ]; then
+        pass "3688-b: node_modules-only no-.git husk was reaped"
+    else
+        fail "3688-b: node_modules-only no-.git husk was NOT reaped" "$out_n2"
+    fi
+    if [ -d "$QN_SYMLINK" ]; then
+        pass "3688-b: no-.git husk holding only a symlink was KEPT, not reaped"
+    else
+        fail "3688-b: no-.git husk holding a symlink was reaped (data loss — symlinks are invisible to -type f)" "$out_n2"
+    fi
+    if [ -d "$QN_EMPTYDIR" ]; then
+        pass "3688-b: no-.git husk holding only an empty subdirectory was KEPT, not reaped"
+    else
+        fail "3688-b: no-.git husk holding only an empty subdirectory was reaped (data loss — empty dirs are invisible to the file-only scan)" "$out_n2"
+    fi
+else
+    fail "3688-b-setup: expected all five no-.git husks in quarantine" "$out_n1"
+    fail "3688-b: skipped (setup did not quarantine notes husk)"
+    fail "3688-b: skipped (setup did not quarantine empty husk)"
+    fail "3688-b: skipped (setup did not quarantine churn husk)"
+    fail "3688-b: skipped (setup did not quarantine symlink husk)"
+    fail "3688-b: skipped (setup did not quarantine emptydir husk)"
 fi
 
 echo
