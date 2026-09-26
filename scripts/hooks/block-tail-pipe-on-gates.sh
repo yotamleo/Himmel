@@ -642,7 +642,8 @@ scan_line() {
         # HIMMEL-3661: ENV_SPLIT_SENTINEL means "unknown program that may be a
         # gate" — treat it as a match without consulting GATE_RE.
         if [ "$prog" != "$ENV_SPLIT_SENTINEL" ]; then
-            printf '%s' "$prog" | grep -Eq "$GATE_RE" || continue
+            gate_match=$(printf '%s' "$prog" | grep -E "$GATE_RE")
+            [ -n "$gate_match" ] || continue
         fi
         # Last stage, same command-position walk — so `| env tail`, `| command
         # head` and `| FOO=1 tail` are recognised too (panel r2, codex-1). The
