@@ -309,6 +309,183 @@ check "no-transcript-match: rc 0 (still closes)" "$rc" "0"
 contains "no-transcript-match: says it cannot resolve unambiguously" "$out" "cannot resolve unambiguously"
 exact_count "no-transcript-match: kill still called exactly once" "$(cat "$CALLS")" "kill -TERM 210" "1"
 
+# --- 17: HIMMEL-3635 -- a colon-suffixed `WRAPPED:` marker bullet (tick.sh's
+# leg_tail_status already accepts this shape; close-wrapped-leg's own
+# marker-bullet check must accept it too, via the shared parser).
+mkdoc "- 10:00 WRAPPED: done"
+reset_calls
+rc=0; out=$(run "$DOC" 2>&1) || rc=$?
+check "wrapped-colon: rc 0 (accepted as WRAPPED)" "$rc" "0"
+
+# --- 18: HIMMEL-3638 console add-on -- a live session named exactly the
+# FULL doc stem (-RESUME and date intact), as the console launches legs this
+# shift, must match as this leg's one live session.
+rm -rf "$W/proc"; mkdir -p "$W/proc"
+FULL_STEM="$(basename "$DOC" .md)"
+mkcmdline 220 claude -n "$FULL_STEM" work
+pgrep_x_stub 220
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(run "$DOC" 2>&1) || rc=$?
+check "full-stem-session: rc 0 (matched)" "$rc" "0"
+exact_count "full-stem-session: kill called exactly once with the matched pid" "$(cat "$CALLS")" "kill -TERM 220" "1"
+# restore the undated-session fixture other cases below assume
+rm -rf "$W/proc"; mkdir -p "$W/proc"
+mkcmdline 210 claude -n "$SESSION_NAME" work
+pgrep_x_stub 210
+
+# --- 19: HIMMEL-3638 -- the pre-signal capture must not read a STALE
+# transcript that happens to share a customTitle-bearing decoy line but is
+# from a prior day (mtime-scoped: only today's files are searched). A stale
+# decoy alongside the real, fresh transcript must still resolve to exactly
+# the fresh one, not refuse as ambiguous.
+ESW_SB3="$W/esw-sb3"
+mkdir -p "$ESW_SB3/vault" "$ESW_SB3/proj" "$ESW_SB3/home"
+PROJDIR3="$W/esw-projects3"
+mkdir -p "$PROJDIR3"
+STALE_TRANSCRIPT="$PROJDIR3/sess-stale.jsonl"
+printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB3/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}" > "$STALE_TRANSCRIPT"
+touch -d '10 days ago' "$STALE_TRANSCRIPT" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$STALE_TRANSCRIPT" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+FRESH_TRANSCRIPT="$PROJDIR3/sess-fresh.jsonl"
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB3/proj\",\"timestamp\":\"2026-06-17T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2026-06-17T00:00:00Z\",\"cwd\":\"$ESW_SB3/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
+} > "$FRESH_TRANSCRIPT"
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB3/home" LUNA_VAULT_PATH="$ESW_SB3/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB3/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR3" \
+    run "$DOC" 2>&1) || rc=$?
+check "mtime-scoped-capture: rc 0 (still closes)" "$rc" "0"
+note_count19=$(find "$ESW_SB3/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "mtime-scoped-capture: exactly one note written (stale decoy excluded, not ambiguous)" "$note_count19" "1"
+
+# --- 20: HIMMEL-3638 timing guard -- a projects dir with many STALE, large
+# decoy transcripts (simulating scale) plus one fresh, large transcript whose
+# customTitle match sits within the head window and is followed by megabytes
+# of padding. The fix must not open every byte of every file: this is a
+# best-effort wall-clock bound (sandbox timing is inherently noisy), backed
+# by the real proof -- correctness despite the decoys (exactly one note).
+PROJDIR4="$W/esw-projects4"
+mkdir -p "$PROJDIR4"
+for i in $(seq 1 10); do
+    stale="$PROJDIR4/stale-$i.jsonl"
+    yes '{"customTitle":"not-this-leg","timestamp":"2020-01-01T00:00:00Z"}' 2>/dev/null | head -c 300000 > "$stale" || true
+    touch -d '30 days ago' "$stale" 2>/dev/null || touch -t "$(date -d '30 days ago' +%Y%m%d0000 2>/dev/null)" "$stale" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+done
+ESW_SB4="$W/esw-sb4"
+mkdir -p "$ESW_SB4/vault" "$ESW_SB4/proj" "$ESW_SB4/home"
+FRESH4="$PROJDIR4/sess-fresh.jsonl"
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB4/proj\",\"timestamp\":\"2026-06-17T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2026-06-17T00:00:00Z\",\"cwd\":\"$ESW_SB4/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\"}]}}"
+    yes '{"padding":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}' 2>/dev/null | head -c 1000000 || true
+} > "$FRESH4"
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+start_ts=$(date +%s)
+rc=0
+out=$(HOME="$ESW_SB4/home" LUNA_VAULT_PATH="$ESW_SB4/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB4/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR4" \
+    run "$DOC" 2>&1) || rc=$?
+end_ts=$(date +%s)
+elapsed=$((end_ts - start_ts))
+check "timing-guard: rc 0" "$rc" "0"
+note_count20=$(find "$ESW_SB4/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "timing-guard: exactly one note written despite large/stale decoys" "$note_count20" "1"
+if [ "$elapsed" -le 15 ]; then
+    echo "ok - timing-guard: close completed in ${elapsed}s (<=15s best-effort bound)"
+else
+    echo "FAIL - timing-guard: close took ${elapsed}s (>15s) - mtime/head-window scoping may have regressed"
+    fails=$((fails+1))
+fi
+
+# --- 21: HIMMEL-3638/F3 -- the ONLY matching transcript is older than the
+# mtime window (e.g. the console closes a leg more than a day after it
+# WRAPPED). The mtime-scoped search alone matches 0 files; the fix must fall
+# back to an all-time search rather than skipping the pre-signal capture.
+ESW_SB5="$W/esw-sb5"
+mkdir -p "$ESW_SB5/vault" "$ESW_SB5/proj" "$ESW_SB5/home"
+PROJDIR5="$W/esw-projects5"
+mkdir -p "$PROJDIR5"
+OLD_TRANSCRIPT="$PROJDIR5/sess-old.jsonl"
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB5/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB5/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
+} > "$OLD_TRANSCRIPT"
+touch -d '10 days ago' "$OLD_TRANSCRIPT" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB5/home" LUNA_VAULT_PATH="$ESW_SB5/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB5/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR5" CLOSE_WRAPPED_LEG_MTIME_DAYS=1 \
+    run "$DOC" 2>&1) || rc=$?
+check "mtime-window-fallback: rc 0 (still closes)" "$rc" "0"
+note_count21=$(find "$ESW_SB5/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "mtime-window-fallback: exactly one note written (0 matches under the mtime window, found via all-time fallback)" "$note_count21" "1"
+
+# --- 22: codex-3 -- the mtime-scoped search is NON-empty (an unrelated, recent
+# decoy transcript exists) but contains 0 MATCHES for this leg; the actual
+# target transcript is older than the window. An empty-scan_files check alone
+# never retries here (scan_files has the decoy in it), so this must fall back
+# on 0 MATCHES, not 0 files.
+ESW_SB6="$W/esw-sb6"
+mkdir -p "$ESW_SB6/vault" "$ESW_SB6/proj" "$ESW_SB6/home"
+PROJDIR6="$W/esw-projects6"
+mkdir -p "$PROJDIR6"
+DECOY_TRANSCRIPT="$PROJDIR6/sess-decoy.jsonl"
+printf '%s\n' "{\"customTitle\":\"not-this-leg\",\"timestamp\":\"2026-06-17T00:00:00Z\"}" > "$DECOY_TRANSCRIPT"
+OLD_TRANSCRIPT6="$PROJDIR6/sess-old.jsonl"
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB6/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB6/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
+} > "$OLD_TRANSCRIPT6"
+touch -d '10 days ago' "$OLD_TRANSCRIPT6" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT6" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB6/home" LUNA_VAULT_PATH="$ESW_SB6/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB6/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR6" CLOSE_WRAPPED_LEG_MTIME_DAYS=1 \
+    run "$DOC" 2>&1) || rc=$?
+check "mtime-scoped-decoy-fallback: rc 0 (still closes)" "$rc" "0"
+note_count22=$(find "$ESW_SB6/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "mtime-scoped-decoy-fallback: exactly one note written (an unrelated recent decoy must not suppress the all-time retry)" "$note_count22" "1"
+
+# --- 23: codex-2 (round 4) -- the all-time FALLBACK pass must not apply the
+# same per-file head-window truncation as the scoped pass. The transcript is
+# outside the mtime window (forces the fallback) AND its customTitle line
+# sits past a small test-configured head window, so a fallback that still
+# truncates at that window can never find it either.
+ESW_SB7="$W/esw-sb7"
+mkdir -p "$ESW_SB7/vault" "$ESW_SB7/proj" "$ESW_SB7/home"
+PROJDIR7="$W/esw-projects7"
+mkdir -p "$PROJDIR7"
+OLD_TRANSCRIPT7="$PROJDIR7/sess-old.jsonl"
+{
+    printf '%s\n' "{\"filler\":1}"
+    printf '%s\n' "{\"filler\":2}"
+    printf '%s\n' "{\"filler\":3}"
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB7/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB7/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
+} > "$OLD_TRANSCRIPT7"
+touch -d '10 days ago' "$OLD_TRANSCRIPT7" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT7" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB7/home" LUNA_VAULT_PATH="$ESW_SB7/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB7/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR7" CLOSE_WRAPPED_LEG_MTIME_DAYS=1 \
+    CLOSE_WRAPPED_LEG_CUSTOMTITLE_HEAD=2 \
+    run "$DOC" 2>&1) || rc=$?
+check "fallback-head-window: rc 0 (still closes)" "$rc" "0"
+note_count23=$(find "$ESW_SB7/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "fallback-head-window: exactly one note written (customTitle past the head window is still found by the unbounded all-time fallback)" "$note_count23" "1"
+
 echo "----"
 if [ "$fails" -eq 0 ]; then
     echo "ALL OK"

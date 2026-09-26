@@ -68,8 +68,14 @@ if ! bash "$HERE/../queue-lock.sh" status "$DOC" >/dev/null 2>&1; then
     exit 3
 fi
 
-last_marker=$(grep -E '^- [0-9]{2}:[0-9]{2} (LIVE|FINDING|RESOLVED|READY|BLOCKED|HALTED|WRAPPED)( |$)' "$DOC" \
-    | tail -1 | sed -E 's/^- [0-9]{2}:[0-9]{2} ([A-Z]+).*/\1/')
+# shellcheck source=scripts/lib/leg-tail-status.sh
+# shellcheck disable=SC1091
+if ! . "$HERE/../../lib/leg-tail-status.sh"; then
+    echo "close-wrapped-leg: cannot load scripts/lib/leg-tail-status.sh" >&2
+    exit 1
+fi
+
+last_marker=$(leg_tail_status "$DOC")
 if [ "$last_marker" != "WRAPPED" ]; then
     echo "close-wrapped-leg: refusing - the doc's last Results marker-bullet is '${last_marker:-<none>}', not WRAPPED" >&2
     exit 4
@@ -89,7 +95,12 @@ if ! . "$HERE/../../lanes/lib/claude-sessions.sh"; then
 fi
 
 ident=$(leg_identity "$DOC")
-names=",${ident#*$'\t'},"
+# HIMMEL-3638 console add-on: leg_identity's names strip -RESUME, but a
+# console may launch a leg's session under the FULL doc stem (-RESUME and
+# date intact) - accept that shape too, locally here (not in leg-identity.sh,
+# which other callers rely on for the stripped forms).
+doc_stem="$(basename "$DOC" .md)"
+names=",${ident#*$'\t'},${doc_stem},"
 
 sessions=$(claude_sessions)
 census_rc=$?
@@ -135,17 +146,55 @@ fi
 END_SESSION_WIKI="${END_SESSION_WIKI_BIN:-$HERE/../../hooks/end-session-wiki.sh}"
 PROJECTS_DIR="${CLOSE_WRAPPED_LEG_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
 if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
-    transcript_matches=""
-    while IFS= read -r cand; do
-        [ -n "$cand" ] || continue
-        cand_matches=$(grep -rlF "\"customTitle\":\"$cand\"" "$PROJECTS_DIR" 2>/dev/null)
-        [ -n "$cand_matches" ] && transcript_matches="${transcript_matches}
-${cand_matches}"
-    done <<EOF
-$(printf '%s' "${ident#*$'\t'}" | tr ',' '\n')
+    # HIMMEL-3638: a plain `grep -rlF ... "$PROJECTS_DIR"` reads every byte of
+    # every transcript ever written across the whole projects tree (5.6 GB) -
+    # minutes per close. A wrapped leg's own transcript is always from TODAY,
+    # and customTitle (when set) is near the top of the file, so bound both
+    # axes: only today's files (mtime), only their first N lines (head) -
+    # same "exactly one match, else skip" semantics as before.
+    mtime_window="${CLOSE_WRAPPED_LEG_MTIME_DAYS:-1}"
+    head_window="${CLOSE_WRAPPED_LEG_CUSTOMTITLE_HEAD:-40}"
+    candidates=$(printf '%s\n%s\n' "${ident#*$'\t'}" "$doc_stem" | tr ',' '\n' | sed '/^$/d')
+    match_transcripts() {
+        local files="$1" hw="$2" matches="" f hit cand
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if [ "$hw" -eq 0 ]; then
+                hit=$(cat "$f" 2>/dev/null)
+            else
+                hit=$(head -n "$hw" "$f" 2>/dev/null)
+            fi
+            while IFS= read -r cand; do
+                [ -n "$cand" ] || continue
+                if printf '%s' "$hit" | grep -qF "\"customTitle\":\"$cand\""; then  # pipefail-ok: no pipefail here (set -u only); $hit is an already-captured small string, not a live producer
+                    matches="${matches}
+${f}"
+                    break
+                fi
+            done <<EOF
+$candidates
 EOF
-    transcript_matches=$(printf '%s\n' "$transcript_matches" | sed '/^$/d' | sort -u)
+        done <<EOF
+$files
+EOF
+        printf '%s\n' "$matches" | sed '/^$/d' | sort -u
+    }
+    scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' -mtime "-${mtime_window}" 2>/dev/null)
+    transcript_matches=$(match_transcripts "$scan_files" "$head_window")
     tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
+    if [ "$tcount" -eq 0 ]; then
+        # F3/codex-3: -mtime is a rolling window, not "today", and a target
+        # transcript outside it can be missed even while OTHER, unrelated
+        # transcripts fall inside it (an empty-scan_files check alone would
+        # miss that case). Retry against the full tree whenever the SCOPED
+        # search found no MATCH, not only when it found no files at all.
+        # codex-2 (round 4): the fallback must also drop the head-window
+        # bound - a customTitle past line $head_window is unmatchable in
+        # either pass otherwise. Pass 0 = unbounded (whole file).
+        scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' 2>/dev/null)
+        transcript_matches=$(match_transcripts "$scan_files" 0)
+        tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
+    fi
     if [ "$tcount" -eq 1 ]; then
         TRANSCRIPT="$transcript_matches"
         cap_cwd=$(jq -r 'select(.cwd != null) | .cwd' "$TRANSCRIPT" 2>/dev/null | head -1)
