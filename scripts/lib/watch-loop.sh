@@ -82,17 +82,25 @@ usage() {
 # forever -- confirmed by reproduction. `kill -0 -- -"$cpid"` reports alive
 # if ANY group member still is; the direct-pid check stays as the fallback
 # for the same non-pgid case as the TERM line above.
+#
+# The `set -m`/`set +m` pair is scoped to restore the CALLER's prior monitor
+# state rather than unconditionally disabling it (critic-panel round 1,
+# codex-2, Suggestion): a caller that already had job control on (e.g. an
+# interactive shell sourcing this file) would otherwise have it silently
+# turned off by this function.
 _wl_timeout() {
     local secs="$1"; shift
+    local _wl_monitor_was_on=0
     [ "$secs" -lt 1 ] 2>/dev/null && secs=1
     if command -v timeout >/dev/null 2>&1; then timeout -k 1 "$secs" "$@"; return; fi
     if command -v gtimeout >/dev/null 2>&1; then gtimeout -k 1 "$secs" "$@"; return; fi
     if command -v setsid >/dev/null 2>&1; then
         setsid "$@" &
     else
+        case $- in *m*) _wl_monitor_was_on=1 ;; esac
         set -m
         "$@" &
-        set +m
+        [ "$_wl_monitor_was_on" -eq 1 ] || set +m
     fi
     local cpid=$! waited=0
     while kill -0 "$cpid" 2>/dev/null; do
