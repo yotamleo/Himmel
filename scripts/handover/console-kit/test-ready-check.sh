@@ -152,6 +152,52 @@ rc=0; out="$(run)" || rc=$?
 check "empty-rollup: exit 1" "$rc" "1"
 contains "empty-rollup: check 2 fails" "$out" "[FAIL] 2. statusCheckRollup: no checks reported yet"
 
+# --- 2c. HIMMEL-3690: same check name CANCELLED earlier, SUCCESS later —
+# item 2 must PASS (judge the LATEST run per check identity, not any row) --
+reset_stubs
+STUB_ROLLUP='[{"name":"pr-title-lint","status":"COMPLETED","conclusion":"CANCELLED","startedAt":"2026-01-01T08:15:00Z","completedAt":"2026-01-01T08:19:58Z"},{"name":"pr-title-lint","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T08:24:00Z","completedAt":"2026-01-01T08:26:47Z"}]'
+rc=0; out="$(run)" || rc=$?
+check "superseded-cancelled: exit 0" "$rc" "0"
+contains "superseded-cancelled: check 2 passes on the later SUCCESS run" "$out" "[PASS] 2."
+
+# --- 2d. control: same name SUCCESS earlier, CANCELLED later — the later
+# run still governs, so item 2 FAILs ----------------------------------------
+reset_stubs
+STUB_ROLLUP='[{"name":"pr-title-lint","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T08:10:00Z","completedAt":"2026-01-01T08:12:00Z"},{"name":"pr-title-lint","status":"COMPLETED","conclusion":"CANCELLED","startedAt":"2026-01-01T08:20:00Z","completedAt":"2026-01-01T08:22:00Z"}]'
+rc=0; out="$(run)" || rc=$?
+check "later-cancelled: exit 1" "$rc" "1"
+contains "later-cancelled: check 2 fails on the later run" "$out" "[FAIL] 2."
+contains "later-cancelled: names the latest run's detail" "$out" "pr-title-lint=COMPLETED/CANCELLED"
+
+# --- 2e. control: two DIFFERENT check names, one FAILURE — each keeps its
+# own verdict; grouping must not merge unrelated names ----------------------
+reset_stubs
+STUB_ROLLUP='[{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"},{"name":"lint","status":"COMPLETED","conclusion":"FAILURE"}]'
+rc=0; out="$(run)" || rc=$?
+check "two-names-one-failure: exit 1" "$rc" "1"
+contains "two-names-one-failure: check 2 fails" "$out" "[FAIL] 2."
+contains "two-names-one-failure: names only the failing check" "$out" "lint=COMPLETED/FAILURE"
+
+# --- 2f. control: same name in two different workflows, one FAILURE — a
+# different workflowName means a different identity, so the earlier failing
+# workflow's run must not be superseded by the other workflow's later
+# success (a grouping-by-name-only bug would hide this) ---------------------
+reset_stubs
+STUB_ROLLUP='[{"name":"test","workflowName":"CI-B","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-01-01T08:00:00Z","completedAt":"2026-01-01T08:02:00Z"},{"name":"test","workflowName":"CI-A","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T08:05:00Z","completedAt":"2026-01-01T08:07:00Z"}]'
+rc=0; out="$(run)" || rc=$?
+check "same-name-two-workflows: exit 1" "$rc" "1"
+contains "same-name-two-workflows: check 2 fails" "$out" "[FAIL] 2."
+contains "same-name-two-workflows: names the failing workflow's run" "$out" "test=COMPLETED/FAILURE"
+
+# --- 2g. control: an in-progress later run after an earlier SUCCESS — the
+# later, unfinished run governs, so item 2 FAILs ----------------------------
+reset_stubs
+STUB_ROLLUP='[{"name":"pr-title-lint","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T08:10:00Z","completedAt":"2026-01-01T08:12:00Z"},{"name":"pr-title-lint","status":"IN_PROGRESS","conclusion":null,"startedAt":"2026-01-01T08:20:00Z"}]'
+rc=0; out="$(run)" || rc=$?
+check "later-in-progress: exit 1" "$rc" "1"
+contains "later-in-progress: check 2 fails on the still-running later run" "$out" "[FAIL] 2."
+contains "later-in-progress: names the in-progress run" "$out" "pr-title-lint=IN_PROGRESS/null"
+
 # --- 3. check 3 fails: unresolved review threads > 0 --------------------
 reset_stubs
 STUB_UNRESOLVED=2
