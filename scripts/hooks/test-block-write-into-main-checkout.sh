@@ -2846,6 +2846,40 @@ check_both "57 fromP: cd wt/nope; mv link-to-wt.txt $FIX/wt/dest-mv.txt (mv SOUR
 check_both "58 fromP: cd wt/nope; ln -sf $FIX/wt/z.txt link-to-wt.txt (ln DEST is a primary symlink ENTRY via the fallback) denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/nope; ln -sf $FIX/wt/z.txt link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
 
+echo "== HIMMEL-3648 CR round 13 (J1307Q — the cp/mv POSITIONAL-destination arm never threaded its own mode into _bwimc_cd_guard) =="
+
+# 60-65 (J1307Q): rows 56-58 fixed the fallback's mode for rm/mv-source/ln,
+# but the cp/mv POSITIONAL-destination arm (the branch computing entry/both
+# for a symlink-entry destination via mv, `cp --remove-destination`, `cp -f`
+# and `mv -T`) still called _bwimc_cd_guard BEFORE that mode was computed,
+# with no $2 at all — an implicit "follow" default. Under a real cd/pushd
+# divergence the main check (against the wrong tracked cwd) never fires,
+# leaving that wrong "follow" fallback as the SOLE catcher: it resolves
+# THROUGH link-to-wt.txt's referent (outside the primary) and wrongly
+# ALLOWS replacing a primary checkout ENTRY. Fixed by moving the call to
+# after $_bwimc_dest_mode is fully known and passing it as $2 (same shape
+# as rows 56-58's fix, applied to the one arm they missed).
+check_both "60 fromP: cd wt | cat; mv wt/z.txt link-to-wt.txt (mv DEST is a primary symlink ENTRY, cd diverges via a pipeline subshell) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; mv $FIX/wt/z.txt link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "61 fromP: (cd wt); mv wt/z.txt link-to-wt.txt (mv DEST entry, cd diverges via a subshell) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"(cd $FIX/wt); mv $FIX/wt/z.txt link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "62 fromP: cd primary || cd wt; mv wt/z.txt link-to-wt.txt (mv DEST entry, first cd succeeds so || never runs) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || cd $FIX/wt; mv $FIX/wt/z.txt link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "63 fromP: cd wt | cat; cp --remove-destination wt/z.txt link-to-wt.txt (cp --remove-destination DEST entry) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp --remove-destination $FIX/wt/z.txt link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "64 fromP: cd wt | cat; cp -f wt/z.txt link-to-wt.txt (cp -f DEST entry, BOTH mode) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp -f $FIX/wt/z.txt link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "65 fromP: cd wt | cat; mv -T wt/z.txt link-to-wt.txt (mv -T DEST entry) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; mv -T $FIX/wt/z.txt link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
+
+# 66 (false-positive control): the SAME cd divergence, but the destination
+# is an explicit absolute worktree path rather than the relative primary
+# symlink name — resolution never depends on which cwd (tracked or real)
+# is used, so this must still ALLOW post-fix. Proves the mode-threading fix
+# does not turn into an over-deny.
+check_both "66 control: cd wt | cat; mv wt/z.txt wt/dest-ctl.txt (explicit absolute wt destination) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; mv $FIX/wt/z.txt $FIX/wt/dest-ctl.txt\",\"cwd\":\"$FIX/primary\"}}"
+
 # 59 (codex-2, round 10): the shc dispatch regex's middle group used to
 # require every intervening token to itself start with "-" (a flag) — a
 # flag that takes its own separate argument, e.g. `-o pipefail`, has a

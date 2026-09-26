@@ -3662,7 +3662,6 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_n=${#_bwimc_ops[@]}
             if [ "$_bwimc_n" -ge 2 ]; then
                 _bwimc_dest_raw="${_bwimc_ops[$((_bwimc_n-1))]}"
-                _bwimc_cd_guard "$_bwimc_dest_raw"
                 _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
                 _bwimc_dest_is_dir=0
                 _bwimc_dest_mode=follow
@@ -3693,6 +3692,14 @@ while IFS= read -r _bwimc_clause; do
                 else
                     _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_ecwd"
                 fi
+                # HIMMEL-3648 (round 13, J1307Q): threaded AFTER $_bwimc_dest_mode
+                # is fully known (entry/both for a symlink-entry destination,
+                # follow for a directory or an unresolved operand) so the
+                # cd-divergence fallback runs the SAME mode the checks above
+                # just used — a hardcoded "follow" default here missed the
+                # ENTRY-mode DENY on a primary-tracked symlink destination
+                # once cd-tracking had diverged from the real cwd.
+                _bwimc_cd_guard "$_bwimc_dest_raw" "$_bwimc_dest_mode"
                 _bwimc_j=0
                 while [ "$_bwimc_j" -lt "$((_bwimc_n-1))" ]; do
                     _bwimc_src_raw="${_bwimc_ops[$_bwimc_j]}"
