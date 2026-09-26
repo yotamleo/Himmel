@@ -1547,7 +1547,7 @@ _bwimc_is_shc_cflag() {
 # is not further modelled — same residual _bwimc_check_target already
 # accepts for every other arm (HIMMEL-3648).
 _bwimc_check_interp_body() {
-    local kind="$2" toks=() t n i cidx body=""
+    local kind="$2" toks=() t t2 n i cidx body=""
     toks=()
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
@@ -1582,9 +1582,29 @@ _bwimc_check_interp_body() {
     while [ "$i" -lt "$n" ]; do
         t="${toks[$i]}"
         if _bwimc_redirect_op_of "$t"; then
-            i=$((i+1))
-            [ "$i" -lt "$n" ] && { _bwimc_cd_guard "${toks[$i]}"; _bwimc_check_target "${toks[$i]}" "$_bwimc_ecwd"; }
-            i=$((i+1))
+            # HIMMEL-3648 (codex-1): an attached target (`>/primary/f`, one
+            # token) was ignored — this loop unconditionally advanced to the
+            # NEXT token and checked THAT, the same false-negative shape the
+            # main clause loop's own _bwimc_op_rest handling (line ~1693)
+            # exists to close. Mirrors that idiom, including the write-only
+            # gate so a read redirect stays allowed.
+            if [ -n "$_bwimc_op_rest" ]; then
+                case "$_bwimc_op_rest" in
+                    '&'*) : ;;
+                    *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$_bwimc_op_rest"; _bwimc_check_target "$_bwimc_op_rest" "$_bwimc_ecwd"; } ;;
+                esac
+                i=$((i+1))
+            else
+                i=$((i+1))
+                if [ "$i" -lt "$n" ]; then
+                    t2="${toks[$i]}"
+                    case "$t2" in
+                        '&'*) : ;;
+                        *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$t2"; _bwimc_check_target "$t2" "$_bwimc_ecwd"; } ;;
+                    esac
+                fi
+                i=$((i+1))
+            fi
             continue
         fi
         case "$t" in

@@ -2571,6 +2571,18 @@ check_both "25 bash -ce redirect into primary (combined short-flag cluster) deni
 check_both "25b bash -ce redirect into wt (combined short-flag cluster) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -ce \\\"echo hi > $FIX/wt/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
 
+# 26 (codex-1, CR round 2 of the CR follow-up itself): an ATTACHED redirect
+# target inside an eval/bash-c body (`>/primary/f`, no space, one token) was
+# ignored — _bwimc_check_interp_body's redirect arm unconditionally advanced
+# to the NEXT token and checked THAT, the same false-negative shape the main
+# clause loop's own _bwimc_op_rest handling exists to close.
+check_both "26 eval 'echo hi >primary/a.txt' (attached redirect target) denies (codex-1)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"eval 'echo hi >$FIX/primary/a.txt'\",\"cwd\":\"$FIX/wt\"}}"
+check_both "26b eval 'echo hi >wt/a.txt' (attached redirect target) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"eval 'echo hi >$FIX/wt/a.txt'\",\"cwd\":\"$FIX/wt\"}}"
+check_both "26c bash -c \"echo hi >primary/a.txt\" (attached redirect target) denies (codex-1)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c \\\"echo hi >$FIX/primary/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
