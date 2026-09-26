@@ -310,6 +310,20 @@ run_test "(13) HIMMEL-1712: no readable ~/.claude.json -> account stamped null (
   [ "$(jq -r ".account" "$CLAUDE_USAGE_CACHE")" = "null" ] || exit 1;
 '
 
+run_test "(14) HIMMEL-1712 CR (panel round 1, codex-1): a partial window is NOT carried forward from a cache stamped for a DIFFERENT known account" '
+  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"session_id\":\"sess-A\",\"rate_limits\":{\"five_hour\":{\"utilization\":33,\"resets_at\":\"R5\"}}}" | bash "$PRODUCER";
+  acct_a=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct_a" ] && [ "$acct_a" != "null" ] || exit 1;
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  printf "%s" "{\"session_id\":\"sess-B\",\"rate_limits\":{\"seven_day\":{\"utilization\":21.5,\"resets_at\":\"R7\"}}}" | bash "$PRODUCER";
+  acct_b=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ "$acct_b" != "$acct_a" ] || exit 1;
+  [ "$(jq -r ".seven_day.utilization" "$CLAUDE_USAGE_CACHE")" = "21.5" ] || exit 1;
+  [ "$(jq -r ".five_hour" "$CLAUDE_USAGE_CACHE")" = "{}" ] || exit 1;
+'
+
 # --- summary ------------------------------------------------------------------
 if [ "$_failures" -eq 0 ]; then
   echo "OK: all cases passed"

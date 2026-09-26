@@ -119,10 +119,21 @@ build_hud() {
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
 SESSION_MAP_FILE="${CACHE_FILE}.sessions.json"
 account_for_session() {
-  local sid="$1" mapped hash prevmap newmap
+  local sid="$1" mapped hash prevmap newmap lockfile
   if [ -z "$sid" ]; then
     current_account_hash
     return
+  fi
+  # HIMMEL-1712 CR (panel round 1, codex-2): the read-modify-write below races
+  # across concurrent sessions writing this shared sidecar — one session's
+  # snapshot can be lost, forcing a later re-snapshot to adopt whatever
+  # identity is on disk THEN instead of what it was at first render. Hold a
+  # session_id-independent lock across the whole read-modify-write (same
+  # fail-open convention as scripts/lib/claudex-inbox.sh's inbox_with_lock:
+  # missing flock keeps this unlocked rather than erroring).
+  lockfile="${SESSION_MAP_FILE}.lock"
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$lockfile" 2>/dev/null && flock -x 9 2>/dev/null
   fi
   if [ -f "$SESSION_MAP_FILE" ]; then
     mapped=$(jq -r --arg sid "$sid" '.[$sid] // empty' "$SESSION_MAP_FILE" 2>/dev/null)
@@ -180,17 +191,25 @@ if [ -n "$stdin_five" ] || [ -n "$stdin_seven" ]; then
     --arg sh "$stdin_seven" --arg shr "$stdin_seven_reset" \
     --arg acct "$account_hash" --arg pby "$produced_by" '
     ($prev // {}) as $p |
+    # HIMMEL-1712 CR (panel round 1, codex-1): a carried-forward window must
+    # not inherit the NEW account stamp when the previous cache is KNOWN to
+    # belong to a different account -- that would mislabel stale numbers as
+    # belonging to the current account. Suppress carry-forward only on a
+    # confirmed mismatch between two known identities; an undeterminable
+    # identity on either side keeps the existing carry-forward behaviour.
+    (($p.account // "") != "" and $acct != "" and ($p.account != $acct)) as $mismatch |
+    (if $mismatch then {} else $p end) as $carry |
     (if $fh == "" then null else ($fh | tonumber? // null) end) as $fhn |
     (if $sh == "" then null else ($sh | tonumber? // null) end) as $shn |
     {
-      five_hour: (if $fh == "" then ($p.five_hour // {})
+      five_hour: (if $fh == "" then ($carry.five_hour // {})
                   else { utilization: $fhn,
                          resets_at: (if $fhr == "" then null else $fhr end) } end),
-      seven_day: (if $sh == "" then ($p.seven_day // {})
+      seven_day: (if $sh == "" then ($carry.seven_day // {})
                   else { utilization: $shn,
                          resets_at: (if $shr == "" then null else $shr end) } end),
-      extra_usage: ($p.extra_usage // {}),
-      oauth_checked_at: ($p.oauth_checked_at // null),
+      extra_usage: ($carry.extra_usage // {}),
+      oauth_checked_at: ($carry.oauth_checked_at // null),
       account: (if $acct == "" then null else $acct end),
       derived_at: $ts,
       produced_by: $pby
@@ -199,7 +218,7 @@ if [ -n "$stdin_five" ] || [ -n "$stdin_seven" ]; then
     # stdin windows carry a numeric utilization; a one-window payload carries
     # the prior stamp so the carried-forward window keeps aging honestly.
     + (if ($fhn != null and $shn != null) then {primaries_refreshed_at: $ts}
-       elif ($p.primaries_refreshed_at != null) then {primaries_refreshed_at: $p.primaries_refreshed_at}
+       elif ($carry.primaries_refreshed_at != null) then {primaries_refreshed_at: $carry.primaries_refreshed_at}
        else {} end)
     ' 2>/dev/null)
 
@@ -261,16 +280,21 @@ fi
 new_cache=$(jq -n --argjson prev "$prev" --argjson f "$fetched" --argjson ts "$now_epoch" \
   --arg acct "$account_hash" --arg pby "$produced_by" '
   ($prev // {}) as $p |
+  # HIMMEL-1712 CR (panel round 1, codex-1): same account-gated carry-forward
+  # as Branch A -- a partial fetch must not silently reuse a value that
+  # belongs to a different account under the new account stamp.
+  (($p.account // "") != "" and $acct != "" and ($p.account != $acct)) as $mismatch |
+  (if $mismatch then {} else $p end) as $carry |
   ($f // {}) as $ff |
-  # HIMMEL-1841: fetched primaries WIN; $p is the fallback only when the
+  # HIMMEL-1841: fetched primaries WIN; $carry is the fallback only when the
   # fetch lacks a window. The old order ($p first) discarded live numbers
   # on every poll, which is why the cache read week-old under a fresh mtime.
   (if (($ff.five_hour.utilization // null) != null) then $ff.five_hour else null end) as $fh |
   (if (($ff.seven_day.utilization // null) != null) then $ff.seven_day else null end) as $sd |
   {
-    five_hour:   ($fh // $p.five_hour // {}),
-    seven_day:   ($sd // $p.seven_day // {}),
-    extra_usage: ($ff.extra_usage // $p.extra_usage // {}),
+    five_hour:   ($fh // $carry.five_hour // {}),
+    seven_day:   ($sd // $carry.seven_day // {}),
+    extra_usage: ($ff.extra_usage // $carry.extra_usage // {}),
     oauth_checked_at: $ts,
     account: (if $acct == "" then null else $acct end),
     derived_at: $ts,
@@ -280,7 +304,7 @@ new_cache=$(jq -n --argjson prev "$prev" --argjson f "$fetched" --argjson ts "$n
   # were taken. A partial fetch preserves the prior stamp so a carried-forward
   # window continues to age honestly; oauth_checked_at cannot prove this.
   + (if ($fh != null and $sd != null) then {primaries_refreshed_at: $ts}
-     elif ($p.primaries_refreshed_at != null) then {primaries_refreshed_at: $p.primaries_refreshed_at}
+     elif ($carry.primaries_refreshed_at != null) then {primaries_refreshed_at: $carry.primaries_refreshed_at}
      else {} end)
   ' 2>/dev/null)
 
