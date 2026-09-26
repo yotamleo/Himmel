@@ -2555,6 +2555,29 @@ X12_CMD=$'env -C $(cd ..\npwd)/salus graphify update notes/patient.md --backend 
 run_fence deny no "$HIMMEL" "env -C \$(cd ..<newline>pwd)/salus (newline inside \$(...)) -> deny (X12)" \
     "$X12_CMD"
 
+# (X13/X14) codex-1 (PR #1323 round 2): a quoted ')' inside \$(...) prematurely
+# closed the naive paren-depth counter (a single/double-quoted string is data
+# to bash, not a real close-paren), so the REAL separator that followed was
+# scanned under the top-level branch, which never checked for one at all -
+# a hidden separator that reached the old scan undetected. Deny both quote
+# flavors.
+run_fence deny no "$HIMMEL" "env -C \$(x=')'; echo salus) quoted ')' in single quotes -> deny (X13)" \
+    "env -C \$(x=')'; echo $SALUS) graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env -C \$(x=\")\"; echo salus) quoted ')' in double quotes -> deny (X14)" \
+    "env -C \$(x=\")\"; echo $SALUS) graphify update notes/patient.md --backend glm"
+
+# (X15) the symmetric false-positive control: a clause-separator CHARACTER
+# quoted inside \$(...) is data to bash, not a real separator, and must not
+# itself trip the new hidden-separator deny.
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "env -C \$(echo ';')/salus graphify update notes/patient.md --backend glm" 2>&1 ); rc=$?
+hit=$(printf '%s' "$out" | grep -F 'clause separator')
+if [ -z "$hit" ]; then
+    pass "quoted ';' inside \$(...) does not trigger hidden-separator deny (X15 control)"
+else
+    fail "quoted ';' inside \$(...) wrongly triggered hidden-separator deny (X15 control) (rc=$rc) out=$out"
+fi
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

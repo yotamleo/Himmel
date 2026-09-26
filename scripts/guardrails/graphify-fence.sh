@@ -2266,30 +2266,40 @@ fi
 # anywhere - a substitution with NO separator inside (env -C $(pwd) ...) is
 # untouched and still reaches the existing per-clause chdir handling below.
 _gf_deny_on_hidden_clause_separator() {
-    local cmd="$1" i=0 len c depth=0 backtick=0 hit=0
+    local cmd="$1" i=0 len c depth=0 backtick=0 hit=0 sq=0 dq=0
     len=${#cmd}
     while [ "$i" -lt "$len" ]; do
         c="${cmd:$i:1}"
-        if [ "$backtick" -eq 1 ]; then
+        if [ "$sq" -eq 1 ]; then
+            [ "$c" = "'" ] && sq=0
+        elif [ "$dq" -eq 1 ]; then
+            [ "$c" = '"' ] && dq=0
+        elif [ "$backtick" -eq 1 ]; then
             case "$c" in
+                "'") sq=1 ;;
+                '"') dq=1 ;;
                 '`') backtick=0 ;;
                 ';'|'|'|'&'|$'\n') hit=1 ;;
             esac
         elif [ "$depth" -gt 0 ]; then
             case "$c" in
+                "'") sq=1 ;;
+                '"') dq=1 ;;
                 '(') depth=$((depth+1)) ;;
                 ')') depth=$((depth-1)) ;;
                 ';'|'|'|'&'|$'\n') hit=1 ;;
             esac
         else
             case "$c" in
+                "'") sq=1 ;;
+                '"') dq=1 ;;
                 '`') backtick=1 ;;
                 '$') [ "${cmd:$((i+1)):1}" = "(" ] && { depth=1; i=$((i+1)); } ;;
             esac
         fi
         i=$((i+1))
     done
-    { [ "$hit" -eq 1 ] || [ "$backtick" -eq 1 ] || [ "$depth" -gt 0 ]; } || return 0
+    { [ "$hit" -eq 1 ] || [ "$backtick" -eq 1 ] || [ "$depth" -gt 0 ] || [ "$sq" -eq 1 ] || [ "$dq" -eq 1 ]; } || return 0
     case "$cmd" in
         *graphify*) deny "cannot resolve a command substitution containing a clause separator; rewrite without it" ;;
     esac
