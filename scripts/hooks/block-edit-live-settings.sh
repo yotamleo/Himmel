@@ -1353,6 +1353,22 @@ has_unquoted_brace_group() {
 # this function needed to grow to close the residual.
 # ponytail: a relative `find … -exec` naming `.claude` as its target is still
 # not matched by either mechanism — the remaining documented residual.
+# ponytail: a cd/pushd/popd/-C matched here relocates the real target
+# directory, but neither _check_write_operand()'s `wabs` nor check_target()'s
+# own relative-join (both use the fixed PreToolUse $cwd) adjust for it — so
+# `cd sub && cp y link`, where `sub/link` is a pre-existing symlink into the
+# primary's live settings.json, resolves `link` against the wrong base and
+# silently evades items 1 and 3 (HIMMEL-3686 round-4 codex-2). Deferred
+# rather than blunt-denied: the write-verb operand scan already inspects
+# every word including the verb itself (round-2 codex-1's accepted ruling),
+# so a blind "deny any relative operand when this function matches" would
+# deny virtually any write-verb command containing a cd from a nested
+# worktree, unrelated to .claude — a materially bigger blast radius than
+# this function's existing HIMMEL-3468 role, where it only ever fires as an
+# additional forcing factor on a command ALREADY flagged by another signal.
+# Upgrade path: HIMMEL-3694 (track the real post-cd cwd per command segment
+# via the tokenizer's own ST_S/ST_SEP arrays, falling back to deny only when
+# a cd target isn't a simple literal).
 changes_directory() {
     local out
     out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cd|pushd|popd)([^a-z0-9_]|$)') || true
