@@ -3043,6 +3043,23 @@ seam). A per-call env prefix does not reach the hook process.
 `block-docker-privesc`); live only after `/himmel-update` (marketplace
 re-sync) + a fresh session.
 
+**Reviewed-round guard, extended here (HIMMEL-1568):** this hook is also the
+Agent-dispatch chokepoint for HIMMEL-1553's reviewed-round guard
+(`countReviewedRounds`/`checkRoundGuard` in `scripts/telegram/round-guard.ts`),
+via a CLI entry point on that same script (`bun round-guard.ts check --cwd
+<dir> [--branch <name>] --task-file <path>`) — never a shell
+reimplementation, so exactly one predicate backs this hook and
+`spawn-glm.ts`/`spawn-claudex.ts`. Thresholds are unchanged:
+`ROUND_WARN_THRESHOLD` (2) allows with a substantive `INVARIANT:` section;
+`ROUND_ESCALATE_THRESHOLD` (3) refuses the cheap lane unconditionally (no
+`--rounds-override` is wired here, so there is no unblock at 3+ rounds at this
+chokepoint). Runs after every exemption above it (read-only/research,
+orchestrator-harness). A dispatch with no `cwd` is 0 rounds and allowed
+(no identity to check); once a `cwd` is given, a runtime failure of the
+predicate itself (bun/script missing, unclean exit) fails **CLOSED** —
+`IMPL_GUARD_DISABLE=1` is the only bypass, there is no INVARIANT-shaped
+escape for this failure mode.
+
 Spec: `scripts/hooks/test-guard-implementor-dispatch.sh`.
 
 ### `guard-console-dispatch.sh` — console/leg dispatch fence (HIMMEL-2323)
