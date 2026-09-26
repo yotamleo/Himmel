@@ -2547,6 +2547,13 @@ fi
 # (X11) a REAL top-level separator (not inside any substitution) -> unaffected.
 run_fence allow no "$HIMMEL" "echo a; graphify update . (real top-level ;, not inside \$(...)) -> allow (X11 control)" \
     "echo a; graphify update . --backend glm"
+# (X12) codex-1 (PR #1323 round 1): a LITERAL newline inside \$(...) instead of
+# a ; is just as much a clause boundary to the pre-existing split (which reads
+# clauses with `while IFS= read -r`, splitting on any real newline) - deny it
+# the same way as X1.
+X12_CMD=$'env -C $(cd ..\npwd)/salus graphify update notes/patient.md --backend glm'
+run_fence deny no "$HIMMEL" "env -C \$(cd ..<newline>pwd)/salus (newline inside \$(...)) -> deny (X12)" \
+    "$X12_CMD"
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"

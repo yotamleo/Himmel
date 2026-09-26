@@ -2273,13 +2273,13 @@ _gf_deny_on_hidden_clause_separator() {
         if [ "$backtick" -eq 1 ]; then
             case "$c" in
                 '`') backtick=0 ;;
-                ';'|'|'|'&') hit=1 ;;
+                ';'|'|'|'&'|$'\n') hit=1 ;;
             esac
         elif [ "$depth" -gt 0 ]; then
             case "$c" in
                 '(') depth=$((depth+1)) ;;
                 ')') depth=$((depth-1)) ;;
-                ';'|'|'|'&') hit=1 ;;
+                ';'|'|'|'&'|$'\n') hit=1 ;;
             esac
         else
             case "$c" in
