@@ -323,7 +323,7 @@ check "bare-red-run: rc 4" "$rc" "4"
 contains "bare-red-run: names the failing run" "$out" "unit="
 
 # --- 27. bare release: malformed shapes stay refused, exit 2, nothing called --
-for args in "v1a.0.0 $SHA" "v1.0 $SHA" "v1.0.0.1 $SHA" "v1.0.0-rc1 $SHA"; do
+for args in "v1a.0.0 $SHA" "v1.0 $SHA" "v1.0.0.1 $SHA" "v1.0.0-rc1 $SHA" "v.1.2 $SHA" "v1..2 $SHA" "v1.2. $SHA"; do
     reset_calls
     rc=0
     # shellcheck disable=SC2086

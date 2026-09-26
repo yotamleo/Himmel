@@ -175,16 +175,35 @@ case "$_vz" in
         echo "cut-tag: version must be v<X>.<Y>.<Z> or v<X>.<Y>.<Z>-pre.<N> (got '$VERSION')" >&2
         exit 2 ;;
 esac
-_vcomps="$_vx $_vy $_vz"
-[ "$IS_PRE" -eq 1 ] && _vcomps="$_vcomps $_vn"
-for _vcomp in $_vcomps; do
-    case "$_vcomp" in
+# Checked individually, quoted, rather than word-split over a joined string -
+# an empty component (e.g. the leading "" in "v.1.2") would silently vanish
+# from an unquoted `for _vcomp in $_vcomps` loop instead of being rejected.
+case "$_vx" in
+    ''|*[!0123456789]*)
+        usage
+        echo "cut-tag: version must be v<X>.<Y>.<Z> or v<X>.<Y>.<Z>-pre.<N> with all-numeric components (got '$VERSION')" >&2
+        exit 2 ;;
+esac
+case "$_vy" in
+    ''|*[!0123456789]*)
+        usage
+        echo "cut-tag: version must be v<X>.<Y>.<Z> or v<X>.<Y>.<Z>-pre.<N> with all-numeric components (got '$VERSION')" >&2
+        exit 2 ;;
+esac
+case "$_vz" in
+    ''|*[!0123456789]*)
+        usage
+        echo "cut-tag: version must be v<X>.<Y>.<Z> or v<X>.<Y>.<Z>-pre.<N> with all-numeric components (got '$VERSION')" >&2
+        exit 2 ;;
+esac
+if [ "$IS_PRE" -eq 1 ]; then
+    case "$_vn" in
         ''|*[!0123456789]*)
             usage
             echo "cut-tag: version must be v<X>.<Y>.<Z> or v<X>.<Y>.<Z>-pre.<N> with all-numeric components (got '$VERSION')" >&2
             exit 2 ;;
     esac
-done
+fi
 case "$SHA" in
     *[!0123456789abcdef]*) SHA_OK=0 ;;
     *) SHA_OK=1 ;;
