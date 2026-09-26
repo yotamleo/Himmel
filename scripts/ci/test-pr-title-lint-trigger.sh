@@ -24,7 +24,8 @@ strip() { sed 's/[[:space:]][[:space:]]*#.*$//' "$1"; }
 # F2: the title-lint step must no longer live in ci.yml's required
 # commit-lint job -- a step there only runs on ci.yml's own trigger, which
 # has no `edited` type.
-if strip "$CI_YML" | grep -q 'Lint the PR title'; then
+ci_stripped="$(strip "$CI_YML")"
+if grep -q 'Lint the PR title' <<< "$ci_stripped"; then
   bad "ci.yml's commit-lint job still contains the PR-title-lint step (must move to its own workflow)"
 else
   ok "ci.yml no longer lints the PR title inline in commit-lint"
@@ -90,7 +91,7 @@ esac
 # Security property carried over from the original ci.yml step: the title is
 # attacker-controlled text, so it must reach the script via env:, never by
 # inline ${{ }} interpolation into the run: shell.
-if grep -Eq '^\s*run:.*\$\{\{\s*github\.event\.pull_request\.title' "$TITLE_YML"; then
+if grep -Eq '^[[:space:]]*run:.*\$\{\{[[:space:]]*github\.event\.pull_request\.title' "$TITLE_YML"; then
   bad "pr-title-lint interpolates the PR title directly into run: (script-injection risk)"
 else
   ok "pr-title-lint does not inline-interpolate the PR title into run:"
