@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Regression guard for HIMMEL-3608: the deterministic ship tail
+# (merge-on-green.sh, ready-check.sh, tick.sh, check-ci.sh) must never gain a
+# headless `claude -p`/`--print`/`--bg` call. See docs/internals/ship-tail-model-free.md
+# for the ruling this test encodes.
+#
+# Distinct in intent from scripts/hooks/check-no-headless-claude.sh (a general
+# billing gate over ALL staged files, opt-in-markable): this test names the
+# ship-tail file set specifically and has no opt-in escape, because the
+# invariant it protects is not billing but "this path never needs a model."
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$DIR/../.."
+
+SHIP_TAIL_FILES=(
+    "scripts/handover/merge-on-green.sh"
+    "scripts/handover/console-kit/ready-check.sh"
+    "scripts/handover/console-kit/tick.sh"
+    "scripts/check-ci.sh"
+)
+
+# Word-bounded `claude ... -p`/`--print`/`--bg` detection, in the spirit of
+# scripts/hooks/check-no-headless-claude.sh but kept independent here so this
+# test's failure mode doesn't depend on that gate's file. Broadened past that
+# gate's immediately-after-`claude` match so a flag appearing after other
+# flags on the same invocation (`claude --output-format json -p`) still trips
+# it.
+PATTERN='(^|[^A-Za-z0-9_-])claude([^A-Za-z0-9_-].*)?[^A-Za-z0-9_-](-p|--print|--bg)($|[^A-Za-z0-9_-])'
+
+pass=0
+fail=0
+check() {
+    # $1 = got  $2 = want  $3 = label
+    if [ "$1" = "$2" ]; then
+        pass=$((pass + 1))
+        echo "PASS: $3"
+    else
+        fail=$((fail + 1))
+        echo "FAIL: $3 -- got '$1' want '$2'"
+    fi
+}
+
+tmp="$(mktemp -d -t test-ship-tail-model-free.XXXXXX)"; trap 'rm -rf "$tmp"' EXIT
+
+# --- RED proof: an injected headless call in a fixture copy of a real
+# ship-tail file must trip the pattern, so a future regression here would
+# actually fail this test rather than pass vacuously. -----------------------
+fixture="$tmp/merge-on-green.sh"
+cp "$REPO/scripts/handover/merge-on-green.sh" "$fixture"
+printf '\nclaude -p "drive the merge"\n' >>"$fixture"
+
+if grep -En "$PATTERN" -- "$fixture" >/dev/null 2>&1; then
+    got="matched"
+else
+    got="no-match"
+fi
+check "$got" "matched" "T1 injected headless call in fixture is caught"
+
+# --- RED proof: a headless call split across a backslash-continued line
+# (`claude \` / `  -p ...`) is invisible to line-based grep, so the per-line
+# check alone would pass it vacuously; the continuation-joined fallback below
+# must catch it. ------------------------------------------------------------
+fixture2="$tmp/tick.sh"
+cp "$REPO/scripts/handover/console-kit/tick.sh" "$fixture2"
+printf '\nclaude \\\n  -p "drive the merge"\n' >>"$fixture2"
+
+joined2="$(sed ':a;N;$!ba;s/\\\n/ /g' -- "$fixture2")"
+if printf '%s\n' "$joined2" | grep -Eq "$PATTERN"; then
+    got2="matched"
+else
+    got2="no-match"
+fi
+check "$got2" "matched" "T3 line-continuation-split headless call in fixture is caught"
+
+# --- Real assertion: none of the named ship-tail files contain a headless
+# call today. -----------------------------------------------------------
+violations=()
+for f in "${SHIP_TAIL_FILES[@]}"; do
+    path="$REPO/$f"
+    if [ ! -f "$path" ]; then
+        violations+=("$f:missing")
+        continue
+    fi
+    grep_out="$(grep -En "$PATTERN" -- "$path" 2>&1)"
+    grep_rc=$?
+    if [ "$grep_rc" -eq 2 ]; then
+        violations+=("$f:grep-error:$grep_out")
+    elif [ "$grep_rc" -eq 0 ]; then
+        while IFS=: read -r line_no _; do
+            [ -z "$line_no" ] && continue
+            violations+=("$f:$line_no")
+        done <<<"$grep_out"
+    else
+        # rc=1 (no single-line match): a call can still be split across a
+        # backslash-continued line, invisible to line-based grep — collapse
+        # only genuine continuations (not every line) and re-check, so
+        # unrelated `claude`/`-p` mentions elsewhere in the file can't pair up
+        # into a false positive.
+        joined="$(sed ':a;N;$!ba;s/\\\n/ /g' -- "$path")"
+        if printf '%s\n' "$joined" | grep -Eq "$PATTERN"; then
+            violations+=("$f:line-continuation-split")
+        fi
+    fi
+done
+
+if [ "${#violations[@]}" -eq 0 ]; then
+    got="clean"
+else
+    got="${violations[*]}"
+fi
+check "$got" "clean" "T2 ship-tail files stay model-free"
+
+[ "$fail" -eq 0 ] && echo "PASS test-ship-tail-model-free ($pass/$((pass + fail)))"
+[ "$fail" -eq 0 ] || { echo "FAIL test-ship-tail-model-free ($fail/$((pass + fail)) failed)"; exit 1; }
