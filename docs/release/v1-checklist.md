@@ -35,7 +35,7 @@ origin for that same `X.Y.Z`, or `--version-override <reason>` is given.
 For the real `v1.0.0` cut: run a final pre-release (e.g. `v1.0.0-pre.1`) to
 prove the pipeline, then run
 
-```
+```bash
 bash scripts/handover/console-kit/cut-tag.sh v1.0.0 <full-40-char-sha> --dry-run
 ```
 
