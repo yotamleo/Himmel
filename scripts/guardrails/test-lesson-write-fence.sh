@@ -966,6 +966,25 @@ run_hook allow "24: sudo cat README.md (control: unrelated read under sudo still
 run_hook allow "24: env -S 'echo hi' (control: split-string value with no enforcement signal still allows)" \
     "$(bash_json "env -S 'echo hi'" "$REPO")" 1
 
+echo "== 25: /pr-check critic panel (codex-1) - unresolvable leading dotdot abandons the WHOLE scan =="
+# `_normalize_scan_text`'s `seg/../` loop walks left-to-right and, on hitting
+# an unresolvable leading `..` (no real parent segment to consume), used to
+# `break` out of the ENTIRE collapsing loop rather than skip just that one
+# hop - so a LATER, independently-resolvable `seg/../` further right in the
+# same string (here `scripts/ci/../hooks/a.sh`) was never collapsed and the
+# raw-text signal scan missed the protected-path substring entirely.
+# `env -S 'tee /../../../tmp/f scripts/ci/../hooks/a.sh'` therefore ALLOWed a
+# write env's split-string resolves to `scripts/hooks/a.sh`.
+run_hook deny "25: env -S 'tee /../../../tmp/f scripts/ci/../hooks/a.sh' (leading unresolvable dotdot must not abandon a later collapsible hop)" \
+    "$(bash_json "env -S 'tee /../../../tmp/f scripts/ci/../hooks/a.sh'" "$REPO")" 1
+run_hook deny "25: env -S 'tee /../../.claude/x/../settings.json' (same gap, settings.json target)" \
+    "$(bash_json "env -S 'tee /../../.claude/x/../settings.json'" "$REPO")" 1
+
+# control: the same leading-unresolvable-dotdot shape, but the later hop
+# resolves to a path with no enforcement signal - must still allow.
+run_hook allow "25: env -S 'tee /../../../tmp/f scripts/ci/../other/a.sh' (control: leading dotdot, later hop resolves to an unprotected path)" \
+    "$(bash_json "env -S 'tee /../../../tmp/f scripts/ci/../other/a.sh'" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

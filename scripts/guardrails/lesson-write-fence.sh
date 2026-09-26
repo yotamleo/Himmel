@@ -1058,10 +1058,7 @@ _git_is_read_only() {
 # Judge J1298R N1 (Critical): the collapse above stopped at `//` and `/./ `
 # and never stripped backslashes, so `env -S 'tee scripts/x/../hooks/a.sh'`,
 # a backslash-escaped `scripts/\hooks/a.sh`, and the same `../` hop against
-# `.claude/settings.json` all evaded the scan. The `seg/../` loop below walks
-# left-to-right and gives up (breaks, does not loop forever) on an
-# unresolvable leading `..` with no parent segment to remove - documented
-# coarseness, not a regression, since it can only ADD matching power.
+# `.claude/settings.json` all evaded the scan.
 # Judge J1298O C1 (Critical, NEW ALLOW vs main): `_clause_has_enforcement_signal`
 # matched the literal substring only, so a policy value written with a
 # single slash (`scripts/hooks/`) missed the identical write spelled
@@ -1069,8 +1066,17 @@ _git_is_read_only() {
 # both exactly as the plain path, so the fence must scan as if normalized
 # too. Text-level only (no filesystem access, no anchoring) since the
 # caller has no single resolved path to normalize.
+# /pr-check critic panel (codex-1, this branch): the `seg/../` loop below
+# used to walk left-to-right and, on hitting an unresolvable leading `..`
+# (no real parent segment to consume), `break` out of the WHOLE loop rather
+# than skip just that one hop - so `env -S 'tee /../../../tmp/f
+# scripts/ci/../hooks/a.sh'` left the later, independently-resolvable
+# `scripts/ci/../hooks/` hop uncollapsed and the raw-text scan missed the
+# `scripts/hooks/` prefix entirely. Fixed: an unresolvable hop is moved,
+# uncollapsed, into `out` and the loop continues scanning the remainder for
+# further `/../` occurrences instead of abandoning the pass.
 _normalize_scan_text() {
-    local t="$1" before after seg
+    local t="$1" before after seg out
     t="${t//\'/}"; t="${t//\"/}"; t="${t//\`/}"; t="${t//\\/}"
     while case "$t" in *//*) true ;; *) false ;; esac; do
         t="${t//\/\//\/}"
@@ -1078,6 +1084,7 @@ _normalize_scan_text() {
     while case "$t" in *"/./"*) true ;; *) false ;; esac; do
         t="${t//\/.\//\/}"
     done
+    out=''
     while case "$t" in */../*) true ;; *) false ;; esac; do
         before="${t%%/../*}"
         after="${t#*/../}"
@@ -1086,7 +1093,11 @@ _normalize_scan_text() {
             *)   seg="$before" ;;
         esac
         case "$seg" in
-            ..|'') break ;;
+            ..|'')
+                out="$out$before/../"
+                t="$after"
+                continue
+                ;;
         esac
         case "$before" in
             */*) before="${before%/*}" ;;
@@ -1098,7 +1109,7 @@ _normalize_scan_text() {
             t="$after"
         fi
     done
-    printf '%s' "$t"
+    printf '%s' "$out$t"
 }
 _interpreter_is_read_only() {
     local verb="$1"; shift
