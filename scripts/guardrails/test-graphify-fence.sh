@@ -2498,6 +2498,54 @@ run_fence deny no "$HIMMEL" "find -exec env -S\"graphify ...\" glued token -> de
 run_fence deny no "$HIMMEL" "quiet-run.sh unparsable label, tail env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
     "bash scripts/quiet-run.sh \"a -- b\" -- env -S\"graphify update notes/patient.md --backend glm\""
 
+echo "== HIMMEL-3683: a clause separator INSIDE a command substitution must not =="
+echo "== split the substitution across two false top-level clauses =="
+
+# (X1) env -C \$(cd ..; pwd)/salus - the original repro: a ; inside \$(...)
+# used to become a clause boundary, so clause 1 was "env -C \$(cd .." and
+# clause 2 "pwd)/salus graphify ..." and the real chdir target (salus) was
+# never classified.
+run_fence deny no "$HIMMEL" "env -C \$(cd ..; pwd)/salus (; inside \$(...)) -> deny (X1)" \
+    "env -C \$(cd ..; pwd)/salus graphify update notes/patient.md --backend glm"
+# (X2) same shape via echo \$PWD/salus instead of pwd.
+run_fence deny no "$HIMMEL" "env -C \$(cd ..; echo \$PWD/salus) -> deny (X2)" \
+    "env -C \$(cd ..; echo \$PWD/salus) graphify update notes/patient.md --backend glm"
+# (X3) sudo -D twin of X1.
+run_fence deny no "$HIMMEL" "sudo -D \$(cd ..; pwd)/salus (; inside \$(...)) -> deny (X3)" \
+    "sudo -D \$(cd ..; pwd)/salus graphify update notes/patient.md --backend glm"
+# (X4) a leading no-op clause (true;) ahead of the real value inside \$(...).
+run_fence deny no "$HIMMEL" "env -C \$(true; echo salus) -> deny (X4)" \
+    "env -C \$(true; echo $SALUS) graphify update notes/patient.md --backend glm"
+# (X5) && inside \$(...) - collapses to the same newline split as ; and |.
+run_fence deny no "$HIMMEL" "env -C \$(true && echo salus) -> deny (X5)" \
+    "env -C \$(true && echo $SALUS) graphify update notes/patient.md --backend glm"
+# (X6) a pipe AND a ; both inside the same \$(...).
+run_fence deny no "$HIMMEL" "env -C \$(true | cat; echo salus) -> deny (X6)" \
+    "env -C \$(true | cat; echo $SALUS) graphify update notes/patient.md --backend glm"
+# (X7) backtick form of X4, not \$(...).
+run_fence deny no "$HIMMEL" "env -C \`true; echo salus\` (; inside backticks) -> deny (X7)" \
+    "env -C \`true; echo $SALUS\` graphify update notes/patient.md --backend glm"
+# (X8) J1290S w06 shape: cd .. then a bare relative echo (no absolute path).
+run_fence deny no "$HIMMEL" "env -C \$(cd ..; echo salus) relative echo -> deny (X8, w06)" \
+    "env -C \$(cd ..; echo salus) graphify update notes/patient.md --backend glm"
+
+# Controls: clause-splitting for every OTHER shape must stay exactly as before.
+# (X9) no substitution at all -> unaffected.
+run_fence allow no "$HIMMEL" "no substitution, himmel-code x glm -> allow (X9 control)" \
+    "graphify update $HIMMEL/scripts/thing.sh --backend glm"
+# (X10) a substitution with NO separator inside -> judged exactly as at base
+# (still denied, but via the pre-existing unresolved-chdir reason, not the
+# new hidden-separator one).
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "env -C \$(pwd) graphify update notes/patient.md --backend glm" 2>&1 ); rc=$?
+if [ "$rc" -eq 2 ] && ! printf '%s' "$out" | grep -q 'clause separator'; then
+    pass "env -C \$(pwd) (no separator inside) -> deny via pre-existing chdir reason, unchanged (X10 control)"
+else
+    fail "env -C \$(pwd) (no separator inside) unchanged (X10 control) (rc=$rc) out=$out"
+fi
+# (X11) a REAL top-level separator (not inside any substitution) -> unaffected.
+run_fence allow no "$HIMMEL" "echo a; graphify update . (real top-level ;, not inside \$(...)) -> allow (X11 control)" \
+    "echo a; graphify update . --backend glm"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

@@ -2252,6 +2252,50 @@ if [ "$#" -eq 5 ] && [ "$1" = "--eval" ]; then
     exit 0
 fi
 
+# HIMMEL-3683: the clause split just below is a blind textual replace of
+# ;/|/& to newlines - it has no notion of $( )/backtick nesting, so a
+# separator genuinely INSIDE a command substitution (e.g.
+# `env -C $(cd ..; pwd)/salus graphify ...`) becomes a false top-level clause
+# boundary: clause 1 is `env -C $(cd ..` and clause 2 is `pwd)/salus
+# graphify ...`, so the real chdir target ($(cd ..; pwd)/salus, i.e. salus)
+# is never classified while real bash resolves the whole $(...) to ONE word
+# before env/sudo ever sees it. Rather than write a real shell parser, fail
+# closed: deny before splitting if any $(...) or `...` span (tracked by
+# paren depth / backtick-open, nested or left unbalanced at end of string)
+# contains an unescaped separator, and the command mentions graphify
+# anywhere - a substitution with NO separator inside (env -C $(pwd) ...) is
+# untouched and still reaches the existing per-clause chdir handling below.
+_gf_deny_on_hidden_clause_separator() {
+    local cmd="$1" i=0 len c depth=0 backtick=0 hit=0
+    len=${#cmd}
+    while [ "$i" -lt "$len" ]; do
+        c="${cmd:$i:1}"
+        if [ "$backtick" -eq 1 ]; then
+            case "$c" in
+                '`') backtick=0 ;;
+                ';'|'|'|'&') hit=1 ;;
+            esac
+        elif [ "$depth" -gt 0 ]; then
+            case "$c" in
+                '(') depth=$((depth+1)) ;;
+                ')') depth=$((depth-1)) ;;
+                ';'|'|'|'&') hit=1 ;;
+            esac
+        else
+            case "$c" in
+                '`') backtick=1 ;;
+                '$') [ "${cmd:$((i+1)):1}" = "(" ] && { depth=1; i=$((i+1)); } ;;
+            esac
+        fi
+        i=$((i+1))
+    done
+    { [ "$hit" -eq 1 ] || [ "$backtick" -eq 1 ] || [ "$depth" -gt 0 ]; } || return 0
+    case "$cmd" in
+        *graphify*) deny "cannot resolve a command substitution containing a clause separator; rewrite without it" ;;
+    esac
+}
+_gf_deny_on_hidden_clause_separator "$CMD"
+
 # --- main: split into clauses, evaluate every graphify command-position clause -
 # Separators ;  |  &  (and && / ||, which collapse) and newlines become clause
 # boundaries. Any denied clause exits 2 immediately; reaching the end = allow.
