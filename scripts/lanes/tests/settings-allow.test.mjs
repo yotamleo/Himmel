@@ -28,12 +28,16 @@ const STEP0 = [
 // HIMMEL-3462: exact (no wildcard-tail) per-script literals beyond STEP0 —
 // each is a genuinely fixed invocation (no leg-supplied variable argument),
 // so the LITERAL_FILE wildcard-tail shape below does not apply to them.
+// HIMMEL-3698: scripts/cr/cr-scores.sh is deliberately NOT here — its
+// gateAllow grant is a `:*`-tail rule (args vary by call site), modeled the
+// same as the pre-existing ledger-append.sh/clear-cr-marker.sh `:*` grants,
+// so it is excluded from the RIDERS check below for the same reason (see
+// that check's comment) rather than asserted exact.
 const EXACT_LITERALS = [
   'bash scripts/cr/doc-freshness-advisory.sh',
   'bash scripts/cr/known-findings.sh --diff',
   'bash scripts/cr/codex-adv-kickoff.sh',
   'bash scripts/cr/codex-adv-harvest.sh',
-  'bash scripts/cr/cr-scores.sh',
 ];
 
 // HIMMEL-3548: the PROJECT and leg-profile relative merge-on-green rules
@@ -135,20 +139,21 @@ for (const command of TRUST_SPELLINGS.filter((c) => !/^bash scripts\/cr\/(clear-
 
 // HIMMEL-3495: an exact scripts/cr literal with a second command riding
 // behind it must match no rule either - the literal grants that one command,
-// never a compound. (The `:*` gateAllow rules, including ledger-append.sh and
-// clear-cr-marker.sh, are left out: this text model lets a `:*` tail absorb
-// anything after a space, including a `; rider`, while the harness matches
-// each subcommand. Both scripts are TARGETS of guard-pr-check-literal.sh
-// (HIMMEL-3383/3495), which denies any command naming them that is not one
-// simple command - no `;`/`&`/`|`/backtick/`()`/redirect/embedded newline -
-// BEFORE gateAllow is ever consulted, IN A HIMMEL-PROJECT SESSION (the hook
-// is registered only in this repo's own hook chain, not at user scope - a
-// leg launched against a non-himmel target repo does not load it, tracked in
-// HIMMEL-3558) - so within a himmel-project session a rider can never
-// actually reach these two scripts' wildcard tail. This is a MODEL claim, not
-// proof: gate-allow-hook-survival.test.mjs spawns the real hook binary with
-// real rider payloads for both scripts and asserts its actual exit code. The
-// full audit is in plugin-profiles.json's _comment_gateAllow, HIMMEL-3469/70,
+// never a compound. (The `:*` gateAllow rules, including ledger-append.sh,
+// clear-cr-marker.sh and (HIMMEL-3698) cr-scores.sh, are left out: this text
+// model lets a `:*` tail absorb anything after a space, including a
+// `; rider`, while the harness matches each subcommand. All three scripts
+// are TARGETS of guard-pr-check-literal.sh (HIMMEL-3383/3495/3698), which
+// denies any command naming them that is not one simple command - no
+// `;`/`&`/`|`/backtick/`()`/redirect/embedded newline - BEFORE gateAllow is
+// ever consulted, IN A HIMMEL-PROJECT SESSION (the hook is registered only
+// in this repo's own hook chain, not at user scope - a leg launched against
+// a non-himmel target repo does not load it, tracked in HIMMEL-3558) - so
+// within a himmel-project session a rider can never actually reach these
+// scripts' wildcard tail. This is a MODEL claim, not proof:
+// gate-allow-hook-survival.test.mjs spawns the real hook binary with real
+// rider payloads and asserts its actual exit code. The full audit is in
+// plugin-profiles.json's _comment_gateAllow, HIMMEL-3469/70,
 // including the gate-evidence-forgery caveat (HIMMEL-3557) this rider-only
 // check does not cover.)
 const RIDERS = ['; evil', ' && evil', ' || evil', ' | sh', ' $(evil)', ' `evil`', '\nevil', ' & evil'];
@@ -221,12 +226,20 @@ const TRUST_DIR = /(^|\s)(\S*\/)?scripts\/(cr|guardrails|hooks)\//;
 const QUIET_SUITE = /^(SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (scripts|templates\/luna-second-brain\/scripts)(\/[a-z-]+)*\/test-\*\.sh$/;
 const LITERAL_FILE = /^(bash|bun|nohup bun) [A-Za-z0-9_./-]+\.(sh|ts|mjs|js):\*$/;
 
+// HIMMEL-3698: the pre-existing PROJECT-level rule in .claude/settings.json,
+// `Bash(bash scripts/cr/cr-scores.sh)` — a genuine exact literal (no `:*`
+// tail), distinct from the wider gateAllow `:*`-tail grant for the same
+// script (deliberately left out of EXACT_LITERALS above; see the RIDERS
+// comment). This list is ONLY for the structural check below, which scans
+// project-level ALLOW, not the leg-profile gateAllow the RIDERS check scans.
+const PROJECT_EXACT_LITERALS = ['bash scripts/cr/cr-scores.sh'];
+
 test('every path-naming Bash allow rule is a per-file literal, a step-0 literal or an enumerated quiet-run suite rule', () => {
   const pathRules = ALLOW.map((r) => /^Bash\(([\s\S]*)\)$/.exec(r)[1])
     .filter((b) => /(^|\s)(\.\/)?(scripts|tests|marketplace|templates)\//.test(b));
   assert.ok(pathRules.length > 10, 'anti-vacuity: expected the per-script rules');
   for (const body of pathRules) {
-    if (STEP0.includes(body) || EXACT_LITERALS.includes(body) || QUIET_SUITE.test(body)) continue;
+    if (STEP0.includes(body) || EXACT_LITERALS.includes(body) || PROJECT_EXACT_LITERALS.includes(body) || QUIET_SUITE.test(body)) continue;
     assert.match(body, LITERAL_FILE, `not a per-file literal rule: ${body}`);
     assert.ok(!body.includes('..') && !body.includes('//'), `path trick in rule: ${body}`);
     assert.ok(!TRUST_DIR.test(body), `trust-root prefix rule: ${body}`);

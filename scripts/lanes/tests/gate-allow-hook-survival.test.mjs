@@ -41,9 +41,10 @@ function runHook(command, { env = {} } = {}) {
   return { status, stderr: stderr ?? '' };
 }
 
-// RIDER shapes on the two scripts HIMMEL-3470 re-reviews. Each must be denied
-// by the hook itself — the gateAllow `:*` rule's own text would otherwise
-// match every one of these (that is exactly what a wildcard tail means).
+// RIDER shapes on the scripts HIMMEL-3470/HIMMEL-3698 re-review. Each must be
+// denied by the hook itself — the gateAllow `:*` rule's own text would
+// otherwise match every one of these (that is exactly what a wildcard tail
+// means).
 const RIDER_COMMANDS = [
   'bash scripts/cr/ledger-append.sh amend --head abc123 --id x --set severity=crit --reason y; echo evil',
   'bash scripts/cr/ledger-append.sh finding --branch x $(echo evil)',
@@ -53,6 +54,12 @@ const RIDER_COMMANDS = [
   'bash scripts/cr/clear-cr-marker.sh fix/x | sh',
   'bash scripts/cr/clear-cr-marker.sh fix/x && echo evil',
   'bash scripts/cr/clear-cr-marker.sh fix/x\necho evil',
+  // HIMMEL-3698: cr-scores.sh's new gateAllow `:*` grant reuses this same
+  // hook-target safety, so it needs the same real-binary proof.
+  'bash scripts/cr/cr-scores.sh --by-branch fix/x; echo evil',
+  'bash scripts/cr/cr-scores.sh --by-branch fix/x && echo evil',
+  'bash scripts/cr/cr-scores.sh --by-branch fix/x | sh',
+  'bash scripts/cr/cr-scores.sh --by-branch fix/x $(echo evil)',
 ];
 
 for (const command of RIDER_COMMANDS) {
@@ -77,6 +84,7 @@ for (const command of RIDER_COMMANDS) {
 const CLEAN_COMMANDS = [
   'bash scripts/cr/ledger-append.sh amend --head abc123 --id x --set severity=crit --reason y',
   'bash scripts/cr/clear-cr-marker.sh --dry-run',
+  'bash scripts/cr/cr-scores.sh --by-branch fix/x',
 ];
 
 for (const command of CLEAN_COMMANDS) {
