@@ -531,6 +531,28 @@ for _leg_env_scrub in $LEG_ENV_SCRUB; do
 done
 unset -v _leg_env_scrub
 
+# (#1334 CR follow-up) A different reason than the CONSOLE_CONTEXT scrub above
+# but the same shape: this wrapper's own process may itself BE a leg that is
+# now arming a SIBLING leg, and LEG_PROFILE_SETTINGS/LEG_PROFILE_PREFACE/
+# LEG_PROFILE_MCP_CONFIG - both the plain env var and the
+# HEADED_ARM_LAUNCHER_ENV token leg-1's own launch added - are still live in
+# that shell. Unlike CONSOLE_CONTEXT these three names DO belong on a leg, so
+# this is not a "must never reach a leg" scrub - it is "must be recomputed by
+# THIS leg, never inherited from a sibling". Dropping the token only where a
+# name is re-propagated is not enough: a path that does NOT touch a given name
+# this run (no --profile; a profile with mcpServers: null skips
+# LEG_PROFILE_MCP_CONFIG entirely) would otherwise leave that sibling's stale
+# value live - the plain var read at
+# real-launch time (LEG_PROFILE_MCP_CONFIG's write-if-set check further down)
+# and the token forwarded to the actually-launched leg. Scrubbing both, once,
+# before any branch, means every path starts clean and the existing
+# leg_propagate_env calls are the only thing that can set them again.
+for _leg_env_scrub in LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG; do
+    unset -v "$_leg_env_scrub"
+    leg_env_drop_token "$_leg_env_scrub"
+done
+unset -v _leg_env_scrub
+
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
 # resolves wrong; headed-arm.sh separately validates the exact argv it launches.
@@ -938,6 +960,8 @@ if [ -n "$PROFILE" ]; then
     fi
     # The shim reads these; propagate so they survive both konsole's
     # `-e env -u ...` (Linux) and `open -a`'s fresh environment (macOS).
+    # (#1334) The early scrub above already dropped any sibling-leg token/var
+    # for this exact name, so this is a plain fresh add, never a clash.
     leg_propagate_env LEG_PROFILE_SETTINGS "$PROFILE_SETTINGS"
     # (HIMMEL-2985) Per-leg path, like PROFILE_SETTINGS above - the claudex
     # lane below overrides this to the same shape for its own coordination
