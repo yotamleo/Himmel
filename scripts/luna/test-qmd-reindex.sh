@@ -400,6 +400,29 @@ else
     fail "failed embed writes no refresh stamp" "stamp exists after a failed embed"
 fi
 
+echo "TEST: a successful reindex invalidates a stale stamp it fails to overwrite (HIMMEL-1307 codex-2)"
+reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
+mkdir -p "$HOME/.cache/qmd"
+printf '%s %s\n' "2020-01-01T00:00:00Z" "1577836800" >"$HOME/.cache/qmd/refresh-stamp"
+FAKE_MV_DIR="$TMP_ROOT/fakemv"
+mkdir -p "$FAKE_MV_DIR"
+cat >"$FAKE_MV_DIR/mv" <<'FAKE'
+#!/bin/sh
+echo "mv: simulated failure installing the refresh stamp" >&2
+exit 1
+FAKE
+chmod +x "$FAKE_MV_DIR/mv"
+rc=0; out=$(PATH="$FAKE_MV_DIR:$PATH" bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "reindex still succeeds when the stamp mv fails" 0 "$rc"
+assert_contains "the write failure is WARNed, not silent" "refresh stamp" "$out"
+old_stamp=$(cat "$HOME/.cache/qmd/refresh-stamp" 2>/dev/null || true)
+if [ "$old_stamp" != "2020-01-01T00:00:00Z 1577836800" ]; then
+    pass "a successful reindex's failed stamp write does not leave the OLD stamp readable"
+else
+    fail "a successful reindex's failed stamp write does not leave the OLD stamp readable" "qmd-staleness.sh would read the 2020 stamp as this run's freshness, not fall back to the proxy"
+fi
+
 rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
 echo "TEST: an INCOMPLETE embed exits 5 (this is the whole point of HIMMEL-568)"
 # A `qmd embed` that hits its session cap exits 0 having embedded only PART of

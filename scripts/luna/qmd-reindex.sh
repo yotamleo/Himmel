@@ -326,12 +326,12 @@ write_refresh_stamp() {
     tmp="$QMD_REFRESH_STAMP.tmp.$$"
     if ! printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(date -u '+%s')" >"$tmp" 2>/dev/null; then
         echo "WARN qmd-reindex: could not write the refresh stamp; qmd-staleness.sh will fall back to its proxy." >&2
-        rm -f "$tmp" 2>/dev/null || true
+        rm -f "$tmp" "$QMD_REFRESH_STAMP" 2>/dev/null || true
         return 0
     fi
     if ! mv -f "$tmp" "$QMD_REFRESH_STAMP" 2>/dev/null; then
         echo "WARN qmd-reindex: could not install the refresh stamp; qmd-staleness.sh will fall back to its proxy." >&2
-        rm -f "$tmp" 2>/dev/null || true
+        rm -f "$tmp" "$QMD_REFRESH_STAMP" 2>/dev/null || true
     fi
     return 0
 }
