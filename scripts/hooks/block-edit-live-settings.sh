@@ -1554,6 +1554,14 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         case "$wleaf" in
             [sS][eE][tT][tT][iI][nN][gG][sS].[jJ][sS][oO][nN]) : ;;
             [sS][eE][tT][tT][iI][nN][gG][sS].[lL][oO][cC][aA][lL].[jJ][sS][oO][nN]) : ;;
+            # ponytail: a brand-new, non-settings-named leaf reached through a
+            # pre-existing symlinked PARENT that itself resolves into the
+            # primary's live .claude/ never reaches check_target() here (the
+            # leaf filter exists to keep the padded-command case cheap, per
+            # the comment above) — an arbitrary new file, just not
+            # settings.json, can still land in the live .claude/ this way.
+            # Upgrade path: HIMMEL-3697 (a cheaper parent-existence check that
+            # does not require narrowing to a settings-only leaf name).
             *) return ;;
         esac
         wparent="${wabs%/*}"
