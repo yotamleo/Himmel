@@ -789,6 +789,54 @@ IS_OUT=$(j_bash_cwd "$IS_W" "$IS_REL $IS_R" | HIMMEL_REPO="$IS_W" bash "$HOOK" 2
 assert "ctl: is HIMMEL_REPO = own worktree"  PASS "$(grepq "$IS_OUT" '"permissionDecision":"allow"' && echo ALLOW || echo PASS)"
 rm -rf "$IS_TMP"
 
+# --- HIMMEL-3660: auto-approve must not cook brace/parameter expansion literally ---
+# The shell EXPANDS these before the command runs, but a literal-word match
+# sees one un-exploded token and misses the write/delete/exec flag hiding
+# inside it. FAIL CLOSED: these must PASS (fall through to a normal prompt),
+# never ALLOW.
+assert "sort brace -o/F split"        PASS "$(decide "$(j_bash 'sort {-o,F} f')")"
+assert "sort param-default -o"        PASS "$(decide "$(j_bash 'sort ${X:--o/tmp/p} f')")"
+assert "sort brace compress-program"  PASS "$(decide "$(j_bash 'sort {--compress-program=sh,f}')")"
+assert "find brace -delete/-print"    PASS "$(decide "$(j_bash 'find . {-delete,-print}')")"
+# Controls: unrelated shapes must keep behaving exactly as before.
+assert "sort plain still ALLOW"       ALLOW "$(decide "$(j_bash 'sort f')")"
+assert "find -name still ALLOW"       ALLOW "$(decide "$(j_bash "find . -name '*.md'")")"
+assert "quoted literal brace ALLOW"   ALLOW "$(decide "$(j_bash "echo '{a,b}'")")"
+assert "sort quoted literal brace"    ALLOW "$(decide "$(j_bash "sort '{a,b}' f")")"
+
+# --- HIMMEL-3660 / J1300O finding (a): segment_is_rootwalk_find must treat an
+# uncookable word ($VAR, brace) as OPAQUE and keep scanning, never bail out of
+# the whole HIMMEL-2121 root-walk DENY the instant one word can't be cooked.
+assert "rootwalk \$X quoted survives cook-fail" DENY "$(decide "$(j_bash 'find / -name "$X"')")"
+assert "rootwalk \$X unquoted survives cook-fail" DENY "$(decide "$(j_bash 'find / -name $X')")"
+assert "rootwalk \${X} survives cook-fail" DENY "$(decide "$(j_bash 'find / -name ${X}')")"
+assert "rootwalk \$f in -newer survives cook-fail" DENY "$(decide "$(j_bash 'find / -newer $f')")"
+assert "rootwalk loop-variable survives cook-fail" DENY "$(decide "$(j_bash 'for f in a b; do find / -name $f; done')")"
+assert "rootwalk \$Y after -o survives cook-fail" DENY "$(decide "$(j_bash 'find / -name x -o -name $Y')")"
+assert "rootwalk \$N maxdepth-value survives cook-fail" DENY "$(decide "$(j_bash 'find / -maxdepth $N -name x')")"
+assert "rootwalk brace maxdepth-value survives cook-fail" DENY "$(decide "$(j_bash 'find / -maxdepth {1,2} -name x')")"
+assert "rootwalk brace path-operand survives cook-fail" DENY "$(decide "$(j_bash 'find / -name *.{md,txt}')")"
+# Control: the $(...) rootwalk DENY (round-3 lock, :346) must still hold.
+assert "rootwalk \$(...)  still DENY"  DENY "$(decide "$(j_bash 'find / -iname $(hostname)')")"
+
+# --- HIMMEL-3660 / J1300O finding (b): an UNQUOTED glob word (*, ?, [) in a
+# guarded arm must fall through to normal permission, never auto-approve —
+# real exploit: with a file named `-oPWNED` present, `sort -* f` wrote PWNED.
+assert "sort -* glob"                 PASS "$(decide "$(j_bash 'sort -* f')")"
+assert "sort ?o glob"                 PASS "$(decide "$(j_bash 'sort ?o f')")"
+assert "sort [-]o glob"               PASS "$(decide "$(j_bash 'sort [-]o f')")"
+assert "sort bare * glob"             PASS "$(decide "$(j_bash 'sort *')")"
+assert "sort *.txt glob"              PASS "$(decide "$(j_bash 'sort *.txt')")"
+assert "find . -* glob"               PASS "$(decide "$(j_bash 'find . -*')")"
+assert "find -name x -o -* glob"      PASS "$(decide "$(j_bash 'find . -name x -o -*')")"
+assert "find bare * glob"             PASS "$(decide "$(j_bash 'find *')")"
+assert "tree -* glob"                 PASS "$(decide "$(j_bash 'tree -*')")"
+assert "base64 -* glob"               PASS "$(decide "$(j_bash 'base64 -*')")"
+# Controls: a QUOTED glob is a literal word, not shell-expanded — must keep
+# auto-approving exactly as before.
+assert "find quoted glob still ALLOW" ALLOW "$(decide "$(j_bash "find . -name '*.md'")")"
+assert "sort quoted glob still ALLOW" ALLOW "$(decide "$(j_bash "sort '-*' f")")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."
