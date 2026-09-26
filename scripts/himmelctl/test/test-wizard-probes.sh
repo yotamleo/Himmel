@@ -658,7 +658,8 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outSK1hAbsent" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "settings-key verifyHudConfig: hud wired + config file absent must NOT read green/n-a (got: $outSK1hAbsent)"
-echo "$outSK1hAbsent" | jq -e -r '.detail // ""' | grep -q "hud config missing" \
+detailSK1hAbsent=$(echo "$outSK1hAbsent" | jq -e -r '.detail // ""')
+grep -q "hud config missing" <<< "$detailSK1hAbsent" \
   || fail "settings-key verifyHudConfig: absent-config detail should name the missing hud config (got: $outSK1hAbsent)"
 
 # RED: hud renderer wired, config present but missing display.customLineCommand -> degraded.
