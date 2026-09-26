@@ -160,10 +160,16 @@ _esw_sid_slug() {
 # exactly one concurrent caller sees it succeed. The claim IS the marker — no
 # separate mark step on the success path.
 claim_capture() {
-    local sid="$1"
+    local sid="$1" slot
     [ -n "$sid" ] || return 0
     (umask 077; mkdir -p "$CAPTURED_DIR") 2>/dev/null
-    mkdir "${CAPTURED_DIR}/$(_esw_sid_slug "$sid")" 2>/dev/null
+    slot="${CAPTURED_DIR}/$(_esw_sid_slug "$sid")"
+    mkdir "$slot" 2>/dev/null && return 0
+    # Only an EXISTING claim is genuine dedup. Any other mkdir failure (e.g.
+    # CAPTURED_DIR itself could not be created) must fall through and let the
+    # note write proceed uncaptured, best-effort, as main did (HIMMEL-3638/F2).
+    [ -d "$slot" ] && return 1
+    return 0
 }
 
 # release_capture <session_id> — undo a claim that did not end in a written
@@ -221,6 +227,11 @@ spawn_crystallizer() {
 #   - explicit `exit N` from anywhere
 #   - signals (where supported)
 HOOK_OK=0
+# WROTE is set to 1 immediately after a successful note write (local fs or
+# REST PUT). Any exit before that point — including a claimed-but-cancelled
+# run — must release its claim so a retry for the same session_id is not
+# wedged forever (HIMMEL-3629/F1).
+WROTE=0
 # shellcheck disable=SC2317  # invoked indirectly via `trap ... EXIT`
 __on_exit() {
     local rc=$?
@@ -230,6 +241,7 @@ __on_exit() {
         # AND set HOOK_OK=1 before exit to avoid double-logging.
         log_msg "FAILED with exit $rc (unhandled - see prior log lines)"
     fi
+    [ "$WROTE" -eq 0 ] && release_capture "${SESSION_ID:-}"
     # Override the actual exit code: hook MUST NEVER exit non-zero.
     exit 0
 }
@@ -245,6 +257,7 @@ trap '__on_exit' EXIT
 __on_signal() {
     local sig="$1"
     log_msg "cancelled by signal $sig (session ${SESSION_ID:-unknown})"
+    [ "$WROTE" -eq 0 ] && release_capture "${SESSION_ID:-}"
     HOOK_OK=1
     exit 0
 }
@@ -765,6 +778,7 @@ if [ -z "$API_KEY" ]; then
     # No REST API key — fall back to a direct on-disk write into the vault.
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "wrote (local fs, no api key) ${REL_PATH}"
+        WROTE=1
         spawn_crystallizer
     else
         log_msg "ERROR: local fs write failed: $ABS_PATH"
@@ -842,6 +856,7 @@ if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "
     if write_note_to_file "$ABS_PATH" "$MARKDOWN"; then
         log_msg "PUT $ENDPOINT returned HTTP $HTTP_CODE; wrote (local fs fallback) ${REL_PATH}"
         flag_degraded_fallback "$HTTP_CODE" "$REL_PATH" "$VAULT_ROOT" disk
+        WROTE=1
         spawn_crystallizer
     else
         log_msg "ERROR: PUT $ENDPOINT HTTP $HTTP_CODE and local fs fallback failed: $ABS_PATH"
@@ -855,6 +870,7 @@ fi
 # Healthy REST push — clear any stale degradation marker from a prior session.
 rm -f "$DEGRADED_MARKER_PATH" 2>/dev/null || true
 log_msg "wrote ${REL_PATH} (${ELAPSED}ms)"
+WROTE=1
 spawn_crystallizer
 HOOK_OK=1
 exit 0

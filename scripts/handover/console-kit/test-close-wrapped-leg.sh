@@ -403,6 +403,31 @@ else
     fails=$((fails+1))
 fi
 
+# --- 21: HIMMEL-3638/F3 -- the ONLY matching transcript is older than the
+# mtime window (e.g. the console closes a leg more than a day after it
+# WRAPPED). The mtime-scoped search alone matches 0 files; the fix must fall
+# back to an all-time search rather than skipping the pre-signal capture.
+ESW_SB5="$W/esw-sb5"
+mkdir -p "$ESW_SB5/vault" "$ESW_SB5/proj" "$ESW_SB5/home"
+PROJDIR5="$W/esw-projects5"
+mkdir -p "$PROJDIR5"
+OLD_TRANSCRIPT="$PROJDIR5/sess-old.jsonl"
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB5/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB5/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
+} > "$OLD_TRANSCRIPT"
+touch -d '10 days ago' "$OLD_TRANSCRIPT" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB5/home" LUNA_VAULT_PATH="$ESW_SB5/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB5/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR5" CLOSE_WRAPPED_LEG_MTIME_DAYS=1 \
+    run "$DOC" 2>&1) || rc=$?
+check "mtime-window-fallback: rc 0 (still closes)" "$rc" "0"
+note_count21=$(find "$ESW_SB5/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "mtime-window-fallback: exactly one note written (0 matches under the mtime window, found via all-time fallback)" "$note_count21" "1"
+
 echo "----"
 if [ "$fails" -eq 0 ]; then
     echo "ALL OK"

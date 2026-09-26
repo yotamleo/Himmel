@@ -155,6 +155,14 @@ if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
     mtime_window="${CLOSE_WRAPPED_LEG_MTIME_DAYS:-1}"
     head_window="${CLOSE_WRAPPED_LEG_CUSTOMTITLE_HEAD:-40}"
     candidates=$(printf '%s\n%s\n' "${ident#*$'\t'}" "$doc_stem" | tr ',' '\n' | sed '/^$/d')
+    scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' -mtime "-${mtime_window}" 2>/dev/null)
+    if [ -z "$scan_files" ]; then
+        # F3: -mtime is a rolling window, not "today" - a leg WRAPPED longer
+        # ago than the window (e.g. the console closes it >24h later) matches
+        # 0 transcripts under the window alone. Fall back to an all-time scan
+        # rather than skipping the pre-signal capture entirely.
+        scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' 2>/dev/null)
+    fi
     transcript_matches=""
     while IFS= read -r f; do
         [ -n "$f" ] || continue
@@ -170,7 +178,7 @@ ${f}"
 $candidates
 EOF
     done <<EOF
-$(find "$PROJECTS_DIR" -type f -name '*.jsonl' -mtime "-${mtime_window}" 2>/dev/null)
+$scan_files
 EOF
     transcript_matches=$(printf '%s\n' "$transcript_matches" | sed '/^$/d' | sort -u)
     tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)

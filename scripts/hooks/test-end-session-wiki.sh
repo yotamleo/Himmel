@@ -847,6 +847,12 @@ rm -rf "$RACE_DIR"
 SB="$(make_sandbox)"
 printf '%s\n' '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"hi"}}' > "$SB/transcript.jsonl"
 run_hook "$SB" >/dev/null
+NOTE_COUNT23_RUN1="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT23_RUN1" = "0" ]; then
+    pass "HIMMEL-3633: run 1 (husk) writes no note"
+else
+    fail "HIMMEL-3633: run 1 (husk) was expected to write 0 notes, wrote $NOTE_COUNT23_RUN1 (run 1 was not a husk — this case is vacuous)"
+fi
 printf '%s\n' '{"timestamp":"2026-06-17T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"line one\nline two"}]}}' > "$SB/transcript.jsonl"
 run_hook "$SB" >/dev/null
 NOTE_COUNT23="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
@@ -854,6 +860,74 @@ if [ "$NOTE_COUNT23" = "1" ]; then
     pass "HIMMEL-3633: a husk-skip claim releases, so a same-session_id retry with real content still writes"
 else
     fail "HIMMEL-3633: a husk-skip claim wrongly stuck — retry wrote $NOTE_COUNT23 notes (want 1)"
+fi
+rm -rf "$SB"
+
+# --- Case 24: SIGTERM mid-run releases the claim, so a retry for the SAME
+# session_id still writes a note (HIMMEL-3638/F1). A claim taken up front
+# (HIMMEL-3633) that is then cancelled before any note is written must not
+# wedge that session_id forever. Blocks curl the same way case 20 does so the
+# hook is guaranteed to be inside the REST PUT (claimed, not yet written) when
+# TERM arrives, then reruns the SAME session_id (a plain fs-fallback retry,
+# no API key) and expects the claim to be free.
+SB="$(make_sandbox)"
+CURL_MARKER="$SB/curl-started"
+CURL_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/esw-curl-stub24.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+cat > "$CURL_STUB_DIR/curl" <<'CURLSTUB'
+#!/usr/bin/env bash
+: > "$CURL_MARKER_FILE"
+sleep 2
+printf '000'
+CURLSTUB
+chmod +x "$CURL_STUB_DIR/curl"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"f1test","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" > "$SB/payload.json"
+env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+    LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="dummy-key" \
+    CLAUDE_PROJECT_DIR="$SB/proj" CURL_MARKER_FILE="$CURL_MARKER" \
+    PATH="$CURL_STUB_DIR:$PATH" \
+    setsid bash "$HOOK" < "$SB/payload.json" &
+HOOK_PID=$!
+i=0
+while [ ! -e "$CURL_MARKER" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+if [ ! -e "$CURL_MARKER" ]; then
+    fail "HIMMEL-3638/F1: curl stub never started (test setup broken, not a hook bug)"
+    kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    wait "$HOOK_PID" 2>/dev/null
+else
+    kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    wait "$HOOK_PID" 2>/dev/null
+    payload2=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"f1test","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+    printf '%s' "$payload2" | \
+        env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+            LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+        bash "$HOOK" >/dev/null
+    NOTE_COUNT24="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$NOTE_COUNT24" = "1" ]; then
+        pass "HIMMEL-3638/F1: TERM mid-run releases the claim; retry for the same session_id writes 1 note"
+    else
+        fail "HIMMEL-3638/F1: TERM mid-run then retry wrote $NOTE_COUNT24 notes (want 1 — claim was not released)"
+    fi
+fi
+rm -rf "$SB" "$CURL_STUB_DIR"
+
+# --- Case 25: an uncreatable log dir must not block capture (HIMMEL-3638/F2) --
+# claim_capture must treat only an EXISTING claim as already-captured. When
+# CAPTURED_DIR itself cannot be created (here: a plain file squats
+# ~/.claude/logs, so mkdir -p fails with ENOTDIR), the run must still proceed
+# and write the note, best-effort, matching main's prior behaviour.
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/.claude"
+: > "$SB/home/.claude/logs"
+run_hook "$SB" >/dev/null
+NOTE_COUNT25="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT25" = "1" ]; then
+    pass "HIMMEL-3638/F2: an uncreatable log dir still writes 1 note"
+else
+    fail "HIMMEL-3638/F2: an uncreatable log dir wrote $NOTE_COUNT25 notes (want 1 — claim_capture wrongly treated a non-existing-claim mkdir failure as already-captured)"
 fi
 rm -rf "$SB"
 
