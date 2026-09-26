@@ -956,6 +956,7 @@ test('advisory members are bounded by the entry deadline, not just the shared ch
       chmodSync(join(dir, name), 0o755);
     }
 
+    const logFile = join(dir, 'skips.jsonl');
     const HARNESS_MS = 2200;
     const t0 = Date.now();
     const result = spawnSync(process.execPath, [LAUNCHER, '--chain', ...names.map((n) => join(dir, n))], {
@@ -969,6 +970,7 @@ test('advisory members are bounded by the entry deadline, not just the shared ch
         RUN_HOOK_CHAIN_BUDGET_MS: '50',
         RUN_HOOK_CHAIN_ENTRY_TIMEOUT_MS: '1000',
         RUN_HOOK_CHAIN_ENTRY_SAFETY_MARGIN_MS: '200',
+        RUN_HOOK_CHAIN_SKIP_LOG: logFile,
       },
     });
     const wall = Date.now() - t0;
@@ -983,7 +985,25 @@ test('advisory members are bounded by the entry deadline, not just the shared ch
     // chain actually decided near that deadline rather than lingering toward the kill-switch
     // itself (codex-1, HIMMEL-3620 /pr-check round 1).
     assert.ok(wall < 1500, `chain took ${wall}ms, must decide near the real ~800ms entry deadline, not merely avoid the ${HARNESS_MS}ms kill-switch`);
-    assert.equal(typeof result.status, 'number', 'the chain must actually decide, not be killed mid-run');
+    // codex-1, HIMMEL-3620 /pr-check round 3: typeof-number alone lets an early
+    // error (e.g. a crash) satisfy this test. All six members here are
+    // advisory (none in MUST_RUN_CHAIN_MEMBERS) and each hangs well past its
+    // bound, so every one is spawned and skipped (advisory members are never
+    // denied without spawning — that pre-spawn check only applies to
+    // must-run members) — the chain's carried status must land on the
+    // all-skipped value 1, never 0 (no emitter ran) or 2 (a deny).
+    assert.equal(result.status, 1, `the chain must land on the all-skipped result, not crash or deny (stderr: ${result.stderr})`);
+    const rows = readFileSync(logFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(rows.length, names.length, `expected one skip entry per advisory member (stderr: ${result.stderr})`);
+    for (const row of rows) {
+      assert.equal(row.action, 'skip');
+      assert.equal(row.reason, 'ETIMEDOUT');
+    }
+    assert.deepEqual(
+      rows.map((row) => row.member).sort(),
+      names.slice().sort(),
+      'every advisory member must be accounted for in the skip log',
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
