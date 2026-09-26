@@ -245,7 +245,7 @@ run_test "(4c) HIMMEL-1866: partial fetch cannot make stale seven_day fresh" '
 # --- HIMMEL-1712: account-mismatched cache -> every DECISION consumer treats it as UNKNOWN, preserving its own existing missing/unusable-cache contract exactly ---
 
 run_test "(7a) HIMMEL-1712: cap-reset-time.sh treats an account-mismatched cache as UNKNOWN (same exit 3 as a missing resets_at)" '
-  W=$(mktemp -d); export HOME="$W/home-a"; mkdir -p "$HOME";
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-7a.XXXXXX"); export HOME="$W/home-a"; mkdir -p "$HOME";
   printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
   produce_cache "$W" 63.4 12.7 || exit 1;
   export HOME="$W/home-b"; mkdir -p "$HOME";
@@ -257,7 +257,7 @@ run_test "(7a) HIMMEL-1712: cap-reset-time.sh treats an account-mismatched cache
 '
 
 run_test "(7b) HIMMEL-1712: auto-arm-on-cap.sh treats an account-mismatched cache as unreadable usage -> quiet no-op, never arms" '
-  W=$(mktemp -d); export HOME="$W/home-a"; mkdir -p "$HOME";
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-7b.XXXXXX"); export HOME="$W/home-a"; mkdir -p "$HOME";
   printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
   produce_cache "$W" 95 12.7 || exit 1;
   export HOME="$W/home-b"; mkdir -p "$HOME";
@@ -271,7 +271,7 @@ run_test "(7b) HIMMEL-1712: auto-arm-on-cap.sh treats an account-mismatched cach
 '
 
 run_test "(7c) HIMMEL-1712: resume-slot.sh treats an account-mismatched cache as unusable (same exit 2/empty-stdout shape as its die() contract)" '
-  W=$(mktemp -d); export HOME="$W/home-a"; mkdir -p "$HOME";
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-7c.XXXXXX"); export HOME="$W/home-a"; mkdir -p "$HOME";
   printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
   produce_cache "$W" 63.4 12.7 || exit 1;
   export HOME="$W/home-b"; mkdir -p "$HOME";

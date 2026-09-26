@@ -131,6 +131,10 @@ account_for_session() {
   # session_id-independent lock across the whole read-modify-write (same
   # fail-open convention as scripts/lib/claudex-inbox.sh's inbox_with_lock:
   # missing flock keeps this unlocked rather than erroring).
+  # ponytail: a still-missing flock leaves this race open (panel round 3,
+  # codex-1) — the same accepted fail-open ceiling as inbox_with_lock, not a
+  # new gap. Upgrade path: a lock-file-free CAS write (mv-based) if a future
+  # ticket needs the race closed even without flock.
   lockfile="${SESSION_MAP_FILE}.lock"
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$lockfile" 2>/dev/null && flock -x 9 2>/dev/null
