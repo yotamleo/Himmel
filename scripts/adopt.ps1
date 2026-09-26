@@ -34,6 +34,12 @@
 #                     commit-msg, pre-push) in -Target. On by default
 #                     (HIMMEL-2441) so a fresh adopt is gated from its first
 #                     commit; mirrors uninstall.ps1's own -SkipHooks.
+#   -HandoverMode <inline|external>
+#                     Gate for Wire-HandoverDirLuna's env.HANDOVER_DIR write
+#                     (HIMMEL-2466). external (the default, today's behaviour)
+#                     wires it when a vault is scaffolded; inline leaves
+#                     settings.json untouched. Windows twin of adopt.sh's
+#                     --handover-mode.
 #
 # Idempotent: re-running adds nothing already present.
 
@@ -48,7 +54,9 @@ param(
     [switch]$DryRun,
     [switch]$FillEnv,
     [switch]$WithGraphify,
-    [switch]$SkipHooks
+    [switch]$SkipHooks,
+    [ValidateSet('inline', 'external')]
+    [string]$HandoverMode = 'external'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -345,6 +353,12 @@ function Wire-LunaVaultPath([string]$Dest) {
 # so Mode B resolves cleanly out of the box. Sibling of Wire-LunaVaultPath;
 # $Dest = the scaffolded vault dir.
 function Wire-HandoverDirLuna([string]$Dest) {
+    # HIMMEL-2466: handover.mode=inline is a no-op here, mirroring adopt.sh's
+    # own gate — handover state stays the repo-local handovers/ stub.
+    if ($HandoverMode -eq 'inline') {
+        Write-Host "  handover.mode=inline — leaving env.HANDOVER_DIR unset (HIMMEL-2466)"
+        return
+    }
     $hdir = Join-Path $Dest 'handovers'
     $settings = if ($Scope -eq 'project') {
         Join-Path $Target '.claude\settings.json'
