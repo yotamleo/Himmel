@@ -919,6 +919,27 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
     fi
+    # (HIMMEL-3698) additionalDirectories above only widens the DIRECTORY
+    # boundary check - it grants no permission `allow` rule, so the auto-mode
+    # classifier could still deny the leg's own Edit of its handover doc
+    # (N577, N582, N564 each parked on exactly this). Grant Edit on markdown
+    # under the WHOLE handover root, not just this leg's own doc directory:
+    # the root-widening concern above is about the go-gate LOCK file, which
+    # is never `.md` and sits under `.locks/`, whose deny still wins over
+    # this rule regardless of scope. Only Edit is emitted - Claude Code now
+    # applies an Edit(path) rule to every file-editing tool (HIMMEL-3645
+    # above), so a sibling Write/MultiEdit/NotebookEdit rule on the same
+    # pattern is dead code. Gated the same as the .locks deny (never the
+    # relay), plus JUDGE: a judge does not implement (design 3.2, Guard E
+    # above) and never needs to write a LEG's handover doc, so it must not
+    # gain this grant even though it resolves its own DOC/HANDOVER_DIR too.
+    if [ "$RELAY" -eq 0 ] && [ "$JUDGE" -eq 0 ] && [ -n "$_leg_handover_dir_norm" ]; then
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_handover_dir_norm" \
+            '.permissions.allow = ((.permissions.allow // []) + ["Edit(" + $dir + "/**/*.md)"])')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add the handover-doc Edit allow to settings JSON" >&2
+            exit 2
+        fi
+    fi
     unset -v _leg_handover_dir_norm
     # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
     # coordination preface untouched. Resolved even under --dry-run, same

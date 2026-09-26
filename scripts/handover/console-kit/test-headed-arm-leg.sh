@@ -1111,6 +1111,17 @@ check "full launch --profile: seeded settings deny NOTHING for Write/MultiEdit/N
   "$(jq -c '(.permissions.deny // []) | map(select(startswith("Write(") or startswith("MultiEdit(") or startswith("NotebookEdit(")))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
   "[]"
 
+# HIMMEL-3698: additionalDirectories above only widens the directory
+# boundary check - it grants no permission `allow` rule, so a leg's own
+# Edit of its handover doc still needs an explicit allow (N577/N582/N564
+# each parked on exactly this classifier gap). Scoped to markdown under the
+# WHOLE handover root, not just this leg's own doc directory - the .locks
+# deny above still wins regardless of scope, since a lock file is never
+# `.md`. Only Edit is emitted, matching the HIMMEL-3645 dead-rule note above.
+check "full launch --profile: seeded settings grant Edit on handover-root markdown" \
+  "$(jq --arg d "$HANDOVER_DIR" '(.permissions.allow // []) | any(. == ("Edit(" + $d + "/**/*.md)"))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "true"
+
 # A handover root containing a space must still resolve correctly -
 # HANDOVER_DIR reaches this wrapper's own process as a plain export
 # (leg_propagate_env's whitespace branch), not through the
@@ -1964,6 +1975,13 @@ wait_record "$d28d" || true
 rec28d="$(ll_line HIMMEL-3270-N5-judge)"
 contains "28f --judge launch is recorded with its forced profile" "$rec28d" " profile=console-judge "
 contains "28f --judge launch is recorded role=judge" "$rec28d" " role=judge "
+
+# HIMMEL-3698: a judge does not implement (design 3.2) and never needs to
+# write a LEG's handover doc, so it must not gain the Edit-allow grant even
+# though it resolves its own DOC/HANDOVER_DIR too.
+check "28f --judge launch does not gain the handover-doc Edit allow (judge never implements)" \
+  "$(jq --arg d "$HANDOVER_DIR" '(.permissions.allow // []) | any(. == ("Edit(" + $d + "/**/*.md)"))' "$d28d/HIMMEL-3270-N5-judge.leg-settings.json" 2>/dev/null)" \
+  "false"
 
 # A relaunch of the same session name appends, never replaces: the record is
 # history, and a replaced line would erase what the first launch really was.
