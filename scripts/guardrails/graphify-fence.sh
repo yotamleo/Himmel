@@ -524,6 +524,45 @@ _is_abs_target() {
     esac
 }
 
+# _gf_apply_chdir <raw-dir-token> -> mutate TOOL_CWD for the rest of THIS
+# clause (HIMMEL-3641: env -C/--chdir, sudo -D/--chdir change the child
+# process's cwd before graphify ever runs, so the fence must resolve later
+# path arguments and the no-path-arg CWD fallback against THAT directory,
+# not the tool call's real cwd). Every downstream cwd-dependent path (_abs,
+# _exists_under_cwd, classify's cross-drive check, evaluate_invocation's
+# no-path-arg fallback) reads TOOL_CWD, so this one mutation point is enough.
+# On anything this file cannot resolve lexically - a missing/empty argument,
+# one still carrying an unexpanded shell substitution ($.../`...`, since this
+# fence does not run a shell and cannot know what that expands to, or (mirrors
+# the CD_SEEN drift guard just above) a RELATIVE argument once a prior clause
+# already ran cd/pushd/popd and the real cwd is unknown - this records the
+# reason instead of denying outright, exactly like _GF_ENDPOINT_OVERRIDE just
+# above: the wrapper walk runs for every clause, graphify or not, and denying
+# here would fail-closed a plain `env -C $DIR make` that never touches
+# graphify at all. _gf_deny_on_chdir_unresolved enforces it once
+# classify_clause has actually confirmed graphify is the command being run.
+_gf_apply_chdir() {
+    local raw; raw="$(_strip_wrap "$1")"
+    case "$raw" in
+        '') _GF_CHDIR_DENY_REASON="chdir wrapper (env -C/--chdir, sudo -D/--chdir) with a missing/empty directory argument"; return 0 ;;
+        *'$'*|*'`'*) _GF_CHDIR_DENY_REASON="chdir wrapper directory argument is unresolvable (unexpanded shell substitution): $raw"; return 0 ;;
+    esac
+    if [ "$CD_SEEN" = 1 ] && ! _is_abs_target "${raw//\\//}"; then
+        _GF_CHDIR_DENY_REASON="chdir wrapper directory argument is relative after an earlier cd/pushd/popd: $raw"
+        return 0
+    fi
+    TOOL_CWD="$(_abs "$raw")"
+}
+
+# _gf_deny_on_chdir_unresolved -> HIMMEL-3641. Called right before a graphify
+# command-position invocation is actually evaluated, alongside
+# _gf_deny_on_endpoint_override; denies when _gf_apply_chdir saw an
+# env -C/--chdir or sudo -D/--chdir it could not resolve ahead of graphify.
+_gf_deny_on_chdir_unresolved() {
+    [ -n "${_GF_CHDIR_DENY_REASON:-}" ] || return 0
+    deny "$_GF_CHDIR_DENY_REASON"
+}
+
 # _exists_under_cwd <bare-token> -> 0 if <tool-call-cwd>/<token> exists on disk.
 # A bare-word (no slash/drive/extension) target the agent dropped without a ./
 # prefix (HIMMEL-779): used to keep it from being swallowed as a subcommand word
@@ -1684,13 +1723,25 @@ classify_clause() {
                     gf_w="$(_strip_cmd "${toks[$i]}")"
                     case "$gf_w" in
                         -u)   i=$((i+2)) ;;                # flag + VAR value
+                        -C)   _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2)) ;;  # HIMMEL-3641: -C DIR
+                        -C?*) _gf_apply_chdir "${gf_w#-C}"; i=$((i+1)) ;;           # HIMMEL-3641: -CDIR attached
                         --*)
                             # HIMMEL-2610: --u/--uns/... are unambiguous GNU
                             # abbreviations of env's only value-taking long
                             # option, --unset; the old literal-only match
                             # missed them (same under-consumption class as
-                            # nice/time above).
-                            if guard_is_long_abbrev "unset" "$gf_w"; then
+                            # nice/time above). HIMMEL-3641: --chdir/--ch/...
+                            # (env -C's long form) is the other value-taking
+                            # long option and is checked first so an
+                            # ambiguous-with-neither abbreviation still falls
+                            # through to the generic -*) arm below.
+                            if guard_is_long_abbrev "chdir" "$gf_w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then
+                                    _gf_apply_chdir "$GUARD_LOPT_VAL"; i=$((i+1))
+                                else
+                                    _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2))
+                                fi
+                            elif guard_is_long_abbrev "unset" "$gf_w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
@@ -1760,6 +1811,8 @@ classify_clause() {
                     gf_w="$(_strip_cmd "${toks[$i]}")"
                     case "$gf_w" in
                         -u|-g|-U|-p|-C|-r|-t|-h) i=$((i+2)) ;;       # flag + value
+                        -D)   _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2)) ;;  # HIMMEL-3641: -D DIR
+                        -D?*) _gf_apply_chdir "${gf_w#-D}"; i=$((i+1)) ;;           # HIMMEL-3641: -DDIR attached
                         --)                      i=$((i+1)); break ;;  # end of sudo options
                         --*)
                             # HIMMEL-2610: sudo had NO long-option handling
@@ -1767,7 +1820,15 @@ classify_clause() {
                             # --close-from/--role/--type/--host (and any
                             # unambiguous abbreviation of each) each take a
                             # SEPARATE value, same as their short forms above.
-                            if guard_is_long_abbrev "user" "$gf_w" || guard_is_long_abbrev "group" "$gf_w" \
+                            # HIMMEL-3641: --chdir (-D's long form) is checked
+                            # first, same rationale as env's --chdir above.
+                            if guard_is_long_abbrev "chdir" "$gf_w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then
+                                    _gf_apply_chdir "$GUARD_LOPT_VAL"; i=$((i+1))
+                                else
+                                    _gf_apply_chdir "${toks[$((i+1))]:-}"; i=$((i+2))
+                                fi
+                            elif guard_is_long_abbrev "user" "$gf_w" || guard_is_long_abbrev "group" "$gf_w" \
                                 || guard_is_long_abbrev "other-user" "$gf_w" || guard_is_long_abbrev "prompt" "$gf_w" \
                                 || guard_is_long_abbrev "close-from" "$gf_w" || guard_is_long_abbrev "role" "$gf_w" \
                                 || guard_is_long_abbrev "type" "$gf_w" || guard_is_long_abbrev "host" "$gf_w"; then
@@ -1866,6 +1927,7 @@ classify_clause() {
             done
             if [ "$found" = 1 ]; then
                 _gf_deny_on_endpoint_override
+                _gf_deny_on_chdir_unresolved
                 args=()
                 while [ "$k" -lt "$n" ]; do args+=("${toks[$k]}"); k=$((k+1)); done
                 evaluate_invocation ${args[@]+"${args[@]}"}
@@ -1878,6 +1940,7 @@ classify_clause() {
     case "$s" in
         graphify|*/graphify)
             _gf_deny_on_endpoint_override
+            _gf_deny_on_chdir_unresolved
             args=()
             j=$((i+1))
             while [ "$j" -lt "$n" ]; do args+=("${toks[$j]}"); j=$((j+1)); done
@@ -1955,6 +2018,13 @@ tmp="${tmp//&/$'\n'}"
 # relative target (see the CD_SEEN checks in evaluate_invocation).
 CD_SEEN=0
 
+# HIMMEL-3641: an env -C/sudo -D chdir wrapper only changes ITS OWN child
+# process's cwd, never a later shell clause's - so TOOL_CWD is reset to the
+# tool call's real cwd before each top-level clause, exactly like
+# _GF_ENDPOINT_OVERRIDE below, and a chdir wrapper in one &&/;-joined clause
+# can never leak into the next.
+_GF_TOOL_CWD_BASE="$TOOL_CWD"
+
 while IFS= read -r clause || [ -n "$clause" ]; do
     [ -n "$clause" ] || continue
     # shellcheck disable=SC2086 # intentional word split for tokenisation
@@ -1965,6 +2035,8 @@ while IFS= read -r clause || [ -n "$clause" ]; do
     # there would erase an override the outer call already captured before the
     # inner call ever reaches the graphify token.
     _GF_ENDPOINT_OVERRIDE=""
+    _GF_CHDIR_DENY_REASON=""
+    TOOL_CWD="$_GF_TOOL_CWD_BASE"
     classify_clause "$@"
     # Same _strip_cmd normalization as the graphify command-position match
     # (quotes/backticks/$/(/)/backslash stripped), checked on the clause's own

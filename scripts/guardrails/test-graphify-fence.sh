@@ -2151,6 +2151,71 @@ env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code claude-cli "$NOWHERE" ref
 [ ! -e "$LEDGER" ] || e9=1
 if [ "$e9" -eq 0 ]; then pass "HIMMEL-1084 E9 --eval: wrong operand count denies, no ledger"; else fail "HIMMEL-1084 E9 --eval wrong operand count did not all deny"; fi
 
+echo "== HIMMEL-3641: env -C/--chdir, sudo -D/--chdir directory-change wrappers (PHI fail-closed) =="
+
+# (C1) env -C DIR (separate token) -> deny (chdir into salus, relative target)
+run_fence deny no "$HIMMEL" "env -C DIR salus (relative target) -> deny" \
+    "env -C $SALUS graphify update notes/patient.md --backend glm"
+
+# (C2) env -CDIR (attached, single token) -> deny
+run_fence deny no "$HIMMEL" "env -CDIR salus -> deny (attached)" \
+    "env -C$SALUS graphify update notes/patient.md --backend glm"
+
+# (C3) env --chdir=DIR (attached value) -> deny
+run_fence deny no "$HIMMEL" "env --chdir=DIR salus -> deny (attached)" \
+    "env --chdir=$SALUS graphify update notes/patient.md --backend glm"
+
+# (C4) env --chdir DIR (separate token) -> deny
+run_fence deny no "$HIMMEL" "env --chdir DIR salus -> deny" \
+    "env --chdir $SALUS graphify update notes/patient.md --backend glm"
+
+# (C5) env --ch DIR (unambiguous abbreviation) -> deny
+run_fence deny no "$HIMMEL" "env --ch DIR salus -> deny (abbrev)" \
+    "env --ch $SALUS graphify update notes/patient.md --backend glm"
+
+# (C6) env --chd DIR (deeper unambiguous abbreviation) -> deny
+run_fence deny no "$HIMMEL" "env --chd DIR salus -> deny (abbrev)" \
+    "env --chd $SALUS graphify update notes/patient.md --backend glm"
+
+# (C7) sudo -D DIR (separate token) -> deny
+run_fence deny no "$HIMMEL" "sudo -D DIR salus -> deny" \
+    "sudo -D $SALUS graphify update notes/patient.md --backend glm"
+
+# (C8) sudo -DDIR (attached, single token) -> deny
+run_fence deny no "$HIMMEL" "sudo -DDIR salus -> deny (attached)" \
+    "sudo -D$SALUS graphify update notes/patient.md --backend glm"
+
+# (C9) sudo --chdir=DIR (attached value) -> deny
+run_fence deny no "$HIMMEL" "sudo --chdir=DIR salus -> deny (attached)" \
+    "sudo --chdir=$SALUS graphify update notes/patient.md --backend glm"
+
+# (C10) sudo -D combined with an earlier sudo flag -> deny
+run_fence deny no "$HIMMEL" "sudo -u root -D DIR salus -> deny (combined, -D after -u)" \
+    "sudo -u root -D $SALUS graphify update notes/patient.md --backend glm"
+
+# (C11) sudo -D combined with a later sudo flag -> deny
+run_fence deny no "$HIMMEL" "sudo -D DIR -H salus -> deny (combined, -D before -H)" \
+    "sudo -D $SALUS -H graphify update notes/patient.md --backend glm"
+
+# (C12) fail-closed: env --chdir= with a missing/empty directory argument
+# (attached form, so graphify is still reachable right after) -> deny
+run_fence deny no "$HIMMEL" "env --chdir= (empty arg) -> deny (fail-closed)" \
+    "env --chdir= graphify update notes/patient.md --backend glm"
+
+# (C13) fail-closed: sudo -D with an unresolvable (unexpanded variable)
+# directory argument -> deny. This fence does not run a shell, so it cannot
+# know what \$UNKNOWN_DIR expands to.
+run_fence deny no "$HIMMEL" "sudo -D \$UNKNOWN_DIR (unresolvable arg) -> deny (fail-closed)" \
+    "sudo -D \$UNKNOWN_DIR graphify update notes/patient.md --backend glm"
+
+# (C14) env -C into a non-PHI corpus still allows (no over-deny regression)
+run_fence allow no "$HIMMEL" "env -C DIR himmel-code -> allow (non-PHI)" \
+    "env -C $HIMMEL graphify update scripts/thing.sh"
+
+# (C15) sudo -D into a non-PHI corpus still allows (no over-deny regression)
+run_fence allow no "$HIMMEL" "sudo -D DIR himmel-code -> allow (non-PHI)" \
+    "sudo -D $HIMMEL graphify update scripts/thing.sh"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
