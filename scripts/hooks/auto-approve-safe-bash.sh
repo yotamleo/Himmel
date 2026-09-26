@@ -63,7 +63,11 @@
 #   binary (argv[0]) is still a literal so we know what runs. If the binary
 #   ITSELF is a variable (`$cmd …`) it is not in the safe set → falls
 #   through. That is the simple_expansion case we deliberately approve:
-#   the risk is the binary, not the loop variable.
+#   the risk is the binary, not the loop variable. EXCEPTION (HIMMEL-3660):
+#   for the six write-guarded verbs (find, sort, xxd, tree, base64, file),
+#   an unquoted brace/parameter expansion OR an unquoted glob (`*`, `?`,
+#   `[`) anywhere in the segment falls through instead — any of those could
+#   hide the write/delete/exec flag the guard is checking argv words for.
 #
 # Known residual (accepted; gate targets accidental hangs, not a determined
 # attacker — the deny-list + block-* hooks are the security backstop):
@@ -313,7 +317,7 @@ tokenize_seg_words() {
 # shellcheck disable=SC2016 # every variable spelling below is inspected literally; nothing is expanded
 shell_word_value() {
     local s="$1" n i c nx st=0 bd=0 bf=0
-    n=${#s}; i=0; SW_VALUE=""; SW_EXPANDS_HOME=0; SW_EXPANDS_TILDE=0
+    n=${#s}; i=0; SW_VALUE=""; SW_EXPANDS_HOME=0; SW_EXPANDS_TILDE=0; SW_HAS_UNQUOTED_GLOB=0
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
         if [ "$st" = 1 ]; then
@@ -361,6 +365,13 @@ shell_word_value() {
                     fi ;;
                 ',') [ "$bd" -gt 0 ] && bf=1 ;;
                 '.') [ "$bd" -gt 0 ] && [ "${s:$((i + 1)):1}" = '.' ] && bf=1 ;;
+                # HIMMEL-3660: an unquoted glob metacharacter can expand this
+                # word into several argv words, one of which may be a
+                # `-`-leading name that reads as a flag (`sort -* f` with a
+                # file named `-oPWNED` writes it). Record it; callers that
+                # guard a write/delete/exec flag check this before trusting
+                # SW_VALUE's literal cooked text.
+                '*'|'?'|'[') SW_HAS_UNQUOTED_GLOB=1 ;;
             esac
         fi
         if [ "$c" = '~' ] && [ "$st" = 0 ] && [ "$i" -eq 0 ]; then
@@ -557,15 +568,26 @@ segment_is_rootwalk_find() {
     # bounded `-exec ... \; -maxdepth N` must not be denied). `-delete` takes
     # NO payload — it is a plain flag, so it is deliberately NOT in this set;
     # a `-maxdepth` after it is real.
+    # HIMMEL-3660: a word `shell_word_value` cannot cook (an unquoted `$VAR`,
+    # `{a,b}`, …) is treated as OPAQUE here, never as a reason to abort the
+    # whole scan — an uncookable word can't literally BE `-maxdepth`, `-exec`
+    # or a terminator (all fixed ASCII), so skipping it costs nothing, and
+    # bailing out used to report "not a rootwalk" even when a literal root
+    # path elsewhere in the same segment made it one (the HIMMEL-2121 DENY
+    # this segment exists to enforce).
     j=$((RB_IDX + 1))
     while [ "$j" -lt "$total" ]; do
-        shell_word_value "${a[$j]}" || return 1
+        if ! shell_word_value "${a[$j]}"; then
+            j=$((j + 1)); continue
+        fi
         tok="$SW_VALUE"
         case "$tok" in
             -exec|-execdir|-ok|-okdir)
                 j=$((j + 1))
                 while [ "$j" -lt "$total" ]; do
-                    shell_word_value "${a[$j]}" || return 1
+                    if ! shell_word_value "${a[$j]}"; then
+                        j=$((j + 1)); continue
+                    fi
                     case "$SW_VALUE" in
                         ';'|'\;'|'+') j=$((j + 1)); break ;;
                         *) j=$((j + 1)) ;;
@@ -574,12 +596,13 @@ segment_is_rootwalk_find() {
                 continue ;;
         esac
         if [ "$tok" = "-maxdepth" ]; then
-            shell_word_value "${a[$((j + 1))]:-}" || return 1
-            val="$SW_VALUE"
-            case "$val" in
-                ''|*[!0-9]*) : ;;              # empty or not all-digits → not it
-                *) has_maxdepth=1 ;;
-            esac
+            if shell_word_value "${a[$((j + 1))]:-}"; then
+                val="$SW_VALUE"
+                case "$val" in
+                    ''|*[!0-9]*) : ;;              # empty or not all-digits → not it
+                    *) has_maxdepth=1 ;;
+                esac
+            fi   # uncookable value ($N, {1,2}, …) → not a valid -maxdepth either
         fi
         j=$((j + 1))
     done
@@ -596,7 +619,12 @@ segment_is_rootwalk_find() {
     # `.` → never a rootwalk.
     j=$((RB_IDX + 1))
     while [ "$j" -lt "$total" ]; do
-        shell_word_value "${a[$j]}" || return 1
+        # HIMMEL-3660: an uncookable word can't literally be `-H`/`-D`/`-O*`/`--`
+        # (all fixed ASCII) — stop skipping leading options and let the path-
+        # operand loop below scan it, rather than bailing "not a rootwalk".
+        if ! shell_word_value "${a[$j]}"; then
+            break
+        fi
         tok="$SW_VALUE"
         case "$tok" in
             -H|-L|-P) j=$((j + 1)); continue ;;
@@ -607,7 +635,12 @@ segment_is_rootwalk_find() {
         esac
     done
     for tok in "${a[@]:$j}"; do
-        shell_word_value "$tok" || return 1
+        # HIMMEL-3660: an opaque operand is skipped, not treated as ending
+        # path-operand collection — a literal root anchor later in the same
+        # segment must still be found.
+        if ! shell_word_value "$tok"; then
+            continue
+        fi
         cooked="$SW_VALUE"
         case "$cooked" in
             -*|'('|'!') break ;;
@@ -634,6 +667,7 @@ segment_is_safe() {
             find)                          # find can execute / delete — guard it
                 for k in "${a[@]}"; do
                     shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -delete/-exec
                     case "$SW_VALUE" in
                         -exec|-execdir|-ok|-okdir|-delete|-fprint|-fprintf|-fprint0|-fls)
                             return 1 ;;
@@ -648,6 +682,7 @@ segment_is_safe() {
                                            # never a wider per-shape parse.
                 for k in "${a[@]}"; do
                     shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -o/--output
                     case "$SW_VALUE" in
                         -[!-]*)
                             case "${SW_VALUE#-}" in *o*) return 1 ;; esac ;;
@@ -660,6 +695,7 @@ segment_is_safe() {
                 local xops=0               # a 2nd positional = output file → write
                 for k in "${a[@]:$((i + 1))}"; do
                     shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -r/-revert or a 2nd positional
                     case "$SW_VALUE" in
                         -r|-revert) return 1 ;;          # reverse = write binary
                         [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) ;;  # redirect token, not a positional
@@ -671,6 +707,7 @@ segment_is_safe() {
             tree)                          # `tree -o FILE` / `--output FILE` writes
                 for k in "${a[@]}"; do
                     shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -o/--output
                     case "$SW_VALUE" in
                         -o|-o*) return 1 ;;
                         --*) guard_is_long_abbrev "output" "$SW_VALUE" && return 1 ;;
@@ -679,6 +716,7 @@ segment_is_safe() {
             base64)                        # BSD `base64 -o FILE` writes a file
                 for k in "${a[@]}"; do
                     shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -o/--output
                     case "$SW_VALUE" in
                         -o|-o*) return 1 ;;
                         --*) guard_is_long_abbrev "output" "$SW_VALUE" && return 1 ;;
@@ -687,6 +725,7 @@ segment_is_safe() {
             file)                          # `file -C [-m mf]` compiles/writes <mf>.mgc
                 for k in "${a[@]}"; do
                     shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -C
                     case "$SW_VALUE" in
                         -C) return 1 ;;
                         --*) guard_is_long_abbrev "compile" "$SW_VALUE" && return 1 ;;
