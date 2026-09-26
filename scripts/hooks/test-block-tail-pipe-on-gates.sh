@@ -564,6 +564,20 @@ deny "env > /dev/null -u X <gate> | tail (bare operator + target, control)" \
 deny "env -S 2>/dev/null x <gate> | tail (redirect on the -S value path, control)" \
      "env -S 2>/dev/null x bash scripts/check-ci.sh | tail"
 
+# --- HIMMEL-3677 round 2 (critic panel r1, codex-1/codex-2): the redirect
+# check above matched on the QUOTE-STRIPPED word, so a quoted option value
+# that merely CONTAINS `>`/`<` (real bash never treats a quoted one as an
+# operator) was misread as a redirect and dropped, leaving a stale pending
+# skip_next to swallow the NEXT real word instead — the launcher itself, or
+# another option's real operand — rather than the value it was sent to
+# consume. Both PoCs below are real, valid-bash, gate-hiding shapes; empirically
+# confirmed against real bash (the gate really runs) and against the pre-fix
+# hook (rc=0, ALLOW) before this fix.
+deny "env > 'foo>bar' -u X <gate> | tail (quoted redirect TARGET containing >, codex-1)" \
+     "env > 'foo>bar' -u X bash scripts/check-ci.sh | tail"
+deny "env -C '/tmp/a>b' bash -o /tmp/foo <gate> | tail (quoted -C value containing >, codex-2)" \
+     "env -C '/tmp/a>b' bash -o /tmp/foo scripts/check-ci.sh | tail"
+
 # --- BYPASS: the documented same-line marker --------------------------------
 allow "same-line tail-pipe-ok marker" \
       'bash scripts/cr/clear-cr-marker.sh x | tail -20  # tail-pipe-ok: rc irrelevant, output only'

@@ -398,7 +398,7 @@ normalise() {
 # leading `VAR=value` assignment, a grouping/negation prefix, nor a known
 # launcher or compound-command keyword. Empty when there is none.
 invoked_program() {
-    local tok stripped base skip_next=0 pending='' dq sq launcher='' pos_skip=0
+    local tok stripped base skip_next=0 pending='' dq sq launcher='' pos_skip=0 redirect_char
     for tok in $1; do
         if [ -n "$pending" ]; then pending="$pending $tok"; else pending=$tok; fi
         # A quoted span containing spaces arrives as SEVERAL whitespace-split
@@ -409,13 +409,26 @@ invoked_program() {
         # apostrophe inside double quotes (`FOO="it's fine"`) is data, and
         # counting it left the word permanently "open", swallowing the rest of
         # the stage and hiding the gate (panel r12, codex-1).
-        dq=''; sq=0
+        #
+        # A `<`/`>` is only a REAL redirect when it appears OUTSIDE quotes —
+        # real bash never treats a quoted one as an operator, so the same walk
+        # tracks `redirect_char` alongside quote balance (panel r1, codex-1/2
+        # on HIMMEL-3677): checking the quote-STRIPPED word instead let a
+        # quoted option value that merely contains `>` (`env -C '/tmp/a>b'
+        # bash <gate>`) be misread as a redirect and dropped, leaving a stale
+        # pending `skip_next` to swallow the NEXT real word instead (the
+        # launcher itself, or another option's real operand) rather than the
+        # value it was actually sent to consume.
+        dq=''; sq=0; redirect_char=0
         while [ "$sq" -lt "${#pending}" ]; do
             case ${pending:$sq:1} in
                 "'" | '"')
                     if [ -z "$dq" ]; then dq=${pending:$sq:1}
                     elif [ "$dq" = "${pending:$sq:1}" ]; then dq=''
                     fi
+                    ;;
+                '>' | '<')
+                    [ -z "$dq" ] && redirect_char=1
                     ;;
             esac
             sq=$((sq + 1))
@@ -434,12 +447,10 @@ invoked_program() {
         # pending until the next word that is NOT itself a redirection.
         # A LEADING redirection is not the command (panel r4, codex-1). A bare
         # operator token (`2>`) also swallows the target word that follows it.
-        case $stripped in
-            *'>'* | *'<'*)
-                case $stripped in *'>' | *'<') skip_next=1 ;; esac
-                continue
-                ;;
-        esac
+        if [ "$redirect_char" = 1 ]; then
+            case $stripped in *'>' | *'<') skip_next=1 ;; esac
+            continue
+        fi
         if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
         # `(`/`{`/`!` glue onto the command they introduce (panel r3, codex-1),
         # and a compact subshell closes onto the LAST word — `(gate|tail)` leaves
