@@ -40,10 +40,10 @@ fail() { printf 'FAIL %s\n' "$1"; FAILED=$((FAILED + 1)); }
 TMP="$(mktemp -d)"
 
 # Per-case watcher (W*) and parent (P*) pids; all reaped by the trap.
-W1="" P1="" W2="" P2="" W3="" P3="" P5="" W6="" P6="" P7="" GC7=""
+W1="" P1="" W2="" P2="" W3="" P3="" P5="" W6="" P6="" P7="" GC7="" P8="" GC8=""
 cleanup() {
     local _p
-    for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7"; do
+    for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
         [ -n "$_p" ] && kill "$_p" 2>/dev/null
     done
     wait 2>/dev/null
