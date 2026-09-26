@@ -1713,6 +1713,25 @@ check_both_reason "70d cp -f wt/z.txt primary/link-to-wt.txt denies (bundled sho
 check_both "70e NEGATIVE CONTROL: cp -P wt/z.txt primary/link-to-wt.txt (no-dereference) still ALLOWS" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -P $FIX/wt/z.txt $FIX/primary/link-to-wt.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+# 70f/70g (J1285R Critical, regression against THIS PR's own 2679 change):
+# `-f`/`--force` does NOT unlink first like `--remove-destination` — GNU cp
+# opens the destination and FOLLOWS a symlink referent, falling back to
+# unlink-and-recreate only when that open fails on permissions (ground-truthed
+# against real GNU coreutils 9.11). Folding `-f` into the SAME entry-only
+# check as `--remove-destination` (rows 70c/70d) swapped FOLLOW for ENTRY
+# instead of checking both, so a WORKTREE-side symlink whose referent is in
+# the PRIMARY (the opposite direction from 70c/70d's primary-side symlink)
+# stopped being checked at all: `$FIX/wt/link-to-primary.txt` ->
+# `$FIX/primary/existing.txt` (fixture set up above) is exactly this shape.
+# These DENY against main's hook (real primary write via the FOLLOWED
+# referent) and must keep denying here — regression rows, not new coverage.
+check_both_reason "70f cp -f wt/z.txt wt/link-to-primary.txt denies (force follows the referent into the primary)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -f $FIX/wt/z.txt $FIX/wt/link-to-primary.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/wt/link-to-primary.txt"
+check_both_reason "70g cp -f -t wt/childdir wt/z.txt denies (force follows the -t child's referent into the primary)" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp -f -t $FIX/wt/childdir $FIX/wt/z.txt\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/wt/childdir"
+
 # 71 (HIMMEL-2645): a heredoc OPENER that itself ends in a line continuation
 # (`cat <<EOF \` then a newline) is not yet a complete command line — bash
 # joins the next physical line onto it before the command ends, so a real
@@ -1766,6 +1785,16 @@ UT_CMD=$(printf 'cat <<EO\\\nF\nbody\nEOF\necho hi > %s/pwned.txt' "$FIX/primary
 UT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UT_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both_reason "72a heredoc delimiter split by continuation (terminator never matches) denies closed" \
     "$UT_JSON" "terminator was never found"
+
+# 72b/72c (J1285R Minor): an unquoted arithmetic left-shift by a NAME
+# (`$((1 << n))`, `(( x = y << z ))`) was misread as a heredoc opener `<<`
+# followed by delimiter word `n`/`z` — no line ever equals that "delimiter",
+# so it failed closed as unresolved-heredoc, a new false DENY vs main. Fixed
+# by excluding `<<` that sits inside an unclosed `((`/`$((` on the same line.
+check_both "72b echo \$((1 << n)) ALLOWS (arithmetic shift by a name is not a heredoc opener)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo \$((1 << n))\",\"cwd\":\"$FIX/wt\"}}"
+check_both "72c (( x = y << z )) ALLOWS (same shift-by-name shape, arithmetic COMMAND form)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"(( x = y << z ))\",\"cwd\":\"$FIX/wt\"}}"
 
 # HIMMEL-3622 (command-substitution body scanning) was pulled from this PR by
 # judge ruling J1285O: the extractor it added both left a real fail-open
