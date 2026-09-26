@@ -19,10 +19,13 @@ SHIP_TAIL_FILES=(
     "scripts/check-ci.sh"
 )
 
-# Same detection pattern as scripts/hooks/check-no-headless-claude.sh
-# (word-bounded `claude -p`/`--print`/`--bg`), kept independent here rather
-# than sourced so this test's failure mode doesn't depend on that gate's file.
-PATTERN='(^|[^A-Za-z0-9_-])claude[[:space:]]+(-p|--print|--bg)($|[^A-Za-z0-9_-])'
+# Word-bounded `claude ... -p`/`--print`/`--bg` detection, in the spirit of
+# scripts/hooks/check-no-headless-claude.sh but kept independent here so this
+# test's failure mode doesn't depend on that gate's file. Broadened past that
+# gate's immediately-after-`claude` match so a flag appearing after other
+# flags on the same invocation (`claude --output-format json -p`) still trips
+# it.
+PATTERN='(^|[^A-Za-z0-9_-])claude([^A-Za-z0-9_-].*)?[^A-Za-z0-9_-](-p|--print|--bg)($|[^A-Za-z0-9_-])'
 
 pass=0
 fail=0
