@@ -796,7 +796,7 @@ _scan_redirects() {
 # that was already covered by the pre-lowering.
 _clause_head_idx() {
     local -a tok=("$@")
-    local n=${#tok[@]} i=0 s w
+    local n=${#tok[@]} i=0 s w sw
     while [ "$i" -lt "$n" ]; do
         s="$(_lc "$(_strip_wrap "${tok[$i]}")")"
         case "$s" in
@@ -816,13 +816,24 @@ _clause_head_idx() {
                 # crafted to name a proven-read-only verb (e.g. `cat`), the
                 # real wrapped write command was never scanned at all.
                 while [ "$i" -lt "$n" ]; do
-                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
-                    case "$w" in
-                        -u|-c)                    i=$((i+2)) ;;
+                    sw="$(_strip_wrap "${tok[$i]}")"
+                    w="$(_lc "$sw")"
+                    # HIMMEL-3658: short-option letters match the RAW
+                    # (case-preserved) `$sw`, never the lowered `$w` - GNU
+                    # env's short options are case-sensitive and none of its
+                    # value-taking letters (-a/--argv0, -u/--unset,
+                    # -C/--chdir, -S/--split-string) has a distinct lowercase
+                    # short option of its own, so matching against `$w`
+                    # missed `-a`/`-S` outright and only reached `-C` by
+                    # accident via the folded literal `-c`. `$w` stays lowered
+                    # for the long-option-abbreviation arm below, where env's
+                    # own long names are already lowercase.
+                    case "$sw" in
+                        -a|-u|-C|-S)              i=$((i+2)) ;;
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
                         --*)
                             if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
-                                || guard_is_long_abbrev "argv0" "$w"; then
+                                || guard_is_long_abbrev "argv0" "$w" || guard_is_long_abbrev "split-string" "$w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
@@ -866,9 +877,33 @@ _clause_head_idx() {
                 # SELinux-only and not compiled into this build, so those two
                 # are taken from upstream sudo.ws docs, unverified locally).
                 while [ "$i" -lt "$n" ]; do
-                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
-                    case "$w" in
-                        -u|-g|-U|-p|-C|-r|-t|-h|-d) i=$((i+2)) ;;
+                    sw="$(_strip_wrap "${tok[$i]}")"
+                    w="$(_lc "$sw")"
+                    # HIMMEL-3659: short-option letters match the RAW
+                    # (case-preserved) `$sw`, never the lowered `$w` - sudo's
+                    # -H (--set-home) and -P (--preserve-groups) are no-arg
+                    # FLAGS, but lowering folded them onto the value-taking
+                    # -h/-p (host/prompt) and made this walk consume the next
+                    # token - the real wrapped command - as a bogus option
+                    # value (`sudo -H tee <protected>` resolved head past the
+                    # end of the clause and ALLOWed). `-C`/`-D` (close-from/
+                    # chdir, real, uppercase-only) and `-U` (other-user, real,
+                    # uppercase-only) are likewise distinct letters with no
+                    # lowercase counterpart of their own; matching them
+                    # case-sensitively also fixes `-C` (previously dead: the
+                    # lowered token never matched the old literal uppercase
+                    # `-C` pattern, and no `-c` entry existed either) and
+                    # keeps `-D` live (previously reached only via the folded
+                    # literal `-d`, which is not a real sudo option). `-h`
+                    # alone stays value-taking and unchanged: sudo overloads
+                    # it for `--help` XOR `--host` depending on invocation
+                    # shape, ambiguous, so this keeps main's existing
+                    # (fail-closed) treatment rather than picking a side. `$w`
+                    # stays lowered for the long-option-abbreviation arm
+                    # below, where sudo's own long names are already
+                    # lowercase.
+                    case "$sw" in
+                        -u|-g|-U|-p|-C|-r|-t|-h|-D) i=$((i+2)) ;;
                         --)                       i=$((i+1)); break ;;
                         --*)
                             if guard_is_long_abbrev "user" "$w" || guard_is_long_abbrev "group" "$w" \

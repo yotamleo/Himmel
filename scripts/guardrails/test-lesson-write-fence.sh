@@ -767,6 +767,45 @@ run_hook deny "21: sudo --chdir cat cp x scripts/hooks/a.sh (sudo --chdir swallo
 run_hook deny "21: sudo -D cat cp x scripts/hooks/a.sh (sudo -D swallowed as read-only verb)" \
     "$(bash_json "sudo -D cat cp x scripts/hooks/a.sh" "$REPO")" 1
 
+echo "== 22: HIMMEL-3658/HIMMEL-3659 - env -a and case-folded env/sudo short options =="
+# _clause_head_idx's env/sudo arms lowered every option token before
+# matching it against the value-taking short-flag set. Two distinct bugs
+# fell out of that fold: (a) env's `-a`/`--argv0` and `-S`/`--split-string`
+# (both real, value-taking, no case ambiguity of their own) were simply
+# never in the set at all, so the walk under-consumed by one token, same
+# swallowed-value-names-a-read-only-verb shape as HIMMEL-2610/HIMMEL-3632
+# above; (b) sudo's `-H`/`--set-home` and `-P`/`--preserve-groups` (real,
+# no-arg FLAGS) got lowered onto the value-taking `-h`/`-p` (host/prompt)
+# and consumed the real wrapped command as a bogus option VALUE, pushing
+# the resolved head past the whole clause - `_operand_targets` then has
+# nothing left to scan and the write is never seen at all. sudo's `-C`/
+# `--close-from` (real, value-taking, no lowercase counterpart) was ALSO
+# dead before this fix: the old pattern's literal `-C` could never match a
+# lowered token, and no `-c` entry existed either.
+run_hook deny "22: env -a cat cp x scripts/hooks/a.sh (env -a swallowed as read-only verb)" \
+    "$(bash_json "env -a cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "22: env -S cat cp x scripts/hooks/a.sh (env -S swallowed as read-only verb)" \
+    "$(bash_json "env -S cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "22: sudo -H tee scripts/hooks/a.sh (sudo -H folded onto -h, swallowed the real command)" \
+    "$(bash_json "sudo -H tee scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "22: sudo -P tee scripts/hooks/a.sh (sudo -P folded onto -p, swallowed the real command)" \
+    "$(bash_json "sudo -P tee scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "22: sudo -C cat cp x scripts/hooks/a.sh (sudo -C close-from was dead, swallowed as read-only verb)" \
+    "$(bash_json "sudo -C cat cp x scripts/hooks/a.sh" "$REPO")" 1
+
+# controls: letters this fix must NOT touch stay exactly as main has them.
+# `sudo -h` is genuinely ambiguous (--help XOR --host depending on
+# invocation shape) and main already treats it as value-taking - unchanged
+# here, still denies via the same swallowed-value shape (verb resolves past
+# it to `cp`, not on the allow-list). `env -i` is a real no-arg flag with no
+# uppercase/lowercase counterpart of its own - never in the value-taking set
+# before or after - so `printenv` (not read-only) still resolves as the head
+# with no further operand to scan, and ALLOWs both before and after.
+run_hook deny "22: sudo -h cat cp x scripts/hooks/a.sh (control: -h stays value-taking, unchanged)" \
+    "$(bash_json "sudo -h cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook allow "22: env -i printenv (control: -i stays a flag, unchanged)" \
+    "$(bash_json "env -i printenv" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then
