@@ -363,7 +363,7 @@ touch_old "$WT_K"
 # inject a write into the husk at that instant (same PATH-shadowing pattern
 # as RUN H's `find` wrapper), then hand off to the real du unchanged.
 REAL_DU_K=$(command -v du)
-FAKE_BIN_K=$(mktemp -d)
+FAKE_BIN_K=$(mktemp -d "${TMPDIR:-/tmp}/himmel-fake-du.XXXXXX")
 cat > "$FAKE_BIN_K/du" <<EOF
 #!/usr/bin/env bash
 for a in "\$@"; do

@@ -1445,13 +1445,16 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             if [ ! -f "$quar_sidecar" ]; then
                 continue   # no timestamp — fail closed, keep it
             fi
-            if find "$quar_sidecar" -mmin -1440 -print 2>/dev/null | grep -q .; then
+            # Captured via $( ) rather than piped into `grep -q` (which can
+            # SIGPIPE `find` under `set -o pipefail` and flip the verdict on
+            # a busy directory) — see HIMMEL-1430.
+            if [ -n "$(find "$quar_sidecar" -mmin -1440 -print 2>/dev/null)" ]; then
                 continue   # quarantined too recently
             fi
-            if find "$quar_dir" -newer "$quar_sidecar" -print 2>/dev/null | grep -q .; then
+            if [ -n "$(find "$quar_dir" -newer "$quar_sidecar" -print 2>/dev/null)" ]; then
                 continue   # something wrote here since quarantining
             fi
-            if quar_git_marker=$(find "$quar_dir" -maxdepth 1 -name .git 2>/dev/null); then
+            if quar_git_marker=$(find "$quar_dir" -maxdepth 1 -name .git 2>/dev/null); then  # gnu-ok: -maxdepth is also POSIX-supported by BSD find
                 if [ -n "$quar_git_marker" ]; then
                     quar_verdict=$(classify_worktree "$quar_dir") || quar_verdict="scanfail"
                     case "$quar_verdict" in
