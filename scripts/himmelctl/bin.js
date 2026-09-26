@@ -2372,6 +2372,11 @@ function deriveCommand(answers) {
   argv.push('--profile', profile, '--scope', answers.scope || 'project');
   if (profile === 'all' && answers.vault && answers.vault.path) {
     argv.push('--luna-target', toBashPath(expandHome(answers.vault.path)));
+    // HIMMEL-2466: adopt.sh's do_luna() only runs here (a vault is actually
+    // being scaffolded) — thread handover.mode through so its own
+    // wire_handover_dir_luna gate agrees with the JS-side no-op T4.5
+    // (applyHandoverStep) already applies for handover.mode=inline.
+    argv.push('--handover-mode', (answers.handover && answers.handover.mode) || 'inline');
   }
   return { argv };
 }

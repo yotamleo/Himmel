@@ -47,6 +47,14 @@
 #                       without gets himmel's native gates directly, since the
 #                       framework's hooks would skip without a config
 #                       (HIMMEL-3306).
+#   --handover-mode <inline|external>
+#                       Gate for wire_handover_dir_luna's env.HANDOVER_DIR
+#                       write (HIMMEL-2466). external (the default, today's
+#                       behaviour) wires it when a vault is scaffolded; inline
+#                       leaves settings.json untouched — handover state stays
+#                       the repo-local handovers/ stub. The wizard passes this
+#                       through from answers.handover.mode; a direct CLI/manual
+#                       adopt.sh run defaults to external unchanged.
 #
 # Idempotent: re-running adds nothing already present.
 set -euo pipefail
@@ -108,6 +116,7 @@ DRY_RUN=0
 FILL_ENV=0
 WITH_GRAPHIFY=0
 SKIP_HOOKS=0
+HANDOVER_MODE="external"
 
 # ── Parse args ───────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -120,6 +129,7 @@ while [[ $# -gt 0 ]]; do
     --fill-env)       FILL_ENV=1; shift ;;
     --with-graphify)  WITH_GRAPHIFY=1; shift ;;
     --skip-hooks)     SKIP_HOOKS=1; shift ;;
+    --handover-mode)  HANDOVER_MODE="$2"; shift 2 ;;
     -h|--help)        sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
     *) echo "ERROR: unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -127,6 +137,7 @@ done
 
 case "$PROFILE" in core|luna|all) ;; *) echo "ERROR: invalid --profile: $PROFILE (expected core|luna|all)" >&2; exit 2 ;; esac
 case "$SCOPE"   in project|user)  ;; *) echo "ERROR: invalid --scope: $SCOPE (expected project|user)" >&2; exit 2 ;; esac
+case "$HANDOVER_MODE" in inline|external) ;; *) echo "ERROR: invalid --handover-mode: $HANDOVER_MODE (expected inline|external)" >&2; exit 2 ;; esac
 [ -n "$LUNA_TARGET" ] || LUNA_TARGET="$HOME/Documents/luna"
 
 run() { if [[ $DRY_RUN -eq 1 ]]; then echo "DRY: $*"; else "$@"; fi; }
@@ -355,6 +366,14 @@ wire_luna_vault_path() {
 # the scaffolded vault dir.
 wire_handover_dir_luna() {
   local dest="$1" hdir settings envfile existing
+  # HIMMEL-2466: handover.mode=inline is a no-op here — handover state stays
+  # the repo-local handovers/ stub, same as the T4.5 JS-side gate
+  # (applyHandoverStep) already treats it. Only external (the default,
+  # preserved for a direct adopt.sh invocation) seeds env.HANDOVER_DIR.
+  if [[ "$HANDOVER_MODE" == "inline" ]]; then
+    echo "  handover.mode=inline — leaving env.HANDOVER_DIR unset (HIMMEL-2466)"
+    return
+  fi
   hdir="$dest/handovers"
   if [[ "$SCOPE" == "project" ]]; then
     settings="$TARGET/.claude/settings.json"
