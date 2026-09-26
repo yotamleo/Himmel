@@ -351,12 +351,19 @@ deny "sudo -n (bare flag) before the gate" \
 # `-S` takes an operand for env and none for sudo — the divergence one flat
 # table could not express.
 #
-# HIMMEL-3632 known limitation: GNU env's `-S`/`--split-string` operand is not
-# a value to skip past like `-a`'s below — env splits it into a NEW argv and
-# runs THAT, so the real invoked program is the operand's own first word
-# (`x`), not `bash scripts/check-ci.sh` one token further along. Fixing that
-# would make this row `allow`, but a false DENY is the fail-closed direction —
-# left as `deny` on purpose pending its own judged change.
+# HIMMEL-3661 (corrects HIMMEL-3632's comment here, which was WRONG): GNU
+# env's `-S`/`--split-string` operand is not a value to skip past like `-a`'s
+# below — env SPLITS it into a brand-new argv and RUNS that, so whatever it
+# contains is an unparsed, unknown program that may itself be a gate. The
+# retired comment called the old skip_next handling "a false DENY, never a
+# bypass" — false: on a QUOTED multi-word operand (`env -S 'bash
+# scripts/check-ci.sh' | tail`, HIMMEL-3661 block below) the whole gate call
+# was swallowed as -S's "value" with nothing left to scan — an outright
+# ALLOW/bypass. This one-word row still denies below only because the real
+# gate call sits as trailing words AFTER the swallowed operand and gets
+# walked normally — an accident of this particular shape, not evidence the
+# class was safe. The fix denies EVERY `-S`/`--split-string` spelling
+# unconditionally instead of trying to parse the split string.
 deny "env -S before the gate" \
      'env -S x bash scripts/check-ci.sh | tail -20'
 # Panel r2 codex-1: `env -a <argv0>` takes an operand too, so the gate sat one
@@ -455,13 +462,33 @@ deny "xargs --process-slot-var (full spelling, split operand) before the gate" \
 deny "xargs --process-s (abbrev of --process-slot-var, split operand) before the gate" \
      'xargs --process-s V bash scripts/check-ci.sh | tail'
 
-# --- HIMMEL-3632: same env -S/--split-string known limitation as above (see
-# "env -S before the gate"), in its full and abbreviated long-option
-# spellings — still `deny`, the fail-closed direction, on purpose. ---
+# --- HIMMEL-3661: same env -S/--split-string shape as above, in its full and
+# abbreviated long-option spellings — `deny` unconditionally now, not as a
+# leftover "known limitation". ---
 deny "env --split-string (full spelling, same shape as env -S above)" \
      'env --split-string x bash scripts/check-ci.sh | tail'
 deny "env --split (abbrev of --split-string, same shape)" \
      'env --split x bash scripts/check-ci.sh | tail'
+
+# --- HIMMEL-3661: the actual bypass — a QUOTED (or otherwise attached)
+# multi-word split-string operand swallows the ENTIRE gate call with nothing
+# left to scan, which the rows above (a bare unquoted one-word operand
+# followed by the real gate call as trailing words) do not exercise. Every
+# spelling — bare, `=`-attached, abbreviated, attached-short-opt — must deny
+# unconditionally, without parsing the split string. ---
+deny "env -S 'gate' | tail (quoted multi-word split-string, the real bypass)" \
+     "env -S 'bash scripts/check-ci.sh' | tail"
+deny "env --split-string=<gate> | tail -5 (attached long form)" \
+     "env --split-string='bash scripts/check-ci.sh' | tail -5"
+deny "env --sp <gate> | tail (abbreviated long form, separate operand)" \
+     "env --sp 'bash scripts/check-ci.sh' | tail"
+deny 'env -S"<gate>" | tail (attached short form, no space)' \
+     'env -S"bash scripts/check-ci.sh" | tail'
+# Controls: env's ordinary VAR=val handling (no -S involved) is unaffected.
+deny "env FOO=1 before the gate (no -S, unaffected)" \
+     'env FOO=1 bash scripts/check-ci.sh | tail'
+allow "env FOO=1 before a non-gate (no -S, unaffected)" \
+      'env FOO=1 ls | tail'
 
 # --- BYPASS: the documented same-line marker --------------------------------
 allow "same-line tail-pipe-ok marker" \
