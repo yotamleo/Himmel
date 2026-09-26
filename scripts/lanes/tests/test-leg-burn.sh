@@ -70,7 +70,7 @@ has "cache-read weight override changes cost-eq" "$out_override" "cost-eq=4.8k"
 out_raw=$(bash "$BURN" --raw "$FIXTURE")
 eq "--raw: same line except the four counters are exact integers" "$out_raw" \
    "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3600 cache-create=250 input=4 cache-health=99.9% cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
-eq "default output is byte-identical to before --raw existed" "$out" \
+eq "default output matches --raw except the four k-rounded counters" "$out" \
    "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3.6k cache-create=250 input=4 cache-health=99.9% cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
 
 out_raw_env=$(LEG_BURN_RAW=1 bash "$BURN" "$FIXTURE")
