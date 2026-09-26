@@ -491,20 +491,35 @@ mkdir -p "$HUSK_N_CHURN/node_modules/pkg"
 printf 'x\n' > "$HUSK_N_CHURN/node_modules/pkg/index.js"
 touch_old "$HUSK_N_CHURN"
 
+HUSK_N_SYMLINK="$REPO_N/.claude/worktrees/feat+symlink-husk"
+mkdir -p "$HUSK_N_SYMLINK"
+SYMLINK_TARGET="$REPO_N/dummy-symlink-target"
+printf 'target\n' > "$SYMLINK_TARGET"
+ln -s "$SYMLINK_TARGET" "$HUSK_N_SYMLINK/link-to-target"
+touch_old "$HUSK_N_SYMLINK"
+# touch_old's `find -exec touch {} +` follows the symlink (touching its
+# TARGET's mtime, not its own) — age the symlink's own timestamp too, or the
+# freshness gate sees a "just created" entry and skips the husk as in-flight.
+touch -h -d '2 days ago' "$HUSK_N_SYMLINK/link-to-target" 2>/dev/null \
+    || touch -h -t 202001010000 "$HUSK_N_SYMLINK/link-to-target"
+
 out_n1=$(run_clean "$REPO_N") || fail "run_clean (quarantine pass) exited nonzero (repo-n)" "$out_n1"
 QDIR_N="$(cd "$REPO_N/.git" && pwd)/stray-quarantine"
 QN_NOTES=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+notes-husk.*' 2>/dev/null | head -1) || true
 QN_EMPTY=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+empty-husk.*' 2>/dev/null | head -1) || true
 QN_CHURN=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+churn-husk.*' 2>/dev/null | head -1) || true
-if [ -n "$QN_NOTES" ] && [ -n "$QN_EMPTY" ] && [ -n "$QN_CHURN" ]; then
-    pass "3688-b-setup: all three no-.git husks quarantined"
+QN_SYMLINK=$(find "$QDIR_N" -mindepth 1 -maxdepth 1 -type d -name 'feat+symlink-husk.*' 2>/dev/null | head -1) || true
+if [ -n "$QN_NOTES" ] && [ -n "$QN_EMPTY" ] && [ -n "$QN_CHURN" ] && [ -n "$QN_SYMLINK" ]; then
+    pass "3688-b-setup: all four no-.git husks quarantined"
 
     touch_old "$QN_NOTES"
     touch_old "$QN_EMPTY"
     touch_old "$QN_CHURN"
+    touch_old "$QN_SYMLINK"
     touch -d '2 days ago' "$QN_NOTES.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_NOTES.himmel-quarantined-at"
     touch -d '2 days ago' "$QN_EMPTY.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_EMPTY.himmel-quarantined-at"
     touch -d '2 days ago' "$QN_CHURN.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_CHURN.himmel-quarantined-at"
+    touch -d '2 days ago' "$QN_SYMLINK.himmel-quarantined-at" 2>/dev/null || touch -t 202001010000 "$QN_SYMLINK.himmel-quarantined-at"
 
     out_n2=$(run_clean "$REPO_N") || fail "run_clean (reap pass) exited nonzero (repo-n)" "$out_n2"
     if [ -d "$QN_NOTES" ]; then
@@ -522,11 +537,17 @@ if [ -n "$QN_NOTES" ] && [ -n "$QN_EMPTY" ] && [ -n "$QN_CHURN" ]; then
     else
         fail "3688-b: node_modules-only no-.git husk was NOT reaped" "$out_n2"
     fi
+    if [ -d "$QN_SYMLINK" ]; then
+        pass "3688-b: no-.git husk holding only a symlink was KEPT, not reaped"
+    else
+        fail "3688-b: no-.git husk holding a symlink was reaped (data loss — symlinks are invisible to -type f)" "$out_n2"
+    fi
 else
-    fail "3688-b-setup: expected all three no-.git husks in quarantine" "$out_n1"
+    fail "3688-b-setup: expected all four no-.git husks in quarantine" "$out_n1"
     fail "3688-b: skipped (setup did not quarantine notes husk)"
     fail "3688-b: skipped (setup did not quarantine empty husk)"
     fail "3688-b: skipped (setup did not quarantine churn husk)"
+    fail "3688-b: skipped (setup did not quarantine symlink husk)"
 fi
 
 echo

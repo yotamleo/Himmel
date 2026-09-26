@@ -521,18 +521,24 @@ EOF
 #   disposable         empty, or every file is on the allowlist
 #   user-data <paths>  at least one file is NOT on the allowlist
 nongit_husk_reap_verdict() {
-    local dir="$1" out rel nonign=""
-    if ! out=$(find "$dir" -mindepth 1 -type f 2>/dev/null); then
+    local dir="$1" rel nonign="" tmpf
+    # NUL-delimited via a temp file, not `out=$(find ... -print0)`: bash
+    # command substitution silently drops NUL bytes, which would merge every
+    # entry into one unsplit blob — worse than the newline-splitting this
+    # ticket fixes elsewhere. A temp file also keeps `find`'s own exit status
+    # (lost across a `while ... done < <(find ...)` process substitution)
+    # so a scan failure still fails closed instead of reading as "empty".
+    tmpf=$(mktemp 2>/dev/null) || { echo "scanfail"; return 0; }
+    if ! find "$dir" -mindepth 1 -not -type d -print0 2>/dev/null >"$tmpf"; then
+        rm -f "$tmpf"
         echo "scanfail"; return 0
     fi
-    if [ -z "$out" ]; then echo "disposable"; return 0; fi
-    while IFS= read -r rel; do
+    while IFS= read -r -d '' rel; do
         [ -z "$rel" ] && continue
         rel="${rel#"$dir"/}"
         is_ignorable_ignored_stray "$rel" || nonign="${nonign:+$nonign }$rel"
-    done <<EOF
-$out
-EOF
+    done <"$tmpf"
+    rm -f "$tmpf"
     if [ -n "$nonign" ]; then echo "user-data $nonign"; return 0; fi
     echo "disposable"; return 0
 }
