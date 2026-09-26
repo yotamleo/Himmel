@@ -1291,6 +1291,50 @@ has_write_verb_or_target_flag() {
     return 1
 }
 
+# lex_resolve BASE OP — join OP onto BASE (OP itself, if already absolute)
+# and collapse `.`/`..` components as plain text, the way a shell would
+# resolve the path, with NO filesystem access (HIMMEL-3686 item 1): a
+# relative destination operand is judged by where it lexically lands, not
+# by whether it merely contains `..`, so `../other` (stays under
+# `worktrees/`) and `../..` (climbs out of it) resolve to different places.
+lex_resolve() {
+    local base="$1" op="$2" joined part n=0
+    local -a out
+    case "$op" in
+        /*|[A-Za-z]:/*|[A-Za-z]:\\*) joined="$op" ;;
+        *) joined="$base/$op" ;;
+    esac
+    local IFS=/
+    for part in $joined; do
+        case "$part" in
+            ''|'.') : ;;
+            '..')
+                if [ "$n" -gt 0 ]; then
+                    n=$((n - 1))
+                    unset "out[$n]"
+                fi
+                ;;
+            *) out[n]=$part; n=$((n + 1)) ;;
+        esac
+    done
+    local i=0 res=''
+    while [ "$i" -lt "$n" ]; do
+        res="$res/${out[$i]}"
+        i=$((i + 1))
+    done
+    [ -n "$res" ] && printf '%s\n' "$res" || printf '/\n'
+}
+
+# has_unquoted_brace_group TEXT — a single, non-nested `{…,…}` brace pair in
+# the (already quote/escape-stripped, HIMMEL-3468) command text (HIMMEL-3686
+# item 2): `.{,.}/.{,.}/settings.json` hides an arbitrary `../` climb from
+# every OTHER check in this file, none of which expand braces. Never
+# expanded here either — a match just denies outright, the same fail-closed
+# shape as an unresolvable canon().
+has_unquoted_brace_group() {
+    [[ "$1" =~ \{[^{}]*,[^{}]*\} ]]
+}
+
 # changes_directory CMD_LC CMD_N — a cd/pushd/popd word anywhere in the
 # command, with the same complement-of-a-word-character boundary as the verb
 # list, or a `-C <dir>` / `--chdir` word (`git -C`, `make -C`, `env -C`),
@@ -1322,6 +1366,16 @@ tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || tr
 
 cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
 [ -n "$cwd" ] || cwd="$PWD"
+
+# nested_wt_primary — set only when $cwd is itself inside a linked
+# worktree's own container path (<primary>/.claude/worktrees/<name>/…);
+# then it is that <primary> root, used below (HIMMEL-3686 item 1/2) to spot
+# a relative destination that climbs back OUT of worktrees/ into the
+# primary's own .claude — text-only, no filesystem access.
+nested_wt_primary=""
+case "$cwd" in
+    */.claude/worktrees/*) nested_wt_primary=${cwd%%/.claude/worktrees/*} ;;
+esac
 
 if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
@@ -1398,19 +1452,66 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             ;;
     esac
 
+    write_verb=0
+    has_write_verb_or_target_flag "$cmd_lc" "$cmd_n" && write_verb=1
+
     dir_dest=0
-    if mentions_dot_claude_dir_dest "$cmd_lc" && has_write_verb_or_target_flag "$cmd_lc" "$cmd_n"; then
+    if mentions_dot_claude_dir_dest "$cmd_lc" && [ "$write_verb" = 1 ]; then
         dir_dest=1
     fi
 
-    if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ]; then
+    # HIMMEL-3686 items 1 and 3, out-of-scope follow-ups from #1313/
+    # HIMMEL-3675 (J1313O): neither needs mentions_settings/dir_dest, so
+    # both are judged BEFORE the early exit below that they would otherwise
+    # never reach. One pass over the command's words, gated on a write verb
+    # being present at all.
+    dirdest_climb=0
+    symlink_dest=0
+    if [ "$write_verb" = 1 ]; then
+        for w in $cmd_n; do
+            [ -n "$w" ] || continue
+            if [ -n "$nested_wt_primary" ]; then
+                case "$w" in
+                    *..*)
+                        resolved=$(lex_resolve "$cwd" "$w")
+                        case "$resolved" in
+                            "$nested_wt_primary/.claude/worktrees"|"$nested_wt_primary/.claude/worktrees/"*) : ;;
+                            "$nested_wt_primary/.claude"|"$nested_wt_primary/.claude/"*) dirdest_climb=1 ;;
+                        esac
+                        ;;
+                esac
+            fi
+            case "$w" in
+                /*|[A-Za-z]:/*|[A-Za-z]:\\*) wabs="$w" ;;
+                *) wabs="$cwd/$w" ;;
+            esac
+            if [ -e "$wabs" ]; then
+                result=$(check_target "$w")
+                case "$result" in deny\ *) symlink_dest=1 ;; esac
+            fi
+        done
+    fi
+
+    # HIMMEL-3686 item 2: a brace group in the text is refused outright
+    # whenever it could hide a climb that matters — the text already names
+    # a live settings file or a primary .claude dir-dest, or $cwd is itself
+    # a nested worktree a hidden `../` could climb out of.
+    brace_dir_dest=0
+    if [ "$write_verb" = 1 ] && has_unquoted_brace_group "$cmd_n" \
+        && { [ "$mentions_settings" = "1" ] || [ "$dir_dest" = "1" ] || [ -n "$nested_wt_primary" ]; }; then
+        brace_dir_dest=1
+    fi
+
+    if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ] && [ "$dirdest_climb" = "0" ] \
+        && [ "$symlink_dest" = "0" ] && [ "$brace_dir_dest" = "0" ]; then
         exit 0
     fi
 
     resolve_repo_context
 
     live=0
-    if [ "$is_primary_cwd" = "1" ] || [ "$ansi_c" = "1" ]; then
+    if [ "$is_primary_cwd" = "1" ] || [ "$ansi_c" = "1" ] || [ "$dirdest_climb" = "1" ] \
+        || [ "$symlink_dest" = "1" ] || [ "$brace_dir_dest" = "1" ]; then
         live=1
     elif changes_directory "$cmd_lc" "$cmd_n"; then
         # The worktree-relative exemption is judged against the PreToolUse

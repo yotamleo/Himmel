@@ -1282,6 +1282,56 @@ assert_rc "203 cp -t glued traversal from a worktree under HOME denies" 2 \
 assert_rc "204 cp -t glued traversal from a worktree directly under primary denies" 2 \
     "$(bash_rc_of "$WTDIRECT" "cp -t../.claude settings.json")"
 
+# 205-211 (HIMMEL-3686, J1313O "Out of scope, noted" follow-ups): a relative
+# dir-dest climb, a brace-hidden traversal, and a write through a
+# pre-existing symlink all ALLOWed at base (#1313/HIMMEL-3675 left these
+# three untouched) and must DENY now.
+
+# 205: `cp -r x/. ../..` from the nested worktree climbs LEXICALLY all the
+# way back to the primary's own .claude/ itself — no literal ".claude" or
+# "settings" in the text at all, so rule 1/2 never fired at base.
+assert_rc "205 cp -r x/. ../.. from nested worktree denies (dir-dest climb)" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp -r x/. ../..")"
+
+# 206 (control): the SAME shape but landing on a SIBLING inside worktrees/
+# (../other, not ../..) must stay ALLOW — this is a worktree writing to
+# another worktree's own container, not a climb into the primary.
+assert_rc "206 cp -r x/. ../other stays inside worktrees/ allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp -r x/. ../other")"
+
+# 207 (control): an ordinary same-directory copy inside the worktree, no
+# ".." anywhere, must stay ALLOW.
+assert_rc "207 cp a b inside worktree allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp a b")"
+
+# 208: `tee .{,.}/.{,.}/settings.json` from the nested worktree hides
+# `../../settings.json` inside an unexpanded brace group — no literal ".."
+# in the text, so has_traversal_dots never fired at base.
+assert_rc "208 tee brace-hidden traversal from nested worktree denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "tee .{,.}/.{,.}/settings.json")"
+
+# 209 (control): a brace group with no .claude/settings mention, outside a
+# nested worktree, and mkdir isn't in the write-verb list either way —
+# must stay ALLOW, unchanged from base.
+assert_rc "209 mkdir -p src/{a,b} outside a worktree allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "mkdir -p src/{a,b}")"
+
+# 210: a pre-existing symlink at <primary>/.claude/worktrees/x/s resolving
+# to the primary's own live settings.json — the destination operand names
+# neither "settings.json" nor ".claude" as a container-relative mention
+# that survives the worktrees/ strip, so this was a text-only hook's blind
+# spot. Built in the scratch SANDBOX only.
+mkdir -p "$PRIMARY/.claude/worktrees/x"
+ln -s "$PRIMARY/.claude/settings.json" "$PRIMARY/.claude/worktrees/x/s"
+assert_rc "210 cp y through a pre-existing symlink to live settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "cp y \"$PRIMARY/.claude/worktrees/x/s\"")"
+
+# 211 (control): writing through an ordinary (non-symlink) worktree file
+# that merely happens to exist on disk must stay ALLOW.
+printf 'plain\n' > "$PRIMARY/.claude/worktrees/x/plain"
+assert_rc "211 cp y into an ordinary existing worktree file allows" 0 \
+    "$(bash_rc_of "$WT2" "cp y \"$PRIMARY/.claude/worktrees/x/plain\"")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

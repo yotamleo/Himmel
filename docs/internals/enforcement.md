@@ -1709,6 +1709,26 @@ moves the real target: from `<primary>/.claude/worktrees/<wt>`,
 read (`cat`/`head`/`tail`/`grep`/`rg`/`diff`/`wc`/`less`/`jq`/`git
 diff|show|log|status|blame`) that has no chaining, pipe or redirect.
 
+**Three narrower checks, judged before the text rules above and each
+independent of `mentions_settings`/`dir_dest` (HIMMEL-3686).** (1) When the
+PreToolUse cwd is itself inside a linked worktree's own container path
+(`<primary>/.claude/worktrees/<name>/…`), every write-destination word
+containing `..` is resolved LEXICALLY against that cwd (collapsing `.`/`..`
+as plain text, no filesystem access) — landing on the primary's `.claude`
+itself, or anywhere under it outside `worktrees/`, denies, even though the
+text names neither `.claude` nor `settings` (a bare `cp -r x/. ../..` from
+the worktree). (2) An unquoted `{…,…}` brace group in the text denies
+outright — braces are never expanded — when the text also names `.claude`
+or `settings`, or `dir_dest` already matched, or the cwd is a nested
+worktree; this catches a brace group hiding a `..` climb from every check
+above, none of which expand braces (`tee .{,.}/.{,.}/settings.json`). (3)
+Every write-destination word that names a path EXISTING on disk is resolved
+with `canon()` (the same `realpath -m`-or-Python `resolve()` this hook
+already uses, which follows symlinks); a destination that already exists as
+a symlink into a live settings file or the primary's `.claude/` outside
+worktrees/ denies even though the text is otherwise silent — this is the one
+place the hook reads the filesystem, and only for destination operands.
+
 **The Bash arm tokenizes (HIMMEL-3546, HIMMEL-3564).** A Bash command is split
 by a quote-aware, segment-wise tokenizer — canonical in
 `scripts/hooks/lib/shell-tokenize.sh`, inlined byte-for-byte into this hook and
@@ -1783,7 +1803,10 @@ does not name the file or its directory in a form above:
   literal text);
 - an ANSI-C word that escapes the `settings` or `claude` letters themselves
   (`$'\x73ettings.json'`);
-- symlinks;
+- a symlink the command itself creates and then writes through in the same
+  invocation (a pre-existing symlink destination is now resolved and caught
+  — HIMMEL-3686 — but the destination-existence check runs at PreToolUse,
+  before the command's own `ln` would have created it);
 - an absolute path into a second clone of the repo, other than this
   session's own primary checkout;
 - a POSIX-mount spelling (`/c/Users/…`) of a Windows drive root.
