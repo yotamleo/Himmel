@@ -122,11 +122,17 @@
 #     `$(...)`/backtick nesting — a command substitution's body is scanned as
 #     ordinary text, so a redirect inside one is seen (fails toward MORE
 #     candidates, never fewer).
-#   - Interpreter bodies (heredoc payloads, `python3 -c '...'`) are NOT parsed
-#     for writes — heredoc bodies are blanked before scanning specifically so
-#     a `>` inside one (`if a > b:`) cannot produce a phantom target; the
-#     PostToolUse dirty-checkout detector (HIMMEL-2526 W3) covers what an
-#     interpreter body actually wrote.
+#   - Interpreter bodies: heredoc payloads and `python3 -c '...'` (or any
+#     other non-shell `-c`) are NOT parsed for writes — heredoc bodies are
+#     blanked before scanning specifically so a `>` inside one (`if a > b:`)
+#     cannot produce a phantom target; the PostToolUse dirty-checkout
+#     detector (HIMMEL-2526 W3) covers what an interpreter body actually
+#     wrote. `eval "..."` and `bash -c`/`sh -c`/`zsh -c "..."` bodies ARE now
+#     scanned (HIMMEL-3648, `_bwimc_check_interp_body`) — coarsely: the body
+#     is word-split, not clause-parsed, and every non-flag token is run
+#     through the same destination check as every other arm, so a dynamic
+#     ($VAR, `cmd`) token inside one is the same unresolved-token residual
+#     _bwimc_check_target already accepts everywhere else.
 #   - `-T`/`--no-target-directory` IS modelled now (RETASK correction,
 #     HIMMEL-2592 round 6 codex-2 — this bullet used to say the opposite):
 #     for `mv` it forces the destination to plain ENTRY resolution instead
@@ -145,17 +151,34 @@
 #   - `is_temp_or_devnull`'s `*/tmp/*` pattern exempts ANY repo-internal
 #     `tmp/` directory, not only the filesystem `/tmp` — accepted, documented,
 #     unchanged here (inherited from block-terminal-write-fence.sh).
-#   - A `cd` earlier in the command does not move the resolution base: every
-#     relative target resolves against the TOOL PAYLOAD cwd, never a `cd` the
-#     command text itself performs (`cd <worktree> && echo x > y` issued from
-#     a session whose payload cwd is the primary on main still denies — the
-#     `cd` is not modelled). Correct-by-policy (the session cwd belongs in the
-#     worktree, not the command text) and unchanged from the old codex-lane
-#     class (b), which never modelled `cd` either — but it IS new behaviour on
-#     the Claude lane, which had no class (b) at all before this PR. Not
-#     something this script should try to fix: modelling `cd` is the
-#     shell-parser line it correctly refuses to cross. Documented bypass:
-#     EDIT_ON_MAIN_OK=1 in the LAUNCHING shell.
+#   - A `cd`/`pushd` earlier in the command DOES move the resolution base for
+#     arms (a) (redirect/tee) and (b)/(e) (sed/cp/mv/rm/touch/ln/git-commit/
+#     install/rsync/dd/eval-bash-c) now (HIMMEL-3648 corrects the bullet this
+#     used to be: `_bwimc_ecwd_track` re-tracks it per clause, and
+#     `_bwimc_cd_guard` denies a RELATIVE write candidate outright once a
+#     `cd`/`pushd` target could not be resolved statically or a `popd` left it
+#     unknown). `_bwimc_ecwd_track` has NO model of a nonexistent cd/pushd
+#     target, `||`/`&&` short-circuiting, a subshell, a pipeline, a background
+#     `&`, an if/while body that never runs, or a `$(...)` command
+#     substitution — every one of those can leave the tracked cwd pointing
+#     somewhere the cd never actually took the shell (HIMMEL-3648 CR round 9,
+#     judge J1307O C1). Rather than model each shape, `_bwimc_cd_guard` closes
+#     the gap structurally: whenever the tracked cwd has diverged from the
+#     real payload cwd at all, the write candidate is ALSO checked against the
+#     real payload cwd, and denied if THAT resolves inside the primary — so
+#     cd tracking can only ADD denies relative to a payload-cwd-only check,
+#     never remove one, regardless of how wrong its own clause-connective
+#     modelling turns out to be (the "strict superset rule"; one documented,
+#     deliberate exception: a genuine, unconditional `cd <worktree> &&
+#     <relative write>` issued from a primary cwd also denies under this rule,
+#     even though it is runtime-safe — the rule does not distinguish "safe"
+#     divergence from "unsafe" divergence). Arm (g) (git subcommands) keeps
+#     its own separate, pre-existing `_bwimc_git_clause` tracking, unaffected
+#     by this. Not modelled: an absolute or dynamic write candidate is checked
+#     against the tracked cwd exactly like before, and a `cd` performed by an
+#     EARLIER, separate command (a prior Bash call in the same session) is
+#     still invisible — this hook only ever sees one command at a time.
+#     Documented bypass: EDIT_ON_MAIN_OK=1 in the LAUNCHING shell.
 #
 # Exit codes: 0/return allow (see mode note above); 2 block. Bash 3.2-safe.
 
@@ -922,6 +945,8 @@ _bwimc_deny() {
         unresolved-git-target) why="a git -C/--git-dir/--work-tree/GIT_* env or cd target could not be resolved (failing closed)" ;;
         repointed-remote) why="it runs a remote operation in a command that repoints a remote (a -c remote/url/protocol/core.sshCommand key, a GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, or git remote add|set-url), which can reach the primary under an innocent name (failing closed)" ;;
         unresolved-heredoc) why="a heredoc opener's terminator was never found in the command (failing closed — text after it cannot be safely classified)" ;;
+        unresolved-cd) why="a cd/pushd target in this command could not be resolved (failing closed — a later relative write cannot be classified against an unknown cwd, HIMMEL-3648)" ;;
+        unsafe-interp-body) why="an eval/bash -c/sh -c/zsh -c argument contains a write-shaped token whose target cannot be proven to stay outside the primary (failing closed, HIMMEL-3648)" ;;
     esac
     {
         echo "⛔ block-write-into-main-checkout: refusing a write-shaped command — $why."
@@ -1069,6 +1094,244 @@ _bwimc_check_target() {
     fi
     eff=$(_bwimc_mode_for_operand "$raw" "$mode")
     _bwimc_check_abs "$abs" "$raw" "$eff"
+}
+
+# HIMMEL-3648: forward declaration — _bwimc_ecwd_track below (used by arm (a),
+# which runs as top-level script code before _bwimc_unq's canonical
+# definition is reached further down) needs _bwimc_unq/_bwimc_ansic already
+# defined. Redefined identically at their original location later in the
+# file for arm (g)/(b)/(e); a bash function redefinition is a plain
+# overwrite, so this is not a behavior change, only an ordering fix.
+_bwimc_ansic() {
+    local s="$1" o="" c k=0 h v m
+    while [ "$k" -lt "${#s}" ]; do
+        c="${s:$k:1}"; k=$((k+1))
+        if [ "$c" != "\\" ]; then o="$o$c"; continue; fi
+        c="${s:$k:1}"; k=$((k+1))
+        case "$c" in
+            a) v=7 ;; b) v=8 ;; e|E) v=27 ;; f) v=12 ;; n) v=10 ;;
+            r) v=13 ;; t) v=9 ;; v) v=11 ;;
+            x|u|U)
+                case "$c" in x) m=2 ;; u) m=4 ;; *) m=8 ;; esac
+                h=""
+                while [ "${#h}" -lt "$m" ]; do
+                    case "${s:$k:1}" in
+                        [0-9A-Fa-f]) h="$h${s:$k:1}"; k=$((k+1)) ;;
+                        *) break ;;
+                    esac
+                done
+                if [ -z "$h" ]; then o="$o$c"; continue; fi
+                v=$((16#$h)) ;;
+            [0-7])
+                h="$c"
+                while [ "${#h}" -lt 3 ]; do
+                    case "${s:$k:1}" in
+                        [0-7]) h="$h${s:$k:1}"; k=$((k+1)) ;;
+                        *) break ;;
+                    esac
+                done
+                v=$((8#$h)) ;;
+            c) k=$((k+1)); o="$o?"; continue ;;
+            *) o="$o$c"; continue ;;
+        esac
+        if [ "$v" -eq 0 ] || [ "$v" -ge 128 ]; then o="$o?"; continue; fi
+        # shellcheck disable=SC2059  # the format IS the octal escape
+        o="$o$(printf "\\$(printf '%03o' "$v")")"
+    done
+    printf '%s' "$o"
+}
+
+_bwimc_unq() {
+    local t="$1" o="" c k=0 q
+    case "$t" in
+        *\$\'*|*\$\"*)
+            while [ "$k" -lt "${#t}" ]; do
+                c="${t:$k:1}"
+                if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = "'" ]; then
+                    k=$((k+2)); q=""
+                    while [ "$k" -lt "${#t}" ] && [ "${t:$k:1}" != "'" ]; do
+                        if [ "${t:$k:1}" = "\\" ]; then q="$q\\"; k=$((k+1)); fi
+                        q="$q${t:$k:1}"; k=$((k+1))
+                    done
+                    k=$((k+1))
+                    o="$o$(_bwimc_ansic "$q")"
+                    continue
+                fi
+                if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = '"' ]; then k=$((k+1)); continue; fi
+                o="$o$c"; k=$((k+1))
+            done
+            t="$o"; o=""; k=0 ;;
+    esac
+    t="${t//\"/}"
+    t="${t//\'/}"
+    t="${t//\`/}"
+    case "$t" in
+        *\\*)
+            t="${t//\\$'\n'/}"
+            while [ "$k" -lt "${#t}" ]; do
+                c="${t:$k:1}"
+                if [ "$c" = "\\" ]; then k=$((k+1)); c="${t:$k:1}"; fi
+                o="$o$c"; k=$((k+1))
+            done
+            t="$o" ;;
+    esac
+    printf '%s' "$t"
+}
+
+# HIMMEL-3648: shared cd/pushd/popd cwd-tracking for arm (a) and arm (b)/(e)
+# — the git-arm's cd/pushd/popd tracking (_bwimc_git_clause below) never
+# reaches these two arms, so a `cd <primary> && echo x > a.txt` left every
+# LATER relative write destination in the same command resolving against the
+# session cwd instead of the cd's target. Modelled on _bwimc_git_clause's own
+# cd handling, simplified: no alt-cwd fallback, no GIT_* env. Each arm resets
+# _bwimc_ecwd/_bwimc_ecwd_unres to _bwimc_cwd/0 at the top of its OWN loop —
+# both arms scan the identical clause sequence in the identical order, so
+# independent, per-arm tracking reproduces the same result as one shared
+# pass. Called as a plain statement once per clause, BEFORE that clause's own
+# scan runs — never via `$(…)`, which would discard the global updates in a
+# subshell.
+_bwimc_ecwd_track() {
+    local toks=() t tu i n r carg cabs craw
+    while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
+    n=${#toks[@]}
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        case "$(_bwimc_unq "${toks[$i]}")" in
+            "{"|"!"|"("|""|if|then|else|elif|do|while|until|builtin) i=$((i+1)) ;;
+            *) break ;;
+        esac
+    done
+    [ "$i" -lt "$n" ] || return 0
+    tu=$(_bwimc_unq "${toks[$i]}")
+    case "$tu" in
+        cd|pushd)
+            i=$((i+1))
+            while [ "$i" -lt "$n" ]; do
+                case "$(_bwimc_unq "${toks[$i]}")" in
+                    -L|-P|-e|-@) i=$((i+1)) ;;
+                    --) i=$((i+1)); break ;;
+                    *) break ;;
+                esac
+            done
+            if [ "$i" -ge "$n" ]; then
+                # HIMMEL-3648 (CR #1307): a bare `pushd` swaps the top two
+                # stack entries — but ONLY if the stack already has a second
+                # entry from an earlier `pushd <dir>` in this same command.
+                # With no prior push, bash errors and leaves cwd UNCHANGED
+                # (verified: `cd /tmp; pushd` -> "no other directory", cwd
+                # stays /tmp) — a guaranteed no-op, not an unmodelled dynamic
+                # cd, so leave _bwimc_ecwd/_bwimc_ecwd_unres untouched in that
+                # case rather than guessing HOME or failing closed.
+                if [ "$tu" = cd ]; then
+                    [ -n "${HOME:-}" ] && { _bwimc_ecwd="$HOME"; _bwimc_ecwd_unres=0; } || _bwimc_ecwd_unres=1
+                elif [ "$_bwimc_ecwd_pushn" -ge 1 ]; then
+                    _bwimc_ecwd_unres=1
+                fi
+            elif [ "$(_bwimc_unq "${toks[$i]}")" = "-" ]; then
+                _bwimc_ecwd_unres=1
+            else
+                craw="${toks[$i]}"
+                # shellcheck disable=SC2016
+                case "$craw" in
+                    *'`'*|*'$('*)
+                        # HIMMEL-3648 (CR #1307): a command-substitution
+                        # cd/pushd target is dynamic, but _bwimc_unq strips
+                        # backticks unconditionally — checking the target
+                        # AFTER _bwimc_unq (as below) would see a laundered
+                        # literal instead of failing closed. Check the RAW
+                        # token instead.
+                        [ "$tu" = pushd ] && _bwimc_ecwd_pushn=$((_bwimc_ecwd_pushn+1))
+                        _bwimc_ecwd_unres=1
+                        ;;
+                    +[0-9]*|-[0-9]*)
+                        if [ "$tu" = pushd ]; then
+                            # HIMMEL-3648 (CR #1307): `pushd +N`/`-N` rotates
+                            # the directory stack this hook does not track —
+                            # fail closed rather than resolve "+N"/"-N" as a
+                            # literal relative path fragment. Not a push of a
+                            # new dir onto the stack, so _bwimc_ecwd_pushn is
+                            # left unchanged.
+                            _bwimc_ecwd_unres=1
+                        else
+                            carg=$(_bwimc_unq "$craw")
+                            if r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
+                                _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
+                            else
+                                _bwimc_ecwd_unres=1
+                            fi
+                        fi
+                        ;;
+                    *)
+                        carg=$(_bwimc_unq "$craw")
+                        case "$carg" in
+                            /*|[A-Za-z]:/*|[A-Za-z]:\\*) cabs=1 ;;
+                            *) cabs=0 ;;
+                        esac
+                        # HIMMEL-3648 (codex-1): a stale _bwimc_ecwd (left
+                        # behind by an earlier popd, `cd -`, or unresolvable
+                        # cd — none of which update it) must not be silently
+                        # trusted again by a later RELATIVE cd/pushd
+                        # resolving against it — that would clear
+                        # _bwimc_ecwd_unres against the WRONG base. Only an
+                        # ABSOLUTE target is base-independent and may clear
+                        # the flag once it was already set.
+                        [ "$tu" = pushd ] && _bwimc_ecwd_pushn=$((_bwimc_ecwd_pushn+1))
+                        if [ "$cabs" = 0 ] && [ "$_bwimc_ecwd_unres" = 1 ]; then
+                            :
+                        elif r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
+                            _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
+                        else
+                            _bwimc_ecwd_unres=1
+                        fi
+                        ;;
+                esac
+            fi
+            ;;
+        popd) _bwimc_ecwd_unres=1 ;;
+    esac
+}
+
+# Denies a RELATIVE, non-dynamic write candidate once a cd/pushd earlier in
+# this same command left the modelled cwd unresolved (HIMMEL-3648) — an
+# absolute or dynamic ($/backtick) candidate is untouched: those already
+# resolve (or fail open on themselves alone) regardless of cwd.
+#
+# HIMMEL-3648 (J1307O C1): _bwimc_ecwd_track has no model of a cd/pushd
+# target that doesn't exist, ||/&&-short-circuiting, a subshell, a
+# pipeline, a background &, an if/while body that never runs, or a $(...)
+# command substitution — every one of those can leave _bwimc_ecwd pointing
+# somewhere the cd never actually took the shell, while the REAL cwd stays
+# wherever it started (often the primary). Modelling every one of those
+# shapes correctly is out of scope for this fix; instead, once the tracked
+# cwd has diverged from the real payload cwd at all, ALSO check this same
+# candidate against the real payload cwd and deny if THAT resolves inside
+# the primary — cd tracking may only ADD denies relative to a
+# payload-cwd-only check, never remove one, regardless of how wrong its
+# own clause-connective modelling turns out to be. _bwimc_check_target
+# itself calls _bwimc_deny (which exits) on a DENY verdict, so this runs
+# before the call site's own _bwimc_ecwd-based check ever gets a chance to
+# allow.
+#
+# HIMMEL-3648 (CR #1307 round 10 codex-1): every call site used to pass only
+# the candidate token — never its own operation mode (entry/follow) — so
+# this fallback defaulted to "follow" regardless of what the caller actually
+# needed. For an `rm` operand (entry semantics: unlink acts on the directory
+# ENTRY, never the referent) that meant a primary-checkout symlink whose
+# ENTRY sits inside the primary but whose REFERENT resolves outside it
+# passed this fallback check unnoticed — deleting the entry is a write into
+# the primary the fallback was supposed to catch. Fixed by threading the
+# caller's own mode through as $2: the fallback must run byte-for-byte the
+# same check main runs — same mode, same semantics — not a guessed default.
+# Callers that never write through their own operand at all (a `cp` source,
+# for instance — cp never checks its source as a destination) pass nothing
+# and get the harmless "follow" default, since main never contradicts it.
+_bwimc_cd_guard() {
+    case "$1" in
+        /*|[A-Za-z]:/*|[A-Za-z]:\\*|*'$'*|*'`'*) return 0 ;;
+    esac
+    [ "$_bwimc_ecwd_unres" = 1 ] && _bwimc_deny "unresolved-cd" "$1" "" ""
+    [ "$_bwimc_ecwd" != "$_bwimc_cwd" ] && _bwimc_check_target "$1" "$_bwimc_cwd" "${2:-follow}"
+    return 0
 }
 
 # _bwimc_git_commit_target CLAUSE_SP CWD — HIMMEL-2884: `git … commit` is a
@@ -1341,9 +1604,183 @@ _bwimc_next_optval_idx() {
     printf '%s' "$idx"
 }
 
+# _bwimc_is_shc_cflag TOKEN — HIMMEL-3648 (codex-3). True iff TOKEN is a
+# single-dash, all-letters short-option cluster containing `c` (bash/sh/zsh's
+# own getopt-style combined short flags: `-c`, `-ce`, `-ec`, `-xc`, …) — real
+# shells accept the string-to-run argument right after such a cluster exactly
+# as they do after a bare `-c`. Excludes any `--long-option` (second char is
+# `-`, never a letter) so `--rcfile` is never mistaken for this.
+_bwimc_is_shc_cflag() {
+    case "$1" in
+        --*) return 1 ;;
+        -*) ;;
+        *) return 1 ;;
+    esac
+    local rest="${1#-}"
+    [ -n "$rest" ] || return 1
+    case "$rest" in
+        *[!a-zA-Z]*) return 1 ;;
+    esac
+    case "$rest" in
+        *c*) return 0 ;;
+    esac
+    return 1
+}
+
+# _bwimc_check_interp_body CLAUSE_SP KIND — HIMMEL-3648. `eval "BODY"` /
+# `bash -c "BODY"` / `sh -c "BODY"` / `zsh -c "BODY"` hide a write-shaped
+# command inside a STRING argument the arms above never look at. Per the
+# ticket: do not re-parse BODY as a command (clause-split it, walk verb
+# arms) — just word-split it with the existing tokenizer and run every
+# resulting non-operator token through the same destination check every
+# other arm uses. A token that resolves inside the primary denies; every
+# other token (verbs, flags, benign operands, sources) resolves elsewhere
+# and is silently ignored, exactly like today's read-only cp/mv sources.
+# This is deliberately coarse — it does not know which token is a
+# "destination" — but the ticket's own words are "prefer fail-closed over
+# modelling", and a check that ALSO looks at a benign source token can only
+# ever ADD a false-positive deny on an already-primary path, never miss a
+# real write into it.
+# ponytail: a dynamic token ($VAR, `cmd`) inside BODY does not resolve and
+# is not further modelled — same residual _bwimc_check_target already
+# accepts for every other arm (HIMMEL-3648).
+_bwimc_check_interp_body() {
+    local kind="$2" toks=() t t2 n i cidx body="" _bwimc_ibody_clause="" \
+        _bwimc_ibody_clause_sp="" _bwimc_ibc_toks=() _bwimc_ibc_n=0 _bwimc_m="" \
+        _bwimc_ibody_saved_ecwd="" _bwimc_ibody_saved_unres=""
+    toks=()
+    while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
+    n=${#toks[@]}
+    if [ "$kind" = eval ]; then
+        i=1
+        while [ "$i" -lt "$n" ]; do
+            [ -n "$body" ] && body="$body "
+            body="$body$(_bwimc_unq "${toks[$i]}")"
+            i=$((i+1))
+        done
+    else
+        cidx=-1
+        i=1
+        while [ "$i" -lt "$n" ]; do
+            _bwimc_is_shc_cflag "$(_bwimc_unq "${toks[$i]}")" && { cidx=$((i+1)); break; }
+            i=$((i+1))
+        done
+        [ "$cidx" -ge 0 ] && [ "$cidx" -lt "$n" ] && body=$(_bwimc_unq "${toks[$cidx]}")
+    fi
+    [ -n "$body" ] || return 0
+    case "$body" in
+        *'>'*) : ;;
+        *) case "$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')" in
+               *cp*|*mv*|*rm*|*touch*|*ln*|*tee*|*sed*|*install*|*rsync*|*dd*|*cd*|*pushd*|*git*|*commit*) : ;;
+               *) return 0 ;;
+           esac ;;
+    esac
+    # HIMMEL-3648 round 4 (codex-1): the round-3 fix tracked cwd across the
+    # WHOLE body first and only then checked every token/`git … commit`
+    # against that final cwd — correct for a body that never cd's again
+    # after its last write, wrong otherwise: `bash -c 'cd <primary>; echo x
+    # > a.txt; cd <wt>'` tracked to <wt> (the body's END state) and checked
+    # "a.txt" against <wt>, allowing a real write into <primary>. A write (or
+    # a `git … commit`) must be checked against the cwd AS OF THAT POINT in
+    # the body, not wherever the body cd's to afterwards. Fix: track AND
+    # check PER CLAUSE, in order, exactly like the main outer loop already
+    # does for the top-level command (line ~1663 tracks, line ~3706 checks
+    # git-commit, both inside the SAME per-clause iteration) — do not
+    # re-derive body-wide flags/tokens first and check them once the cwd has
+    # moved on. Save/restore both globals so this stays scoped to THIS
+    # interp body and never leaks to a sibling outer clause.
+    _bwimc_ibody_saved_ecwd="$_bwimc_ecwd"
+    _bwimc_ibody_saved_unres="$_bwimc_ecwd_unres"
+    _bwimc_ibody_saved_pushn="$_bwimc_ecwd_pushn"
+    while IFS= read -r _bwimc_ibody_clause; do
+        [ -n "$(printf '%s' "$_bwimc_ibody_clause" | tr -d '[:space:]')" ] || continue
+        _bwimc_ibody_clause_sp=$(_bwimc_space_before_redirects "$_bwimc_ibody_clause")
+        _bwimc_ecwd_track "$_bwimc_ibody_clause_sp"
+        if _bwimc_m=$(printf '%s' "$_bwimc_ibody_clause_sp" | tr '[:upper:]' '[:lower:]' | grep -E '^[[:space:]]*git(\.exe)?([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+            _bwimc_git_commit_target "$_bwimc_ibody_clause_sp" "$_bwimc_ecwd"
+            if [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ]; then
+                _bwimc_deny "unresolved-git-target" "$1" "$_BWIMC_GIT_TARGET_DIR" ""
+            fi
+            if [ "$_bwimc_sourced" = 1 ]; then
+                _bwimc_cwd_check_sourced "$_BWIMC_GIT_TARGET_DIR"
+            else
+                _bwimc_cwd_check_direct "$_BWIMC_GIT_TARGET_DIR"
+            fi
+        fi
+        _bwimc_ibc_toks=()
+        while IFS= read -r t; do _bwimc_ibc_toks+=("$t"); done < <(_bwimc_tokenize "$_bwimc_ibody_clause_sp")
+        _bwimc_ibc_n=${#_bwimc_ibc_toks[@]}
+        i=0
+        while [ "$i" -lt "$_bwimc_ibc_n" ]; do
+            t="${_bwimc_ibc_toks[$i]}"
+            if _bwimc_redirect_op_of "$t"; then
+                # HIMMEL-3648 (codex-1): an attached target (`>/primary/f`, one
+                # token) was ignored — this loop unconditionally advanced to the
+                # NEXT token and checked THAT, the same false-negative shape the
+                # main clause loop's own _bwimc_op_rest handling (line ~1693)
+                # exists to close. Mirrors that idiom, including the write-only
+                # gate so a read redirect stays allowed.
+                if [ -n "$_bwimc_op_rest" ]; then
+                    case "$_bwimc_op_rest" in
+                        '&'*) : ;;
+                        *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$_bwimc_op_rest"; _bwimc_check_target "$_bwimc_op_rest" "$_bwimc_ecwd"; } ;;
+                    esac
+                    i=$((i+1))
+                else
+                    i=$((i+1))
+                    if [ "$i" -lt "$_bwimc_ibc_n" ]; then
+                        t2="${_bwimc_ibc_toks[$i]}"
+                        case "$t2" in
+                            '&'*) : ;;
+                            *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$t2"; _bwimc_check_target "$t2" "$_bwimc_ecwd"; } ;;
+                        esac
+                    fi
+                    i=$((i+1))
+                fi
+                continue
+            fi
+            case "$t" in
+                -*)
+                    # HIMMEL-3648 (CodeRabbit #1307 thread, "Heavy lift"
+                    # finding, partial fix): a long option's value is
+                    # ATTACHED with `=` (`--target-directory=PATH`) and is
+                    # itself a write destination — the bare `-*` skip
+                    # dropped it unchecked. Same coarse `=`-value check as
+                    # the non-flag branch below, just not excluded by the
+                    # leading `-`.
+                    case "$t" in
+                        *=*) _bwimc_cd_guard "${t#*=}"; _bwimc_check_target "${t#*=}" "$_bwimc_ecwd" ;;
+                    esac
+                    ;;
+                *)
+                    _bwimc_cd_guard "$t"; _bwimc_check_target "$t" "$_bwimc_ecwd"
+                    # HIMMEL-3648 (CR #1307): a bare key=value token inside a
+                    # body — dd's `of=PATH` above all — is a write
+                    # destination this generic non-flag-token check never
+                    # isolates on its own, since the whole "of=PATH" string
+                    # never resolves as PATH itself. Also check the value
+                    # after the first `=`, same coarse tolerance the rest of
+                    # this scan already accepts for a benign source token.
+                    case "$t" in
+                        *=*) _bwimc_cd_guard "${t#*=}"; _bwimc_check_target "${t#*=}" "$_bwimc_ecwd" ;;
+                    esac
+                    ;;
+            esac
+            i=$((i+1))
+        done
+    done < <(_bwimc_split_clauses "$body")
+    _bwimc_ecwd="$_bwimc_ibody_saved_ecwd"
+    _bwimc_ecwd_unres="$_bwimc_ibody_saved_unres"
+    _bwimc_ecwd_pushn="$_bwimc_ibody_saved_pushn"
+}
+
+_bwimc_ecwd="$_bwimc_cwd"
+_bwimc_ecwd_unres=0
+_bwimc_ecwd_pushn=0
 while IFS= read -r _bwimc_rclause; do
     [ -n "$(printf '%s' "$_bwimc_rclause" | tr -d '[:space:]')" ] || continue
     _bwimc_rclause_sp=$(_bwimc_space_before_redirects "$_bwimc_rclause")
+    _bwimc_ecwd_track "$_bwimc_rclause_sp"
     _bwimc_rtoks=()
     while IFS= read -r _bwimc_t; do _bwimc_rtoks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_rclause_sp")
     _bwimc_rn=${#_bwimc_rtoks[@]}
@@ -1436,7 +1873,7 @@ while IFS= read -r _bwimc_rclause; do
             if [ -n "$_bwimc_op_rest" ]; then
                 case "$_bwimc_op_rest" in
                     '&'*) : ;;  # fd-dup (2>&1, >&2 attached) — no file target
-                    *) [ "$_bwimc_op_write" = 1 ] && _bwimc_check_target "$_bwimc_op_rest" "$_bwimc_cwd" ;;
+                    *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$_bwimc_op_rest"; _bwimc_check_target "$_bwimc_op_rest" "$_bwimc_ecwd"; } ;;
                 esac
             else
                 _bwimc_ri=$((_bwimc_ri+1))
@@ -1444,7 +1881,7 @@ while IFS= read -r _bwimc_rclause; do
                     _bwimc_rt2="${_bwimc_rtoks[$_bwimc_ri]}"
                     case "$_bwimc_rt2" in
                         '&'*) : ;;  # fd-dup (2> &1 — no file target)
-                        *) [ "$_bwimc_op_write" = 1 ] && _bwimc_check_target "$_bwimc_rt2" "$_bwimc_cwd" ;;
+                        *) [ "$_bwimc_op_write" = 1 ] && { _bwimc_cd_guard "$_bwimc_rt2"; _bwimc_check_target "$_bwimc_rt2" "$_bwimc_ecwd"; } ;;
                     esac
                 fi
             fi
@@ -1459,13 +1896,14 @@ while IFS= read -r _bwimc_rclause; do
                 # to a file literally named `-o`; without this, `-*` below
                 # eats it as a flag and the fence never checks it.
                 if [ "$_bwimc_tee_dd" = 1 ]; then
-                    _bwimc_check_target "$_bwimc_rt" "$_bwimc_cwd"
+                    _bwimc_cd_guard "$_bwimc_rt"
+                    _bwimc_check_target "$_bwimc_rt" "$_bwimc_ecwd"
                 elif [ "$_bwimc_rt" = "--" ]; then
                     _bwimc_tee_dd=1
                 else
                     case "$_bwimc_rt" in
                         -*) : ;;
-                        *) _bwimc_check_target "$_bwimc_rt" "$_bwimc_cwd" ;;
+                        *) _bwimc_cd_guard "$_bwimc_rt"; _bwimc_check_target "$_bwimc_rt" "$_bwimc_ecwd" ;;
                     esac
                 fi
             fi
@@ -2013,7 +2451,11 @@ _bwimc_git_clause() {
         cd|pushd)
             i=$((i+1))
             while [ "$i" -lt "$n" ]; do
-                case "$(_bwimc_unq "${toks[$i]}")" in -L|-P|-e|-@) i=$((i+1)) ;; *) break ;; esac
+                case "$(_bwimc_unq "${toks[$i]}")" in
+                    -L|-P|-e|-@) i=$((i+1)) ;;
+                    --) i=$((i+1)); break ;;
+                    *) break ;;
+                esac
             done
             if [ "$i" -ge "$n" ]; then
                 [ -n "${HOME:-}" ] && { _bwimc_gcwd="$HOME"; _bwimc_gcwd_unres=0; } || _bwimc_gcwd_unres=1
@@ -2609,6 +3051,9 @@ done < <(_bwimc_split_clauses "$_bwimc_ghb")
 
 # ---- (b)/(e) per-clause verb scan, command-position anchored ----
 
+_bwimc_ecwd="$_bwimc_cwd"
+_bwimc_ecwd_unres=0
+_bwimc_ecwd_pushn=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     _tolower_ascii "$_bwimc_clause"
@@ -2620,6 +3065,11 @@ while IFS= read -r _bwimc_clause; do
     # the real redirect target instead, so the coverage is relocated, not
     # lost (probe row: adjudicate6 1d / the cp-redirect row in the suite).
     _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_bwimc_clause")
+    # HIMMEL-3648: track cd/pushd/popd BEFORE this clause's own verb scan —
+    # a bare `cd <dir>` clause matches none of the verb regexes below, so
+    # this never diverts the elif chain; it only updates _bwimc_ecwd for
+    # THIS and every LATER clause in the command.
+    _bwimc_ecwd_track "$_bwimc_clause_sp"
 
     # HIMMEL-1430: `grep -E` + capture instead of `grep -q` here and at every
     # verb-scan arm below — under pipefail a multi-line, >64KiB clause can
@@ -2825,10 +3275,210 @@ while IFS= read -r _bwimc_clause; do
             [ "$_bwimc_saw_follow_symlinks" = 1 ] && _bwimc_sed_mode=follow
             _bwimc_k=$_bwimc_start
             while [ "$_bwimc_k" -lt "${#_bwimc_bare[@]}" ]; do
-                _bwimc_check_target "${_bwimc_bare[$_bwimc_k]}" "$_bwimc_cwd" "$_bwimc_sed_mode"
+                _bwimc_cd_guard "${_bwimc_bare[$_bwimc_k]}" "$_bwimc_sed_mode"
+                _bwimc_check_target "${_bwimc_bare[$_bwimc_k]}" "$_bwimc_ecwd" "$_bwimc_sed_mode"
                 _bwimc_k=$((_bwimc_k+1))
             done
         fi
+
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*eval([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+        _bwimc_check_interp_body "$_bwimc_clause_sp" eval
+
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?(bash|sh|zsh|dash|ksh)(\.exe)?([[:space:]]+[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+        # HIMMEL-3648 (CR #1307): allow an optional path prefix (`/bin/sh`,
+        # `./bash`, …) before the shell name — an anchor on the bare name
+        # only let a path-qualified invocation bypass body scanning entirely.
+        # HIMMEL-3648 (codex-3): loosened from a literal `-c` to any
+        # single-dash all-letters cluster containing `c` (`-ce`, `-ec`, …) —
+        # real bash/sh/zsh getopt-style combined short flags a literal `-c`
+        # match let straight through. Deliberately over-inclusive: the
+        # precise check (and the actual body lookup) is
+        # _bwimc_is_shc_cflag inside _bwimc_check_interp_body; a prefilter
+        # false-positive here only means a harmless extra scan.
+        # HIMMEL-3648 (round 10 codex-2): the middle group used to require
+        # each intervening token to itself start with `-` (a flag), so a
+        # flag that takes its own separate argument (`bash -o pipefail -c
+        # '…'`) broke the chain — "pipefail" isn't `-`-prefixed, so the
+        # match failed at the shell name and the whole body scan was
+        # skipped. Widened to accept ANY intervening token, flag or not;
+        # _bwimc_is_shc_cflag still does the precise per-token check, so
+        # this stays a coarse, over-inclusive prefilter only.
+        _bwimc_check_interp_body "$_bwimc_clause_sp" shc
+
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(install|rsync)(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
+        # HIMMEL-3648: install/rsync — the LAST non-option operand is the
+        # write destination (install: `SOURCE... DEST` or, with -t/
+        # --target-directory, `SOURCE... -t DIR`; rsync: `SRC... DEST`).
+        # install's `-t DIR` / `-tDIR` / `--target-directory[=]DIR` share cp's
+        # option NAME per the ticket, but are parsed with a dedicated,
+        # minimal scan below rather than the shared `_bwimc_opt_scan` — that
+        # scanner's bare `-t` means "value follows" for cp/mv, but rsync's own
+        # `-t` (`--times`, no value) is unrelated, so reusing it here would
+        # misread a bundled/bare rsync `-t` as consuming the next token.
+        # rsync's other SEPARATED-value options (--exclude PATTERN, -e CMD,
+        # --temp-dir DIR, ...) are now skipped below the same way, closing
+        # the gap a round-f688778c critic found live (HIMMEL-3648, codex-3):
+        # `rsync SRC /primary/dest --exclude pattern` used to let `pattern`
+        # fall through as the "last operand", masking the real destination.
+        # ponytail: only the SEPARATED form of those options is modelled — a
+        # bundled/immediate-joined short-opt value (`-eCMD`) is not, and
+        # falls through to the generic operand scan below. Escalate only if
+        # a real gap surfaces (HIMMEL-3648).
+        _bwimc_verb=$(printf '%s' "$_bwimc_clause_lc" | sed -E 's/^[[:space:]]*(install|rsync).*/\1/')
+        _bwimc_toks=()
+        while IFS= read -r _bwimc_t; do _bwimc_toks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_clause_sp")
+        _bwimc_ops=()
+        _bwimc_tdir_raw=""
+        _bwimc_dd=0
+        _bwimc_install_dmode=0
+        _bwimc_ntoks=${#_bwimc_toks[@]}
+        _bwimc_i=1
+        while [ "$_bwimc_i" -lt "$_bwimc_ntoks" ]; do
+            _bwimc_t="${_bwimc_toks[$_bwimc_i]}"
+            if _bwimc_redirect_op_of "$_bwimc_t"; then
+                _bwimc_i=$(_bwimc_skip_redirect_at "$_bwimc_i")
+                continue
+            fi
+            if [ "$_bwimc_dd" = 1 ]; then
+                _bwimc_ops+=("$_bwimc_t")
+                _bwimc_i=$((_bwimc_i+1))
+                continue
+            fi
+            if [ "$_bwimc_t" = "--" ]; then
+                _bwimc_dd=1
+                _bwimc_i=$((_bwimc_i+1))
+                continue
+            fi
+            if [ "$_bwimc_verb" = "install" ]; then
+                case "$_bwimc_t" in
+                    -t?*)
+                        _bwimc_tdir_raw="${_bwimc_t#-t}"
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
+                    -t|--target-directory)
+                        _bwimc_i=$(_bwimc_next_optval_idx "$_bwimc_i")
+                        [ "$_bwimc_i" -lt "$_bwimc_ntoks" ] && _bwimc_tdir_raw="${_bwimc_toks[$_bwimc_i]}"
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
+                    --target-directory=*)
+                        _bwimc_tdir_raw="${_bwimc_t#--target-directory=}"
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
+                    # HIMMEL-3648 (codex-2): `-d`/`--directory` puts install
+                    # in directory-creation mode, where EVERY operand (not
+                    # just the last) is itself a destination directory to
+                    # create — the generic `-*` skip below silently dropped
+                    # `-d`'s single operand from _bwimc_ops entirely,
+                    # leaving neither branch of the resolution below able to
+                    # fire.
+                    # ponytail: only the bare `-d`/`--directory` spelling is
+                    # modelled, not a bundled short-opt form (`-vd`) —
+                    # escalate only if a real gap surfaces (HIMMEL-3648).
+                    -d|--directory)
+                        _bwimc_install_dmode=1
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
+                    # HIMMEL-3648 (CR #1307): install's other SEPARATED
+                    # mandatory-value options were not skipped, so — exactly
+                    # like the rsync gap below — the value token fell through
+                    # to the generic operand scan and could become the
+                    # misread "last operand": `install SRC /primary/dest -m
+                    # 755` picked up "755" as the destination, masking the
+                    # real one.
+                    -m|--mode|-o|--owner|-g|--group|-S|--suffix|--strip-program)
+                        _bwimc_i=$(_bwimc_next_optval_idx "$_bwimc_i")
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
+                esac
+            fi
+            # HIMMEL-3648 (codex-3, round f688778c): rsync's other
+            # value-taking options were previously left un-skipped (see the
+            # ponytail note above), so an option's VALUE fell through to the
+            # generic `-*) : ;;` / bare-word split below and was picked up as
+            # if it were a real operand — `rsync SRC /primary/dest --exclude
+            # pattern` misread `pattern` as the LAST operand, masking the
+            # true destination. Skip each one's separated value exactly like
+            # install's -t/--target-directory above, so only real operands
+            # ever reach _bwimc_ops.
+            # HIMMEL-3648 (CR #1307): -T/--temp-dir's short form, -B
+            # (--block-size), -M (--remote-option) and --suffix were missing
+            # from this list — the same "value falls through as a bogus
+            # operand" gap the comment above already covers for the rest.
+            if [ "$_bwimc_verb" = "rsync" ]; then
+                case "$_bwimc_t" in
+                    -e|-f|--filter|--exclude|--exclude-from|--include|--include-from|--files-from|--temp-dir|-T|--backup-dir|--link-dest|--compare-dest|--copy-dest|--partial-dir|--log-file|--log-file-format|--out-format|--password-file|--bwlimit|--timeout|--contimeout|--port|--address|--sockopts|--usermap|--groupmap|--chown|--rsync-path|--rsh|--protocol|--checksum-seed|--max-size|--min-size|--modify-window|--skip-compress|--chmod|-B|--block-size|-M|--remote-option|--suffix|--max-delete|--iconv|--compress-level|--checksum-choice|--write-batch|--only-write-batch|--read-batch|--stop-after)
+                        _bwimc_i=$(_bwimc_next_optval_idx "$_bwimc_i")
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
+                esac
+            fi
+            case "$_bwimc_t" in
+                -*) : ;;
+                *) _bwimc_ops+=("$_bwimc_t") ;;
+            esac
+            _bwimc_i=$((_bwimc_i+1))
+        done
+        if [ -n "$_bwimc_tdir_raw" ]; then
+            _bwimc_cd_guard "$_bwimc_tdir_raw"
+            _bwimc_check_target "$_bwimc_tdir_raw" "$_bwimc_ecwd"
+        elif [ "$_bwimc_install_dmode" = 1 ]; then
+            _bwimc_k=0
+            while [ "$_bwimc_k" -lt "${#_bwimc_ops[@]}" ]; do
+                _bwimc_cd_guard "${_bwimc_ops[$_bwimc_k]}"
+                _bwimc_check_target "${_bwimc_ops[$_bwimc_k]}" "$_bwimc_ecwd"
+                _bwimc_k=$((_bwimc_k+1))
+            done
+        elif [ "${#_bwimc_ops[@]}" -ge 2 ]; then
+            _bwimc_dest_raw="${_bwimc_ops[$((${#_bwimc_ops[@]}-1))]}"
+            # HIMMEL-3648 (CodeRabbit #1307): a REMOTE rsync destination
+            # (`user@host:/path`, `rsync://host/mod`) never writes into the
+            # LOCAL primary checkout — resolving it as a local path (as the
+            # generic destination check below does) can only mis-DENY it,
+            # never mis-allow a real local write, but it is a genuine
+            # functional-correctness bug CodeRabbit flagged, so skip the
+            # local resolution for it. A bare drive letter (`C:/path`) is
+            # excluded from the "has a colon" test so it is not misread as
+            # a remote host.
+            _bwimc_dest_remote=0
+            case "$_bwimc_dest_raw" in
+                [A-Za-z]:[/\\]*) ;;
+                rsync://*) _bwimc_dest_remote=1 ;;
+                *) case "${_bwimc_dest_raw%%/*}" in *:*) _bwimc_dest_remote=1 ;; esac ;;
+            esac
+            if [ "$_bwimc_dest_remote" = 0 ]; then
+                _bwimc_cd_guard "$_bwimc_dest_raw"
+                _bwimc_check_target "$_bwimc_dest_raw" "$_bwimc_ecwd"
+            fi
+        fi
+
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*dd(\.exe)?([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+        # HIMMEL-3648: dd's `of=PATH` key=value token is its write
+        # destination; dd itself never takes it as two separate tokens.
+        _bwimc_toks=()
+        while IFS= read -r _bwimc_t; do _bwimc_toks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_clause_sp")
+        _bwimc_ntoks=${#_bwimc_toks[@]}
+        _bwimc_i=1
+        while [ "$_bwimc_i" -lt "$_bwimc_ntoks" ]; do
+            _bwimc_t="${_bwimc_toks[$_bwimc_i]}"
+            if _bwimc_redirect_op_of "$_bwimc_t"; then
+                _bwimc_i=$(_bwimc_skip_redirect_at "$_bwimc_i")
+                continue
+            fi
+            case "$_bwimc_t" in
+                of=*)
+                    _bwimc_ddof_raw="${_bwimc_t#of=}"
+                    _bwimc_cd_guard "$_bwimc_ddof_raw"
+                    _bwimc_check_target "$_bwimc_ddof_raw" "$_bwimc_ecwd"
+                    ;;
+            esac
+            _bwimc_i=$((_bwimc_i+1))
+        done
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(cp|mv)(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
         _bwimc_verb=$(printf '%s' "$_bwimc_clause_lc" | sed -E 's/^[[:space:]]*(cp|mv).*/\1/')
@@ -2965,21 +3615,32 @@ while IFS= read -r _bwimc_clause; do
         # normally still writes THROUGH the child symlink referent (FOLLOW),
         # falling back to ENTRY only on a permission failure — check both.
         [ "$_bwimc_rmdest" = 0 ] && [ "$_bwimc_force" = 1 ] && _bwimc_child_mode=both
+        # HIMMEL-3648 (round 10 codex-1): mv's SOURCE main check below uses
+        # ENTRY (rename(2) moves the entry, never writes through it); cp
+        # never checks its source as a destination at all, so "follow" here
+        # is an inert default the main check never contradicts. Computed
+        # once, shared by both the -t/--target-directory branch and the
+        # positional branch below, and threaded into _bwimc_cd_guard so its
+        # fallback matches the SAME mode the main check uses.
+        _bwimc_src_cdmode=follow
+        [ "$_bwimc_verb" = "mv" ] && _bwimc_src_cdmode=entry
         if [ -n "$_bwimc_tdir_raw" ]; then
             # -t/--target-directory mode: EVERY remaining operand is a
             # SOURCE; the sink for each is <target-dir>/<basename(source)>.
             # `-t`/`--target-directory` name the destination MORE explicitly
             # than the positional form, so it never depends on source parsing.
-            _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_tdir_raw" "$_bwimc_cwd") || _bwimc_dest_abs=""
+            _bwimc_cd_guard "$_bwimc_tdir_raw"
+            _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_tdir_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
             if [ -n "$_bwimc_dest_abs" ]; then
                 _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_tdir_raw" follow
             else
-                _bwimc_check_glob_operand "$_bwimc_tdir_raw" "$_bwimc_cwd"
+                _bwimc_check_glob_operand "$_bwimc_tdir_raw" "$_bwimc_ecwd"
             fi
             _bwimc_j=0
             while [ "$_bwimc_j" -lt "${#_bwimc_ops[@]}" ]; do
                 _bwimc_src_raw="${_bwimc_ops[$_bwimc_j]}"
-                _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_cwd") || _bwimc_src_abs=""
+                _bwimc_cd_guard "$_bwimc_src_raw" "$_bwimc_src_cdmode"
+                _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_ecwd") || _bwimc_src_abs=""
                 # mv SOURCE: checked whether or not the DESTINATION resolved
                 # (round-5 hoist), with ENTRY semantics — rename(2) moves the
                 # directory entry, it never writes through the link.
@@ -2988,7 +3649,7 @@ while IFS= read -r _bwimc_clause; do
                         _bwimc_check_abs "$_bwimc_src_abs" "$_bwimc_src_raw" \
                             "$(_bwimc_mode_for_operand "$_bwimc_src_raw" entry)"
                     else
-                        _bwimc_check_glob_operand "$_bwimc_src_raw" "$_bwimc_cwd"
+                        _bwimc_check_glob_operand "$_bwimc_src_raw" "$_bwimc_ecwd"
                     fi
                 fi
                 if [ -n "$_bwimc_src_abs" ] && [ -n "$_bwimc_dest_abs" ]; then
@@ -3001,7 +3662,8 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_n=${#_bwimc_ops[@]}
             if [ "$_bwimc_n" -ge 2 ]; then
                 _bwimc_dest_raw="${_bwimc_ops[$((_bwimc_n-1))]}"
-                _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_cwd") || _bwimc_dest_abs=""
+                _bwimc_cd_guard "$_bwimc_dest_raw"
+                _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
                 _bwimc_dest_is_dir=0
                 _bwimc_dest_mode=follow
                 if [ -n "$_bwimc_dest_abs" ]; then
@@ -3029,18 +3691,19 @@ while IFS= read -r _bwimc_clause; do
                     fi
                     _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" "$_bwimc_dest_mode"
                 else
-                    _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_cwd"
+                    _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_ecwd"
                 fi
                 _bwimc_j=0
                 while [ "$_bwimc_j" -lt "$((_bwimc_n-1))" ]; do
                     _bwimc_src_raw="${_bwimc_ops[$_bwimc_j]}"
-                    _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_cwd") || _bwimc_src_abs=""
+                    _bwimc_cd_guard "$_bwimc_src_raw" "$_bwimc_src_cdmode"
+                    _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_ecwd") || _bwimc_src_abs=""
                     if [ "$_bwimc_verb" = "mv" ]; then
                         if [ -n "$_bwimc_src_abs" ]; then
                             _bwimc_check_abs "$_bwimc_src_abs" "$_bwimc_src_raw" \
                                 "$(_bwimc_mode_for_operand "$_bwimc_src_raw" entry)"
                         else
-                            _bwimc_check_glob_operand "$_bwimc_src_raw" "$_bwimc_cwd"
+                            _bwimc_check_glob_operand "$_bwimc_src_raw" "$_bwimc_ecwd"
                         fi
                     fi
                     if [ -n "$_bwimc_src_abs" ] && [ -n "$_bwimc_dest_abs" ] && [ "$_bwimc_nodrf" = 0 ]; then
@@ -3081,7 +3744,11 @@ while IFS= read -r _bwimc_clause; do
             # literally named `-f`; without this, `-*` below eats it as a
             # flag and the fence never checks it.
             if [ "$_bwimc_dd" = 1 ]; then
-                _bwimc_check_target "$_bwimc_t" "$_bwimc_cwd" "$_bwimc_mode"
+                # HIMMEL-3648 (round 10 codex-1): pass rm/touch's own mode
+                # through so the cd-divergence fallback in _bwimc_cd_guard
+                # runs the same entry-vs-follow check the line below does.
+                _bwimc_cd_guard "$_bwimc_t" "$_bwimc_mode"
+                _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" "$_bwimc_mode"
                 _bwimc_i=$((_bwimc_i+1))
                 continue
             fi
@@ -3092,7 +3759,7 @@ while IFS= read -r _bwimc_clause; do
             fi
             case "$_bwimc_t" in
                 -*) : ;;
-                *) _bwimc_check_target "$_bwimc_t" "$_bwimc_cwd" "$_bwimc_mode" ;;
+                *) _bwimc_cd_guard "$_bwimc_t" "$_bwimc_mode"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" "$_bwimc_mode" ;;
             esac
             _bwimc_i=$((_bwimc_i+1))
         done
@@ -3193,9 +3860,10 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_nsrc=$((_bwimc_n-1))
         fi
         if [ -n "$_bwimc_dest_raw" ]; then
-            _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_cwd") || _bwimc_dest_abs=""
+            _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
             if [ -z "$_bwimc_dest_abs" ]; then
-                _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_cwd"
+                _bwimc_cd_guard "$_bwimc_dest_raw"
+                _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_ecwd"
             else
                 # `-n`/`-T` turn the destination back into a plain ENTRY even
                 # when it resolves to a directory (codex-2). `-t` names a
@@ -3208,13 +3876,19 @@ while IFS= read -r _bwimc_clause; do
                     _bwimc_ln_isdir=1
                 fi
                 if [ "$_bwimc_ln_isdir" = 1 ]; then
+                    # HIMMEL-3648 (round 10 codex-1): _bwimc_cd_guard moved
+                    # here, after $_bwimc_ln_isdir is known, so its fallback
+                    # runs the SAME mode ("follow") the check two lines below
+                    # uses — calling it before this branch was decided meant
+                    # guessing.
+                    _bwimc_cd_guard "$_bwimc_dest_raw" follow
                     # Check the directory itself UNCONDITIONALLY (so an
                     # all-unresolvable source list cannot skip it), then the
                     # entry each source creates inside it.
                     _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" follow
                     _bwimc_j=0
                     while [ "$_bwimc_j" -lt "$_bwimc_nsrc" ]; do
-                        _bwimc_src_abs=$(_bwimc_resolve_abs "${_bwimc_ops[$_bwimc_j]}" "$_bwimc_cwd") || _bwimc_src_abs=""
+                        _bwimc_src_abs=$(_bwimc_resolve_abs "${_bwimc_ops[$_bwimc_j]}" "$_bwimc_ecwd") || _bwimc_src_abs=""
                         if [ -n "$_bwimc_src_abs" ]; then
                             _bwimc_base="${_bwimc_src_abs##*/}"
                             # codex-3: `ln` REPLACES the child entry; it does
@@ -3229,6 +3903,10 @@ while IFS= read -r _bwimc_clause; do
                         _bwimc_j=$((_bwimc_j+1))
                     done
                 else
+                    # HIMMEL-3648 (round 10 codex-1): same reasoning as the
+                    # directory branch above — the fallback must match this
+                    # branch's own ENTRY mode, not a guessed "follow".
+                    _bwimc_cd_guard "$_bwimc_dest_raw" "$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)"
                     _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" \
                         "$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)"
                 fi
@@ -3239,7 +3917,7 @@ while IFS= read -r _bwimc_clause; do
         # `cd`/cwd-predicate class this script deliberately leaves alone.
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*git(\.exe)?([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
-        _bwimc_git_commit_target "$_bwimc_clause_sp" "$_bwimc_cwd"
+        _bwimc_git_commit_target "$_bwimc_clause_sp" "$_bwimc_ecwd"
         if [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ]; then
             # HIMMEL-2884 codex-2: an unresolved -C/--git-dir/--work-tree value
             # must deny outright, not fall back to checking the command's cwd
@@ -3258,6 +3936,16 @@ while IFS= read -r _bwimc_clause; do
         # PowerShell writers: sourced/codex lane only (see CODEX-LANE PARITY
         # header note) — PowerShell never reaches direct-exec (Claude wires
         # this script on the "Bash" matcher only).
+        # HIMMEL-3648 (J1307P): this arm used to check only the TRACKED cwd
+        # (_bwimc_ecwd), with no union fallback to the real payload cwd the
+        # way _bwimc_cd_guard already gives every write-target arm — so a
+        # `cd`/pushd whose tracked target diverges from where the shell
+        # really is (nonexistent target, `||`/`|` short-circuit, etc., the
+        # same C1 class round 9 fixed for write-target resolution) let a
+        # write-on-main through once the tracker's cd moved _bwimc_ecwd off
+        # main. Checking the real cwd too makes this a strict superset: a
+        # divergence can only ADD a deny, never remove one.
+        _bwimc_cwd_check_sourced "$_bwimc_ecwd"
         _bwimc_cwd_check_sourced "$_bwimc_cwd"
     fi
 done < <(_bwimc_split_clauses "$_bwimc_hb")
