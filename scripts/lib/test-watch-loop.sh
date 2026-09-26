@@ -37,23 +37,43 @@ FAILED=0
 pass() { printf 'PASS %s\n' "$1"; PASSED=$((PASSED + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAILED=$((FAILED + 1)); }
 
+# codex-1 (round 4, Suggestion): `kill -0 <pid>` succeeds for a ZOMBIE too --
+# the pid slot stays allocated until something reaps it -- so a grandchild
+# liveness assertion built on kill -0 alone can read an already-dead pid as
+# still alive. `ps -o stat=` distinguishes a zombie (leading Z) from a live
+# process without /proc, so it works on bash 3.2 / macOS as well as Linux.
+_alive() {
+    local st
+    st="$(ps -o stat= -p "$1" 2>/dev/null)"
+    case "$st" in
+        '' | Z*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 TMP="$(mktemp -d)"
 
 # Per-case watcher (W*) and parent (P*) pids; all reaped by the trap.
 W1="" P1="" W2="" P2="" W3="" P3="" P5="" W6="" P6="" P7="" GC7="" P8="" GC8=""
 cleanup() {
-    local _p
+    local _p _still_alive=0
     for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
         [ -n "$_p" ] && kill "$_p" 2>/dev/null
     done
-    sleep 1
     # codex-1 (round 3, Suggestion): plain TERM never reaped GC8, which traps
     # and ignores it on purpose (case 8's fixture) -- escalate to KILL for
-    # anything still alive after the grace period, same as the fallback tier
-    # under test.
+    # anything still alive after a grace period, same as the fallback tier
+    # under test. codex-2 (round 4, Suggestion): skip the grace sleep when
+    # nothing is left to escalate against.
     for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
-        [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null && kill -9 "$_p" 2>/dev/null
+        [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null && _still_alive=1
     done
+    if [ "$_still_alive" -eq 1 ]; then
+        sleep 1
+        for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
+            [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null && kill -9 "$_p" 2>/dev/null
+        done
+    fi
     wait 2>/dev/null
     rm -rf "$TMP"
 }
@@ -291,7 +311,7 @@ if [ "$rc7" -eq 0 ] && grep -q 'watch-loop: exiting (ttl)' "$LOG7"; then
 else
     fail "case 7 rc=$rc7 log: $(cat "$LOG7")"
 fi
-if [ -n "$GC7" ] && kill -0 "$GC7" 2>/dev/null; then
+if [ -n "$GC7" ] && _alive "$GC7"; then
     fail "probe's background child (pid $GC7) survived the no-timeout fallback kill"
 else
     pass "probe's background child was reaped along with the probe (no-timeout fallback)"
@@ -342,7 +362,7 @@ if [ "$rc8" -eq 0 ] && grep -q 'watch-loop: exiting (ttl)' "$LOG8"; then
 else
     fail "case 8 rc=$rc8 log: $(cat "$LOG8")"
 fi
-if [ -n "$GC8" ] && kill -0 "$GC8" 2>/dev/null; then
+if [ -n "$GC8" ] && _alive "$GC8"; then
     fail "TERM-ignoring grandchild (pid $GC8) survived the no-timeout fallback KILL escalation"
 else
     pass "TERM-ignoring grandchild was reaped by the group-scoped KILL escalation"
