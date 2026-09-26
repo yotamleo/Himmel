@@ -17,6 +17,19 @@ set -euo pipefail
 
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
+# backdate <file> <epoch-seconds> - set a file's mtime to an exact epoch time.
+# GNU touch takes `-d @<epoch>` directly; BSD/macOS touch has no epoch form,
+# so fall back through BSD `date -r <epoch>` into touch's -t timestamp (same
+# shape as backdate() in test-context-fill.sh) — a plain `touch -d '30 hours
+# ago'` is not portable to macOS (codex-1, HIMMEL-1846 round 2).
+backdate() {
+    local file="$1" epoch="$2" ts
+    touch -d "@$epoch" "$file" 2>/dev/null && return 0
+    ts="$(date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null)" && touch -t "$ts" "$file" 2>/dev/null && return 0
+    echo "backdate: cannot set mtime on this platform" >&2
+    exit 1
+}
+
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/himmel-update.sh"
 
 if [ ! -f "$SCRIPT" ]; then
@@ -184,7 +197,7 @@ mkdir -p "$cache_sweep/temp_git_old" "$cache_sweep/temp_git_new" "$cache_sweep/t
 touch -t 202001010000 "$cache_sweep/temp_git_old"
 # 30h old: past the 24h cutoff but short of the ~48h a day-truncated -mtime
 # +1 would actually require — pins the boundary -mtime +1 missed (HIMMEL-178).
-touch -d '30 hours ago' "$cache_sweep/temp_git_boundary"
+backdate "$cache_sweep/temp_git_boundary" "$(($(date +%s) - 30 * 3600))"
 log_sweep="$TMP/claude-invocations-sweep.log"
 : > "$log_sweep"
 claude_stub_sweep="$TMP/claude-logging-stub-sweep"

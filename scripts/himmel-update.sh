@@ -785,7 +785,7 @@ update_marketplace() {
     if [ -d "$cache" ]; then
         while IFS= read -r -d '' stale; do
             rm -rf "$stale" && swept=$((swept + 1))
-        done < <(find "$cache" -maxdepth 1 -name 'temp_git_*' -mmin +1440 -print0 2>/dev/null)  # gnu-ok: -maxdepth/-mmin/-print0 are all supported by BSD find (macOS) too, not GNU-only
+        done < <(find "$cache" -maxdepth 1 -type d -name 'temp_git_*' -mmin +1440 -print0 2>/dev/null)  # gnu-ok: -maxdepth/-type/-mmin/-print0 are all supported by BSD find (macOS) too, not GNU-only
     fi
     local sweep_detail=""
     [ "$swept" -eq 0 ] || sweep_detail="; swept $swept stale temp_git_* dir(s) from plugin cache"
