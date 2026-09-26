@@ -567,6 +567,7 @@ _gf_apply_chdir() {
     # OLDPWD/PWD) to something this fence cannot know lexically, so anchoring
     # it under TOOL_CWD the way _abs's fallback arm would is a silent
     # wrong-directory ALLOW. Fail closed instead.
+    # shellcheck disable=SC2088 # the "~/" is a literal case-pattern, not an expansion
     case "$raw" in
         '~'|'~/'*) : ;;
         '~'*)
