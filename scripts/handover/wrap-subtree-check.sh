@@ -93,7 +93,7 @@ case "$window" in
         printf 'WITHHELD: WRAP_SUBTREE_START_WINDOW must be a non-negative integer (got %s) — not declaring CLOSABLE\n' "$window"
         exit 2 ;;
 esac
-harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp|caffeinate|claude-hud[^ ]*)( |\$)}"
+harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp|caffeinate|claude-hud(/[^ ]*)?)( |\$)}"
 
 ps_out="$(ps -eo pid=,ppid=,etime=,args= 2>/dev/null)" || ps_out=""
 if [ -z "$ps_out" ]; then
