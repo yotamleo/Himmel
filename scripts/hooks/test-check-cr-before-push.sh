@@ -65,6 +65,17 @@ mkdir -p "$REPO" || exit 1
     git branch -m main 2>/dev/null || true
 ) || exit 1
 
+# HIMMEL-3634 round 6 (J1277O codex-1/codex-2): a weak lane (skip/docs-audit)
+# is now gated on verify_sha_is_reviewed(base_sha), which re-fetches origin's
+# own main. $REPO's main never gains a new commit anywhere in this file after
+# this point (every later mutation happens on a branch cut from it, or in an
+# unrelated scratch repo) — wire up a real, fetchable "origin" now, once, so
+# that fetch finds a genuine matching main instead of failing closed.
+BARE_ORIGIN="$TMP_ROOT/bare-origin.git"
+git init -q --bare "$BARE_ORIGIN"
+git -C "$REPO" remote add origin "$BARE_ORIGIN"
+git -C "$REPO" push -q origin main
+
 run_hook() {
     (
         cd "$REPO"
@@ -76,7 +87,11 @@ run_hook_refs() {
     local refs="$1"
     (
         cd "$REPO"
-        bash "$HOOK" origin https://example.com/repo.git <<< "$refs" 2>&1
+        # HIMMEL-3634 round 6: a weak-lane diff now re-fetches this exact
+        # push_remote_url (verify_sha_is_reviewed) — a fake unreachable
+        # https://example.com/repo.git would always fail closed here, so this
+        # points at the real, fetchable $BARE_ORIGIN set up at repo init.
+        bash "$HOOK" origin "$BARE_ORIGIN" <<< "$refs" 2>&1
     )
 }
 
@@ -326,14 +341,6 @@ git -C "$REPO" checkout -q main
 # HIMMEL-2104: up-to-date push (empty stdin) mints a bound marker ------------
 
 echo "TEST: empty-stdin up-to-date push mints marker binding from upstream (HIMMEL-2104)"
-BARE_ORIGIN="$TMP_ROOT/bare-origin.git"
-git init -q --bare "$BARE_ORIGIN"
-git -C "$REPO" remote add origin "$BARE_ORIGIN" 2>/dev/null || git -C "$REPO" remote set-url origin "$BARE_ORIGIN"
-# HIMMEL-3634 round 4 (J1277O I1): classify_independent_range re-fetches
-# origin's own main to reclassify a weak local lane -- push REPO's current
-# main to it now (main never moves again in this file after this point) so
-# that fetch finds a real, matching main instead of failing closed.
-git -C "$REPO" push -q origin main
 git -C "$REPO" checkout -q -b feat/uptodate-2104 main
 printf 'function uptodate() {}\n' > "$REPO/uptodate.sh"
 git -C "$REPO" -c user.email=t@test.com -c user.name=test add uptodate.sh
@@ -728,8 +735,12 @@ FORK_BARE="$TMP_ROOT/fork-explicit.git"
 git clone -q --bare "$FX" "$FORK_BARE"
 FORK_URL="file://$FORK_BARE"
 git -C "$FX" checkout -q -b feat/urlpush main
-echo 'leg change' > "$FX/urlfeature.txt"
-git -C "$FX" add urlfeature.txt
+# HIMMEL-3634 round 6: a .sh (not .txt) tail keeps this diff classified
+# "full" -- this test's own point (HIMMEL-3477, resolve_diff_base picking the
+# fork's own HEAD as base) is orthogonal to the round-6 weak-lane gate, which
+# the CX1/CX2/R4C1F tests exercise deliberately on this same fixture shape.
+echo 'function urlfeature(){}' > "$FX/urlfeature.sh"
+git -C "$FX" add urlfeature.sh
 git -C "$FX" -c user.email=t@t -c user.name=t commit -q -m "leg feature on top of fork base"
 fx_feat_sha=$(git -C "$FX" rev-parse --verify feat/urlpush)
 
@@ -1109,7 +1120,7 @@ git -C "$REPO" checkout -q main
 # resolve_diff_base's bases (an explicit-URL fork's fetched HEAD, or a local
 # refs/remotes/<remote>/$db tracking ref) are both values the pusher
 # controls. An empty diff(base...local_sha) only proves the content needs no
-# review when the base itself is trustworthy. verify_empty_diff_is_reviewed
+# review when the base itself is trustworthy. verify_sha_is_reviewed
 # closes this: before honoring an empty-diff skip it freshly fetches
 # origin's real default branch and refuses unless local_sha is reachable
 # from it.
@@ -1214,7 +1225,7 @@ echo "TEST: HIMMEL-3634 round-2 codex-1 — fetchurl/pushurl divergence: refresh
 # origin/main tracking ref agree with that SHA too. But the actual PUSH
 # destination -- git's own pre-push argv $2, which honors
 # remote.origin.pushurl / url.<base>.pushInsteadOf and can diverge from the
-# fetch url -- is the real, untouched origin. verify_empty_diff_is_reviewed
+# fetch url -- is the real, untouched origin. verify_sha_is_reviewed
 # must re-fetch by the argv-attested push destination, not by the mutable
 # "origin" name, or this empty-diff safety net re-validates against the
 # wrong repository's history.
@@ -1258,7 +1269,7 @@ echo "TEST: HIMMEL-3634 round-2.5 — explicit-URL push to a fork whose OWN defa
 # clone-order makes HEAD and the fork's actual "main" branch agree by
 # accident. This row forges the fork's named default branch directly (an
 # ordinary push the attacker fully controls, no clone-order artifact) to
-# confirm verify_empty_diff_is_reviewed's safety net does not degrade to
+# confirm verify_sha_is_reviewed's safety net does not degrade to
 # re-checking the same attacker-controlled repository it already failed to
 # get an independent answer from (round-2 regression: an earlier fix that
 # always re-fetched push_remote_url reintroduced exactly this bypass).
@@ -1321,7 +1332,7 @@ echo "TEST: HIMMEL-3634 round-3 CodeRabbit — an origin tag sharing the default
 # refs/tags/<name> before refs/heads/<name> (confirmed empirically: a bare
 # "main" fetch resolved to a same-named TAG, not the branch, in a scratch
 # probe). A tag pusher -- often a lower bar than branch-push rights -- could
-# otherwise redirect verify_empty_diff_is_reviewed's whole authority to
+# otherwise redirect verify_sha_is_reviewed's whole authority to
 # content they control, by pushing a tag named exactly "$db".
 R3_ORIGIN="$TMP_ROOT/r3-real-origin.git"
 git init -q --bare -b main "$R3_ORIGIN"
@@ -1345,7 +1356,7 @@ r3_push_sha=$(git -C "$R3_PUSHER" rev-parse HEAD)
 git -C "$R3_PUSHER" push -q "$R3_ORIGIN" "$r3_push_sha:refs/tags/main"
 # Falsify the LOCAL origin/main tracking ref to make resolve_diff_base see an
 # empty diff (same forging technique as P1(b)) -- what's under test here is
-# ONLY which ref verify_empty_diff_is_reviewed's re-fetch resolves to.
+# ONLY which ref verify_sha_is_reviewed's re-fetch resolves to.
 git -C "$R3_PUSHER" update-ref refs/remotes/origin/main "$r3_push_sha"
 rc=0
 out=$(cd "$R3_PUSHER" && bash "$HOOK" origin "$R3_ORIGIN" <<< "refs/heads/feat/r3sneaky $r3_push_sha refs/heads/feat/r3sneaky $Z40" 2>&1) || rc=$?
@@ -1367,7 +1378,7 @@ echo "TEST: HIMMEL-3634 round-4 (J1277O C2) — pushurl/pushInsteadOf divergence
 # equivalently a url.<fork>.pushInsteadOf rewrite -- both resolve to the
 # same argv $2 from the hook's own point of view, since the hook never reads
 # git config, only argv) while remote.origin.url (what a bare "origin" fetch
-# resolves through) stays real. Before round 4, verify_empty_diff_is_reviewed
+# resolves through) stays real. Before round 4, verify_sha_is_reviewed
 # fetched ONLY push_remote_url for an origin-nominal push -- validating this
 # empty diff against the attacker's own fork.
 R4C2_ORIGIN="$TMP_ROOT/r4c2-real-origin.git"
@@ -1439,13 +1450,18 @@ else
     fail "round-4 residual: documented gap changed shape -- update the ponytail comment/ticket if this is now fixed" "rc=$rc marker=$([ -f "$r4res_marker" ] && echo present || echo absent) / out: $out"
 fi
 
-echo "TEST: HIMMEL-3634 round-4 (J1277O C1/I1) — a handover-only TAIL on a forged local main gets the FULL lane, not skipped"
+echo "TEST: HIMMEL-3634 round-6 (J1277O C1/I1, simplified) — a handover-only TAIL on a forged local main is REFUSED, not silently skipped"
 # resolve_diff_base's local-main branch is exactly as pusher-controlled as
 # the tracking-ref/fork-HEAD branches P1(a)/P1(b) already cover: a locally
 # rewritten refs/heads/main puts the diff base just before an unreviewed
 # code commit (A), so the (non-empty) diff against it only ever shows the
 # handover-only TAIL (B) -- the code in A never appears. Before round 4 this
-# read as "handover-state-only" and wrote NO marker at all.
+# read as "handover-state-only" and wrote NO marker at all. Round 4 tried to
+# upgrade the lane to "full" by reclassifying against a fresh origin fetch;
+# round 6 (codex-1/codex-2 on that mechanism) simplifies instead of patching
+# it further: verify_sha_is_reviewed(base_sha) can't confirm the forged A is
+# real origin history (origin never received it), so the push is refused
+# outright rather than silently trusted at any lane.
 R4I1H_ORIGIN="$TMP_ROOT/r4i1h-real-origin.git"
 git init -q --bare -b main "$R4I1H_ORIGIN"
 R4I1H_SEED="$TMP_ROOT/r4i1h-seed"
@@ -1469,14 +1485,13 @@ git -C "$R4I1H_PUSHER" update-ref refs/heads/main "$r4i1h_A"
 rc=0
 out=$(cd "$R4I1H_PUSHER" && bash "$HOOK" origin "$R4I1H_ORIGIN" <<< "refs/heads/feat/r4i1h $r4i1h_B refs/heads/feat/r4i1h $Z40" 2>&1) || rc=$?
 r4i1h_marker="$R4I1H_PUSHER/.git/cr-pending/feat/r4i1h"
-r4i1h_lane=$(awk -F' [|] ' '{print $3; exit}' "$r4i1h_marker" 2>/dev/null || true)
-if [ "$rc" -eq 0 ] && [ "$r4i1h_lane" = "full" ]; then
-    pass "round-4 C1/I1: handover-only tail on a forged local main gets the full lane, not skipped"
+if [ "$rc" -eq 2 ] && [ ! -e "$r4i1h_marker" ]; then
+    pass "round-6 C1/I1: handover-only tail on a forged local main is refused, no marker written"
 else
-    fail "round-4 C1/I1: expected rc=0 + full-lane marker" "rc=$rc lane=${r4i1h_lane:-NONE} out: $out"
+    fail "round-6 C1/I1: expected rc=2 + no marker" "rc=$rc marker-exists=$([ -e "$r4i1h_marker" ] && echo yes || echo no) out: $out"
 fi
 
-echo "TEST: HIMMEL-3634 round-4 (J1277O I1) — a docs-only TAIL on a forged local main gets the FULL lane, not downgraded to docs-audit"
+echo "TEST: HIMMEL-3634 round-6 (J1277O I1, simplified) — a docs-only TAIL on a forged local main is REFUSED, not silently downgraded to docs-audit"
 R4I1D_ORIGIN="$TMP_ROOT/r4i1d-real-origin.git"
 git init -q --bare -b main "$R4I1D_ORIGIN"
 R4I1D_SEED="$TMP_ROOT/r4i1d-seed"
@@ -1498,21 +1513,21 @@ git -C "$R4I1D_PUSHER" update-ref refs/heads/main "$r4i1d_A"
 rc=0
 out=$(cd "$R4I1D_PUSHER" && bash "$HOOK" origin "$R4I1D_ORIGIN" <<< "refs/heads/feat/r4i1d $r4i1d_B refs/heads/feat/r4i1d $Z40" 2>&1) || rc=$?
 r4i1d_marker="$R4I1D_PUSHER/.git/cr-pending/feat/r4i1d"
-r4i1d_lane=$(awk -F' [|] ' '{print $3; exit}' "$r4i1d_marker" 2>/dev/null || true)
-if [ "$rc" -eq 0 ] && [ "$r4i1d_lane" = "full" ]; then
-    pass "round-4 I1: docs-only tail on a forged local main gets the full lane, not downgraded to docs-audit"
+if [ "$rc" -eq 2 ] && [ ! -e "$r4i1d_marker" ]; then
+    pass "round-6 I1: docs-only tail on a forged local main is refused, no marker written"
 else
-    fail "round-4 I1: expected rc=0 + full-lane marker" "rc=$rc lane=${r4i1d_lane:-NONE} out: $out"
+    fail "round-6 I1: expected rc=2 + no marker" "rc=$rc marker-exists=$([ -e "$r4i1d_marker" ] && echo yes || echo no) out: $out"
 fi
 
-echo "TEST: HIMMEL-3634 round-4 (J1277O C1) — a handover-only TAIL, pushed explicit-URL to a fork whose own main is forged, still gets the FULL lane"
+echo "TEST: HIMMEL-3634 round-6 (J1277O C1, simplified) — a handover-only TAIL, pushed explicit-URL to a fork whose own main is forged, is REFUSED"
 # Same shape as round-2.5's explicit-URL-fork-push branch of resolve_diff_base,
 # but with a non-empty (handover-only) diff instead of an empty one -- the
 # attacker's own fork's main is forged to A directly (an ordinary push to a
 # repo they fully control), so the pusher-supplied diff never shows the tip's
 # real code commit. The pusher's real "origin" remote is untouched by any of
-# this and still has only the shared base -- classify_independent_range's
-# fetch of it must surface the real diff.
+# this and still has only the shared base -- verify_sha_is_reviewed(base_sha)
+# fetches literal "origin" (this is an explicit-URL, non-origin push) and
+# finds base_sha unreachable there, so the push is refused.
 R4C1F_ORIGIN="$TMP_ROOT/r4c1f-real-origin.git"
 git init -q --bare -b main "$R4C1F_ORIGIN"
 R4C1F_SEED="$TMP_ROOT/r4c1f-seed"
@@ -1537,15 +1552,95 @@ git -C "$R4C1F_PUSHER" push -q "$R4C1F_FORK" "$r4c1f_A:refs/heads/main"
 rc=0
 out=$(cd "$R4C1F_PUSHER" && bash "$HOOK" "$R4C1F_FORK" "$R4C1F_FORK" <<< "refs/heads/feat/r4c1f $r4c1f_B refs/heads/feat/r4c1f $Z40" 2>&1) || rc=$?
 r4c1f_marker="$R4C1F_PUSHER/.git/cr-pending/feat/r4c1f"
-r4c1f_lane=$(awk -F' [|] ' '{print $3; exit}' "$r4c1f_marker" 2>/dev/null || true)
-if [ "$rc" -eq 0 ] && [ "$r4c1f_lane" = "full" ]; then
-    pass "round-4 C1: explicit-URL fork push with a forged fork-main and a handover-only tail gets the full lane"
+if [ "$rc" -eq 2 ] && [ ! -e "$r4c1f_marker" ]; then
+    pass "round-6 C1: explicit-URL fork push with a forged fork-main and a handover-only tail is refused, no marker written"
 else
-    fail "round-4 C1: expected rc=0 + full-lane marker" "rc=$rc lane=${r4c1f_lane:-NONE} out: $out"
+    fail "round-6 C1: expected rc=2 + no marker" "rc=$rc marker-exists=$([ -e "$r4c1f_marker" ] && echo yes || echo no) out: $out"
+fi
+
+echo "TEST: HIMMEL-3634 round-6 (J1277O codex-1) — weak lane REFUSED when remote.origin.url is repointed to a fork pre-seeded with the forged base, while the push argv destination is the unseeded real origin"
+# codex-1's finding against round-4's classify_independent_range: it trusted
+# ONLY the literal "origin" name, which a repointed remote.origin.url can aim
+# at a fork the pusher pre-seeded with the forged base -- classifying
+# unreviewed code as a weak lane. verify_sha_is_reviewed's existing
+# dual-authority selection (push_remote_url AND literal "origin" for an
+# origin-nominal push) must catch this via push_remote_url alone (the real,
+# unseeded origin), independent of what "origin" locally resolves to.
+CX1_ORIGIN="$TMP_ROOT/cx1-real-origin.git"
+git init -q --bare -b main "$CX1_ORIGIN"
+CX1_SEED="$TMP_ROOT/cx1-seed"
+git init -q -b main "$CX1_SEED"
+git -C "$CX1_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$CX1_SEED" push -q "$CX1_ORIGIN" main
+CX1_PUSHER="$TMP_ROOT/cx1-pusher"
+git clone -q "$CX1_ORIGIN" "$CX1_PUSHER"
+git -C "$CX1_PUSHER" checkout -q -b feat/cx1 main
+echo 'rm -rf / # unreviewed' > "$CX1_PUSHER/evil.sh"
+git -C "$CX1_PUSHER" add evil.sh
+git -C "$CX1_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: unreviewed code"
+cx1_A=$(git -C "$CX1_PUSHER" rev-parse HEAD)
+mkdir -p "$CX1_PUSHER/handovers"
+echo note > "$CX1_PUSHER/handovers/n.md"
+git -C "$CX1_PUSHER" add handovers/n.md
+git -C "$CX1_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: handover-only tail"
+cx1_B=$(git -C "$CX1_PUSHER" rev-parse HEAD)
+git -C "$CX1_PUSHER" update-ref refs/heads/main "$cx1_A"
+CX1_FORK="$TMP_ROOT/cx1-fork.git"
+git init -q --bare -b main "$CX1_FORK"
+git -C "$CX1_PUSHER" push -q "$CX1_FORK" "$cx1_A:refs/heads/main"
+git -C "$CX1_PUSHER" remote set-url origin "$CX1_FORK"
+rc=0
+out=$(cd "$CX1_PUSHER" && bash "$HOOK" origin "$CX1_ORIGIN" <<< "refs/heads/feat/cx1 $cx1_B refs/heads/feat/cx1 $Z40" 2>&1) || rc=$?
+cx1_marker="$CX1_PUSHER/.git/cr-pending/feat/cx1"
+if [ "$rc" -eq 2 ] && [ ! -e "$cx1_marker" ]; then
+    pass "codex-1: weak lane refused when origin.url is a pre-seeded fork but the push argv destination is the unseeded real origin"
+else
+    fail "codex-1: expected rc=2 + no marker" "rc=$rc marker-exists=$([ -e "$cx1_marker" ] && echo yes || echo no) out: $out"
+fi
+
+echo "TEST: HIMMEL-3634 round-6 (J1277O codex-2) — weak lane REFUSED (fail closed) when the push goes through a remote not literally named \"origin\" and no \"origin\" remote is configured at all"
+# codex-2's finding against round-4's classify_independent_range: it bailed
+# out via `git remote get-url origin` failing, silently trusting the local
+# (weak) classification with ZERO verification whenever no remote is
+# literally named "origin" -- any push through a differently-named remote,
+# on a repo with no "origin" remote configured, got no check at all.
+# verify_sha_is_reviewed's "any OTHER remote" branch still fetches the
+# literal name "origin" as the one independent authority (HIMMEL-3477); with
+# no such remote configured that fetch fails, so it must fail CLOSED
+# (refuse) rather than silently trust the weak lane.
+CX2_ORIGIN="$TMP_ROOT/cx2-real-origin.git"
+git init -q --bare -b main "$CX2_ORIGIN"
+CX2_SEED="$TMP_ROOT/cx2-seed"
+git init -q -b main "$CX2_SEED"
+git -C "$CX2_SEED" -c user.email=a@t -c user.name=a commit -q --allow-empty -m "shared init"
+git -C "$CX2_SEED" push -q "$CX2_ORIGIN" main
+CX2_PUSHER="$TMP_ROOT/cx2-pusher"
+git clone -q "$CX2_ORIGIN" "$CX2_PUSHER"
+git -C "$CX2_PUSHER" remote rename origin upstream
+git -C "$CX2_PUSHER" checkout -q -b feat/cx2 main
+echo 'rm -rf / # unreviewed' > "$CX2_PUSHER/evil.sh"
+git -C "$CX2_PUSHER" add evil.sh
+git -C "$CX2_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: unreviewed code"
+cx2_A=$(git -C "$CX2_PUSHER" rev-parse HEAD)
+mkdir -p "$CX2_PUSHER/handovers"
+echo note > "$CX2_PUSHER/handovers/n.md"
+git -C "$CX2_PUSHER" add handovers/n.md
+git -C "$CX2_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: handover-only tail"
+cx2_B=$(git -C "$CX2_PUSHER" rev-parse HEAD)
+# Named-remote pushes diff against refs/remotes/upstream/main directly (never
+# local main) -- forge THAT ref, no network needed, same technique as P1(b).
+git -C "$CX2_PUSHER" update-ref refs/remotes/upstream/main "$cx2_A"
+rc=0
+out=$(cd "$CX2_PUSHER" && bash "$HOOK" upstream "$CX2_ORIGIN" <<< "refs/heads/feat/cx2 $cx2_B refs/heads/feat/cx2 $Z40" 2>&1) || rc=$?
+cx2_marker="$CX2_PUSHER/.git/cr-pending/feat/cx2"
+if [ "$rc" -eq 2 ] && [ ! -e "$cx2_marker" ]; then
+    pass "codex-2: weak lane refused (fail closed) when pushed via a non-\"origin\"-named remote and no \"origin\" remote exists"
+else
+    fail "codex-2: expected rc=2 + no marker" "rc=$rc marker-exists=$([ -e "$cx2_marker" ] && echo yes || echo no) out: $out"
 fi
 
 # M1: the fork fetch (resolve_diff_base) and the new origin re-fetch
-# (verify_empty_diff_is_reviewed) must both be timeout-bounded. Prove the
+# (verify_sha_is_reviewed) must both be timeout-bounded. Prove the
 # wrap is actually wired by resolving $_TIMEOUT_BIN to a logging stub and
 # replaying the P1(a) fixture, which exercises both call sites in one push
 # (the fork fetch resolves the base, then the empty diff triggers the
