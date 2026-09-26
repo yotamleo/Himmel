@@ -456,6 +456,36 @@ check "mtime-scoped-decoy-fallback: rc 0 (still closes)" "$rc" "0"
 note_count22=$(find "$ESW_SB6/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 check "mtime-scoped-decoy-fallback: exactly one note written (an unrelated recent decoy must not suppress the all-time retry)" "$note_count22" "1"
 
+# --- 23: codex-2 (round 4) -- the all-time FALLBACK pass must not apply the
+# same per-file head-window truncation as the scoped pass. The transcript is
+# outside the mtime window (forces the fallback) AND its customTitle line
+# sits past a small test-configured head window, so a fallback that still
+# truncates at that window can never find it either.
+ESW_SB7="$W/esw-sb7"
+mkdir -p "$ESW_SB7/vault" "$ESW_SB7/proj" "$ESW_SB7/home"
+PROJDIR7="$W/esw-projects7"
+mkdir -p "$PROJDIR7"
+OLD_TRANSCRIPT7="$PROJDIR7/sess-old.jsonl"
+{
+    printf '%s\n' "{\"filler\":1}"
+    printf '%s\n' "{\"filler\":2}"
+    printf '%s\n' "{\"filler\":3}"
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB7/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
+    printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB7/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
+} > "$OLD_TRANSCRIPT7"
+touch -d '10 days ago' "$OLD_TRANSCRIPT7" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT7" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0
+out=$(HOME="$ESW_SB7/home" LUNA_VAULT_PATH="$ESW_SB7/vault" OBSIDIAN_API_KEY="" \
+    CLAUDE_PROJECT_DIR="$ESW_SB7/proj" OSTYPE="linux-gnu" OS="" \
+    CWL_ESW_BIN="$REAL_ESW" CWL_PROJECTS_DIR="$PROJDIR7" CLOSE_WRAPPED_LEG_MTIME_DAYS=1 \
+    CLOSE_WRAPPED_LEG_CUSTOMTITLE_HEAD=2 \
+    run "$DOC" 2>&1) || rc=$?
+check "fallback-head-window: rc 0 (still closes)" "$rc" "0"
+note_count23=$(find "$ESW_SB7/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+check "fallback-head-window: exactly one note written (customTitle past the head window is still found by the unbounded all-time fallback)" "$note_count23" "1"
+
 echo "----"
 if [ "$fails" -eq 0 ]; then
     echo "ALL OK"

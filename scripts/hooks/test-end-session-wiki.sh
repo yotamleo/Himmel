@@ -979,6 +979,34 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 28: codex-1 (round 4) -- an explicit early-exit release must reset
+# CLAIMED so the __on_exit/__on_signal trap guard does not redundantly
+# release a second time. Reproduce the exact trap guard
+# (`[ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture`) after an
+# explicit _esw_release_early call: without the CLAIMED reset, a retry that
+# claims the freed slot in the gap has its claim deleted by the stale guard.
+RACE_DIR28=$(mktemp -d "${TMPDIR:-/tmp}/esw-race28.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+# shellcheck disable=SC2034  # read by claim_capture/release_capture, extracted verbatim via eval below
+CAPTURED_DIR="$RACE_DIR28/captured"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+eval "$(extract_fn claim_capture "$HOOK")"
+eval "$(extract_fn release_capture "$HOOK")"
+eval "$(extract_fn _esw_release_early "$HOOK")"
+CLAIMED=0
+WROTE=0
+claim_capture "sid28"
+CLAIMED=1
+_esw_release_early "sid28"
+claim_capture "sid28"
+[ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture "sid28"
+SLUG28="$(_esw_sid_slug "sid28")"
+if [ -d "$CAPTURED_DIR/$SLUG28" ]; then
+    pass "codex-1 (round 4): explicit early release resets CLAIMED, so a retry's claim survives the exit trap"
+else
+    fail "codex-1 (round 4): explicit early release left CLAIMED set — the stale exit-trap guard deleted a retry's live claim"
+fi
+rm -rf "$RACE_DIR28"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

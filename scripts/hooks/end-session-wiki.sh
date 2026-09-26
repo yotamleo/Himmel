@@ -184,6 +184,16 @@ release_capture() {
     return 0
 }
 
+# _esw_release_early <session_id> — release an explicit early-exit skip AND
+# clear CLAIMED, so the __on_exit/__on_signal trap guard (which also tests
+# CLAIMED) does not redundantly call release_capture a second time. Without
+# the reset, a retry that claims the freed slot in the gap between this call
+# and the trap firing has its claim deleted by that trap (codex-1).
+_esw_release_early() {
+    release_capture "$1"
+    CLAIMED=0
+}
+
 # spawn_crystallizer — best-effort detached LLM crystallization (HIMMEL-576) of
 # the just-written note. Called before each successful-write exit. Ensures the
 # note is on disk first (a REST PUT flushes to disk asynchronously, so the
@@ -370,7 +380,7 @@ CLAIMED=1
 
 if [ -z "$SESSION_CWD" ]; then
     log_msg "ERROR: payload missing 'cwd'"
-    release_capture "$SESSION_ID"
+    _esw_release_early "$SESSION_ID"
     HOOK_OK=1
     exit 0
 fi
@@ -418,7 +428,7 @@ compute_duration "$FIRST_TS" "$NOW_EPOCH"
 # can't compute duration and the cautious choice is to capture rather than drop).
 if [ -n "$FIRST_TS" ] && [ "$DURATION_SECONDS" -lt "$CFG_MIN_DUR" ] 2>/dev/null; then
     log_msg "skipped: duration ${DURATION_SECONDS}s < min ${CFG_MIN_DUR}s"
-    release_capture "$SESSION_ID"
+    _esw_release_early "$SESSION_ID"
     HOOK_OK=1
     exit 0
 fi
@@ -429,7 +439,7 @@ fi
 # also empty). Skip the write entirely — there is nothing to capture.
 if [ "${HAS_CONTENT:-0}" -eq 0 ] && [ "${FILES_COUNT:-0}" -eq 0 ]; then
     log_msg "skipped: husk (no content)"
-    release_capture "$SESSION_ID"
+    _esw_release_early "$SESSION_ID"
     HOOK_OK=1
     exit 0
 fi
@@ -620,7 +630,7 @@ _VR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/vault-resolve.sh"
 VAULT_ROOT="$(resolve_vault_root "$CONFIG_PATH" "$HOME/.claude/luna-vaults.json" "$CFG_DRY_RUN")"
 if [ -z "$VAULT_ROOT" ]; then
     log_msg "skipped: vault unresolved (invalid name / no real vault / unparseable config) — no write"
-    release_capture "$SESSION_ID"
+    _esw_release_early "$SESSION_ID"
     HOOK_OK=1   # clean intentional skip — keep the EXIT trap from logging a phantom FAILED
     exit 0
 fi
@@ -706,7 +716,7 @@ if [ "$CFG_DRY_RUN" = "true" ]; then
         printf '%s\n' "$MARKDOWN"
         printf '%s\n' "$SEP"
     } >> "$LOG_PATH" 2>/dev/null
-    release_capture "$SESSION_ID"
+    _esw_release_early "$SESSION_ID"
     HOOK_OK=1
     exit 0
 fi
@@ -789,7 +799,7 @@ if [ -z "$API_KEY" ]; then
         spawn_crystallizer
     else
         log_msg "ERROR: local fs write failed: $ABS_PATH"
-        release_capture "$SESSION_ID"
+        _esw_release_early "$SESSION_ID"
     fi
     HOOK_OK=1
     exit 0
@@ -868,7 +878,7 @@ if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "
     else
         log_msg "ERROR: PUT $ENDPOINT HTTP $HTTP_CODE and local fs fallback failed: $ABS_PATH"
         flag_degraded_fallback "$HTTP_CODE" "$REL_PATH" "$VAULT_ROOT" lost
-        release_capture "$SESSION_ID"
+        _esw_release_early "$SESSION_ID"
     fi
     HOOK_OK=1
     exit 0

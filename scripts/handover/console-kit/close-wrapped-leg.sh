@@ -156,10 +156,14 @@ if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
     head_window="${CLOSE_WRAPPED_LEG_CUSTOMTITLE_HEAD:-40}"
     candidates=$(printf '%s\n%s\n' "${ident#*$'\t'}" "$doc_stem" | tr ',' '\n' | sed '/^$/d')
     match_transcripts() {
-        local files="$1" matches="" f hit cand
+        local files="$1" hw="$2" matches="" f hit cand
         while IFS= read -r f; do
             [ -n "$f" ] || continue
-            hit=$(head -n "$head_window" "$f" 2>/dev/null)
+            if [ "$hw" -eq 0 ]; then
+                hit=$(cat "$f" 2>/dev/null)
+            else
+                hit=$(head -n "$hw" "$f" 2>/dev/null)
+            fi
             while IFS= read -r cand; do
                 [ -n "$cand" ] || continue
                 if printf '%s' "$hit" | grep -qF "\"customTitle\":\"$cand\""; then  # pipefail-ok: no pipefail here (set -u only); $hit is an already-captured small string, not a live producer
@@ -176,7 +180,7 @@ EOF
         printf '%s\n' "$matches" | sed '/^$/d' | sort -u
     }
     scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' -mtime "-${mtime_window}" 2>/dev/null)
-    transcript_matches=$(match_transcripts "$scan_files")
+    transcript_matches=$(match_transcripts "$scan_files" "$head_window")
     tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
     if [ "$tcount" -eq 0 ]; then
         # F3/codex-3: -mtime is a rolling window, not "today", and a target
@@ -184,8 +188,11 @@ EOF
         # transcripts fall inside it (an empty-scan_files check alone would
         # miss that case). Retry against the full tree whenever the SCOPED
         # search found no MATCH, not only when it found no files at all.
+        # codex-2 (round 4): the fallback must also drop the head-window
+        # bound - a customTitle past line $head_window is unmatchable in
+        # either pass otherwise. Pass 0 = unbounded (whole file).
         scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' 2>/dev/null)
-        transcript_matches=$(match_transcripts "$scan_files")
+        transcript_matches=$(match_transcripts "$scan_files" 0)
         tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
     fi
     if [ "$tcount" -eq 1 ]; then
