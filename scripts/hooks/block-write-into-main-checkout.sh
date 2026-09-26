@@ -118,21 +118,10 @@
 #     UNQUOTED and inside a DOUBLE-quoted span; inside a SINGLE-quoted span
 #     a backslash is LITERAL and does not prevent the closing quote, because
 #     bash has no escape there. That asymmetry is deliberate and is pinned by
-#     the suite's MIRROR rows. Not modelled: `$'...'` ANSI-C quoting. A
-#     `$(...)`/backtick substitution's body is NOT scanned in place as
-#     ordinary text — outer quoting (`"$(...)"`) would hide a `>` inside it
-#     from the outer scanner entirely, and a target token glued to the
-#     closing delimiter (`` `cmd > f` ``) would misclassify as a dynamic
-#     operand and fail open on itself alone. HIMMEL-3622 instead extracts
-#     each substitution's body as its own synthetic clause
-#     (_bwimc_extract_subst_bodies, quote-blind at the outer level, then
-#     re-scanned with FRESH quote/paren state so the body's own quoting is
-#     honoured), appended alongside the real clauses so a redirect or verb
-#     inside it is seen; an unterminated/unbalanced substitution fails
-#     CLOSED rather than being silently ignored. A doubly-nested
-#     substitution inside an extracted body is not itself re-extracted
-#     (single pass; fails toward MORE candidates via the outer clause it
-#     still appears in, never fewer).
+#     the suite's MIRROR rows. Not modelled: `$'...'` ANSI-C quoting, and
+#     `$(...)`/backtick nesting — a command substitution's body is scanned as
+#     ordinary text, so a redirect inside one is seen (fails toward MORE
+#     candidates, never fewer).
 #   - Interpreter bodies (heredoc payloads, `python3 -c '...'`) are NOT parsed
 #     for writes — heredoc bodies are blanked before scanning specifically so
 #     a `>` inside one (`if a > b:`) cannot produce a phantom target; the
@@ -429,73 +418,6 @@ _bwimc_blank_heredocs() {
     if [ "$active" = 1 ] || [ -n "$pend_term" ]; then
         _bwimc_deny "unresolved-heredoc" "<<${term:-$pend_term} (terminator not found)" "" ""
     fi
-    printf '%s' "$out"
-}
-
-# HIMMEL-3622: quote-blind extraction of $(...) and backtick command-
-# substitution BODIES as extra synthetic clauses, appended by the caller to
-# the text fed through _bwimc_split_clauses. Real bash restarts parsing
-# fresh inside a substitution regardless of what quotes it, so this walk
-# looks for the OPENING delimiter irrespective of the outer scanner's quote
-# state — deliberately quote-blind at THAT level, the same "extra fragment,
-# never fewer candidates" precedent the git arm's backtick split already
-# uses (HIMMEL-2526) — then tracks the substitution's OWN quote/paren state
-# with a FRESH _bwimc_scan_init, so a quoted `(` inside it (real bash: not a
-# real paren) does not miscount as unbalanced.
-#
-# Extracting the body WITHOUT its delimiters also closes a second,
-# independent fail-open: an unquoted `` `cmd > target` `` glues the closing
-# backtick onto the target token (no separating whitespace) — that token
-# then carries a literal backtick and is classified DYNAMIC (still carries
-# `$`/backtick after expansion), which fails OPEN on itself alone, by
-# design. The extracted copy has no such delimiter attached, so it resolves
-# statically. An unbalanced $(...) or an unterminated `...` fails CLOSED —
-# a truncated substitution cannot be safely ignored (ground-truthed
-# fail-opens: HIMMEL-3622).
-_bwimc_extract_subst_bodies() {
-    local text="$1"
-    local out="" i len c depth start
-    len=${#text}
-    i=0
-    while [ "$i" -lt "$len" ]; do
-        c="${text:$i:1}"
-        if [ "$c" = '`' ]; then
-            start=$((i+1))
-            i=$((i+1))
-            while [ "$i" -lt "$len" ] && [ "${text:$i:1}" != '`' ]; do
-                i=$((i+1))
-            done
-            if [ "$i" -ge "$len" ]; then
-                _bwimc_deny "unresolved-substitution" "backtick substitution (unterminated)" "" ""
-            fi
-            out="${out}${text:$start:$((i-start))}"$'\n'
-            i=$((i+1))
-            continue
-        fi
-        if [ "$c" = '$' ] && [ "${text:$((i+1)):1}" = '(' ]; then
-            start=$((i+2))
-            i=$((i+2))
-            depth=1
-            _bwimc_scan_init
-            while [ "$i" -lt "$len" ] && [ "$depth" -gt 0 ]; do
-                c="${text:$i:1}"
-                _bwimc_scan_step "$c"
-                if [ "$_BWIMC_ACT" = 1 ]; then
-                    case "$c" in
-                        '(') depth=$((depth+1)) ;;
-                        ')') depth=$((depth-1)) ;;
-                    esac
-                fi
-                i=$((i+1))
-            done
-            if [ "$depth" -gt 0 ]; then
-                _bwimc_deny "unresolved-substitution" "command substitution (unbalanced)" "" ""
-            fi
-            out="${out}${text:$start:$((i-1-start))}"$'\n'
-            continue
-        fi
-        i=$((i+1))
-    done
     printf '%s' "$out"
 }
 
@@ -978,7 +900,6 @@ _bwimc_deny() {
         unresolved-git-target) why="a git -C/--git-dir/--work-tree/GIT_* env or cd target could not be resolved (failing closed)" ;;
         repointed-remote) why="it runs a remote operation in a command that repoints a remote (a -c remote/url/protocol/core.sshCommand key, a GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, or git remote add|set-url), which can reach the primary under an innocent name (failing closed)" ;;
         unresolved-heredoc) why="a heredoc opener's terminator was never found in the command (failing closed — text after it cannot be safely classified)" ;;
-        unresolved-substitution) why="a \$(...) or \`...\` command substitution was never closed (failing closed — its body cannot be safely classified)" ;;
     esac
     {
         echo "⛔ block-write-into-main-checkout: refusing a write-shaped command — $why."
@@ -1257,11 +1178,6 @@ _bwimc_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/
 [ -n "$_bwimc_cwd" ] || _bwimc_cwd="$PWD"
 
 _bwimc_hb=$(_bwimc_blank_heredocs "$cmd")
-# HIMMEL-3622: append extracted $(...)/backtick substitution bodies as extra
-# synthetic clauses, so every downstream consumer of $_bwimc_hb (the
-# redirect/tee scan and the verb-dispatch arms alike) sees them without
-# duplicating the extraction at each call site.
-_bwimc_hb="${_bwimc_hb}"$'\n'"$(_bwimc_extract_subst_bodies "$_bwimc_hb")"
 
 # ---- (a) redirect / tee, per-clause quote-aware token walk ----
 #

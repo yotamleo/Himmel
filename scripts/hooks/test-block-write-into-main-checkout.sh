@@ -1730,20 +1730,22 @@ HC_BODY_CMD=$(printf "cat <<EOF\nif a > b:\n    pass\nEOF")
 HC_BODY_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HC_BODY_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "71c REGRESSION CONTROL: a heredoc body line containing '>' (no continuation) still ALLOWS" allow "$HC_BODY_JSON"
 
-# 71d (HIMMEL-2645 sibling): `<<-EOF` (tab-strip opener) with the SAME
-# opener-ends-in-a-continuation shape as 71a — the continued redirect is
-# still command text, not body, regardless of the `-` variant.
+# 71d COVERAGE (HIMMEL-2645 sibling, `<<-EOF` tab-strip opener variant): the
+# same opener-ends-in-a-continuation shape as 71a, dashed variant. NOT a RED
+# control — this shape already denies against main's (pre-fix) hook too, so
+# it doesn't demonstrate a bug this PR fixes; it pins that the fix doesn't
+# regress the dashed-opener case either.
 HCD_CMD=$(printf 'cat <<-EOF \\\n> %s/a.txt\nbody\n\tEOF' "$FIX/primary")
 HCD_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HCD_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
-check_both_reason "71d cat <<-EOF \\ + newline + > primary/a.txt denies (tab-strip opener, continued redirect is command text)" \
+check_both_reason "71d COVERAGE: cat <<-EOF \\ + newline + > primary/a.txt denies (tab-strip opener, continued redirect is command text)" \
     "$HCD_JSON" "$FIX/primary/a.txt"
 
-# 71e (HIMMEL-2645 sibling): a QUOTED opener (`<<'EOF'`) ending in a line
-# continuation — the quoting of the delimiter word must not suppress the
-# continuation check.
+# 71e COVERAGE (HIMMEL-2645 sibling, quoted opener `<<'EOF'` variant): same
+# shape, quoted delimiter word. NOT a RED control, same reason as 71d — pins
+# that quoting the delimiter doesn't suppress the continuation check.
 HCQ_CMD=$(printf "cat <<'EOF' \\\\\n> %s/a.txt\nbody\nEOF" "$FIX/primary")
 HCQ_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$HCQ_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
-check_both_reason "71e cat <<'EOF' \\ + newline + > primary/a.txt denies (quoted opener, continued redirect is command text)" \
+check_both_reason "71e COVERAGE: cat <<'EOF' \\ + newline + > primary/a.txt denies (quoted opener, continued redirect is command text)" \
     "$HCQ_JSON" "$FIX/primary/a.txt"
 
 # 71f REGRESSION CONTROL (HIMMEL-2645 sibling): a line continuation that
@@ -1765,45 +1767,57 @@ UT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UT_
 check_both_reason "72a heredoc delimiter split by continuation (terminator never matches) denies closed" \
     "$UT_JSON" "terminator was never found"
 
-echo "== HIMMEL-3622: \$(...) / backtick command-substitution bodies are scanned =="
+# HIMMEL-3622 (command-substitution body scanning) was pulled from this PR by
+# judge ruling J1285O: the extractor it added both left a real fail-open
+# (backtick nested inside $(...)) and introduced a new false DENY on the
+# fleet's own `git commit -m "$(cat <<'EOF' … EOF)"` / `gh pr create --body`
+# idiom whenever the message has an apostrophe, a lone `(` or a `"`. 3622
+# goes back to To Do for its own leg; rows 74a-74g below pin that this PR
+# does not regress that idiom (ALLOW, ground-truthed against the real
+# interpreter in a scratch worktree).
 
-# 73a: a redirect inside a DOUBLE-QUOTED \$(...) substitution. Outer quoting
-# gave the whole \"\$(...)\" span ACT=0 and collapsed it into one unsplittable
-# token, hiding the inner `>` from the redirect scan entirely.
-DQS_CMD="x=\"\$(echo hi > $FIX/primary/a.txt)\""
-DQS_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$DQS_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
-check_both_reason "73a double-quoted \$(...) with an inner redirect denies" "$DQS_JSON" "$FIX/primary/a.txt"
+echo "== HIMMEL-2645/2679/3621 regression: the commit/PR-create heredoc idiom must still ALLOW =="
 
-# 73b: an UNQUOTED backtick substitution. The closing backtick glues onto the
-# redirect target token with no separating whitespace, classifying it
-# DYNAMIC (still carries a backtick) and failing open on itself alone.
-BTU_CMD="x=\`echo hi > $FIX/primary/a.txt\`"
-BTU_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$BTU_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
-check_both_reason "73b unquoted backtick substitution with an inner redirect denies" "$BTU_JSON" "$FIX/primary/a.txt"
+# 74a: `git commit -m "$(cat <<'EOF' ... EOF)"` with an apostrophe in the
+# message. This is the fleet's standard commit idiom; must ALLOW.
+CHA_CMD=$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: don'"'"'t break things\nEOF\n)"')
+CHA_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHA_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "74a REGRESSION CONTROL: commit heredoc message with an apostrophe still ALLOWS" allow "$CHA_JSON"
 
-# 73c: a DOUBLE-QUOTED backtick substitution — both fail-open mechanisms
-# (outer quoting AND the glued delimiter) stacked on the same command.
-BTQ_CMD="x=\"\`echo hi > $FIX/primary/a.txt\`\""
-BTQ_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$BTQ_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
-check_both_reason "73c double-quoted backtick substitution with an inner redirect denies" "$BTQ_JSON" "$FIX/primary/a.txt"
+# 74b: same idiom, a lone `(` in the message.
+CHB_CMD=$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: (see ticket)\nEOF\n)"')
+CHB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "74b REGRESSION CONTROL: commit heredoc message with a lone '(' still ALLOWS" allow "$CHB_JSON"
 
-# 73d: an UNBALANCED \$(...) — the substitution is never closed, so its body
-# cannot be safely classified. Fail CLOSED rather than silently ignored.
-UNB_CMD="echo \$(echo hi"
-UNB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UNB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
-check_both_reason "73d unbalanced \$(...) denies closed" "$UNB_JSON" "was never closed"
+# 74c: same idiom, a `"` in the message.
+CHC_CMD=$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: says "hello"\nEOF\n)"')
+CHC_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$CHC_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "74c REGRESSION CONTROL: commit heredoc message with a double-quote still ALLOWS" allow "$CHC_JSON"
 
-# 73e: an UNTERMINATED backtick substitution — same fail-closed direction.
-UNT_CMD='echo `echo hi'
-UNT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$UNT_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
-check_both_reason "73e unterminated backtick substitution denies closed" "$UNT_JSON" "was never closed"
+# 74d: `gh pr create --body "$(cat <<'EOF' ... EOF)"` with an apostrophe —
+# same idiom, PR-body form. Direct-exec only, same rationale as row 27:
+# block-terminal-write-fence.sh has its own separate, pre-existing HIMMEL-745
+# policy that hard-blocks ALL `gh pr create` in the codex-direct lane
+# regardless of content (external-write class) — unrelated to this hook's
+# substitution/heredoc scanning, so sourced mode is out of scope here.
+PRB_CMD=$(printf 'gh pr create --body "$(cat <<'"'"'EOF'"'"'\nit'"'"'s done\nEOF\n)"')
+PRB_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$PRB_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_one "74d REGRESSION CONTROL: gh pr create --body heredoc with an apostrophe — direct-exec ALLOWS (not the external-write fence)" \
+    "$DIRECT" allow "$PRB_JSON"
 
-# 73f REGRESSION CONTROL: a NESTED quoted `(` inside a \$(...) substitution
-# is not a real paren — the extractor re-scans each substitution's body with
-# FRESH quote state, so this must not misdetect as unbalanced.
-NQ_CMD="echo \$(echo \"the (opening\")"
-NQ_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$NQ_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
-check_both "73f REGRESSION CONTROL: a quoted '(' inside \$(...) does not misdetect as unbalanced" allow "$NQ_JSON"
+# 74e/74f: read-only \$(...)-shaped TEXT in a grep/sed pattern (not a real
+# substitution at all — a literal string the command never evaluates) must
+# not be misread as an opener.
+GDP_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"grep -n '\$(' f\",\"cwd\":\"$FIX/wt\"}}"
+check_both "74e REGRESSION CONTROL: grep -n '\$(' f still ALLOWS" allow "$GDP_JSON"
+SDP_CMD='sed -n '"'"'/\$(/p'"'"' f'
+SDP_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$SDP_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "74f REGRESSION CONTROL: sed -n '/\\\$(/p' f still ALLOWS" allow "$SDP_JSON"
+
+# 74g: a backtick inside a single-quoted word — plain literal text, not a
+# substitution.
+BTQ_LIT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo 'don\`t'\",\"cwd\":\"$FIX/wt\"}}"
+check_both "74g REGRESSION CONTROL: echo 'don\`t' still ALLOWS" allow "$BTQ_LIT_JSON"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
