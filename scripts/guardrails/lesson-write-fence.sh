@@ -794,6 +794,33 @@ _scan_redirects() {
 # character class anyway, as a defensive/self-documenting POSIX env-var-name
 # grammar (letter/underscore then word chars), not a case-insensitivity fix
 # that was already covered by the pre-lowering.
+#
+# _bundle_value_at_end <chars-after-dash> <flag-chars> <value-chars> -> 0
+# iff <chars-after-dash> is 2+ characters, every character except the LAST
+# is a member of <flag-chars> (that arm's known no-value short options), and
+# the last character is a member of <value-chars> (that arm's known
+# value-taking short options) - i.e. a getopt-style bundled short-option
+# cluster (`env -ia`, `sudo -Ep`) whose value-taking option is the FINAL
+# letter, so its value is the NEXT token (a glued value would extend the
+# same token past that letter instead - judge J1298O C3: the old walk fell
+# through to the generic bare-flag case for any 2+-letter cluster, advancing
+# by only one token, so the value-taking letter's value became the
+# misresolved head verb instead of the real wrapped command one token
+# further on).
+_bundle_value_at_end() {
+    local chars="$1" flags="$2" values="$3"
+    local len=${#chars} i c last
+    [ "$len" -ge 2 ] || return 1
+    last="${chars: -1}"
+    case "$values" in *"$last"*) : ;; *) return 1 ;; esac
+    i=0
+    while [ "$i" -lt "$((len-1))" ]; do
+        c="${chars:$i:1}"
+        case "$flags" in *"$c"*) : ;; *) return 1 ;; esac
+        i=$((i+1))
+    done
+    return 0
+}
 _clause_head_idx() {
     local -a tok=("$@")
     local n=${#tok[@]} i=0 s w sw
@@ -830,6 +857,16 @@ _clause_head_idx() {
                     # own long names are already lowercase.
                     case "$sw" in
                         -a|-u|-C|-S)              i=$((i+2)) ;;
+                        # judge J1298O C3: a bundled cluster (`-ia`, `-va`,
+                        # `-0a`) ending in a value-taking letter (a/u/C) with
+                        # only known no-value flags (i/0/v) before it - GNU
+                        # env bundling, the value is the next token.
+                        -[A-Za-z0-9][A-Za-z0-9]*)
+                            if _bundle_value_at_end "${sw#-}" "i0v" "auC"; then
+                                i=$((i+2))
+                            else
+                                i=$((i+1))
+                            fi ;;
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
                         --*)
                             if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
@@ -903,14 +940,32 @@ _clause_head_idx() {
                     # below, where sudo's own long names are already
                     # lowercase.
                     case "$sw" in
-                        -u|-g|-U|-p|-C|-r|-t|-h|-D) i=$((i+2)) ;;
+                        # judge J1298O C2: -R (--chroot) and -T
+                        # (--command-timeout) are real value-taking sudo
+                        # options this arm's case-sensitive letter set
+                        # missed outright (main's old case-INsensitive match
+                        # folded them onto -r/-t by accident; this arm's
+                        # move to case-sensitive matching dropped that
+                        # accidental coverage without replacing it).
+                        -u|-g|-U|-p|-C|-r|-t|-h|-D|-R|-T) i=$((i+2)) ;;
+                        # judge J1298O C3: a bundled cluster (`-Ep`, `-Eu`,
+                        # `-HD`, `-nC`) ending in a value-taking letter with
+                        # only known no-value flags before it - same
+                        # bundling gap as the env arm above.
+                        -[A-Za-z][A-Za-z]*)
+                            if _bundle_value_at_end "${sw#-}" "AbBEeHikKlnPsvV" "ugUpCrthDRT"; then
+                                i=$((i+2))
+                            else
+                                i=$((i+1))
+                            fi ;;
                         --)                       i=$((i+1)); break ;;
                         --*)
                             if guard_is_long_abbrev "user" "$w" || guard_is_long_abbrev "group" "$w" \
                                 || guard_is_long_abbrev "other-user" "$w" || guard_is_long_abbrev "prompt" "$w" \
                                 || guard_is_long_abbrev "close-from" "$w" || guard_is_long_abbrev "role" "$w" \
                                 || guard_is_long_abbrev "type" "$w" || guard_is_long_abbrev "host" "$w" \
-                                || guard_is_long_abbrev "chdir" "$w"; then
+                                || guard_is_long_abbrev "chdir" "$w" || guard_is_long_abbrev "chroot" "$w" \
+                                || guard_is_long_abbrev "command-timeout" "$w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
@@ -994,6 +1049,29 @@ _git_is_read_only() {
 # verbs either (it would not catch the target, for the same quoting reason)
 # - it instead runs `_clause_has_enforcement_signal` over the RAW clause
 # text and denies on a hit, allows otherwise.
+#
+# _normalize_scan_text <raw-text> -> squeezes repeated `/` down to one,
+# drops `/./ ` segments, and strips quote characters - the raw-TEXT
+# counterpart to `_normalize`'s path-SEGMENT collapsing, for callers (below)
+# that substring-scan whole clause text rather than resolve a single path.
+# Judge J1298O C1 (Critical, NEW ALLOW vs main): `_clause_has_enforcement_signal`
+# matched the literal substring only, so a policy value written with a
+# single slash (`scripts/hooks/`) missed the identical write spelled
+# `scripts//hooks/a.sh` or `scripts/./hooks/a.sh` - GNU coreutils resolve
+# both exactly as the plain path, so the fence must scan as if normalized
+# too. Text-level only (no filesystem access, no anchoring) since the
+# caller has no single resolved path to normalize.
+_normalize_scan_text() {
+    local t="$1"
+    t="${t//\'/}"; t="${t//\"/}"; t="${t//\`/}"
+    while case "$t" in *//*) true ;; *) false ;; esac; do
+        t="${t//\/\//\/}"
+    done
+    while case "$t" in *"/./"*) true ;; *) false ;; esac; do
+        t="${t//\/.\//\/}"
+    done
+    printf '%s' "$t"
+}
 _interpreter_is_read_only() {
     local verb="$1"; shift
     local -a tok=("$@")
@@ -1031,7 +1109,7 @@ _interpreter_is_read_only() {
 # -exec`/`xargs`'s deferred arguments, called out in the header's ACCEPTED
 # section.
 _clause_has_enforcement_signal() {
-    local raw_lc; raw_lc="$(_lc "$1")"
+    local raw_lc; raw_lc="$(_lc "$(_normalize_scan_text "$1")")"
     local i v_lc
     i=0
     while [ "$i" -lt "$ENTRY_COUNT" ]; do
