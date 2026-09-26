@@ -27,6 +27,16 @@ PROJ_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# HIMMEL-1712: the watchdog now treats a cache with no (or mismatched) account
+# stamp as unusable — synthesize a fake identity so every fixture below can
+# stamp a matching account and keep exercising the threshold/ledger logic.
+export HOME="$TMP/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-quota-gauge-writer-test"}}' > "$HOME/.claude.json"
+# shellcheck source=../lib/usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$PROJ_ROOT/scripts/lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
+
 pass=0
 fail=0
 
@@ -81,7 +91,7 @@ write_cache() {
     # $1=path $2=five_hour util $3=seven_day util $4=five_hour resets_at (optional)
     local resets="${4:-2026-06-10T13:30:00+00:00}"
     cat > "$1" <<EOF
-{"five_hour":{"utilization":$2,"resets_at":"$resets"},"seven_day":{"utilization":$3,"resets_at":"2026-06-13T09:00:00+00:00"}}
+{"account":"$ACCT","five_hour":{"utilization":$2,"resets_at":"$resets"},"seven_day":{"utilization":$3,"resets_at":"2026-06-13T09:00:00+00:00"}}
 EOF
 }
 
@@ -89,7 +99,7 @@ EOF
 # "unknown"/bucket<N> substitution — reset_at must map to null, never copied).
 write_cache_no_resets() {
     cat > "$1" <<EOF
-{"five_hour":{"utilization":$2},"seven_day":{"utilization":$3}}
+{"account":"$ACCT","five_hour":{"utilization":$2},"seven_day":{"utilization":$3}}
 EOF
 }
 
@@ -179,6 +189,7 @@ echo "Test T-lib: missing ledger lib — the command -v guard holds, hook still 
 LIBLESS="$TMP/libless"; mkdir -p "$LIBLESS/hooks" "$LIBLESS/lib"
 cp "$HOOK" "$LIBLESS/hooks/"
 cp "$(dirname "$HOOK")/../lib/py-armor.sh" "$LIBLESS/lib/"
+cp "$(dirname "$HOOK")/../lib/usage-cache-identity.sh" "$LIBLESS/lib/"
 S="$TMP/slib"; mkdir -p "$S"
 C="$TMP/clib.json"; write_cache "$C" 95 14 "2026-06-10T13:30:00+00:00"
 L="$TMP/ledgerlib.jsonl"

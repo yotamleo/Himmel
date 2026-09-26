@@ -10,6 +10,16 @@ SUT="$REPO/scripts/lib/claude-headless.sh"
 PASS=0; FAIL=0; SKIP=0
 W="$(mktemp -d -t claude-headless-test.XXXXXX)"; trap 'rm -rf "$W"' EXIT
 
+# HIMMEL-1712: bank-preflight now distrusts a cache whose account doesn't
+# match the current identity — synthesize one so mk_bank_cache's fixture
+# still verdicts PROCEED.
+export HOME="$W/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-claude-headless-test"}}' > "$HOME/.claude.json"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$REPO/scripts/lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
+
 check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
   else FAIL=$((FAIL+1)); echo "FAIL - $1: expected '$2' got '$3'"; fi; }
 check_ne() { if [ "$2" != "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
@@ -19,7 +29,7 @@ check_ne() { if [ "$2" != "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
 # network, no real usage cache). bank-preflight.sh reads primaries_refreshed_at
 # freshly, so re-stamp it per-call via CADENCE_BANK_SKIP_REFRESH.
 BANK_CACHE="$W/bank-cache.json"
-mk_bank_cache() { printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}\n' "$(date +%s)" > "$BANK_CACHE"; }
+mk_bank_cache() { printf '{"account":"%s","five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}\n' "$ACCT" "$(date +%s)" > "$BANK_CACHE"; }
 mk_bank_cache
 export CADENCE_BANK_CACHE="$BANK_CACHE"
 export CADENCE_BANK_SKIP_REFRESH=1
