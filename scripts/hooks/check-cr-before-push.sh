@@ -186,20 +186,30 @@ REF_LINES
 }
 
 # scrub_endpoint URL — strip userinfo (embedded tokens/passwords) from a
-# scheme://user:pass@host URL before it is persisted in the plaintext marker
-# under .git. HIMMEL-1565: covers every scheme, not just http(s) — ssh://
-# and git:// both accept a user:pass@ userinfo component too (scp-style
+# scheme://user[:pass]@host URL before it is persisted in the plaintext
+# marker under .git. HIMMEL-1565: covers every scheme, not just http(s) —
+# ssh:// and git:// both accept a userinfo component too (scp-style
 # user@host:path, e.g. git@, is a bare username with no `://` and no
-# password position, so it is left untouched: nothing there to scrub). Only a
-# userinfo with a `:` password separator before the `@` is stripped — a bare
-# `scheme://user@host` carries no credential, and the username there is load
-# -bearing (clear-cr-marker.sh's later ls-remote resolves identity from the
-# persisted endpoint, so blanking a plain `git@` would change which account
-# it connects as).
+# password position, so it is left untouched: nothing there to scrub).
+#
+# The exemption for a BARE username (no `:pass`) is scheme-scoped, not
+# blanket: http(s) commonly carries a PAT AS the bare username with no
+# password (`https://ghp_TOKEN@host/repo.git`) — that username IS the
+# credential, so any userinfo on those schemes is stripped unconditionally.
+# ssh:// / git+ssh://, by contrast, commonly carry a real, non-secret account
+# name as a bare username (`ssh://git@host`) that clear-cr-marker.sh's later
+# ls-remote needs to resolve the same identity the push used — so only an
+# actual `user:pass@` pair (a `:` before the `@`) is stripped there.
 scrub_endpoint() {
     case "$1" in
-        *://*:*@*) printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' ;;
-        *) printf '%s\n' "$1" ;;
+        ssh://*:*@*|git+ssh://*:*@*)
+            printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' ;;
+        ssh://*@*|git+ssh://*@*)
+            printf '%s\n' "$1" ;;
+        *://*@*)
+            printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' ;;
+        *)
+            printf '%s\n' "$1" ;;
     esac
 }
 

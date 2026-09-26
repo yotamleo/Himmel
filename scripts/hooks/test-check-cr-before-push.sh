@@ -918,6 +918,20 @@ else
     fail "named-remote push: field 4 changed to '$sm_remote', expected 'origin' unchanged" "out: $out"
 fi
 
+echo "TEST: HIMMEL-1565 -- an https PAT carried as a bare username (no password) is still scrubbed as a credential"
+rc=0; out=$(cd "$REPO" && bash "$HOOK" origin "https://ghp_TOKEN@example.com/repo.git" <<< "refs/heads/feat/scrub $scrub_sha refs/heads/feat/scrub $Z40" 2>&1) || rc=$?
+sm_tok_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$sm" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$sm_tok_endpoint" = "https://example.com/repo.git" ]; then
+    pass "https bare-username PAT stripped: endpoint is https://example.com/repo.git (HIMMEL-1565)"
+else
+    fail "expected the PAT stripped, got '$sm_tok_endpoint' (rc=$rc)" "out: $out"
+fi
+if [ -f "$sm" ] && grep -q "ghp_TOKEN" "$sm"; then
+    fail "marker leaks the bare-username PAT into plaintext under .git"
+else
+    pass "marker carries no PAT material"
+fi
+
 echo "TEST: ref push without an endpoint URL -> fail CLOSED naming the missing binding"
 rc=0; out=$(cd "$REPO" && bash "$HOOK" origin <<< "refs/heads/feat/scrub $scrub_sha refs/heads/feat/scrub $Z40" 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then pass "missing endpoint URL -> exit 2 (fail closed)"; else fail "missing endpoint URL -> expected exit 2 got $rc" "out: $out"; fi
