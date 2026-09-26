@@ -707,7 +707,7 @@ stage_mentions_gate() {
         stripped=${w//\"/}
         stripped=${stripped//\'/}
         [ -n "$stripped" ] || continue
-        printf '%s' "$stripped" | grep -qE "$GATE_RE" && return 0
+        grep -qE "$GATE_RE" <<<"$stripped" && return 0
     done
     return 1
 }
