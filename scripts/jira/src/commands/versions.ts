@@ -83,6 +83,14 @@ export async function releaseVersion(
   return `Released version ${name}`;
 }
 
+// HIMMEL-3713: shared validation so `edit --fix-version`/`--add-fix-version`
+// and `create --fix-version` fail loud on a typo'd version name instead of
+// silently no-oping or surfacing a bare Jira 400 with no project context.
+export async function assertVersionExists(project: string, name: string): Promise<void> {
+  const found = (await fetchVersions(project)).some((v) => v.name === name);
+  if (!found) throw new Error(`no version named "${name}" in project ${project}`);
+}
+
 export async function setFixVersion(
   key: string,
   op: 'add' | 'remove',

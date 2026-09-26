@@ -135,6 +135,29 @@ describe('edit', () => {
   it('does not throw "nothing to edit" when only --add-labels is given', () => {
     expect(buildEditFields({ addLabels: 'a,b' })).toEqual({});
   });
+
+  it('maps --fix-version to a full-replace fixVersions array (HIMMEL-3713)', () => {
+    const fields = buildEditFields({ fixVersion: 'v1.0.0' });
+    expect(fields).toEqual({ fixVersions: [{ name: 'v1.0.0' }] });
+  });
+
+  it('combines fixVersion with another field', () => {
+    const fields = buildEditFields({ fixVersion: 'v1.0.0', priority: 'High' });
+    expect(fields).toEqual({
+      fixVersions: [{ name: 'v1.0.0' }],
+      priority: { name: 'High' },
+    });
+  });
+
+  it('throws when --fix-version and --add-fix-version are both given', () => {
+    expect(() =>
+      buildEditFields({ fixVersion: 'v1.0.0', addFixVersion: 'v1.0.1' }),
+    ).toThrow(/mutually exclusive/);
+  });
+
+  it('does not throw "nothing to edit" when only --add-fix-version is given', () => {
+    expect(buildEditFields({ addFixVersion: 'v1.0.0' })).toEqual({});
+  });
 });
 
 describe('edit --add-labels (HIMMEL-3610)', () => {
@@ -186,5 +209,83 @@ describe('edit --add-labels (HIMMEL-3610)', () => {
     const [, , body] = mockRequest.mock.calls[0];
     expect(body).toEqual({ fields: { labels: ['a', 'b'] } });
     expect((body as { update?: unknown }).update).toBeUndefined();
+  });
+});
+
+describe('edit --fix-version / --add-fix-version (HIMMEL-3713)', () => {
+  let mockRequest: ReturnType<typeof vi.fn>;
+  const origProject = process.env.JIRA_PROJECT_KEY;
+
+  const KNOWN_VERSIONS = [
+    { id: '10001', name: 'v1.0.0' },
+    { id: '10002', name: 'v1.0.1' },
+  ];
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.JIRA_PROJECT_KEY = 'HIMMEL';
+    const { request } = await import('../client.js');
+    mockRequest = request as unknown as ReturnType<typeof vi.fn>;
+    mockRequest.mockImplementation(async (method: string) =>
+      method === 'GET' ? KNOWN_VERSIONS : {},
+    );
+  });
+
+  afterEach(() => {
+    if (origProject === undefined) delete process.env.JIRA_PROJECT_KEY;
+    else process.env.JIRA_PROJECT_KEY = origProject;
+  });
+
+  function freshProgram(register: (p: Command) => void): Command {
+    const p = new Command();
+    p.exitOverride();
+    register(p);
+    return p;
+  }
+
+  it('validates against the project versions then sends a full-replace fields.fixVersions', async () => {
+    const { registerEdit } = await import('./edit.js');
+    const p = freshProgram(registerEdit);
+    await p.parseAsync(['node', 'jira', 'edit', 'HIMMEL-1', '--fix-version', 'v1.0.0']);
+    const putCall = mockRequest.mock.calls.find((c) => c[0] === 'PUT');
+    expect(putCall?.[2]).toEqual({ fields: { fixVersions: [{ name: 'v1.0.0' }] } });
+  });
+
+  it('sends update.fixVersions add op and NO fields.fixVersions for --add-fix-version', async () => {
+    const { registerEdit } = await import('./edit.js');
+    const p = freshProgram(registerEdit);
+    await p.parseAsync(['node', 'jira', 'edit', 'HIMMEL-1', '--add-fix-version', 'v1.0.1']);
+    const putCall = mockRequest.mock.calls.find((c) => c[0] === 'PUT');
+    expect(putCall?.[2]).toEqual({ update: { fixVersions: [{ add: { name: 'v1.0.1' } }] } });
+    expect((putCall?.[2] as { fields?: unknown }).fields).toBeUndefined();
+  });
+
+  it('rejects an unknown --fix-version naming the project, without ever PUTting', async () => {
+    const { registerEdit } = await import('./edit.js');
+    const p = freshProgram(registerEdit);
+    await expect(
+      p.parseAsync(['node', 'jira', 'edit', 'HIMMEL-1', '--fix-version', 'v9.9.9']),
+    ).rejects.toThrow(/no version named "v9\.9\.9" in project HIMMEL/);
+    expect(mockRequest.mock.calls.some((c) => c[0] === 'PUT')).toBe(false);
+  });
+
+  it('rejects --fix-version together with --add-fix-version as a usage error, without a network call', async () => {
+    const { registerEdit } = await import('./edit.js');
+    const p = freshProgram(registerEdit);
+    await expect(
+      p.parseAsync([
+        'node',
+        'jira',
+        'edit',
+        'HIMMEL-1',
+        '--fix-version',
+        'a',
+        '--add-fix-version',
+        'b',
+      ]),
+    ).rejects.toThrow(/mutually exclusive/);
+    expect(mockRequest).not.toHaveBeenCalled();
   });
 });
