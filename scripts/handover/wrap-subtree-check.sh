@@ -64,7 +64,10 @@
 # ponytail: the default harness match is a heuristic over argv, so a leaked
 # process literally named like an MCP server (`node …/mcp-server-x/y.js`) would
 # be exempt; the leak class this gate exists for is a tool-call shell, which
-# is never exempt.
+# is never exempt. The same is true of `caffeinate` and `claude-hud`
+# (HIMMEL-3712): a leg-started `caffeinate` not spawned by the session's own
+# keep-awake would also be exempt by name alone, same tradeoff, no new
+# mechanism to fix it here.
 #
 # READ-ONLY: this script never signals a process. Bash 3.2-compatible.
 # WRAP_SUBTREE_SELF overrides the pid treated as "this script" (test seam).
