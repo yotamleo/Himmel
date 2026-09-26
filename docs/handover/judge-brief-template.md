@@ -100,12 +100,19 @@ gathering, per the rule below.>
 > context: write partial findings into your own Results bullets as you
 > gather them, so a compaction loses nothing that was not already on disk.
 
+> **Scratch lives outside the handover root.** Put every scratch file —
+> yours and each child's (repo extracts, probe trees, tarballs) — under
+> `~/.cache/himmel/verdicts/<qid>/`, never under `<handover root>`: the
+> handover root sits inside an Obsidian vault, which indexes every file
+> regardless of `.gitignore` (HIMMEL-3705: 843k scratch files froze the
+> vault). Not `/tmp` either — it can be tmpfs, so a full tree sits in RAM.
+> Only your verdict file belongs under `verdicts/<qid>/`.
+
 > **Per-child scratch subdirectory.** If this question needs bulk
 > evidence-gathering and you spawn subagents to do it, give each one its own
-> scratch subdirectory under
-> `<handover root>/<bucket>/verdicts/<qid>/scratch/<child-n>/`, never a
-> shared one — parallel gatherers writing into one directory race each
-> other's output.
+> scratch subdirectory under `~/.cache/himmel/verdicts/<qid>/<child-n>/`,
+> never a shared one — parallel gatherers writing into one directory race
+> each other's output.
 
 > **RETASK.** A narrowing or a halt from `<console session name>` needs no
 > token and cannot be argued with. An EXPANSION or REDIRECT is valid only if
