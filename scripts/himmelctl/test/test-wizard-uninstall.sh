@@ -530,4 +530,24 @@ else
   echo "ok: caseI3 dry-run advisory plan prints 'size unknown' (not 'absent') when the qmd-fork path exists but is unreadable"
 fi
 
+# I4: qmd-fork dir holds more entries than the walk's entry bound -> 'size
+# unknown', never a real byte count and never a hang on a huge tree
+# (codex-1 round 4).
+hI4="$work/hI4"; mkdir -p "$hI4/.himmel/qmd-fork"
+i=0
+while [ "$i" -le 5000 ]; do
+  : > "$hI4/.himmel/qmd-fork/f$i"
+  i=$((i + 1))
+done
+set +e
+outI4=$(PATH="$cI" HOME="$hI4" USERPROFILE="$(winpath "$hI4")" HIMMELCTL_CACHE_DIR="$(winpath "$hI4.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hI4.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureI")" \
+       "$node_bin" "$wizard" uninstall --dry-run \
+       </dev/null 2>&1); rcI4=$?
+set -e
+[ "$rcI4" -eq 0 ] || fail "caseI4: dry-run should exit 0 (got rc=$rcI4): $outI4"
+grepq "$outI4" -F -- "qmd-binary ($hI4/.himmel/qmd-fork, size unknown)" \
+  || fail "caseI4: expected qmd-binary to print 'size unknown' once the walk exceeds its entry bound (got: $outI4)"
+echo "ok: caseI4 dry-run advisory plan prints 'size unknown' (not a byte count) once the qmd-fork tree exceeds the walk's entry bound"
+
 echo "PASS"

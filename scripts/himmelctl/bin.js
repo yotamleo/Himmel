@@ -4563,12 +4563,15 @@ function qmdOffboardLocation() {
   } catch (e) {
     return { path: resolved, size: e.code === 'ENOENT' ? 'absent' : 'size unknown' };
   }
+  const QMD_WALK_ENTRY_BOUND = 5000;
+  let entriesVisited = 0;
   const walk = (p, st) => {
     if (st.isSymbolicLink()) return 0;
     if (st.isFile()) return st.size;
     if (!st.isDirectory()) return 0;
     let total = 0;
     for (const entry of fs.readdirSync(p)) {
+      if (++entriesVisited > QMD_WALK_ENTRY_BOUND) throw new Error('qmd size walk exceeded entry bound');
       const child = path.join(p, entry);
       total += walk(child, fs.lstatSync(child));
     }
