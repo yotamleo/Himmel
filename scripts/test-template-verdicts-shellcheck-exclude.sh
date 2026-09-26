@@ -32,13 +32,13 @@ try:
     import yaml
 except ImportError:
     print("SKIP - PyYAML not importable")
-    sys.exit(0)
+    sys.exit(2)
 
 try:
     from pre_commit.commands.run import filter_by_include_exclude
 except ImportError:
     print("SKIP - pre_commit package not importable")
-    sys.exit(0)
+    sys.exit(2)
 
 cfg_path = sys.argv[1]
 with open(cfg_path, encoding="utf-8") as fh:
@@ -82,7 +82,10 @@ PYEOF
 rc=$?
 echo "$OUT"
 echo "----"
-if [ "$rc" -eq 0 ]; then
+if [ "$rc" -eq 2 ]; then
+    echo "SKIP: template-verdicts-shellcheck-exclude ($0)"
+    exit 0
+elif [ "$rc" -eq 0 ]; then
     echo "PASS: template-verdicts-shellcheck-exclude ($0)"
 else
     echo "FAIL: template-verdicts-shellcheck-exclude ($0)" >&2
