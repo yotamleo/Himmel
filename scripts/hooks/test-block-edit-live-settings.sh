@@ -1332,6 +1332,15 @@ printf 'plain\n' > "$PRIMARY/.claude/worktrees/x/plain"
 assert_rc "211 cp y into an ordinary existing worktree file allows" 0 \
     "$(bash_rc_of "$WT2" "cp y \"$PRIMARY/.claude/worktrees/x/plain\"")"
 
+# 212: same pre-existing-symlink shape as 210, but the symlink's own path
+# contains a space and the command text quotes it. Splitting the
+# quote-stripped command on whitespace (the pre-fix implementation) breaks
+# the one destination word into two, neither of which names the real
+# symlink — a real bypass the codex critic panel caught on this ticket.
+ln -s "$PRIMARY/.claude/settings.json" "$PRIMARY/.claude/worktrees/x/s ymlink"
+assert_rc "212 cp y through a quoted pre-existing symlink with a space denies" 2 \
+    "$(bash_rc_of "$WT2" "cp y \"$PRIMARY/.claude/worktrees/x/s ymlink\"")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

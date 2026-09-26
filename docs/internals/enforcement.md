@@ -1728,6 +1728,11 @@ already uses, which follows symlinks); a destination that already exists as
 a symlink into a live settings file or the primary's `.claude/` outside
 worktrees/ denies even though the text is otherwise silent — this is the one
 place the hook reads the filesystem, and only for destination operands.
+Checks (1) and (3) walk the tokenizer's own `ST_W[]` words (quotes/escapes
+removed, internal spaces preserved) when it vouched for the command, so a
+quoted destination with a space stays one operand; only a command the
+tokenizer could not model falls back to a plain whitespace split, same as
+every other `TOK=0` fallback in this file.
 
 **The Bash arm tokenizes (HIMMEL-3546, HIMMEL-3564).** A Bash command is split
 by a quote-aware, segment-wise tokenizer — canonical in

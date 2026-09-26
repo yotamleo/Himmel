@@ -1465,31 +1465,54 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # both are judged BEFORE the early exit below that they would otherwise
     # never reach. One pass over the command's words, gated on a write verb
     # being present at all.
+    #
+    # A quoted destination containing a space ("my path/s") must stay ONE
+    # word — splitting cmd_n on whitespace (already quote-stripped) breaks
+    # it into two words that name neither the real symlink nor the real
+    # climb target (codex-1 panel finding on this ticket). When the
+    # tokenizer vouched for this command (TOK=1, Bash only — HIMMEL-3546),
+    # ST_W still holds cmd's own words, quotes/escapes removed but internal
+    # spaces intact; use those instead. PowerShell and any Bash command the
+    # tokenizer could not vouch for (heredoc, ANSI-C word) fall back to the
+    # whitespace split, same documented ceiling every other TOK=0 fallback
+    # in this file already accepts.
+    _check_write_operand() {
+        local w="$1" resolved wabs result
+        [ -n "$w" ] || return 0
+        if [ -n "$nested_wt_primary" ]; then
+            case "$w" in
+                *..*)
+                    resolved=$(lex_resolve "$cwd" "$w")
+                    case "$resolved" in
+                        "$nested_wt_primary/.claude/worktrees"|"$nested_wt_primary/.claude/worktrees/"*) : ;;
+                        "$nested_wt_primary/.claude"|"$nested_wt_primary/.claude/"*) dirdest_climb=1 ;;
+                    esac
+                    ;;
+            esac
+        fi
+        case "$w" in
+            /*|[A-Za-z]:/*|[A-Za-z]:\\*) wabs="$w" ;;
+            *) wabs="$cwd/$w" ;;
+        esac
+        if [ -e "$wabs" ]; then
+            result=$(check_target "$w")
+            case "$result" in deny\ *) symlink_dest=1 ;; esac
+        fi
+    }
     dirdest_climb=0
     symlink_dest=0
     if [ "$write_verb" = 1 ]; then
-        for w in $cmd_n; do
-            [ -n "$w" ] || continue
-            if [ -n "$nested_wt_primary" ]; then
-                case "$w" in
-                    *..*)
-                        resolved=$(lex_resolve "$cwd" "$w")
-                        case "$resolved" in
-                            "$nested_wt_primary/.claude/worktrees"|"$nested_wt_primary/.claude/worktrees/"*) : ;;
-                            "$nested_wt_primary/.claude"|"$nested_wt_primary/.claude/"*) dirdest_climb=1 ;;
-                        esac
-                        ;;
-                esac
-            fi
-            case "$w" in
-                /*|[A-Za-z]:/*|[A-Za-z]:\\*) wabs="$w" ;;
-                *) wabs="$cwd/$w" ;;
-            esac
-            if [ -e "$wabs" ]; then
-                result=$(check_target "$w")
-                case "$result" in deny\ *) symlink_dest=1 ;; esac
-            fi
-        done
+        if [ "$TOK" = 1 ]; then
+            widx=0
+            while [ "$widx" -lt "$ST_N" ]; do
+                _check_write_operand "${ST_W[widx]}"
+                widx=$((widx + 1))
+            done
+        else
+            for w in $cmd_n; do
+                _check_write_operand "$w"
+            done
+        fi
     fi
 
     # HIMMEL-3686 item 2: a brace group in the text is refused outright
