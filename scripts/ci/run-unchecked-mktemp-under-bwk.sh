@@ -20,12 +20,12 @@ set -euo pipefail
 BWK_COMMIT="5739fd79bcfc75ba7526773d0cf634521f8aca3c"
 BWK_REPO="https://github.com/onetrueawk/awk.git"
 
-build_dir="$(mktemp -d)" || exit 1
+build_dir="$(mktemp -d "${TMPDIR:-/tmp}/bwk-awk-build.XXXXXX")" || exit 1
 git clone --quiet "$BWK_REPO" "$build_dir"
 git -C "$build_dir" checkout --quiet "$BWK_COMMIT"
 make -C "$build_dir" >/dev/null
 
-shim_dir="$(mktemp -d)" || exit 1
+shim_dir="$(mktemp -d "${TMPDIR:-/tmp}/bwk-awk-shim.XXXXXX")" || exit 1
 ln -s "$build_dir/a.out" "$shim_dir/awk"
 
 # Confirm the built binary is genuinely BWK before trusting it: BWK is the
