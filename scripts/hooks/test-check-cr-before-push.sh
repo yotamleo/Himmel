@@ -787,6 +787,12 @@ case "$out" in
     *)
         fail "uncanonicalizable relative endpoint: refusal must name the canonicalization failure" "out: $out" ;;
 esac
+case "$out" in
+    *"../does-not-exist.git"*)
+        pass "uncanonicalizable relative endpoint: refusal names the actual offending endpoint, not an empty value" ;;
+    *)
+        fail "uncanonicalizable relative endpoint: refusal must quote the original endpoint (../does-not-exist.git), not whatever the failed canonicalize_endpoint call left behind" "out: $out" ;;
+esac
 
 echo "TEST: push to a remote with NO local tracking ref -> fail CLOSED naming the missing ref"
 rc=0; out=$(cd "$PB" && bash "$HOOK" nowhere "file:///nowhere.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?

@@ -691,8 +691,9 @@ write_marker_for_branch() {
             return 2
         fi
         endpoint=$(scrub_endpoint "$push_remote_url")
+        pre_canon_endpoint="$endpoint"
         if ! endpoint=$(canonicalize_endpoint "$endpoint"); then
-            echo "→ code-review: cannot canonicalize push endpoint '$endpoint' to an absolute path/URL — refusing the push (a relative endpoint stored in the marker would resolve against an unrelated cwd when later read back; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            echo "→ code-review: cannot canonicalize push endpoint '$pre_canon_endpoint' to an absolute path/URL — refusing the push (a relative endpoint stored in the marker would resolve against an unrelated cwd when later read back; bypass with SKIP_CR=1 or git push --no-verify)" >&2
             return 2
         fi
         case "${push_remote_name}${remote_ref}${endpoint}" in
