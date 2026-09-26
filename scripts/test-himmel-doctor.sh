@@ -5017,6 +5017,49 @@ else
 fi
 rm -rf "$c42_t"
 
+# --- C43 (HIMMEL-1117): bare `rtk hook claude` PreToolUse entry ---------------
+# `rtk init -g` re-adds this entry, bypassing rtk-hook-guard.sh and regressing
+# HIMMEL-241. Read-only detection only, mirrors C6-hooks' settings.json fixture
+# shape.
+echo "== C43: bare 'rtk hook claude' PreToolUse entry -> WARN =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "mcpServers": {}, "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "rtk hook claude" } ] } ] } }
+EOF
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C43-rtk-hook' && grepq "$out" -F 'HIMMEL-241' && ! grepq "$out" 'OK   C43-rtk-hook'; then
+    pass "C43 bare rtk hook entry -> WARN"
+else
+    fail "C43 bare rtk hook entry -> $(printf '%s' "$out" | grep -A1 C43)"
+fi
+rm -rf "$t"
+
+echo "== C43: guard-wrapped rtk hook (rtk-hook-guard.sh) -> OK =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "mcpServers": {}, "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"/himmel/scripts/hooks/rtk-hook-guard.sh\"" } ] } ] } }
+EOF
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C43-rtk-hook' && ! grepq "$out" 'WARN C43-rtk-hook'; then
+    pass "C43 guard-wrapped -> OK"
+else
+    fail "C43 guard-wrapped -> $(printf '%s' "$out" | grep -A1 C43)"
+fi
+rm -rf "$t"
+
+echo "== C43: no hooks at all -> OK =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "mcpServers": {} }
+EOF
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C43-rtk-hook' && ! grepq "$out" 'WARN C43-rtk-hook'; then
+    pass "C43 no hooks -> OK"
+else
+    fail "C43 no hooks -> $(printf '%s' "$out" | grep -A1 C43)"
+fi
+rm -rf "$t"
+
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
 rm -rf "$FAKEROOT"

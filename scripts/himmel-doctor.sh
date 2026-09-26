@@ -3099,6 +3099,37 @@ check_c42_sweep_health() {
     done <<< "$out"
 }
 
+# --- C43: bare `rtk hook claude` PreToolUse entry (HIMMEL-1117) ----------------
+# `rtk init -g` unconditionally appends a bare `rtk hook claude` PreToolUse
+# entry to ~/.claude/settings.json; himmel's setup swaps it for
+# rtk-hook-guard.sh (scripts/lib/reconcile-rtk-hook.sh), whose whole job is
+# suppressing `rtk find` rewrites that carry a compound predicate/action
+# (-not/-exec/-o/-a/-delete/!/(...)/-prune) rtk find rejects or silently
+# mishandles at runtime -- the HIMMEL-241 bug that broke every LUNA runbook
+# clip scan. An operator re-running `rtk init -g` on their own (outside
+# machine-setup) re-adds the bare entry and silently bypasses the guard; rtk
+# then also prints its usual "No hook installed" banner, which is otherwise
+# benign noise (docs/internals/enforcement.md) but here is the one case where
+# that banner IS a real problem. Read-only: reuses reconcile-rtk-hook.sh's own
+# BARE_RTK_RE so detection never drifts from the swap it is warning about.
+# WARN only, never FAIL (an environment drift, not a repo misconfiguration);
+# no --fix here either -- reconcile-rtk-hook.sh is user-scope-only and
+# operator-run by design (mirrors C7/C8/C36's read-only stance).
+check_c43_rtk_bare_hook() {
+    [ -f "$SETTINGS" ] || { emit OK C43-rtk-hook "no settings.json (nothing to check)"; return; }
+    command -v jq >/dev/null 2>&1 || { emit INFO C43-rtk-hook "jq not found -- bare rtk hook scan skipped"; return; }
+    # shellcheck source=scripts/lib/reconcile-rtk-hook.sh
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/scripts/lib/reconcile-rtk-hook.sh"
+    local n
+    n="$(jq -r --arg re "$BARE_RTK_RE" '[(.hooks.PreToolUse[]?.hooks[]? | select((.command // "") | test($re)))] | length' "$SETTINGS" 2>/dev/null)"
+    if [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null; then
+        emit WARN C43-rtk-hook "bare 'rtk hook claude' PreToolUse entry present ($n) -- bypasses rtk-hook-guard.sh and regresses HIMMEL-241 (rtk find silently mishandles -not/-exec/-o/-a/-delete/!/(...)/-prune, breaking LUNA runbook clip scans)" "bash scripts/lib/reconcile-rtk-hook.sh ~/.claude/settings.json <himmel-path>  # do NOT re-run rtk init -g -- it just re-adds the bare entry the reconcile removes"
+    else
+        emit OK C43-rtk-hook "no bare rtk hook entry (guard-wrapped or absent)"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3144,6 +3175,7 @@ check_c39_gtimeout_darwin
 check_c40_qmd_vec
 check_c41_mcp_argv_key
 check_c42_sweep_health
+check_c43_rtk_bare_hook
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

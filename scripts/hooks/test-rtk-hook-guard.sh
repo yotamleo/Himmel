@@ -534,6 +534,41 @@ else
     assert_fail "expected empty rc=0 (anchored fallback), got rc=$rc: $out"
 fi
 
+# ---------- 13. Live installed rtk (HIMMEL-1117) ----------
+# The rejected/accepted token set in the header comment above was verified
+# against rtk 0.40.0; every test above runs the STUB, so a station whose
+# real rtk changed behaviour would never surface it. This row re-checks the
+# one fact the guard's suppression depends on -- that the actually-installed
+# rtk still emits an unsuppressed `rtk find` rewrite for a compound
+# predicate, and a plain rewrite for a simple one -- against whatever rtk is
+# really on PATH. SKIPs cleanly when no rtk is installed; the stub rows above
+# still give hermetic coverage either way.
+echo "Test 13: live installed rtk (if present) still needs suppression, and gets it"
+if real_rtk=$(command -v rtk 2>/dev/null); then
+    real_ver=$("$real_rtk" -V 2>/dev/null || echo "unknown")
+    real_dir=$(dirname "$real_rtk")
+    echo "  (installed: $real_ver at $real_rtk)"
+    set +e
+    out=$(printf '{"tool_name":"Bash","tool_input":{"command":"find . -name \\"*.md\\" -not -path \\"*/_done/*\\""}}' \
+        | PATH="$real_dir:$PATH" bash "$hook")
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+        assert_pass "installed rtk ($real_ver): compound find suppressed"
+    else
+        assert_fail "installed rtk ($real_ver): expected empty rc=0 for compound find, got rc=$rc: $out"
+    fi
+    out=$(printf '{"tool_name":"Bash","tool_input":{"command":"find . -name \\"*.md\\" -type f"}}' \
+        | PATH="$real_dir:$PATH" bash "$hook")
+    if grepq "$out" '"rtk find '; then
+        assert_pass "installed rtk ($real_ver): simple find rewrite forwarded"
+    else
+        assert_fail "installed rtk ($real_ver): expected forwarded rewrite for simple find, got: $out"
+    fi
+else
+    echo "  SKIP: no rtk installed on PATH -- stub-only coverage stands"
+fi
+
 # ---------- summary ----------
 echo ""
 echo "rtk-hook-guard: $pass passed, $fail failed"
