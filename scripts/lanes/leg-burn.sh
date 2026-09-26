@@ -47,6 +47,11 @@
 #   cache-read       sum of cache_read_input_tokens across all calls.
 #   cache-create     sum of cache_creation_input_tokens across all calls.
 #   input            sum of input_tokens across all calls.
+#   cache-health     cache-read / (input + cache-read) * 100 - the standard
+#                    prompt-cache hit-ratio: what share of input-side tokens
+#                    (excluding output) were served from cache vs. paid fresh.
+#                    Distinct from floor-share, which measures how much of
+#                    cache-read is the fixed per-call floor re-warming.
 #   cost-eq          input*W_INPUT + cache-read*W_CACHE_READ +
 #                    cache-create*W_CACHE_CREATE + out*W_OUTPUT - the
 #                    price-weighted token-equivalent total.
@@ -195,9 +200,11 @@ COST_EQ=$(awk -v i="$INP" -v cr="$CR" -v cc="$CC" -v o="$OUT" \
     'BEGIN { printf "%.10g", i*wi + cr*wcr + cc*wcc + o*wo }')
 FLOOR_SHARE=$(awk -v first="$FIRST" -v calls="$CALLS" -v cr="$CR" \
     'BEGIN { printf "%.1f", (cr > 0 ? first * calls / cr * 100 : 0) }')
+CACHE_HEALTH=$(awk -v cr="$CR" -v inp="$INP" \
+    'BEGIN { t = cr + inp; printf "%.1f", (t > 0 ? cr / t * 100 : 0) }')
 COMPACTION_REWARM=$(awk -v n="$REWARM_N" -v s="$REWARM_SUM" -v comp="$COMP" \
     'BEGIN { printf "%.10g", (n > 0 ? comp * (s / n) : 0) }')
 
-printf 'leg-burn %s: calls=%s avg-ctx=%s first-turn=%s out=%s compactions=%s text-only=%s cache-read=%s cache-create=%s input=%s cost-eq=%s floor-share=%s%% compaction-rewarm=%s\n' \
+printf 'leg-burn %s: calls=%s avg-ctx=%s first-turn=%s out=%s compactions=%s text-only=%s cache-read=%s cache-create=%s input=%s cache-health=%s%% cost-eq=%s floor-share=%s%% compaction-rewarm=%s\n' \
     "$(basename "$TRANSCRIPT")" "$CALLS" "$(k "$AVG")" "$(k "$FIRST")" "$(kr "$OUT" k)" "$COMP" "$TEXT_ONLY" \
-    "$(kr "$CR" kf)" "$(kr "$CC" kf)" "$(kr "$INP" kf)" "$(kf "$COST_EQ")" "$FLOOR_SHARE" "$(kf "$COMPACTION_REWARM")"
+    "$(kr "$CR" kf)" "$(kr "$CC" kf)" "$(kr "$INP" kf)" "$CACHE_HEALTH" "$(kf "$COST_EQ")" "$FLOOR_SHARE" "$(kf "$COMPACTION_REWARM")"
