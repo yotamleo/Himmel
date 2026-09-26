@@ -276,7 +276,9 @@ for leg in $LEGS_SPLIT; do
     leg_docmap="$leg_docmap$label=$leg_doc"$'\n'
     leg_candmap="$leg_candmap$label"$'\t'"$lock_status"$'\t'"$leg_cands"$'\n'
 done
-[ -n "$legs_summary" ] || legs_summary=none
+# #1335: legs_summary's "none" default is resolved further down, once
+# the census (below) says whether it can back that up -- see the comment
+# there.
 [ -n "$tails_summary" ] || tails_summary=none
 
 # HIMMEL-2973 S1: cross-reference the console doc's own `## Live state`
@@ -513,8 +515,15 @@ fi
 # /proc/<pid>/cmdline argv, NUL-delimited), never a flattened `pgrep -af`
 # line -- free-text argv (a -p/--append-system-prompt value containing the
 # literal substring "-n X") can no longer spoof procs=/models=.
+# #1335: resolved from $HERE (this script's own directory), not
+# $REPO -- $REPO names the repo THIS console manages (a different checkout
+# for every console but himmel's own), while claude-sessions.sh is a himmel
+# lane helper that always ships beside tick.sh. $REPO-relative sourcing
+# silently failed for any non-himmel $REPO (source: No such file or
+# directory), leaving claude_sessions undefined while the tick still printed
+# a confident line.
 # shellcheck source=../../lanes/lib/claude-sessions.sh
-. "$REPO/scripts/lanes/lib/claude-sessions.sh"
+. "$HERE/../../lanes/lib/claude-sessions.sh"
 sessions_out="$(claude_sessions)"
 sessions_rc=$?
 # HIMMEL-3002: rc=3 means the census itself succeeded but one or more live
@@ -529,6 +538,21 @@ census_failed=0
 if [ "$sessions_rc" -gt 1 ] && { [ "$sessions_rc" -ne 3 ] || [ -z "$sessions_out" ]; }; then
     sessions_out=""
     census_failed=1
+fi
+# #1335: an empty --legs arm reads legs=none only when the census could
+# actually have told us otherwise. A working census (however lossy) that
+# simply finds nothing live is a genuine healthy empty fleet -- legs=none
+# stays accurate. A census that could not run at all (pgrep/ps themselves
+# broken, not merely lossy) leaves this tick with no way to back that claim
+# up, so legs=none would be a guess; legs=unsupported says so instead. A
+# non-empty --legs arm is unaffected: its legs_summary already comes from
+# queue-lock, not the census.
+if [ -z "$legs_summary" ]; then
+    if [ "$census_failed" -eq 1 ]; then
+        legs_summary=unsupported
+    else
+        legs_summary=none
+    fi
 fi
 sessions_lossy=0
 case "$sessions_out" in
