@@ -2569,10 +2569,13 @@ run_fence deny no "$HIMMEL" "env -C \$(x=\")\"; echo salus) quoted ')' in double
 # (X15) the symmetric false-positive control: a clause-separator CHARACTER
 # quoted inside \$(...) is data to bash, not a real separator, and must not
 # itself trip the new hidden-separator deny.
+# round-5 codex-1: checking only that the diagnostic text is absent lets any
+# OTHER failure (a crash, an unrelated deny) pass silently too - assert rc
+# along with the text, the way X17's control already does.
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "env -C \$(echo ';')/salus graphify update notes/patient.md --backend glm" 2>&1 ); rc=$?
 hit=$(printf '%s' "$out" | grep -F 'clause separator')
-if [ -z "$hit" ]; then
+if [ "$rc" -eq 0 ] && [ -z "$hit" ]; then
     pass "quoted ';' inside \$(...) does not trigger hidden-separator deny (X15 control)"
 else
     fail "quoted ';' inside \$(...) wrongly triggered hidden-separator deny (X15 control) (rc=$rc) out=$out"
