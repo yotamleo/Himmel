@@ -2654,6 +2654,84 @@ check_both "31 rsync SRC primary/dest --exclude pattern denies (codex-3 round 6)
 check_both "31b rsync SRC wt/dest --exclude pattern allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/ $FIX/wt/dest --exclude pattern\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-3648 CR round 7 (CodeRabbit review, PR #1307) =="
+
+# 32/32b (CodeRabbit #1307): a bare `pushd` (no argument) swaps the top two
+# directory-stack entries — or errors, leaving cwd UNCHANGED, if there is no
+# second stack entry — it is not a `cd` to HOME. The tracker treated it as
+# `cd $HOME`, which could silently clear a primary-rooted tracked cwd.
+check_both "32 cd primary; pushd; echo x > a.txt denies (bare pushd not HOME, CodeRabbit #1307)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; pushd; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "32b cd wt; pushd; echo x > a.txt allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; pushd; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 33 (CodeRabbit #1307): `pushd +N`/`-N` rotates the directory stack — which
+# this hook does not track — but the old code resolved "+N" as a literal
+# relative path fragment against the tracked cwd instead of failing closed.
+# No relative "33b": the fix deliberately fails closed for every later
+# relative write after a `+N`/`-N` rotation regardless of where it really
+# resolves, matching row 24/24b's precedent — only an ABSOLUTE re-anchor is
+# trusted once the tracked cwd is unresolved.
+check_both "33 pushd primary; pushd wt; pushd +1; echo x > a.txt denies (CodeRabbit #1307)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"pushd $FIX/primary; pushd $FIX/wt; pushd +1; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "33b same, but absolute write target allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"pushd $FIX/primary; pushd $FIX/wt; pushd +1; echo x > $FIX/wt/a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 34/34b (CodeRabbit #1307): a backtick command-substitution cd/pushd target
+# is dynamic, but _bwimc_unq stripped backticks UNCONDITIONALLY before the
+# target ever reached _bwimc_resolve_abs/_bwimc_expand_token — laundering a
+# genuinely dynamic target into a bogus literal relative-path fragment
+# instead of failing closed. Fixed by checking the RAW token first.
+F34_CMD="cd \`echo $FIX/primary\`; echo x > a.txt"
+F34_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F34_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "34 cd \`echo primary\`; echo x > a.txt denies (CodeRabbit #1307)" block "$F34_JSON"
+F34B_CMD="cd \`echo $FIX/primary\`; echo x > $FIX/wt/a.txt"
+F34B_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F34B_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "34b same, but absolute write target allows" allow "$F34B_JSON"
+
+# 35/35b (CodeRabbit #1307): the interpreter-body shell-name match anchored
+# on the bare name (bash|sh|zsh) only, so a path-qualified invocation
+# (`/bin/sh -c ...`) bypassed body scanning entirely — 35b is the genuine
+# regression control: once the widened regex starts scanning a
+# path-qualified invocation, it must still allow a non-primary body.
+F35_CMD="/bin/sh -c \"echo hi > $FIX/primary/a.txt\""
+F35_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F35_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "35 /bin/sh -c denies path-qualified shell body write (CodeRabbit #1307)" block "$F35_JSON"
+F35B_CMD="/bin/sh -c \"echo hi > $FIX/wt/a.txt\""
+F35B_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F35B_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "35b /bin/sh -c allows a worktree body write" allow "$F35B_JSON"
+
+# 36/36b (CodeRabbit #1307): install's other separated-value options
+# (-m/-o/-g/-S/--strip-program) were unhandled, so a value AFTER the real
+# destination fell through to the generic operand scan and was picked up as
+# the misread "last operand" — `install SRC /primary/dest -m 755` let "755"
+# mask the real destination.
+check_both "36 install SRC primary/dest -m 755 denies (CodeRabbit #1307)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install $FIX/wt/src.txt $FIX/primary/dest.txt -m 755\",\"cwd\":\"$FIX/wt\"}}"
+check_both "36b install SRC wt/dest -m 755 allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install $FIX/wt/src.txt $FIX/wt/dest.txt -m 755\",\"cwd\":\"$FIX/wt\"}}"
+
+# 37/37b (CodeRabbit #1307): the same separated-value-option gap in rsync's
+# own skip-list — -T/--temp-dir's short form, -B/--block-size,
+# -M/--remote-option and --suffix were missing, so a value after the real
+# destination masked it the same way as row 31.
+check_both "37 rsync SRC primary/dest -T /tmp/foo denies (CodeRabbit #1307)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/src.txt $FIX/primary/dest.txt -T /tmp/foo\",\"cwd\":\"$FIX/wt\"}}"
+check_both "37b rsync SRC wt/dest -T /tmp/foo allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/src.txt $FIX/wt/dest.txt -T /tmp/foo\",\"cwd\":\"$FIX/wt\"}}"
+
+# 38/38b (CodeRabbit #1307): the interpreter-body scanner's generic
+# non-flag-token check never isolated a `key=value`-shaped write
+# destination — `dd if=... of=PATH` inside an eval/bash -c body checked the
+# WHOLE "of=PATH" string as one relative-path fragment, never matching PATH
+# itself.
+F38_CMD="bash -c 'dd if=/dev/zero of=$FIX/primary/dd.img'"
+F38_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F38_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "38 bash -c dd of=primary/dd.img denies (CodeRabbit #1307)" block "$F38_JSON"
+F38B_CMD="bash -c 'dd if=/dev/zero of=$FIX/wt/dd.img'"
+F38B_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F38B_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "38b bash -c dd of=wt/dd.img allows" allow "$F38B_JSON"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

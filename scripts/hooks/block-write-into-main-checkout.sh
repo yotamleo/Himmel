@@ -1176,7 +1176,7 @@ _bwimc_unq() {
 # scan runs — never via `$(…)`, which would discard the global updates in a
 # subshell.
 _bwimc_ecwd_track() {
-    local toks=() t tu i n r carg cabs
+    local toks=() t tu i n r carg cabs craw
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
     i=0
@@ -1199,29 +1199,76 @@ _bwimc_ecwd_track() {
                 esac
             done
             if [ "$i" -ge "$n" ]; then
-                [ -n "${HOME:-}" ] && { _bwimc_ecwd="$HOME"; _bwimc_ecwd_unres=0; } || _bwimc_ecwd_unres=1
+                # HIMMEL-3648 (CR #1307): a bare `pushd` swaps the top two
+                # stack entries — but ONLY if the stack already has a second
+                # entry from an earlier `pushd <dir>` in this same command.
+                # With no prior push, bash errors and leaves cwd UNCHANGED
+                # (verified: `cd /tmp; pushd` -> "no other directory", cwd
+                # stays /tmp) — a guaranteed no-op, not an unmodelled dynamic
+                # cd, so leave _bwimc_ecwd/_bwimc_ecwd_unres untouched in that
+                # case rather than guessing HOME or failing closed.
+                if [ "$tu" = cd ]; then
+                    [ -n "${HOME:-}" ] && { _bwimc_ecwd="$HOME"; _bwimc_ecwd_unres=0; } || _bwimc_ecwd_unres=1
+                elif [ "$_bwimc_ecwd_pushn" -ge 1 ]; then
+                    _bwimc_ecwd_unres=1
+                fi
             elif [ "$(_bwimc_unq "${toks[$i]}")" = "-" ]; then
                 _bwimc_ecwd_unres=1
             else
-                carg=$(_bwimc_unq "${toks[$i]}")
-                case "$carg" in
-                    /*|[A-Za-z]:/*|[A-Za-z]:\\*) cabs=1 ;;
-                    *) cabs=0 ;;
+                craw="${toks[$i]}"
+                case "$craw" in
+                    *'`'*|*'$('*)
+                        # HIMMEL-3648 (CR #1307): a command-substitution
+                        # cd/pushd target is dynamic, but _bwimc_unq strips
+                        # backticks unconditionally — checking the target
+                        # AFTER _bwimc_unq (as below) would see a laundered
+                        # literal instead of failing closed. Check the RAW
+                        # token instead.
+                        [ "$tu" = pushd ] && _bwimc_ecwd_pushn=$((_bwimc_ecwd_pushn+1))
+                        _bwimc_ecwd_unres=1
+                        ;;
+                    +[0-9]*|-[0-9]*)
+                        if [ "$tu" = pushd ]; then
+                            # HIMMEL-3648 (CR #1307): `pushd +N`/`-N` rotates
+                            # the directory stack this hook does not track —
+                            # fail closed rather than resolve "+N"/"-N" as a
+                            # literal relative path fragment. Not a push of a
+                            # new dir onto the stack, so _bwimc_ecwd_pushn is
+                            # left unchanged.
+                            _bwimc_ecwd_unres=1
+                        else
+                            carg=$(_bwimc_unq "$craw")
+                            if r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
+                                _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
+                            else
+                                _bwimc_ecwd_unres=1
+                            fi
+                        fi
+                        ;;
+                    *)
+                        carg=$(_bwimc_unq "$craw")
+                        case "$carg" in
+                            /*|[A-Za-z]:/*|[A-Za-z]:\\*) cabs=1 ;;
+                            *) cabs=0 ;;
+                        esac
+                        # HIMMEL-3648 (codex-1): a stale _bwimc_ecwd (left
+                        # behind by an earlier popd, `cd -`, or unresolvable
+                        # cd — none of which update it) must not be silently
+                        # trusted again by a later RELATIVE cd/pushd
+                        # resolving against it — that would clear
+                        # _bwimc_ecwd_unres against the WRONG base. Only an
+                        # ABSOLUTE target is base-independent and may clear
+                        # the flag once it was already set.
+                        [ "$tu" = pushd ] && _bwimc_ecwd_pushn=$((_bwimc_ecwd_pushn+1))
+                        if [ "$cabs" = 0 ] && [ "$_bwimc_ecwd_unres" = 1 ]; then
+                            :
+                        elif r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
+                            _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
+                        else
+                            _bwimc_ecwd_unres=1
+                        fi
+                        ;;
                 esac
-                # HIMMEL-3648 (codex-1): a stale _bwimc_ecwd (left behind by
-                # an earlier popd, `cd -`, or unresolvable cd — none of
-                # which update it) must not be silently trusted again by a
-                # later RELATIVE cd/pushd resolving against it — that would
-                # clear _bwimc_ecwd_unres against the WRONG base. Only an
-                # ABSOLUTE target is base-independent and may clear the flag
-                # once it was already set.
-                if [ "$cabs" = 0 ] && [ "$_bwimc_ecwd_unres" = 1 ]; then
-                    :
-                elif r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
-                    _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
-                else
-                    _bwimc_ecwd_unres=1
-                fi
             fi
             ;;
         popd) _bwimc_ecwd_unres=1 ;;
@@ -1597,6 +1644,7 @@ _bwimc_check_interp_body() {
     # interp body and never leaks to a sibling outer clause.
     _bwimc_ibody_saved_ecwd="$_bwimc_ecwd"
     _bwimc_ibody_saved_unres="$_bwimc_ecwd_unres"
+    _bwimc_ibody_saved_pushn="$_bwimc_ecwd_pushn"
     while IFS= read -r _bwimc_ibody_clause; do
         [ -n "$(printf '%s' "$_bwimc_ibody_clause" | tr -d '[:space:]')" ] || continue
         _bwimc_ibody_clause_sp=$(_bwimc_space_before_redirects "$_bwimc_ibody_clause")
@@ -1646,17 +1694,31 @@ _bwimc_check_interp_body() {
             fi
             case "$t" in
                 -*) : ;;
-                *) _bwimc_cd_guard "$t"; _bwimc_check_target "$t" "$_bwimc_ecwd" ;;
+                *)
+                    _bwimc_cd_guard "$t"; _bwimc_check_target "$t" "$_bwimc_ecwd"
+                    # HIMMEL-3648 (CR #1307): a bare key=value token inside a
+                    # body — dd's `of=PATH` above all — is a write
+                    # destination this generic non-flag-token check never
+                    # isolates on its own, since the whole "of=PATH" string
+                    # never resolves as PATH itself. Also check the value
+                    # after the first `=`, same coarse tolerance the rest of
+                    # this scan already accepts for a benign source token.
+                    case "$t" in
+                        *=*) _bwimc_cd_guard "${t#*=}"; _bwimc_check_target "${t#*=}" "$_bwimc_ecwd" ;;
+                    esac
+                    ;;
             esac
             i=$((i+1))
         done
     done < <(_bwimc_split_clauses "$body")
     _bwimc_ecwd="$_bwimc_ibody_saved_ecwd"
     _bwimc_ecwd_unres="$_bwimc_ibody_saved_unres"
+    _bwimc_ecwd_pushn="$_bwimc_ibody_saved_pushn"
 }
 
 _bwimc_ecwd="$_bwimc_cwd"
 _bwimc_ecwd_unres=0
+_bwimc_ecwd_pushn=0
 while IFS= read -r _bwimc_rclause; do
     [ -n "$(printf '%s' "$_bwimc_rclause" | tr -d '[:space:]')" ] || continue
     _bwimc_rclause_sp=$(_bwimc_space_before_redirects "$_bwimc_rclause")
@@ -2933,6 +2995,7 @@ done < <(_bwimc_split_clauses "$_bwimc_ghb")
 
 _bwimc_ecwd="$_bwimc_cwd"
 _bwimc_ecwd_unres=0
+_bwimc_ecwd_pushn=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     _tolower_ascii "$_bwimc_clause"
@@ -3163,7 +3226,10 @@ while IFS= read -r _bwimc_clause; do
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*eval([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
         _bwimc_check_interp_body "$_bwimc_clause_sp" eval
 
-    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(bash|sh|zsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?(bash|sh|zsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+        # HIMMEL-3648 (CR #1307): allow an optional path prefix (`/bin/sh`,
+        # `./bash`, …) before the shell name — an anchor on the bare name
+        # only let a path-qualified invocation bypass body scanning entirely.
         # HIMMEL-3648 (codex-3): loosened from a literal `-c` to any
         # single-dash all-letters cluster containing `c` (`-ce`, `-ec`, …) —
         # real bash/sh/zsh getopt-style combined short flags a literal `-c`
@@ -3250,6 +3316,18 @@ while IFS= read -r _bwimc_clause; do
                         _bwimc_i=$((_bwimc_i+1))
                         continue
                         ;;
+                    # HIMMEL-3648 (CR #1307): install's other SEPARATED
+                    # mandatory-value options were not skipped, so — exactly
+                    # like the rsync gap below — the value token fell through
+                    # to the generic operand scan and could become the
+                    # misread "last operand": `install SRC /primary/dest -m
+                    # 755` picked up "755" as the destination, masking the
+                    # real one.
+                    -m|--mode|-o|--owner|-g|--group|-S|--suffix|--strip-program)
+                        _bwimc_i=$(_bwimc_next_optval_idx "$_bwimc_i")
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
                 esac
             fi
             # HIMMEL-3648 (codex-3, round f688778c): rsync's other
@@ -3261,9 +3339,13 @@ while IFS= read -r _bwimc_clause; do
             # true destination. Skip each one's separated value exactly like
             # install's -t/--target-directory above, so only real operands
             # ever reach _bwimc_ops.
+            # HIMMEL-3648 (CR #1307): -T/--temp-dir's short form, -B
+            # (--block-size), -M (--remote-option) and --suffix were missing
+            # from this list — the same "value falls through as a bogus
+            # operand" gap the comment above already covers for the rest.
             if [ "$_bwimc_verb" = "rsync" ]; then
                 case "$_bwimc_t" in
-                    -e|-f|--filter|--exclude|--exclude-from|--include|--include-from|--files-from|--temp-dir|--backup-dir|--link-dest|--compare-dest|--copy-dest|--partial-dir|--log-file|--log-file-format|--out-format|--password-file|--bwlimit|--timeout|--contimeout|--port|--address|--sockopts|--usermap|--groupmap|--chown|--rsync-path|--rsh|--protocol|--checksum-seed|--max-size|--min-size|--modify-window|--skip-compress|--chmod)
+                    -e|-f|--filter|--exclude|--exclude-from|--include|--include-from|--files-from|--temp-dir|-T|--backup-dir|--link-dest|--compare-dest|--copy-dest|--partial-dir|--log-file|--log-file-format|--out-format|--password-file|--bwlimit|--timeout|--contimeout|--port|--address|--sockopts|--usermap|--groupmap|--chown|--rsync-path|--rsh|--protocol|--checksum-seed|--max-size|--min-size|--modify-window|--skip-compress|--chmod|-B|--block-size|-M|--remote-option|--suffix)
                         _bwimc_i=$(_bwimc_next_optval_idx "$_bwimc_i")
                         _bwimc_i=$((_bwimc_i+1))
                         continue
