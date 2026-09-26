@@ -8,6 +8,16 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.59] — 2026-09-26
+
+### Fixed
+- `.pre-commit-config.yaml`: the `conventional-commit-msg` hook was wired with
+  `pass_filenames: false`, so pre-commit never handed `check-commit-msg.sh`
+  the commit-message file path. With the message file empty, the script's own
+  empty-message skip let every vault commit through regardless of its
+  message — the hook validated nothing. Removed the override so pre-commit's
+  default (`pass_filenames: true`) applies.
+
 ## [0.4.58] — 2026-09-25
 
 ### Fixed
