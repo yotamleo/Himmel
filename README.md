@@ -183,7 +183,7 @@ as verified.
 
 | Tier | Platforms | What it promises |
 |---|---|---|
-| **Supported** | Linux, macOS | Linux is CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified on both. macOS CI runs nightly/dispatch only (same trigger as Alpha below, see [`ci.yml`](.github/workflows/ci.yml)) — not yet a per-PR required check. |
+| **Supported** | Linux, macOS | Linux is CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified on both. macOS CI runs nightly/dispatch only (same trigger as Alpha below, see [`ci.yml`](.github/workflows/ci.yml)) — not yet a per-PR required check, and not yet green: a `force_all_os=true` dispatch verifying HIMMEL-3699's fixes ([run 36254794000](https://github.com/yotamleo/Himmel/actions/runs/36254794000)) still shows all 8 macOS `shell-unit-shard` jobs red (91 suite failures, none in the clusters HIMMEL-3699 fixed); the nightly summary step now fails visibly on this instead of masking it. Remaining failures tracked in HIMMEL-3719. |
 | **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — a nightly `schedule` run, or a manual `workflow_dispatch` with `force_all_os=true` (a plain dispatch alone stays `ubuntu-latest`-only). Bug reports welcome; no round-trip guarantee. |
 
 **Install channels (HIMMEL-3059):**
