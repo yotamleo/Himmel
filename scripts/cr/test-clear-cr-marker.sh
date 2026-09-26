@@ -32,6 +32,7 @@ LEDGER_APPEND="$SCRIPT_DIR/ledger-append.sh"
 REVIEW_ROUND="$SCRIPT_DIR/review-round.sh"
 LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
 DEFAULT_BASE_LIB="$SCRIPT_DIR/../lib/cr-default-base.sh"
+TIMEOUT_BIN_LIB="$SCRIPT_DIR/../lib/timeout-bin.sh"
 FLOOR_MJS="$SCRIPT_DIR/claude-floor.mjs"
 CODEX_SKILL="$ROOT/.agents/skills/pr-check/SKILL.md"
 # shellcheck source=scripts/lib/fixture-tempdir.sh
@@ -101,6 +102,11 @@ build_repo_template() {
     # HIMMEL-3107: the floor provenance check binds its base through this lib.
     cp "$DEFAULT_BASE_LIB" "$REPO_TEMPLATE/scripts/lib/cr-default-base.sh" \
         || { echo "FAIL: cp cr-default-base.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
+    # HIMMEL-1565: the ls-remote timeout bound sources this lib; without a copy
+    # here _TIMEOUT_BIN degrades to empty in every case, silently skipping the
+    # timeout wrapper the fix depends on.
+    cp "$TIMEOUT_BIN_LIB" "$REPO_TEMPLATE/scripts/lib/timeout-bin.sh" \
+        || { echo "FAIL: cp timeout-bin.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
     # HIMMEL-3220: the floor provenance check verifies the artifact's stamp here.
     cp "$FLOOR_MJS" "$REPO_TEMPLATE/scripts/cr/claude-floor.mjs" \
         || { echo "FAIL: cp claude-floor.mjs into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
@@ -457,6 +463,44 @@ if [ -n "$lsremote_argv" ] && grepq "$lsremote_argv" -F -- '--heads -- '; then
 else
     fail "ls-remote missing the -- separator before positionals: ${lsremote_argv:-<no argv log>}"
 fi
+rm -rf "$tmp"
+
+# stub_git_lsremote_sleep <tmp> <sleep-seconds> — HIMMEL-1565: makes `git
+# ls-remote` hang past the configured timeout so resolve_marker_remote_head's
+# DISTINCT timeout path (rc=2, not the generic "unreadable" rc=1) can be
+# exercised without a genuinely unreachable network endpoint. Every other git
+# subcommand execs straight through to the real binary.
+stub_git_lsremote_sleep() {
+    local tmp="$1" secs="$2" real
+    real=$(command -v git)
+    cat > "$tmp/bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "ls-remote" ]; then
+    sleep $secs
+    exit 1
+fi
+exec "$real" "\$@"
+STUB
+    chmod +x "$tmp/bin/git"
+}
+
+# 2b1a. HIMMEL-1565: an unresponsive push endpoint must refuse with a DISTINCT
+# "timed out" reason, not the generic "remote-head-unreadable" one, and must
+# not hang the gate past the configured bound (CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS
+# overrides the 20s default so this test does not itself wait 20s).
+make_repo || exit 1
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+stub_git_lsremote_sleep "$tmp" 5
+export CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS=1
+run_clear "$tmp" 16 "HIMMEL-1565: ls-remote past its timeout bound -> exit 16 (fail closed)"
+unset CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS
+case "$LAST_CLEAR_OUT" in
+    *"reason=remote-head-timeout"*|*"timed out"*)
+        pass "ls-remote timeout: refusal names the DISTINCT timeout reason (HIMMEL-1554)" ;;
+    *)
+        fail "ls-remote timeout: refusal must name a distinct timeout reason, not the generic unreadable one" "out: $LAST_CLEAR_OUT" ;;
+esac
 rm -rf "$tmp"
 
 # 2b2. HIMMEL-2020: critic-panel writes raw finding rows at the full SHA, while

@@ -74,6 +74,15 @@
 # subprocess block is gone.
 set -euo pipefail
 
+# HIMMEL-3666 (judge J1277R OOS finding): every git call below resolves
+# objects through the object store, which honours refs/replace/* by default.
+# A pusher who runs `git replace <origin-tip> <fake>` (fake's tree already
+# containing the unreviewed code) makes every diff/merge-base/rev-list call
+# in this hook read the FAKE's content wherever the real tip is named — no
+# ref is forged, so the ancestry/freshness hardening above never sees it.
+# Disabling replacement makes every resolution below use the real object.
+export GIT_NO_REPLACE_OBJECTS=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # default_branch() resolves the repo's protected default (main OR master,
 # HIMMEL-297) used as the diff base below. Fail-closed: a missing guardrail
@@ -176,14 +185,38 @@ REF_LINES
     return 0
 }
 
-# scrub_endpoint URL — strip http(s) userinfo (embedded tokens/passwords)
-# before the URL is persisted in the plaintext marker under .git. Non-http
-# URLs pass through: ssh/scp-style carry no secret in the userinfo position
-# (git@ is an ssh username, not a credential) and file paths have none.
+# scrub_endpoint URL — strip userinfo (embedded tokens/passwords) from a
+# scheme://user:pass@host URL before it is persisted in the plaintext marker
+# under .git. HIMMEL-1565: covers every scheme, not just http(s) — ssh://
+# and git:// both accept a user:pass@ userinfo component too (scp-style
+# user@host:path, e.g. git@, is a bare username with no `://` and no
+# password position, so it is left untouched: nothing there to scrub).
 scrub_endpoint() {
     case "$1" in
-        http://*|https://*) printf '%s\n' "$1" | sed -E 's#^(https?://)[^/@]*@#\1#' ;;
+        *://*@*) printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' ;;
         *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# canonicalize_endpoint ENDPOINT — HIMMEL-1565: a relative filesystem path
+# persisted verbatim in the marker resolves against WHATEVER cwd a later
+# reader (clear-cr-marker.sh) happens to run from, not the pushing repo's
+# cwd — a different, potentially pusher-influenced target. A URL
+# (scheme://...), an already-absolute path (/...) or an scp-style
+# host:path / user@host:path form (anything else containing a ':') carries
+# its own unambiguous location and passes through; only a bare relative
+# filesystem path is resolved, against THIS process's cwd (the pre-push
+# hook's cwd is the repo's own worktree root). Prints nothing and returns 1
+# if resolution fails — the caller must fail closed rather than persist an
+# endpoint that could not be pinned to an absolute location.
+canonicalize_endpoint() {
+    local ep="$1" abs
+    case "$ep" in
+        *://*|/*|*:*) printf '%s\n' "$ep"; return 0 ;;
+        *)
+            abs=$(cd "$ep" 2>/dev/null && pwd -P) && [ -n "$abs" ] || return 1
+            printf '%s\n' "$abs"
+            ;;
     esac
 }
 
@@ -632,6 +665,10 @@ write_marker_for_branch() {
             return 2
         fi
         endpoint=$(scrub_endpoint "$push_remote_url")
+        if ! endpoint=$(canonicalize_endpoint "$endpoint"); then
+            echo "→ code-review: cannot canonicalize push endpoint '$endpoint' to an absolute path/URL — refusing the push (a relative endpoint stored in the marker would resolve against an unrelated cwd when later read back; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
         case "${push_remote_name}${remote_ref}${endpoint}" in
             *'|'*|*$'\n'*)
                 echo "→ code-review: remote identity/ref/endpoint contains an unsupported marker delimiter — refusing the push" >&2
