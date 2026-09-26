@@ -978,6 +978,11 @@ test('advisory members are bounded by the entry deadline, not just the shared ch
       `advisory members must decide (with SKIPs) before the entry timeout, not be killed by it (stderr: ${result.stderr})`,
     );
     assert.ok(wall < HARNESS_MS, `chain took ${wall}ms, must stay under the ${HARNESS_MS}ms harness stand-in for the entry timeout`);
+    // The real entry deadline is entryTimeoutMs - entrySafetyMarginMs = 1000 - 200 = 800ms from
+    // chain start; HARNESS_MS is only a generous outer kill-switch, not a tight check that the
+    // chain actually decided near that deadline rather than lingering toward the kill-switch
+    // itself (codex-1, HIMMEL-3620 /pr-check round 1).
+    assert.ok(wall < 1500, `chain took ${wall}ms, must decide near the real ~800ms entry deadline, not merely avoid the ${HARNESS_MS}ms kill-switch`);
     assert.equal(typeof result.status, 'number', 'the chain must actually decide, not be killed mid-run');
   } finally {
     rmSync(dir, { recursive: true, force: true });
