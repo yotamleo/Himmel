@@ -1064,6 +1064,98 @@ _report_leftover_scratches() {
   done
 }
 
+# >>> HIMMEL-3708 backup prune protocol -- sliced VERBATIM out of this file by
+# test-refresh-graph-map-backup-prune.sh and sourced there, so the test
+# harness drives the shipped function rather than a copy.
+#
+# _prune_graphify_backups <out-dir> -- upstream graphify's backup_if_protected
+# (graphify/export.py, ~line 41) copies graph.json / GRAPH_REPORT.md /
+# manifest.json etc. into a dated <out-dir>/YYYY-MM-DD/ dir before every
+# semantic/curated overwrite, and never prunes: the daily cadence adds ~150MB
+# per corpus per day, and in the luna vault each dated GRAPH_REPORT.md also
+# gets indexed by Obsidian. Upstream only offers GRAPHIFY_NO_BACKUP=1
+# (all-or-nothing); this keeps the safety net but bounds it to the newest N
+# (env GRAPHIFY_BACKUP_KEEP, default 3; 0 disables pruning entirely). Called
+# ONLY after a SUCCESSFUL promote (see call site below, after the out dir's
+# own graph.json/GRAPH_REPORT.md/manifest.json have already landed) -- a
+# prune failure here only WARNS and never changes the script's exit status: a
+# leftover backup dir is a disk nuisance, not a correctness problem, and must
+# never fail an otherwise-good refresh.
+#
+# Only entries directly under <out-dir> that are DIRECTORIES -- never a file,
+# never a symlink even if date-named, never cache/ or anything else -- whose
+# name matches exactly YYYY-MM-DD are ever considered. grep on this station is
+# ugrep (a station quirk, not a portability guarantee), so the name match
+# below is a plain `case` glob rather than a regex tool. ISO dates sort
+# lexically == chronologically, so the newest N are simply the last N of a
+# plain `sort`. Unmatched globs expand literally and fail the `-e`/`-d`
+# checks below, so the loop is safe with nullglob off (same idiom as the
+# GRAPHIFY_OUT marker-file check above).
+_prune_graphify_backups() {
+  local out="$1" keep="${GRAPHIFY_BACKUP_KEEP:-3}"
+  local entry name pruned=0 total=0 drop idx=0
+  local -a dirs=() sorted=()
+  # codex-1: a digit-only value longer than 4 digits (e.g. a fat-fingered
+  # 99999999999999999999) overflows bash's 64-bit `[ -gt ]` integer test below
+  # and errors -- which under `set -e` would abort the whole refresh instead
+  # of just skipping pruning. `?????*` (5+ chars) rejects it the same way
+  # *[!0-9]* rejects a non-digit value, capping the accepted range at 0-9999.
+  case "$keep" in
+    ''|*[!0-9]*|?????*)
+      echo "refresh-graph-map: WARN GRAPHIFY_BACKUP_KEEP must be a non-negative integer (got '$keep') -- using default 3" >&2
+      keep=3
+      ;;
+  esac
+  # 10# forces base-10 (same normalize as GRAPHIFY_RUN_DEADLINE_SECONDS
+  # above): a leading-zero value ("007", "02") would otherwise be read as
+  # octal by the arithmetic/test contexts below and a value like "010" would
+  # silently become 8. $keep is validated digits-only, <=4 chars at this
+  # point, so this can't fail.
+  keep=$((10#$keep))
+  [ "$keep" -gt 0 ] || return 0
+  # Guard the target the same way _promote_stage_cleanup guards its rm -rf
+  # (an empty/unset out dir must not degenerate to a bare-root rm below).
+  [ -n "$out" ] || return 0
+  [ -d "$out" ] || return 0
+  for entry in "$out"/*/; do
+    [ -e "$entry" ] || continue
+    entry="${entry%/}"
+    name="${entry##*/}"
+    case "$name" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+        [ -L "$entry" ] && continue
+        [ -d "$entry" ] || continue
+        dirs+=("$name")
+        total=$((total + 1))
+        ;;
+    esac
+  done
+  # codex-1 (round 2): a plain counter, not `${#dirs[@]}` -- on bash <4.4
+  # (macOS's stock 3.2, still in the wild) expanding an EMPTY array under
+  # `set -u` can raise "unbound variable" and abort the whole refresh when an
+  # out dir simply has no dated backups yet (the common case on a first
+  # promote). The `-gt` check below still runs BEFORE any "${dirs[@]}"/
+  # "${sorted[@]}" expansion, so those arrays are only ever expanded once
+  # $total is known to be > $keep (i.e. non-empty).
+  [ "$total" -gt "$keep" ] || return 0
+  while IFS= read -r name; do
+    sorted+=("$name")
+  done < <(printf '%s\n' "${dirs[@]}" | sort)
+  drop=$(( total - keep ))
+  for name in "${sorted[@]}"; do
+    idx=$((idx + 1))
+    [ "$idx" -le "$drop" ] || break
+    if rm -rf -- "${out:?}/$name" 2>/dev/null; then
+      pruned=$((pruned + 1))
+    else
+      echo "refresh-graph-map: WARN could not prune backup dir $out/$name" >&2
+    fi
+  done
+  [ "$pruned" -gt 0 ] && echo "refresh-graph-map: pruned $pruned dated backup dir(s) under $out (kept newest $keep)" >&2
+  return 0
+}
+# <<< HIMMEL-3708 backup prune protocol
+
 # _corpus_root_marker -- the value of the `.graphify-source-root` marker: the
 # corpus root's physical (symlink-resolved) absolute path. The extraction path
 # writes it into the scratch workdir; --promote-only compares it against the
@@ -2690,6 +2782,12 @@ PYEOF
   # artifact, not this run's scratch; the operator removes it after reading
   # the "safe to remove" line below.
   if [ "$DO_EXTRACT" -eq 1 ]; then rm -rf "$SCRATCH"; fi
+  # HIMMEL-3708: only reachable after a successful promote (every refusal
+  # above -- shrink guard, leak scan, cache-swap failure -- exits before this
+  # point), on BOTH the normal --update path and --promote-only (this whole
+  # region is inside `if [ "$DO_UPDATE" -eq 1 ]`, which --promote-only always
+  # sets). See _prune_graphify_backups above for the why/how.
+  _prune_graphify_backups "$OUT_DIR"
   # Test-only hook (CR r2): hold between promote and publish, so the
   # promote-vs-publish overlap test can create a deterministic window.
   # No-op unless set.
