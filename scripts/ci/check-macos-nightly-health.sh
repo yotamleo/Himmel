@@ -18,6 +18,15 @@ set -uo pipefail
 REPO="${REPO:?REPO required}"
 RUN_ID="${RUN_ID:?RUN_ID required}"
 
+if ! MACOS_COUNT=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+  --jq '[.jobs[] | select(.name | test("macos-latest"))] | length'); then
+  echo "::error::gh api call failed — cannot determine macOS job count for run $RUN_ID" >&2
+  exit 1
+fi
+if [ "$MACOS_COUNT" -eq 0 ]; then
+  echo "::error::no macOS job found on run $RUN_ID — cannot certify macOS health (this step should only run on the schedule/force_all_os leg, where the matrix always includes macos-latest)" >&2
+  exit 1
+fi
 if ! FAILED=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
   --jq '.jobs[] | select(.name | test("macos-latest")) | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != null) | .name'); then
   echo "::error::gh api call failed — cannot determine macOS job health for run $RUN_ID" >&2

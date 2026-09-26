@@ -84,6 +84,20 @@ if [ "$rc_apifail" -eq 1 ]; then ok "gh api failure -> exit 1 (not silent OK)"; 
 if grep -q "gh api call failed" <<< "$out_apifail"; then ok "gh api failure -> error banner"; else bad "gh api failure missing error banner: $out_apifail"; fi
 if grep -q "OK: no failing macOS job" <<< "$out_apifail"; then bad "gh api failure wrongly reported OK: $out_apifail"; else ok "gh api failure -> no false OK"; fi
 
+# HIMMEL-3699 (CR round 1, codex-2): an empty jobs response, or one with no
+# macOS jobs at all, must not read as an all-clear OK.
+cat > "$TMP/jobs-none.json" <<'JSON'
+{"jobs":[
+  {"name":"shell-unit-shard (ubuntu-latest, 1)","conclusion":"success"}
+]}
+JSON
+
+out_none="$(FAKE_GH_JOBS_JSON="$TMP/jobs-none.json" PATH="$TMP:$PATH" REPO=owner/repo RUN_ID=1 bash "$SCRIPT" 2>&1)"
+rc_none=$?
+if [ "$rc_none" -eq 1 ]; then ok "no-macOS-jobs fixture -> exit 1 (not silent OK)"; else bad "no-macOS-jobs fixture exit=$rc_none (want 1): $out_none"; fi
+if grep -q "no macOS job found" <<< "$out_none"; then ok "no-macOS-jobs -> error banner"; else bad "no-macOS-jobs missing error banner: $out_none"; fi
+if grep -q "OK: no failing macOS job" <<< "$out_none"; then bad "no-macOS-jobs wrongly reported OK: $out_none"; else ok "no-macOS-jobs -> no false OK"; fi
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASSED"
