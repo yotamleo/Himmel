@@ -607,6 +607,58 @@ if [ "$t15_flag" != "yes" ]; then
     echo "  (debug out=$(cat "$tmpdir/t15.out" 2>/dev/null))"
 fi
 
+# -- Test 16: exit code reflects failures (HIMMEL-1136) ----------------
+echo "Test 16: exit code is non-zero when any clip failed"
+if [ "$(id -u)" -ne 0 ]; then
+    fail_vault="$tmpdir/vault-fail"
+    mkdir -p "$fail_vault/Clippings"
+    cat >"$fail_vault/Clippings/unreadable.md" <<'EOF'
+---
+source: https://x.com/jack/status/99
+processed: true
+---
+# tweet from x.com/jack/status/99
+
+## The Idea
+
+## Source
+https://x.com/jack/status/99
+EOF
+    chmod 000 "$fail_vault/Clippings/unreadable.md"
+    node "$SCRIPT" --vault "$fail_vault" --limit 1 >"$tmpdir/t16.out" 2>&1
+    t16_rc=$?
+    chmod 644 "$fail_vault/Clippings/unreadable.md"
+    assert "Test16: run with 1 failed clip exits 3 (documented failure code)" "3" "$t16_rc"
+    if [ "$t16_rc" != "3" ]; then
+        echo "  (debug out=$(cat "$tmpdir/t16.out" 2>/dev/null))"
+    fi
+else
+    echo "  SKIP Test16 (running as root; permission bits do not deny read)"
+fi
+
+# Control: an all-skipped / zero-failure run still exits 0.
+skip_vault="$tmpdir/vault-skip"
+mkdir -p "$skip_vault/Clippings"
+cat >"$skip_vault/Clippings/not-processed.md" <<'EOF'
+---
+source: https://x.com/jack/status/98
+processed: false
+---
+# tweet from x.com/jack/status/98
+
+## The Idea
+This body already has real content, so it is not thin and is skipped regardless of processed state.
+
+## Source
+https://x.com/jack/status/98
+EOF
+node "$SCRIPT" --vault "$skip_vault" --limit 1 >"$tmpdir/t16b.out" 2>&1
+t16b_rc=$?
+assert "Test16b: zero-failure (all-skipped) run still exits 0" "0" "$t16b_rc"
+if [ "$t16b_rc" != "0" ]; then
+    echo "  (debug out=$(cat "$tmpdir/t16b.out" 2>/dev/null))"
+fi
+
 # -- Summary -----------------------------------------------------------
 total=$((pass + fail))
 echo ""

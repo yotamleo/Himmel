@@ -35,8 +35,10 @@
  *                            [--reflag] [--reenrich-quote-only]
  *
  * Exit codes:
- *   0 — run completed (may include partial/failed clips; see summary)
+ *   0 — run completed, no clip failed (partial/skipped alone still exit 0)
  *   1 — bad usage
+ *   3 — run completed but at least one clip failed (HIMMEL-1136: distinct
+ *       from 0 so a caller gating on exit code sees a 100%-failure run)
  *
  * LUNA-33. Sister script: playwright-crawl-x.mjs (deprecated for default
  * use post-LUNA-33 — anti-bot rendering issues on x.com).
@@ -1205,7 +1207,7 @@ async function main() {
     else skipped++;
   }
   console.log(`\nfxt-enrich: ${ok} ok, ${partial} partial, ${failed} failed, ${skipped} skipped. (dry_run=${args.dryRun})`);
-  process.exit(0);
+  process.exit(failed > 0 ? 3 : 0);
 }
 
 // Run unless imported as a module (tests import draftJsToMarkdown directly).
