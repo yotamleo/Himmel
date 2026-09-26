@@ -395,11 +395,12 @@ echo "Test 16: harvest-completion gate (G-8, HIMMEL-1137) documented in all thre
 # run against a harvest that never finished cleanly.
 for rb in triage-clips.md synthesize-clips.md archive-clips.md; do
     f="$CMDS/$rb"
+    g8_section=$(awk '/^### G-8/{p=1;next} /^### /{if(p) exit} p' "$f")
     if grep -qF ".harvest.done" "$f"; then found=yes; else found=no; fi
     assert "$rb checks .harvest.done" "yes" "$found"
     if grep -qiF "upstream harvest incomplete" "$f"; then found=yes; else found=no; fi
     assert "$rb aborts with 'upstream harvest incomplete'" "yes" "$found"
-    if grep -qE "Exit 2" "$f"; then found=yes; else found=no; fi
+    if printf '%s' "$g8_section" | grep -qE "Exit 2"; then found=yes; else found=no; fi
     assert "$rb documents Exit 2 on the gate" "yes" "$found"
 done
 
