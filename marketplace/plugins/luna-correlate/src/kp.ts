@@ -6,7 +6,10 @@ export type KpPoint = { date: string; kp: number };
 
 // Resolve the cache against this module's dir (not cwd) so the cache location
 // is stable no matter where the MCP server / CLI is launched from (#541 nit).
-export const KP_CACHE = join(import.meta.dir, "..", "cache", "kp.json");
+// LUNA_CORRELATE_CACHE_DIR overrides the dir (HIMMEL-370: lets tests point the
+// cache at a per-run temp dir instead of the operator's real cache).
+const CACHE_DIR = process.env.LUNA_CORRELATE_CACHE_DIR ?? join(import.meta.dir, "..", "cache");
+export const KP_CACHE = join(CACHE_DIR, "kp.json");
 
 /**
  * Simplified fixture format: `YYYY-MM-DD kp1 kp2 ...` (date in one column).

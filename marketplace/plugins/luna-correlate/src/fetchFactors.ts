@@ -90,8 +90,10 @@ export function gridCells(bbox: BBox, spacingDeg = 1): GridCell[] {
 }
 
 // Resolve the per-factor cache against this module's dir (not cwd), like KP_CACHE.
+// LUNA_CORRELATE_CACHE_DIR overrides the dir (HIMMEL-370), same override as kp.ts.
 export function factorCachePath(factor: string): string {
-  return join(import.meta.dir, "..", "cache", `${factor}.json`);
+  const dir = process.env.LUNA_CORRELATE_CACHE_DIR ?? join(import.meta.dir, "..", "cache");
+  return join(dir, `${factor}.json`);
 }
 
 function buildUrl(api: string, cell: GridCell, field: string, range: DateRange): string {
