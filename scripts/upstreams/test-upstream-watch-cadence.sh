@@ -446,7 +446,7 @@ esac
 # bakes HANDOVER_DIR in with was `printf '%q'` — a bash-only escaping that can
 # emit `$'...'` ANSI-C quoting a stricter /bin/sh does not reliably parse the
 # same way bash does. Prove it round-trips byte-exact under `sh` for a value
-# containing a single quote, a space, a `$` and a newline.
+# containing a single quote, a space, a `$` and a control byte (see below).
 make_capture_root() {
   local capture="$1" root
   root=$(mktemp -d "${TMPDIR:-/tmp}/upstream-watch-cadence-test-root.XXXXXX")
@@ -462,9 +462,9 @@ CAPEOF
 
 # run_cadence_posix_handover <state> <handover> <anchor> <args...> — like
 # run_cadence_posix_anchor but with a LIVE HANDOVER_DIR env var (go_resolve_root
-# priority 1: a live HANDOVER_DIR outside the harness wins unchanged), so a
-# value the anchor's line-oriented `.env` could never carry (embedded newline)
-# reaches the runner intact.
+# priority 1: a live HANDOVER_DIR outside the harness wins unchanged), so the
+# nasty value below reaches the runner intact without going through the
+# anchor's `.env` file at all.
 run_cadence_posix_handover() {
   local state="$1" handover="$2" anchor="$3"; shift 3
   ( cd "$anchor" && HANDOVER_DIR="$handover" \
@@ -478,7 +478,7 @@ run_cadence_posix_handover() {
       bash "$CADENCE" "$@" )
 }
 
-echo "== test: POSIX generated runner exports a quote/space/\$/newline HANDOVER_DIR byte-exact under sh =="
+echo "== test: POSIX generated runner exports a quote/space/\$/control-byte HANDOVER_DIR byte-exact under sh =="
 pstate6=$(new_scratch_posix)
 capture6="$pstate6/captured-handover"
 proot6=$(make_capture_root "$capture6"); mv "$proot6" "$pstate6/root"
@@ -502,6 +502,32 @@ if cmp -s "$pstate6/expected-handover" "$pstate6/captured-handover" 2>/dev/null;
 else
   fail "posix arm with nasty handover: $SH_BIN exported a corrupted HANDOVER_DIR"
 fi
+
+# HIMMEL-3619 (codex CR on this same fix): posix_sh_quote wraps its `sed`
+# output through `$(...)`, which strips ALL trailing newlines from command
+# substitution — a HANDOVER_DIR ending in a newline byte would silently lose
+# it before being quoted. This must be a UNIT test of posix_sh_quote itself,
+# not a full `cron_arm` round-trip like the case above: resolve_watch_
+# handover_dir() (this same file) and go_resolve_root() (scripts/lib/
+# go-gate.sh, out of this ticket's scope) each capture their result through
+# their OWN `$(...)`, so a trailing newline is already gone from
+# $handover_dir before posix_sh_quote ever sees it — no arm-level test could
+# ever go green on this byte, fixed or not.
+echo "== test: posix_sh_quote preserves a trailing-newline value =="
+quote_fn=$(mktemp -t upstream-watch-cadence-posix-sh-quote.XXXXXX)
+sed -n '/^posix_sh_quote() {/,/^}/p' "$CADENCE" > "$quote_fn"
+# shellcheck source=/dev/null
+. "$quote_fn"
+trailing_nl_val=$'trailing-newline-value\n'
+quoted=$(posix_sh_quote "$trailing_nl_val")
+expected="'trailing-newline-value
+'"
+if [ "$quoted" = "$expected" ]; then
+  pass "posix_sh_quote: trailing-newline value quoted byte-exact"
+else
+  fail "posix_sh_quote: trailing-newline value corrupted — got: $(printf '%s' "$quoted" | od -c | tr '\n' ' ')"
+fi
+rm -f "$quote_fn"
 
 echo
 if [ "$fails" -eq 0 ]; then

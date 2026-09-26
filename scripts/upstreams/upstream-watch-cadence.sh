@@ -621,7 +621,10 @@ cron_escape() {
 # is the one value baked in here worth the extra safety.
 posix_sh_quote() {
     local s
-    s=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+    # trailing sentinel survives $(...)'s trailing-newline stripping so a
+    # HANDOVER_DIR ending in newline(s) round-trips byte-exact (codex CR).
+    s=$(printf '%sX' "$1" | sed "s/'/'\\\\''/g")
+    s=${s%X}
     printf "'%s'" "$s"
 }
 
