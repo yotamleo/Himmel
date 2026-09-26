@@ -2266,40 +2266,59 @@ fi
 # anywhere - a substitution with NO separator inside (env -C $(pwd) ...) is
 # untouched and still reaches the existing per-clause chdir handling below.
 _gf_deny_on_hidden_clause_separator() {
-    local cmd="$1" i=0 len c depth=0 backtick=0 hit=0 sq=0 dq=0
+    # HIMMEL-3683 round-3 codex-1: bash still evaluates $(...)/`...` INSIDE a
+    # "..." string, so a quote can be nested either way - a substitution can
+    # wrap a quote (env -C $(x=")"; ...) - round 2) or a quote can wrap a
+    # substitution (env -C "$(cd ..; pwd)" - round 3). A flat set of
+    # mutually-exclusive states can only give one of those nestings priority
+    # at a time, so track a tiny stack instead: one char pushed per open
+    # quote/substitution (q=single, d=double, b=backtick, p=paren/$(...)
+    # level), popped on its matching close. Still no tokenizing, word
+    # splitting or globbing - just paired-delimiter matching.
+    local cmd="$1" i=0 len c hit=0 stack=''
     len=${#cmd}
     while [ "$i" -lt "$len" ]; do
         c="${cmd:$i:1}"
-        if [ "$sq" -eq 1 ]; then
-            [ "$c" = "'" ] && sq=0
-        elif [ "$dq" -eq 1 ]; then
-            [ "$c" = '"' ] && dq=0
-        elif [ "$backtick" -eq 1 ]; then
-            case "$c" in
-                "'") sq=1 ;;
-                '"') dq=1 ;;
-                '`') backtick=0 ;;
-                ';'|'|'|'&'|$'\n') hit=1 ;;
-            esac
-        elif [ "$depth" -gt 0 ]; then
-            case "$c" in
-                "'") sq=1 ;;
-                '"') dq=1 ;;
-                '(') depth=$((depth+1)) ;;
-                ')') depth=$((depth-1)) ;;
-                ';'|'|'|'&'|$'\n') hit=1 ;;
-            esac
-        else
-            case "$c" in
-                "'") sq=1 ;;
-                '"') dq=1 ;;
-                '`') backtick=1 ;;
-                '$') [ "${cmd:$((i+1)):1}" = "(" ] && { depth=1; i=$((i+1)); } ;;
-            esac
-        fi
+        case "$stack" in
+            *q)
+                [ "$c" = "'" ] && stack="${stack%q}"
+                ;;
+            *d)
+                case "$c" in
+                    '"') stack="${stack%d}" ;;
+                    '`') stack="${stack}b" ;;
+                    '$') [ "${cmd:$((i+1)):1}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
+                esac
+                ;;
+            *b)
+                case "$c" in
+                    "'") stack="${stack}q" ;;
+                    '"') stack="${stack}d" ;;
+                    '`') stack="${stack%b}" ;;
+                    ';'|'|'|'&'|$'\n') hit=1 ;;
+                esac
+                ;;
+            *p)
+                case "$c" in
+                    "'") stack="${stack}q" ;;
+                    '"') stack="${stack}d" ;;
+                    '(') stack="${stack}p" ;;
+                    ')') stack="${stack%p}" ;;
+                    ';'|'|'|'&'|$'\n') hit=1 ;;
+                esac
+                ;;
+            *)
+                case "$c" in
+                    "'") stack="${stack}q" ;;
+                    '"') stack="${stack}d" ;;
+                    '`') stack="${stack}b" ;;
+                    '$') [ "${cmd:$((i+1)):1}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
+                esac
+                ;;
+        esac
         i=$((i+1))
     done
-    { [ "$hit" -eq 1 ] || [ "$backtick" -eq 1 ] || [ "$depth" -gt 0 ] || [ "$sq" -eq 1 ] || [ "$dq" -eq 1 ]; } || return 0
+    { [ "$hit" -eq 1 ] || [ -n "$stack" ]; } || return 0
     case "$cmd" in
         *graphify*) deny "cannot resolve a command substitution containing a clause separator; rewrite without it" ;;
     esac

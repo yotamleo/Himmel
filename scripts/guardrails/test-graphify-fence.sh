@@ -2578,6 +2578,28 @@ else
     fail "quoted ';' inside \$(...) wrongly triggered hidden-separator deny (X15 control) (rc=$rc) out=$out"
 fi
 
+
+# (X16) codex-1 (PR #1323 round 3): the outer double quotes around
+# \$(...)/backticks (not a quote INSIDE the substitution, as X13/X14 cover,
+# but the substitution's own enclosing quote) made the dq-scan swallow
+# everything up to the closing quote, never noticing the ; hidden inside -
+# even though bash still evaluates \$(...) and backticks inside "..." and a
+# separator there is just as live. Deny it the same way as X1.
+run_fence deny no "$HIMMEL" "env -C \"\$(cd ..; echo salus)\" (; inside a dq-wrapped \$(...)) -> deny (X16)" \
+    "env -C \"\$(cd ..; echo $SALUS)\" graphify update notes/patient.md --backend glm"
+
+# (X17) the symmetric control: a dq-wrapped \$(...) with NO separator inside
+# must be judged exactly as X10 - still denied, but via the pre-existing
+# unresolved-chdir reason, not the new hidden-separator one.
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "env -C \"\$(pwd)\" graphify update notes/patient.md --backend glm" 2>&1 ); rc=$?
+hit=$(printf '%s' "$out" | grep -F 'clause separator')
+if [ "$rc" -eq 2 ] && [ -z "$hit" ]; then
+    pass "env -C \"\$(pwd)\" (dq-wrapped, no separator inside) -> deny via pre-existing chdir reason, unchanged (X17 control)"
+else
+    fail "env -C \"\$(pwd)\" (dq-wrapped, no separator inside) unchanged (X17 control) (rc=$rc) out=$out"
+fi
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
