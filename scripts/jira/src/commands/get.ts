@@ -3,15 +3,24 @@ import { request } from '../client.js';
 import { formatIssue, formatIssueWithDescription, printJson } from '../output.js';
 import type { JiraIssue } from '../types.js';
 
-// Local widening: the get.ts fields query includes `labels` (HIMMEL-3610),
-// but the shared JiraIssue type does not declare it — kept local rather than
-// touching types.ts, which this ticket's scope excludes.
-type IssueWithLabels = JiraIssue & { fields: JiraIssue['fields'] & { labels?: string[] } };
+// Local widening: the get.ts fields query includes `labels` (HIMMEL-3610) and
+// `fixVersions` (HIMMEL-3713), but the shared JiraIssue type does not declare
+// them — kept local rather than touching types.ts, which this ticket's scope
+// excludes.
+type IssueWithLabels = JiraIssue & {
+  fields: JiraIssue['fields'] & { labels?: string[]; fixVersions?: Array<{ name: string }> };
+};
 
 function labelsLine(issue: IssueWithLabels): string | undefined {
   const labels = issue.fields.labels;
   if (!labels || labels.length === 0) return undefined;
   return `Labels: ${labels.join(', ')}`;
+}
+
+function fixVersionsLine(issue: IssueWithLabels): string | undefined {
+  const versions = issue.fields.fixVersions;
+  if (!versions || versions.length === 0) return undefined;
+  return `Fix versions: ${versions.map((v) => v.name).join(', ')}`;
 }
 
 export function registerGet(program: Command): void {
@@ -32,7 +41,7 @@ export function registerGet(program: Command): void {
       try {
         issue = await request<IssueWithLabels>(
           'GET',
-          `/issue/${key}?fields=summary,status,issuetype,parent,assignee,description,labels`,
+          `/issue/${key}?fields=summary,status,issuetype,parent,assignee,description,labels,fixVersions`,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -60,6 +69,8 @@ export function registerGet(program: Command): void {
         console.log(formatIssueWithDescription(issue));
         const ll = labelsLine(issue);
         if (ll) console.log(ll);
+        const fvl = fixVersionsLine(issue);
+        if (fvl) console.log(fvl);
       }
     });
 }

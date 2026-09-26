@@ -4,6 +4,7 @@ import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import { markdownToAdf } from '../adf.js';
 import { readBodyFile } from './body-file.js';
 import { parseLabels } from './labels.js';
+import { assertVersionExists, buildFixVersionBody, projectFromKey } from './versions.js';
 
 export interface EditOptions {
   priority?: string;
@@ -13,6 +14,8 @@ export interface EditOptions {
   parent?: string;
   labels?: string;
   addLabels?: string;
+  fixVersion?: string;
+  addFixVersion?: string;
 }
 
 export function buildEditFields(opts: EditOptions): Record<string, unknown> {
@@ -20,6 +23,12 @@ export function buildEditFields(opts: EditOptions): Record<string, unknown> {
     throw new Error(
       'Edit --labels and --add-labels are mutually exclusive: --labels replaces the full ' +
         'label set, --add-labels appends to it — pick one.',
+    );
+  }
+  if (opts.fixVersion !== undefined && opts.addFixVersion !== undefined) {
+    throw new Error(
+      'Edit --fix-version and --add-fix-version are mutually exclusive: --fix-version replaces ' +
+        'the full fixVersion set, --add-fix-version appends to it — pick one.',
     );
   }
   const fields: Record<string, unknown> = {};
@@ -52,10 +61,18 @@ export function buildEditFields(opts: EditOptions): Record<string, unknown> {
   // removed. Use --add-labels (HIMMEL-3610) for an incremental, non-destructive
   // append instead.
   if (opts.labels !== undefined) fields['labels'] = parseLabels(opts.labels);
-  if (Object.keys(fields).length === 0 && opts.addLabels === undefined) {
+  // --fix-version is FULL-REPLACE, same rationale as --labels: a single-valued
+  // field the operator explicitly wants set. --add-fix-version (HIMMEL-3713)
+  // appends via Jira's atomic `update` operation instead.
+  if (opts.fixVersion !== undefined) fields['fixVersions'] = [{ name: opts.fixVersion }];
+  if (
+    Object.keys(fields).length === 0 &&
+    opts.addLabels === undefined &&
+    opts.addFixVersion === undefined
+  ) {
     throw new Error(
       'Edit requires at least one of --priority, --severity, --title, --desc, --parent, ' +
-        '--labels, or --add-labels',
+        '--labels, --add-labels, --fix-version, or --add-fix-version',
     );
   }
   return fields;
@@ -72,7 +89,7 @@ export function registerEdit(program: Command): void {
   program
     .command('edit <key>')
     .description(
-      'Edit a Jira issue (priority, severity, title, description, parent, and/or labels)',
+      'Edit a Jira issue (priority, severity, title, description, parent, labels, and/or fix version)',
     )
     .option('--priority <p>', 'Priority: Highest|High|Medium|Low|Lowest')
     .option('--severity <s>', 'Severity (custom field): free text')
@@ -98,6 +115,16 @@ export function registerEdit(program: Command): void {
       'APPEND these comma-separated labels without touching existing ones ' +
         '(mutually exclusive with --labels)',
     )
+    .option(
+      '--fix-version <name>',
+      'REPLACE the issue fixVersions with this single version (validated against the ' +
+        "project's versions; full-replace)",
+    )
+    .option(
+      '--add-fix-version <name>',
+      'APPEND this version to fixVersions without touching existing ones ' +
+        '(validated against the project\'s versions; mutually exclusive with --fix-version)',
+    )
     .action(async (key: string, options: EditOptions & { desc?: string; descFile?: string }) => {
       // `--desc` and `--description` are aliases; whichever the operator
       // passed wins (and if both, --description wins because it's parsed
@@ -109,9 +136,22 @@ export function registerEdit(program: Command): void {
         options.description = options.desc;
       }
       const fields = buildEditFields(options);
-      const body: { fields?: Record<string, unknown>; update?: ReturnType<typeof buildAddLabelsUpdate> } = {};
+      if (options.fixVersion !== undefined) {
+        await assertVersionExists(projectFromKey(key), options.fixVersion);
+      }
+      if (options.addFixVersion !== undefined) {
+        await assertVersionExists(projectFromKey(key), options.addFixVersion);
+      }
+      const body: { fields?: Record<string, unknown>; update?: Record<string, unknown> } = {};
       if (Object.keys(fields).length > 0) body.fields = fields;
-      if (options.addLabels !== undefined) body.update = buildAddLabelsUpdate(options.addLabels);
+      const update: Record<string, unknown> = {};
+      if (options.addLabels !== undefined) {
+        Object.assign(update, buildAddLabelsUpdate(options.addLabels));
+      }
+      if (options.addFixVersion !== undefined) {
+        Object.assign(update, buildFixVersionBody('add', options.addFixVersion).update);
+      }
+      if (Object.keys(update).length > 0) body.update = update;
       await request('PUT', `/issue/${key}`, body);
       writeJiraBreadcrumb(key);
       console.log(`${key} edited`);

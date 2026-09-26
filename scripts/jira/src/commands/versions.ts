@@ -83,6 +83,24 @@ export async function releaseVersion(
   return `Released version ${name}`;
 }
 
+// HIMMEL-3713: shared validation so `edit --fix-version`/`--add-fix-version`
+// and `create --fix-version` fail loud on a typo'd version name instead of
+// silently no-oping or surfacing a bare Jira 400 with no project context.
+export async function assertVersionExists(project: string, name: string): Promise<void> {
+  const found = (await fetchVersions(project)).some((v) => v.name === name);
+  if (!found) throw new Error(`no version named "${name}" in project ${project}`);
+}
+
+// A Jira project key never contains a hyphen, so the project is everything
+// before the LAST one — used to validate `edit <key> --fix-version` against
+// the issue's own project rather than the configured default (HIMMEL-3713:
+// `edit` has no `--project` flag, unlike `create`).
+export function projectFromKey(key: string): string {
+  const idx = key.lastIndexOf('-');
+  if (idx <= 0) throw new Error(`"${key}" is not a valid issue key (expected PROJECT-NUMBER)`);
+  return key.slice(0, idx);
+}
+
 export async function setFixVersion(
   key: string,
   op: 'add' | 'remove',
