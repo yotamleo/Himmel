@@ -2541,6 +2541,36 @@ check_both "22 zsh -c rm into primary" block \
 check_both "22b zsh -c rm into wt (provably scratch) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"zsh -c \\\"rm $FIX/wt/wtfile.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-3648 CR follow-up fixes (codex-1/2/3) =="
+
+# 23 (codex-2): `install -d`/`--directory` puts install in directory-creation
+# mode, where every operand is itself a destination to create, not a source
+# followed by a trailing destination — the generic option-skip previously
+# dropped -d's operand from consideration entirely.
+check_both "23 install -d primary/newdir (directory-creation mode) denies (codex-2)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install -d $FIX/primary/newdir\",\"cwd\":\"$FIX/wt\"}}"
+check_both "23b install -d wt/newdir (directory-creation mode) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"install -d $FIX/wt/newdir\",\"cwd\":\"$FIX/wt\"}}"
+
+# 24 (codex-1): an unresolvable cd (popd/`cd -`/a dynamic target) must leave
+# _bwimc_ecwd_unres STICKY — a later RELATIVE cd resolving against the STALE
+# base must not silently clear it and re-trust a subsequent relative write.
+# Any relative write after popd denies regardless of where it actually
+# points, per the ticket's fail-closed design; only an ABSOLUTE cd may
+# re-establish trust (24b).
+check_both "24 popd; cd ../elsewhere && echo x > a.txt (relative cd after popd stays unresolved) denies (codex-1)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"popd; cd ../elsewhere && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "24b popd; cd $FIX/wt && echo x > a.txt (absolute cd after popd re-resolves) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"popd; cd $FIX/wt && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 25 (codex-3): bash/sh/zsh accept a COMBINED short-option cluster (`-ce`,
+# `-ec`, …) exactly as they accept a bare `-c` — a literal `-c` match let
+# `bash -ce "..."` straight through unscanned.
+check_both "25 bash -ce redirect into primary (combined short-flag cluster) denies (codex-3)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -ce \\\"echo hi > $FIX/primary/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+check_both "25b bash -ce redirect into wt (combined short-flag cluster) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -ce \\\"echo hi > $FIX/wt/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

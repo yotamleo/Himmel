@@ -1176,7 +1176,7 @@ _bwimc_unq() {
 # scan runs — never via `$(…)`, which would discard the global updates in a
 # subshell.
 _bwimc_ecwd_track() {
-    local toks=() t tu i n r
+    local toks=() t tu i n r carg cabs
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
     i=0
@@ -1198,10 +1198,26 @@ _bwimc_ecwd_track() {
                 [ -n "${HOME:-}" ] && { _bwimc_ecwd="$HOME"; _bwimc_ecwd_unres=0; } || _bwimc_ecwd_unres=1
             elif [ "$(_bwimc_unq "${toks[$i]}")" = "-" ]; then
                 _bwimc_ecwd_unres=1
-            elif r=$(_bwimc_resolve_abs "${toks[$i]}" "$_bwimc_ecwd"); then
-                _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
             else
-                _bwimc_ecwd_unres=1
+                carg=$(_bwimc_unq "${toks[$i]}")
+                case "$carg" in
+                    /*|[A-Za-z]:/*|[A-Za-z]:\\*) cabs=1 ;;
+                    *) cabs=0 ;;
+                esac
+                # HIMMEL-3648 (codex-1): a stale _bwimc_ecwd (left behind by
+                # an earlier popd, `cd -`, or unresolvable cd — none of
+                # which update it) must not be silently trusted again by a
+                # later RELATIVE cd/pushd resolving against it — that would
+                # clear _bwimc_ecwd_unres against the WRONG base. Only an
+                # ABSOLUTE target is base-independent and may clear the flag
+                # once it was already set.
+                if [ "$cabs" = 0 ] && [ "$_bwimc_ecwd_unres" = 1 ]; then
+                    :
+                elif r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
+                    _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
+                else
+                    _bwimc_ecwd_unres=1
+                fi
             fi
             ;;
         popd) _bwimc_ecwd_unres=1 ;;
@@ -1490,6 +1506,29 @@ _bwimc_next_optval_idx() {
     printf '%s' "$idx"
 }
 
+# _bwimc_is_shc_cflag TOKEN — HIMMEL-3648 (codex-3). True iff TOKEN is a
+# single-dash, all-letters short-option cluster containing `c` (bash/sh/zsh's
+# own getopt-style combined short flags: `-c`, `-ce`, `-ec`, `-xc`, …) — real
+# shells accept the string-to-run argument right after such a cluster exactly
+# as they do after a bare `-c`. Excludes any `--long-option` (second char is
+# `-`, never a letter) so `--rcfile` is never mistaken for this.
+_bwimc_is_shc_cflag() {
+    case "$1" in
+        --*) return 1 ;;
+        -*) ;;
+        *) return 1 ;;
+    esac
+    local rest="${1#-}"
+    [ -n "$rest" ] || return 1
+    case "$rest" in
+        *[!a-zA-Z]*) return 1 ;;
+    esac
+    case "$rest" in
+        *c*) return 0 ;;
+    esac
+    return 1
+}
+
 # _bwimc_check_interp_body CLAUSE_SP KIND — HIMMEL-3648. `eval "BODY"` /
 # `bash -c "BODY"` / `sh -c "BODY"` / `zsh -c "BODY"` hide a write-shaped
 # command inside a STRING argument the arms above never look at. Per the
@@ -1523,7 +1562,7 @@ _bwimc_check_interp_body() {
         cidx=-1
         i=1
         while [ "$i" -lt "$n" ]; do
-            [ "$(_bwimc_unq "${toks[$i]}")" = "-c" ] && { cidx=$((i+1)); break; }
+            _bwimc_is_shc_cflag "$(_bwimc_unq "${toks[$i]}")" && { cidx=$((i+1)); break; }
             i=$((i+1))
         done
         [ "$cidx" -ge 0 ] && [ "$cidx" -lt "$n" ] && body=$(_bwimc_unq "${toks[$cidx]}")
@@ -3060,7 +3099,14 @@ while IFS= read -r _bwimc_clause; do
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*eval([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
         _bwimc_check_interp_body "$_bwimc_clause_sp" eval
 
-    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(bash|sh|zsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(bash|sh|zsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+        # HIMMEL-3648 (codex-3): loosened from a literal `-c` to any
+        # single-dash all-letters cluster containing `c` (`-ce`, `-ec`, …) —
+        # real bash/sh/zsh getopt-style combined short flags a literal `-c`
+        # match let straight through. Deliberately over-inclusive: the
+        # precise check (and the actual body lookup) is
+        # _bwimc_is_shc_cflag inside _bwimc_check_interp_body; a prefilter
+        # false-positive here only means a harmless extra scan.
         _bwimc_check_interp_body "$_bwimc_clause_sp" shc
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(install|rsync)(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
@@ -3084,6 +3130,7 @@ while IFS= read -r _bwimc_clause; do
         _bwimc_ops=()
         _bwimc_tdir_raw=""
         _bwimc_dd=0
+        _bwimc_install_dmode=0
         _bwimc_ntoks=${#_bwimc_toks[@]}
         _bwimc_i=1
         while [ "$_bwimc_i" -lt "$_bwimc_ntoks" ]; do
@@ -3120,6 +3167,21 @@ while IFS= read -r _bwimc_clause; do
                         _bwimc_i=$((_bwimc_i+1))
                         continue
                         ;;
+                    # HIMMEL-3648 (codex-2): `-d`/`--directory` puts install
+                    # in directory-creation mode, where EVERY operand (not
+                    # just the last) is itself a destination directory to
+                    # create — the generic `-*` skip below silently dropped
+                    # `-d`'s single operand from _bwimc_ops entirely,
+                    # leaving neither branch of the resolution below able to
+                    # fire.
+                    # ponytail: only the bare `-d`/`--directory` spelling is
+                    # modelled, not a bundled short-opt form (`-vd`) —
+                    # escalate only if a real gap surfaces (HIMMEL-3648).
+                    -d|--directory)
+                        _bwimc_install_dmode=1
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
                 esac
             fi
             case "$_bwimc_t" in
@@ -3131,6 +3193,13 @@ while IFS= read -r _bwimc_clause; do
         if [ -n "$_bwimc_tdir_raw" ]; then
             _bwimc_cd_guard "$_bwimc_tdir_raw"
             _bwimc_check_target "$_bwimc_tdir_raw" "$_bwimc_ecwd"
+        elif [ "$_bwimc_install_dmode" = 1 ]; then
+            _bwimc_k=0
+            while [ "$_bwimc_k" -lt "${#_bwimc_ops[@]}" ]; do
+                _bwimc_cd_guard "${_bwimc_ops[$_bwimc_k]}"
+                _bwimc_check_target "${_bwimc_ops[$_bwimc_k]}" "$_bwimc_ecwd"
+                _bwimc_k=$((_bwimc_k+1))
+            done
         elif [ "${#_bwimc_ops[@]}" -ge 2 ]; then
             _bwimc_dest_raw="${_bwimc_ops[$((${#_bwimc_ops[@]}-1))]}"
             _bwimc_cd_guard "$_bwimc_dest_raw"
