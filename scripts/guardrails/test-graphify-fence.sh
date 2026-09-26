@@ -2469,6 +2469,16 @@ run_fence deny no "$HIMMEL" "sudo -D \$(echo salus) (sudo twin) -> deny (S1)" \
 run_fence deny no "$SALUS" "env -S\"graphify ...\" (glued double-quoted value) from salus -> deny (codex-1)" \
     "env -S\"graphify update notes/patient.md --backend glm\""
 
+# HIMMEL-3641 round-6 codex-1 (critic panel, distinct from the round-5
+# finding above): _gf_deny_if_graphify_follows itself only exact-matched
+# "graphify"/"*/graphify" on later tokens, so an unresolvable env -C
+# argument's fail-closed scan-ahead missed a LATER token that carries
+# graphify glued into another flag's value (env -S"graphify ...") instead
+# of as its own bare token - the scan finished with no match and the
+# caller returned un-denied.
+run_fence deny no "$SALUS" "env -C \$(...) unresolvable, later -S\"graphify ...\" glued token -> deny (round-6 codex-1)" \
+    "env -C \$(echo /nonexistent) -S\"graphify update notes/patient.md --backend glm\""
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

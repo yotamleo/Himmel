@@ -602,8 +602,11 @@ _gf_deny_on_chdir_unresolved() {
 _gf_deny_if_graphify_follows() {
     local k="$1"
     while [ "$k" -lt "$n" ]; do
+        # HIMMEL-3641 round-6 codex-1: substring match, not exact - a later
+        # token can carry graphify GLUED into another flag's value (e.g. a
+        # bundled env -S"graphify ..."), same as the -*S* arm's own scan.
         case "$(_strip_cmd "${toks[$k]}")" in
-            graphify|*/graphify)
+            *graphify*)
                 deny "$2" ;;
         esac
         k=$((k+1))
