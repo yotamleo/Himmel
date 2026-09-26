@@ -19,13 +19,21 @@
 # Usage: check-pr-title.sh <title>
 # Exit: 0 = title passes; 1 = fails (check-commit-msg.sh's own rejection,
 #       plus a usage line naming the expected shape); 2 = bad invocation.
-set -euo pipefail
+set -uo pipefail
 
 TITLE="${1:-}"
 if [ -z "$TITLE" ]; then
     echo "Usage: check-pr-title.sh <title>" >&2
     exit 2
 fi
+case "$TITLE" in
+    \#*)
+        echo "check-pr-title: title must not be comment-only (a leading '#' is" >&2
+        echo "stripped as a comment by check-commit-msg.sh, so it would pass" >&2
+        echo "there with nothing left to validate)" >&2
+        exit 1
+        ;;
+esac
 
 # HIMMEL-3616 (judge J1284O F5/minor): accept GitHub's own revert-button
 # title shape, e.g. `Revert "fix(x): [HIMMEL-1] foo"`. check-commit-msg.sh's
