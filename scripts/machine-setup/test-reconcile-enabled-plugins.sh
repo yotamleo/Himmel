@@ -96,7 +96,7 @@ for flag in --scope --settings --template; do
     echo "ok: trailing $flag exits 2 with its own diagnostic"
 done
 
-command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename "$0"): SKIPPED — 0 cases ran (jq not on PATH)"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename "$0"): SKIPPED — 3 argument-parsing case(s) passed; remaining jq-dependent cases not run (jq not on PATH)"; exit 0; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
