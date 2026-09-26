@@ -32,7 +32,9 @@ current_account_hash() {
   local config="${1:-${CLAUDE_ACCOUNT_CONFIG:-$HOME/.claude.json}}" uuid hash
   command -v jq >/dev/null 2>&1 || return 0
   [ -r "$config" ] || return 0
-  uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$config" 2>/dev/null)
+  # HIMMEL-1712 CR (panel round 3, codex-3): a non-string accountUuid (number,
+  # object, bool) must not be silently hashed as if it were a real identity.
+  uuid=$(jq -r 'if (.oauthAccount.accountUuid | type) == "string" then .oauthAccount.accountUuid else empty end' "$config" 2>/dev/null)
   [ -n "$uuid" ] || return 0
   hash=$(_usage_cache_sha256 "$uuid") || return 0
   printf '%s' "$hash" | cut -c1-16

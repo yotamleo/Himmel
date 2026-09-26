@@ -135,6 +135,11 @@ account_for_session() {
   # codex-1) — the same accepted fail-open ceiling as inbox_with_lock, not a
   # new gap. Upgrade path: a lock-file-free CAS write (mv-based) if a future
   # ticket needs the race closed even without flock.
+  # ponytail: the session map keeps every session_id it has ever seen, so it
+  # grows unbounded (panel round 3, codex-2). Ceiling: one small hash per key,
+  # and item 5 (overwrite/cache policy) is out of HIMMEL-1712's scope. Upgrade
+  # path: prune entries whose session hasn't rendered in N days, if a future
+  # ticket needs the growth bounded.
   lockfile="${SESSION_MAP_FILE}.lock"
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$lockfile" 2>/dev/null && flock -x 9 2>/dev/null

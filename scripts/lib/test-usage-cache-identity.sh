@@ -37,6 +37,9 @@ check "current_account_hash: missing config -> empty" "$(current_account_hash)" 
 printf '%s' '{"oauthAccount":{}}' > "$HOME/.claude.json"
 check "current_account_hash: missing accountUuid field -> empty" "$(current_account_hash)" ""
 
+printf '%s' '{"oauthAccount":{"accountUuid":12345}}' > "$HOME/.claude.json"
+check "current_account_hash: non-string accountUuid -> empty" "$(current_account_hash)" ""
+
 printf '%s' '{"oauthAccount":{"accountUuid":"uuid-account-A"}}' > "$HOME/.claude.json"
 current=$(current_account_hash)
 
