@@ -789,6 +789,73 @@ else
 fi
 rm -rf "$SB" "$CURL_STUB_DIR"
 
+# --- Case 21b: a silent endpoint (accepts the TCP connection, never answers —
+# the HIMMEL-3646 production symptom: Obsidian's REST port open but wedged)
+# must not hang SessionEnd. A real listener (not a PATH-stubbed curl, so the
+# real curl binary's --connect-timeout/--max-time are what's on trial) accepts
+# one connection and then never writes a response. Poll for the hook's own
+# exit rather than a fixed sleep; if it is still running past the bound, force
+# -kill the whole process group (setsid'd, so curl dies with it) so the RED
+# run against the unfixed hook terminates instead of hanging the suite.
+SB="$(make_sandbox)"
+PORT_FILE="$SB/listener-port"
+python3 - "$PORT_FILE" > /dev/null 2>&1 <<'PYEOF' &
+import socket, sys, time
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', 0))
+with open(sys.argv[1], 'w') as f:
+    f.write(str(s.getsockname()[1]))
+s.listen(1)
+conn, _ = s.accept()
+time.sleep(120)
+PYEOF
+LISTENER_PID=$!
+i=0
+while [ ! -s "$PORT_FILE" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+if [ ! -s "$PORT_FILE" ]; then
+    fail "HIMMEL-3646: stub listener never reported its port (test setup broken, not a hook bug)"
+    kill "$LISTENER_PID" 2>/dev/null
+    wait "$LISTENER_PID" 2>/dev/null
+else
+    PORT="$(cat "$PORT_FILE")"
+    payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"silentep","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+    printf '%s' "$payload" > "$SB/payload.json"
+    START=$(date +%s)
+    setsid env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+        LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="dummy-key" \
+        OBSIDIAN_API_URL="http://127.0.0.1:$PORT" CLAUDE_PROJECT_DIR="$SB/proj" \
+        bash "$HOOK" < "$SB/payload.json" > /dev/null 2>&1 &
+    HOOK_PID=$!
+    j=0
+    while kill -0 "$HOOK_PID" 2>/dev/null && [ "$j" -lt 450 ]; do
+        sleep 0.1
+        j=$((j + 1))
+    done
+    if kill -0 "$HOOK_PID" 2>/dev/null; then
+        BOUNDED=0
+        kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    else
+        BOUNDED=1
+    fi
+    wait "$HOOK_PID" 2>/dev/null
+    HOOK_RC=$?
+    END=$(date +%s)
+    ELAPSED=$((END - START))
+    kill -TERM -- -"$LISTENER_PID" 2>/dev/null
+    wait "$LISTENER_PID" 2>/dev/null
+    LOGP="$(log_path_for "$SB/home" "$SB/proj")"
+    if [ "$BOUNDED" -eq 1 ] && [ "$HOOK_RC" -eq 0 ] && [ "$ELAPSED" -lt 45 ] && [ -r "$LOGP" ] && grep -q 'local fs fallback' "$LOGP"; then
+        pass "HIMMEL-3646: silent (connects, never answers) endpoint bounded to ${ELAPSED}s via curl timeout, took the local-fs fallback"
+    else
+        fail "HIMMEL-3646: silent endpoint not bounded (bounded=$BOUNDED rc=$HOOK_RC elapsed=${ELAPSED}s log=$([ -r "$LOGP" ] && tail -3 "$LOGP" | tr '\n' '|' || echo '<no log>'))"
+    fi
+fi
+rm -rf "$SB"
+
 # --- Case 21: dedup guard — two hook runs for the SAME session_id write
 # exactly one note (HIMMEL-3629 direction 2's "must not double-write" clause:
 # a pre-signal capture from close-wrapped-leg.sh and the hook's own normal
