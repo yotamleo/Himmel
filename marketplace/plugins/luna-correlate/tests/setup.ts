@@ -1,4 +1,4 @@
-import { mkdtempSync } from "fs";
+import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -6,4 +6,6 @@ import { join } from "path";
 // file imports src/kp.ts or src/fetchFactors.ts (both resolve their cache path once,
 // at import time, from this env var). No test can then ever write through to the
 // operator's real cache at marketplace/plugins/luna-correlate/cache/.
-process.env.LUNA_CORRELATE_CACHE_DIR = mkdtempSync(join(tmpdir(), "luna-correlate-test-cache-"));
+const testCacheDir = mkdtempSync(join(tmpdir(), "luna-correlate-test-cache-"));
+process.env.LUNA_CORRELATE_CACHE_DIR = testCacheDir;
+process.on("exit", () => rmSync(testCacheDir, { recursive: true, force: true }));
