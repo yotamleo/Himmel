@@ -1397,6 +1397,11 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             # to write at all (the path is simply gone) — never silently
             # discarded. Permanent deletion is deferred to the reap pass
             # below, on a LATER run.
+            # ponytail: assumes stray_dir ($STRAY_HOME, under PRIMARY_WORKTREE)
+            # and STRAY_QUARANTINE_DIR ($COMMON_DIR, also under PRIMARY_WORKTREE)
+            # always share a filesystem, so mv is a single rename() rather than
+            # a copy-and-delete fallback; revisit if himmel ever supports a
+            # worktrees dir or git-common-dir mounted on a separate filesystem.
             if ! mkdir -p "$STRAY_QUARANTINE_DIR" 2>/dev/null; then
                 echo "WARN clean-garden: could not create quarantine dir $STRAY_QUARANTINE_DIR — refusing to sweep $stray_dir" >&2
                 note_stuck "$stray_dir" "stray husk refused: quarantine dir unavailable"
@@ -1447,12 +1452,22 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             fi
             # Captured via $( ) rather than piped into `grep -q` (which can
             # SIGPIPE `find` under `set -o pipefail` and flip the verdict on
-            # a busy directory) — see HIMMEL-1430.
-            if [ -n "$(find "$quar_sidecar" -mmin -1440 -print 2>/dev/null)" ]; then
-                continue   # quarantined too recently
+            # a busy directory) — see HIMMEL-1430. A failed `find` here must
+            # NOT read as "nothing found" (that would treat a scan failure as
+            # permission to reap): check its own exit status and fail closed.
+            if quar_age_out=$(find "$quar_sidecar" -mmin -1440 -print 2>/dev/null); then
+                if [ -n "$quar_age_out" ]; then
+                    continue   # quarantined too recently
+                fi
+            else
+                continue   # age scan failed — fail closed, keep it
             fi
-            if [ -n "$(find "$quar_dir" -newer "$quar_sidecar" -print 2>/dev/null)" ]; then
-                continue   # something wrote here since quarantining
+            if quar_newer_out=$(find "$quar_dir" -newer "$quar_sidecar" -print 2>/dev/null); then
+                if [ -n "$quar_newer_out" ]; then
+                    continue   # something wrote here since quarantining
+                fi
+            else
+                continue   # tamper scan failed — fail closed, keep it
             fi
             if quar_git_marker=$(find "$quar_dir" -maxdepth 1 -name .git 2>/dev/null); then  # gnu-ok: -maxdepth is also POSIX-supported by BSD find
                 if [ -n "$quar_git_marker" ]; then
