@@ -112,6 +112,7 @@ echo "TEST: setup.sh [2/6] step completes (rc=0) with no USER_SLUG, no git ident
 if [ -n "$block" ]; then
   _step_out=$(
     ( set -uo pipefail
+      # shellcheck disable=SC2034  # consumed by `eval "$block"` below
       REPO_ROOT="$(dirname "$here")"
       cd "$REPO" || exit 9
       unset USER_SLUG
