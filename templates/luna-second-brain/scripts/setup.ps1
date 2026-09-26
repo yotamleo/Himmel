@@ -78,9 +78,12 @@ Write-Host "  All foundational tools present."
 Write-Host ""
 
 # --- [2/6] USER_SLUG resolution ---
-# Shells out to bash + scripts/lib/user-slug.sh so the resolver lives in
-# one source of truth (sourced by the bash setup path too). Mirrors the
-# pattern himmel's setup.ps1 uses for handover-link.sh.
+# Shells out to bash + scripts/lib/check-user-slug.sh so the disposition
+# lives in one source of truth (used by the bash setup path too). Mirrors
+# the pattern himmel's setup.ps1 uses for handover-link.sh.
+# Advisory, not fatal (HIMMEL-2539): an unresolved slug no longer aborts —
+# see check-user-slug.sh's own header for why. $UserSlugManual survives to
+# the footer so the skipped step is still named (HIMMEL-2536 principle).
 Write-Host "[2/6] Resolving USER_SLUG..."
 $GitBash = 'C:\Program Files\Git\bin\bash.exe'
 if (-not (Test-Path $GitBash)) {
@@ -91,11 +94,10 @@ if (-not (Test-Path $GitBash)) {
     Write-Host "ERROR: bash not found -- required for USER_SLUG resolution. Install Git for Windows." -ForegroundColor Red
     exit 1
 }
-$UserSlugScript = (Join-Path $RepoRoot 'scripts\lib\_print-user-slug.sh').Replace('\', '/')
+$UserSlugScript = (Join-Path $RepoRoot 'scripts\lib\check-user-slug.sh').Replace('\', '/')
 # Run helper bash script directly so PS does not have to deal with
-# quoting '&&' / '$()' / escaped quotes inside `bash -c "..."`. The
-# helper sources user-slug.sh + prints the slug. EAP relaxed for the
-# bash invocation so its stderr diagnostic does not surface as a PS
+# quoting '&&' / '$()' / escaped quotes inside `bash -c "..."`. EAP relaxed
+# for the bash invocation so its stderr diagnostic does not surface as a PS
 # ErrorRecord under $ErrorActionPreference='Stop'.
 $savedEAP = $ErrorActionPreference
 try {
@@ -104,13 +106,17 @@ try {
 } finally {
     $ErrorActionPreference = $savedEAP
 }
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: USER_SLUG resolution failed:" -ForegroundColor Red
-    $ResolvedSlug | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
-    exit 1
+$UserSlugManual = $false
+if ($LASTEXITCODE -eq 0) {
+    $env:USER_SLUG = ($ResolvedSlug | Select-Object -Last 1).ToString().Trim()
+    $ResolvedSlug | ForEach-Object { Write-Host "  $_" }
+} else {
+    $UserSlugManual = $true
+    if ($LASTEXITCODE -ne 3) {
+        Write-Host "  WARNING: check-user-slug.sh exited $LASTEXITCODE (expected 0 or 3); treating USER_SLUG as unresolved." -ForegroundColor Yellow
+    }
+    $ResolvedSlug | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
 }
-$env:USER_SLUG = ($ResolvedSlug | Select-Object -Last 1).ToString().Trim()
-$ResolvedSlug | ForEach-Object { Write-Host "  $_" }
 Write-Host ""
 
 # --- [3/6] pre-commit install ---
@@ -195,6 +201,13 @@ if ($Medical) {
 Write-Host ""
 Write-Host "Setup complete."
 Write-Host ""
+if ($UserSlugManual) {
+    Write-Host "STILL MANUAL: USER_SLUG did not resolve (see [2/6] above)." -ForegroundColor Yellow
+    Write-Host "  Handover bucket paths and scratch dir names stay un-derivable until you" -ForegroundColor Yellow
+    Write-Host "  set USER_SLUG (env or .env) or a git identity (git config --global" -ForegroundColor Yellow
+    Write-Host "  user.name) -- no re-run of setup is needed once you do." -ForegroundColor Yellow
+    Write-Host ""
+}
 Write-Host "Next steps:"
 Write-Host "  1. (optional) Edit .env to override USER_SLUG / HANDOVER_DIR defaults."
 Write-Host "  2. Install the Obsidian markdown skill pack from inside Claude Code:"

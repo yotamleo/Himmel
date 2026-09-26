@@ -103,14 +103,22 @@ echo "  uv/pipx available for pre-commit install."
 echo ""
 
 # --- [2/6] USER_SLUG resolution ---
+# Advisory, not fatal (HIMMEL-2539, re-verifying HIMMEL-2537 for this
+# template): no step below this one reads USER_SLUG, so aborting here only
+# stopped steps [3/6]..[6/6] that would all have succeeded. _user_slug_manual
+# survives to the footer so the skipped step is still named after "Setup
+# complete." scrolls past (HIMMEL-2536 principle).
 echo "[2/6] Resolving USER_SLUG..."
-# shellcheck source=lib/user-slug.sh
-# shellcheck disable=SC1091
-. "$REPO_ROOT/scripts/lib/user-slug.sh"
-if _resolved_slug=$(user_slug_verify); then
+_user_slug_manual=0
+_slug_rc=0
+_resolved_slug=$(bash "$REPO_ROOT/scripts/lib/check-user-slug.sh") || _slug_rc=$?
+if [ "$_slug_rc" -eq 0 ]; then
   export USER_SLUG="$_resolved_slug"
 else
-  exit 1
+  _user_slug_manual=1
+  if [ "$_slug_rc" -ne 3 ]; then
+    echo "  WARNING: check-user-slug.sh exited rc=$_slug_rc (expected 0 or 3); treating USER_SLUG as unresolved." >&2
+  fi
 fi
 echo ""
 
@@ -197,6 +205,13 @@ fi
 echo ""
 echo "Setup complete."
 echo ""
+if [ "$_user_slug_manual" -eq 1 ]; then
+  echo "STILL MANUAL: USER_SLUG did not resolve (see [2/6] above)."
+  echo "  Handover bucket paths and scratch dir names stay un-derivable until you"
+  echo "  set USER_SLUG (env or .env) or a git identity (git config --global"
+  echo "  user.name) — no re-run of setup is needed once you do."
+  echo ""
+fi
 echo "Next steps:"
 echo "  1. (optional) Edit .env to override USER_SLUG / HANDOVER_DIR defaults."
 echo "  2. Install the Obsidian markdown skill pack from inside Claude Code:"
