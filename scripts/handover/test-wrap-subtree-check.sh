@@ -243,6 +243,41 @@ out="$(run "$W/pre-session.txt" 101 2>&1)"; rc=$?
 eq 'a child older than its session is not exempt: rc 1' 1 "$rc"
 contains 'the older-than-session child is pid 122' "$out" '  pid=122 ppid='
 
+# #1337: two more harness-spawned trees macOS legs actually produce, that the
+# HIMMEL-3265 name/session-start matcher does not catch. The session keep-awake
+# (`caffeinate`) re-arms on a rolling cadence, so its etime never lands inside
+# the isearly() start window (proven here by a session that has run 5h against
+# a caffeinate that just (re)started); it must be exempt by name alone. The
+# claude-hud statusline redraw that running the check itself triggers is a
+# fresh 4-deep tree (node -> the statusline script -> timeout -> jq) forked
+# long after session start too — only its root need be name-matched, since the
+# existing walk-to-root rule already carries the ignore down to its
+# descendants (proven for MCP launchers above). A stray node server and a
+# leg's own sleep sit alongside both trees and must still withhold.
+cat > "$W/harness-trees.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  300   101       00:05 /usr/bin/caffeinate -i -t 300
+  310   101       00:01 node /Users/u/.claude/claude-hud/dist/index.js
+  311   310       00:01 /bin/bash /Users/u/Himmel/scripts/statusline/hud-custom-lines.sh
+  312   311       00:00 timeout 2 jq -r .foo
+  313   312       00:00 jq -r .foo
+  320   101    00:10:00 node /repo/server.js
+  321   101    00:05:00 sleep 999
+FIX
+out="$(run "$W/harness-trees.txt" 101 2>&1)"; rc=$?
+eq 'harness trees (caffeinate + claude-hud) plus a genuine leftover: rc 1 (#1337)' 1 "$rc"
+contains 'only the genuine leftovers withhold (#1337)' "$out" 'WITHHELD: 2 process(es) still alive under claude pid 101'
+contains 'the stray node server is named (#1337)' "$out" 'pid=320 ppid='
+contains 'the leg'"'"'s own sleep is named (#1337)' "$out" 'pid=321 ppid='
+lacks 'a withheld run never prints CLOSABLE (#1337)' "$out" 'CLOSABLE:'
+for p in 300 310 311 312 313; do contains "harness pid $p is ignored, not withheld (#1337)" "$out" "ignored pid=$p "; done
+for p in 300 310 311 312 313; do lacks "harness pid $p is not listed as withheld (#1337)" "$out" "  pid=$p ppid="; done
+contains 'the caffeinate keep-awake is name-matched (#1337)' "$out" 'ignored pid=300 ppid=101 etime=00:05 why=name-match cmd=/usr/bin/caffeinate'
+contains 'the statusline root is name-matched (#1337)' "$out" 'ignored pid=310 ppid=101 etime=00:01 why=name-match cmd=node /Users/u/.claude/claude-hud'
+contains 'the statusline script inherits the ignore from its claude-hud parent (#1337)' "$out" 'ignored pid=311 ppid=310 etime=00:01 why=name-match via=310'
+contains 'the jq leaf inherits the ignore transitively (#1337)' "$out" 'ignored pid=313 ppid=312 etime=00:00 why=name-match via=310'
+
 # Weakening controls (HIMMEL-3265, contract item 3). Each weakened check must RUN
 # and lose the leg-left loop for the specific reason — a check that merely
 # crashes would "fail" every assertion and prove nothing.
