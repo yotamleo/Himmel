@@ -1494,7 +1494,12 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             /*|[A-Za-z]:/*|[A-Za-z]:\\*) wabs="$w" ;;
             *) wabs="$cwd/$w" ;;
         esac
-        if [ -e "$wabs" ]; then
+        # round-3 codex-1: `-e` follows symlinks and reports false for a
+        # DANGLING one (a symlink whose target does not exist yet, e.g. one
+        # pointing at a settings.json that has not been created) — `-L`
+        # is a second stat-family builtin, no subprocess, and catches the
+        # symlink itself so canon() still resolves where it points.
+        if [ -e "$wabs" ] || [ -L "$wabs" ]; then
             result=$(check_target "$w")
             case "$result" in deny\ *) symlink_dest=1 ;; esac
             return

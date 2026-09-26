@@ -1722,12 +1722,17 @@ outright — braces are never expanded — when the text also names `.claude`
 or `settings`, or `dir_dest` already matched, or the cwd is a nested
 worktree; this catches a brace group hiding a `..` climb from every check
 above, none of which expand braces (`tee .{,.}/.{,.}/settings.json`). (3)
-Every write-destination word that names a path EXISTING on disk is resolved
-with `canon()` (the same `realpath -m`-or-Python `resolve()` this hook
-already uses, which follows symlinks); a destination that already exists as
-a symlink into a live settings file or the primary's `.claude/` outside
-worktrees/ denies even though the text is otherwise silent — this is the one
-place the hook reads the filesystem, and only for destination operands. When
+Every write-destination word that names a path EXISTING on disk, OR that is
+itself a symlink even if DANGLING (CR round 3, codex-1: `-e` follows a
+symlink and reports false when its target does not exist yet, e.g. a live
+settings.json that has not been created — `-L` is a second stat-family
+builtin, no extra subprocess, and catches the symlink itself so `canon()`
+still resolves where it points), is resolved with `canon()` (the same
+`realpath -m`-or-Python `resolve()` this hook already uses, which follows
+symlinks); a destination that already exists (or exists as a symlink) into a
+live settings file or the primary's `.claude/` outside worktrees/ denies even
+though the text is otherwise silent — this is the one place the hook reads
+the filesystem, and only for destination operands. When
 the word's leaf case-folds to `settings.json`/`settings.local.json` but the
 full path does not exist yet, the check also fires on the PARENT directory
 existing (CR round 2, codex-2): `canon()` already resolves a missing final

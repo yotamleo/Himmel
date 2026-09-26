@@ -1363,6 +1363,26 @@ ln -s "$PRIMARY/.claude/worktrees/sibling" "$NESTED_WT/escape-inside"
 assert_rc "214 cp y through a symlinked parent dir staying inside worktrees/ allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "cp y escape-inside/notes.json")"
 
+# 215: a DANGLING symlink — the operand itself is a symlink whose target
+# (a live settings.json) does not exist yet — through a separate primary-like
+# repo that has never had a settings.json created. `-e` follows symlinks and
+# reports false for a dangling one, so the pre-fix code's `[ -e "$wabs" ]`
+# gate skipped check_target entirely; the symlink's own name ("dangle-link")
+# is not itself a settings-named leaf, so round-2's parent-existence pre
+# filter does not catch it either (round-3 codex-1 panel finding).
+DANGLE_PRIMARY="$SANDBOX/dangle-primary"
+mkrepo "$DANGLE_PRIMARY"
+mkdir -p "$DANGLE_PRIMARY/.claude"
+ln -s "$DANGLE_PRIMARY/.claude/settings.json" "$WT2/dangle-link"
+assert_rc "215 cp y through a dangling symlink to a not-yet-existing settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "cp y dangle-link")"
+
+# 216 (control): the same dangling-symlink shape, but the target's parent
+# is not a live .claude at all — must stay ALLOW.
+ln -s "$DANGLE_PRIMARY/notes/plan.json" "$WT2/dangle-link-safe"
+assert_rc "216 cp y through a dangling symlink to a non-settings path allows" 0 \
+    "$(bash_rc_of "$WT2" "cp y dangle-link-safe")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
