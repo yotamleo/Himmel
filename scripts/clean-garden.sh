@@ -1415,7 +1415,9 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 # show up as untracked content to classify_worktree on the
                 # reap pass below, permanently blocking reap of an otherwise
                 # clean husk.
-                date +%s > "$stray_q_dest.himmel-quarantined-at" 2>/dev/null || true
+                if ! date +%s > "$stray_q_dest.himmel-quarantined-at" 2>/dev/null; then
+                    echo "WARN clean-garden: failed to write quarantine timestamp for $stray_q_dest — it will never be reaped automatically (inspect by hand, then add the sidecar or rm -rf it yourself once satisfied)" >&2
+                fi
                 echo "clean-garden: quarantined stray husk $stray_dir -> $stray_q_dest (restore: mv '$stray_q_dest' '$stray_dir')"
                 log "  quarantined stray husk: $stray_dir -> $stray_q_dest"
                 STRAY_SWEPT=$((STRAY_SWEPT+1))
@@ -1462,13 +1464,6 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             else
                 continue   # age scan failed — fail closed, keep it
             fi
-            if quar_newer_out=$(find "$quar_dir" -newer "$quar_sidecar" -print 2>/dev/null); then
-                if [ -n "$quar_newer_out" ]; then
-                    continue   # something wrote here since quarantining
-                fi
-            else
-                continue   # tamper scan failed — fail closed, keep it
-            fi
             if quar_git_marker=$(find "$quar_dir" -maxdepth 1 -name .git 2>/dev/null); then  # gnu-ok: -maxdepth is also POSIX-supported by BSD find
                 if [ -n "$quar_git_marker" ]; then
                     quar_verdict=$(classify_worktree "$quar_dir") || quar_verdict="scanfail"
@@ -1485,6 +1480,24 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 fi
             else
                 continue   # presence probe failed — fail closed, keep it
+            fi
+            # HIMMEL-1738 (codex round-2 review) — re-check "nothing wrote here
+            # since quarantining" AGAIN here, immediately before the delete,
+            # rather than only before the classify above: classify_worktree
+            # and stray_ignored_verdict run real `git` status/ls-files scans
+            # that take wall-clock time, and a write landing during that scan
+            # would be invisible to a check made only beforehand. Checking
+            # again right here shrinks the window to the rm -rf call itself.
+            # ponytail: a write landing in that last instant is still lost —
+            # there is no cross-process lock, so a truly atomic
+            # check-then-delete isn't possible without one; revisit only if
+            # this is ever observed in practice.
+            if quar_newer_out=$(find "$quar_dir" -newer "$quar_sidecar" -print 2>/dev/null); then
+                if [ -n "$quar_newer_out" ]; then
+                    continue   # something wrote here since quarantining
+                fi
+            else
+                continue   # tamper scan failed — fail closed, keep it
             fi
             if [ "$DRY_RUN" -eq 1 ]; then
                 echo "DRY clean-garden: would delete quarantined stray husk $quar_dir"
