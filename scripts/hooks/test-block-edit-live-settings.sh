@@ -1341,6 +1341,28 @@ ln -s "$PRIMARY/.claude/settings.json" "$PRIMARY/.claude/worktrees/x/s ymlink"
 assert_rc "212 cp y through a quoted pre-existing symlink with a space denies" 2 \
     "$(bash_rc_of "$WT2" "cp y \"$PRIMARY/.claude/worktrees/x/s ymlink\"")"
 
+# 213: same shape as 210/212, but the symlink sits on a PARENT DIRECTORY
+# rather than being the final destination itself, and the leaf name
+# (settings.local.json) does not exist ANYWHERE on disk yet — a genuinely
+# new destination, reached through a pre-existing symlinked dir that
+# escapes worktrees/ confinement into the primary's own .claude/, with
+# neither ".." nor ".claude" anywhere in the command text (codex-2 round-2
+# panel finding on this ticket: canon()'s realpath-m/resolve(strict=False)
+# already follow symlinks in every EXISTING path component even when the
+# final leaf is missing, so gating check_target on the full path's own
+# existence — rather than its parent's — missed this).
+ln -s "$PRIMARY/.claude" "$NESTED_WT/escape"
+assert_rc "213 cp y through a symlinked PARENT dir to a not-yet-existing settings.local.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp y escape/settings.local.json")"
+
+# 214 (control): the SAME symlinked-parent-dir shape, but the symlink
+# target stays INSIDE worktrees/ (a sibling worktree's own container) and
+# the leaf name is not a live-settings filename — must stay ALLOW.
+mkdir -p "$PRIMARY/.claude/worktrees/sibling"
+ln -s "$PRIMARY/.claude/worktrees/sibling" "$NESTED_WT/escape-inside"
+assert_rc "214 cp y through a symlinked parent dir staying inside worktrees/ allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp y escape-inside/notes.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

@@ -1727,7 +1727,16 @@ with `canon()` (the same `realpath -m`-or-Python `resolve()` this hook
 already uses, which follows symlinks); a destination that already exists as
 a symlink into a live settings file or the primary's `.claude/` outside
 worktrees/ denies even though the text is otherwise silent — this is the one
-place the hook reads the filesystem, and only for destination operands.
+place the hook reads the filesystem, and only for destination operands. When
+the word's leaf case-folds to `settings.json`/`settings.local.json` but the
+full path does not exist yet, the check also fires on the PARENT directory
+existing (CR round 2, codex-2): `canon()` already resolves a missing final
+component safely, so a not-yet-existing settings file reached through a
+pre-existing symlinked parent that escapes into the primary's `.claude/`
+denies too. The leaf-name gate keeps this scoped rather than firing on every
+scanned word's parent (almost always true, since the parent is often just the
+cwd) — `check_target`'s own `canon()` call is a subprocess, and a padded or
+heredoc command can carry thousands of words (the J1242 timing tests).
 Checks (1) and (3) walk the tokenizer's own `ST_W[]` words (quotes/escapes
 removed, internal spaces preserved) when it vouched for the command, so a
 quoted destination with a space stays one operand; only a command the

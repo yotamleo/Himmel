@@ -1477,7 +1477,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # whitespace split, same documented ceiling every other TOK=0 fallback
     # in this file already accepts.
     _check_write_operand() {
-        local w="$1" resolved wabs result
+        local w="$1" resolved wabs wparent wleaf result
         [ -n "$w" ] || return 0
         if [ -n "$nested_wt_primary" ]; then
             case "$w" in
@@ -1495,6 +1495,33 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             *) wabs="$cwd/$w" ;;
         esac
         if [ -e "$wabs" ]; then
+            result=$(check_target "$w")
+            case "$result" in deny\ *) symlink_dest=1 ;; esac
+            return
+        fi
+        # HIMMEL-178 round-2 codex-2: a destination that does not exist YET
+        # can still be reached through a pre-existing symlinked PARENT
+        # directory that escapes into the primary's .claude/. canon()'s
+        # realpath -m / Python resolve(strict=False) already resolve a
+        # missing final component safely (symlinks in every EXISTING
+        # component are followed, the rest is appended lexically), so gate
+        # on the PARENT existing too, not only the full path — but only when
+        # the leaf is actually a live-settings filename: check_target's own
+        # canon() (a realpath/python subprocess) is expensive, and a padded
+        # command can carry thousands of non-existent operand words (J1242
+        # timing tests), so calling it whenever a word's PARENT merely exists
+        # (almost always true — the parent is often just the cwd) blew the
+        # 5s timing budget. The leaf match uses a bash case pattern, not
+        # `tr`, so this pre-filter itself never forks.
+        wleaf="${wabs##*/}"
+        case "$wleaf" in
+            [sS][eE][tT][tT][iI][nN][gG][sS].[jJ][sS][oO][nN]) : ;;
+            [sS][eE][tT][tT][iI][nN][gG][sS].[lL][oO][cC][aA][lL].[jJ][sS][oO][nN]) : ;;
+            *) return ;;
+        esac
+        wparent="${wabs%/*}"
+        [ -n "$wparent" ] || wparent="/"
+        if [ -e "$wparent" ]; then
             result=$(check_target "$w")
             case "$result" in deny\ *) symlink_dest=1 ;; esac
         fi
