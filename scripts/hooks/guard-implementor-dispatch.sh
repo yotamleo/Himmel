@@ -252,6 +252,10 @@ hook_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root="${CLAUDE_PROJECT_DIR:-}"
 [ -n "$repo_root" ] || repo_root=$(cd "$hook_dir/../.." && pwd)
 
+# shellcheck source=../lib/git-clean.sh
+# shellcheck disable=SC1091
+. "$hook_dir/../lib/git-clean.sh" 2>/dev/null || true
+
 # --- HIMMEL-1513: refuse only when a concrete external lane is
 # registry-available AND actually runnable AND bank-funded. The registry marks
 # a lane available by API-key presence alone — it never checks that bun is
@@ -513,10 +517,10 @@ if [ -n "$round_cwd" ]; then
         case "$round_wt_path" in
             /*)
                 if [ -e "$round_wt_path/.git" ]; then
-                    round_wt_common=$(git -C "$round_wt_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-                    round_cwd_common=$(git -C "$round_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+                    round_wt_common=$(git_clean -C "$round_wt_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+                    round_cwd_common=$(git_clean -C "$round_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
                     if [ -n "$round_wt_common" ] && [ "$round_wt_common" = "$round_cwd_common" ]; then
-                        round_wt_branch=$(git -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+                        round_wt_branch=$(git_clean -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
                     fi
                 fi
                 ;;
