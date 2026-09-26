@@ -40,10 +40,10 @@ fail() { printf 'FAIL %s\n' "$1"; FAILED=$((FAILED + 1)); }
 TMP="$(mktemp -d)"
 
 # Per-case watcher (W*) and parent (P*) pids; all reaped by the trap.
-W1="" P1="" W2="" P2="" W3="" P3="" P5="" W6="" P6=""
+W1="" P1="" W2="" P2="" W3="" P3="" P5="" W6="" P6="" P7="" GC7=""
 cleanup() {
     local _p
-    for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6"; do
+    for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7"; do
         [ -n "$_p" ] && kill "$_p" 2>/dev/null
     done
     wait 2>/dev/null
@@ -243,6 +243,50 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
 else
     pass "case 5 -> (skipped: no timeout/gtimeout on this host)"
     pass "case 6 -> (skipped: no timeout/gtimeout on this host)"
+fi
+
+# --- Case 7: the no-timeout/gtimeout fallback kills the probe's WHOLE
+#             process tree, not just its direct pid (HIMMEL-2110) -- a
+#             scratch PATH hides timeout/gtimeout (and setsid, so the
+#             set-m sub-branch is exercised) with only the tools the probe
+#             itself needs symlinked in. At base, the fallback tier only
+#             does `kill "$cpid"` on the probe's direct pid, so a
+#             background CHILD the probe spawned before hanging survives
+#             as an orphan.
+echo "== case 7: no-timeout/gtimeout fallback kills the probe's whole process group =="
+BIN7="$TMP/bin7"
+mkdir -p "$BIN7"
+for t in bash sh sleep kill printf cat; do
+    t_path="$(command -v "$t" 2>/dev/null)"
+    [ -n "$t_path" ] && ln -s "$t_path" "$BIN7/$t"
+done
+sleep 30 &
+P7=$!
+CHILDPID7="$TMP/childpid7"
+LOG7="$TMP/log7"
+PATH="$BIN7" bash "$WATCH_LOOP" --parent-pid "$P7" --ttl 2 --interval 1 \
+    -- sh -c "sleep 30 & echo \$! > '$CHILDPID7'; sleep 30" > "$LOG7" 2>&1
+rc7=$?
+kill "$P7" 2>/dev/null
+wait "$P7" 2>/dev/null
+P7=""
+i=0
+while [ ! -s "$CHILDPID7" ] && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+if [ -s "$CHILDPID7" ]; then
+    pass "probe's background child recorded its pid before the fallback fired"
+else
+    fail "probe's background child never recorded a pid"
+fi
+GC7="$(cat "$CHILDPID7" 2>/dev/null || true)"
+if [ "$rc7" -eq 0 ] && grep -q 'watch-loop: exiting (ttl)' "$LOG7"; then
+    pass "no-timeout fallback loop still exited 0 naming ttl"
+else
+    fail "case 7 rc=$rc7 log: $(cat "$LOG7")"
+fi
+if [ -n "$GC7" ] && kill -0 "$GC7" 2>/dev/null; then
+    fail "probe's background child (pid $GC7) survived the no-timeout fallback kill"
+else
+    pass "probe's background child was reaped along with the probe (no-timeout fallback)"
 fi
 
 echo "---"
