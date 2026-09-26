@@ -789,6 +789,21 @@ IS_OUT=$(j_bash_cwd "$IS_W" "$IS_REL $IS_R" | HIMMEL_REPO="$IS_W" bash "$HOOK" 2
 assert "ctl: is HIMMEL_REPO = own worktree"  PASS "$(grepq "$IS_OUT" '"permissionDecision":"allow"' && echo ALLOW || echo PASS)"
 rm -rf "$IS_TMP"
 
+# --- HIMMEL-3660: auto-approve must not cook brace/parameter expansion literally ---
+# The shell EXPANDS these before the command runs, but a literal-word match
+# sees one un-exploded token and misses the write/delete/exec flag hiding
+# inside it. FAIL CLOSED: these must PASS (fall through to a normal prompt),
+# never ALLOW.
+assert "sort brace -o/F split"        PASS "$(decide "$(j_bash 'sort {-o,F} f')")"
+assert "sort param-default -o"        PASS "$(decide "$(j_bash 'sort ${X:--o/tmp/p} f')")"
+assert "sort brace compress-program"  PASS "$(decide "$(j_bash 'sort {--compress-program=sh,f}')")"
+assert "find brace -delete/-print"    PASS "$(decide "$(j_bash 'find . {-delete,-print}')")"
+# Controls: unrelated shapes must keep behaving exactly as before.
+assert "sort plain still ALLOW"       ALLOW "$(decide "$(j_bash 'sort f')")"
+assert "find -name still ALLOW"       ALLOW "$(decide "$(j_bash "find . -name '*.md'")")"
+assert "quoted literal brace ALLOW"   ALLOW "$(decide "$(j_bash "echo '{a,b}'")")"
+assert "sort quoted literal brace"    ALLOW "$(decide "$(j_bash "sort '{a,b}' f")")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

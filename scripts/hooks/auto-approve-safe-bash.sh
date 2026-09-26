@@ -312,7 +312,7 @@ tokenize_seg_words() {
 # rather than identical-looking text protected by single quotes or a backslash.
 # shellcheck disable=SC2016 # every variable spelling below is inspected literally; nothing is expanded
 shell_word_value() {
-    local s="$1" n i c nx st=0
+    local s="$1" n i c nx st=0 bd=0 bf=0
     n=${#s}; i=0; SW_VALUE=""; SW_EXPANDS_HOME=0; SW_EXPANDS_TILDE=0
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
@@ -344,10 +344,38 @@ shell_word_value() {
                     '$'|'`'|'"'|"\\") SW_VALUE="$SW_VALUE$nx"; i=$((i + 2)); continue ;;
                 esac ;;
         esac
+        # HIMMEL-3660: brace expansion (`{a,b}`, `{1..5}`) explodes ONE raw
+        # word into several argv words before the command runs, so a token
+        # containing an unquoted `{...,...}` or `{...\.\..}` can hide a
+        # dangerous flag from every literal-word guard below it. Track only
+        # the outermost unquoted brace span and fail closed the instant it
+        # closes with a comma or `..` seen inside — never try to enumerate
+        # what it would expand TO.
+        if [ "$st" = 0 ]; then
+            case "$c" in
+                '{') bd=$((bd + 1)) ;;
+                '}')
+                    if [ "$bd" -gt 0 ]; then
+                        bd=$((bd - 1))
+                        [ "$bf" = 1 ] && return 1
+                    fi ;;
+                ',') [ "$bd" -gt 0 ] && bf=1 ;;
+                '.') [ "$bd" -gt 0 ] && [ "${s:$((i + 1)):1}" = '.' ] && bf=1 ;;
+            esac
+        fi
         if [ "$c" = '~' ] && [ "$st" = 0 ] && [ "$i" -eq 0 ]; then
             case "${s:$((i + 1)):1}" in ''|'/'|"'"|'"') SW_EXPANDS_TILDE=1 ;; esac
         fi
         if [ "$c" = '$' ]; then
+            nx="${s:$((i + 1)):1}"
+            # `$(...)` command substitution is a distinct expansion kind, out
+            # of this ticket's scope; HIMMEL-2121's rootwalk-find scan already
+            # tolerates it as opaque literal text, so keep that behavior and
+            # only fail closed on PARAMETER expansion (`${…}`, bare `$VAR`)
+            # below.
+            if [ "$nx" = '(' ]; then
+                SW_VALUE="$SW_VALUE$c"; i=$((i + 1)); continue
+            fi
             if [ "${s:$i:14}" = '${USERPROFILE}' ]; then
                 SW_VALUE="$SW_VALUE"'${USERPROFILE}'; SW_EXPANDS_HOME=1
                 i=$((i + 14)); continue
@@ -372,6 +400,11 @@ shell_word_value() {
                         i=$((i + 5)); continue ;;
                 esac
             fi
+            # HIMMEL-3660: every OTHER unquoted (or double-quoted) `$`
+            # expansion — bare `$VAR`, `${VAR}`, `${VAR:-default}`, `$1`,
+            # `$?`, … — substitutes a runtime value this hook cannot see
+            # statically. Fail closed rather than cook it as literal text.
+            return 1
         fi
         SW_VALUE="$SW_VALUE$c"; i=$((i + 1))
     done
@@ -600,7 +633,8 @@ segment_is_safe() {
         case "$bin" in
             find)                          # find can execute / delete — guard it
                 for k in "${a[@]}"; do
-                    case "$k" in
+                    shell_word_value "$k" || return 1
+                    case "$SW_VALUE" in
                         -exec|-execdir|-ok|-okdir|-delete|-fprint|-fprintf|-fprint0|-fls)
                             return 1 ;;
                     esac
@@ -625,7 +659,8 @@ segment_is_safe() {
             xxd)                           # `xxd in out` / `xxd -r in out` writes
                 local xops=0               # a 2nd positional = output file → write
                 for k in "${a[@]:$((i + 1))}"; do
-                    case "$k" in
+                    shell_word_value "$k" || return 1
+                    case "$SW_VALUE" in
                         -r|-revert) return 1 ;;          # reverse = write binary
                         [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) ;;  # redirect token, not a positional
                         -*) ;;                           # other flags take no file
@@ -635,23 +670,26 @@ segment_is_safe() {
                 [ "$xops" -ge 2 ] && return 1 ;;         # infile + outfile = write
             tree)                          # `tree -o FILE` / `--output FILE` writes
                 for k in "${a[@]}"; do
-                    case "$k" in
+                    shell_word_value "$k" || return 1
+                    case "$SW_VALUE" in
                         -o|-o*) return 1 ;;
-                        --*) guard_is_long_abbrev "output" "$k" && return 1 ;;
+                        --*) guard_is_long_abbrev "output" "$SW_VALUE" && return 1 ;;
                     esac
                 done ;;
             base64)                        # BSD `base64 -o FILE` writes a file
                 for k in "${a[@]}"; do
-                    case "$k" in
+                    shell_word_value "$k" || return 1
+                    case "$SW_VALUE" in
                         -o|-o*) return 1 ;;
-                        --*) guard_is_long_abbrev "output" "$k" && return 1 ;;
+                        --*) guard_is_long_abbrev "output" "$SW_VALUE" && return 1 ;;
                     esac
                 done ;;
             file)                          # `file -C [-m mf]` compiles/writes <mf>.mgc
                 for k in "${a[@]}"; do
-                    case "$k" in
+                    shell_word_value "$k" || return 1
+                    case "$SW_VALUE" in
                         -C) return 1 ;;
-                        --*) guard_is_long_abbrev "compile" "$k" && return 1 ;;
+                        --*) guard_is_long_abbrev "compile" "$SW_VALUE" && return 1 ;;
                     esac
                 done ;;
         esac
