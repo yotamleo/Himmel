@@ -1111,6 +1111,23 @@ check "full launch --profile: seeded settings deny NOTHING for Write/MultiEdit/N
   "$(jq -c '(.permissions.deny // []) | map(select(startswith("Write(") or startswith("MultiEdit(") or startswith("NotebookEdit(")))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
   "[]"
 
+# HIMMEL-3698: additionalDirectories above only widens the directory
+# boundary check - it grants no permission `allow` rule, so a leg's own
+# Edit of its handover doc still needs an explicit allow (N577/N582/N564
+# each parked on exactly this classifier gap). Scoped to the leg's OWN doc
+# file only, an exact path - never a root-wide `**/*.md` glob, which would
+# let a leg edit a SIBLING leg's or a JUDGE's doc under the same handover
+# bucket (CR round 2, codex-1). The .locks deny above still wins regardless,
+# since a lock file is never `.md`. Only Edit is emitted, matching the
+# HIMMEL-3645 dead-rule note above.
+some_doc_canon="$(cd -P "$(dirname "$some_doc")" && pwd -P)/$(basename "$some_doc")"
+check "full launch --profile: seeded settings grant Edit on the leg's own doc only" \
+  "$(jq --arg f "$some_doc_canon" '(.permissions.allow // []) | any(. == ("Edit(" + $f + ")"))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "true"
+check "full launch --profile: seeded settings do NOT grant a root-wide handover markdown glob" \
+  "$(jq --arg d "$HANDOVER_DIR" '(.permissions.allow // []) | any(. == ("Edit(" + $d + "/**/*.md)"))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "false"
+
 # A handover root containing a space must still resolve correctly -
 # HANDOVER_DIR reaches this wrapper's own process as a plain export
 # (leg_propagate_env's whitespace branch), not through the
@@ -1964,6 +1981,36 @@ wait_record "$d28d" || true
 rec28d="$(ll_line HIMMEL-3270-N5-judge)"
 contains "28f --judge launch is recorded with its forced profile" "$rec28d" " profile=console-judge "
 contains "28f --judge launch is recorded role=judge" "$rec28d" " role=judge "
+
+# HIMMEL-3698: a judge does not implement (design 3.2) and never needs to
+# write a LEG's handover doc, so it must not gain the Edit-allow grant even
+# though it resolves its own DOC/HANDOVER_DIR too.
+judge_doc_canon="$(cd -P "$(dirname "$some_doc")" && pwd -P)/$(basename "$some_doc")"
+check "28f --judge launch does not gain the handover-doc Edit allow (judge never implements)" \
+  "$(jq --arg f "$judge_doc_canon" '(.permissions.allow // []) | any(. == ("Edit(" + $f + ")"))' "$d28d/HIMMEL-3270-N5-judge.leg-settings.json" 2>/dev/null)" \
+  "false"
+
+# HIMMEL-3698 CR round 2 (codex-1): the grant is scoped to THIS leg's own doc
+# file, never a root-wide glob - a second leg in the same handover bucket
+# must NOT gain Edit on the first leg's doc (d17/HIMMEL-3333-leg's $some_doc),
+# and must gain it on its own, distinct doc file.
+d17b_doc="$tmp/sibling-doc.md"
+printf '%s\n' '# sibling fixture doc' > "$d17b_doc"
+d17b="$tmp/c17b"; mk_launch_stubs "$d17b" "HIMMEL-3334-leg"; mkdir -p "$tmp/repo17b"
+IMPL_GUARD_OK='' HIMMEL_LEAN_LEG='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17b/konsole" PGREP_CMD="$d17b/pgrep" \
+LEG_REPO="$tmp/repo17b" HEADED_ARM_LOCK_DIR="$d17b/locks" HEADED_ARM_PROC="$d17b/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3334-leg" "$d17b_doc" "$d17b/signal-never" "$PAST" "$d17b/log" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d17b" || true
+d17b_doc_canon="$(cd -P "$(dirname "$d17b_doc")" && pwd -P)/$(basename "$d17b_doc")"
+check "HIMMEL-3698: a leg's settings grant Edit on its OWN doc" \
+  "$(jq --arg f "$d17b_doc_canon" '(.permissions.allow // []) | any(. == ("Edit(" + $f + ")"))' "$d17b/HIMMEL-3334-leg.leg-settings.json" 2>/dev/null)" \
+  "true"
+check "HIMMEL-3698: a leg's settings do NOT grant Edit on a SIBLING leg's doc in the same bucket" \
+  "$(jq --arg f "$some_doc_canon" '(.permissions.allow // []) | any(. == ("Edit(" + $f + ")"))' "$d17b/HIMMEL-3334-leg.leg-settings.json" 2>/dev/null)" \
+  "false"
 
 # A relaunch of the same session name appends, never replaces: the record is
 # history, and a replaced line would erase what the first launch really was.

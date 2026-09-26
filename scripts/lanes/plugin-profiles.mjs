@@ -25,14 +25,20 @@ const ID_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/;
 // HIMMEL-2959: positive rule shapes, not a generic Bash allowlist. In a
 // quiet-run rule the label AND directory are literal; a wildcard before the
 // suite basename can absorb a different executed program plus a fake tail.
-const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/queue-lock|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|docs-audit-panel|ledger-append|impacted-suites|orphan-check|review-round)|check-ci)\.sh:\*\)$/;
+// HIMMEL-3698: cr-scores.sh (relative form, args vary per call site — see
+// docs/configuration.md, minerva SKILL.md) joins the wildcard-tail group.
+const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/queue-lock|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|docs-audit-panel|ledger-append|impacted-suites|orphan-check|review-round|cr-scores)|check-ci)\.sh:\*\)$/;
 // HIMMEL-3338: the /pr-check external-critic steps that take no arguments (or
 // exactly `--diff`) are exact literals — no `:*` tail, so nothing can be
 // appended to them. HIMMEL-3359 adds step 0's himmel-lane entry
 // (pr-check-context), which hands a non-anchor copy off to the anchor itself.
 // HIMMEL-3375 adds the one var-set the runbook spells for pr-check-env
 // (CR_CLAUDE_AGENTS, steps 2.5 / 3.5), which hands off the same way.
-const GATE_EXACT_RE = /^Bash\(bash scripts\/cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory|pr-check-context)\.sh|known-findings\.sh --diff|pr-check-env\.sh CR_CLAUDE_AGENTS)\)$/;
+// HIMMEL-3698: resolve-active-item.sh is a scripts/handover/ script (not
+// scripts/cr/), always invoked bare with no documented argument form
+// (bug-ops.md), so it joins this exact-literal group rather than
+// GATE_SCRIPT_RE's ':*' tail group.
+const GATE_EXACT_RE = /^Bash\(bash scripts\/(?:cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory|pr-check-context)\.sh|known-findings\.sh --diff|pr-check-env\.sh CR_CLAUDE_AGENTS)|handover\/resolve-active-item\.sh)\)$/;
 const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (?:scripts\/(?:handover\/console-kit\/|(?:handover|cr|git|hooks|guardrails|lib|luna|ci)\/)?|templates\/luna-second-brain\/scripts\/)test-\*\.sh\)$/;
 // HIMMEL-3491: the merge-gate ENTRY invocation runs from the $HIMMEL_REPO
 // anchor, not branch-controlled bytes, so it must carry a literal `$` the
@@ -52,6 +58,16 @@ const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.s
 // HIMMEL-3549 (give this fact regression coverage beyond one leg manual
 // check).
 const GATE_ANCHOR_LITERAL = 'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)';
+// HIMMEL-3698 (console ruling on N584): pr-check-context.sh IS /pr-check step
+// 0's own invocation of the trusted-anchor entry point — a leg cannot spell it
+// relative to a resolved <himmel_dir> (that value does not exist until this
+// script prints it) nor via validatedAnchorPath's resolved-absolute-path
+// generators below (those exist for steps that already know the anchor from
+// a prior resolution). It takes the same named EXACT-STRING carve-out as the
+// merge gate. Never a general $VAR admission: the script takes no arguments,
+// so this literal carries no ':*' tail at all.
+const GATE_ANCHOR_LITERAL_PR_CHECK_CONTEXT = 'Bash(bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh")';
+const GATE_ANCHOR_LITERALS = new Set([GATE_ANCHOR_LITERAL, GATE_ANCHOR_LITERAL_PR_CHECK_CONTEXT]);
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
 
 function validateGateAllow(errors, rules) {
@@ -61,7 +77,7 @@ function validateGateAllow(errors, rules) {
     return;
   }
   for (const rule of rules) {
-    if (rule === GATE_ANCHOR_LITERAL) continue;
+    if (GATE_ANCHOR_LITERALS.has(rule)) continue;
     if (typeof rule !== 'string' || /[\r\n]/.test(rule)
       || ['--force', '--no-verify', '--amend', 'reset --hard', 'origin main', '..', '$'].some((s) => rule.includes(s))
       || ![GATE_SCRIPT_RE, GATE_EXACT_RE, GATE_SUITE_RE].some((re) => re.test(rule))) {

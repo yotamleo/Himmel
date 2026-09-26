@@ -881,7 +881,9 @@ if [ -n "$PROFILE" ]; then
     # unknown root can never be proven safe, so treat that the same as a
     # confirmed root/ancestor match rather than falling through to an
     # ungated grant (CR round 5, codex-1).
+    _leg_doc_path=""
     if [ -n "$DOC" ] && _leg_doc_dir="$(cd -P "$(dirname "$DOC")" 2>/dev/null && pwd -P)"; then
+        _leg_doc_path="$_leg_doc_dir/$(basename "$DOC")"
         _leg_doc_is_root_or_ancestor=0
         if [ -z "$_leg_handover_dir_norm" ]; then
             _leg_doc_is_root_or_ancestor=1
@@ -902,7 +904,7 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
     fi
-    unset -v _leg_doc_dir _leg_doc_is_root_or_ancestor
+    unset -v _leg_doc_is_root_or_ancestor
     # Belt and braces: even scoped to the doc's own directory, deny Edit on
     # the handover root's .locks/** outright. Only Edit is emitted: Claude
     # Code applies an Edit(path) rule to every file-editing tool now, and
@@ -919,7 +921,32 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
     fi
-    unset -v _leg_handover_dir_norm
+    # (HIMMEL-3698) additionalDirectories above only widens the DIRECTORY
+    # boundary check - it grants no permission `allow` rule, so the auto-mode
+    # classifier could still deny the leg's own Edit of its handover doc
+    # (N577, N582, N564 each parked on exactly this). Grant Edit on this
+    # leg's OWN doc file only - an exact path, never a root-wide `**/*.md`
+    # glob: a glob would let a leg edit a SIBLING leg's or a JUDGE's doc
+    # (its Results, its RETASK block) under the same handover bucket (CR
+    # round 2, codex-1 - the go-gate lock-file rationale above answers a
+    # different question and does not cover cross-doc tampering). An exact
+    # path carries no such risk regardless of where the doc sits relative to
+    # the handover root, so this grant does not need the root/ancestor guard
+    # the additionalDirectories widening above needs. Only Edit is emitted -
+    # Claude Code now applies an Edit(path) rule to every file-editing tool
+    # (HIMMEL-3645 above), so a sibling Write/MultiEdit/NotebookEdit rule on
+    # the same pattern is dead code. Gated the same as the .locks deny
+    # (never the relay), plus JUDGE: a judge does not implement (design 3.2,
+    # Guard E above) and never needs to write a LEG's handover doc, so it
+    # must not gain this grant even though it resolves its own DOC too.
+    if [ "$RELAY" -eq 0 ] && [ "$JUDGE" -eq 0 ] && [ -n "$_leg_doc_path" ]; then
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" \
+            '.permissions.allow = ((.permissions.allow // []) + ["Edit(" + $doc + ")"])')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add the handover-doc Edit allow to settings JSON" >&2
+            exit 2
+        fi
+    fi
+    unset -v _leg_doc_path _leg_handover_dir_norm
     # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
     # coordination preface untouched. Resolved even under --dry-run, same
     # reasoning as the profile/mcp resolution above: a jq failure here must
