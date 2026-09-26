@@ -2479,6 +2479,25 @@ run_fence deny no "$SALUS" "env -S\"graphify ...\" (glued double-quoted value) f
 run_fence deny no "$SALUS" "env -C \$(...) unresolvable, later -S\"graphify ...\" glued token -> deny (round-6 codex-1)" \
     "env -C \$(echo /nonexistent) -S\"graphify update notes/patient.md --backend glm\""
 
+# HIMMEL-3641 round-7 codex-1 (critic panel) + class sweep: every OTHER
+# fail-closed "scan the rest of the clause for graphify and deny" arm had
+# the same exact-match bug as the two fixed above - a later token carrying
+# graphify GLUED into another flag's value (env -S"graphify ...") was
+# never matched. round-7's own citation is the env -*C* bundled-short-opt
+# arm; the sudo -*D* mirror, xargs/find -exec's deferred-target scan, and
+# quiet-run.sh's unparsable-label tail scan share the identical shape and
+# are swept in the same fix per CLAUDE.md's "sweep the whole class" rule.
+run_fence deny no "$HIMMEL" "env -iC DIR (bundled), later -S\"graphify ...\" glued token -> deny (round-7 codex-1)" \
+    "env -iC /nonexistent -S\"graphify update notes/patient.md --backend glm\""
+run_fence deny no "$HIMMEL" "sudo -nD DIR (bundled), later env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
+    "sudo -nD /nonexistent env -S\"graphify update notes/patient.md --backend glm\""
+run_fence deny no "$HIMMEL" "xargs env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
+    "xargs env -S\"graphify update notes/patient.md --backend glm\""
+run_fence deny no "$HIMMEL" "find -exec env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
+    "find . -exec env -S\"graphify update notes/patient.md --backend glm\""
+run_fence deny no "$HIMMEL" "quiet-run.sh unparsable label, tail env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
+    "bash scripts/quiet-run.sh \"a -- b\" -- env -S\"graphify update notes/patient.md --backend glm\""
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

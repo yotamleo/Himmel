@@ -1760,8 +1760,11 @@ classify_clause() {
                 # never runs at all, so denying it costs nothing either.)
                 k=$((i+1))
                 while [ "$k" -lt "$n" ]; do
+                    # HIMMEL-3641 round-7 codex-1 sweep: substring, not exact
+                    # - graphify can be glued into a later token's value
+                    # (env -S"graphify ..."), same as the -*S* arm's scan.
                     case "$(_strip_cmd "${toks[$k]}")" in
-                        graphify|*/graphify)
+                        *graphify*)
                             deny "graphify via quiet-run.sh with an unparsable label is not statically fenceable; invoke graphify directly" ;;
                     esac
                     k=$((k+1))
@@ -1900,8 +1903,10 @@ classify_clause() {
                         -*C*)
                             k=$((i+1))
                             while [ "$k" -lt "$n" ]; do
+                                # HIMMEL-3641 round-7 codex-1: substring, not
+                                # exact - see the -*S* note above.
                                 case "$(_strip_cmd "${toks[$k]}")" in
-                                    graphify|*/graphify)
+                                    *graphify*)
                                         deny "graphify via a bundled env short option containing -C (env -iC/-vC/...) is not statically fenceable; invoke graphify directly, or spell -C separately" ;;
                                 esac
                                 k=$((k+1))
@@ -2073,8 +2078,10 @@ classify_clause() {
                         -*D*)
                             k=$((i+1))
                             while [ "$k" -lt "$n" ]; do
+                                # HIMMEL-3641 round-7 codex-1 sweep: substring,
+                                # not exact - see the env -*C* note above.
                                 case "$(_strip_cmd "${toks[$k]}")" in
-                                    graphify|*/graphify)
+                                    *graphify*)
                                         deny "graphify via a bundled sudo short option containing -D (sudo -nD/-EHD/...) is not statically fenceable; invoke graphify directly, or spell -D separately" ;;
                                 esac
                                 k=$((k+1))
@@ -2102,8 +2109,10 @@ classify_clause() {
         xargs|*/xargs)
             j=$((i+1))
             while [ "$j" -lt "$n" ]; do
+                # HIMMEL-3641 round-7 codex-1 sweep: substring, not exact -
+                # see the env -*S* note above.
                 case "$(_strip_cmd "${toks[$j]}")" in
-                    graphify|*/graphify)
+                    *graphify*)
                         deny "graphify via xargs/find -exec is not statically fenceable; invoke graphify directly" ;;
                 esac
                 j=$((j+1))
@@ -2115,7 +2124,7 @@ classify_clause() {
             while [ "$j" -lt "$n" ]; do
                 case "$(_strip_cmd "${toks[$j]}")" in
                     -exec|-execdir) seen_exec=1 ;;
-                    graphify|*/graphify)
+                    *graphify*)
                         [ "$seen_exec" = 1 ] && \
                             deny "graphify via xargs/find -exec is not statically fenceable; invoke graphify directly" ;;
                 esac
