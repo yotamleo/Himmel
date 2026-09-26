@@ -122,9 +122,25 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
 # NOT set -e: this script inspects sub-call exit codes explicitly and must fail
 # CLOSED with its own codes, never abort mid-gate.
+# HIMMEL-3666: every git call below (ls-remote, ancestry/base checks) resolves
+# objects through the store, which honours refs/replace/* by default — a
+# `git replace <tip> <fake>` forgery would let this script re-derive its
+# clean verdict from the fake's content. Disable replacement so resolution
+# always uses the real object.
+export GIT_NO_REPLACE_OBJECTS=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK_CI="$SCRIPT_DIR/../check-ci.sh"
+
+# HIMMEL-1565: bounds the ls-remote network call below (resolve_marker_remote_head)
+# so an unresponsive push endpoint cannot wedge this gate. Not a security fence —
+# a missing lib/binary degrades to the same unbounded call as before, it does not
+# refuse the clear (mirrors scripts/hooks/check-cr-before-push.sh's own sourcing).
+# shellcheck source=../lib/timeout-bin.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$SCRIPT_DIR/../lib/timeout-bin.sh" ] && . "$SCRIPT_DIR/../lib/timeout-bin.sh"; } 2>/dev/null; then
+    _TIMEOUT_BIN=""
+fi
 
 branch=""
 DRY_RUN=0
@@ -251,7 +267,16 @@ if [ -z "$marker_endpoint" ] || [ -z "$marker_base" ]; then
 fi
 
 resolve_marker_remote_head() {
-    local lookup rc=0 remote_head remote_ref extra
+    local lookup rc=0 remote_head remote_ref extra lsr_timeout
+    # HIMMEL-1565: bound the network call so an unresponsive endpoint cannot
+    # wedge this gate. A timeout (rc 124 from GNU `timeout`) is reported via a
+    # DISTINCT return (2) from every other lookup failure (1) so callers can
+    # give a specific "the remote timed out" reason rather than folding it
+    # into the generic "unreadable" refusal (HIMMEL-1554: assert the reason).
+    case "${CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS:-}" in
+        ''|*[!0-9]*) lsr_timeout=20 ;;
+        *) lsr_timeout="$CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS" ;;
+    esac
     # The ENDPOINT, never the alias: `git ls-remote <alias>` resolves through
     # current fetch config, which can name a different repository than the one
     # the push actually targeted (pushurl, or set-url after the push).
@@ -259,7 +284,11 @@ resolve_marker_remote_head() {
     # the on-disk marker file, untrusted input this hook does not fully control —
     # without the separator a value crafted to start with `-` would be parsed as
     # an ls-remote OPTION instead of the repository argument.
-    lookup=$(git ls-remote --heads -- "$marker_endpoint" "$marker_remote_ref" 2>/dev/null) || rc=$?
+    # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
+    lookup=$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 "$lsr_timeout"} git ls-remote --heads -- "$marker_endpoint" "$marker_remote_ref" 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        return 2
+    fi
     if [ "$rc" -ne 0 ] || [ -z "$lookup" ]; then
         return 1
     fi
@@ -272,11 +301,16 @@ resolve_marker_remote_head() {
     printf '%s\n' "$remote_head"
 }
 
-remote_head=$(resolve_marker_remote_head) || {
+remote_head=$(resolve_marker_remote_head); rmh_rc=$?
+if [ "$rmh_rc" -eq 2 ]; then
+    echo "clear-cr-marker: timed out resolving the actual head of push endpoint '$marker_endpoint' ('$marker_remote') '$marker_remote_ref' — refusing. An unresponsive remote must not certify PR code; retry once it answers." >&2
+    audit "REFUSED reason=remote-head-timeout branch=$branch remote=$marker_remote endpoint=$marker_endpoint remote_ref=$marker_remote_ref"
+    exit 16
+elif [ "$rmh_rc" -ne 0 ]; then
     echo "clear-cr-marker: cannot resolve the actual head of push endpoint '$marker_endpoint' ('$marker_remote') '$marker_remote_ref' — refusing. An unreadable remote must not certify PR code." >&2
     audit "REFUSED reason=remote-head-unreadable branch=$branch remote=$marker_remote endpoint=$marker_endpoint remote_ref=$marker_remote_ref"
     exit 16
-}
+fi
 if [ "$remote_head" != "$tip" ]; then
     echo "clear-cr-marker: push endpoint '$marker_endpoint' ('$marker_remote') '$marker_remote_ref' is at ${remote_head:0:8}, but the ledger-certified local tip is ${tip:0:8} — refusing. Push this tip successfully, then re-run /pr-check." >&2
     audit "REFUSED reason=remote-head-mismatch branch=$branch remote=$marker_remote endpoint=$marker_endpoint remote_ref=$marker_remote_ref remote_head=$remote_head tip=$tip marker_sha=$marker_sha"
@@ -1334,11 +1368,16 @@ if [ "$now_sha" != "$tip" ] || [ "$now_marker" != "$marker_sha" ] ||
     audit "REFUSED reason=raced-during-gate branch=$branch validated_sha=$tip now_sha=$now_sha now_marker=$now_marker"
     exit 13
 fi
-now_remote_head=$(resolve_marker_remote_head) || {
+now_remote_head=$(resolve_marker_remote_head); now_rmh_rc=$?
+if [ "$now_rmh_rc" -eq 2 ]; then
+    echo "clear-cr-marker: the marker-bound remote timed out while the gates ran — refusing to clear. Re-run /pr-check when the remote is responsive." >&2
+    audit "REFUSED reason=remote-raced-timeout branch=$branch remote=$marker_remote remote_ref=$marker_remote_ref"
+    exit 13
+elif [ "$now_rmh_rc" -ne 0 ]; then
     echo "clear-cr-marker: the marker-bound remote became unreadable while the gates ran — refusing to clear. Re-run /pr-check when the remote is available." >&2
     audit "REFUSED reason=remote-raced-unreadable branch=$branch remote=$marker_remote remote_ref=$marker_remote_ref"
     exit 13
-}
+fi
 if [ "$now_remote_head" != "$tip" ]; then
     echo "clear-cr-marker: the marker-bound remote changed while the gates ran (${remote_head:0:8}->${now_remote_head:0:8}) — refusing to clear. Re-run /pr-check on the new remote head." >&2
     audit "REFUSED reason=remote-raced-during-gate branch=$branch validated_sha=$tip remote_head=$now_remote_head"

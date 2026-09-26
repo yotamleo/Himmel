@@ -707,6 +707,93 @@ else
     fail "pubremote push: expected exit 0 + marker at $pm (got rc=$rc)" "out: $out"
 fi
 
+echo "TEST: HIMMEL-1565 -- scrub_endpoint strips userinfo from ssh:// (and any scheme://user:pass@) endpoint, not just http(s)"
+git -C "$PB" update-ref refs/remotes/sshremote/main "$pb_init"
+rc=0; out=$(cd "$PB" && bash "$HOOK" sshremote "ssh://ghost:s3cr3t@example.com/repo.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+pm_ssh="$PB/.git/cr-pending/feat/pub"
+if [ "$rc" -eq 0 ] && [ -f "$pm_ssh" ]; then
+    pm_ssh_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$pm_ssh" 2>/dev/null || true)
+    case "$pm_ssh_endpoint" in
+        *s3cr3t*|*ghost:*@*)
+            fail "ssh:// endpoint userinfo not scrubbed: '$pm_ssh_endpoint'" "out: $out" ;;
+        ssh://example.com/repo.git)
+            pass "ssh:// endpoint userinfo scrubbed (HIMMEL-1565)" ;;
+        *)
+            fail "unexpected scrubbed ssh:// endpoint '$pm_ssh_endpoint'" "out: $out" ;;
+    esac
+else
+    fail "sshremote push: expected exit 0 + marker at $pm_ssh (got rc=$rc)" "out: $out"
+fi
+
+echo "TEST: HIMMEL-1565 -- scrub_endpoint leaves a bare scp/ssh username (no password) untouched, since it carries no credential"
+git -C "$PB" update-ref refs/remotes/sshbareuser/main "$pb_init"
+rc=0; out=$(cd "$PB" && bash "$HOOK" sshbareuser "ssh://git@example.com/repo.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+pm_ssh_bare="$PB/.git/cr-pending/feat/pub"
+if [ "$rc" -eq 0 ] && [ -f "$pm_ssh_bare" ]; then
+    pm_ssh_bare_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$pm_ssh_bare" 2>/dev/null || true)
+    if [ "$pm_ssh_bare_endpoint" = "ssh://git@example.com/repo.git" ]; then
+        pass "bare ssh:// username preserved -- later ls-remote must resolve identity as the pushed endpoint did (HIMMEL-1565)"
+    else
+        fail "bare ssh:// username was altered: '$pm_ssh_bare_endpoint'" "out: $out"
+    fi
+else
+    fail "sshbareuser push: expected exit 0 + marker at $pm_ssh_bare (got rc=$rc)" "out: $out"
+fi
+
+echo "TEST: HIMMEL-1565 -- a relative push endpoint is canonicalized to an absolute path before the marker binds to it"
+git init -q --bare "$TMP_ROOT/relremote.git" >/dev/null
+git -C "$PB" update-ref refs/remotes/relremote/main "$pb_init"
+rc=0; out=$(cd "$PB" && bash "$HOOK" relremote "../relremote.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+pm_rel="$PB/.git/cr-pending/feat/pub"
+if [ "$rc" -eq 0 ] && [ -f "$pm_rel" ]; then
+    pm_rel_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$pm_rel" 2>/dev/null || true)
+    case "$pm_rel_endpoint" in
+        /*relremote.git)
+            pass "relative endpoint canonicalized to an absolute path (HIMMEL-1565)" ;;
+        *)
+            fail "relative endpoint persisted verbatim (not canonicalized): '$pm_rel_endpoint'" "out: $out" ;;
+    esac
+else
+    fail "relremote push: expected exit 0 + marker at $pm_rel (got rc=$rc)" "out: $out"
+fi
+
+echo "TEST: HIMMEL-1565 -- a relative endpoint whose path contains a colon after a slash is still canonicalized (not mistaken for scp-style)"
+git init -q --bare "$PB/a:b.git" >/dev/null
+git -C "$PB" update-ref refs/remotes/colonrel/main "$pb_init"
+rc=0; out=$(cd "$PB" && bash "$HOOK" colonrel "./a:b.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+pm_colonrel="$PB/.git/cr-pending/feat/pub"
+if [ "$rc" -eq 0 ] && [ -f "$pm_colonrel" ]; then
+    pm_colonrel_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$pm_colonrel" 2>/dev/null || true)
+    case "$pm_colonrel_endpoint" in
+        /*a:b.git)
+            pass "relative path with a post-slash colon canonicalized, not mistaken for scp-style (HIMMEL-1565)" ;;
+        *)
+            fail "relative path with a post-slash colon persisted verbatim: '$pm_colonrel_endpoint'" "out: $out" ;;
+    esac
+else
+    fail "colonrel push: expected exit 0 + marker at $pm_colonrel (got rc=$rc)" "out: $out"
+fi
+
+echo "TEST: HIMMEL-1565 -- an uncanonicalizable relative endpoint fails CLOSED rather than persisting verbatim"
+rc=0; out=$(cd "$PB" && bash "$HOOK" relremote "../does-not-exist.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "uncanonicalizable relative endpoint -> exit 2 (fail closed, HIMMEL-1565)"
+else
+    fail "uncanonicalizable relative endpoint -> expected exit 2 got $rc" "out: $out"
+fi
+case "$out" in
+    *"cannot canonicalize push endpoint"*)
+        pass "uncanonicalizable relative endpoint: refusal names the specific reason (HIMMEL-1554)" ;;
+    *)
+        fail "uncanonicalizable relative endpoint: refusal must name the canonicalization failure" "out: $out" ;;
+esac
+case "$out" in
+    *"../does-not-exist.git"*)
+        pass "uncanonicalizable relative endpoint: refusal names the actual offending endpoint, not an empty value" ;;
+    *)
+        fail "uncanonicalizable relative endpoint: refusal must quote the original endpoint (../does-not-exist.git), not whatever the failed canonicalize_endpoint call left behind" "out: $out" ;;
+esac
+
 echo "TEST: push to a remote with NO local tracking ref -> fail CLOSED naming the missing ref"
 rc=0; out=$(cd "$PB" && bash "$HOOK" nowhere "file:///nowhere.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then pass "unfetched pushed remote -> exit 2 (fail closed)"; else fail "unfetched pushed remote -> expected exit 2 got $rc" "out: $out"; fi
@@ -835,6 +922,20 @@ if [ "$sm_remote" = "origin" ]; then
     pass "named-remote push: marker field 4 stays the remote NAME (guards the ticket's byte-for-byte-unaffected requirement against the explicit-URL scrub branch scope-creeping onto named remotes)"
 else
     fail "named-remote push: field 4 changed to '$sm_remote', expected 'origin' unchanged" "out: $out"
+fi
+
+echo "TEST: HIMMEL-1565 -- an https PAT carried as a bare username (no password) is still scrubbed as a credential"
+rc=0; out=$(cd "$REPO" && bash "$HOOK" origin "https://ghp_TOKEN@example.com/repo.git" <<< "refs/heads/feat/scrub $scrub_sha refs/heads/feat/scrub $Z40" 2>&1) || rc=$?
+sm_tok_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$sm" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$sm_tok_endpoint" = "https://example.com/repo.git" ]; then
+    pass "https bare-username PAT stripped: endpoint is https://example.com/repo.git (HIMMEL-1565)"
+else
+    fail "expected the PAT stripped, got '$sm_tok_endpoint' (rc=$rc)" "out: $out"
+fi
+if [ -f "$sm" ] && grep -q "ghp_TOKEN" "$sm"; then
+    fail "marker leaks the bare-username PAT into plaintext under .git"
+else
+    pass "marker carries no PAT material"
 fi
 
 echo "TEST: ref push without an endpoint URL -> fail CLOSED naming the missing binding"
@@ -1813,6 +1914,55 @@ if [ "$rc" -eq 2 ] || [ "$f1rfh_lane" = "full" ]; then
     pass "F1 revert-fork-handover: an explicit-URL push to an untampered fork whose main is a genuine-but-stale real-origin ancestor is refused (or upgraded to full)"
 else
     fail "F1 revert-fork-handover: expected rc=2 or a 'full' marker" "rc=$rc marker-exists=$([ -f "$f1rfh_marker" ] && echo yes || echo no) lane=$f1rfh_lane out: $out"
+fi
+
+# HIMMEL-3666 (judge J1277R, out-of-scope-of-#1277 finding): object-store
+# forgery via refs/replace/* -- no ref is forged at all. The pusher replaces
+# origin's real tip X with a same-named commit whose tree already contains
+# the unreviewed code, so every git command that resolves X (the fresh
+# fetch's own scratch ref included) reads the replacement's tree instead.
+# The diff against the (replaced) base then shows only the handover-only
+# tail, and the hook takes the skip lane with no marker for code origin has
+# never actually seen. Fix: GIT_NO_REPLACE_OBJECTS=1 so every git call in
+# this hook ignores refs/replace/*.
+echo "TEST: HIMMEL-3666 -- git replace on the origin tip cannot hide code from the diff (object-store forgery, no ref forged)"
+RR_ORIGIN="$TMP_ROOT/rr-origin.git"
+git init -q --bare -b main "$RR_ORIGIN"
+RR_SEED="$TMP_ROOT/rr-seed"
+git init -q -b main "$RR_SEED"
+echo base > "$RR_SEED/README.txt"
+git -C "$RR_SEED" add -A
+git -C "$RR_SEED" -c user.email=a@t -c user.name=a commit -q -m base
+git -C "$RR_SEED" push -q "$RR_ORIGIN" main
+rr_X=$(git -C "$RR_SEED" rev-parse HEAD)
+RR_PUSHER="$TMP_ROOT/rr-pusher"
+git clone -q "$RR_ORIGIN" "$RR_PUSHER"
+git -C "$RR_PUSHER" checkout -qb feat/rr main
+mkdir -p "$RR_PUSHER/scripts"
+echo 'rm -rf / # unreviewed' > "$RR_PUSHER/scripts/evil.sh"
+git -C "$RR_PUSHER" add -A
+git -C "$RR_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: code"
+rr_A=$(git -C "$RR_PUSHER" rev-parse HEAD)
+mkdir -p "$RR_PUSHER/handovers"
+echo note > "$RR_PUSHER/handovers/n.md"
+git -C "$RR_PUSHER" add handovers/n.md
+git -C "$RR_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: handover-only tail"
+rr_B=$(git -C "$RR_PUSHER" rev-parse HEAD)
+# No ref is forged (origin/main and local main both still point at the REAL,
+# freshly-fetchable rr_X). Only the OBJECT rr_X resolves to is replaced, with
+# a same-tree-as-A fake so any diff against the (replaced) base already
+# contains A's evil.sh and only the handover tail shows as "new".
+rr_Yf=$(git -C "$RR_PUSHER" commit-tree "${rr_A}^{tree}" -m fake)
+git -C "$RR_PUSHER" replace "$rr_X" "$rr_Yf"
+rc=0
+out=$(cd "$RR_PUSHER" && bash "$HOOK" origin "$RR_ORIGIN" <<< "refs/heads/feat/rr $rr_B refs/heads/feat/rr $Z40" 2>&1) || rc=$?
+rr_marker="$RR_PUSHER/.git/cr-pending/feat/rr"
+rr_lane=""
+[ -f "$rr_marker" ] && rr_lane=$(cut -d'|' -f3 "$rr_marker" | tr -d ' ')
+if [ "$rc" -eq 2 ] || [ "$rr_lane" = "full" ]; then
+    pass "replace-ref: a git-replaced origin tip cannot hide scripts/evil.sh from the diff (refused or upgraded to full)"
+else
+    fail "replace-ref: expected rc=2 or a 'full' marker" "rc=$rc marker-exists=$([ -f "$rr_marker" ] && echo yes || echo no) lane=$rr_lane out: $out"
 fi
 
 # Summary ------------------------------------------------------------
