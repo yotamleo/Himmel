@@ -102,6 +102,9 @@ repos:
         name: Conventional commit message (TICKET-N optional)
         language: system
         entry: bash scripts/hooks/check-commit-msg.sh
-        pass_filenames: false
+        # pass_filenames defaults to true; a commit-msg stage hook needs it
+        # to receive the message file path (HIMMEL-3642 — `false` here made
+        # check-commit-msg.sh's $1 empty, so it always hit its own
+        # empty-message skip and validated nothing).
         always_run: true
         stages: [commit-msg]
