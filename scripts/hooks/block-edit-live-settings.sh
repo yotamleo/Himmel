@@ -777,14 +777,16 @@ resolve_repo_context() {
 
 # has_traversal_dots TEXT — true when a literal `..` is an actual
 # path-traversal component: a non-path-name character (`/`, quote, space,
-# start/end of string) on BOTH sides, never a bare substring anywhere in the
-# text. A `<sha>..<sha>` git range has a hex digit on each side of the `..`
-# and never matches; `../.claude`, `worktrees/wt/../../x` and a bare `cd ..`
-# all still match (HIMMEL-3675: the three `*..*` glob checks below treated a
-# benign SHA range identically to a real climb-out, false-DENYing
-# `impacted-suites.sh --check <base>..<head>` run from a linked worktree).
+# start/end of string) on EITHER side, never a bare substring anywhere in the
+# text. A `<sha>..<sha>` git range has a hex digit on BOTH sides of the `..`
+# and never matches; `../.claude`, `worktrees/wt/../../x`, a bare `cd ..` and
+# a `..` glued to a short option (`-t../primary/.claude`) all still match
+# (HIMMEL-3675: the three `*..*` glob checks below treated a benign SHA range
+# identically to a real climb-out, false-DENYing `impacted-suites.sh --check
+# <base>..<head>` run from a linked worktree; a both-sides-only boundary check
+# then let a glued short option through undetected — HIMMEL-3675 judge NO-GO).
 has_traversal_dots() {
-    [[ "$1" =~ (^|[^a-z0-9_])\.\.([^a-z0-9_]|$) ]]
+    [[ "$1" =~ (^|[^a-z0-9_])\.\.|\.\.([^a-z0-9_]|$) ]]
 }
 
 # mentions_primary_or_home CMD_LC — true when the command text contains the

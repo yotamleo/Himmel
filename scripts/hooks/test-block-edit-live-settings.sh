@@ -1246,11 +1246,49 @@ assert_rc "195 cp into primary settings.json (double slash) denies" 2 \
 assert_rc "196 mv into primary .claude dir denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "mv x \"$PRIMARY/.claude/\"")"
 
+# 197-204 (HIMMEL-3675 judge J1313O NO-GO): has_traversal_dots previously
+# required a non-name character on BOTH sides of a literal `..`, so a `..`
+# glued to a short option (`-t..`, `-d..`, `-sft..` — a letter immediately to
+# its left) was never counted as traversal, letting these writes through to
+# a real live settings.json/dir undetected. Two more worktree fixtures:
+# HOMEWT sits directly under a fake $HOME, WTDIRECT directly under the
+# primary itself (neither nested under .claude/worktrees/). Every row below
+# must DENY at head.
+git -C "$SANDBOX/primary" worktree add -q "$FAKEHOME/wt" -b feat/homewt >/dev/null 2>&1 || {
+    echo "FATAL: could not create the homewt worktree fixture" >&2
+    exit 1
+}
+git -C "$SANDBOX/primary" worktree add -q "$PRIMARY/wtdirect" -b feat/wtdirect >/dev/null 2>&1 || {
+    echo "FATAL: could not create the wtdirect worktree fixture" >&2
+    exit 1
+}
+HOMEWT="$FAKEHOME/wt"
+WTDIRECT="$PRIMARY/wtdirect"
+
+assert_rc "197 cp -t glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "cp -t../primary/.claude settings.json")"
+assert_rc "198 cp src -t glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "cp settings.json -t../primary/.claude")"
+assert_rc "199 mv -t glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "mv -t../primary/.claude settings.local.json")"
+assert_rc "200 install -t glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "install -t../primary/.claude settings.json")"
+assert_rc "201 unzip -od glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "unzip -od../primary/.claude a.zip")"
+assert_rc "202 ln -sft glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "ln -sft../primary/.claude /tmp/evil/settings.json")"
+assert_rc "203 cp -t glued traversal from a worktree under HOME denies" 2 \
+    "$(bash_rc_of "$HOMEWT" "cp -t../.claude settings.json" HOME="$FAKEHOME")"
+assert_rc "204 cp -t glued traversal from a worktree directly under primary denies" 2 \
+    "$(bash_rc_of "$WTDIRECT" "cp -t../.claude settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$WT2" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/prim" 2>/dev/null || true
+git -C "$SANDBOX/primary" worktree remove --force "$HOMEWT" 2>/dev/null || true
+git -C "$SANDBOX/primary" worktree remove --force "$WTDIRECT" 2>/dev/null || true
 rm -rf "$SANDBOX" 2>/dev/null || true
 
 if [ "$FAILED" -gt 0 ]; then
