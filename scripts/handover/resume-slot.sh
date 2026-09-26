@@ -180,6 +180,7 @@ fi
 # block. A missing/unreadable helper degrades to "can't tell", which this
 # treats the same as a mismatch.
 IDLIB="$SCRIPT_DIR/../lib/usage-cache-identity.sh"
+# shellcheck source=../lib/usage-cache-identity.sh
 if ! { [ -r "$IDLIB" ] && . "$IDLIB"; } 2>/dev/null; then
     usage_cache_account_mismatch() { return 0; }
 fi

@@ -120,6 +120,7 @@ fi
 # new exit path. A missing/unreadable helper degrades to "can't tell" —
 # never a hard failure — so it falls through to the same lack of trust.
 IDLIB="$SCRIPT_DIR/../lib/usage-cache-identity.sh"
+# shellcheck source=../lib/usage-cache-identity.sh
 if ! { [ -r "$IDLIB" ] && . "$IDLIB"; } 2>/dev/null; then
     usage_cache_account_mismatch() { return 0; }
 fi

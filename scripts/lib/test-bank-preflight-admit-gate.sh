@@ -37,7 +37,8 @@ NOW="$(date +%s)"
 
 # HIMMEL-1712: hermetic identity so the cache fixture below matches the
 # current session -- this suite is about the admit-gate lock, not identity.
-export HOME="$W/home"; mkdir -p "$HOME"
+# `command mkdir` because the test's own mkdir() shim (below) isn't defined yet.
+export HOME="$W/home"; command mkdir -p "$HOME"
 printf '%s' '{"oauthAccount":{"accountUuid":"uuid-admit-gate-test"}}' > "$HOME/.claude.json"
 # shellcheck source=usage-cache-identity.sh
 # shellcheck disable=SC1091

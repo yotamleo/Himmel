@@ -27,6 +27,7 @@ _usage_cache_sha256() {
   fi
 }
 
+# shellcheck disable=SC2120 # optional $1 override; every in-repo caller wants the default
 current_account_hash() {
   local config="${1:-${CLAUDE_ACCOUNT_CONFIG:-$HOME/.claude.json}}" uuid hash
   command -v jq >/dev/null 2>&1 || return 0
@@ -42,6 +43,7 @@ usage_cache_account_mismatch() {
   command -v jq >/dev/null 2>&1 || return 0
   cached=$(jq -r '.account // empty' "$cache" 2>/dev/null)
   [ -n "$cached" ] || return 0
+  # shellcheck disable=SC2119 # default $1 (no override) is intended here
   current=$(current_account_hash)
   [ -n "$current" ] || return 0
   [ "$cached" = "$current" ] && return 1
