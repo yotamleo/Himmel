@@ -47,9 +47,10 @@ export function buildEditFields(opts: EditOptions): Record<string, unknown> {
   // that otherwise forced an MCP editJiraIssue fallback (blocked by the
   // plugin-first hook).
   if (opts.parent) fields['parent'] = { key: opts.parent };
-  // Labels are FULL-REPLACE (HIMMEL-243): the comma-separated set becomes
+  // --labels is FULL-REPLACE (HIMMEL-243): the comma-separated set becomes
   // the issue's complete label list — any existing label not in the set is
-  // removed. Deliberately no --add-label/--remove-label incremental ops.
+  // removed. Use --add-labels (HIMMEL-3610) for an incremental, non-destructive
+  // append instead.
   if (opts.labels !== undefined) fields['labels'] = parseLabels(opts.labels);
   if (Object.keys(fields).length === 0 && opts.addLabels === undefined) {
     throw new Error(

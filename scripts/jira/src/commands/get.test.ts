@@ -96,7 +96,7 @@ describe('get labels (HIMMEL-3610)', () => {
     expect(printed).not.toContain('Labels:');
   });
 
-  it('--short still prints the Labels line, header unchanged otherwise', async () => {
+  it('--short never prints a Labels line (one-line header only, consumed by pr-open.sh)', async () => {
     mockRequest.mockResolvedValue({
       key: 'HIMMEL-1',
       fields: {
@@ -109,8 +109,7 @@ describe('get labels (HIMMEL-3610)', () => {
     });
     const p = freshProgram();
     await p.parseAsync(['node', 'jira', 'get', 'HIMMEL-1', '--short']);
+    expect(logSpy).toHaveBeenCalledTimes(1);
     expect(logSpy).toHaveBeenNthCalledWith(1, 'HIMMEL-1\tTask\tTo Do\tS');
-    const printed = logSpy.mock.calls.map((c) => c[0]).join('\n');
-    expect(printed).toContain('Labels: ai-tasklist');
   });
 });

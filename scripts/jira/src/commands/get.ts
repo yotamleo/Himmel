@@ -42,9 +42,10 @@ export function registerGet(program: Command): void {
       if (options.json) {
         printJson(issue);
       } else if (options.short) {
+        // --short is documented as one-line header only (backward-compatible
+        // with the pre-HIMMEL-121 output) and is consumed as a single line by
+        // scripts/handover/pr-open.sh — never append the labels line here.
         console.log(formatIssue(issue));
-        const ll = labelsLine(issue);
-        if (ll) console.log(ll);
       } else {
         // Distinguish "field not returned by API" (undefined — possible
         // when field-level perms hide description from this user) from
