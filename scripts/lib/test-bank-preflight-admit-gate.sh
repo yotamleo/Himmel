@@ -35,16 +35,6 @@ sleep 300 & A_PID=$!
 trap 'kill "$A_PID" 2>/dev/null; rm -rf "$W"' EXIT
 NOW="$(date +%s)"
 
-# HIMMEL-1712: hermetic identity so the cache fixture below matches the
-# current session -- this suite is about the admit-gate lock, not identity.
-# `command mkdir` because the test's own mkdir() shim (below) isn't defined yet.
-export HOME="$W/home"; command mkdir -p "$HOME"
-printf '%s' '{"oauthAccount":{"accountUuid":"uuid-admit-gate-test"}}' > "$HOME/.claude.json"
-# shellcheck source=usage-cache-identity.sh
-# shellcheck disable=SC1091
-. "$REPO/scripts/lib/usage-cache-identity.sh"
-ACCT="$(current_account_hash)"
-
 # count_glob <pattern...> — how many of the (already glob-expanded) paths exist;
 # a bash-glob count, so no GNU/BSD `find -maxdepth` divergence.
 count_glob() { local n=0 f; for f in "$@"; do [ -e "$f" ] && n=$((n+1)); done; echo "$n"; }
@@ -154,6 +144,17 @@ printf() { if [ "$PRINTF_FAIL" = 1 ] && [ "${1:-}" = '%s\n' ] && [ "${2:-}" = "$
 D_WON=0; D_RC=""; REL_RC=""; B1_RC=""; P_STALE=""; B_FENCE=""
 # shellcheck disable=SC1091
 . "$W/fns.sh"
+
+# HIMMEL-1712: hermetic identity so the cache fixture below matches the
+# current session -- this suite is about the admit-gate lock, not identity.
+# Below the mkdir()/printf() shadows above so shellcheck sees them in
+# definition order (it flags a bare call to a name shadowed further down).
+export HOME="$W/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-admit-gate-test"}}' > "$HOME/.claude.json"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$REPO/scripts/lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
 
 mk_admit() { # <admit> <stamp> <pid> — a claim in a given state; clears any gate
   rm -rf "$1" "$1.reclaim"; mkdir "$1"; builtin printf '%s\n' "$2" > "$1/acquired"; builtin printf '%s\n' "$3" > "$1/pid"
