@@ -309,6 +309,14 @@ rc=0; out=$(CT_SERIES_TAGS="$BARE_SERIES_TAGS" run "$BARE_VERSION" "$SHA" 2>&1) 
 check "bare-has-pre: rc 0" "$rc" "0"
 contains "bare-has-pre: created message" "$out" "created refs/tags/$BARE_VERSION"
 
+# --- 24b. bare release: an origin tag with an EMPTY -pre. suffix does not count
+# as a matching pre-release (HIMMEL-3701 codex-1 round 2) ---------------------
+reset_calls
+BARE_SERIES_TAGS_EMPTY="aaaa1111	refs/tags/v1.0.0-pre."
+rc=0; out=$(CT_SERIES_TAGS="$BARE_SERIES_TAGS_EMPTY" run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-empty-pre-suffix: rc 6" "$rc" "6"
+contains "bare-empty-pre-suffix: names the reason" "$out" "no v1.0.0-pre"
+
 # --- 25. bare release: the bare tag itself already exists on origin -> rc 5 ---
 reset_calls
 rc=0; out=$(CT_TAG_EXISTS=1 run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?

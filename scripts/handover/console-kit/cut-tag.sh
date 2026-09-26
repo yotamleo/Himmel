@@ -281,7 +281,7 @@ EOF
             [ -n "$ref" ] || continue
             tail="${ref#refs/tags/"$SERIES"}"
             case "$tail" in
-                *[!0123456789]*) continue ;;
+                ''|*[!0123456789]*) continue ;;
             esac
             has_pre=1
         done <<EOF
