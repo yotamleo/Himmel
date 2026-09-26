@@ -806,6 +806,24 @@ run_hook deny "22: sudo -h cat cp x scripts/hooks/a.sh (control: -h stays value-
 run_hook allow "22: env -i printenv (control: -i stays a flag, unchanged)" \
     "$(bash_json "env -i printenv" "$REPO")" 1
 
+echo "== 22b: round-6 CR fix (codex-1) - env -S's value is CODE, not opaque data =="
+# codex critic panel, round 1: this fix's own committed HIMMEL-3658 fix
+# (above) grouped env's `-S`/`--split-string` with `-a`/`-u`/`-C` as an
+# ordinary value-taking option to skip - but unlike those three, `-S`'s
+# value is not opaque data: GNU env word-splits it itself and executes the
+# resulting words, so `env -S 'tee scripts/hooks/a.sh'` runs `tee
+# scripts/hooks/a.sh` directly. Skipping past it as a value landed the
+# resolved head on (a fragment of) the split-string's OWN content, past
+# which `_operand_targets` has nothing left to scan - ALLOW. Same
+# raw-text-signal fallback as inline-eval/procsub above, not a re-parse of
+# the split-string's own words.
+run_hook deny "22b: env -S 'tee scripts/hooks/a.sh' (split-string value names a protected path)" \
+    "$(bash_json "env -S 'tee scripts/hooks/a.sh'" "$REPO")" 1
+run_hook deny "22b: env --split-string 'tee scripts/hooks/a.sh' (long-form spelling)" \
+    "$(bash_json "env --split-string 'tee scripts/hooks/a.sh'" "$REPO")" 1
+run_hook allow "22b: env -S 'echo hi' (split-string value, no enforcement signal)" \
+    "$(bash_json "env -S 'echo hi'" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

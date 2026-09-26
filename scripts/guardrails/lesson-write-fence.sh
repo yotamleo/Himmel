@@ -1080,6 +1080,57 @@ _deny_procsub() {
     deny "process-substitution write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
 }
 
+# _deny_env_split_string <raw-clause-text> -> denies (exit 2): an `env
+# -S`/`--split-string` clause whose raw text names an enforcement-path
+# signal. Same rationale as `_deny_inline_eval`/`_deny_procsub`: `-S`'s value
+# is not a clean operand, it is a shell-like command line env itself
+# word-splits and executes (`env -S 'tee scripts/hooks/a.sh'` runs `tee
+# scripts/hooks/a.sh` directly) - see `_env_split_string_used`.
+_deny_env_split_string() {
+    deny "env -S/--split-string write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
+}
+
+# _env_split_string_used <head_idx> <tok...> -> 0 iff an `env` token appears
+# among tok[0..head_idx-1] (the wrapper prefix `_clause_head_idx` walked
+# through) followed later in that same range by a case-sensitive `-S` token
+# or a long-option abbreviation of `--split-string`. Round-6 CR fix (codex
+# critic panel, Critical): unlike `-a`/`-u`/`-C`, whose values are opaque
+# data safe to skip, `-S`'s value is CODE - GNU env parses it as a
+# whitespace-separated command line and executes the resulting words, so
+# `_clause_head_idx` treating it as an ordinary value-taking option to skip
+# hides the real wrapped write command from every downstream check (the
+# skipped value never reaches `_verb_is_read_only` OR `_operand_targets`).
+# This is a coarse PRESENCE check, not a re-parse of env's own option
+# grammar (deliberately - duplicating that grammar here is exactly the kind
+# of drift HIMMEL-3659 already burned once): it does not care whether `-S`
+# was the token that actually consumed a value or not, only whether the verb
+# resolved through `env` and the wrapper's option region names `-S`/
+# `--split-string` at all. A false-positive match (e.g. some other flag's
+# OWN value happens to spell "-S") only routes the clause to
+# `_clause_has_enforcement_signal`'s raw-text scan instead of the normal
+# verb/operand path - the same safe-direction fallback `process_clause_for_write`
+# already uses for procsub and interpreter inline-eval, never a new gap.
+_env_split_string_used() {
+    local head_idx="$1"; shift
+    local -a t=("$@")
+    local n=${#t[@]} i=0 s w in_env=0
+    [ "$head_idx" -le "$n" ] || head_idx="$n"
+    while [ "$i" -lt "$head_idx" ]; do
+        s="$(_strip_wrap "${t[$i]}")"
+        w="$(_lc "$s")"
+        if [ "$in_env" = 1 ]; then
+            case "$s" in
+                -S) return 0 ;;
+                --*) guard_is_long_abbrev "split-string" "$w" && return 0 ;;
+            esac
+        elif [ "$w" = env ]; then
+            in_env=1
+        fi
+        i=$((i+1))
+    done
+    return 1
+}
+
 # _verb_is_read_only <verb_lc> <verb-onward-tok...> -> 0 iff the
 # command-position verb is on the round-4 PROVEN-READ-ONLY allow-list (see
 # the `4.` header section for the full list + rationale per entry) - the
@@ -1193,15 +1244,21 @@ _operand_targets() {
 # must run before step (4)'s read-only-verb short-circuit, since that is
 # exactly the shape that let a writer hidden inside `>(...)` slip past a
 # proven-read-only outer verb (`echo`/`cat`); (2) resolve the command-position
-# verb, after wrapper stripping (_clause_head_idx); (3) if that verb is an
-# interpreter, delegate to `_interpreter_is_read_only` +
+# verb, after wrapper stripping (_clause_head_idx); (2b) round 6 - if that
+# resolution walked through an `env -S`/`--split-string`, the same
+# `_clause_has_enforcement_signal` raw-text scan runs and denies on a hit,
+# UNCONDITIONALLY, before the resolved "verb" (which is `-S`'s value, not a
+# real command) is ever checked - `-S`'s value is code env itself
+# word-splits and executes, not a clean operand (_env_split_string_used); (3)
+# if that verb is an interpreter, delegate to `_interpreter_is_read_only` +
 # `_clause_has_enforcement_signal` (round 5 - see those functions); (4) if
 # that verb is otherwise proven read-only, allow outright - its operands are
 # reads; (5) otherwise scan every operand as a write-target candidate
 # (_operand_targets). <clause-raw> is the clause's own pre-tokenization text
-# (round 5 addition), needed by steps (1b) and (3) - a process-substitution
-# or inline-eval writer's target is not a clean token, so those steps scan
-# the raw text instead of the split <tok...> array.
+# (round 5 addition), needed by steps (1b), (2b) and (3) - a
+# process-substitution, split-string or inline-eval writer's target is not a
+# clean token, so those steps scan the raw text instead of the split
+# <tok...> array.
 process_clause_for_write() {
     local cwd="$1" clause_raw="$2"; shift 2
     local -a tok=("$@")
@@ -1216,6 +1273,12 @@ process_clause_for_write() {
     fi
 
     local head_idx; head_idx="$(_clause_head_idx "${tok[@]}")"
+
+    if _env_split_string_used "$head_idx" "${tok[@]}"; then
+        _clause_has_enforcement_signal "$clause_raw" && _deny_env_split_string "$clause_raw"
+        return 0
+    fi
+
     [ "$head_idx" -lt "$n" ] || return 0
 
     local -a vtok=()
