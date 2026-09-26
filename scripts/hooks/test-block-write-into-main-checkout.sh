@@ -2583,6 +2583,29 @@ check_both "26b eval 'echo hi >wt/a.txt' (attached redirect target) allows" allo
 check_both "26c bash -c \"echo hi >primary/a.txt\" (attached redirect target) denies (codex-1)" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c \\\"echo hi >$FIX/primary/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-3648 CR round 3 (codex-1/2 on the interp-body scan) =="
+
+# 27 (codex-1, round 3): `git … commit` inside an eval/bash -c/sh -c/zsh -c
+# body is a CWD predicate the redirect/token walk never checks (neither
+# "git" nor "commit" is a token PATH) — the git-commit arm (g) is a separate,
+# dedicated regex-anchored scan over OUTER clauses only, structurally
+# unreachable from inside an interp-body string.
+check_both "27 bash -c 'cd primary && git commit' denies (codex-1 round 3)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c 'cd $FIX/primary && git commit --allow-empty -m x'\",\"cwd\":\"$FIX/wt\"}}"
+check_both "27b bash -c 'cd wt && git commit' allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c 'cd $FIX/wt && git commit --allow-empty -m x'\",\"cwd\":\"$FIX/wt\"}}"
+
+# 28 (codex-2, round 3): an intra-body cd/pushd was never tracked at all —
+# item 17/18 above cover a DIRECT `cd <primary> && <write>`, but the SAME
+# shape wrapped in `bash -c '...'` bypassed both the outer cd-tracking (it
+# only ever saw the literal string "bash", "-c", "'cd ... '" as its OWN
+# clause, never descending into the quoted body) and the interp-body scan
+# (which checked token PATHS but never modelled a cd inside the body).
+check_both "28 bash -c 'cd primary; echo x > a.txt' denies (codex-2 round 3)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c 'cd $FIX/primary; echo x > a.txt'\",\"cwd\":\"$FIX/wt\"}}"
+check_both "28b bash -c 'cd wt; echo x > a.txt' allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c 'cd $FIX/wt; echo x > a.txt'\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

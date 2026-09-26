@@ -1547,7 +1547,9 @@ _bwimc_is_shc_cflag() {
 # is not further modelled — same residual _bwimc_check_target already
 # accepts for every other arm (HIMMEL-3648).
 _bwimc_check_interp_body() {
-    local kind="$2" toks=() t t2 n i cidx body=""
+    local kind="$2" toks=() t t2 n i cidx body="" _bwimc_ibody_clause="" \
+        _bwimc_ibody_git=0 _bwimc_ibody_commit=0 \
+        _bwimc_ibody_saved_ecwd="" _bwimc_ibody_saved_unres=""
     toks=()
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
@@ -1571,13 +1573,49 @@ _bwimc_check_interp_body() {
     case "$body" in
         *'>'*) : ;;
         *) case "$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')" in
-               *cp*|*mv*|*rm*|*touch*|*ln*|*tee*|*sed*|*install*|*rsync*|*dd*) : ;;
+               *cp*|*mv*|*rm*|*touch*|*ln*|*tee*|*sed*|*install*|*rsync*|*dd*|*cd*|*pushd*|*git*|*commit*) : ;;
                *) return 0 ;;
            esac ;;
     esac
     toks=()
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$body")
     n=${#toks[@]}
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        case "$(_bwimc_unq "${toks[$i]}")" in
+            git|git.exe) _bwimc_ibody_git=1 ;;
+            commit) _bwimc_ibody_commit=1 ;;
+        esac
+        i=$((i+1))
+    done
+    # HIMMEL-3648 round 3 (codex-1/codex-2): `git … commit` inside the body is
+    # a CWD predicate the token/redirect loop below never checks (it only
+    # checks token PATHS, and neither "git" nor "commit" is one), and an
+    # intra-body cd/pushd can move that cwd before the commit runs. Reuse the
+    # existing per-clause _bwimc_split_clauses + _bwimc_ecwd_track idiom the
+    # main loop already runs per outer clause (line ~2941) — split the body
+    # itself into clauses and track cwd across them in order — rather than
+    # growing a separate tracker. _bwimc_ecwd_track expects ONE clause at a
+    # time (it only inspects the clause's FIRST token): passing it the whole
+    # unsplit body let a trailing `;`/`&&` glue onto a cd's target token and
+    # silently break resolution (round-3 self-review). Save/restore both
+    # globals so this stays scoped to THIS interp body and never leaks to a
+    # sibling outer clause.
+    _bwimc_ibody_saved_ecwd="$_bwimc_ecwd"
+    _bwimc_ibody_saved_unres="$_bwimc_ecwd_unres"
+    while IFS= read -r _bwimc_ibody_clause; do
+        _bwimc_ecwd_track "$(_bwimc_space_before_redirects "$_bwimc_ibody_clause")"
+    done < <(_bwimc_split_clauses "$body")
+    if [ "$_bwimc_ibody_git" = 1 ] && [ "$_bwimc_ibody_commit" = 1 ]; then
+        if [ "$_bwimc_ecwd_unres" = 1 ]; then
+            _bwimc_deny "unresolved-git-target" "$1" "$_bwimc_ecwd" ""
+        fi
+        if [ "$_bwimc_sourced" = 1 ]; then
+            _bwimc_cwd_check_sourced "$_bwimc_ecwd"
+        else
+            _bwimc_cwd_check_direct "$_bwimc_ecwd"
+        fi
+    fi
     i=0
     while [ "$i" -lt "$n" ]; do
         t="${toks[$i]}"
@@ -1613,6 +1651,8 @@ _bwimc_check_interp_body() {
         esac
         i=$((i+1))
     done
+    _bwimc_ecwd="$_bwimc_ibody_saved_ecwd"
+    _bwimc_ecwd_unres="$_bwimc_ibody_saved_unres"
 }
 
 _bwimc_ecwd="$_bwimc_cwd"
