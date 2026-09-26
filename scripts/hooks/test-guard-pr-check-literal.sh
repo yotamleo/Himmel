@@ -836,6 +836,7 @@ run "empty stdin -> deny" 2 ''
 # purpose - the guard itself is unchanged - because the fix moved this rc
 # branching into a script instead (scripts/handover/resolve-active-item-
 # report.sh), replacing the fence with the one-line literal in the row below.
+# shellcheck disable=SC2016 # the literal `$item_rc`/`$item_dir` text, never expanded here
 OLD_ITEM_FENCE='item_rc=0
 item_dir=$(bash "'"$PRIMARY"'/scripts/handover/resolve-active-item.sh" --branch '"'"'feat/x'"'"') || item_rc=$?
 case "$item_rc" in
