@@ -42,6 +42,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# HIMMEL-1712: bank-preflight distrusts a cache whose account doesn't match
+# the current identity — synthesize one so the hermetic bank cache below
+# still verdicts PROCEED.
+export HOME="$W/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-claude-headless-trap-test"}}' > "$HOME/.claude.json"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$REPO/scripts/lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
+
 check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
   else FAIL=$((FAIL+1)); echo "FAIL - $1: expected '$2' got '$3'"; fi; }
 
@@ -67,7 +77,7 @@ spawn_sleeper() {
 
 # --- hermetic bank cache (verdict PROCEED unless a row overrides it) ---
 BANK_CACHE="$W/bank-cache.json"
-mk_bank_cache() { printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}\n' "$(date +%s)" > "$BANK_CACHE"; }
+mk_bank_cache() { printf '{"account":"%s","five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}\n' "$ACCT" "$(date +%s)" > "$BANK_CACHE"; }
 mk_bank_cache
 export CADENCE_BANK_CACHE="$BANK_CACHE"
 export CADENCE_BANK_SKIP_REFRESH=1
