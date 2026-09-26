@@ -359,11 +359,13 @@ deny "sudo -n (bare flag) before the gate" \
 # bypass" — false: on a QUOTED multi-word operand (`env -S 'bash
 # scripts/check-ci.sh' | tail`, HIMMEL-3661 block below) the whole gate call
 # was swallowed as -S's "value" with nothing left to scan — an outright
-# ALLOW/bypass. This one-word row still denies below only because the real
-# gate call sits as trailing words AFTER the swallowed operand and gets
-# walked normally — an accident of this particular shape, not evidence the
-# class was safe. The fix denies EVERY `-S`/`--split-string` spelling
-# unconditionally instead of trying to parse the split string.
+# ALLOW/bypass. This one-word row denies below because the fix treats the
+# whole `-S ...` clause as an unknown program that may be a gate
+# (ENV_SPLIT_SENTINEL) rather than because the real gate call happens to sit
+# as trailing words after the swallowed operand — that trailing-words shape
+# was main's accident, not evidence the class was safe. The fix denies EVERY
+# `-S`/`--split-string` spelling unconditionally instead of trying to parse
+# the split string.
 deny "env -S before the gate" \
      'env -S x bash scripts/check-ci.sh | tail -20'
 # Panel r2 codex-1: `env -a <argv0>` takes an operand too, so the gate sat one
@@ -487,6 +489,34 @@ deny 'env -S"<gate>" | tail (attached short form, no space)' \
 # Controls: env's ordinary VAR=val handling (no -S involved) is unaffected.
 deny "env FOO=1 before the gate (no -S, unaffected)" \
      'env FOO=1 bash scripts/check-ci.sh | tail'
+
+# --- J1299O finding 1: the LAST stage can ALSO be an env -S/--split-string
+# clause. The first-stage sentinel closed the "gate hidden in -S" bypass, but
+# the walk of the LAST stage returned the same sentinel and the tail/head case
+# only accepted literal tail/head/*/tail/*/head — so a real `tail`/`head`
+# hidden behind env -S in the last stage fell through to `continue` (ALLOW),
+# same bypass shape as finding 1 but mirrored to the other end of the pipe. ---
+deny "gate | env -S env tail (tail hidden in the LAST stage's -S)" \
+     'bash scripts/check-ci.sh | env -S env tail'
+deny "gate | env -Snice head (attached -S, LAST stage)" \
+     'bash scripts/check-ci.sh | env -Snice head'
+deny "gate | env -S 'tail -5' (quoted multi-word -S, LAST stage)" \
+     "bash scripts/check-ci.sh | env -S 'tail -5'"
+
+# --- J1299O finding 2: a short-option BUNDLE whose leading letters are env's
+# bare flags (-i/-v/-0, which take no operand) followed by S still hid the
+# gate — `-iS` etc. never matched the `-S | -S*` case (it doesn't start with
+# S), so it fell through to the generic bare-flag arm and the quoted operand
+# (now one word containing a space) was returned whole, which the anchored
+# GATE_RE does not match against a gate path. ---
+deny "env -iS '<gate>' | tail (bare-flag bundle -iS)" \
+     "env -iS 'bash scripts/check-ci.sh' | tail"
+deny "env -vS '<gate>' | tail (bare-flag bundle -vS)" \
+     "env -vS 'bash scripts/check-ci.sh' | tail"
+# Negative control: -u takes an OPERAND (--unset), so -uS is not a bare-flag
+# bundle and must keep its current (non-split-string) handling.
+allow "env -uS ls | tail (operand-letter bundle, NOT split-string)" \
+      'env -uS ls | tail'
 allow "env FOO=1 before a non-gate (no -S, unaffected)" \
       'env FOO=1 ls | tail'
 

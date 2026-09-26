@@ -531,9 +531,13 @@ invoked_program() {
                     # never parsed here; instead the clause is treated as
                     # invoking an unknown program that MAY be a gate, via
                     # ENV_SPLIT_SENTINEL, for every spelling — bare,
-                    # abbreviated, attached (`-Sfoo`), or `=`-attached
-                    # (`--split-string=foo`). This does trade in a genuine
-                    # false DENY of its own — a legitimate `env -S '<non-gate
+                    # abbreviated, attached (`-Sfoo`), `=`-attached
+                    # (`--split-string=foo`), or bundled behind env's other
+                    # BARE flags (`-iS`, `-vS`, `-ivS`: `-i`/`-v`/`-0` take no
+                    # operand of their own, so a leading run of only those
+                    # letters followed by `S` is still a split-string clause —
+                    # J1299O finding 2). This does trade in a genuine false
+                    # DENY of its own — a legitimate `env -S '<non-gate
                     # command>' | tail` now also denies — which is the
                     # accepted fail-closed direction.
                     case $stripped in
@@ -541,6 +545,27 @@ invoked_program() {
                         -S | -S*)
                             printf '%s' "$ENV_SPLIT_SENTINEL"
                             return 0 ;;
+                        -[iv0]*)
+                            # Bare-flag bundle: walk the letters after the
+                            # leading `-`; if only `i`/`v`/`0` precede an `S`,
+                            # this bundle carries -S too (operand-letter
+                            # bundles like `-uS`/`-CS`/`-aS` never enter this
+                            # arm — they start with a letter outside [iv0]).
+                            guard_bundle=${stripped#-}
+                            guard_idx=0
+                            guard_is_split=0
+                            while [ "$guard_idx" -lt "${#guard_bundle}" ]; do
+                                case ${guard_bundle:$guard_idx:1} in
+                                    S) guard_is_split=1; break ;;
+                                    i | v | 0) ;;
+                                    *) break ;;
+                                esac
+                                guard_idx=$((guard_idx + 1))
+                            done
+                            if [ "$guard_is_split" = 1 ]; then
+                                printf '%s' "$ENV_SPLIT_SENTINEL"
+                                return 0
+                            fi ;;
                         --*)
                             if guard_is_long_abbrev "split-string" "$stripped"; then
                                 printf '%s' "$ENV_SPLIT_SENTINEL"
@@ -648,10 +673,15 @@ scan_line() {
         # Last stage, same command-position walk — so `| env tail`, `| command
         # head` and `| FOO=1 tail` are recognised too (panel r2, codex-1). The
         # leading `&` is the tail of a `|&` operator, not a word.
+        # J1299O finding 1: the last stage can ALSO be an env -S/--split-string
+        # clause (`| env -S env tail`, `| env -Snice head`) — the walk returns
+        # ENV_SPLIT_SENTINEL there too, and since the split string is never
+        # parsed, it may itself be a tail/head invocation. Treat the sentinel
+        # as tail/head rather than falling through to ALLOW.
         last=${pipeline##*|}
         last=${last#&}
         case $(invoked_program "$last") in
-            tail | head | */tail | */head) ;;
+            tail | head | */tail | */head | "$ENV_SPLIT_SENTINEL") ;;
             *) continue ;;
         esac
         offender=$pipeline
