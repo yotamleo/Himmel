@@ -1311,12 +1311,26 @@ _bwimc_ecwd_track() {
 # itself calls _bwimc_deny (which exits) on a DENY verdict, so this runs
 # before the call site's own _bwimc_ecwd-based check ever gets a chance to
 # allow.
+#
+# HIMMEL-3648 (CR #1307 round 10 codex-1): every call site used to pass only
+# the candidate token — never its own operation mode (entry/follow) — so
+# this fallback defaulted to "follow" regardless of what the caller actually
+# needed. For an `rm` operand (entry semantics: unlink acts on the directory
+# ENTRY, never the referent) that meant a primary-checkout symlink whose
+# ENTRY sits inside the primary but whose REFERENT resolves outside it
+# passed this fallback check unnoticed — deleting the entry is a write into
+# the primary the fallback was supposed to catch. Fixed by threading the
+# caller's own mode through as $2: the fallback must run byte-for-byte the
+# same check main runs — same mode, same semantics — not a guessed default.
+# Callers that never write through their own operand at all (a `cp` source,
+# for instance — cp never checks its source as a destination) pass nothing
+# and get the harmless "follow" default, since main never contradicts it.
 _bwimc_cd_guard() {
     case "$1" in
         /*|[A-Za-z]:/*|[A-Za-z]:\\*|*'$'*|*'`'*) return 0 ;;
     esac
     [ "$_bwimc_ecwd_unres" = 1 ] && _bwimc_deny "unresolved-cd" "$1" "" ""
-    [ "$_bwimc_ecwd" != "$_bwimc_cwd" ] && _bwimc_check_target "$1" "$_bwimc_cwd"
+    [ "$_bwimc_ecwd" != "$_bwimc_cwd" ] && _bwimc_check_target "$1" "$_bwimc_cwd" "${2:-follow}"
     return 0
 }
 
@@ -3261,7 +3275,7 @@ while IFS= read -r _bwimc_clause; do
             [ "$_bwimc_saw_follow_symlinks" = 1 ] && _bwimc_sed_mode=follow
             _bwimc_k=$_bwimc_start
             while [ "$_bwimc_k" -lt "${#_bwimc_bare[@]}" ]; do
-                _bwimc_cd_guard "${_bwimc_bare[$_bwimc_k]}"
+                _bwimc_cd_guard "${_bwimc_bare[$_bwimc_k]}" "$_bwimc_sed_mode"
                 _bwimc_check_target "${_bwimc_bare[$_bwimc_k]}" "$_bwimc_ecwd" "$_bwimc_sed_mode"
                 _bwimc_k=$((_bwimc_k+1))
             done
@@ -3270,7 +3284,7 @@ while IFS= read -r _bwimc_clause; do
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*eval([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
         _bwimc_check_interp_body "$_bwimc_clause_sp" eval
 
-    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?(bash|sh|zsh|dash|ksh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?(bash|sh|zsh|dash|ksh)(\.exe)?([[:space:]]+[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
         # HIMMEL-3648 (CR #1307): allow an optional path prefix (`/bin/sh`,
         # `./bash`, …) before the shell name — an anchor on the bare name
         # only let a path-qualified invocation bypass body scanning entirely.
@@ -3281,6 +3295,14 @@ while IFS= read -r _bwimc_clause; do
         # precise check (and the actual body lookup) is
         # _bwimc_is_shc_cflag inside _bwimc_check_interp_body; a prefilter
         # false-positive here only means a harmless extra scan.
+        # HIMMEL-3648 (round 10 codex-2): the middle group used to require
+        # each intervening token to itself start with `-` (a flag), so a
+        # flag that takes its own separate argument (`bash -o pipefail -c
+        # '…'`) broke the chain — "pipefail" isn't `-`-prefixed, so the
+        # match failed at the shell name and the whole body scan was
+        # skipped. Widened to accept ANY intervening token, flag or not;
+        # _bwimc_is_shc_cflag still does the precise per-token check, so
+        # this stays a coarse, over-inclusive prefilter only.
         _bwimc_check_interp_body "$_bwimc_clause_sp" shc
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(install|rsync)(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
@@ -3593,6 +3615,15 @@ while IFS= read -r _bwimc_clause; do
         # normally still writes THROUGH the child symlink referent (FOLLOW),
         # falling back to ENTRY only on a permission failure — check both.
         [ "$_bwimc_rmdest" = 0 ] && [ "$_bwimc_force" = 1 ] && _bwimc_child_mode=both
+        # HIMMEL-3648 (round 10 codex-1): mv's SOURCE main check below uses
+        # ENTRY (rename(2) moves the entry, never writes through it); cp
+        # never checks its source as a destination at all, so "follow" here
+        # is an inert default the main check never contradicts. Computed
+        # once, shared by both the -t/--target-directory branch and the
+        # positional branch below, and threaded into _bwimc_cd_guard so its
+        # fallback matches the SAME mode the main check uses.
+        _bwimc_src_cdmode=follow
+        [ "$_bwimc_verb" = "mv" ] && _bwimc_src_cdmode=entry
         if [ -n "$_bwimc_tdir_raw" ]; then
             # -t/--target-directory mode: EVERY remaining operand is a
             # SOURCE; the sink for each is <target-dir>/<basename(source)>.
@@ -3608,7 +3639,7 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_j=0
             while [ "$_bwimc_j" -lt "${#_bwimc_ops[@]}" ]; do
                 _bwimc_src_raw="${_bwimc_ops[$_bwimc_j]}"
-                _bwimc_cd_guard "$_bwimc_src_raw"
+                _bwimc_cd_guard "$_bwimc_src_raw" "$_bwimc_src_cdmode"
                 _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_ecwd") || _bwimc_src_abs=""
                 # mv SOURCE: checked whether or not the DESTINATION resolved
                 # (round-5 hoist), with ENTRY semantics — rename(2) moves the
@@ -3665,7 +3696,7 @@ while IFS= read -r _bwimc_clause; do
                 _bwimc_j=0
                 while [ "$_bwimc_j" -lt "$((_bwimc_n-1))" ]; do
                     _bwimc_src_raw="${_bwimc_ops[$_bwimc_j]}"
-                    _bwimc_cd_guard "$_bwimc_src_raw"
+                    _bwimc_cd_guard "$_bwimc_src_raw" "$_bwimc_src_cdmode"
                     _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_ecwd") || _bwimc_src_abs=""
                     if [ "$_bwimc_verb" = "mv" ]; then
                         if [ -n "$_bwimc_src_abs" ]; then
@@ -3713,7 +3744,10 @@ while IFS= read -r _bwimc_clause; do
             # literally named `-f`; without this, `-*` below eats it as a
             # flag and the fence never checks it.
             if [ "$_bwimc_dd" = 1 ]; then
-                _bwimc_cd_guard "$_bwimc_t"
+                # HIMMEL-3648 (round 10 codex-1): pass rm/touch's own mode
+                # through so the cd-divergence fallback in _bwimc_cd_guard
+                # runs the same entry-vs-follow check the line below does.
+                _bwimc_cd_guard "$_bwimc_t" "$_bwimc_mode"
                 _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" "$_bwimc_mode"
                 _bwimc_i=$((_bwimc_i+1))
                 continue
@@ -3725,7 +3759,7 @@ while IFS= read -r _bwimc_clause; do
             fi
             case "$_bwimc_t" in
                 -*) : ;;
-                *) _bwimc_cd_guard "$_bwimc_t"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" "$_bwimc_mode" ;;
+                *) _bwimc_cd_guard "$_bwimc_t" "$_bwimc_mode"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" "$_bwimc_mode" ;;
             esac
             _bwimc_i=$((_bwimc_i+1))
         done
@@ -3826,9 +3860,9 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_nsrc=$((_bwimc_n-1))
         fi
         if [ -n "$_bwimc_dest_raw" ]; then
-            _bwimc_cd_guard "$_bwimc_dest_raw"
             _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
             if [ -z "$_bwimc_dest_abs" ]; then
+                _bwimc_cd_guard "$_bwimc_dest_raw"
                 _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_ecwd"
             else
                 # `-n`/`-T` turn the destination back into a plain ENTRY even
@@ -3842,6 +3876,12 @@ while IFS= read -r _bwimc_clause; do
                     _bwimc_ln_isdir=1
                 fi
                 if [ "$_bwimc_ln_isdir" = 1 ]; then
+                    # HIMMEL-3648 (round 10 codex-1): _bwimc_cd_guard moved
+                    # here, after $_bwimc_ln_isdir is known, so its fallback
+                    # runs the SAME mode ("follow") the check two lines below
+                    # uses — calling it before this branch was decided meant
+                    # guessing.
+                    _bwimc_cd_guard "$_bwimc_dest_raw" follow
                     # Check the directory itself UNCONDITIONALLY (so an
                     # all-unresolvable source list cannot skip it), then the
                     # entry each source creates inside it.
@@ -3863,6 +3903,10 @@ while IFS= read -r _bwimc_clause; do
                         _bwimc_j=$((_bwimc_j+1))
                     done
                 else
+                    # HIMMEL-3648 (round 10 codex-1): same reasoning as the
+                    # directory branch above — the fallback must match this
+                    # branch's own ENTRY mode, not a guessed "follow".
+                    _bwimc_cd_guard "$_bwimc_dest_raw" "$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)"
                     _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" \
                         "$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)"
                 fi

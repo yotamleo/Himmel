@@ -2822,6 +2822,42 @@ check_both "54 fromP: x=\$(cd wt); echo x > a.txt (cd inside a command substitut
 check_both "55 fromP: cd wt && echo x > a.txt (genuine, runtime-safe cd — still denies post-fix under the strict superset rule)" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && echo x > a.txt\",\"cwd\":\"$FIX/primary\"}}"
 
+echo "== HIMMEL-3648 CR round 10 (codex-1 — _bwimc_cd_guard's fallback must use the CALLER's own mode) =="
+
+# 56-58 (codex-1): the round-9 union fix's fallback (_bwimc_cd_guard, fires on
+# _bwimc_ecwd/_bwimc_cwd divergence) always checked the real payload cwd with
+# an implicit "follow" mode, regardless of what the calling arm's own main
+# check actually uses. $FIX/primary/link-to-wt.txt is a symlink whose ENTRY
+# lives in the primary but whose REFERENT ($FIX/wt/wtfile.txt) resolves
+# outside it (fixture, set up above at "A symlink INSIDE the primary pointing
+# OUT at a worktree file"). Combined with a nonexistent-cd-target divergence
+# (row 43's shape) the main check (against the tracked, wrong cwd) never
+# fires, leaving the fallback as the SOLE catcher — and a "follow" fallback
+# wrongly resolves through the symlink to its worktree referent and ALLOWS
+# deleting/overwriting a primary checkout ENTRY. rm and mv's source use ENTRY
+# semantics (unlink/rename act on the entry, never the referent); a
+# non-directory ln destination is the same. Fixed by threading each caller's
+# own mode into _bwimc_cd_guard's $2 so the fallback runs byte-for-byte the
+# same check the main call site uses.
+check_both "56 fromP: cd wt/nope; rm link-to-wt.txt (rm on a primary symlink ENTRY, referent outside, via the fallback) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/nope; rm link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "57 fromP: cd wt/nope; mv link-to-wt.txt $FIX/wt/dest-mv.txt (mv SOURCE is a primary symlink ENTRY via the fallback) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/nope; mv link-to-wt.txt $FIX/wt/dest-mv.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "58 fromP: cd wt/nope; ln -sf $FIX/wt/z.txt link-to-wt.txt (ln DEST is a primary symlink ENTRY via the fallback) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/nope; ln -sf $FIX/wt/z.txt link-to-wt.txt\",\"cwd\":\"$FIX/primary\"}}"
+
+# 59 (codex-2, round 10): the shc dispatch regex's middle group used to
+# require every intervening token to itself start with "-" (a flag) — a
+# flag that takes its own separate argument, e.g. `-o pipefail`, has a
+# bare (non-dash) token in the middle ("pipefail"), which broke the match
+# at the shell name and skipped the interp-body scan entirely, unlike the
+# already-correct per-token walk inside _bwimc_is_shc_cflag (which finds
+# -c/-ce/etc. anywhere in argv, flags-with-args included).
+check_both "59 bash -o pipefail -c 'redirect into primary' (flag-with-arg before -c) denies (codex-2)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -o pipefail -c \\\"echo hi > $FIX/primary/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+check_both "59b bash -o pipefail -c 'redirect into wt' (flag-with-arg before -c) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -o pipefail -c \\\"echo hi > $FIX/wt/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
