@@ -42,7 +42,7 @@ if [ "$rc_e" -eq 0 ]; then pass "threaded dependabot author passes (rc=0)"; else
 
 echo "TEST: the same ticket-less title is still refused for a non-exempt author"
 err_f=$(TICKET_ID_AUTHOR='someone' TICKET_ID_TRUSTED_AUTHOR='someone' bash "$SUT" "build(deps): bump foo from 1 to 2" 2>&1); rc_f=$?
-if [ "$rc_f" -ne 0 ]; then pass "non-exempt author still refused (rc!=0)"; else fail "non-exempt author still refused (rc!=0)" "got rc=$rc_f"; fi
+if [ "$rc_f" -ne 0 ]; then pass "non-exempt author still refused (rc!=0)"; else fail "non-exempt author still refused (rc!=0)" "got rc=$rc_f err=$err_f"; fi
 
 echo "TEST: GitHub's revert-button title shape is accepted (HIMMEL-3616 judge J1284O F5)"
 out_g=$(bash "$SUT" 'Revert "fix(x): [HIMMEL-1] foo"' 2>&1); rc_g=$?
@@ -50,7 +50,7 @@ if [ "$rc_g" -eq 0 ]; then pass "revert-button title accepted (rc=0)"; else fail
 
 echo "TEST: a non-GitHub-generated title merely starting with Revert still needs the quoted-string shape"
 err_h=$(bash "$SUT" "Revert stuff without quotes" 2>&1); rc_h=$?
-if [ "$rc_h" -ne 0 ]; then pass "bare Revert-prefixed title without the quoted shape still refused (rc!=0)"; else fail "bare Revert-prefixed title without the quoted shape still refused (rc!=0)" "got rc=$rc_h"; fi
+if [ "$rc_h" -ne 0 ]; then pass "bare Revert-prefixed title without the quoted shape still refused (rc!=0)"; else fail "bare Revert-prefixed title without the quoted shape still refused (rc!=0)" "got rc=$rc_h err=$err_h"; fi
 
 echo "TEST: usage error on no argument"
 err_d=$(bash "$SUT" 2>&1); rc_d=$?

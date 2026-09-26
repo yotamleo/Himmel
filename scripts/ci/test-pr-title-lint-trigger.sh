@@ -74,11 +74,13 @@ fi
 # (scripts/hooks/check-commit-msg.sh) fires for a title the same way it
 # already fires for a commit (check-commit-range.sh:86 threads the commit's
 # own author the same way).
+# shellcheck disable=SC2016 # literal YAML text, not meant to expand
 case "$body" in
   *'TICKET_ID_AUTHOR: ${{ github.event.pull_request.user.login }}'*)
     ok "pr-title-lint threads TICKET_ID_AUTHOR from the PR author login" ;;
   *) bad "pr-title-lint does not thread TICKET_ID_AUTHOR from the PR author login" ;;
 esac
+# shellcheck disable=SC2016 # literal YAML text, not meant to expand
 case "$body" in
   *'TICKET_ID_TRUSTED_AUTHOR: ${{ github.event.pull_request.user.login }}'*)
     ok "pr-title-lint threads TICKET_ID_TRUSTED_AUTHOR from the PR author login" ;;
@@ -93,6 +95,7 @@ if grep -Eq '^\s*run:.*\$\{\{\s*github\.event\.pull_request\.title' "$TITLE_YML"
 else
   ok "pr-title-lint does not inline-interpolate the PR title into run:"
 fi
+# shellcheck disable=SC2016 # literal YAML text, not meant to expand
 case "$body" in
   *'PR_TITLE: ${{ github.event.pull_request.title }}'*)
     ok "pr-title-lint passes the title through env: PR_TITLE" ;;
