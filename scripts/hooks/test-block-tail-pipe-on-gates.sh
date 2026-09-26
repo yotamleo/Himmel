@@ -543,6 +543,27 @@ allow "env -iu X ls | tail (bundle ending in -u, no gate, unaffected)" \
 allow "env -uS ls | tail (value letter not last, unchanged)" \
       'env -uS ls | tail'
 
+# --- HIMMEL-3677 (judge J1311O on #1311): a redirect word landing in an
+# option's value slot was swallowed by skip_next as if it WERE the value —
+# real bash strips redirections before argv reaches the invoked program, so
+# `env -u 2>/dev/null X <gate>` really runs `env -u X <gate>` with stderr
+# redirected, but the walk read the redirect word as -u's value and reset
+# skip_next early, leaving X (the actual value) to be misread as the
+# invoked program and the gate one token further along missed entirely.
+deny "env -u 2>/dev/null X <gate> | tail (redirect in -u's value slot)" \
+     'env -u 2>/dev/null X bash scripts/check-ci.sh | tail'
+deny "env -C 2>&1 /tmp <gate> | head (redirect in -C's value slot)" \
+     'env -C 2>&1 /tmp bash scripts/check-ci.sh | head'
+# Controls: these shapes already denied correctly at base (the redirect never
+# landed in a pending value slot) — kept here as regression guards, not new
+# RED cases.
+deny "env -u X 2>/dev/null <gate> | tail (redirect AFTER the value, control)" \
+     'env -u X 2>/dev/null bash scripts/check-ci.sh | tail'
+deny "env > /dev/null -u X <gate> | tail (bare operator + target, control)" \
+     'env > /dev/null -u X bash scripts/check-ci.sh | tail'
+deny "env -S 2>/dev/null x <gate> | tail (redirect on the -S value path, control)" \
+     "env -S 2>/dev/null x bash scripts/check-ci.sh | tail"
+
 # --- BYPASS: the documented same-line marker --------------------------------
 allow "same-line tail-pipe-ok marker" \
       'bash scripts/cr/clear-cr-marker.sh x | tail -20  # tail-pipe-ok: rc irrelevant, output only'

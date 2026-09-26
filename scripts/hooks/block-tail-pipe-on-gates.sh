@@ -424,15 +424,23 @@ invoked_program() {
         stripped=${pending//\"/}
         stripped=${stripped//\'/}
         pending=''
+        # A redirection word is dropped BEFORE a pending skip_next can consume
+        # it (HIMMEL-3677, J1311O): real bash strips redirections at parse
+        # time, before argv ever reaches the invoked program, so `env -u
+        # 2>/dev/null X <gate>` really runs `env -u X <gate>` with stderr
+        # redirected. Checking this FIRST, ahead of skip_next, means a
+        # redirect landing in an option's value slot is stripped as a
+        # redirect, not swallowed as the option's value — skip_next stays
+        # pending until the next word that is NOT itself a redirection.
         # A LEADING redirection is not the command (panel r4, codex-1). A bare
         # operator token (`2>`) also swallows the target word that follows it.
-        if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
         case $stripped in
             *'>'* | *'<'*)
                 case $stripped in *'>' | *'<') skip_next=1 ;; esac
                 continue
                 ;;
         esac
+        if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
         # `(`/`{`/`!` glue onto the command they introduce (panel r3, codex-1),
         # and a compact subshell closes onto the LAST word — `(gate|tail)` leaves
         # `tail)` (panel r6, codex-2). Strip both ends.
