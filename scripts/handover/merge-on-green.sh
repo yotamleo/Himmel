@@ -852,13 +852,20 @@ fi
 # (and during) the check-ci.sh watch above. Re-query it fresh, right before
 # merging, same staleness class as fresh_base above, and refuse rather than
 # land a non-conventional subject on main.
-fresh_title=$("$GH" pr view "$pr_num" --repo "$nwo" --json title --jq '.title' 2>/dev/null || true)
+fresh_title_meta=$("$GH" pr view "$pr_num" --repo "$nwo" --json title,author --jq '"\(.title)\t\(.author.login // "")"' 2>/dev/null || true)
+fresh_title=${fresh_title_meta%%$'\t'*}
+fresh_title_author=${fresh_title_meta#*$'\t'}
 if [ -z "$fresh_title" ]; then
     echo "merge-on-green: cannot re-verify PR #$pr_num's title right before merging — refusing. Re-run." >&2
     audit "REFUSED reason=title-undeterminable repo=$nwo pr=#$pr_num"
     exit 20
 fi
-if ! title_err=$("$himmel_repo/scripts/lib/check-pr-title.sh" "$fresh_title" 2>&1); then
+# HIMMEL-3616 (judge J1284O panel round 3, codex-1): thread the PR author the
+# same way the CI title-lint workflow does, so the dependabot[bot] exemption
+# check-commit-msg.sh already applies at open time and in CI also applies at
+# this pre-merge re-check — otherwise a ticketless Dependabot title that
+# passed both earlier gates gets refused here instead.
+if ! title_err=$(TICKET_ID_AUTHOR="$fresh_title_author" TICKET_ID_TRUSTED_AUTHOR="$fresh_title_author" "$himmel_repo/scripts/lib/check-pr-title.sh" "$fresh_title" 2>&1); then
     echo "merge-on-green: PR #$pr_num's title fails the conventional-commit + ticket gate — refusing (this would land as main's commit subject verbatim). $title_err" >&2
     audit "REFUSED reason=title-gate-failed title=$fresh_title repo=$nwo pr=#$pr_num"
     exit 20

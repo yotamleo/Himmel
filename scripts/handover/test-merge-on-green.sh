@@ -99,6 +99,11 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #                        pre-existing case is unaffected. `-` (not `:-`) so an
 #                        explicitly-empty STUB_PR_TITLE is reachable
 #                        (undeterminable → fail closed).
+#   STUB_PR_AUTHOR       `author.login` in guard 3c's --json title,author
+#                        query, threaded into TICKET_ID_AUTHOR/
+#                        TICKET_ID_TRUSTED_AUTHOR (judge J1284O panel round 3,
+#                        codex-1). Default a non-exempt login, so every
+#                        pre-existing case is unaffected.
 #   STUB_PRIVATE_PREMERGE  `isPrivate` in the FIX-1 pre-merge re-verify
 #                        (HIMMEL-1080 CR round-3 folds isPrivate into the
 #                        pre-merge repo view). Default = STUB_PRIVATE. Set false
@@ -315,6 +320,12 @@ case "$verb" in
                 # jira_auto_transition's own extraction still resolves to its
                 # no-op skip by default.
                 printf '%s' "${STUB_PR_TITLE-fix(x): HIMMEL-1 stub title}" ;;
+            title,author)
+                # HIMMEL-3616 (judge J1284O panel round 3, codex-1): guard 3c's
+                # own query, distinct from the "title"-only case above (jira's
+                # caller never asks for author) — tab-separated title\tauthor,
+                # matching the wrapper's --jq expression.
+                printf '%s\t%s' "${STUB_PR_TITLE-fix(x): HIMMEL-1 stub title}" "${STUB_PR_AUTHOR-someone}" ;;
             "state,url,number,headRefOid,baseRefName,headRefName")
                 # Consolidated meta query (HIMMEL-1080 adds baseRefName;
                 # HIMMEL-1970 adds headRefName, LAST, for the post-merge
@@ -1156,6 +1167,42 @@ assert_audit_has "undeterminable-title audits the reason" "reason=title-undeterm
 STUB_SHA="titleok01" STUB_PR_TITLE="fix(x): [HIMMEL-42] thing" \
     run_mog 0 "conventional ticketed title → merged"
 assert_merge_has "title-gate-ok merge pins the certified sha" "--match-head-commit titleok01"
+
+# 9k. Pre-merge title gate: a ticketless Dependabot-authored title merges
+# (exit 0) — judge J1284O panel round 3 (codex-1) found guard 3c never
+# threaded the PR author, so a title that already passed leg-pr-open.sh's
+# open-time check and the CI title-lint workflow (both exempt
+# dependabot[bot]) was refused here instead. RED-first: the mutant below
+# strips the threading and must reproduce the pre-fix exit 20.
+STUB_SHA="titleok02" STUB_PR_TITLE="build(deps): bump foo from 1 to 2" STUB_PR_AUTHOR="dependabot[bot]" \
+    run_mog 0 "ticketless dependabot title at pre-merge → merged"
+assert_merge_has "title-gate-dependabot merge pins the certified sha" "--match-head-commit titleok02"
+
+# shellcheck disable=SC2016  # literal match/replacement against
+# merge-on-green.sh's own source text (unexpanded $fresh_title_author) --
+# not a shell expansion.
+rc_notitleauthor_widened_line='if ! title_err=$(TICKET_ID_AUTHOR="$fresh_title_author" TICKET_ID_TRUSTED_AUTHOR="$fresh_title_author" "$himmel_repo/scripts/lib/check-pr-title.sh" "$fresh_title" 2>&1); then'
+# shellcheck disable=SC2016  # same reason as above -- literal source text.
+rc_notitleauthor_reverted_line='if ! title_err=$("$himmel_repo/scripts/lib/check-pr-title.sh" "$fresh_title" 2>&1); then'
+rc_notitleauthor_mutant=$(mktemp "${TMPDIR:-/tmp}/mog-3616-notitleauthor-mutant.XXXXXX")
+if [ -z "$rc_notitleauthor_mutant" ] || [ ! -f "$rc_notitleauthor_mutant" ]; then
+    fail "RED (no-author-threading) setup: mktemp produced no mutant-script file — refusing to build the fixture on an empty root"
+else
+    awk -v line="$rc_notitleauthor_widened_line" -v repl="$rc_notitleauthor_reverted_line" \
+        '$0==line{print repl; next}{print}' "$MOG" > "$rc_notitleauthor_mutant"
+    rc_notitleauthor_pre=$(grep -Fxc -- "$rc_notitleauthor_widened_line" "$MOG")
+    rc_notitleauthor_post=$(grep -Fxc -- "$rc_notitleauthor_widened_line" "$rc_notitleauthor_mutant")
+    # A SUBSTITUTION (one line replaced by a different line): diff reports 2
+    # (one `<` old line, one `>` new line) — same shape as RC-4's above.
+    rc_notitleauthor_diff=$(diff "$MOG" "$rc_notitleauthor_mutant" | grep -c '^[<>]')
+    if [ "$rc_notitleauthor_pre" -eq 1 ] && [ "$rc_notitleauthor_post" -eq 0 ] && [ "$rc_notitleauthor_diff" -eq 2 ]; then
+        STUB_SHA="titleok02" STUB_PR_TITLE="build(deps): bump foo from 1 to 2" STUB_PR_AUTHOR="dependabot[bot]" \
+            MOG_SRC="$rc_notitleauthor_mutant" \
+            run_mog 20 "RED: without author threading, the dependabot title is refused (exit 20)"
+    else
+        fail "RED (no-author-threading) setup: mutant did not cleanly substitute exactly one line (pre=$rc_notitleauthor_pre post=$rc_notitleauthor_post diff=$rc_notitleauthor_diff)"
+    fi
+fi
 
 # 10. --dry-run: gates pass but NO merge fires.
 run_mog 0 "dry-run passes gates, no merge" -- --dry-run
