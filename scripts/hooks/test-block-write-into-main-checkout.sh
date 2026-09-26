@@ -2641,6 +2641,19 @@ check_both "30c cd -- primary && git commit denies (codex-1 round 5, git-arm)" b
 check_both "30d cd -- wt && git commit allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd -- $FIX/wt && git commit --allow-empty -m x\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-3648 CR round 6 (codex-3, rsync separated-value options) =="
+
+# 31 (codex-3, round f688778c): rsync's own value-taking options
+# (--exclude PATTERN, -e CMD, --temp-dir DIR, ...) were not skipped, so a
+# SEPARATED option value after the real destination fell through the
+# generic operand scan and was picked up as the "last operand" instead —
+# `rsync SRC /primary/dest --exclude pattern` misread `pattern` as the
+# destination, masking the real one and letting the write through.
+check_both "31 rsync SRC primary/dest --exclude pattern denies (codex-3 round 6)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/ $FIX/primary/dest --exclude pattern\",\"cwd\":\"$FIX/wt\"}}"
+check_both "31b rsync SRC wt/dest --exclude pattern allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rsync -a $FIX/wt/ $FIX/wt/dest --exclude pattern\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

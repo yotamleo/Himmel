@@ -3183,10 +3183,14 @@ while IFS= read -r _bwimc_clause; do
         # scanner's bare `-t` means "value follows" for cp/mv, but rsync's own
         # `-t` (`--times`, no value) is unrelated, so reusing it here would
         # misread a bundled/bare rsync `-t` as consuming the next token.
-        # ponytail: rsync's other value-taking options (--exclude PATTERN,
-        # -e CMD, --temp-dir DIR, ...) are not modelled — an option's value
-        # could be misread as the destination, or mask the real one. Simplest
-        # shape per the ticket (fail-closed over modelling); escalate only if
+        # rsync's other SEPARATED-value options (--exclude PATTERN, -e CMD,
+        # --temp-dir DIR, ...) are now skipped below the same way, closing
+        # the gap a round-f688778c critic found live (HIMMEL-3648, codex-3):
+        # `rsync SRC /primary/dest --exclude pattern` used to let `pattern`
+        # fall through as the "last operand", masking the real destination.
+        # ponytail: only the SEPARATED form of those options is modelled — a
+        # bundled/immediate-joined short-opt value (`-eCMD`) is not, and
+        # falls through to the generic operand scan below. Escalate only if
         # a real gap surfaces (HIMMEL-3648).
         _bwimc_verb=$(printf '%s' "$_bwimc_clause_lc" | sed -E 's/^[[:space:]]*(install|rsync).*/\1/')
         _bwimc_toks=()
@@ -3243,6 +3247,24 @@ while IFS= read -r _bwimc_clause; do
                     # escalate only if a real gap surfaces (HIMMEL-3648).
                     -d|--directory)
                         _bwimc_install_dmode=1
+                        _bwimc_i=$((_bwimc_i+1))
+                        continue
+                        ;;
+                esac
+            fi
+            # HIMMEL-3648 (codex-3, round f688778c): rsync's other
+            # value-taking options were previously left un-skipped (see the
+            # ponytail note above), so an option's VALUE fell through to the
+            # generic `-*) : ;;` / bare-word split below and was picked up as
+            # if it were a real operand — `rsync SRC /primary/dest --exclude
+            # pattern` misread `pattern` as the LAST operand, masking the
+            # true destination. Skip each one's separated value exactly like
+            # install's -t/--target-directory above, so only real operands
+            # ever reach _bwimc_ops.
+            if [ "$_bwimc_verb" = "rsync" ]; then
+                case "$_bwimc_t" in
+                    -e|-f|--filter|--exclude|--exclude-from|--include|--include-from|--files-from|--temp-dir|--backup-dir|--link-dest|--compare-dest|--copy-dest|--partial-dir|--log-file|--log-file-format|--out-format|--password-file|--bwlimit|--timeout|--contimeout|--port|--address|--sockopts|--usermap|--groupmap|--chown|--rsync-path|--rsh|--protocol|--checksum-seed|--max-size|--min-size|--modify-window|--skip-compress|--chmod)
+                        _bwimc_i=$(_bwimc_next_optval_idx "$_bwimc_i")
                         _bwimc_i=$((_bwimc_i+1))
                         continue
                         ;;
