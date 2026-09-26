@@ -53,6 +53,21 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/check-no-secrets.sh
 
+  # HIMMEL-3653: HIMMEL-3624 fixed a bracket-expression bug in
+  # scripts/lib/unchecked-mktemp.sh that only failed under a real BWK
+  # (one-true-awk) — `gawk --posix`/`--lint=fatal` both accept the broken
+  # regex (J1288O), so a lint substitute would not catch this class of
+  # regression, and Ubuntu PR CI runs everything else under gawk. The only
+  # prior BWK coverage was the nightly macOS shell-unit-shard leg, which is
+  # continue-on-error (advisory), so a regression here previously reached
+  # main unnoticed. This job builds a pinned one-true-awk commit from source
+  # (never a branch) and runs the gate's own suite under it, gating every PR.
+  bwk-awk-mktemp-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/ci/run-unchecked-mktemp-under-bwk.sh
+
   # Commit-time / pre-commit backstop for the 5 leak classes (HIMMEL-2561 /
   # HIMMEL-2705 step 2): catches anything that slipped past the pre-commit
   # hook (a --no-verify commit, a merge, a stale clone) by re-scanning the

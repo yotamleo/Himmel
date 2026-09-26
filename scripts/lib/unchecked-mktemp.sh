@@ -539,9 +539,12 @@ unchecked_mktemp_scan() {
             # a bare `/` inside `[...]` ends the literal early, so the class
             # is (from that parser point of view) never closed with a `]`,
             # and it fails "nonterminated character class" on every staged
-            # .sh. Escaping the delimiter is a no-op for the byte matched (a
-            # bracket expression gives `\` no escaping role under POSIX, and
-            # both gawk and BWK read `\/` as the same literal `/` as before).
+            # .sh. Escaping the delimiter is a no-op for the byte matched:
+            # under POSIX a bracket expression gives `\` no special escaping
+            # role, so `\/` literally adds both `\` and `/` to the class --
+            # but `/` was already in the class before this fix, and `\` is
+            # already there via the `\\` before `-]`, so the byte set
+            # matched is unchanged either way.
             if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+((-[a-zA-Z]+|--)[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp(""|'\'''\'')*([^A-Za-z0-9_.\/'\''"\\-]|\\$|$)/)
                 continue
 
