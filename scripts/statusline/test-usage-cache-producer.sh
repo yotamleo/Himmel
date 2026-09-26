@@ -324,6 +324,18 @@ run_test "(14) HIMMEL-1712 CR (panel round 1, codex-1): a partial window is NOT 
   [ "$(jq -r ".five_hour" "$CLAUDE_USAGE_CACHE")" = "{}" ] || exit 1;
 '
 
+run_test "(15) HIMMEL-1712 CR (panel round 2, codex-1): a legacy cache with NO account field is not relabeled under a known current identity" '
+  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-C\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"five_hour\":{\"utilization\":33,\"resets_at\":\"R5\"},\"seven_day\":{\"utilization\":1,\"resets_at\":\"old\"},\"extra_usage\":{}}" > "$CLAUDE_USAGE_CACHE";
+  printf "%s" "{\"session_id\":\"sess-C\",\"rate_limits\":{\"seven_day\":{\"utilization\":21.5,\"resets_at\":\"R7\"}}}" | bash "$PRODUCER";
+  acct=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct" ] && [ "$acct" != "null" ] || exit 1;
+  [ "$(jq -r ".seven_day.utilization" "$CLAUDE_USAGE_CACHE")" = "21.5" ] || exit 1;
+  [ "$(jq -r ".five_hour" "$CLAUDE_USAGE_CACHE")" = "{}" ] || exit 1;
+'
+
 # --- summary ------------------------------------------------------------------
 if [ "$_failures" -eq 0 ]; then
   echo "OK: all cases passed"

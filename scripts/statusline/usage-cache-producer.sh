@@ -191,13 +191,15 @@ if [ -n "$stdin_five" ] || [ -n "$stdin_seven" ]; then
     --arg sh "$stdin_seven" --arg shr "$stdin_seven_reset" \
     --arg acct "$account_hash" --arg pby "$produced_by" '
     ($prev // {}) as $p |
-    # HIMMEL-1712 CR (panel round 1, codex-1): a carried-forward window must
-    # not inherit the NEW account stamp when the previous cache is KNOWN to
-    # belong to a different account -- that would mislabel stale numbers as
-    # belonging to the current account. Suppress carry-forward only on a
-    # confirmed mismatch between two known identities; an undeterminable
-    # identity on either side keeps the existing carry-forward behaviour.
-    (($p.account // "") != "" and $acct != "" and ($p.account != $acct)) as $mismatch |
+    # HIMMEL-1712 CR (panel round 1, codex-1; panel round 2, codex-1): a
+    # carried-forward window must not inherit the NEW account stamp unless
+    # the previous cache already carried that SAME known identity -- that
+    # covers both a confirmed mismatch between two known identities and a
+    # legacy/unstamped cache (no account at all) being freshly relabeled
+    # under a known one. When the CURRENT identity is undeterminable the
+    # merged cache is stamped null anyway (never a false positive match),
+    # so carry-forward is safe to keep in that case (existing behaviour).
+    (($p.account // "") != $acct and $acct != "") as $mismatch |
     (if $mismatch then {} else $p end) as $carry |
     (if $fh == "" then null else ($fh | tonumber? // null) end) as $fhn |
     (if $sh == "" then null else ($sh | tonumber? // null) end) as $shn |
@@ -280,10 +282,12 @@ fi
 new_cache=$(jq -n --argjson prev "$prev" --argjson f "$fetched" --argjson ts "$now_epoch" \
   --arg acct "$account_hash" --arg pby "$produced_by" '
   ($prev // {}) as $p |
-  # HIMMEL-1712 CR (panel round 1, codex-1): same account-gated carry-forward
-  # as Branch A -- a partial fetch must not silently reuse a value that
-  # belongs to a different account under the new account stamp.
-  (($p.account // "") != "" and $acct != "" and ($p.account != $acct)) as $mismatch |
+  # HIMMEL-1712 CR (panel round 1 + round 2, codex-1): same account-gated
+  # carry-forward as Branch A -- a partial fetch must not silently reuse a
+  # value under the new account stamp unless the previous cache already
+  # carried that SAME known identity (covers both a confirmed mismatch and
+  # a legacy/unstamped cache being freshly relabeled).
+  (($p.account // "") != $acct and $acct != "") as $mismatch |
   (if $mismatch then {} else $p end) as $carry |
   ($f // {}) as $ff |
   # HIMMEL-1841: fetched primaries WIN; $carry is the fallback only when the
