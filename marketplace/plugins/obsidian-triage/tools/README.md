@@ -192,12 +192,14 @@ It re-fetches, adds `## The Idea` (through the normal body-fill + HIMMEL-256
 re-screen path) and **replaces** the stale quote-context `## Crawled content`
 section rather than adding a second one, so the article/media-shaped quotes that
 rendered as a bare `t.co` line come back as real content. `enriched_at` is
-bumped to the re-enrich date, never erased. Idempotent for the clips it exists
-to repair: once one has `## The Idea` it is no longer a target. The exception
-is a quote-RT whose author added no text of their own — there is nothing to
-body-fill, so it stays eligible and is re-fetched on each explicit invocation
-of the switch (harmless, but not a no-op). Tracked as HIMMEL-2628. Mutually
-exclusive with `--reflag`.
+bumped to the re-enrich date, never erased. Idempotent for every clip it exists
+to repair: once one has `## The Idea` it is no longer a target. A quote-RT
+whose author added no text of their own has nothing to body-fill, so instead
+it gets a terminal `last_error: quote_only_no_own_text` marker (HIMMEL-2628);
+`enrichment_status` stays `ok` — the enrichment is complete, there's just no
+`## The Idea` to add — and `isQuoteOnlyClip` treats a clip carrying that
+marker as no longer eligible, so a later invocation of the switch skips it
+rather than re-fetching and rewriting it. Mutually exclusive with `--reflag`.
 
 ### When fxtwitter is NOT the right tool
 
