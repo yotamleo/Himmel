@@ -18,7 +18,7 @@
 #
 # Bounded start: the daemon start is wrapped in timeout(1) when available so
 # a hung qmd/bun start cannot stall every new session at SessionStart.
-# Worst case ~34s (QMD_START_TIMEOUT 20 + kill grace 5 + port-release wait 5 +
+# Worst case ~39s (QMD_START_TIMEOUT 20 + kill grace 5 + port-release wait 10 +
 # post-start wait loop ~4), under Claude Code's default 60s hook timeout - do
 # not raise the defaults past that budget. Note: a malformed QMD_MCP_URL
 # override looks identical to daemon-dead (curl stderr is discarded by
@@ -47,7 +47,7 @@ QMD_CURL="${QMD_CURL:-curl}"
 QMD_START_TIMEOUT="${QMD_START_TIMEOUT:-20}"
 PROBE_TIMEOUT=2
 WAIT_TRIES=5
-PORT_WAIT_TRIES=5
+PORT_WAIT_TRIES=10
 
 INIT_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ensure-qmd-daemon","version":"1"}}}'
 
@@ -137,17 +137,27 @@ fi
 # would launch a second daemon contending with the first for the same port
 # (HIMMEL-3062). Poll a raw TCP connect - distinct from the qmd-shaped MCP
 # probe above, this only asks "is anything listening", not "is it qmd" - and
-# wait for the port to fully free before starting. Bounded to PORT_WAIT_TRIES
-# * 1s so a port stuck for some unrelated reason still falls through to the
-# normal start attempt rather than hanging. On a bash build without /dev/tcp
-# support, the connect always "fails" and this loop is a silent no-op - same
-# behavior as before this fix.
+# wait for the port to fully free before starting. PORT_WAIT_TRIES=10 covers
+# most of the observed ~15s unwind without pushing the total worst case too
+# close to Claude Code's 60s default hook timeout; a port still held past
+# that still falls through to the normal start attempt rather than hanging
+# forever. Each connect attempt is itself bounded with timeout(1) when
+# available (degrading to an unbounded connect otherwise) so a stalled
+# connect - not just a held port - cannot blow the bound either. On a bash
+# build without /dev/tcp support, the connect always "fails" and this loop
+# is a silent no-op - same behavior as before this fix.
 port_host="${QMD_MCP_URL#*://}"
 port_host="${port_host%%/*}"
 port_num="${port_host##*:}"
 port_host="${port_host%%:*}"
 port_held() {
-  (exec 3<>"/dev/tcp/$port_host/$port_num") 2>/dev/null
+  if command -v timeout >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # $1/$2 are the inner bash -c's OWN positional
+    # params (bound below), not this shell's - must stay single-quoted.
+    timeout 1 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$port_host" "$port_num" 2>/dev/null
+  else
+    (exec 3<>"/dev/tcp/$port_host/$port_num") 2>/dev/null
+  fi
 }
 p=0
 while [ "$p" -lt "$PORT_WAIT_TRIES" ] && port_held; do
