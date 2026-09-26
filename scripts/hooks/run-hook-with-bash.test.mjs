@@ -260,6 +260,12 @@ const MEMBERS = {
   'block-read-secrets.sh': `sleep 3`,
   // HIMMEL-3383: the /pr-check literal guard is must-run too.
   'guard-pr-check-literal.sh': `sleep 3`,
+  // HIMMEL-3669: the relay write-deny fence (Guard D) is must-run too.
+  'guard-relay-writes.sh': `sleep 3`,
+  // HIMMEL-3669: the worktree-isolation fence is must-run too.
+  'block-edit-on-main.sh': `sleep 3`,
+  // HIMMEL-3669: the memory-index form guard is must-run too.
+  'guard-memory-capture.sh': `sleep 3`,
   // HIMMEL-3601: a must-run member that CRASHES (not a timeout) — named like
   // a real must-run guard so MUST_RUN_CHAIN_MEMBERS fires, exits 1 the way a
   // `set -u` abort or a failed `.` source would.
@@ -597,6 +603,7 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
       'block-chokepoint-env-prefix.sh',
       'block-destructive-commands.sh',
       'block-edit-live-settings.sh',
+      'block-edit-on-main.sh',
       'block-git-stash.sh',
       'block-jira-compound-write.sh',
       'block-read-secrets.sh',
@@ -604,7 +611,9 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
       'block-tail-pipe-on-gates.sh',
       'block-write-into-main-checkout.sh',
       'check-cr-marker-on-pr-create.sh',
+      'guard-memory-capture.sh',
       'guard-pr-check-literal.sh',
+      'guard-relay-writes.sh',
     ].sort(),
   );
 });
@@ -1025,6 +1034,66 @@ test('a starved guard-pr-check-literal.sh DENIES the chain instead of being skip
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /DENY guard-pr-check-literal\.sh \(budget=500ms/);
     assert.equal(ran(dir, 'allow.sh'), false, 'a starved literal guard must deny, not skip past it');
+  });
+});
+
+// HIMMEL-3669: guard-relay-writes.sh (Guard D, HIMMEL-2975) is deny-capable
+// and fails closed by its own header, but was missing from
+// MUST_RUN_CHAIN_MEMBERS — a starved run let its DENY be skipped instead of
+// failing the chain closed.
+test('a starved guard-relay-writes.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'guard-relay-writes.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY guard-relay-writes\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved relay-write guard must deny, not skip past it');
+  });
+});
+
+// HIMMEL-3669: block-edit-on-main.sh self-describes as a "security hook"
+// that "fails CLOSED" (worktree-isolation fence), but was missing from
+// MUST_RUN_CHAIN_MEMBERS.
+test('a starved block-edit-on-main.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'block-edit-on-main.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY block-edit-on-main\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved main-checkout guard must deny, not skip past it');
+  });
+});
+
+// HIMMEL-3669: guard-memory-capture.sh denies (exit 2) a malformed auto-memory
+// write, but was missing from MUST_RUN_CHAIN_MEMBERS.
+test('a starved guard-memory-capture.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'guard-memory-capture.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY guard-memory-capture\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved memory-capture guard must deny, not skip past it');
   });
 });
 
