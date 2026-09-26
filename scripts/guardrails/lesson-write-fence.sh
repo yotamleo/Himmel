@@ -818,10 +818,11 @@ _clause_head_idx() {
                 while [ "$i" -lt "$n" ]; do
                     w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
                     case "$w" in
-                        -u)                       i=$((i+2)) ;;
+                        -u|-c)                    i=$((i+2)) ;;
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
                         --*)
-                            if guard_is_long_abbrev "unset" "$w"; then
+                            if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
+                                || guard_is_long_abbrev "argv0" "$w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
@@ -867,13 +868,14 @@ _clause_head_idx() {
                 while [ "$i" -lt "$n" ]; do
                     w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
                     case "$w" in
-                        -u|-g|-U|-p|-C|-r|-t|-h)  i=$((i+2)) ;;
+                        -u|-g|-U|-p|-C|-r|-t|-h|-d) i=$((i+2)) ;;
                         --)                       i=$((i+1)); break ;;
                         --*)
                             if guard_is_long_abbrev "user" "$w" || guard_is_long_abbrev "group" "$w" \
                                 || guard_is_long_abbrev "other-user" "$w" || guard_is_long_abbrev "prompt" "$w" \
                                 || guard_is_long_abbrev "close-from" "$w" || guard_is_long_abbrev "role" "$w" \
-                                || guard_is_long_abbrev "type" "$w" || guard_is_long_abbrev "host" "$w"; then
+                                || guard_is_long_abbrev "type" "$w" || guard_is_long_abbrev "host" "$w" \
+                                || guard_is_long_abbrev "chdir" "$w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))

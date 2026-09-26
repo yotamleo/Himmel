@@ -605,11 +605,21 @@ segment_is_safe() {
                             return 1 ;;
                     esac
                 done ;;
-            sort)                          # `sort -o FILE` writes a file — guard it
+            sort)                          # `sort -o FILE` writes a file, and
+                                           # `--compress-program` runs one on
+                                           # spill — guard both. FAIL CLOSED:
+                                           # an option this can't cook or that
+                                           # doesn't match a known long name
+                                           # falls through to normal permission,
+                                           # never a wider per-shape parse.
                 for k in "${a[@]}"; do
-                    case "$k" in
-                        -o|-o*) return 1 ;;
-                        --*) guard_is_long_abbrev "output" "$k" && return 1 ;;
+                    shell_word_value "$k" || return 1
+                    case "$SW_VALUE" in
+                        -[!-]*)
+                            case "${SW_VALUE#-}" in *o*) return 1 ;; esac ;;
+                        --*)
+                            guard_is_long_abbrev "output" "$SW_VALUE" && return 1
+                            guard_is_long_abbrev "compress-program" "$SW_VALUE" && return 1 ;;
                     esac
                 done ;;
             xxd)                           # `xxd in out` / `xxd -r in out` writes

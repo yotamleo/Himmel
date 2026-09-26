@@ -350,6 +350,13 @@ deny "sudo -n (bare flag) before the gate" \
      'sudo -n bash scripts/check-ci.sh | tail -20'
 # `-S` takes an operand for env and none for sudo — the divergence one flat
 # table could not express.
+#
+# HIMMEL-3632 known limitation: GNU env's `-S`/`--split-string` operand is not
+# a value to skip past like `-a`'s below — env splits it into a NEW argv and
+# runs THAT, so the real invoked program is the operand's own first word
+# (`x`), not `bash scripts/check-ci.sh` one token further along. Fixing that
+# would make this row `allow`, but a false DENY is the fail-closed direction —
+# left as `deny` on purpose pending its own judged change.
 deny "env -S before the gate" \
      'env -S x bash scripts/check-ci.sh | tail -20'
 # Panel r2 codex-1: `env -a <argv0>` takes an operand too, so the gate sat one
@@ -439,6 +446,22 @@ deny "xargs --max-l (abbrev of optional-arg --max-lines) before the gate" \
      'xargs --max-l scripts/check-ci.sh | tail -20'
 deny "xargs --max-lines (optional-arg, full spelling) before the gate" \
      'xargs --max-lines scripts/check-ci.sh | tail -20'
+
+# --- HIMMEL-3632: xargs --process-slot-var (real GNU xargs value-taking
+# option) was entirely unrecognized, so its VALUE (not the gate one token
+# further along) was returned as the invoked program — a genuine bypass. ---
+deny "xargs --process-slot-var (full spelling, split operand) before the gate" \
+     'xargs --process-slot-var V bash scripts/check-ci.sh | tail'
+deny "xargs --process-s (abbrev of --process-slot-var, split operand) before the gate" \
+     'xargs --process-s V bash scripts/check-ci.sh | tail'
+
+# --- HIMMEL-3632: same env -S/--split-string known limitation as above (see
+# "env -S before the gate"), in its full and abbreviated long-option
+# spellings — still `deny`, the fail-closed direction, on purpose. ---
+deny "env --split-string (full spelling, same shape as env -S above)" \
+     'env --split-string x bash scripts/check-ci.sh | tail'
+deny "env --split (abbrev of --split-string, same shape)" \
+     'env --split x bash scripts/check-ci.sh | tail'
 
 # --- BYPASS: the documented same-line marker --------------------------------
 allow "same-line tail-pipe-ok marker" \

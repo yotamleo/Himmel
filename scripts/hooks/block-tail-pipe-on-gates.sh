@@ -512,15 +512,26 @@ invoked_program() {
                     esac ;;
                 env)
                     # `env`'s VAR=val assignments are already stepped over by the
-                    # assignment arm above; `-S` DOES take an operand here, which
-                    # is exactly what a launcher-agnostic table could not express.
-                    # Same attached-value carve-out as sudo above.
+                    # assignment arm above; `-S`/`--split-string` DOES take an
+                    # operand here, which is exactly what a launcher-agnostic
+                    # table could not express. Same attached-value carve-out as
+                    # sudo above.
+                    #
+                    # HIMMEL-3632 known limitation: GNU env's `-S`/
+                    # `--split-string` operand is NOT a value to skip past like
+                    # `-u`/`-C`/`-a`'s — it is itself split into a NEW argv and
+                    # run, so the word this skip_next steps over is not
+                    # necessarily the invoked program, and the walk can land on
+                    # a following word instead. That is a false DENY (the
+                    # fail-closed direction, never a bypass) and is left
+                    # uncorrected here on purpose — relaxing it needs its own
+                    # judged change; see the PR/ticket for the accepted shape.
                     case $stripped in
-                        -u | -C | -S | -a) skip_next=1; continue ;;
+                        -S | -u | -C | -a) skip_next=1; continue ;;
                         --*)
-                            if guard_is_long_abbrev "unset" "$stripped" \
+                            if guard_is_long_abbrev "split-string" "$stripped" \
+                                || guard_is_long_abbrev "unset" "$stripped" \
                                 || guard_is_long_abbrev "chdir" "$stripped" \
-                                || guard_is_long_abbrev "split-string" "$stripped" \
                                 || guard_is_long_abbrev "argv0" "$stripped"; then
                                 [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
@@ -563,7 +574,8 @@ invoked_program() {
                                 || guard_is_long_abbrev "max-procs" "$stripped" \
                                 || guard_is_long_abbrev "delimiter" "$stripped" \
                                 || guard_is_long_abbrev "arg-file" "$stripped" \
-                                || guard_is_long_abbrev "max-chars" "$stripped"; then
+                                || guard_is_long_abbrev "max-chars" "$stripped" \
+                                || guard_is_long_abbrev "process-slot-var" "$stripped"; then
                                 [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;
