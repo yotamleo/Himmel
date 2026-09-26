@@ -23,26 +23,24 @@ tag:
    git tag via the GitHub API; it never touches tracked files).
 3. Re-note `main`'s new tip sha — that is the sha the tag must point at.
 
-## 2. `cut-tag.sh` — format gap you will hit
+## 2. `cut-tag.sh` — cutting the bare release
 
 `scripts/handover/console-kit/cut-tag.sh` (console-run only; never from a
-leg) strictly validates its `<version>` argument as `v<X>.<Y>.<Z>-pre.<N>`
-and refuses anything else, `--version-override` included — the format check
-runs before the override logic. **It cannot accept a bare `v1.0.0` release
-tag as currently written.** Either:
+leg) accepts `<version>` as either `v<X>.<Y>.<Z>-pre.<N>` or a bare
+`v<X>.<Y>.<Z>` release (HIMMEL-3701). The bare form runs through every gate
+in section 4 below, plus one release-specific sequence rule: it is refused
+(exit 6) unless at least one `v<X>.<Y>.<Z>-pre.<N>` tag already exists on
+origin for that same `X.Y.Z`, or `--version-override <reason>` is given.
 
-- run it once more with a final pre-release (e.g. `v1.0.0-pre.1`) to prove
-  the pipeline, then create the real `v1.0.0` tag by hand through the same
-  `gh api repos/:owner/:repo/git/refs` call the script uses (copy its
-  ref-creation call, substituting the bare version) after re-running its
-  checks manually, or
-- extend `cut-tag.sh` in its own follow-up PR to also accept a bare
-  `vX.Y.Z` release form (out of this ticket's scope — touch-scope here is
-  docs/CHANGELOG only).
+For the real `v1.0.0` cut: run a final pre-release (e.g. `v1.0.0-pre.1`) to
+prove the pipeline, then run
 
-Whichever path is taken, do not skip the gate list below for the real tag
-just because the script cannot run it end-to-end — reproduce each check
-manually if cutting by hand.
+```
+bash scripts/handover/console-kit/cut-tag.sh v1.0.0 <full-40-char-sha> --dry-run
+```
+
+and, once the plan looks right, drop `--dry-run`. No by-hand `gh api` fallback
+is needed.
 
 ## 3. Dry run first
 
@@ -61,8 +59,9 @@ origin and creates no tag. Confirm the plan looks right before dropping
 2. `<sha>` is an ancestor of (or equal to) `origin/main`.
 3. `<version>` does not already exist as a tag on origin.
 4. `<version>` is the next in-sequence value for its `vX.Y.Z-pre.` series
-   (current series tops out at `v0.3.0-pre.9`), unless `--version-override
-   <reason>` is given.
+   (current series tops out at `v0.3.0-pre.9`); for a bare `vX.Y.Z` release,
+   at least one `vX.Y.Z-pre.N` tag must already exist on origin instead —
+   unless `--version-override <reason>` is given.
 5. Every GitHub check-run at `<sha>` is `status=completed` with a conclusion
    in `{success, skipped, neutral}`, and at least one check-run exists
    (HIMMEL-3572: check-runs is the authoritative read, not combined-status).
