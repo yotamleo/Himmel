@@ -65,7 +65,12 @@ repos:
         # `ps|grep`) would have us EDIT the record of what actually ran, so a
         # clean lint could only be bought by falsifying the artifact. They are
         # data, not code.
-        exclude: ^handovers/.*/specs/(console-kit-[^/]+|reports/[^/]*-artifacts)/
+        #
+        # Judge verdict dirs (handovers/**/verdicts/) are the same class: a
+        # judge's probe and case scripts are the evidence its verdict rests
+        # on, not shipped code. A verdict script with no shebang (SC2148) can
+        # otherwise stall every vault commit (HIMMEL-3702).
+        exclude: ^handovers/.*/(specs/(console-kit-[^/]+|reports/[^/]*-artifacts)|verdicts)/
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2

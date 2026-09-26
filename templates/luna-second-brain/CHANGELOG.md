@@ -8,6 +8,16 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.60] — 2026-09-26
+
+### Fixed
+- `.pre-commit-config.yaml`'s shellcheck hook now excludes
+  `handovers/**/verdicts/` the same way it already excludes
+  `handovers/**/specs/(console-kit-*|reports/*-artifacts)/`: a judge's probe
+  and case scripts under a verdict directory are evidence, not shipped code,
+  and a script with no shebang there could otherwise stall every vault
+  commit.
+
 ## [0.4.59] — 2026-09-26
 
 ### Fixed
