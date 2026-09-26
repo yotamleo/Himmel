@@ -159,17 +159,69 @@ err6="$(_prune_graphify_backups "$OUT6" 2>&1 1>/dev/null)"
 # --- T7: pruning never changes the caller's exit status, even when rm fails
 # on one of the doomed dirs (made unremovable via a read-only parent) ---
 echo "T7: a prune failure only WARNs, never flips the caller's exit status"
-OUT7="$WS/t7/graphify-out"; mkdir -p "$OUT7"
-for d in 2026-06-01 2026-06-02 2026-06-03 2026-06-04; do mkdate "$OUT7" "$d"; done
-chmod 555 "$OUT7"
-err7="$(unset GRAPHIFY_BACKUP_KEEP; _prune_graphify_backups "$OUT7" 2>&1 1>/dev/null)"; rc7=$?
-chmod 755 "$OUT7"
-[ "$rc7" -eq 0 ] && pass "T7 function still returns 0 despite an rm failure" \
-  || fail "T7 should return 0 even when a prune rm fails (got rc=$rc7)"
-echo "$err7" | grep -q "WARN could not prune backup dir" \
-  && pass "T7 stderr WARNs about the failed prune" \
-  || fail "T7 stderr should WARN about the failed prune: $err7"
-rm -rf "$OUT7" 2>/dev/null
+if [ "$(id -u)" -eq 0 ]; then
+  # codex-2: root ignores directory permission bits, so chmod 555 below would
+  # never actually block the rm -- the assertions would pass for the wrong
+  # reason (or not exercise the failure path at all). Skip rather than assert
+  # something this privilege level cannot test.
+  echo "  skip: T7 (root ignores dir permissions)"
+else
+  OUT7="$WS/t7/graphify-out"; mkdir -p "$OUT7"
+  for d in 2026-06-01 2026-06-02 2026-06-03 2026-06-04; do mkdate "$OUT7" "$d"; done
+  chmod 555 "$OUT7"
+  err7="$(unset GRAPHIFY_BACKUP_KEEP; _prune_graphify_backups "$OUT7" 2>&1 1>/dev/null)"; rc7=$?
+  chmod 755 "$OUT7"
+  [ "$rc7" -eq 0 ] && pass "T7 function still returns 0 despite an rm failure" \
+    || fail "T7 should return 0 even when a prune rm fails (got rc=$rc7)"
+  echo "$err7" | grep -q "WARN could not prune backup dir" \
+    && pass "T7 stderr WARNs about the failed prune" \
+    || fail "T7 stderr should WARN about the failed prune: $err7"
+  rm -rf "$OUT7" 2>/dev/null
+fi
+
+# --- T8: codex-1 -- a digit-only value too large for bash's 64-bit integer
+# test (e.g. a fat-fingered extra zero) must warn and fall back to 3, not
+# silently disable pruning. Without the length cap, `[ "$keep" -gt 0 ]`
+# itself errors (rc=2) and the unguarded `||` reads that as "keep is 0",
+# silently skipping every prune -- verified empirically: no warning, no
+# prune, exit still 0. ---
+echo "T8: a huge GRAPHIFY_BACKUP_KEEP warns and falls back to 3 (does not silently disable pruning)"
+OUT8="$WS/t8/graphify-out"; mkdir -p "$OUT8"
+for d in 2026-07-01 2026-07-02 2026-07-03 2026-07-04 2026-07-05; do mkdate "$OUT8" "$d"; done
+err8="$(GRAPHIFY_BACKUP_KEEP=99999999999999999999 _prune_graphify_backups "$OUT8" 2>&1 1>/dev/null)"; rc8=$?
+[ "$rc8" -eq 0 ] && pass "T8 function returns 0 for an oversized value" \
+  || fail "T8 should return 0 for an oversized value (got rc=$rc8)"
+echo "$err8" | grep -q "WARN GRAPHIFY_BACKUP_KEEP must be a non-negative integer" \
+  && pass "T8 stderr warns about the oversized value" \
+  || fail "T8 stderr should warn about the oversized GRAPHIFY_BACKUP_KEEP: $err8"
+echo "$err8" | grep -q "using default 3" \
+  && pass "T8 stderr names the fallback default" \
+  || fail "T8 stderr should name the default-3 fallback: $err8"
+for d in 2026-07-03 2026-07-04 2026-07-05; do
+  [ -d "$OUT8/$d" ] && pass "T8 kept $d (fallback keep=3)" || fail "T8 should have kept $d"
+done
+for d in 2026-07-01 2026-07-02; do
+  [ -d "$OUT8/$d" ] && fail "T8 should have pruned $d (fallback keep=3)" || pass "T8 pruned $d"
+done
+
+# --- T9: codex-1 -- a leading-zero GRAPHIFY_BACKUP_KEEP ("010") is read as
+# DECIMAL (10), never as octal (8). 9 backups: if misread as octal-8 the
+# oldest one would be pruned; read correctly as decimal-10, all 9 survive
+# (9 is not > 10). ---
+echo "T9: a leading-zero GRAPHIFY_BACKUP_KEEP is normalised as decimal, not octal"
+OUT9="$WS/t9/graphify-out"; mkdir -p "$OUT9"
+for d in 2026-08-01 2026-08-02 2026-08-03 2026-08-04 2026-08-05 2026-08-06 2026-08-07 2026-08-08 2026-08-09; do
+  mkdate "$OUT9" "$d"
+done
+err9="$(GRAPHIFY_BACKUP_KEEP=010 _prune_graphify_backups "$OUT9" 2>&1 1>/dev/null)"
+echo "$err9" | grep -q "WARN GRAPHIFY_BACKUP_KEEP" \
+  && fail "T9 should not warn on a valid leading-zero value: $err9" \
+  || pass "T9 no bad-value warning for '010'"
+n9=0; for d in 2026-08-01 2026-08-02 2026-08-03 2026-08-04 2026-08-05 2026-08-06 2026-08-07 2026-08-08 2026-08-09; do
+  [ -d "$OUT9/$d" ] && n9=$((n9+1))
+done
+[ "$n9" -eq 9 ] && pass "T9 all 9 backups survive ('010' read as decimal 10, not octal 8)" \
+  || fail "T9 expected all 9 to survive under keep=10, only $n9 did (leading zero misread as octal?)"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

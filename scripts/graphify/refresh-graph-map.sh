@@ -1095,12 +1095,23 @@ _prune_graphify_backups() {
   local out="$1" keep="${GRAPHIFY_BACKUP_KEEP:-3}"
   local entry name pruned=0 total drop idx=0
   local -a dirs=() sorted=()
+  # codex-1: a digit-only value longer than 4 digits (e.g. a fat-fingered
+  # 99999999999999999999) overflows bash's 64-bit `[ -gt ]` integer test below
+  # and errors -- which under `set -e` would abort the whole refresh instead
+  # of just skipping pruning. `?????*` (5+ chars) rejects it the same way
+  # *[!0-9]* rejects a non-digit value, capping the accepted range at 0-9999.
   case "$keep" in
-    ''|*[!0-9]*)
+    ''|*[!0-9]*|?????*)
       echo "refresh-graph-map: WARN GRAPHIFY_BACKUP_KEEP must be a non-negative integer (got '$keep') -- using default 3" >&2
       keep=3
       ;;
   esac
+  # 10# forces base-10 (same normalize as GRAPHIFY_RUN_DEADLINE_SECONDS
+  # above): a leading-zero value ("007", "02") would otherwise be read as
+  # octal by the arithmetic/test contexts below and a value like "010" would
+  # silently become 8. $keep is validated digits-only, <=4 chars at this
+  # point, so this can't fail.
+  keep=$((10#$keep))
   [ "$keep" -gt 0 ] || return 0
   # Guard the target the same way _promote_stage_cleanup guards its rm -rf
   # (an empty/unset out dir must not degenerate to a bare-root rm below).
