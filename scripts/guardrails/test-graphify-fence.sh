@@ -2347,6 +2347,90 @@ run_fence deny no "$HIMMEL" "env --chdir=DIR (uppercase-C path) into salus -> st
 run_fence deny no "$HIMMEL" "env -iC DIR salus (true bundled) -> still deny (codex-1 control)" \
     "env -iC $SALUS graphify update notes/patient.md --backend glm"
 
+echo "== HIMMEL-3641 J1290R: R1 unquoted-vs-shell tilde, R2 raw/stripped mismatch + env -S, R3 backtick-wrapped value =="
+
+# (R1a) R1: env -C~/x (attached tilde) run from a real salus cwd, relative
+# target. In bash/zsh a `~` is ONLY tilde-expanded when it is the FIRST
+# character of a whole word - attached to -C it is never shell-expanded and
+# stays the literal two characters `~/x`, so the DIR env would really try to
+# chdir into is a literal (almost certainly nonexistent) subdirectory, never
+# $HOME/x. The old _abs()-based fix expanded it to $HOME/x unconditionally,
+# so the real cwd (salus, PHI) was replaced by a $HOME-relative one that
+# looks non-PHI -> a new false ALLOW. Fail closed instead: any chdir
+# argument containing `~` is unresolvable now, full stop.
+run_fence deny no "$SALUS" "env -C~/x (attached tilde) from salus -> deny (R1, fail-closed)" \
+    "env -C~/x graphify update notes/patient.md --backend glm" "HOME=$HIMMEL"
+
+# (R1b) R1: env -C"~/x" (attached AND quoted) - same non-expansion in real
+# bash/zsh, same old bug (_strip_wrap peeled the quotes, then _abs still
+# expanded the now-bare ~/x to $HOME/x).
+run_fence deny no "$SALUS" "env -C\"~/x\" (attached+quoted tilde) from salus -> deny (R1, fail-closed)" \
+    "env -C\"~/x\" graphify update notes/patient.md --backend glm" "HOME=$HIMMEL"
+
+# (R2a) R2: env '-C'<salus> - the flag is quoted, the value is glued on with
+# no space, so the RAW token does not literally start with `-C` and the old
+# `${toks[$i]#-C}` prefix-strip was a no-op; the OLD code still matched the
+# _stripped_ form against the `-C?*` glob and ran `_abs()` on the untouched
+# (quote-prefixed) raw value, which is not absolute, so it resolved as a
+# garbage path under the real (non-PHI) cwd - silently misresolving instead
+# of failing closed. Real shell semantics: quoted+unquoted fragments with no
+# space between them concatenate into ONE argument, so this really is `-C
+# <salus>` and would have chdir'd into PHI.
+run_fence deny no "$HIMMEL" "env '-C'<salus> (quoted flag, glued value) -> deny (R2)" \
+    "env '-C'$SALUS graphify update notes/patient.md --backend glm"
+
+# (R2b) R2 twin: env "-C<salus>" - the WHOLE flag+value is one double-quoted
+# token. Same raw-vs-stripped mismatch, same old misresolution.
+run_fence deny no "$HIMMEL" "env \"-C<salus>\" (whole token double-quoted) -> deny (R2)" \
+    "env \"-C$SALUS\" graphify update notes/patient.md --backend glm"
+
+# (R2c) R2: env -\C<salus> (backslash before the C) - same mismatch, this
+# time via a backslash rather than a quote character.
+run_fence deny no "$HIMMEL" "env -\\C<salus> (backslash-escaped) -> deny (R2)" \
+    "env -\\C$SALUS graphify update notes/patient.md --backend glm"
+
+# (R2d) R2 sudo twin: sudo '-D'<salus>, same quoted-flag/glued-value
+# mismatch as R2a.
+run_fence deny no "$HIMMEL" "sudo '-D'<salus> (quoted flag, glued value) -> deny (R2)" \
+    "sudo '-D'$SALUS graphify update notes/patient.md --backend glm"
+
+# (R2e) R2: env -S/--split-string re-splits its value into a brand new argv
+# at RUNTIME - a shebang-line mechanism this fence cannot statically
+# evaluate. The old code had NO handling for -S at all: it fell to the
+# generic `-*)` "skip one token" arm, which then misaligned the walk onto the
+# split-string value's own FIRST word (here a decoy, "true") - that word is
+# neither a recognised wrapper nor `graphify`, so the whole positional walk
+# stopped right there and classify_clause returned without ever calling
+# deny() OR apply_verdict(): the invocation allowed SILENTLY, never even
+# noticing graphify was invoked one word later in the same value, even
+# though the real cwd here is salus (PHI) and the real env -S argv really
+# does end in `graphify update notes/patient.md ...`.
+run_fence deny no "$SALUS" "env -S \"true graphify ...\" (hidden invocation) from salus -> deny (R2)" \
+    "env -S \"true graphify update notes/patient.md --backend glm\""
+
+# (R3) env -C\`pwd\` - a whole-token wrapped backtick chdir value. The old
+# _gf_apply_chdir called _strip_wrap FIRST, which peeled the matching pair of
+# backticks off BEFORE the $/backtick unresolvable-substitution check ever
+# ran, leaving the plain literal string "pwd" - which _abs() then resolved as
+# an ordinary (nonexistent) relative subdirectory instead of recognising an
+# unresolvable command substitution and failing closed. Real shell semantics:
+# `` `pwd` `` evaluates to whatever the real cwd is AT RUNTIME - something
+# this fence can never know ahead of time - so it must deny regardless of
+# where it happens to land, not silently resolve to a literal "pwd" folder.
+run_fence deny no "$HIMMEL" "env -C\`pwd\` (backtick-wrapped value) -> deny (R3, fail-closed)" \
+    "env -C\`pwd\` graphify update notes/patient.md --backend glm"
+
+# (R4) documentation row, not a fix target: J1290R rated this an acceptable
+# over-deny, so no code change was made for it. Before this round, an
+# UNQUOTED, SEPARATE-token `~/x` (real bash *would* shell-expand this one,
+# since the tilde is the first character of its own word) was correctly
+# allowed via $HOME/x. The "stop modelling shell expansion" fix in this round
+# denies ALL `~` forms without exception, so this previously-correct case now
+# also fails closed - a deliberate, accepted trade documented here so a
+# future reader does not mistake it for a regression.
+run_fence deny no "$HIMMEL" "env -C ~/x (unquoted separate-token tilde, previously-correct case) -> deny (R4, accepted over-deny)" \
+    "env -C ~/x graphify update notes/patient.md --backend glm" "HOME=$HIMMEL"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
