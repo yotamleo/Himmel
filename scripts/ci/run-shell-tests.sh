@@ -401,6 +401,19 @@ _suite_timeout_for() {
       # observed loaded 606s (398s reproduced here on a lighter moment of the
       # same box). Rule: loaded x2 -- 606 * 2 = 1212, rounded up to 1250.
       printf '1250' ;;
+    scripts/himmelctl/test/test-wizard-probes.sh|*/scripts/himmelctl/test/test-wizard-probes.sh)
+      # HIMMEL-2358. Ticket-cited pristine standalone figure: 799s, rc=0,
+      # genuine PASS (measured on overlord8, Windows/Git-Bash, per
+      # HIMMEL-2350's own diagnosis of that box). A fresh scratch-HOME
+      # re-measurement here (Linux CachyOS, 2026-09-26, via
+      # scripts/lib/clean-sandbox.sh) completed in ~27s, rc=0, PASS -- the
+      # ~30x gap is Windows/Git-Bash node-spawn overhead on this heavily
+      # node-spawning suite (winpath/hermetic-path.sh throughout), not a
+      # suite hang or regression. This table has one shared value per suite
+      # across every platform, so it is sized for the slower one, matching
+      # this table's established convention (test-propagate-public.sh,
+      # test-suite-concurrency.sh). 799 * 1.5 = 1198.5, rounded up to 1200.
+      printf '1200' ;;
     scripts/hooks/test-check-security-reviewed.sh|*/scripts/hooks/test-check-security-reviewed.sh)
       # HIMMEL-2401 loaded re-benchmark (2026-09-02): worst observed loaded
       # 743s, against the stale 500 cap derived from a 2026-08-27 idle
