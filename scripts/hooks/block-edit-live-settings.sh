@@ -1305,6 +1305,12 @@ lex_resolve() {
         *) joined="$base/$op" ;;
     esac
     local IFS=/
+    # HIMMEL-3686 round-5 codex-3: unquoted word-splitting on $joined also
+    # triggers pathname expansion on any segment containing a glob char,
+    # against the HOOK PROCESS's own cwd (unrelated to the path being
+    # resolved) — `set -f` keeps this loop the filesystem-blind textual
+    # split the function promises.
+    set -f
     for part in $joined; do
         case "$part" in
             ''|'.') : ;;
@@ -1317,6 +1323,7 @@ lex_resolve() {
             *) out[n]=$part; n=$((n + 1)) ;;
         esac
     done
+    set +f
     local i=0 res=''
     while [ "$i" -lt "$n" ]; do
         res="$res/${out[$i]}"

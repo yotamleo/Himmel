@@ -1383,6 +1383,32 @@ ln -s "$DANGLE_PRIMARY/notes/plan.json" "$WT2/dangle-link-safe"
 assert_rc "216 cp y through a dangling symlink to a non-settings path allows" 0 \
     "$(bash_rc_of "$WT2" "cp y dangle-link-safe")"
 
+# 217: HIMMEL-3686 round-5 codex-3 — lex_resolve's `for part in $joined`
+# word-split (with IFS=/) is also subject to bash's default pathname (glob)
+# expansion, which runs against the HOOK SUBPROCESS'S OWN real cwd —
+# unrelated to either BASE or the path being resolved — so a write-
+# destination operand containing a glob metacharacter (a legal filename
+# character) could silently resolve differently depending on what files
+# happen to exist wherever the hook process is invoked from. Force the real
+# process cwd to a scratch dir seeded with files that WOULD match the
+# operand's glob segment if pathname expansion fired, then confirm
+# lex_resolve still returns the untouched literal text.
+GLOBTRAP="$SANDBOX/glob-trap-real-cwd"
+mkdir -p "$GLOBTRAP/a"
+touch "$GLOBTRAP/a/one" "$GLOBTRAP/a/two"
+LEX_RESOLVE_SRC="$SANDBOX/lex_resolve_extract.sh"
+sed -n '/^lex_resolve() {/,/^}/p' "$HOOK" > "$LEX_RESOLVE_SRC"
+LEX_OUT=$(cd "$GLOBTRAP" && bash -c '
+    source "$1"
+    lex_resolve "/x/y" "../a/*"
+' _ "$LEX_RESOLVE_SRC")
+if [ "$LEX_OUT" = "/x/a/*" ]; then
+    echo "PASS 217 lex_resolve leaves a glob-metacharacter segment untouched regardless of files in the hook process's real cwd (got $LEX_OUT)"
+else
+    echo "FAIL 217 lex_resolve leaves a glob-metacharacter segment untouched regardless of files in the hook process's real cwd — expected /x/a/*, got $LEX_OUT"
+    FAILED=$((FAILED + 1))
+fi
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
