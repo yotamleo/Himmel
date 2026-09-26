@@ -702,21 +702,20 @@ Steps:
    there is no escaping rule to get right and none was invented. Neither
    handover script needed to change.
 
-   Resolve the active item ONCE, substituting step 0's printed `branch=`
-   literal. The fence normalizes the exit code STRUCTURALLY rather than leaving
-   the graceful-skip claim to prose (HIMMEL-195): rc 0 prints the item dir —
-   carry it forward as a literal below — rc 3 prints an explicit SKIP line, and
-   rc 2 a distinguishable error on stderr; neither rc blocks steps 5/6:
+   Resolve the active item ONCE via a single script call, substituting step
+   0's printed `branch=` literal. The rc branching itself lives inside the
+   script now, not in this fence (HIMMEL-3707: guard-pr-check-literal.sh reads
+   a `case` statement's bare `*` default arm as an unresolved
+   scripts/handover/ writer operand whenever the same command also invokes a
+   scripts/handover/ script, denying this exact fence — the same class of fix
+   HIMMEL-2321 applied to the reviewer-notes/bugs writers below). It
+   normalizes the exit code STRUCTURALLY rather than leaving the
+   graceful-skip claim to prose (HIMMEL-195): rc 0 prints the item dir —
+   carry it forward as a literal below — rc 3 prints an explicit SKIP line,
+   and any other rc a distinguishable error on stderr; neither blocks steps
+   5/6:
    ```bash
-   item_rc=0
-   item_dir=$(bash "<himmel_dir>/scripts/handover/resolve-active-item.sh" --branch '<branch>') || item_rc=$?
-   case "$item_rc" in
-       0) printf '%s\n' "$item_dir" ;;
-       # Single-quoted whole: the branch is substituted INTO this message too,
-       # and a double-quoted echo would still execute a `$(…)` inside it.
-       3) echo '4.6/4.7: no active handover item for <branch> — handover bridges SKIPPED (not a failure)' ;;
-       *) echo "4.6/4.7: resolve-active-item.sh errored (rc=$item_rc) — handover bridges skipped, best-effort" >&2 ;;
-   esac
+   bash "<himmel_dir>/scripts/handover/resolve-active-item-report.sh" --branch '<branch>'
    ```
 
    When that printed an item dir, run the bridge ONCE — it does both halves.
