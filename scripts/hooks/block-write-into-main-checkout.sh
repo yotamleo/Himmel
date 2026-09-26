@@ -3936,7 +3936,17 @@ while IFS= read -r _bwimc_clause; do
         # PowerShell writers: sourced/codex lane only (see CODEX-LANE PARITY
         # header note) — PowerShell never reaches direct-exec (Claude wires
         # this script on the "Bash" matcher only).
+        # HIMMEL-3648 (J1307P): this arm used to check only the TRACKED cwd
+        # (_bwimc_ecwd), with no union fallback to the real payload cwd the
+        # way _bwimc_cd_guard already gives every write-target arm — so a
+        # `cd`/pushd whose tracked target diverges from where the shell
+        # really is (nonexistent target, `||`/`|` short-circuit, etc., the
+        # same C1 class round 9 fixed for write-target resolution) let a
+        # write-on-main through once the tracker's cd moved _bwimc_ecwd off
+        # main. Checking the real cwd too makes this a strict superset: a
+        # divergence can only ADD a deny, never remove one.
         _bwimc_cwd_check_sourced "$_bwimc_ecwd"
+        _bwimc_cwd_check_sourced "$_bwimc_cwd"
     fi
 done < <(_bwimc_split_clauses "$_bwimc_hb")
 
