@@ -392,9 +392,44 @@ resolve_diff_base() {
 #     name, unchanged from pre-round-2 behavior.
 # Falls back to the bare name for the legacy manual/no-argv invocation too,
 # where no push is actually in flight to pin push_remote_url to.
+#
+# classify_lane / lane_strength (HIMMEL-3634 round 7, J1277R F1): the same
+# non_docs/reviewable_docs lane test write_marker_for_branch uses on the
+# local diff, factored out so verify_sha_is_reviewed can run it a second
+# time against the freshly fetched authority ref(s) below.
+classify_lane() {
+    local files="$1" non_docs reviewable_docs
+    non_docs=$(echo "$files" | grep -Ev '\.(md|txt)$|^docs/|^handovers/' || true)
+    if [ -n "$non_docs" ]; then
+        echo full
+        return
+    fi
+    reviewable_docs=$(echo "$files" | grep -Ev '^handovers/' | grep -E '\.(md|txt)$|^docs/' || true)
+    if [ -z "$reviewable_docs" ]; then
+        echo skip
+    else
+        echo docs-audit
+    fi
+}
+
+lane_strength() {
+    case "$1" in
+        full) echo 2 ;;
+        docs-audit) echo 1 ;;
+        *) echo 0 ;;
+    esac
+}
+
 verify_sha_is_reviewed() {
     local local_sha="$1"
     local empty_diff="${2:-0}"
+    local local_lane="${3:-skip}"
+    # Round 7 (J1277R F1): the ancestor check above verifies whatever was
+    # passed as $1 -- at the weak-lane call site that is base_sha, not the
+    # pushed tip, so the range this function reclassifies below must be
+    # anchored to the ACTUAL pushed tip, carried separately. Defaults to
+    # local_sha for the empty-diff call site, where $1 already IS the tip.
+    local push_tip="${4:-$local_sha}"
     local fetch_rc=0
     local scratch_ref="refs/cr/verify-base/${db}"
     local fetch_source="origin"
@@ -437,6 +472,22 @@ verify_sha_is_reviewed() {
         echo "→ code-review: ${diff_desc}, but ${local_sha:0:8} is NOT reachable from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, a local tracking ref never re-fetched, or the diff base itself — so only an independent, unrewritable history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
         return 2
     fi
+    # HIMMEL-3634 round 7 (J1277R F1): ancestry alone is not sufficient — a
+    # genuine but STALE base (a real ancestor of a fresh fetch, just not the
+    # CURRENT tip) still lets a tail that reverts later origin history hide
+    # behind a weak local lane. Reclassify the range from the fresh authority
+    # ref to local_sha the same way the local diff was classified; a stronger
+    # result here means the local lane was computed against a stale base.
+    local range_changed range_lane
+    if ! range_changed=$(git diff --name-only "${scratch_ref}...${push_tip}" 2>/dev/null); then
+        echo "→ code-review: ${diff_desc}, but cannot compute the range from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) to ${push_tip:0:8} (no merge base / git error) — refusing the push (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    range_lane=$(classify_lane "$range_changed")
+    if [ "$(lane_strength "$range_lane")" -gt "$(lane_strength "$local_lane")" ]; then
+        echo "→ code-review: ${diff_desc} as '${local_lane}', but the range from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) to ${push_tip:0:8} classifies as '${range_lane}' — your base is stale — fetch origin and retry (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
     if [ -n "$dual_scratch_ref" ]; then
         fetch_rc=0
         ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head "$dual_source" "+refs/heads/${db}:${dual_scratch_ref}" 2>/dev/null || fetch_rc=$?
@@ -448,6 +499,17 @@ verify_sha_is_reviewed() {
             echo "→ code-review: ${diff_desc} and ${scrubbed_source} confirmed it, but ${local_sha:0:8} is NOT reachable from ${dual_desc}'s ${db} — refusing the push (this push's argv destination and its remote.origin.url disagree about whether the content is already reviewed; a pushurl/pushInsteadOf rewrite to a fork is exactly this shape, so neither authority alone is trusted; bypass with SKIP_CR=1 or git push --no-verify)" >&2
             return 2
         fi
+        # Round 7 (J1277R F1): same stale-base reclassification, against the
+        # dual authority ref.
+        if ! range_changed=$(git diff --name-only "${dual_scratch_ref}...${push_tip}" 2>/dev/null); then
+            echo "→ code-review: ${diff_desc} and ${scrubbed_source} confirmed it, but cannot compute the range from ${dual_desc}'s ${db} to ${push_tip:0:8} (no merge base / git error) — refusing the push (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
+        range_lane=$(classify_lane "$range_changed")
+        if [ "$(lane_strength "$range_lane")" -gt "$(lane_strength "$local_lane")" ]; then
+            echo "→ code-review: ${diff_desc} as '${local_lane}', but the range from ${dual_desc}'s ${db} to ${push_tip:0:8} classifies as '${range_lane}' — your base is stale — fetch origin and retry (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
     fi
     return 0
 }
@@ -456,7 +518,7 @@ write_marker_for_branch() {
     local branch="$1"
     local local_sha="$2"
     local remote_ref="${3:-}"
-    local changed non_docs reviewable_docs audit_kind
+    local changed audit_kind
     local git_dir marker_path short_sha now_ts
     local endpoint="" base_sha=""
     local lock_lib lock_wait lock_rc=0 write_rc=0 lock_owner release_rc=0
@@ -612,17 +674,7 @@ write_marker_for_branch() {
     # state stays exempt so handover/* auto-commits don't gate on a review they
     # don't need. The marker carries the lane as a 3rd field; the PR-create hook
     # parses only field 2 (the SHA), so the extra field is backward-compatible.
-    non_docs=$(echo "$changed" | grep -Ev '\.(md|txt)$|^docs/|^handovers/' || true)
-    if [ -n "$non_docs" ]; then
-        audit_kind="full"
-    else
-        reviewable_docs=$(echo "$changed" | grep -Ev '^handovers/' | grep -E '\.(md|txt)$|^docs/' || true)
-        if [ -z "$reviewable_docs" ]; then
-            audit_kind="skip"
-        else
-            audit_kind="docs-audit"
-        fi
-    fi
+    audit_kind=$(classify_lane "$changed")
 
     # HIMMEL-3634 round 6 (J1277O codex-1/codex-2, simplify): $base_sha above
     # can be pusher-forged — resolve_diff_base's every branch is — so a
@@ -637,8 +689,14 @@ write_marker_for_branch() {
     # classification of "full" is already the strongest lane there is, so
     # skip the extra fetch (and its network dependency) in the common,
     # untampered case.
+    # Round 7 (J1277R F1): ancestry of base_sha alone is not enough — base_sha
+    # can be a genuine but STALE ancestor of the fresh authority, and the
+    # range from that fresh authority to local_sha can still hold code a
+    # revert-shaped tail hid from the local diff above. Pass audit_kind so
+    # verify_sha_is_reviewed can reclassify that range and refuse if it is
+    # stronger than what the local diff found.
     if [ "$audit_kind" != "full" ]; then
-        verify_sha_is_reviewed "$base_sha" || return $?
+        verify_sha_is_reviewed "$base_sha" 0 "$audit_kind" "$local_sha" || return $?
     fi
     if [ "$audit_kind" = "skip" ]; then
         echo "→ code-review: handover-state-only change — skipping marker write" >&2

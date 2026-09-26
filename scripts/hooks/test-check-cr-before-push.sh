@@ -1673,6 +1673,148 @@ fi
 # own-URL ponytail note) are comment-only changes with no behavioural delta
 # -- no test row, per the contract's "where testable".
 
+# HIMMEL-3634 round 7 (J1277R F1): round 6's verify_sha_is_reviewed only
+# checked that base_sha is an ANCESTOR of a freshly fetched origin -- it
+# never checked whether the RANGE from that fresh origin to the pushed tip
+# is itself still weak. A base that is genuine but STALE (a real ancestor of
+# origin, just not origin's current tip) passes that ancestor check even
+# when the pushed branch's tail silently reverts a fix that landed on
+# origin AFTER the forged base. Three shapes below, mirroring the judge's
+# scratch/repro.sh: a forged local tracking ref with no fork at all
+# (revert-handover, revert-docs) and an untampered fork whose own main is
+# genuinely = the stale base, with no local ref tampering (revert-fork-handover).
+
+echo "TEST: HIMMEL-3634 round-7 (J1277R F1) -- weak lane REFUSED when a genuine-but-stale forged base's tail reverts a fix that landed on origin after it (handover-only tail)"
+F1RH_ORIGIN="$TMP_ROOT/f1rh-real-origin.git"
+git init -q --bare -b main "$F1RH_ORIGIN"
+F1RH_SEED="$TMP_ROOT/f1rh-seed"
+git init -q -b main "$F1RH_SEED"
+echo base > "$F1RH_SEED/README.txt"
+mkdir -p "$F1RH_SEED/scripts"
+echo 'exit 0 # insecure' > "$F1RH_SEED/scripts/guard.sh"
+git -C "$F1RH_SEED" add -A
+git -C "$F1RH_SEED" -c user.email=a@t -c user.name=a commit -q -m base
+git -C "$F1RH_SEED" push -q "$F1RH_ORIGIN" main
+f1rh_X=$(git -C "$F1RH_SEED" rev-parse HEAD)
+echo 'exit 2 # secure' > "$F1RH_SEED/scripts/guard.sh"
+mkdir -p "$F1RH_SEED/scripts/hooks"
+echo 'exit 2' > "$F1RH_SEED/scripts/hooks/new-guard.sh"
+git -C "$F1RH_SEED" add -A
+git -C "$F1RH_SEED" -c user.email=a@t -c user.name=a commit -q -m "Y: security fix"
+git -C "$F1RH_SEED" push -q "$F1RH_ORIGIN" main
+F1RH_PUSHER="$TMP_ROOT/f1rh-pusher"
+git clone -q "$F1RH_ORIGIN" "$F1RH_PUSHER"
+git -C "$F1RH_PUSHER" checkout -qb feat/f1rh main
+git -C "$F1RH_PUSHER" checkout -q "$f1rh_X" -- scripts/guard.sh
+git -C "$F1RH_PUSHER" rm -q scripts/hooks/new-guard.sh
+git -C "$F1RH_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: revert fix"
+mkdir -p "$F1RH_PUSHER/handovers"
+echo note > "$F1RH_PUSHER/handovers/n.md"
+git -C "$F1RH_PUSHER" add handovers/n.md
+git -C "$F1RH_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: handover-only tail"
+f1rh_B=$(git -C "$F1RH_PUSHER" rev-parse HEAD)
+# Base forged to X: genuine origin history, but STALE (predates Y's fix) --
+# no fork, no url repoint, just a rewritten local tracking ref (J1277R F1).
+git -C "$F1RH_PUSHER" update-ref refs/remotes/origin/main "$f1rh_X"
+git -C "$F1RH_PUSHER" update-ref refs/heads/main "$f1rh_X"
+rc=0
+out=$(cd "$F1RH_PUSHER" && bash "$HOOK" origin "$F1RH_ORIGIN" <<< "refs/heads/feat/f1rh $f1rh_B refs/heads/feat/f1rh $Z40" 2>&1) || rc=$?
+f1rh_marker="$F1RH_PUSHER/.git/cr-pending/feat/f1rh"
+f1rh_lane=""
+[ -f "$f1rh_marker" ] && f1rh_lane=$(cut -d'|' -f3 "$f1rh_marker" | tr -d ' ')
+if [ "$rc" -eq 2 ] || [ "$f1rh_lane" = "full" ]; then
+    pass "F1 revert-handover: a genuine-but-stale forged base with a handover-only tail is refused (or upgraded to full), never a silent skip"
+else
+    fail "F1 revert-handover: expected rc=2 or a 'full' marker" "rc=$rc marker-exists=$([ -f "$f1rh_marker" ] && echo yes || echo no) lane=$f1rh_lane out: $out"
+fi
+
+echo "TEST: HIMMEL-3634 round-7 (J1277R F1) -- weak lane never gives docs-audit when a genuine-but-stale forged base's tail reverts a fix and adds a docs-only file"
+F1RD_ORIGIN="$TMP_ROOT/f1rd-real-origin.git"
+git init -q --bare -b main "$F1RD_ORIGIN"
+F1RD_SEED="$TMP_ROOT/f1rd-seed"
+git init -q -b main "$F1RD_SEED"
+echo base > "$F1RD_SEED/README.txt"
+mkdir -p "$F1RD_SEED/scripts"
+echo 'exit 0 # insecure' > "$F1RD_SEED/scripts/guard.sh"
+git -C "$F1RD_SEED" add -A
+git -C "$F1RD_SEED" -c user.email=a@t -c user.name=a commit -q -m base
+git -C "$F1RD_SEED" push -q "$F1RD_ORIGIN" main
+f1rd_X=$(git -C "$F1RD_SEED" rev-parse HEAD)
+echo 'exit 2 # secure' > "$F1RD_SEED/scripts/guard.sh"
+mkdir -p "$F1RD_SEED/scripts/hooks"
+echo 'exit 2' > "$F1RD_SEED/scripts/hooks/new-guard.sh"
+git -C "$F1RD_SEED" add -A
+git -C "$F1RD_SEED" -c user.email=a@t -c user.name=a commit -q -m "Y: security fix"
+git -C "$F1RD_SEED" push -q "$F1RD_ORIGIN" main
+F1RD_PUSHER="$TMP_ROOT/f1rd-pusher"
+git clone -q "$F1RD_ORIGIN" "$F1RD_PUSHER"
+git -C "$F1RD_PUSHER" checkout -qb feat/f1rd main
+git -C "$F1RD_PUSHER" checkout -q "$f1rd_X" -- scripts/guard.sh
+git -C "$F1RD_PUSHER" rm -q scripts/hooks/new-guard.sh
+git -C "$F1RD_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: revert fix"
+echo doc > "$F1RD_PUSHER/NOTES.md"
+git -C "$F1RD_PUSHER" add NOTES.md
+git -C "$F1RD_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: docs-only tail"
+f1rd_B=$(git -C "$F1RD_PUSHER" rev-parse HEAD)
+git -C "$F1RD_PUSHER" update-ref refs/remotes/origin/main "$f1rd_X"
+git -C "$F1RD_PUSHER" update-ref refs/heads/main "$f1rd_X"
+rc=0
+out=$(cd "$F1RD_PUSHER" && bash "$HOOK" origin "$F1RD_ORIGIN" <<< "refs/heads/feat/f1rd $f1rd_B refs/heads/feat/f1rd $Z40" 2>&1) || rc=$?
+f1rd_marker="$F1RD_PUSHER/.git/cr-pending/feat/f1rd"
+f1rd_lane=""
+[ -f "$f1rd_marker" ] && f1rd_lane=$(cut -d'|' -f3 "$f1rd_marker" | tr -d ' ')
+if [ "$f1rd_lane" != "docs-audit" ] && { [ "$rc" -eq 2 ] || [ "$f1rd_lane" = "full" ]; }; then
+    pass "F1 revert-docs: a genuine-but-stale forged base with a docs-only tail is refused (or upgraded to full), never docs-audit against a code range"
+else
+    fail "F1 revert-docs: expected rc=2 or a 'full' marker, never docs-audit" "rc=$rc marker-exists=$([ -f "$f1rd_marker" ] && echo yes || echo no) lane=$f1rd_lane out: $out"
+fi
+
+echo "TEST: HIMMEL-3634 round-7 (J1277R F1) -- weak lane REFUSED for an explicit-URL fork push whose fork main is a genuine-but-stale real-origin ancestor, no local ref tampering at all"
+F1RFH_ORIGIN="$TMP_ROOT/f1rfh-real-origin.git"
+git init -q --bare -b main "$F1RFH_ORIGIN"
+F1RFH_SEED="$TMP_ROOT/f1rfh-seed"
+git init -q -b main "$F1RFH_SEED"
+echo base > "$F1RFH_SEED/README.txt"
+mkdir -p "$F1RFH_SEED/scripts"
+echo 'exit 0 # insecure' > "$F1RFH_SEED/scripts/guard.sh"
+git -C "$F1RFH_SEED" add -A
+git -C "$F1RFH_SEED" -c user.email=a@t -c user.name=a commit -q -m base
+git -C "$F1RFH_SEED" push -q "$F1RFH_ORIGIN" main
+f1rfh_X=$(git -C "$F1RFH_SEED" rev-parse HEAD)
+echo 'exit 2 # secure' > "$F1RFH_SEED/scripts/guard.sh"
+mkdir -p "$F1RFH_SEED/scripts/hooks"
+echo 'exit 2' > "$F1RFH_SEED/scripts/hooks/new-guard.sh"
+git -C "$F1RFH_SEED" add -A
+git -C "$F1RFH_SEED" -c user.email=a@t -c user.name=a commit -q -m "Y: security fix"
+git -C "$F1RFH_SEED" push -q "$F1RFH_ORIGIN" main
+F1RFH_PUSHER="$TMP_ROOT/f1rfh-pusher"
+git clone -q "$F1RFH_ORIGIN" "$F1RFH_PUSHER"
+git -C "$F1RFH_PUSHER" checkout -qb feat/f1rfh main
+git -C "$F1RFH_PUSHER" checkout -q "$f1rfh_X" -- scripts/guard.sh
+git -C "$F1RFH_PUSHER" rm -q scripts/hooks/new-guard.sh
+git -C "$F1RFH_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "A: revert fix"
+mkdir -p "$F1RFH_PUSHER/handovers"
+echo note > "$F1RFH_PUSHER/handovers/n.md"
+git -C "$F1RFH_PUSHER" add handovers/n.md
+git -C "$F1RFH_PUSHER" -c user.email=b@t -c user.name=b commit -q -m "B: handover-only tail"
+f1rfh_B=$(git -C "$F1RFH_PUSHER" rev-parse HEAD)
+F1RFH_FORK="$TMP_ROOT/f1rfh-fork.git"
+git init -q --bare -b main "$F1RFH_FORK"
+# Own fork whose main is genuinely = X (real origin history) -- no local ref
+# tampering at all; the pusher's "origin" remote is untouched and still
+# points at the real, Y-headed origin.
+git -C "$F1RFH_SEED" push -q "$F1RFH_FORK" "$f1rfh_X:refs/heads/main"
+rc=0
+out=$(cd "$F1RFH_PUSHER" && bash "$HOOK" "$F1RFH_FORK" "$F1RFH_FORK" <<< "refs/heads/feat/f1rfh $f1rfh_B refs/heads/feat/f1rfh $Z40" 2>&1) || rc=$?
+f1rfh_marker="$F1RFH_PUSHER/.git/cr-pending/feat/f1rfh"
+f1rfh_lane=""
+[ -f "$f1rfh_marker" ] && f1rfh_lane=$(cut -d'|' -f3 "$f1rfh_marker" | tr -d ' ')
+if [ "$rc" -eq 2 ] || [ "$f1rfh_lane" = "full" ]; then
+    pass "F1 revert-fork-handover: an explicit-URL push to an untampered fork whose main is a genuine-but-stale real-origin ancestor is refused (or upgraded to full)"
+else
+    fail "F1 revert-fork-handover: expected rc=2 or a 'full' marker" "rc=$rc marker-exists=$([ -f "$f1rfh_marker" ] && echo yes || echo no) lane=$f1rfh_lane out: $out"
+fi
+
 # Summary ------------------------------------------------------------
 
 echo
