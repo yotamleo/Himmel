@@ -650,27 +650,30 @@ fi
 echo "Test 14: G-2 dead-PID lock recovery documented (HIMMEL-1138)"
 g2_section=$(awk '/^### G-2/{p=1;next} /^### /{if(p) exit} p' "$CMD")
 
-if printf '%s' "$g2_section" | grep -qE "kill -0" \
-    && printf '%s' "$g2_section" | grep -qiE "not running" \
-    && printf '%s' "$g2_section" | grep -qiE "removing stale lock"; then
+out=$(printf '%s' "$g2_section" | grep -E "kill -0")
+out2=$(printf '%s' "$g2_section" | grep -iE "not running")
+out3=$(printf '%s' "$g2_section" | grep -iE "removing stale lock")
+if [ -n "$out" ] && [ -n "$out2" ] && [ -n "$out3" ]; then
     dead_pid=yes
 else
     dead_pid=no
 fi
 assert "G-2 documents dead-PID recovery (kill -0 fails -> remove stale lock + re-acquire)" "yes" "$dead_pid"
 
-if printf '%s' "$g2_section" | grep -qiE "unparseable" \
-    && printf '%s' "$g2_section" | grep -qiE "no PID" \
-    && printf '%s' "$g2_section" | grep -qiE "treat as.*alive" \
-    && printf '%s' "$g2_section" | grep -qiE "fail closed"; then
+out=$(printf '%s' "$g2_section" | grep -iE "unparseable")
+out2=$(printf '%s' "$g2_section" | grep -iE "no PID")
+out3=$(printf '%s' "$g2_section" | grep -iE "treat as.*alive")
+out4=$(printf '%s' "$g2_section" | grep -iE "fail closed")
+if [ -n "$out" ] && [ -n "$out2" ] && [ -n "$out3" ] && [ -n "$out4" ]; then
     unparse=yes
 else
     unparse=no
 fi
 assert "G-2 documents unparseable/no-PID lock treated as alive (fail closed)" "yes" "$unparse"
 
-if printf '%s' "$g2_section" | grep -qF "another harvest run is active" \
-    && printf '%s' "$g2_section" | grep -qE "Exit 2"; then
+out=$(printf '%s' "$g2_section" | grep -F "another harvest run is active")
+out2=$(printf '%s' "$g2_section" | grep -E "Exit 2")
+if [ -n "$out" ] && [ -n "$out2" ]; then
     live_abort=yes
 else
     live_abort=no
