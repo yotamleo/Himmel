@@ -198,6 +198,18 @@ check "later-in-progress: exit 1" "$rc" "1"
 contains "later-in-progress: check 2 fails on the still-running later run" "$out" "[FAIL] 2."
 contains "later-in-progress: names the in-progress run" "$out" "pr-title-lint=IN_PROGRESS/null"
 
+# --- 2h. control: a later QUEUED run (no startedAt/completedAt at all) after
+# an earlier timestamped SUCCESS — a run that has not started yet has no
+# timestamp to lose a max_by comparison with, so it must still govern and
+# item 2 FAILs (HIMMEL-3690 codex-1: an untimed later run must not lose to an
+# earlier timestamped one) --------------------------------------------------
+reset_stubs
+STUB_ROLLUP='[{"name":"pr-title-lint","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T08:10:00Z","completedAt":"2026-01-01T08:12:00Z"},{"name":"pr-title-lint","status":"QUEUED","conclusion":null}]'
+rc=0; out="$(run)" || rc=$?
+check "later-queued-untimed: exit 1" "$rc" "1"
+contains "later-queued-untimed: check 2 fails on the still-queued later run" "$out" "[FAIL] 2."
+contains "later-queued-untimed: names the queued run" "$out" "pr-title-lint=QUEUED/null"
+
 # --- 3. check 3 fails: unresolved review threads > 0 --------------------
 reset_stubs
 STUB_UNRESOLVED=2

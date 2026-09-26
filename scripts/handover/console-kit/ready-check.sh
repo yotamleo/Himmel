@@ -143,8 +143,12 @@ else
     # plus `workflowName` when present, else StatusContext `context`. Latest
     # = greatest startedAt/completedAt (CheckRun) or createdAt/startedAt
     # (StatusContext), falling back to the row's array position when neither
-    # timestamp is present. An entry with no identifiable name is judged
-    # alone — it never merges into another group (fail closed).
+    # timestamp is present. A run with no timestamp at all (e.g. QUEUED,
+    # not yet started) has no completed/started time to compare, but it can
+    # only exist because GitHub created it after every already-timestamped
+    # run for that identity — so it always outranks them, never the reverse.
+    # An entry with no identifiable name is judged alone — it never merges
+    # into another group (fail closed).
     grouped=$(printf '%s' "$rollup" | jq -c '
         def key_of(e):
             if e.name == null then "unk:\(e.idx)"
@@ -170,7 +174,7 @@ else
             }
         ]
         | map(.key = key_of(.))
-        | map(.sort_key = [(.ts != null), (.ts // .idx)])
+        | map(.sort_key = [(.ts == null), (.ts // .idx)])
         | group_by(.key)
         | map(max_by(.sort_key))
         | {total: length, bad: (map(select(.ok | not)) | map("\(.name // "?")=\(.detail)") | join(", "))}
