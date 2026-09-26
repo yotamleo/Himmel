@@ -804,9 +804,9 @@ import socket, sys, time
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(('127.0.0.1', 0))
+s.listen(1)
 with open(sys.argv[1], 'w') as f:
     f.write(str(s.getsockname()[1]))
-s.listen(1)
 conn, _ = s.accept()
 time.sleep(120)
 PYEOF
