@@ -49,6 +49,10 @@ CALLS="$W/calls.log"
 # handovers/ dir BEFORE any test below runs, so the end-of-suite assertion
 # catches this suite CREATING one, not an unrelated pre-existing one.
 REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT=""
+if [ -z "$REPO_ROOT" ]; then
+    echo "FAIL - no-leak: repo-root discovery failed, cannot check for a leaked handovers/ dir"
+    fails=$((fails+1))
+fi
 pre_handovers=absent
 [ -n "$REPO_ROOT" ] && [ -e "$REPO_ROOT/handovers" ] && pre_handovers=present
 
