@@ -1403,7 +1403,7 @@ fold_crlf() {
         if [ "$c" = $'\r' ] && [ "${s:$((i + 1)):1}" = $'\n' ]; then
             prev=""
             [ "$i" -gt 0 ] && prev="${s:$((i - 1)):1}"
-            if [ "$prev" = '\' ]; then
+            if [ "$prev" = "\\" ]; then
                 out="$out$c"          # backslash-preceded CR: leave the CRLF pair intact
                 i=$((i + 1))
                 continue
