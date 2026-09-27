@@ -245,6 +245,20 @@ export function statusFor(row) {
 // Short label for a hook command: the script it ultimately runs.
 export function labelFor(command) {
   const parts = String(command).split(/\s+/).filter(Boolean);
+  // A --route entry (HIMMEL-1843) runs several groups from ONE launcher: name
+  // each group's pattern and members, from the primary branch only (up to the
+  // first `;`, before the `else node ...` fallback repeats them).
+  if (parts.includes('--route')) {
+    const groups = [];
+    for (const raw of parts.slice(parts.indexOf('--route'))) {
+      const token = raw.replace(/;$/, '').replace(/^"|"$/g, '');
+      if (raw === '--route') groups.push({ pattern: null, members: [] });
+      else if (groups.at(-1).pattern === null) groups.at(-1).pattern = token;
+      else if (token.endsWith('.sh')) groups.at(-1).members.push(token.split(/[\\/]/).pop());
+      if (raw.endsWith(';')) break;
+    }
+    return `route(${groups.map((g) => `${g.pattern}:${g.members.join('+')}`).join(' ')})`;
+  }
   // A --chain entry (HIMMEL-2002) runs several scripts from ONE launcher, so
   // the tail token would name only the last of them.
   if (parts.includes('--chain')) {

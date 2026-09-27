@@ -1441,6 +1441,30 @@ function chainMembersOf(command) {
   return [...m[1].matchAll(/([\w.-]+\.sh)/g)].map((x) => x[1]);
 }
 
+// HIMMEL-1843: a `--route` entry carries its chains as route sub-groups, so
+// the settings-level invariants below read every chain an entry runs — the
+// plain `--chain` form and each routed one — through the launcher's own
+// route parser rather than a second, drifting regex.
+function launcherArgvOf(command) {
+  const m = String(command).match(/run-hook-with-bash\.js"\s+([^;]*)/);
+  if (!m) return null;
+  return [...m[1].matchAll(/"([^"]*)"|(\S+)/g)].map((x) => (x[1] !== undefined ? x[1] : x[2]));
+}
+
+function routesOf(command) {
+  const argv = launcherArgvOf(command);
+  if (!argv || argv[0] !== '--route') return [];
+  return require('./run-hook-with-bash.js').parseRouteArgs(argv)
+    .map((route) => ({ ...route, members: route.members.map((m) => m.split('/').pop()) }));
+}
+
+// [{ matcher, members }] for every chain the command runs.
+function chainsOf(command, matcher) {
+  const plain = chainMembersOf(command);
+  if (plain) return [{ matcher, members: plain }];
+  return routesOf(command).filter((route) => route.chain).map((route) => ({ matcher: route.pattern, members: route.members }));
+}
+
 function groupsOf(event) {
   return JSON.parse(readFileSync(SETTINGS, 'utf8')).hooks[event] || [];
 }
@@ -1455,10 +1479,8 @@ const CHAINED_EVENTS = ['PreToolUse', 'SessionStart'];
 test('every chained hook member exists and appears at most once in its chain', () => {
   for (const event of CHAINED_EVENTS) {
     for (const group of groupsOf(event)) {
-      for (const hook of group.hooks || []) {
-        const members = chainMembersOf(hook.command);
-        if (!members) continue;
-        const where = `${event} ${group.matcher || ''}`.trim();
+      for (const hook of group.hooks || []) for (const { matcher, members } of chainsOf(hook.command, group.matcher)) {
+        const where = `${event} ${matcher || ''}`.trim();
         assert.ok(members.length >= 2, `a chain of one is pointless: ${where}`);
         assert.deepEqual([...new Set(members)], members, `duplicate member in ${where}`);
         for (const member of members) {
@@ -1479,9 +1501,7 @@ test('every chained hook member exists and appears at most once in its chain', (
 test('every chained entry outlives the launcher worst case (budget + members x floor)', () => {
   for (const event of CHAINED_EVENTS) {
     for (const group of groupsOf(event)) {
-      for (const hook of group.hooks || []) {
-        const members = chainMembersOf(hook.command);
-        if (!members) continue;
+      for (const hook of group.hooks || []) for (const { members } of chainsOf(hook.command, group.matcher)) {
         const worstCaseMs = DEFAULT_CHAIN_BUDGET_MS + members.length * MIN_MEMBER_TIMEOUT_MS;
         const where = `${event} ${group.matcher || ''}`.trim();
         assert.ok(
@@ -1500,7 +1520,7 @@ test('the SessionStart chain is --lifecycle and no PreToolUse chain is', () => {
   const lifecycled = (command) => /--chain\s+--lifecycle\s/.test(String(command));
   const chains = (event) => groupsOf(event)
     .flatMap((group) => (group.hooks || []).map((hook) => hook.command))
-    .filter((command) => chainMembersOf(command));
+    .filter((command) => chainsOf(command).length);
 
   const sessionStart = chains('SessionStart');
   assert.ok(sessionStart.length > 0, 'expected a chained SessionStart entry');
@@ -1509,14 +1529,47 @@ test('the SessionStart chain is --lifecycle and no PreToolUse chain is', () => {
 });
 
 // auto-arm-on-cap is the ONE side-effecting PreToolUse hook: it must fire for
-// every tool AND regardless of an earlier deny, so it keeps its own `*` entry.
-// Chaining it would let an earlier guardrail's deny silently disarm it.
-test('auto-arm-on-cap.sh is never chained', () => {
+// every tool AND regardless of an earlier deny, so it stays its own group —
+// a lone `*` route sub-group since HIMMEL-1843, which the router isolates
+// from every other group. Chaining it would let an earlier guardrail's deny
+// silently disarm it.
+test('auto-arm-on-cap.sh is never chained, and runs as its own * group', () => {
+  let lone = 0;
   for (const group of preToolUseGroups()) {
     for (const hook of group.hooks || []) {
-      const members = chainMembersOf(hook.command);
-      assert.ok(!members || !members.includes('auto-arm-on-cap.sh'), 'auto-arm-on-cap.sh must stay on its own entry');
+      for (const { members } of chainsOf(hook.command, group.matcher)) {
+        assert.ok(!members.includes('auto-arm-on-cap.sh'), 'auto-arm-on-cap.sh must stay its own group');
+      }
+      for (const route of routesOf(hook.command)) {
+        if (!route.chain && route.members[0] === 'auto-arm-on-cap.sh') {
+          assert.equal(group.matcher, '*');
+          assert.equal(route.pattern, '*');
+          lone += 1;
+        }
+      }
     }
+  }
+  assert.equal(lone, 1, 'expected exactly one routed `*` auto-arm-on-cap.sh group');
+});
+
+// Console condition 1 (HIMMEL-1843): the router derives its entry-safe
+// deadline from DEFAULT_ENTRY_TIMEOUT_MS, so the settings `timeout` of the one
+// entry that carries it must BE that value — a mismatch would let Claude Code
+// kill the router (fail OPEN) before its own deadline, or waste the slack. It
+// is also no lower than the largest entry it replaced (Bash chain 60, `*` 60,
+// Bash|Monitor 15), and every per-route --timeout fits inside it.
+test('the router entry timeout is the launcher entry deadline and covers what it replaced', () => {
+  const { DEFAULT_ENTRY_TIMEOUT_MS } = require('./run-hook-with-bash.js');
+  const routers = preToolUseGroups().flatMap((group) => (group.hooks || [])
+    .filter((hook) => routesOf(hook.command).length)
+    .map((hook) => ({ group, hook })));
+  assert.equal(routers.length, 1, 'expected exactly one --route entry');
+  const [{ group, hook }] = routers;
+  assert.equal(group.matcher, '*');
+  assert.equal(Number(hook.timeout) * 1000, DEFAULT_ENTRY_TIMEOUT_MS);
+  assert.ok(Number(hook.timeout) >= 60);
+  for (const route of routesOf(hook.command)) {
+    if (route.timeoutMs !== null) assert.ok(route.timeoutMs <= DEFAULT_ENTRY_TIMEOUT_MS, `route ${route.pattern} --timeout past the entry`);
   }
 });
 
@@ -1528,10 +1581,13 @@ test('chain-carrying PreToolUse matchers are pairwise disjoint', () => {
   const matchers = [];
   const tools = new Set();
   for (const group of preToolUseGroups()) {
-    const matcher = String(group.matcher || '');
-    if (!(group.hooks || []).some((h) => chainMembersOf(h.command))) continue;
-    matchers.push([matcher, new RegExp(`^(?:${matcher})$`)]);
-    for (const alt of matcher.split('|')) if (/^[\w.]+$/.test(alt)) tools.add(alt);
+    for (const hook of group.hooks || []) {
+      for (const chain of chainsOf(hook.command, group.matcher)) {
+        const matcher = String(chain.matcher || '');
+        matchers.push([matcher, new RegExp(`^(?:${matcher})$`)]);
+        for (const alt of matcher.split('|')) if (/^[\w.]+$/.test(alt)) tools.add(alt);
+      }
+    }
   }
   assert.ok(matchers.length > 1, 'expected several chained matcher blocks');
   const overlaps = [];
@@ -2546,6 +2602,7 @@ function collectChainCommandStrings(node, out) {
 }
 
 function extractNonLifecycleChainMembers(command) {
+  if (routesOf(command).length) return chainsOf(command).flatMap((chain) => chain.members);
   const idx = command.indexOf('--chain');
   if (idx === -1) return [];
   const chainPart = command.slice(idx);
@@ -2589,4 +2646,212 @@ test('every non-lifecycle --chain member wired in settings.json and every plugin
     [],
     `unclassified --chain member(s) — add to MUST_RUN_CHAIN_MEMBERS or to ADVISORY_CHAIN_MEMBERS with a reason: ${unclassified.join(', ')}`,
   );
+});
+
+// ------------------------------------------------------------ route mode (HIMMEL-1843)
+//
+// One `*` settings entry, several matcher groups dispatched in-process by
+// tool_name. Each sub-group behaves exactly as its own settings entry did:
+// isolated from the others (a deny in one never stops the next), combined
+// with Claude Code's own cross-group lattice (deny > ask > allow), and an
+// advisory sub-group that runs out of time is a non-blocking skip, as a
+// killed entry was. The router itself fails CLOSED on anything it cannot
+// parse or on its own internal error.
+
+const runRoute = (dir, args, input = PAYLOAD, env = {}) =>
+  spawnSync(
+    process.execPath,
+    [LAUNCHER, ...args.map((a) => (a.endsWith('.sh') && !isAbsolute(a) ? join(dir, a) : a))],
+    { encoding: 'utf8', input, env: { ...process.env, RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl'), ...env } },
+  );
+
+const payloadFor = (toolName) => JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: { command: 'echo hi' } });
+
+test('route runs only the sub-groups whose pattern matches tool_name', () => {
+  withChain((dir) => {
+    const result = runRoute(dir, [
+      '--route', 'Read|Grep', '--chain', 'allow.sh', 'ask.sh',
+      '--route', '*', 'context.sh',
+      '--route', 'Bash|Monitor', 'plain-stdout.sh',
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(ran(dir, 'allow.sh'), false);
+    assert.equal(ran(dir, 'ask.sh'), false);
+    assert.equal(ran(dir, 'context.sh'), true);
+    assert.equal(ran(dir, 'plain-stdout.sh'), true);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'ctx' },
+      systemMessage: 'note',
+    });
+    assert.match(result.stderr, /just words/);
+  });
+});
+
+test('route matches a pattern by exact alternative, never by substring', () => {
+  withChain((dir) => {
+    const result = runRoute(dir, ['--route', 'Bash|Monitor', 'allow.sh'], payloadFor('BashOutput'));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(ran(dir, 'allow.sh'), false);
+  });
+});
+
+test('a deny in one route sub-group does not stop the next one (group isolation)', () => {
+  withChain((dir) => {
+    const result = runRoute(dir, ['--route', 'Bash', '--chain', 'deny-exit2.sh', 'allow.sh', '--route', '*', 'adv1.sh']);
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(result.stdout, 'DENY-STDOUT');
+    // Only the denying group speaks on a deny, verbatim.
+    assert.equal(result.stderr, 'deny reason\n');
+    // The chain still short-circuits INSIDE its own group...
+    assert.equal(ran(dir, 'allow.sh'), false);
+    // ...but the next group still runs, as its own settings entry did.
+    assert.equal(ran(dir, 'adv1.sh'), true);
+  });
+});
+
+test('route sub-groups combine on the cross-group lattice: ask beats allow, any deny wins', () => {
+  withChain((dir) => {
+    const ask = runRoute(dir, ['--route', 'Bash', '--chain', 'allow.sh', '--route', '*', 'ask.sh']);
+    assert.equal(ask.status, 0, ask.stderr);
+    assert.deepEqual(JSON.parse(ask.stdout), {
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'safe | confirm' },
+    });
+
+    const jsonDeny = runRoute(dir, ['--route', 'Bash', '--chain', 'allow.sh', '--route', '*', 'deny-json.sh']);
+    assert.equal(jsonDeny.status, 2, jsonDeny.stderr);
+    assert.equal(JSON.parse(jsonDeny.stdout).hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(jsonDeny.stderr, 'why\n');
+
+    const legacy = runRoute(dir, ['--route', '*', 'allow.sh', '--route', 'Bash', 'deny-legacy.sh']);
+    assert.equal(legacy.status, 2, legacy.stderr);
+    assert.deepEqual(JSON.parse(legacy.stdout), { decision: 'block', reason: 'legacy block' });
+  });
+});
+
+// Console condition 2: an advisory group running out of time must never cost
+// a deny the Bash chain already computed.
+test('an advisory sub-group timing out still emits the deny the Bash chain computed', () => {
+  withChain((dir) => {
+    const started = Date.now();
+    const byTimeout = runRoute(dir, ['--route', 'Bash', '--chain', 'deny-exit2.sh', '--route', '*', '--timeout', '1', 'hang.sh']);
+    assert.ok(Date.now() - started < 2800, 'the hung advisory group was not killed at its own timeout');
+    assert.equal(byTimeout.status, 2, byTimeout.stderr);
+    assert.equal(byTimeout.stdout, 'DENY-STDOUT');
+    assert.equal(byTimeout.stderr, 'deny reason\n');
+    assert.equal(ran(dir, 'hang.sh'), true);
+
+    // Same, with the advisory group bounded by the ENTRY deadline instead.
+    const byEntry = runRoute(
+      dir,
+      ['--route', 'Bash', '--chain', 'deny-exit2.sh', '--route', '*', 'hang2.sh'],
+      PAYLOAD,
+      { RUN_HOOK_CHAIN_ENTRY_TIMEOUT_MS: '1500', RUN_HOOK_CHAIN_ENTRY_SAFETY_MARGIN_MS: '500' },
+    );
+    assert.equal(byEntry.status, 2, byEntry.stderr);
+    assert.equal(byEntry.stdout, 'DENY-STDOUT');
+    assert.equal(byEntry.stderr, 'deny reason\n');
+  });
+});
+
+test('a timed-out advisory sub-group with nothing else deciding is a non-blocking skip', () => {
+  withChain((dir) => {
+    const result = runRoute(dir, ['--route', '*', '--timeout', '1', 'hang.sh', '--route', 'Bash', 'allow.sh']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'allow');
+    assert.match(result.stderr, /SKIP hang\.sh/);
+    const alone = runRoute(dir, ['--route', '*', '--timeout', '1', 'hang2.sh']);
+    assert.equal(alone.status, 1, alone.stderr);
+    assert.equal(alone.stdout, '');
+  });
+});
+
+// Console condition 1: the chain's deadline math is unchanged by routing — the
+// same must-run guard gets the same entry-safe window either way.
+test('a routed Bash chain gets the same entry-deadline budget as a direct --chain', () => {
+  withChain((dir) => {
+    const env = { RUN_HOOK_CHAIN_ENTRY_TIMEOUT_MS: '2000', RUN_HOOK_CHAIN_ENTRY_SAFETY_MARGIN_MS: '500' };
+    const direct = runRoute(dir, ['--chain', 'block-read-secrets.sh'], PAYLOAD, env);
+    const routed = runRoute(dir, ['--route', 'Bash', '--chain', 'block-read-secrets.sh', '--route', '*', 'adv1.sh'], PAYLOAD, env);
+    const budgetOf = (r) => Number((r.stderr.match(/DENY block-read-secrets\.sh \(budget=(\d+)ms/) || [])[1]);
+    assert.equal(direct.status, 2, direct.stderr);
+    assert.equal(routed.status, 2, routed.stderr);
+    const a = budgetOf(direct);
+    const b = budgetOf(routed);
+    assert.ok(a > 1000 && a <= 1500, `direct budget ${a}`);
+    assert.ok(b > 1000 && b <= 1500, `routed budget ${b}`);
+    assert.ok(Math.abs(a - b) <= 150, `routed chain budget ${b}ms drifted from direct ${a}ms`);
+  });
+});
+
+test('a lone route sub-group keeps the lone-hook exit semantics', () => {
+  withChain((dir) => {
+    const broke = runRoute(dir, ['--route', '*', 'exit1.sh']);
+    assert.equal(broke.status, 1);
+    assert.match(broke.stderr, /broke/);
+    // A lone hook killed by a signal maps to 2, as main() does for one entry.
+    const killed = runRoute(dir, ['--route', '*', 'block-git-stash.sh']);
+    assert.equal(killed.status, 2, killed.stderr);
+  });
+});
+
+test('route fails closed on any pattern that is not * or an exact A|B|C list', () => {
+  withChain((dir) => {
+    for (const pattern of ['Ba*sh', 'Bash|', '|Bash', '', '.*', 'Bash||Edit', 'mcp__x__.*', 'Bash Edit']) {
+      const result = runRoute(dir, ['--route', pattern, 'allow.sh', '--route', '*', 'adv1.sh']);
+      assert.equal(result.status, 2, `pattern ${JSON.stringify(pattern)} was accepted`);
+      assert.equal(ran(dir, 'allow.sh') || ran(dir, 'adv1.sh'), false, `pattern ${JSON.stringify(pattern)} ran a member`);
+    }
+  });
+});
+
+test('route fails closed on a malformed route list before anything runs', () => {
+  withChain((dir) => {
+    const shapes = [
+      ['--route'],
+      ['--route', '*'],
+      ['--route', '*', '--chain'],
+      ['--route', '*', 'adv1.sh', 'adv2.sh'],
+      ['--route', '*', '--optional', 'adv1.sh'],
+      ['--route', '*', '--timeout', '0', 'adv1.sh'],
+      ['--route', '*', '--timeout', 'x', 'adv1.sh'],
+      ['--route', '*', '--timeout', '5', '--chain', 'adv1.sh', 'adv2.sh'],
+      ['--route', '*', '--chain', '--lifecycle', 'adv1.sh', 'adv2.sh'],
+      ['--route', '*', 'adv1.sh', '--route', 'Bash', 'missing.sh'],
+      ['--route', '*', 'adv1.sh', 'stray-arg'],
+    ];
+    for (const shape of shapes) {
+      const result = runRoute(dir, shape);
+      assert.equal(result.status, 2, `accepted ${JSON.stringify(shape)}: ${result.stderr}`);
+      assert.equal(ran(dir, 'adv1.sh') || ran(dir, 'adv2.sh'), false, `ran a member for ${JSON.stringify(shape)}`);
+    }
+  });
+});
+
+test('route fails closed when the payload has no usable tool_name', () => {
+  withChain((dir) => {
+    for (const input of ['', 'not json', '[]', '{"hook_event_name":"PreToolUse"}', '{"tool_name":7}', '{"tool_name":""}']) {
+      const result = runRoute(dir, ['--route', '*', 'adv1.sh'], input);
+      assert.equal(result.status, 2, `accepted ${JSON.stringify(input)}`);
+      assert.match(result.stderr, /tool_name/);
+      assert.equal(ran(dir, 'adv1.sh'), false);
+    }
+  });
+});
+
+test('route fails closed on its own internal error', () => {
+  withChain((dir) => {
+    const { routeMain } = require('./run-hook-with-bash.js');
+    const out = [];
+    const err = [];
+    const io = { input: PAYLOAD, out: (s) => out.push(s), err: (s) => err.push(s) };
+    const status = routeMain(['--route', '*', join(dir, 'adv1.sh')], io, {
+      spawnSync: () => {
+        throw new Error('boom');
+      },
+    });
+    assert.equal(status, 2);
+    assert.equal(out.join(''), '');
+    assert.match(err.join(''), /internal error.*boom.*failing closed/);
+  });
 });

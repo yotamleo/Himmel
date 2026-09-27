@@ -43,7 +43,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // extras, no unexpected repeats.
 const OWNED_EVENTS = Object.freeze(new Set(['PreToolUse', 'PostToolUse', 'SessionStart']));
 export const EXPECTED_SCRIPT_ORDER = Object.freeze([
-  // PreToolUse `Bash` chain.
+  // PreToolUse `*` router (HIMMEL-1843) — one entry carrying three route
+  // groups that were three entries: the `Bash` chain, then `*`
+  // auto-arm-on-cap.sh, then `Bash|Monitor` block-subagent-park.sh. Folding
+  // them cuts the cold node starts a Bash call pays; the router keeps each
+  // group isolated and scoped to the tools it matched before.
+  //
+  // Route `Bash` chain.
   'auto-approve-safe-bash.sh',
   'check-cr-marker-on-pr-create.sh',
   'block-jira-compound-write.sh',
@@ -78,6 +84,13 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // allow-listed `bash scripts/cr/pr-check-context.sh` is typed; no-op on any
   // other command.
   'guard-pr-check-literal.sh',
+  // Route `*` — the side-effecting watchdog, its own group, never chained.
+  'auto-arm-on-cap.sh',
+  // Route `Bash|Monitor` (HIMMEL-2140): denies a subagent (agent_id present)
+  // from backgrounding a Bash call or reaching for Monitor — the parking
+  // pathology. Parents (no agent_id) are unaffected. See
+  // block-subagent-park.sh's header for the full derivation.
+  'block-subagent-park.sh',
   // PreToolUse `PowerShell` chain.
   'block-read-secrets.sh',
   'block-destructive-commands.sh',
@@ -118,12 +131,6 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'guard-leg-wakeup.sh',
   // PreToolUse, one entry each.
   'block-backend-tier.sh',
-  'auto-arm-on-cap.sh',
-  // PreToolUse `Bash|Monitor` — its own matcher (HIMMEL-2140): denies a
-  // subagent (agent_id present) from backgrounding a Bash call or reaching
-  // for Monitor — the parking pathology. Parents (no agent_id) are
-  // unaffected. See block-subagent-park.sh's header for the full derivation.
-  'block-subagent-park.sh',
   // PostToolUse — two sibling entries, deliberately un-chained: both are
   // side-effecting, and chaining would make the push trigger reachable only
   // when the PR-create trigger does not deny first.
@@ -306,14 +313,22 @@ function wrapWithFallback(argsSuffix) {
   return `if [ -f "${RUN_NODE}" ]; then command -p sh "${RUN_NODE}" "${target}"${argsSuffix}; else node "${target}"${argsSuffix}; fi`;
 }
 
-// The suffix after a recognised launcher prefix: either one script, or a
-// `--chain` (optionally `--lifecycle`, HIMMEL-2003) member list. Returns the
-// owned scripts, or null if the suffix matches neither shape.
+// The suffix after a recognised launcher prefix: one script, a `--chain`
+// (optionally `--lifecycle`, HIMMEL-2003) member list, or a `--route` router
+// (HIMMEL-1843) — a sequence of `--route "P" [--timeout N]` groups, each a
+// `--chain` member list or one script. Returns the owned scripts in argument
+// order, or null if the suffix matches none of those shapes.
+const HOOK_ARG = '"\\$CLAUDE_PROJECT_DIR\\/scripts\\/hooks\\/[A-Za-z0-9._-]+\\.sh"';
+const CHAIN_ARGS = `--chain (?:${HOOK_ARG} )*${HOOK_ARG}`;
+const ROUTE_GROUP = `--route "(?:\\*|[A-Za-z0-9_]+(?:\\|[A-Za-z0-9_]+)*)" (?:--timeout [1-9][0-9]* ${HOOK_ARG}|${CHAIN_ARGS}|${HOOK_ARG})`;
+const ROUTE_RE = new RegExp(`^${ROUTE_GROUP}(?: ${ROUTE_GROUP})*$`);
+
 function launcherSuffixScripts(rest) {
   let m = rest.match(/^"\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"$/);
   if (m) return [m[1]];
   m = rest.match(/^--chain (?:--lifecycle )?((?:"\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/[A-Za-z0-9._-]+\.sh" )*"\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/[A-Za-z0-9._-]+\.sh")$/);
   if (m) return [...m[1].matchAll(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)/g)].map((x) => x[1]);
+  if (ROUTE_RE.test(rest)) return [...rest.matchAll(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)/g)].map((x) => x[1]);
   return null;
 }
 

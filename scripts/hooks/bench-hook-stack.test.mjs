@@ -202,6 +202,12 @@ test('labelFor reduces a wrapped hook command to the script it runs', () => {
     labelFor('node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js" --chain "$CLAUDE_PROJECT_DIR/scripts/hooks/a.sh" "$CLAUDE_PROJECT_DIR/scripts/hooks/b.sh"'),
     'chain(a.sh+b.sh)',
   );
+  // A --route row (HIMMEL-1843) names each group's pattern and members, from
+  // the primary launcher branch only — not the `else node ...` fallback too.
+  assert.equal(
+    labelFor('if [ -f x ]; then sh x "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js" --route "Bash" --chain "$CLAUDE_PROJECT_DIR/scripts/hooks/a.sh" "$CLAUDE_PROJECT_DIR/scripts/hooks/b.sh" --route "*" "$CLAUDE_PROJECT_DIR/scripts/hooks/c.sh" --route "Bash|Monitor" --timeout 15 "$CLAUDE_PROJECT_DIR/scripts/hooks/d.sh"; else node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js" --route "Bash" --chain "$CLAUDE_PROJECT_DIR/scripts/hooks/a.sh"; fi'),
+    'route(Bash:a.sh+b.sh *:c.sh Bash|Monitor:d.sh)',
+  );
   assert.equal(labelFor('C:/Users/x/.local/bin/graphify.EXE hook-guard search'), 'graphify.EXE');
   // No script-looking token at all: fall back to the executable, not the args.
   assert.equal(labelFor('/usr/bin/somehook --flag value'), 'somehook');
@@ -368,17 +374,16 @@ for (const config of CONFIGS) {
 // ------------------------------------------- HIMMEL-1843: the Bash matcher count
 
 // A Bash tool call fires every PreToolUse group whose matcher pattern matches
-// Bash — not just the literal `Bash` matcher. Verified against
-// .claude/settings.json at 92ee89588 (2026-09-26): FOUR groups match — the
-// `Bash` chain (15 members, one node process), the `*` catch-all
-// (auto-arm-on-cap.sh), `Bash|Edit|Write|MultiEdit|NotebookEdit`
-// (shadow-ledger.mjs, invoked directly — not through the chain dispatcher),
-// and `Bash|Monitor` (block-subagent-park.sh) — each its own cold node
-// process, so the real per-Bash-call cost is 4 process starts, not the 1 a
-// reader of only the `Bash` chain would assume. Docs:
+// Bash — not just the literal `Bash` matcher — and each is its own cold node
+// process. #1341 measured FOUR (the `Bash` chain, the `*` auto-arm-on-cap
+// entry, the `Bash|Edit|Write|MultiEdit|NotebookEdit` shadow ledger and
+// `Bash|Monitor` block-subagent-park). HIMMEL-1843 folded the chain, the `*`
+// entry and `Bash|Monitor` into ONE `*` router entry (run-hook-with-bash.js
+// --route), leaving TWO: the router and the ledger, which stays standalone
+// because wire-trust-hooks.mjs owns its entry (follow-up HIMMEL-3759). Docs:
 // docs/internals/hook-cost-baseline.md. Pins the count so a future matcher
-// edit that silently drops or adds Bash coverage is caught here.
-test('exactly 4 PreToolUse matcher groups in .claude/settings.json match the Bash tool', (t) => {
+// edit that silently adds a Bash cold start is caught here.
+test('exactly 2 PreToolUse matcher groups in .claude/settings.json match the Bash tool', (t) => {
   const config = join(REPO, '.claude', 'settings.json');
   if (!existsSync(config)) return t.skip('config not present in this checkout');
   const settings = JSON.parse(readFileSync(config, 'utf8'));
@@ -386,6 +391,89 @@ test('exactly 4 PreToolUse matcher groups in .claude/settings.json match the Bas
   const bashGroups = groups.filter((g) => toolNamesFor(g.matcher).includes('Bash'));
   assert.deepEqual(
     bashGroups.map((g) => g.matcher),
-    ['Bash', '*', 'Bash|Edit|Write|MultiEdit|NotebookEdit', 'Bash|Monitor'],
+    ['*', 'Bash|Edit|Write|MultiEdit|NotebookEdit'],
   );
+});
+
+// HIMMEL-1843 coverage equivalence. Which hooks fire for a tool, frozen from
+// .claude/settings.json at 4a24bfee0 (before the router): one entry per
+// group that fires, the group's members in their run order. Groups fire
+// concurrently, so their relative order carries nothing and the lists are
+// compared sorted; a router sub-group counts as a group of its own, which is
+// exactly how the router runs it (isolated, no cross-group short-circuit).
+const BASH_CHAIN = [
+  'auto-approve-safe-bash.sh', 'check-cr-marker-on-pr-create.sh', 'block-jira-compound-write.sh',
+  'block-tail-pipe-on-gates.sh', 'block-read-secrets.sh', 'read-clamp.sh', 'block-destructive-commands.sh',
+  'block-git-stash.sh', 'block-rogue-claude-schedule.sh', 'block-chokepoint-env-prefix.sh',
+  'require-quiet-run.sh', 'block-edit-live-settings.sh', 'block-write-into-main-checkout.sh',
+  'guard-relay-writes.sh', 'guard-pr-check-literal.sh',
+].join(' > ');
+const EDIT_CHAIN = 'block-edit-on-main.sh > block-edit-live-settings.sh > guard-memory-capture.sh > guard-relay-writes.sh';
+const PS_CHAIN = [
+  'block-read-secrets.sh', 'block-destructive-commands.sh', 'block-git-stash.sh',
+  'block-rogue-claude-schedule.sh', 'block-chokepoint-env-prefix.sh', 'block-edit-live-settings.sh',
+].join(' > ');
+const READ_CHAIN = 'block-read-secrets.sh > read-clamp.sh';
+const AUTO_ARM = 'auto-arm-on-cap.sh';
+const PARK = 'block-subagent-park.sh';
+const LEDGER = 'node "$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs" pre';
+const GRAPHIFY = 'command -v graphify >/dev/null 2>&1 && exec graphify hook-guard search; exit 0';
+const BASE_COVERAGE = {
+  Bash: [BASH_CHAIN, AUTO_ARM, LEDGER, PARK],
+  Edit: [EDIT_CHAIN, 'orchestrator-inline-guard.sh', AUTO_ARM, LEDGER],
+  Write: [EDIT_CHAIN, 'orchestrator-inline-guard.sh', AUTO_ARM, LEDGER],
+  NotebookEdit: [EDIT_CHAIN, 'orchestrator-inline-guard.sh', AUTO_ARM, LEDGER],
+  MultiEdit: [EDIT_CHAIN, AUTO_ARM, LEDGER],
+  Monitor: [AUTO_ARM, PARK],
+  Read: [READ_CHAIN, AUTO_ARM],
+  Grep: [READ_CHAIN, AUTO_ARM, GRAPHIFY],
+  PowerShell: [PS_CHAIN, AUTO_ARM],
+  NoSuchTool: [AUTO_ARM],
+};
+
+// The launcher's argv as the FIRST branch of the wrapped command passes it
+// (both branches carry the same list; stop at the first `;`).
+function launcherArgv(command) {
+  const m = String(command).match(/run-hook-with-bash\.js"\s+([^;]*)/);
+  if (!m) return null;
+  return [...m[1].matchAll(/"([^"]*)"|(\S+)/g)].map((x) => (x[1] !== undefined ? x[1] : x[2]));
+}
+
+const baseName = (p) => p.split('/').pop();
+
+// Claude Code's matcher rule: empty or `*` is every tool, anything else is an
+// anchored pattern (a plain `A|B` list is the common case).
+const matcherHits = (matcher, tool) => {
+  const m = String(matcher === undefined ? '' : matcher);
+  return m === '' || m === '*' || new RegExp(`^(?:${m})$`).test(tool);
+};
+
+function groupsFiring(settings, tool) {
+  const { parseRouteArgs, routeMatches } = createRequire(import.meta.url)('./run-hook-with-bash.js');
+  const fired = [];
+  for (const group of settings.hooks.PreToolUse) {
+    if (!matcherHits(group.matcher, tool)) continue;
+    for (const hook of group.hooks || []) {
+      const argv = launcherArgv(hook.command);
+      if (!argv) {
+        fired.push(hook.command);
+      } else if (argv[0] === '--route') {
+        for (const route of parseRouteArgs(argv)) {
+          if (routeMatches(route.pattern, tool)) fired.push(route.members.map(baseName).join(' > '));
+        }
+      } else {
+        fired.push(argv.filter((a) => !a.startsWith('--')).map(baseName).join(' > '));
+      }
+    }
+  }
+  return fired.sort();
+}
+
+test('every tool fires the same groups with the same ordered members as before the router (HIMMEL-1843)', (t) => {
+  const config = join(REPO, '.claude', 'settings.json');
+  if (!existsSync(config)) return t.skip('config not present in this checkout');
+  const settings = JSON.parse(readFileSync(config, 'utf8'));
+  for (const [tool, groups] of Object.entries(BASE_COVERAGE)) {
+    assert.deepEqual(groupsFiring(settings, tool), [...groups].sort(), `coverage drifted for ${tool}`);
+  }
 });

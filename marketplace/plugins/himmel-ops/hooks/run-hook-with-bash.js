@@ -170,7 +170,8 @@ function parseHookArgs(argv) {
 // Codex-side dispatcher in
 // .codex/codex-hook-adapter.sh (HIMMEL-1989); same invariants: whole-chain
 // validation before any member runs, first deny short-circuits, and the one
-// side-effecting hook (auto-arm-on-cap.sh) stays OUT of every chain.
+// side-effecting hook (auto-arm-on-cap.sh) stays OUT of every chain — it
+// rides the --route router below as its own isolated group (HIMMEL-1843).
 
 // Claude Code reads our stdout as ONE JSON object (or nothing). These are the
 // keys a chain knows how to combine; anything else is dropped with a warning
@@ -501,13 +502,19 @@ function budgetConsumer(memberTimings, chainDeadline) {
 // stdout is ASYNC, so exiting immediately after a write can truncate the very
 // JSON decision this exists to deliver. The caller sets process.exitCode and
 // lets node drain and exit on its own.
-function runChain(members, lifecycle = false) {
+// HIMMEL-1843: `io` lets the --route router run a chain as one of its groups
+// — the payload it already read, writers that capture the group's output, and
+// the router's own entry-safe deadline. Omitted, it is the process streams and
+// the chain's own deadline, exactly as before.
+function runChain(members, lifecycle = false, io = null) {
+  const out = io ? io.out : (text) => process.stdout.write(text);
+  const err = io ? io.err : (text) => process.stderr.write(text);
   // Validate the WHOLE chain before running any of it: a typo'd or duplicated
   // member must deny outright, never run a prefix of the chain.
   const seen = new Set();
   for (const member of members) {
     if (seen.has(member)) {
-      process.stderr.write(`run-hook-with-bash: duplicate chain member ${member}; refusing to run chain\n`);
+      err(`run-hook-with-bash: duplicate chain member ${member}; refusing to run chain\n`);
       return 2;
     }
     seen.add(member);
@@ -518,20 +525,20 @@ function runChain(members, lifecycle = false) {
       stat = null;
     }
     if (!stat || !stat.isFile()) {
-      process.stderr.write(`run-hook-with-bash: chain member not found: ${member}; refusing to run chain\n`);
+      err(`run-hook-with-bash: chain member not found: ${member}; refusing to run chain\n`);
       return 2;
     }
   }
 
   const bash = resolveBash();
   if (!bash) {
-    process.stderr.write('run-hook-with-bash: no usable Bash interpreter found; refusing to run hook\n');
+    err('run-hook-with-bash: no usable Bash interpreter found; refusing to run hook\n');
     return 2;
   }
 
   // Read once, fan the same payload to every member — each sees the full hook
   // JSON exactly as it would as its own entry.
-  const input = readAllStdin();
+  const input = io && io.input !== undefined ? io.input : readAllStdin();
   // Parsed once for the skip/deny log rows below (HIMMEL-2060) — never for
   // chain decisions, which stay per-member exactly as before.
   const hookInput = parseJsonObject(input);
@@ -597,23 +604,23 @@ function runChain(members, lifecycle = false) {
             sessionId,
             toolCall: toolCallSummary(hookInput),
           });
-          process.stderr.write(
+          err(
             `run-hook-with-bash: SKIP ${basename} (budget=${bound}ms elapsed=${elapsed}ms) — guard did not evaluate this call.\n`,
           );
         } else {
-          process.stderr.write(
+          err(
             `run-hook-with-bash: lifecycle member ${basename} skipped: ${result.error.message}\n`,
           );
         }
         continue;
       }
-      if (result.stderr) process.stderr.write(result.stderr);
+      if (result.stderr) err(result.stderr);
       // Emit each body as it lands rather than joining at the end: byte-identical
       // output, and whatever the chain already collected survives an outer
       // SIGKILL. For an advisory lane partial context beats none.
       // Drop ONE trailing newline so exactly one separator lands per body.
       const body = String(result.stdout || '').replace(/\n$/, '');
-      if (body) process.stdout.write(`${body}\n`);
+      if (body) out(`${body}\n`);
     }
     return 0;
   }
@@ -630,7 +637,9 @@ function runChain(members, lifecycle = false) {
   // HIMMEL-3080 (J1259O F1): the hard ceiling a must-run member's window is
   // capped against, derived from the settings.json entry timeout so the whole
   // chain always decides safely inside it, regardless of the shared budget.
-  const entryDeadline = chainStartedAt + entryTimeoutMs() - entrySafetyMarginMs();
+  const entryDeadline = io && io.entryDeadline !== undefined
+    ? io.entryDeadline
+    : chainStartedAt + entryTimeoutMs() - entrySafetyMarginMs();
   // HIMMEL-3080: per-member elapsed times seen so far in THIS chain run, so a
   // starvation-adjacent denial can name the member that ate the budget, not
   // merely the one that was starved by it.
@@ -702,7 +711,7 @@ function runChain(members, lifecycle = false) {
       const consumerNote = consumer
         ? ` must-run guard was left no safe window before the entry deadline; the shared chain budget was mostly spent by ${consumer.basename} (${consumer.elapsedMs}ms); failing closed.`
         : ` must-run guard was left no safe window before the entry deadline; failing closed.`;
-      process.stderr.write(`run-hook-with-bash: DENY ${basename} (entry deadline exhausted) —${consumerNote}\n`);
+      err(`run-hook-with-bash: DENY ${basename} (entry deadline exhausted) —${consumerNote}\n`);
       return 2;
     }
     const memberStart = Date.now();
@@ -746,19 +755,19 @@ function runChain(members, lifecycle = false) {
           const consumerNote = consumer
             ? ` must-run guard did not evaluate this call within its ${bound}ms window; the shared chain budget was mostly spent by ${consumer.basename} (${consumer.elapsedMs}ms); failing closed.`
             : ` must-run guard did not evaluate this call; failing closed.`;
-          process.stderr.write(
+          err(
             `run-hook-with-bash: DENY ${basename} (budget=${bound}ms elapsed=${elapsed}ms) —${consumerNote}\n`,
           );
           return 2;
         }
-        process.stderr.write(
+        err(
           `run-hook-with-bash: SKIP ${basename} (budget=${bound}ms elapsed=${elapsed}ms) — guard did not evaluate this call.\n`,
         );
         memberTimings.push({ basename, elapsedMs: elapsed, startedAt: memberStart });
         if (carriedStatus === 0) carriedStatus = 1;
         continue;
       }
-      process.stderr.write(`run-hook-with-bash: failed to start ${bash}: ${result.error.message}\n`);
+      err(`run-hook-with-bash: failed to start ${bash}: ${result.error.message}\n`);
       return 2;
     }
     memberTimings.push({ basename, elapsedMs: elapsed, startedAt: memberStart });
@@ -773,11 +782,11 @@ function runChain(members, lifecycle = false) {
     const crashed = rawStatus === null || (typeof rawStatus === 'number' && rawStatus !== 0 && rawStatus !== 2);
     if (crashed && mustRun) {
       const reason = rawStatus === null ? `signal ${result.signal}` : `rc=${rawStatus}`;
-      process.stderr.write(
+      err(
         `run-hook-with-bash: DENY ${basename} (${reason}) — must-run guard crashed instead of deciding; failing closed.\n`,
       );
       if (stderr.trim()) {
-        process.stderr.write(`run-hook-with-bash: ${basename} stderr: ${stderr.trim()}\n`);
+        err(`run-hook-with-bash: ${basename} stderr: ${stderr.trim()}\n`);
       }
       return 2;
     }
@@ -787,8 +796,8 @@ function runChain(members, lifecycle = false) {
     // exit 2 is the deny convention; a deny expressed as JSON on exit 0 is the
     // same decision in the structured channel. Both end the chain here.
     if (status === 2 || (status === 0 && isDeny(output))) {
-      process.stdout.write(stdout);
-      process.stderr.write(stderr);
+      out(stdout);
+      err(stderr);
       return 2;
     }
     if (status === 0 && output) {
@@ -804,24 +813,273 @@ function runChain(members, lifecycle = false) {
     if (status !== 0 && carriedStatus === 0) carriedStatus = status;
   }
 
-  if (held.length) process.stderr.write(held.join(''));
+  if (held.length) err(held.join(''));
 
   if (emitters.length === 0) return carriedStatus;
   if (emitters.length === 1) {
-    process.stdout.write(emitters[0].raw);
+    out(emitters[0].raw);
     return 0;
   }
   const merged = mergeHookOutputs(emitters, (key, source) => {
-    process.stderr.write(`run-hook-with-bash: chain: dropping unmergeable key ${key} from ${source}\n`);
+    err(`run-hook-with-bash: chain: dropping unmergeable key ${key} from ${source}\n`);
   });
-  process.stdout.write(`${JSON.stringify(merged)}\n`);
+  out(`${JSON.stringify(merged)}\n`);
   return 0;
 }
 
+// ---------------------------------------------------------------- route mode
+//
+// HIMMEL-1843. Claude Code fires every PreToolUse group whose matcher matches,
+// each as its own cold node start, so one Bash call paid separately for the
+// Bash chain, the `*` auto-arm-on-cap entry and the `Bash|Monitor`
+// block-subagent-park entry. `--route PATTERN <group> [--route PATTERN
+// <group>]...` folds such groups into ONE `*` entry: the router reads the
+// payload once and runs, in order, every group whose PATTERN matches
+// tool_name. A group is a `--chain m1 m2 ...` (runChain, unchanged) or ONE lone
+// script (main()'s lone-hook semantics, bounded by an optional
+// `--timeout <sec>` standing in for the `timeout` its own entry had, and by the
+// router's entry-safe deadline).
+//
+// Groups stay exactly as isolated as separate entries were — a deny in one
+// never stops the next, which is why auto-arm-on-cap.sh can ride the router
+// while staying out of every chain — and their results combine the way Claude
+// Code combines entries: any deny wins, then ask > allow. A lone group that
+// runs out of time is a non-blocking skip, as a killed entry was. Everything
+// the router itself cannot vouch for fails CLOSED: a pattern other than `*` or
+// an exact `A|B|C` tool list, a malformed group, a missing member, a payload
+// with no tool_name, and any internal error.
+const ROUTE_PATTERN_RE = /^[A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*$/;
+
+// Pure syntax (no filesystem), so the settings tests can read a wired router
+// through the same parser the launcher runs.
+function parseRouteArgs(argv) {
+  const routes = [];
+  let index = 0;
+  while (index < argv.length) {
+    if (argv[index] !== '--route') throw new Error(`--route: expected --route, got ${argv[index]}`);
+    const pattern = argv[index + 1];
+    if (pattern === undefined) throw new Error('--route requires a PATTERN');
+    if (pattern !== '*' && !ROUTE_PATTERN_RE.test(pattern)) {
+      throw new Error(`--route pattern must be * or an exact A|B|C tool list: ${JSON.stringify(pattern)}`);
+    }
+    index += 2;
+    let timeoutMs = null;
+    if (argv[index] === '--timeout') {
+      const raw = argv[index + 1] || '';
+      if (!/^[1-9][0-9]*$/.test(raw)) throw new Error(`--route ${pattern}: --timeout requires whole seconds > 0`);
+      timeoutMs = Number(raw) * 1000;
+      index += 2;
+    }
+    let end = index;
+    while (end < argv.length && argv[end] !== '--route') end += 1;
+    const body = argv.slice(index, end);
+    index = end;
+    const chain = body[0] === '--chain';
+    const members = chain ? body.slice(1) : body;
+    if (chain && timeoutMs !== null) throw new Error(`--route ${pattern}: --timeout applies to a lone group, not a --chain`);
+    if (members.length === 0) throw new Error(`--route ${pattern}: missing hook script`);
+    const option = members.find((member) => member.startsWith('--'));
+    if (option) throw new Error(`--route ${pattern}: unexpected option ${option}`);
+    if (!chain && members.length !== 1) throw new Error(`--route ${pattern}: a lone group runs exactly one script`);
+    routes.push({ pattern, timeoutMs, chain, members });
+  }
+  if (routes.length === 0) throw new Error('--route requires at least one group');
+  return routes;
+}
+
+function routeMatches(pattern, toolName) {
+  return pattern === '*' || pattern.split('|').includes(toolName);
+}
+
+// One lone group, as main() runs a lone hook — integrity check, a signal or a
+// failed start maps to 2 — but captured rather than inherited, so the router
+// can combine it with the other groups.
+function runLoneGroup(route, ctx) {
+  const script = route.members[0];
+  const basename = path.basename(script);
+  const integrity = verifyProjectHookIntegrity(script, ctx.sessionId);
+  if (!integrity.ok) {
+    denyIntegrityMismatch(script, integrity.relPath, integrity.reason);
+    return { source: basename, status: 2, stdout: '', stderr: '' };
+  }
+  const left = ctx.entryDeadline - Date.now();
+  const bound = route.timeoutMs === null ? left : Math.min(route.timeoutMs, left);
+  if (bound < 1) {
+    return {
+      source: basename,
+      status: 1,
+      stdout: '',
+      stderr: `run-hook-with-bash: SKIP ${basename} (budget=0ms elapsed=0ms) — guard did not evaluate this call.\n`,
+    };
+  }
+  const started = Date.now();
+  const result = ctx.spawn(ctx.bash, [script], {
+    input: ctx.input,
+    env: process.env,
+    encoding: 'utf8',
+    timeout: bound,
+    killSignal: 'SIGKILL',
+    maxBuffer: MEMBER_MAX_BUFFER,
+    windowsHide: true,   // HIMMEL-2043: no console flash per hook call
+  });
+  const elapsed = Date.now() - started;
+  if (result.error && !isRecoverableEpipe(result)) {
+    if (result.error.code === 'ETIMEDOUT' || result.error.code === 'ENOBUFS') {
+      logChainSkip({
+        ts: new Date().toISOString(),
+        action: 'skip',
+        member: basename,
+        budget: bound,
+        elapsed,
+        reason: result.error.code,
+        sessionId: ctx.sessionId,
+        toolCall: toolCallSummary(ctx.hookInput),
+      });
+      return {
+        source: basename,
+        status: 1,
+        stdout: '',
+        stderr: `run-hook-with-bash: SKIP ${basename} (budget=${bound}ms elapsed=${elapsed}ms) — guard did not evaluate this call.\n`,
+      };
+    }
+    return { source: basename, status: 2, stdout: '', stderr: `run-hook-with-bash: failed to start ${ctx.bash}: ${result.error.message}\n` };
+  }
+  return {
+    source: basename,
+    status: typeof result.status === 'number' ? result.status : 2,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  };
+}
+
+// Claude Code's cross-entry lattice over the groups that ran. A denying group
+// speaks alone and verbatim (the first one's stdout, every denier's stderr),
+// as it would have from its own entry; otherwise the JSON decisions merge
+// (ask > allow) and everything else goes to stderr, as in a chain.
+function combineGroups(results, io) {
+  const denying = results.filter((r) => r.status === 2 || (r.status === 0 && isDeny(parseJsonObject(r.stdout))));
+  if (denying.length) {
+    io.out(denying[0].stdout);
+    for (const r of denying) if (r.stderr) io.err(r.stderr);
+    return 2;
+  }
+  const emitters = [];
+  const held = [];
+  let carriedStatus = 0;
+  for (const r of results) {
+    const output = r.status === 0 ? parseJsonObject(r.stdout) : null;
+    if (output) emitters.push({ source: r.source, output, raw: r.stdout });
+    else if (r.stdout.trim()) held.push(r.stdout.endsWith('\n') ? r.stdout : `${r.stdout}\n`);
+    if (r.stderr) held.push(r.stderr);
+    if (r.status !== 0 && carriedStatus === 0) carriedStatus = r.status;
+  }
+  if (held.length) io.err(held.join(''));
+  if (emitters.length === 0) return carriedStatus;
+  if (emitters.length === 1) {
+    io.out(emitters[0].raw);
+    return 0;
+  }
+  const merged = mergeHookOutputs(emitters, (key, source) => {
+    io.err(`run-hook-with-bash: route: dropping unmergeable key ${key} from ${source}\n`);
+  });
+  io.out(`${JSON.stringify(merged)}\n`);
+  return 0;
+}
+
+function runRoutes(routes, io, deps) {
+  // Validate every group before any runs, as runChain does for one chain.
+  for (const route of routes) {
+    for (const member of route.members) {
+      let stat = null;
+      try {
+        stat = fs.statSync(member);
+      } catch (_e) {
+        stat = null;
+      }
+      if (!stat || !stat.isFile()) {
+        io.err(`run-hook-with-bash: route member not found: ${member}; refusing to run\n`);
+        return 2;
+      }
+    }
+  }
+  const input = io.input !== undefined ? io.input : readAllStdin();
+  // The router's entry clock starts where a lone chain's does — after the
+  // payload is read — so the first chain group sees the deadline it always had.
+  const routedAt = Date.now();
+  const hookInput = parseJsonObject(input);
+  const toolName = hookInput ? hookInput.tool_name : undefined;
+  if (typeof toolName !== 'string' || !toolName) {
+    io.err('run-hook-with-bash: route: payload carries no tool_name to route on; failing closed\n');
+    return 2;
+  }
+  const bash = resolveBash();
+  if (!bash) {
+    io.err('run-hook-with-bash: no usable Bash interpreter found; refusing to run hook\n');
+    return 2;
+  }
+  const ctx = {
+    input,
+    hookInput,
+    sessionId: typeof hookInput.session_id === 'string' ? hookInput.session_id : null,
+    bash,
+    entryDeadline: routedAt + entryTimeoutMs() - entrySafetyMarginMs(),
+    spawn: deps.spawnSync || spawnSync,
+  };
+  const results = [];
+  for (const route of routes) {
+    if (!routeMatches(route.pattern, toolName)) continue;
+    if (route.chain) {
+      const out = [];
+      const err = [];
+      const status = runChain(route.members, false, {
+        input,
+        out: (text) => out.push(text),
+        err: (text) => err.push(text),
+        entryDeadline: ctx.entryDeadline,
+      });
+      results.push({ source: `--route ${route.pattern}`, status, stdout: out.join(''), stderr: err.join('') });
+    } else {
+      results.push(runLoneGroup(route, ctx));
+    }
+  }
+  return combineGroups(results, io);
+}
+
+function processIo() {
+  return {
+    input: undefined,
+    out: (text) => process.stdout.write(text),
+    err: (text) => process.stderr.write(text),
+  };
+}
+
+// Returns the exit code (see runChain). `deps` is the test seam for the
+// internal-error path; production passes none.
+function routeMain(argv, io = processIo(), deps = {}) {
+  let routes;
+  try {
+    routes = parseRouteArgs(argv);
+  } catch (error) {
+    io.err(`run-hook-with-bash: ${error.message}\n`);
+    return 2;
+  }
+  try {
+    return runRoutes(routes, io, deps);
+  } catch (error) {
+    io.err(`run-hook-with-bash: route: internal error (${error && error.message}); failing closed\n`);
+    return 2;
+  }
+}
+
 function main() {
+  const argv = process.argv.slice(2);
+  if (argv[0] === '--route') {
+    process.exitCode = routeMain(argv);
+    return;
+  }
   let parsed;
   try {
-    parsed = parseHookArgs(process.argv.slice(2));
+    parsed = parseHookArgs(argv);
   } catch (error) {
     process.stderr.write(`run-hook-with-bash: ${error.message}\n`);
     process.exit(2);
@@ -872,13 +1130,17 @@ function main() {
 
 module.exports = {
   DEFAULT_CHAIN_BUDGET_MS,
+  DEFAULT_ENTRY_TIMEOUT_MS,
   MIN_MEMBER_TIMEOUT_MS,
   MUST_RUN_CHAIN_MEMBERS,
   isKnownBadWindowsBash,
   isRecoverableEpipe,
   isUsable,
   mergeHookOutputs,
+  parseRouteArgs,
   resolveBash,
+  routeMain,
+  routeMatches,
   windowsCandidates,
   // Re-exported from ./hook-integrity.js so the launcher's test surface is
   // unchanged by the module split.

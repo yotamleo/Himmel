@@ -1,10 +1,10 @@
-# PreToolUse:Bash cold-start cost — the true 4-matcher shape (HIMMEL-1843)
+# PreToolUse:Bash cold-start cost — 4 matchers, folded to 2 (HIMMEL-1843)
 
 `docs/internals/enforcement.md`'s dispatcher section (HIMMEL-2002) is stale on
 this point and is owned by a parked PR (#1322) rather than fixed here — this
 doc is the corrected, standalone baseline until that lands.
 
-## What actually fires on a Bash tool call
+## What fired on a Bash tool call before the router
 
 A Bash tool call matches every `PreToolUse` group whose matcher pattern
 includes `Bash` — not only the group literally named `Bash`. Read
@@ -70,13 +70,70 @@ collapse under concurrency is the **process count**: 4 separate node cold
 starts happen regardless, since each is a distinct OS process the kernel has
 to schedule and tear down.
 
-Regression guard: `scripts/hooks/bench-hook-stack.test.mjs` — "exactly 4
-PreToolUse matcher groups in .claude/settings.json match the Bash tool" pins
-the matcher list itself (`Bash`, `*`,
-`Bash|Edit|Write|MultiEdit|NotebookEdit`, `Bash|Monitor`, in that order), so a
-future edit that silently drops or adds Bash-tool coverage is caught here.
+## After HIMMEL-1843: one router entry, 2 cold starts per Bash call
 
-## Not in scope
+Groups 1, 2 and 4 above are now ONE `PreToolUse` entry with matcher `*`:
+`run-hook-with-bash.js --route "Bash" --chain <the 15 members> --route "*"
+auto-arm-on-cap.sh --route "Bash|Monitor" --timeout 15 block-subagent-park.sh`.
+The router reads the payload once and runs, in order, every route group whose
+pattern matches `tool_name` — so each member still runs for exactly the tools
+it ran for before (`scripts/hooks/bench-hook-stack.test.mjs`, "every tool
+fires the same groups with the same ordered members as before the router",
+pins this per tool against a frozen pre-router table).
+
+| # | Matcher | What runs | Process shape |
+|---|---|---|---|
+| 1 | `*` | router: route `Bash` (the 15-member chain), route `*` (`auto-arm-on-cap.sh`), route `Bash\|Monitor` (`block-subagent-park.sh`) | one node process |
+| 2 | `Bash\|Edit\|Write\|MultiEdit\|NotebookEdit` | `node scripts/trust/shadow-ledger.mjs pre` — unchanged, see below | one node process |
+
+**2 cold node starts per Bash call** (was 4). Every other tool that used to
+start the `*` entry alone now starts the router instead: same count, and the
+router runs only the auto-arm group for it (plus park for `Monitor`).
+
+What the fold keeps, each pinned by `scripts/hooks/run-hook-with-bash.test.mjs`
+("route mode"):
+
+- **Group isolation, Claude Code's cross-entry lattice.** A deny in one group
+  never stops the next (auto-arm still runs after a Bash-chain deny, and stays
+  out of every chain); any deny wins and is emitted verbatim, then ask > allow.
+- **The same budget.** The Bash chain's entry-safe deadline is computed from
+  the same clock point and `DEFAULT_ENTRY_TIMEOUT_MS` as before; a starved
+  must-run member sees the same budget routed or direct.
+- **Per-group timeouts.** A lone group keeps the timeout its own entry had
+  (`--timeout 15` for park), bounded again by the router's entry deadline; a
+  lone group that runs out of time is a non-blocking skip, as a killed entry
+  was — and never masks the chain's deny.
+- **Fail closed on the router itself.** A pattern other than `*` or an exact
+  `A|B|C` tool list, a malformed group, a missing member (checked before
+  anything runs), a payload without a `tool_name`, or an internal error → exit 2.
+
+Timeouts: before — `Bash` 60 s, `*` 60 s, `Bash|Monitor` 15 s, ledger 10 s.
+After — router 60 s (= `DEFAULT_ENTRY_TIMEOUT_MS`, the launcher's own entry
+deadline, pinned by a settings test), park route `--timeout 15`, ledger 10 s.
+
+`scripts/hooks/bench-hook-stack.mjs --runs 7`, same station:
+
+| Entry | p50 | p95 | max |
+|---|---|---|---|
+| `*` router (Bash chain + auto-arm + park, one process) | 209ms | 215ms | 215ms |
+| `Bash\|Edit\|Write\|MultiEdit\|NotebookEdit` (`shadow-ledger.mjs`) | 24ms | 27ms | 27ms |
+
+The trade, stated plainly: the process count per Bash call halves (4 → 2) and
+the summed per-call CPU drops (~319ms → ~242ms of p95), but the two lone
+groups that used to run *concurrently* with the chain now run *after* it
+inside the router, so the slowest entry a Bash call waits on rises from ~187ms
+to ~215ms. The remaining ledger start is follow-up HIMMEL-3759: the trust
+ledger is a second sanctioned writer of that entry (`wire-trust-hooks.mjs`
+repairs drift), so it cannot be folded without teaching that writer about the
+router.
+
+Regression guard: `scripts/hooks/bench-hook-stack.test.mjs` — "exactly 2
+PreToolUse matcher groups in .claude/settings.json match the Bash tool" pins
+the matcher list itself (`*`, `Bash|Edit|Write|MultiEdit|NotebookEdit`, in
+that order), so a future edit that silently drops or adds Bash-tool coverage
+is caught here.
+
+## Not in scope (as written before the router — kept for the record)
 
 Merging the `*`, `Bash|Edit|Write|MultiEdit|NotebookEdit`, and `Bash|Monitor`
 matchers into the `Bash` chain to cut the process count further is real
