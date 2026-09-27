@@ -33,9 +33,11 @@ _sha256_bin_resolve || true
 
 sha256_hex() {
     [ -n "$_SHA256_CMD" ] || return 1
+    local out
     if [ $# -gt 0 ]; then
-        $_SHA256_CMD -- "$@" | awk '{print $1}'
+        out=$($_SHA256_CMD -- "$@") || return 1
     else
-        $_SHA256_CMD | awk '{print $1}'
+        out=$($_SHA256_CMD) || return 1
     fi
+    printf '%s\n' "$out" | awk '{print $1}'
 }

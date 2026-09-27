@@ -89,5 +89,16 @@ out="$(PATH="$W/nonexistent" "$BASH_BIN" -c 'set -u; . "$1"; printf "[%s]" "$_SH
 eq "T4 rc 0" "$rc" "0"
 eq "T4 empty" "$out" "[]"
 
+echo "[test-sha256-bin] T5 hasher present but fails at runtime (missing file): sha256_hex fails closed, not a silent empty success"
+if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then
+    d5="$(stub_dir t5 sha256sum shasum awk)"
+    rc=0
+    out="$(PATH="$d5" "$BASH_BIN" -c '. "$1"; sha256_hex "$2"' _ "$LIBF" "$W/does-not-exist.txt" 2>/dev/null)" || rc=$?
+    eq "T5 sha256_hex fails closed on hasher error (rc != 0)" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+    eq "T5 sha256_hex prints nothing on hasher error" "$out" ""
+else
+    echo "  SKIP T5: neither sha256sum nor shasum on this host"
+fi
+
 echo "[test-sha256-bin] $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
