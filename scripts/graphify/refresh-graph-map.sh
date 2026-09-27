@@ -574,7 +574,30 @@ if [ -n "$OUT_ROOT" ]; then
   done
   [ -n "$_or_norm" ] || _or_norm="/"
   OUT_ROOT_RESOLVED="$_or_norm"
-  if [ -d "$OUT_ROOT_RESOLVED" ]; then OUT_ROOT_RESOLVED="$(cd "$OUT_ROOT_RESOLVED" && pwd -P)"; fi
+  # HIMMEL-3718 CR (CodeRabbit, PR #1367): the "if -d" canonicalizer above only
+  # fires once the FULL OUT_ROOT_RESOLVED path exists. A not-yet-existing leaf
+  # under a symlinked ANCESTOR then skips pwd -P entirely, so the corpus/home/
+  # root refusals below compare the lexical (unresolved) value while the later
+  # `mkdir -p "$OUT_DIR"` follows the real ancestor symlink -- landing wherever
+  # it actually points, which these checks never saw. Walk up to the nearest
+  # EXISTING ancestor, resolve THAT with pwd -P, then re-append the suffix
+  # that doesn't exist yet.
+  _or_suffix=""
+  _or_existing="$OUT_ROOT_RESOLVED"
+  while [ ! -d "$_or_existing" ] && [ "$_or_existing" != "/" ]; do
+    _or_part="${_or_existing##*/}"
+    if [ -n "$_or_suffix" ]; then _or_suffix="$_or_part/$_or_suffix"; else _or_suffix="$_or_part"; fi
+    _or_existing="${_or_existing%/*}"
+    [ -n "$_or_existing" ] || _or_existing="/"
+  done
+  if [ -d "$_or_existing" ]; then
+    _or_existing="$(cd "$_or_existing" && pwd -P)"
+    if [ -n "$_or_suffix" ]; then
+      OUT_ROOT_RESOLVED="${_or_existing%/}/$_or_suffix"
+    else
+      OUT_ROOT_RESOLVED="$_or_existing"
+    fi
+  fi
   if [ "$OUT_ROOT_RESOLVED" = "/" ]; then
     echo "refresh-graph-map: REFUSING --out-root=/ -- the promote step deletes cache/ and manifest.json under it." >&2
     exit 2

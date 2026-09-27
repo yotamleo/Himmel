@@ -4011,6 +4011,26 @@ else
   fail "T53e3 symlink+.. divergence (rc=$rc) validated=$( [ -f "$T53E3VALIDATED/graphify-out/graph.json" ] && echo yes || echo no ) raw-resolved=$( [ -e "$T53E3RAWRESOLVED/graphify-out" ] && echo yes || echo no ): $out"
 fi
 
+# T53e4 (CodeRabbit review on PR #1367): a not-yet-existing --out-root whose
+# ANCESTOR is a symlink is never canonicalized -- the "if -d" pwd -P
+# canonicalizer above only fires once the FULL OUT_ROOT_RESOLVED path exists,
+# so an ancestor symlink pointing straight into the corpus survives lexically
+# unresolved past every refusal below, then `mkdir -p "$OUT_DIR"` follows that
+# real symlink and lands the promote inside the corpus after all.
+T53E4ROOT="$WS/t53e4"; T53E4CORPUS="$T53E4ROOT/corpus"; mkdir -p "$T53E4CORPUS"
+printf '# note\n' > "$T53E4CORPUS/note.md"
+ln -s "$T53E4CORPUS" "$T53E4ROOT/link-to-corpus"
+T53E4LEAF="$T53E4ROOT/link-to-corpus/not-yet-existing-leaf"
+out=$( GRAPHIFY_MAP_BIN="$GOBIN/graphify" bash "$SCRIPT" \
+  --name t53e4 --corpus-root "$T53E4CORPUS" --backend claude-cli \
+  --maps-dir "$T53MAPS" --title T53e4 --slug t53e4-map \
+  --out-root "$T53E4LEAF" 2>&1 ); rc=$?
+if [ "$rc" -eq 2 ] && [ ! -e "$T53E4CORPUS/not-yet-existing-leaf" ]; then
+  pass "T53e4 --out-root with a not-yet-existing ancestor-symlink into the corpus is refused"
+else
+  fail "T53e4 ancestor-symlink divergence (rc=$rc) leaked=$( [ -e "$T53E4CORPUS/not-yet-existing-leaf" ] && echo yes || echo no ): $out"
+fi
+
 # T53f: an --out-root pointing at an existing non-graphify, non-empty directory
 # is refused, EVEN AT THE DEFAULT leaf name -- HIMMEL-3718 widens the T47a/T47b2
 # guard (previously scoped only to a GRAPHIFY_OUT_NAME override) to also fire
