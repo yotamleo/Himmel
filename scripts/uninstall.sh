@@ -3220,7 +3220,7 @@ unwire_user_files() {
           # HIMMEL-3058 comment below) to avoid leaking strict-mode into this
           # script's own shell.
           # shellcheck source=lib/unwire-hud-config.sh
-          ( . "$SCRIPT_DIR/lib/unwire-hud-config.sh"; unwire_hud_config "$_hud_legacy" "$_dry" ) || true
+          ( . "$SCRIPT_DIR/lib/unwire-hud-config.sh"; unwire_hud_config "$_hud_legacy" "$_dry" "$REPO_ROOT" ) || true
         fi
       elif [ "$_hud_legacy" != "$_p" ] && [ ! -e "$_hud_legacy" ] && [ "$LEDGER_OK" -eq 1 ] && command -v jq >/dev/null 2>&1; then
         # HIMMEL-3334 F1 (judge J1269O verdict): a re-wire on THIS box already
@@ -3237,16 +3237,30 @@ unwire_user_files() {
         _hud_legacy_unit="$(prov_read_units --path "$_hud_legacy" --kind file | head -n1)"
         _hud_legacy_backup=""
         [ -n "$_hud_legacy_unit" ] && _hud_legacy_backup="$(printf '%s' "$_hud_legacy_unit" | jq -r '.eff_pre.backup // empty')"
-        if [ -n "$_hud_legacy_backup" ]; then
-          _hud_legacy_args=()
-          [ "$_dry" -eq 1 ] && _hud_legacy_args=(--dry-run)
-          if prov_read_apply "$_hud_legacy_unit" restore ${_hud_legacy_args[@]+"${_hud_legacy_args[@]}"}; then
-            [ "$_dry" -eq 0 ] && echo "  restored $_hud_legacy (from $_hud_legacy_backup)"
-            prov_read_outcome restored "$_hud_legacy_unit" migrated-away "$_hud_legacy_backup"
+        if [ -n "$_hud_legacy_unit" ]; then
+          # HIMMEL-3334 I1 (judge J1269C): a missing/unreadable backup here
+          # (the clean-end prune already deleted it, or the plugin-dir sweep
+          # took it) is not a halt -- mirror prov_read_verdict's own
+          # "keep no-backup" policy instead of calling prov_read_apply
+          # unconditionally and letting fail_step stop the run.
+          if [ -n "$_hud_legacy_backup" ] && [ -r "$_hud_legacy_backup" ]; then
+            _hud_legacy_args=()
+            [ "$_dry" -eq 1 ] && _hud_legacy_args=(--dry-run)
+            if prov_read_apply "$_hud_legacy_unit" restore ${_hud_legacy_args[@]+"${_hud_legacy_args[@]}"}; then
+              [ "$_dry" -eq 0 ] && echo "  restored $_hud_legacy (from $_hud_legacy_backup)"
+              prov_read_outcome restored "$_hud_legacy_unit" migrated-away "$_hud_legacy_backup"
+            else
+              echo "  WARN: could not restore $_hud_legacy" >&2
+              fail_step "[6/8] hud-config legacy restore: $_hud_legacy"
+              prov_read_outcome failed "$_hud_legacy_unit" step-failed "$_hud_legacy_backup"
+            fi
           else
-            echo "  WARN: could not restore $_hud_legacy" >&2
-            fail_step "[6/8] hud-config legacy restore: $_hud_legacy"
-            prov_read_outcome failed "$_hud_legacy_unit" step-failed "$_hud_legacy_backup"
+            if [ "$_dry" -eq 1 ]; then
+              echo "DRY: would keep $_hud_legacy (no-backup)"
+            else
+              echo "  kept $_hud_legacy (no-backup)"
+              prov_read_outcome kept "$_hud_legacy_unit" no-backup "$_hud_legacy_backup"
+            fi
           fi
         fi
       fi
