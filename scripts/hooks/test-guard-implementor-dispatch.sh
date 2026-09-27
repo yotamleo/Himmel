@@ -442,6 +442,43 @@ RC104=$(run_hook readonly-numbered-steps-write-code "$REG_CLAUDEX" "$(payload ge
 3. write the code for retries')")
 assert_rc "read-only + numbered-list 'write the code for retries' is governed (J1388A row 6)" 2 "$RC104"
 
+RC105=$(run_hook writeup-report "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate why the suite is flaky and write up your findings.')")
+assert_rc "'then write up your findings' (report brief) allows (HIMMEL-3784)" 0 "$RC105"
+assert_empty "write-up report brief silent" "$(combined_output writeup-report)"
+
+RC106=$(run_hook write-overview "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Plan only: design the retry policy and write an overview.')")
+assert_rc "'and write an overview' (report brief) allows (HIMMEL-3784)" 0 "$RC106"
+assert_empty "write-overview report brief silent" "$(combined_output write-overview)"
+
+RC107=$(run_hook write-short-summary "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Locate where the lane router reads its config and write a short summary.')")
+assert_rc "'and write a short summary' (adjective before noun) allows (HIMMEL-3784)" 0 "$RC107"
+assert_empty "write-short-summary report brief silent" "$(combined_output write-short-summary)"
+
+RC108=$(run_hook commit-history "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Review the PR description and commit history for the parser module.')")
+assert_rc "'commit history' (research noun, not action) allows (HIMMEL-3784)" 0 "$RC108"
+assert_empty "commit-history brief silent" "$(combined_output commit-history)"
+
+RC109=$(run_hook edit-distance "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Research the parser and edit distance heuristics used elsewhere.')")
+assert_rc "'edit distance' (research noun, not action) allows (HIMMEL-3784)" 0 "$RC109"
+assert_empty "edit-distance brief silent" "$(combined_output edit-distance)"
+
+RC110=$(run_hook write-summary-unrelated-later-path "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Research the parser, then write a summary. Also check scripts/router.sh for reference.')")
+assert_rc "path in an unrelated LATER sentence does not gate the write (HIMMEL-3784, codex round 4)" 0 "$RC110"
+assert_empty "unrelated-later-path brief silent" "$(combined_output write-summary-unrelated-later-path)"
+
+RC111=$(run_hook write-summary-version-number "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Research the parser, then write a summary mentioning version 1.0 of the API.')")
+assert_rc "a version number is not a file extension (HIMMEL-3784, codex round 4)" 0 "$RC111"
+assert_empty "version-number brief silent" "$(combined_output write-summary-version-number)"
+
+RC112=$(run_hook commit-history-still-governed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the routing logic, then commit the change to history.log.')")
+assert_rc "a real path after 'commit' still governs (HIMMEL-3784 exclusion stays narrow)" 2 "$RC112"
+
+RC113=$(run_hook write-summary-then-second-write "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Research the parser, then write a summary. Then create the file src/tok.ts.')")
+assert_rc "a genuine second write clause chained by 'Then' still governs (HIMMEL-3784, path_scope stays chain-aware)" 2 "$RC113"
+
+RC114=$(run_hook modify-bare-object-still-governed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the routing logic, then modify the config.')")
+assert_rc "'then modify <bare object>' still governs (HIMMEL-3784 exclusion is phrase-literal, not grammatical)" 2 "$RC114"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 

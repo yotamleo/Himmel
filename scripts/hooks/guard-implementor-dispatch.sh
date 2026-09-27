@@ -214,7 +214,15 @@ fi
 if grepq "$text" -Eqi '(^|[^[:alnum:]_])(research|explore|investigate|analy[sz]e|review|audit|plan|design|locate|trace|explain|read-only)([^[:alnum:]_]|$)'; then
     research=1
 fi
-if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)'; then
+# HIMMEL-3784: "commit" and "edit" are nouns as well as verbs -- "then
+# review the commit history" or "and analyze edit distance heuristics"
+# read as a research object, not an action transition. Excluded narrowly
+# by literal phrase rather than a general grammatical rule (a determiner
+# requirement was tried and reverted: it also exempted genuine actions
+# like "then modify Y", a bare object with no determiner).
+if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)' \
+    && ! grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)commit[[:space:]]+history([^[:alnum:]_]|$)' \
+    && ! grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)edit[[:space:]]+distance([^[:alnum:]_]|$)'; then
     gate_action=1
 fi
 
@@ -240,11 +248,32 @@ fi
 # write/edit/etc. transition anywhere in that remainder is already covered
 # by the existing danger alternation (it includes "write"), so no separate
 # occurrence loop is needed -- one unbounded tail check subsumes it.
+# HIMMEL-3784: the round-3 exemption only recognized a report noun
+# immediately after "write"/"write a"/"write the", so "write UP your
+# findings", "write an OVERVIEW", and "write a SHORT summary" (an adjective
+# between the article and the noun) still fell through to gate_action --
+# newly governing genuinely read-only report briefs. Widened to accept
+# "write up" and up to two leading words (adjectives) before the noun.
+#
+# codex (PR #1388 round 4): the unbounded tail also treated a path or
+# extension mentioned in a LATER, UNRELATED sentence as a file-write target
+# ("write a summary. Also check scripts/router.sh for reference"), and the
+# extension pattern matched an ordinary version number ("version 1.0"). The
+# path/extension check is now scoped to path_scope -- the tail truncated at
+# the first sentence boundary -- UNLESS that boundary is immediately
+# followed by a then/and transition, which is a genuine continuation of the
+# same write-action chain, not an unrelated aside; and the extension match
+# now requires a letter first, so a bare digit run ("1.0") does not match.
 if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)write([^[:alnum:]_]|$)'; then
     lower_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
     write_trigger=$(printf '%s' "$lower_text" | grep -Eo '(^|[^[:alnum:]_])(then|and)[[:space:][:punct:]]+write' | head -1)
     write_tail=${lower_text#*"$write_trigger"}
-    if [ -n "$write_trigger" ] && grepq "$write_tail" -Eq '^[[:space:]]+(a[[:space:]]+|the[[:space:]]+)?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)' && ! grepq "$write_tail" -Eq '/|\.[a-zA-Z0-9]+([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]|(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
+    protected_tail=$(printf '%s' "$write_tail" | sed -E 's/([.!?])[[:space:]]+(then|and)([^[:alnum:]_])/\1Z\2\3/g')
+    path_scope=$(printf '%s' "$protected_tail" | sed -E 's/([.!?])[[:space:]]+.*/\1/')
+    if [ -n "$write_trigger" ] \
+        && grepq "$write_tail" -Eq '^[[:space:]]+(up([^[:alnum:]_]|$)|((a|an|the)[[:space:]]+)?([a-z]+[[:space:]]+){0,2}(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$))' \
+        && ! grepq "$path_scope" -Eq '/|\.[a-zA-Z][a-zA-Z0-9]*([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]' \
+        && ! grepq "$write_tail" -Eq '(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
         :
     else
         gate_action=1
