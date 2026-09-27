@@ -109,6 +109,24 @@ run_hook() {
     if [ "$ok" = 1 ]; then pass "$name"; else fail "$name (rc=$rc) out=$out"; fi
 }
 
+# run_hook_timed <bound-seconds> <expect: allow|deny> <name> <json> <loop:0|1> [policy]
+# Same as run_hook, plus asserts the fence decided within <bound-seconds> -
+# for judge J1298D C1: a fail-CLOSED cap must decide in O(1), not merely
+# "eventually deny", or the fix does not actually close the timeout.
+run_hook_timed() {
+    local bound="$1" expect="$2" name="$3" json="$4" loop="$5" policy="${6:-$POLICY_COPY}"
+    local out rc t0 t1 elapsed
+    t0=$(date +%s)
+    out=$(printf '%s' "$json" | env HIMMEL_LESSON_LOOP="$loop" LESSON_FENCE_POLICY="$policy" "$BASH_BIN" "$FENCE" 2>&1); rc=$?
+    t1=$(date +%s)
+    elapsed=$((t1 - t0))
+    local ok=1
+    if [ "$expect" = allow ]; then [ "$rc" -eq 0 ] || ok=0
+    else [ "$rc" -eq 2 ] || ok=0; fi
+    [ "$elapsed" -le "$bound" ] || ok=0
+    if [ "$ok" = 1 ]; then pass "$name (${elapsed}s)"; else fail "$name (rc=$rc elapsed=${elapsed}s bound=${bound}s) out=$out"; fi
+}
+
 # run_check_batch <cwd> <name1> <expect1> <path1> [<name2> <expect2> <path2> ...]
 # HIMMEL-2169: batches N cases that were each their OWN hook-mode run_hook
 # spawn into ONE `fence check <path>...` process, verifying each path's
@@ -1156,6 +1174,49 @@ run_hook deny "29: @scripts/hooks env -i env -S 'cp y a.sh' (outer env's own -i,
     "$(bash_json "env -i env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
 run_hook deny "29: @scripts/hooks env -uX env -S 'cp y a.sh' (outer env's own -uX, nested -S)" \
     "$(bash_json "env -uX env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+
+echo "== 30: judge J1298D - _clause_has_enforcement_signal raw-first + fail-closed cap =="
+# M1 (Minor, mutation-VERIFIED): neutering the normalized arm still passed
+# 280/280 - no existing row in sections 26-29 needs it, because every one of
+# those rows also carries the policy substring literally in the RAW text
+# (e.g. `x=scripts/hooks/../` - "scripts/hooks/" IS present verbatim before
+# the `%../}` strip runs). These three rows put the substring ONLY behind
+# the `seg/../` collapse (raw text is "scripts/x/../hooks/..." - "scripts/x"
+# then "/../" then "hooks", so "scripts/hooks/" never appears contiguously
+# in the raw text), one per caller (inline-eval, wrapper, procsub), so a
+# neutered normalize arm now fails these.
+run_hook deny "30: python3 -c open('scripts/x/../hooks/a.sh','w') (inline-eval, normalized-only match)" \
+    "$(bash_json "python3 -c \"open('scripts/x/../hooks/a.sh','w')\"" "$REPO")" 1
+run_hook deny "30: sudo cp y scripts/x/../hooks/a.sh (env/sudo wrapper, normalized-only match)" \
+    "$(bash_json "sudo cp y scripts/x/../hooks/a.sh" "$REPO")" 1
+run_hook deny "30: cat <(cp y scripts/x/../hooks/a.sh) (process substitution, normalized-only match)" \
+    "$(bash_json "cat <(cp y scripts/x/../hooks/a.sh)" "$REPO")" 1
+run_hook allow "30: sudo cp y scripts/x/../other/a.sh (control: normalizes clean, no enforcement signal)" \
+    "$(bash_json "sudo cp y scripts/x/../other/a.sh" "$REPO")" 1
+
+# C1 (Critical, main DENY -> effective head ALLOW via a >15s hook timeout,
+# TIMING-VERIFIED by J1298D: quadratic in the /../ hop count, ~19.5-20.5s at
+# 20000 hops on the pre-fix union scan). A clause whose raw text carries no
+# policy substring reaches the normalize arm; padding it past
+# MAX_NORMALIZE_LEN must now fail CLOSED in O(1) - not "eventually deny",
+# but decide well inside the 15s hook budget. hop20000 below reproduces
+# J1298D's own worst-case payload (~100KB, well over the 4096-byte cap):
+# pre-fix this took 19.5-20.5s; post-fix normalization never runs at all and
+# the deny fires immediately, so the 5s bound below is still generous.
+hop20000=""
+i=0
+while [ "$i" -lt 20000 ]; do hop20000="${hop20000}a/../"; i=$((i+1)); done
+run_hook_timed 5 deny "30: sudo cp y scripts/${hop20000}hooks/a.sh (padded past cap, must fail CLOSED fast, not normalize)" \
+    "$(bash_json "sudo cp y scripts/${hop20000}hooks/a.sh" "$REPO")" 1
+
+# Benign control: a signal-free clause padded with hops that stay UNDER the
+# cap must still be normalized and ALLOWed - proving the cap does not
+# over-deny ordinary long-but-safe wrapper commands.
+hop500=""
+i=0
+while [ "$i" -lt 500 ]; do hop500="${hop500}a/../"; i=$((i+1)); done
+run_hook_timed 5 allow "30: sudo cp y scripts/${hop500}other/a.sh (padded under cap, normalizes clean, no enforcement signal)" \
+    "$(bash_json "sudo cp y scripts/${hop500}other/a.sh" "$REPO")" 1
 
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?

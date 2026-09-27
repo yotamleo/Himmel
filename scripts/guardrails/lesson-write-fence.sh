@@ -1093,8 +1093,31 @@ _interpreter_is_read_only() {
 # either the raw text (main's original check, unchanged) OR the normalized
 # text matches a policy value. Normalization can then only ADD denies
 # (catching `//`/`/./ ` spelling variants) and never remove one.
+# Judge J1298D C1 (Critical, main DENY -> effective head ALLOW via timeout):
+# the union above used to compute norm_lc UNCONDITIONALLY, before ever
+# trying the raw match, and `_normalize_scan_text`'s `seg/../` collapse is
+# quadratic in the number of `/../` hops (scratch/timing.sh: ~13.4s at
+# 16000 hops, ~19.5-20.5s at 20000, vs ~100ms on main) - past this fence's
+# 15s PreToolUse hook timeout, which fails OPEN (a timed-out command hook
+# does not block the tool call). A deny-worthy clause padded with enough
+# `a/../` hops could outrun the clock and run unblocked. Fix: (1) try the
+# raw match first and return immediately on a hit, so a clause main already
+# denies via raw text never reaches normalization at all; (2) bound
+# normalization itself - a clause whose raw text is longer than
+# MAX_NORMALIZE_LEN skips normalization and denies outright (fail CLOSED),
+# since every caller of this function (procsub, env/sudo wrapper,
+# inline-eval - `process_clause_for_write`) has already decided the clause
+# is one of the unanalysable shapes this scan exists to catch in the first
+# place, so treating "too long to normalize safely" the same as "found a
+# signal" adds no new main-ALLOW->head-DENY risk in the wrong direction.
+# MAX_NORMALIZE_LEN=4096 keeps the worst case (~800 `/../` hops) at roughly
+# 100ms per scratch/timing.sh's N=1000 row, far under the timeout, while a
+# genuine attack clause (tens of KB) is denied in O(1) before the quadratic
+# loop ever runs.
+MAX_NORMALIZE_LEN=4096
 _clause_has_enforcement_signal() {
-    local raw_lc norm_lc; raw_lc="$(_lc "$1")"; norm_lc="$(_lc "$(_normalize_scan_text "$1")")"
+    local raw="$1" raw_lc norm_lc
+    raw_lc="$(_lc "$raw")"
     local i v_lc
     i=0
     while [ "$i" -lt "$ENTRY_COUNT" ]; do
@@ -1102,6 +1125,15 @@ _clause_has_enforcement_signal() {
         case "$raw_lc" in
             *"$v_lc"*) return 0 ;;
         esac
+        i=$((i+1))
+    done
+    if [ "${#raw}" -gt "$MAX_NORMALIZE_LEN" ]; then
+        return 0
+    fi
+    norm_lc="$(_lc "$(_normalize_scan_text "$raw")")"
+    i=0
+    while [ "$i" -lt "$ENTRY_COUNT" ]; do
+        v_lc="$(_lc "${ENTRY_VALUE[$i]}")"
         case "$norm_lc" in
             *"$v_lc"*) return 0 ;;
         esac
