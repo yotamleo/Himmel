@@ -71,10 +71,11 @@ printf '# readme\n' > "$SANDBOX/primary/README.md"
 git -C "$SANDBOX/primary" worktree add -q "$SANDBOX/primary/.claude/worktrees/feat+x" -b feat/x >/dev/null 2>&1
 mkdir -p "$SANDBOX/primary/.claude/worktrees/feat+x/.claude"
 printf '{}\n' > "$SANDBOX/primary/.claude/worktrees/feat+x/.claude/settings.json"
-# A committed, git-clean wire-hook-bash.mjs inside feat+x — HIMMEL-3761's
-# read-only allow rule (rows 222/223 below) trusts this exact file's content,
-# so it must actually exist and be clean (see codex round-10 Important, rows
-# 237/238).
+# A committed, git-clean wire-hook-bash.mjs inside feat+x. HIMMEL-3781
+# removed the dedicated allow rule that once trusted this file's git
+# cleanliness (rounds 10-13); rows 222/223 below now assert DENY regardless
+# of the script's content, but the fixture is kept as-is so those rows
+# still exercise the exact "otherwise-plausible, argv-correct" shape.
 mkdir -p "$SANDBOX/primary/.claude/worktrees/feat+x/scripts/hooks"
 printf 'module.exports = {};\n' > "$SANDBOX/primary/.claude/worktrees/feat+x/scripts/hooks/wire-hook-bash.mjs"
 git -C "$SANDBOX/primary/.claude/worktrees/feat+x" add scripts/hooks/wire-hook-bash.mjs >/dev/null 2>&1
@@ -1703,6 +1704,15 @@ assert_rc "242 echo mention-only, redirect through a symlinked parent directory,
 ln "$PRIMARY/.claude/settings.json" "$SANDBOX/hardlink-settings.json"
 assert_rc "243 printf mention-only, redirect target is a hardlink to the live settings file, denies" 2 \
     "$(bash_rc_of "$PRIMARY" "printf 'see settings.json for details' >> $SANDBOX/hardlink-settings.json")"
+
+# 244: bare mention, no redirect, but the verb is spelled with a different
+# CASE than the builtin ("Echo" instead of "echo") -> DENY (codex round-15
+# Important). Bash resolves the builtin by an exact, case-sensitive name
+# lookup, so `Echo` is never the builtin at all — it is a PATH lookup for an
+# arbitrary program of that literal name, which this rule must not vouch for
+# just because it case-insensitively spells `echo`.
+assert_rc "244 bash Echo (wrong case) mentioning settings.json with no redirect denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "Echo see settings.json for details")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

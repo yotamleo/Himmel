@@ -1432,10 +1432,19 @@ _tok_single_segment_ok() {
 # so echo/printf can only ever write to stdout. A write of any kind, to any
 # target, falls through to main's deny like any other ambiguous shape (the
 # false-deny this drops is tracked on HIMMEL-3781).
+#
+# The verb is matched in ORIGINAL CASE, never against ST_LW (round-15
+# Important): bash resolves the builtin `echo`/`printf` by an exact,
+# case-sensitive name lookup, so `Echo`/`PRINTF` is never the builtin at
+# all — it is an arbitrary PATH lookup for a program with that literal
+# name, which is free to write files however it likes regardless of this
+# function's "no redirect" invariant. Folding case here would let such a
+# program vouch for itself merely by sharing a case-insensitive spelling
+# with the builtin.
 _himmel_3761_mention_only_ok() {
     local k=0
     _tok_single_segment_ok || return 1
-    case "${ST_LW[0]}" in
+    case "${ST_W[0]}" in
         echo|printf) ;;
         *) return 1 ;;
     esac
