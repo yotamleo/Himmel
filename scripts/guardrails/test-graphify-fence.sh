@@ -2586,6 +2586,16 @@ timer_elapsed_ms() { # <start>
         echo $(( (end - start) * 1000 ))
     fi
 }
+# The whole-second fallback truncates both endpoints to the second, so a run
+# that actually takes under 5s can still report up to 5999ms if it straddles
+# a second boundary (e.g. start at x.99s, end at (x+5).01s truncates to a
+# 5s/6000ms delta). TIMING_SLOP_MS absorbs that ±1s rounding error on the
+# assertions below without loosening what they catch (still far under the
+# 15s hook timeout the comments describe).
+TIMING_SLOP_MS=0
+if [ "$ns_supported" -eq 0 ]; then
+    TIMING_SLOP_MS=1000
+fi
 
 start_ns=$(timer_start)
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
@@ -2596,7 +2606,7 @@ elapsed_ms=$(timer_elapsed_ms "$start_ns")
 # Assert the expected deny (rc=2) alongside the timing, and (codex-1 round
 # 15) that it was NOT the size cap that fired, or this would again test the
 # cap instead of the scan.
-if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ] && ! grepq "$out" "fence cap"; then
+if [ "$elapsed_ms" -lt $((5000 + TIMING_SLOP_MS)) ] && [ "$rc" -eq 2 ] && ! grepq "$out" "fence cap"; then
     pass "under-cap large routed command denies via the scan (not the size cap) in ${elapsed_ms}ms, well under the 15s hook timeout (X19)"
 else
     fail "under-cap large routed command rc=$rc in ${elapsed_ms}ms, cap-fired=$(grepq "$out" "fence cap" && echo yes || echo no) (want rc=2, <5000ms, scan-path deny) (X19) out=$out"
@@ -2637,7 +2647,7 @@ for X23_N in 8192 30000; do
     # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
     out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X23_CMD" 2>&1 ); rc=$?
     elapsed_ms=$(timer_elapsed_ms "$start_ns")
-    if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ]; then
+    if [ "$elapsed_ms" -lt $((5000 + TIMING_SLOP_MS)) ] && [ "$rc" -eq 2 ]; then
         pass "${X23_N}B nested-at-depth command denies in ${elapsed_ms}ms, well under the 15s hook timeout (X23 N=$X23_N)"
     else
         fail "${X23_N}B nested-at-depth command rc=$rc in ${elapsed_ms}ms (want rc=2, <5000ms) (X23 N=$X23_N)"
@@ -2676,7 +2686,7 @@ start_ns=$(timer_start)
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X27_CMD" 2>&1 ); rc=$?
 elapsed_ms=$(timer_elapsed_ms "$start_ns")
-if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ] && grepq "$out" "fence cap"; then
+if [ "$elapsed_ms" -lt $((5000 + TIMING_SLOP_MS)) ] && [ "$rc" -eq 2 ] && grepq "$out" "fence cap"; then
     pass "combo2-shaped flood+nested-heredoc denies via the size cap (not some other predicate) in ${elapsed_ms}ms, well under the 15s hook timeout (X27)"
 else
     fail "combo2-shaped flood+nested-heredoc rc=$rc in ${elapsed_ms}ms, cap-diagnostic present=$(grepq "$out" "fence cap" && echo yes || echo no) (want rc=2, <5000ms, size-cap denial) (X27)"
