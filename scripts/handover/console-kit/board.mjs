@@ -5,14 +5,25 @@
 // open decisions. The console republishes it as an artifact (that call is the
 // console's own; this script never publishes).
 //
-//   node board.mjs --doc <console doc> [--legs "<leg doc> ..."] [--out <file>] [--repo <dir>]
+//   node board.mjs --doc <console doc> [--legs "<leg doc> ..."] [--out <file>] [--repo <dir>] [--changed]
+//
+// --changed (Ask 1, HIMMEL-3745): still renders and writes the file, but prints
+// one line -- `CHANGED <path>` or `UNCHANGED <path>` -- instead of the bare
+// path, so a console can call this after every Live-state mutation (dispatch,
+// verdict, GO, MERGED, WRAPPED) and grep the answer instead of diffing the
+// file itself. "Changed" compares the embedded fingerprint (below) against
+// what the file on disk carried before this render; the Artifact publish
+// itself stays a model step, never done here.
 //
 // State comes from tick.sh (leg locks, tails, fleet, open PRs, and the board
 // fingerprint via --emit-fp), the console doc's `## Live state` block, the leg
-// docs' Results bullets, and `gh` (open + merged PRs). tick.sh's `board=` field
-// compares the fingerprint embedded here with a freshly recomputed one, so a
-// stale board is structurally visible. The published page is public-ish: nonces,
-// lock tokens and token spans are redacted from everything before it is escaped.
+// docs' Results bullets, `gh` (open + merged PRs), and -- for a WRAPPED leg
+// only -- the SAME process census tick.sh's procs= builds from
+// (claude-sessions.sh), read independently because tick.sh's own procs= counts
+// only HELD legs. tick.sh's `board=` field compares the fingerprint embedded
+// here with a freshly recomputed one, so a stale board is structurally
+// visible. The published page is public-ish: nonces, lock tokens and token
+// spans are redacted from everything before it is escaped.
 //
 // Optional Live-state lines the console may keep (console-template.md):
 //   epics: HIMMEL-3332=4, HIMMEL-3340=2     declared totals; merged is counted from gh
@@ -32,17 +43,23 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-const args = process.argv.slice(2);
+const USAGE = 'usage: board.mjs --doc <console doc> [--legs "<leg doc> ..."] [--out <file>] [--repo <dir>] [--changed]';
+const rawArgs = process.argv.slice(2);
+// --changed (Ask 1, HIMMEL-3745) is the one console step that both re-renders
+// and says whether the render moved: a boolean flag, pulled out before the
+// --opt pairs below so it never consumes the next pair's value.
+const changedFlag = rawArgs.includes('--changed');
+const args = rawArgs.filter((a) => a !== '--changed');
 const opt = {};
 for (let i = 0; i < args.length; i += 2) {
     if (!['--doc', '--legs', '--out', '--repo'].includes(args[i]) || args[i + 1] === undefined) {
-        console.error('usage: board.mjs --doc <console doc> [--legs "<leg doc> ..."] [--out <file>] [--repo <dir>]');
+        console.error(USAGE);
         process.exit(2);
     }
     opt[args[i].slice(2)] = args[i + 1];
 }
 if (!opt.doc) {
-    console.error('usage: board.mjs --doc <console doc> [--legs "<leg doc> ..."] [--out <file>] [--repo <dir>]');
+    console.error(USAGE);
     process.exit(2);
 }
 const docPath = resolve(opt.doc);
@@ -268,7 +285,7 @@ for (const n of new Set([...legInfo.values()].map((i) => i.pr).filter(Boolean)))
 }
 
 // ---------------------------------------------------------------- phases
-const LADDER = ['LIVE', 'READY-TO-OPEN', 'PR open', 'READY', 'BLOCKED', 'MERGED', 'WRAPPED'];
+const LADDER = ['LIVE', 'READY-TO-OPEN', 'PR open', 'READY', 'BLOCKED', 'MERGED', 'WRAPPED', 'WRAPPED, window still open'];
 const labels = [...new Set([...liveLabels, ...locks.keys(), ...tails.keys(), ...legInfo.keys()])]
     .sort((a, b) => parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10) || a.localeCompare(b));
 const legs = labels.map((label) => {
@@ -288,6 +305,43 @@ const legs = labels.map((label) => {
     return { label, ticket: info.ticket, phase, tail, lock, prNum: info.pr, ci: pr ? ciOf(pr) : '', last: info.last, needs, lostLock };
 });
 
+// ------------------------------------------------- WRAPPED window still open
+// Ask 3 (HIMMEL-3745): tick.sh's procs= counts only HELD (FRESH/STALE) legs,
+// so a leg whose lock/tail already reads WRAPPED (the normal end of a leg) can
+// still own a live claude window nobody is watching -- invisible to tick.sh.
+// This reads the SAME process census tick.sh's procs= builds from
+// (claude-sessions.sh's claude_sessions()) and the SAME candidate-name
+// derivation (leg-identity.sh's leg_identity(), not leg_label() -- a label
+// alone cannot be matched against a census row), independently of tick.sh, so
+// tick.sh itself is never touched. BOARD_SESSIONS overrides the sourced file
+// (test seam, mirrors BOARD_TICK/BOARD_LEGID); its absence from the census (or
+// the census itself being unavailable) is never treated as "still open".
+const SESSIONS_BIN = process.env.BOARD_SESSIONS || join(HERE, '..', '..', 'lanes', 'lib', 'claude-sessions.sh');
+let censusNames = null; // null = census unavailable -- never read as "nothing is running"
+try {
+    const out = execFileSync('bash', ['-c', 'source "$1" || exit 1; claude_sessions', 'bash', SESSIONS_BIN],
+        { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
+    censusNames = new Set(out.split('\n').filter((l) => l && !l.startsWith('#')).map((l) => l.split('\t')[1]).filter(Boolean));
+} catch { censusNames = null; }
+const wrappedLegs = legs.filter((l) => l.phase === 'WRAPPED' && legInfo.get(l.label)?.file);
+if (censusNames && wrappedLegs.length) {
+    let out = '';
+    try {
+        out = execFileSync('bash', ['-c', 'source "$1" || exit 1; shift; for s in "$@"; do leg_identity "$s"; done', 'bash', LEGID,
+            ...wrappedLegs.map((l) => basename(legInfo.get(l.label).file))],
+            { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { out = ''; }
+    const lines = out.split('\n').filter(Boolean);
+    wrappedLegs.forEach((l, i) => {
+        const names = (lines[i] || '').split('\t')[1] || '';
+        const stillOpen = names.split(',').filter(Boolean).some((n) => censusNames.has(n));
+        if (stillOpen) {
+            l.phase = 'WRAPPED, window still open';
+            l.needs = true;
+        }
+    });
+}
+
 // ---------------------------------------------------------------- render
 const now = new Date();
 const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -302,8 +356,9 @@ const needRows = legs.filter((l) => l.needs).map((l) => {
     const tailWhy = l.phase === 'READY' ? `READY${l.prNum ? ` · PR #${l.prNum}` : ''} — awaiting GO`
         : l.phase === 'READY-TO-OPEN' ? 'READY-TO-OPEN — awaiting PR open'
             : l.phase === 'BLOCKED' ? 'BLOCKED — needs a ruling'
-                : l.tail === 'FINDING' ? 'FINDING — needs a ruling'
-                    : '';
+                : l.phase === 'WRAPPED, window still open' ? 'WRAPPED, window still open — close the leg window'
+                    : l.tail === 'FINDING' ? 'FINDING — needs a ruling'
+                        : '';
     // A lost/stale lock is its own rendered signal, never displaced by the tail/phase
     // why-text above (or hidden behind its truncation): a leg can be FINDING, BLOCKED,
     // etc. AND lock-lost at once, and the lock is the one thing the console must never miss.
@@ -345,7 +400,7 @@ ul { list-style:none; margin:0; padding:0; } li { padding:6px 0; border-top:1px 
 .fleet { font-size:1.6rem; font-weight:650; } .fleet small { font-size:.85rem; color:var(--muted); font-weight:400; }
 .idle { color:var(--warn); font-weight:600; }
 .tk, .pr, .leg-last { color:var(--muted); font-size:.85rem; } .ph { color:var(--accent); font-weight:600; }
-li[data-phase="BLOCKED"] .ph, li[data-ci="failing"] .pr { color:var(--bad); } li[data-phase="WRAPPED"] .ph, li[data-phase="MERGED"] .ph, li[data-ci="green"] .pr { color:var(--ok); } li[data-ci="pending"] .pr { color:var(--warn); }
+li[data-phase="BLOCKED"] .ph, li[data-phase="WRAPPED, window still open"] .ph, li[data-ci="failing"] .pr { color:var(--bad); } li[data-phase="WRAPPED"] .ph, li[data-phase="MERGED"] .ph, li[data-ci="green"] .pr { color:var(--ok); } li[data-ci="pending"] .pr { color:var(--warn); }
 .bar { height:6px; background:var(--line); border-radius:3px; margin-top:4px; } .bar i { display:block; height:100%; background:var(--accent); border-radius:3px; }
 .wide { grid-column:1 / -1; }
 </style>
@@ -384,7 +439,19 @@ ${panel('Console log — newest last', logRows, 'no Results yet')}
 </html>
 `;
 
+// Ask 1 (HIMMEL-3745): --changed reads the PREVIOUS render's embedded
+// fingerprint before overwriting it, so a console can call this after every
+// Live-state mutation and know from one line whether the render moved --
+// the Artifact publish itself stays a separate, deliberate model step.
+let oldFp = null;
+if (changedFlag && existsSync(outPath)) {
+    oldFp = (/<meta name="console-board-fp" content="([0-9a-f]{16})">/.exec(readFileSync(outPath, 'utf8')) || [])[1] || null;
+}
 const tmp = `${outPath}.tmp${process.pid}`;
 writeFileSync(tmp, html);
 renameSync(tmp, outPath);
-console.log(outPath);
+if (changedFlag) {
+    console.log(`${fp && fp !== oldFp ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
+} else {
+    console.log(outPath);
+}

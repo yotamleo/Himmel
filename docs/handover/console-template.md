@@ -184,15 +184,23 @@ Run these, in order, and write the result as the first bullet under
     (the `chat=` value from the line you are answering).
 12. **Render and publish the console board** (HIMMEL-3361). The board is a
     generated HTML page — fleet N/cap with idle slots, every leg's phase
-    (LIVE → READY-TO-OPEN → PR open → READY → MERGED → WRAPPED), what needs you,
-    epic merged/total, the operator's open decisions — so the operator sees
-    progress and convergence without asking. Render it with
-    `node "{{KIT}}/board.mjs" --doc "<this file>"` (prints the path of
-    `console-board.html`, written next to this doc; nonces and lock tokens are
-    redacted), then publish that file with the `Artifact` tool and record the
-    artifact URL on the `board:` line of `## Live state` — `console.sh next`
-    carries it to your successor, who updates the same artifact instead of
-    minting a new one. The tick's `board=` field is your reminder:
+    (LIVE → READY-TO-OPEN → PR open → READY → MERGED → WRAPPED, plus its own
+    `WRAPPED, window still open` when a WRAPPED leg's claude window is still
+    alive — derived from an independent process census, since tick.sh's `procs=`
+    only counts HELD legs), what needs you, epic merged/total, the operator's
+    open decisions — so the operator sees progress and convergence without
+    asking. Render it with `node "{{KIT}}/board.mjs" --doc "<this file>" --changed`
+    (HIMMEL-3745): `--changed` re-renders and prints `CHANGED <path>` or
+    `UNCHANGED <path>` instead of the bare path, so you know from one line
+    whether the render moved after a dispatch, verdict, GO, MERGED or WRAPPED
+    (nonces and lock tokens are redacted from the file either way). Rendering
+    never publishes — on `CHANGED`, publish that file with the `Artifact` tool
+    yourself and record the artifact URL on the `board:` line of `## Live
+    state` — `console.sh next` carries it to your successor, who updates the
+    same artifact instead of minting a new one. **A successor's FIRST publish
+    to a carried `board:` URL must `Artifact read` it before it `Artifact
+    publish`es** — the tool refuses a publish to an artifact this session
+    has not viewed. The tick's `board=` field is your reminder:
     `board=MISSING` (never rendered) or `board=STALE:<age>` (the state moved
     since the last render) means re-run it now. `board=ok` proves only that the
     LOCAL file matches the current state; republishing the artifact stays your
