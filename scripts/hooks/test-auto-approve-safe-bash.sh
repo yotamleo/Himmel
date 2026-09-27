@@ -48,6 +48,35 @@ decide() {
     fi
 }
 
+# HIMMEL-3773/HIMMEL-3776 (judge J1387A): a jq-shim standing in for Windows
+# jq.exe, which renders every LF of its `-r` output as CRLF. This is the
+# same mechanism the judge used (own jq shim, not a real Windows box) to
+# prove the hook's win-rendering detection and fold. WIN_JQ_SHIM_DIR wraps
+# the real jq so every hook invocation under this PATH sees CRLF-rendered
+# `jq -r` output, exactly like real Windows jq.exe.
+WIN_JQ_SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/win-jq-shim.XXXXXX")" || exit 1
+REAL_JQ="$(command -v jq)"
+cat > "$WIN_JQ_SHIM_DIR/jq" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_JQ" "\$@" | sed 's/\$/\r/'
+EOF
+chmod +x "$WIN_JQ_SHIM_DIR/jq"
+
+# decide_win — same contract as decide(), but the hook sees CRLF-rendered
+# jq -r output (Windows jq.exe), the case fold_backslash_newline()/scan_cmd()
+# never exercise natively on this Linux test box.
+decide_win() {
+    local out
+    out=$(printf '%s' "$1" | PATH="$WIN_JQ_SHIM_DIR:$PATH" bash "$HOOK" 2>/dev/null)
+    if grepq "$out" '"permissionDecision":"deny"'; then
+        echo "DENY"
+    elif grepq "$out" '"permissionDecision":"allow"'; then
+        echo "ALLOW"
+    else
+        echo "PASS"
+    fi
+}
+
 assert() {
     local label="$1" expected="$2" actual="$3"
     if [ "$actual" = "$expected" ]; then
@@ -262,6 +291,9 @@ FWL_ROOT=$(mktemp -d); if command -v cygpath >/dev/null 2>&1; then FWL_ROOT=$(cy
 fwl_cleanup() {
     if [ -n "${FWL_ROOT:-}" ] && [ -d "$FWL_ROOT" ]; then
         rm -rf "$FWL_ROOT" 2>/dev/null || true
+    fi
+    if [ -n "${WIN_JQ_SHIM_DIR:-}" ] && [ -d "$WIN_JQ_SHIM_DIR" ]; then
+        rm -rf "$WIN_JQ_SHIM_DIR" 2>/dev/null || true
     fi
 }
 trap fwl_cleanup EXIT
@@ -1011,6 +1043,29 @@ assert "lone CR (no LF) is untouched by fold_crlf, no exploit" ALLOW "$(decide "
 # still fold and ALLOW — fold_crlf() only withholds the fold for a
 # backslash-preceded CR, never for a bare backslash+LF.
 assert "genuine LF-only continuation still ALLOW"            ALLOW "$(decide "$(j_bash "echo a \\"$'\n'"echo b")")"
+
+# --- HIMMEL-3773 round 2 / HIMMEL-3776 (judge J1387A): a genuine `\`+LF
+# continuation, run under Windows jq.exe (every LF of jq's -r output
+# rendered as CRLF), reaches the hook as `\`+CR+LF — byte-identical to the
+# CRLF-continuation attack payload. Detecting the rendering from the CR jq
+# already appends to the `tool` line (before this fix stripped it) lets the
+# hook fold ALL CRLF back to LF on that path only (main's original, correct
+# Windows behavior), while never folding on native jq (no rendering
+# artifact to undo). VERIFIED (real bash): the destructive join below
+# genuinely runs `find . echo -delete` once the two lines are joined.
+assert "win-jq: crafted \\+CRLF join still PASS (destructive join blocked)" \
+    PASS "$(decide_win "$(j_bash "find . \\"$'\n'"echo -delete")")"
+assert "native jq: same payload, unaffected by win-jq detection, stays PASS" \
+    PASS "$(decide "$(j_bash "find . \\"$'\n'"echo -delete")")"
+# Control: a genuine continuation under win-jq rendering must still ALLOW —
+# this is the HIMMEL-3776 usability loss the round-1 fix introduced, closed
+# by folding on the win-jq path instead of deferring it.
+assert "win-jq: genuine continuation still ALLOW (HIMMEL-3776 closed)" \
+    ALLOW "$(decide_win "$(j_bash "git status \\"$'\n'"  --help")")"
+# Control: a CR-free command takes the fast path (no CR at all to fold, on
+# either jq rendering) — same verdict either way.
+assert "win-jq: CR-free command unaffected" \
+    ALLOW "$(decide_win "$(j_bash 'git log --oneline -1')")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

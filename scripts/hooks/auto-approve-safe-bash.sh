@@ -1382,40 +1382,6 @@ fold_backslash_newline() {
     printf '%s' "$out"
 }
 
-# HIMMEL-3773: fold a BARE CR+LF pair to LF (Windows jq.exe renders an
-# embedded newline as CRLF), but never a CR immediately preceded by a
-# backslash. Real bash only treats `\`+LF as a continuation — `\`+CR is an
-# ordinary escaped byte (CR has no special meaning), and the LF that follows
-# it is a plain statement-ending newline, not part of any continuation. A
-# blind global `${cmd//$'\r\n'/$'\n'}` erases that distinction: it turns a
-# genuine `\`+CR+LF attack payload into `\`+LF, which fold_backslash_newline()
-# and scan_cmd() then read as a real continuation, hiding the command that
-# followed the CR as part of the prior, approved segment (181-row set,
-# HIMMEL-3773). Leaving a backslash-preceded CR+LF unfolded lets both of
-# those functions re-derive the backslash run themselves and correctly see
-# no continuation there — the same fail-closed result whether the run is odd
-# or even, since neither parity makes `\`+CR a continuation.
-fold_crlf() {
-    local s="$1" out="" i=0 n c prev
-    n=${#s}
-    while [ "$i" -lt "$n" ]; do
-        c="${s:$i:1}"
-        if [ "$c" = $'\r' ] && [ "${s:$((i + 1)):1}" = $'\n' ]; then
-            prev=""
-            [ "$i" -gt 0 ] && prev="${s:$((i - 1)):1}"
-            if [ "$prev" = "\\" ]; then
-                out="$out$c"          # backslash-preceded CR: leave the CRLF pair intact
-                i=$((i + 1))
-                continue
-            fi
-            i=$((i + 1))              # bare CRLF: drop the CR, LF copied through next
-            continue
-        fi
-        out="$out$c"
-        i=$((i + 1))
-    done
-    printf '%s' "$out"
-}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
@@ -1433,15 +1399,40 @@ IFS= read -r -d '' input 2>/dev/null || true
 # expression (cross-product-of-generators semantics), not just that field.
 result=$(jq -r '(.tool_name // "") + "\n" + (.tool_input.command // "")' <<<"$input" 2>/dev/null) || exit 0
 tool="${result%%$'\n'*}"
+# HIMMEL-3773/HIMMEL-3776 (judge J1387A): `tool` is jq's own first output
+# line and never legitimately contains a CR — a trailing CR on it means jq
+# itself is rendering every LF in `result` as CRLF (Windows jq.exe), so the
+# SAME rendering also doubled every embedded newline in `cmd` below. Detect
+# that here, before stripping the CR off `tool`.
+case "$tool" in
+    *$'\r') win_crlf=1 ;;
+    *) win_crlf=0 ;;
+esac
 tool="${tool%$'\r'}"
 cmd="${result#*$'\n'}"
-# Windows jq.exe renders embedded newlines as CRLF too. Restore LF before the
-# shell-structure scan so a Bash backslash-newline continuation is not seen as
-# backslash-CR followed by a separate newline command boundary. HIMMEL-3773:
-# a backslash-preceded CR+LF is left alone — see fold_crlf()'s header comment
-# for why bash never treats it as a continuation, and folding it blindly is
-# how a real second command hid inside an approved segment.
-cmd="$(fold_crlf "$cmd")"
+# Only touch cmd when it actually contains a CR (HIMMEL-3773/J1387A finding
+# 3: skip the fold entirely on CR-free input — no-op on the common case,
+# avoiding the added cost on large CR-free heredocs).
+case "$cmd" in
+    *$'\r'*)
+        if [ "$win_crlf" = 1 ]; then
+            # Windows jq.exe rendering: every LF became CRLF, including the
+            # LF of a genuine `\`+LF continuation, so a blind fold back to
+            # LF (main's original behavior) is correct here — it restores
+            # exactly what the shell will actually execute. A CRAFTED
+            # `\`+CR arrives doubled as `\`+CR+CR+LF; this fold consumes only
+            # the trailing CR+LF, leaving `\`+CR+LF, which
+            # fold_backslash_newline()/scan_cmd() correctly read as a
+            # non-continuation (backslash precedes CR, not LF).
+            cmd="${cmd//$'\r\n'/$'\n'}"
+        fi
+        # Native jq: `cmd` already carries the exact bytes bash will see.
+        # Real bash gives CR no special meaning and only LF ends a
+        # statement/continuation, so folding anything here would be the
+        # HIMMEL-3773 bug (turning a backslash-preceded CR+LF into a
+        # continuation that hides the command after the CR) — never fold.
+        ;;
+esac
 # HIMMEL-3750 round 3 (codex-1): a backslash-newline continuation is folded
 # away by the shell before parsing even INSIDE double quotes, so a quoted
 # `"$\<NL>=x"` reaches the shell as `"$=x"` — the raw-text tripwires below
