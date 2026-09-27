@@ -2647,10 +2647,10 @@ start_ns=$(date +%s%N)
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X27_CMD" 2>&1 ); rc=$?
 end_ns=$(date +%s%N)
 elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
-if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ]; then
-    pass "combo2-shaped flood+nested-heredoc denies in ${elapsed_ms}ms via the size cap, well under the 15s hook timeout (X27)"
+if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ] && grepq "$out" "fence cap"; then
+    pass "combo2-shaped flood+nested-heredoc denies via the size cap (not some other predicate) in ${elapsed_ms}ms, well under the 15s hook timeout (X27)"
 else
-    fail "combo2-shaped flood+nested-heredoc rc=$rc in ${elapsed_ms}ms (want rc=2, <5000ms) (X27)"
+    fail "combo2-shaped flood+nested-heredoc rc=$rc in ${elapsed_ms}ms, cap-diagnostic present=$(grepq "$out" "fence cap" && echo yes || echo no) (want rc=2, <5000ms, size-cap denial) (X27)"
 fi
 
 # (X28) NEGATIVE control for X27: an ordinary graphify command safely under
