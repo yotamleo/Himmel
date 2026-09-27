@@ -3181,12 +3181,52 @@ unwire_user_files() {
       if [ "$_hud_sl_still_wired" -eq 1 ] && [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ]; then
         echo "  kept (statusLine still wired): $_hud_legacy — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_hud_legacy"
       elif [ "$_hud_legacy" != "$_p" ] && [ -e "$_hud_legacy" ] && command -v jq >/dev/null 2>&1; then
-        # HIMMEL-3334: unwire-hud-config.sh sets `set -euo pipefail` when
-        # sourced, so it is sourced in a subshell (same pattern as the
-        # HIMMEL-3058 comment below) to avoid leaking strict-mode into this
-        # script's own shell.
-        # shellcheck source=lib/unwire-hud-config.sh
-        ( . "$SCRIPT_DIR/lib/unwire-hud-config.sh"; unwire_hud_config "$_hud_legacy" "$_dry" ) || true
+        # HIMMEL-3334 C1/I1 (judge J1269A verdict): a pre-himmel config may
+        # once have lived at $_hud_legacy and been REPLACED by himmel's own
+        # install, recording a ledger `replace` unit with a backup of the
+        # operator's original bytes -- the live file now matches himmel's own
+        # customLineCommand pattern (it IS himmel's template), so
+        # unwire_hud_config's own safety check alone cannot tell "himmel wrote
+        # this fresh" from "himmel overwrote the operator's own config" and
+        # would just rm -f it, losing the operator's original for good.
+        # Consult the ledger for THIS path first, the same primitive the F1
+        # (file-absent) branch below uses, before ever touching the file.
+        _hud_legacy_unit=""
+        _hud_legacy_backup=""
+        if [ "$LEDGER_OK" -eq 1 ]; then
+          _hud_legacy_unit="$(prov_read_units --path "$_hud_legacy" --kind file | head -n1)"
+          [ -n "$_hud_legacy_unit" ] && _hud_legacy_backup="$(printf '%s' "$_hud_legacy_unit" | jq -r '.eff_pre.backup // empty')"
+        fi
+        if [ -n "$_hud_legacy_backup" ]; then
+          _hud_legacy_args=()
+          [ "$_dry" -eq 1 ] && _hud_legacy_args=(--dry-run)
+          if prov_read_apply "$_hud_legacy_unit" restore ${_hud_legacy_args[@]+"${_hud_legacy_args[@]}"}; then
+            [ "$_dry" -eq 0 ] && echo "  restored $_hud_legacy (from $_hud_legacy_backup)"
+            prov_read_outcome restored "$_hud_legacy_unit" replaced-in-place "$_hud_legacy_backup"
+          else
+            echo "  WARN: could not restore $_hud_legacy" >&2
+            fail_step "[6/8] hud-config legacy restore: $_hud_legacy"
+            prov_read_outcome failed "$_hud_legacy_unit" step-failed "$_hud_legacy_backup"
+          fi
+        elif [ "$LEDGER_OK" -eq 1 ] && [ -z "$_hud_legacy_unit" ]; then
+          # HIMMEL-3334 I1 (judge J1269A verdict): a ledger exists but holds
+          # no unit at all for this path -- no ledger evidence himmel ever
+          # wrote or replaced this file, so it cannot be told from an
+          # operator's own pre-himmel config that merely happens to match the
+          # customLineCommand pattern. Leave it, same as the no-ledger-at-all
+          # fallback below.
+          echo "  kept (no ledger unit): $_hud_legacy — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_hud_legacy"
+        else
+          # No ledger to consult at all, or a unit exists with no backup
+          # (himmel wrote this file fresh, nothing of the operator's to lose)
+          # -- best-effort pattern-gated rm, same as before this fix.
+          # HIMMEL-3334: unwire-hud-config.sh sets `set -euo pipefail` when
+          # sourced, so it is sourced in a subshell (same pattern as the
+          # HIMMEL-3058 comment below) to avoid leaking strict-mode into this
+          # script's own shell.
+          # shellcheck source=lib/unwire-hud-config.sh
+          ( . "$SCRIPT_DIR/lib/unwire-hud-config.sh"; unwire_hud_config "$_hud_legacy" "$_dry" ) || true
+        fi
       elif [ "$_hud_legacy" != "$_p" ] && [ ! -e "$_hud_legacy" ] && [ "$LEDGER_OK" -eq 1 ] && command -v jq >/dev/null 2>&1; then
         # HIMMEL-3334 F1 (judge J1269O verdict): a re-wire on THIS box already
         # migrated the legacy path away (wire-statusline.sh's own migration
