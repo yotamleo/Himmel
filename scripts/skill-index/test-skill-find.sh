@@ -22,7 +22,7 @@ check() {
     fi
 }
 
-td="$(mktemp -d)"
+td="$(mktemp -d "${TMPDIR:-/tmp}/test-skill-find.XXXXXX")"
 trap 'rm -rf "$td"' EXIT
 mkdir -p "$td/bin"
 
