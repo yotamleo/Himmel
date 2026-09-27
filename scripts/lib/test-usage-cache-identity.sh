@@ -65,5 +65,11 @@ printf '%s' "{\"account\":\"$current\"}" > "$cache"
 usage_cache_account_mismatch "$cache"; rc=$?
 check "usage_cache_account_mismatch: current identity undeterminable -> 0 (UNKNOWN)" "$rc" "0"
 
+save_home="$HOME"
+unset HOME
+h_unset=$(current_account_hash); rc_unset=$?
+export HOME="$save_home"
+check "current_account_hash: HOME unset -> rc 0 (no crash), empty" "$rc_unset:$h_unset" "0:"
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

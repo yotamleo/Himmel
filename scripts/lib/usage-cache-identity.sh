@@ -29,7 +29,10 @@ _usage_cache_sha256() {
 
 # shellcheck disable=SC2120 # optional $1 override; every in-repo caller wants the default
 current_account_hash() {
-  local config="${1:-${CLAUDE_ACCOUNT_CONFIG:-$HOME/.claude.json}}" uuid hash
+  # HIMMEL-1712 CR (panel round 9, codex-1): a bare $HOME here would be an
+  # unbound-variable error under a set -u caller with HOME unset, instead of
+  # falling through to the "undeterminable identity" empty-return path.
+  local config="${1:-${CLAUDE_ACCOUNT_CONFIG:-${HOME:-}/.claude.json}}" uuid hash
   command -v jq >/dev/null 2>&1 || return 0
   [ -r "$config" ] || return 0
   # HIMMEL-1712 CR (panel round 3, codex-3): a non-string accountUuid (number,

@@ -272,7 +272,10 @@ fi
 # re-check of the identity disagrees with the pinned one.
 if [ -n "$account_hash" ]; then
   live_account_hash=$(current_account_hash)
-  if [ -n "$live_account_hash" ] && [ "$live_account_hash" != "$account_hash" ]; then
+  # HIMMEL-1712 CR (panel round 9, codex-2): an unreadable live identity is
+  # just as unattributable as a changed one -- skip either way rather than
+  # only when the live identity is known AND different.
+  if [ "$live_account_hash" != "$account_hash" ]; then
     echo "WARN usage-cache-producer: on-disk account identity changed since this session's first render; skipping OAuth fetch to avoid mislabeling" >&2
     exit 0
   fi
