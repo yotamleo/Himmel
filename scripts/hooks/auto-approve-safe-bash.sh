@@ -868,8 +868,16 @@ scan_cmd() {
             SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue
         fi
         case "$c" in
-            "'") st=1; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
-            '"') st=2; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
+            "'")
+                if [ "$cm" = 1 ]; then                   # inside a comment: no quote semantics
+                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue
+                fi
+                st=1; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
+            '"')
+                if [ "$cm" = 1 ]; then                   # inside a comment: no quote semantics
+                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue
+                fi
+                st=2; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
             '#')
                 [ "$aws" = 1 ] && cm=1
                 seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue ;;

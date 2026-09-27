@@ -964,6 +964,13 @@ assert "&& after a comment start still splits the segment" PASS "$(decide "$(j_b
 assert "| after a comment start still splits the segment"  PASS "$(decide "$(j_bash 'echo hi #x | sh')")"
 assert "& after a comment start still splits the segment"  PASS "$(decide "$(j_bash 'echo hi #x & touch M')")"
 
+# codex-1 (round 2): a quote character inside a real comment must not enter
+# quote state — a real shell gives comments zero quote semantics, so a
+# balanced quote spanning the newline must never mask the real separator and
+# hide a following command inside SCAN_MASK. main already denies (PASS) these.
+assert "dquote inside a comment does not mask the next newline (codex-1)" PASS "$(decide "$(j_bash "echo hi #say \"x"$'\n'"touch MARKER\"")")"
+assert "squote inside a comment does not mask the next newline (codex-1)" PASS "$(decide "$(j_bash "echo hi #it's fine"$'\n'"touch MARKER'")")"
+
 # --- HIMMEL-3734 (J1300A finding 7): a brace-expanded root among the
 # find path operands (\`{/,.}\` -> \`/ .\`) must DENY as a root-walk.
 assert "find brace-expanded root DENY" DENY "$(decide "$(j_bash 'find {/,.} -name x')")"
