@@ -12,10 +12,11 @@ merged, with no judgment call left in them — contains no `claude -p` /
 - `scripts/check-ci.sh`
 
 Verified by grepping all four for the pattern
-`(^|[^A-Za-z0-9_-])claude[[:space:]]+(-p|--print|--bg)($|[^A-Za-z0-9_-])`
+`(^|[^A-Za-z0-9_-])claude([^A-Za-z0-9_-].*)?[^A-Za-z0-9_-](-p|--print|--bg)($|[^A-Za-z0-9_-])`
 (the pattern `scripts/cr/test-ship-tail-model-free.sh` uses, broadened past
 `scripts/hooks/check-no-headless-claude.sh`'s immediately-after-`claude`
-match — see "Regression guard" below) against
+match so a flag appearing after other flags on the same invocation also
+trips it — see "Regression guard" below) against
 main at `92ee89588` (2026-09-26): zero matches.
 
 ## Scope: hermes-critic.sh is excluded, not missed
