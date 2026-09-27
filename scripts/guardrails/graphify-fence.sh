@@ -2346,7 +2346,7 @@ _gf_deny_on_hidden_clause_separator() {
     local -a stk=()
     local sp=0
     local found_bad=0 in_span=0 span_chdir=0 span_hit=0 lookback lb_i lb_start
-    local lb_nwords=0 lb_last='' lb_prev='' lb_previx=0
+    local lb_nwords=0 lb_last='' lb_prev='' lb_previx=0 lb_glued=0
     local -a chars=()
     len=${#cmd}
     # codex-2 (PR #1323 round 4): every `'$') [ "${chars[$((i+1))]}" = "(" ]`
@@ -2459,13 +2459,31 @@ _gf_deny_on_hidden_clause_separator() {
                 lb_previx=$((lb_nwords-1))
                 lb_prev="${!lb_previx}"
             fi
+            # codex-3683-panel-4: the lb_prev fallback (added for
+            # `-C ../$(...)`, where "../" glues onto the substitution as ONE
+            # shell word) doesn't check whether lb_last is actually glued to
+            # the span - `-C foo $(...)` has "foo" as its OWN complete word
+            # (whitespace before the substitution), making the substitution
+            # an unrelated argument, not part of `-C foo`'s value. Only trust
+            # lb_prev when nothing separates lb_last from the span itself.
+            lb_glued=0
+            if [ "$i0" -gt 0 ]; then
+                case "${chars[$((i0-1))]}" in
+                    ' '|$'\t'|$'\n') lb_glued=0 ;;
+                    *) lb_glued=1 ;;
+                esac
+            fi
             case "$lb_last" in
                 -C*|-D*|--chdir|--chdir=*) span_chdir=1 ;;
                 *)
-                    case "$lb_prev" in
-                        -C|-D|--chdir) span_chdir=1 ;;
-                        *) span_chdir=0 ;;
-                    esac
+                    if [ "$lb_glued" -eq 1 ]; then
+                        case "$lb_prev" in
+                            -C|-D|--chdir) span_chdir=1 ;;
+                            *) span_chdir=0 ;;
+                        esac
+                    else
+                        span_chdir=0
+                    fi
                     ;;
             esac
         elif [ "$in_span" -eq 1 ] && [ "$sp" -eq 0 ]; then

@@ -2762,6 +2762,19 @@ run_fence deny no "$HIMMEL" "env --chdir \`...; separator inside\`, backtick for
 run_fence deny no "$HIMMEL" "sudo --chdir \$(...; separator inside), bare --chdir word -> deny (X33)" \
     "sudo --chdir \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
 
+# (X34) codex-2 (critic panel round 4): the lb_prev fallback that resolves a
+# bare --chdir word (added for J1323C F2, e.g. `-C ../$(...)` where "../"
+# glues onto the substitution as one shell word) trusted -C/--chdir as the
+# PRECEDING word without checking whether the word actually touching the
+# substitution is glued to it. `-C foo $(...)` has "foo" as its own complete
+# word (whitespace before the substitution) - the substitution is an
+# unrelated argument, not part of `-C foo`'s value - so this must ALLOW.
+run_fence allow no "$HIMMEL" "-C flag with an unrelated word before an unrelated substitution -> allow (X34)" \
+    "echo -C foo \$(echo a; echo b) graphify"
+# (X34-control) the glued case this fallback exists for must still deny.
+run_fence deny no "$HIMMEL" "-C flag with a glued path fragment before the substitution -> deny (X34-control)" \
+    "env -C ../\$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
