@@ -2660,9 +2660,12 @@ run_fence deny no "$HIMMEL" "env -C (two spaces) \$(...; separator inside) -> de
 # such as `x=$(cat <<'EOF' <N x '('> EOF)`, where X19's flat padding never
 # goes. Pad AT depth instead: N '(' characters nested inside one $(...) via
 # a heredoc body (each '(' is data to the heredoc, but pushes the fence's
-# stack all the same), at two sizes either side of J1323B's measured 48KB
-# fail-open point.
-for X23_N in 65536 122880; do
+# stack all the same). J1323C F1's 32768-byte size cap (checked before any
+# scan runs) now denies both of this test's original sizes on byte count
+# alone, so they no longer reach the stack scan at all - shrink under the
+# cap (codex-3683-panel-3) so the timing check still exercises the O(depth)
+# stack fix itself, not the unrelated size cap.
+for X23_N in 8192 30000; do
     X23_PARENS=$(head -c "$X23_N" /dev/zero | tr '\0' '(')
     # shellcheck disable=SC2016 # single-quoted printf format string: the
     # literal $(...) text is the payload under test, not a real expansion

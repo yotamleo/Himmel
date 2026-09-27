@@ -393,8 +393,13 @@ deny() { # <reason>
 # upgrade path is HIMMEL-3731's incremental last-two-words tracking, which
 # would make the scan itself O(1) per span instead of bounding total input.
 _GF_MAX_CMD_BYTES=32768
-if [ "${#CMD}" -gt "$_GF_MAX_CMD_BYTES" ]; then
-    deny "routed command is ${#CMD} bytes, over the ${_GF_MAX_CMD_BYTES}-byte fence cap (fail-closed, HIMMEL-3683/J1323C F1 - a command this size cannot be scanned within the hook timeout)"
+# `${#CMD}` is a CHARACTER count under the shell's locale, not a byte count -
+# in a multibyte (UTF-8) locale a command padded with multibyte characters
+# undercounts its true byte length, so the cap must measure real bytes
+# (codex-3683-panel-2).
+_GF_CMD_BYTES=$(LC_ALL=C printf '%s' "$CMD" | wc -c)
+if [ "$_GF_CMD_BYTES" -gt "$_GF_MAX_CMD_BYTES" ]; then
+    deny "routed command is ${_GF_CMD_BYTES} bytes, over the ${_GF_MAX_CMD_BYTES}-byte fence cap (fail-closed, HIMMEL-3683/J1323C F1 - a command this size cannot be scanned within the hook timeout)"
 fi
 
 # HIMMEL-1776 (fence parity by extraction): file-readability and endpoint-host
