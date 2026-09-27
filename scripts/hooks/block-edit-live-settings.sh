@@ -1422,6 +1422,16 @@ _tok_single_segment_ok() {
 # when no redirect TARGET word (ST_RO-marked) itself names a live settings
 # leaf — a real write onto settings.json/settings.local.json still falls
 # through to main's deny, same as today.
+#
+# A redirect target is rejected outright when it carries a live `$`
+# expansion or an unquoted glob/brace (ST_X/ST_G — codex round-8 Critical):
+# the literal-text substring scan below only catches a target word that
+# SPELLS `settings.json`, so `echo hi > "$TARGET"` sailed through — the
+# word `$TARGET` never contains that substring, yet at runtime it can
+# expand to a live settings path and the redirect genuinely writes it.
+# ST_X/ST_G are set by the tokenizer whenever a word's actual value is not
+# fully known from its text alone, so any such target is ambiguous and
+# falls through to main's deny, the same as an unresolvable substring.
 _himmel_3761_mention_only_ok() {
     local k=0 w lw
     _tok_single_segment_ok || return 1
@@ -1431,6 +1441,7 @@ _himmel_3761_mention_only_ok() {
     esac
     while [ "$k" -lt "$ST_N" ]; do
         if [ -n "${ST_RO[k]}" ]; then
+            [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1
             w=${ST_W[k]}
             lw=$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')
             case "$lw" in
@@ -1485,16 +1496,22 @@ _himmel_3761_mention_only_ok() {
 # from command text), so each path must be either bare-relative
 # (`.claude/worktrees/$wt_name/…`, resolved against cwd like any relative
 # path) or prefixed with EXACTLY that real root — never a wildcard prefix.
+#
+# The two path values are read from ST_W (the ORIGINAL-case tokens), never
+# ST_LW (codex round-8 Critical): `.claude` is a fixed-case literal on a
+# case-sensitive filesystem, and an earlier draft matched it via the
+# lowercased array, so an attacker-planted `.CLAUDE/worktrees/<name>/…`
+# tree — a wholly distinct directory from the real `.claude/worktrees/…`
+# one on Linux — folded to the same lowercase text and passed. Comparing
+# the raw-case token against the lowercase-literal `.claude/worktrees/`
+# pattern means only the real, exact-case directory can ever match, so
+# `$real_root` is also compared in its own original case — no `st_lower`
+# call on it, and no mismatch to fix, since both sides now share whatever
+# case the tool call's own cwd and command text actually used.
 _himmel_3761_worktree_settings_check_ok() {
-    local k=1 lw has_check=0 settings_path='' script_path='' next_is_settings=0 wt_name=''
+    local k=1 w lw has_check=0 settings_path='' script_path='' next_is_settings=0 wt_name=''
     local real_root=$cwd
     [ -z "$nested_wt_primary" ] || real_root=$nested_wt_primary
-    # ST_LW is lowercased (st_lower, line ~410), so settings_path/script_path
-    # below are lowercase too; real_root must be lowered the same way before
-    # comparison, or a real_root with any uppercase byte (a mixed-case
-    # mktemp dir, common in this suite's own SANDBOX) would never match.
-    st_lower "$real_root"
-    real_root=$ST_LOWER
     local wt_name_re='(^|/)\.claude/worktrees/([^/]+)/\.claude/settings\.json$'
     _tok_single_segment_ok || return 1
     case "${ST_LW[0]##*/}" in
@@ -1502,7 +1519,7 @@ _himmel_3761_worktree_settings_check_ok() {
         *) return 1 ;;
     esac
     [ "$ST_N" -ge 2 ] || return 1
-    script_path=${ST_LW[1]}
+    script_path=${ST_W[1]}
     case "${script_path##*/}" in
         wire-hook-bash.mjs) ;;
         *) return 1 ;;
@@ -1510,8 +1527,9 @@ _himmel_3761_worktree_settings_check_ok() {
     while [ "$k" -lt "$ST_N" ]; do
         [ -z "${ST_RO[k]}" ] || return 1
         lw=${ST_LW[k]}
+        w=${ST_W[k]}
         if [ "$next_is_settings" = 1 ]; then
-            settings_path=$lw
+            settings_path=$w
             next_is_settings=0
         fi
         case "$lw" in

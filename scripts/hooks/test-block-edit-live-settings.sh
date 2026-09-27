@@ -1565,6 +1565,29 @@ printf 'console.log(1)\n' > "$EVILROOT/scripts/hooks/wire-hook-bash.mjs"
 assert_rc "233 node <fake worktree script> --check --settings <fake worktree settings, outside real root> denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $EVILROOT/scripts/hooks/wire-hook-bash.mjs --check --settings $EVILROOT/.claude/settings.json")"
 
+# 234: printf mentioning a settings.json filename as plain text, but
+# redirecting to a VARIABLE target -> DENY. The mention-only rule only
+# inspects the LITERAL text of a redirect target for a settings-leaf
+# substring; a bare `$TARGET` never spells one, yet at runtime it can expand
+# to a live settings path, so the redirect target must be rejected whenever
+# it carries any live expansion at all, not scanned for a literal substring
+# (codex round-8 Critical).
+assert_rc "234 printf mentioning settings.json, redirect to a variable target, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'printf "see settings.json for details" > "$TARGET"')"
+
+# 235: a fake worktree tree planted at a DIFFERENT case (.CLAUDE/worktrees/…
+# instead of .claude/worktrees/…), same cwd as PRIMARY -> DENY. On a
+# case-sensitive filesystem this is a wholly distinct directory from the
+# real `.claude/worktrees/…` one; comparing the settings/script path against
+# a lowercased copy of the command folded the two together (codex round-8
+# Critical). Proves the path values are matched in their ORIGINAL case.
+CASEROOT="$PRIMARY/.CLAUDE/worktrees/feat+x"
+mkdir -p "$CASEROOT/.CLAUDE" "$CASEROOT/scripts/hooks"
+printf '{}\n' > "$CASEROOT/.CLAUDE/settings.json"
+printf 'console.log(1)\n' > "$CASEROOT/scripts/hooks/wire-hook-bash.mjs"
+assert_rc "235 node <script under .CLAUDE/worktrees> --check --settings <settings under .CLAUDE/worktrees> denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $CASEROOT/scripts/hooks/wire-hook-bash.mjs --check --settings $CASEROOT/.CLAUDE/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
