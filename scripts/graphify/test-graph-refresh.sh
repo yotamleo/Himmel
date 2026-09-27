@@ -225,6 +225,21 @@ assert_contains "dry-run mentions cadence status plan" "status" "$out"
 assert_eq "dry-run invoked the runner zero times" "" "$(cat "$RUNNER_LOG")"
 
 # ============================================================================
+# Test 4b (HIMMEL-3718): GRAPHIFY_LUNA_OUT_ROOT threads --out-root into the
+# luna leg only -- himmel's own graphify-out stays in-corpus (HIMMEL-1123), so
+# graph-out-root.sh resolves it to empty and the himmel leg must never see
+# the flag.
+# ============================================================================
+echo "TEST: GRAPHIFY_LUNA_OUT_ROOT adds --out-root to the luna leg only"
+reset_runner_log
+rc=0; out=$(GRAPHIFY_LUNA_OUT_ROOT="/out/root" run_refresh both --vault "$VAULT" --dry-run 2>&1) || rc=$?
+assert_rc "out-root dry-run rc 0" 0 "$rc"
+luna_dry=$(printf '%s\n' "$out" | grep '\[luna\]' || true)
+himmel_dry_or=$(printf '%s\n' "$out" | grep '\[himmel\]' || true)
+assert_contains "out-root dry-run luna leg carries --out-root" "--out-root /out/root" "$luna_dry"
+assert_not_contains "out-root dry-run himmel leg has no --out-root" "--out-root" "$himmel_dry_or"
+
+# ============================================================================
 # Test 5: serial both -> order luna then himmel, canonical arg sets, hint, status
 # ============================================================================
 echo "TEST: serial both invokes luna then himmel with the canonical arg sets"

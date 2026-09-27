@@ -2176,4 +2176,26 @@ if [ -n "${CYGPATH_STUB_DIR:-}" ]; then
     fi
 fi
 
+# Test C-outroot (HIMMEL-3718): cron_payload / ast_cron_payload accept an
+# optional out-root/out-dir arg and emit the flag ONLY when it is non-empty --
+# the empty case is already covered above (the luna/himmel runner asserts
+# never see --out-root/GRAPHIFY_OUT= today, since no test here sets
+# GRAPHIFY_LUNA_OUT_ROOT), so this unit-tests the plumbing directly rather
+# than re-running the whole hermetic cron_arm harness a second time.
+echo "TEST: cron_payload / ast_cron_payload out-root wiring (HIMMEL-3718)"
+CP_SRC="$(sed -n '/^cron_payload()/,/^}/p' "$SCRIPT")"
+ACP_SRC="$(sed -n '/^ast_cron_payload()/,/^}/p' "$SCRIPT")"
+run_cp() { bash -c "BACKEND=claude-cli"$'\n'"$CP_SRC"$'\n''cron_payload "$@"' _ "$@"; }
+run_acp() { bash -c "$ACP_SRC"$'\n''ast_cron_payload "$@"' _ "$@"; }
+
+cp_no_root=$(run_cp bash script.sh luna corpus maps title slug tag)
+assert_not_contains "cron_payload omits --out-root when unset" "--out-root" "$cp_no_root"
+cp_with_root=$(run_cp bash script.sh luna corpus maps title slug tag /out/root)
+assert_contains "cron_payload appends --out-root when set" "--out-root /out/root" "$cp_with_root"
+
+acp_no_dir=$(run_acp bash script.sh corpus)
+assert_not_contains "ast_cron_payload omits GRAPHIFY_OUT= when unset" "GRAPHIFY_OUT=" "$acp_no_dir"
+acp_with_dir=$(run_acp bash script.sh corpus /out/root/graphify-out)
+assert_contains "ast_cron_payload prefixes GRAPHIFY_OUT= when set" "GRAPHIFY_OUT=/out/root/graphify-out " "$acp_with_dir"
+
 summary
