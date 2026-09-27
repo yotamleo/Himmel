@@ -305,7 +305,7 @@ function Test-ConfigSeedStale {
   try {
     $sentinel = Join-Path $ConfigDir '.seeded'
     if (-not (Test-Path -LiteralPath $sentinel)) { return $false }
-    $sentinelTime = (Get-Item -LiteralPath $sentinel).LastWriteTimeUtc
+    $sentinelTime = (Get-Item -Force -LiteralPath $sentinel).LastWriteTimeUtc
     $src = Join-Path $HomeDir '.claude'
     foreach ($rel in @('settings.json', 'CLAUDE.md', 'RTK.md', (Join-Path 'plugins' 'installed_plugins.json'), (Join-Path 'plugins' 'known_marketplaces.json'), (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json')), 'claude-hud.json')) {
       $s = Join-Path $src $rel
@@ -354,7 +354,7 @@ function Test-SeedLockStale {
   # $true when $Lock exists and its mtime is older than $SeedLockStale seconds.
   if (-not (Test-Path -LiteralPath $Lock -PathType Container)) { return $false }
   try {
-    $age = ([DateTime]::UtcNow - (Get-Item -LiteralPath $Lock).LastWriteTimeUtc).TotalSeconds
+    $age = ([DateTime]::UtcNow - (Get-Item -Force -LiteralPath $Lock).LastWriteTimeUtc).TotalSeconds
     return ($age -ge $SeedLockStale)
   } catch { return $false }
 }

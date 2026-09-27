@@ -221,6 +221,29 @@ $env:CLAUDE_CONFIG_DIR = $cfg14d
 Wire $s14d $repoRoot | Out-Null
 $c14d = Get-Content (Join-Path $cfg14d 'claude-hud.json') -Raw | ConvertFrom-Json
 Check ($c14d.display.customLineCommand -eq "bash `"$repoRoot/scripts/statusline/hud-custom-lines.sh`"") "14d a foreign FOO=1 prefix is not carried"
+
+# 15 HIMMEL-3334 codex-1 (suggestion): starting from ONLY a legacy-path hud
+# config (no new-path file at all -- the pre-migration state), a rewire must
+# publish the new-path config carrying the previous config's
+# HIMMEL_STATUSLINE_ECON prefix forward, and remove the legacy file since its
+# customLineCommand matches himmel's own shape. Parity with bash case 40.
+$cfg15 = Join-Path $tmp 'cfg15'
+$hud15 = Join-Path $cfg15 'plugins/claude-hud'
+$proj15 = Join-Path $tmp 'proj15'
+New-Item -ItemType Directory -Force (Join-Path $proj15 '.claude') | Out-Null
+New-Item -ItemType Directory -Force $hud15 | Out-Null
+$s15 = Join-Path $proj15 '.claude/settings.json'
+$env:CLAUDE_CONFIG_DIR = $cfg15
+'{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $hud15 'config.json')
+Check (-not (Test-Path (Join-Path $cfg15 'claude-hud.json'))) "15 precondition: new-path config must not pre-exist"
+Wire $s15 $repoRoot | Out-Null
+$newPath15 = Join-Path $cfg15 'claude-hud.json'
+Check (Test-Path $newPath15) "15a migration published the new-path config"
+if (Test-Path $newPath15) {
+    $c15 = Get-Content $newPath15 -Raw | ConvertFrom-Json
+    Check ($c15.display.customLineCommand.StartsWith('HIMMEL_STATUSLINE_ECON=off ')) "15b HIMMEL_STATUSLINE_ECON=off prefix carried forward from a legacy-only config"
+}
+Check (-not (Test-Path (Join-Path $hud15 'config.json'))) "15c himmel-owned legacy config was removed after migration"
 $env:CLAUDE_CONFIG_DIR = $cfgDir
 
 $env:CLAUDE_CONFIG_DIR = $prevClaudeConfigDir

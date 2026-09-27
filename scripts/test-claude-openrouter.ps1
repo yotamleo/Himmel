@@ -183,7 +183,7 @@ try {
   $hudNew = Join-Path $FAKEHOME '.claude-openrouter\claude-hud.json'
   if (Test-Path -LiteralPath $hudNew) { Pass 'claude-hud.json (new path) seeded' } else { Fail 'claude-hud.json (new path) not seeded' }
   if (FileHas $hudNew 'new-path') { Pass 'seeded claude-hud.json content matches source' } else { Fail 'seeded claude-hud.json content mismatch' }
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-openrouter\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude-openrouter\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
   '{"display":{"customLineCommand":"new-path-updated"}}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\claude-hud.json') -NoNewline
   Assert-Exit (Invoke-Launcher) 0 'new hud path staleness triggers reseed'
   if (FileHas $hudNew 'new-path-updated') { Pass 'new-path hud change triggered reseed' } else { Fail 'new-path hud change did not trigger reseed' }

@@ -176,7 +176,7 @@ try {
 
   # --- T7b: stale seed auto-refreshes on plain launch (HIMMEL-819) — source
   # settings.json newer than the sentinel triggers a reseed without -Reseed. ---
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
   '{"env":{"HIMMEL_INITIATIVE":"1"},"marker":"lean-profile-v2"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json') -NoNewline
   Assert-Exit (Invoke-Launcher) 0 'stale seed auto-refreshes'
   if (FileHas (Join-Path $FAKEHOME '.claude-routed\settings.json') 'lean-profile-v2') { Pass 'stale seed refreshed on plain launch' } else { Fail 'stale seed not refreshed on plain launch' }
@@ -188,9 +188,9 @@ try {
   foreach ($srcRel in @('.claude\settings.json', '.claude\plugins\installed_plugins.json', '.claude\plugins\known_marketplaces.json',
                         '.claude\commands', '.claude\skills', '.claude\hooks', '.claude\agents', '.claude\plugins\marketplaces')) {
     $p = Join-Path $FAKEHOME $srcRel
-    if (Test-Path -LiteralPath $p) { (Get-Item -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
+    if (Test-Path -LiteralPath $p) { (Get-Item -Force -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
   }
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
   Assert-Exit (Invoke-Launcher) 0 'fresh sentinel skips reseed'
   if (FileHas (Join-Path $FAKEHOME '.claude-routed\settings.json') 'tamper-survives') { Pass 'fresh sentinel skipped reseed' } else { Fail 'fresh sentinel still reseeded' }
 
@@ -201,7 +201,7 @@ try {
 
   # --- T7e: CLAUDE_LANE_AUTO_RESEED=0 opt-out — stale state left alone on plain launch ---
   '{"env":{"HIMMEL_INITIATIVE":"1"},"marker":"optout-should-not-land"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json') -NoNewline
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
   $env:CLAUDE_LANE_AUTO_RESEED = '0'
   Assert-Exit (Invoke-Launcher) 0 'opt-out skips auto-reseed'
   Remove-Item Env:CLAUDE_LANE_AUTO_RESEED
@@ -236,7 +236,7 @@ try {
   $hudNew = Join-Path $FAKEHOME '.claude-routed\claude-hud.json'
   if (Test-Path -LiteralPath $hudNew) { Pass 'claude-hud.json (new path) seeded' } else { Fail 'claude-hud.json (new path) not seeded' }
   if (FileHas $hudNew 'new-path') { Pass 'seeded claude-hud.json content matches source' } else { Fail 'seeded claude-hud.json content mismatch' }
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-01-01'
   '{"display":{"customLineCommand":"new-path-updated"}}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\claude-hud.json') -NoNewline
   Assert-Exit (Invoke-Launcher) 0 'new hud path staleness triggers reseed'
   if (FileHas $hudNew 'new-path-updated') { Pass 'new-path hud change triggered reseed' } else { Fail 'new-path hud change did not trigger reseed' }
@@ -415,9 +415,9 @@ try {
   Remove-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands') -Recurse -Force  # dest subtree vanishes
   foreach ($srcRel in @('.claude\settings.json', '.claude\plugins\installed_plugins.json', '.claude\plugins\known_marketplaces.json', '.claude\commands')) {
     $p = Join-Path $FAKEHOME $srcRel
-    if (Test-Path -LiteralPath $p) { (Get-Item -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
+    if (Test-Path -LiteralPath $p) { (Get-Item -Force -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
   }
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
   Assert-Exit (Invoke-Launcher) 0 'half-seeded tree triggers reseed on plain launch'
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands\keep.md')) { Pass 'missing subtree restored by self-heal reseed' } else { Fail 'missing subtree NOT restored (half-seed not detected)' }
 
@@ -432,11 +432,11 @@ try {
   Assert-Exit (Invoke-Launcher) 0 'seed before subtree drift'
   foreach ($srcRel in @('.claude\settings.json', '.claude\plugins\installed_plugins.json', '.claude\plugins\known_marketplaces.json')) {
     $p = Join-Path $FAKEHOME $srcRel
-    if (Test-Path -LiteralPath $p) { (Get-Item -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
+    if (Test-Path -LiteralPath $p) { (Get-Item -Force -LiteralPath $p).LastWriteTimeUtc = [datetime]'2020-01-01' }
   }
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-06-01'
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]'2020-06-01'
   Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude\commands\two.md') -Value 'b'  # new source command
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude\commands')).LastWriteTimeUtc = [datetime]::UtcNow
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude\commands')).LastWriteTimeUtc = [datetime]::UtcNow
   Assert-Exit (Invoke-Launcher) 0 'source subtree drift auto-reseeds on plain launch'
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands\two.md')) { Pass 'new source command mirrored by subtree-drift reseed' } else { Fail 'new source command NOT mirrored (subtree drift not detected)' }
 
@@ -475,8 +475,8 @@ try {
   Assert-Exit (Invoke-Launcher) 0 'source-deleted subtree triggers a mirror reseed'
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\commands')) { Fail 'stale lane subtree survived source deletion' } else { Pass 'stale lane subtree removed (deletion mirrored)' }
   '{"local":"tamper-stable"}' | Set-Content -LiteralPath (Join-Path $FAKEHOME '.claude-routed\settings.json') -NoNewline
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json')).LastWriteTimeUtc = [datetime]'2020-01-01'
-  (Get-Item -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude\settings.json')).LastWriteTimeUtc = [datetime]'2020-01-01'
+  (Get-Item -Force -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')).LastWriteTimeUtc = [datetime]::UtcNow
   Assert-Exit (Invoke-Launcher) 0 'no further churn after deletion mirrored'
   if (FileHas (Join-Path $FAKEHOME '.claude-routed\settings.json') 'tamper-stable') { Pass 'stable after mirror (no churn)' } else { Fail 'churns after deletion mirrored' }
 
@@ -508,7 +508,7 @@ try {
   New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
   $lockDir = Join-Path $FAKEHOME '.claude-routed.seed-lock'
   New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
-  (Get-Item -LiteralPath $lockDir).LastWriteTimeUtc = [datetime]'2020-01-01'   # older than the 120s default stale window
+  (Get-Item -Force -LiteralPath $lockDir).LastWriteTimeUtc = [datetime]'2020-01-01'   # older than the 120s default stale window
   Assert-Exit (Invoke-Launcher) 0 'stale seed lock is stolen and seed proceeds'
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')) { Pass 'seed completed after stealing stale lock' } else { Fail 'seed did not complete after stealing stale lock' }
   if (Test-Path -LiteralPath $lockDir) { Fail 'stale lock not released after seed' } else { Pass 'stale lock released after seed' }
