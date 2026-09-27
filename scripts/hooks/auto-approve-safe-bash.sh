@@ -861,16 +861,12 @@ scan_cmd() {
             i=$((i + 1)); continue
         fi
         # --- unquoted ---
-        if [ "$cm" = 1 ]; then                       # inside a real # comment
-            if [ "$c" = "$NL" ]; then                # the ONE thing that ends it
-                cm=0
-                SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
-                SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue
-            fi
-            seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0
-            i=$((i + 1)); continue
-        fi
         nx="${s:$((i + 1)):1}"
+        if [ "$cm" = 1 ] && [ "$c" = "$NL" ]; then   # a newline always ends a comment
+            cm=0
+            SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
+            SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue
+        fi
         case "$c" in
             "'") st=1; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
             '"') st=2; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
@@ -878,6 +874,9 @@ scan_cmd() {
                 [ "$aws" = 1 ] && cm=1
                 seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue ;;
             "\\")
+                if [ "$cm" = 1 ]; then               # inside a comment: no continuation fold
+                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue
+                fi
                 if [ "$nx" = "$NL" ]; then          # line continuation: remove both bytes
                     SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
                 fi

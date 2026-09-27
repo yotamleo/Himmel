@@ -955,6 +955,15 @@ assert "\$# does not block a real continuation"            ALLOW "$(decide "$(j_
 assert "\${#x} does not block a real continuation"          ALLOW "$(decide "$(j_bash "echo \${#x} \\"$'\n'"echo c")")"
 assert "mid-word # does not block a real continuation"     ALLOW "$(decide "$(j_bash "echo foo#bar \\"$'\n'"echo c")")"
 
+# --- J1385A (HIMMEL-3762 NO-GO finding 1): a comment must still SPLIT on an
+# unquoted separator exactly as it does outside a comment — the fix must only
+# suppress the backslash-newline continuation fold, never the segment break.
+# main already denies (PASS) these, so head must match, never widen to ALLOW.
+assert "; after a comment start still splits the segment"  PASS "$(decide "$(j_bash 'echo hi #x; touch MARKER')")"
+assert "&& after a comment start still splits the segment" PASS "$(decide "$(j_bash 'echo hi #x && touch M')")"
+assert "| after a comment start still splits the segment"  PASS "$(decide "$(j_bash 'echo hi #x | sh')")"
+assert "& after a comment start still splits the segment"  PASS "$(decide "$(j_bash 'echo hi #x & touch M')")"
+
 # --- HIMMEL-3734 (J1300A finding 7): a brace-expanded root among the
 # find path operands (\`{/,.}\` -> \`/ .\`) must DENY as a root-walk.
 assert "find brace-expanded root DENY" DENY "$(decide "$(j_bash 'find {/,.} -name x')")"
