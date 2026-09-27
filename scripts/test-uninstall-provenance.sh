@@ -1838,6 +1838,44 @@ check "RED56: a torn row does not abort a normal (non-purge) uninstall" "$rc56" 
 check "RED56: the good row's unit still restores normally on a normal uninstall" \
   "$AFTER_GOOD56_BYTES" "$ORIG_GOOD56_BYTES"
 
+echo "==== RED57 (HIMMEL-3787): a backup file with NO ledger row at all -- not even a torn one -- must refuse --purge-state (orphan-backup-dir scan alone, independent of PROV_READ_BAD_ROWS) ===="
+# Simulates a crash between writing the backup and appending ANY row for it
+# (not even a truncated line): the ledger is fully well-formed and has zero
+# bad rows, so RED55's "any bad row refuses" half of the fix has nothing to
+# catch this -- only the backup-directory orphan scan (contract 3(b)) can.
+new_case red57
+mkdir -p "$CASE_DIR/cwd/scripts"
+DEST_GOOD57="$CASE_DIR/cwd/scripts/good.sh"
+printf '#!/bin/sh\necho original-good\n' > "$DEST_GOOD57"
+ORIG_GOOD57_BYTES=$(cat "$DEST_GOOD57")
+SNAP_GOOD57=$(mktemp "$SUITE_TMP/SNAPG57.XXXXXX") || exit 1
+cp -p "$DEST_GOOD57" "$SNAP_GOOD57"
+printf '#!/bin/sh\necho himmel-installed-good\n' > "$DEST_GOOD57"
+( prov_begin --writer adopt.sh -- seed-red57 >/dev/null
+  prov_record replace file "$DEST_GOOD57" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP_GOOD57" --backup --post-file "$DEST_GOOD57" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP_GOOD57"
+# an orphan backup with NO ledger row referencing it at all -- the ledger
+# above is fully well-formed (PROV_READ_BAD_ROWS stays 0).
+mkdir -p "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+ORPHAN57="$HIMMEL_PROVENANCE_DIR/provenance-backups/orphan-red57.pre.backup"
+printf 'orphan-backup-content-red57\n' > "$ORPHAN57"
+BACKUPS57_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+check "RED57: setup actually created two backups, one orphan (control is not vacuous)" "$BACKUPS57_BEFORE" "2"
+out57=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks --skip-settings)
+rc57=$?
+BACKUPS57_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+REFUSED57=$([ "$rc57" -ne 0 ] && echo yes || echo no)
+warn57=$(printf '%s\n' "$out57" | grep -c -F "refused to purge")
+check "RED57: --purge-state refuses (non-zero) when an orphan backup has no ledger row at all" "$REFUSED57" "yes"
+check "RED57: a refusal warning is printed" "$([ "$warn57" -ge 1 ] && echo yes || echo no)" "yes"
+check "RED57: refusing means deleting nothing -- both backups survive, including the orphan" "$BACKUPS57_AFTER" "$BACKUPS57_BEFORE"
+check "RED57: the orphan backup file itself still exists" "$([ -f "$ORPHAN57" ] && echo yes || echo no)" "yes"
+AFTER_GOOD57_BYTES=$(cat "$DEST_GOOD57")
+check "RED57: the good row's unit still restores normally despite the orphan backup" \
+  "$AFTER_GOOD57_BYTES" "$ORIG_GOOD57_BYTES"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \
