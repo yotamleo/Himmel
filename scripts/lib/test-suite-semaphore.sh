@@ -374,7 +374,9 @@ OUT=$(qr "$SEM" HIMMEL_SUITE_SLOTS=1 "PATH=$FAKE_PS_DIR:$PATH" -- \
     sh -c 'cp "$1/slot-1/owner" "$2" 2>/dev/null; bash "$0" suite -- true' \
     "$QUIET_RUN" "$SEM" "$SNAP" 2>&1); RC=$?
 OWNER_ID=$(sed -n 's/^identity=//p' "$SNAP" 2>/dev/null)
-if [ -n "$OWNER_ID" ]; then
+if [ ! -s "$SNAP" ]; then
+    fail "HIMMEL-3778 fault-injection setup: owner snapshot $SNAP was not captured (cp failed) -- cannot verify the ps shim fired, an empty OWNER_ID here would be a false pass"
+elif [ -n "$OWNER_ID" ]; then
     fail "HIMMEL-3778 fault-injection setup: holder's owner identity is [$OWNER_ID], expected empty -- the ps shim was not exercised, skip is not a pass"
 elif [ "$RC" = "0" ]; then
     pass "HIMMEL-3778: nested quiet-run under an empty-identity live holder proceeds (re-entrant)"

@@ -1186,24 +1186,24 @@ _suite_lock_wait_brand() {
 # touched, so a lock that changed hands (or was released) between judgement
 # and this call is left alone.
 #
-# Returns 0 whenever the guard was won — whether or not a stale owner was
-# actually cleared under it. The caller's own subsequent _suite_lock_claim
-# retry is what discovers a live winner, exactly as suite_sem_acquire does
-# after _suite_sem_reclaim. Returns 1 only when the guard itself could not be
-# won: another reclaimer is already acting, which is ordinary contention, not
-# an operational failure to diagnose.
+# Returns 0 whenever a stale owner was actually cleared, or the CAS found the
+# generation had already moved on (someone else's turn, ordinary). Returns 1
+# when the guard itself could not be won: another reclaimer is already
+# acting, ordinary contention, not an operational failure to diagnose. Returns
+# 2 when the guard was won and the CAS matched, but the delete itself was
+# refused — see below.
 #
 # The actual delete goes through _suite_lock_drop, not a raw mv+rm -rf: SUITE_LOCK_DIR
 # is env-overridable, and a foreign directory that happens to contain a
 # same-shaped `owner` file passes the CAS compare above without ever being a
 # lock this script made. _suite_lock_drop refuses to touch a directory
 # holding anything besides `owner` — the same guard the ordinary release path
-# already relies on — so a foreign directory (Case 2d2) is left untouched
-# even after CAS-matching, at the cost of no longer distinguishing that
-# refusal from an ordinary lost race in the caller's message (both now read
-# as "lost_race").
+# already relies on — so a foreign directory (Case 2d2) is left untouched even
+# after CAS-matching. That case returns 2 rather than folding into the guard's
+# ordinary 0/1, so the caller can tell a directory that will never clear on
+# its own from a takeover that merely lost the race.
 _suite_lock_reclaim() {
-  local expected="$1" guard="${SUITE_LOCK_DIR}.reclaim"
+  local expected="$1" guard="${SUITE_LOCK_DIR}.reclaim" rc=0
   if ! mkdir "$guard" 2>/dev/null; then
     # A reclaimer killed mid-way leaves the guard behind; free it late.
     [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$guard" 2>/dev/null  # gnu-ok: -maxdepth/-mmin are BSD find too
@@ -1211,9 +1211,10 @@ _suite_lock_reclaim() {
   fi
   if [ "$(_suite_lock_owner_raw "$SUITE_LOCK_DIR")" = "$expected" ]; then
     _suite_lock_drop "$SUITE_LOCK_DIR" 2>/dev/null
+    [ -e "$SUITE_LOCK_DIR" ] && rc=2
   fi
   rmdir "$guard" 2>/dev/null
-  return 0
+  return "$rc"
 }
 
 _suite_lock_owner_field() {
@@ -1970,7 +1971,7 @@ suite_lock_acquire() {
   # the other direction ("ALIVE") on a probe that cannot show identity.
   # pid_unknown is the third outcome: the probe was refused for a reason
   # other than "no such process", which proves nothing either way.
-  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 probe_rc
+  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 foreign_lock=0 probe_rc reclaim_rc
   this_host=$(_suite_lock_host)
   if _suite_lock_same_host "$o_host" "$this_host"; then same_host=1; fi
   if [ -n "$o_pid" ] && [ "$same_host" -eq 1 ]; then
@@ -2010,22 +2011,41 @@ suite_lock_acquire() {
     # must succeed. Either one losing means an ordinary refusal: someone else
     # got the freed slot, is already reclaiming it, or the lock turned out to
     # be live after all.
-    if _suite_lock_reclaim "$o_raw" && _suite_lock_claim; then
+    _suite_lock_reclaim "$o_raw"
+    reclaim_rc=$?
+    if [ "$reclaim_rc" -eq 0 ] && _suite_lock_claim; then
       printf 'NOTE: cleared an abandoned suite lock (pid=%s host=%s age=%s) at %s\n' \
         "${o_pid:-?}" "${o_host:-?}" "$age_disp" "$SUITE_LOCK_DIR" >&2
       return 0
     fi
-    # A lost race means the generation read above — and every field derived
-    # from it — is KNOWN stale: the CAS exists precisely to catch a lock
-    # changing hands under a judgement, and it just did (HIMMEL-1805). The
-    # refusal must not present that snapshot as the current holder, nor
-    # counsel TTL arithmetic out of an age that no longer describes anything.
-    lost_race=1
+    if [ "$reclaim_rc" -eq 2 ]; then
+      # _suite_lock_reclaim won the guard and CAS-matched, but _suite_lock_drop
+      # refused: SUITE_LOCK_DIR holds something besides `owner` (Case 2d2). This
+      # is not contention — no amount of re-running clears foreign content — so
+      # it gets its own message rather than folding into lost_race below.
+      foreign_lock=1
+    else
+      # A lost race means the generation read above — and every field derived
+      # from it — is KNOWN stale: the CAS exists precisely to catch a lock
+      # changing hands under a judgement, and it just did (HIMMEL-1805). The
+      # refusal must not present that snapshot as the current holder, nor
+      # counsel TTL arithmetic out of an age that no longer describes anything.
+      lost_race=1
+    fi
   fi
 
   if [ "$suite_lock_quiet" -eq 0 ]; then
   {
-    if [ "$lost_race" -eq 1 ]; then
+    if [ "$foreign_lock" -eq 1 ]; then
+      printf 'REFUSED: %s holds content besides an owner file and cannot be reclaimed automatically.\n' \
+        "$SUITE_LOCK_DIR"
+      printf '  This run judged the lock abandoned (last observed pid=%s host=%s age=%s), but\n' \
+        "${o_pid:-unknown}" "${o_host:-unknown}" "$age_disp"
+      printf '  refused to delete it once it won the right to try: the directory is not the\n'
+      printf '  shape a lock this script made ever takes (owner file only), so it is left\n'
+      printf '  untouched rather than risk deleting something else. Re-running will NOT\n'
+      printf '  clear this on its own — inspect %s by hand.\n' "$SUITE_LOCK_DIR"
+    elif [ "$lost_race" -eq 1 ]; then
       printf 'REFUSED: lost the race to take over the machine lock of scan root "%s".\n' "$scan"
       printf '  lock: %s\n' "$SUITE_LOCK_DIR"
       printf '  Concurrent runs test the same tree and starve each other (HIMMEL-1338).\n'

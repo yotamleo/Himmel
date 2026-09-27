@@ -413,16 +413,20 @@ fi
 # the same shape-check the ordinary release path already relies on -- it wins
 # the .reclaim guard (the CAS still matches: nothing touched the decoy in the
 # interim) but refuses to delete a directory holding anything besides `owner`,
-# so it returns 0 having deleted nothing. _suite_lock_claim's own mkdir then
-# fails against the still-present foreign directory, so this is reported as an
-# ordinary lost race (TAKEOVER IN PROGRESS) rather than a dedicated verdict --
-# a caller cannot tell "foreign content" apart from "someone else won", but
-# nothing is ever deleted either way, which is the property this case exists
-# to protect.
-if grepq "$out2d2" -F 'TAKEOVER IN PROGRESS'; then
-  pass "the undroppable-foreign-directory case reads as an ordinary lost race"
+# so _suite_lock_reclaim returns 2 having deleted nothing (codex-1, round 1: an
+# earlier version of this case folded this into an ordinary lost race, so a
+# caller retrying on the "re-run in a moment" advice would never converge --
+# nothing about a foreign directory changes on its own). The caller now tells
+# the two apart and prints a dedicated operational-error message instead.
+if grepq "$out2d2" -F 'cannot be reclaimed automatically'; then
+  pass "the undroppable-foreign-directory case gets its own operational-error verdict"
 else
-  fail "foreign owner-file dir missing the TAKEOVER IN PROGRESS verdict; output: $out2d2"
+  fail "foreign owner-file dir missing the dedicated foreign-lock verdict; output: $out2d2"
+fi
+if grepq "$out2d2" -F 'TAKEOVER IN PROGRESS'; then
+  fail "foreign owner-file dir wrongly read as an ordinary lost race; output: $out2d2"
+else
+  pass "the undroppable-foreign-directory case is not mistaken for an ordinary lost race"
 fi
 if [ "$rc2d" -eq 2 ]; then
   pass "an unusable lock path refuses (rc 2) rather than proceeding unlocked"
