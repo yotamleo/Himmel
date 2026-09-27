@@ -28,7 +28,17 @@ W="$(mktemp -d -t bank-preflight-fleet.XXXXXX)" || { echo "FAIL - could not crea
 if [ -z "$W" ] || [ ! -d "$W" ]; then echo "FAIL - mktemp returned an empty/invalid scratch dir" >&2; exit 1; fi
 trap 'rm -rf "$W"' EXIT
 NOW="$(date +%s)"
-HEALTHY_CACHE="{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}"
+
+# HIMMEL-1712: hermetic identity so the cache fixture below matches the
+# current session -- this suite is about the reservation race, not identity.
+export HOME="$W/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-fleet-test"}}' > "$HOME/.claude.json"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$REPO/scripts/lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
+
+HEALTHY_CACHE="{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW,\"account\":\"$ACCT\"}"
 printf '%s' "$HEALTHY_CACHE" > "$W/c.json"
 
 check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";

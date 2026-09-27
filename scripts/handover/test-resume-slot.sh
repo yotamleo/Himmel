@@ -15,6 +15,18 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 FAILED=0
 
+# HIMMEL-1712: hermetic identity so every raw/mk_cache fixture below can
+# stamp the SAME matching account hash -- this suite is about slot-picking
+# math, not identity, and a dedicated account-mismatch case is added
+# separately below.
+export HOME="$TMP/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-resume-slot-test"}}' > "$HOME/.claude.json"
+IDLIB="$(cd "$(dirname "$0")" && pwd)/../lib/usage-cache-identity.sh"
+# shellcheck source=../lib/usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$IDLIB"
+ACCT="$(current_account_hash)"
+
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
     if [ "$actual" = "$expected" ]; then echo "PASS $label (rc=$actual)"
@@ -38,8 +50,8 @@ assert_not_contains() {
 # Write a cache fixture with given utils + resets, fresh mtime (now).
 # Usage: mk_cache <path> <five_util> <five_reset_iso> <seven_util> <seven_reset_iso>
 mk_cache() {
-    printf '{"five_hour":{"utilization":%s,"resets_at":"%s"},"seven_day":{"utilization":%s,"resets_at":"%s"}}' \
-        "$2" "$3" "$4" "$5" > "$1"
+    printf '{"five_hour":{"utilization":%s,"resets_at":"%s"},"seven_day":{"utilization":%s,"resets_at":"%s"},"account":"%s"}' \
+        "$2" "$3" "$4" "$5" "$ACCT" > "$1"
 }
 # ISO 8601 UTC string for now + N seconds (python3).
 iso_in() { python3 -c 'import sys,datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=int(sys.argv[1]))).isoformat())' "$1"; }
@@ -122,7 +134,7 @@ assert_rc "T8 bad --threshold exits 1" 1 "$?"
 # ---------------------------------------------------------------------------
 # T9: exhausted window with NULL resets_at -> fail loud (rc 2), NOT silent ASAP
 # ---------------------------------------------------------------------------
-printf '{"five_hour":{"utilization":99.0,"resets_at":null},"seven_day":{"utilization":10.0,"resets_at":"%s"}}' "$(iso_in 604800)" > "$TMP/nullreset.json"
+printf '{"five_hour":{"utilization":99.0,"resets_at":null},"seven_day":{"utilization":10.0,"resets_at":"%s"},"account":"%s"}' "$(iso_in 604800)" "$ACCT" > "$TMP/nullreset.json"
 err=$(bash "$SLOT" --cache "$TMP/nullreset.json" --max-age 0 --emit epoch 2>&1); rc=$?
 assert_rc "T9 exhausted+null-reset exits 2" 2 "$rc"
 assert_contains "T9 surfaces the unsafe-slot reason" "cannot pick a safe slot" "$err"
@@ -133,14 +145,19 @@ assert_contains "T9 surfaces the unsafe-slot reason" "cannot pick a safe slot" "
 printf 'not json at all {' > "$TMP/bad.json"
 err=$(bash "$SLOT" --cache "$TMP/bad.json" --max-age 0 --emit epoch 2>&1); rc=$?
 assert_rc "T10 malformed JSON exits 2" 2 "$rc"
-assert_contains "T10 clean ERR line" "ERR resume-slot: cannot parse usage cache" "$err"
+# HIMMEL-1712: the account-mismatch check runs in bash before the cache ever
+# reaches python, and malformed JSON has no readable .account either -- same
+# fail-closed UNKNOWN path as a missing/old-schema cache, so this is now the
+# ERR line malformed JSON surfaces (still rc=2, still no traceback: python
+# never runs).
+assert_contains "T10 clean ERR line" "ERR resume-slot: usage cache account does not match the current session" "$err"
 assert_not_contains "T10 no python traceback leaks" "Traceback (most recent call last)" "$err"
 
 # ---------------------------------------------------------------------------
 # T11: structurally-empty but valid JSON ({}) -> schema-mismatch rc 2,
 #      NOT a silent 0%-coerced ASAP.
 # ---------------------------------------------------------------------------
-printf '{}' > "$TMP/empty.json"
+printf '{"account":"%s"}' "$ACCT" > "$TMP/empty.json"
 err=$(bash "$SLOT" --cache "$TMP/empty.json" --max-age 0 --emit epoch 2>&1); rc=$?
 assert_rc "T11 schema-empty cache exits 2" 2 "$rc"
 assert_contains "T11 surfaces schema mismatch" "schema mismatch" "$err"
@@ -186,8 +203,8 @@ fi
 # T14: null utilization on one window (HIMMEL-279) — fail loud (rc 2), NOT
 #      silent 0%-coerce into ASAP. Covers the statusline-PR-#2 null path.
 # ---------------------------------------------------------------------------
-printf '{"five_hour":{"utilization":null,"resets_at":"%s"},"seven_day":{"utilization":30.0,"resets_at":"%s"}}' \
-    "$(iso_in 18000)" "$(iso_in 604800)" > "$TMP/null-five.json"
+printf '{"five_hour":{"utilization":null,"resets_at":"%s"},"seven_day":{"utilization":30.0,"resets_at":"%s"},"account":"%s"}' \
+    "$(iso_in 18000)" "$(iso_in 604800)" "$ACCT" > "$TMP/null-five.json"
 t14_out="$TMP/t14-stdout"
 err=$(bash "$SLOT" --cache "$TMP/null-five.json" --max-age 0 --emit epoch 2>&1 >"$t14_out"); rc=$?
 assert_rc "T14 null five_hour util exits 2" 2 "$rc"
@@ -201,8 +218,8 @@ assert_true "T14 no epoch/timestamp emitted on null-util die path (stdout is emp
 # T15: null utilization on BOTH windows (HIMMEL-279) — fail loud (rc 2),
 #      the 0%-coerce would have silently scheduled ASAP into a stalled cap.
 # ---------------------------------------------------------------------------
-printf '{"five_hour":{"utilization":null,"resets_at":"%s"},"seven_day":{"utilization":null,"resets_at":"%s"}}' \
-    "$(iso_in 18000)" "$(iso_in 604800)" > "$TMP/null-both.json"
+printf '{"five_hour":{"utilization":null,"resets_at":"%s"},"seven_day":{"utilization":null,"resets_at":"%s"},"account":"%s"}' \
+    "$(iso_in 18000)" "$(iso_in 604800)" "$ACCT" > "$TMP/null-both.json"
 err=$(bash "$SLOT" --cache "$TMP/null-both.json" --max-age 0 --emit epoch 2>&1); rc=$?
 assert_rc "T15 null both-windows util exits 2" 2 "$rc"
 assert_contains "T15 surfaces null-utilization reason" "utilization is null" "$err"
@@ -222,8 +239,8 @@ ep=$(printf '%s' "$out" | cut -f1)
 match=$(python3 -c 'import sys; print(1 if abs(int(sys.argv[1])-int(sys.argv[2]))<=1 else 0)' "$ep" "$SEVEN_EPOCH")
 assert_true "T16 epoch == seven_day epoch reset" "$match"
 # ...and a numeric (unquoted JSON number) resets_at is accepted too.
-printf '{"five_hour":{"utilization":10.0,"resets_at":%s},"seven_day":{"utilization":95.0,"resets_at":%s}}' \
-    "$((NOW + 9000))" "$SEVEN_EPOCH" > "$TMP/epochnum.json"
+printf '{"five_hour":{"utilization":10.0,"resets_at":%s},"seven_day":{"utilization":95.0,"resets_at":%s},"account":"%s"}' \
+    "$((NOW + 9000))" "$SEVEN_EPOCH" "$ACCT" > "$TMP/epochnum.json"
 out=$(bash "$SLOT" --cache "$TMP/epochnum.json" --max-age 0 --emit reason 2>&1); rc=$?
 assert_rc "T16b numeric resets_at exits 0" 0 "$rc"
 assert_contains "T16b waits for seven-day reset" "wait for seven-day reset" "$out"
@@ -370,6 +387,23 @@ mk_cache "$TMP/at16.json" 2.0 "$(iso_in 9000)" 16.0 "$(iso_in 200000)"
 out=$(RESUME_SLOT_THRESHOLD=97 bash "$SLOT" --cache "$TMP/at16.json" --max-age 0 --emit reason 2>&1); rc=$?
 assert_rc "T20b free bank exits 0" 0 "$rc"
 assert_not_contains "T20b free bank emits no near-wall WARN" "WARN resume-slot" "$out"
+
+# ---------------------------------------------------------------------------
+# T21: HIMMEL-1712 -- a cache stamped for account A, read by a session whose
+# identity is B, is unusable -- same exit 2 / empty-stdout / clean-ERR-line
+# shape as any other unusable cache (T6-T11).
+# ---------------------------------------------------------------------------
+mk_cache "$TMP/mismatch.json" 0.0 "$(iso_in 18000)" 21.0 "$(iso_in 604800)"
+export HOME="$TMP/home-b"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-resume-slot-DIFFERENT"}}' > "$HOME/.claude.json"
+t21_out="$TMP/t21-stdout"
+err=$(bash "$SLOT" --cache "$TMP/mismatch.json" --max-age 0 --emit epoch 2>&1 >"$t21_out"); rc=$?
+export HOME="$TMP/home"
+assert_rc "T21 account-mismatched cache exits 2" 2 "$rc"
+assert_contains "T21 surfaces the account-mismatch reason" "usage cache account does not match the current session" "$err"
+t21_stdout=$(cat "$t21_out" 2>/dev/null || echo "")
+t21_empty=0; [ -z "$t21_stdout" ] && t21_empty=1
+assert_true "T21 no epoch/timestamp emitted on account-mismatch die path (stdout is empty)" "$t21_empty"
 
 # ---------------------------------------------------------------------------
 # Summary
