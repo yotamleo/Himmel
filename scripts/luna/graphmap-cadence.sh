@@ -1862,6 +1862,11 @@ cron_existing() {
 # name/slug/tag/backend are fixed ASCII literals.
 cron_payload() {
     local q_bash="$1" q_script="$2" name="$3" q_corpus="$4" q_maps="$5" q_title="$6" slug="$7" tag="$8" q_out_root="${9:-}"
+    # HIMMEL-3718 CR (codex-1, round 6): refresh-graph-map.sh now falls back to
+    # GRAPHIFY_OUT_ROOT from the environment when --out-root is absent -- clear
+    # it whenever this leg omits --out-root, so an ambient value left over from
+    # the OTHER leg's out-of-corpus run can't redirect this one.
+    if [ -z "$q_out_root" ]; then printf 'unset GRAPHIFY_OUT_ROOT; '; fi
     printf '%s %s --name %s --corpus-root %s --maps-dir %s --title %s --slug %s --backend %s --corpus-tag %s' \
         "$q_bash" "$q_script" "$name" "$q_corpus" "$q_maps" "$q_title" "$slug" "$BACKEND" "$tag"
     if [ -n "$q_out_root" ]; then printf ' --out-root %s' "$q_out_root"; fi

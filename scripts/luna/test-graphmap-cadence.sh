@@ -2216,4 +2216,13 @@ assert_not_contains "ast_cron_payload omits GRAPHIFY_OUT= when unset" "GRAPHIFY_
 acp_with_dir=$(run_acp bash script.sh corpus /out/root/graphify-out)
 assert_contains "ast_cron_payload prefixes GRAPHIFY_OUT= when set" "GRAPHIFY_OUT=/out/root/graphify-out " "$acp_with_dir"
 
+# Test C-outroot-2 (HIMMEL-3718 CR panel round 6, codex-1): the himmel
+# semantic runner never passes --out-root, but refresh-graph-map.sh now
+# honors GRAPHIFY_OUT_ROOT from the environment as a fallback (line ~157) --
+# an ambient value (e.g. left over from a luna promote test in the same
+# shell) could otherwise redirect himmel's tracked graph out of its corpus.
+# cron_payload must unset it explicitly whenever it omits --out-root.
+assert_contains "cron_payload unsets GRAPHIFY_OUT_ROOT when --out-root is omitted" "unset GRAPHIFY_OUT_ROOT" "$cp_no_root"
+assert_not_contains "cron_payload leaves GRAPHIFY_OUT_ROOT alone when --out-root is set" "unset GRAPHIFY_OUT_ROOT" "$cp_with_root"
+
 summary
