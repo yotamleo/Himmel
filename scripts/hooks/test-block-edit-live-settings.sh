@@ -1516,8 +1516,10 @@ assert_rc "224 echo with a real live-settings redirect target still denies" 2 \
     "$(bash_rc_of "$PRIMARY" "echo {} > .claude/settings.json")"
 
 # 225: mention-only echo wrapped in a command SUBSTITUTION for the redirect
-# target -> DENY. Proves the new allow rule requires ST_SUBST=0 (single,
-# unexpanded segment) — the exact J1381B Finding-1 decoy shape stays denied.
+# target -> DENY. Since round 14 this denies simply because ANY redirect is
+# present, not because of the substitution specifically (the pre-round-14
+# rule required ST_SUBST=0; that target-word judgment is gone) — kept as a
+# regression lock for the exact J1381B Finding-1 decoy shape.
 assert_rc "225 echo mentioning settings.json, real write via substitution, denies" 2 \
     "$(bash_rc_of "$PRIMARY" "echo {} > .claude/\$(echo settings.json)")"
 
@@ -1528,15 +1530,18 @@ assert_rc "226 printf mention chained to a real write denies" 2 \
     "$(bash_rc_of "$PRIMARY" "printf 'settings.json' >> notes.txt; echo {} > .claude/settings.json")"
 
 # 227: node wire-hook-bash.mjs --check --settings pointing at the PRIMARY's
-# own live settings.json (not a worktree's nested copy) -> DENY. Proves the
-# path regex is anchored to the `.claude/worktrees/<name>/.claude/` shape,
-# not just any `--settings` operand.
+# own live settings.json (not a worktree's nested copy) -> DENY. Historically
+# proved the removed allow rule's path regex was anchored to the
+# `.claude/worktrees/<name>/.claude/` shape; HIMMEL-3781 removed that rule in
+# round 13, so this now denies via the same unconditional fallback as every
+# other invocation of this command, whatever the --settings path.
 assert_rc "227 node wire-hook-bash.mjs --check --settings (primary's own live file) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings .claude/settings.json")"
 
 # 228: node wire-hook-bash.mjs --settings <worktree copy> with NO --check
-# flag -> DENY. Proves the rule requires the read-only flag to be present,
-# not just the settings path shape.
+# flag -> DENY. Historically proved the removed allow rule required the
+# read-only flag to be present; that rule is gone (HIMMEL-3781, round 13), so
+# this now denies via the same unconditional fallback regardless of flags.
 assert_rc "228 node wire-hook-bash.mjs --settings (worktree copy, no --check) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --settings $FEATX/.claude/settings.json")"
 
@@ -1551,25 +1556,28 @@ assert_rc "229 node wire-hook-bash.mjs --check --settings with an added live red
 # copy> -> DENY. `wire-hook-bash.mjs`/`--check`/`--settings <worktree path>`
 # are all present, but as INERT decoy argv after a `-e` payload node actually
 # executes — the script name and flags never reach node's own argv parsing.
-# Proves the allow check requires the script name at POSITION 1 (right after
-# `node`), not merely present anywhere in the command.
+# Historically proved the removed allow rule required the script name at
+# POSITION 1; that rule is gone (HIMMEL-3781, round 13), so this now denies
+# via the same unconditional fallback as every decoy-argv shape.
 assert_rc "230 node -e <payload> wire-hook-bash.mjs --check --settings (decoy argv) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node -e 'require(0)' wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json")"
 
 # 231: node /tmp/wire-hook-bash.mjs --check --settings <worktree's own copy>
 # -> DENY. The script's BASENAME matches, but it does not live at the
 # worktree's own `scripts/hooks/wire-hook-bash.mjs` — an attacker-planted
-# same-named script anywhere else on disk would otherwise run. Proves the
-# script path is anchored to the SAME named worktree as the --settings
-# target, not just checked by basename.
+# same-named script anywhere else on disk would otherwise run. Historically
+# proved the removed allow rule anchored the script path to the SAME named
+# worktree as --settings; that rule is gone (HIMMEL-3781, round 13), so this
+# now denies via the same unconditional fallback regardless of script path.
 assert_rc "231 node /tmp/wire-hook-bash.mjs --check --settings (script outside worktree) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node /tmp/wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json")"
 
 # 232: node <worktree A's own script> --check --settings <worktree B's own
 # copy> -> DENY. Both paths independently match the worktree shape, but name
-# DIFFERENT worktrees. Proves the captured worktree name from --settings is
-# actually compared against the script path, not merely pattern-matched
-# independently.
+# DIFFERENT worktrees. Historically proved the removed allow rule compared
+# the captured worktree name from --settings against the script path; that
+# rule is gone (HIMMEL-3781, round 13), so this now denies via the same
+# unconditional fallback whichever worktrees are named.
 assert_rc "232 node <worktree A script> --check --settings <worktree B settings> denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATY/.claude/settings.json")"
 
@@ -1577,9 +1585,11 @@ assert_rc "232 node <worktree A script> --check --settings <worktree B settings>
 # and its --settings target live under $SANDBOX/evil/.claude/worktrees/<name>/,
 # a directory tree that is not $PRIMARY (the session's own cwd) at all, yet
 # both paths independently satisfy the `.claude/worktrees/<name>/…` shape and
-# share the same captured name -> DENY. Proves the prefix before
-# `.claude/worktrees/<name>/…` is anchored to the real cwd-derived root, not
-# accepted as an arbitrary `*` glob (codex round-7 Critical).
+# share the same captured name -> DENY. Historically proved the removed
+# allow rule anchored the prefix before `.claude/worktrees/<name>/…` to the
+# real cwd-derived root rather than an arbitrary `*` glob (codex round-7
+# Critical); that rule is gone (HIMMEL-3781, round 13), so this now denies
+# via the same unconditional fallback whatever the fake root's prefix.
 EVILROOT="$SANDBOX/evil/.claude/worktrees/feat+x"
 mkdir -p "$EVILROOT/.claude" "$EVILROOT/scripts/hooks"
 printf '{}\n' > "$EVILROOT/.claude/settings.json"
@@ -1603,7 +1613,9 @@ assert_rc "234 printf mentioning settings.json, redirect to a variable target, d
 # case-sensitive filesystem this is a wholly distinct directory from the
 # real `.claude/worktrees/…` one; comparing the settings/script path against
 # a lowercased copy of the command folded the two together (codex round-8
-# Critical). Proves the path values are matched in their ORIGINAL case.
+# Critical). Historically proved the removed allow rule matched path values
+# in their ORIGINAL case; that rule is gone (HIMMEL-3781, round 13), so this
+# now denies via the same unconditional fallback regardless of path case.
 CASEROOT="$PRIMARY/.CLAUDE/worktrees/feat+x"
 mkdir -p "$CASEROOT/.CLAUDE" "$CASEROOT/scripts/hooks"
 printf '{}\n' > "$CASEROOT/.CLAUDE/settings.json"
@@ -1616,7 +1628,10 @@ assert_rc "235 node <script under .CLAUDE/worktrees> --check --settings <setting
 # (case-sensitive), so `--CHECK` never sets its own check flag and it falls
 # through to writeFileSync instead of the "wrote nothing" branch — a real
 # write the hook must not mistake for the read-only check path (codex round-9
-# Critical). Proves the flag itself is matched in ORIGINAL case, not ST_LW.
+# Critical). Historically proved the removed allow rule matched the flag in
+# ORIGINAL case, not ST_LW; that rule is gone (HIMMEL-3781, round 13), so
+# this now denies via the same unconditional fallback whatever the flag's
+# case.
 assert_rc "236 node wire-hook-bash.mjs --CHECK (wrong case) --settings (worktree) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --CHECK --settings $FEATX/.claude/settings.json")"
 
@@ -1664,9 +1679,12 @@ assert_rc "239 node wire-hook-bash.mjs --check --settings (worktree, script is a
 
 # 240: mention-only printf, but the redirect target is a PRE-EXISTING SYMLINK
 # resolving to the primary's own live settings.json -> DENY (codex round-12
-# Important). The literal target word (`link.txt`) never spells
-# settings.json/settings.local.json, so the substring scan alone would allow
-# it; the write then lands on the real file through the symlink.
+# Important, historical: the literal target word `link.txt` never spells
+# settings.json/settings.local.json, so a substring scan alone would have
+# allowed it). That target-word substring scan no longer exists (round 14
+# dropped all redirect-target judgment) — this now denies via the same
+# unconditional "any redirect" fallback, kept as a regression lock for the
+# original symlink shape.
 ln -s "$PRIMARY/.claude/settings.json" "$SANDBOX/link.txt"
 assert_rc "240 printf mention-only, redirect target is a symlink to the live settings file, denies" 2 \
     "$(bash_rc_of "$PRIMARY" "printf 'see settings.json for details' >> $SANDBOX/link.txt")"
@@ -1713,6 +1731,24 @@ assert_rc "243 printf mention-only, redirect target is a hardlink to the live se
 # just because it case-insensitively spells `echo`.
 assert_rc "244 bash Echo (wrong case) mentioning settings.json with no redirect denies" 2 \
     "$(bash_rc_of "$PRIMARY" "Echo see settings.json for details")"
+
+# 245: bare mention, no redirect, exact-case verb `echo` — but a shell
+# FUNCTION named `echo` is exported into the environment -> DENY (codex
+# round-16 Important). A function takes precedence over the builtin at
+# invocation time, so matching the verb's exact-case name alone (round 15's
+# fix) is not enough: the function could write the live file with no
+# redirect ever appearing in this clause's text. Exported via `export -f`,
+# which propagates through the environment the same way to the hook's own
+# process and to a real invocation of the command.
+FN_RC=$(
+    eval 'echo() { command echo pwned > "$SANDBOX/pwned-via-fn.txt" 2>/dev/null; }'
+    export -f echo
+    jq -n --arg cwd "$PRIMARY" \
+        '{tool_name: "Bash", tool_input: {command: "echo see settings.json for details", cwd: $cwd}}' \
+        | bash "$HOOK" >/dev/null 2>&1
+    printf '%s' "$?"
+)
+assert_rc "245 bash echo with an exported shell function shadowing the builtin denies" 2 "$FN_RC"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

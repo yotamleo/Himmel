@@ -1448,6 +1448,16 @@ _himmel_3761_mention_only_ok() {
         echo|printf) ;;
         *) return 1 ;;
     esac
+    # round-16 Important: matching the verb by NAME is not enough even in the
+    # exact case — a shell FUNCTION named echo/printf takes precedence over
+    # the builtin, and an inherited one (exported via `export -f`, which
+    # propagates through the environment to a non-interactive child same as
+    # this hook's own process) can write files however it likes with no
+    # redirect ever appearing in this clause's text. Refuse the exemption
+    # outright when either name currently resolves to a function in THIS
+    # process's environment, since a real invocation of the same command
+    # inherits the same environment tree.
+    declare -F "${ST_W[0]}" >/dev/null 2>&1 && return 1
     while [ "$k" -lt "$ST_N" ]; do
         [ -z "${ST_RO[k]}" ] || return 1
         k=$((k + 1))
