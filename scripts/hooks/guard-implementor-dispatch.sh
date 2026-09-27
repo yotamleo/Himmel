@@ -227,28 +227,25 @@ fi
 # codex (PR #1388 round 2): a single first-match extraction missed a SECOND
 # then/and-write occurrence later in the same text ("write a report and
 # write code"), and its clause-boundary cut at a literal "." hid a file
-# extension right after the noun ("write a report.md"). Fixed by scanning
-# EVERY then/and-write occurrence independently, over a fixed-width
-# character window that a "." never terminates -- so an attached extension
-# stays visible to the path-like check, and a second write/edit/etc.
-# transition inside that window is itself a danger signal.
+# extension right after the noun ("write a report.md").
+#
+# codex (PR #1388 round 3): the round-2 fix-up's remedy -- a fixed-width
+# 60-char window per occurrence, and a 1-5 char cap on the extension match --
+# was itself bounded, so a long-enough intervening phrase ("write a report
+# about <60+ chars> to notes.txt") or a long extension ("report.markdown",
+# 8 chars) could push the path-like signal outside what either bound could
+# see. Fixed by dropping both bounds: take the UNBOUNDED remainder of the
+# text starting right after the first then/and-write occurrence. A second
+# write/edit/etc. transition anywhere in that remainder is already covered
+# by the existing danger alternation (it includes "write"), so no separate
+# occurrence loop is needed -- one unbounded tail check subsumes it.
 if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)write([^[:alnum:]_]|$)'; then
-    write_windows=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | grep -Eo '(then|and)[[:space:][:punct:]]+write.{0,60}')
-    write_safe=1
-    while IFS= read -r write_window; do
-        if [ -z "$write_window" ]; then
-            continue
-        fi
-        write_tail=$(printf '%s' "$write_window" | sed -E 's/^(then|and)[[:space:][:punct:]]+write//')
-        if grepq "$write_tail" -Eq '^[[:space:]]+(a[[:space:]]+|the[[:space:]]+)?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)' && ! grepq "$write_tail" -Eq '/|\.[a-z0-9]{1,5}([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]|(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
-            :
-        else
-            write_safe=0
-        fi
-    done <<WRITE_WINDOWS
-$write_windows
-WRITE_WINDOWS
-    if [ "$write_safe" != "1" ]; then
+    lower_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
+    write_trigger=$(printf '%s' "$lower_text" | grep -Eo '(^|[^[:alnum:]_])(then|and)[[:space:][:punct:]]+write' | head -1)
+    write_tail=${lower_text#*"$write_trigger"}
+    if [ -n "$write_trigger" ] && grepq "$write_tail" -Eq '^[[:space:]]+(a[[:space:]]+|the[[:space:]]+)?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)' && ! grepq "$write_tail" -Eq '/|\.[a-zA-Z0-9]+([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]|(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
+        :
+    else
         followed_by_action=1
     fi
 fi

@@ -399,6 +399,16 @@ assert_rc "'write a report AND write code' is governed -- the second write is a 
 RC96=$(run_hook write-report-dot-extension "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write a report.md.')")
 assert_rc "'then write a report.md' is governed -- the extension is a file write, not prose" 2 "$RC96"
 
+# codex (PR #1388 round 3): the round-2 fix-up's own remedy was itself
+# bounded -- a 1-5 char extension cap, and a fixed 60-char window per
+# occurrence -- so a longer extension or a long intervening phrase could
+# push the path-like signal out of view.
+RC97=$(run_hook write-report-long-extension "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write a report.markdown.')")
+assert_rc "'then write a report.markdown' is governed -- a >5-char extension is still a file write" 2 "$RC97"
+
+RC98=$(run_hook write-report-long-phrase-then-path "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write a report about all of the various nuances and detailed considerations discussed above to scripts/router.sh.')")
+assert_rc "'then write a report <60+ char phrase> to <path>' is governed -- the path outlives any fixed window" 2 "$RC98"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 
