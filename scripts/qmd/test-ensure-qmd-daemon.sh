@@ -473,7 +473,7 @@ start_fake_daemon 4
 run_ceiling 7340032   # 7 GB
 [ "$rc" -eq 0 ] || fail "(l) over-ceiling: expected rc 0, got $rc ($out)"
 [ "$dur" -lt 3 ] || fail "(l) over-ceiling: hook blocked ${dur}s on the recycle (must run detached)"
-printf '%s' "$out" | grep -q "recycling" || \
+grep -q "recycling" <<< "$out" || \
   fail "(l) over-ceiling: no loud 'recycling' line (got: $out)"
 kill -0 "$fake_pid" 2>/dev/null || true
 wait_restarted || fail "(l) over-ceiling: detached recycler never restarted qmd ($(cat "$xdg/qmd/recycle.log" 2>/dev/null))"
@@ -490,7 +490,7 @@ run_ceiling 7340032
 [ "$rc" -eq 0 ] || fail "(m) cooldown: expected rc 0, got $rc ($out)"
 sleep 1
 kill -0 "$fake_pid" 2>/dev/null || fail "(m) cooldown: daemon recycled again inside the cooldown"
-printf '%s' "$out" | grep -q "cooldown" || fail "(m) cooldown: skip not reported (got: $out)"
+grep -q "cooldown" <<< "$out" || fail "(m) cooldown: skip not reported (got: $out)"
 kill "$fake_pid" 2>/dev/null; wait "$fake_pid" 2>/dev/null
 echo "ok (m): a recycle inside the cooldown window is skipped"
 

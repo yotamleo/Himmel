@@ -4805,7 +4805,8 @@ rm -rf "$c40_t"
 # Seams: HIMMEL_DOCTOR_QMD_PIDFILE (the daemon pidfile), HIMMEL_DOCTOR_QMD_PS
 # (the ps binary; the stub prints C44D_ROW for the pid it is asked about).
 c44d_setup() {
-    c44d_t="$(mktemp -d)"; mkdir -p "$c44d_t/home" "$c44d_t/claude"
+    c44d_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c44.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+    mkdir -p "$c44d_t/home" "$c44d_t/claude"
     echo 4242 > "$c44d_t/mcp.pid"
     # shellcheck disable=SC2016 # the stub expands C44D_ROW at ITS run time
     printf '#!/usr/bin/env bash\n[ -n "${C44D_ROW:-}" ] || exit 1\necho "$C44D_ROW"\n' > "$c44d_t/ps"
