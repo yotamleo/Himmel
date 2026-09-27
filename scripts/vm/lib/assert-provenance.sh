@@ -33,6 +33,7 @@ D="$(cd "$(dirname "$0")" && pwd)"
 ST="$D/seed-state"
 PURGE="${RT_PURGE:-0}"
 PROFILE="${RT_PROFILE:-core}"
+QMD="${RT_QMD:-0}"
 INV="${INV_BASE:-/tmp}"  # the inventories' base dir; only the hermetic test sets INV_BASE
 for f in "$INV"/inv-{A,B,C}/home.{meta,sha} "$D/seeded.list" "$D/state.list" "$ST/settings.json"; do
     [ -f "$f" ] || { echo "assert-provenance.sh: missing input $f" >&2; exit 2; }
@@ -161,6 +162,24 @@ ok semantic too-much context7-enabled 'enabledPlugins["context7@claude-plugins-o
 ok semantic too-much my-tool-enabled 'enabledPlugins["my-tool@my-market"] is not true' \
     jq -e '.enabledPlugins["my-tool@my-market"] == true' "$S"
 ok semantic too-much user-statusline "statusLine is $(jq -c '.statusLine // "absent"' "$S" 2>/dev/null)" jeq '.statusLine'
+# HIMMEL-3332 contract (b): with the clone gone, the guarded statusLine
+# command must have stayed silent (rc 0, no output) rather than throwing a
+# Node stack trace. provenance-roundtrip.sh's statusline-probe step (only
+# under --clone-gone) writes this file BEFORE uninstall runs; its absence
+# (plain variant, or a run predating the probe) is a precondition SKIP, not a
+# failure — this direction is simply unobservable that run.
+SLP="$D/statusline-probe.txt"
+if [ -f "$SLP" ]; then
+    SLP_RC=$(sed -n '1s/^RC=//p' "$SLP")
+    SLP_BODY=$(tail -n +2 "$SLP")
+    if [ "$SLP_RC" = 0 ] && [ -z "$SLP_BODY" ]; then
+        check semantic too-much PASS statusline-silent-after-clone-gone "ok"
+    else
+        check semantic too-much FAIL statusline-silent-after-clone-gone "rc=$SLP_RC output=$(printf '%s' "$SLP_BODY" | head -c 200)"
+    fi
+else
+    check precondition precondition SKIP statusline-silent-after-clone-gone "no statusline-probe.txt this run (only --clone-gone runs the probe)"
+fi
 ok semantic too-much handover-dir "env.HANDOVER_DIR is $(jq -c '.env.HANDOVER_DIR // "absent"' "$S" 2>/dev/null)" jeq '.env.HANDOVER_DIR'
 ok semantic too-much user-mcp 'mcpServers["my-mcp"] differs from the seed' jeq '.mcpServers["my-mcp"]'
 ok semantic too-much user-marketplaces 'extraKnownMarketplaces lost or changed a seeded entry' \
@@ -345,6 +364,16 @@ fi
 #     from a git clone to a tarball-installed root, not a new exemption.
 allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.npm/_update-notifier-last-checked|$H/\\.cache/node-gyp|$H/\\.bun/install/cache|$H/\\.claude/plugins/cache|$H/\\.cache/qmd|$H/proj/scripts/guardrails|$H/proj/scripts/lib|$H/\\.codex|$H/\\.local/share/himmel"
 [ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance(\\.jsonl)?|$H/\\.himmel/uninstall|$H/\\.himmel/provenance-backups"
+# RT_QMD=1 (--with-qmd, HIMMEL-3332 contract (c)): a himmel-installed qmd-fork
+# (scripts/lib/qmd-bin.sh: clone+build under ~/.himmel/qmd-fork, symlinked at
+# ~/.bun/install/global/node_modules/@tobilu/qmd) is KEPT by a plain uninstall
+# (allowed here) and removed only under --purge-state when the ledger says
+# himmel created it (scripts/uninstall.sh:3622-3859, already unit-tested in
+# scripts/test-uninstall-provenance.sh RED20-RED28) -- so under --purge-state
+# these paths are deliberately NOT allowed: if uninstall fails to remove them,
+# the existing "left behind (not at A)" residue scan below catches it as a
+# genuine FAIL, no separate CHECK needed.
+[ "$QMD" != 1 ] || [ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/qmd-fork|$H/\\.bun/install/global/node_modules/@tobilu/qmd"
 # HIMMEL-3559: --profile all seeds a real vault at $H/luna (the adopter-<scope>
 # profile overlay's .vault.path — see provenance-roundtrip.sh's OVERLAY) so the
 # adopter has second-brain content from the first run. It is the operator's

@@ -178,6 +178,7 @@ ssh_order() {
             *'bin.js install'*'--scope user'*) echo install-user ;;
             *'inventory.sh B'*) echo invB ;;
             'SSH rm -rf /tmp/rt-src') echo clone-gone-rm ;;
+            *'statusline-probe.txt'*) echo statusline-probe ;;
             *'bin.js uninstall'*|*'.local/bin/himmelctl uninstall'*) echo uninstall ;;
             *'inventory.sh C'*) echo invC ;;
             *assert-provenance.sh*) echo assert ;;
@@ -505,7 +506,7 @@ fi
 # armed-at-B precondition reads
 for prof in core all; do
     run_rt "$BOTH" f73a62f1 --expect-red --profile "$prof"
-    if grep '^SSH ' "$LOG" | grep 'seed-provenance.sh' | grep -qF "HIMMEL_RT_GUEST=1 RT_PROFILE=$prof bash /tmp/rt-work/seed-provenance.sh"; then
+    if grep '^SSH ' "$LOG" | grep 'seed-provenance.sh' | grep -qF "HIMMEL_RT_GUEST=1 RT_PROFILE=$prof RT_QMD=0 bash /tmp/rt-work/seed-provenance.sh"; then
         pass "D15 seed step carries RT_PROFILE=$prof"
     else
         fail_case "D15 seed step under $prof"; dump
@@ -524,7 +525,7 @@ fi
 # <clone>/.../bin.js` — the clone is gone (HIMMEL-3312 S15)
 # =====================================================================
 run_rt "$ALL_PASS" f73a62f1 --clone-gone
-want='stage seed invA install-project install-user invB clone-gone-rm uninstall invC assert '
+want='stage seed invA install-project install-user invB clone-gone-rm statusline-probe uninstall invC assert '
 got=$(ssh_order "$LOG")
 un=$(grep '^SSH ' "$LOG" | grep 'himmelctl uninstall')
 if [ "$got" = "$want" ] && [[ "$un" == *'/home/testuser/.local/bin/himmelctl uninstall --yes'* ]] \
@@ -532,6 +533,47 @@ if [ "$got" = "$want" ] && [[ "$un" == *'/home/testuser/.local/bin/himmelctl uni
     pass "D16 --clone-gone: rm -rf's the clone after inventory B, uninstall runs through the PATH launcher"
 else
     fail_case "D16 clone-gone step order/launcher: got='$got' un='$un'"; dump
+fi
+
+# D16f — HIMMEL-3332 contract (b): the statusline-probe step runs ONLY under
+# --clone-gone, between clone-gone-rm and uninstall (checked by D16's want=
+# above), reads settings.json's LIVE statusLine.command and writes the probe
+# result to $WORKDIR/statusline-probe.txt for assert-provenance.sh to judge.
+sl=$(grep '^SSH ' "$LOG" | grep 'statusline-probe.txt')
+if [[ "$sl" == *'statusLine.command'* ]] && [[ "$sl" == *'/tmp/rt-work/statusline-probe.txt'* ]]; then
+    pass "D16f statusline-probe reads settings.json's statusLine.command and writes to \$WORKDIR"
+else
+    fail_case "D16f statusline-probe command shape: sl='$sl'"; dump
+fi
+run_rt "$ALL_PASS" f73a62f1
+if ! grep '^SSH ' "$LOG" | grep -q 'statusline-probe.txt'; then
+    pass "D16g without --clone-gone, no statusline-probe step at all"
+else
+    fail_case "D16g statusline-probe ran without --clone-gone"; dump
+fi
+
+# D16h — HIMMEL-3332 contract (c): --with-qmd prepends bun's guest directory
+# to the printed/passed install PATH (so `command -v bun` succeeds and
+# scripts/lib/qmd-bin.sh's real qmd wiring runs) and threads RT_QMD=1 into
+# both the seed and assert guest invocations.
+run_rt "$ALL_PASS" f73a62f1 --with-qmd
+qenv='env -i HOME=/home/testuser PATH=/home/testuser/.bun/bin:/home/testuser/.local/bin:/usr/local/bin:/usr/bin:/bin HIMMELCTL_CACHE_DIR=/home/testuser/.claude/himmel'  # leak-allow: home-path fixture guest user testuser, not a real home
+if printf '%s\n' "$OUT" | grep -qxF "[env] $qenv" \
+   && grep '^SSH ' "$LOG" | grep 'seed-provenance.sh' | grep -qF 'RT_QMD=1 bash /tmp/rt-work/seed-provenance.sh' \
+   && grep '^SSH ' "$LOG" | grep 'assert-provenance.sh' | grep -qF 'RT_QMD=1 bash /tmp/rt-work/assert-provenance.sh'; then
+    pass "D16h --with-qmd prepends bun to PATH and threads RT_QMD=1 into seed + assert"
+else
+    fail_case "D16h --with-qmd PATH/RT_QMD threading"; dump
+fi
+
+# D16i — without --with-qmd, PATH is unchanged and RT_QMD is absent (0)
+run_rt "$ALL_PASS" f73a62f1
+if grep '^SSH ' "$LOG" | grep 'seed-provenance.sh' | grep -qF 'RT_QMD=0 bash /tmp/rt-work/seed-provenance.sh' \
+   && grep '^SSH ' "$LOG" | grep 'assert-provenance.sh' | grep -qF 'RT_QMD=0 bash /tmp/rt-work/assert-provenance.sh' \
+   && ! printf '%s\n' "$OUT" | grep -q '\.bun/bin'; then
+    pass "D16i without --with-qmd: RT_QMD=0, no bun on PATH"
+else
+    fail_case "D16i baseline PATH/RT_QMD"; dump
 fi
 
 # D16b — the marketplace-remove observation is printed verbatim, whatever it

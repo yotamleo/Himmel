@@ -52,6 +52,12 @@ TARGETS=(
     .claude/handover/bridge .claude/handover/bridge/state.json
 )
 [ "$PROFILE" != all ] || TARGETS+=(.local/bin/qmd .local/bin/graphify)
+# RT_QMD=1 (the harness's --with-qmd, HIMMEL-3332 contract (c)): a pre-existing
+# qmd data file the USER put there themselves, unrelated to himmel's qmd-fork
+# install -- must survive byte-identical (seeded.list) whether or not install
+# ever touches qmd, and regardless of --purge-state.
+QMD="${RT_QMD:-0}"
+[ "$QMD" != 1 ] || TARGETS+=(.cache/qmd/user-data.txt)
 hit=0
 for t in "${TARGETS[@]}"; do
     if [ -e "$H/$t" ] || [ -L "$H/$t" ]; then echo "seed-provenance.sh: refusing: $H/$t already exists" >&2; hit=1; fi
@@ -210,6 +216,16 @@ echo seed >"$H/.npm/_cacache/seed"
 echo seed >"$H/.cache/node-gyp/seed"
 echo seed >"$H/.bun/install/cache/seed"
 rec .config/claude-glm/phi-roots .himmel/config.json .npm/_cacache/seed .cache/node-gyp/seed .bun/install/cache/seed
+
+# RT_QMD=1 (--with-qmd, HIMMEL-3332 contract (c)): the user's OWN pre-existing
+# qmd data, unrelated to any himmel-installed qmd-fork -- must survive
+# byte-identical regardless of --purge-state (assert-provenance.sh's generic
+# seeded.list loop judges it; no himmel writer ever touches this path).
+if [ "$QMD" = 1 ]; then
+    mkdir -p "$H/.cache/qmd"
+    echo "the user's own pre-existing qmd data, not himmel's" >"$H/.cache/qmd/user-data.txt"
+    rec .cache/qmd/user-data.txt
+fi
 
 # --- the telegram bridge's own state: the two locations `uninstall --purge-state`
 # removes and a plain uninstall keeps. A core install creates neither, so

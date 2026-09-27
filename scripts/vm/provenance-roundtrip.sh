@@ -73,16 +73,17 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
-    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--clone-gone] [--install-from clone|tarball|aur] [--runtime docker|podman] [--image <ref>]" >&2
+    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--clone-gone] [--with-qmd] [--install-from clone|tarball|aur] [--runtime docker|podman] [--image <ref>]" >&2
     exit 2
 }
 
-REF="" EXPECT_RED=0 PROFILE=core PURGE=0 CLONE_GONE=0 INSTALL_FROM=clone RUNTIME_OPT="" IMAGE_OPT=""
+REF="" EXPECT_RED=0 PROFILE=core PURGE=0 CLONE_GONE=0 WITH_QMD=0 INSTALL_FROM=clone RUNTIME_OPT="" IMAGE_OPT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --expect-red) EXPECT_RED=1; shift ;;
         --purge-state) PURGE=1; shift ;;
         --clone-gone) CLONE_GONE=1; shift ;;
+        --with-qmd) WITH_QMD=1; shift ;;
         --profile)
             case "${2:-}" in core|all) PROFILE="$2" ;; *) usage ;; esac
             shift 2 ;;
@@ -180,8 +181,14 @@ case "$INSTALL_FROM" in
 esac
 
 # The exact environment every install and the uninstall run under (HIMMEL-3321:
-# printed, then passed — the printed line IS the argv).
-INSTALL_ENV=(HOME="$GHOME" PATH="$GHOME/.local/bin:/usr/local/bin:/usr/bin:/bin" HIMMELCTL_CACHE_DIR="$GHOME/.claude/himmel")
+# printed, then passed — the printed line IS the argv). --with-qmd (HIMMEL-3332
+# contract (c)) prepends bun's guest directory so `command -v bun` succeeds and
+# scripts/lib/qmd-bin.sh's real qmd wiring runs instead of skipping; bun itself
+# is only on the guest's login-shell PATH (marketplace/plugins/himmel-ops/
+# skills/vm/SKILL.md), never this restricted install PATH otherwise.
+INSTALL_PATH="$GHOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+[ "$WITH_QMD" = 0 ] || INSTALL_PATH="$GHOME/.bun/bin:$INSTALL_PATH"
+INSTALL_ENV=(HOME="$GHOME" PATH="$INSTALL_PATH" HIMMELCTL_CACHE_DIR="$GHOME/.claude/himmel")
 ENV_CMD="env -i ${INSTALL_ENV[*]}"
 
 HOST_TMP=""
@@ -236,7 +243,7 @@ else
         *) fail "could not acquire the vm-lock on '$CLONE_NAME'" ;;
     esac
 
-    echo "[run] ref=$REF sha=$SHA install-from=$INSTALL_FROM profile=$PROFILE purge-state=$PURGE clone-gone=$CLONE_GONE expect-red=$EXPECT_RED clone=$CLONE_NAME snapshot=$SNAPSHOT guest-user=$GUEST_USER"
+    echo "[run] ref=$REF sha=$SHA install-from=$INSTALL_FROM profile=$PROFILE purge-state=$PURGE clone-gone=$CLONE_GONE with-qmd=$WITH_QMD expect-red=$EXPECT_RED clone=$CLONE_NAME snapshot=$SNAPSHOT guest-user=$GUEST_USER"
     vm_clone_ensure "$SNAPSHOT"
     vm_restore "$SNAPSHOT"
     vm_boot
@@ -362,7 +369,7 @@ tar -C "$REPO_ROOT/scripts/vm/lib" -cf - seed-provenance.sh assert-provenance.sh
     | guest_ssh "rm -rf $WORKDIR && mkdir -p $WORKDIR && tar -C $WORKDIR -xf -" || fail "step helpers failed"
 
 # 2-3. Seed, inventory A.
-step seed "HIMMEL_RT_GUEST=1 RT_PROFILE=$PROFILE bash $WORKDIR/seed-provenance.sh"
+step seed "HIMMEL_RT_GUEST=1 RT_PROFILE=$PROFILE RT_QMD=$WITH_QMD bash $WORKDIR/seed-provenance.sh"
 step inventory-A "bash $WORKDIR/inventory.sh A"
 
 # 4. Install, project scope then user scope, under the printed env.
@@ -395,6 +402,15 @@ step inventory-B "bash $WORKDIR/inventory.sh B && { L=\${HIMMEL_PROVENANCE_DIR:-
 # 5b. --clone-gone: delete the staged clone on the guest so the uninstall
 # below has no source tree to fall back on (HIMMEL-3312 S15).
 [ "$CLONE_GONE" = 0 ] || step clone-gone-rm "rm -rf $SRC"
+
+# 5c. --clone-gone: probe the guest's LIVE statusLine command now that the
+# clone (and the guarded JS it exec's) is gone — HIMMEL-3332 contract (b): it
+# must stay silent (rc 0, no output), never a Node stack trace. Written to a
+# file assert-provenance.sh reads at inventory C; never fails this step
+# itself (the interesting case is the probe's content, not its guest rc).
+if [ "$CLONE_GONE" = 1 ]; then
+    step statusline-probe "CMD=\$(jq -r '.statusLine.command // empty' $GHOME/.claude/settings.json 2>/dev/null); if [ -n \"\$CMD\" ]; then OUT=\$(bash -c \"\$CMD\" 2>&1); RC=\$?; else OUT='(no statusLine.command)'; RC=none; fi; { printf 'RC=%s\n' \"\$RC\"; printf '%s' \"\$OUT\"; } >$WORKDIR/statusline-probe.txt; true"
+fi
 
 # 6. Uninstall. --clone-gone runs it through the PATH launcher
 # (~/.local/bin/himmelctl) rather than `node <clone>/…/bin.js`, since the
@@ -461,7 +477,7 @@ step inventory-C "bash $WORKDIR/inventory.sh C"
 echo "[step] invdiff"
 guest_ssh "INVDIFF_BASE=/tmp python3 $WORKDIR/invdiff.py A B | grep '^###'; INVDIFF_BASE=/tmp python3 $WORKDIR/invdiff.py A C | grep '^###'" || true
 echo "[step] assert"
-ASSERT_OUT=$(guest_ssh "HIMMEL_RT_GUEST=1 RT_PURGE=$PURGE RT_PROFILE=$PROFILE bash $WORKDIR/assert-provenance.sh") \
+ASSERT_OUT=$(guest_ssh "HIMMEL_RT_GUEST=1 RT_PURGE=$PURGE RT_PROFILE=$PROFILE RT_QMD=$WITH_QMD bash $WORKDIR/assert-provenance.sh") \
     || fail "step assert failed (rc=$?)"
 printf '%s\n' "$ASSERT_OUT"
 

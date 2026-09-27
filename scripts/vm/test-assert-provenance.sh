@@ -95,9 +95,9 @@ fresh() {
     both "A B C" f "$H/.claude.json" cj
     : >"$FAKE_CRON"
 }
-# run_assert <RT_PROFILE> <RT_PURGE> — populate OUT (HOME is the scratch one).
+# run_assert <RT_PROFILE> <RT_PURGE> [RT_QMD] — populate OUT (HOME is the scratch one).
 run_assert() {
-    OUT=$(HOME="$H" PATH="$FAKEBIN:$PATH" INV_BASE="$INV" HIMMEL_RT_GUEST=1 RT_PROFILE="$1" RT_PURGE="$2" bash "$LB/assert-provenance.sh" 2>&1)
+    OUT=$(HOME="$H" PATH="$FAKEBIN:$PATH" INV_BASE="$INV" HIMMEL_RT_GUEST=1 RT_PROFILE="$1" RT_PURGE="$2" RT_QMD="${3:-0}" bash "$LB/assert-provenance.sh" 2>&1)
     RC=$?
 }
 
@@ -395,6 +395,100 @@ run_assert all 0
 has "all: every cadence armed at B passes the precondition" 'CHECK precondition precondition PASS cadence-crontab-armed-at-B '
 run_assert core 0
 hasnt "plain profile: no armed-at-B check" 'cadence-crontab-armed-at-B'
+
+# ---- 7b. statusline-silent-after-clone-gone (HIMMEL-3332 contract (b)):
+# provenance-roundtrip.sh's --clone-gone-only probe writes statusline-probe.txt
+# (first line "RC=<n>", the rest the guest command's captured output) BEFORE
+# this script ever runs it; the file's absence (a plain-variant run) is a
+# precondition SKIP, never a pass or a fail.
+fresh
+run_assert core 0
+has "no probe file (plain variant): precondition SKIP, not judged" 'CHECK precondition precondition SKIP statusline-silent-after-clone-gone '
+hasnt "no probe file: never itself a PASS/FAIL" 'CHECK semantic too-much (PASS|FAIL) statusline-silent-after-clone-gone'
+
+fresh
+printf 'RC=0\n' >"$LB/statusline-probe.txt"
+run_assert core 0
+has "silent (rc=0, no output): PASSes" 'CHECK semantic too-much PASS statusline-silent-after-clone-gone — ok'
+
+# RED: the pre-guard regression this check exists to catch — the bare `node
+# <js>` form throws MODULE_NOT_FOUND once the clone is gone, so the probe
+# captures a non-zero rc and a stack trace body. Confirms the check actually
+# fails on that shape rather than being vacuously green.
+fresh
+printf 'RC=1\nnode:internal/modules/cjs/loader:1215\n  throw err;\n  ^\n\nError: Cannot find module\n' >"$LB/statusline-probe.txt"
+run_assert core 0
+has "stack trace after clone-gone: FAILs, rc and a body snippet reported" 'CHECK semantic too-much FAIL statusline-silent-after-clone-gone — rc=1 output=node:internal'
+
+# rc=0 but non-empty output (e.g. a stray warning) is not "silent" either.
+fresh
+printf 'RC=0\nsome unexpected output\n' >"$LB/statusline-probe.txt"
+run_assert core 0
+has "rc=0 but non-empty output: still FAILs (not silent)" 'CHECK semantic too-much FAIL statusline-silent-after-clone-gone — rc=0 output=some unexpected output'
+
+# ---- 7c. --with-qmd (RT_QMD=1), HIMMEL-3332 contract (c) second half: a
+# himmel-installed qmd-fork is kept by a plain uninstall and removed only
+# under --purge-state; this is gated by the new PURGE-conditional allow-list
+# line, judged by the EXISTING generic residue scan (section 7), never a new
+# CHECK name. QF/QG are the two paths scripts/lib/qmd-bin.sh creates.
+QF="$H/.himmel/qmd-fork" QG="$H/.bun/install/global/node_modules/@tobilu/qmd"
+
+# RED: --purge-state left the fork checkout behind — the pre-guard shape this
+# allow-list exists to catch (a regression in uninstall.sh's own removal).
+fresh
+inv B d "$QF"; inv C d "$QF"
+run_assert core 1 1
+has "--with-qmd, --purge-state: a leftover qmd-fork FAILs as residue" 'CHECK residue too-little FAIL left:~/\.himmel/qmd-fork '
+
+# GREEN: --purge-state actually removed it (absent at C) — not flagged.
+fresh
+inv B d "$QF"
+run_assert core 1 1
+hasnt "--with-qmd, --purge-state: a removed qmd-fork is not flagged" 'CHECK residue too-little FAIL left:~/\.himmel/qmd-fork '
+
+# GREEN: a plain uninstall keeps it (the ruling: kept by default) — allowed.
+fresh
+inv B d "$QF"; inv C d "$QF"
+run_assert core 0 1
+hasnt "--with-qmd, plain uninstall: a kept qmd-fork is not flagged" 'CHECK residue too-little FAIL left:~/\.himmel/qmd-fork '
+
+# The bun global symlink follows the same rule (kept plain, gone under purge).
+fresh
+inv B l "$QG"; inv C l "$QG"
+run_assert core 0 1
+hasnt "--with-qmd, plain uninstall: the bun global symlink is not flagged" 'CHECK residue too-little FAIL left:~/\.bun/install/global '
+fresh
+inv B l "$QG"; inv C l "$QG"
+run_assert core 1 1
+has "--with-qmd, --purge-state: a leftover bun global symlink FAILs" 'CHECK residue too-little FAIL left:~/\.bun/install/global '
+
+# Baseline unaffected: without --with-qmd (RT_QMD unset/0), the identical
+# leftover shape still FAILs generically — the new allow-list line never
+# engages for the existing plain/--clone-gone core-profile variants.
+fresh
+inv B d "$QF"; inv C d "$QF"
+run_assert core 0
+has "no --with-qmd: a leftover qmd-fork still FAILs generically" 'CHECK residue too-little FAIL left:~/\.himmel/qmd-fork '
+
+# ---- 7d. pre-existing (non-himmel) qmd data survives byte-identical (HIMMEL-
+# 3332 contract (c) first half). seed-provenance.sh's RT_QMD=1 fixture is what
+# makes this observable; the judgment itself is the EXISTING generic
+# seeded.list byte-identity loop (section 1) — no new assert code, so this
+# proves the fixture is wired to it, not new logic.
+fresh
+printf '%s\n' "$H/.cache/qmd/user-data.txt" >>"$LB/seeded.list"
+both "A B C" f "$H/.cache/qmd/user-data.txt" "user qmd data"
+run_assert core 0 1
+has "pre-existing qmd data unchanged: PASSes byte-identical" 'CHECK identity identity PASS seeded:~/\.cache/qmd/user-data\.txt '
+
+# RED: the pre-existing qmd file was mutated by C — a regression this loop
+# must still catch even with --with-qmd in play.
+fresh
+printf '%s\n' "$H/.cache/qmd/user-data.txt" >>"$LB/seeded.list"
+both "A B" f "$H/.cache/qmd/user-data.txt" "user qmd data"
+inv C f "$H/.cache/qmd/user-data.txt" mutated
+run_assert core 0 1
+has "pre-existing qmd data mutated: FAILs" 'CHECK identity identity FAIL seeded:~/\.cache/qmd/user-data\.txt '
 
 # ---- 8. seed-provenance.sh: the stubs, the telegram + bridge state, refusals.
 seed() {  # <RT_PROFILE> — run the seed step from the scratch copy against the scratch HOME
