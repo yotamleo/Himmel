@@ -2307,7 +2307,21 @@ _gf_deny_on_hidden_clause_separator() {
     # lookback ending right before that opening delimiter, and is never
     # revisited by a nested open at depth >= 1. found_bad only ever gets set
     # from inside a chdir-argument span, and once set it stays set.
-    local cmd="$1" i=0 i0 len c stack='' esc=0
+    # HIMMEL-3683 J1323B F1: the stack above was a STRING (one char per
+    # nesting level), popped/pushed with `${stack%q}` / `${stack}q` and read
+    # with `case "$stack" in *q)` - each of those is O(depth), so the scan as
+    # a whole was O(n * depth): fine at depth 0 (J1323A's X19), but a
+    # ~45-64KB command nested tens of thousands of parens deep (e.g. inside
+    # one `$(cat <<'EOF' ... EOF)`) took 18-33s through the real hook,
+    # past its 15s timeout - and a timed-out PreToolUse hook fails OPEN, the
+    # exact bypass this function exists to close. Track the same states in
+    # an indexed array instead (`stk[sp]=<char>; sp=$((sp+1))` to push,
+    # `sp=$((sp-1))` to pop, `${stk[sp-1]}` for the current top) - array
+    # element access/assignment is O(1) regardless of depth, so every push,
+    # pop and top-of-stack read here is now O(1) and the scan is O(n) again.
+    local cmd="$1" i=0 i0 len c top esc=0
+    local -a stk=()
+    local sp=0
     local found_bad=0 in_span=0 span_chdir=0 span_hit=0 lookback lb_i lb_start lb_trim
     local -a chars=()
     len=${#cmd}
@@ -2327,48 +2341,53 @@ _gf_deny_on_hidden_clause_separator() {
             i=$((i+1))
             continue
         fi
-        case "$stack" in
-            *q)
-                [ "$c" = "'" ] && stack="${stack%q}"
+        if [ "$sp" -eq 0 ]; then
+            top=''
+        else
+            top="${stk[$((sp-1))]}"
+        fi
+        case "$top" in
+            q)
+                [ "$c" = "'" ] && sp=$((sp-1))
                 ;;
-            *d)
+            d)
                 case "$c" in
                     "\\") esc=1 ;;
-                    '"') stack="${stack%d}" ;;
-                    '`') stack="${stack}b" ;;
-                    '$') [ "${chars[$((i+1))]}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
+                    '"') sp=$((sp-1)) ;;
+                    '`') stk[sp]=b; sp=$((sp+1)) ;;
+                    '$') [ "${chars[$((i+1))]}" = "(" ] && { stk[sp]=p; sp=$((sp+1)); i=$((i+1)); } ;;
                 esac
                 ;;
-            *b)
+            b)
                 case "$c" in
                     "\\") esc=1 ;;
-                    "'") stack="${stack}q" ;;
-                    '"') stack="${stack}d" ;;
-                    '`') stack="${stack%b}" ;;
+                    "'") stk[sp]=q; sp=$((sp+1)) ;;
+                    '"') stk[sp]=d; sp=$((sp+1)) ;;
+                    '`') sp=$((sp-1)) ;;
                     ';'|'|'|'&'|$'\n') [ "$in_span" -eq 1 ] && span_hit=1 ;;
                 esac
                 ;;
-            *p)
+            p)
                 case "$c" in
                     "\\") esc=1 ;;
-                    "'") stack="${stack}q" ;;
-                    '"') stack="${stack}d" ;;
-                    '(') stack="${stack}p" ;;
-                    ')') stack="${stack%p}" ;;
+                    "'") stk[sp]=q; sp=$((sp+1)) ;;
+                    '"') stk[sp]=d; sp=$((sp+1)) ;;
+                    '(') stk[sp]=p; sp=$((sp+1)) ;;
+                    ')') sp=$((sp-1)) ;;
                     ';'|'|'|'&'|$'\n') [ "$in_span" -eq 1 ] && span_hit=1 ;;
                 esac
                 ;;
             *)
                 case "$c" in
                     "\\") esc=1 ;;
-                    "'") stack="${stack}q" ;;
-                    '"') stack="${stack}d" ;;
-                    '`') stack="${stack}b" ;;
-                    '$') [ "${chars[$((i+1))]}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
+                    "'") stk[sp]=q; sp=$((sp+1)) ;;
+                    '"') stk[sp]=d; sp=$((sp+1)) ;;
+                    '`') stk[sp]=b; sp=$((sp+1)) ;;
+                    '$') [ "${chars[$((i+1))]}" = "(" ] && { stk[sp]=p; sp=$((sp+1)); i=$((i+1)); } ;;
                 esac
                 ;;
         esac
-        if [ "$in_span" -eq 0 ] && [ -n "$stack" ]; then
+        if [ "$in_span" -eq 0 ] && [ "$sp" -gt 0 ]; then
             in_span=1
             span_hit=0
             lb_start=$((i0-10))
@@ -2392,7 +2411,7 @@ _gf_deny_on_hidden_clause_separator() {
                 *-C|*-D|*--chdir|*--chdir=) span_chdir=1 ;;
                 *) span_chdir=0 ;;
             esac
-        elif [ "$in_span" -eq 1 ] && [ -z "$stack" ]; then
+        elif [ "$in_span" -eq 1 ] && [ "$sp" -eq 0 ]; then
             if [ "$span_hit" -eq 1 ] && [ "$span_chdir" -eq 1 ]; then
                 found_bad=1
             fi

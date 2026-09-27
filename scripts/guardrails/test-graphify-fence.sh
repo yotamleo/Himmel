@@ -2653,6 +2653,31 @@ run_fence allow no "$HIMMEL" "gh pr create heredoc body mentioning graphify as d
 run_fence deny no "$HIMMEL" "env -C (two spaces) \$(...; separator inside) -> deny (X22)" \
     "env -C  \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
 
+# (X23) J1323B F1: X19 only padded the command at nesting depth 0, so it
+# never exercised the stack's push/pop/top-of-stack cost - the actual
+# quadratic (a string stack popped/pushed with `${stack%q}`/`${stack}q`,
+# O(depth) per character) hid entirely inside a deeply nested substitution
+# such as `x=$(cat <<'EOF' <N x '('> EOF)`, where X19's flat padding never
+# goes. Pad AT depth instead: N '(' characters nested inside one $(...) via
+# a heredoc body (each '(' is data to the heredoc, but pushes the fence's
+# stack all the same), at two sizes either side of J1323B's measured 48KB
+# fail-open point.
+for X23_N in 65536 122880; do
+    X23_PARENS=$(head -c "$X23_N" /dev/zero | tr '\0' '(')
+    X23_CMD=$(printf 'env -C %s graphify update notes/patient.md --backend glm; x=$(cat <<%s\n%s\nEOF\n)' \
+        "$SALUS" "'EOF'" "$X23_PARENS")
+    start_ns=$(date +%s%N)
+    # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+    out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X23_CMD" 2>&1 ); rc=$?
+    end_ns=$(date +%s%N)
+    elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+    if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ]; then
+        pass "${X23_N}B nested-at-depth command denies in ${elapsed_ms}ms, well under the 15s hook timeout (X23 N=$X23_N)"
+    else
+        fail "${X23_N}B nested-at-depth command rc=$rc in ${elapsed_ms}ms (want rc=2, <5000ms) (X23 N=$X23_N)"
+    fi
+done
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
