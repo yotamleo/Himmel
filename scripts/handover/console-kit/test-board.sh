@@ -341,7 +341,7 @@ rm -f "$W/changed-board.html"
 out1="$(run --out "$W/changed-board.html" --changed)"; rc1=$?
 contains '--changed on the first render (nothing to compare against) reports CHANGED' "$out1" "CHANGED $W/changed-board.html"
 contains '--changed rc is still 0' "rc=$rc1" 'rc=0'
-out2="$(run --out "$W/changed-board.html" --changed)"; rc2=$?
+out2="$(run --out "$W/changed-board.html" --changed)"
 contains '--changed on an identical re-render reports UNCHANGED' "$out2" "UNCHANGED $W/changed-board.html"
 out3="$(TICK_STUB_FAIL=1 run --out "$W/changed-board.html" --changed)"
 contains '--changed after a real content change (fp now empty) reports CHANGED' "$out3" "CHANGED $W/changed-board.html"
