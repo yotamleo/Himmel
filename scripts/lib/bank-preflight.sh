@@ -1040,6 +1040,16 @@ is_num "$fh" && usable=$((usable+1))
 is_num "$sd" && usable=$((usable+1))
 [ "$usable" -gt 0 ] || { echo "bank-preflight: no usable primary" >&2; emit BANK-UNKNOWN; }
 
+# HIMMEL-1712: a cache stamped by a different account is unusable here for
+# the same reason "no usable primary" is above — don't gate on someone
+# else's numbers. A missing/unreadable helper degrades to "can't tell",
+# treated the same as a mismatch.
+_id_lib="$REPO/scripts/lib/usage-cache-identity.sh"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1090,SC1091
+{ [ -r "$_id_lib" ] && . "$_id_lib"; } 2>/dev/null || usage_cache_account_mismatch() { return 0; }
+usage_cache_account_mismatch "$CACHE" && { echo "bank-preflight: usage cache account does not match the current session" >&2; emit BANK-UNKNOWN; }
+
 # Staleness keys on primaries_refreshed_at, NOT file mtime. The producer only
 # advances this aggregate stamp when both fetched primary windows are valid;
 # partial-primary and extra_usage-only writes preserve the prior stamp.

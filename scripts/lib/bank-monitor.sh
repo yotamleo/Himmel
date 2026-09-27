@@ -50,6 +50,16 @@ valid_pct() {
 valid_pct "$five" || exit 0
 valid_pct "$seven" || exit 0
 
+# HIMMEL-1712: a cache stamped by a different account is the same
+# can't-trust-this-number case valid_pct's own failures above already
+# quiet-no-op on. A missing/unreadable helper degrades to "can't tell",
+# which this treats the same as a mismatch.
+_id_lib="$HERE/usage-cache-identity.sh"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1090,SC1091
+{ [ -r "$_id_lib" ] && . "$_id_lib"; } 2>/dev/null || usage_cache_account_mismatch() { return 0; }
+usage_cache_account_mismatch "$BANK_CACHE_FILE" && exit 0
+
 bank_status="$(bun "$REPO/scripts/lanes/bank-status.ts" 2>/dev/null | grep '^claudex ' | head -n 1)" || bank_status=""
 codex_five="$(printf '%s\n' "$bank_status" | sed -n 's/.*5h used=\([0-9][0-9.]*\)%.*/\1/p')"
 codex_seven="$(printf '%s\n' "$bank_status" | sed -n 's/.*weekly used=\([0-9][0-9.]*\)%.*/\1/p')"

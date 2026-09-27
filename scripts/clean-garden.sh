@@ -455,6 +455,9 @@ is_branch_mergeable_for_prune() {
 # at a commit older than the .gitignore change, which is why adding the rule
 # to .gitignore alone cannot unstick worktrees that already exist (HIMMEL-2584
 # — __pycache__/*.pyc from any tracked .py script run in the worktree).
+# .vitest/ (HIMMEL-3754): vitest's own reporter output dir, minted by any
+# tracked `vitest run` invocation the same way __pycache__ is minted by a
+# tracked .py script.
 is_ignorable_stray() {
     case "$1" in
         AGENTS.md|*/AGENTS.md)                 return 0 ;;
@@ -463,6 +466,7 @@ is_ignorable_stray() {
         package-lock.json|*/package-lock.json) return 0 ;;
         __pycache__/*|*/__pycache__/*)         return 0 ;;
         *.pyc)                                 return 0 ;;
+        .vitest/*|*/.vitest/*)                 return 0 ;;
     esac
     return 1
 }
@@ -482,6 +486,7 @@ is_ignorable_ignored_stray() {
         .tokensave/|*/.tokensave/|.tokensave/*|*/.tokensave/*)         return 0 ;;
         .codex/|*/.codex/|.codex/*|*/.codex/*)                         return 0 ;;
         node_modules/|*/node_modules/|node_modules/*|*/node_modules/*) return 0 ;;
+        .vitest/|*/.vitest/|.vitest/*|*/.vitest/*)                     return 0 ;;
     esac
     return 1
 }

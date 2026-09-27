@@ -166,6 +166,15 @@ printf '#!/bin/sh\necho Linux\n' > "$FAKEBIN/uname"; chmod +x "$FAKEBIN/uname"
 # skip. Dedicated C40 cases override this seam per invocation with a stub curl.
 export HIMMEL_DOCTOR_QMD_CURL="$FAKEROOT/no-such-curl"
 
+# Keep unrelated cases from probing the operator's real qmd 'skills'
+# collection for C44 (HIMMEL-2222): most invocations below never override
+# PATH, so an inherited bun/qmd install would otherwise make check_c44 run a
+# LIVE `qmd collection list` and leak this machine's real collection state
+# (missing here) into every unrelated "clean -> rc0" assertion. Point the
+# seam at a nonexistent path so unrelated cases get a deterministic INFO
+# skip; dedicated C44 cases override it per invocation with their own stub.
+export HIMMEL_DOCTOR_SKILL_INDEX_QMD="$FAKEROOT/no-such-skill-qmd"
+
 # Keep unrelated cases from scanning this checkout's own .mcp.json files (and the
 # operator's generated mcp-profiles) for C41 (HIMMEL-2762): point the scan root at
 # an empty dir. HOME is redirected per case, so ~/.claude.json is already hermetic.
@@ -5059,6 +5068,71 @@ else
     fail "C43 no hooks -> $(printf '%s' "$out" | grep -A1 C43)"
 fi
 rm -rf "$t"
+
+echo "== C44: skills collection missing -> FAIL =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-missing.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (1):\n\nhimmel (qmd://himmel/)\n  Files:    527\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'FAIL C44-skill-index' && grepq "$out" -F 'build-skill-index.sh'; then
+    pass "C44 missing collection -> FAIL"
+else
+    fail "C44 missing collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: skills collection empty (0 files) -> FAIL =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-empty.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (2):\n\nhimmel (qmd://himmel/)\n  Files:    527\n\nskills (qmd://skills/)\n  Files:    0\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 empty collection -> FAIL"
+else
+    fail "C44 empty collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: skills collection populated -> OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-ok.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (2):\n\nhimmel (qmd://himmel/)\n  Files:    527\n\nskills (qmd://skills/)\n  Files:    42\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 populated collection -> OK"
+else
+    fail "C44 populated collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: qmd not resolvable -> INFO skip, no FAIL =="
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/no-such-qmd-anywhere" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 qmd absent -> INFO skip"
+else
+    fail "C44 qmd absent -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 

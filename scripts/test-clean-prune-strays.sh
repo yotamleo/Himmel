@@ -93,6 +93,7 @@ WT_SCAN=$(mk_wt wt-scan     feat/scan)     # case 11: broken .git -> scanfail (f
 WT_PYCACHE=$(mk_wt wt-pycache feat/pycache) # case 12: pinned-worktree __pycache__ (HIMMEL-2584)
 WT_PYSRC=$(mk_wt wt-pysrc   feat/pysrc)    # case 13: untracked .py source (allowlist boundary)
 WT_PYNEW=$(mk_wt wt-pynew   feat/pynew)    # case 14: untracked .py source + its .pyc together
+WT_VITEST=$(mk_wt wt-vitest feat/vitest)   # case 15: untracked .vitest/ reporter output (HIMMEL-3754)
 
 printf 'lock\n' > "$WT_LOCK/package-lock.json"
 mkdir -p "$WT_CODEX/.codex"; printf 'x\n' > "$WT_CODEX/.codex/config.toml"; printf 'x\n' > "$WT_CODEX/AGENTS.md"
@@ -127,6 +128,12 @@ mkdir -p "$WT_PYSRC/scripts/lib"; printf 'x\n' > "$WT_PYSRC/scripts/lib/vbox.py"
 mkdir -p "$WT_PYNEW/scripts/__pycache__"
 printf 'x\n' > "$WT_PYNEW/scripts/newthing.py"
 printf 'x\n' > "$WT_PYNEW/scripts/__pycache__/newthing.cpython-314.pyc"
+# WT_VITEST: the real HIMMEL-3754 shape — a vitest run's reporter output
+# (scripts/jira/.vitest/json/output.json), the only untracked file in the
+# worktree, with NO .gitignore rule for it in this fixture repo (reproducing
+# a worktree pinned before the .gitignore fix, same as WT_PYCACHE above).
+mkdir -p "$WT_VITEST/scripts/jira/.vitest/json"
+printf '{}\n' > "$WT_VITEST/scripts/jira/.vitest/json/output.json"
 
 run_clean() {
     (
@@ -153,8 +160,8 @@ else
     fail "6: dry-run removed a worktree" "$dry_out"
 fi
 # D4 dry-run parity across non-stray branches: nothing mutated, regardless of verdict.
-if [ -d "$WT_NOTES" ] && [ -d "$WT_WIP" ] && [ -d "$WT_NESTED" ] && [ -d "$WT_MIXED" ] && [ -d "$WT_BAK" ] && [ -d "$WT_SCAN" ] && [ -d "$WT_PYCACHE" ] && [ -d "$WT_PYSRC" ] && [ -d "$WT_PYNEW" ]; then
-    pass "6: dry-run mutated nothing across all branch types (forgotten/tracked/nested/mixed/bak/scanfail/pycache/pysrc/pynew)"
+if [ -d "$WT_NOTES" ] && [ -d "$WT_WIP" ] && [ -d "$WT_NESTED" ] && [ -d "$WT_MIXED" ] && [ -d "$WT_BAK" ] && [ -d "$WT_SCAN" ] && [ -d "$WT_PYCACHE" ] && [ -d "$WT_PYSRC" ] && [ -d "$WT_PYNEW" ] && [ -d "$WT_VITEST" ]; then
+    pass "6: dry-run mutated nothing across all branch types (forgotten/tracked/nested/mixed/bak/scanfail/pycache/pysrc/pynew/vitest)"
 else
     fail "6: dry-run removed a non-stray worktree" "$dry_out"
 fi
@@ -272,6 +279,16 @@ if grepq "$pynew_line" "newthing.cpython-314.pyc"; then
     fail "14: WARN unexpectedly also names the sibling .pyc — forgotten list should carry only the non-stray source" "$out"
 else
     pass "14: WARN does not name the sibling .pyc (only the non-stray source is listed as forgotten)"
+fi
+
+# case 15: real HIMMEL-3754 shape — untracked .vitest/json/output.json, no
+# vitest-output rule in this fixture's .gitignore -> allowlisted stray ->
+# pruned + NOTE.
+if [ ! -d "$WT_VITEST" ]; then pass "15: vitest-output-stray worktree pruned"; else fail "15: vitest-output-stray worktree NOT pruned" "$out"; fi
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/vitest")" "discarding untracked strays:.*output.json"; then
+    pass "15: NOTE names the .vitest output.json stray"
+else
+    fail "15: expected strays NOTE naming .vitest/json/output.json for feat/vitest" "$out"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

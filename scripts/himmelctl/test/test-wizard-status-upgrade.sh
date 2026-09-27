@@ -34,6 +34,8 @@ manifest_path="$repo_root/scripts/install/manifest.json"
 [ -f "$manifest_path" ] || { echo "FAIL: $manifest_path not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq required" >&2; exit 1; }
+. "$repo_root/scripts/lib/sha256-bin.sh"
+[ -n "$_SHA256_CMD" ] || { echo "FAIL: sha256sum or shasum required" >&2; exit 1; }
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
@@ -157,10 +159,10 @@ echo "ok: case a — an already-tracked item's state survives the migration unch
 
 # ── a second post-upgrade run performs zero further state.json writes
 # (status never writes, migration or otherwise). ────────────────────────────
-before2=$(sha256sum "$cacheA/state.json")
+before2=$($_SHA256_CMD -- "$cacheA/state.json")
 ( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HIMMEL_LUNA_CONFIG_PATH="$cacheA_w-luna-config.json" HOME="$homeA" USERPROFILE="$(winpath "$homeA")" \
     "$node_bin" "$wizard" status --json >/dev/null ) || fail "case a: second post-upgrade run failed"
-after2=$(sha256sum "$cacheA/state.json")
+after2=$($_SHA256_CMD -- "$cacheA/state.json")
 [ "$before2" = "$after2" ] || fail "case a: a second run against an already-migrated target should write nothing further to state.json"
 echo "ok: case a — a second run against an already-migrated target is a zero-write no-op"
 
