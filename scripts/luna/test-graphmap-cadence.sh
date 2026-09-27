@@ -1705,6 +1705,14 @@ luna_bat=$(cat "$BAT_DIR/graphmap-luna.bat" 2>/dev/null || echo MISSING)
 himmel_bat=$(cat "$BAT_DIR/graphmap-himmel.bat" 2>/dev/null || echo MISSING)
 assert_contains    "luna runner carries its default out-root"      "--out-root \"$HOME/.local/share/himmel/graphify/luna\"" "$luna_bat"
 assert_not_contains "himmel runner has no --out-root (stays in-corpus)" "--out-root" "$himmel_bat"
+# HIMMEL-3718 CR (codex-1): the Windows structural (AST) runner must get the
+# same out-root redirect its POSIX cron sibling (ast_cron_payload's
+# GRAPHIFY_OUT=) already carries -- otherwise luna's semantic and structural
+# legs write to different graph directories despite sharing a promote lock.
+ast_luna_bat=$(cat "$BAT_DIR/graphmap-ast-luna.bat" 2>/dev/null || echo MISSING)
+ast_himmel_bat=$(cat "$BAT_DIR/graphmap-ast-himmel.bat" 2>/dev/null || echo MISSING)
+assert_contains     "ast-luna runner carries its default out-root"       "set \"GRAPHIFY_OUT=$HOME/.local/share/himmel/graphify/luna/graphify-out\"" "$ast_luna_bat"
+assert_not_contains "ast-himmel runner has no GRAPHIFY_OUT (stays in-corpus)" "GRAPHIFY_OUT=" "$ast_himmel_bat"
 if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 5 ]; then
     pass "still exactly five tasks after --force re-arm"
 else

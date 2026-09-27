@@ -779,7 +779,7 @@ emit_bat() {
     # value left sitting among escaped ones, which is exactly how an unescaped
     # path gets used by accident later. Dropped rather than fed an escaped
     # value nothing reads.
-    local himmel_win_esc="$1" payload="$2" log_win_esc="$3" graphify_dir_win_esc="${4:-}" git_bin_esc="${5:-}" declare_ollama="${6:-0}" claude_dir_win_esc="${7:-}"
+    local himmel_win_esc="$1" payload="$2" log_win_esc="$3" graphify_dir_win_esc="${4:-}" git_bin_esc="${5:-}" declare_ollama="${6:-0}" claude_dir_win_esc="${7:-}" graphify_out_esc="${8:-}"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
     # Pin editor hooks to the no-op `true` so a cadence child (stdin closed under
     # schtasks) can never block on an editor prompt (HIMMEL-1753).
@@ -808,6 +808,13 @@ emit_bat() {
     # zero egress) without adding any bypass.
     if [ "$declare_ollama" -eq 1 ]; then
         printf 'set "GRAPHIFY_DECLARED_BACKEND=ollama"\r\n'
+    fi
+    # HIMMEL-3718 CR (codex-1): mirror ast_cron_payload's GRAPHIFY_OUT= prefix
+    # on the POSIX structural leg -- a .bat sets env vars as their own `set`
+    # line, not as part of the command, so this stays a separate emit_bat arg
+    # rather than something ast_bat_payload's payload string could carry.
+    if [ -n "$graphify_out_esc" ]; then
+        printf 'set "GRAPHIFY_OUT=%s"\r\n' "$graphify_out_esc"
     fi
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
@@ -1404,6 +1411,17 @@ cmd_arm() {
     if [ -n "$luna_out_root" ]; then
         luna_out_root_esc=$(cadence_cmd_escape "$luna_out_root")
     fi
+    # luna_out_dir_esc (HIMMEL-3718 CR, codex-1): the Windows structural
+    # (AST) runner's GRAPHIFY_OUT= counterpart to luna_out_root_esc above --
+    # same full out-dir (out-root/graphify-out) the POSIX q_out_dir_ast_luna
+    # resolves to. Like luna_out_root_esc's --out-root value, this is read by
+    # bash/ast-update.sh, not a native Windows exe, so it stays the raw POSIX
+    # path (no cygpath -w) -- only cmd-escaped for the .bat `set` line.
+    local luna_out_dir_esc
+    luna_out_dir_esc=""
+    if [ -n "$luna_out_root" ]; then
+        luna_out_dir_esc=$(cadence_cmd_escape "$luna_out_root/graphify-out")
+    fi
     local payload_luna payload_himmel
     payload_luna=$(bat_payload "$script_esc" luna "$vault_esc" "$maps_esc" "$LUNA_TITLE" "$LUNA_SLUG" "$LUNA_TAG" "$luna_out_root_esc")
     payload_himmel=$(bat_payload "$script_esc" himmel "$himmel_esc" "$maps_esc" "$HIMMEL_TITLE" "$HIMMEL_SLUG" "$HIMMEL_TAG")
@@ -1517,7 +1535,7 @@ cmd_arm() {
             emit_task_xml "$bat_himmel_win" "$HIMMEL_TIME" "$sched_semantic" | sed 's/^/    /'
         fi
         echo "DRY graphmap-cadence: would write $bat_ast_luna:"
-        emit_bat "$himmel_win_esc" "$payload_ast_luna" "$log_ast_luna_esc" "$graphify_dir_win_esc" "$git_bin_esc" 1 | sed 's/^/    /'
+        emit_bat "$himmel_win_esc" "$payload_ast_luna" "$log_ast_luna_esc" "$graphify_dir_win_esc" "$git_bin_esc" 1 "" "$luna_out_dir_esc" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would write $vbs_ast_luna:"
         cadence_vbs_wrapper "$bat_ast_luna_win" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would write $bat_ast_himmel:"
@@ -1563,7 +1581,7 @@ cmd_arm() {
     tmp_ast_himmel_bat=$(mktemp "$BAT_DIR/.graphmap-ast-himmel.bat.XXXXXX")
     tmp_ast_luna_vbs=$(mktemp "$BAT_DIR/.graphmap-ast-luna.vbs.XXXXXX")
     tmp_ast_himmel_vbs=$(mktemp "$BAT_DIR/.graphmap-ast-himmel.vbs.XXXXXX")
-    emit_bat "$himmel_win_esc" "$payload_ast_luna" "$log_ast_luna_esc" "$graphify_dir_win_esc" "$git_bin_esc" 1 > "$tmp_ast_luna_bat"
+    emit_bat "$himmel_win_esc" "$payload_ast_luna" "$log_ast_luna_esc" "$graphify_dir_win_esc" "$git_bin_esc" 1 "" "$luna_out_dir_esc" > "$tmp_ast_luna_bat"
     emit_bat "$himmel_win_esc" "$payload_ast_himmel" "$log_ast_himmel_esc" "$graphify_dir_win_esc" "$git_bin_esc" 0 > "$tmp_ast_himmel_bat"
     cadence_vbs_wrapper "$bat_ast_luna_win" > "$tmp_ast_luna_vbs"
     cadence_vbs_wrapper "$bat_ast_himmel_win" > "$tmp_ast_himmel_vbs"
