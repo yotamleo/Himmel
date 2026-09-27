@@ -757,6 +757,14 @@ jobs:
   shell-unit:
     needs: shell-unit-shard
     if: always()
+    # HIMMEL-3788: a manual force_all_os dispatch exercises the same
+    # macOS-aggregate gate below on an arbitrary branch/PR head. Without a
+    # distinct name here, that run's check-run is literally
+    # "shell-unit (ubuntu-latest)" -- identical to (and newer than) the PR's
+    # own required check -- so GitHub's required-check evaluation and
+    # check-ci.sh both read the dispatch run's failure and shadow the PR's
+    # green one. schedule/pull_request/push keep the unchanged name.
+    name: shell-unit${{ github.event_name == 'workflow_dispatch' && ' (dispatch verify)' || '' }} (${{ matrix.os }})
     permissions:
       contents: read
       issues: write
