@@ -560,7 +560,16 @@ brace_word_is_rootwalk() {
     # HIMMEL-3753 tracks whether that's worth building.
     local IFS=','
     for part in $inner; do
-        case "$part" in '/'|'//') return 0 ;; esac  # codex-1: // is POSIX root too (is_root_anchor:503)
+        # codex-1 (round 1): // is POSIX root too (is_root_anchor:503).
+        # codex-2 (round 3): any run of slashes only (///, ////, ...) is the
+        # same root — is_root_anchor gets this for free by collapsing runs of
+        # `/` before its case match (line 499); this loop has no such
+        # normalization pass, so match the whole class directly instead.
+        case "$part" in
+            '') ;;
+            *[!/]*) ;;
+            *) return 0 ;;
+        esac
     done
     return 1
 }

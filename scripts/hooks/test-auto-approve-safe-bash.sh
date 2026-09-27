@@ -893,6 +893,8 @@ assert "echo \$PWD still ALLOW"        ALLOW "$(decide "$(j_bash 'echo "$PWD"')"
 assert "find brace-expanded root DENY" DENY "$(decide "$(j_bash 'find {/,.} -name x')")"
 # codex-1: // is POSIX root too (mirrors is_root_anchor's own /|// case).
 assert "find brace-expanded // root DENY" DENY "$(decide "$(j_bash 'find {//,.} -name x')")"
+# codex-2 (round 3): any run of slashes only (///, not just / and //) is root.
+assert "find brace-expanded /// root DENY" DENY "$(decide "$(j_bash 'find {///,.} -name x')")"
 # Controls: brace alternatives with no bare '/' stay as before (opaque, PASS).
 assert "find brace non-root stays PASS" PASS "$(decide "$(j_bash 'find {a,b} -name x')")"
 assert "find brace maxdepth-value unaffected" DENY "$(decide "$(j_bash 'find / -maxdepth {1,2} -name x')")" # gnu-ok: fixture string fed to the hook under test, never executed as a shell command
