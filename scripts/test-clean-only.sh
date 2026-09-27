@@ -116,9 +116,9 @@ mkdir -p "$STUB_DIR_FAIL"
 cat > "$STUB_DIR_FAIL/gh" <<'STUB'
 #!/usr/bin/env bash
 args="$*"
-if echo "$args" | grep -q "auth status"; then exit 0; fi
-if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi
-if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then
+if echo "$args" | grep -q "auth status"; then exit 0; fi  # pipefail-ok: $args is a small captured argv
+if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi  # pipefail-ok: same $args
+if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then  # pipefail-ok: same $args
     exit 1
 fi
 exit 0

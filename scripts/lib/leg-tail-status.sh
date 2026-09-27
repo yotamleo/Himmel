@@ -45,11 +45,11 @@ leg_tail_status() {  # leg_tail_status <leg doc> -- prints the marker, or nothin
     if [ -z "$final" ]; then
         return
     fi
-    if printf '%s\n' "$final" | grep -qE "$marker_re"; then
+    if printf '%s\n' "$final" | grep -qE "$marker_re"; then  # pipefail-ok: $final is one already-extracted line, far under the pipe buffer size
         printf '%s' "$final" | sed -nE "s/$marker_re/\\3/p" | tr -d '\n'
         return
     fi
-    if printf '%s' "$final" | grep -qE '(^|[^A-Za-z0-9_])WRAPPED([^A-Za-z0-9_]|$)'; then
+    if printf '%s' "$final" | grep -qE '(^|[^A-Za-z0-9_])WRAPPED([^A-Za-z0-9_]|$)'; then  # pipefail-ok: same $final, same reasoning
         printf 'WRAPPED'
         return
     fi
