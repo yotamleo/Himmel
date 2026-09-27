@@ -32,6 +32,8 @@ repo_root=$(git rev-parse --show-toplevel)
 script="$repo_root/scripts/machine-setup/install-plugins.sh"
 [ -f "$script" ] || { echo "FAIL: $script not found" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename "$0"): SKIPPED — 0 cases ran (jq not on PATH)"; exit 0; }
+. "$repo_root/scripts/lib/sha256-bin.sh"
+[ -n "$_SHA256_CMD" ] || { echo "SKIP: no sha256sum/shasum on PATH"; echo "$(basename "$0"): SKIPPED — 0 cases ran (no sha256 tool on PATH)"; exit 0; }
 
 FAILED=0
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/test-install-plugins-provenance.XXXXXX") || { echo "mktemp failed" >&2; exit 1; }
@@ -41,7 +43,7 @@ trap 'rm -rf "$TMP"' EXIT
 # in: every case runs under a scratch HOME, and a leak here (a case that forgot
 # the scratch HOME) would append test rows to ~/.himmel/provenance.jsonl.
 REAL_LEDGER="$HOME/.himmel/provenance.jsonl"
-real_ledger_sha() { if [ -f "$REAL_LEDGER" ]; then sha256sum "$REAL_LEDGER" | cut -d' ' -f1; else echo absent; fi; }
+real_ledger_sha() { if [ -f "$REAL_LEDGER" ]; then sha256_hex "$REAL_LEDGER"; else echo absent; fi; }
 REAL_LEDGER_BEFORE=$(real_ledger_sha)
 
 pass() { echo "PASS $1"; }
@@ -335,11 +337,11 @@ refuse_case() {
     fresh_env "wrongshape-$label"
     mkdir -p "$HOME/.claude"
     printf '%s\n' "$json" > "$HOME/.claude/settings.json"
-    sha_before=$(sha256sum "$HOME/.claude/settings.json" | cut -d' ' -f1)
+    sha_before=$(sha256_hex "$HOME/.claude/settings.json")
     export STUB_LOG="$CASE/claude.log"
     out=$(run_install --scope user "$@"); rc=$?
     unset STUB_LOG
-    sha_after=$(sha256sum "$HOME/.claude/settings.json" | cut -d' ' -f1)
+    sha_after=$(sha256_hex "$HOME/.claude/settings.json")
     assert_eq "15 $label: exit code" 3 "$rc"
     case "$out" in *"$HOME/.claude/settings.json"*) pass "15 $label: message names the file" ;; *) fail "15 $label: message does not name the file: $out" ;; esac
     case "$out" in *"\"$key\""*) pass "15 $label: message names the key" ;; *) fail "15 $label: message does not name \"$key\": $out" ;; esac

@@ -73,7 +73,7 @@ session that noticed is never held for the ~15 s unwind. A lock
 (`~/.cache/qmd/recycle.lock`) lets exactly one of many concurrently starting
 sessions recycle, and a stamp blocks another recycle for
 `QMD_RECYCLE_COOLDOWN_MIN` minutes (default `30`). The recycler logs to
-`~/.cache/qmd/recycle.log`. `himmel-doctor.sh` check `C44-qmd-daemon` reports the
+`~/.cache/qmd/recycle.log`. `himmel-doctor.sh` check `C45-qmd-daemon` reports the
 daemon's RSS and uptime and WARNs over the same ceiling. The PowerShell twin does
 not carry the ceiling yet (HIMMEL-3751).
 

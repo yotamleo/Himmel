@@ -141,6 +141,9 @@ CorsairLink.log
 # these files are noise.
 __pycache__/
 *.pyc
+# HIMMEL-3754: vitest's own reporter output dir (any tracked `vitest run`
+# invocation mints it), same class of noise as __pycache__ above.
+.vitest/
 # HIMMEL-3078: two recurring strays that tripped himmel-update's dirty-tree
 # gate before the gate was scoped to tracked changes — a `bun.lock` `bun
 # install` drops inside the npm-managed scripts/bitbucket/, and a claude-hud

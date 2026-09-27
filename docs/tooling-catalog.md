@@ -135,7 +135,7 @@ README's fork-delta section).
   a non-qmd listener on 8181 fails loudly as a port collision instead of
   counting as alive). Over `QMD_RSS_CEILING_MB` (default 4096) RSS it
   recycles the daemon in a detached child, one recycle per lock and cooldown
-  (HIMMEL-3062; doctor `C44-qmd-daemon` reports RSS + uptime). A manual operator twin for PowerShell lives at
+  (HIMMEL-3062; doctor `C45-qmd-daemon` reports RSS + uptime). A manual operator twin for PowerShell lives at
   `scripts/qmd/ensure-qmd-daemon.ps1`. Stop the daemon with `qmd mcp stop`.
   Both resolve qmd as `bun <bun-global dist/cli/qmd.js>` first (HIMMEL-928):
   the bun bin shim honors the CLI's node shebang and hands the daemon to

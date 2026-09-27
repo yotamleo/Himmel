@@ -165,9 +165,18 @@ printf '#!/bin/sh\necho Linux\n' > "$FAKEBIN/uname"; chmod +x "$FAKEBIN/uname"
 # localhost:8181 for C40 (HIMMEL-3056): an absent curl seam makes C40 an INFO
 # skip. Dedicated C40 cases override this seam per invocation with a stub curl.
 export HIMMEL_DOCTOR_QMD_CURL="$FAKEROOT/no-such-curl"
-# Same for C44-qmd-daemon (HIMMEL-3062): never read the operator's real qmd
+# Same for C45-qmd-daemon (HIMMEL-3062): never read the operator's real qmd
 # pidfile; dedicated cases point this seam at a fixture.
 export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
+
+# Keep unrelated cases from probing the operator's real qmd 'skills'
+# collection for C44 (HIMMEL-2222): most invocations below never override
+# PATH, so an inherited bun/qmd install would otherwise make check_c44 run a
+# LIVE `qmd collection list` and leak this machine's real collection state
+# (missing here) into every unrelated "clean -> rc0" assertion. Point the
+# seam at a nonexistent path so unrelated cases get a deterministic INFO
+# skip; dedicated C44 cases override it per invocation with their own stub.
+export HIMMEL_DOCTOR_SKILL_INDEX_QMD="$FAKEROOT/no-such-skill-qmd"
 
 # Keep unrelated cases from scanning this checkout's own .mcp.json files (and the
 # operator's generated mcp-profiles) for C41 (HIMMEL-2762): point the scan root at
@@ -4798,7 +4807,7 @@ else
 fi
 rm -rf "$c40_t"
 
-# --- C44-qmd-daemon (HIMMEL-3062): daemon RSS + uptime vs the recycle ceiling --
+# --- C45-qmd-daemon (HIMMEL-3062): daemon RSS + uptime vs the recycle ceiling --
 # The qmd daemon grows native memory over hours until vec queries time out. The
 # qmd plugin's SessionStart hook recycles it over QMD_RSS_CEILING_MB; this row
 # reports RSS and uptime (one ps call, no network) and WARNs over the ceiling.
@@ -4818,48 +4827,48 @@ c44d_run() { # <ps row> [<pidfile>]
         CLAUDE_DIR="$c44d_t/claude" HOME="$c44d_t/home" bash "$DOC" --no-color 2>&1
 }
 
-echo "== C44-qmd-daemon: under the ceiling -> OK with RSS and uptime (RED) =="
+echo "== C45-qmd-daemon: under the ceiling -> OK with RSS and uptime (RED) =="
 c44d_setup
 out="$(c44d_run '1048576 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
-if grepq "$out" 'OK   C44-qmd-daemon' && grepq "$out" -F 'RSS 1024 MB' && grepq "$out" -F 'up 04:31:07' && ! grepq "$out" 'WARN C44-qmd-daemon'; then
-    pass "C44-qmd-daemon under ceiling -> OK naming RSS + uptime"
+if grepq "$out" 'OK   C45-qmd-daemon' && grepq "$out" -F 'RSS 1024 MB' && grepq "$out" -F 'up 04:31:07' && ! grepq "$out" 'WARN C45-qmd-daemon'; then
+    pass "C45-qmd-daemon under ceiling -> OK naming RSS + uptime"
 else
-    fail "C44-qmd-daemon under ceiling -> $(printf '%s' "$out" | grep -A1 C44-qmd-daemon)"
+    fail "C45-qmd-daemon under ceiling -> $(printf '%s' "$out" | grep -A1 C45-qmd-daemon)"
 fi
 rm -rf "$c44d_t"
 
-echo "== C44-qmd-daemon: over the ceiling -> WARN naming RSS and the ceiling (RED) =="
+echo "== C45-qmd-daemon: over the ceiling -> WARN naming RSS and the ceiling (RED) =="
 c44d_setup
 out="$(c44d_run '7340032 1-02:03:04 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
-if grepq "$out" 'WARN C44-qmd-daemon' && grepq "$out" -F 'RSS 7168 MB' && grepq "$out" -F 'ceiling 4096 MB' && grepq "$out" -F 'up 1-02:03:04'; then
-    pass "C44-qmd-daemon over ceiling -> WARN naming RSS, uptime and ceiling"
+if grepq "$out" 'WARN C45-qmd-daemon' && grepq "$out" -F 'RSS 7168 MB' && grepq "$out" -F 'ceiling 4096 MB' && grepq "$out" -F 'up 1-02:03:04'; then
+    pass "C45-qmd-daemon over ceiling -> WARN naming RSS, uptime and ceiling"
 else
-    fail "C44-qmd-daemon over ceiling -> $(printf '%s' "$out" | grep -A1 C44-qmd-daemon)"
+    fail "C45-qmd-daemon over ceiling -> $(printf '%s' "$out" | grep -A1 C45-qmd-daemon)"
 fi
 rm -rf "$c44d_t"
 
-echo "== C44-qmd-daemon: half a MB over the ceiling still WARNs; a leading-zero ceiling reads as decimal; a non-numeric one is off =="
+echo "== C45-qmd-daemon: half a MB over the ceiling still WARNs; a leading-zero ceiling reads as decimal; a non-numeric one is off =="
 c44d_setup
 out="$(c44d_run '4194816 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
 out_oct="$(QMD_RSS_CEILING_MB=08 c44d_run '1048576 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
 out_bad="$(QMD_RSS_CEILING_MB=lots c44d_run '7340032 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
-if grepq "$out" 'WARN C44-qmd-daemon' && grepq "$out_oct" 'WARN C44-qmd-daemon' && grepq "$out_oct" -F 'ceiling 8 MB' \
-    && grepq "$out_bad" 'OK   C44-qmd-daemon'; then
-    pass "C44-qmd-daemon compares in KB and reads a leading-zero ceiling as decimal"
+if grepq "$out" 'WARN C45-qmd-daemon' && grepq "$out_oct" 'WARN C45-qmd-daemon' && grepq "$out_oct" -F 'ceiling 8 MB' \
+    && grepq "$out_bad" 'OK   C45-qmd-daemon'; then
+    pass "C45-qmd-daemon compares in KB and reads a leading-zero ceiling as decimal"
 else
-    fail "C44-qmd-daemon KB/decimal/invalid -> half=[$(printf '%s' "$out" | grep C44-qmd-daemon)] oct=[$(printf '%s' "$out_oct" | grep C44-qmd-daemon)] bad=[$(printf '%s' "$out_bad" | grep C44-qmd-daemon)]"
+    fail "C45-qmd-daemon KB/decimal/invalid -> half=[$(printf '%s' "$out" | grep C45-qmd-daemon)] oct=[$(printf '%s' "$out_oct" | grep C45-qmd-daemon)] bad=[$(printf '%s' "$out_bad" | grep C45-qmd-daemon)]"
 fi
 rm -rf "$c44d_t"
 
-echo "== C44-qmd-daemon: no pidfile / dead pid / non-qmd pid -> silent =="
+echo "== C45-qmd-daemon: no pidfile / dead pid / non-qmd pid -> silent =="
 c44d_setup
 out_nopid="$(c44d_run '1048576 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181' "$c44d_t/absent.pid")"
 out_dead="$(c44d_run '')"
 out_foreign="$(c44d_run '1048576 04:31:07 /usr/bin/vim notes.md')"
-if ! grepq "$out_nopid" 'C44-qmd-daemon' && ! grepq "$out_dead" 'C44-qmd-daemon' && ! grepq "$out_foreign" 'C44-qmd-daemon'; then
-    pass "C44-qmd-daemon stays silent without a live qmd daemon behind the pidfile"
+if ! grepq "$out_nopid" 'C45-qmd-daemon' && ! grepq "$out_dead" 'C45-qmd-daemon' && ! grepq "$out_foreign" 'C45-qmd-daemon'; then
+    pass "C45-qmd-daemon stays silent without a live qmd daemon behind the pidfile"
 else
-    fail "C44-qmd-daemon silent cases -> nopid=[$(printf '%s' "$out_nopid" | grep C44-qmd-daemon)] dead=[$(printf '%s' "$out_dead" | grep C44-qmd-daemon)] foreign=[$(printf '%s' "$out_foreign" | grep C44-qmd-daemon)]"
+    fail "C45-qmd-daemon silent cases -> nopid=[$(printf '%s' "$out_nopid" | grep C45-qmd-daemon)] dead=[$(printf '%s' "$out_dead" | grep C45-qmd-daemon)] foreign=[$(printf '%s' "$out_foreign" | grep C45-qmd-daemon)]"
 fi
 rm -rf "$c44d_t"
 
@@ -5127,6 +5136,71 @@ else
     fail "C43 no hooks -> $(printf '%s' "$out" | grep -A1 C43)"
 fi
 rm -rf "$t"
+
+echo "== C44: skills collection missing -> FAIL =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-missing.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (1):\n\nhimmel (qmd://himmel/)\n  Files:    527\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'FAIL C44-skill-index' && grepq "$out" -F 'build-skill-index.sh'; then
+    pass "C44 missing collection -> FAIL"
+else
+    fail "C44 missing collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: skills collection empty (0 files) -> FAIL =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-empty.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (2):\n\nhimmel (qmd://himmel/)\n  Files:    527\n\nskills (qmd://skills/)\n  Files:    0\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 empty collection -> FAIL"
+else
+    fail "C44 empty collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: skills collection populated -> OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-ok.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (2):\n\nhimmel (qmd://himmel/)\n  Files:    527\n\nskills (qmd://skills/)\n  Files:    42\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 populated collection -> OK"
+else
+    fail "C44 populated collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: qmd not resolvable -> INFO skip, no FAIL =="
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/no-such-qmd-anywhere" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 qmd absent -> INFO skip"
+else
+    fail "C44 qmd absent -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 

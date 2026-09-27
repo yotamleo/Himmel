@@ -11,30 +11,33 @@ session-start skill listings cause (e.g. `obsidian-capture` vs
 
 ## Workflow
 
-1. **Ensure the index exists.** If `$SKILL_INDEX_DIR` (default
-   `$HOME/.claude/skill-index`) is empty, run:
+1. **Check + query in one step.** Run:
 
    ```bash
-   bash scripts/skill-index/build-skill-index.sh
-   bash -c 'source scripts/lib/qmd-bin.sh; qmd_cmd ingest --collection skills "$HOME/.claude/skill-index"'
+   bash scripts/skill-index/skill-find.sh "$ARGUMENTS" "${LIMIT:-5}"
    ```
 
-   Bare `qmd` inside Claude's Bash tool resolves to the broken
-   plugin-cache stub (HIMMEL-163) — always go through the
-   `scripts/lib/qmd-bin.sh` resolver. Re-run the two commands above
-   after plugin install/uninstall.
+   This checks the `skills` qmd collection is registered and non-empty
+   before ever querying (bare `qmd` inside Claude's Bash tool resolves
+   to the broken plugin-cache stub, HIMMEL-163 — the script goes
+   through the `scripts/lib/qmd-bin.sh` resolver, never bare `qmd`).
 
-2. **Query.** Pass `$ARGUMENTS` to qmd with a hybrid lex+vec sub-query
-   set:
+   - **Exit 3** (collection missing or empty): the script prints the
+     exact two rebuild commands on stderr. Run them verbatim, then
+     retry the query. Never fall back to guessing skill/command names
+     from `ls`/`grep` — that silent reversion to pre-HIMMEL-33
+     behavior is the failure mode this check exists to prevent
+     (HIMMEL-2222). Re-run the two rebuild commands after any plugin
+     install/uninstall too, since nothing auto-rebuilds yet.
+   - **Exit 127**: qmd is not resolvable on this machine at all — report
+     that, don't guess either.
+   - **Exit 0**: the query ran; its stdout is the raw qmd hits to
+     report per step 2 below.
 
-   ```bash
-   bash -c 'source scripts/lib/qmd-bin.sh; qmd_cmd query --collection skills --intent "$ARGUMENTS" --lex "$ARGUMENTS" --vec "$ARGUMENTS" --limit "${LIMIT:-5}"'
-   ```
-
-   When `--namespace <plugin>` is passed, filter results to entries
+   When `--namespace <plugin>` is passed, filter the results to entries
    whose `plugin:` frontmatter field matches.
 
-3. **Report results.** Print top-K matches:
+2. **Report results.** Print top-K matches:
    - `<qualified-name>` (fully-qualified, e.g. `pr-review-toolkit:code-reviewer`)
    - `<kind>` (command | agent | skill)
    - `<plugin>` (plugin name or `local`)

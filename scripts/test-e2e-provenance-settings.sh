@@ -13,6 +13,8 @@
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"   # <repo>/scripts
 lib="$here/lib"
+# shellcheck source=scripts/lib/sha256-bin.sh
+. "$lib/sha256-bin.sh"
 fails=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
@@ -51,7 +53,8 @@ wires() {
   bash "$lib/wire-luna-vault.sh"        "$SETTINGS" "C:/fake/vault" >/dev/null
   bash "$lib/wire-handover-dir.sh"      "$SETTINGS" "C:/fake/vault/handovers" >/dev/null
 }
-sha() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
+# shellcheck disable=SC2119 # sha256_hex reads stdin here, by design
+sha() { printf '%s' "$1" | sha256_hex; }
 # rows_of <unit> [op] -- artifact rows for one unit, optionally one op
 rows_of() { jq -c --arg u "$1" --arg o "${2:-}" 'select(.unit==$u and ($o=="" or .op==$o))' "$LEDGER" 2>/dev/null; }
 count_of() { rows_of "$@" | grep -c . ; }
