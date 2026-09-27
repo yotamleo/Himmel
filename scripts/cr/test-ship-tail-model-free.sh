@@ -64,16 +64,20 @@ fixture2="$tmp/tick.sh"
 cp "$REPO/scripts/handover/console-kit/tick.sh" "$fixture2"
 printf '\nclaude \\\n  -p "drive the merge"\n' >>"$fixture2"
 
-joined2="$(sed ':a;N;$!ba;s/\\\n/ /g' -- "$fixture2")"
-# pipefail-ok: capture full grep output (no -q) instead of piping into
-# `grep -q` — under `set -o pipefail`, `grep -q`'s early exit on first match
-# SIGPIPEs the producer, and the pipeline status can then reflect the
-# producer's SIGPIPE exit rather than grep's own match (HIMMEL-1430 class).
-match2="$(printf '%s\n' "$joined2" | grep -E "$PATTERN")"
-if [ -n "$match2" ]; then
-    got2="matched"
+if joined2="$(sed ':a;N;$!ba;s/\\\n/ /g' -- "$fixture2")"; then
+    # pipefail-ok: capture full grep output (no -q) instead of piping into
+    # `grep -q` — under `set -o pipefail`, `grep -q`'s early exit on first
+    # match SIGPIPEs the producer, and the pipeline status can then reflect
+    # the producer's SIGPIPE exit rather than grep's own match (HIMMEL-1430
+    # class).
+    match2="$(printf '%s\n' "$joined2" | grep -E "$PATTERN")"
+    if [ -n "$match2" ]; then
+        got2="matched"
+    else
+        got2="no-match"
+    fi
 else
-    got2="no-match"
+    got2="sed-error"
 fi
 check "$got2" "matched" "T3 line-continuation-split headless call in fixture is caught"
 
@@ -101,10 +105,16 @@ for f in "${SHIP_TAIL_FILES[@]}"; do
         # only genuine continuations (not every line) and re-check, so
         # unrelated `claude`/`-p` mentions elsewhere in the file can't pair up
         # into a false positive.
-        joined="$(sed ':a;N;$!ba;s/\\\n/ /g' -- "$path")"
+        if ! joined="$(sed ':a;N;$!ba;s/\\\n/ /g' -- "$path")"; then
+            violations+=("$f:sed-error")
+            continue
+        fi
         # pipefail-ok: same capture-not-`-q` fix as above (HIMMEL-1430 class).
         match="$(printf '%s\n' "$joined" | grep -E "$PATTERN")"
-        if [ -n "$match" ]; then
+        grep_rc2=$?
+        if [ "$grep_rc2" -eq 2 ]; then
+            violations+=("$f:grep-error")
+        elif [ -n "$match" ]; then
             violations+=("$f:line-continuation-split")
         fi
     fi
