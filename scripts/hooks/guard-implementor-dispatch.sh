@@ -557,9 +557,43 @@ if [ -n "$round_cwd" ]; then
     # dispatch prose routinely ends the sentence naming the path with a
     # literal "." right after it, and a trailing-dot class would swallow
     # that punctuation into the path, making a real worktree unresolvable.
+    round_task_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_task_file=""
+    round_task_path="$round_task_file"
+    if [ -n "$round_task_file" ]; then
+        printf '%s' "$text" > "$round_task_file" 2>/dev/null || round_task_file=""
+    fi
+    if [ -z "$round_task_file" ] || ! command -v bun >/dev/null 2>&1 || [ ! -f "$repo_root/scripts/telegram/round-guard.ts" ]; then
+        printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate could not be evaluated for this implementor dispatch (bun missing, scripts/telegram/round-guard.ts missing, or a temp file could not be created; dispatch cwd: %s) — fix the environment and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_cwd" >&2
+        [ -n "$round_task_path" ] && rm -f "$round_task_path" 2>/dev/null
+        exit 2
+    fi
+    # HIMMEL-3676 (J1322B NO-GO, Critical): check the cwd's OWN branch FIRST,
+    # before the named-worktree loop below. A PreToolUse hook that times out
+    # fails OPEN (docs/internals/enforcement.md), and the loop below is O(n)
+    # in the number of DISTINCT .claude/worktrees/ path spellings the dispatch
+    # text contains -- a pathological prompt with thousands of spellings ran
+    # the loop past the 15s hook timeout (measured ~17s), turning a dispatch
+    # main REFUSES (cwd is an exhausted worktree) into an ALLOW purely by
+    # timing the hook out before it ever reached this check. Running the cwd
+    # check first means a dispatch main refuses is refused at the SAME speed
+    # as on main, no matter what the rest of the text contains.
+    _round_check_one "" "the dispatch cwd's own branch"
     round_wt_paths=$(printf '%s' "$text" | grep -oE '[A-Za-z0-9_./+-]*\.claude/worktrees/([A-Za-z0-9_+-]+\.)*[A-Za-z0-9_+-]+' | sort -u || true)
     round_extra_branches=""
     if [ -n "$round_wt_paths" ]; then
+        # HIMMEL-3676 (J1322B NO-GO, Critical): bound the loop itself, so the
+        # NEW named-worktree check cannot be timed out either. A dispatch
+        # naming more than IMPL_GUARD_MAX_WT_PATHS distinct worktree-path
+        # spellings refuses outright rather than resolving them all --
+        # over-refusing here is the safe direction for a refusal-only guard,
+        # and no honest brief spells the same worktree path hundreds of times.
+        round_wt_path_count=$(printf '%s\n' "$round_wt_paths" | grep -c . || true)
+        round_max_wt_paths="${IMPL_GUARD_MAX_WT_PATHS:-200}"
+        if [ "$round_wt_path_count" -gt "$round_max_wt_paths" ]; then
+            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch text names %s distinct .claude/worktrees/ paths, over the %s-path bound -- refusing rather than resolving them all (a pathological prompt must not be able to time this guard out into an allow). Raise the bound with IMPL_GUARD_MAX_WT_PATHS, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_wt_path_count" "$round_max_wt_paths" >&2
+            rm -f "$round_task_path" 2>/dev/null
+            exit 2
+        fi
         while IFS= read -r round_wt_path; do
             [ -n "$round_wt_path" ] || continue
             # HIMMEL-3676 (codex-1/codex-2 CR round): `git -C` walks UP to an
@@ -604,17 +638,6 @@ if [ -n "$round_cwd" ]; then
             esac
         done <<< "$round_wt_paths"
     fi
-    round_task_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_task_file=""
-    round_task_path="$round_task_file"
-    if [ -n "$round_task_file" ]; then
-        printf '%s' "$text" > "$round_task_file" 2>/dev/null || round_task_file=""
-    fi
-    if [ -z "$round_task_file" ] || ! command -v bun >/dev/null 2>&1 || [ ! -f "$repo_root/scripts/telegram/round-guard.ts" ]; then
-        printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate could not be evaluated for this implementor dispatch (bun missing, scripts/telegram/round-guard.ts missing, or a temp file could not be created; dispatch cwd: %s) — fix the environment and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_cwd" >&2
-        [ -n "$round_task_path" ] && rm -f "$round_task_path" 2>/dev/null
-        exit 2
-    fi
-    _round_check_one "" "the dispatch cwd's own branch"
     if [ -n "$round_extra_branches" ]; then
         for round_extra_branch in $round_extra_branches; do
             _round_check_one " --branch $(printf '%q' "$round_extra_branch")" "worktree branch $round_extra_branch"

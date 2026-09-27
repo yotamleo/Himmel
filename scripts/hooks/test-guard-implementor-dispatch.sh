@@ -907,8 +907,16 @@ avail_row() {
 }
 
 payload_cwd() {
-    jq -nc --arg st "$1" --arg m "$2" --arg d "$3" --arg p "$4" --arg c "$5" \
+    # HIMMEL-3676 (v)/(w): the prompt text can run into the hundreds of KB
+    # (thousands of distinct worktree-path spellings). Passing that as a
+    # jq --arg CLI value hits Linux's per-argument MAX_ARG_STRLEN (128 KiB)
+    # and fails with "Argument list too long" well under the OS ARG_MAX --
+    # so the prompt goes through a temp file and --rawfile instead.
+    local prompt_file="$TMP/payload-prompt-$$-$RANDOM"
+    printf '%s' "$4" > "$prompt_file"
+    jq -nc --arg st "$1" --arg m "$2" --arg d "$3" --rawfile p "$prompt_file" --arg c "$5" \
         '{tool_name:"Agent",session_id:"sess-test",tool_input:{subagent_type:$st,description:$d,prompt:$p,model:$m,cwd:$c}}'
+    rm -f "$prompt_file"
 }
 
 # --- (a)/(d) fixture: 3 trailing blocking rounds on one branch (ESCALATE).
@@ -1131,8 +1139,17 @@ assert_contains "(n) refusal explains the unresolved worktree" "could not be res
 # 3-round ledger and the predicate wrongly returns "0 rounds" -- an unrelated
 # worktree must never be trusted for round attribution unless it shares the
 # payload cwd's git-common-dir.
+#
+# HIMMEL-3676 (J1322B NO-GO, Critical, reorder): the cwd's own branch is now
+# checked FIRST, so it must be CLEAN (0 rounds) here -- otherwise that check
+# alone would refuse before the named-worktree loop is ever reached, masking
+# the specific cross-repo class this fixture exists to exercise. The 3-crit
+# ledger rows stay filed under a DIFFERENT branch than the cwd's own HEAD, so
+# they remain irrelevant to the cwd check and only matter if the (buggy,
+# pre-fix) code wrongly let the foreign worktree's branch name filter into
+# this repo's own ledger.
 RG_REPO_P="$TMP/round-repo-p"
-mk_round_repo "$RG_REPO_P" "fix/himmel-9014-round-p"
+mk_round_repo "$RG_REPO_P" "main"
 RG_H16=$(round_head h16); RG_H17=$(round_head h17); RG_H18=$(round_head h18)
 {
     finding_row "fix/himmel-9014-round-p" "$RG_H16" crit open f16
@@ -1249,6 +1266,72 @@ else
     echo "FAIL (u) bounded budget killed at ${RG_U_MS}ms, expected >= 2000ms"
     fail=$((fail + 1))
 fi
+
+# --- (v), HIMMEL-3676 (J1322B NO-GO, Critical): cwd IS the exhausted
+# (3-round) worktree, and the dispatch text spells 3000 DISTINCT sibling
+# worktree paths (a pathological prompt). Before the reorder, the
+# named-worktree loop ran BEFORE the cwd check, and its cost grows with the
+# number of distinct spellings -- past this hook's 15s PreToolUse timeout on
+# a large enough prompt (measured ~17s at head vs ~1.2s at main in J1322B).
+# A PreToolUse hook that times out fails OPEN, so that turned a dispatch main
+# REFUSES into an ALLOW purely by timing the hook out before it ever reached
+# the cwd check. Checking the cwd's own branch FIRST means this refuses at
+# the SAME (fast) speed no matter how much of the text names other
+# worktrees -- the loop below is never even reached once the cwd itself
+# refuses.
+RG_REPO_V="$TMP/round-repo-v"
+RG_WT_BRANCH_V_HOT="fix/himmel-9020-hot"
+RG_WT_DIR_V_HOT="$TMP/.claude/worktrees/fix-himmel-9020-hot"
+mk_round_repo "$RG_REPO_V" "main"
+git -C "$RG_REPO_V" worktree add -q -b "$RG_WT_BRANCH_V_HOT" "$RG_WT_DIR_V_HOT" main
+RG_H22=$(round_head h22); RG_H23=$(round_head h23); RG_H24=$(round_head h24)
+{
+    finding_row "$RG_WT_BRANCH_V_HOT" "$RG_H22" crit open f22
+    finding_row "$RG_WT_BRANCH_V_HOT" "$RG_H23" imp open f23
+    finding_row "$RG_WT_BRANCH_V_HOT" "$RG_H24" crit open f24
+} > "$(round_ledger_path "$RG_REPO_V")/cr-critic-scores.jsonl"
+
+RG_V_TEXT="Write the code and commit it in $RG_WT_DIR_V_HOT."
+RG_V_I=0
+while [ "$RG_V_I" -lt 3000 ]; do
+    RG_V_TEXT="$RG_V_TEXT Also see $TMP/.claude/worktrees/fix-himmel-9020-fresh-$RG_V_I for an old attempt."
+    RG_V_I=$((RG_V_I + 1))
+done
+
+RG_V_START=$(date +%s%N)
+RC_RG_V=$(run_hook round-cwd-checked-before-named-loop "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9020' "$RG_V_TEXT" "$RG_WT_DIR_V_HOT")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+RG_V_END=$(date +%s%N)
+RG_V_MS=$(( (RG_V_END - RG_V_START) / 1000000 ))
+assert_rc "(v) cwd is the 3-round worktree, text spells 3000 distinct sibling paths: refuses on the cwd's own exhausted branch" 2 "$RC_RG_V"
+if [ "$RG_V_MS" -lt 2000 ]; then
+    echo "ok   (v) 3000-spelling dispatch still refuses well under the round budget (${RG_V_MS}ms)"
+    pass=$((pass + 1))
+else
+    echo "FAIL (v) 3000-spelling dispatch took ${RG_V_MS}ms, expected well under 2000ms"
+    fail=$((fail + 1))
+fi
+
+# --- (w), HIMMEL-3676 (J1322B NO-GO, Critical): bound the named-worktree
+# loop itself, so the NEW check cannot be timed out either. cwd is a FRESH
+# (0-round) worktree -- so the cwd check alone would ALLOW -- and the text
+# names more than IMPL_GUARD_MAX_WT_PATHS (default 200) distinct worktree-path
+# spellings. The loop must refuse outright rather than resolve them all.
+RG_REPO_W="$TMP/round-repo-w"
+RG_WT_BRANCH_W_FRESH="fix/himmel-9021-fresh"
+RG_WT_DIR_W_FRESH="$TMP/.claude/worktrees/fix-himmel-9021-fresh"
+mk_round_repo "$RG_REPO_W" "main"
+git -C "$RG_REPO_W" worktree add -q -b "$RG_WT_BRANCH_W_FRESH" "$RG_WT_DIR_W_FRESH" main
+
+RG_W_TEXT="Write the code and commit it in $RG_WT_DIR_W_FRESH."
+RG_W_I=0
+while [ "$RG_W_I" -lt 250 ]; do
+    RG_W_TEXT="$RG_W_TEXT Also see $TMP/.claude/worktrees/fix-himmel-9021-other-$RG_W_I."
+    RG_W_I=$((RG_W_I + 1))
+done
+
+RC_RG_W=$(run_hook round-named-loop-bounded "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9021' "$RG_W_TEXT" "$RG_WT_DIR_W_FRESH")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(w) text names 251 distinct worktree paths, over the 200-path bound: refuses rather than resolving them all" 2 "$RC_RG_W"
+assert_contains "(w) refusal names the path bound" "path bound" "$(combined_output round-named-loop-bounded)"
 
 # --- (i), HIMMEL-3681: the probe's CLI stdout/stderr on exit 0 must carry
 # its version sentinel ("round-guard-cli: v1"); a stub standing in for a
