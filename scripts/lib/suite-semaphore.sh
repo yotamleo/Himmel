@@ -7,7 +7,7 @@
 #
 # Model: N slot directories, slot-1..slot-N, under
 #   ${HIMMEL_SUITE_SEMAPHORE_DIR:-${TMPDIR:-/tmp}/himmel-suite-semaphore.d}
-# N = HIMMEL_SUITE_SLOTS (default 1). A slot is taken by an atomic `mkdir` and
+# N = HIMMEL_SUITE_SLOTS (default 3). A slot is taken by an atomic `mkdir` and
 # carries an `owner` file: pid, start-time identity (proc-tree.sh), label,
 # started epoch. Liveness is pid + identity, not a TTL alone -- unlike
 # shared-branch-lock.sh, which deliberately does no pid probing. A slot is
@@ -208,7 +208,7 @@ _suite_sem_busy_report() {
         done
         printf 'Retry, waiting up to 60s for a slot:\n'
         printf '  SUITE_LOCK_WAIT=60 %s\n' "$hint"
-        printf 'The budget is HIMMEL_SUITE_SLOTS (default 1), set in the LAUNCHING shell.\n'
+        printf 'The budget is HIMMEL_SUITE_SLOTS (default 3), set in the LAUNCHING shell.\n'
     } >&2
 }
 
@@ -218,9 +218,10 @@ suite_sem_acquire() {
         return 0
     fi
     dir=$(suite_sem_dir)
-    n=$(_suite_sem_uint "${HIMMEL_SUITE_SLOTS:-}" 1)
+    n=$(_suite_sem_uint "${HIMMEL_SUITE_SLOTS:-}" 3)
     wait=${SUITE_LOCK_WAIT:-0}
     case "$wait" in ''|*[!0-9]*) wait=0 ;; esac
+    wait=$((10#$wait))
     poll=$(_suite_sem_uint "${HIMMEL_SUITE_SLOT_POLL:-}" 1)
     if ! mkdir -p "$dir" 2>/dev/null; then
         printf 'ERR suite-semaphore: cannot create %s\n' "$dir" >&2

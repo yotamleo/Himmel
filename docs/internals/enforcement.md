@@ -2384,7 +2384,7 @@ shell, session-sticky). Spec: `scripts/hooks/test-block-chokepoint-env-prefix.sh
 
 **Suite concurrency budget (HIMMEL-1818).** Test suites share a machine-wide
 semaphore (`scripts/lib/suite-semaphore.sh`): `HIMMEL_SUITE_SLOTS` slots
-(default 1) under `${TMPDIR:-/tmp}/himmel-suite-semaphore.d`. Only the two
+(default 3) under `${TMPDIR:-/tmp}/himmel-suite-semaphore.d`. Only the two
 chokepoints take a slot — `bash scripts/quiet-run.sh suite -- <cmd>` (any
 command) and `scripts/ci/run-shell-tests.sh` (once per sweep). A busy budget
 exits **75**, naming each holder's pid, label and age, plus the retry shape

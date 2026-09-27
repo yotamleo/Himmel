@@ -13,7 +13,9 @@
 #     quiet-run under the holder proceeds, a forged HIMMEL_SUITE_SLOT_HELD from
 #     an unrelated process does not;
 #   - HIMMEL_SUITE_SLOTS=N admits N concurrent suites;
-#   - run-shell-tests.sh takes a slot too.
+#   - run-shell-tests.sh takes a slot too;
+#   - the default (HIMMEL_SUITE_SLOTS unset) admits 3 concurrent suites;
+#   - SUITE_LOCK_WAIT with a leading zero (octal-looking) is read as decimal.
 #
 # Every case runs against its own sandbox HIMMEL_SUITE_SEMAPHORE_DIR, with the
 # outer runner's HIMMEL_SUITE_SLOT_HELD removed, so the slot this suite itself
@@ -99,8 +101,8 @@ stop_holder() {
 
 # --- 1: a second concurrent suite fails loud (rc 75) ---
 new_sem
-start_holder "$SEM" one
-ERR=$(qr "$SEM" -- true 2>&1 >/dev/null); RC=$?
+start_holder "$SEM" one HIMMEL_SUITE_SLOTS=1
+ERR=$(qr "$SEM" HIMMEL_SUITE_SLOTS=1 -- true 2>&1 >/dev/null); RC=$?
 if [ "$RC" = "75" ] \
    && grep -q "pid ${QR_PID:-none}" <<<"$ERR" \
    && grep -q "label suite" <<<"$ERR" \
@@ -125,10 +127,10 @@ fi
 
 # --- 3: SUITE_LOCK_WAIT=<n> waits for the slot ---
 new_sem
-start_holder "$SEM" wait
+start_holder "$SEM" wait HIMMEL_SUITE_SLOTS=1
 ( sleep 1; kill -TERM "$(cat "$SLEEPER_FILE")" 2>/dev/null ) &
 BG_PIDS="$BG_PIDS $!"
-if qr "$SEM" SUITE_LOCK_WAIT=20 -- true >/dev/null 2>&1; then
+if qr "$SEM" HIMMEL_SUITE_SLOTS=1 SUITE_LOCK_WAIT=20 -- true >/dev/null 2>&1; then
     pass "SUITE_LOCK_WAIT=20 waits for the busy slot, then proceeds"
 else
     fail "SUITE_LOCK_WAIT=20 did not acquire after the holder released"
@@ -137,11 +139,11 @@ wait "$HOLDER" 2>/dev/null || true
 
 # --- 4: a KILLED runner's stale slot is reclaimed ---
 new_sem
-start_holder "$SEM" killed
+start_holder "$SEM" killed HIMMEL_SUITE_SLOTS=1
 kill -KILL "${QR_PID:-none}" 2>/dev/null
 wait "$HOLDER" 2>/dev/null || true
 kill -TERM "$(cat "$SLEEPER_FILE")" 2>/dev/null || true
-ERR=$(qr "$SEM" -- true 2>&1 >/dev/null); RC=$?
+ERR=$(qr "$SEM" HIMMEL_SUITE_SLOTS=1 -- true 2>&1 >/dev/null); RC=$?
 if [ "$RC" = "0" ] && grep -q "reclaimed" <<<"$ERR"; then
     pass "kill -9'd runner's stale slot is reclaimed"
 else
@@ -160,8 +162,8 @@ fi
 
 # --- 6: a slot past HIMMEL_SUITE_SLOT_TTL is reclaimed even if the pid lives ---
 new_sem
-start_holder "$SEM" ttl
-ERR=$(qr "$SEM" HIMMEL_SUITE_SLOT_TTL=1 SUITE_LOCK_WAIT=5 -- true 2>&1 >/dev/null)
+start_holder "$SEM" ttl HIMMEL_SUITE_SLOTS=1
+ERR=$(qr "$SEM" HIMMEL_SUITE_SLOTS=1 HIMMEL_SUITE_SLOT_TTL=1 SUITE_LOCK_WAIT=5 -- true 2>&1 >/dev/null)
 if grep -q reclaimed <<<"$ERR"; then
     pass "slot older than HIMMEL_SUITE_SLOT_TTL is reclaimed"
 else
@@ -181,8 +183,8 @@ fi
 
 # --- 8: a FORGED HIMMEL_SUITE_SLOT_HELD (not a descendant) is not honoured ---
 new_sem
-start_holder "$SEM" forged
-ERR=$(qr "$SEM" HIMMEL_SUITE_SLOT_HELD="$SEM/slot-1" -- true 2>&1 >/dev/null); RC=$?
+start_holder "$SEM" forged HIMMEL_SUITE_SLOTS=1
+ERR=$(qr "$SEM" HIMMEL_SUITE_SLOTS=1 HIMMEL_SUITE_SLOT_HELD="$SEM/slot-1" -- true 2>&1 >/dev/null); RC=$?
 if [ "$RC" = "75" ]; then
     pass "forged HIMMEL_SUITE_SLOT_HELD from a non-descendant is refused (rc 75)"
 else
@@ -217,9 +219,9 @@ new_sem
 FIX="$SCRATCH/fixture-root"
 mkdir -p "$FIX"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FIX/test-ok.sh"
-start_holder "$SEM" runner
-env -u HIMMEL_SUITE_SLOT_HELD -u HIMMEL_SUITE_LOCK_HELD -u SUITE_LOCK_WAIT -u HIMMEL_SUITE_SLOTS \
-    HIMMEL_SUITE_SEMAPHORE_DIR="$SEM" TMPDIR="$SCRATCH" HIMMEL_RUNTIME_PREFLIGHT=0 \
+start_holder "$SEM" runner HIMMEL_SUITE_SLOTS=1
+env -u HIMMEL_SUITE_SLOT_HELD -u HIMMEL_SUITE_LOCK_HELD -u SUITE_LOCK_WAIT \
+    HIMMEL_SUITE_SEMAPHORE_DIR="$SEM" HIMMEL_SUITE_SLOTS=1 TMPDIR="$SCRATCH" HIMMEL_RUNTIME_PREFLIGHT=0 \
     bash "$RUNNER" "$FIX" >"$SCRATCH/runner.out" 2>&1 </dev/null; RC=$?
 if [ "$RC" = "75" ]; then
     pass "run-shell-tests.sh refuses while another suite holds the slot (rc 75)"
@@ -227,6 +229,52 @@ else
     fail "run-shell-tests.sh under a busy slot -- expected rc 75, got rc=$RC: $(tail -5 "$SCRATCH/runner.out")"
 fi
 stop_holder
+
+# --- 11: default (HIMMEL_SUITE_SLOTS unset) admits 3, refuses the 4th ---
+new_sem
+start_holder "$SEM" def-a
+H1=$HOLDER; S1=$SLEEPER_FILE
+start_holder "$SEM" def-b
+H2=$HOLDER; S2=$SLEEPER_FILE
+start_holder "$SEM" def-c
+H3=$HOLDER
+if [ -e "$SEM/slot-1" ] && [ -e "$SEM/slot-2" ] && [ -e "$SEM/slot-3" ]; then
+    pass "default HIMMEL_SUITE_SLOTS admits 3 concurrent suites"
+else
+    fail "default HIMMEL_SUITE_SLOTS did not admit 3 concurrent suites"
+fi
+qr "$SEM" -- true >/dev/null 2>&1; RC=$?
+if [ "$RC" = "75" ]; then
+    pass "default HIMMEL_SUITE_SLOTS refuses the 4th (rc 75)"
+else
+    fail "default HIMMEL_SUITE_SLOTS 4th suite -- expected rc 75, got rc=$RC"
+fi
+stop_holder
+HOLDER=$H2; SLEEPER_FILE=$S2
+stop_holder
+HOLDER=$H1; SLEEPER_FILE=$S1
+stop_holder
+wait "$H3" 2>/dev/null || true
+
+# --- 12: SUITE_LOCK_WAIT with a leading zero is read as decimal, not octal.
+# A bad base-8 arithmetic expansion aborts suite_sem_acquire before it ever
+# tries the slot, and the caller reads that abort as success -- the busy
+# budget is silently BYPASSED instead of waited out. Pin on wall-clock: a
+# correct wait blocks until the holder releases (>= 1s); the bypass returns
+# almost instantly. ---
+new_sem
+start_holder "$SEM" octal HIMMEL_SUITE_SLOTS=1
+( sleep 1; kill -TERM "$(cat "$SLEEPER_FILE")" 2>/dev/null ) &
+BG_PIDS="$BG_PIDS $!"
+START=$(date +%s)
+qr "$SEM" HIMMEL_SUITE_SLOTS=1 SUITE_LOCK_WAIT=08 -- true >/dev/null 2>&1; RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+if [ "$RC" = "0" ] && [ "$ELAPSED" -ge 1 ]; then
+    pass "SUITE_LOCK_WAIT=08 (leading zero) waits for the holder (${ELAPSED}s) instead of bypassing the budget"
+else
+    fail "SUITE_LOCK_WAIT=08 (leading zero) -- expected rc 0 after >=1s wait, got rc=$RC after ${ELAPSED}s (a fast rc 0 means the budget was silently bypassed)"
+fi
+wait "$HOLDER" 2>/dev/null || true
 
 if [ "$FAILED" -eq 0 ]; then
     echo "OK: all $CASES cases passed"
