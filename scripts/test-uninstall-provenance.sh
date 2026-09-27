@@ -1831,7 +1831,7 @@ LEDGER56="$HIMMEL_PROVENANCE_DIR/provenance.jsonl"
 # a garbage line of its own -- never a real row, just a torn tail from a
 # crash mid-append that a normal (non-purge) uninstall must tolerate.
 printf '{"t":"2026-01-01T00:00:00Z","iid":"x","op":"replace","kind":"fil\n' >> "$LEDGER56"
-out56=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings)
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings >/dev/null
 rc56=$?
 AFTER_GOOD56_BYTES=$(cat "$DEST_GOOD56")
 check "RED56: a torn row does not abort a normal (non-purge) uninstall" "$rc56" "0"
