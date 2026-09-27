@@ -1084,7 +1084,9 @@ RACE_DIR29=$(mktemp -d "${TMPDIR:-/tmp}/esw-race29.XXXXXX") || { echo "test-end-
 # shellcheck disable=SC2034  # read by claim_capture/release_capture/log_msg, extracted verbatim via eval below
 CAPTURED_DIR="$RACE_DIR29/captured"
 LOG_DIR="$RACE_DIR29/logs"
+# shellcheck disable=SC2034  # read by log_msg (via __on_signal), extracted verbatim via eval below
 LOG_PATH="$LOG_DIR/end-session-wiki.log"
+# shellcheck disable=SC2034  # read by log_msg (via __on_signal), extracted verbatim via eval below
 LOG_OLD_PATH="$LOG_DIR/end-session-wiki.log.old"
 eval "$(extract_fn _esw_sid_slug "$HOOK")"
 eval "$(extract_fn claim_capture "$HOOK")"
@@ -1095,10 +1097,10 @@ eval "$(extract_fn __on_signal "$HOOK")"
 # Shadow the builtin so __on_signal's own `exit 0` returns to us instead of
 # killing this test script; CLAIMED must persist as a real variable change
 # (not a subshell copy), matching how the real process behaves.
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, via the extracted __on_signal calling `exit 0`
 exit() { return 0; }
 CLAIMED=0
 WROTE=0
-HOOK_OK=0
 SESSION_ID="sid29"
 claim_capture "$SESSION_ID"
 CLAIMED=1
