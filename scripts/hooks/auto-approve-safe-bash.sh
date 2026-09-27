@@ -1192,8 +1192,18 @@ guard_is_long_abbrev() {
 # newline stays a real separator, so leave it unfolded and let the existing
 # unquoted-separator/newline handling see it. Single quotes give backslash no
 # special meaning at all, so no fold happens inside them either.
+#
+# HIMMEL-3750 round 6 (codex-1): a `'` is only a single-quote DELIMITER when
+# not already inside double quotes — real shells nest quoting that way, so
+# `"'$\<NL>(touch PWN)"` has a literal apostrophe, not a quote open, and the
+# backslash-newline after it still folds (double quotes fold it same as
+# unquoted text). The old check toggled in_sq on ANY `'`, double-quoted or
+# not, so that literal apostrophe wrongly entered "single-quote" mode and
+# suppressed the fold for the rest of the string (no closing `'` ever came),
+# leaving the raw-text `$(` tripwire unable to see the reconstituted `$(`.
+# Track double-quote state too so a `'` inside `"..."` stays inert.
 fold_backslash_newline() {
-    local s="$1" out="" i=0 n c j run k in_sq=0 bs=$'\\'
+    local s="$1" out="" i=0 n c j run k in_sq=0 in_dq=0 bs=$'\\'
     n=${#s}
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
@@ -1203,8 +1213,14 @@ fold_backslash_newline() {
             i=$((i + 1))
             continue
         fi
-        if [ "$c" = "'" ]; then
+        if [ "$c" = "'" ] && [ "$in_dq" = 0 ]; then
             in_sq=1
+            out="$out$c"
+            i=$((i + 1))
+            continue
+        fi
+        if [ "$c" = '"' ]; then
+            [ "$in_dq" = 0 ] && in_dq=1 || in_dq=0
             out="$out$c"
             i=$((i + 1))
             continue

@@ -912,6 +912,15 @@ assert "genuine single-backslash continuation still ALLOW" ALLOW "$(decide "$(j_
 # and correctly leaves the `;` unescaped, so this must stay PASS (fall
 # through), not get folded into a single approved segment.
 assert "odd(3) backslash-newline leaves real separator visible (codex-1)" PASS "$(decide "$(j_bash "echo hi\\\\\\"$'\n'"; touch PWN")")"
+# codex-1 (round 6): fold_backslash_newline() toggled its single-quote state
+# on ANY `'`, even one appearing INSIDE double quotes, where it is a plain
+# literal character, not a quote delimiter. `echo "'$\<NL>(touch PWN)"` has
+# its apostrophe inside double quotes; the old code wrongly treated it as
+# opening a single-quoted span (no closing `'` ever follows), so the fold
+# never ran and the raw `$(` tripwire never saw the reconstituted `$(`.
+# VERIFIED (real bash): this exact string, run as a script, executes
+# `touch PWN`. Must fall through to PASS, not ALLOW.
+assert "apostrophe inside dquotes no longer blocks fold (codex-1 round 6)" PASS "$(decide "$(j_bash "echo \"'\$\\"$'\n'"(touch PWN)\"")")"
 # Controls: common benign expansions must keep ALLOWing.
 assert "echo \${HOME} still ALLOW"     ALLOW "$(decide "$(j_bash 'echo "${HOME}"')")"
 assert "echo \$PWD still ALLOW"        ALLOW "$(decide "$(j_bash 'echo "$PWD"')")"
