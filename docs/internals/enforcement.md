@@ -2382,6 +2382,25 @@ shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 `eval`/`bash -c` recursion. Bypass: `ENV_PREFIX_GUARD_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-chokepoint-env-prefix.sh`.
 
+**Suite concurrency budget (HIMMEL-1818).** Test suites share a machine-wide
+semaphore (`scripts/lib/suite-semaphore.sh`): `HIMMEL_SUITE_SLOTS` slots
+(default 1) under `${TMPDIR:-/tmp}/himmel-suite-semaphore.d`. Only the two
+chokepoints take a slot — `bash scripts/quiet-run.sh suite -- <cmd>` (any
+command) and `scripts/ci/run-shell-tests.sh` (once per sweep). A busy budget
+exits **75**, naming each holder's pid, label and age, plus the retry shape
+`SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- <cmd>`
+(`SUITE_LOCK_WAIT=<seconds>` waits for a slot). A slot is reclaimed when its
+owner is gone, its pid names another process (start-time identity), or it
+passed `HIMMEL_SUITE_SLOT_TTL` (default 14400 s). Nested suites re-enter via
+`HIMMEL_SUITE_SLOT_HELD`, honoured only when the recorded owner is a live
+ancestor. This hook enforces the chokepoint: a `bun test`, `node --test`, or
+`test-*.sh` at the invoked-program position is denied with the quiet-run
+shape, and the semaphore knobs are registered seams (a per-call
+`HIMMEL_SUITE_SLOTS=`/`HIMMEL_SUITE_SLOT_HELD=` prefix is denied;
+`SUITE_LOCK_WAIT=` is not a seam). Residuals (`timeout`/`xargs`/`find -exec`
+wrappers, `$var` paths, `bun run test`/`npm test`) are HIMMEL-3763. Bypass of
+the direct-suite rule only: `DIRECT_SUITE_OK=1` (launching shell).
+
 ### `require-quiet-run.sh` — bare test-suite bounce (HIMMEL-1952)
 
 Fires on Bash. Denies a bare `bash`/`sh`/direct invocation of a repo shell

@@ -2861,7 +2861,7 @@ fi
 # --------------------------------------------------------------------------
 suites_file=$(mktemp)
 suites_raw=$(mktemp)
-trap 'rm -f "$suites_file" "$suites_raw"; suite_lock_release; suite_lock_queue_leave' EXIT
+trap 'rm -f "$suites_file" "$suites_raw"; suite_lock_release; suite_lock_queue_leave; [ -z "${SUITE_SEM_SLOT:-}" ] || suite_sem_release' EXIT
 
 # Check EVERY discovery stage so a partial-output-then-fail can't mask an
 # incomplete scan (ran>0 with the guard below passing → green on a scan that
@@ -2995,6 +2995,15 @@ if [ "$list_only" -eq 0 ]; then
   # "Exit codes:" block at the top of this file. Propagate it verbatim rather
   # than collapsing both refusal shapes back into one hardcoded exit 2.
   [ "$lock_rc" -eq 0 ] || exit "$lock_rc"
+  # HIMMEL-1818 — then one slot of the machine-wide suite budget for the whole
+  # sweep (the scan lock above only serialises sweeps of THIS tree). Busy = 75;
+  # a runner under quiet-run's slot is its descendant and re-enters.
+  # shellcheck source=../lib/suite-semaphore.sh
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/scripts/lib/suite-semaphore.sh"
+  sem_rc=0
+  suite_sem_acquire run-shell-tests "bash scripts/ci/run-shell-tests.sh <same arguments>" || sem_rc=$?
+  [ "$sem_rc" -eq 0 ] || exit "$sem_rc"
   # HIMMEL-2517 — first re-stat. A queued run can sit in the wait loop for
   # hours before this line; the tree it is about to walk may not have survived.
   scan_root_abort_if_vanished

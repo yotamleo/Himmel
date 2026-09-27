@@ -62,7 +62,7 @@ run() {
     local input="$1"; shift
     local outf errf
     outf=$(mktemp); errf=$(mktemp)
-    printf '%s' "$input" | env -u ENV_PREFIX_GUARD_OK -u CHOKEPOINT_REGISTRY "$@" bash "$HOOK" >"$outf" 2>"$errf"
+    printf '%s' "$input" | env -u ENV_PREFIX_GUARD_OK -u DIRECT_SUITE_OK -u CHOKEPOINT_REGISTRY "$@" bash "$HOOK" >"$outf" 2>"$errf"
     RC=$?
     OUT=$(cat "$outf"); ERR=$(cat "$errf")
     rm -f "$outf" "$errf"
@@ -782,6 +782,52 @@ diff_row noleak "non-seam \$(( )) assignment as the chokepoint argument" '@P@ $(
 # to `leak` deliberately. ---
 diff_row residual "indirect: x=SEAM=0; (( x )) assigns via the VALUE (HIMMEL-3195)" 'x=HIMMEL_CONSOLE_LEG=0; (( x )); @P@'
 rm -rf "$ORACLE_DIR"
+
+# --- HIMMEL-1818: a suite launched AROUND the chokepoint is denied, naming the
+# quiet-run shape. Recognition is by the INVOKED-PROGRAM token (the HIMMEL-1746
+# pattern): a suite path that is only an ARGUMENT (quiet-run's own operand, a
+# grep pattern) never matches. ---
+assert_deny_suite() {  # assert_deny_suite <label> <json> [ENV=VAL ...]
+    local label="$1"; shift
+    run "$@"
+    local decision
+    decision=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
+    CASES=$((CASES + 1))
+    if [ "$RC" = "2" ] && [ "$decision" = "deny" ] \
+       && printf '%s' "$ERR" | grep -qF "bash scripts/quiet-run.sh suite --"; then
+        echo "PASS $label (denied, message names the quiet-run suite shape)"
+    else
+        echo "FAIL $label -- expected rc=2 + permissionDecision=deny + quiet-run suite message, got rc=$RC decision='$decision'"
+        FAILED=$((FAILED + 1))
+    fi
+}
+QR="scripts/quiet-run.sh"
+assert_deny_suite "direct bun test <file>"                    "$(j "bun test scripts/foo.test.ts")"
+assert_deny_suite "direct bun test, no file"                  "$(j "bun test")"
+assert_deny_suite "bun with a global flag before test"        "$(j "bun --silent test")"
+assert_deny_suite "path-qualified bun test"                   "$(j "/usr/local/bin/bun test x.test.ts")"
+assert_deny_suite "direct node --test"                        "$(j "node --test scripts/x.test.mjs")"
+assert_deny_suite "node --test after a --require operand"     "$(j "node --require ./setup.js --test")"
+assert_deny_suite "direct bash scripts/*/test-*.sh"           "$(j "bash scripts/hooks/test-block-chokepoint-env-prefix.sh")"
+assert_deny_suite "sh with options, then a test-*.sh"         "$(j "sh -x scripts/test-quiet-run.sh")"
+assert_deny_suite "executed test-*.sh path"                   "$(j "./scripts/test-quiet-run.sh")"
+assert_deny_suite "direct suite after && compound"            "$(j "git status && bun test")"
+assert_deny_suite "direct suite behind an env assignment"     "$(j "FOO=1 bun test")"
+assert_deny_suite "direct suite inside bash -c"               "$(j "bash -c 'node --test'")"
+assert_deny "HIMMEL_SUITE_SLOT_HELD= prefix on quiet-run suite" "$(j "HIMMEL_SUITE_SLOT_HELD=/tmp/x bash $QR suite -- bash scripts/test-quiet-run.sh")"
+assert_deny "HIMMEL_SUITE_SLOTS= prefix on quiet-run suite"     "$(j "HIMMEL_SUITE_SLOTS=9 bash $QR suite -- bun test")"
+assert_deny "HIMMEL_SUITE_SLOTS= prefix on run-shell-tests"     "$(j "HIMMEL_SUITE_SLOTS=9 bash scripts/ci/run-shell-tests.sh .")"
+assert_allow "quiet-run suite shape (bash test-*.sh)"          "$(j "bash $QR suite -- bash scripts/hooks/test-block-chokepoint-env-prefix.sh")"
+assert_allow "quiet-run suite shape (bun test)"                "$(j "bash $QR suite -- bun test scripts/foo.test.ts")"
+assert_allow "quiet-run suite shape (node --test)"             "$(j "bash $QR suite -- node --test scripts/x.test.mjs")"
+assert_allow "SUITE_LOCK_WAIT= prefix on quiet-run suite"      "$(j "SUITE_LOCK_WAIT=60 bash $QR suite -- bash scripts/test-quiet-run.sh")"
+assert_allow "run-shell-tests.sh (the CI chokepoint)"          "$(j "bash scripts/ci/run-shell-tests.sh --shard 1/8 .")"
+assert_allow "test-*.sh only as a grep argument"               "$(j "git grep -n foo -- scripts/test-quiet-run.sh")"
+assert_allow "bun test only as a grep pattern"                 "$(j "grep -rn 'bun test' docs")"
+assert_allow "bun run (not bun test)"                          "$(j "bun run build")"
+assert_allow "node running a script (no --test)"               "$(j "node scripts/jira/dist/index.js get HIMMEL-1")"
+assert_allow "test-*.sh as bash -c \$0, not the script"        "$(j "bash -c 'echo hi' test-x.sh")"
+assert_allow "bypass: DIRECT_SUITE_OK=1 in the hook env"       "$(j "bun test")" "DIRECT_SUITE_OK=1"
 
 # --- ALLOWED: fail-open proofs ---
 assert_allow "bare sanctioned invocation (no prefix)"   "$(j "bash $MERGE_ON_GREEN")"

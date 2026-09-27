@@ -230,7 +230,7 @@ fi
 fake1b="$sb1b/root"
 mkdir -p "$fake1b/scripts/ci" "$fake1b/scripts/lib"
 cp "$RUNNER" "$fake1b/scripts/ci/run-shell-tests.sh"
-for lib1b in proc-tree git-test-env runtime-preflight; do
+for lib1b in proc-tree git-test-env runtime-preflight suite-semaphore; do
   cp "$(dirname "$RUNNER")/../lib/$lib1b.sh" "$fake1b/scripts/lib/$lib1b.sh"
 done
 for tree1b in scripts templates marketplace packaging; do

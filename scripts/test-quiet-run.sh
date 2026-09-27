@@ -199,8 +199,10 @@ assert_rc "suite with node --test <tracked file> unaffected" 0 "$RC"
 # repo instead of finding none, so this case would fail despite quiet-run.sh
 # behaving correctly.
 NOTREPO="$SCRATCH/notrepo"
-mkdir -p "$NOTREPO/scripts"
+mkdir -p "$NOTREPO/scripts" "$NOTREPO/lib"
 cp "$QUIET_RUN" "$NOTREPO/quiet-run.sh"
+# label `suite` sources its semaphore lib beside it (HIMMEL-1818).
+cp "$(dirname "$QUIET_RUN")/lib/suite-semaphore.sh" "$(dirname "$QUIET_RUN")/lib/proc-tree.sh" "$NOTREPO/lib/"
 printf '#!/usr/bin/env bash\necho hi\n' > "$NOTREPO/scripts/test-x.sh"
 OUT=$(cd "$NOTREPO" && GIT_CEILING_DIRECTORIES="$SCRATCH" bash quiet-run.sh suite -- bash scripts/test-x.sh 2>&1)
 RC=$?

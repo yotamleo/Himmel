@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Tests for scripts/lib/suite-semaphore.sh, the machine-wide suite concurrency
+# budget (HIMMEL-1818), through its two chokepoints: scripts/quiet-run.sh
+# (label `suite`) and scripts/ci/run-shell-tests.sh.
+#
+# Pinned:
+#   - a second concurrent suite fails loud: rc 75, naming the holder's pid and
+#     label, and the exact retry shape (SUITE_LOCK_WAIT=60 ...);
+#   - SUITE_LOCK_WAIT=<n> waits for the slot instead;
+#   - a killed runner's stale slot is reclaimed (dead pid, identity mismatch,
+#     TTL expiry);
+#   - re-entrancy is honoured only for a DESCENDANT of the slot owner: a nested
+#     quiet-run under the holder proceeds, a forged HIMMEL_SUITE_SLOT_HELD from
+#     an unrelated process does not;
+#   - HIMMEL_SUITE_SLOTS=N admits N concurrent suites;
+#   - run-shell-tests.sh takes a slot too.
+#
+# Every case runs against its own sandbox HIMMEL_SUITE_SEMAPHORE_DIR, with the
+# outer runner's HIMMEL_SUITE_SLOT_HELD removed, so the slot this suite itself
+# runs under is never touched.
+#
+# Usage: bash scripts/lib/test-suite-semaphore.sh
+# Exit codes: 0 -- all cases passed; 1 -- at least one failed
+# Platform guard (gitbash-only): POSIX bash 3.2+, ps, coreutils. ASCII only.
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+QUIET_RUN="$REPO_ROOT/scripts/quiet-run.sh"
+RUNNER="$REPO_ROOT/scripts/ci/run-shell-tests.sh"
+
+FAILED=0
+CASES=0
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/test-suite-semaphore.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+BG_PIDS=''
+# shellcheck disable=SC2329,SC2317  # invoked via trap
+cleanup() {
+    local p
+    for p in $BG_PIDS; do
+        kill -TERM "$p" 2>/dev/null || true
+    done
+    for p in $BG_PIDS; do
+        wait "$p" 2>/dev/null || true
+    done
+    rm -rf "$SCRATCH"
+}
+trap cleanup EXIT
+
+pass() { CASES=$((CASES + 1)); echo "PASS $1"; }
+fail() { CASES=$((CASES + 1)); FAILED=$((FAILED + 1)); echo "FAIL $1"; }
+
+# new_sem -- a fresh sandbox semaphore dir per case.
+N_SEM=0
+new_sem() {
+    N_SEM=$((N_SEM + 1))
+    SEM="$SCRATCH/sem-$N_SEM"
+}
+
+# qr <sem> [VAR=VAL ...] -- <cmd...>: quiet-run `suite` against sandbox <sem>,
+# stdin from /dev/null (the non-tty, own-process-group path legs use).
+qr() {
+    local sem="$1"; shift
+    local -a envs=()
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
+    shift
+    env -u HIMMEL_SUITE_SLOT_HELD -u SUITE_LOCK_WAIT -u HIMMEL_SUITE_SLOTS \
+        HIMMEL_SUITE_SEMAPHORE_DIR="$sem" ${envs[@]+"${envs[@]}"} \
+        bash "$QUIET_RUN" suite -- "$@" </dev/null
+}
+
+# wait_file <path> -- up to ~10s for <path> to exist.
+wait_file() {
+    local i=0
+    while [ ! -e "$1" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+    [ -e "$1" ]
+}
+
+# start_holder <sem> <tag> [VAR=VAL ...] -- a backgrounded quiet-run suite that
+# holds a slot until its sleeper is killed. Sets HOLDER (quiet-run pid) and
+# SLEEPER_FILE (holds the sleeper's pid once it is running).
+start_holder() {
+    local sem="$1" tag="$2"; shift 2
+    SLEEPER_FILE="$SCRATCH/sleeper-$tag.pid"
+    # shellcheck disable=SC2016  # $$ and $0 expand in the inner sh
+    qr "$sem" "$@" -- sh -c 'echo $$ >"$0"; exec sleep 60' "$SLEEPER_FILE" >/dev/null 2>&1 &
+    HOLDER=$!
+    BG_PIDS="$BG_PIDS $HOLDER"
+    wait_file "$SLEEPER_FILE"
+    # $! names the backgrounded subshell; the slot owner is quiet-run itself.
+    QR_PID=$(sed -n 's/^pid=//p' "$sem"/slot-*/owner 2>/dev/null | tail -1)
+}
+
+# stop_holder -- kill the sleeper so the holder exits normally (releasing).
+stop_holder() {
+    local sp
+    sp=$(cat "$SLEEPER_FILE" 2>/dev/null) || sp=''
+    [ -n "$sp" ] && kill -TERM "$sp" 2>/dev/null
+    wait "$HOLDER" 2>/dev/null || true
+}
+
+# --- 1: a second concurrent suite fails loud (rc 75) ---
+new_sem
+start_holder "$SEM" one
+ERR=$(qr "$SEM" -- true 2>&1 >/dev/null); RC=$?
+if [ "$RC" = "75" ] \
+   && printf '%s' "$ERR" | grep -q "pid ${QR_PID:-none}" \
+   && printf '%s' "$ERR" | grep -q "label suite" \
+   && printf '%s' "$ERR" | grep -qF "SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- true"; then
+    pass "second concurrent suite -> rc 75 naming holder pid, label and retry shape"
+else
+    fail "second concurrent suite -- expected rc 75 + holder pid ${QR_PID:-none} + retry line, got rc=$RC err: $ERR"
+fi
+
+# --- 2: the holder releases its slot on a normal exit ---
+stop_holder
+if [ ! -e "$SEM/slot-1" ]; then
+    pass "holder releases its slot on exit"
+else
+    fail "holder left $SEM/slot-1 behind after exiting"
+fi
+if qr "$SEM" -- true >/dev/null 2>&1 && [ ! -e "$SEM/slot-1" ]; then
+    pass "a suite after the holder exits proceeds"
+else
+    fail "a suite after the holder exits did not proceed"
+fi
+
+# --- 3: SUITE_LOCK_WAIT=<n> waits for the slot ---
+new_sem
+start_holder "$SEM" wait
+( sleep 1; kill -TERM "$(cat "$SLEEPER_FILE")" 2>/dev/null ) &
+BG_PIDS="$BG_PIDS $!"
+if qr "$SEM" SUITE_LOCK_WAIT=20 -- true >/dev/null 2>&1; then
+    pass "SUITE_LOCK_WAIT=20 waits for the busy slot, then proceeds"
+else
+    fail "SUITE_LOCK_WAIT=20 did not acquire after the holder released"
+fi
+wait "$HOLDER" 2>/dev/null || true
+
+# --- 4: a KILLED runner's stale slot is reclaimed ---
+new_sem
+start_holder "$SEM" killed
+kill -KILL "${QR_PID:-none}" 2>/dev/null
+wait "$HOLDER" 2>/dev/null || true
+kill -TERM "$(cat "$SLEEPER_FILE")" 2>/dev/null || true
+ERR=$(qr "$SEM" -- true 2>&1 >/dev/null); RC=$?
+if [ "$RC" = "0" ] && printf '%s' "$ERR" | grep -q "reclaimed"; then
+    pass "kill -9'd runner's stale slot is reclaimed"
+else
+    fail "stale slot of a kill -9'd runner -- expected rc 0 + reclaimed note, got rc=$RC err: $ERR"
+fi
+
+# --- 5: a live pid whose identity no longer matches (pid reuse) is reclaimed ---
+new_sem
+mkdir -p "$SEM/slot-1"
+printf 'pid=%s\nidentity=posix:not-this-process\nlabel=suite\nstarted=%s\n' "$$" "$(date +%s)" >"$SEM/slot-1/owner"
+if qr "$SEM" -- true >/dev/null 2>&1 && [ ! -e "$SEM/slot-1" ]; then
+    pass "slot whose owner identity mismatches (pid reuse) is reclaimed"
+else
+    fail "slot whose owner identity mismatches was not reclaimed"
+fi
+
+# --- 6: a slot past HIMMEL_SUITE_SLOT_TTL is reclaimed even if the pid lives ---
+new_sem
+start_holder "$SEM" ttl
+if qr "$SEM" HIMMEL_SUITE_SLOT_TTL=1 SUITE_LOCK_WAIT=5 -- true 2>&1 >/dev/null | grep -q reclaimed; then
+    pass "slot older than HIMMEL_SUITE_SLOT_TTL is reclaimed"
+else
+    fail "slot older than HIMMEL_SUITE_SLOT_TTL was not reclaimed"
+fi
+stop_holder
+
+# --- 7: re-entrancy -- a quiet-run nested under the holder proceeds ---
+new_sem
+# shellcheck disable=SC2016  # $0 expands in the inner sh
+OUT=$(qr "$SEM" -- sh -c 'bash "$0" suite -- true' "$QUIET_RUN" 2>&1); RC=$?
+if [ "$RC" = "0" ]; then
+    pass "nested quiet-run under the slot holder proceeds (re-entrant)"
+else
+    fail "nested quiet-run under the slot holder -- expected rc 0, got rc=$RC: $OUT"
+fi
+
+# --- 8: a FORGED HIMMEL_SUITE_SLOT_HELD (not a descendant) is not honoured ---
+new_sem
+start_holder "$SEM" forged
+ERR=$(qr "$SEM" HIMMEL_SUITE_SLOT_HELD="$SEM/slot-1" -- true 2>&1 >/dev/null); RC=$?
+if [ "$RC" = "75" ]; then
+    pass "forged HIMMEL_SUITE_SLOT_HELD from a non-descendant is refused (rc 75)"
+else
+    fail "forged HIMMEL_SUITE_SLOT_HELD -- expected rc 75, got rc=$RC err: $ERR"
+fi
+stop_holder
+
+# --- 9: HIMMEL_SUITE_SLOTS=2 admits two, refuses the third ---
+new_sem
+start_holder "$SEM" two-a HIMMEL_SUITE_SLOTS=2
+H1=$HOLDER; S1=$SLEEPER_FILE
+start_holder "$SEM" two-b HIMMEL_SUITE_SLOTS=2
+H2=$HOLDER
+if [ -e "$SEM/slot-1" ] && [ -e "$SEM/slot-2" ]; then
+    pass "HIMMEL_SUITE_SLOTS=2 admits two concurrent suites"
+else
+    fail "HIMMEL_SUITE_SLOTS=2 did not admit two concurrent suites"
+fi
+qr "$SEM" HIMMEL_SUITE_SLOTS=2 -- true >/dev/null 2>&1; RC=$?
+if [ "$RC" = "75" ]; then
+    pass "HIMMEL_SUITE_SLOTS=2 refuses the third (rc 75)"
+else
+    fail "HIMMEL_SUITE_SLOTS=2 third suite -- expected rc 75, got rc=$RC"
+fi
+stop_holder
+HOLDER=$H1; SLEEPER_FILE=$S1
+stop_holder
+wait "$H2" 2>/dev/null || true
+
+# --- 10: run-shell-tests.sh takes a slot too ---
+new_sem
+FIX="$SCRATCH/fixture-root"
+mkdir -p "$FIX"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$FIX/test-ok.sh"
+start_holder "$SEM" runner
+env -u HIMMEL_SUITE_SLOT_HELD -u HIMMEL_SUITE_LOCK_HELD -u SUITE_LOCK_WAIT -u HIMMEL_SUITE_SLOTS \
+    HIMMEL_SUITE_SEMAPHORE_DIR="$SEM" TMPDIR="$SCRATCH" HIMMEL_RUNTIME_PREFLIGHT=0 \
+    bash "$RUNNER" "$FIX" >"$SCRATCH/runner.out" 2>&1 </dev/null; RC=$?
+if [ "$RC" = "75" ]; then
+    pass "run-shell-tests.sh refuses while another suite holds the slot (rc 75)"
+else
+    fail "run-shell-tests.sh under a busy slot -- expected rc 75, got rc=$RC: $(tail -5 "$SCRATCH/runner.out")"
+fi
+stop_holder
+
+if [ "$FAILED" -eq 0 ]; then
+    echo "OK: all $CASES cases passed"
+    exit 0
+fi
+echo "FAILED: $FAILED of $CASES cases failed"
+exit 1

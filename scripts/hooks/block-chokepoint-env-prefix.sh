@@ -213,6 +213,10 @@
 #
 # Env knobs (optional):
 #   ENV_PREFIX_GUARD_OK=1   launching-shell bypass (see above)
+#   DIRECT_SUITE_OK=1       launching-shell bypass of ONLY the HIMMEL-1818
+#                           direct-suite rule (check_direct_suite): a
+#                           `bun test` / `node --test` / test-*.sh run outside
+#                           `bash scripts/quiet-run.sh suite -- <cmd>`
 #   CHOKEPOINT_REGISTRY     registry path override (test seam; default
 #                           scripts/chokepoints.json, resolved beside this
 #                           hook's parent directory)
@@ -833,6 +837,81 @@ check_invocation() {
     return 0
 }
 
+# HIMMEL-1818: a test suite launched AROUND the suite chokepoint. Suites share
+# a machine-wide concurrency budget (scripts/lib/suite-semaphore.sh) that only
+# the chokepoints -- `bash scripts/quiet-run.sh suite -- <cmd>` and
+# scripts/ci/run-shell-tests.sh -- take a slot of, so a suite at the
+# INVOKED-PROGRAM position is denied and pointed at the quiet-run shape. Same
+# recognition as check_invocation: the program token, never a substring, so a
+# suite path that is only an ARGUMENT (quiet-run's own operand, a grep pattern,
+# `bash -c '...' test-x.sh`'s $0) never matches. The message carries no
+# caller-authored text.
+# ponytail: invoked-program recognition only -- wrappers with operands of their
+# own (`timeout 60 bun test`, `xargs`, `find -exec`), `$var` paths and
+# package-script indirection (`bun run test`, `npm test`) still run a suite
+# unbudgeted. Follow-up HIMMEL-3763 models or accepts each shape.
+deny_suite() {
+    local msg reason
+    msg="block-chokepoint-env-prefix: refusing a test suite launched outside the suite chokepoint (HIMMEL-1818).
+
+    Test suites share one machine-wide concurrency budget, and only the
+    chokepoint takes a slot of it. Run the same command through it:
+
+      bash scripts/quiet-run.sh suite -- <the same command>
+
+    A busy budget exits 75 and names the holder; prefix SUITE_LOCK_WAIT=60 to
+    wait for a slot instead. A whole sweep goes through
+    bash scripts/ci/run-shell-tests.sh, which takes its own slot.
+
+    To bypass this rule intentionally, set DIRECT_SUITE_OK=1 in the shell
+    that launched Claude Code (a per-call prefix does not reach a hook
+    process); restart without it to re-enable."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: run test suites through bash scripts/quiet-run.sh suite -- <cmd> (HIMMEL-1818)"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+}
+
+# is_suite_script <word> -- 0 when the word's basename is a test-*.sh suite.
+is_suite_script() {
+    case "${1##*/}" in test-*.sh) return 0 ;; esac
+    return 1
+}
+
+# check_direct_suite <index> -- W[index] (scan_segment's word array, read via
+# bash's dynamic scope) is the invoked program of the segment. Deny a
+# test-*.sh executed by path, `bun [opts] test`, or `node [opts] --test`.
+check_direct_suite() {
+    local k="$1" prog="${W[$1]}"
+    [ "${DIRECT_SUITE_OK:-0}" = "1" ] && return 0
+    if is_suite_script "$prog"; then deny_suite; fi
+    case "${prog##*/}" in
+    bun|bun.exe)
+        k=$((k + 1))
+        while [ "$k" -lt "$nw" ]; do
+            case "${W[$k]}" in
+            test) deny_suite ;;
+            --cwd|-c|--config) k=$((k + 2)) ;;
+            -*) k=$((k + 1)) ;;
+            *) return 0 ;;
+            esac
+        done ;;
+    node|node.exe|nodejs)
+        k=$((k + 1))
+        while [ "$k" -lt "$nw" ]; do
+            case "${W[$k]}" in
+            --test) deny_suite ;;
+            -e|--eval|-p|--print) return 0 ;;
+            -r|--require|--import|--loader|--experimental-loader|-C|--conditions|--env-file) k=$((k + 2)) ;;
+            -*) k=$((k + 1)) ;;
+            *) return 0 ;;
+            esac
+        done ;;
+    esac
+    return 0
+}
+
 # env_short_cluster <word> -- GNU-getopt walk of ONE env short-option word
 # (HIMMEL-1803 round 2). Short options cluster: "-vS str" is flag -v plus
 # -S whose operand is the NEXT word, "-vSstr" attaches the operand to the
@@ -1143,6 +1222,10 @@ scan_segment() {
             -*) j=$((j + 1)); continue ;;
             esac
             check_invocation "$w" "$names"
+            # HIMMEL-1818: the interpreter's script operand is a suite.
+            if [ "${DIRECT_SUITE_OK:-0}" != "1" ] && is_suite_script "$w"; then
+                deny_suite
+            fi
             return 0
             ;;
         env)
@@ -1481,6 +1564,7 @@ scan_segment() {
             # The invoked-program token of this segment. Words beyond it
             # are arguments and never match (the finding-4 direction).
             check_invocation "$w" "$names"
+            check_direct_suite "$j"
             return 0
             ;;
         esac

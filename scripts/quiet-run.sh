@@ -86,6 +86,23 @@ if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
     fi
 fi
 
+# HIMMEL-1818: label `suite` is a suite chokepoint -- whatever it runs (bash
+# test-*.sh, bun test, node --test) takes a slot of the machine-wide suite
+# budget first, and a busy budget fails loud with rc 75 (SUITE_LOCK_WAIT=<n>
+# waits instead). A missing lib refuses rather than running unbudgeted.
+if [ "$LABEL" = "suite" ]; then
+    SEM_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/suite-semaphore.sh"
+    # shellcheck source=lib/suite-semaphore.sh
+    if ! { [ -r "$SEM_LIB" ] && . "$SEM_LIB"; } 2>/dev/null; then
+        echo "ERR quiet-run: label 'suite' needs $SEM_LIB (HIMMEL-1818)" >&2
+        exit 2
+    fi
+    SEM_RC=0
+    suite_sem_acquire suite "bash scripts/quiet-run.sh suite -- $*" || SEM_RC=$?
+    [ "$SEM_RC" -eq 0 ] || exit "$SEM_RC"
+    trap suite_sem_release EXIT
+fi
+
 LOG="${TMPDIR:-/tmp}/quiet-run-${LABEL}-$(date +%Y%m%d-%H%M%S)-$$.log"
 
 {
