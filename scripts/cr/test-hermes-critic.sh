@@ -157,9 +157,19 @@ chmod +x "$bindir/claude"
 # offline and fast; case 8b drives the exhausted-bank branch.
 # primaries_refreshed_at must be a LIVE stamp: a stale cache yields BANK-STALE,
 # which is a fail-open verdict and would let case 8b pass for the wrong reason.
+# HIMMEL-1712/HIMMEL-3765: bank-preflight distrusts a cache whose account
+# doesn't match the current identity (BANK-UNKNOWN, checked before the
+# utilization threshold) — stamp a matching account hash so both fixtures
+# below exercise the utilization branch case 8/8b actually test.
+export HOME="$work/home"
+mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-hermes-critic-test"}}' > "$HOME/.claude.json"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/../lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
 bank_now="$(date +%s)"
 bank_cache="$work/bank-ok.json"
-printf '{"five_hour":{"utilization":5},"seven_day":{"utilization":5},"primaries_refreshed_at":%s}' "$bank_now" > "$bank_cache"
+printf '{"account":"%s","five_hour":{"utilization":5},"seven_day":{"utilization":5},"primaries_refreshed_at":%s}' "$ACCT" "$bank_now" > "$bank_cache"
 export CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_CACHE="$bank_cache"
 export CADENCE_BANK_LEDGER="$work/bank-ledger.jsonl"
 
@@ -199,7 +209,7 @@ echo "  ok" >&2
 # 8b. Exhausted bank → the claude route refuses BEFORE launching claude, and
 #     fails open at exit 3 so the caller falls back to another reviewer.
 echo "test: claude route refuses an exhausted bank" >&2
-printf '{"five_hour":{"utilization":99},"seven_day":{"utilization":99},"primaries_refreshed_at":%s}' "$(date +%s)" > "$work/bank-full.json"
+printf '{"account":"%s","five_hour":{"utilization":99},"seven_day":{"utilization":99},"primaries_refreshed_at":%s}' "$ACCT" "$(date +%s)" > "$work/bank-full.json"
 : > "$work/claude-argv"
 CADENCE_BANK_CACHE="$work/bank-full.json" CLAUDE_ARGV_CAPTURE="$work/claude-argv" PATH="$bindir:$PATH" \
     bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/err8b"
