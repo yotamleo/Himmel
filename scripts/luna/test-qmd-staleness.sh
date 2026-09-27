@@ -179,6 +179,19 @@ assert_contains "falls back to the proxy" "source: proxy" "$out"
 assert_contains "still reports the proxy's real age" "2h ago" "$out"
 rm -f "$STAMP_FILE"
 
+echo "== a stamp epoch with a leading zero is not misread as octal (HIMMEL-1307 [codex-2]) =="
+# A shape-valid all-digit epoch with a leading zero (e.g. 01234567) is
+# silently reparsed as OCTAL by bash arithmetic unless forced to base 10 --
+# this stamp is really ~14 days old (well past the 36h budget) but an octal
+# misread makes it look only ~5.5h old (342391s), which would wrongly pass.
+set_fixture "$HOST_FRESH"
+STAMP_EPOCH=$(( $(date -u +%s) - 1234567 ))
+printf '2026-09-13T00:00:00Z 0%s\n' "$STAMP_EPOCH" >"$STAMP_FILE"
+out=$(run_guard) && rc=0 || rc=$?
+assert_rc "leading-zero epoch parsed as decimal is stale -> rc 3" 3 "$rc"
+assert_contains "names the stamp as the source" "source: stamp" "$out"
+rm -f "$STAMP_FILE"
+
 echo "== the top-level Updated: is not confused with a collection's =="
 # RUN it rather than re-asserting the previous case's $rc — that variable was
 # already 0 from the fixture above, so the old form restated a result instead of

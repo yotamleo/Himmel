@@ -346,6 +346,13 @@ fi
 
 echo "qmd-reindex: start $(stamp) (qmd: $(qmd_desc))"
 
+# Invalidate any stamp from an earlier run BEFORE mutating the index (HIMMEL-1307
+# [codex-1]): 'qmd update' below can re-index files even if this run later fails
+# the embed or completeness steps, so a stamp certifying an EARLIER verified-complete
+# state must not survive to be read as this run's freshness. write_refresh_stamp()
+# re-installs it only once this run itself reaches verified-complete.
+rm -f "$QMD_REFRESH_STAMP" 2>/dev/null || true
+
 # --- 1. re-index changed files across every configured collection -----------
 echo "qmd-reindex: [1/3] qmd update"
 if ! run_qmd update; then

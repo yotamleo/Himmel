@@ -400,6 +400,23 @@ else
     fail "failed embed writes no refresh stamp" "stamp exists after a failed embed"
 fi
 
+echo "TEST: a PRE-EXISTING stamp is invalidated when this run mutates the index but fails before verified-complete (HIMMEL-1307 [codex-1])"
+# 'qmd update' has already re-indexed changed files by the time 'qmd embed'
+# fails -- the on-disk index is no longer what the OLD stamp certified, so
+# that stamp must not survive to be read as this run's freshness.
+reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
+mkdir -p "$HOME/.cache/qmd"
+printf '%s %s\n' "2020-01-01T00:00:00Z" "1577836800" >"$HOME/.cache/qmd/refresh-stamp"
+touch "$STATE/fail-embed"
+rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "embed failure still rc 4 with a pre-existing stamp" 4 "$rc"
+if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then
+    pass "a failed embed invalidates a pre-existing stamp from an earlier run"
+else
+    fail "a failed embed invalidates a pre-existing stamp from an earlier run" "the 2020 stamp survived a run that mutated the index and then failed"
+fi
+
 echo "TEST: a successful reindex invalidates a stale stamp it fails to overwrite (HIMMEL-1307 codex-2)"
 reset_state
 rm -rf "$HOME/.cache/qmd" 2>/dev/null || true

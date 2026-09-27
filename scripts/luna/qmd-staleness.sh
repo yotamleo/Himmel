@@ -431,7 +431,11 @@ if [ -r "$QMD_REFRESH_STAMP" ]; then
     if [[ $stamp_line =~ $stamp_re ]]; then
         stamp_epoch="${stamp_line##* }"
         now_epoch=$(date -u +%s)
-        AGE_HOURS=$(( (now_epoch - stamp_epoch) / 3600 ))
+        # HIMMEL-1307 [codex-2]: a leading zero makes bash treat the epoch as
+        # octal -- silently wrong for digits 0-7 (e.g. 01234567), a hard
+        # "value too great for base" shell error for 8/9. force base-10 so
+        # any all-digit epoch parses as the decimal value it plainly is.
+        AGE_HOURS=$(( (now_epoch - 10#$stamp_epoch) / 3600 ))
         [ "$AGE_HOURS" -ge 0 ] || AGE_HOURS=0
         AGE_SOURCE="stamp"
     fi
