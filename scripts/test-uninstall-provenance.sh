@@ -1403,11 +1403,11 @@ printf '{"display":{"customLineCommand":"bash \\"%s/scripts/statusline/hud-custo
   prov_end ok >/dev/null )
 printf '{"display":{"customLineCommand":"bash \\"%s/scripts/statusline/hud-custom-lines.sh\\"","operatorKey":"edited-after-install"}}\n' "$repo_root" > "$HUD_LEGACY38"
 EDITED38_BYTES=$(cat "$HUD_LEGACY38")
-out38dry=$(run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks); rc38dry=$?
+run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null; rc38dry=$?
 check "RED38 dry-run: exits 0" "$rc38dry" "0"
 AFTER38DRY_BYTES=$(cat "$HUD_LEGACY38")
 check "RED38 dry-run: left the operator's edit untouched (preview only)" "$AFTER38DRY_BYTES" "$EDITED38_BYTES"
-out38=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks); rc38=$?
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null; rc38=$?
 check "RED38 wet run: exits 0" "$rc38" "0"
 AFTER38_BYTES=$([ -f "$HUD_LEGACY38" ] && cat "$HUD_LEGACY38" || echo "ABSENT")
 check "RED38 uninstall: legacy-path operator edit survives (not deleted)" \
@@ -1442,11 +1442,11 @@ BACKUP39=$(jq -r --arg p "$HUD_LEGACY39" 'select(.path==$p and .pre.backup != nu
 [ -n "$BACKUP39" ] || { echo "RED39 setup: could not find the recorded backup path" >&2; exit 1; }
 rm -f "$BACKUP39"
 ORIG39_BYTES=$(cat "$HUD_LEGACY39")
-out39dry=$(run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks); rc39dry=$?
+run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null; rc39dry=$?
 check "RED39 dry-run: exits 0 (no-backup is not a halt)" "$rc39dry" "0"
 AFTER39DRY_BYTES=$(cat "$HUD_LEGACY39")
 check "RED39 dry-run: left the legacy config untouched (preview only)" "$AFTER39DRY_BYTES" "$ORIG39_BYTES"
-out39=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks); rc39=$?
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null; rc39=$?
 check "RED39 wet run: exits 0 (no-backup is not a halt)" "$rc39" "0"
 AFTER39_BYTES=$(cat "$HUD_LEGACY39")
 check "RED39 uninstall: legacy-path config with a pruned backup is kept, byte-identical" \
