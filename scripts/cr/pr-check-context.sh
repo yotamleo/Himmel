@@ -772,6 +772,14 @@ gitd() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache
 # conventional-commit regex rather than copy it - both merge-on-green.sh and
 # leg-pr-open.sh reach it through that one file, so check-commit-msg.sh is
 # guarded too.
+#
+# HIMMEL-3783 generalized the merge-on-green.sh anchor literal above into
+# anchorShipStepRules, which now also emits an anchored gateAllow literal for
+# leg-pr-open.sh in plugin-profiles.mjs - the same over-matching fail-safe
+# makes the scanner read scripts/lanes/leg-pr-open.sh as an edge from
+# plugin-profiles.mjs. leg-pr-open.sh itself runs leg-burn.sh (to compute the
+# ship PR's leg-burn line) and sources leg-burn.sh's lib/burn-weights.sh, so
+# both join the guarded set too.
 cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh
 scripts/handover/resolve-active-item-report.sh
 scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh
@@ -793,7 +801,7 @@ scripts/telegram/log-timestamp.ts scripts/telegram/gate.ts scripts/telegram/run.
 scripts/telegram/triage.ts scripts/telegram/transcribe.ts scripts/telegram/spawn-glm.ts
 scripts/telegram/glm-env.ts scripts/telegram/grants.ts scripts/telegram/huge-diff-guard.ts
 scripts/telegram/lane-args.ts scripts/telegram/phi-egress-guard.ts scripts/telegram/round-guard.ts
-scripts/lanes/plugin-profiles.mjs"
+scripts/lanes/plugin-profiles.mjs scripts/lanes/leg-pr-open.sh scripts/lanes/leg-burn.sh scripts/lanes/lib/burn-weights.sh"
 cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails/lib.sh' ':(top)scripts/check-ci.sh'
     ':(top)scripts/handover/resolve-active-item.sh'
     ':(top)scripts/handover/resolve-active-item-report.sh'
@@ -822,6 +830,7 @@ cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails
     ':(top)scripts/telegram/huge-diff-guard.ts' ':(top)scripts/telegram/lane-args.ts'
     ':(top)scripts/telegram/phi-egress-guard.ts' ':(top)scripts/telegram/round-guard.ts'
     ':(top)scripts/lanes/plugin-profiles.mjs'
+    ':(top)scripts/lanes/leg-pr-open.sh' ':(top)scripts/lanes/leg-burn.sh' ':(top)scripts/lanes/lib/burn-weights.sh'
     ':(top,exclude,glob)scripts/**/__pycache__/**')
 cr_manifest() { # cr_manifest <root> - "<mode> <blob-id> <path>" per guarded file, sorted
     local root=$1 odd files execs oids modes p d present=()
