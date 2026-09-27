@@ -686,6 +686,10 @@ for f in /usr/bin/*; do
   esac
   tool_link "$f" "$W8/notimeout/$b"
 done
+# macOS ships bash only at /bin/bash, never under /usr/bin -- name it
+# explicitly (same convention as the NOGH_BIN block above) so the rebuilt
+# PATH can still run "$SCRIPT" regardless of which directory holds it.
+tool_link "$(command -v bash)" "$W8/notimeout/bash"
 cat > "$W8/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0

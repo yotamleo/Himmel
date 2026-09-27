@@ -76,6 +76,10 @@ printf '#!/bin/sh\nexit 0\n' > "$STUBS/chmod"
 # shellcheck disable=SC2016 # the stub's own $1/$2 must stay literal
 printf '#!/bin/sh\n# MSYS without the symlink privilege: ln -s copies its source\nshift\nexec cp -R "$1" "$2"\n' > "$STUBS/ln"
 chmod +x "$STUBS/chmod" "$STUBS/ln"
+# hash -r: a prefix-assignment PATH override doesn't invalidate bash's command
+# hash table on every bash (notably macOS's bash 3.2), so `command -v chmod`
+# can return the real /bin/chmod cached from the real-host probes above.
+hash -r
 assert_eq "T9 the chmod stub is the one PATH resolves" "$STUBS/chmod" "$(PATH="$STUBS:$REAL_PATH" command -v chmod)"
 
 PATH="$STUBS:$REAL_PATH"

@@ -737,6 +737,10 @@ exec "$REAL_GIT" "\$@"
 SHIM
 chmod +x "$TH23_STUB/git"
 # Precondition: the stub is the git actually resolved on this PATH.
+# hash -r: a prefix-assignment PATH override doesn't invalidate bash's command
+# hash table on every bash (notably macOS's bash 3.2), so `command -v git`
+# can return the real git cached by the many `git -C ...` calls above.
+hash -r
 resolved_git=$(PATH="$TH23_STUB:$PATH" command -v git)
 assert_eq "git-status-fails: stub is the git resolved on PATH" "$TH23_STUB/git" "$resolved_git"
 head_before=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
