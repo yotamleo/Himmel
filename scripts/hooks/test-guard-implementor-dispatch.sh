@@ -1333,6 +1333,66 @@ RC_RG_W=$(run_hook round-named-loop-bounded "$REG_NONE" "$(payload_cwd general-p
 assert_rc "(w) text names 251 distinct worktree paths, over the 200-path bound: refuses rather than resolving them all" 2 "$RC_RG_W"
 assert_contains "(w) refusal names the path bound" "path bound" "$(combined_output round-named-loop-bounded)"
 
+# --- (x), HIMMEL-3676 (J1322C NO-GO, Critical): cwd is a FRESH (0-round)
+# worktree, so the cwd-first check alone would ALLOW and the named-worktree
+# loop below runs. The text also names a second path whose `.git/HEAD` is a
+# FIFO with no reader/writer -- `git -C <path> rev-parse` blocks on open()
+# reading it. The loop must resolve named paths WITHOUT ever opening a file
+# inside them (one `git worktree list --porcelain` read on the trusted cwd,
+# then pure string matching), so this refuses (the FIFO path is not a listed
+# worktree) in well under the 15s PreToolUse timeout instead of hanging.
+RG_REPO_X="$TMP/round-repo-x"
+RG_WT_BRANCH_X_FRESH="fix/himmel-9022-fresh"
+RG_WT_DIR_X_FRESH="$TMP/.claude/worktrees/fix-himmel-9022-fresh"
+RG_WT_DIR_X_FIFO="$TMP/.claude/worktrees/fix-himmel-9022-fifo"
+mk_round_repo "$RG_REPO_X" "main"
+git -C "$RG_REPO_X" worktree add -q -b "$RG_WT_BRANCH_X_FRESH" "$RG_WT_DIR_X_FRESH" main
+mkdir -p "$RG_WT_DIR_X_FIFO/.git"
+mkfifo "$RG_WT_DIR_X_FIFO/.git/HEAD"
+
+RG_X_TEXT="Write the code and commit it in $RG_WT_DIR_X_FRESH. See also an old attempt in $RG_WT_DIR_X_FIFO."
+RG_X_START=$(date +%s%N)
+RC_RG_X=$(run_hook round-named-path-fifo-head "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9022' "$RG_X_TEXT" "$RG_WT_DIR_X_FRESH")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+RG_X_END=$(date +%s%N)
+RG_X_MS=$(( (RG_X_END - RG_X_START) / 1000000 ))
+assert_rc "(x) named path's .git/HEAD is a FIFO: refuses rather than blocking on it" 2 "$RC_RG_X"
+if [ "$RG_X_MS" -lt 5000 ]; then
+    echo "ok   (x) FIFO-HEAD named path still refuses well under the 15s hook timeout (${RG_X_MS}ms)"
+    pass=$((pass + 1))
+else
+    echo "FAIL (x) FIFO-HEAD named path took ${RG_X_MS}ms, expected well under 5000ms"
+    fail=$((fail + 1))
+fi
+
+# --- (y), HIMMEL-3676 (J1322C NO-GO, Critical): the same hang shape, but
+# through a gitfile whose target gitdir's HEAD is the FIFO (`.git` is a file
+# containing "gitdir: <path>", as a real linked worktree's is) rather than a
+# directory `.git/HEAD` itself.
+RG_REPO_Y="$TMP/round-repo-y"
+RG_WT_BRANCH_Y_FRESH="fix/himmel-9023-fresh"
+RG_WT_DIR_Y_FRESH="$TMP/.claude/worktrees/fix-himmel-9023-fresh"
+RG_WT_DIR_Y_FIFO="$TMP/.claude/worktrees/fix-himmel-9023-fifo"
+RG_Y_GITDIR="$TMP/y-external-gitdir"
+mk_round_repo "$RG_REPO_Y" "main"
+git -C "$RG_REPO_Y" worktree add -q -b "$RG_WT_BRANCH_Y_FRESH" "$RG_WT_DIR_Y_FRESH" main
+mkdir -p "$RG_WT_DIR_Y_FIFO" "$RG_Y_GITDIR"
+mkfifo "$RG_Y_GITDIR/HEAD"
+printf 'gitdir: %s\n' "$RG_Y_GITDIR" > "$RG_WT_DIR_Y_FIFO/.git"
+
+RG_Y_TEXT="Write the code and commit it in $RG_WT_DIR_Y_FRESH. See also an old attempt in $RG_WT_DIR_Y_FIFO."
+RG_Y_START=$(date +%s%N)
+RC_RG_Y=$(run_hook round-named-path-gitfile-fifo-head "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9023' "$RG_Y_TEXT" "$RG_WT_DIR_Y_FRESH")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+RG_Y_END=$(date +%s%N)
+RG_Y_MS=$(( (RG_Y_END - RG_Y_START) / 1000000 ))
+assert_rc "(y) named path's gitfile points to a gitdir whose HEAD is a FIFO: refuses rather than blocking on it" 2 "$RC_RG_Y"
+if [ "$RG_Y_MS" -lt 5000 ]; then
+    echo "ok   (y) gitfile-to-FIFO-gitdir named path still refuses well under the 15s hook timeout (${RG_Y_MS}ms)"
+    pass=$((pass + 1))
+else
+    echo "FAIL (y) gitfile-to-FIFO-gitdir named path took ${RG_Y_MS}ms, expected well under 5000ms"
+    fail=$((fail + 1))
+fi
+
 # --- (i), HIMMEL-3681: the probe's CLI stdout/stderr on exit 0 must carry
 # its version sentinel ("round-guard-cli: v1"); a stub standing in for a
 # stale/version-skewed round-guard.ts that exits 0 silently must NOT be

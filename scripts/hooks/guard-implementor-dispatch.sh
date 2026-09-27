@@ -594,49 +594,56 @@ if [ -n "$round_cwd" ]; then
             rm -f "$round_task_path" 2>/dev/null
             exit 2
         fi
-        while IFS= read -r round_wt_path; do
-            [ -n "$round_wt_path" ] || continue
-            # HIMMEL-3676 (codex-1/codex-2 CR round): `git -C` walks UP to an
-            # enclosing .git when the named path is not itself a repo root, so
-            # a match that exists but has no .git of its own would silently
-            # attribute to an ancestor's branch instead of refusing — and a
-            # relative match would resolve against the hook process's own
-            # cwd, not the payload's. Require an absolute path with its own
-            # .git entry before ever calling git -C on it; anything else falls
-            # through to the same "could not be resolved" refusal below.
-            #
-            # HIMMEL-3676 (codex-1, CR round 2): round-guard.ts always reads
-            # the CR ledger from --cwd's own git-common-dir and uses --branch
-            # only to filter rows within it — so a worktree belonging to an
-            # UNRELATED repository resolves to a real, valid branch name that
-            # simply has no rows in the TARGET repo's ledger, wrongly
-            # reporting 0 rounds. Trust round_wt_branch only when the named
-            # worktree shares the payload cwd's git-common-dir.
-            round_wt_branch=""
-            case "$round_wt_path" in
-                /*)
-                    if [ -e "$round_wt_path/.git" ]; then
-                        round_wt_common=$(git_clean -C "$round_wt_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-                        round_cwd_common=$(git_clean -C "$round_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-                        if [ -n "$round_wt_common" ] && [ "$round_wt_common" = "$round_cwd_common" ]; then
-                            round_wt_branch=$(git_clean -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-                        fi
-                    fi
-                    ;;
-            esac
-            case "$round_wt_branch" in
-                ""|HEAD)
-                    printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch names worktree %s but its branch could not be resolved (missing directory, not a git repo, or detached HEAD) — the reviewed-round predicate cannot be safely attributed. Fix the worktree reference and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_wt_path" >&2
-                    exit 2
-                    ;;
-                *)
+        # HIMMEL-3676 (J1322C, Critical): the per-path `git -C "$round_wt_path"
+        # rev-parse ...` calls this loop used to run had NO time bound of
+        # their own — the path-count bound above caps how MANY paths are
+        # resolved, not how LONG resolving one takes. A named path whose
+        # `.git/HEAD` (or a gitfile's target gitdir's `HEAD`) is a FIFO blocks
+        # `git rev-parse` on open() until Claude Code's own 15s PreToolUse
+        # kill, which fails OPEN (docs/internals/enforcement.md) — skipping
+        # the lane-routing and bank-guard refusals below. Never `git -C` INTO
+        # a path the dispatch text supplies. Resolve every named path against
+        # ONE bounded `git -C "$round_cwd" worktree list --porcelain` read on
+        # the TRUSTED cwd instead (this also subsumes the old git-common-dir
+        # equality check: only same-repo worktrees are ever listed), matching
+        # by canonical path (`cd -P`/`pwd -P`, which never opens a file), and
+        # run the whole block under a deadline so an unmatched, detached-HEAD
+        # or unreadable path — or the deadline itself — REFUSES instead of
+        # hanging.
+        round_wt_paths_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_wt_paths_file=""
+        if [ -z "$round_wt_paths_file" ]; then
+            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): could not create a temp file to resolve the named worktree paths — failing CLOSED. IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' >&2
+            rm -f "$round_task_path" 2>/dev/null
+            exit 2
+        fi
+        printf '%s\n' "$round_wt_paths" > "$round_wt_paths_file"
+        round_resolver="$repo_root/scripts/hooks/lib/resolve-worktree-branches.sh"
+        round_resolve_budget="${IMPL_GUARD_WT_RESOLVE_BUDGET_SECS:-5}"
+        round_resolve_cmd="bash $(printf '%q' "$round_resolver") $(printf '%q' "$round_cwd") $(printf '%q' "$round_wt_paths_file")"
+        round_resolve_out=$(_run_bounded "$round_resolve_budget" "$round_resolve_cmd" 0.05); round_resolve_rc=$?
+        rm -f "$round_wt_paths_file" 2>/dev/null
+        if [ "$round_resolve_rc" -ne 0 ]; then
+            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): resolving the named worktree paths did not finish cleanly (rc=%s, budget %ss) — failing CLOSED rather than risk a hang skipping the checks below.\n' "$round_resolve_rc" "$round_resolve_budget" >&2
+            rm -f "$round_task_path" 2>/dev/null
+            exit 2
+        fi
+        while IFS= read -r round_resolve_line; do
+            [ -n "$round_resolve_line" ] || continue
+            case "$round_resolve_line" in
+                "BRANCH "*)
+                    round_wt_branch=${round_resolve_line#BRANCH }
                     case " $round_extra_branches " in
                         *" $round_wt_branch "*) ;;
                         *) round_extra_branches="$round_extra_branches $round_wt_branch" ;;
                     esac
                     ;;
+                "UNRESOLVED "*)
+                    printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch names worktree %s but its branch could not be resolved (missing directory, not a git repo, not this repository, or detached HEAD) — the reviewed-round predicate cannot be safely attributed. Fix the worktree reference and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "${round_resolve_line#UNRESOLVED }" >&2
+                    rm -f "$round_task_path" 2>/dev/null
+                    exit 2
+                    ;;
             esac
-        done <<< "$round_wt_paths"
+        done <<< "$round_resolve_out"
     fi
     if [ -n "$round_extra_branches" ]; then
         for round_extra_branch in $round_extra_branches; do
