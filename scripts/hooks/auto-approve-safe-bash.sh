@@ -1193,6 +1193,13 @@ cmd="${result#*$'\n'}"
 # shell-structure scan so a Bash backslash-newline continuation is not seen as
 # backslash-CR followed by a separate newline command boundary.
 cmd="${cmd//$'\r\n'/$'\n'}"
+# HIMMEL-3750 round 3 (codex-1): a backslash-newline continuation is folded
+# away by the shell before parsing even INSIDE double quotes, so a quoted
+# `"$\<NL>=x"` reaches the shell as `"$=x"` — the raw-text tripwires below
+# must see the same joined text the shell will actually execute, not the
+# literal backslash-newline bytes (which never match `*'$='*` etc). Fold it
+# here, before scan_cmd, so both the structural scan and the tripwires agree.
+cmd="${cmd//$'\\\n'/}"
 [ "$tool" = "Bash" ] || exit 0   # PowerShell keeps its own native rules
 [ -n "$cmd" ] || exit 0
 

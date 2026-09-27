@@ -877,6 +877,13 @@ assert "backslash-newline \$( regression" PASS "$(decide "$(j_bash "echo \$\\"$'
 # Accepted false refusal (brief-documented): a SINGLE-QUOTED literal '\${('
 # is refused too, since the fix reads the RAW command text, not the mask.
 assert "single-quoted literal \${( (accepted false refusal)" PASS "$(decide "$(j_bash "grep '\${(' f")")"
+# codex-1 (round 3): a backslash-newline between \$ and = INSIDE double quotes
+# is folded away by the shell before parsing, same as finding 4's \$( case,
+# but the newline sits inside the quotes here so the unquoted-separator
+# fallback that protects finding 4 does not fire. Confirmed ALLOW (bypass) on
+# the pre-fix code; the fold added above joins it into "\$=x" before the
+# tripwires run, so it now falls through like any other \$= case.
+assert "backslash-newline \$= regression" PASS "$(decide "$(j_bash "ls \"\$\\"$'\n''=x"')")"
 # Controls: common benign expansions must keep ALLOWing.
 assert "echo \${HOME} still ALLOW"     ALLOW "$(decide "$(j_bash 'echo "${HOME}"')")"
 assert "echo \$PWD still ALLOW"        ALLOW "$(decide "$(j_bash 'echo "$PWD"')")"
