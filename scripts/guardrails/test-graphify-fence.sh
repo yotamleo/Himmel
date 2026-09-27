@@ -2501,33 +2501,6 @@ run_fence deny no "$HIMMEL" "quiet-run.sh unparsable label, tail env -S\"graphif
 echo "== HIMMEL-3683: a clause separator INSIDE a command substitution must not =="
 echo "== split the substitution across two false top-level clauses =="
 
-# (X1) env -C \$(cd ..; pwd)/salus - the original repro: a ; inside \$(...)
-# used to become a clause boundary, so clause 1 was "env -C \$(cd .." and
-# clause 2 "pwd)/salus graphify ..." and the real chdir target (salus) was
-# never classified.
-run_fence deny no "$HIMMEL" "env -C \$(cd ..; pwd)/salus (; inside \$(...)) -> deny (X1)" \
-    "env -C \$(cd ..; pwd)/salus graphify update notes/patient.md --backend glm"
-# (X2) same shape via echo \$PWD/salus instead of pwd.
-run_fence deny no "$HIMMEL" "env -C \$(cd ..; echo \$PWD/salus) -> deny (X2)" \
-    "env -C \$(cd ..; echo \$PWD/salus) graphify update notes/patient.md --backend glm"
-# (X3) sudo -D twin of X1.
-run_fence deny no "$HIMMEL" "sudo -D \$(cd ..; pwd)/salus (; inside \$(...)) -> deny (X3)" \
-    "sudo -D \$(cd ..; pwd)/salus graphify update notes/patient.md --backend glm"
-# (X4) a leading no-op clause (true;) ahead of the real value inside \$(...).
-run_fence deny no "$HIMMEL" "env -C \$(true; echo salus) -> deny (X4)" \
-    "env -C \$(true; echo $SALUS) graphify update notes/patient.md --backend glm"
-# (X5) && inside \$(...) - collapses to the same newline split as ; and |.
-run_fence deny no "$HIMMEL" "env -C \$(true && echo salus) -> deny (X5)" \
-    "env -C \$(true && echo $SALUS) graphify update notes/patient.md --backend glm"
-# (X6) a pipe AND a ; both inside the same \$(...).
-run_fence deny no "$HIMMEL" "env -C \$(true | cat; echo salus) -> deny (X6)" \
-    "env -C \$(true | cat; echo $SALUS) graphify update notes/patient.md --backend glm"
-# (X7) backtick form of X4, not \$(...).
-run_fence deny no "$HIMMEL" "env -C \`true; echo salus\` (; inside backticks) -> deny (X7)" \
-    "env -C \`true; echo $SALUS\` graphify update notes/patient.md --backend glm"
-# (X8) J1290S w06 shape: cd .. then a bare relative echo (no absolute path).
-run_fence deny no "$HIMMEL" "env -C \$(cd ..; echo salus) relative echo -> deny (X8, w06)" \
-    "env -C \$(cd ..; echo salus) graphify update notes/patient.md --backend glm"
 
 # Controls: clause-splitting for every OTHER shape must stay exactly as before.
 # (X9) no substitution at all -> unaffected.
@@ -2547,24 +2520,7 @@ fi
 # (X11) a REAL top-level separator (not inside any substitution) -> unaffected.
 run_fence allow no "$HIMMEL" "echo a; graphify update . (real top-level ;, not inside \$(...)) -> allow (X11 control)" \
     "echo a; graphify update . --backend glm"
-# (X12) codex-1 (PR #1323 round 1): a LITERAL newline inside \$(...) instead of
-# a ; is just as much a clause boundary to the pre-existing split (which reads
-# clauses with `while IFS= read -r`, splitting on any real newline) - deny it
-# the same way as X1.
-X12_CMD=$'env -C $(cd ..\npwd)/salus graphify update notes/patient.md --backend glm'
-run_fence deny no "$HIMMEL" "env -C \$(cd ..<newline>pwd)/salus (newline inside \$(...)) -> deny (X12)" \
-    "$X12_CMD"
 
-# (X13/X14) codex-1 (PR #1323 round 2): a quoted ')' inside \$(...) prematurely
-# closed the naive paren-depth counter (a single/double-quoted string is data
-# to bash, not a real close-paren), so the REAL separator that followed was
-# scanned under the top-level branch, which never checked for one at all -
-# a hidden separator that reached the old scan undetected. Deny both quote
-# flavors.
-run_fence deny no "$HIMMEL" "env -C \$(x=')'; echo salus) quoted ')' in single quotes -> deny (X13)" \
-    "env -C \$(x=')'; echo $SALUS) graphify update notes/patient.md --backend glm"
-run_fence deny no "$HIMMEL" "env -C \$(x=\")\"; echo salus) quoted ')' in double quotes -> deny (X14)" \
-    "env -C \$(x=\")\"; echo $SALUS) graphify update notes/patient.md --backend glm"
 
 # (X15) the symmetric false-positive control: a clause-separator CHARACTER
 # quoted inside \$(...) is data to bash, not a real separator, and must not
@@ -2582,14 +2538,6 @@ else
 fi
 
 
-# (X16) codex-1 (PR #1323 round 3): the outer double quotes around
-# \$(...)/backticks (not a quote INSIDE the substitution, as X13/X14 cover,
-# but the substitution's own enclosing quote) made the dq-scan swallow
-# everything up to the closing quote, never noticing the ; hidden inside -
-# even though bash still evaluates \$(...) and backticks inside "..." and a
-# separator there is just as live. Deny it the same way as X1.
-run_fence deny no "$HIMMEL" "env -C \"\$(cd ..; echo salus)\" (; inside a dq-wrapped \$(...)) -> deny (X16)" \
-    "env -C \"\$(cd ..; echo $SALUS)\" graphify update notes/patient.md --backend glm"
 
 # (X17) the symmetric control: a dq-wrapped \$(...) with NO separator inside
 # must be judged exactly as X10 - still denied, but via the pre-existing
@@ -2603,15 +2551,6 @@ else
     fail "env -C \"\$(pwd)\" (dq-wrapped, no separator inside) unchanged (X17 control) (rc=$rc) out=$out"
 fi
 
-# (X18) codex-1 (PR #1323 round 4): a backslash-escaped ')' inside \$(...)
-# is literal data to bash, not a real close-paren, but the paren-depth stack
-# popped on it anyway - closing the tracked substitution early so the REAL
-# separator that followed (still logically inside the still-open
-# substitution) fell through to the top-level branch, which never checks
-# for one - a hidden separator reaching the old scan undetected, same class
-# as X13/X14/X16 but via an escape instead of a nested quote.
-run_fence deny no "$HIMMEL" "env -C \$(echo \\); echo salus) escaped ')' hides a real ; -> deny (X18)" \
-    "env -C \$(echo \\); echo $SALUS) graphify update notes/patient.md --backend glm"
 
 # (X19) J1323A F1: the hidden-separator scan must be linear, not quadratic -
 # a >=64KB routed command has to decide well under the hook's 15s timeout,
@@ -2644,14 +2583,6 @@ X21_CMD=$'gh pr create --title t --body "$(cat <<\'EOF\'\ngraphify query forms s
 run_fence allow no "$HIMMEL" "gh pr create heredoc body mentioning graphify as data -> allow (X21)" \
     "$X21_CMD"
 
-# (X22) codex-1 (PR #1323 round 3 critic panel): the chdir-lookback match in
-# F2's fix required an EXACT one-space suffix ("-C ") right before the
-# substitution's opening delimiter. Extra whitespace between the flag and
-# the substitution (a form real bash accepts identically) fails that exact
-# match, so span_chdir resolves to 0 and the hidden separator inside goes
-# undetected - the same class of bypass this PR exists to close.
-run_fence deny no "$HIMMEL" "env -C (two spaces) \$(...; separator inside) -> deny (X22)" \
-    "env -C  \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
 
 # (X23) J1323B F1: X19 only padded the command at nesting depth 0, so it
 # never exercised the stack's push/pop/top-of-stack cost - the actual
@@ -2683,14 +2614,6 @@ for X23_N in 8192 30000; do
     fi
 done
 
-# (X24) codex-1 (PR #1323 round 4): the chdir-lookback match required the
-# flag to be a SUFFIX of a fixed, trailing-space-trimmed lookback window - a
-# literal path fragment between the flag and the substitution (e.g.
-# `-C ../$(...)`) put the path text, not the flag, at the tail of that
-# window, so span_chdir resolved to 0 and the hidden separator inside went
-# undetected even though the substitution IS a real chdir argument.
-run_fence deny no "$HIMMEL" "env -C ../\$(...; separator inside), literal path before the substitution -> deny (X24)" \
-    "env -C ../\$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
 
 # (X25) codex-2 (PR #1323 round 4): a trailing unquoted \$ as the LAST
 # character of the routed command (no substitution actually opens) read one
@@ -2702,16 +2625,6 @@ run_fence deny no "$HIMMEL" "env -C ../\$(...; separator inside), literal path b
 run_fence allow no "$HIMMEL" "trailing bare \$ (no substitution, no graphify) -> allow, does not abort (X25)" \
     'echo hello $'
 
-# (X26) codex-3 (PR #1323 round 4): the lookback match trimmed only trailing
-# SPACES before matching the flag suffix; bash treats a literal TAB between
-# the flag and the substitution identically to a space (`-C<TAB>$(...)`), but
-# the untrimmed tab defeated the suffix match, so this chdir argument's
-# hidden separator went undetected the same as X22's multi-space case.
-# shellcheck disable=SC2016 # single-quoted printf format string: the
-# literal $(...) text is the payload under test, not a real expansion
-X26_CMD=$(printf 'env -C\t$(cd ..; echo %s) graphify update notes/patient.md --backend glm' "$SALUS")
-run_fence deny no "$HIMMEL" "env -C (tab) \$(...; separator inside) -> deny (X26)" \
-    "$X26_CMD"
 
 # (X27) J1323C F1: a per-span lookback rebuild-plus-word-split cost, stacked
 # in front of an unrelated quadratic elsewhere in this file, crosses the
@@ -2746,21 +2659,6 @@ fi
 run_fence allow no "$HIMMEL" "ordinary graphify command well under the size cap -> allow (X28)" \
     "graphify update notes/patient.md --backend glm"
 
-# (X29-X33) J1323C F2: \`-C*|-D*|--chdir=*\` matches a bare -C/-D but not a
-# bare --chdir (no trailing '='), so \`env --chdir \$(...)\` / \`sudo --chdir
-# \$(...)\` - the flag as its own word, immediately before the substitution -
-# fails to be recognized as a chdir argument and the hidden separator inside
-# goes undetected, even though a prior head correctly denied this shape.
-run_fence deny no "$HIMMEL" "env --chdir \$(...; separator inside), bare --chdir word -> deny (X29)" \
-    "env --chdir \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
-run_fence deny no "$HIMMEL" "env --chdir (two spaces) \$(...; separator inside) -> deny (X30)" \
-    "env --chdir  \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
-run_fence deny no "$HIMMEL" "env --chdir \"\$(...; separator inside)\", dq-wrapped -> deny (X31)" \
-    "env --chdir \"\$(cd ..; echo $SALUS)\" graphify update notes/patient.md --backend glm"
-run_fence deny no "$HIMMEL" "env --chdir \`...; separator inside\`, backtick form -> deny (X32)" \
-    "env --chdir \`cd ..; echo $SALUS\` graphify update notes/patient.md --backend glm"
-run_fence deny no "$HIMMEL" "sudo --chdir \$(...; separator inside), bare --chdir word -> deny (X33)" \
-    "sudo --chdir \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
 
 # (X34) codex-2 (critic panel round 4): the lb_prev fallback that resolves a
 # bare --chdir word (added for J1323C F2, e.g. `-C ../$(...)` where "../"
@@ -2771,9 +2669,46 @@ run_fence deny no "$HIMMEL" "sudo --chdir \$(...; separator inside), bare --chdi
 # unrelated argument, not part of `-C foo`'s value - so this must ALLOW.
 run_fence allow no "$HIMMEL" "-C flag with an unrelated word before an unrelated substitution -> allow (X34)" \
     "echo -C foo \$(echo a; echo b) graphify"
-# (X34-control) the glued case this fallback exists for must still deny.
-run_fence deny no "$HIMMEL" "-C flag with a glued path fragment before the substitution -> deny (X34-control)" \
-    "env -C ../\$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
+
+# (F2) J1323D F2: the cut hidden-clause-separator scan (removed HIMMEL-3683
+# PR #1323, formerly scripts/guardrails/graphify-fence.sh:2278-2510) had an
+# over-broad -C/-D/--chdir prefix match that false-denied a chdir flag
+# followed by an UNRELATED substitution merely containing a separator -
+# common real shapes like `git -C $(...) status` and `make -C $(...) test`
+# must ALLOW now that the scan is gone.
+# shellcheck disable=SC2016 # single-quoted: the literal $(...) text is the
+# payload under test, not a real expansion
+run_fence allow no "$HIMMEL" "git -C \$(cd .. && pwd) status; graphify query x -> allow (F2A)" \
+    'git -C "$(cd .. && pwd)" status; graphify query x'
+# shellcheck disable=SC2016 # single-quoted: the literal $(...) text is the
+# payload under test, not a real expansion
+run_fence allow no "$HIMMEL" "make -C \$(git rev-parse --show-toplevel; true) test && graphify query x -> allow (F2B)" \
+    'make -C $(git rev-parse --show-toplevel; true) test && graphify query x'
+
+# (F1) J1323D F1: the cut scan itself is what pushed hook execution past the
+# 15s PreToolUse timeout on a sub-32KB-cap flood input (a timed-out
+# --optional hook fails OPEN). This asserts only that the shape still denies
+# functionally, via the pre-existing unresolved-chdir reason - not a timing
+# SLA: main's own unrelated quoting/clause-splitting cost on this ;'' padding
+# shape is itself close to the hook's 15s budget at this size, independent of
+# this PR's change. A bounded (not merely faster) redesign is tracked in
+# HIMMEL-3771, not fixed by this PR.
+F1_N=8000
+F1_UNIT=";''"
+F1_REPS=$(( F1_N / ${#F1_UNIT} + 1 ))
+F1_PAD=$(for _ in $(seq 1 "$F1_REPS"); do printf '%s' "$F1_UNIT"; done | head -c "$F1_N")
+F1_CMD=$(printf 'cat > notes.txt <<%s\n%s\nEOF\nenv -C %s graphify update notes/patient.md --backend glm' \
+    "'EOF'" "$F1_PAD" "$SALUS")
+start_ns=$(date +%s%N)
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$F1_CMD" 2>&1 ); rc=$?
+end_ns=$(date +%s%N)
+elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+if [ "$rc" -eq 2 ]; then
+    pass "${F1_N}B ;'' padding + real chdir still denies (rc=$rc) in ${elapsed_ms}ms - functional, no timing SLA, residual risk tracked in HIMMEL-3771 (F1)"
+else
+    fail "${F1_N}B ;'' padding + real chdir rc=$rc (want rc=2) in ${elapsed_ms}ms (F1)"
+fi
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
