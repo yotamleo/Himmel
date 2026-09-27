@@ -160,20 +160,34 @@ if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
         while IFS= read -r f; do
             [ -n "$f" ] || continue
             if [ "$hw" -eq 0 ]; then
-                hit=$(cat "$f" 2>/dev/null)
-            else
-                hit=$(head -n "$hw" "$f" 2>/dev/null)
-            fi
-            while IFS= read -r cand; do
-                [ -n "$cand" ] || continue
-                if printf '%s' "$hit" | grep -qF "\"customTitle\":\"$cand\""; then  # pipefail-ok: no pipefail here (set -u only); $hit is an already-captured small string, not a live producer
-                    matches="${matches}
+                # codex-2: the all-time fallback scans whole-repo-age
+                # transcripts, so grep the file directly per candidate
+                # instead of slurping it into a shell variable first --
+                # a multi-GB transcript otherwise loads entirely into memory
+                # just to be thrown away after one match.
+                while IFS= read -r cand; do
+                    [ -n "$cand" ] || continue
+                    if grep -qF "\"customTitle\":\"$cand\"" "$f" 2>/dev/null; then
+                        matches="${matches}
 ${f}"
-                    break
-                fi
-            done <<EOF
+                        break
+                    fi
+                done <<EOF
 $candidates
 EOF
+            else
+                hit=$(head -n "$hw" "$f" 2>/dev/null)
+                while IFS= read -r cand; do
+                    [ -n "$cand" ] || continue
+                    if printf '%s' "$hit" | grep -qF "\"customTitle\":\"$cand\""; then  # pipefail-ok: no pipefail here (set -u only); $hit is an already-captured small string, not a live producer
+                        matches="${matches}
+${f}"
+                        break
+                    fi
+                done <<EOF
+$candidates
+EOF
+            fi
         done <<EOF
 $files
 EOF

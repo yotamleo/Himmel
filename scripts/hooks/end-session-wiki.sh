@@ -273,7 +273,7 @@ trap '__on_exit' EXIT
 __on_signal() {
     local sig="$1"
     log_msg "cancelled by signal $sig (session ${SESSION_ID:-unknown})"
-    [ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture "${SESSION_ID:-}"
+    [ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && _esw_release_early "${SESSION_ID:-}"
     HOOK_OK=1
     exit 0
 }

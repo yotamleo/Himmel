@@ -1074,6 +1074,49 @@ else
 fi
 rm -rf "$RACE_DIR28"
 
+# --- Case 29: codex-1 (this round) -- __on_signal releases the claim but
+# must ALSO reset CLAIMED, the same discipline _esw_release_early already
+# enforces (case 28). Without it, __on_signal's own `exit 0` re-triggers the
+# EXIT trap in the SAME process, whose guard sees CLAIMED still 1 and
+# releases AGAIN -- deleting a retry's freshly-won claim taken in the gap
+# between the two releases.
+RACE_DIR29=$(mktemp -d "${TMPDIR:-/tmp}/esw-race29.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+# shellcheck disable=SC2034  # read by claim_capture/release_capture/log_msg, extracted verbatim via eval below
+CAPTURED_DIR="$RACE_DIR29/captured"
+LOG_DIR="$RACE_DIR29/logs"
+LOG_PATH="$LOG_DIR/end-session-wiki.log"
+LOG_OLD_PATH="$LOG_DIR/end-session-wiki.log.old"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+eval "$(extract_fn claim_capture "$HOOK")"
+eval "$(extract_fn release_capture "$HOOK")"
+eval "$(extract_fn _esw_release_early "$HOOK")"
+eval "$(extract_fn log_msg "$HOOK")"
+eval "$(extract_fn __on_signal "$HOOK")"
+# Shadow the builtin so __on_signal's own `exit 0` returns to us instead of
+# killing this test script; CLAIMED must persist as a real variable change
+# (not a subshell copy), matching how the real process behaves.
+exit() { return 0; }
+CLAIMED=0
+WROTE=0
+HOOK_OK=0
+SESSION_ID="sid29"
+claim_capture "$SESSION_ID"
+CLAIMED=1
+__on_signal 15
+unset -f exit
+# Simulate a RETRY process re-claiming the same session in the gap between
+# __on_signal's release and __on_exit's trap guard -- exactly what happens
+# when the signalled process's own __on_exit fires next in the SAME process.
+claim_capture "$SESSION_ID"
+[ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture "$SESSION_ID"
+SLUG29="$(_esw_sid_slug "$SESSION_ID")"
+if [ -d "$CAPTURED_DIR/$SLUG29" ]; then
+    pass "codex-1 (this round): __on_signal resets CLAIMED, so a retry's claim survives the __on_exit trap guard"
+else
+    fail "codex-1 (this round): __on_signal left CLAIMED set -- the stale __on_exit guard deleted a retry's live claim"
+fi
+rm -rf "$RACE_DIR29"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0
