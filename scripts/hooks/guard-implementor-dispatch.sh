@@ -213,8 +213,23 @@ fi
 if grepq "$text" -Eqi '(^|[^[:alnum:]_])(research|explore|investigate|analy[sz]e|review|audit|plan|design|locate|trace|explain|read-only)([^[:alnum:]_]|$)'; then
     research=1
 fi
-if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|write|edit|modify|commit)([^[:alnum:]_]|$)'; then
+if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)'; then
     followed_by_action=1
+fi
+
+# CodeRabbit (HIMMEL-1534 PR #1388): a bare "write" is ambiguous between
+# prose output (a summary/report/findings/notes/answer/overview/write-up)
+# and a code/file write. Only the latter is an implementation action.
+# A report-type object is safe ONLY when nothing path-like follows it in
+# the same clause -- a slash, a file extension, or "to <path>"/"into
+# <file>" all mean a file write, not a written summary.
+if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)write([^[:alnum:]_]|$)'; then
+    write_clause=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | grep -Eo '(then|and)[[:space:][:punct:]]+write[^.;]*' | head -1)
+    if grepq "$write_clause" -Eq '^(then|and)[[:space:][:punct:]]+write[[:space:]]+(a[[:space:]]+|the[[:space:]]+)?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)' && ! grepq "$write_clause" -Eq '/|\.[a-z0-9]{1,5}([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]'; then
+        :
+    else
+        followed_by_action=1
+    fi
 fi
 if grepq "$text" -Eqi '(\.claude[/\\]worktrees[/\\]|--worktree([=[:space:]]|$)|platforms tested:|security reviewed:|attestation trailer|git commit|commit (the |these )?changes)'; then
     operational_context=1

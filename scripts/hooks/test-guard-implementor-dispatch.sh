@@ -363,6 +363,33 @@ RC88=$(run_hook fix-colon-in-table "$REG_CLAUDEX" "$(payload general-purpose son
 Every open ticket must land in exactly one theme.')")
 assert_rc "'fix:' quoted in a table stays refused (pre-existing HIMMEL-1608 gap, unchanged)" 2 "$RC88"
 
+# CodeRabbit (PR #1388): "write" is ambiguous between prose output and a
+# code/file write. Making followed_by_action a gate disjunct (RC81/82 above)
+# newly exposed the pre-existing "write" entry in that regex, which used to
+# be moot before the gate consulted the signal at all -- a written summary
+# now fell through to lane routing/bank guard exactly like a real file
+# write. Narrow the write-verb match: a report-type direct object
+# (summary/report/findings/notes/answer/overview/write-up) with nothing
+# path-like in the same clause is prose, not an action.
+RC89=$(run_hook write-summary-readonly "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write a summary of findings. Read-only analysis.')")
+assert_rc "'then write a summary of findings' (read-only) stays allowed" 0 "$RC89"
+assert_empty "'then write a summary of findings' (read-only) is silent" "$(combined_output write-summary-readonly)"
+
+RC90=$(run_hook write-report-no-path "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Investigate the routing logic and write a report.')")
+assert_rc "'and write a report' with no path-like object stays allowed" 0 "$RC90"
+
+RC91=$(run_hook write-report-to-path "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the routing logic, then write a report to scripts/router.sh.')")
+assert_rc "'then write a report to <path>' is governed -- a file write, not prose" 2 "$RC91"
+
+RC92=$(run_hook write-the-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser then write the fix.')")
+assert_rc "'then write the fix' is governed -- not a report-type object" 2 "$RC92"
+
+RC93=$(run_hook write-code-for "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Look at the router then write code for the parser.')")
+assert_rc "'then write code for B' is governed -- not a report-type object" 2 "$RC93"
+
+RC94=$(run_hook write-summary-and-edit "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write the summary and edit the config.')")
+assert_rc "'write the summary AND edit Y' is governed -- the edit half still trips followed_by_action" 2 "$RC94"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 
