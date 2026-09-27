@@ -608,6 +608,20 @@ assert_rc "receiver failure rc 6" 6 "$rc"
 assert_contains "points at the receiver's own output" "SHIP-REMOTE" "$out"
 assert_not_contains "a failed receiver-side ship writes NO remote stamp (HIMMEL-1307)" "refresh-stamp" "$(calls | grep '^ssh ' || true)"
 
+echo "TEST: a failed stamp write invalidates a stale stamp instead of leaving it readable (HIMMEL-1307 [codex-1])"
+# The header comment on write_remote_stamp() promises that a write failure
+# falls back to qmd-staleness.sh's MAX(mtime) proxy -- but a bare write
+# failure leaves an EARLIER successful ship's stamp file untouched on the
+# receiver, so the receiver would keep reading that stale timestamp instead
+# of falling back. The fix must also invalidate (remove) the remote stamp on
+# a write failure, not merely warn.
+reset_calls
+touch "$STATE/remote-stamp-fail"
+rc=0; out=$(run_ship --no-reindex --no-graph 2>&1) || rc=$?
+assert_rc "a stamp-write failure does not fail the ship itself" 0 "$rc"
+assert_contains "still warns the stamp could not be written" "could not write the receiver's refresh stamp" "$out"
+assert_contains "invalidates any stale stamp left from an earlier ship" "Remove-Item" "$(calls | grep '^ssh ' | grep 'refresh-stamp' || true)"
+
 # ============================================================================
 echo "TEST: receiver rc 6 (HTTP restore failed) still runs the graph leg and exits 8 (HIMMEL-1416 round 4 [codex-adv-6])"
 # ============================================================================

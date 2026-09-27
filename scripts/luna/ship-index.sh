@@ -215,6 +215,11 @@ write_remote_stamp() {
     # shellcheck disable=SC2029  # client-side expansion is intended (paths resolved here)
     if ! ssh "$HOST" "powershell -NoProfile -Command \"$ps_cmd\"" >/dev/null 2>&1; then
         echo "WARN ship-index: could not write the receiver's refresh stamp at $REMOTE_STAMP -- qmd-staleness.sh there will fall back to its proxy." >&2
+        # A write failure must not leave an EARLIER ship's stamp readable --
+        # that would defeat the fallback promised above by reporting a stale
+        # timestamp instead. Best-effort, same non-fatal contract as the write.
+        # shellcheck disable=SC2029
+        ssh "$HOST" "powershell -NoProfile -Command \"Remove-Item -Force -ErrorAction SilentlyContinue -Path '$REMOTE_STAMP'\"" >/dev/null 2>&1 || true
     fi
 }
 
