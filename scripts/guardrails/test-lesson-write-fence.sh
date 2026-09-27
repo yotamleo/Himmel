@@ -1218,6 +1218,42 @@ while [ "$i" -lt 500 ]; do hop500="${hop500}a/../"; i=$((i+1)); done
 run_hook_timed 5 allow "30: sudo cp y scripts/${hop500}other/a.sh (padded under cap, normalizes clean, no enforcement signal)" \
     "$(bash_json "sudo cp y scripts/${hop500}other/a.sh" "$REPO")" 1
 
+echo "== 31: judge J1298E - per-entry _lc fork cost x clause count, whole-command deadline =="
+# C1 (Critical, TIMING-VERIFIED by J1298E: main DENY -> effective head ALLOW
+# via a >15s hook timeout). Unlike section 30's C1 (one long clause, quadratic
+# in /../ hop count), this padded the CLAUSE COUNT instead: hundreds of cheap
+# `sudo true x; ` clauses, each one re-forking `_lc` (a `printf | tr`
+# subprocess) once per policy entry via classify_target's basename/prefix
+# loops and _clause_has_enforcement_signal's raw/normalized loops - four call
+# sites, all repeating the fork on every clause. J1298E measured this at
+# K=300 (~3.9KB): main 4.2s, pre-fix head 16.0s - past the 15s hook timeout,
+# so main's deny becomes an effective ALLOW at head. Fix: lower every
+# ENTRY_VALUE ONCE at policy-load time (ENTRY_VALUE_LC) instead of per-clause.
+sudo300=""
+i=0
+while [ "$i" -lt 300 ]; do sudo300="${sudo300}sudo true x; "; i=$((i+1)); done
+run_hook_timed 10 deny "31: sudo true x;x300 + sudo cp y scripts/hooks/a.sh (J1298E C1, K=300 per-entry-fork cost)" \
+    "$(bash_json "${sudo300}sudo cp y scripts/hooks/a.sh" "$REPO")" 1
+
+# Same shape at J1298E's K=420 (~5.5KB): main 5.9s, pre-fix head 23.2s. Past
+# the per-entry-fork fix this clause count alone no longer approaches the
+# timeout, but the whole-command deadline (MAX_EVAL_SECONDS) below is what
+# now bounds it regardless - this row also exercises that deadline.
+sudo420=""
+i=0
+while [ "$i" -lt 420 ]; do sudo420="${sudo420}sudo true x; "; i=$((i+1)); done
+run_hook_timed 10 deny "31: sudo true x;x420 + sudo cp y scripts/hooks/a.sh (J1298E C1, K=420 per-entry-fork cost)" \
+    "$(bash_json "${sudo420}sudo cp y scripts/hooks/a.sh" "$REPO")" 1
+
+# Operator REDIRECT: main's own pre-existing ~9KB `python3 -c` timeout class
+# (same per-clause cost, different wrapper) must also be closed by the same
+# whole-command deadline, not just the sudo/env-wrapper shape above.
+py560=""
+i=0
+while [ "$i" -lt 560 ]; do py560="${py560}python3 -c x; "; i=$((i+1)); done
+run_hook_timed 10 deny "31: python3 -c x;x560 + python3 -c write scripts/hooks/a.sh (pre-existing python3 -c timeout class)" \
+    "$(bash_json "${py560}python3 -c \"open('scripts/hooks/a.sh','w')\"" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

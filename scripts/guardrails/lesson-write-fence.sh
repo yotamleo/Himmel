@@ -548,7 +548,26 @@ _nearest_toplevel() {
 
 # --- policy -----------------------------------------------------------------
 
-ENTRY_MATCH=(); ENTRY_VALUE=(); ENTRY_CLASS=(); ENTRY_WHY=(); ENTRY_COUNT=0
+ENTRY_MATCH=(); ENTRY_VALUE=(); ENTRY_VALUE_LC=(); ENTRY_CLASS=(); ENTRY_WHY=(); ENTRY_COUNT=0
+
+# Judge J1298E C1 (Critical, main DENY -> effective head ALLOW via timeout):
+# every per-clause scan loop below (classify_target's basename/prefix loops,
+# _clause_has_enforcement_signal's raw/normalized loops) used to lower each
+# ENTRY_VALUE with a fresh `_lc` call - a `printf | tr` FORK - on every
+# clause, so the fork cost scaled with ENTRY_COUNT * clauses-in-command
+# instead of ENTRY_COUNT alone. A padded command with hundreds of cheap
+# env/sudo clauses (`sudo true x; ` xK) drove that product past the 15s
+# PreToolUse hook timeout, which fails OPEN. Fix: lower every ENTRY_VALUE
+# ONCE here, at policy-load time, into ENTRY_VALUE_LC - every per-clause
+# loop below reads the cached value instead of re-forking.
+_cache_entry_value_lc() {
+    ENTRY_VALUE_LC=()
+    local i=0
+    while [ "$i" -lt "$ENTRY_COUNT" ]; do
+        ENTRY_VALUE_LC+=("$(_lc "${ENTRY_VALUE[$i]}")")
+        i=$((i+1))
+    done
+}
 
 load_policy() {
     _require_jq
@@ -565,6 +584,7 @@ load_policy() {
     done < <(jq -r '.entries[] | [.match, .value, .class, .why] | @tsv' "$POLICY" 2>/dev/null)
     ENTRY_COUNT=${#ENTRY_MATCH[@]}
     [ "$ENTRY_COUNT" -gt 0 ] || deny "enforcement-paths policy has zero entries (fail-closed): $POLICY"
+    _cache_entry_value_lc
 }
 
 # classify_target <raw-path> [cwd] -> return 0 (DENY, sets _MATCH_CLASS /
@@ -592,7 +612,7 @@ classify_target() {
     i=0
     while [ "$i" -lt "$ENTRY_COUNT" ]; do
         if [ "${ENTRY_MATCH[$i]}" = "basename" ]; then
-            v_lc="$(_lc "${ENTRY_VALUE[$i]}")"
+            v_lc="${ENTRY_VALUE_LC[$i]}"
             if [ "$base_lc" = "$v_lc" ]; then
                 _MATCH_CLASS="${ENTRY_CLASS[$i]}"; _MATCH_WHY="${ENTRY_WHY[$i]}"
                 return 0
@@ -612,7 +632,7 @@ classify_target() {
                 i=0
                 while [ "$i" -lt "$ENTRY_COUNT" ]; do
                     if [ "${ENTRY_MATCH[$i]}" = "prefix" ]; then
-                        v_lc="$(_lc "${ENTRY_VALUE[$i]}")"
+                        v_lc="${ENTRY_VALUE_LC[$i]}"
                         case "$v_lc" in
                             */)
                                 case "$relpath/" in
@@ -1121,7 +1141,7 @@ _clause_has_enforcement_signal() {
     local i v_lc
     i=0
     while [ "$i" -lt "$ENTRY_COUNT" ]; do
-        v_lc="$(_lc "${ENTRY_VALUE[$i]}")"
+        v_lc="${ENTRY_VALUE_LC[$i]}"
         case "$raw_lc" in
             *"$v_lc"*) return 0 ;;
         esac
@@ -1133,7 +1153,7 @@ _clause_has_enforcement_signal() {
     norm_lc="$(_lc "$(_normalize_scan_text "$raw")")"
     i=0
     while [ "$i" -lt "$ENTRY_COUNT" ]; do
-        v_lc="$(_lc "${ENTRY_VALUE[$i]}")"
+        v_lc="${ENTRY_VALUE_LC[$i]}"
         case "$norm_lc" in
             *"$v_lc"*) return 0 ;;
         esac
@@ -1570,6 +1590,23 @@ _check_git_hook_routing() {
 # non-enforcement paths and still allow. `&>|`/`&>>` (all three metachars)
 # reduce to the existing `&>` handling: `&>|` -> `&> ` after this step, then
 # the `&` split below produces the same clause shape `&>` already denies.
+#
+# Judge J1298E C1 (Critical, main DENY -> effective head ALLOW via timeout):
+# the per-entry-fork fix above (`ENTRY_VALUE_LC`) removes the QUADRATIC-ish
+# blowup for a large ENTRY_COUNT, but the per-clause scan cost (still real,
+# still nonzero: option-cluster walks, wrapper/verb classification, operand
+# scans) is multiplied by the NUMBER of clauses a padded command can carry
+# (`sudo true x; ` xK), and that product is unbounded by anything in this
+# loop - main pays the same per-clause cost via its own inline-eval scan, so
+# this is a pre-existing class this fence widens, not a new one (per the
+# judge's own timing table). A whole-command wall-clock deadline closes
+# BOTH: any command whose clause-by-clause evaluation is still running past
+# MAX_EVAL_SECONDS is denied outright, fail-closed, well under this fence's
+# 15s PreToolUse hook timeout (which fails OPEN on a real timeout) - a
+# padded command that would otherwise race the clock now loses the race on
+# the safe side. `$SECONDS` is a bash builtin (no fork), reset to 0 at
+# process start, so reading it here costs nothing extra per clause.
+MAX_EVAL_SECONDS=8
 evaluate_command() {
     local cmd="$1" cwd="$2" tmp clause
     tmp="$cmd"
@@ -1580,6 +1617,9 @@ evaluate_command() {
     tmp="${tmp//&/$'\n'}"
     while IFS= read -r clause || [ -n "$clause" ]; do
         [ -n "$clause" ] || continue
+        if [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ]; then
+            deny "command evaluation exceeded the fail-closed time budget (${MAX_EVAL_SECONDS}s); denying the remainder outright (fail-closed)"
+        fi
         _check_git_hook_routing "$clause"
         # shellcheck disable=SC2086 # intentional word split for tokenisation
         set -- $clause
