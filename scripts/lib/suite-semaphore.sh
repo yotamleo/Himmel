@@ -7,6 +7,10 @@
 #
 # Model: N slot directories, slot-1..slot-N, under
 #   ${HIMMEL_SUITE_SEMAPHORE_DIR:-${TMPDIR:-/tmp}/himmel-suite-semaphore.d}
+# ponytail: the TMPDIR-keyed default shards the "machine-wide" budget across
+# any two processes with different TMPDIR values (e.g. two login sessions) --
+# each gets its own N-slot budget instead of sharing one. Upgrade path tracked
+# as the round-3 TMPDIR sharding axis on HIMMEL-1838.
 # N = HIMMEL_SUITE_SLOTS (default 3). A slot is taken by an atomic `mkdir` and
 # carries an `owner` file: pid, start-time identity (proc-tree.sh), label,
 # started epoch. Liveness is pid + identity, not a TTL alone -- unlike
@@ -182,9 +186,12 @@ _suite_sem_try() {
     local slot="$1" label="$2" id
     mkdir "$slot" 2>/dev/null || return 1
     id=$(proc_tree_process_identity "$$") || id=''
-    printf 'pid=%s\nidentity=%s\nlabel=%s\nstarted=%s\n' \
+    if ! { printf 'pid=%s\nidentity=%s\nlabel=%s\nstarted=%s\n' \
         "$$" "$id" "$label" "$(date +%s)" >"$slot/owner.tmp" \
-        && mv "$slot/owner.tmp" "$slot/owner"
+        && mv "$slot/owner.tmp" "$slot/owner"; }; then
+        rm -rf "$slot" 2>/dev/null
+        return 1
+    fi
     SUITE_SEM_SLOT="$slot"
     SUITE_SEM_OWNER_PID="$$"
     export HIMMEL_SUITE_SLOT_HELD="$slot"

@@ -163,11 +163,11 @@ fi
 # --- 6: a slot past HIMMEL_SUITE_SLOT_TTL is reclaimed even if the pid lives ---
 new_sem
 start_holder "$SEM" ttl HIMMEL_SUITE_SLOTS=1
-ERR=$(qr "$SEM" HIMMEL_SUITE_SLOTS=1 HIMMEL_SUITE_SLOT_TTL=1 SUITE_LOCK_WAIT=5 -- true 2>&1 >/dev/null)
-if grep -q reclaimed <<<"$ERR"; then
+ERR=$(qr "$SEM" HIMMEL_SUITE_SLOTS=1 HIMMEL_SUITE_SLOT_TTL=1 SUITE_LOCK_WAIT=5 -- true 2>&1 >/dev/null); RC=$?
+if [ "$RC" = "0" ] && grep -q reclaimed <<<"$ERR"; then
     pass "slot older than HIMMEL_SUITE_SLOT_TTL is reclaimed"
 else
-    fail "slot older than HIMMEL_SUITE_SLOT_TTL was not reclaimed"
+    fail "slot older than HIMMEL_SUITE_SLOT_TTL was not reclaimed -- rc=$RC: $ERR"
 fi
 stop_holder
 
@@ -287,6 +287,32 @@ if [ "$RC" = "0" ] && [ ! -e "$SEM/slot-1" ]; then
     pass "run-shell-tests.sh releases its semaphore slot on a successful run"
 else
     fail "run-shell-tests.sh slot release -- expected rc 0 + no slot-1, got rc=$RC slot-1=$([ -e "$SEM/slot-1" ] && echo present || echo absent): $(tail -5 "$SCRATCH/runner-ok.out")"
+fi
+
+# --- 14: _suite_sem_try's owner-file write is unchecked -- if the printf/mv
+# pipeline that records the owner fails (permission denied, disk full), the
+# mkdir'd slot dir is left behind with no owner file, yet the function still
+# returns 0 and exports HIMMEL_SUITE_SLOT_HELD as if the slot were legitimately
+# claimed. Force the write to fail with umask 0777 on the mkdir'd slot dir
+# (mkdir needs write+exec on the PARENT, not the new dir itself, so mkdir still
+# succeeds; writing inside a 000-mode dir then fails). ---
+new_sem
+mkdir -p "$SEM"
+(
+    . "$REPO_ROOT/scripts/lib/suite-semaphore.sh"
+    umask 0777
+    _suite_sem_try "$SEM/slot-1" testlabel
+    echo "rc=$? held=$HIMMEL_SUITE_SLOT_HELD"
+) >"$SCRATCH/try14.out" 2>/dev/null
+TRY_RC=$(sed -n 's/^rc=\([0-9]*\).*/\1/p' "$SCRATCH/try14.out")
+if [ "$TRY_RC" = "0" ] && [ -e "$SEM/slot-1/owner" ]; then
+    fail "_suite_sem_try -- unwritable slot: expected rc!=0 and no dir left behind, got rc=$TRY_RC with an owner file present (should be impossible if this is failing correctly)"
+elif [ "$TRY_RC" = "0" ] && [ ! -e "$SEM/slot-1/owner" ]; then
+    fail "_suite_sem_try -- unwritable slot: got rc=0 (claimed success) with NO owner file written -- an ownerless slot was claimed as held"
+elif [ -d "$SEM/slot-1" ]; then
+    fail "_suite_sem_try -- unwritable slot: rc=$TRY_RC (failure correctly reported) but the mkdir'd slot dir was left behind, still blocking that slot"
+else
+    pass "_suite_sem_try reports failure and cleans up the slot when the owner-file write fails"
 fi
 
 if [ "$FAILED" -eq 0 ]; then
