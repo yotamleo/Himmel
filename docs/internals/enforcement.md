@@ -2393,13 +2393,16 @@ exits **75**, naming each holder's pid, label and age, plus the retry shape
 owner is gone, its pid names another process (start-time identity), or it
 passed `HIMMEL_SUITE_SLOT_TTL` (default 14400 s). Nested suites re-enter via
 `HIMMEL_SUITE_SLOT_HELD`, honoured only when the recorded owner is a live
-ancestor. This hook enforces the chokepoint: a `bun test`, `node --test`, or
-`test-*.sh` at the invoked-program position is denied with the quiet-run
-shape, and the semaphore knobs are registered seams (a per-call
+ancestor. The semaphore knobs are registered seams on this hook (a per-call
 `HIMMEL_SUITE_SLOTS=`/`HIMMEL_SUITE_SLOT_HELD=` prefix is denied;
-`SUITE_LOCK_WAIT=` is not a seam). Residuals (`timeout`/`xargs`/`find -exec`
-wrappers, `$var` paths, `bun run test`/`npm test`) are HIMMEL-3763. Bypass of
-the direct-suite rule only: `DIRECT_SUITE_OK=1` (launching shell).
+`SUITE_LOCK_WAIT=` is not a seam). There is no invoked-program-level deny of a
+bare `bun test`/`node --test`/`test-*.sh` run outside the chokepoint — an
+earlier version of this hook added one and it false-denied ordinary heredoc
+body text (commit messages, PR bodies) that merely mentioned a suite name;
+that mechanism was removed (see HIMMEL-3763). Bypassing the budget
+entirely (`timeout`/`xargs`/`find -exec` wrappers, `$var` paths, `bun run
+test`/`npm test`, or simply not routing through quiet-run) is untouched by
+this hook and tracked under HIMMEL-3763.
 
 ### `require-quiet-run.sh` — bare test-suite bounce (HIMMEL-1952)
 
