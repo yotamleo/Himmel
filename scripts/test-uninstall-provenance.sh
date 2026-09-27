@@ -150,6 +150,29 @@ esac
 CRONTAB_STUB_EOF
 chmod 755 "$FAKE_CRONTAB"
 
+# fake jq shim (RED53, HIMMEL-3637 R3-codex2): a real jq passthrough for every
+# call EXCEPT prov_read_units' own fold query, which it forces to fail
+# (exit 1) when RED53_FORCE_JQ_FAIL=1 is exported -- prov_read_units' filter
+# is the only jq invocation in this codebase carrying `--argjson havepath`
+# (provenance-read.sh), so this is a targeted failure injection of "the fold
+# read itself errors", not a corrupted row (which prov_read_load's own
+# fold-validation already catches upstream, before LEDGER_OK is even set).
+REAL_JQ="$(command -v jq)"
+FAKE_JQ="$SUITE_TMP/bin/jq"
+cat > "$FAKE_JQ" <<JQ_STUB_EOF
+#!/usr/bin/env bash
+set -u
+if [ "\${RED53_FORCE_JQ_FAIL:-}" = "1" ]; then
+    prev=""
+    for a in "\$@"; do
+        [ "\$prev" = "--argjson" ] && [ "\$a" = "havepath" ] && exit 1
+        prev="\$a"
+    done
+fi
+exec "$REAL_JQ" "\$@"
+JQ_STUB_EOF
+chmod 755 "$FAKE_JQ"
+
 # new_case <name> -- fresh scratch HOME/cwd/provenance dir + fresh plugin and
 # marketplace stub state for one case. Sets the CASE_* globals the rest of
 # the case (and run_uninstall) uses.
@@ -1664,6 +1687,38 @@ BACKUPS52_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/de
 REFUSED52=$([ "$rc52" -ne 0 ] && echo yes || echo no)
 check "RED52: --purge-state refuses (non-zero) when the adopted project directory itself is gone" "$REFUSED52" "yes"
 check "RED52: refusing means deleting nothing — the backup survives" "$BACKUPS52_AFTER" "$BACKUPS52_BEFORE"
+
+echo "==== RED53 (HIMMEL-3637 R3-codex2): --purge-state must refuse when prov_read_units itself fails, not treat a failed read as zero units ===="
+# Round-1 critic finding: 'done <<EOF\n$(prov_read_units)\nEOF' fed an empty
+# loop body whether prov_read_units returned zero units OR failed outright --
+# both looked identical to the scan. RED53 forces the LATTER: the ledger loads
+# fine (LEDGER_OK=1), a recorded backup exists and is unrestored exactly like
+# RED50, but prov_read_units' own fold query errors (RED53_FORCE_JQ_FAIL=1's
+# jq shim above). The scan must fail closed, exactly as if it had read the
+# real unrestored unit, not silently proceed as "nothing to check".
+new_case red53
+PROJDIR53="$CASE_DIR/project"
+mkdir -p "$PROJDIR53/scripts"
+DEST53="$PROJDIR53/scripts/clean.sh"
+printf '#!/bin/sh\necho original-user-script\n' > "$DEST53"
+SNAP53=$(mktemp "$SUITE_TMP/SNAP53.XXXXXX") || exit 1
+cp -p "$DEST53" "$SNAP53"
+printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST53"
+( prov_begin --writer adopt.sh -- seed-red53 >/dev/null
+  prov_record replace file "$DEST53" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP53" --backup --post-file "$DEST53" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP53"
+BACKUPS53_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+check "RED53: setup actually created a backup (control is not vacuous)" "$([ "$BACKUPS53_BEFORE" -gt 0 ] && echo yes || echo no)" "yes"
+export RED53_FORCE_JQ_FAIL=1
+run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings --purge-state >/dev/null
+rc53=$?
+unset RED53_FORCE_JQ_FAIL
+BACKUPS53_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+REFUSED53=$([ "$rc53" -ne 0 ] && echo yes || echo no)
+check "RED53: --purge-state refuses (non-zero) when prov_read_units itself fails" "$REFUSED53" "yes"
+check "RED53: refusing means deleting nothing — the backup survives" "$BACKUPS53_AFTER" "$BACKUPS53_BEFORE"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)

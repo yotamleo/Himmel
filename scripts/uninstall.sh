@@ -3915,36 +3915,46 @@ if [ "$LEDGER_OK" -eq 1 ]; then
 $_prov_handled_keys
 "
       _prov_unrestored=""
-      while IFS= read -r _pu; do
-        [ -n "$_pu" ] || continue
-        _pu_path="$(printf '%s' "$_pu" | jq -r '.path // empty')"
-        [ -n "$_pu_path" ] || continue
-        printf '%s' "$_pu" | jq -e '.eff_pre.backup // empty' >/dev/null 2>&1 || continue
-        _pu_unit="$(printf '%s' "$_pu" | jq -r '.unit // ""')"
-        _pu_key="${_pu_path}$(printf '\000')${_pu_unit}"
-        case "$_prov_handled_keys" in *"
+      if ! _prov_units_raw="$(prov_read_units)"; then
+        # HIMMEL-3637 R3-codex2: prov_read_units itself failing (a malformed
+        # provenance fold file, not just one bad row) must not look like "no
+        # units to check" -- an empty `$()` here fed the loop nothing and let
+        # --purge-state through with zero checks. Fail the whole scan closed
+        # instead of silently skipping it.
+        echo "WARN: refusing --purge-state — could not read the provenance ledger units (prov_read_units failed)" >&2
+        fail_step "[8/8] provenance ledger: refused to purge — provenance ledger unreadable"
+      else
+        while IFS= read -r _pu; do
+          [ -n "$_pu" ] || continue
+          _pu_path="$(printf '%s' "$_pu" | jq -r '.path // empty')"
+          [ -n "$_pu_path" ] || continue
+          printf '%s' "$_pu" | jq -e '.eff_pre.backup // empty' >/dev/null 2>&1 || continue
+          _pu_unit="$(printf '%s' "$_pu" | jq -r '.unit // ""')"
+          _pu_key="${_pu_path}$(printf '\000')${_pu_unit}"
+          case "$_prov_handled_keys" in *"
 $_pu_key
 "*) continue ;; esac
-        # HIMMEL-3637 R3-codex1: a verdict this can't even COMPUTE (rc!=0 --
-        # malformed row, missing field) is unresolvable, not safe -- fail
-        # closed on it exactly like an explicit "restore" verdict, rather
-        # than silently letting `|| continue` skip past it and purge.
-        if ! _pu_verdict="$(prov_read_verdict "$_pu")"; then
+          # HIMMEL-3637 R3-codex1: a verdict this can't even COMPUTE (rc!=0 --
+          # malformed row, missing field) is unresolvable, not safe -- fail
+          # closed on it exactly like an explicit "restore" verdict, rather
+          # than silently letting `|| continue` skip past it and purge.
+          if ! _pu_verdict="$(prov_read_verdict "$_pu")"; then
+            _prov_unrestored="${_prov_unrestored}${_pu_path}"$'\n'
+            continue
+          fi
+          # HIMMEL-3637: "keep already-absent" means the path is gone -- which
+          # includes the whole project directory having been deleted (J1274O
+          # w1). prov_read_verdict can't distinguish that from a genuinely
+          # gone, harmless-to-purge file, so both count as unrestored here.
+          case "$_pu_verdict" in
+            restore\ *|"keep already-absent") ;;
+            *) continue ;;
+          esac
           _prov_unrestored="${_prov_unrestored}${_pu_path}"$'\n'
-          continue
-        fi
-        # HIMMEL-3637: "keep already-absent" means the path is gone -- which
-        # includes the whole project directory having been deleted (J1274O
-        # w1). prov_read_verdict can't distinguish that from a genuinely
-        # gone, harmless-to-purge file, so both count as unrestored here.
-        case "$_pu_verdict" in
-          restore\ *|"keep already-absent") ;;
-          *) continue ;;
-        esac
-        _prov_unrestored="${_prov_unrestored}${_pu_path}"$'\n'
-      done <<EOF
-$(prov_read_units)
+        done <<EOF
+$_prov_units_raw
 EOF
+      fi
       if [ -n "$_prov_unrestored" ]; then
         echo "WARN: refusing --purge-state — these backups have not been restored:" >&2
         printf '%s' "$_prov_unrestored" | while IFS= read -r _pu_path; do
