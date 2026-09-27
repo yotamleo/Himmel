@@ -3427,11 +3427,17 @@ if [ "$HALTED" -eq 0 ] && [ "$LEDGER_OK" -eq 1 ]; then
         # skipping it would let this run finish at rc=0 having restored
         # nothing — and a later --purge-state would then delete its only
         # backup. Halt instead: the caller re-runs from the recorded project.
+        # "keep already-absent" (the project dir itself, not just the file,
+        # is gone -- J1274O w1's "clone deleted" shape) is just as unsafe as
+        # a live "restore" verdict: prov_read_verdict can't tell a genuinely
+        # gone project from this bug's wrong-cwd trap, so both halt.
         _adopter_verdict="$(prov_read_verdict "$_au")" || _adopter_verdict=""
-        if [ "${_adopter_verdict%% *}" = "restore" ]; then
-          echo "  WARN: $_adopter_path needs restoring but is outside this directory ($PWD) — re-run uninstall.sh from $_adopter_proj_root" >&2
-          fail_step "[6/8] adopter-scripts: $_adopter_path not restored (wrong cwd — re-run from its project directory)"
-        fi
+        case "$_adopter_verdict" in
+          restore\ *|"keep already-absent")
+            echo "  WARN: $_adopter_path needs restoring but is outside this directory ($PWD) — re-run uninstall.sh from $_adopter_proj_root" >&2
+            fail_step "[6/8] adopter-scripts: $_adopter_path not restored (wrong cwd — re-run from its project directory)"
+            ;;
+        esac
         continue ;;
     esac
     ledger_apply_unit "$_au"
@@ -3914,7 +3920,14 @@ $_prov_handled_paths
 $_pu_path
 "*) continue ;; esac
         _pu_verdict="$(prov_read_verdict "$_pu")" || continue
-        [ "${_pu_verdict%% *}" = "restore" ] || continue
+        # HIMMEL-3637: "keep already-absent" means the path is gone -- which
+        # includes the whole project directory having been deleted (J1274O
+        # w1). prov_read_verdict can't distinguish that from a genuinely
+        # gone, harmless-to-purge file, so both count as unrestored here.
+        case "$_pu_verdict" in
+          restore\ *|"keep already-absent") ;;
+          *) continue ;;
+        esac
         _prov_unrestored="${_prov_unrestored}${_pu_path}"$'\n'
       done <<EOF
 $(prov_read_units)

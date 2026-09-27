@@ -1635,6 +1635,34 @@ OUTCOME51=BUG
 check "RED51: uninstall from a non-project cwd either resolves+restores or refuses non-zero (never silent rc=0 with nothing restored)" \
   "$OUTCOME51" "ok"
 
+echo "==== RED52 (HIMMEL-3637): --purge-state must refuse when the recorded project dir itself is gone (J1274O w1 'clone deleted') ===="
+# The exact judge repro shape: the adopted project directory is deleted
+# entirely (not just left unrestored), so the recorded path's current state
+# reads ABSENT and prov_read_verdict says "keep already-absent" rather than
+# "restore" -- a distinct code path from RED50/RED51, which both leave the
+# project directory on disk.
+new_case red52
+PROJDIR52="$CASE_DIR/project"
+mkdir -p "$PROJDIR52/scripts"
+DEST52="$PROJDIR52/scripts/clean.sh"
+printf '#!/bin/sh\necho original-user-script\n' > "$DEST52"
+SNAP52=$(mktemp "$SUITE_TMP/SNAP52.XXXXXX") || exit 1
+cp -p "$DEST52" "$SNAP52"
+printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST52"
+( prov_begin --writer adopt.sh -- seed-red52 >/dev/null
+  prov_record replace file "$DEST52" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP52" --backup --post-file "$DEST52" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP52"
+rm -rf "$PROJDIR52"
+BACKUPS52_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings --purge-state >/dev/null
+rc52=$?
+BACKUPS52_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+REFUSED52=$([ "$rc52" -ne 0 ] && echo yes || echo no)
+check "RED52: --purge-state refuses (non-zero) when the adopted project directory itself is gone" "$REFUSED52" "yes"
+check "RED52: refusing means deleting nothing — the backup survives" "$BACKUPS52_AFTER" "$BACKUPS52_BEFORE"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \
