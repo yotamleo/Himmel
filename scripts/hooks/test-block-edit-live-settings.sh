@@ -1444,6 +1444,53 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# 219 (HIMMEL-3761 shape 1): a piped read-only chain (tail | grep) of a
+# *.leg-settings.json scratchpad file, from a PRIMARY-checkout cwd
+# (is_primary_cwd=1) -> ALLOW. tail and grep are both on the read-only
+# allowlist and joined only by `|`, so is_readonly_allowlisted already
+# exempts this regardless of is_primary_cwd; this pins that a PRIMARY cwd
+# does not override the read-only exemption.
+assert_rc "219 tail | grep of a scratchpad .leg-settings.json from primary cwd allows (HIMMEL-3761)" 0 \
+    "$(bash_rc_of "$PRIMARY" "tail -50 /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json | grep additionalDirectories")"
+
+# 220 (HIMMEL-3761 shape 2/4): a printf payload that merely MENTIONS
+# "leg-settings.json" as text, appended into an unrelated ordinary file (no
+# settings path is ever a write operand) -> ALLOW. The word-boundary fix
+# means the mention no longer flips mentions_settings for a basename that
+# only ENDS in "settings.json" as a longer filename, and even where it does,
+# the actual write destination (append.log) is what matters.
+assert_rc "220 printf mentioning a *.leg-settings.json filename, writing elsewhere, allows (HIMMEL-3761)" 0 \
+    "$(bash_rc_of "$PRIMARY" "printf 'see %s\\n' HIMMEL-3514-N424-bridge-hardening.leg-settings.json >> append.log")"
+
+# 221 (HIMMEL-3761 shape 3): a read-only `--check --settings` naming a linked
+# WORKTREE's own settings.json by ABSOLUTE path, run with cwd=PRIMARY
+# (is_primary_cwd=1, node is not on the read-only allowlist) -> ALLOW.
+# settings_word_live resolves the operand via the existing check_target(),
+# which walks up to the worktree's own git-dir (differs from the primary's),
+# so it overrides is_primary_cwd's unconditional live-forcing.
+assert_rc "221 node --check --settings on a worktree's own settings.json (absolute) from primary cwd allows (HIMMEL-3761)" 0 \
+    "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings $NESTED_WT/.claude/settings.json")"
+
+# 222: the same shape, spelled worktree-relative from the PRIMARY cwd
+# (`.claude/worktrees/feat+x/.claude/settings.json`) -> ALLOW.
+assert_rc "222 node --check --settings on a worktree's own settings.json (relative) from primary cwd allows (HIMMEL-3761)" 0 \
+    "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings .claude/worktrees/feat+x/.claude/settings.json")"
+
+# 223 control: the same `--check --settings` shape, this time naming the
+# PRIMARY's own live settings.json (not a worktree copy) -> DENY — proves
+# 221/222's fix only exempts a genuinely non-live worktree target, not a
+# `--check`-flagged read of a live path in general.
+assert_rc "223 node --check --settings on the primary's own settings.json still denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings $PRIMARY/.claude/settings.json")"
+
+# 224 control: a worktree-looking relative spelling that actually escapes
+# back to the primary via `..` (`../../.claude/settings.json` from inside a
+# nested worktree) -> DENY — settings_word_live must not blanket-allow every
+# path merely because it looks worktree-shaped; check_target's real
+# resolution still walks it up to the primary's own git-dir.
+assert_rc "224 node --check --settings via ../.. from a nested worktree still denies (control)" 2 \
+    "$(bash_rc_of "$NESTED_WT" "node scripts/hooks/wire-hook-bash.mjs --check --settings ../../.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
