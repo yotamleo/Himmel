@@ -938,6 +938,15 @@ else
     pass "marker carries no PAT material"
 fi
 
+echo "TEST: CodeRabbit (dd570f08) -- an '@' in the query string or fragment is not mistaken for userinfo"
+rc=0; out=$(cd "$REPO" && bash "$HOOK" origin "https://example.com?contact=alice@example.org" <<< "refs/heads/feat/scrub $scrub_sha refs/heads/feat/scrub $Z40" 2>&1) || rc=$?
+sm_q_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$sm" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$sm_q_endpoint" = "https://example.com?contact=alice@example.org" ]; then
+    pass "query-string '@' left untouched, host is still example.com (HIMMEL-1565, CodeRabbit dd570f08)"
+else
+    fail "expected the query string preserved and host to stay example.com, got '$sm_q_endpoint'" "out: $out"
+fi
+
 echo "TEST: ref push without an endpoint URL -> fail CLOSED naming the missing binding"
 rc=0; out=$(cd "$REPO" && bash "$HOOK" origin <<< "refs/heads/feat/scrub $scrub_sha refs/heads/feat/scrub $Z40" 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then pass "missing endpoint URL -> exit 2 (fail closed)"; else fail "missing endpoint URL -> expected exit 2 got $rc" "out: $out"; fi
@@ -1952,7 +1961,7 @@ rr_B=$(git -C "$RR_PUSHER" rev-parse HEAD)
 # freshly-fetchable rr_X). Only the OBJECT rr_X resolves to is replaced, with
 # a same-tree-as-A fake so any diff against the (replaced) base already
 # contains A's evil.sh and only the handover tail shows as "new".
-rr_Yf=$(git -C "$RR_PUSHER" commit-tree "${rr_A}^{tree}" -m fake)
+rr_Yf=$(git -C "$RR_PUSHER" -c user.email=b@t -c user.name=b commit-tree "${rr_A}^{tree}" -m fake)
 git -C "$RR_PUSHER" replace "$rr_X" "$rr_Yf"
 rc=0
 out=$(cd "$RR_PUSHER" && bash "$HOOK" origin "$RR_ORIGIN" <<< "refs/heads/feat/rr $rr_B refs/heads/feat/rr $Z40" 2>&1) || rc=$?

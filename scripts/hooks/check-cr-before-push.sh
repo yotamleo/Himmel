@@ -203,11 +203,11 @@ REF_LINES
 scrub_endpoint() {
     case "$1" in
         ssh://*:*@*|git+ssh://*:*@*)
-            printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' ;;
+            printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/?#@]*@#\1#' ;;
         ssh://*@*|git+ssh://*@*)
             printf '%s\n' "$1" ;;
         *://*@*)
-            printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' ;;
+            printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/?#@]*@#\1#' ;;
         *)
             printf '%s\n' "$1" ;;
     esac

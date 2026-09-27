@@ -274,7 +274,7 @@ resolve_marker_remote_head() {
     # give a specific "the remote timed out" reason rather than folding it
     # into the generic "unreadable" refusal (HIMMEL-1554: assert the reason).
     case "${CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS:-}" in
-        ''|*[!0-9]*) lsr_timeout=20 ;;
+        ''|0|*[!0-9]*) lsr_timeout=20 ;;
         *) lsr_timeout="$CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS" ;;
     esac
     # The ENDPOINT, never the alias: `git ls-remote <alias>` resolves through
