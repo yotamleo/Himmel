@@ -835,11 +835,15 @@ segment_is_safe() {
 # (no separator, no backslash-continuation) until the terminating newline,
 # which still ends the comment AND breaks the segment as it always did.
 scan_cmd() {
-    local s="$1" n i c nx p st seg NL cm aws
+    local s="$1" n i c nx p ppe st seg NL cm aws pesc
     NL=$'\n'
-    n=${#s}; i=0; st=0; cm=0; aws=1; seg=""; SCAN_SEGS=""; SCAN_MASK=""
+    n=${#s}; i=0; st=0; cm=0; aws=1; seg=""; SCAN_SEGS=""; SCAN_MASK=""; pesc=0
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
+        # HIMMEL-3777: was s[i-1] itself the escaped byte of a `\x` pair (so it
+        # is data, not a live operator char)? Captured before this iteration's
+        # own escape branch (if any) resets pesc for the NEXT iteration.
+        ppe="$pesc"; pesc=0
         if [ "$st" = 1 ]; then                       # inside single quotes
             seg="$seg${c/"$NL"/ }"; SCAN_MASK="$SCAN_MASK "
             [ "$c" = "'" ] && st=0
@@ -853,7 +857,7 @@ scan_cmd() {
                     SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
                 fi
                 seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "
-                aws=0; i=$((i + 2)); continue
+                aws=0; pesc=1; i=$((i + 2)); continue
             fi
             seg="$seg${c/"$NL"/ }"; SCAN_MASK="$SCAN_MASK "
             [ "$c" = '"' ] && st=0
@@ -888,7 +892,7 @@ scan_cmd() {
                 if [ "$nx" = "$NL" ]; then          # line continuation: remove both bytes
                     SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
                 fi
-                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "; aws=0; i=$((i + 2)); continue ;;
+                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "; aws=0; pesc=1; i=$((i + 2)); continue ;;
             ';'|"$NL")                               # statement separator
                 SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
                 SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue ;;
@@ -906,9 +910,16 @@ scan_cmd() {
                     seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; aws=0; i=$((i + 1)); continue
                 fi
                 p=""; [ "$i" -gt 0 ] && p="${s:$((i - 1)):1}"
-                case "$p" in                         # fd-dup 2>&1 / >&2 → keep
-                    '>'|'<'|'&') seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; aws=0; i=$((i + 1)); continue ;;
-                esac
+                # HIMMEL-3777: a raw '>'/'<'/'&' immediately before is only a
+                # live fd-dup neighbor when it was NOT itself the escaped
+                # payload of a preceding `\x` — otherwise `\&&` reads its
+                # escaped first & as a false fd-dup partner for the second,
+                # LIVE &, hiding it from the bare-& break below.
+                if [ "$ppe" != 1 ]; then
+                    case "$p" in                     # fd-dup 2>&1 / >&2 → keep
+                        '>'|'<'|'&') seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; aws=0; i=$((i + 1)); continue ;;
+                    esac
+                fi
                 SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""    # bare & separator → break
                 SCAN_MASK="$SCAN_MASK&"; aws=1; i=$((i + 1)); continue ;;
         esac

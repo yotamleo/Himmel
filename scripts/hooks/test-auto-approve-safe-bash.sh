@@ -1067,6 +1067,46 @@ assert "win-jq: genuine continuation still ALLOW (HIMMEL-3776 closed)" \
 assert "win-jq: CR-free command unaffected" \
     ALLOW "$(decide_win "$(j_bash 'git log --oneline -1')")"
 
+# --- HIMMEL-3777: the &-branch's fd-dup lookback (2>&1 / >&2, line ~908)
+# reads the raw previous byte without checking whether THAT byte was itself
+# the escaped payload of a preceding `\x` pair. An escaped `\&` followed by
+# a real, live `&` then misreads the escaped `&` as a fd-dup neighbor and
+# keeps the live `&` out of the bare-& break, hiding a second command.
+# VERIFIED (real bash, scratch dir, marker-file M): each "HIDDEN-RAN" case
+# below genuinely runs `touch M` as a second, separate command; each
+# "no-hidden-run" case does not (`&` stays inert data). PASS is the correct
+# verdict for a hidden-run case (the whole string must NOT be auto-ALLOWed);
+# ALLOW is correct only where nothing is hidden.
+assert "escaped amp, 1 backslash: touch M hidden (HIDDEN-RAN)" \
+    PASS "$(decide "$(j_bash 'echo hi \&& touch M')")"
+assert "escaped amp, 1 backslash, glued (HIDDEN-RAN)" \
+    PASS "$(decide "$(j_bash 'echo hi \&&touch M')")"
+assert "escaped amp, odd (3) backslashes: still escapes (HIDDEN-RAN)" \
+    PASS "$(decide "$(j_bash 'echo hi \\\&& touch M')")"
+assert "escaped amp, even (2) backslashes: real && (HIDDEN-RAN, pre-existing PASS)" \
+    PASS "$(decide "$(j_bash 'echo hi \\&& touch M')")"
+# Control: BOTH &s individually backslash-escaped is truly literal text — no
+# operator ever reaches the &-branch, no hidden run, must stay ALLOW.
+assert "both amps escaped: literal, no hidden run (control, stays ALLOW)" \
+    ALLOW "$(decide "$(j_bash 'echo a\&\&b touch M')")"
+# Controls: an escaped `;` or `|` is likewise fully consumed as literal data
+# by the existing single-character escape walk (no lookback involved), so
+# these were never part of this bug — confirm no regression.
+assert "escaped semicolon: literal, no hidden run (control)" \
+    ALLOW "$(decide "$(j_bash 'echo hi \; touch M')")"
+assert "escaped pipe: literal, no hidden run (control)" \
+    ALLOW "$(decide "$(j_bash 'echo hi \| touch M')")"
+# Quoted variants: the backslash is INSIDE quotes (no escaping effect on the
+# `&` outside), so this is a plain, visible `&&` chain — HIDDEN-RAN for real,
+# but not disguised, and already correctly not auto-ALLOWed pre-fix.
+assert "single-quoted backslash before real &&: visible chain (control)" \
+    PASS "$(decide "$(j_bash "echo 'x\\'&& touch M")")"
+assert "double-quoted backslash before real &&: visible chain (control)" \
+    PASS "$(decide "$(j_bash 'echo "x\\"&& touch M')")"
+# fd-dup must still parse as one safe segment even right after this fix.
+assert "2>&1 fd-dup still safe post-fix"   ALLOW "$(decide "$(j_bash 'grep x f 2>&1 | head')")"
+assert "amp-redirect &>devnull still safe post-fix" ALLOW "$(decide "$(j_bash 'grep x f &>/dev/null')")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."
