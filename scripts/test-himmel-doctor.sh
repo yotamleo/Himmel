@@ -4813,6 +4813,9 @@ rm -rf "$c40_t"
 # reports RSS and uptime (one ps call, no network) and WARNs over the ceiling.
 # Seams: HIMMEL_DOCTOR_QMD_PIDFILE (the daemon pidfile), HIMMEL_DOCTOR_QMD_PS
 # (the ps binary; the stub prints C44D_ROW for the pid it is asked about).
+# An operator-exported ceiling (0 = off) must not leak into the default cases;
+# the 08/lots cases set it per call.
+unset QMD_RSS_CEILING_MB
 c44d_setup() {
     c44d_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c44.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
     mkdir -p "$c44d_t/home" "$c44d_t/claude"
