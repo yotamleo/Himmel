@@ -815,6 +815,7 @@ assert_deny_suite "executed test-*.sh path"                   "$(j "./scripts/te
 assert_deny_suite "direct suite after && compound"            "$(j "git status && bun test")"
 assert_deny_suite "direct suite behind an env assignment"     "$(j "FOO=1 bun test")"
 assert_deny_suite "direct suite inside bash -c"               "$(j "bash -c 'node --test'")"
+assert_allow "bash -n test-*.sh: syntax check, not a run"      "$(j "bash -n scripts/hooks/test-block-chokepoint-env-prefix.sh")"
 assert_deny "HIMMEL_SUITE_SLOT_HELD= prefix on quiet-run suite" "$(j "HIMMEL_SUITE_SLOT_HELD=/tmp/x bash $QR suite -- bash scripts/test-quiet-run.sh")"
 assert_deny "HIMMEL_SUITE_SLOTS= prefix on quiet-run suite"     "$(j "HIMMEL_SUITE_SLOTS=9 bash $QR suite -- bun test")"
 assert_deny "HIMMEL_SUITE_SLOTS= prefix on run-shell-tests"     "$(j "HIMMEL_SUITE_SLOTS=9 bash scripts/ci/run-shell-tests.sh .")"

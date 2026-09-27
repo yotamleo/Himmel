@@ -1155,7 +1155,7 @@ scan_split_argv() {
 scan_segment() {
     local seg="$1" inames="$2" depth="$3"
     local -a W
-    local w nw=0 j=0 k rest names asg_ok=1 expect_cstr=0
+    local w nw=0 j=0 k rest names asg_ok=1 expect_cstr=0 syntax_only=0
     local phase="${4:-start}"
     local env_endopts=0 lo_out lo_verdict lo_operand
     local cluster_out cluster_verdict cluster_operand
@@ -1219,11 +1219,14 @@ scan_segment() {
             fi
             case "$w" in
             -c) expect_cstr=1; j=$((j + 1)); continue ;;
+            # -n: bash/sh parse-only (syntax check), never executes the
+            # script -- the direct-suite deny exists to stop a RUN.
+            -n) syntax_only=1; j=$((j + 1)); continue ;;
             -*) j=$((j + 1)); continue ;;
             esac
             check_invocation "$w" "$names"
             # HIMMEL-1818: the interpreter's script operand is a suite.
-            if [ "${DIRECT_SUITE_OK:-0}" != "1" ] && is_suite_script "$w"; then
+            if [ "$syntax_only" != "1" ] && [ "${DIRECT_SUITE_OK:-0}" != "1" ] && is_suite_script "$w"; then
                 deny_suite
             fi
             return 0
