@@ -2699,15 +2699,14 @@ F1_REPS=$(( F1_N / ${#F1_UNIT} + 1 ))
 F1_PAD=$(for _ in $(seq 1 "$F1_REPS"); do printf '%s' "$F1_UNIT"; done | head -c "$F1_N")
 F1_CMD=$(printf 'cat > notes.txt <<%s\n%s\nEOF\nenv -C %s graphify update notes/patient.md --backend glm' \
     "'EOF'" "$F1_PAD" "$SALUS")
-start_ns=$(date +%s%N)
+start_s=$SECONDS
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$F1_CMD" 2>&1 ); rc=$?
-end_ns=$(date +%s%N)
-elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+elapsed_s=$(( SECONDS - start_s ))
 if [ "$rc" -eq 2 ]; then
-    pass "${F1_N}B ;'' padding + real chdir still denies (rc=$rc) in ${elapsed_ms}ms - functional, no timing SLA, residual risk tracked in HIMMEL-3771 (F1)"
+    pass "${F1_N}B ;'' padding + real chdir still denies (rc=$rc) in ${elapsed_s}s - functional, no timing SLA, residual risk tracked in HIMMEL-3771 (F1)"
 else
-    fail "${F1_N}B ;'' padding + real chdir rc=$rc (want rc=2) in ${elapsed_ms}ms (F1)"
+    fail "${F1_N}B ;'' padding + real chdir rc=$rc (want rc=2) in ${elapsed_s}s (F1)"
 fi
 
 if [ "$failures" -eq 0 ]; then
