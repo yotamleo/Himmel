@@ -1225,6 +1225,23 @@ case "$cmd" in
     *'system('*|*'popen('*|*'exec('*)  exit 0 ;;  # interpreter shell-out
 esac
 
+# HIMMEL-3732 / HIMMEL-3733 (J1300A findings 6,7): an unquoted `(` in ANY word
+# is zsh glob-qualifier (`f(e:'cmd':)` — arbitrary code under zsh defaults) or
+# grouping-glob (`(-)oPWNED` — a real write) syntax, independent of which
+# binary carries it — so this refuses GLOBALLY, not only in the six
+# write-guarded arms (HIMMEL-3660). SCAN_MASK already blanks quoted spans and
+# backslash-escaped chars to spaces, so any '(' surviving in it is a genuinely
+# unquoted, unescaped one. Strip the constructs the tripwire above and
+# elsewhere already own — $((...)), $(...), <(...), >(...) — before checking,
+# since those are handled cases, not this one. Longest-first so stripping
+# "$((" doesn't leave a stray "(" from a truncated "$(" match.
+paren_mask="$SCAN_MASK"
+paren_mask="${paren_mask//'$(('/}"
+paren_mask="${paren_mask//'$('/}"
+paren_mask="${paren_mask//'<('/}"
+paren_mask="${paren_mask//'>('/}"
+case "$paren_mask" in *'('*) exit 0 ;; esac
+
 # Output redirect to a real file → not safe. Strip /dev/null sinks + fd-dups first.
 # Anchor /dev/null to a token boundary so `>/dev/null.bak` (a real file) is
 # NOT mistaken for the sink and stripped. Run on SCAN_MASK so a '>' inside a

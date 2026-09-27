@@ -837,6 +837,26 @@ assert "base64 -* glob"               PASS "$(decide "$(j_bash 'base64 -*')")"
 assert "find quoted glob still ALLOW" ALLOW "$(decide "$(j_bash "find . -name '*.md'")")"
 assert "sort quoted glob still ALLOW" ALLOW "$(decide "$(j_bash "sort '-*' f")")"
 
+# --- HIMMEL-3732 / HIMMEL-3733 (J1300A findings 6,7): an unquoted `(` in ANY
+# word is zsh glob-qualifier / grouping syntax under zsh defaults — arbitrary
+# code (`f(e:'cmd':)`) or a real write (`(-)oPWNED`) — independent of which
+# binary carries it, so this is a GLOBAL refusal, not confined to the six
+# write-guarded arms. Quoted/escaped `(` and the already-handled
+# $(...)/<(...)/>(...)/$((...)) constructs stay unaffected.
+assert "glob-qualifier exec f(e:...)"  PASS "$(decide "$(j_bash "cat f(e:'touch /tmp/x':)")")"
+assert "glob-qualifier plus f(+cmd)"   PASS "$(decide "$(j_bash 'cat f(+cmd)')")"
+assert "glob-qualifier dot *(.)"       PASS "$(decide "$(j_bash 'ls *(.)')")"
+assert "grouping-glob sort (-)oX"      PASS "$(decide "$(j_bash 'sort (-)oX f')")"
+assert "grouping (a|b) word"           PASS "$(decide "$(j_bash 'cat (a|b)')")"
+assert "glob-qualifier grep f(N)"      PASS "$(decide "$(j_bash 'grep x f(N)')")"
+# Controls: quoted/escaped '(' and unrelated shapes must keep ALLOWing.
+assert "quoted paren in grep pattern"  ALLOW "$(decide "$(j_bash "grep '(' f")")"
+assert "quoted paren in dquote arg"    ALLOW "$(decide "$(j_bash 'grep "a(b)" f')")"
+assert "escaped paren"                 ALLOW "$(decide "$(j_bash 'echo \(')")"
+assert "cmd-subst paren still PASS"    PASS "$(decide "$(j_bash 'cat "$(pwd)/f"')")"
+assert "plain cat README still ALLOW"  ALLOW "$(decide "$(j_bash 'cat README.md')")"
+assert "plain git log still ALLOW"     ALLOW "$(decide "$(j_bash 'git log --oneline -1')")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."
