@@ -417,6 +417,18 @@ run_test "(20) HIMMEL-1712 item 4: USAGE_FORCE_REFRESH=1 bypasses the OAuth TTL 
   [ -e "$OAUTH_MARKER" ] || exit 1;
 '
 
+run_test "(21) HIMMEL-1712 item 5: a cross-account overwrite (rates path) emits a stderr WARN naming both account hashes, and still overwrites" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-21.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"session_id\":\"sess-A\",\"rate_limits\":{\"five_hour\":{\"utilization\":10,\"resets_at\":\"R\"}}}" | bash "$PRODUCER" >/dev/null 2>"$W/err1.log";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  printf "%s" "{\"session_id\":\"sess-B\",\"rate_limits\":{\"five_hour\":{\"utilization\":11,\"resets_at\":\"R\"}}}" | bash "$PRODUCER" >/dev/null 2>"$W/err2.log";
+  grep -qi "different account" "$W/err2.log" || exit 1;
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "11" ] || exit 1;
+'
+
 # --- summary ------------------------------------------------------------------
 if [ "$_failures" -eq 0 ]; then
   echo "OK: all cases passed"

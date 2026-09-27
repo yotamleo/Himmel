@@ -210,6 +210,14 @@ if [ -n "$stdin_five" ] || [ -n "$stdin_seven" ]; then
     fi
   fi
 
+  # HIMMEL-1712 item 5: overwrite policy is newest-write-wins (operator
+  # ruling) -- consumers already treat an account mismatch as UNKNOWN, so an
+  # unconditional overwrite is safe; this WARN is visibility only.
+  prev_account=$(printf '%s' "$prev" | jq -r '.account // empty' 2>/dev/null)
+  if [ -n "$prev_account" ] && [ -n "$account_hash" ] && [ "$prev_account" != "$account_hash" ]; then
+    echo "WARN usage-cache-producer: overwriting a cache stamped by a different account (prev=$prev_account new=$account_hash)" >&2
+  fi
+
   new_cache=$(jq -n --argjson prev "$prev" --argjson ts "$now_epoch" \
     --arg fh "$stdin_five" --arg fhr "$stdin_five_reset" \
     --arg sh "$stdin_seven" --arg shr "$stdin_seven_reset" \
@@ -320,6 +328,13 @@ fi
 if [ -z "$fetched" ] || ! printf '%s' "$fetched" | jq -e 'type=="object"' >/dev/null 2>&1; then
   echo "WARN usage-cache-producer: usage fetch failed; keeping previous cache" >&2
   exit 0
+fi
+
+# HIMMEL-1712 item 5: same newest-write-wins policy as the rates path
+# (operator ruling) -- visibility-only WARN, no behavior change.
+prev_account=$(printf '%s' "$prev" | jq -r '.account // empty' 2>/dev/null)
+if [ -n "$prev_account" ] && [ -n "$account_hash" ] && [ "$prev_account" != "$account_hash" ]; then
+  echo "WARN usage-cache-producer: overwriting a cache stamped by a different account (prev=$prev_account new=$account_hash)" >&2
 fi
 
 new_cache=$(jq -n --argjson prev "$prev" --argjson f "$fetched" --argjson ts "$now_epoch" \
