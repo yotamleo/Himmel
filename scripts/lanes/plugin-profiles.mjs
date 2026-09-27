@@ -433,7 +433,7 @@ export function resolveProfile(registry, name, opts = {}) {
   if (spec?.gateAllow === true) {
     const allow = [...registry.gateAllow];
     if (opts.anchor !== undefined) {
-      for (const rule of [anchorMergeRule(opts.anchor), anchorClearCrMarkerRule(opts.anchor)]) {
+      for (const rule of anchorShipStepRules(registry, opts.anchor)) {
         if (rule && !allow.includes(rule)) allow.push(rule);
       }
     }
@@ -463,25 +463,49 @@ function validatedAnchorPath(anchor, purpose) {
   return /^[A-Za-z0-9._/+-]+$/.test(path) ? path : null;
 }
 
-// The one exact absolute literal for the PRIMARY checkout's merge-on-green.sh.
-// It widens nothing: the GO gate inside merge-on-green.sh (exit 17 without a
-// GO file) stays the only authority on whether a merge runs.
-export function anchorMergeRule(anchor) {
-  const path = validatedAnchorPath(anchor, 'merge');
-  return path ? `Bash(bash ${path}/scripts/handover/merge-on-green.sh:*)` : null;
+// HIMMEL-3783: two ship-step scripts a leg calls carry no relative
+// GATE_SCRIPT_RE entry of their own — merge-on-green.sh's relative rule was
+// retired (HIMMEL-3548, only its $HIMMEL_REPO literal remains in
+// registry.gateAllow) and leg-pr-open.sh's relative allow lives in
+// .claude/settings.json, not here — so anchorShipStepRules below carries
+// their relative spelling explicitly, the same text either rule would have
+// had, purely as the transform's input.
+const EXTRA_SHIP_STEP_RELATIVE_RULES = [
+  'Bash(bash scripts/handover/merge-on-green.sh:*)',
+  'Bash(bash scripts/lanes/leg-pr-open.sh:*)',
+];
+
+// The anchor-absolute twin of one relative `Bash(bash scripts/....sh<tail>)`
+// rule, or null when the anchor fails validatedAnchorPath. Generalizes the
+// two former per-script helpers (anchorMergeRule, anchorClearCrMarkerRule)
+// into one text transform: swap the leading `scripts/` for `<anchor>/scripts/`,
+// keeping whatever tail (`:*`, ` --diff`, or nothing) the relative rule had.
+function anchorRuleFromRelative(rule, anchor) {
+  const m = /^Bash\(bash (scripts\/[\w./-]+\.sh)([^)]*)\)$/.exec(rule);
+  if (!m) return null;
+  const path = validatedAnchorPath(anchor, m[1]);
+  return path ? `Bash(bash ${path}/${m[1]}${m[2]})` : null;
 }
 
-// The one exact absolute literal for the PRIMARY checkout's
-// clear-cr-marker.sh. It widens nothing beyond the relative rule already in
-// registry.gateAllow: clear-cr-marker.sh's own gates (branch-identity check,
-// rename-claim + byte-for-byte re-check under a mutual-exclusion lock, per
-// plugin-profiles.json's gateAllow comment) stay the only authority on
-// whether a marker actually clears, and guard-pr-check-literal.sh still
-// refuses any compound shape naming this script before gateAllow is
-// consulted at all.
-export function anchorClearCrMarkerRule(anchor) {
-  const path = validatedAnchorPath(anchor, 'clear-cr-marker');
-  return path ? `Bash(bash ${path}/scripts/cr/clear-cr-marker.sh:*)` : null;
+// Every ship-step allow's anchor-absolute twin: registry.gateAllow's
+// wildcard-tail GATE_SCRIPT_RE rules (queue-lock, panel-first-pass,
+// clear-cr-marker, check-ci, and the rest of that set) plus the two extras
+// above. Deliberately excludes GATE_EXACT_RE's no-argument literals
+// (codex-adv-kickoff, pr-check-context, pr-check-env, …) and GATE_SUITE_RE's
+// test-suite rules: those either hand off to the anchor's own copy
+// internally (pr-check-context/pr-check-env, HIMMEL-3698) or must run
+// against the WORKTREE's bytes, never the anchor's (test suites exercise the
+// branch under review, not the primary checkout). It widens nothing beyond
+// each relative rule already in registry.gateAllow or .claude/settings.json:
+// every script's own internal gates (branch-identity checks, GO-file gates,
+// mutual-exclusion locks, …) stay the only authority on what it actually
+// does.
+export function anchorShipStepRules(registry, anchor) {
+  const relatives = [
+    ...(registry.gateAllow ?? []).filter((rule) => GATE_SCRIPT_RE.test(rule)),
+    ...EXTRA_SHIP_STEP_RELATIVE_RULES,
+  ];
+  return relatives.map((rule) => anchorRuleFromRelative(rule, anchor)).filter(Boolean);
 }
 
 // The primary checkout that owns `dir` (its git common dir's parent), or null

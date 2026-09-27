@@ -1143,16 +1143,47 @@ const ANCHOR_RULE = 'Bash(bash /home/u/himmel/scripts/handover/merge-on-green.sh
 // merge literal exactly: same anchor, same mechanism.
 const MARKER_ANCHOR_RULE = 'Bash(bash /home/u/himmel/scripts/cr/clear-cr-marker.sh:*)';
 
+// HIMMEL-3783: N651 (leg-pr-open.sh) and N649 (panel-first-pass.sh) each fell
+// to the classifier the same way merge-on-green/clear-cr-marker used to —
+// every OTHER wildcard-tail (GATE_SCRIPT_RE) ship-step allow needs the same
+// anchor-absolute twin, plus leg-pr-open.sh (its own relative allow lives in
+// .claude/settings.json, not registry.gateAllow). Independent of the
+// production regex — a literal, hand-maintained expectation, same style as
+// GATE_RULES above — so this fails if the generator's coverage drifts either
+// way. Deliberately excludes GATE_EXACT_RE's no-argument literals
+// (codex-adv-kickoff.sh, pr-check-context.sh, pr-check-env.sh
+// CR_CLAUDE_AGENTS, known-findings.sh --diff, resolve-active-item.sh): those
+// hand off to the anchor's own copy internally (HIMMEL-3698) rather than
+// being typed by a leg as an absolute Bash command.
+const SHIP_STEP_ANCHOR_RULES = [
+  'Bash(bash /home/u/himmel/scripts/handover/queue-lock.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/handover/console-kit/inbox-send.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/cr/write-verdicts.sh:*)',
+  MARKER_ANCHOR_RULE,
+  'Bash(bash /home/u/himmel/scripts/cr/panel-first-pass.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/cr/docs-audit-panel.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/cr/ledger-append.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/cr/impacted-suites.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/cr/orphan-check.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/cr/review-round.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/cr/cr-scores.sh:*)',
+  'Bash(bash /home/u/himmel/scripts/check-ci.sh:*)',
+  ANCHOR_RULE,
+  'Bash(bash /home/u/himmel/scripts/lanes/leg-pr-open.sh:*)',
+];
+
 for (const name of LEG_PROFILES) {
-  test(`HIMMEL-3567: ${name} with an anchor adds exactly the absolute merge literal and keeps every gate rule`, () => {
+  test(`HIMMEL-3783: ${name} with an anchor adds exactly every ship-step anchor twin, nothing more`, () => {
     const { permissions } = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
-    assert.deepEqual(permissions.allow, [...REG.gateAllow, ANCHOR_RULE, MARKER_ANCHOR_RULE]);
+    assert.deepEqual(permissions.allow, [...REG.gateAllow, ...SHIP_STEP_ANCHOR_RULES]);
   });
 
-  test(`HIMMEL-3572: ${name} with an anchor also adds the absolute clear-cr-marker literal`, () => {
-    const { permissions } = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
-    assert.ok(permissions.allow.includes(MARKER_ANCHOR_RULE), permissions.allow.join('\n'));
-  });
+  for (const rule of SHIP_STEP_ANCHOR_RULES) {
+    test(`HIMMEL-3783: ${name} with an anchor includes ${rule}`, () => {
+      const { permissions } = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
+      assert.ok(permissions.allow.includes(rule), permissions.allow.join('\n'));
+    });
+  }
 }
 
 for (const name of ['operator', 'user', 'bare']) {
