@@ -557,7 +557,7 @@ brace_word_is_rootwalk() {
     case "$inner" in *'{'*|*'}'*) return 1 ;; esac  # nested — leave opaque
     local IFS=','
     for part in $inner; do
-        case "$part" in '/') return 0 ;; esac
+        case "$part" in '/'|'//') return 0 ;; esac  # codex-1: // is POSIX root too (is_root_anchor:503)
     done
     return 1
 }
