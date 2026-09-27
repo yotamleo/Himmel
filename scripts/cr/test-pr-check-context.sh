@@ -2637,4 +2637,28 @@ check "$rc68" "0" "T68 rc (fails closed, not hard-abort)"
 check "$(get_kv "$out68" anchor_lane)" "adopter" "T68 anchor_lane=adopter (an unresolvable common dir fails to the conservative lane)"
 grep -q 'could not resolve an absolute git-common-dir' "$tmp/t68.err" || { echo "FAIL: T68 missing the loud stderr diagnostic naming the cause"; fail=1; }
 
+# T69 (HIMMEL-2650, console REDIRECT): the relative-common-dir resolution
+# must not consult CDPATH. Bash's `cd` searches CDPATH for a bare relative
+# name like ".git" even when the cwd already has its own `.git` -- CDPATH
+# wins over the local match (verified empirically). Left unguarded, a
+# caller whose environment happens to set CDPATH to a directory containing
+# the anchor turns an adopter-lane cwd into anchor_lane=himmel: a lane
+# ESCALATION, trusting the reviewed repo's own scripts/cr/, not the safe
+# adopter fallback the other branches take.
+#
+# T69a: a genuinely foreign repo (its own real `.git`) reviewed with CDPATH
+# poisoned toward anchor13 must still classify adopter.
+foreign69="$tmp/foreign-repo-69"
+mkdir -p "$foreign69"
+(cd "$foreign69" && git init -q) || { echo "FAIL: T69 could not init foreign69"; fail=1; }
+out69a="$(cd "$foreign69" && CDPATH="$anchor13" HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh")"
+check "$(get_kv "$out69a" anchor_lane)" "adopter" "T69a anchor_lane=adopter (CDPATH poisoned toward the anchor must not escalate a foreign repo with its own .git)"
+
+# T69b: the legitimate himmel-lane match must survive CDPATH poisoned
+# toward an unrelated directory (no false NEGATIVE from the same fix).
+unrelated69="$tmp/unrelated-cdpath-69"
+mkdir -p "$unrelated69"
+out69b="$(cd "$anchor13" && CDPATH="$unrelated69" HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh")"
+check "$(get_kv "$out69b" anchor_lane)" "himmel" "T69b anchor_lane=himmel (CDPATH poisoned toward an unrelated dir must not break the legitimate himmel-lane match)"
+
 [ "$fail" -eq 0 ] && echo "PASS test-pr-check-context" || exit 1
