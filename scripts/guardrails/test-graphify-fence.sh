@@ -2553,9 +2553,15 @@ fi
 
 
 # (X19) J1323A F1: the hidden-separator scan must be linear, not quadratic -
-# a >=64KB routed command has to decide well under the hook's 15s timeout,
-# or a timed-out PreToolUse hook fails OPEN and a main-DENY becomes an ALLOW.
-big=$(head -c 65536 /dev/zero | tr '\0' 'a')
+# a large routed command has to decide well under the hook's 15s timeout, or
+# a timed-out PreToolUse hook fails OPEN and a main-DENY becomes an ALLOW.
+# codex-1 (PR #1323 round 15): kept at a fixed 65536 bytes this payload now
+# hits HIMMEL-3683/J1323C F1's own size cap (32768 bytes) before the scan
+# this row means to exercise ever runs, so a pass here stopped being evidence
+# the SCAN is linear - only that the (separately-tested, X27/X28) cap denies
+# quickly. Sized under the cap so the scan path is what actually executes,
+# and the deny is asserted to come from THIS scan (not the cap).
+big=$(head -c 20000 /dev/zero | tr '\0' 'a')
 X19_CMD="env -C $SALUS graphify update notes/patient.md --backend glm # $big"
 start_ns=$(date +%s%N)
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
@@ -2564,11 +2570,13 @@ end_ns=$(date +%s%N)
 elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
 # codex-2 (PR #1323 round 3): a fast result alone is not evidence the scan
 # ran correctly - a crash or an erroneous allow both return quickly too.
-# Assert the expected deny (rc=2) alongside the timing.
-if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ]; then
-    pass "64KB routed command denies in ${elapsed_ms}ms, well under the 15s hook timeout (X19)"
+# Assert the expected deny (rc=2) alongside the timing, and (codex-1 round
+# 15) that it was NOT the size cap that fired, or this would again test the
+# cap instead of the scan.
+if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ] && ! grepq "$out" "fence cap"; then
+    pass "under-cap large routed command denies via the scan (not the size cap) in ${elapsed_ms}ms, well under the 15s hook timeout (X19)"
 else
-    fail "64KB routed command rc=$rc in ${elapsed_ms}ms (want rc=2, <5000ms) (X19)"
+    fail "under-cap large routed command rc=$rc in ${elapsed_ms}ms, cap-fired=$(grepq "$out" "fence cap" && echo yes || echo no) (want rc=2, <5000ms, scan-path deny) (X19) out=$out"
 fi
 
 # (X20/X21) J1323A F2: the hidden-separator deny must be scoped to a
@@ -2687,12 +2695,15 @@ run_fence allow no "$HIMMEL" "make -C \$(git rev-parse --show-toplevel; true) te
 
 # (F1) J1323D F1: the cut scan itself is what pushed hook execution past the
 # 15s PreToolUse timeout on a sub-32KB-cap flood input (a timed-out
-# --optional hook fails OPEN). This asserts only that the shape still denies
-# functionally, via the pre-existing unresolved-chdir reason - not a timing
-# SLA: main's own unrelated quoting/clause-splitting cost on this ;'' padding
-# shape is itself close to the hook's 15s budget at this size, independent of
-# this PR's change. A bounded (not merely faster) redesign is tracked in
-# HIMMEL-3771, not fixed by this PR.
+# --optional hook fails OPEN). This asserts the shape still denies
+# functionally - not a timing SLA: main's own unrelated quoting/clause-
+# splitting cost on this ;'' padding shape is itself close to the hook's 15s
+# budget at this size, independent of this PR's change. A bounded (not
+# merely faster) redesign is tracked in HIMMEL-3771, not fixed by this PR.
+# codex-2 (PR #1323 round 15): rc=2 alone does not prove THIS deny reason
+# fired (a cap or a crash also returns rc=2) - and this row's own chdir arg
+# (SALUS) resolves cleanly, so the actual reason is the ordinary corpus x
+# backend policy deny (egress matrix), not chdir at all. Assert that text.
 F1_N=8000
 F1_UNIT=";''"
 F1_REPS=$(( F1_N / ${#F1_UNIT} + 1 ))
@@ -2703,10 +2714,10 @@ start_s=$SECONDS
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$F1_CMD" 2>&1 ); rc=$?
 elapsed_s=$(( SECONDS - start_s ))
-if [ "$rc" -eq 2 ]; then
-    pass "${F1_N}B ;'' padding + real chdir still denies (rc=$rc) in ${elapsed_s}s - functional, no timing SLA, residual risk tracked in HIMMEL-3771 (F1)"
+if [ "$rc" -eq 2 ] && grepq "$out" "egress matrix"; then
+    pass "${F1_N}B ;'' padding + real chdir still denies via egress-matrix policy (rc=$rc) in ${elapsed_s}s - functional, no timing SLA, residual risk tracked in HIMMEL-3771 (F1)"
 else
-    fail "${F1_N}B ;'' padding + real chdir rc=$rc (want rc=2) in ${elapsed_s}s (F1)"
+    fail "${F1_N}B ;'' padding + real chdir rc=$rc in ${elapsed_s}s, egress-matrix-deny=$(grepq "$out" "egress matrix" && echo yes || echo no) (want rc=2, egress-matrix deny) (F1) out=$out"
 fi
 
 if [ "$failures" -eq 0 ]; then
