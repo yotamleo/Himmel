@@ -30,7 +30,13 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { classifyTicket, findMatches, applyDisposition, buildEvidenceComment } from './reconcile-lib.mjs';
+import {
+  classifyTicket,
+  findMatches,
+  applyDisposition,
+  buildEvidenceComment,
+  openStatusJql,
+} from './reconcile-lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -147,8 +153,10 @@ async function loadBacklog({ jiraCli, project, limit }) {
   const { request } = await import(pathToFileURL(join(distDir, 'client.js')).href);
   // statusCategory (not a hardcoded open-status allow-list) so a project-specific
   // status like this backlog's own "Backlog" isn't silently excluded from
-  // reconciliation just because it wasn't named here.
-  const jql = `project=${project} AND statusCategory != Done ORDER BY created ASC`;
+  // reconciliation just because it wasn't named here. OR'd with the shared
+  // in-flight-but-Done exception (HIMMEL-1657) so "In Public" tickets stay in
+  // the reconciliation set instead of being read as finished.
+  const jql = `project=${project} AND ${openStatusJql()} ORDER BY created ASC`;
   const issues = await searchAllIssues(jql, limit, request);
   return issues.map((issue) => ({
     key: issue.key,

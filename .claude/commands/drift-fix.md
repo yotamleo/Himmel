@@ -280,10 +280,12 @@ was misread — abort and report; do not "try the next version".
 
 ## 6. Ticket
 
-Every PR carries a Jira ticket. Search first:
+Every PR carries a Jira ticket. Search first — the open condition mirrors
+`openStatusJql()` in `scripts/jira/reconcile-lib.mjs` (HIMMEL-1657: "In Public"
+still counts as open, not Done):
 
 ```bash
-node <repo-root>/scripts/jira/dist/index.js list --jql "project = HIMMEL AND summary ~ 'graphify' AND statusCategory != Done" --limit 10
+node <repo-root>/scripts/jira/dist/index.js list --jql "project = HIMMEL AND summary ~ 'graphify' AND (statusCategory != Done OR status = \"In Public\")" --limit 10
 ```
 
 Reuse an open ticket for this exact bump if one exists; otherwise file one

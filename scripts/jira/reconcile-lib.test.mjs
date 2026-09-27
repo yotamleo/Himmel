@@ -13,6 +13,8 @@ import {
   applyDisposition,
   buildEvidenceComment,
   TOOL_EVIDENCE_MARKER,
+  isOpenIssue,
+  openStatusJql,
 } from './reconcile-lib.mjs';
 
 // Real HIMMEL-2975 description (fetched 2026-09-17): the ticket the 40 %
@@ -63,6 +65,31 @@ curl -sI https://yotamleo.github.io/Himmel/adoption-trail.html -> 200 after the 
 function commit(subject, { body = '', sha = 'deadbee', date = '2026-09-01' } = {}) {
   return { sha, date, subject, body };
 }
+
+describe('isOpenIssue — HIMMEL-1657: "In Public" is statusCategory=Done but still in flight', () => {
+  it('counts an "In Public" ticket as open despite statusCategory Done', () => {
+    const inPublic = { fields: { status: { name: 'In Public', statusCategory: { name: 'Done' } } } };
+    expect(isOpenIssue(inPublic)).toBe(true);
+  });
+
+  it('still counts a genuinely finished ticket as closed', () => {
+    const done = { fields: { status: { name: 'Done', statusCategory: { name: 'Done' } } } };
+    expect(isOpenIssue(done)).toBe(false);
+  });
+
+  it('counts an ordinary open ticket as open', () => {
+    const inProgress = { fields: { status: { name: 'In Progress', statusCategory: { name: 'In Progress' } } } };
+    expect(isOpenIssue(inProgress)).toBe(true);
+  });
+});
+
+describe('openStatusJql — the single shared "open" JQL fragment', () => {
+  it('ORs the caller condition with the in-flight-but-Done statuses', () => {
+    expect(openStatusJql('statusCategory != Done')).toBe(
+      '(statusCategory != Done OR status = "In Public")',
+    );
+  });
+});
 
 describe('ticketKeyPattern / word-boundary matching', () => {
   it('matches a bare mention with word boundaries', () => {

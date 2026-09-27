@@ -12,6 +12,29 @@ const HYGIENE_SWEEP_MARKERS = [
 ];
 export const TOOL_EVIDENCE_MARKER = 'Auto-reconciled by scripts/jira/reconcile-backlog.mjs';
 
+// "In Public" resolves to statusCategory=Done in Jira's workflow, but a
+// ticket sitting there is still in flight — the public PR can still fail CI,
+// take CR findings, or get reverted (HIMMEL-1657). Every "is this ticket
+// open" check goes through this ONE list so the open-set can't drift into
+// N slightly-different per-consumer definitions.
+export const IN_FLIGHT_DONE_STATUSES = ['In Public'];
+
+// Builds the JQL "open" condition: the caller's own base condition (normally
+// `statusCategory != Done`) OR'd with the in-flight-but-Done statuses above.
+export function openStatusJql(baseCondition = 'statusCategory != Done') {
+  const inFlight = IN_FLIGHT_DONE_STATUSES.map((s) => `status = "${s}"`).join(' OR ');
+  return `(${baseCondition} OR ${inFlight})`;
+}
+
+// Local mirror of the same rule for an already-fetched issue (no extra Jira
+// round-trip needed): true if the issue is not statusCategory=Done, OR its
+// status name is one of the in-flight-but-Done statuses above.
+export function isOpenIssue(issue) {
+  const statusName = issue?.fields?.status?.name;
+  if (IN_FLIGHT_DONE_STATUSES.includes(statusName)) return true;
+  return issue?.fields?.status?.statusCategory?.name !== 'Done';
+}
+
 const NEVER_TOUCH_TYPES = new Set(['Epic', 'Story']);
 
 // A partial-delivery signal in a commit subject/PR title: "PR 1 of 2",
