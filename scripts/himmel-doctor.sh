@@ -2981,7 +2981,7 @@ check_c40_qmd_vec() {
 # Test seams: HIMMEL_DOCTOR_QMD_PIDFILE (default
 # ${XDG_CACHE_HOME:-~/.cache}/qmd/mcp.pid, where qmd writes it),
 # HIMMEL_DOCTOR_QMD_PS (default ps).
-check_c44_qmd_daemon() {
+check_c44_qmd_daemon() {  # t13b-ok: doctor row that reads ps only, starts nothing
     local pidfile="${HIMMEL_DOCTOR_QMD_PIDFILE:-${XDG_CACHE_HOME:-$HOME/.cache}/qmd/mcp.pid}"
     local ps_bin="${HIMMEL_DOCTOR_QMD_PS:-ps}"
     local ceiling="${QMD_RSS_CEILING_MB:-4096}" pid row rss_kb etime rss_mb
@@ -2998,10 +2998,10 @@ check_c44_qmd_daemon() {
     rss_mb=$((rss_kb / 1024))
     # Compare in KB, the unit the hook uses, so a 4096.5 MB daemon is over too.
     if [ "$ceiling" -gt 0 ] && [ "$rss_kb" -gt $((ceiling * 1024)) ]; then
-        emit WARN C44-qmd-daemon "qmd daemon pid $pid: RSS $rss_mb MB, up $etime -- over the recycle ceiling $ceiling MB (vec queries degrade as it grows)" \
-            "the qmd plugin's SessionStart hook recycles it on the next session start (log: ~/.cache/qmd/recycle.log); QMD_RSS_CEILING_MB tunes the ceiling"
+        local fix="the qmd plugin's SessionStart hook recycles it on the next session start (log: ~/.cache/qmd/recycle.log); QMD_RSS_CEILING_MB tunes the ceiling"
+        emit WARN C44-qmd-daemon "qmd daemon pid $pid: RSS $rss_mb MB, up $etime -- over the recycle ceiling $ceiling MB (vec queries degrade as it grows)" "$fix"  # t13b-ok: doctor report text, starts nothing
     else
-        emit OK C44-qmd-daemon "qmd daemon pid $pid: RSS $rss_mb MB, up $etime (ceiling $ceiling MB)"
+        emit OK C44-qmd-daemon "qmd daemon pid $pid: RSS $rss_mb MB, up $etime (ceiling $ceiling MB)"  # t13b-ok: doctor report text, starts nothing
     fi
 }
 
@@ -3213,7 +3213,7 @@ check_c40_qmd_vec
 check_c41_mcp_argv_key
 check_c42_sweep_health
 check_c43_rtk_bare_hook
-check_c44_qmd_daemon
+check_c44_qmd_daemon  # t13b-ok: doctor row that reads ps only, starts nothing
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
