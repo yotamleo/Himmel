@@ -3637,87 +3637,30 @@ while IFS= read -r _bwimc_clause; do
             # SOURCE; the sink for each is <target-dir>/<basename(source)>.
             # `-t`/`--target-directory` name the destination MORE explicitly
             # than the positional form, so it never depends on source parsing.
-            # ponytail: the per-source child check below runs against the
-            # tracked cwd only, with no real-cwd fallback, HIMMEL-3726.
-            _bwimc_cd_guard "$_bwimc_tdir_raw"
-            _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_tdir_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
-            if [ -n "$_bwimc_dest_abs" ]; then
-                _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_tdir_raw" follow
-            else
-                _bwimc_check_glob_operand "$_bwimc_tdir_raw" "$_bwimc_ecwd"
-            fi
-            _bwimc_j=0
-            while [ "$_bwimc_j" -lt "${#_bwimc_ops[@]}" ]; do
-                _bwimc_src_raw="${_bwimc_ops[$_bwimc_j]}"
-                _bwimc_cd_guard "$_bwimc_src_raw" "$_bwimc_src_cdmode"
-                _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_ecwd") || _bwimc_src_abs=""
-                # mv SOURCE: checked whether or not the DESTINATION resolved
-                # (round-5 hoist), with ENTRY semantics — rename(2) moves the
-                # directory entry, it never writes through the link.
-                if [ "$_bwimc_verb" = "mv" ]; then
-                    if [ -n "$_bwimc_src_abs" ]; then
-                        _bwimc_check_abs "$_bwimc_src_abs" "$_bwimc_src_raw" \
-                            "$(_bwimc_mode_for_operand "$_bwimc_src_raw" entry)"
-                    else
-                        _bwimc_check_glob_operand "$_bwimc_src_raw" "$_bwimc_ecwd"
-                    fi
-                fi
-                if [ -n "$_bwimc_src_abs" ] && [ -n "$_bwimc_dest_abs" ]; then
-                    _bwimc_base="${_bwimc_src_abs##*/}"
-                    _bwimc_check_abs "${_bwimc_dest_abs%/}/$_bwimc_base" "$_bwimc_tdir_raw" "$_bwimc_child_mode"
-                fi
-                _bwimc_j=$((_bwimc_j+1))
-            done
-        else
-            _bwimc_n=${#_bwimc_ops[@]}
-            if [ "$_bwimc_n" -ge 2 ]; then
-                _bwimc_dest_raw="${_bwimc_ops[$((_bwimc_n-1))]}"
-                # ponytail: dest-is-dir, dest-mode and the child check are
-                # decided from the TRACKED-cwd resolution only; main decides
-                # them against the real cwd, HIMMEL-3726.
-                _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
-                _bwimc_dest_is_dir=0
-                _bwimc_dest_mode=follow
+            # HIMMEL-3648 (J1307A F1, closes the HIMMEL-3726 regression): the
+            # destination TYPE is resolved against the tracked cwd and, when a pipe,
+            # subshell or `||` cd made it diverge, again against the real cwd.
+            # _bwimc_check_abs exits on the first deny, so a deny from EITHER
+            # resolution denies (union) - the fence may only ADD denies over main.
+            _bwimc_dpass=0
+            for _bwimc_dbase in "$_bwimc_ecwd" "$_bwimc_cwd"; do
+                _bwimc_dpass=$((_bwimc_dpass+1))
+                if [ "$_bwimc_dpass" = 2 ] && [ "$_bwimc_cwd" = "$_bwimc_ecwd" ]; then break; fi
+                _bwimc_cd_guard "$_bwimc_tdir_raw"
+                _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_tdir_raw" "$_bwimc_dbase") || _bwimc_dest_abs=""
                 if [ -n "$_bwimc_dest_abs" ]; then
-                    if [ "$_bwimc_nodrf" = 1 ]; then
-                        # mv -T: the destination is the ENTRY, never a
-                        # directory written through (see the -T note above).
-                        _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)
-                    else
-                        [ -d "$_bwimc_dest_abs" ] && _bwimc_dest_is_dir=1
-                        if [ "$_bwimc_dest_is_dir" = 0 ] && { [ "$_bwimc_verb" = "mv" ] || [ "$_bwimc_rmdest" = 1 ]; }; then
-                            # rename(2) replaces the ENTRY, so a destination
-                            # that is a symlink to a NON-directory is written
-                            # AT, not through (codex-2, ground-truthed).
-                            # `cp --remove-destination` unlinks+recreates the
-                            # same way (HIMMEL-2679, ground-truthed).
-                            _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)
-                        elif [ "$_bwimc_dest_is_dir" = 0 ] && [ "$_bwimc_force" = 1 ]; then
-                            # HIMMEL-2679/J1285R: `-f`/`--force` normally
-                            # writes THROUGH the referent (FOLLOW) and falls
-                            # back to unlink+recreate (ENTRY) only when that
-                            # open fails on permissions — check both, never
-                            # ENTRY-only (that missed the real write target).
-                            _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" both)
-                        fi
-                    fi
-                    _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" "$_bwimc_dest_mode"
+                    _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_tdir_raw" follow
                 else
-                    _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_ecwd"
+                    _bwimc_check_glob_operand "$_bwimc_tdir_raw" "$_bwimc_dbase"
                 fi
-                # HIMMEL-3648 (round 13, J1307Q): threaded AFTER $_bwimc_dest_mode
-                # is fully known (entry/both for a symlink-entry destination,
-                # follow for a directory or an unresolved operand) so the
-                # cd-divergence fallback runs the SAME mode the checks above
-                # just used — a hardcoded "follow" default here missed the
-                # ENTRY-mode DENY on a primary-tracked symlink destination
-                # once cd-tracking had diverged from the real cwd.
-                _bwimc_cd_guard "$_bwimc_dest_raw" "$_bwimc_dest_mode"
                 _bwimc_j=0
-                while [ "$_bwimc_j" -lt "$((_bwimc_n-1))" ]; do
+                while [ "$_bwimc_j" -lt "${#_bwimc_ops[@]}" ]; do
                     _bwimc_src_raw="${_bwimc_ops[$_bwimc_j]}"
                     _bwimc_cd_guard "$_bwimc_src_raw" "$_bwimc_src_cdmode"
                     _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_ecwd") || _bwimc_src_abs=""
+                    # mv SOURCE: checked whether or not the DESTINATION resolved
+                    # (round-5 hoist), with ENTRY semantics — rename(2) moves the
+                    # directory entry, it never writes through the link.
                     if [ "$_bwimc_verb" = "mv" ]; then
                         if [ -n "$_bwimc_src_abs" ]; then
                             _bwimc_check_abs "$_bwimc_src_abs" "$_bwimc_src_raw" \
@@ -3726,15 +3669,87 @@ while IFS= read -r _bwimc_clause; do
                             _bwimc_check_glob_operand "$_bwimc_src_raw" "$_bwimc_ecwd"
                         fi
                     fi
-                    if [ -n "$_bwimc_src_abs" ] && [ -n "$_bwimc_dest_abs" ] && [ "$_bwimc_nodrf" = 0 ]; then
-                        if [ "$_bwimc_dest_is_dir" = 1 ]; then
-                            _bwimc_base="${_bwimc_src_abs##*/}"
-                            _bwimc_check_abs "${_bwimc_dest_abs%/}/$_bwimc_base" "$_bwimc_dest_raw" "$_bwimc_child_mode"
-                        else
-                            _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" "$_bwimc_dest_mode"
-                        fi
+                    if [ -n "$_bwimc_src_abs" ] && [ -n "$_bwimc_dest_abs" ]; then
+                        _bwimc_base="${_bwimc_src_abs##*/}"
+                        _bwimc_check_abs "${_bwimc_dest_abs%/}/$_bwimc_base" "$_bwimc_tdir_raw" "$_bwimc_child_mode"
                     fi
                     _bwimc_j=$((_bwimc_j+1))
+                done
+            done
+        else
+            _bwimc_n=${#_bwimc_ops[@]}
+            if [ "$_bwimc_n" -ge 2 ]; then
+                _bwimc_dest_raw="${_bwimc_ops[$((_bwimc_n-1))]}"
+                # HIMMEL-3648 (J1307A F1, closes the HIMMEL-3726 regression): the
+                # destination TYPE is resolved against the tracked cwd and, when a pipe,
+                # subshell or `||` cd made it diverge, again against the real cwd.
+                # _bwimc_check_abs exits on the first deny, so a deny from EITHER
+                # resolution denies (union) - the fence may only ADD denies over main.
+                _bwimc_dpass=0
+                for _bwimc_dbase in "$_bwimc_ecwd" "$_bwimc_cwd"; do
+                    _bwimc_dpass=$((_bwimc_dpass+1))
+                    if [ "$_bwimc_dpass" = 2 ] && [ "$_bwimc_cwd" = "$_bwimc_ecwd" ]; then break; fi
+                    _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_dbase") || _bwimc_dest_abs=""
+                    _bwimc_dest_is_dir=0
+                    _bwimc_dest_mode=follow
+                    if [ -n "$_bwimc_dest_abs" ]; then
+                        if [ "$_bwimc_nodrf" = 1 ]; then
+                            # mv -T: the destination is the ENTRY, never a
+                            # directory written through (see the -T note above).
+                            _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)
+                        else
+                            [ -d "$_bwimc_dest_abs" ] && _bwimc_dest_is_dir=1
+                            if [ "$_bwimc_dest_is_dir" = 0 ] && { [ "$_bwimc_verb" = "mv" ] || [ "$_bwimc_rmdest" = 1 ]; }; then
+                                # rename(2) replaces the ENTRY, so a destination
+                                # that is a symlink to a NON-directory is written
+                                # AT, not through (codex-2, ground-truthed).
+                                # `cp --remove-destination` unlinks+recreates the
+                                # same way (HIMMEL-2679, ground-truthed).
+                                _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)
+                            elif [ "$_bwimc_dest_is_dir" = 0 ] && [ "$_bwimc_force" = 1 ]; then
+                                # HIMMEL-2679/J1285R: `-f`/`--force` normally
+                                # writes THROUGH the referent (FOLLOW) and falls
+                                # back to unlink+recreate (ENTRY) only when that
+                                # open fails on permissions — check both, never
+                                # ENTRY-only (that missed the real write target).
+                                _bwimc_dest_mode=$(_bwimc_mode_for_operand "$_bwimc_dest_raw" both)
+                            fi
+                        fi
+                        _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" "$_bwimc_dest_mode"
+                    else
+                        _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_dbase"
+                    fi
+                    # HIMMEL-3648 (round 13, J1307Q): threaded AFTER $_bwimc_dest_mode
+                    # is fully known (entry/both for a symlink-entry destination,
+                    # follow for a directory or an unresolved operand) so the
+                    # cd-divergence fallback runs the SAME mode the checks above
+                    # just used — a hardcoded "follow" default here missed the
+                    # ENTRY-mode DENY on a primary-tracked symlink destination
+                    # once cd-tracking had diverged from the real cwd.
+                    _bwimc_cd_guard "$_bwimc_dest_raw" "$_bwimc_dest_mode"
+                    _bwimc_j=0
+                    while [ "$_bwimc_j" -lt "$((_bwimc_n-1))" ]; do
+                        _bwimc_src_raw="${_bwimc_ops[$_bwimc_j]}"
+                        _bwimc_cd_guard "$_bwimc_src_raw" "$_bwimc_src_cdmode"
+                        _bwimc_src_abs=$(_bwimc_resolve_abs "$_bwimc_src_raw" "$_bwimc_ecwd") || _bwimc_src_abs=""
+                        if [ "$_bwimc_verb" = "mv" ]; then
+                            if [ -n "$_bwimc_src_abs" ]; then
+                                _bwimc_check_abs "$_bwimc_src_abs" "$_bwimc_src_raw" \
+                                    "$(_bwimc_mode_for_operand "$_bwimc_src_raw" entry)"
+                            else
+                                _bwimc_check_glob_operand "$_bwimc_src_raw" "$_bwimc_ecwd"
+                            fi
+                        fi
+                        if [ -n "$_bwimc_src_abs" ] && [ -n "$_bwimc_dest_abs" ] && [ "$_bwimc_nodrf" = 0 ]; then
+                            if [ "$_bwimc_dest_is_dir" = 1 ]; then
+                                _bwimc_base="${_bwimc_src_abs##*/}"
+                                _bwimc_check_abs "${_bwimc_dest_abs%/}/$_bwimc_base" "$_bwimc_dest_raw" "$_bwimc_child_mode"
+                            else
+                                _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" "$_bwimc_dest_mode"
+                            fi
+                        fi
+                        _bwimc_j=$((_bwimc_j+1))
+                    done
                 done
             fi
         fi
@@ -3880,60 +3895,70 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_nsrc=$((_bwimc_n-1))
         fi
         if [ -n "$_bwimc_dest_raw" ]; then
-            # ponytail: the dir-vs-entry decision below uses the TRACKED-cwd
-            # resolution only; main decides it against the real cwd,
-            # HIMMEL-3726.
-            _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
-            if [ -z "$_bwimc_dest_abs" ]; then
-                _bwimc_cd_guard "$_bwimc_dest_raw"
-                _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_ecwd"
-            else
-                # `-n`/`-T` turn the destination back into a plain ENTRY even
-                # when it resolves to a directory (codex-2). `-t` names a
-                # directory explicitly and stays FOLLOW; real `ln` rejects
-                # `-t` together with `-T`, so no write happens in that
-                # combination and either verdict is safe.
-                if [ "$_bwimc_ln_nodrf" = 1 ] && [ -z "$_bwimc_tdir_raw" ]; then
-                    _bwimc_ln_isdir=0
-                elif [ -d "$_bwimc_dest_abs" ]; then
-                    _bwimc_ln_isdir=1
-                fi
-                if [ "$_bwimc_ln_isdir" = 1 ]; then
-                    # HIMMEL-3648 (round 10 codex-1): _bwimc_cd_guard moved
-                    # here, after $_bwimc_ln_isdir is known, so its fallback
-                    # runs the SAME mode ("follow") the check two lines below
-                    # uses — calling it before this branch was decided meant
-                    # guessing.
-                    _bwimc_cd_guard "$_bwimc_dest_raw" follow
-                    # Check the directory itself UNCONDITIONALLY (so an
-                    # all-unresolvable source list cannot skip it), then the
-                    # entry each source creates inside it.
-                    _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" follow
-                    _bwimc_j=0
-                    while [ "$_bwimc_j" -lt "$_bwimc_nsrc" ]; do
-                        _bwimc_src_abs=$(_bwimc_resolve_abs "${_bwimc_ops[$_bwimc_j]}" "$_bwimc_ecwd") || _bwimc_src_abs=""
-                        if [ -n "$_bwimc_src_abs" ]; then
-                            _bwimc_base="${_bwimc_src_abs##*/}"
-                            # codex-3: `ln` REPLACES the child entry; it does
-                            # not write through it. Ground-truthed — the
-                            # primary file behind a worktree-local child link
-                            # is untouched, so FOLLOW here was a false
-                            # positive. The DIRECTORY itself stays FOLLOW,
-                            # which is what still catches a dirlink pointing
-                            # into the primary (round 1, codex-2).
-                            _bwimc_check_abs "${_bwimc_dest_abs%/}/$_bwimc_base" "$_bwimc_dest_raw" entry
-                        fi
-                        _bwimc_j=$((_bwimc_j+1))
-                    done
+            _bwimc_ln_isdir0=$_bwimc_ln_isdir
+            # HIMMEL-3648 (J1307A F1, closes the HIMMEL-3726 regression): the
+            # destination TYPE is resolved against the tracked cwd and, when a pipe,
+            # subshell or `||` cd made it diverge, again against the real cwd.
+            # _bwimc_check_abs exits on the first deny, so a deny from EITHER
+            # resolution denies (union) - the fence may only ADD denies over main.
+            # _bwimc_ln_isdir is re-seeded each pass: -t presets it to 1.
+            _bwimc_dpass=0
+            for _bwimc_dbase in "$_bwimc_ecwd" "$_bwimc_cwd"; do
+                _bwimc_dpass=$((_bwimc_dpass+1))
+                if [ "$_bwimc_dpass" = 2 ] && [ "$_bwimc_cwd" = "$_bwimc_ecwd" ]; then break; fi
+                _bwimc_ln_isdir=$_bwimc_ln_isdir0
+                _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_dbase") || _bwimc_dest_abs=""
+                if [ -z "$_bwimc_dest_abs" ]; then
+                    _bwimc_cd_guard "$_bwimc_dest_raw"
+                    _bwimc_check_glob_operand "$_bwimc_dest_raw" "$_bwimc_dbase"
                 else
-                    # HIMMEL-3648 (round 10 codex-1): same reasoning as the
-                    # directory branch above — the fallback must match this
-                    # branch's own ENTRY mode, not a guessed "follow".
-                    _bwimc_cd_guard "$_bwimc_dest_raw" "$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)"
-                    _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" \
-                        "$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)"
+                    # `-n`/`-T` turn the destination back into a plain ENTRY even
+                    # when it resolves to a directory (codex-2). `-t` names a
+                    # directory explicitly and stays FOLLOW; real `ln` rejects
+                    # `-t` together with `-T`, so no write happens in that
+                    # combination and either verdict is safe.
+                    if [ "$_bwimc_ln_nodrf" = 1 ] && [ -z "$_bwimc_tdir_raw" ]; then
+                        _bwimc_ln_isdir=0
+                    elif [ -d "$_bwimc_dest_abs" ]; then
+                        _bwimc_ln_isdir=1
+                    fi
+                    if [ "$_bwimc_ln_isdir" = 1 ]; then
+                        # HIMMEL-3648 (round 10 codex-1): _bwimc_cd_guard moved
+                        # here, after $_bwimc_ln_isdir is known, so its fallback
+                        # runs the SAME mode ("follow") the check two lines below
+                        # uses — calling it before this branch was decided meant
+                        # guessing.
+                        _bwimc_cd_guard "$_bwimc_dest_raw" follow
+                        # Check the directory itself UNCONDITIONALLY (so an
+                        # all-unresolvable source list cannot skip it), then the
+                        # entry each source creates inside it.
+                        _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" follow
+                        _bwimc_j=0
+                        while [ "$_bwimc_j" -lt "$_bwimc_nsrc" ]; do
+                            _bwimc_src_abs=$(_bwimc_resolve_abs "${_bwimc_ops[$_bwimc_j]}" "$_bwimc_ecwd") || _bwimc_src_abs=""
+                            if [ -n "$_bwimc_src_abs" ]; then
+                                _bwimc_base="${_bwimc_src_abs##*/}"
+                                # codex-3: `ln` REPLACES the child entry; it does
+                                # not write through it. Ground-truthed — the
+                                # primary file behind a worktree-local child link
+                                # is untouched, so FOLLOW here was a false
+                                # positive. The DIRECTORY itself stays FOLLOW,
+                                # which is what still catches a dirlink pointing
+                                # into the primary (round 1, codex-2).
+                                _bwimc_check_abs "${_bwimc_dest_abs%/}/$_bwimc_base" "$_bwimc_dest_raw" entry
+                            fi
+                            _bwimc_j=$((_bwimc_j+1))
+                        done
+                    else
+                        # HIMMEL-3648 (round 10 codex-1): same reasoning as the
+                        # directory branch above — the fallback must match this
+                        # branch's own ENTRY mode, not a guessed "follow".
+                        _bwimc_cd_guard "$_bwimc_dest_raw" "$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)"
+                        _bwimc_check_abs "$_bwimc_dest_abs" "$_bwimc_dest_raw" \
+                            "$(_bwimc_mode_for_operand "$_bwimc_dest_raw" entry)"
+                    fi
                 fi
-            fi
+            done
         fi
         # DOCUMENTED GAP: the one-operand form (`ln -s <target>`, which links
         # into the CWD under basename(target)) is not modelled — it is the

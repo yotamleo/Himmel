@@ -2893,6 +2893,50 @@ check_both "59 bash -o pipefail -c 'redirect into primary' (flag-with-arg before
 check_both "59b bash -o pipefail -c 'redirect into wt' (flag-with-arg before -c) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -o pipefail -c \\\"echo hi > $FIX/wt/a.txt\\\"\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-3648 CR round 16 (judge J1307A F1 — cp/mv/-t/ln destination type resolved against BOTH cwds, union) =="
+# 67-77 (J1307A F1 / J1307R, closes HIMMEL-3726's regression class): the
+# destination's TYPE (dir? existing entry?) was decided against the tracked
+# cwd only. When a pipe, subshell or `||` makes the tracked cwd (wt) diverge
+# from the real one (primary), a name that is a DIRECTORY in wt but a SYMLINK
+# in primary picked child/allow from wt, while at runtime the write lands on
+# the primary entry. Main denied every row; each must deny again.
+# Fixture: <primary>/xlnk -> xother/src.txt (file symlink) while <wt>/xlnk is
+# a real directory; <primary>/xlnkdir2 -> xother2 (dir symlink) whose child
+# src.txt links back to <primary>/README.md, and wt has no xlnkdir2 at all.
+mkdir -p "$FIX/xother" "$FIX/xother2" "$FIX/wt/xlnk"
+printf 'src\n' > "$FIX/xother/src.txt"
+printf 'src\n' > "$FIX/wt/src.txt"
+ln -sf "$FIX/xother/src.txt" "$FIX/primary/xlnk"
+ln -sf "$FIX/primary/README.md" "$FIX/xother2/src.txt"
+ln -sfn "$FIX/xother2" "$FIX/primary/xlnkdir2"
+check_both "67 fromP: cd wt | cat; mv wt/src.txt xlnk (dir in wt, symlink entry in primary) denies (x1)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; mv $FIX/wt/src.txt xlnk\",\"cwd\":\"$FIX/primary\"}}"
+check_both "68 fromP: cd primary || cd wt; mv wt/src.txt xlnk denies (x1c)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || cd $FIX/wt; mv $FIX/wt/src.txt xlnk\",\"cwd\":\"$FIX/primary\"}}"
+check_both "69 fromP: cd wt | cat; cp --remove-destination wt/src.txt xlnk denies (x2)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp --remove-destination $FIX/wt/src.txt xlnk\",\"cwd\":\"$FIX/primary\"}}"
+check_both "70 fromP: cd wt | cat; cp -f wt/src.txt xlnk denies (x3)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp -f $FIX/wt/src.txt xlnk\",\"cwd\":\"$FIX/primary\"}}"
+check_both "71 fromP: cd wt | cat; ln -sf wt/src.txt xlnk denies (x5)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; ln -sf $FIX/wt/src.txt xlnk\",\"cwd\":\"$FIX/primary\"}}"
+check_both "72 fromP: cd wt | cat; cp wt/src.txt xlnkdir2 (child of a primary dir symlink) denies (x6)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp $FIX/wt/src.txt xlnkdir2\",\"cwd\":\"$FIX/primary\"}}"
+check_both "73 fromP: (cd wt); cp wt/src.txt xlnkdir2 denies (x6b)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"(cd $FIX/wt); cp $FIX/wt/src.txt xlnkdir2\",\"cwd\":\"$FIX/primary\"}}"
+check_both "74 fromP: cd primary || cd wt; cp wt/src.txt xlnkdir2 denies (x6c)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || cd $FIX/wt; cp $FIX/wt/src.txt xlnkdir2\",\"cwd\":\"$FIX/primary\"}}"
+check_both "75 fromP: cd wt | cat; cp -t xlnkdir2 wt/src.txt denies (x8)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp -t xlnkdir2 $FIX/wt/src.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "76 fromP: (cd wt); cp -t xlnkdir2 wt/src.txt denies (x8b)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"(cd $FIX/wt); cp -t xlnkdir2 $FIX/wt/src.txt\",\"cwd\":\"$FIX/primary\"}}"
+check_both "77 fromP: cd wt | cat; cp wt/src.txt xlnkdir2/ (trailing slash) denies (y8)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp $FIX/wt/src.txt xlnkdir2/\",\"cwd\":\"$FIX/primary\"}}"
+# 78 (control): the same divergent cd with an explicit absolute wt directory
+# destination still allows — the union only adds a second resolution, and an
+# absolute operand resolves identically against either cwd.
+check_both "78 control: cd wt | cat; cp wt/src.txt wt/xlnk (absolute wt dir) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp $FIX/wt/src.txt $FIX/wt/xlnk\",\"cwd\":\"$FIX/primary\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
