@@ -1883,6 +1883,9 @@ ast_cron_payload() {
     # graphify itself does (paths.py) -- an absolute value is used as-is, so
     # this is the FULL out dir (out-root/graphify-out), not just the root, to
     # land on the same directory refresh-graph-map.sh's --out-root resolves to.
+    # HIMMEL-3718 CR (codex-1, round 7): mirror cron_payload's unset -- clear
+    # an ambient GRAPHIFY_OUT whenever this leg omits its own GRAPHIFY_OUT=.
+    if [ -z "$q_out_dir" ]; then printf 'unset GRAPHIFY_OUT; '; fi
     if [ -n "$q_out_dir" ]; then printf 'GRAPHIFY_OUT=%s ' "$q_out_dir"; fi
     printf '%s %s %s' "$q_bash" "$q_script" "$q_corpus"
 }

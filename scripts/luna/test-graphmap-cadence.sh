@@ -2225,4 +2225,11 @@ assert_contains "ast_cron_payload prefixes GRAPHIFY_OUT= when set" "GRAPHIFY_OUT
 assert_contains "cron_payload unsets GRAPHIFY_OUT_ROOT when --out-root is omitted" "unset GRAPHIFY_OUT_ROOT" "$cp_no_root"
 assert_not_contains "cron_payload leaves GRAPHIFY_OUT_ROOT alone when --out-root is set" "unset GRAPHIFY_OUT_ROOT" "$cp_with_root"
 
+# Test C-outroot-3 (HIMMEL-3718 CR panel round 7, codex-1): symmetric gap on
+# the structural (AST) leg -- ast-update.sh reads GRAPHIFY_OUT from its
+# environment the same way; an ambient value (e.g. from a manual luna AST
+# test run in the same shell) could redirect himmel's AST leg the same way.
+assert_contains "ast_cron_payload unsets GRAPHIFY_OUT when GRAPHIFY_OUT= is omitted" "unset GRAPHIFY_OUT" "$acp_no_dir"
+assert_not_contains "ast_cron_payload leaves GRAPHIFY_OUT alone when it is set" "unset GRAPHIFY_OUT" "$acp_with_dir"
+
 summary
