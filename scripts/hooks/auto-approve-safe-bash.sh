@@ -1263,6 +1263,7 @@ esac
 # `${~...}` (the GLOB_SUBST flag) was checked too: quoted, it does NOT glob
 # (VERIFIED zsh -f) — quoting still protects it, so it is not a new bypass
 # and is left alone.
+# shellcheck disable=SC2016 # literal raw-text match patterns, nothing expanded
 case "$cmd" in
     *'${('*|*'$='*|*'${='*)  exit 0 ;;
 esac
