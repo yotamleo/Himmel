@@ -353,6 +353,41 @@ _round_block_deadline_exceeded() {
     exit 2
 }
 
+# _round_set_clamped_budget <declared_budget> <label> -- sets round_clamped_budget
+# to min(declared_budget, remaining aggregate block budget), REFUSING (exit 2,
+# cleanup) first if the block is already exceeded (via
+# _round_block_deadline_exceeded) or if what remains is under a 1s floor.
+# HIMMEL-3676 (codex-1, CR round 8): the aggregate deadline above was only
+# checked BEFORE each bounded call started -- a call given its own full
+# per-call budget near the edge of the aggregate window could still run past
+# it (and past the hook's 15s timeout) once started, since nothing clamped
+# the call's OWN timeout to what was actually left. Every bounded call this
+# block makes must ask for its clamped budget here instead of its raw
+# per-call default. A remaining budget under the 1s floor refuses outright
+# rather than starting a probe too short to trust its own timeout.
+_round_set_clamped_budget() {
+    local declared="$1" label="$2" elapsed remaining floor
+    _round_block_deadline_exceeded "$label"
+    elapsed=$((SECONDS - round_block_start))
+    # HIMMEL-3676: force base-10 on the env-overridable budget -- an operator
+    # override like IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS=012 would otherwise be
+    # read as octal by bash arithmetic (unlike the `[ ]` decimal-string
+    # comparisons elsewhere in this file, which never reinterpret a leading
+    # zero).
+    remaining=$((10#$round_block_budget_secs - elapsed))
+    floor=1
+    if [ "$remaining" -lt "$floor" ]; then
+        printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the reviewed-round predicate could not be evaluated for %s -- only %ss remains of the aggregate round-guard block budget (%ss) -- under the %ss floor for a trustworthy probe, failing CLOSED rather than start one destined to overrun. Raise IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$label" "$remaining" "$round_block_budget_secs" "$floor" >&2
+        rm -f "$round_task_path" 2>/dev/null
+        exit 2
+    fi
+    if [ "$declared" -le "$remaining" ]; then
+        round_clamped_budget="$declared"
+    else
+        round_clamped_budget="$remaining"
+    fi
+}
+
 # _round_check_one <branch-args-suffix> <label> — run round-guard.ts's CLI
 # once under the wall-clock budget for one branch and disposition its result
 # exactly like the single-branch call this replaces (HIMMEL-3676, J1322A
@@ -364,10 +399,10 @@ _round_block_deadline_exceeded() {
 # the caller's scope, same as every other round-guard helper in this file.
 _round_check_one() {
     local branch_args="$1" label="$2" cmd out rc
-    _round_block_deadline_exceeded "$label"
+    _round_set_clamped_budget "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$label"
     cmd="bun $(printf '%q' "$repo_root/scripts/telegram/round-guard.ts") check --cwd $(printf '%q' "$round_cwd") --task-file $(printf '%q' "$round_task_file")$branch_args"
     rc=0
-    out=$(_run_bounded "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$cmd" 0.05) || rc=$?
+    out=$(_run_bounded "$round_clamped_budget" "$cmd" 0.05) || rc=$?
     case "$rc" in
         0)
             # HIMMEL-3681: a version-skewed/stale round-guard.ts build could
@@ -625,8 +660,16 @@ if [ -n "$round_cwd" ]; then
     # down only caps how many DISTINCT paths are resolved, not how long
     # grep/sort itself takes to scan the text, so a text padded into the
     # megabytes could cost real wall time before that bound is ever reached.
-    # `${#text}` is a pure shell string-length read, no subprocess.
-    round_text_len=${#text}
+    # HIMMEL-3676 (codex-2, CR round 8): bare `${#text}` counts CHARACTERS
+    # under this process's locale, not bytes -- under a multibyte locale
+    # (e.g. UTF-8) a text full of multi-byte characters can be well under the
+    # advertised byte bound by character count while genuinely over it in
+    # bytes, letting a pathologically large text slip past this cap and into
+    # the grep/sort below uncapped in the dimension that actually costs wall
+    # time. Force the length read itself into the C locale (one subshell
+    # fork, no external process) so `${#text}` counts bytes regardless of the
+    # ambient locale.
+    round_text_len=$(LC_ALL=C; printf '%s' "${#text}")
     round_max_text_bytes="${IMPL_GUARD_MAX_TEXT_BYTES:-200000}"
     if [ "$round_text_len" -gt "$round_max_text_bytes" ]; then
         printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch text is %s bytes, over the %s-byte bound -- refusing rather than scanning it for worktree paths (a pathological prompt must not be able to spend this guard'"'"'s time budget before the path-count bound even applies). Raise the bound with IMPL_GUARD_MAX_TEXT_BYTES, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_text_len" "$round_max_text_bytes" >&2
@@ -665,7 +708,7 @@ if [ -n "$round_cwd" ]; then
         # run the whole block under a deadline so an unmatched, detached-HEAD
         # or unreadable path — or the deadline itself — REFUSES instead of
         # hanging.
-        _round_block_deadline_exceeded "resolving the named worktree paths"
+        _round_set_clamped_budget "${IMPL_GUARD_WT_RESOLVE_BUDGET_SECS:-5}" "resolving the named worktree paths"
         round_wt_paths_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_wt_paths_file=""
         if [ -z "$round_wt_paths_file" ]; then
             printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): could not create a temp file to resolve the named worktree paths — failing CLOSED. IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' >&2
@@ -674,12 +717,11 @@ if [ -n "$round_cwd" ]; then
         fi
         printf '%s\n' "$round_wt_paths" > "$round_wt_paths_file"
         round_resolver="$repo_root/scripts/hooks/lib/resolve-worktree-branches.sh"
-        round_resolve_budget="${IMPL_GUARD_WT_RESOLVE_BUDGET_SECS:-5}"
         round_resolve_cmd="bash $(printf '%q' "$round_resolver") $(printf '%q' "$round_cwd") $(printf '%q' "$round_wt_paths_file")"
-        round_resolve_out=$(_run_bounded "$round_resolve_budget" "$round_resolve_cmd" 0.05); round_resolve_rc=$?
+        round_resolve_out=$(_run_bounded "$round_clamped_budget" "$round_resolve_cmd" 0.05); round_resolve_rc=$?
         rm -f "$round_wt_paths_file" 2>/dev/null
         if [ "$round_resolve_rc" -ne 0 ]; then
-            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): resolving the named worktree paths did not finish cleanly (rc=%s, budget %ss) — failing CLOSED rather than risk a hang skipping the checks below.\n' "$round_resolve_rc" "$round_resolve_budget" >&2
+            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): resolving the named worktree paths did not finish cleanly (rc=%s, budget %ss) — failing CLOSED rather than risk a hang skipping the checks below.\n' "$round_resolve_rc" "$round_clamped_budget" >&2
             rm -f "$round_task_path" 2>/dev/null
             exit 2
         fi

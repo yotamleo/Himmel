@@ -1503,6 +1503,69 @@ RC_RG_Z2=$(run_hook round-text-size-cap "$REG_NONE" "$(payload_cwd general-purpo
 assert_rc "(z2) 300000-byte dispatch text with no worktree paths at all: the size cap refuses before grep/sort ever runs" 2 "$RC_RG_Z2"
 assert_contains "(z2) refusal names the byte bound" "byte bound" "$(combined_output round-text-size-cap)"
 
+# --- (z3), HIMMEL-3676 (codex-1, CR round 8): the aggregate deadline was only
+# checked BEFORE each bounded call started -- a call given its own full
+# per-call budget near the edge of the aggregate window could still run past
+# it once started, since nothing clamped the call's OWN timeout to what
+# remained. cwd is a fresh worktree; the text names ONE further real
+# worktree branch. A stub `bun` sleeps ~1.5s for the cwd-first check (no
+# --branch) and ~5s for the named-branch check (--branch present), both well
+# under a generous per-call declared budget (IMPL_GUARD_ROUND_BUDGET_SECS=10)
+# so neither call is killed by its OWN raw budget -- only the clamp to the
+# REMAINING aggregate budget (IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS=2, ~0.5s
+# left after the 1.5s cwd check) can refuse this in time. Pre-fix this ran
+# the full ~5s second probe and allowed (~6.5s total); post-fix the clamp
+# sees under the 1s floor and refuses before the second probe ever starts
+# (~1.5s total).
+RG_REPO_Z3="$TMP/round-repo-z3"
+RG_WT_DIR_Z3="$TMP/.claude/worktrees/fix-himmel-9026-branch"
+mk_round_repo "$RG_REPO_Z3" "main"
+git -C "$RG_REPO_Z3" worktree add -q -b fix/himmel-9026-branch "$RG_WT_DIR_Z3" main
+RG_Z3_TEXT="Write the code and commit it. Also see $RG_WT_DIR_Z3 for an old attempt."
+
+RG_Z3_STUB_DIR="$TMP/stub-bun-z3"
+mkdir -p "$RG_Z3_STUB_DIR"
+cat > "$RG_Z3_STUB_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+    *--branch*) sleep 5 ;;
+    *) sleep 1.5 ;;
+esac
+echo "round-guard-cli: v1" >&2
+exit 0
+EOF
+chmod +x "$RG_Z3_STUB_DIR/bun"
+
+RG_Z3_START=$(date +%s%N)
+RC_RG_Z3=$(run_hook round-per-call-clamp "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9026' "$RG_Z3_TEXT" "$RG_REPO_Z3")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS=2 IMPL_GUARD_ROUND_BUDGET_SECS=10 PATH="$RG_Z3_STUB_DIR:$PATH")
+RG_Z3_END=$(date +%s%N)
+RG_Z3_MS=$(( (RG_Z3_END - RG_Z3_START) / 1000000 ))
+assert_rc "(z3) a probe starting near the aggregate edge refuses instead of running its full per-call budget" 2 "$RC_RG_Z3"
+if [ "$RG_Z3_MS" -lt 3000 ]; then
+    echo "ok   (z3) refused well before the ~5s named-branch probe would have finished (${RG_Z3_MS}ms)"
+    pass=$((pass + 1))
+else
+    echo "FAIL (z3) took ${RG_Z3_MS}ms, expected well under 3000ms (the clamp should refuse before the second probe starts)"
+    fail=$((fail + 1))
+fi
+
+# --- (z4), HIMMEL-3676 (codex-2, CR round 8): the size-cap read used bare
+# `${#text}`, which counts CHARACTERS under this process's (multibyte, UTF-8)
+# locale, not bytes -- a text full of multi-byte characters can sit under the
+# byte bound by character count while genuinely over it in bytes, letting it
+# slip past the cap uncapped in the dimension that actually costs grep/sort
+# wall time. cwd is a clean repo (no named worktrees); the text is ~100000
+# two-byte UTF-8 characters (200000 bytes), over IMPL_GUARD_MAX_TEXT_BYTES=150000
+# in bytes but under it in characters.
+RG_REPO_Z4="$TMP/round-repo-z4"
+mk_round_repo "$RG_REPO_Z4" "main"
+RG_Z4_PAD=$(printf 'é%.0s' $(seq 1 100000))
+RG_Z4_TEXT="Write the code and commit it. $RG_Z4_PAD"
+
+RC_RG_Z4=$(run_hook round-text-size-cap-multibyte "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9027' "$RG_Z4_TEXT" "$RG_REPO_Z4")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" IMPL_GUARD_MAX_TEXT_BYTES=150000 PATH="$PATH")
+assert_rc "(z4) a multibyte text over the byte bound (but under it in characters) refuses" 2 "$RC_RG_Z4"
+assert_contains "(z4) refusal names the byte bound" "byte bound" "$(combined_output round-text-size-cap-multibyte)"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
