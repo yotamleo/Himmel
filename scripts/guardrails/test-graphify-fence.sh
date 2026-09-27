@@ -2563,11 +2563,34 @@ fi
 # and the deny is asserted to come from THIS scan (not the cap).
 big=$(head -c 20000 /dev/zero | tr '\0' 'a')
 X19_CMD="env -C $SALUS graphify update notes/patient.md --backend glm # $big"
-start_ns=$(date +%s%N)
+
+# date +%s%N is a GNU coreutils extension: on stock macOS/BSD date, "%N" is
+# not substituted and the output ends in a literal "N" rather than digits,
+# breaking the arithmetic below. Probe once and fall back to whole-second
+# (ms-scaled) timing when unsupported (mirrors test-session-end-timeout-budget.sh).
+ns_probe=$(date +%s%N)
+case "$ns_probe" in
+    *[0-9]) ns_supported=1 ;;
+    *) ns_supported=0 ;;
+esac
+timer_start() {
+    if [ "$ns_supported" -eq 1 ]; then date +%s%N; else date +%s; fi
+}
+timer_elapsed_ms() { # <start>
+    local start="$1" end
+    if [ "$ns_supported" -eq 1 ]; then
+        end=$(date +%s%N)
+        echo $(( (end - start) / 1000000 ))
+    else
+        end=$(date +%s)
+        echo $(( (end - start) * 1000 ))
+    fi
+}
+
+start_ns=$(timer_start)
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X19_CMD" 2>&1 ); rc=$?
-end_ns=$(date +%s%N)
-elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+elapsed_ms=$(timer_elapsed_ms "$start_ns")
 # codex-2 (PR #1323 round 3): a fast result alone is not evidence the scan
 # ran correctly - a crash or an erroneous allow both return quickly too.
 # Assert the expected deny (rc=2) alongside the timing, and (codex-1 round
@@ -2610,11 +2633,10 @@ for X23_N in 8192 30000; do
     # literal $(...) text is the payload under test, not a real expansion
     X23_CMD=$(printf 'env -C %s graphify update notes/patient.md --backend glm; x=$(cat <<%s\n%s\nEOF\n)' \
         "$SALUS" "'EOF'" "$X23_PARENS")
-    start_ns=$(date +%s%N)
+    start_ns=$(timer_start)
     # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
     out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X23_CMD" 2>&1 ); rc=$?
-    end_ns=$(date +%s%N)
-    elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+    elapsed_ms=$(timer_elapsed_ms "$start_ns")
     if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ]; then
         pass "${X23_N}B nested-at-depth command denies in ${elapsed_ms}ms, well under the 15s hook timeout (X23 N=$X23_N)"
     else
@@ -2650,11 +2672,10 @@ X27_PARENS=$(head -c 20000 /dev/zero | tr '\0' '(')
 # literal $(...) text is the payload under test, not a real expansion
 X27_CMD=$(printf 'echo %s\ncat > notes.txt <<%s\n$%s\nEOF\nenv -C %s graphify update notes/patient.md --backend glm' \
     "$X27_FLOOD" "'EOF'" "$X27_PARENS" "$SALUS")
-start_ns=$(date +%s%N)
+start_ns=$(timer_start)
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X27_CMD" 2>&1 ); rc=$?
-end_ns=$(date +%s%N)
-elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+elapsed_ms=$(timer_elapsed_ms "$start_ns")
 if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ] && grepq "$out" "fence cap"; then
     pass "combo2-shaped flood+nested-heredoc denies via the size cap (not some other predicate) in ${elapsed_ms}ms, well under the 15s hook timeout (X27)"
 else

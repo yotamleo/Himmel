@@ -73,6 +73,13 @@ spawn_sleeper() {
   sleep 120 >/dev/null 2>&1 &
   SLEEPER_PID=$!
   SLEEPERS="$SLEEPERS $SLEEPER_PID"
+  # Bash prints an async job-control notice ("Killed"/"Killed: 9" — the exact
+  # text differs between bash 3.2 (macOS) and bash 5 (Linux)) when a
+  # background job this shell still tracks is later killed by an external
+  # process (kill_tree runs in its own bash -c). That notice can land on
+  # stderr mid-assertion-capture and corrupt whatever `check` runs next.
+  # `disown` drops the job from this shell's table so no notice ever fires.
+  disown "$SLEEPER_PID" 2>/dev/null || true
 }
 
 # --- hermetic bank cache (verdict PROCEED unless a row overrides it) ---

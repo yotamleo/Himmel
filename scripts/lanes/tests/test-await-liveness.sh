@@ -192,11 +192,15 @@ EOF
         cat > "$bin/stat" <<'EOF'
 #!/usr/bin/env bash
 # Fake BSD stat: `stat -f %m FILE...` prints each mtime as whole epoch secs,
-# built on the host's real GNU stat -c %Y so the portability path can run on
-# a GNU host. Other forms defer to the real stat.
+# backed by the host's REAL stat -- GNU (`-c %Y`) on a Linux CI host, BSD
+# (`-f %m`) on a macOS CI host -- so the fake works on either. Other forms
+# defer to the real stat.
 if [ "$1" = "-f" ] && [ "$2" = "%m" ]; then
     shift 2
-    for f in "$@"; do "${AWAIT_LIVENESS_REAL_STAT:-stat}" -c %Y "$f"; done
+    for f in "$@"; do
+        "${AWAIT_LIVENESS_REAL_STAT:-stat}" -c %Y "$f" 2>/dev/null \
+            || "${AWAIT_LIVENESS_REAL_STAT:-stat}" -f %m "$f"
+    done
 else
     exec "${AWAIT_LIVENESS_REAL_STAT:-stat}" "$@"
 fi
