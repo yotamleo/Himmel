@@ -1551,6 +1551,20 @@ assert_rc "231 node /tmp/wire-hook-bash.mjs --check --settings (script outside w
 assert_rc "232 node <worktree A script> --check --settings <worktree B settings> denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATY/.claude/settings.json")"
 
+# 233: a wholly FAKE worktree planted outside any real root — both the script
+# and its --settings target live under $SANDBOX/evil/.claude/worktrees/<name>/,
+# a directory tree that is not $PRIMARY (the session's own cwd) at all, yet
+# both paths independently satisfy the `.claude/worktrees/<name>/…` shape and
+# share the same captured name -> DENY. Proves the prefix before
+# `.claude/worktrees/<name>/…` is anchored to the real cwd-derived root, not
+# accepted as an arbitrary `*` glob (codex round-7 Critical).
+EVILROOT="$SANDBOX/evil/.claude/worktrees/feat+x"
+mkdir -p "$EVILROOT/.claude" "$EVILROOT/scripts/hooks"
+printf '{}\n' > "$EVILROOT/.claude/settings.json"
+printf 'console.log(1)\n' > "$EVILROOT/scripts/hooks/wire-hook-bash.mjs"
+assert_rc "233 node <fake worktree script> --check --settings <fake worktree settings, outside real root> denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $EVILROOT/scripts/hooks/wire-hook-bash.mjs --check --settings $EVILROOT/.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

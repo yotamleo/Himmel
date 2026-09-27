@@ -1472,8 +1472,29 @@ _himmel_3761_mention_only_ok() {
 # it carry regex metacharacters (`.`, `*`, `(`, …), and splicing attacker
 # text into a live `[[ =~ ]]` pattern would trade this bug for a regex-
 # injection one. A quoted variable inside a `case` pattern is always literal.
+#
+# Both paths' PREFIX before `.claude/worktrees/<name>/…` is also anchored to
+# a real root, never accepted as an arbitrary `*` glob (codex round-7
+# Critical): `*/.claude/worktrees/$wt_name/…` matches ANY directory that
+# happens to contain a `.claude/worktrees/<name>/` subtree, so an attacker
+# could plant `/tmp/evil/.claude/worktrees/x/.claude/settings.json` next to
+# `/tmp/evil/.claude/worktrees/x/scripts/hooks/wire-hook-bash.mjs` — a wholly
+# fake "worktree" satisfying every structural check while running arbitrary
+# attacker-controlled code. The only trustworthy root is `$cwd`/
+# `$nested_wt_primary`, both derived from the tool call's OWN cwd (never
+# from command text), so each path must be either bare-relative
+# (`.claude/worktrees/$wt_name/…`, resolved against cwd like any relative
+# path) or prefixed with EXACTLY that real root — never a wildcard prefix.
 _himmel_3761_worktree_settings_check_ok() {
     local k=1 lw has_check=0 settings_path='' script_path='' next_is_settings=0 wt_name=''
+    local real_root=$cwd
+    [ -z "$nested_wt_primary" ] || real_root=$nested_wt_primary
+    # ST_LW is lowercased (st_lower, line ~410), so settings_path/script_path
+    # below are lowercase too; real_root must be lowered the same way before
+    # comparison, or a real_root with any uppercase byte (a mixed-case
+    # mktemp dir, common in this suite's own SANDBOX) would never match.
+    st_lower "$real_root"
+    real_root=$ST_LOWER
     local wt_name_re='(^|/)\.claude/worktrees/([^/]+)/\.claude/settings\.json$'
     _tok_single_segment_ok || return 1
     case "${ST_LW[0]##*/}" in
@@ -1503,9 +1524,14 @@ _himmel_3761_worktree_settings_check_ok() {
     has_traversal_dots "$cmd_lc" && return 1
     [[ "$settings_path" =~ $wt_name_re ]] || return 1
     wt_name=${BASH_REMATCH[2]}
+    case "$settings_path" in
+        ".claude/worktrees/$wt_name/.claude/settings.json") ;;
+        "$real_root/.claude/worktrees/$wt_name/.claude/settings.json") ;;
+        *) return 1 ;;
+    esac
     case "$script_path" in
         ".claude/worktrees/$wt_name/scripts/hooks/wire-hook-bash.mjs") ;;
-        *"/.claude/worktrees/$wt_name/scripts/hooks/wire-hook-bash.mjs") ;;
+        "$real_root/.claude/worktrees/$wt_name/scripts/hooks/wire-hook-bash.mjs") ;;
         *) return 1 ;;
     esac
     return 0
