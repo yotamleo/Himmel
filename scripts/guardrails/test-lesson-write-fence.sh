@@ -1025,6 +1025,74 @@ run_hook deny "26: cat <(p=.pre-commit-config.yaml/../; cp y \${p%/../}) (pre-co
 run_hook allow "26: bash -c x=scripts/other/../; echo hi > \${x%../}a.sh (control: no enforcement signal)" \
     "$(bash_json "bash -c 'x=scripts/other/../; echo hi > \${x%../}a.sh'" "$REPO")" 1
 
+echo "== 27: judge J1298B C1 - env -S branch's return 0 bypassed the baseline operand scan =="
+# C1 (Critical, NEW ALLOW vs main): the `_env_split_string_used` branch used
+# to `return 0` unconditionally after its own raw-text signal scan, which
+# skipped the per-operand `classify_target` path main runs for every other
+# clause. That raw scan is not a superset of classify_target - it misses a
+# directory target with no trailing slash in the clause text (the policy
+# value itself has one, e.g. `scripts/hooks/`) and any cwd-relative target -
+# so head ALLOWed 21 shapes main DENIES. Separately, `_env_split_string_used`
+# flagged ANY `-S*` token seen before the head verb as env's own split-string
+# flag, including the opaque VALUE of a preceding `-u`/`-a`/`-C` and a
+# DIFFERENT wrapped command's own `-S` (`sudo -S`, read password from stdin).
+# Fix: fall through instead of `return 0` (add-only), and make
+# `_env_split_string_used` skip `-u`/`-a`/`-C` values and stop at the first
+# bare word (env's own resolved verb).
+run_hook deny "27: env -u -S cp y scripts/hooks (bare -u value misread as env's own -S)" \
+    "$(bash_json "env -u -S cp y scripts/hooks" "$REPO")" 1
+run_hook deny "27: env -a -S cp y scripts/hooks (bare -a value misread as env's own -S)" \
+    "$(bash_json "env -a -S cp y scripts/hooks" "$REPO")" 1
+run_hook deny "27: env sudo -S cp y scripts/hooks (sudo's own -S misread as env's)" \
+    "$(bash_json "env sudo -S cp y scripts/hooks" "$REPO")" 1
+run_hook deny "27: @scripts/hooks env -u -S cp y a.sh (cwd-relative target, no trailing-slash signal in text)" \
+    "$(bash_json "env -u -S cp y a.sh" "$REPO/scripts/hooks")" 1
+run_hook deny "27: @scripts/hooks env -a -S cp y a.sh (cwd-relative target)" \
+    "$(bash_json "env -a -S cp y a.sh" "$REPO/scripts/hooks")" 1
+run_hook deny "27: @scripts/hooks env sudo -S cp y a.sh (cwd-relative target, sudo's own -S)" \
+    "$(bash_json "env sudo -S cp y a.sh" "$REPO/scripts/hooks")" 1
+run_hook deny "27: @scripts/hooks env -i sudo -S -u root cp y a.sh (nested wrapper options, cwd-relative)" \
+    "$(bash_json "env -i sudo -S -u root cp y a.sh" "$REPO/scripts/hooks")" 1
+run_hook deny "27: env -u -S cp y .codex (no-trailing-slash directory target)" \
+    "$(bash_json "env -u -S cp y .codex" "$REPO")" 1
+run_hook deny "27: @.codex env -u -S cp y hooks.sh (cwd-relative, .codex entry)" \
+    "$(bash_json "env -u -S cp y hooks.sh" "$REPO/.codex")" 1
+run_hook deny "27: env -u -S mv y scripts/guardrails (no-trailing-slash directory target)" \
+    "$(bash_json "env -u -S mv y scripts/guardrails" "$REPO")" 1
+run_hook deny "27: env -u -S rm -rf scripts/lessons (no-trailing-slash directory target)" \
+    "$(bash_json "env -u -S rm -rf scripts/lessons" "$REPO")" 1
+run_hook deny "27: env -u --s cp y scripts/hooks (abbreviated long option)" \
+    "$(bash_json "env -u --s cp y scripts/hooks" "$REPO")" 1
+run_hook deny "27: env -u --split-string cp y scripts/hooks (full long option)" \
+    "$(bash_json "env -u --split-string cp y scripts/hooks" "$REPO")" 1
+run_hook deny "27: env --split-string='cp y scripts/hooks' (long option, = form)" \
+    "$(bash_json "env --split-string='cp y scripts/hooks'" "$REPO")" 1
+run_hook deny "27: env -S 'cp y scripts/hooks' (genuine split-string, quoted single token)" \
+    "$(bash_json "env -S 'cp y scripts/hooks'" "$REPO")" 1
+run_hook deny "27: env -S cp y scripts/hooks (genuine split-string, unquoted words)" \
+    "$(bash_json "env -S cp y scripts/hooks" "$REPO")" 1
+run_hook deny "27: @scripts/hooks env -S 'cp y a.sh' (genuine split-string, quoted, cwd-relative)" \
+    "$(bash_json "env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+run_hook deny "27: @scripts/hooks env -S cp y a.sh (genuine split-string, unquoted, cwd-relative)" \
+    "$(bash_json "env -S cp y a.sh" "$REPO/scripts/hooks")" 1
+run_hook deny "27: @scripts/hooks env -Sx cp y a.sh (glued -S value, cwd-relative)" \
+    "$(bash_json "env -Sx cp y a.sh" "$REPO/scripts/hooks")" 1
+run_hook deny "27: @scripts/hooks env -u -S cp ../../y a.sh (cwd-relative, parent-hop source)" \
+    "$(bash_json "env -u -S cp ../../y a.sh" "$REPO/scripts/hooks")" 1
+run_hook deny "27: @scripts/hooks env -S 'cp ../../y a.sh' (genuine split-string, quoted, cwd-relative, parent-hop source)" \
+    "$(bash_json "env -S 'cp ../../y a.sh'" "$REPO/scripts/hooks")" 1
+
+# controls: benign env/sudo shapes the verdict confirmed ALLOW on both main
+# and head must still allow after this fix.
+run_hook allow "27: env -S 'echo hi' (control: split-string value with no enforcement signal)" \
+    "$(bash_json "env -S 'echo hi'" "$REPO")" 1
+run_hook allow "27: env -u FOO cp y src/b.js (control: -u value, unrelated target)" \
+    "$(bash_json "env -u FOO cp y src/b.js" "$REPO")" 1
+run_hook allow "27: sudo -S apt update (control: sudo's own -S, unrelated command)" \
+    "$(bash_json "sudo -S apt update" "$REPO")" 1
+run_hook allow "27: sudo -u root cp y /etc/foo (control: -u value, unrelated absolute target)" \
+    "$(bash_json "sudo -u root cp y /etc/foo" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

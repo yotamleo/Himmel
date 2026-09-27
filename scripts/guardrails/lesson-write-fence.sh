@@ -1258,7 +1258,31 @@ _env_split_string_used() {
                 # empirically verified), and a glued token still carries the
                 # same executable split-string value.
                 -S*) return 0 ;;
-                --*) guard_is_long_abbrev "split-string" "$w" && return 0 ;;
+                --*)
+                    guard_is_long_abbrev "split-string" "$w" && return 0
+                    # judge J1298B C1: `--unset`/`--chdir`/`--argv0` are
+                    # env's OTHER value-taking long options - their value is
+                    # opaque data, skip it (mirrors `_clause_head_idx`'s
+                    # `GUARD_LOPT_HAS_EQ` handling) so a value that happens
+                    # to spell `-S...` is never mistaken for env's OWN flag.
+                    if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
+                        || guard_is_long_abbrev "argv0" "$w"; then
+                        [ "$GUARD_LOPT_HAS_EQ" = 1 ] || i=$((i+1))
+                    else
+                        return 1
+                    fi ;;
+                -a|-u|-C)
+                    # value is opaque data (a var name / dir / argv0
+                    # string) - skip it so a value that happens to spell
+                    # `-S...` is never mistaken for env's own `-S`.
+                    i=$((i+1)) ;;
+                -*) : ;;
+                *)
+                    # judge J1298B C1: the first bare (non-option) word ends
+                    # env's own option region - this is the resolved verb
+                    # (e.g. `sudo`), and any `-S` appearing AFTER it (like
+                    # sudo's own `-S`) is not env's split-string flag.
+                    return 1 ;;
             esac
         elif [ "$w" = env ]; then
             in_env=1
@@ -1470,9 +1494,17 @@ process_clause_for_write() {
         _clause_has_enforcement_signal "$clause_raw" && _deny_wrapper_enforcement_signal "$clause_raw"
     fi
 
+    # Judge J1298B C1 (Critical, NEW ALLOW vs main): this branch used to
+    # `return 0` unconditionally after its raw-text scan, which SKIPPED the
+    # per-operand classify_target path main runs below - the raw scan is not
+    # a superset of classify_target (it misses a directory target with no
+    # trailing slash, and any cwd-relative target), so it could ALLOW where
+    # main's operand walk would DENY. Falling through instead makes this
+    # branch add-only: the raw-text deny stays, and the normal head-verb/
+    # operand path below still runs afterward exactly as it does for any
+    # other clause.
     if _env_split_string_used "$head_idx" "${tok[@]}"; then
         _clause_has_enforcement_signal "$clause_raw" && _deny_env_split_string "$clause_raw"
-        return 0
     fi
 
     [ "$head_idx" -lt "$n" ] || return 0
