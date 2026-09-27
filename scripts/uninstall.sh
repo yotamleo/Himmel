@@ -3907,8 +3907,13 @@ if [ "$LEDGER_OK" -eq 1 ]; then
         # different fold units (e.g. distinct hooks nested at the same file
         # path) each get their own outcome row, so an outcome for one must
         # never mask a different, still-unrestored unit at the same path.
-        _prov_handled_keys="$(jq -r --arg iid "$_prov_session_iid" \
-          'select(.iid==$iid and (.op=="kept" or .op=="restored" or .op=="removed")) | ((.path // "") + "\u0000" + (.unit // ""))' \
+        # HIMMEL-3637 R4-codex1: the key is a jq-encoded [path,unit] JSON
+        # array, not a NUL-joined string -- bash's handling of an embedded
+        # NUL inside a variable is undocumented and version-dependent (this
+        # project must stay bash-3.2-safe), so a NUL separator is not a safe
+        # foundation for a substring-match key on every supported shell.
+        _prov_handled_keys="$(jq -c --arg iid "$_prov_session_iid" \
+          'select(.iid==$iid and (.op=="kept" or .op=="restored" or .op=="removed")) | [(.path // ""), (.unit // "")]' \
           "$_prov_scan_ledger")"
       fi
       _prov_handled_keys="
@@ -3930,7 +3935,7 @@ $_prov_handled_keys
           [ -n "$_pu_path" ] || continue
           printf '%s' "$_pu" | jq -e '.eff_pre.backup // empty' >/dev/null 2>&1 || continue
           _pu_unit="$(printf '%s' "$_pu" | jq -r '.unit // ""')"
-          _pu_key="${_pu_path}$(printf '\000')${_pu_unit}"
+          _pu_key="$(jq -cn --arg p "$_pu_path" --arg u "$_pu_unit" '[$p,$u]')"
           case "$_prov_handled_keys" in *"
 $_pu_key
 "*) continue ;; esac
