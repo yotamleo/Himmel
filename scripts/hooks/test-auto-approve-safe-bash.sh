@@ -857,6 +857,37 @@ assert "cmd-subst paren still PASS"    PASS "$(decide "$(j_bash 'cat "$(pwd)/f"'
 assert "plain cat README still ALLOW"  ALLOW "$(decide "$(j_bash 'cat README.md')")"
 assert "plain git log still ALLOW"     ALLOW "$(decide "$(j_bash 'git log --oneline -1')")"
 
+# --- HIMMEL-3750 (J1366A finding 1): zsh parameter-flag expansions reach code
+# execution or defeat quoting even INSIDE double quotes, so SCAN_MASK's
+# quoted-span blanking never sees them — must be caught on the RAW text.
+assert "param-flag (e) exec via char-code \$(" PASS "$(decide "$(j_bash 'echo "${(e)${:-${(#):-36}${(#):-40}touch PWN${(#):-41}}}"')")"
+assert "param-flag (e) quoted"         PASS "$(decide "$(j_bash 'cat "${(e)X}"')")"
+assert "param-flag (%) quoted"         PASS "$(decide "$(j_bash 'ls "${(%):-%x}"')")"
+assert "param-flag through git log --" PASS "$(decide "$(j_bash 'git log -- "${(e)X}"')")"
+# \$= / \${= (SH_WORD_SPLIT) forces field-splitting even inside double quotes,
+# so a quoted "\$=x" can still explode into a flag argv word.
+assert "dollar-eq splits through quotes"      PASS "$(decide "$(j_bash 'ls "$=x"')")"
+assert "dollar-brace-eq splits through quotes" PASS "$(decide "$(j_bash 'ls "${=x}"')")"
+# Checked and left alone: quoted \${~...} (GLOB_SUBST) does NOT glob under
+# zsh -f (VERIFIED) — quoting still protects it, so it stays ALLOW.
+assert "param-flag (~) quoted stays ALLOW"    ALLOW "$(decide "$(j_bash 'echo "${~x}"')")"
+# HIMMEL-3750 (J1366A finding 4) regression: a backslash-newline between \$
+# and ( hides \$( from the raw tripwire on main; head must still refuse it.
+assert "backslash-newline \$( regression" PASS "$(decide "$(j_bash "echo \$\\"$'\n''(touch PWN)')")"
+# Accepted false refusal (brief-documented): a SINGLE-QUOTED literal '\${('
+# is refused too, since the fix reads the RAW command text, not the mask.
+assert "single-quoted literal \${( (accepted false refusal)" PASS "$(decide "$(j_bash "grep '\${(' f")")"
+# Controls: common benign expansions must keep ALLOWing.
+assert "echo \${HOME} still ALLOW"     ALLOW "$(decide "$(j_bash 'echo "${HOME}"')")"
+assert "echo \$PWD still ALLOW"        ALLOW "$(decide "$(j_bash 'echo "$PWD"')")"
+
+# --- HIMMEL-3734 (J1300A finding 7): a brace-expanded root among the
+# find path operands (\`{/,.}\` -> \`/ .\`) must DENY as a root-walk.
+assert "find brace-expanded root DENY" DENY "$(decide "$(j_bash 'find {/,.} -name x')")"
+# Controls: brace alternatives with no bare '/' stay as before (opaque, PASS).
+assert "find brace non-root stays PASS" PASS "$(decide "$(j_bash 'find {a,b} -name x')")"
+assert "find brace maxdepth-value unaffected" DENY "$(decide "$(j_bash 'find / -maxdepth {1,2} -name x')")" # gnu-ok: fixture string fed to the hook under test, never executed as a shell command
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

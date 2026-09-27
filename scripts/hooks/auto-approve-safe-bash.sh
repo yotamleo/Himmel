@@ -542,6 +542,26 @@ path_textually_resolves_to_root() {
     [ "${#stack[@]}" -eq 0 ]
 }
 
+# HIMMEL-3734 (J1300A finding 7): a bare brace-list word (`{/,.}`) is
+# uncookable to shell_word_value (HIMMEL-3660 fails closed on the internal
+# comma) and so is normally treated as OPAQUE by the path-operand loop below
+# — but `find {/,.} -name x` expands to `find / . -name x`, a real root walk.
+# Scoped narrowly to stay obviously-correct: only a word that is ENTIRELY one
+# non-nested `{...}` span counts, split on TOP-LEVEL commas, and only a
+# literal `/`-only alternative is treated as root — this does not attempt to
+# cook the general brace-expansion case.
+brace_word_is_rootwalk() {
+    local w="$1" inner part
+    case "$w" in '{'*'}') ;; *) return 1 ;; esac
+    inner="${w#\{}"; inner="${inner%\}}"
+    case "$inner" in *'{'*|*'}'*) return 1 ;; esac  # nested — leave opaque
+    local IFS=','
+    for part in $inner; do
+        case "$part" in '/') return 0 ;; esac
+    done
+    return 1
+}
+
 segment_is_rootwalk_find() {
     resolve_seg_binary "$1"
     [ "$RB_STATUS" = bin ] || return 1
@@ -639,6 +659,7 @@ segment_is_rootwalk_find() {
         # path-operand collection — a literal root anchor later in the same
         # segment must still be found.
         if ! shell_word_value "$tok"; then
+            brace_word_is_rootwalk "$tok" && has_root=1
             continue
         fi
         cooked="$SW_VALUE"
@@ -1223,6 +1244,27 @@ esac
 case "$cmd" in
     *'$('*|*'`'*|*'<('*|*'>('*)        exit 0 ;;  # command / process substitution
     *'system('*|*'popen('*|*'exec('*)  exit 0 ;;  # interpreter shell-out
+esac
+
+# HIMMEL-3750 (J1366A finding 1): zsh parameter-flag expansions reach code
+# execution or defeat quoting even inside double quotes, so SCAN_MASK's
+# quoted-span blanking never sees them — this must check the RAW $cmd text,
+# not the mask. Refuse unconditionally, quoted or not:
+#   - `${(...)`  — the `(e)`/`(#)`/`(%)`/... parameter flags. `(e)` re-
+#     evaluates its value (arbitrary code), and nested `(#):-N` flags build
+#     `$(` from character codes, hiding it from the tripwire above even
+#     unquoted. VERIFIED (zsh -f): `echo "${(e)${:-${(#):-36}${(#):-40}touch
+#     P${(#):-41}}}"` runs `touch P`.
+#   - `$=` / `${=` — the SH_WORD_SPLIT flag forces field-splitting on the
+#     substituted value EVEN INSIDE DOUBLE QUOTES, so a quoted `"$=x"` can
+#     still explode into several argv words, one of which can be a flag
+#     (`ls "$=x"` with x="-l /etc/passwd" runs `ls -l /etc/passwd`).
+#     VERIFIED (zsh -f).
+# `${~...}` (the GLOB_SUBST flag) was checked too: quoted, it does NOT glob
+# (VERIFIED zsh -f) — quoting still protects it, so it is not a new bypass
+# and is left alone.
+case "$cmd" in
+    *'${('*|*'$='*|*'${='*)  exit 0 ;;
 esac
 
 # HIMMEL-3732 / HIMMEL-3733 (J1300A findings 6,7): an unquoted `(` in ANY word
