@@ -1509,7 +1509,7 @@ _himmel_3761_mention_only_ok() {
 # call on it, and no mismatch to fix, since both sides now share whatever
 # case the tool call's own cwd and command text actually used.
 _himmel_3761_worktree_settings_check_ok() {
-    local k=1 w lw has_check=0 settings_path='' script_path='' next_is_settings=0 wt_name=''
+    local k=1 w has_check=0 settings_path='' script_path='' next_is_settings=0 wt_name=''
     local real_root=$cwd
     [ -z "$nested_wt_primary" ] || real_root=$nested_wt_primary
     local wt_name_re='(^|/)\.claude/worktrees/([^/]+)/\.claude/settings\.json$'
@@ -1526,13 +1526,17 @@ _himmel_3761_worktree_settings_check_ok() {
     esac
     while [ "$k" -lt "$ST_N" ]; do
         [ -z "${ST_RO[k]}" ] || return 1
-        lw=${ST_LW[k]}
         w=${ST_W[k]}
         if [ "$next_is_settings" = 1 ]; then
             settings_path=$w
             next_is_settings=0
         fi
-        case "$lw" in
+        # Flags matched in ORIGINAL case (codex round-9 Critical): the real
+        # script does an exact `arg === '--check'` comparison (case-sensitive),
+        # so a lowercased match here let `--CHECK` fool the hook into believing
+        # this was the read-only check path while the actual script fell
+        # through to writeFileSync — a real write the hook thought was a no-op.
+        case "$w" in
             --check) has_check=1 ;;
             --settings) next_is_settings=1 ;;
         esac

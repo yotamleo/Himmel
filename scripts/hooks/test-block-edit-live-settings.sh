@@ -1589,6 +1589,15 @@ printf 'console.log(1)\n' > "$CASEROOT/scripts/hooks/wire-hook-bash.mjs"
 assert_rc "235 node <script under .CLAUDE/worktrees> --check --settings <settings under .CLAUDE/worktrees> denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $CASEROOT/scripts/hooks/wire-hook-bash.mjs --check --settings $CASEROOT/.CLAUDE/settings.json")"
 
+# 236: node wire-hook-bash.mjs --CHECK (wrong case) --settings <worktree's own
+# copy> -> DENY. The real script does an exact `arg === '--check'` comparison
+# (case-sensitive), so `--CHECK` never sets its own check flag and it falls
+# through to writeFileSync instead of the "wrote nothing" branch — a real
+# write the hook must not mistake for the read-only check path (codex round-9
+# Critical). Proves the flag itself is matched in ORIGINAL case, not ST_LW.
+assert_rc "236 node wire-hook-bash.mjs --CHECK (wrong case) --settings (worktree) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --CHECK --settings $FEATX/.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
