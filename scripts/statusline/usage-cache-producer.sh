@@ -30,6 +30,14 @@
 #   USAGE_OAUTH_TTL (3540s) — the OAuth query is skipped when the cache's
 #                             extra_usage (oauth_checked_at) is fresher.
 #
+# HIMMEL-1712 item 4 — force-refresh lever: USAGE_FORCE_REFRESH=1 bypasses
+# BOTH throttles above for this one invocation, re-deriving now and stamping
+# a fresh derived_at. Idempotent (a second forced run just re-derives again)
+# and safe to run concurrently with a live statusline — it is the SAME
+# single-writer path (same account-pinning gate, same atomic write), just
+# with the "nothing changed, skip" shortcuts disabled for one call:
+#   USAGE_FORCE_REFRESH=1 bash scripts/statusline/usage-cache-producer.sh <<< '{}'
+#
 # Parsing idioms (token resolution, curl headers, atomic tmp+mv, stat mtime,
 # object-shape guard) are lifted from scripts/statusline/bin/statusline.sh
 # (lines 288-427). Statusline must NEVER break: any failure keeps the previous
@@ -194,7 +202,8 @@ stdin_seven_reset=$(printf '%s' "$input" | jq -r '.rate_limits.seven_day.resets_
 # mirrored, not dropped to the OAuth branch).
 if [ -n "$stdin_five" ] || [ -n "$stdin_seven" ]; then
   # Throttle: a fresh-enough consumer cache short-circuits the rewrite.
-  if [ -f "$CACHE_FILE" ]; then
+  # Bypassed by USAGE_FORCE_REFRESH=1 (item 4).
+  if [ -f "$CACHE_FILE" ] && [ "${USAGE_FORCE_REFRESH:-}" != "1" ]; then
     age=$(( now_epoch - $(file_mtime "$CACHE_FILE") ))
     if [ "$age" -ge 0 ] && [ "$age" -lt "$CACHE_TTL" ]; then
       exit 0
@@ -256,7 +265,8 @@ fi
 # ── Branch B: no stdin rate_limits — query the OAuth seam for extra_usage ────
 # Throttle: skip the network entirely while the cached extra_usage is fresh.
 oauth_at=$(printf '%s' "$prev" | jq -r '.oauth_checked_at // empty' 2>/dev/null)
-if printf '%s' "$oauth_at" | grep -Eq '^[0-9]+$'; then
+# Bypassed by USAGE_FORCE_REFRESH=1 (item 4).
+if [ "${USAGE_FORCE_REFRESH:-}" != "1" ] && printf '%s' "$oauth_at" | grep -Eq '^[0-9]+$'; then
   oage=$(( now_epoch - oauth_at ))
   if [ "$oage" -ge 0 ] && [ "$oage" -lt "$OAUTH_TTL" ]; then
     exit 0

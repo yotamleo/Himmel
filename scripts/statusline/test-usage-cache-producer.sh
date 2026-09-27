@@ -392,6 +392,31 @@ run_test "(18) HIMMEL-1712 CR (panel round 9, codex-2): OAuth fetch is skipped, 
   [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "10" ] || exit 1;
 '
 
+run_test "(19) HIMMEL-1712 item 4: USAGE_FORCE_REFRESH=1 bypasses the rates-path TTL and stamps a fresh derived_at" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-19.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD;
+  seed="{\"five_hour\":{\"utilization\":1,\"resets_at\":\"X\"},\"seven_day\":{\"utilization\":1,\"resets_at\":\"Y\"},\"extra_usage\":{},\"derived_at\":1}";
+  printf "%s" "$seed" > "$CLAUDE_USAGE_CACHE";
+  export USAGE_FORCE_REFRESH=1;
+  printf "%s" "{\"rate_limits\":{\"five_hour\":{\"utilization\":63.4,\"resets_at\":\"Z\"}}}" | bash "$PRODUCER";
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "63.4" ] || exit 1;
+  [ "$(jq -r ".derived_at" "$CLAUDE_USAGE_CACHE")" != "1" ] || exit 1;
+'
+
+run_test "(20) HIMMEL-1712 item 4: USAGE_FORCE_REFRESH=1 bypasses the OAuth TTL (stub invoked despite fresh oauth_checked_at)" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-20.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  now=$(date +%s);
+  printf "%s" "{\"five_hour\":{\"utilization\":40,\"resets_at\":\"R5\"},\"seven_day\":{\"utilization\":8,\"resets_at\":\"R7\"},\"extra_usage\":{\"is_enabled\":true},\"oauth_checked_at\":$now}" > "$CLAUDE_USAGE_CACHE";
+  stub="$W/stub.sh"; export OAUTH_MARKER="$W/marker";
+  printf "%s\n" "#!/usr/bin/env bash" ": > \"\$OAUTH_MARKER\"" "echo {}" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
+  export USAGE_FORCE_REFRESH=1;
+  printf "%s" "{\"model\":{}}" | bash "$PRODUCER";
+  [ -e "$OAUTH_MARKER" ] || exit 1;
+'
+
 # --- summary ------------------------------------------------------------------
 if [ "$_failures" -eq 0 ]; then
   echo "OK: all cases passed"
