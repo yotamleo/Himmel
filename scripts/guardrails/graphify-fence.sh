@@ -2308,7 +2308,7 @@ _gf_deny_on_hidden_clause_separator() {
     # revisited by a nested open at depth >= 1. found_bad only ever gets set
     # from inside a chdir-argument span, and once set it stays set.
     local cmd="$1" i=0 i0 len c stack='' esc=0
-    local found_bad=0 in_span=0 span_chdir=0 span_hit=0 lookback lb_i lb_start
+    local found_bad=0 in_span=0 span_chdir=0 span_hit=0 lookback lb_i lb_start lb_trim
     local -a chars=()
     len=${#cmd}
     while IFS= read -r -N 1 c; do
@@ -2379,8 +2379,17 @@ _gf_deny_on_hidden_clause_separator() {
                 lookback="${lookback}${chars[$lb_i]}"
                 lb_i=$((lb_i+1))
             done
-            case "$lookback" in
-                *-C\ |*-D\ |*--chdir\ |*--chdir=) span_chdir=1 ;;
+            # codex-1 (PR #1323 round 3): a real chdir flag may be followed
+            # by more than one space before the substitution opens (bash
+            # treats "-C  $(...)" identically to "-C $(...)"), so trim
+            # trailing spaces before matching the flag suffix rather than
+            # requiring exactly one.
+            lb_trim="$lookback"
+            while [ "${lb_trim: -1}" = " " ]; do
+                lb_trim="${lb_trim% }"
+            done
+            case "$lb_trim" in
+                *-C|*-D|*--chdir|*--chdir=) span_chdir=1 ;;
                 *) span_chdir=0 ;;
             esac
         elif [ "$in_span" -eq 1 ] && [ -z "$stack" ]; then

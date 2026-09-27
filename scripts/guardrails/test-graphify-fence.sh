@@ -2623,10 +2623,13 @@ start_ns=$(date +%s%N)
 out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X19_CMD" 2>&1 ); rc=$?
 end_ns=$(date +%s%N)
 elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
-if [ "$elapsed_ms" -lt 5000 ]; then
-    pass "64KB routed command decides in ${elapsed_ms}ms, well under the 15s hook timeout (X19)"
+# codex-2 (PR #1323 round 3): a fast result alone is not evidence the scan
+# ran correctly - a crash or an erroneous allow both return quickly too.
+# Assert the expected deny (rc=2) alongside the timing.
+if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ]; then
+    pass "64KB routed command denies in ${elapsed_ms}ms, well under the 15s hook timeout (X19)"
 else
-    fail "64KB routed command took ${elapsed_ms}ms (>=5000ms), risking hook-timeout fail-open (X19) rc=$rc"
+    fail "64KB routed command rc=$rc in ${elapsed_ms}ms (want rc=2, <5000ms) (X19)"
 fi
 
 # (X20/X21) J1323A F2: the hidden-separator deny must be scoped to a
@@ -2640,6 +2643,15 @@ run_fence allow no "$HIMMEL" "git commit heredoc body mentioning graphify as dat
 X21_CMD=$'gh pr create --title t --body "$(cat <<\'EOF\'\ngraphify query forms still allowed\nEOF\n)"'
 run_fence allow no "$HIMMEL" "gh pr create heredoc body mentioning graphify as data -> allow (X21)" \
     "$X21_CMD"
+
+# (X22) codex-1 (PR #1323 round 3 critic panel): the chdir-lookback match in
+# F2's fix required an EXACT one-space suffix ("-C ") right before the
+# substitution's opening delimiter. Extra whitespace between the flag and
+# the substitution (a form real bash accepts identically) fails that exact
+# match, so span_chdir resolves to 0 and the hidden separator inside goes
+# undetected - the same class of bypass this PR exists to close.
+run_fence deny no "$HIMMEL" "env -C (two spaces) \$(...; separator inside) -> deny (X22)" \
+    "env -C  \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
