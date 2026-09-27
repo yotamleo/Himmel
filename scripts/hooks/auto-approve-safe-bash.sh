@@ -1179,6 +1179,68 @@ guard_is_long_abbrev() {
         *) return 1 ;;
     esac
 }
+# HIMMEL-3750 judge J1370A (NO-GO, round 3->4): the naive `${cmd//$'\\\n'/}`
+# fold treated every backslash-newline pair as a continuation, even when the
+# backslash itself was already escaped by a PRECEDING backslash (`\\<NL>`: the
+# shell consumes the first two backslashes as one literal `\`, so the newline
+# that follows is a real, unescaped command separator, not a continuation).
+# That let `echo \\<NL>touch PWN` fold into a single harmless-looking `echo`
+# line while the shell actually ran `touch PWN` as a second command — a
+# non-approved command turned into an auto-APPROVE. Only an ODD run of
+# backslashes immediately before the newline is a genuine continuation (the
+# last backslash is unescaped); an even run pairs off completely and the
+# newline stays a real separator, so leave it unfolded and let the existing
+# unquoted-separator/newline handling see it. Single quotes give backslash no
+# special meaning at all, so no fold happens inside them either.
+fold_backslash_newline() {
+    local s="$1" out="" i=0 n c j run k in_sq=0
+    n=${#s}
+    while [ "$i" -lt "$n" ]; do
+        c="${s:$i:1}"
+        if [ "$in_sq" = 1 ]; then
+            out="$out$c"
+            [ "$c" = "'" ] && in_sq=0
+            i=$((i + 1))
+            continue
+        fi
+        if [ "$c" = "'" ]; then
+            in_sq=1
+            out="$out$c"
+            i=$((i + 1))
+            continue
+        fi
+        if [ "$c" = '\' ]; then
+            run=0
+            j=$i
+            while [ "${s:$j:1}" = '\' ]; do
+                run=$((run + 1))
+                j=$((j + 1))
+            done
+            if [ "${s:$j:1}" = $'\n' ] && [ $((run % 2)) -eq 1 ]; then
+                # An odd run of N backslashes folds in real shell parsing as
+                # (N-1)/2 escaped-pair literal backslashes, then the final
+                # lone backslash+newline is the continuation that disappears.
+                k=0
+                while [ "$k" -lt $(((run - 1) / 2)) ]; do
+                    out="$out\\"
+                    k=$((k + 1))
+                done
+                i=$((j + 1))
+                continue
+            fi
+            k=0
+            while [ "$k" -lt "$run" ]; do
+                out="$out\\"
+                k=$((k + 1))
+            done
+            i=$j
+            continue
+        fi
+        out="$out$c"
+        i=$((i + 1))
+    done
+    printf '%s' "$out"
+}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
@@ -1208,7 +1270,11 @@ cmd="${cmd//$'\r\n'/$'\n'}"
 # must see the same joined text the shell will actually execute, not the
 # literal backslash-newline bytes (which never match `*'$='*` etc). Fold it
 # here, before scan_cmd, so both the structural scan and the tripwires agree.
-cmd="${cmd//$'\\\n'/}"
+# Judge J1370A (round 4): a NAIVE fold of every `\`+newline pair is wrong when
+# the backslash is itself escaped by a preceding one — see
+# fold_backslash_newline()'s header comment above for why only an odd
+# backslash run is a genuine continuation.
+cmd="$(fold_backslash_newline "$cmd")"
 [ "$tool" = "Bash" ] || exit 0   # PowerShell keeps its own native rules
 [ -n "$cmd" ] || exit 0
 

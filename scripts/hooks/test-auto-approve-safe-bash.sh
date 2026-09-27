@@ -884,6 +884,21 @@ assert "single-quoted literal \${( (accepted false refusal)" PASS "$(decide "$(j
 # the pre-fix code; the fold added above joins it into "\$=x" before the
 # tripwires run, so it now falls through like any other \$= case.
 assert "backslash-newline \$= regression" PASS "$(decide "$(j_bash "ls \"\$\\"$'\n''=x"')")"
+# Judge J1370A (round 4, NO-GO): the round-3 fold above folded EVERY
+# backslash-newline pair unconditionally, even when the backslash was itself
+# escaped by a preceding backslash — an even run of backslashes before the
+# newline pairs off completely in real shell parsing, leaving the newline a
+# genuine, unescaped command separator. Folding it anyway merged two real
+# commands into one harmless-looking approved line while the shell still ran
+# the second command. These four must stay PASS (fall through, not approved),
+# matching main's (safe) behavior exactly.
+assert "escaped-backslash-newline stays PASS (J1370A finding 1a)" PASS "$(decide "$(j_bash "echo \\\\"$'\n'"touch PWN")")"
+assert "escaped-backslash-newline w/ prior word stays PASS (finding 1b)" PASS "$(decide "$(j_bash "echo a\\\\"$'\n'"touch PWN")")"
+assert "escaped-backslash-newline via cat/rm stays PASS (finding 1c)" PASS "$(decide "$(j_bash "cat f \\\\"$'\n'"rm -rf x")")"
+assert "double escaped-backslash-newline stays PASS (finding 1d)" PASS "$(decide "$(j_bash "echo \\\\"$'\n'"\\\\"$'\n'"touch PWN")")"
+# Control: a genuine (odd, single) backslash-newline continuation of an
+# otherwise benign command must still fold and stay ALLOW.
+assert "genuine single-backslash continuation still ALLOW" ALLOW "$(decide "$(j_bash "echo a \\"$'\n'"b")")"
 # Controls: common benign expansions must keep ALLOWing.
 assert "echo \${HOME} still ALLOW"     ALLOW "$(decide "$(j_bash 'echo "${HOME}"')")"
 assert "echo \$PWD still ALLOW"        ALLOW "$(decide "$(j_bash 'echo "$PWD"')")"
