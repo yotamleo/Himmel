@@ -34,10 +34,22 @@ export BANK_STATE_FILE="$W/state"
 export BANK_STUB_ROW_FILE="$W/codex-row"
 export REPO="$W/repo"
 
+# HIMMEL-1712: every fixture below stamps the matching current-session account
+# hash so the new usage_cache_account_mismatch() check in bank-monitor.sh
+# stays out of the way of the pre-existing rate/state coverage below — this
+# suite is about sampling math, not identity. A dedicated account-mismatch
+# case is added separately, at the end.
+export HOME="$W/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-bank-monitor-test"}}' > "$HOME/.claude.json"
+# shellcheck source=usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$HERE/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
+
 sample_revision=0
 sample() {
     sample_revision=$((sample_revision + 1))
-    printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":%s}}\n' "$1" "$2" > "$BANK_CACHE_FILE"
+    printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":%s},"account":"%s"}\n' "$1" "$2" "$ACCT" > "$BANK_CACHE_FILE"
     touch -t "202001010000.$(printf '%02d' "$sample_revision")" "$BANK_CACHE_FILE"
 }
 run_at() {
@@ -136,7 +148,7 @@ check 'weekly reset retains five-hour rate and projection' \
 # oauth_checked_at may stay fixed while the stdin producer refreshes rates.
 export BANK_STATE_FILE="$W/oauth-state"
 sample 10 20
-printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":20},"oauth_checked_at":1000}\n' > "$BANK_CACHE_FILE"
+printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":20},"oauth_checked_at":1000,"account":"%s"}\n' "$ACCT" > "$BANK_CACHE_FILE"
 touch -t 202001010001.00 "$BANK_CACHE_FILE"
 run_at 1000 12:00 >/dev/null
 out="$(run_at 1300 12:05)"
@@ -144,11 +156,19 @@ case "$out" in *'state=stale'*) pass 'unchanged OAuth cache is stale' ;; *) fail
 touch -t 202001010002.00 "$BANK_CACHE_FILE"
 out="$(run_at 1600 12:10)"
 case "$out" in *'state=headroom'*) pass 'mtime refresh with unchanged OAuth stamp resumes sampling' ;; *) fail "mtime refresh with unchanged OAuth stamp resumes sampling (out='$out')" ;; esac
-printf '{"five_hour":{"utilization":20},"seven_day":{"utilization":25},"oauth_checked_at":1900}\n' > "$BANK_CACHE_FILE"
+printf '{"five_hour":{"utilization":20},"seven_day":{"utilization":25},"oauth_checked_at":1900,"account":"%s"}\n' "$ACCT" > "$BANK_CACHE_FILE"
 touch -t 202001010002.00 "$BANK_CACHE_FILE"
 out="$(run_at 1900 12:15)"
 check 'OAuth refresh within the same mtime second resumes sampling' \
   'BANK 12:15 rate five_hour=+40.0/h seven_day=+20.0/h ttc=2.0h state=headroom five_hour_ttc=2.0h seven_day_ttc=3.8h codex=5h10/wk20' "$out"
+
+export BANK_STATE_FILE="$W/mismatch-state"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-bank-monitor-DIFFERENT"}}' > "$HOME/.claude.json"
+sample 60 20
+out="$(run_at 1000 12:00)"; rc=$?
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-bank-monitor-test"}}' > "$HOME/.claude.json"
+check 'HIMMEL-1712: an account-mismatched cache is silent (same as a missing cache), never fatal' '' "$out"
+check 'HIMMEL-1712: an account-mismatched cache exits 0' 0 "$rc"
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-bank-monitor.sh'

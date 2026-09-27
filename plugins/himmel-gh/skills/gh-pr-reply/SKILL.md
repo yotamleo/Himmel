@@ -1,6 +1,6 @@
 ---
 name: gh-pr-reply
-description: Use when user asks to reply to, respond to, or answer a specific PR review thread referenced by a short prefix or thread ID ("reply to thread a3f2c1", "respond to that review comment with X", "reply on #42 thread a3f2c1 saying fixed"). MUST reference a 6-char-or-longer hex prefix or thread node id. Do NOT trigger on "comment on PR" (general PR comment → /gh-pr-comment, no thread). Do NOT trigger on Jira comment requests.
+description: Reply to a specific PR review thread by 6-char prefix ("reply to thread a3f2c1"). Not general PR comments/Jira.
 ---
 
 # gh-pr-reply

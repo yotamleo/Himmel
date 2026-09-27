@@ -63,6 +63,11 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/arm-resume-cron.XXXXXX") || {
     exit 1
 }
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3679: every case in this suite stubs crontab/at via mac_env, but the
+# suite-level guard is defense-in-depth against a case that doesn't. Snapshot
+# now, before any case runs, and diff again right before the summary.
+CRONTAB_SNAPSHOT_BEFORE=$(crontab -l 2>/dev/null || true)
+ATQ_SNAPSHOT_BEFORE=$(atq 2>/dev/null || true)
 # HIMMEL-3103: every non-dry-run arm reserves a FLEET_CAP slot; redirect it off
 # the production dir the live fleet counts, and fail the suite if it could leak.
 . "$(dirname "$ARM")/../lib/fleet-slots-shield.sh"
@@ -93,6 +98,17 @@ export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
 # ${ARM_RUNNER_DIR:-$HOME/.claude/handover/arm-runners} -- point it at a
 # throwaway dir so this suite never writes into the operator's real $HOME.
 export ARM_RUNNER_DIR="$TMP/arm-runners"
+
+# HIMMEL-1712: hermetic identity so every raw usage-cache fixture below can
+# stamp a matching account hash — resume-slot.sh now refuses (rc=2) a cache
+# whose .account doesn't match the current session, and CLAUDE_ACCOUNT_CONFIG
+# overrides current_account_hash's HOME lookup regardless of which g_env/
+# mac_env HOME override a given section below applies.
+export CLAUDE_ACCOUNT_CONFIG="$TMP/claude-account.json"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-arm-resume-cron-test"}}' > "$CLAUDE_ACCOUNT_CONFIG"
+# shellcheck source=../lib/usage-cache-identity.sh
+. "$(dirname "$ARM")/../lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
 
 # ---------------------------------------------------------------------------
 # Helpers — same idiom as test-arm-resume-context.sh
@@ -711,9 +727,10 @@ assert_not_contains "d: no sed diagnostic on stderr" "extra characters at the en
 G_HOME="$TMP/g-home"; mkdir -p "$G_HOME/.claude"
 g_env() { mac_env HOME="$G_HOME" CLAUDE_CONFIG_DIR="$G_HOME/.claude" "$@"; }
 SLOT_FREE_3121="$TMP/usage-free-3121.json"
-printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":5.0,"resets_at":"%s"}}' \
+printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":5.0,"resets_at":"%s"},"account":"%s"}' \
     "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')" \
     "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')" \
+    "$ACCT" \
     > "$SLOT_FREE_3121"
 
 : > "$CRON_STORE"
@@ -772,6 +789,23 @@ assert_rc "g5: a real explicit-time arm succeeds through the crontab stub" 0 "$r
 assert_contains "g5: it armed" "RESUME ARMED" "$out"
 assert_not_contains "g5: the imperative /exit order is gone" "PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW." "$out"
 assert_contains "g5: the self-resume NOTE is present" "NOTE (self-resume only):" "$out"
+
+# HIMMEL-3679: the real crontab/at queue must be byte-identical to what this
+# run started with -- any case that reached the real scheduler despite its
+# stub is a leak into the operator's own crontab/at, not a test failure to
+# shrug off.
+CRONTAB_SNAPSHOT_AFTER=$(crontab -l 2>/dev/null || true)
+if [ "$CRONTAB_SNAPSHOT_AFTER" != "$CRONTAB_SNAPSHOT_BEFORE" ]; then
+    echo "FAIL the real crontab changed during this run -- a case leaked into the operator's live crontab:"
+    diff <(printf '%s\n' "$CRONTAB_SNAPSHOT_BEFORE") <(printf '%s\n' "$CRONTAB_SNAPSHOT_AFTER") || true
+    FAILED=$((FAILED + 1))
+fi
+ATQ_SNAPSHOT_AFTER=$(atq 2>/dev/null || true)
+if [ "$ATQ_SNAPSHOT_AFTER" != "$ATQ_SNAPSHOT_BEFORE" ]; then
+    echo "FAIL the real at queue changed during this run -- a case leaked into the operator's live at queue:"
+    diff <(printf '%s\n' "$ATQ_SNAPSHOT_BEFORE") <(printf '%s\n' "$ATQ_SNAPSHOT_AFTER") || true
+    FAILED=$((FAILED + 1))
+fi
 
 if [ "$FAILED" -gt 0 ]; then
     echo "---"

@@ -21,7 +21,12 @@
 # CONSOLE_ARM_FOREGROUND (test seam: run the arm in the foreground instead of
 # detaching it).
 # Flag seams: --name (both commands; on next it selects which console
-# succession to continue) --arm --dry-run --model --bucket --prefix --deadline-min --doc
+# succession to continue) --arm --dry-run --model --bucket --prefix --project
+# --deadline-min --doc
+# --project (both commands; plugin /console from any repo -- points at a repo
+# that is NOT this himmel checkout, e.g. run from ~/Websites: bucket/prefix
+# derive from it instead of himmel's own repo basename/JIRA_PROJECT_KEY, and
+# an --arm session opens there, not in himmel)
 # --date (next only; overrides the day used for the SUCCESSOR's own name --
 # HIMMEL-2984 -- letting a 23:5x console pre-mint tomorrow's A without
 # waiting for midnight; passing --date always starts that day's succession at A,
@@ -74,10 +79,11 @@ ALPHABET="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 usage() {
     cat <<'USAGE'
 usage: console.sh new  [--name <slug>] [--arm] [--dry-run] [--model <m>]
-                       [--bucket <b>] [--prefix <P>] [--deadline-min <n>]
+                       [--bucket <b>] [--prefix <P>] [--project <dir>]
+                       [--deadline-min <n>]
        console.sh next [--doc <path>] [--date <YYYY-MM-DD>] [--name <slug>]
                        [--arm] [--dry-run] [--model <m>] [--bucket <b>]
-                       [--prefix <P>] [--deadline-min <n>]
+                       [--prefix <P>] [--project <dir>] [--deadline-min <n>]
        console.sh -h|--help
 
 --name on next selects which console succession to continue; defaults to the name
@@ -88,6 +94,13 @@ starts that day's succession at letter A; without --date the successor
 continues the predecessor's own bijective letter sequence (rolling past Z
 into AA, AB, ... as needed) regardless of whether the calendar day has
 rolled over since.
+--project points console.sh at a repo that is NOT this himmel checkout
+(plugin /console from any repo); bucket/prefix derive from it instead of
+himmel's own repo basename/JIRA_PROJECT_KEY. The console session itself
+always stays in this himmel checkout -- --project is recorded as data in
+the console doc, and a leg for the project is dispatched into it explicitly
+with LEG_REPO=<path> (codex-4, pr-check round 2, HIMMEL-3623).
+--bucket/--prefix still override it when given.
 USAGE
 }
 
@@ -101,9 +114,12 @@ slugify() {
 
 # resolve_repo -- the primary checkout root (parent of the shared git-common
 # dir), which resolves correctly from a plain checkout OR a linked worktree.
+# Anchored on THIS script's own location ($HERE), never the cwd: the plugin
+# /console runs it with the cwd in a FOREIGN repo, and the template, kit and
+# queue-lock.sh below must be himmel's, not that repo's (HIMMEL-3623 J1271O C1).
 resolve_repo() {
     local common
-    if common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    if common="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
         (cd "$(dirname "$common")" && pwd)
         return 0
     fi
@@ -220,6 +236,15 @@ do_arm() {
         leg_env_names+=("$leg_env_name")
     done
     unset "${leg_env_names[@]}"
+    # plugin /console from any repo (HIMMEL-3623 verdict J1268O change 2): a
+    # foreign --project selects the bucket/prefix and is recorded in the
+    # doc as data (see project_doc_value below) -- the console session
+    # itself ALWAYS opens in the himmel checkout, never HEADED_ARM_REPO'd
+    # into the project. Himmel's own project-scoped hooks (the GO-file merge
+    # gate, block-leg-askuserquestion) and the console-kit's relative paths
+    # only load there. Legs for the project are dispatched into it
+    # explicitly with LEG_REPO=<project> (headed-arm-leg.sh), never by the
+    # console inheriting a repo override.
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
         bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
@@ -246,6 +271,7 @@ DRY_RUN=0
 MODEL=""
 BUCKET=""
 PREFIX=""
+PROJECT_ARG=""
 DEADLINE_MIN=480
 DOC_ARG=""
 DATE_ARG=""
@@ -280,6 +306,8 @@ while [ "$#" -gt 0 ]; do
         --bucket=*) BUCKET="${1#--bucket=}"; shift ;;
         --prefix) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; PREFIX="$2"; shift 2 ;;
         --prefix=*) PREFIX="${1#--prefix=}"; shift ;;
+        --project) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; PROJECT_ARG="$2"; shift 2 ;;
+        --project=*) PROJECT_ARG="${1#--project=}"; shift ;;
         --deadline-min) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; DEADLINE_MIN="$2"; shift 2 ;;
         --deadline-min=*) DEADLINE_MIN="${1#--deadline-min=}"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -291,7 +319,10 @@ case "$DEADLINE_MIN" in
     ''|*[!0-9]*) err "--deadline-min must be a positive integer, got '$DEADLINE_MIN'"; exit 1 ;;
 esac
 
-# --- resolve root / slug / bucket / repo / prefix / state dir -------------
+# --- resolve root / slug / repo (moved ahead of the project-inheritance
+# block below, HIMMEL-3631): the cross-bucket auto-discovery block that
+# follows needs root/slug to search with, and nothing between here and the
+# old position depended on the previous ordering.
 if ! root="$(handover_root)"; then
     err "set HANDOVER_DIR or run /handover-setup."
     exit 2
@@ -301,16 +332,213 @@ if ! slug="$(user_slug)"; then
     exit 2
 fi
 repo="$(resolve_repo)"
-# bucket: --bucket, else $CONSOLE_BUCKET, else derived from the repo
-# basename — every branch already goes through `slugify` uniformly, so no
-# ONE source can bypass sanitization the others get (the class codex-3
-# round 5 flagged for --prefix). The only gap slugify itself doesn't close
-# is a source that slugifies to nothing (e.g. CONSOLE_BUCKET='###') —
-# refused once, after precedence settles, same principle as prefix below.
+
+# HIMMEL-3631: a bare `next` with nothing pinning down where to search (no
+# --doc, no $CONSOLE_DOC, no --bucket/$CONSOLE_BUCKET/--prefix/--project)
+# cannot resolve state_dir before searching for a predecessor -- state_dir
+# derives from bucket, which derives from the project this block is trying
+# to discover in the first place. Widen the search across every bucket this
+# operator has ever used, rank candidates by the same date+letter key
+# resolve_predecessor's own cross-date branch uses below (never a raw name
+# sort -- AA sorts before B lexically despite being the later letter), and
+# hand the winner to DOC_ARG so the EXISTING --doc-given machinery (the
+# project-inheritance block right after this one, the --name-from-doc
+# inference further down, resolve_predecessor itself) does the rest
+# unmodified -- including refusing a poisoned recorded project exactly as
+# --project would (J1271R). Any of --doc/$CONSOLE_DOC/--bucket/
+# $CONSOLE_BUCKET/--prefix/--project pins the search on its own and skips
+# this block entirely, so explicit flags always still win.
+if [ "$CMD" = next ] && [ -z "$PROJECT_ARG" ] && [ -z "$DOC_ARG" ] && [ -z "${CONSOLE_DOC:-}" ] && [ -z "$BUCKET" ] && [ -z "${CONSOLE_BUCKET:-}" ] && [ -z "$PREFIX" ]; then
+    _auto_name="$(slugify "$NAME")"
+    if [ -n "$_auto_name" ]; then
+        _auto_newest="" _auto_newest_key=""
+        for _auto_cand in "$root/$slug/"*/*"-nextleg-"*"-${_auto_name}.md"; do
+            [ -f "$_auto_cand" ] || continue
+            _auto_base="$(basename "$_auto_cand")"
+            _auto_stem="${_auto_base%.md}"
+            _auto_prefix_part="${_auto_stem%-"$_auto_name"}"
+            [ "$_auto_prefix_part" = "$_auto_stem" ] && continue
+            if [[ "$_auto_prefix_part" =~ ^[A-Z0-9]+-nextleg-([0-9]{4}-[0-9]{2}-[0-9]{2})([A-Z]{1,2})$ ]]; then
+                _auto_cdate="${BASH_REMATCH[1]}"
+                _auto_cletter="${BASH_REMATCH[2]}"
+            else
+                continue
+            fi
+            _auto_key="${_auto_cdate}-$(printf '%03d' "$(letter_value "$_auto_cletter")")"
+            if [ -z "$_auto_newest_key" ] || [[ "$_auto_key" > "$_auto_newest_key" ]]; then
+                _auto_newest_key="$_auto_key"
+                _auto_newest="$_auto_cand"
+            fi
+        done
+        [ -n "$_auto_newest" ] && DOC_ARG="$_auto_newest"
+        unset _auto_cand _auto_base _auto_stem _auto_prefix_part _auto_cdate _auto_cletter _auto_key _auto_newest _auto_newest_key
+    fi
+    unset _auto_name
+fi
+
+# codex-1 (pr-check round 1, HIMMEL-3623): a `next` with no explicit
+# --project must not silently record the successor as running "in the
+# himmel checkout itself" for a chain that is FOR a foreign project -- the
+# console session always lives in $REPO by design, so the plugin /console
+# wrapper never derives --project from cwd for `next` (only for `new`), and
+# without one this defaults PROJECT_ARG from the predecessor doc's own
+# recorded project line, feeding the SAME bucket/prefix/registry resolution
+# below as an explicit --project would. Possible either when the predecessor
+# doc is known up front (--doc / $CONSOLE_DOC) or once the auto-discovery
+# block above has populated DOC_ARG; an explicit --project always still wins.
+if [ "$CMD" = next ] && [ -z "$PROJECT_ARG" ]; then
+    _predecessor_doc_early="${DOC_ARG:-${CONSOLE_DOC:-}}"
+    if [ -n "$_predecessor_doc_early" ] && [ -f "$_predecessor_doc_early" ]; then
+        # shellcheck disable=SC2016  # single-quoted sed pattern; no expansion wanted
+        _predecessor_project_early="$(sed -n 's/.*The project this console is FOR is \*\*`\([^`]*\)`\*\*.*/\1/p' "$_predecessor_doc_early" | head -n1)"
+        case "$_predecessor_project_early" in
+            ''|none*) _predecessor_project_early="" ;;
+        esac
+        # A recorded project that is not an absolute, existing directory is
+        # refused exactly as --project would refuse it (HIMMEL-3623 J1271O
+        # I2): dropping it would silently turn a foreign chain into a himmel
+        # one. A relative value is refused too -- it would resolve against
+        # whatever cwd this run happens to have.
+        if [ -n "$_predecessor_project_early" ]; then
+            case "$_predecessor_project_early" in
+                /*) [ -d "$_predecessor_project_early" ] || _predecessor_project_bad=1 ;;
+                *) _predecessor_project_bad=1 ;;
+            esac
+            if [ -n "${_predecessor_project_bad:-}" ]; then
+                err "--project must be an existing directory, got '$_predecessor_project_early'"
+                err "(recorded as the project in the predecessor doc $_predecessor_doc_early)"
+                exit 1
+            fi
+            PROJECT_ARG="$_predecessor_project_early"
+        fi
+    fi
+    unset _predecessor_doc_early _predecessor_project_early
+fi
+# plugin /console from any repo -- himmel's own JIRA_PROJECT_KEY and repo
+# aren't the project's. --project marks the session as being FOR a DIFFERENT
+# checkout than this one: when it resolves to somewhere other than $repo,
+# bucket/prefix below derive from the PROJECT instead of from himmel, and the
+# project is recorded as data in the console doc (see project_doc_value) --
+# the console session itself always stays in $repo (do_arm above never
+# retargets it). Canonicalized with `pwd -P` (HIMMEL-3623 verdict J1268O
+# change 7): a symlink to himmel, or two spellings of the SAME real repo (a
+# trailing slash, a relative path), still compare equal and count as "not
+# foreign".
+project_dir=""
+if [ -n "$PROJECT_ARG" ]; then
+    [ -d "$PROJECT_ARG" ] || { err "--project must be an existing directory, got '$PROJECT_ARG'"; exit 1; }
+    project_canon="$(cd "$PROJECT_ARG" && pwd -P)"
+    if [ "$project_canon" != "$repo" ]; then
+        project_dir="$project_canon"
+    fi
+fi
+project_doc_value="none — this console runs in the himmel checkout itself"
+[ -n "$project_dir" ] && project_doc_value="$project_dir"
+
+# registry_lookup_for_project <project_dir> -- HIMMEL-3623 verdict J1268O
+# change 4. Prints "<key>\t<jira_project>" and returns 0 on a match: an exact
+# registered path, or the project's slugified basename against one of a
+# registry key's ALIASES (curated, so no path check needed). 1 on no match,
+# 2 on an unreadable registry. Refuses instead (exit 1, caller exits 1) when
+# the basename-derived slug merely equals an existing key's NAME but that
+# key's own path differs -- a bare name coincidence is not confirmation the
+# two are the same repo, and silently mixing two unrelated projects into one
+# bucket/prefix chain (P4) is worse than a loud refusal to disambiguate.
+registry_lookup_for_project() {
+    local dir="$1" reg rr_canon bn_slug out rc
+    reg="${HANDOVER_REGISTRY:-$HOME/.claude/handover/registry.json}"
+    [ -f "$reg" ] || return 1
+    # shellcheck disable=SC1003  # '\\' is a literal backslash for tr, not a quote escape
+    rr_canon="$(printf '%s' "$dir" | tr '\\' '/' | sed 's:/*$::' | tr '[:upper:]' '[:lower:]')"
+    bn_slug="$(slugify "$(basename "$dir")")"
+    out="$(REG="$reg" RR="$rr_canon" BN="$bn_slug" node -e '
+        const fs = require("fs"), e = process.env;
+        let j;
+        try { j = JSON.parse(fs.readFileSync(e.REG, "utf8")); } catch (err) { process.exit(2); }
+        const repos = (j && j.repos) || {};
+        const norm = p => String(p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+        for (const k of Object.keys(repos)) {
+            if (norm(repos[k].path) === e.RR) {
+                process.stdout.write([k, repos[k].jira_project || ""].join("\t"));
+                process.exit(0);
+            }
+        }
+        // A key-NAME or ALIAS match (no path confirmation) is only a
+        // coincidence unless it is the registered projects own path too --
+        // checked above and already returned. Treat it as a collision, not a
+        // match: an unrelated project sharing a basename (a repo named
+        // himmel, internal or docs at another path) must not silently inherit
+        // another projects bucket/prefix (HIMMEL-3623 J1271O I1).
+        const display = p => String(p || "").replace(/\\/g, "/").replace(/\/+$/, "");
+        for (const k of Object.keys(repos)) {
+            const aliases = (repos[k].aliases || []).map(a => String(a).toLowerCase());
+            if (k.toLowerCase() === e.BN || aliases.includes(e.BN)) {
+                process.stdout.write([k, display(repos[k].path)].join("\t"));
+                process.exit(3);
+            }
+        }
+        process.exit(1);
+    ')"
+    rc=$?
+    printf '%s' "$out"
+    return "$rc"
+}
+# The lookup above runs inside a `$( )` command substitution, so an `exit`
+# there would only kill that subshell, not the script -- a collision (rc 3)
+# would silently fall through to the "not registered" warning below instead
+# of refusing. So all exit-bearing decisions on its result happen HERE, in
+# the real script scope.
+project_registry_key=""
+project_registry_jira=""
+if [ -n "$project_dir" ]; then
+    # `if x=$(...); then` is the errexit-safe form under `set -e` -- a plain
+    # `x=$(...); rc=$?` assignment would abort the script on a non-zero
+    # substitution (the collision/unreadable cases) before `rc=$?` ever runs.
+    if _reg_match="$(registry_lookup_for_project "$project_dir")"; then
+        _reg_rc=0
+    else
+        _reg_rc=$?
+    fi
+    case "$_reg_rc" in
+        0)
+            project_registry_key="${_reg_match%%$'\t'*}"
+            project_registry_jira="${_reg_match#*$'\t'}"
+            ;;
+        2)
+            err "handover registry unreadable (${HANDOVER_REGISTRY:-$HOME/.claude/handover/registry.json})"
+            exit 2
+            ;;
+        3)
+            # An explicit --bucket already disambiguates the collision the
+            # message below is warning about -- refusing anyway would make
+            # the documented remedy unusable (codex-2 pr-check round 1).
+            if [ -z "$BUCKET" ]; then
+                err "resolved bucket '$(slugify "$(basename "$project_dir")")' for --project '$project_dir' collides with the registered project at '${_reg_match#*$'\t'}' — pass --bucket to disambiguate, or register this path: /handover register"
+                exit 1
+            fi
+            ;;
+        *)
+            err "'$project_dir' is not in the handover registry — using its basename for bucket/prefix. Register it for stable naming: /handover register"
+            ;;
+    esac
+fi
+
+# bucket: --bucket, else $CONSOLE_BUCKET, else the registry key for a
+# registered foreign --project, else basename of a foreign --project, else
+# derived from the repo basename — every branch already goes through
+# `slugify` uniformly, so no ONE source can bypass sanitization the others
+# get (the class codex-3 round 5 flagged for --prefix). The only gap
+# slugify itself doesn't close is a source that slugifies to nothing (e.g.
+# CONSOLE_BUCKET='###') — refused once, after precedence settles, same
+# principle as prefix below.
 if [ -n "$BUCKET" ]; then
     bucket="$(slugify "$BUCKET")"
 elif [ -n "${CONSOLE_BUCKET:-}" ]; then
     bucket="$(slugify "$CONSOLE_BUCKET")"
+elif [ -n "$project_registry_key" ]; then
+    bucket="$(slugify "$project_registry_key")"
+elif [ -n "$project_dir" ]; then
+    bucket="$(slugify "$(basename "$project_dir")")"
 else
     bucket="$(slugify "$(basename "$repo")")"
 fi
@@ -318,19 +546,24 @@ if [ -z "$bucket" ]; then
     err "resolved --bucket is empty after slugifying — pass an explicit --bucket with at least one alphanumeric character"
     exit 1
 fi
-# prefix: --prefix, else $JIRA_PROJECT_KEY, else derived from bucket.
-# Validated ONCE here, on the RESOLVED value, after precedence settles —
-# not per-branch — so no source (flag, env, or a future derivation change)
-# can bypass it. Round 4 only validated the --prefix flag branch;
-# JIRA_PROJECT_KEY reached the same path construction unvalidated, the
-# exact asymmetry this round's codex-3 caught. Unlike --name/--bucket
-# (slugified), a malformed prefix is refused rather than silently
-# rewritten: a Jira-style project key is uppercase alphanumerics, and
-# '../OTHER' copied verbatim would escape the selected bucket entirely.
+# prefix: --prefix, else the registry's jira_project for a registered foreign
+# --project, else $JIRA_PROJECT_KEY (only when NOT a foreign --project --
+# himmel's own key doesn't belong to another project), else derived from
+# bucket. Validated ONCE here, on the RESOLVED value, after precedence
+# settles — not per-branch — so no source (flag, env, or a future derivation
+# change) can bypass it. Round 4 only validated the --prefix flag branch;
+# JIRA_PROJECT_KEY reached the same path construction unvalidated, the exact
+# asymmetry this round's codex-3 caught. Unlike --name/--bucket (slugified),
+# a malformed prefix is refused rather than silently rewritten: a Jira-style
+# project key is uppercase alphanumerics, and '../OTHER' copied verbatim
+# would escape the selected bucket entirely.
 if [ -n "$PREFIX" ]; then
     prefix="$PREFIX"
     prefix_source="--prefix"
-elif [ -n "${JIRA_PROJECT_KEY:-}" ]; then
+elif [ -n "$project_registry_jira" ]; then
+    prefix="$project_registry_jira"
+    prefix_source="registry jira_project"
+elif [ -z "$project_dir" ] && [ -n "${JIRA_PROJECT_KEY:-}" ]; then
     prefix="$JIRA_PROJECT_KEY"
     prefix_source="JIRA_PROJECT_KEY"
 else
@@ -408,9 +641,13 @@ console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MO
 # `;` not `&&`: a row that cannot be written must not stop the console.
 # An --arm console is launched by headed-arm.sh, which writes its own row; the
 # line printed beside it is informational and is not pasted.
+# The line opens with `cd <himmel checkout> && { ...; }` (HIMMEL-3623 J1271O
+# I3): the plugin prints it to an operator sitting in a FOREIGN repo, and the
+# console must start in himmel for its project hooks and GO gate. The group
+# keeps a failed cd from falling through to claude in the wrong directory.
 launch_cmd() {
-    printf 'bash %q %s %s %s %s; %s claude --model %s --autocompact %s -n %s "load %s and continue"' \
-        "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label 0)" "$console_autocompact" \
+    printf 'cd %q && { bash %q %s %s %s %s; %s claude --model %s --autocompact %s -n %s "load %s and continue"; }' \
+        "$repo" "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label 0)" "$console_autocompact" \
         "$CONSOLE_LAUNCH_ENV" "$model" "$console_autocompact" "$1" "$2"
 }
 
@@ -725,6 +962,9 @@ cmd_new() {
         echo "would-doc: $doc"
         echo "would-session: $session"
         echo "would-kit: $kit"
+        if [ -n "$project_dir" ]; then
+            echo "would-project: $project_dir"
+        fi
         echo "would-launch: $(launch_cmd "$session" "$doc")"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
@@ -820,7 +1060,8 @@ cmd_new() {
         FILL_PERCENT "$fill_percent" \
         RELEASE_TOKEN "$release_token" \
         BOARD_URL "none yet — publish it at ACTION ZERO step 12" \
-        MODEL "$model"
+        MODEL "$model" \
+        PROJECT "$project_doc_value"
 
     printf '%s\n' "$lock_out"
 
@@ -999,6 +1240,9 @@ cmd_next() {
         else
             echo "would-handoff: $predecessor_handoff"
         fi
+        if [ -n "$project_dir" ]; then
+            echo "would-project: $project_dir"
+        fi
         echo "would-launch: $(launch_cmd "$session" "$doc")"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
@@ -1049,7 +1293,8 @@ cmd_next() {
         FILL_PERCENT "$fill_percent" \
         RELEASE_TOKEN "none yet — acquire your own at ACTION ZERO and record it here" \
         BOARD_URL "$predecessor_board" \
-        MODEL "$model"
+        MODEL "$model" \
+        PROJECT "$project_doc_value"
 
     echo "doc: $doc"
     echo "session: $session"

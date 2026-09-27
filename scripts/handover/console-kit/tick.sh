@@ -180,26 +180,10 @@ csv_add() {
     fi
 }
 
-# HIMMEL-3305 / HIMMEL-3393: a leg's tails= status is the marker its newest
-# status bullet STARTS with. The vocabulary (docs/handover/leg-preface.md -- change
-# the two together) is LIVE / FINDING / RESOLVED / READY / BLOCKED / HALTED / WRAPPED.
-# RESOLVED retires a FINDING the console has answered: without it FINDING stayed
-# the newest marker for the whole window the leg spent doing the authorised work.
-# A status bullet is `- [HH:MM] <MARKER> ...` (a bold `**MARKER**` also reads). The
-# status is that leading token, never a word further into the text: HIMMEL-3305
-# took the highest-precedence marker anywhere in the bullet, so `- 23:47 LIVE --
-# ... not a FINDING ...` read FINDING and the board asked the console for a ruling
-# the leg never requested. A marker is a whole word (FINDINGS / UNRESOLVED are not
-# markers). A bullet that does not start with one carries no status and is skipped:
-# SHIPPED / MERGED are deliberately NOT markers -- a leg between GREEN and READY
-# reports LIVE.
-# ponytail: a status bullet that leads with something other than the marker
-# (`- Sent READY to the console`) is invisible here; the tick reads the last bullet
-# that does lead with one.
-leg_tail_status() {  # leg_tail_status <leg doc> -- prints the marker, or nothing
-    sed -nE 's/^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_].*)?$/\3/p' "$1" 2>/dev/null \
-        | tail -n 1 | tr -d '\n'
-}
+# HIMMEL-3635: leg_tail_status is shared with close-wrapped-leg.sh's WRAPPED
+# gate, so the two readers can never accept different marker-bullet shapes.
+# shellcheck source=../../lib/leg-tail-status.sh
+. "$HERE/../../lib/leg-tail-status.sh"
 
 clock="$(date +%H:%M 2>/dev/null)" || clock="??:??"
 
@@ -276,7 +260,9 @@ for leg in $LEGS_SPLIT; do
     leg_docmap="$leg_docmap$label=$leg_doc"$'\n'
     leg_candmap="$leg_candmap$label"$'\t'"$lock_status"$'\t'"$leg_cands"$'\n'
 done
-[ -n "$legs_summary" ] || legs_summary=none
+# #1335: legs_summary's "none" default is resolved further down, once
+# the census (below) says whether it can back that up -- see the comment
+# there.
 [ -n "$tails_summary" ] || tails_summary=none
 
 # HIMMEL-2973 S1: cross-reference the console doc's own `## Live state`
@@ -513,8 +499,15 @@ fi
 # /proc/<pid>/cmdline argv, NUL-delimited), never a flattened `pgrep -af`
 # line -- free-text argv (a -p/--append-system-prompt value containing the
 # literal substring "-n X") can no longer spoof procs=/models=.
+# #1335: resolved from $HERE (this script's own directory), not
+# $REPO -- $REPO names the repo THIS console manages (a different checkout
+# for every console but himmel's own), while claude-sessions.sh is a himmel
+# lane helper that always ships beside tick.sh. $REPO-relative sourcing
+# silently failed for any non-himmel $REPO (source: No such file or
+# directory), leaving claude_sessions undefined while the tick still printed
+# a confident line.
 # shellcheck source=../../lanes/lib/claude-sessions.sh
-. "$REPO/scripts/lanes/lib/claude-sessions.sh"
+. "$HERE/../../lanes/lib/claude-sessions.sh"
 sessions_out="$(claude_sessions)"
 sessions_rc=$?
 # HIMMEL-3002: rc=3 means the census itself succeeded but one or more live
@@ -529,6 +522,21 @@ census_failed=0
 if [ "$sessions_rc" -gt 1 ] && { [ "$sessions_rc" -ne 3 ] || [ -z "$sessions_out" ]; }; then
     sessions_out=""
     census_failed=1
+fi
+# #1335: an empty --legs arm reads legs=none only when the census could
+# actually have told us otherwise. A working census (however lossy) that
+# simply finds nothing live is a genuine healthy empty fleet -- legs=none
+# stays accurate. A census that could not run at all (pgrep/ps themselves
+# broken, not merely lossy) leaves this tick with no way to back that claim
+# up, so legs=none would be a guess; legs=unsupported says so instead. A
+# non-empty --legs arm is unaffected: its legs_summary already comes from
+# queue-lock, not the census.
+if [ -z "$legs_summary" ]; then
+    if [ "$census_failed" -eq 1 ]; then
+        legs_summary=unsupported
+    else
+        legs_summary=none
+    fi
 fi
 sessions_lossy=0
 case "$sessions_out" in

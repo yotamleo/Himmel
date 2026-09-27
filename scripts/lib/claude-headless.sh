@@ -26,6 +26,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # shellcheck source=scripts/lib/kill-tree.sh
 . "$SCRIPT_DIR/kill-tree.sh" || { echo "claude-headless.sh: cannot source $SCRIPT_DIR/kill-tree.sh" >&2; exit 1; }
+# shellcheck source=scripts/lib/dedupe-path.sh
+. "$SCRIPT_DIR/dedupe-path.sh" || { echo "claude-headless.sh: cannot source $SCRIPT_DIR/dedupe-path.sh" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
@@ -408,9 +410,14 @@ STDOUT_FILE="$(mktemp "${TMPDIR:-${TEMP:-/tmp}}/claude-headless-stdout.XXXXXX")"
 # claude session (the most likely time to be interrupted) never reached
 # finalize_on_exit, leaving the dispatch row permanently "dispatched". A
 # background job + `wait "$pid"` IS promptly interruptible.
+# HIMMEL-3640: dedupe PATH before the nested `claude -p` launch — Claude
+# Code prepends each enabled plugin's bin/ dir at startup without checking
+# for an existing copy, so handing it an already-duplicated inherited PATH
+# lets that compound across every headless dispatch in a long session.
+DEDUPED_PATH="$(dedupe_path "$PATH")"
 # shellcheck disable=SC1091
 ( cd "$CWD" && . "$REPO_ROOT/scripts/lib/native-auth-pin.sh" && native_auth_pin_env && \
-  MSYS_NO_PATHCONV=1 "${CMD[@]}" < "$PROMPT_FILE" \
+  PATH="$DEDUPED_PATH" MSYS_NO_PATHCONV=1 "${CMD[@]}" < "$PROMPT_FILE" \
   >"$STDOUT_FILE" 2>"$STDERR_FILE" ) &
 # HIMMEL-2514: deliberately NOT named CLAUDE_PID — an interactive Claude Code
 # session exports its OWN pid into every subprocess under that exact name, so

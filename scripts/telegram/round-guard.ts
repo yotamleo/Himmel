@@ -258,13 +258,27 @@ export function checkRoundGuard(
     return { note: `${lane}: round guard OVERRIDE (HIMMEL-1553): ${ticket} is on review round ${rounds + 1} (${rounds} consecutive blocking reviews) — cheap-lane dispatch proceeding on recorded operator authority: "${override}"` };
   }
   if (rounds >= ROUND_ESCALATE_THRESHOLD) {
+    // HIMMEL-1568: the Agent-tool hook chokepoint (lane "agent-dispatch") has
+    // no --rounds-override wired and no way to "re-dispatch" through the same
+    // tool call — the escalation options that are genuinely actionable for
+    // spawn-glm/spawn-claudex's own CLI-driven callers are not for this one,
+    // so it gets its own accurate advice rather than inheriting theirs.
+    const permittedPaths = lane === "agent-dispatch"
+      ? [
+          `Permitted paths (this chokepoint has no --rounds-override — the flag is not wired here, and there is no way to re-dispatch through the Agent tool with it):`,
+          `  (a) ESCALATE: stop dispatching this ticket's implementation through the Agent tool here and hand it to a judgment-tier lane instead (see /lanes) — give it the abstraction as the task: "state the invariant all ${rounds} rounds' defects violated, then fix to it," never the newest defect;`,
+          `  (b) an operator-launched leg (e.g. via headed-arm-leg.sh) can still call spawn-glm/spawn-claudex directly with --rounds-override "<reason>" (>= ${ROUNDS_OVERRIDE_MIN_CHARS} chars) if another cheap round is genuinely justified — that path does not go through this hook.`,
+        ]
+      : [
+          `Permitted paths:`,
+          `  (a) ESCALATE: route this to a judgment-tier lane (see /lanes) with the abstraction as the task — "state the invariant all ${rounds} rounds' defects violated, then fix to it" — never the newest defect;`,
+          `  (b) OPERATOR OVERRIDE: re-dispatch with --rounds-override "<why another cheap round is justified>" (>= ${ROUNDS_OVERRIDE_MIN_CHARS} chars${override ? `; the reason given was too short` : ""}). Appropriate for a purely mechanical batch of nit/sug fixes with no open crit/imp design question. The reason is recorded in the transcript.`,
+        ];
     return {
       refusal: [
         `${lane}: REFUSED (round guard, HIMMEL-1553): ${ticket} already has ${rounds} consecutive blocking reviews on the active branch (heads: ${heads.join(", ")}) — buying another cheap-lane round is the failure mode itself, not a fix for it.`,
         `Evidence class (HIMMEL-1540): four rounds of competent workers with increasingly detailed briefs each fixed the symptom and exposed the next seam; what broke the loop was a JUDGMENT-TIER pass given the abstraction as the task. At this round the thing that must change is the model, not the brief.`,
-        `Permitted paths:`,
-        `  (a) ESCALATE: route this to a judgment-tier lane (see /lanes) with the abstraction as the task — "state the invariant all ${rounds} rounds' defects violated, then fix to it" — never the newest defect;`,
-        `  (b) OPERATOR OVERRIDE: re-dispatch with --rounds-override "<why another cheap round is justified>" (>= ${ROUNDS_OVERRIDE_MIN_CHARS} chars${override ? `; the reason given was too short` : ""}). Appropriate for a purely mechanical batch of nit/sug fixes with no open crit/imp design question. The reason is recorded in the transcript.`,
+        ...permittedPaths,
       ].join("\n"),
     };
   }
@@ -283,4 +297,77 @@ export function checkRoundGuard(
       `Derive it from ALL prior rounds' findings (grep the CR ledger $(git rev-parse --git-common-dir)/cr-critic-scores.jsonl for ${ticket}), not from the last round alone. If you cannot state the invariant, the ticket needs a design pass or an escalation lane, not another worker round — and at ${ROUND_ESCALATE_THRESHOLD} consecutive blocking reviews this guard refuses a cheap-lane dispatch outright.`,
     ].join("\n"),
   };
+}
+
+// CLI entry (HIMMEL-1568): scripts/hooks/guard-implementor-dispatch.sh — the
+// PreToolUse chokepoint on the Agent tool — shells out to this as a
+// subprocess (a bash hook cannot import a TS module), so exactly one
+// implementation of "what counts as a reviewed round" backs BOTH the
+// spawn-glm/spawn-claudex dispatchers above (in-process) and a real Agent
+// dispatch. Never reached when this file is `import`ed by those two scripts.
+//
+// Usage: bun round-guard.ts check --cwd <dir> [--branch <name>] --task-file <path> [--rounds-override <text>]
+// Exit 0 = allow (a note, if any, on stderr). Exit 2 = refuse (message on
+// stderr) — this covers both a genuine round-guard policy refusal AND a CLI
+// usage/argument/task-file-read error (the message on stderr distinguishes
+// them; the one real call site always passes well-formed args and an
+// already-written task file, so those paths are unreached in practice). Any
+// other exit means the predicate could not be evaluated at all —
+// the hook's own contract (HIMMEL-1568) treats that as a fail-CLOSED case for
+// a real implementor dispatch, unlike this guard's own fail-open posture on a
+// missing ledger or an unkeyed dispatch (both handled above, inside
+// checkRoundGuard, and surfaced here as an ordinary exit 0).
+//
+// The branch defaults to --cwd's own git branch: an Agent-tool dispatch runs
+// IN the caller's existing worktree, unlike spawn-glm/spawn-claudex's
+// anonymous own-mode dispatches, which mint a fresh branch and so derive
+// theirs from --name instead (see the `prefix`/`nameSlug` logic above, which
+// this lane id deliberately does not match). A --cwd that is not a git repo,
+// or a detached HEAD, leaves the branch undetermined — checkRoundGuard then
+// fails open (no activeBranch, same as an anonymous spawn-glm/spawn-claudex
+// dispatch), not a CLI error.
+if (import.meta.main) {
+  const argv = process.argv.slice(2);
+  if (argv[0] !== "check") {
+    console.error("usage: round-guard.ts check --cwd <dir> [--branch <name>] --task-file <path> [--rounds-override <text>]");
+    process.exit(2);
+  }
+  let cwd: string | undefined;
+  let branch: string | undefined;
+  let taskFile: string | undefined;
+  let roundsOverride: string | undefined;
+  for (let i = 1; i < argv.length; i++) {
+    const flag = argv[i];
+    if (flag === "--cwd") cwd = argv[++i];
+    else if (flag === "--branch") branch = argv[++i];
+    else if (flag === "--task-file") taskFile = argv[++i];
+    else if (flag === "--rounds-override") roundsOverride = argv[++i];
+  }
+  if (!cwd || !taskFile) {
+    console.error("round-guard.ts check: --cwd and --task-file are required");
+    process.exit(2);
+  }
+  let task: string;
+  try {
+    task = readFileSync(taskFile, "utf8");
+  } catch (err) {
+    console.error(`round-guard.ts check: cannot read --task-file ${taskFile}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+  if (!branch) {
+    try {
+      const r = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { stdout: "pipe", stderr: "pipe" });
+      if (r.exitCode === 0) {
+        const detected = r.stdout.toString().trim();
+        if (detected && detected !== "HEAD") branch = detected;
+      }
+    } catch { /* not a git repo / detached HEAD -> no branch, checkRoundGuard fails open */ }
+  }
+  const result = checkRoundGuard("agent-dispatch", { task, branch, cwd, roundsOverride });
+  if (result.refusal) {
+    console.error(result.refusal);
+    process.exit(2);
+  }
+  if (result.note) console.error(result.note);
+  process.exit(0);
 }

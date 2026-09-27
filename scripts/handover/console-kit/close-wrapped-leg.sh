@@ -68,8 +68,14 @@ if ! bash "$HERE/../queue-lock.sh" status "$DOC" >/dev/null 2>&1; then
     exit 3
 fi
 
-last_marker=$(grep -E '^- [0-9]{2}:[0-9]{2} (LIVE|FINDING|RESOLVED|READY|BLOCKED|HALTED|WRAPPED)( |$)' "$DOC" \
-    | tail -1 | sed -E 's/^- [0-9]{2}:[0-9]{2} ([A-Z]+).*/\1/')
+# shellcheck source=scripts/lib/leg-tail-status.sh
+# shellcheck disable=SC1091
+if ! . "$HERE/../../lib/leg-tail-status.sh"; then
+    echo "close-wrapped-leg: cannot load scripts/lib/leg-tail-status.sh" >&2
+    exit 1
+fi
+
+last_marker=$(leg_tail_status "$DOC")
 if [ "$last_marker" != "WRAPPED" ]; then
     echo "close-wrapped-leg: refusing - the doc's last Results marker-bullet is '${last_marker:-<none>}', not WRAPPED" >&2
     exit 4
@@ -89,7 +95,12 @@ if ! . "$HERE/../../lanes/lib/claude-sessions.sh"; then
 fi
 
 ident=$(leg_identity "$DOC")
-names=",${ident#*$'\t'},"
+# HIMMEL-3638 console add-on: leg_identity's names strip -RESUME, but a
+# console may launch a leg's session under the FULL doc stem (-RESUME and
+# date intact) - accept that shape too, locally here (not in leg-identity.sh,
+# which other callers rely on for the stripped forms).
+doc_stem="$(basename "$DOC" .md)"
+names=",${ident#*$'\t'},${doc_stem},"
 
 sessions=$(claude_sessions)
 census_rc=$?
@@ -117,6 +128,105 @@ EOF
 if [ "$match_count" -ne 1 ]; then
     echo "close-wrapped-leg: refusing - $match_count live session(s) matched leg names [${ident#*$'\t'}] (need exactly 1)" >&2
     exit 5
+fi
+
+# ---------- Pre-signal session-note capture (HIMMEL-3629) --------------------
+# A wrapped leg's SessionEnd hook never runs: Claude Code cancels it the
+# instant our TERM below lands, so no luna session note is written. Reproduce
+# the hook's input here, from what we already resolved above (the leg's
+# session names) - never a guess: resolve those names to EXACTLY ONE
+# transcript file (same customTitle-grep precedent as leg-burn.sh's
+# session-name lookup, but refusing instead of picking "newest" on
+# ambiguity), pull cwd straight from that transcript (every row carries a
+# "cwd" field), derive session_id from the transcript's own filename, and
+# feed end-session-wiki.sh the same SessionEnd JSON shape Claude Code would
+# have. 0 or >1 matching transcripts: say so on stderr and still close -
+# never guess which one. The hook itself dedups by session_id (HIMMEL-3629),
+# so it is harmless if the leg's own SessionEnd ALSO manages to fire.
+END_SESSION_WIKI="${END_SESSION_WIKI_BIN:-$HERE/../../hooks/end-session-wiki.sh}"
+PROJECTS_DIR="${CLOSE_WRAPPED_LEG_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
+if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
+    # HIMMEL-3638: a plain `grep -rlF ... "$PROJECTS_DIR"` reads every byte of
+    # every transcript ever written across the whole projects tree (5.6 GB) -
+    # minutes per close. A wrapped leg's own transcript is always from TODAY,
+    # and customTitle (when set) is near the top of the file, so bound both
+    # axes: only today's files (mtime), only their first N lines (head) -
+    # same "exactly one match, else skip" semantics as before.
+    mtime_window="${CLOSE_WRAPPED_LEG_MTIME_DAYS:-1}"
+    head_window="${CLOSE_WRAPPED_LEG_CUSTOMTITLE_HEAD:-40}"
+    candidates=$(printf '%s\n%s\n' "${ident#*$'\t'}" "$doc_stem" | tr ',' '\n' | sed '/^$/d')
+    match_transcripts() {
+        local files="$1" hw="$2" matches="" f hit cand
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if [ "$hw" -eq 0 ]; then
+                # codex-2: the all-time fallback scans whole-repo-age
+                # transcripts, so grep the file directly per candidate
+                # instead of slurping it into a shell variable first --
+                # a multi-GB transcript otherwise loads entirely into memory
+                # just to be thrown away after one match.
+                while IFS= read -r cand; do
+                    [ -n "$cand" ] || continue
+                    if grep -qF "\"customTitle\":\"$cand\"" "$f" 2>/dev/null; then
+                        matches="${matches}
+${f}"
+                        break
+                    fi
+                done <<EOF
+$candidates
+EOF
+            else
+                hit=$(head -n "$hw" "$f" 2>/dev/null)
+                while IFS= read -r cand; do
+                    [ -n "$cand" ] || continue
+                    if printf '%s' "$hit" | grep -qF "\"customTitle\":\"$cand\""; then  # pipefail-ok: no pipefail here (set -u only); $hit is an already-captured small string, not a live producer
+                        matches="${matches}
+${f}"
+                        break
+                    fi
+                done <<EOF
+$candidates
+EOF
+            fi
+        done <<EOF
+$files
+EOF
+        printf '%s\n' "$matches" | sed '/^$/d' | sort -u
+    }
+    scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' -mtime "-${mtime_window}" 2>/dev/null)
+    transcript_matches=$(match_transcripts "$scan_files" "$head_window")
+    tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
+    if [ "$tcount" -eq 0 ]; then
+        # F3/codex-3: -mtime is a rolling window, not "today", and a target
+        # transcript outside it can be missed even while OTHER, unrelated
+        # transcripts fall inside it (an empty-scan_files check alone would
+        # miss that case). Retry against the full tree whenever the SCOPED
+        # search found no MATCH, not only when it found no files at all.
+        # codex-2 (round 4): the fallback must also drop the head-window
+        # bound - a customTitle past line $head_window is unmatchable in
+        # either pass otherwise. Pass 0 = unbounded (whole file).
+        scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' 2>/dev/null)
+        transcript_matches=$(match_transcripts "$scan_files" 0)
+        tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
+    fi
+    if [ "$tcount" -eq 1 ]; then
+        TRANSCRIPT="$transcript_matches"
+        cap_cwd=$(jq -r 'select(.cwd != null) | .cwd' "$TRANSCRIPT" 2>/dev/null | head -1)
+        cap_sid=$(basename "$TRANSCRIPT" .jsonl)
+        if [ -n "$cap_cwd" ]; then
+            cap_payload=$(jq -n --arg t "$TRANSCRIPT" --arg s "$cap_sid" --arg c "$cap_cwd" --arg r "leg-close" \
+                '{transcript_path:$t, session_id:$s, cwd:$c, reason:$r}')
+            if printf '%s' "$cap_payload" | bash "$END_SESSION_WIKI" >/dev/null 2>&1; then
+                echo "close-wrapped-leg: captured session note for $cap_sid before signalling"
+            else
+                echo "close-wrapped-leg: end-session-wiki failed for $cap_sid - closing anyway, never blocking on it" >&2
+            fi
+        else
+            echo "close-wrapped-leg: resolved transcript $TRANSCRIPT has no 'cwd' field - skipping the pre-signal capture, never guessing" >&2
+        fi
+    else
+        echo "close-wrapped-leg: $tcount transcript(s) matched leg names [${ident#*$'\t'}] - cannot resolve unambiguously, skipping the pre-signal capture, never guessing" >&2
+    fi
 fi
 
 if ! "$KILL" -TERM "$matched"; then

@@ -33,6 +33,7 @@ marketplace/plugins/handover/scripts/test-migrate-v1-to-v2.sh	0
 marketplace/plugins/handover/scripts/test-skill-e2e.sh	1
 marketplace/plugins/himmel-ops/hooks/test-inject-minerva-critic.sh	0
 marketplace/plugins/himmel-ops/scripts/test-autonomy-mode.sh	0
+marketplace/plugins/himmel-ops/scripts/test-console-cmd-resolution.sh	0
 marketplace/plugins/himmel-ops/scripts/test-himmel-update-cmd-resolution.sh	0
 marketplace/plugins/himmel-ops/scripts/test-legs.sh	0
 marketplace/plugins/himmel-ops/scripts/test-minerva-scripts-resolution.sh	0

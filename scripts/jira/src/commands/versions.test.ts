@@ -6,6 +6,7 @@ import {
   createVersion,
   releaseVersion,
   setFixVersion,
+  assertVersionExists,
 } from './versions.js';
 
 interface Call {
@@ -175,5 +176,19 @@ describe('setFixVersion', () => {
     const out = await setFixVersion('HIMMEL-374', 'remove', 'v1.0.0');
     expect(calls[0].body).toEqual({ update: { fixVersions: [{ remove: { name: 'v1.0.0' } }] } });
     expect(out).toBe('HIMMEL-374 fixVersion -v1.0.0');
+  });
+});
+
+describe('assertVersionExists (HIMMEL-3713)', () => {
+  it('resolves silently when the version exists', async () => {
+    stubJira({ 'GET /project/HIMMEL/versions': VERSIONS });
+    await expect(assertVersionExists('HIMMEL', 'v1.0.0')).resolves.toBeUndefined();
+  });
+
+  it('throws naming the project when the version does not exist', async () => {
+    stubJira({ 'GET /project/HIMMEL/versions': VERSIONS });
+    await expect(assertVersionExists('HIMMEL', 'v9.9.9')).rejects.toThrow(
+      /no version named "v9\.9\.9" in project HIMMEL/,
+    );
   });
 });

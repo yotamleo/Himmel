@@ -401,6 +401,19 @@ _suite_timeout_for() {
       # observed loaded 606s (398s reproduced here on a lighter moment of the
       # same box). Rule: loaded x2 -- 606 * 2 = 1212, rounded up to 1250.
       printf '1250' ;;
+    scripts/himmelctl/test/test-wizard-probes.sh|*/scripts/himmelctl/test/test-wizard-probes.sh)
+      # HIMMEL-2358. Ticket-cited pristine standalone figure: 799s, rc=0,
+      # genuine PASS (measured on overlord8, Windows/Git-Bash, per
+      # HIMMEL-2350's own diagnosis of that box). A fresh scratch-HOME
+      # re-measurement here (Linux CachyOS, 2026-09-26, via
+      # scripts/lib/clean-sandbox.sh) completed in ~27s, rc=0, PASS -- the
+      # ~30x gap is Windows/Git-Bash node-spawn overhead on this heavily
+      # node-spawning suite (winpath/hermetic-path.sh throughout), not a
+      # suite hang or regression. This table has one shared value per suite
+      # across every platform, so it is sized for the slower one, matching
+      # this table's established convention (test-propagate-public.sh,
+      # test-suite-concurrency.sh). 799 * 1.5 = 1198.5, rounded up to 1200.
+      printf '1200' ;;
     scripts/hooks/test-check-security-reviewed.sh|*/scripts/hooks/test-check-security-reviewed.sh)
       # HIMMEL-2401 loaded re-benchmark (2026-09-02): worst observed loaded
       # 743s, against the stale 500 cap derived from a 2026-08-27 idle
@@ -434,6 +447,13 @@ _suite_timeout_for() {
       printf '650' ;;  # measured 307s idle 2026-08-27 (rc=1 was the HIMMEL-1329 ticket-mutex
       # false-positive fixed by HIMMEL-2165, not HIMMEL-1796 -- that ticket is about two
       # unrelated hook suites and never mentions queue-lock; the earlier citation here was wrong)
+    scripts/hooks/test-block-write-into-main-checkout.sh|*/scripts/hooks/test-block-write-into-main-checkout.sh)
+      # HIMMEL-3648 (#1307): CAP EXCEEDED on ubuntu CI (603s, cap 600s,
+      # assertions passing). Measured locally 2026-09-27: origin/main 6ac09bf9
+      # 276s, head 5b19a0b7 337s (+22% from the PR's new rows). CI completion
+      # is unmeasured (killed at the cap). Rule: loaded x2 -- 603 * 2 = 1206,
+      # rounded to 1200.
+      printf '1200' ;;
     *)
       printf '%s' "$SUITE_TIMEOUT" ;;
   esac
@@ -686,6 +706,13 @@ scripts/test-plugin-test.sh          # integration: self-bootstraps a plugin's d
 # non-Linux reason is unchanged from its SKIP_LIST days.
 SKIP_LIST_NON_LINUX="
 scripts/test-adopt.sh                # HIMMEL-3203: skipped off-Linux only — timing-heavy full adoption matrix exceeds the hermetic runner's per-suite cap on Windows (600s default since HIMMEL-2233; the exceedance was last measured against the older 180s cap and STILL has not been re-measured, HIMMEL-3580 — do not reinstate on Windows without one); runs on Linux CI (~62s uncontended, 2026-09-19; re-verified PASS at 197s under concurrent multi-lane load, 2026-09-24 — still well inside the 600s cap either way); runnable individually, no VM e2e coverage
+scripts/vm/test-vm-clone-lib.sh              # HIMMEL-3699: skipped off-Linux only — exercises vm-clone.sh's slot-acquire preflight (scripts/vm/lib/vm-clone.sh:133), which requires flock (util-linux, absent from stock macOS); its own CodeRabbit-reviewed comment (PR #2206, vm-clone.sh:123-132) documents this as \"not a portability concern on THIS linux-only runner\" — VM-clone infra is Linux-only by design; precedent HIMMEL-3203
+scripts/vm/test-provenance-roundtrip-dry.sh  # HIMMEL-3699: skipped off-Linux only — same flock/Linux-only dependency as scripts/vm/test-vm-clone-lib.sh above (scripts/vm/lib/vm-clone.sh:133); precedent HIMMEL-3203
+scripts/upstreams/test-apply-drift-bump.sh   # HIMMEL-3699: skipped off-Linux only — same flock/Linux-only dependency as scripts/vm/test-vm-clone-lib.sh above (scripts/vm/lib/vm-clone.sh:133); precedent HIMMEL-3203
+scripts/release/test-tarball-vs-clone.sh     # HIMMEL-3699: skipped off-Linux only — converge-check.sh's hook-diff walk (scripts/release/converge-check.sh:154) uses GNU find's -printf (absent from BSD/macOS find), documented there as \`# gnu-ok: only ever runs on the Linux guest\` — the tarball converge check is Linux-guest-only by design; precedent HIMMEL-3203
+scripts/handover/console-kit/test-console-wait.sh    # HIMMEL-3699: skipped off-Linux only — console-wait.sh's own \`# PLATFORM GUARD: no .ps1 twin, by design — the console kit is Linux-only\` (console-wait.sh:79), and this suite's bare \`timeout\` calls are marked \`# gnu-ok: Linux-only kit\` throughout — the console kit is Linux-only by design; precedent HIMMEL-3203
+scripts/handover/console-kit/test-board.sh           # HIMMEL-3699: skipped off-Linux only — same console-kit Linux-only-by-design PLATFORM GUARD as test-console-wait.sh above (board.mjs:21: \"tick.sh reads pgrep, atq and the konsole launch logs\"); precedent HIMMEL-3203
+scripts/handover/console-kit/test-tick.sh            # HIMMEL-3699: skipped off-Linux only — same console-kit Linux-only-by-design PLATFORM GUARD as test-console-wait.sh above (tick.sh:12-14: \"pgrep, atq, /tmp suite locks, and claudex/konsole\"); precedent HIMMEL-3203
 "
 case "$(uname -s 2>/dev/null || echo unknown)" in
   Linux) ;;
@@ -757,6 +784,7 @@ SUITE_REQUIRE_TOOL_DEFAULT="
 scripts/test-claude-openrouter-pwsh.sh  pwsh  # PowerShell twin smoke suite for claude-openrouter.ps1 (HIMMEL-1792); runs wherever pwsh exists, loud-skips where it does not
 scripts/lib/test-native-auth-pin-pwsh.sh  pwsh  # PowerShell twin suite for native-auth-pin.ps1 (HIMMEL-1867); runs wherever pwsh exists, loud-skips where it does not
 scripts/telegram/test-phi-egress-guard-parity.sh  bun  # cross-language parity check (scripts/claude-glm vs scripts/telegram/phi-egress-guard.ts) (HIMMEL-2204); runs wherever bun exists, loud-skips where it does not
+scripts/test-template-nostash-hooks.sh  pre-commit  # exercises the real pre-commit binary against install-nostash-hooks.sh (HIMMEL-2223); runs wherever pre-commit exists, loud-skips where it does not
 "
 SUITE_REQUIRE_TOOL="${SUITE_REQUIRE_TOOL:-$SUITE_REQUIRE_TOOL_DEFAULT}"
 
@@ -3550,7 +3578,13 @@ while IFS= read -r suite <&3; do
   # not be skipped because a hygiene nicety could not be set up — but never
   # SILENTLY: a run that quietly lost its isolation is a run whose leftovers
   # nobody expects.
-  suite_tmp=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite.XXXXXX" 2>/dev/null) || suite_tmp=''
+  # HIMMEL-3699: anchor at literal /tmp, never ${TMPDIR:-/tmp} — on macOS,
+  # TMPDIR defaults to a per-process dir under /private/var/folders, and
+  # uninstall.sh's protected_path() hard-refuses anything under /var. A suite
+  # temp root that ended up there made every suite exercising protected_path
+  # (test-uninstall*.sh, test-console.sh, ...) see its own scratch dir as
+  # protected. Children still inherit TMPDIR/TMP/TEMP=$suite_tmp below.
+  suite_tmp=$(mktemp -d "/tmp/himmel-suite.XXXXXX" 2>/dev/null) || suite_tmp=''
   if [ -z "$suite_tmp" ]; then
     printf '[NOTE] %s — could not create a per-suite temp root; running in the shared one\n' "$suite"
   fi

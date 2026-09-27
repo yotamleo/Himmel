@@ -21,6 +21,8 @@
 #             = 4 + 360 + 312.5 + 925 = 1601.5 -> "1.6k"
 #     floor-share = first-turn(1203) * calls(4) / cache-read(3600) * 100
 #                 = 133.7%
+#     cache-health = cache-read(3600) / (input(4) + cache-read(3600)) * 100
+#                  = 99.88901...% -> 99.9%
 #     compaction-rewarm: 2 compact_boundary markers; the first NEW message
 #     after each is msg_C (ctx 550) then msg_D (ctx 100), mean 325 * 2 = 650
 #
@@ -44,12 +46,13 @@ has() { case "$2" in *"$3"*) pass "$1";; *) fail "$1: '$3' not in '$2'";; esac; 
 out=$(bash "$BURN" "$FIXTURE"); rc=$?
 eq "fixture exits 0" "$rc" "0"
 eq "one line, every field, hand-computed" "$out" \
-   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3.6k cache-create=250 input=4 cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
+   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3.6k cache-create=250 input=4 cache-health=99.9% cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
 
 # --- HIMMEL-2987: price-weighted fields --------------------------------------
 has "cache-read sum" "$out" "cache-read=3.6k"
 has "cache-create sum" "$out" "cache-create=250"
 has "input sum" "$out" "input=4"
+has "cache-health pct" "$out" "cache-health=99.9%"
 has "cost-eq weighted sum" "$out" "cost-eq=1.6k"
 has "floor-share pct" "$out" "floor-share=133.7%"
 has "compaction-rewarm" "$out" "compaction-rewarm=650"
@@ -66,9 +69,9 @@ has "cache-read weight override changes cost-eq" "$out_override" "cost-eq=4.8k"
 # input are already <1000 and print the same integer either way.
 out_raw=$(bash "$BURN" --raw "$FIXTURE")
 eq "--raw: same line except the four counters are exact integers" "$out_raw" \
-   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3600 cache-create=250 input=4 cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
-eq "default output is byte-identical to before --raw existed" "$out" \
-   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3.6k cache-create=250 input=4 cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
+   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3600 cache-create=250 input=4 cache-health=99.9% cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
+eq "default output matches --raw except the four k-rounded counters" "$out" \
+   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3.6k cache-create=250 input=4 cache-health=99.9% cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
 
 out_raw_env=$(LEG_BURN_RAW=1 bash "$BURN" "$FIXTURE")
 eq "LEG_BURN_RAW=1 env is equivalent to --raw" "$out_raw_env" "$out_raw"

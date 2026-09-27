@@ -618,6 +618,20 @@ PY
 fi
 rm -f "$stale_count_file" 2>/dev/null || true  # fresh cache — the stale streak is broken
 
+# HIMMEL-1712: a cache stamped by a different account is the same "can't
+# see usage" case as a missing cache — quiet no-op (this watchdog fails
+# OPEN; per scripts/hooks/CLAUDE.md never block the tool call on this
+# check, and a missing/unreadable helper degrades to "can't tell" rather
+# than tripping the arm on an unverifiable number).
+_id_lib="$hook_dir/../lib/usage-cache-identity.sh"
+[ -f "$_id_lib" ] || _id_lib="$project_dir/scripts/lib/usage-cache-identity.sh"
+# shellcheck source=../lib/usage-cache-identity.sh
+# shellcheck disable=SC1090,SC1091
+{ [ -r "$_id_lib" ] && . "$_id_lib"; } 2>/dev/null || usage_cache_account_mismatch() { return 0; }  # fail-open-ok: watchdog — a missing/unreadable identity lib must never block the tool call this hook is watching (scripts/hooks/CLAUDE.md fail-open-vs-fail-closed rule)
+if usage_cache_account_mismatch "$CACHE_PATH"; then
+    exit 0
+fi
+
 command -v python3 >/dev/null 2>&1 || { warn "MALFUNCTION: python3 missing — usage check impossible"; exit 1; }
 
 # ─── threshold check (python owns float compare + JSON parse) ──────────

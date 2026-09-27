@@ -1,5 +1,15 @@
-import { describe, it, expect } from 'vitest';
-import { jqlStatusClause, resolveListJql } from './list.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { Command } from 'commander';
+import { jqlStatusClause, resolveListJql, registerList } from './list.js';
+
+vi.mock('../client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../client.js')>();
+  return { ...actual, request: vi.fn() };
+});
+
+import { request } from '../client.js';
+
+const mockRequest = request as unknown as ReturnType<typeof vi.fn>;
 
 describe('jqlStatusClause (HIMMEL-112)', () => {
   it('defaults to To Do + In Progress when status is undefined', () => {
@@ -145,5 +155,76 @@ describe('resolveListJql --label (HIMMEL-243)', () => {
     expect(resolveListJql({ project: 'HIMMEL', label: 'a"b' })).toBe(
       'project=HIMMEL AND status in ("To Do","In Progress") AND labels = "a\\"b" ORDER BY created DESC',
     );
+  });
+});
+
+describe('list --labels display flag (HIMMEL-3610)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.JIRA_PROJECT_KEY = 'HIMMEL';
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  function freshProgram(): Command {
+    const p = new Command();
+    p.exitOverride();
+    return p;
+  }
+
+  it('does NOT request labels by default (unchanged column count)', async () => {
+    mockRequest.mockResolvedValue({ issues: [], total: 0 });
+    const p = freshProgram();
+    registerList(p);
+    await p.parseAsync(['node', 'jira', 'list']);
+    const [, path] = mockRequest.mock.calls[0];
+    expect(path).toContain('fields=summary,status,issuetype&');
+    expect(path).not.toContain('labels');
+  });
+
+  it('requests labels and appends a 5th column only with --labels', async () => {
+    mockRequest.mockResolvedValue({
+      issues: [
+        {
+          key: 'HIMMEL-1',
+          fields: {
+            summary: 'S',
+            status: { name: 'To Do' },
+            issuetype: { name: 'Task' },
+            labels: ['a', 'b'],
+          },
+        },
+      ],
+      total: 1,
+    });
+    const p = freshProgram();
+    registerList(p);
+    await p.parseAsync(['node', 'jira', 'list', '--labels']);
+    const [, path] = mockRequest.mock.calls[0];
+    expect(path).toContain('fields=summary,status,issuetype,labels');
+    expect(logSpy).toHaveBeenCalledWith('HIMMEL-1\tTask\tTo Do\tS\ta,b');
+  });
+
+  it('appends an empty trailing column when the issue has no labels', async () => {
+    mockRequest.mockResolvedValue({
+      issues: [
+        {
+          key: 'HIMMEL-2',
+          fields: {
+            summary: 'S2',
+            status: { name: 'To Do' },
+            issuetype: { name: 'Task' },
+            labels: [],
+          },
+        },
+      ],
+      total: 1,
+    });
+    const p = freshProgram();
+    registerList(p);
+    await p.parseAsync(['node', 'jira', 'list', '--labels']);
+    expect(logSpy).toHaveBeenCalledWith('HIMMEL-2\tTask\tTo Do\tS2\t');
   });
 });

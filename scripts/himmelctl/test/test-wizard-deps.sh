@@ -159,6 +159,316 @@ grepq "$(echo "$outB2" | jq -er '.args[1]')" -F '_ensure_install_bun' \
   || fail "case b (upgrade): expected '_ensure_install_bun' (got: $outB2)"
 echo "ok: case b — bun ensure-tools: install -> ensure_tools bun, upgrade -> _ensure_install_bun"
 
+# ── case b2 (HIMMEL-2521): manager:"ensure-tools" for uv/pre-commit ────────
+# uv and pre-commit have no apt/dnf package on stock Ubuntu/Debian, and
+# python3 -m pip is unreliable there (PEP 668 + often no pip at all) -- both
+# route through the SAME bespoke-installer dispatch bun already uses, never
+# the generic pip manager on linux.
+for _dep2521 in uv pre-commit; do
+  out2521a=$("$node_bin" -e "
+const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);
+const dep = { id: '$_dep2521', cmd: '$_dep2521', install: { linux: { manager: 'ensure-tools' } } };
+const ctx = { repoRoot: '/fake/repo', platform: 'linux' };
+console.log(JSON.stringify(buildDepEntry(dep, ctx)));
+")
+  grepq "$(echo "$out2521a" | jq -er '.args[1]')" -F "ensure_tools $_dep2521" \
+    || fail "case b2 ($_dep2521 install): expected 'ensure_tools $_dep2521' (got: $out2521a)"
+  out2521b=$("$node_bin" -e "
+const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);
+const dep = { id: '$_dep2521', cmd: '$_dep2521', install: { linux: { manager: 'ensure-tools' } } };
+const ctx = { repoRoot: '/fake/repo', platform: 'linux' };
+console.log(JSON.stringify(buildDepEntry(dep, ctx, { upgrade: true })));
+")
+  _installer_fn="_ensure_install_uv"
+  [ "$_dep2521" = "pre-commit" ] && _installer_fn="_ensure_install_precommit"
+  grepq "$(echo "$out2521b" | jq -er '.args[1]')" -F "$_installer_fn" \
+    || fail "case b2 ($_dep2521 upgrade): expected '$_installer_fn' (got: $out2521b)"
+done
+echo "ok: case b2 — uv/pre-commit ensure-tools: install -> ensure_tools <id>, upgrade -> the bespoke installer, never manager:pip on linux"
+
+# ── case b3 (HIMMEL-2521): ensure-tools.sh installs uv/pre-commit without
+# ever invoking python3 -m pip, and names the cause when uv cannot be
+# bootstrapped ────────────────────────────────────────────────────────────
+b3dir="$work/b3"; mkdir -p "$b3dir/bin" "$b3dir/home"
+pip_called_marker="$b3dir/python3-pip-was-called"
+uv_calls_log="$b3dir/uv-calls.log"
+# A python3 stub that would prove itself CALLED (for -m pip specifically) --
+# it must never be invoked by the new uv/pre-commit path. Any other args
+# succeed quietly so the stub does not itself break something unrelated.
+cat > "$b3dir/bin/python3" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = "-m" ] && [ "\$2" = "pip" ]; then
+  echo called > "$pip_called_marker"
+  echo "python3: no module named pip" >&2
+  exit 1
+fi
+exit 0
+SH
+chmod +x "$b3dir/bin/python3"
+# A curl stub that, regardless of URL, returns a canned "installer" script
+# writing a fake uv binary -- no network. The fake uv binary itself answers
+# `tool install pre-commit` as a no-op success, standing in for the real
+# `uv tool install pre-commit` this path shells out to.
+cat > "$b3dir/bin/curl" <<'SH'
+#!/usr/bin/env bash
+cat <<'INSTALLER'
+#!/bin/sh
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/uv" <<'UVBIN'
+#!/usr/bin/env bash
+exit 0
+UVBIN
+chmod +x "$HOME/.local/bin/uv"
+INSTALLER
+SH
+chmod +x "$b3dir/bin/curl"
+# A logging uv, placed on PATH ahead of the real system uv (b3dir/bin is
+# first in PATH below) -- this is what _ensure_install_precommit's
+# `command -v uv` resolves to, so its invocation can be asserted below
+# without shelling out to whatever uv is actually installed on this host.
+cat > "$b3dir/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+exit 0
+SH
+chmod +x "$b3dir/bin/uv"
+UV_CALLS_LOG="$uv_calls_log" HOME="$b3dir/home" PATH="$b3dir/bin:$PATH" bash -c '
+  . "$1"
+  _ensure_install_uv
+  _ensure_install_precommit
+' _ "$repo_root/scripts/setup/ensure-tools.sh"
+[ -x "$b3dir/home/.local/bin/uv" ] \
+  || fail "case b3: _ensure_install_uv should have landed uv at \$HOME/.local/bin/uv via the stubbed installer"
+[ -e "$pip_called_marker" ] \
+  && fail "case b3: python3 -m pip must NEVER be invoked by the uv/pre-commit bootstrap path"
+grepq "$(cat "$uv_calls_log" 2>/dev/null)" -F 'tool install pre-commit' \
+  || fail "case b3: expected the fake uv to have been invoked with 'tool install pre-commit' (got: $(cat "$uv_calls_log" 2>/dev/null))"
+echo "ok: case b3 — ensure-tools.sh installs uv (stubbed official installer) then pre-commit (stubbed uv tool install pre-commit, verified by call log), without ever calling python3 -m pip"
+
+# ── case b4 (HIMMEL-2521): a genuinely unavailable uv names the cause ──────
+b4dir="$work/b4"; mkdir -p "$b4dir/bin" "$b4dir/home"
+# No curl on PATH at all -- uv cannot be bootstrapped; the message must name
+# the cause (curl missing) and the fix (the manual install URL).
+# A dedicated dir holding only a bash symlink goes on PATH so the isolated
+# PATH can still resolve `bash` itself without exposing curl.
+b4bashdir="$work/b4bashbin"; mkdir -p "$b4bashdir"
+ln -s "$(command -v bash)" "$b4bashdir/bash"
+uv_out=$(HOME="$b4dir/home" PATH="$b4bashdir:$b4dir/bin" bash -c '. "$1"; _ensure_install_uv' _ "$repo_root/scripts/setup/ensure-tools.sh" 2>&1) || true
+grepq "$uv_out" -F 'curl not found' \
+  || fail "case b4 (uv): expected the message to name curl as the cause (got: $uv_out)"
+grepq "$uv_out" -F 'https://astral.sh/uv/install.sh' \
+  || fail "case b4 (uv): expected the message to name the manual-install fix (got: $uv_out)"
+pc_out=$(HOME="$b4dir/home" PATH="$b4bashdir:$b4dir/bin" bash -c '. "$1"; _ensure_install_precommit' _ "$repo_root/scripts/setup/ensure-tools.sh" 2>&1) || true
+grepq "$pc_out" -F 'needs uv, and uv could not be installed' \
+  || fail "case b4 (pre-commit): expected the message to name uv as the cause (got: $pc_out)"
+echo "ok: case b4 — a genuinely unavailable uv (no curl) makes ensure-tools.sh name the cause and the fix, for both uv and pre-commit"
+
+# ── case b5 (HIMMEL-2521 CR follow-up): "upgrade" mode actually upgrades an
+# already-present uv/pre-commit, instead of the idempotency early-return
+# (ensure-mode's) silently no-op'ing -- the old manager:pip route supported
+# `--upgrade`; the bespoke-installer route must not regress that. ──────────
+b5dir="$work/b5"; mkdir -p "$b5dir/bin" "$b5dir/home/.local/bin"
+# A pre-existing (fake) uv already at ~/.local/bin -- ensure-mode's early
+# return would normally fire here and skip the installer entirely.
+cat > "$b5dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then echo "pre-commit v0.0.0"; exit 0; fi
+if [ "$1 $2" = "tool upgrade" ]; then exit 0; fi
+if [ "$1 $2" = "tool install" ]; then exit 0; fi
+exit 0
+SH
+chmod +x "$b5dir/home/.local/bin/uv"
+# A pre-existing (fake) pre-commit shim, standing in for the one a prior
+# `uv tool install pre-commit` would have already placed on PATH -- this is
+# what makes _ensure_install_precommit's "already installed" check see it as
+# present, and so choose the upgrade verb over the plain install one.
+cat > "$b5dir/home/.local/bin/pre-commit" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$b5dir/home/.local/bin/pre-commit"
+uv_calls_log="$b5dir/uv-calls.log"; : > "$uv_calls_log"
+b5curl_log="$b5dir/curl-called"
+cat > "$b5dir/bin/curl" <<SH
+#!/usr/bin/env bash
+echo called > "$b5curl_log"
+exit 1
+SH
+chmod +x "$b5dir/bin/curl"
+HOME="$b5dir/home" PATH="$b5dir/home/.local/bin:$b5dir/bin:$PATH" UV_CALLS_LOG="$uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_uv upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+[ -e "$b5curl_log" ] \
+  || fail "case b5 (uv upgrade): expected the official installer to be re-invoked (curl called) instead of the idempotency early-return"
+rm -f "$b5curl_log"
+HOME="$b5dir/home" PATH="$b5dir/home/.local/bin:$b5dir/bin:$PATH" UV_CALLS_LOG="$uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+grepq "$(cat "$uv_calls_log")" -F 'tool upgrade' \
+  || fail "case b5 (pre-commit upgrade): expected 'uv tool upgrade pre-commit', got calls: $(cat "$uv_calls_log")"
+echo "ok: case b5 — upgrade mode re-runs the uv installer and calls 'uv tool upgrade pre-commit' instead of silently no-op'ing on an already-present install"
+
+# ── case b6 (CR follow-up on b5): upgrade mode falls through to
+# 'uv tool install pre-commit' when pre-commit is on PATH but NOT uv-managed
+# (e.g. apt/pipx/manual) -- 'uv tool upgrade' cannot upgrade an install it
+# does not manage, so the upgrade verb must be gated on `uv tool list`. ─────
+b6dir="$work/b6"; mkdir -p "$b6dir/bin" "$b6dir/home/.local/bin"
+cat > "$b6dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then exit 0; fi
+exit 0
+SH
+chmod +x "$b6dir/home/.local/bin/uv"
+# pre-commit on PATH, but `uv tool list` (above) never mentions it -- standing
+# in for an apt/pipx/manual install uv does not manage.
+cat > "$b6dir/home/.local/bin/pre-commit" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$b6dir/home/.local/bin/pre-commit"
+b6_uv_calls_log="$b6dir/uv-calls.log"; : > "$b6_uv_calls_log"
+HOME="$b6dir/home" PATH="$b6dir/home/.local/bin:$b6dir/bin:$PATH" UV_CALLS_LOG="$b6_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+grepq "$(cat "$b6_uv_calls_log")" -F 'tool upgrade' \
+  && fail "case b6: pre-commit is not uv-managed (uv tool list omits it) -- 'uv tool upgrade pre-commit' must NOT be called (calls: $(cat "$b6_uv_calls_log"))"
+grepq "$(cat "$b6_uv_calls_log")" -F 'tool install --force pre-commit' \
+  || fail "case b6: expected a fall-through to 'uv tool install --force pre-commit' when pre-commit is on PATH but not uv-managed (calls: $(cat "$b6_uv_calls_log"))"
+echo "ok: case b6 — upgrade mode falls through to 'uv tool install pre-commit' when the on-PATH pre-commit is not uv-managed, instead of calling 'uv tool upgrade' on an install uv cannot upgrade"
+
+# ── case b7 (pr-check round 3 finding): upgrade mode must call 'uv tool
+# upgrade pre-commit' when uv manages pre-commit (per `uv tool list`) even
+# though its shim is NOT on PATH -- gating the upgrade verb on `command -v
+# pre-commit` (PATH) as well as `uv tool list` made this fall through to
+# 'uv tool install', which no-ops on an already-installed tool and silently
+# skips the upgrade. ─────────────────────────────────────────────────────────
+b7dir="$work/b7"; mkdir -p "$b7dir/bin" "$b7dir/home/.local/bin"
+cat > "$b7dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then echo "pre-commit v0.0.0"; exit 0; fi
+exit 0
+SH
+chmod +x "$b7dir/home/.local/bin/uv"
+# grep and bash itself are the only external commands this isolated PATH
+# needs besides uv -- symlinked in rather than appending the host's own
+# $PATH, which would leak the STATION's real /usr/bin/pre-commit into
+# `command -v` and mask the exact bug this case exists to catch.
+ln -s "$(command -v grep)" "$b7dir/bin/grep"
+ln -s "$(command -v bash)" "$b7dir/bin/bash"
+# No pre-commit shim anywhere on PATH -- uv manages it (per `uv tool list`
+# above) but the shim itself is missing, standing in for a PATH not yet
+# updated after a prior `uv tool install pre-commit`.
+b7_uv_calls_log="$b7dir/uv-calls.log"; : > "$b7_uv_calls_log"
+HOME="$b7dir/home" PATH="$b7dir/home/.local/bin:$b7dir/bin" UV_CALLS_LOG="$b7_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+grepq "$(cat "$b7_uv_calls_log")" -F 'tool upgrade' \
+  || fail "case b7: uv manages pre-commit (uv tool list) but its shim is not on PATH -- 'uv tool upgrade pre-commit' must still be called (calls: $(cat "$b7_uv_calls_log"))"
+echo "ok: case b7 — upgrade mode calls 'uv tool upgrade pre-commit' when uv manages it even though its shim is not on PATH"
+
+# ── case b8 (CR round-4 finding): upgrade mode's fall-through 'uv tool
+# install pre-commit' must pass --force when pre-commit is on PATH but not
+# uv-managed -- a pip/pipx/manual pre-commit shim lives at the same
+# ~/.local/bin uv installs into, so a plain 'uv tool install' refuses to
+# overwrite it ("Executable already exists ... use --force"), and a genuine
+# failure's stderr must be surfaced, not swallowed. ─────────────────────────
+b8dir="$work/b8"; mkdir -p "$b8dir/bin" "$b8dir/home/.local/bin"
+cat > "$b8dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then exit 0; fi
+if [ "$1 $2" = "tool install" ] && [ "$3" = "pre-commit" ]; then
+  echo "error: Executable already exists at \`$HOME/.local/bin/pre-commit\` but is not managed by uv; use --force to replace it" >&2
+  exit 1
+fi
+if [ "$1 $2 $3" = "tool install --force" ] && [ "$4" = "pre-commit" ]; then exit 0; fi
+exit 1
+SH
+chmod +x "$b8dir/home/.local/bin/uv"
+# pre-commit on PATH via a pip/pipx/manual install -- not uv-managed (per
+# `uv tool list` above), same shape as case b6.
+cat > "$b8dir/home/.local/bin/pre-commit" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$b8dir/home/.local/bin/pre-commit"
+b8_uv_calls_log="$b8dir/uv-calls.log"; : > "$b8_uv_calls_log"
+b8_stderr=$(HOME="$b8dir/home" PATH="$b8dir/home/.local/bin:$b8dir/bin:$PATH" UV_CALLS_LOG="$b8_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit upgrade
+' _ "$repo_root/scripts/setup/ensure-tools.sh" 2>&1 >/dev/null)
+b8_rc=$?
+[ "$b8_rc" -eq 0 ] \
+  || fail "case b8: _ensure_install_precommit upgrade should succeed once it retries with --force (rc=$b8_rc, stderr: $b8_stderr)"
+grepq "$(cat "$b8_uv_calls_log")" -F 'tool install --force pre-commit' \
+  || fail "case b8: expected a retry as 'uv tool install --force pre-commit' after the unforced install refused to overwrite the existing pip/pipx shim (calls: $(cat "$b8_uv_calls_log"))"
+echo "ok: case b8 — upgrade mode's fall-through install retries with --force when uv refuses to overwrite an existing unmanaged pre-commit shim"
+
+# ── case b9 (HIMMEL-3628): a FAILING `uv tool list` (uv present but broken)
+# must not be read the same as an EMPTY one -- the function reports the uv
+# failure and returns non-zero WITHOUT attempting an install/upgrade. ──────
+b9dir="$work/b9"; mkdir -p "$b9dir/bin" "$b9dir/home/.local/bin"
+cat > "$b9dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then echo "uv: internal error" >&2; exit 1; fi
+exit 0
+SH
+chmod +x "$b9dir/home/.local/bin/uv"
+b9_uv_calls_log="$b9dir/uv-calls.log"; : > "$b9_uv_calls_log"
+set +e
+b9_out=$(HOME="$b9dir/home" PATH="$b9dir/home/.local/bin:$b9dir/bin:$PATH" UV_CALLS_LOG="$b9_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit
+' _ "$repo_root/scripts/setup/ensure-tools.sh" 2>&1)
+b9_rc=$?
+set -e
+[ "$b9_rc" -ne 0 ] \
+  || fail "case b9: a failing 'uv tool list' should make _ensure_install_precommit return non-zero (rc=$b9_rc, out: $b9_out)"
+grepq "$b9_out" -F 'tool list' \
+  || fail "case b9: expected the failure message to name 'uv tool list' as the cause (got: $b9_out)"
+grepq "$(cat "$b9_uv_calls_log")" -F 'tool install' \
+  && fail "case b9: a failing 'uv tool list' must NOT be treated as 'absent' -- no 'uv tool install' call should follow (calls: $(cat "$b9_uv_calls_log"))"
+grepq "$(cat "$b9_uv_calls_log")" -F 'tool upgrade' \
+  && fail "case b9: a failing 'uv tool list' must NOT be treated as 'absent' -- no 'uv tool upgrade' call should follow (calls: $(cat "$b9_uv_calls_log"))"
+echo "ok: case b9 — a failing 'uv tool list' reports the uv failure and returns non-zero without attempting an install"
+
+# ── case b10 (HIMMEL-3628): an EMPTY-but-successful `uv tool list` is still
+# treated as 'pre-commit absent' (install proceeds), and _ensure_install_
+# precommit's locals (uv_tool_list, pc_installed, ...) must not leak into
+# the caller's scope of the same name. ──────────────────────────────────────
+b10dir="$work/b10"; mkdir -p "$b10dir/bin" "$b10dir/home/.local/bin"
+cat > "$b10dir/home/.local/bin/uv" <<'SH'
+#!/usr/bin/env bash
+echo "uv $*" >> "$UV_CALLS_LOG"
+if [ "$1 $2" = "tool list" ]; then exit 0; fi
+exit 0
+SH
+chmod +x "$b10dir/home/.local/bin/uv"
+b10_uv_calls_log="$b10dir/uv-calls.log"; : > "$b10_uv_calls_log"
+HOME="$b10dir/home" PATH="$b10dir/home/.local/bin:$b10dir/bin:$PATH" UV_CALLS_LOG="$b10_uv_calls_log" bash -c '
+  . "$1"
+  _ensure_install_precommit
+' _ "$repo_root/scripts/setup/ensure-tools.sh" >/dev/null 2>&1 || true
+grepq "$(cat "$b10_uv_calls_log")" -F 'tool install pre-commit' \
+  || fail "case b10: an empty (but successful) 'uv tool list' should still be treated as 'absent' -- expected a 'uv tool install pre-commit' call (calls: $(cat "$b10_uv_calls_log"))"
+b10_leak=$(HOME="$b10dir/home" PATH="$b10dir/home/.local/bin:$b10dir/bin:$PATH" UV_CALLS_LOG="$b10_uv_calls_log" bash -c '
+  . "$1"
+  uv_tool_list="SENTINEL"; pc_installed="SENTINEL"; pc_force_flag="SENTINEL"; pc_err="SENTINEL"
+  _ensure_install_precommit >/dev/null 2>&1
+  echo "uv_tool_list=[$uv_tool_list] pc_installed=[$pc_installed] pc_force_flag=[$pc_force_flag] pc_err=[$pc_err]"
+' _ "$repo_root/scripts/setup/ensure-tools.sh")
+[ "$b10_leak" = "uv_tool_list=[SENTINEL] pc_installed=[SENTINEL] pc_force_flag=[SENTINEL] pc_err=[SENTINEL]" ] \
+  || fail "case b10: _ensure_install_precommit's internals must not leak into caller variables of the same name (got: $b10_leak)"
+echo "ok: case b10 — an empty-but-successful 'uv tool list' is still treated as absent, and the function's internals stay local to the caller"
+
 # ── case c: manager:"brew" (install vs upgrade) ─────────────────────────────
 outC1=$("$node_bin" -e "
 const { buildDepEntry } = require(process.env.DEPS_ENGINE_LIB);

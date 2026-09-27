@@ -1,12 +1,15 @@
 ---
 description: Start a console session (new) or hand it over (next) — writes the doc, takes the queue lock, prints the launch line.
-argument-hint: new|next [--bucket <slug>] [--name <slug>] [--arm] [--dry-run] [--doc <path>] [--model <m>]
+argument-hint: new|next [--bucket <slug>] [--name <slug>] [--arm] [--dry-run] [--doc <path>] [--model <m>] [--project <dir>]
 ---
 
 Starts or hands over a console (defined in
 [`docs/glossary.md`](../../docs/glossary.md)). Background + the operating
 contract:
 [`docs/handover/running-a-console.md`](../../docs/handover/running-a-console.md).
+The himmel-ops plugin ships its own copy of this command that runs from any
+repo, resolving the himmel checkout and passing `--project` at that project's
+cwd — see `marketplace/plugins/himmel-ops/commands/console.md`.
 
 Run:
 
@@ -27,6 +30,11 @@ bash scripts/handover/console/console.sh $ARGUMENTS
   `--autocompact 200000` by default (HIMMEL-2973); set `CONSOLE_CONTEXT=1m`
   in the launching shell to opt into `--autocompact auto` instead.
 - `--dry-run` — print what it would write, prefixed `would-`, and touch nothing.
+- `--project <dir>` — a repo other than this himmel checkout: bucket/prefix
+  derive from it instead of himmel's own repo basename/`JIRA_PROJECT_KEY`, and
+  it is recorded in the console doc as data; the console session itself still
+  opens in this himmel checkout, also under `--arm`. `--bucket`/`--prefix`
+  still override it.
 
 Record the printed `release-token: ` line — now backticked around the token
 itself (HIMMEL-2910) — in the console's first Results bullet verbatim:

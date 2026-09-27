@@ -27,6 +27,7 @@ unset CR_PROFILE CRITIC_PANEL_TIERS CR_TRIVIALITY_OVERRIDE CR_REQUIRE_CROSS_MODE
     CRITIC_PANEL_STARTED_AT 2>/dev/null || true
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/../lib/timeout-bin.sh"
 PANEL="$HERE/critic-panel.sh"
 tmp="$(mktemp -d -t critic-panel-triviality-test.XXXXXX)"
 # shellcheck disable=SC2064
@@ -169,9 +170,9 @@ printf 'ok\n'; exit 0
 EOS
 chmod +x "$CHK_INVOKE"
 
-if command -v timeout > /dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
     chk_out="$(CR_PROFILE="free,paid" CRITICS_JSON="$JSON" CRITIC_INVOKE="$CHK_INVOKE" \
-        timeout 15 bash "$PANEL" --check --all-tiers </dev/null 2>&1)"; chk_rc=$?
+        "$_TIMEOUT_BIN" 15 bash "$PANEL" --check --all-tiers </dev/null 2>&1)"; chk_rc=$?
     check "4: --check terminates (not 124 timeout)" "$([ "$chk_rc" != "124" ] && echo ok)" "ok"
     check_contains "4: --check --all-tiers probes the paid row (gate not applied)" "$chk_out" "row paidcrit: ok"
     check "4: --check emits NO triviality skip line" "$(printf '%s\n' "$chk_out" | grep -cF 'triviality-gate')" "0"

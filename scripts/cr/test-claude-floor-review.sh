@@ -17,15 +17,23 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$2' got '$3'
 has() { if grep -qF -- "$2" "$3" 2>/dev/null; then ok "$1"; else bad "$1: '$2' not in $3"; fi; }
 hasnt() { if grep -qE -- "$2" "$3" 2>/dev/null; then bad "$1: /$2/ found in $3"; else ok "$1"; fi; }
 
-# Bank preflight + registry stubs (same shape as scripts/lib/test-claude-headless.sh).
-printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}\n' "$(date +%s)" > "$W/bank.json"
-export CADENCE_BANK_CACHE="$W/bank.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/bank-ledger.jsonl"
-printf '%s\n' '#!/usr/bin/env bash' 'true' > "$W/no-fleet.sh"; chmod +x "$W/no-fleet.sh"
-export FLEET_PS_CMD="$W/no-fleet.sh" HIMMEL_REGISTRY_DIR="$W/registry"
 # HIMMEL-3220: a throwaway HOME and floor key dir — this suite never touches
 # the real ~/.himmel/cr-floor-key.
 export HOME="$W/home" CR_FLOOR_KEY_DIR="$W/keys"
 mkdir -p "$HOME"
+# HIMMEL-1712: bank-preflight distrusts a cache whose account doesn't match
+# the current identity — synthesize one so this fixture still verdicts PROCEED.
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-claude-floor-review-test"}}' > "$HOME/.claude.json"
+# shellcheck source=../lib/usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$REPO/scripts/lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
+
+# Bank preflight + registry stubs (same shape as scripts/lib/test-claude-headless.sh).
+printf '{"account":"%s","five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}\n' "$ACCT" "$(date +%s)" > "$W/bank.json"
+export CADENCE_BANK_CACHE="$W/bank.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/bank-ledger.jsonl"
+printf '%s\n' '#!/usr/bin/env bash' 'true' > "$W/no-fleet.sh"; chmod +x "$W/no-fleet.sh"
+export FLEET_PS_CMD="$W/no-fleet.sh" HIMMEL_REGISTRY_DIR="$W/registry"
 FLOOR_MJS="$REPO/scripts/cr/claude-floor.mjs"
 node "$FLOOR_MJS" init-key > "$W/init.out" 2>&1 || { echo "FAIL - floor key init failed: $(cat "$W/init.out")" >&2; exit 1; }
 

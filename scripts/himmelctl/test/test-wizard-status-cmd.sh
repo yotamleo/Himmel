@@ -49,7 +49,8 @@ manifest_path="$repo_root/scripts/install/manifest.json"
 [ -f "$manifest_path" ] || { echo "FAIL: $manifest_path not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq required" >&2; exit 1; }
-command -v sha256sum >/dev/null 2>&1 || { echo "FAIL: sha256sum required" >&2; exit 1; }
+. "$repo_root/scripts/lib/sha256-bin.sh"
+[ -n "$_SHA256_CMD" ] || { echo "FAIL: sha256sum or shasum required" >&2; exit 1; }
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
@@ -71,7 +72,7 @@ JSON
 # snapshot_dir <dir> — sorted "relpath sha256" pairs, for a before/after
 # byte-identity check that doesn't depend on tar's metadata quirks.
 snapshot_dir() {
-  ( cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done )
+  ( cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do $_SHA256_CMD -- "$f"; done )
 }
 
 # ── shared fixture repo root (HIMMELCTL_REPO_ROOT) ──────────────────────────

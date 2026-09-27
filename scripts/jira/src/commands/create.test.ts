@@ -145,3 +145,65 @@ describe('create — v1 bug freeze wiring', () => {
     expect(fields.fixVersions).toBeUndefined();
   });
 });
+
+describe('create --fix-version (HIMMEL-3713)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('validates against the project versions then sets fixVersions', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-20T12:00:00'));
+    mockRequest.mockImplementation(async (method: string) =>
+      method === 'GET' ? [{ id: '1', name: 'v1.0.0' }] : { key: 'HIMMEL-1' },
+    );
+    const p = new Command();
+    p.exitOverride();
+    registerCreate(p);
+    await p.parseAsync([
+      'node',
+      'jira',
+      'create',
+      '--type',
+      'Task',
+      '--title',
+      't',
+      '--fix-version',
+      'v1.0.0',
+    ]);
+    const postCall = mockRequest.mock.calls.find((c) => c[0] === 'POST');
+    expect((postCall?.[2] as { fields: { fixVersions?: unknown } }).fields.fixVersions).toEqual([
+      { name: 'v1.0.0' },
+    ]);
+  });
+
+  it('rejects an unknown --fix-version naming the project, without ever POSTing', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-20T12:00:00'));
+    mockRequest.mockImplementation(async (method: string) =>
+      method === 'GET' ? [{ id: '1', name: 'v1.0.0' }] : { key: 'HIMMEL-1' },
+    );
+    const p = new Command();
+    p.exitOverride();
+    registerCreate(p);
+    await expect(
+      p.parseAsync([
+        'node',
+        'jira',
+        'create',
+        '--type',
+        'Task',
+        '--title',
+        't',
+        '--fix-version',
+        'v9.9.9',
+      ]),
+    ).rejects.toThrow(/no version named "v9\.9\.9" in project HIMMEL/);
+    expect(mockRequest.mock.calls.some((c) => c[0] === 'POST')).toBe(false);
+  });
+});

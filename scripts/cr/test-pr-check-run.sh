@@ -75,6 +75,9 @@ CLEAR="$SCRIPT_DIR/clear-cr-marker.sh"
 # shellcheck source=scripts/lib/fixture-tempdir.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/timeout-bin.sh"
 
 # ---------------------------------------------------------------------------
 # Fixture helpers -- the scripts/cr/test-clear-cr-marker.sh pattern (its
@@ -333,16 +336,6 @@ if case "$CASE_TIMEOUT" in ''|*[!0-9]*) true ;; *) [ "$CASE_TIMEOUT" -eq 0 ] ;; 
     CASE_TIMEOUT=120
 fi
 
-TIMEOUT_CMD=""
-if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD=timeout
-elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD=gtimeout
-else
-    echo "test-pr-check-run: a GNU-compatible timeout command is required (timeout or gtimeout; on macOS: brew install coreutils)" >&2
-    exit 1
-fi
-
 # The scripts every case drives must be present. Without this a rename turns
 # the whole suite into a quiet green -- exactly the vacuous pass the retired
 # stub cases used to hide behind.
@@ -363,7 +356,7 @@ FAIL=0
 
 for c in "${CASES[@]}"; do
     rc=0
-    "$TIMEOUT_CMD" "$CASE_TIMEOUT" bash "$0" --run-case "$c"
+    ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 "$CASE_TIMEOUT"} bash "$0" --run-case "$c"
     rc=$?
     case "$rc" in
         0) PASSED=$((PASSED + 1)) ;;

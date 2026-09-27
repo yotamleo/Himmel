@@ -169,7 +169,14 @@ fi
 if [ -n "$doc" ]; then
     # All mirror writers use the canonical doc path as the lock key. Keep
     # lock artifacts outside the vault, in a private per-user temp directory.
-    doc="$(realpath -e -- "$doc")" || exit 2
+    # realpath -e is GNU-only (BSD/macOS realpath has no -e flag); check
+    # existence explicitly first, then canonicalize without it -- with
+    # existence already confirmed, GNU and BSD realpath agree on the result.
+    if [ ! -e "$doc" ]; then
+        printf 'inbox-send: --doc %s: No such file or directory\n' "$doc" >&2
+        exit 2
+    fi
+    doc="$(realpath -- "$doc")" || exit 2
     lock_dir="${TMPDIR:-/tmp}/himmel-inbox-doc-$UID"
     # shellcheck disable=SC2174 # Only the final, per-user directory is ours.
     if ! mkdir -m 700 -p "$lock_dir" || [ -L "$lock_dir" ] || [ ! -O "$lock_dir" ]; then

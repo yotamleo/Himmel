@@ -612,6 +612,19 @@ homeV1="$work/homeV1"; mkdir -p "$homeV1"
 bridgeEnvV1="$work/bridgeV1"; mkdir -p "$bridgeEnvV1"
 printf 'SOME_UNRELATED_KEY=1\n' > "$bridgeEnvV1/.env"
 
+# HIMMEL-3308 CR r2: since the wizard's --dry-run now shells out to the REAL
+# adopt.sh (to surface its own per-file plan), it needs a repo root whose
+# adopt.sh is runnable hermetically -- pathV1's minimal stub PATH lacks the
+# coreutils (sed, grep, dirname, ...) the real adopt.sh needs. A no-op fixture
+# adopt.sh, same shape as fixtureRepoLF/fixtureRepo below, sidesteps that: V1
+# is checking bin.js's OWN preview lines (luna cadence, bridge config), not
+# adopt.sh's dry-run output.
+fixtureRepoV1="$work/fixture-repo-v1"; mkdir -p "$fixtureRepoV1/scripts/luna"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixtureRepoV1/scripts/adopt.sh"
+chmod +x "$fixtureRepoV1/scripts/adopt.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixtureRepoV1/scripts/luna/pipeline-cadence.sh"
+chmod +x "$fixtureRepoV1/scripts/luna/pipeline-cadence.sh"
+
 profileV1="$work/profileV1.json"
 cat > "$profileV1" <<JSON
 {
@@ -633,6 +646,7 @@ JSON
 
 run_v1_dry_run() {
   PATH="$pathV1" HOME="$homeV1" USERPROFILE="$(winpath "$homeV1")" HIMMELCTL_INTERACTIVE=0 \
+    HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepoV1")" \
     HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/config-v1-unused.json")" \
     HIMMELCTL_CACHE_DIR="$(winpath "$work/cache-v1")" \
     HIMMELCTL_BIN_DIR="$(winpath "$work/bin-v1")" \
@@ -1340,6 +1354,14 @@ make_git_stub "$stubVN" "https://github.com/someone/other-repo.git"
 homeVN="$work/homeVN"; mkdir -p "$homeVN"
 cacheVN="$work/cache-vn"; mkdir -p "$cacheVN"
 
+# HIMMEL-3308 CR r2: same reasoning as fixtureRepoV1 above -- --dry-run now
+# shells out to the real adopt.sh, so give it a hermetically-runnable one.
+# Created here (moved up from step 2 below) so BOTH the interactive dry-run
+# and the --from-profile replay can use it.
+fixtureRepoVN="$work/fixture-repo-vn"; mkdir -p "$fixtureRepoVN/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixtureRepoVN/scripts/adopt.sh"
+chmod +x "$fixtureRepoVN/scripts/adopt.sh"
+
 # ── step 1: drive the INTERACTIVE flow, answering vault=none (7 questions,
 # the same shape test-wizard-questions.sh's own case1 pins). HIMMEL-2436:
 # --dry-run no longer WRITES the T3 cache (case2436d below), so the artifact
@@ -1351,6 +1373,7 @@ cacheVN="$work/cache-vn"; mkdir -p "$cacheVN"
 # without a real (non-dry, side-effecting) install.
 set +e
 outVNInteractive=$(PATH="$pathVN" HOME="$homeVN" USERPROFILE="$(winpath "$homeVN")" HIMMELCTL_INTERACTIVE=1 \
+  HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepoVN")" \
   HIMMELCTL_CACHE_DIR="$(winpath "$cacheVN")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheVN")-luna-config.json" \
   "$node_bin" "$wizard" install --dry-run 2>&1 <<INPUT
 adopter
@@ -1381,9 +1404,7 @@ echo "ok: caseVaultNoneNoOp [codex-1] an interactive vault=none run never serial
 # ── step 2: replay that EXACT cache (the artifact a real adopter would get)
 # via --from-profile against an ALREADY-ARMED config -- same assertion shape
 # as caseLegacyProfile, this time via the path that actually produces the file.
-fixtureRepoVN="$work/fixture-repo-vn"; mkdir -p "$fixtureRepoVN/scripts"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$fixtureRepoVN/scripts/adopt.sh"
-chmod +x "$fixtureRepoVN/scripts/adopt.sh"
+# (fixtureRepoVN was created above, alongside pathVN.)
 
 configPathVN="$(winpath "$work/config-vn.json")"
 "$node_bin" -e "
@@ -2172,7 +2193,12 @@ stubPV1="$work/stubPV1"; mkdir -p "$stubPV1"
 # repro: rc=1 with `dirname` missing, rc=0 once it resolves) is what
 # actually surfaces it. Listing it as PRESENT links the real binary into the
 # stub dir ahead of the scrubbed PATH, same as bash/jq/python3/npm above.
-pathPV1=$(build_path "$stubPV1" bash jq python3 npm dirname -- python)
+# HIMMEL-3308 CR r2: `install --dry-run` (unlike preflight-adopter.sh alone,
+# which needed only `dirname` above) now shells out to the real adopt.sh for
+# its own dry-run pass too, which unconditionally needs the rest of coreutils
+# below for its internal provenance-diff bookkeeping (temp-file copy/compare/
+# cleanup), even though --dry-run applies none of it permanently.
+pathPV1=$(build_path "$stubPV1" bash jq python3 npm dirname basename cat chmod cmp cp find grep install mkdir mv readlink realpath rm sed sort tail touch tr -- python)
 # `git` also collides with the scrubbed `python` on the same stations
 # (HIMMEL-2642) -- every other stub dir in this suite covers hardGateCheck()'s
 # `git` presence check via make_git_stub's fake; PV1 never called it.
@@ -2681,7 +2707,7 @@ stubPV11="$work/stubPV11"; mkdir -p "$stubPV11"
 # `dirname` + `git` (HIMMEL-2642): same PV1 fixture gap — see PV1's own
 # comment above for the full mechanics (real `dirname`/`git` collide with the
 # scrubbed `python` in the same PATH dir on some stations).
-pathPV11=$(build_path "$stubPV11" bash jq python3 npm dirname -- python)
+pathPV11=$(build_path "$stubPV11" bash jq python3 npm dirname basename cat chmod cmp cp find grep install mkdir mv readlink realpath rm sed sort tail touch tr -- python)
 make_git_stub "$stubPV11" "https://github.com/someone/other-repo.git"
 homePV11="$work/homePV11"; mkdir -p "$homePV11"
 cachePV11="$work/cache-pv11"; mkdir -p "$cachePV11"
@@ -3565,6 +3591,7 @@ home2436c="$work/home2436c"; mkdir -p "$home2436c"
 cache2436c_posix="$work/cache-2436c"
 set +e
 out2436c=$(PATH="$path2436c" HOME="$home2436c" USERPROFILE="$(winpath "$home2436c")" HIMMELCTL_INTERACTIVE=0 \
+  HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" \
   HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/config-2436c-unused.json")" \
   HIMMELCTL_CACHE_DIR="$(winpath "$cache2436c_posix")" \
   HIMMELCTL_BIN_DIR="$(winpath "$work/bin-2436c")" \
@@ -3587,6 +3614,7 @@ home2436d="$work/home2436d"; mkdir -p "$home2436d"
 cache2436d_posix="$work/cache-2436d"
 set +e
 out2436d=$(PATH="$path2436d" HOME="$home2436d" USERPROFILE="$(winpath "$home2436d")" HIMMELCTL_INTERACTIVE=1 \
+  HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" \
   HIMMELCTL_CACHE_DIR="$(winpath "$cache2436d_posix")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cache2436d_posix")-luna-config.json" \
   "$node_bin" "$wizard" install --dry-run 2>&1 <<INPUT
 starter

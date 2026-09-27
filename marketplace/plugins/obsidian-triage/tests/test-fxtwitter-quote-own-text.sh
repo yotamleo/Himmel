@@ -28,6 +28,11 @@
 #     already carries its own text elsewhere in the body (HIMMEL-2621 CR
 #     finding: isQuoteOnlyClip must also require isThinTweetBody, or it
 #     duplicates text an unaffected clip already has).
+#   - HIMMEL-2628: a quote-only clip whose author added NO text of their own
+#     gets a terminal `last_error: quote_only_no_own_text` marker on re-enrich
+#     (there is nothing to body-fill), so a LATER `--reenrich-quote-only` run
+#     no longer re-fetches or rewrites it. `enrichment_status` stays `ok` -
+#     this is a complete enrichment, not a failure.
 
 set -euo pipefail
 
@@ -61,10 +66,12 @@ vault_dryrun="$tmpdir/vault-dryrun"
 vault_link="$tmpdir/vault-link"
 vault_tco="$tmpdir/vault-tco"
 vault_own_text="$tmpdir/vault-own-text"
+vault_no_own_text="$tmpdir/vault-no-own-text"
+vault_heading="$tmpdir/vault-heading"
 mkdir -p "$vault_note/Clippings" "$vault_article/Clippings" "$vault_media/Clippings" \
          "$vault_backfill/Clippings" "$vault_skip_idea/Clippings" "$vault_skip_plain/Clippings" \
          "$vault_dryrun/Clippings" "$vault_link/Clippings" "$vault_tco/Clippings" \
-         "$vault_own_text/Clippings"
+         "$vault_own_text/Clippings" "$vault_no_own_text/Clippings" "$vault_heading/Clippings"
 
 # Stub screener: records the body it was handed, then exits 0 (clean). Proves
 # the HIMMEL-256 re-screen ran on the new quote path with the NEW body.
@@ -397,6 +404,116 @@ https://t.co/iDl6I25AQu
 [x](https://x.com/i/status/1717)
 EOF
 
+# -- Clip 11: quote-only clip whose author added NO text of their own ---
+# (HIMMEL-2628). There is nothing to body-fill; the fix marks this terminal
+# so a later --reenrich-quote-only run does not refetch and rewrite it.
+cat >"$vault_no_own_text/Clippings/tweet-quote-no-text.md" <<'EOF'
+---
+title: "tweet from x.com/i/status/2020"
+source: https://x.com/i/status/2020
+type: tweet
+tags: []
+clipped_via: telegram
+enriched_at: "2026-09-01"
+enrichment_source: fxtwitter
+tweet_is_note: false
+tweet_is_article: false
+tweet_has_quote: true
+enrichment_status: ok
+---
+# tweet from x.com/i/status/2020
+
+https://x.com/i/status/2020
+
+## Crawled content
+<!-- enriched 2026-09-01 via fxtwitter (quote-context) -->
+
+### Quoted tweet (@quotedauthor)
+
+https://t.co/xYzAbC1234
+
+[Quoted tweet](https://x.com/quotedauthor/status/2121)
+
+## Source
+[x](https://x.com/i/status/2020)
+EOF
+
+cat >"$tmpdir/fixture-quote-no-text-v1.json" <<'EOF'
+{"code":200,"tweet":{
+  "text":"",
+  "author":{"screen_name":"noowntext","name":"NoOwnText"},
+  "is_note_tweet":false,"likes":5,"views":50,
+  "quote":{"url":"https://x.com/quotedauthor/status/2121",
+    "text":"https://x.com/i/article/9999",
+    "raw_text":{"text":"https://t.co/xYzAbC1234"},
+    "author":{"screen_name":"quotedauthor"},
+    "article":{"title":"An article the quoted author wrote",
+      "preview_text":"Some preview text for the quoted article."}}}}
+EOF
+
+# Same shape but a different tweet_stats.likes: proves a refetch by making
+# any second fetch produce a byte-different file.
+cat >"$tmpdir/fixture-quote-no-text-v2.json" <<'EOF'
+{"code":200,"tweet":{
+  "text":"",
+  "author":{"screen_name":"noowntext","name":"NoOwnText"},
+  "is_note_tweet":false,"likes":999,"views":50,
+  "quote":{"url":"https://x.com/quotedauthor/status/2121",
+    "text":"https://x.com/i/article/9999",
+    "raw_text":{"text":"https://t.co/xYzAbC1234"},
+    "author":{"screen_name":"quotedauthor"},
+    "article":{"title":"An article the quoted author wrote",
+      "preview_text":"Some preview text for the quoted article."}}}}
+EOF
+
+# -- Clip 12: backfill target whose FRESH quote text has its own `## ` ---
+# heading line. HIMMEL-2627: QUOTE_SECTION_RE's lookahead stops at the next
+# `\n## `. A quoted tweet's own text (untrusted, verbatim) can contain such
+# a line; rendered bare, it becomes a real markdown heading nested inside
+# the quote section, which the NEXT strip pass over this same content would
+# then stop at, leaving a truncated remnant. Same byte-shape as Clip 4 (the
+# real backfill target) so this exercises the actual --reenrich-quote-only
+# path, not a hand-rolled shortcut.
+cat >"$vault_heading/Clippings/tweet-quote-heading.md" <<'EOF'
+---
+title: "tweet from x.com/i/status/3030"
+source: https://x.com/i/status/3030
+type: tweet
+tags: []
+clipped_via: telegram
+enriched_at: "2026-09-01"
+enrichment_source: fxtwitter
+tweet_has_quote: true
+enrichment_status: ok
+---
+# tweet from x.com/i/status/3030
+
+https://x.com/i/status/3030
+
+## Crawled content
+<!-- enriched 2026-09-01 via fxtwitter (quote-context) -->
+
+### Quoted tweet (@staleauthor)
+
+https://t.co/staleShortener1
+
+[Quoted tweet](https://x.com/staleauthor/status/3232)
+
+## Source
+[x](https://x.com/i/status/3030)
+EOF
+
+cat >"$tmpdir/fixture-quote-heading.json" <<'EOF'
+{"code":200,"tweet":{
+  "text":"Own take on this one.",
+  "author":{"screen_name":"headingauthor","name":"HeadingAuthor"},
+  "is_note_tweet":false,"likes":3,"views":30,
+  "quote":{"url":"https://x.com/quotedheading/status/3131",
+    "text":"Reading this take.\n## Nested heading inside a quote\nWhich should never truncate the parser.",
+    "raw_text":{"text":"Reading this take.\n## Nested heading inside a quote\nWhich should never truncate the parser."},
+    "author":{"screen_name":"quotedheading"}}}}
+EOF
+
 # -- Run 1: note tweet + quote ------------------------------------------
 SCREENER_LOG="$screener_log" FXT_SCREENER="$tmpdir/stub-screener.py" \
   FXT_FIXTURE="$tmpdir/fixture-note-quote.json" \
@@ -645,15 +762,72 @@ check "control: --reenrich-quote-only skips a quote clip with its own text elsew
 grep -q 'skipped (reenrich-quote-only: not a quote-only fxtwitter clip)' "$tmpdir/run10.out" && r=yes || r=no
 check "control: run output names the own-text clip as skipped" "$r"
 
+# -- Run 11: quote-only clip with NO own text becomes terminal (HIMMEL-2628) --
+no_own_text_clip="$vault_no_own_text/Clippings/tweet-quote-no-text.md"
+
+FXT_FIXTURE="$tmpdir/fixture-quote-no-text-v1.json" \
+  node "$SCRIPT" --vault "$vault_no_own_text" --reenrich-quote-only >"$tmpdir/run11a.out" 2>&1 || true
+
+if grep -q '^## The Idea' "$no_own_text_clip"; then r=no; else r=yes; fi
+check "quote-only clip with no own text does NOT gain ## The Idea (nothing to fill)" "$r"
+
+grep -qE '^last_error:[[:space:]]*"?quote_only_no_own_text"?[[:space:]]*$' "$no_own_text_clip" && r=yes || r=no
+check "quote-only clip with no own text gets a terminal last_error: quote_only_no_own_text marker" "$r"
+
+grep -qE '^enrichment_status:[[:space:]]*"?ok"?[[:space:]]*$' "$no_own_text_clip" && r=yes || r=no
+check "quote-only clip with no own text keeps enrichment_status: ok (not misrepresented as partial)" "$r"
+
+no_own_text_sha1="$(sha256sum "$no_own_text_clip" | cut -d' ' -f1)"
+
+# Second invocation uses a DIFFERENT fixture (different tweet_stats.likes), so
+# IF the clip were refetched the file would change. The terminal marker must
+# make the switch skip it before any fetch happens.
+FXT_FIXTURE="$tmpdir/fixture-quote-no-text-v2.json" \
+  node "$SCRIPT" --vault "$vault_no_own_text" --reenrich-quote-only >"$tmpdir/run11b.out" 2>&1 || true
+
+grep -q 'skipped (reenrich-quote-only: not a quote-only fxtwitter clip)' "$tmpdir/run11b.out" && r=yes || r=no
+check "second --reenrich-quote-only run skips the now-terminal clip (0 fetches)" "$r"
+
+no_own_text_sha2="$(sha256sum "$no_own_text_clip" | cut -d' ' -f1)"
+[ "$no_own_text_sha1" = "$no_own_text_sha2" ] && r=yes || r=no
+check "second run leaves the clip byte-identical (the differing fixture was never fetched)" "$r"
+
+# -- Run 12: quote text containing its own `## ` heading line ------------
+heading_clip="$vault_heading/Clippings/tweet-quote-heading.md"
+
+FXT_FIXTURE="$tmpdir/fixture-quote-heading.json" \
+  node "$SCRIPT" --vault "$vault_heading" --reenrich-quote-only >"$tmpdir/run12.out" 2>&1 || true
+
+grep -q '^> Reading this take\.' "$heading_clip" && r=yes || r=no
+check "quote text is rendered as a blockquote" "$r"
+
+grep -q '^> ## Nested heading inside a quote' "$heading_clip" && r=yes || r=no
+check "a \`## \` line inside the quote is blockquoted, not a bare heading" "$r"
+
+if grep -qE '^## Nested heading' "$heading_clip"; then r=no; else r=yes; fi
+check "the quote's own \`## \` line is NOT a bare (unblockquoted) heading" "$r"
+
+heading_crawl_count="$(grep -c '^## Crawled content' "$heading_clip" || true)"
+[ "$heading_crawl_count" = "1" ] && r=yes || r=no
+check "heading clip has exactly ONE ## Crawled content section (got: $heading_crawl_count)" "$r"
+
+if grep -q 'staleShortener1' "$heading_clip"; then r=no; else r=yes; fi
+check "heading clip's stale quote section was fully replaced" "$r"
+
+grep -q '^## Source' "$heading_clip" && r=yes || r=no
+check "heading clip still has its ## Source section" "$r"
+
 if [ "$fail" -ne 0 ]; then
   echo ""
-  for n in 1 2 3 4a 4b 5 6 7 8 9 10; do
+  for n in 1 2 3 4a 4b 5 6 7 8 9 10 11a 11b 12; do
     echo "--- run$n output ---"; cat "$tmpdir/run$n.out" 2>/dev/null || true
   done
   echo "--- note clip ---";     cat "$note_clip"
   echo "--- article clip ---";  cat "$article_clip"
   echo "--- media clip ---";    cat "$media_clip"
   echo "--- backfill clip ---"; cat "$backfill_clip"
+  echo "--- no-own-text clip ---"; cat "$no_own_text_clip"
+  echo "--- heading clip ---";  cat "$heading_clip"
   exit 1
 fi
 

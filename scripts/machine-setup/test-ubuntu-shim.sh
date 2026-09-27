@@ -254,4 +254,17 @@ grep -q '^BOOTSTRAP:invoked' "$logC" \
   && fail "caseC: --luna-remote must never reach the delegated bootstrap (got: $(cat "$logC"))"
 echo "ok: caseC --luna-remote -> fail-closed error before any provisioning, bootstrap never invoked"
 
+# ── Case E (HIMMEL-2699): trailing --luna-remote with no value must reach the
+#    script's own usage diagnostic and exit 2, never an unbound-variable death
+#    from `set -u`. ────────────────────────────────────────────────────────
+set +e
+out=$(bash "$target" --luna-remote 2>&1); rcE=$?
+set -e
+[ "$rcE" -eq 2 ] || fail "caseE: trailing --luna-remote should exit 2, got $rcE (out: $out)"
+grep -q -- "--luna-remote requires a value" <<< "$out" \
+  || fail "caseE: trailing --luna-remote missing usage diagnostic (out: $out)"
+grep -q "unbound variable" <<< "$out" \
+  && fail "caseE: trailing --luna-remote leaked an unbound-variable death (out: $out)"
+echo "ok: caseE trailing --luna-remote exits 2 with its own diagnostic"
+
 echo "PASS"

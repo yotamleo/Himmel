@@ -482,6 +482,63 @@ guard_cmdpos_grammar() {
     CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
 }
 
+# guard_long_opt_name TOKEN — splits a long-option token into its name and
+# any attached `=VALUE`. Sets GUARD_LOPT_NAME (the part after `--`, before
+# any `=`), GUARD_LOPT_VAL (the part after `=`, "" if there was none) and
+# GUARD_LOPT_HAS_EQ (1 if `=` was present, 0 otherwise). HIMMEL-2610 round 2
+# (codex-1): a caller cannot tell "no `=`" from "`=` with an empty value"
+# (`--prompt=`) from GUARD_LOPT_VAL alone — both are "". `--prompt=` already
+# carries its (empty) operand in this token, same as `--prompt=x`, so a
+# caller deciding whether to consume a SEPARATE next-word operand must test
+# GUARD_LOPT_HAS_EQ, never `[ -n "$GUARD_LOPT_VAL" ]`.
+guard_long_opt_name() {
+    local tok="$1" rest
+    rest="${tok#--}"
+    # shellcheck disable=SC2034 # GUARD_LOPT_VAL/GUARD_LOPT_HAS_EQ consumed by callers after sourcing, not in this file
+    case "$rest" in
+        *=*) GUARD_LOPT_NAME="${rest%%=*}"; GUARD_LOPT_VAL="${rest#*=}"; GUARD_LOPT_HAS_EQ=1 ;;
+        *)   GUARD_LOPT_NAME="$rest"; GUARD_LOPT_VAL=""; GUARD_LOPT_HAS_EQ=0 ;;
+    esac
+}
+
+# guard_is_long_abbrev FULL TOKEN — HIMMEL-2610, generalized from HIMMEL-2592's
+# _bwimc_is_long_abbrev (scripts/hooks/block-write-into-main-checkout.sh).
+# True iff TOKEN is `--P` or `--P=V` where P is a non-empty, case-sensitive
+# PREFIX of FULL (the option's full name, no leading `--`). This mirrors how
+# GNU getopt_long resolves an unambiguous long-option ABBREVIATION (`--targ`
+# for `--target-directory`, `--adj` for `--adjustment`, `--u` for `--unset`)
+# — enumerating spellings cannot cover an abbreviation axis, since it is
+# infinite; matching the same RULE getopt_long uses is what makes a further-
+# shortened spelling a non-event instead of another special case.
+#
+# Direction matters: this tests "TOKEN's name is a prefix of FULL", never the
+# reverse and never a substring match — `rm --recursive` and `cp --posix`
+# must not resolve as an abbreviation of anything checked here, because
+# neither "recursive" nor "posix" is a PREFIX of any full option name a
+# caller checks (quoting `$GUARD_LOPT_NAME` in the case pattern below also
+# keeps a glob-metacharacter token, e.g. `--*`, from being interpreted as a
+# wildcard).
+#
+# AMBIGUITY IS THE SAFE DIRECTION (documented, not modelled): a real
+# abbreviation genuinely shared by two options makes GNU refuse it outright —
+# the real command fails at the OS level and never runs. This helper does not
+# model that refusal: called against one FULL name at a time, it may claim
+# such a token for whichever option happens to be checked first. That is
+# harmless because the reason it cannot matter is upstream of the verdict —
+# GNU refuses the ambiguous abbreviation, the command never runs, and nothing
+# happens either way. Whatever this helper decides about such a token
+# describes a command with no effect; it is not asked to be more precise
+# than that.
+guard_is_long_abbrev() {
+    local full="$1" tok="$2"
+    guard_long_opt_name "$tok"
+    [ -n "$GUARD_LOPT_NAME" ] || return 1
+    case "$full" in
+        "$GUARD_LOPT_NAME"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # is_secret_basename PATH_OR_TOKEN
 # True iff PATH_OR_TOKEN's basename matches a secret-file pattern (.env,
 # .envrc, id_rsa, id_ed25519, credentials.json, secrets.y[a]ml, *.pem, *.key,

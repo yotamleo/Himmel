@@ -14,6 +14,9 @@ HOOKS="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HOOKS/console-compact-reinject.sh"
 [ -f "$HOOK" ] || { echo "hook not found: $HOOK" >&2; exit 1; }
 
+# shellcheck source=scripts/lib/sha256-bin.sh
+. "$HOOKS/../lib/sha256-bin.sh"
+
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/console-compact-reinject-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -276,12 +279,12 @@ printf '{"repos":{"state":{"path":"%s","user":"yotamleo","branch_prefix":"handov
 CMDLINE_3160="$TMP/cmdline-3160-console"
 printf 'claude\0-n\0fixture-3160-console\0' > "$CMDLINE_3160"
 
-reg_before="$(sha256sum "$N3160_HOME/.claude/handover/registry.json" | awk '{print $1}')"
+reg_before="$(sha256_hex "$N3160_HOME/.claude/handover/registry.json")"
 out="$(cd "$N3160_WT" && env -u HANDOVER_DIR -u HIMMEL_CONSOLE_DOC \
     HOME="$N3160_HOME" CLAUDE_CONFIG_DIR="$N3160_HOME/.claude" \
     CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_3160" \
     HANDOVER_REGISTRY="$N3160_REG" bash "$HOOK")"; rc=$?
-reg_after="$(sha256sum "$N3160_HOME/.claude/handover/registry.json" | awk '{print $1}')"
+reg_after="$(sha256_hex "$N3160_HOME/.claude/handover/registry.json")"
 if [ "$rc" -eq 0 ]; then ok "registry-root fallback exits 0"; else bad "expected rc 0, got $rc"; fi
 # shellcheck disable=SC2016  # backtick leg span, literal fixture text
 case "$out" in

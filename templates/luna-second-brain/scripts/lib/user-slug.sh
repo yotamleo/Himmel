@@ -19,8 +19,11 @@
 #
 #   user_slug_value=$(user_slug) || exit 2
 #
-# `user_slug_verify` prints the resolved slug + source to stderr (rc=0)
-# or the helpful error (rc=2). Use in setup.sh to fail loud at install.
+# `user_slug_verify [severity]` prints the resolved slug + source to stderr
+# (rc=0) or a diagnostic labelled by `severity` (default ERR, rc=2 either
+# way). setup.sh's step [2/6] calls it via scripts/lib/check-user-slug.sh,
+# which passes WARN and turns the rc=2 failure into an advisory rc=3 —
+# HIMMEL-2539: an unresolved slug no longer aborts install.
 
 user_slug() {
     if [ -n "${USER_SLUG:-}" ]; then
@@ -46,6 +49,7 @@ user_slug() {
 }
 
 user_slug_verify() {
+    local _sev="${1:-ERR}"
     local slug
     if slug=$(user_slug); then
         if [ -n "${USER_SLUG:-}" ]; then
@@ -56,8 +60,8 @@ user_slug_verify() {
         printf '%s' "$slug"
         return 0
     fi
+    printf '%s user-slug: cannot resolve USER_SLUG.\n' "$_sev" >&2
     cat >&2 <<'EOF'
-ERR user-slug: cannot resolve USER_SLUG.
 
 Tried (in order):
   1. $USER_SLUG env var: unset or empty.

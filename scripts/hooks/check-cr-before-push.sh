@@ -74,6 +74,15 @@
 # subprocess block is gone.
 set -euo pipefail
 
+# HIMMEL-3666 (judge J1277R OOS finding): every git call below resolves
+# objects through the object store, which honours refs/replace/* by default.
+# A pusher who runs `git replace <origin-tip> <fake>` (fake's tree already
+# containing the unreviewed code) makes every diff/merge-base/rev-list call
+# in this hook read the FAKE's content wherever the real tip is named — no
+# ref is forged, so the ancestry/freshness hardening above never sees it.
+# Disabling replacement makes every resolution below use the real object.
+export GIT_NO_REPLACE_OBJECTS=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # default_branch() resolves the repo's protected default (main OR master,
 # HIMMEL-297) used as the diff base below. Fail-closed: a missing guardrail
@@ -83,6 +92,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null; then
     echo "→ code-review: cannot source guardrails/lib.sh — refusing the push (fix the guardrail lib or bypass with SKIP_CR=1)" >&2
     exit 2
+fi
+# _TIMEOUT_BIN (degrades to unbounded when neither timeout nor gtimeout is on
+# PATH — see the lib's own header) bounds the network fetches below: the
+# fork-base fetch in resolve_diff_base and the real-origin re-fetch in
+# verify_sha_is_reviewed (HIMMEL-3634 M1). Not a security fence (unlike
+# guardrails/lib.sh above) — a missing lib degrades to the same unbounded
+# fetch as a missing timeout/gtimeout binary, it does not refuse the push.
+# shellcheck source=../lib/timeout-bin.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$SCRIPT_DIR/../lib/timeout-bin.sh" ] && . "$SCRIPT_DIR/../lib/timeout-bin.sh"; } 2>/dev/null; then
+    _TIMEOUT_BIN=""
 fi
 
 db=$(default_branch)
@@ -165,15 +185,65 @@ REF_LINES
     return 0
 }
 
-# scrub_endpoint URL — strip http(s) userinfo (embedded tokens/passwords)
-# before the URL is persisted in the plaintext marker under .git. Non-http
-# URLs pass through: ssh/scp-style carry no secret in the userinfo position
-# (git@ is an ssh username, not a credential) and file paths have none.
+# scrub_endpoint URL — strip userinfo (embedded tokens/passwords) from a
+# scheme://user[:pass]@host URL before it is persisted in the plaintext
+# marker under .git. HIMMEL-1565: covers every scheme, not just http(s) —
+# ssh:// and git:// both accept a userinfo component too (scp-style
+# user@host:path, e.g. git@, is a bare username with no `://` and no
+# password position, so it is left untouched: nothing there to scrub).
+#
+# The exemption for a BARE username (no `:pass`) is scheme-scoped, not
+# blanket: http(s) commonly carries a PAT AS the bare username with no
+# password (`https://ghp_TOKEN@host/repo.git`) — that username IS the
+# credential, so any userinfo on those schemes is stripped unconditionally.
+# ssh:// / git+ssh://, by contrast, commonly carry a real, non-secret account
+# name as a bare username (`ssh://git@host`) that clear-cr-marker.sh's later
+# ls-remote needs to resolve the same identity the push used — so only an
+# actual `user:pass@` pair (a `:` before the `@`) is stripped there.
 scrub_endpoint() {
     case "$1" in
-        http://*|https://*) printf '%s\n' "$1" | sed -E 's#^(https?://)[^/@]*@#\1#' ;;
-        *) printf '%s\n' "$1" ;;
+        ssh://*:*@*|git+ssh://*:*@*)
+            printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/?#@]*@#\1#' ;;
+        ssh://*@*|git+ssh://*@*)
+            printf '%s\n' "$1" ;;
+        *://*@*)
+            printf '%s\n' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/?#@]*@#\1#' ;;
+        *)
+            printf '%s\n' "$1" ;;
     esac
+}
+
+# canonicalize_endpoint ENDPOINT — HIMMEL-1565: a relative filesystem path
+# persisted verbatim in the marker resolves against WHATEVER cwd a later
+# reader (clear-cr-marker.sh) happens to run from, not the pushing repo's
+# cwd — a different, potentially pusher-influenced target. A URL
+# (scheme://...) or an already-absolute path (/...) carries its own
+# unambiguous location and passes through. An scp-style host:path /
+# user@host:path form also passes through — recognized the same way git
+# itself disambiguates it: a ':' with no '/' before it. A ':' that first
+# appears AFTER a '/' (e.g. `./a:b`, `sub/dir:with:colon`) is just a colon
+# inside an ordinary relative path, not scp syntax, so that still falls
+# through to resolution. Only a bare relative filesystem path is resolved,
+# against THIS process's cwd (the pre-push hook's cwd is the repo's own
+# worktree root). Prints nothing and returns 1 if resolution fails — the
+# caller must fail closed rather than persist an endpoint that could not be
+# pinned to an absolute location.
+canonicalize_endpoint() {
+    local ep="$1" abs before_colon
+    case "$ep" in
+        *://*|/*) printf '%s\n' "$ep"; return 0 ;;
+    esac
+    case "$ep" in
+        *:*)
+            before_colon="${ep%%:*}"
+            case "$before_colon" in
+                */*) ;;
+                *) printf '%s\n' "$ep"; return 0 ;;
+            esac
+            ;;
+    esac
+    abs=$(cd "$ep" 2>/dev/null && pwd -P) && [ -n "$abs" ] || return 1
+    printf '%s\n' "$abs"
 }
 
 resolve_diff_base() {
@@ -189,6 +259,56 @@ resolve_diff_base() {
     # PR. No network call — the tracking ref is local; missing/unfetched fails
     # CLOSED.
     if [ -n "$push_remote_name" ] && [ "$push_remote_name" != "origin" ]; then
+        # Explicit-URL push (HIMMEL-3477): git's pre-push hook passes the SAME
+        # string for both the remote's name and its location when no named
+        # remote is used (see `git help githooks`), so this is the signal
+        # that no refs/remotes/<name>/$db can ever exist to require.
+        # ponytail: a NAMED remote whose name happens to equal its own URL
+        # (unusual, but legal) is indistinguishable at this boundary from an
+        # anonymous URL push and takes this branch too (HIMMEL-3634 M3) — git
+        # itself gives the hook no way to tell the two apart (same argv
+        # convention for both), so there is no smaller fix than accepting the
+        # ambiguity; harmless here since either branch still resolves a real,
+        # fetchable base for that same URL. Upgrade path: none known short of
+        # a git hook-API change.
+        # Resolve the target's own base ourselves instead: fetch the pushed URL's
+        # HEAD (its default branch, whatever it is named) into a scratch ref
+        # this hook owns — never refs/remotes/*, so it can't collide with, or
+        # be mistaken for, a real remote-tracking ref.
+        # Deterministic per-URL name, so a re-push reuses (refreshes) the same
+        # ref rather than accumulating one per push. No shared-config write,
+        # no git remote add — fail CLOSED if the fetch itself fails.
+        if [ "$push_remote_name" = "$push_remote_url" ]; then
+            local url_hash scratch_ref scrubbed_url
+            scrubbed_url=$(scrub_endpoint "$push_remote_url")
+            if ! url_hash=$(printf '%s' "$push_remote_url" | git hash-object --stdin 2>/dev/null) || [ -z "$url_hash" ]; then
+                echo "→ code-review: cannot hash the push URL '$scrubbed_url' — refusing the push (cannot compute diff for review; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+                return 2
+            fi
+            scratch_ref="refs/cr/${url_hash}/fork-head"
+            # Never pushed by an ordinary `git push` (not under refs/heads or
+            # refs/tags) — but `git push --mirror` publishes every local ref
+            # verbatim, this one included (HIMMEL-3634 M2); a caller relying
+            # on --mirror must exclude refs/cr/* itself, since this hook has
+            # no hook point into --mirror's own ref selection.
+            # Force (+): this ref is reused across pushes to the same fork, and
+            # a rewound/rebased fork default branch is a non-fast-forward
+            # update of our OWN prior fetch, not a real history-loss risk — we
+            # never read the ref's old value, only its freshest fetch.
+            # --no-write-fetch-head (git 2.29+; repo minimum is 2.30, see
+            # docs/adoption-trail.html): this hook's caller may have their
+            # own FETCH_HEAD from a real manual fetch moments earlier, and
+            # our scratch-ref fetch must not clobber it (HIMMEL-3477 CR
+            # round 4, CodeRabbit). Timeout-bounded (HIMMEL-3634 M1): the
+            # fork URL is pusher-supplied and may be unreachable/slow.
+            # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
+            if ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --no-tags --quiet --no-write-fetch-head "$push_remote_url" "+HEAD:${scratch_ref}" 2>/dev/null; then
+                diff_base="$scratch_ref"
+                return 0
+            fi
+            echo "→ code-review: could not fetch the default branch from '$scrubbed_url' — refusing the push (the review diff must use the TARGET's own base, not origin's; the fork may be unreachable — retry, or bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
         if git rev-parse --verify --quiet "refs/remotes/$push_remote_name/$db" >/dev/null; then
             diff_base="refs/remotes/$push_remote_name/$db"
             return 0
@@ -226,15 +346,242 @@ resolve_diff_base() {
     fi
 }
 
+# verify_sha_is_reviewed SHA [EMPTY_DIFF] — HIMMEL-3634 P1.
+# Round 6 (J1277O codex-1/codex-2, simplify): also called with base_sha (no
+# 2nd arg) from write_marker_for_branch to prove a locally-computed WEAK lane
+# (skip/docs-audit) isn't sitting on a pusher-forged base — see that call
+# site's own comment. Round 4 tried to do this by RECLASSIFYING the lane
+# (re-diffing against a fresh fetch of literal "origin" and taking the
+# stronger of the two lanes, via a separate classify_independent_range()
+# function) but that mechanism trusted only the literal "origin" name,
+# independent of this function's already-hardened dual/argv-aware authority
+# selection below: codex-1 showed a repointed remote.origin.url pre-seeded
+# with the pushed tip passes unnoticed while the real push goes elsewhere,
+# and codex-2 showed reclassification is skipped ENTIRELY whenever no remote
+# is literally named "origin" (any named-remote or explicit-URL push).
+# Rather than patch a third authority hole into a second, parallel
+# mechanism, reuse this one: proving base_sha itself is genuine, unrewritable
+# history is a strictly simpler and already-correct question than
+# reclassifying the lane, and a forged base_sha is never an ancestor of a
+# freshly-fetched trustworthy origin (or push destination) either way.
+#
+# An empty diff(base...local) only proves local_sha needs no review when the
+# base itself is trustworthy — but every base resolve_diff_base can choose is
+# something the PUSHER controls: a fork's fetched HEAD (they can push their
+# own tip to their fork's default branch first), or a refs/remotes/*/$db
+# tracking ref (never re-fetched by resolve_diff_base — a plain `git
+# update-ref` overwrites it locally, no network needed). Either lets a pusher
+# make the diff empty for code origin has never seen, skipping the marker and
+# leaving `gh pr create` ungated.
+# The one base no pusher can rewrite is origin's REAL default branch, fetched
+# FRESH right now — a cached refs/remotes/origin/$db is exactly what the
+# local-rewrite attack falsifies, so this never trusts it unrefreshed. The
+# fetch destination must be a scratch ref THIS hook owns, never
+# refs/remotes/origin/$db itself (HIMMEL-3634 codex-1): a bare `git fetch
+# origin $db` only updates that remote-tracking ref as a side effect of a
+# MATCHING remote.origin.fetch refspec — a pusher who locally clears or
+# repoints remote.origin.fetch (same "no network needed" tampering class as
+# the update-ref attack this function exists to close) makes the fetch a
+# silent no-op against that ref, leaving a forged refs/remotes/origin/$db
+# untouched and the bypass wide open again (reproduced in a scratch repo:
+# unset remote.origin.fetch, fetch rc=0, tracking ref unchanged). An explicit
+# destination refspec (+$db:refs/cr/verify-base/$db) has no such dependency —
+# git always writes the named destination for an explicit refspec, config or
+# no config — confirmed the same scratch repo resolves to origin's real tip
+# through the dedicated ref regardless. Skip stays safe (return 0) only when
+# local_sha is an ancestor of that freshly-fetched scratch ref — the
+# legitimate case (HIMMEL-3477: pushing to a companion/target remote where
+# content is already merged to origin/$db but new to the target) always
+# satisfies this, since "already merged to origin/$db" is exactly what it
+# means. Fails CLOSED (2) when origin can't be fetched at all: an
+# unverifiable empty diff must not read as "reviewed" (HIMMEL-323 direction).
+#
+# Fetch source (HIMMEL-3634 round-2 codex-1, corrected): this safety net's
+# whole job is to check the empty diff against an authority the PUSHER did
+# NOT just use to produce that empty diff. Which fetch source is trustworthy
+# therefore depends on WHICH resolve_diff_base branch ran:
+#   - Pushing nominally TO origin (push_remote_name unset or "origin"):
+#     `git fetch origin` resolves through remote.origin.url (the FETCH url),
+#     which can diverge from remote.origin.pushurl / a pushInsteadOf rewrite
+#     (the URL THIS push actually used) — a pusher whose fetch and push URLs
+#     point at different repositories gets this safety net validated against
+#     the WRONG repository's history. git's own pre-push argv already carries
+#     the exact endpoint this push resolved to (push_remote_url, "$2" — same
+#     trust-argv-over-config precedent as the mint logic above), so that is
+#     one fetch source here; reproduced in a scratch repo: remote.origin.url
+#     pointed at an attacker fork seeded with the exact pushed SHA, push argv
+#     naming the real origin as the destination — fetching "origin" by name
+#     validated against the fork (bypass), fetching push_remote_url correctly
+#     fetched the real origin and refused.
+#       Round 4 (J1277O C2): that fix alone is one-sided — it stops trusting a
+#     repointed remote.origin.url, but a pusher can just as easily repoint
+#     the OTHER field instead (remote.origin.pushurl, or a
+#     url.<fork>.pushInsteadOf rewrite) while leaving remote.origin.url
+#     pointing at the real origin. push_remote_url then names an
+#     attacker-controlled fork the pusher pre-seeded with the exact pushed
+#     SHA, and fetching ONLY push_remote_url validates against it — bypass,
+#     confirmed in a scratch repo (origin.pushurl -> fork, argv $2 -> fork).
+#     Neither field is unilaterally trustworthy for an origin-nominal push,
+#     so both must independently confirm local_sha is already reviewed: fetch
+#     push_remote_url AND the literal "origin" name (which resolves through
+#     remote.origin.url, untouched by a pushurl/pushInsteadOf rewrite) and
+#     require local_sha to be an ancestor of BOTH, refusing on any
+#     disagreement. This still catches the original round-2 divergence (fetch
+#     url -> fork, push url -> real origin: the "origin" fetch fails to find
+#     local_sha, so the AND fails) and the new round-4 one (fetch url -> real,
+#     push url -> fork: same). The one shape it cannot catch is a genuine
+#     fork-workflow clone where url AND pushurl both name the same fork —
+#     there both fetches resolve to the identical repository and agree, and
+#     there is no independent local datum left to check against (ponytail:
+#     HIMMEL-3634 residual, HIMMEL-3654).
+#   - Pushing to any OTHER remote — a named non-origin remote, or an
+#     explicit-URL push (resolve_diff_base's HIMMEL-3477 branch, e.g. pushing
+#     to your own fork whose default branch already has the tip) — the empty
+#     diff was computed against push_remote_url itself (or a tracking ref
+#     for it). Re-fetching push_remote_url here re-validates against the
+#     SAME repository the pusher already fully controls and proves nothing:
+#     reproduced in a scratch repo — an attacker pushed their unreviewed
+#     commit straight to their own fork's main, then pushed explicitly to
+#     that fork; fetch_source=push_remote_url found it trivially "reachable"
+#     from itself and let the push through with NO marker (bypass). The only
+#     authority that proves "already reviewed" here is origin's own real
+#     default branch (HIMMEL-3477's legitimate case — content already merged
+#     to origin/$db but new to the target — is exactly "reachable from
+#     origin's $db"), so this branch keeps fetching the literal "origin"
+#     name, unchanged from pre-round-2 behavior.
+# Falls back to the bare name for the legacy manual/no-argv invocation too,
+# where no push is actually in flight to pin push_remote_url to.
+#
+# classify_lane / lane_strength (HIMMEL-3634 round 7, J1277R F1): the same
+# non_docs/reviewable_docs lane test write_marker_for_branch uses on the
+# local diff, factored out so verify_sha_is_reviewed can run it a second
+# time against the freshly fetched authority ref(s) below.
+classify_lane() {
+    local files="$1" non_docs reviewable_docs
+    non_docs=$(echo "$files" | grep -Ev '\.(md|txt)$|^docs/|^handovers/' || true)
+    if [ -n "$non_docs" ]; then
+        echo full
+        return
+    fi
+    reviewable_docs=$(echo "$files" | grep -Ev '^handovers/' | grep -E '\.(md|txt)$|^docs/' || true)
+    if [ -z "$reviewable_docs" ]; then
+        echo skip
+    else
+        echo docs-audit
+    fi
+}
+
+lane_strength() {
+    case "$1" in
+        full) echo 2 ;;
+        docs-audit) echo 1 ;;
+        *) echo 0 ;;
+    esac
+}
+
+verify_sha_is_reviewed() {
+    local local_sha="$1"
+    local empty_diff="${2:-0}"
+    local local_lane="${3:-skip}"
+    # Round 7 (J1277R F1): the ancestor check above verifies whatever was
+    # passed as $1 -- at the weak-lane call site that is base_sha, not the
+    # pushed tip, so the range this function reclassifies below must be
+    # anchored to the ACTUAL pushed tip, carried separately. Defaults to
+    # local_sha for the empty-diff call site, where $1 already IS the tip.
+    local push_tip="${4:-$local_sha}"
+    local fetch_rc=0
+    local scratch_ref="refs/cr/verify-base/${db}"
+    local fetch_source="origin"
+    local authority_desc="origin, independent of the push destination"
+    local dual_scratch_ref="" dual_source="" dual_desc=""
+    local diff_desc
+    if [ "$empty_diff" = "1" ]; then
+        diff_desc="diff vs ${diff_base} was empty"
+    else
+        diff_desc="diff vs ${diff_base} (${local_sha:0:8}) classified as a weak lane"
+    fi
+    if [ -z "$push_remote_name" ] || [ "$push_remote_name" = "origin" ]; then
+        fetch_source="${push_remote_url:-origin}"
+        authority_desc="the actual push destination"
+        # Round 4 (J1277O C2): argv $2 alone is not enough for an
+        # origin-nominal push either — check the header comment above. When
+        # it differs from the literal name "origin" (the only case where a
+        # pushurl/pushInsteadOf divergence is even possible), fetch that too
+        # and require BOTH to agree below.
+        if [ "$fetch_source" != "origin" ]; then
+            dual_scratch_ref="refs/cr/verify-base-origin/${db}"
+            dual_source="origin"
+            dual_desc="origin's own fetch URL"
+        fi
+    fi
+    local scrubbed_source
+    scrubbed_source=$(scrub_endpoint "$fetch_source")
+
+    # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
+    # refs/heads/ qualifies the fetch source (CodeRabbit, HIMMEL-3634): a bare
+    # "$db" is subject to git's remote-ref DWIM order, which tries refs/tags/
+    # before refs/heads/ -- an origin tag sharing the default branch's name
+    # would silently redirect this authority to a ref a tag-pusher controls.
+    ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head "$fetch_source" "+refs/heads/${db}:${scratch_ref}" 2>/dev/null || fetch_rc=$?
+    if [ "$fetch_rc" -ne 0 ]; then
+        echo "→ code-review: ${diff_desc}, but re-verifying against a FRESH fetch of ${scrubbed_source}'s ${db} failed (unreachable?) — refusing the push rather than trusting an unverifiable result (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    if ! git merge-base --is-ancestor "$local_sha" "$scratch_ref" 2>/dev/null; then
+        echo "→ code-review: ${diff_desc}, but ${local_sha:0:8} is NOT reachable from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) — refusing the push (the chosen base can be pusher-controlled — a fork's own default branch, a local tracking ref never re-fetched, or the diff base itself — so only an independent, unrewritable history proves this content was already reviewed; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    # HIMMEL-3634 round 7 (J1277R F1): ancestry alone is not sufficient — a
+    # genuine but STALE base (a real ancestor of a fresh fetch, just not the
+    # CURRENT tip) still lets a tail that reverts later origin history hide
+    # behind a weak local lane. Reclassify the range from the fresh authority
+    # ref to local_sha the same way the local diff was classified; a stronger
+    # result here means the local lane was computed against a stale base.
+    local range_changed range_lane
+    if ! range_changed=$(git diff --name-only "${scratch_ref}...${push_tip}" 2>/dev/null); then
+        echo "→ code-review: ${diff_desc}, but cannot compute the range from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) to ${push_tip:0:8} (no merge base / git error) — refusing the push (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    range_lane=$(classify_lane "$range_changed")
+    if [ "$(lane_strength "$range_lane")" -gt "$(lane_strength "$local_lane")" ]; then
+        echo "→ code-review: ${diff_desc} as '${local_lane}', but the range from ${scrubbed_source}'s ${db} (freshly fetched from ${authority_desc}) to ${push_tip:0:8} classifies as '${range_lane}' — your base is stale — fetch origin and retry (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    if [ -n "$dual_scratch_ref" ]; then
+        fetch_rc=0
+        ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} git fetch --quiet --no-tags --no-write-fetch-head "$dual_source" "+refs/heads/${db}:${dual_scratch_ref}" 2>/dev/null || fetch_rc=$?
+        if [ "$fetch_rc" -ne 0 ]; then
+            echo "→ code-review: ${diff_desc} and ${scrubbed_source} confirmed it, but a FRESH fetch of ${dual_desc}'s ${db} failed (unreachable?) — refusing the push rather than trusting a single, possibly-repointed authority (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
+        if ! git merge-base --is-ancestor "$local_sha" "$dual_scratch_ref" 2>/dev/null; then
+            echo "→ code-review: ${diff_desc} and ${scrubbed_source} confirmed it, but ${local_sha:0:8} is NOT reachable from ${dual_desc}'s ${db} — refusing the push (this push's argv destination and its remote.origin.url disagree about whether the content is already reviewed; a pushurl/pushInsteadOf rewrite to a fork is exactly this shape, so neither authority alone is trusted; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
+        # Round 7 (J1277R F1): same stale-base reclassification, against the
+        # dual authority ref.
+        if ! range_changed=$(git diff --name-only "${dual_scratch_ref}...${push_tip}" 2>/dev/null); then
+            echo "→ code-review: ${diff_desc} and ${scrubbed_source} confirmed it, but cannot compute the range from ${dual_desc}'s ${db} to ${push_tip:0:8} (no merge base / git error) — refusing the push (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
+        range_lane=$(classify_lane "$range_changed")
+        if [ "$(lane_strength "$range_lane")" -gt "$(lane_strength "$local_lane")" ]; then
+            echo "→ code-review: ${diff_desc} as '${local_lane}', but the range from ${dual_desc}'s ${db} to ${push_tip:0:8} classifies as '${range_lane}' — your base is stale — fetch origin and retry (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
+    fi
+    return 0
+}
+
 write_marker_for_branch() {
     local branch="$1"
     local local_sha="$2"
     local remote_ref="${3:-}"
-    local changed non_docs reviewable_docs audit_kind
+    local changed audit_kind
     local git_dir marker_path short_sha now_ts
     local endpoint="" base_sha=""
     local lock_lib lock_wait lock_rc=0 write_rc=0 lock_owner release_rc=0
-    local prev_marker marker_line rollback_claim
+    local prev_marker marker_line rollback_claim marker_remote
 
     # Skip on the protected default (main OR master) / detached HEAD — pushing the
     # default branch is blocked elsewhere and there's no meaningful diff to review.
@@ -344,6 +691,11 @@ write_marker_for_branch() {
             return 2
         fi
         endpoint=$(scrub_endpoint "$push_remote_url")
+        pre_canon_endpoint="$endpoint"
+        if ! endpoint=$(canonicalize_endpoint "$endpoint"); then
+            echo "→ code-review: cannot canonicalize push endpoint '$pre_canon_endpoint' to an absolute path/URL — refusing the push (a relative endpoint stored in the marker would resolve against an unrelated cwd when later read back; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+            return 2
+        fi
         case "${push_remote_name}${remote_ref}${endpoint}" in
             *'|'*|*$'\n'*)
                 echo "→ code-review: remote identity/ref/endpoint contains an unsupported marker delimiter — refusing the push" >&2
@@ -374,6 +726,7 @@ write_marker_for_branch() {
         return 2
     fi
     if [ -z "$changed" ]; then
+        verify_sha_is_reviewed "$local_sha" 1 || return $?
         echo "→ code-review: no diff vs ${diff_base} for ${branch} — skipping" >&2
         return 0
     fi
@@ -385,16 +738,33 @@ write_marker_for_branch() {
     # state stays exempt so handover/* auto-commits don't gate on a review they
     # don't need. The marker carries the lane as a 3rd field; the PR-create hook
     # parses only field 2 (the SHA), so the extra field is backward-compatible.
-    non_docs=$(echo "$changed" | grep -Ev '\.(md|txt)$|^docs/|^handovers/' || true)
-    if [ -n "$non_docs" ]; then
-        audit_kind="full"
-    else
-        reviewable_docs=$(echo "$changed" | grep -Ev '^handovers/' | grep -E '\.(md|txt)$|^docs/' || true)
-        if [ -z "$reviewable_docs" ]; then
-            echo "→ code-review: handover-state-only change — skipping marker write" >&2
-            return 0
-        fi
-        audit_kind="docs-audit"
+    audit_kind=$(classify_lane "$changed")
+
+    # HIMMEL-3634 round 6 (J1277O codex-1/codex-2, simplify): $base_sha above
+    # can be pusher-forged — resolve_diff_base's every branch is — so a
+    # WEAKER lane here (skip or docs-audit) is not trustworthy unless
+    # base_sha itself is proven genuine, already-known history. Round 4 tried
+    # to catch this by RECLASSIFYING the lane against a fresh fetch of the
+    # literal name "origin", but that authority selection was weaker than
+    # verify_sha_is_reviewed's own (dual/argv-aware) one — see that
+    # function's header. Reuse it instead of maintaining two authority
+    # mechanisms: refuse outright (fail closed) rather than trust a weak
+    # local lane whose base isn't independently verifiable. A local
+    # classification of "full" is already the strongest lane there is, so
+    # skip the extra fetch (and its network dependency) in the common,
+    # untampered case.
+    # Round 7 (J1277R F1): ancestry of base_sha alone is not enough — base_sha
+    # can be a genuine but STALE ancestor of the fresh authority, and the
+    # range from that fresh authority to local_sha can still hold code a
+    # revert-shaped tail hid from the local diff above. Pass audit_kind so
+    # verify_sha_is_reviewed can reclassify that range and refuse if it is
+    # stronger than what the local diff found.
+    if [ "$audit_kind" != "full" ]; then
+        verify_sha_is_reviewed "$base_sha" 0 "$audit_kind" "$local_sha" || return $?
+    fi
+    if [ "$audit_kind" = "skip" ]; then
+        echo "→ code-review: handover-state-only change — skipping marker write" >&2
+        return 0
     fi
 
     # Write marker. .git/ is never tracked, so this is safe to scribble in.
@@ -465,7 +835,17 @@ write_marker_for_branch() {
     # own certificate, and refusing this push without undoing the overwrite
     # would leave ITS marker replaced by ours.
     prev_marker=$(cat "${marker_path}" 2>/dev/null || true)
-    marker_line=$(printf '%s | %s | %s | %s | %s | %s | %s\n' "${now_ts}" "${local_sha}" "${audit_kind}" "${push_remote_name}" "${remote_ref}" "${endpoint}" "${base_sha}")
+    # Explicit-URL push (HIMMEL-3477 CR round 4, CodeRabbit): git passes the
+    # SAME string for push_remote_name and push_remote_url in that case (see
+    # resolve_diff_base above), so an embedded credential lands in field 4
+    # raw unless scrubbed here too — scrub_endpoint above only covers field 6.
+    # Field 4 is a display/audit identity only (clear-cr-marker.sh never
+    # resolves the endpoint through it), so scrubbing it costs nothing.
+    marker_remote="$push_remote_name"
+    if [ "$push_remote_name" = "$push_remote_url" ]; then
+        marker_remote=$(scrub_endpoint "$push_remote_name")
+    fi
+    marker_line=$(printf '%s | %s | %s | %s | %s | %s | %s\n' "${now_ts}" "${local_sha}" "${audit_kind}" "${marker_remote}" "${remote_ref}" "${endpoint}" "${base_sha}")
     printf '%s\n' "${marker_line}" > "${marker_path}" || write_rc=$?
     # Releasing tells us whether we STILL held the lock while writing (CR round
     # 2, codex-2): the TTL that keeps a dead holder from wedging the branch can

@@ -1716,10 +1716,14 @@ fi
 # are untouched, and its own cache dir so profiles cannot leak between cases.
 scope_case() {
     # $1 = case slug, $2 = the install-profile.json body (empty = write none),
-    # $3 = the cli_scope the seeded ledger row records (default user)
-    SC15_HOME=$(mktemp -d "$TMP/sc15-home.XXXXXX") || exit 1
-    SC15_CACHE="$TMP/sc15-$1-cache"
-    SC15_LOG="$TMP/sc15-$1-argv.log"
+    # $3 = the cli_scope the seeded ledger row records (default user),
+    # $4 = base dir for this case's fixtures (default: $TMP) — SC15d points
+    #      this at a path containing a space so the log-path quoting fix is
+    #      exercised on every run, not only when the suite's own TMPDIR has one.
+    local base="${4:-$TMP}"
+    SC15_HOME=$(mktemp -d "$base/sc15-home.XXXXXX") || exit 1
+    SC15_CACHE="$base/sc15-$1-cache"
+    SC15_LOG="$base/sc15-$1-argv.log"
     mkdir -p "$SC15_HOME/.local/bin" "$SC15_CACHE"
     : > "$SC15_LOG"
     # The log path is baked into the stub at generation time: uninstall.sh
@@ -1727,7 +1731,7 @@ scope_case() {
     # to survive two hops; hardcoding keeps the stub hermetic.
     {
         printf '#!/usr/bin/env bash\n'
-        printf 'printf "%%s\\n" "$*" >> %s\n' "$SC15_LOG"
+        printf 'printf "%%s\\n" "$*" >> %q\n' "$SC15_LOG"
         printf 'exit 0\n'
     } > "$SC15_HOME/.local/bin/claude"
     chmod +x "$SC15_HOME/.local/bin/claude"
@@ -1748,6 +1752,11 @@ scope_case() {
 # 15a. a project-scope install: EVERY plugin uninstall carries --scope project,
 #      and none silently falls back to the `user` default.
 scope_case project '{"profile":"starter","scope":"project"}' project
+if [ -s "$TMP/sc15-project-argv.log" ]; then
+    echo "PASS SC15a argv log recorded a call"
+else
+    echo "FAIL SC15a argv log is empty — the stub never recorded a call"; FAILED=$((FAILED + 1))
+fi
 sc15_log="$(cat "$TMP/sc15-project-argv.log")"
 assert_has "SC15a project profile -> plugin uninstall invoked" \
     "plugin uninstall" "$sc15_log"
@@ -1759,6 +1768,11 @@ assert_not_has "SC15a project profile -> no call falls back to user scope" \
 # 15b. no profile at all (a pre-2694 cache, or an install that never recorded
 #      one): fall back to install-plugins.sh's own default, `user`.
 scope_case noprofile ''
+if [ -s "$TMP/sc15-noprofile-argv.log" ]; then
+    echo "PASS SC15b argv log recorded a call"
+else
+    echo "FAIL SC15b argv log is empty — the stub never recorded a call"; FAILED=$((FAILED + 1))
+fi
 sc15_log="$(cat "$TMP/sc15-noprofile-argv.log")"
 assert_has "SC15b no profile -> falls back to --scope user" \
     "--scope user" "$sc15_log"
@@ -1769,11 +1783,35 @@ assert_not_has "SC15b no profile -> never invents a project scope" \
 #      rather than passing the garbage through (uninstall-plugins.sh exits 2 on
 #      an invalid --scope, turning a stale cache into a failed teardown).
 scope_case garbage '{"profile":"starter","scope":"not-a-scope"}'
+if [ -s "$TMP/sc15-garbage-argv.log" ]; then
+    echo "PASS SC15c argv log recorded a call"
+else
+    echo "FAIL SC15c argv log is empty — the stub never recorded a call"; FAILED=$((FAILED + 1))
+fi
 sc15_log="$(cat "$TMP/sc15-garbage-argv.log")"
 assert_has "SC15c garbage scope -> falls back to --scope user" \
     "--scope user" "$sc15_log"
 assert_not_has "SC15c garbage scope -> the bad value never reaches the CLI" \
     "not-a-scope" "$sc15_log"
+
+# 15d (HIMMEL-2700): a permanent regression for the stub's log-path quoting —
+# the fixture dir carries a space unconditionally, so the defect reproduces on
+# every run regardless of the suite's own TMPDIR.
+SC15_SPACE_DIR="$TMP/sc15 space dir"
+mkdir -p "$SC15_SPACE_DIR"
+scope_case spaced '{"profile":"starter","scope":"project"}' project "$SC15_SPACE_DIR"
+if [ -s "$SC15_SPACE_DIR/sc15-spaced-argv.log" ]; then
+    echo "PASS SC15d argv log recorded a call despite a space in its path"
+else
+    echo "FAIL SC15d argv log is empty — the stub never recorded a call (log path quoting broken?)"; FAILED=$((FAILED + 1))
+fi
+sc15_log="$(cat "$SC15_SPACE_DIR/sc15-spaced-argv.log")"
+assert_has "SC15d spaced path -> plugin uninstall invoked" \
+    "plugin uninstall" "$sc15_log"
+assert_has "SC15d spaced path -> --scope project forwarded" \
+    "--scope project" "$sc15_log"
+assert_not_has "SC15d spaced path -> no call falls back to user scope" \
+    "--scope user" "$sc15_log"
 
 # ── SC16 (HIMMEL-2754): every failed step halts all later teardown ─────────
 # The fixture repo contains only the helpers under test and fake hook files.

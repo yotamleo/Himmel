@@ -2,6 +2,7 @@
   "jobs": {
     "ci:secret-scan": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false },
     "ci:leak-classes": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false },
+    "ci:bwk-awk-mktemp-gate": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false },
     "ci:git-env-scrub": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false },
     "ci:commit-lint": { "fidelity": "needs-shim", "os": ["linux"], "heavy": false, "shim": "act lacks the pull_request base.sha context; supply the range base via an -e event.json / ACT_* env so check-commit-range.sh has a base to walk." },
     "ci:lint": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false },

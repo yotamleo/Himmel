@@ -1,6 +1,6 @@
 ---
 name: gh-pr-comments
-description: Use when user asks to list, see, or read review threads/comments on a specific GitHub PR ("what comments are on PR 97", "show review threads on #42", "list unresolved threads on PR 100", "any open review comments on PR 5"). MUST reference a PR number. Do NOT trigger on Jira (HIMMEL-N → himmel-jira). Do NOT trigger on issue comments without PR context. Do NOT trigger on commit comments.
+description: List/show review threads on a specific PR ("what comments are on PR 97"). Needs PR number. Not Jira or issue comments.
 ---
 
 # gh-pr-comments

@@ -7,7 +7,9 @@
 > wins over this file where the two differ. Your session name is
 > **`{{SESSION_NAME}}`**. Your handover root is **`{{HANDOVER_ROOT}}`**; your
 > bucket is **`{{BUCKET}}`** (at `{{STATE_DIR}}`); the repo you ship from is
-> **`{{REPO}}`**.
+> **`{{REPO}}`**. The project this console is FOR is **`{{PROJECT}}`** — you
+> (the console) always run in `{{REPO}}`, never in the project; dispatch a leg
+> into the project explicitly with `LEG_REPO=<path>` (`headed-arm-leg.sh`).
 > Handover line for consoles: **{{FILL_PERCENT}} % context fill, or 90 k input
 > tokens in one turn** — whichever comes first. Report at MILESTONES only.
 
@@ -368,7 +370,9 @@ To cut a pre-release tag yourself (HIMMEL-3572), run
 `bash scripts/handover/console-kit/cut-tag.sh <version> <sha>` (`--dry-run`
 first to see the plan) — it creates the tag through the GitHub API, never
 `git tag`, so it needs no operator `!` step. It refuses unless `<sha>` is an
-ancestor of `origin/main`, every check-run at `<sha>` is green, the tag
+ancestor of `origin/main`, every check-run at `<sha>` is green, the commit's
+`CI` workflow run exists and completed green (never a vacuous pass on a
+Pages-only commit whose `CI` run hasn't started), the tag
 doesn't already exist, and `<version>` is the next `N` in sequence for its
 own `v<X>.<Y>.<Z>-pre.` series — the series is derived from `<version>`
 itself, not hardcoded to any one release line, so `v0.3.0-pre.9` and a future

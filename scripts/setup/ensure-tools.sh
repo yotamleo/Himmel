@@ -258,6 +258,134 @@ _ensure_install_bun() {
   return 1
 }
 
+# uv bootstrap (HIMMEL-2521): uv has no apt/dnf package on stock Ubuntu/
+# Debian, and routing pre-commit/uv through `python3 -m pip` fails on those
+# same distros -- python3 ships without pip, and PEP 668 marks the system
+# interpreter externally-managed even when pip IS present. The official
+# installer (mirrors _ensure_install_bun's shape exactly) lands the binary in
+# $HOME/.local/bin, which is NOT on PATH in this subprocess -- same honest
+# "not on your PATH" notice as bun's own idempotency branch. No pip anywhere
+# in this path.
+#
+# $1 (optional): "upgrade" -- the old pip-manager route supported
+# `--upgrade`; skip the idempotency early-return so `himmelctl deps upgrade`
+# re-runs the official installer (which itself overwrites in place) instead
+# of silently no-op'ing on an already-present uv. Only deps-engine.js's
+# built shell line ever passes it (this file's own bare calls never do), so
+# static analysis can't see a caller that supplies $1.
+# shellcheck disable=SC2120
+_ensure_install_uv() {
+  if [ -x "$HOME/.local/bin/uv" ] && [ "${1:-}" != upgrade ]; then
+    echo "  ensure-tools: uv is already installed at ~/.local/bin -- not on your PATH; add it (export PATH=\"\$HOME/.local/bin:\$PATH\") to your shell rc"
+    return 0
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    :
+  else
+    echo "  ensure-tools: 'uv' needs curl to bootstrap (curl not found) -- install uv manually: https://astral.sh/uv/install.sh" >&2
+    return 1
+  fi
+  echo "  ensure-tools: installing 'uv' via the official installer (https://astral.sh/uv/install.sh)..."
+  local installer errfile lastline
+  installer=$(curl -fsSL https://astral.sh/uv/install.sh 2>/dev/null) || installer=""
+  errfile=$(mktemp "${TMPDIR:-/tmp}/ensure-tools-uv.XXXXXX" 2>/dev/null) || errfile=""
+  if [ -n "$installer" ]; then
+    if [ -n "$errfile" ]; then
+      printf '%s' "$installer" | sh >/dev/null 2>"$errfile" && { rm -f "$errfile"; return 0; }
+    else
+      printf '%s' "$installer" | sh >/dev/null 2>&1 && return 0
+    fi
+  fi
+  lastline=""
+  [ -n "$errfile" ] && [ -s "$errfile" ] && lastline=$(grep -v '^[[:space:]]*$' "$errfile" | tail -n1)
+  [ -n "$errfile" ] && rm -f "$errfile"
+  if [ -n "$lastline" ]; then
+    echo "  ensure-tools: uv official installer failed -- $lastline -- install uv manually: https://astral.sh/uv/install.sh" >&2
+  else
+    echo "  ensure-tools: uv official installer failed -- install uv manually: https://astral.sh/uv/install.sh" >&2
+  fi
+  return 1
+}
+
+# pre-commit bootstrap (HIMMEL-2521): `uv tool install pre-commit` instead of
+# `python3 -m pip install --user pre-commit` -- same PEP 668 / missing-pip
+# reason as uv above, and uv is what this repo already standardizes on. Looks
+# for uv on the CURRENT PATH first, then at the fixed ~/.local/bin location
+# the official installer above uses (this subprocess's PATH was not updated
+# by a uv install that just ran in the same `ensure_tools` loop), bootstraps
+# uv via _ensure_install_uv when neither is found, then re-resolves once.
+#
+# $1 (optional): "upgrade" -- the old pip-manager route supported
+# `--upgrade`; when already installed, run `uv tool upgrade` instead of the
+# plain `uv tool install`, which is a no-op once pre-commit is present. Only
+# deps-engine.js's built shell line ever passes it (this file's own bare
+# calls never do), so static analysis can't see a caller that supplies $1.
+# shellcheck disable=SC2120
+_ensure_install_precommit() {
+  local mode="${1:-}" uv_bin uv_tool_list uv_tool_list_rc pc_installed pc_force_flag pc_err
+  uv_bin=$(command -v uv 2>/dev/null) || uv_bin=""
+  [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ] && uv_bin="$HOME/.local/bin/uv"
+  if [ -z "$uv_bin" ]; then
+    if ! _ensure_install_uv "$mode"; then
+      echo "  ensure-tools: 'pre-commit' needs uv, and uv could not be installed -- install uv manually (https://astral.sh/uv/install.sh), then run: uv tool install pre-commit" >&2
+      return 1
+    fi
+    uv_bin=$(command -v uv 2>/dev/null) || uv_bin=""
+    [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ] && uv_bin="$HOME/.local/bin/uv"
+  fi
+  if [ -z "$uv_bin" ]; then
+    echo "  ensure-tools: 'pre-commit' needs uv, and uv was just installed but is not on PATH -- add ~/.local/bin to your PATH, then run: uv tool install pre-commit" >&2
+    return 1
+  fi
+  # `uv tool upgrade` only works on a pre-commit uv itself installed --
+  # a pre-commit found on PATH via some other means (apt, pipx, a manual
+  # install) is not something uv can upgrade, so check `uv tool list` before
+  # taking that branch; anything else falls through to the plain install
+  # below, which places a uv-managed pre-commit on PATH (CR follow-up).
+  # Captured into a variable and tested for non-emptiness, never the exit
+  # status of a `| grep -q` pipe: under this file's `set -o pipefail`, an
+  # early grep match SIGPIPEs the producer, and the pipeline status becomes
+  # the producer's non-zero one, flipping a genuine match to look like a
+  # failure (grep-q-pipe-under-pipefail, HIMMEL-1430).
+  #
+  # `uv tool list` alone -- not a `command -v pre-commit` PATH check -- is
+  # what proves uv manages it: gating on PATH too meant a uv-managed
+  # pre-commit whose shim isn't on PATH fell through to `uv tool install`,
+  # which no-ops on an already-installed tool, silently skipping the upgrade
+  # (pr-check round 3 finding).
+  #
+  # A FAILING `uv tool list` (uv present but broken/corrupt) must not be
+  # read the same as an EMPTY one (uv fine, pre-commit just not installed
+  # yet) -- the former reports the failure and bails; only the latter falls
+  # through to the install/upgrade below (HIMMEL-3628).
+  uv_tool_list=$("$uv_bin" tool list 2>/dev/null)
+  uv_tool_list_rc=$?
+  if [ "$uv_tool_list_rc" -ne 0 ]; then
+    echo "  ensure-tools: '$uv_bin tool list' failed (exit $uv_tool_list_rc) -- cannot tell whether 'pre-commit' is installed; run it yourself: $uv_bin tool list" >&2
+    return 1
+  fi
+  pc_installed=$(printf '%s\n' "$uv_tool_list" | grep '^pre-commit ') || true
+  if [ "$mode" = upgrade ] && [ -n "$pc_installed" ]; then
+    echo "  ensure-tools: upgrading 'pre-commit' via 'uv tool upgrade'..."
+    "$uv_bin" tool upgrade pre-commit >/dev/null 2>&1 || { echo "  ensure-tools: 'uv tool upgrade pre-commit' failed -- run it yourself: $uv_bin tool upgrade pre-commit" >&2; return 1; }
+    return 0
+  fi
+  echo "  ensure-tools: installing 'pre-commit' via 'uv tool install'..."
+  # A pip/pipx/manual pre-commit shim already on PATH (e.g. left over from
+  # this dep's pre-HIMMEL-2521 pip route) lands in the same ~/.local/bin uv
+  # installs into, so a plain `uv tool install` refuses to overwrite it
+  # ("Executable already exists ... use --force"); upgrade mode replaces it
+  # (pr-check round 4 finding).
+  pc_force_flag=""
+  [ "$mode" = upgrade ] && pc_force_flag="--force"
+  pc_err=$("$uv_bin" tool install $pc_force_flag pre-commit 2>&1 >/dev/null) || {
+    pc_err=$(printf '%s\n' "$pc_err" | grep -v '^[[:space:]]*$' | tail -n1)
+    echo "  ensure-tools: 'uv tool install pre-commit' failed${pc_err:+ -- $pc_err} -- run it yourself: $uv_bin tool install $pc_force_flag pre-commit" >&2
+    return 1
+  }
+  return 0
+}
+
 # Non-interactive privilege probe (HIMMEL-2438): echoes the prefix to use for
 # an apt/dnf call ("" when already root, "sudo -n" when passwordless sudo is
 # configured) on stdout with rc 0, or nothing with rc 1 when neither holds.
@@ -284,6 +412,17 @@ ensure_tools() {
     # independent of any package manager.
     if [ "$t" = bun ]; then
       _ensure_install_bun
+      continue
+    fi
+    # uv/pre-commit: bootstrapped via the official installer / uv tool
+    # install (HIMMEL-2521) -- never routed through the package-manager
+    # branch below, same bypass as bun above.
+    if [ "$t" = uv ]; then
+      _ensure_install_uv
+      continue
+    fi
+    if [ "$t" = "pre-commit" ]; then
+      _ensure_install_precommit
       continue
     fi
     if [ -z "$pm" ]; then

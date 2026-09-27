@@ -120,6 +120,34 @@ printf '%s\n' "$(cap_payload 'sid-001b')" | \
 assert_rc "subagent-disable exits 0" 0 $?
 assert_file "no arm call with subagent disable" absent "$ARM_LOG"
 
+echo "Test 1c: disabled hook drains a large stdin payload without SIGPIPE'ing the writer (HIMMEL-2345)"
+# A payload bigger than one pipe buffer (64 KiB on Linux), with the hook
+# exiting on the kill switch WITHOUT reading stdin, races the writer (this
+# printf) against the hook's own teardown: under this file's own
+# `set -o pipefail`, matching a real `payload | hook` caller that checks $?,
+# a losing writer surfaces as rc=141 on this line even though the hook's own
+# exit is 0. Confirmed the real site (not the git|head at old line ~190,
+# which is already `|| `-guarded and safe).
+rm -f "$ARM_LOG"
+big_payload=$(printf '%*s' 500000 '' | tr ' ' 'x')
+printf '%s\n' "$big_payload" | \
+    AUTO_ARM_DISABLE=1 \
+    AUTO_ARM_STATE_DIR="$S" AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" >/dev/null 2>"$STDERR_LOG"
+assert_rc "disabled hook drains large stdin, no SIGPIPE" 0 $?
+assert_file "no arm call when disabled (large payload)" absent "$ARM_LOG"
+
+echo "Test 1d: subagent-disable drains a large stdin payload without SIGPIPE (HIMMEL-2345)"
+rm -f "$ARM_LOG"
+printf '%s\n' "$big_payload" | \
+    AUTO_ARM_SUBAGENT_DISABLE=1 \
+    AUTO_ARM_STATE_DIR="$S" AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" >/dev/null 2>"$STDERR_LOG"
+assert_rc "subagent-disable drains large stdin, no SIGPIPE" 0 $?
+assert_file "no arm call with subagent disable (large payload)" absent "$ARM_LOG"
+
 echo "Test 2: non-Agent tool — quiet no-op"
 S="$TMP/s2"; mkdir -p "$S"
 rm -f "$ARM_LOG"

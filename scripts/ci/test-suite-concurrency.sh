@@ -38,6 +38,7 @@ unset SUITE_LOCK_WAIT
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 CI_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$CI_DIR/../lib/timeout-bin.sh"
 RUNNER="$CI_DIR/run-shell-tests.sh"
 
 if [ ! -f "$RUNNER" ]; then
@@ -2363,9 +2364,9 @@ printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other\n' \
   "$$" "$(this_host)" "$(date +%s)" > "$lockw9/owner"
 
 startw9=$(date +%s)
-if command -v timeout >/dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
   outw9=$(SUITE_LOCK_DIR="$lockw9" SUITE_LOCK_WAIT=3 SUITE_LOCK_WAIT_INTERVAL=9223372036854775807 \
-    timeout 60 bash "$RUNNER" "$sbw9" 2>&1)
+    "$_TIMEOUT_BIN" 60 bash "$RUNNER" "$sbw9" 2>&1)
   rcw9=$?
   w9_ran=1
 else

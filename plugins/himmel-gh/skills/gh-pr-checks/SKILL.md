@@ -1,6 +1,6 @@
 ---
 name: gh-pr-checks
-description: Use when user asks about CI/check status for a specific GitHub PR ("is PR N passing", "are the checks green on PR 42", "CI status for #97", "did PR checks pass"). MUST reference a PR number. Do NOT trigger on generic "run CI" (no PR context) or on Jira (HIMMEL-N → himmel-jira). Do NOT trigger on "check git status" or "check pre-commit" (local, not CI).
+description: CI/check status for a specific PR ("is PR N passing", "CI status for #97"). Needs a PR number. Not Jira or local checks.
 ---
 
 # gh-pr-checks

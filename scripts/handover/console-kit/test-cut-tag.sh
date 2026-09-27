@@ -48,6 +48,7 @@ cat > "$GH_STUB" <<'STUB'
 echo "gh $*" >> "$CALLS_LOG"
 RUNS_DEFAULT='{"total_count":1,"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}]}'
 STATUS_DEFAULT='{"state":"success","total_count":0}'
+CI_RUNS_DEFAULT='{"workflow_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}'
 case "$1 $2" in
   "repo view")
     [ "${CT_NWO_MISMATCH:-0}" = "1" ] && { echo "octo-other/demo"; exit 0; }
@@ -62,6 +63,10 @@ case "$*" in
   *"commits/$SHA_ENV/status"*)
     [ "${CT_STATUS_FAIL:-0}" = "1" ] && exit 1
     printf '%s' "${CT_STATUS_JSON:-$STATUS_DEFAULT}"
+    exit 0 ;;
+  *"actions/runs?head_sha=$SHA_ENV"*)
+    [ "${CT_CI_RUNS_FAIL:-0}" = "1" ] && exit 1
+    printf '%s' "${CT_CI_RUNS_JSON:-$CI_RUNS_DEFAULT}"
     exit 0 ;;
   *"git/refs -f"*)
     [ "${CT_CREATE_FAIL:-0}" = "1" ] && exit 1
@@ -114,6 +119,7 @@ run() { # run <version> <sha> [more args...] - runs the script under test
         CT_ANCESTOR_BAD="${CT_ANCESTOR_BAD:-0}" CT_TAG_EXISTS="${CT_TAG_EXISTS:-0}" \
         CT_SERIES_TAGS="${CT_SERIES_TAGS:-}" CT_FETCH_FAIL="${CT_FETCH_FAIL:-0}" \
         CT_RUNS_JSON="${CT_RUNS_JSON:-}" CT_STATUS_JSON="${CT_STATUS_JSON:-}" \
+        CT_CI_RUNS_JSON="${CT_CI_RUNS_JSON:-}" CT_CI_RUNS_FAIL="${CT_CI_RUNS_FAIL:-0}" \
         CT_CREATE_FAIL="${CT_CREATE_FAIL:-0}" \
         CT_ORIGIN_URL="${CT_ORIGIN_URL:-}" CT_ORIGIN_URL_FAIL="${CT_ORIGIN_URL_FAIL:-0}" \
         CT_NWO_MISMATCH="${CT_NWO_MISMATCH:-0}" CT_SERIES_LS_FAIL="${CT_SERIES_LS_FAIL:-0}" \
@@ -123,6 +129,7 @@ run() { # run <version> <sha> [more args...] - runs the script under test
 reset_calls() { : > "$CALLS"; }
 unset CT_ANCESTOR_BAD CT_TAG_EXISTS CT_SERIES_TAGS CT_FETCH_FAIL CT_RUNS_JSON CT_STATUS_JSON CT_CREATE_FAIL
 unset CT_ORIGIN_URL CT_ORIGIN_URL_FAIL CT_NWO_MISMATCH CT_SERIES_LS_FAIL CT_RUNS_FAIL CT_STATUS_FAIL
+unset CT_CI_RUNS_JSON CT_CI_RUNS_FAIL
 
 CLEAN_VERSION="v0.3.0-pre.9"
 CT_SERIES_TAGS_DEFAULT="aaaa1111	refs/tags/v0.3.0-pre.6
@@ -234,6 +241,41 @@ rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_STATUS_FAIL=1 run "$CLEA
 check "status-fail: rc 4" "$rc" "4"
 not_contains "status-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
 
+# --- 17. Pages-only check-runs, no CI workflow run (HIMMEL-3627 vacuous-pass bug) ---
+reset_calls
+PAGES_ONLY_RUNS='{"total_count":3,"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"deploy","status":"completed","conclusion":"success"},{"name":"report-build-status","status":"completed","conclusion":"success"}]}'
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_RUNS_JSON="$PAGES_ONLY_RUNS" CT_CI_RUNS_JSON='{"workflow_runs":[]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "pages-only: rc 4" "$rc" "4"
+contains "pages-only: names the missing CI run" "$out" "CI workflow run"
+not_contains "pages-only: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 18. CI workflow run queued -------------------------------------------------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_CI_RUNS_JSON='{"workflow_runs":[{"name":"CI","status":"queued","conclusion":null}]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "ci-queued: rc 4" "$rc" "4"
+contains "ci-queued: names the status" "$out" "queued"
+not_contains "ci-queued: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 19. CI workflow run in_progress --------------------------------------------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_CI_RUNS_JSON='{"workflow_runs":[{"name":"CI","status":"in_progress","conclusion":null}]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "ci-in-progress: rc 4" "$rc" "4"
+contains "ci-in-progress: names the status" "$out" "in_progress"
+not_contains "ci-in-progress: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 20. CI workflow run completed/cancelled ------------------------------------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_CI_RUNS_JSON='{"workflow_runs":[{"name":"CI","status":"completed","conclusion":"cancelled"}]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "ci-cancelled: rc 4" "$rc" "4"
+contains "ci-cancelled: names the conclusion" "$out" "cancelled"
+not_contains "ci-cancelled: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 21. CI actions/runs gh api failure (RED: must NOT read as clean) -----------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_CI_RUNS_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "ci-runs-fail: rc 4" "$rc" "4"
+not_contains "ci-runs-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
 # --- 16. option-shaped / empty --version-override reason (RED: must not become the reason) ---
 reset_calls
 rc=0; out=$(run "$CLEAN_VERSION" "$SHA" --version-override --dry-run 2>&1) || rc=$?
@@ -244,6 +286,67 @@ reset_calls
 rc=0; out=$(run "$CLEAN_VERSION" "$SHA" --version-override "" 2>&1) || rc=$?
 check "override-reason-empty: rc 2" "$rc" "2"
 check "override-reason-empty: nothing called" "$(cat "$CALLS")" ""
+
+# --- 22. bare release: no matching pre-release tag, no override -> rc 6 (HIMMEL-3701) ---
+BARE_VERSION="v1.0.0"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="" run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-no-pre: rc 6" "$rc" "6"
+contains "bare-no-pre: names the reason" "$out" "no v1.0.0-pre"
+not_contains "bare-no-pre: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 23. bare release: --version-override with no pre-release tag -> rc 0 -----
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="" run "$BARE_VERSION" "$SHA" --version-override "no pre-release cut" 2>&1) || rc=$?
+check "bare-override: rc 0" "$rc" "0"
+contains "bare-override: reason echoed" "$out" "no pre-release cut"
+contains "bare-override: ref created" "$(cat "$CALLS")" "git/refs -f ref=refs/tags/v1.0.0 "
+
+# --- 24. bare release: an existing pre-release tag for the same X.Y.Z, no override -> rc 0 ---
+reset_calls
+BARE_SERIES_TAGS="aaaa1111	refs/tags/v1.0.0-pre.3"
+rc=0; out=$(CT_SERIES_TAGS="$BARE_SERIES_TAGS" run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-has-pre: rc 0" "$rc" "0"
+contains "bare-has-pre: created message" "$out" "created refs/tags/$BARE_VERSION"
+
+# --- 24b. bare release: an origin tag with an EMPTY -pre. suffix does not count
+# as a matching pre-release (HIMMEL-3701 codex-1 round 2) ---------------------
+reset_calls
+BARE_SERIES_TAGS_EMPTY="aaaa1111	refs/tags/v1.0.0-pre."
+rc=0; out=$(CT_SERIES_TAGS="$BARE_SERIES_TAGS_EMPTY" run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-empty-pre-suffix: rc 6" "$rc" "6"
+contains "bare-empty-pre-suffix: names the reason" "$out" "no v1.0.0-pre"
+
+# --- 25. bare release: the bare tag itself already exists on origin -> rc 5 ---
+reset_calls
+rc=0; out=$(CT_TAG_EXISTS=1 run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-exists: rc 5" "$rc" "5"
+contains "bare-exists: names the reason" "$out" "already exists"
+
+# --- 26. bare release: a red check-run -> rc 4 (same gate as pre) ------------
+reset_calls
+BARE_SERIES_TAGS_26="aaaa1111	refs/tags/v1.0.0-pre.1"
+rc=0; out=$(CT_SERIES_TAGS="$BARE_SERIES_TAGS_26" CT_RUNS_JSON='{"total_count":1,"check_runs":[{"name":"unit","status":"completed","conclusion":"failure"}]}' run "$BARE_VERSION" "$SHA" 2>&1) || rc=$?
+check "bare-red-run: rc 4" "$rc" "4"
+contains "bare-red-run: names the failing run" "$out" "unit="
+
+# --- 27. bare release: malformed shapes stay refused, exit 2, nothing called --
+for args in "v1a.0.0 $SHA" "v1.0 $SHA" "v1.0.0.1 $SHA" "v1.0.0-rc1 $SHA" "v.1.2 $SHA" "v1..2 $SHA" "v1.2. $SHA"; do
+    reset_calls
+    rc=0
+    # shellcheck disable=SC2086
+    run $args >/dev/null 2>&1 || rc=$?
+    check "bare-malformed: [$args] -> exit 2" "$rc" "2"
+    check "bare-malformed: [$args] -> nothing called" "$(cat "$CALLS")" ""
+done
+
+# --- 28. leading zeros: the bare path mirrors whatever the pre path does -----
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="" run "v01.0.0-pre.1" "$SHA" 2>&1) || rc=$?
+check "pre-leading-zero: not refused as usage" "$( [ "$rc" != "2" ] && echo yes || echo no )" "yes"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="" run "v01.0.0" "$SHA" --version-override "leading zero" 2>&1) || rc=$?
+check "bare-leading-zero: mirrors pre path (not refused as usage)" "$( [ "$rc" != "2" ] && echo yes || echo no )" "yes"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then

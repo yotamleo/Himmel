@@ -502,7 +502,18 @@ repos:
         # would launder the himmel-authored skill as vendored.
         language: system
         entry: node scripts/lanes/skill-cost.mjs --max-desc 120
-        files: '^(\.claude/commands/[^/]+\.md|\.claude/skills/[^/]+/SKILL\.md|\.agents/skills/[^/]+/SKILL\.md|marketplace/plugins/[^/]+/commands/[^/]+\.md|marketplace/plugins/[^/]+/skills/[^/]+/SKILL\.md)$'
+        files: '^(\.claude/commands/[^/]+\.md|\.claude/skills/[^/]+/SKILL\.md|\.agents/skills/[^/]+/SKILL\.md|marketplace/plugins/[^/]+/commands/[^/]+\.md|marketplace/plugins/[^/]+/skills/[^/]+/SKILL\.md|plugins/(himmel-gh|himmel-jira)/skills/[^/]+/SKILL\.md)$'
+        stages: [pre-commit]
+
+      - id: skill-lint
+        name: SKILL.md frontmatter hygiene (name/description present, name==dirname, no dup name)
+        # HIMMEL-3609 (v1 gate). Repo-owned SKILL.md corpus only — .agents/skills
+        # (generated Codex mirror) and bench-scorecard test fixtures are out of
+        # scope by design. Description-LENGTH policy is skill-description-cap
+        # above, not this hook.
+        language: system
+        entry: bash scripts/lint/skill-lint.sh
+        files: '^(marketplace/plugins/[^/]+/skills/[^/]+/SKILL\.md|\.claude/skills/[^/]+/SKILL\.md|plugins/(himmel-gh|himmel-jira)/skills/[^/]+/SKILL\.md)$'
         stages: [pre-commit]
 
       - id: command-positional-args

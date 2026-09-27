@@ -23,6 +23,7 @@ HOOK="$HOOK_DIR/jira-nudge-on-end.sh"
 # shellcheck source=../lib/fixture-tempdir.sh
 # shellcheck disable=SC1091
 . "$HOOK_DIR/../lib/fixture-tempdir.sh"
+. "$HOOK_DIR/../lib/timeout-bin.sh"
 
 FAILED=0
 PASSED=0
@@ -208,7 +209,7 @@ assert_no_nudge "unresolved-key suppresses" "$OUT"
 #     "detached" from "never fired"). Skipped where GNU coreutils `timeout` is
 #     absent (stock macOS); the detach primitive's setsid+disown branches are
 #     covered portably by scripts/lib/test-detach.sh.
-if command -v timeout >/dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
     build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
     CURL_MARK="$ROOT_TMP/curl-fired"
     CURL_ARGS="$ROOT_TMP/curl-args"
@@ -236,7 +237,7 @@ CURLEOF
     # what is under test here, so exercise it on the legacy detach path; the
     # queued path is owned by scripts/hooks/stop-queue.test.mjs and
     # scripts/lib/test-detach.sh (which assert enqueue, drain and fallback).
-    printf '%s' "$CASE_PAYLOAD" | timeout 15 env -u JIRA_PROJECT_KEY \
+    printf '%s' "$CASE_PAYLOAD" | "$_TIMEOUT_BIN" 15 env -u JIRA_PROJECT_KEY \
         -u HIMMEL_INITIATIVE -u HIMMEL_INITIATIVE_OVERNIGHT -u HIMMEL_OVERNIGHT \
         HOME="$CASE_HOME" USERPROFILE="$CASE_HOME" PATH="$STUB_DIR:$PATH" \
         TMPDIR="$TMPDIR_8B" HIMMEL_STOP_QUEUE_OFF=1 \
@@ -298,10 +299,10 @@ if [ ! -f "$PF_8C" ]; then pass "child deletes its payload temp file"; else fail
 #     HIMMEL_STOP_QUEUE_OFF for the same reason as the relay case above: with
 #     the queue on, this leaves a detached worker sleeping out the 12s delay
 #     under $CASE_HOME while the suite's EXIT trap deletes $ROOT_TMP under it.
-if command -v timeout >/dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
     build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
     _t0=$(date +%s)
-    printf '%s' "$CASE_PAYLOAD" | timeout 15 env -u JIRA_PROJECT_KEY \
+    printf '%s' "$CASE_PAYLOAD" | "$_TIMEOUT_BIN" 15 env -u JIRA_PROJECT_KEY \
         -u HIMMEL_INITIATIVE -u HIMMEL_INITIATIVE_OVERNIGHT -u HIMMEL_OVERNIGHT \
         HOME="$CASE_HOME" USERPROFILE="$CASE_HOME" PATH="$STUB_DIR:$PATH" \
         HIMMEL_JIRA_NUDGE=0 JIRA_NUDGE_TEST_DELAY=12 HIMMEL_STOP_QUEUE_OFF=1 \

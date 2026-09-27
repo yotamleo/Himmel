@@ -419,4 +419,41 @@ grepq "$out" -E 'WARN.*fixture-owned \(present, user\)' \
   || fail "caseH (HIMMEL-2459 control 3): a genuine user-scope leftover must still WARN even when run from himmel's own checkout (got: $out)"
 echo "ok: caseH self-checkout + genuine user-scope residue -> still WARNs (HIMMEL-2459 control 3)"
 
+# ── Case I (HIMMEL-2501): sameFsEntry() must reject a degenerate ino=0
+# comparison rather than reading it as a match. This cannot be driven from
+# a real filesystem on any platform CI runs on (POSIX filesystems always
+# report real inodes) -- stub fs.statSync directly and call sameFsEntry()
+# in-process. The positive control (equal non-zero dev+ino still matches)
+# proves the guard rejects only the degenerate case, not identity matching
+# generally -- without it, a sameFsEntry that always returned false would
+# also pass case I alone.
+iCase=$(cat <<'NODEEOF'
+const bin = require(process.argv[2]);
+const fs = require('fs');
+const real = fs.statSync;
+
+fs.statSync = () => ({ dev: 0, ino: 0 });
+const degenerate = bin.sameFsEntry('/tmp/himmel-2501-a', '/tmp/himmel-2501-b');
+if (degenerate !== false) {
+  console.error('FAIL: degenerate ino=0 must not compare equal, got ' + degenerate);
+  process.exit(1);
+}
+
+fs.statSync = (p) => ({ dev: 7, ino: 42 });
+const control = bin.sameFsEntry('/tmp/himmel-2501-a', '/tmp/himmel-2501-b');
+if (control !== true) {
+  console.error('FAIL: equal non-zero dev+ino must still compare equal, got ' + control);
+  process.exit(1);
+}
+
+fs.statSync = real;
+console.log('ok');
+NODEEOF
+)
+out=$(printf '%s' "$iCase" | "$node_bin" - "$wizard" 2>&1); rc=$?
+if [ "$rc" -ne 0 ] || [ "$out" != "ok" ]; then
+  fail "caseI (HIMMEL-2501): sameFsEntry degenerate-inode guard failed (rc=$rc): $out"
+fi
+echo "ok: caseI — sameFsEntry rejects ino=0 while still matching real identity (HIMMEL-2501)"
+
 echo "PASS"

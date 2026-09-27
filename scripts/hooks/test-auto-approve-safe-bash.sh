@@ -179,6 +179,36 @@ assert "tree plain"               ALLOW "$(decide "$(j_bash 'tree -L 2 src')")"
 assert "base64 decode stdout"     ALLOW "$(decide "$(j_bash 'cat f | base64 -d')")"
 assert "file plain"               ALLOW "$(decide "$(j_bash 'file README.md')")"
 
+# --- Round-6 locks: HIMMEL-2610 — abbreviated long-option write flags must
+# be caught the same as the full spelling (GNU getopt_long-style unambiguous
+# abbreviation; `sort`/`file` empirically confirmed to accept it). ---
+assert "sort --outp abbrev write" PASS  "$(decide "$(j_bash 'sort --outp=/tmp/pwned f')")"
+assert "tree --outp abbrev write" PASS  "$(decide "$(j_bash 'tree --outp=out.html .')")"
+assert "base64 --outp abbrev"     PASS  "$(decide "$(j_bash 'base64 --outp=/tmp/x in')")"
+assert "file --comp abbrev write" PASS  "$(decide "$(j_bash 'file --comp -m mymagic')")"
+# negative controls: an unrelated long option on the same binary must not be
+# swallowed by the abbreviation check (only a genuine prefix of the write
+# flag's own name resolves).
+assert "sort --buffer-size ctrl"  ALLOW "$(decide "$(j_bash 'sort --buffer-size=1M f')")"
+assert "tree --dirsfirst ctrl"    ALLOW "$(decide "$(j_bash 'tree --dirsfirst .')")"
+assert "file --mime-type ctrl"    ALLOW "$(decide "$(j_bash 'file --mime-type f')")"
+
+# --- Round-7 locks: HIMMEL-3632 — sort's raw (quote-preserving) token
+# defeated the `--*`/`-o*` case match, and `--compress-program` (runs an
+# arbitrary program on spill = ACE) was never checked at all. FAIL CLOSED:
+# an unrecognised or program/output-taking sort option must fall through to
+# normal permission, never a per-shape patch that parses more. ---
+assert "sort --compress-program"  PASS  "$(decide "$(j_bash 'sort --compress-program=sh f')")"
+assert "sort --comp abbrev exec"  PASS  "$(decide "$(j_bash 'sort --comp=sh f')")"
+assert "sort --output single-q"   PASS  "$(decide "$(j_bash "sort '--output=/tmp/pwned' f")")"
+assert "sort --output double-q"   PASS  "$(decide "$(j_bash 'sort "--output=/tmp/pwned" f')")"
+assert "sort -uo clustered write" PASS  "$(decide "$(j_bash 'sort -uo /tmp/pwned f')")"
+# plain read-only sort forms (incl. clustered/unrelated short flags) still
+# auto-approve.
+assert "sort plain"               ALLOW "$(decide "$(j_bash 'sort f')")"
+assert "sort -u plain"            ALLOW "$(decide "$(j_bash 'sort -u f')")"
+assert "sort -k2 plain"           ALLOW "$(decide "$(j_bash 'sort -k2 f')")"
+
 # --- Correctness-CR locks: false-negatives that should ALLOW ---
 assert "xxd file + redirect"      ALLOW "$(decide "$(j_bash 'xxd file 2>/dev/null')")"
 assert "git --git-dir= equals"    ALLOW "$(decide "$(j_bash 'git --git-dir=/repo log --oneline')")"
@@ -328,6 +358,26 @@ assert "real -maxdepth still ALLOW" ALLOW "$(decide "$(j_bash 'find / -maxdepth 
 # Unchanged: scoped path with -delete stays un-denied (segment_is_safe's own
 # guard handles it, not the rootwalk deny).
 assert "find . -delete still PASS2" PASS  "$(decide "$(j_bash 'find . -delete')")"
+
+# --- HIMMEL-2610 J1267O F2: the root-walk DENY (HIMMEL-2121) predates this
+# hook's guardrails/lib.sh dependency and must survive lib.sh being missing —
+# a fail-open here silently drops the ONLY thing this hook ever denies. ---
+NOLIB_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/aasb-nolib.XXXXXX")" || { echo "FAIL mktemp for the no-lib fixture"; exit 1; }
+mkdir -p "$NOLIB_ROOT/scripts/hooks"
+cp "$HOOK" "$NOLIB_ROOT/scripts/hooks/auto-approve-safe-bash.sh"
+decide_nolib() {
+    local out
+    out=$(printf '%s' "$1" | bash "$NOLIB_ROOT/scripts/hooks/auto-approve-safe-bash.sh" 2>/dev/null)
+    if grepq "$out" '"permissionDecision":"deny"'; then
+        echo "DENY"
+    elif grepq "$out" '"permissionDecision":"allow"'; then
+        echo "ALLOW"
+    else
+        echo "PASS"
+    fi
+}
+assert "find / no maxdepth, NO lib.sh present" DENY "$(decide_nolib "$(j_bash 'find / -iname harvest-clips -not -path /node_modules/')")"
+rm -rf "$NOLIB_ROOT"
 
 # --- Round-5 locks (cross-model critic panel, round 4): root-equivalent
 # canonicalization, `--` option terminator, and resuming the -maxdepth scan
@@ -738,6 +788,74 @@ assert "ctl: is trailing &"                  PASS "$(is_dec "$IS_W" "$IS_REL $IS
 IS_OUT=$(j_bash_cwd "$IS_W" "$IS_REL $IS_R" | HIMMEL_REPO="$IS_W" bash "$HOOK" 2>/dev/null)
 assert "ctl: is HIMMEL_REPO = own worktree"  PASS "$(grepq "$IS_OUT" '"permissionDecision":"allow"' && echo ALLOW || echo PASS)"
 rm -rf "$IS_TMP"
+
+# --- HIMMEL-3660: auto-approve must not cook brace/parameter expansion literally ---
+# The shell EXPANDS these before the command runs, but a literal-word match
+# sees one un-exploded token and misses the write/delete/exec flag hiding
+# inside it. FAIL CLOSED: these must PASS (fall through to a normal prompt),
+# never ALLOW.
+assert "sort brace -o/F split"        PASS "$(decide "$(j_bash 'sort {-o,F} f')")"
+assert "sort param-default -o"        PASS "$(decide "$(j_bash 'sort ${X:--o/tmp/p} f')")"
+assert "sort brace compress-program"  PASS "$(decide "$(j_bash 'sort {--compress-program=sh,f}')")"
+assert "find brace -delete/-print"    PASS "$(decide "$(j_bash 'find . {-delete,-print}')")"
+# Controls: unrelated shapes must keep behaving exactly as before.
+assert "sort plain still ALLOW"       ALLOW "$(decide "$(j_bash 'sort f')")"
+assert "find -name still ALLOW"       ALLOW "$(decide "$(j_bash "find . -name '*.md'")")"
+assert "quoted literal brace ALLOW"   ALLOW "$(decide "$(j_bash "echo '{a,b}'")")"
+assert "sort quoted literal brace"    ALLOW "$(decide "$(j_bash "sort '{a,b}' f")")"
+
+# --- HIMMEL-3660 / J1300O finding (a): segment_is_rootwalk_find must treat an
+# uncookable word ($VAR, brace) as OPAQUE and keep scanning, never bail out of
+# the whole HIMMEL-2121 root-walk DENY the instant one word can't be cooked.
+assert "rootwalk \$X quoted survives cook-fail" DENY "$(decide "$(j_bash 'find / -name "$X"')")"
+assert "rootwalk \$X unquoted survives cook-fail" DENY "$(decide "$(j_bash 'find / -name $X')")"
+assert "rootwalk \${X} survives cook-fail" DENY "$(decide "$(j_bash 'find / -name ${X}')")"
+assert "rootwalk \$f in -newer survives cook-fail" DENY "$(decide "$(j_bash 'find / -newer $f')")"
+assert "rootwalk loop-variable survives cook-fail" DENY "$(decide "$(j_bash 'for f in a b; do find / -name $f; done')")"
+assert "rootwalk \$Y after -o survives cook-fail" DENY "$(decide "$(j_bash 'find / -name x -o -name $Y')")"
+assert "rootwalk \$N maxdepth-value survives cook-fail" DENY "$(decide "$(j_bash 'find / -maxdepth $N -name x')")" # gnu-ok: fixture string fed to the hook under test, never executed as a shell command
+assert "rootwalk brace maxdepth-value survives cook-fail" DENY "$(decide "$(j_bash 'find / -maxdepth {1,2} -name x')")" # gnu-ok: fixture string fed to the hook under test, never executed as a shell command
+assert "rootwalk brace path-operand survives cook-fail" DENY "$(decide "$(j_bash 'find / -name *.{md,txt}')")"
+# Control: the $(...) rootwalk DENY (round-3 lock, :346) must still hold.
+assert "rootwalk \$(...)  still DENY"  DENY "$(decide "$(j_bash 'find / -iname $(hostname)')")"
+
+# --- HIMMEL-3660 / J1300O finding (b): an UNQUOTED glob word (*, ?, [) in a
+# guarded arm must fall through to normal permission, never auto-approve —
+# real exploit: with a file named `-oPWNED` present, `sort -* f` wrote PWNED.
+assert "sort -* glob"                 PASS "$(decide "$(j_bash 'sort -* f')")"
+assert "sort ?o glob"                 PASS "$(decide "$(j_bash 'sort ?o f')")"
+assert "sort [-]o glob"               PASS "$(decide "$(j_bash 'sort [-]o f')")"
+assert "sort bare * glob"             PASS "$(decide "$(j_bash 'sort *')")"
+assert "sort *.txt glob"              PASS "$(decide "$(j_bash 'sort *.txt')")"
+assert "find . -* glob"               PASS "$(decide "$(j_bash 'find . -*')")"
+assert "find -name x -o -* glob"      PASS "$(decide "$(j_bash 'find . -name x -o -*')")"
+assert "find bare * glob"             PASS "$(decide "$(j_bash 'find *')")"
+assert "tree -* glob"                 PASS "$(decide "$(j_bash 'tree -*')")"
+assert "base64 -* glob"               PASS "$(decide "$(j_bash 'base64 -*')")"
+# Controls: a QUOTED glob is a literal word, not shell-expanded — must keep
+# auto-approving exactly as before.
+assert "find quoted glob still ALLOW" ALLOW "$(decide "$(j_bash "find . -name '*.md'")")"
+assert "sort quoted glob still ALLOW" ALLOW "$(decide "$(j_bash "sort '-*' f")")"
+
+# --- HIMMEL-3732 / HIMMEL-3733 (J1300A findings 6,7): an unquoted `(` in ANY
+# word is zsh glob-qualifier / grouping syntax under zsh defaults — arbitrary
+# code (`f(e:'cmd':)`) or a real write (`(-)oPWNED`) — independent of which
+# binary carries it, so this is a GLOBAL refusal, not confined to the six
+# write-guarded arms. Quoted/escaped `(` and the already-handled
+# $(...)/<(...)/>(...)/$((...)) constructs stay unaffected.
+assert "glob-qualifier exec f(e:...)"  PASS "$(decide "$(j_bash "cat f(e:'touch /tmp/x':)")")"
+assert "glob-qualifier plus f(+cmd)"   PASS "$(decide "$(j_bash 'cat f(+cmd)')")"
+assert "glob-qualifier dot *(.)"       PASS "$(decide "$(j_bash 'ls *(.)')")"
+assert "grouping-glob sort (-)oX"      PASS "$(decide "$(j_bash 'sort (-)oX f')")"
+assert "grouping (a|b) word"           PASS "$(decide "$(j_bash 'cat (a|b)')")"
+assert "glob-qualifier grep f(N)"      PASS "$(decide "$(j_bash 'grep x f(N)')")"
+# Controls: quoted/escaped '(' and unrelated shapes must keep ALLOWing.
+assert "quoted paren in grep pattern"  ALLOW "$(decide "$(j_bash "grep '(' f")")"
+assert "quoted paren in dquote arg"    ALLOW "$(decide "$(j_bash 'grep "a(b)" f')")"
+assert "escaped paren"                 ALLOW "$(decide "$(j_bash 'echo \(')")"
+assert "cmd-subst paren still PASS"    PASS "$(decide "$(j_bash 'cat "$(pwd)/f"')")"
+assert "plain cat README still ALLOW"  ALLOW "$(decide "$(j_bash 'cat README.md')")"
+assert "plain git log still ALLOW"     ALLOW "$(decide "$(j_bash 'git log --oneline -1')")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

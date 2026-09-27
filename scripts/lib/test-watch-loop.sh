@@ -37,15 +37,43 @@ FAILED=0
 pass() { printf 'PASS %s\n' "$1"; PASSED=$((PASSED + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAILED=$((FAILED + 1)); }
 
+# codex-1 (round 4, Suggestion): `kill -0 <pid>` succeeds for a ZOMBIE too --
+# the pid slot stays allocated until something reaps it -- so a grandchild
+# liveness assertion built on kill -0 alone can read an already-dead pid as
+# still alive. `ps -o stat=` distinguishes a zombie (leading Z) from a live
+# process without /proc, so it works on bash 3.2 / macOS as well as Linux.
+_alive() {
+    local st
+    st="$(ps -o stat= -p "$1" 2>/dev/null)"
+    case "$st" in
+        '' | Z*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 TMP="$(mktemp -d)"
 
 # Per-case watcher (W*) and parent (P*) pids; all reaped by the trap.
-W1="" P1="" W2="" P2="" W3="" P3="" P5="" W6="" P6=""
+W1="" P1="" W2="" P2="" W3="" P3="" P5="" W6="" P6="" P7="" GC7="" P8="" GC8=""
 cleanup() {
-    local _p
-    for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6"; do
+    local _p _still_alive=0
+    for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
         [ -n "$_p" ] && kill "$_p" 2>/dev/null
     done
+    # codex-1 (round 3, Suggestion): plain TERM never reaped GC8, which traps
+    # and ignores it on purpose (case 8's fixture) -- escalate to KILL for
+    # anything still alive after a grace period, same as the fallback tier
+    # under test. codex-2 (round 4, Suggestion): skip the grace sleep when
+    # nothing is left to escalate against.
+    for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
+        [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null && _still_alive=1
+    done
+    if [ "$_still_alive" -eq 1 ]; then
+        sleep 1
+        for _p in "$W1" "$P1" "$W2" "$P2" "$W3" "$P3" "$P5" "$W6" "$P6" "$P7" "$GC7" "$P8" "$GC8"; do
+            [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null && kill -9 "$_p" 2>/dev/null
+        done
+    fi
     wait 2>/dev/null
     rm -rf "$TMP"
 }
@@ -243,6 +271,101 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
 else
     pass "case 5 -> (skipped: no timeout/gtimeout on this host)"
     pass "case 6 -> (skipped: no timeout/gtimeout on this host)"
+fi
+
+# --- Case 7: the no-timeout/gtimeout fallback kills the probe's WHOLE
+#             process tree, not just its direct pid (HIMMEL-2110) -- a
+#             scratch PATH hides timeout/gtimeout (and setsid, so the
+#             set-m sub-branch is exercised) with only the tools the probe
+#             itself needs symlinked in. At base, the fallback tier only
+#             does `kill "$cpid"` on the probe's direct pid, so a
+#             background CHILD the probe spawned before hanging survives
+#             as an orphan.
+echo "== case 7: no-timeout/gtimeout fallback kills the probe's whole process group =="
+BIN7="$TMP/bin7"
+mkdir -p "$BIN7"
+for t in bash sh sleep kill printf cat; do
+    t_path="$(command -v "$t" 2>/dev/null)"
+    [ -n "$t_path" ] && ln -s "$t_path" "$BIN7/$t"
+done
+sleep 30 &
+P7=$!
+CHILDPID7="$TMP/childpid7"
+LOG7="$TMP/log7"
+PATH="$BIN7" bash "$WATCH_LOOP" --parent-pid "$P7" --ttl 2 --interval 1 \
+    -- sh -c "sleep 30 & echo \$! > '$CHILDPID7'; sleep 30" > "$LOG7" 2>&1
+rc7=$?
+kill "$P7" 2>/dev/null
+wait "$P7" 2>/dev/null
+P7=""
+i=0
+while [ ! -s "$CHILDPID7" ] && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+if [ -s "$CHILDPID7" ]; then
+    pass "probe's background child recorded its pid before the fallback fired"
+else
+    fail "probe's background child never recorded a pid"
+fi
+GC7="$(cat "$CHILDPID7" 2>/dev/null || true)"
+if [ "$rc7" -eq 0 ] && grep -q 'watch-loop: exiting (ttl)' "$LOG7"; then
+    pass "no-timeout fallback loop still exited 0 naming ttl"
+else
+    fail "case 7 rc=$rc7 log: $(cat "$LOG7")"
+fi
+if [ -n "$GC7" ] && _alive "$GC7"; then
+    fail "probe's background child (pid $GC7) survived the no-timeout fallback kill"
+else
+    pass "probe's background child was reaped along with the probe (no-timeout fallback)"
+fi
+
+# --- Case 8: the no-timeout/gtimeout fallback's KILL escalation is
+#             group-scoped, not direct-pid-scoped (HIMMEL-2110, codex-1
+#             critic finding). At base, the escalation only sends KILL
+#             when `kill -0 "$cpid"` (the probe's OWN pid) still succeeds;
+#             if the probe dies from the TERM (no trap of its own) while a
+#             grandchild ignores TERM (SIG_IGN surviving an exec, so not
+#             just a shell trap) and stays in the same process group, the
+#             escalation check sees the probe gone and skips KILL, leaving
+#             that grandchild running forever.
+echo "== case 8: no-timeout fallback KILL escalation reaps a TERM-ignoring child even after the probe itself has already died =="
+BIN8="$TMP/bin8"
+mkdir -p "$BIN8"
+for t in bash sh sleep kill printf cat; do
+    t_path="$(command -v "$t" 2>/dev/null)"
+    [ -n "$t_path" ] && ln -s "$t_path" "$BIN8/$t"
+done
+GCHELPER8="$TMP/gchelper8.sh"
+GCPID8="$TMP/gcpid8"
+cat > "$GCHELPER8" <<'GCHELPER_EOF'
+trap '' TERM
+echo $$ > "$1"
+exec sleep 30
+GCHELPER_EOF
+sleep 30 &
+P8=$!
+LOG8="$TMP/log8"
+PATH="$BIN8" bash "$WATCH_LOOP" --parent-pid "$P8" --ttl 2 --interval 1 \
+    -- sh -c "sh '$GCHELPER8' '$GCPID8' & wait" > "$LOG8" 2>&1
+rc8=$?
+kill "$P8" 2>/dev/null
+wait "$P8" 2>/dev/null
+P8=""
+i=0
+while [ ! -s "$GCPID8" ] && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+if [ -s "$GCPID8" ]; then
+    pass "TERM-ignoring grandchild recorded its pid before the fallback fired"
+else
+    fail "TERM-ignoring grandchild never recorded a pid"
+fi
+GC8="$(cat "$GCPID8" 2>/dev/null || true)"
+if [ "$rc8" -eq 0 ] && grep -q 'watch-loop: exiting (ttl)' "$LOG8"; then
+    pass "no-timeout fallback loop still exited 0 naming ttl (case 8)"
+else
+    fail "case 8 rc=$rc8 log: $(cat "$LOG8")"
+fi
+if [ -n "$GC8" ] && _alive "$GC8"; then
+    fail "TERM-ignoring grandchild (pid $GC8) survived the no-timeout fallback KILL escalation"
+else
+    pass "TERM-ignoring grandchild was reaped by the group-scoped KILL escalation"
 fi
 
 echo "---"

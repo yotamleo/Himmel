@@ -25,6 +25,7 @@ set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CADENCE="$SCRIPT_DIR/upstream-watch-cadence.sh"
+HIMMEL_REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
 
 fails=0
 pass() { echo "  ok   — $1"; }
@@ -121,6 +122,32 @@ FAKE
   printf '%s' "$f"
 }
 
+# make_anchor <state> — a stub `.env`-bearing anchor for HANDOVER_DIR
+# resolution (HIMMEL-2619): symlinks the REAL scripts/lib/load-dotenv.sh (a
+# static utility, never mutated by this suite) so go_resolve_root's `.env`
+# read works, then points its .env at an external scratch handover dir —
+# never inside $state/root, the stub payload cd's into.
+make_anchor() {
+  local state="$1" anchor="$1/anchor"
+  mkdir -p "$anchor/scripts/lib" "$state/external-handover"
+  ln -sf "$HIMMEL_REPO_ROOT/scripts/lib/load-dotenv.sh" "$anchor/scripts/lib/load-dotenv.sh"
+  printf 'HANDOVER_DIR=%s\n' "$state/external-handover" > "$anchor/.env"
+  printf '%s' "$anchor"
+}
+
+# make_bare_anchor <state> — a real (git-init'd) anchor with NO .env and a
+# pre-existing <anchor>/handovers, for the RED case: no external
+# HANDOVER_DIR is configured anywhere, so resolution must fall through to
+# the Mode A inline stub and the cadence script must refuse to arm rather
+# than silently bake that stub in.
+make_bare_anchor() {
+  local state="$1" anchor="$1/anchor-bare"
+  mkdir -p "$anchor/scripts/lib" "$anchor/handovers"
+  ln -sf "$HIMMEL_REPO_ROOT/scripts/lib/load-dotenv.sh" "$anchor/scripts/lib/load-dotenv.sh"
+  ( cd "$anchor" && git init -q && git config user.email t@t.test && git config user.name t && git add -A && git commit -q -m init )
+  printf '%s' "$anchor"
+}
+
 new_scratch() {
   local state
   state=$(mktemp -d "${TMPDIR:-/tmp}/upstream-watch-cadence-test.XXXXXX")
@@ -150,16 +177,38 @@ run_cadence() {
 
 # run_cadence_posix — same contract as run_cadence but the POSIX/crontab arm
 # path (UPSTREAMWATCH_CRONTAB), never touching a real cygpath/wscript
-# dependency the Windows path needs.
+# dependency the Windows path needs. HANDOVER_DIR resolution (HIMMEL-2619) is
+# pinned to a scratch external anchor so this stays hermetic regardless of
+# this station's own real HANDOVER_DIR/`.env` — see make_anchor.
 run_cadence_posix() {
   local state="$1"; shift
-  UPSTREAMWATCH_CRONTAB="$state/crontab" \
+  local anchor; anchor=$(make_anchor "$state")
+  env -u HANDOVER_DIR \
+    UPSTREAMWATCH_CRONTAB="$state/crontab" \
     UPSTREAMWATCH_BAT_DIR="$state/bat" \
     UPSTREAMWATCH_HIMMEL_ROOT="$state/root" \
+    UPSTREAMWATCH_ANCHOR_ROOT="$anchor" \
     UPSTREAMWATCH_PLATFORM=posix \
     HIMMEL_OBSERVABILITY_CONFIG="$state/observability.json" \
     HIMMEL_PROVENANCE_DIR="$state/provenance" \
     bash "$CADENCE" "$@"
+}
+
+# run_cadence_posix_anchor <state> <anchor> <args...> — like run_cadence_posix
+# but with an EXPLICIT anchor (e.g. make_bare_anchor's no-`.env` stub), for
+# exercising HANDOVER_DIR resolution itself rather than the default
+# always-succeeds anchor above.
+run_cadence_posix_anchor() {
+  local state="$1" anchor="$2"; shift 2
+  ( cd "$anchor" && env -u HANDOVER_DIR \
+      UPSTREAMWATCH_CRONTAB="$state/crontab" \
+      UPSTREAMWATCH_BAT_DIR="$state/bat" \
+      UPSTREAMWATCH_HIMMEL_ROOT="$state/root" \
+      UPSTREAMWATCH_ANCHOR_ROOT="$anchor" \
+      UPSTREAMWATCH_PLATFORM=posix \
+      HIMMEL_OBSERVABILITY_CONFIG="$state/observability.json" \
+      HIMMEL_PROVENANCE_DIR="$state/provenance" \
+      bash "$CADENCE" "$@" )
 }
 
 registry_has_task() {
@@ -359,6 +408,127 @@ if [ -f "$pstate3/tab" ]; then
 else
   pass "posix dry-run arm: no cron entry installed"
 fi
+
+# --- HANDOVER_DIR resolution (HIMMEL-2619) — a cron-fired shell has no
+# interactive/login env, so the generated runner must bake in an external
+# HANDOVER_DIR at arm time rather than let the payload's own handover_root()
+# fall back to <repo>/handovers at fire time.
+echo "== test: POSIX arm refuses when no external HANDOVER_DIR resolves =="
+pstate4=$(new_scratch_posix); proot4=$(make_root); mv "$proot4" "$pstate4/root"
+bare4=$(make_bare_anchor "$pstate4")
+out=$(run_cadence_posix_anchor "$pstate4" "$bare4" arm 2>&1); rc=$?
+if [ "$rc" -eq 2 ]; then pass "posix arm no-handover: rc=2"; else fail "posix arm no-handover: expected rc=2 got rc=$rc; output: $out"; fi
+assert_has "$out" "refusing to arm into the inline handovers/ stub" "posix arm no-handover: reports the refusal reason"
+if [ -f "$pstate4/bat/upstream-watch.sh" ]; then
+  fail "posix arm no-handover: runner should not have been published"
+else
+  pass "posix arm no-handover: no runner published"
+fi
+if [ -f "$pstate4/tab" ]; then
+  fail "posix arm no-handover: no cron entry should have been installed"
+else
+  pass "posix arm no-handover: no cron entry installed"
+fi
+
+echo "== test: POSIX generated runner exports the resolved external HANDOVER_DIR =="
+pstate5=$(new_scratch_posix); proot5=$(make_root); mv "$proot5" "$pstate5/root"
+out=$(run_cadence_posix "$pstate5" arm 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then pass "posix arm with handover: rc=0"; else fail "posix arm with handover: expected rc=0 got rc=$rc; output: $out"; fi
+runner_body=$(cat "$pstate5/bat/upstream-watch.sh" 2>/dev/null || echo "<missing>")
+assert_has "$runner_body" "HANDOVER_DIR='$pstate5/external-handover'" "posix arm with handover: runner exports the resolved external root"
+assert_has "$runner_body" "export HANDOVER_DIR" "posix arm with handover: HANDOVER_DIR is exported before the payload runs"
+case "$runner_body" in
+  *"$pstate5/root/handovers"*) fail "posix arm with handover: runner still references the inline <repo>/handovers stub" ;;
+  *) pass "posix arm with handover: never references the inline <repo>/handovers stub" ;;
+esac
+
+# HIMMEL-3619: the generated runner's shebang is `#!/bin/sh`, but the value it
+# bakes HANDOVER_DIR in with was `printf '%q'` — a bash-only escaping that can
+# emit `$'...'` ANSI-C quoting a stricter /bin/sh does not reliably parse the
+# same way bash does. Prove it round-trips byte-exact under `sh` for a value
+# containing a single quote, a space, a `$` and a control byte (see below).
+make_capture_root() {
+  local capture="$1" root
+  root=$(mktemp -d "${TMPDIR:-/tmp}/upstream-watch-cadence-test-root.XXXXXX")
+  mkdir -p "$root/scripts/upstreams"
+  cat > "$root/scripts/upstreams/upstream-watch.sh" <<CAPEOF
+#!/usr/bin/env bash
+printf '%s' "\$HANDOVER_DIR" > "$capture"
+exit 0
+CAPEOF
+  chmod +x "$root/scripts/upstreams/upstream-watch.sh"
+  printf '%s' "$root"
+}
+
+# run_cadence_posix_handover <state> <handover> <anchor> <args...> — like
+# run_cadence_posix_anchor but with a LIVE HANDOVER_DIR env var (go_resolve_root
+# priority 1: a live HANDOVER_DIR outside the harness wins unchanged), so the
+# nasty value below reaches the runner intact without going through the
+# anchor's `.env` file at all.
+run_cadence_posix_handover() {
+  local state="$1" handover="$2" anchor="$3"; shift 3
+  ( cd "$anchor" && HANDOVER_DIR="$handover" \
+      UPSTREAMWATCH_CRONTAB="$state/crontab" \
+      UPSTREAMWATCH_BAT_DIR="$state/bat" \
+      UPSTREAMWATCH_HIMMEL_ROOT="$state/root" \
+      UPSTREAMWATCH_ANCHOR_ROOT="$anchor" \
+      UPSTREAMWATCH_PLATFORM=posix \
+      HIMMEL_OBSERVABILITY_CONFIG="$state/observability.json" \
+      HIMMEL_PROVENANCE_DIR="$state/provenance" \
+      bash "$CADENCE" "$@" )
+}
+
+echo "== test: POSIX generated runner exports a quote/space/\$/control-byte HANDOVER_DIR byte-exact under sh =="
+pstate6=$(new_scratch_posix)
+capture6="$pstate6/captured-handover"
+proot6=$(make_capture_root "$capture6"); mv "$proot6" "$pstate6/root"
+# \x1b (ESC): bash's `printf %q` emits the bash-only `\E` escape for this byte
+# inside its `$'...'` output, which dash's ANSI-C-quote parser does not
+# recognize and passes through as the literal two bytes `\E` instead of ESC —
+# the concrete, verified corruption `%q` risks on a stricter /bin/sh.
+nasty_leaf=$'it\'s $weird\x1bdir'
+nasty_dir="$pstate6/handover-parent/$nasty_leaf"
+mkdir -p "$nasty_dir"
+anchor6=$(make_bare_anchor "$pstate6")
+out=$(run_cadence_posix_handover "$pstate6" "$nasty_dir" "$anchor6" arm 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then pass "posix arm with nasty handover: rc=0"; else fail "posix arm with nasty handover: expected rc=0 got rc=$rc; output: $out"; fi
+runner6="$pstate6/bat/upstream-watch.sh"
+if [ -f "$runner6" ]; then pass "posix arm with nasty handover: runner published"; else fail "posix arm with nasty handover: runner missing"; fi
+SH_BIN=$(command -v dash 2>/dev/null || command -v sh)
+"$SH_BIN" "$runner6" >/dev/null 2>&1; runner6_rc=$?
+if [ "$runner6_rc" -eq 0 ]; then pass "posix arm with nasty handover: $SH_BIN runner exits 0"; else fail "posix arm with nasty handover: $SH_BIN runner exited $runner6_rc"; fi
+printf '%s' "$nasty_dir" > "$pstate6/expected-handover"
+if cmp -s "$pstate6/expected-handover" "$pstate6/captured-handover" 2>/dev/null; then
+  pass "posix arm with nasty handover: $SH_BIN exports the value byte-exact"
+else
+  fail "posix arm with nasty handover: $SH_BIN exported a corrupted HANDOVER_DIR"
+fi
+
+# HIMMEL-3619 (codex CR on this same fix): posix_sh_quote wraps its `sed`
+# output through `$(...)`, which strips ALL trailing newlines from command
+# substitution — a HANDOVER_DIR ending in a newline byte would silently lose
+# it before being quoted. This must be a UNIT test of posix_sh_quote itself,
+# not a full `cron_arm` round-trip like the case above: resolve_watch_
+# handover_dir() (this same file) and go_resolve_root() (scripts/lib/
+# go-gate.sh, out of this ticket's scope) each capture their result through
+# their OWN `$(...)`, so a trailing newline is already gone from
+# $handover_dir before posix_sh_quote ever sees it — no arm-level test could
+# ever go green on this byte, fixed or not.
+echo "== test: posix_sh_quote preserves a trailing-newline value =="
+quote_fn=$(mktemp -t upstream-watch-cadence-posix-sh-quote.XXXXXX)
+sed -n '/^posix_sh_quote() {/,/^}/p' "$CADENCE" > "$quote_fn"
+# shellcheck source=/dev/null
+. "$quote_fn"
+trailing_nl_val=$'trailing-newline-value\n'
+quoted=$(posix_sh_quote "$trailing_nl_val")
+expected="'trailing-newline-value
+'"
+if [ "$quoted" = "$expected" ]; then
+  pass "posix_sh_quote: trailing-newline value quoted byte-exact"
+else
+  fail "posix_sh_quote: trailing-newline value corrupted — got: $(printf '%s' "$quoted" | od -c | tr '\n' ' ')"
+fi
+rm -f "$quote_fn"
 
 echo
 if [ "$fails" -eq 0 ]; then

@@ -197,6 +197,21 @@ const DEFAULT_MEMBER_TIMEOUT_MS = 15_000;
 // path. Set just inside the 60 s entry timeout the multi-member chains carry.
 const DEFAULT_CHAIN_BUDGET_MS = 50_000;
 
+// HIMMEL-3080 (J1259O F1): the whole-chain budget above bounds ADVISORY
+// members, but a must-run SECURITY member below is deliberately let run past
+// a spent shared budget so a slow upstream neighbour cannot deny a guard that
+// never got to decide. Left uncapped, several such members can still
+// collectively outrun the settings.json entry's own `timeout` (60s on every
+// chain that carries a must-run member) — Claude Code kills the entry, and a
+// killed PreToolUse hook fails OPEN, silently skipping every guard that had
+// not run yet. So a must-run member's window is ALSO capped, by an
+// entry-safe deadline derived from this timeout minus a safety margin
+// (start-up overhead before the chain's own clock starts, plus the time this
+// launcher needs to merge/write/exit after the last member) — never by the
+// raw 60s figure itself. Env override for slow boxes and the suite.
+const DEFAULT_ENTRY_TIMEOUT_MS = 60_000;
+const DEFAULT_ENTRY_SAFETY_MARGIN_MS = 5_000;
+
 // ...and a member is never clamped below this, even by a fully spent budget. A
 // clamp with no floor kills the tail after ~0ms — technically "reported", but
 // no guard ever gets to decide, which is the starvation the clamp exists to
@@ -221,6 +236,14 @@ const MEMBER_MAX_BUFFER = 16 * 1024 * 1024;
 // for a security fence: a starved block-read-secrets.sh means the secret read
 // it exists to catch just runs. Those members must FAIL CLOSED on a starved
 // budget instead of being silently skipped.
+//
+// HIMMEL-3080: "fail closed" is not the same as "deny without ever running".
+// A must-run member below gets its own per-member window (memberTimeoutMs(),
+// same tier as any other member) regardless of what the SHARED chain budget
+// has left — a slow upstream neighbour must not deny a must-run guard that
+// never got to decide. It still denies on a real timeout or crash within that
+// own window (unchanged from before); only the "clamped to whatever is left"
+// path is gone for these members.
 //
 // Keyed by BASENAME here rather than an inline `--must-run` marker inside the
 // .claude/settings.json chain command string (the other shape this ticket
@@ -252,6 +275,15 @@ const MUST_RUN_CHAIN_MEMBERS = new Set([
   // been starved of budget, so naming a file that does not exist yet is inert:
   // nothing looks the entry up until that hook is actually wired into a chain.
   'block-write-into-main-checkout.sh',
+  // HIMMEL-3669 (J1295O): Guard D — self-describes as a SECURITY FENCE that
+  // fails CLOSED; a starved run let its relay write-deny be skipped.
+  'guard-relay-writes.sh',
+  // HIMMEL-3669: self-describes as "this security hook" and fails CLOSED on
+  // a missing lib; a starved run let an edit on main slip through unchecked.
+  'block-edit-on-main.sh',
+  // HIMMEL-3669: the auto-memory index's only form gate (line/growth caps);
+  // a starved run let a malformed MEMORY.md write through unchecked.
+  'guard-memory-capture.sh',
 ]);
 
 function envMs(name, fallback) {
@@ -265,6 +297,14 @@ function memberTimeoutMs() {
 
 function chainBudgetMs() {
   return envMs('RUN_HOOK_CHAIN_BUDGET_MS', DEFAULT_CHAIN_BUDGET_MS);
+}
+
+function entryTimeoutMs() {
+  return envMs('RUN_HOOK_CHAIN_ENTRY_TIMEOUT_MS', DEFAULT_ENTRY_TIMEOUT_MS);
+}
+
+function entrySafetyMarginMs() {
+  return envMs('RUN_HOOK_CHAIN_ENTRY_SAFETY_MARGIN_MS', DEFAULT_ENTRY_SAFETY_MARGIN_MS);
 }
 
 // Durable record of every starved member (HIMMEL-2060) — the stderr line
@@ -438,6 +478,25 @@ function isRecoverableEpipe(result) {
   return Boolean(result.error) && result.error.code === 'EPIPE' && typeof result.status === 'number';
 }
 
+// HIMMEL-3080: which prior chain member actually ate the SHARED chain budget,
+// so a starvation-adjacent denial can name the real consumer instead of just
+// the member that was starved by it. (J1259O F2): the largest raw elapsed
+// time is not always the right answer — a must-run member can run long
+// inside its OWN entry-safe window, started only after the shared budget
+// (chainDeadline) was already gone, and none of that time was budget spend.
+// Score each prior member by how much of ITS run happened before
+// chainDeadline, floored at 0, and pick the largest.
+function budgetConsumer(memberTimings, chainDeadline) {
+  let consumer = null;
+  for (const entry of memberTimings) {
+    const budgetShare = Math.max(0, Math.min(entry.elapsedMs, chainDeadline - entry.startedAt));
+    if (budgetShare > 0 && (!consumer || budgetShare > consumer.budgetShare)) {
+      consumer = { ...entry, budgetShare };
+    }
+  }
+  return consumer;
+}
+
 // Returns the exit code rather than calling process.exit(): on Windows a pipe
 // stdout is ASYNC, so exiting immediately after a write can truncate the very
 // JSON decision this exists to deliver. The caller sets process.exitCode and
@@ -566,7 +625,16 @@ function runChain(members, lifecycle = false) {
   const held = [];
   let carriedStatus = 0;
 
-  const chainDeadline = Date.now() + chainBudgetMs();
+  const chainStartedAt = Date.now();
+  const chainDeadline = chainStartedAt + chainBudgetMs();
+  // HIMMEL-3080 (J1259O F1): the hard ceiling a must-run member's window is
+  // capped against, derived from the settings.json entry timeout so the whole
+  // chain always decides safely inside it, regardless of the shared budget.
+  const entryDeadline = chainStartedAt + entryTimeoutMs() - entrySafetyMarginMs();
+  // HIMMEL-3080: per-member elapsed times seen so far in THIS chain run, so a
+  // starvation-adjacent denial can name the member that ate the budget, not
+  // merely the one that was starved by it.
+  const memberTimings = [];
 
   for (const member of members) {
     // HIMMEL-1666: a tampered project-local member must not run at all — deny
@@ -578,10 +646,65 @@ function runChain(members, lifecycle = false) {
       denyIntegrityMismatch(member, integrity.relPath, integrity.reason);
       return 2;
     }
+    const basename = path.basename(member);
+    const mustRun = MUST_RUN_CHAIN_MEMBERS.has(basename);
     // Clamped to what is left of the chain budget, but never below the floor:
     // a spent budget must not reduce the remaining guards to a 0ms execution
     // slice — each still gets a real, if small, chance to decide.
-    const bound = Math.max(MIN_MEMBER_TIMEOUT_MS, Math.min(memberTimeoutMs(), chainDeadline - Date.now()));
+    const budgetBound = Math.max(MIN_MEMBER_TIMEOUT_MS, Math.min(memberTimeoutMs(), chainDeadline - Date.now()));
+    // HIMMEL-3620 (N2): that floor guards against a spent SHARED budget, but
+    // must never push an advisory member's window past the entry-safe
+    // deadline itself — several floored members in a row can otherwise add up
+    // to more time than is actually left before Claude Code's own entry
+    // `timeout` fires, and a killed entry fails the whole chain OPEN. Clamp
+    // down (never back up) by what is left before entryDeadline, floored at
+    // 1ms — never 0 or negative, which spawnSync's `timeout` treats as "no
+    // timeout at all" rather than "expire immediately".
+    const sharedBound = Math.max(1, Math.min(budgetBound, entryDeadline - Date.now()));
+    // HIMMEL-3080: a must-run SECURITY member gets its own window regardless
+    // of what the shared budget has left — a slow upstream neighbour must not
+    // deny a must-run guard that never got to run — but that window is ALSO
+    // capped by the entry-safe deadline (J1259O F1): the chain must always
+    // decide before Claude Code's own entry `timeout` kills it and fails the
+    // whole chain OPEN. `starved` records whether the shared clock alone
+    // would have clamped this member below its own full window, purely to
+    // drive the denial message's diagnostics below.
+    const starved = mustRun && sharedBound < memberTimeoutMs();
+    // HIMMEL-3620 (N1): floor the CONFIGURED member timeout at the same
+    // MIN_MEMBER_TIMEOUT_MS floor every other member gets before capping by
+    // the entry-safe deadline — otherwise a RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS
+    // override below the floor made mustRunWindow always land under it, so
+    // the pre-spawn deny check below fired for every must-run member
+    // regardless of how much of the real entry deadline was actually left.
+    // Capping by entryDeadline afterward is unchanged, so a genuinely
+    // exhausted entry deadline still denies exactly as before.
+    const mustRunWindow = Math.min(Math.max(memberTimeoutMs(), MIN_MEMBER_TIMEOUT_MS), entryDeadline - Date.now());
+    const bound = mustRun ? mustRunWindow : sharedBound;
+    // HIMMEL-3080 (J1259O F1): even the floor cannot fit before the entry
+    // deadline — spawning anyway would either get killed mid-run (still a
+    // fail-open once Claude Code reaps the entry) or hand the guard a slice
+    // too small to mean anything. Deny WITHOUT spawning, naming whoever
+    // actually spent the budget, the same as the ETIMEDOUT path below does
+    // for a member that DID get to run.
+    if (mustRun && bound < MIN_MEMBER_TIMEOUT_MS) {
+      logChainSkip({
+        ts: new Date().toISOString(),
+        action: 'deny',
+        member: basename,
+        budget: bound,
+        elapsed: 0,
+        reason: 'ENTRY_DEADLINE',
+        sessionId,
+        toolCall: toolCallSummary(hookInput),
+        starved: true,
+      });
+      const consumer = budgetConsumer(memberTimings, chainDeadline);
+      const consumerNote = consumer
+        ? ` must-run guard was left no safe window before the entry deadline; the shared chain budget was mostly spent by ${consumer.basename} (${consumer.elapsedMs}ms); failing closed.`
+        : ` must-run guard was left no safe window before the entry deadline; failing closed.`;
+      process.stderr.write(`run-hook-with-bash: DENY ${basename} (entry deadline exhausted) —${consumerNote}\n`);
+      return 2;
+    }
     const memberStart = Date.now();
     const result = spawnSync(bash, [member], {
       input,
@@ -592,6 +715,7 @@ function runChain(members, lifecycle = false) {
       maxBuffer: MEMBER_MAX_BUFFER,
       windowsHide: true,   // HIMMEL-2043: no console flash per hook call
     });
+    const elapsed = Date.now() - memberStart;
     if (result.error && !isRecoverableEpipe(result)) {
       // A member that outran a LIMIT of ours is not a launcher failure. Two
       // limits reach here: the per-member timeout, and the output buffer (a
@@ -601,13 +725,11 @@ function runChain(members, lifecycle = false) {
       // an advisory member is skipped exactly as before (Claude Code killing
       // the hung ENTRY would have skipped the sibling entries the same way);
       // a must-run SECURITY member instead fails the whole chain CLOSED,
-      // because a starved guard silently skipped is a starved guard that
-      // never got to deny.
+      // because a guard that still doesn't decide inside its own window is a
+      // guard that never got to deny — HIMMEL-3080 only changes what window
+      // it got, not what happens when even that window runs out.
       const overran = { ETIMEDOUT: true, ENOBUFS: true };
       if (overran[result.error.code]) {
-        const basename = path.basename(member);
-        const elapsed = Date.now() - memberStart;
-        const mustRun = MUST_RUN_CHAIN_MEMBERS.has(basename);
         logChainSkip({
           ts: new Date().toISOString(),
           action: mustRun ? 'deny' : 'skip',
@@ -617,22 +739,29 @@ function runChain(members, lifecycle = false) {
           reason: result.error.code,
           sessionId,
           toolCall: toolCallSummary(hookInput),
+          ...(mustRun && starved ? { starved: true } : {}),
         });
         if (mustRun) {
+          const consumer = starved ? budgetConsumer(memberTimings, chainDeadline) : null;
+          const consumerNote = consumer
+            ? ` must-run guard did not evaluate this call within its ${bound}ms window; the shared chain budget was mostly spent by ${consumer.basename} (${consumer.elapsedMs}ms); failing closed.`
+            : ` must-run guard did not evaluate this call; failing closed.`;
           process.stderr.write(
-            `run-hook-with-bash: DENY ${basename} (budget=${bound}ms elapsed=${elapsed}ms) — must-run guard did not evaluate this call; failing closed.\n`,
+            `run-hook-with-bash: DENY ${basename} (budget=${bound}ms elapsed=${elapsed}ms) —${consumerNote}\n`,
           );
           return 2;
         }
         process.stderr.write(
           `run-hook-with-bash: SKIP ${basename} (budget=${bound}ms elapsed=${elapsed}ms) — guard did not evaluate this call.\n`,
         );
+        memberTimings.push({ basename, elapsedMs: elapsed, startedAt: memberStart });
         if (carriedStatus === 0) carriedStatus = 1;
         continue;
       }
       process.stderr.write(`run-hook-with-bash: failed to start ${bash}: ${result.error.message}\n`);
       return 2;
     }
+    memberTimings.push({ basename, elapsedMs: elapsed, startedAt: memberStart });
     const stdout = result.stdout || '';
     const stderr = result.stderr || '';
     // HIMMEL-3601: a must-run member that CRASHES — any status other than 0
@@ -642,13 +771,13 @@ function runChain(members, lifecycle = false) {
     // below (which would let a later member decide in its place).
     const rawStatus = result.status;
     const crashed = rawStatus === null || (typeof rawStatus === 'number' && rawStatus !== 0 && rawStatus !== 2);
-    if (crashed && MUST_RUN_CHAIN_MEMBERS.has(path.basename(member))) {
+    if (crashed && mustRun) {
       const reason = rawStatus === null ? `signal ${result.signal}` : `rc=${rawStatus}`;
       process.stderr.write(
-        `run-hook-with-bash: DENY ${path.basename(member)} (${reason}) — must-run guard crashed instead of deciding; failing closed.\n`,
+        `run-hook-with-bash: DENY ${basename} (${reason}) — must-run guard crashed instead of deciding; failing closed.\n`,
       );
       if (stderr.trim()) {
-        process.stderr.write(`run-hook-with-bash: ${path.basename(member)} stderr: ${stderr.trim()}\n`);
+        process.stderr.write(`run-hook-with-bash: ${basename} stderr: ${stderr.trim()}\n`);
       }
       return 2;
     }
@@ -663,7 +792,7 @@ function runChain(members, lifecycle = false) {
       return 2;
     }
     if (status === 0 && output) {
-      emitters.push({ source: path.basename(member), output, raw: stdout });
+      emitters.push({ source: basename, output, raw: stdout });
     } else if (stdout.trim()) {
       // Plain stdout on exit 0 is transcript-only for a lone hook, but our
       // stdout must stay one JSON object or empty — so it goes to stderr.

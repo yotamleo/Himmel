@@ -740,6 +740,385 @@ else
 fi
 rm -rf "$SB"
 
+# --- Case 20: SIGTERM mid-run logs "cancelled by signal", not the generic
+# unhandled-FAILED line (HIMMEL-3629 direction 3). A PATH-stubbed curl blocks
+# so the hook is guaranteed to still be inside the REST PUT when the signal
+# arrives; the stub writes a marker file the instant it starts so the test
+# waits for real mid-run state instead of guessing a sleep duration. setsid is
+# NOT forked here (no enclosing subshell/pipe): $! is the setsid'd bash's own
+# pid, which is also the new process-group leader, so `kill -TERM -- -$!`
+# reaches both the hook and its blocked curl child directly (the direct
+# delivery is what makes bash dispatch the trap immediately instead of
+# deferring it until the blocked curl finishes).
+SB="$(make_sandbox)"
+CURL_MARKER="$SB/curl-started"
+CURL_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/esw-curl-stub.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+cat > "$CURL_STUB_DIR/curl" <<'CURLSTUB'
+#!/usr/bin/env bash
+: > "$CURL_MARKER_FILE"
+sleep 2
+printf '000'
+CURLSTUB
+chmod +x "$CURL_STUB_DIR/curl"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"sigtest","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" > "$SB/payload.json"
+env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+    LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="dummy-key" \
+    CLAUDE_PROJECT_DIR="$SB/proj" CURL_MARKER_FILE="$CURL_MARKER" \
+    PATH="$CURL_STUB_DIR:$PATH" \
+    setsid bash "$HOOK" < "$SB/payload.json" &
+HOOK_PID=$!
+i=0
+while [ ! -e "$CURL_MARKER" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+if [ ! -e "$CURL_MARKER" ]; then
+    fail "HIMMEL-3629: curl stub never started (test setup broken, not a hook bug)"
+    kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    wait "$HOOK_PID" 2>/dev/null
+else
+    kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    wait "$HOOK_PID" 2>/dev/null
+    LOGP="$(log_path_for "$SB/home" "$SB/proj")"
+    if [ -r "$LOGP" ] && grep -q 'cancelled by signal 15 (session sigtest)' "$LOGP"; then
+        pass "HIMMEL-3629: SIGTERM mid-run logs cancelled-by-signal, not the generic FAILED line"
+    else
+        fail "HIMMEL-3629: SIGTERM mid-run did not log cancelled-by-signal ($([ -r "$LOGP" ] && tail -3 "$LOGP" | tr '\n' '|' || echo '<no log>'))"
+    fi
+fi
+rm -rf "$SB" "$CURL_STUB_DIR"
+
+# --- Case 21b: a silent endpoint (accepts the TCP connection, never answers —
+# the HIMMEL-3646 production symptom: Obsidian's REST port open but wedged)
+# must not hang SessionEnd. A real listener (not a PATH-stubbed curl, so the
+# real curl binary's --connect-timeout/--max-time are what's on trial) accepts
+# one connection and then never writes a response. Poll for the hook's own
+# exit rather than a fixed sleep; if it is still running past the bound, force
+# -kill the whole process group (setsid'd, so curl dies with it) so the RED
+# run against the unfixed hook terminates instead of hanging the suite.
+SB="$(make_sandbox)"
+PORT_FILE="$SB/listener-port"
+setsid python3 - "$PORT_FILE" > /dev/null 2>&1 <<'PYEOF' &
+import socket, sys, time
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', 0))
+s.listen(1)
+with open(sys.argv[1], 'w') as f:
+    f.write(str(s.getsockname()[1]))
+conn, _ = s.accept()
+time.sleep(120)
+PYEOF
+LISTENER_PID=$!
+i=0
+while [ ! -s "$PORT_FILE" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+if [ ! -s "$PORT_FILE" ]; then
+    fail "HIMMEL-3646: stub listener never reported its port (test setup broken, not a hook bug)"
+    kill "$LISTENER_PID" 2>/dev/null
+    wait "$LISTENER_PID" 2>/dev/null
+else
+    PORT="$(cat "$PORT_FILE")"
+    payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"silentep","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+    printf '%s' "$payload" > "$SB/payload.json"
+    START=$(date +%s)
+    setsid env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+        LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="dummy-key" \
+        OBSIDIAN_API_URL="http://127.0.0.1:$PORT" CLAUDE_PROJECT_DIR="$SB/proj" \
+        bash "$HOOK" < "$SB/payload.json" > /dev/null 2>&1 &
+    HOOK_PID=$!
+    j=0
+    while kill -0 "$HOOK_PID" 2>/dev/null && [ "$j" -lt 450 ]; do
+        sleep 0.1
+        j=$((j + 1))
+    done
+    if kill -0 "$HOOK_PID" 2>/dev/null; then
+        BOUNDED=0
+        kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    else
+        BOUNDED=1
+    fi
+    wait "$HOOK_PID" 2>/dev/null
+    HOOK_RC=$?
+    END=$(date +%s)
+    ELAPSED=$((END - START))
+    kill -TERM -- -"$LISTENER_PID" 2>/dev/null
+    wait "$LISTENER_PID" 2>/dev/null
+    LOGP="$(log_path_for "$SB/home" "$SB/proj")"
+    if [ "$BOUNDED" -eq 1 ] && [ "$HOOK_RC" -eq 0 ] && [ "$ELAPSED" -lt 45 ] && [ -r "$LOGP" ] && grep -q 'local fs fallback' "$LOGP"; then
+        pass "HIMMEL-3646: silent (connects, never answers) endpoint bounded to ${ELAPSED}s via curl timeout, took the local-fs fallback"
+    else
+        fail "HIMMEL-3646: silent endpoint not bounded (bounded=$BOUNDED rc=$HOOK_RC elapsed=${ELAPSED}s log=$([ -r "$LOGP" ] && tail -3 "$LOGP" | tr '\n' '|' || echo '<no log>'))"
+    fi
+fi
+rm -rf "$SB"
+
+# --- Case 21: dedup guard — two hook runs for the SAME session_id write
+# exactly one note (HIMMEL-3629 direction 2's "must not double-write" clause:
+# a pre-signal capture from close-wrapped-leg.sh and the hook's own normal
+# SessionEnd run can both fire for the same session). Without the guard the
+# second run's ABS_PATH collision handling (-2, -3, ...) means it takes a
+# DIFFERENT filename rather than silently overwriting — so an undeduped
+# double-write shows up as two note files, not one file written twice.
+SB="$(make_sandbox)"
+run_hook "$SB" >/dev/null
+run_hook "$SB" >/dev/null
+NOTE_COUNT="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT" = "1" ]; then
+    pass "HIMMEL-3629: two hook runs for the same session_id write exactly one note"
+else
+    fail "HIMMEL-3629: two hook runs for the same session_id wrote $NOTE_COUNT notes (want 1)"
+fi
+rm -rf "$SB"
+
+# --- Case 22: claim_capture is atomic under real concurrency (HIMMEL-3633) ----
+# The old already_captured()/mark_captured() pair was check-then-mark: two
+# concurrent hook runs for the same session_id could both pass the check
+# before either marked, and both write. Extract the ACTUAL functions verbatim
+# from the hook (not a reimplementation) and race N parallel callers for the
+# same session_id on a scratch CAPTURED_DIR: mkdir is atomic, so exactly one
+# must win regardless of scheduling.
+extract_fn() {
+    awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{" { p=1 } p { print } p && /^}/ { exit }' "$2"
+}
+RACE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/esw-race.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+# shellcheck disable=SC2034  # read by claim_capture/release_capture, extracted verbatim via eval below
+CAPTURED_DIR="$RACE_DIR/captured"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+eval "$(extract_fn claim_capture "$HOOK")"
+eval "$(extract_fn release_capture "$HOOK")"
+RESULT_DIR="$RACE_DIR/results"
+mkdir -p "$RESULT_DIR"
+N=20
+for i in $(seq 1 "$N"); do
+    ( if claim_capture "race-sid"; then echo win > "$RESULT_DIR/$i"; else echo lose > "$RESULT_DIR/$i"; fi ) &
+done
+wait
+WINS="$(grep -l win "$RESULT_DIR"/* 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$WINS" = "1" ]; then
+    pass "HIMMEL-3633: $N concurrent claim_capture callers for one session_id — exactly 1 won"
+else
+    fail "HIMMEL-3633: $N concurrent claim_capture callers for one session_id — $WINS won (want 1)"
+fi
+rm -rf "$RACE_DIR"
+
+# --- Case 23: a claim that produced NO note does not block a legitimate retry
+# (HIMMEL-3633's release_capture: claim_capture now runs up front, before any
+# skip check, so an early-exit path that leaves the claim in place would wrongly
+# stick "captured" on a session that was never written). First run is a husk
+# (no content, no files touched) -> claims, then must skip AND release. Second
+# run for the SAME session_id has real content -> must still be free to write.
+SB="$(make_sandbox)"
+printf '%s\n' '{"timestamp":"2026-06-17T00:00:00Z","type":"user","message":{"role":"user","content":"hi"}}' > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE_COUNT23_RUN1="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT23_RUN1" = "0" ]; then
+    pass "HIMMEL-3633: run 1 (husk) writes no note"
+else
+    fail "HIMMEL-3633: run 1 (husk) was expected to write 0 notes, wrote $NOTE_COUNT23_RUN1 (run 1 was not a husk — this case is vacuous)"
+fi
+printf '%s\n' '{"timestamp":"2026-06-17T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"line one\nline two"}]}}' > "$SB/transcript.jsonl"
+run_hook "$SB" >/dev/null
+NOTE_COUNT23="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT23" = "1" ]; then
+    pass "HIMMEL-3633: a husk-skip claim releases, so a same-session_id retry with real content still writes"
+else
+    fail "HIMMEL-3633: a husk-skip claim wrongly stuck — retry wrote $NOTE_COUNT23 notes (want 1)"
+fi
+rm -rf "$SB"
+
+# --- Case 24: SIGTERM mid-run releases the claim, so a retry for the SAME
+# session_id still writes a note (HIMMEL-3638/F1). A claim taken up front
+# (HIMMEL-3633) that is then cancelled before any note is written must not
+# wedge that session_id forever. Blocks curl the same way case 20 does so the
+# hook is guaranteed to be inside the REST PUT (claimed, not yet written) when
+# TERM arrives, then reruns the SAME session_id (a plain fs-fallback retry,
+# no API key) and expects the claim to be free.
+SB="$(make_sandbox)"
+CURL_MARKER="$SB/curl-started"
+CURL_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/esw-curl-stub24.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+cat > "$CURL_STUB_DIR/curl" <<'CURLSTUB'
+#!/usr/bin/env bash
+: > "$CURL_MARKER_FILE"
+sleep 2
+printf '000'
+CURLSTUB
+chmod +x "$CURL_STUB_DIR/curl"
+payload=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"f1test","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload" > "$SB/payload.json"
+env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+    LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="dummy-key" \
+    CLAUDE_PROJECT_DIR="$SB/proj" CURL_MARKER_FILE="$CURL_MARKER" \
+    PATH="$CURL_STUB_DIR:$PATH" \
+    setsid bash "$HOOK" < "$SB/payload.json" &
+HOOK_PID=$!
+i=0
+while [ ! -e "$CURL_MARKER" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+if [ ! -e "$CURL_MARKER" ]; then
+    fail "HIMMEL-3638/F1: curl stub never started (test setup broken, not a hook bug)"
+    kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    wait "$HOOK_PID" 2>/dev/null
+else
+    kill -TERM -- -"$HOOK_PID" 2>/dev/null
+    wait "$HOOK_PID" 2>/dev/null
+    payload2=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"f1test","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+    printf '%s' "$payload2" | \
+        env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+            LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+        bash "$HOOK" >/dev/null
+    NOTE_COUNT24="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$NOTE_COUNT24" = "1" ]; then
+        pass "HIMMEL-3638/F1: TERM mid-run releases the claim; retry for the same session_id writes 1 note"
+    else
+        fail "HIMMEL-3638/F1: TERM mid-run then retry wrote $NOTE_COUNT24 notes (want 1 — claim was not released)"
+    fi
+fi
+rm -rf "$SB" "$CURL_STUB_DIR"
+
+# --- Case 25: an uncreatable log dir must not block capture (HIMMEL-3638/F2) --
+# claim_capture must treat only an EXISTING claim as already-captured. When
+# CAPTURED_DIR itself cannot be created (here: a plain file squats
+# ~/.claude/logs, so mkdir -p fails with ENOTDIR), the run must still proceed
+# and write the note, best-effort, matching main's prior behaviour.
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/.claude"
+: > "$SB/home/.claude/logs"
+run_hook "$SB" >/dev/null
+NOTE_COUNT25="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT25" = "1" ]; then
+    pass "HIMMEL-3638/F2: an uncreatable log dir still writes 1 note"
+else
+    fail "HIMMEL-3638/F2: an uncreatable log dir wrote $NOTE_COUNT25 notes (want 1 — claim_capture wrongly treated a non-existing-claim mkdir failure as already-captured)"
+fi
+rm -rf "$SB"
+
+# --- Case 26: codex-1 -- a duplicate caller (claim_capture fails because
+# another run already holds the claim) must NOT release that claim on its own
+# exit. Pre-claim the slot as if a real winning run is still in flight, then
+# run the hook for the SAME session_id (a duplicate loser) and confirm the
+# pre-existing claim survives the duplicate's own EXIT trap — otherwise a
+# third caller could re-claim and double-write.
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/.claude/logs/end-session-wiki"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+SLUG26="$(_esw_sid_slug "codex1test")"
+CLAIM_DIR26="$SB/home/.claude/logs/end-session-wiki/captured"
+mkdir -p "$CLAIM_DIR26/$SLUG26"
+payload26=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"codex1test","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload26" | \
+    env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+        LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    bash "$HOOK" >/dev/null
+if [ -d "$CLAIM_DIR26/$SLUG26" ]; then
+    pass "codex-1: a duplicate caller (already-captured) does not release the winner's claim"
+else
+    fail "codex-1: a duplicate caller's own exit released a claim it never won"
+fi
+rm -rf "$SB"
+
+# --- Case 27: codex-2 -- a pre-upgrade FILE marker (main wrote a plain file,
+# not a directory) at the capture slot must still be honored as
+# "already captured": claim_capture must not treat a non-directory occupant
+# as "no genuine claim" and let the note be written again.
+SB="$(make_sandbox)"
+mkdir -p "$SB/home/.claude/logs/end-session-wiki"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+SLUG27="$(_esw_sid_slug "codex2test")"
+CLAIM_DIR27="$SB/home/.claude/logs/end-session-wiki/captured"
+mkdir -p "$CLAIM_DIR27"
+: > "$CLAIM_DIR27/$SLUG27"
+payload27=$(printf '{"transcript_path":"%s","cwd":"%s","session_id":"codex2test","reason":"other"}' "$SB/transcript.jsonl" "$SB/proj")
+printf '%s' "$payload27" | \
+    env OSTYPE="linux-gnu" OS="" HOME="$SB/home" \
+        LUNA_VAULT_PATH="$SB/vault" OBSIDIAN_API_KEY="" CLAUDE_PROJECT_DIR="$SB/proj" \
+    bash "$HOOK" >/dev/null
+NOTE_COUNT27="$(find "$SB/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$NOTE_COUNT27" = "0" ]; then
+    pass "codex-2: a pre-upgrade FILE marker is honored as already-captured"
+else
+    fail "codex-2: a pre-upgrade FILE marker was NOT honored — wrote $NOTE_COUNT27 notes (want 0)"
+fi
+rm -rf "$SB"
+
+# --- Case 28: codex-1 (round 4) -- an explicit early-exit release must reset
+# CLAIMED so the __on_exit/__on_signal trap guard does not redundantly
+# release a second time. Reproduce the exact trap guard
+# (`[ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture`) after an
+# explicit _esw_release_early call: without the CLAIMED reset, a retry that
+# claims the freed slot in the gap has its claim deleted by the stale guard.
+RACE_DIR28=$(mktemp -d "${TMPDIR:-/tmp}/esw-race28.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+# shellcheck disable=SC2034  # read by claim_capture/release_capture, extracted verbatim via eval below
+CAPTURED_DIR="$RACE_DIR28/captured"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+eval "$(extract_fn claim_capture "$HOOK")"
+eval "$(extract_fn release_capture "$HOOK")"
+eval "$(extract_fn _esw_release_early "$HOOK")"
+CLAIMED=0
+WROTE=0
+claim_capture "sid28"
+CLAIMED=1
+_esw_release_early "sid28"
+claim_capture "sid28"
+[ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture "sid28"
+SLUG28="$(_esw_sid_slug "sid28")"
+if [ -d "$CAPTURED_DIR/$SLUG28" ]; then
+    pass "codex-1 (round 4): explicit early release resets CLAIMED, so a retry's claim survives the exit trap"
+else
+    fail "codex-1 (round 4): explicit early release left CLAIMED set — the stale exit-trap guard deleted a retry's live claim"
+fi
+rm -rf "$RACE_DIR28"
+
+# --- Case 29: codex-1 (this round) -- __on_signal releases the claim but
+# must ALSO reset CLAIMED, the same discipline _esw_release_early already
+# enforces (case 28). Without it, __on_signal's own `exit 0` re-triggers the
+# EXIT trap in the SAME process, whose guard sees CLAIMED still 1 and
+# releases AGAIN -- deleting a retry's freshly-won claim taken in the gap
+# between the two releases.
+RACE_DIR29=$(mktemp -d "${TMPDIR:-/tmp}/esw-race29.XXXXXX") || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+# shellcheck disable=SC2034  # read by claim_capture/release_capture/log_msg, extracted verbatim via eval below
+CAPTURED_DIR="$RACE_DIR29/captured"
+LOG_DIR="$RACE_DIR29/logs"
+# shellcheck disable=SC2034  # read by log_msg (via __on_signal), extracted verbatim via eval below
+LOG_PATH="$LOG_DIR/end-session-wiki.log"
+# shellcheck disable=SC2034  # read by log_msg (via __on_signal), extracted verbatim via eval below
+LOG_OLD_PATH="$LOG_DIR/end-session-wiki.log.old"
+eval "$(extract_fn _esw_sid_slug "$HOOK")"
+eval "$(extract_fn claim_capture "$HOOK")"
+eval "$(extract_fn release_capture "$HOOK")"
+eval "$(extract_fn _esw_release_early "$HOOK")"
+eval "$(extract_fn log_msg "$HOOK")"
+eval "$(extract_fn __on_signal "$HOOK")"
+# Shadow the builtin so __on_signal's own `exit 0` returns to us instead of
+# killing this test script; CLAIMED must persist as a real variable change
+# (not a subshell copy), matching how the real process behaves.
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, via the extracted __on_signal calling `exit 0`
+exit() { return 0; }
+CLAIMED=0
+WROTE=0
+SESSION_ID="sid29"
+claim_capture "$SESSION_ID"
+CLAIMED=1
+__on_signal 15
+unset -f exit
+# Simulate a RETRY process re-claiming the same session in the gap between
+# __on_signal's release and __on_exit's trap guard -- exactly what happens
+# when the signalled process's own __on_exit fires next in the SAME process.
+claim_capture "$SESSION_ID"
+[ "$CLAIMED" -eq 1 ] && [ "$WROTE" -eq 0 ] && release_capture "$SESSION_ID"
+SLUG29="$(_esw_sid_slug "$SESSION_ID")"
+if [ -d "$CAPTURED_DIR/$SLUG29" ]; then
+    pass "codex-1 (this round): __on_signal resets CLAIMED, so a retry's claim survives the __on_exit trap guard"
+else
+    fail "codex-1 (this round): __on_signal left CLAIMED set -- the stale __on_exit guard deleted a retry's live claim"
+fi
+rm -rf "$RACE_DIR29"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

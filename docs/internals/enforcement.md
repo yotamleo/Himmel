@@ -719,21 +719,45 @@ unchanged; only the launcher's own process count falls.
   sit at `60` for that reason (28× the measured p95, and no added worst-case wall
   clock: the `*`-matcher `auto-arm-on-cap.sh` entry already bounds every tool call
   at 60 s). See the SLO note below.
-- **Each member is bounded too, and the bound is budget-aware.** The entry
-  timeout alone still lets one hung member spend the whole thing, so the launcher
-  gives every member the smaller of the 15 s fast-guard bound and what is left of
-  its own 50 s whole-chain budget — floored at 500 ms, so a spent budget clamps
-  the tail without starving it to a 0 ms slice (`RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS`
-  / `RUN_HOOK_CHAIN_BUDGET_MS` override the first two). The floor is affordable by
-  construction: worst case is budget + members × floor, so the 10-member Bash
-  chain tops out at 55 s, still inside its 60 s entry. A member that outruns its bound is
-  killed, **named on stderr, and skipped** — the chain continues, which is what
-  happened before the collapse when Claude Code killed a hung *entry* and its
-  siblings ran on. Deliberately not a deny: turning a slow guard into a hard
-  block on the tool call is a worse failure than the one being bounded. The
-  budget is what keeps the chain inside the entry timeout, so even a pathological
-  run ends with the launcher reporting what it dropped rather than being killed
-  mid-chain with the tail skipped silently.
+- **Each member is bounded too, and the bound is budget-aware — advisory
+  members share the clock, must-run members get their own window capped by an
+  entry-safe deadline (HIMMEL-3080).** The entry timeout alone still lets one
+  hung member spend the whole thing, so the launcher gives every *advisory*
+  member the smaller of the 15 s fast-guard bound and what is left of the 50 s
+  whole-chain budget — floored at 500 ms, so a spent budget clamps the tail
+  without starving it to a 0 ms slice (`RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS` /
+  `RUN_HOOK_CHAIN_BUDGET_MS` override the first two). A member that outruns its
+  bound is killed, **named on stderr, and skipped** — the chain continues,
+  which is what happened before the collapse when Claude Code killed a hung
+  *entry* and its siblings ran on. Deliberately not a deny: turning a slow
+  advisory guard into a hard block on the tool call is a worse failure than the
+  one being bounded.
+
+  A `MUST_RUN_CHAIN_MEMBERS` security guard is different: it must never be
+  silently skipped just because an upstream advisory neighbour spent the
+  shared budget, so it gets its own full `memberTimeoutMs()` window regardless
+  of what the shared clock has left. Left uncapped, that exemption is its own
+  hazard — several must-run members (or one that hangs) can collectively
+  outrun the entry's own `timeout`, and a killed PreToolUse entry fails OPEN,
+  silently skipping every member that had not yet run, where the launcher
+  itself would have denied. So a must-run member's window is *also* capped, by
+  an entry-safe deadline: `min(memberTimeoutMs(), entryDeadline − now)`, where
+  `entryDeadline` is the entry's own `timeout` (`RUN_HOOK_CHAIN_ENTRY_TIMEOUT_MS`,
+  default 60 s) minus a safety margin
+  (`RUN_HOOK_CHAIN_ENTRY_SAFETY_MARGIN_MS`, default 5 s) for the launcher's own
+  start-up and exit overhead. When even the 500 ms floor cannot fit before that
+  deadline, the launcher denies **without spawning the member**, fail-closed,
+  naming whichever prior member actually spent the shared budget — the same
+  guarantee a real timeout/crash inside the window already gives (HIMMEL-2060 /
+  HIMMEL-3601), just reached one step earlier. That consumer note is scored by
+  how much of each prior member's run happened *before* the shared budget's own
+  deadline, not by raw elapsed time, so a must-run member that ran long inside
+  its own exempt window is never blamed for spend that happened after the
+  shared budget was already gone. This is what keeps the chain inside the entry
+  timeout even under HIMMEL-3080's must-run exemption: every path — advisory
+  clamp, must-run's own window, or the pre-spawn deadline-exhausted deny — ends
+  with the launcher reporting what it dropped or denied rather than being
+  killed mid-chain with the tail skipped silently.
 
 **SLO: p95 < 1 s per hook.** Claude Code runs matching *entries* concurrently, so
 the stack's cost is roughly the slowest matching entry, not their sum — but a
@@ -1685,6 +1709,45 @@ moves the real target: from `<primary>/.claude/worktrees/<wt>`,
 read (`cat`/`head`/`tail`/`grep`/`rg`/`diff`/`wc`/`less`/`jq`/`git
 diff|show|log|status|blame`) that has no chaining, pipe or redirect.
 
+**Three narrower checks, judged before the text rules above and each
+independent of `mentions_settings`/`dir_dest` (HIMMEL-3686).** (1) When the
+PreToolUse cwd is itself inside a linked worktree's own container path
+(`<primary>/.claude/worktrees/<name>/…`), every write-destination word
+containing `..` is resolved LEXICALLY against that cwd (collapsing `.`/`..`
+as plain text, no filesystem access) — landing on the primary's `.claude`
+itself, or anywhere under it outside `worktrees/`, denies, even though the
+text names neither `.claude` nor `settings` (a bare `cp -r x/. ../..` from
+the worktree). (2) An unquoted `{…,…}` brace group in the text denies
+outright — braces are never expanded — when the text also names `.claude`
+or `settings`, or `dir_dest` already matched, or the cwd is a nested
+worktree; this catches a brace group hiding a `..` climb from every check
+above, none of which expand braces (`tee .{,.}/.{,.}/settings.json`). (3)
+Every write-destination word that names a path EXISTING on disk, OR that is
+itself a symlink even if DANGLING (CR round 3, codex-1: `-e` follows a
+symlink and reports false when its target does not exist yet, e.g. a live
+settings.json that has not been created — `-L` is a second stat-family
+builtin, no extra subprocess, and catches the symlink itself so `canon()`
+still resolves where it points), is resolved with `canon()` (the same
+`realpath -m`-or-Python `resolve()` this hook already uses, which follows
+symlinks); a destination that already exists (or exists as a symlink) into a
+live settings file or the primary's `.claude/` outside worktrees/ denies even
+though the text is otherwise silent — this is the one place the hook reads
+the filesystem, and only for destination operands. When
+the word's leaf case-folds to `settings.json`/`settings.local.json` but the
+full path does not exist yet, the check also fires on the PARENT directory
+existing (CR round 2, codex-2): `canon()` already resolves a missing final
+component safely, so a not-yet-existing settings file reached through a
+pre-existing symlinked parent that escapes into the primary's `.claude/`
+denies too. The leaf-name gate keeps this scoped rather than firing on every
+scanned word's parent (almost always true, since the parent is often just the
+cwd) — `check_target`'s own `canon()` call is a subprocess, and a padded or
+heredoc command can carry thousands of words (the J1242 timing tests).
+Checks (1) and (3) walk the tokenizer's own `ST_W[]` words (quotes/escapes
+removed, internal spaces preserved) when it vouched for the command, so a
+quoted destination with a space stays one operand; only a command the
+tokenizer could not model falls back to a plain whitespace split, same as
+every other `TOK=0` fallback in this file.
+
 **The Bash arm tokenizes (HIMMEL-3546, HIMMEL-3564).** A Bash command is split
 by a quote-aware, segment-wise tokenizer — canonical in
 `scripts/hooks/lib/shell-tokenize.sh`, inlined byte-for-byte into this hook and
@@ -1759,7 +1822,10 @@ does not name the file or its directory in a form above:
   literal text);
 - an ANSI-C word that escapes the `settings` or `claude` letters themselves
   (`$'\x73ettings.json'`);
-- symlinks;
+- a symlink the command itself creates and then writes through in the same
+  invocation (a pre-existing symlink destination is now resolved and caught
+  — HIMMEL-3686 — but the destination-existence check runs at PreToolUse,
+  before the command's own `ln` would have created it);
 - an absolute path into a second clone of the repo, other than this
   session's own primary checkout;
 - a POSIX-mount spelling (`/c/Users/…`) of a Windows drive root.
@@ -3018,6 +3084,23 @@ seam). A per-call env prefix does not reach the hook process.
 `Agent`, same exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as
 `block-docker-privesc`); live only after `/himmel-update` (marketplace
 re-sync) + a fresh session.
+
+**Reviewed-round guard, extended here (HIMMEL-1568):** this hook is also the
+Agent-dispatch chokepoint for HIMMEL-1553's reviewed-round guard
+(`countReviewedRounds`/`checkRoundGuard` in `scripts/telegram/round-guard.ts`),
+via a CLI entry point on that same script (`bun round-guard.ts check --cwd
+<dir> [--branch <name>] --task-file <path>`) — never a shell
+reimplementation, so exactly one predicate backs this hook and
+`spawn-glm.ts`/`spawn-claudex.ts`. Thresholds are unchanged:
+`ROUND_WARN_THRESHOLD` (2) allows with a substantive `INVARIANT:` section;
+`ROUND_ESCALATE_THRESHOLD` (3) refuses the cheap lane unconditionally (no
+`--rounds-override` is wired here, so there is no unblock at 3+ rounds at this
+chokepoint). Runs after every exemption above it (read-only/research,
+orchestrator-harness). A dispatch with no `cwd` is 0 rounds and allowed
+(no identity to check); once a `cwd` is given, a runtime failure of the
+predicate itself (bun/script missing, unclean exit) fails **CLOSED** —
+`IMPL_GUARD_DISABLE=1` is the only bypass, there is no INVARIANT-shaped
+escape for this failure mode.
 
 Spec: `scripts/hooks/test-guard-implementor-dispatch.sh`.
 

@@ -166,6 +166,15 @@ printf '#!/bin/sh\necho Linux\n' > "$FAKEBIN/uname"; chmod +x "$FAKEBIN/uname"
 # skip. Dedicated C40 cases override this seam per invocation with a stub curl.
 export HIMMEL_DOCTOR_QMD_CURL="$FAKEROOT/no-such-curl"
 
+# Keep unrelated cases from probing the operator's real qmd 'skills'
+# collection for C44 (HIMMEL-2222): most invocations below never override
+# PATH, so an inherited bun/qmd install would otherwise make check_c44 run a
+# LIVE `qmd collection list` and leak this machine's real collection state
+# (missing here) into every unrelated "clean -> rc0" assertion. Point the
+# seam at a nonexistent path so unrelated cases get a deterministic INFO
+# skip; dedicated C44 cases override it per invocation with their own stub.
+export HIMMEL_DOCTOR_SKILL_INDEX_QMD="$FAKEROOT/no-such-skill-qmd"
+
 # Keep unrelated cases from scanning this checkout's own .mcp.json files (and the
 # operator's generated mcp-profiles) for C41 (HIMMEL-2762): point the scan root at
 # an empty dir. HOME is redirected per case, so ~/.claude.json is already hermetic.
@@ -5016,6 +5025,114 @@ else
     fail "C42 rc 1 + empty output -> $(printf '%s' "$out" | grep -A1 C42)"
 fi
 rm -rf "$c42_t"
+
+# --- C43 (HIMMEL-1117): bare `rtk hook claude` PreToolUse entry ---------------
+# `rtk init -g` re-adds this entry, bypassing rtk-hook-guard.sh and regressing
+# HIMMEL-241. Read-only detection only, mirrors C6-hooks' settings.json fixture
+# shape.
+echo "== C43: bare 'rtk hook claude' PreToolUse entry -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c43-bare.XXXXXX")"; mkdir -p "$t/claude"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "mcpServers": {}, "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "rtk hook claude" } ] } ] } }
+EOF
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C43-rtk-hook' && grepq "$out" -F 'HIMMEL-241' && ! grepq "$out" 'OK   C43-rtk-hook'; then
+    pass "C43 bare rtk hook entry -> WARN"
+else
+    fail "C43 bare rtk hook entry -> $(printf '%s' "$out" | grep -A1 C43)"
+fi
+rm -rf "$t"
+
+echo "== C43: guard-wrapped rtk hook (rtk-hook-guard.sh) -> OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c43-guarded.XXXXXX")"; mkdir -p "$t/claude"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "mcpServers": {}, "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"/himmel/scripts/hooks/rtk-hook-guard.sh\"" } ] } ] } }
+EOF
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C43-rtk-hook' && ! grepq "$out" 'WARN C43-rtk-hook'; then
+    pass "C43 guard-wrapped -> OK"
+else
+    fail "C43 guard-wrapped -> $(printf '%s' "$out" | grep -A1 C43)"
+fi
+rm -rf "$t"
+
+echo "== C43: no hooks at all -> OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c43-nohooks.XXXXXX")"; mkdir -p "$t/claude"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "mcpServers": {} }
+EOF
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C43-rtk-hook' && ! grepq "$out" 'WARN C43-rtk-hook'; then
+    pass "C43 no hooks -> OK"
+else
+    fail "C43 no hooks -> $(printf '%s' "$out" | grep -A1 C43)"
+fi
+rm -rf "$t"
+
+echo "== C44: skills collection missing -> FAIL =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-missing.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (1):\n\nhimmel (qmd://himmel/)\n  Files:    527\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'FAIL C44-skill-index' && grepq "$out" -F 'build-skill-index.sh'; then
+    pass "C44 missing collection -> FAIL"
+else
+    fail "C44 missing collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: skills collection empty (0 files) -> FAIL =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-empty.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (2):\n\nhimmel (qmd://himmel/)\n  Files:    527\n\nskills (qmd://skills/)\n  Files:    0\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 empty collection -> FAIL"
+else
+    fail "C44 empty collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: skills collection populated -> OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-ok.XXXXXX")"
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (2):\n\nhimmel (qmd://himmel/)\n  Files:    527\n\nskills (qmd://skills/)\n  Files:    42\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 populated collection -> OK"
+else
+    fail "C44 populated collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: qmd not resolvable -> INFO skip, no FAIL =="
+out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/no-such-qmd-anywhere" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 qmd absent -> INFO skip"
+else
+    fail "C44 qmd absent -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 

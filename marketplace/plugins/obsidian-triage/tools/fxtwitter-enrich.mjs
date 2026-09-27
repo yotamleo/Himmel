@@ -35,8 +35,10 @@
  *                            [--reflag] [--reenrich-quote-only]
  *
  * Exit codes:
- *   0 — run completed (may include partial/failed clips; see summary)
+ *   0 — run completed, no clip failed (partial/skipped alone still exit 0)
  *   1 — bad usage
+ *   3 — run completed but at least one clip failed (HIMMEL-1136: distinct
+ *       from 0 so a caller gating on exit code sees a 100%-failure run)
  *
  * LUNA-33. Sister script: playwright-crawl-x.mjs (deprecated for default
  * use post-LUNA-33 — anti-bot rendering issues on x.com).
@@ -225,6 +227,11 @@ function alreadyEnriched(fmRaw) {
  * --reenrich-quote-only backfill targets exactly the casualties; every other
  * clip is skipped under that switch.
  *
+ * A clip carrying `last_error: quote_only_no_own_text` (HIMMEL-2628) is also
+ * excluded: a prior re-enrich already found the author added no text of
+ * their own, so there is nothing left to body-fill and re-fetching it again
+ * would only repeat that same no-op-ish rewrite.
+ *
  * @param {string} fmRaw - raw frontmatter text.
  * @param {string} body  - the clip body.
  * @returns {boolean}
@@ -232,6 +239,7 @@ function alreadyEnriched(fmRaw) {
 export function isQuoteOnlyClip(fmRaw, body) {
   if (!/^enrichment_source:\s*"?fxtwitter"?\s*$/m.test(fmRaw)) return false;
   if (!/^tweet_has_quote:\s*"?true"?\s*$/m.test(fmRaw)) return false;
+  if (/^last_error:\s*"?quote_only_no_own_text"?\s*$/m.test(fmRaw)) return false;
   if (/^## The Idea\s*$/m.test(body)) return false;
   return isThinTweetBody(body);
 }
@@ -717,11 +725,30 @@ function renderQuoteBody(q) {
   return "_(no quote text)_";
 }
 
+/**
+ * Render text as a markdown blockquote (`> ` per line).
+ *
+ * HIMMEL-2627: the quoted tweet's text is untrusted, verbatim third-party
+ * content and may itself contain a line starting `## `. QUOTE_SECTION_RE's
+ * lookahead stops at the next `\n## `, so a bare `## ` line inside the quote
+ * would truncate a later strip of this same section. Blockquoting turns any
+ * such line into `> ## `, which the strip regex can never match.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function toBlockquote(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => (line ? `> ${line}` : ">"))
+    .join("\n");
+}
+
 function renderQuoteSection(tweet) {
   // tweet.quote holds the quoted tweet
   const q = tweet.quote || {};
   const author = q.author?.screen_name ? `@${q.author.screen_name}` : "(unknown)";
-  const text = renderQuoteBody(q);
+  const text = toBlockquote(renderQuoteBody(q));
   const url = q.url || "";
   const lines = [
     "## Crawled content",
@@ -955,6 +982,10 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
   let didBodyFill = false;
   // Body-fill markers for thin plain/note tweets (author/title repair).
   const bodyFill = {};
+  // Quote tweet, thin body, but the author added no text of their own —
+  // there is nothing to body-fill. Set below so the terminal last_error
+  // marker (HIMMEL-2628) stops isQuoteOnlyClip re-selecting this clip.
+  let quoteOnlyNoOwnText = false;
   if (isArticle) {
     section = renderArticleSection(tweet);
   } else if (hasQuote) {
@@ -976,6 +1007,7 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
       }
     } else {
       section = quoteSection;
+      if (thinBody) quoteOnlyNoOwnText = true;
     }
   } else if (thinBody) {
     // Thin plain/note tweet: inject tweet text into `## The Idea`.
@@ -1020,7 +1052,7 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
     tweet_is_article: isArticle,
     tweet_has_quote: hasQuote,
     ...(needsThread ? { needs_thread: true } : {}),
-    last_error: null,
+    last_error: quoteOnlyNoOwnText ? "quote_only_no_own_text" : null,
     ...bodyFill,
   };
   const res = await writeEnrichment({
@@ -1205,7 +1237,7 @@ async function main() {
     else skipped++;
   }
   console.log(`\nfxt-enrich: ${ok} ok, ${partial} partial, ${failed} failed, ${skipped} skipped. (dry_run=${args.dryRun})`);
-  process.exit(0);
+  process.exit(failed > 0 ? 3 : 0);
 }
 
 // Run unless imported as a module (tests import draftJsToMarkdown directly).

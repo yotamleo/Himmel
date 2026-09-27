@@ -205,6 +205,89 @@ cr_trigger_repo_armed() {
     _cmg_nwo_eq "$_CMG_CANON" "$repo_canon"
 }
 
+# cr_trigger_rate_limited <repo_path> -- rc 0 + "sha description" on stdout
+# iff the account reads rate-limited RIGHT NOW, evidenced by CodeRabbit's own
+# status on the LAST head this repo already triggered (HIMMEL-3319). A brand
+# new PR's own head carries no CodeRabbit status yet, so there is no local
+# evidence to read from IT — the account-wide limit only shows up on whatever
+# head we most recently asked CodeRabbit to review. Reuses cr-signal.sh's
+# EXISTING reader (no new parser): the same rate-limit wording check-ci.sh
+# already trusts for the HIMMEL-3360 rate-limited=NOTE gate.
+#
+# That status is only ever trusted for CR_TRIGGER_RATE_LIMIT_TTL_SECONDS
+# (default 3600) past its own created_at, never indefinitely: nothing here
+# ever asks CodeRabbit to re-review that exact old SHA, so an unbounded read
+# would skip every later head forever the first time a repo hit the limit
+# once — a stale status past the TTL is treated as "not rate-limited",
+# letting the next real head take its own shot.
+#
+# Fail-OPEN (rc 1, "not rate-limited") on anything short of a positive match:
+# no prior ledger entry for this repo, an unreadable/malformed ledger, a gh
+# query failure, a clean/absent status, or a status too old to trust. This is
+# a workflow nudge, not a security fence (scripts/hooks/CLAUDE.md) — treating
+# "cannot tell" as "proceed" is what keeps a transient gh hiccup from
+# silently stranding a PR with NO trigger ever posted.
+cr_trigger_rate_limited() {
+    local repo_path="${1:-}" path last_line prior_sha owner name desc
+    [ -n "$repo_path" ] || return 1
+
+    path=$(cr_trigger_ledger_path 2>/dev/null) || return 1
+    last_line=$(awk -v r="$repo_path" '$1==r{line=$0} END{if(line)print line}' "$path" 2>/dev/null) || return 1
+    [ -n "$last_line" ] || return 1
+    prior_sha=$(printf '%s' "$last_line" | awk '{print $3}')
+    [ -n "$prior_sha" ] || return 1
+
+    case "$repo_path" in
+        */*) owner="${repo_path%%/*}"; name="${repo_path#*/}" ;;
+        *) return 1 ;;
+    esac
+
+    # Lazily sourced, same pattern as cr_trigger_repo_armed above: paid only
+    # on the trigger path, never on the PostToolUse fast path.
+    if ! declare -f cr_signal_description >/dev/null 2>&1; then
+        local _ctl_dir
+        _ctl_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 1
+        # shellcheck source=scripts/lib/cr-signal.sh
+        # shellcheck disable=SC1091
+        . "$_ctl_dir/cr-signal.sh" 2>/dev/null || return 1
+    fi
+
+    desc=$(cr_signal_description "$owner" "$name" "$prior_sha") || return 1
+    case "$desc" in
+        *[Rr]ate*[Ll]imit*) ;;
+        *) return 1 ;;
+    esac
+
+    # HIMMEL-3319 follow-up (codex-1, pr-check round 1): the status on
+    # prior_sha is frozen the instant CodeRabbit posts it — nothing here ever
+    # asks CodeRabbit to re-review that exact old SHA, so trusting this
+    # signal forever would skip every later head permanently the first time
+    # a repo hits the limit, never actually retrying "once the window
+    # clears" as promised above. Bound trust in it to a TTL, read from the
+    # SAME status object's own created_at: past that age treat the signal as
+    # stale and let the caller attempt a real post, which either succeeds
+    # (the window genuinely cleared) or earns a FRESH rate-limited status on
+    # its own head next time.
+    local uid ctx json created_at posted_epoch now_epoch
+    uid=$(cr_signal_bot_id)
+    ctx=$(cr_signal_context)
+    json=$("${GH_CMD:-gh}" api "repos/$owner/$name/commits/$prior_sha/statuses?per_page=100" 2>/dev/null) || return 1
+    created_at=$(printf '%s' "$json" | jq -r --arg ctx "$ctx" --argjson uid "$uid" '
+        [ .[]?
+          | select(.creator.id == $uid)
+          | select(.creator.type == "Bot")
+          | select(.context == $ctx)
+        ] | first | (.created_at // "")' 2>/dev/null) || return 1
+    [ -n "$created_at" ] || return 1
+    # gnu-ok: GNU -d paired with the BSD -j -f fallback (macOS date has no -d; HIMMEL-3177)
+    posted_epoch=$(date -u -d "$created_at" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$created_at" +%s 2>/dev/null) || return 1
+    now_epoch=$(date -u +%s) || return 1
+    [ $(( now_epoch - posted_epoch )) -lt "${CR_TRIGGER_RATE_LIMIT_TTL_SECONDS:-3600}" ] || return 1
+
+    printf '%s %s\n' "$prior_sha" "$desc"
+    return 0
+}
+
 # cr_trigger_post_review <sha> <num> <repo_path> <scan_existing 0|1>
 #
 # The ledger is checked FIRST — it is what prevents a double-post in the
@@ -244,6 +327,17 @@ cr_trigger_post_review() {
 
     if cr_trigger_ledger_has "$repo_path" "$num" "$sha"; then
         warn "already triggered CodeRabbit for head ${sha} on PR #$num ($repo_path) — no-op"
+        return 0
+    fi
+
+    # HIMMEL-3319: while the account reads rate-limited, every new head burns
+    # another wasted attempt. Deliberately does NOT record the ledger, same
+    # "deferred, not satisfied" reasoning as CR_TRIGGER_SUPPRESS above — a
+    # later create/push for this exact head must still be free to post once
+    # the window clears.
+    local rl_evidence
+    if rl_evidence=$(cr_trigger_rate_limited "$repo_path"); then
+        warn "CodeRabbit reads rate-limited for $repo_path (last seen on ${rl_evidence%% *}: \"${rl_evidence#* }\") — not spending another attempt on head ${sha} for PR #$num; check-ci's skipped/absent arms remain the backstop, and a later create/push will retry once the window clears"
         return 0
     fi
 

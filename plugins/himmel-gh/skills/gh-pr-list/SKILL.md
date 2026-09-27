@@ -1,6 +1,6 @@
 ---
 name: gh-pr-list
-description: Use when user asks to list, enumerate, or count open GitHub PRs ("list PRs", "what PRs are open", "show me open pull requests", "list my PRs", "any open PRs"). MUST mention PR / pull request / "PRs". Add `--author "@me"` when user specifies "my" or "mine" (gh has no --mine flag). Do NOT trigger on Jira list ("jira tickets", "HIMMEL stories" → himmel-jira). Do NOT trigger on bare "list issues" without PR context.
+description: List/count open GitHub PRs ("list PRs", "show open pull requests"). Add --author "@me" for "my PRs". Not Jira list.
 ---
 
 # gh-pr-list

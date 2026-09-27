@@ -1,6 +1,6 @@
 ---
 name: gh-pr-comment
-description: Use when user asks to add a general comment to a PR (NOT a reply to a review thread) — phrases like "leave a comment on PR 42", "add a note to #97", "comment on PR 100 saying X". MUST reference a PR number. Do NOT trigger on "reply to that review thread" (→ /gh-pr-reply), "approve PR" (→ /gh-pr-review), or Jira comment requests (HIMMEL-N → /jira-comment).
+description: Add a general PR comment, not a thread reply ("comment on PR 42 saying X"). Needs PR number. Not thread replies/Jira.
 ---
 
 # gh-pr-comment

@@ -32,6 +32,10 @@ LEDGER_APPEND="$SCRIPT_DIR/ledger-append.sh"
 REVIEW_ROUND="$SCRIPT_DIR/review-round.sh"
 LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
 DEFAULT_BASE_LIB="$SCRIPT_DIR/../lib/cr-default-base.sh"
+TIMEOUT_BIN_LIB="$SCRIPT_DIR/../lib/timeout-bin.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$TIMEOUT_BIN_LIB"
 FLOOR_MJS="$SCRIPT_DIR/claude-floor.mjs"
 CODEX_SKILL="$ROOT/.agents/skills/pr-check/SKILL.md"
 # shellcheck source=scripts/lib/fixture-tempdir.sh
@@ -101,6 +105,11 @@ build_repo_template() {
     # HIMMEL-3107: the floor provenance check binds its base through this lib.
     cp "$DEFAULT_BASE_LIB" "$REPO_TEMPLATE/scripts/lib/cr-default-base.sh" \
         || { echo "FAIL: cp cr-default-base.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
+    # HIMMEL-1565: the ls-remote timeout bound sources this lib; without a copy
+    # here _TIMEOUT_BIN degrades to empty in every case, silently skipping the
+    # timeout wrapper the fix depends on.
+    cp "$TIMEOUT_BIN_LIB" "$REPO_TEMPLATE/scripts/lib/timeout-bin.sh" \
+        || { echo "FAIL: cp timeout-bin.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
     # HIMMEL-3220: the floor provenance check verifies the artifact's stamp here.
     cp "$FLOOR_MJS" "$REPO_TEMPLATE/scripts/cr/claude-floor.mjs" \
         || { echo "FAIL: cp claude-floor.mjs into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
@@ -458,6 +467,106 @@ else
     fail "ls-remote missing the -- separator before positionals: ${lsremote_argv:-<no argv log>}"
 fi
 rm -rf "$tmp"
+
+# stub_git_lsremote_sleep <tmp> <sleep-seconds> — HIMMEL-1565: makes `git
+# ls-remote` hang past the configured timeout so resolve_marker_remote_head's
+# DISTINCT timeout path (rc=2, not the generic "unreadable" rc=1) can be
+# exercised without a genuinely unreachable network endpoint. Every other git
+# subcommand execs straight through to the real binary.
+stub_git_lsremote_sleep() {
+    local tmp="$1" secs="$2" real
+    real=$(command -v git)
+    cat > "$tmp/bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "ls-remote" ]; then
+    sleep $secs
+    exit 1
+fi
+exec "$real" "\$@"
+STUB
+    chmod +x "$tmp/bin/git"
+}
+
+# stub_timeout_capture <tmp> — replaces the `timeout`/`gtimeout` binary
+# resolve_marker_remote_head calls through with one that records the DURATION
+# it was invoked with (to <tmp>/timeout_secs.log) and immediately reports a
+# timeout (rc=124), without actually sleeping. This lets a test assert WHICH
+# bound was selected (CodeRabbit dd570f08: a 0 must resolve to the 20s
+# default, not reach the real timeout binary as a literal 0, which GNU
+# `timeout` reads as "no timeout") without waiting out a real 20s bound.
+stub_timeout_capture() {
+    local tmp="$1"
+    cat > "$tmp/bin/timeout" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "--version" ]; then
+    echo "timeout (stub) 1.0"
+    exit 0
+fi
+shift 2
+secs="\$1"
+echo "\$secs" > "$tmp/timeout_secs.log"
+exit 124
+STUB
+    chmod +x "$tmp/bin/timeout"
+}
+
+# 2b1a. HIMMEL-1565: an unresponsive push endpoint must refuse with a DISTINCT
+# "timed out" reason, not the generic "remote-head-unreadable" one, and must
+# not hang the gate past the configured bound (CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS
+# overrides the 20s default so this test does not itself wait 20s).
+# Skipped without a GNU timeout on PATH: clear-cr-marker.sh's own bound then
+# degrades to unbounded (see timeout-bin.sh), so the stub's 5s sleep would
+# never hit the "past its timeout bound" path this case exists to exercise --
+# it would instead fall through to the generic unreadable-remote refusal.
+if [ -z "$_TIMEOUT_BIN" ]; then
+    echo "  SKIP: ls-remote timeout case -- no GNU timeout/gtimeout on PATH"
+else
+    make_repo || exit 1
+    write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+    stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+    stub_git_lsremote_sleep "$tmp" 5
+    export CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS=1
+    run_clear "$tmp" 16 "HIMMEL-1565: ls-remote past its timeout bound -> exit 16 (fail closed)"
+    unset CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS
+    case "$LAST_CLEAR_OUT" in
+        *"reason=remote-head-timeout"*|*"timed out"*)
+            pass "ls-remote timeout: refusal names the DISTINCT timeout reason (HIMMEL-1554)" ;;
+        *)
+            fail "ls-remote timeout: refusal must name a distinct timeout reason, not the generic unreadable one" "out: $LAST_CLEAR_OUT" ;;
+    esac
+    rm -rf "$tmp"
+fi
+
+# 2b1b. CodeRabbit (dd570f08): CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS=0 must select
+# the 20s default, not disable GNU timeout -- the repo documents 0 as an
+# explicit opt-out for other timeout settings, but resolve_marker_remote_head
+# has no unbounded mode: a 0 that reached `timeout` verbatim would mean "no
+# timeout" to GNU timeout and let an unresponsive endpoint wedge the gate.
+# Asserts the SELECTED duration directly (via stub_timeout_capture) rather
+# than waiting out a real 20s bound.
+if [ -z "$_TIMEOUT_BIN" ]; then
+    echo "  SKIP: ls-remote timeout=0 case -- no GNU timeout/gtimeout on PATH"
+else
+    make_repo || exit 1
+    write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+    stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+    stub_timeout_capture "$tmp"
+    export CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS=0
+    run_clear "$tmp" 16 "CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS=0 -> the 20s default bound still applies, not unbounded"
+    unset CR_CLEAR_LSREMOTE_TIMEOUT_SECONDS
+    captured_secs=$(cat "$tmp/timeout_secs.log" 2>/dev/null || true)
+    case "$LAST_CLEAR_OUT" in
+        *"reason=remote-head-timeout"*|*"timed out"*)
+            if [ "$captured_secs" = "20" ]; then
+                pass "ls-remote timeout=0: falls back to the 20s default (captured duration=$captured_secs), still reports the DISTINCT timeout reason"
+            else
+                fail "ls-remote timeout=0: expected the timeout binary to be invoked with duration=20, got '$captured_secs'" "out: $LAST_CLEAR_OUT"
+            fi ;;
+        *)
+            fail "ls-remote timeout=0: expected the default-bound timeout reason" "out: $LAST_CLEAR_OUT" ;;
+    esac
+    rm -rf "$tmp"
+fi
 
 # 2b2. HIMMEL-2020: critic-panel writes raw finding rows at the full SHA, while
 # a runbook using a short HEAD used to append the adjudicated verdict under a

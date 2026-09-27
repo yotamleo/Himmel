@@ -4,16 +4,16 @@
 # (HIMMEL-2873).
 #
 # Every case runs against a TEMP handover root AND a throwaway fixture
-# "repo" (a fresh `git init` whose scripts/ and docs/ are symlinked back to
-# this checkout's real ones): console.sh resolves its own "repo" from
-# `git rev-parse --git-common-dir` of the process cwd, and this checkout is
-# a linked worktree whose PRIMARY checkout lives under this operator's real
-# home directory — using it as-is would embed that real path into every
-# doc console.sh writes and trip the private-string-leak check (case 8)
-# for no reason related to the code under test. cd'ing into the fixture
-# before every invocation makes the resolved repo path a clean /tmp path
-# while queue-lock.sh, the templates, and console-kit all still resolve
-# to the real, working files via the symlinks.
+# "repo" (a fresh `git init` holding REAL copies of scripts/handover,
+# scripts/lib and docs/handover, the rest of scripts/ and docs/ symlinked
+# back to this checkout's real ones): console.sh resolves its own "repo"
+# from its OWN location (`git -C $HERE rev-parse --git-common-dir`,
+# HIMMEL-3623 J1271O C1), never the cwd, and git resolves a symlinked dir
+# physically -- so a symlinked scripts/ would resolve to this checkout's
+# PRIMARY, whose path lives under this operator's real home directory, embed
+# it into every doc console.sh writes and trip the private-string-leak check
+# (case 8). The suite runs console.sh from the fixture's copy, so the
+# resolved repo path is a clean /tmp path.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+; exercises console.sh,
 # which is konsole/Linux-only for --arm (see console.sh's own header) —
@@ -21,7 +21,6 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-C="$HERE/console.sh"
 REPO_REAL="$(cd "$HERE/../../.." && pwd)"
 QL="$REPO_REAL/scripts/handover/queue-lock.sh"
 # shellcheck source=../../lib/permission-test.sh
@@ -47,14 +46,29 @@ trap 'rm -rf "$tmp"' EXIT
 # (session DEMO-nextleg-...) in the operator's real launch-record directory.
 export HIMMELCTL_CACHE_DIR="$tmp/himmelctl-cache"
 
+# HIMMEL-3623 verdict J1268O change 4: registry_lookup_for_project() falls back
+# to $HOME/.claude/handover/registry.json when HANDOVER_REGISTRY is unset. Pin
+# it to a path that never exists for the WHOLE suite, so every --project case
+# that doesn't set its own scratch registry stays hermetic -- never reads the
+# operator's real registry (Do-Not: tests use scratch copies only).
+export HANDOVER_REGISTRY="$tmp/no-registry-for-this-suite.json"
+
 fails=0
 check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
 fixture_repo="$tmp/repo"
 mkdir -p "$fixture_repo"
 git init -q "$fixture_repo"
-ln -s "$REPO_REAL/scripts" "$fixture_repo/scripts"
-ln -s "$REPO_REAL/docs" "$fixture_repo/docs"
+mkdir -p "$fixture_repo/scripts" "$fixture_repo/docs"
+for _e in "$REPO_REAL"/scripts/* "$REPO_REAL"/docs/*; do
+    case "$_e" in
+        "$REPO_REAL/scripts/handover"|"$REPO_REAL/scripts/lib") cp -R "$_e" "$fixture_repo/scripts/" ;;
+        "$REPO_REAL/docs/handover") cp -R "$_e" "$fixture_repo/docs/" ;;
+        "$REPO_REAL"/scripts/*) ln -s "$_e" "$fixture_repo/scripts/${_e##*/}" ;;
+        *) ln -s "$_e" "$fixture_repo/docs/${_e##*/}" ;;
+    esac
+done
+C="$fixture_repo/scripts/handover/console/console.sh"
 
 root="$tmp/handovers"
 mkdir -p "$root"
@@ -161,7 +175,7 @@ check "5d launch line forces session persistence" \
 # The env prefix must precede the binary, not trail it -- `claude ... env -u X`
 # would pass the flags to claude as arguments instead of scrubbing anything.
 check "5d env prefix precedes the claude binary" \
-    "$(printf '%s\n' "$out5b" | grep -c -E '^(would-)?launch: bash [^;]*record-launch.sh [^;]*; env( -u [A-Z_]+)+ CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ')" "1"
+    "$(printf '%s\n' "$out5b" | grep -c -E '^(would-)?launch: cd [^;]* && \{ bash [^;]*record-launch.sh [^;]*; env( -u [A-Z_]+)+ CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ')" "1"
 
 # --- 6: next writes the successor stub + predecessor HANDOFF ----------
 doc6A="$root/tester/nextrepo/DEMO-nextleg-${today}A-console.md"
@@ -1528,13 +1542,12 @@ own65="$tmp/own-checkout-65"
 mkdir -p "$own65/scripts"
 cp -r "$REPO_REAL/scripts/lib" "$own65/scripts/lib"
 cp -r "$REPO_REAL/scripts/handover" "$own65/scripts/handover"
+ln -s "$REPO_REAL/docs" "$own65/docs"
 mkdir -p "$own65/state-fixture-65/ownslug"
 printf 'HANDOVER_DIR=%s\nUSER_SLUG=ownslug\nJIRA_PROJECT_KEY=OWNKEY\n' "$own65/state-fixture-65" > "$own65/.env"
 foreign65="$tmp/foreign-repo-65"
 mkdir -p "$foreign65/nested"
 ( cd "$foreign65" && git init -q )
-ln -s "$REPO_REAL/scripts" "$foreign65/scripts"
-ln -s "$REPO_REAL/docs" "$foreign65/docs"
 out65="$(cd "$foreign65/nested" && env -u HANDOVER_DIR -u USER_SLUG -u JIRA_PROJECT_KEY CONSOLE_WORK_DIR="$tmp/defaultwork65" bash "$own65/scripts/handover/console/console.sh" new --name rec65 --dry-run 2>&1)"
 rc65=$?
 check "65 own-checkout .env resolves rc=0" "$rc65" "0"
@@ -1627,5 +1640,281 @@ propagated67="$(grep -v -E '^[[:space:]]*#' "$REPO_REAL/scripts/handover/console
 strip_list67="$( ( . "$REPO_REAL/scripts/lib/console-context.sh"; console_context_leg_env_unset_names ) | sort -u)"
 missing67="$(comm -23 <(printf '%s\n' "$propagated67") <(printf '%s\n' "$strip_list67"))"
 check "67 every leg_propagate_env name in headed-arm-leg.sh is in the strip list" "$missing67" ""
+
+# --- 68: --project <dir> -- a console for a repo that is NOT this himmel
+# checkout (the himmel-ops plugin's /console, run from e.g. ~/Websites). The
+# bucket and prefix come from the project, never from himmel's own
+# JIRA_PROJECT_KEY, and the armed session opens in the project, not in himmel.
+proj68="$tmp/Web Sites68"; mkdir -p "$proj68"
+out68="$(console new --project "$proj68" --dry-run 2>&1)"
+check "68 --project: bucket derived from the project dir" \
+    "$(printf '%s\n' "$out68" | grep -c "^would-doc: $root/tester/web-sites68/WEBSITES68-nextleg-${today}A-console.md\$")" "1"
+check "68 --project: himmel's JIRA_PROJECT_KEY is not the prefix" \
+    "$(printf '%s\n' "$out68" | grep -c 'DEMO-nextleg')" "0"
+check "68 --project: dry-run names the project the session opens in" \
+    "$(printf '%s\n' "$out68" | grep -c "^would-project: $proj68\$")" "1"
+out68b="$(console new --project "$proj68" --bucket other68 --prefix OTH --dry-run 2>&1)"
+check "68 --project: explicit --bucket/--prefix still win" \
+    "$(printf '%s\n' "$out68b" | grep -c "^would-doc: $root/tester/other68/OTH-nextleg-")" "1"
+out68c="$(console new --project "$fixture_repo" --dry-run 2>&1)"
+check "68 --project at the himmel checkout itself changes nothing (JIRA key kept)" \
+    "$(printf '%s\n' "$out68c" | grep -c '^would-doc: .*/DEMO-nextleg-')" "1"
+check "68 --project at the himmel checkout prints no would-project" \
+    "$(printf '%s\n' "$out68c" | grep -c '^would-project:')" "0"
+rc68=0; console new --project "$tmp/no-such-68" --dry-run >/dev/null 2>&1 || rc68=$?
+check "68 --project on a missing dir is a usage error" "$rc68" "1"
+cat > "$tmp/stub-arm-68.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-arm-68: HEADED_ARM_REPO=${HEADED_ARM_REPO:-<unset>}"
+STUB
+out68d="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HANDOVER_REGISTRY="$tmp/no-such-registry-68.json" \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-68.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work68" \
+    bash "$C" new --project "$proj68" --arm --deadline-min 0 ) 2>&1 )"
+# 68d (HIMMEL-3623 verdict J1268O change 2): the console session itself stays
+# in the himmel checkout -- --project is data recorded in the doc, never an
+# exported HEADED_ARM_REPO for the ARMED CONSOLE (a leg for the project is
+# dispatched separately via LEG_REPO). RED against the imported commit (which
+# exported HEADED_ARM_REPO=$proj68 here), GREEN after the fix.
+check "68d --project --arm does NOT export HEADED_ARM_REPO for the console" \
+    "$(printf '%s\n' "$out68d" | grep -c "^stub-arm-68: HEADED_ARM_REPO=<unset>\$")" "1"
+doc68="$root/tester/web-sites68/WEBSITES68-nextleg-${today}A-console.md"
+check "68d the doc records the project (not just the dry-run line)" \
+    "$(grep -c "The project this console is FOR is \*\*\`$proj68\`\*\*" "$doc68" 2>/dev/null)" "1"
+HANDOVER_DIR="$root" bash "$QL" release "$doc68" "$(token_of "$out68d")" >/dev/null 2>&1
+
+# --- 68e/68f (change 4): project -> bucket/prefix through the handover
+# registry, via a SCRATCH registry file only -- never ~/.claude/handover/registry.json.
+reg68="$tmp/registry-68.json"
+regproj68="$tmp/Widget Co 68"; mkdir -p "$regproj68"
+regproj68_canon="$(cd "$regproj68" && pwd -P)"
+cat > "$reg68" <<JSON
+{"repos":{"widgets68":{"path":"$regproj68_canon","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"WIDG68"}}}
+JSON
+out68e="$( HANDOVER_REGISTRY="$reg68" console new --project "$regproj68" --dry-run 2>&1 )"
+check "68e a registered path resolves to its registry key + jira_project" \
+    "$(printf '%s\n' "$out68e" | grep -c "^would-doc: $root/tester/widgets68/WIDG68-nextleg-${today}A-console.md\$")" "1"
+
+collideproj68="$tmp/collideproj68"; mkdir -p "$collideproj68"
+cat > "$reg68" <<JSON
+{"repos":{"collideproj68":{"path":"$tmp/some-other-real-project","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"COLL"}}}
+JSON
+rc68f=0
+out68f="$( HANDOVER_REGISTRY="$reg68" console new --project "$collideproj68" --dry-run 2>&1 )" || rc68f=$?
+check "68f a basename collision with an unrelated registered key is refused" "$rc68f" "1"
+check "68f collision refusal names the conflicting registered path" \
+    "$(printf '%s\n' "$out68f" | grep -c "collides with the registered project at '$tmp/some-other-real-project'")" "1"
+check "68f no doc written on a collision refusal" \
+    "$([ -e "$root/tester/collideproj68" ] && echo yes || echo no)" "no"
+
+# --- 68g (change 7): a SYMLINK to the himmel checkout given as --project is
+# canonicalized with pwd -P and recognized as himmel itself, not a foreign
+# project (skips on hosts where a real symlink doesn't stick, e.g. Git Bash).
+if [ "$HOST_SYMLINKS_REAL" = "1" ]; then
+    himmel_link68="$tmp/himmel-link-68"
+    ln -s "$fixture_repo" "$himmel_link68"
+    out68g="$( HANDOVER_REGISTRY="$tmp/no-such-registry-68.json" console new --project "$himmel_link68" --dry-run 2>&1 )"
+    check "68g a symlink to himmel is treated as himmel (no would-project)" \
+        "$(printf '%s\n' "$out68g" | grep -c '^would-project:')" "0"
+    check "68g a symlink to himmel keeps himmel's own JIRA key" \
+        "$(printf '%s\n' "$out68g" | grep -c '^would-doc: .*/DEMO-nextleg-')" "1"
+fi
+
+# --- 68h (codex-2, pr-check round 1 on HIMMEL-3623): the 68f collision
+# message itself says "pass --bucket to disambiguate", but the collision
+# exit used to fire unconditionally -- an explicit --bucket could never
+# reach the bucket-resolution code below it. RED against the pre-fix
+# collision-exit (always refuses), GREEN after (only refuses when --bucket
+# was not given).
+collideproj68h="$tmp/collideproj68h"; mkdir -p "$collideproj68h"
+cat > "$reg68" <<JSON
+{"repos":{"collideproj68h":{"path":"$tmp/some-other-real-project","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"COLL"}}}
+JSON
+rc68h=0
+out68h="$( HANDOVER_REGISTRY="$reg68" console new --project "$collideproj68h" --bucket disambig68h --dry-run 2>&1 )" || rc68h=$?
+check "68h an explicit --bucket disambiguates a registry collision (no refusal)" "$rc68h" "0"
+check "68h the disambiguated doc uses the explicit --bucket" \
+    "$(printf '%s\n' "$out68h" | grep -c "^would-doc: $root/tester/disambig68h/")" "1"
+
+# --- 69a/69b/69c (codex-1, pr-check round 1 EXPANSION ruling on HIMMEL-3623):
+# `next` with no --project must not silently record the successor as "the
+# himmel checkout itself" for a chain that is FOR a foreign project -- the
+# plugin console.md no longer derives --project for `next` (only for `new`,
+# see marketplace/plugins/himmel-ops/commands/console.md), so without this a
+# foreign-project chain's successor would fall back into himmel's own DEMO
+# bucket. RED against the pre-codex-1 console.sh (PROJECT_ARG never seeded
+# from the predecessor doc), GREEN after.
+reg69="$tmp/registry-69.json"
+foreignproj69="$tmp/Acme Co 69"; mkdir -p "$foreignproj69"
+foreignproj69_canon="$(cd "$foreignproj69" && pwd -P)"
+cat > "$reg69" <<JSON
+{"repos":{"acme69":{"path":"$foreignproj69_canon","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"ACME69"}}}
+JSON
+out69a_new="$( HANDOVER_REGISTRY="$reg69" console new --project "$foreignproj69" )"
+token69a_new="$(token_of "$out69a_new")"
+doc69A="$root/tester/acme69/ACME69-nextleg-${today}A-console.md"
+check "69 setup: predecessor doc written under the foreign project's registry bucket" "$([ -f "$doc69A" ] && echo yes)" "yes"
+
+out69a="$( HANDOVER_REGISTRY="$reg69" console next --doc "$doc69A" --dry-run )"
+check "69a next --doc with no --project derives the foreign bucket/prefix from the predecessor's recorded project" \
+    "$(printf '%s\n' "$out69a" | grep -c "^would-doc: $root/tester/acme69/ACME69-nextleg-${today}B-console.md\$")" "1"
+check "69a next --doc with no --project inherits the predecessor's recorded project" \
+    "$(printf '%s\n' "$out69a" | grep -c "^would-project: $foreignproj69\$")" "1"
+
+# --- 69b: an explicit --project/--bucket/--prefix on next still overrides
+# the inherited value (same predecessor doc as 69a -- --dry-run never claims
+# the successor letter, so it stays reusable across these sub-cases).
+otherproj69="$tmp/Other Co 69"; mkdir -p "$otherproj69"
+out69b="$( HANDOVER_REGISTRY="$reg69" console next --doc "$doc69A" --project "$otherproj69" --bucket otherdst69 --prefix OTH69 --dry-run )"
+check "69b an explicit --project/--bucket/--prefix on next overrides the inherited project" \
+    "$(printf '%s\n' "$out69b" | grep -c "^would-doc: $root/tester/otherdst69/OTH69-nextleg-${today}B-console.md\$")" "1"
+check "69b overridden would-project reflects the explicit --project, not the inherited one" \
+    "$(printf '%s\n' "$out69b" | grep -c "^would-project: $otherproj69\$")" "1"
+HANDOVER_DIR="$root" bash "$QL" release "$doc69A" "$token69a_new" >/dev/null 2>&1
+
+# --- 69c: a predecessor doc with no recorded project (a native himmel-only
+# chain, e.g. case 1's docA) keeps today's fallback -- no project inherited.
+out69c="$( console next --bucket demorepo --doc "$docA" --dry-run )"
+check "69c a predecessor doc with no recorded project prints no would-project (native fallback unchanged)" \
+    "$(printf '%s\n' "$out69c" | grep -c '^would-project:')" "0"
+
+# --- 70 (HIMMEL-3623 verdict J1271O, C1): the plugin runs console.sh with the
+# cwd in a FOREIGN repo. `repo` (template, kit, queue-lock, the doc's REPO)
+# must come from console.sh's OWN location, never the cwd: RED against the
+# cwd-first resolve_repo (missing template rc=2 / the foreign queue-lock ran).
+console_from() {  # console_from <cwd> <args...>
+    local d="$1"; shift
+    ( cd "$d" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" bash "$C" "$@" )
+}
+foreign70="$tmp/foreign70"; mkdir -p "$foreign70"; git init -q "$foreign70"
+rc70a=0; out70a="$(console_from "$foreign70" new --bucket c1plain --dry-run 2>&1)" || rc70a=$?
+check "70a a plain foreign cwd still gets himmel's template (dry-run rc=0)" "$rc70a" "0"
+check "70a the kit is himmel's, not the foreign cwd's" \
+    "$(printf '%s\n' "$out70a" | grep -c "^would-kit: $fixture_repo/scripts/handover/console-kit\$")" "1"
+# A foreign repo shipping its own template and a booby-trapped queue-lock: the
+# trap writes a sentinel if it is ever executed.
+evil70="$tmp/evil70"; mkdir -p "$evil70/docs/handover" "$evil70/scripts/handover"
+git init -q "$evil70"
+printf 'EVIL-TEMPLATE {{LETTER}} {{SESSION_NAME}} {{REPO}} {{PROJECT}} {{KIT}} {{RELEASE_TOKEN}}\n' > "$evil70/docs/handover/console-template.md"
+cp "$fixture_repo/docs/handover/console-handoff-template.md" "$evil70/docs/handover/console-handoff-template.md"
+printf '#!/usr/bin/env bash\necho ran > %q\nexit 0\n' "$tmp/evil70-sentinel" > "$evil70/scripts/handover/queue-lock.sh"
+rc70b=0; out70b="$(console_from "$evil70" new --bucket c1evil 2>&1)" || rc70b=$?
+check "70b a real new from a foreign cwd shipping its own template succeeds" "$rc70b" "0"
+check "70b the foreign repo's queue-lock.sh is never executed" "$([ -e "$tmp/evil70-sentinel" ] && echo ran || echo clean)" "clean"
+doc70b="$root/tester/c1evil/DEMO-nextleg-${today}A-console.md"
+check "70b the doc is rendered from himmel's template, not the foreign one" "$(grep -c 'EVIL-TEMPLATE' "$doc70b" 2>/dev/null)" "0"
+check "70b the doc points at the himmel checkout" \
+    "$(grep -c "^> \*\*\`$fixture_repo\`\*\*\. The project this console is FOR" "$doc70b" 2>/dev/null)" "1"
+check "70b the doc never names the foreign cwd" "$(grep -c "$evil70" "$doc70b" 2>/dev/null)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc70b" "$(token_of "$out70b")" >/dev/null 2>&1
+
+# --- 70c (I3): the printed launch line cds into the himmel checkout first, so a
+# line pasted into the foreign terminal starts the console in himmel (its hooks,
+# its GO gate), not in the foreign cwd.
+launch70="$(printf '%s\n' "$out70a" | sed -n 's/^would-launch: //p')"
+case "$launch70" in
+    "cd $(printf '%q' "$fixture_repo") && { bash "*) l70=cd-himmel ;;
+    *) l70="$launch70" ;;
+esac
+check "70c the printed launch line cds into the himmel checkout first" "$l70" "cd-himmel"
+# ... and a cd that fails must not fall through to running claude elsewhere:
+# the whole line is one `&&` group, so a failed cd skips the recorder AND claude.
+case "$launch70" in
+    *"; }") l70e=braced ;;
+    *) l70e="$launch70" ;;
+esac
+check "70c the cd guards the whole line (one braced group)" "$l70e" "braced"
+
+# --- 71 (I1): a same-NAME repo at a different path must not inherit himmel's or
+# notes' bucket/prefix through a registry ALIAS (J1268O change 4 case).
+reg71="$tmp/registry-71.json"
+notes71="$tmp/notes71"; mkdir -p "$notes71"
+cat > "$reg71" <<JSON
+{"repos":{"himmel71":{"path":"$fixture_repo","user":"tester","aliases":["himmel71","internal71"],"keywords":[],"branch_prefix":"","jira_project":"HIM71"},"notes71":{"path":"$notes71","user":"tester","aliases":["docs71","vault71x"],"keywords":[],"branch_prefix":"","jira_project":"NOT71"}}}
+JSON
+for n71 in himmel71 internal71 docs71; do
+    other71="$tmp/other71/$n71"; mkdir -p "$other71"
+    rc71=0; out71="$( HANDOVER_REGISTRY="$reg71" console new --project "$other71" --dry-run 2>&1 )" || rc71=$?
+    check "71 an unrelated repo named $n71 (a registered key or alias) is refused" "$rc71" "1"
+    check "71 $n71 refusal names the collision" "$(printf '%s\n' "$out71" | grep -c 'collides with the registered project')" "1"
+    rc71b=0; HANDOVER_REGISTRY="$reg71" console new --project "$other71" --bucket other71b --dry-run >/dev/null 2>&1 || rc71b=$?
+    check "71 $n71 with an explicit --bucket disambiguates" "$rc71b" "0"
+done
+out71c="$( HANDOVER_REGISTRY="$reg71" console new --project "$notes71" --dry-run 2>&1 )"
+check "71 the registered path itself still resolves to its key + jira_project" \
+    "$(printf '%s\n' "$out71c" | grep -c "^would-doc: $root/tester/notes71/NOT71-nextleg-")" "1"
+
+# --- 72 (I2): a predecessor doc's recorded PROJECT that is missing, relative or
+# a file is REFUSED like --project would, never silently dropped so the
+# successor falls back to himmel's own bucket.
+reg72="$tmp/registry-72.json"
+proj72="$tmp/Proj 72"; mkdir -p "$proj72"
+printf '{"repos":{}}\n' > "$reg72"
+out72="$( HANDOVER_REGISTRY="$reg72" console new --project "$proj72" 2>&1 )"
+doc72="$root/tester/proj-72/PROJ72-nextleg-${today}A-console.md"
+check "72 setup: a foreign chain doc records its project" "$(grep -c "The project this console is FOR is \*\*\`$proj72\`\*\*" "$doc72" 2>/dev/null)" "1"
+touch "$tmp/a-file-72"
+rc72p=0; HANDOVER_REGISTRY="$reg72" console new --project "$tmp/a-file-72" --dry-run >/dev/null 2>&1 || rc72p=$?
+check "72 (control) --project on a file is refused" "$rc72p" "1"
+cp "$doc72" "$doc72.orig"
+for bad72 in "$tmp/no-such-dir-72" "." "$tmp/a-file-72"; do
+    sed "s|The project this console is FOR is \*\*\`$proj72\`\*\*|The project this console is FOR is **\`$bad72\`**|" "$doc72.orig" > "$doc72"
+    rc72=0; out72n="$( HANDOVER_REGISTRY="$reg72" console next --doc "$doc72" --dry-run 2>&1 )" || rc72=$?
+    check "72 next refuses a recorded project of '$bad72' (rc=1, like --project)" "$rc72" "1"
+    check "72 the refusal is --project's own message for '$bad72'" \
+        "$(printf '%s\n' "$out72n" | grep -c "^console: --project must be an existing directory, got '$bad72'\$")" "1"
+    check "72 nothing falls back to himmel's bucket for '$bad72'" "$(printf '%s\n' "$out72n" | grep -c '^would-doc:')" "0"
+done
+cp "$doc72.orig" "$doc72"
+out72ok="$( HANDOVER_REGISTRY="$reg72" console next --doc "$doc72" --dry-run 2>&1 )"
+check "72 (control) an intact recorded project still inherits" "$(printf '%s\n' "$out72ok" | grep -c "^would-project: $proj72\$")" "1"
+HANDOVER_DIR="$root" bash "$QL" release "$doc72" "$(token_of "$out72")" >/dev/null 2>&1
+
+# --- 73 (HIMMEL-3631): a bare `next` with NOTHING pinning down where to
+# search (no --doc, no CONSOLE_DOC, no --bucket/--project/--prefix) must
+# still find a foreign predecessor and inherit ITS bucket/prefix/project --
+# not silently fall back to himmel's own DEMO bucket. RED against pre-fix
+# console.sh (state_dir, needed to search, can only ever resolve to himmel's
+# own bucket when nothing pins the project down), GREEN after. An isolated
+# root avoids any letter/name collision with the rest of this suite.
+root73="$tmp/root73"; mkdir -p "$root73"
+reg73="$tmp/registry-73.json"
+foreignproj73="$tmp/Acme Co 73"; mkdir -p "$foreignproj73"
+cat > "$reg73" <<JSON
+{"repos":{"acme73":{"path":"$foreignproj73","user":"tester","aliases":[],"keywords":[],"branch_prefix":"","jira_project":"ACME73"}}}
+JSON
+out73_new="$( HANDOVER_REGISTRY="$reg73" console_root "$root73" new --project "$foreignproj73" )"
+token73_new="$(token_of "$out73_new")"
+doc73A="$root73/tester/acme73/ACME73-nextleg-${today}A-console.md"
+check "73 setup: predecessor doc written under the foreign project's registry bucket" "$([ -f "$doc73A" ] && echo yes)" "yes"
+HANDOVER_DIR="$root73" bash "$QL" release "$doc73A" "$token73_new" >/dev/null 2>&1
+
+out73="$( HANDOVER_REGISTRY="$reg73" console_root "$root73" next --dry-run )"
+check "73 a bare next with nothing pinning the search finds the foreign predecessor's would-doc" \
+    "$(printf '%s\n' "$out73" | grep -c "^would-doc: $root73/tester/acme73/ACME73-nextleg-${today}B-console.md\$")" "1"
+check "73 a bare next inherits the foreign predecessor's recorded project" \
+    "$(printf '%s\n' "$out73" | grep -c "^would-project: $foreignproj73\$")" "1"
+
+# --- 74 (HIMMEL-3631, mirrors 72 for the auto-discovery path): a poisoned
+# recorded PROJECT reached through auto-discovery (no --doc) is refused
+# exactly like --project would refuse it -- never silently dropped so the
+# successor falls back to himmel's own bucket.
+root74="$tmp/root74"; mkdir -p "$root74"
+reg74="$tmp/registry-74.json"
+proj74="$tmp/Proj 74"; mkdir -p "$proj74"
+printf '{"repos":{}}\n' > "$reg74"
+out74_new="$( HANDOVER_REGISTRY="$reg74" console_root "$root74" new --project "$proj74" )"
+token74_new="$(token_of "$out74_new")"
+doc74A="$root74/tester/proj-74/PROJ74-nextleg-${today}A-console.md"
+check "74 setup: a foreign chain doc records its project" \
+    "$(grep -c "The project this console is FOR is \*\*\`$proj74\`\*\*" "$doc74A" 2>/dev/null)" "1"
+HANDOVER_DIR="$root74" bash "$QL" release "$doc74A" "$token74_new" >/dev/null 2>&1
+cp "$doc74A" "$doc74A.orig"
+sed "s|The project this console is FOR is \*\*\`$proj74\`\*\*|The project this console is FOR is **\`$tmp/no-such-dir-74\`**|" "$doc74A.orig" > "$doc74A"
+rc74=0; out74="$( HANDOVER_REGISTRY="$reg74" console_root "$root74" next --dry-run 2>&1 )" || rc74=$?
+check "74 a bare next refuses a poisoned recorded project (rc=1, like --project)" "$rc74" "1"
+check "74 the refusal is --project's own message" \
+    "$(printf '%s\n' "$out74" | grep -c "^console: --project must be an existing directory, got '$tmp/no-such-dir-74'\$")" "1"
+check "74 nothing falls back to himmel's bucket" "$(printf '%s\n' "$out74" | grep -c '^would-doc:')" "0"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

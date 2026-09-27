@@ -5,7 +5,7 @@ set -euo pipefail
 LUNA_REMOTE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --luna-remote) LUNA_REMOTE="$2"; shift 2 ;;
+    --luna-remote) [[ $# -ge 2 ]] || { echo "ERROR: --luna-remote requires a value" >&2; exit 2; }; LUNA_REMOTE="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done

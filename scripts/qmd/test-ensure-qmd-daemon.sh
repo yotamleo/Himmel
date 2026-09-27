@@ -86,13 +86,32 @@ exit 0
 EOF
 chmod +x "$mock_qmd"
 
+# A fixed, verified-free test port for QMD_MCP_URL: the fix under test adds a
+# raw TCP connect probe (distinct from the mocked curl probe below), which
+# makes REAL localhost connections - it must never point at the real qmd
+# daemon's port (8181, commonly live on this machine) or every existing case
+# here would race a live process instead of the dead port they assume.
+test_port="$(python3 - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+bash -c "(exec 3<>/dev/tcp/127.0.0.1/$test_port) 2>/dev/null" && \
+  fail "precondition: chosen test port $test_port is unexpectedly held"
+test_url="http://127.0.0.1:$test_port/mcp"
+
 # run_ensure <curl-mode> <path> -> sets global rc/out.
-# QMD_MOCK_HANG / QMD_START_TIMEOUT pass through from the caller's scope.
+# QMD_MOCK_HANG / QMD_START_TIMEOUT / QMD_MCP_URL pass through from the
+# caller's scope (QMD_MCP_URL defaults to the hermetic test_port above).
 run_ensure() {
   rm -f "$state/qmd-argv.log"
   set +e
   out="$(QMD_CURL="$mock_curl" QMD_MOCK_CURL_MODE="$1" QMD_MOCK_STATE="$state" \
     QMD_MOCK_HANG="${QMD_MOCK_HANG:-0}" QMD_START_TIMEOUT="${QMD_START_TIMEOUT:-20}" \
+    QMD_MCP_URL="${QMD_MCP_URL:-$test_url}" \
     HOME="$home" PATH="$2" \
     bash "$script" 2>&1)"
   rc=$?
@@ -308,5 +327,63 @@ grep -qx 'mcp --http --daemon' "$state/qmd-custom-shim.log" || \
   fail "(i4) override+js-absent: custom shim not called with 'mcp --http --daemon'"
 [ ! -f "$state/qmd-bun.log" ] || fail "(i4) override+js-absent: default \$HOME shim used instead of the BUN_INSTALL root"
 echo "ok (i4): BUN_INSTALL override + missing qmd.js falls back to the override root's shim"
+
+# ---- (j) port held by a dying process delays the start (HIMMEL-3062) --------
+# A fixture binds+listens on a REAL localhost port (no MCP handshake - a raw
+# TCP connect should still see it as held) for hold_secs seconds, then
+# releases it - simulating the ~15s bun-thread unwind window after SIGTERM on
+# a killed daemon. The mocked MCP probe ("sentinel" mode) reports dead the
+# whole time, until the mock qmd sets the alive sentinel after it is invoked.
+# Assert: qmd start is NOT attempted while the fixture still holds the port,
+# and it IS attempted (and succeeds) once the fixture releases it.
+# Reset the bun-shim artifacts left by cases (h)-(i4) so resolve_qmd falls
+# through to the plain PATH mock at $bin/qmd (the one this case asserts on).
+rm -rf "$home/.bun"
+rm -f "$state/alive" "$state/qmd-argv.log"
+hold_port="$(python3 - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+hold_secs=3
+python3 - "$hold_port" "$hold_secs" <<'PY' &
+import socket, sys, time
+port = int(sys.argv[1])
+hold = float(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(1)
+time.sleep(hold)
+s.close()
+PY
+fixture_pid=$!
+# Give the fixture a moment to actually bind before the script starts probing.
+sleep 0.5
+bash -c "(exec 3<>/dev/tcp/127.0.0.1/$hold_port) 2>/dev/null" || \
+  fail "(j) precondition: fixture on port $hold_port is not actually held"
+
+(
+  QMD_CURL="$mock_curl" QMD_MOCK_CURL_MODE=sentinel QMD_MOCK_STATE="$state" \
+    QMD_MCP_URL="http://127.0.0.1:$hold_port/mcp" \
+    HOME="$home" PATH="$bin:$safe" \
+    bash "$script" > "$work/j-out.log" 2>&1
+) &
+ensure_pid=$!
+
+sleep 2
+[ ! -f "$state/qmd-argv.log" ] || \
+  fail "(j) port-held: qmd was invoked while the fixture still held the port (raced a dying process)"
+
+wait "$fixture_pid" 2>/dev/null
+wait "$ensure_pid"
+rc=$?
+[ "$rc" -eq 0 ] || fail "(j) port-held: expected rc 0 once the port freed, got $rc ($(cat "$work/j-out.log"))"
+grep -qx 'mcp --http --daemon' "$state/qmd-argv.log" || \
+  fail "(j) port-held: qmd was never invoked after the port freed"
+echo "ok (j): dying process holding the port delays the daemon start until it releases"
 
 echo "PASS: all ensure-qmd-daemon cases"

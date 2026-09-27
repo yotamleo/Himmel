@@ -3,6 +3,11 @@ import { request, projectKey } from '../client.js';
 import { formatIssue } from '../output.js';
 import type { JiraIssue, JiraSearchResult } from '../types.js';
 
+// Local widening: with `--labels`, the search fields include `labels`, but
+// the shared JiraIssue type does not declare it — kept local rather than
+// touching types.ts, which this ticket's scope excludes.
+type IssueWithLabels = JiraIssue & { fields: JiraIssue['fields'] & { labels?: string[] } };
+
 const DEFAULT_STATUSES = ['To Do', 'In Progress'];
 
 /**
@@ -92,9 +97,11 @@ export async function searchAllIssues(
   jql: string,
   limit: string,
   req: typeof request,
+  includeLabels = false,
 ): Promise<JiraIssue[]> {
   const want = Number.parseInt(limit, 10);
   const target = Number.isFinite(want) && want > 0 ? want : 25;
+  const fields = includeLabels ? 'summary,status,issuetype,labels' : 'summary,status,issuetype';
 
   const issues: JiraIssue[] = [];
   let token: string | undefined;
@@ -117,7 +124,7 @@ export async function searchAllIssues(
     const cursor = token === undefined ? '' : `&nextPageToken=${encodeURIComponent(token)}`;
     const result = await req<JiraSearchResult>(
       'GET',
-      `/search/jql?jql=${encodeURIComponent(jql)}&fields=summary,status,issuetype&maxResults=${page}${cursor}`,
+      `/search/jql?jql=${encodeURIComponent(jql)}&fields=${fields}&maxResults=${page}${cursor}`,
     );
     issues.push(...result.issues);
     token = result.nextPageToken;
@@ -141,15 +148,26 @@ export function registerList(program: Command): void {
     )
     .option('--label <label>', 'Filter by a single label (composed into the built JQL)')
     .option(
+      '--labels',
+      'Show each issue\'s labels as a trailing comma-separated 5th column ' +
+        '(off by default: appending it unconditionally would break fixed-column consumers)',
+    )
+    .option(
       '--jql <jql>',
       'Raw JQL passthrough (overrides --project/--type/--status/--label)',
     )
     .option('--limit <n>', 'Max results (paged automatically above 100)', '25')
     .action(
-      async (options: ListJqlOptions & { limit: string }) => {
+      async (options: ListJqlOptions & { limit: string; labels?: boolean }) => {
         const jql = resolveListJql(options);
-        for (const issue of await searchAllIssues(jql, options.limit, request)) {
-          console.log(formatIssue(issue));
+        const issues = await searchAllIssues(jql, options.limit, request, options.labels ?? false);
+        for (const issue of issues) {
+          if (options.labels) {
+            const withLabels = issue as IssueWithLabels;
+            console.log(`${formatIssue(issue)}\t${(withLabels.fields.labels ?? []).join(',')}`);
+          } else {
+            console.log(formatIssue(issue));
+          }
         }
       },
     );
