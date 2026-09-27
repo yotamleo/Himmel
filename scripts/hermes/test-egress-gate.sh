@@ -307,7 +307,11 @@ printf 'GATED-CORPUS\n' > "$SWAPFILE"; : > "$HIMMEL_HERMES_EGRESS_LEDGER"
 SNAPDIR="$(TMPDIR="$GTMP" bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot 2>/dev/null)"; rc=$?
 SNAP="$SNAPDIR/prompt"
 check "gate --snapshot: permitted dispatch rc 0" 0 "$rc"
-check "gate --snapshot: prints a fresh directory under TMPDIR" "yes" "$(case "$SNAPDIR" in ("$GTMP"/hermes-snapshot.*) echo yes ;; *) echo "no:$SNAPDIR" ;; esac)"
+snapdir_check="no:$SNAPDIR"
+case "$SNAPDIR" in
+    ("$GTMP"/hermes-snapshot.*) snapdir_check=yes ;;
+esac
+check "gate --snapshot: prints a fresh directory under TMPDIR" "yes" "$snapdir_check"
 check "gate --snapshot: the directory is 0700 and the file 0600" "dir700 file600" "$(find "$SNAPDIR" -prune -type d -perm 700 | grep -q . && echo dir700 || echo dir-other) $(find "$SNAP" -prune -type f -perm 600 | grep -q . && echo file600 || echo file-other)"
 check "gate --snapshot: the snapshot holds the gated bytes" "GATED-CORPUS" "$(tr -d '\n' < "$SNAP" 2>/dev/null)"
 WANT_SHA="$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$SNAP")"
