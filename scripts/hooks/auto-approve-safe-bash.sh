@@ -1193,7 +1193,7 @@ guard_is_long_abbrev() {
 # unquoted-separator/newline handling see it. Single quotes give backslash no
 # special meaning at all, so no fold happens inside them either.
 fold_backslash_newline() {
-    local s="$1" out="" i=0 n c j run k in_sq=0
+    local s="$1" out="" i=0 n c j run k in_sq=0 bs=$'\\'
     n=${#s}
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
@@ -1209,10 +1209,10 @@ fold_backslash_newline() {
             i=$((i + 1))
             continue
         fi
-        if [ "$c" = '\' ]; then
+        if [ "$c" = "$bs" ]; then
             run=0
             j=$i
-            while [ "${s:$j:1}" = '\' ]; do
+            while [ "${s:$j:1}" = "$bs" ]; do
                 run=$((run + 1))
                 j=$((j + 1))
             done
