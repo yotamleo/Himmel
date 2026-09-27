@@ -77,7 +77,8 @@ _fm_description() {
 
 # True if $1 opens with a `---` / `---` frontmatter block.
 _has_frontmatter() {
-    head -n1 "$1" 2>/dev/null | grep -qE '^---[[:space:]]*$' || return 1
+    _first_line="$(head -n1 "$1" 2>/dev/null)"
+    [[ "$_first_line" =~ ^---[[:space:]]*$ ]] || return 1
     awk 'NR==1{next} /^---[[:space:]]*$/{found=1; exit} END{exit !found}' "$1"
 }
 
@@ -112,7 +113,7 @@ if [ "$STAGED" -eq 1 ]; then
     fi
     while IFS= read -r _f; do
         [ -n "$_f" ] || continue
-        printf '%s' "$_f" | grep -qE "$IN_SCOPE_RE" || continue
+        [[ "$_f" =~ $IN_SCOPE_RE ]] || continue
         FILES="$FILES$_root/$_f"$'\n'
     done <<EOF
 $_staged
