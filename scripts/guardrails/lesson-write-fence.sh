@@ -753,6 +753,15 @@ _is_standalone_fd_redirect() {
 # is written - because this fence cannot tell redirect direction apart from
 # a bare operator any more reliably than it can tell shell dialects apart;
 # see the header's over-blocking-is-safe posture.
+# J1298F-followup (found while verifying codex-1): this runs FIRST in
+# process_clause_for_write, unconditionally, on the full token array, calling
+# `_is_standalone_fd_redirect`/`_redirect_target_in_token` per token with no
+# deadline check at all - timing-verified as the ACTUAL dominant cost for a
+# K=20000 padding-token clause (~24s alone, dwarfing every fork-eliminated
+# loop below it) even after `_clause_head_idx`/`_check_git_hook_routing` were
+# fixed. Same class as J1298F C1/codex-1: an unbounded per-token loop with no
+# deadline check outruns the 15s hook timeout. Now checks the deadline every
+# iteration like the other per-token loops in this file.
 REDIR_SKIP=()
 _scan_redirects() {
     local cwd="$1"; shift
@@ -760,6 +769,9 @@ _scan_redirects() {
     local n=${#tok[@]} i=0 t tgt
     REDIR_SKIP=()
     while [ "$i" -lt "$n" ]; do
+        if [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ]; then
+            deny "command evaluation exceeded the fail-closed time budget (${MAX_EVAL_SECONDS}s); denying the remainder outright (fail-closed)"
+        fi
         t="${tok[$i]}"
         case "$t" in
             '>'|'>>'|'<')
@@ -822,11 +834,31 @@ _scan_redirects() {
 # -d`/`-G`/`-H`/`-P`, each + `cat`). Head-index accuracy for these wrappers
 # is tracked as HIMMEL-3757, scoped so any future fix there can only ADD
 # denials relative to main.
+#
+# J1298F-followup (codex-1, Important -> agreed): this used to fork
+# `_strip_wrap`+`_lc` per token in every loop below, exactly the shape J1298F
+# C1 fixed in `_env_split_string_used`/`_wrapper_is_env_or_sudo` - timing-
+# verified 56s/233s for K=8000/20000 padding tokens with no wrapper needed
+# (this outer loop matches `nice` cheaply and runs unconditionally), both far
+# past the 15s hook timeout with zero deadline check anywhere in this
+# function. Now indexes the global `LC_TOK` array instead of forking, exactly
+# like `_env_split_string_used`/`_wrapper_is_env_or_sudo` - the CALLER must
+# have already run `_lc_all` on this SAME token array first (an internal
+# `_lc_all` call here would double the cost instead of eliminating it: this
+# function always runs inside a `$(...)` command substitution, so a caller
+# who has not pre-populated `LC_TOK` gets stale/empty data, not a crash -
+# both current callers populate it immediately before calling this). Checks
+# the deadline every iteration of every loop below; a caller retrieving
+# `head_idx` back from the subshell re-checks `$SECONDS` itself immediately
+# afterward (real process, `deny` works there) since `deny`'s `exit` inside
+# this subshelled function would only end the subshell, not the command.
 _clause_head_idx() {
     local -a tok=("$@")
     local n=${#tok[@]} i=0 s w
     while [ "$i" -lt "$n" ]; do
-        s="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+        [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ] && break
+        s="${LC_TOK[$i]}"
+        s="${s%\"}"; s="${s#\"}"; s="${s%\'}"; s="${s#\'}"; s="${s%\`}"; s="${s#\`}"
         case "$s" in
             [A-Za-z_][A-Za-z0-9_]*=*)
                 i=$((i+1)); continue ;;
@@ -854,7 +886,9 @@ _clause_head_idx() {
                 # `-S`/`--split-string` deny below (`_env_split_string_used`)
                 # is untouched by this revert.
                 while [ "$i" -lt "$n" ]; do
-                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+                    [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ] && break
+                    w="${LC_TOK[$i]}"
+                    w="${w%\"}"; w="${w#\"}"; w="${w%\'}"; w="${w#\'}"; w="${w%\`}"; w="${w#\`}"
                     case "$w" in
                         -u|-c)                    i=$((i+2)) ;;
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
@@ -877,7 +911,9 @@ _clause_head_idx() {
                 # (empirically verified: `timeout --k 5 10 true` behaves
                 # identically to `timeout --kill-after 5 10 true`).
                 while [ "$i" -lt "$n" ]; do
-                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+                    [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ] && break
+                    w="${LC_TOK[$i]}"
+                    w="${w%\"}"; w="${w#\"}"; w="${w%\'}"; w="${w#\'}"; w="${w%\`}"; w="${w#\`}"
                     case "$w" in
                         -k|-s)                    i=$((i+2)) ;;
                         --*)
@@ -912,7 +948,9 @@ _clause_head_idx() {
                 # arm's other head-index gaps are tracked as HIMMEL-3757
                 # (ADD-only denials from here).
                 while [ "$i" -lt "$n" ]; do
-                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+                    [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ] && break
+                    w="${LC_TOK[$i]}"
+                    w="${w%\"}"; w="${w#\"}"; w="${w%\'}"; w="${w#\'}"; w="${w%\`}"; w="${w#\`}"
                     case "$w" in
                         -u|-g|-U|-p|-C|-r|-t|-h|-d) i=$((i+2)) ;;
                         --)                       i=$((i+1)); break ;;
@@ -1594,7 +1632,17 @@ _check_git_hook_routing() {
     local n=${#tok[@]}
     [ "$n" -gt 0 ] || return 0
 
+    # J1298F-followup (codex-1): this runs unconditionally on every clause,
+    # BEFORE process_clause_for_write's own `_lc_all` call - populate LC_TOK
+    # here too (one fork total for this call, not per-token) so both
+    # `_clause_head_idx` and the per-token loop below stay fork-free and
+    # deadline-checked in the real process (this function is never itself
+    # invoked via `$(...)`, so `deny` here works).
+    _lc_all "${tok[@]}"
     local head_idx; head_idx="$(_clause_head_idx "${tok[@]}")"
+    if [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ]; then
+        deny "command evaluation exceeded the fail-closed time budget (${MAX_EVAL_SECONDS}s); denying the remainder outright (fail-closed)"
+    fi
     [ "$head_idx" -lt "$n" ] || return 0
 
     case "$(_lc "$(_strip_wrap "${tok[$head_idx]}")")" in
@@ -1604,7 +1652,11 @@ _check_git_hook_routing() {
 
     local i="$head_idx" t_lc has_routing=0 has_get=0
     while [ "$i" -lt "$n" ]; do
-        t_lc="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+        if [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ]; then
+            deny "command evaluation exceeded the fail-closed time budget (${MAX_EVAL_SECONDS}s); denying the remainder outright (fail-closed)"
+        fi
+        t_lc="${LC_TOK[$i]}"
+        t_lc="${t_lc%\"}"; t_lc="${t_lc#\"}"; t_lc="${t_lc%\'}"; t_lc="${t_lc#\'}"; t_lc="${t_lc%\`}"; t_lc="${t_lc#\`}"
         case "$t_lc" in
             core.hookspath|core.hookspath=*) has_routing=1 ;;
             include.path|include.path=*)     has_routing=1 ;;

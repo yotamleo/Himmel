@@ -1289,6 +1289,24 @@ while [ "$i" -lt 1000 ]; do timeout1000="${timeout1000}timeout 1 "; i=$((i+1)); 
 run_hook_timed 12 deny "32: timeout 1,x1000 tee scripts/hooks/a.sh (J1298F C1, K=1000 wrapper-prefix token flood)" \
     "$(bash_json "${timeout1000}tee scripts/hooks/a.sh" "$REPO")" 1
 
+echo "== 32b: J1298F-followup (codex-1 verify) - _scan_redirects had no deadline check =="
+# Found while independently verifying codex-1's _clause_head_idx finding:
+# _clause_head_idx and _check_git_hook_routing WERE the reported gap, but
+# after fixing both, a K=20000 `nice` flood still took ~24s through the real
+# fence (past the 15s hook timeout) - _scan_redirects runs FIRST in
+# process_clause_for_write, unconditionally, on the full token array, calling
+# two per-token helper functions with zero deadline check at all, and was the
+# actual dominant cost (~24s alone). Fixed the same way: check the deadline
+# every loop iteration. This clause names no enforcement-path target at all
+# (verb `cat`, operand `filler-x`) so the ONLY way it can deny is the
+# fail-closed budget firing - proving the deadline is actually reached from
+# inside _scan_redirects, not just from the other three fixed functions.
+nice20000=""
+i=0
+while [ "$i" -lt 20000 ]; do nice20000="${nice20000}nice "; i=$((i+1)); done
+run_hook_timed 12 deny "32b: nice,x20000 cat filler-x (J1298F-followup, _scan_redirects had no deadline check)" \
+    "$(bash_json "${nice20000}cat filler-x" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then
