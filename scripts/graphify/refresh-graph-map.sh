@@ -79,6 +79,13 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 # default, not a billing guarantee.
 NAME="" CORPUS_ROOT="" BACKEND="claude-cli" MAPS_DIR="" TITLE="" SLUG="" CORPUS_TAG=""
 SCRATCH="" DO_UPDATE=1 CORPUS_CLASS="luna-personal"
+# HIMMEL-3718: OPTIONAL out-of-corpus promote destination. Empty (default)
+# keeps every existing in-corpus behaviour byte-for-byte. See the OUT_ROOT
+# validation block below (next to the GRAPHIFY_OUT_NAME resolution) for why
+# this is a SEPARATE knob from GRAPHIFY_OUT: that variable only names the
+# scratch-relative extraction leaf graphify itself writes; this one only
+# redirects where the finished promote lands.
+OUT_ROOT=""
 # HIMMEL-1704: OPTIONAL device:inode identity for --corpus-root / --maps-dir,
 # as probed by the caller's OWN preflight (graph-refresh.sh) at validation
 # time. A caller that does not pass one (e.g. a direct/manual invocation, or
@@ -91,7 +98,7 @@ CORPUS_ID="" MAPS_ID="" MAPS_PARENT_ID=""
 # the promote half of that region on an existing workdir instead.
 PROMOTE_ONLY="" PUBLISH=0 FORCE=0 ALLOW_UNVERIFIED=0 DO_EXTRACT=1
 PROMOTE_ONLY_DIR="" PROMOTE_ONLY_SHAPE=""   # shape: workdir | quarantine
-usage() { echo "usage: refresh-graph-map.sh --name N --corpus-root P --maps-dir D --title T --slug S [--backend B] [--corpus-tag T] [--corpus-class C] [--corpus-id DEV:INODE] [--maps-id DEV:INODE] [--maps-parent-id DEV:INODE] [--scratch DIR] [--no-update] [--promote-only WORKDIR [--publish] [--force] [--allow-unverified-corpus]]" >&2; exit 1; }
+usage() { echo "usage: refresh-graph-map.sh --name N --corpus-root P --maps-dir D --title T --slug S [--backend B] [--corpus-tag T] [--corpus-class C] [--corpus-id DEV:INODE] [--maps-id DEV:INODE] [--maps-parent-id DEV:INODE] [--out-root DIR] [--scratch DIR] [--no-update] [--promote-only WORKDIR [--publish] [--force] [--allow-unverified-corpus]]" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
@@ -133,6 +140,7 @@ while [ $# -gt 0 ]; do
     --slug) SLUG="${2:-}"; shift 2 ;;
     --corpus-tag) CORPUS_TAG="${2:-}"; shift 2 ;;
     --corpus-class) CORPUS_CLASS="${2:-}"; shift 2 ;;
+    --out-root) OUT_ROOT="${2:-}"; shift 2 ;;
     --scratch) SCRATCH="${2:-}"; shift 2 ;;
     --no-update) DO_UPDATE=0; shift ;;
     # HIMMEL-3205: recover an orphaned finished extraction (see the header).
@@ -143,6 +151,10 @@ while [ $# -gt 0 ]; do
     *) echo "refresh-graph-map: unknown flag: $1" >&2; usage ;;
   esac
 done
+# --out-root wins; GRAPHIFY_OUT_ROOT is the env fallback for callers (cron
+# cadences) that invoke this script by fixed argv and vary behaviour by env,
+# same pattern as GRAPHIFY_OUT itself.
+OUT_ROOT="${OUT_ROOT:-${GRAPHIFY_OUT_ROOT-}}"
 if [ -z "$NAME" ] || [ -z "$CORPUS_ROOT" ] || [ -z "$MAPS_DIR" ] || [ -z "$TITLE" ] || [ -z "$SLUG" ]; then usage; fi
 [ -d "$CORPUS_ROOT" ] || { echo "refresh-graph-map: corpus root not found: $CORPUS_ROOT" >&2; exit 1; }
 # HIMMEL-3205: the promote-only modifiers mean nothing without --promote-only,
@@ -514,7 +526,44 @@ if ! printf '%s' "$GRAPHIFY_OUT_NAME" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$';
   echo "refresh-graph-map: GRAPHIFY_OUT must be a single relative directory name matching [A-Za-z0-9][A-Za-z0-9._-]* (got '$GRAPHIFY_OUT_NAME')" >&2
   exit 2
 fi
-OUT_DIR="$CORPUS_ROOT/$GRAPHIFY_OUT_NAME"
+# HIMMEL-3718: OPTIONAL out-of-corpus promote destination (--out-root /
+# GRAPHIFY_OUT_ROOT). This is UNRELATED to the GRAPHIFY_OUT_NAME refusal
+# above: that one refuses letting the SCRATCH-relative extraction leaf be
+# absolute (graphify would then write onto the live corpus instead of the
+# scratch copy). OUT_ROOT only redirects where the FINISHED promote lands,
+# after extraction has already happened in the scratch copy — it never
+# touches how or where graphify itself writes.
+OUT_OF_CORPUS=0
+if [ -n "$OUT_ROOT" ]; then
+  case "$OUT_ROOT" in
+    /*) : ;;
+    *)
+      echo "refresh-graph-map: --out-root/GRAPHIFY_OUT_ROOT must be an absolute path (got '$OUT_ROOT')" >&2
+      exit 2 ;;
+  esac
+  # Resolve both sides before comparing so a trailing slash, a symlinked
+  # corpus root, or a not-yet-existing OUT_ROOT (mkdir -p happens later, at
+  # first use) can't dodge the refusals below by lexical spelling alone.
+  CORPUS_ROOT_RESOLVED="$(cd "$CORPUS_ROOT" && pwd -P)"
+  OUT_ROOT_RESOLVED="$OUT_ROOT"
+  if [ -d "$OUT_ROOT" ]; then OUT_ROOT_RESOLVED="$(cd "$OUT_ROOT" && pwd -P)"; fi
+  if [ "$OUT_ROOT_RESOLVED" = "/" ]; then
+    echo "refresh-graph-map: REFUSING --out-root=/ -- the promote step deletes cache/ and manifest.json under it." >&2
+    exit 2
+  fi
+  if [ -n "${HOME:-}" ] && [ "$OUT_ROOT_RESOLVED" = "$(cd "$HOME" && pwd -P 2>/dev/null || printf '%s' "$HOME")" ]; then
+    echo "refresh-graph-map: REFUSING --out-root=\$HOME ($OUT_ROOT) -- point it at a dedicated subdirectory, not the home directory itself." >&2
+    exit 2
+  fi
+  if [ "$OUT_ROOT_RESOLVED" = "$CORPUS_ROOT_RESOLVED" ]; then
+    echo "refresh-graph-map: REFUSING --out-root=<corpus root> ($OUT_ROOT) -- that is the in-corpus case; omit --out-root/GRAPHIFY_OUT_ROOT instead." >&2
+    exit 2
+  fi
+  OUT_OF_CORPUS=1
+  OUT_DIR="$OUT_ROOT/$GRAPHIFY_OUT_NAME"
+else
+  OUT_DIR="$CORPUS_ROOT/$GRAPHIFY_OUT_NAME"
+fi
 # Refuse to adopt a directory that is not already a graphify out dir (CR r8/r9).
 # Accepting any well-formed NAME widened what the promote can land on: with
 # GRAPHIFY_OUT=docs, OUT_DIR becomes <corpus>/docs, and the promote block below
@@ -544,11 +593,17 @@ OUT_DIR="$CORPUS_ROOT/$GRAPHIFY_OUT_NAME"
 # write into, and delete graph-named content from, a directory outside the
 # corpus the operator named. `-L` is the only test that sees the link itself,
 # and it runs before `-d` so a link to a directory cannot slip past.
-if [ "$GRAPHIFY_OUT_NAME" != "graphify-out" ] && [ -L "$OUT_DIR" ]; then
-  echo "refresh-graph-map: REFUSING to use $OUT_DIR as the graphify out dir -- GRAPHIFY_OUT is overridden to '$GRAPHIFY_OUT' and that path is a SYMLINK, which would place the promote outside the corpus root. Point it at a real directory under the corpus." >&2
+# HIMMEL-3718: widened to also fire whenever OUT_ROOT redirects the promote
+# out-of-corpus, even at the default leaf name -- the original scoping's
+# premise ("the conventional graphify-out under the corpus root needs no
+# proof") only holds while OUT_DIR is guaranteed to be a child of a corpus
+# the operator already trusts. Once it can live anywhere, the default name
+# earns exactly the same proof an override name always did.
+if { [ "$GRAPHIFY_OUT_NAME" != "graphify-out" ] || [ "$OUT_OF_CORPUS" -eq 1 ]; } && [ -L "$OUT_DIR" ]; then
+  echo "refresh-graph-map: REFUSING to use $OUT_DIR as the graphify out dir -- that path is a SYMLINK, which would place the promote somewhere other than the validated out dir. Point it at a real directory." >&2
   exit 2
 fi
-if [ "$GRAPHIFY_OUT_NAME" != "graphify-out" ] && [ -d "$OUT_DIR" ]; then
+if { [ "$GRAPHIFY_OUT_NAME" != "graphify-out" ] || [ "$OUT_OF_CORPUS" -eq 1 ]; } && [ -d "$OUT_DIR" ]; then
   _out_is_graphify=0
   # `.graphify_*` with the UNDERSCORE, not `.graphify*` (CR r11). Every out-dir
   # control file graphify writes is underscored -- .graphify_root,
@@ -572,7 +627,7 @@ if [ "$GRAPHIFY_OUT_NAME" != "graphify-out" ] && [ -d "$OUT_DIR" ]; then
     exit 2
   fi
   if [ "$_out_is_graphify" -eq 0 ] && [ -n "$_out_listing" ]; then
-    echo "refresh-graph-map: REFUSING to use $OUT_DIR as the graphify out dir -- GRAPHIFY_OUT is overridden to '$GRAPHIFY_OUT' and that is a non-empty directory carrying none of graphify's control files, so it is source content, not a graph output. Promoting into it would destroy $OUT_DIR/cache and $OUT_DIR/manifest.json." >&2
+    echo "refresh-graph-map: REFUSING to use $OUT_DIR as the graphify out dir -- it is a non-empty directory carrying none of graphify's control files, so it is unrelated content, not a graph output. Promoting into it would destroy $OUT_DIR/cache and $OUT_DIR/manifest.json." >&2
     exit 2
   fi
 fi
@@ -2548,7 +2603,19 @@ with open(manifest_path, "w") as fh:
     json.dump(manifest, fh, sort_keys=True)
     fh.write("\n")
 PYEOF
-  printf '%s\n' "." > "$PROMOTE_STAGE/.graphify_root"
+  # HIMMEL-3718: relative "." only resolves back to the corpus when OUT_DIR is
+  # a child of CORPUS_ROOT (the HIMMEL-1116 assumption this marker was built
+  # on). Out-of-corpus, "$OUT/../." would resolve to OUT_ROOT's parent, not
+  # the corpus -- so write the resolved absolute corpus root instead.
+  # check-graph-freshness.sh already has an absolute-marker code path for
+  # this (case "$MARKER_ROOT" in /*|...), so no downstream change is needed.
+  # Every in-corpus corpus (himmel's own tracked graph included) keeps the
+  # exact relative "." it always had.
+  if [ "$OUT_OF_CORPUS" -eq 1 ]; then
+    printf '%s\n' "$CORPUS_ROOT_RESOLVED" > "$PROMOTE_STAGE/.graphify_root"
+  else
+    printf '%s\n' "." > "$PROMOTE_STAGE/.graphify_root"
+  fi
   # Version stamp (HIMMEL-1901 addendum) -- captures the graphify version that
   # produced THIS promoted graph, so a later refresh's shrink guard (1b, below)
   # can tell "the extractor changed" (an expected shrink -- e.g. the upcoming

@@ -172,6 +172,15 @@ BAT_DIR="${GRAPHMAP_BAT_DIR:-$(resolve_user_home)/.claude/graphmap-cadence}"
 # so the runner fires the shipped refresh-graph-map.sh by absolute path.
 HIMMEL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
 REFRESH_SCRIPT="$HIMMEL_ROOT/scripts/graphify/refresh-graph-map.sh"
+# HIMMEL-3718: ONE resolver for the out-of-corpus promote destination — see
+# graph-out-root.sh for why (Obsidian hangs on the vault-internal
+# graphify-out/ churn). Empty for himmel (its graphify-out/ stays tracked +
+# in-corpus). Used by both the semantic pair (cron_payload --out-root) and
+# the structural pair (ast_cron_payload GRAPHIFY_OUT=) below, so the two legs
+# that share one promote lock (HIMMEL-1948) keep resolving the SAME directory.
+# shellcheck source=../graphify/graph-out-root.sh
+# shellcheck disable=SC1091
+. "$HIMMEL_ROOT/scripts/graphify/graph-out-root.sh"
 # Structural (AST) pair (HIMMEL-1948 CR r1b): routes through the promote-lock
 # wrapper, by absolute path, same rationale as REFRESH_SCRIPT above -- see
 # ast-update.sh's own header for why (HIMMEL-910 lock, shared graphify-out).
@@ -1824,9 +1833,10 @@ cron_existing() {
 # flags. bash/script/corpus/maps/title arrive pre-quoted (printf %q);
 # name/slug/tag/backend are fixed ASCII literals.
 cron_payload() {
-    local q_bash="$1" q_script="$2" name="$3" q_corpus="$4" q_maps="$5" q_title="$6" slug="$7" tag="$8"
+    local q_bash="$1" q_script="$2" name="$3" q_corpus="$4" q_maps="$5" q_title="$6" slug="$7" tag="$8" q_out_root="${9:-}"
     printf '%s %s --name %s --corpus-root %s --maps-dir %s --title %s --slug %s --backend %s --corpus-tag %s' \
         "$q_bash" "$q_script" "$name" "$q_corpus" "$q_maps" "$q_title" "$slug" "$BACKEND" "$tag"
+    if [ -n "$q_out_root" ]; then printf ' --out-root %s' "$q_out_root"; fi
 }
 
 # Structural (AST) payload builder, POSIX form (HIMMEL-1948 Task 3, routed
@@ -1835,7 +1845,12 @@ cron_payload() {
 # Mirrors ast_bat_payload's rationale -- --force now lives INSIDE
 # ast-update.sh, not on this command line.
 ast_cron_payload() {
-    local q_bash="$1" q_script="$2" q_corpus="$3"
+    local q_bash="$1" q_script="$2" q_corpus="$3" q_out_dir="${4:-}"
+    # ast-update.sh reads GRAPHIFY_OUT from its environment exactly the way
+    # graphify itself does (paths.py) -- an absolute value is used as-is, so
+    # this is the FULL out dir (out-root/graphify-out), not just the root, to
+    # land on the same directory refresh-graph-map.sh's --out-root resolves to.
+    if [ -n "$q_out_dir" ]; then printf 'GRAPHIFY_OUT=%s ' "$q_out_dir"; fi
     printf '%s %s %s' "$q_bash" "$q_script" "$q_corpus"
 }
 
@@ -2027,13 +2042,26 @@ cron_arm() {
     q_log_ast_himmel=$(printf '%q' "$BAT_DIR/graphmap-ast-himmel.log")
     q_log_publish_himmel=$(printf '%q' "$BAT_DIR/graphmap-publish-himmel.log")
 
+    # HIMMEL-3718: luna's out-of-corpus destination, resolved ONCE and shared
+    # by both the semantic (--out-root) and structural (GRAPHIFY_OUT=) legs
+    # below -- see graph-out-root.sh. Empty when no override is configured
+    # (today's in-corpus default, byte-for-byte unchanged).
+    local luna_out_root q_out_root_luna q_out_dir_ast_luna
+    luna_out_root="$(graphify_out_root_for luna)"
+    q_out_root_luna=""
+    q_out_dir_ast_luna=""
+    if [ -n "$luna_out_root" ]; then
+        q_out_root_luna=$(printf '%q' "$luna_out_root")
+        q_out_dir_ast_luna=$(printf '%q' "$luna_out_root/graphify-out")
+    fi
+
     local payload_luna payload_himmel payload_ast_luna payload_ast_himmel payload_publish_himmel
-    payload_luna=$(cron_payload "$q_bash" "$q_script" luna "$q_vault" "$q_maps" "$q_luna_title" "$LUNA_SLUG" "$LUNA_TAG")
+    payload_luna=$(cron_payload "$q_bash" "$q_script" luna "$q_vault" "$q_maps" "$q_luna_title" "$LUNA_SLUG" "$LUNA_TAG" "$q_out_root_luna")
     payload_himmel=$(cron_payload "$q_bash" "$q_script" himmel "$q_himmel" "$q_maps" "$q_himmel_title" "$HIMMEL_SLUG" "$HIMMEL_TAG")
     # Structural (AST) payloads (HIMMEL-1948 Task 3, routed through the
     # promote-lock wrapper as of CR r1b): same asymmetric corpus roots as the
     # semantic pair (luna = vault, himmel = repo).
-    payload_ast_luna=$(ast_cron_payload "$q_bash" "$q_ast_script" "$q_vault")
+    payload_ast_luna=$(ast_cron_payload "$q_bash" "$q_ast_script" "$q_vault" "$q_out_dir_ast_luna")
     payload_ast_himmel=$(ast_cron_payload "$q_bash" "$q_ast_script" "$q_himmel")
     # Publish leg (HIMMEL-2095): himmel repo only (v1).
     payload_publish_himmel=$(publish_cron_payload "$q_bash" "$q_publish_script" "$q_himmel")
