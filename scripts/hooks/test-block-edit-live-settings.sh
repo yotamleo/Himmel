@@ -1444,110 +1444,79 @@ else
     FAILED=$((FAILED + 1))
 fi
 
-# 219 (HIMMEL-3761 shape 1): a piped read-only chain (tail | grep) of a
-# *.leg-settings.json scratchpad file, from a PRIMARY-checkout cwd
-# (is_primary_cwd=1) -> ALLOW. tail and grep are both on the read-only
-# allowlist and joined only by `|`, so is_readonly_allowlisted already
-# exempts this regardless of is_primary_cwd; this pins that a PRIMARY cwd
-# does not override the read-only exemption.
-assert_rc "219 tail | grep of a scratchpad .leg-settings.json from primary cwd allows (HIMMEL-3761)" 0 \
-    "$(bash_rc_of "$PRIMARY" "tail -50 /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json | grep additionalDirectories")"
+# --- HIMMEL-3761: closed allow-list for the ticket's read-only/mention shapes ---
+# `feat+x`'s own settings.json (already created above as the worktree fixture)
+# structurally matches `.claude/worktrees/<name>/.claude/settings.json`, the
+# exact shape the ticket names.
+FEATX="$SANDBOX/primary/.claude/worktrees/feat+x"
+mkdir -p "$SANDBOX/hb/logs"
+printf '{"leg":"N634"}\n' > "$SANDBOX/hb/logs/N634.leg-settings.json"
 
-# 220 (HIMMEL-3761 shape 2/4): a printf payload that merely MENTIONS
-# "leg-settings.json" as text, appended into an unrelated ordinary file (no
-# settings path is ever a write operand) -> ALLOW. The word-boundary fix
-# means the mention no longer flips mentions_settings for a basename that
-# only ENDS in "settings.json" as a longer filename, and even where it does,
-# the actual write destination (append.log) is what matters.
-assert_rc "220 printf mentioning a *.leg-settings.json filename, writing elsewhere, allows (HIMMEL-3761)" 0 \
-    "$(bash_rc_of "$PRIMARY" "printf 'see %s\\n' HIMMEL-3514-N424-bridge-hardening.leg-settings.json >> append.log")"
+# 219: tail of a per-leg *.leg-settings.json log artifact -> ALLOW. Already
+# covered by main's existing _tok_readonly_ok (single-segment tail with a
+# plain path operand); documented here as a ticket-shape regression lock, not
+# a new allow rule.
+assert_rc "219 bash tail of a *.leg-settings.json log artifact allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "tail -n 20 $SANDBOX/hb/logs/N634.leg-settings.json")"
 
-# 221 (HIMMEL-3761 shape 3): a read-only `--check --settings` naming a linked
-# WORKTREE's own settings.json by ABSOLUTE path, run with cwd=PRIMARY
-# (is_primary_cwd=1, node is not on the read-only allowlist) -> ALLOW.
-# settings_word_live resolves the operand via the existing check_target(),
-# which walks up to the worktree's own git-dir (differs from the primary's),
-# so it overrides is_primary_cwd's unconditional live-forcing.
-assert_rc "221 node --check --settings on a worktree's own settings.json (absolute) from primary cwd allows (HIMMEL-3761)" 0 \
-    "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings $NESTED_WT/.claude/settings.json")"
+# 220: printf mention-only, redirecting into an UNRELATED file while the text
+# names a *.leg-settings.json artifact -> ALLOW (ticket shape; RED on main).
+assert_rc "220 printf mentioning a leg-settings filename, redirect to a non-live file, allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "printf 'see N634.leg-settings.json for details' >> $SANDBOX/console.md")"
 
-# 222: the same shape, spelled worktree-relative from the PRIMARY cwd
-# (`.claude/worktrees/feat+x/.claude/settings.json`) -> ALLOW.
-assert_rc "222 node --check --settings on a worktree's own settings.json (relative) from primary cwd allows (HIMMEL-3761)" 0 \
-    "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings .claude/worktrees/feat+x/.claude/settings.json")"
+# 221: bare echo mention, no redirect at all -> ALLOW (ticket shape; RED on
+# main).
+assert_rc "221 bash echo mentioning settings.json with no redirect allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "echo see settings.json for details")"
 
-# 223 control: the same `--check --settings` shape, this time naming the
-# PRIMARY's own live settings.json (not a worktree copy) -> DENY — proves
-# 221/222's fix only exempts a genuinely non-live worktree target, not a
-# `--check`-flagged read of a live path in general.
-assert_rc "223 node --check --settings on the primary's own settings.json still denies (control)" 2 \
-    "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings $PRIMARY/.claude/settings.json")"
+# 222: node wire-hook-bash.mjs --check --settings <worktree's own ABSOLUTE
+# copy> -> ALLOW (ticket shape; RED on main).
+assert_rc "222 node wire-hook-bash.mjs --check --settings (worktree, absolute) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json")"
 
-# 224 control: a worktree-looking relative spelling that actually escapes
-# back to the primary via `..` (`../../../.claude/settings.json` from inside a
-# nested worktree — three levels, matching row 58's proven
-# feat+x -> worktrees -> .claude -> primary climb, not two, which would land
-# on the nonexistent $PRIMARY/.claude/.claude/settings.json instead — codex-2,
-# HIMMEL-3761 CR round 1) -> DENY — settings_word_live must not blanket-allow
-# every path merely because it looks worktree-shaped; check_target's real
-# resolution still walks it up to the primary's own git-dir.
-assert_rc "224 node --check --settings via ../../.. from a nested worktree still denies (control)" 2 \
-    "$(bash_rc_of "$NESTED_WT" "node scripts/hooks/wire-hook-bash.mjs --check --settings ../../../.claude/settings.json")"
+# 223: node wire-hook-bash.mjs --check --settings <worktree's own copy,
+# spelled RELATIVE from the primary cwd> -> ALLOW (ticket shape; RED on
+# main).
+assert_rc "223 node wire-hook-bash.mjs --check --settings (worktree, relative) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "node .claude/worktrees/feat+x/scripts/hooks/wire-hook-bash.mjs --check --settings .claude/worktrees/feat+x/.claude/settings.json")"
 
-# 225 control (HIMMEL-3761, codex-1 CR finding): a benign --check --settings
-# decoy naming a linked worktree's OWN copy (settings_word_live=0) is chained
-# with a SEPARATE node -e write of the PRIMARY's live settings.json — a
-# write mechanism has_write_verb_or_target_flag does not recognize at all, so
-# write_operand_settings_mention never fires either. Proves the decoy operand
-# cannot vouch for the whole command when unrelated live-shaped text sits
-# elsewhere in it -> DENY.
-assert_rc "225 --check --settings decoy chained with a node -e write of the primary's live settings.json still denies (control, codex-1)" 2 \
-    "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings $NESTED_WT/.claude/settings.json; node -e \"require('fs').writeFileSync('$PRIMARY/.claude/settings.json','pwned')\"")"
+# 224: mention-only echo, but the REDIRECT TARGET itself names a live
+# settings leaf -> DENY. Proves rule 220/221 never lets a real write through
+# just because the command also happens to be echo/printf.
+assert_rc "224 echo with a real live-settings redirect target still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo {} > .claude/settings.json")"
 
-# 226-235 (judge J1381A Finding 1, Critical): _check_settings_word silently
-# returned for a settings-leaf word it could not resolve (an unexpanded
-# `~`/`$HOME` word, or an `x=...` assignment word), so a SEPARATE, resolved
-# worktree-copy word in the same command set settings_word_live=0 and wrongly
-# vouched for the whole command, leaving the real live redirect target never
-# judged. All ten must DENY.
-assert_rc "226 (J1381A F1) wt cwd: cat own copy redirected into ~/.claude/settings.json denies" 2 \
-    "$(bash_rc_of "$WT2" "cat .claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
-assert_rc "227 (J1381A F1) wt cwd: cat own copy redirected into \$HOME/.claude/settings.json denies" 2 \
-    "$(bash_rc_of "$WT2" "cat .claude/settings.json > \$HOME/.claude/settings.json" HOME="$FAKEHOME")"
-assert_rc "228 (J1381A F1) wt cwd: cat own copy by absolute path redirected into ~/.claude/settings.json denies" 2 \
-    "$(bash_rc_of "$WT2" "cat $WT2/.claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
-assert_rc "229 (J1381A F1) primary cwd: cat worktree's own copy redirected into ~/.claude/settings.json denies" 2 \
-    "$(bash_rc_of "$PRIMARY" "cat .claude/worktrees/feat+x/.claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
-assert_rc "230 (J1381A F1) wt cwd: jq of own copy redirected into ~/.claude/settings.local.json denies" 2 \
-    "$(bash_rc_of "$WT2" "jq . .claude/settings.json > ~/.claude/settings.local.json" HOME="$FAKEHOME")"
-assert_rc "231 (J1381A F1) wt cwd: write to ~/.claude/settings.json then read own copy denies" 2 \
-    "$(bash_rc_of "$WT2" "echo {} > ~/.claude/settings.json; cat .claude/settings.json" HOME="$FAKEHOME")"
-assert_rc "232 (J1381A F1) primary cwd: cat worktree's own copy appended into quoted \"\$HOME\"/.claude/settings.json denies" 2 \
-    "$(bash_rc_of "$PRIMARY" "cat .claude/worktrees/feat+x/.claude/settings.json >> \"\$HOME\"/.claude/settings.json" HOME="$FAKEHOME")"
-assert_rc "233 (J1381A F1) wt cwd: truncating own copy into ~/.claude/settings.json denies" 2 \
-    "$(bash_rc_of "$WT2" "head -c0 .claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
-assert_rc "234 (J1381A F1) primary cwd: assignment word x=.claude/settings.json redirect target still denies" 2 \
-    "$(bash_rc_of "$PRIMARY" "x=.claude/settings.json; cat .claude/worktrees/feat+x/.claude/settings.json > \$x")"
-assert_rc "235 (J1381A F1) wt cwd: assignment word naming the primary's absolute settings.json still denies" 2 \
-    "$(bash_rc_of "$WT2" "x=$PRIMARY/.claude/settings.json; cat .claude/settings.json > \$x")"
+# 225: mention-only echo wrapped in a command SUBSTITUTION for the redirect
+# target -> DENY. Proves the new allow rule requires ST_SUBST=0 (single,
+# unexpanded segment) — the exact J1381B Finding-1 decoy shape stays denied.
+assert_rc "225 echo mentioning settings.json, real write via substitution, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo {} > .claude/\$(echo settings.json)")"
 
-# 236-240 (judge J1381A Finding 2, Critical): the word-boundary regex ran on
-# already quote/backslash-stripped text, and its substring fallback only
-# fires when a recognized file verb is present — so a bare echo/printf
-# redirect whose target glues a variable or a stripped backslash directly
-# onto "settings.json" evaded mentions_settings entirely, and with no write
-# verb recognized either, the target was never judged at all. All five must
-# DENY.
-assert_rc "236 (J1381A F2) wt cwd: echo redirect with a quoted glued var before settings.json denies" 2 \
-    "$(bash_rc_of "$WT2" "echo {} > ~/.claude/\"\$e\"settings.json" HOME="$FAKEHOME")"
-assert_rc "237 (J1381A F2) wt cwd: D=~/.claude/ then echo redirect via \"\$D\"settings.json denies" 2 \
-    "$(bash_rc_of "$WT2" "D=~/.claude/; echo {} > \"\$D\"settings.json" HOME="$FAKEHOME")"
-assert_rc "238 (J1381A F2) primary cwd: echo redirect with a quoted glued var before settings.json denies" 2 \
-    "$(bash_rc_of "$PRIMARY" "echo {} > .claude/\"\$e\"settings.json")"
-assert_rc "239 (J1381A F2) primary cwd: printf redirect via positional \$1 glued onto settings.json denies" 2 \
-    "$(bash_rc_of "$PRIMARY" "printf %s x > .claude/\$1settings.json")"
-assert_rc "240 (J1381A F2) primary cwd: echo redirect to a Windows backslash path that strips onto settings.json denies" 2 \
-    "$(bash_rc_of "$PRIMARY" "echo {} > 'C:\\\\x\\\\.claude\\\\settings.json'")"
+# 226: mention-only printf CHAINED (`;`) to a second command that writes the
+# live file -> DENY. Proves the new allow rule requires a single segment —
+# a trailing chained write can't ride in on an allowlisted first command.
+assert_rc "226 printf mention chained to a real write denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "printf 'settings.json' >> notes.txt; echo {} > .claude/settings.json")"
+
+# 227: node wire-hook-bash.mjs --check --settings pointing at the PRIMARY's
+# own live settings.json (not a worktree's nested copy) -> DENY. Proves the
+# path regex is anchored to the `.claude/worktrees/<name>/.claude/` shape,
+# not just any `--settings` operand.
+assert_rc "227 node wire-hook-bash.mjs --check --settings (primary's own live file) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings .claude/settings.json")"
+
+# 228: node wire-hook-bash.mjs --settings <worktree copy> with NO --check
+# flag -> DENY. Proves the rule requires the read-only flag to be present,
+# not just the settings path shape.
+assert_rc "228 node wire-hook-bash.mjs --settings (worktree copy, no --check) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --settings $FEATX/.claude/settings.json")"
+
+# 229: node wire-hook-bash.mjs --check --settings <worktree copy>, but with
+# an ADDED redirect onto the primary's own live file -> DENY. Proves the
+# rule requires no redirect operand at all, so appending a real write can't
+# ride in on an allowlisted --check invocation.
+assert_rc "229 node wire-hook-bash.mjs --check --settings with an added live redirect denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json > .claude/settings.json")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

@@ -1393,6 +1393,92 @@ changes_directory() {
     [ -n "$out" ]
 }
 
+# HIMMEL-3761 — a small, CLOSED allow-list of the exact false-deny shapes the
+# ticket names, layered on top of main's unmodified raw-text deny (rule 1).
+# Each check below is purely structural (single tokenized segment, no
+# substitution, no chaining) and never trusts the presence/absence of a data
+# word — an ambiguous command falls through to main's existing deny
+# unchanged. Both checks require TOK=1 (Bash only; PowerShell and any Bash
+# command the tokenizer could not vouch for keep main's raw-text verdict,
+# same ceiling every other TOK=0 fallback in this file already accepts).
+
+# _tok_single_segment_ok — true when the tokenized command is exactly one
+# segment (no `;`, `&&`, `||`, `|` or newline) and carries no command
+# substitution/subshell — the shape every allow rule below requires so a
+# trailing chained command can never ride in on an allowlisted first one.
+_tok_single_segment_ok() {
+    [ "$TOK" = 1 ] || return 1
+    [ "$ST_NSEG" = 1 ] || return 1
+    [ "$ST_SUBST" = 0 ] || return 1
+    return 0
+}
+
+# _himmel_3761_mention_only_ok — the ticket's "mention, not a path operand"
+# shape: a bare `echo`/`printf` whose only job is to emit text, where a
+# settings-leaf substring appears purely as DATA (a printf format argument
+# mentioning a per-leg `*.leg-settings.json` artifact; a bare word like
+# `echo see settings.json for details`). printf/echo cannot themselves read
+# or write any file except through a redirect, so this is safe precisely
+# when no redirect TARGET word (ST_RO-marked) itself names a live settings
+# leaf — a real write onto settings.json/settings.local.json still falls
+# through to main's deny, same as today.
+_himmel_3761_mention_only_ok() {
+    local k=0 w lw
+    _tok_single_segment_ok || return 1
+    case "${ST_LW[0]}" in
+        echo|printf) ;;
+        *) return 1 ;;
+    esac
+    while [ "$k" -lt "$ST_N" ]; do
+        if [ -n "${ST_RO[k]}" ]; then
+            w=${ST_W[k]}
+            lw=$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')
+            case "$lw" in
+                *settings.json*|*settings.local.json*) return 1 ;;
+            esac
+        fi
+        k=$((k + 1))
+    done
+    return 0
+}
+
+# _himmel_3761_worktree_settings_check_ok — the ticket's read-only worktree
+# probe: `node <script>/wire-hook-bash.mjs --check --settings <path>`, where
+# <path> structurally names a linked worktree's OWN nested copy
+# (`.claude/worktrees/<name>/.claude/settings.json`), spelled either absolute
+# or relative to the primary checkout — never the primary's or $HOME's own
+# file, which never contains a `.claude/worktrees/` segment. `--check` is
+# read-only by the script's own contract; no redirect operand is present at
+# all, so nothing this command does can write anywhere.
+_himmel_3761_worktree_settings_check_ok() {
+    local k=0 lw has_check=0 has_script=0 settings_path='' next_is_settings=0
+    local wt_re='(^|/)\.claude/worktrees/[^/]+/\.claude/settings\.json$'
+    _tok_single_segment_ok || return 1
+    case "${ST_LW[0]##*/}" in
+        node) ;;
+        *) return 1 ;;
+    esac
+    while [ "$k" -lt "$ST_N" ]; do
+        [ -z "${ST_RO[k]}" ] || return 1
+        lw=${ST_LW[k]}
+        if [ "$next_is_settings" = 1 ]; then
+            settings_path=$lw
+            next_is_settings=0
+        fi
+        case "${lw##*/}" in
+            wire-hook-bash.mjs) has_script=1 ;;
+        esac
+        case "$lw" in
+            --check) has_check=1 ;;
+            --settings) next_is_settings=1 ;;
+        esac
+        k=$((k + 1))
+    done
+    [ "$has_check" = 1 ] && [ "$has_script" = 1 ] && [ -n "$settings_path" ] || return 1
+    has_traversal_dots "$cmd_lc" && return 1
+    [[ "$settings_path" =~ $wt_re ]]
+}
+
 input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
@@ -1459,36 +1545,10 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # the lowercased text.
     cmd_lc=$(printf '%s' "$cmd_n" | tr '[:upper:]' '[:lower:]')
 
-    # A word-boundary requirement (HIMMEL-3761): a filename that merely ENDS
-    # in "settings.json" (a per-leg launch artifact like `foo.leg-settings.json`,
-    # or a scratchpad file) is not settings.json itself — the char immediately
-    # before "settings" must not be a filename character, or this is matching
-    # inside a longer basename. `settings.local.json` is checked the same way
-    # under the same prefix. This only narrows rule 1's raw-text trigger; it
-    # does not touch check_target()'s own basename check (already exact) or
-    # the ANSI-C paranoia below (deliberately a bare substring, HIMMEL-3468).
     mentions_settings=0
-    settings_boundary_re='(^|[^a-z0-9_.-])settings\.(json|local\.json)($|[^a-z0-9_.-])'
-    if [[ "$cmd_lc" =~ $settings_boundary_re ]]; then
-        mentions_settings=1
-    fi
-
-    # A file-manipulating verb (cat/head/tail/grep/diff/wc/jq/rg/less/sed, or
-    # the write-verb list) is already reads-or-writes-shaped by design — its
-    # trailing operand IS a path, never inert text like printf's format-string
-    # data, so the boundary requirement above must not exempt a *.leg-settings.json
-    # suffix there (HIMMEL-3761: a genuine `sed -i` write-in-place onto such a
-    # path must still fail closed, test 123). Restrict the boundary narrowing to
-    # commands with NO such verb at all — printf/echo/node/jira, the ticket's
-    # own mention-only shapes, never carry one.
-    if [ "$mentions_settings" = "0" ]; then
-        file_verb_re='(^|[^a-z0-9_])(cat|head|tail|grep|diff|wc|jq|rg|less|sed|cp|mv|install|rsync|ln|dd|tee|g?tar|bsdtar|unzip|checkout|restore)([^a-z0-9_]|$)'
-        if [[ "$cmd_lc" =~ $file_verb_re ]]; then
-            case "$cmd_lc" in
-                *settings.json*|*settings.local.json*) mentions_settings=1 ;;
-            esac
-        fi
-    fi
+    case "$cmd_lc" in
+        *settings.json*|*settings.local.json*) mentions_settings=1 ;;
+    esac
 
     # ANSI-C quoting (`$'\x2e\x2e'`, `settings$'\x2e'json`) spells any byte,
     # so the text above cannot say what it names. Not decoded: a `$'` beside
@@ -1537,20 +1597,6 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     _check_write_operand() {
         local w="$1" resolved wabs wparent wleaf result
         [ -n "$w" ] || return 0
-        # write_operand_settings_mention (HIMMEL-3761): a broad, unbounded
-        # substring match (unlike settings_word_live's exact-leaf filter
-        # below) — a write-verb operand merely SUFFIXED with settings.json
-        # (e.g. a *.leg-settings.json scratchpad file under a write verb like
-        # sed -i) stays fail-closed even though it is not itself a live
-        # settings file: this is a write position, and the ticket's fix is
-        # for MENTIONS outside write position (a read, or unrelated text),
-        # never for an actual write landing on a settings.json-suffixed
-        # path. Keeps test 123's sed-i control denying without widening
-        # _check_write_operand's own exact-leaf resolution below.
-        case "$w" in
-            *[sS][eE][tT][tT][iI][nN][gG][sS].[jJ][sS][oO][nN]*) write_operand_settings_mention=1 ;;
-            *[sS][eE][tT][tT][iI][nN][gG][sS].[lL][oO][cC][aA][lL].[jJ][sS][oO][nN]*) write_operand_settings_mention=1 ;;
-        esac
         if [ -n "$nested_wt_primary" ]; then
             case "$w" in
                 *..*)
@@ -1613,42 +1659,34 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     }
     dirdest_climb=0
     symlink_dest=0
-    write_operand_settings_mention=0
-    # HIMMEL-3761 (judge J1381A F2): a redirect TARGET word (ST_RO[i] set) is
-    # a write operand whatever write_verb says — `echo`/`printf`/`:` are not
-    # write verbs, but `echo x > <live settings>` still writes. Judge every
-    # ST_RO-marked word unconditionally; a non-redirect word is still gated on
-    # write_verb, same as before. TOK=0 (PowerShell, or a Bash command the
-    # tokenizer could not vouch for) has no per-word redirect marking, so its
-    # fallback stays write_verb-gated, the same documented ceiling as before.
-    if [ "$TOK" = 1 ]; then
-        widx=0
-        while [ "$widx" -lt "$ST_N" ]; do
-            if [ "$write_verb" = 1 ] || [ -n "${ST_RO[widx]}" ]; then
+    if [ "$write_verb" = 1 ]; then
+        if [ "$TOK" = 1 ]; then
+            widx=0
+            while [ "$widx" -lt "$ST_N" ]; do
                 _check_write_operand "${ST_W[widx]}"
-            fi
-            widx=$((widx + 1))
-        done
-    elif [ "$write_verb" = 1 ]; then
-        # CodeRabbit (HIMMEL-3686): unquoted `for w in $cmd_n` is subject
-        # to pathname expansion against the HOOK PROCESS's own real cwd —
-        # unrelated to the command's cwd — so a glob-containing operand
-        # could reach _check_write_operand as an unrelated expanded path
-        # instead of its literal text. `set -f` for exactly this loop
-        # keeps the fallback textual, restoring the prior noglob state
-        # after (mirrors lex_resolve's own set -f/set +f bracket).
-        case $- in
-            *f*) _had_noglob=1 ;;
-            *) _had_noglob=0 ;;
-        esac
-        set -f
-        for w in $cmd_n; do
-            _check_write_operand "$w"
-        done
-        if [ "$_had_noglob" = 1 ]; then
-            set -f
+                widx=$((widx + 1))
+            done
         else
-            set +f
+            # CodeRabbit (HIMMEL-3686): unquoted `for w in $cmd_n` is subject
+            # to pathname expansion against the HOOK PROCESS's own real cwd —
+            # unrelated to the command's cwd — so a glob-containing operand
+            # could reach _check_write_operand as an unrelated expanded path
+            # instead of its literal text. `set -f` for exactly this loop
+            # keeps the fallback textual, restoring the prior noglob state
+            # after (mirrors lex_resolve's own set -f/set +f bracket).
+            case $- in
+                *f*) _had_noglob=1 ;;
+                *) _had_noglob=0 ;;
+            esac
+            set -f
+            for w in $cmd_n; do
+                _check_write_operand "$w"
+            done
+            if [ "$_had_noglob" = 1 ]; then
+                set -f
+            else
+                set +f
+            fi
         fi
     fi
 
@@ -1663,119 +1701,14 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     fi
 
     if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ] && [ "$dirdest_climb" = "0" ] \
-        && [ "$symlink_dest" = "0" ] && [ "$brace_dir_dest" = "0" ] \
-        && [ "$write_operand_settings_mention" = "0" ]; then
+        && [ "$symlink_dest" = "0" ] && [ "$brace_dir_dest" = "0" ]; then
         exit 0
     fi
 
     resolve_repo_context
 
-    # settings_word_live (HIMMEL-3761): -1 = no settings-leaf word resolved,
-    # 0 = every resolved word is check_target()'s "allow" (a worktree's own
-    # copy, named absolute or worktree-relative), 1 = at least one resolved
-    # word is check_target()'s "deny" (genuinely live). This reuses the same
-    # write-target resolver _check_write_operand already calls, but runs
-    # regardless of write_verb — a `--settings <path>` flag value is never a
-    # write operand, yet still names a real file to judge by its target, not
-    # by is_primary_cwd. Same existence gate as _check_write_operand (only a
-    # word whose leaf is an exact settings filename AND already exists, or
-    # whose parent already exists, is resolved): a sentence-shaped quoted
-    # argument that merely ENDS in ".claude/settings.json" (row 13) never
-    # exists as a real path, so it is left at -1 and falls through to the
-    # existing raw-text heuristics below, unchanged. Only fires when the
-    # tokenizer vouched for the command (TOK=1, so never a heredoc or
-    # ANSI-C word — those already force TOK=0).
-    settings_word_live=-1
-    # settings_word_unmatched (HIMMEL-3761, codex-1): a word that MENTIONS a
-    # settings filename as a substring but whose own leaf is not an exact
-    # match (a node -e/python -c script body embedding a live path inside a
-    # larger string, e.g. `require('fs').writeFileSync('/primary/.claude/
-    # settings.json', ...)`) is never resolved by _check_settings_word below —
-    # it hits the `*) return` leaf-mismatch branch untouched. Without this
-    # flag, a SEPARATE benign settings-leaf word elsewhere in the same command
-    # (a decoy --settings <worktree-copy> operand) sets settings_word_live=0,
-    # which would wrongly vouch for the whole command and suppress both the
-    # primary_cwd force and the raw-text fallback below, even though this
-    # word's own live write was never actually judged. Only a word that
-    # cleanly resolves via check_target() may ever set settings_word_live;
-    # any word that merely mentions the filename without resolving keeps the
-    # command fail-closed regardless of what other words resolved to.
-    settings_word_unmatched=0
-    if [ "$mentions_settings" = "1" ] && [ "$TOK" = "1" ]; then
-        _check_settings_word() {
-            local w="$1" wabs wparent wleaf result
-            [ -n "$w" ] || return
-            case "$w" in
-                /*|[A-Za-z]:/*|[A-Za-z]:\\*) wabs="$w" ;;
-                *) wabs="$cwd/$w" ;;
-            esac
-            wleaf="${wabs##*/}"
-            case "$wleaf" in
-                [sS][eE][tT][tT][iI][nN][gG][sS].[jJ][sS][oO][nN]) : ;;
-                [sS][eE][tT][tT][iI][nN][gG][sS].[lL][oO][cC][aA][lL].[jJ][sS][oO][nN]) : ;;
-                *)
-                    case "$w" in
-                        *[sS][eE][tT][tT][iI][nN][gG][sS].[jJ][sS][oO][nN]*) settings_word_unmatched=1 ;;
-                        *[sS][eE][tT][tT][iI][nN][gG][sS].[lL][oO][cC][aA][lL].[jJ][sS][oO][nN]*) settings_word_unmatched=1 ;;
-                    esac
-                    return
-                    ;;
-            esac
-            if [ -e "$wabs" ] || [ -L "$wabs" ]; then
-                : # fall through to check_target below
-            else
-                wparent="${wabs%/*}"
-                [ -n "$wparent" ] || wparent="/"
-                # HIMMEL-3761 (judge J1381A F1): an exact settings-leaf word
-                # whose parent does not exist under $cwd is UNRESOLVED, not
-                # absent — an unexpanded `~/...`/`$HOME/...` word, or an
-                # `x=.claude/settings.json` assignment word, both land here
-                # (their leaf matches exactly, but "$cwd/~/..."/"$cwd/x=..."
-                # never exists on disk). check_target() is never called, so
-                # this word can never vouch check_target()'s "allow" for a
-                # benign worktree copy — it also must never be silently
-                # dropped, or a genuinely live target hiding behind one of
-                # these unresolvable shapes escapes judgment entirely while a
-                # SEPARATE, resolved worktree-copy word in the same command
-                # sets settings_word_live=0 and wrongly vouches for the whole
-                # command. Fail closed the same way an unmatched-leaf word
-                # already does.
-                if [ ! -e "$wparent" ]; then
-                    settings_word_unmatched=1
-                    return
-                fi
-            fi
-            result=$(check_target "$w")
-            case "$result" in
-                deny\ *) settings_word_live=1 ;;
-                allow) [ "$settings_word_live" = 1 ] || settings_word_live=0 ;;
-            esac
-        }
-        settings_widx=0
-        while [ "$settings_widx" -lt "$ST_N" ]; do
-            _check_settings_word "${ST_W[settings_widx]}" || true
-            settings_widx=$((settings_widx + 1))
-        done
-    fi
-
-    # is_primary_cwd forces live=1 unconditionally on its own (the whole cwd
-    # is the primary checkout), which is right for a write but wrong for a
-    # command that only ever NAMES a settings-shaped word that resolves,
-    # via the same git-dir/git-common-dir check check_target() always uses,
-    # to a linked worktree's own copy — the worktree-copy-by-absolute-path
-    # and worktree-relative-from-primary-cwd shapes (HIMMEL-3761). Only
-    # is_primary_cwd is suppressed here: dir_dest (rule 2) and every other
-    # independent live signal below (ansi_c, dirdest_climb, symlink_dest,
-    # brace_dir_dest, changes_directory, has_traversal_dots) are untouched,
-    # so a command that ALSO does something else live-shaped still denies.
-    primary_cwd_forces_live=$is_primary_cwd
-    if [ "$is_primary_cwd" = "1" ] && [ "$dir_dest" = "0" ] && [ "$settings_word_live" = "0" ] \
-        && [ "$write_operand_settings_mention" = "0" ] && [ "$settings_word_unmatched" = "0" ]; then
-        primary_cwd_forces_live=0
-    fi
-
     live=0
-    if [ "$primary_cwd_forces_live" = "1" ] || [ "$ansi_c" = "1" ] || [ "$dirdest_climb" = "1" ] \
+    if [ "$is_primary_cwd" = "1" ] || [ "$ansi_c" = "1" ] || [ "$dirdest_climb" = "1" ] \
         || [ "$symlink_dest" = "1" ] || [ "$brace_dir_dest" = "1" ]; then
         live=1
     elif changes_directory "$cmd_lc" "$cmd_n"; then
@@ -1796,20 +1729,9 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             # (HIMMEL-3675).
             live=1
         fi
-        # settings_word_live = 0 means a settings-leaf word actually resolved,
-        # via check_target(), to a non-live path — that ground truth takes
-        # precedence over the raw-text heuristics below (HIMMEL-3761), which
-        # would otherwise re-flag it live merely because the primary's own
-        # root is a textual prefix of the worktree's container path.
-        if [ "$live" = "0" ] \
-            && { [ "$settings_word_live" != "0" ] || [ "$write_operand_settings_mention" = "1" ] \
-                || [ "$settings_word_unmatched" = "1" ]; } \
-            && mentions_primary_or_home "$cmd_lc"; then
+        if [ "$live" = "0" ] && mentions_primary_or_home "$cmd_lc"; then
             live=1
-        elif [ "$live" = "0" ] \
-            && { [ "$settings_word_live" != "0" ] || [ "$write_operand_settings_mention" = "1" ] \
-                || [ "$settings_word_unmatched" = "1" ]; } \
-            && [ -z "$primary_root_lc" ]; then
+        elif [ "$live" = "0" ] && [ -z "$primary_root_lc" ]; then
             # No repo upward from cwd (or it did not resolve): there is no
             # worktree to exempt, and a relative mention resolves to whatever
             # sits under cwd — `$HOME/.claude/settings.json` when cwd is
@@ -1825,6 +1747,8 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     if [ "$mentions_settings" = "1" ]; then
         if [ "$TOK" = 1 ]; then
             _tok_readonly_ok && exit 0
+            _himmel_3761_mention_only_ok && exit 0
+            _himmel_3761_worktree_settings_check_ok && exit 0
         elif is_readonly_allowlisted "$cmd_lc"; then
             exit 0
         fi
