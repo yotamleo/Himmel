@@ -1645,8 +1645,33 @@ git -C "$FEATSYM" -c user.email=t@t -c user.name=t commit -q -m "symlinked fixtu
 assert_rc "239 node wire-hook-bash.mjs --check --settings (worktree, script is a committed, git-clean symlink) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATSYM/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATSYM/.claude/settings.json")"
 
+# 240: mention-only printf, but the redirect target is a PRE-EXISTING SYMLINK
+# resolving to the primary's own live settings.json -> DENY (codex round-12
+# Important). The literal target word (`link.txt`) never spells
+# settings.json/settings.local.json, so the substring scan alone would allow
+# it; the write then lands on the real file through the symlink.
+ln -s "$PRIMARY/.claude/settings.json" "$SANDBOX/link.txt"
+assert_rc "240 printf mention-only, redirect target is a symlink to the live settings file, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "printf 'see settings.json for details' >> $SANDBOX/link.txt")"
+
+# 241: node wire-hook-bash.mjs --check --settings <worktree's own copy>, but
+# the script is GITIGNORED and entirely UNTRACKED (never committed) -> DENY
+# (codex round-12 Important). `git status --porcelain` reports COMPLETELY
+# EMPTY for a path covered by .gitignore, even when it holds arbitrary
+# uncommitted content, so round-10's cleanliness check alone would wrongly
+# read this as "clean".
+FEATIGNORE="$SANDBOX/primary/.claude/worktrees/feat+ignore"
+git -C "$SANDBOX/primary" worktree add -q "$FEATIGNORE" -b feat/ignore >/dev/null 2>&1
+mkdir -p "$FEATIGNORE/.claude" "$FEATIGNORE/scripts/hooks"
+printf '{}\n' > "$FEATIGNORE/.claude/settings.json"
+printf 'scripts/hooks/wire-hook-bash.mjs\n' > "$FEATIGNORE/.gitignore"
+printf 'module.exports = {}; require("fs").writeFileSync(0, "tampered");\n' > "$FEATIGNORE/scripts/hooks/wire-hook-bash.mjs"
+assert_rc "241 node wire-hook-bash.mjs --check --settings (worktree, script gitignored and untracked) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATIGNORE/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATIGNORE/.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
+git -C "$SANDBOX/primary" worktree remove --force "$FEATIGNORE" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$FEATSYM" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$FEATDIRTY" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

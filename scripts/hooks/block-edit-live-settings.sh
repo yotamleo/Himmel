@@ -1432,8 +1432,18 @@ _tok_single_segment_ok() {
 # ST_X/ST_G are set by the tokenizer whenever a word's actual value is not
 # fully known from its text alone, so any such target is ambiguous and
 # falls through to main's deny, the same as an unresolvable substring.
+#
+# A redirect target that is itself an existing SYMLINK is rejected outright
+# too (codex round-12 Important): the substring scan only judges the
+# target's own SPELLING, never its DESTINATION, so `echo hi > notes.txt`
+# sails through even when `notes.txt` is a pre-existing symlink resolving to
+# a live settings.json — the write then lands on the real file through the
+# symlink. This function only ever proves the command is SAFE (never proves
+# it unsafe on its own), so it cannot resolve where a symlink points either;
+# the same closed-allow-list posture as an ST_X/ST_G target applies: an
+# existing symlink target is ambiguous and falls through to main's deny.
 _himmel_3761_mention_only_ok() {
-    local k=0 w lw
+    local k=0 w lw wabs
     _tok_single_segment_ok || return 1
     case "${ST_LW[0]}" in
         echo|printf) ;;
@@ -1447,6 +1457,11 @@ _himmel_3761_mention_only_ok() {
             case "$lw" in
                 *settings.json*|*settings.local.json*) return 1 ;;
             esac
+            case "$w" in
+                /*|[A-Za-z]:/*|[A-Za-z]:\\*) wabs="$w" ;;
+                *) wabs="$cwd/$w" ;;
+            esac
+            [ ! -L "$wabs" ] || return 1
         fi
         k=$((k + 1))
     done
@@ -1589,6 +1604,14 @@ _himmel_3761_worktree_settings_check_ok() {
     # closed allow-list, and a symlinked script is never a shape the
     # ticket's read-only probe needs.
     [ ! -L "$wt_root/scripts/hooks/wire-hook-bash.mjs" ] || return 1
+    # `git status --porcelain` reports COMPLETELY EMPTY for a path git is
+    # told to ignore, even when that path is entirely untracked and holds
+    # arbitrary attacker content (codex round-12 Important) — a
+    # `.gitignore` rule covering this script would make the check below
+    # wrongly read it as "clean". Require the file be genuinely TRACKED
+    # first: `ls-files --error-unmatch` fails for any path git does not
+    # know about, gitignored or simply never added.
+    git -C "$wt_root" ls-files --error-unmatch -- scripts/hooks/wire-hook-bash.mjs >/dev/null 2>&1 || return 1
     local script_git_status
     script_git_status=$(git -C "$wt_root" status --porcelain -- scripts/hooks/wire-hook-bash.mjs 2>/dev/null) || return 1
     [ -z "$script_git_status" ] || return 1
