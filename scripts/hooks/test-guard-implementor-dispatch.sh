@@ -390,6 +390,15 @@ assert_rc "'then write code for B' is governed -- not a report-type object" 2 "$
 RC94=$(run_hook write-summary-and-edit "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write the summary and edit the config.')")
 assert_rc "'write the summary AND edit Y' is governed -- the edit half still trips followed_by_action" 2 "$RC94"
 
+# codex (PR #1388 round 2): a first-match-only extraction missed a SECOND
+# then/and-write occurrence, and a clause boundary cut at a literal "."
+# hid a file extension right after the report noun.
+RC95=$(run_hook write-report-and-write-code "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write a report and write code for the fix.')")
+assert_rc "'write a report AND write code' is governed -- the second write is a real action" 2 "$RC95"
+
+RC96=$(run_hook write-report-dot-extension "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write a report.md.')")
+assert_rc "'then write a report.md' is governed -- the extension is a file write, not prose" 2 "$RC96"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 

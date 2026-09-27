@@ -223,11 +223,32 @@ fi
 # A report-type object is safe ONLY when nothing path-like follows it in
 # the same clause -- a slash, a file extension, or "to <path>"/"into
 # <file>" all mean a file write, not a written summary.
+#
+# codex (PR #1388 round 2): a single first-match extraction missed a SECOND
+# then/and-write occurrence later in the same text ("write a report and
+# write code"), and its clause-boundary cut at a literal "." hid a file
+# extension right after the noun ("write a report.md"). Fixed by scanning
+# EVERY then/and-write occurrence independently, over a fixed-width
+# character window that a "." never terminates -- so an attached extension
+# stays visible to the path-like check, and a second write/edit/etc.
+# transition inside that window is itself a danger signal.
 if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)write([^[:alnum:]_]|$)'; then
-    write_clause=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | grep -Eo '(then|and)[[:space:][:punct:]]+write[^.;]*' | head -1)
-    if grepq "$write_clause" -Eq '^(then|and)[[:space:][:punct:]]+write[[:space:]]+(a[[:space:]]+|the[[:space:]]+)?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)' && ! grepq "$write_clause" -Eq '/|\.[a-z0-9]{1,5}([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]'; then
-        :
-    else
+    write_windows=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | grep -Eo '(then|and)[[:space:][:punct:]]+write.{0,60}')
+    write_safe=1
+    while IFS= read -r write_window; do
+        if [ -z "$write_window" ]; then
+            continue
+        fi
+        write_tail=$(printf '%s' "$write_window" | sed -E 's/^(then|and)[[:space:][:punct:]]+write//')
+        if grepq "$write_tail" -Eq '^[[:space:]]+(a[[:space:]]+|the[[:space:]]+)?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)' && ! grepq "$write_tail" -Eq '/|\.[a-z0-9]{1,5}([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]|(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
+            :
+        else
+            write_safe=0
+        fi
+    done <<WRITE_WINDOWS
+$write_windows
+WRITE_WINDOWS
+    if [ "$write_safe" != "1" ]; then
         followed_by_action=1
     fi
 fi
