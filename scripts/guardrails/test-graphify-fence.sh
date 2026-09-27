@@ -2710,6 +2710,55 @@ X26_CMD=$(printf 'env -C\t$(cd ..; echo %s) graphify update notes/patient.md --b
 run_fence deny no "$HIMMEL" "env -C (tab) \$(...; separator inside) -> deny (X26)" \
     "$X26_CMD"
 
+# (X27) J1323C F1: a per-span lookback rebuild-plus-word-split cost, stacked
+# in front of an unrelated quadratic elsewhere in this file, crosses the
+# hook's 15s timeout on a large-enough routed command (a flood of `''` pairs
+# combined with a deeply nested heredoc) - and a timed-out --optional hook
+# fails OPEN. The fence's fail-closed size cap must reject an oversized
+# command outright, before any scan runs, well inside the 15s budget.
+# Sized well over the 32768-byte cap but under Linux's MAX_ARG_STRLEN
+# (131072 bytes, the hard per-argv-element ceiling) so this shape can
+# actually be passed to bash as a single argument at all.
+X27_PAIRS=40000
+X27_FLOOD=$(head -c "$((X27_PAIRS * 2))" /dev/zero | tr '\0' "'")
+X27_PARENS=$(head -c 20000 /dev/zero | tr '\0' '(')
+# shellcheck disable=SC2016 # single-quoted printf format string: the
+# literal $(...) text is the payload under test, not a real expansion
+X27_CMD=$(printf 'echo %s\ncat > notes.txt <<%s\n$%s\nEOF\nenv -C %s graphify update notes/patient.md --backend glm' \
+    "$X27_FLOOD" "'EOF'" "$X27_PARENS" "$SALUS")
+start_ns=$(date +%s%N)
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X27_CMD" 2>&1 ); rc=$?
+end_ns=$(date +%s%N)
+elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+if [ "$elapsed_ms" -lt 5000 ] && [ "$rc" -eq 2 ]; then
+    pass "combo2-shaped flood+nested-heredoc denies in ${elapsed_ms}ms via the size cap, well under the 15s hook timeout (X27)"
+else
+    fail "combo2-shaped flood+nested-heredoc rc=$rc in ${elapsed_ms}ms (want rc=2, <5000ms) (X27)"
+fi
+
+# (X28) NEGATIVE control for X27: an ordinary graphify command safely under
+# the size cap must still ALLOW (or DENY on its own merits, never on size
+# alone) - the cap must not be so tight it false-denies real usage.
+run_fence allow no "$HIMMEL" "ordinary graphify command well under the size cap -> allow (X28)" \
+    "graphify update notes/patient.md --backend glm"
+
+# (X29-X33) J1323C F2: \`-C*|-D*|--chdir=*\` matches a bare -C/-D but not a
+# bare --chdir (no trailing '='), so \`env --chdir \$(...)\` / \`sudo --chdir
+# \$(...)\` - the flag as its own word, immediately before the substitution -
+# fails to be recognized as a chdir argument and the hidden separator inside
+# goes undetected, even though a prior head correctly denied this shape.
+run_fence deny no "$HIMMEL" "env --chdir \$(...; separator inside), bare --chdir word -> deny (X29)" \
+    "env --chdir \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env --chdir (two spaces) \$(...; separator inside) -> deny (X30)" \
+    "env --chdir  \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env --chdir \"\$(...; separator inside)\", dq-wrapped -> deny (X31)" \
+    "env --chdir \"\$(cd ..; echo $SALUS)\" graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env --chdir \`...; separator inside\`, backtick form -> deny (X32)" \
+    "env --chdir \`cd ..; echo $SALUS\` graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "sudo --chdir \$(...; separator inside), bare --chdir word -> deny (X33)" \
+    "sudo --chdir \$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0

@@ -379,6 +379,24 @@ deny() { # <reason>
     exit 2
 }
 
+# HIMMEL-3683 (J1323C F1): every depth-0 quote/substitution span later scanned
+# by _gf_deny_on_hidden_clause_separator costs a fixed ~char-count-of-CMD
+# amount of work (a bounded lookback rebuild + word-split per span), so a
+# command padded with many small spans (e.g. a flood of `''` pairs) costs
+# roughly linear time in len(CMD) - and stacked in front of an unrelated
+# quadratic cost elsewhere in this file, it crosses the hook's 15s timeout,
+# which fails OPEN (run-hook-with-bash.js fails a timed-out --optional hook
+# open). Deny oversized input before any scan runs at all, rather than
+# tighten the scan's own per-span cost again - this is the fence's FIRST
+# check on CMD, ahead of every other predicate in this file.
+# ponytail: a legitimate graphify command over 32768 bytes false-denies here;
+# upgrade path is HIMMEL-3731's incremental last-two-words tracking, which
+# would make the scan itself O(1) per span instead of bounding total input.
+_GF_MAX_CMD_BYTES=32768
+if [ "${#CMD}" -gt "$_GF_MAX_CMD_BYTES" ]; then
+    deny "routed command is ${#CMD} bytes, over the ${_GF_MAX_CMD_BYTES}-byte fence cap (fail-closed, HIMMEL-3683/J1323C F1 - a command this size cannot be scanned within the hook timeout)"
+fi
+
 # HIMMEL-1776 (fence parity by extraction): file-readability and endpoint-host
 # predicates shared with scripts/graphify/refresh-graph-map.sh, the scheduled
 # path this interactive fence never runs on. ONE implementation instead of two
@@ -2437,7 +2455,7 @@ _gf_deny_on_hidden_clause_separator() {
                 lb_prev="${!lb_previx}"
             fi
             case "$lb_last" in
-                -C*|-D*|--chdir=*) span_chdir=1 ;;
+                -C*|-D*|--chdir|--chdir=*) span_chdir=1 ;;
                 *)
                     case "$lb_prev" in
                         -C|-D|--chdir) span_chdir=1 ;;
