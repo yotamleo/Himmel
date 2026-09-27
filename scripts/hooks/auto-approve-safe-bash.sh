@@ -1218,10 +1218,20 @@ fold_backslash_newline() {
             done
             if [ "${s:$j:1}" = $'\n' ] && [ $((run % 2)) -eq 1 ]; then
                 # An odd run of N backslashes folds in real shell parsing as
-                # (N-1)/2 escaped-pair literal backslashes, then the final
-                # lone backslash+newline is the continuation that disappears.
+                # the final lone backslash+newline being the continuation
+                # that disappears, leaving the other (N-1, always even)
+                # backslashes RAW rather than pre-collapsed to (N-1)/2
+                # literal backslash bytes here. Pre-collapsing them handed
+                # scan_cmd's own backslash-escape walk a single
+                # already-resolved backslash byte indistinguishable from a
+                # fresh, still-escaping one, so it swallowed the next real
+                # character (e.g. a `;` separator) as if it were escaped
+                # when it was not (HIMMEL-3750 round 5, codex-1). Left raw,
+                # scan_cmd re-derives the same even pairing bash does on its
+                # own and correctly leaves the following character
+                # unescaped.
                 k=0
-                while [ "$k" -lt $(((run - 1) / 2)) ]; do
+                while [ "$k" -lt "$((run - 1))" ]; do
                     out="$out\\"
                     k=$((k + 1))
                 done

@@ -899,6 +899,19 @@ assert "double escaped-backslash-newline stays PASS (finding 1d)" PASS "$(decide
 # Control: a genuine (odd, single) backslash-newline continuation of an
 # otherwise benign command must still fold and stay ALLOW.
 assert "genuine single-backslash continuation still ALLOW" ALLOW "$(decide "$(j_bash "echo a \\"$'\n'"b")")"
+# codex-1 (round 5): an ODD run of 3+ backslashes before the newline still
+# has a genuine (single) continuation, but the code used to pre-COLLAPSE the
+# other (N-1, always even) backslashes down to (N-1)/2 literal backslash
+# BYTES before scan_cmd ever saw them. scan_cmd's own backslash-escape walk
+# then treated that single residual backslash as a FRESH, still-escaping
+# byte and swallowed the very next character — here a real `;` separator —
+# as if it were escaped, hiding a second real command inside what looked
+# like one approved `echo` line. VERIFIED (real bash): `echo hi\\\`+NL+
+# `; touch PWN` runs `touch PWN` as its own command. Left raw (this fix),
+# scan_cmd's own char-by-char escape rule re-derives the same even pairing
+# and correctly leaves the `;` unescaped, so this must stay PASS (fall
+# through), not get folded into a single approved segment.
+assert "odd(3) backslash-newline leaves real separator visible (codex-1)" PASS "$(decide "$(j_bash "echo hi\\\\\\"$'\n'"; touch PWN")")"
 # Controls: common benign expansions must keep ALLOWing.
 assert "echo \${HOME} still ALLOW"     ALLOW "$(decide "$(j_bash 'echo "${HOME}"')")"
 assert "echo \$PWD still ALLOW"        ALLOW "$(decide "$(j_bash 'echo "$PWD"')")"
