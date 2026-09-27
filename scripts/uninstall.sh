@@ -3931,9 +3931,24 @@ $_prov_handled_keys
       else
         while IFS= read -r _pu; do
           [ -n "$_pu" ] || continue
+          # HIMMEL-3637 R5-codex1: a genuinely unparsable row must not look
+          # like "row has no path"/"row has no backup" -- both silently fell
+          # into the same `|| continue` as a legitimate skip. Validate JSON
+          # parseability up front so that failure is unresolvable, not safe.
+          if ! printf '%s' "$_pu" | jq -e '.
+# HIMMEL-3637-pu-json' >/dev/null 2>&1; then
+            _prov_unrestored="${_prov_unrestored}(unparsable provenance row)"$'\n'
+            continue
+          fi
           _pu_path="$(printf '%s' "$_pu" | jq -r '.path // empty')"
           [ -n "$_pu_path" ] || continue
-          printf '%s' "$_pu" | jq -e '.eff_pre.backup // empty' >/dev/null 2>&1 || continue
+          # `.eff_pre.backup?` (not `.eff_pre.backup`) -- some legitimate
+          # rows carry a non-object eff_pre (e.g. `false`), which a bare
+          # `.eff_pre.backup` errors on (a jq type error, not "no backup");
+          # `?` makes that case resolve to "no backup" like any other absent
+          # field, so `|| continue` here can only mean a genuine no-backup
+          # row now that the row is already known to be valid JSON above.
+          printf '%s' "$_pu" | jq -e '.eff_pre.backup? // empty' >/dev/null 2>&1 || continue
           _pu_unit="$(printf '%s' "$_pu" | jq -r '.unit // ""')"
           _pu_key="$(jq -cn --arg p "$_pu_path" --arg u "$_pu_unit" '[$p,$u]')"
           case "$_prov_handled_keys" in *"

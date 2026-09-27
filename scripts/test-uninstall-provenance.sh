@@ -169,6 +169,11 @@ if [ "\${RED53_FORCE_JQ_FAIL:-}" = "1" ]; then
         prev="\$a"
     done
 fi
+if [ "\${RED54_FORCE_JQ_FAIL:-}" = "1" ]; then
+    for a in "\$@"; do
+        case "\$a" in *HIMMEL-3637-pu-json*) exit 5 ;; esac
+    done
+fi
 exec "$REAL_JQ" "\$@"
 JQ_STUB_EOF
 chmod 755 "$FAKE_JQ"
@@ -1719,6 +1724,45 @@ BACKUPS53_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/de
 REFUSED53=$([ "$rc53" -ne 0 ] && echo yes || echo no)
 check "RED53: --purge-state refuses (non-zero) when prov_read_units itself fails" "$REFUSED53" "yes"
 check "RED53: refusing means deleting nothing — the backup survives" "$BACKUPS53_AFTER" "$BACKUPS53_BEFORE"
+
+echo "==== RED54 (HIMMEL-3637 R5-codex1): --purge-state must refuse when a per-row jq check itself fails, not treat the row as backup-less ===="
+# Round-5 critic finding: the purge-time scan's per-row backup check
+# ('jq -e .eff_pre.backup // empty || continue') could not tell "this row
+# genuinely has no backup" from "jq itself failed reading this row" (a
+# malformed provenance-ledger line) -- both fell into the same
+# `|| continue`. Fixed by validating each row's JSON parseability up front
+# (tagged `# HIMMEL-3637-pu-json` so this shim can target only that check,
+# not prov_read_units' own fold query or any unrelated `jq -e .` validity
+# check elsewhere in uninstall.sh's unwire helpers) and by adding `?` to
+# the backup-check filter itself, so a legitimate non-object eff_pre (e.g.
+# `false`) can no longer produce a jq type-error exit that looked
+# identical to a hard failure. RED54 forces the JSON-parseability check to
+# fail via the RED54_FORCE_JQ_FAIL shim above, on a row that DOES have a
+# genuine, unrestored backup. The scan must fail closed exactly as if it
+# had read the real unrestored unit, not silently skip it as unparsable.
+new_case red54
+PROJDIR54="$CASE_DIR/project"
+mkdir -p "$PROJDIR54/scripts"
+DEST54="$PROJDIR54/scripts/clean.sh"
+printf '#!/bin/sh\necho original-user-script\n' > "$DEST54"
+SNAP54=$(mktemp "$SUITE_TMP/SNAP54.XXXXXX") || exit 1
+cp -p "$DEST54" "$SNAP54"
+printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST54"
+( prov_begin --writer adopt.sh -- seed-red54 >/dev/null
+  prov_record replace file "$DEST54" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP54" --backup --post-file "$DEST54" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP54"
+BACKUPS54_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+check "RED54: setup actually created a backup (control is not vacuous)" "$([ "$BACKUPS54_BEFORE" -gt 0 ] && echo yes || echo no)" "yes"
+export RED54_FORCE_JQ_FAIL=1
+run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings --purge-state >/dev/null
+rc54=$?
+unset RED54_FORCE_JQ_FAIL
+BACKUPS54_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+REFUSED54=$([ "$rc54" -ne 0 ] && echo yes || echo no)
+check "RED54: --purge-state refuses (non-zero) when the per-row backup check itself fails" "$REFUSED54" "yes"
+check "RED54: refusing means deleting nothing — the backup survives" "$BACKUPS54_AFTER" "$BACKUPS54_BEFORE"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
