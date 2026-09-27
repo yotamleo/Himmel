@@ -1572,6 +1572,7 @@ assert_rc "233 node <fake worktree script> --check --settings <fake worktree set
 # to a live settings path, so the redirect target must be rejected whenever
 # it carries any live expansion at all, not scanned for a literal substring
 # (codex round-8 Critical).
+# shellcheck disable=SC2016 # $TARGET is fixture COMMAND TEXT, never expanded here
 assert_rc "234 printf mentioning settings.json, redirect to a variable target, denies" 2 \
     "$(bash_rc_of "$PRIMARY" 'printf "see settings.json for details" > "$TARGET"')"
 
