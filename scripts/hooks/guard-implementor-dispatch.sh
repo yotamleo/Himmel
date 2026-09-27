@@ -233,7 +233,13 @@ if grepq "$text" -Eqi 'do[[:space:]]+not[[:space:]]+edit|analysis[[:space:]]+onl
     read_only_declared=1
 fi
 
-[ "$implementation" = "1" ] || [ "$operational_context" = "1" ] || exit 0
+# HIMMEL-1534: followed_by_action must be consulted here too -- a
+# "research X, then edit Y" dispatch has research=1, implementation=0
+# (bare-verb regex doesn't cover edit/modify/write/commit), operational_context=0,
+# but followed_by_action=1 (the "then edit" action transition), and the old
+# two-disjunct gate exited 0 before that signal was ever read, bypassing lane
+# routing and the HIMMEL-920 bank guard.
+[ "$implementation" = "1" ] || [ "$operational_context" = "1" ] || [ "$followed_by_action" = "1" ] || exit 0
 if [ "$research" = "1" ] && [ "$implementation" = "0" ] && [ "$followed_by_action" = "0" ] && [ "$operational_context" = "0" ]; then
     exit 0
 fi

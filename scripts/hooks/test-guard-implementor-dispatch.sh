@@ -318,6 +318,51 @@ RC4D=$(run_hook pure-research "$REG_CLAUDEX" "$(payload general-purpose sonnet '
 assert_rc "pure lane-router research remains allowed" 0 "$RC4D"
 assert_empty "pure lane-router research remains silent" "$(combined_output pure-research)"
 
+# HIMMEL-1534: the first gate used to exit 0 on
+# [implementation=1] || [operational_context=1] before followed_by_action was
+# ever consulted. "research the parser, then edit the file" sets research=1
+# (word "research"), followed_by_action=1 ("then edit"), but implementation=0
+# ("edit" is not in the bare-verb set implement|fix|land) and
+# operational_context=0 -- so the OLD first gate exited 0 straight through,
+# bypassing lane routing and the HIMMEL-920 bank guard. followed_by_action
+# must now be a third disjunct in that gate.
+RC81=$(run_hook research-then-edit "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser module, then edit the config file.')")
+assert_rc "'research X, then edit Y' is governed like a direct implementation dispatch" 2 "$RC81"
+assert_contains "'research X, then edit Y' names the claudex dispatcher" "bun scripts/telegram/spawn-claudex.ts" "$(combined_output research-then-edit)"
+
+RC82=$(run_hook investigate-then-modify "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Investigate the routing logic, then modify the config.')")
+assert_rc "'investigate X, then modify Y' is governed like a direct implementation dispatch" 2 "$RC82"
+
+# Unaffected controls: these phrasings already trip the bare-verb
+# implementation regex directly ("fix"/"implement" as standalone words survive
+# the descriptive-fix strip), so they were already governed on main before
+# this fix and must stay governed identically after it.
+RC83=$(run_hook lookat-then-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Router work' 'Look at the router and then fix the parser.')")
+assert_rc "'look at A and then fix B' stays governed (unaffected by the gate reorder)" 2 "$RC83"
+
+RC84=$(run_hook investigate-afterwards-implement "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Drift work' 'Investigate the drift; afterwards implement the fix.')")
+assert_rc "'investigate; afterwards implement' stays governed (unaffected by the gate reorder)" 2 "$RC84"
+
+# GREEN control: a pure read-only research brief with no action transition and
+# no operational context keeps its exemption -- no followed_by_action signal
+# is present, so the gate reorder cannot affect it.
+RC87=$(run_hook pure-research-himmel-1534 "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Research HIMMEL-1534' 'Research the parser module. Report findings only, read-only.')")
+assert_rc "pure research with no action transition remains allowed" 0 "$RC87"
+assert_empty "pure research with no action transition is silent" "$(combined_output pure-research-himmel-1534)"
+
+# GREEN control (HIMMEL-1608 class, out of scope here): a judgment dispatch
+# that merely QUOTES 'fix:' inside a markdown table already trips the bare-verb
+# implementation regex on main ("fix:" satisfies the word boundary) and is
+# already refused for that separate, pre-existing, deferred (v1.0.1) reason --
+# unrelated to followed_by_action/gate ordering. This pins that the HIMMEL-1534
+# fix does not change its verdict either way.
+RC88=$(run_hook fix-colon-in-table "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster tickets' 'Cluster these tickets by subject. | Type | Count |
+|---|---|
+| fix: | 112 |
+| feat: | 70 |
+Every open ticket must land in exactly one theme.')")
+assert_rc "'fix:' quoted in a table stays refused (pre-existing HIMMEL-1608 gap, unchanged)" 2 "$RC88"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 
@@ -443,6 +488,20 @@ assert_contains "non-allow-listed HARD utilization gets advisory" '"permissionDe
 RC28=$(run_hook plan-hard "$REG_CLAUDEX" "$(payload Plan sonnet 'Implementation worker' 'Write the implementation.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
 assert_rc "Plan lane exemption still retains bank HARD guard" 2 "$RC28"
 assert_contains "Plan bank refusal names Plan shape" "Plan/sonnet" "$(cat "$TMP/err-plan-hard")"
+
+# HIMMEL-1534: the same fail-open bypassed the INDEPENDENT HIMMEL-920 bank
+# guard for Plan too -- Plan is lane-exempt, not classifier-exempt, so a
+# research-then-edit Plan prompt must still reach the bank check once
+# followed_by_action is consulted at the first gate.
+RC85=$(run_hook plan-research-then-edit-hard "$REG_CLAUDEX" "$(payload Plan sonnet 'Plan worker' 'Research the parser, then edit the config.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
+assert_rc "Plan 'research, then edit' now reaches the HARD bank guard" 2 "$RC85"
+assert_contains "Plan research-then-edit bank refusal names Plan shape" "Plan/sonnet" "$(combined_output plan-research-then-edit-hard)"
+
+# GREEN control: the same Plan dispatch at LOW bank utilization stays allowed
+# -- the fix must not turn Plan's independent bank exemption into a refusal.
+RC86=$(run_hook plan-research-then-edit-low "$REG_CLAUDEX" "$(payload Plan sonnet 'Plan worker' 'Research the parser, then edit the config.')" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "Plan 'research, then edit' at low bank remains allowed" 0 "$RC86"
+assert_empty "Plan 'research, then edit' at low bank is silent" "$(combined_output plan-research-then-edit-low)"
 
 RC29=$(run_hook haiku "$REG_CLAUDEX" "$(payload general-purpose HaIkU 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
 assert_rc "Haiku always allows despite lane and HARD bank" 0 "$RC29"
