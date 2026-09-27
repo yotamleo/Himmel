@@ -4012,5 +4012,20 @@ else
   skip "T53g SKIPPED (this environment cannot create symlinks)"
 fi
 
+# T53h (HIMMEL-3718 CR round 1, codex-1): a NOT-YET-EXISTING --out-root that
+# lexically collapses (via "..") to the corpus root itself must be refused
+# exactly like T53e's direct spelling -- the "if -d" cd/pwd -P canonicalizer
+# alone never fires for a path that doesn't exist yet, so a naive resolver
+# would compare the unresolved string against the fully-resolved corpus root
+# and silently let this through, landing the promote back inside the corpus
+# once `mkdir -p`/the promote step itself collapsed the ".." the same way.
+T53HNONEXIST="$T53CORPUS/does-not-exist-t53h"
+out=$( GRAPHIFY_MAP_BIN="$GOBIN/graphify" bash "$SCRIPT" \
+  --name t53h --corpus-root "$T53CORPUS" --backend claude-cli \
+  --maps-dir "$T53MAPS" --title T53h --slug t53h-map --out-root "$T53HNONEXIST/.." 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] && grep -q "REFUSING --out-root=<corpus root>" <<< "$out" \
+  && pass "T53h a not-yet-existing --out-root that collapses via .. to the corpus root is refused rc=2" \
+  || fail "T53h .. traversal into the corpus root should be refused rc=2 (rc=$rc): $out"
+
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 if [ "$SKIPS" -ne 0 ]; then echo "ALL PASS ($SKIPS skipped)"; else echo "ALL PASS"; fi

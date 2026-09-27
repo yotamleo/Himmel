@@ -545,8 +545,36 @@ if [ -n "$OUT_ROOT" ]; then
   # corpus root, or a not-yet-existing OUT_ROOT (mkdir -p happens later, at
   # first use) can't dodge the refusals below by lexical spelling alone.
   CORPUS_ROOT_RESOLVED="$(cd "$CORPUS_ROOT" && pwd -P)"
-  OUT_ROOT_RESOLVED="$OUT_ROOT"
-  if [ -d "$OUT_ROOT" ]; then OUT_ROOT_RESOLVED="$(cd "$OUT_ROOT" && pwd -P)"; fi
+  # HIMMEL-3718 CR round 1 (codex-1): lexically collapse "." / ".." segments in
+  # OUT_ROOT FIRST, purely as a string -- no filesystem call, so this fires
+  # even when nothing in the path exists yet. Before this, a not-yet-existing
+  # OUT_ROOT such as "<corpus-root>/x/.." (where "x" does not exist) reached
+  # the refusals below un-resolved, because the "if -d" cd/pwd -P canonicalizer
+  # only fires once the directory exists -- while CORPUS_ROOT_RESOLVED is
+  # always fully resolved, so the string-equality check below silently passed
+  # even though `mkdir -p` (and the promote step itself) collapse the ".." the
+  # same way once "x" is created, landing the promote back inside the corpus
+  # root. This does not need to resolve symlinks (that is what the existing
+  # `[ -d ]`/`cd`+`pwd -P` step right after it still does, on whatever this
+  # loop produces) -- only to stop a lexical ".."/"." spelling from dodging a
+  # string comparison the same way a real filesystem would not.
+  _or_input="$OUT_ROOT"
+  _or_norm=""
+  while [ -n "$_or_input" ]; do
+    _or_seg="${_or_input%%/*}"
+    case "$_or_input" in
+      */*) _or_input="${_or_input#*/}" ;;
+      *) _or_input="" ;;
+    esac
+    case "$_or_seg" in
+      ''|'.') : ;;
+      '..') _or_norm="${_or_norm%/*}" ;;
+      *) _or_norm="$_or_norm/$_or_seg" ;;
+    esac
+  done
+  [ -n "$_or_norm" ] || _or_norm="/"
+  OUT_ROOT_RESOLVED="$_or_norm"
+  if [ -d "$OUT_ROOT_RESOLVED" ]; then OUT_ROOT_RESOLVED="$(cd "$OUT_ROOT_RESOLVED" && pwd -P)"; fi
   if [ "$OUT_ROOT_RESOLVED" = "/" ]; then
     echo "refresh-graph-map: REFUSING --out-root=/ -- the promote step deletes cache/ and manifest.json under it." >&2
     exit 2
