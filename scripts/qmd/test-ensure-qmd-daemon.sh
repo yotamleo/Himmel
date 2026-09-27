@@ -386,4 +386,130 @@ grep -qx 'mcp --http --daemon' "$state/qmd-argv.log" || \
   fail "(j) port-held: qmd was never invoked after the port freed"
 echo "ok (j): dying process holding the port delays the daemon start until it releases"
 
+# ---- (k)-(n) memory ceiling + detached self-recycle (HIMMEL-3062) -----------
+# A fake "daemon" (a real process, so kill/kill -0 are real) is named by a
+# pidfile under a scratch XDG_CACHE_HOME; a mock ps reports its RSS. The fake
+# models the ~15s bun unwind: on SIGTERM it takes UNWIND seconds to exit, then
+# drops the alive sentinel (the MCP probe goes dead) the way a real exit would.
+xdg="$work/xdg"
+mkdir -p "$xdg/qmd"
+mock_ps="$bin/ps"
+cat > "$mock_ps" <<'EOF'
+#!/usr/bin/env bash
+# Mimics `ps -o rss= -o etime= -o args= -p <pid>`: prints nothing and exits 1
+# for a dead pid, like real ps.
+pid="${!#}"
+kill -0 "$pid" 2>/dev/null || exit 1
+echo "$*" >> "$QMD_MOCK_STATE/ps-argv.log"
+printf '%s 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181\n' "$QMD_MOCK_RSS_KB"
+EOF
+chmod +x "$mock_ps"
+fake_daemon="$work/fake-daemon.sh"
+cat > "$fake_daemon" <<'EOF'
+#!/usr/bin/env bash
+trap 'sleep "${UNWIND:-0}"; rm -f "$QMD_MOCK_STATE/alive"; exit 0' TERM
+touch "$QMD_MOCK_STATE/alive"
+while :; do sleep 1; done
+EOF
+chmod +x "$fake_daemon"
+
+start_fake_daemon() { # <unwind secs> -> sets fake_pid, writes the pidfile
+  UNWIND="$1" QMD_MOCK_STATE="$state" bash "$fake_daemon" &
+  fake_pid=$!
+  echo "$fake_pid" > "$xdg/qmd/mcp.pid"
+  local i=0
+  while [ ! -f "$state/alive" ] && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done
+  [ -f "$state/alive" ] || fail "precondition: fake daemon never came alive"
+}
+
+# run_ceiling <rss_kb> -> sets rc/out/dur; the hook's own wall time
+run_ceiling() {
+  rm -f "$state/qmd-argv.log"
+  local t0 t1
+  t0="$(date +%s)"
+  set +e
+  out="$(QMD_CURL="$mock_curl" QMD_MOCK_CURL_MODE=sentinel QMD_MOCK_STATE="$state" \
+    QMD_MOCK_RSS_KB="$1" QMD_PS="$mock_ps" XDG_CACHE_HOME="$xdg" \
+    QMD_RSS_CEILING_MB=4096 QMD_MCP_URL="$test_url" \
+    HOME="$home" PATH="$bin:$safe" \
+    bash "$script" 2>&1)"
+  rc=$?
+  set -e
+  t1="$(date +%s)"
+  dur=$((t1 - t0))
+}
+
+# Wait (bounded) for the detached recycler to finish: it restarted qmd and
+# logged its restart rc (the lock is released right after that line).
+wait_restarted() {
+  local i=0
+  while [ "$i" -lt 40 ]; do
+    grep -qx 'mcp --http --daemon' "$state/qmd-argv.log" 2>/dev/null &&
+      grep -q 'recycle: restart rc=' "$xdg/qmd/recycle.log" 2>/dev/null &&
+      [ ! -d "$xdg/qmd/recycle.lock" ] && return 0
+    i=$((i + 1))
+    sleep 0.5
+  done
+  return 1
+}
+
+# ---- (k) under the ceiling: no recycle, daemon untouched --------------------
+rm -f "$state/alive" "$state/ps-argv.log" "$xdg/qmd/recycle.stamp"
+start_fake_daemon 0
+run_ceiling 1048576   # 1 GB
+[ "$rc" -eq 0 ] || fail "(k) under-ceiling: expected rc 0, got $rc ($out)"
+[ -f "$state/ps-argv.log" ] || fail "(k) under-ceiling: RSS was never read (ps not called) ($out)"
+sleep 1
+kill -0 "$fake_pid" 2>/dev/null || fail "(k) under-ceiling: daemon was killed below the ceiling"
+[ ! -f "$state/qmd-argv.log" ] || fail "(k) under-ceiling: qmd was restarted below the ceiling"
+kill "$fake_pid" 2>/dev/null; wait "$fake_pid" 2>/dev/null
+echo "ok (k): RSS under the ceiling leaves the daemon alone"
+
+# ---- (l) over the ceiling: hook returns promptly, recycle runs DETACHED -----
+# The fake takes 4s to unwind; the hook must not wait for it (SessionStart
+# budget, HIMMEL-1844) - it returns at once and the recycler finishes later.
+rm -f "$state/alive" "$state/ps-argv.log" "$xdg/qmd/recycle.stamp" "$xdg/qmd/recycle.log"
+start_fake_daemon 4
+run_ceiling 7340032   # 7 GB
+[ "$rc" -eq 0 ] || fail "(l) over-ceiling: expected rc 0, got $rc ($out)"
+[ "$dur" -lt 3 ] || fail "(l) over-ceiling: hook blocked ${dur}s on the recycle (must run detached)"
+printf '%s' "$out" | grep -q "recycling" || \
+  fail "(l) over-ceiling: no loud 'recycling' line (got: $out)"
+kill -0 "$fake_pid" 2>/dev/null || true
+wait_restarted || fail "(l) over-ceiling: detached recycler never restarted qmd ($(cat "$xdg/qmd/recycle.log" 2>/dev/null))"
+kill -0 "$fake_pid" 2>/dev/null && fail "(l) over-ceiling: old daemon still alive after the recycle"
+[ -f "$xdg/qmd/recycle.stamp" ] || fail "(l) over-ceiling: no recycle stamp written"
+grep -q 'recycle: restart rc=0' "$xdg/qmd/recycle.log" || \
+  fail "(l) over-ceiling: restart did not succeed ($(cat "$xdg/qmd/recycle.log"))"
+echo "ok (l): over the ceiling -> hook returned in ${dur}s, detached recycler stopped + restarted qmd"
+
+# ---- (m) cooldown: a fresh stamp blocks a second recycle --------------------
+rm -f "$state/alive" "$state/ps-argv.log"
+start_fake_daemon 0
+run_ceiling 7340032
+[ "$rc" -eq 0 ] || fail "(m) cooldown: expected rc 0, got $rc ($out)"
+sleep 1
+kill -0 "$fake_pid" 2>/dev/null || fail "(m) cooldown: daemon recycled again inside the cooldown"
+printf '%s' "$out" | grep -q "cooldown" || fail "(m) cooldown: skip not reported (got: $out)"
+kill "$fake_pid" 2>/dev/null; wait "$fake_pid" 2>/dev/null
+echo "ok (m): a recycle inside the cooldown window is skipped"
+
+# ---- (n) stampede: concurrent sessions start ONE recycle ---------------------
+rm -f "$state/alive" "$state/ps-argv.log" "$state/qmd-argv.log" "$xdg/qmd/recycle.stamp" "$xdg/qmd/recycle.log"
+start_fake_daemon 3
+for s in 1 2 3 4 5; do
+  ( QMD_CURL="$mock_curl" QMD_MOCK_CURL_MODE=sentinel QMD_MOCK_STATE="$state" \
+      QMD_MOCK_RSS_KB=7340032 QMD_PS="$mock_ps" XDG_CACHE_HOME="$xdg" \
+      QMD_RSS_CEILING_MB=4096 QMD_MCP_URL="$test_url" \
+      HOME="$home" PATH="$bin:$safe" \
+      bash "$script" > "$work/n-$s.log" 2>&1 ) &
+done
+wait_restarted || fail "(n) stampede: no recycle happened"
+sleep 2
+starts="$(grep -c 'SIGTERM' "$xdg/qmd/recycle.log" 2>/dev/null || true)"
+[ "$starts" = 1 ] || fail "(n) stampede: expected exactly 1 recycle, got ${starts:-0} ($(cat "$xdg/qmd/recycle.log" 2>/dev/null))"
+kill "$fake_pid" 2>/dev/null || true
+wait 2>/dev/null || true
+echo "ok (n): five concurrent sessions over the ceiling ran exactly one recycle"
+
 echo "PASS: all ensure-qmd-daemon cases"

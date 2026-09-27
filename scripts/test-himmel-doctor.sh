@@ -165,6 +165,9 @@ printf '#!/bin/sh\necho Linux\n' > "$FAKEBIN/uname"; chmod +x "$FAKEBIN/uname"
 # localhost:8181 for C40 (HIMMEL-3056): an absent curl seam makes C40 an INFO
 # skip. Dedicated C40 cases override this seam per invocation with a stub curl.
 export HIMMEL_DOCTOR_QMD_CURL="$FAKEROOT/no-such-curl"
+# Same for C44-qmd-daemon (HIMMEL-3062): never read the operator's real qmd
+# pidfile; dedicated cases point this seam at a fixture.
+export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
 
 # Keep unrelated cases from scanning this checkout's own .mcp.json files (and the
 # operator's generated mcp-profiles) for C41 (HIMMEL-2762): point the scan root at
@@ -4794,6 +4797,57 @@ else
     fi
 fi
 rm -rf "$c40_t"
+
+# --- C44-qmd-daemon (HIMMEL-3062): daemon RSS + uptime vs the recycle ceiling --
+# The qmd daemon grows native memory over hours until vec queries time out. The
+# qmd plugin's SessionStart hook recycles it over QMD_RSS_CEILING_MB; this row
+# reports RSS and uptime (one ps call, no network) and WARNs over the ceiling.
+# Seams: HIMMEL_DOCTOR_QMD_PIDFILE (the daemon pidfile), HIMMEL_DOCTOR_QMD_PS
+# (the ps binary; the stub prints C44D_ROW for the pid it is asked about).
+c44d_setup() {
+    c44d_t="$(mktemp -d)"; mkdir -p "$c44d_t/home" "$c44d_t/claude"
+    echo 4242 > "$c44d_t/mcp.pid"
+    # shellcheck disable=SC2016 # the stub expands C44D_ROW at ITS run time
+    printf '#!/usr/bin/env bash\n[ -n "${C44D_ROW:-}" ] || exit 1\necho "$C44D_ROW"\n' > "$c44d_t/ps"
+    chmod +x "$c44d_t/ps"
+}
+c44d_run() { # <ps row> [<pidfile>]
+    PATH="$FAKEBIN:$PATH" C44D_ROW="$1" HIMMEL_DOCTOR_QMD_PS="$c44d_t/ps" \
+        HIMMEL_DOCTOR_QMD_PIDFILE="${2:-$c44d_t/mcp.pid}" \
+        CLAUDE_DIR="$c44d_t/claude" HOME="$c44d_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C44-qmd-daemon: under the ceiling -> OK with RSS and uptime (RED) =="
+c44d_setup
+out="$(c44d_run '1048576 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
+if grepq "$out" 'OK   C44-qmd-daemon' && grepq "$out" -F 'RSS 1024 MB' && grepq "$out" -F 'up 04:31:07' && ! grepq "$out" 'WARN C44-qmd-daemon'; then
+    pass "C44-qmd-daemon under ceiling -> OK naming RSS + uptime"
+else
+    fail "C44-qmd-daemon under ceiling -> $(printf '%s' "$out" | grep -A1 C44-qmd-daemon)"
+fi
+rm -rf "$c44d_t"
+
+echo "== C44-qmd-daemon: over the ceiling -> WARN naming RSS and the ceiling (RED) =="
+c44d_setup
+out="$(c44d_run '7340032 1-02:03:04 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
+if grepq "$out" 'WARN C44-qmd-daemon' && grepq "$out" -F 'RSS 7168 MB' && grepq "$out" -F 'ceiling 4096 MB' && grepq "$out" -F 'up 1-02:03:04'; then
+    pass "C44-qmd-daemon over ceiling -> WARN naming RSS, uptime and ceiling"
+else
+    fail "C44-qmd-daemon over ceiling -> $(printf '%s' "$out" | grep -A1 C44-qmd-daemon)"
+fi
+rm -rf "$c44d_t"
+
+echo "== C44-qmd-daemon: no pidfile / dead pid / non-qmd pid -> silent =="
+c44d_setup
+out_nopid="$(c44d_run '1048576 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181' "$c44d_t/absent.pid")"
+out_dead="$(c44d_run '')"
+out_foreign="$(c44d_run '1048576 04:31:07 /usr/bin/vim notes.md')"
+if ! grepq "$out_nopid" 'C44-qmd-daemon' && ! grepq "$out_dead" 'C44-qmd-daemon' && ! grepq "$out_foreign" 'C44-qmd-daemon'; then
+    pass "C44-qmd-daemon stays silent without a live qmd daemon behind the pidfile"
+else
+    fail "C44-qmd-daemon silent cases -> nopid=[$(printf '%s' "$out_nopid" | grep C44-qmd-daemon)] dead=[$(printf '%s' "$out_dead" | grep C44-qmd-daemon)] foreign=[$(printf '%s' "$out_foreign" | grep C44-qmd-daemon)]"
+fi
+rm -rf "$c44d_t"
 
 # --- C41 (HIMMEL-2762): MCP server credential on the command line --------------
 # A key passed as an argv element is readable by any local user through ps and

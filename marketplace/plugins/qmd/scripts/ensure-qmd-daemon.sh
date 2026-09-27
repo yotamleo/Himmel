@@ -38,6 +38,11 @@
 #                        http://localhost:8181/mcp)
 #   QMD_CURL            curl binary         (default curl)
 #   QMD_START_TIMEOUT   daemon-start bound  (default 20 seconds)
+#   QMD_PS              ps binary           (default ps)
+# Operator knobs (HIMMEL-3062):
+#   QMD_RSS_CEILING_MB        recycle the daemon above this RSS (default 4096;
+#                              0 disables)
+#   QMD_RECYCLE_COOLDOWN_MIN  minimum minutes between recycles (default 30)
 set -u
 
 # localhost, NOT 127.0.0.1: the daemon binds qmd's own advertised address,
@@ -47,6 +52,10 @@ set -u
 QMD_MCP_URL="${QMD_MCP_URL:-http://localhost:8181/mcp}"
 QMD_CURL="${QMD_CURL:-curl}"
 QMD_START_TIMEOUT="${QMD_START_TIMEOUT:-20}"
+QMD_PS="${QMD_PS:-ps}"
+QMD_RSS_CEILING_MB="${QMD_RSS_CEILING_MB:-4096}"
+QMD_RECYCLE_COOLDOWN_MIN="${QMD_RECYCLE_COOLDOWN_MIN:-30}"
+case "$QMD_RECYCLE_COOLDOWN_MIN" in ''|*[!0-9]*) QMD_RECYCLE_COOLDOWN_MIN=30 ;; esac
 PROBE_TIMEOUT=2
 WAIT_TRIES=5
 PORT_WAIT_TRIES=15
@@ -114,10 +123,111 @@ resolve_qmd() {
   return 1
 }
 
+# ---- Memory ceiling + detached self-recycle (HIMMEL-3062) --------------------
+# A long-lived daemon has been seen to grow to 6.8 GB RSS / 37% idle CPU over
+# ~4.5h, at which point vec queries time out while lex keeps answering. Bound
+# it: on the healthy path, read the RSS of the pid in qmd's own pidfile (ONE ps
+# call, no network - this runs at every SessionStart, HIMMEL-1844) and, over
+# QMD_RSS_CEILING_MB, hand the recycle to a DETACHED copy of this script
+# (--recycle) so the SIGTERM + ~15s unwind + restart never spends the hook's
+# budget. Fleets start many sessions at once, so a mkdir lock admits one
+# recycler and a stamp holds off another for QMD_RECYCLE_COOLDOWN_MIN.
+# ponytail: ceiling is POSIX-ps only (Git Bash's ps has no -o, so the check is a silent no-op there) and the ps1 twin is not ported, port in HIMMEL-3751.
+qmd_state_dir="${XDG_CACHE_HOME:-$HOME/.cache}/qmd"
+pidfile="$qmd_state_dir/mcp.pid"
+recycle_lock="$qmd_state_dir/recycle.lock"
+recycle_stamp="$qmd_state_dir/recycle.stamp"
+recycle_log="$qmd_state_dir/recycle.log"
+
+# Echo "<rss_kb> <etime>" for a live qmd mcp pid, else fail.
+daemon_rss() {
+  local row rss etime
+  row="$("$QMD_PS" -o rss= -o etime= -o args= -p "$1" 2>/dev/null)" || return 1
+  case "$row" in *qmd*mcp*) ;; *) return 1 ;; esac
+  read -r rss etime _ <<EOF
+$row
+EOF
+  case "$rss" in ''|*[!0-9]*) return 1 ;; esac
+  echo "$rss $etime"
+}
+
+check_ceiling() {
+  local pid row rss_kb etime now last ceiling_kb
+  case "$QMD_RSS_CEILING_MB" in ''|0|*[!0-9]*) return 0 ;; esac
+  [ -f "$pidfile" ] || return 0
+  pid="$(cat "$pidfile" 2>/dev/null)"
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  row="$(daemon_rss "$pid")" || return 0
+  rss_kb="${row%% *}"
+  etime="${row#* }"
+  ceiling_kb=$((QMD_RSS_CEILING_MB * 1024))
+  [ "$rss_kb" -gt "$ceiling_kb" ] || return 0
+  now="$(date +%s)"
+  last="$(cat "$recycle_stamp" 2>/dev/null)"
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt $((QMD_RECYCLE_COOLDOWN_MIN * 60)) ]; then
+    echo "ensure-qmd-daemon: qmd daemon (PID $pid) RSS $((rss_kb / 1024)) MB > ceiling ${QMD_RSS_CEILING_MB} MB, but it was recycled under ${QMD_RECYCLE_COOLDOWN_MIN} min ago - cooldown, not recycling again" >&2
+    return 0
+  fi
+  # A crashed recycler must not wedge the ceiling forever: a lock older than
+  # its worst case (~90s: 30s kill wait + the ~59s start path) is reclaimed. The stamp re-check after mkdir closes
+  # the reclaim race (a second reclaimer sees the winner's fresh stamp).
+  if ! mkdir "$recycle_lock" 2>/dev/null; then
+    last="$(cat "$recycle_lock/at" 2>/dev/null)"
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    [ $((now - last)) -gt 120 ] || return 0
+    rm -rf "$recycle_lock"
+    mkdir "$recycle_lock" 2>/dev/null || return 0
+  fi
+  last="$(cat "$recycle_stamp" 2>/dev/null)"
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt $((QMD_RECYCLE_COOLDOWN_MIN * 60)) ]; then
+    rm -rf "$recycle_lock"
+    return 0
+  fi
+  echo "$now" > "$recycle_lock/at"
+  echo "$now" > "$recycle_stamp"
+  echo "ensure-qmd-daemon: qmd daemon (PID $pid, up $etime) RSS $((rss_kb / 1024)) MB > ceiling ${QMD_RSS_CEILING_MB} MB - recycling it in the background (log: $recycle_log)" >&2
+  # Every fd redirected: a child holding the hook's stdout/stderr would make
+  # Claude Code wait on it. setsid (when present) survives the session's exit.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash "$0" --recycle "$pid" </dev/null >>"$recycle_log" 2>&1 &
+  else
+    bash "$0" --recycle "$pid" </dev/null >>"$recycle_log" 2>&1 &
+  fi
+}
+
+# Detached recycler: stop the old daemon, wait for it to exit, then run the
+# normal start path (probe dead -> port-release wait -> start -> verify).
+if [ "${1:-}" = "--recycle" ]; then
+  pid="${2:-}"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') recycle: SIGTERM qmd daemon PID $pid"
+  if daemon_rss "$pid" >/dev/null; then
+    kill -TERM "$pid" 2>/dev/null
+    w=0
+    while [ "$w" -lt 30 ] && kill -0 "$pid" 2>/dev/null; do
+      w=$((w + 1))
+      sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "recycle: PID $pid still alive after 30s - SIGKILL"
+      kill -KILL "$pid" 2>/dev/null
+    fi
+  else
+    echo "recycle: PID $pid is no longer a qmd mcp process - skipping the kill"
+  fi
+  bash "$0"
+  rc=$?
+  echo "$(date '+%Y-%m-%d %H:%M:%S') recycle: restart rc=$rc"
+  rm -rf "$recycle_lock"
+  exit "$rc"
+fi
+
 # ---- Healthy path: something already answers -------------------------------
 body="$(probe_body)"
 if [ -n "$body" ]; then
   if is_qmd_shaped "$body"; then
+    check_ceiling
     exit 0
   fi
   echo "ensure-qmd-daemon: ERROR - a process is listening on $QMD_MCP_URL but it is NOT qmd" >&2

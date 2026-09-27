@@ -64,6 +64,19 @@ or a non-number falls back to 30 with an INFO, because curl treats `-m 0` as "no
 timeout". If a `vec` call times out, run that check — do not retry-loop the query, and
 treat a lex-only result as incomplete coverage, not a miss.
 
+The daemon's native memory grows over hours (6.8 GB RSS after ~4.5 h, with vec
+queries timing out, HIMMEL-3062), so the SessionStart hook also bounds it. On the
+healthy path it reads the daemon's RSS with ONE `ps` call (no network) and, over
+`QMD_RSS_CEILING_MB` (default `4096`; `0` disables), recycles it: a DETACHED
+child SIGTERMs the daemon, waits for it to exit, and starts a fresh one, so the
+session that noticed is never held for the ~15 s unwind. A lock
+(`~/.cache/qmd/recycle.lock`) lets exactly one of many concurrently starting
+sessions recycle, and a stamp blocks another recycle for
+`QMD_RECYCLE_COOLDOWN_MIN` minutes (default `30`). The recycler logs to
+`~/.cache/qmd/recycle.log`. `himmel-doctor.sh` check `C44-qmd-daemon` reports the
+daemon's RSS and uptime and WARNs over the same ceiling. The PowerShell twin does
+not carry the ceiling yet (HIMMEL-3751).
+
 ## Upstream watch
 
 The standalone `qmd` CLI installs from a local clone of upstream `tobi/qmd`
