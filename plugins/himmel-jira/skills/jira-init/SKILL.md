@@ -1,6 +1,6 @@
 ---
 name: jira-init
-description: Use ONLY when user explicitly asks to bootstrap, set up, or initialize Jira authentication and metadata cache. Triggers on phrases like "set up jira", "init jira", "bootstrap jira plugin", "configure jira". Do NOT trigger on routine jira ops (create/list/transition) — those have their own skills. Do NOT trigger on PR or GitHub setup (those go to himmel-gh).
+description: Bootstrap Jira auth + metadata cache ("set up jira", "init jira"). Not routine Jira ops or GitHub setup.
 ---
 
 # jira-init

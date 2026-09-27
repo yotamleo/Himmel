@@ -1,6 +1,6 @@
 ---
 name: gh-init
-description: Use ONLY when user explicitly asks to bootstrap, set up, initialize, or verify GitHub CLI authentication. Triggers on phrases like "set up gh", "init gh", "check gh auth", "verify github login", "is gh logged in". Do NOT trigger on routine GitHub PR ops (view/list/create/checks) — those have their own skills. Do NOT trigger on Jira setup (HIMMEL-N format or "jira" → himmel-jira plugin).
+description: Bootstrap/verify GitHub CLI auth ("set up gh", "check gh auth", "is gh logged in"). Not PR ops or Jira setup.
 ---
 
 # gh-init
