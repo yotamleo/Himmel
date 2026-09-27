@@ -243,6 +243,94 @@ out="$(run "$W/pre-session.txt" 101 2>&1)"; rc=$?
 eq 'a child older than its session is not exempt: rc 1' 1 "$rc"
 contains 'the older-than-session child is pid 122' "$out" '  pid=122 ppid='
 
+# #1337: a harness-spawned tree macOS legs actually produce, that the
+# HIMMEL-3265 name/session-start matcher does not catch. The session keep-awake
+# (`caffeinate`) re-arms on a rolling cadence, so its etime never lands inside
+# the isearly() start window (proven here by a session that has run 5h against
+# a caffeinate that just (re)started); it must be exempt by name alone. A
+# stray node server and a leg's own sleep sit alongside it and must still
+# withhold. (#1337 also reported a claude-hud statusline false WITHHELD; a
+# claude-hud-by-path exemption was tried and reverted on re-judge — see
+# HIMMEL-3723 — so no claude-hud row is exempt here.)
+cat > "$W/harness-trees.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  300   101       00:05 /usr/bin/caffeinate -i -t 300
+  320   101    00:10:00 node /repo/server.js
+  321   101    00:05:00 sleep 999
+FIX
+out="$(run "$W/harness-trees.txt" 101 2>&1)"; rc=$?
+eq 'harness caffeinate tree plus genuine leftovers: rc 1 (#1337)' 1 "$rc"
+contains 'only the genuine leftovers withhold (#1337)' "$out" 'WITHHELD: 2 process(es) still alive under claude pid 101'
+contains 'the stray node server is named (#1337)' "$out" 'pid=320 ppid='
+contains 'the leg'"'"'s own sleep is named (#1337)' "$out" 'pid=321 ppid='
+lacks 'a withheld run never prints CLOSABLE (#1337)' "$out" 'CLOSABLE:'
+contains 'harness pid 300 is ignored, not withheld (#1337)' "$out" 'ignored pid=300 '
+lacks 'harness pid 300 is not listed as withheld (#1337)' "$out" '  pid=300 ppid='
+contains 'the caffeinate keep-awake is name-matched (#1337)' "$out" 'ignored pid=300 ppid=101 etime=00:05 why=name-match cmd=/usr/bin/caffeinate'
+
+# J1355O (Opus judge, round 2): the #1337 fix above matched `caffeinate` as a
+# WORD anywhere in argv, so a leg running a real job named
+# `caffeinate ./long-job.sh`, or a `sleep` invocation that merely mentions the
+# word, got falsely exempted too. Anchor caffeinate to the PROGRAM position
+# (only flags may follow); the legit row from #1337 above (300) must stay
+# exempt alongside the new decoys withholding.
+cat > "$W/decoys.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  300   101       00:05 /usr/bin/caffeinate -i -t 300
+  330   101    00:10:00 caffeinate -i ./long-job.sh
+  331   330    00:10:00 /bin/bash ./long-job.sh
+  332   101    00:10:00 sleep 999 caffeinate
+FIX
+out="$(run "$W/decoys.txt" 101 2>&1)"; rc=$?
+eq 'decoys withhold, legit caffeinate tree stays exempt: rc 1 (J1355O)' 1 "$rc"
+contains 'exactly the three decoys withhold (J1355O)' "$out" 'WITHHELD: 3 process(es) still alive under claude pid 101'
+contains 'a real job named like caffeinate withholds (J1355O)' "$out" '  pid=330 ppid='
+contains "the job's own child withholds too (J1355O)" "$out" '  pid=331 ppid='
+contains '"sleep 999 caffeinate" is not exempt by the word alone (J1355O)' "$out" '  pid=332 ppid='
+lacks 'a withheld run never prints CLOSABLE (J1355O)' "$out" 'CLOSABLE:'
+contains 'the legit caffeinate keep-awake stays exempt (J1355O)' "$out" 'ignored pid=300 '
+
+# J1355P (Opus judge, round 3): a claude-hud-by-path exemption
+# (`^([^ ]*/)?(node|bun) [^ ]*/claude-hud/[^ ]*`) was proposed to fix the
+# claude-hud half of #1337 and rejected — it exempted ANY node/bun script
+# under any directory merely NAMED claude-hud, plus its descendants, not just
+# the real statusline install. That exemption was removed entirely (tracked
+# as HIMMEL-3723, not fixed here); this row is the negative control proving
+# it stays gone: a real service that happens to live under a `claude-hud`
+# directory, with its own child, must still withhold.
+cat > "$W/claude-hud-decoy.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  340   101    00:10:00 node /repo/claude-hud/server.js
+  341   340    00:10:00 node /repo/claude-hud/worker.js
+FIX
+out="$(run "$W/claude-hud-decoy.txt" 101 2>&1)"; rc=$?
+eq 'an unrelated service under a claude-hud-named directory withholds: rc 1 (J1355P, HIMMEL-3723)' 1 "$rc"
+contains 'the claude-hud-path decoy withholds (J1355P)' "$out" '  pid=340 ppid='
+contains "the decoy's own child withholds too (J1355P)" "$out" '  pid=341 ppid='
+lacks 'no claude-hud exemption remains (J1355P)' "$out" 'why=name-match cmd=node /repo/claude-hud'
+
+# fx3: the SAME tool call that starts a background job also runs the check —
+# a shell wrapper backgrounds `caffeinate -i ./long-job.sh` and the check
+# itself with `&`, both children of one wrapper. The job must withhold even
+# though it shares a wrapper with the check being run.
+cat > "$W/same-tool-call.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  950   101       00:05 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-9-z.sh && eval 'caffeinate -i ./long-job.sh & bash scripts/handover/wrap-subtree-check.sh'
+  951   950       00:05 caffeinate -i ./long-job.sh
+  952   951       00:05 /bin/bash ./long-job.sh
+  953   950       00:00 bash scripts/handover/wrap-subtree-check.sh
+  954   953       00:00 ps -eo pid=,ppid=,etime=,args=
+FIX
+out="$(PATH="$W/bin:$PATH" PS_FIXTURE="$W/same-tool-call.txt" WRAP_SUBTREE_SELF=953 bash "$SUT" 101 2>&1)"; rc=$?
+eq 'a caffeinate job started in the SAME tool call as the check still withholds: rc 1 (J1355O, fx3)' 1 "$rc"
+contains 'the same-tool-call caffeinate job withholds (fx3)' "$out" '  pid=951 ppid='
+contains "the job's own child withholds too (fx3)" "$out" '  pid=952 ppid='
+lacks 'a withheld run never prints CLOSABLE (fx3)' "$out" 'CLOSABLE:'
+
 # Weakening controls (HIMMEL-3265, contract item 3). Each weakened check must RUN
 # and lose the leg-left loop for the specific reason — a check that merely
 # crashes would "fail" every assertion and prove nothing.

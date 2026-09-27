@@ -475,6 +475,23 @@ assert_rc "69 nested worktree abs write to its own settings.json allows" 0 \
 # FD-2). 72, FD-1's piped form, was a third accepted false deny until the
 # per-segment allowlist (HIMMEL-3546): a read piped into another read is a
 # chain of read-only segments, and allows.
+#
+# HIMMEL-3615/J1282O: row 71 briefly ALLOWed (trusting the tokenizer's word
+# list to drop a heredoc-body-only mention) across this ticket's first three
+# commits, on the theory that a heredoc body is prose/data, not a command
+# word. Judge J1282O found that relaxation unsound in three ways at once —
+# the tokenizer's heredoc model diverges from real bash's on `<<` inside an
+# arithmetic context and on a backslash-newline-joined delimiter (so a real
+# top-level write hides inside what the tokenizer thinks is body text), and
+# no denylist of heredoc CONSUMERS that read the body as code can ever be
+# complete (any stdin reader can turn a body into a write). 28 shapes that
+# write, truncate or redirect into a live settings file ALLOWed at that head
+# where base correctly denies all of them. Per the console's ruling, heredoc-
+# body parsing leaves this hook entirely rather than trying to patch the
+# tokenizer or extend the consumer list further: row 71 goes back to being an
+# accepted false deny, and mentions_settings is a plain raw-text scan again,
+# with no ST_LW rescan overriding it. The 28 shapes are pinned as DENY rows
+# below (J1282O-F1 through J1282O-F3).
 assert_rc "70 accepted false deny: harmless cd + worktree settings write denies" 2 \
     "$(bash_rc_of "$WT2" "cd . && echo x > .claude/settings.json")"
 assert_rc "71 accepted false deny: cat >> other file with settings.json in heredoc prose denies" 2 \
@@ -483,6 +500,204 @@ assert_rc "71 accepted false deny: cat >> other file with settings.json in hered
 EOF")"
 assert_rc "72 piped grep naming settings.json from primary allows (HIMMEL-3546; was an accepted false deny)" 0 \
     "$(bash_rc_of "$PRIMARY" "grep -rl x scripts .claude/settings.json docs | head")"
+
+# 71d-71g (HIMMEL-3615 ticket rows, user-scope \$HOME): the ticket's own
+# repro list, run against \$HOME's live settings.json rather than the
+# primary's (36-38 already cover the primary). 71d/71e are read-only
+# controls that must ALLOW; 71f/71g are write shapes that must stay DENY.
+assert_rc "71d bash grep of \$HOME settings.json allows" 0 \
+    "$(bash_rc_of "$SANDBOX" "grep x ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "71e bash jq of \$HOME settings.json allows" 0 \
+    "$(bash_rc_of "$SANDBOX" "jq . ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "71f bash python3 open(...,'w') on \$HOME settings.json denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "python3 -c \"open('$FAKEHOME/.claude/settings.json','w')\"" HOME="$FAKEHOME")"
+assert_rc "71g bash jq redirect into \$HOME settings.json denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "jq . ~/.claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
+
+# 71h-71j: a heredoc whose CONSUMER runs or parses the body (nested bash,
+# git apply, bare patch) rather than reading it as inert prose. These used to
+# be caught by a dedicated interpreter/diff-consumer denylist (removed per
+# J1282O below); with row 71's relaxation gone, they now DENY the same way
+# every other heredoc-body mention does — the raw text still names
+# settings.json, and none of these outer verbs is on the read-only
+# allowlist. Kept as regression pins for the specific consumer classes two
+# earlier /pr-check rounds found bypassing the (now-removed) denylist.
+assert_rc "71h heredoc body run by a nested bash writes to settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "bash <<'EOF'
+echo x > .claude/settings.json
+EOF")"
+assert_rc "71i heredoc git-apply patch writing settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "git apply <<'EOF'
+diff --git a/.claude/settings.json b/.claude/settings.json
+index e69de29..0000000 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+assert_rc "71j heredoc bare patch writing settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "patch -p1 <<'EOF'
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+
+# J1282O-F1 (verdict F1, Critical): the tokenizer treats `<<` as a heredoc
+# operator even inside an arithmetic context, where bash reads it as a left
+# shift — so a real top-level write on the next line used to vanish into what
+# the (now-removed) tokenizer-trust mechanism thought was heredoc body.
+# mentions_settings is a raw-text scan again, so these deny regardless of how
+# the tokenizer parses `<<`.
+assert_rc "J1282O-F1a arithmetic \$((1<<2)) then a real write to primary settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo \$((1<<2))
+echo x > .claude/settings.json")"
+assert_rc "J1282O-F1b arithmetic (( x = 1 << 2 )) then a real write to primary settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "(( x = 1 << 2 ))
+echo x > .claude/settings.json")"
+assert_rc "J1282O-F1c for ((i=1<<0;...)) then a truncate of primary settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "for ((i=1<<0; i<1; i++)); do :; done
+truncate -s0 .claude/settings.json")"
+assert_rc "J1282O-F1d arithmetic << then a real write to \$HOME settings.json, denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "echo \$((1<<2))
+echo x > ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "J1282O-F1e arithmetic << then a real write to the primary's settings.json by absolute path, denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "echo \$((1<<2))
+echo x > $PRIMARY/.claude/settings.json")"
+
+# J1282O-F2 (verdict F2, Critical): for an unquoted heredoc delimiter, bash
+# joins a backslash-newline before matching the delimiter; the tokenizer
+# compared raw, unjoined lines, so it kept reading real commands as heredoc
+# body past the point bash had already ended the heredoc.
+assert_rc "J1282O-F2 backslash-newline-joined heredoc delimiter hides a real write, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat <<EOF
+EO\\
+F
+echo x > .claude/settings.json
+EOF")"
+
+# J1282O-F3 (verdict F3, Critical): the consumer denylist this ticket's first
+# two /pr-check rounds built up (interpreters, git apply, patch) is
+# structurally incomplete — any program that reads the heredoc body from
+# stdin can turn it into a write, so the list can never enumerate all of
+# them. Six of these were confirmed to write in real bash by the judge; the
+# rest are pinned on the hook's own documented stdin semantics. All 16+6
+# stay DENY now that no consumer list decides the outcome at all.
+assert_rc "J1282O-F3a xargs truncate reading the target path from a heredoc, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "xargs truncate -s0 <<EOF
+.claude/settings.json
+EOF")"
+assert_rc "J1282O-F3b . /dev/stdin sources a heredoc that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" ". /dev/stdin <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3c read -r reads a path from a heredoc, then a write to it, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "read -r f <<EOF
+.claude/settings.json
+EOF
+echo x > \"\$f\"")"
+assert_rc "J1282O-F3d awk -f /dev/stdin runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "awk -f /dev/stdin <<EOF
+BEGIN { print \"x\" > \".claude/settings.json\" }
+EOF")"
+assert_rc "J1282O-F3e sed -n -f /dev/stdin with a w command writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "sed -n -f /dev/stdin README.md <<EOF
+w .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3f \$SHELL run against a heredoc that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "\$SHELL <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3g source /dev/stdin runs a heredoc that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "source /dev/stdin <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3h while read loop truncates every path named in a heredoc, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "while read -r f; do : > \"\$f\"; done <<EOF
+.claude/settings.json
+EOF")"
+assert_rc "J1282O-F3i ed -s runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ed -s <<EOF
+a
+echo x > .claude/settings.json
+.
+w
+q
+EOF")"
+assert_rc "J1282O-F3j ex -s runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ex -s <<EOF
+a
+echo x > .claude/settings.json
+.
+:wq
+EOF")"
+assert_rc "J1282O-F3k gawk -f /dev/stdin runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "gawk -f /dev/stdin <<EOF
+BEGIN { print \"x\" > \".claude/settings.json\" }
+EOF")"
+assert_rc "J1282O-F3l python3.12 - (versioned name) runs a heredoc that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "python3.12 - <<EOF
+open('.claude/settings.json', 'w').write('x')
+EOF")"
+assert_rc "J1282O-F3m sqlite3 .output redirects a heredoc's query results into settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "sqlite3 <<EOF
+.output .claude/settings.json
+select 1;
+EOF")"
+assert_rc "J1282O-F3n make -f - runs a heredoc Makefile that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "make -f - <<EOF
+all:
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3o fish runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "fish <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3p pwsh -Command - runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "pwsh -Command - <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3q bun run - runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "bun run - <<EOF
+require('fs').writeFileSync('.claude/settings.json', 'x')
+EOF")"
+assert_rc "J1282O-F3r git am applies a heredoc mailbox patch writing settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "git am <<EOF
+From: a <a@example.com>
+Subject: pwned
+
+---
+ .claude/settings.json | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/.claude/settings.json b/.claude/settings.json
+index e69de29..0000000 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+assert_rc "J1282O-F3s absolute /usr/lib/git-core/git-apply spelling has no git+apply word pair, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "/usr/lib/git-core/git-apply <<EOF
+diff --git a/.claude/settings.json b/.claude/settings.json
+index e69de29..0000000 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -0,0 +1 @@
++pwned
+EOF")"
+assert_rc "J1282O-F3t at now schedules a heredoc job that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "at now <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3u busybox ash runs a heredoc script that writes settings.json, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "busybox ash <<EOF
+echo x > .claude/settings.json
+EOF")"
+assert_rc "J1282O-F3v xargs truncate reading a \$HOME settings.json path from a heredoc, denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "xargs truncate -s0 <<EOF
+$FAKEHOME/.claude/settings.json
+EOF" HOME="$FAKEHOME")"
 
 # 73-74 controls: FD-1's exact spelling stays a bare allowlisted read, and a
 # worktree's own relative write with no cd stays open.
@@ -993,11 +1208,249 @@ else
     echo "SKIP 186-190 (node not installed)"
 fi
 
+# 191-196 (HIMMEL-3675): a literal `..` inside a benign `<base>..<head>` git
+# SHA range must not be treated as directory traversal. Real-world trigger:
+# /pr-check step 3.6's canonical `impacted-suites.sh --check <base>..<head>`
+# submission, run from inside a linked worktree nested under the primary's
+# `.claude/worktrees/<name>`, with a heredoc body listing impacted suites —
+# one of which coincidentally contains a write-verb WORD ("install") as part
+# of an unrelated filename (test-wizard-install-engine.sh). Two real SHAs
+# from the sandbox's own history exercise a genuine-looking range.
+SHA_BASE=$(git -C "$SANDBOX/primary" rev-parse HEAD)
+git -C "$SANDBOX/primary" -c user.email=t@t -c user.name=t commit -q --allow-empty -m second
+SHA_HEAD=$(git -C "$SANDBOX/primary" rev-parse HEAD)
+
+HIMMEL_3675_CMD="bash \"$NESTED_WT/scripts/cr/impacted-suites.sh\" --check ${SHA_BASE}..${SHA_HEAD} <<'IMPACTED_EOF'
+SUITE scripts/himmelctl/test/test-wizard-install-engine.sh reason
+IMPACTED_EOF"
+
+# 191: the exact N558/HIMMEL-3675 shape -> ALLOW (FAILS at base with a false
+# DENY: the `..` in the SHA range voids the .claude/worktrees container-path
+# strip, compounding with the heredoc body's coincidental "install" match).
+assert_rc "191 impacted-suites --check <base>..<head> heredoc from a worktree allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "$HIMMEL_3675_CMD")"
+
+# 192: a plain worktree-relative script run, no heredoc -> ALLOW (already
+# passed at base; kept alongside 191 as a non-regression guard).
+assert_rc "192 no-heredoc worktree script run allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "bash \"$NESTED_WT/scripts/foo.sh\"")"
+
+# 193-196: controls that must stay DENY at base AND head — the 191/192 fix
+# must never let a genuine write into the primary's live .claude/ through.
+assert_rc "193 cp into primary settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp x \"$PRIMARY/.claude/settings.json\"")"
+assert_rc "194 tee via worktrees/.. traversal into settings.local.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "tee \"$PRIMARY/.claude/worktrees/../settings.local.json\"")"
+assert_rc "195 cp into primary settings.json (double slash) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp x \"$PRIMARY/.claude//settings.json\"")"
+assert_rc "196 mv into primary .claude dir denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "mv x \"$PRIMARY/.claude/\"")"
+
+# 197-204 (HIMMEL-3675 judge J1313O NO-GO): has_traversal_dots previously
+# required a non-name character on BOTH sides of a literal `..`, so a `..`
+# glued to a short option (`-t..`, `-d..`, `-sft..` — a letter immediately to
+# its left) was never counted as traversal, letting these writes through to
+# a real live settings.json/dir undetected. Two more worktree fixtures:
+# HOMEWT sits directly under a fake $HOME, WTDIRECT directly under the
+# primary itself (neither nested under .claude/worktrees/). Every row below
+# must DENY at head.
+git -C "$SANDBOX/primary" worktree add -q "$FAKEHOME/wt" -b feat/homewt >/dev/null 2>&1 || {
+    echo "FATAL: could not create the homewt worktree fixture" >&2
+    exit 1
+}
+git -C "$SANDBOX/primary" worktree add -q "$PRIMARY/wtdirect" -b feat/wtdirect >/dev/null 2>&1 || {
+    echo "FATAL: could not create the wtdirect worktree fixture" >&2
+    exit 1
+}
+HOMEWT="$FAKEHOME/wt"
+WTDIRECT="$PRIMARY/wtdirect"
+
+assert_rc "197 cp -t glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "cp -t../primary/.claude settings.json")"
+assert_rc "198 cp src -t glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "cp settings.json -t../primary/.claude")"
+assert_rc "199 mv -t glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "mv -t../primary/.claude settings.local.json")"
+assert_rc "200 install -t glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "install -t../primary/.claude settings.json")"
+assert_rc "201 unzip -od glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "unzip -od../primary/.claude a.zip")"
+assert_rc "202 ln -sft glued traversal from sibling worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "ln -sft../primary/.claude /tmp/evil/settings.json")"
+assert_rc "203 cp -t glued traversal from a worktree under HOME denies" 2 \
+    "$(bash_rc_of "$HOMEWT" "cp -t../.claude settings.json" HOME="$FAKEHOME")"
+assert_rc "204 cp -t glued traversal from a worktree directly under primary denies" 2 \
+    "$(bash_rc_of "$WTDIRECT" "cp -t../.claude settings.json")"
+
+# 205-211 (HIMMEL-3686, J1313O "Out of scope, noted" follow-ups): a relative
+# dir-dest climb, a brace-hidden traversal, and a write through a
+# pre-existing symlink all ALLOWed at base (#1313/HIMMEL-3675 left these
+# three untouched) and must DENY now.
+
+# 205: `cp -r x/. ../..` from the nested worktree climbs LEXICALLY all the
+# way back to the primary's own .claude/ itself — no literal ".claude" or
+# "settings" in the text at all, so rule 1/2 never fired at base.
+assert_rc "205 cp -r x/. ../.. from nested worktree denies (dir-dest climb)" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp -r x/. ../..")"
+
+# 206 (control): the SAME shape but landing on a SIBLING inside worktrees/
+# (../other, not ../..) must stay ALLOW — this is a worktree writing to
+# another worktree's own container, not a climb into the primary.
+assert_rc "206 cp -r x/. ../other stays inside worktrees/ allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp -r x/. ../other")"
+
+# 207 (control): an ordinary same-directory copy inside the worktree, no
+# ".." anywhere, must stay ALLOW.
+assert_rc "207 cp a b inside worktree allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp a b")"
+
+# 208: `tee .{,.}/.{,.}/settings.json` from the nested worktree hides
+# `../../settings.json` inside an unexpanded brace group — no literal ".."
+# in the text, so has_traversal_dots never fired at base.
+assert_rc "208 tee brace-hidden traversal from nested worktree denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "tee .{,.}/.{,.}/settings.json")"
+
+# 209 (control): a brace group with no .claude/settings mention, outside a
+# nested worktree, and mkdir isn't in the write-verb list either way —
+# must stay ALLOW, unchanged from base.
+assert_rc "209 mkdir -p src/{a,b} outside a worktree allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "mkdir -p src/{a,b}")"
+
+# 210: a pre-existing symlink at <primary>/.claude/worktrees/x/s resolving
+# to the primary's own live settings.json — the destination operand names
+# neither "settings.json" nor ".claude" as a container-relative mention
+# that survives the worktrees/ strip, so this was a text-only hook's blind
+# spot. Built in the scratch SANDBOX only.
+mkdir -p "$PRIMARY/.claude/worktrees/x"
+ln -s "$PRIMARY/.claude/settings.json" "$PRIMARY/.claude/worktrees/x/s"
+assert_rc "210 cp y through a pre-existing symlink to live settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "cp y \"$PRIMARY/.claude/worktrees/x/s\"")"
+
+# 211 (control): writing through an ordinary (non-symlink) worktree file
+# that merely happens to exist on disk must stay ALLOW.
+printf 'plain\n' > "$PRIMARY/.claude/worktrees/x/plain"
+assert_rc "211 cp y into an ordinary existing worktree file allows" 0 \
+    "$(bash_rc_of "$WT2" "cp y \"$PRIMARY/.claude/worktrees/x/plain\"")"
+
+# 212: same pre-existing-symlink shape as 210, but the symlink's own path
+# contains a space and the command text quotes it. Splitting the
+# quote-stripped command on whitespace (the pre-fix implementation) breaks
+# the one destination word into two, neither of which names the real
+# symlink — a real bypass the codex critic panel caught on this ticket.
+ln -s "$PRIMARY/.claude/settings.json" "$PRIMARY/.claude/worktrees/x/s ymlink"
+assert_rc "212 cp y through a quoted pre-existing symlink with a space denies" 2 \
+    "$(bash_rc_of "$WT2" "cp y \"$PRIMARY/.claude/worktrees/x/s ymlink\"")"
+
+# 213: same shape as 210/212, but the symlink sits on a PARENT DIRECTORY
+# rather than being the final destination itself, and the leaf name
+# (settings.local.json) does not exist ANYWHERE on disk yet — a genuinely
+# new destination, reached through a pre-existing symlinked dir that
+# escapes worktrees/ confinement into the primary's own .claude/, with
+# neither ".." nor ".claude" anywhere in the command text (codex-2 round-2
+# panel finding on this ticket: canon()'s realpath-m/resolve(strict=False)
+# already follow symlinks in every EXISTING path component even when the
+# final leaf is missing, so gating check_target on the full path's own
+# existence — rather than its parent's — missed this).
+ln -s "$PRIMARY/.claude" "$NESTED_WT/escape"
+assert_rc "213 cp y through a symlinked PARENT dir to a not-yet-existing settings.local.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp y escape/settings.local.json")"
+
+# 214 (control): the SAME symlinked-parent-dir shape, but the symlink
+# target stays INSIDE worktrees/ (a sibling worktree's own container) and
+# the leaf name is not a live-settings filename — must stay ALLOW.
+mkdir -p "$PRIMARY/.claude/worktrees/sibling"
+ln -s "$PRIMARY/.claude/worktrees/sibling" "$NESTED_WT/escape-inside"
+assert_rc "214 cp y through a symlinked parent dir staying inside worktrees/ allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp y escape-inside/notes.json")"
+
+# 215: a DANGLING symlink — the operand itself is a symlink whose target
+# (a live settings.json) does not exist yet — through a separate primary-like
+# repo that has never had a settings.json created. `-e` follows symlinks and
+# reports false for a dangling one, so the pre-fix code's `[ -e "$wabs" ]`
+# gate skipped check_target entirely; the symlink's own name ("dangle-link")
+# is not itself a settings-named leaf, so round-2's parent-existence pre
+# filter does not catch it either (round-3 codex-1 panel finding).
+DANGLE_PRIMARY="$SANDBOX/dangle-primary"
+mkrepo "$DANGLE_PRIMARY"
+mkdir -p "$DANGLE_PRIMARY/.claude"
+ln -s "$DANGLE_PRIMARY/.claude/settings.json" "$WT2/dangle-link"
+assert_rc "215 cp y through a dangling symlink to a not-yet-existing settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "cp y dangle-link")"
+
+# 216 (control): the same dangling-symlink shape, but the target's parent
+# is not a live .claude at all — must stay ALLOW.
+ln -s "$DANGLE_PRIMARY/notes/plan.json" "$WT2/dangle-link-safe"
+assert_rc "216 cp y through a dangling symlink to a non-settings path allows" 0 \
+    "$(bash_rc_of "$WT2" "cp y dangle-link-safe")"
+
+# 217: HIMMEL-3686 round-5 codex-3 — lex_resolve's `for part in $joined`
+# word-split (with IFS=/) is also subject to bash's default pathname (glob)
+# expansion, which runs against the HOOK SUBPROCESS'S OWN real cwd —
+# unrelated to either BASE or the path being resolved — so a write-
+# destination operand containing a glob metacharacter (a legal filename
+# character) could silently resolve differently depending on what files
+# happen to exist wherever the hook process is invoked from. Force the real
+# process cwd to a scratch dir seeded with files that WOULD match the
+# operand's glob segment if pathname expansion fired, then confirm
+# lex_resolve still returns the untouched literal text.
+GLOBTRAP="$SANDBOX/glob-trap-real-cwd"
+mkdir -p "$GLOBTRAP/a"
+touch "$GLOBTRAP/a/one" "$GLOBTRAP/a/two"
+LEX_RESOLVE_SRC="$SANDBOX/lex_resolve_extract.sh"
+sed -n '/^lex_resolve() {/,/^}/p' "$HOOK" > "$LEX_RESOLVE_SRC"
+LEX_OUT=$(cd "$GLOBTRAP" && bash -c '
+    source "$1"
+    lex_resolve "/x/y" "../a/*"
+' _ "$LEX_RESOLVE_SRC")
+if [ "$LEX_OUT" = "/x/a/*" ]; then
+    echo "PASS 217 lex_resolve leaves a glob-metacharacter segment untouched regardless of files in the hook process's real cwd (got $LEX_OUT)"
+else
+    echo "FAIL 217 lex_resolve leaves a glob-metacharacter segment untouched regardless of files in the hook process's real cwd — expected /x/a/*, got $LEX_OUT"
+    FAILED=$((FAILED + 1))
+fi
+
+# 218: HIMMEL-3686 CodeRabbit (round-6) — the TOK=0 fallback's own
+# `for w in $cmd_n; do _check_write_operand "$w"; done` (used whenever the
+# tokenizer can't fully vouch for the command text, e.g. a heredoc is
+# present) is UNQUOTED, so it is also subject to pathname (glob) expansion
+# against the HOOK SUBPROCESS'S OWN real cwd — unrelated to tool_input.cwd.
+# A write-destination operand containing a glob metacharacter can therefore
+# be silently replaced depending on what files happen to exist wherever the
+# hook process is launched from. Build a real symlink into a live settings
+# file at a fixed relative path inside a worktree, then run the SAME
+# heredoc-bearing (TOK=0) command with that symlink addressed via a glob
+# operand from two different real launch cwds: one with no matching decoy,
+# one with a same-named decoy that makes the glob expand successfully. The
+# verdict must be identical in both cases.
+mkdir -p "$WT2/wtlink"
+ln -s "$PRIMARY/.claude/settings.json" "$WT2/wtlink/s"
+TOK0_GLOB_CMD='cat <<HEREDOC_BODY
+x
+HEREDOC_BODY
+cp y wtlink/*'
+TOK0_GLOB_JSON=$(jq -n --arg cmd "$TOK0_GLOB_CMD" --arg cwd "$WT2" \
+    '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}')
+TRAP_EMPTY="$SANDBOX/tok0-glob-trap-empty"
+mkdir -p "$TRAP_EMPTY"
+TRAP_MATCH="$SANDBOX/tok0-glob-trap-match"
+mkdir -p "$TRAP_MATCH/wtlink"
+touch "$TRAP_MATCH/wtlink/s"
+RC_TRAP_EMPTY=$(cd "$TRAP_EMPTY" && printf '%s' "$TOK0_GLOB_JSON" | bash "$HOOK" >/dev/null 2>&1; echo $?)
+RC_TRAP_MATCH=$(cd "$TRAP_MATCH" && printf '%s' "$TOK0_GLOB_JSON" | bash "$HOOK" >/dev/null 2>&1; echo $?)
+if [ "$RC_TRAP_EMPTY" = "$RC_TRAP_MATCH" ] && [ "$RC_TRAP_EMPTY" = 0 ]; then
+    echo "PASS 218 TOK=0 fallback's glob write operand gives the same, correct ALLOW verdict regardless of a same-named decoy in the hook process's real cwd (rc=$RC_TRAP_EMPTY both)"
+else
+    echo "FAIL 218 TOK=0 fallback's glob write operand verdict depends on the hook process's real cwd contents, or is not ALLOW — got rc=$RC_TRAP_EMPTY with no decoy, rc=$RC_TRAP_MATCH with a same-named decoy present (expected 0 both)"
+    FAILED=$((FAILED + 1))
+fi
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$WT2" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/prim" 2>/dev/null || true
+git -C "$SANDBOX/primary" worktree remove --force "$HOMEWT" 2>/dev/null || true
+git -C "$SANDBOX/primary" worktree remove --force "$WTDIRECT" 2>/dev/null || true
 rm -rf "$SANDBOX" 2>/dev/null || true
 
 if [ "$FAILED" -gt 0 ]; then

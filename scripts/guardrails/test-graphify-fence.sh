@@ -49,6 +49,7 @@ PHI="$WS/phicfg";       mkdir -p "$PHI"
 PHI_BADROOTS="$WS/phicfg2"; mkdir -p "$PHI_BADROOTS/phi-roots"   # phi-roots is a DIR -> unreadable
 DENYROOT="$WS/secretvault"; mkdir -p "$DENYROOT/x"
 NOWHERE="$WS/nowhere";  mkdir -p "$NOWHERE"
+HIMMEL_UPPER="$HIMMEL/CorpusDir"; mkdir -p "$HIMMEL_UPPER"      # HIMMEL-3641 codex-1: uppercase-C path, non-PHI
 
 # an egress-denylist root (path-list membership -> salus corpus)
 printf '%s\n' "$DENYROOT" > "$PHI/egress-denylist"
@@ -66,6 +67,7 @@ LEDGER="$HOME/.claude/graphify-egress.jsonl"
 : > "$HIMMEL/scripts/thing.sh"
 : > "$DENYROOT/x/leak.md"
 : > "$NOWHERE/loose.md"
+: > "$HIMMEL_UPPER/thing.sh"
 
 # env vars scrubbed on every fence call so the outer shell cannot leak state in.
 CLEAN_ENV="-u GRAPHIFY_SALUS_LOCAL_OK -u GRAPHIFY_CLIPPINGS_GLM_OK -u GRAPHIFY_LEDGER \
@@ -2150,6 +2152,351 @@ env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code claude-cli "$NOWHERE" >/d
 env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code claude-cli "$NOWHERE" refresh-graph-map extra >/dev/null 2>&1; [ "$?" -eq 2 ] || e9=1
 [ ! -e "$LEDGER" ] || e9=1
 if [ "$e9" -eq 0 ]; then pass "HIMMEL-1084 E9 --eval: wrong operand count denies, no ledger"; else fail "HIMMEL-1084 E9 --eval wrong operand count did not all deny"; fi
+
+echo "== HIMMEL-3641: env -C/--chdir, sudo -D/--chdir directory-change wrappers (PHI fail-closed) =="
+
+# (C1) env -C DIR (separate token) -> deny (chdir into salus, relative target)
+run_fence deny no "$HIMMEL" "env -C DIR salus (relative target) -> deny" \
+    "env -C $SALUS graphify update notes/patient.md --backend glm"
+
+# (C2) env -CDIR (attached, single token) -> deny
+run_fence deny no "$HIMMEL" "env -CDIR salus -> deny (attached)" \
+    "env -C$SALUS graphify update notes/patient.md --backend glm"
+
+# (C3) env --chdir=DIR (attached value) -> deny
+run_fence deny no "$HIMMEL" "env --chdir=DIR salus -> deny (attached)" \
+    "env --chdir=$SALUS graphify update notes/patient.md --backend glm"
+
+# (C4) env --chdir DIR (separate token) -> deny
+run_fence deny no "$HIMMEL" "env --chdir DIR salus -> deny" \
+    "env --chdir $SALUS graphify update notes/patient.md --backend glm"
+
+# (C5) env --ch DIR (unambiguous abbreviation) -> deny
+run_fence deny no "$HIMMEL" "env --ch DIR salus -> deny (abbrev)" \
+    "env --ch $SALUS graphify update notes/patient.md --backend glm"
+
+# (C6) env --chd DIR (deeper unambiguous abbreviation) -> deny
+run_fence deny no "$HIMMEL" "env --chd DIR salus -> deny (abbrev)" \
+    "env --chd $SALUS graphify update notes/patient.md --backend glm"
+
+# (C7) sudo -D DIR (separate token) -> deny
+run_fence deny no "$HIMMEL" "sudo -D DIR salus -> deny" \
+    "sudo -D $SALUS graphify update notes/patient.md --backend glm"
+
+# (C8) sudo -DDIR (attached, single token) -> deny
+run_fence deny no "$HIMMEL" "sudo -DDIR salus -> deny (attached)" \
+    "sudo -D$SALUS graphify update notes/patient.md --backend glm"
+
+# (C9) sudo --chdir=DIR (attached value) -> deny
+run_fence deny no "$HIMMEL" "sudo --chdir=DIR salus -> deny (attached)" \
+    "sudo --chdir=$SALUS graphify update notes/patient.md --backend glm"
+
+# (C10) sudo -D combined with an earlier sudo flag -> deny
+run_fence deny no "$HIMMEL" "sudo -u root -D DIR salus -> deny (combined, -D after -u)" \
+    "sudo -u root -D $SALUS graphify update notes/patient.md --backend glm"
+
+# (C11) sudo -D combined with a later sudo flag -> deny
+run_fence deny no "$HIMMEL" "sudo -D DIR -H salus -> deny (combined, -D before -H)" \
+    "sudo -D $SALUS -H graphify update notes/patient.md --backend glm"
+
+# (C12) fail-closed: env --chdir= with a missing/empty directory argument
+# (attached form, so graphify is still reachable right after) -> deny
+run_fence deny no "$HIMMEL" "env --chdir= (empty arg) -> deny (fail-closed)" \
+    "env --chdir= graphify update notes/patient.md --backend glm"
+
+# (C13) fail-closed: sudo -D with an unresolvable (unexpanded variable)
+# directory argument -> deny. This fence does not run a shell, so it cannot
+# know what \$UNKNOWN_DIR expands to.
+run_fence deny no "$HIMMEL" "sudo -D \$UNKNOWN_DIR (unresolvable arg) -> deny (fail-closed)" \
+    "sudo -D \$UNKNOWN_DIR graphify update notes/patient.md --backend glm"
+
+# (C14) env -C into a non-PHI corpus still allows (no over-deny regression)
+run_fence allow no "$HIMMEL" "env -C DIR himmel-code -> allow (non-PHI)" \
+    "env -C $HIMMEL graphify update scripts/thing.sh"
+
+# (C15) sudo -D into a non-PHI corpus still allows (no over-deny regression)
+run_fence allow no "$HIMMEL" "sudo -D DIR himmel-code -> allow (non-PHI)" \
+    "sudo -D $HIMMEL graphify update scripts/thing.sh"
+
+echo "== HIMMEL-3641 J1290O fix round: F1 double-chdir, F2 raw-token \$/\` check, F3 tilde, F4 bundled short opts =="
+
+# (C16) F1: env -C salus -C himmel stacked in ONE invocation -> deny
+# unconditionally, even though the SECOND (real last-wins) target is
+# itself non-PHI - old code applies each -C in sequence and lands on
+# himmel (allow); this must fail closed on the STACK, not on the result.
+run_fence deny no "$HIMMEL" "env -C salus -C himmel stacked in one env -> deny (F1)" \
+    "env -C $SALUS -C $HIMMEL graphify update notes/patient.md --backend glm"
+
+# (C17) F1: env --chdir=salus --chdir=himmel stacked (long form) -> deny
+run_fence deny no "$HIMMEL" "env --chdir=salus --chdir=himmel stacked -> deny (F1)" \
+    "env --chdir=$SALUS --chdir=$HIMMEL graphify update notes/patient.md --backend glm"
+
+# (C18) F1: the J1290O repro - env -C<himmel> -C<relative sibling salus>,
+# run from the shared parent dir. Old code anchors the second RELATIVE -C
+# against the already-mutated TOOL_CWD (<himmel>/salusvault, non-PHI ->
+# allow); real env resolves the LAST -C against the ORIGINAL cwd (real
+# salus). Fail closed on the stack instead of modelling that.
+run_fence deny no "$HIMMEL" "env -C<himmel> -Csalusvault -> deny (F1)" \
+    "env -C $HIMMEL -Csalusvault graphify update notes/patient.md --backend glm"
+
+# (C18b) same repro, run from the actual shared parent dir as cwd
+run_fence deny no "$WS" "env -C<himmel> -Csalusvault from parent -> deny (F1, real parent cwd)" \
+    "env -C $HIMMEL -Csalusvault graphify update notes/patient.md --backend glm"
+
+# (C19) F1, no-path-arg form: cwd is really salus; env -C<himmel> -C.
+# stacked. Old code anchors the trailing "." to the mutated TOOL_CWD
+# (<himmel>, non-PHI -> allow with no explicit path argument at all); real
+# env's last -C "." resolves against the ORIGINAL cwd (salus).
+run_fence deny no "$SALUS" "env -C<himmel> -C. (no-path-arg) from salus -> deny (F1)" \
+    "env -C $HIMMEL -C . graphify --backend glm"
+
+# (C20) F1: sudo -D<himmel> -D<relative sibling salus>, run from the shared
+# parent dir - the sudo twin of C18.
+run_fence deny no "$WS" "sudo -D<himmel> -Dsalusvault from parent -> deny (F1)" \
+    "sudo -D $HIMMEL -Dsalusvault graphify update notes/patient.md --backend glm"
+
+# (C21) F2: env -C\$VAR (attached, unexpanded substitution) -> deny.
+# _gf_apply_chdir's \$/\` check must see the RAW token, not the
+# _strip_cmd'd one (which deletes \$ before the check can ever fire).
+run_fence deny no "$HIMMEL" "env -C\$UNKNOWN_DIR attached -> deny (F2)" \
+    "env -C\$UNKNOWN_DIR graphify update notes/patient.md --backend glm"
+
+# (C22) F2: env --chdir=\$VAR (attached long form) -> deny
+run_fence deny no "$HIMMEL" "env --chdir=\$UNKNOWN_DIR attached -> deny (F2)" \
+    "env --chdir=\$UNKNOWN_DIR graphify update notes/patient.md --backend glm"
+
+# (C23) F2: sudo -D\$VAR (attached) -> deny
+run_fence deny no "$HIMMEL" "sudo -D\$UNKNOWN_DIR attached -> deny (F2)" \
+    "sudo -D\$UNKNOWN_DIR graphify update notes/patient.md --backend glm"
+
+# (C24) F2: sudo --chdir=\$VAR (attached long form) -> deny
+run_fence deny no "$HIMMEL" "sudo --chdir=\$UNKNOWN_DIR attached -> deny (F2)" \
+    "sudo --chdir=\$UNKNOWN_DIR graphify update notes/patient.md --backend glm"
+
+# (C25) F3: env -C ~someuser (tilde-user form, not bare ~ or ~/...) -> deny.
+# _abs only expands a bare ~ or ~/...; a ~user form really expands to that
+# user's home, which this fence cannot know lexically.
+run_fence deny no "$HIMMEL" "env -C ~someuser/x (tilde-user) -> deny (F3)" \
+    "env -C ~someuser/x graphify update notes/patient.md --backend glm"
+
+# (C26) F3: env -C ~- (tilde-OLDPWD form) -> deny
+run_fence deny no "$HIMMEL" "env -C ~- (tilde-OLDPWD) -> deny (F3)" \
+    "env -C ~- graphify update notes/patient.md --backend glm"
+
+# (C27) F4: env -iC DIR (bundled short opt containing -C's letter,
+# separate value) -> deny. Old code falls to the generic -*) arm, which
+# consumes only the "-iC" token; the DIR value is then misaligned into
+# command position and graphify past it is never reached (silent allow).
+run_fence deny no "$HIMMEL" "env -iC salus (bundled) -> deny (F4)" \
+    "env -iC $SALUS graphify update notes/patient.md --backend glm"
+
+# (C28) F4: env -vC DIR (bundled, -v + -C) -> deny
+run_fence deny no "$HIMMEL" "env -vC salus (bundled) -> deny (F4)" \
+    "env -vC $SALUS graphify update notes/patient.md --backend glm"
+
+# (C29) F4: sudo -nD DIR (bundled short opt containing -D's letter) -> deny
+run_fence deny no "$HIMMEL" "sudo -nD salus (bundled) -> deny (F4)" \
+    "sudo -nD $SALUS graphify update notes/patient.md --backend glm"
+
+# (C30) F4: sudo -EHD DIR (bundled, -E -H + -D) -> deny
+run_fence deny no "$HIMMEL" "sudo -EHD salus (bundled) -> deny (F4)" \
+    "sudo -EHD $SALUS graphify update notes/patient.md --backend glm"
+
+# (C31) control: env -C DIR with NO graphify anywhere in the clause still
+# allows (the F1-F4 fail-closed additions must never over-deny a command
+# that never touches graphify at all).
+run_fence allow no "$HIMMEL" "env -C DIR make (no graphify) -> allow (control)" \
+    "env -C $NOWHERE make"
+
+# (C32) control: the bundled-short-opt scan-ahead (F4) must also leave a
+# graphify-free bundled command alone.
+run_fence allow no "$HIMMEL" "env -iC DIR make (bundled, no graphify) -> allow (control)" \
+    "env -iC $NOWHERE make"
+
+echo "== HIMMEL-3641 codex-1 (J1290R): --* long options checked before the -*C*/-*D* bundled-short-opt glob =="
+
+# (C33) codex-1: env --chdir=DIR where DIR contains an uppercase C must be
+# handled as the long option it is, not misrouted into the F4 bundled-short-
+# opt scan just because the token contains "-C" as a substring. Non-PHI
+# target -> allow (this DENYed before the fix, on the F4 bundled-opt
+# message, even though env --chdir= is fully resolvable here).
+run_fence allow no "$HIMMEL" "env --chdir=DIR (uppercase-C path) non-PHI -> allow (codex-1)" \
+    "env --chdir=$HIMMEL_UPPER graphify update $HIMMEL_UPPER/thing.sh"
+
+# (C34) codex-1: env --unset=VAR where VAR's name contains an uppercase C
+# (CLAUDE_CODE_USE_BEDROCK) must also stay on the --* long-option arm; it
+# never chdirs at all, so a non-PHI target must allow.
+run_fence allow no "$HIMMEL" "env --unset=CLAUDE_CODE_USE_BEDROCK non-PHI -> allow (codex-1)" \
+    "env --unset=CLAUDE_CODE_USE_BEDROCK graphify update $HIMMEL/scripts/thing.sh"
+
+# (C35) codex-1 sudo twin: sudo --chdir=DIR where DIR contains an uppercase D
+# must stay on the --* long-option arm, not the F4 bundled-opt scan.
+mkdir -p "$HIMMEL/DataDir"
+: > "$HIMMEL/DataDir/thing.sh"
+run_fence allow no "$HIMMEL" "sudo --chdir=DIR (uppercase-D path) non-PHI -> allow (codex-1)" \
+    "sudo --chdir=$HIMMEL/DataDir graphify update $HIMMEL/DataDir/thing.sh"
+
+# (C36) codex-1 regression control: env --chdir=DIR into SALUS (PHI), where
+# the path also contains an uppercase C, must still deny - on the real
+# chdir-into-PHI reason, not the (now bypassed) bundled-opt reason.
+run_fence deny no "$HIMMEL" "env --chdir=DIR (uppercase-C path) into salus -> still deny (codex-1 control)" \
+    "env --chdir=$SALUS graphify update notes/patient.md --backend glm"
+
+# (C37) codex-1 regression control: a TRUE bundled short option containing
+# -C's letter must still fail closed (F4 unchanged for real bundled opts).
+run_fence deny no "$HIMMEL" "env -iC DIR salus (true bundled) -> still deny (codex-1 control)" \
+    "env -iC $SALUS graphify update notes/patient.md --backend glm"
+
+echo "== HIMMEL-3641 J1290R: R1 unquoted-vs-shell tilde, R2 raw/stripped mismatch + env -S, R3 backtick-wrapped value =="
+
+# (R1a) R1: env -C~/x (attached tilde) run from a real salus cwd, relative
+# target. In bash/zsh a `~` is ONLY tilde-expanded when it is the FIRST
+# character of a whole word - attached to -C it is never shell-expanded and
+# stays the literal two characters `~/x`, so the DIR env would really try to
+# chdir into is a literal (almost certainly nonexistent) subdirectory, never
+# $HOME/x. The old _abs()-based fix expanded it to $HOME/x unconditionally,
+# so the real cwd (salus, PHI) was replaced by a $HOME-relative one that
+# looks non-PHI -> a new false ALLOW. Fail closed instead: any chdir
+# argument containing `~` is unresolvable now, full stop.
+run_fence deny no "$SALUS" "env -C~/x (attached tilde) from salus -> deny (R1, fail-closed)" \
+    "env -C~/x graphify update notes/patient.md --backend glm" "HOME=$HIMMEL"
+
+# (R1b) R1: env -C"~/x" (attached AND quoted) - same non-expansion in real
+# bash/zsh, same old bug (_strip_wrap peeled the quotes, then _abs still
+# expanded the now-bare ~/x to $HOME/x).
+run_fence deny no "$SALUS" "env -C\"~/x\" (attached+quoted tilde) from salus -> deny (R1, fail-closed)" \
+    "env -C\"~/x\" graphify update notes/patient.md --backend glm" "HOME=$HIMMEL"
+
+# (R2a) R2: env '-C'<salus> - the flag is quoted, the value is glued on with
+# no space, so the RAW token does not literally start with `-C` and the old
+# `${toks[$i]#-C}` prefix-strip was a no-op; the OLD code still matched the
+# _stripped_ form against the `-C?*` glob and ran `_abs()` on the untouched
+# (quote-prefixed) raw value, which is not absolute, so it resolved as a
+# garbage path under the real (non-PHI) cwd - silently misresolving instead
+# of failing closed. Real shell semantics: quoted+unquoted fragments with no
+# space between them concatenate into ONE argument, so this really is `-C
+# <salus>` and would have chdir'd into PHI.
+run_fence deny no "$HIMMEL" "env '-C'<salus> (quoted flag, glued value) -> deny (R2)" \
+    "env '-C'$SALUS graphify update notes/patient.md --backend glm"
+
+# (R2b) R2 twin: env "-C<salus>" - the WHOLE flag+value is one double-quoted
+# token. Same raw-vs-stripped mismatch, same old misresolution.
+run_fence deny no "$HIMMEL" "env \"-C<salus>\" (whole token double-quoted) -> deny (R2)" \
+    "env \"-C$SALUS\" graphify update notes/patient.md --backend glm"
+
+# (R2c) R2: env -\C<salus> (backslash before the C) - same mismatch, this
+# time via a backslash rather than a quote character.
+run_fence deny no "$HIMMEL" "env -\\C<salus> (backslash-escaped) -> deny (R2)" \
+    "env -\\C$SALUS graphify update notes/patient.md --backend glm"
+
+# (R2d) R2 sudo twin: sudo '-D'<salus>, same quoted-flag/glued-value
+# mismatch as R2a.
+run_fence deny no "$HIMMEL" "sudo '-D'<salus> (quoted flag, glued value) -> deny (R2)" \
+    "sudo '-D'$SALUS graphify update notes/patient.md --backend glm"
+
+# (R2e) R2: env -S/--split-string re-splits its value into a brand new argv
+# at RUNTIME - a shebang-line mechanism this fence cannot statically
+# evaluate. The old code had NO handling for -S at all: it fell to the
+# generic `-*)` "skip one token" arm, which then misaligned the walk onto the
+# split-string value's own FIRST word (here a decoy, "true") - that word is
+# neither a recognised wrapper nor `graphify`, so the whole positional walk
+# stopped right there and classify_clause returned without ever calling
+# deny() OR apply_verdict(): the invocation allowed SILENTLY, never even
+# noticing graphify was invoked one word later in the same value, even
+# though the real cwd here is salus (PHI) and the real env -S argv really
+# does end in `graphify update notes/patient.md ...`.
+run_fence deny no "$SALUS" "env -S \"true graphify ...\" (hidden invocation) from salus -> deny (R2)" \
+    "env -S \"true graphify update notes/patient.md --backend glm\""
+
+# (R3) env -C\`pwd\` - a whole-token wrapped backtick chdir value. The old
+# _gf_apply_chdir called _strip_wrap FIRST, which peeled the matching pair of
+# backticks off BEFORE the $/backtick unresolvable-substitution check ever
+# ran, leaving the plain literal string "pwd" - which _abs() then resolved as
+# an ordinary (nonexistent) relative subdirectory instead of recognising an
+# unresolvable command substitution and failing closed. Real shell semantics:
+# `` `pwd` `` evaluates to whatever the real cwd is AT RUNTIME - something
+# this fence can never know ahead of time - so it must deny regardless of
+# where it happens to land, not silently resolve to a literal "pwd" folder.
+run_fence deny no "$HIMMEL" "env -C\`pwd\` (backtick-wrapped value) -> deny (R3, fail-closed)" \
+    "env -C\`pwd\` graphify update notes/patient.md --backend glm"
+
+# (R1 consequence) documentation row, not a fix target: J1290R rated this an
+# acceptable over-deny, so no code change was made for it. Before this round,
+# an UNQUOTED, SEPARATE-token `~/x` (real bash *would* shell-expand this one,
+# since the tilde is the first character of its own word) was correctly
+# allowed via $HOME/x. The "stop modelling shell expansion" fix in this round
+# denies ALL `~` forms without exception, so this previously-correct case now
+# also fails closed - a deliberate, accepted trade documented here so a
+# future reader does not mistake it for a regression. HIMMEL-3641 J1290S M2:
+# this row used to be tagged "(R4, ...)" - J1290R's own R1-R3 findings never
+# included a fourth item (its actual fourth contribution was the codex-1
+# --*-vs--*C*/-*D* ordering fix above, not this one), so the tag is corrected
+# to what it actually is: a consequence of R1 (the unquoted-tilde finding).
+run_fence deny no "$HIMMEL" "env -C ~/x (unquoted separate-token tilde, previously-correct case) -> deny (R1 consequence, accepted over-deny)" \
+    "env -C ~/x graphify update notes/patient.md --backend glm" "HOME=$HIMMEL"
+
+# HIMMEL-3641 J1290S S1: a separate-token chdir DIR argument that the
+# tokenizer splits across multiple raw tokens ($(...) command substitution,
+# a backtick form, or a double-quoted "$(...)") sets
+# _GF_CHDIR_DENY_REASON inside _gf_apply_chdir, but the walk used to step
+# past it with i+=2 regardless, landing on the substitution's leftover tail
+# token, misclassifying it as the wrapped command, and never reaching
+# graphify's own command-position check - so the deny reason was recorded
+# but never enforced. Net effect: a real chdir into salus (PHI) via one of
+# these forms silently ALLOWed. Same defect, applies to all 4 separate-token
+# DIR arms (env -C, env --chdir, sudo -D, sudo --chdir).
+run_fence deny no "$HIMMEL" "env -C \$(echo salus) (tokenizer-split \$(...) value) -> deny (S1)" \
+    "env -C \$(echo $SALUS) graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env -C \`echo salus\` (tokenizer-split backtick value) -> deny (S1)" \
+    "env -C \`echo $SALUS\` graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env -C \"\$(echo salus)\" (tokenizer-split quoted \$(...) value) -> deny (S1)" \
+    "env -C \"\$(echo $SALUS)\" graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "env --chdir \$(echo salus) (long-option twin) -> deny (S1)" \
+    "env --chdir \$(echo $SALUS) graphify update notes/patient.md --backend glm"
+run_fence deny no "$HIMMEL" "sudo -D \$(echo salus) (sudo twin) -> deny (S1)" \
+    "sudo -D \$(echo $SALUS) graphify update notes/patient.md --backend glm"
+
+# HIMMEL-3641 J1290S codex-1 (round-5 critic panel): the raw-vs-stripped
+# mismatch guard (added in the same R2 round as env -S handling) only scans
+# LATER tokens for a literal "graphify" via _gf_deny_if_graphify_follows -
+# but env -S"graphify ..." (the flag glued to its double-quoted value, no
+# space) puts the literal word "graphify" INSIDE the very token that
+# mismatched (_strip_cmd turns -S"graphify into -Sgraphify by removing the
+# quote), so the later-tokens-only scan never sees it and the walk fell
+# through untouched - even though env -S's split-string argv really does
+# invoke graphify. sudo has no -S/--split-string, so only env's mismatch
+# guard is exposed to this shape.
+run_fence deny no "$SALUS" "env -S\"graphify ...\" (glued double-quoted value) from salus -> deny (codex-1)" \
+    "env -S\"graphify update notes/patient.md --backend glm\""
+
+# HIMMEL-3641 round-6 codex-1 (critic panel, distinct from the round-5
+# finding above): _gf_deny_if_graphify_follows itself only exact-matched
+# "graphify"/"*/graphify" on later tokens, so an unresolvable env -C
+# argument's fail-closed scan-ahead missed a LATER token that carries
+# graphify glued into another flag's value (env -S"graphify ...") instead
+# of as its own bare token - the scan finished with no match and the
+# caller returned un-denied.
+run_fence deny no "$SALUS" "env -C \$(...) unresolvable, later -S\"graphify ...\" glued token -> deny (round-6 codex-1)" \
+    "env -C \$(echo /nonexistent) -S\"graphify update notes/patient.md --backend glm\""
+
+# HIMMEL-3641 round-7 codex-1 (critic panel) + class sweep: every OTHER
+# fail-closed "scan the rest of the clause for graphify and deny" arm had
+# the same exact-match bug as the two fixed above - a later token carrying
+# graphify GLUED into another flag's value (env -S"graphify ...") was
+# never matched. round-7's own citation is the env -*C* bundled-short-opt
+# arm; the sudo -*D* mirror, xargs/find -exec's deferred-target scan, and
+# quiet-run.sh's unparsable-label tail scan share the identical shape and
+# are swept in the same fix per CLAUDE.md's "sweep the whole class" rule.
+run_fence deny no "$HIMMEL" "env -iC DIR (bundled), later -S\"graphify ...\" glued token -> deny (round-7 codex-1)" \
+    "env -iC /nonexistent -S\"graphify update notes/patient.md --backend glm\""
+run_fence deny no "$HIMMEL" "sudo -nD DIR (bundled), later env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
+    "sudo -nD /nonexistent env -S\"graphify update notes/patient.md --backend glm\""
+run_fence deny no "$HIMMEL" "xargs env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
+    "xargs env -S\"graphify update notes/patient.md --backend glm\""
+run_fence deny no "$HIMMEL" "find -exec env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
+    "find . -exec env -S\"graphify update notes/patient.md --backend glm\""
+run_fence deny no "$HIMMEL" "quiet-run.sh unparsable label, tail env -S\"graphify ...\" glued token -> deny (round-7 sweep)" \
+    "bash scripts/quiet-run.sh \"a -- b\" -- env -S\"graphify update notes/patient.md --backend glm\""
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"

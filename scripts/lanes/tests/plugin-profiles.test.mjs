@@ -29,6 +29,11 @@ const MINI = {
 const LEG_PROFILES = ['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay'];
 const GATE_RULES = [
   'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)',
+  // HIMMEL-3698: step 0's own invocation of pr-check-context.sh, the
+  // trusted-anchor entry point itself — no relative <himmel_dir> form exists
+  // yet, so like the merge gate it is an exact-string $HIMMEL_REPO literal,
+  // no ':*' tail (the script takes no arguments).
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh")',
   'Bash(bash scripts/handover/queue-lock.sh:*)',
   'Bash(bash scripts/handover/console-kit/inbox-send.sh:*)',
   'Bash(bash scripts/cr/write-verdicts.sh:*)',
@@ -54,6 +59,11 @@ const GATE_RULES = [
   'Bash(bash scripts/cr/impacted-suites.sh:*)',
   'Bash(bash scripts/cr/orphan-check.sh:*)',
   'Bash(bash scripts/cr/review-round.sh:*)',
+  // HIMMEL-3698: previously-absent scripts, documented only via a
+  // resolved-path placeholder (never $HIMMEL_REPO directly), so they take
+  // the pre-existing relative gate-rule shapes.
+  'Bash(bash scripts/cr/cr-scores.sh:*)',
+  'Bash(bash scripts/handover/resolve-active-item.sh)',
   'Bash(bash scripts/check-ci.sh:*)',
 ];
 const SUITE_TAILS = [
@@ -160,6 +170,18 @@ const BAD_GATE_RULES = [
   // anchor still falls through to the '$' ban.
   ['anchor literal with a different var', 'Bash(bash "$FOO/scripts/handover/merge-on-green.sh":*)'],
   ['anchor literal with a different path under the anchor', 'Bash(bash "$HIMMEL_REPO/scripts/handover/queue-lock.sh":*)'],
+  // HIMMEL-3698: the pr-check-context anchor literal is its own EXACT-STRING
+  // exception too — a different var, a different script under the SAME
+  // anchor, a wildcard tail, or an appended command must all still fall
+  // through to the '$' ban.
+  ['pr-check-context anchor literal with a different var', 'Bash(bash "$FOO/scripts/cr/pr-check-context.sh")'],
+  ['pr-check-context anchor literal with a different script under the anchor', 'Bash(bash "$HIMMEL_REPO/scripts/cr/write-verdicts.sh")'],
+  ['pr-check-context anchor literal gains a wildcard tail', 'Bash(bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh":*)'],
+  ['pr-check-context anchor literal with an appended command', 'Bash(bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"; rm -rf /)'],
+  // HIMMEL-3698: resolve-active-item.sh is admitted exact-literal only — no
+  // documented call site ever passes it an argument.
+  ['resolve-active-item gains a wildcard', 'Bash(bash scripts/handover/resolve-active-item.sh:*)'],
+  ['resolve-active-item gains an argument', 'Bash(bash scripts/handover/resolve-active-item.sh --foo)'],
   // HIMMEL-3338: the exact-literal external-critic rules must not gain a `:*`
   // tail, and the scripts the operator ruling left out stay out.
   ['exact-literal kickoff gains a wildcard', 'Bash(bash scripts/cr/codex-adv-kickoff.sh:*)'],

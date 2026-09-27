@@ -299,11 +299,16 @@ const legCard = (l) => `<li class="leg" data-label="${esc(l.label)}" data-phase=
 </li>`;
 const ladder = LADDER.map((p) => `<li data-ladder="${esc(p)}" data-count="${legs.filter((l) => l.phase === p).length}"><span>${esc(p)}</span><b>${legs.filter((l) => l.phase === p).length}</b></li>`).join('\n');
 const needRows = legs.filter((l) => l.needs).map((l) => {
-    const why = l.phase === 'READY' ? `READY${l.prNum ? ` · PR #${l.prNum}` : ''} — awaiting GO`
+    const tailWhy = l.phase === 'READY' ? `READY${l.prNum ? ` · PR #${l.prNum}` : ''} — awaiting GO`
         : l.phase === 'READY-TO-OPEN' ? 'READY-TO-OPEN — awaiting PR open'
             : l.phase === 'BLOCKED' ? 'BLOCKED — needs a ruling'
                 : l.tail === 'FINDING' ? 'FINDING — needs a ruling'
-                    : `lock ${l.lock} — lost or stale`;
+                    : '';
+    // A lost/stale lock is its own rendered signal, never displaced by the tail/phase
+    // why-text above (or hidden behind its truncation): a leg can be FINDING, BLOCKED,
+    // etc. AND lock-lost at once, and the lock is the one thing the console must never miss.
+    const lockWhy = l.lostLock ? `lock ${l.lock} — lost or stale` : '';
+    const why = [tailWhy, lockWhy].filter(Boolean).join(' · ');
     return `<li data-need="${esc(l.label)}"><b>${esc(l.label)}</b> ${esc(why)}<div class="leg-last">${safe(l.last, 160)}</div></li>`;
 }).join('\n');
 const epicRows = epics.map((e) => {

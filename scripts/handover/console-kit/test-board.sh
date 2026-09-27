@@ -33,12 +33,14 @@ B="$W/bucket"
 mkdir -p "$B" "$W/bin" "$W/repo"
 
 # The tick stub records its argv and prints a fixed line + fingerprint. N1..N7
-# cover every phase; the fleet is 9/15 with six idle slots.
+# cover every phase; the fleet is 9/15 with six idle slots. N12 (issue #1336):
+# tail=FINDING with a lock reported lost at the same time -- the tick reports
+# both independently of any leg-doc prose.
 cat > "$W/bin/tick-stub" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$TICK_ARGV_LOG"
 [ "${TICK_STUB_FAIL:-0}" -eq 0 ] || exit 1
-printf '%s\n' 'TICK 12:34 hb=skip legs=N1:FRESH,N2:FRESH,N3:FRESH,N4:FRESH,N5:WRAPPED,N6:FRESH,N7:FRESH livestate=ok procs=6 models=sonnet:6 ceiling=ok atq=0 suites=0alive/0dead prs=#2001,#2002 bank=5h8/wk42/codex=? fill=28 tails=N1:LIVE,N2:LIVE,N3:READY,N4:LIVE,N5:WRAPPED,N6:READY,N7:BLOCKED inbox=none tick=UNKNOWN fleet=9/15 capacity=UNDERFILLED:6 gql=4321/13:00 orphans=none nonces=ok legset=ok board=MISSING'
+printf '%s\n' 'TICK 12:34 hb=skip legs=N1:FRESH,N2:FRESH,N3:FRESH,N4:FRESH,N5:WRAPPED,N6:FRESH,N7:FRESH,N12:STALE livestate=ok procs=6 models=sonnet:6 ceiling=ok atq=0 suites=0alive/0dead prs=#2001,#2002 bank=5h8/wk42/codex=? fill=28 tails=N1:LIVE,N2:LIVE,N3:READY,N4:LIVE,N5:WRAPPED,N6:READY,N7:BLOCKED,N12:FINDING inbox=none tick=UNKNOWN fleet=9/15 capacity=UNDERFILLED:6 gql=4321/13:00 orphans=none nonces=ok legset=ok board=MISSING'
 printf '%s\n' 'board-fp=deadbeefdeadbeef'
 STUB
 chmod +x "$W/bin/tick-stub"
@@ -110,6 +112,11 @@ mkleg HIMMEL-3371-N9-iota '- 12:00 LIVE — PR 1701 open, watching CI'
 # /pull/ URL) attributes nothing.
 mkleg HIMMEL-3377-N10-lambda '- 12:00 LIVE — working' '- 12:20 FINDING scope-shrunk — #1995 (HIMMEL-3348, in the base) already shipped; see PR #1995 merged, PR 1995 merged, https://github.com/o/r/pull/1995'
 mkleg HIMMEL-3378-N11-mu '- 12:00 LIVE — building; PR 1995 merged upstream, so #1995 is in the base'
+# Regression (issue #1336): a leg whose LAST line is a long FINDING must not hide a
+# lost/stale lock reported by the tick at the same time. The tick line above marks
+# N12 tail=FINDING, lock=STALE; board.mjs must surface both, not just the FINDING.
+pad180="$(printf '%180s' '' | tr ' ' q)"
+mkleg HIMMEL-3379-N12-xi '- 12:00 LIVE — working' "- 12:30 FINDING ${pad180} needs a ruling"
 # Two docs share a label; Live state names one by doc stem (N18) or by nonce (N19).
 # The newer-by-mtime doc is the wrong one in both.
 mkleg HIMMEL-3375-N18-iota '- 12:00 LIVE — the right doc'
@@ -138,6 +145,7 @@ printf '%s\n' '# console' '' '## Live state' '' \
     '  `N9:V-N9-bbbb0909:cachyos-x8664-pid909090:909`' \
     '  `N10:V-N10-aaaa1010:cachyos-x8664-pid101010:1010`' \
     '  `N11:V-N11-bbbb1111:cachyos-x8664-pid111011:1011`' \
+    '  `N12:V-N12-aaaa1212:cachyos-x8664-pid121212:1212`' \
     '  `N16_x.y-z:V-N16-aaaa1616:cachyos-x8664-pid161616:1616`' \
     '  `N15:V-N15-aaaa1515:cachyos-x8664-pid151515`' \
     '  `N17:V-N17-aaaa1717::1717`' \
@@ -175,7 +183,7 @@ lacks 'a healthy label lookup prints no stderr warning (HIMMEL-3369)' "$(cat "$W
 lacks 'a healthy label lookup renders no unavailable banner (HIMMEL-3369)' "$html" 'labels-unavailable'
 
 # --- secrets: a board is published to a URL, so no nonce or lock token may reach it
-for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 pid4242 'V-N1-' 'x8664' abcdef12 cafe0123 'AA-N1-' aaaa0808 bbbb0909 aaaa1616 aaaa1313 aaaa1818 cafe1919 pid808080 pid181818; do
+for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 pid4242 'V-N1-' 'x8664' abcdef12 cafe0123 'AA-N1-' aaaa0808 bbbb0909 aaaa1616 aaaa1313 aaaa1818 cafe1919 pid808080 pid181818 aaaa1212 pid121212; do
     lacks "no nonce/lock-token text in the board: $secret" "$html" "$secret"
 done
 contains 'the legs are named by label' "$html" 'data-label="N3"'
@@ -202,6 +210,10 @@ contains 'the phase ladder counts legs per phase' "$html" 'data-ladder="READY" d
 contains 'a BLOCKED leg is listed as needing the console' "$html" 'data-need="N7"'
 contains 'a READY leg awaits GO' "$html" 'data-need="N3"'
 contains 'a READY-TO-OPEN leg awaits the console' "$html" 'data-need="N6"'
+# Regression (issue #1336): a long FINDING tail must not hide a lock the tick
+# reports lost in the same tick line. RED before the fix: board.mjs checked
+# tail === 'FINDING' before lostLock, so the lock text never rendered.
+contains 'a FINDING leg with a lost lock still shows the lock (issue #1336)' "$html" '<b>N12</b> FINDING — needs a ruling · lock STALE — lost or stale'
 contains 'the Live-state decisions: line renders as open operator decisions' "$html" 'widen the fleet cap to 20?'
 
 # --- epics: merged/total from the declared total + the merged PRs citing the key

@@ -28,6 +28,12 @@ unset HIMMEL_CONSOLE_LEG
 # overrides this per-invocation; unset here too for hermeticity / defense in
 # depth against any direct (non-run_mog) invocation added later.
 unset HIMMEL_REPO
+# HIMMEL-3616: the new pre-merge title gate invokes check-pr-title.sh ->
+# check-commit-msg.sh, whose ticket pattern derives from JIRA_PROJECT_KEY.
+# Exported here (inherited by every case's child bash below, matching the
+# real .env's JIRA_PROJECT_KEY=HIMMEL, ci.yml's commit-lint job) rather than
+# threaded through every individual invocation site in this file.
+export JIRA_PROJECT_KEY=HIMMEL
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
@@ -86,6 +92,18 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #                        after check-ci, before merging). Default = STUB_BASE.
 #   STUB_DEFAULT_BRANCH_PREMERGE  `defaultBranchRef.name` in the FIX-1 pre-merge
 #                        re-query. Default = STUB_DEFAULT_BRANCH.
+#   STUB_PR_TITLE        `title` in the HIMMEL-3616 pre-merge title re-query
+#                        (guard 3c) AND jira_auto_transition_on_merge's own
+#                        title read (both --json title). Default a
+#                        conventional, ticketed, unbracketed title, so every
+#                        pre-existing case is unaffected. `-` (not `:-`) so an
+#                        explicitly-empty STUB_PR_TITLE is reachable
+#                        (undeterminable → fail closed).
+#   STUB_PR_AUTHOR       `author.login` in guard 3c's --json title,author
+#                        query, threaded into TICKET_ID_AUTHOR/
+#                        TICKET_ID_TRUSTED_AUTHOR (judge J1284O panel round 3,
+#                        codex-1). Default a non-exempt login, so every
+#                        pre-existing case is unaffected.
 #   STUB_PRIVATE_PREMERGE  `isPrivate` in the FIX-1 pre-merge re-verify
 #                        (HIMMEL-1080 CR round-3 folds isPrivate into the
 #                        pre-merge repo view). Default = STUB_PRIVATE. Set false
@@ -188,7 +206,7 @@ mog_build_fixture() {
 
     # Copy the script into a temp tree so its fixed `../check-ci.sh` sibling
     # resolves to our stub — no CHECK_CI env override exists any more.
-    mkdir -p "$tmp/scripts/handover" "$tmp/scripts/lib" "$tmp/scripts/cr" "$tmp/bin"
+    mkdir -p "$tmp/scripts/handover" "$tmp/scripts/lib" "$tmp/scripts/cr" "$tmp/scripts/hooks" "$tmp/bin"
     cp "${MOG_SRC:-$MOG}" "$tmp/scripts/handover/merge-on-green.sh"
     # HIMMEL-3437: merge-on-green.sh now sources ../cr/anchor-handoff.sh as its
     # first executable statement. run_mog always invokes the fixture copy by
@@ -225,6 +243,13 @@ mog_build_fixture() {
     # HIMMEL-3381: the GitHub-blocked alert lib (sourced next to cr-available.sh).
     # Its sender is a stub that only logs, so the suite can never DM the operator.
     cp "$SCRIPT_DIR/../lib/merge-block-alert.sh" "$tmp/scripts/lib/merge-block-alert.sh"
+    # HIMMEL-3616: the pre-merge title guard (3c) calls this sibling, which in
+    # turn invokes check-commit-msg.sh — both must be copied into the fixture
+    # tree, since HIMMEL_REPO defaults to the fixture tree itself (himmel_repo_dir
+    # above), never the real checkout.
+    cp "$SCRIPT_DIR/../lib/check-pr-title.sh" "$tmp/scripts/lib/check-pr-title.sh"
+    cp "$SCRIPT_DIR/../hooks/check-commit-msg.sh" "$tmp/scripts/hooks/check-commit-msg.sh"
+    chmod +x "$tmp/scripts/lib/check-pr-title.sh" "$tmp/scripts/hooks/check-commit-msg.sh"
     # SC2016 is the point: $1/$2/$STUB_ALERT_FAIL must reach the stub FILE unexpanded.
     # shellcheck disable=SC2016
     printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "$1" "$2" >> "%s/alerts.log"\n[ -z "${STUB_ALERT_FAIL:-}" ]\n' "$tmp" > "$tmp/bin/alert-sender"
@@ -285,11 +310,22 @@ case "$verb" in
         [ "${STUB_STATE_FAIL:-0}" = "1" ] && { echo "gh: api error" >&2; exit 1; }
         case "$json" in
             title)
-                # HIMMEL-374: jira_auto_transition_on_merge's own title read
-                # (--repo "$nwo" --json title -q .title, no --jq). Defaults to
-                # empty (no ticket tag) so every pre-existing case, which never
-                # sets STUB_PR_TITLE, still resolves to a no-op skip.
-                printf '%s' "${STUB_PR_TITLE:-}" ;;
+                # Shared by TWO callers: jira_auto_transition_on_merge's own
+                # title read (--json title -q .title, no --jq) AND the
+                # HIMMEL-3616 pre-merge title gate (--json title --jq '.title').
+                # Defaults to a conventional, ticketed (JIRA_PROJECT_KEY=HIMMEL
+                # above), UNBRACKETED title — passes the HIMMEL-3616 gate (so
+                # every pre-existing case, which never sets STUB_PR_TITLE, is
+                # unaffected) while carrying no `[KEY-N]` bracket tag, so
+                # jira_auto_transition's own extraction still resolves to its
+                # no-op skip by default.
+                printf '%s' "${STUB_PR_TITLE-fix(x): HIMMEL-1 stub title}" ;;
+            title,author)
+                # HIMMEL-3616 (judge J1284O panel round 3, codex-1): guard 3c's
+                # own query, distinct from the "title"-only case above (jira's
+                # caller never asks for author) — tab-separated title\tauthor,
+                # matching the wrapper's --jq expression.
+                printf '%s\t%s' "${STUB_PR_TITLE-fix(x): HIMMEL-1 stub title}" "${STUB_PR_AUTHOR-someone}" ;;
             "state,url,number,headRefOid,baseRefName,headRefName")
                 # Consolidated meta query (HIMMEL-1080 adds baseRefName;
                 # HIMMEL-1970 adds headRefName, LAST, for the post-merge
@@ -1104,6 +1140,68 @@ if [ "$have_jq" = "1" ]; then
     assert_audit_has "null-default-branch-premerge audits undeterminable" "reason=base-branch-undeterminable"
 else
     echo "  SKIP: jq not installed — null-defaultBranchRef-pre-merge case (CodeRabbit, HIMMEL-1080)"
+fi
+
+# 9h. Pre-merge title gate (HIMMEL-3616, guard 3c): the squash merge below
+# makes the PR TITLE main's commit subject verbatim, but only leg-pr-open.sh
+# checked it at open time — the title can still be edited in the GitHub UI any
+# time up to (and during) the check-ci.sh watch. A type-less title re-verified
+# right before merging refuses (exit 20), same staleness class as the
+# base-branch-changed guard (9e) above.
+STUB_PR_TITLE="[HIMMEL-1] fix the thing" \
+    run_mog 20 "type-less title at pre-merge → exit 20"
+assert_gh_lacks "title-gate: no merge attempted" "pr merge"
+assert_audit_has "title-gate audits the refusal reason" "reason=title-gate-failed"
+assert_audit_has "title-gate audit records the bad title" "title=[HIMMEL-1] fix the thing"
+assert_err_has "title-gate stderr names the conventional-commit rule" "conventional-commit"
+
+# 9i. Pre-merge title gate: an undeterminable title (gh returns empty) refuses
+# (exit 20) fail-closed rather than waving the merge through on a title it
+# could not read.
+STUB_PR_TITLE="" run_mog 20 "undeterminable title at pre-merge → exit 20 fail-closed"
+assert_gh_lacks "undeterminable-title: no merge attempted" "pr merge"
+assert_audit_has "undeterminable-title audits the reason" "reason=title-undeterminable"
+
+# 9j. Pre-merge title gate: a properly-typed, ticketed title still merges
+# (exit 0) — the gate passes real conventional titles through unchanged.
+STUB_SHA="titleok01" STUB_PR_TITLE="fix(x): [HIMMEL-42] thing" \
+    run_mog 0 "conventional ticketed title → merged"
+assert_merge_has "title-gate-ok merge pins the certified sha" "--match-head-commit titleok01"
+
+# 9k. Pre-merge title gate: a ticketless Dependabot-authored title merges
+# (exit 0) — judge J1284O panel round 3 (codex-1) found guard 3c never
+# threaded the PR author, so a title that already passed leg-pr-open.sh's
+# open-time check and the CI title-lint workflow (both exempt
+# dependabot[bot]) was refused here instead. RED-first: the mutant below
+# strips the threading and must reproduce the pre-fix exit 20.
+STUB_SHA="titleok02" STUB_PR_TITLE="build(deps): bump foo from 1 to 2" STUB_PR_AUTHOR="dependabot[bot]" \
+    run_mog 0 "ticketless dependabot title at pre-merge → merged"
+assert_merge_has "title-gate-dependabot merge pins the certified sha" "--match-head-commit titleok02"
+
+# shellcheck disable=SC2016  # literal match/replacement against
+# merge-on-green.sh's own source text (unexpanded $fresh_title_author) --
+# not a shell expansion.
+rc_notitleauthor_widened_line='if ! title_err=$(TICKET_ID_AUTHOR="$fresh_title_author" TICKET_ID_TRUSTED_AUTHOR="$fresh_title_author" "$himmel_repo/scripts/lib/check-pr-title.sh" "$fresh_title" 2>&1); then'
+# shellcheck disable=SC2016  # same reason as above -- literal source text.
+rc_notitleauthor_reverted_line='if ! title_err=$("$himmel_repo/scripts/lib/check-pr-title.sh" "$fresh_title" 2>&1); then'
+rc_notitleauthor_mutant=$(mktemp "${TMPDIR:-/tmp}/mog-3616-notitleauthor-mutant.XXXXXX")
+if [ -z "$rc_notitleauthor_mutant" ] || [ ! -f "$rc_notitleauthor_mutant" ]; then
+    fail "RED (no-author-threading) setup: mktemp produced no mutant-script file — refusing to build the fixture on an empty root"
+else
+    awk -v line="$rc_notitleauthor_widened_line" -v repl="$rc_notitleauthor_reverted_line" \
+        '$0==line{print repl; next}{print}' "$MOG" > "$rc_notitleauthor_mutant"
+    rc_notitleauthor_pre=$(grep -Fxc -- "$rc_notitleauthor_widened_line" "$MOG")
+    rc_notitleauthor_post=$(grep -Fxc -- "$rc_notitleauthor_widened_line" "$rc_notitleauthor_mutant")
+    # A SUBSTITUTION (one line replaced by a different line): diff reports 2
+    # (one `<` old line, one `>` new line) — same shape as RC-4's above.
+    rc_notitleauthor_diff=$(diff "$MOG" "$rc_notitleauthor_mutant" | grep -c '^[<>]')
+    if [ "$rc_notitleauthor_pre" -eq 1 ] && [ "$rc_notitleauthor_post" -eq 0 ] && [ "$rc_notitleauthor_diff" -eq 2 ]; then
+        STUB_SHA="titleok02" STUB_PR_TITLE="build(deps): bump foo from 1 to 2" STUB_PR_AUTHOR="dependabot[bot]" \
+            MOG_SRC="$rc_notitleauthor_mutant" \
+            run_mog 20 "RED: without author threading, the dependabot title is refused (exit 20)"
+    else
+        fail "RED (no-author-threading) setup: mutant did not cleanly substitute exactly one line (pre=$rc_notitleauthor_pre post=$rc_notitleauthor_post diff=$rc_notitleauthor_diff)"
+    fi
 fi
 
 # 10. --dry-run: gates pass but NO merge fires.
@@ -2759,8 +2857,12 @@ fi
 rm -f "$RC67_TRUNC_GOGATE"
 
 # --- HIMMEL-374: best-effort Jira auto-transition on merge -------------------
-# No ticket tag in the PR title => no Jira CLI calls, merge still succeeds.
-STUB_JIRA_BUILD=1 STUB_PR_TITLE="chore: tidy things up" \
+# No BRACKETED ticket TAG in the PR title => no Jira CLI calls, merge still
+# succeeds. The trailing "HIMMEL-99" (no brackets) satisfies the HIMMEL-3616
+# pre-merge title gate's JIRA_PROJECT_KEY=HIMMEL ticket pattern without
+# matching the transition's own `[KEY-N]` bracket tag-extraction regex above —
+# the two ticket notions are deliberately different call sites.
+STUB_JIRA_BUILD=1 STUB_PR_TITLE="chore: tidy things up HIMMEL-99" \
     run_mog 0 "jira: no ticket tag skips transition"
 assert_audit_has "jira: no-tag case records the skip reason" "jira-transition=skip=no-ticket-tag"
 assert_jira_log_lacks "jira: no-tag case makes no jira comment call" "comment"

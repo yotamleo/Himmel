@@ -19,6 +19,7 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HOOK_DIR/refresh-where-are-we-on-end.sh"
 REPO_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
 [ -x "$HOOK" ] || chmod +x "$HOOK" 2>/dev/null || true
+. "$HOOK_DIR/../lib/timeout-bin.sh"
 
 FAILED=0
 PASSED=0
@@ -134,11 +135,11 @@ fi
 # completes async (sentinel + marker) AFTER the delay. Skipped where GNU coreutils
 # `timeout` is absent (stock macOS); the detach primitive is covered portably by
 # scripts/lib/test-detach.sh.
-if command -v timeout >/dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
     state5="$TMP/s5"; mkdir -p "$state5"
     sentinel5="$TMP/sentinel5"
     _t0=$(date +%s)
-    timeout 20 env HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state5" \
+    "$_TIMEOUT_BIN" 20 env HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state5" \
         HIMMEL_WHERE_ARE_WE=1 \
         HIMMEL_WHERE_ARE_WE_TEST_DELAY=12 \
         HIMMEL_WHERE_ARE_WE_COLLECT_CMD="touch '$sentinel5'" \

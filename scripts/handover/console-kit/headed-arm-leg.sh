@@ -531,6 +531,28 @@ for _leg_env_scrub in $LEG_ENV_SCRUB; do
 done
 unset -v _leg_env_scrub
 
+# (#1334 CR follow-up) A different reason than the CONSOLE_CONTEXT scrub above
+# but the same shape: this wrapper's own process may itself BE a leg that is
+# now arming a SIBLING leg, and LEG_PROFILE_SETTINGS/LEG_PROFILE_PREFACE/
+# LEG_PROFILE_MCP_CONFIG - both the plain env var and the
+# HEADED_ARM_LAUNCHER_ENV token leg-1's own launch added - are still live in
+# that shell. Unlike CONSOLE_CONTEXT these three names DO belong on a leg, so
+# this is not a "must never reach a leg" scrub - it is "must be recomputed by
+# THIS leg, never inherited from a sibling". Dropping the token only where a
+# name is re-propagated is not enough: a path that does NOT touch a given name
+# this run (no --profile; a profile with mcpServers: null skips
+# LEG_PROFILE_MCP_CONFIG entirely) would otherwise leave that sibling's stale
+# value live - the plain var read at
+# real-launch time (LEG_PROFILE_MCP_CONFIG's write-if-set check further down)
+# and the token forwarded to the actually-launched leg. Scrubbing both, once,
+# before any branch, means every path starts clean and the existing
+# leg_propagate_env calls are the only thing that can set them again.
+for _leg_env_scrub in LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG; do
+    unset -v "$_leg_env_scrub"
+    leg_env_drop_token "$_leg_env_scrub"
+done
+unset -v _leg_env_scrub
+
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
 # resolves wrong; headed-arm.sh separately validates the exact argv it launches.
@@ -881,7 +903,9 @@ if [ -n "$PROFILE" ]; then
     # unknown root can never be proven safe, so treat that the same as a
     # confirmed root/ancestor match rather than falling through to an
     # ungated grant (CR round 5, codex-1).
+    _leg_doc_path=""
     if [ -n "$DOC" ] && _leg_doc_dir="$(cd -P "$(dirname "$DOC")" 2>/dev/null && pwd -P)"; then
+        _leg_doc_path="$_leg_doc_dir/$(basename "$DOC")"
         _leg_doc_is_root_or_ancestor=0
         if [ -z "$_leg_handover_dir_norm" ]; then
             _leg_doc_is_root_or_ancestor=1
@@ -902,21 +926,49 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
     fi
-    unset -v _leg_doc_dir _leg_doc_is_root_or_ancestor
-    # Belt and braces: even scoped to the doc's own directory, deny Edit/
-    # Write/MultiEdit/NotebookEdit on the handover root's .locks/** outright.
-    # Deny wins over additionalDirectories, so this holds even if a future
-    # change widens the grant back toward the root. Gated the same as the
-    # EnterWorktree deny above: the relay never works in a worktree and
+    unset -v _leg_doc_is_root_or_ancestor
+    # Belt and braces: even scoped to the doc's own directory, deny Edit on
+    # the handover root's .locks/** outright. Only Edit is emitted: Claude
+    # Code applies an Edit(path) rule to every file-editing tool now, and
+    # warns on every leg exit that Write/MultiEdit/NotebookEdit rules on the
+    # same path are dead code (HIMMEL-3645) - so seeding them protects
+    # nothing. Deny wins over additionalDirectories, so this holds even if a
+    # future change widens the grant back toward the root. Gated the same as
+    # the EnterWorktree deny above: the relay never works in a worktree and
     # keeps its settings as they are.
     if [ "$RELAY" -eq 0 ] && [ -n "$_leg_handover_dir_norm" ]; then
         if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_handover_dir_norm" \
-            '.permissions.deny = ((.permissions.deny // []) + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $dir + "/.locks/**)")))')"; then
+            '.permissions.deny = ((.permissions.deny // []) + (["Edit"] | map(. + "(" + $dir + "/.locks/**)")))')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the .locks deny to settings JSON" >&2
             exit 2
         fi
     fi
-    unset -v _leg_handover_dir_norm
+    # (HIMMEL-3698) additionalDirectories above only widens the DIRECTORY
+    # boundary check - it grants no permission `allow` rule, so the auto-mode
+    # classifier could still deny the leg's own Edit of its handover doc
+    # (N577, N582, N564 each parked on exactly this). Grant Edit on this
+    # leg's OWN doc file only - an exact path, never a root-wide `**/*.md`
+    # glob: a glob would let a leg edit a SIBLING leg's or a JUDGE's doc
+    # (its Results, its RETASK block) under the same handover bucket (CR
+    # round 2, codex-1 - the go-gate lock-file rationale above answers a
+    # different question and does not cover cross-doc tampering). An exact
+    # path carries no such risk regardless of where the doc sits relative to
+    # the handover root, so this grant does not need the root/ancestor guard
+    # the additionalDirectories widening above needs. Only Edit is emitted -
+    # Claude Code now applies an Edit(path) rule to every file-editing tool
+    # (HIMMEL-3645 above), so a sibling Write/MultiEdit/NotebookEdit rule on
+    # the same pattern is dead code. Gated the same as the .locks deny
+    # (never the relay), plus JUDGE: a judge does not implement (design 3.2,
+    # Guard E above) and never needs to write a LEG's handover doc, so it
+    # must not gain this grant even though it resolves its own DOC too.
+    if [ "$RELAY" -eq 0 ] && [ "$JUDGE" -eq 0 ] && [ -n "$_leg_doc_path" ]; then
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" \
+            '.permissions.allow = ((.permissions.allow // []) + ["Edit(" + $doc + ")"])')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add the handover-doc Edit allow to settings JSON" >&2
+            exit 2
+        fi
+    fi
+    unset -v _leg_doc_path _leg_handover_dir_norm
     # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
     # coordination preface untouched. Resolved even under --dry-run, same
     # reasoning as the profile/mcp resolution above: a jq failure here must
@@ -935,6 +987,8 @@ if [ -n "$PROFILE" ]; then
     fi
     # The shim reads these; propagate so they survive both konsole's
     # `-e env -u ...` (Linux) and `open -a`'s fresh environment (macOS).
+    # (#1334) The early scrub above already dropped any sibling-leg token/var
+    # for this exact name, so this is a plain fresh add, never a clash.
     leg_propagate_env LEG_PROFILE_SETTINGS "$PROFILE_SETTINGS"
     # (HIMMEL-2985) Per-leg path, like PROFILE_SETTINGS above - the claudex
     # lane below overrides this to the same shape for its own coordination

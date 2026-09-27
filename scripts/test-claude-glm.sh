@@ -374,15 +374,16 @@ t "blank CRLF guard line does not over-refuse clean cwd" 0
 # Drop the mock claude and restrict PATH to the sandbox bin + coreutils + node
 # (the launcher still needs node to seed and date for the annotation) so no real
 # claude on the host PATH is reachable and the pre-exec check fires hermetically.
-# The restricted PATH keeps /usr/bin (coreutils) + NODE_DIR — if a host claude
-# lives in either, the guard cannot be exercised there: SKIP instead of flaking.
+# The restricted PATH keeps /bin + /usr/bin (coreutils, and on macOS /bin is
+# where the system bash lives) + NODE_DIR — if a host claude lives in any of
+# them, the guard cannot be exercised there: SKIP instead of flaking.
 setup; KEY="zai-test-123"
 rm -f "$BIN/claude"
 NODE_DIR="$(dirname "$(command -v node)")"
-if PATH="$BIN:/usr/bin:$NODE_DIR" command -v claude >/dev/null 2>&1; then
+if PATH="$BIN:/bin:/usr/bin:$NODE_DIR" command -v claude >/dev/null 2>&1; then
   echo "skip: T21 — host claude resolvable inside the restricted PATH"
 else
-  ( cd "$WORK" && HOME="$FAKEHOME" PATH="$BIN:/usr/bin:$NODE_DIR" ZAI_API_KEY="$KEY" \
+  ( cd "$WORK" && HOME="$FAKEHOME" PATH="$BIN:/bin:/usr/bin:$NODE_DIR" ZAI_API_KEY="$KEY" \
       CLAUDE_GLM_DOTENV_ROOT="$WORK" bash "$LAUNCHER" >"$WORK/out.txt" 2>&1 )
   noclaude_rc=$?
   [ "$noclaude_rc" -eq 5 ] && echo "ok: missing claude exits 5" \

@@ -827,6 +827,33 @@ run "refs/remotes/origin/main missing, bytes equal the anchor's -> allow" 0 "$(p
 run "malformed JSON -> deny" 2 '{"tool_name":"Bash","tool_input":{"command":'
 run "empty stdin -> deny" 2 ''
 
+# ---- HIMMEL-3707: pr-check.md's own 4.6/4.7 item-resolution fence ----------
+# The runbook's literal `case "$item_rc" in ... esac` rc-branching fence (base
+# pr-check.md 4.6/4.7) denies: the same simple command also mentions
+# scripts/handover/ (the resolve-active-item.sh call), which routes it into
+# full classification, and the tokenizer there misreads the case subject
+# `$item_rc` as an unresolvable writer-path operand. Left denied here on
+# purpose - the guard itself is unchanged - because the fix moved this rc
+# branching into a script instead (scripts/handover/resolve-active-item-
+# report.sh), replacing the fence with the one-line literal in the row below.
+# shellcheck disable=SC2016 # the literal `$item_rc`/`$item_dir` text, never expanded here
+OLD_ITEM_FENCE='item_rc=0
+item_dir=$(bash "'"$PRIMARY"'/scripts/handover/resolve-active-item.sh" --branch '"'"'feat/x'"'"') || item_rc=$?
+case "$item_rc" in
+    0) printf '"'"'%s\n'"'"' "$item_dir" ;;
+    3) echo '"'"'4.6/4.7: no active handover item for feat/x — handover bridges SKIPPED (not a failure)'"'"' ;;
+    *) echo "4.6/4.7: resolve-active-item.sh errored (rc=$item_rc) — handover bridges skipped, best-effort" >&2 ;;
+esac'
+run "base pr-check.md 4.6/4.7 case-fence literal, clean tree -> still denied (HIMMEL-3707, guard unchanged)" 2 \
+    "$(payload "$OLD_ITEM_FENCE" "$WT")" "$HR"
+need_in_err "deny names the unresolvable operand" "does not resolve to this root's"
+
+# The rewritten pr-check.md 4.6/4.7 literal (HIMMEL-3707 fix): one plain bash
+# call, no case statement left for the tokenizer to misread -> allow.
+NEW_ITEM_LITERAL='bash "'"$PRIMARY"'/scripts/handover/resolve-active-item-report.sh" --branch '"'"'feat/x'"'"''
+run "rewritten pr-check.md 4.6/4.7 one-line wrapper literal, clean tree -> allow" 0 \
+    "$(payload "$NEW_ITEM_LITERAL" "$WT")" "$HR"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "all guard-pr-check-literal cases passed"

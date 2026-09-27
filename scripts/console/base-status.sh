@@ -206,7 +206,7 @@ while [ "$i" -lt "$count" ]; do
     done
     [ -n "$matched_fences" ] || continue
 
-    comments_json=$(_gh pr view "$num" --comments --json comments 2>&1)
+    comments_json=$(_gh pr view "$num" --json comments 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "QUERY-ERROR PR $num: could not read comments: $comments_json" >&2

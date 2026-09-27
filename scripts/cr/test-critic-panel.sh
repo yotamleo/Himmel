@@ -1518,14 +1518,14 @@ retry_once() {
 }
 
 # Only run this test if 'timeout' is available (same condition as the panel uses)
-if command -v timeout > /dev/null 2>&1; then
+if [ -n "$_TIMEOUT_BIN" ]; then
     # Outer timeout 20 (was 5): only a backstop against a genuinely hung panel.
     # The tight 5s margin raced panel startup + the 2s member timeout on loaded
     # runners (outer kill -> rc=124, stderr lines never emitted).
     j1_case() {
         j_rc=0
         stderr_j="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=2 CRITICS_JSON="$HANG_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
-            timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j_rc=$?
+            "$_TIMEOUT_BIN" 20 bash "$PANEL" 2>&1 >/dev/null)" || j_rc=$?
         grepq "$stderr_j" -F "unavailable (timeout 2s)" \
             && grepq "$stderr_j" -F "hang-critic" \
             && [ "$j_rc" = "1" ]
@@ -1545,7 +1545,7 @@ if command -v timeout > /dev/null 2>&1; then
     j2_case() {
         j2_rc=0
         stderr_j2="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=20 CRITICS_JSON="$HANG_OVERRIDE_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
-            timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j2_rc=$?
+            "$_TIMEOUT_BIN" 20 bash "$PANEL" 2>&1 >/dev/null)" || j2_rc=$?
         grepq "$stderr_j2" -F "unavailable (timeout 1s)" \
             && grepq "$stderr_j2" -F "hang-critic2" \
             && [ "$j2_rc" = "1" ]
@@ -1565,7 +1565,7 @@ if command -v timeout > /dev/null 2>&1; then
     j3_case() {
         j3_rc=0
         stderr_j3="$(printf '%s' "$DIFF" | CRITIC_TIMEOUT_SECS=2 CRITICS_JSON="$HANG_BAD_JSON" CRITIC_FIRST_PASS="$STUB_HANG" \
-            timeout 20 bash "$PANEL" 2>&1 >/dev/null)" || j3_rc=$?
+            "$_TIMEOUT_BIN" 20 bash "$PANEL" 2>&1 >/dev/null)" || j3_rc=$?
         grepq "$stderr_j3" -F "unavailable (timeout 2s)" \
             && grepq "$stderr_j3" -F "hang-critic3" \
             && [ "$j3_rc" = "1" ]

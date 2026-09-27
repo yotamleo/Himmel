@@ -87,6 +87,14 @@ Same logic as `/triage-clips`:
 
 All `find`/`grep`/`mv` use forward-slash paths; quote every path containing spaces. Verify `<vault>/Clippings/` exists; else exit 0 with `archive-clips: no Clippings/ — nothing to archive`.
 
+### G-8 — Harvest-completion gate (HIMMEL-1137) — run FIRST after vault resolution
+
+archive-clips graduates clips whose eligibility ultimately traces back to a completed harvest. A hard-killed `/harvest-clips` mid-run leaves that state partial — graduating over it can move clips that were never cleanly processed. Before scanning:
+
+If `<vault>/.harvest.done` does not exist: abort with `archive-clips: upstream harvest incomplete — <vault>/.harvest.done not found; run /harvest-clips first.` Exit 2. No date-freshness check: G-2 invalidates the marker at the START of every harvest run, so its mere presence already means "the most recent harvest that started finished cleanly" — a night where harvest exits early without running (bank-threshold skip) leaves yesterday's marker valid, and that is correct.
+
+No operator override flag — keep it minimal; re-running `/harvest-clips` clears the gate.
+
 ### Inbox-folder convention (shared with all pipeline stages)
 
 These names under `Clippings/` are NEVER source clips and MUST be excluded from any clip scan:

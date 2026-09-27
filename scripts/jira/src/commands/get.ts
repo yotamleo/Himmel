@@ -3,6 +3,26 @@ import { request } from '../client.js';
 import { formatIssue, formatIssueWithDescription, printJson } from '../output.js';
 import type { JiraIssue } from '../types.js';
 
+// Local widening: the get.ts fields query includes `labels` (HIMMEL-3610) and
+// `fixVersions` (HIMMEL-3713), but the shared JiraIssue type does not declare
+// them — kept local rather than touching types.ts, which this ticket's scope
+// excludes.
+type IssueWithLabels = JiraIssue & {
+  fields: JiraIssue['fields'] & { labels?: string[]; fixVersions?: Array<{ name: string }> };
+};
+
+function labelsLine(issue: IssueWithLabels): string | undefined {
+  const labels = issue.fields.labels;
+  if (!labels || labels.length === 0) return undefined;
+  return `Labels: ${labels.join(', ')}`;
+}
+
+function fixVersionsLine(issue: IssueWithLabels): string | undefined {
+  const versions = issue.fields.fixVersions;
+  if (!versions || versions.length === 0) return undefined;
+  return `Fix versions: ${versions.map((v) => v.name).join(', ')}`;
+}
+
 export function registerGet(program: Command): void {
   program
     .command('get <key>')
@@ -17,11 +37,11 @@ export function registerGet(program: Command): void {
       // display only, so --short still gets the field for --json
       // round-tripping (consistent --json payload shape regardless of
       // which display flag was used).
-      let issue: JiraIssue;
+      let issue: IssueWithLabels;
       try {
-        issue = await request<JiraIssue>(
+        issue = await request<IssueWithLabels>(
           'GET',
-          `/issue/${key}?fields=summary,status,issuetype,parent,assignee,description`,
+          `/issue/${key}?fields=summary,status,issuetype,parent,assignee,description,labels,fixVersions`,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -31,6 +51,9 @@ export function registerGet(program: Command): void {
       if (options.json) {
         printJson(issue);
       } else if (options.short) {
+        // --short is documented as one-line header only (backward-compatible
+        // with the pre-HIMMEL-121 output) and is consumed as a single line by
+        // scripts/handover/pr-open.sh — never append the labels line here.
         console.log(formatIssue(issue));
       } else {
         // Distinguish "field not returned by API" (undefined — possible
@@ -44,6 +67,10 @@ export function registerGet(program: Command): void {
           );
         }
         console.log(formatIssueWithDescription(issue));
+        const ll = labelsLine(issue);
+        if (ll) console.log(ll);
+        const fvl = fixVersionsLine(issue);
+        if (fvl) console.log(fvl);
       }
     });
 }

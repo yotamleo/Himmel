@@ -76,6 +76,14 @@ if [ -z "$body" ]; then
     exit 1
 fi
 
+# HIMMEL-3616: the squash merge makes this TITLE main's commit subject, so
+# refuse a type-less one here rather than let it reach `gh pr create`/`pr
+# edit` at all — check-pr-title.sh runs the SAME regex check-commit-msg.sh
+# enforces on commits.
+if ! "$HERE/../lib/check-pr-title.sh" "$title"; then
+    exit 1
+fi
+
 # HIMMEL-3572: compute the leg-burn line HERE, inside the script, never as a
 # leg-typed ad-hoc `leg-burn.sh ...` command — that shape was classifier-denied
 # [Session Transcript Tampering]. A failure to resolve or run it is a WARN

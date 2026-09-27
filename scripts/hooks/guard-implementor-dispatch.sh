@@ -48,6 +48,15 @@
 #   IMPL_GUARD_BANK_BUDGET_SECS    funded-bank probe wall-clock budget (default 4)
 #   IMPL_GUARD_READINESS_CMD       override the lane-readiness probe command (tests stub it; default `node scripts/lanes/lane-readiness.mjs`)
 #   IMPL_GUARD_READINESS_BUDGET_SECS  lane-readiness probe wall-clock budget (default 4)
+#   IMPL_GUARD_ROUND_BUDGET_SECS   round-guard probe wall-clock budget (default 4)
+#
+# HIMMEL-1568: this hook is also the Agent-dispatch chokepoint for the
+# HIMMEL-1553 reviewed-round guard (scripts/telegram/round-guard.ts) — the
+# same predicate spawn-glm.ts/spawn-claudex.ts already apply, now covering the
+# in-process Agent-tool dispatch path those two scripts never see. Unlike
+# every other probe above, a payload cwd that IS given but whose round-guard
+# probe cannot be evaluated (bun missing, script missing, probe crash/timeout)
+# fails CLOSED, not open — see the HIMMEL-1568 comment at its call site.
 #
 # Exit codes: 0 allow; 2 refuse. Bash 3.2-compatible.
 set -uo pipefail
@@ -430,6 +439,73 @@ lane_ready() {
             ;;
     esac
 }
+
+# --- HIMMEL-1568: the reviewed-round guard (HIMMEL-1553) runs at THIS
+# chokepoint too, not only in scripts/telegram/spawn-glm.ts / spawn-claudex.ts.
+# Those two lanes are dispatched by an operator/console over a separate
+# subprocess; a real implementor round is just as often an in-process Agent
+# tool call, which reaches neither script (HIMMEL-1568). Control has already
+# reached here past every read-only/research/Haiku/lane-exempt-Explore
+# classification gate above without exiting, so this dispatch is exactly the
+# same "implementation-shaped, not read-only, not research" scope those two
+# scripts gate on — applied to the SAME countReviewedRounds()/checkRoundGuard()
+# in scripts/telegram/round-guard.ts via a small CLI entry point there (never a
+# shell reimplementation): one implementation of "what counts as a reviewed
+# round" backs all three dispatch paths.
+#
+# The dispatch's own worktree is the payload's cwd (.tool_input.cwd // .cwd,
+# the same fallback convention used elsewhere in this repo's hooks) — an
+# Agent-tool dispatch runs IN the caller's existing branch, unlike
+# spawn-glm/spawn-claudex's anonymous own-mode dispatches, which mint a fresh
+# branch and so key off --name instead. A payload with no cwd at all cannot be
+# attributed to any branch — that is a shape issue, not an infra failure, and
+# is skipped here exactly like round-guard.ts's own documented fail-open cases
+# (no ticket key, no ledger): allow, without even trying to run bun.
+#
+# Once a cwd IS given, this stops being "not enough identity to ask the
+# question" and becomes a real implementor dispatch this guard must answer for
+# — so from here the direction flips (deliberately the opposite of every other
+# probe in this hook): bun missing, round-guard.ts missing, or the CLI not
+# finishing cleanly all mean the predicate could not be EVALUATED, and for a
+# genuine implementor dispatch that fails CLOSED with a clear, self-serviceable
+# message (IMPL_GUARD_DISABLE=1 is the only escape hatch — there is no
+# round-guard-specific bypass; the sanctioned unblock is the same INVARIANT:
+# section spawn-glm/spawn-claudex already honour).
+round_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
+if [ -n "$round_cwd" ]; then
+    round_task_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_task_file=""
+    round_task_path="$round_task_file"
+    if [ -n "$round_task_file" ]; then
+        printf '%s' "$text" > "$round_task_file" 2>/dev/null || round_task_file=""
+    fi
+    round_cmd=""
+    if [ -n "$round_task_file" ]; then
+        if command -v bun >/dev/null 2>&1 && [ -f "$repo_root/scripts/telegram/round-guard.ts" ]; then
+            round_cmd="bun $(printf '%q' "$repo_root/scripts/telegram/round-guard.ts") check --cwd $(printf '%q' "$round_cwd") --task-file $(printf '%q' "$round_task_file")"
+        fi
+    fi
+    if [ -z "$round_cmd" ]; then
+        printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate could not be evaluated for this implementor dispatch (bun missing, scripts/telegram/round-guard.ts missing, or a temp file could not be created; dispatch cwd: %s) — fix the environment and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_cwd" >&2
+        [ -n "$round_task_path" ] && rm -f "$round_task_path" 2>/dev/null
+        exit 2
+    fi
+    round_rc=0
+    round_out=$(_run_bounded "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$round_cmd") || round_rc=$?
+    rm -f "$round_task_path" 2>/dev/null
+    case "$round_rc" in
+        0)
+            [ -n "$round_out" ] && warn "$round_out"
+            ;;
+        2)
+            printf '%s\n' "$round_out" >&2
+            exit 2
+            ;;
+        *)
+            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate did not finish cleanly (rc=%s) for this implementor dispatch — failing CLOSED. Output: %s\n' "$round_rc" "$round_out" >&2
+            exit 2
+            ;;
+    esac
+fi
 
 lane=""
 reg_claudex=0

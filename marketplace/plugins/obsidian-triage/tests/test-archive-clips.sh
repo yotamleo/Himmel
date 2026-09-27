@@ -390,6 +390,23 @@ else
 fi
 assert ".md-cited clip exercises predicate and renders empty stuck section" "_(none)_" "$empty_stuck_render"
 
+echo "Test 16: harvest-completion gate (G-8, HIMMEL-1137) documented in all three downstream runbooks"
+# triage/synthesize/archive each consume harvest output and must refuse to
+# run against a harvest that never finished cleanly.
+for rb in triage-clips.md synthesize-clips.md archive-clips.md; do
+    f="$CMDS/$rb"
+    g8_section=$(awk '/^### G-8/{p=1;next} /^### /{if(p) exit} p' "$f")
+    if grep -qF ".harvest.done" "$f"; then found=yes; else found=no; fi
+    assert "$rb checks .harvest.done" "yes" "$found"
+    if grep -qiF "upstream harvest incomplete" "$f"; then found=yes; else found=no; fi
+    assert "$rb aborts with 'upstream harvest incomplete'" "yes" "$found"
+    out=$(printf '%s' "$g8_section" | grep -E "Exit 2")
+    if [ -n "$out" ]; then found=yes; else found=no; fi
+    assert "$rb documents Exit 2 on the gate" "yes" "$found"
+    if grep -qiF "fresh only if" "$f"; then found=yes; else found=no; fi
+    assert "$rb has no date-freshness wording (marker presence alone gates, since G-2 invalidates at harvest start)" "no" "$found"
+done
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -gt 0 ] && exit 1 || exit 0

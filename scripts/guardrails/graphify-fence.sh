@@ -524,6 +524,95 @@ _is_abs_target() {
     esac
 }
 
+# _gf_apply_chdir <raw-dir-token> -> mutate TOOL_CWD for the rest of THIS
+# clause (HIMMEL-3641: env -C/--chdir, sudo -D/--chdir change the child
+# process's cwd before graphify ever runs, so the fence must resolve later
+# path arguments and the no-path-arg CWD fallback against THAT directory,
+# not the tool call's real cwd). Every downstream cwd-dependent path (_abs,
+# _exists_under_cwd, classify's cross-drive check, evaluate_invocation's
+# no-path-arg fallback) reads TOOL_CWD, so this one mutation point is enough.
+# On anything this file cannot resolve lexically - a missing/empty argument,
+# one carrying any character a real shell could still act on (see the J1290R
+# note below), or (mirrors the CD_SEEN drift guard just above) a RELATIVE
+# argument once a prior clause already ran cd/pushd/popd and the real cwd is
+# unknown - this records the reason instead of denying outright, exactly like
+# _GF_ENDPOINT_OVERRIDE just above: the wrapper walk runs for every clause,
+# graphify or not, and denying here would fail-closed a plain
+# `env -C $DIR make` that never touches graphify at all.
+# _gf_deny_on_chdir_unresolved enforces it once classify_clause has actually
+# confirmed graphify is the command being run.
+_gf_apply_chdir() {
+    local raw="$1"
+    # HIMMEL-3641 J1290O F1: a SECOND chdir inside one wrapper invocation
+    # (env -C a -C ., --chdir=a --chdir=., sudo -D a -D .) stacks each
+    # relative DIR onto the already-mutated TOOL_CWD from the first one; GNU
+    # env/sudo instead take the LAST flag and resolve it against the
+    # invocation's ORIGINAL cwd. Modelling that last-wins-from-origin
+    # semantics correctly would need a second saved cwd; failing closed on
+    # the second chdir is the simplest safe shape and never falsely denies
+    # an invocation with only one chdir. _GF_CHDIR_APPLIED is reset once per
+    # wrapper invocation (env)/sudo) arm entry below), never once per clause,
+    # so nested wrappers (sudo -D a env -C b - two DIFFERENT invocations)
+    # each still get their own single chdir.
+    if [ "${_GF_CHDIR_APPLIED:-0}" = 1 ]; then
+        _GF_CHDIR_DENY_REASON="chdir wrapper (env -C/--chdir, sudo -D/--chdir) given more than once in one invocation: $raw"
+        return 0
+    fi
+    # HIMMEL-3641 J1290R (R1/R2/R3): two rounds of trying to lexically model
+    # what a real shell would do with this argument - unwrap surrounding
+    # quotes, expand a bare ~/~/..., reject $/backtick - each produced its own
+    # wrong-directory ALLOW (an attached/quoted `~` is NOT shell-expanded and
+    # stays literal, but was expanded to $HOME anyway; a whole-token-wrapped
+    # backtick lost its backticks before the unresolvable-substitution check
+    # ever ran). Per J1290R: stop modelling shell expansion entirely. The DIR
+    # argument is honoured only when its RAW token is a plain path - letters,
+    # digits, `.`, `_`, `/`, `+`, `-` and nothing else, so no ~, $, backtick,
+    # quote, backslash, glob or space survives - which is also why this no
+    # longer calls _strip_wrap first: unwrapping a quote before validating
+    # would let a quoted value back in.
+    case "$raw" in
+        ''|*[!A-Za-z0-9._/+-]*)
+            _GF_CHDIR_DENY_REASON="cannot resolve chdir; run graphify from the target dir"
+            return 0 ;;
+    esac
+    if [ "$CD_SEEN" = 1 ] && ! _is_abs_target "$raw"; then
+        _GF_CHDIR_DENY_REASON="chdir wrapper directory argument is relative after an earlier cd/pushd/popd: $raw"
+        return 0
+    fi
+    TOOL_CWD="$(_abs "$raw")"
+    _GF_CHDIR_APPLIED=1
+}
+
+# _gf_deny_on_chdir_unresolved -> HIMMEL-3641. Called right before a graphify
+# command-position invocation is actually evaluated, alongside
+# _gf_deny_on_endpoint_override; denies when _gf_apply_chdir saw an
+# env -C/--chdir or sudo -D/--chdir it could not resolve ahead of graphify.
+_gf_deny_on_chdir_unresolved() {
+    [ -n "${_GF_CHDIR_DENY_REASON:-}" ] || return 0
+    deny "$_GF_CHDIR_DENY_REASON"
+}
+
+# _gf_deny_if_graphify_follows <toks index to scan from> <deny reason> ->
+# HIMMEL-3641 J1290R R2/R3: fail-closed scan, same shape as the existing
+# xargs/find -exec and bundled -*C*/-*D* arms in classify_clause below - deny
+# if graphify appears anywhere later in the same clause, otherwise leave the
+# clause alone (return normally; the caller still returns 0). Reads the
+# caller's `toks`/`n` by bash dynamic scope, same as _gf_apply_chdir reads
+# TOOL_CWD.
+_gf_deny_if_graphify_follows() {
+    local k="$1"
+    while [ "$k" -lt "$n" ]; do
+        # HIMMEL-3641 round-6 codex-1: substring match, not exact - a later
+        # token can carry graphify GLUED into another flag's value (e.g. a
+        # bundled env -S"graphify ..."), same as the -*S* arm's own scan.
+        case "$(_strip_cmd "${toks[$k]}")" in
+            *graphify*)
+                deny "$2" ;;
+        esac
+        k=$((k+1))
+    done
+}
+
 # _exists_under_cwd <bare-token> -> 0 if <tool-call-cwd>/<token> exists on disk.
 # A bare-word (no slash/drive/extension) target the agent dropped without a ./
 # prefix (HIMMEL-779): used to keep it from being swallowed as a subcommand word
@@ -1671,8 +1760,11 @@ classify_clause() {
                 # never runs at all, so denying it costs nothing either.)
                 k=$((i+1))
                 while [ "$k" -lt "$n" ]; do
+                    # HIMMEL-3641 round-7 codex-1 sweep: substring, not exact
+                    # - graphify can be glued into a later token's value
+                    # (env -S"graphify ..."), same as the -*S* arm's scan.
                     case "$(_strip_cmd "${toks[$k]}")" in
-                        graphify|*/graphify)
+                        *graphify*)
                             deny "graphify via quiet-run.sh with an unparsable label is not statically fenceable; invoke graphify directly" ;;
                     esac
                     k=$((k+1))
@@ -1680,21 +1772,168 @@ classify_clause() {
                 return 0 ;;
             env)
                 i=$((i+1))                                 # env [-i|-|-u VAR|X=y]... CMD
+                _GF_CHDIR_APPLIED=0                        # HIMMEL-3641 J1290O F1: scope to THIS invocation
                 while [ "$i" -lt "$n" ]; do
                     gf_w="$(_strip_cmd "${toks[$i]}")"
+                    # HIMMEL-3641 J1290R R2: a quote, backtick, backslash or
+                    # substitution character inside an option-shaped token
+                    # (env '-C'<dir>, "-C<dir>", -\C<dir>, `-C<dir>) strips to
+                    # something that LOOKS like -C/-D/--chdir once _strip_cmd
+                    # cleans it, but the RAW token does not literally start
+                    # with that prefix - so the attached-value strips below
+                    # (`${toks[$i]#-C}` etc.) are a no-op and misresolve the
+                    # directory instead of failing closed. Any mismatch
+                    # between the raw and _strip_cmd'd forms of an
+                    # option-shaped token means one of those characters was
+                    # removed; fail closed rather than enumerate which one.
+                    case "$gf_w" in
+                        -*)
+                            if [ "${toks[$i]}" != "$gf_w" ]; then
+                                # HIMMEL-3641 J1290S codex-1: "graphify" can be
+                                # embedded INSIDE this same mismatched token
+                                # (env -S"graphify ..." splits into a token
+                                # whose stripped form never equals the raw
+                                # one) - _gf_deny_if_graphify_follows only
+                                # scans LATER tokens, so check this one first.
+                                case "$gf_w" in
+                                    *graphify*)
+                                        deny "graphify via a wrapper option token containing a quote, backtick, backslash or substitution character is not statically fenceable; invoke graphify directly" ;;
+                                esac
+                                _gf_deny_if_graphify_follows $((i+1)) \
+                                    "graphify via a wrapper option token containing a quote, backtick, backslash or substitution character is not statically fenceable; invoke graphify directly"
+                                return 0
+                            fi ;;
+                    esac
                     case "$gf_w" in
                         -u)   i=$((i+2)) ;;                # flag + VAR value
+                        -C)
+                            _gf_apply_chdir "${toks[$((i+1))]:-}"
+                            if [ -n "${_GF_CHDIR_DENY_REASON:-}" ]; then
+                                # HIMMEL-3641 J1290S S1: a separate-token DIR
+                                # argument _gf_apply_chdir could not resolve
+                                # (e.g. a tokenizer-split $(...)/`...`/"..."
+                                # fragment) must not let the walk step past it
+                                # with the usual i+=2 - that lands on the
+                                # substitution's leftover tail token,
+                                # misclassifies it as the wrapped command, and
+                                # never reaches graphify's own command-position
+                                # check. Fail closed now instead.
+                                _gf_deny_if_graphify_follows $((i+1)) "$_GF_CHDIR_DENY_REASON"
+                                return 0
+                            fi
+                            i=$((i+2)) ;;                                    # HIMMEL-3641: -C DIR
+                        # HIMMEL-3641 J1290O F2: pass the RAW token's suffix
+                        # (${toks[$i]}), not $gf_w - $gf_w is already
+                        # _strip_cmd'd, which deletes $/`/quotes/() before
+                        # _gf_apply_chdir's own substitution check ever sees
+                        # them, so env -C$X / env -C"$X" silently resolved
+                        # instead of failing closed.
+                        -C?*) _gf_apply_chdir "${toks[$i]#-C}"; i=$((i+1)) ;;        # HIMMEL-3641: -CDIR attached
                         --*)
                             # HIMMEL-2610: --u/--uns/... are unambiguous GNU
                             # abbreviations of env's only value-taking long
                             # option, --unset; the old literal-only match
                             # missed them (same under-consumption class as
-                            # nice/time above).
-                            if guard_is_long_abbrev "unset" "$gf_w"; then
+                            # nice/time above). HIMMEL-3641: --chdir/--ch/...
+                            # (env -C's long form) is the other value-taking
+                            # long option and is checked first so an
+                            # ambiguous-with-neither abbreviation still falls
+                            # through to the generic -*) arm below.
+                            # HIMMEL-3641 codex-1 (J1290R): this arm is checked
+                            # BEFORE -*C* below - a long option's raw token
+                            # starts with `--` and can contain an uppercase C
+                            # anywhere in its name or value (--chdir=/tmp/CorpusDir,
+                            # --unset=CLAUDE_CODE_USE_BEDROCK); testing -*C*
+                            # first would misclassify it as an unresolvable
+                            # bundled short option and could deny a legitimate
+                            # invocation that should be allowed. `--` never
+                            # matches a bundled short option, so ordering the
+                            # arms this way changes no *correct* -*C* match.
+                            if guard_is_long_abbrev "chdir" "$gf_w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then
+                                    # HIMMEL-3641 J1290O F2: raw value after
+                                    # the FIRST `=` in the raw token, not
+                                    # $GUARD_LOPT_VAL (parsed from $gf_w,
+                                    # already _strip_cmd'd - see the -CDIR
+                                    # note above).
+                                    _gf_apply_chdir "${toks[$i]#*=}"; i=$((i+1))
+                                else
+                                    _gf_apply_chdir "${toks[$((i+1))]:-}"
+                                    if [ -n "${_GF_CHDIR_DENY_REASON:-}" ]; then
+                                        # HIMMEL-3641 J1290S S1: see the -C DIR
+                                        # arm's comment above - same
+                                        # fail-closed fix for --chdir DIR's
+                                        # separate-token form.
+                                        _gf_deny_if_graphify_follows $((i+1)) "$_GF_CHDIR_DENY_REASON"
+                                        return 0
+                                    fi
+                                    i=$((i+2))
+                                fi
+                            elif guard_is_long_abbrev "unset" "$gf_w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
+                            elif guard_is_long_abbrev "split-string" "$gf_w"; then
+                                # HIMMEL-3641 J1290R R2: the long-option
+                                # spelling of -S - see the -*S* note below for
+                                # why the value is scanned as a substring, not
+                                # matched exactly.
+                                k=$i
+                                while [ "$k" -lt "$n" ]; do
+                                    case "$(_strip_cmd "${toks[$k]}")" in
+                                        *graphify*)
+                                            deny "graphify via env -S/--split-string is not statically fenceable; invoke graphify directly" ;;
+                                    esac
+                                    k=$((k+1))
+                                done
+                                return 0
                             else
                                 i=$((i+1))
                             fi ;;
+                        # HIMMEL-3641 J1290O F4: a bundled short option
+                        # containing -C's letter (-iC, -vC, -i0C, ...) cannot
+                        # be positionally resolved without modelling GNU
+                        # getopt bundling - which flag in the bundle actually
+                        # consumes the DIR value is ambiguous from lexical
+                        # inspection alone, and misresolving it misaligns the
+                        # walk so graphify is never reached (silent ALLOW).
+                        # Fail closed the same way xargs/find -exec do above:
+                        # scan the rest of the clause for graphify and deny
+                        # if present, leave any other command alone. Checked
+                        # AFTER --* above (HIMMEL-3641 codex-1/J1290R) so a
+                        # long option is never routed here.
+                        -*C*)
+                            k=$((i+1))
+                            while [ "$k" -lt "$n" ]; do
+                                # HIMMEL-3641 round-7 codex-1: substring, not
+                                # exact - see the -*S* note above.
+                                case "$(_strip_cmd "${toks[$k]}")" in
+                                    *graphify*)
+                                        deny "graphify via a bundled env short option containing -C (env -iC/-vC/...) is not statically fenceable; invoke graphify directly, or spell -C separately" ;;
+                                esac
+                                k=$((k+1))
+                            done
+                            return 0 ;;
+                        # HIMMEL-3641 J1290R R2: env -S/--split-string (and a
+                        # bundled short option containing -S's letter, e.g.
+                        # -iS) re-splits its VALUE into a whole new argv at
+                        # runtime - a shebang-line mechanism this fence cannot
+                        # statically evaluate. The value is one quoted token
+                        # to this fence's own tokenizer (not pre-split like a
+                        # real xargs/find -exec deferred argv), so `graphify`
+                        # can sit anywhere INSIDE that one token rather than
+                        # being its own token - scan for it as a substring,
+                        # starting at THIS token (covers both the separate
+                        # `-S "..."` form and an attached `-S"..."` one), and
+                        # deny if present.
+                        -*S*)
+                            k=$i
+                            while [ "$k" -lt "$n" ]; do
+                                case "$(_strip_cmd "${toks[$k]}")" in
+                                    *graphify*)
+                                        deny "graphify via env -S/--split-string is not statically fenceable; invoke graphify directly" ;;
+                                esac
+                                k=$((k+1))
+                            done
+                            return 0 ;;
                         [A-Za-z_]*=*)
                             case "$gf_w" in
                                 ANTHROPIC_BASE_URL=*|CLAUDE_CODE_USE_BEDROCK=*|CLAUDE_CODE_USE_VERTEX=*|ANTHROPIC_API_KEY=*|ANTHROPIC_AUTH_TOKEN=*)
@@ -1756,10 +1995,43 @@ classify_clause() {
                 continue ;;
             sudo)
                 i=$((i+1))                                 # sudo [flags] CMD
+                _GF_CHDIR_APPLIED=0                        # HIMMEL-3641 J1290O F1: scope to THIS invocation
                 while [ "$i" -lt "$n" ]; do
                     gf_w="$(_strip_cmd "${toks[$i]}")"
+                    # HIMMEL-3641 J1290R R2: same raw-vs-stripped mismatch
+                    # guard as env's wrapper walk above (sudo '-D'<dir>,
+                    # "-D<dir>", -\D<dir>, ...) - see that arm's comment.
+                    case "$gf_w" in
+                        -*)
+                            if [ "${toks[$i]}" != "$gf_w" ]; then
+                                # HIMMEL-3641 J1290S codex-1: same fix as
+                                # env's wrapper walk above - check THIS token
+                                # for an embedded "graphify" before scanning
+                                # only the later ones.
+                                case "$gf_w" in
+                                    *graphify*)
+                                        deny "graphify via a wrapper option token containing a quote, backtick, backslash or substitution character is not statically fenceable; invoke graphify directly" ;;
+                                esac
+                                _gf_deny_if_graphify_follows $((i+1)) \
+                                    "graphify via a wrapper option token containing a quote, backtick, backslash or substitution character is not statically fenceable; invoke graphify directly"
+                                return 0
+                            fi ;;
+                    esac
                     case "$gf_w" in
                         -u|-g|-U|-p|-C|-r|-t|-h) i=$((i+2)) ;;       # flag + value
+                        -D)
+                            _gf_apply_chdir "${toks[$((i+1))]:-}"
+                            if [ -n "${_GF_CHDIR_DENY_REASON:-}" ]; then
+                                # HIMMEL-3641 J1290S S1: see env -C's arm
+                                # comment above - same fail-closed fix, sudo's
+                                # -D DIR twin.
+                                _gf_deny_if_graphify_follows $((i+1)) "$_GF_CHDIR_DENY_REASON"
+                                return 0
+                            fi
+                            i=$((i+2)) ;;                                    # HIMMEL-3641: -D DIR
+                        # HIMMEL-3641 J1290O F2: raw suffix, not $gf_w - see
+                        # the env -CDIR note above.
+                        -D?*) _gf_apply_chdir "${toks[$i]#-D}"; i=$((i+1)) ;;        # HIMMEL-3641: -DDIR attached
                         --)                      i=$((i+1)); break ;;  # end of sudo options
                         --*)
                             # HIMMEL-2610: sudo had NO long-option handling
@@ -1767,7 +2039,30 @@ classify_clause() {
                             # --close-from/--role/--type/--host (and any
                             # unambiguous abbreviation of each) each take a
                             # SEPARATE value, same as their short forms above.
-                            if guard_is_long_abbrev "user" "$gf_w" || guard_is_long_abbrev "group" "$gf_w" \
+                            # HIMMEL-3641: --chdir (-D's long form) is checked
+                            # first, same rationale as env's --chdir above.
+                            # HIMMEL-3641 codex-1 (J1290R): checked BEFORE
+                            # -*D* below - see the env --* note above; same
+                            # ordering rationale (a --chdir=/tmp/DataDir or
+                            # --host=DBhost value can contain -D's letter).
+                            if guard_is_long_abbrev "chdir" "$gf_w"; then
+                                if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then
+                                    # HIMMEL-3641 J1290O F2: raw value, not
+                                    # $GUARD_LOPT_VAL - see env's --chdir=
+                                    # note above.
+                                    _gf_apply_chdir "${toks[$i]#*=}"; i=$((i+1))
+                                else
+                                    _gf_apply_chdir "${toks[$((i+1))]:-}"
+                                    if [ -n "${_GF_CHDIR_DENY_REASON:-}" ]; then
+                                        # HIMMEL-3641 J1290S S1: see env -C's
+                                        # arm comment above - same fail-closed
+                                        # fix, sudo --chdir DIR's twin.
+                                        _gf_deny_if_graphify_follows $((i+1)) "$_GF_CHDIR_DENY_REASON"
+                                        return 0
+                                    fi
+                                    i=$((i+2))
+                                fi
+                            elif guard_is_long_abbrev "user" "$gf_w" || guard_is_long_abbrev "group" "$gf_w" \
                                 || guard_is_long_abbrev "other-user" "$gf_w" || guard_is_long_abbrev "prompt" "$gf_w" \
                                 || guard_is_long_abbrev "close-from" "$gf_w" || guard_is_long_abbrev "role" "$gf_w" \
                                 || guard_is_long_abbrev "type" "$gf_w" || guard_is_long_abbrev "host" "$gf_w"; then
@@ -1775,6 +2070,23 @@ classify_clause() {
                             else
                                 i=$((i+1))
                             fi ;;
+                        # HIMMEL-3641 J1290O F4: bundled short option
+                        # containing -D's letter (-nD, -EHD, ...) - see the
+                        # env -*C* note above; same fail-closed shape. Checked
+                        # AFTER --* above (HIMMEL-3641 codex-1/J1290R) so a
+                        # long option is never routed here.
+                        -*D*)
+                            k=$((i+1))
+                            while [ "$k" -lt "$n" ]; do
+                                # HIMMEL-3641 round-7 codex-1 sweep: substring,
+                                # not exact - see the env -*C* note above.
+                                case "$(_strip_cmd "${toks[$k]}")" in
+                                    *graphify*)
+                                        deny "graphify via a bundled sudo short option containing -D (sudo -nD/-EHD/...) is not statically fenceable; invoke graphify directly, or spell -D separately" ;;
+                                esac
+                                k=$((k+1))
+                            done
+                            return 0 ;;
                         [A-Za-z_]*=*)            i=$((i+1)) ;;        # sudo-local VAR=val
                         -*)                      i=$((i+1)) ;;        # -n / -E / -H / -i / -s / ...
                         *)                       break ;;
@@ -1797,8 +2109,10 @@ classify_clause() {
         xargs|*/xargs)
             j=$((i+1))
             while [ "$j" -lt "$n" ]; do
+                # HIMMEL-3641 round-7 codex-1 sweep: substring, not exact -
+                # see the env -*S* note above.
                 case "$(_strip_cmd "${toks[$j]}")" in
-                    graphify|*/graphify)
+                    *graphify*)
                         deny "graphify via xargs/find -exec is not statically fenceable; invoke graphify directly" ;;
                 esac
                 j=$((j+1))
@@ -1810,7 +2124,7 @@ classify_clause() {
             while [ "$j" -lt "$n" ]; do
                 case "$(_strip_cmd "${toks[$j]}")" in
                     -exec|-execdir) seen_exec=1 ;;
-                    graphify|*/graphify)
+                    *graphify*)
                         [ "$seen_exec" = 1 ] && \
                             deny "graphify via xargs/find -exec is not statically fenceable; invoke graphify directly" ;;
                 esac
@@ -1866,6 +2180,7 @@ classify_clause() {
             done
             if [ "$found" = 1 ]; then
                 _gf_deny_on_endpoint_override
+                _gf_deny_on_chdir_unresolved
                 args=()
                 while [ "$k" -lt "$n" ]; do args+=("${toks[$k]}"); k=$((k+1)); done
                 evaluate_invocation ${args[@]+"${args[@]}"}
@@ -1878,6 +2193,7 @@ classify_clause() {
     case "$s" in
         graphify|*/graphify)
             _gf_deny_on_endpoint_override
+            _gf_deny_on_chdir_unresolved
             args=()
             j=$((i+1))
             while [ "$j" -lt "$n" ]; do args+=("${toks[$j]}"); j=$((j+1)); done
@@ -1955,6 +2271,13 @@ tmp="${tmp//&/$'\n'}"
 # relative target (see the CD_SEEN checks in evaluate_invocation).
 CD_SEEN=0
 
+# HIMMEL-3641: an env -C/sudo -D chdir wrapper only changes ITS OWN child
+# process's cwd, never a later shell clause's - so TOOL_CWD is reset to the
+# tool call's real cwd before each top-level clause, exactly like
+# _GF_ENDPOINT_OVERRIDE below, and a chdir wrapper in one &&/;-joined clause
+# can never leak into the next.
+_GF_TOOL_CWD_BASE="$TOOL_CWD"
+
 while IFS= read -r clause || [ -n "$clause" ]; do
     [ -n "$clause" ] || continue
     # shellcheck disable=SC2086 # intentional word split for tokenisation
@@ -1965,6 +2288,9 @@ while IFS= read -r clause || [ -n "$clause" ]; do
     # there would erase an override the outer call already captured before the
     # inner call ever reaches the graphify token.
     _GF_ENDPOINT_OVERRIDE=""
+    _GF_CHDIR_DENY_REASON=""
+    _GF_CHDIR_APPLIED=0
+    TOOL_CWD="$_GF_TOOL_CWD_BASE"
     classify_clause "$@"
     # Same _strip_cmd normalization as the graphify command-position match
     # (quotes/backticks/$/(/)/backslash stripped), checked on the clause's own

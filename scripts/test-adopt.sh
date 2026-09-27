@@ -617,6 +617,25 @@ expected_rel="$(norm "$relbase/rel-vault/handovers")"
 case "$hd" in /*|[A-Za-z]:/*) : ;; *) fail "HIMMEL-839 canonicalize: HANDOVER_DIR is not absolute: $hd" ;; esac
 echo "ok: HIMMEL-839 canonicalizes a relative --luna-target to an absolute HANDOVER_DIR"
 
+# ── 4e. HIMMEL-2466: handover.mode=inline must NOT wire HANDOVER_DIR ────────
+# Default (no --handover-mode) preserves today's HIMMEL-839 behaviour (cases
+# 4/4b/4c/4d above); --handover-mode inline is the new no-op path.
+inline_vault="$work/inline-vault"
+inline_target="$work/inline-target"; mkdir -p "$inline_target"
+HOME="$base_home" bash "$adopt" --profile luna --target "$inline_target" --luna-target "$inline_vault" --handover-mode inline >/dev/null
+hd=$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$inline_target/.claude/settings.json" 2>/dev/null)
+[ "$hd" = "ABSENT" ] || fail "HIMMEL-2466: handover.mode=inline still wired env.HANDOVER_DIR ([$hd])"
+[ -d "$inline_vault/handovers" ] && fail "HIMMEL-2466: handover.mode=inline must not create <vault>/handovers"
+echo "ok: HIMMEL-2466 handover.mode=inline leaves settings.json without env.HANDOVER_DIR"
+
+# ── 4f. HIMMEL-2466 control: --handover-mode external is still today's behaviour ──
+external_vault="$work/external-vault"
+external_target="$work/external-target"; mkdir -p "$external_target"
+HOME="$base_home" bash "$adopt" --profile luna --target "$external_target" --luna-target "$external_vault" --handover-mode external >/dev/null
+hd=$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$external_target/.claude/settings.json" 2>/dev/null)
+[ "$hd" = "$(norm "$external_vault/handovers")" ] || fail "HIMMEL-2466 control: --handover-mode external did not persist HANDOVER_DIR ([$hd])"
+echo "ok: HIMMEL-2466 control: --handover-mode external still wires HANDOVER_DIR"
+
 # ── 6. all — core→--target, vault→--luna-target (no leak) ────────────────────
 allrepo="$work/allrepo"; allvault="$work/allvault"; mkdir -p "$allrepo"
 HOME="$base_home" bash "$adopt" --profile all --scope project --target "$allrepo" --luna-target "$allvault" >/dev/null

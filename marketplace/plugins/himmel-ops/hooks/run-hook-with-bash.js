@@ -275,6 +275,15 @@ const MUST_RUN_CHAIN_MEMBERS = new Set([
   // been starved of budget, so naming a file that does not exist yet is inert:
   // nothing looks the entry up until that hook is actually wired into a chain.
   'block-write-into-main-checkout.sh',
+  // HIMMEL-3669 (J1295O): Guard D — self-describes as a SECURITY FENCE that
+  // fails CLOSED; a starved run let its relay write-deny be skipped.
+  'guard-relay-writes.sh',
+  // HIMMEL-3669: self-describes as "this security hook" and fails CLOSED on
+  // a missing lib; a starved run let an edit on main slip through unchecked.
+  'block-edit-on-main.sh',
+  // HIMMEL-3669: the auto-memory index's only form gate (line/growth caps);
+  // a starved run let a malformed MEMORY.md write through unchecked.
+  'guard-memory-capture.sh',
 ]);
 
 function envMs(name, fallback) {
@@ -642,7 +651,16 @@ function runChain(members, lifecycle = false) {
     // Clamped to what is left of the chain budget, but never below the floor:
     // a spent budget must not reduce the remaining guards to a 0ms execution
     // slice — each still gets a real, if small, chance to decide.
-    const sharedBound = Math.max(MIN_MEMBER_TIMEOUT_MS, Math.min(memberTimeoutMs(), chainDeadline - Date.now()));
+    const budgetBound = Math.max(MIN_MEMBER_TIMEOUT_MS, Math.min(memberTimeoutMs(), chainDeadline - Date.now()));
+    // HIMMEL-3620 (N2): that floor guards against a spent SHARED budget, but
+    // must never push an advisory member's window past the entry-safe
+    // deadline itself — several floored members in a row can otherwise add up
+    // to more time than is actually left before Claude Code's own entry
+    // `timeout` fires, and a killed entry fails the whole chain OPEN. Clamp
+    // down (never back up) by what is left before entryDeadline, floored at
+    // 1ms — never 0 or negative, which spawnSync's `timeout` treats as "no
+    // timeout at all" rather than "expire immediately".
+    const sharedBound = Math.max(1, Math.min(budgetBound, entryDeadline - Date.now()));
     // HIMMEL-3080: a must-run SECURITY member gets its own window regardless
     // of what the shared budget has left — a slow upstream neighbour must not
     // deny a must-run guard that never got to run — but that window is ALSO
@@ -652,7 +670,15 @@ function runChain(members, lifecycle = false) {
     // would have clamped this member below its own full window, purely to
     // drive the denial message's diagnostics below.
     const starved = mustRun && sharedBound < memberTimeoutMs();
-    const mustRunWindow = Math.min(memberTimeoutMs(), entryDeadline - Date.now());
+    // HIMMEL-3620 (N1): floor the CONFIGURED member timeout at the same
+    // MIN_MEMBER_TIMEOUT_MS floor every other member gets before capping by
+    // the entry-safe deadline — otherwise a RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS
+    // override below the floor made mustRunWindow always land under it, so
+    // the pre-spawn deny check below fired for every must-run member
+    // regardless of how much of the real entry deadline was actually left.
+    // Capping by entryDeadline afterward is unchanged, so a genuinely
+    // exhausted entry deadline still denies exactly as before.
+    const mustRunWindow = Math.min(Math.max(memberTimeoutMs(), MIN_MEMBER_TIMEOUT_MS), entryDeadline - Date.now());
     const bound = mustRun ? mustRunWindow : sharedBound;
     // HIMMEL-3080 (J1259O F1): even the floor cannot fit before the entry
     // deadline — spawning anyway would either get killed mid-run (still a

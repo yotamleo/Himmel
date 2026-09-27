@@ -193,6 +193,22 @@ assert "sort --buffer-size ctrl"  ALLOW "$(decide "$(j_bash 'sort --buffer-size=
 assert "tree --dirsfirst ctrl"    ALLOW "$(decide "$(j_bash 'tree --dirsfirst .')")"
 assert "file --mime-type ctrl"    ALLOW "$(decide "$(j_bash 'file --mime-type f')")"
 
+# --- Round-7 locks: HIMMEL-3632 — sort's raw (quote-preserving) token
+# defeated the `--*`/`-o*` case match, and `--compress-program` (runs an
+# arbitrary program on spill = ACE) was never checked at all. FAIL CLOSED:
+# an unrecognised or program/output-taking sort option must fall through to
+# normal permission, never a per-shape patch that parses more. ---
+assert "sort --compress-program"  PASS  "$(decide "$(j_bash 'sort --compress-program=sh f')")"
+assert "sort --comp abbrev exec"  PASS  "$(decide "$(j_bash 'sort --comp=sh f')")"
+assert "sort --output single-q"   PASS  "$(decide "$(j_bash "sort '--output=/tmp/pwned' f")")"
+assert "sort --output double-q"   PASS  "$(decide "$(j_bash 'sort "--output=/tmp/pwned" f')")"
+assert "sort -uo clustered write" PASS  "$(decide "$(j_bash 'sort -uo /tmp/pwned f')")"
+# plain read-only sort forms (incl. clustered/unrelated short flags) still
+# auto-approve.
+assert "sort plain"               ALLOW "$(decide "$(j_bash 'sort f')")"
+assert "sort -u plain"            ALLOW "$(decide "$(j_bash 'sort -u f')")"
+assert "sort -k2 plain"           ALLOW "$(decide "$(j_bash 'sort -k2 f')")"
+
 # --- Correctness-CR locks: false-negatives that should ALLOW ---
 assert "xxd file + redirect"      ALLOW "$(decide "$(j_bash 'xxd file 2>/dev/null')")"
 assert "git --git-dir= equals"    ALLOW "$(decide "$(j_bash 'git --git-dir=/repo log --oneline')")"

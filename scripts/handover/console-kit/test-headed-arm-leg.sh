@@ -1098,12 +1098,35 @@ check "full launch --profile: additionalDirectories never contains the handover 
   "$(jq --arg d "$HANDOVER_DIR" '(.permissions.additionalDirectories // []) | any(. == $d)' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
   "false"
 
-# Belt and braces: Edit/Write/MultiEdit/NotebookEdit are denied on the
-# handover root's .locks/** outright, regardless of what additionalDirectories
-# grants - deny wins over additionalDirectories.
-check "full launch --profile: seeded settings deny Edit/Write/MultiEdit/NotebookEdit on .locks/**" \
+# Belt and braces: Edit is denied on the handover root's .locks/** outright,
+# regardless of what additionalDirectories grants - deny wins over
+# additionalDirectories. HIMMEL-3645: only Edit is emitted - Claude Code
+# applies an Edit(path) rule to every file-editing tool now, and warns on
+# every leg exit that Write/MultiEdit/NotebookEdit rules on the same path
+# are dead, so seeding them protects nothing.
+check "full launch --profile: seeded settings deny Edit on .locks/**, naming the resolved handover root" \
   "$(jq -c '.permissions.deny' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
+  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree", ("Edit(" + $d + "/.locks/**)")]')"
+check "full launch --profile: seeded settings deny NOTHING for Write/MultiEdit/NotebookEdit on .locks/** (dead rules dropped)" \
+  "$(jq -c '(.permissions.deny // []) | map(select(startswith("Write(") or startswith("MultiEdit(") or startswith("NotebookEdit(")))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "[]"
+
+# HIMMEL-3698: additionalDirectories above only widens the directory
+# boundary check - it grants no permission `allow` rule, so a leg's own
+# Edit of its handover doc still needs an explicit allow (N577/N582/N564
+# each parked on exactly this classifier gap). Scoped to the leg's OWN doc
+# file only, an exact path - never a root-wide `**/*.md` glob, which would
+# let a leg edit a SIBLING leg's or a JUDGE's doc under the same handover
+# bucket (CR round 2, codex-1). The .locks deny above still wins regardless,
+# since a lock file is never `.md`. Only Edit is emitted, matching the
+# HIMMEL-3645 dead-rule note above.
+some_doc_canon="$(cd -P "$(dirname "$some_doc")" && pwd -P)/$(basename "$some_doc")"
+check "full launch --profile: seeded settings grant Edit on the leg's own doc only" \
+  "$(jq --arg f "$some_doc_canon" '(.permissions.allow // []) | any(. == ("Edit(" + $f + ")"))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "true"
+check "full launch --profile: seeded settings do NOT grant a root-wide handover markdown glob" \
+  "$(jq --arg d "$HANDOVER_DIR" '(.permissions.allow // []) | any(. == ("Edit(" + $d + "/**/*.md)"))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "false"
 
 # A handover root containing a space must still resolve correctly -
 # HANDOVER_DIR reaches this wrapper's own process as a plain export
@@ -1136,7 +1159,7 @@ check "full launch --profile (space in handover root): additionalDirectories nev
   "false"
 check "full launch --profile (space in handover root): .locks deny resolves with the space intact" \
   "$(jq -c '.permissions.deny' "$d17s/HIMMEL-3333-space.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$space_root" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
+  "$(jq -cn --arg d "$space_root" '["EnterWorktree", ("Edit(" + $d + "/.locks/**)")]')"
 
 # HIMMEL-3285 (CR round 2, codex-1; behaviour changed CR round 4/5, codex-1,
 # HIMMEL-3544): a doc placed directly AT the handover root (dirname(doc) ==
@@ -1251,7 +1274,7 @@ HANDOVER_DIR="$slash_root" \
 check "full launch --profile (trailing slash on HANDOVER_DIR, doc under it): exit 0" "$rc" "0"
 check "full launch --profile (trailing slash on HANDOVER_DIR): .locks deny normalizes, no double slash" \
   "$(jq -c '.permissions.deny' "$d17slash2/HIMMEL-3333-slash2.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
+  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree", ("Edit(" + $d + "/.locks/**)")]')"
 
 # HIMMEL-3285 (CR round 5, codex-1): when HANDOVER_DIR cannot be resolved at
 # all, the root/ancestor comparison has nothing to compare against - an
@@ -1372,9 +1395,11 @@ const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings
 assert.ok(settings.permissions.allow.includes('Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)'));
 // HIMMEL-3285: HANDOVER_DIR is exported suite-wide (line ~105), so this
 // non-relay launch also seeds the .locks deny alongside EnterWorktree.
+// HIMMEL-3645: only Edit is seeded now - the other three tools' rules were
+// dead (Claude Code applies an Edit(path) rule to every file-editing tool).
 assert.deepStrictEqual(settings.permissions.deny, [
   'EnterWorktree',
-  ...['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].map((t) => `${t}(${process.env.HANDOVER_DIR}/.locks/**)`),
+  `Edit(${process.env.HANDOVER_DIR}/.locks/**)`,
 ]);
 assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-mcp.json`, 'utf8')),
   {mcpServers: {qmd: {type: 'http', url: 'http://localhost:8181/mcp'}}});
@@ -1957,6 +1982,36 @@ rec28d="$(ll_line HIMMEL-3270-N5-judge)"
 contains "28f --judge launch is recorded with its forced profile" "$rec28d" " profile=console-judge "
 contains "28f --judge launch is recorded role=judge" "$rec28d" " role=judge "
 
+# HIMMEL-3698: a judge does not implement (design 3.2) and never needs to
+# write a LEG's handover doc, so it must not gain the Edit-allow grant even
+# though it resolves its own DOC/HANDOVER_DIR too.
+judge_doc_canon="$(cd -P "$(dirname "$some_doc")" && pwd -P)/$(basename "$some_doc")"
+check "28f --judge launch does not gain the handover-doc Edit allow (judge never implements)" \
+  "$(jq --arg f "$judge_doc_canon" '(.permissions.allow // []) | any(. == ("Edit(" + $f + ")"))' "$d28d/HIMMEL-3270-N5-judge.leg-settings.json" 2>/dev/null)" \
+  "false"
+
+# HIMMEL-3698 CR round 2 (codex-1): the grant is scoped to THIS leg's own doc
+# file, never a root-wide glob - a second leg in the same handover bucket
+# must NOT gain Edit on the first leg's doc (d17/HIMMEL-3333-leg's $some_doc),
+# and must gain it on its own, distinct doc file.
+d17b_doc="$tmp/sibling-doc.md"
+printf '%s\n' '# sibling fixture doc' > "$d17b_doc"
+d17b="$tmp/c17b"; mk_launch_stubs "$d17b" "HIMMEL-3334-leg"; mkdir -p "$tmp/repo17b"
+IMPL_GUARD_OK='' HIMMEL_LEAN_LEG='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17b/konsole" PGREP_CMD="$d17b/pgrep" \
+LEG_REPO="$tmp/repo17b" HEADED_ARM_LOCK_DIR="$d17b/locks" HEADED_ARM_PROC="$d17b/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3334-leg" "$d17b_doc" "$d17b/signal-never" "$PAST" "$d17b/log" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d17b" || true
+d17b_doc_canon="$(cd -P "$(dirname "$d17b_doc")" && pwd -P)/$(basename "$d17b_doc")"
+check "HIMMEL-3698: a leg's settings grant Edit on its OWN doc" \
+  "$(jq --arg f "$d17b_doc_canon" '(.permissions.allow // []) | any(. == ("Edit(" + $f + ")"))' "$d17b/HIMMEL-3334-leg.leg-settings.json" 2>/dev/null)" \
+  "true"
+check "HIMMEL-3698: a leg's settings do NOT grant Edit on a SIBLING leg's doc in the same bucket" \
+  "$(jq --arg f "$some_doc_canon" '(.permissions.allow // []) | any(. == ("Edit(" + $f + ")"))' "$d17b/HIMMEL-3334-leg.leg-settings.json" 2>/dev/null)" \
+  "false"
+
 # A relaunch of the same session name appends, never replaces: the record is
 # history, and a replaced line would erase what the first launch really was.
 d28e="$tmp/c28e"; mk_launch_stubs "$d28e" "HIMMEL-3270-N2-real"; mkdir -p "$tmp/repo28e"
@@ -2406,6 +2461,70 @@ check "self-resolved root, doc outside it: grant is never \$HOME" \
   "$(jq --arg d "$HOME" '(.permissions.additionalDirectories // []) | any(. == $d)' "$settings35" 2>/dev/null)" "false"
 check "self-resolved root, doc outside it: grant is never the repo root" \
   "$(jq --arg d "$primary35" '(.permissions.additionalDirectories // []) | any(. == $d)' "$settings35" 2>/dev/null)" "false"
+
+# --- 37 (#1334). leg_propagate_env's caller-wins de-dupe (case 29/31b above)
+# is correct for a generic passthrough knob, but wrong for the per-leg
+# settings/preface/MCP triplet: this wrapper's own process may itself BE a
+# leg that is now arming a SIBLING leg (console.sh's do_arm() comment: "this
+# process itself may BE a leg"), so leg-1's own LEG_PROFILE_SETTINGS/
+# LEG_PROFILE_PREFACE/LEG_PROFILE_MCP_CONFIG - both the plain env var and the
+# HEADED_ARM_LAUNCHER_ENV token leg-1's own launch added - are still live in
+# that shell when it arms leg-2. Before the fix, leg-2's launcher-env kept
+# leg-1's stale triplet forever, since a real leg never collides with its OWN
+# by-NAME path (only a sibling can). Same bug class HIMMEL-3456 already fixed
+# for HIMMEL_CONSOLE_NAME (see the "preset token" cases above), same fix
+# (leg_env_drop_token) now applied to the triplet.
+leg1_settings37="$tmp/leg-1.leg-settings.json"
+leg1_preface37="$tmp/leg-1.leg-preface.md"
+leg1_mcp37="$tmp/leg-1.leg-mcp.json"
+leg2_settings37="$tmp/HIMMEL-9999-leg-2.leg-settings.json"
+leg2_preface37="$tmp/HIMMEL-9999-leg-2.leg-preface.md"
+leg2_mcp37="$tmp/HIMMEL-9999-leg-2.leg-mcp.json"
+out37="$(LEG_PROFILE_SETTINGS="$leg1_settings37" LEG_PROFILE_PREFACE="$leg1_preface37" LEG_PROFILE_MCP_CONFIG="$leg1_mcp37" \
+  HEADED_ARM_LAUNCHER_ENV="LEG_PROFILE_SETTINGS=$leg1_settings37 LEG_PROFILE_PREFACE=$leg1_preface37 LEG_PROFILE_MCP_CONFIG=$leg1_mcp37 KEEP_ME=1" \
+  bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-2 some/doc.md /tmp/nosig 99999999999 "$tmp/HIMMEL-9999-leg-2.log" claude-sonnet-5 2>&1)"
+lenv37="$(printf '%s\n' "$out37" | grep '^headed-arm-leg: lane=')"
+contains "37 leg 2's launcher-env names its OWN settings file" "$lenv37" "LEG_PROFILE_SETTINGS=$leg2_settings37"
+not_contains "37 leg 2's launcher-env does not keep leg 1's stale settings file" "$lenv37" "LEG_PROFILE_SETTINGS=$leg1_settings37"
+contains "37 leg 2's launcher-env names its OWN preface file" "$lenv37" "LEG_PROFILE_PREFACE=$leg2_preface37"
+not_contains "37 leg 2's launcher-env does not keep leg 1's stale preface file" "$lenv37" "LEG_PROFILE_PREFACE=$leg1_preface37"
+contains "37 leg 2's launcher-env names its OWN mcp-config file" "$lenv37" "LEG_PROFILE_MCP_CONFIG=$leg2_mcp37"
+not_contains "37 leg 2's launcher-env does not keep leg 1's stale mcp-config file" "$lenv37" "LEG_PROFILE_MCP_CONFIG=$leg1_mcp37"
+contains "37 an unrelated sibling launcher-env token still survives" "$lenv37" "KEEP_ME=1"
+
+# --- 37b (#1334 CR follow-up). Case 37 above covers a leg-2 whose OWN profile
+# re-propagates all three names. A leg-2 whose profile does NOT touch a given
+# name this run - here, "mcp-none" (registered above, case 18d's own fixture:
+# no mcpServers field) - never calls leg_propagate_env LEG_PROFILE_MCP_CONFIG
+# at all, so a per-site leg_env_drop_token alone (only reachable INSIDE the
+# `mcpServers != null` branch) would leave leg-1's stale plain var AND token
+# live. Worse than a stale value: the real-launch write-if-set block further
+# down reads the stale plain LEG_PROFILE_MCP_CONFIG as "this leg has an mcp
+# config" and then references $MCP_CONFIG_JSON, which THIS leg's run never
+# assigned (mcp-none never entered that resolution branch) - an unbound
+# variable under `set -u`, i.e. the wrapper crashes instead of launching.
+# Real (non-dry) launch, matching case 18's own fixture registry/profile.
+d37b="$tmp/c37b"; mk_launch_stubs "$d37b" "HIMMEL-9999-leg2b"; mkdir -p "$tmp/repo37b"
+leg1_settings37b="$tmp/leg-1-37b.leg-settings.json"
+leg1_preface37b="$tmp/leg-1-37b.leg-preface.md"
+leg1_mcp37b="$tmp/leg-1-37b.leg-mcp.json"
+printf '%s' '{"mcpServers":{"SENTINEL_LEG1":{}}}' > "$leg1_mcp37b"
+rc=0
+PLUGIN_PROFILES_REGISTRY="$mcpreg" \
+LEG_PROFILE_SETTINGS="$leg1_settings37b" LEG_PROFILE_PREFACE="$leg1_preface37b" LEG_PROFILE_MCP_CONFIG="$leg1_mcp37b" \
+HEADED_ARM_LAUNCHER_ENV="LEG_PROFILE_SETTINGS=$leg1_settings37b LEG_PROFILE_PREFACE=$leg1_preface37b LEG_PROFILE_MCP_CONFIG=$leg1_mcp37b KEEP_ME=1" \
+RUN_LEG_ARGS='--profile mcp-none' run_leg "$d37b" "$tmp/repo37b" "HIMMEL-9999-leg2b" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d37b" || true
+check "37b leg 2 (mcp-none profile) still launches (no unbound-variable crash)" "$rc" "0"
+check "37b leg 1's own mcp file is untouched" \
+  "$(cat "$leg1_mcp37b" 2>/dev/null || true)" '{"mcpServers":{"SENTINEL_LEG1":{}}}'
+env37b="$(cat "$d37b/env-record" 2>/dev/null || true)"
+not_contains "37b leg 2's launched env carries no LEG_PROFILE_MCP_CONFIG at all" "$env37b" "LEG_PROFILE_MCP_CONFIG="
+if [ -e "$d37b/HIMMEL-9999-leg2b.leg-mcp.json" ]; then
+  echo "FAIL - 37b leg 2 must not get its own mcp file (mcp-none has no mcpServers field)"; fails=$((fails+1))
+else
+  echo "ok - 37b leg 2 gets no mcp file (mcp-none has no mcpServers field)"
+fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

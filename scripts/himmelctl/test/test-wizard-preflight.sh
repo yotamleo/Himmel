@@ -49,6 +49,9 @@ node_bin=$(command -v node)
 # shellcheck source=lib/hermetic-path.sh
 # shellcheck disable=SC1091
 . "$repo_root/scripts/lib/hermetic-path.sh"
+# shellcheck source=lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$repo_root/scripts/lib/timeout-bin.sh"
 
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
@@ -231,8 +234,8 @@ h4="$work/h4"; mkdir -p "$h4"
 c4_budget=15
 c4_out="$work/case4.out"
 set +e
-if command -v timeout >/dev/null 2>&1; then
-  timeout "$c4_budget" env PATH="$c4path" HOME="$h4" USERPROFILE="$(winpath "$h4")" HIMMELCTL_CACHE_DIR="$(winpath "$h4.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h4.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
+if [ -n "$_TIMEOUT_BIN" ]; then
+  "$_TIMEOUT_BIN" "$c4_budget" env PATH="$c4path" HOME="$h4" USERPROFILE="$(winpath "$h4")" HIMMELCTL_CACHE_DIR="$(winpath "$h4.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h4.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
     "$node_bin" "$wizard" install </dev/null >"$c4_out" 2>&1
   rc=$?
 else

@@ -182,6 +182,10 @@ cmd=${cmd//$'\r'/}
 
 # Registered gate paths, anchored: the token must END with one, at a `/` boundary.
 GATE_RE='(^|/)scripts/(cr/clear-cr-marker\.sh|ci/run-shell-tests\.sh|check-ci\.sh|handover/merge-on-green\.sh|handover/pr-merge\.sh|[A-Za-z0-9._-]+/test-[A-Za-z0-9._-]*\.sh)$'
+# HIMMEL-3661: invoked_program's env case returns this instead of a real
+# program name when it sees -S/--split-string — see that case's comment.
+# scan_line treats it as a gate match without consulting GATE_RE.
+ENV_SPLIT_SENTINEL='<env-split-string>'
 NL=$'\n'
 TAB=$'\t'
 MARK='#tail-pipe-ok:'      # the opt-out, reduced to one operator-free token
@@ -422,6 +426,12 @@ invoked_program() {
         pending=''
         # A LEADING redirection is not the command (panel r4, codex-1). A bare
         # operator token (`2>`) also swallows the target word that follows it.
+        # HIMMEL-3677 (J1314O): this word-walk cannot reliably tell a redirect
+        # from an escaped, glued or process-substitution word that merely
+        # CONTAINS `<`/`>` — scan_line's stage-level fail-closed check now
+        # owns that distinction for the first stage of a tail/head pipeline;
+        # this stays exactly as it was pre-HIMMEL-3677 for every other case
+        # (the last-stage tail/head check, and any stage with no pipe at all).
         if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
         case $stripped in
             *'>'* | *'<'*)
@@ -512,15 +522,75 @@ invoked_program() {
                     esac ;;
                 env)
                     # `env`'s VAR=val assignments are already stepped over by the
-                    # assignment arm above; `-S` DOES take an operand here, which
-                    # is exactly what a launcher-agnostic table could not express.
-                    # Same attached-value carve-out as sudo above.
+                    # assignment arm above. `-u`/`-C`/`-a` (--unset/--chdir/
+                    # --argv0) take an ordinary operand — a value to skip past,
+                    # same attached-value carve-out as sudo above.
+                    #
+                    # HIMMEL-3661 (corrects HIMMEL-3632's comment here, which
+                    # was WRONG): `-S`/`--split-string` is NOT like those
+                    # three. GNU env SPLITS its operand into a brand-new argv
+                    # and RUNS it, so treating that operand as a value to skip
+                    # past let the walk land on nothing at all — an ALLOW, not
+                    # a false DENY: a real bypass (`env -S 'bash
+                    # scripts/check-ci.sh' | tail` reached tail with the gate's
+                    # real exit code lost, undetected). The split string is
+                    # never parsed here; instead the clause is treated as
+                    # invoking an unknown program that MAY be a gate, via
+                    # ENV_SPLIT_SENTINEL, for every spelling — bare,
+                    # abbreviated, attached (`-Sfoo`), `=`-attached
+                    # (`--split-string=foo`), or bundled behind env's other
+                    # BARE flags (`-iS`, `-vS`, `-ivS`: `-i`/`-v`/`-0` take no
+                    # operand of their own, so a leading run of only those
+                    # letters followed by `S` is still a split-string clause —
+                    # J1299O finding 2). This does trade in a genuine false
+                    # DENY of its own — a legitimate `env -S '<non-gate
+                    # command>' | tail` now also denies — which is the
+                    # accepted fail-closed direction.
                     case $stripped in
-                        -u | -C | -S | -a) skip_next=1; continue ;;
+                        -u | -C | -a) skip_next=1; continue ;;
+                        -S | -S*)
+                            printf '%s' "$ENV_SPLIT_SENTINEL"
+                            return 0 ;;
+                        -[iv0]*)
+                            # Bare-flag bundle: walk the letters after the
+                            # leading `-`; if only `i`/`v`/`0` precede an `S`,
+                            # this bundle carries -S too (operand-letter
+                            # bundles like `-uS`/`-CS`/`-aS` never enter this
+                            # arm — they start with a letter outside [iv0]).
+                            # HIMMEL-3671 (J1299R): if instead the bundle ENDS
+                            # in a value-taking letter (`-iu`, `-vC`, `-0a`),
+                            # that letter's value is the NEXT word, same as
+                            # the bare `-u`/`-C`/`-a` case above — skip it so
+                            # the walk lands on the real command instead of
+                            # misreading the value as one. A value letter NOT
+                            # last in the bundle (`-uS`, `-uX`) is unchanged:
+                            # the rest of the token is already its value.
+                            guard_bundle=${stripped#-}
+                            guard_idx=0
+                            guard_is_split=0
+                            guard_last=$((${#guard_bundle} - 1))
+                            while [ "$guard_idx" -lt "${#guard_bundle}" ]; do
+                                case ${guard_bundle:$guard_idx:1} in
+                                    S) guard_is_split=1; break ;;
+                                    i | v | 0) ;;
+                                    u | C | a)
+                                        [ "$guard_idx" -eq "$guard_last" ] && skip_next=1
+                                        break ;;
+                                    *) break ;;
+                                esac
+                                guard_idx=$((guard_idx + 1))
+                            done
+                            if [ "$guard_is_split" = 1 ]; then
+                                printf '%s' "$ENV_SPLIT_SENTINEL"
+                                return 0
+                            fi ;;
                         --*)
+                            if guard_is_long_abbrev "split-string" "$stripped"; then
+                                printf '%s' "$ENV_SPLIT_SENTINEL"
+                                return 0
+                            fi
                             if guard_is_long_abbrev "unset" "$stripped" \
                                 || guard_is_long_abbrev "chdir" "$stripped" \
-                                || guard_is_long_abbrev "split-string" "$stripped" \
                                 || guard_is_long_abbrev "argv0" "$stripped"; then
                                 [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
@@ -563,7 +633,8 @@ invoked_program() {
                                 || guard_is_long_abbrev "max-procs" "$stripped" \
                                 || guard_is_long_abbrev "delimiter" "$stripped" \
                                 || guard_is_long_abbrev "arg-file" "$stripped" \
-                                || guard_is_long_abbrev "max-chars" "$stripped"; then
+                                || guard_is_long_abbrev "max-chars" "$stripped" \
+                                || guard_is_long_abbrev "process-slot-var" "$stripped"; then
                                 [ "$GUARD_LOPT_HAS_EQ" = 1 ] || skip_next=1
                                 continue
                             fi ;;
@@ -595,8 +666,54 @@ invoked_program() {
     done
 }
 
+# HIMMEL-3677 (J1314O): whether STAGE contains an unquoted `<`/`>` ANYWHERE —
+# real redirect, escaped (`normalise()` already un-escapes `\>`/`\<` to a bare
+# character before this text is ever seen), glued (`2>/dev/null`), spaced
+# (`2> /dev/null`), or process substitution (`>(cat)`, which is a real bash
+# WORD, not a redirect, but still spelled with a bare `>`). Rather than try to
+# tell these forms apart with a flag that can only remember ONE pending skip,
+# scan_line treats ANY of them as reason enough to stop trusting invoked_program's
+# word walk for this stage and decide by scanning the raw text instead
+# (fail-closed: J1314O findings 1-3, and the pre-existing `>'out>'` class).
+# `$(...)`/backtick bodies are already lifted out to a separate `SUBST`-marked
+# line by normalise(), and `$((...))` bodies to an `ARITH`-marked line, so
+# neither is present in STAGE here — no extra placeholder-skipping needed.
+stage_has_unquoted_angle() {
+    local str=$1 i=0 n dq=''
+    n=${#str}
+    while [ "$i" -lt "$n" ]; do
+        case ${str:$i:1} in
+            "'" | '"')
+                if [ -z "$dq" ]; then dq=${str:$i:1}
+                elif [ "$dq" = "${str:$i:1}" ]; then dq=''
+                fi
+                ;;
+            '<' | '>')
+                [ -z "$dq" ] && return 0 ;;
+        esac
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# HIMMEL-3677 (J1314O fail-closed rule): does ANY word of STAGE match
+# GATE_RE, quote-stripped — used only once stage_has_unquoted_angle says the
+# stage's real invoked program cannot be trusted, so this does not try to
+# resolve WHICH word is the command; it denies if a gate name appears
+# anywhere in the stage's text at all.
+stage_mentions_gate() {
+    local w stripped
+    for w in $1; do
+        stripped=${w//\"/}
+        stripped=${stripped//\'/}
+        [ -n "$stripped" ] || continue
+        grep -qE "$GATE_RE" <<<"$stripped" && return 0
+    done
+    return 1
+}
+
 scan_line() {
-    local line=$1 stmts pipeline prog last
+    local line=$1 stmts pipeline first prog last
     # The opt-out survived normalisation only if it was a real shell comment.
     case "$line" in *"$MARK"*) return 0 ;; esac
 
@@ -609,18 +726,27 @@ scan_line() {
 
     while IFS= read -r pipeline; do
         case "$pipeline" in *'|'*) ;; *) continue ;; esac
-        prog=$(invoked_program "${pipeline%%|*}")
-        [ -n "$prog" ] || continue
-        printf '%s' "$prog" | grep -Eq "$GATE_RE" || continue
-        # Last stage, same command-position walk — so `| env tail`, `| command
-        # head` and `| FOO=1 tail` are recognised too (panel r2, codex-1). The
-        # leading `&` is the tail of a `|&` operator, not a word.
+        # Last stage first (cheap filter): if it isn't tail/head, nothing in
+        # this pipeline can trip the guard regardless of the first stage.
         last=${pipeline##*|}
         last=${last#&}
         case $(invoked_program "$last") in
-            tail | head | */tail | */head) ;;
+            tail | head | */tail | */head | "$ENV_SPLIT_SENTINEL") ;;
             *) continue ;;
         esac
+        first=${pipeline%%|*}
+        if stage_has_unquoted_angle "$first" && stage_mentions_gate "$first"; then
+            offender=$pipeline
+            return 0
+        fi
+        prog=$(invoked_program "$first")
+        [ -n "$prog" ] || continue
+        # HIMMEL-3661: ENV_SPLIT_SENTINEL means "unknown program that may be a
+        # gate" — treat it as a match without consulting GATE_RE.
+        if [ "$prog" != "$ENV_SPLIT_SENTINEL" ]; then
+            gate_match=$(printf '%s' "$prog" | grep -E "$GATE_RE")
+            [ -n "$gate_match" ] || continue
+        fi
         offender=$pipeline
         return 0
     done <<EOF

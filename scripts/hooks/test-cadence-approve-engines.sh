@@ -33,6 +33,7 @@ HOOK="$(cd "$(dirname "$0")" && pwd)/cadence-approve-engines.sh"
 # shellcheck source=scripts/lib/canon-path.sh
 # shellcheck disable=SC1091
 . "$(dirname "$HOOK")/../lib/canon-path.sh"
+. "$(dirname "$HOOK")/../lib/timeout-bin.sh"
 
 FAILED=0
 
@@ -649,7 +650,6 @@ assert "--print-engine-list: every line is one bare <bin>:<suffix> token" 0 "$BA
 # `timeout` is GNU-only (absent by default on macOS) — resolve it once and
 # skip just this one assertion, visibly, when it isn't on PATH rather than
 # letting the whole suite fail on a missing coreutil.
-_TIMEOUT_BIN="$(command -v timeout 2>/dev/null)" || _TIMEOUT_BIN=""
 if [ -n "$_TIMEOUT_BIN" ]; then
     "$_TIMEOUT_BIN" 5 bash "$HOOK" --print-engine-list </dev/null >/dev/null 2>&1
     assert "--print-engine-list: exits promptly with stdin closed" 0 "$?"

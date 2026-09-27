@@ -38,6 +38,11 @@ const standaloneBundleLib = require('./lib/standalone-bundle.js');
 const tarballUpdateLib = require('./lib/tarball-update.js');
 const stateLib = require('./lib/state.js');
 const statusReportLib = require('./lib/status-report.js');
+// Expand a leading `~` to an absolute home path (adopt.sh/set-handover-dir.sh
+// receive an already-expanded path — a literal `~` would never expand inside
+// a quoted spawn arg). Reused from status-report.js's copy (HIMMEL-2646)
+// rather than kept as a second implementation to drift out of sync with.
+const { expandHome } = statusReportLib;
 const installEngineLib = require('./lib/install-engine.js');
 const probesLib = require('./lib/probes.js');
 const depsEngineLib = require('./lib/deps-engine.js');
@@ -2355,16 +2360,6 @@ function deriveExistingVaultPlan(answers) {
   };
 }
 
-// Expand a leading `~` to an absolute home path (adopt.sh/set-handover-dir.sh
-// receive an already-expanded path — a literal `~` would never expand inside
-// a quoted spawn arg). Honors $HOME first (tests fake it), else os.homedir().
-function expandHome(p) {
-  if (typeof p !== 'string' || p === '') return p;
-  const home = process.env.HOME || os.homedir();
-  if (p === '~') return home;
-  if (p.slice(0, 2) === '~/') return path.join(home, p.slice(2));
-  return p;
-}
 
 // Derive { argv } for the answer object. argv[0] is the launcher, the rest
 // are its args, sized for spawnSync. HIMMEL-2308: ONE engine — always
@@ -2377,6 +2372,11 @@ function deriveCommand(answers) {
   argv.push('--profile', profile, '--scope', answers.scope || 'project');
   if (profile === 'all' && answers.vault && answers.vault.path) {
     argv.push('--luna-target', toBashPath(expandHome(answers.vault.path)));
+    // HIMMEL-2466: adopt.sh's do_luna() only runs here (a vault is actually
+    // being scaffolded) — thread handover.mode through so its own
+    // wire_handover_dir_luna gate agrees with the JS-side no-op T4.5
+    // (applyHandoverStep) already applies for handover.mode=inline.
+    argv.push('--handover-mode', (answers.handover && answers.handover.mode) || 'inline');
   }
   return { argv };
 }
@@ -4534,11 +4534,75 @@ function partitionOffboard(manifest) {
 // clone never touches those, and uninstall.sh names them as kept in its own
 // footer. The header below must not claim otherwise; it states what
 // uninstall.sh's machine-level steps do and where the rest stays.
+// HIMMEL-3589: the ids manifest.json prints for qmd (qmd-binary, qmd-index)
+// carry no path of their own — the resolved on-disk location only lives in
+// scripts/install/uninstall-manifest.tsv's one 'qmd'-surface row (qmd-fork:
+// the checkout + bun-global symlink + index collection both ids point at).
+// Reuses expandHome() for the {HOME} token, the same convention bin.js
+// already uses for a literal '~', instead of a second home-resolution
+// helper. Never throws: an unreadable tsv or no 'qmd' row -> null (caller
+// falls back to the bare id); a resolved path that doesn't exist -> size
+// 'absent'; any stat/readdir error walking the tree (permissions, races) ->
+// 'size unknown'. The walk never follows symlinks, so a symlink cycle inside
+// the tree cannot recurse forever.
+function qmdOffboardLocation() {
+  let resolved;
+  try {
+    const file = process.env.HIMMEL_UNINSTALL_MANIFEST
+      || path.join(repoRoot(), 'scripts', 'install', 'uninstall-manifest.tsv');
+    const row = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+      .find((line) => line && !line.startsWith('#') && line.split('\t')[2] === 'qmd');
+    if (!row) return null;
+    resolved = expandHome(row.split('\t')[5].replace('{HOME}', '~'));
+  } catch (e) {
+    return null;
+  }
+  let top;
+  try {
+    top = fs.lstatSync(resolved);
+  } catch (e) {
+    return { path: resolved, size: e.code === 'ENOENT' ? 'absent' : 'size unknown' };
+  }
+  const QMD_WALK_ENTRY_BOUND = 5000;
+  let entriesVisited = 0;
+  const walk = (p, st) => {
+    if (st.isSymbolicLink()) return 0;
+    if (st.isFile()) return st.size;
+    if (!st.isDirectory()) return 0;
+    let total = 0;
+    const dir = fs.opendirSync(p);
+    try {
+      let entry;
+      while ((entry = dir.readSync()) !== null) {
+        if (++entriesVisited > QMD_WALK_ENTRY_BOUND) throw new Error('qmd size walk exceeded entry bound');
+        const child = path.join(p, entry.name);
+        total += walk(child, fs.lstatSync(child));
+      }
+    } finally {
+      dir.closeSync();
+    }
+    return total;
+  };
+  try {
+    const bytes = walk(resolved, top);
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let n = bytes, u = 0;
+    while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+    return { path: resolved, size: `${u === 0 ? n : n.toFixed(1)} ${units[u]}` };
+  } catch (e) {
+    return { path: resolved, size: 'size unknown' };
+  }
+}
+
 function printOffboardPlan(unwireItems, adviseItems, keepItems) {
-  console.log(`himmel-owned wiring & repo-local artifacts (${unwireItems.length}) — uninstall.sh removes himmel's machine-level wiring (settings.json hooks/statusline, working-principles rule-file blocks, hud config, scheduled jobs, plugins, git hooks, telegram bridge); artifacts in this list that live in the himmel clone go away when the clone is deleted, but what adopt copied into a project-scope adopter's own repo (scripts/) and Claude's workspace-trust entry STAY until you remove them — uninstall.sh lists them under "NOT touched": ${unwireItems.map((i) => i.id).join(', ')}`);
+  const isQmdId = (id) => id === 'qmd-binary' || id === 'qmd-index';
+  const hasQmdId = [...unwireItems, ...adviseItems, ...keepItems].some((i) => isQmdId(i.id));
+  const qmdLoc = hasQmdId ? qmdOffboardLocation() : null;
+  const withLoc = (id) => (isQmdId(id) && qmdLoc) ? `${id} (${qmdLoc.path}, ${qmdLoc.size})` : id;
+  console.log(`himmel-owned wiring & repo-local artifacts (${unwireItems.length}) — uninstall.sh removes himmel's machine-level wiring (settings.json hooks/statusline, working-principles rule-file blocks, hud config, scheduled jobs, plugins, git hooks, telegram bridge); artifacts in this list that live in the himmel clone go away when the clone is deleted, but what adopt copied into a project-scope adopter's own repo (scripts/) and Claude's workspace-trust entry STAY until you remove them — uninstall.sh lists them under "NOT touched": ${unwireItems.map((i) => withLoc(i.id)).join(', ')}`);
   console.log("Shared tools himmel installed or requires (NOT removed — remove any you don't use elsewhere):");
-  console.log(`  ${adviseItems.map((i) => i.id).join(', ')}`);
-  console.log(`left untouched (your data): ${keepItems.map((i) => i.id).join(', ')}`);
+  console.log(`  ${adviseItems.map((i) => withLoc(i.id)).join(', ')}`);
+  console.log(`left untouched (your data): ${keepItems.map((i) => withLoc(i.id)).join(', ')}`);
 }
 
 // Post-teardown completeness check (the manifest-driven "converge" value-

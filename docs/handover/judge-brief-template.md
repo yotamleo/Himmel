@@ -100,12 +100,19 @@ gathering, per the rule below.>
 > context: write partial findings into your own Results bullets as you
 > gather them, so a compaction loses nothing that was not already on disk.
 
+> **Scratch lives outside the handover root.** Put every scratch file —
+> yours and each child's (repo extracts, probe trees, tarballs) — under
+> `~/.cache/himmel/verdicts/<qid>/`, never under `<handover root>`: the
+> handover root commonly lives inside an Obsidian vault, which indexes
+> every file regardless of `.gitignore` (HIMMEL-3705: 843k scratch files
+> froze the vault). Not `/tmp` either — it can be tmpfs, so a full tree sits in RAM.
+> Only your verdict file belongs under `verdicts/<qid>/`.
+
 > **Per-child scratch subdirectory.** If this question needs bulk
 > evidence-gathering and you spawn subagents to do it, give each one its own
-> scratch subdirectory under
-> `<handover root>/<bucket>/verdicts/<qid>/scratch/<child-n>/`, never a
-> shared one — parallel gatherers writing into one directory race each
-> other's output.
+> scratch subdirectory under `~/.cache/himmel/verdicts/<qid>/<child-n>/`,
+> never a shared one — parallel gatherers writing into one directory race
+> each other's output.
 
 > **RETASK.** A narrowing or a halt from `<console session name>` needs no
 > token and cannot be argued with. An EXPANSION or REDIRECT is valid only if
@@ -146,4 +153,5 @@ gathering, per the rule below.>
 | RETASK block | The same asymmetry as a leg's: a narrowing needs no token, an EXPANSION does, and no revision from anyone widens what the judge may act with — which for a judge is nothing to begin with. |
 | Lifecycle rule | A judge that does not end its turn after writing its verdict holds a fleet slot the console cannot reclaim without killing the window itself. |
 | "Checkpoint to disk as you go" | The standard `--autocompact 200000` pin is too small for a design-grade question (design spec §3.2); a judge holding its reasoning only in context loses it at compaction. |
+| Scratch lives outside the handover root | Judges extract whole repo trees; under a vault-resident handover root they are indexed by Obsidian despite `.gitignore` (HIMMEL-3705: 843k files, 16 GB). `/tmp` is ruled out because it can be tmpfs. |
 | Per-child scratch subdirectory | Parallel evidence-gatherers sharing one directory overwrite or interleave each other's output. |

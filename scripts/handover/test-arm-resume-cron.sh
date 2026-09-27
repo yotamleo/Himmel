@@ -63,6 +63,11 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/arm-resume-cron.XXXXXX") || {
     exit 1
 }
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3679: every case in this suite stubs crontab/at via mac_env, but the
+# suite-level guard is defense-in-depth against a case that doesn't. Snapshot
+# now, before any case runs, and diff again right before the summary.
+CRONTAB_SNAPSHOT_BEFORE=$(crontab -l 2>/dev/null || true)
+ATQ_SNAPSHOT_BEFORE=$(atq 2>/dev/null || true)
 # HIMMEL-3103: every non-dry-run arm reserves a FLEET_CAP slot; redirect it off
 # the production dir the live fleet counts, and fail the suite if it could leak.
 . "$(dirname "$ARM")/../lib/fleet-slots-shield.sh"
@@ -772,6 +777,23 @@ assert_rc "g5: a real explicit-time arm succeeds through the crontab stub" 0 "$r
 assert_contains "g5: it armed" "RESUME ARMED" "$out"
 assert_not_contains "g5: the imperative /exit order is gone" "PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW." "$out"
 assert_contains "g5: the self-resume NOTE is present" "NOTE (self-resume only):" "$out"
+
+# HIMMEL-3679: the real crontab/at queue must be byte-identical to what this
+# run started with -- any case that reached the real scheduler despite its
+# stub is a leak into the operator's own crontab/at, not a test failure to
+# shrug off.
+CRONTAB_SNAPSHOT_AFTER=$(crontab -l 2>/dev/null || true)
+if [ "$CRONTAB_SNAPSHOT_AFTER" != "$CRONTAB_SNAPSHOT_BEFORE" ]; then
+    echo "FAIL the real crontab changed during this run -- a case leaked into the operator's live crontab:"
+    diff <(printf '%s\n' "$CRONTAB_SNAPSHOT_BEFORE") <(printf '%s\n' "$CRONTAB_SNAPSHOT_AFTER") || true
+    FAILED=$((FAILED + 1))
+fi
+ATQ_SNAPSHOT_AFTER=$(atq 2>/dev/null || true)
+if [ "$ATQ_SNAPSHOT_AFTER" != "$ATQ_SNAPSHOT_BEFORE" ]; then
+    echo "FAIL the real at queue changed during this run -- a case leaked into the operator's live at queue:"
+    diff <(printf '%s\n' "$ATQ_SNAPSHOT_BEFORE") <(printf '%s\n' "$ATQ_SNAPSHOT_AFTER") || true
+    FAILED=$((FAILED + 1))
+fi
 
 if [ "$FAILED" -gt 0 ]; then
     echo "---"

@@ -73,6 +73,8 @@ unset ARMAUTOMERGE CR_MERGE_GATE_OK
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/check-ci.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$SCRIPT_DIR/lib/timeout-bin.sh"
 
 PASS=0; FAIL=0; COUNT=0; STUBDIR=""
 
@@ -841,9 +843,9 @@ case "$CHECK_CI_CASE_TIMEOUT" in
     ''|*[!0-9]*) CHECK_CI_CASE_TIMEOUT=600 ;;
     *) [ "$CHECK_CI_CASE_TIMEOUT" -ge 1 ] || CHECK_CI_CASE_TIMEOUT=600 ;;
 esac
-# `env` is the no-op wrapper on a host without coreutils `timeout` (macOS ships
-# none) — same call shape, no bound, and one loud line saying so.
-CASE_RUNNER="$(command -v timeout 2>/dev/null)" || CASE_RUNNER=""
+# `env` is the no-op wrapper on a host without coreutils `timeout`/`gtimeout`
+# (macOS ships none) — same call shape, no bound, and one loud line saying so.
+CASE_RUNNER="$_TIMEOUT_BIN"
 if [ -n "$CASE_RUNNER" ]; then
     CASE_RUNNER_ARGS="-k 5 $CHECK_CI_CASE_TIMEOUT"
 else

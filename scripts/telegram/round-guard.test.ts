@@ -297,3 +297,27 @@ test("blank --name is treated as anonymous, not as the malformed branch `glm/`",
   const r = checkRoundGuard("spawn-glm", { task: "fix HIMMEL-1540", name: "   ", cwd: "." }, () => ledger);
   expect(r.refusal).toBeUndefined();
 });
+
+// ── CLI entry (HIMMEL-1568) ─────────────────────────────────────────────────
+// The ledger/threshold semantics above are exercised in-process; these two
+// cover only the CLI's own argv validation, which nothing else does — the
+// bash-side integration coverage (scripts/hooks/test-guard-implementor-dispatch.sh)
+// always supplies both flags, so a broken required-flag check would pass there
+// silently. Scoped to exactly the two failure shapes possible before
+// checkRoundGuard is ever called.
+import { join } from "node:path";
+const CLI_PATH = join(import.meta.dir, "round-guard.ts");
+
+test("CLI: a subcommand other than `check` prints usage and exits 2", () => {
+  const r = Bun.spawnSync(["bun", CLI_PATH, "bogus"], { stdout: "pipe", stderr: "pipe" });
+  expect(r.exitCode).toBe(2);
+  expect(r.stderr.toString()).toContain(
+    "usage: round-guard.ts check --cwd <dir> [--branch <name>] --task-file <path> [--rounds-override <text>]",
+  );
+});
+
+test("CLI: `check` without --cwd/--task-file exits 2 naming both as required", () => {
+  const r = Bun.spawnSync(["bun", CLI_PATH, "check"], { stdout: "pipe", stderr: "pipe" });
+  expect(r.exitCode).toBe(2);
+  expect(r.stderr.toString()).toContain("round-guard.ts check: --cwd and --task-file are required");
+});

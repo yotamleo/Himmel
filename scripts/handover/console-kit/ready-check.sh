@@ -14,10 +14,13 @@
 #   1. gh pr view: headRefOid == <head-sha> (full 40 chars); mergeStateStatus
 #      == CLEAN (retries briefly on UNKNOWN — a transient GitHub computation
 #      state, not a verdict).
-#   2. statusCheckRollup: every entry is COMPLETED with conclusion
-#      SUCCESS/SKIPPED/NEUTRAL (CheckRun), or state SUCCESS (StatusContext).
-#      Read via --json, never `gh pr checks` text (a green check whose name
-#      contains a space mislabels under naive text parsing).
+#   2. statusCheckRollup: every check IDENTITY's LATEST run is COMPLETED with
+#      conclusion SUCCESS/SKIPPED/NEUTRAL (CheckRun), or state SUCCESS
+#      (StatusContext) — a superseded run (e.g. an earlier CANCELLED run
+#      before a later SUCCESS) is not judged (HIMMEL-3690). Identity =
+#      CheckRun name + workflowName when present, else StatusContext
+#      context. Read via --json, never `gh pr checks` text (a green check
+#      whose name contains a space mislabels under naive text parsing).
 #   3. GraphQL unresolved review threads == 0. Paginated the same way
 #      check-ci.sh's review-thread gate is (scripts/check-ci.sh, "Paginate:
 #      first:100 alone would let unresolved threads beyond page one slip
@@ -133,20 +136,51 @@ if [ -z "$rollup" ] || [ "$rollup" = "null" ]; then
     echo "[FAIL] 2. statusCheckRollup unreadable (gh pr view --json statusCheckRollup failed)"
     mark_fail
 else
-    bad=$(printf '%s' "$rollup" | jq -r '
-        [ .[] |
-          if has("conclusion") then
-            {name: (.name // .context // "?"),
-             ok: (.status == "COMPLETED" and (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL")),
-             detail: ((.status // "?") + "/" + (.conclusion // "null"))}
-          else
-            {name: (.context // .name // "?"),
-             ok: (.state == "SUCCESS"),
-             detail: (.state // "?")}
-          end
-        ] | map(select(.ok | not)) | map("\(.name)=\(.detail)") | join(", ")
+    # Judge each check IDENTITY by its LATEST run, not any matching row — a
+    # superseded CANCELLED run must not fail a check whose later run at the
+    # same head is green (HIMMEL-3690; evidence: PR #1317's pr-title-lint
+    # CANCELLED 08:19:58Z then SUCCESS 08:26:47Z). Identity = CheckRun `name`
+    # plus `workflowName` when present, else StatusContext `context`. Latest
+    # = greatest startedAt/completedAt (CheckRun) or createdAt/startedAt
+    # (StatusContext), falling back to the row's array position when neither
+    # timestamp is present. A run with no timestamp at all (e.g. QUEUED,
+    # not yet started) has no completed/started time to compare, but it can
+    # only exist because GitHub created it after every already-timestamped
+    # run for that identity — so it always outranks them, never the reverse.
+    # An entry with no identifiable name is judged alone — it never merges
+    # into another group (fail closed).
+    grouped=$(printf '%s' "$rollup" | jq -c '
+        def key_of(e):
+            if e.name == null then "unk:\(e.idx)"
+            elif e.is_checkrun then "cr:\(e.name)\u0001\(e.workflow)"
+            else "sc:\(e.name)" end;
+        [ to_entries[] |
+            .value as $row | .key as $idx |
+            ($row | has("conclusion")) as $is_checkrun |
+            {
+                idx: $idx,
+                is_checkrun: $is_checkrun,
+                name: (if $is_checkrun then ($row.name // $row.context) else ($row.context // $row.name) end),
+                workflow: ($row.workflowName // ""),
+                ts: (if $is_checkrun then ($row.startedAt // $row.completedAt // null)
+                     else ($row.createdAt // $row.startedAt // null) end),
+                ok: (if $is_checkrun then
+                        ($row.status == "COMPLETED" and ($row.conclusion == "SUCCESS" or $row.conclusion == "SKIPPED" or $row.conclusion == "NEUTRAL"))
+                     else
+                        ($row.state == "SUCCESS")
+                     end),
+                detail: (if $is_checkrun then (($row.status // "?") + "/" + ($row.conclusion // "null"))
+                         else ($row.state // "?") end)
+            }
+        ]
+        | map(.key = key_of(.))
+        | map(.sort_key = [(.ts == null), (.ts // .idx)])
+        | group_by(.key)
+        | map(max_by(.sort_key))
+        | {total: length, bad: (map(select(.ok | not)) | map("\(.name // "?")=\(.detail)") | join(", "))}
     ' 2>/dev/null)
-    total=$(printf '%s' "$rollup" | jq 'length' 2>/dev/null || echo 0)
+    total=$(printf '%s' "$grouped" | jq -r '.total // 0' 2>/dev/null)
+    bad=$(printf '%s' "$grouped" | jq -r '.bad // empty' 2>/dev/null)
     case "$total" in ''|*[!0-9]*) total=0 ;; esac
     if [ "$total" -eq 0 ]; then
         echo "[FAIL] 2. statusCheckRollup: no checks reported yet (0 entries — CI may not have registered)"

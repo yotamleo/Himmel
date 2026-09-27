@@ -8,6 +8,7 @@ import { uploadAll } from './attach-helper.js';
 import { readBodyFile } from './body-file.js';
 import { parseLabels } from './labels.js';
 import { BUG_FREEZE, freezeFixVersion, todayIso } from '../freeze.js';
+import { assertVersionExists } from './versions.js';
 
 function collect(value: string, prev: string[]): string[] {
   return [...prev, value];
@@ -48,6 +49,10 @@ export function registerCreate(program: Command): void {
     .option('--adf-file <path>', 'Path to pre-built ADF JSON document (overrides --desc)')
     .option('--parent <key>', 'Parent issue key')
     .option('--labels <labels>', 'Comma-separated labels to set (e.g. a,b)')
+    .option(
+      '--fix-version <name>',
+      "Set the fixVersion (validated against the project's versions; overridden by the v1 bug freeze when it applies)",
+    )
     .option('--project <key>', 'Project key (default: JIRA_PROJECT_KEY env var)')
     .option('--attach <path>', 'File to attach (repeatable)', collect, [])
     .action(
@@ -60,6 +65,7 @@ export function registerCreate(program: Command): void {
         adfFile?: string;
         parent?: string;
         labels?: string;
+        fixVersion?: string;
         project?: string;
         attach: string[];
       }) => {
@@ -85,6 +91,12 @@ export function registerCreate(program: Command): void {
         if (options.parent) fields['parent'] = { key: options.parent };
         const labels = options.labels !== undefined ? parseLabels(options.labels) : undefined;
         if (labels) fields['labels'] = labels;
+        if (options.fixVersion !== undefined) {
+          await assertVersionExists(options.project ?? projectKey(), options.fixVersion);
+          fields['fixVersions'] = [{ name: options.fixVersion }];
+        }
+        // The v1 bug freeze (HIMMEL-3411) overrides any explicit --fix-version
+        // on a post-cutoff Bug without the blocker label — freeze wins by design.
         const frozenTo = freezeFixVersion(options.type, labels, todayIso());
         if (frozenTo) {
           fields['fixVersions'] = [{ name: frozenTo }];

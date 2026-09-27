@@ -751,6 +751,22 @@ else
     fail "20: env --u expected rc=2 + class=hooks reason, got rc=$rc out=$out"
 fi
 
+echo "== 21: HIMMEL-3632 - env/sudo value-taking options this hook's arms still missed =="
+# env's `-C`/`--chdir` and `--argv0` (both real, value-taking GNU env
+# options) and sudo's `-D`/`--chdir` (real, value-taking sudo option) were
+# entirely unrecognized by _clause_head_idx's env/sudo arms - the walk
+# under-consumed by one token and misresolved the head verb to the option's
+# own value (`cat`), tricking the read-only-verb allowlist into never
+# scanning the real `cp` write.
+run_hook deny "21: env -C cat cp x scripts/hooks/a.sh (env -C swallowed as read-only verb)" \
+    "$(bash_json "env -C cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "21: env --argv0 cat cp x scripts/hooks/a.sh (env --argv0 swallowed as read-only verb)" \
+    "$(bash_json "env --argv0 cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "21: sudo --chdir cat cp x scripts/hooks/a.sh (sudo --chdir swallowed as read-only verb)" \
+    "$(bash_json "sudo --chdir cat cp x scripts/hooks/a.sh" "$REPO")" 1
+run_hook deny "21: sudo -D cat cp x scripts/hooks/a.sh (sudo -D swallowed as read-only verb)" \
+    "$(bash_json "sudo -D cat cp x scripts/hooks/a.sh" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

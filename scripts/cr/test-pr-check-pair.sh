@@ -313,8 +313,15 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # step-0 code, OR the twin's code enters through the
     # "$himmel_repo/scripts/cr/..." anchor-entry call AND
     # scripts/cr/pr-check-context.sh itself carries the comparison.
+    # HIMMEL-3698: pr-check.md's step-0 anchor-entry line now lives in its OWN
+    # fence, split from the assignment fence (fences share no shell variables,
+    # so the persistent uppercase $HIMMEL_REPO is the only reference the
+    # second fence can make) -- SKILL.md keeps the older single-compound-fence
+    # shape with the assignment-local lowercase $himmel_repo. Both spellings
+    # are accepted here; each twin's actual line is still pinned exactly by
+    # anchor_entry_pattern in check (ii) below.
     inline_anchor=$(printf '%s\n' "$code" | grep -c 'HIMMEL_REPO/\.git')
-    anchor_entry=$(printf '%s\n' "$code" | grep -c -E '"\$himmel_repo/scripts/cr/')
+    anchor_entry=$(printf '%s\n' "$code" | grep -c -E '"\$(himmel_repo|HIMMEL_REPO)/scripts/cr/')
     script_anchor=$(grep -c 'HIMMEL_REPO/\.git' "$ROOT/scripts/cr/pr-check-context.sh" 2>/dev/null)
     script_anchor="${script_anchor:-0}"
     stray_cd=$(printf '%s\n' "$code" | grep -c 'cd "$target"')
@@ -373,7 +380,12 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # substring, which would also silence a genuinely unrooted invocation of
     # that script added later) and asserted to appear EXACTLY ONCE per twin
     # -- a carve-out for one specific line, not a floor.
-    anchor_entry_pattern='^[[:space:]]*bash "\$himmel_repo/scripts/cr/pr-check-context\.sh"[[:space:]]*$'
+    # HIMMEL-3698: pr-check.md's split-fence design spells this line with the
+    # persistent uppercase $HIMMEL_REPO (its own fence, no local var to
+    # reference); SKILL.md's single compound fence still spells it with the
+    # assignment-local lowercase $himmel_repo. Both are the ONE legitimate
+    # anchor-entry line for their respective twin.
+    anchor_entry_pattern='^[[:space:]]*bash "\$(himmel_repo|HIMMEL_REPO)/scripts/cr/pr-check-context\.sh"[[:space:]]*$'
     anchor_entry_count=$(printf '%s\n' "$ii_calls" | grep -c -E "$anchor_entry_pattern")
     ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$anchor_entry_pattern")
     # HIMMEL-3359: the himmel-lane spelling of step 0 -- the bare relative
@@ -747,7 +759,13 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # false-positive on working, already-verified code -- the guard screens
     # per LINE, and the bisection's own refused examples are both
     # single-line compounds.
-    dollar_himmel_repo=$(printf '%s\n' "$code" | grep -c -E '\$\{?HIMMEL_REPO([^A-Za-z0-9_]|$)')
+    # HIMMEL-3698: pr-check.md's step-0 anchor-entry line is the ONE blessed
+    # bare-$HIMMEL_REPO site (anchor_entry_pattern, check (ii) above) -- a
+    # standalone simple command in its own fence, no if/;/pipe/test anywhere
+    # in it, matching plugin-profiles.json's exact gateAllow literal. Excluded
+    # here by the same carved-out line, not a floor: any OTHER bare
+    # $HIMMEL_REPO expansion still fails this check.
+    dollar_himmel_repo=$(printf '%s\n' "$code" | grep -v -E "$anchor_entry_pattern" | grep -c -E '\$\{?HIMMEL_REPO([^A-Za-z0-9_]|$)')
     subst_vars=$(printf '%s\n' "$code" | grep -o -E '[A-Za-z_][A-Za-z0-9_]*=\$\(' | sed -E 's/=\$\($//' | sort -u)
     # Anti-vacuity: this collection must find at least one real
     # $(...)-assigned variable (the runbooks assign several, e.g.

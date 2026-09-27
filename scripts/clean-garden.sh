@@ -467,6 +467,50 @@ is_ignorable_stray() {
     return 1
 }
 
+# HIMMEL-1738 — disposable-class allowlist for IGNORED content found inside a
+# stray-husk sweep candidate. Deliberately a SEPARATE allowlist from
+# is_ignorable_stray above: that one classifies non-ignored untracked paths
+# and its verdict also drives the merged-worktree PRUNE decision
+# (classify_worktree is shared by both), so widening it would widen pruning
+# too. This one is consulted only by the stray-husk sweep below, on paths
+# `git ls-files --others --ignored --exclude-standard --directory` reports,
+# and never reaches classify_worktree or the prune path. `--directory`
+# collapses a wholly-ignored directory into one entry ending in "/", so
+# patterns must match both that shorthand and an un-collapsed nested path.
+is_ignorable_ignored_stray() {
+    case "$1" in
+        .tokensave/|*/.tokensave/|.tokensave/*|*/.tokensave/*)         return 0 ;;
+        .codex/|*/.codex/|.codex/*|*/.codex/*)                         return 0 ;;
+        node_modules/|*/node_modules/|node_modules/*|*/node_modules/*) return 0 ;;
+    esac
+    return 1
+}
+
+# HIMMEL-1738 — a stray husk can classify "clean"/"strays" on its tracked and
+# non-ignored state alone while still hiding real user data that only
+# .gitignore protects (a worktree-local .env, local config): classify_worktree
+# above scans with `ls-files --others --exclude-standard`, which EXCLUDES
+# ignored paths by design, so it never sees them. Echoes one verdict (rc
+# always 0; a git failure -> "scanfail"):
+#   clean              no ignored content at all
+#   disposable         every ignored path is a known tool-churn class
+#   user-data <paths>  at least one ignored path is NOT on the allowlist
+stray_ignored_verdict() {
+    local wt="$1" out u nonign=""
+    if ! out=$(git -C "$wt" ls-files --others --ignored --exclude-standard --directory 2>/dev/null); then
+        echo "scanfail"; return 0
+    fi
+    if [ -z "$out" ]; then echo "clean"; return 0; fi
+    while IFS= read -r u; do
+        [ -z "$u" ] && continue
+        is_ignorable_ignored_stray "$u" || nonign="${nonign:+$nonign }$u"
+    done <<EOF
+$out
+EOF
+    if [ -n "$nonign" ]; then echo "user-data $nonign"; return 0; fi
+    echo "disposable"; return 0
+}
+
 # Classify a worktree's working-tree state for the merged-prune decision.
 # Echoes exactly one verdict token (rc always 0; git failures -> "scanfail"):
 #   scanfail            a git status/ls-files call failed
@@ -1181,6 +1225,10 @@ if [ "$NO_PRUNE" -eq 0 ]; then
     fi
 
     STRAY_HOME="$PRIMARY_WORKTREE/.claude/worktrees"
+    # Sibling of sweep-health/ (STUCK_DIR above) under the same common dir —
+    # always the primary checkout's own filesystem, so the `mv` below (and a
+    # later restore `mv` back) is a same-filesystem rename, never a copy.
+    STRAY_QUARANTINE_DIR="$(cd "$COMMON_DIR" 2>/dev/null && pwd || printf '%s' "$COMMON_DIR")/stray-quarantine"
     if [ -d "$STRAY_HOME" ]; then
         STRAY_FOUND=0
         STRAY_SWEPT=0
@@ -1304,8 +1352,31 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                     continue
                     ;;
             esac
-            # verdict is "nonworktree", "clean", or "strays ..." — safe to
-            # sweep.
+            # verdict is "nonworktree", "clean", or "strays ..." — safe on
+            # tracked/non-ignored state. A real worktree ($stray_git_marker
+            # non-empty) still needs the ignored-content check below
+            # (HIMMEL-1738 #1): classify_worktree never sees ignored paths.
+            # A "nonworktree" leftover has no .git, so git has no gitignore
+            # semantics to ask it about — nothing to check.
+            if [ -n "$stray_git_marker" ]; then
+                ignored_verdict=$(stray_ignored_verdict "$stray_dir") || ignored_verdict="scanfail"
+                case "$ignored_verdict" in
+                    clean|disposable) : ;;
+                    scanfail)
+                        echo "WARN clean-garden: stray husk's ignored-content scan could not be completed — refusing to sweep $stray_dir (inspect by hand, then rm -rf it yourself once satisfied)" >&2
+                        note_stuck "$stray_dir" "stray husk refused: ignored-content scan failed"
+                        STRAY_REFUSED=$((STRAY_REFUSED+1))
+                        continue
+                        ;;
+                    "user-data "*)
+                        checkpoint_worktree "$stray_dir" "(husk) $(basename "$stray_dir")" || true
+                        echo "WARN clean-garden: stray husk has ignored user data (${ignored_verdict#user-data }) — refusing to sweep $stray_dir" >&2
+                        note_stuck "$stray_dir" "stray husk refused: ignored user data present"
+                        STRAY_REFUSED=$((STRAY_REFUSED+1))
+                        continue
+                        ;;
+                esac
+            fi
 
             stray_kib=$(du -sk "$stray_dir" 2>/dev/null | awk '{ print $1 }') || stray_kib=0
             stray_kib=${stray_kib:-0}
@@ -1316,19 +1387,132 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 STRAY_RECLAIMED_KIB=$((STRAY_RECLAIMED_KIB+stray_kib))
                 continue
             fi
-            if rm -rf "$stray_dir" 2>/dev/null; then
-                log "  swept stray husk: $stray_dir"
+            # HIMMEL-1738 #2 (TOCTOU) — a write landing between the
+            # classification above and a destructive `rm -rf` here used to be
+            # lost outright. `mv` is a single rename() on the same filesystem
+            # (quarantine lives under COMMON_DIR, alongside sweep-health/,
+            # which is always on the primary checkout's own filesystem): it
+            # atomically carries along whatever is on disk at that instant,
+            # so a racing write either lands in the quarantined copy or fails
+            # to write at all (the path is simply gone) — never silently
+            # discarded. Permanent deletion is deferred to the reap pass
+            # below, on a LATER run.
+            # ponytail: assumes stray_dir ($STRAY_HOME, under PRIMARY_WORKTREE)
+            # and STRAY_QUARANTINE_DIR ($COMMON_DIR, also under PRIMARY_WORKTREE)
+            # always share a filesystem, so mv is a single rename() rather than
+            # a copy-and-delete fallback; revisit if himmel ever supports a
+            # worktrees dir or git-common-dir mounted on a separate filesystem.
+            if ! mkdir -p "$STRAY_QUARANTINE_DIR" 2>/dev/null; then
+                echo "WARN clean-garden: could not create quarantine dir $STRAY_QUARANTINE_DIR — refusing to sweep $stray_dir" >&2
+                note_stuck "$stray_dir" "stray husk refused: quarantine dir unavailable"
+                STRAY_REFUSED=$((STRAY_REFUSED+1))
+                continue
+            fi
+            stray_q_dest="$STRAY_QUARANTINE_DIR/$(basename "$stray_dir").$(date +%s).$$"
+            if mv "$stray_dir" "$stray_q_dest" 2>/dev/null; then
+                # The quarantine timestamp is a SIDECAR next to the moved dir,
+                # never inside it: a marker file placed inside would itself
+                # show up as untracked content to classify_worktree on the
+                # reap pass below, permanently blocking reap of an otherwise
+                # clean husk.
+                if ! date +%s > "$stray_q_dest.himmel-quarantined-at" 2>/dev/null; then
+                    echo "WARN clean-garden: failed to write quarantine timestamp for $stray_q_dest — it will never be reaped automatically (inspect by hand, then add the sidecar or rm -rf it yourself once satisfied)" >&2
+                fi
+                echo "clean-garden: quarantined stray husk $stray_dir -> $stray_q_dest (restore: mv '$stray_q_dest' '$stray_dir')"
+                log "  quarantined stray husk: $stray_dir -> $stray_q_dest"
                 STRAY_SWEPT=$((STRAY_SWEPT+1))
                 STRAY_RECLAIMED_KIB=$((STRAY_RECLAIMED_KIB+stray_kib))
             else
-                echo "WARN clean-garden: failed to sweep stray husk $stray_dir" >&2
-                note_stuck "$stray_dir" "stray husk sweep failed (rm -rf did not complete)"
+                echo "WARN clean-garden: failed to quarantine stray husk $stray_dir" >&2
+                note_stuck "$stray_dir" "stray husk sweep failed (quarantine move did not complete)"
                 STRAY_FAILED=$((STRAY_FAILED+1))
             fi
         done < <(find "$STRAY_HOME" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
         if [ "$STRAY_FOUND" -gt 0 ]; then
             STRAY_SIZE=$(human_kib "$STRAY_RECLAIMED_KIB")
             echo "clean-garden: stray-sweep — $STRAY_SWEPT swept, $STRAY_FAILED failed, $STRAY_REFUSED refused ($STRAY_SIZE reclaimed)"
+        fi
+    fi
+
+    # HIMMEL-1738 #2 — reap quarantined husks on a LATER run. The quarantine
+    # timestamp lives in a SIDECAR file next to the moved dir, not inside it
+    # (a marker inside would show up to classify_worktree as untracked
+    # content and block reap forever). A quarantine entry is deleted only if
+    # its sidecar is older than the freshness window (quarantined long enough
+    # ago) AND nothing inside the dir is newer than the sidecar (nothing
+    # wrote there since) — mirroring the sweep's own fresh-husk gate. Only
+    # then is it re-classified; anything that no longer reads clean/disposable
+    # (real work landed, or a formerly-disposable ignored path turned into
+    # real user data) is left in quarantine rather than guessed away.
+    if [ -d "$STRAY_QUARANTINE_DIR" ]; then
+        QUAR_REAPED=0
+        while IFS= read -r quar_dir; do
+            [ -n "$quar_dir" ] || continue
+            quar_sidecar="$quar_dir.himmel-quarantined-at"
+            if [ ! -f "$quar_sidecar" ]; then
+                continue   # no timestamp — fail closed, keep it
+            fi
+            # Captured via $( ) rather than piped into `grep -q` (which can
+            # SIGPIPE `find` under `set -o pipefail` and flip the verdict on
+            # a busy directory) — see HIMMEL-1430. A failed `find` here must
+            # NOT read as "nothing found" (that would treat a scan failure as
+            # permission to reap): check its own exit status and fail closed.
+            if quar_age_out=$(find "$quar_sidecar" -mmin -1440 -print 2>/dev/null); then
+                if [ -n "$quar_age_out" ]; then
+                    continue   # quarantined too recently
+                fi
+            else
+                continue   # age scan failed — fail closed, keep it
+            fi
+            if quar_git_marker=$(find "$quar_dir" -maxdepth 1 -name .git 2>/dev/null); then  # gnu-ok: -maxdepth is also POSIX-supported by BSD find
+                if [ -n "$quar_git_marker" ]; then
+                    quar_verdict=$(classify_worktree "$quar_dir") || quar_verdict="scanfail"
+                    case "$quar_verdict" in
+                        clean|"strays "*)
+                            quar_ig=$(stray_ignored_verdict "$quar_dir") || quar_ig="scanfail"
+                            case "$quar_ig" in
+                                clean|disposable) : ;;
+                                *) continue ;;
+                            esac
+                            ;;
+                        *) continue ;;
+                    esac
+                fi
+            else
+                continue   # presence probe failed — fail closed, keep it
+            fi
+            # HIMMEL-1738 (codex round-2 review) — re-check "nothing wrote here
+            # since quarantining" AGAIN here, immediately before the delete,
+            # rather than only before the classify above: classify_worktree
+            # and stray_ignored_verdict run real `git` status/ls-files scans
+            # that take wall-clock time, and a write landing during that scan
+            # would be invisible to a check made only beforehand. Checking
+            # again right here shrinks the window to the rm -rf call itself.
+            # ponytail: a write landing in that last instant is still lost —
+            # there is no cross-process lock, so a truly atomic
+            # check-then-delete isn't possible without one; revisit only if
+            # this is ever observed in practice.
+            if quar_newer_out=$(find "$quar_dir" -newer "$quar_sidecar" -print 2>/dev/null); then
+                if [ -n "$quar_newer_out" ]; then
+                    continue   # something wrote here since quarantining
+                fi
+            else
+                continue   # tamper scan failed — fail closed, keep it
+            fi
+            if [ "$DRY_RUN" -eq 1 ]; then
+                echo "DRY clean-garden: would delete quarantined stray husk $quar_dir"
+                continue
+            fi
+            if rm -rf "$quar_dir" 2>/dev/null; then
+                rm -f "$quar_sidecar" 2>/dev/null || true
+                log "  reaped quarantined stray husk: $quar_dir"
+                QUAR_REAPED=$((QUAR_REAPED+1))
+            else
+                echo "WARN clean-garden: failed to delete quarantined stray husk $quar_dir" >&2
+            fi
+        done < <(find "$STRAY_QUARANTINE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+        if [ "$QUAR_REAPED" -gt 0 ]; then
+            echo "clean-garden: stray-quarantine — $QUAR_REAPED reaped"
         fi
     fi
 

@@ -82,6 +82,13 @@ The `signals.dashboard` tool runs a **lag-swept, multi-series, FDR-controlled** 
 correlation awaits a daily symptom log. These series cannot be included in the dashboard
 until a daily `<name>.csv` is available.
 
+## Cache location
+
+Kp/factor caches write to `cache/` next to this plugin by default. Set
+`LUNA_CORRELATE_CACHE_DIR` to point them elsewhere (e.g. the test suite points it
+at a per-run temp dir, HIMMEL-370, so tests can never write through to the real
+operator cache).
+
 ## Kp data source
 
 **Source:** GFZ Potsdam Kp index — `https://kp.gfz.de/app/files/Kp_ap_Ap_SN_F107_since_1932.txt`

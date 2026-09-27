@@ -260,6 +260,12 @@ const MEMBERS = {
   'block-read-secrets.sh': `sleep 3`,
   // HIMMEL-3383: the /pr-check literal guard is must-run too.
   'guard-pr-check-literal.sh': `sleep 3`,
+  // HIMMEL-3669: the relay write-deny fence (Guard D) is must-run too.
+  'guard-relay-writes.sh': `sleep 3`,
+  // HIMMEL-3669: the worktree-isolation fence is must-run too.
+  'block-edit-on-main.sh': `sleep 3`,
+  // HIMMEL-3669: the memory-index form guard is must-run too.
+  'guard-memory-capture.sh': `sleep 3`,
   // HIMMEL-3601: a must-run member that CRASHES (not a timeout) — named like
   // a real must-run guard so MUST_RUN_CHAIN_MEMBERS fires, exits 1 the way a
   // `set -u` abort or a failed `.` source would.
@@ -597,6 +603,7 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
       'block-chokepoint-env-prefix.sh',
       'block-destructive-commands.sh',
       'block-edit-live-settings.sh',
+      'block-edit-on-main.sh',
       'block-git-stash.sh',
       'block-jira-compound-write.sh',
       'block-read-secrets.sh',
@@ -604,7 +611,9 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
       'block-tail-pipe-on-gates.sh',
       'block-write-into-main-checkout.sh',
       'check-cr-marker-on-pr-create.sh',
+      'guard-memory-capture.sh',
       'guard-pr-check-literal.sh',
+      'guard-relay-writes.sh',
     ].sort(),
   );
 });
@@ -898,6 +907,117 @@ test('a starved denial names the member that actually spent the shared budget, n
   }
 });
 
+// HIMMEL-3620 (N1, J1259R residual): mustRunWindow used to be
+// `Math.min(memberTimeoutMs(), entryDeadline - Date.now())` with no floor, so
+// a RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS override below MIN_MEMBER_TIMEOUT_MS
+// (500ms) always landed under the floor regardless of how much of the real
+// entry deadline was left — every must-run member was denied pre-spawn as
+// "entry deadline exhausted", even a chain that would decide in a few ms. The
+// fixture here decides instantly; the fix must let it actually run.
+test('a must-run member with a sub-floor RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS still gets a real window (HIMMEL-3620 N1)', () => {
+  const dir = makeTmpDir('hook-bash-subfloor-member-');
+  try {
+    writeFileSync(
+      join(dir, 'block-read-secrets.sh'),
+      `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-tail.sh"\nprintf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"fast"}}'\n`,
+    );
+    chmodSync(join(dir, 'block-read-secrets.sh'), 0o755);
+
+    const result = spawnSync(process.execPath, [LAUNCHER, '--chain', join(dir, 'block-read-secrets.sh')], {
+      encoding: 'utf8',
+      input: PAYLOAD,
+      env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '400' },
+    });
+    assert.equal(
+      existsSync(join(dir, 'ran-tail.sh')),
+      true,
+      'the must-run member must actually spawn, not be denied pre-spawn',
+    );
+    assert.doesNotMatch(
+      result.stderr,
+      /entry deadline exhausted/,
+      'a fast must-run member must not be denied as entry-deadline-exhausted merely because the override is below the 500ms floor',
+    );
+    assert.equal(result.status, 0, `expected allow, got: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'allow');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// HIMMEL-3620 (N2, J1259R residual, latent): an advisory member's bound used
+// to be floored at MIN_MEMBER_TIMEOUT_MS (500ms) against the SHARED chain
+// budget only, never capped by the entry-safe deadline — several advisory
+// members after a slow must-run member could each add a floored 500ms slice
+// past the point where the real settings.json entry timeout fires, and a
+// killed entry fails the whole chain OPEN. Six advisory members that each
+// hang past their bound, with an entry deadline tight enough that only ~2 of
+// them fit inside it: at base, every one still gets the full 500ms floor
+// (~3s total), outrunning the outer harness stand-in for the real entry
+// timeout; the fix must shrink each member's bound as the entry deadline is
+// approached so the chain decides (with SKIPs) well inside it instead.
+test('advisory members are bounded by the entry deadline, not just the shared chain budget (HIMMEL-3620 N2)', () => {
+  const dir = makeTmpDir('hook-bash-advisory-entry-deadline-');
+  try {
+    const names = ['hang1.sh', 'hang2.sh', 'hang3.sh', 'hang4.sh', 'hang5.sh', 'hang6.sh'];
+    for (const name of names) {
+      writeFileSync(join(dir, name), `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-${name}"\nsleep 100\n`);
+      chmodSync(join(dir, name), 0o755);
+    }
+
+    const logFile = join(dir, 'skips.jsonl');
+    const HARNESS_MS = 2200;
+    const t0 = Date.now();
+    const result = spawnSync(process.execPath, [LAUNCHER, '--chain', ...names.map((n) => join(dir, n))], {
+      encoding: 'utf8',
+      input: PAYLOAD,
+      timeout: HARNESS_MS,
+      killSignal: 'SIGKILL',
+      env: {
+        ...process.env,
+        RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '2000',
+        RUN_HOOK_CHAIN_BUDGET_MS: '50',
+        RUN_HOOK_CHAIN_ENTRY_TIMEOUT_MS: '1000',
+        RUN_HOOK_CHAIN_ENTRY_SAFETY_MARGIN_MS: '200',
+        RUN_HOOK_CHAIN_SKIP_LOG: logFile,
+      },
+    });
+    const wall = Date.now() - t0;
+    assert.notEqual(
+      result.signal,
+      'SIGKILL',
+      `advisory members must decide (with SKIPs) before the entry timeout, not be killed by it (stderr: ${result.stderr})`,
+    );
+    assert.ok(wall < HARNESS_MS, `chain took ${wall}ms, must stay under the ${HARNESS_MS}ms harness stand-in for the entry timeout`);
+    // The real entry deadline is entryTimeoutMs - entrySafetyMarginMs = 1000 - 200 = 800ms from
+    // chain start; HARNESS_MS is only a generous outer kill-switch, not a tight check that the
+    // chain actually decided near that deadline rather than lingering toward the kill-switch
+    // itself (codex-1, HIMMEL-3620 /pr-check round 1).
+    assert.ok(wall < 1500, `chain took ${wall}ms, must decide near the real ~800ms entry deadline, not merely avoid the ${HARNESS_MS}ms kill-switch`);
+    // codex-1, HIMMEL-3620 /pr-check round 3: typeof-number alone lets an early
+    // error (e.g. a crash) satisfy this test. All six members here are
+    // advisory (none in MUST_RUN_CHAIN_MEMBERS) and each hangs well past its
+    // bound, so every one is spawned and skipped (advisory members are never
+    // denied without spawning — that pre-spawn check only applies to
+    // must-run members) — the chain's carried status must land on the
+    // all-skipped value 1, never 0 (no emitter ran) or 2 (a deny).
+    assert.equal(result.status, 1, `the chain must land on the all-skipped result, not crash or deny (stderr: ${result.stderr})`);
+    const rows = readFileSync(logFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(rows.length, names.length, `expected one skip entry per advisory member (stderr: ${result.stderr})`);
+    for (const row of rows) {
+      assert.equal(row.action, 'skip');
+      assert.equal(row.reason, 'ETIMEDOUT');
+    }
+    assert.deepEqual(
+      rows.map((row) => row.member).sort(),
+      names.slice().sort(),
+      'every advisory member must be accounted for in the skip log',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // HIMMEL-3383: a starved guard-pr-check-literal.sh must deny, never let the
 // bare scripts/cr literal fall through to the allow rule unchecked.
 test('a starved guard-pr-check-literal.sh DENIES the chain instead of being skipped', () => {
@@ -914,6 +1034,66 @@ test('a starved guard-pr-check-literal.sh DENIES the chain instead of being skip
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /DENY guard-pr-check-literal\.sh \(budget=500ms/);
     assert.equal(ran(dir, 'allow.sh'), false, 'a starved literal guard must deny, not skip past it');
+  });
+});
+
+// HIMMEL-3669: guard-relay-writes.sh (Guard D, HIMMEL-2975) is deny-capable
+// and fails closed by its own header, but was missing from
+// MUST_RUN_CHAIN_MEMBERS — a starved run let its DENY be skipped instead of
+// failing the chain closed.
+test('a starved guard-relay-writes.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'guard-relay-writes.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY guard-relay-writes\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved relay-write guard must deny, not skip past it');
+  });
+});
+
+// HIMMEL-3669: block-edit-on-main.sh self-describes as a "security hook"
+// that "fails CLOSED" (worktree-isolation fence), but was missing from
+// MUST_RUN_CHAIN_MEMBERS.
+test('a starved block-edit-on-main.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'block-edit-on-main.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY block-edit-on-main\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved main-checkout guard must deny, not skip past it');
+  });
+});
+
+// HIMMEL-3669: guard-memory-capture.sh denies (exit 2) a malformed auto-memory
+// write, but was missing from MUST_RUN_CHAIN_MEMBERS.
+test('a starved guard-memory-capture.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'guard-memory-capture.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY guard-memory-capture\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved memory-capture guard must deny, not skip past it');
   });
 });
 
@@ -2316,4 +2496,97 @@ test('bypass audit line carries the session name resolved from CLAUDE_PID (null 
     child.kill();
     rmSync(fx.root, { recursive: true, force: true });
   }
+});
+
+// HIMMEL-3678 (J1310O F4): MUST_RUN_CHAIN_MEMBERS is a hardcoded basename set
+// with nothing cross-checking it against the chains actually wired, so a new
+// or renamed deny-capable hook could silently join a chain as advisory. These
+// tests enumerate every hook wired into a --chain in .claude/settings.json and
+// every marketplace/plugins/*/hooks/hooks.json, and require each one to be
+// either in MUST_RUN_CHAIN_MEMBERS or in the explicit ADVISORY_CHAIN_MEMBERS
+// allowlist below (each entry carrying its own one-line reason).
+const REPO_ROOT = join(HERE, '..', '..');
+const SETTINGS_PATH = join(REPO_ROOT, '.claude', 'settings.json');
+
+// --lifecycle chains are out of scope: runChain's lifecycle branch never
+// consults MUST_RUN_CHAIN_MEMBERS at all (see run-hook-with-bash.js's
+// runChain — "a --lifecycle chain is advisory BY DEFINITION"), so requiring
+// its members to be must-run-or-advisory-classified would test a distinction
+// the runner itself does not apply to them.
+const ADVISORY_CHAIN_MEMBERS = new Map([
+  ['auto-approve-safe-bash.sh', 'fail-open nudge by design (J1310O F1)'],
+  ['read-clamp.sh', 'fail-open nudge by design (J1310O F1)'],
+  ['require-quiet-run.sh', 'fail-open nudge by design (J1310O F1)'],
+]);
+
+function findPluginHooksJsonFiles(repoRoot) {
+  const pluginsDir = join(repoRoot, 'marketplace', 'plugins');
+  const out = [];
+  if (!existsSync(pluginsDir)) return out;
+  for (const entry of readdirSync(pluginsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const candidate = join(pluginsDir, entry.name, 'hooks', 'hooks.json');
+    if (existsSync(candidate)) out.push(candidate);
+  }
+  return out;
+}
+
+function collectChainCommandStrings(node, out) {
+  if (typeof node === 'string') {
+    if (node.includes('run-hook-with-bash.js') && node.includes('--chain')) out.push(node);
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const value of node) collectChainCommandStrings(value, out);
+    return;
+  }
+  if (node && typeof node === 'object') {
+    for (const value of Object.values(node)) collectChainCommandStrings(value, out);
+  }
+}
+
+function extractNonLifecycleChainMembers(command) {
+  const idx = command.indexOf('--chain');
+  if (idx === -1) return [];
+  const chainPart = command.slice(idx);
+  if (chainPart.startsWith('--chain --lifecycle')) return [];
+  const members = [];
+  for (const m of chainPart.matchAll(/([A-Za-z0-9_.-]+\.sh)(?![A-Za-z0-9_.-])/g)) {
+    members.push(m[1]);
+  }
+  return members;
+}
+
+function enumerateNonLifecycleChainMembers(files) {
+  const members = new Set();
+  for (const file of files) {
+    if (!existsSync(file)) continue;
+    const commands = [];
+    collectChainCommandStrings(JSON.parse(readFileSync(file, 'utf8')), commands);
+    for (const command of commands) {
+      for (const basename of extractNonLifecycleChainMembers(command)) members.add(basename);
+    }
+  }
+  return members;
+}
+
+function unclassifiedChainMembers(members, mustRunSet, advisoryMap) {
+  const unclassified = [];
+  for (const basename of members) {
+    if (mustRunSet.has(basename) || advisoryMap.has(basename)) continue;
+    unclassified.push(basename);
+  }
+  return unclassified.sort();
+}
+
+test('every non-lifecycle --chain member wired in settings.json and every plugin hooks.json is must-run or explicitly advisory', () => {
+  assert.ok(existsSync(SETTINGS_PATH), `sanity: ${SETTINGS_PATH} must exist for this test to mean anything`);
+  const members = enumerateNonLifecycleChainMembers([SETTINGS_PATH, ...findPluginHooksJsonFiles(REPO_ROOT)]);
+  assert.ok(members.size > 0, 'sanity: expected at least one wired non-lifecycle --chain member');
+  const unclassified = unclassifiedChainMembers(members, MUST_RUN_CHAIN_MEMBERS, ADVISORY_CHAIN_MEMBERS);
+  assert.deepEqual(
+    unclassified,
+    [],
+    `unclassified --chain member(s) — add to MUST_RUN_CHAIN_MEMBERS or to ADVISORY_CHAIN_MEMBERS with a reason: ${unclassified.join(', ')}`,
+  );
 });

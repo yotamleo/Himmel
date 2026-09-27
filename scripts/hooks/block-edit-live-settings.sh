@@ -775,6 +775,20 @@ resolve_repo_context() {
     fi
 }
 
+# has_traversal_dots TEXT — true when a literal `..` is an actual
+# path-traversal component: a non-path-name character (`/`, quote, space,
+# start/end of string) on EITHER side, never a bare substring anywhere in the
+# text. A `<sha>..<sha>` git range has a hex digit on BOTH sides of the `..`
+# and never matches; `../.claude`, `worktrees/wt/../../x`, a bare `cd ..` and
+# a `..` glued to a short option (`-t../primary/.claude`) all still match
+# (HIMMEL-3675: the three `*..*` glob checks below treated a benign SHA range
+# identically to a real climb-out, false-DENYing `impacted-suites.sh --check
+# <base>..<head>` run from a linked worktree; a both-sides-only boundary check
+# then let a glued short option through undetected — HIMMEL-3675 judge NO-GO).
+has_traversal_dots() {
+    [[ "$1" =~ (^|[^a-z0-9_])\.\.|\.\.([^a-z0-9_]|$) ]]
+}
+
 # mentions_primary_or_home CMD_LC — true when the command text contains the
 # resolved primary checkout's own path, the resolved $HOME, or an
 # unexpanded $HOME/~ literal immediately before .claude — i.e. the mention
@@ -790,15 +804,16 @@ mentions_primary_or_home() {
     # A linked worktree nested under the primary (`<primary>/.claude/
     # worktrees/<wt>`) contains the primary root in its own absolute path, so
     # its OWN settings write matched below (HIMMEL-3468 codex-1). Blank out
-    # this worktree's own root first — never when `..` appears anywhere, since
-    # `<wt>/../../settings.json` climbs back into the primary. Only the root
-    # followed by `/` is removed: a bare string prefix would also eat the
-    # front of a sibling path (`<dir>/prim` inside `<dir>/primary/...`).
+    # this worktree's own root first — never when a real traversal `..`
+    # (has_traversal_dots) appears anywhere, since `<wt>/../../settings.json`
+    # climbs back into the primary; a `<sha>..<sha>` git range never counts
+    # (HIMMEL-3675). Only the root followed by `/` is removed: a bare string
+    # prefix would also eat the front of a sibling path (`<dir>/prim` inside
+    # `<dir>/primary/...`).
     if [ "$is_primary_cwd" = "0" ] && [ -n "$own_root_lc" ]; then
-        case "$c_noquotes" in
-            *..*) ;;
-            *) c_noquotes=${c_noquotes//"$own_root_lc/"/} ;;
-        esac
+        if ! has_traversal_dots "$c_noquotes"; then
+            c_noquotes=${c_noquotes//"$own_root_lc/"/}
+        fi
     fi
     # Only the primary root's OWN .claude counts as live — matching
     # primary_root_lc as a bare substring anywhere also matched any command
@@ -1096,18 +1111,23 @@ mentions_dot_claude_dir_dest() {
     # keeps a SECOND, un-stripped `.claude` after the container segment), and
     # never touches rule 1 (`settings.json` is a distinct substring).
     #
-    # Never stripped when `..` appears ANYWHERE in the text (HIMMEL-3499,
-    # third panel round on #1210): `cp -r x/. …/worktrees/..` (or a deeper
-    # `worktrees/wt/../../`) climbs back OUT of the worktrees container into
-    # `.claude` itself — the SAME "any `..` voids the strip" rule
-    # mentions_primary_or_home() already applies to its own-root blanking,
-    # for the identical reason (this hook does not resolve `..`, so it
-    # cannot tell how far a climb reaches; only refusing to strip at all
-    # keeps the mention visible to the live-check `..` rule below).
-    case "$1" in
-        *..*) c="$1" ;;
-        *) c=${1//.claude\/worktrees/CLAUDE_WORKTREES_PATH} ;;
-    esac
+    # Never stripped when a real traversal `..` (has_traversal_dots) appears
+    # ANYWHERE in the text (HIMMEL-3499, third panel round on #1210):
+    # `cp -r x/. …/worktrees/..` (or a deeper `worktrees/wt/../../`) climbs
+    # back OUT of the worktrees container into `.claude` itself — the SAME
+    # "any traversal `..` voids the strip" rule mentions_primary_or_home()
+    # already applies to its own-root blanking, for the identical reason
+    # (this hook does not resolve `..`, so it cannot tell how far a climb
+    # reaches; only refusing to strip at all keeps the mention visible to
+    # the live-check `..` rule below). A `<sha>..<sha>` git range (hex on
+    # both sides of the `..`) is not a traversal and never voids the strip
+    # (HIMMEL-3675 — this was the false-DENY on `impacted-suites.sh --check
+    # <base>..<head>` run from a `.claude/worktrees/<name>` worktree).
+    if has_traversal_dots "$1"; then
+        c="$1"
+    else
+        c=${1//.claude\/worktrees/CLAUDE_WORKTREES_PATH}
+    fi
     # No LEADING boundary requirement (HIMMEL-3499/3555 panel round on
     # #1210): a short flag glued directly to its argument (`-C.claude`,
     # `-d.claude`, `-t.claude`) puts an alnum character immediately before
@@ -1271,6 +1291,66 @@ has_write_verb_or_target_flag() {
     return 1
 }
 
+# lex_resolve BASE OP — join OP onto BASE (OP itself, if already absolute)
+# and collapse `.`/`..` components as plain text, the way a shell would
+# resolve the path, with NO filesystem access (HIMMEL-3686 item 1): a
+# relative destination operand is judged by where it lexically lands, not
+# by whether it merely contains `..`, so `../other` (stays under
+# `worktrees/`) and `../..` (climbs out of it) resolve to different places.
+lex_resolve() {
+    local base="$1" op="$2" joined part n=0
+    local -a out
+    case "$op" in
+        /*|[A-Za-z]:/*|[A-Za-z]:\\*) joined="$op" ;;
+        *) joined="$base/$op" ;;
+    esac
+    local IFS=/
+    # HIMMEL-3686 round-5 codex-3: unquoted word-splitting on $joined also
+    # triggers pathname expansion on any segment containing a glob char,
+    # against the HOOK PROCESS's own cwd (unrelated to the path being
+    # resolved) — `set -f` keeps this loop the filesystem-blind textual
+    # split the function promises.
+    set -f
+    for part in $joined; do
+        case "$part" in
+            ''|'.') : ;;
+            '..')
+                if [ "$n" -gt 0 ]; then
+                    n=$((n - 1))
+                    unset "out[$n]"
+                fi
+                ;;
+            *) out[n]=$part; n=$((n + 1)) ;;
+        esac
+    done
+    set +f
+    local i=0 res=''
+    while [ "$i" -lt "$n" ]; do
+        res="$res/${out[$i]}"
+        i=$((i + 1))
+    done
+    [ -n "$res" ] && printf '%s\n' "$res" || printf '/\n'
+}
+
+# has_unquoted_brace_group TEXT — a single, non-nested `{…,…}` brace pair in
+# the (already quote/escape-stripped, HIMMEL-3468) command text (HIMMEL-3686
+# item 2): `.{,.}/.{,.}/settings.json` hides an arbitrary `../` climb from
+# every OTHER check in this file, none of which expand braces. Never
+# expanded here either — a match just denies outright, the same fail-closed
+# shape as an unresolvable canon().
+has_unquoted_brace_group() {
+    [[ "$1" =~ \{[^{}]*,[^{}]*\} ]]
+}
+# ponytail: matching against already quote-stripped text means a genuinely
+# quoted brace-containing filename (e.g. a file literally named `.{,.}`,
+# passed as `'.{,.}'`) is denied the same as a real unquoted, expandable
+# `{…,…}` — ST_Q[] only tracks "any byte of this word was quoted", and bash
+# still brace-expands an unquoted `{...}` segment even when another part of
+# the SAME word is quoted, so that per-word flag cannot safely exempt this
+# check. Accepted false-deny, same fail-closed direction as this file's other
+# documented residuals. Upgrade path: HIMMEL-3696 (per-character quote
+# tracking in the tokenizer).
+
 # changes_directory CMD_LC CMD_N — a cd/pushd/popd word anywhere in the
 # command, with the same complement-of-a-word-character boundary as the verb
 # list, or a `-C <dir>` / `--chdir` word (`git -C`, `make -C`, `env -C`),
@@ -1289,6 +1369,22 @@ has_write_verb_or_target_flag() {
 # this function needed to grow to close the residual.
 # ponytail: a relative `find … -exec` naming `.claude` as its target is still
 # not matched by either mechanism — the remaining documented residual.
+# ponytail: a cd/pushd/popd/-C matched here relocates the real target
+# directory, but neither _check_write_operand()'s `wabs` nor check_target()'s
+# own relative-join (both use the fixed PreToolUse $cwd) adjust for it — so
+# `cd sub && cp y link`, where `sub/link` is a pre-existing symlink into the
+# primary's live settings.json, resolves `link` against the wrong base and
+# silently evades items 1 and 3 (HIMMEL-3686 round-4 codex-2). Deferred
+# rather than blunt-denied: the write-verb operand scan already inspects
+# every word including the verb itself (round-2 codex-1's accepted ruling),
+# so a blind "deny any relative operand when this function matches" would
+# deny virtually any write-verb command containing a cd from a nested
+# worktree, unrelated to .claude — a materially bigger blast radius than
+# this function's existing HIMMEL-3468 role, where it only ever fires as an
+# additional forcing factor on a command ALREADY flagged by another signal.
+# Upgrade path: HIMMEL-3694 (track the real post-cd cwd per command segment
+# via the tokenizer's own ST_S/ST_SEP arrays, falling back to deny only when
+# a cd target isn't a simple literal).
 changes_directory() {
     local out
     out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cd|pushd|popd)([^a-z0-9_]|$)') || true
@@ -1302,6 +1398,16 @@ tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || tr
 
 cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
 [ -n "$cwd" ] || cwd="$PWD"
+
+# nested_wt_primary — set only when $cwd is itself inside a linked
+# worktree's own container path (<primary>/.claude/worktrees/<name>/…);
+# then it is that <primary> root, used below (HIMMEL-3686 item 1/2) to spot
+# a relative destination that climbs back OUT of worktrees/ into the
+# primary's own .claude — text-only, no filesystem access.
+nested_wt_primary=""
+case "$cwd" in
+    */.claude/worktrees/*) nested_wt_primary=${cwd%%/.claude/worktrees/*} ;;
+esac
 
 if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
@@ -1378,19 +1484,146 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             ;;
     esac
 
+    write_verb=0
+    has_write_verb_or_target_flag "$cmd_lc" "$cmd_n" && write_verb=1
+
     dir_dest=0
-    if mentions_dot_claude_dir_dest "$cmd_lc" && has_write_verb_or_target_flag "$cmd_lc" "$cmd_n"; then
+    if mentions_dot_claude_dir_dest "$cmd_lc" && [ "$write_verb" = 1 ]; then
         dir_dest=1
     fi
 
-    if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ]; then
+    # HIMMEL-3686 items 1 and 3, out-of-scope follow-ups from #1313/
+    # HIMMEL-3675 (J1313O): neither needs mentions_settings/dir_dest, so
+    # both are judged BEFORE the early exit below that they would otherwise
+    # never reach. One pass over the command's words, gated on a write verb
+    # being present at all.
+    #
+    # A quoted destination containing a space ("my path/s") must stay ONE
+    # word — splitting cmd_n on whitespace (already quote-stripped) breaks
+    # it into two words that name neither the real symlink nor the real
+    # climb target (codex-1 panel finding on this ticket). When the
+    # tokenizer vouched for this command (TOK=1, Bash only — HIMMEL-3546),
+    # ST_W still holds cmd's own words, quotes/escapes removed but internal
+    # spaces intact; use those instead. PowerShell and any Bash command the
+    # tokenizer could not vouch for (heredoc, ANSI-C word) fall back to the
+    # whitespace split, same documented ceiling every other TOK=0 fallback
+    # in this file already accepts.
+    _check_write_operand() {
+        local w="$1" resolved wabs wparent wleaf result
+        [ -n "$w" ] || return 0
+        if [ -n "$nested_wt_primary" ]; then
+            case "$w" in
+                *..*)
+                    resolved=$(lex_resolve "$cwd" "$w")
+                    case "$resolved" in
+                        "$nested_wt_primary/.claude/worktrees"|"$nested_wt_primary/.claude/worktrees/"*) : ;;
+                        "$nested_wt_primary/.claude"|"$nested_wt_primary/.claude/"*) dirdest_climb=1 ;;
+                    esac
+                    ;;
+            esac
+        fi
+        case "$w" in
+            /*|[A-Za-z]:/*|[A-Za-z]:\\*) wabs="$w" ;;
+            *) wabs="$cwd/$w" ;;
+        esac
+        # round-3 codex-1: `-e` follows symlinks and reports false for a
+        # DANGLING one (a symlink whose target does not exist yet, e.g. one
+        # pointing at a settings.json that has not been created) — `-L`
+        # is a second stat-family builtin, no subprocess, and catches the
+        # symlink itself so canon() still resolves where it points.
+        if [ -e "$wabs" ] || [ -L "$wabs" ]; then
+            result=$(check_target "$w")
+            case "$result" in deny\ *) symlink_dest=1 ;; esac
+            return
+        fi
+        # HIMMEL-178 round-2 codex-2: a destination that does not exist YET
+        # can still be reached through a pre-existing symlinked PARENT
+        # directory that escapes into the primary's .claude/. canon()'s
+        # realpath -m / Python resolve(strict=False) already resolve a
+        # missing final component safely (symlinks in every EXISTING
+        # component are followed, the rest is appended lexically), so gate
+        # on the PARENT existing too, not only the full path — but only when
+        # the leaf is actually a live-settings filename: check_target's own
+        # canon() (a realpath/python subprocess) is expensive, and a padded
+        # command can carry thousands of non-existent operand words (J1242
+        # timing tests), so calling it whenever a word's PARENT merely exists
+        # (almost always true — the parent is often just the cwd) blew the
+        # 5s timing budget. The leaf match uses a bash case pattern, not
+        # `tr`, so this pre-filter itself never forks.
+        wleaf="${wabs##*/}"
+        case "$wleaf" in
+            [sS][eE][tT][tT][iI][nN][gG][sS].[jJ][sS][oO][nN]) : ;;
+            [sS][eE][tT][tT][iI][nN][gG][sS].[lL][oO][cC][aA][lL].[jJ][sS][oO][nN]) : ;;
+            # ponytail: a brand-new, non-settings-named leaf reached through a
+            # pre-existing symlinked PARENT that itself resolves into the
+            # primary's live .claude/ never reaches check_target() here (the
+            # leaf filter exists to keep the padded-command case cheap, per
+            # the comment above) — an arbitrary new file, just not
+            # settings.json, can still land in the live .claude/ this way.
+            # Upgrade path: HIMMEL-3697 (a cheaper parent-existence check that
+            # does not require narrowing to a settings-only leaf name).
+            *) return ;;
+        esac
+        wparent="${wabs%/*}"
+        [ -n "$wparent" ] || wparent="/"
+        if [ -e "$wparent" ]; then
+            result=$(check_target "$w")
+            case "$result" in deny\ *) symlink_dest=1 ;; esac
+        fi
+    }
+    dirdest_climb=0
+    symlink_dest=0
+    if [ "$write_verb" = 1 ]; then
+        if [ "$TOK" = 1 ]; then
+            widx=0
+            while [ "$widx" -lt "$ST_N" ]; do
+                _check_write_operand "${ST_W[widx]}"
+                widx=$((widx + 1))
+            done
+        else
+            # CodeRabbit (HIMMEL-3686): unquoted `for w in $cmd_n` is subject
+            # to pathname expansion against the HOOK PROCESS's own real cwd —
+            # unrelated to the command's cwd — so a glob-containing operand
+            # could reach _check_write_operand as an unrelated expanded path
+            # instead of its literal text. `set -f` for exactly this loop
+            # keeps the fallback textual, restoring the prior noglob state
+            # after (mirrors lex_resolve's own set -f/set +f bracket).
+            case $- in
+                *f*) _had_noglob=1 ;;
+                *) _had_noglob=0 ;;
+            esac
+            set -f
+            for w in $cmd_n; do
+                _check_write_operand "$w"
+            done
+            if [ "$_had_noglob" = 1 ]; then
+                set -f
+            else
+                set +f
+            fi
+        fi
+    fi
+
+    # HIMMEL-3686 item 2: a brace group in the text is refused outright
+    # whenever it could hide a climb that matters — the text already names
+    # a live settings file or a primary .claude dir-dest, or $cwd is itself
+    # a nested worktree a hidden `../` could climb out of.
+    brace_dir_dest=0
+    if [ "$write_verb" = 1 ] && has_unquoted_brace_group "$cmd_n" \
+        && { [ "$mentions_settings" = "1" ] || [ "$dir_dest" = "1" ] || [ -n "$nested_wt_primary" ]; }; then
+        brace_dir_dest=1
+    fi
+
+    if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ] && [ "$dirdest_climb" = "0" ] \
+        && [ "$symlink_dest" = "0" ] && [ "$brace_dir_dest" = "0" ]; then
         exit 0
     fi
 
     resolve_repo_context
 
     live=0
-    if [ "$is_primary_cwd" = "1" ] || [ "$ansi_c" = "1" ]; then
+    if [ "$is_primary_cwd" = "1" ] || [ "$ansi_c" = "1" ] || [ "$dirdest_climb" = "1" ] \
+        || [ "$symlink_dest" = "1" ] || [ "$brace_dir_dest" = "1" ]; then
         live=1
     elif changes_directory "$cmd_lc" "$cmd_n"; then
         # The worktree-relative exemption is judged against the PreToolUse
@@ -1401,15 +1634,15 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # deny).
         live=1
     else
-        case "$cmd_lc" in
-            *..*)
-                # A `..` climbs out of the worktree the exemption covers —
-                # from `<primary>/.claude/worktrees/<wt>`, `../../settings.json`
-                # IS the primary's file — whatever the verb. The worktree's own
-                # copy never needs `..` to name it (HIMMEL-3468).
-                live=1
-                ;;
-        esac
+        if has_traversal_dots "$cmd_lc"; then
+            # A real traversal `..` climbs out of the worktree the exemption
+            # covers — from `<primary>/.claude/worktrees/<wt>`,
+            # `../../settings.json` IS the primary's file — whatever the verb.
+            # The worktree's own copy never needs `..` to name it
+            # (HIMMEL-3468). A `<sha>..<sha>` git range never counts
+            # (HIMMEL-3675).
+            live=1
+        fi
         if [ "$live" = "0" ] && mentions_primary_or_home "$cmd_lc"; then
             live=1
         elif [ "$live" = "0" ] && [ -z "$primary_root_lc" ]; then

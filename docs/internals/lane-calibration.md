@@ -304,7 +304,37 @@ Telegram dispatch (`scripts/telegram/run.ts` `spawnSpec`) maps the run's model
 to its tier row (alias `opus`, or full id `claude-opus-…`) and exports the row's
 `effort` as `CLAUDE_CODE_EFFORT_LEVEL`, over any ambient value; a route's own
 env still wins, and a row with no level-shaped `effort` leaves the ambient
-setting alone. The console leg launcher does not read the row yet (HIMMEL-3488).
+setting alone. The console leg launcher mirrors this for native-lane legs
+(HIMMEL-3488) — see the ruling below.
+
+**Ruling (HIMMEL-3604, 2026-09-26): effort-at-dispatch is shipped, on both
+paths.** Re-verified live on main at `cb43cfbfa`. Two mechanisms cover the two
+dispatch surfaces, both keyed off the same `lanes.json` `effort` field
+(`scripts/lanes/lanes.json:8-9`, e.g. `"id": "haiku"` → `"effort": "low"`,
+`"id": "sonnet"` → `"effort": "medium"`):
+- **Telegram/native dispatch** (HIMMEL-3482, `bfa9201a0`): `laneEffort()` in
+  `scripts/telegram/run.ts:318` resolves the model to its lane row and
+  `run.ts:328-329` folds the row's `effort` into `CLAUDE_CODE_EFFORT_LEVEL` for
+  the spawned session's env.
+- **Console-launched native leg** (HIMMEL-3488, `79b205218`):
+  `scripts/handover/console-kit/headed-arm-leg.sh:746-764` mirrors the same
+  match rule (exact model id, or `claude-<tier-id>-` prefix) for `LANE=native`
+  — an explicit ambient `CLAUDE_CODE_EFFORT_LEVEL` always wins (checked before
+  the lookup, `headed-arm-leg.sh:747-748`); otherwise it resolves the row via
+  `jq` against `lanes.json` and exports it. `scripts/handover/console-kit/
+  test-headed-arm-leg.sh` carries 18 assertions on `CLAUDE_CODE_EFFORT_LEVEL`
+  (including cases 34a-34c: tier-row export, no-row leaves it unset, ambient
+  value survives the lookup), all passing on current main
+  (`bash scripts/quiet-run.sh suite -- bash scripts/handover/console-kit/
+  test-headed-arm-leg.sh`).
+
+A third, related mechanism — the tier-reason gate that requires a sanctioned
+`> **Tier:** opus|fable — <category>: <reason>` line before an Opus/Fable leg
+launches (HIMMEL-2976 `a3260c8f6`; category tags added by HIMMEL-2997
+`d5a71757f`) — is the "raise effort before tier" enforcement point referenced
+above; it lives at `headed-arm-leg.sh:565-584`. All four shipping SHAs are
+ancestors of current main and none has been reverted. This closes HIMMEL-3604
+as answered, not as a gap: no lane class was found uncovered.
 
 **2026-09-07 caveat:** the `fable`/`sonnet` effort defaults above predate
 Fable 5.1 and Anthropic's Fable 5.1 prompting guide's instruction to re-run

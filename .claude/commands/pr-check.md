@@ -55,16 +55,20 @@ Steps:
 
    > **Fences inherit NOTHING — not shell variables, and not the WORKING DIRECTORY.** Every ```bash``` fence is a separate Bash tool call in a separate process, started back in the session's own directory. Every value step 0 prints is therefore carried forward as a substituted LITERAL, never as a variable a later fence expands. With the `cd` gone, the cwd half of that rule costs nothing: no fence changes directory, so every fence starts in the repo under review.
 
-   **Why the fence is now ONE call with no lane-comparison branching (HIMMEL-2335).** A 13-shape bisection (harness v2.1.251) found two more worktree-isolation-guard refusal rules the old two-part fence tripped at once: expansion of an env var the guard cannot resolve is refused EVEN WHEN THE VAR IS SET — `echo "$HIMMEL_REPO"` is refused exactly like an unset one, only `d=$(printenv HIMMEL_REPO); echo "$d"` is accepted (fence-contract entry 2 below is corrected to say this plainly); and a `[ ]` test on a value derived from command substitution is refused — `a=$(printenv X); if [ -z "$a" ]` refused, `if h=$(printenv X); then` (branching on the assignment's own exit status, no `[ ]` test on the captured value) accepted. The old `if [ -z "$HIMMEL_REPO" ] ... elif [ "$cwd_common" -ef "$HIMMEL_REPO/.git" ]` lane comparison hit both at once. The fence is now this, and nothing else:
+   **Why the fence is now TWO calls, neither one a compound (HIMMEL-3698, on top of HIMMEL-2335's shape).** A 13-shape bisection (harness v2.1.251) found two worktree-isolation-guard refusal rules the old two-part fence tripped at once: expansion of an env var the guard cannot resolve is refused EVEN WHEN THE VAR IS SET — `echo "$HIMMEL_REPO"` is refused exactly like an unset one, only `d=$(printenv HIMMEL_REPO); echo "$d"` is accepted (fence-contract entry 2 below is corrected to say this plainly); and a `[ ]` test on a value derived from command substitution is refused — `a=$(printenv X); if [ -z "$a" ]` refused, `if h=$(printenv X); then` (branching on the assignment's own exit status, no `[ ]` test on the captured value) accepted. The old `if [ -z "$HIMMEL_REPO" ] ... elif [ "$cwd_common" -ef "$HIMMEL_REPO/.git" ]` lane comparison hit both at once, and HIMMEL-2335 folded the surviving check into one `if himmel_repo=$(printenv HIMMEL_REPO | grep .); then bash "$himmel_repo/scripts/cr/pr-check-context.sh"; else …; fi` compound. **That compound is exactly the shape no `gateAllow` rule can match** (HIMMEL-3698): the permission matcher splits a compound command on its shell separators and matches each simple command independently, so an exact-literal allow rule for the whole `if…fi` string never fires, and legs fell through to the auto-mode classifier and were denied `[Out-of-Place Publication]` on this very fence. The fence is now two calls, each its own ```bash``` fence (fences already inherit nothing between them, so nothing needs to survive from the first to the second — see above):
    ```bash
    if himmel_repo=$(printenv HIMMEL_REPO | grep .); then
-       bash "$himmel_repo/scripts/cr/pr-check-context.sh"
+       :
    else
        echo "pr-check: HIMMEL_REPO is unset or empty — cannot locate himmel from a trusted source outside the repo under review; adopt/setup wires it into settings.json env, or export it non-empty in your launching shell, then re-run" >&2
        exit 2
    fi
    ```
-   No `[ ]` test on any substituted value, no bare `$HIMMEL_REPO`/`${HIMMEL_REPO` expansion, and the double quote spans the WHOLE path (`"$himmel_repo/scripts/..."`, never `"$himmel_repo"/scripts/...`) — exactly the shapes the bisection found refused. The `| grep .` piped into the assignment does not change what the guard sees: the fence still branches only on the ASSIGNMENT's own exit status — no `[ ]` test on the captured value — so the worktree-isolation guard accepts this shape exactly as it accepted the bare form (probed directly in an EnterWorktree-isolated session).
+   Then, only once the check above exits 0:
+   ```bash
+   bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"
+   ```
+   The first fence carries no bare `$HIMMEL_REPO`/`${HIMMEL_REPO` expansion and no `[ ]` test on any substituted value — exactly the shapes the bisection found refused — and invokes no script, so it needs no permission rule of its own. The second fence is a standalone SIMPLE command, no `if`/`;`/pipe anywhere in it, spelling the PERSISTENT uppercase `$HIMMEL_REPO` directly (not the first fence's local lowercase `$himmel_repo` — nothing carries across fences, so this is a fresh reference, not a reuse) with the double quote spanning the WHOLE path (`"$HIMMEL_REPO/scripts/..."`, never `"$HIMMEL_REPO"/scripts/...`). That shape matches `plugin-profiles.json`'s exact `gateAllow` literal for this call (HIMMEL-3698) — the same anchor spelling `guard-pr-check-literal.sh`'s own deny message already recommends for its other targets (merge-on-green.sh, HIMMEL-3491) — and the hook's own classifier exempts a lone, unwrapped `"$HIMMEL_REPO/`-prefixed operand from its relative-path conditions entirely (it is the trusted anchor form, not a relative one), so this fence is not itself subject to them.
 
    **If this fence is refused with "runs bash in a plain command … cannot be shown not to run git" anyway, the session is EnterWorktree-pinned** (a leg launched before HIMMEL-3536's fix, or one whose settings someone hand-edited back in) — the fix and the interim are in `docs/internals/stuck-playbook.md` (HIMMEL-3536), not a respelling of this fence.
 
@@ -698,21 +702,20 @@ Steps:
    there is no escaping rule to get right and none was invented. Neither
    handover script needed to change.
 
-   Resolve the active item ONCE, substituting step 0's printed `branch=`
-   literal. The fence normalizes the exit code STRUCTURALLY rather than leaving
-   the graceful-skip claim to prose (HIMMEL-195): rc 0 prints the item dir —
-   carry it forward as a literal below — rc 3 prints an explicit SKIP line, and
-   rc 2 a distinguishable error on stderr; neither rc blocks steps 5/6:
+   Resolve the active item ONCE via a single script call, substituting step
+   0's printed `branch=` literal. The rc branching itself lives inside the
+   script now, not in this fence (HIMMEL-3707: guard-pr-check-literal.sh reads
+   a `case` statement's bare `*` default arm as an unresolved
+   scripts/handover/ writer operand whenever the same command also invokes a
+   scripts/handover/ script, denying this exact fence — the same class of fix
+   HIMMEL-2321 applied to the reviewer-notes/bugs writers below). It
+   normalizes the exit code STRUCTURALLY rather than leaving the
+   graceful-skip claim to prose (HIMMEL-195): rc 0 prints the item dir —
+   carry it forward as a literal below — rc 3 prints an explicit SKIP line,
+   and any other rc a distinguishable error on stderr; neither blocks steps
+   5/6:
    ```bash
-   item_rc=0
-   item_dir=$(bash "<himmel_dir>/scripts/handover/resolve-active-item.sh" --branch '<branch>') || item_rc=$?
-   case "$item_rc" in
-       0) printf '%s\n' "$item_dir" ;;
-       # Single-quoted whole: the branch is substituted INTO this message too,
-       # and a double-quoted echo would still execute a `$(…)` inside it.
-       3) echo '4.6/4.7: no active handover item for <branch> — handover bridges SKIPPED (not a failure)' ;;
-       *) echo "4.6/4.7: resolve-active-item.sh errored (rc=$item_rc) — handover bridges skipped, best-effort" >&2 ;;
-   esac
+   bash "<himmel_dir>/scripts/handover/resolve-active-item-report.sh" --branch '<branch>'
    ```
 
    When that printed an item dir, run the bridge ONCE — it does both halves.

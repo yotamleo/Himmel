@@ -284,7 +284,31 @@ grep -q -- '--profile all --scope project --luna-target' "$fixtureC/adopt-calls.
   || fail "caseC (HIMMEL-3308): adopt.sh should have been called with --profile all --scope project --luna-target ... (got: $(cat "$fixtureC/adopt-calls.log" 2>&1))"
 grep -q -- '--dry-run' "$fixtureC/adopt-calls.log" \
   || fail "caseC (HIMMEL-3308): adopt.sh should have been called with --dry-run (got: $(cat "$fixtureC/adopt-calls.log" 2>&1))"
+# HIMMEL-2466: deriveCommand must thread answers.handover.mode through to
+# adopt.sh so wire_handover_dir_luna's own gate agrees with the JS-side
+# no-op the SKIPPED summary already claims for handover.mode=inline.
+grep -q -- '--handover-mode inline' "$fixtureC/adopt-calls.log" \
+  || fail "caseC (HIMMEL-2466): adopt.sh should have been called with --handover-mode inline (got: $(cat "$fixtureC/adopt-calls.log" 2>&1))"
 echo "ok: caseC adopter + vault=default-template -> --profile all --luna-target, no luna-upgrade-all/wire-luna-vault"
+
+# ── Case C2 (HIMMEL-2466): vault=default-template + handover=external -> adopt.sh gets --handover-mode external ──
+stubC2="$work/caseC2"; mkdir -p "$stubC2"
+cC2=$(build_path "$stubC2" bash git jq python3 npm -- )
+hC2="$work/hC2"; mkdir -p "$hC2"
+fixtureC2="$work/caseC2-fixture"; build_fixture "$fixtureC2"
+lunaC2="$work/caseC2-luna"
+cacheC2="$work/caseC2-profile.json"
+write_cache "$cacheC2" adopter project default-template "$(winpath "$lunaC2")" external "$(winpath "$work/caseC2-handover-target")" lean
+set +e
+outC2=$(PATH="$cC2" HOME="$hC2" USERPROFILE="$(winpath "$hC2")" HIMMELCTL_CACHE_DIR="$(winpath "$hC2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hC2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureC2")" \
+      "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$cacheC2")" \
+      </dev/null 2>&1); rcC2=$?
+set -e
+[ "$rcC2" -eq 0 ] || fail "caseC2: dry-run should succeed (got rc=$rcC2): $outC2"
+grep -q -- '--handover-mode external' "$fixtureC2/adopt-calls.log" \
+  || fail "caseC2 (HIMMEL-2466): adopt.sh should have been called with --handover-mode external (got: $(cat "$fixtureC2/adopt-calls.log" 2>&1))"
+echo "ok: caseC2 adopter + vault=default-template + handover=external -> adopt.sh gets --handover-mode external"
 
 # ── Case D: adopter + vault=existing, UNSTAMPED -> refuse, zero shell-outs ──
 stubD="$work/caseD"; mkdir -p "$stubD"
