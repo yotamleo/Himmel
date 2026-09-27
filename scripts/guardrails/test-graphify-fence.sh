@@ -2664,6 +2664,8 @@ run_fence deny no "$HIMMEL" "env -C (two spaces) \$(...; separator inside) -> de
 # fail-open point.
 for X23_N in 65536 122880; do
     X23_PARENS=$(head -c "$X23_N" /dev/zero | tr '\0' '(')
+    # shellcheck disable=SC2016 # single-quoted printf format string: the
+    # literal $(...) text is the payload under test, not a real expansion
     X23_CMD=$(printf 'env -C %s graphify update notes/patient.md --backend glm; x=$(cat <<%s\n%s\nEOF\n)' \
         "$SALUS" "'EOF'" "$X23_PARENS")
     start_ns=$(date +%s%N)
@@ -2702,6 +2704,8 @@ run_fence allow no "$HIMMEL" "trailing bare \$ (no substitution, no graphify) ->
 # the flag and the substitution identically to a space (`-C<TAB>$(...)`), but
 # the untrimmed tab defeated the suffix match, so this chdir argument's
 # hidden separator went undetected the same as X22's multi-space case.
+# shellcheck disable=SC2016 # single-quoted printf format string: the
+# literal $(...) text is the payload under test, not a real expansion
 X26_CMD=$(printf 'env -C\t$(cd ..; echo %s) graphify update notes/patient.md --backend glm' "$SALUS")
 run_fence deny no "$HIMMEL" "env -C (tab) \$(...; separator inside) -> deny (X26)" \
     "$X26_CMD"
