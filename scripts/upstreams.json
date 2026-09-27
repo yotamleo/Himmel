@@ -161,7 +161,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "obra/superpowers",
-      "synced_base": "6.4.1",
+      "synced_base": "6.4.2",
       "tier": "A",
       "note": "11 of superpowers' 14 skill directories vendored verbatim at marketplace/plugins/lean-skills/skills (HIMMEL-3064): the four himmel invokes (brainstorming, writing-plans, systematic-debugging, verification-before-completion) plus the seven they hand off to, i.e. the `superpowers:<name>` reference closure — vendoring fewer leaves dangling cross-references. Deliberately NOT vendored: using-superpowers, receiving-code-review, dispatching-parallel-agents. Detection is release-level, not per-file: we carry whole DIRECTORIES (SKILL.md plus companion prompts and scripts), so a sha256 pin per file would cost ~36 gh calls a run and would still miss a companion file we had not enumerated — that is also why this plugin carries a VENDORED.md rather than a class-2 UPSTREAM_PIN, which parses only one triple per plugin. No `version_pin`, so scripts/upstreams/apply-drift-bump.sh reports SKIP (manual): repair is a reviewed re-copy of the 11 trees, and moving synced_base alone would launder the very signal this row raises (the qmd caveat). Tier A — these copies ARE himmel's context floor, so upstream fixes are worth adopting promptly."
     },
