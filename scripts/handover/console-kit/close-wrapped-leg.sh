@@ -270,11 +270,26 @@ out=$(bash "$CLEAN_SH" --only "$WT" --only-allow-unmerged 2>&1)
 rc=$?
 echo "$out"
 if [ "$rc" -ne 0 ]; then
-    case "$out" in
-        *'in use'*|*'not a prune candidate'*)
-            echo "close-wrapped-leg: worktree $WT not pruned (see message above) - not a failure, retry --only shortly"
-            exit 0 ;;
-    esac
+    # clean-garden.sh's own --only failure text always contains "not a prune
+    # candidate" (its wording is shared across a benign skip AND a PARTIAL or
+    # FAILED removal - codex-2, HIMMEL-3747 CR round 1), so a substring match
+    # on that text alone can't tell a benign skip apart from a dangerous
+    # partial/gutted-tree removal. Read its "prune summary" counts instead:
+    # only a summary with 0 partial and 0 failed is a benign skip.
+    summary_line=$(printf '%s\n' "$out" | grep -F 'clean-garden: prune summary' | tail -n 1)
+    partial_n=$(printf '%s' "$summary_line" | sed -nE 's/.*, ([0-9]+) partial,.*/\1/p')
+    failed_n=$(printf '%s' "$summary_line" | sed -nE 's/.* ([0-9]+) failed$/\1/p')
+    benign=0
+    if [ "$partial_n" = "0" ] && [ "$failed_n" = "0" ]; then
+        case "$out" in
+            *'in use'*|*'not a prune candidate'*)
+                benign=1 ;;
+        esac
+    fi
+    if [ "$benign" -eq 1 ]; then
+        echo "close-wrapped-leg: worktree $WT not pruned (see message above) - not a failure, retry --only shortly"
+        exit 0
+    fi
     echo "close-wrapped-leg: clean.sh --only $WT --only-allow-unmerged failed (rc=$rc)" >&2
     exit 1
 fi

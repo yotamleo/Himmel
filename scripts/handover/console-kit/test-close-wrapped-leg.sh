@@ -116,10 +116,22 @@ cat > "$CLEAN_STUB" <<'STUB'
 echo "clean.sh $*" >> "$CALLS_LOG"
 if [ "${CWL_CLEAN_MODE:-ok}" = "in-use" ]; then
     echo "worktree is in use, skipping"
+    echo "clean-garden: prune summary — 0 pruned, 0 partial, 1 skipped, 0 failed"
     exit 1
 fi
 if [ "${CWL_CLEAN_MODE:-ok}" = "not-candidate" ]; then
-    echo "ERR clean-garden: --only ... was not cleanly pruned -- not a prune candidate (PR is open)"
+    echo "clean-garden: prune summary — 0 pruned, 0 partial, 1 skipped, 0 failed"
+    echo "ERR clean-garden: --only ... was not cleanly pruned -- not a prune candidate, or the removal was partial (reason above; PR is open)"
+    exit 1
+fi
+if [ "${CWL_CLEAN_MODE:-ok}" = "partial" ]; then
+    echo "clean-garden: prune summary — 0 pruned, 1 partial, 0 skipped, 0 failed"
+    echo "ERR clean-garden: --only ... was not cleanly pruned -- not a prune candidate, or the removal was partial (reason above; branch delete failed after worktree removal)"
+    exit 1
+fi
+if [ "${CWL_CLEAN_MODE:-ok}" = "gutted" ]; then
+    echo "clean-garden: prune summary — 0 pruned, 0 partial, 0 skipped, 1 failed"
+    echo "ERR clean-garden: --only ... was not cleanly pruned -- not a prune candidate, or the removal was partial (reason above; removal FAILED PARTWAY -- the tree may be GUTTED)"
     exit 1
 fi
 if [ "${CWL_CLEAN_MODE:-ok}" = "fail" ]; then
@@ -273,6 +285,21 @@ reset_calls
 rc=0; out=$(CWL_CLEAN_MODE="not-candidate" run "$DOC" 2>&1) || rc=$?
 check "not-candidate: rc 0 (non-fatal)" "$rc" "0"
 contains "not-candidate: names the skip" "$out" "not pruned"
+
+# --- 9b. clean.sh's error text ALSO contains "not a prune candidate" when the
+# true cause was PARTIAL (branch-delete-after-worktree-removal failure) --
+# codex-2 (HIMMEL-3747 CR round 1): the substring match can't tell this apart
+# from case 9's benign skip, so it must NOT be treated as non-fatal. ------------
+mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`"
+reset_calls
+rc=0; out=$(CWL_CLEAN_MODE="partial" run "$DOC" 2>&1) || rc=$?
+check "partial: rc 1 (fatal -- a partial removal is not a benign skip)" "$rc" "1"
+
+# --- 9c. same, but the true cause was FAILED (a possibly GUTTED worktree) ------
+mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`"
+reset_calls
+rc=0; out=$(CWL_CLEAN_MODE="gutted" run "$DOC" 2>&1) || rc=$?
+check "gutted: rc 1 (fatal -- a failed/gutted removal is not a benign skip)" "$rc" "1"
 
 # --- 10. clean success path ----------------------------------------------------
 mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`"
