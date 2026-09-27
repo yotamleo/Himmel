@@ -1466,7 +1466,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 note_stuck "$stray_dir" "stray husk sweep failed (quarantine move did not complete)"
                 STRAY_FAILED=$((STRAY_FAILED+1))
             fi
-        done < <(find "$STRAY_HOME" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
+        done < <(find "$STRAY_HOME" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
         if [ "$STRAY_FOUND" -gt 0 ]; then
             STRAY_SIZE=$(human_kib "$STRAY_RECLAIMED_KIB")
             echo "clean-garden: stray-sweep — $STRAY_SWEPT swept, $STRAY_FAILED failed, $STRAY_REFUSED refused ($STRAY_SIZE reclaimed)"
@@ -1564,7 +1564,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             else
                 echo "WARN clean-garden: failed to delete quarantined stray husk $quar_dir" >&2
             fi
-        done < <(find "$STRAY_QUARANTINE_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
+        done < <(find "$STRAY_QUARANTINE_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
         if [ "$QUAR_REAPED" -gt 0 ]; then
             echo "clean-garden: stray-quarantine — $QUAR_REAPED reaped"
         fi
