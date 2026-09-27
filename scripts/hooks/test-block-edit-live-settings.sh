@@ -1484,12 +1484,15 @@ assert_rc "223 node --check --settings on the primary's own settings.json still 
     "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings $PRIMARY/.claude/settings.json")"
 
 # 224 control: a worktree-looking relative spelling that actually escapes
-# back to the primary via `..` (`../../.claude/settings.json` from inside a
-# nested worktree) -> DENY — settings_word_live must not blanket-allow every
-# path merely because it looks worktree-shaped; check_target's real
+# back to the primary via `..` (`../../../.claude/settings.json` from inside a
+# nested worktree — three levels, matching row 58's proven
+# feat+x -> worktrees -> .claude -> primary climb, not two, which would land
+# on the nonexistent $PRIMARY/.claude/.claude/settings.json instead — codex-2,
+# HIMMEL-3761 CR round 1) -> DENY — settings_word_live must not blanket-allow
+# every path merely because it looks worktree-shaped; check_target's real
 # resolution still walks it up to the primary's own git-dir.
-assert_rc "224 node --check --settings via ../.. from a nested worktree still denies (control)" 2 \
-    "$(bash_rc_of "$NESTED_WT" "node scripts/hooks/wire-hook-bash.mjs --check --settings ../../.claude/settings.json")"
+assert_rc "224 node --check --settings via ../../.. from a nested worktree still denies (control)" 2 \
+    "$(bash_rc_of "$NESTED_WT" "node scripts/hooks/wire-hook-bash.mjs --check --settings ../../../.claude/settings.json")"
 
 # 225 control (HIMMEL-3761, codex-1 CR finding): a benign --check --settings
 # decoy naming a linked worktree's OWN copy (settings_word_live=0) is chained
