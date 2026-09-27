@@ -1508,6 +1508,27 @@ _himmel_3761_mention_only_ok() {
 # `$real_root` is also compared in its own original case — no `st_lower`
 # call on it, and no mismatch to fix, since both sides now share whatever
 # case the tool call's own cwd and command text actually used.
+#
+# The script's ON-DISK CONTENT is also required to be git-clean (codex
+# round-10 Important): every check above only constrains the command's
+# ARGV shape, but `node` executes whatever bytes actually sit at
+# `script_path` — a script's real behavior is not determined by its own
+# filename or the flags it was invoked with. A worktree copy of
+# wire-hook-bash.mjs is trusted as read-only-under-`--check` only because
+# THAT specific committed script honors `--check`; if the in-session actor
+# (the same actor this hook exists to constrain) first Edits the worktree's
+# copy to ignore `--check` and writeFileSync unconditionally — a worktree
+# edit this hook's own header treats as harmless precisely because it needs
+# a commit + PR + review to take effect — then invokes it via this exact
+# allow-shape, the tampered script runs immediately, in the same turn, with
+# no review in between. Requiring `git status --porcelain` on the script
+# path to be empty (no staged/unstaged changes, no untracked file) closes
+# that gap the same way the settings.json worktree-copy exemption already
+# relies on: only a script that has actually gone through this worktree's
+# own commit boundary is trusted, restoring the "needs a commit to matter"
+# invariant the read-only contract implicitly assumed. A `git` failure (not
+# a real worktree, no repo, unreadable) is treated the same as dirty: fail
+# closed.
 _himmel_3761_worktree_settings_check_ok() {
     local k=1 w has_check=0 settings_path='' script_path='' next_is_settings=0 wt_name=''
     local real_root=$cwd
@@ -1556,6 +1577,10 @@ _himmel_3761_worktree_settings_check_ok() {
         "$real_root/.claude/worktrees/$wt_name/scripts/hooks/wire-hook-bash.mjs") ;;
         *) return 1 ;;
     esac
+    local wt_root="$real_root/.claude/worktrees/$wt_name"
+    local script_git_status
+    script_git_status=$(git -C "$wt_root" status --porcelain -- scripts/hooks/wire-hook-bash.mjs 2>/dev/null) || return 1
+    [ -z "$script_git_status" ] || return 1
     return 0
 }
 

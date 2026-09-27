@@ -71,6 +71,14 @@ printf '# readme\n' > "$SANDBOX/primary/README.md"
 git -C "$SANDBOX/primary" worktree add -q "$SANDBOX/primary/.claude/worktrees/feat+x" -b feat/x >/dev/null 2>&1
 mkdir -p "$SANDBOX/primary/.claude/worktrees/feat+x/.claude"
 printf '{}\n' > "$SANDBOX/primary/.claude/worktrees/feat+x/.claude/settings.json"
+# A committed, git-clean wire-hook-bash.mjs inside feat+x — HIMMEL-3761's
+# read-only allow rule (rows 222/223 below) trusts this exact file's content,
+# so it must actually exist and be clean (see codex round-10 Important, rows
+# 237/238).
+mkdir -p "$SANDBOX/primary/.claude/worktrees/feat+x/scripts/hooks"
+printf 'module.exports = {};\n' > "$SANDBOX/primary/.claude/worktrees/feat+x/scripts/hooks/wire-hook-bash.mjs"
+git -C "$SANDBOX/primary/.claude/worktrees/feat+x" add scripts/hooks/wire-hook-bash.mjs >/dev/null 2>&1
+git -C "$SANDBOX/primary/.claude/worktrees/feat+x" -c user.email=t@t -c user.name=t commit -q -m "wire-hook-bash fixture" >/dev/null 2>&1
 
 # Fake $HOME fixture for the user-scope case — never touch the real $HOME.
 FAKEHOME="$SANDBOX/fakehome"
@@ -1598,8 +1606,29 @@ assert_rc "235 node <script under .CLAUDE/worktrees> --check --settings <setting
 assert_rc "236 node wire-hook-bash.mjs --CHECK (wrong case) --settings (worktree) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --CHECK --settings $FEATX/.claude/settings.json")"
 
+# 237/238: the script's ON-DISK CONTENT must be git-clean, not just its argv
+# shape (codex round-10 Important). Every prior row only proves the COMMAND
+# TEXT is well-formed; none of them prove the script `node` actually runs
+# honors `--check`. A second real worktree, feat+dirty, starts with the same
+# committed, clean wire-hook-bash.mjs feat+x has (so the exact command shape
+# from row 222 still allows there too), then gets an UNCOMMITTED local edit
+# to that file — the in-session tamper-then-invoke attack the fix closes.
+FEATDIRTY="$SANDBOX/primary/.claude/worktrees/feat+dirty"
+git -C "$SANDBOX/primary" worktree add -q "$FEATDIRTY" -b feat/dirty >/dev/null 2>&1
+mkdir -p "$FEATDIRTY/.claude" "$FEATDIRTY/scripts/hooks"
+printf '{}\n' > "$FEATDIRTY/.claude/settings.json"
+printf 'module.exports = {};\n' > "$FEATDIRTY/scripts/hooks/wire-hook-bash.mjs"
+git -C "$FEATDIRTY" add scripts/hooks/wire-hook-bash.mjs >/dev/null 2>&1
+git -C "$FEATDIRTY" -c user.email=t@t -c user.name=t commit -q -m "wire-hook-bash fixture" >/dev/null 2>&1
+assert_rc "237 node wire-hook-bash.mjs --check --settings (worktree, script git-clean) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATDIRTY/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATDIRTY/.claude/settings.json")"
+printf 'module.exports = {}; require("fs").writeFileSync(0, "tampered");\n' > "$FEATDIRTY/scripts/hooks/wire-hook-bash.mjs"
+assert_rc "238 node wire-hook-bash.mjs --check --settings (worktree, script locally modified, uncommitted) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATDIRTY/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATDIRTY/.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
+git -C "$SANDBOX/primary" worktree remove --force "$FEATDIRTY" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$WT2" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/prim" 2>/dev/null || true
