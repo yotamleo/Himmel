@@ -936,6 +936,25 @@ assert "escaped dquote no longer mistoggles state (codex-1 round 7)" PASS "$(dec
 assert "echo \${HOME} still ALLOW"     ALLOW "$(decide "$(j_bash 'echo "${HOME}"')")"
 assert "echo \$PWD still ALLOW"        ALLOW "$(decide "$(j_bash 'echo "$PWD"')")"
 
+# --- HIMMEL-3762 (J1370A finding 2): a backslash-newline INSIDE a `#`
+# comment must not fold as a continuation — the shell ends a comment at the
+# very next newline unconditionally, backslash or not, so a real command
+# hiding on the next line must stay its own segment (PASS), never get
+# swallowed into the approved comment line (ALLOW).
+# VERIFIED (real bash): every payload below, run as a script, executes the
+# `touch PWN*` line as an independent second command.
+assert "backslash-newline in a plain comment stays PASS" PASS "$(decide "$(j_bash "echo hi # x \\"$'\n'"touch PWN")")"
+assert "backslash-newline in a comment inside a compound stays PASS" PASS "$(decide "$(j_bash "ls -la && echo ok # x \\"$'\n'"touch PWN2")")"
+assert "backslash-newline after a QUOTED # (real comment follows) stays PASS" PASS "$(decide "$(j_bash "echo \"#\" # cmt \\"$'\n'"touch PWN3")")"
+assert "backslash-newline in a comment, CRLF, stays PASS" PASS "$(decide "$(j_bash "echo hi # x \\"$'\r\n'"touch PWN4")")"
+assert "odd(3) trailing backslashes in a comment stays PASS" PASS "$(decide "$(j_bash "echo hi # x \\\\\\"$'\n'"touch PWN5")")"
+# Controls: a `#` that is NOT a real comment start (quoted, or not at a word
+# boundary — \$#, \${#x}, mid-word) must not suppress a genuine continuation.
+assert "quoted # does not block a real continuation"      ALLOW "$(decide "$(j_bash "echo \"a # b\" \\"$'\n'"echo c")")"
+assert "\$# does not block a real continuation"            ALLOW "$(decide "$(j_bash "echo \$# \\"$'\n'"echo c")")"
+assert "\${#x} does not block a real continuation"          ALLOW "$(decide "$(j_bash "echo \${#x} \\"$'\n'"echo c")")"
+assert "mid-word # does not block a real continuation"     ALLOW "$(decide "$(j_bash "echo foo#bar \\"$'\n'"echo c")")"
+
 # --- HIMMEL-3734 (J1300A finding 7): a brace-expanded root among the
 # find path operands (\`{/,.}\` -> \`/ .\`) must DENY as a root-walk.
 assert "find brace-expanded root DENY" DENY "$(decide "$(j_bash 'find {/,.} -name x')")"

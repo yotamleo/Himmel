@@ -823,15 +823,27 @@ segment_is_safe() {
 #               backslash-escaped chars) replaced by a space, so the existing
 #               redirect detector sees only UNQUOTED '>'.
 # bash 3.2-safe: only ${s:i:1}, ${#s}, arithmetic.
+#
+# HIMMEL-3762 (J1370A finding 2): this walk had its OWN naive backslash-newline
+# collapse, independent of (and downstream from) fold_backslash_newline() —
+# fixing only the top-level fold left this one still folding a comment's
+# trailing backslash-newline as a continuation, hiding the real command that
+# followed. `cm` tracks "inside a real # comment" using the same word-start
+# (`aws`) rule as fold_backslash_newline(): a comment can start only where a
+# new word can, so `$#`/`${#x}`/mid-word `#` are excluded by construction, not
+# special-cased. Once cm=1, every byte is copied through as plain comment text
+# (no separator, no backslash-continuation) until the terminating newline,
+# which still ends the comment AND breaks the segment as it always did.
 scan_cmd() {
-    local s="$1" n i c nx p st seg NL
+    local s="$1" n i c nx p st seg NL cm aws
     NL=$'\n'
-    n=${#s}; i=0; st=0; seg=""; SCAN_SEGS=""; SCAN_MASK=""
+    n=${#s}; i=0; st=0; cm=0; aws=1; seg=""; SCAN_SEGS=""; SCAN_MASK=""
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
         if [ "$st" = 1 ]; then                       # inside single quotes
             seg="$seg${c/"$NL"/ }"; SCAN_MASK="$SCAN_MASK "
             [ "$c" = "'" ] && st=0
+            aws=0
             i=$((i + 1)); continue
         fi
         if [ "$st" = 2 ]; then                       # inside double quotes
@@ -841,46 +853,64 @@ scan_cmd() {
                     SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
                 fi
                 seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "
-                i=$((i + 2)); continue
+                aws=0; i=$((i + 2)); continue
             fi
             seg="$seg${c/"$NL"/ }"; SCAN_MASK="$SCAN_MASK "
             [ "$c" = '"' ] && st=0
+            aws=0
             i=$((i + 1)); continue
         fi
         # --- unquoted ---
+        if [ "$cm" = 1 ]; then                       # inside a real # comment
+            if [ "$c" = "$NL" ]; then                # the ONE thing that ends it
+                cm=0
+                SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
+                SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue
+            fi
+            seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0
+            i=$((i + 1)); continue
+        fi
         nx="${s:$((i + 1)):1}"
         case "$c" in
-            "'") st=1; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; i=$((i + 1)); continue ;;
-            '"') st=2; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; i=$((i + 1)); continue ;;
+            "'") st=1; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
+            '"') st=2; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
+            '#')
+                [ "$aws" = 1 ] && cm=1
+                seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue ;;
             "\\")
                 if [ "$nx" = "$NL" ]; then          # line continuation: remove both bytes
                     SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
                 fi
-                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue ;;
+                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "; aws=0; i=$((i + 2)); continue ;;
             ';'|"$NL")                               # statement separator
                 SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
-                SCAN_MASK="$SCAN_MASK$c"; i=$((i + 1)); continue ;;
+                SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue ;;
             '|')                                     # | or || → one break
                 SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
-                SCAN_MASK="$SCAN_MASK|"
+                SCAN_MASK="$SCAN_MASK|"; aws=1
                 if [ "$nx" = '|' ]; then SCAN_MASK="$SCAN_MASK|"; i=$((i + 2)); else i=$((i + 1)); fi
                 continue ;;
             '&')
                 if [ "$nx" = '&' ]; then             # && logical-AND → break
                     SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
-                    SCAN_MASK="$SCAN_MASK&&"; i=$((i + 2)); continue
+                    SCAN_MASK="$SCAN_MASK&&"; aws=1; i=$((i + 2)); continue
                 fi
                 if [ "$nx" = '>' ]; then             # &> redirect form → keep with seg
-                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; i=$((i + 1)); continue
+                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; aws=0; i=$((i + 1)); continue
                 fi
                 p=""; [ "$i" -gt 0 ] && p="${s:$((i - 1)):1}"
                 case "$p" in                         # fd-dup 2>&1 / >&2 → keep
-                    '>'|'<'|'&') seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; i=$((i + 1)); continue ;;
+                    '>'|'<'|'&') seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; aws=0; i=$((i + 1)); continue ;;
                 esac
                 SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""    # bare & separator → break
-                SCAN_MASK="$SCAN_MASK&"; i=$((i + 1)); continue ;;
+                SCAN_MASK="$SCAN_MASK&"; aws=1; i=$((i + 1)); continue ;;
         esac
-        seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; i=$((i + 1))
+        seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"
+        case "$c" in
+            ' '|$'\t'|'('|')'|'<'|'>') aws=1 ;;
+            *) aws=0 ;;
+        esac
+        i=$((i + 1))
     done
     [ "$st" = 0 ] || return 1                        # unbalanced quote → fail closed
     SCAN_SEGS="$SCAN_SEGS$seg"
@@ -1226,25 +1256,60 @@ guard_is_long_abbrev() {
 # backslash-newline fold for the rest of the string and hid the
 # reconstituted `$(` from the raw-text tripwire. Detect an escaped quote
 # right where the backslash run is measured and copy it through untouched.
+#
+# HIMMEL-3762 (J1370A finding 2): a real `#` comment ends at the very next
+# newline UNCONDITIONALLY — the shell never honors a trailing backslash as a
+# continuation of comment text, no matter how many backslashes precede the
+# newline. The old walk had no comment state at all, so `# note \<NL>rm -rf x`
+# folded the newline away and let `rm -rf x` ride inside the (approved) `#`
+# comment of the first segment. Track `aws` ("at word start": true at the
+# start of the string and right after whitespace or a structural operator —
+# `;|&()<>` or newline) and open a real comment only when an unquoted `#`
+# lands there — exactly bash's own "a word beginning with # is a comment"
+# rule. That rule alone disambiguates the three shapes HIMMEL-3762 called
+# out without any special-casing: `$#` and `${#x}` fail the word-start test
+# on the `$`/`{` immediately before the `#`, and a mid-word `#` (`foo#bar`)
+# fails it on the preceding letter — all three fall through as plain
+# characters, same as real bash. Once inside a comment, every byte (including
+# backslashes) is copied through verbatim until the terminating newline,
+# which is copied too and never folded.
 fold_backslash_newline() {
-    local s="$1" out="" i=0 n c j run k nc in_sq=0 in_dq=0 bs=$'\\'
+    local s="$1" out="" i=0 n c j run k nc in_sq=0 in_dq=0 in_cm=0 aws=1 bs=$'\\'
     n=${#s}
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
+        if [ "$in_cm" = 1 ]; then
+            out="$out$c"
+            if [ "$c" = $'\n' ]; then
+                in_cm=0
+                aws=1
+            fi
+            i=$((i + 1))
+            continue
+        fi
         if [ "$in_sq" = 1 ]; then
             out="$out$c"
             [ "$c" = "'" ] && in_sq=0
+            aws=0
             i=$((i + 1))
             continue
         fi
         if [ "$c" = "'" ] && [ "$in_dq" = 0 ]; then
             in_sq=1
             out="$out$c"
+            aws=0
             i=$((i + 1))
             continue
         fi
         if [ "$c" = '"' ]; then
             [ "$in_dq" = 0 ] && in_dq=1 || in_dq=0
+            out="$out$c"
+            aws=0
+            i=$((i + 1))
+            continue
+        fi
+        if [ "$c" = '#' ] && [ "$in_dq" = 0 ] && [ "$aws" = 1 ]; then
+            in_cm=1
             out="$out$c"
             i=$((i + 1))
             continue
@@ -1275,6 +1340,7 @@ fold_backslash_newline() {
                     out="$out\\"
                     k=$((k + 1))
                 done
+                [ "$run" -gt 1 ] && aws=0
                 i=$((j + 1))
                 continue
             fi
@@ -1286,6 +1352,7 @@ fold_backslash_newline() {
                     k=$((k + 1))
                 done
                 out="$out\\$nc"
+                aws=0
                 i=$((j + 1))
                 continue
             fi
@@ -1294,10 +1361,15 @@ fold_backslash_newline() {
                 out="$out\\"
                 k=$((k + 1))
             done
+            aws=0
             i=$j
             continue
         fi
         out="$out$c"
+        case "$c" in
+            ' '|$'\t'|$'\n'|';'|'|'|'&'|'('|')'|'<'|'>') aws=1 ;;
+            *) aws=0 ;;
+        esac
         i=$((i + 1))
     done
     printf '%s' "$out"
