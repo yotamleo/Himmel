@@ -55,10 +55,13 @@ suite_sem_dir() {
 }
 
 # _suite_sem_uint <value> <default> -- print value when a positive integer.
+# An all-zero string ("0", "00", ...) is not a digit-string typo the caller
+# needs to see rejected -- it falls back to the default like any other
+# non-positive input, same as an empty or non-digit value.
 _suite_sem_uint() {
     case "$1" in
-        ''|*[!0-9]*|0) printf '%s\n' "$2" ;;
-        *) printf '%s\n' "$1" ;;
+        ''|*[!0-9]*) printf '%s\n' "$2" ;;
+        *) if [ "$((10#$1))" -gt 0 ]; then printf '%s\n' "$((10#$1))"; else printf '%s\n' "$2"; fi ;;
     esac
 }
 

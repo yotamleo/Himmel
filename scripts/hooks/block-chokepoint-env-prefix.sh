@@ -901,7 +901,7 @@ check_direct_suite() {
         k=$((k + 1))
         while [ "$k" -lt "$nw" ]; do
             case "${W[$k]}" in
-            --test) deny_suite ;;
+            --test|--test=*) deny_suite ;;
             -e|--eval|-p|--print) return 0 ;;
             -r|--require|--import|--loader|--experimental-loader|-C|--conditions|--env-file) k=$((k + 2)) ;;
             -*) k=$((k + 1)) ;;

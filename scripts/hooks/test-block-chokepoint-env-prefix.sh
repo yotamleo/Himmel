@@ -808,6 +808,7 @@ assert_deny_suite "bun with a global flag before test"        "$(j "bun --silent
 assert_deny_suite "path-qualified bun test"                   "$(j "/usr/local/bin/bun test x.test.ts")"
 assert_deny_suite "direct node --test"                        "$(j "node --test scripts/x.test.mjs")"
 assert_deny_suite "node --test after a --require operand"     "$(j "node --require ./setup.js --test")"
+assert_deny_suite "node --test=<pattern> long-opt form"       "$(j "node --test=scripts/x.test.mjs")"
 assert_deny_suite "direct bash scripts/*/test-*.sh"           "$(j "bash scripts/hooks/test-block-chokepoint-env-prefix.sh")"
 assert_deny_suite "sh with options, then a test-*.sh"         "$(j "sh -x scripts/test-quiet-run.sh")"
 assert_deny_suite "executed test-*.sh path"                   "$(j "./scripts/test-quiet-run.sh")"

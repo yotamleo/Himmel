@@ -315,6 +315,17 @@ else
     pass "_suite_sem_try reports failure and cleans up the slot when the owner-file write fails"
 fi
 
+# --- 15: HIMMEL_SUITE_SLOTS=00 (all-zero, not the single digit "0" the uint
+# helper already special-cases) must fall back to the default budget, not
+# silently provide a 0-slot pool that reports "busy" on the very first try. ---
+new_sem
+OUT=$(HIMMEL_SUITE_SEMAPHORE_DIR="$SEM" HIMMEL_SUITE_SLOTS=00 bash "$QUIET_RUN" suite -- true 2>&1 </dev/null); RC=$?
+if [ "$RC" = "0" ]; then
+    pass "HIMMEL_SUITE_SLOTS=00 falls back to the default budget instead of a 0-slot pool"
+else
+    fail "HIMMEL_SUITE_SLOTS=00 -- expected rc 0 (default budget), got rc=$RC: $OUT"
+fi
+
 if [ "$FAILED" -eq 0 ]; then
     echo "OK: all $CASES cases passed"
     exit 0
