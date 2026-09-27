@@ -985,6 +985,46 @@ run_hook deny "25: env -S 'tee /../../.claude/x/../settings.json' (same gap, set
 run_hook allow "25: env -S 'tee /../../../tmp/f scripts/ci/../other/a.sh' (control: leading dotdot, later hop resolves to an unprotected path)" \
     "$(bash_json "env -S 'tee /../../../tmp/f scripts/ci/../other/a.sh'" "$REPO")" 1
 
+echo "== 26: judge J1298A C1 - normalized-only scan is lossy, must be a UNION with the raw scan =="
+# C1 (Critical, NEW ALLOW vs main): checking ONLY the normalized text let
+# the `seg/../` collapse in `_normalize_scan_text` DELETE a policy signal
+# the raw clause text still carries verbatim (`scripts/hooks/../` collapses
+# to `scripts/`, erasing `scripts/hooks/`) while runtime string-slicing or
+# parameter expansion (`${x%../}a.sh`, `d[:14]+'a.sh'`) reconstructs the real
+# write target from exactly that raw, uncollapsed text. Fix: scan both the
+# raw text (main's original check) and the normalized text, deny on either.
+run_hook deny "26: python3 -c d='scripts/hooks/../'; open(d[:14]+'a.sh','w') (raw text carries scripts/hooks/, normalized loses it)" \
+    "$(bash_json "python3 -c \"d='scripts/hooks/../'; open(d[:14]+'a.sh','w')\"" "$REPO")" 1
+run_hook deny "26: node -e require('fs').writeFileSync('scripts/hooks/../'.slice(0,14)+'a.sh','x')" \
+    "$(bash_json "node -e \"require('fs').writeFileSync('scripts/hooks/../'.slice(0,14)+'a.sh','x')\"" "$REPO")" 1
+run_hook deny "26: bash -c x=scripts/hooks/../; echo pwn > \${x%../}a.sh" \
+    "$(bash_json "bash -c 'x=scripts/hooks/../; echo pwn > \${x%../}a.sh'" "$REPO")" 1
+run_hook deny "26: sh -c x=scripts/hooks/../; cp y \${x%../}a.sh" \
+    "$(bash_json "sh -c 'x=scripts/hooks/../; cp y \${x%../}a.sh'" "$REPO")" 1
+run_hook deny "26: sudo sh -c x=scripts/hooks/../; cp y \${x%../}a.sh" \
+    "$(bash_json "sudo sh -c 'x=scripts/hooks/../; cp y \${x%../}a.sh'" "$REPO")" 1
+run_hook deny "26: env -S sh -c x=scripts/hooks/../; cp y \${x%../}a.sh (split-string value)" \
+    "$(bash_json "env -S 'sh -c \"x=scripts/hooks/../; cp y \${x%../}a.sh\"'" "$REPO")" 1
+run_hook deny "26: cat <(x=scripts/hooks/../; cp y \${x%../}a.sh) (process substitution)" \
+    "$(bash_json "cat <(x=scripts/hooks/../; cp y \${x%../}a.sh)" "$REPO")" 1
+run_hook deny "26: echo hi > >(x=scripts/hooks/../; tee \${x%../}a.sh) (output process substitution)" \
+    "$(bash_json "echo hi > >(x=scripts/hooks/../; tee \${x%../}a.sh)" "$REPO")" 1
+run_hook deny "26: sh -c x=.claude/settings.json/../; cp y \${x%/../} (settings.json entry)" \
+    "$(bash_json "sh -c 'x=.claude/settings.json/../; cp y \${x%/../}'" "$REPO")" 1
+run_hook deny "26: sh -c x=CLAUDE.md/../; cp y \${x%/../} (CLAUDE.md entry)" \
+    "$(bash_json "sh -c 'x=CLAUDE.md/../; cp y \${x%/../}'" "$REPO")" 1
+run_hook deny "26: python3 -c p='AGENTS.md/../'; open(p[:9],'w') (AGENTS.md entry)" \
+    "$(bash_json "python3 -c \"p='AGENTS.md/../'; open(p[:9],'w')\"" "$REPO")" 1
+run_hook deny "26: bash -c p=scripts/guardrails/../; echo z > \${p%../}x.sh (scripts/guardrails entry)" \
+    "$(bash_json "bash -c 'p=scripts/guardrails/../; echo z > \${p%../}x.sh'" "$REPO")" 1
+run_hook deny "26: cat <(p=.pre-commit-config.yaml/../; cp y \${p%/../}) (pre-commit-config entry)" \
+    "$(bash_json "cat <(p=.pre-commit-config.yaml/../; cp y \${p%/../})" "$REPO")" 1
+
+# control: the same eval shape with no policy-path substring anywhere in the
+# raw or normalized text must still allow.
+run_hook allow "26: bash -c x=scripts/other/../; echo hi > \${x%../}a.sh (control: no enforcement signal)" \
+    "$(bash_json "bash -c 'x=scripts/other/../; echo hi > \${x%../}a.sh'" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

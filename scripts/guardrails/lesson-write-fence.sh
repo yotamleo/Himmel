@@ -1147,13 +1147,26 @@ _interpreter_is_read_only() {
 # parseable" gap as `git apply`/`patch`'s diff-body target and `find
 # -exec`/`xargs`'s deferred arguments, called out in the header's ACCEPTED
 # section.
+# Judge J1298A C1 (Critical, NEW ALLOW vs main): checking the NORMALIZED
+# text alone is lossy - the `seg/../` collapse in `_normalize_scan_text`
+# deletes a policy signal that the raw text still carries verbatim (e.g.
+# `scripts/hooks/../` collapses to `scripts/`, erasing the `scripts/hooks/`
+# substring), while runtime string-slicing/parameter-expansion
+# (`${x%../}a.sh`, `d[:14]+'a.sh'`) reconstructs the real write target from
+# exactly that raw text. Fix: scan is a UNION, never a replacement - deny if
+# either the raw text (main's original check, unchanged) OR the normalized
+# text matches a policy value. Normalization can then only ADD denies
+# (catching `//`/`/./ ` spelling variants) and never remove one.
 _clause_has_enforcement_signal() {
-    local raw_lc; raw_lc="$(_lc "$(_normalize_scan_text "$1")")"
+    local raw_lc norm_lc; raw_lc="$(_lc "$1")"; norm_lc="$(_lc "$(_normalize_scan_text "$1")")"
     local i v_lc
     i=0
     while [ "$i" -lt "$ENTRY_COUNT" ]; do
         v_lc="$(_lc "${ENTRY_VALUE[$i]}")"
         case "$raw_lc" in
+            *"$v_lc"*) return 0 ;;
+        esac
+        case "$norm_lc" in
             *"$v_lc"*) return 0 ;;
         esac
         i=$((i+1))
