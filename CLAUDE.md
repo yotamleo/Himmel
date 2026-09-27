@@ -137,7 +137,10 @@ on scratchpad copies, **never live vaults**, and its backends are governed by
 `scripts/guardrails/egress-matrix.json` (`block-graphify-egress.sh` enforces
 it). The `## graphify` section below is graphify's own installer text,
 upstream-owned and rewritten by `graphify install` — where it conflicts with
-these RULES (e.g. `graphify path`), the RULES win.
+these RULES (e.g. `graphify path`), the RULES win. A live external URL (read
+this X/Twitter/web link) is none of the three organs' job — fetch it directly
+(`WebFetch`), and only route the result into qmd/luna afterward if it's worth
+keeping.
 
 ## WORKFLOWS
 

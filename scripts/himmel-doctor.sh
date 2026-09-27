@@ -3132,6 +3132,57 @@ check_c43_rtk_bare_hook() {
     fi
 }
 
+# --- C44: /skill-find's qmd 'skills' collection missing or empty (HIMMEL-2222) --
+# /skill-find's own docs anticipate a missing collection ("if $SKILL_INDEX_DIR
+# is empty, run ...") but that only helps a session that already invoked the
+# skill and read past the raw `Collection not found: skills` failure -- and
+# nothing rebuilds it automatically yet (the skill's own acceptance list
+# still has "auto-rebuild on plugin manifest change" unchecked). Same
+# "armed but inert" shape as C26/C28: the harness advertises /skill-find as
+# available at session start, but it silently reverts to guessing
+# skill/command names the moment the collection is absent or was never
+# ingested with any files. FAIL (not WARN): a doctor advisory here is the
+# whole point of the ticket -- catch the gap before the next session burns
+# calls rediscovering it. qmd itself is optional (no qmd, no /skill-find
+# expectation), so a machine with qmd unreachable is a skip, not a FAIL.
+#
+# HIMMEL_DOCTOR_SKILL_INDEX_QMD (test seam, mirrors C40's HIMMEL_DOCTOR_QMD_CURL):
+# when set, this executable is invoked directly for `collection list` instead
+# of going through qmd_cmd's real bun/PATH resolution -- lets the test suite
+# force a deterministic "qmd absent" (point at a nonexistent path) for every
+# unrelated case without an operator's real qmd install leaking a live FAIL/OK
+# here, and lets dedicated C44 cases substitute their own stub.
+check_c44_skill_index() {
+    local qmd_probe="${HIMMEL_DOCTOR_SKILL_INDEX_QMD:-}"
+    local list_out
+    if [ -n "$qmd_probe" ]; then
+        if [ ! -x "$qmd_probe" ]; then
+            emit INFO C44-skill-index "qmd not resolvable on this machine -- /skill-find check skipped (qmd is optional)"
+            return
+        fi
+        list_out="$("$qmd_probe" collection list 2>/dev/null)"
+    else
+        # shellcheck source=scripts/lib/qmd-bin.sh
+        # shellcheck disable=SC1091
+        . "$REPO_ROOT/scripts/lib/qmd-bin.sh"
+        if ! has_qmd; then
+            emit INFO C44-skill-index "qmd not resolvable on this machine -- /skill-find check skipped (qmd is optional)"
+            return
+        fi
+        list_out="$(qmd_cmd collection list 2>/dev/null)"
+    fi
+    local files_line count
+    files_line="$(printf '%s\n' "$list_out" | grep -A2 '^skills (' | grep 'Files:')"
+    count="$(printf '%s' "$files_line" | grep -oE '[0-9]+' || true)"
+    if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+        emit FAIL C44-skill-index \
+            "the 'skills' qmd collection is missing or empty -- /skill-find silently reverts to guessing skill/command names (HIMMEL-2222)" \
+            "bash scripts/skill-index/build-skill-index.sh && bash -c 'source scripts/lib/qmd-bin.sh; qmd_cmd ingest --collection skills \"\$HOME/.claude/skill-index\"'"
+        return
+    fi
+    emit OK C44-skill-index "'skills' qmd collection present ($count files)"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3178,6 +3229,7 @@ check_c40_qmd_vec
 check_c41_mcp_argv_key
 check_c42_sweep_health
 check_c43_rtk_bare_hook
+check_c44_skill_index
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
