@@ -1614,34 +1614,41 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     dirdest_climb=0
     symlink_dest=0
     write_operand_settings_mention=0
-    if [ "$write_verb" = 1 ]; then
-        if [ "$TOK" = 1 ]; then
-            widx=0
-            while [ "$widx" -lt "$ST_N" ]; do
+    # HIMMEL-3761 (judge J1381A F2): a redirect TARGET word (ST_RO[i] set) is
+    # a write operand whatever write_verb says — `echo`/`printf`/`:` are not
+    # write verbs, but `echo x > <live settings>` still writes. Judge every
+    # ST_RO-marked word unconditionally; a non-redirect word is still gated on
+    # write_verb, same as before. TOK=0 (PowerShell, or a Bash command the
+    # tokenizer could not vouch for) has no per-word redirect marking, so its
+    # fallback stays write_verb-gated, the same documented ceiling as before.
+    if [ "$TOK" = 1 ]; then
+        widx=0
+        while [ "$widx" -lt "$ST_N" ]; do
+            if [ "$write_verb" = 1 ] || [ -n "${ST_RO[widx]}" ]; then
                 _check_write_operand "${ST_W[widx]}"
-                widx=$((widx + 1))
-            done
-        else
-            # CodeRabbit (HIMMEL-3686): unquoted `for w in $cmd_n` is subject
-            # to pathname expansion against the HOOK PROCESS's own real cwd —
-            # unrelated to the command's cwd — so a glob-containing operand
-            # could reach _check_write_operand as an unrelated expanded path
-            # instead of its literal text. `set -f` for exactly this loop
-            # keeps the fallback textual, restoring the prior noglob state
-            # after (mirrors lex_resolve's own set -f/set +f bracket).
-            case $- in
-                *f*) _had_noglob=1 ;;
-                *) _had_noglob=0 ;;
-            esac
-            set -f
-            for w in $cmd_n; do
-                _check_write_operand "$w"
-            done
-            if [ "$_had_noglob" = 1 ]; then
-                set -f
-            else
-                set +f
             fi
+            widx=$((widx + 1))
+        done
+    elif [ "$write_verb" = 1 ]; then
+        # CodeRabbit (HIMMEL-3686): unquoted `for w in $cmd_n` is subject
+        # to pathname expansion against the HOOK PROCESS's own real cwd —
+        # unrelated to the command's cwd — so a glob-containing operand
+        # could reach _check_write_operand as an unrelated expanded path
+        # instead of its literal text. `set -f` for exactly this loop
+        # keeps the fallback textual, restoring the prior noglob state
+        # after (mirrors lex_resolve's own set -f/set +f bracket).
+        case $- in
+            *f*) _had_noglob=1 ;;
+            *) _had_noglob=0 ;;
+        esac
+        set -f
+        for w in $cmd_n; do
+            _check_write_operand "$w"
+        done
+        if [ "$_had_noglob" = 1 ]; then
+            set -f
+        else
+            set +f
         fi
     fi
 
@@ -1719,7 +1726,24 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             else
                 wparent="${wabs%/*}"
                 [ -n "$wparent" ] || wparent="/"
-                [ -e "$wparent" ] || return
+                # HIMMEL-3761 (judge J1381A F1): an exact settings-leaf word
+                # whose parent does not exist under $cwd is UNRESOLVED, not
+                # absent — an unexpanded `~/...`/`$HOME/...` word, or an
+                # `x=.claude/settings.json` assignment word, both land here
+                # (their leaf matches exactly, but "$cwd/~/..."/"$cwd/x=..."
+                # never exists on disk). check_target() is never called, so
+                # this word can never vouch check_target()'s "allow" for a
+                # benign worktree copy — it also must never be silently
+                # dropped, or a genuinely live target hiding behind one of
+                # these unresolvable shapes escapes judgment entirely while a
+                # SEPARATE, resolved worktree-copy word in the same command
+                # sets settings_word_live=0 and wrongly vouches for the whole
+                # command. Fail closed the same way an unmatched-leaf word
+                # already does.
+                if [ ! -e "$wparent" ]; then
+                    settings_word_unmatched=1
+                    return
+                fi
             fi
             result=$(check_target "$w")
             case "$result" in

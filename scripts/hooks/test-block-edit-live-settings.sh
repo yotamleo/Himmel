@@ -1504,6 +1504,51 @@ assert_rc "224 node --check --settings via ../../.. from a nested worktree still
 assert_rc "225 --check --settings decoy chained with a node -e write of the primary's live settings.json still denies (control, codex-1)" 2 \
     "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings $NESTED_WT/.claude/settings.json; node -e \"require('fs').writeFileSync('$PRIMARY/.claude/settings.json','pwned')\"")"
 
+# 226-235 (judge J1381A Finding 1, Critical): _check_settings_word silently
+# returned for a settings-leaf word it could not resolve (an unexpanded
+# `~`/`$HOME` word, or an `x=...` assignment word), so a SEPARATE, resolved
+# worktree-copy word in the same command set settings_word_live=0 and wrongly
+# vouched for the whole command, leaving the real live redirect target never
+# judged. All ten must DENY.
+assert_rc "226 (J1381A F1) wt cwd: cat own copy redirected into ~/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "cat .claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "227 (J1381A F1) wt cwd: cat own copy redirected into \$HOME/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "cat .claude/settings.json > \$HOME/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "228 (J1381A F1) wt cwd: cat own copy by absolute path redirected into ~/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "cat $WT2/.claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "229 (J1381A F1) primary cwd: cat worktree's own copy redirected into ~/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/worktrees/feat+x/.claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "230 (J1381A F1) wt cwd: jq of own copy redirected into ~/.claude/settings.local.json denies" 2 \
+    "$(bash_rc_of "$WT2" "jq . .claude/settings.json > ~/.claude/settings.local.json" HOME="$FAKEHOME")"
+assert_rc "231 (J1381A F1) wt cwd: write to ~/.claude/settings.json then read own copy denies" 2 \
+    "$(bash_rc_of "$WT2" "echo {} > ~/.claude/settings.json; cat .claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "232 (J1381A F1) primary cwd: cat worktree's own copy appended into quoted \"\$HOME\"/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/worktrees/feat+x/.claude/settings.json >> \"\$HOME\"/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "233 (J1381A F1) wt cwd: truncating own copy into ~/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "head -c0 .claude/settings.json > ~/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "234 (J1381A F1) primary cwd: assignment word x=.claude/settings.json redirect target still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "x=.claude/settings.json; cat .claude/worktrees/feat+x/.claude/settings.json > \$x")"
+assert_rc "235 (J1381A F1) wt cwd: assignment word naming the primary's absolute settings.json still denies" 2 \
+    "$(bash_rc_of "$WT2" "x=$PRIMARY/.claude/settings.json; cat .claude/settings.json > \$x")"
+
+# 236-240 (judge J1381A Finding 2, Critical): the word-boundary regex ran on
+# already quote/backslash-stripped text, and its substring fallback only
+# fires when a recognized file verb is present — so a bare echo/printf
+# redirect whose target glues a variable or a stripped backslash directly
+# onto "settings.json" evaded mentions_settings entirely, and with no write
+# verb recognized either, the target was never judged at all. All five must
+# DENY.
+assert_rc "236 (J1381A F2) wt cwd: echo redirect with a quoted glued var before settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo {} > ~/.claude/\"\$e\"settings.json" HOME="$FAKEHOME")"
+assert_rc "237 (J1381A F2) wt cwd: D=~/.claude/ then echo redirect via \"\$D\"settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "D=~/.claude/; echo {} > \"\$D\"settings.json" HOME="$FAKEHOME")"
+assert_rc "238 (J1381A F2) primary cwd: echo redirect with a quoted glued var before settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo {} > .claude/\"\$e\"settings.json")"
+assert_rc "239 (J1381A F2) primary cwd: printf redirect via positional \$1 glued onto settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "printf %s x > .claude/\$1settings.json")"
+assert_rc "240 (J1381A F2) primary cwd: echo redirect to a Windows backslash path that strips onto settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo {} > 'C:\\\\x\\\\.claude\\\\settings.json'")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
