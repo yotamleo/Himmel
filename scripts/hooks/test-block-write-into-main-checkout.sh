@@ -2816,7 +2816,8 @@ check_both "54 fromP: x=\$(cd wt); echo x > a.txt (cd inside a command substitut
 # (documented in base's header as correct-by-policy), even though this ONE
 # shape is a genuine, unconditional cd and runtime lands safely in wt. The
 # strict superset rule (cd tracking may only ADD denies relative to a
-# payload-cwd-only check, never remove one) takes this relaxation back:
+# payload-cwd-only check, never remove one — except the cp/mv/ln
+# destination-type class deferred to HIMMEL-3726) takes this relaxation back:
 # post-fix, the union check fires on every _bwimc_ecwd/_bwimc_cwd
 # divergence unconditionally, so this row denies again too.
 check_both "55 fromP: cd wt && echo x > a.txt (genuine, runtime-safe cd — still denies post-fix under the strict superset rule)" block \

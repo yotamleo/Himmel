@@ -172,7 +172,15 @@
 #     deliberate exception: a genuine, unconditional `cd <worktree> &&
 #     <relative write>` issued from a primary cwd also denies under this rule,
 #     even though it is runtime-safe — the rule does not distinguish "safe"
-#     divergence from "unsafe" divergence). Arm (g) (git subcommands) keeps
+#     divergence from "unsafe" divergence). ponytail: the fallback re-checks
+#     only the raw operand, in the mode the TRACKED-cwd resolution picked, so
+#     the rule does NOT hold for cp/mv/ln destination-TYPE decisions (dest is
+#     a dir vs an entry, entry vs follow) or for the `<dest>/<basename(src)>`
+#     child check (incl. `-t`): those are made against the tracked cwd only,
+#     and main makes them against the real cwd, so a divergent cd can turn a
+#     main DENY into an ALLOW (judge J1307R, 11 rows). Upgrade path:
+#     HIMMEL-3726, which re-runs the whole destination block against the real
+#     cwd whenever the two differ. Arm (g) (git subcommands) keeps
 #     its own separate, pre-existing `_bwimc_git_clause` tracking, unaffected
 #     by this. Not modelled: an absolute or dynamic write candidate is checked
 #     against the tracked cwd exactly like before, and a `cd` performed by an
@@ -3629,6 +3637,8 @@ while IFS= read -r _bwimc_clause; do
             # SOURCE; the sink for each is <target-dir>/<basename(source)>.
             # `-t`/`--target-directory` name the destination MORE explicitly
             # than the positional form, so it never depends on source parsing.
+            # ponytail: the per-source child check below runs against the
+            # tracked cwd only, with no real-cwd fallback, HIMMEL-3726.
             _bwimc_cd_guard "$_bwimc_tdir_raw"
             _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_tdir_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
             if [ -n "$_bwimc_dest_abs" ]; then
@@ -3662,6 +3672,9 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_n=${#_bwimc_ops[@]}
             if [ "$_bwimc_n" -ge 2 ]; then
                 _bwimc_dest_raw="${_bwimc_ops[$((_bwimc_n-1))]}"
+                # ponytail: dest-is-dir, dest-mode and the child check are
+                # decided from the TRACKED-cwd resolution only; main decides
+                # them against the real cwd, HIMMEL-3726.
                 _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
                 _bwimc_dest_is_dir=0
                 _bwimc_dest_mode=follow
@@ -3867,6 +3880,9 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_nsrc=$((_bwimc_n-1))
         fi
         if [ -n "$_bwimc_dest_raw" ]; then
+            # ponytail: the dir-vs-entry decision below uses the TRACKED-cwd
+            # resolution only; main decides it against the real cwd,
+            # HIMMEL-3726.
             _bwimc_dest_abs=$(_bwimc_resolve_abs "$_bwimc_dest_raw" "$_bwimc_ecwd") || _bwimc_dest_abs=""
             if [ -z "$_bwimc_dest_abs" ]; then
                 _bwimc_cd_guard "$_bwimc_dest_raw"
