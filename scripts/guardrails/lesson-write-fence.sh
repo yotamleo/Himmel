@@ -795,35 +795,16 @@ _scan_redirects() {
 # grammar (letter/underscore then word chars), not a case-insensitivity fix
 # that was already covered by the pre-lowering.
 #
-# _bundle_value_at_end <chars-after-dash> <flag-chars> <value-chars> -> 0
-# iff <chars-after-dash> is 2+ characters, every character except the LAST
-# is a member of <flag-chars> (that arm's known no-value short options), and
-# the last character is a member of <value-chars> (that arm's known
-# value-taking short options) - i.e. a getopt-style bundled short-option
-# cluster (`env -ia`, `sudo -Ep`) whose value-taking option is the FINAL
-# letter, so its value is the NEXT token (a glued value would extend the
-# same token past that letter instead - judge J1298O C3: the old walk fell
-# through to the generic bare-flag case for any 2+-letter cluster, advancing
-# by only one token, so the value-taking letter's value became the
-# misresolved head verb instead of the real wrapped command one token
-# further on).
-_bundle_value_at_end() {
-    local chars="$1" flags="$2" values="$3"
-    local len=${#chars} i c last
-    [ "$len" -ge 2 ] || return 1
-    last="${chars: -1}"
-    case "$values" in *"$last"*) : ;; *) return 1 ;; esac
-    i=0
-    while [ "$i" -lt "$((len-1))" ]; do
-        c="${chars:$i:1}"
-        case "$flags" in *"$c"*) : ;; *) return 1 ;; esac
-        i=$((i+1))
-    done
-    return 0
-}
+# HIMMEL-3757: `_bundle_value_at_end` and the case-sensitive short-option
+# matching it supported (HIMMEL-3658/HIMMEL-3659) were reverted from the
+# `env`/`sudo` arms below after judge J1298C found the replacement letter
+# sets opened 12 NEW main-DENY -> head-ALLOW gaps (`env -c`/`-U`, `sudo
+# -d`/`-G`/`-H`/`-P`, each + `cat`). Head-index accuracy for these wrappers
+# is tracked as HIMMEL-3757, scoped so any future fix there can only ADD
+# denials relative to main.
 _clause_head_idx() {
     local -a tok=("$@")
-    local n=${#tok[@]} i=0 s w sw
+    local n=${#tok[@]} i=0 s w
     while [ "$i" -lt "$n" ]; do
         s="$(_lc "$(_strip_wrap "${tok[$i]}")")"
         case "$s" in
@@ -842,42 +823,20 @@ _clause_head_idx() {
                 # --unset's VALUE as the resolved verb - if that value is
                 # crafted to name a proven-read-only verb (e.g. `cat`), the
                 # real wrapped write command was never scanned at all.
+                # HIMMEL-3757: this arm's short-option matching was made
+                # case-sensitive (HIMMEL-3658) to recognize `-a`/`--argv0` as
+                # value-taking, but judge J1298C found the replacement letter
+                # set opened 2 NEW main-DENY -> head-ALLOW gaps (`-c`, `-U`)
+                # that main's case-insensitive match had covered by accident.
+                # Reverted to main's exact case-insensitive matching; env -a
+                # and this arm's other head-index gaps are tracked as
+                # HIMMEL-3757 (ADD-only denials from here). The separate flat
+                # `-S`/`--split-string` deny below (`_env_split_string_used`)
+                # is untouched by this revert.
                 while [ "$i" -lt "$n" ]; do
-                    sw="$(_strip_wrap "${tok[$i]}")"
-                    w="$(_lc "$sw")"
-                    # HIMMEL-3658: short-option letters match the RAW
-                    # (case-preserved) `$sw`, never the lowered `$w` - GNU
-                    # env's short options are case-sensitive and none of its
-                    # value-taking letters (-a/--argv0, -u/--unset,
-                    # -C/--chdir, -S/--split-string) has a distinct lowercase
-                    # short option of its own, so matching against `$w`
-                    # missed `-a`/`-S` outright and only reached `-C` by
-                    # accident via the folded literal `-c`. `$w` stays lowered
-                    # for the long-option-abbreviation arm below, where env's
-                    # own long names are already lowercase.
-                    case "$sw" in
-                        # console-authorized redesign (three rounds of
-                        # Criticals in this same `-S` handling): `-S`/
-                        # `--split-string`'s value is CODE env itself parses
-                        # and executes, not opaque data safe to skip past -
-                        # unlike `-a`/`-u`/`-C`, this walk no longer advances
-                        # over it at all. `_env_split_string_used` below
-                        # detects its presence and `process_clause_for_write`
-                        # denies unconditionally; leaving `-S`/`--split-string`
-                        # un-skipped here just means the generic `-*` fall-
-                        # through (or the bundled-cluster arm) leaves it
-                        # visible to that detector instead of consuming it.
-                        -a|-u|-C)                 i=$((i+2)) ;;
-                        # judge J1298O C3: a bundled cluster (`-ia`, `-va`,
-                        # `-0a`) ending in a value-taking letter (a/u/C) with
-                        # only known no-value flags (i/0/v) before it - GNU
-                        # env bundling, the value is the next token.
-                        -[A-Za-z0-9][A-Za-z0-9]*)
-                            if _bundle_value_at_end "${sw#-}" "i0v" "auC"; then
-                                i=$((i+2))
-                            else
-                                i=$((i+1))
-                            fi ;;
+                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+                    case "$w" in
+                        -u|-c)                    i=$((i+2)) ;;
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
                         --*)
                             if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
@@ -924,59 +883,25 @@ _clause_head_idx() {
                 # names per `sudo --help` on this station (-r/-t are
                 # SELinux-only and not compiled into this build, so those two
                 # are taken from upstream sudo.ws docs, unverified locally).
+                # HIMMEL-3757: this arm's short-option matching was made
+                # case-sensitive (HIMMEL-3659) to stop folding no-arg -H/-P
+                # onto value-taking -h/-p, but judge J1298C found the
+                # replacement letter set opened 4 NEW main-DENY ->
+                # head-ALLOW gaps (`-d`, `-G`, `-H`, `-P`). Reverted to
+                # main's exact case-insensitive matching; sudo -H/-P and this
+                # arm's other head-index gaps are tracked as HIMMEL-3757
+                # (ADD-only denials from here).
                 while [ "$i" -lt "$n" ]; do
-                    sw="$(_strip_wrap "${tok[$i]}")"
-                    w="$(_lc "$sw")"
-                    # HIMMEL-3659: short-option letters match the RAW
-                    # (case-preserved) `$sw`, never the lowered `$w` - sudo's
-                    # -H (--set-home) and -P (--preserve-groups) are no-arg
-                    # FLAGS, but lowering folded them onto the value-taking
-                    # -h/-p (host/prompt) and made this walk consume the next
-                    # token - the real wrapped command - as a bogus option
-                    # value (`sudo -H tee <protected>` resolved head past the
-                    # end of the clause and ALLOWed). `-C`/`-D` (close-from/
-                    # chdir, real, uppercase-only) and `-U` (other-user, real,
-                    # uppercase-only) are likewise distinct letters with no
-                    # lowercase counterpart of their own; matching them
-                    # case-sensitively also fixes `-C` (previously dead: the
-                    # lowered token never matched the old literal uppercase
-                    # `-C` pattern, and no `-c` entry existed either) and
-                    # keeps `-D` live (previously reached only via the folded
-                    # literal `-d`, which is not a real sudo option). `-h`
-                    # alone stays value-taking and unchanged: sudo overloads
-                    # it for `--help` XOR `--host` depending on invocation
-                    # shape, ambiguous, so this keeps main's existing
-                    # (fail-closed) treatment rather than picking a side. `$w`
-                    # stays lowered for the long-option-abbreviation arm
-                    # below, where sudo's own long names are already
-                    # lowercase.
-                    case "$sw" in
-                        # judge J1298O C2: -R (--chroot) and -T
-                        # (--command-timeout) are real value-taking sudo
-                        # options this arm's case-sensitive letter set
-                        # missed outright (main's old case-INsensitive match
-                        # folded them onto -r/-t by accident; this arm's
-                        # move to case-sensitive matching dropped that
-                        # accidental coverage without replacing it).
-                        -u|-g|-U|-p|-C|-r|-t|-h|-D|-R|-T) i=$((i+2)) ;;
-                        # judge J1298O C3: a bundled cluster (`-Ep`, `-Eu`,
-                        # `-HD`, `-nC`) ending in a value-taking letter with
-                        # only known no-value flags before it - same
-                        # bundling gap as the env arm above.
-                        -[A-Za-z][A-Za-z]*)
-                            if _bundle_value_at_end "${sw#-}" "AbBEeHikKlnPsvV" "ugUpCrthDRT"; then
-                                i=$((i+2))
-                            else
-                                i=$((i+1))
-                            fi ;;
+                    w="$(_lc "$(_strip_wrap "${tok[$i]}")")"
+                    case "$w" in
+                        -u|-g|-U|-p|-C|-r|-t|-h|-d) i=$((i+2)) ;;
                         --)                       i=$((i+1)); break ;;
                         --*)
                             if guard_is_long_abbrev "user" "$w" || guard_is_long_abbrev "group" "$w" \
                                 || guard_is_long_abbrev "other-user" "$w" || guard_is_long_abbrev "prompt" "$w" \
                                 || guard_is_long_abbrev "close-from" "$w" || guard_is_long_abbrev "role" "$w" \
                                 || guard_is_long_abbrev "type" "$w" || guard_is_long_abbrev "host" "$w" \
-                                || guard_is_long_abbrev "chdir" "$w" || guard_is_long_abbrev "chroot" "$w" \
-                                || guard_is_long_abbrev "command-timeout" "$w"; then
+                                || guard_is_long_abbrev "chdir" "$w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
