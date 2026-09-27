@@ -102,9 +102,9 @@ new_sem
 start_holder "$SEM" one
 ERR=$(qr "$SEM" -- true 2>&1 >/dev/null); RC=$?
 if [ "$RC" = "75" ] \
-   && printf '%s' "$ERR" | grep -q "pid ${QR_PID:-none}" \
-   && printf '%s' "$ERR" | grep -q "label suite" \
-   && printf '%s' "$ERR" | grep -qF "SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- true"; then
+   && grep -q "pid ${QR_PID:-none}" <<<"$ERR" \
+   && grep -q "label suite" <<<"$ERR" \
+   && grep -qF "SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- true" <<<"$ERR"; then
     pass "second concurrent suite -> rc 75 naming holder pid, label and retry shape"
 else
     fail "second concurrent suite -- expected rc 75 + holder pid ${QR_PID:-none} + retry line, got rc=$RC err: $ERR"
@@ -142,7 +142,7 @@ kill -KILL "${QR_PID:-none}" 2>/dev/null
 wait "$HOLDER" 2>/dev/null || true
 kill -TERM "$(cat "$SLEEPER_FILE")" 2>/dev/null || true
 ERR=$(qr "$SEM" -- true 2>&1 >/dev/null); RC=$?
-if [ "$RC" = "0" ] && printf '%s' "$ERR" | grep -q "reclaimed"; then
+if [ "$RC" = "0" ] && grep -q "reclaimed" <<<"$ERR"; then
     pass "kill -9'd runner's stale slot is reclaimed"
 else
     fail "stale slot of a kill -9'd runner -- expected rc 0 + reclaimed note, got rc=$RC err: $ERR"
@@ -161,7 +161,8 @@ fi
 # --- 6: a slot past HIMMEL_SUITE_SLOT_TTL is reclaimed even if the pid lives ---
 new_sem
 start_holder "$SEM" ttl
-if qr "$SEM" HIMMEL_SUITE_SLOT_TTL=1 SUITE_LOCK_WAIT=5 -- true 2>&1 >/dev/null | grep -q reclaimed; then
+ERR=$(qr "$SEM" HIMMEL_SUITE_SLOT_TTL=1 SUITE_LOCK_WAIT=5 -- true 2>&1 >/dev/null)
+if grep -q reclaimed <<<"$ERR"; then
     pass "slot older than HIMMEL_SUITE_SLOT_TTL is reclaimed"
 else
     fail "slot older than HIMMEL_SUITE_SLOT_TTL was not reclaimed"

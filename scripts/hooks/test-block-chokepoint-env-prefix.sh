@@ -794,7 +794,7 @@ assert_deny_suite() {  # assert_deny_suite <label> <json> [ENV=VAL ...]
     decision=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
     CASES=$((CASES + 1))
     if [ "$RC" = "2" ] && [ "$decision" = "deny" ] \
-       && printf '%s' "$ERR" | grep -qF "bash scripts/quiet-run.sh suite --"; then
+       && grep -qF "bash scripts/quiet-run.sh suite --" <<<"$ERR"; then
         echo "PASS $label (denied, message names the quiet-run suite shape)"
     else
         echo "FAIL $label -- expected rc=2 + permissionDecision=deny + quiet-run suite message, got rc=$RC decision='$decision'"

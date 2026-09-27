@@ -115,7 +115,7 @@ _suite_sem_stale() {
     if ! _suite_sem_read_owner "$slot"; then
         # Ownerless: a writer between mkdir and the owner write, or one killed
         # there. Young = still being written; leave it alone.
-        if [ -n "$(find "$slot" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+        if [ -n "$(find "$slot" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then  # gnu-ok: -maxdepth/-mmin are BSD find too; bash has no mtime-age test
             SUITE_SEM_STALE_WHY='no owner record for over a minute'
             return 0
         fi
@@ -148,7 +148,7 @@ _suite_sem_reclaim() {
     local slot="$1" guard="$1.reclaim" tomb
     if ! mkdir "$guard" 2>/dev/null; then
         # A reclaimer killed mid-way leaves the guard behind; free it late.
-        [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$guard" 2>/dev/null
+        [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$guard" 2>/dev/null  # gnu-ok: -maxdepth/-mmin are BSD find too
         return 1
     fi
     if _suite_sem_stale "$slot"; then
