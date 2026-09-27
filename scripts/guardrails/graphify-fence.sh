@@ -2322,9 +2322,16 @@ _gf_deny_on_hidden_clause_separator() {
     local cmd="$1" i=0 i0 len c top esc=0
     local -a stk=()
     local sp=0
-    local found_bad=0 in_span=0 span_chdir=0 span_hit=0 lookback lb_i lb_start lb_trim
+    local found_bad=0 in_span=0 span_chdir=0 span_hit=0 lookback lb_i lb_start
+    local lb_nwords=0 lb_last='' lb_prev='' lb_previx=0
     local -a chars=()
     len=${#cmd}
+    # codex-2 (PR #1323 round 4): every `'$') [ "${chars[$((i+1))]}" = "(" ]`
+    # lookahead below reads one index past a trailing unquoted `$` (the last
+    # char of $cmd) under this file's `set -u`; that abort was already caught
+    # by the fail-closed EXIT trap and turned into a DENY, never a bypass,
+    # but it denied a benign command for the wrong reason. Bounds-check the
+    # index first so a bare trailing `$` falls through to a normal verdict.
     while IFS= read -r -N 1 c; do
         chars+=("$c")
     done <<< "$cmd"
@@ -2355,7 +2362,7 @@ _gf_deny_on_hidden_clause_separator() {
                     "\\") esc=1 ;;
                     '"') sp=$((sp-1)) ;;
                     '`') stk[sp]=b; sp=$((sp+1)) ;;
-                    '$') [ "${chars[$((i+1))]}" = "(" ] && { stk[sp]=p; sp=$((sp+1)); i=$((i+1)); } ;;
+                    '$') [ "$((i+1))" -lt "$len" ] && [ "${chars[$((i+1))]}" = "(" ] && { stk[sp]=p; sp=$((sp+1)); i=$((i+1)); } ;;
                 esac
                 ;;
             b)
@@ -2383,14 +2390,31 @@ _gf_deny_on_hidden_clause_separator() {
                     "'") stk[sp]=q; sp=$((sp+1)) ;;
                     '"') stk[sp]=d; sp=$((sp+1)) ;;
                     '`') stk[sp]=b; sp=$((sp+1)) ;;
-                    '$') [ "${chars[$((i+1))]}" = "(" ] && { stk[sp]=p; sp=$((sp+1)); i=$((i+1)); } ;;
+                    '$') [ "$((i+1))" -lt "$len" ] && [ "${chars[$((i+1))]}" = "(" ] && { stk[sp]=p; sp=$((sp+1)); i=$((i+1)); } ;;
                 esac
                 ;;
         esac
         if [ "$in_span" -eq 0 ] && [ "$sp" -gt 0 ]; then
             in_span=1
             span_hit=0
-            lb_start=$((i0-10))
+            # codex-1 (PR #1323 round 4): a fixed-width suffix match over a
+            # trailing-space-trimmed lookback missed a chdir flag once any
+            # literal path text sat between the flag and the substitution
+            # (e.g. `-C ../$(...)`) - the lookback's tail was the path text,
+            # never the flag, so the suffix match never fired and the
+            # hidden-separator check was skipped for a substitution that WAS
+            # inside a real chdir argument. Resolve the flag by shell WORD
+            # instead of by trailing bytes: split the bounded lookback on
+            # whitespace (`set --`, safe under this file's `set -f`) and
+            # check whether the substitution's own word starts with the flag
+            # (`-C../$(...)`, `--chdir=../$(...)`) OR the word immediately
+            # before it IS the flag on its own (`-C ../$(...)`,
+            # `--chdir ../$(...)`). `set --` also splits on tabs, so this
+            # closes codex-3 (a literal tab after the flag) for free. The
+            # lookback stays bounded (64 chars, not the whole command) so a
+            # command with many chdir-scoped substitutions back to back
+            # still scans in O(n) overall, not O(n * word length).
+            lb_start=$((i0-64))
             [ "$lb_start" -lt 0 ] && lb_start=0
             lookback=''
             lb_i=$lb_start
@@ -2398,18 +2422,28 @@ _gf_deny_on_hidden_clause_separator() {
                 lookback="${lookback}${chars[$lb_i]}"
                 lb_i=$((lb_i+1))
             done
-            # codex-1 (PR #1323 round 3): a real chdir flag may be followed
-            # by more than one space before the substitution opens (bash
-            # treats "-C  $(...)" identically to "-C $(...)"), so trim
-            # trailing spaces before matching the flag suffix rather than
-            # requiring exactly one.
-            lb_trim="$lookback"
-            while [ "${lb_trim: -1}" = " " ]; do
-                lb_trim="${lb_trim% }"
-            done
-            case "$lb_trim" in
-                *-C|*-D|*--chdir|*--chdir=) span_chdir=1 ;;
-                *) span_chdir=0 ;;
+            # shellcheck disable=SC2086 # word-splitting on whitespace is the
+            # point (splits the lookback into shell words); `set -f` (line
+            # 318) already disables the globbing half of the warning.
+            set -- $lookback
+            lb_nwords=$#
+            lb_last=''
+            lb_prev=''
+            if [ "$lb_nwords" -ge 1 ]; then
+                lb_last="${!lb_nwords}"
+            fi
+            if [ "$lb_nwords" -ge 2 ]; then
+                lb_previx=$((lb_nwords-1))
+                lb_prev="${!lb_previx}"
+            fi
+            case "$lb_last" in
+                -C*|-D*|--chdir=*) span_chdir=1 ;;
+                *)
+                    case "$lb_prev" in
+                        -C|-D|--chdir) span_chdir=1 ;;
+                        *) span_chdir=0 ;;
+                    esac
+                    ;;
             esac
         elif [ "$in_span" -eq 1 ] && [ "$sp" -eq 0 ]; then
             if [ "$span_hit" -eq 1 ] && [ "$span_chdir" -eq 1 ]; then

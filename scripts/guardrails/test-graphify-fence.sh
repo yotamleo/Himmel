@@ -2678,6 +2678,34 @@ for X23_N in 65536 122880; do
     fi
 done
 
+# (X24) codex-1 (PR #1323 round 4): the chdir-lookback match required the
+# flag to be a SUFFIX of a fixed, trailing-space-trimmed lookback window - a
+# literal path fragment between the flag and the substitution (e.g.
+# `-C ../$(...)`) put the path text, not the flag, at the tail of that
+# window, so span_chdir resolved to 0 and the hidden separator inside went
+# undetected even though the substitution IS a real chdir argument.
+run_fence deny no "$HIMMEL" "env -C ../\$(...; separator inside), literal path before the substitution -> deny (X24)" \
+    "env -C ../\$(cd ..; echo $SALUS) graphify update notes/patient.md --backend glm"
+
+# (X25) codex-2 (PR #1323 round 4): a trailing unquoted \$ as the LAST
+# character of the routed command (no substitution actually opens) read one
+# array index past the end under this file's `set -u`, aborting the scan;
+# the fail-closed EXIT trap turned that abort into a DENY regardless of
+# whether the command has anything to do with graphify or chdir at all - a
+# false-positive-deny availability bug, not a bypass. A benign command with
+# no graphify token and a bare trailing \$ must ALLOW.
+run_fence allow no "$HIMMEL" "trailing bare \$ (no substitution, no graphify) -> allow, does not abort (X25)" \
+    'echo hello $'
+
+# (X26) codex-3 (PR #1323 round 4): the lookback match trimmed only trailing
+# SPACES before matching the flag suffix; bash treats a literal TAB between
+# the flag and the substitution identically to a space (`-C<TAB>$(...)`), but
+# the untrimmed tab defeated the suffix match, so this chdir argument's
+# hidden separator went undetected the same as X22's multi-space case.
+X26_CMD=$(printf 'env -C\t$(cd ..; echo %s) graphify update notes/patient.md --backend glm' "$SALUS")
+run_fence deny no "$HIMMEL" "env -C (tab) \$(...; separator inside) -> deny (X26)" \
+    "$X26_CMD"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
