@@ -1107,6 +1107,54 @@ assert "double-quoted backslash before real &&: visible chain (control)" \
 assert "2>&1 fd-dup still safe post-fix"   ALLOW "$(decide "$(j_bash 'grep x f 2>&1 | head')")"
 assert "amp-redirect &>devnull still safe post-fix" ALLOW "$(decide "$(j_bash 'grep x f &>/dev/null')")"
 
+# --- HIMMEL-3782 (judge J1387B): an unquoted `>&2` followed by a lone CR is
+# not a valid fd-dup word to real bash — the CR glues onto the digit, so the
+# redirect target word is "2<CR>" (not the digit 2), and bash opens a REAL
+# FILE named "2<CR>" instead of duplicating fd 2. VERIFIED (real bash, scratch
+# dir): `grep x f >&2<CR>` creates a junk file literally named `2\r`. Must not
+# auto-approve: falls through to PASS (the normal prompt), same as any other
+# real-file redirect.
+assert "fd-dup >&2 + lone CR writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash "grep x f >&2"$'\r')")"
+assert "fd-dup >&2 + CR then a second line (must not ALLOW)" \
+    PASS "$(decide "$(j_bash "grep x f >&2"$'\r'"echo y")")"
+# 2>&1 + lone CR: real bash raises "ambiguous redirect" (word "1<CR>" is not
+# all-digit) instead of writing a file, but it is still not a genuine
+# fd-dup — must not auto-approve either.
+assert "fd-dup 2>&1 + lone CR is ambiguous, not a real fd-dup (must not ALLOW)" \
+    PASS "$(decide "$(j_bash "grep x f 2>&1"$'\r')")"
+# Controls: the CR-free originals must keep ALLOWing — this fix must not
+# regress the ordinary fd-dup case.
+assert "fd-dup >&2, no CR, still ALLOW (control)" \
+    ALLOW "$(decide "$(j_bash 'grep x f >&2')")"
+assert "fd-dup 2>&1, no CR, still ALLOW (control)" \
+    ALLOW "$(decide "$(j_bash 'grep x f 2>&1')")"
+# >&- (close fd) + CR was never matched by the digit-only strip pattern in the
+# first place, so it already stays PASS — pin it so a future rewrite of the
+# strip regex doesn't accidentally start ALLOWing it.
+assert "fd-dup >&- + CR stays PASS (pre-existing, pin)" \
+    PASS "$(decide "$(j_bash "grep x f >&-"$'\r')")"
+
+# Same shapes under the CRLF-rendering jq shim (Windows jq.exe path): the
+# embedded CR is not a line terminator by itself, so fold_crlf's CRLF-fold
+# leaves it in place same as native — the fix must hold under both renderings.
+assert "fd-dup >&2 + lone CR, CRLF-shim rendering (must not ALLOW)" \
+    PASS "$(decide_win "$(j_bash "grep x f >&2"$'\r')")"
+assert "fd-dup 2>&1 + lone CR, CRLF-shim rendering (must not ALLOW)" \
+    PASS "$(decide_win "$(j_bash "grep x f 2>&1"$'\r')")"
+
+# --- HIMMEL-3786 (judge J1391A): pin the escaped ->-before-fd-dup-& shapes
+# (2\>&1 / \>&2) that #1391 (HIMMEL-3777) fixed but never got an explicit test
+# row for. Escaping the `>` leaves a live, unescaped `&` right after it — the
+# exact shape the &-branch's fd-dup lookback misparsed before #1391; the fix
+# keeps it from being read as a hidden second command, at the cost of not
+# auto-approving it either (PASS, not ALLOW) — same verdict as any other case
+# scan_cmd can't prove safe.
+assert "escaped \\>&1 before fd-dup &: not falsely ALLOW/DENY (HIMMEL-3786 pin)" \
+    PASS "$(decide "$(j_bash 'grep x f 2\>&1 | head')")"
+assert "escaped \\>&2: not falsely ALLOW/DENY (HIMMEL-3786 pin)" \
+    PASS "$(decide "$(j_bash 'grep x f \>&2 | head')")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

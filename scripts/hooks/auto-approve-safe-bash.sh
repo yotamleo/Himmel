@@ -1555,10 +1555,20 @@ case "$paren_mask" in *'('*) exit 0 ;; esac
 # Anchor /dev/null to a token boundary so `>/dev/null.bak` (a real file) is
 # NOT mistaken for the sink and stripped. Run on SCAN_MASK so a '>' inside a
 # quoted argument (e.g. a comment body) is not mistaken for a real redirect.
+#      HIMMEL-3782 (J1387B): the fd-dup strip below requires a real word
+#      boundary right after the target digit — space/tab/newline or one of
+#      the separators scan_cmd itself treats as live (`;|&`), or end of
+#      string. A CR is deliberately EXCLUDED from that boundary class: to
+#      real bash, `>&2<CR>` is `>&word` with word == "2<CR>" (not the digit
+#      2, since CR is just an ordinary byte to bash, not a separator), so
+#      bash opens/creates a REAL FILE named "2<CR>" instead of duplicating
+#      fd 2. Requiring the boundary means that shape no longer matches here,
+#      so its `>` survives into $rd and falls through to the same
+#      not-auto-approved path as any other real-file redirect.
 rd=$(printf '%s' "$SCAN_MASK" | sed -E \
     -e 's@&?>>?[[:space:]]*/dev/null([[:space:]]|$)@ @g' \
     -e 's@[0-9]*>>?[[:space:]]*/dev/null([[:space:]]|$)@ @g' \
-    -e 's@[0-9]*>&[0-9]@ @g')
+    -e 's@[0-9]*>&[0-9]([ \t\n;|&]|$)@ @g')
 case "$rd" in *'>'*) exit 0 ;; esac
 
 # --- Every segment must be safe ---
