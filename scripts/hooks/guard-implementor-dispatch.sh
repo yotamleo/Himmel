@@ -49,6 +49,15 @@
 #   IMPL_GUARD_READINESS_CMD       override the lane-readiness probe command (tests stub it; default `node scripts/lanes/lane-readiness.mjs`)
 #   IMPL_GUARD_READINESS_BUDGET_SECS  lane-readiness probe wall-clock budget (default 4)
 #   IMPL_GUARD_ROUND_BUDGET_SECS   round-guard probe wall-clock budget (default 4)
+#   IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS  aggregate wall-clock budget for the WHOLE
+#                                  named-path round-guard block -- the cwd check,
+#                                  resolving named worktree paths, and every
+#                                  named branch's own check together (default 12;
+#                                  the per-call budgets above bound one call each,
+#                                  not their sum)
+#   IMPL_GUARD_MAX_TEXT_BYTES      dispatch-text size cap enforced BEFORE the
+#                                  named-worktree-path grep/sort runs over it
+#                                  (default 200000)
 #
 # HIMMEL-1568: this hook is also the Agent-dispatch chokepoint for the
 # HIMMEL-1553 reviewed-round guard (scripts/telegram/round-guard.ts) — the
@@ -320,6 +329,30 @@ _run_bounded() {
     return "$rc"
 }
 
+# _round_block_deadline_exceeded <label> — REFUSE (exit 2, cleanup) once the
+# WHOLE named-path round-guard block's aggregate wall-clock budget
+# (round_block_budget_secs, set by the caller from
+# IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS) has been used up since round_block_start
+# (also caller-set, in $SECONDS). HIMMEL-3676 (codex-1, CR round 7): every
+# individual round-guard.ts call already carries its OWN budget
+# (IMPL_GUARD_ROUND_BUDGET_SECS), but nothing summed them across the cwd check
+# and every distinct named-worktree branch -- a dispatch naming up to
+# IMPL_GUARD_MAX_WT_PATHS branches could still drive the block past the
+# hook's 15s PreToolUse timeout (fail-open) however small each INDIVIDUAL
+# budget was. Checked at the top of _round_check_one (covers the cwd check
+# and every named branch) and again before resolving the named paths, so
+# nothing in the block can run once the aggregate is spent.
+_round_block_deadline_exceeded() {
+    local label="$1" elapsed
+    elapsed=$((SECONDS - round_block_start))
+    if [ "$elapsed" -lt "$round_block_budget_secs" ]; then
+        return 1
+    fi
+    printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the reviewed-round predicate could not be evaluated for %s -- the aggregate round-guard block budget (%ss) was used up after %ss across the cwd and named-worktree checks -- failing CLOSED rather than risk overrunning the hook timeout. Raise IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$label" "$round_block_budget_secs" "$elapsed" >&2
+    rm -f "$round_task_path" 2>/dev/null
+    exit 2
+}
+
 # _round_check_one <branch-args-suffix> <label> — run round-guard.ts's CLI
 # once under the wall-clock budget for one branch and disposition its result
 # exactly like the single-branch call this replaces (HIMMEL-3676, J1322A
@@ -331,6 +364,7 @@ _run_bounded() {
 # the caller's scope, same as every other round-guard helper in this file.
 _round_check_one() {
     local branch_args="$1" label="$2" cmd out rc
+    _round_block_deadline_exceeded "$label"
     cmd="bun $(printf '%q' "$repo_root/scripts/telegram/round-guard.ts") check --cwd $(printf '%q' "$round_cwd") --task-file $(printf '%q' "$round_task_file")$branch_args"
     rc=0
     out=$(_run_bounded "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$cmd" 0.05) || rc=$?
@@ -528,6 +562,14 @@ lane_ready() {
 # section spawn-glm/spawn-claudex already honour).
 round_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
 if [ -n "$round_cwd" ]; then
+    # HIMMEL-3676 (codex-1, CR round 7): ONE deadline over the WHOLE
+    # named-path block below -- the cwd check, resolving the named worktree
+    # paths, and every named branch's own check -- so however many distinct
+    # branches the dispatch names (up to IMPL_GUARD_MAX_WT_PATHS), the block
+    # cannot itself be timed past the hook's 15s PreToolUse timeout. See
+    # _round_block_deadline_exceeded above.
+    round_block_start=$SECONDS
+    round_block_budget_secs="${IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS:-12}"
     # HIMMEL-3676: the dispatch text (not the payload cwd) is the ground truth
     # for WHICH branch this implementor round belongs to whenever it names a
     # worktree — a dispatching session's own cwd is routinely the primary
@@ -578,6 +620,19 @@ if [ -n "$round_cwd" ]; then
     # check first means a dispatch main refuses is refused at the SAME speed
     # as on main, no matter what the rest of the text contains.
     _round_check_one "" "the dispatch cwd's own branch"
+    # HIMMEL-3676 (codex-2, CR round 7): cap the dispatch text's SIZE before
+    # the grep/sort below ever runs over it -- the path-count bound further
+    # down only caps how many DISTINCT paths are resolved, not how long
+    # grep/sort itself takes to scan the text, so a text padded into the
+    # megabytes could cost real wall time before that bound is ever reached.
+    # `${#text}` is a pure shell string-length read, no subprocess.
+    round_text_len=${#text}
+    round_max_text_bytes="${IMPL_GUARD_MAX_TEXT_BYTES:-200000}"
+    if [ "$round_text_len" -gt "$round_max_text_bytes" ]; then
+        printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch text is %s bytes, over the %s-byte bound -- refusing rather than scanning it for worktree paths (a pathological prompt must not be able to spend this guard'"'"'s time budget before the path-count bound even applies). Raise the bound with IMPL_GUARD_MAX_TEXT_BYTES, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_text_len" "$round_max_text_bytes" >&2
+        rm -f "$round_task_path" 2>/dev/null
+        exit 2
+    fi
     round_wt_paths=$(printf '%s' "$text" | grep -oE '[A-Za-z0-9_./+-]*\.claude/worktrees/([A-Za-z0-9_+-]+\.)*[A-Za-z0-9_+-]+' | sort -u || true)
     round_extra_branches=""
     if [ -n "$round_wt_paths" ]; then
@@ -610,6 +665,7 @@ if [ -n "$round_cwd" ]; then
         # run the whole block under a deadline so an unmatched, detached-HEAD
         # or unreadable path — or the deadline itself — REFUSES instead of
         # hanging.
+        _round_block_deadline_exceeded "resolving the named worktree paths"
         round_wt_paths_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_wt_paths_file=""
         if [ -z "$round_wt_paths_file" ]; then
             printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): could not create a temp file to resolve the named worktree paths — failing CLOSED. IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' >&2

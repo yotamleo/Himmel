@@ -1433,6 +1433,76 @@ else
     fail=$((fail + 1))
 fi
 
+# --- (z1), HIMMEL-3676 (codex-1, CR round 7): the per-branch _round_check_one
+# loop (one round-guard.ts call per DISTINCT named worktree branch) had no
+# AGGREGATE deadline of its own -- each individual call was bounded
+# (IMPL_GUARD_ROUND_BUDGET_SECS), but nothing summed them across the cwd
+# check, the resolve step and every named branch, so enough distinct named
+# branches could still drive the whole block past the hook's 15s PreToolUse
+# timeout (fail-open) however small each individual per-call budget was. cwd
+# is a fresh worktree (so the cwd-first check runs first, same as always);
+# the text names 20 further distinct real worktree branches (well under
+# IMPL_GUARD_MAX_WT_PATHS, so the path-count bound is not what's under test);
+# a stub `bun` sleeps ~0.3s per round-guard.ts call before printing the
+# version sentinel and allowing, simulating real per-call cost without 20
+# real review ledgers. A short IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS=2 keeps
+# this test fast: the whole block must refuse once ~2s of aggregate budget
+# is spent, long before all the branches would be checked (~6-7s at
+# ~0.3s each).
+RG_REPO_Z1="$TMP/round-repo-z1"
+RG_WT_DIR_Z1_CWD="$TMP/.claude/worktrees/fix-himmel-9024-cwd"
+mk_round_repo "$RG_REPO_Z1" "main"
+git -C "$RG_REPO_Z1" worktree add -q -b fix/himmel-9024-cwd "$RG_WT_DIR_Z1_CWD" main
+RG_Z1_TEXT="Write the code and commit it in $RG_WT_DIR_Z1_CWD."
+RG_Z1_I=0
+while [ "$RG_Z1_I" -lt 20 ]; do
+    RG_WT_DIR_Z1_SIB="$TMP/.claude/worktrees/fix-himmel-9024-sib-$RG_Z1_I"
+    git -C "$RG_REPO_Z1" worktree add -q -b "fix/himmel-9024-sib-$RG_Z1_I" "$RG_WT_DIR_Z1_SIB" main
+    RG_Z1_TEXT="$RG_Z1_TEXT Also see $RG_WT_DIR_Z1_SIB for an old attempt."
+    RG_Z1_I=$((RG_Z1_I + 1))
+done
+
+RG_Z1_STUB_DIR="$TMP/stub-bun-z1"
+mkdir -p "$RG_Z1_STUB_DIR"
+cat > "$RG_Z1_STUB_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+sleep 0.3
+echo "round-guard-cli: v1" >&2
+exit 0
+EOF
+chmod +x "$RG_Z1_STUB_DIR/bun"
+
+RG_Z1_START=$(date +%s%N)
+RC_RG_Z1=$(run_hook round-aggregate-block-deadline "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9024' "$RG_Z1_TEXT" "$RG_WT_DIR_Z1_CWD")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" IMPL_GUARD_ROUND_BLOCK_BUDGET_SECS=2 PATH="$RG_Z1_STUB_DIR:$PATH")
+RG_Z1_END=$(date +%s%N)
+RG_Z1_MS=$(( (RG_Z1_END - RG_Z1_START) / 1000000 ))
+assert_rc "(z1) 20 named branches at ~0.3s/call: the aggregate 2s block budget refuses before all of them run" 2 "$RC_RG_Z1"
+assert_contains "(z1) refusal names the aggregate block budget" "aggregate round-guard block budget" "$(combined_output round-aggregate-block-deadline)"
+if [ "$RG_Z1_MS" -lt 4000 ]; then
+    echo "ok   (z1) refused well under the time checking all 20 branches would have taken (${RG_Z1_MS}ms)"
+    pass=$((pass + 1))
+else
+    echo "FAIL (z1) took ${RG_Z1_MS}ms, expected well under 4000ms (the aggregate deadline should refuse early)"
+    fail=$((fail + 1))
+fi
+
+# --- (z2), HIMMEL-3676 (codex-2, CR round 7): the named-worktree-path
+# grep/sort ran over the FULL untrusted dispatch text BEFORE the path-count
+# bound (IMPL_GUARD_MAX_WT_PATHS) ever applied, so a large text cost real
+# grep/sort wall time before any bound had a chance to fire -- even a text
+# containing NO worktree-path substrings at all. cwd is a clean repo (no
+# named worktrees, so the cwd-first check alone allows quickly); the text is
+# far over IMPL_GUARD_MAX_TEXT_BYTES bytes of filler with no
+# ".claude/worktrees/" substring anywhere in it.
+RG_REPO_Z2="$TMP/round-repo-z2"
+mk_round_repo "$RG_REPO_Z2" "main"
+RG_Z2_PAD=$(head -c 300000 /dev/zero | tr '\0' 'x')
+RG_Z2_TEXT="Write the code and commit it. $RG_Z2_PAD"
+
+RC_RG_Z2=$(run_hook round-text-size-cap "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9025' "$RG_Z2_TEXT" "$RG_REPO_Z2")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(z2) 300000-byte dispatch text with no worktree paths at all: the size cap refuses before grep/sort ever runs" 2 "$RC_RG_Z2"
+assert_contains "(z2) refusal names the byte bound" "byte bound" "$(combined_output round-text-size-cap)"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
