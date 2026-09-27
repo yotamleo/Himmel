@@ -1583,6 +1583,58 @@ AFTER43_BYTES=$([ -f "$HUD_LEGACY43" ] && cat "$HUD_LEGACY43" || echo "ABSENT")
 check "RED43 uninstall: no-ledger legacy config byte-identical to himmel's own template is removed" \
   "$AFTER43_BYTES" "ABSENT"
 
+echo "==== RED50 (HIMMEL-3637): --purge-state must refuse while a recorded backup's original path has not been restored ===="
+# J1274O P1 wet-run repro (a): the adopted project lives OUTSIDE this case's
+# cwd (run_uninstall always cd's into $CASE_DIR/cwd), so the adopter-scripts
+# restore step cannot reach it and the file stays overwritten by himmel's
+# copy. --purge-state must then refuse to delete the only backup, not
+# silently remove it and exit 0.
+new_case red50
+PROJDIR50="$CASE_DIR/project"
+mkdir -p "$PROJDIR50/scripts"
+DEST50="$PROJDIR50/scripts/clean.sh"
+printf '#!/bin/sh\necho original-user-script\n' > "$DEST50"
+SNAP50=$(mktemp "$SUITE_TMP/SNAP50.XXXXXX") || exit 1
+cp -p "$DEST50" "$SNAP50"
+printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST50"
+( prov_begin --writer adopt.sh -- seed-red50 >/dev/null
+  prov_record replace file "$DEST50" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP50" --backup --post-file "$DEST50" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP50"
+BACKUPS50_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings --purge-state >/dev/null
+rc50=$?
+BACKUPS50_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+REFUSED50=$([ "$rc50" -ne 0 ] && echo yes || echo no)
+check "RED50: --purge-state refuses (non-zero) when the adopted project's backup was never restored" "$REFUSED50" "yes"
+check "RED50: refusing means deleting nothing — the backup survives" "$BACKUPS50_AFTER" "$BACKUPS50_BEFORE"
+
+echo "==== RED51 (HIMMEL-3637): an uninstall run from a cwd that is not the recorded project must never exit 0 having restored nothing ===="
+new_case red51
+PROJDIR51="$CASE_DIR/project"
+mkdir -p "$PROJDIR51/scripts"
+DEST51="$PROJDIR51/scripts/clean.sh"
+printf '#!/bin/sh\necho original-user-script\n' > "$DEST51"
+ORIG51_BYTES=$(cat "$DEST51")
+SNAP51=$(mktemp "$SUITE_TMP/SNAP51.XXXXXX") || exit 1
+cp -p "$DEST51" "$SNAP51"
+printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST51"
+( prov_begin --writer adopt.sh -- seed-red51 >/dev/null
+  prov_record replace file "$DEST51" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP51" --backup --post-file "$DEST51" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP51"
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings >/dev/null
+rc51=$?
+AFTER51_BYTES=$(cat "$DEST51")
+RESTORED51=$([ "$AFTER51_BYTES" = "$ORIG51_BYTES" ] && echo yes || echo no)
+REFUSED51=$([ "$rc51" -ne 0 ] && echo yes || echo no)
+OUTCOME51=BUG
+{ [ "$RESTORED51" = yes ] || [ "$REFUSED51" = yes ]; } && OUTCOME51=ok
+check "RED51: uninstall from a non-project cwd either resolves+restores or refuses non-zero (never silent rc=0 with nothing restored)" \
+  "$OUTCOME51" "ok"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \
