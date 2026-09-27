@@ -2665,6 +2665,8 @@ grep -q 'could not resolve an absolute git-common-dir' "$tmp/t68.err" || { echo 
 foreign69="$tmp/foreign-repo-69"
 mkdir -p "$foreign69"
 (cd "$foreign69" && git init -q -b main .) || { echo "FAIL: T69 could not init foreign69"; fail=1; }
+(cd "$foreign69" && git config user.email t@t) || { echo "FAIL: T69 could not config foreign69 email"; fail=1; }
+(cd "$foreign69" && git config user.name t) || { echo "FAIL: T69 could not config foreign69 name"; fail=1; }
 (cd "$foreign69" && git commit -q --allow-empty -m init) || { echo "FAIL: T69 could not commit foreign69"; fail=1; }
 (cd "$foreign69" && git checkout -q -b t69a-foreign) || { echo "FAIL: T69 could not switch foreign69 off main"; fail=1; }
 out69a="$(cd "$foreign69" && CDPATH="$anchor13" HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh")"
