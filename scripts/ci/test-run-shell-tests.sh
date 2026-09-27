@@ -1060,6 +1060,11 @@ else
   check_timeout_2267 "scripts/handover/test-arm-resume-1879.sh" "1700"
   check_timeout_2267 "/repo/scripts/handover/test-arm-resume-1879.sh" "1700"
 
+  # HIMMEL-3648 (#1307): the write-fence suite hit the 600s default twice on
+  # ubuntu CI (603s, CAP EXCEEDED, assertions passing).
+  check_timeout_2267 "scripts/hooks/test-block-write-into-main-checkout.sh" "1200"
+  check_timeout_2267 "/repo/scripts/hooks/test-block-write-into-main-checkout.sh" "1200"
+
   # HIMMEL-2895. The third HIMMEL-2267 arm was this file's own 1200s budget,
   # sized to a 712s measurement of the pre-split 3086-line suite. The split
   # left six suites whose slowest is 114s, so every one of them falls under
