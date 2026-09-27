@@ -558,7 +558,7 @@ brace_word_is_rootwalk() {
     # ponytail: nested brace words (e.g. {{/,a},b}) stay opaque here — a
     # one-level comma split, not a recursive brace-expansion parser.
     # HIMMEL-3753 tracks whether that's worth building.
-    local IFS=','
+    local IFS=',' norm
     for part in $inner; do
         # codex-1 (round 1): // is POSIX root too (is_root_anchor:503).
         # codex-2 (round 3): any run of slashes only (///, ////, ...) is the
@@ -567,7 +567,16 @@ brace_word_is_rootwalk() {
         # normalization pass, so match the whole class directly instead.
         case "$part" in
             '') ;;
-            *[!/]*) ;;
+            *[!/]*)
+                # codex-1 (round 8): `/.` (and `/./`, `//.`, ...) is root too
+                # — is_root_anchor's own normalization (line 499) already
+                # strips a trailing `/.` before matching, so apply the same
+                # sed here rather than duplicate its case logic; a part with
+                # any OTHER non-slash byte (e.g. `a`, `a/.`) still falls
+                # through untouched.
+                norm=$(printf '%s' "$part" | sed -E 's@/+@/@g; s@/\.(/)?$@/@')
+                [ "$norm" = / ] && return 0
+                ;;
             *) return 0 ;;
         esac
     done
