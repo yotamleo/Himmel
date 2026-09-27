@@ -1254,6 +1254,41 @@ while [ "$i" -lt 560 ]; do py560="${py560}python3 -c x; "; i=$((i+1)); done
 run_hook_timed 10 deny "31: python3 -c x;x560 + python3 -c write scripts/hooks/a.sh (pre-existing python3 -c timeout class)" \
     "$(bash_json "${py560}python3 -c \"open('scripts/hooks/a.sh','w')\"" "$REPO")" 1
 
+echo "== 32: judge J1298F - single-clause token floods, per-token fork cost inside a clause =="
+# C1 (Critical, TIMING-VERIFIED by J1298F: main DENY -> effective head ALLOW
+# via a >15s hook timeout). Unlike section 31's C1 (many cheap clauses,
+# fork cost paid once per clause at four call sites), this pads ONE clause
+# with many tokens: _env_split_string_used and _wrapper_is_env_or_sudo used
+# to fork $(_strip_wrap) then $(_lc) (a printf|tr subprocess) for EVERY
+# token of that single clause, and the whole-command deadline
+# (MAX_EVAL_SECONDS) only fires BETWEEN clauses, so it could never reach
+# inside one. J1298F measured main 3.4-3.9s vs pre-fix head 16.1-16.3s at
+# K=5000 tokens (~10KB) - past the 15s hook timeout. Fix: lower every token
+# ONCE per clause (_lc_all, one fork total) and check the deadline inside
+# the per-token loops too.
+x5000=""
+i=0
+while [ "$i" -lt 5000 ]; do x5000="${x5000}x "; i=$((i+1)); done
+run_hook_timed 12 deny "32: echo x,x5000; tee scripts/hooks/a.sh (J1298F C1, K=5000 single-clause token flood, no wrapper needed)" \
+    "$(bash_json "echo ${x5000}; tee scripts/hooks/a.sh" "$REPO")" 1
+
+# Same shape via the wrapper-prefix scan (_wrapper_is_env_or_sudo): J1298F
+# measured main 8.6-9.3s vs pre-fix head 16.4-17.5s at K=2000 `nice` tokens
+# (~10KB).
+nice2000=""
+i=0
+while [ "$i" -lt 2000 ]; do nice2000="${nice2000}nice "; i=$((i+1)); done
+run_hook_timed 12 deny "32: nice,x2000 tee scripts/hooks/a.sh (J1298F C1, K=2000 wrapper-prefix token flood)" \
+    "$(bash_json "${nice2000}tee scripts/hooks/a.sh" "$REPO")" 1
+
+# Same shape, `timeout` wrapper token: J1298F measured main 9.2s vs pre-fix
+# head 17.3s at K=1000 (~10KB).
+timeout1000=""
+i=0
+while [ "$i" -lt 1000 ]; do timeout1000="${timeout1000}timeout 1 "; i=$((i+1)); done
+run_hook_timed 12 deny "32: timeout 1,x1000 tee scripts/hooks/a.sh (J1298F C1, K=1000 wrapper-prefix token flood)" \
+    "$(bash_json "${timeout1000}tee scripts/hooks/a.sh" "$REPO")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then

@@ -1220,6 +1220,28 @@ _deny_env_split_string() {
     deny "env -S/--split-string write refused: env's split-string value hides the real command from the lesson-write fence - it is a shell-like command line env parses and executes itself, not a plain operand this fence can classify. Run the wrapped command directly instead of through env -S/--split-string. clause=$1"
 }
 
+# _lc_all <tok...> -> sets the global array LC_TOK to the case-lowered form
+# of each token, in ONE fork total no matter how many tokens - J1298F C1
+# (Critical): `_env_split_string_used`/`_wrapper_is_env_or_sudo` used to fork
+# `_lc`+`_strip_wrap` (a `$(...)` subshell each, `_lc` forking `tr` on top)
+# for EVERY token of EVERY clause, so a single padded clause (K tokens)
+# forked ~2-3x K processes, outrunning the 15s hook budget on inputs main
+# denied in seconds (the between-clause `MAX_EVAL_SECONDS` check cannot reach
+# inside a clause). Newline is a safe batch separator here: clause tokens
+# always arrive whitespace-free (`evaluate_command`'s `set -- $clause`
+# IFS-word-splits them, which forbids an embedded newline in any one token),
+# so this can never miscount tokens against attacker-controlled input.
+# `process_clause_for_write` calls this ONCE per clause; the two functions
+# below then index LC_TOK instead of forking per token.
+_lc_all() {
+    LC_TOK=()
+    [ "$#" -gt 0 ] || return 0
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        LC_TOK+=("$line")
+    done <<< "$(printf '%s\n' "$@" | tr '[:upper:]' '[:lower:]')"
+}
+
 # _env_split_string_used <tok...> -> 0 iff some token's basename is `env`
 # (bare `env` or a path ending in `/env`, e.g. `/usr/bin/env`) and any LATER
 # token anywhere in the clause is a short-option cluster containing `S`
@@ -1243,12 +1265,25 @@ _deny_env_split_string() {
 # clause that happens to spell an `-S`-shaped token (e.g. `env FOO=bar grep
 # -S x`) now also denies, coarser than the walk it replaces - accepted for
 # the same reason `_deny_env_split_string`'s own trade-off note gives.
+# J1298F C1 (Critical, TIMING-VERIFIED: main DENY -> effective head ALLOW via
+# a >15s hook timeout): this used to fork `_strip_wrap`+`_lc` (a `$(...)`
+# subshell each, `_lc` forking `tr` on top of that) for EVERY token, and the
+# whole-command deadline (`MAX_EVAL_SECONDS`, below `evaluate_command`) only
+# checks BETWEEN clauses - so a single padded clause (K tokens, no wrapper
+# needed at all: this runs unconditionally on every clause) forked ~2-3x K
+# processes with the deadline never able to reach it. Now reads the global
+# `LC_TOK` array `_lc_all` (see its own comment) computed ONCE per clause by
+# the caller - zero forks in this loop - and checks the deadline itself every
+# iteration ($SECONDS is a bash builtin, no fork), so an oversized single
+# clause fails closed instead of outrunning the between-clause check.
 _env_split_string_used() {
     local -a t=("$@")
     local n=${#t[@]} i=0 s w seen_env=0
     while [ "$i" -lt "$n" ]; do
-        s="$(_strip_wrap "${t[$i]}")"
-        w="$(_lc "$s")"
+        s="${t[$i]}"
+        s="${s%\"}"; s="${s#\"}"; s="${s%\'}"; s="${s#\'}"; s="${s%\`}"; s="${s#\`}"
+        w="${LC_TOK[$i]}"
+        w="${w%\"}"; w="${w#\"}"; w="${w%\'}"; w="${w#\'}"; w="${w%\`}"; w="${w#\`}"
         if [ "$seen_env" = 1 ]; then
             case "$s" in
                 -*S*) return 0 ;;
@@ -1261,6 +1296,9 @@ _env_split_string_used() {
         case "$w" in
             env|*/env) seen_env=1 ;;
         esac
+        if [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ]; then
+            deny "command evaluation exceeded the fail-closed time budget (${MAX_EVAL_SECONDS}s); denying the remainder outright (fail-closed)"
+        fi
         i=$((i+1))
     done
     return 1
@@ -1297,16 +1335,23 @@ _deny_wrapper_enforcement_signal() {
 # sudo cat ...`) only routes the clause to the raw-text scan unnecessarily -
 # never a new gap, the same false-positive-is-safe reasoning already used
 # for `_env_split_string_used` above.
+# J1298F C1: same fork-elimination and in-loop deadline as
+# `_env_split_string_used` above (see its comment) - reads global `LC_TOK`
+# instead of forking `_lc`/`_strip_wrap` per token.
 _wrapper_is_env_or_sudo() {
     local head_idx="$1"; shift
     local -a t=("$@")
     local n=${#t[@]} i=0 w
     [ "$head_idx" -le "$n" ] || head_idx="$n"
     while [ "$i" -lt "$head_idx" ]; do
-        w="$(_lc "$(_strip_wrap "${t[$i]}")")"
+        w="${LC_TOK[$i]}"
+        w="${w%\"}"; w="${w#\"}"; w="${w%\'}"; w="${w#\'}"; w="${w%\`}"; w="${w#\`}"
         case "$w" in
             env|sudo) return 0 ;;
         esac
+        if [ "$SECONDS" -ge "$MAX_EVAL_SECONDS" ]; then
+            deny "command evaluation exceeded the fail-closed time budget (${MAX_EVAL_SECONDS}s); denying the remainder outright (fail-closed)"
+        fi
         i=$((i+1))
     done
     return 1
@@ -1464,6 +1509,10 @@ process_clause_for_write() {
         return 0
     fi
 
+    # J1298F C1: lower every token ONCE per clause (one fork total via
+    # _lc_all), not once per token per check below - see _lc_all's comment.
+    _lc_all "${tok[@]}"
+
     local head_idx; head_idx="$(_clause_head_idx "${tok[@]}")"
 
     # J1298R ruling item 1: this check is UNCONDITIONAL - it runs whether or
@@ -1609,6 +1658,12 @@ _check_git_hook_routing() {
 MAX_EVAL_SECONDS=8
 evaluate_command() {
     local cmd="$1" cwd="$2" tmp clause
+    # J1298F M2: bash IMPORTS $SECONDS from the environment (`env
+    # SECONDS=-100000 bash -c 'echo $SECONDS'` prints -100000), so a caller
+    # that exports SECONDS before invoking this hook could otherwise stall
+    # the deadline arbitrarily. Reset it here, unconditionally, so the
+    # budget always counts from this function's own start.
+    SECONDS=0
     tmp="$cmd"
     tmp="${tmp//>|/> }"
     tmp="${tmp//>&/> }"
