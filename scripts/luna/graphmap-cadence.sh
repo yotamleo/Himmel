@@ -727,9 +727,10 @@ cmd_disarm() {
 # flags. All interpolated path values are already cmd-escaped by the caller;
 # name/slug/tag/backend are fixed ASCII literals.
 bat_payload() {
-    local script_esc="$1" name="$2" corpus_esc="$3" maps_esc="$4" title="$5" slug="$6" tag="$7"
+    local script_esc="$1" name="$2" corpus_esc="$3" maps_esc="$4" title="$5" slug="$6" tag="$7" out_root_esc="${8:-}"
     printf '"%s" --name %s --corpus-root "%s" --maps-dir "%s" --title "%s" --slug %s --backend %s --corpus-tag %s' \
         "$script_esc" "$name" "$corpus_esc" "$maps_esc" "$title" "$slug" "$BACKEND" "$tag"
+    if [ -n "$out_root_esc" ]; then printf ' --out-root "%s"' "$out_root_esc"; fi
 }
 
 # Structural (AST) payload builder (HIMMEL-1948 Task 3, routed through the
@@ -1394,8 +1395,17 @@ cmd_arm() {
     # but BOTH publish their curated MOC into the luna vault's 60-Maps ($maps_esc).
     # The luna vault is the single home for every map; the cross-corpus mix here
     # is intentional, not a copy-paste bug (HIMMEL-829 wiring decision).
+    # luna_out_root_esc (HIMMEL-3718): same graphify_out_root_for resolver the
+    # POSIX cron_payload path uses; himmel gets none (stays in-corpus), so its
+    # bat_payload call below omits the arg entirely.
+    local luna_out_root luna_out_root_esc
+    luna_out_root="$(graphify_out_root_for luna)"
+    luna_out_root_esc=""
+    if [ -n "$luna_out_root" ]; then
+        luna_out_root_esc=$(cadence_cmd_escape "$luna_out_root")
+    fi
     local payload_luna payload_himmel
-    payload_luna=$(bat_payload "$script_esc" luna "$vault_esc" "$maps_esc" "$LUNA_TITLE" "$LUNA_SLUG" "$LUNA_TAG")
+    payload_luna=$(bat_payload "$script_esc" luna "$vault_esc" "$maps_esc" "$LUNA_TITLE" "$LUNA_SLUG" "$LUNA_TAG" "$luna_out_root_esc")
     payload_himmel=$(bat_payload "$script_esc" himmel "$himmel_esc" "$maps_esc" "$HIMMEL_TITLE" "$HIMMEL_SLUG" "$HIMMEL_TAG")
     # Both .bats get the bash exe prepended; assemble the full exec line.
     # bash_win is cmd-escaped like every other interpolated value (HIMMEL-1281

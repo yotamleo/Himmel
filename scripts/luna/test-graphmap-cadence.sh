@@ -1695,6 +1695,16 @@ luna_args=$(cat "$STATE/tasks/HIMMEL-GraphMap-Luna" 2>/dev/null || echo MISSING)
 himmel_args=$(cat "$STATE/tasks/HIMMEL-GraphMap-Himmel" 2>/dev/null || echo MISSING)
 assert_contains "luna override (XML time)"   "T01:15:00" "$luna_args"
 assert_contains "himmel override (XML time)" "T05:00:00" "$himmel_args"
+# HIMMEL-3718 CR round 2 (codex-3): the C-outroot unit test above only proves
+# cron_payload's own arg-handling; nothing here proved the REAL arm code path
+# actually threads graphify_out_root_for luna's nonempty default through to
+# the emitted runner, while leaving himmel (which stays in-corpus) untouched.
+# The payload lands in the .bat runner emit_bat writes, not the schtasks task
+# file read above (which only carries the /Create args, e.g. the XML time).
+luna_bat=$(cat "$BAT_DIR/graphmap-luna.bat" 2>/dev/null || echo MISSING)
+himmel_bat=$(cat "$BAT_DIR/graphmap-himmel.bat" 2>/dev/null || echo MISSING)
+assert_contains    "luna runner carries its default out-root"      "--out-root \"$HOME/.local/share/himmel/graphify/luna\"" "$luna_bat"
+assert_not_contains "himmel runner has no --out-root (stays in-corpus)" "--out-root" "$himmel_bat"
 if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 5 ]; then
     pass "still exactly five tasks after --force re-arm"
 else
