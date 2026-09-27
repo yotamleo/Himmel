@@ -443,9 +443,9 @@ elif [ -n "$raw_common" ]; then
     # `cwd_common` to the ANCHOR's .git for an adopter-lane cwd, misclassifying
     # it as himmel and trusting the reviewed repo's own scripts/cr/ - a lane
     # ESCALATION, not the safe adopter fallback this file's other paths take.
-    # `CDPATH=` for this one assignment plus the `./` prefix both defeat that:
-    # either alone is enough, both together is defense in depth.
-    cwd_common=$(CDPATH= cd -P -- "./$raw_common" 2>/dev/null && pwd -P)
+    # `CDPATH=''` for this one assignment plus the `./` prefix both defeat
+    # that: either alone is enough, both together is defense in depth.
+    cwd_common=$(CDPATH='' cd -P -- "./$raw_common" 2>/dev/null && pwd -P)
 fi
 if looks_like_absolute_path "$cwd_common" && [ "$cwd_common" -ef "$anchor/.git" ]; then
     anchor_lane=himmel
