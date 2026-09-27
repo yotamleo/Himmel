@@ -44,7 +44,10 @@ import re, sys
 from types import SimpleNamespace as NS
 
 def evaluate(expr, ctx):
-    m = re.fullmatch(r"(.*?)\$\{\{\s*(.*?)\s*\}\}(.*)", expr.strip())
+    # Literal text around a ${{ }} block (e.g. the space before "(matrix.os)")
+    # must survive recursion verbatim -- only the ${{ }} delimiters themselves
+    # get whitespace-trimmed, never the surrounding prefix/rest text.
+    m = re.fullmatch(r"(.*?)\$\{\{\s*(.*?)\s*\}\}(.*)", expr, re.DOTALL)
     if not m:
         return expr
     prefix, inner, rest = m.groups()
@@ -53,7 +56,7 @@ def evaluate(expr, ctx):
     tail = evaluate(rest, ctx) if rest else ""
     return prefix + str(val) + tail
 
-expr = sys.argv[1]
+expr = sys.argv[1].strip()
 events = {
     "pull_request": NS(event_name="pull_request"),
     "push":         NS(event_name="push"),
@@ -66,11 +69,15 @@ except Exception as e:
     print(f"FAIL - name: expression does not evaluate: {e!r}")
     sys.exit(1)
 
+REQUIRED_CHECK_NAME = "shell-unit (ubuntu-latest)"
+
 errs = []
 if names["dispatch"] == names["pull_request"]:
     errs.append("workflow_dispatch resolves to the SAME check-run name as pull_request -- a force_all_os dispatch shadows the PR's required check")
 if names["pull_request"] != names["push"] or names["pull_request"] != names["schedule"]:
     errs.append("pull_request/push/schedule do not share one name -- the required-check name must stay stable across those events")
+if names["pull_request"] != REQUIRED_CHECK_NAME:
+    errs.append(f"pull_request no longer resolves to the branch protection required check {REQUIRED_CHECK_NAME!r} -- got {names['pull_request']!r}")
 if errs:
     print("FAIL - " + "; ".join(errs) + f"; names={names}")
     sys.exit(1)
