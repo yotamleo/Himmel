@@ -40,7 +40,11 @@ check() {
     fi
 }
 
-tmp="$(mktemp -d -t test-ship-tail-model-free.XXXXXX)"; trap 'rm -rf "$tmp"' EXIT
+if ! tmp="$(mktemp -d -t test-ship-tail-model-free.XXXXXX)"; then
+    echo "FAIL test-ship-tail-model-free -- mktemp -d failed" >&2
+    exit 1
+fi
+trap 'rm -rf "$tmp"' EXIT
 
 # --- RED proof: an injected headless call in a fixture copy of a real
 # ship-tail file must trip the pattern, so a future regression here would
