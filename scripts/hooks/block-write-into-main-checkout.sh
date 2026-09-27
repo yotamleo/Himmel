@@ -172,15 +172,13 @@
 #     deliberate exception: a genuine, unconditional `cd <worktree> &&
 #     <relative write>` issued from a primary cwd also denies under this rule,
 #     even though it is runtime-safe — the rule does not distinguish "safe"
-#     divergence from "unsafe" divergence). ponytail: the fallback re-checks
-#     only the raw operand, in the mode the TRACKED-cwd resolution picked, so
-#     the rule does NOT hold for cp/mv/ln destination-TYPE decisions (dest is
-#     a dir vs an entry, entry vs follow) or for the `<dest>/<basename(src)>`
-#     child check (incl. `-t`): those are made against the tracked cwd only,
-#     and main makes them against the real cwd, so a divergent cd can turn a
-#     main DENY into an ALLOW (judge J1307R, 11 rows). Upgrade path:
-#     HIMMEL-3726, which re-runs the whole destination block against the real
-#     cwd whenever the two differ. Arm (g) (git subcommands) keeps
+#     divergence from "unsafe" divergence). The fallback re-checks only the
+#     raw operand, so the cp/mv/ln destination-TYPE decisions (dest is a dir
+#     vs an entry, entry vs follow) and the `<dest>/<basename(src)>` child
+#     check (incl. `-t`) get the same rule separately: each destination block
+#     runs against the tracked cwd and, when it diverged, again against the
+#     real cwd, denying if either pass denies (judge J1307A F1, closing the
+#     HIMMEL-3726 regression). Arm (g) (git subcommands) keeps
 #     its own separate, pre-existing `_bwimc_git_clause` tracking, unaffected
 #     by this. Not modelled: an absolute or dynamic write candidate is checked
 #     against the tracked cwd exactly like before, and a `cd` performed by an
