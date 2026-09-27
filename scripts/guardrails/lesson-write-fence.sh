@@ -856,7 +856,18 @@ _clause_head_idx() {
                     # for the long-option-abbreviation arm below, where env's
                     # own long names are already lowercase.
                     case "$sw" in
-                        -a|-u|-C|-S)              i=$((i+2)) ;;
+                        # console-authorized redesign (three rounds of
+                        # Criticals in this same `-S` handling): `-S`/
+                        # `--split-string`'s value is CODE env itself parses
+                        # and executes, not opaque data safe to skip past -
+                        # unlike `-a`/`-u`/`-C`, this walk no longer advances
+                        # over it at all. `_env_split_string_used` below
+                        # detects its presence and `process_clause_for_write`
+                        # denies unconditionally; leaving `-S`/`--split-string`
+                        # un-skipped here just means the generic `-*` fall-
+                        # through (or the bundled-cluster arm) leaves it
+                        # visible to that detector instead of consuming it.
+                        -a|-u|-C)                 i=$((i+2)) ;;
                         # judge J1298O C3: a bundled cluster (`-ia`, `-va`,
                         # `-0a`) ending in a value-taking letter (a/u/C) with
                         # only known no-value flags (i/0/v) before it - GNU
@@ -870,7 +881,7 @@ _clause_head_idx() {
                         [A-Za-z_][A-Za-z0-9_]*=*) i=$((i+1)) ;;
                         --*)
                             if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
-                                || guard_is_long_abbrev "argv0" "$w" || guard_is_long_abbrev "split-string" "$w"; then
+                                || guard_is_long_abbrev "argv0" "$w"; then
                                 if [ "$GUARD_LOPT_HAS_EQ" = 1 ]; then i=$((i+1)); else i=$((i+2)); fi
                             else
                                 i=$((i+1))
@@ -1210,38 +1221,51 @@ _deny_procsub() {
     deny "process-substitution write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
 }
 
-# _deny_env_split_string <raw-clause-text> -> denies (exit 2): an `env
-# -S`/`--split-string` clause whose raw text names an enforcement-path
-# signal. Same rationale as `_deny_inline_eval`/`_deny_procsub`: `-S`'s value
-# is not a clean operand, it is a shell-like command line env itself
-# word-splits and executes (`env -S 'tee scripts/hooks/a.sh'` runs `tee
-# scripts/hooks/a.sh` directly) - see `_env_split_string_used`.
+# _deny_env_split_string <raw-clause-text> -> denies (exit 2), UNCONDITIONALLY,
+# any clause where `_env_split_string_used` fires - no enforcement-path-signal
+# match required. /pr-check critic panel (codex-1, this round): `-S`'s value is
+# CODE env itself word-splits and executes, not a clean operand - when that
+# value lands as a SINGLE token (a quoted argument, e.g. `env -S 'cp y a.sh'`),
+# `_clause_head_idx`'s old value-skip treatment of `-S` consumed the whole
+# thing as one opaque "value" and left NOTHING for `_operand_targets` to scan,
+# so a cwd-relative or textually-signal-free write ALLOWed outright - the
+# raw-text scan this branch used to gate on cannot see a cwd-relative target
+# either, so gating the deny on it left exactly that gap open. Per console
+# ruling (three rounds of patching this same parser found a Critical each
+# time): treat ANY genuine `env -S`/`--split-string` use as UNANALYSABLE and
+# fail closed, full stop - `_clause_head_idx` no longer tries to skip past
+# `-S`'s value at all (see the `env)` arm above), and this deny no longer
+# requires a policy-signal match. A benign `env -S 'echo hi'` now denies too;
+# that trade-off is accepted (env -S is rare in agent commands, and failing
+# closed on an unanalysable wrapper is this fence's house style already -
+# see `_deny_inline_eval`/`_deny_procsub`/`_deny_wrapper_enforcement_signal`).
 _deny_env_split_string() {
-    deny "env -S/--split-string write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
+    deny "env -S/--split-string write refused: env's split-string value hides the real command from the lesson-write fence - it is a shell-like command line env parses and executes itself, not a plain operand this fence can classify. Run the wrapped command directly instead of through env -S/--split-string. clause=$1"
 }
 
 # _env_split_string_used <head_idx> <tok...> -> 0 iff an `env` token appears
 # among tok[0..head_idx-1] (the wrapper prefix `_clause_head_idx` walked
 # through) followed later in that same range by a case-sensitive `-S` token
-# (bare or with its value glued on, e.g. `-Stee ...` - GNU env accepts both
+# (bare, with its value glued on, e.g. `-Stee ...`, or bundled behind other
+# no-value short flags, e.g. `-uS`/`-iS...` - GNU env accepts all these
 # spellings identically) or a long-option abbreviation of `--split-string`.
-# Round-6 CR fix (codex
-# critic panel, Critical): unlike `-a`/`-u`/`-C`, whose values are opaque
-# data safe to skip, `-S`'s value is CODE - GNU env parses it as a
-# whitespace-separated command line and executes the resulting words, so
-# `_clause_head_idx` treating it as an ordinary value-taking option to skip
-# hides the real wrapped write command from every downstream check (the
-# skipped value never reaches `_verb_is_read_only` OR `_operand_targets`).
 # This is a coarse PRESENCE check, not a re-parse of env's own option
 # grammar (deliberately - duplicating that grammar here is exactly the kind
 # of drift HIMMEL-3659 already burned once): it does not care whether `-S`
 # was the token that actually consumed a value or not, only whether the verb
 # resolved through `env` and the wrapper's option region names `-S`/
 # `--split-string` at all. A false-positive match (e.g. some other flag's
-# OWN value happens to spell "-S") only routes the clause to
-# `_clause_has_enforcement_signal`'s raw-text scan instead of the normal
-# verb/operand path - the same safe-direction fallback `process_clause_for_write`
+# OWN value happens to spell "-S") only routes the clause to the
+# unconditional fail-closed deny below instead of the normal verb/operand
+# path - the same safe-direction-favors-deny reasoning `process_clause_for_write`
 # already uses for procsub and interpreter inline-eval, never a new gap.
+# Console-authorized redesign (three rounds of Criticals against this same
+# parser: J1298A/J1298B/pr-check-round-3's codex-1) collapses this from a
+# raw-text-signal gate into an unconditional fail-closed deny (see
+# `_deny_env_split_string`) - `_clause_head_idx` no longer tries to skip past
+# `-S`'s value as ordinary opaque data (see the `env)` arm above), so this
+# check no longer needs to worry about `-S`'s value swallowing the rest of
+# the clause; it only needs to spot the flag.
 _env_split_string_used() {
     local head_idx="$1"; shift
     local -a t=("$@")
@@ -1252,11 +1276,11 @@ _env_split_string_used() {
         w="$(_lc "$s")"
         if [ "$in_env" = 1 ]; then
             case "$s" in
-                # round-6 CR fix (codex-1, round 2): `-S*` (not the exact
-                # `-S`) - GNU env accepts the value glued directly onto the
-                # letter (`-Stee...` behaves identically to `-S tee...`,
-                # empirically verified), and a glued token still carries the
-                # same executable split-string value.
+                # `-S*` (not the exact `-S`) - GNU env accepts the value
+                # glued directly onto the letter (`-Stee...` behaves
+                # identically to `-S tee...`, empirically verified), and a
+                # glued token still carries the same executable split-string
+                # value.
                 -S*) return 0 ;;
                 --*)
                     guard_is_long_abbrev "split-string" "$w" && return 0
@@ -1276,6 +1300,15 @@ _env_split_string_used() {
                     # string) - skip it so a value that happens to spell
                     # `-S...` is never mistaken for env's own `-S`.
                     i=$((i+1)) ;;
+                -*S*)
+                    # console-authorized redesign: a bundled short-option
+                    # cluster carrying `S` anywhere after the leading dash
+                    # (e.g. `-uS`, `-iS'tee ...'`) - GNU env bundling puts
+                    # `-S` last in a cluster of no-value flags, so its own
+                    # glued value follows immediately. Fail closed on the
+                    # mere presence of the letter rather than re-parsing
+                    # which cluster position it occupies.
+                    return 0 ;;
                 -*) : ;;
                 *)
                     # judge J1298B C1: the first bare (non-option) word ends
@@ -1456,12 +1489,18 @@ _operand_targets() {
 # `_clause_has_enforcement_signal` raw-text scan runs and denies on a hit,
 # UNCONDITIONALLY, regardless of whether the option-cluster walk resolved
 # the rest of the wrapper correctly (_wrapper_is_env_or_sudo) - a miss falls
-# through unchanged; (2b) round 6 - if that
-# resolution walked through an `env -S`/`--split-string`, the same
-# `_clause_has_enforcement_signal` raw-text scan runs and denies on a hit,
-# UNCONDITIONALLY, before the resolved "verb" (which is `-S`'s value, not a
-# real command) is ever checked - `-S`'s value is code env itself
-# word-splits and executes, not a clean operand (_env_split_string_used); (3)
+# through unchanged; (2b) console-authorized redesign (three straight rounds
+# of Criticals against this same `env -S` parser) - if the wrapper-prefix
+# range names env's OWN `-S`/`--split-string` at all, in ANY spelling
+# (`_env_split_string_used`), this denies UNCONDITIONALLY and unguarded by any
+# raw-text signal match, before the resolved "verb" (which would be `-S`'s
+# value, not a real command) is ever checked: `-S`'s value is a shell-like
+# command line env itself word-splits and executes, not a clean operand this
+# fence can classify, so it is treated as categorically unanalysable rather
+# than re-parsed - the accepted trade-off is that a benign `env -S 'echo hi'`
+# now denies too (env -S is rare in agent commands, and failing closed on an
+# unanalysable wrapper is this fence's house style already, same as
+# `_deny_procsub`/`_deny_inline_eval` above); (3)
 # if that verb is an interpreter, delegate to `_interpreter_is_read_only` +
 # `_clause_has_enforcement_signal` (round 5 - see those functions); (4) if
 # that verb is otherwise proven read-only, allow outright - its operands are
@@ -1494,17 +1533,19 @@ process_clause_for_write() {
         _clause_has_enforcement_signal "$clause_raw" && _deny_wrapper_enforcement_signal "$clause_raw"
     fi
 
-    # Judge J1298B C1 (Critical, NEW ALLOW vs main): this branch used to
-    # `return 0` unconditionally after its raw-text scan, which SKIPPED the
-    # per-operand classify_target path main runs below - the raw scan is not
-    # a superset of classify_target (it misses a directory target with no
-    # trailing slash, and any cwd-relative target), so it could ALLOW where
-    # main's operand walk would DENY. Falling through instead makes this
-    # branch add-only: the raw-text deny stays, and the normal head-verb/
-    # operand path below still runs afterward exactly as it does for any
-    # other clause.
+    # Console-authorized redesign (pr-check round 3, codex-1 Critical): a
+    # genuine `env -S`/`--split-string` clause denies UNCONDITIONALLY here,
+    # not gated on `_clause_has_enforcement_signal`'s raw-text scan. That
+    # scan is not a superset of `_operand_targets`' classification (it misses
+    # a directory target with no trailing slash and any cwd-relative
+    # target - the exact gap codex-1 found: a quoted single-token value like
+    # `env -S 'cp y a.sh'` from a protected cwd carries no textual signal at
+    # all), and `_clause_head_idx` no longer skips past `-S`'s value as an
+    # ordinary opaque option value, so there is nothing left to safely fall
+    # through to `_operand_targets` for. Treat the whole clause as
+    # unanalysable and stop here.
     if _env_split_string_used "$head_idx" "${tok[@]}"; then
-        _clause_has_enforcement_signal "$clause_raw" && _deny_env_split_string "$clause_raw"
+        _deny_env_split_string "$clause_raw"
     fi
 
     [ "$head_idx" -lt "$n" ] || return 0

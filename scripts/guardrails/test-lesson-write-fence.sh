@@ -836,7 +836,7 @@ run_hook deny "22b: env -S 'tee scripts/hooks/a.sh' (split-string value names a 
     "$(bash_json "env -S 'tee scripts/hooks/a.sh'" "$REPO")" 1
 run_hook deny "22b: env --split-string 'tee scripts/hooks/a.sh' (long-form spelling)" \
     "$(bash_json "env --split-string 'tee scripts/hooks/a.sh'" "$REPO")" 1
-run_hook allow "22b: env -S 'echo hi' (split-string value, no enforcement signal)" \
+run_hook deny "22b: env -S 'echo hi' (round-9 fail-closed redesign: benign split-string value now denies too)" \
     "$(bash_json "env -S 'echo hi'" "$REPO")" 1
 
 echo "== 22c: round-6 CR fix (codex-1, round 2) - env -S accepts its value glued onto the letter =="
@@ -847,7 +847,7 @@ echo "== 22c: round-6 CR fix (codex-1, round 2) - env -S accepts its value glued
 # ALLOWed under the exact-`-S` match.
 run_hook deny "22c: env -Stee scripts/hooks/a.sh (glued -S form names a protected path)" \
     "$(bash_json "env -Stee scripts/hooks/a.sh" "$REPO")" 1
-run_hook allow "22c: env -Secho hi (glued -S form, no enforcement signal)" \
+run_hook deny "22c: env -Secho hi (round-9 fail-closed redesign: benign glued -S form now denies too)" \
     "$(bash_json "env -Secho hi" "$REPO")" 1
 
 echo "== 23: HIMMEL-3658/HIMMEL-3659 J1298O re-judge - path normalization, sudo -R/-T, bundled clusters =="
@@ -963,7 +963,7 @@ run_hook deny "24: env cat scripts/hooks/a.sh (accepted cost: proven-read-only v
 # controls: env/sudo wrapping an unrelated read must still ALLOW.
 run_hook allow "24: sudo cat README.md (control: unrelated read under sudo still allows)" \
     "$(bash_json "sudo cat README.md" "$REPO")" 1
-run_hook allow "24: env -S 'echo hi' (control: split-string value with no enforcement signal still allows)" \
+run_hook deny "24: env -S 'echo hi' (round-9 fail-closed redesign: benign split-string value now denies too)" \
     "$(bash_json "env -S 'echo hi'" "$REPO")" 1
 
 echo "== 25: /pr-check critic panel (codex-1) - unresolvable leading dotdot abandons the WHOLE scan =="
@@ -980,9 +980,10 @@ run_hook deny "25: env -S 'tee /../../../tmp/f scripts/ci/../hooks/a.sh' (leadin
 run_hook deny "25: env -S 'tee /../../.claude/x/../settings.json' (same gap, settings.json target)" \
     "$(bash_json "env -S 'tee /../../.claude/x/../settings.json'" "$REPO")" 1
 
-# control: the same leading-unresolvable-dotdot shape, but the later hop
-# resolves to a path with no enforcement signal - must still allow.
-run_hook allow "25: env -S 'tee /../../../tmp/f scripts/ci/../other/a.sh' (control: leading dotdot, later hop resolves to an unprotected path)" \
+# round-9 fail-closed redesign: this control USED to prove the raw-text scan
+# doesn't false-deny an unprotected target - moot now, since ANY genuine
+# `env -S` use denies unconditionally regardless of what its value names.
+run_hook deny "25: env -S 'tee /../../../tmp/f scripts/ci/../other/a.sh' (round-9 fail-closed redesign: unrelated target still denies, env -S is unconditional now)" \
     "$(bash_json "env -S 'tee /../../../tmp/f scripts/ci/../other/a.sh'" "$REPO")" 1
 
 echo "== 26: judge J1298A C1 - normalized-only scan is lossy, must be a UNION with the raw scan =="
@@ -1084,7 +1085,7 @@ run_hook deny "27: @scripts/hooks env -S 'cp ../../y a.sh' (genuine split-string
 
 # controls: benign env/sudo shapes the verdict confirmed ALLOW on both main
 # and head must still allow after this fix.
-run_hook allow "27: env -S 'echo hi' (control: split-string value with no enforcement signal)" \
+run_hook deny "27: env -S 'echo hi' (round-9 fail-closed redesign: benign split-string value now denies too)" \
     "$(bash_json "env -S 'echo hi'" "$REPO")" 1
 run_hook allow "27: env -u FOO cp y src/b.js (control: -u value, unrelated target)" \
     "$(bash_json "env -u FOO cp y src/b.js" "$REPO")" 1
@@ -1092,6 +1093,46 @@ run_hook allow "27: sudo -S apt update (control: sudo's own -S, unrelated comman
     "$(bash_json "sudo -S apt update" "$REPO")" 1
 run_hook allow "27: sudo -u root cp y /etc/foo (control: -u value, unrelated absolute target)" \
     "$(bash_json "sudo -u root cp y /etc/foo" "$REPO")" 1
+
+echo "== 28: console-authorized round-9 redesign - env -S/--split-string fails closed UNCONDITIONALLY =="
+# pr-check round 3 (codex-1, Critical): a quoted single-token `-S` value from
+# a protected cwd (`env -S 'cp y a.sh'` @scripts/hooks) still ALLOWed at
+# J1298B's head - `_clause_head_idx` skipped `-S`'s value as an ordinary
+# 2-token-wide opaque option value (grouped with `-a`/`-u`/`-C`), and because
+# the value arrived as a SINGLE quoted token, that skip consumed the whole
+# clause in one step, leaving nothing for `_operand_targets` to scan.
+# Console ruling: stop patching this parser and fail closed on any genuine
+# `env -S`/`--split-string` use, unconditionally - `_clause_head_idx` no
+# longer tries to skip `-S`'s value at all, and the deny no longer requires a
+# raw-text policy-signal match. RED-first: this exact shape reproduces
+# codex-1's finding.
+run_hook deny "28: @scripts/hooks env -S 'cp y a.sh' (codex-1 round-3: quoted single-token value, cwd-relative target, no raw-text signal)" \
+    "$(bash_json "env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+
+# Bundled short-option clusters carrying -S (e.g. -uS, -iS) must fail closed
+# the same way, both signal-free and against a cwd-relative target.
+run_hook deny "28: env -uS 'echo hi' (bundled -uS, no enforcement signal)" \
+    "$(bash_json "env -uS 'echo hi'" "$REPO")" 1
+run_hook deny "28: @scripts/hooks env -uS 'cp y a.sh' (bundled -uS, cwd-relative target)" \
+    "$(bash_json "env -uS 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+run_hook deny "28: env -iS 'echo hi' (bundled -iS, no enforcement signal)" \
+    "$(bash_json "env -iS 'echo hi'" "$REPO")" 1
+
+# --split-string=VAL (long option, = form) in a signal-free context.
+run_hook deny "28: env --split-string='echo hi' (long option = form, no enforcement signal)" \
+    "$(bash_json "env --split-string='echo hi'" "$REPO")" 1
+
+# -S appearing AFTER another value-taking option AND its own separate value
+# token (not bundled, not glued) - the option walk must not let a prior
+# -u/-C's value skip carry it past -S undetected.
+run_hook deny "28: env -u FOO -S 'echo hi' (unset value then separate -S, no enforcement signal)" \
+    "$(bash_json "env -u FOO -S 'echo hi'" "$REPO")" 1
+run_hook deny "28: env -C /tmp -S 'echo hi' (chdir value then separate -S, no enforcement signal)" \
+    "$(bash_json "env -C /tmp -S 'echo hi'" "$REPO")" 1
+
+# sudo/env nesting: env's -S under a sudo wrapper must still fail closed.
+run_hook deny "28: sudo env -S 'echo hi' (env -S nested under sudo, no enforcement signal)" \
+    "$(bash_json "sudo env -S 'echo hi'" "$REPO")" 1
 
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
