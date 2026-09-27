@@ -5,6 +5,7 @@ import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   formatBankAnnotation,
   formatMeasured,
@@ -485,4 +486,53 @@ test('the SHIPPED lanes.json stays guardable end-to-end against the reader contr
   // No quota lane in the shipped registry may be left ungoverned or spent by
   // these healthy fixtures.
   assert.doesNotMatch(out, /^(haiku|sonnet|opus|fable|glm|claudex|codex-exec|codex-wsl) (unknown|spent) /m);
+});
+
+// HIMMEL-1712 item 3: a cache the producer stamped with account/derived_at/
+// produced_by (HIMMEL-1712 items 1-2, PR #1325) surfaces that provenance on
+// the claude bank's line — a legacy cache with none of those fields (every
+// fixture above) must stay silent, which is why those exact-match assertions
+// don't need updating.
+test('bank-status CLI: a stamped claude cache surfaces account/age/producer provenance', { skip: BUN_SKIP }, () => {
+  const dir = makeTmpDir('lane-bank-provenance-');
+  const registry = writeRegistry(dir, [
+    { id: 'sonnet', quota: { bank: 'claude', accessPaths: [{ kind: 'subscription', windows: ['5h'] }], activeAccessPath: 0 } },
+  ]);
+  const acctConfig = join(dir, 'account.json');
+  writeFileSync(acctConfig, JSON.stringify({ oauthAccount: { accountUuid: 'aaaa-current-account' } }));
+  const acctHash = createHash('sha256').update('aaaa-current-account').digest('hex').slice(0, 16);
+  const cache = join(dir, 'statusline-cache.json');
+  const derivedAt = Math.floor(Date.now() / 1000) - 30;
+  writeFileSync(cache, JSON.stringify({
+    five_hour: { utilization: 12, resets_at: Math.floor((Date.now() + 3600_000) / 1000) },
+    account: acctHash,
+    derived_at: derivedAt,
+    produced_by: 4242,
+  }));
+  const out = execFileSync('bun', [BANK_STATUS], {
+    encoding: 'utf8',
+    env: { ...process.env, LANES_REGISTRY: registry, CLAUDE_USAGE_CACHE: cache, CLAUDE_ACCOUNT_CONFIG: acctConfig },
+  });
+  assert.match(out, /^sonnet funded measured 5h used=12% free=88% provenance=account=match age=\d+s producer=4242$/m);
+});
+
+test('bank-status CLI: a claude cache stamped by a DIFFERENT account surfaces MISMATCH', { skip: BUN_SKIP }, () => {
+  const dir = makeTmpDir('lane-bank-provenance-mismatch-');
+  const registry = writeRegistry(dir, [
+    { id: 'sonnet', quota: { bank: 'claude', accessPaths: [{ kind: 'subscription', windows: ['5h'] }], activeAccessPath: 0 } },
+  ]);
+  const acctConfig = join(dir, 'account.json');
+  writeFileSync(acctConfig, JSON.stringify({ oauthAccount: { accountUuid: 'aaaa-current-account' } }));
+  const cache = join(dir, 'statusline-cache.json');
+  writeFileSync(cache, JSON.stringify({
+    five_hour: { utilization: 12, resets_at: Math.floor((Date.now() + 3600_000) / 1000) },
+    account: 'deadbeefdeadbeef',
+    derived_at: Math.floor(Date.now() / 1000),
+    produced_by: 9999,
+  }));
+  const out = execFileSync('bun', [BANK_STATUS], {
+    encoding: 'utf8',
+    env: { ...process.env, LANES_REGISTRY: registry, CLAUDE_USAGE_CACHE: cache, CLAUDE_ACCOUNT_CONFIG: acctConfig },
+  });
+  assert.match(out, /^sonnet funded measured 5h used=12% free=88% provenance=account=MISMATCH age=\d+s producer=9999$/m);
 });

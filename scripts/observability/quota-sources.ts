@@ -73,6 +73,26 @@ export function readClaudeBank(cachePath: string, nowMs: number): BankResult {
   }
   return { readings, omitReason: readings.length ? null : "no live window in statusline cache" };
 }
+
+export type ClaudeCacheProvenance = { account: string | null; derivedAtMs: number; producedBy: string | null };
+
+// HIMMEL-1712 item 3: null for any cache the producer hasn't stamped yet
+// (no derived_at) - callers must stay silent on those, not fabricate a value.
+export function readClaudeCacheProvenance(cachePath: string): ClaudeCacheProvenance | null {
+  if (!existsSync(cachePath)) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return null;
+  } catch {
+    return null;
+  }
+  const derivedAt = parsed.derived_at;
+  if (typeof derivedAt !== "number" || !Number.isFinite(derivedAt)) return null;
+  const account = typeof parsed.account === "string" && parsed.account ? parsed.account : null;
+  const producedBy = parsed.produced_by === undefined || parsed.produced_by === null ? null : String(parsed.produced_by);
+  return { account, derivedAtMs: derivedAt * 1000, producedBy };
+}
 const CODEX_TAIL_BYTES = 256 * 1024;
 const CODEX_MAX_FILES = 5;
 

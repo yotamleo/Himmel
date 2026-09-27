@@ -53,10 +53,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import {
   BANK_IDS,
   defaultClaudeCachePath,
   readClaudeBank,
+  readClaudeCacheProvenance,
   readGlmBank,
   type BankId,
   type BankReading,
@@ -94,6 +96,33 @@ const glmLedger = quotaGaugeLedgerPath(env);
 function positiveEnvNumber(v: string | undefined): number | null {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// HIMMEL-1712 item 3: mirrors scripts/lib/usage-cache-identity.sh's
+// current_account_hash — same source (.oauthAccount.accountUuid), same
+// 16-hex sha256 prefix — so a bash-produced cache and this TS reader agree.
+function currentAccountHash(env: NodeJS.ProcessEnv): string | null {
+  const configPath = env.CLAUDE_ACCOUNT_CONFIG?.trim() || join(env.HOME ?? homedir(), ".claude.json");
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+    const uuid = parsed?.oauthAccount?.accountUuid;
+    if (typeof uuid !== "string" || !uuid) return null;
+    return createHash("sha256").update(uuid).digest("hex").slice(0, 16);
+  } catch {
+    return null;
+  }
+}
+
+// One short field, appended only when the cache is new enough to carry
+// derived_at (legacy caches stay silent - see the "shipped lanes" test).
+function claudeProvenanceSuffix(): string {
+  const provenance = readClaudeCacheProvenance(claudeCache);
+  if (!provenance) return "";
+  const current = currentAccountHash(env);
+  const accountState = !provenance.account || !current ? "unknown" : provenance.account === current ? "match" : "MISMATCH";
+  const ageSeconds = Math.max(0, Math.round((nowMs - provenance.derivedAtMs) / 1000));
+  const producer = provenance.producedBy ?? "unknown";
+  return ` provenance=account=${accountState} age=${ageSeconds}s producer=${producer}`;
 }
 
 type CodexCacheReading = BankReading & { resetsAt?: number };
@@ -158,6 +187,7 @@ function readLaneRegistry(): { base: object; local: object | null } {
 const { base, local } = readLaneRegistry();
 const targets = resolveBankTargets(base, local, BANK_IDS) as LaneQuotaTargets;
 const bankCache = new Map<BankId, DisplayResult>();
+let claudeSuffix: string | null = null;
 for (const { lane, bank, quota } of targets.withBank) {
   let result = bankCache.get(bank);
   if (!result) {
@@ -177,5 +207,10 @@ for (const { lane, bank, quota } of targets.withBank) {
   if (!active.ok) {
     process.stderr.write(`bank-status: lane '${lane}': ${active.reason} — guard unknown\n`);
   }
-  process.stdout.write(`${lane} ${guardState(result, active, MAX_PCT)} ${detail(result)}\n`);
+  let line = `${lane} ${guardState(result, active, MAX_PCT)} ${detail(result)}`;
+  if (bank === "claude") {
+    if (claudeSuffix === null) claudeSuffix = claudeProvenanceSuffix();
+    line += claudeSuffix;
+  }
+  process.stdout.write(`${line}\n`);
 }
