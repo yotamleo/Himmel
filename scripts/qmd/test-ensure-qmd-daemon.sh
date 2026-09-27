@@ -422,7 +422,7 @@ start_fake_daemon() { # <unwind secs> -> sets fake_pid, writes the pidfile
   [ -f "$state/alive" ] || fail "precondition: fake daemon never came alive"
 }
 
-# run_ceiling <rss_kb> -> sets rc/out/dur; the hook's own wall time
+# run_ceiling <rss_kb> [<ceiling_mb>] -> sets rc/out/dur; the hook's own wall time
 run_ceiling() {
   rm -f "$state/qmd-argv.log"
   local t0 t1
@@ -430,7 +430,7 @@ run_ceiling() {
   set +e
   out="$(QMD_CURL="$mock_curl" QMD_MOCK_CURL_MODE=sentinel QMD_MOCK_STATE="$state" \
     QMD_MOCK_RSS_KB="$1" QMD_PS="$mock_ps" XDG_CACHE_HOME="$xdg" \
-    QMD_RSS_CEILING_MB=4096 QMD_MCP_URL="$test_url" \
+    QMD_RSS_CEILING_MB="${2:-4096}" QMD_MCP_URL="$test_url" \
     HOME="$home" PATH="$bin:$safe" \
     bash "$script" 2>&1)"
   rc=$?
@@ -511,5 +511,37 @@ starts="$(grep -c 'SIGTERM' "$xdg/qmd/recycle.log" 2>/dev/null || true)"
 kill "$fake_pid" 2>/dev/null || true
 wait 2>/dev/null || true
 echo "ok (n): five concurrent sessions over the ceiling ran exactly one recycle"
+
+# ---- (o) leading-zero knobs are decimal, never octal -------------------------
+# `08` is not a valid octal literal: Bash arithmetic on it aborts the hook.
+# `00` is zero, so it disables the ceiling exactly like `0`.
+rm -f "$state/alive" "$state/ps-argv.log" "$xdg/qmd/recycle.log"
+date +%s > "$xdg/qmd/recycle.stamp"
+start_fake_daemon 0
+run_ceiling 7340032 08
+[ "$rc" -eq 0 ] || fail "(o) ceiling 08: expected rc 0, got $rc ($out)"
+grep -q "ceiling 8 MB" <<< "$out" || fail "(o) ceiling 08: not read as 8 MB (got: $out)"
+run_ceiling 7340032 00
+[ "$rc" -eq 0 ] || fail "(o) ceiling 00: expected rc 0, got $rc ($out)"
+grep -q "ceiling" <<< "$out" && fail "(o) ceiling 00: must disable the ceiling (got: $out)"
+kill "$fake_pid" 2>/dev/null || true
+wait "$fake_pid" 2>/dev/null || true
+echo "ok (o): ceiling 08 reads as 8 MB, 00 disables it"
+
+# ---- (p) a lock whose owner has not yet written its 'at' is not stale --------
+# A winner is between its mkdir and its 'at' write: a second session must judge
+# the lock by the directory's own age, not reclaim it as ancient.
+rm -f "$state/alive" "$state/ps-argv.log" "$xdg/qmd/recycle.stamp" "$xdg/qmd/recycle.log"
+mkdir "$xdg/qmd/recycle.lock"
+start_fake_daemon 0
+run_ceiling 7340032
+[ "$rc" -eq 0 ] || fail "(p) fresh lock: expected rc 0, got $rc ($out)"
+grep -q "recycling" <<< "$out" && fail "(p) fresh lock without 'at' was reclaimed (got: $out)"
+[ -d "$xdg/qmd/recycle.lock" ] || fail "(p) fresh lock without 'at' was removed"
+kill -0 "$fake_pid" 2>/dev/null || fail "(p) daemon recycled while another session held the lock"
+rm -rf "$xdg/qmd/recycle.lock"
+kill "$fake_pid" 2>/dev/null || true
+wait "$fake_pid" 2>/dev/null || true
+echo "ok (p): a fresh lock with no 'at' file is left to its owner"
 
 echo "PASS: all ensure-qmd-daemon cases"

@@ -2986,6 +2986,7 @@ check_c44_qmd_daemon() {
     local ps_bin="${HIMMEL_DOCTOR_QMD_PS:-ps}"
     local ceiling="${QMD_RSS_CEILING_MB:-4096}" pid row rss_kb etime rss_mb
     case "$ceiling" in ''|*[!0-9]*) ceiling=4096 ;; esac
+    ceiling=$((10#$ceiling))
     [ -f "$pidfile" ] || return 0
     pid="$(head -1 "$pidfile" 2>/dev/null | tr -d '[:space:]')"
     case "$pid" in ''|*[!0-9]*) return 0 ;; esac
@@ -2994,7 +2995,8 @@ check_c44_qmd_daemon() {
     read -r rss_kb etime _ <<< "$row"
     case "$rss_kb" in ''|*[!0-9]*) return 0 ;; esac
     rss_mb=$((rss_kb / 1024))
-    if [ "$ceiling" -gt 0 ] && [ "$rss_mb" -gt "$ceiling" ]; then
+    # Compare in KB, the unit the hook uses, so a 4096.5 MB daemon is over too.
+    if [ "$ceiling" -gt 0 ] && [ "$rss_kb" -gt $((ceiling * 1024)) ]; then
         emit WARN C44-qmd-daemon "qmd daemon pid $pid: RSS $rss_mb MB, up $etime -- over the recycle ceiling $ceiling MB (vec queries degrade as it grows)" \
             "the qmd plugin's SessionStart hook recycles it on the next session start (log: ~/.cache/qmd/recycle.log); QMD_RSS_CEILING_MB tunes the ceiling"
     else

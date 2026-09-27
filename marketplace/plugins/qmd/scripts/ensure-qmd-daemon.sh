@@ -56,6 +56,11 @@ QMD_PS="${QMD_PS:-ps}"
 QMD_RSS_CEILING_MB="${QMD_RSS_CEILING_MB:-4096}"
 QMD_RECYCLE_COOLDOWN_MIN="${QMD_RECYCLE_COOLDOWN_MIN:-30}"
 case "$QMD_RECYCLE_COOLDOWN_MIN" in ''|*[!0-9]*) QMD_RECYCLE_COOLDOWN_MIN=30 ;; esac
+# Force base 10: a leading zero (`08`) is octal to Bash arithmetic and aborts.
+# A non-numeric ceiling disables it.
+case "$QMD_RSS_CEILING_MB" in ''|*[!0-9]*) QMD_RSS_CEILING_MB=0 ;; esac
+QMD_RSS_CEILING_MB=$((10#$QMD_RSS_CEILING_MB))
+QMD_RECYCLE_COOLDOWN_MIN=$((10#$QMD_RECYCLE_COOLDOWN_MIN))
 PROBE_TIMEOUT=2
 WAIT_TRIES=5
 PORT_WAIT_TRIES=15
@@ -153,7 +158,7 @@ EOF
 
 check_ceiling() {
   local pid row rss_kb etime now last ceiling_kb
-  case "$QMD_RSS_CEILING_MB" in ''|0|*[!0-9]*) return 0 ;; esac
+  [ "$QMD_RSS_CEILING_MB" -gt 0 ] || return 0
   [ -f "$pidfile" ] || return 0
   pid="$(cat "$pidfile" 2>/dev/null)"
   case "$pid" in ''|*[!0-9]*) return 0 ;; esac
@@ -174,8 +179,12 @@ check_ceiling() {
   # the reclaim race (a second reclaimer sees the winner's fresh stamp).
   if ! mkdir "$recycle_lock" 2>/dev/null; then
     last="$(cat "$recycle_lock/at" 2>/dev/null)"
-    case "$last" in ''|*[!0-9]*) last=0 ;; esac
-    [ $((now - last)) -gt 120 ] || return 0
+    case "$last" in
+      # No 'at' yet: its holder may sit between mkdir and the write, so judge
+      # staleness by the lock directory's own age instead.
+      ''|*[!0-9]*) [ -n "$(find "$recycle_lock" -maxdepth 0 -mmin +2 2>/dev/null)" ] || return 0 ;;
+      *) [ $((now - last)) -gt 120 ] || return 0 ;;
+    esac
     rm -rf "$recycle_lock"
     mkdir "$recycle_lock" 2>/dev/null || return 0
   fi

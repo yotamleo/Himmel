@@ -4838,6 +4838,17 @@ else
 fi
 rm -rf "$c44d_t"
 
+echo "== C44-qmd-daemon: half a MB over the ceiling still WARNs; a leading-zero ceiling reads as decimal =="
+c44d_setup
+out="$(c44d_run '4194816 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
+out_oct="$(QMD_RSS_CEILING_MB=08 c44d_run '1048576 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
+if grepq "$out" 'WARN C44-qmd-daemon' && grepq "$out_oct" 'WARN C44-qmd-daemon' && grepq "$out_oct" -F 'ceiling 8 MB'; then
+    pass "C44-qmd-daemon compares in KB and reads a leading-zero ceiling as decimal"
+else
+    fail "C44-qmd-daemon KB/decimal -> half=[$(printf '%s' "$out" | grep C44-qmd-daemon)] oct=[$(printf '%s' "$out_oct" | grep C44-qmd-daemon)]"
+fi
+rm -rf "$c44d_t"
+
 echo "== C44-qmd-daemon: no pidfile / dead pid / non-qmd pid -> silent =="
 c44d_setup
 out_nopid="$(c44d_run '1048576 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181' "$c44d_t/absent.pid")"
