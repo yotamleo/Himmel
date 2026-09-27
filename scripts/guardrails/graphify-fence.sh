@@ -2284,10 +2284,44 @@ _gf_deny_on_hidden_clause_separator() {
     # marks "the next char is escaped, skip all state matching for it" in
     # every state except single-quote (the one context where bash gives
     # backslash no meaning at all).
-    local cmd="$1" i=0 len c hit=0 stack='' esc=0
+    #
+    # HIMMEL-3683 J1323A F1: ${cmd:$i:1} substring indexing is O(i) per call
+    # in bash, so the old char-by-char scan was O(n^2) overall - past the
+    # hook's 15s timeout on a ~64KB command, and a timed-out PreToolUse hook
+    # fails OPEN (a main-DENY becomes a head-ALLOW). Build a char array once,
+    # up front, with `read -N1` (capital N, so an embedded newline is read as
+    # data rather than treated as a line terminator) - that walk is O(n),
+    # and every array index afterwards is O(1).
+    #
+    # HIMMEL-3683 J1323A F2: denying whenever a hidden separator appears
+    # ANYWHERE inside ANY substitution, so long as "graphify" is anywhere in
+    # the command, false-denies the everyday
+    # `git commit -m "$(cat <<'EOF' ... graphify ... EOF)"` /
+    # `gh pr create --body "$(cat <<'EOF' ... graphify ... EOF)"` shapes -
+    # main allows both. Scope the deny to a substitution that is itself a
+    # chdir argument: in_span/span_chdir/span_hit track only the CURRENT
+    # top-level quote-or-substitution span (the depth 0 -> 1 push, whichever
+    # delimiter opens it - a quote wrapping a substitution, e.g.
+    # `-C "$(cd ..; pwd)"`, and a bare substitution, e.g. `-C $(cd ..; pwd)`,
+    # must both count as one span). span_chdir is decided once, from a short
+    # lookback ending right before that opening delimiter, and is never
+    # revisited by a nested open at depth >= 1. found_bad only ever gets set
+    # from inside a chdir-argument span, and once set it stays set.
+    local cmd="$1" i=0 i0 len c stack='' esc=0
+    local found_bad=0 in_span=0 span_chdir=0 span_hit=0 lookback lb_i lb_start
+    local -a chars=()
     len=${#cmd}
+    while IFS= read -r -N 1 c; do
+        chars+=("$c")
+    done <<< "$cmd"
+    # <<< always terminates the herestring with a newline not present in
+    # $cmd itself; drop the extra array element read -N1 picked up for it.
+    if [ "${#chars[@]}" -gt "$len" ]; then
+        unset 'chars[${#chars[@]}-1]'
+    fi
     while [ "$i" -lt "$len" ]; do
-        c="${cmd:$i:1}"
+        i0=$i
+        c="${chars[$i]}"
         if [ "$esc" -eq 1 ]; then
             esc=0
             i=$((i+1))
@@ -2302,7 +2336,7 @@ _gf_deny_on_hidden_clause_separator() {
                     "\\") esc=1 ;;
                     '"') stack="${stack%d}" ;;
                     '`') stack="${stack}b" ;;
-                    '$') [ "${cmd:$((i+1)):1}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
+                    '$') [ "${chars[$((i+1))]}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
                 esac
                 ;;
             *b)
@@ -2311,7 +2345,7 @@ _gf_deny_on_hidden_clause_separator() {
                     "'") stack="${stack}q" ;;
                     '"') stack="${stack}d" ;;
                     '`') stack="${stack%b}" ;;
-                    ';'|'|'|'&'|$'\n') hit=1 ;;
+                    ';'|'|'|'&'|$'\n') [ "$in_span" -eq 1 ] && span_hit=1 ;;
                 esac
                 ;;
             *p)
@@ -2321,7 +2355,7 @@ _gf_deny_on_hidden_clause_separator() {
                     '"') stack="${stack}d" ;;
                     '(') stack="${stack}p" ;;
                     ')') stack="${stack%p}" ;;
-                    ';'|'|'|'&'|$'\n') hit=1 ;;
+                    ';'|'|'|'&'|$'\n') [ "$in_span" -eq 1 ] && span_hit=1 ;;
                 esac
                 ;;
             *)
@@ -2330,13 +2364,42 @@ _gf_deny_on_hidden_clause_separator() {
                     "'") stack="${stack}q" ;;
                     '"') stack="${stack}d" ;;
                     '`') stack="${stack}b" ;;
-                    '$') [ "${cmd:$((i+1)):1}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
+                    '$') [ "${chars[$((i+1))]}" = "(" ] && { stack="${stack}p"; i=$((i+1)); } ;;
                 esac
                 ;;
         esac
+        if [ "$in_span" -eq 0 ] && [ -n "$stack" ]; then
+            in_span=1
+            span_hit=0
+            lb_start=$((i0-10))
+            [ "$lb_start" -lt 0 ] && lb_start=0
+            lookback=''
+            lb_i=$lb_start
+            while [ "$lb_i" -lt "$i0" ]; do
+                lookback="${lookback}${chars[$lb_i]}"
+                lb_i=$((lb_i+1))
+            done
+            case "$lookback" in
+                *-C\ |*-D\ |*--chdir\ |*--chdir=) span_chdir=1 ;;
+                *) span_chdir=0 ;;
+            esac
+        elif [ "$in_span" -eq 1 ] && [ -z "$stack" ]; then
+            if [ "$span_hit" -eq 1 ] && [ "$span_chdir" -eq 1 ]; then
+                found_bad=1
+            fi
+            in_span=0
+            span_chdir=0
+            span_hit=0
+        fi
         i=$((i+1))
     done
-    { [ "$hit" -eq 1 ] || [ -n "$stack" ]; } || return 0
+    # unbalanced at EOF: a chdir-argument span that never closed is exactly
+    # as unresolvable as one whose hidden separator was caught mid-scan -
+    # fail closed the same way.
+    if [ "$in_span" -eq 1 ] && [ "$span_chdir" -eq 1 ]; then
+        found_bad=1
+    fi
+    [ "$found_bad" -eq 1 ] || return 0
     case "$cmd" in
         *graphify*) deny "cannot resolve a command substitution containing a clause separator; rewrite without it" ;;
     esac

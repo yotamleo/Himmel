@@ -2613,6 +2613,34 @@ fi
 run_fence deny no "$HIMMEL" "env -C \$(echo \\); echo salus) escaped ')' hides a real ; -> deny (X18)" \
     "env -C \$(echo \\); echo $SALUS) graphify update notes/patient.md --backend glm"
 
+# (X19) J1323A F1: the hidden-separator scan must be linear, not quadratic -
+# a >=64KB routed command has to decide well under the hook's 15s timeout,
+# or a timed-out PreToolUse hook fails OPEN and a main-DENY becomes an ALLOW.
+big=$(head -c 65536 /dev/zero | tr '\0' 'a')
+X19_CMD="env -C $SALUS graphify update notes/patient.md --backend glm # $big"
+start_ns=$(date +%s%N)
+# shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+out=$( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "$X19_CMD" 2>&1 ); rc=$?
+end_ns=$(date +%s%N)
+elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+if [ "$elapsed_ms" -lt 5000 ]; then
+    pass "64KB routed command decides in ${elapsed_ms}ms, well under the 15s hook timeout (X19)"
+else
+    fail "64KB routed command took ${elapsed_ms}ms (>=5000ms), risking hook-timeout fail-open (X19) rc=$rc"
+fi
+
+# (X20/X21) J1323A F2: the hidden-separator deny must be scoped to a
+# substitution that is itself a chdir argument, not fire on ANY substitution
+# containing a separator just because "graphify" appears somewhere in the
+# command - the everyday `git commit`/`gh pr create` heredoc-body form must
+# still ALLOW when its body text merely mentions graphify as data.
+X20_CMD=$'git commit -m "$(cat <<\'EOF\'\ngraphify fence now denies a thing\nEOF\n)"'
+run_fence allow no "$HIMMEL" "git commit heredoc body mentioning graphify as data -> allow (X20)" \
+    "$X20_CMD"
+X21_CMD=$'gh pr create --title t --body "$(cat <<\'EOF\'\ngraphify query forms still allowed\nEOF\n)"'
+run_fence allow no "$HIMMEL" "gh pr create heredoc body mentioning graphify as data -> allow (X21)" \
+    "$X21_CMD"
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
