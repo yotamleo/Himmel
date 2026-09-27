@@ -2839,19 +2839,58 @@ test('route fails closed when the payload has no usable tool_name', () => {
   });
 });
 
-test('route fails closed on its own internal error', () => {
-  withChain((dir) => {
+test('route fails closed on its own internal error', async () => {
+  const dir = chainFixture();
+  try {
     const { routeMain } = require('./run-hook-with-bash.js');
     const out = [];
     const err = [];
     const io = { input: PAYLOAD, out: (s) => out.push(s), err: (s) => err.push(s) };
-    const status = routeMain(['--route', '*', join(dir, 'adv1.sh')], io, {
-      spawnSync: () => {
+    const status = await routeMain(['--route', '*', join(dir, 'adv1.sh')], io, {
+      spawn: () => {
         throw new Error('boom');
       },
     });
     assert.equal(status, 2);
     assert.equal(out.join(''), '');
     assert.match(err.join(''), /internal error.*boom.*failing closed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Console blocker on HIMMEL-1843: a Bash call blocks for the router's WHOLE
+// wall-clock, so the lone advisory groups must overlap the security chain, as
+// their own settings entries did, not queue behind it.
+test('lone route sub-groups run concurrently with the chain, not after it', () => {
+  withChain((dir) => {
+    const nap = (name, reason) =>
+      `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-${name}"\nsleep 1\nprintf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"${reason}"}}'\n`;
+    for (const [name, reason] of [['nap-chain.sh', 'c'], ['nap-a.sh', 'a'], ['nap-b.sh', 'b']]) {
+      writeFileSync(join(dir, name), nap(name, reason));
+      chmodSync(join(dir, name), 0o755);
+    }
+    const started = Date.now();
+    const result = runRoute(dir, ['--route', 'Bash', '--chain', 'nap-chain.sh', '--route', '*', 'nap-a.sh', '--route', 'Bash|Monitor', '--timeout', '15', 'nap-b.sh']);
+    const took = Date.now() - started;
+    assert.equal(result.status, 0, result.stderr);
+    // Serial would be >= 3s; concurrent is ~1s plus start-up.
+    assert.ok(took < 2000, `router took ${took}ms — the lone groups did not overlap the chain`);
+    // Results still combine in route order.
+    assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason, 'c | a | b');
+  });
+});
+
+// Its timer cannot fire while the chain blocks the loop; a lone group that
+// finished inside its own --timeout must not be skipped just because the chain
+// outlasted that timeout.
+test('a lone group that finished in time is not skipped when the chain runs past its timeout', () => {
+  withChain((dir) => {
+    writeFileSync(join(dir, 'nap-long.sh'), `#!/usr/bin/env bash\nsleep 1.5\n`);
+    chmodSync(join(dir, 'nap-long.sh'), 0o755);
+    const result = runRoute(dir, ['--route', 'Bash', '--chain', 'nap-long.sh', '--route', '*', '--timeout', '1', 'adv1.sh']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /SKIP/);
+    assert.match(result.stderr, /ADV-ONE/);
   });
 });

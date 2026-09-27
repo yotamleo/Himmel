@@ -28,6 +28,8 @@ import {
   benchEnv,
   isFailedRun,
   parseRuns,
+  matchesTool,
+  benchFullCall,
   SKIP,
 } from './bench-hook-stack.mjs';
 
@@ -475,5 +477,32 @@ test('every tool fires the same groups with the same ordered members as before t
   const settings = JSON.parse(readFileSync(config, 'utf8'));
   for (const [tool, groups] of Object.entries(BASE_COVERAGE)) {
     assert.deepEqual(groupsFiring(settings, tool), [...groups].sort(), `coverage drifted for ${tool}`);
+  }
+});
+
+// HIMMEL-1843: --full-call times what one tool call blocks on — every matching
+// PreToolUse entry fired together, waited on until the last one finishes.
+test('matchesTool fires on * and on an exact alternative only', () => {
+  assert.equal(matchesTool('*', 'Read'), true);
+  assert.equal(matchesTool('', 'Read'), true);
+  assert.equal(matchesTool('Bash|Monitor', 'Monitor'), true);
+  assert.equal(matchesTool('Bash|Monitor', 'BashOutput'), false);
+});
+
+test('benchFullCall fires the matching PreToolUse entries concurrently and times the slowest', async () => {
+  const nap = { event: 'PreToolUse', command: 'sleep 0.4', timeout: 5 };
+  const hooks = [
+    { ...nap, matcher: 'Bash' },
+    { ...nap, matcher: '*' },
+    { ...nap, matcher: 'Bash|Monitor' },
+    { ...nap, matcher: 'Read' },
+    { ...nap, event: 'PostToolUse', matcher: 'Bash' },
+  ];
+  const result = await benchFullCall(hooks, { runs: 2, cwd: process.cwd(), env: {}, bash: 'bash', tool: 'Bash' });
+  assert.equal(result.entries, 3);
+  assert.equal(result.failures, 0);
+  // Serial would be >= 1200ms per sample.
+  for (const sample of result.samples) {
+    assert.ok(sample >= 400 && sample < 1000, `sample ${sample}ms is not the slowest-entry wall-clock`);
   }
 });

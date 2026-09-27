@@ -111,18 +111,28 @@ Timeouts: before — `Bash` 60 s, `*` 60 s, `Bash|Monitor` 15 s, ledger 10 s.
 After — router 60 s (= `DEFAULT_ENTRY_TIMEOUT_MS`, the launcher's own entry
 deadline, pinned by a settings test), park route `--timeout 15`, ledger 10 s.
 
-`scripts/hooks/bench-hook-stack.mjs --runs 7`, same station:
+The router starts its lone groups first and runs them *concurrently* with the
+synchronous chain, joining them before it decides, so a Bash call blocks for
+about the slowest group, as it did across separate entries. (A first cut ran
+them after the chain: 209ms p50 / 215ms p95 for the router entry alone.)
 
-| Entry | p50 | p95 | max |
-|---|---|---|---|
-| `*` router (Bash chain + auto-arm + park, one process) | 209ms | 215ms | 215ms |
-| `Bash\|Edit\|Write\|MultiEdit\|NotebookEdit` (`shadow-ledger.mjs`) | 24ms | 27ms | 27ms |
+What a Bash call actually blocks on is measured with `bench-hook-stack.mjs
+--full-call Bash`: every matching PreToolUse entry fired at once, as Claude
+Code does, timed to the last one finishing. Before = main's settings.json, after
+= this branch's, both run from the same checkout on the same station,
+interleaved:
 
-The trade, stated plainly: the process count per Bash call halves (4 → 2) and
-the summed per-call CPU drops (~319ms → ~242ms of p95), but the two lone
-groups that used to run *concurrently* with the chain now run *after* it
-inside the router, so the slowest entry a Bash call waits on rises from ~187ms
-to ~215ms. The remaining ledger start is follow-up HIMMEL-3759: the trust
+| PreToolUse:Bash, one full call | entries | p50 | p95 | max |
+|---|---|---|---|---|
+| before (main), `--runs 60` | 4 | 179ms | 188ms | 196ms |
+| after (router), `--runs 60` | 2 | 183ms | 192ms | 200ms |
+
+Three earlier interleaved `--runs 15/30` pairs agree (before/after p50: 181/184,
+176/180, 181/185 ms; p95 within noise either way). The fold halves the process
+count per Bash call (4 → 2 cold node starts) but costs about 4ms of blocking
+time: the router forks its two lone groups (~1.4ms per `spawn` on this station,
+measured) before the chain's first member, on the critical path, where the old
+entries paid for their own starts in parallel. The remaining ledger start is follow-up HIMMEL-3759: the trust
 ledger is a second sanctioned writer of that entry (`wire-trust-hooks.mjs`
 repairs drift), so it cannot be folded without teaching that writer about the
 router.

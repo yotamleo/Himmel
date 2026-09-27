@@ -41,11 +41,14 @@
 //
 // Usage:
 //   node scripts/hooks/bench-hook-stack.mjs [--runs N] [--settings PATH]
+//   node scripts/hooks/bench-hook-stack.mjs --full-call Bash [--runs N] [--settings PATH]
+//     (fires every matching PreToolUse entry at once, as Claude Code does, and
+//     reports the wall-clock one tool call blocks for — HIMMEL-1843)
 //
 // Re-benchmark recipe + the timeout policy it feeds:
 // docs/internals/enforcement.md ("Hook timeout policy").
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -355,6 +358,53 @@ export function benchOne(hook, { runs, cwd, env, bash }) {
   return { ...hook, skipped: false, samples, failures, ...summarize(groups) };
 }
 
+// Whether a PreToolUse matcher fires for `tool`. Ours are '*' or a plain
+// A|B|C alternation, matched by exact alternative as Claude Code does.
+export function matchesTool(matcher, tool) {
+  const raw = String(matcher || '').trim();
+  if (!raw || raw === '*' || raw === '.*') return true;
+  return raw.split('|').map((part) => part.trim()).includes(tool);
+}
+
+// HIMMEL-1843: what ONE tool call actually blocks on. Claude Code starts every
+// matching PreToolUse entry at once and waits for the last, so a sample is the
+// wall-clock from firing them all together to the last one finishing — the
+// number the per-hook rows above cannot give, since they run one at a time.
+export async function benchFullCall(hooks, { runs, cwd, env, bash, tool }) {
+  const entries = hooks.filter((h) => h.event === 'PreToolUse' && matchesTool(h.matcher, tool) && !SKIP.some((s) => h.command.includes(s)));
+  const input = JSON.stringify(payloadFor('PreToolUse', tool, cwd)) + '\n';
+  const samples = [];
+  let failures = 0;
+  const runEntry = (hook) => new Promise((resolve) => {
+    const child = spawn(bash, ['-c', hook.command], { cwd, env: { ...process.env, ...env }, stdio: ['pipe', 'ignore', 'ignore'] });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve({ error: true });
+    });
+    child.on('close', (status, signal) => {
+      clearTimeout(timer);
+      resolve({ status, signal });
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(input);
+  });
+  for (let i = 0; i < runs; i += 1) {
+    const started = process.hrtime.bigint();
+    const results = await Promise.all(entries.map(runEntry));
+    samples.push(Number((process.hrtime.bigint() - started) / 1_000_000n));
+    failures += results.filter(isFailedRun).length;
+  }
+  return { tool, entries: entries.length, samples, failures, p50: percentile(samples, 50), p95: percentile(samples, 95), max: Math.max(...samples) };
+}
+
+export function formatFullCall(result, meta) {
+  return [
+    `hook-stack full-call bench — settings=${meta.settings} runs=${meta.runs}`,
+    `FULL-CALL PreToolUse:${result.tool}: entries=${result.entries} p50=${result.p50}ms p95=${result.p95}ms max=${result.max}ms failed=${result.failures}`,
+  ].join('\n');
+}
+
 // Throws on anything that would produce meaningless statistics (0 runs gives
 // -Infinity maxima, a fractional count silently truncates).
 export function parseRuns(value) {
@@ -368,6 +418,7 @@ export function parseRuns(value) {
 function main(argv) {
   let runs = 5;
   let settingsPath = null;
+  let fullCall = null;
   // Consume values, and refuse anything unrecognised: a mistyped flag that
   // silently benchmarks the default config is a wrong answer wearing a right
   // one's clothes.
@@ -379,7 +430,13 @@ function main(argv) {
       i += 1;
       continue;
     }
-    throw new Error(`unknown argument: ${argv[i]} (usage: bench-hook-stack.mjs [--runs N] [--settings PATH])`);
+    if (argv[i] === '--full-call') {
+      fullCall = argv[i + 1];
+      if (!fullCall || !/^[A-Za-z0-9_]+$/.test(fullCall)) throw new Error('--full-call needs a tool name, e.g. Bash');
+      i += 1;
+      continue;
+    }
+    throw new Error(`unknown argument: ${argv[i]} (usage: bench-hook-stack.mjs [--runs N] [--settings PATH] [--full-call TOOL])`);
   }
   const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   settingsPath = settingsPath || join(cwd, '.claude', 'settings.json');
@@ -387,6 +444,15 @@ function main(argv) {
   const bash = resolveBash();
   if (!bash) throw new Error('no usable bash found (same resolver the wired hooks use) — cannot measure');
   const scratch = mkdtempSync(join(tmpdir(), 'hook-bench-'));
+  if (fullCall) {
+    const env = benchEnv(scratch, cwd, pluginRootFor(settingsPath));
+    return benchFullCall(enumerateHooks(settings), { runs, cwd, env, bash, tool: fullCall })
+      .then((result) => {
+        process.stdout.write(formatFullCall(result, { settings: settingsPath, runs }) + '\n');
+        return 0;
+      })
+      .finally(() => rmSync(scratch, { recursive: true, force: true }));
+  }
   try {
     const env = benchEnv(scratch, cwd, pluginRootFor(settingsPath));
     const rows = enumerateHooks(settings).map((h) => benchOne(h, { runs, cwd, env, bash }));
@@ -398,5 +464,5 @@ function main(argv) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  process.exit(main(process.argv.slice(2)));
+  Promise.resolve(main(process.argv.slice(2))).then((code) => process.exit(code));
 }

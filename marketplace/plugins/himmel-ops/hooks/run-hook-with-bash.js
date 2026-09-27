@@ -9,7 +9,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 // Directory-relative on purpose: the canonical launcher gets
 // scripts/hooks/hook-integrity.js and the vendored plugin copy gets
 // marketplace/plugins/himmel-ops/hooks/hook-integrity.js. Both copies of that
@@ -834,11 +834,13 @@ function runChain(members, lifecycle = false, io = null) {
 // Bash chain, the `*` auto-arm-on-cap entry and the `Bash|Monitor`
 // block-subagent-park entry. `--route PATTERN <group> [--route PATTERN
 // <group>]...` folds such groups into ONE `*` entry: the router reads the
-// payload once and runs, in order, every group whose PATTERN matches
-// tool_name. A group is a `--chain m1 m2 ...` (runChain, unchanged) or ONE lone
-// script (main()'s lone-hook semantics, bounded by an optional
-// `--timeout <sec>` standing in for the `timeout` its own entry had, and by the
-// router's entry-safe deadline).
+// payload once and runs every group whose PATTERN matches tool_name. A group
+// is a `--chain m1 m2 ...` (runChain, unchanged) or ONE lone script (main()'s
+// lone-hook semantics, bounded by an optional `--timeout <sec>` standing in
+// for the `timeout` its own entry had, and by the router's entry-safe
+// deadline). Lone groups start first and run concurrently with the chain, as
+// their separate entries did, so the router blocks a Bash call for about its
+// slowest group, not their sum; all are joined, in route order, before deciding.
 //
 // Groups stay exactly as isolated as separate entries were — a deny in one
 // never stops the next, which is why auto-arm-on-cap.sh can ride the router
@@ -893,8 +895,16 @@ function routeMatches(pattern, toolName) {
 
 // One lone group, as main() runs a lone hook — integrity check, a signal or a
 // failed start maps to 2 — but captured rather than inherited, so the router
-// can combine it with the other groups.
-function runLoneGroup(route, ctx) {
+// can combine it with the other groups. It is STARTED asynchronously and
+// resolves to its result, so it runs concurrently with the synchronous chain
+// the way its own settings entry ran concurrently with the chain's entry.
+//
+// ponytail: the chain's spawnSync blocks the event loop, so while it runs the
+// router drains no pipe: a payload or a lone group's output past the ~64 KiB
+// pipe buffer stalls that group until the chain returns (serial again, still
+// correct, and still bounded — elapsed counts from its own spawn). Upgrade
+// path: run the chain async too, if a real payload ever gets that large.
+function startLoneGroup(route, ctx) {
   const script = route.members[0];
   const basename = path.basename(script);
   const integrity = verifyProjectHookIntegrity(script, ctx.sessionId);
@@ -904,52 +914,100 @@ function runLoneGroup(route, ctx) {
   }
   const left = ctx.entryDeadline - Date.now();
   const bound = route.timeoutMs === null ? left : Math.min(route.timeoutMs, left);
-  if (bound < 1) {
-    return {
-      source: basename,
-      status: 1,
-      stdout: '',
-      stderr: `run-hook-with-bash: SKIP ${basename} (budget=0ms elapsed=0ms) — guard did not evaluate this call.\n`,
-    };
-  }
+  const skip = (budget, elapsed) => ({
+    source: basename,
+    status: 1,
+    stdout: '',
+    stderr: `run-hook-with-bash: SKIP ${basename} (budget=${budget}ms elapsed=${elapsed}ms) — guard did not evaluate this call.\n`,
+  });
+  if (bound < 1) return skip(0, 0);
   const started = Date.now();
-  const result = ctx.spawn(ctx.bash, [script], {
-    input: ctx.input,
+  const child = ctx.spawn(ctx.bash, [script], {
     env: process.env,
-    encoding: 'utf8',
-    timeout: bound,
-    killSignal: 'SIGKILL',
-    maxBuffer: MEMBER_MAX_BUFFER,
+    stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,   // HIMMEL-2043: no console flash per hook call
   });
-  const elapsed = Date.now() - started;
-  if (result.error && !isRecoverableEpipe(result)) {
-    if (result.error.code === 'ETIMEDOUT' || result.error.code === 'ENOBUFS') {
+  return new Promise((resolve) => {
+    const stdout = [];
+    const stderr = [];
+    let size = 0;
+    let exited = false;
+    let failure = null;   // 'ETIMEDOUT' | 'ENOBUFS' | an Error from the spawn
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const kill = (code) => {
+      if (exited || failure) return;
+      failure = code;
+      try {
+        child.kill('SIGKILL');
+      } catch (_e) {
+        // already gone; 'close' still settles
+      }
+    };
+    const collect = (sink) => (chunk) => {
+      size += chunk.length;
+      if (size > MEMBER_MAX_BUFFER) kill('ENOBUFS');
+      else sink.push(chunk);
+    };
+    child.stdout.on('data', collect(stdout));
+    child.stderr.on('data', collect(stderr));
+    // The timer cannot fire while the chain blocks the loop, and once it does
+    // an exit that happened meanwhile may not be reaped yet: re-check after
+    // the poll phase before killing a group that in fact finished in time.
+    const timer = setTimeout(() => setImmediate(() => kill('ETIMEDOUT')), bound);
+    const skipped = () => {
+      if (settled) return;
+      // Let go of pipes an orphaned grandchild may still hold, or they keep
+      // the router alive until it exits.
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      const elapsed = Date.now() - started;
       logChainSkip({
         ts: new Date().toISOString(),
         action: 'skip',
         member: basename,
         budget: bound,
         elapsed,
-        reason: result.error.code,
+        reason: failure,
         sessionId: ctx.sessionId,
         toolCall: toolCallSummary(ctx.hookInput),
       });
-      return {
+      finish(skip(bound, elapsed));
+    };
+    const killedByUs = () => failure === 'ETIMEDOUT' || failure === 'ENOBUFS';
+    // A killed group settles on 'exit': a grandchild it left behind can hold
+    // the pipes open, and 'close' would wait for it.
+    child.on('exit', () => {
+      exited = true;
+      if (killedByUs()) skipped();
+    });
+    child.on('error', (error) => {
+      if (!failure) failure = error;
+      finish({ source: basename, status: 2, stdout: '', stderr: `run-hook-with-bash: failed to start ${ctx.bash}: ${error.message}\n` });
+    });
+    child.on('close', (code) => {
+      if (killedByUs()) {
+        skipped();
+        return;
+      }
+      finish({
         source: basename,
-        status: 1,
-        stdout: '',
-        stderr: `run-hook-with-bash: SKIP ${basename} (budget=${bound}ms elapsed=${elapsed}ms) — guard did not evaluate this call.\n`,
-      };
-    }
-    return { source: basename, status: 2, stdout: '', stderr: `run-hook-with-bash: failed to start ${ctx.bash}: ${result.error.message}\n` };
-  }
-  return {
-    source: basename,
-    status: typeof result.status === 'number' ? result.status : 2,
-    stdout: result.stdout || '',
-    stderr: result.stderr || '',
-  };
+        status: typeof code === 'number' ? code : 2,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+      });
+    });
+    // A hook that exits without reading its stdin is not an error (EPIPE, as
+    // isRecoverableEpipe tolerates for spawnSync); its exit status decides.
+    child.stdin.on('error', () => {});
+    child.stdin.end(ctx.input);
+  });
 }
 
 // Claude Code's cross-entry lattice over the groups that ran. A denying group
@@ -986,7 +1044,7 @@ function combineGroups(results, io) {
   return 0;
 }
 
-function runRoutes(routes, io, deps) {
+async function runRoutes(routes, io, deps) {
   // Validate every group before any runs, as runChain does for one chain.
   for (const route of routes) {
     for (const member of route.members) {
@@ -1023,10 +1081,14 @@ function runRoutes(routes, io, deps) {
     sessionId: typeof hookInput.session_id === 'string' ? hookInput.session_id : null,
     bash,
     entryDeadline: routedAt + entryTimeoutMs() - entrySafetyMarginMs(),
-    spawn: deps.spawnSync || spawnSync,
+    spawn: deps.spawn || spawn,
   };
+  // Start every matching lone group first, so each overlaps the chain below.
+  const started = routes.map((route) => (
+    !route.chain && routeMatches(route.pattern, toolName) ? startLoneGroup(route, ctx) : null
+  ));
   const results = [];
-  for (const route of routes) {
+  for (const [index, route] of routes.entries()) {
     if (!routeMatches(route.pattern, toolName)) continue;
     if (route.chain) {
       const out = [];
@@ -1039,10 +1101,11 @@ function runRoutes(routes, io, deps) {
       });
       results.push({ source: `--route ${route.pattern}`, status, stdout: out.join(''), stderr: err.join('') });
     } else {
-      results.push(runLoneGroup(route, ctx));
+      results.push(started[index]);
     }
   }
-  return combineGroups(results, io);
+  // Join every group, in route order, before deciding.
+  return combineGroups(await Promise.all(results), io);
 }
 
 function processIo() {
@@ -1053,9 +1116,9 @@ function processIo() {
   };
 }
 
-// Returns the exit code (see runChain). `deps` is the test seam for the
+// Resolves to the exit code (see runChain). `deps` is the test seam for the
 // internal-error path; production passes none.
-function routeMain(argv, io = processIo(), deps = {}) {
+async function routeMain(argv, io = processIo(), deps = {}) {
   let routes;
   try {
     routes = parseRouteArgs(argv);
@@ -1064,7 +1127,7 @@ function routeMain(argv, io = processIo(), deps = {}) {
     return 2;
   }
   try {
-    return runRoutes(routes, io, deps);
+    return await runRoutes(routes, io, deps);
   } catch (error) {
     io.err(`run-hook-with-bash: route: internal error (${error && error.message}); failing closed\n`);
     return 2;
@@ -1074,7 +1137,14 @@ function routeMain(argv, io = processIo(), deps = {}) {
 function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === '--route') {
-    process.exitCode = routeMain(argv);
+    routeMain(argv).then(
+      (code) => {
+        process.exitCode = code;
+      },
+      () => {
+        process.exitCode = 2;
+      },
+    );
     return;
   }
   let parsed;
