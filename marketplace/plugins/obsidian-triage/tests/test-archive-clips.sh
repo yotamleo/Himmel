@@ -14,6 +14,14 @@ PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CMD="$PLUGIN_DIR/commands/archive-clips.md"
 CMDS="$PLUGIN_DIR/commands"
 
+# bash 3.2 (macOS): a `${var//pattern/replacement}` whose pattern/replacement
+# carries an unbalanced literal `[[` (opened, never closed on that side) trips
+# a bracket-matching bug in its old `${...}` scanner — it never finds the
+# closing `}` and swallows the rest of the file, erroring "unexpected end of
+# file" at true EOF. Building the bracket text through a variable keeps no
+# raw `[[` inside the `${...}` for that scanner to miscount.
+LB='[['
+
 # Frontmatter-scoped control-marker predicate — the same one /triage-clips
 # defines and /archive-clips Phase 2 now requires. True iff <key>: true is a
 # real key inside a COMPLETE leading --- block, never body or fenced-code text.
@@ -115,8 +123,8 @@ SIB="$OLD-extra"                                  # prefix-sibling that must NOT
 # fixed-string substitution (no regex), so the + and space in the id are handled correctly.
 content="$(cat "$tmp/note.md")"
 content="${content//"[[Clippings/$OLD]]"/"[[Clippings/$NEW]]"}"
-content="${content//"[[Clippings/$OLD|"/"[[Clippings/$NEW|"}"
-content="${content//"[[Clippings/$OLD#"/"[[Clippings/$NEW#"}"
+content="${content//"${LB}Clippings/$OLD|"/"${LB}Clippings/$NEW|"}"
+content="${content//"${LB}Clippings/$OLD#"/"${LB}Clippings/$NEW#"}"
 printf '%s\n' "$content" > "$tmp/note.out"
 
 # all 4 OLD occurrences rewritten despite the + and space in the id
@@ -197,11 +205,11 @@ graduate() {  # $@ = files to rewrite (must include the moved clip's NEW path)
     [ -s "$f" ] || { assert "rewrite target $f non-empty" "yes" "no"; continue; }
     c="$(cat "$f")"
     c="${c//"[[Clippings/$OLD4]]"/"[[Clippings/$NEW4]]"}"
-    c="${c//"[[Clippings/$OLD4|"/"[[Clippings/$NEW4|"}"
-    c="${c//"[[Clippings/$OLD4#"/"[[Clippings/$NEW4#"}"
+    c="${c//"${LB}Clippings/$OLD4|"/"${LB}Clippings/$NEW4|"}"
+    c="${c//"${LB}Clippings/$OLD4#"/"${LB}Clippings/$NEW4#"}"
     c="${c//"[[Clippings/$OLD4.md]]"/"[[Clippings/$NEW4.md]]"}"
-    c="${c//"[[Clippings/$OLD4.md|"/"[[Clippings/$NEW4.md|"}"
-    c="${c//"[[Clippings/$OLD4.md#"/"[[Clippings/$NEW4.md#"}"
+    c="${c//"${LB}Clippings/$OLD4.md|"/"${LB}Clippings/$NEW4.md|"}"
+    c="${c//"${LB}Clippings/$OLD4.md#"/"${LB}Clippings/$NEW4.md#"}"
     printf '%s\n' "$c" > "$f"
   done
 }

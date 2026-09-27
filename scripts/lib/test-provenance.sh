@@ -19,6 +19,10 @@ sha() { printf '%s' "$1" | _prov_sha256; }
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/prov-test.XXXXXX") || { echo "FAIL: mktemp" >&2; exit 1; }
 trap '[ -n "${tmp:-}" ] && [ -d "$tmp" ] && rm -rf "$tmp"' EXIT
+# _prov_abs_path resolves the parent chain's symlinks (provenance.sh); resolve
+# tmp the same way so expected paths built from it match what gets recorded
+# when /tmp is a symlink (macOS: /tmp -> /private/tmp).
+tmp=$(cd -P "$tmp" && pwd -P) || { echo "FAIL: resolve tmp" >&2; exit 1; }
 export HOME="$tmp/home"
 mkdir -p "$HOME"
 export HIMMEL_PROVENANCE_DIR="$tmp/prov"

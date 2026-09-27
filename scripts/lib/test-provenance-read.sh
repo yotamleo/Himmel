@@ -16,6 +16,10 @@ fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }  # gnu-ok: BSD stat
 
 td=$(mktemp -d "${TMPDIR:-/tmp}/prov-read-test.XXXXXX") || { echo "FAIL: mktemp" >&2; exit 1; }
 trap '[ -n "${td:-}" ] && [ -d "$td" ] && rm -rf "$td"' EXIT
+# _prov_abs_path resolves the parent chain's symlinks (provenance.sh); resolve
+# td the same way so expected paths built from it match what gets recorded
+# when /tmp is a symlink (macOS: /tmp -> /private/tmp).
+td=$(cd -P "$td" && pwd -P) || { echo "FAIL: resolve td" >&2; exit 1; }
 export HOME="$td/home"
 mkdir -p "$HOME"
 export HIMMEL_PROVENANCE_DIR="$td/prov"

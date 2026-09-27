@@ -38,6 +38,10 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename
 FAILED=0
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/test-install-plugins-provenance.XXXXXX") || { echo "mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
+# _prov_abs_path resolves the parent chain's symlinks (provenance.sh); resolve
+# TMP the same way so expected paths built from it match what gets recorded
+# when /tmp is a symlink (macOS: /tmp -> /private/tmp).
+TMP=$(cd -P "$TMP" && pwd -P) || { echo "resolve TMP failed" >&2; exit 1; }
 
 # The operator's REAL ledger must come out of this suite byte-for-byte as it went
 # in: every case runs under a scratch HOME, and a leak here (a case that forgot

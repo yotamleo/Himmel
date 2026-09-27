@@ -1856,7 +1856,7 @@ wt38="$tmp/fake-himmel-wt-gitdir"
   git commit -q -m "t38 touch scripts/cr"
 )
 head38="$(cd "$wt38" && git rev-parse HEAD)"
-wt38_toplevel="$(cd "$wt38" && git rev-parse --show-toplevel)"
+wt38_toplevel="$(cd "$wt38" && pwd)"
 rows_before38="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
 out38="$(cd "$wt38" && HIMMEL_REPO="$anchor13" GIT_DIR="$decoy38/.git" GIT_WORK_TREE="$decoy38" bash "$anchor13/scripts/cr/pr-check-context.sh")"
 rc38=$?
@@ -2418,7 +2418,7 @@ check "$(fx_outcome "$out60")" "anchor" "T60 a symlinked scripts/lib is not read
 # scripts/hooks/test-guard-pr-check-literal.sh) is what stops a leg from
 # reaching that shape at all once a scripts/cr/ diff's bytes actually differ.
 fx_new t62-deleted-handoff
-old62=$(cat <<'HANDOFF_GUARD_EOF'
+cat > "$tmp/t62-old-handoff-guard.txt" <<'HANDOFF_GUARD_EOF'
 hand_off_to_anchor() {
     if [ ! -f "$anchor/scripts/cr/pr-check-context.sh" ]; then
         echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) and the anchor carries no scripts/cr/pr-check-context.sh ($anchor) - refusing to let this copy decide; fix HIMMEL_REPO, then re-run" >&2
@@ -2441,7 +2441,7 @@ if ! [ "$HIMMEL_ROOT" -ef "$anchor" ]; then
     fi
 fi
 HANDOFF_GUARD_EOF
-)
+old62="$(cat "$tmp/t62-old-handoff-guard.txt")"
 literal_replace "$SCRIPT" "$fx_wt/scripts/cr/pr-check-context.sh" "$old62" \
   ': # T62 mutant (HIMMEL-3536) - the branch deleted its own hand-off guard entirely'
 rc62_mut=$?

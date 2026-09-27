@@ -146,8 +146,8 @@ generate() {
             # rank=0 (has one) under the `nr` (numeric reverse) sort below.
             # KEEP IN SYNC with scripts/gen-changelog.ps1 $rank.
             case "$vt" in
-                *-*) rank=0 ;;
-                *)   rank=1 ;;
+                (*-*) rank=0 ;;
+                (*)   rank=1 ;;
             esac
             printf '%s\t%s\t%s\n' "$(git rev-list --count "$vt")" "$rank" "$vt"
         done < <(git tag --list "$VERSION_TAG_GLOB" | grep -E "$VERSION_TAG_RE") \

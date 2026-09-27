@@ -18,6 +18,11 @@ FAILED=0
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/egress-gate-test.XXXXXX")" || { echo "FAIL mktemp"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
+# egress-gate.sh resolves every path with cd -P/pwd -P before logging it (no
+# GNU realpath on stock macOS); resolve TMP the same way so expected values
+# built from it match what the gate actually writes when /tmp is a symlink
+# (macOS: /tmp -> /private/tmp).
+TMP="$(cd -P "$TMP" && pwd -P)" || { echo "FAIL resolve TMP"; exit 1; }
 
 check() { # label expected actual
     if [ "$2" = "$3" ]; then echo "PASS $1"

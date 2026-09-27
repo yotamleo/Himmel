@@ -272,7 +272,7 @@ if have_fn _fleet_gate_take; then
   rm -rf "$admit.reclaim"; mkdir "$admit.reclaim"
   _fleet_steal_stale_admit "$admit" "$((NOW - 61))"; d3_rc=$?
   check "(d3) unstamped gate -> busy this once (rc 1)" 1 "$d3_rc"
-  check "(d3) ...and it is stamped so it can age out" numeric "$(case "$(cat "$admit.reclaim/acquired" 2>/dev/null)" in ''|*[!0-9]*) echo bad ;; *) echo numeric ;; esac)"
+  check "(d3) ...and it is stamped so it can age out" numeric "$(case "$(cat "$admit.reclaim/acquired" 2>/dev/null)" in (''|*[!0-9]*) echo bad ;; (*) echo numeric ;; esac)"
 else
   FAIL=$((FAIL+8)); echo "FAIL - (d) _fleet_gate_take does not exist (no gate)"
 fi
@@ -686,7 +686,7 @@ check "(n) the run completes to a PROCEED verdict" PROCEED "$(cat "$W/n.out")"
 check "(n) long-seen .admit.stale.* debris is pruned" gone "$([ -e "$slots_n/.admit.stale.1.1" ] && echo present || echo gone)"
 check "(n) long-seen .admit.reclaim.broken.* debris is pruned" gone "$([ -e "$slots_n/.admit.reclaim.broken.1.1" ] && echo present || echo gone)"
 check "(n) never-seen .admit.stale.* debris is kept and stamped" numeric \
-  "$(case "$(cat "$slots_n/.admit.stale.2.2/seen" 2>/dev/null)" in ''|*[!0-9]*) echo bad ;; *) echo numeric ;; esac)"
+  "$(case "$(cat "$slots_n/.admit.stale.2.2/seen" 2>/dev/null)" in (''|*[!0-9]*) echo bad ;; (*) echo numeric ;; esac)"
 # HIMMEL-3232: every gate holder sweeps `.admit.reclaim.broken.*` before it may
 # hold, so the run's own gated release removes even a never-seen one.
 check "(n) never-seen .admit.reclaim.broken.* debris is swept by the release's gate take" gone \
