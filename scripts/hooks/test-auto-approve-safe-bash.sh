@@ -986,6 +986,32 @@ assert "find brace-expanded /. root DENY" DENY "$(decide "$(j_bash 'find {/.,a} 
 assert "find brace non-root stays PASS" PASS "$(decide "$(j_bash 'find {a,b} -name x')")"
 assert "find brace maxdepth-value unaffected" DENY "$(decide "$(j_bash 'find / -maxdepth {1,2} -name x')")" # gnu-ok: fixture string fed to the hook under test, never executed as a shell command
 
+# --- HIMMEL-3773 (J1385A/B finding 3): the CRLF->LF fold used to run
+# unconditionally, so a real backslash+CR+LF was seen as backslash+LF, a
+# genuine continuation, and the command that followed the CR was swallowed
+# into the prior approved segment. Real bash never treats `\`+CR as a
+# continuation (CR has no special meaning; it is just an escaped byte), and
+# the LF that follows it is a plain statement-ending newline. VERIFIED (real
+# bash, run as a script): every ALLOW-on-unfixed-head payload below executes
+# the `touch PWN*` line as its own, independent command.
+assert "plain backslash+CRLF hides a second command"        PASS "$(decide "$(j_bash "echo hi \\"$'\r\n'"touch PWN10")")"
+assert "compound prefix, backslash+CRLF hides a second command" PASS "$(decide "$(j_bash "ls -la && echo hi \\"$'\r\n'"touch PWN11")")"
+assert "backslash+CRLF after a prior # comment line"        PASS "$(decide "$(j_bash "echo hi # cmt"$'\n'"echo ok \\"$'\r\n'"touch PWN12")")"
+assert "even(2) backslash run + CRLF: still no continuation" PASS "$(decide "$(j_bash "echo hi\\\\\\"$'\r\n'"touch PWN13")")"
+assert "odd(3) backslash run + CRLF: still no continuation"  PASS "$(decide "$(j_bash "echo hi\\\\\\\\\\"$'\r\n'"touch PWN14")")"
+# Control: a backslash+CR+LF INSIDE a real `#` comment already stayed PASS
+# before this fix (in_cm short-circuits before the backslash branch) —
+# unaffected by fold_crlf(), still PASS: see "backslash-newline in a comment,
+# CRLF, stays PASS" above.
+# Control: a lone CR (no following LF) is not a CRLF pair — fold_crlf() must
+# leave it untouched. It is not an exploit either way: the escaped CR merges
+# into the following word (no separator), so nothing hidden ever executes.
+assert "lone CR (no LF) is untouched by fold_crlf, no exploit" ALLOW "$(decide "$(j_bash "echo hi \\"$'\r'"touch PWN15")")"
+# Control: a genuine safe continuation with a real LF (no CR at all) must
+# still fold and ALLOW — fold_crlf() only withholds the fold for a
+# backslash-preceded CR, never for a bare backslash+LF.
+assert "genuine LF-only continuation still ALLOW"            ALLOW "$(decide "$(j_bash "echo a \\"$'\n'"echo b")")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

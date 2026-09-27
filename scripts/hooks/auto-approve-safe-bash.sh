@@ -1381,6 +1381,41 @@ fold_backslash_newline() {
     done
     printf '%s' "$out"
 }
+
+# HIMMEL-3773: fold a BARE CR+LF pair to LF (Windows jq.exe renders an
+# embedded newline as CRLF), but never a CR immediately preceded by a
+# backslash. Real bash only treats `\`+LF as a continuation — `\`+CR is an
+# ordinary escaped byte (CR has no special meaning), and the LF that follows
+# it is a plain statement-ending newline, not part of any continuation. A
+# blind global `${cmd//$'\r\n'/$'\n'}` erases that distinction: it turns a
+# genuine `\`+CR+LF attack payload into `\`+LF, which fold_backslash_newline()
+# and scan_cmd() then read as a real continuation, hiding the command that
+# followed the CR as part of the prior, approved segment (181-row set,
+# HIMMEL-3773). Leaving a backslash-preceded CR+LF unfolded lets both of
+# those functions re-derive the backslash run themselves and correctly see
+# no continuation there — the same fail-closed result whether the run is odd
+# or even, since neither parity makes `\`+CR a continuation.
+fold_crlf() {
+    local s="$1" out="" i=0 n c prev
+    n=${#s}
+    while [ "$i" -lt "$n" ]; do
+        c="${s:$i:1}"
+        if [ "$c" = $'\r' ] && [ "${s:$((i + 1)):1}" = $'\n' ]; then
+            prev=""
+            [ "$i" -gt 0 ] && prev="${s:$((i - 1)):1}"
+            if [ "$prev" = '\' ]; then
+                out="$out$c"          # backslash-preceded CR: leave the CRLF pair intact
+                i=$((i + 1))
+                continue
+            fi
+            i=$((i + 1))              # bare CRLF: drop the CR, LF copied through next
+            continue
+        fi
+        out="$out$c"
+        i=$((i + 1))
+    done
+    printf '%s' "$out"
+}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
@@ -1402,8 +1437,11 @@ tool="${tool%$'\r'}"
 cmd="${result#*$'\n'}"
 # Windows jq.exe renders embedded newlines as CRLF too. Restore LF before the
 # shell-structure scan so a Bash backslash-newline continuation is not seen as
-# backslash-CR followed by a separate newline command boundary.
-cmd="${cmd//$'\r\n'/$'\n'}"
+# backslash-CR followed by a separate newline command boundary. HIMMEL-3773:
+# a backslash-preceded CR+LF is left alone — see fold_crlf()'s header comment
+# for why bash never treats it as a continuation, and folding it blindly is
+# how a real second command hid inside an approved segment.
+cmd="$(fold_crlf "$cmd")"
 # HIMMEL-3750 round 3 (codex-1): a backslash-newline continuation is folded
 # away by the shell before parsing even INSIDE double quotes, so a quoted
 # `"$\<NL>=x"` reaches the shell as `"$=x"` — the raw-text tripwires below
