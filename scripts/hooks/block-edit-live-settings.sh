@@ -1578,6 +1578,17 @@ _himmel_3761_worktree_settings_check_ok() {
         *) return 1 ;;
     esac
     local wt_root="$real_root/.claude/worktrees/$wt_name"
+    # A git-clean SYMLINK at this path is not enough (codex round-11
+    # Important): git status on a tracked symlink only reflects the
+    # symlink's own content (the target string), never the target file's
+    # content — a symlink committed once, pointing outside the worktree
+    # (or outside git's view entirely, e.g. /tmp), lets its target be
+    # edited freely forever after with this check staying clean the whole
+    # time, since the target is never a path git status is asked about.
+    # Reject outright rather than resolve-and-recheck: this is a narrow,
+    # closed allow-list, and a symlinked script is never a shape the
+    # ticket's read-only probe needs.
+    [ ! -L "$wt_root/scripts/hooks/wire-hook-bash.mjs" ] || return 1
     local script_git_status
     script_git_status=$(git -C "$wt_root" status --porcelain -- scripts/hooks/wire-hook-bash.mjs 2>/dev/null) || return 1
     [ -z "$script_git_status" ] || return 1

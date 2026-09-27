@@ -1626,8 +1626,28 @@ printf 'module.exports = {}; require("fs").writeFileSync(0, "tampered");\n' > "$
 assert_rc "238 node wire-hook-bash.mjs --check --settings (worktree, script locally modified, uncommitted) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATDIRTY/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATDIRTY/.claude/settings.json")"
 
+# 239: a git-clean SYMLINK at the script path denies, even committed (codex
+# round-11 Important). git status on a tracked symlink reflects only the
+# symlink's OWN content (the target path string), never the target file's
+# content — a symlink committed once, pointing at a file outside the
+# worktree (here, outside git's view entirely), lets that target be edited
+# freely forever after while this check stays clean, since the target path
+# is never what git status is asked about. A symlinked script is rejected
+# outright, whatever its git status.
+FEATSYM="$SANDBOX/primary/.claude/worktrees/feat+symlink"
+git -C "$SANDBOX/primary" worktree add -q "$FEATSYM" -b feat/symlink >/dev/null 2>&1
+mkdir -p "$FEATSYM/.claude" "$FEATSYM/scripts/hooks"
+printf '{}\n' > "$FEATSYM/.claude/settings.json"
+printf 'module.exports = {};\n' > "$SANDBOX/outside-wire-hook-bash.mjs"
+ln -s "$SANDBOX/outside-wire-hook-bash.mjs" "$FEATSYM/scripts/hooks/wire-hook-bash.mjs"
+git -C "$FEATSYM" add scripts/hooks/wire-hook-bash.mjs >/dev/null 2>&1
+git -C "$FEATSYM" -c user.email=t@t -c user.name=t commit -q -m "symlinked fixture" >/dev/null 2>&1
+assert_rc "239 node wire-hook-bash.mjs --check --settings (worktree, script is a committed, git-clean symlink) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATSYM/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATSYM/.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
+git -C "$SANDBOX/primary" worktree remove --force "$FEATSYM" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$FEATDIRTY" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$WT2" 2>/dev/null || true
