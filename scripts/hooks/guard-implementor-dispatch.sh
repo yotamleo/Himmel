@@ -298,7 +298,13 @@ _run_bounded() {
     pid=$!
     set +m
     start=$SECONDS
-    while [ $((SECONDS - start)) -lt "$budget_secs" ] && kill -0 "$pid" 2>/dev/null; do
+    # HIMMEL-3676 (J1322A, Minor 3): $SECONDS has whole-second granularity, so
+    # a strict "-lt" let the loop exit as soon as the second counter ticked
+    # OVER the budget rather than honouring it in full (measured: a
+    # 2-second budget killed a probe at ~1.1s). "-le" widens the floor to
+    # budget..budget+1s, restoring "at least budget seconds" instead of
+    # "somewhere between budget-1 and budget".
+    while [ $((SECONDS - start)) -le "$budget_secs" ] && kill -0 "$pid" 2>/dev/null; do
         sleep "$poll_secs"
     done
     rc=0
@@ -312,6 +318,51 @@ _run_bounded() {
     [ -n "$cap" ] && cat "$cap" 2>/dev/null
     [ -n "$cap" ] && rm -f "$cap"
     return "$rc"
+}
+
+# _round_check_one <branch-args-suffix> <label> — run round-guard.ts's CLI
+# once under the wall-clock budget for one branch and disposition its result
+# exactly like the single-branch call this replaces (HIMMEL-3676, J1322A
+# Critical): refuse the whole hook (exit 2) on anything but a clean
+# sentinel-bearing rc=0. <branch-args-suffix> is empty for the payload cwd's
+# own branch (round-guard.ts self-detects it from --cwd when --branch is
+# omitted) or " --branch <name>" for one distinct worktree branch the
+# dispatch text names. Reads round_cwd/round_task_path/round_task_file from
+# the caller's scope, same as every other round-guard helper in this file.
+_round_check_one() {
+    local branch_args="$1" label="$2" cmd out rc
+    cmd="bun $(printf '%q' "$repo_root/scripts/telegram/round-guard.ts") check --cwd $(printf '%q' "$round_cwd") --task-file $(printf '%q' "$round_task_file")$branch_args"
+    rc=0
+    out=$(_run_bounded "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$cmd" 0.05) || rc=$?
+    case "$rc" in
+        0)
+            # HIMMEL-3681: a version-skewed/stale round-guard.ts build could
+            # exit 0 having never actually evaluated the predicate; the
+            # sentinel is the only signal this hook has that it did.
+            # HIMMEL-3676 (J1322A, Minor 4): anchored to the WHOLE line, not a
+            # bare substring — "round-guard-cli: v1" used to also match a
+            # hypothetical future "round-guard-cli: v10" build.
+            case $'\n'"$out"$'\n' in
+                *$'\n'"round-guard-cli: v1"$'\n'*) ;;
+                *)
+                    printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3681): the reviewed-round probe exited 0 without its version sentinel ("round-guard-cli: v1") for %s — a version-skewed or stale round-guard.ts cannot be trusted to have evaluated the predicate for this implementor dispatch. Output: %s\n' "$label" "$out" >&2
+                    rm -f "$round_task_path" 2>/dev/null
+                    exit 2
+                    ;;
+            esac
+            [ -n "$out" ] && warn "$out"
+            ;;
+        2)
+            printf '%s\n' "$out" >&2
+            rm -f "$round_task_path" 2>/dev/null
+            exit 2
+            ;;
+        *)
+            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate did not finish cleanly (rc=%s) for %s — failing CLOSED. Output: %s\n' "$rc" "$label" "$out" >&2
+            rm -f "$round_task_path" 2>/dev/null
+            exit 2
+            ;;
+    esac
 }
 
 # lane_funded <lane-id> — return 0 iff the lane's declared active access path is
@@ -485,7 +536,18 @@ if [ -n "$round_cwd" ]; then
     # resolve its branch (missing dir, not a git repo, detached HEAD) must
     # refuse rather than silently fall back to the payload cwd's own (0-round)
     # branch — that fallback is exactly the wrong-attribution bug this fixes.
-    round_branch_args=""
+    # HIMMEL-3676 (J1322A, Critical): a named worktree branch must be ADDED to
+    # the cwd's own branch, never REPLACE it — evaluating only the first
+    # named worktree let a dispatch made FROM an already-exhausted worktree
+    # become ALLOWED the moment its text named any other same-repo worktree
+    # first, because that worktree's (unrelated, usually 0-round) branch
+    # silently took over the WHOLE predicate, cwd branch included. So this
+    # collects every DISTINCT worktree branch the text names (not just the
+    # first) into round_extra_branches and, further down, the predicate runs
+    # once for the cwd's own branch and once per named branch, refusing if
+    # ANY of them refuses — over-counting is the safe direction for a
+    # refusal-only guard.
+    #
     # HIMMEL-3676 (codex-2, CR round 2): the trailing worktree-name class
     # excluded "." (e.g. "fix.himmel-9016"), which rejected the match
     # entirely instead of recognizing it -- a false-positive refusal, not a
@@ -495,88 +557,70 @@ if [ -n "$round_cwd" ]; then
     # dispatch prose routinely ends the sentence naming the path with a
     # literal "." right after it, and a trailing-dot class would swallow
     # that punctuation into the path, making a real worktree unresolvable.
-    round_wt_path=$(printf '%s' "$text" | grep -oE '[A-Za-z0-9_./+-]*\.claude/worktrees/([A-Za-z0-9_+-]+\.)*[A-Za-z0-9_+-]+' | head -1 || true)
-    if [ -n "$round_wt_path" ]; then
-        # HIMMEL-3676 (codex-1/codex-2 CR round): `git -C` walks UP to an
-        # enclosing .git when the named path is not itself a repo root, so a
-        # match that exists but has no .git of its own would silently
-        # attribute to an ancestor's branch instead of refusing — and a
-        # relative match would resolve against the hook process's own cwd,
-        # not the payload's. Require an absolute path with its own .git entry
-        # before ever calling git -C on it; anything else falls through to
-        # the same "could not be resolved" refusal below.
-        #
-        # HIMMEL-3676 (codex-1, CR round 2): round-guard.ts always reads the
-        # CR ledger from --cwd's own git-common-dir and uses --branch only to
-        # filter rows within it — so a worktree belonging to an UNRELATED
-        # repository resolves to a real, valid branch name that simply has no
-        # rows in the TARGET repo's ledger, wrongly reporting 0 rounds. Trust
-        # round_wt_branch only when the named worktree shares the payload
-        # cwd's git-common-dir.
-        round_wt_branch=""
-        case "$round_wt_path" in
-            /*)
-                if [ -e "$round_wt_path/.git" ]; then
-                    round_wt_common=$(git_clean -C "$round_wt_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-                    round_cwd_common=$(git_clean -C "$round_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-                    if [ -n "$round_wt_common" ] && [ "$round_wt_common" = "$round_cwd_common" ]; then
-                        round_wt_branch=$(git_clean -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    round_wt_paths=$(printf '%s' "$text" | grep -oE '[A-Za-z0-9_./+-]*\.claude/worktrees/([A-Za-z0-9_+-]+\.)*[A-Za-z0-9_+-]+' | sort -u || true)
+    round_extra_branches=""
+    if [ -n "$round_wt_paths" ]; then
+        while IFS= read -r round_wt_path; do
+            [ -n "$round_wt_path" ] || continue
+            # HIMMEL-3676 (codex-1/codex-2 CR round): `git -C` walks UP to an
+            # enclosing .git when the named path is not itself a repo root, so
+            # a match that exists but has no .git of its own would silently
+            # attribute to an ancestor's branch instead of refusing — and a
+            # relative match would resolve against the hook process's own
+            # cwd, not the payload's. Require an absolute path with its own
+            # .git entry before ever calling git -C on it; anything else falls
+            # through to the same "could not be resolved" refusal below.
+            #
+            # HIMMEL-3676 (codex-1, CR round 2): round-guard.ts always reads
+            # the CR ledger from --cwd's own git-common-dir and uses --branch
+            # only to filter rows within it — so a worktree belonging to an
+            # UNRELATED repository resolves to a real, valid branch name that
+            # simply has no rows in the TARGET repo's ledger, wrongly
+            # reporting 0 rounds. Trust round_wt_branch only when the named
+            # worktree shares the payload cwd's git-common-dir.
+            round_wt_branch=""
+            case "$round_wt_path" in
+                /*)
+                    if [ -e "$round_wt_path/.git" ]; then
+                        round_wt_common=$(git_clean -C "$round_wt_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+                        round_cwd_common=$(git_clean -C "$round_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+                        if [ -n "$round_wt_common" ] && [ "$round_wt_common" = "$round_cwd_common" ]; then
+                            round_wt_branch=$(git_clean -C "$round_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+                        fi
                     fi
-                fi
-                ;;
-        esac
-        case "$round_wt_branch" in
-            ""|HEAD)
-                printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch names worktree %s but its branch could not be resolved (missing directory, not a git repo, or detached HEAD) — the reviewed-round predicate cannot be safely attributed. Fix the worktree reference and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_wt_path" >&2
-                exit 2
-                ;;
-            *)
-                round_branch_args=" --branch $(printf '%q' "$round_wt_branch")"
-                ;;
-        esac
+                    ;;
+            esac
+            case "$round_wt_branch" in
+                ""|HEAD)
+                    printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3676): the dispatch names worktree %s but its branch could not be resolved (missing directory, not a git repo, or detached HEAD) — the reviewed-round predicate cannot be safely attributed. Fix the worktree reference and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_wt_path" >&2
+                    exit 2
+                    ;;
+                *)
+                    case " $round_extra_branches " in
+                        *" $round_wt_branch "*) ;;
+                        *) round_extra_branches="$round_extra_branches $round_wt_branch" ;;
+                    esac
+                    ;;
+            esac
+        done <<< "$round_wt_paths"
     fi
     round_task_file=$(mktemp "${TMPDIR:-/tmp}/himmel-round-guard.XXXXXX" 2>/dev/null) || round_task_file=""
     round_task_path="$round_task_file"
     if [ -n "$round_task_file" ]; then
         printf '%s' "$text" > "$round_task_file" 2>/dev/null || round_task_file=""
     fi
-    round_cmd=""
-    if [ -n "$round_task_file" ]; then
-        if command -v bun >/dev/null 2>&1 && [ -f "$repo_root/scripts/telegram/round-guard.ts" ]; then
-            round_cmd="bun $(printf '%q' "$repo_root/scripts/telegram/round-guard.ts") check --cwd $(printf '%q' "$round_cwd") --task-file $(printf '%q' "$round_task_file")$round_branch_args"
-        fi
-    fi
-    if [ -z "$round_cmd" ]; then
+    if [ -z "$round_task_file" ] || ! command -v bun >/dev/null 2>&1 || [ ! -f "$repo_root/scripts/telegram/round-guard.ts" ]; then
         printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate could not be evaluated for this implementor dispatch (bun missing, scripts/telegram/round-guard.ts missing, or a temp file could not be created; dispatch cwd: %s) — fix the environment and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_cwd" >&2
         [ -n "$round_task_path" ] && rm -f "$round_task_path" 2>/dev/null
         exit 2
     fi
-    round_rc=0
-    round_out=$(_run_bounded "${IMPL_GUARD_ROUND_BUDGET_SECS:-4}" "$round_cmd" 0.05) || round_rc=$?
+    _round_check_one "" "the dispatch cwd's own branch"
+    if [ -n "$round_extra_branches" ]; then
+        for round_extra_branch in $round_extra_branches; do
+            _round_check_one " --branch $(printf '%q' "$round_extra_branch")" "worktree branch $round_extra_branch"
+        done
+    fi
     rm -f "$round_task_path" 2>/dev/null
-    case "$round_rc" in
-        0)
-            # HIMMEL-3681: a version-skewed/stale round-guard.ts build could
-            # exit 0 having never actually evaluated the predicate; the
-            # sentinel is the only signal this hook has that it did.
-            case "$round_out" in
-                *"round-guard-cli: v1"*) ;;
-                *)
-                    printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-3681): the reviewed-round probe exited 0 without its version sentinel ("round-guard-cli: v1") — a version-skewed or stale round-guard.ts cannot be trusted to have evaluated the predicate for this implementor dispatch. Output: %s\n' "$round_out" >&2
-                    exit 2
-                    ;;
-            esac
-            [ -n "$round_out" ] && warn "$round_out"
-            ;;
-        2)
-            printf '%s\n' "$round_out" >&2
-            exit 2
-            ;;
-        *)
-            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate did not finish cleanly (rc=%s) for this implementor dispatch — failing CLOSED. Output: %s\n' "$round_rc" "$round_out" >&2
-            exit 2
-            ;;
-    esac
 fi
 
 lane=""

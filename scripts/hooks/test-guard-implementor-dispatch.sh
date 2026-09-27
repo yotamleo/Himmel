@@ -1163,6 +1163,93 @@ git -C "$RG_REPO_R" worktree add -q -b "$RG_WT_BRANCH_R" "$RG_WT_DIR_R" main
 RC_RG_R=$(run_hook round-worktree-dotted-name-allows "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9016' "Write the code and commit it in $RG_WT_DIR_R." "$RG_REPO_R")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
 assert_rc "(p) worktree directory name contains a dot: still recognized and attributed (0 rounds) rather than refused as an unresolved/truncated path" 0 "$RC_RG_R"
 
+# --- (q), HIMMEL-3676 (J1322A NO-GO, Critical): the payload cwd IS ITSELF
+# the 3-round worktree, and the dispatch text names a FRESH (0-round)
+# sibling worktree first. Before the fix, extracting only the FIRST named
+# worktree path let that fresh branch REPLACE the cwd's own branch (and its
+# ticket key) entirely, so a dispatch made from an exhausted worktree became
+# ALLOWED the moment its text named any other same-repo worktree first
+# (judge probes A3-A6, C2). The fix must evaluate BOTH branches and refuse
+# because the cwd's own branch still has 3 rounds.
+RG_REPO_Q2="$TMP/round-repo-q2"
+mk_round_repo "$RG_REPO_Q2" "main"
+RG_WT_BRANCH_HOT="fix/himmel-9017-hot"
+RG_WT_DIR_HOT="$TMP/.claude/worktrees/fix-himmel-9017-hot"
+git -C "$RG_REPO_Q2" worktree add -q -b "$RG_WT_BRANCH_HOT" "$RG_WT_DIR_HOT" main
+RG_WT_BRANCH_FRESH="fix/himmel-9017-fresh"
+RG_WT_DIR_FRESH="$TMP/.claude/worktrees/fix-himmel-9017-fresh"
+git -C "$RG_REPO_Q2" worktree add -q -b "$RG_WT_BRANCH_FRESH" "$RG_WT_DIR_FRESH" main
+RG_H19=$(round_head h19); RG_H20=$(round_head h20); RG_H21=$(round_head h21)
+{
+    finding_row "$RG_WT_BRANCH_HOT" "$RG_H19" crit open f19
+    finding_row "$RG_WT_BRANCH_HOT" "$RG_H20" imp open f20
+    finding_row "$RG_WT_BRANCH_HOT" "$RG_H21" crit open f21
+} > "$(round_ledger_path "$RG_REPO_Q2")/cr-critic-scores.jsonl"
+
+RC_RG_Q2=$(run_hook round-cwd-own-branch-not-replaced "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9017' "Write the code and commit it in $RG_WT_DIR_FRESH." "$RG_WT_DIR_HOT")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(q) cwd is the 3-round worktree and text names a fresh sibling first: the fresh branch must not REPLACE the cwd's own exhausted branch -- refuses" 2 "$RC_RG_Q2"
+assert_contains "(q) refusal names the ticket on the cwd's own (hot) branch" "HIMMEL-9017" "$(combined_output round-cwd-own-branch-not-replaced)"
+
+# --- (r), same shape but the fresh sibling is named only in incidental
+# prose (judge probe A6) -- an honest brief mentioning another worktree for
+# context, with the real instruction pointing at the hot one. Still must
+# refuse on the cwd's own exhausted branch.
+RC_RG_R2=$(run_hook round-cwd-own-branch-not-replaced-prose "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9017' "For context only, $RG_WT_DIR_FRESH holds an old attempt; ignore it. Write the code and commit it in $RG_WT_DIR_HOT." "$RG_WT_DIR_HOT")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(r) same shape, fresh sibling named only in prose (A6): still refuses on the cwd's own exhausted branch" 2 "$RC_RG_R2"
+
+# --- control: cwd is the FRESH (0-round) worktree and the text names the HOT
+# sibling -- the NAMED branch must still be checked (not just the cwd's own),
+# proving the fix evaluates BOTH, not merely "whichever wins".
+RC_RG_S2=$(run_hook round-named-worktree-still-checked "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9017' "Write the code and commit it in $RG_WT_DIR_HOT." "$RG_WT_DIR_FRESH")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$PATH")
+assert_rc "(control) cwd is the fresh worktree but text names the hot one: the named branch is still evaluated and refuses" 2 "$RC_RG_S2"
+
+# --- (t), HIMMEL-3676 (J1322A NO-GO, Minor 4): the sentinel check was a bare
+# substring match, so "round-guard-cli: v10" (a hypothetical future build)
+# also satisfied a check for "round-guard-cli: v1". Anchor the match to the
+# WHOLE line so only the exact current sentinel passes.
+RG_REPO_T="$TMP/round-repo-t"
+mk_round_repo "$RG_REPO_T" "main"
+BUN_V10_DIR="$TMP/stub-bun-v10"
+mkdir -p "$BUN_V10_DIR"
+cat > "$BUN_V10_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+echo "round-guard-cli: v10" >&2
+exit 0
+EOF
+chmod +x "$BUN_V10_DIR/bun"
+
+RC_RG_T=$(run_hook round-sentinel-v10-refuses "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9018' 'Write the code and commit it.' "$RG_REPO_T")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" PATH="$BUN_V10_DIR:$PATH")
+assert_rc "(t) sentinel match anchored to the whole line: a hypothetical v10 stub no longer satisfies the v1 check" 2 "$RC_RG_T"
+assert_contains "(t) refusal names the sentinel" "sentinel" "$(combined_output round-sentinel-v10-refuses)"
+
+# --- (u), HIMMEL-3676 (J1322A NO-GO, Minor 3): _run_bounded's effective
+# budget used to be between budget-1 and budget seconds because $SECONDS has
+# whole-second granularity -- widen the loop condition so a bounded call
+# honours AT LEAST its configured budget before being killed.
+RG_REPO_U="$TMP/round-repo-u"
+mk_round_repo "$RG_REPO_U" "main"
+BUN_SLOW_DIR="$TMP/stub-bun-slow"
+mkdir -p "$BUN_SLOW_DIR"
+cat > "$BUN_SLOW_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+echo "round-guard-cli: v1" >&2
+sleep 10
+EOF
+chmod +x "$BUN_SLOW_DIR/bun"
+
+RG_U_START=$(date +%s%N)
+RC_RG_U=$(run_hook round-budget-floor "$REG_NONE" "$(payload_cwd general-purpose sonnet 'Implement HIMMEL-9019' 'Write the code and commit it.' "$RG_REPO_U")" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json" IMPL_GUARD_ROUND_BUDGET_SECS=2 PATH="$BUN_SLOW_DIR:$PATH")
+RG_U_END=$(date +%s%N)
+RG_U_MS=$(( (RG_U_END - RG_U_START) / 1000000 ))
+assert_rc "(u) probe sleeping past the budget: fails CLOSED" 2 "$RC_RG_U"
+if [ "$RG_U_MS" -ge 2000 ]; then
+    echo "ok   (u) bounded budget honours AT LEAST its configured floor (${RG_U_MS}ms >= 2000ms)"
+    pass=$((pass + 1))
+else
+    echo "FAIL (u) bounded budget killed at ${RG_U_MS}ms, expected >= 2000ms"
+    fail=$((fail + 1))
+fi
+
 # --- (i), HIMMEL-3681: the probe's CLI stdout/stderr on exit 0 must carry
 # its version sentinel ("round-guard-cli: v1"); a stub standing in for a
 # stale/version-skewed round-guard.ts that exits 0 silently must NOT be
