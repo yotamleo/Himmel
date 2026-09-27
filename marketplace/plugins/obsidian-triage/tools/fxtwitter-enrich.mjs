@@ -227,6 +227,11 @@ function alreadyEnriched(fmRaw) {
  * --reenrich-quote-only backfill targets exactly the casualties; every other
  * clip is skipped under that switch.
  *
+ * A clip carrying `last_error: quote_only_no_own_text` (HIMMEL-2628) is also
+ * excluded: a prior re-enrich already found the author added no text of
+ * their own, so there is nothing left to body-fill and re-fetching it again
+ * would only repeat that same no-op-ish rewrite.
+ *
  * @param {string} fmRaw - raw frontmatter text.
  * @param {string} body  - the clip body.
  * @returns {boolean}
@@ -234,6 +239,7 @@ function alreadyEnriched(fmRaw) {
 export function isQuoteOnlyClip(fmRaw, body) {
   if (!/^enrichment_source:\s*"?fxtwitter"?\s*$/m.test(fmRaw)) return false;
   if (!/^tweet_has_quote:\s*"?true"?\s*$/m.test(fmRaw)) return false;
+  if (/^last_error:\s*"?quote_only_no_own_text"?\s*$/m.test(fmRaw)) return false;
   if (/^## The Idea\s*$/m.test(body)) return false;
   return isThinTweetBody(body);
 }
@@ -957,6 +963,10 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
   let didBodyFill = false;
   // Body-fill markers for thin plain/note tweets (author/title repair).
   const bodyFill = {};
+  // Quote tweet, thin body, but the author added no text of their own —
+  // there is nothing to body-fill. Set below so the terminal last_error
+  // marker (HIMMEL-2628) stops isQuoteOnlyClip re-selecting this clip.
+  let quoteOnlyNoOwnText = false;
   if (isArticle) {
     section = renderArticleSection(tweet);
   } else if (hasQuote) {
@@ -978,6 +988,7 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
       }
     } else {
       section = quoteSection;
+      if (thinBody) quoteOnlyNoOwnText = true;
     }
   } else if (thinBody) {
     // Thin plain/note tweet: inject tweet text into `## The Idea`.
@@ -1022,7 +1033,7 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
     tweet_is_article: isArticle,
     tweet_has_quote: hasQuote,
     ...(needsThread ? { needs_thread: true } : {}),
-    last_error: null,
+    last_error: quoteOnlyNoOwnText ? "quote_only_no_own_text" : null,
     ...bodyFill,
   };
   const res = await writeEnrichment({
