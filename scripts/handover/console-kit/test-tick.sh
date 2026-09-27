@@ -1328,6 +1328,39 @@ else
     printf 'SKIP - board round-trip (node not installed)\n'
 fi
 
+# --- HIMMEL-3747 Ask 1: a WRAPPED leg (lock free, tail says WRAPPED) whose own
+# session process is STILL alive in the census reads CLOSABLE, not WRAPPED --
+# the window is sitting there finished but not yet closed, and this is the
+# signal a console should wake on and go close it.
+w3747a="HIMMEL-3747-N640-closable-2026-09-27-RESUME"
+printf '%s\n' '# leg' '- 12:00 LIVE — working' '- 12:30 WRAPPED — released' > "$W/handover/$w3747a.md"
+mkcmdline 140 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3747-N640-closable-2026-09-27 work
+mk_pgrep_x "$W/bin-3747a" 140
+o3747a="$(PATH="$W/bin-3747a:$PATH" bash "$SUT" --legs "$W/handover/$w3747a.md")"
+contains 'a WRAPPED leg whose session process is still alive reads CLOSABLE (HIMMEL-3747 Ask 1)' "$o3747a" 'legs=N640:CLOSABLE'
+
+# Control: the same WRAPPED doc, but no live session anywhere in the census --
+# the normal end of a leg once its window is actually gone. Must stay WRAPPED.
+w3747b="HIMMEL-3747-N641-gone-2026-09-27-RESUME"
+printf '%s\n' '# leg' '- 12:00 LIVE — working' '- 12:30 WRAPPED — released' > "$W/handover/$w3747b.md"
+mk_pgrep_x "$W/bin-3747b"
+o3747b="$(PATH="$W/bin-3747b:$PATH" bash "$SUT" --legs "$W/handover/$w3747b.md")"
+contains 'a WRAPPED leg whose session process is gone stays WRAPPED, not CLOSABLE (HIMMEL-3747 Ask 1)' "$o3747b" 'legs=N641:WRAPPED'
+
+# Control: a fatal census (pgrep itself failing) must never claim CLOSABLE --
+# fail closed to WRAPPED, since "session process alive" cannot be proven.
+w3747c="HIMMEL-3747-N642-unproven-2026-09-27-RESUME"
+printf '%s\n' '# leg' '- 12:00 LIVE — working' '- 12:30 WRAPPED — released' > "$W/handover/$w3747c.md"
+mkcmdline 141 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3747-N642-unproven-2026-09-27 work
+mkdir -p "$W/bin-3747c"
+cat > "$W/bin-3747c/pgrep" <<'STUB'
+#!/usr/bin/env bash
+exit 2
+STUB
+chmod +x "$W/bin-3747c/pgrep"
+o3747c="$(PATH="$W/bin-3747c:$PATH" bash "$SUT" --legs "$W/handover/$w3747c.md")"
+contains 'a fatal census must not promote a live-looking leg to CLOSABLE (HIMMEL-3747 Ask 1)' "$o3747c" 'legs=N642:WRAPPED'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
     exit 0

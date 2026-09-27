@@ -24,8 +24,34 @@
 # (`- Sent READY to the console`) is invisible here; the tick reads the last bullet
 # that does lead with one.
 #
+# HIMMEL-3747 Ask 4: WRAPPED is the one exception, and only when the FINAL
+# bullet has no leading marker of its own (so it would otherwise be invisible,
+# per the ponytail above) -- it is the wrap signal a leg never gets a second
+# chance to send (the window closes right after), so a bullet like
+# `- 10:15 Released lock \`tok\`, appended the WRAPPED bullet, ending turn`
+# still reads WRAPPED instead of falling through to the last bullet that DID
+# lead with a marker. A bullet whose leading token IS a recognized marker
+# keeps HIMMEL-3393's rule untouched: `- 23:47 LIVE -- was BLOCKED, then
+# WRAPPED nothing` still reads LIVE, never WRAPPED, because LIVE already
+# leads it. And an earlier bullet mentioning the word (a FINDING asking
+# whether to wait for WRAPPED, say) is never retroactively promoted -- only
+# the truly last bullet in the doc is checked this way.
+#
 # Source this file; it defines one function, runs nothing. Bash 3.2-compatible.
 leg_tail_status() {  # leg_tail_status <leg doc> -- prints the marker, or nothing
-    sed -nE 's/^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_].*)?$/\3/p' "$1" 2>/dev/null \
-        | tail -n 1 | tr -d '\n'
+    local marker_re='^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_].*)?$'
+    local final
+    final=$(sed -nE '/^- /p' "$1" 2>/dev/null | tail -n 1)
+    if [ -z "$final" ]; then
+        return
+    fi
+    if printf '%s\n' "$final" | grep -qE "$marker_re"; then
+        printf '%s' "$final" | sed -nE "s/$marker_re/\\3/p" | tr -d '\n'
+        return
+    fi
+    if printf '%s' "$final" | grep -qE '(^|[^A-Za-z0-9_])WRAPPED([^A-Za-z0-9_]|$)'; then
+        printf 'WRAPPED'
+        return
+    fi
+    sed -nE "s/$marker_re/\\3/p" "$1" 2>/dev/null | tail -n 1 | tr -d '\n'
 }

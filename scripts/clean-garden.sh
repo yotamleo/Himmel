@@ -61,6 +61,15 @@ Flags:
                         subject to every prune gate. Exits non-zero when the
                         target is not a prune candidate. Skips the fleet-wide
                         stray/checkpoint/marker sweeps.
+  --only-allow-unmerged Only with --only (HIMMEL-3747): also accept a target
+                        whose PR is CLOSED unmerged, or has no PR at all, when
+                        the working tree is clean AND (its head is pushed to
+                        origin at that branch name, OR it carries no commits
+                        beyond main). An OPEN PR, an unresolvable PR state
+                        (gh/cache failure), or a MERGED PR whose head does not
+                        match the recorded merge are still refused -- never
+                        widened by this flag. Every other prune gate (locked,
+                        in-use, dirty, primary) still applies unchanged.
   --no-prune            Skip prune; only create.
   --no-install          Forward to _new-worktree.sh (skip jira install).
   --dry-run             Show plan; do nothing.
@@ -86,6 +95,7 @@ print_help() {
 BRANCH=""
 PRUNE_ONLY=0
 ONLY_TARGET=""
+ONLY_ALLOW_UNMERGED=0
 NO_PRUNE=0
 NO_INSTALL=0
 DRY_RUN=0
@@ -100,6 +110,7 @@ while [ $# -gt 0 ]; do
                 usage_err
             fi
             ONLY_TARGET="$2"; PRUNE_ONLY=1; shift 2 ;;
+        --only-allow-unmerged) ONLY_ALLOW_UNMERGED=1; shift ;;
         --no-prune)   NO_PRUNE=1; shift ;;
         --no-install) NO_INSTALL=1; shift ;;
         --dry-run)           DRY_RUN=1; shift ;;
@@ -128,6 +139,10 @@ if [ "$NO_PRUNE" -eq 1 ] && [ "$PRUNE_ONLY" -eq 1 ]; then
 fi
 if [ -n "$ONLY_TARGET" ] && { [ "$NO_PRUNE" -eq 1 ] || [ -n "$BRANCH" ]; }; then
     echo "ERR clean-garden: --only prunes one worktree; it cannot be combined with --no-prune or a create branch-name" >&2
+    exit 1
+fi
+if [ "$ONLY_ALLOW_UNMERGED" -eq 1 ] && [ -z "$ONLY_TARGET" ]; then
+    echo "ERR clean-garden: --only-allow-unmerged requires --only" >&2
     exit 1
 fi
 if [ "$NO_PRUNE" -eq 1 ] && [ -z "$BRANCH" ]; then
@@ -430,7 +445,29 @@ is_branch_mergeable_for_prune() {
         return
     fi
     resolve_pr_state origin "$branch" "$tip"
-    [ "$PR_STATE" = "merged" ] && [ "$PR_HEAD_MATCH" -eq 1 ]
+    if [ "$PR_STATE" = "merged" ] && [ "$PR_HEAD_MATCH" -eq 1 ]; then
+        return 0
+    fi
+    # HIMMEL-3747: --only-allow-unmerged widens the merged-only gate above for
+    # a SINGLE --only target. Only "closed" (a real PR that never merged) or
+    # "none" (no PR at all) are eligible here -- "open" (a parked leg keeps
+    # its worktree) and "unknown" (resolve_pr_state's own gh/cache failure,
+    # fail-closed) are both explicitly excluded, and a "merged" PR whose head
+    # does not match (fell through above) stays kept for manual review, same
+    # as the unwidened path.
+    if [ "$ONLY_ALLOW_UNMERGED" -eq 1 ]; then
+        case "$PR_STATE" in
+            closed|none) ;;
+            *) return 1 ;;
+        esac
+        local ahead remote_sha head_on_remote=0
+        ahead=$(commits_not_on_main "$tip")
+        remote_sha=$(git -C "$PRIMARY_WORKTREE" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk '{print $1}')
+        [ -n "$remote_sha" ] && [ "$remote_sha" = "$tip" ] && head_on_remote=1
+        [ "$head_on_remote" -eq 1 ] || [ "$ahead" = "0" ]
+        return
+    fi
+    return 1
 }
 
 # Is an untracked path a known, discardable stray? (HIMMEL-431)
@@ -1262,7 +1299,11 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             exit 1
         fi
         if [ "$PRUNED" -ne 1 ] || [ "$PARTIAL" -ne 0 ] || [ "$FAILED" -ne 0 ]; then
-            echo "ERR clean-garden: --only $ONLY_TARGET was not cleanly pruned — not a prune candidate, or the removal was partial (reason above; a candidate needs a merged PR whose head is the branch tip, no uncommitted work, no live process inside)" >&2
+            if [ "$ONLY_ALLOW_UNMERGED" -eq 1 ]; then
+                echo "ERR clean-garden: --only $ONLY_TARGET was not cleanly pruned — not a prune candidate, or the removal was partial (reason above; --only-allow-unmerged still needs an open-PR-free branch that is either clean-and-pushed to origin or has no commits beyond main, no uncommitted work, no live process inside)" >&2
+            else
+                echo "ERR clean-garden: --only $ONLY_TARGET was not cleanly pruned — not a prune candidate, or the removal was partial (reason above; a candidate needs a merged PR whose head is the branch tip, no uncommitted work, no live process inside)" >&2
+            fi
             exit 1
         fi
         exit 0

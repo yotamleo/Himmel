@@ -23,12 +23,25 @@
 # 0 or >1 matches is a refusal, not a best guess.
 #
 # After the signal, if the doc names exactly one worktree path (a
-# `.claude/worktrees/...` path appearing once) AND that worktree's PR (the
-# last `MERGED #<n>` bullet, else the last `READY <pr> ...` bullet) reads
-# MERGED via `gh pr view`, runs `scripts/clean.sh --only <worktree>` and
-# reports (not fails) an "in use" skip. Never guesses a worktree: 0 or >1
-# candidates in the doc skips the prune with a report, same as the PR-not-
-# found case.
+# `.claude/worktrees/...` path appearing once), runs
+# `scripts/clean.sh --only <worktree> --only-allow-unmerged` and reports (not
+# fails) a "not pruned" skip. That flag (HIMMEL-3747) makes clean-garden.sh
+# itself resolve the worktree's branch's PR by branch (via gh, independent of
+# whatever the doc's own Results bullets say) and prune when: the PR is
+# MERGED with a head match (the original, unwidened case -- also covers a doc
+# with no MERGED/READY bullet at all, since the branch lookup does not depend
+# on one), OR the PR is CLOSED unmerged or there is no PR, the working tree is
+# clean, and the branch's head is either pushed to origin or carries no
+# commits beyond main. An OPEN PR (a parked leg) or an unresolvable PR state
+# (gh/cache failure) are never pruned. Never guesses a worktree: 0 or >1
+# candidates in the doc skips the prune with a report.
+#
+# Before signalling (HIMMEL-3747), reuses scripts/handover/wrap-subtree-check.sh
+# on the matched pid: a non-harness descendant still alive (a leg mid an
+# operator command, a tool call in flight) refuses the TERM rather than
+# killing it out from under that work - never guessed, never overridden.
+# A withheld subtree is not a failure: the console re-runs this script later,
+# same as any other "retry shortly" refusal here.
 #
 # Exit codes:
 #   0  signaled (prune ran, skipped, or reported "in use" - all non-fatal)
@@ -37,6 +50,8 @@
 #   3  refused - the queue lock is not free
 #   4  refused - the doc's last marker-bullet is not WRAPPED
 #   5  refused - 0 or >1 live sessions matched the leg's names
+#   6  refused - the matched session still has a non-harness process alive
+#      (wrap-subtree-check.sh reported WITHHELD, or could not prove CLOSABLE)
 #
 # Platform guard: Linux bash 3.2+ (depends on /proc via claude-sessions.sh;
 # no .ps1 twin - konsole legs are Linux/KDE-only, same guard as
@@ -44,9 +59,9 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-GH="${GH_BIN:-gh}"
 KILL="${KILL_BIN:-kill}"
 CLEAN_SH="${CLEAN_SH_BIN:-$HERE/../../clean.sh}"
+WRAP_SUBTREE_CHECK="${WRAP_SUBTREE_CHECK_BIN:-$HERE/../wrap-subtree-check.sh}"
 
 usage() {
     echo "usage: close-wrapped-leg.sh <leg-doc>" >&2
@@ -229,6 +244,14 @@ EOF
     fi
 fi
 
+subtree_out=$(bash "$WRAP_SUBTREE_CHECK" "$matched" 2>&1)
+subtree_rc=$?
+if [ "$subtree_rc" -ne 0 ]; then
+    echo "$subtree_out"
+    echo "close-wrapped-leg: refusing to signal pid $matched - wrap-subtree-check.sh did not report CLOSABLE (see above); retry shortly" >&2
+    exit 6
+fi
+
 if ! "$KILL" -TERM "$matched"; then
     echo "close-wrapped-leg: failed to send TERM to pid $matched" >&2
     exit 1
@@ -243,36 +266,16 @@ if [ "$wt_count" -ne 1 ]; then
 fi
 WT="$worktrees"
 
-shipline=$(grep -E '^- [0-9]{2}:[0-9]{2} (MERGED #|READY )' "$DOC" | tail -1)
-pr=""
-case "$shipline" in
-    *MERGED\ \#*) pr=$(printf '%s' "$shipline" | sed -E 's/.*MERGED #([0-9]+).*/\1/') ;;
-    *READY\ *) pr=$(printf '%s' "$shipline" | sed -E 's/.*READY ([0-9]+) .*/\1/') ;;
-esac
-case "$pr" in
-    ''|*[!0123456789]*)
-        echo "close-wrapped-leg: no MERGED/READY PR number found in $DOC - skipping the prune" >&2
-        exit 0 ;;
-esac
-
-if ! state=$("$GH" pr view "$pr" --json state --jq '.state' 2>/dev/null); then
-    echo "close-wrapped-leg: refusing - gh pr view #$pr failed (auth/connectivity?) - cannot confirm the PR is merged, not pruning" >&2
-    exit 1
-fi
-if [ "$state" != "MERGED" ]; then
-    echo "close-wrapped-leg: PR #$pr state is '${state:-unknown}', not MERGED - skipping the prune" >&2
-    exit 0
-fi
-
-out=$(bash "$CLEAN_SH" --only "$WT" 2>&1)
+out=$(bash "$CLEAN_SH" --only "$WT" --only-allow-unmerged 2>&1)
 rc=$?
 echo "$out"
 if [ "$rc" -ne 0 ]; then
-    if printf '%s' "$out" | grep -qi 'in use'; then  # pipefail-ok: no pipefail here (set -u only); $out is an already-captured small string, not a live producer
-        echo "close-wrapped-leg: worktree $WT reported in use - not a failure, retry --only shortly"
-        exit 0
-    fi
-    echo "close-wrapped-leg: clean.sh --only $WT failed (rc=$rc)" >&2
+    case "$out" in
+        *'in use'*|*'not a prune candidate'*)
+            echo "close-wrapped-leg: worktree $WT not pruned (see message above) - not a failure, retry --only shortly"
+            exit 0 ;;
+    esac
+    echo "close-wrapped-leg: clean.sh --only $WT --only-allow-unmerged failed (rc=$rc)" >&2
     exit 1
 fi
 exit 0

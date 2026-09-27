@@ -58,8 +58,15 @@ shows here: procs=...,unwatched= (below) is what names a live leg the arm omits.
 
 legs= reads a leg's lock as FRESH or STALE (held; an idle-warned lock still reads
 FRESH/STALE here -- the IDLE-HELD? flag belongs to the sweep and the exit code),
-WRAPPED (lock released and the tail says WRAPPED -- the normal end of a leg),
-FREE (lock released while the tail does not say WRAPPED -- a lost lock),
+CLOSABLE (HIMMEL-3747: lock released, the tail says WRAPPED, AND the leg's own
+session process is still alive in the census -- the window is sitting there
+finished but not yet closed; console-wait.sh wakes on this the same way it
+wakes on any other legs= change, since it samples the whole field, so no
+change was needed there), WRAPPED (lock released and the tail says WRAPPED,
+but either no live session matched or the census itself could not be read --
+the normal end of a leg once its window is gone, and also the fail-closed
+reading when CLOSABLE cannot be proven), FREE (lock released while the tail
+does not say WRAPPED -- a lost lock),
 UNVERIFIED (a lock named for the doc exists but records a path that does not
 resolve here -- neither ruled held nor free: check its owner, never reclaim on
 it; HIMMEL-3290), CORRUPT, UNKNOWN (queue-lock status unreadable) or NOTFOUND
@@ -587,6 +594,24 @@ while IFS=$'\t' read -r m_label m_status m_cands; do
         unmatched_csv="$m_label"
     fi
 done <<< "$leg_candmap"
+# HIMMEL-3747 Ask 1: a WRAPPED leg (lock free, tail says WRAPPED) whose own
+# session process is STILL alive in this same census is CLOSABLE -- the
+# window sitting there finished but not yet closed is exactly what a console
+# should wake up and act on. Never claimed when the census itself could not
+# be trusted (census_failed=1): fail closed to plain WRAPPED, same posture as
+# the matched_n/unmatched_csv derivation above.
+if [ "$census_failed" -eq 0 ]; then
+    while IFS=$'\t' read -r w_label w_status w_cands; do
+        [ -n "$w_label" ] || continue
+        [ "$w_status" = WRAPPED ] || continue
+        for w_cand in ${w_cands//,/ }; do
+            if grep -Fxq -- "$w_cand" <<< "$census_names"; then
+                legs_summary="${legs_summary//$w_label:WRAPPED/$w_label:CLOSABLE}"
+                break
+            fi
+        done
+    done <<< "$leg_candmap"
+fi
 leg_names_wrapped=",${leg_names},"
 # HIMMEL-3293: procs= counts only the sessions THIS arm names, so a live leg the
 # arm does not name (dispatched after it, or another console's) was dropped

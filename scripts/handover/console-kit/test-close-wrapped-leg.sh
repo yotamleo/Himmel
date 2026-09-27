@@ -15,12 +15,18 @@
 #   5. 2 matching live sessions                             -> rc 5, kill NOT called
 #   6. 1 match, 0 worktree paths in doc                    -> rc 0, clean.sh NOT called
 #   7. 1 match, 2 worktree paths in doc                    -> rc 0, clean.sh NOT called
-#   8. 1 match, 1 worktree, no MERGED/READY line             -> rc 0, clean.sh NOT called
-#   9. 1 match, 1 worktree, PR state != MERGED               -> rc 0, clean.sh NOT called
-#  10. 1 match, 1 worktree, PR MERGED, clean.sh succeeds      -> rc 0, kill called with the ONE matched pid, clean.sh called once
+#   8. 1 match, 1 worktree, NO MERGED/READY line in the doc  -> rc 0, clean.sh
+#      --only <wt> --only-allow-unmerged called anyway (HIMMEL-3747: the doc's
+#      own Results bullets no longer gate the prune -- clean-garden.sh
+#      resolves the branch's PR state itself)
+#   9. clean.sh reports "not a prune candidate" (its own PR-state gate
+#      refused, e.g. an OPEN PR)                              -> rc 0 (non-fatal)
+#  10. 1 match, 1 worktree, clean.sh succeeds                 -> rc 0, kill called with the ONE matched pid, clean.sh --only <wt> --only-allow-unmerged called once
 #  11. clean.sh output contains "in use"                    -> rc 0 (non-fatal)
 #  12. clean.sh fails for another reason                    -> rc 1
-#  13. gh pr view itself fails (auth/connectivity)           -> rc 1, clean.sh NOT called
+#  13. wrap-subtree-check.sh reports WITHHELD (a non-harness child process is
+#      still alive under the matched session)              -> rc 6, kill NOT
+#      called, clean.sh NOT called (HIMMEL-3747 Ask 3)
 #  14. the TERM signal itself fails                          -> rc 1, no pruning attempted
 #
 # Platform guard: Linux bash 3.2+ (depends on /proc via claude-sessions.sh).
@@ -112,6 +118,10 @@ if [ "${CWL_CLEAN_MODE:-ok}" = "in-use" ]; then
     echo "worktree is in use, skipping"
     exit 1
 fi
+if [ "${CWL_CLEAN_MODE:-ok}" = "not-candidate" ]; then
+    echo "ERR clean-garden: --only ... was not cleanly pruned -- not a prune candidate (PR is open)"
+    exit 1
+fi
 if [ "${CWL_CLEAN_MODE:-ok}" = "fail" ]; then
     echo "clean.sh: something else broke"
     exit 1
@@ -120,6 +130,22 @@ echo "clean.sh: pruned"
 exit 0
 STUB
 chmod +x "$CLEAN_STUB"
+
+# Stub wrap-subtree-check.sh (HIMMEL-3747 Ask 3): CLOSABLE by default so
+# every pre-existing case is unaffected; CWL_SUBTREE_MODE=withheld models a
+# non-harness child process still alive under the matched session.
+SUBTREE_STUB="$W/bin/wrap-subtree-check.sh"
+cat > "$SUBTREE_STUB" <<'STUB'
+#!/usr/bin/env bash
+echo "wrap-subtree-check.sh $*" >> "$CALLS_LOG"
+if [ "${CWL_SUBTREE_MODE:-closable}" = "withheld" ]; then
+    echo "WITHHELD: 1 process(es) still alive under claude pid $1 - TaskStop every background task and agent you spawned, then re-run"
+    exit 1
+fi
+echo "CLOSABLE: no non-harness process under claude pid $1"
+exit 0
+STUB
+chmod +x "$SUBTREE_STUB"
 
 DOC="$W/HIMMEL-9-N1-demo-2026-01-01-RESUME.md"
 SESSION_NAME="HIMMEL-9-N1-demo-2026-01-01"
@@ -153,14 +179,16 @@ run() { # run <doc> - runs the script under test with every stub wired
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
         HANDOVER_DIR="$W/handover-root" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
+        WRAP_SUBTREE_CHECK_BIN="$SUBTREE_STUB" \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
+        CWL_SUBTREE_MODE="${CWL_SUBTREE_MODE:-closable}" \
         CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
         END_SESSION_WIKI_BIN="${CWL_ESW_BIN:-/bin/true}" \
         CLOSE_WRAPPED_LEG_PROJECTS_DIR="${CWL_PROJECTS_DIR:-$W/no-such-projects-dir}" \
         bash "$SCRIPT" "$@"
 }
 reset_calls() { : > "$CALLS"; }
-unset CWL_PR_STATE CWL_CLEAN_MODE CWL_PR_VIEW_FAIL CWL_KILL_FAIL
+unset CWL_PR_STATE CWL_CLEAN_MODE CWL_PR_VIEW_FAIL CWL_KILL_FAIL CWL_SUBTREE_MODE
 
 # --- 1. usage ----------------------------------------------------------------
 reset_calls
@@ -220,7 +248,7 @@ check "no-worktree: rc 0" "$rc" "0"
 calls6="$(cat "$CALLS")"
 exact_count "no-worktree: kill called exactly once with the matched pid" "$calls6" "kill -TERM 210" "1"
 not_contains "no-worktree: clean.sh not called" "$calls6" "clean.sh"
-check "no-worktree: exactly one call logged (no other pid signaled)" "$(wc -l < "$CALLS" | tr -d ' ')" "1"
+check "no-worktree: exactly two calls logged (subtree check + kill, no other pid signaled)" "$(wc -l < "$CALLS" | tr -d ' ')" "2"
 
 # --- 7. 1 match, 2 worktree paths -------------------------------------------------
 mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`" "worktree: \`$W/wt/.claude/worktrees/other\`"
@@ -229,49 +257,54 @@ rc=0; out=$(run "$DOC" 2>&1) || rc=$?
 check "two-worktree: rc 0" "$rc" "0"
 not_contains "two-worktree: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
 
-# --- 8. 1 match, 1 worktree, no MERGED/READY line -----------------------------
+# --- 8. 1 match, 1 worktree, NO MERGED/READY line in the doc (HIMMEL-3747:
+# the doc's own bullets no longer gate the prune) -------------------------------
 mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`"
 reset_calls
 rc=0; out=$(run "$DOC" 2>&1) || rc=$?
 check "no-pr-line: rc 0" "$rc" "0"
-not_contains "no-pr-line: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
+calls8="$(cat "$CALLS")"
+exact_count "no-pr-line: clean.sh --only <wt> --only-allow-unmerged called anyway" "$calls8" "clean.sh --only $WT/.claude/worktrees/demo --only-allow-unmerged" "1"
 
-# --- 9. 1 match, 1 worktree, PR not merged ------------------------------------
-mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`" "- 09:30 READY 42 deadbeef GREEN"
+# --- 9. clean.sh reports "not a prune candidate" (its own PR-state gate
+# refused the target, e.g. an OPEN PR) -------------------------------------------
+mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`"
 reset_calls
-rc=0; out=$(CWL_PR_STATE="OPEN" run "$DOC" 2>&1) || rc=$?
-check "pr-not-merged: rc 0" "$rc" "0"
-not_contains "pr-not-merged: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
+rc=0; out=$(CWL_CLEAN_MODE="not-candidate" run "$DOC" 2>&1) || rc=$?
+check "not-candidate: rc 0 (non-fatal)" "$rc" "0"
+contains "not-candidate: names the skip" "$out" "not pruned"
 
 # --- 10. clean success path ----------------------------------------------------
-mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`" "- 09:45 MERGED #42 -> deadbeef"
+mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`"
 reset_calls
-rc=0; out=$(CWL_PR_STATE="MERGED" run "$DOC" 2>&1) || rc=$?
+rc=0; out=$(CWL_CLEAN_MODE="ok" run "$DOC" 2>&1) || rc=$?
 check "clean-success: rc 0" "$rc" "0"
 calls="$(cat "$CALLS")"
 exact_count "clean-success: kill called exactly once with the matched pid" "$calls" "kill -TERM 210" "1"
-exact_count "clean-success: clean.sh called exactly once" "$calls" "clean.sh --only $WT/.claude/worktrees/demo" "1"
-exact_count "clean-success: gh pr view called exactly once" "$calls" "gh pr view 42 --json state --jq .state" "1"
-check "clean-success: exactly 3 calls logged (no extra kill/clean.sh)" "$(wc -l < "$CALLS" | tr -d ' ')" "3"
+exact_count "clean-success: clean.sh called exactly once with --only-allow-unmerged" "$calls" "clean.sh --only $WT/.claude/worktrees/demo --only-allow-unmerged" "1"
+check "clean-success: exactly 3 calls logged (subtree check + kill + clean.sh, no extras)" "$(wc -l < "$CALLS" | tr -d ' ')" "3"
 
 # --- 11. clean.sh reports in-use ------------------------------------------------
 reset_calls
-rc=0; out=$(CWL_PR_STATE="MERGED" CWL_CLEAN_MODE="in-use" run "$DOC" 2>&1) || rc=$?
+rc=0; out=$(CWL_CLEAN_MODE="in-use" run "$DOC" 2>&1) || rc=$?
 check "clean-in-use: rc 0 (non-fatal)" "$rc" "0"
 contains "clean-in-use: names it" "$out" "in use"
 
 # --- 12. clean.sh fails for another reason --------------------------------------
 reset_calls
-rc=0; out=$(CWL_PR_STATE="MERGED" CWL_CLEAN_MODE="fail" run "$DOC" 2>&1) || rc=$?
+rc=0; out=$(CWL_CLEAN_MODE="fail" run "$DOC" 2>&1) || rc=$?
 check "clean-fail: rc 1" "$rc" "1"
 
-# --- 13. gh pr view itself fails -------------------------------------------------
-mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`" "- 09:45 MERGED #42 -> deadbeef"
+# --- 13. wrap-subtree-check.sh reports WITHHELD (HIMMEL-3747 Ask 3) -------------
+mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`"
 reset_calls
-rc=0; out=$(CWL_PR_VIEW_FAIL="1" run "$DOC" 2>&1) || rc=$?
-check "pr-view-fail: rc 1" "$rc" "1"
-not_contains "pr-view-fail: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
-contains "pr-view-fail: names the reason" "$out" "gh pr view"
+rc=0; out=$(CWL_SUBTREE_MODE="withheld" run "$DOC" 2>&1) || rc=$?
+check "subtree-withheld: rc 6" "$rc" "6"
+calls13="$(cat "$CALLS")"
+exact_count "subtree-withheld: wrap-subtree-check.sh called exactly once with the matched pid" "$calls13" "wrap-subtree-check.sh 210" "1"
+not_contains "subtree-withheld: kill never called" "$calls13" "kill -TERM"
+not_contains "subtree-withheld: clean.sh never called" "$calls13" "clean.sh"
+contains "subtree-withheld: names the refusal" "$out" "did not report CLOSABLE"
 
 # --- 14. the TERM signal itself fails ---------------------------------------------
 mkdoc "- 10:00 WRAPPED - done"
@@ -337,6 +370,22 @@ mkdoc "- 10:00 WRAPPED: done"
 reset_calls
 rc=0; out=$(run "$DOC" 2>&1) || rc=$?
 check "wrapped-colon: rc 0 (accepted as WRAPPED)" "$rc" "0"
+
+# --- 17b: HIMMEL-3747 Ask 4 -- WRAPPED not leading the FINAL timestamped
+# bullet is still accepted (a leg that reports the lock release before the
+# marker word).
+mkdoc "- 10:15 Released lock \`tok-123\`, appended WRAPPED, ending turn"
+reset_calls
+rc=0; out=$(run "$DOC" 2>&1) || rc=$?
+check "wrapped-anywhere: rc 0 (accepted as WRAPPED)" "$rc" "0"
+
+# --- 17c: HIMMEL-3747 Ask 4 control -- WRAPPED mentioned in an EARLIER
+# bullet does not retroactively count once a later, non-WRAPPED bullet is the
+# final timestamped one.
+mkdoc "- 10:20 LIVE - still going, resumed after the earlier wrap discussion" "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(run "$DOC" 2>&1) || rc=$?
+check "wrapped-earlier-only: rc 4 (last bullet is LIVE, not WRAPPED)" "$rc" "4"
 
 # --- 18: HIMMEL-3638 console add-on -- a live session named exactly the
 # FULL doc stem (-RESUME and date intact), as the console launches legs this

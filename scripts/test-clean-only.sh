@@ -72,10 +72,17 @@ printf 'base\n' > "$REPO/README"
 git -C "$REPO" add README
 git -C "$REPO" commit -q -m "base"
 git -C "$REPO" branch -m main 2>/dev/null || true
-git -C "$REPO" remote add origin https://github.com/owner/repo.git
+# A real local bare repo as origin (not a fake https URL) so the
+# HIMMEL-3747 --only-allow-unmerged "head is on the remote" check can do a
+# genuine `git ls-remote origin` — gh (stubbed below) still answers the PR
+# cache/NWO lookups, independent of this URL.
+ORIGIN_BARE="$TMP_ROOT_UNIX/origin.git"
+git init -q --bare "$ORIGIN_BARE"
+git -C "$REPO" remote add origin "$ORIGIN_BARE"
 
-# Stub gh: every feat/* branch is a merged PR at its current tip; any other
-# branch has no PR row (kept as "PR not merged").
+# Stub gh: every feat/* branch is a merged PR at its current tip; open/* and
+# closed/* branches get a PR row in that state (HIMMEL-3747 fixtures); any
+# other branch has no PR row at all ("none").
 STUB_DIR="$TMP_ROOT_UNIX/bin"
 mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/gh" <<'STUB'
@@ -87,6 +94,12 @@ if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then
     while IFS=' ' read -r branch sha; do
         printf 'owner/repo\t%s\tmerged\t%s\n' "$branch" "$sha"
     done < <(git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/feat)
+    while IFS=' ' read -r branch sha; do
+        printf 'owner/repo\t%s\topen\t%s\n' "$branch" "$sha"
+    done < <(git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/open)
+    while IFS=' ' read -r branch sha; do
+        printf 'owner/repo\t%s\tclosed\t%s\n' "$branch" "$sha"
+    done < <(git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/closed)
     exit 0
 fi
 if echo "$args" | grep -q -- "--state merged"; then echo "1"; exit 0; fi
@@ -95,6 +108,23 @@ exit 0
 STUB
 chmod +x "$STUB_DIR/gh"
 
+# A second stub whose PR-cache fetch fails outright (HIMMEL-3747: models an
+# unresolvable PR_STATE — gh/cache failure — which must stay fail-closed
+# even under --only-allow-unmerged).
+STUB_DIR_FAIL="$TMP_ROOT_UNIX/bin-fail"
+mkdir -p "$STUB_DIR_FAIL"
+cat > "$STUB_DIR_FAIL/gh" <<'STUB'
+#!/usr/bin/env bash
+args="$*"
+if echo "$args" | grep -q "auth status"; then exit 0; fi
+if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi
+if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then
+    exit 1
+fi
+exit 0
+STUB
+chmod +x "$STUB_DIR_FAIL/gh"
+
 mk_wt() {
     local name="$1" branch="$2"
     git -C "$REPO" worktree add -q "$TMP_ROOT/$name" -b "$branch" >/dev/null 2>&1
@@ -102,11 +132,15 @@ mk_wt() {
 }
 
 # run_clean <script> <args...> — runs from inside the fixture repo; prints
-# combined output then a final "rc=<n>" line.
+# combined output then a final "rc=<n>" line. Honors RUN_CLEAN_STUB_DIR to
+# swap in the failing-gh stub for one call (HIMMEL-3747 unknown-state case).
 run_clean() {
     local script="$1"; shift
     (
-        export PATH="${STUB_DIR}:${PATH}"
+        export PATH="${RUN_CLEAN_STUB_DIR:-$STUB_DIR}:${PATH}"
+        # origin is a real local bare repo (for ls-remote), not a github.com
+        # URL, so force forge detection past its origin-hostname sniff.
+        export FORGE=github
         cd "$REPO" || exit 1
         set +e
         out=$(bash "$script" "$@" 2>&1)
@@ -217,6 +251,56 @@ expect "8: ambiguous target refused non-zero" "$out" rc_nonzero "$out"
 expect "8: message names the ambiguity" "$out" grepq "$out" "matches 2 worktrees"
 expect "8: path-matched worktree kept" "$out" is_dir "$REPO/feat/amb"
 expect "8: branch-matched worktree kept" "$out" is_dir "$WT_AMB_BR"
+
+# ── case 9: --only-allow-unmerged (HIMMEL-3747) ──────────────────────────────
+echo "CASE 9: --only-allow-unmerged"
+
+WT_UA_NONE=$(mk_wt wt-ua-none none/case)
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_NONE")
+expect "9a control: no-PR branch refused WITHOUT the flag" "$out" rc_nonzero "$out"
+expect "9a control: kept" "$out" is_dir "$WT_UA_NONE"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_NONE" --only-allow-unmerged)
+expect "9a: no-PR branch, clean, zero-ahead pruned WITH the flag" "$out" is_gone "$WT_UA_NONE"
+
+WT_UA_CLOSED=$(mk_wt wt-ua-closed closed/case)
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_CLOSED" --only-allow-unmerged)
+expect "9b: closed-unmerged PR, clean, zero-ahead pruned WITH the flag" "$out" is_gone "$WT_UA_CLOSED"
+
+WT_UA_OPEN=$(mk_wt wt-ua-open open/case)
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_OPEN" --only-allow-unmerged)
+expect "9c: OPEN PR still refused even WITH the flag" "$out" rc_nonzero "$out"
+expect "9c: open-PR worktree kept" "$out" is_dir "$WT_UA_OPEN"
+
+WT_UA_DIRTY=$(mk_wt wt-ua-dirty none/dirty)
+printf 'changed\n' >> "$WT_UA_DIRTY/README"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_DIRTY" --only-allow-unmerged)
+expect "9d: dirty tree still refused WITH the flag" "$out" rc_nonzero "$out"
+expect "9d: dirty worktree kept" "$out" is_dir "$WT_UA_DIRTY"
+
+WT_UA_PUSHED=$(mk_wt wt-ua-pushed none/pushed)
+printf 'extra\n' > "$WT_UA_PUSHED/extra.txt"
+git -C "$WT_UA_PUSHED" add extra.txt
+git -C "$WT_UA_PUSHED" commit -q -m "extra commit ahead of main"
+git -C "$REPO" push -q origin "none/pushed:refs/heads/none/pushed"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_PUSHED" --only-allow-unmerged)
+expect "9e: ahead-of-main but head pushed to origin pruned WITH the flag" "$out" is_gone "$WT_UA_PUSHED"
+
+WT_UA_NOTPUSHED=$(mk_wt wt-ua-notpushed none/notpushed)
+printf 'extra\n' > "$WT_UA_NOTPUSHED/extra.txt"
+git -C "$WT_UA_NOTPUSHED" add extra.txt
+git -C "$WT_UA_NOTPUSHED" commit -q -m "extra commit, never pushed"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_NOTPUSHED" --only-allow-unmerged)
+expect "9f: ahead-of-main and NOT on origin refused WITH the flag" "$out" rc_nonzero "$out"
+expect "9f: unpushed-ahead worktree kept" "$out" is_dir "$WT_UA_NOTPUSHED"
+
+WT_UA_UNKNOWN=$(mk_wt wt-ua-unknown none/unknown)
+out=$(RUN_CLEAN_STUB_DIR="$STUB_DIR_FAIL" run_clean "$CLEAN_GARDEN" --only "$WT_UA_UNKNOWN" --only-allow-unmerged)
+expect "9g: unresolvable PR state (gh/cache failure) refused WITH the flag" "$out" rc_nonzero "$out"
+expect "9g: unknown-state worktree kept" "$out" is_dir "$WT_UA_UNKNOWN"
+
+out=$(run_clean "$CLEAN_GARDEN" --only-allow-unmerged)
+expect "9h: --only-allow-unmerged with no --only refused" "$out" rc_nonzero "$out"
+expect "9h: usage error names the flag" "$out" grepq "$out" -e "--only-allow-unmerged requires --only"
 
 # ── control: the plain (fleet-wide) run still prunes every merged sibling ────
 echo "CONTROL: plain --prune-only"
