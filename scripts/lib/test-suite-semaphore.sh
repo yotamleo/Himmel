@@ -276,6 +276,19 @@ else
 fi
 wait "$HOLDER" 2>/dev/null || true
 
+# --- 13: run-shell-tests.sh releases its slot on a successful run (the EXIT
+# trap's `suite_sem_release` call) -- a leaked slot here would starve every
+# later suite on the machine, not just this tree's own re-runs. ---
+new_sem
+env -u HIMMEL_SUITE_SLOT_HELD -u HIMMEL_SUITE_LOCK_HELD -u SUITE_LOCK_WAIT \
+    HIMMEL_SUITE_SEMAPHORE_DIR="$SEM" HIMMEL_SUITE_SLOTS=1 TMPDIR="$SCRATCH" HIMMEL_RUNTIME_PREFLIGHT=0 \
+    bash "$RUNNER" "$FIX" >"$SCRATCH/runner-ok.out" 2>&1 </dev/null; RC=$?
+if [ "$RC" = "0" ] && [ ! -e "$SEM/slot-1" ]; then
+    pass "run-shell-tests.sh releases its semaphore slot on a successful run"
+else
+    fail "run-shell-tests.sh slot release -- expected rc 0 + no slot-1, got rc=$RC slot-1=$([ -e "$SEM/slot-1" ] && echo present || echo absent): $(tail -5 "$SCRATCH/runner-ok.out")"
+fi
+
 if [ "$FAILED" -eq 0 ]; then
     echo "OK: all $CASES cases passed"
     exit 0
