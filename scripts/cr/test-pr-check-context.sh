@@ -2583,6 +2583,14 @@ fi
 # cwd) this misclassifies the anchor's own root as adopter, and the fixed
 # code (plain --git-common-dir + a `cd -P`/`pwd -P` absolutization,
 # validated by looks_like_absolute_path) correctly stays himmel.
+#
+# anchor13 is checked out on 'main' at this point (every earlier test's
+# worktree adds branch off it without switching it) -- HIMMEL-2773's
+# default-branch refusal (rc=4) fires before this fix's own code ever runs
+# there. Switch it to a non-default branch first: the "own root, not a
+# linked worktree" scenario this test targets does not require main itself,
+# only that cwd's git-common-dir resolves to the anchor's own .git.
+(cd "$anchor13" && git checkout -q -b t67-anchor-root) || { echo "FAIL: T67 could not switch anchor13 off main"; fail=1; }
 real_git67=$(command -v git)
 fakegit_dir67="$tmp/pathformat230-fake-git-bin"
 mkdir -p "$fakegit_dir67"
