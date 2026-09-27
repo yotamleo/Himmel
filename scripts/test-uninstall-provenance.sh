@@ -1526,6 +1526,7 @@ AFTER41_FIRST_BYTES=$([ -f "$HUD_LEGACY41" ] && cat "$HUD_LEGACY41" || echo "ABS
 check "RED41 setup: uninstall #1 restored the operator's original" "$AFTER41_FIRST_BYTES" "$ORIG41_BYTES"
 # The plugin-dir sweep: the just-restored file (and its already-pruned
 # backup) are both gone again, while the ledger unit is still live (m1).
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
 rm -rf "$HOME/.claude/plugins/claude-hud"
 run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null; rc41dry=$?
 check "RED41 dry-run #2: exits 0 (no-backup is not a halt)" "$rc41dry" "0"
