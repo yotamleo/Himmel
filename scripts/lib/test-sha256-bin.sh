@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # single quotes below are deliberate: $1/$2 are
+# the sub-shell's OWN positional args (via `-c '...' _ "$LIBF" ...`), not
+# this script's — double-quoting would expand the wrong scope's variables.
 # scripts/lib/test-sha256-bin.sh — tests for scripts/lib/sha256-bin.sh
 # (HIMMEL-3177). Hermetic: every PATH is a stub dir.
 #

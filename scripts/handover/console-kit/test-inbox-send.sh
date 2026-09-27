@@ -287,6 +287,7 @@ INBOX28="$HANDOVER_DIR/inbox/$SESSION28.md"
 # the sha256 of the bullet as appended.
 out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" bash "$SCRIPT" "$SESSION28" ledgered --token lt1 2>&1)"; rc=$?
 bullet_line="$(tail -n1 "$INBOX28" 2>/dev/null)"
+# shellcheck disable=SC2119 # sha256_hex reads stdin here, by design
 expected_sha="$(printf '%s' "$bullet_line" | sha256_hex)"
 ledger_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
 ledger_sha="$(tail -n1 "$LEDGER" 2>/dev/null | awk '{print $4}')"

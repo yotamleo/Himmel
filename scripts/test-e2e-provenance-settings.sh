@@ -53,6 +53,7 @@ wires() {
   bash "$lib/wire-luna-vault.sh"        "$SETTINGS" "C:/fake/vault" >/dev/null
   bash "$lib/wire-handover-dir.sh"      "$SETTINGS" "C:/fake/vault/handovers" >/dev/null
 }
+# shellcheck disable=SC2119 # sha256_hex reads stdin here, by design
 sha() { printf '%s' "$1" | sha256_hex; }
 # rows_of <unit> [op] -- artifact rows for one unit, optionally one op
 rows_of() { jq -c --arg u "$1" --arg o "${2:-}" 'select(.unit==$u and ($o=="" or .op==$o))' "$LEDGER" 2>/dev/null; }
