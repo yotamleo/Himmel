@@ -161,7 +161,7 @@ else
 fi
 # D4 dry-run parity across non-stray branches: nothing mutated, regardless of verdict.
 if [ -d "$WT_NOTES" ] && [ -d "$WT_WIP" ] && [ -d "$WT_NESTED" ] && [ -d "$WT_MIXED" ] && [ -d "$WT_BAK" ] && [ -d "$WT_SCAN" ] && [ -d "$WT_PYCACHE" ] && [ -d "$WT_PYSRC" ] && [ -d "$WT_PYNEW" ] && [ -d "$WT_VITEST" ]; then
-    pass "6: dry-run mutated nothing across all branch types (forgotten/tracked/nested/mixed/bak/scanfail/pycache/pysrc/pynew)"
+    pass "6: dry-run mutated nothing across all branch types (forgotten/tracked/nested/mixed/bak/scanfail/pycache/pysrc/pynew/vitest)"
 else
     fail "6: dry-run removed a non-stray worktree" "$dry_out"
 fi
