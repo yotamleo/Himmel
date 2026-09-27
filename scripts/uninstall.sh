@@ -3975,6 +3975,44 @@ $_pu_key
 $_prov_units_raw
 EOF
       fi
+      # HIMMEL-3787: a torn/unparsable ledger row is dropped silently at LOAD
+      # (prov_read_load counts it in PROV_READ_BAD_ROWS but drops it before it
+      # ever reaches prov_read_units), so the per-unit scan above never sees
+      # it and has nothing to refuse on. Two independent, backup-preserving
+      # checks close that gap: (a) any bad row at all makes the ledger's
+      # account of what's on disk unreliable, so refuse outright; (b) scan the
+      # backup directory itself for files no VALID raw row's .pre.backup
+      # references at all -- an orphan left behind by exactly this failure
+      # mode, regardless of whether (a) already caught it.
+      if [ "${PROV_READ_BAD_ROWS:-0}" -gt 0 ] 2>/dev/null; then
+        _prov_unrestored="${_prov_unrestored}(unparsable provenance ledger row(s): $PROV_READ_BAD_ROWS)"$'\n'
+      fi
+      if [ -n "$_prov_scan_dir" ] && [ -n "$_prov_scan_ledger" ] && [ -f "$_prov_scan_ledger" ]; then
+        _prov_scan_backups_dir="$_prov_scan_dir/provenance-backups"
+        if [ -d "$_prov_scan_backups_dir" ]; then
+          _prov_known_backups="$(jq -R -r -s '
+            split("\n") as $lines
+            | (if ($lines|length) > 0 and $lines[-1] == "" then $lines[0:-1] else $lines end)[]
+            | (try fromjson catch null)
+            | select(. != null)
+            | (.pre.backup? // empty)
+          ' "$_prov_scan_ledger" 2>/dev/null)"
+          _prov_known_backups="
+$_prov_known_backups
+"
+          while IFS= read -r _pb_file; do
+            [ -n "$_pb_file" ] || continue
+            case "$_prov_known_backups" in
+              *"
+$_pb_file
+"*) continue ;;
+            esac
+            _prov_unrestored="${_prov_unrestored}${_pb_file} (orphan backup: no ledger row accounts for it)"$'\n'
+          done <<EOF
+$(find "$_prov_scan_backups_dir" -type f 2>/dev/null)
+EOF
+        fi
+      fi
       if [ -n "$_prov_unrestored" ]; then
         echo "WARN: refusing --purge-state — these backups have not been restored:" >&2
         printf '%s' "$_prov_unrestored" | while IFS= read -r _pu_path; do

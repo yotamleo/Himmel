@@ -1764,6 +1764,80 @@ REFUSED54=$([ "$rc54" -ne 0 ] && echo yes || echo no)
 check "RED54: --purge-state refuses (non-zero) when the per-row backup check itself fails" "$REFUSED54" "yes"
 check "RED54: refusing means deleting nothing — the backup survives" "$BACKUPS54_AFTER" "$BACKUPS54_BEFORE"
 
+echo "==== RED55 (HIMMEL-3787): a torn/unparsable ledger row's own backup must refuse --purge-state (backup-dir orphan scan); a healthy row alongside it still restores normally ===="
+# J1390A Minor (b): a torn row is dropped SILENTLY at ledger LOAD (before it
+# ever reaches prov_read_units), so the HIMMEL-3637 per-unit scan above never
+# sees it and has nothing to refuse on. Simulates a crash mid-append: the
+# backup file for DEST_TORN55 was written successfully, but its ledger row
+# never finished writing (truncated line, unparsable).
+new_case red55
+mkdir -p "$CASE_DIR/cwd/scripts"
+DEST_GOOD55="$CASE_DIR/cwd/scripts/good.sh"
+DEST_TORN55="$CASE_DIR/cwd/scripts/torn.sh"
+printf '#!/bin/sh\necho original-good\n' > "$DEST_GOOD55"
+printf '#!/bin/sh\necho original-torn\n' > "$DEST_TORN55"
+ORIG_GOOD55_BYTES=$(cat "$DEST_GOOD55")
+SNAP_GOOD55=$(mktemp "$SUITE_TMP/SNAPG55.XXXXXX") || exit 1
+cp -p "$DEST_GOOD55" "$SNAP_GOOD55"
+SNAP_TORN55=$(mktemp "$SUITE_TMP/SNAPT55.XXXXXX") || exit 1
+cp -p "$DEST_TORN55" "$SNAP_TORN55"
+printf '#!/bin/sh\necho himmel-installed-good\n' > "$DEST_GOOD55"
+printf '#!/bin/sh\necho himmel-installed-torn\n' > "$DEST_TORN55"
+( prov_begin --writer adopt.sh -- seed-red55 >/dev/null
+  prov_record replace file "$DEST_GOOD55" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP_GOOD55" --backup --post-file "$DEST_GOOD55" >/dev/null
+  prov_record replace file "$DEST_TORN55" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP_TORN55" --backup --post-file "$DEST_TORN55" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP_GOOD55" "$SNAP_TORN55"
+LEDGER55="$HIMMEL_PROVENANCE_DIR/provenance.jsonl"
+BACKUPS55_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+check "RED55: setup actually created two backups (control is not vacuous)" "$BACKUPS55_BEFORE" "2"
+# truncate the TORN row's own line to half its length so it no longer
+# parses as JSON at all -- its backup, created above, is untouched.
+TORN55_LINE=$(grep -n -F "$DEST_TORN55" "$LEDGER55" | tail -1 | cut -d: -f1)
+[ -n "$TORN55_LINE" ] || { echo "FAIL - RED55 setup: could not find the torn row's own line" >&2; fails=$((fails+1)); }
+TORN55_CONTENT=$(sed -n "${TORN55_LINE}p" "$LEDGER55")
+TORN55_HALF="${TORN55_CONTENT:0:$((${#TORN55_CONTENT} / 2))}"
+awk -v n="$TORN55_LINE" -v r="$TORN55_HALF" 'NR==n{print r; next} {print}' "$LEDGER55" > "$LEDGER55.next" \
+  && mv "$LEDGER55.next" "$LEDGER55"
+out55=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks --skip-settings)
+rc55=$?
+BACKUPS55_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+REFUSED55=$([ "$rc55" -ne 0 ] && echo yes || echo no)
+warn55=$(printf '%s\n' "$out55" | grep -c -F "refused to purge")
+check "RED55: --purge-state refuses (non-zero) when a torn ledger row's own backup is on disk" "$REFUSED55" "yes"
+check "RED55: a refusal warning is printed" "$([ "$warn55" -ge 1 ] && echo yes || echo no)" "yes"
+check "RED55: refusing means deleting nothing -- both backups survive" "$BACKUPS55_AFTER" "$BACKUPS55_BEFORE"
+AFTER_GOOD55_BYTES=$(cat "$DEST_GOOD55")
+check "RED55: the good row's unit still restores normally despite the torn row alongside it" \
+  "$AFTER_GOOD55_BYTES" "$ORIG_GOOD55_BYTES"
+
+echo "==== RED56 (HIMMEL-3787): a torn ledger row must NOT abort a normal (non-purge) uninstall -- only --purge-state is refused ===="
+new_case red56
+mkdir -p "$CASE_DIR/cwd/scripts"
+DEST_GOOD56="$CASE_DIR/cwd/scripts/good.sh"
+printf '#!/bin/sh\necho original-good\n' > "$DEST_GOOD56"
+ORIG_GOOD56_BYTES=$(cat "$DEST_GOOD56")
+SNAP_GOOD56=$(mktemp "$SUITE_TMP/SNAPG56.XXXXXX") || exit 1
+cp -p "$DEST_GOOD56" "$SNAP_GOOD56"
+printf '#!/bin/sh\necho himmel-installed-good\n' > "$DEST_GOOD56"
+( prov_begin --writer adopt.sh -- seed-red56 >/dev/null
+  prov_record replace file "$DEST_GOOD56" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP_GOOD56" --backup --post-file "$DEST_GOOD56" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP_GOOD56"
+LEDGER56="$HIMMEL_PROVENANCE_DIR/provenance.jsonl"
+# a garbage line of its own -- never a real row, just a torn tail from a
+# crash mid-append that a normal (non-purge) uninstall must tolerate.
+printf '{"t":"2026-01-01T00:00:00Z","iid":"x","op":"replace","kind":"fil\n' >> "$LEDGER56"
+out56=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings)
+rc56=$?
+AFTER_GOOD56_BYTES=$(cat "$DEST_GOOD56")
+check "RED56: a torn row does not abort a normal (non-purge) uninstall" "$rc56" "0"
+check "RED56: the good row's unit still restores normally on a normal uninstall" \
+  "$AFTER_GOOD56_BYTES" "$ORIG_GOOD56_BYTES"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \
