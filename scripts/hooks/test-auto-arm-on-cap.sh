@@ -24,6 +24,19 @@ export HIMMEL_QUOTA_GAUGE_LEDGER="$TMP/quota-gauge.jsonl"
 REAL_LEDGER="${HOME:-}/.himmel/quota-gauge.jsonl"
 if [ -f "$REAL_LEDGER" ]; then REAL_LEDGER_BEFORE="$(wc -c < "$REAL_LEDGER" | tr -d ' ')"; else REAL_LEDGER_BEFORE="ABSENT"; fi
 
+# HIMMEL-1712: hermetic identity so every write_cache()/raw fixture below can
+# stamp the SAME matching account hash -- this suite is about threshold/arm
+# logic, not identity, and a dedicated account-mismatch case is added
+# separately below. Set AFTER REAL_LEDGER is captured (that leak-guard checks
+# the ambient real ledger path, not this scratch HOME).
+export HOME="$TMP/home"; mkdir -p "$HOME"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-auto-arm-test"}}' > "$HOME/.claude.json"
+IDLIB="$(cd "$(dirname "$0")" && pwd)/../lib/usage-cache-identity.sh"
+# shellcheck source=../lib/usage-cache-identity.sh
+# shellcheck disable=SC1091
+. "$IDLIB"
+ACCT="$(current_account_hash)"
+
 pass=0
 fail=0
 
@@ -83,7 +96,7 @@ write_cache() {
     # $1 = path, $2 = five_hour util, $3 = seven_day util, $4 = five_hour resets_at (optional)
     local resets="${4:-2026-06-10T13:30:00+00:00}"
     cat > "$1" <<EOF
-{"five_hour":{"utilization":$2,"resets_at":"$resets"},"seven_day":{"utilization":$3,"resets_at":"2026-06-13T09:00:00+00:00"}}
+{"five_hour":{"utilization":$2,"resets_at":"$resets"},"seven_day":{"utilization":$3,"resets_at":"2026-06-13T09:00:00+00:00"},"account":"$ACCT"}
 EOF
 }
 
@@ -308,7 +321,7 @@ assert_file "no arm call on unparseable cache" absent "$ARM_LOG"
 echo "Test 11: schema drift — cache with NO parseable utilization is a quiet no-op (not 0%)"
 S="$TMP/s11"; mkdir -p "$S"
 C="$TMP/c11.json"
-echo '{"five_hour":{"percent":99,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"percent":99}}' > "$C"
+echo '{"five_hour":{"percent":99,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"percent":99},"account":"'"$ACCT"'"}' > "$C"
 run_hook "$S" "$C"
 assert_rc "schema-drift run exits 0 (unusable signal, not healthy)" 0 $?
 assert_file "no arm call on schema drift" absent "$ARM_LOG"
@@ -750,7 +763,7 @@ rm -f "$ARM_LOG"
 seven_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
 seven_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$seven_iso")
 C="$TMP/c42.json"
-printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":95,"resets_at":"%s"}}' "$seven_iso" > "$C"
+printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":95,"resets_at":"%s"},"account":"%s"}' "$seven_iso" "$ACCT" > "$C"
 touch -d '@1' "$C"
 AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
@@ -769,7 +782,7 @@ five_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.ti
 seven_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
 five_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$five_iso")
 C="$TMP/c43.json"
-printf '{"five_hour":{"utilization":95,"resets_at":"%s"},"seven_day":{"utilization":95,"resets_at":"%s"}}' "$five_iso" "$seven_iso" > "$C"
+printf '{"five_hour":{"utilization":95,"resets_at":"%s"},"seven_day":{"utilization":95,"resets_at":"%s"},"account":"%s"}' "$five_iso" "$seven_iso" "$ACCT" > "$C"
 touch -d '@1' "$C"
 AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
@@ -785,7 +798,7 @@ rm -f "$ARM_LOG"
 far_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
 far_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$far_iso")
 C="$TMP/c44.json"
-printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":95,"resets_at":"%s"}}' "$far_iso" > "$C"
+printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":95,"resets_at":"%s"},"account":"%s"}' "$far_iso" "$ACCT" > "$C"
 touch -d '@1' "$C"
 AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
@@ -811,7 +824,7 @@ rm -f "$ARM_LOG"
 seven_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))')
 seven_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$seven_iso")
 C="$TMP/c45.json"
-printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":1782696700,"resets_at":"%s"}}' "$seven_iso" > "$C"
+printf '{"five_hour":{"utilization":10,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":1782696700,"resets_at":"%s"},"account":"%s"}' "$seven_iso" "$ACCT" > "$C"
 touch -d '@1' "$C"
 AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
@@ -838,7 +851,7 @@ seven_iso=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.t
 five_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$five_iso")
 seven_hhmm=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone().strftime("%H:%M"))' "$seven_iso")
 C="$TMP/c46.json"
-printf '{"five_hour":{"utilization":95,"resets_at":"%s"},"seven_day":{"utilization":10,"resets_at":"%s"}}' "$five_iso" "$seven_iso" > "$C"
+printf '{"five_hour":{"utilization":95,"resets_at":"%s"},"seven_day":{"utilization":10,"resets_at":"%s"},"account":"%s"}' "$five_iso" "$seven_iso" "$ACCT" > "$C"
 touch -d '@1' "$C"
 AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" AUTO_ARM_STALE_MIN_CHECKS=1 \
     AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
@@ -916,7 +929,7 @@ rm -rf "$S29/auto-arm-status-${fired_key_29}.md"
 echo "Test 30: null utilization on one window, other below threshold (HIMMEL-279) — warn + quiet no-op (below threshold)"
 S="$TMP/s30"; mkdir -p "$S"
 C="$TMP/c30.json"
-printf '{"five_hour":{"utilization":null,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":30,"resets_at":"2026-06-13T09:00:00+00:00"}}' > "$C"
+printf '{"five_hour":{"utilization":null,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":30,"resets_at":"2026-06-13T09:00:00+00:00"},"account":"%s"}' "$ACCT" > "$C"
 rm -f "$ARM_LOG"
 run_hook "$S" "$C"
 assert_rc "null-one-below-threshold exits 0 (no arm)" 0 $?
@@ -933,7 +946,7 @@ fi
 echo "Test 31: null utilization on one window, other above threshold (HIMMEL-279) — warn + still ARM"
 S="$TMP/s31"; mkdir -p "$S"
 C="$TMP/c31.json"
-printf '{"five_hour":{"utilization":null,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":95,"resets_at":"2026-06-13T09:00:00+00:00"}}' > "$C"
+printf '{"five_hour":{"utilization":null,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":95,"resets_at":"2026-06-13T09:00:00+00:00"},"account":"%s"}' "$ACCT" > "$C"
 rm -f "$ARM_LOG"
 run_hook "$S" "$C"
 assert_rc "null-one-above-threshold still trips (exits 2)" 2 $?
@@ -950,7 +963,7 @@ rm -f "$ARM_LOG"
 echo "Test 32: BOTH windows null (HIMMEL-279) — MALFUNCTION exit 1, NOT quiet no-op"
 S="$TMP/s32"; mkdir -p "$S"
 C="$TMP/c32.json"
-printf '{"five_hour":{"utilization":null,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":null,"resets_at":"2026-06-13T09:00:00+00:00"}}' > "$C"
+printf '{"five_hour":{"utilization":null,"resets_at":"2026-06-10T13:30:00+00:00"},"seven_day":{"utilization":null,"resets_at":"2026-06-13T09:00:00+00:00"},"account":"%s"}' "$ACCT" > "$C"
 rm -f "$ARM_LOG"
 run_hook "$S" "$C"
 assert_rc "both-null exits 1 (MALFUNCTION, not silent)" 1 $?
@@ -1028,6 +1041,22 @@ run_hook "$S" "$C"
 assert_rc "real over-100 overage still trips (exits 2)" 2 $?
 assert_file "arm called on a 150% overage" present "$ARM_LOG"
 rm -f "$ARM_LOG"
+
+# --- HIMMEL-1712: account-mismatched cache -- same quiet no-op as a missing
+# or unparseable cache (Tests 9-11); this watchdog fails OPEN and must never
+# arm on a number it cannot attribute to the current session's account.
+echo "Test 39b: account-mismatched cache -- quiet no-op (fail-open, no arm)"
+S="$TMP/s39b"; mkdir -p "$S"
+C="$TMP/c39b.json"; write_cache "$C" 99 99
+HOME_B="$TMP/home-b"; mkdir -p "$HOME_B"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-auto-arm-DIFFERENT"}}' > "$HOME_B/.claude.json"
+rm -f "$ARM_LOG"
+HOME="$HOME_B" AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" \
+    AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$HANDOVER_TEST_DIR" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+assert_rc "account-mismatched cache run exits 0" 0 $?
+assert_file "no arm call on account mismatch" absent "$ARM_LOG"
 
 # --- HIMMEL-687: leak guard -- real ledger untouched by the suite -----------
 echo "Test 40: quota-gauge ledger isolation -- real ~/.himmel/quota-gauge.jsonl untouched"

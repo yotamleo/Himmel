@@ -99,6 +99,17 @@ export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
 # throwaway dir so this suite never writes into the operator's real $HOME.
 export ARM_RUNNER_DIR="$TMP/arm-runners"
 
+# HIMMEL-1712: hermetic identity so every raw usage-cache fixture below can
+# stamp a matching account hash — resume-slot.sh now refuses (rc=2) a cache
+# whose .account doesn't match the current session, and CLAUDE_ACCOUNT_CONFIG
+# overrides current_account_hash's HOME lookup regardless of which g_env/
+# mac_env HOME override a given section below applies.
+export CLAUDE_ACCOUNT_CONFIG="$TMP/claude-account.json"
+printf '%s' '{"oauthAccount":{"accountUuid":"uuid-arm-resume-cron-test"}}' > "$CLAUDE_ACCOUNT_CONFIG"
+# shellcheck source=../lib/usage-cache-identity.sh
+. "$(dirname "$ARM")/../lib/usage-cache-identity.sh"
+ACCT="$(current_account_hash)"
+
 # ---------------------------------------------------------------------------
 # Helpers — same idiom as test-arm-resume-context.sh
 # ---------------------------------------------------------------------------
@@ -716,9 +727,10 @@ assert_not_contains "d: no sed diagnostic on stderr" "extra characters at the en
 G_HOME="$TMP/g-home"; mkdir -p "$G_HOME/.claude"
 g_env() { mac_env HOME="$G_HOME" CLAUDE_CONFIG_DIR="$G_HOME/.claude" "$@"; }
 SLOT_FREE_3121="$TMP/usage-free-3121.json"
-printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":5.0,"resets_at":"%s"}}' \
+printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":5.0,"resets_at":"%s"},"account":"%s"}' \
     "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')" \
     "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')" \
+    "$ACCT" \
     > "$SLOT_FREE_3121"
 
 : > "$CRON_STORE"

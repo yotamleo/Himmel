@@ -1,6 +1,6 @@
 ---
 name: gh-pr-view
-description: Use when user mentions a GitHub PR number (e.g. "#123", "PR 97", "pull request 42") or asks to view/show/check a specific pull request. Needs a PR number — a bare integer with PR/pull-request context, or the # prefix. Not for Jira tickets (HIMMEL-N or any `[A-Z]+-\d+` pattern → himmel-jira), branches, commits, or issues without PR context.
+description: View a specific GitHub PR by number ("PR 97", "#42"). Not Jira keys, branches, commits, or issues without PR context.
 ---
 
 # gh-pr-view

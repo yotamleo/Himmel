@@ -114,6 +114,23 @@ if [ "$MAX_AGE_SEC" -gt 0 ]; then
     fi
 fi
 
+# HIMMEL-1712: a cache stamped by a different account is a stale number
+# under this identity — treat it the same as the existing "can't trust
+# this window" contract (missing/null resets_at) rather than inventing a
+# new exit path. A missing/unreadable helper degrades to "can't tell" —
+# never a hard failure — so it falls through to the same lack of trust.
+IDLIB="$SCRIPT_DIR/../lib/usage-cache-identity.sh"
+# shellcheck source=../lib/usage-cache-identity.sh
+if ! { [ -r "$IDLIB" ] && . "$IDLIB"; } 2>/dev/null; then
+    usage_cache_account_mismatch() { return 0; }
+fi
+if usage_cache_account_mismatch "$CACHE_PATH"; then
+    echo "ERR cap-reset-time: ${WINDOW}.resets_at is null or missing in cache" >&2
+    echo "    Cache account does not match the current session's identity (or" >&2
+    echo "    carries no account at all) — the number cannot be trusted here." >&2
+    exit 3
+fi
+
 # Extract .resets_at via jq. Cache uses underscore keys (five_hour /
 # seven_day) — already normalised above.
 resets_at_iso=$(jq -r ".${WINDOW}.resets_at // \"\"" < "$CACHE_PATH" 2>/dev/null || true)

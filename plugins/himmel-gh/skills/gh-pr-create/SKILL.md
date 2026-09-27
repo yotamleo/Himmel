@@ -1,6 +1,6 @@
 ---
 name: gh-pr-create
-description: Use when user asks to open, create, or file a GitHub pull request ("open a PR", "create a pull request", "file a PR for this branch", "make a PR"). MUST mention PR / pull request. Do NOT trigger on "create issue" (could be ambiguous — could be GitHub issue or Jira). Do NOT trigger on Jira create ("create jira ticket" → himmel-jira).
+description: Open/create a GitHub PR ("open a PR", "create a pull request"). Not GitHub/Jira issue creation.
 ---
 
 # gh-pr-create

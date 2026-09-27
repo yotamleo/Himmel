@@ -1,6 +1,6 @@
 ---
 name: gh-pr-review
-description: Use when user asks to review a GitHub PR with a verdict — approve, request changes, or post a review comment ("approve PR 42", "request changes on #97", "leave a review on PR 100", "review PR 5 with comment"). MUST reference a PR number and an explicit review action. Do NOT trigger on Jira (HIMMEL-N → himmel-jira). Do NOT trigger on "leave a comment on PR" without verdict (that's /gh-pr-comment, plain comment).
+description: Submit a PR review verdict: approve/request-changes/comment ("approve PR 42"). Needs verdict. Not plain comments.
 ---
 
 # gh-pr-review
