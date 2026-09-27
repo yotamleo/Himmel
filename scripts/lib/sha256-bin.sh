@@ -39,5 +39,7 @@ sha256_hex() {
     else
         out=$($_SHA256_CMD) || return 1
     fi
-    printf '%s\n' "$out" | awk '{print $1}'
+    local hex
+    hex=$(printf '%s\n' "$out" | awk '{print $1}')
+    printf '%s\n' "${hex#\\}"
 }

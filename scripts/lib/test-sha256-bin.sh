@@ -100,5 +100,16 @@ else
     echo "  SKIP T5: neither sha256sum nor shasum on this host"
 fi
 
+echo "[test-sha256-bin] T6 GNU-style backslash-escaped output line: sha256_hex strips the leading backslash"
+d6="$(stub_dir t6 awk)"
+ln -sf "$BASH_BIN" "$d6/bash"
+cat > "$d6/sha256sum" <<'STUB'
+#!/usr/bin/env bash
+printf '\\%s  file.txt\n' "$KNOWN_HEX_STUB"
+STUB
+chmod +x "$d6/sha256sum"
+out="$(PATH="$d6" KNOWN_HEX_STUB="$KNOWN_HEX" "$BASH_BIN" -c '. "$1"; sha256_hex "$2"' _ "$LIBF" "$W/whatever" 2>/dev/null)"
+eq "T6 sha256_hex strips the leading backslash from an escaped digest line" "$out" "$KNOWN_HEX"
+
 echo "[test-sha256-bin] $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
