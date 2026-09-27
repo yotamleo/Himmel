@@ -407,8 +407,36 @@ fi
 # trailing slash / symlink / slash-style / Windows-casing difference between
 # the two paths cannot misclassify the lane - a foreign repo cannot fake a
 # match short of being a registered worktree of the anchor itself.
-cwd_common=$(git rev-parse --path-format=absolute --git-common-dir)
-if [ "$cwd_common" -ef "$anchor/.git" ]; then
+#
+# HIMMEL-2650 - `--path-format=absolute` needs git >= 2.31, but this repo's
+# declared minimum is git 2.30; an unrecognised `--path-format` is not
+# rejected by `git rev-parse` - it is echoed back as an ordinary output line
+# and the command still exits 0 with a garbage, non-absolute value (verified
+# directly, not assumed - see the ticket), and on that garbage the `-ef`
+# compare below always evaluates false regardless of any value check -
+# silently misclassifying a genuine himmel-lane run as adopter rather than
+# just failing safe. So this resolves the common dir WITHOUT --path-format
+# at all: plain `--git-common-dir` has been supported since git 2.5 and never
+# echoes anything back. Its result may be relative, so `looks_like_absolute_path`
+# validates it and, if it isn't already absolute, a `cd -P`/`pwd -P` subshell
+# (no bare $(...) trusted directly) makes it absolute by hand. Only if THAT
+# still fails to produce a usable absolute value does this fall to the
+# conservative adopter lane below (`himmel_dir` = anchor) - loudly, naming the
+# cause, never silently.
+looks_like_absolute_path() {
+    case "$1" in
+        /*|[A-Za-z]:[/\\]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+raw_common=$(git rev-parse --git-common-dir 2>/dev/null)
+cwd_common=""
+if looks_like_absolute_path "$raw_common"; then
+    cwd_common="$raw_common"
+elif [ -n "$raw_common" ]; then
+    cwd_common=$(cd -P -- "$raw_common" 2>/dev/null && pwd -P)
+fi
+if looks_like_absolute_path "$cwd_common" && [ "$cwd_common" -ef "$anchor/.git" ]; then
     anchor_lane=himmel
     # Deliberate - NOT $anchor: this is what lets a change to THIS branch's
     # own scripts/cr/ review itself (see "Anchor + delegation" above). Safe
@@ -437,6 +465,9 @@ if [ "$cwd_common" -ef "$anchor/.git" ]; then
         himmel_dir_is_anchor=yes
     fi
 else
+    if ! looks_like_absolute_path "$cwd_common"; then
+        echo "pr-check-context: could not resolve an absolute git-common-dir for $repo (raw value '$raw_common') - falling to the adopter lane" >&2
+    fi
     anchor_lane=adopter
     # Never anything the reviewed repo supplied.
     himmel_dir="$anchor"

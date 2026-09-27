@@ -2567,4 +2567,66 @@ else
   echo "negative control confirmed: marker '$real_marker' != deliberately wrong '$wrong_marker'"
 fi
 
+# T67 (HIMMEL-2650): git < 2.31 does NOT fail on an unsupported --path-format
+# -- it ECHOES the option back as an ordinary output line and still exits 0
+# with a garbage, non-absolute value (proven directly: `git rev-parse
+# --totally-unknown-option --git-common-dir` on this station's real git
+# prints the unknown option then the path, rc=0). The faithful stub below
+# reproduces that exact mechanism for the flag the code no longer even
+# calls at this site (--path-format=absolute) -- strips it out of argv,
+# echoes it back, execs real git with the rest -- to prove the fix does not
+# regress if the flag ever reappears nearby. Run DIRECTLY AT anchor13's own
+# root (not a linked worktree): that's the scenario where plain
+# `--git-common-dir` (no --path-format) returns a RELATIVE ".git", which is
+# exactly the shape the old `--path-format=absolute`-only code could not
+# recover from -- empirically confirmed pre-fix (base logic, same shim, same
+# cwd) this misclassifies the anchor's own root as adopter, and the fixed
+# code (plain --git-common-dir + a `cd -P`/`pwd -P` absolutization,
+# validated by looks_like_absolute_path) correctly stays himmel.
+real_git67=$(command -v git)
+fakegit_dir67="$tmp/pathformat230-fake-git-bin"
+mkdir -p "$fakegit_dir67"
+cat > "$fakegit_dir67/git" <<GITSHIM67
+#!/usr/bin/env bash
+saw_path_format=0
+args=()
+for a in "\$@"; do
+    if [ "\$a" = "--path-format=absolute" ]; then
+        saw_path_format=1
+        continue
+    fi
+    args+=("\$a")
+done
+if [ "\$saw_path_format" -eq 1 ]; then
+    echo "--path-format=absolute"
+fi
+exec "$real_git67" "\${args[@]}"
+GITSHIM67
+chmod +x "$fakegit_dir67/git"
+out67="$(cd "$anchor13" && PATH="$fakegit_dir67:$PATH" HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh")"
+rc67=$?
+check "$rc67" "0" "T67 rc"
+check "$(get_kv "$out67" anchor_lane)" "himmel" "T67 anchor_lane=himmel (a real himmel-lane run at the anchor root survives a git-2.30-shaped --path-format echo-back nearby, not silently downgraded to adopter)"
+
+# T68 (HIMMEL-2650): when the common-dir resolution genuinely cannot produce
+# an absolute value at all (not just the --path-format echo-back shape),
+# the fix must still fail CLOSED to the adopter lane -- and must say so
+# loudly on stderr, never silently (per the console's REDIRECT ruling).
+fakegit_dir68="$tmp/unresolvable-fake-git-bin"
+mkdir -p "$fakegit_dir68"
+cat > "$fakegit_dir68/git" <<GITSHIM68
+#!/usr/bin/env bash
+if [ "\$1" = "rev-parse" ] && [ "\$2" = "--git-common-dir" ]; then
+    echo "totally-unresolvable-garbage"
+    exit 0
+fi
+exec "$real_git67" "\$@"
+GITSHIM68
+chmod +x "$fakegit_dir68/git"
+out68="$(cd "$anchor13" && PATH="$fakegit_dir68:$PATH" HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh" 2>"$tmp/t68.err")"
+rc68=$?
+check "$rc68" "0" "T68 rc (fails closed, not hard-abort)"
+check "$(get_kv "$out68" anchor_lane)" "adopter" "T68 anchor_lane=adopter (an unresolvable common dir fails to the conservative lane)"
+grep -q 'could not resolve an absolute git-common-dir' "$tmp/t68.err" || { echo "FAIL: T68 missing the loud stderr diagnostic naming the cause"; fail=1; }
+
 [ "$fail" -eq 0 ] && echo "PASS test-pr-check-context" || exit 1

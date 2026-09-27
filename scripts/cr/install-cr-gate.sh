@@ -78,6 +78,11 @@ if ! git -C "$TARGET" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "install-cr-gate: $TARGET is not a git work tree" >&2
     exit 2
 fi
+# NOTE (HIMMEL-2650): this only catches an rc!=0 failure. Git < 2.31 does not
+# reject an unrecognised --path-format - it echoes the option back as an
+# ordinary output line and still exits 0 with a garbage, non-absolute value,
+# which this `|| {...}` cannot see. Follow-up ticket tracks giving this (and
+# the two --path-format sites below) real value validation.
 target_common_dir=$(git -C "$TARGET" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
     echo "install-cr-gate: cannot resolve git-common-dir of $TARGET" >&2
     exit 2
@@ -102,6 +107,11 @@ target_common_dir=$(git -C "$TARGET" rev-parse --path-format=absolute --git-comm
 # such a shim, which is why the gate does fire on a box configured that way —
 # but it cannot be assumed, and an un-chained global dir would otherwise leave
 # the adopter with an "installed" report over an inert gate.
+# NOTE (HIMMEL-2650): the `-n` check below only catches an EMPTY result. Git
+# < 2.31 echoes an unrecognised --path-format back as an ordinary output
+# line, so this comes back non-empty but garbage (not an absolute path) -
+# the check does not see that either. Follow-up ticket tracks value
+# validation here.
 git_hooks_dir=$(git -C "$TARGET" rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || git_hooks_dir=""
 [ -n "$git_hooks_dir" ] || {
     echo "install-cr-gate: cannot resolve the effective hooks dir of $TARGET" >&2
