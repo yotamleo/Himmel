@@ -554,7 +554,10 @@ brace_word_is_rootwalk() {
     local w="$1" inner part
     case "$w" in '{'*'}') ;; *) return 1 ;; esac
     inner="${w#\{}"; inner="${inner%\}}"
-    case "$inner" in *'{'*|*'}'*) return 1 ;; esac  # nested — leave opaque
+    case "$inner" in *'{'*|*'}'*) return 1 ;; esac
+    # ponytail: nested brace words (e.g. {{/,a},b}) stay opaque here — a
+    # one-level comma split, not a recursive brace-expansion parser.
+    # HIMMEL-3753 tracks whether that's worth building.
     local IFS=','
     for part in $inner; do
         case "$part" in '/'|'//') return 0 ;; esac  # codex-1: // is POSIX root too (is_root_anchor:503)
