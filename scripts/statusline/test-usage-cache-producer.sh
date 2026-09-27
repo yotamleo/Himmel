@@ -350,6 +350,27 @@ run_test "(16) HIMMEL-1712 CR (panel round 4, codex-1): a session whose FIRST re
   acct_new=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct_new" ] && [ "$acct_new" != "null" ] || exit 1;
 '
 
+run_test "(17) HIMMEL-1712 CR (panel round 8, codex-1): OAuth fetch is skipped, not mislabeled, when ~/.claude.json flips mid-session" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-17.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  export USAGE_OAUTH_TTL=0;
+  stub="$W/stub.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20}}" "JSON" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
+  printf "%s" "{\"session_id\":\"sess-17\",\"model\":{}}" | bash "$PRODUCER";
+  acct_first=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct_first" ] && [ "$acct_first" != "null" ] || exit 1;
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "10" ] || exit 1;
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  stub2="$W/stub2.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"five_hour\":{\"utilization\":99},\"seven_day\":{\"utilization\":88}}" "JSON" > "$stub2";
+  chmod +x "$stub2"; export USAGE_OAUTH_CMD="$stub2";
+  printf "%s" "{\"session_id\":\"sess-17\",\"model\":{}}" | bash "$PRODUCER";
+  acct_second=$(jq -r ".account" "$CLAUDE_USAGE_CACHE");
+  [ "$acct_second" = "$acct_first" ] || exit 1;
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "10" ] || exit 1;
+'
+
 # --- summary ------------------------------------------------------------------
 if [ "$_failures" -eq 0 ]; then
   echo "OK: all cases passed"

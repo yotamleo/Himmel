@@ -263,6 +263,21 @@ if printf '%s' "$oauth_at" | grep -Eq '^[0-9]+$'; then
   fi
 fi
 
+# HIMMEL-1712 CR (panel round 8, codex-1): the fetch below reads LIVE
+# credentials (env or ~/.claude/.credentials.json), not this session's pinned
+# $account_hash snapshot. If the disk identity flipped since first render, a
+# fetch here would pull the NEW account's numbers but stamp them under the
+# session's stale identity -- exactly the mislabeling the pinned-stamp design
+# exists to prevent. Skip the fetch (keep the previous cache) whenever a live
+# re-check of the identity disagrees with the pinned one.
+if [ -n "$account_hash" ]; then
+  live_account_hash=$(current_account_hash)
+  if [ -n "$live_account_hash" ] && [ "$live_account_hash" != "$account_hash" ]; then
+    echo "WARN usage-cache-producer: on-disk account identity changed since this session's first render; skipping OAuth fetch to avoid mislabeling" >&2
+    exit 0
+  fi
+fi
+
 fetched=""
 if [ -n "${USAGE_OAUTH_CMD:-}" ]; then
   # Seam: a PATH to an executable (fixture stub in tests). Executed directly —
