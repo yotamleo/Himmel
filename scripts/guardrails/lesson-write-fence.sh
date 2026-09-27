@@ -1243,83 +1243,47 @@ _deny_env_split_string() {
     deny "env -S/--split-string write refused: env's split-string value hides the real command from the lesson-write fence - it is a shell-like command line env parses and executes itself, not a plain operand this fence can classify. Run the wrapped command directly instead of through env -S/--split-string. clause=$1"
 }
 
-# _env_split_string_used <head_idx> <tok...> -> 0 iff an `env` token appears
-# among tok[0..head_idx-1] (the wrapper prefix `_clause_head_idx` walked
-# through) followed later in that same range by a case-sensitive `-S` token
-# (bare, with its value glued on, e.g. `-Stee ...`, or bundled behind other
-# no-value short flags, e.g. `-uS`/`-iS...` - GNU env accepts all these
-# spellings identically) or a long-option abbreviation of `--split-string`.
-# This is a coarse PRESENCE check, not a re-parse of env's own option
-# grammar (deliberately - duplicating that grammar here is exactly the kind
-# of drift HIMMEL-3659 already burned once): it does not care whether `-S`
-# was the token that actually consumed a value or not, only whether the verb
-# resolved through `env` and the wrapper's option region names `-S`/
-# `--split-string` at all. A false-positive match (e.g. some other flag's
-# OWN value happens to spell "-S") only routes the clause to the
-# unconditional fail-closed deny below instead of the normal verb/operand
-# path - the same safe-direction-favors-deny reasoning `process_clause_for_write`
-# already uses for procsub and interpreter inline-eval, never a new gap.
-# Console-authorized redesign (three rounds of Criticals against this same
-# parser: J1298A/J1298B/pr-check-round-3's codex-1) collapses this from a
-# raw-text-signal gate into an unconditional fail-closed deny (see
-# `_deny_env_split_string`) - `_clause_head_idx` no longer tries to skip past
-# `-S`'s value as ordinary opaque data (see the `env)` arm above), so this
-# check no longer needs to worry about `-S`'s value swallowing the rest of
-# the clause; it only needs to spot the flag.
+# _env_split_string_used <tok...> -> 0 iff some token's basename is `env`
+# (bare `env` or a path ending in `/env`, e.g. `/usr/bin/env`) and any LATER
+# token anywhere in the clause is a short-option cluster containing `S`
+# (`-S`, glued `-Stee...`, bundled `-uS`/`-iS'...'` - GNU env accepts all
+# these spellings identically) or a long-option abbreviation of
+# `--split-string`. Console ruling (pr-check round 4, codex-1 Critical):
+# the prior version walked only tok[0..head_idx-1], the wrapper-prefix range
+# `_clause_head_idx` resolves - for a NESTED wrapper (`env env -S '...'`)
+# that walk resolves the FIRST `env`'s option region and treats the SECOND
+# `env` token as the already-resolved verb, so the real `-S` sitting past it
+# was never inspected and the clause fell through to `_operand_targets`
+# unguarded. Fourth Critical in a row against hop/walk-based detection of
+# this flag (J1298A -> J1298B -> pr-check-round-3's codex-1 -> this one) -
+# per ruling, this is no longer a wrapper walk at all: it is a flat,
+# unconditional scan of every token in the clause, with no head_idx bound,
+# no hop count and no per-option value-skip logic (dropping the old
+# `-a`/`-u`/`-C` value-skip and `--unset`/`--chdir`/`--argv0` handling
+# entirely - there is nothing left to skip past when the scan does not care
+# which option position anything occupies). Accepted false-denies (Minor,
+# pinned in tests): a later, unrelated flag on a DIFFERENT verb in the same
+# clause that happens to spell an `-S`-shaped token (e.g. `env FOO=bar grep
+# -S x`) now also denies, coarser than the walk it replaces - accepted for
+# the same reason `_deny_env_split_string`'s own trade-off note gives.
 _env_split_string_used() {
-    local head_idx="$1"; shift
     local -a t=("$@")
-    local n=${#t[@]} i=0 s w in_env=0
-    [ "$head_idx" -le "$n" ] || head_idx="$n"
-    while [ "$i" -lt "$head_idx" ]; do
+    local n=${#t[@]} i=0 s w seen_env=0
+    while [ "$i" -lt "$n" ]; do
         s="$(_strip_wrap "${t[$i]}")"
         w="$(_lc "$s")"
-        if [ "$in_env" = 1 ]; then
+        if [ "$seen_env" = 1 ]; then
             case "$s" in
-                # `-S*` (not the exact `-S`) - GNU env accepts the value
-                # glued directly onto the letter (`-Stee...` behaves
-                # identically to `-S tee...`, empirically verified), and a
-                # glued token still carries the same executable split-string
-                # value.
-                -S*) return 0 ;;
-                --*)
-                    guard_is_long_abbrev "split-string" "$w" && return 0
-                    # judge J1298B C1: `--unset`/`--chdir`/`--argv0` are
-                    # env's OTHER value-taking long options - their value is
-                    # opaque data, skip it (mirrors `_clause_head_idx`'s
-                    # `GUARD_LOPT_HAS_EQ` handling) so a value that happens
-                    # to spell `-S...` is never mistaken for env's OWN flag.
-                    if guard_is_long_abbrev "unset" "$w" || guard_is_long_abbrev "chdir" "$w" \
-                        || guard_is_long_abbrev "argv0" "$w"; then
-                        [ "$GUARD_LOPT_HAS_EQ" = 1 ] || i=$((i+1))
-                    else
-                        return 1
-                    fi ;;
-                -a|-u|-C)
-                    # value is opaque data (a var name / dir / argv0
-                    # string) - skip it so a value that happens to spell
-                    # `-S...` is never mistaken for env's own `-S`.
-                    i=$((i+1)) ;;
-                -*S*)
-                    # console-authorized redesign: a bundled short-option
-                    # cluster carrying `S` anywhere after the leading dash
-                    # (e.g. `-uS`, `-iS'tee ...'`) - GNU env bundling puts
-                    # `-S` last in a cluster of no-value flags, so its own
-                    # glued value follows immediately. Fail closed on the
-                    # mere presence of the letter rather than re-parsing
-                    # which cluster position it occupies.
-                    return 0 ;;
-                -*) : ;;
-                *)
-                    # judge J1298B C1: the first bare (non-option) word ends
-                    # env's own option region - this is the resolved verb
-                    # (e.g. `sudo`), and any `-S` appearing AFTER it (like
-                    # sudo's own `-S`) is not env's split-string flag.
-                    return 1 ;;
+                -*S*) return 0 ;;
             esac
-        elif [ "$w" = env ]; then
-            in_env=1
+            case "$w" in
+                --split-string|--split-string=*) return 0 ;;
+                --*) guard_is_long_abbrev "split-string" "$w" && return 0 ;;
+            esac
         fi
+        case "$w" in
+            env|*/env) seen_env=1 ;;
+        esac
         i=$((i+1))
     done
     return 1
@@ -1533,18 +1497,15 @@ process_clause_for_write() {
         _clause_has_enforcement_signal "$clause_raw" && _deny_wrapper_enforcement_signal "$clause_raw"
     fi
 
-    # Console-authorized redesign (pr-check round 3, codex-1 Critical): a
-    # genuine `env -S`/`--split-string` clause denies UNCONDITIONALLY here,
-    # not gated on `_clause_has_enforcement_signal`'s raw-text scan. That
-    # scan is not a superset of `_operand_targets`' classification (it misses
-    # a directory target with no trailing slash and any cwd-relative
-    # target - the exact gap codex-1 found: a quoted single-token value like
-    # `env -S 'cp y a.sh'` from a protected cwd carries no textual signal at
-    # all), and `_clause_head_idx` no longer skips past `-S`'s value as an
-    # ordinary opaque option value, so there is nothing left to safely fall
-    # through to `_operand_targets` for. Treat the whole clause as
-    # unanalysable and stop here.
-    if _env_split_string_used "$head_idx" "${tok[@]}"; then
+    # Console-authorized redesign (pr-check round 3, codex-1 Critical; round 4,
+    # codex-1 Critical on the nested-wrapper gap): a genuine `env -S`/
+    # `--split-string` clause denies UNCONDITIONALLY here, not gated on
+    # `_clause_has_enforcement_signal`'s raw-text scan and not bounded by
+    # `head_idx`/the wrapper walk - `_env_split_string_used` now scans every
+    # token in the clause flatly, so a nested wrapper (`env env -S '...'`)
+    # cannot place the flag outside the range this check inspects. Treat the
+    # whole clause as unanalysable and stop here.
+    if _env_split_string_used "${tok[@]}"; then
         _deny_env_split_string "$clause_raw"
     fi
 

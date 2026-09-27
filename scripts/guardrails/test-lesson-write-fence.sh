@@ -1134,6 +1134,29 @@ run_hook deny "28: env -C /tmp -S 'echo hi' (chdir value then separate -S, no en
 run_hook deny "28: sudo env -S 'echo hi' (env -S nested under sudo, no enforcement signal)" \
     "$(bash_json "sudo env -S 'echo hi'" "$REPO")" 1
 
+echo "== 29: pr-check round-4 codex-1 - nested env env -S must still fail closed (flat scan, no wrapper walk) =="
+# codex-1 Critical: the round-3 detector only walked tok[0..head_idx-1] (the
+# wrapper prefix `_clause_head_idx` resolves), and for `env env -S '...'`
+# that walk resolves the FIRST env's option region and treats the SECOND env
+# token as the already-resolved verb, so the real -S sitting past it was
+# never inspected - a protected-cwd write ALLOWed. Console-mandated fix
+# replaces the walk with a flat, per-clause scan: env's presence anywhere,
+# followed by -S/--split-string anywhere later, denies unconditionally.
+run_hook deny "29: @scripts/hooks env env -S 'cp y a.sh' (nested env, cwd-relative target)" \
+    "$(bash_json "env env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+run_hook deny "29: @scripts/hooks env -- env -S 'cp y a.sh' (nested env past a bare --)" \
+    "$(bash_json "env -- env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+run_hook deny "29: @scripts/hooks sudo env env -S 'cp y a.sh' (nested env under sudo)" \
+    "$(bash_json "sudo env env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+run_hook deny "29: @scripts/hooks /usr/bin/env env --split-string='cp y a.sh' (absolute-path env, long-option nested)" \
+    "$(bash_json "/usr/bin/env env --split-string='cp y a.sh'" "$REPO/scripts/hooks")" 1
+run_hook deny "29: @scripts/hooks env env env -S 'cp y a.sh' (triple-nested env)" \
+    "$(bash_json "env env env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+run_hook deny "29: @scripts/hooks env -i env -S 'cp y a.sh' (outer env's own -i, nested -S)" \
+    "$(bash_json "env -i env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+run_hook deny "29: @scripts/hooks env -uX env -S 'cp y a.sh' (outer env's own -uX, nested -S)" \
+    "$(bash_json "env -uX env -S 'cp y a.sh'" "$REPO/scripts/hooks")" 1
+
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i deny; then
