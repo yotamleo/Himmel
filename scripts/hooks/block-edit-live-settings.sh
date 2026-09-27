@@ -1450,12 +1450,26 @@ _himmel_3761_mention_only_ok() {
 # file, which never contains a `.claude/worktrees/` segment. `--check` is
 # read-only by the script's own contract; no redirect operand is present at
 # all, so nothing this command does can write anywhere.
+#
+# The script name is checked POSITIONALLY (ST_LW[1], the token right after
+# `node`), never by scanning the whole command for a `wire-hook-bash.mjs`
+# substring: node treats every token before the script argument as a node
+# flag, so `node -e '<payload>' wire-hook-bash.mjs --check --settings <path>`
+# would otherwise satisfy a substring scan while actually running the `-e`
+# payload (the script name and `--check`/`--settings` become inert decoy
+# argv to a script node never loads). Requiring the script name at position 1
+# means no node-level flag — `-e`/`--eval` included — can appear before it.
 _himmel_3761_worktree_settings_check_ok() {
-    local k=0 lw has_check=0 has_script=0 settings_path='' next_is_settings=0
+    local k=1 lw has_check=0 settings_path='' next_is_settings=0
     local wt_re='(^|/)\.claude/worktrees/[^/]+/\.claude/settings\.json$'
     _tok_single_segment_ok || return 1
     case "${ST_LW[0]##*/}" in
         node) ;;
+        *) return 1 ;;
+    esac
+    [ "$ST_N" -ge 2 ] || return 1
+    case "${ST_LW[1]##*/}" in
+        wire-hook-bash.mjs) ;;
         *) return 1 ;;
     esac
     while [ "$k" -lt "$ST_N" ]; do
@@ -1465,16 +1479,13 @@ _himmel_3761_worktree_settings_check_ok() {
             settings_path=$lw
             next_is_settings=0
         fi
-        case "${lw##*/}" in
-            wire-hook-bash.mjs) has_script=1 ;;
-        esac
         case "$lw" in
             --check) has_check=1 ;;
             --settings) next_is_settings=1 ;;
         esac
         k=$((k + 1))
     done
-    [ "$has_check" = 1 ] && [ "$has_script" = 1 ] && [ -n "$settings_path" ] || return 1
+    [ "$has_check" = 1 ] && [ -n "$settings_path" ] || return 1
     has_traversal_dots "$cmd_lc" && return 1
     [[ "$settings_path" =~ $wt_re ]]
 }

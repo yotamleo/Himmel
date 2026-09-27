@@ -1518,6 +1518,15 @@ assert_rc "228 node wire-hook-bash.mjs --settings (worktree copy, no --check) de
 assert_rc "229 node wire-hook-bash.mjs --check --settings with an added live redirect denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json > .claude/settings.json")"
 
+# 230: node -e '<payload>' wire-hook-bash.mjs --check --settings <worktree
+# copy> -> DENY. `wire-hook-bash.mjs`/`--check`/`--settings <worktree path>`
+# are all present, but as INERT decoy argv after a `-e` payload node actually
+# executes — the script name and flags never reach node's own argv parsing.
+# Proves the allow check requires the script name at POSITION 1 (right after
+# `node`), not merely present anywhere in the command.
+assert_rc "230 node -e <payload> wire-hook-bash.mjs --check --settings (decoy argv) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node -e 'require(0)' wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
