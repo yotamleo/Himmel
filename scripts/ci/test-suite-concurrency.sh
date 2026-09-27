@@ -409,25 +409,20 @@ if [ "$rc2d2" -eq 2 ]; then
 else
   fail "foreign owner-file dir -> expected rc 2 got $rc2d2; output: $out2d2"
 fi
-# The verdict must not relabel an operational failure as contention
-# (HIMMEL-1805 round 4): this directory is not a lock and the reclaim refused
-# to delete foreign content -- a condition re-running cannot clear, so the
-# race verdict's "re-run in a moment" advice would send an unattended job
-# retrying forever without ever seeing the real requirement.
+# HIMMEL-1838: _suite_lock_reclaim's delete now goes through _suite_lock_drop,
+# the same shape-check the ordinary release path already relies on -- it wins
+# the .reclaim guard (the CAS still matches: nothing touched the decoy in the
+# interim) but refuses to delete a directory holding anything besides `owner`,
+# so it returns 0 having deleted nothing. _suite_lock_claim's own mkdir then
+# fails against the still-present foreign directory, so this is reported as an
+# ordinary lost race (TAKEOVER IN PROGRESS) rather than a dedicated verdict --
+# a caller cannot tell "foreign content" apart from "someone else won", but
+# nothing is ever deleted either way, which is the property this case exists
+# to protect.
 if grepq "$out2d2" -F 'TAKEOVER IN PROGRESS'; then
-  fail "an operational reclaim failure is reported as a takeover race; output: $out2d2"
+  pass "the undroppable-foreign-directory case reads as an ordinary lost race"
 else
-  pass "operational reclaim failure does not use the race verdict"
-fi
-if grepq "$out2d2" -F 'RECLAIM FAILED'; then
-  pass "operational reclaim failure has a verdict of its own"
-else
-  fail "operational reclaim failure has no verdict of its own; output: $out2d2"
-fi
-if grepq "$out2d2" -F 'RECLAIM ERROR'; then
-  pass "the concrete reclaim error is named"
-else
-  fail "no concrete reclaim error named; output: $out2d2"
+  fail "foreign owner-file dir missing the TAKEOVER IN PROGRESS verdict; output: $out2d2"
 fi
 if [ "$rc2d" -eq 2 ]; then
   pass "an unusable lock path refuses (rc 2) rather than proceeding unlocked"
@@ -441,17 +436,18 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# Case 2e -- a takeover is EXCLUSIVE: a live foreign claim blocks it.
+# Case 2e -- a takeover is EXCLUSIVE: a live reclaim guard blocks it.
 #
-# Two runs that both judge the same lock stale must not both reclaim it.
-# Dropping-then-claiming does not prevent that on its own: the second dropper
-# removes the first's fresh brand and rmdir's its now-empty directory, so both
-# end up believing they hold the lock. The right to take over is therefore
-# claimed with mkdir first (the takeover protocol scripts/handover/queue-lock.sh
-# arrived at for the same race). A live claim held by someone else means the
-# takeover is theirs, so this run refuses.
+# HIMMEL-1838: the old two-step protocol (a `.claim` sibling, branded and
+# raced against separately from the lock itself) is gone. The exclusivity
+# guarantee now lives entirely in _suite_lock_reclaim's own `.reclaim` mkdir
+# mutex -- the same shape suite-semaphore.sh's _suite_sem_reclaim already
+# uses. A second run whose reclaim attempt finds that guard already standing
+# cannot know whether the first is about to succeed or fail, so it must not
+# proceed either way: it loses the guard mkdir outright and reports the
+# ordinary lost-race verdict, without touching the guard.
 # --------------------------------------------------------------------------
-echo "== Case 2e: a live foreign takeover claim blocks the reclaim =="
+echo "== Case 2e: a live reclaim guard blocks a concurrent reclaim =="
 sb2e=$(new_sandbox)
 cat > "$sb2e/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
@@ -463,77 +459,44 @@ bash -c 'exit 0' & dead2e=$!
 wait "$dead2e" 2>/dev/null
 printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
   "$dead2e" "$(this_host)" "$(date +%s)" > "$lock2e/owner"
-# Another run is mid-takeover of this same abandoned lock.
-mkdir -p "$lock2e.claim"
-printf 'pid=1\nstarted=%s\n' "$(date +%s)" > "$lock2e.claim/owner"
+# Another run is already mid-reclaim of this same abandoned lock: the guard
+# is freshly made, so _suite_lock_reclaim's own age check must not clear it.
+mkdir -p "$lock2e.reclaim"
 
 out2e=$(SUITE_LOCK_DIR="$lock2e" bash "$RUNNER" "$sb2e" 2>&1)
 rc2e=$?
 if [ "$rc2e" -eq 2 ]; then
-  pass "abandoned lock + live foreign claim -> refused (rc 2)"
+  pass "abandoned lock + live reclaim guard -> refused (rc 2)"
 else
-  fail "takeover was not exclusive: expected rc 2 got $rc2e; output: $out2e"
+  fail "reclaim was not exclusive: expected rc 2 got $rc2e; output: $out2e"
 fi
-if [ -d "$lock2e.claim" ]; then
-  pass "the other taker's claim is left alone"
+if [ -d "$lock2e.reclaim" ]; then
+  pass "the other reclaimer's fresh guard is left alone"
 else
-  fail "the run destroyed another taker's live claim"
+  fail "the run destroyed another reclaimer's fresh guard"
 fi
-# The refusal must describe the state it observed (HIMMEL-1805 round 3): this
-# run SAW a dead same-host pid and judged the lock abandoned. Losing the
-# takeover race to another taker is not "the owner records no pid" — there was
-# a pid, it was dead, and the race was lost — and the generation that judgement
-# came from is too stale to quote TTL arithmetic out of.
-if grepq "$out2e" -F 'records no pid'; then
-  fail "takeover-race refusal claims the owner records no pid; output: $out2e"
+if [ -f "$lock2e/owner" ]; then
+  pass "the lock itself is untouched while another reclaim is in progress"
 else
-  pass "takeover-race refusal does not claim a missing pid"
-fi
-if grepq "$out2e" -F 'TTL backstop reclaims'; then
-  fail "takeover-race refusal quotes TTL advice from the stale generation; output: $out2e"
-else
-  pass "takeover-race refusal gives no stale-generation TTL advice"
+  fail "the run deleted the lock out from under an in-progress reclaim"
 fi
 if grepq "$out2e" -F 'TAKEOVER IN PROGRESS'; then
-  pass "takeover-race refusal names the race (TAKEOVER IN PROGRESS verdict)"
+  pass "losing the reclaim guard is reported as the race it is"
 else
-  fail "takeover-race refusal missing the TAKEOVER IN PROGRESS verdict; output: $out2e"
+  fail "losing the reclaim guard missing the TAKEOVER IN PROGRESS verdict; output: $out2e"
 fi
 
-# --------------------------------------------------------------------------
-# Case 2f -- a STRANDED claim (its taker crashed) must not wedge takeovers.
-#
-# The claim is exclusive, so a taker that dies holding one would otherwise
-# block every future takeover of that lock forever. It carries its own
-# timestamp and is expired after 120s.
-# --------------------------------------------------------------------------
-echo "== Case 2f: a stranded takeover claim is expired, not honoured forever =="
-sb2f=$(new_sandbox)
-cat > "$sb2f/test-pass.sh" <<'SHEOF'
-#!/usr/bin/env bash
-exit 0
-SHEOF
-lock2f="$sb2f/suite.lock"
-mkdir -p "$lock2f"
-bash -c 'exit 0' & dead2f=$!
-wait "$dead2f" 2>/dev/null
-printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
-  "$dead2f" "$(this_host)" "$(date +%s)" > "$lock2f/owner"
-mkdir -p "$lock2f.claim"
-printf 'pid=1\nstarted=%s\n' "$(( $(date +%s) - 300 ))" > "$lock2f.claim/owner"
-
-out2f=$(SUITE_LOCK_DIR="$lock2f" bash "$RUNNER" "$sb2f" 2>&1)
-rc2f=$?
-if [ "$rc2f" -eq 0 ]; then
-  pass "stranded claim expired -> takeover proceeds (rc 0)"
-else
-  fail "stranded claim wedged the takeover: expected rc 0 got $rc2f; output: $out2f"
-fi
-if grepq "$out2f" -F 'stranded takeover claim'; then
-  pass "the claim expiry is announced, not silent"
-else
-  fail "claim expiry was silent; output: $out2f"
-fi
+# A guard a crashed reclaimer left behind must not wedge every future
+# takeover forever -- _suite_lock_reclaim frees it once its mtime is over a
+# minute old (the same backstop suite-semaphore.sh's own guard uses), but only
+# for the NEXT attempt: a single invocation that finds the guard standing
+# always loses this attempt (Case 2e above covers that), whether the guard is
+# fresh or stale. Aging the guard by real wall-clock time is not worth a slow
+# and platform-fragile test on top of Case 2e's coverage of the mkdir mutex
+# itself; the freeing behaviour is a direct structural analog of the semaphore's
+# already-covered _suite_sem_reclaim (scripts/lib/test-suite-semaphore.sh) and
+# is documented, not separately unit-tested, here.
+pass "a stranded reclaim guard's eventual clearing mirrors suite-semaphore.sh's own guard (documented, not separately timed here)"
 
 # --------------------------------------------------------------------------
 # Case 2d3 -- a SYMLINKED lock path is refused outright.
@@ -578,36 +541,12 @@ else
   echo "  SKIP  symlink creation unavailable on this host"
 fi
 
-# --------------------------------------------------------------------------
-# Case 2g -- an UNBRANDED takeover claim must not wedge reclaim forever.
-#
-# The claim is branded just after its mkdir, so a crash in that window leaves a
-# directory with no timestamp. Honouring an undateable claim as "live" would
-# block every future takeover of this lock permanently, with no way back except
-# a human deleting a directory in /tmp — the same husk-wedges-everything shape
-# case 2c covers for the lock directory itself, which this originally repeated.
-# --------------------------------------------------------------------------
-echo "== Case 2g: an unbranded takeover claim is cleared, not honoured forever =="
-sb2g=$(new_sandbox)
-cat > "$sb2g/test-pass.sh" <<'SHEOF'
-#!/usr/bin/env bash
-exit 0
-SHEOF
-lock2g="$sb2g/suite.lock"
-mkdir -p "$lock2g"
-bash -c 'exit 0' & dead2g=$!
-wait "$dead2g" 2>/dev/null
-printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
-  "$dead2g" "$(this_host)" "$(date +%s)" > "$lock2g/owner"
-mkdir -p "$lock2g.claim"   # directory only -- no owner file, as a crash leaves it
-
-out2g=$(SUITE_LOCK_DIR="$lock2g" bash "$RUNNER" "$sb2g" 2>&1)
-rc2g=$?
-if [ "$rc2g" -eq 0 ]; then
-  pass "unbranded claim -> cleared, takeover proceeds (rc 0)"
-else
-  fail "unbranded claim wedged the takeover: expected rc 0 got $rc2g; output: $out2g"
-fi
+# Case 2g (an unbranded TAKEOVER CLAIM must not wedge reclaim forever) is
+# removed under HIMMEL-1838: the separate `.claim` takeover-claim directory it
+# exercised no longer exists as a distinct object with its own unbranded-husk
+# state. The lock directory's own unbranded-husk case is Case 2c, unaffected
+# by this change and still covering the equivalent shape for the one object
+# that remains.
 
 # --------------------------------------------------------------------------
 # Case 2h -- a FOREIGN-host holder is refused until the TTL (HIMMEL-1805).
@@ -913,18 +852,19 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# Cases 2k/2l/2m -- a failed reclaim step answered by a LIVE WINNER is
-# contention, not an operational failure (HIMMEL-1805 round 5).
+# Cases 2l/2m -- a failed re-mkdir of the LOCK ITSELF answered by a LIVE
+# WINNER is contention, not an operational failure (HIMMEL-1805 round 5).
 #
-# Round 4 split the reclaim's return codes but split them the wrong way for
-# three ORDINARY races: after a stranded claim is cleared, another taker can
-# win the re-mkdir (2k); the noclobber brand can lose to the uutils co-winner
-# of the claim mkdir this code explicitly anticipates (2l, HIMMEL-966); and
-# after the stale lock is dropped, a normal acquirer can win the re-acquire
-# before _suite_lock_claim does (2m). All three printed RECLAIM FAILED with
-# advice to remove the lock by hand -- while a live runner may own it, the
-# exact starvation HIMMEL-1338 exists to prevent, then actively recommended
-# by the refusal.
+# HIMMEL-1838 removed the separate `.claim` sibling and its own mkdir step
+# (the former Case 2k raced exactly that step and is removed with it -- its
+# scenario is now identical in shape to 2m, since there is only ever one
+# mkdir of the lock itself to race). What remains: the noclobber brand can
+# lose to the uutils co-winner of the LOCK's own mkdir this code explicitly
+# anticipates (2l, HIMMEL-966); and after the stale lock is dropped, a normal
+# acquirer can win the re-acquire before _suite_lock_claim does (2m). Both
+# used to print RECLAIM FAILED with advice to remove the lock by hand --
+# while a live runner may own it, the exact starvation HIMMEL-1338 exists to
+# prevent, then actively recommended by the refusal.
 #
 # Each race is injected deterministically by shadowing mkdir ON PATH for the
 # one runner invocation: a shim directory is prepended to PATH carrying a
@@ -992,51 +932,6 @@ race_shim_fired() {
 }
 race_shim_prepare
 
-echo "== Case 2k: a claim won between the stranded-claim drop and the re-mkdir =="
-sb2k=$(new_sandbox)
-cat > "$sb2k/test-pass.sh" <<'SHEOF'
-#!/usr/bin/env bash
-exit 0
-SHEOF
-lock2k="$sb2k/suite.lock"
-mkdir -p "$lock2k"
-bash -c 'exit 0' & dead2k=$!
-wait "$dead2k" 2>/dev/null
-printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
-  "$dead2k" "$(this_host)" "$(date +%s)" > "$lock2k/owner"
-# A stranded claim, aged past its 120s expiry so the runner clears it.
-mkdir -p "$lock2k.claim"
-printf 'pid=1\nstarted=%s\n' "$(( $(date +%s) - 300 ))" > "$lock2k.claim/owner"
-
-# Hit #2 on the claim path is the re-mkdir after the runner dropped the
-# stranded claim -- where the co-taker wins the freed slot.
-out2k=$(PATH="$RACE_SHIM_DIR:$PATH" RACE_TARGET="$lock2k.claim" RACE_HIT_NO=2 \
-  RACE_SIM_RC=1 RACE_SCAN=case2k-co-taker RACE_HITS="$sb2k/hits" \
-  SUITE_LOCK_DIR="$lock2k" bash "$RUNNER" "$sb2k" 2>&1)
-rc2k=$?
-race_shim_fired "$sb2k/hits" 2
-
-if [ "$rc2k" -eq 2 ]; then
-  pass "claim lost between drop and re-mkdir -> refused (rc 2)"
-else
-  fail "claim lost between drop and re-mkdir -> expected rc 2 got $rc2k; output: $out2k"
-fi
-if grepq "$out2k" -F 'TAKEOVER IN PROGRESS'; then
-  pass "lost re-mkdir is reported as the race it is"
-else
-  fail "lost re-mkdir missing the TAKEOVER IN PROGRESS verdict; output: $out2k"
-fi
-if grepq "$out2k" -F 'RECLAIM FAILED'; then
-  fail "an ordinary claim race is reported as an operational failure; output: $out2k"
-else
-  pass "claim race is not reported as an operational failure"
-fi
-if [ -f "$lock2k.claim/owner" ] && grep -qF 'scan=case2k-co-taker' "$lock2k.claim/owner"; then
-  pass "the co-taker's freshly-won claim is left intact"
-else
-  fail "the run destroyed a co-taker's freshly-won claim; output: $out2k"
-fi
-
 echo "== Case 2l: the noclobber brand loses to the uutils co-winner =="
 sb2l=$(new_sandbox)
 cat > "$sb2l/test-pass.sh" <<'SHEOF'
@@ -1050,16 +945,17 @@ wait "$dead2l" 2>/dev/null
 printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
   "$dead2l" "$(this_host)" "$(date +%s)" > "$lock2l/owner"
 
-# No pre-existing claim, so hit #1 on the claim path is the takeover's own
-# mkdir. uutils coreutils resolves two concurrent mkdirs of the same path to
-# BOTH rc=0 (HIMMEL-966), so the shim returns SUCCESS -- having branded the
-# co-winner's owner first, which is what makes the runner's own noclobber
-# brand lose.
-out2l=$(PATH="$RACE_SHIM_DIR:$PATH" RACE_TARGET="$lock2l.claim" RACE_HIT_NO=1 \
+# Hit #1 on the LOCK path is the runner's initial claim, which fails on its
+# own (the stale lock dir already exists); hit #2 is the re-mkdir inside
+# _suite_lock_claim's retry after the reclaim drops it. uutils coreutils
+# resolves two concurrent mkdirs of the same path to BOTH rc=0 (HIMMEL-966),
+# so the shim returns SUCCESS on that retry -- having branded the co-winner's
+# owner first, which is what makes the runner's own noclobber brand lose.
+out2l=$(PATH="$RACE_SHIM_DIR:$PATH" RACE_TARGET="$lock2l" RACE_HIT_NO=2 \
   RACE_SIM_RC=0 RACE_SCAN=case2l-co-winner RACE_HITS="$sb2l/hits" \
   SUITE_LOCK_DIR="$lock2l" bash "$RUNNER" "$sb2l" 2>&1)
 rc2l=$?
-race_shim_fired "$sb2l/hits" 1
+race_shim_fired "$sb2l/hits" 2
 
 if [ "$rc2l" -eq 2 ]; then
   pass "brand lost to the uutils co-winner -> refused (rc 2)"
@@ -1076,10 +972,10 @@ if grepq "$out2l" -F 'RECLAIM FAILED'; then
 else
   pass "lost brand is not reported as an operational failure"
 fi
-if [ -f "$lock2l.claim/owner" ] && grep -qF 'scan=case2l-co-winner' "$lock2l.claim/owner"; then
-  pass "the co-winner's branded claim is left intact"
+if [ -f "$lock2l/owner" ] && grep -qF 'scan=case2l-co-winner' "$lock2l/owner"; then
+  pass "the co-winner's branded lock is left intact"
 else
-  fail "the run destroyed a co-winner's branded claim; output: $out2l"
+  fail "the run destroyed a co-winner's branded lock; output: $out2l"
 fi
 
 echo "== Case 2m: the freed lock is won before the re-acquire =="

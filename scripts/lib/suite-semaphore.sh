@@ -131,7 +131,13 @@ _suite_sem_stale() {
     case "$SO_PID" in
         ''|*[!0-9]*) SUITE_SEM_STALE_WHY='owner record has no valid pid'; return 0 ;;
     esac
-    proc_tree_process_identity_matches "$SO_PID" "$SO_ID" || rc=$?
+    # HIMMEL-3778: SO_ID can be empty (the ps probe failed at acquire time,
+    # see _suite_sem_try below) -- proc_tree_process_identity_matches alone
+    # always answers 2 (unavailable) for an empty expected, which made a
+    # confirmed-dead holder with no recorded identity reclaimable ONLY by the
+    # TTL. proc_tree_liveness_matches falls back to identity-free liveness in
+    # that case, so a dead holder is still confirmed dead even without one.
+    proc_tree_liveness_matches "$SO_PID" "$SO_ID" || rc=$?
     if [ "$rc" -eq 1 ]; then
         SUITE_SEM_STALE_WHY="owner pid $SO_PID is gone or now names another process"
         return 0
@@ -188,7 +194,10 @@ _suite_sem_held_ok() {
     _suite_sem_read_owner "$held" || return 1
     case "$SO_PID" in ''|*[!0-9]*) return 1 ;; esac
     _suite_sem_is_ancestor "$SO_PID" || return 1
-    proc_tree_process_identity_matches "$SO_PID" "$SO_ID"
+    # HIMMEL-3778: an empty SO_ID (failed ps probe at acquire) must not refuse
+    # our OWN re-entrant child -- fall back to identity-free liveness, same as
+    # _suite_sem_stale above.
+    proc_tree_liveness_matches "$SO_PID" "$SO_ID"
 }
 
 # _suite_sem_try <slot> <label> -- take <slot>; 0 on success.

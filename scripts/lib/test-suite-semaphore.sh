@@ -326,6 +326,83 @@ else
     fail "HIMMEL_SUITE_SLOTS=00 -- expected rc 0 (default budget), got rc=$RC: $OUT"
 fi
 
+# --- 16 (HIMMEL-3778): a dead holder with an EMPTY identity (its ps probe
+# failed at acquire time) is reclaimed promptly -- WITHOUT waiting for
+# HIMMEL_SUITE_SLOT_TTL. Before proc_tree_liveness_matches, an empty SO_ID
+# made proc_tree_process_identity_matches answer "unavailable" (2) even for a
+# confirmed-dead pid, so a dead-but-unidentified holder was reclaimable ONLY
+# by the TTL (default 14400s) -- see suite-semaphore.sh:134-140. Craft the
+# owner file directly with a pid this test process can confirm gone and a
+# blank identity= field, and pin on wall-clock: a correct fix reclaims fast
+# (well under the default TTL); the pre-fix bug would refuse until the TTL
+# elapsed, which this test does not wait around for. ---
+new_sem
+mkdir -p "$SEM/slot-1"
+DEAD_PID=$(sh -c 'echo $$')
+printf 'pid=%s\nidentity=\nlabel=suite\nstarted=%s\n' "$DEAD_PID" "$(date +%s)" >"$SEM/slot-1/owner"
+START=$(date +%s)
+ERR=$(qr "$SEM" -- true 2>&1 >/dev/null); RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+if [ "$RC" = "0" ] && grep -q reclaimed <<<"$ERR" && [ "$ELAPSED" -lt 30 ]; then
+    pass "HIMMEL-3778: dead holder with empty identity reclaimed in ${ELAPSED}s, not the ${HIMMEL_SUITE_SLOT_TTL:-14400}s TTL"
+else
+    fail "HIMMEL-3778: dead holder with empty identity -- expected rc 0 + reclaimed note within seconds, got rc=$RC after ${ELAPSED}s: $ERR"
+fi
+
+# --- 17 (HIMMEL-3778): while a LIVE holder's identity is empty (fault-injected
+# ps), its own child (a nested quiet-run) is NOT refused -- re-entrancy must
+# survive the same empty-identity condition that case 16 reclaims once the
+# holder is dead. This is NOT the same as case 7: case 7's holder has a
+# normal, non-empty identity, so it never exercises _suite_sem_held_ok's
+# HIMMEL-3778 fallback at suite-semaphore.sh:197-200. Like case 7 (and unlike
+# case 16), this must be ONE synchronous qr call whose payload runs the nested
+# quiet-run itself -- a separately started background holder plus a second,
+# sibling qr call are NOT ancestor/descendant, so _suite_sem_is_ancestor would
+# correctly refuse them regardless of identity. A PATH-shimmed `ps` that
+# always fails is fed to that one call, so ITS OWN owner file -- the one the
+# nested child's _suite_sem_held_ok reads back -- is written with a blank
+# identity=; the payload snapshots that file before recursing so the setup
+# itself is verified, not assumed. ---
+new_sem
+FAKE_PS_DIR="$SCRATCH/fake-ps-bin"
+mkdir -p "$FAKE_PS_DIR"
+printf '#!/bin/sh\nexit 1\n' >"$FAKE_PS_DIR/ps"
+chmod +x "$FAKE_PS_DIR/ps"
+SNAP="$SCRATCH/owner17.snapshot"
+# shellcheck disable=SC2016  # $0/$1/$2 expand in the inner sh, not this shell
+OUT=$(qr "$SEM" HIMMEL_SUITE_SLOTS=1 "PATH=$FAKE_PS_DIR:$PATH" -- \
+    sh -c 'cp "$1/slot-1/owner" "$2" 2>/dev/null; bash "$0" suite -- true' \
+    "$QUIET_RUN" "$SEM" "$SNAP" 2>&1); RC=$?
+OWNER_ID=$(sed -n 's/^identity=//p' "$SNAP" 2>/dev/null)
+if [ -n "$OWNER_ID" ]; then
+    fail "HIMMEL-3778 fault-injection setup: holder's owner identity is [$OWNER_ID], expected empty -- the ps shim was not exercised, skip is not a pass"
+elif [ "$RC" = "0" ]; then
+    pass "HIMMEL-3778: nested quiet-run under an empty-identity live holder proceeds (re-entrant)"
+else
+    fail "HIMMEL-3778: nested quiet-run under an empty-identity live holder -- expected rc 0, got rc=$RC: $OUT"
+fi
+
+# --- 18 (deferred from PR #1382 round 7): the scan-root lock (run-shell-tests.sh)
+# and this machine-wide semaphore are independent locks with INDEPENDENT TTL
+# clocks -- HIMMEL-1838 demoted the scan lock to a pure duplicate-sweep
+# refusal and made this semaphore the one LIVENESS owner (dead/live judgment
+# via proc_tree_liveness_matches), but it did NOT unify their two TTL
+# backstops into one clock. Each still defaults to 14400s and each is still
+# independently overridable (this semaphore via HIMMEL_SUITE_SLOT_TTL, the
+# scan lock via SUITE_LOCK_TTL) -- a holder that is confirmed-dead is freed by
+# liveness on both paths well before either TTL matters, but a merely
+# UNPROBEABLE holder (rc 2, e.g. a permission-refused kill -0) still falls
+# through to its OWN lock's TTL, and the two are not the same number unless
+# an operator sets them to match. This is a documentation row, not a RED
+# case: nothing here exercises a bug, it pins that the overlap survives on
+# purpose so a future PR does not unify the clocks by accident. ---
+if grep -q 'SUITE_LOCK_TTL' "$REPO_ROOT/scripts/ci/run-shell-tests.sh" \
+    && grep -q 'HIMMEL_SUITE_SLOT_TTL' "$REPO_ROOT/scripts/lib/suite-semaphore.sh"; then
+    pass "TTL-overlap documented: scan lock (SUITE_LOCK_TTL) and semaphore (HIMMEL_SUITE_SLOT_TTL) remain two independent, independently-overridable 14400s-default clocks, not unified by HIMMEL-1838"
+else
+    fail "TTL-overlap documentation row: expected both SUITE_LOCK_TTL (scan lock) and HIMMEL_SUITE_SLOT_TTL (semaphore) to still exist as distinct env knobs"
+fi
+
 if [ "$FAILED" -eq 0 ]; then
     echo "OK: all $CASES cases passed"
     exit 0

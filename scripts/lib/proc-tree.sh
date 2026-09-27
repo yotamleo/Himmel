@@ -157,6 +157,27 @@ proc_tree_process_identity_matches() {
     [ "$actual" = "$expected" ]
 }
 
+# proc_tree_liveness_matches <pid> <expected-identity> -- like
+# proc_tree_process_identity_matches, but falls back to identity-free
+# proc_tree_process_alive when <expected-identity> is empty, instead of the 2
+# ("unavailable") that an empty expected always forces on that function. An
+# owner record with no identity is not automatically stale or automatically
+# live -- it means the identity probe failed at RECORD time (HIMMEL-3778: e.g.
+# `ps` unavailable at acquire), not that the pid itself is unprobeable NOW. A
+# caller who cannot distinguish those two failures loses the confirmed-death
+# signal for exactly the owners that most need it -- a crashed holder whose
+# slot was branded with no identity was previously reclaimable only by TTL.
+# Same 0/1/2 contract as its sibling: 0 confirmed live/match, 1 confirmed
+# dead/mismatch, 2 probe unavailable.
+proc_tree_liveness_matches() {
+    local pid="$1" expected="$2"
+    if [ -n "$expected" ]; then
+        proc_tree_process_identity_matches "$pid" "$expected"
+        return
+    fi
+    proc_tree_process_alive "$pid"
+}
+
 # proc_tree_group_members <pgid> -- print the pids still in a process group,
 # one per line. Prints nothing when the group is empty and returns nonzero when
 # the process table cannot be read. Existing liveness callers treat either as

@@ -1037,7 +1037,7 @@ EOF
 suite_lock_owned=0
 
 # When 1, suite_lock_acquire suppresses its multi-line REFUSED block (and only
-# that block — NOTE: and RECLAIM ERROR: lines still print). Set by the wait
+# that block — NOTE: lines still print). Set by the wait
 # loop for its silent retries: with a wait budget in effect a held lock is the
 # EXPECTED state, not a refusal, and printing the full verdict once a minute
 # would bury the heartbeat it exists to make visible. The final attempt is
@@ -1046,8 +1046,8 @@ suite_lock_quiet=0
 
 # Set by suite_lock_acquire when its refusal is PERMANENT — a safety refusal
 # that retrying cannot clear (a symlinked lock path, a directory that is not a
-# lock, a failed reclaim) as opposed to the ordinary "someone else holds it"
-# refusal, which is exactly what waiting is for. The wait loop reads it to stop
+# lock) as opposed to the ordinary "someone else holds it" (or "lost the
+# reclaim race") refusal, which is exactly what waiting is for. The wait loop reads it to stop
 # burning a budget on a condition no amount of waiting resolves; without it a
 # mis-set SUITE_LOCK_DIR spends the whole SUITE_LOCK_WAIT emitting heartbeats
 # that claim a holder which does not exist.
@@ -1171,125 +1171,49 @@ _suite_lock_wait_brand() {
   [ -f "$1/owner" ]
 }
 
-# _suite_lock_reclaim <expected-owner-raw> — take over a lock judged abandoned.
+# _suite_lock_reclaim <expected-owner-raw> — best-effort takeover of a lock
+# judged abandoned (HIMMEL-1838).
 #
-# Dropping-then-claiming is NOT safe on its own, and the comment that used to
-# sit here ("exactly one mkdir wins the reopened race") was wrong. Two runs
-# that both judge the same lock stale interleave like this:
+# This used to run its own multi-step claim/CAS/stranded-claim-clearing
+# protocol (mkdir a .claim sibling, brand it, wait for a co-winner's brand,
+# clear a stranded claim by age, CAS-verify, drop, re-claim — five distinct
+# failure surfaces, each with its own HIMMEL-1805 history). That machinery is
+# deleted rather than re-implemented: this now runs the SAME guarded-reclaim
+# shape _suite_sem_reclaim uses in scripts/lib/suite-semaphore.sh, the
+# canonical liveness owner — one mkdir guard sibling gives exactly one
+# reclaimer the right to act, and the owner's raw content is re-read and
+# compared against the exact generation the caller judged before anything is
+# touched, so a lock that changed hands (or was released) between judgement
+# and this call is left alone.
 #
-#   A: drop → mkdir → brand          B: (already decided stale) drop
+# Returns 0 whenever the guard was won — whether or not a stale owner was
+# actually cleared under it. The caller's own subsequent _suite_lock_claim
+# retry is what discovers a live winner, exactly as suite_sem_acquire does
+# after _suite_sem_reclaim. Returns 1 only when the guard itself could not be
+# won: another reclaimer is already acting, which is ordinary contention, not
+# an operational failure to diagnose.
 #
-# B's drop removes A's FRESH brand and then rmdir's A's now-empty directory,
-# so B claims too and both believe they hold the lock — the lock admitting
-# exactly the concurrency it exists to prevent.
-#
-# So the right to take over is itself an exclusive resource, claimed with the
-# one primitive that is atomic here: mkdir. This mirrors the takeover protocol
-# in scripts/handover/queue-lock.sh, which arrived at the same design after
-# the same class of race (and after finding `mv` unreliable on MSYS).
-#
-#   1. mkdir <lock>.claim — exactly one contender wins the right to take over.
-#   2. CAS re-verify UNDER the claim: the lock's owner must still be the
-#      generation we judged. Anything else means it changed hands while we
-#      deliberated — it is LIVE, so abort rather than destroy it.
-#   3. Only then drop and re-acquire.
-#
-# Returns 0 when this process now holds the lock. Returns 1 for CONFIRMED
-# contention only — another taker holds a fresh claim, the CAS caught the
-# lock changing hands under the judgement, or a failed mkdir / brand /
-# re-acquire was answered by a live winner's owner file at that moment (the
-# check, not the return code, is the evidence: every one of those steps has
-# more than one failure cause, and reading the code alone asserted "operational"
-# for three ordinary races — HIMMEL-1805 round 5) — the one failure a retry
-# can legitimately hope to clear. Returns 2 for an OPERATIONAL failure (an
-# invariant refusal, or an I/O error where NO winner could be shown to exist),
-# after printing the concrete reason to stderr prefixed RECLAIM ERROR: the
-# caller must not relabel those as a race, or an unattended job retries forever
-# on advice that never applied (HIMMEL-1805 round 4).
+# The actual delete goes through _suite_lock_drop, not a raw mv+rm -rf: SUITE_LOCK_DIR
+# is env-overridable, and a foreign directory that happens to contain a
+# same-shaped `owner` file passes the CAS compare above without ever being a
+# lock this script made. _suite_lock_drop refuses to touch a directory
+# holding anything besides `owner` — the same guard the ordinary release path
+# already relies on — so a foreign directory (Case 2d2) is left untouched
+# even after CAS-matching, at the cost of no longer distinguishing that
+# refusal from an ordinary lost race in the caller's message (both now read
+# as "lost_race").
 _suite_lock_reclaim() {
-  local expected="$1" claim="${SUITE_LOCK_DIR}.claim" rc=1 c_started c_age
-
-  if ! mkdir "$claim" 2>/dev/null; then
-    # A crashed taker must not wedge takeovers forever. The claim is branded
-    # immediately after its mkdir, so give that a moment before judging —
-    # otherwise a legitimate taker gets clobbered inside its own brand window.
-    local _cs=0
-    while [ ! -f "$claim/owner" ] && [ "$_cs" -lt 20 ]; do
-      sleep 0.05
-      _cs=$((_cs + 1))
-    done
-    c_started=$(_suite_lock_owner_field "$claim/owner" started)
-    c_age=-1
-    case "$c_started" in
-      ''|*[!0-9]*) ;;
-      *) c_age=$(( $(date +%s) - 10#$c_started )) ;;
-    esac
-    # A claim is only honoured when it can be shown to be FRESH. Anything else
-    # — no owner file at all, an unparseable timestamp, or simply old — is
-    # abandoned and gets cleared.
-    #
-    # "Cannot be dated, so treat it as live" is the wrong default HERE, and
-    # this is the same mistake the lock directory already had fixed one level
-    # up: an unbranded husk left by a crash in the microsecond window between
-    # mkdir and brand would otherwise block every future takeover of this lock
-    # forever, with no path back except a human deleting a directory in /tmp.
-    # A claim is held for milliseconds by construction, so failing open here
-    # costs a rare double-takeover; failing closed costs the guard entirely.
-    if [ "$c_age" -ge 0 ] && [ "$c_age" -lt 120 ]; then
-      return 1
-    fi
-    printf 'NOTE: clearing a stranded takeover claim (age %ss) at %s\n' "$c_age" "$claim" >&2
-    if ! _suite_lock_drop "$claim"; then
-      printf 'RECLAIM ERROR: could not clear the stranded takeover claim at %s\n' "$claim" >&2
-      return 2
-    fi
-    if ! mkdir "$claim" 2>/dev/null; then
-      # The freed slot was taken between the drop and this mkdir: a branded
-      # claim EXISTS, which is contention, not an operational failure.
-      if _suite_lock_wait_brand "$claim"; then
-        return 1
-      fi
-      printf 'RECLAIM ERROR: could not create a takeover claim at %s\n' "$claim" >&2
-      return 2
-    fi
+  local expected="$1" guard="${SUITE_LOCK_DIR}.reclaim"
+  if ! mkdir "$guard" 2>/dev/null; then
+    # A reclaimer killed mid-way leaves the guard behind; free it late.
+    [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$guard" 2>/dev/null  # gnu-ok: -maxdepth/-mmin are BSD find too
+    return 1
   fi
-  # Brand the claim so its age is readable and a co-winner of a non-atomic
-  # mkdir (uutils, HIMMEL-966) loses here instead. Losing that brand to the
-  # co-winner is exactly the race the sentence above anticipates — an owner
-  # file already present means a LIVE claim, so it is contention (the claim
-  # is the co-winner's and is left alone), not an operational failure.
-  if ! ( set -C; printf 'pid=%s\nstarted=%s\n' "$$" "$(date +%s)" > "$claim/owner" ) 2>/dev/null; then
-    if [ -f "$claim/owner" ]; then
-      return 1
-    fi
-    rmdir "$claim" 2>/dev/null
-    printf 'RECLAIM ERROR: could not brand the takeover claim at %s\n' "$claim" >&2
-    return 2
-  fi
-
   if [ "$(_suite_lock_owner_raw "$SUITE_LOCK_DIR")" = "$expected" ]; then
-    if _suite_lock_drop "$SUITE_LOCK_DIR"; then
-      if _suite_lock_claim; then
-        rc=0
-      elif _suite_lock_wait_brand "$SUITE_LOCK_DIR"; then
-        # The freed lock was won by a normal acquirer in the drop-to-reclaim
-        # gap: a branded owner EXISTS, which is contention, not an
-        # operational failure.
-        rc=1
-      else
-        printf 'RECLAIM ERROR: dropped the abandoned lock at %s but could not re-acquire it\n' \
-          "$SUITE_LOCK_DIR" >&2
-        rc=2
-      fi
-    else
-      printf 'RECLAIM ERROR: %s holds more than a lone owner file — not a suite lock; refusing to delete it\n' \
-        "$SUITE_LOCK_DIR" >&2
-      rc=2
-    fi
+    _suite_lock_drop "$SUITE_LOCK_DIR" 2>/dev/null
   fi
-
-  _suite_lock_drop "$claim"
-  return "$rc"
+  rmdir "$guard" 2>/dev/null
+  return 0
 }
 
 _suite_lock_owner_field() {
@@ -1316,7 +1240,7 @@ _suite_lock_owner_field() {
 # EARLIEST arrival time is allowed to attempt the lock on any given poll.
 #
 # QUEUE DIR: ${SUITE_LOCK_DIR}.q — a SIBLING of the lock directory, exactly
-# like the existing ${SUITE_LOCK_DIR}.claim takeover-claim sibling. Never a
+# like the existing ${SUITE_LOCK_DIR}.reclaim takeover-guard sibling. Never a
 # subdirectory of SUITE_LOCK_DIR itself: the lock directory's own contents
 # stay byte-identical to today (just the one "owner" file), which is what
 # COEXISTENCE below depends on.
@@ -1919,8 +1843,15 @@ _suite_lock_claim() {
   # two concurrent mkdir of the same path to BOTH rc=0 (HIMMEL-966). So the
   # owner-file create is the real arbiter — `set -C` makes it a single
   # open(O_CREAT|O_EXCL) performed by bash itself, atomic on every POSIX fs.
-  if ! ( set -C; printf 'pid=%s\nhost=%s\nstarted=%s\nscan=%s\n' \
+  # identity (HIMMEL-1838): the same proc-tree.sh start-time identity the
+  # canonical semaphore records, so this lock's staleness judgement below can
+  # use the one shared liveness primitive instead of a bespoke kill-0-only
+  # probe. Empty when the probe itself failed (e.g. ps unavailable) — never
+  # fatal to the acquire; proc_tree_liveness_matches falls back to
+  # identity-free liveness for that case, same as suite-semaphore.sh (HIMMEL-3778).
+  if ! ( set -C; printf 'pid=%s\nhost=%s\nstarted=%s\nscan=%s\nidentity=%s\n' \
       "$$" "$(_suite_lock_host)" "$(date +%s)" "$scan" \
+      "$(proc_tree_process_identity "$$" 2>/dev/null || printf '')" \
       > "$SUITE_LOCK_DIR/owner" ) 2>/dev/null; then
     # No winner branded at all = an IO/permission failure, not a lost race;
     # rmdir (never rm -rf) is race-safe — it refuses a dir a racer has since
@@ -1987,7 +1918,9 @@ suite_lock_acquire() {
     fi
     # Expected generation is "no owner file" — the CAS re-check inside
     # _suite_lock_reclaim fails if anyone branded it while we spun above.
-    if _suite_lock_reclaim ""; then
+    # _suite_lock_reclaim only wins the right to act; _suite_lock_claim is
+    # what actually re-acquires, and can itself lose to a winner from the gap.
+    if _suite_lock_reclaim "" && _suite_lock_claim; then
       printf 'NOTE: cleared an unbranded suite lock (no owner file) at %s\n' \
         "$SUITE_LOCK_DIR" >&2
       return 0
@@ -1997,7 +1930,7 @@ suite_lock_acquire() {
   # ONE raw read; every field below AND the takeover's CAS check derive from
   # this single generation, so the staleness judgement and the act on it can
   # never straddle a concurrent rewrite.
-  local o_raw o_pid o_host o_started now age=-1 dated=0
+  local o_raw o_pid o_host o_started o_identity now age=-1 dated=0
   o_raw=$(_suite_lock_owner_raw "$SUITE_LOCK_DIR")
   o_pid=$(_suite_lock_owner_field "$SUITE_LOCK_DIR/owner" pid)
   # Invalid owner metadata is no pid at all: never probe it, and let an undated
@@ -2005,6 +1938,11 @@ suite_lock_acquire() {
   case "$o_pid" in *[!0-9]*) o_pid='' ;; esac
   o_host=$(_suite_lock_owner_field "$SUITE_LOCK_DIR/owner" host)
   o_started=$(_suite_lock_owner_field "$SUITE_LOCK_DIR/owner" started)
+  # Absent on a lock branded before this field existed, or when the probe
+  # failed at acquire time (HIMMEL-3778) — proc_tree_liveness_matches treats
+  # that the same way suite-semaphore.sh does: fall back to identity-free
+  # liveness rather than refuse to judge it at all.
+  o_identity=$(_suite_lock_owner_field "$SUITE_LOCK_DIR/owner" identity)
   now=$(date +%s)
   case "$o_started" in
     ''|*[!0-9]*) ;;
@@ -2032,12 +1970,19 @@ suite_lock_acquire() {
   # the other direction ("ALIVE") on a probe that cannot show identity.
   # pid_unknown is the third outcome: the probe was refused for a reason
   # other than "no such process", which proves nothing either way.
-  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 reclaim_failed=0 probe_rc
+  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 probe_rc
   this_host=$(_suite_lock_host)
   if _suite_lock_same_host "$o_host" "$this_host"; then same_host=1; fi
   if [ -n "$o_pid" ] && [ "$same_host" -eq 1 ]; then
     probe_rc=0
-    _suite_lock_probe_pid "$o_pid" || probe_rc=$?
+    # HIMMEL-1838: the canonical proc-tree.sh liveness primitive — the same
+    # one the semaphore is built from — replaces the bespoke kill-0-only
+    # _suite_lock_probe_pid here (still used, unchanged, by the FIFO waiter
+    # queue below, a separate concern: ordering LIVE waiters, not reclaiming
+    # a dead holder). identity-aware when o_identity is recorded, and the
+    # same identity-free liveness fallback as suite-semaphore.sh (HIMMEL-3778)
+    # otherwise.
+    proc_tree_liveness_matches "$o_pid" "$o_identity" || probe_rc=$?
     case "$probe_rc" in
       0) pid_present=1 ;;
       1) stale=1 ;;
@@ -2060,58 +2005,27 @@ suite_lock_acquire() {
   fi
 
   if [ "$stale" -eq 1 ]; then
-    # Guarded by the takeover claim + a CAS on the generation we just judged.
-    # rc 1 (someone else got the freed slot, or the lock turned out to be
-    # live after all) is an ordinary refusal; rc 2 is an operational failure
-    # with its concrete reason already printed.
-    local reclaim_rc=0
-    _suite_lock_reclaim "$o_raw" || reclaim_rc=$?
-    if [ "$reclaim_rc" -eq 0 ]; then
+    # _suite_lock_reclaim only wins the mkdir guard and re-verifies the CAS;
+    # _suite_lock_claim is what actually re-acquires (HIMMEL-1838), so both
+    # must succeed. Either one losing means an ordinary refusal: someone else
+    # got the freed slot, is already reclaiming it, or the lock turned out to
+    # be live after all.
+    if _suite_lock_reclaim "$o_raw" && _suite_lock_claim; then
       printf 'NOTE: cleared an abandoned suite lock (pid=%s host=%s age=%s) at %s\n' \
         "${o_pid:-?}" "${o_host:-?}" "$age_disp" "$SUITE_LOCK_DIR" >&2
       return 0
     fi
-    if [ "$reclaim_rc" -eq 1 ]; then
-      # A lost race means the generation read above — and every field derived
-      # from it — is KNOWN stale: the CAS exists precisely to catch a lock
-      # changing hands under a judgement, and it just did (HIMMEL-1805). The
-      # refusal must not present that snapshot as the current holder, nor
-      # counsel TTL arithmetic out of an age that no longer describes anything.
-      lost_race=1
-    else
-      # An OPERATIONAL failure, not confirmed contention: a directory that is
-      # not a lock, a permission or I/O error — and no live winner could be
-      # shown at the moment of the failure. Reporting this as a race would
-      # counsel "re-run in a moment" at a condition re-running cannot clear
-      # (HIMMEL-1805 round 4); but the classification is a CHECK, not proof —
-      # a winner branding a moment after the check is invisible to it — so the
-      # refusal below says what to VERIFY before touching anything, never what
-      # to delete (HIMMEL-1805 round 5).
-      reclaim_failed=1
-      suite_lock_permanent=1
-    fi
+    # A lost race means the generation read above — and every field derived
+    # from it — is KNOWN stale: the CAS exists precisely to catch a lock
+    # changing hands under a judgement, and it just did (HIMMEL-1805). The
+    # refusal must not present that snapshot as the current holder, nor
+    # counsel TTL arithmetic out of an age that no longer describes anything.
+    lost_race=1
   fi
 
   if [ "$suite_lock_quiet" -eq 0 ]; then
   {
-    if [ "$reclaim_failed" -eq 1 ]; then
-      printf 'REFUSED: could not take over the machine lock of scan root "%s" — the reclaim failed.\n' \
-        "$scan"
-      printf '  lock: %s\n' "$SUITE_LOCK_DIR"
-      printf '  Concurrent runs test the same tree and starve each other (HIMMEL-1338).\n'
-      printf '  RECLAIM FAILED: this lock was judged abandoned, but taking it over did\n'
-      printf '  not succeed and no live winner could be shown for it at that moment\n'
-      printf '  (the concrete reason is printed above, prefixed RECLAIM ERROR: a\n'
-      printf '  directory that is not a lock, a permission or an I/O error). That\n'
-      printf '  READS like an operational failure rather than a race — but the check\n'
-      printf '  that found no winner cannot exclude one arriving a moment later, so\n'
-      printf '  treat this as what was observed, not proven. Re-running will not\n'
-      printf '  clear an operational failure. If manual intervention seems needed,\n'
-      printf '  verify FIRST that no live holder exists — read the owner file in the\n'
-      printf '  lock above, confirm its pid is not running on its host and its age is\n'
-      printf '  past the %ss TTL — and only a lock that fails every one of those\n' "$SUITE_LOCK_TTL"
-      printf '  checks is safe to remove by hand.\n'
-    elif [ "$lost_race" -eq 1 ]; then
+    if [ "$lost_race" -eq 1 ]; then
       printf 'REFUSED: lost the race to take over the machine lock of scan root "%s".\n' "$scan"
       printf '  lock: %s\n' "$SUITE_LOCK_DIR"
       printf '  Concurrent runs test the same tree and starve each other (HIMMEL-1338).\n'
