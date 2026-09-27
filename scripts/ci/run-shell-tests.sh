@@ -447,6 +447,13 @@ _suite_timeout_for() {
       printf '650' ;;  # measured 307s idle 2026-08-27 (rc=1 was the HIMMEL-1329 ticket-mutex
       # false-positive fixed by HIMMEL-2165, not HIMMEL-1796 -- that ticket is about two
       # unrelated hook suites and never mentions queue-lock; the earlier citation here was wrong)
+    scripts/hooks/test-block-write-into-main-checkout.sh|*/scripts/hooks/test-block-write-into-main-checkout.sh)
+      # HIMMEL-3648 (#1307): CAP EXCEEDED on ubuntu CI (603s, cap 600s,
+      # assertions passing). Measured locally 2026-09-27: origin/main 6ac09bf9
+      # 276s, head 5b19a0b7 337s (+22% from the PR's new rows). CI completion
+      # is unmeasured (killed at the cap). Rule: loaded x2 -- 603 * 2 = 1206,
+      # rounded to 1200.
+      printf '1200' ;;
     *)
       printf '%s' "$SUITE_TIMEOUT" ;;
   esac

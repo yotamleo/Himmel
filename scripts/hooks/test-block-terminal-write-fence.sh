@@ -120,6 +120,32 @@ check "cat read on main allowed"         allow "{\"tool_name\":\"Bash\",\"tool_i
 : > "$MAIN/.single-writer"
 check "Set-Content on main with .single-writer allowed" allow "{\"tool_name\":\"PowerShell\",\"tool_input\":{\"command\":\"Set-Content -Path foo.txt -Value x\",\"cwd\":\"$MAIN\"}}"
 
+echo "== HIMMEL-3648 J1307P: PS-writer arm had no union fallback to the real cwd =="
+# The PowerShell-writer arm in block-write-into-main-checkout.sh (sourced by
+# this guard) used to check only the TRACKED cwd (_bwimc_ecwd) after a
+# cd/pushd clause, with no fallback to the REAL payload cwd. Each row below
+# runs from cwd=$MAIN (on main, no .single-writer — a fresh $MAIN2 fixture,
+# since the row above opted $MAIN itself out via .single-writer) with a
+# leading cd/pushd whose tracked target lands at $FEAT (a feature-branch
+# repo, so the tracker-only check ALLOWs) while the real shell either never
+# moves (nonexistent target, `||` short-circuit, `|` pipeline component) or
+# moves and pops back (pushd without a matching popd still leaves the
+# CALLER's real shell at $MAIN for this one command). main denies every one
+# of these (no cd tracking at all, so the write-on-main check always sees
+# the real cwd); so must this guard, post-fix.
+mkrepo "$T/mainrepo2" "main"
+MAIN2="$T/mainrepo2"
+for verb in "Set-Content -Path foo.txt -Value x" "Out-File -FilePath foo.txt" "Add-Content -Path foo.txt -Value x"; do
+    check "cd \$FEAT/nope; $verb (nonexistent cd target) denies" block \
+        "{\"tool_name\":\"PowerShell\",\"tool_input\":{\"command\":\"cd $FEAT/nope; $verb\",\"cwd\":\"$MAIN2\"}}"
+    check "cd \$MAIN2 || cd \$FEAT; $verb (first cd succeeds, || never runs) denies" block \
+        "{\"tool_name\":\"PowerShell\",\"tool_input\":{\"command\":\"cd $MAIN2 || cd $FEAT; $verb\",\"cwd\":\"$MAIN2\"}}"
+    check "cd \$FEAT | cat; $verb (pipeline component runs in its own subshell) denies" block \
+        "{\"tool_name\":\"PowerShell\",\"tool_input\":{\"command\":\"cd $FEAT | cat; $verb\",\"cwd\":\"$MAIN2\"}}"
+    check "pushd \$FEAT/nope; $verb (nonexistent pushd target) denies" block \
+        "{\"tool_name\":\"PowerShell\",\"tool_input\":{\"command\":\"pushd $FEAT/nope; $verb\",\"cwd\":\"$MAIN2\"}}"
+done
+
 echo "== non-command payloads =="
 check "no command -> allow"              allow '{"tool_name":"Bash","tool_input":{}}'
 check "non-terminal tool -> allow"       allow '{"tool_name":"Read","tool_input":{"file_path":"/x/README.md"}}'

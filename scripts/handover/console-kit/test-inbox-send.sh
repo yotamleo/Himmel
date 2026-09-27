@@ -10,6 +10,9 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/inbox-send.sh"
 
+# shellcheck source=scripts/lib/sha256-bin.sh
+. "$HERE/../../lib/sha256-bin.sh"
+
 # HIMMEL-3182: inbox-send.sh takes a flock and secures its ledger/lock dirs with
 # `mkdir -m 700` + `chmod 700`; a host without flock, or where the mode does not
 # stick (Git Bash / NTFS), cannot run it at all, so every case below would fail
@@ -284,7 +287,8 @@ INBOX28="$HANDOVER_DIR/inbox/$SESSION28.md"
 # the sha256 of the bullet as appended.
 out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" bash "$SCRIPT" "$SESSION28" ledgered --token lt1 2>&1)"; rc=$?
 bullet_line="$(tail -n1 "$INBOX28" 2>/dev/null)"
-expected_sha="$(printf '%s' "$bullet_line" | sha256sum | cut -d' ' -f1)"
+# shellcheck disable=SC2119 # sha256_hex reads stdin here, by design
+expected_sha="$(printf '%s' "$bullet_line" | sha256_hex)"
 ledger_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
 ledger_sha="$(tail -n1 "$LEDGER" 2>/dev/null | awk '{print $4}')"
 if [ "$rc" -eq 0 ] && [ "$ledger_lines" = "1" ] && [ -n "$expected_sha" ] && [ "$ledger_sha" = "$expected_sha" ]; then

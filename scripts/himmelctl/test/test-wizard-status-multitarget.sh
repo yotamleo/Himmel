@@ -52,7 +52,8 @@ manifest_path="$repo_root/scripts/install/manifest.json"
 [ -f "$manifest_path" ] || { echo "FAIL: $manifest_path not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq required" >&2; exit 1; }
-command -v sha256sum >/dev/null 2>&1 || { echo "FAIL: sha256sum required" >&2; exit 1; }
+. "$repo_root/scripts/lib/sha256-bin.sh"
+[ -n "$_SHA256_CMD" ] || { echo "FAIL: sha256sum or shasum required" >&2; exit 1; }
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
@@ -189,7 +190,7 @@ echo "ok: case a — toggling A's wiring does not bleed into B's report (B staye
 # ── case (c) snapshot point: capture B's exact entry + the whole-file hash
 # BEFORE the batch of A-only runs below (both settings.json files are back
 # at baseline here, matching the post-setup fixture state). ───────────────
-stateBefore=$(sha256sum "$cacheDir/state.json")
+stateBefore=$($_SHA256_CMD -- "$cacheDir/state.json")
 userEntryBefore=$(jq -S '.targets["user"]' "$cacheDir/state.json")
 
 # ── case (b): --items subset scoping is per-target ─────────────────────────
@@ -210,7 +211,7 @@ echo "ok: case b — --items subset scoping works independently per target"
 # whole state.json) is byte-untouched. ─────────────────────────────────────
 runA wiring-statusline >/dev/null
 runA "wiring-statusline,jira-cli-dist-build" >/dev/null
-stateAfter=$(sha256sum "$cacheDir/state.json")
+stateAfter=$($_SHA256_CMD -- "$cacheDir/state.json")
 userEntryAfter=$(jq -S '.targets["user"]' "$cacheDir/state.json")
 [ "$stateBefore" = "$stateAfter" ] || fail "case c: state.json changed after a batch of runs against A only (expected zero writes — both targets already had entries)"
 [ "$userEntryBefore" = "$userEntryAfter" ] || fail "case c: target B's entry changed after runs against A only"
