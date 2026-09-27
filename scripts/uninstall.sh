@@ -3192,23 +3192,18 @@ unwire_user_files() {
         # Consult the ledger for THIS path first, the same primitive the F1
         # (file-absent) branch below uses, before ever touching the file.
         _hud_legacy_unit=""
-        _hud_legacy_backup=""
         if [ "$LEDGER_OK" -eq 1 ]; then
           _hud_legacy_unit="$(prov_read_units --path "$_hud_legacy" --kind file | head -n1)"
-          [ -n "$_hud_legacy_unit" ] && _hud_legacy_backup="$(printf '%s' "$_hud_legacy_unit" | jq -r '.eff_pre.backup // empty')"
         fi
-        if [ -n "$_hud_legacy_backup" ]; then
-          _hud_legacy_args=()
-          [ "$_dry" -eq 1 ] && _hud_legacy_args=(--dry-run)
-          if prov_read_apply "$_hud_legacy_unit" restore ${_hud_legacy_args[@]+"${_hud_legacy_args[@]}"}; then
-            [ "$_dry" -eq 0 ] && echo "  restored $_hud_legacy (from $_hud_legacy_backup)"
-            prov_read_outcome restored "$_hud_legacy_unit" replaced-in-place "$_hud_legacy_backup"
-          else
-            echo "  WARN: could not restore $_hud_legacy" >&2
-            fail_step "[6/8] hud-config legacy restore: $_hud_legacy"
-            prov_read_outcome failed "$_hud_legacy_unit" step-failed "$_hud_legacy_backup"
-          fi
-        elif [ "$LEDGER_OK" -eq 1 ] && [ -z "$_hud_legacy_unit" ]; then
+        if [ -n "$_hud_legacy_unit" ]; then
+          # HIMMEL-3334 N1/N2/N3 (judge J1269B verdict): route through the
+          # same verdict-then-apply wrapper every other manifest branch uses
+          # (ledger_apply_unit) instead of a raw restore/rm -- its drift check
+          # (prov_read_verdict) is what tells an operator's post-install edit
+          # (keep user-modified) or a missing backup (keep no-backup) apart
+          # from a clean replace/create unit.
+          ledger_apply_unit "$_hud_legacy_unit"
+        elif [ "$LEDGER_OK" -eq 1 ]; then
           # HIMMEL-3334 I1 (judge J1269A verdict): a ledger exists but holds
           # no unit at all for this path -- no ledger evidence himmel ever
           # wrote or replaced this file, so it cannot be told from an
@@ -3275,7 +3270,9 @@ EOF
       # (predates per-file recording) -- treat it exactly like the no-ledger
       # branch above (kept with a hand command), not an unconditional strip;
       # "kept (no ledger)" would be misleading with a real ledger present.
-      else
+      # HIMMEL-3334 m1 (judge J1269B verdict): only print it when $_p exists
+      # -- the message is truthful only about a file that's actually there.
+      elif [ -e "$_p" ]; then
         echo "  kept (not in ledger): $_p — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_p"
       fi
     elif [ "$_ix" = "$_ix_trust" ]; then
