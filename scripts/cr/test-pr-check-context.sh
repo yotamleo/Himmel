@@ -2611,6 +2611,20 @@ fi
 exec "$real_git67" "\${args[@]}"
 GITSHIM67
 chmod +x "$fakegit_dir67/git"
+
+# Positive control (codex-1, HIMMEL-2650): the assertion below never passes
+# --path-format=absolute to this shim (the code under test no longer calls
+# it at this site), so without this control T67 could pass even if the shim
+# were broken and never echoed anything at all. Call the shim directly with
+# that flag first, and confirm it actually reproduces the git<2.31 echo-back
+# it claims to -- proving the no-op result below is "the flag isn't passed",
+# not "the shim is inert".
+shim_direct67="$(cd "$anchor13" && PATH="$fakegit_dir67:$PATH" git rev-parse --path-format=absolute --git-common-dir)"
+case "$shim_direct67" in
+  *"--path-format=absolute"*) echo "positive control confirmed: shim echoes --path-format=absolute back, matching git<2.31" ;;
+  *) echo "FAIL: T67 positive control - shim did not echo --path-format=absolute back when passed directly"; fail=1 ;;
+esac
+
 out67="$(cd "$anchor13" && PATH="$fakegit_dir67:$PATH" HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh")"
 rc67=$?
 check "$rc67" "0" "T67 rc"
