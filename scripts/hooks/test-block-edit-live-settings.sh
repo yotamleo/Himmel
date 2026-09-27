@@ -1485,14 +1485,22 @@ assert_rc "221 bash echo mentioning settings.json with no redirect allows" 0 \
     "$(bash_rc_of "$PRIMARY" "echo see settings.json for details")"
 
 # 222: node wire-hook-bash.mjs --check --settings <worktree's own ABSOLUTE
-# copy> -> ALLOW (ticket shape; RED on main).
-assert_rc "222 node wire-hook-bash.mjs --check --settings (worktree, absolute) allows" 0 \
+# copy> -> DENY. This shape was a dedicated allow rule
+# (_himmel_3761_worktree_settings_check_ok) through round 12; HIMMEL-3781
+# removed it after round 13 found a Critical (unquoted glob letting a
+# different script run than the one Git checked) and an Important (a purely
+# LOCAL, unreviewed commit is enough to satisfy the git-cleanliness check) on
+# top of rounds 10-11's already-patched holes — four escalating rounds on one
+# shape, the same pattern that triggered this ticket's original design
+# inversion. The command now falls through to main's unmodified deny like any
+# other ambiguous shape; re-adding an allow rule here needs a design that
+# closes all four classes at once (see HIMMEL-3781).
+assert_rc "222 node wire-hook-bash.mjs --check --settings (worktree, absolute) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json")"
 
 # 223: node wire-hook-bash.mjs --check --settings <worktree's own copy,
-# spelled RELATIVE from the primary cwd> -> ALLOW (ticket shape; RED on
-# main).
-assert_rc "223 node wire-hook-bash.mjs --check --settings (worktree, relative) allows" 0 \
+# spelled RELATIVE from the primary cwd> -> DENY (same removal, HIMMEL-3781).
+assert_rc "223 node wire-hook-bash.mjs --check --settings (worktree, relative) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node .claude/worktrees/feat+x/scripts/hooks/wire-hook-bash.mjs --check --settings .claude/worktrees/feat+x/.claude/settings.json")"
 
 # 224: mention-only echo, but the REDIRECT TARGET itself names a live
@@ -1620,7 +1628,10 @@ printf '{}\n' > "$FEATDIRTY/.claude/settings.json"
 printf 'module.exports = {};\n' > "$FEATDIRTY/scripts/hooks/wire-hook-bash.mjs"
 git -C "$FEATDIRTY" add scripts/hooks/wire-hook-bash.mjs >/dev/null 2>&1
 git -C "$FEATDIRTY" -c user.email=t@t -c user.name=t commit -q -m "wire-hook-bash fixture" >/dev/null 2>&1
-assert_rc "237 node wire-hook-bash.mjs --check --settings (worktree, script git-clean) allows" 0 \
+# 237 used to allow here (script git-clean) before HIMMEL-3781 removed the
+# allow shape entirely; it now denies like every other invocation of this
+# command, git-clean or not.
+assert_rc "237 node wire-hook-bash.mjs --check --settings (worktree, script git-clean) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATDIRTY/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATDIRTY/.claude/settings.json")"
 printf 'module.exports = {}; require("fs").writeFileSync(0, "tampered");\n' > "$FEATDIRTY/scripts/hooks/wire-hook-bash.mjs"
 assert_rc "238 node wire-hook-bash.mjs --check --settings (worktree, script locally modified, uncommitted) denies" 2 \

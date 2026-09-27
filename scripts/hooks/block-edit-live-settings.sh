@@ -1468,156 +1468,6 @@ _himmel_3761_mention_only_ok() {
     return 0
 }
 
-# _himmel_3761_worktree_settings_check_ok — the ticket's read-only worktree
-# probe: `node <script>/wire-hook-bash.mjs --check --settings <path>`, where
-# <path> structurally names a linked worktree's OWN nested copy
-# (`.claude/worktrees/<name>/.claude/settings.json`), spelled either absolute
-# or relative to the primary checkout — never the primary's or $HOME's own
-# file, which never contains a `.claude/worktrees/` segment. `--check` is
-# read-only by the script's own contract; no redirect operand is present at
-# all, so nothing this command does can write anywhere.
-#
-# The script name is checked POSITIONALLY (ST_LW[1], the token right after
-# `node`), never by scanning the whole command for a `wire-hook-bash.mjs`
-# substring: node treats every token before the script argument as a node
-# flag, so `node -e '<payload>' wire-hook-bash.mjs --check --settings <path>`
-# would otherwise satisfy a substring scan while actually running the `-e`
-# payload (the script name and `--check`/`--settings` become inert decoy
-# argv to a script node never loads). Requiring the script name at position 1
-# means no node-level flag — `-e`/`--eval` included — can appear before it.
-#
-# The script path is also ANCHORED to the SAME named worktree as the
-# `--settings` target, at the fixed `scripts/hooks/wire-hook-bash.mjs`
-# location — matching basename alone would let `node /tmp/wire-hook-bash.mjs
-# --check --settings <matching-path>` run an attacker-planted script of that
-# name from anywhere on disk. Tying both paths to one captured `<name>`
-# means the executed script must live inside the very worktree whose own
-# settings copy is being probed — the read-only contract's script is real,
-# not a same-named decoy elsewhere. The captured name is compared with a
-# QUOTED `case` pattern, never re-embedded into a second regex: `[^/]+` lets
-# it carry regex metacharacters (`.`, `*`, `(`, …), and splicing attacker
-# text into a live `[[ =~ ]]` pattern would trade this bug for a regex-
-# injection one. A quoted variable inside a `case` pattern is always literal.
-#
-# Both paths' PREFIX before `.claude/worktrees/<name>/…` is also anchored to
-# a real root, never accepted as an arbitrary `*` glob (codex round-7
-# Critical): `*/.claude/worktrees/$wt_name/…` matches ANY directory that
-# happens to contain a `.claude/worktrees/<name>/` subtree, so an attacker
-# could plant `/tmp/evil/.claude/worktrees/x/.claude/settings.json` next to
-# `/tmp/evil/.claude/worktrees/x/scripts/hooks/wire-hook-bash.mjs` — a wholly
-# fake "worktree" satisfying every structural check while running arbitrary
-# attacker-controlled code. The only trustworthy root is `$cwd`/
-# `$nested_wt_primary`, both derived from the tool call's OWN cwd (never
-# from command text), so each path must be either bare-relative
-# (`.claude/worktrees/$wt_name/…`, resolved against cwd like any relative
-# path) or prefixed with EXACTLY that real root — never a wildcard prefix.
-#
-# The two path values are read from ST_W (the ORIGINAL-case tokens), never
-# ST_LW (codex round-8 Critical): `.claude` is a fixed-case literal on a
-# case-sensitive filesystem, and an earlier draft matched it via the
-# lowercased array, so an attacker-planted `.CLAUDE/worktrees/<name>/…`
-# tree — a wholly distinct directory from the real `.claude/worktrees/…`
-# one on Linux — folded to the same lowercase text and passed. Comparing
-# the raw-case token against the lowercase-literal `.claude/worktrees/`
-# pattern means only the real, exact-case directory can ever match, so
-# `$real_root` is also compared in its own original case — no `st_lower`
-# call on it, and no mismatch to fix, since both sides now share whatever
-# case the tool call's own cwd and command text actually used.
-#
-# The script's ON-DISK CONTENT is also required to be git-clean (codex
-# round-10 Important): every check above only constrains the command's
-# ARGV shape, but `node` executes whatever bytes actually sit at
-# `script_path` — a script's real behavior is not determined by its own
-# filename or the flags it was invoked with. A worktree copy of
-# wire-hook-bash.mjs is trusted as read-only-under-`--check` only because
-# THAT specific committed script honors `--check`; if the in-session actor
-# (the same actor this hook exists to constrain) first Edits the worktree's
-# copy to ignore `--check` and writeFileSync unconditionally — a worktree
-# edit this hook's own header treats as harmless precisely because it needs
-# a commit + PR + review to take effect — then invokes it via this exact
-# allow-shape, the tampered script runs immediately, in the same turn, with
-# no review in between. Requiring `git status --porcelain` on the script
-# path to be empty (no staged/unstaged changes, no untracked file) closes
-# that gap the same way the settings.json worktree-copy exemption already
-# relies on: only a script that has actually gone through this worktree's
-# own commit boundary is trusted, restoring the "needs a commit to matter"
-# invariant the read-only contract implicitly assumed. A `git` failure (not
-# a real worktree, no repo, unreadable) is treated the same as dirty: fail
-# closed.
-_himmel_3761_worktree_settings_check_ok() {
-    local k=1 w has_check=0 settings_path='' script_path='' next_is_settings=0 wt_name=''
-    local real_root=$cwd
-    [ -z "$nested_wt_primary" ] || real_root=$nested_wt_primary
-    local wt_name_re='(^|/)\.claude/worktrees/([^/]+)/\.claude/settings\.json$'
-    _tok_single_segment_ok || return 1
-    case "${ST_LW[0]##*/}" in
-        node) ;;
-        *) return 1 ;;
-    esac
-    [ "$ST_N" -ge 2 ] || return 1
-    script_path=${ST_W[1]}
-    case "${script_path##*/}" in
-        wire-hook-bash.mjs) ;;
-        *) return 1 ;;
-    esac
-    while [ "$k" -lt "$ST_N" ]; do
-        [ -z "${ST_RO[k]}" ] || return 1
-        w=${ST_W[k]}
-        if [ "$next_is_settings" = 1 ]; then
-            settings_path=$w
-            next_is_settings=0
-        fi
-        # Flags matched in ORIGINAL case (codex round-9 Critical): the real
-        # script does an exact `arg === '--check'` comparison (case-sensitive),
-        # so a lowercased match here let `--CHECK` fool the hook into believing
-        # this was the read-only check path while the actual script fell
-        # through to writeFileSync — a real write the hook thought was a no-op.
-        case "$w" in
-            --check) has_check=1 ;;
-            --settings) next_is_settings=1 ;;
-        esac
-        k=$((k + 1))
-    done
-    [ "$has_check" = 1 ] && [ -n "$settings_path" ] || return 1
-    has_traversal_dots "$cmd_lc" && return 1
-    [[ "$settings_path" =~ $wt_name_re ]] || return 1
-    wt_name=${BASH_REMATCH[2]}
-    case "$settings_path" in
-        ".claude/worktrees/$wt_name/.claude/settings.json") ;;
-        "$real_root/.claude/worktrees/$wt_name/.claude/settings.json") ;;
-        *) return 1 ;;
-    esac
-    case "$script_path" in
-        ".claude/worktrees/$wt_name/scripts/hooks/wire-hook-bash.mjs") ;;
-        "$real_root/.claude/worktrees/$wt_name/scripts/hooks/wire-hook-bash.mjs") ;;
-        *) return 1 ;;
-    esac
-    local wt_root="$real_root/.claude/worktrees/$wt_name"
-    # A git-clean SYMLINK at this path is not enough (codex round-11
-    # Important): git status on a tracked symlink only reflects the
-    # symlink's own content (the target string), never the target file's
-    # content — a symlink committed once, pointing outside the worktree
-    # (or outside git's view entirely, e.g. /tmp), lets its target be
-    # edited freely forever after with this check staying clean the whole
-    # time, since the target is never a path git status is asked about.
-    # Reject outright rather than resolve-and-recheck: this is a narrow,
-    # closed allow-list, and a symlinked script is never a shape the
-    # ticket's read-only probe needs.
-    [ ! -L "$wt_root/scripts/hooks/wire-hook-bash.mjs" ] || return 1
-    # `git status --porcelain` reports COMPLETELY EMPTY for a path git is
-    # told to ignore, even when that path is entirely untracked and holds
-    # arbitrary attacker content (codex round-12 Important) — a
-    # `.gitignore` rule covering this script would make the check below
-    # wrongly read it as "clean". Require the file be genuinely TRACKED
-    # first: `ls-files --error-unmatch` fails for any path git does not
-    # know about, gitignored or simply never added.
-    git -C "$wt_root" ls-files --error-unmatch -- scripts/hooks/wire-hook-bash.mjs >/dev/null 2>&1 || return 1
-    local script_git_status
-    script_git_status=$(git -C "$wt_root" status --porcelain -- scripts/hooks/wire-hook-bash.mjs 2>/dev/null) || return 1
-    [ -z "$script_git_status" ] || return 1
-    return 0
-}
-
 input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
@@ -1887,7 +1737,13 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         if [ "$TOK" = 1 ]; then
             _tok_readonly_ok && exit 0
             _himmel_3761_mention_only_ok && exit 0
-            _himmel_3761_worktree_settings_check_ok && exit 0
+            # _himmel_3761_worktree_settings_check_ok was removed (rounds
+            # 10-13 kept finding new bypasses on this shape — symlinked
+            # target, gitignored-untracked script, unquoted glob expansion,
+            # and a local uncommitted commit spoofing git-cleanliness; see
+            # HIMMEL-3781). `node wire-hook-bash.mjs --check --settings
+            # <worktree>` now falls through to main's deny like any other
+            # ambiguous shape.
         elif is_readonly_allowlisted "$cmd_lc"; then
             exit 0
         fi
