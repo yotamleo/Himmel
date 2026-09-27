@@ -2985,7 +2985,8 @@ check_c44_qmd_daemon() {
     local pidfile="${HIMMEL_DOCTOR_QMD_PIDFILE:-${XDG_CACHE_HOME:-$HOME/.cache}/qmd/mcp.pid}"
     local ps_bin="${HIMMEL_DOCTOR_QMD_PS:-ps}"
     local ceiling="${QMD_RSS_CEILING_MB:-4096}" pid row rss_kb etime rss_mb
-    case "$ceiling" in ''|*[!0-9]*) ceiling=4096 ;; esac
+    # A non-numeric ceiling disables the hook's recycle, so it disables the WARN.
+    case "$ceiling" in ''|*[!0-9]*) ceiling=0 ;; esac
     ceiling=$((10#$ceiling))
     [ -f "$pidfile" ] || return 0
     pid="$(head -1 "$pidfile" 2>/dev/null | tr -d '[:space:]')"

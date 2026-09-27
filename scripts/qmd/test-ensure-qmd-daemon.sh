@@ -544,4 +544,23 @@ kill "$fake_pid" 2>/dev/null || true
 wait "$fake_pid" 2>/dev/null || true
 echo "ok (p): a fresh lock with no 'at' file is left to its owner"
 
+# ---- (q) a stale lock is cleared, never taken over in the same run -----------
+# Two sessions that both judged one lock stale could each remove the other's
+# fresh lock and both recycle; so the reclaimer only clears it, and the next
+# session start takes the lock through a plain mkdir.
+rm -f "$state/alive" "$state/ps-argv.log" "$xdg/qmd/recycle.stamp" "$xdg/qmd/recycle.log"
+mkdir "$xdg/qmd/recycle.lock"
+echo $(( $(date +%s) - 300 )) > "$xdg/qmd/recycle.lock/at"
+start_fake_daemon 0
+run_ceiling 7340032
+[ "$rc" -eq 0 ] || fail "(q) stale lock: expected rc 0, got $rc ($out)"
+grep -q "recycling" <<< "$out" && fail "(q) stale lock: the reclaiming run also recycled (got: $out)"
+[ ! -d "$xdg/qmd/recycle.lock" ] || fail "(q) stale lock: not cleared"
+run_ceiling 7340032
+grep -q "recycling" <<< "$out" || fail "(q) stale lock: the next session did not recycle (got: $out)"
+wait_restarted || fail "(q) stale lock: recycle after the clear never finished ($(cat "$xdg/qmd/recycle.log" 2>/dev/null))"
+kill "$fake_pid" 2>/dev/null || true
+wait "$fake_pid" 2>/dev/null || true
+echo "ok (q): a stale lock is cleared, and the next session recycles"
+
 echo "PASS: all ensure-qmd-daemon cases"

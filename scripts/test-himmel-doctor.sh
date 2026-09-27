@@ -4838,14 +4838,16 @@ else
 fi
 rm -rf "$c44d_t"
 
-echo "== C44-qmd-daemon: half a MB over the ceiling still WARNs; a leading-zero ceiling reads as decimal =="
+echo "== C44-qmd-daemon: half a MB over the ceiling still WARNs; a leading-zero ceiling reads as decimal; a non-numeric one is off =="
 c44d_setup
 out="$(c44d_run '4194816 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
 out_oct="$(QMD_RSS_CEILING_MB=08 c44d_run '1048576 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
-if grepq "$out" 'WARN C44-qmd-daemon' && grepq "$out_oct" 'WARN C44-qmd-daemon' && grepq "$out_oct" -F 'ceiling 8 MB'; then
+out_bad="$(QMD_RSS_CEILING_MB=lots c44d_run '7340032 04:31:07 bun /x/dist/cli/qmd.js mcp --http --port 8181')"
+if grepq "$out" 'WARN C44-qmd-daemon' && grepq "$out_oct" 'WARN C44-qmd-daemon' && grepq "$out_oct" -F 'ceiling 8 MB' \
+    && grepq "$out_bad" 'OK   C44-qmd-daemon'; then
     pass "C44-qmd-daemon compares in KB and reads a leading-zero ceiling as decimal"
 else
-    fail "C44-qmd-daemon KB/decimal -> half=[$(printf '%s' "$out" | grep C44-qmd-daemon)] oct=[$(printf '%s' "$out_oct" | grep C44-qmd-daemon)]"
+    fail "C44-qmd-daemon KB/decimal/invalid -> half=[$(printf '%s' "$out" | grep C44-qmd-daemon)] oct=[$(printf '%s' "$out_oct" | grep C44-qmd-daemon)] bad=[$(printf '%s' "$out_bad" | grep C44-qmd-daemon)]"
 fi
 rm -rf "$c44d_t"
 

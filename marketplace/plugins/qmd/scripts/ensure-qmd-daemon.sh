@@ -175,8 +175,9 @@ check_ceiling() {
     return 0
   fi
   # A crashed recycler must not wedge the ceiling forever: a lock older than
-  # its worst case (~90s: 30s kill wait + the ~59s start path) is reclaimed. The stamp re-check after mkdir closes
-  # the reclaim race (a second reclaimer sees the winner's fresh stamp).
+  # its worst case (~90s: 30s kill wait + the ~59s start path) is cleared. The
+  # stamp re-check after mkdir stops a session that read the stamp before the
+  # winner wrote it.
   if ! mkdir "$recycle_lock" 2>/dev/null; then
     last="$(cat "$recycle_lock/at" 2>/dev/null)"
     case "$last" in
@@ -185,8 +186,12 @@ check_ceiling() {
       ''|*[!0-9]*) [ -n "$(find "$recycle_lock" -maxdepth 0 -mmin +2 2>/dev/null)" ] || return 0 ;; # gnu-ok: BSD find has -maxdepth and -mmin too
       *) [ $((now - last)) -gt 120 ] || return 0 ;;
     esac
+    # Clear it, never take it over here: two sessions that both judged it
+    # stale could each remove the other's fresh lock and both recycle. The
+    # next session start takes the lock through a plain mkdir.
     rm -rf "$recycle_lock"
-    mkdir "$recycle_lock" 2>/dev/null || return 0
+    echo "ensure-qmd-daemon: cleared a stale recycle lock; the next session start recycles the daemon (RSS $((rss_kb / 1024)) MB > ceiling ${QMD_RSS_CEILING_MB} MB)" >&2
+    return 0
   fi
   last="$(cat "$recycle_stamp" 2>/dev/null)"
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
