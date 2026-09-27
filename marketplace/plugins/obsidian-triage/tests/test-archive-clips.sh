@@ -350,8 +350,8 @@ stuck_section="$(
     fi
     triaged="$(grep -m1 '^triaged_at:' "$f" | sed -E 's/^triaged_at:[[:space:]]*//')"
     # GNU/BSD fallback: `date -d` is GNU-only and BSD date on macOS rejects it,
-    # which under this suite's `set -u` aborts the arithmetic below and fails
-    # the whole run on a platform the plugin supports.
+    # which under this suite runs with `set -u` and aborts the arithmetic below,
+    # failing the whole run on a platform the plugin supports.
     epoch_of() {  # $1 = YYYY-MM-DD
       date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
     }
