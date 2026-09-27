@@ -112,7 +112,7 @@ mkdir -p "$VAULT/60-Maps" "$VAULT/.obsidian"
 FAKE_RUNNER="$TMP_ROOT/runner-fake.sh"
 cat >"$FAKE_RUNNER" <<'FAKE'
 #!/usr/bin/env bash
-printf 'ARGS:%s\n' "$*" >> "$RUNNER_LOG"
+printf 'ARGS:%s GRAPHIFY_OUT_ROOT=%s\n' "$*" "${GRAPHIFY_OUT_ROOT-UNSET}" >> "$RUNNER_LOG"
 name=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -238,6 +238,23 @@ luna_dry=$(printf '%s\n' "$out" | grep '\[luna\]' || true)
 himmel_dry_or=$(printf '%s\n' "$out" | grep '\[himmel\]' || true)
 assert_contains "out-root dry-run luna leg carries --out-root" "--out-root /out/root" "$luna_dry"
 assert_not_contains "out-root dry-run himmel leg has no --out-root" "--out-root" "$himmel_dry_or"
+
+# ============================================================================
+# Test 4c (HIMMEL-3718 CR round 3, codex-1): a REAL (non-dry-run) both invocation
+# must not let an AMBIENT GRAPHIFY_OUT_ROOT (left over in the invoking shell from
+# some unrelated prior call) leak into the himmel leg's runner process just
+# because himmel's own resolver says stay in-corpus. The dry-run-only Test 4b
+# above cannot catch this: the leak only happens on the real exec path.
+# ============================================================================
+echo "TEST: ambient GRAPHIFY_OUT_ROOT does not leak into the himmel leg (real run)"
+reset_runner_log
+rc=0; out=$(GRAPHIFY_OUT_ROOT="/ambient/leftover" run_refresh both --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "ambient out-root real-run rc 0" 0 "$rc"
+line1=$(sed -n '1p' "$RUNNER_LOG")
+line2=$(sed -n '2p' "$RUNNER_LOG")
+assert_contains "luna leg still runs" "--name luna" "$line1"
+assert_contains "himmel leg still runs" "--name himmel" "$line2"
+assert_not_contains "himmel leg does not see the ambient GRAPHIFY_OUT_ROOT" "GRAPHIFY_OUT_ROOT=/ambient/leftover" "$line2"
 
 # ============================================================================
 # Test 5: serial both -> order luna then himmel, canonical arg sets, hint, status

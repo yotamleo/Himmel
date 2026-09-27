@@ -690,7 +690,18 @@ for c in "${CORPORA[@]}"; do
     # The `if` guards the runner call from set -e so a failed leg is REPORTED and
     # the remaining legs still run (the operator wants the per-corpus summary for
     # BOTH, not a hard stop after the first failure).
-    if "${RUNNER_ARGV[@]}"; then
+    # HIMMEL-3718 CR round 3 (codex-1): when this corpus's resolver says
+    # in-corpus (R_OUT_ROOT empty), scrub an ambient GRAPHIFY_OUT_ROOT so a
+    # value the invoking shell happens to have exported (e.g. left over from
+    # testing luna's out-root) can't silently leak into this leg's child
+    # process and redirect it too -- refresh-graph-map.sh's own env fallback
+    # would otherwise honour it.
+    if [ -z "$R_OUT_ROOT" ]; then
+        RUNNER_CMD=(env -u GRAPHIFY_OUT_ROOT "${RUNNER_ARGV[@]}")
+    else
+        RUNNER_CMD=("${RUNNER_ARGV[@]}")
+    fi
+    if "${RUNNER_CMD[@]}"; then
         echo "graph-refresh: [$c] OK -- published $VAULT/60-Maps/$R_SLUG.md"
         # Himmel's graphify-out/ is TRACKED (HIMMEL-1123); the refresh regenerates
         # it on disk but does NOT ship it. The operator must publish it separately

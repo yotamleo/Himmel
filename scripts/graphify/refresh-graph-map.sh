@@ -587,8 +587,26 @@ if [ -n "$OUT_ROOT" ]; then
     echo "refresh-graph-map: REFUSING --out-root=<corpus root> ($OUT_ROOT) -- that is the in-corpus case; omit --out-root/GRAPHIFY_OUT_ROOT instead." >&2
     exit 2
   fi
+  # HIMMEL-3718 CR round 3 (codex-3): a --out-root INSIDE the corpus (not
+  # equal to it) passed the check above but still puts graph churn under
+  # whatever this corpus's own watcher/backup tooling watches -- exactly what
+  # this ticket exists to get out of. Refuse any out-root that is the corpus
+  # root itself OR a descendant of it.
+  case "$OUT_ROOT_RESOLVED/" in
+    "$CORPUS_ROOT_RESOLVED"/*)
+      echo "refresh-graph-map: REFUSING --out-root inside the corpus ($OUT_ROOT) -- that still churns inside the watched corpus; point it at a directory outside $CORPUS_ROOT_RESOLVED." >&2
+      exit 2 ;;
+  esac
   OUT_OF_CORPUS=1
-  OUT_DIR="$OUT_ROOT/$GRAPHIFY_OUT_NAME"
+  # HIMMEL-3718 CR round 3 (codex-2): build OUT_DIR from OUT_ROOT_RESOLVED, not
+  # the raw $OUT_ROOT. A raw path with a symlink component followed by ".."
+  # (e.g. "$CORPUS_ROOT/link/../../x" where "link" targets somewhere deep) gets
+  # real OS symlink-then-".." resolution when used for mkdir/promote -- which
+  # can land somewhere the lexical-".."-collapse above never modeled and so
+  # never checked against the root/home/corpus refusals. Using the already-
+  # validated OUT_ROOT_RESOLVED string for BOTH the checks and the actual
+  # write target means whatever got approved is exactly what gets used.
+  OUT_DIR="$OUT_ROOT_RESOLVED/$GRAPHIFY_OUT_NAME"
 else
   OUT_DIR="$CORPUS_ROOT/$GRAPHIFY_OUT_NAME"
 fi

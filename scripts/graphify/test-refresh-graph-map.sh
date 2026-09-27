@@ -3973,6 +3973,44 @@ out=$( GRAPHIFY_MAP_BIN="$GOBIN/graphify" bash "$SCRIPT" \
   && pass "T53e --out-root=<corpus root> is refused rc=2" \
   || fail "T53e --out-root=<corpus root> should be refused rc=2 (rc=$rc): $out"
 
+# T53e2 (HIMMEL-3718 CR round 3, codex-3): an --out-root that is a SUBDIRECTORY
+# of the corpus root (not equal to it) still churns inside the watched corpus
+# and must be refused too.
+T53SUB="$T53CORPUS/dedicated-out"; mkdir -p "$T53SUB"
+out=$( GRAPHIFY_MAP_BIN="$GOBIN/graphify" bash "$SCRIPT" \
+  --name t53e2 --corpus-root "$T53CORPUS" --backend claude-cli \
+  --maps-dir "$T53MAPS" --title T53e2 --slug t53e2-map --out-root "$T53SUB" 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] && grep -q "REFUSING --out-root inside the corpus" <<< "$out" \
+  && pass "T53e2 --out-root=<subdir of corpus> is refused rc=2" \
+  || fail "T53e2 --out-root=<subdir of corpus> should be refused rc=2 (rc=$rc): $out"
+
+# T53e3 (HIMMEL-3718 CR round 3, codex-2): a --out-root with a SYMLINK component
+# followed by ".." can lexically collapse to one location (what the root/home/
+# corpus-root refusals above actually check) while the OS resolves the raw
+# string -- following the real symlink target, then applying ".." from THERE --
+# to a totally different, unvalidated location. If OUT_DIR were built from the
+# raw string, the promote would land somewhere the checks above never saw.
+# Fixture: corpus at t53sym/a/b/corpus; a symlink under it points 6 levels deep
+# (t53sym/deep/x/y/z/w); "corpus/link/../../../safe-out" lexically collapses to
+# t53sym/a/safe-out (an ancestor of corpus, correctly accepted as out-of-corpus)
+# but really resolves (symlink then 3 real ".."s from its target) to
+# t53sym/deep/x/safe-out -- a different directory this test never validates.
+# The graph must land at the LEXICALLY-VALIDATED path, never the raw-resolved one.
+T53SYMROOT="$WS/t53sym"; mkdir -p "$T53SYMROOT/a/b/corpus" "$T53SYMROOT/deep/x/y/z/w"
+printf '# note\nt53e3 fixture\n' > "$T53SYMROOT/a/b/corpus/note.md"
+ln -s "$T53SYMROOT/deep/x/y/z/w" "$T53SYMROOT/a/b/corpus/link"
+T53E3VALIDATED="$T53SYMROOT/a/safe-out"
+T53E3RAWRESOLVED="$T53SYMROOT/deep/x/safe-out"
+out=$( GRAPHIFY_MAP_BIN="$GOBIN/graphify" bash "$SCRIPT" \
+  --name t53e3 --corpus-root "$T53SYMROOT/a/b/corpus" --backend claude-cli \
+  --maps-dir "$T53MAPS" --title T53e3 --slug t53e3-map \
+  --out-root "$T53SYMROOT/a/b/corpus/link/../../../safe-out" 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ] && [ -f "$T53E3VALIDATED/graphify-out/graph.json" ] && [ ! -e "$T53E3RAWRESOLVED/graphify-out" ]; then
+  pass "T53e3 symlink+.. out-root promotes at the validated path, not the raw-resolved one"
+else
+  fail "T53e3 symlink+.. divergence (rc=$rc) validated=$( [ -f "$T53E3VALIDATED/graphify-out/graph.json" ] && echo yes || echo no ) raw-resolved=$( [ -e "$T53E3RAWRESOLVED/graphify-out" ] && echo yes || echo no ): $out"
+fi
+
 # T53f: an --out-root pointing at an existing non-graphify, non-empty directory
 # is refused, EVEN AT THE DEFAULT leaf name -- HIMMEL-3718 widens the T47a/T47b2
 # guard (previously scoped only to a GRAPHIFY_OUT_NAME override) to also fire
