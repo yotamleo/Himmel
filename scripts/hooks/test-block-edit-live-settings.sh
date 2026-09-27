@@ -1491,6 +1491,16 @@ assert_rc "223 node --check --settings on the primary's own settings.json still 
 assert_rc "224 node --check --settings via ../.. from a nested worktree still denies (control)" 2 \
     "$(bash_rc_of "$NESTED_WT" "node scripts/hooks/wire-hook-bash.mjs --check --settings ../../.claude/settings.json")"
 
+# 225 control (HIMMEL-3761, codex-1 CR finding): a benign --check --settings
+# decoy naming a linked worktree's OWN copy (settings_word_live=0) is chained
+# with a SEPARATE node -e write of the PRIMARY's live settings.json — a
+# write mechanism has_write_verb_or_target_flag does not recognize at all, so
+# write_operand_settings_mention never fires either. Proves the decoy operand
+# cannot vouch for the whole command when unrelated live-shaped text sits
+# elsewhere in it -> DENY.
+assert_rc "225 --check --settings decoy chained with a node -e write of the primary's live settings.json still denies (control, codex-1)" 2 \
+    "$(bash_rc_of "$PRIMARY" "node scripts/hooks/wire-hook-bash.mjs --check --settings $NESTED_WT/.claude/settings.json; node -e \"require('fs').writeFileSync('$PRIMARY/.claude/settings.json','pwned')\"")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

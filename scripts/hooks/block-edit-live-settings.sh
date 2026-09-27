@@ -1679,6 +1679,21 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # tokenizer vouched for the command (TOK=1, so never a heredoc or
     # ANSI-C word — those already force TOK=0).
     settings_word_live=-1
+    # settings_word_unmatched (HIMMEL-3761, codex-1): a word that MENTIONS a
+    # settings filename as a substring but whose own leaf is not an exact
+    # match (a node -e/python -c script body embedding a live path inside a
+    # larger string, e.g. `require('fs').writeFileSync('/primary/.claude/
+    # settings.json', ...)`) is never resolved by _check_settings_word below —
+    # it hits the `*) return` leaf-mismatch branch untouched. Without this
+    # flag, a SEPARATE benign settings-leaf word elsewhere in the same command
+    # (a decoy --settings <worktree-copy> operand) sets settings_word_live=0,
+    # which would wrongly vouch for the whole command and suppress both the
+    # primary_cwd force and the raw-text fallback below, even though this
+    # word's own live write was never actually judged. Only a word that
+    # cleanly resolves via check_target() may ever set settings_word_live;
+    # any word that merely mentions the filename without resolving keeps the
+    # command fail-closed regardless of what other words resolved to.
+    settings_word_unmatched=0
     if [ "$mentions_settings" = "1" ] && [ "$TOK" = "1" ]; then
         _check_settings_word() {
             local w="$1" wabs wparent wleaf result
@@ -1691,7 +1706,13 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             case "$wleaf" in
                 [sS][eE][tT][tT][iI][nN][gG][sS].[jJ][sS][oO][nN]) : ;;
                 [sS][eE][tT][tT][iI][nN][gG][sS].[lL][oO][cC][aA][lL].[jJ][sS][oO][nN]) : ;;
-                *) return ;;
+                *)
+                    case "$w" in
+                        *[sS][eE][tT][tT][iI][nN][gG][sS].[jJ][sS][oO][nN]*) settings_word_unmatched=1 ;;
+                        *[sS][eE][tT][tT][iI][nN][gG][sS].[lL][oO][cC][aA][lL].[jJ][sS][oO][nN]*) settings_word_unmatched=1 ;;
+                    esac
+                    return
+                    ;;
             esac
             if [ -e "$wabs" ] || [ -L "$wabs" ]; then
                 : # fall through to check_target below
@@ -1725,7 +1746,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # so a command that ALSO does something else live-shaped still denies.
     primary_cwd_forces_live=$is_primary_cwd
     if [ "$is_primary_cwd" = "1" ] && [ "$dir_dest" = "0" ] && [ "$settings_word_live" = "0" ] \
-        && [ "$write_operand_settings_mention" = "0" ]; then
+        && [ "$write_operand_settings_mention" = "0" ] && [ "$settings_word_unmatched" = "0" ]; then
         primary_cwd_forces_live=0
     fi
 
@@ -1757,11 +1778,13 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # would otherwise re-flag it live merely because the primary's own
         # root is a textual prefix of the worktree's container path.
         if [ "$live" = "0" ] \
-            && { [ "$settings_word_live" != "0" ] || [ "$write_operand_settings_mention" = "1" ]; } \
+            && { [ "$settings_word_live" != "0" ] || [ "$write_operand_settings_mention" = "1" ] \
+                || [ "$settings_word_unmatched" = "1" ]; } \
             && mentions_primary_or_home "$cmd_lc"; then
             live=1
         elif [ "$live" = "0" ] \
-            && { [ "$settings_word_live" != "0" ] || [ "$write_operand_settings_mention" = "1" ]; } \
+            && { [ "$settings_word_live" != "0" ] || [ "$write_operand_settings_mention" = "1" ] \
+                || [ "$settings_word_unmatched" = "1" ]; } \
             && [ -z "$primary_root_lc" ]; then
             # No repo upward from cwd (or it did not resolve): there is no
             # worktree to exempt, and a relative mention resolves to whatever
