@@ -1235,11 +1235,12 @@ esac
 # elsewhere already own — $((...)), $(...), <(...), >(...) — before checking,
 # since those are handled cases, not this one. Longest-first so stripping
 # "$((" doesn't leave a stray "(" from a truncated "$(" match.
+# shellcheck disable=SC2016 # literal match patterns, not expansions
 paren_mask="$SCAN_MASK"
-paren_mask="${paren_mask//'$(('/}"
-paren_mask="${paren_mask//'$('/}"
-paren_mask="${paren_mask//'<('/}"
-paren_mask="${paren_mask//'>('/}"
+paren_mask="${paren_mask//"\$(("/}"
+paren_mask="${paren_mask//"\$("/}"
+paren_mask="${paren_mask//"<("/}"
+paren_mask="${paren_mask//">("/}"
 case "$paren_mask" in *'('*) exit 0 ;; esac
 
 # Output redirect to a real file → not safe. Strip /dev/null sinks + fd-dups first.
