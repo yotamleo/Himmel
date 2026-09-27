@@ -409,6 +409,39 @@ assert_rc "'then write a report.markdown' is governed -- a >5-char extension is 
 RC98=$(run_hook write-report-long-phrase-then-path "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Research the parser, then write a report about all of the various nuances and detailed considerations discussed above to scripts/router.sh.')")
 assert_rc "'then write a report <60+ char phrase> to <path>' is governed -- the path outlives any fixed window" 2 "$RC98"
 
+# J1388A (Opus judge, PR #1388): the write-clause exemption above cleared
+# followed_by_action itself, and that variable is also the veto on the
+# read-only-declared allow exit below (:301) -- so a dispatch with a
+# read-only declaration, an implementation signal, and an EXEMPTED "then
+# write a summary" cleared the veto and was wrongly ALLOWed here, where main
+# GOVERNs it. Fix: split the signal into gate_action (feeds only the new
+# :290 first-gate disjunct, narrowed by the exemption) and followed_by_action
+# (recomputed exactly as main, bare "write" included, feeding only the
+# pre-existing research/read-only vetoes). These 6 rows are RED on
+# 22b0897173a9a7672d7f870068f0d336a4952730 (all ALLOW there) and GREEN with
+# the split.
+RC99=$(run_hook readonly-implement-then-summary "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Read-only review. Assess whether we should implement caching, then write a summary.')")
+assert_rc "read-only + implement + exempted 'then write a summary' is governed (J1388A row 1)" 2 "$RC99"
+
+RC100=$(run_hook readonly-implement-summary-then-implement "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Read-only review. Assess whether we should implement caching, then write a summary; after that implement caching in the client.')")
+assert_rc "read-only + implement + exempted write + second implement is governed (J1388A row 2)" 2 "$RC100"
+
+RC101=$(run_hook readonly-summary-then-write-code "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Read-only review of the cache layer, then write a summary; afterwards write the code for caching.')")
+assert_rc "read-only + exempted write + ';afterwards write the code' is governed (J1388A row 3)" 2 "$RC101"
+
+RC102=$(run_hook readonly-summary-next-write-implementation "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Read-only task. Review the parser, then write a summary. Next, write the implementation of the retry loop.')")
+assert_rc "read-only + exempted write + '. Next, write the implementation' is governed (J1388A row 4)" 2 "$RC102"
+
+RC103=$(run_hook readonly-write-code-second-line "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Read-only task. Review the parser, then write the code
+  notes are in the ticket.')")
+assert_rc "read-only + 'then write the code' (non-report object) is governed (J1388A row 5)" 2 "$RC103"
+
+RC104=$(run_hook readonly-numbered-steps-write-code "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1534 dispatch' 'Read-only task. Steps:
+1. review the parser
+2. and write a summary
+3. write the code for retries')")
+assert_rc "read-only + numbered-list 'write the code for retries' is governed (J1388A row 6)" 2 "$RC104"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 
