@@ -1474,9 +1474,14 @@ printf '{"leg":"N634"}\n' > "$SANDBOX/hb/logs/N634.leg-settings.json"
 assert_rc "219 bash tail of a *.leg-settings.json log artifact allows" 0 \
     "$(bash_rc_of "$PRIMARY" "tail -n 20 $SANDBOX/hb/logs/N634.leg-settings.json")"
 
-# 220: printf mention-only, redirecting into an UNRELATED file while the text
-# names a *.leg-settings.json artifact -> ALLOW (ticket shape; RED on main).
-assert_rc "220 printf mentioning a leg-settings filename, redirect to a non-live file, allows" 0 \
+# 220 used to allow here (redirect to an unrelated, non-live file) before the
+# round-14 H console ruling: aliasing through a symlinked parent directory or
+# a hardlink cannot be closed by inspecting the redirect target word (neither
+# ever shows up in the word's own text or its own `-L` bit), so
+# _himmel_3761_mention_only_ok no longer judges redirect targets at all — ANY
+# output redirection now falls through to main's deny, whatever the target
+# (HIMMEL-3781 tracks this narrowed false-deny).
+assert_rc "220 printf mentioning a leg-settings filename, redirect to a non-live file, denies" 2 \
     "$(bash_rc_of "$PRIMARY" "printf 'see N634.leg-settings.json for details' >> $SANDBOX/console.md")"
 
 # 221: bare echo mention, no redirect at all -> ALLOW (ticket shape; RED on
@@ -1679,6 +1684,25 @@ printf 'scripts/hooks/wire-hook-bash.mjs\n' > "$FEATIGNORE/.gitignore"
 printf 'module.exports = {}; require("fs").writeFileSync(0, "tampered");\n' > "$FEATIGNORE/scripts/hooks/wire-hook-bash.mjs"
 assert_rc "241 node wire-hook-bash.mjs --check --settings (worktree, script gitignored and untracked) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node $FEATIGNORE/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATIGNORE/.claude/settings.json")"
+
+# 242: mention-only echo, redirect target's PARENT DIRECTORY is a symlink
+# aliasing into the primary's own live .claude/ -> DENY (codex round-14
+# Critical). The leaf word itself is an ordinary, non-symlink name, so a
+# check that only lstats the target word (round 12's fix) misses this
+# entirely; the round-14 H console ruling drops target-word judgment
+# altogether, so ANY redirect denies regardless of what's in the path.
+ln -s "$PRIMARY/.claude" "$SANDBOX/alias-dir"
+assert_rc "242 echo mention-only, redirect through a symlinked parent directory, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo see settings.json for details >> $SANDBOX/alias-dir/notes.txt")"
+
+# 243: mention-only printf, redirect target is a HARDLINK sharing an inode
+# with the primary's own live settings.json -> DENY (codex round-14
+# Critical). A hardlink is indistinguishable from an ordinary file by `-L`
+# (round 12's symlink check never fires), so writing through it silently
+# writes the same underlying bytes as the live settings file.
+ln "$PRIMARY/.claude/settings.json" "$SANDBOX/hardlink-settings.json"
+assert_rc "243 printf mention-only, redirect target is a hardlink to the live settings file, denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "printf 'see settings.json for details' >> $SANDBOX/hardlink-settings.json")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

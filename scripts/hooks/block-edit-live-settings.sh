@@ -1414,55 +1414,33 @@ _tok_single_segment_ok() {
 }
 
 # _himmel_3761_mention_only_ok — the ticket's "mention, not a path operand"
-# shape: a bare `echo`/`printf` whose only job is to emit text, where a
-# settings-leaf substring appears purely as DATA (a printf format argument
-# mentioning a per-leg `*.leg-settings.json` artifact; a bare word like
-# `echo see settings.json for details`). printf/echo cannot themselves read
-# or write any file except through a redirect, so this is safe precisely
-# when no redirect TARGET word (ST_RO-marked) itself names a live settings
-# leaf — a real write onto settings.json/settings.local.json still falls
-# through to main's deny, same as today.
+# shape: a bare `echo`/`printf` to STDOUT ONLY, whose only job is to emit
+# text, where a settings-leaf substring appears purely as DATA (a printf
+# format argument mentioning a per-leg `*.leg-settings.json` artifact; a bare
+# word like `echo see settings.json for details`).
 #
-# A redirect target is rejected outright when it carries a live `$`
-# expansion or an unquoted glob/brace (ST_X/ST_G — codex round-8 Critical):
-# the literal-text substring scan below only catches a target word that
-# SPELLS `settings.json`, so `echo hi > "$TARGET"` sailed through — the
-# word `$TARGET` never contains that substring, yet at runtime it can
-# expand to a live settings path and the redirect genuinely writes it.
-# ST_X/ST_G are set by the tokenizer whenever a word's actual value is not
-# fully known from its text alone, so any such target is ambiguous and
-# falls through to main's deny, the same as an unresolvable substring.
-#
-# A redirect target that is itself an existing SYMLINK is rejected outright
-# too (codex round-12 Important): the substring scan only judges the
-# target's own SPELLING, never its DESTINATION, so `echo hi > notes.txt`
-# sails through even when `notes.txt` is a pre-existing symlink resolving to
-# a live settings.json — the write then lands on the real file through the
-# symlink. This function only ever proves the command is SAFE (never proves
-# it unsafe on its own), so it cannot resolve where a symlink points either;
-# the same closed-allow-list posture as an ST_X/ST_G target applies: an
-# existing symlink target is ambiguous and falls through to main's deny.
+# Judging a redirect TARGET word was tried through rounds 8-14 (live `$`
+# expansion / unquoted glob, then an existing-symlink check) and still missed
+# aliasing through a symlinked PARENT directory or a hardlink (round-14
+# Critical) — neither is closeable by inspecting the target word's own text
+# or its own `-L` bit, since a hardlink is indistinguishable from an ordinary
+# file and a parent-directory symlink never appears in the leaf word at all.
+# Rather than keep narrowing a check that structurally cannot close (H
+# console ruling, round 14), this function no longer judges redirect targets
+# at all: it requires there be NO output redirection in the clause —
+# `>`, `>>`, `>|`, `&>`, a numbered-fd redirect (any ST_RO-marked word) —
+# so echo/printf can only ever write to stdout. A write of any kind, to any
+# target, falls through to main's deny like any other ambiguous shape (the
+# false-deny this drops is tracked on HIMMEL-3781).
 _himmel_3761_mention_only_ok() {
-    local k=0 w lw wabs
+    local k=0
     _tok_single_segment_ok || return 1
     case "${ST_LW[0]}" in
         echo|printf) ;;
         *) return 1 ;;
     esac
     while [ "$k" -lt "$ST_N" ]; do
-        if [ -n "${ST_RO[k]}" ]; then
-            [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1
-            w=${ST_W[k]}
-            lw=$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')
-            case "$lw" in
-                *settings.json*|*settings.local.json*) return 1 ;;
-            esac
-            case "$w" in
-                /*|[A-Za-z]:/*|[A-Za-z]:\\*) wabs="$w" ;;
-                *) wabs="$cwd/$w" ;;
-            esac
-            [ ! -L "$wabs" ] || return 1
-        fi
+        [ -z "${ST_RO[k]}" ] || return 1
         k=$((k + 1))
     done
     return 0
