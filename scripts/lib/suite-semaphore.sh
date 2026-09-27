@@ -150,7 +150,14 @@ _suite_sem_stale() {
 # _suite_sem_reclaim <slot> -- remove a stale slot under a per-slot reclaim
 # lock, re-checking staleness while holding it: two waiters that both judged
 # the same dead slot stale must not let the second remove the FRESH slot the
-# first one's successor just created.
+# first one's successor just created. mkdir on $slot cannot succeed while
+# this function holds it, so nothing can claim $slot between the recheck and
+# the mv below -- the mv only ever moves the dead owner's own directory.
+# ponytail: the guard only orders reclaimers against EACH OTHER, not against
+# a false-stale verdict -- if _suite_sem_stale wrongly calls a live owner
+# dead (a too-short TTL, clock skew), that owner's own eventual release could
+# still race this mv. Fixing that needs a stronger liveness check than a TTL
+# heuristic, tracked under HIMMEL-1838's liveness-owner unification.
 _suite_sem_reclaim() {
     local slot="$1" guard="$1.reclaim" tomb
     if ! mkdir "$guard" 2>/dev/null; then
