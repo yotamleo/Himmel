@@ -182,7 +182,7 @@ check_ceiling() {
     case "$last" in
       # No 'at' yet: its holder may sit between mkdir and the write, so judge
       # staleness by the lock directory's own age instead.
-      ''|*[!0-9]*) [ -n "$(find "$recycle_lock" -maxdepth 0 -mmin +2 2>/dev/null)" ] || return 0 ;;
+      ''|*[!0-9]*) [ -n "$(find "$recycle_lock" -maxdepth 0 -mmin +2 2>/dev/null)" ] || return 0 ;; # gnu-ok: BSD find has -maxdepth and -mmin too
       *) [ $((now - last)) -gt 120 ] || return 0 ;;
     esac
     rm -rf "$recycle_lock"
