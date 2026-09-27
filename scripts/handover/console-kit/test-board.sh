@@ -28,6 +28,9 @@ contains() {
 lacks() {
     case "$2" in *"$3"*) fail "$1 (found '$3')" ;; *) pass "$1" ;; esac
 }
+same() {
+    if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (got '$2', want '$3')"; fi
+}
 
 B="$W/bucket"
 mkdir -p "$B" "$W/bin" "$W/repo"
@@ -339,12 +342,24 @@ lacks 'never flags "still open" on a census it could not read' "$n5failhtml" 'da
 # publish stays a separate model step.
 rm -f "$W/changed-board.html"
 out1="$(run --out "$W/changed-board.html" --changed)"; rc1=$?
-contains '--changed on the first render (nothing to compare against) reports CHANGED' "$out1" "CHANGED $W/changed-board.html"
+same '--changed on the first render (nothing to compare against) reports CHANGED' "$out1" "CHANGED $W/changed-board.html"
 contains '--changed rc is still 0' "rc=$rc1" 'rc=0'
 out2="$(run --out "$W/changed-board.html" --changed)"
-contains '--changed on an identical re-render reports UNCHANGED' "$out2" "UNCHANGED $W/changed-board.html"
+same '--changed on an identical re-render reports UNCHANGED' "$out2" "UNCHANGED $W/changed-board.html"
 out3="$(TICK_STUB_FAIL=1 run --out "$W/changed-board.html" --changed)"
-contains '--changed after a real content change (fp now empty) reports CHANGED' "$out3" "CHANGED $W/changed-board.html"
+same '--changed after tick goes unavailable (fp now empty, prior fp was real) reports CHANGED' "$out3" "CHANGED $W/changed-board.html"
+
+# --- HIMMEL-3745 (Ask 3 x Ask 1): the WRAPPED-window census is read independently
+# of tick's --emit-fp, so a window opening on an otherwise-unchanged tick
+# fingerprint must still flip --changed to CHANGED.
+rm -f "$W/changed-census-board.html"
+out4="$(run --out "$W/changed-census-board.html" --changed)"; rc4=$?
+same 'census --changed: first render reports CHANGED' "$out4" "CHANGED $W/changed-census-board.html"
+contains 'census --changed: rc is still 0' "rc=$rc4" 'rc=0'
+out5="$(BOARD_SESSIONS="$W/bin/sessions-n5-alive.sh" run --out "$W/changed-census-board.html" --changed)"
+same 'a WRAPPED leg gaining a live window flips CHANGED although tick-fp is unchanged' "$out5" "CHANGED $W/changed-census-board.html"
+out6="$(BOARD_SESSIONS="$W/bin/sessions-n5-alive.sh" run --out "$W/changed-census-board.html" --changed)"
+same 'the same still-open leg on a re-render reports UNCHANGED' "$out6" "UNCHANGED $W/changed-census-board.html"
 
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?

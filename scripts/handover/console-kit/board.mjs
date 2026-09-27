@@ -341,6 +341,11 @@ if (censusNames && wrappedLegs.length) {
         }
     });
 }
+// This census runs after tick's --emit-fp is already captured, so a window
+// closing/reopening on an otherwise-unchanged tick fingerprint is invisible to
+// board-fp; --changed folds this signature in separately (below) rather than
+// asking tick.sh to account for a read it never performs.
+const censusSig = legs.filter((l) => l.phase === 'WRAPPED, window still open').map((l) => l.label).sort().join(',');
 
 // ---------------------------------------------------------------- render
 const now = new Date();
@@ -382,6 +387,7 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Console Board</title>
 ${fp ? `<meta name="console-board-fp" content="${fp}">` : ''}
+${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}
 <style>
 :root { --bg:#f6f7f9; --surface:#fff; --text:#1c2128; --muted:#5b6672; --line:#d9dee4; --accent:#2457c5; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1318; --surface:#181d24; --text:#e6e9ed; --muted:#96a1ad; --line:#2b333d; --accent:#7aa2ff; --ok:#3fb950; --warn:#d29922; --bad:#ff7b72; } }
@@ -444,14 +450,17 @@ ${panel('Console log — newest last', logRows, 'no Results yet')}
 // Live-state mutation and know from one line whether the render moved --
 // the Artifact publish itself stays a separate, deliberate model step.
 let oldFp = null;
+let oldCensusSig = '';
 if (changedFlag && existsSync(outPath)) {
-    oldFp = (/<meta name="console-board-fp" content="([0-9a-f]{16})">/.exec(readFileSync(outPath, 'utf8')) || [])[1] || null;
+    const prev = readFileSync(outPath, 'utf8');
+    oldFp = (/<meta name="console-board-fp" content="([0-9a-f]{16})">/.exec(prev) || [])[1] || null;
+    oldCensusSig = (/<meta name="console-board-census-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
 }
 const tmp = `${outPath}.tmp${process.pid}`;
 writeFileSync(tmp, html);
 renameSync(tmp, outPath);
 if (changedFlag) {
-    console.log(`${fp && fp !== oldFp ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
+    console.log(`${fp !== oldFp || censusSig !== oldCensusSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
 } else {
     console.log(outPath);
 }
