@@ -1837,7 +1837,11 @@ suite_lock_queue_is_our_turn() {
 }
 
 # _suite_lock_claim — mkdir the lock dir and brand it. Prints nothing.
-# Returns 0 only when THIS process is the branded owner.
+# Returns 0 only when THIS process is the branded owner; 1 when another
+# racer won (ordinary — ITS brand is on the dir); 2 when NO ONE branded it
+# — an IO/permission failure on the owner-file write, not contention, so a
+# caller must not treat it as a race a re-run will resolve (HIMMEL-1838
+# round 2, codex-2).
 _suite_lock_claim() {
   mkdir "$SUITE_LOCK_DIR" 2>/dev/null || return 1
   # mkdir is not a reliable mutex everywhere: uutils coreutils 0.8.0 resolves
@@ -1854,11 +1858,16 @@ _suite_lock_claim() {
       "$$" "$(_suite_lock_host)" "$(date +%s)" "$scan" \
       "$(proc_tree_process_identity "$$" 2>/dev/null || printf '')" \
       > "$SUITE_LOCK_DIR/owner" ) 2>/dev/null; then
-    # No winner branded at all = an IO/permission failure, not a lost race;
-    # rmdir (never rm -rf) is race-safe — it refuses a dir a racer has since
-    # branded — so a genuine loser leaves the winner's lock intact.
-    [ -e "$SUITE_LOCK_DIR/owner" ] || rmdir "$SUITE_LOCK_DIR" 2>/dev/null
-    return 1
+    # A brand on the dir means a racer won ordinarily; rmdir (never rm -rf)
+    # is race-safe there — it refuses a dir a racer has since branded — so a
+    # genuine loser leaves the winner's lock intact. No brand at all means no
+    # one won: the write itself failed (IO/permission), so the dir this
+    # process alone created is cleaned up and that distinct failure reported.
+    if [ -e "$SUITE_LOCK_DIR/owner" ]; then
+      return 1
+    fi
+    rmdir "$SUITE_LOCK_DIR" 2>/dev/null
+    return 2
   fi
   suite_lock_owned=1
   export HIMMEL_SUITE_LOCK_HELD="$SUITE_LOCK_DIR"
@@ -1971,7 +1980,7 @@ suite_lock_acquire() {
   # the other direction ("ALIVE") on a probe that cannot show identity.
   # pid_unknown is the third outcome: the probe was refused for a reason
   # other than "no such process", which proves nothing either way.
-  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 foreign_lock=0 probe_rc reclaim_rc
+  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 foreign_lock=0 claim_failed=0 probe_rc reclaim_rc claim_rc
   this_host=$(_suite_lock_host)
   if _suite_lock_same_host "$o_host" "$this_host"; then same_host=1; fi
   if [ -n "$o_pid" ] && [ "$same_host" -eq 1 ]; then
@@ -2010,20 +2019,37 @@ suite_lock_acquire() {
     # _suite_lock_claim is what actually re-acquires (HIMMEL-1838), so both
     # must succeed. Either one losing means an ordinary refusal: someone else
     # got the freed slot, is already reclaiming it, or the lock turned out to
-    # be live after all.
+    # be live after all — UNLESS the failure is one of the two operational
+    # cases below, neither of which any amount of re-running clears.
     _suite_lock_reclaim "$o_raw"
     reclaim_rc=$?
-    if [ "$reclaim_rc" -eq 0 ] && _suite_lock_claim; then
-      printf 'NOTE: cleared an abandoned suite lock (pid=%s host=%s age=%s) at %s\n' \
-        "${o_pid:-?}" "${o_host:-?}" "$age_disp" "$SUITE_LOCK_DIR" >&2
-      return 0
+    claim_rc=1
+    if [ "$reclaim_rc" -eq 0 ]; then
+      _suite_lock_claim
+      claim_rc=$?
+      if [ "$claim_rc" -eq 0 ]; then
+        printf 'NOTE: cleared an abandoned suite lock (pid=%s host=%s age=%s) at %s\n' \
+          "${o_pid:-?}" "${o_host:-?}" "$age_disp" "$SUITE_LOCK_DIR" >&2
+        return 0
+      fi
     fi
     if [ "$reclaim_rc" -eq 2 ]; then
       # _suite_lock_reclaim won the guard and CAS-matched, but _suite_lock_drop
       # refused: SUITE_LOCK_DIR holds something besides `owner` (Case 2d2). This
       # is not contention — no amount of re-running clears foreign content — so
-      # it gets its own message rather than folding into lost_race below.
+      # it gets its own message rather than folding into lost_race below, and
+      # SUITE_LOCK_WAIT must not spend its budget waiting for it (HIMMEL-1838
+      # round 2, codex-2 — the same gap this round's other finding closes for
+      # the claim-failure case just below).
       foreign_lock=1
+      suite_lock_permanent=1
+    elif [ "$reclaim_rc" -eq 0 ] && [ "$claim_rc" -eq 2 ]; then
+      # The reclaim cleared the dead owner, but nothing branded the freed dir:
+      # an IO/permission failure on OUR OWN write, not a racer winning it
+      # (_suite_lock_claim distinguishes the two). Re-running does not fix a
+      # broken write path, so this is not an ordinary lost race either.
+      claim_failed=1
+      suite_lock_permanent=1
     else
       # A lost race means the generation read above — and every field derived
       # from it — is KNOWN stale: the CAS exists precisely to catch a lock
@@ -2045,6 +2071,15 @@ suite_lock_acquire() {
       printf '  shape a lock this script made ever takes (owner file only), so it is left\n'
       printf '  untouched rather than risk deleting something else. Re-running will NOT\n'
       printf '  clear this on its own — inspect %s by hand.\n' "$SUITE_LOCK_DIR"
+    elif [ "$claim_failed" -eq 1 ]; then
+      printf 'REFUSED: cleared the abandoned lock of scan root "%s" but failed to re-claim it.\n' "$scan"
+      printf '  lock: %s\n' "$SUITE_LOCK_DIR"
+      printf '  This run judged the previous owner abandoned (last observed pid=%s host=%s\n' \
+        "${o_pid:-unknown}" "${o_host:-unknown}"
+      printf '  age=%s) and cleared it, but writing this run'"'"'s own owner file into the freed\n' "$age_disp"
+      printf '  directory failed — no other run branded it either, so this is not a race\n'
+      printf '  someone else won. Re-running will NOT clear this on its own — check that\n'
+      printf '  %s is writable.\n' "$SUITE_LOCK_DIR"
     elif [ "$lost_race" -eq 1 ]; then
       printf 'REFUSED: lost the race to take over the machine lock of scan root "%s".\n' "$scan"
       printf '  lock: %s\n' "$SUITE_LOCK_DIR"

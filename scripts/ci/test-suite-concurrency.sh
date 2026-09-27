@@ -440,6 +440,51 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# Case 2d2b -- the foreign-lock refusal above is PERMANENT: SUITE_LOCK_WAIT
+# must not spend its budget retrying it (HIMMEL-1838 round 2, codex-2). The
+# round-1 fix that gave the foreign-directory case its own verdict (Case 2d2
+# above) never told the SUITE_LOCK_WAIT retry loop that the refusal is a
+# safety refusal, not a held lock -- so a caller that waits would burn the
+# whole budget printing WAITING: for a directory nothing will ever release.
+# --------------------------------------------------------------------------
+echo "== Case 2d2b: a foreign-lock refusal is not queued behind SUITE_LOCK_WAIT =="
+sb2d2b=$(new_sandbox)
+cat > "$sb2d2b/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+decoy2b="$sb2d2b/decoy"
+mkdir -p "$decoy2b"
+printf 'started=1\nsomething the operator cares about\n' > "$decoy2b/owner"
+printf 'also mine\n' > "$decoy2b/other.txt"
+
+start2d2b=$(date +%s)
+out2d2b=$(SUITE_LOCK_DIR="$decoy2b" SUITE_LOCK_WAIT=60 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sb2d2b" 2>&1)
+rc2d2b=$?
+elapsed2d2b=$(( $(date +%s) - start2d2b ))
+
+if [ "$rc2d2b" -eq 2 ]; then
+  pass "foreign-lock refusal with SUITE_LOCK_WAIT set -> still refuses (rc 2)"
+else
+  fail "foreign-lock refusal with SUITE_LOCK_WAIT set -> expected rc 2 got $rc2d2b; output: $out2d2b"
+fi
+if grepq "$out2d2b" -F 'WAITING:'; then
+  fail "a foreign-lock refusal was dressed up as a queue -- WAITING: present; output: $out2d2b"
+else
+  pass "no WAITING: heartbeat -- a foreign-lock refusal is never presented as a queue"
+fi
+if grepq "$out2d2b" -F 'NOT QUEUED'; then
+  pass "output contains NOT QUEUED"
+else
+  fail "no NOT QUEUED verdict in output: $out2d2b"
+fi
+if [ "$elapsed2d2b" -lt 30 ]; then
+  pass "broke out immediately instead of spending the 60s budget (${elapsed2d2b}s)"
+else
+  fail "spent ${elapsed2d2b}s on a foreign-lock refusal waiting cannot clear; output: $out2d2b"
+fi
+
+# --------------------------------------------------------------------------
 # Case 2e -- a takeover is EXCLUSIVE: a live reclaim guard blocks it.
 #
 # HIMMEL-1838: the old two-step protocol (a `.claim` sibling, branded and
@@ -1023,6 +1068,106 @@ if [ -f "$lock2m/owner" ] && grep -qF 'scan=case2m-acquirer' "$lock2m/owner"; th
   pass "the acquirer's freshly-won lock is left intact"
 else
   fail "the run destroyed an acquirer's freshly-won lock; output: $out2m"
+fi
+
+# --------------------------------------------------------------------------
+# Case 2m2 -- the re-claim after a successful reclaim fails to WRITE its own
+# owner file (an IO/permission error), and NO ONE ELSE branded the dir either
+# (HIMMEL-1838 round 2, codex-2). _suite_lock_claim distinguishes this from an
+# ordinary lost race (Case 2m above, where a co-winner's brand IS on the dir):
+# before this fix both were folded into the same "someone else won" verdict,
+# so a caller retrying on that advice would spin forever on a write path that
+# is simply broken -- re-running does not fix filesystem permissions. This
+# also exercises the SUITE_LOCK_WAIT interaction: like a foreign lock (Case
+# 2d2b), a claim failure is a permanent refusal and must not be queued.
+#
+# The injected fault is a `mkdir` shim on PATH, distinct from race_shim's:
+# from the SECOND call onward targeting the lock path (the re-claim after the
+# reclaim dropped the stale dir, AND the one further re-attempt
+# suite_lock_acquire_waiting makes after breaking out of its wait loop on
+# suite_lock_permanent -- HIMMEL-1838 round 2), it mkdirs for real but then
+# strips write permission from the fresh, empty directory before the runner's
+# own owner-file write gets a chance to run -- so the write fails every time,
+# and nothing brands the dir. A one-shot fault (only the second call) is NOT
+# this scenario: the runner's own final re-attempt after breaking out of the
+# wait loop would then hit an unshimmed mkdir and self-heal, silently passing
+# on a fault an operator's genuinely-broken filesystem would keep failing.
+# Skipped running as root: root bypasses the permission check being tested,
+# same guard scripts/lib/test-vm-guest-excludes.sh already uses for chmod.
+# --------------------------------------------------------------------------
+if [ "$(id -u)" -ne 0 ]; then
+echo "== Case 2m2: reclaim succeeds but the re-claim write fails (rc 2, not a race) =="
+sb2m2=$(new_sandbox)
+cat > "$sb2m2/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2m2="$sb2m2/suite.lock"
+mkdir -p "$lock2m2"
+bash -c 'exit 0' & dead2m2=$!
+wait "$dead2m2" 2>/dev/null
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2m2" "$(this_host)" "$(date +%s)" > "$lock2m2/owner"
+
+noaccess2m2=$(mktemp -d "$WORK/noaccXXXXXX")
+real_mkdir2m2=$(command -v mkdir)
+cat > "$noaccess2m2/mkdir" <<SHEOF2
+#!/usr/bin/env bash
+if [ "\$#" -eq 1 ] && [ "\$1" = "$lock2m2" ]; then
+  n=\$(( \$(cat "$sb2m2/hits2" 2>/dev/null || printf '0') + 1 ))
+  printf '%s' "\$n" > "$sb2m2/hits2"
+  if [ "\$n" -ge 2 ]; then
+    "$real_mkdir2m2" "\$1" && chmod 555 "\$1"
+    exit 0
+  fi
+fi
+exec "$real_mkdir2m2" "\$@"
+SHEOF2
+chmod +x "$noaccess2m2/mkdir"
+
+start2m2=$(date +%s)
+out2m2=$(PATH="$noaccess2m2:$PATH" SUITE_LOCK_DIR="$lock2m2" SUITE_LOCK_WAIT=60 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sb2m2" 2>&1)
+rc2m2=$?
+elapsed2m2=$(( $(date +%s) - start2m2 ))
+chmod 755 "$lock2m2" 2>/dev/null
+
+if [ "$(cat "$sb2m2/hits2" 2>/dev/null || printf '0')" -ge 2 ]; then
+  pass "the injected write-failure fired (shim reached mkdir call 2)"
+else
+  fail "the injected write-failure never fired: the mkdir shim was skipped -- this case's scenario did not happen"
+fi
+if [ "$rc2m2" -eq 2 ]; then
+  pass "reclaim then a failed re-claim write -> refused (rc 2)"
+else
+  fail "reclaim then a failed re-claim write -> expected rc 2 got $rc2m2; output: $out2m2"
+fi
+if grepq "$out2m2" -F 'failed to re-claim it'; then
+  pass "the claim-failure gets its own dedicated verdict"
+else
+  fail "claim-failure missing its dedicated verdict; output: $out2m2"
+fi
+if grepq "$out2m2" -F 'TAKEOVER IN PROGRESS'; then
+  fail "an operational write failure was mistaken for an ordinary lost race; output: $out2m2"
+else
+  pass "claim-failure is not mistaken for an ordinary lost race"
+fi
+if grepq "$out2m2" -F 'WAITING:'; then
+  fail "a permanent claim-failure was dressed up as a queue -- WAITING: present; output: $out2m2"
+else
+  pass "no WAITING: heartbeat -- a claim-failure is never presented as a queue"
+fi
+if grepq "$out2m2" -F 'NOT QUEUED'; then
+  pass "output contains NOT QUEUED"
+else
+  fail "no NOT QUEUED verdict in output: $out2m2"
+fi
+if [ "$elapsed2m2" -lt 30 ]; then
+  pass "broke out immediately instead of spending the 60s budget (${elapsed2m2}s)"
+else
+  fail "spent ${elapsed2m2}s on a refusal waiting cannot clear; output: $out2m2"
+fi
+else
+  echo "SKIP Case 2m2 running as root (chmod 555 does not deny)"
 fi
 
 # --------------------------------------------------------------------------
