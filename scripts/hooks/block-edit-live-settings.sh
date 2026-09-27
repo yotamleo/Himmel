@@ -1459,16 +1459,30 @@ _himmel_3761_mention_only_ok() {
 # payload (the script name and `--check`/`--settings` become inert decoy
 # argv to a script node never loads). Requiring the script name at position 1
 # means no node-level flag — `-e`/`--eval` included — can appear before it.
+#
+# The script path is also ANCHORED to the SAME named worktree as the
+# `--settings` target, at the fixed `scripts/hooks/wire-hook-bash.mjs`
+# location — matching basename alone would let `node /tmp/wire-hook-bash.mjs
+# --check --settings <matching-path>` run an attacker-planted script of that
+# name from anywhere on disk. Tying both paths to one captured `<name>`
+# means the executed script must live inside the very worktree whose own
+# settings copy is being probed — the read-only contract's script is real,
+# not a same-named decoy elsewhere. The captured name is compared with a
+# QUOTED `case` pattern, never re-embedded into a second regex: `[^/]+` lets
+# it carry regex metacharacters (`.`, `*`, `(`, …), and splicing attacker
+# text into a live `[[ =~ ]]` pattern would trade this bug for a regex-
+# injection one. A quoted variable inside a `case` pattern is always literal.
 _himmel_3761_worktree_settings_check_ok() {
-    local k=1 lw has_check=0 settings_path='' next_is_settings=0
-    local wt_re='(^|/)\.claude/worktrees/[^/]+/\.claude/settings\.json$'
+    local k=1 lw has_check=0 settings_path='' script_path='' next_is_settings=0 wt_name=''
+    local wt_name_re='(^|/)\.claude/worktrees/([^/]+)/\.claude/settings\.json$'
     _tok_single_segment_ok || return 1
     case "${ST_LW[0]##*/}" in
         node) ;;
         *) return 1 ;;
     esac
     [ "$ST_N" -ge 2 ] || return 1
-    case "${ST_LW[1]##*/}" in
+    script_path=${ST_LW[1]}
+    case "${script_path##*/}" in
         wire-hook-bash.mjs) ;;
         *) return 1 ;;
     esac
@@ -1487,7 +1501,14 @@ _himmel_3761_worktree_settings_check_ok() {
     done
     [ "$has_check" = 1 ] && [ -n "$settings_path" ] || return 1
     has_traversal_dots "$cmd_lc" && return 1
-    [[ "$settings_path" =~ $wt_re ]]
+    [[ "$settings_path" =~ $wt_name_re ]] || return 1
+    wt_name=${BASH_REMATCH[2]}
+    case "$script_path" in
+        ".claude/worktrees/$wt_name/scripts/hooks/wire-hook-bash.mjs") ;;
+        *"/.claude/worktrees/$wt_name/scripts/hooks/wire-hook-bash.mjs") ;;
+        *) return 1 ;;
+    esac
+    return 0
 }
 
 input=$(cat)

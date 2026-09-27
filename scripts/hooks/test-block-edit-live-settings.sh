@@ -1449,6 +1449,13 @@ fi
 # structurally matches `.claude/worktrees/<name>/.claude/settings.json`, the
 # exact shape the ticket names.
 FEATX="$SANDBOX/primary/.claude/worktrees/feat+x"
+# feat+y — a SECOND worktree-shaped fixture, distinct name, used only to
+# prove a script from one worktree cannot vouch for another's settings copy
+# (row 232). No `git worktree add` needed: the allow check is purely
+# textual, so a plain directory with its own nested settings.json suffices.
+FEATY="$SANDBOX/primary/.claude/worktrees/feat+y"
+mkdir -p "$FEATY/.claude"
+printf '{}\n' > "$FEATY/.claude/settings.json"
 mkdir -p "$SANDBOX/hb/logs"
 printf '{"leg":"N634"}\n' > "$SANDBOX/hb/logs/N634.leg-settings.json"
 
@@ -1526,6 +1533,23 @@ assert_rc "229 node wire-hook-bash.mjs --check --settings with an added live red
 # `node`), not merely present anywhere in the command.
 assert_rc "230 node -e <payload> wire-hook-bash.mjs --check --settings (decoy argv) denies" 2 \
     "$(bash_rc_of "$PRIMARY" "node -e 'require(0)' wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json")"
+
+# 231: node /tmp/wire-hook-bash.mjs --check --settings <worktree's own copy>
+# -> DENY. The script's BASENAME matches, but it does not live at the
+# worktree's own `scripts/hooks/wire-hook-bash.mjs` — an attacker-planted
+# same-named script anywhere else on disk would otherwise run. Proves the
+# script path is anchored to the SAME named worktree as the --settings
+# target, not just checked by basename.
+assert_rc "231 node /tmp/wire-hook-bash.mjs --check --settings (script outside worktree) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node /tmp/wire-hook-bash.mjs --check --settings $FEATX/.claude/settings.json")"
+
+# 232: node <worktree A's own script> --check --settings <worktree B's own
+# copy> -> DENY. Both paths independently match the worktree shape, but name
+# DIFFERENT worktrees. Proves the captured worktree name from --settings is
+# actually compared against the script path, not merely pattern-matched
+# independently.
+assert_rc "232 node <worktree A script> --check --settings <worktree B settings> denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node $FEATX/scripts/hooks/wire-hook-bash.mjs --check --settings $FEATY/.claude/settings.json")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
