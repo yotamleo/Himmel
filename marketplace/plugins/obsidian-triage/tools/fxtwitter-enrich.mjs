@@ -725,11 +725,30 @@ function renderQuoteBody(q) {
   return "_(no quote text)_";
 }
 
+/**
+ * Render text as a markdown blockquote (`> ` per line).
+ *
+ * HIMMEL-2627: the quoted tweet's text is untrusted, verbatim third-party
+ * content and may itself contain a line starting `## `. QUOTE_SECTION_RE's
+ * lookahead stops at the next `\n## `, so a bare `## ` line inside the quote
+ * would truncate a later strip of this same section. Blockquoting turns any
+ * such line into `> ## `, which the strip regex can never match.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function toBlockquote(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => (line ? `> ${line}` : ">"))
+    .join("\n");
+}
+
 function renderQuoteSection(tweet) {
   // tweet.quote holds the quoted tweet
   const q = tweet.quote || {};
   const author = q.author?.screen_name ? `@${q.author.screen_name}` : "(unknown)";
-  const text = renderQuoteBody(q);
+  const text = toBlockquote(renderQuoteBody(q));
   const url = q.url || "";
   const lines = [
     "## Crawled content",
