@@ -3901,14 +3901,18 @@ if [ "$LEDGER_OK" -eq 1 ]; then
       # all (silently skipped) is what must refuse the purge.
       _prov_scan_dir="$(prov_dir 2>/dev/null || true)"
       _prov_scan_ledger="${_prov_scan_dir:+$_prov_scan_dir/provenance.jsonl}"
-      _prov_handled_paths=""
+      _prov_handled_keys=""
       if [ -n "$_prov_session_iid" ] && [ -n "$_prov_scan_ledger" ] && [ -f "$_prov_scan_ledger" ]; then
-        _prov_handled_paths="$(jq -r --arg iid "$_prov_session_iid" \
-          'select(.iid==$iid and (.op=="kept" or .op=="restored" or .op=="removed")) | .path // empty' \
+        # HIMMEL-3637 R3-codex2: key by path+unit, not path alone -- two
+        # different fold units (e.g. distinct hooks nested at the same file
+        # path) each get their own outcome row, so an outcome for one must
+        # never mask a different, still-unrestored unit at the same path.
+        _prov_handled_keys="$(jq -r --arg iid "$_prov_session_iid" \
+          'select(.iid==$iid and (.op=="kept" or .op=="restored" or .op=="removed")) | ((.path // "") + "\u0000" + (.unit // ""))' \
           "$_prov_scan_ledger")"
       fi
-      _prov_handled_paths="
-$_prov_handled_paths
+      _prov_handled_keys="
+$_prov_handled_keys
 "
       _prov_unrestored=""
       while IFS= read -r _pu; do
@@ -3916,10 +3920,19 @@ $_prov_handled_paths
         _pu_path="$(printf '%s' "$_pu" | jq -r '.path // empty')"
         [ -n "$_pu_path" ] || continue
         printf '%s' "$_pu" | jq -e '.eff_pre.backup // empty' >/dev/null 2>&1 || continue
-        case "$_prov_handled_paths" in *"
-$_pu_path
+        _pu_unit="$(printf '%s' "$_pu" | jq -r '.unit // ""')"
+        _pu_key="${_pu_path}$(printf '\000')${_pu_unit}"
+        case "$_prov_handled_keys" in *"
+$_pu_key
 "*) continue ;; esac
-        _pu_verdict="$(prov_read_verdict "$_pu")" || continue
+        # HIMMEL-3637 R3-codex1: a verdict this can't even COMPUTE (rc!=0 --
+        # malformed row, missing field) is unresolvable, not safe -- fail
+        # closed on it exactly like an explicit "restore" verdict, rather
+        # than silently letting `|| continue` skip past it and purge.
+        if ! _pu_verdict="$(prov_read_verdict "$_pu")"; then
+          _prov_unrestored="${_prov_unrestored}${_pu_path}"$'\n'
+          continue
+        fi
         # HIMMEL-3637: "keep already-absent" means the path is gone -- which
         # includes the whole project directory having been deleted (J1274O
         # w1). prov_read_verdict can't distinguish that from a genuinely

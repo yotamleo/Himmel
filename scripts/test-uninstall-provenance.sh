@@ -1603,6 +1603,7 @@ printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST50"
   prov_end ok >/dev/null )
 rm -f "$SNAP50"
 BACKUPS50_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+check "RED50: setup actually created a backup (control is not vacuous)" "$([ "$BACKUPS50_BEFORE" -gt 0 ] && echo yes || echo no)" "yes"
 run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings --purge-state >/dev/null
 rc50=$?
 BACKUPS50_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
@@ -1656,6 +1657,7 @@ printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST52"
 rm -f "$SNAP52"
 rm -rf "$PROJDIR52"
 BACKUPS52_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+check "RED52: setup actually created a backup (control is not vacuous)" "$([ "$BACKUPS52_BEFORE" -gt 0 ] && echo yes || echo no)" "yes"
 run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings --purge-state >/dev/null
 rc52=$?
 BACKUPS52_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
