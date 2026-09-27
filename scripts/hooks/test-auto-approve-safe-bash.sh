@@ -921,6 +921,17 @@ assert "odd(3) backslash-newline leaves real separator visible (codex-1)" PASS "
 # VERIFIED (real bash): this exact string, run as a script, executes
 # `touch PWN`. Must fall through to PASS, not ALLOW.
 assert "apostrophe inside dquotes no longer blocks fold (codex-1 round 6)" PASS "$(decide "$(j_bash "echo \"'\$\\"$'\n'"(touch PWN)\"")")"
+# codex-1 (round 7): the `"` toggle in fold_backslash_newline() fired on ANY
+# `"` byte, even one immediately preceded by a backslash (an ESCAPED quote,
+# which stays a literal char and never closes the real double-quoted span).
+# `echo "\"'$\<NL>(touch PWN)"` has that escaped `"` right after the opening
+# quote; the old code wrongly flipped in_dq to 0, which then let the
+# following (still-really-inside-double-quotes) apostrophe wrongly open the
+# fake single-quote span, suppressing the fold for the rest of the string and
+# hiding the reconstituted `$(` from the raw tripwire.
+# VERIFIED (real bash): this exact string, run as a script, executes
+# `touch PWN`. Must fall through to PASS, not ALLOW.
+assert "escaped dquote no longer mistoggles state (codex-1 round 7)" PASS "$(decide "$(j_bash "echo \"\\\"'\$\\"$'\n'"(touch PWN)\"")")"
 # Controls: common benign expansions must keep ALLOWing.
 assert "echo \${HOME} still ALLOW"     ALLOW "$(decide "$(j_bash 'echo "${HOME}"')")"
 assert "echo \$PWD still ALLOW"        ALLOW "$(decide "$(j_bash 'echo "$PWD"')")"

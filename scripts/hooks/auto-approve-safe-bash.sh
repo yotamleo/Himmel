@@ -1202,8 +1202,23 @@ guard_is_long_abbrev() {
 # suppressed the fold for the rest of the string (no closing `'` ever came),
 # leaving the raw-text `$(` tripwire unable to see the reconstituted `$(`.
 # Track double-quote state too so a `'` inside `"..."` stays inert.
+# HIMMEL-3750 round 7 (codex-1): a `"` (or `'`) immediately after an ODD
+# backslash run is an ESCAPED quote character in real shell parsing — it
+# stays a literal byte and never opens/closes a quoted region (`\"` inside
+# double quotes writes a literal `"` without closing the string; `\'`
+# outside any quotes writes a literal apostrophe without opening one). The
+# old code let the backslash branch consume only the backslash run and then
+# let the next loop iteration process the quote character with its
+# unconditional/`in_dq==0`-gated toggle, with no memory that a backslash had
+# just escaped it. `echo "\"'$\<NL>(touch PWN)"` exploited exactly that: the
+# escaped `"` wrongly flipped in_dq from 1 to 0, which then let the
+# following literal (still-inside-real-double-quotes) apostrophe wrongly
+# open the code's own fake single-quote mode, which suppressed the
+# backslash-newline fold for the rest of the string and hid the
+# reconstituted `$(` from the raw-text tripwire. Detect an escaped quote
+# right where the backslash run is measured and copy it through untouched.
 fold_backslash_newline() {
-    local s="$1" out="" i=0 n c j run k in_sq=0 in_dq=0 bs=$'\\'
+    local s="$1" out="" i=0 n c j run k nc in_sq=0 in_dq=0 bs=$'\\'
     n=${#s}
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
@@ -1251,6 +1266,17 @@ fold_backslash_newline() {
                     out="$out\\"
                     k=$((k + 1))
                 done
+                i=$((j + 1))
+                continue
+            fi
+            nc="${s:$j:1}"
+            if [ $((run % 2)) -eq 1 ] && { [ "$nc" = "'" ] || [ "$nc" = '"' ]; }; then
+                k=0
+                while [ "$k" -lt "$((run - 1))" ]; do
+                    out="$out\\"
+                    k=$((k + 1))
+                done
+                out="$out\\$nc"
                 i=$((j + 1))
                 continue
             fi
