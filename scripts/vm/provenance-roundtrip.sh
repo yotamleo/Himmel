@@ -132,8 +132,11 @@ fail() {
 }
 
 if [ -n "$S2A_CASE" ]; then
-    [ "$INSTALL_FROM" = clone ] && [ "$PROFILE" = core ] && [ "$CLONE_GONE" = 0 ] \
-        || fail "--s2a-case only supports --install-from clone --profile core, no --clone-gone"
+    if [ "$INSTALL_FROM" = clone ] && [ "$PROFILE" = core ] && [ "$CLONE_GONE" = 0 ]; then
+        :
+    else
+        fail "--s2a-case only supports --install-from clone --profile core, no --clone-gone"
+    fi
     PURGE=1
     [ "$S2A_CASE" != b ] || KEEP_BACKUPS=1
 fi
@@ -508,8 +511,11 @@ if [ -n "$S2A_CASE" ]; then
     echo "[s2a] case=$S2A_CASE expect-red=$EXPECT_RED backups-after-first-purge=$BACKUP_COUNT_1 halted-at=$HALT_AT rc=$UN_RC"
     if [ "$S2A_CASE" = a ]; then
         if [ "$EXPECT_RED" = 1 ]; then
-            [ "$UN_RC" -eq 0 ] && [ "$BACKUP_COUNT_1" -eq 0 ] \
-                || fail "s2a case a RED control: expected the pre-fix defect (purge succeeds, backup gone) at this ref, got rc=$UN_RC backups=$BACKUP_COUNT_1 -- the defect did not reproduce"
+            if [ "$UN_RC" -eq 0 ] && [ "$BACKUP_COUNT_1" -eq 0 ]; then
+                :
+            else
+                fail "s2a case a RED control: expected the pre-fix defect (purge succeeds, backup gone) at this ref, got rc=$UN_RC backups=$BACKUP_COUNT_1 -- the defect did not reproduce"
+            fi
             echo "RED confirmed: S2A-CASE-A (rc=$UN_RC backups-after=$BACKUP_COUNT_1) -- purge silently dropped the held-user-modified backup, as J1390A Finding 4 describes"
             exit 0
         fi
