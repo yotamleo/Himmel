@@ -110,7 +110,7 @@ normalize() {
 
 normalized=$(normalize "$tool_input_flat")
 redacted=$(redact "$tool_input_flat")
-input_head=$(printf '%s' "$redacted" | cut -c1-200)
+input_head=$(printf '%s' "$redacted" | tr '\n\r' '  ' | cut -c1-200)
 
 input_sha=$(printf '%s' "$normalized" | sha256sum 2>/dev/null | cut -d' ' -f1)
 [ -n "$input_sha" ] || exit 0

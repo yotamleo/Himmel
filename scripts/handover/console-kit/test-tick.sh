@@ -1425,6 +1425,15 @@ printf '%s\n' '5' '[1]' >> "$d3724h"
 o3724h="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724h" bash "$SUT" 2>/dev/null)"
 contains 'scalar and array lines in the log keep denials= populated (HIMMEL-3724)' "$o3724h" 'denials=leg-a:1:SHIP-STEP'
 
+# A valid object whose input_head is not a string must be skipped, not make
+# test() fail and turn the whole column into skip.
+d3724i="$W/denials-3724i.jsonl"
+: > "$d3724i"
+mkdenial "$d3724i" 5 leg-a 'git push origin main'
+printf '%s\n' '{"ts":"2099-01-01T00:00:00Z","session_title":"leg-b","input_head":5}' >> "$d3724i"
+o3724i="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724i" bash "$SUT" 2>/dev/null)"
+contains 'a non-string input_head row is skipped, denials= stays populated (HIMMEL-3724)' "$o3724i" 'denials=leg-a:1:SHIP-STEP'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
     exit 0

@@ -206,6 +206,18 @@ else
     fail "missing tool_name writes nothing and exits 0"
 fi
 
+# --- 7. a multiline command is capped as a WHOLE: input_head stays one
+# bounded line (cut -c1-200 alone caps per line, not per value). ---
+LOG8="$WORKDIR/c8.jsonl"
+multiline=$(printf 'line-%s\n' $(seq 1 100))
+run_hook "$(payload s8 /tmp/repo Bash "$multiline" '[Out-of-Place Publication]')" "$LOG8" >/dev/null
+head_len=$(jq -r '.input_head | length' "$LOG8" 2>/dev/null)
+if [ -n "$head_len" ] && [ "$head_len" -le 200 ]; then
+    pass "multiline input_head capped at 200 chars in total"
+else
+    fail "multiline input_head capped at 200 chars in total (got ${head_len:-none})"
+fi
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then
     echo "log-classifier-denial: all cases passed"

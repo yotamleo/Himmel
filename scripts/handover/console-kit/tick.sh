@@ -937,9 +937,10 @@ if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
         # denial in it. Pre-filter line-by-line in raw-input mode first
         # (fromjson? never aborts the read, it just drops what doesn't
         # parse; select(type == "object") also drops valid scalars/arrays,
-        # which would otherwise fail the field access below), then slurp
+        # which would otherwise fail the field access below, and a row whose
+        # input_head is not a string would fail test()), then slurp
         # only the lines that survived.
-        denials_summary="$(tail -n "$denials_tail_max" "$denials_log" 2>/dev/null | jq -R -c 'fromjson? | select(type == "object")' 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
+        denials_summary="$(tail -n "$denials_tail_max" "$denials_log" 2>/dev/null | jq -R -c 'fromjson? | select(type == "object" and (.input_head | type) == "string")' 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
             . as $all
             | ($all | group_by(.session_title // "unknown")
                | map({key: (.[0].session_title // "unknown"), value: length})
