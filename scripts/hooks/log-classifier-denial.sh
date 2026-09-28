@@ -38,25 +38,6 @@ tool_input_flat=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | string
 
 [ -n "$tool" ] || exit 0
 
-# The reason tag is the bracketed classifier category, e.g.
-# "[Out-of-Place Publication]" — observed empirically across the 172 mined
-# denials (design doc §4c). Falls back to the raw denial_reason, then to
-# "unknown", so an unrecognised shape still lands a row instead of vanishing.
-reason_tag=$(printf '%s' "$denial_reason" | grep -oE '\[[^]]+\]' | head -1)
-if [ -z "$reason_tag" ]; then
-    reason_tag="$denial_reason"
-fi
-if [ -z "$reason_tag" ]; then
-    reason_tag="unknown"
-fi
-
-# Collapses git-SHA-shaped tokens and squeezes whitespace so two calls that
-# differ only by a commit sha or incidental spacing hash identically — this is
-# what lets tick.sh's REPEAT class notice "this exact call already ran once".
-normalize() {
-    printf '%s' "$1" | sed -E 's/\b[0-9a-f]{40}\b/<SHA>/g' | tr -s '[:space:]' ' '
-}
-
 # Redacts common secret shapes before ANY of this text is written to disk.
 # Not a full gitleaks port (that ruleset is upstream-maintained and huge) —
 # a bounded set of the shapes most likely to appear in a denied command:
@@ -71,6 +52,27 @@ redact() {
         -e 's/-----BEGIN[A-Z ]*PRIVATE KEY-----/[REDACTED]/g' \
         -e 's/([Bb]earer) [A-Za-z0-9._-]{20,}/\1 [REDACTED]/g' \
         -e 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])([\"'"'"']?[[:space:]]*[:=][[:space:]]*[\"'"'"']?)[A-Za-z0-9._/+=-]{12,}/\1\2[REDACTED]/g'
+}
+
+# The reason tag is the bracketed classifier category, e.g.
+# "[Out-of-Place Publication]" — observed empirically across the 172 mined
+# denials (design doc §4c). Falls back to the raw denial_reason (redacted and
+# capped, same as input_head — a classifier denial_reason can itself quote
+# the offending command text back), then to "unknown", so an unrecognised
+# shape still lands a row instead of vanishing.
+reason_tag=$(printf '%s' "$denial_reason" | grep -oE '\[[^]]+\]' | head -1)
+if [ -z "$reason_tag" ]; then
+    reason_tag=$(redact "$denial_reason" | cut -c1-200)
+fi
+if [ -z "$reason_tag" ]; then
+    reason_tag="unknown"
+fi
+
+# Collapses git-SHA-shaped tokens and squeezes whitespace so two calls that
+# differ only by a commit sha or incidental spacing hash identically — this is
+# what lets tick.sh's REPEAT class notice "this exact call already ran once".
+normalize() {
+    printf '%s' "$1" | sed -E 's/\b[0-9a-f]{40}\b/<SHA>/g' | tr -s '[:space:]' ' '
 }
 
 normalized=$(normalize "$tool_input_flat")

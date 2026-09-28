@@ -73,6 +73,24 @@ else
     fail "redaction marker present in place of the token"
 fi
 
+# --- 3b. RED-shaped redaction control on the UNBRACKETED-reason fallback
+# path: a classifier denial_reason with no bracketed tag can itself quote
+# the offending command, so the fallback must redact it too, not just
+# input_head. ---
+SECRET2="ghp_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+LOG2B="$WORKDIR/c2b.jsonl"
+run_hook "$(payload s2b /tmp/repo Bash 'ls' "denied because $SECRET2 was found")" "$LOG2B" >/dev/null
+if grep -qF "$SECRET2" "$LOG2B" 2>/dev/null; then
+    fail "gitleaks-shaped token redacted on the unbracketed-reason fallback path"
+else
+    pass "gitleaks-shaped token redacted on the unbracketed-reason fallback path"
+fi
+if grep -q '\[REDACTED\]' "$LOG2B" 2>/dev/null; then
+    pass "redaction marker present in reason_tag fallback"
+else
+    fail "redaction marker present in reason_tag fallback"
+fi
+
 # --- 4. two calls differing only by a git SHA normalise to the same
 # input_sha (this is what lets tick.sh's REPEAT class notice a flip). ---
 LOG3="$WORKDIR/c3.jsonl"
