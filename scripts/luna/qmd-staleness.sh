@@ -452,13 +452,15 @@ if [ -r "$QMD_REFRESH_STAMP" ]; then
         # ISO date it is paired with. Both real writers (qmd-reindex.sh,
         # ship-index.sh) derive iso+epoch from the same `date` invocation, so
         # they always agree; a hand-edited or foreign-written stamp might not.
-        # Cross-validate within a 1-day tolerance (clock skew / truncation
+        # Cross-validate within a 1-hour tolerance (clock skew / truncation
         # slop, not a wrong-epoch cover); an unparsable ISO date is treated as
-        # a mismatch, same as a wrong epoch, not partially trusted.
+        # a mismatch, same as a wrong epoch, not partially trusted. Kept tight
+        # (not ~1 day) so a mismatched epoch can't understate age enough to
+        # clear a caller's freshness budget (codex-1, /pr-check round 1).
         iso_epoch=$(_qs_iso_to_epoch "$stamp_iso") || iso_epoch=""
         skew=$(( stamp_epoch_dec - iso_epoch ))
         [ "$skew" -ge 0 ] || skew=$(( -skew ))
-        if [ -n "$iso_epoch" ] && [ "$skew" -le 86400 ]; then
+        if [ -n "$iso_epoch" ] && [ "$skew" -le 3600 ]; then
             AGE_HOURS=$(( (now_epoch - stamp_epoch_dec) / 3600 ))
             [ "$AGE_HOURS" -ge 0 ] || AGE_HOURS=0
             AGE_SOURCE="stamp"
