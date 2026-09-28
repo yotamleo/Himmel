@@ -461,6 +461,67 @@ _provread_collection_salvage() {
     fi
 }
 
+# _provread_is_container <unit-json> -- true iff this is a whole-object
+# json-key container unit (/env or /hooks), never a leaf under one.
+_provread_is_container() {
+    local unit
+    unit=$(printf '%s' "$1" | jq -r '.unit // ""')
+    case "$unit" in
+        /env|/hooks) return 0 ;;
+    esac
+    return 1
+}
+
+# _provread_container_child_clean <child-unit-json> -- true iff this governed
+# child, on its own, is one of the states design §3.2 calls clean for
+# container-children: it will be removed or restored this run, its verdict is
+# already `keep already-base`, or it is already-absent with no backup to
+# hold. Note this is NOT the same test as prov_read_unit_resolved (§5.1) --
+# already-absent-with-no-backup counts here but never holds a backup anyway.
+_provread_container_child_clean() {
+    local c="$1" v action reason backup
+    v=$(prov_read_verdict "$c") || return 1
+    action="${v%% *}"; reason="${v#* }"
+    case "$action" in
+        remove|restore) return 0 ;;
+    esac
+    case "$action:$reason" in
+        keep:already-base) return 0 ;;
+        keep:already-absent)
+            backup=$(printf '%s' "$c" | jq -r '.eff_pre.backup // empty')
+            [ -z "$backup" ] && return 0
+            ;;
+    esac
+    return 1
+}
+
+# _provread_container_children_resolved <container-unit-json> -- true iff the
+# container has at least one governed child and every governed child is clean
+# (design §3.2 `container-children`). /env's children are json-key leaves
+# under /env/; /hooks's children are json-elem stanzas under /hooks/.
+_provread_container_children_resolved() {
+    local u="$1" path unit ckind cpfx children c governed found=0
+    path=$(printf '%s' "$u" | jq -r '.path // ""')
+    unit=$(printf '%s' "$u" | jq -r '.unit // ""')
+    case "$unit" in
+        /env)   ckind=json-key; cpfx="/env/" ;;
+        /hooks) ckind=json-elem; cpfx="/hooks/" ;;
+        *) return 1 ;;
+    esac
+    children=$(prov_read_units --path "$path" --kind "$ckind" \
+        | jq -c --arg pfx "$cpfx" 'select((.unit // "") | startswith($pfx))')
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        governed=$(printf '%s' "$c" | jq -r '.governed')
+        [ "$governed" = "true" ] || continue
+        found=1
+        _provread_container_child_clean "$c" || return 1
+    done <<EOF
+$children
+EOF
+    [ "$found" -eq 1 ]
+}
+
 # prov_read_verdict <unit-json> -- prints "<action> <reason>".
 # action in remove restore keep skip heuristic; see the design doc "Verdict"
 # section for the order of tests this follows.
@@ -496,7 +557,17 @@ prov_read_verdict() {
     cur=$(prov_read_current "$u") || return 1
     if [ "$cur" = "ABSENT" ]; then printf 'keep already-absent\n'; return 0; fi
     eff_post_sha=$(printf '%s' "$u" | jq -r '.eff_post.sha // ""')
-    if [ "$cur" != "$eff_post_sha" ]; then printf 'keep user-modified\n'; return 0; fi
+    if [ "$cur" != "$eff_post_sha" ]; then
+        local eff_pre_sha
+        eff_pre_sha=$(printf '%s' "$u" | jq -r '.eff_pre.sha // ""')
+        if [ -n "$eff_pre_sha" ] && [ "$cur" = "$eff_pre_sha" ]; then
+            printf 'keep already-base\n'; return 0
+        fi
+        if [ "$kind" = "json-key" ] && _provread_is_container "$u" && _provread_container_children_resolved "$u"; then
+            printf 'surgical container-children\n'; return 0
+        fi
+        printf 'keep user-modified\n'; return 0
+    fi
     # F2 (parent review): `.eff_pre.state // "absent"` fail-coalesces a NULL
     # or missing eff_pre (no recorded pre-state at all) into the same
     # "absent" as an EXPLICIT `{"state":"absent"}` -- only the latter is real
@@ -506,6 +577,28 @@ prov_read_verdict() {
     if [ "$eff_pre_state" = "absent" ]; then printf 'remove ours\n'; return 0; fi
     backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
     if [ -n "$backup" ] && [ -r "$backup" ]; then printf 'restore ours\n'; else printf 'keep no-backup\n'; fi
+}
+
+# prov_read_unit_resolved <unit-json> [<outcome>] -- design §5.1: true (rc 0)
+# iff this unit's backup may be released -- its outcome THIS session was
+# removed/restored, or its verdict is `keep already-base` or `surgical *`.
+# Pass "" for <outcome> to test the unit purely by its (re-derived) verdict,
+# which is what the purge scan and a non-purge prune re-check both need.
+# Every other state -- keep user-modified, keep already-absent, a failed
+# outcome, an uncomputable verdict, a unit never visited this session --
+# holds the backup (this is what closes J1390A Finding 4).
+prov_read_unit_resolved() {
+    local u="$1" outcome="${2:-}" verdict action reason
+    case "$outcome" in
+        removed|restored) return 0 ;;
+    esac
+    verdict=$(prov_read_verdict "$u") || return 1
+    action="${verdict%% *}"; reason="${verdict#* }"
+    case "$action" in
+        surgical) return 0 ;;
+    esac
+    [ "$action" = "keep" ] && [ "$reason" = "already-base" ] && return 0
+    return 1
 }
 
 # _provread_atomic_write <target-file> -- writes stdin to a temp file beside
@@ -774,15 +867,16 @@ prov_read_session_end() {
     _PROV_READ_IID=""
 }
 
-# prov_read_prune_backups -- at a clean end: delete ONLY backup files a
-# removed or restored outcome row of THIS session named (those units are
-# done: the file's been put back or thrown away, so backup no longer needed).
-# Everything else under provenance-backups/ -- a kept/no-backup unit's
-# backup, a unit this run never touched, one predating per-file recording --
-# is left alone; a later run may still need it. Refuses a symlinked backups
-# dir.
+# prov_read_prune_backups -- at a clean end: delete backup files a removed or
+# restored outcome row of THIS session named, PLUS the backup of any unit
+# whose (re-derived) verdict is now resolved per §5.1 (`keep already-base` or
+# `surgical *` -- a container's own backup, or a unit that already reads as
+# the user's pre-himmel base). Everything else under provenance-backups/ -- a
+# kept/user-modified/no-backup unit's backup, a unit this run never touched,
+# one predating per-file recording -- is left alone; a later run may still
+# need it. Refuses a symlinked backups dir.
 prov_read_prune_backups() {
-    local dir bdir f is_done done_list
+    local dir bdir f is_done done_list units u backup
     dir=$(prov_dir) || return 1
     bdir="$dir/provenance-backups"
     [ -e "$bdir" ] || return 0
@@ -792,6 +886,19 @@ prov_read_prune_backups() {
     # cannot authorise deleting foo.bak (whole entries, not a prefix).
     done_list="$_PROV_READ_DONE_BACKUPS
 "
+    if [ -n "${PROV_READ_FOLD:-}" ] && [ -f "$PROV_READ_FOLD" ]; then
+        units=$(prov_read_units)
+        while IFS= read -r u; do
+            [ -n "$u" ] || continue
+            backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
+            [ -n "$backup" ] || continue
+            prov_read_unit_resolved "$u" "" || continue
+            done_list="$done_list$backup
+"
+        done <<EOF
+$units
+EOF
+    fi
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         is_done=0

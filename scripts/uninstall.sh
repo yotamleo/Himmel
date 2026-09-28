@@ -3912,14 +3912,33 @@ if [ "$LEDGER_OK" -eq 1 ]; then
         # NUL inside a variable is undocumented and version-dependent (this
         # project must stay bash-3.2-safe), so a NUL separator is not a safe
         # foundation for a substring-match key on every supported shell.
+        # HIMMEL-3787: a "kept" op with reason `user-modified` or bare
+        # `already-absent` is deliberately excluded here -- those two are
+        # still HELD (§5.1), and folding them into "handled" let them skip
+        # the unrestored scan below entirely and lose their only backup
+        # (J1390A Finding 4). Every OTHER "kept" reason (`class-keep`,
+        # `preexisted`, `no-backup`, `no-systemctl`, `linger-preexisted`,
+        # etc.) is a policy exemption the ledger recorded deliberately and
+        # was never meant to hold a backup for (e.g. the qmd plugin-cache
+        # stub, HIMMEL-3332's "never gates a removal" console ruling) --
+        # excluding those too would refuse --purge-state on backups nothing
+        # is actually waiting to resolve. `user-modified`/`already-absent`
+        # units are re-checked by prov_read_unit_resolved instead, which is
+        # what accepts the new resolved reasons.
         _prov_handled_keys="$(jq -c --arg iid "$_prov_session_iid" \
-          'select(.iid==$iid and (.op=="kept" or .op=="restored" or .op=="removed")) | [(.path // ""), (.unit // "")]' \
+          'select(.iid==$iid and (.op=="restored" or .op=="removed" or (.op=="kept" and (.reason != "user-modified" and .reason != "already-absent")))) | [(.path // ""), (.unit // "")]' \
           "$_prov_scan_ledger")"
       fi
       _prov_handled_keys="
 $_prov_handled_keys
 "
       _prov_unrestored=""
+      # HIMMEL-3787: backups held by a resolvable-but-not-yet-resolved unit
+      # (chiefly `keep user-modified`, §5.1) are tracked separately from
+      # `_prov_unrestored` -- a bad row or orphan backup always refuses, but
+      # a held backup is exactly what `--keep-backups` is for (§5.4): it
+      # retains instead of refusing.
+      _prov_held_backups=""
       if ! _prov_units_raw="$(prov_read_units)"; then
         # HIMMEL-3637 R3-codex2: prov_read_units itself failing (a malformed
         # provenance fold file, not just one bad row) must not look like "no
@@ -3962,15 +3981,18 @@ $_pu_key
             _prov_unrestored="${_prov_unrestored}${_pu_path}"$'\n'
             continue
           fi
-          # HIMMEL-3637: "keep already-absent" means the path is gone -- which
-          # includes the whole project directory having been deleted (J1274O
-          # w1). prov_read_verdict can't distinguish that from a genuinely
-          # gone, harmless-to-purge file, so both count as unrestored here.
-          case "$_pu_verdict" in
-            restore\ *|"keep already-absent") ;;
-            *) continue ;;
-          esac
-          _prov_unrestored="${_prov_unrestored}${_pu_path}"$'\n'
+          # HIMMEL-3787: resolved status now comes from prov_read_unit_resolved
+          # (spec §5.1) -- `keep already-base` and `surgical *` release their
+          # backup exactly like restore/remove already did, while `keep
+          # user-modified` is caught here for the first time. It used to fall
+          # into a `*) continue` default and its backup was purged out from
+          # under it (J1390A Finding 4). "keep already-absent" still counts as
+          # held here (§5.1 excludes bare already-absent from "resolved" even
+          # though §3.2's own, more permissive test does not).
+          if prov_read_unit_resolved "$_pu" ""; then
+            continue
+          fi
+          _prov_held_backups="${_prov_held_backups}${_pu_path}"$'\n'
         done <<EOF
 $_prov_units_raw
 EOF
@@ -4021,6 +4043,18 @@ EOF
         done
         fail_step "[8/8] provenance ledger: refused to purge — unrestored backup(s) would be lost"
       fi
+      # HIMMEL-3787 (design §5.4, J1393A Minor 1): a held backup (chiefly
+      # `keep user-modified`) is not the same kind of problem as a bad row or
+      # orphan above -- nothing is lost by keeping it around, so
+      # --keep-backups is a real escape hatch here, not a refusal.
+      if [ -n "$_prov_held_backups" ] && [ "$KEEP_BACKUPS" -ne 1 ]; then
+        echo "WARN: refusing --purge-state — these backups are still held:" >&2
+        printf '%s' "$_prov_held_backups" | while IFS= read -r _pu_path; do
+          [ -n "$_pu_path" ] || continue
+          echo "  $_pu_path (resolve it -- edit or delete the file, then re-run uninstall.sh from its project directory -- or re-run with --keep-backups to retain it)" >&2
+        done
+        fail_step "[8/8] provenance ledger: refused to purge — held backup(s) would be lost (see --keep-backups)"
+      fi
       if [ "$HALTED" -eq 0 ]; then
         _prov_base_dir="$(prov_dir 2>/dev/null || true)"
         if [ -z "$_prov_base_dir" ] || suspicious_rm_path "$_prov_base_dir"; then
@@ -4029,10 +4063,31 @@ EOF
         else
           _prov_backups_dir="$_prov_base_dir/provenance-backups"
           _prov_ledger_file="$_prov_base_dir/provenance.jsonl"
-          # HIMMEL-3332 S6 R2-codex6: --keep-backups spares provenance-backups/
-          # under --purge-state too -- the ledger file itself is still removed
-          # unconditionally, only the backups directory is protected.
-          if [ "$KEEP_BACKUPS" -ne 1 ]; then
+          if [ "$KEEP_BACKUPS" -eq 1 ]; then
+            # HIMMEL-3787 (design §5.4, J1393A Minor 1): --keep-backups under
+            # --purge-state used to leave the ledger deleted and
+            # provenance-backups/ behind as a permanent orphan -- the next
+            # purge's own orphan scan (above) would then refuse forever,
+            # since nothing ever accounted for those files again. Retaining
+            # BOTH the ledger and the backups together into one
+            # never-auto-deleted `retained-<UTC stamp>/` directory closes
+            # that gap: the orphan scan only looks at the live
+            # provenance-backups/ path, which this empties by moving it away.
+            _prov_retained_dir="$_prov_base_dir/retained-$(date -u +%Y%m%dT%H%M%SZ)"
+            if [ "$DRY_RUN" -eq 1 ]; then
+              echo "DRY: would retain provenance ledger + backups into $_prov_retained_dir"
+            else
+              guarded run mkdir -p -- "$_prov_retained_dir"
+              if [ -d "$_prov_backups_dir" ] || [ -L "$_prov_backups_dir" ]; then
+                guarded run mv -- "$_prov_backups_dir" "$_prov_retained_dir/provenance-backups"
+              fi
+              if [ -f "$_prov_ledger_file" ]; then
+                guarded run mv -- "$_prov_ledger_file" "$_prov_retained_dir/provenance.jsonl"
+              fi
+              echo "Retained provenance ledger + backups: $_prov_retained_dir"
+              echo "  (never deleted automatically -- delete that directory yourself once you no longer need it)"
+            fi
+          else
             # HIMMEL-2505 gap A.3: a symlinked backups dir is unlinked, never
             # `rm -rf`'d through into whatever it points at.
             if [ -L "$_prov_backups_dir" ]; then
@@ -4040,8 +4095,8 @@ EOF
             else
               guarded run rm -rf -- "$_prov_backups_dir"
             fi
+            guarded run rm -f -- "$_prov_ledger_file"
           fi
-          guarded run rm -f -- "$_prov_ledger_file"
         fi
       fi
     elif [ "$KEEP_BACKUPS" -ne 1 ]; then

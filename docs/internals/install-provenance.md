@@ -23,6 +23,7 @@ byte-identity cross-check).
 ```text
 ${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance.jsonl              # the ledger, mode 0600
 ${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance-backups/<iid>/     # pre-state copies, mode 0700
+${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/retained-<UTC yyyymmddThhmmssZ>/   # `uninstall.sh --purge-state --keep-backups` output; see below
 ```
 
 One JSON object per line, appended with a single write. A reader must skip a
@@ -116,6 +117,37 @@ prov_end ok
 Test seams: `HIMMEL_PROVENANCE_NOW` fixes `t`; `prov_begin --iid` fixes the
 session id; `HIMMEL_PROVENANCE_DIR` relocates the ledger. Every test runs under a
 scratch `HOME` and never touches the real `~/.himmel`.
+
+## Reading verdicts and backup retention (HIMMEL-3787 S2a)
+
+`scripts/lib/provenance-read.sh` folds raw rows into units and derives a
+verdict (`prov_read_verdict`) uninstall acts on. Besides the base
+`remove ours` / `restore ours` / `keep no-backup` / `keep already-absent` /
+`keep user-modified` rows, two more can fire when live content (`L`) differs
+from himmel's post-install content (`ours`, `O`):
+
+- `keep already-base` — `L` equals the pre-install backup (`B`) even though it
+  differs from `O`: the unit is resolved and its backup may be released.
+- `surgical container-children` — for a whole-object `json-key` container unit
+  at exactly `/env` or `/hooks`: fires when every governed child unit under it
+  is itself clean (removed/restored this run, `keep already-base`, or
+  `keep already-absent` with no backup to hold). The container is never
+  restored or written whole; only its children are ever touched.
+
+`prov_read_unit_resolved` is the single predicate for "this unit's backup may
+be deleted": true for an outcome of `removed`/`restored` this session, or a
+verdict of `keep already-base` / `surgical *`. Every other state — including
+`keep user-modified` and bare `keep already-absent` — holds its backup, and
+`prov_read_prune_backups` / `uninstall.sh --purge-state`'s scan both refuse to
+delete a held backup.
+
+`--purge-state --keep-backups` no longer leaves the ledger deleted and
+`provenance-backups/` behind as a permanent orphan (J1393A Minor 1): it
+retain-moves both the ledger and the backups directory together into one
+`retained-<UTC yyyymmddThhmmssZ>/` directory, which is never deleted
+automatically. With that flag, a purge with held backups succeeds (nothing is
+lost); without it, a held backup still refuses, naming `--keep-backups` as the
+way out.
 
 ## Known limits
 

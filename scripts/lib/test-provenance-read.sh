@@ -166,6 +166,74 @@ u=$(u_for --path "$w/abs.txt")
 check "already-absent verdict" "$(prov_read_verdict "$u")" "keep already-absent"
 prov_read_cleanup
 
+# ── HIMMEL-3787 S2a: L == B -> keep already-base, and it is a RESOLVED unit
+#    (backup releasable), unlike keep user-modified which HOLDS its backup
+#    (J1390A Finding 4) ───────────────────────────────────────────────────
+
+reset
+prov_begin --iid AB1 --writer t
+printf 'orig\n' > "$w/ab.txt"
+snapAB=$(mktemp "$td/snapAB.XXXXXX") || exit 1; cp "$w/ab.txt" "$snapAB"
+printf 'newer\n' > "$w/ab.txt"
+prov_record replace file "$w/ab.txt" --pre-file "$snapAB" --backup --post-file "$w/ab.txt" --scope user --class code
+prov_end ok
+printf 'orig\n' > "$w/ab.txt"   # live reverted to exactly the pre-himmel base
+prov_read_load
+u=$(u_for --path "$w/ab.txt")
+check "L==B verdict: keep already-base" "$(prov_read_verdict "$u")" "keep already-base"
+check "L==B: unit is resolved (backup releasable)" "$(prov_read_unit_resolved "$u" "" && echo yes || echo no)" "yes"
+prov_read_cleanup
+rm -f "$snapAB"
+
+# control: keep user-modified must NOT be resolved -- its backup is held
+reset
+prov_begin --iid UM1 --writer t
+printf 'orig\n' > "$w/um.txt"
+snapUM=$(mktemp "$td/snapUM.XXXXXX") || exit 1; cp "$w/um.txt" "$snapUM"
+printf 'newer\n' > "$w/um.txt"
+prov_record replace file "$w/um.txt" --pre-file "$snapUM" --backup --post-file "$w/um.txt" --scope user --class code
+prov_end ok
+printf 'something else entirely\n' > "$w/um.txt"
+prov_read_load
+u=$(u_for --path "$w/um.txt")
+check "keep user-modified verdict (control)" "$(prov_read_verdict "$u")" "keep user-modified"
+check "keep user-modified: unit NOT resolved (backup held)" "$(prov_read_unit_resolved "$u" "" && echo yes || echo no)" "no"
+prov_read_cleanup
+rm -f "$snapUM"
+
+# ── HIMMEL-3787 S2a: container-children -- an /env container with a
+#    user-added key and every governed child removed resolves surgical
+#    container-children; a kept child makes the container keep user-modified
+#    too (reports the child, not the container) ────────────────────────────
+
+reset
+CE1="$w/cenv1.json"
+printf '{}\n' > "$CE1"
+prov_begin --iid CV1 --writer t
+prov_record create json-key "$CE1" --unit /env --post-json '{}' --scope user --class code
+prov_record create json-key "$CE1" --unit /env/HANDOVER_DIR --pre-absent --post-json '"/h/one"' --scope user --class code
+prov_end ok
+printf '%s' '{"env":{"HANDOVER_DIR":"/h/one","USER_ADDED":"x"}}' > "$CE1"
+prov_read_load
+ucontainer1=$(prov_read_units --path "$CE1" --kind json-key | jq -c 'select(.unit=="/env")')
+check "container-children: all governed children clean -> surgical container-children" \
+    "$(prov_read_verdict "$ucontainer1")" "surgical container-children"
+prov_read_cleanup
+
+reset
+CE2="$w/cenv2.json"
+printf '{}\n' > "$CE2"
+prov_begin --iid CV2 --writer t
+prov_record create json-key "$CE2" --unit /env --post-json '{}' --scope user --class code
+prov_record create json-key "$CE2" --unit /env/HANDOVER_DIR --pre-absent --post-json '"/h/one"' --scope user --class code
+prov_end ok
+printf '%s' '{"env":{"HANDOVER_DIR":"/h/user-changed"}}' > "$CE2"
+prov_read_load
+ucontainer2=$(prov_read_units --path "$CE2" --kind json-key | jq -c 'select(.unit=="/env")')
+check "container-children control: a kept child makes the container kept too" \
+    "$(prov_read_verdict "$ucontainer2")" "keep user-modified"
+prov_read_cleanup
+
 # ── ungoverned: noop-only(preexisted) keep, noop-only(no flag) heuristic ────
 
 reset
