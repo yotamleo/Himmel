@@ -84,7 +84,7 @@ d6="$tmp/d6.md"
 printf '# leg\n\n## Results-old\n\nstale content\n' > "$d6"
 before_d6="$(cat "$d6")"
 rc=0; bash "$SCRIPT" "$d6" "LIVE fixture" >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] && echo "ok - 6: '## Results-old' heading rc != 0 (not a real Results heading)" || { echo "FAIL - 6: '## Results-old' heading rc == 0"; fails=$((fails+1)); }
+[ "$rc" -eq 4 ] && echo "ok - 6: '## Results-old' heading rc == 4 (no-heading refusal, not a real Results heading)" || { echo "FAIL - 6: '## Results-old' heading rc == $rc, want 4"; fails=$((fails+1)); }
 after_d6="$(cat "$d6")"
 check "6: doc unchanged" "$after_d6" "$before_d6"
 

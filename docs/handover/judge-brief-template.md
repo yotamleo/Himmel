@@ -70,8 +70,10 @@ template_version: 1
 > A native `--judge` defaults to `CLAUDE_CODE_EFFORT_LEVEL=high`
 > (HIMMEL-3795). To dispatch a judge at a non-high effort, set
 > `HIMMEL_CONSOLE_JUDGE_EFFORT=<level>` in the LAUNCHING shell before calling
-> `headed-arm-leg.sh --judge` — the only channel meant to override it
-> (`headed-arm-leg.sh:461-466`).
+> `headed-arm-leg.sh --judge` — the channel meant for a console's deliberate
+> override (`headed-arm-leg.sh:461-466`; a caller-preset
+> `HEADED_ARM_LAUNCHER_ENV` token is a separate, deliberate-only channel that
+> still wins downstream — see the comment there).
 
 > **The question (verbatim, one line):** <the single question this verdict
 > answers — a finding to confirm or reject, a disposition to choose among
