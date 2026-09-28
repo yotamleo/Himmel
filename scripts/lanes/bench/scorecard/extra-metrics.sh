@@ -140,7 +140,7 @@ done < "$FILES"
 awk '{s+=$1; n++} END{printf "console_sessions=%d operator_msgs=%d per_session=%.1f\n", n, s, (n?s/n:0)}' "$OP_COUNTS"
 sc_cov_line "$(wc -l < "$FILES" | tr -d ' ')" "$SC_ROOT_COUNT"
 
-n_op_fail=$(wc -l < "$OP_FAILS")
+n_op_fail=$(wc -l < "$OP_FAILS" | tr -d ' ')
 if [ "$n_op_fail" -gt 0 ]; then
     echo "extra-metrics: WARNING: $n_op_fail transcript(s) skipped due to jq failure in operator-intervention count" >&2
 fi

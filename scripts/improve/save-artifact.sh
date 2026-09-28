@@ -126,7 +126,7 @@ slug=$(printf '%s' "$original" \
     | head -c 80 \
     | tr '[:upper:]' '[:lower:]' \
     | tr -c 'a-z0-9' '-' \
-    | sed 's/-\+/-/g; s/^-//; s/-$//' \
+    | sed 's/--*/-/g; s/^-//; s/-$//' \
     | head -c 40)
 [ -n "$slug" ] || slug="draft"
 
