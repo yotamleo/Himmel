@@ -24,6 +24,7 @@
 #   2  usage (wrong arg count)
 #   3  doc missing / unreadable / unwritable
 #   4  doc has no `## Results` heading - nothing written
+#   5  write failed (e.g. disk full) after the heading/newline checks passed
 #
 # Platform guard: POSIX bash 3.2+, no GNU-only flags.
 set -u
@@ -40,7 +41,7 @@ if [ ! -f "$DOC" ] || [ ! -r "$DOC" ] || [ ! -w "$DOC" ]; then
     exit 3
 fi
 
-if ! grep -qF '## Results' "$DOC"; then
+if ! grep -q '^## Results' "$DOC"; then
     echo "append-results: '$DOC' has no '## Results' heading - refusing" >&2
     exit 4
 fi
@@ -54,5 +55,8 @@ if [ -s "$DOC" ] && [ -n "$(tail -c 1 "$DOC")" ]; then
     printf '\n' >> "$DOC"
 fi
 
-printf '%s\n' "$bullet" >> "$DOC"
+if ! printf '%s\n' "$bullet" >> "$DOC"; then
+    echo "append-results: write failed for $DOC" >&2
+    exit 5
+fi
 echo "append-results: appended to $DOC"
