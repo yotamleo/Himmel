@@ -52,7 +52,7 @@ if [ ! -f "$DOC" ] || [ ! -r "$DOC" ] || [ ! -w "$DOC" ]; then
     exit 3
 fi
 
-if ! grep -q '^## Results\([[:space:]]\|$\)' "$DOC"; then
+if ! grep -Eq '^## Results([[:space:]]|$)' "$DOC"; then
     echo "append-results: '$DOC' has no '## Results' heading - refusing" >&2
     exit 4
 fi

@@ -82,11 +82,11 @@ check "5: leg_tail_status reads WRAPPED first try" "$marker" "WRAPPED"
 # --- 6. HIMMEL-3796: `## Results-old` is a prefix match, not the heading ---
 d6="$tmp/d6.md"
 printf '# leg\n\n## Results-old\n\nstale content\n' > "$d6"
-before_d6="$(cat "$d6")"
+before_d6="$tmp/d6.before"
+cp "$d6" "$before_d6"
 rc=0; bash "$SCRIPT" "$d6" "LIVE fixture" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 4 ] && echo "ok - 6: '## Results-old' heading rc == 4 (no-heading refusal, not a real Results heading)" || { echo "FAIL - 6: '## Results-old' heading rc == $rc, want 4"; fails=$((fails+1)); }
-after_d6="$(cat "$d6")"
-check "6: doc unchanged" "$after_d6" "$before_d6"
+cmp -s "$d6" "$before_d6" && echo "ok - 6: doc unchanged" || { echo "FAIL - 6: doc unchanged"; fails=$((fails+1)); }
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$fails FAILED"; exit 1
