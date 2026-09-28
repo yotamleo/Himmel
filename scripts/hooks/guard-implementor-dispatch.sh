@@ -214,42 +214,23 @@ fi
 if grepq "$text" -Eqi '(^|[^[:alnum:]_])(research|explore|investigate|analy[sz]e|review|audit|plan|design|locate|trace|explain|read-only)([^[:alnum:]_]|$)'; then
     research=1
 fi
-# HIMMEL-3784: "commit" and "edit" are nouns as well as verbs -- "then
-# review the commit history" or "and analyze edit distance heuristics"
-# read as a research object, not an action transition. Excluded narrowly
-# by literal phrase rather than a general grammatical rule (a determiner
-# requirement was tried and reverted: it also exempted genuine actions
-# like "then modify Y", a bare object with no determiner). The exclusion
-# is applied to a STRIPPED copy of the text, not the whole raw $text
-# (round-1 panel codex-1): checking the exclusion phrase against the
-# whole text suppressed gate_action for a genuine, unrelated "then commit
-# the change" elsewhere in the same brief whenever ANY "then/and commit
-# history" or "then/and edit distance" occurred anywhere else in it.
-# Stripping only the then/and word off the excluded phrase's own match
-# leaves every other occurrence of the trigger untouched.
-# CodeRabbit (this PR): the trailing boundary treated a "." followed by more
-# word characters as the end of the phrase, so "then edit distance.py" -- a
-# genuine file-edit action, not the descriptive phrase -- matched "then edit
-# distance." and had its "then" stripped, losing the action trigger. The
-# boundary now refuses a "." immediately followed by an alnum character (a
-# filename extension); a real sentence-ending "." (followed by space/end/
-# punctuation) still closes the phrase as before.
-# codex-2 (round 4 panel, HIMMEL-3784): the same boundary also accepted a
-# "/" as closing the phrase, so "then edit distance/parser.py" -- a real
-# path -- matched "then edit distance/" the same way.
-# codex-1 (round 5 panel, HIMMEL-3784): blacklisting punctuation one
-# character at a time (".", then "/") was still incomplete -- a hyphen
-# ("then edit distance-parser.py") closed the boundary the same way. The
-# boundary is now an ALLOWLIST of genuine sentence-ending shapes (a
-# sentence-final mark followed by space/end, a bare space, or end of
-# string) instead of a blacklist of path/filename characters, so no
-# further punctuation character used inside a path or filename can ever
-# satisfy it.
-gate_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
-    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(commit[[:space:]]+history)(\.([[:space:]]|$)|,([[:space:]]|$)|;([[:space:]]|$)|:([[:space:]]|$)|!([[:space:]]|$)|\?([[:space:]]|$)|[[:space:]]|$)/\1 \4\5/g
-    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(edit[[:space:]]+distance)(\.([[:space:]]|$)|,([[:space:]]|$)|;([[:space:]]|$)|:([[:space:]]|$)|!([[:space:]]|$)|\?([[:space:]]|$)|[[:space:]]|$)/\1 \4\5/g
-')
-if grepq "$gate_text" -Eq '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)'; then
+# J1398A (Opus judge, PR #1398, Finding 3, Critical): the "commit history"/
+# "edit distance" exclusion this comment used to describe (rounds 1, 3, 4, 5)
+# accepted a bare space -- and ":"/";" -- as closing the excluded phrase, so
+# it also fired on a genuine verb+object continuation in the SAME sentence,
+# e.g. "then edit distance thresholds in config/match.yaml to 0.8" or "then
+# commit history files to the repo" -- both real actions, not a research
+# noun, losing their "then"/"and" action trigger. A tightened allowlist
+# (sentence-final punctuation only, dropping the bare-space/":"/";" cases)
+# still passes adversarial whitespace shapes such as a literal tab standing
+# in for the space after the sentence-final mark. Per the judge's own
+# fallback ("if that is not simple and obviously correct, delete the strip
+# entirely instead"), the exclusion is dropped rather than re-patched a
+# sixth time: "then review the commit history" and "then analyze edit
+# distance heuristics" are GOVERNED again, matching main, and this whole
+# gate_text detour is gone -- gate_action is computed straight off $text,
+# same as main.
+if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)'; then
     gate_action=1
 fi
 
@@ -276,48 +257,66 @@ fi
 # by the existing danger alternation (it includes "write"), so no separate
 # occurrence loop is needed -- one unbounded tail check subsumes it.
 # HIMMEL-3784: the round-3 exemption only recognized a report noun
-# immediately after "write"/"write a"/"write the", so "write UP your
-# findings", "write an OVERVIEW", and "write a SHORT summary" (an adjective
-# between the article and the noun) still fell through to gate_action --
-# newly governing genuinely read-only report briefs. Widened to accept
-# "write up" and one adjective between the determiner and the noun.
-# (round-2 panel codex-1: an earlier version of this widening allowed up
-# to two BARE words before the noun with no determiner required at all,
-# so "write code for report" satisfied it via "code"+"for" -- the
-# adjective slot now only fires as part of a determiner+noun phrase.)
+# immediately after "write"/"write a"/"write the", so "write an OVERVIEW"
+# still fell through to gate_action -- newly governing genuinely read-only
+# report briefs. Widened (round-4/round-2-panel-codex-1) to accept a
+# determiner+noun phrase. A one-word adjective slot between the determiner
+# and the noun was tried in that round ("write a SHORT summary") and dropped
+# again by J1398A below -- see the comment on the exemption's grepq call.
+# "write a short summary" is GOVERNED again; that loss is an accepted trade,
+# not a regression.
 #
-# codex (PR #1388 round 4): the unbounded tail also treated a path or
-# extension mentioned in a LATER, UNRELATED sentence as a file-write target
-# ("write a summary. Also check scripts/router.sh for reference"), and the
-# extension pattern matched an ordinary version number ("version 1.0"). The
-# path/extension check is now scoped to path_scope -- the tail truncated at
-# the first sentence boundary -- UNLESS that boundary is immediately
-# followed by a then/and transition, which is a genuine continuation of the
-# same write-action chain, not an unrelated aside; and the extension match
-# now requires a letter first, so a bare digit run ("1.0") does not match.
+# J1398B ruling (console J, HIMMEL-3784, responding to J1398A Finding 2): a
+# round-4 "write up" idiom exemption used to live here too, so "write up
+# your findings" and bare "write up" were exempt. Cut entirely, not
+# right-anchored: main has no "up" idiom support at all, which is exactly
+# why main governs "then write up your summary module" and "then write up my
+# notes file" (J1398A's own Finding 2 examples) -- head only escaped them
+# because of this "up" exemption. Adding a right anchor instead would be
+# another exemption shape to get right, and the last two rounds already
+# spent their budget failing to make one safe. "write up your findings"
+# and bare "write up" are GOVERNED again, matching main; that loss is an
+# accepted trade, not a regression.
+#
+# codex (PR #1388 round 4): the extension pattern originally matched an
+# ordinary version number ("version 1.0"); the match now requires a letter
+# first, so a bare digit run ("1.0") does not satisfy it. This tightening
+# stays (J1398A "Suggested direction": "the letter-first extension
+# tightening can stay").
+#
+# J1398A (Opus judge, PR #1398, Finding 1, Critical): round 4 also scoped the
+# path/extension veto to path_scope -- the tail truncated at the first
+# sentence boundary -- so a code- or file-write TARGET named in a LATER
+# sentence of the same brief escaped the veto entirely, e.g. "Research the
+# tokenizer, then write a summary. Afterwards create src/tok.ts with the new
+# class." never saw "src/tok.ts" because path_scope cut the tail at the
+# first ". ". That is a regression against main, which never existed before
+# this PR (main has no path_scope at all): main checks the path/extension/
+# to-into veto against the WHOLE, unbounded write_tail. Reverted to that:
+# path_scope/protected_tail are gone, and the veto below reads $write_tail
+# directly. This re-accepts the round-4 codex-1 over-breadth (a path named
+# in a genuinely unrelated later sentence, e.g. "write a summary. Also check
+# scripts/router.sh for reference", is GOVERNED again even though it isn't a
+# write target) as a known, ticketed trade -- correctness on the write-target
+# direction matters more than that one over-governed shape.
 if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)write([^[:alnum:]_]|$)'; then
     lower_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
     write_trigger=$(printf '%s' "$lower_text" | grep -Eo '(^|[^[:alnum:]_])(then|and)[[:space:][:punct:]]+write' | head -1)
     write_tail=${lower_text#*"$write_trigger"}
-    # CodeRabbit (this PR): the "Z" placeholder is a letter, so a genuine
-    # chained "write a summary. Then explain the findings" produced
-    # "summary.Zthen...", which the extension check below (`\.[a-zA-Z]...`)
-    # then misread as a file extension, wrongly gating a read-only chain. "_"
-    # is not a letter, so it cannot itself complete that pattern.
-    protected_tail=$(printf '%s' "$write_tail" | sed -E 's/([.!?])[[:space:]]+(then|and)([^[:alnum:]_])/\1_\2\3/g')
-    path_scope=$(printf '%s' "$protected_tail" | sed -E 's/([.!?])[[:space:]]+.*/\1/')
-    # codex-1 (round 4 panel, HIMMEL-3784): the bare "up" alternation matched
-    # "up" followed by ANY single non-alnum character -- including the space
-    # before "a shell script" -- so "then write up a shell script" (a genuine
-    # implementation request) still matched on "up " alone regardless of what
-    # came after. "up" alone is now exempt only when NOTHING but trailing
-    # punctuation/whitespace follows it to the end of the tail; when an
-    # object follows "up", that object must be a report-noun phrase like the
-    # bare "write a ..." branch, not an arbitrary noun.
+    # J1398A (Finding 2, Critical): the one-word adjective/possessive slot
+    # between the determiner and the report noun ("(a|an|the|your|my)
+    # [a-z]+ (summary|report|...)") had no right anchor past the noun, so it
+    # admitted a code artifact disguised as an adjective+noun pair, e.g.
+    # "then write a new report module" matched "a"+"new"+"report" and never
+    # inspected "module". Dropped entirely, with no right-anchored
+    # replacement (per the judge's ruling, "no right-anchor variant" this
+    # round).
+    # J1398B (console J ruling): the "up" idiom exemption that used to sit in
+    # this alternation is also gone -- see the comment above this if-block.
+    # Only the bare determiner+noun branch remains.
     if [ -n "$write_trigger" ] \
-        && grepq "$write_tail" -Eq '^[[:space:]]+(up[[:space:][:punct:]]*$|up[[:space:]]+((a|an|the|your|my)[[:space:]]+([a-z]+[[:space:]]+){0,1})?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)|((a|an|the)[[:space:]]+([a-z]+[[:space:]]+){0,1})?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$))' \
-        && ! grepq "$path_scope" -Eq '/|\.[a-zA-Z][a-zA-Z0-9]*([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]' \
-        && ! grepq "$write_tail" -Eq '(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
+        && grepq "$write_tail" -Eq '^[[:space:]]+((a|an|the)[[:space:]]+)?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)' \
+        && ! grepq "$write_tail" -Eq '/|\.[a-zA-Z][a-zA-Z0-9]*([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]|(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
         :
     else
         gate_action=1
