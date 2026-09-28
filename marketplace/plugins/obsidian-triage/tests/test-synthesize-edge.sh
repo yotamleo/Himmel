@@ -156,7 +156,9 @@ assert "DENSIFY path claims acme/agent-kit row (MEDIUM regression)" "1" "$defA"
 sib="$(grep -cE '^\- \[ \] acme/agent-kit-extra' "$v6/Clippings/_deferred.md" 2>/dev/null || echo 0)"
 assert "sibling-prefix acme/agent-kit-extra row untouched" "1" "$sib"
 # revert-when-regenerated: mutate the claimed line so the recorded newLine is gone
-sed -i 's/^- \[x\] acme\/agent-kit .*/- [ ] acme\/agent-kit — REGENERATED/' "$v6/Clippings/_deferred.md"
+# no `sed -i`: GNU and BSD disagree on its suffix argument (BSD reads the script as one)
+sed 's/^- \[x\] acme\/agent-kit .*/- [ ] acme\/agent-kit — REGENERATED/' "$v6/Clippings/_deferred.md" > "$v6/Clippings/_deferred.md.new"
+mv "$v6/Clippings/_deferred.md.new" "$v6/Clippings/_deferred.md"
 rv6="$(node "$TOOL" "$v6" --revert "$v6/.synthesize-stubs.ledger.jsonl" 2>&1)"
 if echo "$rv6" | grep -qiE 'no longer present|regenerated|skipping'; then f=yes; else f=no; fi
 assert "revert gracefully skips a regenerated _deferred row" "yes" "$f"

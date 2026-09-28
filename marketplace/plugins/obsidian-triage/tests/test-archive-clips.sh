@@ -102,6 +102,17 @@ for rb in harvest-clips.md triage-clips.md synthesize-clips.md archive-clips.md;
     assert "$rb scan uses -not -path '*/_done/*'" "yes" "$found"
 done
 
+# lit_sub VAR PATTERN REPLACEMENT — fixed-string ${//} on VAR. bash 3.2 (macOS /bin/bash)
+# mis-parses inline quoted patterns/replacements and leaks the quote characters into the
+# result; a quoted pattern held in a variable with an UNQUOTED replacement variable is
+# the one spelling that behaves identically on 3.2 and 5.x.
+lit_sub() {
+  local _v="$1" _p="$2" _r="$3" _cur
+  eval "_cur=\$$_v"
+  _cur=${_cur//"$_p"/$_r}
+  eval "$_v=\$_cur"
+}
+
 echo "Test 10: FUNCTIONAL — LITERAL boundary-safe link-rewrite on a REALISTIC clip id (metachars)"
 # Regression guard for the C1 finding: a regex rewrite (sed -E) silently fails on clip ids
 # containing + ( . space etc. The runbook mandates LITERAL replacement (Edit / bash ${//}).
@@ -122,9 +133,9 @@ SIB="$OLD-extra"                                  # prefix-sibling that must NOT
 # Runbook Phase 4 step 5 — LITERAL replacement of the 3 boundary forms. bash ${//} is a
 # fixed-string substitution (no regex), so the + and space in the id are handled correctly.
 content="$(cat "$tmp/note.md")"
-content="${content//"[[Clippings/$OLD]]"/"[[Clippings/$NEW]]"}"
-content="${content//"${LB}Clippings/$OLD|"/"${LB}Clippings/$NEW|"}"
-content="${content//"${LB}Clippings/$OLD#"/"${LB}Clippings/$NEW#"}"
+lit_sub content "[[Clippings/$OLD]]" "[[Clippings/$NEW]]"
+lit_sub content "${LB}Clippings/$OLD|" "${LB}Clippings/$NEW|"
+lit_sub content "${LB}Clippings/$OLD#" "${LB}Clippings/$NEW#"
 printf '%s\n' "$content" > "$tmp/note.out"
 
 # all 4 OLD occurrences rewritten despite the + and space in the id
@@ -204,12 +215,12 @@ graduate() {  # $@ = files to rewrite (must include the moved clip's NEW path)
   for f in "$@"; do
     [ -s "$f" ] || { assert "rewrite target $f non-empty" "yes" "no"; continue; }
     c="$(cat "$f")"
-    c="${c//"[[Clippings/$OLD4]]"/"[[Clippings/$NEW4]]"}"
-    c="${c//"${LB}Clippings/$OLD4|"/"${LB}Clippings/$NEW4|"}"
-    c="${c//"${LB}Clippings/$OLD4#"/"${LB}Clippings/$NEW4#"}"
-    c="${c//"[[Clippings/$OLD4.md]]"/"[[Clippings/$NEW4.md]]"}"
-    c="${c//"${LB}Clippings/$OLD4.md|"/"${LB}Clippings/$NEW4.md|"}"
-    c="${c//"${LB}Clippings/$OLD4.md#"/"${LB}Clippings/$NEW4.md#"}"
+    lit_sub c "[[Clippings/$OLD4]]" "[[Clippings/$NEW4]]"
+    lit_sub c "${LB}Clippings/$OLD4|" "${LB}Clippings/$NEW4|"
+    lit_sub c "${LB}Clippings/$OLD4#" "${LB}Clippings/$NEW4#"
+    lit_sub c "[[Clippings/$OLD4.md]]" "[[Clippings/$NEW4.md]]"
+    lit_sub c "${LB}Clippings/$OLD4.md|" "${LB}Clippings/$NEW4.md|"
+    lit_sub c "${LB}Clippings/$OLD4.md#" "${LB}Clippings/$NEW4.md#"
     printf '%s\n' "$c" > "$f"
   done
 }

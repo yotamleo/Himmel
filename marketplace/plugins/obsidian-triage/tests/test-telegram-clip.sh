@@ -86,10 +86,16 @@ assert "firstUrl strips unbalanced wrapping paren" "https://x.com/a" "$(T='(http
 assert "firstUrl strips paren + trailing dot, keeps inner paren" "https://en.wikipedia.org/wiki/Foo_(bar)" "$(T='(https://en.wikipedia.org/wiki/Foo_(bar)).' libcall "console.log(lib.firstUrl(process.env.T))")"
 assert "slugify kebab" "hello-world" "$(libcall "console.log(lib.slugify('Hello, World!'))")"
 assert "slugify empty → untitled" "untitled" "$(libcall "console.log(lib.slugify('!!!'))")"
-assert "clipFilename shape" "telegram-42-my-note.md" "$(libcall "console.log(lib.clipFilename({msgId:'42',title:'My Note'}))")"
-assert "clipFilename sanitizes id" "telegram-ab12-x.md" "$(libcall "console.log(lib.clipFilename({msgId:'a/b\\\\1 2',title:'x'}))")"
-assert "deriveTitle uses first line" "My idea here" "$(T=$'My idea here\nmore' libcall "console.log(lib.deriveTitle({text:process.env.T,type:'note',source:null}))")"
-assert "deriveTitle url-only → host+path" "tweet from x.com/u/status/1" "$(libcall "console.log(lib.deriveTitle({text:'https://x.com/u/status/1',type:'tweet',source:'https://x.com/u/status/1'}))")"
+# js held in a variable: bash 3.2 brace-expands a comma-brace object literal written
+# inline inside "$(libcall "...")" and drops every key after the first.
+js89="console.log(lib.clipFilename({msgId:'42',title:'My Note'}))"
+assert "clipFilename shape" "telegram-42-my-note.md" "$(libcall "$js89")"
+js90="console.log(lib.clipFilename({msgId:'a/b\\\\1 2',title:'x'}))"
+assert "clipFilename sanitizes id" "telegram-ab12-x.md" "$(libcall "$js90")"
+js91="console.log(lib.deriveTitle({text:process.env.T,type:'note',source:null}))"
+assert "deriveTitle uses first line" "My idea here" "$(T=$'My idea here\nmore' libcall "$js91")"
+js92="console.log(lib.deriveTitle({text:'https://x.com/u/status/1',type:'tweet',source:'https://x.com/u/status/1'}))"
+assert "deriveTitle url-only → host+path" "tweet from x.com/u/status/1" "$(libcall "$js92")"
 
 # -- Test 3c: tweetStatusId (dedup-at-ingest match key) ------------------
 echo "Test 3c: tweetStatusId"

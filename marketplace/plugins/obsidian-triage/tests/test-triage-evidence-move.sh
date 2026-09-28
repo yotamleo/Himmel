@@ -148,6 +148,17 @@ echo "Test 4: clip gone from top-level Clippings/"
 gone=$([ ! -f "$tmp/Clippings/$OLD.md" ] && echo yes || echo no)
 assert "clip gone from top-level Clippings/" "yes" "$gone"
 
+# lit_sub VAR PATTERN REPLACEMENT — fixed-string ${//} on VAR. bash 3.2 (macOS /bin/bash)
+# mis-parses inline quoted patterns/replacements and leaks the quote characters into the
+# result; a quoted pattern held in a variable with an UNQUOTED replacement variable is
+# the one spelling that behaves identically on 3.2 and 5.x.
+lit_sub() {
+  local _v="$1" _p="$2" _r="$3" _cur
+  eval "_cur=\$$_v"
+  _cur=${_cur//"$_p"/$_r}
+  eval "$_v=\$_cur"
+}
+
 # Step 5: literal rewrite — bash ${//} is fixed-string, handles + space en-dash
 while IFS= read -r f; do
     # self-ref: the clip is now at its NEW path (old inbox path is gone)
@@ -160,12 +171,12 @@ while IFS= read -r f; do
     # SIX literal replacements — plain forms map to the no-`.md` _evidence target;
     # `.md` forms keep the `.md` (and the |alias / #heading tail). The plain `]]`
     # form never matches `.md]]` (boundary char differs), so order is safe.
-    c="${c//"[[Clippings/$OLD]]"/"[[Clippings/$NEW]]"}"
-    c="${c//"[[Clippings/$OLD|"/"[[Clippings/$NEW|"}"
-    c="${c//"[[Clippings/$OLD#"/"[[Clippings/$NEW#"}"
-    c="${c//"[[Clippings/$OLD.md]]"/"[[Clippings/$NEW.md]]"}"
-    c="${c//"[[Clippings/$OLD.md|"/"[[Clippings/$NEW.md|"}"
-    c="${c//"[[Clippings/$OLD.md#"/"[[Clippings/$NEW.md#"}"
+    lit_sub c "[[Clippings/$OLD]]" "[[Clippings/$NEW]]"
+    lit_sub c "[[Clippings/$OLD|" "[[Clippings/$NEW|"
+    lit_sub c "[[Clippings/$OLD#" "[[Clippings/$NEW#"
+    lit_sub c "[[Clippings/$OLD.md]]" "[[Clippings/$NEW.md]]"
+    lit_sub c "[[Clippings/$OLD.md|" "[[Clippings/$NEW.md|"
+    lit_sub c "[[Clippings/$OLD.md#" "[[Clippings/$NEW.md#"
     printf '%s\n' "$c" > "$rewrite_at"
 done < "$INBOUND_LIST"
 
