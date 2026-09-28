@@ -1221,33 +1221,23 @@ assert "fd-dup >&2 + trailing backslash writes a junk file (must not ALLOW)" \
 # that literal survives as uniq's 2nd positional, which real uniq treats as
 # an OUTPUT file, not another input. VERIFIED (real bash): `uniq -c f \&`
 # creates a file named `&`; `uniq -c f a\&\&b` creates `a&&b`.
-assert "uniq 2nd positional via escaped bare & writes a junk file (must not ALLOW)" \
-    PASS "$(decide "$(j_bash 'uniq -c f \&')")"
-assert "uniq 2nd positional via escaped & inside a word writes a junk file (must not ALLOW)" \
-    PASS "$(decide "$(j_bash 'uniq -c f a\&\&b')")"
-# Panel review of the uniq guard above (J1397A/codex, HIMMEL-3793) found two
-# further bypasses in that same fix. VERIFIED (real bash/coreutils):
-# `uniq - f` reads stdin as INPUT and writes to `f` as OUTPUT — a bare "-"
-# is a real positional (stdin), not a flag, but the guard's `-*` flag case
-# also matched the lone "-" and excluded it from the count.
-assert "uniq bare dash 1st positional + 2nd positional writes a junk file (must not ALLOW)" \
-    PASS "$(decide "$(j_bash 'uniq - f')")"
-# `uniq f '>'` writes deduped output to a file literally named `>` — a
-# quoted positional whose decoded value merely resembles a redirect token
-# was wrongly excluded by matching on the decoded value instead of the raw
-# (unquoted) token text.
-assert "uniq 2nd positional that is a quoted '>' writes a junk file (must not ALLOW)" \
-    PASS "$(decide "$(j_bash "uniq f '>'")")"
-# Panel round 2: `uniq f 2\>` writes deduped output to a file literally
-# named `2>` — a backslash-escaped redirect-looking positional decodes to
-# a real filename, not fd 2, but the raw-token redirect check above (fix
-# for the previous finding) didn't yet account for an escaped char
-# glued into an otherwise redirect-shaped raw token. VERIFIED (real
-# uniq): creates a 4-byte file named `2>`.
-assert "uniq 2nd positional that is a backslash-escaped 2> writes a junk file (must not ALLOW)" \
-    PASS "$(decide "$(j_bash 'uniq f 2\>')")"
-# Controls: ordinary fd-dups and a single-file uniq must keep ALLOWing — this
-# fix must not regress anything main already approves.
+#
+# NOT fixed by this PR (console ruling, HIMMEL-3793): an earlier draft of
+# this PR added a uniq-specific "2nd positional = output file" guard to
+# close these two, but three straight /pr-check panel rounds each found a
+# new real bypass in that guard (a bare "-" miscounted as a flag, a quoted
+# `'>' ` miscounted as a redirect, a backslash-escaped `2\>` miscounted as a
+# redirect, and finally `uniq -- -input output` miscounted post-`--`). A
+# guard that keeps yielding a new real bypass every round gets cut, not
+# patched further — so these two remain ALLOWed on this head, same as main,
+# and stay open on HIMMEL-3793 as part of the broader "uniq/sort-style
+# positional output operand" class (ticket comment has the full bypass list).
+assert "uniq 2nd positional via escaped bare & still ALLOW (known gap, HIMMEL-3793 stays open)" \
+    ALLOW "$(decide "$(j_bash 'uniq -c f \&')")"
+assert "uniq 2nd positional via escaped & inside a word still ALLOW (known gap, HIMMEL-3793 stays open)" \
+    ALLOW "$(decide "$(j_bash 'uniq -c f a\&\&b')")"
+# Controls: ordinary fd-dups must keep ALLOWing — this fix must not regress
+# anything main already approves.
 assert "fd-dup >&2, no escape, still ALLOW (control)" \
     ALLOW "$(decide "$(j_bash 'grep x f >&2')")"
 assert "fd-dup 2>&1, no escape, still ALLOW (control)" \
@@ -1256,8 +1246,6 @@ assert "uniq single positional (no 2nd/output arg) still ALLOW (control)" \
     ALLOW "$(decide "$(j_bash 'uniq -c f')")"
 assert "a plain backslash-escaped & INSIDE quotes still ALLOW (control)" \
     ALLOW "$(decide "$(j_bash 'grep "\&" f')")"
-assert "uniq single positional with a genuine unquoted redirect still PASS, not DENY-shaped (control)" \
-    PASS "$(decide "$(j_bash 'uniq f > out')")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
