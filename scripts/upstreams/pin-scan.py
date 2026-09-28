@@ -14,6 +14,10 @@ Latest comes from the npm registry (`curl`) or `gh api` — both looked up via
 PATH so the test harness can stub them. Prints one verdict line per pin and
 exits with a bitmask: 1 = at least one BEHIND, 2 = at least one UNCHECKED.
 
+A package inside a tree carrying a VENDORED.md marker (a verbatim upstream copy,
+e.g. claude-hud) reads VENDORED: its pins are upstream's, so they are neither
+compared to npm-latest nor bumped here.
+
 scripts/upstreams/pin-holds.json records a bump held back on purpose. A hold
 reads HELD only while the pin is still at `current` AND upstream's latest is
 still `latest_reviewed`; any newer upstream release re-raises BEHIND.
@@ -58,11 +62,23 @@ def lock_versions(dirpath):
     return res
 
 
+def is_vendored(root, dirpath):
+    """True when dirpath or an ancestor below root carries a VENDORED.md marker."""
+    root = os.path.abspath(root)
+    d = os.path.abspath(dirpath)
+    while d.startswith(root) and d != root:
+        if os.path.exists(os.path.join(d, "VENDORED.md")):
+            return True
+        d = os.path.dirname(d)
+    return False
+
+
 def discover(root):
     pins = {}  # (eco, key, current) -> set(where)
+    vendored = {}  # same key -> set(where) found inside vendored upstream trees
 
-    def add(eco, key, current, where):
-        pins.setdefault((eco, key, current), set()).add(where)
+    def add(eco, key, current, where, vend=False):
+        (vendored if vend else pins).setdefault((eco, key, current), set()).add(where)
 
     for p in walk(root):
         name = os.path.basename(p)
@@ -73,12 +89,13 @@ def discover(root):
             except (OSError, ValueError):
                 continue
             locked = lock_versions(os.path.dirname(p))
+            vend = is_vendored(root, os.path.dirname(p))
             for sec in ("dependencies", "devDependencies"):
                 for pkg, rng in (pj.get(sec) or {}).items():
                     cur = locked.get(pkg)
                     if not cur and re.match(r"^\d+\.\d+\.\d+$", str(rng)):
                         cur = rng
-                    add("npm", pkg, cur or "?", os.path.dirname(r) or ".")
+                    add("npm", pkg, cur or "?", os.path.dirname(r) or ".", vend)
         elif name.startswith(".pre-commit-config") and name.endswith((".yaml", ".yml")):
             text = open(p).read()
             for m in re.finditer(
@@ -95,7 +112,7 @@ def discover(root):
         elif r.startswith("scripts/hooks/") and name.endswith(".sh"):
             for m in re.finditer(r"^OXLINT_VERSION=(\d+\.\d+\.\d+)\s*$", open(p).read(), re.M):
                 add("npm", "oxlint", m.group(1), r)
-    return pins
+    return pins, vendored
 
 
 def run(cmd):
@@ -144,7 +161,8 @@ def main():
     holds = []
     if holds_path and os.path.exists(holds_path):
         holds = json.load(open(holds_path)).get("holds", [])
-    pins = sorted(discover(root).items())
+    found, vend_found = discover(root)
+    pins = sorted(found.items())
 
     def check(item):
         (eco, key, current), where = item
@@ -155,6 +173,12 @@ def main():
         results = list(ex.map(check, pins))
 
     rc = 0
+    # A vendored tree's pins are upstream's: never compared to npm-latest, never
+    # bumped here. Upstream advance is watched by its scripts/upstreams.json row.
+    for (eco, key, current), where in sorted(vend_found.items()):
+        if (eco, key, current) not in found:
+            print(f"  {eco}:{key} {current} ({', '.join(sorted(where))}): VENDORED (upstream-owned pin; "
+                  "follows upstream — bump via /fork-resync, upstream advance watched by upstreams.json)")
     for eco, key, current, where, latest in results:
         label = f"{eco}:{key} {current} ({', '.join(where)})"
         if current == "?":

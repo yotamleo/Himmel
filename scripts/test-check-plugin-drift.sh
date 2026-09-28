@@ -947,6 +947,11 @@ jobs:
       - uses: owner/act2@v1
 YML
 printf '#!/usr/bin/env bash\nOXLINT_VERSION=1.0.0\n' > "$W12/root/scripts/hooks/h.sh"
+# A vendored upstream tree (VENDORED.md marker): its pins follow upstream, not npm-latest.
+mkdir -p "$W12/root/vend"; printf 'vend-pkg=9.0.0\n' >> "$W12/state/npm"
+printf '{"name":"v","devDependencies":{"vend-pkg":"^1.0.0"}}\n' > "$W12/root/vend/package.json"
+printf '{"lockfileVersion":3,"packages":{"":{},"node_modules/vend-pkg":{"version":"1.0.0"}}}\n' > "$W12/root/vend/package-lock.json"
+printf 'vendored from upstream\n' > "$W12/root/vend/VENDORED.md"
 cat > "$W12/holds.json" <<'JSON'
 {"holds":[{"eco":"gh","key":"owner/heldrepo","current":"v1.0.0","latest_reviewed":"v2.0.0","reason":"fixture hold"}]}
 JSON
@@ -967,6 +972,7 @@ if grepq "$pin_sec" '^  gh:owner/hookrepo v1\.0\.0 (\.pre-commit-config\.yaml): 
 if grepq "$pin_sec" '^  gh:owner/heldrepo v1\.0\.0 .*: HELD'; then ok "pin-scan: recorded hold -> HELD, not drift"; else bad "heldrepo not HELD"; fi
 if grepq "$pin_sec" '^  gh:owner/act v3 .*: CURRENT'; then ok "pin-scan: major-only action pin tracks its major -> CURRENT"; else bad "act@v3 not CURRENT"; fi
 if grepq "$pin_sec" '^  gh:owner/act2 v1 .*: BEHIND'; then ok "pin-scan: action a major behind -> BEHIND"; else bad "act2@v1 not BEHIND"; fi
+if grepq "$pin_sec" '^  npm:vend-pkg 1\.0\.0 (vend): VENDORED'; then ok "pin-scan: pin inside a VENDORED.md tree -> VENDORED, not BEHIND npm-latest"; else bad "vend-pkg not VENDORED; $(printf '%s' "$pin_sec" | grep vend-pkg)"; fi
 if [ "$pin_rc" -eq 2 ]; then ok "pin-scan drift run exits 2"; else bad "pin-scan drift run rc=$pin_rc; expected 2"; fi
 # A hold expires when upstream ships something newer than the one reviewed.
 printf 'owner/hookrepo=v1.3.0\nowner/heldrepo=v3.0.0\nowner/act=v3.4.1\nowner/act2=v2.0.0\n' > "$W12/state/rel"
