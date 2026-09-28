@@ -2118,6 +2118,63 @@ check "RED61c: the backup is kept" "$([ -f "$BACKUP_SM" ] && echo yes || echo no
 check "RED61c: a failed outcome row is written" \
   "$(jq -r 'select(.op=="failed") | .op' "$(prov_dir)/provenance.jsonl" 2>/dev/null | head -n1)" "failed"
 
+# seed_created_unit <dest> -- one file himmel CREATED (pre-absent, so no backup),
+# then the operator edits it: verdict "keep user-modified", no readable backup,
+# which is the shape that offers [k]eep / [d]elete.
+seed_created_unit() {
+  local dest="$1"
+  mkdir -p "$(dirname "$dest")"
+  printf '#!/bin/sh\necho himmel-created-script\n' > "$dest"
+  ( prov_begin --writer adopt.sh -- seed-created >/dev/null
+    prov_record create file "$dest" --scope project --class code --row adopter-scripts \
+      --writer adopt.sh --pre-absent --post-file "$dest" >/dev/null
+    prov_end ok >/dev/null )
+  printf '#!/bin/sh\necho operator-edited-created-file\n' > "$dest"
+}
+
+echo "==== RED64 (HIMMEL-3787 S2b, ruling 2026-09-29): a TTY [d]elete on a user-modified created file saves the live bytes to a sidecar FIRST ===="
+new_case red64
+DEST64="$CASE_DIR/cwd/scripts/red64.sh"
+seed_created_unit "$DEST64"
+SIDE64="$DEST64.himmel-uninstall-backup"
+out64=$(RUN_TTY_ANSWER=$'y\nd' run_uninstall --skip-tasks --skip-plugins --skip-hooks)
+check "RED64: the sidecar holds the operator's live bytes" \
+  "$(cat "$SIDE64" 2>/dev/null)" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
+check "RED64: the file was deleted" "$([ -e "$DEST64" ] && echo present || echo gone)" "gone"
+check "RED64: the report names the sidecar path" \
+  "$([ "$(printf '%s\n' "$out64" | grep -c -F -- "$SIDE64")" -ge 1 ] && echo yes || echo no)" "yes"
+
+echo "==== RED64b (HIMMEL-3787 S2b): Enter keeps the file; --yes (tty or not) never deletes; no sidecar in either ===="
+new_case red64b
+DEST64B="$CASE_DIR/cwd/scripts/red64b.sh"
+seed_created_unit "$DEST64B"
+RUN_TTY_ANSWER=$'y\n' run_uninstall --skip-tasks --skip-plugins --skip-hooks >/dev/null
+check "RED64b: the default (Enter) keeps the operator's edit" \
+  "$(cat "$DEST64B")" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
+RUN_TTY_ANSWER=d run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
+check "RED64b: --yes on a tty never deletes" \
+  "$(cat "$DEST64B")" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
+run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
+check "RED64b: a non-tty --yes run never deletes" \
+  "$(cat "$DEST64B")" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
+check "RED64b: no sidecar written by any keep path" \
+  "$([ -e "$DEST64B.himmel-uninstall-backup" ] && echo yes || echo no)" "no"
+
+echo "==== RED64c (HIMMEL-3787 S2b): a [d]elete whose sidecar cannot be written fails closed -- file kept, failed row, non-zero ===="
+new_case red64c
+DEST64C="$CASE_DIR/cwd/scripts/red64c.sh"
+seed_created_unit "$DEST64C"
+printf 'earlier-save\n' > "$DEST64C.himmel-uninstall-backup"
+RUN_TTY_ANSWER=$'y\nd' run_uninstall --skip-tasks --skip-plugins --skip-hooks >/dev/null
+rc64c=$?
+check "RED64c: the live file is NOT deleted" \
+  "$(cat "$DEST64C")" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
+check "RED64c: the earlier save is untouched" \
+  "$(cat "$DEST64C.himmel-uninstall-backup")" "earlier-save"
+check "RED64c: a failed outcome row is written" \
+  "$(jq -r 'select(.op=="failed") | .op' "$(prov_dir)/provenance.jsonl" 2>/dev/null | head -n1)" "failed"
+check "RED64c: the run exits non-zero" "$([ "$rc64c" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+
 echo "==== RED62 (HIMMEL-3787 S2b, J1408A F1): a failed backups-dir mv must not move the ledger into retained-* ===="
 new_case red62
 DEST62="$CASE_DIR/cwd/scripts/red62.sh"

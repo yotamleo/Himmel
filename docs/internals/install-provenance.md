@@ -165,6 +165,13 @@ nothing is restored: the unit is recorded `failed` and its backup is kept.
 start-up, because `ledger_apply_unit` runs inside heredoc loops where fd 0 is
 not a terminal.
 
+The same save guards `[d]elete`. A `keep user-modified` unit that himmel
+created (no readable backup) offers `[k]eep` (default) or `[d]elete anyway`.
+`[d]` copies the live file to the same sidecar and prints the path before it
+removes anything; if the save cannot be made the file is kept, the unit is
+recorded `failed` and the run exits non-zero. `--yes` and non-TTY runs never
+reach the prompt, so they never delete.
+
 ## Known limits
 
 - No jq on `PATH`: the node dialect falls back to a pure-language

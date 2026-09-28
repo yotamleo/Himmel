@@ -1951,19 +1951,34 @@ $unit"
                 return 1 ;;
             esac
           else
-            printf "  %s changed since install -- [k]eep / [d]elete anyway? [k] " "$unit"
+            printf "  %s changed since install -- [k]eep / [d]elete anyway (your current file is saved first)? [k] " "$unit"
             read -r _ans <&8
             case "$_ans" in
               [dD]*)
-                if prov_read_apply "$u" remove; then
-                  echo "  removed $unit"
-                  prov_read_outcome removed "$u" "user-modified" "$backup"
-                else
-                  echo "  WARN: could not remove $unit" >&2
-                  fail_step "$_step ledger remove: $unit"
-                  prov_read_outcome failed "$u" "step-failed" "$backup"
+                # HIMMEL-3787 S2b: the delete destroys the operator's live
+                # bytes too, so it takes the same sidecar save as [r]estore
+                # and fails closed (file kept, failed row) if it cannot.
+                _live=$(printf '%s' "$u" | jq -r '.path // empty')
+                _side="$_live.himmel-uninstall-backup"
+                if [ -n "$_live" ] && [ -f "$_live" ] && [ ! -e "$_side" ] && [ ! -L "$_side" ] \
+                   && cp -p -- "$_live" "$_side" 2>/dev/null; then
+                  echo "  saved your current $unit to $_side"
+                  if prov_read_apply "$u" remove; then
+                    echo "  removed $unit"
+                    prov_read_outcome removed "$u" "user-modified" "$backup"
+                  else
+                    echo "  WARN: could not remove $unit" >&2
+                    fail_step "$_step ledger remove: $unit"
+                    prov_read_outcome failed "$u" "step-failed" "$backup"
+                  fi
+                  return 0
                 fi
-                return 0 ;;
+                echo "  WARN: could not save your current $unit to $_side -- not deleting" >&2
+                fail_step "$_step ledger remove: $unit (live-bytes save failed)"
+                prov_read_outcome failed "$u" "step-failed" "$backup"
+                _LEDGER_PROTECTED="$_LEDGER_PROTECTED
+$unit"
+                return 1 ;;
             esac
           fi
         fi
