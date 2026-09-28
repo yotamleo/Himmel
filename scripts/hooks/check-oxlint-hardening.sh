@@ -12,7 +12,7 @@
 # the commit loudly rather than turning an unevaluated gate into a pass.
 set -uo pipefail
 
-OXLINT_VERSION=1.81.0
+OXLINT_VERSION=1.86.0
 
 # ---- rule set (HIMMEL-2163 audit) --------------------------------------
 # oxc/bad-bitwise-operator and eslint/no-throw-literal each had exactly one

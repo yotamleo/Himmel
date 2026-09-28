@@ -77,9 +77,9 @@ assert_says() {
 # without the other goes red here rather than in CI.
 HARDENING_GATE="$SCRIPT_DIR/check-oxlint-hardening.sh"
 if grep -q '^OXLINT_VERSION=1\.81\.0$' "$GATE"; then
-    echo "PASS gate pins OXLINT_VERSION=1.81.0"
+    echo "PASS gate pins OXLINT_VERSION=1.86.0"
 else
-    echo "FAIL gate must pin OXLINT_VERSION=1.81.0"
+    echo "FAIL gate must pin OXLINT_VERSION=1.86.0"
     FAILED=$((FAILED + 1))
 fi
 

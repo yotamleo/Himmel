@@ -30,7 +30,7 @@ OXLINT_COMPLEXITY_MAX="${OXLINT_COMPLEXITY_MAX:-81}"
 # Same literal as check-oxlint-hardening.sh's OXLINT_VERSION (HIMMEL-2802) —
 # keep the two pins in lockstep; test-check-oxlint-complexity.sh asserts
 # parity so a future bump of one without the other goes red.
-OXLINT_VERSION=1.81.0
+OXLINT_VERSION=1.86.0
 # -------------------------------------------------------------------------
 
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)

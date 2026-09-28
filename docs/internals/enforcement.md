@@ -121,7 +121,7 @@ Stages currently wired:
 - **Oxlint ratchets (pre-commit):** oxlint-complexity-ratchet (no NEW
   function above the audited max; HIMMEL-2154),
   oxlint-hardening-zero-violations (bug-class hardening — zero violations;
-  pinned oxlint 1.81.0, with root/cwd diagnostics; findings and tool/JSON
+  pinned oxlint 1.86.0, with root/cwd diagnostics; findings and tool/JSON
   failures block, while only a missing `bunx` fails open; HIMMEL-2163/2802).
 - **Doctor check-ID + shell platform-guard gates (pre-commit):**
   doctor-check-ids (`check-doctor-check-ids.sh`, scoped to
