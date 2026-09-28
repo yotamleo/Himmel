@@ -93,10 +93,11 @@
 # that prefix out of the hit list; find prints absolute paths, so a real hit cannot start
 # with it unless a directory name embeds a newline followed by the prefix (a hostile
 # guest could then hide one hit line — an accepted residual, not a host-secret carrier).
-# ponytail: the walk's searchability test is `[ -x ]`, which follows the mode bits; an
-# ancestor whose ACL denies search while the mode bits allow it can pass, and the link is
-# then skipped instead of refused. Upgrade path: a real access(2)-style probe (e.g. `cd`
-# into the ancestor in a subshell) if a guest with search-denying ACLs ever shows up.
+# ponytail: the walk's searchability test is `[ -x ]`, whose ACL handling varies by shell
+# (some approximate it from the mode bits, and root always passes); an ancestor whose ACL
+# denies search can then pass, and the link is skipped instead of refused. Upgrade path: a
+# real search probe (e.g. `cd` into the ancestor in a subshell) if a guest with
+# search-denying ACLs ever shows up.
 # The untracked base builder (/tmp/m2457-rebuild.sh) stages wherever it likes and is
 # NOT covered — it must call this CLI itself (operator item, HIMMEL-2540).
 #
