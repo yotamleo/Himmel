@@ -387,7 +387,7 @@ _protection_ruleset() {
     PROT_RULESET_DETAIL="unreadable"
     # shellcheck disable=SC2016  # jq program: $r is a jq variable, not shell
     rules=$("$GH" api "repos/$nwo/rules/branches/$branch" \
-            --jq '[.[] | select(.type == "required_status_checks")] as $r | "\([$r[] | .parameters.required_status_checks | if type == "array" then length else 0 end] | add | if . == null then 0 else . end)|\([$r[] | .ruleset_id] | unique | join(","))"' 2>/dev/null || true)
+            --jq '(if type == "array" then . else [] end) | [.[] | select(.type == "required_status_checks")] as $r | "\([$r[] | .parameters.required_status_checks | if type == "array" then length else 0 end] | add | if . == null then 0 else . end)|\([$r[] | .ruleset_id] | unique | join(","))"' 2>/dev/null || true)
     [ -n "$rules" ] || return 1
     n_checks=${rules%%|*}
     ids=${rules#*|}

@@ -1110,6 +1110,15 @@ if [ "$have_jq_2869" = "1" ]; then
         run_mog 12 "3808-5b: required checks dropped during the CI wait → exit 12"
     assert_audit_has "3808-5b: audits not-protected-premerge" "reason=not-protected-premerge"
 
+    # 3808-5c. A rules response whose root is an object (not an array) is
+    # malformed: a required_status_checks rule nested inside it must NOT satisfy
+    # the gate (codex-1, fail closed).
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
+        STUB_RULES_JSON='{"x":{"type":"required_status_checks","ruleset_id":17745842,"parameters":{"required_status_checks":[{"context":"a"}]}}}' \
+        STUB_RULESET_JSON='{"id":17745842,"enforcement":"active","bypass_actors":[]}' \
+        run_mog 12 "3808-5c: object-rooted rules response → exit 12"
+    assert_gh_lacks "3808-5c: no merge attempted" "pr merge"
+
     # 3808-6. HIMMEL_PROTECTION_SOURCE modes, via a sed'd copy of the script (the
     # literal is not env-overridable, exactly like HIMMEL_PUBLIC_ORIGIN_NWO).
     # Each copy is checked to carry the literal, so a sed that matched nothing
