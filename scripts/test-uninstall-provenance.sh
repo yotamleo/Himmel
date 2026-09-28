@@ -2109,7 +2109,7 @@ seed_modified_unit "$DEST61C"
 # an earlier save already sits at the sidecar path: never clobbered, so the
 # save is refused and the restore must not run.
 printf 'earlier-save\n' > "$DEST61C.himmel-uninstall-backup"
-out61c=$(RUN_TTY_ANSWER=$'y\nr' run_uninstall --skip-tasks --skip-plugins --skip-hooks)
+RUN_TTY_ANSWER=$'y\nr' run_uninstall --skip-tasks --skip-plugins --skip-hooks >/dev/null
 check "RED61c: the live file is NOT restored" \
   "$(cat "$DEST61C")" "$(printf '#!/bin/sh\necho operator-edited-after-install')"
 check "RED61c: the earlier save is untouched" \
