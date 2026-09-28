@@ -13,7 +13,7 @@
 #      parser) accepts a WRAPPED bullet the helper appended AFTER older
 #      out-of-order bullets, first try
 #   6. HIMMEL-3796: a `## Results-old` heading (grep -q's old prefix match)
-#      is rejected -> rc != 0, doc unchanged (exact-line match only)
+#      is rejected -> rc != 0, doc unchanged (word-boundary match only)
 #
 # Hermetic: temp dir only. Platform guard: POSIX bash 3.2+.
 set -uo pipefail
