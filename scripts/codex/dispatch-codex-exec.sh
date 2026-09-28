@@ -214,7 +214,7 @@ _dispatch_cleanup() {
         wait "$OUTPUT_PID" 2>/dev/null
     fi
     [ -n "$TIMEOUT_FLAG" ] && rm -f "$TIMEOUT_FLAG" 2>/dev/null
-    [ -n "$EVENT_LOG" ] && rm -f "$EVENT_LOG" 2>/dev/null
+    [ -n "$EVENT_LOG" ] && rm -f "$EVENT_LOG" "$EVENT_LOG.fifo" 2>/dev/null
     if [ -n "$CODEX_CHILD_PID" ]; then
         bash "$REAP_HELPER" --root-pid "$CODEX_CHILD_PID" --started-at "$STARTED_AT" --kill || true
         [ -n "$JOB_FILE" ] && rm -f "$JOB_FILE" 2>/dev/null
@@ -477,8 +477,20 @@ set -m
 # A one-byte read cannot overread the pipe, including binary/NUL output.
 # Both stages belong to OUTPUT_PID's process group; && propagates either
 # failure and keeps the existing wait/watchdog lifetime contract intact.
-exec 3> >(dd bs=1 count=1 of="$EVENT_LOG" 2>/dev/null && cat "$EVENT_LOG" -)
+# A named pipe + real background subshell, NOT `exec 3> >(...)`: bash 3.2
+# (stock macOS) does not make a process substitution a child of this shell,
+# so `wait "$OUTPUT_PID"` below failed rc=127 there. The reader opens the fifo
+# first (backgrounded, so it blocks harmlessly) and the `exec 3>` opens the
+# write end, releasing both; the path is unlinked as soon as both ends are open.
+EVENT_FIFO="$EVENT_LOG.fifo"
+if ! mkfifo "$EVENT_FIFO" 2>/dev/null; then
+    echo "dispatch-codex-exec.sh: cannot create the stdout relay fifo (mkfifo failed) - refusing to run codex without timeout diagnostics" >&2
+    exit 2
+fi
+( dd bs=1 count=1 of="$EVENT_LOG" 2>/dev/null && cat "$EVENT_LOG" - ) < "$EVENT_FIFO" &
 OUTPUT_PID=$!
+exec 3> "$EVENT_FIFO"
+rm -f "$EVENT_FIFO"
 if [ "$STDIN_BRIEF" -eq 0 ]; then
     # shellcheck disable=SC2086,SC2090  # pin_args is a fixed, space-safe flag list built above; embedded quotes (HIMMEL-905 -c override) are intentional, single argv tokens once split
     "$CODEX" exec $pin_args "$@" </dev/null >&3 3>&- &

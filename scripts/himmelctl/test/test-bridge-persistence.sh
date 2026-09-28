@@ -97,6 +97,8 @@ set -uo pipefail
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/bridge-persistence-test.XXXXXX") || exit 1
 [ -n "$WORK" ] || exit 1
+# physical path: provenance ledger rows carry realpaths (macOS /tmp -> /private/tmp)
+WORK=$(cd "$WORK" && pwd -P) || exit 1
 trap 'rm -rf "$WORK"' EXIT
 
 # to_node_path <path> — every path handed to `node` (as a require() arg or an
