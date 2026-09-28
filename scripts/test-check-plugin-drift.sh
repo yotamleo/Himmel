@@ -20,7 +20,7 @@ fails=0
 # The pin scan (section 12) hits the npm registry per package; every OTHER case
 # below runs against an empty scan root so its exit-code assertions stay about
 # the section under test.
-PIN_EMPTY="$(mktemp -d)"; export DRIFT_PIN_ROOT="$PIN_EMPTY"
+PIN_EMPTY="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-pinempty.XXXXXX")" || { echo "mktemp -d failed" >&2; exit 1; }; export DRIFT_PIN_ROOT="$PIN_EMPTY"
 ok() { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 
@@ -886,7 +886,7 @@ rm -rf "$W11"
 #     scanning the repo and compared to its latest stable — hermetic, `curl`
 #     (npm registry) and `gh` (releases) stubbed from a state dir. A
 #     deliberately stale pin for a newly watched package MUST read BEHIND.
-W12="$(mktemp -d)"; mkdir -p "$W12/bin" "$W12/state" "$W12/root/pkgA" "$W12/root/.github/workflows" "$W12/root/scripts/hooks"
+W12="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-w12.XXXXXX")" || { echo "mktemp -d failed" >&2; exit 1; }; mkdir -p "$W12/bin" "$W12/state" "$W12/root/pkgA" "$W12/root/.github/workflows" "$W12/root/scripts/hooks"
 cat > "$W12/bin/curl" <<'CURL'
 #!/usr/bin/env bash
 for last; do :; done
