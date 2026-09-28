@@ -85,9 +85,13 @@ _SCAN_FN_TAIL = (
     " \\) ! -name '.env.example' ! -type d -print || exit 1; "
     'k=$(find -H "$d" -xdev -type l ! -exec test -d {} \\; -print) || exit 1; '
     "[ -z \"$k\" ] || printf '%s\\n' \"$k\" | while IFS= read -r y; do "
-    'find -L "$y" -prune >/dev/null 2>&1 || '
-    '{ printf "scan-unscanned: %s\\n" "$y" >&2; exit 1; }; '
-    'printf "scan-skipped: %s\\n" "$y" >&2; done || exit 1; '
+    't=$(readlink -- "$y" 2>/dev/null); if [ -z "$t" ]; then ok=0; else '
+    'case "$t" in /*) a="$t";; *) a="${y%/*}/$t";; esac; ok=1; b="/"; s=${a#/}; '
+    'while [ -n "$s" ]; do e=${s%%/*}; case "$s" in */*) s=${s#*/};; *) s="";; esac; '
+    '[ -z "$e" ] && continue; f="$b$e"; [ -e "$f" ] || break; '
+    'if [ -n "$s" ] && { [ ! -d "$f" ] || [ ! -x "$f" ]; }; then ok=0; break; fi; '
+    'b="$f/"; done; fi; if [ "$ok" = 1 ]; then printf "scan-skipped: %s\\n" "$y" >&2; '
+    'else printf "scan-unscanned: %s\\n" "$y" >&2; exit 1; fi; done || exit 1; '
     'l=$(find -H "$d" -xdev -type l -exec test -d {} \\; -print) || exit 1; '
     '[ -z "$l" ] || q="$q$l$n"; done ); ')
 

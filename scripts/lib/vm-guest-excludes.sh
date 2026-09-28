@@ -74,10 +74,13 @@
 # /snap /var) is skipped — those never receive a host checkout and hold
 # root-owned 0700 dirs that would refuse every guest. A secret planted under a system
 # tree is therefore NOT covered. A directory target that stat's but cannot be entered
-# fails closed. A non-directory link is probed with `find -L <link> -prune`, which exits 0
-# for a dangling (ENOENT) link or a stat-able target and non-zero when the target cannot
-# be stat'ed (EACCES behind an unsearchable ancestor, but also a link loop or ENOTDIR):
-# such a link is reported `scan-unscanned:` and the scan REFUSES (HIMMEL-3238). Every
+# fails closed. A non-directory link's target is resolved by walking its path components
+# with `[ -e ]`/`[ -d ]`/`[ -x ]` (HIMMEL-3719): this does NOT trust a `find`'s exit status,
+# because BSD find can exit 0 on a permission-denied traversal where GNU find exits
+# non-zero. A missing component ends the walk clean (ENOENT: dangling, not a refusal); a
+# present non-last component that is not a searchable directory (EACCES on an ancestor, or
+# ENOTDIR) stops the walk and refuses. Such a link is reported `scan-unscanned:` and the
+# scan REFUSES (HIMMEL-3238, HIMMEL-3719). Every
 # other link left unscanned (file, dangling or system-tree target) is reported as a
 # read-only `scan-skipped:` line and counted by the consumers (never a refusal); an
 # already-visited target is NOT reported, it is being scanned. Consumers filter
@@ -157,7 +160,7 @@ vm_guest_quote_root() {
 # shellcheck disable=SC2016  # literal guest-shell text: nothing may expand HERE
 VM_GUEST_SCAN_FN_HEAD='_s() ( n=$(printf "\n_"); n=${n%_}; q="$1$n"; v=$n; r=; while [ -n "$q" ]; do x=${q%%"$n"*}; q=${q#*"$n"}; d=$(CDPATH= cd -P -- "$x" && pwd -P) || exit 1; case "$v" in *"$n$d$n"*) continue;; esac; v="$v$d$n"; if [ -n "$r" ]; then case "$d/" in //|/proc/*|/sys/*|/dev/*|/run/*|/usr/*|/bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*|/etc/*|/boot/*|/snap/*|/var/*) printf "scan-skipped: %s\n" "$d" >&2; continue;; esac; fi; r=1; find -H "$d" -xdev \( '
 # shellcheck disable=SC2016  # literal guest-shell text: nothing may expand HERE
-VM_GUEST_SCAN_FN_TAIL=' \) ! -name '\''.env.example'\'' ! -type d -print || exit 1; k=$(find -H "$d" -xdev -type l ! -exec test -d {} \; -print) || exit 1; [ -z "$k" ] || printf '\''%s\n'\'' "$k" | while IFS= read -r y; do find -L "$y" -prune >/dev/null 2>&1 || { printf "scan-unscanned: %s\n" "$y" >&2; exit 1; }; printf "scan-skipped: %s\n" "$y" >&2; done || exit 1; l=$(find -H "$d" -xdev -type l -exec test -d {} \; -print) || exit 1; [ -z "$l" ] || q="$q$l$n"; done ); '
+VM_GUEST_SCAN_FN_TAIL=' \) ! -name '\''.env.example'\'' ! -type d -print || exit 1; k=$(find -H "$d" -xdev -type l ! -exec test -d {} \; -print) || exit 1; [ -z "$k" ] || printf '\''%s\n'\'' "$k" | while IFS= read -r y; do t=$(readlink -- "$y" 2>/dev/null); if [ -z "$t" ]; then ok=0; else case "$t" in /*) a="$t";; *) a="${y%/*}/$t";; esac; ok=1; b="/"; s=${a#/}; while [ -n "$s" ]; do e=${s%%/*}; case "$s" in */*) s=${s#*/};; *) s="";; esac; [ -z "$e" ] && continue; f="$b$e"; [ -e "$f" ] || break; if [ -n "$s" ] && { [ ! -d "$f" ] || [ ! -x "$f" ]; }; then ok=0; break; fi; b="$f/"; done; fi; if [ "$ok" = 1 ]; then printf "scan-skipped: %s\n" "$y" >&2; else printf "scan-unscanned: %s\n" "$y" >&2; exit 1; fi; done || exit 1; l=$(find -H "$d" -xdev -type l -exec test -d {} \; -print) || exit 1; [ -z "$l" ] || q="$q$l$n"; done ); '
 
 vm_guest_scan_cmd() {
   local root="$1" prof="${2:-full}" globs q
