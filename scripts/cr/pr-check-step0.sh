@@ -19,6 +19,6 @@ set -uo pipefail
 if himmel_repo=$(printenv HIMMEL_REPO | grep .); then
     exec bash "$himmel_repo/scripts/cr/pr-check-context.sh"
 else
-    echo "pr-check: HIMMEL_REPO is unset or empty" >&2
+    echo "pr-check: HIMMEL_REPO is unset or empty — cannot locate himmel from a trusted source outside the repo under review; adopt/setup wires it into settings.json env, or export it non-empty in your launching shell, then re-run" >&2
     exit 2
 fi

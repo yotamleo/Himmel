@@ -32,7 +32,8 @@ check_rc() {
     fi
 }
 
-tmp="$(mktemp -d -t test-pr-check-step0.XXXXXX)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d -t test-pr-check-step0.XXXXXX)" || { echo "FAIL: mktemp"; exit 1; }
+trap 'rm -rf "$tmp"' EXIT
 
 fixture="$tmp/fixture"
 mkdir -p "$fixture/scripts/cr"
@@ -47,13 +48,13 @@ run="$fixture/scripts/cr/pr-check-step0.sh"
 # T1: HIMMEL_REPO unset -> fail closed, exit 2, remedy on stderr.
 out1="$(env -u HIMMEL_REPO bash "$run" 2>&1)"
 rc1=$?
-check "$out1" "pr-check: HIMMEL_REPO is unset or empty" "T1 unset HIMMEL_REPO prints remedy"
+check "$out1" "pr-check: HIMMEL_REPO is unset or empty — cannot locate himmel from a trusted source outside the repo under review; adopt/setup wires it into settings.json env, or export it non-empty in your launching shell, then re-run" "T1 unset HIMMEL_REPO prints remedy"
 check_rc "$rc1" 2 "T1 unset HIMMEL_REPO exits 2"
 
 # T2: HIMMEL_REPO set but empty -> same fail-closed remedy as unset.
 out2="$(HIMMEL_REPO="" bash "$run" 2>&1)"
 rc2=$?
-check "$out2" "pr-check: HIMMEL_REPO is unset or empty" "T2 empty HIMMEL_REPO prints remedy"
+check "$out2" "pr-check: HIMMEL_REPO is unset or empty — cannot locate himmel from a trusted source outside the repo under review; adopt/setup wires it into settings.json env, or export it non-empty in your launching shell, then re-run" "T2 empty HIMMEL_REPO prints remedy"
 check_rc "$rc2" 2 "T2 empty HIMMEL_REPO exits 2"
 
 # T3: HIMMEL_REPO set -> hands off to the anchor's pr-check-context.sh with
