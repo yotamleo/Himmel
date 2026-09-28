@@ -102,7 +102,7 @@ CFG
 assert_toplevel_is() {
   local dir="$1" top
   top=$(cd "$dir" && git rev-parse --show-toplevel 2>/dev/null)
-  [ "$top" = "$dir" ]
+  [ "$top" = "$(cd "$dir" && pwd -P)" ]
 }
 
 # run_race <repo> -- stage ONLY commit-file.txt, leave data.json dirty and

@@ -325,14 +325,14 @@ worktree_intact() {
     [ -e "$path/.git" ] || return 1
 
     local path_pwd
-    path_pwd=$(cd "$path" 2>/dev/null && pwd) || path_pwd="$path"
+    path_pwd=$(cd "$path" 2>/dev/null && pwd -P) || path_pwd="$path"
 
     local line wt wt_pwd
     while IFS= read -r line; do
         case "$line" in
             "worktree "*)
                 wt="${line#worktree }"
-                wt_pwd=$(cd "$wt" 2>/dev/null && pwd) || wt_pwd="$wt"
+                wt_pwd=$(cd "$wt" 2>/dev/null && pwd -P) || wt_pwd="$wt"
                 if [ "$wt_pwd" = "$path_pwd" ] || [ "$wt" = "$path" ]; then
                     return 0
                 fi

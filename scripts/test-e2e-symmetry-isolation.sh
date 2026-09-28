@@ -26,6 +26,7 @@ same(){ if cmp -s "$2" "$3"; then echo "ok - $1"; else echo "FAIL - $1: $3 diffe
 command -v jq >/dev/null 2>&1 || { echo "test-e2e-symmetry-isolation: jq required" >&2; exit 2; }
 
 td="$(mktemp -d "${TMPDIR:-/tmp}/e2e-isolation.XXXXXX")" || { echo "test-e2e-symmetry-isolation: mktemp failed" >&2; exit 2; }
+td="$(cd "$td" && pwd -P)"   # canonical: uninstall.sh's real-home check compares resolved paths (macOS /var -> /private/var)
 trap 'rm -rf "$td"' EXIT
 mkdir -p "$td/cwd"
 

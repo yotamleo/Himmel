@@ -49,6 +49,30 @@ fail_case() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 PYTHON_BIN=$(command -v python3)
 [ -n "$PYTHON_BIN" ] || echo "SKIP: no python3 on PATH — several cases need it for wait_for_ssh's real socket check" >&2
 
+# macOS ships no flock(1). vm-clone.sh's slot claim needs one, so when the host
+# has none, put a python fcntl stand-in on PATH (same `flock [-n] <fd>` shape
+# the runner and T2's holder use; the lock lives on the inherited open-file
+# description, exactly like util-linux flock).
+if ! command -v flock >/dev/null 2>&1 && [ -n "$PYTHON_BIN" ]; then
+    FLOCKBIN="$WORK/flockbin"
+    mkdir -p "$FLOCKBIN"
+    cat >"$FLOCKBIN/flock" <<FLOCKEOF
+#!/usr/bin/env bash
+nb=""
+[ "\${1:-}" = "-n" ] && { nb=1; shift; }
+exec "$PYTHON_BIN" -c '
+import fcntl, sys
+flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if sys.argv[2] else 0)
+try:
+    fcntl.flock(int(sys.argv[1]), flags)
+except OSError:
+    sys.exit(1)
+' "\$1" "\$nb"
+FLOCKEOF
+    chmod +x "$FLOCKBIN/flock"
+    export PATH="$FLOCKBIN:$PATH"
+fi
+
 # --- fake VBoxManage: a minimal, STATEFUL VirtualBox stand-in, enough to
 # drive after-report.sh's clonevm/snapshot/startvm/controlvm/modifyvm calls
 # and scripts/lib/vbox.py's state/get_forwards/restore/power lifecycle.
