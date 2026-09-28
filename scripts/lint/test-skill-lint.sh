@@ -272,12 +272,16 @@ description: clean and staged
 ---
 EOF
     git add .claude/skills/divergent-skill2/SKILL.md
+    if [ -z "$(git diff --cached --name-only)" ]; then
+        echo "FATAL: git add did not stage divergent-skill2/SKILL.md" >&2
+        exit 1
+    fi
     cat > .claude/skills/divergent-skill2/SKILL.md <<'EOF2'
 ---
 description: broken on disk, missing name, not staged
 ---
 EOF2
-)
+) || fail "Case 10b setup failed to stage the fixture" ""
 OUT10B="$(cd "$REPO3" && bash "$LINT" --staged 2>&1)"; EC10B=$?
 if [ "$EC10B" -eq 0 ]; then pass "--staged stays clean when only the working tree (not the index) is broken"; else fail "expected exit 0, got $EC10B" "$OUT10B"; fi
 
