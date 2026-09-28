@@ -813,7 +813,7 @@ process.stdout.write(String(v===undefined?"":v));' 2>/dev/null; }
 check "clean run: exactly one score row joined on target_head" "$(score_field model)" "codex"
 check "clean run: score row carries crit/imp/sug = 0/0/0" "$(score_field critical)/$(score_field important)/$(score_field suggestions)" "0/0/0"
 s_raw="$(score_field raw_path)"
-check "clean run: score row records a raw path beside the ledger" "$(case "$s_raw" in "$s_raw_dir"/*) echo y ;; *) echo n ;; esac)" "y"
+check "clean run: score row records a raw path beside the ledger" "$([[ "$s_raw" == "$s_raw_dir"/* ]] && echo y || echo n)" "y"
 check "clean run: the raw artifact still exists after the process exited" "$([ -n "$s_raw" ] && [ -f "$s_raw" ] && echo y || echo n)" "y"
 check "clean run: the raw artifact holds the critic's response" "$([ -n "$s_raw" ] && grep -c '^## Suggestions (0 found)' "$s_raw" 2>/dev/null || echo 0)" "1"
 

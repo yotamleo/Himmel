@@ -54,7 +54,7 @@ if hook is None:
     print("FAIL - no shellcheck-py/shellcheck hook found in the template .pre-commit-config.yaml")
     sys.exit(1)
 
-# pre-commit's own schema default when `exclude` is absent: matches nothing.
+# pre-commit own schema default when exclude is absent: matches nothing.
 exclude = hook.get("exclude", "^$")
 
 VERDICT_PATH = "handovers/x/verdicts/J1/cases.sh"

@@ -75,7 +75,7 @@ check "statusLine path is the resolved settings" "$(printf '%s' "$sl" | field .p
 check "statusLine pre.sha = seeded value sha" "$(printf '%s' "$sl" | field .pre.sha)" "$(sha "$SEED_STATUSLINE")"
 check "statusLine post.sha = wired value sha" "$(printf '%s' "$sl" | field .post.sha)" "$(sha "$(jq -cS .statusLine "$SETTINGS")")"
 bk="$(printf '%s' "$sl" | field .pre.backup)"
-check "statusLine backup is a .prior.json"   "$(case "$bk" in *.prior.json) echo yes;; *) echo no;; esac)" "yes"
+check "statusLine backup is a .prior.json"   "$([[ "$bk" == *.prior.json ]] && echo yes || echo no)" "yes"
 check "statusLine backup exists"             "$([ -f "$bk" ] && echo yes || echo no)" "yes"
 check "statusLine backup jq -S-equals the seed" "$(jq -S . "$bk" 2>/dev/null | jq -cS .)" "$SEED_STATUSLINE"
 n_backups_1="$(find "$HOME/.himmel/provenance-backups" -type f | wc -l | tr -d ' ')"
