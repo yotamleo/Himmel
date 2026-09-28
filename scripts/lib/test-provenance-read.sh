@@ -213,11 +213,36 @@ prov_begin --iid CV1 --writer t
 prov_record create json-key "$CE1" --unit /env --post-json '{}' --scope user --class code
 prov_record create json-key "$CE1" --unit /env/HANDOVER_DIR --pre-absent --post-json '"/h/one"' --scope user --class code
 prov_end ok
-printf '%s' '{"env":{"HANDOVER_DIR":"/h/one","USER_ADDED":"x"}}' > "$CE1"
+# HANDOVER_DIR is genuinely gone from the live file (actually reverted, not
+# merely a forward-looking "remove" verdict on a still-live value --
+# HIMMEL-3787 codex-1: _provread_container_child_clean must see the child's
+# CURRENT state already reflect the revert, never accept the verdict string
+# alone as proof the action ran).
+printf '%s' '{"env":{"USER_ADDED":"x"}}' > "$CE1"
 prov_read_load
 ucontainer1=$(prov_read_units --path "$CE1" --kind json-key | jq -c 'select(.unit=="/env")')
 check "container-children: all governed children clean -> surgical container-children" \
     "$(prov_read_verdict "$ucontainer1")" "surgical container-children"
+prov_read_cleanup
+
+# codex-1 (HIMMEL-3787): same fixture as CE1, but HANDOVER_DIR is still LIVE
+# at its post-install value -- its own verdict is "remove ours", a
+# forward-looking recommendation the purge scan has not yet executed (e.g.
+# uninstall.sh --skip-settings). A clean child must reflect an ACTUAL revert,
+# not just a verdict string, so the container must NOT resolve surgically
+# here -- it must fall through to keep user-modified, holding its backup.
+reset
+CE1B="$w/cenv1b.json"
+printf '{}\n' > "$CE1B"
+prov_begin --iid CV1B --writer t
+prov_record create json-key "$CE1B" --unit /env --post-json '{}' --scope user --class code
+prov_record create json-key "$CE1B" --unit /env/HANDOVER_DIR --pre-absent --post-json '"/h/one"' --scope user --class code
+prov_end ok
+printf '%s' '{"env":{"HANDOVER_DIR":"/h/one","USER_ADDED":"x"}}' > "$CE1B"
+prov_read_load
+ucontainer1b=$(prov_read_units --path "$CE1B" --kind json-key | jq -c 'select(.unit=="/env")')
+check "container-children codex-1: a still-live (never-reverted) child is NOT clean -> keep user-modified" \
+    "$(prov_read_verdict "$ucontainer1b")" "keep user-modified"
 prov_read_cleanup
 
 reset

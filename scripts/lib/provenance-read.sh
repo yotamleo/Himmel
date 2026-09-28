@@ -473,18 +473,29 @@ _provread_is_container() {
 }
 
 # _provread_container_child_clean <child-unit-json> -- true iff this governed
-# child, on its own, is one of the states design §3.2 calls clean for
-# container-children: it will be removed or restored this run, its verdict is
-# already `keep already-base`, or it is already-absent with no backup to
-# hold. Note this is NOT the same test as prov_read_unit_resolved (§5.1) --
+# child's LIVE state already reflects its resolution: its verdict is
+# `keep already-base`, or it is already-absent with no backup to hold. Note
+# this is NOT the same test as prov_read_unit_resolved (§5.1) --
 # already-absent-with-no-backup counts here but never holds a backup anyway.
+#
+# HIMMEL-3787 (codex-1, panel round 1): this used to also accept a bare
+# `remove`/`restore` VERDICT (a recommendation prov_read_verdict computes
+# from the child's CURRENT live state, not a record that the action ran).
+# In the normal flow that was harmless -- the settings-unwire step physically
+# reverts the child before the purge scan runs, so by then `cur` has already
+# changed and prov_read_verdict re-derives `keep already-base` on its own,
+# which the branch below already accepts. But with --skip-settings the
+# unwire step never runs: the child's live value stays at eff_post, its
+# verdict is still `remove ours`/`restore ours` as a pure recommendation, and
+# the old blanket accept let the CONTAINER's own backup be released anyway --
+# while the child was still live and installed, with no backup left to
+# restore it from (reproduced via CASE60 in test-uninstall-provenance.sh).
+# Only a verdict that reflects an ALREADY-reverted live state counts as clean
+# here now.
 _provread_container_child_clean() {
     local c="$1" v action reason backup
     v=$(prov_read_verdict "$c") || return 1
     action="${v%% *}"; reason="${v#* }"
-    case "$action" in
-        remove|restore) return 0 ;;
-    esac
     case "$action:$reason" in
         keep:already-base) return 0 ;;
         keep:already-absent)

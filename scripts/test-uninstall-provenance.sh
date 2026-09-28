@@ -1946,21 +1946,20 @@ check "RED59 (S2a case b): a purge after a reinstall is not permanently blocked 
 check "RED59: the earlier retained-* dir is left untouched (never auto-deleted)" \
   "$([ -d "$RETAINED59" ] && echo yes || echo no)" "yes"
 
-echo "==== CASE60 (HIMMEL-3787 S2a, spec case c): a settings.json /env container with a user-added key resolves via its clean children (guards gap 3) ===="
-# Not a RED-on-base case, unlike 58/59: on base, a bystander key makes the
-# container's naive verdict "keep user-modified", and base's purge-scan case
-# statement (`restore *|"keep already-absent") ;; *) continue ;;`) never
-# flags "keep user-modified" as unrestored at all -- the SAME pre-existing
-# gap RED58 targets directly. So on base this scenario purges (rc 0) and
-# deletes the backup unconditionally regardless of the container-children
-# feature, and asserting rc/backup-state here can't distinguish "resolved via
-# clean children" from "silently swept by the old gap". The RED-first proof
-# for `surgical container-children` itself (base can never emit that verdict
-# string; the branch doesn't exist there) lives in
-# scripts/lib/test-provenance-read.sh. This case instead confirms the
-# INTEGRATION wiring at head: uninstall.sh's purge scan actually calls
-# prov_read_unit_resolved and treats a `surgical *` verdict as resolved
-# end-to-end, with the bystander key left untouched.
+echo "==== RED60 (HIMMEL-3787 S2a, spec case c; HIMMEL-3787 codex-1 panel round 1): a container whose governed children were NEVER reverted (--skip-settings) must not release its backup ===="
+# Same fixture as the old CASE60, but --skip-settings means the settings
+# unwire step (which would physically revert the children) never runs -- the
+# live file stays exactly at post-install. _provread_container_child_clean
+# used to accept a bare "remove"/"restore" VERDICT as clean (a recommendation
+# prov_read_verdict computes from CURRENT live state, not a record that the
+# action ran), so the container's own backup was released here while a
+# governed child (HANDOVER_DIR) was still live and installed, with no backup
+# left to restore it from -- confirmed on this exact fixture before the fix
+# (backup released, HANDOVER_DIR still present). The fix in
+# provenance-read.sh drops that blanket accept; only a verdict that already
+# reflects a REVERTED live state (keep already-base / keep already-absent
+# with no backup) counts as clean now, so --skip-settings + a live governed
+# child must refuse or hold, never release.
 new_case red60
 # /env was explicitly null before this install (the only real shape that
 # gives the /env container itself a backup -- wire-himmel-repo.sh only
@@ -1979,12 +1978,12 @@ printf '{"env": null}\n' > "$CASE_SETTINGS"
     --pre-absent --post-json '"/opt/red60-vault"' >/dev/null
   prov_end ok >/dev/null )
 BACKUP60=$(find "$(prov_dir)/provenance-backups" -type f | head -n1)
-[ -n "$BACKUP60" ] || { echo "FAIL - CASE60 setup: backup for the /env container not found"; fails=$((fails+1)); }
+[ -n "$BACKUP60" ] || { echo "FAIL - RED60 setup: backup for the /env container not found"; fails=$((fails+1)); }
 # The live file: both governed children are untouched since install (clean,
-# "remove ours"), plus a bystander key the operator added by hand that
+# verdict "remove ours" -- a recommendation, never executed under
+# --skip-settings), plus a bystander key the operator added by hand that
 # himmel never recorded a unit for -- so the CONTAINER's own live value
-# differs from what it recorded (L != O), and naively would read
-# "keep user-modified" forever, holding a backup that never needs to.
+# differs from what it recorded (L != O).
 cat > "$CASE_SETTINGS" <<JSON
 {
   "env": {
@@ -1996,12 +1995,58 @@ cat > "$CASE_SETTINGS" <<JSON
 JSON
 run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks --skip-settings >/dev/null
 rc60=$?
-check "CASE60 (S2a case c): --purge-state succeeds once the /env container resolves via clean children" \
-  "$rc60" "0"
-check "CASE60: the bystander key the operator added by hand is never touched" \
+check "RED60 (S2a case c, codex-1 gap): --purge-state refuses/holds while a governed child is still live under --skip-settings" \
+  "$([ "$rc60" -ne 0 ] && echo yes || echo no)" "yes"
+check "RED60: the bystander key the operator added by hand is never touched" \
   "$(jq -r '.env.MY_USER_KEY // "ABSENT"' "$CASE_SETTINGS")" "operator-bystander-value"
-check "CASE60: the container's own backup is released, not held forever" \
-  "$([ -f "$BACKUP60" ] && echo held || echo released)" "released"
+check "RED60: the still-live governed child is untouched (never reverted by --skip-settings)" \
+  "$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$CASE_SETTINGS")" "/opt/red60-handover"
+check "RED60: the container's own backup is HELD, not released while a child is still live" \
+  "$([ -f "$BACKUP60" ] && echo held || echo released)" "held"
+
+echo "==== GREEN60 (HIMMEL-3787 S2a, spec case c): once the settings unwire step ACTUALLY reverts the children (no --skip-settings), the container resolves via its clean children and its backup releases ===="
+# Identical ledger + live-file fixture to RED60, but this run does NOT pass
+# --skip-settings: the real settings-unwire step ([6/8]) reverts the two
+# governed children for real before the [8/8] purge scan runs, so by the
+# time _provread_container_child_clean looks at them their verdict has
+# already re-derived to "keep already-base"/"keep already-absent" from their
+# OWN live state -- the same acceptance path RED60 shows must not be
+# shortcut to when the revert never actually happened.
+new_case green60
+printf '{"env": null}\n' > "$CASE_SETTINGS"
+( prov_begin --writer wire-himmel-repo.sh -- seed-green60 >/dev/null
+  prov_record replace json-key "$CASE_SETTINGS" --unit /env --scope user --class code \
+    --writer wire-himmel-repo.sh --row user-settings \
+    --pre-json null --backup \
+    --post-json '{"HANDOVER_DIR":"/opt/green60-handover","LUNA_VAULT_PATH":"/opt/green60-vault"}' >/dev/null
+  prov_record create json-key "$CASE_SETTINGS" --unit /env/HANDOVER_DIR --scope user --class code \
+    --writer wire-himmel-repo.sh --row user-settings \
+    --pre-absent --post-json '"/opt/green60-handover"' >/dev/null
+  prov_record create json-key "$CASE_SETTINGS" --unit /env/LUNA_VAULT_PATH --scope user --class code \
+    --writer wire-himmel-repo.sh --row user-settings \
+    --pre-absent --post-json '"/opt/green60-vault"' >/dev/null
+  prov_end ok >/dev/null )
+BACKUPG60=$(find "$(prov_dir)/provenance-backups" -type f | head -n1)
+[ -n "$BACKUPG60" ] || { echo "FAIL - GREEN60 setup: backup for the /env container not found"; fails=$((fails+1)); }
+cat > "$CASE_SETTINGS" <<JSON
+{
+  "env": {
+    "HANDOVER_DIR": "/opt/green60-handover",
+    "LUNA_VAULT_PATH": "/opt/green60-vault",
+    "MY_USER_KEY": "operator-bystander-value"
+  }
+}
+JSON
+run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+rcg60=$?
+check "GREEN60 (S2a case c): --purge-state succeeds once settings-unwire has actually reverted the children" \
+  "$rcg60" "0"
+check "GREEN60: the bystander key the operator added by hand is never touched" \
+  "$(jq -r '.env.MY_USER_KEY // "ABSENT"' "$CASE_SETTINGS")" "operator-bystander-value"
+check "GREEN60: the governed children were actually removed by the real settings-unwire step" \
+  "$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$CASE_SETTINGS")" "ABSENT"
+check "GREEN60: the container's own backup is released, not held forever" \
+  "$([ -f "$BACKUPG60" ] && echo held || echo released)" "released"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
