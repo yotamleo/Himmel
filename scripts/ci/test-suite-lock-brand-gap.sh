@@ -45,9 +45,13 @@ trap cleanup EXIT
 REAL_PS=$(command -v ps)
 REAL_RM=$(command -v rm)
 REAL_MKDIR=$(command -v mkdir)
+if [ -z "$REAL_PS" ] || [ -z "$REAL_RM" ] || [ -z "$REAL_MKDIR" ]; then
+  echo "ERR: ps, rm and mkdir must all be on PATH for the shims" >&2
+  exit 1
+fi
 
 echo "== Case 1: a slow identity probe leaves no unbranded gap (HIMMEL-3799) =="
-w=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX"); sandboxes+=("$w")
+w=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX") || exit 1; sandboxes+=("$w")
 mkdir -p "$w/shim" "$w/sb" "$w/home" "$w/tmp"
 # Delay ONLY the first identity probe (`ps ... -o lstart=`), by longer than
 # the loser's ~1s husk spin.
@@ -108,7 +112,7 @@ echo "== Case 2: _suite_sem_reclaim refuses at once on a non-contention guard fa
 if [ "$(id -u)" = 0 ]; then
   echo "  SKIP  running as root: chmod cannot make a directory unwritable"
 else
-  s=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX"); sandboxes+=("$s")
+  s=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX") || exit 1; sandboxes+=("$s")
   mkdir -p "$s/sem/slot-1"
   # A dead owner: the slot is stale, so a waiter goes for the reclaim guard.
   printf 'pid=999999\nidentity=\nlabel=x\nstarted=1\n' > "$s/sem/slot-1/owner"
@@ -131,7 +135,7 @@ echo "== Case 3: _suite_lock_reclaim refuses at once on a non-contention guard f
 if [ "$(id -u)" = 0 ]; then
   echo "  SKIP  running as root: chmod cannot make a directory unwritable"
 else
-  r=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX"); sandboxes+=("$r")
+  r=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX") || exit 1; sandboxes+=("$r")
   mkdir -p "$r/sb" "$r/home" "$r/tmp" "$r/lockparent/suite.lock"
   printf '#!/usr/bin/env bash\ntrue\n' > "$r/sb/test-noop.sh"
   # An empty unbranded husk in an unwritable parent: the husk path reaches
@@ -155,7 +159,7 @@ else
 fi
 
 echo "== Case 4: a guard-mkdir failure whose guard is then absent is retried once, not refused (HIMMEL-3791) =="
-m=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX"); sandboxes+=("$m")
+m=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX") || exit 1; sandboxes+=("$m")
 mkdir -p "$m/shim" "$m/sb" "$m/home" "$m/tmp/suite.lock"
 printf '#!/usr/bin/env bash\ntrue\n' > "$m/sb/test-noop.sh"
 # Fail the FIRST `.reclaim` mkdir WITHOUT creating it: the shape of another
