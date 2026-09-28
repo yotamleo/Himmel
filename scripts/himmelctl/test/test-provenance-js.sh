@@ -26,8 +26,8 @@ if [ -z "$node_bin" ]; then echo "SKIP - node not installed"; exit 0; fi
 command -v jq >/dev/null 2>&1 || { echo "SKIP - jq not installed"; exit 0; }
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/prov-js-test.XXXXXX") || { echo "FAIL: mktemp" >&2; exit 1; }
-tmp="$(cd "$tmp" && pwd -P)" || { echo "FAIL: pwd -P" >&2; exit 1; }
 trap '[ -n "${tmp:-}" ] && [ -d "$tmp" ] && rm -rf "$tmp"' EXIT
+tmp="$(cd "$tmp" && pwd -P)" || { echo "FAIL: pwd -P" >&2; exit 1; }
 mkdir -p "$tmp/home" "$tmp/w"
 export HOME="$tmp/home"
 USERPROFILE="$(winpath "$tmp/home")"; export USERPROFILE
