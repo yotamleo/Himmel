@@ -145,60 +145,23 @@ deny() {
     exit 2
 }
 
-# HIMMEL-3798: the two STDIN-only /pr-check writers (write-verdicts.sh,
-# impacted-suites.sh --check) take their payload only on stdin, so the
-# runbook's only ways to hand them one are a pipe (denied below, since a pipe
-# is a second command that can rewrite what runs before the writer does), a
-# quoted heredoc, or a `< <file>` redirect. Neither of the last two rewrites
-# the checked script's bytes - a heredoc's body and a redirect's file operand
-# are both stdin DATA the writer itself parses and validates line by line
-# (rejecting the whole write on any malformed line, echoing back only a line
-# number, never content - see write-verdicts.sh's header), never bytes bash
-# executes - so accepting them does not weaken the byte-equality check below,
-# which still runs unchanged against $entries. These two checkers recognise
-# ONLY that narrow shape, on the RAW command text (never $flat, which has
-# already lost quoting): a fixed, quoted closing delimiter with nothing after
-# it on its own line, or a single literal (no variable, glob or quote) file
-# operand with nothing after it - so a trailing `; rm -rf /` after either
-# still fails to match and falls through to the denial below.
-st_is_stdin_heredoc() { # st_is_stdin_heredoc <line1-re> <delim> <body-re>
-    local line1_re=$1 delim=$2 body_re=$3 c=$cmd l1 body bl
-    l1=${c%%$'\n'*}
-    [ "$l1" != "$c" ] || return 1
-    case "$l1" in *[[:cntrl:]]*) return 1 ;; esac
-    [[ "$l1" =~ $line1_re ]] || return 1
-    body=${c#*$'\n'}
-    case "$body" in
-        "$delim") body='' ;;
-        *$'\n'"$delim") body=${body%$'\n'"$delim"} ;;
-        *) return 1 ;;
-    esac
-    [ -n "$body" ] || return 0
-    while IFS= read -r bl; do
-        case "$bl" in *[[:cntrl:]]*) return 1 ;; esac
-        [[ "$bl" =~ $body_re ]] || return 1
-    done <<ST_BODY_EOF
-$body
-ST_BODY_EOF
-    return 0
-}
-st_is_stdin_file_redirect() { # st_is_stdin_file_redirect <line-re-with-file-capture>
-    local re=$1 f
-    case "$cmd" in *$'\n'*) return 1 ;; esac
-    case "$cmd" in *[[:cntrl:]]*) return 1 ;; esac
-    [[ "$cmd" =~ $re ]] || return 1
-    f=${BASH_REMATCH[1]}
-    f=${f#\"}; f=${f%\"}
-    case "$f" in ""|*[\\\'\"\$\`\;\&\|\(\)\<\>]*|*[][*?~]*) return 1 ;; esac
-    return 0
-}
-# shellcheck disable=SC2016 # regexes, matched as text
-WV_LINE1_RE="^bash [^;&|()<>\`]*write-verdicts\\.sh[^;&|()<>\`]*<<'WV_STDIN_EOF'\$"
-WV_BODY_RE='^VERDICT \[[^]]+\] = (agreed|disproved|conflict|unaddressed|deferred -> [A-Za-z0-9-]+)$'
-WV_REDIRECT_RE="^bash [^;&|()<>\`]*write-verdicts\\.sh[^;&|()<>\`]* < (\"[^\"]*\"|[^ \"]+)\$"
-IS_LINE1_RE2="^bash [^;&|()<>\`]*impacted-suites\\.sh[^;&|()<>\`]*<<'IS_STDIN_EOF'\$"
-IS_BODY_RE='^SUITE .*$'
-IS_REDIRECT_RE="^bash [^;&|()<>\`]*impacted-suites\\.sh[^;&|()<>\`]* < (\"[^\"]*\"|[^ \"]+)\$"
+# HIMMEL-3798 round 3: the inline quoted-heredoc and `< <file>` redirect
+# shapes this hook used to accept for the two STDIN-only /pr-check writers
+# (write-verdicts.sh, impacted-suites.sh --check) are CUT, not patched a
+# third time - a regex matching a line as bash grammar is only ever an
+# approximation, and each round's fix (widening an excluded-character class)
+# just narrowed the gap the next round found: round 2's separator gap, then
+# round 3's unquoted `#` swallowing the heredoc/redirect operator into a real
+# bash comment while the guard's regex still matched the line as a valid
+# heredoc header, so a "body" line the guard treated as inert stdin data
+# actually ran as a separate shell command. The sanctioned shape now is
+# `--from-file <path>` only: the caller writes the verdict lines with a real
+# editing tool first, then runs ONE ordinary literal command naming the path
+# as a plain argument - nothing for a regex to approximate bash's grammar
+# for. A pipe into either writer is still denied below (a second command
+# that can rewrite what runs before the writer does).
+# shellcheck disable=SC2016 # regex, matched as text
+FROM_FILE_TOKEN_RE='--from-file[[:space:]]+([^[:space:]]+)'
 
 input=""
 IFS= read -r -d '' input 2>/dev/null || true
@@ -1158,34 +1121,29 @@ shown=${shown:0:200}
     || deny "'$unresolved' does not resolve to this root's scripts/cr/ or scripts/handover/ writer by its text alone (a glob, a variable, or a path outside the root), so the bytes it runs cannot be checked."
 [ "$chdir" -eq 0 ] \
     || deny "the command changes directory, so the relative path does not resolve against the cwd the conditions are checked in."
+# HIMMEL-3798 round 3 disposition 2: --from-file's value must be a single
+# literal token - no shell metacharacter, quote or glob, no whitespace - so
+# what the writer actually opens can never diverge from what this text scan
+# saw. Checked against the RAW $cmd (not $flat, which has already dropped
+# quotes) so a quoted metacharacter is not invisible to this scan.
+case " $entries " in
+    *' write-verdicts.sh '*|*' impacted-suites.sh '*)
+        if [[ "$cmd" =~ $FROM_FILE_TOKEN_RE ]]; then
+            ff_val=${BASH_REMATCH[1]}
+            case "$ff_val" in
+                *[\;\&\|\(\)\<\>\`\$\#\'\"\*\?\[\]\~]*)
+                    deny "the --from-file path '$ff_val' is not a single literal token (a shell metacharacter, quote or glob is not accepted)." ;;
+            esac
+        fi
+        ;;
+esac
 # Only one simple command can be checked: the conditions hold for the bytes
 # at match time, and another command in the same call (cp, a redirect, a
 # pipe) can rewrite them before the script runs; a wrapper's operands can
 # hide what it runs.
-stdin_shape_ok=0
-if [ -z "$hentries" ]; then
-    case " $entries " in
-        *' write-verdicts.sh '*)
-            if st_is_stdin_heredoc "$WV_LINE1_RE" "WV_STDIN_EOF" "$WV_BODY_RE" \
-                || st_is_stdin_file_redirect "$WV_REDIRECT_RE"; then
-                stdin_shape_ok=1
-            fi
-            ;;
-    esac
-    case " $entries " in
-        *' impacted-suites.sh '*)
-            if st_is_stdin_heredoc "$IS_LINE1_RE2" "IS_STDIN_EOF" "$IS_BODY_RE" \
-                || st_is_stdin_file_redirect "$IS_REDIRECT_RE"; then
-                stdin_shape_ok=1
-            fi
-            ;;
-    esac
-fi
-if [ "$stdin_shape_ok" -eq 0 ]; then
-    case "$flat" in
-        *[\;\&\|\(\)\<\>\`]*|*$'\n'*) deny "the command is not one simple command, so the bytes checked at match time are not guaranteed to be the bytes that run." ;;
-    esac
-fi
+case "$flat" in
+    *[\;\&\|\(\)\<\>\`]*|*$'\n'*) deny "the command is not one simple command, so the bytes checked at match time are not guaranteed to be the bytes that run." ;;
+esac
 [ "$wrapped" -eq 0 ] \
     || deny "the command runs the script through a wrapper or a VAR= prefix (BASH_ENV, PATH, ...), which can run other code or change what runs before the checked bytes do."
 

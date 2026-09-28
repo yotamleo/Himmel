@@ -15,11 +15,21 @@
 # scripts/cr/ledger-append.sh plays for the CR critic ledger.
 #
 # Usage:
-#   bash scripts/cr/write-verdicts.sh <prior-blocking|aggregate> [--branch <branch>]
-#   Verdict lines come from STDIN ONLY (HIMMEL-2131 review round 2: this
-#   helper carries a standing auto-approve rule, so a `--file <path>` option
-#   would be a sanctioned arbitrary-file-READ primitive for anything the
-#   caller can name — no such option exists).
+#   bash scripts/cr/write-verdicts.sh <prior-blocking|aggregate> [--branch <branch>] [--from-file <path>]
+#   Verdict lines come from STDIN by default, or from --from-file <path> when
+#   given (HIMMEL-3798 round 3: the guard's regex-matched inline heredoc/`<`
+#   redirect shapes were cut after a third real bypass in three rounds — see
+#   scripts/hooks/guard-pr-check-literal.sh's header. --from-file replaces
+#   them: the caller writes the verdict lines to a file with a real editing
+#   tool first, then runs ONE simple literal command naming it. The guard
+#   accepts the path only as a single literal token with no shell
+#   metacharacters; this script separately refuses a symlinked, missing,
+#   unreadable or empty --from-file path (fails closed) before reading it —
+#   the same "sanctioned arbitrary-file-READ primitive" concern HIMMEL-2131
+#   round 2 raised against an unrestricted `--file` is narrowed by the
+#   guard-side literal-path restriction plus the exact-grammar check below,
+#   which refuses the whole write on the first line that is not a valid
+#   verdict, same as the STDIN path always has.
 #   --branch defaults to `git branch --show-current`.
 #
 # Every non-blank input line must match EXACTLY ONE of:
@@ -75,6 +85,7 @@ case "$mode" in
 esac
 
 branch=""
+from_file=""
 while [ $# -gt 0 ]; do case "$1" in
   # codex-3, HIMMEL-2131 round 2: check $# BEFORE consuming "$2" — a trailing
   # `--branch` with nothing after it must hit this rc=2 usage error, not a
@@ -84,8 +95,32 @@ while [ $# -gt 0 ]; do case "$1" in
   --branch)
     [ $# -ge 2 ] || { echo "write-verdicts.sh: --branch requires a value" >&2; exit 2; }
     branch="$2"; shift 2 ;;
+  --from-file)
+    [ $# -ge 2 ] || { echo "write-verdicts.sh: --from-file requires a path" >&2; exit 2; }
+    from_file="$2"; shift 2 ;;
   *) echo "write-verdicts.sh: unknown arg $1" >&2; exit 2 ;;
 esac; done
+
+# HIMMEL-3798 round 3: --from-file fails closed before anything downstream
+# reads it — a symlinked, missing, unreadable or empty path is refused rather
+# than silently falling through to an empty write (which the STDIN path
+# treats as valid, "no candidates" input; --from-file has no such caller, so
+# empty here is always a mistake, not a real zero-verdicts run).
+if [ -n "$from_file" ]; then
+  if [ -L "$from_file" ]; then
+    echo "write-verdicts.sh: refusing to read through a symlink at $from_file" >&2; exit 2
+  fi
+  if [ ! -f "$from_file" ]; then
+    echo "write-verdicts.sh: --from-file path does not exist or is not a regular file: $from_file" >&2; exit 2
+  fi
+  if [ ! -r "$from_file" ]; then
+    echo "write-verdicts.sh: --from-file path is not readable: $from_file" >&2; exit 2
+  fi
+  if [ ! -s "$from_file" ]; then
+    echo "write-verdicts.sh: --from-file path is empty: $from_file" >&2; exit 2
+  fi
+  exec < "$from_file"
+fi
 
 # Derived EXACTLY like the runbook fences: $(git rev-parse --git-common-dir)
 # is the SHARED git dir across every worktree in the checkout.

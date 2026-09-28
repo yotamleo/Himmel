@@ -286,19 +286,27 @@ Steps:
    #   relative allow-rule `Bash(bash scripts/cr/write-verdicts.sh:*)` never
    #   prefix-matches it (matching is literal) — the operator also needs
    #   `Bash(bash <primary-checkout>/scripts/cr/write-verdicts.sh:*)`.
-   # `guard-pr-check-literal.sh` denies a pipe into this writer as of
-   # HIMMEL-3798 (a pipe is a second command that can rewrite what runs before
-   # the writer does) and denies any heredoc delimiter but the canonical
-   # `WV_STDIN_EOF`, quoted exactly as below. A `< <file>` redirect to a
-   # scratchpad file is the other accepted shape when the payload is large.
-   #   Example — one VERDICT line per candidate you adjudicated, inside the
-   #   heredoc body (never as printf args piped in):
-   #     bash "<himmel_dir>/scripts/cr/write-verdicts.sh" prior-blocking --branch '<branch>' <<'WV_STDIN_EOF'
+   # `guard-pr-check-literal.sh` denies a pipe into this writer, and (as of
+   # HIMMEL-3798 round 3, "CUT, do not patch") denies every heredoc and
+   # `< <file>` redirect shape outright — three rounds of the same
+   # regex-approximates-bash-grammar mechanism finding a new bypass meant the
+   # mechanism itself, not the regex, was wrong. The sanctioned shape is
+   # `--from-file <path>`: use the Write tool to author the verdict lines
+   # into a scratch file first, then run ONE ordinary, argument-only command
+   # naming that path as a plain literal — no heredoc, no redirect, nothing
+   # for the guard's text-matching to approximate. The guard restricts the
+   # `--from-file` value to a single literal token with no shell
+   # metacharacters/quotes/glob/whitespace; the script itself fails closed
+   # (refuses) if the path is a symlink, missing, unreadable, or empty.
+   #   Example — write one VERDICT line per candidate you adjudicated to a
+   #   scratch file (e.g. via the Write tool), then:
+   #     bash "<himmel_dir>/scripts/cr/write-verdicts.sh" prior-blocking --branch '<branch>' --from-file <scratch-path>
+   #   with <scratch-path> containing:
    #     VERDICT [codex-1] = disproved
    #     VERDICT [codex-adv-2] = agreed
-   #     WV_STDIN_EOF
-   bash "<himmel_dir>/scripts/cr/write-verdicts.sh" prior-blocking --branch '<branch>' <<'WV_STDIN_EOF'
-   WV_STDIN_EOF
+   #   Pass an EMPTY file (zero verdict lines) when 3.0/3.1 produced no
+   #   candidates — do not skip the call.
+   bash "<himmel_dir>/scripts/cr/write-verdicts.sh" prior-blocking --branch '<branch>' --from-file <scratch-path>
    ```
 
    **There is no CodeRabbit phase in `/pr-check` (HIMMEL-2704).** CodeRabbit is the GitHub **App**, and the App reviews the PR only AFTER `gh pr create` — there is nothing local to invoke here, nothing to conserve, and no `[coderabbit-N]` candidates to adjudicate at this step. The CLI wrapper (`scripts/cr/coderabbit-review.sh`) and the conserve-or-run gate (`scripts/cr/coderabbit-gate.sh`) that used to occupy this slot are DELETED, along with `CODERABBIT_BIN`, `CODERABBIT_WSL`, `CODERABBIT_TIMEOUT_SECS` and `CODERABBIT_CLI_DISABLE`. Do not reintroduce them: the operator's ruling (2026-09-07) is that every CodeRabbit finding is commented on and tracked **on the PR in GitHub**, and each CLI round was costing an extra paid codex panel row to satisfy the cross-model marker at the new head.
@@ -424,13 +432,15 @@ Steps:
    - `SUITE <path> = SKIP <reason>` — it was not run, and the reason names WHY it does not apply to this diff (a host that lacks the tool, a suite that cannot exercise the changed lines). A bare `SKIP` is not a verdict.
    - `SUITE <path> = BLOCKED <denial>` — it could not be run, and the denial quotes the refusal (a hook/permission text, a lock wait that expired). Route the BLOCKED to your console/operator; it is not clean either, only *accounted for*: `--check` exits 3 on it, so the row stays open until the console/operator rules (re-run the suite, or re-record it `SKIP <reason>` quoting the ruling).
 
-   Then submit them. The heredoc delimiter is quoted so the pasted lines stay inert; write `<path>` and the reason as printed, one line per suite. **Keep the `<himmel_dir>` anchor spelling exactly as shown below — never a bare relative `bash scripts/cr/impacted-suites.sh`.** **Keep the delimiter exactly `IS_STDIN_EOF` — the canonical spelling `guard-pr-check-literal.sh` recognises (HIMMEL-3798); any other delimiter, an unquoted one, or a pipe into the writer falls through to the classifier.** `guard-pr-check-literal.sh` denies the relative spelling of this heredoc at its "one simple command" check (a heredoc carries a `<` and a newline), parking the leg before `auto-approve-safe-bash.sh`'s grant is ever reached (HIMMEL-3587; see `docs/internals/enforcement.md`'s Third exception):
+   Then submit them. Write `<path>` and the reason as printed, one line per suite, to a scratch file via the Write tool. **Keep the `<himmel_dir>` anchor spelling exactly as shown below — never a bare relative `bash scripts/cr/impacted-suites.sh`.** As of HIMMEL-3798 round 3 ("CUT, do not patch"), `guard-pr-check-literal.sh` denies every heredoc and `< <file>` redirect shape outright — three rounds of patching the same regex-approximates-bash-grammar mechanism kept finding a new bypass, so the mechanism itself was cut, not narrowed further. The sanctioned shape is `--from-file <path>`: a single literal token naming a scratch file, no shell metacharacters/quotes/glob/whitespace in the value, and `--check` is required alongside it (`impacted-suites.sh` refuses `--from-file` without `--check`):
 
    ```bash
-   bash "<himmel_dir>/scripts/cr/impacted-suites.sh" --check <db_sha>..<head> <<'IS_STDIN_EOF'
+   bash "<himmel_dir>/scripts/cr/impacted-suites.sh" --check <db_sha>..<head> --from-file <scratch-path>
+   ```
+   with `<scratch-path>` containing lines of the form:
+   ```
    SUITE <path> = PASS
    SUITE <path> = SKIP <reason>
-   IS_STDIN_EOF
    ```
 
    Carry forward `impacted_rc` (the fence's exit code) and its `impacted-suites: N impacted, M without a verdict` line. `impacted_rc = 0` means every impacted suite has a verdict (or none is impacted); `impacted_rc = 1` names each unverdicted suite on stderr and the row is NOT clean; `impacted_rc = 2` is an unresolvable range or a failed search — fix it, do not proceed as if the list were empty; `impacted_rc = 3` means every suite has a verdict but at least one is BLOCKED (accounted for, NOT clean). Steps 4.9, 5 and 6 read `impacted_rc`.
@@ -479,24 +489,24 @@ Steps:
    # worktrees (round 1b). write-verdicts.sh is the classifier-sanctioned
    # write path (HIMMEL-2131) — it REPLACES the file contents every run, and
    # step 0 pre-truncates it, so a stale aggregate from a prior run can never
-   # mask an orphan. Pass ZERO verdict lines (empty heredoc body, as below)
-   # when no cross-model source produced any verdict — phase A wrote nothing
-   # either, so there is nothing to reconcile (fail-open). Do NOT feed
-   # placeholder `VERDICT [<id>] = <v>` lines; feed the REAL verdicts you
-   # emitted, or nothing.
+   # mask an orphan. Pass an EMPTY scratch file (zero verdict lines) when no
+   # cross-model source produced any verdict — phase A wrote nothing either,
+   # so there is nothing to reconcile (fail-open). Do NOT feed placeholder
+   # `VERDICT [<id>] = <v>` lines; feed the REAL verdicts you emitted, or
+   # nothing.
    #   Operator note: same absolute-path caveat as phase A above — the
    #   relative allow-rule does not cover this invocation; both rules needed.
-   # `guard-pr-check-literal.sh` denies a pipe into this writer as of
-   # HIMMEL-3798, and any heredoc delimiter but the canonical `WV_STDIN_EOF`,
-   # quoted exactly as below — same accepted shapes as phase A.
-   #   Example — one VERDICT line per verdict you emitted in 3.2, inside the
-   #   heredoc body (never as printf args piped in):
-   #     bash "<himmel_dir>/scripts/cr/write-verdicts.sh" aggregate --branch '<branch>' <<'WV_STDIN_EOF'
+   # `guard-pr-check-literal.sh` denies a pipe into this writer, and (as of
+   # HIMMEL-3798 round 3, "CUT, do not patch") denies every heredoc and
+   # `< <file>` redirect shape outright — same cut as phase A above. The
+   # sanctioned shape is `--from-file <path>`, same accepted shape as phase A.
+   #   Example — write one VERDICT line per verdict you emitted in 3.2 to a
+   #   scratch file (e.g. via the Write tool), then:
+   #     bash "<himmel_dir>/scripts/cr/write-verdicts.sh" aggregate --branch '<branch>' --from-file <scratch-path>
+   #   with <scratch-path> containing:
    #     VERDICT [codex-1] = disproved
    #     VERDICT [codex-adv-3] = unaddressed
-   #     WV_STDIN_EOF
-   bash "<himmel_dir>/scripts/cr/write-verdicts.sh" aggregate --branch '<branch>' <<'WV_STDIN_EOF'
-   WV_STDIN_EOF
+   bash "<himmel_dir>/scripts/cr/write-verdicts.sh" aggregate --branch '<branch>' --from-file <scratch-path>
    ```
    Then mechanically diff the two ID sets — every phase-A candidate ID (read from the prior-blocking file with the SAME VERDICT-line parse `orphan-check.sh` uses, so the two readers can never disagree about the ID set) that has NO matching aggregate VERDICT line is an orphan, treated fail-closed as `unaddressed`. The directions the reconciliation deliberately fails in: a missing / empty / unreadable prior-blocking file means there are no phase-A candidates to reconcile → 0 orphans (fail-open, matching phase B); an aggregate file that is missing or empty while the prior-blocking file has candidates makes EVERY step-3.2 candidate an orphan → fail-closed, so a forgotten aggregate write reads as "every candidate unaddressed". **The comparison lives in `scripts/cr/orphan-check.sh` (HIMMEL-2226)** — the fence it replaces walked the orphan list with a `read` loop carrying an `IFS` prefix assignment, which Claude Code's worktree-isolation guard refuses, so it could never run inline in an isolated session. The script prints the identical `orphan-check: <N> unaddressed phase-A candidate(s)` line on stdout and the identical per-orphan diagnostic on stderr. **Pass step 0's captured branch explicitly — `--branch '<branch>'`, the same value the two `write-verdicts.sh` calls above are given (HIMMEL-1175).** The script's `--branch` is optional and falls back to the live `git branch --show-current`, and that fallback is exactly the hole: the two verdict files are WRITTEN under the captured branch and would then be READ under the live one. A mid-run same-SHA branch switch — the case the SHA pins cannot catch — points the orphan check at a different branch's scratch files, where it finds no phase-A candidates and reports **0 orphans fail-open**, silently dropping the fail-closed reconciliation this step exists to provide. Writer and reader must agree by construction, not because the checkout happened not to move; this is the same defect the round-3 captured-branch pin closed:
    ```bash

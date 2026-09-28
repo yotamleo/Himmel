@@ -20,8 +20,11 @@
 #       test-*.sh (what run-shell-tests.sh can run); the *.test.mjs / .js / .ts
 #       suites are listed without it and are run by their own runner — see
 #       --runner below for which one.
-#   impacted-suites.sh --check <base>..<head>
-#       The verdict gate. Reads one line per impacted suite from stdin:
+#   impacted-suites.sh --check <base>..<head> [--from-file <path>]
+#       The verdict gate. Reads one line per impacted suite from stdin, or
+#       from --from-file <path> when given (HIMMEL-3798 round 3: replaces the
+#       cut inline heredoc/`<` redirect shapes — write the lines with a real
+#       editing tool, then run ONE simple literal command naming the path):
 #           SUITE <path> = PASS
 #           SUITE <path> = SKIP <reason>          (reason required)
 #           SUITE <path> = BLOCKED <denial>       (denial required)
@@ -316,10 +319,14 @@ range=""
 runner_path=""
 runner_check_mode=0
 run_path=""
+from_file=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --check) check=1; shift ;;
         --shell) shell_only=1; shift ;;
+        --from-file)
+            [ "$#" -ge 2 ] || { echo "impacted-suites.sh: --from-file requires a path" >&2; exit 2; }
+            from_file="$2"; shift 2 ;;
         --runner)
             [ "$#" -ge 2 ] || { echo "impacted-suites.sh: --runner requires a path" >&2; exit 2; }
             runner_path="$2"; shift 2 ;;
@@ -336,6 +343,28 @@ while [ "$#" -gt 0 ]; do
             range="$1"; shift ;;
     esac
 done
+
+if [ -n "$from_file" ] && [ "$check" -eq 0 ]; then
+    echo "impacted-suites.sh: --from-file requires --check" >&2; exit 2
+fi
+# HIMMEL-3798 round 3: same fail-closed contract as write-verdicts.sh's
+# --from-file — refuse a symlinked, missing, unreadable or empty path before
+# the --check awk ever reads it.
+if [ -n "$from_file" ]; then
+    if [ -L "$from_file" ]; then
+        echo "impacted-suites.sh: refusing to read through a symlink at $from_file" >&2; exit 2
+    fi
+    if [ ! -f "$from_file" ]; then
+        echo "impacted-suites.sh: --from-file path does not exist or is not a regular file: $from_file" >&2; exit 2
+    fi
+    if [ ! -r "$from_file" ]; then
+        echo "impacted-suites.sh: --from-file path is not readable: $from_file" >&2; exit 2
+    fi
+    if [ ! -s "$from_file" ]; then
+        echo "impacted-suites.sh: --from-file path is empty: $from_file" >&2; exit 2
+    fi
+    exec < "$from_file"
+fi
 
 if [ -n "$runner_path" ]; then
     runner_for "$runner_path"

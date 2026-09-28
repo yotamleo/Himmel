@@ -146,4 +146,54 @@ check "$(cat "$git_dir/cr-prior-blocking/t9")" "VERDICT [x-1] = deferred -> HIMM
 ( cd "$repo" && printf 'VERDICT [x-1] = deferred -> not-a-ticket\n' | bash "$SCRIPT" prior-blocking --branch t10 ) 2>"$tmp/err10.txt"
 check "$?" "2" "T10 rc (malformed ticket rejected)"
 
+# 11. HIMMEL-3798 round 3: --from-file reads verdict content from a path
+# instead of stdin, round-tripping byte-identical.
+printf 'VERDICT [x-1] = disproved\nVERDICT [codex-adv-2] = agreed\n' >"$tmp/ff11.txt"
+( cd "$repo" && bash "$SCRIPT" prior-blocking --branch t11 --from-file "$tmp/ff11.txt" )
+check "$?" "0" "T11 rc"
+check "$(cat "$git_dir/cr-prior-blocking/t11")" "VERDICT [x-1] = disproved
+VERDICT [codex-adv-2] = agreed" "T11 contents"
+
+# 12. --from-file naming a missing path refuses rc=2, fails closed.
+( cd "$repo" && bash "$SCRIPT" prior-blocking --branch t12 --from-file "$tmp/does-not-exist.txt" ) 2>"$tmp/err12.txt"
+check "$?" "2" "T12 rc (missing --from-file path)"
+[ ! -e "$git_dir/cr-prior-blocking/t12" ] || { echo "FAIL: T12 wrote a target for a missing --from-file path"; fail=1; }
+grep -q 'does not exist' "$tmp/err12.txt" || { echo "FAIL: T12 missing not-exist diagnostic"; fail=1; }
+
+# 13. --from-file naming a symlink refuses rc=2 without reading through it
+# (same symlink-through concern as T4e, applied to the read side).
+printf 'VERDICT [x-1] = agreed\n' >"$tmp/ff13-real.txt"
+ln -s "$tmp/ff13-real.txt" "$tmp/ff13-link.txt" 2>/dev/null
+if [ -L "$tmp/ff13-link.txt" ]; then
+  ( cd "$repo" && bash "$SCRIPT" prior-blocking --branch t13 --from-file "$tmp/ff13-link.txt" ) 2>"$tmp/err13.txt"
+  check "$?" "2" "T13 rc (symlinked --from-file path)"
+  [ ! -e "$git_dir/cr-prior-blocking/t13" ] || { echo "FAIL: T13 wrote a target reading through a symlinked --from-file path"; fail=1; }
+  grep -q 'symlink' "$tmp/err13.txt" || { echo "FAIL: T13 missing symlink diagnostic"; fail=1; }
+else
+  echo "SKIP T13: platform cannot create symlinks without elevated privilege"
+fi
+
+# 14. --from-file naming an unreadable path refuses rc=2, fails closed.
+# Skip under a caller running as root (e.g. some CI containers), where mode
+# bits do not block reads.
+printf 'VERDICT [x-1] = agreed\n' >"$tmp/ff14.txt"
+chmod 000 "$tmp/ff14.txt"
+if [ "$(id -u)" != "0" ]; then
+  ( cd "$repo" && bash "$SCRIPT" prior-blocking --branch t14 --from-file "$tmp/ff14.txt" ) 2>"$tmp/err14.txt"
+  check "$?" "2" "T14 rc (unreadable --from-file path)"
+  [ ! -e "$git_dir/cr-prior-blocking/t14" ] || { echo "FAIL: T14 wrote a target for an unreadable --from-file path"; fail=1; }
+  grep -q 'not readable' "$tmp/err14.txt" || { echo "FAIL: T14 missing not-readable diagnostic"; fail=1; }
+else
+  echo "SKIP T14: running as root, mode bits do not block reads"
+fi
+chmod 644 "$tmp/ff14.txt"
+
+# 15. --from-file naming an empty file refuses rc=2 — unlike empty STDIN (T5),
+# --from-file has no "no candidates" caller, so empty is always a mistake.
+: >"$tmp/ff15.txt"
+( cd "$repo" && bash "$SCRIPT" prior-blocking --branch t15 --from-file "$tmp/ff15.txt" ) 2>"$tmp/err15.txt"
+check "$?" "2" "T15 rc (empty --from-file path)"
+[ ! -e "$git_dir/cr-prior-blocking/t15" ] || { echo "FAIL: T15 wrote a target for an empty --from-file path"; fail=1; }
+grep -q 'empty' "$tmp/err15.txt" || { echo "FAIL: T15 missing empty diagnostic"; fail=1; }
+
 [ "$fail" -eq 0 ] && echo "PASS test-write-verdicts" || exit 1
