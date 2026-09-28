@@ -41,7 +41,13 @@ reap_stubs() {
     wait "$pid" 2>/dev/null || true
   done
 }
-trap 'reap_stubs; rm -rf "$work"' EXIT INT TERM
+trap 'reap_stubs; rm -rf "$work"' EXIT
+# A trap without an explicit exit does not terminate the script on INT/TERM -
+# it runs the handler, then execution continues from where the signal landed
+# (now inside a removed $work). Exit explicitly so an interrupt actually stops
+# the suite instead of running on against a deleted work directory.
+trap 'reap_stubs; rm -rf "$work"; exit 130' INT
+trap 'reap_stubs; rm -rf "$work"; exit 143' TERM
 # Test-only hooks for HIMMEL-3775's leak regression test (test-ensure-qmd-daemon-leak.sh):
 # QMD_TEST_WORK_MARKER, if set, receives this run's unique $work path so the
 # leak test can pgrep -f its fake-daemon.sh by a marker no other run shares.

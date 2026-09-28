@@ -13,6 +13,7 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 suite="$repo_root/scripts/qmd/test-ensure-qmd-daemon.sh"
 [ -f "$suite" ] || { echo "FAIL: $suite not found" >&2; exit 1; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
+command -v pgrep >/dev/null 2>&1 || fail "pgrep not found - cannot check for a surviving stub"
 
 marker="$(mktemp)"
 log="$(mktemp)"
@@ -25,6 +26,12 @@ QMD_TEST_WORK_MARKER="$marker" QMD_TEST_FORCE_FAIL_AFTER=start_fake_daemon \
   bash "$suite" > "$log" 2>&1
 rc=$?
 [ "$rc" -ne 0 ] || fail "expected the forced failure to exit nonzero (got 0; out: $(cat "$log"))"
+# A nonzero exit alone doesn't prove we reached the forced-failure point (an
+# unrelated earlier failure would also exit nonzero without ever starting a
+# stub, making this control pass vacuously) - require the suite's own
+# forced-failure message.
+grep -q 'forced failure after start_fake_daemon (HIMMEL-3775 leak-test hook)' "$log" \
+  || fail "suite exited nonzero but never reached the forced failure after start_fake_daemon (out: $(cat "$log"))"
 
 work_dir="$(cat "$marker")"
 [ -n "$work_dir" ] || fail "suite never wrote its \$work path to the marker"
