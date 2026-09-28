@@ -4087,22 +4087,30 @@ EOF
               # fresh directory is actually created (bounded so a genuine
               # mkdir failure, e.g. permission denied, still surfaces).
               _prov_retained_suffix=0
+              _prov_retain_ok=1
               while ! guarded run mkdir -- "$_prov_retained_dir" 2>/dev/null; do
                 _prov_retained_suffix=$((_prov_retained_suffix + 1))
                 if [ "$_prov_retained_suffix" -gt 1000 ]; then
                   fail_step "[8/8] provenance ledger: could not create a fresh retained-* directory under $_prov_base_dir"
+                  _prov_retain_ok=0
                   break
                 fi
                 _prov_retained_dir="$_prov_base_dir/retained-$(date -u +%Y%m%dT%H%M%SZ)-$_prov_retained_suffix"
               done
-              if [ -d "$_prov_backups_dir" ] || [ -L "$_prov_backups_dir" ]; then
-                guarded run mv -- "$_prov_backups_dir" "$_prov_retained_dir/provenance-backups"
+              if [ "$_prov_retain_ok" -eq 1 ]; then
+                if [ -d "$_prov_backups_dir" ] || [ -L "$_prov_backups_dir" ]; then
+                  guarded run mv -- "$_prov_backups_dir" "$_prov_retained_dir/provenance-backups" || _prov_retain_ok=0
+                fi
+                if [ -f "$_prov_ledger_file" ]; then
+                  guarded run mv -- "$_prov_ledger_file" "$_prov_retained_dir/provenance.jsonl" || _prov_retain_ok=0
+                fi
+                if [ "$_prov_retain_ok" -eq 1 ]; then
+                  echo "Retained provenance ledger + backups: $_prov_retained_dir"
+                  echo "  (never deleted automatically -- delete that directory yourself once you no longer need it)"
+                else
+                  fail_step "[8/8] provenance ledger: retaining into $_prov_retained_dir failed"
+                fi
               fi
-              if [ -f "$_prov_ledger_file" ]; then
-                guarded run mv -- "$_prov_ledger_file" "$_prov_retained_dir/provenance.jsonl"
-              fi
-              echo "Retained provenance ledger + backups: $_prov_retained_dir"
-              echo "  (never deleted automatically -- delete that directory yourself once you no longer need it)"
             fi
           else
             # HIMMEL-2505 gap A.3: a symlinked backups dir is unlinked, never
