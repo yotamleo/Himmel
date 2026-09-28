@@ -46,12 +46,35 @@ tool_input_flat=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | string
 redact() {
     printf '%s' "$1" | sed -E \
         -e 's/gh[pousr]_[A-Za-z0-9]{20,}/[REDACTED]/g' \
+        -e 's/github_pat_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
+        -e 's/sk-ant-[A-Za-z0-9_-]{20,}/[REDACTED]/g' \
         -e 's/AKIA[0-9A-Z]{16}/[REDACTED]/g' \
         -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/[REDACTED]/g' \
         -e 's/[0-9]{8,10}:[A-Za-z0-9_-]{35}/[REDACTED]/g' \
-        -e 's/-----BEGIN[A-Z ]*PRIVATE KEY-----/[REDACTED]/g' \
         -e 's/([Bb]earer) [A-Za-z0-9._-]{20,}/\1 [REDACTED]/g' \
-        -e 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])([\"'"'"']?[[:space:]]*[:=][[:space:]]*[\"'"'"']?)[A-Za-z0-9._/+=-]{12,}/\1\2[REDACTED]/g'
+        -e 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])([\"'"'"']?[[:space:]]*[:=][[:space:]]*[\"'"'"']?)[A-Za-z0-9._/+=-]{12,}/\1\2[REDACTED]/g' \
+        | awk '
+            BEGIN { inkey = 0 }
+            {
+                line = $0
+                if (!inkey && line ~ /-----BEGIN[A-Z ]*PRIVATE KEY-----/) {
+                    if (line ~ /-----END[A-Z ]*PRIVATE KEY-----/) {
+                        sub(/-----BEGIN[A-Z ]*PRIVATE KEY-----.*-----END[A-Z ]*PRIVATE KEY-----/, "[REDACTED-PEM]", line)
+                        print line
+                        next
+                    }
+                    sub(/-----BEGIN[A-Z ]*PRIVATE KEY-----.*/, "[REDACTED-PEM]", line)
+                    print line
+                    inkey = 1
+                    next
+                }
+                if (inkey) {
+                    if (line ~ /-----END[A-Z ]*PRIVATE KEY-----/) inkey = 0
+                    next
+                }
+                print line
+            }
+        '
 }
 
 # The reason tag is the bracketed classifier category, e.g.

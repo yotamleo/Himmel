@@ -109,6 +109,68 @@ else
     fail "redaction marker present in bracketed reason_tag"
 fi
 
+# --- 3d. RED-shaped redaction control on a MULTI-LINE PEM body: round 1's
+# single-line PEM sed rule only matched a BEGIN...END pair on the SAME
+# line, so a real multi-line key body (BEGIN, body lines, END on separate
+# lines) still leaked in full -- round 3 of the critic panel. ---
+LOG2D="$WORKDIR/c2d.jsonl"
+PEMBODY='MIIEowIBAAKCAQEAsecretsecretsecretsecretsecretsecretsecretsecret'
+run_hook "$(payload s2d /tmp/repo Bash "echo -----BEGIN RSA PRIVATE KEY-----
+$PEMBODY
+anothersecretlineanothersecretlineanothersecretline
+-----END RSA PRIVATE KEY-----" '[Data Exfiltration]')" "$LOG2D" >/dev/null
+if grep -qF "$PEMBODY" "$LOG2D" 2>/dev/null; then
+    fail "multi-line PEM body redacted before it reaches the jsonl"
+else
+    pass "multi-line PEM body redacted before it reaches the jsonl"
+fi
+if grep -q '\[REDACTED-PEM\]' "$LOG2D" 2>/dev/null; then
+    pass "PEM redaction marker present for multi-line body"
+else
+    fail "PEM redaction marker present for multi-line body"
+fi
+
+# --- 3e. RED-shaped redaction control on a PEM BEGIN with no matching END:
+# the redactor must fail CLOSED and drop everything after the marker,
+# never emit it unredacted just because no END was ever seen. ---
+LOG2E="$WORKDIR/c2e.jsonl"
+PEMBODY2='MIIEowIBAAKCAQEAsecretsecretsecretsecretsecretsecretsecretsecret'
+run_hook "$(payload s2e /tmp/repo Bash "echo -----BEGIN OPENSSH PRIVATE KEY-----
+$PEMBODY2
+after this there is no end marker at all so this must all vanish" '[Data Exfiltration]')" "$LOG2E" >/dev/null
+if grep -qF "$PEMBODY2" "$LOG2E" 2>/dev/null; then
+    fail "PEM body with no END marker redacted (fail-closed)"
+else
+    pass "PEM body with no END marker redacted (fail-closed)"
+fi
+if grep -qF "this must all vanish" "$LOG2E" 2>/dev/null; then
+    fail "text after a BEGIN with no END is dropped (fail-closed)"
+else
+    pass "text after a BEGIN with no END is dropped (fail-closed)"
+fi
+if grep -q '\[REDACTED-PEM\]' "$LOG2E" 2>/dev/null; then
+    pass "PEM redaction marker present for BEGIN with no END"
+else
+    fail "PEM redaction marker present for BEGIN with no END"
+fi
+
+# --- 3f. RED-shaped redaction control: a github_pat_ token was uncovered
+# by round 1/2's pattern set (which only matched gh[pousr]_) -- round 3
+# of the critic panel. ---
+SECRET4="github_pat_11AAAAAAAAAAAAAAAAAAAA_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+LOG2F="$WORKDIR/c2f.jsonl"
+run_hook "$(payload s2f /tmp/repo Bash 'ls' "denied because $SECRET4 was found")" "$LOG2F" >/dev/null
+if grep -qF "$SECRET4" "$LOG2F" 2>/dev/null; then
+    fail "github_pat_ token redacted"
+else
+    pass "github_pat_ token redacted"
+fi
+if grep -q '\[REDACTED\]' "$LOG2F" 2>/dev/null; then
+    pass "redaction marker present for github_pat_ token"
+else
+    fail "redaction marker present for github_pat_ token"
+fi
+
 # --- 4. two calls differing only by a git SHA normalise to the same
 # input_sha (this is what lets tick.sh's REPEAT class notice a flip). ---
 LOG3="$WORKDIR/c3.jsonl"
