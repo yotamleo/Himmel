@@ -176,10 +176,21 @@ for a relay that is not coming.
   turn. Never emit a text-only turn between tool calls. Read files by line
   range, not whole. Your fixed context is re-paid on every API call of a
   session that runs for hours.
-- **Gate scripts** are invoked by RELATIVE path from the worktree cwd, one
-  literal command each — no `cd`, no absolute path, no compound operators, no
-  `$(…)`. The native permission matcher bails on those shapes and a refused
-  compound runs **nothing**.
+- **Ship steps are typed exactly as their allow rule is written — no quotes,
+  no `VAR=` prefix, no `cd … &&`, no compound operators, no `$(…)`.** A
+  relative gate script is `bash scripts/cr/X.sh <args>`, never
+  `bash "scripts/cr/X.sh"` and never `bash "$HIMMEL_REPO/..."` — the quote or
+  the `$VAR` alone sends an otherwise-correct call to the classifier
+  (HIMMEL-3724). The few scripts anchored to the primary checkout's absolute
+  path instead (the merge, the CR-marker clear, below) are named as
+  exceptions where they appear; everything else stays relative and unquoted.
+  The matcher bails on all these shapes and a refused compound runs
+  **nothing**.
+- **Never pipe into a gate script.** Write the input to a file with `Write`,
+  then pass it as an argument if the script takes one; otherwise pipe into
+  the bare unquoted literal only — never `printf ... | bash "..."`.
+- Where the `/pr-check` skill itself prints a command to run, its spelling
+  wins over this section — it is kept in sync with its own allow rules.
 - **Two refusals of one command → `himmel-ops:stuck-playbook`, then `BLOCKED`
   to the console.** Never reshape a command to dodge a guardrail, and never try
   a third spelling.
@@ -223,10 +234,12 @@ hand-rolled `HOME=… cmd`, which keeps every other operator variable.
 **Impacted suites = every suite that references a file you touched**
 (`git grep -l` from the worktree), not the suites in the directory you edited.
 Run those and name them with their counts, each as one literal
-`bash scripts/quiet-run.sh suite -- bash <tracked test-*.sh>`: the label is
-always the literal `suite`, the only one the allow list pre-approves
-(HIMMEL-3402); any other label, or a suite outside the enumerated
-directories, goes to the classifier by design.
+`bash scripts/quiet-run.sh suite -- bash <tracked test-*.sh>` — nothing
+appended: no `>`, no `2>&1`, no `; echo`, no `sleep N;` prefix, no `| tail`.
+`quiet-run` already captures the output. The label is always the literal
+`suite`, the only one the allow list pre-approves (HIMMEL-3402); any other
+label, or a suite outside the enumerated directories, goes to the classifier
+by design.
 
 ## Shipping
 

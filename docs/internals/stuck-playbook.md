@@ -450,6 +450,24 @@ with cwd set to the leg's worktree, and hands the leg the output.
 
 ---
 
+## Symptom: a denial right after a quoted, prefixed, or piped spelling of a ship step (HIMMEL-3724)
+
+`bash "scripts/cr/X.sh"` (quoted), `bash "$HIMMEL_REPO/scripts/cr/X.sh"`
+(variable-prefixed), `cd <worktree> && bash scripts/...`, or
+`printf ... | bash "..."` all miss the allow rule on an otherwise-correct
+call — the rule matches text, and none of these shapes is the text it was
+written for (design doc §3.1, §3.4). The denial is real, but the command was
+never the problem.
+
+**What to do:** retype the same script call as the **bare literal** its
+allow rule spells out — unquoted, no `$VAR`, no `cd … &&` prefix, no pipe
+into the gate script itself (write the input to a file first). That is the
+one permitted retry (`docs/handover/leg-preface.md`, "How you work"). If the
+bare literal is *still* denied, this is not a spelling problem: stop, do not
+try a third spelling, and go `BLOCKED` to the console.
+
+---
+
 ## Symptom: a late fix after `pre-commit run` gets gated against stale (pre-edit) content
 
 Plain `pre-commit run <hook>` (no `--all-files`, no `--files`) stashes
