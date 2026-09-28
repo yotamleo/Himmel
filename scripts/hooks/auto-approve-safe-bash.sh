@@ -759,9 +759,15 @@ segment_is_safe() {
                 for k in "${a[@]:$((i + 1))}"; do
                     shell_word_value "$k" || return 1
                     [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into a 2nd positional
+                    # Redirect-shape check runs on the RAW token ($k), not the
+                    # decoded $SW_VALUE (panel J1397A/codex-2, HIMMEL-3793): a
+                    # quoted positional like '>' decodes to the same text as a
+                    # real unquoted `>` redirect but IS a positional argument.
+                    case "$k" in
+                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) continue ;;  # redirect token, not a positional
+                    esac
                     case "$SW_VALUE" in
-                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) ;;  # redirect token, not a positional
-                        -*) ;;                           # a flag; conservatively not counted as its value either
+                        -?*) ;;                          # a flag; conservatively not counted as its value either. Bare "-" is excluded from this (codex-1, HIMMEL-3793): real uniq treats it as an INPUT positional (stdin), not a flag.
                         *) uops=$((uops + 1)) ;;
                     esac
                 done

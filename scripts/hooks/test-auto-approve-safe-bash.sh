@@ -1225,6 +1225,19 @@ assert "uniq 2nd positional via escaped bare & writes a junk file (must not ALLO
     PASS "$(decide "$(j_bash 'uniq -c f \&')")"
 assert "uniq 2nd positional via escaped & inside a word writes a junk file (must not ALLOW)" \
     PASS "$(decide "$(j_bash 'uniq -c f a\&\&b')")"
+# Panel review of the uniq guard above (J1397A/codex, HIMMEL-3793) found two
+# further bypasses in that same fix. VERIFIED (real bash/coreutils):
+# `uniq - f` reads stdin as INPUT and writes to `f` as OUTPUT — a bare "-"
+# is a real positional (stdin), not a flag, but the guard's `-*` flag case
+# also matched the lone "-" and excluded it from the count.
+assert "uniq bare dash 1st positional + 2nd positional writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash 'uniq - f')")"
+# `uniq f '>'` writes deduped output to a file literally named `>` — a
+# quoted positional whose decoded value merely resembles a redirect token
+# was wrongly excluded by matching on the decoded value instead of the raw
+# (unquoted) token text.
+assert "uniq 2nd positional that is a quoted '>' writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash "uniq f '>'")")"
 # Controls: ordinary fd-dups and a single-file uniq must keep ALLOWing — this
 # fix must not regress anything main already approves.
 assert "fd-dup >&2, no escape, still ALLOW (control)" \
@@ -1235,6 +1248,8 @@ assert "uniq single positional (no 2nd/output arg) still ALLOW (control)" \
     ALLOW "$(decide "$(j_bash 'uniq -c f')")"
 assert "a plain backslash-escaped & INSIDE quotes still ALLOW (control)" \
     ALLOW "$(decide "$(j_bash 'grep "\&" f')")"
+assert "uniq single positional with a genuine unquoted redirect still PASS, not DENY-shaped (control)" \
+    PASS "$(decide "$(j_bash 'uniq f > out')")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
