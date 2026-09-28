@@ -4077,7 +4077,24 @@ EOF
             if [ "$DRY_RUN" -eq 1 ]; then
               echo "DRY: would retain provenance ledger + backups into $_prov_retained_dir"
             else
-              guarded run mkdir -p -- "$_prov_retained_dir"
+              # HIMMEL-3787 (codex-2, panel round 1): the stamp is
+              # second-precision, so two --purge-state --keep-backups purges
+              # within the same second used to reuse the same
+              # retained-<stamp>/ dir -- `mkdir -p` succeeded silently on it,
+              # so the second mv could land inside the first purge's already-
+              # retained set instead of a fresh one. mkdir without -p fails on
+              # an existing dir; retry with an incrementing suffix until a
+              # fresh directory is actually created (bounded so a genuine
+              # mkdir failure, e.g. permission denied, still surfaces).
+              _prov_retained_suffix=0
+              while ! guarded run mkdir -- "$_prov_retained_dir" 2>/dev/null; do
+                _prov_retained_suffix=$((_prov_retained_suffix + 1))
+                if [ "$_prov_retained_suffix" -gt 1000 ]; then
+                  fail_step "[8/8] provenance ledger: could not create a fresh retained-* directory under $_prov_base_dir"
+                  break
+                fi
+                _prov_retained_dir="$_prov_base_dir/retained-$(date -u +%Y%m%dT%H%M%SZ)-$_prov_retained_suffix"
+              done
               if [ -d "$_prov_backups_dir" ] || [ -L "$_prov_backups_dir" ]; then
                 guarded run mv -- "$_prov_backups_dir" "$_prov_retained_dir/provenance-backups"
               fi
