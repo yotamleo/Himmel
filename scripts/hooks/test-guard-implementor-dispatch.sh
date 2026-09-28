@@ -462,6 +462,17 @@ RC109=$(run_hook edit-distance "$REG_CLAUDEX" "$(payload general-purpose sonnet 
 assert_rc "'edit distance' (research noun, not action) allows (HIMMEL-3784)" 0 "$RC109"
 assert_empty "edit-distance brief silent" "$(combined_output edit-distance)"
 
+# codex-1 (round 1 panel, HIMMEL-3784): the commit-history/edit-distance
+# exclusions above must not be checked against the WHOLE brief -- an
+# unrelated "then/and commit history" or "then/and edit distance" phrase
+# elsewhere must not suppress a genuine, separate "then commit"/"then edit"
+# action transition in the same brief.
+RC110=$(run_hook commit-history-plus-action "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Then commit the change to the config file. Then commit history matters here.')")
+assert_rc "genuine 'then commit' action still governed despite unrelated 'then commit history' elsewhere (codex-1)" 2 "$RC110"
+
+RC111=$(run_hook edit-distance-plus-action "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Then edit the config file. Also and edit distance heuristics come up here.')")
+assert_rc "genuine 'then edit' action still governed despite unrelated 'and edit distance' elsewhere (codex-1)" 2 "$RC111"
+
 RC110=$(run_hook write-summary-unrelated-later-path "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Research the parser, then write a summary. Also check scripts/router.sh for reference.')")
 assert_rc "path in an unrelated LATER sentence does not gate the write (HIMMEL-3784, codex round 4)" 0 "$RC110"
 assert_empty "unrelated-later-path brief silent" "$(combined_output write-summary-unrelated-later-path)"

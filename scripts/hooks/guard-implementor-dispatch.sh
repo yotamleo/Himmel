@@ -219,10 +219,19 @@ fi
 # read as a research object, not an action transition. Excluded narrowly
 # by literal phrase rather than a general grammatical rule (a determiner
 # requirement was tried and reverted: it also exempted genuine actions
-# like "then modify Y", a bare object with no determiner).
-if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)' \
-    && ! grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)commit[[:space:]]+history([^[:alnum:]_]|$)' \
-    && ! grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)edit[[:space:]]+distance([^[:alnum:]_]|$)'; then
+# like "then modify Y", a bare object with no determiner). The exclusion
+# is applied to a STRIPPED copy of the text, not the whole raw $text
+# (round-1 panel codex-1): checking the exclusion phrase against the
+# whole text suppressed gate_action for a genuine, unrelated "then commit
+# the change" elsewhere in the same brief whenever ANY "then/and commit
+# history" or "then/and edit distance" occurred anywhere else in it.
+# Stripping only the then/and word off the excluded phrase's own match
+# leaves every other occurrence of the trigger untouched.
+gate_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
+    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(commit[[:space:]]+history)([^[:alnum:]_]|$)/\1 \4\5/g
+    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(edit[[:space:]]+distance)([^[:alnum:]_]|$)/\1 \4\5/g
+')
+if grepq "$gate_text" -Eq '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)'; then
     gate_action=1
 fi
 
