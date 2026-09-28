@@ -1215,7 +1215,7 @@ assert "word-glued >&2nd.txt: PASS under POSIX sed too (J1397A finding 3)" \
 assert "fd-dup >&2 + backslash-escaped CR writes a junk file (must not ALLOW)" \
     PASS "$(decide "$(j_bash "grep x f >&2\\"$'\r')")"
 assert "fd-dup >&2 + trailing backslash writes a junk file (must not ALLOW)" \
-    PASS "$(decide "$(j_bash 'grep x f >&2\')")"
+    PASS "$(decide "$(j_bash "grep x f >&2\\")")"
 # Same root cause, a different consumer: an unquoted, backslash-escaped `&`
 # is correctly kept as a LITERAL `&` argument (not a live separator) — but
 # that literal survives as uniq's 2nd positional, which real uniq treats as
