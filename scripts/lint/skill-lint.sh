@@ -143,7 +143,7 @@ if [ "$STAGED" -eq 1 ]; then
         mkdir -p "$(dirname "$_dest")"
         if ! (cd "$_root" && git show ":$_f") > "$_dest" 2>/dev/null; then
             printf 'skill-lint: --staged: git show failed for %s\n' "$_f" >&2
-            continue
+            exit 2
         fi
         FILES="$FILES$_root/$_f	$_dest"$'\n'
     done <<EOF
