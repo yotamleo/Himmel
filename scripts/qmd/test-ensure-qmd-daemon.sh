@@ -26,7 +26,30 @@ script="$repo_root/marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# HIMMEL-3775: every fake-daemon.sh stub PID this run starts is tracked here
+# and reaped on EXIT/INT/TERM (not only on the happy path), so a forced early
+# exit (an assertion failure, a kill partway through) never leaks a stub.
+declare -a STUB_PIDS=()
+reap_stubs() {
+  local pid
+  for pid in "${STUB_PIDS[@]:-}"; do
+    [ -n "$pid" ] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  for pid in "${STUB_PIDS[@]:-}"; do
+    [ -n "$pid" ] || continue
+    wait "$pid" 2>/dev/null || true
+  done
+}
+trap 'reap_stubs; rm -rf "$work"' EXIT INT TERM
+# Test-only hooks for HIMMEL-3775's leak regression test (test-ensure-qmd-daemon-leak.sh):
+# QMD_TEST_WORK_MARKER, if set, receives this run's unique $work path so the
+# leak test can pgrep -f its fake-daemon.sh by a marker no other run shares.
+# QMD_TEST_FORCE_FAIL_AFTER=start_fake_daemon forces an early exit right after
+# a stub starts, modeling a kill/assertion-failure partway through.
+: "${QMD_TEST_WORK_MARKER:=}"
+[ -z "$QMD_TEST_WORK_MARKER" ] || printf '%s\n' "$work" > "$QMD_TEST_WORK_MARKER"
+: "${QMD_TEST_FORCE_FAIL_AFTER:=}"
 
 home="$work/home"
 mkdir -p "$home"
@@ -416,10 +439,13 @@ chmod +x "$fake_daemon"
 start_fake_daemon() { # <unwind secs> -> sets fake_pid, writes the pidfile
   UNWIND="$1" QMD_MOCK_STATE="$state" bash "$fake_daemon" &
   fake_pid=$!
+  STUB_PIDS+=("$fake_pid")
   echo "$fake_pid" > "$xdg/qmd/mcp.pid"
   local i=0
   while [ ! -f "$state/alive" ] && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done
   [ -f "$state/alive" ] || fail "precondition: fake daemon never came alive"
+  [ "$QMD_TEST_FORCE_FAIL_AFTER" != "start_fake_daemon" ] || \
+    fail "forced failure after start_fake_daemon (HIMMEL-3775 leak-test hook)"
 }
 
 # run_ceiling <rss_kb> [<ceiling_mb>] -> sets rc/out/dur; the hook's own wall time
