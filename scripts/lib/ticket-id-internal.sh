@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+# shellcheck shell=bash
 # scripts/lib/ticket-id-internal.sh — HIMMEL-3806. Sourced by the CI ticket-ID
 # wrappers (scripts/ci/check-commit-range.sh, scripts/lib/check-pr-title.sh).
 #
