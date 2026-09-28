@@ -37,6 +37,9 @@ mkdir -p "$ORIGIN/scripts/cr" "$ORIGIN/scripts/guardrails" "$ORIGIN/scripts/lib"
     "$ORIGIN/scripts/handover/console-kit"
 g init -q "$ORIGIN"
 echo 'echo anchor' >"$ORIGIN/scripts/cr/pr-check-context.sh"
+# HIMMEL-3798 codex-1: the sentinel file the guard's himmel_anchor_prefix
+# exemption checks for before trusting HIMMEL_REPO's runtime value.
+echo 'echo step0' >"$ORIGIN/scripts/cr/pr-check-step0.sh"
 echo ': lib' >"$ORIGIN/scripts/guardrails/lib.sh"
 echo 'echo env' >"$ORIGIN/scripts/cr/pr-check-env.sh"
 echo ': dotenv' >"$ORIGIN/scripts/lib/load-dotenv.sh"
@@ -317,6 +320,21 @@ run 'literal $HIMMEL_REPO/ prefix onto a scripts/cr/ target -> allow' 0 \
 # shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
 run 'literal $HIMMEL_REPO/ prefix onto go.sh -> allow' 0 \
     "$(payload 'bash "$HIMMEL_REPO/scripts/handover/console-kit/go.sh"' "$WT")" "$HR"
+
+# codex-1 (round 2 critic panel, HIMMEL-3798): the anchor-prefix exemption
+# above trusted the COMMAND TEXT shape alone, never the hook's own actual
+# HIMMEL_REPO runtime value - so an unset or empty HIMMEL_REPO (the Git Bash
+# hazard main's pr-check.md documents: "$HIMMEL_REPO/..." then resolves to a
+# root-relative, user-plantable path) still hit the exemption and allowed.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'control: HIMMEL_REPO unset -> anchor-prefix step0 call still denies (HIMMEL-3798 codex-1)' 2 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-step0.sh"' "$WT")"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'control: HIMMEL_REPO empty -> anchor-prefix step0 call still denies (HIMMEL-3798 codex-1)' 2 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-step0.sh"' "$WT")" "HIMMEL_REPO="
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'HIMMEL_REPO correctly set to the anchor -> step0 call still allows (HIMMEL-3798 codex-1)' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-step0.sh"' "$WT")" "$HR"
 
 # ---- console-O NO-GO round 2: the exemption must not survive a re-point ------
 # A `$HIMMEL_REPO` re-point earlier in the SAME command, any wrapper, or any
@@ -926,6 +944,28 @@ run "control: trailing command after the heredoc closes still denies (HIMMEL-379
 rm -rf /' "$WT")" "$HR"
 run "control: trailing command after the redirect target still denies (HIMMEL-3798)" 2 \
     "$(payload "bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' < /dev/null; rm -rf /" "$WT")" "$HR"
+
+# codex-2 (round 2 critic panel, HIMMEL-3798): the unquoted redirect-file
+# alternative did not exclude shell separators, so a trailing `;id` etc. was
+# captured as part of the "filename" and passed validation - the guard
+# classified a two-command line as one simple redirect, letting the second
+# command run unguarded. Each of these must deny.
+run "control: redirect file with trailing ;id still denies (HIMMEL-3798 codex-2)" 2 \
+    "$(payload "bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' < /dev/null;id" "$WT")" "$HR"
+run "control: redirect file with trailing &&id still denies (HIMMEL-3798 codex-2)" 2 \
+    "$(payload "bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' < /dev/null&&id" "$WT")" "$HR"
+run "control: redirect file with trailing |id still denies (HIMMEL-3798 codex-2)" 2 \
+    "$(payload "bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' < /dev/null|id" "$WT")" "$HR"
+run "control: redirect file with trailing ) still denies (HIMMEL-3798 codex-2)" 2 \
+    "$(payload "bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' < /dev/null)" "$WT")" "$HR"
+run "control: redirect file with trailing >g still denies (HIMMEL-3798 codex-2)" 2 \
+    "$(payload "bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' < /dev/null>g" "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal backtick-id-backtick text, never expanded here
+run "control: redirect file with trailing backtick-id-backtick still denies (HIMMEL-3798 codex-2)" 2 \
+    "$(payload 'bash scripts/cr/write-verdicts.sh prior-blocking --branch '"'"'feat/x'"'"' < /dev/null`id`' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal $(id) text, never expanded here
+run "control: redirect file with trailing \$(id) still denies (HIMMEL-3798 codex-2)" 2 \
+    "$(payload 'bash scripts/cr/write-verdicts.sh prior-blocking --branch '"'"'feat/x'"'"' < /dev/null$(id)' "$WT")" "$HR"
 # A worktree whose write-verdicts.sh copy differs from the anchor's still
 # denies at the existing byte-equality tail, unaffected by this fix.
 echo tampered >>"$WT/scripts/cr/write-verdicts.sh"

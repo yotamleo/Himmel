@@ -189,7 +189,7 @@ st_is_stdin_file_redirect() { # st_is_stdin_file_redirect <line-re-with-file-cap
     [[ "$cmd" =~ $re ]] || return 1
     f=${BASH_REMATCH[1]}
     f=${f#\"}; f=${f%\"}
-    case "$f" in ""|*[\\\'\"\$\`]*|*[][*?~]*) return 1 ;; esac
+    case "$f" in ""|*[\\\'\"\$\`\;\&\|\(\)\<\>]*|*[][*?~]*) return 1 ;; esac
     return 0
 }
 # shellcheck disable=SC2016 # regexes, matched as text
@@ -983,6 +983,26 @@ case "$flat" in
         fi
         ;;
 esac
+
+# HIMMEL-3798 codex-1: the anchor-prefix exemption above trusts the COMMAND
+# TEXT's "$HIMMEL_REPO/..." shape unconditionally, without checking that this
+# hook's own actual HIMMEL_REPO environment value is one a real shell would
+# resolve to himmel's checkout. On Git Bash an unset/empty HIMMEL_REPO makes
+# "$HIMMEL_REPO/scripts/cr/pr-check-step0.sh" resolve to a root-relative path
+# an ordinary user can plant (main's pr-check.md documents the same
+# unset/empty hazard for this exact fence) - a regression from the prior
+# two-fence flow, which gated the anchor fence on a passing
+# `printenv HIMMEL_REPO | grep .` first. Require it non-empty, absolute, and
+# actually himmel's checkout before honouring the exemption at all.
+if [ "$himmel_anchor_prefix" -eq 1 ]; then
+    himmel_repo_ok=0
+    case "${HIMMEL_REPO:-}" in
+        /*) [ -f "$HIMMEL_REPO/scripts/cr/pr-check-step0.sh" ] && himmel_repo_ok=1 ;;
+    esac
+    if [ "$himmel_repo_ok" -eq 0 ]; then
+        deny "HIMMEL_REPO is unset, empty, not absolute, or its checkout has no scripts/cr/pr-check-step0.sh, so the \"\$HIMMEL_REPO/...\" anchor-prefix exemption cannot be trusted; export HIMMEL_REPO to himmel's primary checkout in your launching shell, or run the canonical fence non-anchor form."
+    fi
+fi
 
 # glob_is_literal_elsewhere <raw-token> <normalised> - a glob operand that
 # cannot name a target (HIMMEL-3433): its directory part is literal (no glob,

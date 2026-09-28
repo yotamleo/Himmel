@@ -113,7 +113,14 @@ PERSISTENT uppercase `$HIMMEL_REPO` with the double quote spanning the WHOLE
 path. It needs no entry in the guard's `TARGETS`: the guard's
 `himmel_anchor_prefix` exemption (HIMMEL-3437 finding 1) already skips a
 lone, unwrapped `"$HIMMEL_REPO/`-prefixed operand entirely, because
-`$HIMMEL_REPO` is anchor-controlled, never branch-controlled.
+`$HIMMEL_REPO` is anchor-controlled, never branch-controlled. **The literal's
+TEXT shape alone is not what makes this safe** (HIMMEL-3798 codex-1): an
+unset or empty `HIMMEL_REPO` at the guard's own runtime would let this call
+resolve to a root-relative, user-plantable path (the Git Bash hazard below).
+The guard additionally checks its own actual `HIMMEL_REPO` value (non-empty,
+absolute, containing `scripts/cr/pr-check-step0.sh`) before honouring the
+exemption, denying with a remedy otherwise — this fence is safe because the
+guard verifies that, not merely because of how the literal is spelled.
 `pr-check-step0.sh` itself does exactly what the old fence did:
 `printenv HIMMEL_REPO | grep .` (empty stays refused, see below), then
 `exec`s `"$himmel_repo/scripts/cr/pr-check-context.sh"`, or prints the same
