@@ -12,7 +12,7 @@ HOOK="$(cd "$(dirname "$0")" && pwd)/log-classifier-denial.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK" 2>/dev/null || true
 
 FAILED=0
-WORKDIR=$(mktemp -d)
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/log-classifier-denial-test.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$WORKDIR"' EXIT
 
 pass() { echo "PASS $1"; }

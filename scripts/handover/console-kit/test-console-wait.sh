@@ -122,7 +122,7 @@ reset_stub
 I="$(new_inbox b3724)"
 start "$I" "$WORK/b3724.out" --legs "N1.md"
 wait_hb "$I" || fail "(b3724) no baseline heartbeat"
-sed -i 's/denials=none/denials=N1:1:SHIP-STEP/' "$STUB/tick.line"
+sed -i 's/denials=none/denials=N1:1:SHIP-STEP/' "$STUB/tick.line"  # gnu-ok: Linux-only kit
 wait_exit "$WPID"
 check "(b3724) a denials= class change ends the wait with rc 0" "0" "$rc"
 check "(b3724) the wake names denials" "WAKE tick changed=denials bank=PROCEED" "$(head -n1 "$WORK/b3724.out")"
