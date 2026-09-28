@@ -56,17 +56,27 @@ redact() {
 
 # The reason tag is the bracketed classifier category, e.g.
 # "[Out-of-Place Publication]" — observed empirically across the 172 mined
-# denials (design doc §4c). Falls back to the raw denial_reason (redacted and
-# capped, same as input_head — a classifier denial_reason can itself quote
-# the offending command text back), then to "unknown", so an unrecognised
-# shape still lands a row instead of vanishing.
-reason_tag=$(printf '%s' "$denial_reason" | grep -oE '\[[^]]+\]' | head -1)
+# denials (design doc §4c). Redact the WHOLE denial_reason first (a
+# classifier denial_reason, bracketed or not, can itself quote the offending
+# command text back — a secret can land inside the brackets too), then
+# extract the bracket from the redacted copy, falling back to the redacted
+# text capped like input_head, then to "unknown", so an unrecognised shape
+# still lands a row instead of vanishing.
+denial_reason_redacted=$(redact "$denial_reason")
+reason_tag=$(printf '%s' "$denial_reason_redacted" | grep -oE '\[[^]]+\]' | head -1)
 if [ -z "$reason_tag" ]; then
-    reason_tag=$(redact "$denial_reason" | cut -c1-200)
+    reason_tag="$denial_reason_redacted"
 fi
 if [ -z "$reason_tag" ]; then
     reason_tag="unknown"
 fi
+# Cap every field going into the row, not just input_head: denial_reason (and
+# so a bracket match on it) is classifier/reviewer text, not bounded by us,
+# and the row-fits-in-PIPE_BUF atomic-append claim below only holds if every
+# field is actually short.
+reason_tag=$(printf '%s' "$reason_tag" | cut -c1-200)
+cwd=$(printf '%s' "$cwd" | cut -c1-400)
+session_id=$(printf '%s' "$session_id" | cut -c1-200)
 
 # Collapses git-SHA-shaped tokens and squeezes whitespace so two calls that
 # differ only by a commit sha or incidental spacing hash identically — this is
@@ -99,9 +109,11 @@ ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 mkdir -p "$(dirname "$OUT")" 2>/dev/null || exit 0
 
-# A single jq -c line is well under PIPE_BUF (4096 bytes: input_head is capped
-# to 200 chars, every other field is short), so a plain O_APPEND >> is atomic
-# against concurrent legs without needing a lock.
+# A single jq -c line is well under PIPE_BUF (4096 bytes): input_head,
+# reason_tag, cwd and session_id are all explicitly capped above (not just
+# "usually short" — denial_reason and cwd are classifier/session text, not
+# bounded by us), so a plain O_APPEND >> is atomic against concurrent legs
+# without needing a lock.
 jq -n -c \
     --arg ts "$ts" \
     --arg session_id "$session_id" \

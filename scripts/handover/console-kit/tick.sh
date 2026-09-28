@@ -932,7 +932,12 @@ if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
         # this same bounded tail, not the true unbounded all-time count.
         denials_tail_max="${TICK_DENIALS_TAIL_MAX:-2000}"
         case "$denials_tail_max" in ''|*[!0-9]*) denials_tail_max=2000 ;; esac
-        denials_summary="$(tail -n "$denials_tail_max" "$denials_log" 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
+        # jq -s needs the WHOLE input to parse before it emits anything, so
+        # one malformed line anywhere in the tail would hide every valid
+        # denial in it. Pre-filter line-by-line in raw-input mode first
+        # (fromjson? never aborts the read, it just drops what doesn't
+        # parse), then slurp only the lines that survived.
+        denials_summary="$(tail -n "$denials_tail_max" "$denials_log" 2>/dev/null | jq -R -c 'fromjson? // empty' 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
             . as $all
             | ($all | group_by(.session_title // "unknown")
                | map({key: (.[0].session_title // "unknown"), value: length})

@@ -91,6 +91,24 @@ else
     fail "redaction marker present in reason_tag fallback"
 fi
 
+# --- 3c. RED-shaped redaction control on the BRACKETED-reason path: a
+# secret embedded INSIDE the brackets must also be redacted, not just an
+# unbracketed fallback -- round 2 of the critic panel found the bracket
+# extraction itself still ran on raw text. ---
+SECRET3="ghp_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+LOG2C="$WORKDIR/c2c.jsonl"
+run_hook "$(payload s2c /tmp/repo Bash 'ls' "[LEAK $SECRET3]")" "$LOG2C" >/dev/null
+if grep -qF "$SECRET3" "$LOG2C" 2>/dev/null; then
+    fail "gitleaks-shaped token redacted on the bracketed-reason path"
+else
+    pass "gitleaks-shaped token redacted on the bracketed-reason path"
+fi
+if grep -q '\[REDACTED\]' "$LOG2C" 2>/dev/null; then
+    pass "redaction marker present in bracketed reason_tag"
+else
+    fail "redaction marker present in bracketed reason_tag"
+fi
+
 # --- 4. two calls differing only by a git SHA normalise to the same
 # input_sha (this is what lets tick.sh's REPEAT class notice a flip). ---
 LOG3="$WORKDIR/c3.jsonl"
