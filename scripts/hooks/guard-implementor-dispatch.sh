@@ -234,9 +234,14 @@ fi
 # boundary now refuses a "." immediately followed by an alnum character (a
 # filename extension); a real sentence-ending "." (followed by space/end/
 # punctuation) still closes the phrase as before.
+# codex-2 (round 4 panel, HIMMEL-3784): the same boundary also accepted a
+# "/" as closing the phrase, so "then edit distance/parser.py" -- a real
+# path -- matched "then edit distance/" the same way. "/" is excluded from
+# the boundary alongside "."; a genuine descriptive phrase never continues
+# straight into a path separator.
 gate_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
-    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(commit[[:space:]]+history)(\.$|\.[^[:alnum:]_]|[^[:alnum:]_.]|$)/\1 \4\5/g
-    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(edit[[:space:]]+distance)(\.$|\.[^[:alnum:]_]|[^[:alnum:]_.]|$)/\1 \4\5/g
+    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(commit[[:space:]]+history)(\.$|\.[^[:alnum:]_]|[^[:alnum:]_./]|$)/\1 \4\5/g
+    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(edit[[:space:]]+distance)(\.$|\.[^[:alnum:]_]|[^[:alnum:]_./]|$)/\1 \4\5/g
 ')
 if grepq "$gate_text" -Eq '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)'; then
     gate_action=1
@@ -295,8 +300,16 @@ if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)write([
     # is not a letter, so it cannot itself complete that pattern.
     protected_tail=$(printf '%s' "$write_tail" | sed -E 's/([.!?])[[:space:]]+(then|and)([^[:alnum:]_])/\1_\2\3/g')
     path_scope=$(printf '%s' "$protected_tail" | sed -E 's/([.!?])[[:space:]]+.*/\1/')
+    # codex-1 (round 4 panel, HIMMEL-3784): the bare "up" alternation matched
+    # "up" followed by ANY single non-alnum character -- including the space
+    # before "a shell script" -- so "then write up a shell script" (a genuine
+    # implementation request) still matched on "up " alone regardless of what
+    # came after. "up" alone is now exempt only when NOTHING but trailing
+    # punctuation/whitespace follows it to the end of the tail; when an
+    # object follows "up", that object must be a report-noun phrase like the
+    # bare "write a ..." branch, not an arbitrary noun.
     if [ -n "$write_trigger" ] \
-        && grepq "$write_tail" -Eq '^[[:space:]]+(up([^[:alnum:]_]|$)|((a|an|the)[[:space:]]+([a-z]+[[:space:]]+){0,1})?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$))' \
+        && grepq "$write_tail" -Eq '^[[:space:]]+(up[[:space:][:punct:]]*$|up[[:space:]]+((a|an|the|your|my)[[:space:]]+([a-z]+[[:space:]]+){0,1})?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$)|((a|an|the)[[:space:]]+([a-z]+[[:space:]]+){0,1})?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$))' \
         && ! grepq "$path_scope" -Eq '/|\.[a-zA-Z][a-zA-Z0-9]*([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]' \
         && ! grepq "$write_tail" -Eq '(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
         :

@@ -515,6 +515,21 @@ RC116=$(run_hook write-summary-then-explain-chain-allows "$REG_CLAUDEX" "$(paylo
 assert_rc "'write a summary. Then explain the findings' (a read-only chain, not a file write) allows (CodeRabbit)" 0 "$RC116"
 assert_empty "write-summary-then-explain-chain-allows brief silent" "$(combined_output write-summary-then-explain-chain-allows)"
 
+# codex-1 (round 4 panel, HIMMEL-3784): "write up" was exempt unconditionally
+# regardless of what followed it, so a genuine implementation object after
+# "up" (not a report noun) still slipped through as a report brief. (A
+# trailing "to reproduce it" would independently trip the existing "to/into"
+# path_scope veto and mask this exact bug, so the fixture avoids it.)
+RC117=$(run_hook write-up-shell-script-still-governed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the bug, then write up a shell script.')")
+assert_rc "'then write up a shell script' (genuine implementation, not a report) still governed (codex-1 round 4)" 2 "$RC117"
+
+# codex-2 (round 4 panel, HIMMEL-3784): the commit-history/edit-distance
+# exclusion's trailing boundary accepted "/" as closing the descriptive
+# phrase, so a real path with a slash ("distance/parser.py") lost its "then"
+# the same way a bare extension did.
+RC118=$(run_hook edit-distance-slash-path-still-governed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the routine, then edit distance/parser.py.')")
+assert_rc "'then edit distance/parser.py' (a real path, not the descriptive phrase) still governed (codex-2 round 4)" 2 "$RC118"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 
