@@ -1939,7 +1939,7 @@ printf '#!/bin/sh\necho reinstalled\n' > "$DEST59B"
   prov_record create file "$DEST59B" --scope project --class code --row adopter-scripts \
     --writer adopt.sh --pre-absent --post-file "$DEST59B" >/dev/null
   prov_end ok >/dev/null )
-out59=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks)
+run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
 rc59=$?
 check "RED59 (S2a case b): a purge after a reinstall is not permanently blocked by an earlier retained-* purge" \
   "$rc59" "0"
@@ -1994,7 +1994,7 @@ cat > "$CASE_SETTINGS" <<JSON
   }
 }
 JSON
-out60=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks --skip-settings)
+run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks --skip-settings >/dev/null
 rc60=$?
 check "CASE60 (S2a case c): --purge-state succeeds once the /env container resolves via clean children" \
   "$rc60" "0"
