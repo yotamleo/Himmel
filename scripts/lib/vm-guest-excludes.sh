@@ -77,9 +77,15 @@
 # fails closed. A non-directory link's target is resolved by walking its path components
 # with `[ -e ]`/`[ -d ]`/`[ -x ]` (HIMMEL-3719): this does NOT trust a `find`'s exit status,
 # because BSD find can exit 0 on a permission-denied traversal where GNU find exits
-# non-zero. A missing component ends the walk clean (ENOENT: dangling, not a refusal); a
-# present non-last component that is not a searchable directory (EACCES on an ancestor, or
-# ENOTDIR) stops the walk and refuses. Such a link is reported `scan-unscanned:` and the
+# non-zero. A component that does not exist at all ends the walk clean (dangling, not a
+# refusal); a symlink component whose target cannot be stat'ed (dangling, a loop, or behind
+# an unsearchable dir) is CHASED as a hop, at most 40 hops (then it refuses); a present
+# non-last component that is not a searchable directory (EACCES on an ancestor, or
+# ENOTDIR) stops the walk and refuses, and so does a trailing `/` on a non-directory. The
+# readlink capture keeps trailing newlines (a sentinel is appended and stripped), and a
+# resolved path of 1024 bytes or more refuses on every platform (macOS PATH_MAX; a longer
+# string makes `[ -e ]` fail ENAMETOOLONG, which would read as "missing"). Such a link is
+# reported `scan-unscanned:` and the
 # scan REFUSES (HIMMEL-3238, HIMMEL-3719). Every
 # other link left unscanned (file, dangling or system-tree target) is reported as a
 # read-only `scan-skipped:` line and counted by the consumers (never a refusal); an
@@ -87,6 +93,10 @@
 # that prefix out of the hit list; find prints absolute paths, so a real hit cannot start
 # with it unless a directory name embeds a newline followed by the prefix (a hostile
 # guest could then hide one hit line — an accepted residual, not a host-secret carrier).
+# ponytail: the walk's searchability test is `[ -x ]`, which follows the mode bits; an
+# ancestor whose ACL denies search while the mode bits allow it can pass, and the link is
+# then skipped instead of refused. Upgrade path: a real access(2)-style probe (e.g. `cd`
+# into the ancestor in a subshell) if a guest with search-denying ACLs ever shows up.
 # The untracked base builder (/tmp/m2457-rebuild.sh) stages wherever it likes and is
 # NOT covered — it must call this CLI itself (operator item, HIMMEL-2540).
 #
@@ -160,7 +170,7 @@ vm_guest_quote_root() {
 # shellcheck disable=SC2016  # literal guest-shell text: nothing may expand HERE
 VM_GUEST_SCAN_FN_HEAD='_s() ( n=$(printf "\n_"); n=${n%_}; q="$1$n"; v=$n; r=; while [ -n "$q" ]; do x=${q%%"$n"*}; q=${q#*"$n"}; d=$(CDPATH= cd -P -- "$x" && pwd -P) || exit 1; case "$v" in *"$n$d$n"*) continue;; esac; v="$v$d$n"; if [ -n "$r" ]; then case "$d/" in //|/proc/*|/sys/*|/dev/*|/run/*|/usr/*|/bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*|/etc/*|/boot/*|/snap/*|/var/*) printf "scan-skipped: %s\n" "$d" >&2; continue;; esac; fi; r=1; find -H "$d" -xdev \( '
 # shellcheck disable=SC2016  # literal guest-shell text: nothing may expand HERE
-VM_GUEST_SCAN_FN_TAIL=' \) ! -name '\''.env.example'\'' ! -type d -print || exit 1; k=$(find -H "$d" -xdev -type l ! -exec test -d {} \; -print) || exit 1; [ -z "$k" ] || printf '\''%s\n'\'' "$k" | while IFS= read -r y; do t=$(readlink -- "$y" 2>/dev/null); if [ -z "$t" ]; then ok=0; else ok=1; cy="$y"; ct="$t"; hop=0; while :; do case "$ct" in /*) a="$ct";; *) a="${cy%/*}/$ct";; esac; b="/"; s=${a#/}; f=""; while [ -n "$s" ]; do e=${s%%/*}; case "$s" in */*) s=${s#*/};; *) s="";; esac; [ -z "$e" ] && continue; f="$b$e"; if [ -e "$f" ] || [ -L "$f" ]; then :; else ok=1; f=""; break; fi; if [ -n "$s" ] && { [ ! -d "$f" ] || [ ! -x "$f" ]; }; then ok=0; f=""; break; fi; b="$f/"; done; [ -z "$f" ] && break; if [ -e "$f" ]; then ok=1; break; fi; hop=$((hop+1)); if [ "$hop" -ge 40 ]; then ok=0; break; fi; nt=$(readlink -- "$f" 2>/dev/null); if [ -z "$nt" ]; then ok=1; break; fi; cy="$f"; ct="$nt"; done; fi; if [ "$ok" = 1 ]; then printf "scan-skipped: %s\n" "$y" >&2; else printf "scan-unscanned: %s\n" "$y" >&2; exit 1; fi; done || exit 1; l=$(find -H "$d" -xdev -type l -exec test -d {} \; -print) || exit 1; [ -z "$l" ] || q="$q$l$n"; done ); '
+VM_GUEST_SCAN_FN_TAIL=' \) ! -name '\''.env.example'\'' ! -type d -print || exit 1; k=$(find -H "$d" -xdev -type l ! -exec test -d {} \; -print) || exit 1; [ -z "$k" ] || printf '\''%s\n'\'' "$k" | while IFS= read -r y; do t=$(readlink -- "$y" 2>/dev/null; printf _); t=${t%_}; t=${t%"$n"}; if [ -z "$t" ]; then ok=0; else ok=1; cy="$y"; ct="$t"; hop=0; tsl=; while :; do case "$ct" in /*) a="$ct";; *) a="${cy%/*}/$ct";; esac; case "$a" in */) tsl=1;; esac; w=$(printf %s "$a" | LC_ALL=C wc -c); if [ $((w)) -ge 1024 ]; then ok=0; break; fi; b="/"; s=${a#/}; f=""; ch=; while [ -n "$s" ]; do e=${s%%/*}; case "$s" in */*) s=${s#*/};; *) s="";; esac; [ -z "$e" ] && continue; f="$b$e"; if [ ! -e "$f" ] && [ ! -L "$f" ]; then ok=1; f=""; break; fi; if [ ! -e "$f" ]; then hop=$((hop+1)); if [ "$hop" -ge 40 ]; then ok=0; f=""; break; fi; nt=$(readlink -- "$f" 2>/dev/null; printf _); nt=${nt%_}; nt=${nt%"$n"}; if [ -z "$nt" ]; then ok=1; f=""; break; fi; if [ -n "$s" ]; then ct="$nt/$s"; else ct="$nt"; fi; cy="$f"; ch=1; break; fi; if [ -n "$s" ] && { [ ! -d "$f" ] || [ ! -x "$f" ]; }; then ok=0; f=""; break; fi; b="$f/"; done; [ -n "$ch" ] && continue; [ -z "$f" ] && break; if [ -e "$f" ]; then if [ -n "$tsl" ] && [ ! -d "$f" ]; then ok=0; else ok=1; fi; break; fi; done; fi; if [ "$ok" = 1 ]; then printf "scan-skipped: %s\n" "$y" >&2; else printf "scan-unscanned: %s\n" "$y" >&2; exit 1; fi; done || exit 1; l=$(find -H "$d" -xdev -type l -exec test -d {} \; -print) || exit 1; [ -z "$l" ] || q="$q$l$n"; done ); '
 
 vm_guest_scan_cmd() {
   local root="$1" prof="${2:-full}" globs q
