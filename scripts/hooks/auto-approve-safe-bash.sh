@@ -1421,6 +1421,17 @@ case "$tool" in
 esac
 tool="${tool%$'\r'}"
 cmd="${result#*$'\n'}"
+# J1397A finding 1: on the CRLF-jq (Windows) rendering, jq.exe's OWN final
+# newline also comes out as CRLF, but the `<<<`/`$()` substitution above
+# strips only the trailing LF, leaving a stray, unpaired CR on the end of
+# every command (nothing to fold: no CRLF pair remains to match). That is
+# jq's own artifact, not part of the command bash will see, so strip exactly
+# one trailing CR here -- before the boundary checks further down that would
+# otherwise treat it as a hostile CR right after a redirect target (e.g.
+# `cmd 2>&1` arriving as `cmd 2>&1<CR>`) and refuse the whole command. A
+# CRAFTED trailing CR (HIMMEL-3782) arrives DOUBLED under this same
+# rendering, so one copy survives this strip and is still caught below.
+[ "$win_crlf" = 1 ] && cmd="${cmd%$'\r'}"
 # Only touch cmd when it actually contains a CR (HIMMEL-3773/J1387A finding
 # 3: skip the fold entirely on CR-free input — no-op on the common case,
 # avoiding the added cost on large CR-free heredocs).
@@ -1568,7 +1579,7 @@ case "$paren_mask" in *'('*) exit 0 ;; esac
 rd=$(printf '%s' "$SCAN_MASK" | sed -E \
     -e 's@&?>>?[[:space:]]*/dev/null([[:space:]]|$)@ @g' \
     -e 's@[0-9]*>>?[[:space:]]*/dev/null([[:space:]]|$)@ @g' \
-    -e 's@[0-9]*>&[0-9]([ \t\n;|&]|$)@ @g')
+    -e 's@[0-9]*>&[0-9]([[:blank:];|&]|$)@ @g')
 case "$rd" in *'>'*) exit 0 ;; esac
 
 # --- Every segment must be safe ---
