@@ -272,7 +272,7 @@ if [ "$RC" -eq 2 ]; then pass "D6 zero CHECK lines exits 2"; else fail_case "D6 
 # D7 — the uninstall step: himmelctl --yes (+ --purge-state), and this
 # default (no --keep-backups) invocation never sends HIMMEL_UNINSTALL_REAL_HOME
 # (HIMMEL-3787 S2a: --keep-backups' own direct-uninstall.sh path DOES send it,
-# scoped to that flag alone — see D7f)
+# scoped to that flag alone — pinned by D7f below)
 # =====================================================================
 run_rt "$BOTH" f73a62f1 --expect-red --purge-state
 un=$(grep '^SSH ' "$LOG" | grep 'bin.js uninstall')
@@ -281,6 +281,19 @@ if [[ "$un" == *'bin.js uninstall --yes --purge-state'* ]] \
     pass "D7 uninstall runs 'himmelctl uninstall --yes --purge-state'; HIMMEL_UNINSTALL_REAL_HOME not sent on this run"
 else
     fail_case "D7 uninstall step: '$un'"; dump
+fi
+
+# D7f — HIMMEL_UNINSTALL_REAL_HOME is pinned to the --keep-backups guest
+# command ONLY (J1408A F6): it rides on the direct uninstall.sh line and on
+# no other SSH line of that run.
+run_rt "$BOTH" f73a62f1 --expect-red --purge-state --keep-backups
+pin=HIMMEL_UNINSTALL_REAL_HOME   # name held in a variable: the real-home caller scan matches the literal assignment text
+kb=$(grep '^SSH ' "$LOG" | grep 'uninstall.sh' | grep -e '--keep-backups')
+other=$(grep '^SSH ' "$LOG" | grep -v -e '--keep-backups' | grep -c "$pin")
+if [[ "$kb" == *"$pin=1"* ]] && [ "$other" -eq 0 ]; then
+    pass "D7f the real-home pin rides only on the --keep-backups guest command"
+else
+    fail_case "D7f real-home pin: kb='$kb' other-lines=$other"; dump
 fi
 
 # D7b — the plain variant (spec §11 runs both): no --purge-state reaches the

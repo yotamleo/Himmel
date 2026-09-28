@@ -147,7 +147,23 @@ retain-moves both the ledger and the backups directory together into one
 `retained-<UTC yyyymmddThhmmssZ>/` directory, which is never deleted
 automatically. With that flag, a purge with held backups succeeds (nothing is
 lost); without it, a held backup still refuses, naming `--keep-backups` as the
-way out.
+way out. The retain is all-or-nothing in order (J1408A F1/F2): the ledger moves
+only after the backups directory moved, so a failed backups move leaves both
+live; and the `retained-*` mkdir is retried only on a name collision — any other
+failure (permission denied, read-only fs) fails at once with the real error.
+
+### TTY `[r]estore` saves the live file first (HIMMEL-3787 S2b)
+
+On a real terminal without `--yes`, a `keep user-modified` unit with a readable
+backup offers `[k]eep` (default) or `[r]estore what you had before himmel`. A
+restore would overwrite the operator's current bytes, so `uninstall.sh` first
+copies the live file to `<path>.himmel-uninstall-backup` and prints that path;
+the unit is then restored and recorded `restored`. If the save cannot be made
+(an earlier sidecar or a symlink already sits at that path, or the copy fails)
+nothing is restored: the unit is recorded `failed` and its backup is kept.
+`--yes` never restores. The offer reads the terminal through fd 8, saved at
+start-up, because `ledger_apply_unit` runs inside heredoc loops where fd 0 is
+not a terminal.
 
 ## Known limits
 

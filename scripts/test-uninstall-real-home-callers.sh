@@ -35,7 +35,7 @@ ALLOW_PATHS=(
 ALLOW_WHY=(
   "the wizard's confirmed wet teardown spawn: it must lift the fence for the operator's real HOME (HIMMEL-3312 S13 item 2 moved this out of bin.js, which no longer sets the variable itself)"
   "matches only remedy TEXT (the re-run hint printed for a refused wet run); it never sets the variable itself"
-  "sets the variable only inside a command string dispatched via guest_ssh (line 474) to the disposable VM or AUR container guest, whose HOME is /home/\$GUEST_USER (line 209), never the operator's real HOME"
+  "sets the variable only inside a command string dispatched via guest_ssh (line 474) to the disposable VM or AUR container guest, whose HOME is /home/\$GUEST_USER (line 209), never the operator's real HOME; the VM guest only -- the clone-side fence-lift path is not here"
 )
 # HIMMEL-3394: both halves are ALLOW-LISTS. Enumerating dangerous spellings lost six
 # review rounds to shapes nobody had listed (HIMMEL-3345), so the rule is inverted: a

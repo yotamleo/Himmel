@@ -66,9 +66,10 @@
 #                          last.
 #   --keep-backups         Keep provenance-backups/ after a clean, ledger-
 #                          driven run instead of pruning it (backups are kept
-#                          on a halt regardless). Under --purge-state, spares
-#                          provenance-backups/ from that removal too — the
-#                          ledger file itself is still removed.
+#                          on a halt regardless). Under --purge-state, retains
+#                          the ledger AND provenance-backups/ together into a
+#                          never-auto-deleted retained-<UTC stamp>/ directory
+#                          beside them, instead of deleting either.
 #   --keep-telegram-state  Accepted for compatibility; state is already kept by
 #                          default. Contradicts --purge-state (rc=2).
 #   --skip-plugins         Keep Claude plugins + marketplaces installed.
@@ -1782,6 +1783,13 @@ if ! state_removed; then
 fi
 echo ""
 
+# HIMMEL-3787 S2b: ledger_apply_unit runs inside `while ... done <<EOF` loops,
+# where fd 0 is the heredoc, so its `[ -t 0 ]` was never true and the TTY
+# [k]eep/[r]estore|[d]elete offers were unreachable. Keep the real terminal on
+# fd 8 (only when both ends are a TTY) and let the offers test/read that.
+_TTY_FD8=0
+if [ -t 0 ] && [ -t 1 ]; then exec 8<&0; _TTY_FD8=1; fi
+
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "(dry-run — nothing will be executed)"
 elif [ "$YES" -ne 1 ]; then
@@ -1908,19 +1916,34 @@ $unit"
         # user-modified unit only ever offers itself on a real TTY with no
         # --yes — a scripted/CI/--yes run always takes the safe default
         # (keep) rather than prompting into a pipe.
-        if [ "$reason" = "user-modified" ] && [ "$YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
+        if [ "$reason" = "user-modified" ] && [ "$YES" -ne 1 ] && [ "$_TTY_FD8" -eq 1 ]; then
           backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
           if [ -n "$backup" ] && [ -r "$backup" ]; then
-            printf "  %s changed since install -- [k]eep / [r]estore himmel's backup? [k] " "$unit"
-            read -r _ans
+            printf "  %s changed since install -- [k]eep / [r]estore what you had before himmel (your current file is saved first)? [k] " "$unit"
+            read -r _ans <&8
             case "$_ans" in
               [rR]*)
-                if prov_read_apply "$u" restore; then
-                  echo "  restored $unit (from $backup)"
-                  prov_read_outcome restored "$u" "user-modified" "$backup"
+                # HIMMEL-3787 S2b (design §5.5): the restore overwrites the
+                # operator's live bytes, so save them to a sidecar first and
+                # fail closed (no restore, backup kept) if the save cannot be
+                # made. An existing sidecar (an earlier save) or a symlink at
+                # that path is never clobbered or written through.
+                _live=$(printf '%s' "$u" | jq -r '.path // empty')
+                _side="$_live.himmel-uninstall-backup"
+                if [ -n "$_live" ] && [ -f "$_live" ] && [ ! -e "$_side" ] && [ ! -L "$_side" ] \
+                   && cp -p -- "$_live" "$_side" 2>/dev/null; then
+                  echo "  saved your current $unit to $_side"
+                  if prov_read_apply "$u" restore; then
+                    echo "  restored $unit (from $backup)"
+                    prov_read_outcome restored "$u" "user-modified" "$backup"
+                  else
+                    echo "  WARN: could not restore $unit" >&2
+                    fail_step "$_step ledger restore: $unit"
+                    prov_read_outcome failed "$u" "step-failed" "$backup"
+                  fi
                 else
-                  echo "  WARN: could not restore $unit" >&2
-                  fail_step "$_step ledger restore: $unit"
+                  echo "  WARN: could not save your current $unit to $_side -- not restoring" >&2
+                  fail_step "$_step ledger restore: $unit (live-bytes save failed)"
                   prov_read_outcome failed "$u" "step-failed" "$backup"
                 fi
                 _LEDGER_PROTECTED="$_LEDGER_PROTECTED
@@ -1929,7 +1952,7 @@ $unit"
             esac
           else
             printf "  %s changed since install -- [k]eep / [d]elete anyway? [k] " "$unit"
-            read -r _ans
+            read -r _ans <&8
             case "$_ans" in
               [dD]*)
                 if prov_read_apply "$u" remove; then
@@ -4084,11 +4107,18 @@ EOF
               # so the second mv could land inside the first purge's already-
               # retained set instead of a fresh one. mkdir without -p fails on
               # an existing dir; retry with an incrementing suffix until a
-              # fresh directory is actually created (bounded so a genuine
-              # mkdir failure, e.g. permission denied, still surfaces).
+              # fresh directory is actually created. J1408A F2: retry ONLY on
+              # a collision (the dir now exists); any other mkdir failure
+              # (EACCES, read-only fs) fails at once with the real error.
               _prov_retained_suffix=0
               _prov_retain_ok=1
-              while ! guarded run mkdir -- "$_prov_retained_dir" 2>/dev/null; do
+              while ! _prov_mkdir_err=$(guarded run mkdir -- "$_prov_retained_dir" 2>&1); do
+                if [ ! -e "$_prov_retained_dir" ] && [ ! -L "$_prov_retained_dir" ]; then
+                  echo "WARN: $_prov_mkdir_err" >&2
+                  fail_step "[8/8] provenance ledger: could not create a retained-* directory under $_prov_base_dir"
+                  _prov_retain_ok=0
+                  break
+                fi
                 _prov_retained_suffix=$((_prov_retained_suffix + 1))
                 if [ "$_prov_retained_suffix" -gt 1000 ]; then
                   fail_step "[8/8] provenance ledger: could not create a fresh retained-* directory under $_prov_base_dir"
@@ -4101,7 +4131,10 @@ EOF
                 if [ -d "$_prov_backups_dir" ] || [ -L "$_prov_backups_dir" ]; then
                   guarded run mv -- "$_prov_backups_dir" "$_prov_retained_dir/provenance-backups" || _prov_retain_ok=0
                 fi
-                if [ -f "$_prov_ledger_file" ]; then
+                # J1408A F1: the ledger only follows its backups -- moving it
+                # after a failed backups mv would leave live backups no ledger
+                # accounts for (the next purge's orphan scan refuses forever).
+                if [ "$_prov_retain_ok" -eq 1 ] && [ -f "$_prov_ledger_file" ]; then
                   guarded run mv -- "$_prov_ledger_file" "$_prov_retained_dir/provenance.jsonl" || _prov_retain_ok=0
                 fi
                 if [ "$_prov_retain_ok" -eq 1 ]; then
