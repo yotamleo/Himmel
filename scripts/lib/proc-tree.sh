@@ -85,7 +85,13 @@ proc_tree_process_identity() {
         return 0
     fi
 
-    value=$(LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || value=""
+    # Pin TZ/LC_ALL and disable ps's terminal-width truncation (-ww) so the
+    # identity string is the same whoever/wherever it is read: lstart is
+    # printed in the caller's TZ, and command is cut to the caller's COLUMNS
+    # otherwise, which made a live holder look "dead" to a contender running
+    # under a different TZ/COLUMNS (HIMMEL-3791 judge finding). -ww is
+    # accepted by both GNU procps and BSD/macOS ps.
+    value=$(unset COLUMNS; TZ=UTC LC_ALL=C ps -ww -p "$pid" -o lstart= -o command= 2>/dev/null) || value=""
     [ -n "$value" ] || return 1
     printf 'posix:%s\n' "$value"
 }

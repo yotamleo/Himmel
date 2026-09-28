@@ -178,6 +178,45 @@ rc=0; proc_tree_liveness_matches 4242 "some-identity" || rc=$?
 check "T11 liveness_matches: non-empty identity delegates to identity_matches (rc 1 propagated)" "$rc" "1"
 unset -f proc_tree_process_identity_matches
 
+# --- proc_tree_process_identity: TZ/COLUMNS independence (HIMMEL-3791 judge
+# finding J1396A). The identity is `ps -o lstart= -o command=`; lstart is
+# printed in the caller's TZ and command is truncated to the caller's COLUMNS,
+# so a live holder recorded in one environment looked "dead" to a contender
+# reading it in another -- a false-positive double-acquire. Real background
+# process, real ps, no stubs.
+#
+# T6/T11 above stub proc_tree_process_identity /
+# proc_tree_process_identity_matches then `unset -f` them -- unset -f removes
+# a function outright, it does not restore whatever definition preceded the
+# stub, so the REAL implementations sourced at the top of this file are gone
+# from here on unless re-sourced.
+# shellcheck source=proc-tree.sh
+# shellcheck disable=SC1091
+. "$HERE/proc-tree.sh"
+
+sleep 60 & livepid=$!
+
+# T12: identity recorded under TZ=Asia/Jerusalem, judged under TZ=UTC, must
+# still match -- before the fix this diverged and liveness_matches judged a
+# live process dead (rc 1).
+recorded=$(TZ=Asia/Jerusalem proc_tree_process_identity "$livepid")
+rc=0; TZ=UTC proc_tree_liveness_matches "$livepid" "$recorded" || rc=$?
+check "T12 identity: TZ mismatch (recorded JLM, judged UTC) still matches live pid -> rc 0" "$rc" "0"
+kill "$livepid" 2>/dev/null
+
+# T13: identity recorded under a narrow COLUMNS, judged under a wide one, must
+# still match -- before the fix, ps truncated `command` to the narrower width
+# and the two strings diverged. A short argv (e.g. bare `sleep 60`) is already
+# shorter than a narrow COLUMNS and never triggers ps's truncation, so this
+# needs a long argv to actually exercise the width cut.
+long_arg=$(printf 'A%.0s' $(seq 1 200))
+bash -c 'while :; do sleep 5; done' "$long_arg" & livepid=$!
+recorded=$(COLUMNS=20 proc_tree_process_identity "$livepid")
+rc=0; COLUMNS=200 proc_tree_liveness_matches "$livepid" "$recorded" || rc=$?
+check "T13 identity: COLUMNS mismatch (recorded 20, judged 200) still matches live pid -> rc 0" "$rc" "0"
+
+kill "$livepid" 2>/dev/null
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else
