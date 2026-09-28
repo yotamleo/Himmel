@@ -1238,6 +1238,14 @@ assert "uniq bare dash 1st positional + 2nd positional writes a junk file (must 
 # (unquoted) token text.
 assert "uniq 2nd positional that is a quoted '>' writes a junk file (must not ALLOW)" \
     PASS "$(decide "$(j_bash "uniq f '>'")")"
+# Panel round 2: `uniq f 2\>` writes deduped output to a file literally
+# named `2>` — a backslash-escaped redirect-looking positional decodes to
+# a real filename, not fd 2, but the raw-token redirect check above (fix
+# for the previous finding) didn't yet account for an escaped char
+# glued into an otherwise redirect-shaped raw token. VERIFIED (real
+# uniq): creates a 4-byte file named `2>`.
+assert "uniq 2nd positional that is a backslash-escaped 2> writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash 'uniq f 2\>')")"
 # Controls: ordinary fd-dups and a single-file uniq must keep ALLOWing — this
 # fix must not regress anything main already approves.
 assert "fd-dup >&2, no escape, still ALLOW (control)" \

@@ -763,8 +763,14 @@ segment_is_safe() {
                     # decoded $SW_VALUE (panel J1397A/codex-2, HIMMEL-3793): a
                     # quoted positional like '>' decodes to the same text as a
                     # real unquoted `>` redirect but IS a positional argument.
+                    # A raw token carrying a backslash or quote char can never
+                    # be a live (unescaped) redirect operator to real bash, so
+                    # it is excluded from this check too (panel round 2,
+                    # codex-1): `2\>` decodes to the literal filename "2>",
+                    # not fd 2 — it must fall to the positional count below.
                     case "$k" in
-                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) continue ;;  # redirect token, not a positional
+                        *[\\\'\"]*) ;;
+                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) continue ;;  # a genuine unescaped redirect token, not a positional
                     esac
                     case "$SW_VALUE" in
                         -?*) ;;                          # a flag; conservatively not counted as its value either. Bare "-" is excluded from this (codex-1, HIMMEL-3793): real uniq treats it as an INPUT positional (stdin), not a flag.
