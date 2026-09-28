@@ -44,6 +44,14 @@ The console's tick reads the marker on your **newest marker-bearing bullet**
   green`) is prose and changes nothing; a bullet that does not start with one of
   `LIVE` / `FINDING` / `RESOLVED` / `READY` / `BLOCKED` / `HALTED` / `WRAPPED` is
   invisible to the tick.
+- **Write every marker bullet with `append-results.sh`, never the Edit tool.**
+  `bash <repo>/scripts/handover/console-kit/append-results.sh <doc> "<MARKER> …"`
+  always appends at the doc's true EOF (HIMMEL-3794); an Edit whose `old_string`
+  anchors on an earlier bullet can land the new one ABOVE later bullets, and
+  `leg_tail_status` (the parser `close-wrapped-leg.sh` and `tick.sh` share)
+  reads only the doc's LAST `- ` line — a misordered WRAPPED is invisible to
+  it and your wrap is refused. It stamps the `HH:MM` itself; pass the marker
+  and text only.
 - **A `FINDING` stays your status until you retire it.** When the console has
   ruled on it, write `- HH:MM RESOLVED — <what was ruled>` as soon as you act
   on the ruling. Until then the console reads `FINDING` and must assume it owes
@@ -54,11 +62,12 @@ The console's tick reads the marker on your **newest marker-bearing bullet**
   Between GREEN and `READY` (PR open, CI and review running) you are `LIVE`:
   `- HH:MM LIVE — PR <n> open, watching CI`. After the merge you are `WRAPPED`.
 
-Stamp every Results bullet from an actual `date +%H:%M` command; never type a
-time. A bullet containing a literal `%` goes through the Write tool, never
-`printf`. Never write a token-shaped literal with trailing punctuation, and
-always wrap tokens in backticks — bare token text stalls the vault's own
-scanners.
+`append-results.sh` stamps the time itself from `date +%H:%M`; never type a
+time by hand. A non-marker Results bullet (one that does not start with a
+marker) still goes through the Write tool if its text contains a literal `%`,
+never a bare `printf`. Never write a token-shaped literal with trailing
+punctuation, and always wrap tokens in backticks — bare token text stalls the
+vault's own scanners.
 
 ## The RETASK channel
 
