@@ -913,10 +913,12 @@ run "control: pipe into write-verdicts.sh still denies (HIMMEL-3798)" 2 \
     "$(payload "printf '' | bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x'" "$WT")" "$HR"
 run "control: pipe into impacted-suites.sh --check still denies (HIMMEL-3798)" 2 \
     "$(payload "printf '' | bash scripts/cr/impacted-suites.sh --check aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$X` text inside the payload, never expanded here
 run "control: \$VAR path with a heredoc still denies (HIMMEL-3798)" 2 \
     "$(payload 'X="scripts/cr/write-verdicts.sh"; bash "$X" prior-blocking --branch feat/x <<'"'"'WV_STDIN_EOF'"'"'
 VERDICT [f1] = agreed
 WV_STDIN_EOF' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$F` text inside the payload, never expanded here
 run "control: \$VAR redirect file still denies (HIMMEL-3798)" 2 \
     "$(payload 'F=/dev/null; bash scripts/cr/write-verdicts.sh prior-blocking --branch feat/x < "$F"' "$WT")" "$HR"
 run "control: trailing command after the heredoc closes still denies (HIMMEL-3798)" 2 \
