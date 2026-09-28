@@ -2038,6 +2038,7 @@ LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin \
 wait_record "$d28e" || true
 env28e="$(cat "$d28e/env-record" 2>/dev/null || true)"
 check "HIMMEL-3795: full --judge launch, ambient LEG_CLAUDE_BIN: exit 0" "$rc" "0"
+contains "HIMMEL-3795: full --judge launch, ambient LEG_CLAUDE_BIN: env-record was actually produced (judge still gets its high default)" "$env28e" "CLAUDE_CODE_EFFORT_LEVEL=high"
 not_contains "HIMMEL-3795: full --judge launch, ambient LEG_CLAUDE_BIN: does not reach the armed process env" "$env28e" "LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin"
 
 # Same leak, native --profile leg-impl instead of --judge (the ticket's other
@@ -2049,6 +2050,7 @@ LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin \
 wait_record "$d28f" || true
 env28f="$(cat "$d28f/env-record" 2>/dev/null || true)"
 check "HIMMEL-3795: full --profile leg-impl launch, ambient LEG_CLAUDE_BIN: exit 0" "$rc" "0"
+contains "HIMMEL-3795: full --profile leg-impl launch, ambient LEG_CLAUDE_BIN: env-record was actually produced (LEG_PROFILE_SETTINGS still resolved)" "$env28f" "LEG_PROFILE_SETTINGS="
 not_contains "HIMMEL-3795: full --profile leg-impl launch, ambient LEG_CLAUDE_BIN: does not reach the armed process env" "$env28f" "LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin"
 
 # Finding 2: a leg's own ambient CLAUDE_CODE_EFFORT_LEVEL=low (inherited from
