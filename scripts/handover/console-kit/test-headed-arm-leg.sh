@@ -545,6 +545,25 @@ contains "dry-run --judge: withholds INLINE_IMPL_OK" "$out" "INLINE_IMPL_OK=<uns
 contains "dry-run --judge: raises the read-clamp line limit" "$out" "read-clamp-lines=4000"
 contains "dry-run --judge: preface source is judge-preface.md" "$out" "docs/handover/judge-preface.md"
 
+# HIMMEL-3720: a persisting leg shell that itself calls headed-arm-leg.sh to
+# arm a judge keeps its OWN leg-only env (IMPL_GUARD_OK, INLINE_IMPL_OK,
+# CLAUDEX_LANE_OK, LEG_CLAUDE_BIN, a stale HEADED_ARM_LAUNCHER pointer, and the
+# HEADED_ARM_LAUNCHER_ENV token list carrying them) exported ambiently for its
+# whole session. A judge never implements, so an inherited IMPL_GUARD_OK=1
+# reaching it silently is the live symptom this ticket fixes - the wrapper
+# must scrub all of it before arming, not just skip re-setting IMPL_GUARD_OK.
+rc=0; out="$(IMPL_GUARD_OK=1 INLINE_IMPL_OK=1 HEADED_ARM_LAUNCHER=/tmp/stale-launcher \
+  LEG_CLAUDE_BIN=/tmp/stale-claude-bin HIMMEL_LEAN_LEG=1 CLAUDEX_LANE_OK=1 \
+  HEADED_ARM_LAUNCHER_ENV='IMPL_GUARD_OK=1 INLINE_IMPL_OK=1 CLAUDEX_LANE_OK=1 HEADED_ARM_LAUNCHER=/tmp/stale-launcher LEG_CLAUDE_BIN=/tmp/stale-claude-bin' \
+  bash "$SCRIPT" --dry-run --judge HIMMEL-9999-leg "$doc_tier_judge" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge, ambient leg-only env: exit 0" "$rc" "0"
+contains "dry-run --judge, ambient leg-only env: still withholds IMPL_GUARD_OK" "$out" "IMPL_GUARD_OK=<unset>"
+contains "dry-run --judge, ambient leg-only env: still withholds INLINE_IMPL_OK" "$out" "INLINE_IMPL_OK=<unset>"
+not_contains "dry-run --judge, ambient leg-only env: launcher-env drops the inherited IMPL_GUARD_OK token" "$out" "IMPL_GUARD_OK=1"
+not_contains "dry-run --judge, ambient leg-only env: launcher-env drops the inherited CLAUDEX_LANE_OK token" "$out" "CLAUDEX_LANE_OK=1"
+not_contains "dry-run --judge, ambient leg-only env: launcher-env drops the stale LEG_CLAUDE_BIN token" "$out" "/tmp/stale-claude-bin"
+not_contains "dry-run --judge, ambient leg-only env: launcher-env drops the stale HEADED_ARM_LAUNCHER token" "$out" "/tmp/stale-launcher"
+
 # HIMMEL-3630 (console ruling, W-N519-b4c60d80): the Opus default is not an
 # exemption from TIER_GATE - the gate matches by MODEL PREFIX regardless of
 # how MODEL got set, so a --judge launch with NO Tier line in its doc must
@@ -1050,6 +1069,24 @@ if [ -e "$tmp/HIMMEL-9999-leg.leg-settings.json" ]; then
 else
   echo "ok - --profile: --dry-run writes nothing"
 fi
+
+# HIMMEL-3720: same ambient-leak scenario as the --judge case above, but for
+# an ordinary --profile leg-impl (non-judge, native lane) launch. The wrapper
+# DOES intend to set IMPL_GUARD_OK/INLINE_IMPL_OK=1 here (an impl leg), but
+# leg_propagate_env's caller-preset-token-wins de-dupe means a stale token
+# already present in an inherited HEADED_ARM_LAUNCHER_ENV silently wins over
+# the wrapper's own "1" - so the leg launch must carry ONLY the value the
+# wrapper itself sets, never an inherited one. CLAUDEX_LANE_OK must not
+# survive at all on the native lane.
+rc=0; out="$(IMPL_GUARD_OK=1 INLINE_IMPL_OK=1 CLAUDEX_LANE_OK=1 \
+  HEADED_ARM_LAUNCHER_ENV='IMPL_GUARD_OK=99 INLINE_IMPL_OK=99 CLAUDEX_LANE_OK=1' \
+  bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --profile leg-impl, ambient leg-only env: exit 0" "$rc" "0"
+contains "dry-run --profile leg-impl, ambient leg-only env: reports the wrapper's own IMPL_GUARD_OK=1, not the inherited 99" "$out" "IMPL_GUARD_OK=1"
+contains "dry-run --profile leg-impl, ambient leg-only env: reports the wrapper's own INLINE_IMPL_OK=1, not the inherited 99" "$out" "INLINE_IMPL_OK=1"
+not_contains "dry-run --profile leg-impl, ambient leg-only env: never reports the inherited IMPL_GUARD_OK=99" "$out" "IMPL_GUARD_OK=99"
+not_contains "dry-run --profile leg-impl, ambient leg-only env: never reports the inherited INLINE_IMPL_OK=99" "$out" "INLINE_IMPL_OK=99"
+not_contains "dry-run --profile leg-impl, ambient leg-only env: drops the inherited CLAUDEX_LANE_OK token on the native lane" "$out" "CLAUDEX_LANE_OK=1"
 
 # HIMMEL-2959: inspect the real seeded settings and the same resolver used by
 # --dry-run; checking only the profile= line would miss dropped permissions.

@@ -553,6 +553,52 @@ for _leg_env_scrub in LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_C
 done
 unset -v _leg_env_scrub
 
+# HIMMEL-3720: same "this wrapper's own process may itself BE a leg" hazard as
+# the LEG_PROFILE_* scrub above, but for the rest of the names a leg sets on
+# itself while arming a SIBLING (most often a judge). A judge deliberately
+# never gets IMPL_GUARD_OK/INLINE_IMPL_OK re-set below (a judge doesn't
+# implement) - without this scrub, an inherited value from the calling leg's
+# own session reaches it anyway, unset+undetected. console_context_leg_env_unset_names
+# (scripts/lib/console-context.sh) is the single source of truth for this set
+# already - console.sh's do_arm() blindly unsets the whole list before arming
+# headed-arm.sh directly, which is safe there because do_arm() never reads any
+# of these names as input. This wrapper DOES read six of them as deliberate,
+# tested ambient input (HANDOVER_DIR above; HIMMEL_CONSOLE_NAME,
+# CLAUDE_CODE_EFFORT_LEVEL, LEG_EFFORT and HEADED_ARM_UNAME further down;
+# HIMMEL_CONSOLE_LEG has a pinned caller-preset-wins override test, case 31b),
+# so scrubbing those here would destroy the exact feature they exist for -
+# they are excluded by name, not by re-deriving a second list. The three
+# LEG_PROFILE_* names are excluded because the loop above already scrubbed
+# them; HEADED_ARM_LAUNCHER_ENV is excluded because it is the container being
+# cleaned, not a name inside it. LEG_CLAUDE_BIN is a narrower case: it is
+# BOTH a leak the ticket names AND deliberate ambient input on the native
+# lane (leg-claude-launcher.sh, the --profile/--headless HEADED_ARM_LAUNCHER
+# shim, reads it as which `claude` binary to exec - pinned by the --headless
+# suite, which sets it as a plain env var to point at a test stub). The leak
+# is specifically the HEADED_ARM_LAUNCHER_ENV TOKEN: a stale sibling token
+# would win over this wrapper's own fresh `leg_propagate_env LEG_CLAUDE_BIN`
+# call on the claudex branch via caller-preset-token-wins de-dupe. So
+# LEG_CLAUDE_BIN drops its token but keeps its plain var, unlike every other
+# name here. Every remaining name is set-only (this wrapper never reads it
+# back as input), so unsetting it early and letting the existing
+# leg_propagate_env/export calls below re-set it is a no-op for a normal
+# console-launched leg or judge and closes the leak for a leg-launched one.
+# shellcheck source=scripts/lib/console-context.sh
+# shellcheck disable=SC1091
+. "$HERE/../../lib/console-context.sh"
+for _leg_env_scrub in $(console_context_leg_env_unset_names); do
+    case "$_leg_env_scrub" in
+        HANDOVER_DIR|HIMMEL_CONSOLE_NAME|CLAUDE_CODE_EFFORT_LEVEL|LEG_EFFORT|HEADED_ARM_UNAME) continue ;;
+        HIMMEL_CONSOLE_LEG) continue ;;
+        LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG) continue ;;
+        HEADED_ARM_LAUNCHER_ENV) continue ;;
+        LEG_CLAUDE_BIN) leg_env_drop_token "$_leg_env_scrub"; continue ;;
+    esac
+    unset -v "$_leg_env_scrub"
+    leg_env_drop_token "$_leg_env_scrub"
+done
+unset -v _leg_env_scrub
+
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
 # resolves wrong; headed-arm.sh separately validates the exact argv it launches.
