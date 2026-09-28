@@ -548,6 +548,84 @@ fi
 pass "a stranded reclaim guard's eventual clearing mirrors suite-semaphore.sh's own guard (documented, not separately timed here)"
 
 # --------------------------------------------------------------------------
+# Case 2e2 -- the reclaim guard's own mkdir fails for a reason OTHER than
+# another reclaimer holding it (permission denied, a missing parent, ...):
+# a permanent failure, not contention (HIMMEL-1838 round 5, codex-1). Before
+# this fix, _suite_lock_reclaim treated ANY failed guard mkdir as "someone
+# else is reclaiming" (Case 2e's ordinary-contention verdict) even when the
+# guard directory was never created at all -- so a genuinely broken
+# filesystem would spend the whole SUITE_LOCK_WAIT budget retrying a mkdir
+# that can never succeed. The injected fault fails the guard mkdir outright
+# (no real directory left behind), distinct from Case 2e's pre-existing
+# guard.
+# --------------------------------------------------------------------------
+echo "== Case 2e2: the reclaim guard's own mkdir fails outright, not contention =="
+sb2e2=$(new_sandbox)
+cat > "$sb2e2/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2e2="$sb2e2/suite.lock"
+mkdir -p "$lock2e2"
+bash -c 'exit 0' & dead2e2=$!
+wait "$dead2e2" 2>/dev/null
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2e2" "$(this_host)" "$(date +%s)" > "$lock2e2/owner"
+
+noaccess2e2=$(mktemp -d "$WORK/noaccXXXXXX")
+real_mkdir2e2=$(command -v mkdir)
+cat > "$noaccess2e2/mkdir" <<SHEOF2
+#!/usr/bin/env bash
+if [ "\$#" -eq 1 ] && [ "\$1" = "${lock2e2}.reclaim" ]; then
+  printf 1 > "$sb2e2/hit"
+  exit 1
+fi
+exec "$real_mkdir2e2" "\$@"
+SHEOF2
+chmod +x "$noaccess2e2/mkdir"
+
+start2e2=$(date +%s)
+out2e2=$(PATH="$noaccess2e2:$PATH" SUITE_LOCK_DIR="$lock2e2" SUITE_LOCK_WAIT=60 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sb2e2" 2>&1)
+rc2e2=$?
+elapsed2e2=$(( $(date +%s) - start2e2 ))
+
+if [ -f "$sb2e2/hit" ]; then
+  pass "the injected reclaim-guard mkdir failure fired"
+else
+  fail "the injected reclaim-guard mkdir failure never fired -- this case's scenario did not happen"
+fi
+if [ ! -d "${lock2e2}.reclaim" ]; then
+  pass "no guard directory was left behind by the failed mkdir"
+else
+  fail "a guard directory exists despite the injected mkdir failure"
+fi
+if [ "$rc2e2" -eq 2 ]; then
+  pass "reclaim guard mkdir failure -> refused (rc 2)"
+else
+  fail "reclaim guard mkdir failure -> expected rc 2 got $rc2e2; output: $out2e2"
+fi
+if grepq "$out2e2" -F 'could not even attempt to reclaim it'; then
+  pass "the guard-mkdir failure gets its own dedicated verdict"
+else
+  fail "guard-mkdir failure missing its dedicated verdict; output: $out2e2"
+fi
+if grepq "$out2e2" -F 'TAKEOVER IN PROGRESS'; then
+  fail "an operational guard-mkdir failure was mistaken for ordinary reclaim contention; output: $out2e2"
+else
+  pass "guard-mkdir failure is not mistaken for ordinary reclaim contention"
+fi
+if grepq "$out2e2" -F 'WAITING:'; then
+  fail "a permanent guard-mkdir failure was dressed up as a queue -- WAITING: present; output: $out2e2"
+else
+  pass "no WAITING: heartbeat -- a guard-mkdir failure is never presented as a queue"
+fi
+if [ "$elapsed2e2" -lt 30 ]; then
+  pass "broke out immediately instead of spending the 60s budget (${elapsed2e2}s)"
+else
+  fail "spent ${elapsed2e2}s on a refusal waiting cannot clear; output: $out2e2"
+fi
+
+# --------------------------------------------------------------------------
 # Case 2d3 -- a SYMLINKED lock path is refused outright.
 #
 # The sharpest shape of the mis-set-override class: globbing inspects the
@@ -1168,6 +1246,85 @@ else
 fi
 else
   echo "SKIP Case 2m2 running as root (chmod 555 does not deny)"
+fi
+
+# --------------------------------------------------------------------------
+# Case 2m3 -- the re-claim's mkdir call ITSELF fails, not just its later
+# owner-file write (HIMMEL-1838 round 5, codex-2 extends round 2's codex-2
+# fix to the mkdir itself). Before this fix, _suite_lock_claim treated any
+# failed mkdir as "another racer won" (Case 2m's ordinary-lost-race verdict)
+# even when nothing branded the directory at all -- so a genuinely broken
+# filesystem (mkdir itself denied, not merely the write that follows it)
+# would be advised to retry a race that was never happening.
+#
+# The injected fault, distinct from Case 2m2's chmod-after-mkdir shim, fails
+# the mkdir call outright on the second hit (the re-claim after the reclaim
+# dropped the stale dir) so no directory is ever created. Unlike Case 2m2
+# (a chmod-based permission denial), this is a plain PATH shim and is not
+# affected by running as root.
+# --------------------------------------------------------------------------
+echo "== Case 2m3: the re-claim's mkdir call itself fails (rc 2, not a race) =="
+sb2m3=$(new_sandbox)
+cat > "$sb2m3/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2m3="$sb2m3/suite.lock"
+mkdir -p "$lock2m3"
+bash -c 'exit 0' & dead2m3=$!
+wait "$dead2m3" 2>/dev/null
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2m3" "$(this_host)" "$(date +%s)" > "$lock2m3/owner"
+
+noaccess2m3=$(mktemp -d "$WORK/noaccXXXXXX")
+real_mkdir2m3=$(command -v mkdir)
+cat > "$noaccess2m3/mkdir" <<SHEOF2
+#!/usr/bin/env bash
+if [ "\$#" -eq 1 ] && [ "\$1" = "$lock2m3" ]; then
+  n=\$(( \$(cat "$sb2m3/hits3" 2>/dev/null || printf '0') + 1 ))
+  printf '%s' "\$n" > "$sb2m3/hits3"
+  if [ "\$n" -ge 2 ]; then
+    exit 1
+  fi
+fi
+exec "$real_mkdir2m3" "\$@"
+SHEOF2
+chmod +x "$noaccess2m3/mkdir"
+
+start2m3=$(date +%s)
+out2m3=$(PATH="$noaccess2m3:$PATH" SUITE_LOCK_DIR="$lock2m3" SUITE_LOCK_WAIT=60 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sb2m3" 2>&1)
+rc2m3=$?
+elapsed2m3=$(( $(date +%s) - start2m3 ))
+
+if [ "$(cat "$sb2m3/hits3" 2>/dev/null || printf '0')" -ge 2 ]; then
+  pass "the injected mkdir failure fired (shim reached mkdir call 2)"
+else
+  fail "the injected mkdir failure never fired: the mkdir shim was skipped -- this case's scenario did not happen"
+fi
+if [ ! -d "$lock2m3" ]; then
+  pass "no directory was left behind by the failed mkdir"
+else
+  fail "a lock directory exists despite the injected mkdir failure"
+fi
+if [ "$rc2m3" -eq 2 ]; then
+  pass "reclaim then a failed re-claim mkdir -> refused (rc 2)"
+else
+  fail "reclaim then a failed re-claim mkdir -> expected rc 2 got $rc2m3; output: $out2m3"
+fi
+if grepq "$out2m3" -F 'failed to re-claim it'; then
+  pass "the mkdir-failure gets its own dedicated verdict"
+else
+  fail "mkdir-failure missing its dedicated verdict; output: $out2m3"
+fi
+if grepq "$out2m3" -F 'TAKEOVER IN PROGRESS'; then
+  fail "an operational mkdir failure was mistaken for an ordinary lost race; output: $out2m3"
+else
+  pass "mkdir-failure is not mistaken for an ordinary lost race"
+fi
+if [ "$elapsed2m3" -lt 30 ]; then
+  pass "broke out immediately instead of spending the 60s budget (${elapsed2m3}s)"
+else
+  fail "spent ${elapsed2m3}s on a refusal waiting cannot clear; output: $out2m3"
 fi
 
 # --------------------------------------------------------------------------

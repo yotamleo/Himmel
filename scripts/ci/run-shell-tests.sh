@@ -1188,10 +1188,13 @@ _suite_lock_wait_brand() {
 #
 # Returns 0 whenever a stale owner was actually cleared, or the CAS found the
 # generation had already moved on (someone else's turn, ordinary). Returns 1
-# when the guard itself could not be won: another reclaimer is already
-# acting, ordinary contention, not an operational failure to diagnose. Returns
-# 2 when the guard was won and the CAS matched, but the delete itself was
-# refused — see below.
+# when the guard itself could not be won BECAUSE another reclaimer already
+# holds it: ordinary contention, not an operational failure to diagnose.
+# Returns 2 when the guard was won and the CAS matched, but the delete itself
+# was refused — see below. Returns 3 when the guard mkdir failed and the guard
+# directory does not exist at all — a permission or IO failure, not
+# contention, so a caller must not treat it as a race a re-run will resolve
+# (HIMMEL-1838 round 5, codex-1).
 #
 # The actual delete goes through _suite_lock_drop, not a raw mv+rm -rf: SUITE_LOCK_DIR
 # is env-overridable, and a foreign directory that happens to contain a
@@ -1205,6 +1208,13 @@ _suite_lock_wait_brand() {
 _suite_lock_reclaim() {
   local expected="$1" guard="${SUITE_LOCK_DIR}.reclaim" rc=0
   if ! mkdir "$guard" 2>/dev/null; then
+    # The guard not existing at all means mkdir failed for a reason OTHER
+    # than another reclaimer already holding it (permission denied, a
+    # missing parent, ...): a permanent failure, not contention, so it must
+    # be reported before the staleness cleanup below (which can itself rmdir
+    # a genuinely-contended guard and make it look like this case) (HIMMEL-1838
+    # round 5, codex-1).
+    [ -d "$guard" ] || return 3
     # A reclaimer killed mid-way leaves the guard behind; free it late.
     [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$guard" 2>/dev/null  # gnu-ok: -maxdepth/-mmin are BSD find too
     return 1
@@ -1838,12 +1848,17 @@ suite_lock_queue_is_our_turn() {
 
 # _suite_lock_claim — mkdir the lock dir and brand it. Prints nothing.
 # Returns 0 only when THIS process is the branded owner; 1 when another
-# racer won (ordinary — ITS brand is on the dir); 2 when NO ONE branded it
-# — an IO/permission failure on the owner-file write, not contention, so a
-# caller must not treat it as a race a re-run will resolve (HIMMEL-1838
-# round 2, codex-2).
+# racer won (ordinary — ITS brand is on the dir, or the initial mkdir lost
+# to one); 2 when NO ONE branded it — an IO/permission failure on the mkdir
+# itself (the directory still does not exist) or on the owner-file write, not
+# contention, so a caller must not treat it as a race a re-run will resolve
+# (HIMMEL-1838 round 2, codex-2; round 5, codex-2 extends this to the mkdir
+# itself).
 _suite_lock_claim() {
-  mkdir "$SUITE_LOCK_DIR" 2>/dev/null || return 1
+  if ! mkdir "$SUITE_LOCK_DIR" 2>/dev/null; then
+    [ -d "$SUITE_LOCK_DIR" ] && return 1
+    return 2
+  fi
   # mkdir is not a reliable mutex everywhere: uutils coreutils 0.8.0 resolves
   # two concurrent mkdir of the same path to BOTH rc=0 (HIMMEL-966). So the
   # owner-file create is the real arbiter — `set -C` makes it a single
@@ -1980,7 +1995,7 @@ suite_lock_acquire() {
   # the other direction ("ALIVE") on a probe that cannot show identity.
   # pid_unknown is the third outcome: the probe was refused for a reason
   # other than "no such process", which proves nothing either way.
-  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 foreign_lock=0 claim_failed=0 probe_rc reclaim_rc claim_rc
+  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 foreign_lock=0 claim_failed=0 guard_failed=0 probe_rc reclaim_rc claim_rc
   this_host=$(_suite_lock_host)
   if _suite_lock_same_host "$o_host" "$this_host"; then same_host=1; fi
   if [ -n "$o_pid" ] && [ "$same_host" -eq 1 ]; then
@@ -2043,6 +2058,14 @@ suite_lock_acquire() {
       # the claim-failure case just below).
       foreign_lock=1
       suite_lock_permanent=1
+    elif [ "$reclaim_rc" -eq 3 ]; then
+      # The reclaim guard's own mkdir failed for a reason other than another
+      # reclaimer holding it (permission denied, a missing parent, ...): a
+      # permanent failure, not contention — the same "do not spend the wait
+      # budget on it" treatment as the other operational cases here (HIMMEL-1838
+      # round 5, codex-1).
+      guard_failed=1
+      suite_lock_permanent=1
     elif [ "$reclaim_rc" -eq 0 ] && [ "$claim_rc" -eq 2 ]; then
       # The reclaim cleared the dead owner, but nothing branded the freed dir:
       # an IO/permission failure on OUR OWN write, not a racer winning it
@@ -2080,6 +2103,16 @@ suite_lock_acquire() {
       printf '  directory failed — no other run branded it either, so this is not a race\n'
       printf '  someone else won. Re-running will NOT clear this on its own — check that\n'
       printf '  %s is writable.\n' "$SUITE_LOCK_DIR"
+    elif [ "$guard_failed" -eq 1 ]; then
+      printf 'REFUSED: judged the lock of scan root "%s" abandoned but could not even attempt to reclaim it.\n' "$scan"
+      printf '  lock: %s\n' "$SUITE_LOCK_DIR"
+      printf '  This run judged the previous owner abandoned (last observed pid=%s host=%s\n' \
+        "${o_pid:-unknown}" "${o_host:-unknown}"
+      printf '  age=%s), but making the reclaim guard directory (%s.reclaim) failed for a\n' \
+        "$age_disp" "$SUITE_LOCK_DIR"
+      printf '  reason other than another reclaimer already holding it — no other run took the\n'
+      printf '  right to reclaim it. Re-running will NOT clear this on its own — check that\n'
+      printf '  %s is writable.\n' "$(dirname "$SUITE_LOCK_DIR")"
     elif [ "$lost_race" -eq 1 ]; then
       printf 'REFUSED: lost the race to take over the machine lock of scan root "%s".\n' "$scan"
       printf '  lock: %s\n' "$SUITE_LOCK_DIR"

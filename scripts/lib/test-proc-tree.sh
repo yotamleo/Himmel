@@ -200,6 +200,7 @@ sleep 60 & livepid=$!
 # still match -- before the fix this diverged and liveness_matches judged a
 # live process dead (rc 1).
 recorded=$(TZ=Asia/Jerusalem proc_tree_process_identity "$livepid")
+check "T12 identity: ps probe recorded a nonempty identity (not a vacuous pass)" "$([ -n "$recorded" ] && echo 1 || echo 0)" "1"
 rc=0; TZ=UTC proc_tree_liveness_matches "$livepid" "$recorded" || rc=$?
 check "T12 identity: TZ mismatch (recorded JLM, judged UTC) still matches live pid -> rc 0" "$rc" "0"
 kill "$livepid" 2>/dev/null
@@ -212,6 +213,7 @@ kill "$livepid" 2>/dev/null
 long_arg=$(printf 'A%.0s' $(seq 1 200))
 bash -c 'while :; do sleep 5; done' "$long_arg" & livepid=$!
 recorded=$(COLUMNS=20 proc_tree_process_identity "$livepid")
+check "T13 identity: ps probe recorded a nonempty identity (not a vacuous pass)" "$([ -n "$recorded" ] && echo 1 || echo 0)" "1"
 rc=0; COLUMNS=200 proc_tree_liveness_matches "$livepid" "$recorded" || rc=$?
 check "T13 identity: COLUMNS mismatch (recorded 20, judged 200) still matches live pid -> rc 0" "$rc" "0"
 
