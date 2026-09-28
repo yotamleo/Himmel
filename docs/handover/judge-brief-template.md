@@ -67,6 +67,12 @@ template_version: 1
 > line truncates it silently), the category tag is exact-lowercase, and the
 > free text after `: ` must be non-blank.
 
+> A native `--judge` defaults to `CLAUDE_CODE_EFFORT_LEVEL=high`
+> (HIMMEL-3795). To dispatch a judge at a non-high effort, set
+> `HIMMEL_CONSOLE_JUDGE_EFFORT=<level>` in the LAUNCHING shell before calling
+> `headed-arm-leg.sh --judge` — the only channel meant to override it
+> (`headed-arm-leg.sh:461-466`).
+
 > **The question (verbatim, one line):** <the single question this verdict
 > answers — a finding to confirm or reject, a disposition to choose among
 > named options. Not a topic; a question with a determinate answer.>

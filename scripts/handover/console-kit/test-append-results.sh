@@ -12,6 +12,8 @@
 #   5. close-wrapped-leg.sh's WRAPPED gate (leg_tail_status, the shared
 #      parser) accepts a WRAPPED bullet the helper appended AFTER older
 #      out-of-order bullets, first try
+#   6. HIMMEL-3796: a `## Results-old` heading (grep -q's old prefix match)
+#      is rejected -> rc != 0, doc unchanged (exact-line match only)
 #
 # Hermetic: temp dir only. Platform guard: POSIX bash 3.2+.
 set -uo pipefail
@@ -76,6 +78,15 @@ check "5: append succeeds rc 0" "$rc" 0
 . "$TAIL_STATUS_LIB"
 marker="$(leg_tail_status "$d5")"
 check "5: leg_tail_status reads WRAPPED first try" "$marker" "WRAPPED"
+
+# --- 6. HIMMEL-3796: `## Results-old` is a prefix match, not the heading ---
+d6="$tmp/d6.md"
+printf '# leg\n\n## Results-old\n\nstale content\n' > "$d6"
+before_d6="$(cat "$d6")"
+rc=0; bash "$SCRIPT" "$d6" "LIVE fixture" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] && echo "ok - 6: '## Results-old' heading rc != 0 (not a real Results heading)" || { echo "FAIL - 6: '## Results-old' heading rc == 0"; fails=$((fails+1)); }
+after_d6="$(cat "$d6")"
+check "6: doc unchanged" "$after_d6" "$before_d6"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$fails FAILED"; exit 1

@@ -16,8 +16,19 @@
 # does not already end in a newline, one is added first, so the new bullet
 # is never glued onto a prior line. Refuses - doc left byte-for-byte
 # unchanged - unless the file exists, is readable and writable, and
-# contains a literal `## Results` heading line somewhere in it (a doc with
-# no Results section has nowhere defined to append a Results bullet).
+# contains a literal `## Results` heading line, matched at a word boundary
+# (`## Results` followed by whitespace or end-of-line, so the real
+# `## Results (newest at the bottom)` heading still matches but a lookalike
+# like `## Results-old` does not), somewhere in it (a doc with no Results
+# section has nowhere defined to append a Results bullet).
+#
+# HIMMEL-3796: <text> is read only from argv ($2), never stdin/a file/a
+# heredoc, so it can never carry an embedded NUL byte - execve() argv
+# strings are NUL-terminated C strings at the kernel level, so no NUL can
+# ever cross into $2 in the first place. A NUL-refusal check here would be
+# unreachable dead code; if this script ever grows a non-argv text source,
+# that path needs its own NUL-refusal with a real test, this guarantee does
+# not extend to it.
 #
 # Exit codes:
 #   0  appended
@@ -41,7 +52,7 @@ if [ ! -f "$DOC" ] || [ ! -r "$DOC" ] || [ ! -w "$DOC" ]; then
     exit 3
 fi
 
-if ! grep -q '^## Results' "$DOC"; then
+if ! grep -q '^## Results\([[:space:]]\|$\)' "$DOC"; then
     echo "append-results: '$DOC' has no '## Results' heading - refusing" >&2
     exit 4
 fi

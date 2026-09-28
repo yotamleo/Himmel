@@ -147,6 +147,27 @@ HIMMEL-2058 block in `scripts/cr/test-critic-first-pass.sh` (prompt injection).
   `change1.sh:15` (`(.agent_id | type) == "string"`), where flipping the one
   token under test changes the verdict. General rule + rationale: HIMMEL-2450.
 
+## Verdict labels: by-design vs disproved (HIMMEL-3797)
+
+`disproved` (the ledger's grammar — `scripts/cr/write-verdicts.sh`) means the
+critic's factual claim was checked and found wrong. It does not fit a finding
+whose claim is true but whose behavior is intended: a critic can correctly
+describe a deliberate, non-regressing change and still get recorded as
+`disproved` if the adjudicator reads "we're keeping this behavior" as "the
+claim is false". That misreads the finding as noise rather than as a
+documented tradeoff, and lets `cr-tune`'s per-critic scoring count an
+accurate finding against the critic that raised it.
+
+Independent judge J1407A (verdict:
+`handovers/yotamleo/himmel/verdicts/J1407A/verdict.md`) found exactly this on
+PR #1407: codex-1 (`headed-arm-leg.sh:468/469`, HIMMEL-3795) and codex-2
+(`headed-arm-leg.sh:618`, same PR) were both ledger-recorded as `disproved`,
+but both claims are factually true — the round adjudicated "keep the
+behavior" as if it meant "the claim is wrong". The ledger rows are left
+unrewritten (out of scope for a doc-only follow-up); the relabel is recorded
+as a HIMMEL-3797 Jira comment instead, so a future `cr-tune` pass over this
+window can read the correct label without a ledger rewrite.
+
 Related: [`enforcement.md`](enforcement.md) (the CR gate), `/cr-tune` (per-model
 tuning proposals — different question: *which critic* is miscalibrated; this
 page answers *which finding class* keeps recurring), `/cr-scores`.

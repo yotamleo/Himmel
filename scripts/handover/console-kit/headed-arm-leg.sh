@@ -462,8 +462,16 @@ fi
 # nothing else in this wrapper ever sets or reads - only a caller that means
 # to override a judge's effort would set it. Overwriting
 # CLAUDE_CODE_EFFORT_LEVEL here unconditionally (not just when unset) makes
-# this the last word for a native judge, before the ambient value could ever
-# reach the effort resolver at the bottom of this file.
+# this the last word for a native judge against ambient/inherited input -
+# this assignment, not the leg_propagate_env de-dupe below, is what a judge
+# brief means by "the effort channel". HIMMEL-3797: it is NOT the only
+# override channel left: a caller-preset HEADED_ARM_LAUNCHER_ENV token for
+# CLAUDE_CODE_EFFORT_LEVEL still wins downstream, because
+# leg_env_propagate's "caller-preset token wins" de-dupe (:242-249) leaves
+# an existing token alone rather than replacing it with this value. That is
+# a second, deliberate-only channel (a leg's own shell never reaches it -
+# headed-arm.sh unsets HEADED_ARM_LAUNCHER_ENV before a leg's own children
+# launch), unaffected by this ticket and not a bug to fix here.
 if [ "$JUDGE" -eq 1 ] && [ "$LANE" = "native" ]; then
     [ -z "$MODEL" ] && MODEL=claude-opus-5-5
     CLAUDE_CODE_EFFORT_LEVEL="${HIMMEL_CONSOLE_JUDGE_EFFORT:-high}"
@@ -608,6 +616,13 @@ unset -v _leg_env_scrub
 # shellcheck source=scripts/lib/console-context.sh
 # shellcheck disable=SC1091
 . "$HERE/../../lib/console-context.sh"
+# HIMMEL-3797: LEG_EFFORT is excluded (not scrubbed) same as the other five
+# names above, so it still passes through unchanged into a --judge launch as
+# a plain ambient var. Harmless today: a native judge never reads LEG_EFFORT
+# back (only the claudex branch further down and the relay path do), so an
+# inherited value has nothing to affect here. It would matter the day a
+# judge itself arms a claudex leg and forwards LEG_EFFORT to it - watch for
+# that if the judge role ever grows a claudex-arming path.
 for _leg_env_scrub in $(console_context_leg_env_unset_names); do
     case "$_leg_env_scrub" in
         HANDOVER_DIR|HIMMEL_CONSOLE_NAME|CLAUDE_CODE_EFFORT_LEVEL|LEG_EFFORT|HEADED_ARM_UNAME) continue ;;
