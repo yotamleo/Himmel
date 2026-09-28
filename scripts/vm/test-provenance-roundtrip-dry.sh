@@ -269,15 +269,16 @@ run_rt "$NO_CHECKS" f73a62f1 --expect-red
 if [ "$RC" -eq 2 ]; then pass "D6 zero CHECK lines exits 2"; else fail_case "D6 zero checks: rc=$RC"; dump; fi
 
 # =====================================================================
-# D7 — the uninstall step: himmelctl --yes (+ --purge-state), and the
-# harness never sets HIMMEL_UNINSTALL_REAL_HOME itself
+# D7 — the uninstall step: himmelctl --yes (+ --purge-state), and this
+# default (no --keep-backups) invocation never sends HIMMEL_UNINSTALL_REAL_HOME
+# (HIMMEL-3787 S2a: --keep-backups' own direct-uninstall.sh path DOES send it,
+# scoped to that flag alone — see D7f)
 # =====================================================================
 run_rt "$BOTH" f73a62f1 --expect-red --purge-state
 un=$(grep '^SSH ' "$LOG" | grep 'bin.js uninstall')
 if [[ "$un" == *'bin.js uninstall --yes --purge-state'* ]] \
-   && ! grep -q 'HIMMEL_UNINSTALL_REAL_HOME' "$LOG" \
-   && ! grep -qE 'HIMMEL_UNINSTALL_REAL_HOME[=]' "$SCRIPT"; then
-    pass "D7 uninstall runs 'himmelctl uninstall --yes --purge-state'; HIMMEL_UNINSTALL_REAL_HOME never set by the harness"
+   && ! grep -q 'HIMMEL_UNINSTALL_REAL_HOME' "$LOG"; then
+    pass "D7 uninstall runs 'himmelctl uninstall --yes --purge-state'; HIMMEL_UNINSTALL_REAL_HOME not sent on this run"
 else
     fail_case "D7 uninstall step: '$un'"; dump
 fi

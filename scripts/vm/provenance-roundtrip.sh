@@ -11,8 +11,9 @@
 # is the part CI runs.
 #
 # Usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red]
-#            [--profile core|all] [--purge-state] [--clone-gone]
+#            [--profile core|all] [--purge-state] [--keep-backups] [--clone-gone]
 #            [--install-from clone|tarball|aur] [--runtime docker|podman] [--image <ref>]
+#            [--s2a-case a|b]
 #   --expect-red   pass only when BOTH directions fail (the pre-fix RED); any
 #                  missing direction prints `RED incomplete: <dir> direction missing`
 #   --install-from clone (default) stages the ref's tree and installs from it,
@@ -47,6 +48,23 @@
 #                  step's observed output is printed on a `[marketplace-remove]`
 #                  line. Combined with --purge-state, the run also asserts
 #                  no `~/.himmel` is left.
+#   --keep-backups pass --keep-backups to the uninstall (only meaningful with
+#                  --purge-state or --s2a-case, which implies --purge-state).
+#   --s2a-case     HIMMEL-3787 S2a retention wet-run (clone/core only, no
+#                  --clone-gone): after install, mutate the project's
+#                  himmel-installed adopter-scripts unit (proj/scripts/
+#                  worktree.sh) to a third value the operator would have typed
+#                  by hand — same scenario as test-uninstall-provenance.sh's
+#                  RED58/RED59, this time through a real install. `a` expects
+#                  `--purge-state` (no --keep-backups) to REFUSE ([8/8] halt)
+#                  with the backup still held (J1390A Finding 4). `b` forces
+#                  --keep-backups on the first purge, expects it to succeed
+#                  with a new `retained-*` directory, then reinstalls and
+#                  purges a second time, expecting success with the earlier
+#                  `retained-*` left untouched (J1393A Minor 1 / HIMMEL-3792).
+#                  Bypasses the generic assert-provenance.sh CHECK verdict
+#                  (the mutation is deliberately not what a plain/purge run
+#                  expects) and reports its own PASS/FAIL.
 # Exit: 0 green (or, with --expect-red, RED complete); 1 a FAIL (or RED
 # incomplete); 2 usage, a refused VM precondition or a failed harness step.
 #
@@ -73,15 +91,16 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
-    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--clone-gone] [--with-qmd] [--install-from clone|tarball|aur] [--runtime docker|podman] [--image <ref>]" >&2
+    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--keep-backups] [--clone-gone] [--with-qmd] [--install-from clone|tarball|aur] [--runtime docker|podman] [--image <ref>] [--s2a-case a|b]" >&2
     exit 2
 }
 
-REF="" EXPECT_RED=0 PROFILE=core PURGE=0 CLONE_GONE=0 WITH_QMD=0 INSTALL_FROM=clone RUNTIME_OPT="" IMAGE_OPT=""
+REF="" EXPECT_RED=0 PROFILE=core PURGE=0 KEEP_BACKUPS=0 CLONE_GONE=0 WITH_QMD=0 INSTALL_FROM=clone RUNTIME_OPT="" IMAGE_OPT="" S2A_CASE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --expect-red) EXPECT_RED=1; shift ;;
         --purge-state) PURGE=1; shift ;;
+        --keep-backups) KEEP_BACKUPS=1; shift ;;
         --clone-gone) CLONE_GONE=1; shift ;;
         --with-qmd) WITH_QMD=1; shift ;;
         --profile)
@@ -95,6 +114,9 @@ while [ $# -gt 0 ]; do
             shift 2 ;;
         --image)
             [ -n "${2:-}" ] || usage; IMAGE_OPT="$2"; shift 2 ;;
+        --s2a-case)
+            case "${2:-}" in a|b) S2A_CASE="$2" ;; *) usage ;; esac
+            shift 2 ;;
         -h|--help) usage ;;
         -*) usage ;;
         *) [ -z "$REF" ] || usage; REF="$1"; shift ;;
@@ -108,6 +130,18 @@ fail() {
     echo "ERROR: provenance-roundtrip: $1" >&2
     exit 2
 }
+
+if [ -n "$S2A_CASE" ]; then
+    [ "$INSTALL_FROM" = clone ] && [ "$PROFILE" = core ] && [ "$CLONE_GONE" = 0 ] \
+        || fail "--s2a-case only supports --install-from clone --profile core, no --clone-gone"
+    PURGE=1
+    [ "$S2A_CASE" != b ] || KEEP_BACKUPS=1
+fi
+[ "$KEEP_BACKUPS" = 0 ] || [ "$PURGE" = 1 ] || fail "--keep-backups requires --purge-state (or --s2a-case)"
+# --keep-backups is a scripts/uninstall.sh flag, never wired through
+# himmelctl's own CLI, so the uninstall step below invokes the script
+# directly at $SRC -- only populated for --install-from clone.
+[ "$KEEP_BACKUPS" = 0 ] || [ "$INSTALL_FROM" = clone ] || fail "--keep-backups only supports --install-from clone"
 
 # aur mode never stages a clone tree, so --clone-gone (which deletes one) is
 # not a meaningful combination.
@@ -365,7 +399,7 @@ else
     step git-init "cd $SRC && git init -q && git add -A && git -c user.name=rt -c user.email=rt@invalid commit -qm 'rt $SHA'"
 fi
 echo "[step] helpers"
-tar -C "$REPO_ROOT/scripts/vm/lib" -cf - seed-provenance.sh assert-provenance.sh inventory.sh invdiff.py \
+tar -C "$REPO_ROOT/scripts/vm/lib" -cf - seed-provenance.sh assert-provenance.sh inventory.sh invdiff.py mutate-provenance.sh \
     | guest_ssh "rm -rf $WORKDIR && mkdir -p $WORKDIR && tar -C $WORKDIR -xf -" || fail "step helpers failed"
 
 # 2-3. Seed, inventory A.
@@ -399,6 +433,11 @@ done
 # 5. Inventory B + the ledger and the crontab as they stood after install.
 step inventory-B "bash $WORKDIR/inventory.sh B && { L=\${HIMMEL_PROVENANCE_DIR:-$GHOME/.himmel}/provenance.jsonl; [ ! -f \$L ] || cp \$L $WORKDIR/ledger-B.jsonl; } && { crontab -l >$WORKDIR/crontab-B.txt 2>/dev/null; true; }"
 
+# 5a. HIMMEL-3787 S2a: mutate the project's himmel-installed adopter-scripts
+# unit (proj/scripts/worktree.sh) to a third value, the way an operator would
+# by hand after install -- the real-install mirror of RED58/RED59.
+[ -z "$S2A_CASE" ] || step s2a-mutate "HIMMEL_RT_GUEST=1 bash $WORKDIR/mutate-provenance.sh"
+
 # 5b. --clone-gone: delete the staged clone on the guest so the uninstall
 # below has no source tree to fall back on (HIMMEL-3312 S15).
 [ "$CLONE_GONE" = 0 ] || step clone-gone-rm "rm -rf $SRC"
@@ -418,21 +457,37 @@ fi
 # S13 added.
 UNINSTALL_FLAGS="--yes"
 [ "$PURGE" = 0 ] || UNINSTALL_FLAGS="--yes --purge-state"
+[ "$KEEP_BACKUPS" = 0 ] || UNINSTALL_FLAGS="$UNINSTALL_FLAGS --keep-backups"
+UNINSTALL_CD="cd $GHOME/proj"
 if [ "$CLONE_GONE" = 1 ]; then
-    UNINSTALL_ENTRY="$GHOME/.local/bin/himmelctl"
-    UNINSTALL_CD="cd $GHOME/proj"
+    UNINSTALL_INVOKE="$ENV_CMD $GHOME/.local/bin/himmelctl uninstall $UNINSTALL_FLAGS"
+elif [ "$KEEP_BACKUPS" = 1 ]; then
+    # --keep-backups is a scripts/uninstall.sh flag, never wired through
+    # himmelctl's own CLI ("himmelctl: unknown argument: --keep-backups",
+    # confirmed on both a pre-fix and a fixed ref) -- invoke the script
+    # directly, the documented direct-invocation path (uninstall.sh's own
+    # "Fix the cause and re-run" hint), which requires
+    # HIMMEL_UNINSTALL_REAL_HOME=1 for a wet run against a real $HOME.
+    UNINSTALL_INVOKE="$ENV_CMD env HIMMEL_UNINSTALL_REAL_HOME=1 bash $SRC/scripts/uninstall.sh $UNINSTALL_FLAGS"
 else
-    UNINSTALL_ENTRY="$RUN_BIN"
-    UNINSTALL_CD="cd $GHOME/proj"
+    UNINSTALL_INVOKE="$ENV_CMD $RUN_BIN uninstall $UNINSTALL_FLAGS"
 fi
 # A non-zero uninstall is itself a result (console ruling): record its rc and
 # the step it halted at, then take inventory C anyway.
 echo "[step] uninstall"
-UN_OUT=$(guest_ssh "$UNINSTALL_CD && $ENV_CMD $UNINSTALL_ENTRY uninstall $UNINSTALL_FLAGS >$WORKDIR/uninstall.log 2>&1; rc=\$?; sed 's/^/[uninstall-log] /' $WORKDIR/uninstall.log; exit \$rc")
+UN_OUT=$(guest_ssh "$UNINSTALL_CD && $UNINSTALL_INVOKE >$WORKDIR/uninstall.log 2>&1; rc=\$?; sed 's/^/[uninstall-log] /' $WORKDIR/uninstall.log; exit \$rc")
 UN_RC=$?
 printf '%s\n' "$UN_OUT"
 # "Halted at: [7/8] ..." -> 7; empty when the uninstall ran every step.
 HALT_N=$(printf '%s\n' "$UN_OUT" | sed -n 's/^\[uninstall-log\] Halted at: \[\([0-9]*\)\/[0-9]*\].*/\1/p' | head -n 1)
+# s2a case b RED control: a pre-fix ref's himmelctl does not recognize
+# --keep-backups at all (arg-parsing rejection, no uninstall step even
+# starts) -- itself the expected RED for this case, not a harness failure.
+if [ "$S2A_CASE" = b ] && [ "$EXPECT_RED" = 1 ] && [ "$UN_RC" -ne 0 ] && [ -z "$HALT_N" ] \
+    && printf '%s\n' "$UN_OUT" | grep -qi -- "unknown argument: --keep-backups"; then
+    echo "RED confirmed: S2A-CASE-B (rc=$UN_RC) -- --keep-backups is not a recognized flag at this ref"
+    exit 0
+fi
 [ "$UN_RC" -eq 0 ] || [ -n "$HALT_N" ] || fail "step uninstall failed (rc=$UN_RC) with no 'Halted at:' line"
 # owner() below resolves only [8/8] and the launchers after it, so a halt
 # before [7/8] would count leftovers of unexecuted steps as pre-halt.
@@ -440,6 +495,58 @@ HALT_N=$(printf '%s\n' "$UN_OUT" | sed -n 's/^\[uninstall-log\] Halted at: \[\([
 HALT_AT=none
 [ -z "$HALT_N" ] || HALT_AT="[$HALT_N/8]"
 echo "uninstall-exit rc=$UN_RC halted-at=$HALT_AT"
+
+# 5d. HIMMEL-3787 S2a: cases (a) and (b) bypass the generic assert-
+# provenance.sh CHECK verdict below (the deliberate post-install mutation is
+# not what a plain/purge run expects) and report their own PASS/FAIL here.
+# --expect-red runs the SAME scenario against a pre-fix ref, where the fixed
+# behaviour is expected to be ABSENT (the RED control, mirroring the script's
+# existing --expect-red convention): rc=0/no held backup for case (a), an
+# unrecognized/ignored --keep-backups with no retained-* dir for case (b).
+if [ -n "$S2A_CASE" ]; then
+    BACKUP_COUNT_1=$(vm_ssh "find $GHOME/.himmel/provenance-backups -type f 2>/dev/null | wc -l" | tr -d '[:space:]')
+    echo "[s2a] case=$S2A_CASE expect-red=$EXPECT_RED backups-after-first-purge=$BACKUP_COUNT_1 halted-at=$HALT_AT rc=$UN_RC"
+    if [ "$S2A_CASE" = a ]; then
+        if [ "$EXPECT_RED" = 1 ]; then
+            [ "$UN_RC" -eq 0 ] && [ "$BACKUP_COUNT_1" -eq 0 ] \
+                || fail "s2a case a RED control: expected the pre-fix defect (purge succeeds, backup gone) at this ref, got rc=$UN_RC backups=$BACKUP_COUNT_1 -- the defect did not reproduce"
+            echo "RED confirmed: S2A-CASE-A (rc=$UN_RC backups-after=$BACKUP_COUNT_1) -- purge silently dropped the held-user-modified backup, as J1390A Finding 4 describes"
+            exit 0
+        fi
+        [ "$UN_RC" -ne 0 ] || fail "s2a case a: expected --purge-state to refuse (nonzero rc), got rc=0"
+        [ "$HALT_N" = 8 ] || fail "s2a case a: expected halt at [8/8], got halted-at=$HALT_AT"
+        [ "$BACKUP_COUNT_1" -gt 0 ] || fail "s2a case a: expected the held backup to survive the refused purge, found none"
+        echo "RESULT: S2A-CASE-A PASS (backups-held=$BACKUP_COUNT_1 halted-at=$HALT_AT)"
+        exit 0
+    fi
+    # case b: --purge-state --keep-backups must succeed and retain into a
+    # retained-* dir; a reinstall + second purge must succeed too, leaving
+    # the earlier retained-* dir untouched (J1393A Minor 1 / HIMMEL-3792).
+    if [ "$EXPECT_RED" = 1 ]; then
+        RETAINED_COUNT_1=$(vm_ssh "find $GHOME/.himmel -maxdepth 1 -type d -name 'retained-*' 2>/dev/null | wc -l" | tr -d '[:space:]')
+        echo "[s2a] case=b RED control: retained-after-first-purge=$RETAINED_COUNT_1"
+        [ "$RETAINED_COUNT_1" -eq 0 ] \
+            || fail "s2a case b RED control: expected no retained-* dir at this pre-fix ref, found $RETAINED_COUNT_1"
+        echo "RED confirmed: S2A-CASE-B (rc=$UN_RC backups-after=$BACKUP_COUNT_1 retained=$RETAINED_COUNT_1) -- --keep-backups has no retention effect at this ref"
+        exit 0
+    fi
+    [ "$UN_RC" -eq 0 ] || fail "s2a case b: expected --purge-state --keep-backups to succeed, rc=$UN_RC halted-at=$HALT_AT"
+    RETAINED_COUNT_1=$(vm_ssh "find $GHOME/.himmel -maxdepth 1 -type d -name 'retained-*' 2>/dev/null | wc -l" | tr -d '[:space:]')
+    RETAINED_DIR_1=$(vm_ssh "find $GHOME/.himmel -maxdepth 1 -type d -name 'retained-*' 2>/dev/null | head -n1")
+    [ "$RETAINED_COUNT_1" -ge 1 ] || fail "s2a case b: expected a retained-* dir after the first --keep-backups purge, found none"
+    echo "[s2a] case=b retained-after-first-purge=$RETAINED_COUNT_1 dir=$RETAINED_DIR_1"
+    step s2a-reinstall "cd $GHOME/proj && $ENV_CMD $RUN_BIN install --scope project >$WORKDIR/install-s2a-reinstall.log 2>&1; rc=\$?; sed 's/^/[install-s2a-reinstall-log] /' $WORKDIR/install-s2a-reinstall.log; exit \$rc"
+    UN2_OUT=$(guest_ssh "$UNINSTALL_CD && $UNINSTALL_INVOKE >$WORKDIR/uninstall-2.log 2>&1; rc=\$?; sed 's/^/[uninstall-2-log] /' $WORKDIR/uninstall-2.log; exit \$rc")
+    UN2_RC=$?
+    printf '%s\n' "$UN2_OUT"
+    [ "$UN2_RC" -eq 0 ] || fail "s2a case b: second purge (after reinstall) failed, rc=$UN2_RC"
+    RETAINED_COUNT_2=$(vm_ssh "find $GHOME/.himmel -maxdepth 1 -type d -name 'retained-*' 2>/dev/null | wc -l" | tr -d '[:space:]')
+    [ "$RETAINED_COUNT_2" -ge 2 ] || fail "s2a case b: expected >=2 retained-* dirs (earlier one kept + a new one), found $RETAINED_COUNT_2"
+    STILL_THERE=$(vm_ssh "[ -d '$RETAINED_DIR_1' ] && echo yes || echo no")
+    [ "$STILL_THERE" = yes ] || fail "s2a case b: the earlier retained-* dir ($RETAINED_DIR_1) was disturbed by the second purge"
+    echo "RESULT: S2A-CASE-B PASS (retained-before=1 retained-after=$RETAINED_COUNT_2, earlier dir untouched)"
+    exit 0
+fi
 
 # 6b. --clone-gone: the observed rc/output of `claude plugin marketplace
 # remove` for the gone directory marketplace — the one unverified claim this
