@@ -8,6 +8,12 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.61] — 2026-09-29
+
+### Changed
+- `.pre-commit-config.yaml`: the gitleaks hook moves from v8.21.2 to v8.30.1
+  (latest stable).
+
 ## [0.4.60] — 2026-09-26
 
 ### Fixed
