@@ -1230,18 +1230,25 @@ _suite_lock_wait_brand() {
 _suite_lock_reclaim() {
   local expected="$1" guard="${SUITE_LOCK_DIR}.reclaim" rc claim_rc
   if ! mkdir "$guard" 2>/dev/null; then
+    if [ -d "$guard" ]; then
+      # A reclaimer killed mid-way leaves the guard (and its brand, if it got
+      # that far) behind; free it late via _suite_lock_drop, which tolerates
+      # either a bare dir or one holding just `owner`.
+      [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && _suite_lock_drop "$guard" 2>/dev/null  # gnu-ok: -maxdepth/-mmin are BSD find too
+      return 1
+    fi
     # The guard not existing at all means mkdir failed for a reason OTHER
     # than another reclaimer already holding it (permission denied, a
-    # missing parent, ...): a permanent failure, not contention, so it must
-    # be reported before the staleness cleanup below (which can itself drop
-    # a genuinely-contended guard and make it look like this case) (HIMMEL-1838
-    # round 5, codex-1).
-    [ -d "$guard" ] || return 3
-    # A reclaimer killed mid-way leaves the guard (and its brand, if it got
-    # that far) behind; free it late via _suite_lock_drop, which tolerates
-    # either a bare dir or one holding just `owner`.
-    [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && _suite_lock_drop "$guard" 2>/dev/null  # gnu-ok: -maxdepth/-mmin are BSD find too
-    return 1
+    # missing parent, ...): a permanent failure, not contention (HIMMEL-1838
+    # round 5, codex-1). The holder may also have RELEASED the guard between
+    # our failed mkdir and that test, which looks identical to a permanent
+    # failure: retry the mkdir once, and only a second failure with the
+    # guard still absent is permanent (HIMMEL-3791, J1396D finding 5). The
+    # canonical twin _suite_sem_reclaim keeps this same shape.
+    if ! mkdir "$guard" 2>/dev/null; then
+      [ -d "$guard" ] && return 1
+      return 3
+    fi
   fi
   if ! ( set -C; printf 'pid=%s\nstarted=%s\n' "$$" "$(date +%s)" > "$guard/owner" ) 2>/dev/null; then
     # A uutils-0.8.0 co-winner of the mkdir above loses HERE: only one
@@ -1897,6 +1904,16 @@ suite_lock_queue_is_our_turn() {
 # (HIMMEL-1838 round 2, codex-2; round 5, codex-2 extends this to the mkdir
 # itself).
 _suite_lock_claim() {
+  # HIMMEL-3799: the WHOLE brand, identity probe included, is computed BEFORE
+  # the mkdir. proc_tree_process_identity forks (pwsh on Windows, slow), and a
+  # fork between the mkdir and the owner write left the live lock unbranded
+  # long enough for a second run to read it as a crash husk and reclaim it —
+  # two holders. Now nothing between the mkdir and the write forks.
+  local _brand
+  _brand=$(printf 'pid=%s\nhost=%s\nstarted=%s\nscan=%s\nidentity=%s\n' \
+    "$$" "$(_suite_lock_host)" "$(date +%s)" "$scan" \
+    "$(proc_tree_process_identity "$$" 2>/dev/null || printf '')"; printf x)
+  _brand=${_brand%x}
   if ! mkdir "$SUITE_LOCK_DIR" 2>/dev/null; then
     [ -d "$SUITE_LOCK_DIR" ] && return 1
     return 2
@@ -1911,10 +1928,7 @@ _suite_lock_claim() {
   # probe. Empty when the probe itself failed (e.g. ps unavailable) — never
   # fatal to the acquire; proc_tree_liveness_matches falls back to
   # identity-free liveness for that case, same as suite-semaphore.sh (HIMMEL-3778).
-  if ! ( set -C; printf 'pid=%s\nhost=%s\nstarted=%s\nscan=%s\nidentity=%s\n' \
-      "$$" "$(_suite_lock_host)" "$(date +%s)" "$scan" \
-      "$(proc_tree_process_identity "$$" 2>/dev/null || printf '')" \
-      > "$SUITE_LOCK_DIR/owner" ) 2>/dev/null; then
+  if ! ( set -C; printf '%s' "$_brand" > "$SUITE_LOCK_DIR/owner" ) 2>/dev/null; then
     # A brand on the dir means a racer won ordinarily; rmdir (never rm -rf)
     # is race-safe there — it refuses a dir a racer has since branded — so a
     # genuine loser leaves the winner's lock intact. No brand at all means no
