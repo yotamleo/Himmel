@@ -49,7 +49,8 @@ mkdir -p "$tree_src"
 # option, so pass it only where supported (a tracked-but-deleted file then
 # fails the copy on bsdtar, which a clean CI checkout never has)
 tar_ifr=""
-tar --help 2>&1 | grep -q -e '--ignore-failed-read' && tar_ifr="--ignore-failed-read"
+tar_help=$(tar --help 2>&1)
+case "$tar_help" in *--ignore-failed-read*) tar_ifr="--ignore-failed-read" ;; esac
 git -C "$repo_root" ls-files -co --exclude-standard -z \
   | tar -C "$repo_root" --null $tar_ifr -T - -cf - 2>/dev/null \
   | tar -xf - -C "$tree_src" || fail "could not copy the working tree"
