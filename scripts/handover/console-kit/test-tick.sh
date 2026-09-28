@@ -1416,6 +1416,15 @@ contains 'an empty log reads none (HIMMEL-3724)' "$o3724f" 'denials=none'
 o3724g="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-3724-missing.jsonl" bash "$SUT" 2>/dev/null)"
 contains 'a missing log reads skip (HIMMEL-3724)' "$o3724g" 'denials=skip'
 
+# Valid non-object JSON lines (a scalar, an array) survive `fromjson?`; they
+# must be dropped, not abort the slurp and hide every real denial.
+d3724h="$W/denials-3724h.jsonl"
+: > "$d3724h"
+mkdenial "$d3724h" 5 leg-a 'git push origin main'
+printf '%s\n' '5' '[1]' >> "$d3724h"
+o3724h="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724h" bash "$SUT" 2>/dev/null)"
+contains 'scalar and array lines in the log keep denials= populated (HIMMEL-3724)' "$o3724h" 'denials=leg-a:1:SHIP-STEP'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
     exit 0
