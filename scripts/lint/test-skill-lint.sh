@@ -14,6 +14,12 @@
 #   7. --staged mode   : lints only staged in-scope SKILL.md paths
 #   8. --help          : exits 0 and prints usage
 #   9. real tree       : the repo's actual in-scope SKILL.md corpus is clean
+#  10. --staged/index  : --staged lints the INDEX content, not the working tree
+#      (a) bad staged frontmatter + a clean unstaged edit on disk -> flagged
+#      (b) clean staged frontmatter + a bad unstaged edit on disk -> not flagged
+#  11. no-description  : a comment-only description (`# TODO`) counts as empty
+#  12. description ok  : real text followed by a trailing `# comment` stays clean
+#  13. name-mismatch   : a quoted name: with trailing whitespace still matches
 #
 # Exit: 0 all passed, 1 any failed. bash 3.2-safe.
 
@@ -220,6 +226,111 @@ printf '\nCase 9: real in-scope tree is clean\n'
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && git rev-parse --show-toplevel)"
 OUT9="$(cd "$REPO_ROOT" && bash "$LINT" 2>&1)"; EC9=$?
 if [ "$EC9" -eq 0 ]; then pass "real tree exits 0 (regression guard, not a cleanup)"; else fail "expected exit 0, got $EC9" "$OUT9"; fi
+
+# ---------------------------------------------------------------------------
+# Case 10: --staged lints the INDEX, not the working tree
+# ---------------------------------------------------------------------------
+printf '\nCase 10a: --staged flags bad STAGED content despite a clean unstaged edit\n'
+
+REPO2="$TMP_ROOT/repo2"
+mkdir -p "$REPO2/.claude/skills/divergent-skill"
+(
+    cd "$REPO2" || exit 1
+    git init -q
+    git config user.email t@t.t
+    git config user.name t
+    cat > .claude/skills/divergent-skill/SKILL.md <<'EOF'
+---
+description: missing a name field, staged
+---
+EOF
+    git add .claude/skills/divergent-skill/SKILL.md
+    cat > .claude/skills/divergent-skill/SKILL.md <<'EOF2'
+---
+name: divergent-skill
+description: fixed on disk but not staged
+---
+EOF2
+)
+OUT10A="$(cd "$REPO2" && bash "$LINT" --staged 2>&1)"; EC10A=$?
+if [ "$EC10A" -eq 1 ]; then pass "--staged flags bad staged content even when the working tree is clean"; else fail "expected exit 1, got $EC10A" "$OUT10A"; fi
+assert_contains "--staged [no-name] on the staged (not working-tree) content" "no-name" "$OUT10A"
+
+printf '\nCase 10b: --staged stays clean when only the working tree is broken\n'
+
+REPO3="$TMP_ROOT/repo3"
+mkdir -p "$REPO3/.claude/skills/divergent-skill2"
+(
+    cd "$REPO3" || exit 1
+    git init -q
+    git config user.email t@t.t
+    git config user.name t
+    cat > .claude/skills/divergent-skill2/SKILL.md <<'EOF'
+---
+name: divergent-skill2
+description: clean and staged
+---
+EOF
+    git add .claude/skills/divergent-skill2/SKILL.md
+    cat > .claude/skills/divergent-skill2/SKILL.md <<'EOF2'
+---
+description: broken on disk, missing name, not staged
+---
+EOF2
+)
+OUT10B="$(cd "$REPO3" && bash "$LINT" --staged 2>&1)"; EC10B=$?
+if [ "$EC10B" -eq 0 ]; then pass "--staged stays clean when only the working tree (not the index) is broken"; else fail "expected exit 0, got $EC10B" "$OUT10B"; fi
+
+# ---------------------------------------------------------------------------
+# Case 11: a comment-only description counts as empty
+# ---------------------------------------------------------------------------
+printf '\nCase 11: [no-description] on a comment-only value\n'
+
+mkdir -p "$TMP_ROOT/comment-desc-skill"
+COMMENTDESC="$TMP_ROOT/comment-desc-skill/SKILL.md"
+cat > "$COMMENTDESC" <<'EOF'
+---
+name: comment-desc-skill
+description: # TODO
+---
+
+# comment-desc-skill
+EOF
+
+OUT11="$(bash "$LINT" "$COMMENTDESC" 2>&1)"; EC11=$?
+if [ "$EC11" -eq 1 ]; then pass "exit 1 on comment-only description"; else fail "expected exit 1, got $EC11" "$OUT11"; fi
+assert_contains "[no-description] tag present for comment-only value" "no-description" "$OUT11"
+
+# ---------------------------------------------------------------------------
+# Case 12: real description text plus a trailing comment stays clean
+# ---------------------------------------------------------------------------
+printf '\nCase 12: description with real text and a trailing comment stays clean\n'
+
+mkdir -p "$TMP_ROOT/trailing-comment-skill"
+TRAILDESC="$TMP_ROOT/trailing-comment-skill/SKILL.md"
+cat > "$TRAILDESC" <<'EOF'
+---
+name: trailing-comment-skill
+description: real text # note
+---
+
+# trailing-comment-skill
+EOF
+
+OUT12="$(bash "$LINT" "$TRAILDESC" 2>&1)"; EC12=$?
+if [ "$EC12" -eq 0 ]; then pass "description with real text plus a trailing comment stays clean"; else fail "expected exit 0, got $EC12" "$OUT12"; fi
+
+# ---------------------------------------------------------------------------
+# Case 13: a quoted name: with trailing whitespace still matches the parent dir
+# ---------------------------------------------------------------------------
+printf '\nCase 13: quoted name: with trailing whitespace avoids a false name-mismatch\n'
+
+mkdir -p "$TMP_ROOT/quoted-name-skill"
+QUOTEDNAME="$TMP_ROOT/quoted-name-skill/SKILL.md"
+printf -- '---\nname: "quoted-name-skill"  \ndescription: quoted name with trailing spaces\n---\n\n# quoted-name-skill\n' > "$QUOTEDNAME"
+
+OUT13="$(bash "$LINT" "$QUOTEDNAME" 2>&1)"; EC13=$?
+if [ "$EC13" -eq 0 ]; then pass "quoted name: with trailing whitespace still matches the parent dir"; else fail "expected exit 0, got $EC13" "$OUT13"; fi
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

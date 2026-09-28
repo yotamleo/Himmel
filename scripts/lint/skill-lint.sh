@@ -19,7 +19,9 @@
 #
 # Usage:
 #   bash scripts/lint/skill-lint.sh              # scan the full in-scope tree
-#   bash scripts/lint/skill-lint.sh --staged     # lint staged in-scope SKILL.md
+#   bash scripts/lint/skill-lint.sh --staged     # lint the STAGED (index) content
+#                                                 # of in-scope SKILL.md paths, not
+#                                                 # whatever is currently on disk
 #   bash scripts/lint/skill-lint.sh FILE...      # lint exactly the named files
 #   bash scripts/lint/skill-lint.sh --help
 #
@@ -48,29 +50,42 @@ usage() {
 }
 
 # Print the frontmatter's non-empty `name:` value for $1, or nothing.
+# Trim whitespace BEFORE stripping quotes, so `name: "foo"  ` (trailing
+# spaces after the closing quote) unquotes to `foo`, not `foo"`.
 _fm_name() {
     awk '
         NR==1 && /^---[[:space:]]*$/ { in_fm=1; next }
         in_fm && /^---[[:space:]]*$/ { exit }
-        in_fm && /^name:[[:space:]]*/ {
-            sub(/^name:[[:space:]]*/, "");
-            gsub(/^["'"'"']|["'"'"']$/, "");
-            sub(/[[:space:]]+$/, "");
-            print; exit
+        in_fm && /^name:/ {
+            v = $0
+            sub(/^name:/, "", v)
+            sub(/^[[:space:]]+/, "", v)
+            sub(/[[:space:]]+$/, "", v)
+            gsub(/^["'"'"']|["'"'"']$/, "", v)
+            print v; exit
         }
     ' "$1"
 }
 
 # Print the frontmatter's non-empty `description:` value for $1, or nothing.
+# A value that is only a `# comment` (no real content before it) counts as
+# empty; a trailing ` # comment` after real content is stripped, not kept.
 _fm_description() {
     awk '
         NR==1 && /^---[[:space:]]*$/ { in_fm=1; next }
         in_fm && /^---[[:space:]]*$/ { exit }
-        in_fm && /^description:[[:space:]]*/ {
-            sub(/^description:[[:space:]]*/, "");
-            gsub(/^["'"'"']|["'"'"']$/, "");
-            sub(/[[:space:]]+$/, "");
-            print; exit
+        in_fm && /^description:/ {
+            v = $0
+            sub(/^description:/, "", v)
+            sub(/^[[:space:]]+/, "", v)
+            if (v ~ /^#/) {
+                v = ""
+            } else {
+                sub(/[[:space:]]+#.*$/, "", v)
+                sub(/[[:space:]]+$/, "", v)
+                gsub(/^["'"'"']|["'"'"']$/, "", v)
+            }
+            print v; exit
         }
     ' "$1"
 }
@@ -84,14 +99,21 @@ _has_frontmatter() {
 
 STAGED=0
 EXPLICIT=0
-FILES=""   # newline-separated (bash 3.2-safe; avoids array edge cases)
+# Newline-separated "display-path<TAB>content-path" pairs (bash 3.2-safe; no
+# arrays). display-path is what gets printed; content-path is what gets
+# linted. They differ only under --staged, where content-path is a temp copy
+# of the file's INDEX content, not the working-tree file.
+FILES=""
+STAGE_TMP=""
+_cleanup_stage_tmp() { [ -n "$STAGE_TMP" ] && rm -rf "$STAGE_TMP" 2>/dev/null; :; }
+trap _cleanup_stage_tmp EXIT
 while [ $# -gt 0 ]; do
     case "$1" in
         --staged) STAGED=1; shift ;;
         --help|-h) usage; exit 0 ;;
-        --) shift; while [ $# -gt 0 ]; do FILES="$FILES$1"$'\n'; EXPLICIT=1; shift; done ;;
+        --) shift; while [ $# -gt 0 ]; do FILES="$FILES$1	$1"$'\n'; EXPLICIT=1; shift; done ;;
         -*) printf 'skill-lint: unknown option: %s\n' "$1" >&2; exit 2 ;;
-        *) FILES="$FILES$1"$'\n'; EXPLICIT=1; shift ;;
+        *) FILES="$FILES$1	$1"$'\n'; EXPLICIT=1; shift ;;
     esac
 done
 
@@ -111,10 +133,19 @@ if [ "$STAGED" -eq 1 ]; then
     if ! _staged="$(cd "$_root" && git diff --cached --name-only --diff-filter=ACM)"; then
         printf 'skill-lint: --staged: git diff --cached failed\n' >&2; exit 2
     fi
+    STAGE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/skill-lint-staged.XXXXXX")" || {
+        printf 'skill-lint: --staged: mktemp -d failed\n' >&2; exit 2
+    }
     while IFS= read -r _f; do
         [ -n "$_f" ] || continue
         [[ "$_f" =~ $IN_SCOPE_RE ]] || continue
-        FILES="$FILES$_root/$_f"$'\n'
+        _dest="$STAGE_TMP/$_f"
+        mkdir -p "$(dirname "$_dest")"
+        if ! (cd "$_root" && git show ":$_f") > "$_dest" 2>/dev/null; then
+            printf 'skill-lint: --staged: git show failed for %s\n' "$_f" >&2
+            continue
+        fi
+        FILES="$FILES$_root/$_f	$_dest"$'\n'
     done <<EOF
 $_staged
 EOF
@@ -127,7 +158,7 @@ elif [ "$EXPLICIT" -eq 0 ]; then
         "$_root"/plugins/himmel-jira/skills/*/SKILL.md
     do
         for _f in $_pat; do
-            [ -f "$_f" ] && FILES="$FILES$_f"$'\n'
+            [ -f "$_f" ] && FILES="$FILES$_f	$_f"$'\n'
         done
     done
 fi
@@ -137,9 +168,10 @@ MISSING=0
 ISSUE_FILES=0
 NAMES=""   # newline-separated "name<TAB>file" for the dup-name pass
 
-while IFS= read -r f; do
+while IFS=$'\t' read -r f content_src; do
     [ -n "$f" ] || continue
-    if [ ! -f "$f" ]; then
+    [ -n "$content_src" ] || content_src="$f"
+    if [ ! -f "$content_src" ]; then
         printf 'skill-lint: skipping missing file: %s\n' "$f" >&2
         MISSING=$((MISSING + 1))
         continue
@@ -148,12 +180,12 @@ while IFS= read -r f; do
     file_issues=0
     file_report=""
 
-    if ! _has_frontmatter "$f"; then
+    if ! _has_frontmatter "$content_src"; then
         file_report="$file_report  [no-frontmatter] file does not open with a ---/--- frontmatter block"$'\n'
         file_issues=$((file_issues + 1))
     else
-        name_val="$(_fm_name "$f")"
-        desc_val="$(_fm_description "$f")"
+        name_val="$(_fm_name "$content_src")"
+        desc_val="$(_fm_description "$content_src")"
 
         if [ -z "$name_val" ]; then
             file_report="$file_report  [no-name] frontmatter has no non-empty name: field"$'\n'
