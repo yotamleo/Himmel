@@ -188,12 +188,12 @@ else
 fi
 chmod 644 "$tmp/ff14.txt"
 
-# 15. --from-file naming an empty file refuses rc=2 — unlike empty STDIN (T5),
-# --from-file has no "no candidates" caller, so empty is always a mistake.
+# 15. HIMMEL-3798 round 4: --from-file naming a genuinely empty regular file
+# is ALLOWED, same "no candidates" semantics as empty STDIN (T5) — it is the
+# only sanctioned shape /pr-check can use for that case post-round-3-cut.
 : >"$tmp/ff15.txt"
 ( cd "$repo" && bash "$SCRIPT" prior-blocking --branch t15 --from-file "$tmp/ff15.txt" ) 2>"$tmp/err15.txt"
-check "$?" "2" "T15 rc (empty --from-file path)"
-[ ! -e "$git_dir/cr-prior-blocking/t15" ] || { echo "FAIL: T15 wrote a target for an empty --from-file path"; fail=1; }
-grep -q 'empty' "$tmp/err15.txt" || { echo "FAIL: T15 missing empty diagnostic"; fail=1; }
+check "$?" "0" "T15 rc (empty --from-file path)"
+check "$(wc -c <"$git_dir/cr-prior-blocking/t15" | tr -d ' ')" "0" "T15 empty target file"
 
 [ "$fail" -eq 0 ] && echo "PASS test-write-verdicts" || exit 1

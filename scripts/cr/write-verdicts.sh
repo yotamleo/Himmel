@@ -101,11 +101,14 @@ while [ $# -gt 0 ]; do case "$1" in
   *) echo "write-verdicts.sh: unknown arg $1" >&2; exit 2 ;;
 esac; done
 
-# HIMMEL-3798 round 3: --from-file fails closed before anything downstream
-# reads it — a symlinked, missing, unreadable or empty path is refused rather
-# than silently falling through to an empty write (which the STDIN path
-# treats as valid, "no candidates" input; --from-file has no such caller, so
-# empty here is always a mistake, not a real zero-verdicts run).
+# HIMMEL-3798 round 4: --from-file fails closed before anything downstream
+# reads it — a symlinked, missing or unreadable path is refused. A genuinely
+# empty regular file is NOT refused: /pr-check's own runbook mandates an
+# empty --from-file for the "3.0/3.1 produced no candidates" case (it is the
+# ONLY sanctioned shape post-round-3-cut, so this is the sole way that valid
+# case can ever reach the script), and the read loop below already treats
+# zero lines as a no-op write — the same "no candidates" semantics the old
+# STDIN path had.
 if [ -n "$from_file" ]; then
   if [ -L "$from_file" ]; then
     echo "write-verdicts.sh: refusing to read through a symlink at $from_file" >&2; exit 2
@@ -115,9 +118,6 @@ if [ -n "$from_file" ]; then
   fi
   if [ ! -r "$from_file" ]; then
     echo "write-verdicts.sh: --from-file path is not readable: $from_file" >&2; exit 2
-  fi
-  if [ ! -s "$from_file" ]; then
-    echo "write-verdicts.sh: --from-file path is empty: $from_file" >&2; exit 2
   fi
   exec < "$from_file"
 fi

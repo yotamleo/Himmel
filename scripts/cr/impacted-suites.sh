@@ -347,9 +347,13 @@ done
 if [ -n "$from_file" ] && [ "$check" -eq 0 ]; then
     echo "impacted-suites.sh: --from-file requires --check" >&2; exit 2
 fi
-# HIMMEL-3798 round 3: same fail-closed contract as write-verdicts.sh's
-# --from-file — refuse a symlinked, missing, unreadable or empty path before
-# the --check awk ever reads it.
+# HIMMEL-3798 round 4: same fail-closed contract as write-verdicts.sh's
+# --from-file — refuse a symlinked, missing or unreadable path before the
+# --check awk ever reads it. A genuinely empty regular file is NOT refused:
+# /pr-check's own runbook mandates an empty --from-file when zero suites are
+# impacted, and --check's own n_impacted/n_missing reconciliation below
+# already catches an empty file paired with a NON-empty impacted set (it is
+# computed independently, from the diff, not from this file).
 if [ -n "$from_file" ]; then
     if [ -L "$from_file" ]; then
         echo "impacted-suites.sh: refusing to read through a symlink at $from_file" >&2; exit 2
@@ -359,9 +363,6 @@ if [ -n "$from_file" ]; then
     fi
     if [ ! -r "$from_file" ]; then
         echo "impacted-suites.sh: --from-file path is not readable: $from_file" >&2; exit 2
-    fi
-    if [ ! -s "$from_file" ]; then
-        echo "impacted-suites.sh: --from-file path is empty: $from_file" >&2; exit 2
     fi
     exec < "$from_file"
 fi

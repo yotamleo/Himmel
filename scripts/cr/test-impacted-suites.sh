@@ -434,13 +434,23 @@ else
     echo "SKIP 24: platform cannot create symlinks without elevated privilege"
 fi
 
-# --- 25. --from-file naming an empty file refuses (rc2) — unlike empty
-# stdin, which --check treats as "no verdicts supplied" (test 8's RED
-# control), --from-file has no caller that means it, so empty is always a
-# mistake. --------------------------------------------------------------
+# --- 25. HIMMEL-3798 round 4: --from-file naming a genuinely empty regular
+# file is ALLOWED (same "no candidates" semantics as empty stdin, test 9) —
+# but --check's own n_impacted/n_missing reconciliation, computed independently
+# from the diff rather than from this file, still catches it as a missing
+# verdict (rc1) when the impacted set from `change scripts/machine-setup/
+# uninstall-plugins.sh` (test 21) is non-empty: this is the downstream catch
+# for a wrongly-empty --from-file when real candidates exist. -----------------
 : > "$FX/empty-25.txt"
-err="$( cd "$FX" && bash "$IS" --check "$range" --from-file "$FX/empty-25.txt" 2>&1 >/dev/null )"; rc=$?
-if [ "$rc" -eq 2 ] && grepq "$err" 'empty'; then pass "--from-file empty path -> rc2, names the reason"; else fail "--from-file empty path: rc=$rc err=$err"; fi
+out="$( cd "$FX" && bash "$IS" --check "$range" --from-file "$FX/empty-25.txt" 2>&1 )"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" 'without a verdict'; then pass "--from-file empty path with a non-empty impacted set -> rc1, names the gap"; else fail "--from-file empty path against impacted suites: rc=$rc out=$out"; fi
+
+# --- 26. --from-file naming a genuinely empty file against a genuinely empty
+# impacted set is clean (rc0) — the case the runbook's own zero-candidate
+# instruction relies on. ------------------------------------------------------
+change docs/bar/other-26.md
+out="$( cd "$FX" && bash "$IS" --check "$range" --from-file "$FX/empty-25.txt" 2>&1 )"; rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" '0 impacted'; then pass "--from-file empty path with an empty impacted set -> rc0 '0 impacted'"; else fail "--from-file empty path against no impacted suites: rc=$rc out=$out"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
