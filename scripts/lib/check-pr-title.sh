@@ -52,6 +52,15 @@ if [ ! -f "$CHECK_MSG" ]; then
     exit 2
 fi
 
+# HIMMEL-3806: an external PR author (not on the internal allowlist) skips only
+# the ticket-ID requirement; the conventional shape is still checked. An empty
+# TICKET_ID_TRUSTED_AUTHOR keeps the ID required. See ticket-id-internal.sh.
+# shellcheck source=scripts/lib/ticket-id-internal.sh
+. "$HERE/ticket-id-internal.sh"
+if ticket_id_author_is_external "${TICKET_ID_TRUSTED_AUTHOR:-}"; then
+    export TICKET_ID_REQUIRED=0
+fi
+
 TMP="$(mktemp "${TMPDIR:-/tmp}/check-pr-title.XXXXXX")" || { echo "check-pr-title: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$TMP"' EXIT
 printf '%s\n' "$TITLE" > "$TMP"

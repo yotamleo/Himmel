@@ -41,7 +41,7 @@ out_e=$(TICKET_ID_AUTHOR='dependabot[bot]' TICKET_ID_TRUSTED_AUTHOR='dependabot[
 if [ "$rc_e" -eq 0 ]; then pass "threaded dependabot author passes (rc=0)"; else fail "threaded dependabot author passes (rc=0)" "got rc=$rc_e out=$out_e"; fi
 
 echo "TEST: the same ticket-less title is still refused for a non-exempt author"
-err_f=$(TICKET_ID_AUTHOR='someone' TICKET_ID_TRUSTED_AUTHOR='someone' bash "$SUT" "build(deps): bump foo from 1 to 2" 2>&1); rc_f=$?
+err_f=$(TICKET_ID_AUTHOR='yotamleo' TICKET_ID_TRUSTED_AUTHOR='yotamleo' bash "$SUT" "build(deps): bump foo from 1 to 2" 2>&1); rc_f=$?
 if [ "$rc_f" -ne 0 ]; then pass "non-exempt author still refused (rc!=0)"; else fail "non-exempt author still refused (rc!=0)" "got rc=$rc_f err=$err_f"; fi
 
 echo "TEST: GitHub's revert-button title shape is accepted (HIMMEL-3616 judge J1284O F5)"
@@ -51,6 +51,17 @@ if [ "$rc_g" -eq 0 ]; then pass "revert-button title accepted (rc=0)"; else fail
 echo "TEST: a non-GitHub-generated title merely starting with Revert still needs the quoted-string shape"
 err_h=$(bash "$SUT" "Revert stuff without quotes" 2>&1); rc_h=$?
 if [ "$rc_h" -ne 0 ]; then pass "bare Revert-prefixed title without the quoted shape still refused (rc!=0)"; else fail "bare Revert-prefixed title without the quoted shape still refused (rc!=0)" "got rc=$rc_h err=$err_h"; fi
+
+echo "TEST: HIMMEL-3806 — ticket ID required only from internal committers"
+out_x=$(TICKET_ID_TRUSTED_AUTHOR='Goomal' bash "$SUT" "fix(x): external fix with no ticket" 2>&1); rc_x=$?
+if [ "$rc_x" -eq 0 ]; then pass "external login, ticketless title passes"; else fail "external login, ticketless title passes" "got rc=$rc_x out=$out_x"; fi
+contains "external exemption prints a NOTE naming the login" "$out_x" "Goomal"
+TICKET_ID_TRUSTED_AUTHOR='Goomal' bash "$SUT" "no type external title" >/dev/null 2>&1; rc_x2=$?
+if [ "$rc_x2" -ne 0 ]; then pass "external login, non-conventional title still refused"; else fail "external login, non-conventional title still refused" "got rc=$rc_x2"; fi
+TICKET_ID_TRUSTED_AUTHOR='yotamleo' bash "$SUT" "fix(x): internal fix with no ticket" >/dev/null 2>&1; rc_x3=$?
+if [ "$rc_x3" -ne 0 ]; then pass "yotamleo, ticketless title refused"; else fail "yotamleo, ticketless title refused" "got rc=$rc_x3"; fi
+TICKET_ID_TRUSTED_AUTHOR='' bash "$SUT" "fix(x): unknown author no ticket" >/dev/null 2>&1; rc_x4=$?
+if [ "$rc_x4" -ne 0 ]; then pass "empty login, ticketless title refused (fail-safe)"; else fail "empty login, ticketless title refused (fail-safe)" "got rc=$rc_x4"; fi
 
 echo "TEST: usage error on no argument"
 err_d=$(bash "$SUT" 2>&1); rc_d=$?

@@ -1,0 +1,7 @@
+# GitHub logins that must cite a HIMMEL ticket ID in CI (commit messages and PR
+# title) — HIMMEL-3806. HIMMEL is a private Jira, so an author NOT listed here is
+# an external contributor and is exempt from the ticket-ID check only; the
+# conventional-commit shape and every other gate still apply to them.
+# One login per line, case-insensitive; blank lines and # comments are ignored.
+# Read by scripts/lib/ticket-id-internal.sh — the ONE source of truth.
+yotamleo

@@ -207,5 +207,39 @@ out="$(run_cr_mr "$t")"; rc=$?
 if [ "$rc" -eq 1 ]; then pass "merge-ref on a non-merge HEAD falls back to the given base -> rc1"; else fail "expected rc1, got $rc: $out"; fi
 rm -rf "$t"
 
+# --- HIMMEL-3806: the ticket-ID requirement binds internal committers only ---
+# The PR author login (TICKET_ID_TRUSTED_AUTHOR) picks the side. Empty/unknown
+# data must REQUIRE the ID (fail-safe); the conventional shape always applies.
+t="$(fixture_mktemp_dir)" || exit 1
+mkrepo "$t" "fix(x): external fix without a ticket"
+out="$(TICKET_ID_TRUSTED_AUTHOR='Goomal' run_cr "$t")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "external login, ticketless conventional commit -> rc0"; else fail "expected rc0, got $rc: $out"; fi
+if grepq "$out" 'NOTE.*Goomal'; then pass "external exemption prints a NOTE naming the login"; else fail "no NOTE naming Goomal: $out"; fi
+rm -rf "$t"
+
+t="$(fixture_mktemp_dir)" || exit 1
+mkrepo "$t" "broken external commit no type"
+out="$(TICKET_ID_TRUSTED_AUTHOR='Goomal' run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "external login, non-conventional commit still -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
+t="$(fixture_mktemp_dir)" || exit 1
+mkrepo "$t" "fix(x): internal fix without a ticket"
+out="$(TICKET_ID_TRUSTED_AUTHOR='yotamleo' run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "yotamleo, ticketless commit -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
+t="$(fixture_mktemp_dir)" || exit 1
+mkrepo "$t" "fix(x): unknown author without a ticket"
+out="$(TICKET_ID_TRUSTED_AUTHOR='' run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "empty login, ticketless commit -> rc1 (fail-safe)"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
+t="$(fixture_mktemp_dir)" || exit 1
+mkrepo "$t" "fix(x): case-variant internal login"
+out="$(TICKET_ID_TRUSTED_AUTHOR='YotamLeo' run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "allowlist match is case-insensitive -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; else echo "$failures FAILED"; exit 1; fi

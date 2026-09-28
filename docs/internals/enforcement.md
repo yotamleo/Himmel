@@ -160,6 +160,15 @@ Stages currently wired:
   **ON by default**, including for an adopter with no `.env` at all;
   `TICKET_ID_REQUIRED=0` is the explicit opt-out. Merge/revert commits and the configurable comma-list
   `TICKET_ID_EXEMPT_AUTHORS` (default `dependabot[bot],dependabot`) are exempt.
+  **CI applies the ticket-ID half to internal committers only (HIMMEL-3806):**
+  HIMMEL is a private Jira, so an external contributor cannot cite an ID. The
+  allowlist is `scripts/ci/ticket-id-internal-authors.txt` (one GitHub login per
+  line, case-insensitive, default `yotamleo`) — add a login there to bind a new
+  internal committer. `check-commit-range.sh` and `check-pr-title.sh` compare
+  the PR author (`TICKET_ID_TRUSTED_AUTHOR`) against it; an unlisted author gets
+  a `NOTE` and skips only the ticket-ID check (conventional shape and every other
+  gate still apply). An empty login or an unreadable/empty allowlist keeps the ID
+  required (fail-safe), and the local commit-msg hook is unchanged.
   The `.pre-commit-config.yaml` entry must keep `pass_filenames: true` — the
   commit-msg stage's filename argument IS the message file. Handed none, the
   hook falls back to `.git/COMMIT_EDITMSG`; only when that fallback does not

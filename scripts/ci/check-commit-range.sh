@@ -76,6 +76,17 @@ if [ -z "$commits" ]; then
   exit 0
 fi
 
+# HIMMEL-3806: HIMMEL is a private Jira, so only internal committers (the
+# allowlist in scripts/ci/ticket-id-internal-authors.txt) must cite an ID. An
+# external PR author skips ONLY the ticket-ID requirement (TICKET_ID_REQUIRED=0
+# makes check-commit-msg.sh return after the conventional-shape check); an empty
+# or unlisted-data login keeps it required.
+# shellcheck source=scripts/lib/ticket-id-internal.sh
+. "$SCRIPT_DIR/../lib/ticket-id-internal.sh"
+if ticket_id_author_is_external "${TICKET_ID_TRUSTED_AUTHOR:-}"; then
+  export TICKET_ID_REQUIRED=0
+fi
+
 fails=0
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
