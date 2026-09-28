@@ -55,20 +55,13 @@ Steps:
 
    > **Fences inherit NOTHING — not shell variables, and not the WORKING DIRECTORY.** Every ```bash``` fence is a separate Bash tool call in a separate process, started back in the session's own directory. Every value step 0 prints is therefore carried forward as a substituted LITERAL, never as a variable a later fence expands. With the `cd` gone, the cwd half of that rule costs nothing: no fence changes directory, so every fence starts in the repo under review.
 
-   **Why the fence is now TWO calls, neither one a compound (HIMMEL-3698, on top of HIMMEL-2335's shape).** A 13-shape bisection (harness v2.1.251) found two worktree-isolation-guard refusal rules the old two-part fence tripped at once: expansion of an env var the guard cannot resolve is refused EVEN WHEN THE VAR IS SET — `echo "$HIMMEL_REPO"` is refused exactly like an unset one, only `d=$(printenv HIMMEL_REPO); echo "$d"` is accepted (fence-contract entry 2 below is corrected to say this plainly); and a `[ ]` test on a value derived from command substitution is refused — `a=$(printenv X); if [ -z "$a" ]` refused, `if h=$(printenv X); then` (branching on the assignment's own exit status, no `[ ]` test on the captured value) accepted. The old `if [ -z "$HIMMEL_REPO" ] ... elif [ "$cwd_common" -ef "$HIMMEL_REPO/.git" ]` lane comparison hit both at once, and HIMMEL-2335 folded the surviving check into one `if himmel_repo=$(printenv HIMMEL_REPO | grep .); then bash "$himmel_repo/scripts/cr/pr-check-context.sh"; else …; fi` compound. **That compound is exactly the shape no `gateAllow` rule can match** (HIMMEL-3698): the permission matcher splits a compound command on its shell separators and matches each simple command independently, so an exact-literal allow rule for the whole `if…fi` string never fires, and legs fell through to the auto-mode classifier and were denied `[Out-of-Place Publication]` on this very fence. The fence is now two calls, each its own ```bash``` fence (fences already inherit nothing between them, so nothing needs to survive from the first to the second — see above):
+   **Why step 0 is now ONE call, not a compound `if`/`else` (HIMMEL-3798, superseding HIMMEL-3698's two-call split).** The two-call split (below, for history) worked around two worktree-isolation-guard refusal rules the old inline compound tripped (env-var expansion the guard cannot resolve refused even when the var is set; a `[ ]` test on a command-substitution value refused), but it was itself the single highest-rate classifier-denial shape on this runbook (HIMMEL-3724 4a row 2): a leg's `gateAllow` literal matches a whole SIMPLE command, and the permission matcher splits a compound on its shell separators before matching, so no exact-literal rule for the whole `if…fi` string — nor for two back-to-back fences read as one unit — ever fired reliably, and legs fell through to the classifier. `scripts/cr/pr-check-step0.sh` moves that entire `if`/`else` INSIDE a file: the runbook now spells step 0 as one bare, unwrapped anchor-prefixed literal, no `if`, no `;`, no pipe:
    ```bash
-   if himmel_repo=$(printenv HIMMEL_REPO | grep .); then
-       :
-   else
-       echo "pr-check: HIMMEL_REPO is unset or empty — cannot locate himmel from a trusted source outside the repo under review; adopt/setup wires it into settings.json env, or export it non-empty in your launching shell, then re-run" >&2
-       exit 2
-   fi
+   bash "$HIMMEL_REPO/scripts/cr/pr-check-step0.sh"
    ```
-   Then, only once the check above exits 0:
-   ```bash
-   bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"
-   ```
-   The first fence carries no bare `$HIMMEL_REPO`/`${HIMMEL_REPO` expansion and no `[ ]` test on any substituted value — exactly the shapes the bisection found refused — and invokes no script, so it needs no permission rule of its own. The second fence is a standalone SIMPLE command, no `if`/`;`/pipe anywhere in it, spelling the PERSISTENT uppercase `$HIMMEL_REPO` directly (not the first fence's local lowercase `$himmel_repo` — nothing carries across fences, so this is a fresh reference, not a reuse) with the double quote spanning the WHOLE path (`"$HIMMEL_REPO/scripts/..."`, never `"$HIMMEL_REPO"/scripts/...`). That shape matches `plugin-profiles.json`'s exact `gateAllow` literal for this call (HIMMEL-3698) — the same anchor spelling `guard-pr-check-literal.sh`'s own deny message already recommends for its other targets (merge-on-green.sh, HIMMEL-3491) — and the hook's own classifier exempts a lone, unwrapped `"$HIMMEL_REPO/`-prefixed operand from its relative-path conditions entirely (it is the trusted anchor form, not a relative one), so this fence is not itself subject to them.
+   This is a standalone SIMPLE command, spelling the PERSISTENT uppercase `$HIMMEL_REPO` with the double quote spanning the WHOLE path (`"$HIMMEL_REPO/scripts/..."`, never `"$HIMMEL_REPO"/scripts/...`) — the same anchor spelling `guard-pr-check-literal.sh`'s own deny message already recommends for its other targets (merge-on-green.sh, HIMMEL-3491). It needs no entry in that guard's `TARGETS`: the guard's `himmel_anchor_prefix` exemption (HIMMEL-3437 finding 1) already skips a lone, unwrapped `"$HIMMEL_REPO/`-prefixed operand from its relative-path conditions entirely, because `$HIMMEL_REPO` is anchor-controlled, never branch-controlled — the bytes that run are never in question. `pr-check-step0.sh` itself does exactly what the old two-call fence did: `printenv HIMMEL_REPO | grep .` (empty stays refused, matching the "$VAR set-but-empty" note below), then `exec`s `"$himmel_repo/scripts/cr/pr-check-context.sh"` with `HIMMEL_REPO` still in its environment, or prints the same remedy and exits 2. Being a script file, not a runbook fence, none of the Bash-tool refusal shapes below apply to what it contains.
+
+   *(History — the two-call split this superseded, kept for the classifier-denial rate this fixed: `if himmel_repo=$(printenv HIMMEL_REPO | grep .); then :; else echo "…" >&2; exit 2; fi` as fence one, `bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"` as fence two, run only once fence one exited 0.)
 
    **If this fence is refused with "runs bash in a plain command … cannot be shown not to run git" anyway, the session is EnterWorktree-pinned** (a leg launched before HIMMEL-3536's fix, or one whose settings someone hand-edited back in) — the fix and the interim are in `docs/internals/stuck-playbook.md` (HIMMEL-3536), not a respelling of this fence.
 
@@ -268,9 +261,9 @@ Steps:
 
    ```bash
    # Phase A — persist the panel/codex adjudication verdicts you just rendered.
-   # Pipe one `VERDICT [<id>] = <verdict>` line per candidate into
-   # scripts/cr/write-verdicts.sh, REPLACING the file's contents (step 0
-   # truncated it). The helper is the classifier-sanctioned write path
+   # Put one `VERDICT [<id>] = <verdict>` line per candidate in a quoted
+   # heredoc into scripts/cr/write-verdicts.sh, REPLACING the file's contents
+   # (step 0 truncated it). The helper is the classifier-sanctioned write path
    # (HIMMEL-2131): the inline `cat > ... <<EOF` heredoc this fence used to run
    # is denied by the auto-mode classifier, which silently degraded this
    # structural signal to fail-open.
@@ -280,23 +273,32 @@ Steps:
    # branch name is shell-parsed and a git ref may legitimately carry shell
    # metacharacters; the file is branch-scoped because git-common-dir is
    # SHARED across worktrees (round 1b).
-   # Pass ZERO verdict lines (empty stdin, as below) when 3.0/3.1 produced no
-   # candidates — the readers below then see an adjudicated-empty set rather
-   # than an absent one. That empty write is ALSO the fail-open default: a
-   # write that is skipped or left unfilled reads as 0 blockers, never as a
-   # silent block (the invariant this file must never break). So do NOT
-   # feed placeholder `VERDICT [<slug>-N] = <verdict>` lines verbatim — step 4's
-   # cross-check and orphan-check.sh both read this file, and they would count a
-   # placeholder as a real adjudication you never actually made; feed the REAL
-   # verdicts, or nothing.
+   # Pass ZERO verdict lines (empty heredoc body, as below) when 3.0/3.1
+   # produced no candidates — the readers below then see an adjudicated-empty
+   # set rather than an absent one. That empty write is ALSO the fail-open
+   # default: a write that is skipped or left unfilled reads as 0 blockers,
+   # never as a silent block (the invariant this file must never break). So
+   # do NOT feed placeholder `VERDICT [<slug>-N] = <verdict>` lines verbatim —
+   # step 4's cross-check and orphan-check.sh both read this file, and they
+   # would count a placeholder as a real adjudication you never actually made;
+   # feed the REAL verdicts, or nothing.
    #   Operator note: this invokes the helper by ABSOLUTE path, so the
    #   relative allow-rule `Bash(bash scripts/cr/write-verdicts.sh:*)` never
    #   prefix-matches it (matching is literal) — the operator also needs
    #   `Bash(bash <primary-checkout>/scripts/cr/write-verdicts.sh:*)`.
-   #   Example — one printf arg per candidate you adjudicated:
-   #     printf '%s\n' 'VERDICT [codex-1] = disproved' 'VERDICT [codex-adv-2] = agreed' \
-   #       | bash "<himmel_dir>/scripts/cr/write-verdicts.sh" prior-blocking --branch '<branch>'
-   printf '' | bash "<himmel_dir>/scripts/cr/write-verdicts.sh" prior-blocking --branch '<branch>'
+   # `guard-pr-check-literal.sh` denies a pipe into this writer as of
+   # HIMMEL-3798 (a pipe is a second command that can rewrite what runs before
+   # the writer does) and denies any heredoc delimiter but the canonical
+   # `WV_STDIN_EOF`, quoted exactly as below. A `< <file>` redirect to a
+   # scratchpad file is the other accepted shape when the payload is large.
+   #   Example — one VERDICT line per candidate you adjudicated, inside the
+   #   heredoc body (never as printf args piped in):
+   #     bash "<himmel_dir>/scripts/cr/write-verdicts.sh" prior-blocking --branch '<branch>' <<'WV_STDIN_EOF'
+   #     VERDICT [codex-1] = disproved
+   #     VERDICT [codex-adv-2] = agreed
+   #     WV_STDIN_EOF
+   bash "<himmel_dir>/scripts/cr/write-verdicts.sh" prior-blocking --branch '<branch>' <<'WV_STDIN_EOF'
+   WV_STDIN_EOF
    ```
 
    **There is no CodeRabbit phase in `/pr-check` (HIMMEL-2704).** CodeRabbit is the GitHub **App**, and the App reviews the PR only AFTER `gh pr create` — there is nothing local to invoke here, nothing to conserve, and no `[coderabbit-N]` candidates to adjudicate at this step. The CLI wrapper (`scripts/cr/coderabbit-review.sh`) and the conserve-or-run gate (`scripts/cr/coderabbit-gate.sh`) that used to occupy this slot are DELETED, along with `CODERABBIT_BIN`, `CODERABBIT_WSL`, `CODERABBIT_TIMEOUT_SECS` and `CODERABBIT_CLI_DISABLE`. Do not reintroduce them: the operator's ruling (2026-09-07) is that every CodeRabbit finding is commented on and tracked **on the PR in GitHub**, and each CLI round was costing an extra paid codex panel row to satisfy the cross-model marker at the new head.
@@ -422,13 +424,13 @@ Steps:
    - `SUITE <path> = SKIP <reason>` — it was not run, and the reason names WHY it does not apply to this diff (a host that lacks the tool, a suite that cannot exercise the changed lines). A bare `SKIP` is not a verdict.
    - `SUITE <path> = BLOCKED <denial>` — it could not be run, and the denial quotes the refusal (a hook/permission text, a lock wait that expired). Route the BLOCKED to your console/operator; it is not clean either, only *accounted for*: `--check` exits 3 on it, so the row stays open until the console/operator rules (re-run the suite, or re-record it `SKIP <reason>` quoting the ruling).
 
-   Then submit them. The heredoc delimiter is quoted so the pasted lines stay inert; write `<path>` and the reason as printed, one line per suite. **Keep the `<himmel_dir>` anchor spelling exactly as shown below — never a bare relative `bash scripts/cr/impacted-suites.sh`.** `guard-pr-check-literal.sh` denies the relative spelling of this heredoc at its "one simple command" check (a heredoc carries a `<` and a newline), parking the leg before `auto-approve-safe-bash.sh`'s grant is ever reached (HIMMEL-3587; see `docs/internals/enforcement.md`'s Third exception):
+   Then submit them. The heredoc delimiter is quoted so the pasted lines stay inert; write `<path>` and the reason as printed, one line per suite. **Keep the `<himmel_dir>` anchor spelling exactly as shown below — never a bare relative `bash scripts/cr/impacted-suites.sh`.** **Keep the delimiter exactly `IS_STDIN_EOF` — the canonical spelling `guard-pr-check-literal.sh` recognises (HIMMEL-3798); any other delimiter, an unquoted one, or a pipe into the writer falls through to the classifier.** `guard-pr-check-literal.sh` denies the relative spelling of this heredoc at its "one simple command" check (a heredoc carries a `<` and a newline), parking the leg before `auto-approve-safe-bash.sh`'s grant is ever reached (HIMMEL-3587; see `docs/internals/enforcement.md`'s Third exception):
 
    ```bash
-   bash "<himmel_dir>/scripts/cr/impacted-suites.sh" --check <db_sha>..<head> <<'IMPACTED_EOF'
+   bash "<himmel_dir>/scripts/cr/impacted-suites.sh" --check <db_sha>..<head> <<'IS_STDIN_EOF'
    SUITE <path> = PASS
    SUITE <path> = SKIP <reason>
-   IMPACTED_EOF
+   IS_STDIN_EOF
    ```
 
    Carry forward `impacted_rc` (the fence's exit code) and its `impacted-suites: N impacted, M without a verdict` line. `impacted_rc = 0` means every impacted suite has a verdict (or none is impacted); `impacted_rc = 1` names each unverdicted suite on stderr and the row is NOT clean; `impacted_rc = 2` is an unresolvable range or a failed search — fix it, do not proceed as if the list were empty; `impacted_rc = 3` means every suite has a verdict but at least one is BLOCKED (accounted for, NOT clean). Steps 4.9, 5 and 6 read `impacted_rc`.
@@ -477,17 +479,24 @@ Steps:
    # worktrees (round 1b). write-verdicts.sh is the classifier-sanctioned
    # write path (HIMMEL-2131) — it REPLACES the file contents every run, and
    # step 0 pre-truncates it, so a stale aggregate from a prior run can never
-   # mask an orphan. Pass ZERO verdict lines (empty stdin, as below) when no
-   # cross-model source produced any verdict — phase A wrote nothing either,
-   # so there is nothing to reconcile (fail-open). Do NOT feed placeholder
-   # `VERDICT [<id>] = <v>` lines; feed the REAL verdicts you emitted, or
-   # nothing.
+   # mask an orphan. Pass ZERO verdict lines (empty heredoc body, as below)
+   # when no cross-model source produced any verdict — phase A wrote nothing
+   # either, so there is nothing to reconcile (fail-open). Do NOT feed
+   # placeholder `VERDICT [<id>] = <v>` lines; feed the REAL verdicts you
+   # emitted, or nothing.
    #   Operator note: same absolute-path caveat as phase A above — the
    #   relative allow-rule does not cover this invocation; both rules needed.
-   #   Example — one printf arg per verdict you emitted in 3.2:
-   #     printf '%s\n' 'VERDICT [codex-1] = disproved' 'VERDICT [codex-adv-3] = unaddressed' \
-   #       | bash "<himmel_dir>/scripts/cr/write-verdicts.sh" aggregate --branch '<branch>'
-   printf '' | bash "<himmel_dir>/scripts/cr/write-verdicts.sh" aggregate --branch '<branch>'
+   # `guard-pr-check-literal.sh` denies a pipe into this writer as of
+   # HIMMEL-3798, and any heredoc delimiter but the canonical `WV_STDIN_EOF`,
+   # quoted exactly as below — same accepted shapes as phase A.
+   #   Example — one VERDICT line per verdict you emitted in 3.2, inside the
+   #   heredoc body (never as printf args piped in):
+   #     bash "<himmel_dir>/scripts/cr/write-verdicts.sh" aggregate --branch '<branch>' <<'WV_STDIN_EOF'
+   #     VERDICT [codex-1] = disproved
+   #     VERDICT [codex-adv-3] = unaddressed
+   #     WV_STDIN_EOF
+   bash "<himmel_dir>/scripts/cr/write-verdicts.sh" aggregate --branch '<branch>' <<'WV_STDIN_EOF'
+   WV_STDIN_EOF
    ```
    Then mechanically diff the two ID sets — every phase-A candidate ID (read from the prior-blocking file with the SAME VERDICT-line parse `orphan-check.sh` uses, so the two readers can never disagree about the ID set) that has NO matching aggregate VERDICT line is an orphan, treated fail-closed as `unaddressed`. The directions the reconciliation deliberately fails in: a missing / empty / unreadable prior-blocking file means there are no phase-A candidates to reconcile → 0 orphans (fail-open, matching phase B); an aggregate file that is missing or empty while the prior-blocking file has candidates makes EVERY step-3.2 candidate an orphan → fail-closed, so a forgotten aggregate write reads as "every candidate unaddressed". **The comparison lives in `scripts/cr/orphan-check.sh` (HIMMEL-2226)** — the fence it replaces walked the orphan list with a `read` loop carrying an `IFS` prefix assignment, which Claude Code's worktree-isolation guard refuses, so it could never run inline in an isolated session. The script prints the identical `orphan-check: <N> unaddressed phase-A candidate(s)` line on stdout and the identical per-orphan diagnostic on stderr. **Pass step 0's captured branch explicitly — `--branch '<branch>'`, the same value the two `write-verdicts.sh` calls above are given (HIMMEL-1175).** The script's `--branch` is optional and falls back to the live `git branch --show-current`, and that fallback is exactly the hole: the two verdict files are WRITTEN under the captured branch and would then be READ under the live one. A mid-run same-SHA branch switch — the case the SHA pins cannot catch — points the orphan check at a different branch's scratch files, where it finds no phase-A candidates and reports **0 orphans fail-open**, silently dropping the fail-closed reconciliation this step exists to provide. Writer and reader must agree by construction, not because the checkout happened not to move; this is the same defect the round-3 captured-branch pin closed:
    ```bash

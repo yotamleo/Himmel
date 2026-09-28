@@ -95,25 +95,38 @@ NAME that variable — check (vi) of `scripts/cr/test-pr-check-pair.sh` forbids
 the token anywhere in either twin, prose included, because the harness
 substitutes it before the runbook is read.
 
-**Why the fence is now ONE call with no lane-comparison branching
-(HIMMEL-2335).** A 13-shape bisection (harness v2.1.251) found two more
-worktree-isolation-guard refusal rules the old two-part fence tripped at
-once: expansion of an env var the guard cannot resolve is refused EVEN WHEN
-THE VAR IS SET — `echo "$HIMMEL_REPO"` is refused exactly like an unset one,
-only `d=$(printenv HIMMEL_REPO); echo "$d"` is accepted; and a `[ ]` test on
-a value derived from command substitution is refused — `a=$(printenv X); if
-[ -z "$a" ]` refused, `if h=$(printenv X); then` (branching on the
-assignment's own exit status, no `[ ]` test on the captured value) accepted.
-The old `if [ -z "$HIMMEL_REPO" ] ... elif [ "$cwd_common" -ef
-"$HIMMEL_REPO/.git" ]` lane comparison hit both at once. The fence is now
-this, and nothing else:
+**Why the fence is now ONE bare call, not an inline `if`/`else`
+(HIMMEL-3798, superseding HIMMEL-2335's one-fence shape).** The one-fence
+compound below (kept for history) already satisfied the worktree-isolation
+guard, but it was still the single highest-rate classifier-denial shape on
+this runbook (HIMMEL-3724 4a row 2): a leg's `gateAllow` literal matches a
+whole SIMPLE command, and the permission matcher splits a compound on its
+shell separators before matching, so no exact-literal rule for the whole
+`if...fi` string ever fired reliably. `scripts/cr/pr-check-step0.sh` moves
+that entire `if`/`else` INSIDE a file, so step 0 is now one bare, unwrapped,
+anchor-prefixed literal:
 
-    if himmel_repo=$(printenv HIMMEL_REPO | grep .); then
-        bash "$himmel_repo/scripts/cr/pr-check-context.sh"
-    else
-        echo "pr-check: HIMMEL_REPO is unset or empty — cannot locate himmel from a trusted source outside the repo under review; adopt/setup wires it into settings.json env, or export it non-empty in your launching shell, then re-run" >&2
-        exit 2
-    fi
+    bash "$HIMMEL_REPO/scripts/cr/pr-check-step0.sh"
+
+A standalone SIMPLE command, no `if`, no `;`, no pipe, spelling the
+PERSISTENT uppercase `$HIMMEL_REPO` with the double quote spanning the WHOLE
+path. It needs no entry in the guard's `TARGETS`: the guard's
+`himmel_anchor_prefix` exemption (HIMMEL-3437 finding 1) already skips a
+lone, unwrapped `"$HIMMEL_REPO/`-prefixed operand entirely, because
+`$HIMMEL_REPO` is anchor-controlled, never branch-controlled.
+`pr-check-step0.sh` itself does exactly what the old fence did:
+`printenv HIMMEL_REPO | grep .` (empty stays refused, see below), then
+`exec`s `"$himmel_repo/scripts/cr/pr-check-context.sh"`, or prints the same
+remedy and exits 2. Being a script file, none of the Bash-tool refusal
+shapes below apply to what it contains.
+
+*(History — the one-fence compound this superseded, kept as prose so it is
+never re-extracted as code: `if himmel_repo=$(printenv HIMMEL_REPO | grep
+.); then bash "$himmel_repo/scripts/cr/pr-check-context.sh"; else echo
+"pr-check: HIMMEL_REPO is unset or empty — cannot locate himmel from a
+trusted source outside the repo under review; adopt/setup wires it into
+settings.json env, or export it non-empty in your launching shell, then
+re-run" >&2; exit 2; fi`)*
 
 No `[ ]` test on any substituted value, no bare `$HIMMEL_REPO`/`${HIMMEL_REPO`
 expansion, and the double quote spans the WHOLE path

@@ -854,6 +854,84 @@ NEW_ITEM_LITERAL='bash "'"$PRIMARY"'/scripts/handover/resolve-active-item-report
 run "rewritten pr-check.md 4.6/4.7 one-line wrapper literal, clean tree -> allow" 0 \
     "$(payload "$NEW_ITEM_LITERAL" "$WT")" "$HR"
 
+# ---- HIMMEL-3798: the two STDIN-only /pr-check writers accept exactly one
+# quoted heredoc (canonical delimiter WV_STDIN_EOF / IS_STDIN_EOF) or one
+# `< <file>` redirect - the runbook's only ways to feed them a payload,
+# since a pipe stays denied (another command can rewrite what runs first).
+WV_HEREDOC=$(cat <<'ENVELOPE'
+bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' <<'WV_STDIN_EOF'
+VERDICT [f1] = agreed
+WV_STDIN_EOF
+ENVELOPE
+)
+run "write-verdicts.sh documented heredoc shape, clean tree -> allow (HIMMEL-3798)" 0 \
+    "$(payload "$WV_HEREDOC" "$WT")" "$HR"
+
+IS_HEREDOC=$(cat <<'ENVELOPE'
+bash scripts/cr/impacted-suites.sh --check aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb <<'IS_STDIN_EOF'
+SUITE scripts/hooks/test-foo.sh = PASS
+IS_STDIN_EOF
+ENVELOPE
+)
+run "impacted-suites.sh --check documented heredoc shape, clean tree -> allow (HIMMEL-3798)" 0 \
+    "$(payload "$IS_HEREDOC" "$WT")" "$HR"
+
+WV_EMPTY_HEREDOC=$(cat <<'ENVELOPE'
+bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' <<'WV_STDIN_EOF'
+WV_STDIN_EOF
+ENVELOPE
+)
+run "write-verdicts.sh heredoc with zero verdict lines -> allow (HIMMEL-3798)" 0 \
+    "$(payload "$WV_EMPTY_HEREDOC" "$WT")" "$HR"
+
+run "write-verdicts.sh via < file redirect, clean tree -> allow (HIMMEL-3798)" 0 \
+    "$(payload "bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' < /dev/null" "$WT")" "$HR"
+run "impacted-suites.sh --check via < file redirect, clean tree -> allow (HIMMEL-3798)" 0 \
+    "$(payload "bash scripts/cr/impacted-suites.sh --check aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb < /dev/null" "$WT")" "$HR"
+
+# case (ii): a heredoc body that merely MENTIONS another guarded script's name
+# is data, not a second candidate to resolve - still allow.
+IS_HEREDOC_MENTIONS=$(cat <<'ENVELOPE'
+bash scripts/cr/impacted-suites.sh --check aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb <<'IS_STDIN_EOF'
+SUITE scripts/cr/write-verdicts.sh = BLOCKED denial mentioning scripts/cr/write-verdicts.sh
+IS_STDIN_EOF
+ENVELOPE
+)
+run "impacted-suites.sh heredoc body mentions another script's name -> allow (HIMMEL-3798)" 0 \
+    "$(payload "$IS_HEREDOC_MENTIONS" "$WT")" "$HR"
+
+# case (iii): a plain node .../jira call whose --summary happens to mention a
+# writer's name never reaches this hook's runner detection at all (no bash/sh
+# interpreter word, no scripts/cr candidate as the command word) - allow,
+# unaffected by this fix; this hook is not what denies that shape in
+# production (a different hook, block-jira-compound-write.sh, is).
+run "node jira --summary mentions a writer's name -> allow, not this hook's concern (HIMMEL-3798)" 0 \
+    "$(payload "node $PRIMARY/scripts/jira/dist/index.js create --type Bug --summary 'guard denies scripts/cr/write-verdicts.sh heredoc'" "$WT")" "$HR"
+
+# ---- controls: must stay denied ---------------------------------------------
+run "control: pipe into write-verdicts.sh still denies (HIMMEL-3798)" 2 \
+    "$(payload "printf '' | bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x'" "$WT")" "$HR"
+run "control: pipe into impacted-suites.sh --check still denies (HIMMEL-3798)" 2 \
+    "$(payload "printf '' | bash scripts/cr/impacted-suites.sh --check aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "$WT")" "$HR"
+run "control: \$VAR path with a heredoc still denies (HIMMEL-3798)" 2 \
+    "$(payload 'X="scripts/cr/write-verdicts.sh"; bash "$X" prior-blocking --branch feat/x <<'"'"'WV_STDIN_EOF'"'"'
+VERDICT [f1] = agreed
+WV_STDIN_EOF' "$WT")" "$HR"
+run "control: \$VAR redirect file still denies (HIMMEL-3798)" 2 \
+    "$(payload 'F=/dev/null; bash scripts/cr/write-verdicts.sh prior-blocking --branch feat/x < "$F"' "$WT")" "$HR"
+run "control: trailing command after the heredoc closes still denies (HIMMEL-3798)" 2 \
+    "$(payload "$WV_HEREDOC"'
+rm -rf /' "$WT")" "$HR"
+run "control: trailing command after the redirect target still denies (HIMMEL-3798)" 2 \
+    "$(payload "bash scripts/cr/write-verdicts.sh prior-blocking --branch 'feat/x' < /dev/null; rm -rf /" "$WT")" "$HR"
+# A worktree whose write-verdicts.sh copy differs from the anchor's still
+# denies at the existing byte-equality tail, unaffected by this fix.
+echo tampered >>"$WT/scripts/cr/write-verdicts.sh"
+run "control: heredoc shape on a tampered worktree copy still denies (HIMMEL-3798)" 2 \
+    "$(payload "$WV_HEREDOC" "$WT")" "$HR"
+need_in_err "deny names the byte mismatch, not the shape" "differs from the HIMMEL_REPO anchor's"
+g -C "$WT" checkout -q -- scripts/cr/write-verdicts.sh
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "all guard-pr-check-literal cases passed"

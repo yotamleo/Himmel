@@ -372,20 +372,27 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # is exactly the regression this check exists to catch.
     calls=$(printf '%s\n' "$code" | grep -v '^[[:space:]]*#')
     ii_calls=$(printf '%s\n' "$calls" | grep -vF "arm it once from himmel's primary checkout: bash scripts/cr/install-cr-gate.sh --target \$PWD")
-    # HIMMEL-2335: the step-0 anchor-entry line legitimately spells the root
-    # "$himmel_repo/scripts/cr/pr-check-context.sh" -- $himmel_repo is the
-    # fence-local variable `himmel_repo=$(printenv HIMMEL_REPO)` assigns, not
-    # the <himmel_dir> substituted-literal every OTHER invocation site uses.
-    # Anchored on the FULL exact line (not a bare `pr-check-context.sh`
-    # substring, which would also silence a genuinely unrooted invocation of
-    # that script added later) and asserted to appear EXACTLY ONCE per twin
-    # -- a carve-out for one specific line, not a floor.
-    # HIMMEL-3698: pr-check.md's split-fence design spells this line with the
-    # persistent uppercase $HIMMEL_REPO (its own fence, no local var to
-    # reference); SKILL.md's single compound fence still spells it with the
-    # assignment-local lowercase $himmel_repo. Both are the ONE legitimate
-    # anchor-entry line for their respective twin.
-    anchor_entry_pattern='^[[:space:]]*bash "\$(himmel_repo|HIMMEL_REPO)/scripts/cr/pr-check-context\.sh"[[:space:]]*$'
+    # HIMMEL-3798: the step-0 anchor-entry line now spells the root
+    # "$HIMMEL_REPO/scripts/cr/pr-check-step0.sh" -- the no-arg wrapper that
+    # moved the old inline `if himmel_repo=$(printenv HIMMEL_REPO | grep .);
+    # then ... fi` compound INSIDE a script file, because that compound was
+    # the single highest-rate classifier-denial shape on this runbook
+    # (HIMMEL-3724 4a row 2): a leg's gateAllow literal matches a whole SIMPLE
+    # command, and the permission matcher splits a compound on its shell
+    # separators before matching, so no exact-literal rule for the whole
+    # `if...fi` string ever fired reliably. pr-check-step0.sh itself hands
+    # off to pr-check-context.sh once HIMMEL_REPO is confirmed non-empty
+    # (test-pr-check-step0.sh T1-T3 pins that hand-off and the fail-closed
+    # behaviour on unset/empty -- checks (ix)/(x) below now point at that
+    # script's own source instead of re-deriving the property from runbook
+    # prose). Anchored on the FULL exact line (not a bare
+    # `pr-check-step0.sh` substring, which would also silence a genuinely
+    # unrooted invocation of that script added later) and asserted to appear
+    # EXACTLY ONCE per twin -- a carve-out for one specific line, not a
+    # floor. Both twins spell it identically: no fence-local lowercase
+    # $himmel_repo left to reference, since the assignment itself moved into
+    # the wrapper script.
+    anchor_entry_pattern='^[[:space:]]*bash "\$(himmel_repo|HIMMEL_REPO)/scripts/cr/pr-check-step0\.sh"[[:space:]]*$'
     anchor_entry_count=$(printf '%s\n' "$ii_calls" | grep -c -E "$anchor_entry_pattern")
     ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$anchor_entry_pattern")
     # HIMMEL-3359: the himmel-lane spelling of step 0 -- the bare relative
@@ -449,30 +456,36 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
         [ "$total" -gt 0 ] || fail "$n: (ii) ZERO himmel-script invocation lines found -- this twin invokes nothing, or this check is scanning the wrong lines; either way (ii) would be vacuous"
         [ "$rooted" -eq "$total" ] || fail "$n: (ii) $((total - rooted)) of $total himmel-script invocation line(s) are NOT rooted -- every one must spell the root \"<himmel_dir>/scripts/...\", the substituted literal. The raw-variable form \"\$himmel_dir/scripts/...\" is REJECTED as of HIMMEL-2314: a fence inherits no variables, and the Codex harness runs each block as a separate process, so \$himmel_dir expands to empty and the call becomes an unrooted \`bash /scripts/...\`"
         [ "$stale" -eq 0 ] || fail "$n: (ii) $stale CLAUDE_PROJECT_DIR reference(s) in shell code -- it is UNSET in Bash-tool shells (hook processes only), so the fence aborts with 'parameter null or not set', and the isolation guard refuses it besides (HIMMEL-2226)"
-        [ "$anchor_entry_count" -eq 1 ] || fail "$n: (ii) found $anchor_entry_count step-0 anchor-entry line(s) (\`bash \"\$himmel_repo/scripts/cr/pr-check-context.sh\"\`), expected EXACTLY ONE -- zero means the anchor entry point is missing or misspelled, more than one is a duplicate/reintroduction risk (HIMMEL-2335)"
+        [ "$anchor_entry_count" -eq 1 ] || fail "$n: (ii) found $anchor_entry_count step-0 anchor-entry line(s) (\`bash \"\$HIMMEL_REPO/scripts/cr/pr-check-step0.sh\"\`), expected EXACTLY ONE -- zero means the anchor entry point is missing or misspelled, more than one is a duplicate/reintroduction risk (HIMMEL-3798)"
         [ "$lane_entry_count" -eq 1 ] || fail "$n: (ii) found $lane_entry_count himmel-lane step-0 line(s) (\`bash scripts/cr/pr-check-context.sh\`, exact, no args), expected EXACTLY ONE -- zero means a leg has no matchable step-0 spelling, more than one is a duplicate (HIMMEL-3359)"
     fi
 
     # (ii) regression guard -- pr-check-context.sh invoked EXACTLY ONCE per
-    # twin, counted across EITHER legitimate root spelling (the step-0
-    # anchor-entry "$himmel_repo/scripts/cr/pr-check-context.sh" line counted
-    # above, or a later "<himmel_dir>/scripts/cr/pr-check-context.sh" rooted
-    # call) -- $anchor_entry_count alone would miss a stale SECOND call
-    # spelled the other way. A second invocation double-writes the
-    # HIMMEL-1219 verdict-scratch truncation and, on a delegating run, a
-    # second CR-ledger `delegation` row (HIMMEL-2335 [codex-1]: the Codex
-    # twin carried exactly this stale leftover from the old two-part step-0
-    # fence). Counted over $calls (comments already excluded), not $ii_calls
-    # (which has the anchor-entry line filtered out for the rooting tally
-    # above) -- this check wants BOTH spellings in one number.
-    # HIMMEL-3359: the two step-0 spellings are ALTERNATIVES (a run uses one
-    # of them), so the expected line count is two -- one per spelling, both
-    # pinned above -- and any third line is the stale second call.
+    # twin, counted DIRECTLY (the himmel-lane "bash scripts/cr/pr-check-
+    # context.sh" line pinned above by lane_entry_pattern) -- a second direct
+    # invocation double-writes the HIMMEL-1219 verdict-scratch truncation
+    # and, on a delegating run, a second CR-ledger `delegation` row
+    # (HIMMEL-2335 [codex-1]). HIMMEL-3798: the step-0 anchor entry no
+    # longer names pr-check-context.sh directly -- it names pr-check-step0.sh
+    # (counted separately below), which hands off to pr-check-context.sh
+    # itself, so this count is now ONE, not two.
     pcc_calls=$(printf '%s\n' "$calls" | grep -c 'scripts/cr/pr-check-context\.sh')
-    if [ "$pcc_calls" -eq 2 ]; then
-        pass "$n: (ii) pr-check-context.sh invoked exactly once per step-0 spelling"
+    if [ "$pcc_calls" -eq 1 ]; then
+        pass "$n: (ii) pr-check-context.sh invoked exactly once, direct (himmel-lane spelling)"
     else
-        fail "$n: (ii) pr-check-context.sh appears on $pcc_calls code line(s), expected EXACTLY TWO (the anchor entry and the himmel-lane entry, alternatives) -- a further invocation double-writes the HIMMEL-1219 verdict-scratch truncation and, on a delegating run, a second CR-ledger \`delegation\` row (HIMMEL-2335 [codex-1])"
+        fail "$n: (ii) pr-check-context.sh appears on $pcc_calls code line(s), expected EXACTLY ONE (the himmel-lane entry -- the anchor entry now hands off through pr-check-step0.sh instead of naming pr-check-context.sh directly) -- a further invocation double-writes the HIMMEL-1219 verdict-scratch truncation and, on a delegating run, a second CR-ledger \`delegation\` row (HIMMEL-2335 [codex-1])"
+    fi
+
+    # (ii) regression guard, twin -- pr-check-step0.sh invoked EXACTLY ONCE
+    # per twin (the anchor entry pinned above by anchor_entry_pattern). A
+    # second call would re-run the wrapper's own HIMMEL_REPO check twice for
+    # no reason and signals a duplicate/reintroduction risk the same way a
+    # stale second pr-check-context.sh call used to (HIMMEL-3798).
+    ps0_calls=$(printf '%s\n' "$calls" | grep -c 'scripts/cr/pr-check-step0\.sh')
+    if [ "$ps0_calls" -eq 1 ]; then
+        pass "$n: (ii) pr-check-step0.sh invoked exactly once (step-0 anchor entry)"
+    else
+        fail "$n: (ii) pr-check-step0.sh appears on $ps0_calls code line(s), expected EXACTLY ONE (HIMMEL-3798)"
     fi
 
     # HIMMEL-3359 console ruling: the himmel-lane literal is permitted ONLY on
@@ -796,53 +809,52 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
         fi
     fi
 
-    # (ix) HIMMEL-2335 (set-but-empty anchor security fix) -- the step-0
-    # anchor-entry assignment must pipe printenv's output through `grep .`,
-    # so a set-but-EMPTY HIMMEL_REPO fails the ASSIGNMENT and takes the else
-    # branch, instead of collapsing to `bash "/scripts/cr/pr-check-
+    # (ix)/(x) HIMMEL-2335 (set-but-empty anchor security fix), relocated by
+    # HIMMEL-3798 -- this property used to live in each twin's OWN step-0
+    # fence; the fix moved the `if himmel_repo=$(printenv HIMMEL_REPO | grep
+    # .); then ... fi` compound out of the runbook prose and into
+    # scripts/cr/pr-check-step0.sh (both twins now delegate to the SAME
+    # file, pinned as the anchor-entry line by anchor_entry_pattern in check
+    # (ii) above), so the property is checked ONCE here against that shared
+    # script, guarded on the first twin so it is not asserted twice.
+    # (ix): the assignment must still pipe printenv's output through
+    # `grep .`, so a set-but-EMPTY HIMMEL_REPO fails the ASSIGNMENT and takes
+    # the else branch, instead of collapsing to `bash "/scripts/cr/pr-check-
     # context.sh"` -- an absolute path an ORDINARY user can create without
-    # admin rights under Git Bash on Windows (C:\scripts\cr\pr-check-
-    # context.sh), letting a planted file execute AS THE TRUSTED ENTRY POINT
-    # ahead of every anchor/lane check below it (see (x) and the positive
-    # control below for the behavioural proof). Pinned on the FULL
-    # assignment line, not a bare `grep .` substring, so deleting the pipe
-    # -- the "simplification" this whole check exists to prevent -- fails
-    # this check.
-    grep_dot_pattern='^[[:space:]]*if himmel_repo=\$\(printenv HIMMEL_REPO \| grep \.\); then[[:space:]]*$'
-    grep_dot_count=$(printf '%s\n' "$code" | grep -c -E "$grep_dot_pattern")
-    if [ "$grep_dot_count" -eq 1 ]; then
-        pass "$n: (ix) step-0 anchor assignment pipes printenv through 'grep .' -- a set-but-empty HIMMEL_REPO fails the assignment (HIMMEL-2335)"
-    else
-        fail "$n: (ix) expected EXACTLY ONE 'if himmel_repo=\$(printenv HIMMEL_REPO | grep .); then' line, found $grep_dot_count -- without the | grep . a set-but-empty HIMMEL_REPO collapses to bash \"/scripts/cr/pr-check-context.sh\", an attacker-plantable path under Git Bash on Windows (HIMMEL-2335)"
-    fi
-
-    # (x) HIMMEL-2335 (set-but-empty anchor security fix) -- BEHAVIOURAL
-    # check: extract THIS twin's actual step-0 anchor fence and run it, with
-    # HIMMEL_REPO set but EMPTY, inside a subshell whose own `bash` is a
-    # stub function that records its argv instead of executing anything (a
-    # shell function of the same name is looked up before an external
-    # command, so `bash "..."` inside the extracted fence calls the stub,
-    # never a real bash) -- proving the fence takes the else branch and
-    # NEVER attempts to invoke a pr-check-context.sh at all, without
-    # creating or running any file anywhere.
-    fence_block=$(printf '%s\n' "$code" | awk '
-        /^[[:space:]]*if himmel_repo=\$\(printenv HIMMEL_REPO/ { grab=1 }
-        grab { print }
-        grab && /^[[:space:]]*fi[[:space:]]*$/ { exit }
-    ')
-    if [ -z "$fence_block" ]; then
-        fail "$n: (x) could not locate the step-0 anchor fence block in extracted code -- (x) would be vacuous"
-    else
-        fence_out=$(HIMMEL_REPO="" bash -c '
-            bash() { printf "STUB_BASH_CALLED:%s\n" "$*"; return 0; }
-            '"$fence_block"'
-        ' 2>&1)
-        fence_rc=$?
-        fence_hits=$(printf '%s' "$fence_out" | grep 'STUB_BASH_CALLED')
-        if [ "$fence_rc" -eq 2 ] && [ -z "$fence_hits" ]; then
-            pass "$n: (x) set-but-empty HIMMEL_REPO takes the else branch (exit 2, no bash invocation attempted)"
+    # admin rights under Git Bash on Windows, letting a planted file execute
+    # AS THE TRUSTED ENTRY POINT.
+    # (x): BEHAVIOURAL check -- source the actual script with HIMMEL_REPO set
+    # but EMPTY, inside a subshell whose own `bash` is a stub function that
+    # records its argv instead of executing anything, proving the script
+    # takes the else branch and NEVER attempts to invoke pr-check-context.sh,
+    # without creating or running any file anywhere. test-pr-check-step0.sh's
+    # own T2 proves the real (non-stubbed) exit-2 behaviour; this proves the
+    # SAME property structurally, from this suite, against the ONE file both
+    # twins now delegate to.
+    if [ "$f" = "$CLAUDE_RUNBOOK" ]; then
+        ps0_src="$ROOT/scripts/cr/pr-check-step0.sh"
+        if [ ! -f "$ps0_src" ]; then
+            fail "scripts/cr/pr-check-step0.sh: (ix)/(x) file not found -- both checks would be vacuous"
         else
-            fail "$n: (x) set-but-empty HIMMEL_REPO did NOT cleanly take the else branch (rc=$fence_rc, output: $fence_out) -- the if-branch may have run with an empty \$himmel_repo, which would invoke bash \"/scripts/cr/pr-check-context.sh\""
+            grep_dot_pattern='^[[:space:]]*if himmel_repo=\$\(printenv HIMMEL_REPO \| grep \.\); then[[:space:]]*$'
+            grep_dot_count=$(grep -c -E "$grep_dot_pattern" "$ps0_src")
+            if [ "$grep_dot_count" -eq 1 ]; then
+                pass "scripts/cr/pr-check-step0.sh: (ix) anchor assignment pipes printenv through 'grep .' -- a set-but-empty HIMMEL_REPO fails the assignment (HIMMEL-2335, HIMMEL-3798)"
+            else
+                fail "scripts/cr/pr-check-step0.sh: (ix) expected EXACTLY ONE 'if himmel_repo=\$(printenv HIMMEL_REPO | grep .); then' line, found $grep_dot_count -- without the | grep . a set-but-empty HIMMEL_REPO collapses to bash \"/scripts/cr/pr-check-context.sh\", an attacker-plantable path under Git Bash on Windows (HIMMEL-2335)"
+            fi
+
+            ps0_out=$(HIMMEL_REPO="" bash -c '
+                bash() { printf "STUB_BASH_CALLED:%s\n" "$*"; return 0; }
+                . "'"$ps0_src"'"
+            ' 2>&1)
+            ps0_rc=$?
+            ps0_hits=$(printf '%s' "$ps0_out" | grep 'STUB_BASH_CALLED')
+            if [ "$ps0_rc" -eq 2 ] && [ -z "$ps0_hits" ]; then
+                pass "scripts/cr/pr-check-step0.sh: (x) set-but-empty HIMMEL_REPO takes the else branch (exit 2, no bash invocation attempted)"
+            else
+                fail "scripts/cr/pr-check-step0.sh: (x) set-but-empty HIMMEL_REPO did NOT cleanly take the else branch (rc=$ps0_rc, output: $ps0_out) -- the if-branch may have run with an empty \$himmel_repo, which would invoke bash \"/scripts/cr/pr-check-context.sh\""
+            fi
         fi
     fi
 
