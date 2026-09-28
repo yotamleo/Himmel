@@ -499,6 +499,35 @@ case "$verb" in
                         printf '%s' "${STUB_PROTECTION_PREMERGE-${STUB_PROTECTION-true|10|0}}"
                     fi
                 fi ;;
+            */rules/branches/*|*/rulesets/*)
+                # HIMMEL-3808 — the ruleset probe: effective rules for the base
+                # branch (rules/branches/<b>) then each contributing ruleset
+                # (rulesets/<id>). Real JSON through the SCRIPT'S OWN --jq via
+                # real jq. Routed first-read / pre-merge-read by the per-endpoint
+                # count in the gh argv log (this call is already logged, so the
+                # count is 1 on a site's first read). Unset JSON = 404, so every
+                # pre-existing case (which never sets these) sees "no ruleset".
+                if [ -z "$jqexpr" ]; then
+                    echo "gh stub: ruleset read missing required --jq expression" >&2
+                    exit 93
+                fi
+                case "$api_path" in
+                    */rules/branches/*) rk=RULES; rpat='/rules/branches/' ;;
+                    *) rk=RULESET; rpat='/rulesets/' ;;
+                esac
+                n=$(grep -c "$rpat" "$GH_LOG" 2>/dev/null || echo 1)
+                if [ "${n:-1}" -le 1 ]; then
+                    fail_var="STUB_${rk}_FAIL"; json_var="STUB_${rk}_JSON"
+                    [ "${!fail_var:-0}" = "1" ] && { echo "gh: $rk unreadable" >&2; exit 1; }
+                    json_val="${!json_var:-}"
+                else
+                    fail_var="STUB_${rk}_PREMERGE_FAIL"; json_var="STUB_${rk}_JSON"; pm_var="STUB_${rk}_JSON_PREMERGE"
+                    [ "${!fail_var:-0}" = "1" ] && { echo "gh: $rk unreadable" >&2; exit 1; }
+                    json_val="${!pm_var-${!json_var:-}}"
+                fi
+                [ -n "$json_val" ] || { echo "gh: HTTP 404 (no ruleset)" >&2; exit 1; }
+                printf '%s' "$json_val" | jq -r "$jqexpr"
+                ;;
             *) echo "gh stub: unhandled 'api' path: $api_path" >&2; exit 90 ;;
         esac
         ;;
@@ -996,6 +1025,147 @@ if [ "$have_jq_2869" = "1" ]; then
     assert_gh_lacks "2876 premerge: no merge attempted" "pr merge"
 else
     echo "  SKIP: jq not installed — protection array type-check cases (HIMMEL-2876)"
+fi
+
+# ── HIMMEL-3808: ruleset-based protection alongside classic ─────────────────
+# The gate accepts the base branch's protection from the classic endpoint OR an
+# effective ruleset (rules/branches/<b> + each contributing rulesets/<id>),
+# per HIMMEL_PROTECTION_SOURCE (a fixed literal, like HIMMEL_PUBLIC_ORIGIN_NWO:
+# classic | ruleset | either (default) | both). A ruleset satisfies only when
+# every contributing ruleset is `active`, requires >=1 status check, and lists
+# NO bypass actor. Cases below need real jq (the stub runs the script's own
+# --jq), and set STUB_PROTECTION_FAIL=1 to make classic unreadable so the
+# ruleset path alone decides.
+if [ "$have_jq_2869" = "1" ]; then
+    R_RULES='[{"type":"pull_request","ruleset_id":17745842},{"type":"required_status_checks","ruleset_id":17745842,"parameters":{"required_status_checks":[{"context":"lint"},{"context":"shellcheck"}]}}]'
+    R_SET='{"id":17745842,"enforcement":"active","bypass_actors":[]}'
+
+    # 3808-1. Ruleset-only, strong → accept; the audit names the source.
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="rs01" \
+        STUB_PROTECTION_FAIL=1 STUB_PROTECTION_PREMERGE_FAIL=1 \
+        STUB_RULES_JSON="$R_RULES" STUB_RULESET_JSON="$R_SET" \
+        run_mog 0 "3808-1: strong ruleset alone (classic 404) → merged"
+    assert_merge_has "3808-1: merge pins the certified sha" "--match-head-commit rs01"
+    assert_gh_has "3808-1: reads the effective rules" "api repos/yotamleo/Himmel/rules/branches/main"
+    assert_gh_has "3808-1: reads the contributing ruleset" "api repos/yotamleo/Himmel/rulesets/17745842"
+    assert_audit_has "3808-1: audit names the ruleset source" "source=ruleset"
+
+    # 3808-2. Classic-only → accept exactly as before; ruleset never read.
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="cl01" \
+        run_mog 0 "3808-2: classic alone → merged (no regression)"
+    assert_audit_has "3808-2: audit names the classic source" "source=classic"
+    assert_gh_lacks "3808-2: classic satisfied, ruleset never read" "/rules/branches/"
+
+    # 3808-3. Every weakness of the ruleset path refuses (classic 404).
+    r3() { # <label> <rules> <ruleset> [extra VAR=val…]
+        local label="$1" rules="$2" set="$3"; shift 3
+        STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false \
+            STUB_PROTECTION_FAIL=1 STUB_RULES_JSON="$rules" STUB_RULESET_JSON="$set" \
+            run_mog 12 "3808-3: $label → exit 12"
+        assert_gh_lacks "3808-3 ($label): no merge attempted" "pr merge"
+        assert_audit_has "3808-3 ($label): audits not-protected" "reason=not-protected"
+    }
+    r3 "ruleset in evaluate mode" "$R_RULES" '{"id":17745842,"enforcement":"evaluate","bypass_actors":[]}'
+    r3 "ruleset disabled" "$R_RULES" '{"id":17745842,"enforcement":"disabled","bypass_actors":[]}'
+    r3 "admin bypass actor (pull_request mode)" "$R_RULES" \
+        '{"id":17745842,"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"pull_request"}]}'
+    r3 "admin bypass actor (always mode)" "$R_RULES" \
+        '{"id":17745842,"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}'
+    r3 "null bypass_actors is unreadable" "$R_RULES" '{"id":17745842,"enforcement":"active"}'
+    r3 "no required_status_checks rule" '[{"type":"pull_request","ruleset_id":17745842}]' "$R_SET"
+    r3 "empty required_status_checks list" \
+        '[{"type":"required_status_checks","ruleset_id":17745842,"parameters":{"required_status_checks":[]}}]' "$R_SET"
+    r3 "string required_status_checks" \
+        '[{"type":"required_status_checks","ruleset_id":17745842,"parameters":{"required_status_checks":"lint"}}]' "$R_SET"
+    r3 "no rules at all" '[]' "$R_SET"
+
+    # 3808-3b. One contributing ruleset strong, a SECOND (with checks) has a bypass
+    # actor: every contributing ruleset must be clean.
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
+        STUB_RULES_JSON='[{"type":"required_status_checks","ruleset_id":1,"parameters":{"required_status_checks":[{"context":"a"}]}},{"type":"required_status_checks","ruleset_id":2,"parameters":{"required_status_checks":[{"context":"b"}]}}]' \
+        STUB_RULESET_JSON='{"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' \
+        run_mog 12 "3808-3b: a bypass actor on any contributing ruleset → exit 12"
+    assert_gh_lacks "3808-3b: no merge attempted" "pr merge"
+
+    # 3808-4. API errors fail closed.
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
+        STUB_RULES_FAIL=1 STUB_RULES_JSON="$R_RULES" STUB_RULESET_JSON="$R_SET" \
+        run_mog 12 "3808-4: rules endpoint error → exit 12"
+    assert_gh_lacks "3808-4: no merge attempted" "pr merge"
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
+        STUB_RULESET_FAIL=1 STUB_RULES_JSON="$R_RULES" STUB_RULESET_JSON="$R_SET" \
+        run_mog 12 "3808-4: ruleset endpoint error → exit 12"
+    assert_gh_lacks "3808-4b: no merge attempted" "pr merge"
+
+    # 3808-5. Weakened between the watch and the merge → the FRESH pre-merge
+    # re-read refuses (same staleness class as 2869-6).
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 STUB_PROTECTION_PREMERGE_FAIL=1 \
+        STUB_RULES_JSON="$R_RULES" STUB_RULESET_JSON="$R_SET" \
+        STUB_RULESET_JSON_PREMERGE='{"id":17745842,"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"pull_request"}]}' \
+        run_mog 12 "3808-5: bypass actor added during the CI wait → exit 12"
+    assert_gh_lacks "3808-5: no merge attempted" "pr merge"
+    assert_audit_has "3808-5: audits not-protected-premerge" "reason=not-protected-premerge"
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 STUB_PROTECTION_PREMERGE_FAIL=1 \
+        STUB_RULES_JSON="$R_RULES" STUB_RULESET_JSON="$R_SET" STUB_RULES_JSON_PREMERGE='[]' \
+        run_mog 12 "3808-5b: required checks dropped during the CI wait → exit 12"
+    assert_audit_has "3808-5b: audits not-protected-premerge" "reason=not-protected-premerge"
+
+    # 3808-6. HIMMEL_PROTECTION_SOURCE modes, via a sed'd copy of the script (the
+    # literal is not env-overridable, exactly like HIMMEL_PUBLIC_ORIGIN_NWO).
+    # Each copy is checked to carry the literal, so a sed that matched nothing
+    # cannot leave the whole matrix silently testing the default.
+    mode_dir=$(mktemp -d "${TMPDIR:-/tmp}/mog-mode.XXXXXX")
+    mode_src() { # <mode> → path of a copy carrying that literal
+        local out="$mode_dir/mog-$1.sh"
+        sed "s/^HIMMEL_PROTECTION_SOURCE=.*/HIMMEL_PROTECTION_SOURCE=\"$1\"/" "$MOG" > "$out"
+        if ! grep -Fxq "HIMMEL_PROTECTION_SOURCE=\"$1\"" "$out"; then
+            echo "  NOTE: mode copy '$1' did not take the literal" >&2
+        fi
+        printf '%s' "$out"
+    }
+    mode_case() { # <mode> <classic:ok|bad> <ruleset:ok|bad> <expect rc> <label>
+        local mode="$1" c="$2" r="$3" want="$4" label="$5" src
+        src=$(mode_src "$mode")
+        local -a v=(STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false)
+        [ "$c" = "bad" ] && v+=(STUB_PROTECTION_FAIL=1 STUB_PROTECTION_PREMERGE_FAIL=1)
+        [ "$r" = "ok" ] && v+=(STUB_RULES_JSON="$R_RULES" STUB_RULESET_JSON="$R_SET")
+        # shellcheck disable=SC2163
+        for kv in "${v[@]}"; do export "$kv"; done
+        MOG_SRC="$src" run_mog "$want" "3808-6: mode=$mode classic=$c ruleset=$r → $want ($label)"
+        for kv in "${v[@]}"; do unset "${kv%%=*}"; done
+    }
+    mode_case classic ok bad 0  "classic mode accepts classic"
+    mode_case classic bad ok 12 "classic mode ignores a strong ruleset"
+    assert_gh_lacks "3808-6: classic mode never reads rulesets" "/rules/branches/"
+    mode_case ruleset bad ok 0  "ruleset mode accepts a strong ruleset"
+    mode_case ruleset ok bad 12 "ruleset mode ignores strong classic"
+    assert_gh_lacks "3808-6: ruleset mode never reads classic" "/protection"
+    mode_case either ok bad 0   "either: classic"
+    mode_case either bad ok 0   "either: ruleset"
+    mode_case either bad bad 12 "either: neither"
+    mode_case both ok ok 0      "both: both pass"
+    assert_audit_has "3808-6: both names both sources" "source=classic+ruleset"
+    mode_case both ok bad 12    "both: classic only"
+    mode_case both bad ok 12    "both: ruleset only"
+    mode_case bogus ok ok 12    "unknown mode fails closed even with strong protection"
+    assert_gh_lacks "3808-6: unknown mode reads nothing" "/protection"
+    assert_audit_has "3808-6: unknown mode is named in the audit" "unknown-protection-source=bogus"
+
+    # 3808-7. The knob is a fixed literal, not an env seam: an ambient
+    # HIMMEL_PROTECTION_SOURCE=ruleset must not steer the gate (classic-only
+    # protection must still merge under the shipped `either`).
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false \
+        HIMMEL_PROTECTION_SOURCE=ruleset STUB_SHA="env01" \
+        run_mog 0 "3808-7: ambient HIMMEL_PROTECTION_SOURCE does not steer the gate"
+    assert_audit_has "3808-7: still the classic source" "source=classic"
+
+    # 3808-8. Private repo: unaffected, reads neither source.
+    STUB_PRIVATE=true STUB_NWO="acme/private-repo" STUB_CWD_NWO="acme/private-repo" STUB_SHA="priv3808" \
+        run_mog 0 "3808-8: private repo unaffected"
+    assert_gh_lacks "3808-8: private repo reads no rulesets" "/rules/branches/"
+    rm -rf "$mode_dir"
+else
+    echo "  SKIP: jq not installed — ruleset protection cases (HIMMEL-3808)"
 fi
 
 # 6. Cannot read head SHA → refuse (exit 13).

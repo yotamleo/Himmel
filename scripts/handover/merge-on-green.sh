@@ -324,8 +324,6 @@ audit_preflight() {
 PUBLIC_ORIGIN_REASON=""
 PUBLIC_ORIGIN_DETAIL=""
 
-# public_origin_merge_allowed <nwo> <default-branch> [reason-suffix]
-#
 # HIMMEL-2869. The private-only boundary (guard 2b / the pre-merge re-check)
 # widens to admit ONE named public repo — the configured public origin — and
 # ONLY while GitHub itself is enforcing required status checks on the branch
@@ -336,19 +334,87 @@ PUBLIC_ORIGIN_DETAIL=""
 # protection object without required_status_checks, or an empty contexts/checks
 # list all refuse, never "assume protected".
 #
-# Reads the CLASSIC protection endpoint, and reads ONLY required_status_checks
-# + enforce_admins from it. It deliberately infers NOTHING about reviews:
+# HIMMEL-3808: the protection can come from the CLASSIC endpoint, from an
+# effective RULESET, or both — HIMMEL_PROTECTION_SOURCE picks which source(s)
+# satisfy the gate (classic | ruleset | either | both; either is the default).
+# Each source reads ONLY required status checks (+ enforce_admins for classic;
+# active enforcement + no bypass actor for a ruleset). It deliberately infers
+# NOTHING about reviews:
 # rulesets can require approvals even when `/branches/main/protection` returns
 # `required_pull_request_reviews: null`. That null is CORRECT — do not "fix"
 # it or gate this helper on approvals. The pre-merge PR-policy read below
 # catches BLOCKED + REVIEW_REQUIRED; GitHub still enforces rulesets at merge
 # time. A refusal is reported as policy-refused, never bypassed (which is also
-# why this lever never passes `--admin`). Rulesets may
-# ADD to protection, never replace it, so the classic read stays authoritative
-# for the checks this gate requires.
+# why this lever never passes `--admin`).
+#
+# Like HIMMEL_PUBLIC_ORIGIN_NWO the mode is a FIXED LITERAL, not an env seam:
+# an ambient variable must not be able to steer a merge gate, and `ruleset` /
+# `either` are the widening choices. An adopter chooses by editing the line.
+HIMMEL_PROTECTION_SOURCE="either"
+
+# Which source(s) satisfied the widened gate, for the audit line.
+PUBLIC_ORIGIN_SOURCE=""
+
+# _protection_classic <nwo> <branch> — rc 0 = the classic endpoint shows
+# enforce_admins on AND >=1 required status check. Sets PROT_CLASSIC_DETAIL.
+_protection_classic() {
+    local nwo="$1" branch="$2" prot admins rest n_contexts n_checks
+    PROT_CLASSIC_DETAIL="unreadable"
+    prot=$("$GH" api "repos/$nwo/branches/$branch/protection" \
+            --jq '"\(.enforce_admins.enabled // false)|\((.required_status_checks.contexts // []) | if type == "array" then length else 0 end)|\((.required_status_checks.checks // []) | if type == "array" then length else 0 end)"' 2>/dev/null || true)  # jq-alt-ok: every `//` default here is the FAIL-CLOSED answer, so swallowing false is harmless — absent, null and false all yield the value that REFUSES (enforce_admins must equal the string "true"; an empty contexts/checks list means zero required checks). has() would be weaker, not stronger: it would read a present-but-false enforce_admins as satisfied.
+    [ -n "$prot" ] || return 1
+    admins=${prot%%|*}
+    rest=${prot#*|}
+    n_contexts=${rest%%|*}
+    n_checks=${rest##*|}
+    case "$n_contexts" in ''|*[!0-9]*) n_contexts=0 ;; esac
+    case "$n_checks" in ''|*[!0-9]*) n_checks=0 ;; esac
+    PROT_CLASSIC_DETAIL="enforce_admins=$admins required_checks=$((n_contexts + n_checks))"
+    [ "$admins" = "true" ] || return 1
+    [ "$((n_contexts + n_checks))" -gt 0 ] || return 1
+    return 0
+}
+
+# _protection_ruleset <nwo> <branch> — rc 0 = the branch's effective rules
+# (rules/branches/<b>) carry >=1 required status check AND every contributing
+# ruleset (rulesets/<id>) is `active` with NO bypass actor. ANY bypass actor
+# refuses (RepositoryRole admin, bypass_mode pull_request or always alike): it
+# can merge past the required checks, which is exactly what the gate leans on
+# them not allowing. An unreadable / null / non-array field is the refusing
+# answer. Sets PROT_RULESET_DETAIL.
+_protection_ruleset() {
+    local nwo="$1" branch="$2" rules n_checks ids id rs enf byp
+    PROT_RULESET_DETAIL="unreadable"
+    rules=$("$GH" api "repos/$nwo/rules/branches/$branch" \
+            --jq '[.[] | select(.type == "required_status_checks")] as $r | "\([$r[] | .parameters.required_status_checks | if type == "array" then length else 0 end] | add | if . == null then 0 else . end)|\([$r[] | .ruleset_id] | unique | join(","))"' 2>/dev/null || true)
+    [ -n "$rules" ] || return 1
+    n_checks=${rules%%|*}
+    ids=${rules#*|}
+    case "$n_checks" in ''|*[!0-9]*) n_checks=0 ;; esac
+    PROT_RULESET_DETAIL="required_checks=$n_checks ids=${ids:-none}"
+    [ "$n_checks" -gt 0 ] || return 1
+    case "$ids" in ''|*[!0-9,]*) return 1 ;; esac
+    local IFS=,
+    for id in $ids; do
+        [ -n "$id" ] || return 1
+        rs=$("$GH" api "repos/$nwo/rulesets/$id" \
+                --jq '"\(.enforcement)|\(.bypass_actors | if type == "array" then length else -1 end)"' 2>/dev/null || true)
+        [ -n "$rs" ] || { PROT_RULESET_DETAIL="$PROT_RULESET_DETAIL ruleset=$id:unreadable"; return 1; }
+        enf=${rs%%|*}
+        byp=${rs#*|}
+        PROT_RULESET_DETAIL="$PROT_RULESET_DETAIL ruleset=$id:enforcement=$enf,bypass_actors=$byp"
+        [ "$enf" = "active" ] || return 1
+        [ "$byp" = "0" ] || return 1
+    done
+    return 0
+}
+
+# public_origin_merge_allowed <nwo> <default-branch> [reason-suffix]
+# Sets PUBLIC_ORIGIN_REASON / _DETAIL (refusal) or PUBLIC_ORIGIN_SOURCE (allow).
 public_origin_merge_allowed() {
-    local nwo="$1" branch="$2" suffix="${3:-}" prot admins rest n_contexts n_checks
+    local nwo="$1" branch="$2" suffix="${3:-}" c_ok=0 r_ok=0
     PUBLIC_ORIGIN_DETAIL=""
+    PUBLIC_ORIGIN_SOURCE=""
     if [ "$nwo" != "$HIMMEL_PUBLIC_ORIGIN_NWO" ]; then
         PUBLIC_ORIGIN_REASON="not-private${suffix}"
         return 1
@@ -358,21 +424,36 @@ public_origin_merge_allowed() {
         PUBLIC_ORIGIN_DETAIL="no-branch"
         return 1
     fi
-    prot=$("$GH" api "repos/$nwo/branches/$branch/protection" \
-            --jq '"\(.enforce_admins.enabled // false)|\((.required_status_checks.contexts // []) | if type == "array" then length else 0 end)|\((.required_status_checks.checks // []) | if type == "array" then length else 0 end)"' 2>/dev/null || true)  # jq-alt-ok: every `//` default here is the FAIL-CLOSED answer, so swallowing false is harmless — absent, null and false all yield the value that REFUSES (enforce_admins must equal the string "true"; an empty contexts/checks list means zero required checks). has() would be weaker, not stronger: it would read a present-but-false enforce_admins as satisfied.
-    if [ -z "$prot" ]; then
-        PUBLIC_ORIGIN_DETAIL="unreadable"
-        return 1
-    fi
-    admins=${prot%%|*}
-    rest=${prot#*|}
-    n_contexts=${rest%%|*}
-    n_checks=${rest##*|}
-    case "$n_contexts" in ''|*[!0-9]*) n_contexts=0 ;; esac
-    case "$n_checks" in ''|*[!0-9]*) n_checks=0 ;; esac
-    PUBLIC_ORIGIN_DETAIL="enforce_admins=$admins required_checks=$((n_contexts + n_checks))"
-    [ "$admins" = "true" ] || return 1
-    [ "$((n_contexts + n_checks))" -gt 0 ] || return 1
+    case "$HIMMEL_PROTECTION_SOURCE" in
+        classic)
+            _protection_classic "$nwo" "$branch" && c_ok=1
+            PUBLIC_ORIGIN_DETAIL="classic:$PROT_CLASSIC_DETAIL" ;;
+        ruleset)
+            _protection_ruleset "$nwo" "$branch" && r_ok=1
+            PUBLIC_ORIGIN_DETAIL="ruleset:$PROT_RULESET_DETAIL" ;;
+        either)
+            if _protection_classic "$nwo" "$branch"; then
+                c_ok=1
+                PUBLIC_ORIGIN_DETAIL="classic:$PROT_CLASSIC_DETAIL"
+            else
+                _protection_ruleset "$nwo" "$branch" && r_ok=1
+                PUBLIC_ORIGIN_DETAIL="classic:$PROT_CLASSIC_DETAIL ruleset:$PROT_RULESET_DETAIL"
+                [ "$r_ok" = "1" ] && PUBLIC_ORIGIN_DETAIL="ruleset:$PROT_RULESET_DETAIL"
+            fi ;;
+        both)
+            _protection_classic "$nwo" "$branch" && c_ok=1
+            _protection_ruleset "$nwo" "$branch" && r_ok=1
+            PUBLIC_ORIGIN_DETAIL="classic:$PROT_CLASSIC_DETAIL ruleset:$PROT_RULESET_DETAIL"
+            [ "$c_ok$r_ok" = "11" ] || { c_ok=0; r_ok=0; } ;;
+        *)
+            echo "merge-on-green: HIMMEL_PROTECTION_SOURCE='$HIMMEL_PROTECTION_SOURCE' is not one of classic|ruleset|either|both — refusing (fail closed)." >&2
+            PUBLIC_ORIGIN_DETAIL="unknown-protection-source=$HIMMEL_PROTECTION_SOURCE"
+            return 1 ;;
+    esac
+    [ "$c_ok$r_ok" != "00" ] || return 1
+    if [ "$c_ok" = "1" ] && [ "$r_ok" = "1" ]; then PUBLIC_ORIGIN_SOURCE="classic+ruleset"
+    elif [ "$c_ok" = "1" ]; then PUBLIC_ORIGIN_SOURCE="classic"
+    else PUBLIC_ORIGIN_SOURCE="ruleset"; fi
     PUBLIC_ORIGIN_REASON=""
     return 0
 }
@@ -541,6 +622,9 @@ if [ "$is_private" != "true" ] && ! public_origin_merge_allowed "$nwo" "$default
     echo "merge-on-green: repo $nwo is not confirmed PRIVATE (isPrivate='${is_private:-<unknown>}') and is not the configured public origin ($HIMMEL_PUBLIC_ORIGIN_NWO) under branch protection with required status checks (${PUBLIC_ORIGIN_DETAIL:-n/a}) — refusing." >&2
     audit "REFUSED reason=$PUBLIC_ORIGIN_REASON repo=$nwo isPrivate=${is_private:-unknown} protection=${PUBLIC_ORIGIN_DETAIL:-n/a}"
     exit 12
+fi
+if [ "$is_private" != "true" ]; then
+    audit "PROTECTION-OK repo=$nwo source=$PUBLIC_ORIGIN_SOURCE detail=$PUBLIC_ORIGIN_DETAIL" || true
 fi
 
 # 2c. Base-branch guard (HIMMEL-1080, coderabbit public round) — this lever was
@@ -839,6 +923,9 @@ if [ "$fresh_private" != "true" ] && ! public_origin_merge_allowed "$nwo" "$fres
     echo "merge-on-green: repo $nwo is no longer confirmed PRIVATE (isPrivate='${fresh_private:-<unknown>}') and is not the configured public origin ($HIMMEL_PUBLIC_ORIGIN_NWO) under branch protection with required status checks (${PUBLIC_ORIGIN_DETAIL:-n/a}) right before merging — refusing. A repo made public, or a public origin whose protection weakened, during the CI wait must not auto-merge." >&2
     audit "REFUSED reason=$PUBLIC_ORIGIN_REASON repo=$nwo isPrivate=${fresh_private:-unknown} protection=${PUBLIC_ORIGIN_DETAIL:-n/a} pr=#$pr_num"
     exit 12
+fi
+if [ "$fresh_private" != "true" ]; then
+    audit "PROTECTION-OK-PREMERGE repo=$nwo source=$PUBLIC_ORIGIN_SOURCE detail=$PUBLIC_ORIGIN_DETAIL pr=#$pr_num" || true
 fi
 if [ "$fresh_base" != "$fresh_default" ] || [ "$fresh_base" != "$pr_base" ]; then
     echo "merge-on-green: PR #$pr_num base branch changed since the gate (was '$pr_base', now '$fresh_base', repo default '$fresh_default') — refusing. The base binding must hold from certification to merge." >&2
