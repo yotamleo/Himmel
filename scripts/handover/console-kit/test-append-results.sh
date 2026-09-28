@@ -25,7 +25,7 @@ trap 'rm -rf "$tmp"' EXIT
 tmp="$(cd "$tmp" && pwd)"
 fails=0
 check()    { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
-contains() { printf '%s' "$2" | grep -qF -e "$3" && echo "ok - $1" || { echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)); }; }
+contains() { case "$2" in *"$3"*) echo "ok - $1" ;; *) echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)) ;; esac; }
 
 # --- 1. doc whose Results section is last -------------------------------
 d1="$tmp/d1.md"
