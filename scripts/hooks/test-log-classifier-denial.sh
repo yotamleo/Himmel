@@ -89,7 +89,7 @@ fi
 # --- 5. session_title derives from a worktree cwd's slug ---
 LOG4="$WORKDIR/c4.jsonl"
 run_hook "$(payload s4 /repo/.claude/worktrees/feat+foo-bar Bash 'ls' '[X]')" "$LOG4" >/dev/null
-title=$(cat "$LOG4" | jq -r .session_title)
+title=$(jq -r .session_title "$LOG4")
 if [ "$title" = "feat+foo-bar" ]; then
     pass "session_title derived from worktree slug"
 else
