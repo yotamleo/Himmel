@@ -118,7 +118,8 @@ else
     bash -c ". '$SEM_LIB'; suite_sem_acquire case2 hint" 2>&1)
   rc=$?
   elapsed=$(( $(date +%s) - start ))
-  if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && [ "$elapsed" -lt 10 ]; then
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && [ "$elapsed" -lt 10 ] \
+    && grep -q 'cannot create the reclaim guard' <<< "$out"; then
     pass "refused permanently (rc=$rc) in ${elapsed}s, not after the wait budget"
   else
     fail "rc=$rc after ${elapsed}s (want an immediate non-75 refusal): $out"
@@ -131,18 +132,21 @@ if [ "$(id -u)" = 0 ]; then
   echo "  SKIP  running as root: chmod cannot make a directory unwritable"
 else
   r=$(mktemp -d "${TMPDIR:-/tmp}/lock-brand-gap.XXXXXX"); sandboxes+=("$r")
-  mkdir -p "$r/sb" "$r/home" "$r/tmp/suite.lock"
+  mkdir -p "$r/sb" "$r/home" "$r/tmp" "$r/lockparent/suite.lock"
   printf '#!/usr/bin/env bash\ntrue\n' > "$r/sb/test-noop.sh"
   # An empty unbranded husk in an unwritable parent: the husk path reaches
   # the reclaim guard and its mkdir fails with EACCES, not contention.
-  chmod a-w "$r/tmp"
+  # (Only the lock's parent is unwritable; TMPDIR stays writable so the runner
+  # reaches the lock instead of dying earlier on an unrelated mktemp.)
+  chmod a-w "$r/lockparent"
   start=$(date +%s)
-  out=$(env HOME="$r/home" TMPDIR="$r/tmp" SUITE_LOCK_DIR="$r/tmp/suite.lock" \
+  out=$(env HOME="$r/home" TMPDIR="$r/tmp" SUITE_LOCK_DIR="$r/lockparent/suite.lock" \
     HIMMEL_SUITE_SEMAPHORE_DIR="$r/sem" SUITE_LOCK_WAIT=20 \
     bash "$RUNNER" "$r/sb" 2>&1)
   rc=$?
   elapsed=$(( $(date +%s) - start ))
-  if [ "$rc" -ne 0 ] && [ "$elapsed" -lt 10 ]; then
+  if [ "$rc" -ne 0 ] && [ "$elapsed" -lt 10 ] \
+    && grep -q 'making the reclaim guard directory' <<< "$out"; then
     pass "refused (rc=$rc) in ${elapsed}s, not after the wait budget"
   else
     fail "rc=$rc after ${elapsed}s (want an immediate refusal): $out"
