@@ -795,6 +795,23 @@ PY
   fi
 fi
 
+# Pinned tools and packages (HIMMEL-3807). Not a registry: scripts/upstreams/
+# pin-scan.py DISCOVERS every npm/bun dependency (at its lockfile version), every
+# pre-commit rev, every workflow `uses:`, the gitleaks `ver=` literal and the
+# OXLINT_VERSION= literal in scripts/hooks, so a new pin is watched from the day
+# it lands. A bump held back on purpose lives in scripts/upstreams/pin-holds.json.
+echo ""
+echo "== pinned tools and packages (npm/bun deps, pre-commit revs, actions, oxlint) =="
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "  ? python3 not available — pin scan UNCHECKED."
+  incomplete=1
+else
+  python3 "$ROOT/scripts/upstreams/pin-scan.py" "${DRIFT_PIN_ROOT:-$ROOT}" "${DRIFT_PIN_HOLDS-$ROOT/scripts/upstreams/pin-holds.json}"
+  pin_rc=$?
+  [ $((pin_rc & 1)) -ne 0 ] && drift=1
+  if [ $((pin_rc & 2)) -ne 0 ] || [ "$pin_rc" -gt 3 ]; then incomplete=1; fi
+fi
+
 echo ""
 if [ "$drift" -ne 0 ]; then
   echo "DRIFT DETECTED — one or more plugins are behind upstream (see above)."

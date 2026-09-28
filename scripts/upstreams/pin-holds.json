@@ -1,0 +1,19 @@
+{
+  "_comment": "A bump held back on purpose (HIMMEL-3807). A hold reads HELD only while the pin is still at `current` AND upstream's newest release is still `latest_reviewed`; anything newer re-raises BEHIND. Drop the row when the bump lands.",
+  "holds": [
+    {
+      "eco": "gh",
+      "key": "pre-commit/pre-commit-hooks",
+      "current": "v5.0.0",
+      "latest_reviewed": "v6.0.0",
+      "reason": "v6 check-shebang-scripts-are-executable fails on ~50 non-executable .mjs/.js files with shebangs; needs a repo-wide mode fix, own ticket"
+    },
+    {
+      "eco": "gh",
+      "key": "shellcheck-py/shellcheck-py",
+      "current": "v0.10.0.1",
+      "latest_reviewed": "v0.11.0.1",
+      "reason": "shellcheck 0.11 adds SC2329 (unused function) across scripts/hooks/*.sh, which need a hook-integrity-bypass leg to fix; own ticket"
+    }
+  ]
+}

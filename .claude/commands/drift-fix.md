@@ -105,6 +105,12 @@ carry an in-repo pin this runbook can move. A `BEHIND` line reads:
 
 → name `graphify`, target version `v0.9.28`.
 
+`npm:<pkg>` / `gh:<owner/repo>` BEHIND lines (the "pinned tools and packages"
+section, HIMMEL-3807) are **not** registry entries: they are dependency bumps
+(lockfile, hook rev, action, `OXLINT_VERSION=`) for a normal `chore(deps)` PR,
+not for this runbook. Skip them here; a bump held back on purpose is recorded in
+`scripts/upstreams/pin-holds.json` and reads `HELD`, not `BEHIND`.
+
 Do not read "installed 0.9.25" as a probe of the installed binary. That message
 is one shared template (`"$repo latest tag $latest; installed $local_ver"`)
 printed for EVERY `tag_release` BEHIND case. For `mode: probe` (rtk,

@@ -7,7 +7,8 @@
       { "name": "telegram-himmel and pr-review-toolkit-himmel", "surface": "marketplace/plugins/*/UPSTREAM_PIN" },
       { "name": "claude-hud", "surface": "claude-hud registry row + scripts/statusline/check-hud-drift.sh vendored-tree hash" },
       { "name": "scripts/lib pinned binaries", "surface": "graphify and qmd registry rows; no other scripts/lib helper carries an upstream pin" },
-      { "name": "codex companion and installed marketplaces", "surface": "known_marketplaces.json dynamic discovery" }
+      { "name": "codex companion and installed marketplaces", "surface": "known_marketplaces.json dynamic discovery" },
+      { "name": "npm/bun deps, pre-commit revs, workflow actions, gitleaks ver=, OXLINT_VERSION=", "surface": "scripts/upstreams/pin-scan.py (HIMMEL-3807) discovers them by scanning the repo, so no registry row is needed; deliberate holds in scripts/upstreams/pin-holds.json" }
     ],
     "skips": [
       { "name": "claude-statusline", "reason": "Archived rollback-only subtree superseded by claude-hud; its fork is archived and re-vendor path deliberately closed (scripts/statusline/VENDORED.md)." },

@@ -17,6 +17,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/scripts/check-plugin-drift.sh"
 MJSON="$ROOT/marketplace/.claude-plugin/marketplace.json"
 fails=0
+# The pin scan (section 12) hits the npm registry per package; every OTHER case
+# below runs against an empty scan root so its exit-code assertions stay about
+# the section under test.
+PIN_EMPTY="$(mktemp -d)"; export DRIFT_PIN_ROOT="$PIN_EMPTY"
 ok() { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 
@@ -360,6 +364,7 @@ fi
 #     fields must mark the run incomplete, never skip into a false all-current.
 W5B="$(mktemp -d)"; mkdir -p "$W5B/bin" "$W5B/scripts" "$W5B/marketplace/plugins/bad-pin"
 cp "$SCRIPT" "$W5B/scripts/check-plugin-drift.sh"
+mkdir -p "$W5B/scripts/upstreams"; cp "$ROOT/scripts/upstreams/pin-scan.py" "$W5B/scripts/upstreams/pin-scan.py"
 cat >"$W5B/marketplace/plugins/bad-pin/UPSTREAM_PIN" <<'PIN'
 upstream_repo=
 PIN
@@ -380,6 +385,7 @@ if [ "$badpin_rc" -eq 3 ]; then ok "malformed UPSTREAM_PIN run exits 3 (incomple
 #     fall back to shasum -a 256. Hash-tool failure must not read as DRIFT.
 W5C="$(mktemp -d)"; mkdir -p "$W5C/bin" "$W5C/nosha" "$W5C/scripts" "$W5C/marketplace/plugins/hash-pin"
 cp "$SCRIPT" "$W5C/scripts/check-plugin-drift.sh"
+mkdir -p "$W5C/scripts/upstreams"; cp "$ROOT/scripts/upstreams/pin-scan.py" "$W5C/scripts/upstreams/pin-scan.py"
 for f in /usr/bin/*; do
   b="$(basename "$f")"
   case "$b" in
@@ -874,6 +880,109 @@ bad_out="$(PATH="$W11/bin:$PATH" DRIFT_REGISTRY="$W11/reg-bad.json" DRIFT_KNOWN_
 if grepq "$(printf '%s' "$bad_out" | grep 'bad-src')" "unknown latest_source"; then ok "unknown latest_source -> UNCHECKED (not silent tag-mode)"; else bad "unknown latest_source not UNCHECKED; $(printf '%s' "$bad_out" | grep bad-src)"; fi
 if grepq "$bad_out" -E '^  bad-src: (CURRENT|BEHIND)'; then bad "unknown latest_source fell through to a tag-mode verdict"; else ok "unknown latest_source never produced a CURRENT/BEHIND verdict"; fi
 rm -rf "$W11"
+
+# 12. Pin scan (HIMMEL-3807): every npm/bun dep, pre-commit rev, workflow
+#     `uses:`, gitleaks `ver=` and OXLINT_VERSION= literal is discovered by
+#     scanning the repo and compared to its latest stable — hermetic, `curl`
+#     (npm registry) and `gh` (releases) stubbed from a state dir. A
+#     deliberately stale pin for a newly watched package MUST read BEHIND.
+W12="$(mktemp -d)"; mkdir -p "$W12/bin" "$W12/state" "$W12/root/pkgA" "$W12/root/.github/workflows" "$W12/root/scripts/hooks"
+cat > "$W12/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+for last; do :; done
+pkg="${last#https://registry.npmjs.org/}"; pkg="${pkg%/latest}"
+ver=$(grep -E "^${pkg}=" "$PINSTATE/npm" 2>/dev/null | head -1 | cut -d= -f2)
+[ -n "$ver" ] || ver="${PINSTATE_DEFAULT:-}"
+[ -n "$ver" ] || exit 22
+printf '{"name":"%s","version":"%s"}\n' "$pkg" "$ver"
+CURL
+cat > "$W12/bin/gh" <<'GH'
+#!/usr/bin/env bash
+a="$*"
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+repo=$(printf '%s\n' "$a" | sed -n 's|.*repos/\([^/ ]*/[^/ ]*\)/.*|\1|p')
+case "$a" in
+  *"/releases/latest"*)
+    hit=$(grep -E "^${repo}=" "$PINSTATE/rel" 2>/dev/null | head -1 | cut -d= -f2)
+    if [ -n "$hit" ]; then printf '%s\n' "$hit"; exit 0; fi
+    [ -n "${PINSTATE_DEFAULT:-}" ] && { printf 'v%s\n' "$PINSTATE_DEFAULT"; exit 0; }
+    exit 1 ;;
+esac
+exit 1
+GH
+chmod +x "$W12/bin/curl" "$W12/bin/gh"
+cat > "$W12/state/npm" <<'NPM'
+stale-pkg=1.4.0
+fresh-pkg=2.0.0
+oxlint=2.0.0
+NPM
+cat > "$W12/state/rel" <<'REL'
+owner/hookrepo=v1.3.0
+owner/heldrepo=v2.0.0
+owner/act=v3.4.1
+owner/act2=v2.0.0
+REL
+cat > "$W12/root/pkgA/package.json" <<'JSON'
+{"name":"a","devDependencies":{"stale-pkg":"^1.0.0","fresh-pkg":"^2.0.0","unreach-pkg":"^1.0.0"}}
+JSON
+cat > "$W12/root/pkgA/package-lock.json" <<'JSON'
+{"lockfileVersion":3,"packages":{"":{},"node_modules/stale-pkg":{"version":"1.0.0"},"node_modules/fresh-pkg":{"version":"2.0.0"},"node_modules/unreach-pkg":{"version":"1.0.0"}}}
+JSON
+cat > "$W12/root/.pre-commit-config.yaml" <<'YML'
+repos:
+  - repo: https://github.com/owner/hookrepo
+    rev: v1.0.0
+    hooks:
+      - id: x
+  - repo: https://github.com/owner/heldrepo
+    rev: v1.0.0
+    hooks:
+      - id: y
+YML
+cat > "$W12/root/.github/workflows/w.yml" <<'YML'
+jobs:
+  a:
+    steps:
+      - uses: owner/act@v3
+      - uses: owner/act2@v1
+YML
+printf '#!/usr/bin/env bash\nOXLINT_VERSION=1.0.0\n' > "$W12/root/scripts/hooks/h.sh"
+cat > "$W12/holds.json" <<'JSON'
+{"holds":[{"eco":"gh","key":"owner/heldrepo","current":"v1.0.0","latest_reviewed":"v2.0.0","reason":"fixture hold"}]}
+JSON
+printf '{"plugins":[]}' > "$W12/empty_mjson.json"; printf '{}' > "$W12/empty_ups.json"
+pin_run() {  # pin_run <holds-file> -> output in $pin_out, rc in $pin_rc
+  pin_out="$(PINSTATE="$W12/state" PATH="$W12/bin:$PATH" DRIFT_PIN_ROOT="$W12/root" DRIFT_PIN_HOLDS="$1" \
+    DRIFT_REGISTRY=/dev/null DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W12/empty_mjson.json" DRIFT_UPSTREAMS="$W12/empty_ups.json" \
+    bash "$SCRIPT" 2>&1)"; pin_rc=$?
+  pin_sec="$(printf '%s\n' "$pin_out" | sed -n '/pinned tools and packages/,$p')"
+}
+pin_run "$W12/holds.json"
+if grepq "$pin_sec" 'pinned tools and packages'; then ok "pin-scan section present"; else bad "pin-scan section missing; $pin_out"; fi
+if grepq "$pin_sec" '^  npm:stale-pkg 1\.0\.0 (pkgA): BEHIND'; then ok "pin-scan: stale npm pin -> BEHIND (lockfile version, not the range)"; else bad "stale-pkg not BEHIND; $(printf '%s' "$pin_sec" | grep stale-pkg)"; fi
+if grepq "$pin_sec" '^  npm:fresh-pkg 2\.0\.0 (pkgA): CURRENT'; then ok "pin-scan: current npm pin -> CURRENT"; else bad "fresh-pkg not CURRENT"; fi
+if grepq "$pin_sec" '^  npm:unreach-pkg .*UNCHECKED'; then ok "pin-scan: unreachable registry -> UNCHECKED (never CURRENT)"; else bad "unreach-pkg not UNCHECKED"; fi
+if grepq "$pin_sec" '^  npm:oxlint 1\.0\.0 (scripts/hooks/h\.sh): BEHIND'; then ok "pin-scan: OXLINT_VERSION= literal watched -> BEHIND"; else bad "oxlint literal not BEHIND; $(printf '%s' "$pin_sec" | grep oxlint)"; fi
+if grepq "$pin_sec" '^  gh:owner/hookrepo v1\.0\.0 (\.pre-commit-config\.yaml): BEHIND'; then ok "pin-scan: stale pre-commit rev -> BEHIND"; else bad "hookrepo not BEHIND"; fi
+if grepq "$pin_sec" '^  gh:owner/heldrepo v1\.0\.0 .*: HELD'; then ok "pin-scan: recorded hold -> HELD, not drift"; else bad "heldrepo not HELD"; fi
+if grepq "$pin_sec" '^  gh:owner/act v3 .*: CURRENT'; then ok "pin-scan: major-only action pin tracks its major -> CURRENT"; else bad "act@v3 not CURRENT"; fi
+if grepq "$pin_sec" '^  gh:owner/act2 v1 .*: BEHIND'; then ok "pin-scan: action a major behind -> BEHIND"; else bad "act2@v1 not BEHIND"; fi
+if [ "$pin_rc" -eq 2 ]; then ok "pin-scan drift run exits 2"; else bad "pin-scan drift run rc=$pin_rc; expected 2"; fi
+# A hold expires when upstream ships something newer than the one reviewed.
+printf 'owner/hookrepo=v1.3.0\nowner/heldrepo=v3.0.0\nowner/act=v3.4.1\nowner/act2=v2.0.0\n' > "$W12/state/rel"
+pin_run "$W12/holds.json"
+if grepq "$pin_sec" '^  gh:owner/heldrepo v1\.0\.0 .*: BEHIND'; then ok "pin-scan: hold expires once upstream moves past the reviewed release"; else bad "expired hold still HELD; $(printf '%s' "$pin_sec" | grep heldrepo)"; fi
+# Coverage: every tracked package.json directory in THIS repo is discovered.
+cov_out="$(PINSTATE="$W12/state" PINSTATE_DEFAULT=0.0.0 PATH="$W12/bin:$PATH" python3 "$ROOT/scripts/upstreams/pin-scan.py" "$ROOT" "" 2>&1)"
+cov_missing=""
+while IFS= read -r pj; do
+  d="$(dirname "$pj")"
+  grepq "$cov_out" -F "$d" || cov_missing="$cov_missing $d"
+done < <(git -C "$ROOT" ls-files '*package.json' | grep -v -e '^node_modules/' -e '/fixtures/')
+if [ -z "$cov_missing" ]; then ok "pin-scan discovers every tracked package.json directory"; else bad "pin-scan missed:$cov_missing"; fi
+if grepq "$cov_out" -F 'scripts/hooks/check-oxlint-complexity.sh' && grepq "$cov_out" -F 'scripts/hooks/check-oxlint-hardening.sh'; then ok "pin-scan discovers both oxlint hook pins"; else bad "oxlint hook pins not discovered"; fi
+if grepq "$cov_out" -F 'gitleaks/gitleaks v8.21.2' || grepq "$cov_out" -F '.github/workflows/ci.yml'; then ok "pin-scan reads workflow pins"; else bad "workflow pins not discovered"; fi
+rm -rf "$W12" "$PIN_EMPTY"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi

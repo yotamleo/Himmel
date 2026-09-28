@@ -2,7 +2,10 @@ name: fork-drift
 
 # Nightly upstream-drift watch (HIMMEL-1046). Runs the existing drift guard
 # (scripts/check-plugin-drift.sh + scripts/upstreams.json, HIMMEL-869) — which
-# now also covers the two SHA-pinned lib forks graphify + qmd — and, on real
+# now also covers the two SHA-pinned lib forks graphify + qmd, and (HIMMEL-3807)
+# scans every npm/bun dependency, pre-commit rev, workflow `uses:` and the
+# OXLINT_VERSION= literal via scripts/upstreams/pin-scan.py (npm registry + gh
+# releases; holds in scripts/upstreams/pin-holds.json) — and, on real
 # DRIFT (guard exit 2), opens or refreshes ONE consolidated tracking issue
 # (himmel /himmel-doctor convention: never a new issue per run). exit 3
 # (INCOMPLETE — expected in CI, where the probe/checkout registry entries for

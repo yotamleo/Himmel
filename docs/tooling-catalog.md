@@ -88,7 +88,13 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 > SHA-pinned remotes in `marketplace.json` (pin vs upstream HEAD) and the
 > vendored forks (`UPSTREAM_PIN` sha vs the upstream file fetched via `gh api`).
 > Fail-open when gh is absent; exit 2 on drift (cadence-armable). Run it on
-> demand or arm it like `pipeline-cadence`.
+> demand or arm it like `pipeline-cadence`. Since HIMMEL-3807 it also scans
+> every third-party pin in the repo (`scripts/upstreams/pin-scan.py`): npm/bun
+> dependencies at their lockfile version, pre-commit revs, workflow `uses:`, the
+> gitleaks `ver=` literal and `OXLINT_VERSION=` in `scripts/hooks`. Discovery is
+> by scanning, so a new pin is watched with no registry edit; a bump held back on
+> purpose goes in `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream
+> ships something newer than the release reviewed).
 
 > **Boundary ownership:** which optimizer owns which token boundary (rtk vs
 > MCP-output vs cache vs routing) is governed by
