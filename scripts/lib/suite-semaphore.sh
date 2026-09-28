@@ -253,7 +253,7 @@ _suite_sem_busy_report() {
 }
 
 suite_sem_acquire() {
-    local label="$1" hint="$2" dir n wait poll deadline i
+    local label="$1" hint="$2" dir n wait poll deadline i rc
     if _suite_sem_held_ok; then
         return 0
     fi
@@ -273,8 +273,9 @@ suite_sem_acquire() {
         while [ "$i" -le "$n" ]; do
             _suite_sem_try "$dir/slot-$i" "$label" && return 0
             if _suite_sem_stale "$dir/slot-$i"; then
-                _suite_sem_reclaim "$dir/slot-$i"
-                if [ "$?" -eq 3 ]; then
+                # if/else keeps a contention rc 1 from tripping a set -e caller.
+                if _suite_sem_reclaim "$dir/slot-$i"; then rc=0; else rc=$?; fi
+                if [ "$rc" -eq 3 ]; then
                     printf 'ERR suite-semaphore: cannot create the reclaim guard %s.reclaim (permission or IO failure, not contention)\n' "$dir/slot-$i" >&2
                     return 2
                 fi

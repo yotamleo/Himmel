@@ -78,7 +78,7 @@ chmod +x "$w/shim/ps" "$w/shim/rm" "$w/sb/test-hold.sh"
 lock="$w/tmp/suite.lock"; : > "$w/hold.log"
 run() {
   env PATH="$w/shim:$PATH" HOME="$w/home" TMPDIR="$w/tmp" SUITE_LOCK_DIR="$lock" \
-    HIMMEL_SUITE_SEMAPHORE_DIR="$w/tmp/sem" HOLDLOG="$w/hold.log" "$@" \
+    HIMMEL_SUITE_SEMAPHORE_DIR="$w/tmp/sem" HOLDLOG="$w/hold.log" SUITE_LOCK_WAIT=60 "$@" \
     bash "$RUNNER" "$w/sb"
 }
 run HOLDNAME=F > "$w/F.out" 2>&1 & fp=$!
@@ -87,10 +87,17 @@ run HOLDNAME=F > "$w/F.out" 2>&1 & fp=$!
 n=0
 while [ ! -d "$lock" ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done
 run HOLDNAME=B > "$w/B.out" 2>&1 & bp=$!
-wait "$fp"; wait "$bp"
+wait "$fp"; frc=$?
+wait "$bp"; brc=$?
+# Both runs must have completed their suite (start AND end logged, rc 0); a
+# run that never executed would otherwise read as "no overlap".
 dbl=$(awk '$1=="start"{s[$3]=$2} $1=="end"{e[$3]=$2}
-  END {if (("F" in s) && ("B" in s) && s["B"] < e["F"] && s["F"] < e["B"]) print 1; else print 0}' "$w/hold.log")
-if [ "$dbl" = 0 ]; then
+  END {if (!(("F" in s) && ("B" in s) && ("F" in e) && ("B" in e))) print 2;
+        else if (s["B"] < e["F"] && s["F"] < e["B"]) print 1; else print 0}' "$w/hold.log")
+if [ "$frc" -ne 0 ] || [ "$brc" -ne 0 ] || [ "$dbl" = 2 ]; then
+  fail "a run did not complete its suite (F rc=$frc, B rc=$brc, hold-log incomplete=$dbl)"
+  cat "$w/hold.log" "$w/F.out" "$w/B.out"
+elif [ "$dbl" = 0 ]; then
   pass "two runs never held the suite lock at once"
 else
   fail "DOUBLE HOLD: both runs executed their suite at the same time"
