@@ -262,7 +262,11 @@ fi
 # findings", "write an OVERVIEW", and "write a SHORT summary" (an adjective
 # between the article and the noun) still fell through to gate_action --
 # newly governing genuinely read-only report briefs. Widened to accept
-# "write up" and up to two leading words (adjectives) before the noun.
+# "write up" and one adjective between the determiner and the noun.
+# (round-2 panel codex-1: an earlier version of this widening allowed up
+# to two BARE words before the noun with no determiner required at all,
+# so "write code for report" satisfied it via "code"+"for" -- the
+# adjective slot now only fires as part of a determiner+noun phrase.)
 #
 # codex (PR #1388 round 4): the unbounded tail also treated a path or
 # extension mentioned in a LATER, UNRELATED sentence as a file-write target
@@ -280,7 +284,7 @@ if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)write([
     protected_tail=$(printf '%s' "$write_tail" | sed -E 's/([.!?])[[:space:]]+(then|and)([^[:alnum:]_])/\1Z\2\3/g')
     path_scope=$(printf '%s' "$protected_tail" | sed -E 's/([.!?])[[:space:]]+.*/\1/')
     if [ -n "$write_trigger" ] \
-        && grepq "$write_tail" -Eq '^[[:space:]]+(up([^[:alnum:]_]|$)|((a|an|the)[[:space:]]+)?([a-z]+[[:space:]]+){0,2}(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$))' \
+        && grepq "$write_tail" -Eq '^[[:space:]]+(up([^[:alnum:]_]|$)|((a|an|the)[[:space:]]+([a-z]+[[:space:]]+){0,1})?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$))' \
         && ! grepq "$path_scope" -Eq '/|\.[a-zA-Z][a-zA-Z0-9]*([^[:alnum:]]|$)|[[:space:]](to|into)[[:space:]]' \
         && ! grepq "$write_tail" -Eq '(then|and)[[:space:][:punct:]]+(implement|fix|land|apply|edit|modify|commit|write)'; then
         :

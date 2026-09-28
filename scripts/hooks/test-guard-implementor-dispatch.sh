@@ -473,6 +473,16 @@ assert_rc "genuine 'then commit' action still governed despite unrelated 'then c
 RC111=$(run_hook edit-distance-plus-action "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Then edit the config file. Also and edit distance heuristics come up here.')")
 assert_rc "genuine 'then edit' action still governed despite unrelated 'and edit distance' elsewhere (codex-1)" 2 "$RC111"
 
+# codex-1 (round 2 panel, HIMMEL-3784): the write-clause exemption's
+# leading-words-before-noun match must not fire without a determiner --
+# two arbitrary bare words ("patch", "for") must not satisfy it just
+# because a report noun happens to follow later in the same clause. (A
+# "write code for report" phrasing also trips the independent bare
+# "write code" implementation detector, so it doesn't isolate this exact
+# regex bug on its own; "write patch for report" avoids that overlap.)
+RC112=$(run_hook write-patch-for-report "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the bug, then write patch for report.')")
+assert_rc "'then write patch for report' (genuine implementation, not a report noun phrase) still governed (codex-1 round 2)" 2 "$RC112"
+
 RC110=$(run_hook write-summary-unrelated-later-path "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Research the parser, then write a summary. Also check scripts/router.sh for reference.')")
 assert_rc "path in an unrelated LATER sentence does not gate the write (HIMMEL-3784, codex round 4)" 0 "$RC110"
 assert_empty "unrelated-later-path brief silent" "$(combined_output write-summary-unrelated-later-path)"
