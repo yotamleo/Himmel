@@ -924,8 +924,19 @@ denials_summary=skip
 if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
     denials_cutoff="$(date -u -d "-${denials_window_min} minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"  # gnu-ok: Linux-only kit
     if [ -n "$denials_cutoff" ]; then
-        denials_summary="$(jq -s -r --arg cutoff "$denials_cutoff" '
+        # Bound the read (TICK_DENIALS_TAIL_MAX lines) so a tick's cost stays
+        # flat regardless of how large the all-time jsonl has grown -- this
+        # is a stateless trailing-window field (no persisted cursor), so a
+        # tick is already an approximation; the tail cap just keeps that
+        # approximation cheap too. The all-time total below counts within
+        # this same bounded tail, not the true unbounded all-time count.
+        denials_tail_max="${TICK_DENIALS_TAIL_MAX:-2000}"
+        case "$denials_tail_max" in ''|*[!0-9]*) denials_tail_max=2000 ;; esac
+        denials_summary="$(tail -n "$denials_tail_max" "$denials_log" 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
             . as $all
+            | ($all | group_by(.session_title // "unknown")
+               | map({key: (.[0].session_title // "unknown"), value: length})
+               | from_entries) as $totals
             | ($all | map(select(.ts >= $cutoff))) as $recent
             | ($recent | group_by(.session_title // "unknown")) as $rgroups
             | if ($rgroups | length) == 0 then "none"
@@ -935,7 +946,7 @@ if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
                     (.[0].session_title // "unknown") as $leg
                     | length as $n
                     | (any(.[]; (.input_head // "") | test("merge-on-green|go\\.sh|git push|gh pr (create|merge)|write-verdicts|pr-check"))) as $ship
-                    | ($all | map(select((.session_title // "unknown") == $leg)) | length) as $total
+                    | ($totals[$leg] // $n) as $total
                     | (if $ship then "SHIP-STEP"
                        elif ($total >= 18 or $n >= 3) then "PAUSE-RISK"
                        elif ($n >= 2) then "REPEAT"
@@ -944,7 +955,7 @@ if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
                   )
                 | join(",")
               end
-        ' "$denials_log" 2>/dev/null)" || denials_summary=""
+        ' 2>/dev/null)" || denials_summary=""
         [ -n "$denials_summary" ] || denials_summary=skip
     fi
 fi
