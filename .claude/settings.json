@@ -101,8 +101,6 @@
       "Bash(bash scripts/quiet-run.sh suite -- bash scripts/hermes/test-*.sh)",
       "Bash(bash scripts/quiet-run.sh suite -- bash scripts/himmelctl/test/test-*.sh)",
       "Bash(bash scripts/quiet-run.sh suite -- bash scripts/graphify/test-*.sh)",
-      "Bash(bash scripts/quiet-run.sh suite -- node --test --test-reporter=dot scripts/hooks/*.test.mjs)",
-      "Bash(bash scripts/quiet-run.sh suite -- node --test --test-reporter=dot scripts/lanes/tests/**/*.test.mjs)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/handover/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/handover/console-kit/test-*.sh)",
@@ -118,8 +116,6 @@
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/hermes/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/himmelctl/test/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/graphify/test-*.sh)",
-      "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- node --test --test-reporter=dot scripts/hooks/*.test.mjs)",
-      "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- node --test --test-reporter=dot scripts/lanes/tests/**/*.test.mjs)",
       "Bash(claude plugin *)",
       "Bash(sed *)",
       "Bash(awk *)",
@@ -501,7 +497,7 @@
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/log-classifier-denial.sh\"",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/log-classifier-denial.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/log-classifier-denial.sh\"; fi",
             "timeout": 10
           }
         ]
