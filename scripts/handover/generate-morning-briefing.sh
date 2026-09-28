@@ -420,8 +420,10 @@ EOF_WIP
     else
         printf '_No In-Progress tickets._\n'
     fi
-    catchall=$(printf '%s\n' "$pr_map" | awk -F'\t' -v seen="$annotated_branches" '
-        BEGIN{ n=split(seen,s,"\n"); for(i in s) skip[tolower(s[i])]=1 }
+    # HIMMEL-3719: BSD awk (macOS) rejects a newline inside -v, so hand the
+    # branch list over tab-separated (a branch name cannot contain a tab).
+    catchall=$(printf '%s\n' "$pr_map" | awk -F'\t' -v seen="$(printf '%s' "$annotated_branches" | tr '\n' '\t')" '
+        BEGIN{ n=split(seen,s,"\t"); for(i in s) skip[tolower(s[i])]=1 }
         $1=="OPEN" && !( tolower($2) in skip ){ printf "- PR #%s — %s\n", $3, $2 }')
     if [ -n "$catchall" ]; then
         printf '\n_Other open PRs / worktrees (no In-Progress ticket):_\n%s\n' "$catchall"

@@ -140,7 +140,9 @@ assert_contains() {
     local label="$1" needle="$2" haystack="$3"
     case "$haystack" in
         *"$needle"*) echo "PASS $label" ;;
-        *) echo "FAIL $label -- output missing: $needle"; FAILED=$((FAILED + 1)) ;;
+        *) echo "FAIL $label -- output missing: $needle"
+           printf '%s\n' "$haystack" | head -8 | sed 's/^/    got: /'
+           FAILED=$((FAILED + 1)) ;;
     esac
 }
 assert_not_contains() {

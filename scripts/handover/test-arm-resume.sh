@@ -218,6 +218,9 @@ ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 [ -x "$ARM" ] || chmod +x "$ARM"
 
 TMP=$(mktemp -d)
+# macOS: mktemp yields /var/folders/... but arm-resume resolves the real path
+# (/private/var/...); canonicalise so path assertions compare like with like.
+TMP=$(cd "$TMP" && pwd -P)
 trap 'rm -rf "$TMP"' EXIT
 # HIMMEL-3679: any case below that fails to stub crontab/at must not be able
 # to silently touch the operator's REAL scheduler. Snapshot now, before any

@@ -526,7 +526,7 @@ test_collision_pair() {
         --handover "$HANDOVER_DIR/g2/$label/$name_a" 2>&1)
     rc=$?
     assert_rc "$label a: first distinct handover arms" 0 "$rc" "$out"
-    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap \
+    out=$(ARM_COLLISION_CANDIDATES= SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap \
         --handover "$HANDOVER_DIR/g2/$label/$name_b" 2>&1)
     rc=$?
     assert_ne_rc "$label b: second DISTINCT handover is NOT a dedup block (rc!=3)" 3 "$rc" "$out"

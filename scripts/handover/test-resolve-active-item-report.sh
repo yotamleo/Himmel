@@ -3,6 +3,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; R="$HERE/resolve-active-item-report.sh"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-resolve-active-item-report.XXXXXX")" || exit 1
+tmp="$(cd "$tmp" && pwd -P)"  # macOS: /var/folders -> /private/var (git reports the real path)
 trap 'rm -rf "$tmp"' EXIT
 fails=0; check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 

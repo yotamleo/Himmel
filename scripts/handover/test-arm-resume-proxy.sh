@@ -61,7 +61,9 @@ assert_contains() {
     local label="$1" needle="$2" haystack="$3"
     case "$haystack" in
         *"$needle"*) echo "PASS $label" ;;
-        *) echo "FAIL $label -- output missing: $needle"; FAILED=$((FAILED + 1)) ;;
+        *) echo "FAIL $label -- output missing: $needle"
+           printf '%s\n' "$haystack" | head -8 | sed 's/^/    got: /'
+           FAILED=$((FAILED + 1)) ;;
     esac
 }
 assert_not_contains() {
@@ -242,10 +244,8 @@ done
 ENVROOT="$TMP/envfallback"
 mkdir -p "$ENVROOT/scripts/handover" "$ENVROOT/scripts/lib"
 cp "$ARM" "$ENVROOT/scripts/handover/arm-resume.sh"
-cp "$SCRIPT_DIR/../lib/py-armor.sh" "$ENVROOT/scripts/lib/py-armor.sh"
+cp "$SCRIPT_DIR"/../lib/*.sh "$ENVROOT/scripts/lib/"
 cp "$LIB" "$ENVROOT/scripts/lib/headroom-proxy.sh"
-cp "$SCRIPT_DIR/../lib/console-context.sh" "$ENVROOT/scripts/lib/console-context.sh"
-cp "$SCRIPT_DIR/../lib/macos-app-resolve.sh" "$ENVROOT/scripts/lib/macos-app-resolve.sh"
 
 # T3b: process env UNSET, repo-root .env carries HIMMEL_HEADROOM_PROXY=1 ->
 #      falls back to the file -> proxy lines present.
@@ -440,9 +440,8 @@ assert_contains "T6c crontab entry bakes the %q-quoted bin" "$EXPECTED_POSIX_HB 
 LIBFAIL="$TMP/libfail"
 mkdir -p "$LIBFAIL/scripts/handover" "$LIBFAIL/scripts/lib"
 cp "$ARM" "$LIBFAIL/scripts/handover/arm-resume.sh"
-cp "$SCRIPT_DIR/../lib/py-armor.sh" "$LIBFAIL/scripts/lib/py-armor.sh"
-cp "$SCRIPT_DIR/../lib/console-context.sh" "$LIBFAIL/scripts/lib/console-context.sh"
-cp "$SCRIPT_DIR/../lib/macos-app-resolve.sh" "$LIBFAIL/scripts/lib/macos-app-resolve.sh"
+cp "$SCRIPT_DIR"/../lib/*.sh "$LIBFAIL/scripts/lib/"
+rm -f "$LIBFAIL/scripts/lib/headroom-proxy.sh"
 printf 'HIMMEL_HEADROOM_PROXY=1\n' > "$LIBFAIL/.env"
 # (a) lib ABSENT: arm works (rc 0), WARNs, and the truthy .env is IGNORED
 #     (fallback disabled without the parser).
@@ -523,14 +522,22 @@ esac
 #     rather than assert on a broken fixture.
 # ---------------------------------------------------------------------------
 PY3BIN=$(command -v python3 2>/dev/null || true)
-RESTRICTED_PATH="$SCHED_STUB:/usr/bin"
-[ -n "$PY3BIN" ] && RESTRICTED_PATH="$RESTRICTED_PATH:$(dirname "$PY3BIN")"
-if env PATH="$RESTRICTED_PATH" bash -c 'command -v curl' >/dev/null 2>&1; then
+# macOS ships curl in /usr/bin and bash in /bin (not /usr/bin): mirror the
+# system dirs minus curl into a symlink dir, and name bash by absolute path
+# (env cannot find it on the restricted PATH -> rc=127).
+NOCURL="$TMP/nocurl"; mkdir -p "$NOCURL"
+for _f in /usr/bin/* /bin/*; do
+    [ "${_f##*/}" = curl ] || ln -sf "$_f" "$NOCURL/${_f##*/}" 2>/dev/null
+done
+BASH_ABS=$(command -v bash)
+RESTRICTED_PATH="$SCHED_STUB:$NOCURL"
+[ -n "$PY3BIN" ] && [ ! -e "$NOCURL/python3" ] && RESTRICTED_PATH="$RESTRICTED_PATH:$(dirname "$PY3BIN")"
+if env PATH="$RESTRICTED_PATH" "$BASH_ABS" -c 'command -v curl' >/dev/null 2>&1; then
     echo "SKIP T9 (curl still resolvable on the restricted PATH; cannot fake a curl-less arm here)"
 else
     HO=$(make_handover)
     out=$(env PATH="$RESTRICTED_PATH" HIMMEL_HEADROOM_PROXY=1 \
-        bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
+        "$BASH_ABS" "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
     rc=$?
     assert_rc "T9 curl-missing arm still exits 0" 0 "$rc"
     assert_contains "T9 arm-time WARN about missing curl" "curl not on PATH" "$out"

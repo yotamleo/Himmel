@@ -243,6 +243,23 @@ exit 0
 EOF
 chmod +x "$SCHED_STUB/at" "$SCHED_STUB/atq" "$SCHED_STUB/atrm" "$SCHED_STUB/claude"
 
+# HIMMEL-3719: macOS always takes arm-resume's crontab branch (never `at`), so
+# the arms here would land in the operator's REAL crontab and T9's second arm
+# would dedup against T6's leftover entry (rc=3). Give it a file-backed crontab
+# stub (same shape as test-arm-resume-cron.sh) plus a private runner dir and no
+# Terminal window. Linux takes the `at` stubs above and never calls it.
+CRON_STORE="$TMP/cron.store"; : > "$CRON_STORE"
+cat > "$SCHED_STUB/crontab" <<EOF
+#!/bin/sh
+case "\$1" in
+  -l) if [ -s "$CRON_STORE" ]; then cat "$CRON_STORE"; exit 0; else exit 1; fi ;;
+  -)  cat > "$CRON_STORE" ;;
+  *)  exit 0 ;;
+esac
+EOF
+chmod +x "$SCHED_STUB/crontab"
+export ARM_RUNNER_DIR="$TMP/arm-runners" ARM_TERMINAL_APP=none
+
 # mktemp shim for T1b (HIMMEL-708 fallout): arm-resume's --time HH:MM
 # resolution now round-trips through py_armor_capture, which ALSO calls
 # mktemp -- so a global broken TMPDIR (the old way this case forced a
@@ -643,6 +660,7 @@ assert_contains "T9 refusal names the offending meta path" "glm-malformed/meta.j
 # from a clean scheduler, like every T-case before the stubs gained real
 # state (HIMMEL-2642 added the at-jobs half of this reset).
 rm -f "$TMP/sched-stub.tasks"
+: > "$CRON_STORE"
 rm -rf "$AT_DB"
 mkdir -p "$AT_DB"
 reset_fleet_slots

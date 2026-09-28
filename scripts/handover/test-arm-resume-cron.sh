@@ -317,7 +317,7 @@ assert_contains "a-appresolve: missing app falls open to Terminal.app" "headed l
 # regardless -- the long path lives only in the runner FILE, which /bin/sh
 # parses with no such limit.
 LONGDIR="$HANDOVER_DIR"
-for _seg in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+for _seg in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17; do  # 17 not 18: macOS PATH_MAX 1024 counted after /tmp -> /private/tmp
     LONGDIR="$LONGDIR/$(printf 's%.0s' $(seq 1 50))$_seg"
 done
 mkdir -p "$LONGDIR"

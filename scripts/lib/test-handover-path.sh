@@ -449,6 +449,33 @@ else
     echo "SKIP T10f: this host's realpath has no -m (no GNU reference to compare against)"
 fi
 
+# T11 (HIMMEL-3719): macOS folds identity case only when the lowercased path is
+# the SAME file (APFS case-insensitive). A hard link stands in for that on any
+# host: Foo11.md and foo11.md are one inode. Linux/Windows output is unchanged.
+T11_DIR="$TMP/t11"; mkdir -p "$T11_DIR"
+printf 'x\n' > "$T11_DIR/Foo11.md"
+ln "$T11_DIR/Foo11.md" "$T11_DIR/foo11.md" 2>/dev/null
+printf 'x\n' > "$T11_DIR/Bar11.md"
+printf 'y\n' > "$T11_DIR/bar11.md"
+printf 'x\n' > "$T11_DIR/Baz11.md"
+# The fold lowercases the WHOLE path (APFS folds directories too), so a mktemp
+# dir with capitals needs a lowercase alias to stand in for that.
+_hp_ascii_lower "$TMP"; T11_ALIAS="$_HP_LOWER"
+[ "$T11_ALIAS" = "$TMP" ] || ln -s "$TMP" "$T11_ALIAS" 2>/dev/null
+if [ "$T11_DIR/Foo11.md" -ef "$T11_DIR/foo11.md" ]; then
+    assert_eq "T11a macos folds a case variant that is the same file" \
+        "$(PLATFORM=macos _arm_identity_path "$T11_DIR/foo11.md")" "$(PLATFORM=macos _arm_identity_path "$T11_DIR/Foo11.md")"
+    assert_eq "T11b linux keeps the case (byte-identical to realpath)" \
+        "$(_arm_realpath "$T11_DIR/Foo11.md")" "$(PLATFORM=linux _arm_identity_path "$T11_DIR/Foo11.md")"
+else
+    echo "SKIP T11a/b: this host cannot hard-link"
+fi
+assert_eq "T11c macos keeps case when the lowercase name is a DIFFERENT file" \
+    "$(_arm_realpath "$T11_DIR/Bar11.md")" "$(PLATFORM=macos _arm_identity_path "$T11_DIR/Bar11.md")"
+assert_eq "T11d macos keeps case when the lowercase name does not exist" \
+    "$(_arm_realpath "$T11_DIR/Baz11.md")" "$(PLATFORM=macos _arm_identity_path "$T11_DIR/Baz11.md")"
+[ "$T11_ALIAS" = "$TMP" ] || { [ -L "$T11_ALIAS" ] && rm -f "$T11_ALIAS"; }
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

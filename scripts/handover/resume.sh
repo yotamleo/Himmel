@@ -86,7 +86,7 @@ if [ "$mode" = "list" ]; then
     st="$(item_status "$d/$f")"
     is_active "$st" || return 0
     bn="$(basename "$d")"
-    id2="$(printf '%s' "$bn" | sed -n "s/^\(#\{0,1\}${jira_uc}-[0-9]\{1,\}\|#[0-9]\{1,\}\).*/\1/p")"
+    id2="$(printf '%s' "$bn" | sed -En "s/^(#?${jira_uc}-[0-9]+|#[0-9]+).*/\1/p")"
     [ -n "$id2" ] || id2="$bn"
     slug="${bn#"$id2"-}"
     printf '%s\t%s\t%s\t%s\n' "$id2" "$slug" "$st" "$t"

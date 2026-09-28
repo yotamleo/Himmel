@@ -304,7 +304,7 @@ assert_contains "g: warns loudly on the query error" "WARN arm-resume: arming on
 #     WRONG repo's fence. The gh stub itself asserts its cwd.
 # ---------------------------------------------------------------------------
 GH_CWDCHECK="$GH_STUB_DIR/gh-cwdcheck"
-WORK_REPO_NORM=$(cd "$WORK_REPO" && pwd)
+WORK_REPO_NORM=$(cd "$WORK_REPO" && pwd -P)
 cat > "$GH_CWDCHECK" <<EOF
 #!/usr/bin/env bash
 if [ "\$(pwd)" != "$WORK_REPO_NORM" ]; then

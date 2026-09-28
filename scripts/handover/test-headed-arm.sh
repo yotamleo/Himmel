@@ -36,6 +36,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; SCRIPT="$HERE/headed-arm.sh"
 # suite's own per-case overrides are the only source, same as
 # console-kit/test-headed-arm-leg.sh:40.
 unset HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER 2>/dev/null || true
+# HIMMEL-3719: a real macOS host reads uname=Darwin, which picks the macOS shim
+# and its ~7 minute session-visibility budget; every case that launches but
+# never confirms (44c+) then outruns the CI timeout. Pin the platform so the
+# suite is host-independent; cases that want Darwin (43, 43c) set or unset it
+# per call.
+export HEADED_ARM_UNAME=Linux
 # r2-codex-4: this mktemp used to be unchecked. A failed mktemp leaves $tmp
 # EMPTY, and every fixture path built on it below ("$tmp/..." -> "/...")
 # then targets an unintended location instead of a throwaway one - abort

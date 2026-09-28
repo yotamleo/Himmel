@@ -101,6 +101,10 @@ TMP_ROOT=$(mktemp -d)
 if command -v cygpath >/dev/null 2>&1; then
     TMP_ROOT=$(cygpath -m "$TMP_ROOT")
 fi
+# macOS: mktemp yields /var/folders/... (a symlink to /private/var) but git
+# reports the physical toplevel and macOS realpath has no -m, so the two never
+# line up. Resolve it once here (HIMMEL-3719).
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 echo "test: TMP_ROOT=$TMP_ROOT"
 SLUG="dpz$$"
 
@@ -149,7 +153,7 @@ run_auto_commit() {
 echo "TEST: branch creation from ticket-tagged message"
 
 echo "first content" > "$HANDOVER_REPO/handovers/$SLUG/notes.md"
-out=$(run_auto_commit "HIMMEL-140 add notes" 2>&1)
+out=$(run_auto_commit "HIMMEL-140 add notes" 2>&1) || echo "  auto-commit exited non-zero"
 printf '%s\n' "$out" | awk '{print "  > "$0}'
 assert_contains "creates handover/HIMMEL-140 branch" \
     "handover/HIMMEL-140-add-notes" "$out"

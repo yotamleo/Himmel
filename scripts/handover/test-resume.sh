@@ -13,7 +13,8 @@ set -uo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"; R="$HERE/resume.sh"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d)"; tmp="$(cd "$tmp" && pwd -P)"  # macOS: /var -> /private/var
+trap 'rm -rf "$tmp"' EXIT
 fails=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 has(){ grepq "$2" "$3" && echo "ok - $1" || { echo "FAIL - $1: missing [$3]"; fails=$((fails+1)); }; }
@@ -124,5 +125,10 @@ SH
 chmod +x "$fakebin/node"
 PATH="$fakebin:$PATH" HANDOVER_DIR="$root" HANDOVER_REGISTRY="$reg" bash "$R" --repo-root "$RR" 389 >/dev/null 2>&1
 check "node crash (rc=5) -> hard error, not graceful skip" "$?" "2"
+
+# HIMMEL-3719: BSD sed (macOS) has no `\|` alternation in a BRE, so the list
+# id split silently fell through. Keep resume.sh free of it (use sed -E).
+o="$(grep -nE 'sed .*\\\|' "$R")"
+check "resume.sh: no GNU-only \\| alternation in sed" "$o" ""
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

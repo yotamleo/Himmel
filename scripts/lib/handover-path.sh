@@ -413,6 +413,16 @@ _arm_identity_path() {
         fi
         _hp_ascii_lower "$_p"; _p="$_HP_LOWER"
     fi
+    if [ "$_platform" = macos ]; then
+        # HIMMEL-3719: APFS is case-insensitive by default, so Foo.md and foo.md
+        # are one file. Fold only when the lowercased path exists AND is the
+        # same file (-ef); a case-sensitive volume, a missing path or a distinct
+        # file keeps today's identity (fail safe).
+        _hp_ascii_lower "$_p"
+        if [ "$_HP_LOWER" != "$_p" ] && [ -e "$_HP_LOWER" ] && [ "$_HP_LOWER" -ef "$_p" ]; then
+            _p="$_HP_LOWER"
+        fi
+    fi
     # stderr redirected FIRST (see the matching comment in
     # _arm_cygpath_available above) so a failed `>>` open never reaches the
     # real stderr even if $_ARM_CACHE_DIR vanished between the usability
