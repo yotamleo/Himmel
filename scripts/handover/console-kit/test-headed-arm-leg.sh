@@ -179,7 +179,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT|HANDOVER_DIR|HIMMEL_CONSOLE_NAME)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT|HANDOVER_DIR|HIMMEL_CONSOLE_NAME|CLAUDE_CODE_EFFORT_LEVEL|HEADED_ARM_LEG_CLAUDE_BIN|HIMMEL_CONSOLE_JUDGE_EFFORT)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -317,7 +317,7 @@ contains "dry-run default: no console-name source -> HIMMEL_CONSOLE_NAME absent"
 # this exact assertion, not a vaguer one.
 rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
-contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT CONSOLE_CONTEXT=<unset>"
+contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT HIMMEL_CONSOLE_JUDGE_EFFORT CONSOLE_CONTEXT=<unset>"
 not_contains "dry-run, ambient CONSOLE_CONTEXT=1m: never reported as still set" "$out" "CONSOLE_CONTEXT=1m"
 
 # --- HIMMEL-3435: HIMMEL_CONSOLE_NAME resolution (--console, launching
@@ -2019,6 +2019,82 @@ rec28d="$(ll_line HIMMEL-3270-N5-judge)"
 contains "28f --judge launch is recorded with its forced profile" "$rec28d" " profile=console-judge "
 contains "28f --judge launch is recorded role=judge" "$rec28d" " role=judge "
 
+# --- HIMMEL-3795 (J1404A findings 1-2). Full (non-dry) launches: the
+# --dry-run cases above (~line 555) only prove the HEADED_ARM_LAUNCHER_ENV
+# token-list channel is scrubbed - they never exec anything, so they cannot
+# see a plain-var leak that only reaches a real (here: stubbed) downstream
+# process. These full launches route through the real headed-arm.sh and its
+# konsole stub, which records every name in its allowlist (mk_launch_stubs
+# above) from ITS OWN process env - the only way to prove the plain
+# LEG_CLAUDE_BIN/CLAUDE_CODE_EFFORT_LEVEL a leg's shell inherited from ITS OWN
+# launch never survives the exec chain into an armed judge/leg. ------------
+
+# Finding 1: a claudex leg's own ambient LEG_CLAUDE_BIN=<claude-codex>, still
+# exported in that leg's shell, must not reach a native judge it arms.
+d28e="$tmp/c28e"; mk_launch_stubs "$d28e" "HIMMEL-3795-N1-binleak"; mkdir -p "$tmp/repo28e"
+rc=0
+LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin \
+  RUN_LEG_ARGS='--judge' run_leg "$d28e" "$tmp/repo28e" "HIMMEL-3795-N1-binleak" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d28e" || true
+env28e="$(cat "$d28e/env-record" 2>/dev/null || true)"
+check "HIMMEL-3795: full --judge launch, ambient LEG_CLAUDE_BIN: exit 0" "$rc" "0"
+not_contains "HIMMEL-3795: full --judge launch, ambient LEG_CLAUDE_BIN: does not reach the armed process env" "$env28e" "LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin"
+
+# Same leak, native --profile leg-impl instead of --judge (the ticket's other
+# named case).
+d28f="$tmp/c28f"; mk_launch_stubs "$d28f" "HIMMEL-3795-N2-binleak-profile"; mkdir -p "$tmp/repo28f"
+rc=0
+LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin \
+  RUN_LEG_ARGS='--profile leg-impl' run_leg "$d28f" "$tmp/repo28f" "HIMMEL-3795-N2-binleak-profile" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d28f" || true
+env28f="$(cat "$d28f/env-record" 2>/dev/null || true)"
+check "HIMMEL-3795: full --profile leg-impl launch, ambient LEG_CLAUDE_BIN: exit 0" "$rc" "0"
+not_contains "HIMMEL-3795: full --profile leg-impl launch, ambient LEG_CLAUDE_BIN: does not reach the armed process env" "$env28f" "LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin"
+
+# Finding 2: a leg's own ambient CLAUDE_CODE_EFFORT_LEVEL=low (inherited from
+# ITS OWN low-effort launch) must not override a judge it arms - the judge
+# still gets high.
+d28g="$tmp/c28g"; mk_launch_stubs "$d28g" "HIMMEL-3795-N3-effortleak"; mkdir -p "$tmp/repo28g"
+rc=0
+CLAUDE_CODE_EFFORT_LEVEL=low \
+  RUN_LEG_ARGS='--judge' run_leg "$d28g" "$tmp/repo28g" "HIMMEL-3795-N3-effortleak" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d28g" || true
+env28g="$(cat "$d28g/env-record" 2>/dev/null || true)"
+check "HIMMEL-3795: full --judge launch, ambient CLAUDE_CODE_EFFORT_LEVEL=low: exit 0" "$rc" "0"
+contains "HIMMEL-3795: full --judge launch, ambient CLAUDE_CODE_EFFORT_LEVEL=low: judge still gets high" "$env28g" "CLAUDE_CODE_EFFORT_LEVEL=high"
+not_contains "HIMMEL-3795: full --judge launch, ambient CLAUDE_CODE_EFFORT_LEVEL=low: ambient low never reaches the armed process" "$env28g" "CLAUDE_CODE_EFFORT_LEVEL=low"
+
+# Control: a console's DELIBERATE override (HIMMEL_CONSOLE_JUDGE_EFFORT) still
+# wins over the high default - the fix must not make every override
+# impossible, only the ambient/inherited kind.
+d28h="$tmp/c28h"; mk_launch_stubs "$d28h" "HIMMEL-3795-N4-effortoverride"; mkdir -p "$tmp/repo28h"
+rc=0
+HIMMEL_CONSOLE_JUDGE_EFFORT=medium \
+  RUN_LEG_ARGS='--judge' run_leg "$d28h" "$tmp/repo28h" "HIMMEL-3795-N4-effortoverride" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d28h" || true
+env28h="$(cat "$d28h/env-record" 2>/dev/null || true)"
+check "HIMMEL-3795: full --judge launch, explicit HIMMEL_CONSOLE_JUDGE_EFFORT: exit 0" "$rc" "0"
+contains "HIMMEL-3795: full --judge launch, explicit HIMMEL_CONSOLE_JUDGE_EFFORT: the override wins" "$env28h" "CLAUDE_CODE_EFFORT_LEVEL=medium"
+not_contains "HIMMEL-3795: full --judge launch, explicit HIMMEL_CONSOLE_JUDGE_EFFORT: the high default is not also present" "$env28h" "CLAUDE_CODE_EFFORT_LEVEL=high"
+
+# Control (console ruling, HIMMEL-3795): the two new seam names themselves
+# (HEADED_ARM_LEG_CLAUDE_BIN, HIMMEL_CONSOLE_JUDGE_EFFORT) must not reach the
+# armed process's own env - otherwise a leg armed with either one ambiently
+# set could push it into a judge IT arms, moving the leak one level rather
+# than closing it. Both seams are exercised together so a single launch
+# proves both are consumed-then-scrubbed, not merely consumed.
+d28i="$tmp/c28i"; mk_launch_stubs "$d28i" "HIMMEL-3795-N5-seamscrub"; mkdir -p "$tmp/repo28i"
+rc=0
+HEADED_ARM_LEG_CLAUDE_BIN=/tmp/test-claude-stub HIMMEL_CONSOLE_JUDGE_EFFORT=medium \
+  RUN_LEG_ARGS='--judge' run_leg "$d28i" "$tmp/repo28i" "HIMMEL-3795-N5-seamscrub" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d28i" || true
+env28i="$(cat "$d28i/env-record" 2>/dev/null || true)"
+check "HIMMEL-3795: full --judge launch, both seams set: exit 0" "$rc" "0"
+contains "HIMMEL-3795: full --judge launch, both seams set: LEG_CLAUDE_BIN takes the seam's value" "$env28i" "LEG_CLAUDE_BIN=/tmp/test-claude-stub"
+contains "HIMMEL-3795: full --judge launch, both seams set: effort override applied" "$env28i" "CLAUDE_CODE_EFFORT_LEVEL=medium"
+not_contains "HIMMEL-3795: full --judge launch, both seams set: HEADED_ARM_LEG_CLAUDE_BIN itself never reaches the armed process (cannot leak into a nested arm)" "$env28i" "HEADED_ARM_LEG_CLAUDE_BIN="
+not_contains "HIMMEL-3795: full --judge launch, both seams set: HIMMEL_CONSOLE_JUDGE_EFFORT itself never reaches the armed process (cannot leak into a nested arm)" "$env28i" "HIMMEL_CONSOLE_JUDGE_EFFORT="
+
 # HIMMEL-3698: a judge does not implement (design 3.2) and never needs to
 # write a LEG's handover doc, so it must not gain the Edit-allow grant even
 # though it resolves its own DOC/HANDOVER_DIR too.
@@ -2079,7 +2155,9 @@ check "28i no resolvable cache dir: nothing written under /tmp/.claude" "$([ -e 
 
 # --- 29 (HIMMEL-3403). --headless: the leg runs as a Claude Code background
 # session instead of in a konsole window. Stubs: the claude binary the shim
-# execs (LEG_CLAUDE_BIN) doubles as the CLI headed-arm.sh asks for the
+# execs (HIMMEL-3795: HEADED_ARM_LEG_CLAUDE_BIN, converted into LEG_CLAUDE_BIN
+# by the wrapper itself - an ambient LEG_CLAUDE_BIN is scrubbed unconditionally
+# now) doubles as the CLI headed-arm.sh asks for the
 # session census (HEADED_ARM_CLAUDE_CLI). Its launch call writes its argv to
 # `record`, touches `confirmable` and prints the backgrounded line. After that,
 # `agents --json` lists the session. pgrep answers only the daemon scan: pid
@@ -2131,7 +2209,7 @@ run_headless() {
   HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
   HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
   KONSOLE_CMD="$stubdir/konsole" PGREP_CMD="$stubdir/pgrep" \
-  LEG_CLAUDE_BIN="$stubdir/claude" HEADED_ARM_CLAUDE_CLI="$stubdir/claude" \
+  HEADED_ARM_LEG_CLAUDE_BIN="$stubdir/claude" HEADED_ARM_CLAUDE_CLI="$stubdir/claude" \
   LEG_REPO="$repo" HEADED_ARM_LOCK_DIR="$stubdir/locks" HEADED_ARM_PROC="$stubdir/proc" \
     bash "$SCRIPT" "$@" "$name" "$some_doc" "$stubdir/signal-never" "$PAST" "$stubdir/log" claude-sonnet-5
 }

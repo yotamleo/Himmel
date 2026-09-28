@@ -447,12 +447,26 @@ fi
 # default is set here, before the native-lane effort resolver below, so that
 # resolver's own "an explicit CLAUDE_CODE_EFFORT_LEVEL wins" check treats it
 # exactly like a caller-set value and never falls through to lanes.json's
-# opus row (medium) instead. An explicit model or effort from the caller
-# still wins over either default; Fable stays available as an explicit,
-# tier-gated choice.
+# opus row (medium) instead. An explicit model still wins over the MODEL
+# default; Fable stays available as an explicit, tier-gated choice.
+#
+# HIMMEL-3795: CLAUDE_CODE_EFFORT_LEVEL/LEG_EFFORT are deliberately kept as
+# ambient leg-process input further down (the scrub loop's exclusion list),
+# because a normal native leg's own effort resolver (below) needs a caller's
+# explicit value to win. But a judge is armed by a LEG, not only by a
+# console, and that leg's own shell can carry an inherited
+# CLAUDE_CODE_EFFORT_LEVEL=low from ITS OWN launch - textually
+# indistinguishable from a deliberate override, so the exclusion above let it
+# silently beat this judge's high default. A console's actual deliberate
+# override therefore gets its own name, HIMMEL_CONSOLE_JUDGE_EFFORT, which
+# nothing else in this wrapper ever sets or reads - only a caller that means
+# to override a judge's effort would set it. Overwriting
+# CLAUDE_CODE_EFFORT_LEVEL here unconditionally (not just when unset) makes
+# this the last word for a native judge, before the ambient value could ever
+# reach the effort resolver at the bottom of this file.
 if [ "$JUDGE" -eq 1 ] && [ "$LANE" = "native" ]; then
     [ -z "$MODEL" ] && MODEL=claude-opus-5-5
-    [ -z "${CLAUDE_CODE_EFFORT_LEVEL:-}" ] && CLAUDE_CODE_EFFORT_LEVEL=high
+    CLAUDE_CODE_EFFORT_LEVEL="${HIMMEL_CONSOLE_JUDGE_EFFORT:-high}"
 fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -524,7 +538,15 @@ fi
 # replacing it, and headed-arm.sh hands every token to the leg on every lane,
 # so an `unset` alone let a caller-listed CONSOLE_CONTEXT=1m come straight
 # back into the leg.
-LEG_ENV_SCRUB="CONSOLE_CONTEXT"
+#
+# HIMMEL-3795: HIMMEL_CONSOLE_JUDGE_EFFORT is the same class of hazard as
+# CONSOLE_CONTEXT, not the LEG_PROFILE_* class further down - it is consumed
+# above (line ~469) for THIS invocation only, and a judge's own persisting
+# shell must not keep it exported: an armed judge that itself later arms a
+# nested judge would otherwise have its ambient (inherited, not deliberate)
+# HIMMEL_CONSOLE_JUDGE_EFFORT silently win again, the exact same "ambient
+# looks deliberate" failure this ticket closes for CLAUDE_CODE_EFFORT_LEVEL.
+LEG_ENV_SCRUB="CONSOLE_CONTEXT HIMMEL_CONSOLE_JUDGE_EFFORT"
 for _leg_env_scrub in $LEG_ENV_SCRUB; do
     unset "$_leg_env_scrub"
     leg_env_drop_token "$_leg_env_scrub"
@@ -570,17 +592,17 @@ unset -v _leg_env_scrub
 # they are excluded by name, not by re-deriving a second list. The three
 # LEG_PROFILE_* names are excluded because the loop above already scrubbed
 # them; HEADED_ARM_LAUNCHER_ENV is excluded because it is the container being
-# cleaned, not a name inside it. LEG_CLAUDE_BIN is a narrower case: it is
-# BOTH a leak the ticket names AND deliberate ambient input on the native
-# lane (leg-claude-launcher.sh, the --profile/--headless HEADED_ARM_LAUNCHER
-# shim, reads it as which `claude` binary to exec - pinned by the --headless
-# suite, which sets it as a plain env var to point at a test stub). The leak
-# is specifically the HEADED_ARM_LAUNCHER_ENV TOKEN: a stale sibling token
-# would win over this wrapper's own fresh `leg_propagate_env LEG_CLAUDE_BIN`
-# call on the claudex branch via caller-preset-token-wins de-dupe. So
-# LEG_CLAUDE_BIN drops its token but keeps its plain var, unlike every other
-# name here. Every remaining name is set-only (this wrapper never reads it
-# back as input), so unsetting it early and letting the existing
+# cleaned, not a name inside it. LEG_CLAUDE_BIN is NOT excluded (HIMMEL-3720
+# left it as a plain-var exception; HIMMEL-3795 closes it): unlike the six
+# names above, this wrapper never reads LEG_CLAUDE_BIN back as deliberate
+# input on this native lane - only the claudex branch and the
+# HEADED_ARM_LEG_CLAUDE_BIN test seam below ever set it again, both via a
+# fresh `leg_propagate_env` call after this point. Scrubbing var+token here
+# closes the leak: a claudex leg's own `LEG_CLAUDE_BIN=<claude-codex>`
+# inherited into a native --judge/--profile launch would otherwise reach
+# leg-claude-launcher.sh's `CLAUDE_BIN="${LEG_CLAUDE_BIN:-claude}"` (see
+# leg-claude-launcher.sh:63) and exec the wrong binary. Every remaining name
+# is set-only, so unsetting it early and letting the existing
 # leg_propagate_env/export calls below re-set it is a no-op for a normal
 # console-launched leg or judge and closes the leak for a leg-launched one.
 # shellcheck source=scripts/lib/console-context.sh
@@ -592,12 +614,35 @@ for _leg_env_scrub in $(console_context_leg_env_unset_names); do
         HIMMEL_CONSOLE_LEG) continue ;;
         LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG) continue ;;
         HEADED_ARM_LAUNCHER_ENV) continue ;;
-        LEG_CLAUDE_BIN) leg_env_drop_token "$_leg_env_scrub"; continue ;;
     esac
     unset -v "$_leg_env_scrub"
     leg_env_drop_token "$_leg_env_scrub"
 done
 unset -v _leg_env_scrub
+
+# HIMMEL-3795: the scrub above just dropped any inherited LEG_CLAUDE_BIN, var
+# and token, unconditionally. test-headed-arm-leg.sh's --headless suite
+# (run_headless(), case 29) needs a way to point leg-claude-launcher.sh's
+# `CLAUDE_BIN="${LEG_CLAUDE_BIN:-claude}"` (leg-claude-launcher.sh:63) at a
+# stub, without reintroducing the leak the scrub just closed - a plain
+# LEG_CLAUDE_BIN in this wrapper's own process env is now indistinguishable
+# from a stale sibling leak, so the suite gets its own dedicated seam name
+# instead. A real caller never sets this; only a test does. Scoped to the
+# native lane so it can never race the claudex branch's own
+# `leg_propagate_env LEG_CLAUDE_BIN "$CLAUDEX_BIN"` further down - no
+# existing or new caller combines the two.
+#
+# The seam name itself is unset right after use (var + any launcher-env
+# token) for the same reason HIMMEL_CONSOLE_JUDGE_EFFORT is scrubbed above:
+# an armed leg that itself later arms a nested leg/judge must not have an
+# ambient HEADED_ARM_LEG_CLAUDE_BIN, inherited from its own launch, silently
+# satisfy this seam again - only the immediate caller of THIS invocation may
+# set it.
+if [ "$LANE" = "native" ] && [ -n "${HEADED_ARM_LEG_CLAUDE_BIN:-}" ]; then
+    leg_propagate_env LEG_CLAUDE_BIN "$HEADED_ARM_LEG_CLAUDE_BIN"
+fi
+unset -v HEADED_ARM_LEG_CLAUDE_BIN
+leg_env_drop_token HEADED_ARM_LEG_CLAUDE_BIN
 
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
