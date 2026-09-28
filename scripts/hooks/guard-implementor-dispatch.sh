@@ -227,9 +227,16 @@ fi
 # history" or "then/and edit distance" occurred anywhere else in it.
 # Stripping only the then/and word off the excluded phrase's own match
 # leaves every other occurrence of the trigger untouched.
+# CodeRabbit (this PR): the trailing boundary treated a "." followed by more
+# word characters as the end of the phrase, so "then edit distance.py" -- a
+# genuine file-edit action, not the descriptive phrase -- matched "then edit
+# distance." and had its "then" stripped, losing the action trigger. The
+# boundary now refuses a "." immediately followed by an alnum character (a
+# filename extension); a real sentence-ending "." (followed by space/end/
+# punctuation) still closes the phrase as before.
 gate_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
-    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(commit[[:space:]]+history)([^[:alnum:]_]|$)/\1 \4\5/g
-    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(edit[[:space:]]+distance)([^[:alnum:]_]|$)/\1 \4\5/g
+    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(commit[[:space:]]+history)(\.$|\.[^[:alnum:]_]|[^[:alnum:]_.]|$)/\1 \4\5/g
+    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(edit[[:space:]]+distance)(\.$|\.[^[:alnum:]_]|[^[:alnum:]_.]|$)/\1 \4\5/g
 ')
 if grepq "$gate_text" -Eq '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)'; then
     gate_action=1
@@ -281,7 +288,12 @@ if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)write([
     lower_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
     write_trigger=$(printf '%s' "$lower_text" | grep -Eo '(^|[^[:alnum:]_])(then|and)[[:space:][:punct:]]+write' | head -1)
     write_tail=${lower_text#*"$write_trigger"}
-    protected_tail=$(printf '%s' "$write_tail" | sed -E 's/([.!?])[[:space:]]+(then|and)([^[:alnum:]_])/\1Z\2\3/g')
+    # CodeRabbit (this PR): the "Z" placeholder is a letter, so a genuine
+    # chained "write a summary. Then explain the findings" produced
+    # "summary.Zthen...", which the extension check below (`\.[a-zA-Z]...`)
+    # then misread as a file extension, wrongly gating a read-only chain. "_"
+    # is not a letter, so it cannot itself complete that pattern.
+    protected_tail=$(printf '%s' "$write_tail" | sed -E 's/([.!?])[[:space:]]+(then|and)([^[:alnum:]_])/\1_\2\3/g')
     path_scope=$(printf '%s' "$protected_tail" | sed -E 's/([.!?])[[:space:]]+.*/\1/')
     if [ -n "$write_trigger" ] \
         && grepq "$write_tail" -Eq '^[[:space:]]+(up([^[:alnum:]_]|$)|((a|an|the)[[:space:]]+([a-z]+[[:space:]]+){0,1})?(summary|report|findings|notes|answer|overview|write-up)([^[:alnum:]_]|$))' \

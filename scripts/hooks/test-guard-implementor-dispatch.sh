@@ -500,6 +500,21 @@ assert_rc "a genuine second write clause chained by 'Then' still governs (HIMMEL
 RC114=$(run_hook modify-bare-object-still-governed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the routing logic, then modify the config.')")
 assert_rc "'then modify <bare object>' still governs (HIMMEL-3784 exclusion is phrase-literal, not grammatical)" 2 "$RC114"
 
+# CodeRabbit (this PR, PR #1398): "then edit distance.py" is a genuine file
+# edit, not the descriptive "edit distance" phrase -- the exclusion's old
+# trailing boundary treated the "." before "py" as the end of the phrase and
+# stripped "then", losing the action trigger.
+RC115=$(run_hook edit-distance-dot-py-still-governed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the routine, then edit distance.py.')")
+assert_rc "'then edit distance.py' (a real file, not the descriptive phrase) still governed (CodeRabbit)" 2 "$RC115"
+
+# CodeRabbit (this PR, PR #1398): the sentence-boundary "Z" placeholder is a
+# letter, so a genuine read-only chain ("write a summary. Then explain the
+# findings") produced "summary.Zthen...", which the extension check then
+# misread as a file extension and wrongly gated the chain.
+RC116=$(run_hook write-summary-then-explain-chain-allows "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Research the parser, then write a summary. Then explain the findings.')")
+assert_rc "'write a summary. Then explain the findings' (a read-only chain, not a file write) allows (CodeRabbit)" 0 "$RC116"
+assert_empty "write-summary-then-explain-chain-allows brief silent" "$(combined_output write-summary-then-explain-chain-allows)"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 
