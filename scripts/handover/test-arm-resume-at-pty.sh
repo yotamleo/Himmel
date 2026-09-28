@@ -104,6 +104,7 @@ HAVE_SCRIPT=0; command -v script >/dev/null 2>&1 && HAVE_SCRIPT=1; HAVE_PTY=$HAV
 # have, so no pty can be made there. Probe through the lib itself: if it cannot
 # run `true` under a pty, the pty-dependent cases below cannot run on this host.
 if [ "$HAVE_SCRIPT" -eq 1 ] && [ -r "$LIB" ]; then
+    # shellcheck source=/dev/null
     if ! ( . "$LIB"; _himmel_pty_run true </dev/null >/dev/null 2>&1 ); then
         HAVE_PTY=0
         echo "SKIP P1-P6/Q1-Q2: script(1) cannot allocate a pty on this host (no controlling tty)"

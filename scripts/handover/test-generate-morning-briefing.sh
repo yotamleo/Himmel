@@ -416,6 +416,7 @@ assert_contains "gh-down stale message"   "stale detection unavailable"  "$file"
 # HIMMEL-3719: BSD awk (macOS) rejects a newline inside `-v`; the catch-all
 # must not hand awk the raw newline-joined branch list.
 echo "TEST: no awk -v carries the raw multi-line annotated_branches"
+# shellcheck disable=SC2016  # the pattern is a literal, not an expansion
 raw_v=$(grep -nE 'awk .*-v [A-Za-z_]+="\$annotated_branches"' "$SCRIPT" || true)
 if [ -z "$raw_v" ]; then pass "annotated_branches not passed raw via awk -v"; else fail "raw multi-line awk -v" "$raw_v"; fi
 
