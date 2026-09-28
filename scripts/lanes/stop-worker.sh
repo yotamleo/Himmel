@@ -439,8 +439,15 @@ identity_started_epoch() {
             # `ps -o lstart=` is the fixed-width "Dow Mon DD HH:MM:SS YYYY"
             # (24 chars), immediately followed by a space and the command.
             lstart="${lstart:0:24}"
-            date -d "$lstart" +%s 2>/dev/null \
-                || date -j -f "%a %b %e %T %Y" "$lstart" +%s 2>/dev/null
+            # proc_tree_process_identity (proc-tree.sh) pins TZ=UTC on the ps
+            # probe that produced this lstart (HIMMEL-3791 judge J1396A), so it
+            # must be parsed back as UTC too -- neither `date -d` nor `date -j`
+            # infers a timezone from the text itself, and without this pin both
+            # silently read it as local time (HIMMEL-3791 judge J1396B: on a
+            # non-UTC station this drifted stop-worker's correlation window by
+            # the UTC offset, refusing to stop every live worker).
+            TZ=UTC date -d "$lstart" +%s 2>/dev/null \
+                || TZ=UTC date -j -f "%a %b %e %T %Y" "$lstart" +%s 2>/dev/null
             ;;
         *) return 1 ;;
     esac

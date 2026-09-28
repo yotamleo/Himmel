@@ -248,6 +248,43 @@ case "$out" in
     *) fail "C6: the halt cleared the quarantine silently" "$out" ;;
 esac
 
+echo "RUN C-TZ: end-to-end stop of a live process under a non-UTC TZ (HIMMEL-3791 judge J1396B)"
+
+# proc_tree_process_identity (proc-tree.sh) pins TZ=UTC when it samples
+# `ps -o lstart=`, so identity_started_epoch (stop-worker.sh) must parse that
+# lstart back as UTC too. Before that fix, running stop-worker itself under a
+# non-UTC TZ made identity_started_epoch read the UTC-stamped lstart as LOCAL
+# time, drifting the correlation window by the zone offset and refusing to
+# stop a genuinely live, correctly-registered worker.
+WT_CTZ="$TMP_ROOT/wt-live-tz"
+mk_repo "$WT_CTZ"
+set -m
+sleep 300 &
+LIVE_TZ_PID=$!
+set +m
+LIVE_TZ_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+mk_session glm glm-live-tz-1 running "$LIVE_TZ_PID" glm/live-tz "$WT_CTZ" "$(printf '{"started_at":"%s"}' "$LIVE_TZ_STARTED_AT")" >/dev/null
+
+out=$(TZ=Europe/Berlin run_stop glm-live-tz-1); rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "C-TZ1: stop-worker exits 0 on a live worker when run under TZ=Europe/Berlin"
+else
+    fail "C-TZ1: expected rc=0 under TZ=Europe/Berlin, got $rc" "$out"
+fi
+
+gone=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$LIVE_TZ_PID" 2>/dev/null; then gone=1; break; fi
+    sleep 1
+done
+if [ "$gone" -eq 1 ]; then
+    pass "C-TZ2: the worker process is actually GONE under TZ=Europe/Berlin"
+else
+    fail "C-TZ2: pid $LIVE_TZ_PID survived the stop under TZ=Europe/Berlin" "$out"
+fi
+kill -9 "$LIVE_TZ_PID" 2>/dev/null
+wait "$LIVE_TZ_PID" 2>/dev/null
+
 echo "RUN D: spawn-time identity correlation (recycled-pid refusal)"
 
 # A REAL live process, but its registry started_at is nowhere near when it
