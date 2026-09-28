@@ -236,12 +236,18 @@ fi
 # punctuation) still closes the phrase as before.
 # codex-2 (round 4 panel, HIMMEL-3784): the same boundary also accepted a
 # "/" as closing the phrase, so "then edit distance/parser.py" -- a real
-# path -- matched "then edit distance/" the same way. "/" is excluded from
-# the boundary alongside "."; a genuine descriptive phrase never continues
-# straight into a path separator.
+# path -- matched "then edit distance/" the same way.
+# codex-1 (round 5 panel, HIMMEL-3784): blacklisting punctuation one
+# character at a time (".", then "/") was still incomplete -- a hyphen
+# ("then edit distance-parser.py") closed the boundary the same way. The
+# boundary is now an ALLOWLIST of genuine sentence-ending shapes (a
+# sentence-final mark followed by space/end, a bare space, or end of
+# string) instead of a blacklist of path/filename characters, so no
+# further punctuation character used inside a path or filename can ever
+# satisfy it.
 gate_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
-    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(commit[[:space:]]+history)(\.$|\.[^[:alnum:]_]|[^[:alnum:]_./]|$)/\1 \4\5/g
-    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(edit[[:space:]]+distance)(\.$|\.[^[:alnum:]_]|[^[:alnum:]_./]|$)/\1 \4\5/g
+    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(commit[[:space:]]+history)(\.([[:space:]]|$)|,([[:space:]]|$)|;([[:space:]]|$)|:([[:space:]]|$)|!([[:space:]]|$)|\?([[:space:]]|$)|[[:space:]]|$)/\1 \4\5/g
+    s/(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(edit[[:space:]]+distance)(\.([[:space:]]|$)|,([[:space:]]|$)|;([[:space:]]|$)|:([[:space:]]|$)|!([[:space:]]|$)|\?([[:space:]]|$)|[[:space:]]|$)/\1 \4\5/g
 ')
 if grepq "$gate_text" -Eq '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|edit|modify|commit)([^[:alnum:]_]|$)'; then
     gate_action=1

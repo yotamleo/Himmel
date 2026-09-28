@@ -530,6 +530,11 @@ assert_rc "'then write up a shell script' (genuine implementation, not a report)
 RC118=$(run_hook edit-distance-slash-path-still-governed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the routine, then edit distance/parser.py.')")
 assert_rc "'then edit distance/parser.py' (a real path, not the descriptive phrase) still governed (codex-2 round 4)" 2 "$RC118"
 
+# codex-1 (round 5 panel, HIMMEL-3784): a hyphen closed the boundary the
+# same way "." and "/" did, so a real hyphenated filename lost its "then".
+RC119=$(run_hook edit-distance-hyphen-path-still-governed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-3784 dispatch' 'Investigate the routine, then edit distance-parser.py.')")
+assert_rc "'then edit distance-parser.py' (a real file, not the descriptive phrase) still governed (codex-1 round 5)" 2 "$RC119"
+
 RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
 assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 
