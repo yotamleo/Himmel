@@ -88,6 +88,14 @@ run_guard() {
 
 set_fixture() { printf '%s\n' "$1" >"$FIXTURE"; }
 
+# iso_from_epoch <epoch> -- the ISO-8601Z that PAIRS with an epoch, GNU first
+# then BSD (HIMMEL-3725: the fixtures below must write a genuinely matching
+# iso+epoch, same as the real writers do, now that the guard cross-validates).
+iso_from_epoch() {
+    TZ=UTC date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || TZ=UTC date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
+}
+
 # --- fixtures ---------------------------------------------------------------
 
 # VERBATIM host capture 2026-07-27 — fresh (2h) and complete (no Pending line).
@@ -154,7 +162,7 @@ set_fixture "$HOST_FRESH"
 # source flip is unambiguous: if the stamp were ignored the verdict would
 # still show "2h ago" from the proxy.
 STAMP_EPOCH=$(( $(date -u +%s) - 90000 ))
-printf '2026-09-25T04:00:00Z %s\n' "$STAMP_EPOCH" >"$STAMP_FILE"
+printf '%s %s\n' "$(iso_from_epoch "$STAMP_EPOCH")" "$STAMP_EPOCH" >"$STAMP_FILE"
 out=$(run_guard) && rc=0 || rc=$?
 assert_rc "valid stamp within budget -> rc 0" 0 "$rc"
 assert_contains "names the stamp as the source" "source: stamp" "$out"
@@ -164,7 +172,7 @@ rm -f "$STAMP_FILE"
 echo "== a stale refresh stamp is honored even when the proxy looks fresh (HIMMEL-1307) =="
 set_fixture "$HOST_FRESH"
 STAMP_EPOCH=$(( $(date -u +%s) - 200000 ))  # ~55.5h, over the 36h default budget
-printf '2026-09-23T12:00:00Z %s\n' "$STAMP_EPOCH" >"$STAMP_FILE"
+printf '%s %s\n' "$(iso_from_epoch "$STAMP_EPOCH")" "$STAMP_EPOCH" >"$STAMP_FILE"
 out=$(run_guard) && rc=0 || rc=$?
 assert_rc "stale stamp overrides a fresh-looking proxy -> rc 3" 3 "$rc"
 assert_contains "names the stamp as the source" "source: stamp" "$out"
@@ -186,9 +194,35 @@ echo "== a stamp epoch with a leading zero is not misread as octal (HIMMEL-1307 
 # misread makes it look only ~5.5h old (342391s), which would wrongly pass.
 set_fixture "$HOST_FRESH"
 STAMP_EPOCH=$(( $(date -u +%s) - 1234567 ))
-printf '2026-09-13T00:00:00Z 0%s\n' "$STAMP_EPOCH" >"$STAMP_FILE"
+printf '%s 0%s\n' "$(iso_from_epoch "$STAMP_EPOCH")" "$STAMP_EPOCH" >"$STAMP_FILE"
 out=$(run_guard) && rc=0 || rc=$?
 assert_rc "leading-zero epoch parsed as decimal is stale -> rc 3" 3 "$rc"
+assert_contains "names the stamp as the source" "source: stamp" "$out"
+rm -f "$STAMP_FILE"
+
+echo "== a stamp with a mismatched epoch (shape-valid, wrong value) falls back to the proxy (HIMMEL-3725) =="
+# Shape-valid (`^ISO EPOCH$` both individually well-formed) but the epoch does
+# NOT correspond to the paired ISO date -- a hand-edited or foreign-written
+# stamp, since both real writers (qmd-reindex.sh, ship-index.sh) always derive
+# iso+epoch from the same `date` invocation. Off by ~6 years, far past any
+# reasonable tolerance -- must fall back to the MAX(mtime) proxy, not be
+# trusted as a direct measurement.
+set_fixture "$HOST_FRESH"
+printf '2020-01-01T00:00:00Z %s\n' "$(date -u +%s)" >"$STAMP_FILE"
+out=$(run_guard) && rc=0 || rc=$?
+assert_rc "mismatched-epoch stamp falls back to proxy -> rc 0" 0 "$rc"
+assert_contains "falls back to the proxy" "source: proxy" "$out"
+assert_contains "still reports the proxy's real age" "2h ago" "$out"
+rm -f "$STAMP_FILE"
+
+echo "== a stamp whose epoch matches its ISO date within tolerance is still trusted (HIMMEL-3725) =="
+# Control: a properly-paired stamp (epoch == the ISO date's own epoch) must
+# still read as "stamp", not regress into always falling back.
+set_fixture "$HOST_FRESH"
+MATCH_EPOCH=$(( $(date -u +%s) - 90000 ))
+printf '%s %s\n' "$(iso_from_epoch "$MATCH_EPOCH")" "$MATCH_EPOCH" >"$STAMP_FILE"
+out=$(run_guard) && rc=0 || rc=$?
+assert_rc "matched stamp within budget -> rc 0" 0 "$rc"
 assert_contains "names the stamp as the source" "source: stamp" "$out"
 rm -f "$STAMP_FILE"
 

@@ -417,6 +417,16 @@ age_hours() {
     esac
 }
 
+# portable ISO-8601Z -> epoch: GNU `date -d` first, then BSD `date -j -f`
+# (HIMMEL-3725, same fallback shape as himmel-doctor.sh's _c33_epoch). TZ=UTC
+# so BSD date -- which has no %Z in this format and would otherwise assume the
+# local zone -- reads the literal "Z" as UTC too. Echoes nothing (rc=1) on an
+# unparsable timestamp; the caller treats that as a mismatch, not a match.
+_qs_iso_to_epoch() {
+    TZ=UTC date -d "$1" +%s 2>/dev/null \
+        || TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null  # gnu-ok: GNU date -d is paired with the BSD date -j fallback on this same line
+}
+
 # --- refresh stamp (HIMMEL-1307), preferred over the MAX(mtime) proxy above --
 # A durable timestamp is a DIRECT measurement of "when was this index last
 # verified refreshed/received", not a proxy for it — so it wins when present
@@ -429,15 +439,30 @@ if [ -r "$QMD_REFRESH_STAMP" ]; then
     stamp_line=$(cat "$QMD_REFRESH_STAMP" 2>/dev/null || true)
     stamp_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z [0-9]+$'
     if [[ $stamp_line =~ $stamp_re ]]; then
+        stamp_iso="${stamp_line%% *}"
         stamp_epoch="${stamp_line##* }"
         now_epoch=$(date -u +%s)
         # HIMMEL-1307 [codex-2]: a leading zero makes bash treat the epoch as
         # octal -- silently wrong for digits 0-7 (e.g. 01234567), a hard
         # "value too great for base" shell error for 8/9. force base-10 so
         # any all-digit epoch parses as the decimal value it plainly is.
-        AGE_HOURS=$(( (now_epoch - 10#$stamp_epoch) / 3600 ))
-        [ "$AGE_HOURS" -ge 0 ] || AGE_HOURS=0
-        AGE_SOURCE="stamp"
+        stamp_epoch_dec=$(( 10#$stamp_epoch ))
+        # HIMMEL-3725: the regex above validates the ISO date and the epoch's
+        # SHAPE independently -- it never checks the epoch actually names the
+        # ISO date it is paired with. Both real writers (qmd-reindex.sh,
+        # ship-index.sh) derive iso+epoch from the same `date` invocation, so
+        # they always agree; a hand-edited or foreign-written stamp might not.
+        # Cross-validate within a 1-day tolerance (clock skew / truncation
+        # slop, not a wrong-epoch cover); an unparsable ISO date is treated as
+        # a mismatch, same as a wrong epoch, not partially trusted.
+        iso_epoch=$(_qs_iso_to_epoch "$stamp_iso") || iso_epoch=""
+        skew=$(( stamp_epoch_dec - iso_epoch ))
+        [ "$skew" -ge 0 ] || skew=$(( -skew ))
+        if [ -n "$iso_epoch" ] && [ "$skew" -le 86400 ]; then
+            AGE_HOURS=$(( (now_epoch - stamp_epoch_dec) / 3600 ))
+            [ "$AGE_HOURS" -ge 0 ] || AGE_HOURS=0
+            AGE_SOURCE="stamp"
+        fi
     fi
 fi
 

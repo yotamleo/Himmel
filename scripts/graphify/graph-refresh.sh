@@ -654,8 +654,17 @@ if [ "$DRY_RUN" -eq 1 ]; then
         if [ "$c" = "luna" ]; then RUNNER_ARGV+=(--corpus-class luna-personal); fi
         R_OUT_ROOT="$(graphify_out_root_for "$c")"
         if [ -n "$R_OUT_ROOT" ]; then RUNNER_ARGV+=(--out-root "$R_OUT_ROOT"); fi
+        # HIMMEL-3764: mirror the real run's conditional `env -u GRAPHIFY_OUT_ROOT`
+        # wrapper (below) so the printed command matches what actually executes --
+        # a copy-pasted dry-run line must behave the same under an ambient
+        # GRAPHIFY_OUT_ROOT as the real run does.
+        if [ -z "$R_OUT_ROOT" ]; then
+            RUNNER_CMD=(env -u GRAPHIFY_OUT_ROOT "${RUNNER_ARGV[@]}")
+        else
+            RUNNER_CMD=("${RUNNER_ARGV[@]}")
+        fi
         printf 'DRY graph-refresh: [%s] ' "$c"
-        print_argv "${RUNNER_ARGV[@]}"
+        print_argv "${RUNNER_CMD[@]}"
         printf '\n'
     done
     echo "DRY graph-refresh: would then print \`$(basename "$CADENCE_SCRIPT") status\` for cadence-drift visibility (advisory)."

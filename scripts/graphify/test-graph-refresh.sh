@@ -257,6 +257,34 @@ assert_contains "himmel leg still runs" "--name himmel" "$line2"
 assert_not_contains "himmel leg does not see the ambient GRAPHIFY_OUT_ROOT" "GRAPHIFY_OUT_ROOT=/ambient/leftover" "$line2"
 
 # ============================================================================
+# Test 4d (HIMMEL-3764): the dry-run print must mirror the real run's
+# conditional `env -u GRAPHIFY_OUT_ROOT` wrapper -- shown for an in-corpus leg
+# (R_OUT_ROOT empty), omitted for a leg with a resolved --out-root. Without
+# this, a copy-pasted dry-run command can behave differently from what the
+# real run actually executes whenever the invoking shell has an ambient
+# GRAPHIFY_OUT_ROOT exported. himmel's resolver always returns empty
+# (HIMMEL-1123, in-corpus by design) so its leg always needs the scrub; luna's
+# resolver always returns a value (default or override, graph-out-root.sh) so
+# its leg never does.
+# ============================================================================
+echo "TEST: dry-run print shows the env -u GRAPHIFY_OUT_ROOT wrapper exactly where the real run applies it"
+reset_runner_log
+rc=0; out=$(run_refresh both --vault "$VAULT" --dry-run 2>&1) || rc=$?
+assert_rc "dry-run wrapper-check rc 0" 0 "$rc"
+luna_dry_d=$(printf '%s\n' "$out" | grep '\[luna\]' || true)
+himmel_dry_d=$(printf '%s\n' "$out" | grep '\[himmel\]' || true)
+assert_not_contains "dry-run luna leg (out-root default) has NO env -u scrub" "env -u GRAPHIFY_OUT_ROOT" "$luna_dry_d"
+assert_contains "dry-run himmel leg (in-corpus) shows the env -u scrub" "env -u GRAPHIFY_OUT_ROOT" "$himmel_dry_d"
+
+reset_runner_log
+rc=0; out=$(GRAPHIFY_LUNA_OUT_ROOT="/out/root" run_refresh both --vault "$VAULT" --dry-run 2>&1) || rc=$?
+assert_rc "dry-run wrapper-check with out-root rc 0" 0 "$rc"
+luna_dry_d2=$(printf '%s\n' "$out" | grep '\[luna\]' || true)
+himmel_dry_d2=$(printf '%s\n' "$out" | grep '\[himmel\]' || true)
+assert_not_contains "dry-run luna leg with --out-root has NO env -u scrub" "env -u GRAPHIFY_OUT_ROOT" "$luna_dry_d2"
+assert_contains "dry-run himmel leg (still in-corpus) shows the env -u scrub" "env -u GRAPHIFY_OUT_ROOT" "$himmel_dry_d2"
+
+# ============================================================================
 # Test 5: serial both -> order luna then himmel, canonical arg sets, hint, status
 # ============================================================================
 echo "TEST: serial both invokes luna then himmel with the canonical arg sets"
