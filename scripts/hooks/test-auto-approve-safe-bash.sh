@@ -1204,6 +1204,38 @@ assert "word-glued >&2nd.txt: PASS under GNU sed (control)" \
 assert "word-glued >&2nd.txt: PASS under POSIX sed too (J1397A finding 3)" \
     PASS "$(decide_posix "$(j_bash 'grep x f >&2nd.txt')")"
 
+# --- HIMMEL-3793 (J1397A finding 4): a backslash-escaped CR, or a trailing
+# backslash, right after an fd-dup target still writes a junk file. SCAN_MASK
+# blanks BOTH bytes of an unquoted `\<x>` pair to spaces, so the fd-dup
+# boundary check at :1571 sees a plain space right after the digit and treats
+# it as a valid boundary — but to real bash the backslash keeps the CR
+# literal, so the redirect word is "2<CR>" (a real file), not the digit 2.
+# VERIFIED (real bash): `grep x f >&2\<CR>` creates a file named `2\r`;
+# `grep x f >&2\` (trailing backslash, no CR) creates `2\`.
+assert "fd-dup >&2 + backslash-escaped CR writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash "grep x f >&2\\"$'\r')")"
+assert "fd-dup >&2 + trailing backslash writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash 'grep x f >&2\')")"
+# Same root cause, a different consumer: an unquoted, backslash-escaped `&`
+# is correctly kept as a LITERAL `&` argument (not a live separator) — but
+# that literal survives as uniq's 2nd positional, which real uniq treats as
+# an OUTPUT file, not another input. VERIFIED (real bash): `uniq -c f \&`
+# creates a file named `&`; `uniq -c f a\&\&b` creates `a&&b`.
+assert "uniq 2nd positional via escaped bare & writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash 'uniq -c f \&')")"
+assert "uniq 2nd positional via escaped & inside a word writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash 'uniq -c f a\&\&b')")"
+# Controls: ordinary fd-dups and a single-file uniq must keep ALLOWing — this
+# fix must not regress anything main already approves.
+assert "fd-dup >&2, no escape, still ALLOW (control)" \
+    ALLOW "$(decide "$(j_bash 'grep x f >&2')")"
+assert "fd-dup 2>&1, no escape, still ALLOW (control)" \
+    ALLOW "$(decide "$(j_bash 'grep x f 2>&1')")"
+assert "uniq single positional (no 2nd/output arg) still ALLOW (control)" \
+    ALLOW "$(decide "$(j_bash 'uniq -c f')")"
+assert "a plain backslash-escaped & INSIDE quotes still ALLOW (control)" \
+    ALLOW "$(decide "$(j_bash 'grep "\&" f')")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

@@ -746,6 +746,26 @@ segment_is_safe() {
                     esac
                 done
                 [ "$xops" -ge 2 ] && return 1 ;;         # infile + outfile = write
+            uniq)                          # `uniq [INPUT [OUTPUT]]` — a 2nd
+                                           # positional is an OUTPUT file, not
+                                           # another input. HIMMEL-3793
+                                           # (J1397A finding 4): an unquoted
+                                           # backslash-escaped `&` is correctly
+                                           # kept as a literal `&` argument
+                                           # rather than a live separator, and
+                                           # that literal can BE this 2nd
+                                           # positional.
+                local uops=0
+                for k in "${a[@]:$((i + 1))}"; do
+                    shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into a 2nd positional
+                    case "$SW_VALUE" in
+                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) ;;  # redirect token, not a positional
+                        -*) ;;                           # a flag; conservatively not counted as its value either
+                        *) uops=$((uops + 1)) ;;
+                    esac
+                done
+                [ "$uops" -ge 2 ] && return 1 ;;         # infile + outfile = write
             tree)                          # `tree -o FILE` / `--output FILE` writes
                 for k in "${a[@]}"; do
                     shell_word_value "$k" || return 1
@@ -892,7 +912,17 @@ scan_cmd() {
                 if [ "$nx" = "$NL" ]; then          # line continuation: remove both bytes
                     SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
                 fi
-                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "; aws=0; pesc=1; i=$((i + 2)); continue ;;
+                # HIMMEL-3793 (J1397A finding 4): keep the backslash itself
+                # LITERAL in SCAN_MASK (blank only the escaped byte it
+                # protects). Blanking both to spaces made an escaped CR (or a
+                # trailing backslash) right after an fd-dup digit look like a
+                # genuine word boundary to the :1571 strip below — but to real
+                # bash the backslash keeps that byte glued to the word, so
+                # `>&2\<CR>` opens a real file named "2\r", not fd 2. A raw
+                # backslash is never itself a boundary char nor a separator
+                # any downstream SCAN_MASK consumer looks for, so this cannot
+                # newly satisfy any of them — it can only stop a false match.
+                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK\\ "; aws=0; pesc=1; i=$((i + 2)); continue ;;
             ';'|"$NL")                               # statement separator
                 SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
                 SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue ;;
