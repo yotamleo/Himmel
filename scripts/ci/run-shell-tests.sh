@@ -1186,15 +1186,37 @@ _suite_lock_wait_brand() {
 # touched, so a lock that changed hands (or was released) between judgement
 # and this call is left alone.
 #
-# Returns 0 whenever a stale owner was actually cleared, or the CAS found the
-# generation had already moved on (someone else's turn, ordinary). Returns 1
-# when the guard itself could not be won BECAUSE another reclaimer already
-# holds it: ordinary contention, not an operational failure to diagnose.
-# Returns 2 when the guard was won and the CAS matched, but the delete itself
-# was refused — see below. Returns 3 when the guard mkdir failed and the guard
-# directory does not exist at all — a permission or IO failure, not
-# contention, so a caller must not treat it as a race a re-run will resolve
-# (HIMMEL-1838 round 5, codex-1).
+# Returns 0 on a completed takeover: this call now HOLDS the lock, whether it
+# got there by dropping a CAS-matched stale owner and re-claiming, or (CAS
+# mismatch — generation already moved on) by claiming outright. Returns 1 for
+# ordinary contention: the guard is already held by another reclaimer, a
+# co-winner branded the guard first, or the claim itself lost to a fresh
+# racer — nothing to diagnose, a re-run resolves it. Returns 2 when the CAS
+# matched but the delete itself was refused — see below. Returns 3 when the
+# guard mkdir (or its brand write) failed for a reason other than contention —
+# a permission or IO failure, not a race a re-run will resolve (HIMMEL-1838
+# round 5, codex-1). Returns 4 when the drop succeeded (or was skipped on a
+# CAS mismatch) but the re-claim itself hit an operational failure — distinct
+# from 2 so a caller can still tell "will never clear on its own" from "the
+# claim write itself is broken."
+#
+# The guard is now branded with `set -C`, the SAME primitive
+# _suite_lock_claim already uses for SUITE_LOCK_DIR/owner: a bare `mkdir` can
+# report success to two concurrent callers on the same path under uutils
+# coreutils 0.8.0 (measured; GNU coreutils and uutils 0.12.0 are unaffected),
+# so the owner-file `set -C` write, not the mkdir, is the real arbiter of who
+# holds the guard (HIMMEL-1838 round 6, codex-1 / J1396C finding 2).
+#
+# The guard stays held across the drop AND the re-claim — the claim happens
+# UNDER this call, not as a separate step the caller takes after the guard is
+# released. Releasing the guard in between let a second reclaimer win the
+# freed guard and CAS-match the same gap this process was about to fill, so
+# both believed they held the freshly re-acquired lock (HIMMEL-1838 round 6,
+# J1396C finding 1). The CAS itself also now requires SUITE_LOCK_DIR to
+# EXIST (even for an empty-string `expected`, the "unbranded husk" case): an
+# absent directory is not a match, only an existing empty one is, so a
+# takeover attempt against a slot nothing occupies does not fabricate a
+# reclaim.
 #
 # The actual delete goes through _suite_lock_drop, not a raw mv+rm -rf: SUITE_LOCK_DIR
 # is env-overridable, and a foreign directory that happens to contain a
@@ -1206,24 +1228,44 @@ _suite_lock_wait_brand() {
 # ordinary 0/1, so the caller can tell a directory that will never clear on
 # its own from a takeover that merely lost the race.
 _suite_lock_reclaim() {
-  local expected="$1" guard="${SUITE_LOCK_DIR}.reclaim" rc=0
+  local expected="$1" guard="${SUITE_LOCK_DIR}.reclaim" rc claim_rc
   if ! mkdir "$guard" 2>/dev/null; then
     # The guard not existing at all means mkdir failed for a reason OTHER
     # than another reclaimer already holding it (permission denied, a
     # missing parent, ...): a permanent failure, not contention, so it must
-    # be reported before the staleness cleanup below (which can itself rmdir
+    # be reported before the staleness cleanup below (which can itself drop
     # a genuinely-contended guard and make it look like this case) (HIMMEL-1838
     # round 5, codex-1).
     [ -d "$guard" ] || return 3
-    # A reclaimer killed mid-way leaves the guard behind; free it late.
-    [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$guard" 2>/dev/null  # gnu-ok: -maxdepth/-mmin are BSD find too
+    # A reclaimer killed mid-way leaves the guard (and its brand, if it got
+    # that far) behind; free it late via _suite_lock_drop, which tolerates
+    # either a bare dir or one holding just `owner`.
+    [ -n "$(find "$guard" -maxdepth 0 -mmin +1 2>/dev/null)" ] && _suite_lock_drop "$guard" 2>/dev/null  # gnu-ok: -maxdepth/-mmin are BSD find too
     return 1
   fi
-  if [ "$(_suite_lock_owner_raw "$SUITE_LOCK_DIR")" = "$expected" ]; then
-    _suite_lock_drop "$SUITE_LOCK_DIR" 2>/dev/null
-    [ -e "$SUITE_LOCK_DIR" ] && rc=2
+  if ! ( set -C; printf 'pid=%s\nstarted=%s\n' "$$" "$(date +%s)" > "$guard/owner" ) 2>/dev/null; then
+    # A uutils-0.8.0 co-winner of the mkdir above loses HERE: only one
+    # `set -C` open(O_CREAT|O_EXCL) on $guard/owner can succeed.
+    if [ -f "$guard/owner" ]; then
+      return 1
+    fi
+    rmdir "$guard" 2>/dev/null
+    return 3
   fi
-  rmdir "$guard" 2>/dev/null
+  if [ -d "$SUITE_LOCK_DIR" ] && [ "$(_suite_lock_owner_raw "$SUITE_LOCK_DIR")" = "$expected" ]; then
+    if ! _suite_lock_drop "$SUITE_LOCK_DIR" 2>/dev/null; then
+      _suite_lock_drop "$guard" 2>/dev/null
+      return 2
+    fi
+  fi
+  _suite_lock_claim
+  claim_rc=$?
+  case "$claim_rc" in
+    0) rc=0 ;;
+    2) rc=4 ;;
+    *) rc=1 ;;
+  esac
+  _suite_lock_drop "$guard" 2>/dev/null
   return "$rc"
 }
 
@@ -1942,10 +1984,11 @@ suite_lock_acquire() {
       return 1
     fi
     # Expected generation is "no owner file" — the CAS re-check inside
-    # _suite_lock_reclaim fails if anyone branded it while we spun above.
-    # _suite_lock_reclaim only wins the right to act; _suite_lock_claim is
-    # what actually re-acquires, and can itself lose to a winner from the gap.
-    if _suite_lock_reclaim "" && _suite_lock_claim; then
+    # _suite_lock_reclaim fails if anyone branded it while we spun above, and
+    # the re-claim itself now happens INSIDE _suite_lock_reclaim, under the
+    # same guard, so a winner from the gap cannot straddle the two steps
+    # (HIMMEL-1838 round 6, J1396C finding 1).
+    if _suite_lock_reclaim ""; then
       printf 'NOTE: cleared an unbranded suite lock (no owner file) at %s\n' \
         "$SUITE_LOCK_DIR" >&2
       return 0
@@ -1995,7 +2038,7 @@ suite_lock_acquire() {
   # the other direction ("ALIVE") on a probe that cannot show identity.
   # pid_unknown is the third outcome: the probe was refused for a reason
   # other than "no such process", which proves nothing either way.
-  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 foreign_lock=0 claim_failed=0 guard_failed=0 probe_rc reclaim_rc claim_rc
+  local stale=0 this_host same_host=0 pid_present=0 pid_unknown=0 lost_race=0 foreign_lock=0 claim_failed=0 guard_failed=0 probe_rc reclaim_rc
   this_host=$(_suite_lock_host)
   if _suite_lock_same_host "$o_host" "$this_host"; then same_host=1; fi
   if [ -n "$o_pid" ] && [ "$same_host" -eq 1 ]; then
@@ -2030,23 +2073,16 @@ suite_lock_acquire() {
   fi
 
   if [ "$stale" -eq 1 ]; then
-    # _suite_lock_reclaim only wins the mkdir guard and re-verifies the CAS;
-    # _suite_lock_claim is what actually re-acquires (HIMMEL-1838), so both
-    # must succeed. Either one losing means an ordinary refusal: someone else
-    # got the freed slot, is already reclaiming it, or the lock turned out to
-    # be live after all — UNLESS the failure is one of the two operational
-    # cases below, neither of which any amount of re-running clears.
+    # _suite_lock_reclaim now does the whole takeover itself — winning the
+    # guard, re-verifying the CAS, dropping the dead owner and re-claiming —
+    # all under one guard hold (HIMMEL-1838 round 6, J1396C finding 1), so a
+    # single return code drives every branch below.
     _suite_lock_reclaim "$o_raw"
     reclaim_rc=$?
-    claim_rc=1
     if [ "$reclaim_rc" -eq 0 ]; then
-      _suite_lock_claim
-      claim_rc=$?
-      if [ "$claim_rc" -eq 0 ]; then
-        printf 'NOTE: cleared an abandoned suite lock (pid=%s host=%s age=%s) at %s\n' \
-          "${o_pid:-?}" "${o_host:-?}" "$age_disp" "$SUITE_LOCK_DIR" >&2
-        return 0
-      fi
+      printf 'NOTE: cleared an abandoned suite lock (pid=%s host=%s age=%s) at %s\n' \
+        "${o_pid:-?}" "${o_host:-?}" "$age_disp" "$SUITE_LOCK_DIR" >&2
+      return 0
     fi
     if [ "$reclaim_rc" -eq 2 ]; then
       # _suite_lock_reclaim won the guard and CAS-matched, but _suite_lock_drop
@@ -2059,18 +2095,21 @@ suite_lock_acquire() {
       foreign_lock=1
       suite_lock_permanent=1
     elif [ "$reclaim_rc" -eq 3 ]; then
-      # The reclaim guard's own mkdir failed for a reason other than another
-      # reclaimer holding it (permission denied, a missing parent, ...): a
-      # permanent failure, not contention — the same "do not spend the wait
-      # budget on it" treatment as the other operational cases here (HIMMEL-1838
-      # round 5, codex-1).
+      # The reclaim guard's own mkdir (or its `set -C` brand write) failed for
+      # a reason other than another reclaimer holding it (permission denied, a
+      # missing parent, ...): a permanent failure, not contention — the same
+      # "do not spend the wait budget on it" treatment as the other
+      # operational cases here (HIMMEL-1838 round 5, codex-1).
       guard_failed=1
       suite_lock_permanent=1
-    elif [ "$reclaim_rc" -eq 0 ] && [ "$claim_rc" -eq 2 ]; then
-      # The reclaim cleared the dead owner, but nothing branded the freed dir:
-      # an IO/permission failure on OUR OWN write, not a racer winning it
-      # (_suite_lock_claim distinguishes the two). Re-running does not fix a
-      # broken write path, so this is not an ordinary lost race either.
+    elif [ "$reclaim_rc" -eq 4 ]; then
+      # The reclaim cleared the dead owner (or found the CAS had already moved
+      # on), but the re-claim itself — still under the same guard — failed to
+      # brand the freed dir: an IO/permission failure on OUR OWN write, not a
+      # racer winning it (_suite_lock_claim's own rc=1/2 distinguishes the
+      # two, folded here into this one operational bucket). Re-running does
+      # not fix a broken write path, so this is not an ordinary lost race
+      # either.
       claim_failed=1
       suite_lock_permanent=1
     else

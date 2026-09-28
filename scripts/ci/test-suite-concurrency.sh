@@ -1328,6 +1328,124 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# Case 2n -- the reclaim guard is held across BOTH the drop and the re-claim
+# (HIMMEL-1838 round 6, F1). Before this fix, the guard was released right
+# after the stale lock was dropped, and the re-claim happened as a separate
+# step the CALLER took only once the guard was already gone -- reopening the
+# exact takeover window the guard exists to close. A PATH-shimmed mkdir pins
+# the moment the re-claim itself calls mkdir on the lock path and records
+# whether the guard sibling is still standing at that instant: gone means the
+# window reopened, present means one guard covered the whole takeover.
+# --------------------------------------------------------------------------
+echo "== Case 2n: the reclaim guard is held across the drop AND the re-claim =="
+sb2n=$(new_sandbox)
+cat > "$sb2n/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2n="$sb2n/suite.lock"
+mkdir -p "$lock2n"
+bash -c 'exit 0' & dead2n=$!
+wait "$dead2n" 2>/dev/null
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2n" "$(this_host)" "$(date +%s)" > "$lock2n/owner"
+
+noaccess2n=$(mktemp -d "$WORK/noaccXXXXXX")
+real_mkdir2n=$(command -v mkdir)
+cat > "$noaccess2n/mkdir" <<SHEOF2
+#!/usr/bin/env bash
+if [ "\$#" -eq 1 ] && [ "\$1" = "$lock2n" ]; then
+  if [ -d "$lock2n.reclaim" ]; then
+    printf 'present' > "$sb2n/guard-state"
+  else
+    printf 'missing' > "$sb2n/guard-state"
+  fi
+fi
+exec "$real_mkdir2n" "\$@"
+SHEOF2
+chmod +x "$noaccess2n/mkdir"
+
+out2n=$(PATH="$noaccess2n:$PATH" SUITE_LOCK_DIR="$lock2n" SUITE_LOCK_WAIT=60 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sb2n" 2>&1)
+rc2n=$?
+if [ "$rc2n" -eq 0 ]; then
+  pass "a genuinely dead lock is reclaimed (rc 0)"
+else
+  fail "reclaim of a dead lock failed: expected rc 0 got $rc2n; output: $out2n"
+fi
+if [ "$(cat "$sb2n/guard-state" 2>/dev/null || printf '')" = "present" ]; then
+  pass "the reclaim guard was still standing when the re-claim's own mkdir fired"
+else
+  fail "the reclaim guard was gone by the time the re-claim's mkdir fired -- the takeover window reopened; guard-state=$(cat "$sb2n/guard-state" 2>/dev/null || printf '(never recorded)'); output: $out2n"
+fi
+if [ ! -d "$lock2n.reclaim" ]; then
+  pass "the guard is cleaned up once the whole takeover completes"
+else
+  fail "the guard was left behind after a completed takeover"
+fi
+
+# --------------------------------------------------------------------------
+# Case 2n2 -- the reclaim guard's mkdir is not a reliable mutex on its own
+# (HIMMEL-1838 round 6, F2/codex-1): uutils coreutils 0.8.0 can resolve two
+# concurrent `mkdir` of the SAME directory to both rc=0. A PATH-shimmed mkdir
+# forces exactly that co-win deterministically -- reporting success on the
+# guard path even though it already exists and is already owned by another
+# (simulated) reclaimer -- so this racer must fall back to the `set -C`
+# owner-file brand as the real arbiter, not the mkdir return code, and must
+# never touch the lock or the other reclaimer's guard on losing that brand.
+# --------------------------------------------------------------------------
+echo "== Case 2n2: a forced guard co-win falls back to the set -C brand, not the mkdir rc =="
+sb2n2=$(new_sandbox)
+cat > "$sb2n2/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2n2="$sb2n2/suite.lock"
+mkdir -p "$lock2n2"
+bash -c 'exit 0' & dead2n2=$!
+wait "$dead2n2" 2>/dev/null
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2n2" "$(this_host)" "$(date +%s)" > "$lock2n2/owner"
+# Another reclaimer already won the guard slot for real and branded it --
+# this is the guard as it stands the instant BEFORE this racer's forced
+# co-win mkdir fires.
+mkdir -p "$lock2n2.reclaim"
+printf 'pid=999999\nhost=other\nstarted=1\nscan=other-racer\n' > "$lock2n2.reclaim/owner"
+
+noaccess2n2=$(mktemp -d "$WORK/noaccXXXXXX")
+real_mkdir2n2=$(command -v mkdir)
+cat > "$noaccess2n2/mkdir" <<SHEOF2
+#!/usr/bin/env bash
+if [ "\$#" -eq 1 ] && [ "\$1" = "$lock2n2.reclaim" ]; then
+  exit 0
+fi
+exec "$real_mkdir2n2" "\$@"
+SHEOF2
+chmod +x "$noaccess2n2/mkdir"
+
+out2n2=$(PATH="$noaccess2n2:$PATH" SUITE_LOCK_DIR="$lock2n2" bash "$RUNNER" "$sb2n2" 2>&1)
+rc2n2=$?
+if [ "$rc2n2" -eq 2 ]; then
+  pass "a forced guard co-win against a live guard -> refused (rc 2)"
+else
+  fail "a forced guard co-win was not refused: expected rc 2 got $rc2n2; output: $out2n2"
+fi
+if grep -qF 'scan=crashed' "$lock2n2/owner" 2>/dev/null; then
+  pass "the forced co-win did not let this racer drop the stale lock out from under the true guard holder"
+else
+  fail "the stale lock was dropped or clobbered despite losing the guard brand race; owner: $(cat "$lock2n2/owner" 2>/dev/null)"
+fi
+if grep -qF 'scan=other-racer' "$lock2n2.reclaim/owner" 2>/dev/null; then
+  pass "the true guard holder's brand is left alone"
+else
+  fail "the forced co-win clobbered the true guard holder's brand; owner: $(cat "$lock2n2.reclaim/owner" 2>/dev/null)"
+fi
+if grepq "$out2n2" -F 'TAKEOVER IN PROGRESS'; then
+  pass "losing the brand race is reported as the race it is"
+else
+  fail "losing the brand race missing the TAKEOVER IN PROGRESS verdict; output: $out2n2"
+fi
+
+# --------------------------------------------------------------------------
 # Case 3 -- the lock is RE-ENTRANT for nested runs.
 #
 # The scripts/ci/test-run-shell-tests*.sh family — six suites since
