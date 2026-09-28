@@ -493,7 +493,7 @@ done
 
 # --- 6b (HIMMEL-2975). --relay: forces the console-relay profile + the
 # HIMMEL_CONSOLE_RELAY env marker Guard C (inbox-send.sh) and the Task 26
-# write-deny hook key off. No value; defaults MODEL to claude-sonnet-5 when
+# write-deny hook key off. No value; defaults MODEL to claude-sonnet-5-5 when
 # omitted; an explicit --profile (flag or LEG_PROFILE) other than
 # console-relay conflicts and refuses.
 rc=0; out="$(bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
@@ -501,7 +501,7 @@ check "dry-run --relay: exit 0" "$rc" "0"
 contains "dry-run --relay: reports HIMMEL_CONSOLE_RELAY=1" "$out" "HIMMEL_CONSOLE_RELAY=1"
 contains "dry-run --relay: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
 contains "dry-run --relay: forces profile=console-relay" "$out" "profile=console-relay"
-contains "dry-run --relay: defaults the model to claude-sonnet-5" "$out" "claude-sonnet-5"
+contains "dry-run --relay: defaults the model to claude-sonnet-5-5" "$out" "/tmp/leg.log claude-sonnet-5-5 standard"
 
 rc=0; out="$(bash "$SCRIPT" --dry-run --relay --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "dry-run --relay --profile leg-impl: refused with exit 2" "$rc" "2"

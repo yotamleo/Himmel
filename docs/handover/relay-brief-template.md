@@ -2,7 +2,7 @@
 
 The `>`-block a console writes into a relay's brief. The relay is a leg kind
 serving the console (see [`../glossary.md`](../glossary.md)) — launched via
-`headed-arm-leg.sh --relay` (Task 25, #752), Sonnet 5, effort low,
+`headed-arm-leg.sh --relay` (Task 25, #752), Sonnet 5.5, effort low,
 `console-relay` profile. It is reference, not a spec — see spec §3.5 for the
 full shape.
 

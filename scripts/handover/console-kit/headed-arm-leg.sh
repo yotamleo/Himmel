@@ -158,7 +158,7 @@
 #
 # --relay (HIMMEL-2975): launches the Sonnet relay half of a split console.
 # Forces --profile console-relay (a real --profile conflicts, exit 2); an
-# empty MODEL defaults to claude-sonnet-5 and LEG_EFFORT defaults low, both
+# empty MODEL defaults to claude-sonnet-5-5 and LEG_EFFORT defaults low, both
 # only under this flag. Exports HIMMEL_CONSOLE_RELAY=1, the marker
 # inbox-send.sh's Guard C already refuses --token under and the Task 26
 # write-deny hook will key writes off - a distinct signal from the profile.
@@ -431,7 +431,7 @@ fi
 # Gated on RELAY: a non-relay leg's model default is headed-arm.sh's own, and
 # must stay untouched (--dry-run's no-relay report is pinned byte-identical).
 if [ "$RELAY" -eq 1 ]; then
-    [ -z "$MODEL" ] && MODEL=claude-sonnet-5
+    [ -z "$MODEL" ] && MODEL=claude-sonnet-5-5
     : "${LEG_EFFORT:=low}"
     export LEG_EFFORT
 fi

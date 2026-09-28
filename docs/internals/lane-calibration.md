@@ -129,7 +129,7 @@ can inherit into the child.
 | Lane | Best for | Effort / notes |
 |---|---|---|
 | Haiku | bulk mechanical (never delegates further) | low |
-| Sonnet 5 | scoped research; default implementor for well-specified impl briefs | medium default; high for multi-file/long briefs — raise effort before reaching for Opus |
+| Sonnet 5.5 | scoped research; default implementor for well-specified impl briefs | medium default (a native leg runs at `lanes.json`'s `sonnet` lane effort, `medium`; an explicit `CLAUDE_CODE_EFFORT_LEVEL` in the launching shell overrides it — e.g. `CLAUDE_CODE_EFFORT_LEVEL=high` for a multi-step or guard-grade leg); high for multi-file/long briefs — raise effort before reaching for Opus. Effort is recalibrated vs Sonnet 5: `low` can skip verifying a change, and at `low`/`medium` on long tasks it is likelier to stop and check in (Anthropic migration guide) |
 | Opus 5.5 | multi-step reasoning; default parent | medium default (≈ Opus 5 `high`, HIMMEL-3479); `low` for scoped impl; `high` for heavy parenting; `xhigh`/`max` only where a gain was measured — see [Effort calibration](#effort-calibration) |
 | Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; high for substantial judgment work — not just the hardest; xhigh for the hardest |
 
@@ -474,6 +474,13 @@ says so rather than claiming a mode it could not set.
 re-run for `claude-opus-5-5` — its `[1m]` handling and plain-launch
 `context_window_size` are unmeasured; re-measure with the zero-spend method
 above before relying on them.
+
+**2026-09-28 (HIMMEL-3801):** the Sonnet tier moved to `claude-sonnet-5-5`
+(relay default, new leg dispatches). Anthropic's model page documents a **1M**
+context window and no beta header. The Sonnet 5 rows above have **not** been
+re-run for `claude-sonnet-5-5`: its `[1m]` suffix handling, the `sonnet[1m]`
+alias target, and its plain-launch `context_window_size` are unmeasured —
+re-measure with the zero-spend method above before relying on them.
 
 ### What a plain launch reports
 
