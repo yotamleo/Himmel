@@ -461,7 +461,12 @@ if [ -r "$QMD_REFRESH_STAMP" ]; then
         skew=$(( stamp_epoch_dec - iso_epoch ))
         [ "$skew" -ge 0 ] || skew=$(( -skew ))
         if [ -n "$iso_epoch" ] && [ "$skew" -le 3600 ]; then
-            AGE_HOURS=$(( (now_epoch - stamp_epoch_dec) / 3600 ))
+            # Age from the OLDER of the two agreeing epochs (codex-1, round 2):
+            # within tolerance they can still differ by up to an hour, and
+            # using the newer one would understate age by that much.
+            older_epoch=$stamp_epoch_dec
+            [ "$iso_epoch" -lt "$older_epoch" ] && older_epoch=$iso_epoch
+            AGE_HOURS=$(( (now_epoch - older_epoch) / 3600 ))
             [ "$AGE_HOURS" -ge 0 ] || AGE_HOURS=0
             AGE_SOURCE="stamp"
         fi
