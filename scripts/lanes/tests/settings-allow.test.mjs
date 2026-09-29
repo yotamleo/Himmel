@@ -36,8 +36,6 @@ const STEP0 = [
 const EXACT_LITERALS = [
   'bash scripts/cr/doc-freshness-advisory.sh',
   'bash scripts/cr/known-findings.sh --diff',
-  'bash scripts/cr/codex-adv-kickoff.sh',
-  'bash scripts/cr/codex-adv-harvest.sh',
 ];
 
 // HIMMEL-3548: the PROJECT and leg-profile relative merge-on-green rules

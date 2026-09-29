@@ -52,8 +52,8 @@
 # REQUIRES: scripts/lib/proc-tree.sh sourced first (identity primitives).
 # CONVENTIONS: bash 3.2-safe (no mapfile/associative arrays), ASCII only,
 # same as proc-tree.sh. No comment line may BEGIN with the linter's name.
-# COVERAGE: scripts/lib/test-render-lease.sh (unit) plus
-# scripts/cr/test-run-codex-adversarial.sh (launcher integration).
+# COVERAGE: scripts/lib/test-render-lease.sh (unit; its only launcher,
+# run-codex-adversarial.sh, was removed in HIMMEL-3818).
 
 render_lease_registry_dir() {
     printf '%s\n' "${RENDER_LEASE_DIR:-$HOME/.claude/handover/bridge/render-leases}"

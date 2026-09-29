@@ -62,7 +62,7 @@
 # RENDER-LEASE REGISTRY (HIMMEL-1509 - replaces the retired :00 launch-window
 # rule with dynamic coordination): before ANY kill, the sweep takes the
 # registry lock and reads the per-branch render leases that
-# run-codex-adversarial.sh acquires (see scripts/lib/render-lease.sh). A LIVE
+# the (removed, HIMMEL-3818) run-codex-adversarial.sh acquired (see scripts/lib/render-lease.sh). A LIVE
 # lease (fresh heartbeat, or a leader pid whose snapshot creation time matches
 # the recorded win:<pid>:<startticks> identity) makes every broker tree in its
 # worktree - and every token its heartbeat recorded - UNTOUCHABLE regardless

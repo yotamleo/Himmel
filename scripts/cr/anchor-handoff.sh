@@ -9,7 +9,7 @@
 # WHY: plugin-profiles.json / .claude/settings.json pre-approve the RELATIVE
 # literals of a set of gate-writer entry scripts — the nine original
 # scripts/cr/ writers (write-verdicts, clear-cr-marker, panel-first-pass,
-# docs-audit-panel, codex-adv-kickoff, codex-adv-harvest, doc-freshness-advisory,
+# docs-audit-panel, doc-freshness-advisory,
 # known-findings, ledger-append, and since HIMMEL-3495 review-round,
 # orphan-check, impacted-suites, cr-scores), and since HIMMEL-3437 also
 # scripts/handover/merge-on-green.sh and scripts/handover/console-kit/go.sh.
@@ -32,7 +32,7 @@
 #
 # Scope: only a RELATIVE entry hands off - the one shape an allow rule can
 # match. An absolute entry (suites, internal callers such as
-# codex-adv-harvest -> ledger-append, the runbook's "<himmel_dir>/…" spelling)
+# another script calling ledger-append, the runbook's "<himmel_dir>/…" spelling)
 # never matched an allow rule, stays visible to the classifier, and runs as
 # invoked; handing those off would make a worktree's own suites test the
 # anchor's copy instead of the branch's.

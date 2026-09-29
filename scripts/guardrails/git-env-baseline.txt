@@ -12,8 +12,6 @@ SHELL:scripts/cr/anchor-handoff.sh
 SHELL:scripts/cr/base-resolver.sh
 SHELL:scripts/cr/claude-floor-review.sh
 SHELL:scripts/cr/clear-cr-marker.sh
-SHELL:scripts/cr/codex-adv-harvest.sh
-SHELL:scripts/cr/codex-adv-kickoff.sh
 SHELL:scripts/cr/critic-first-pass.sh
 SHELL:scripts/cr/critic-panel.sh
 SHELL:scripts/cr/cr-pending-audit.sh

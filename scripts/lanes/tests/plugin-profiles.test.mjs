@@ -43,8 +43,6 @@ const GATE_RULES = [
   // Codex): the /pr-check external-critic steps. Exact literals except
   // docs-audit-panel, which takes --head/--branch like panel-first-pass.
   'Bash(bash scripts/cr/docs-audit-panel.sh:*)',
-  'Bash(bash scripts/cr/codex-adv-kickoff.sh)',
-  'Bash(bash scripts/cr/codex-adv-harvest.sh)',
   'Bash(bash scripts/cr/doc-freshness-advisory.sh)',
   'Bash(bash scripts/cr/known-findings.sh --diff)',
   // HIMMEL-3359: the himmel-lane step-0 entry. Exact literal — the script
@@ -184,8 +182,7 @@ const BAD_GATE_RULES = [
   ['resolve-active-item gains an argument', 'Bash(bash scripts/handover/resolve-active-item.sh --foo)'],
   // HIMMEL-3338: the exact-literal external-critic rules must not gain a `:*`
   // tail, and the scripts the operator ruling left out stay out.
-  ['exact-literal kickoff gains a wildcard', 'Bash(bash scripts/cr/codex-adv-kickoff.sh:*)'],
-  ['exact-literal harvest gains a wildcard', 'Bash(bash scripts/cr/codex-adv-harvest.sh:*)'],
+  ['exact-literal advisory gains a wildcard', 'Bash(bash scripts/cr/doc-freshness-advisory.sh:*)'],
   ['exact-literal doc-freshness gains a wildcard', 'Bash(bash scripts/cr/doc-freshness-advisory.sh:*)'],
   ['known-findings without --diff', 'Bash(bash scripts/cr/known-findings.sh)'],
   ['known-findings gains a wildcard', 'Bash(bash scripts/cr/known-findings.sh --diff:*)'],
@@ -213,7 +210,7 @@ const BAD_GATE_RULES = [
   // HIMMEL-3359: the step-0 entry is admitted as an exact literal only.
   ['pr-check-context gains a wildcard', 'Bash(bash scripts/cr/pr-check-context.sh:*)'],
   ['pr-check-context gains an argument', 'Bash(bash scripts/cr/pr-check-context.sh --head)'],
-  ['absolute-path critic rule', 'Bash(bash /home/x/scripts/cr/codex-adv-kickoff.sh)'],
+  ['absolute-path critic rule', 'Bash(bash /home/x/scripts/cr/doc-freshness-advisory.sh)'],
   ['blanket quiet-run', 'Bash(bash scripts/quiet-run.sh:*)'],
   ['wildcard before --', 'Bash(bash scripts/quiet-run.sh * -- bash scripts/test-*.sh)'],
   ['other label', 'Bash(bash scripts/quiet-run.sh other -- bash scripts/test-*.sh)'],
@@ -1056,7 +1053,7 @@ test('validateRegistry: the shipped registry (console-relay included) validates 
 // The matcher below models the documented rule forms only (`X:*` = X or X plus
 // a space-separated tail; `X` = exact); it is a model, not the harness matcher.
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const EXTERNAL_CRITICS = ['panel-first-pass', 'docs-audit-panel', 'codex-adv-kickoff', 'codex-adv-harvest', 'doc-freshness-advisory', 'known-findings'];
+const EXTERNAL_CRITICS = ['panel-first-pass', 'docs-audit-panel', 'doc-freshness-advisory', 'known-findings'];
 const CRITIC_LINE_RE = new RegExp(`scripts/cr/(?:${EXTERNAL_CRITICS.join('|')})\\.sh`);
 
 function allowRuleMatches(rules, command) {
@@ -1151,7 +1148,7 @@ const MARKER_ANCHOR_RULE = 'Bash(bash /home/u/himmel/scripts/cr/clear-cr-marker.
 // production regex — a literal, hand-maintained expectation, same style as
 // GATE_RULES above — so this fails if the generator's coverage drifts either
 // way. Deliberately excludes GATE_EXACT_RE's no-argument literals
-// (codex-adv-kickoff.sh, pr-check-context.sh, pr-check-env.sh
+// (doc-freshness-advisory.sh, pr-check-context.sh, pr-check-env.sh
 // CR_CLAUDE_AGENTS, known-findings.sh --diff, resolve-active-item.sh): those
 // hand off to the anchor's own copy internally (HIMMEL-3698) rather than
 // being typed by a leg as an absolute Bash command.

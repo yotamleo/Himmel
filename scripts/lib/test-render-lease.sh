@@ -2,8 +2,7 @@
 # Unit tests for scripts/lib/render-lease.sh (HIMMEL-1509). Hermetic: the
 # registry lives in a mktemp dir and the proc-tree identity primitives are
 # stubbed, so no real process is probed or signaled and no shared state is
-# touched. Launcher integration is covered by
-# scripts/cr/test-run-codex-adversarial.sh.
+# touched. The launcher that used it was removed in HIMMEL-3818.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

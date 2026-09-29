@@ -82,8 +82,6 @@
       "Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS)",
       "Bash(bash scripts/cr/doc-freshness-advisory.sh)",
       "Bash(bash scripts/cr/known-findings.sh --diff)",
-      "Bash(bash scripts/cr/codex-adv-kickoff.sh)",
-      "Bash(bash scripts/cr/codex-adv-harvest.sh)",
       "Bash(bash scripts/cr/cr-scores.sh)",
       "Bash(git push)",
       "Bash(bash scripts/quiet-run.sh suite -- bash scripts/test-*.sh)",

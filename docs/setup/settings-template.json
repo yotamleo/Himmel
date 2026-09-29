@@ -114,7 +114,7 @@
       "neededBy": "The telegram MCP behind /telegram-clip and the Telegram connector legs. Disabling the plugin is what disables that MCP."
     },
     "codex@openai-codex": {
-      "neededBy": "The codex adversarial critic lane. scripts/cr/codex-adv-kickoff.sh resolves this plugin's CACHED companion (~/.claude/plugins/cache/openai-codex/*/codex-companion.mjs) by glob and degrades the lane to 'skipped' when the cache is absent (HIMMEL-2707) — so the lane needs the plugin INSTALLED, never enabled."
+      "neededBy": "The codex worker lanes resolve this plugin's CACHED companion (~/.claude/plugins/cache/openai-codex/*/codex-companion.mjs) — so they need the plugin INSTALLED, never enabled. (The codex adversarial /pr-check lane that also used it was removed in HIMMEL-3818.)"
     },
     "plannotator-effective-html@himmel": {
       "neededBy": "Design/UI work via the `design` lane profile (scripts/lanes/plugin-profiles.json), which enables it for its 6 html/design skills. Installed but disabled by default (HIMMEL-3064) — reachable via `/profile enable plannotator-effective-html@himmel`."

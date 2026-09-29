@@ -2843,84 +2843,17 @@ gate: no reviewer, critic, or CR lane in this repo — including the pass below
 — has ever re-executed the suite; each one reads (or fails to read) the same
 Summary artifact.
 
-**HIMMEL-1957's "it re-runs the suite" hypothesis is DISPROVED.** The codex
-adversarial pass had sat dormant since HIMMEL-1957 (`run-codex-adversarial.sh`
-exits 0 unless `CODEX_ADV_OK=1`, and nothing in the repo set it) on the
-unverified theory that letting it run risked a paid, unbounded test-suite
-re-execution. A HIMMEL-2707 audit traced the companion instead of guessing:
-it structurally cannot re-run anything. The companion (openai-codex plugin
-`codex@1.0.6`, not vendored into this repo) requests `sandbox: "read-only"` at
-`codex-companion.mjs:414`, with `approvalPolicy` defaulting to `"never"` at
-`codex.mjs:63-72`. The sandbox is the load-bearing constraint — it bounds
-what may execute at all; `approvalPolicy: "never"` is not a second deny-list
-on top of it, it means the pass never raises an approval prompt and has no
-path to REQUEST escalation to write or network access. A proposed command
-still runs, but only inside whatever the read-only sandbox permits, with no
-way to ask for more — so the companion can never reach a state where it
-writes a file or runs a suite that needs to write.
-Nothing in its tree spawns a test runner, a shell, or any subprocess other
-than itself (`app-server`, its own `task-worker`, and its own broker). Its own
-guidance string to the model, at `git.mjs:292-298`, says explicitly to
-**inspect the diff with read-only git commands** — the tool is designed
-around never touching the suite, not merely prevented from it as a side
-effect. The one residual unknown: the exact enforcement boundary of
-`"read-only"` *inside* the `codex` binary itself (the actual sandboxing —
-not vendored here, and not traced by this audit).
-
-**The open question — HIMMEL-2714.** With the "re-runs the suite" hypothesis
-disproved, the 8 recorded empty-output passes and 28 lifetime `/pr-check`
-timeouts attributed to this lane are therefore NOT test-run duration.
-HIMMEL-1957's other standing hypothesis — an unanswerable approval prompt
-blocking the pass — is also undermined by `approvalPolicy: "never"` above: a
-`"never"` policy cannot itself be a prompt waiting on an answer. The
-empty-output/timeout signature is UNEXPLAINED and tracked by **HIMMEL-2714**,
-not closed by this audit.
-
-**Re-armed, narrowed (HIMMEL-2707).** Given the above — advisory-only,
-structurally incapable of re-running the suite, and worth 11.5% of ledger
-findings (580/5022) including two catches the other CR paths missed (this
-file, above at `:277` — the CI-doc-invariants staging step — and `:1849` —
-the CodeRabbit-availability config-vs-App distinction) — the pass is re-armed,
-but only for diffs that plausibly need the extra reviewer, and at most once
-per branch:
-
-- **High-risk only.** `scripts/cr/codex-adv-kickoff.sh` sources the shared
-  path predicate `cr_paths_are_high_risk` (`scripts/lib/cr-high-risk-diff.sh`
-  — split out of `cr_diff_is_high_risk` so both the PR-time GitHub-backed
-  reader and this pre-PR, git-diff-backed caller share one path list) against
-  `git diff --name-only <merge-base>...HEAD`. A diff that cannot be
-  classified — no resolvable base ref, or the `git diff` itself fails — fails
-  OPEN (arms) rather than skips, logging a line beginning `armed: diff
-  undeterminable (fail-open, capped)` so the reason is visible rather than
-  silently indistinguishable from a genuinely high-risk diff; this mirrors
-  `cr_diff_is_high_risk`'s own documented rc 2 posture ("cannot determine …
-  caller treats as high risk") and costs at most quota, never a blocked
-  merge, since the pass gates nothing.
-- **Once per branch.** A new `"${codex_out}.armed"` sidecar (same
-  `"${codex_out}.SUFFIX"` convention as `.pid`/`.rc`/`.head`) records the
-  launched head the first time a branch arms. Deliberately excluded from the
-  per-kickoff `rm -f` reset that clears `.rc`/`.cleanup-rc`/`.head` on every
-  `/pr-check` round, so a later round on the same branch cannot buy a second
-  paid run just by moving HEAD — the marker has to survive rounds to do its
-  job. Caps the blast radius of the fail-open path above to a single run per
-  branch.
-
-**Still dormant by default (HIMMEL-2737).** None of the above turns the pass
-ON. `run-codex-adversarial.sh:38` still exits 0 unless `CODEX_ADV_OK=1`, and
-nothing in this repo sets that variable — so on the default path the
-background launch is a no-op on every round, regardless of the high-risk
-classification or the once-per-branch marker (which is itself only ever
-written on the `CODEX_ADV_OK=1` branch — see the guard above). What
-HIMMEL-2707 changed is *when* the pass would launch if it were enabled —
-high-risk diffs only, at most once per branch, wall-clock bounded — not
-*whether* it launches; that narrowing, the bound, and the once-per-branch cap
-are all real and already in effect for whenever the lane is enabled.
-Flipping it on is a deliberate operator opt-in, tracked separately as
-**HIMMEL-2737**, because it spends paid codex quota on every arm. A per-call
-`CODEX_ADV_OK=1 <command>` prefix does NOT work here — this harness blocks
-per-call env prefixes on its chokepoints — so enabling it has to go through
-the `.env` file `codex-adv-kickoff.sh` reads via `load_dotenv`, or be
-exported in the launching shell itself.
+**Removed (HIMMEL-3818).** The codex adversarial `/pr-check` pass
+(`codex-adv-kickoff.sh`, `codex-adv-harvest.sh`, `codex-adv-completion-check.sh`,
+`run-codex-adversarial.sh`) is deleted. It had sat dormant since HIMMEL-1957
+(nothing in the repo set `CODEX_ADV_OK`), drew on the same OpenAI bank as the
+panel's `codex` critic, and agreed on 6% of its findings against 23% for the
+panel `codex`. The HIMMEL-1957 "it re-runs the suite" hypothesis was disproved
+by the HIMMEL-2707 audit (the companion runs `sandbox: "read-only"` with
+`approvalPolicy: "never"`), and HIMMEL-2737's flip-it-on question was decided
+REMOVE by the operator on 2026-09-29. Gate 3b no longer accepts a `codex-adv`
+availability row: a legacy row of that name is not cross-model evidence, so
+the panel's own non-Claude rows are the only source.
 
 ### CI-green merge gate (HIMMEL-1043)
 

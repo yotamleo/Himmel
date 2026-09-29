@@ -521,9 +521,8 @@ marker may be cleared only from evidence persisted by
 
    **The producers already wrote the finding rows — you record only the VERDICT
    (HIMMEL-2321).** `critic-panel.sh` has always self-written every panel finding
-   through `ledger-append.sh --batch-file`, and since HIMMEL-2321
-   `codex-adv-harvest.sh` does the same. The rows for
-   `[<slug>-N]` and `[codex-adv-N]` therefore already exist at
+   through `ledger-append.sh --batch-file`. The rows for
+   `[<slug>-N]` therefore already exist at
    this head, carrying the reviewer's own file, line and text — written by the
    process that received them, never retyped. The old form of this step pasted
    `--file '<file>' --line '<line>'` into a fence; a critic's title or path
