@@ -437,15 +437,25 @@ assert_rc 1 "a hook exiting 7 (crash) exits 1" "hook-rc7"
 
 # A hook that HANGS must produce a failed leg, not stall the runner. The bound
 # is shrunk here so the case costs seconds instead of the 30s default.
-set +e
-OUT="$(PATH="$BIN:$PATH" SMOKE_STUB_MODE=clean FIXTURE_HOOK_SLEEP=6 HOOK_SMOKE_REPLAY_TIMEOUT=2 \
-    bash "$SMOKE" --from "$FIX" --timeout 20 2>&1)"; RC=$?
-set -e
-assert_rc 1 "a hanging hook is bounded and exits 1" "hook-hang"
-if printf '%s\n' "$OUT" | grep -qE '^claude-replay +FAIL.*rc=124'
-then pass "the hanging hook is reported as rc=124, not a hang"; else fail "hang not bounded: $OUT"; fi
-if printf '%s\n' "$OUT" | grep -qE '^claude-replay +FAIL'
-then pass "claude-replay FAIL row on a crashing hook"; else fail "no claude-replay FAIL row: $OUT"; fi
+# Without a GNU timeout the script degrades to unbounded (macOS ships none), and
+# a row that asserts "this terminates" would hang the suite instead of failing:
+# SKIP it there (scripts/lib/timeout-bin.sh contract).
+# shellcheck source=../lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/timeout-bin.sh"
+if [ -z "$_TIMEOUT_BIN" ]; then
+    echo "  SKIP: hanging-hook rows: no GNU timeout on PATH"
+else
+    set +e
+    OUT="$(PATH="$BIN:$PATH" SMOKE_STUB_MODE=clean FIXTURE_HOOK_SLEEP=6 HOOK_SMOKE_REPLAY_TIMEOUT=2 \
+        bash "$SMOKE" --from "$FIX" --timeout 20 2>&1)"; RC=$?
+    set -e
+    assert_rc 1 "a hanging hook is bounded and exits 1" "hook-hang"
+    if printf '%s\n' "$OUT" | grep -qE '^claude-replay +FAIL.*rc=124'
+    then pass "the hanging hook is reported as rc=124, not a hang"; else fail "hang not bounded: $OUT"; fi
+    if printf '%s\n' "$OUT" | grep -qE '^claude-replay +FAIL'
+    then pass "claude-replay FAIL row on a crashing hook"; else fail "no claude-replay FAIL row: $OUT"; fi
+fi
 
 # --- 11: vacuous-pass guard ---------------------------------------------------
 # --codex-only with neither codex nor pwsh present: every leg SKIPs, so there is

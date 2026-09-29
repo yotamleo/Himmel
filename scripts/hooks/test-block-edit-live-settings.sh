@@ -31,6 +31,16 @@ SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/block-edit-live-settings.XXXXXX") || {
     echo "FATAL: mktemp -d failed" >&2
     exit 1
 }
+# ponytail: the fixtures are pinned to their physical path because the hook
+# matches the command's TEXT against the canonicalised (realpath) primary root,
+# so a symlinked TMPDIR (macOS /var -> /private/var) spells the primary
+# differently from the root and the text rows read as unrelated paths. That
+# spelling-alias gap in the hook is not tested here; upgrade path is a hook
+# change that canonicalises path words too (filed as a HIMMEL-3699 FINDING).
+SANDBOX=$(cd -P "$SANDBOX" && pwd -P) || {
+    echo "FATAL: cannot resolve $SANDBOX" >&2
+    exit 1
+}
 # Windows/Git-Bash: mktemp's /tmp/... is a compound MSYS mount (aliases into
 # AppData\Local\Temp), a different representation than the C:/... drive form
 # a real Windows-native caller (Claude Code's JSON) would send. The hook

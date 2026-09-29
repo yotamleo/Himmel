@@ -456,7 +456,11 @@ assert_silent "F6 fail-open: MEMDIR unset and not inside a git repo"
 # --- MEMDIR derivation: memory lives under the PRIMARY checkout's slug, also
 #     when the session starts in a linked worktree.
 mk_index 61
-REPO="$SB/repo"; mkdir -p "$REPO"
+mkdir -p "$SB/repo"
+# The hook slugs git's own (physical) common-dir, so derive the expected slug
+# from the physical path too: under a symlinked TMPDIR (macOS /var ->
+# /private/var) the spelling $SB/repo would slug to a different directory.
+REPO="$(cd -P "$SB/repo" && pwd -P)"
 git -C "$REPO" init -q 2>/dev/null
 git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init 2>/dev/null
 git -C "$REPO" worktree add -q "$SB/wt" -b wt 2>/dev/null
