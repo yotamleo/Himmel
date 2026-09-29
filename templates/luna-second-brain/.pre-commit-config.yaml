@@ -70,7 +70,12 @@ repos:
         # judge's probe and case scripts are the evidence its verdict rests
         # on, not shipped code. A verdict script with no shebang (SC2148) can
         # otherwise stall every vault commit (HIMMEL-3702).
-        exclude: ^handovers/.*/(specs/(console-kit-[^/]+|reports/[^/]*-artifacts)|verdicts)/
+        #
+        # Handover log dirs (handovers/**/logs/) are the same class again:
+        # scratch scripts and launch artefacts a session leaves behind. One
+        # failing scratch .sh there refused every later commit, silently, for
+        # hours (HIMMEL-3851).
+        exclude: ^handovers/.*/(specs/(console-kit-[^/]+|reports/[^/]*-artifacts)|verdicts|logs)/
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1

@@ -8,6 +8,24 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.62] — 2026-09-29
+
+### Added
+- `scripts/vault-autosync.sh`: alerts once per stall episode when a
+  pre-commit hook keeps refusing the pending changes. Once the refusals
+  outlast `LUNA_VAULT_STALL_THRESHOLD_MIN` (default 30) it calls the
+  executable named by `LUNA_VAULT_ALERT_CMD` with one argument, a message
+  naming the failing hook and file. A successful commit or a clean tree ends
+  the episode; a sink that exits non-zero is retried on the next run; with no
+  sink set the stall is only logged to stderr. See
+  `docs/setup/new-machine.md` section 5. (`vault-autosync.ps1` is not
+  covered yet.)
+
+### Fixed
+- `.pre-commit-config.yaml`'s shellcheck hook now also excludes
+  `handovers/**/logs/`: one failing scratch script there refused every vault
+  commit until someone noticed.
+
 ## [0.4.61] — 2026-09-29
 
 ### Changed
