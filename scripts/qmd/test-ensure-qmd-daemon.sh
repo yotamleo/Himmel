@@ -411,8 +411,17 @@ hold = float(sys.argv[2])
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", port))
-s.listen(1)
-time.sleep(hold)
+s.listen(128)
+# Drain the accept queue for the whole hold: BSD/macOS refuses further connects
+# once a never-accepting listener's backlog is full, which would read as "port
+# free" to the script under test.
+s.settimeout(0.2)
+end = time.time() + hold
+while time.time() < end:
+    try:
+        s.accept()[0].close()
+    except socket.timeout:
+        pass
 s.close()
 PY
 fixture_pid=$!

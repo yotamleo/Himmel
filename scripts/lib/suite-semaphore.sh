@@ -222,7 +222,9 @@ _suite_sem_try() {
     if ! { printf 'pid=%s\nidentity=%s\nlabel=%s\nstarted=%s\n' \
         "$$" "$id" "$label" "$(date +%s)" >"$slot/owner.tmp" \
         && mv "$slot/owner.tmp" "$slot/owner"; }; then
-        rm -rf "$slot" 2>/dev/null
+        # rmdir first: BSD rm -rf cannot remove a mode-000 dir (it will not
+        # open it to empty it), but an empty one goes with a plain rmdir.
+        rmdir "$slot" 2>/dev/null || rm -rf "$slot" 2>/dev/null
         return 1
     fi
     SUITE_SEM_SLOT="$slot"
