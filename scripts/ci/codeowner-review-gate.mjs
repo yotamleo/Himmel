@@ -29,8 +29,21 @@
 // so a PR cannot edit its own gate. It never executes anything from the PR.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { isMain } from '../lib/is-main.mjs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// Main-module guard, realpath on both sides (HIMMEL-3810). Deliberately inlined
+// rather than importing ../lib/is-main.mjs: the workflow fetches only this one
+// file from the base sha (no checkout), so any relative import is a
+// ERR_MODULE_NOT_FOUND on every later PR. test-codeowner-review-gate.sh part 4
+// pins that this file has no relative imports.
+function isMain(importMetaUrl) {
+  try {
+    return realpathSync(fileURLToPath(importMetaUrl)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
 
 const WRITE_PERMISSIONS = new Set(['admin', 'write']);
 const WRITE_ROLES = new Set(['admin', 'maintain', 'write']);
