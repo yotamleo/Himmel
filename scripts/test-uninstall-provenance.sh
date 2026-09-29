@@ -2559,7 +2559,8 @@ printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST79B"
     --writer adopt.sh --post-file "$DEST79B" >/dev/null
   prov_end ok >/dev/null )
 out79b=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings); rc79b=$?
-check "RED79b: exits 0" "$rc79b" "0"check "RED79b: NEEDS YOU is zero" "$(printf '%s\n' "$out79b" | grep -c -E '^  NEEDS YOU +0$')" "1"
+check "RED79b: exits 0" "$rc79b" "0"
+check "RED79b: NEEDS YOU is zero" "$(printf '%s\n' "$out79b" | grep -c -E '^  NEEDS YOU +0$')" "1"
 check "RED79b: the created file is counted as reverted (removed 1)" "$(printf '%s\n' "$out79b" | grep -c -E '^  reverted +1 +\(removed 1,')" "1"
 check "RED79b: no held-backups line" "$(printf '%s\n' "$out79b" | grep -c '^  backups held')" "0"
 

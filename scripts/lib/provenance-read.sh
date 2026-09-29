@@ -1077,7 +1077,7 @@ EOF
     if [ -n "$dir" ]; then
         for d in "$dir"/retained-*; do
             [ -d "$d" ] || continue
-            printf '  retained from an earlier purge: %s  (rm -rf %s when done)\n' "$d" "$d"
+            printf '  retained from an earlier purge: %s  (rm -rf %q when done)\n' "$d" "$d"
         done
     fi
     return 0

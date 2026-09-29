@@ -368,7 +368,7 @@ rm -f "$out"
 elif [ -n "$cache" ]; then rm -f "$cache"
 rm -f "$tmp"
 find "$bdir" -type d -empty -delete 2>/dev/null
-printf '  retained from an earlier purge: %s  (rm -rf %s when done)\n' "$d" "$d"
+printf '  retained from an earlier purge: %s  (rm -rf %q when done)\n' "$d" "$d"
 EOF
 )
 _PRL="${CLI%/*}/lib/provenance-read.sh"
