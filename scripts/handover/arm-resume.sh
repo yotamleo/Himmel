@@ -1759,7 +1759,7 @@ fi
 # below), and telemetry_emit itself always returns 0 under our set -e.
 # Format spec: docs/tool-adoption/telemetry.md.
 # shellcheck source=../lib/telemetry.sh
-# shellcheck disable=SC1091
+# shellcheck disable=SC1091,SC2015
 # The [ -f ] guard (all four fail-open sources): macOS bash 3.2 exits the
 # whole script on a `.` of a MISSING file even under `|| true` (HIMMEL-3699).
 [ -f "$SCRIPT_DIR/../lib/telemetry.sh" ] \
