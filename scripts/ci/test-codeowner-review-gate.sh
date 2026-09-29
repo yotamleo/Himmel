@@ -448,6 +448,30 @@ mutate "a job-level if: skip"        "job-level if"        's/^    name: codeown
 mutate "a default-branch exemption" "404/bootstrap"       's|^    steps:|    steps:\n      - run: test "$BASE_REF" = "$DEFAULT_BRANCH"|'
 mutate "a step gated on the fetch"   "404/bootstrap"       's|^    steps:|    steps:\n      - if: steps.fetch.outputs.present == '"'"'true'"'"'\n        run: true|'
 
+# ---------------------------------------------------------------- part 4
+echo "== part 4: gate script is self-contained =="
+# The workflow fetches ONLY this one file from the base sha into $RUNNER_TEMP (no
+# checkout), so a relative import dies with ERR_MODULE_NOT_FOUND on every later PR.
+# The PR that adds such an import is green regardless (its base still has the old
+# self-contained script), which is why this is asserted statically here.
+rel_imports() {
+  # Newlines are folded to spaces first so a multiline `import {\n a,\n} from
+  # '../x.mjs'` or `import(\n'./x.mjs')` matches like its one-line form.
+  tr '\n' ' ' < "$1" | grep -oE "[[:space:]}]from[[:space:]]*['\"]\.[^'\"]*|import[[:space:]]*['\"]\.[^'\"]*|import[[:space:]]*\([[:space:]]*['\"]\.[^'\"]*|require[[:space:]]*\([[:space:]]*['\"]\.[^'\"]*" || true
+}
+ri=$(rel_imports "$GATE")
+if [ -z "$ri" ]; then pass "gate script has no relative imports"; else fail "gate script has a relative import: $ri"; fi
+printf "import { x } from '../lib/x.mjs';\n" > "$TMP/rel-static.mjs"
+printf "const m = await import('./x.mjs');\n" > "$TMP/rel-dynamic.mjs"
+printf "import {\n  x,\n} from '../lib/x.mjs';\n" > "$TMP/rel-multiline.mjs"
+printf "const m = await import(\n  './x.mjs');\n" > "$TMP/rel-multiline-dynamic.mjs"
+printf "import { readFileSync } from 'node:fs';\n" > "$TMP/rel-none.mjs"
+if [ -n "$(rel_imports "$TMP/rel-static.mjs")" ]; then pass "control: a static relative import is caught"; else fail "control: a static relative import NOT caught"; fi
+if [ -n "$(rel_imports "$TMP/rel-dynamic.mjs")" ]; then pass "control: a dynamic relative import is caught"; else fail "control: a dynamic relative import NOT caught"; fi
+if [ -n "$(rel_imports "$TMP/rel-multiline.mjs")" ]; then pass "control: a multiline relative import is caught"; else fail "control: a multiline relative import NOT caught"; fi
+if [ -n "$(rel_imports "$TMP/rel-multiline-dynamic.mjs")" ]; then pass "control: a multiline dynamic import is caught"; else fail "control: a multiline dynamic import NOT caught"; fi
+if [ -z "$(rel_imports "$TMP/rel-none.mjs")" ]; then pass "control: a node: import is not flagged"; else fail "control: a node: import wrongly flagged"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then
   echo "test-codeowner-review-gate: all passed"

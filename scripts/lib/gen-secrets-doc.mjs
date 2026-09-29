@@ -18,6 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 export const BEGIN_MARKER = '# === GENERATED: secrets manifest (scripts/lib/gen-secrets-doc.mjs -- DO NOT HAND-EDIT; source: scripts/himmelctl/lib/secrets-manifest.json) -- BEGIN ===';
 export const END_MARKER = '# === GENERATED: secrets manifest -- END ===';
@@ -204,7 +205,7 @@ export function main(mode, staged, overrides = {}) {
   return 0;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   const args = process.argv.slice(2);
   const staged = args.includes('--staged');
   const mode = args.find((a) => a === 'check' || a === 'write');

@@ -30,6 +30,7 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 import { classifyTicket, findMatches, applyDisposition, buildEvidenceComment } from './reconcile-lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -390,9 +391,9 @@ async function main() {
 
 // Guarded so vitest can import the pure helpers above (parseArgs, loadConfig,
 // loadHygieneKeys, loadCommits) without triggering a live Jira run.
-// pathToFileURL (not a manually-built `file://` string) so this comparison
-// also holds on Windows and on paths with URL-reserved characters.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// isMain realpaths both sides, so this holds through a symlinked invocation
+// path and on Windows / paths with URL-reserved characters.
+if (isMain(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`reconcile-backlog: ${err.stack ?? err.message}\n`);
     process.exit(1);

@@ -78,11 +78,6 @@ node_bin=$(command -v node)
 . "$repo_root/scripts/lib/hermetic-path.sh"
 
 work=$(mktemp -d)
-# ponytail: masks HIMMEL-3810 (main-guard no-op via symlinked path), remove when it merges
-# physical path: wire-trust-hooks.mjs only runs main() when argv[1] equals its
-# realpath'd import.meta.url, so a symlinked TMPDIR (macOS /var -> /private/var)
-# made 'trust status' a silent no-op
-work=$(cd "$work" && pwd -P)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
@@ -495,6 +490,7 @@ printf '{}\n' > "$fxP/.claude/settings.json"
 cp "$repo_root/scripts/trust/wire-trust-hooks.mjs" "$fxP/scripts/trust/wire-trust-hooks.mjs"
 cp "$repo_root/scripts/trust/shadow-ledger.mjs" "$fxP/scripts/trust/shadow-ledger.mjs"
 cp "$repo_root/scripts/lib/settings-lock.mjs" "$fxP/scripts/lib/settings-lock.mjs"
+cp "$repo_root/scripts/lib/is-main.mjs" "$fxP/scripts/lib/is-main.mjs"
 
 # P1: `himmelctl profile list` dispatches to the stub with EXACTLY ["list"]
 # forwarded (never "profile list"), and the stub's non-standard exit code (17,

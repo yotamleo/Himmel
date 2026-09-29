@@ -561,6 +561,19 @@ describe('it refuses rather than guessing', () => {
     assert.doesNotMatch(r.stdout, /entries wired/, 'and reports on NO project rather than the wrong one');
   });
 
+  // HIMMEL-3810: the main-module guard compared resolve(argv[1]) with the
+  // REALPATH'd import.meta.url, so invoking the script through a symlinked
+  // directory (macOS /tmp -> /private/tmp; any symlinked dir on Linux) made
+  // main() silently never run: empty stdout, rc 0, wiring looked applied.
+  test('invoked through a symlinked directory it still runs (no silent no-op)', () => {
+    const f = fixture('symlinked-invocation');
+    const linkedDir = path.join(TMP, 'linked-trust');
+    fs.symlinkSync(path.join(HERE, '..'), linkedDir, 'dir');
+    const r = spawnSync(process.execPath, [path.join(linkedDir, 'wire-trust-hooks.mjs'), '--check', f], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /wire-trust-hooks:/, 'main() must have run and reported');
+  });
+
   // [codex-adv round 3] A ledger command sharing an entry with a foreign hook
   // was INVISIBLE to isOurs: install appended a second ledger entry beside it
   // (seven live invocations reported as 6/6, zero duplicates) and remove

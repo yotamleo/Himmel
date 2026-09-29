@@ -36,7 +36,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUF = 256 * 1024 * 1024;
@@ -447,7 +448,7 @@ async function main() {
   if (report.failed.length) process.exit(1);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   main().catch((e) => {
     console.error(`sync-versions: ${e.message}`);
     process.exit(1);

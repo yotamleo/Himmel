@@ -21,9 +21,9 @@
 //          here because dispatch-luna.sh (the driver) chose the cwd itself,
 //          so resolveLunaTranscript below can recompute the same slug.
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { isMain } from '../../lib/is-main.mjs';
 import { listRunManifests } from './run-manifest.mjs';
 
 // spec §0.1, retrieved 2026-08-11 — $/M tokens (first-party list price).
@@ -177,6 +177,6 @@ function main() {
 // `endsWith('aggregate-tokens.mjs')` would also fire when this module is
 // imported by any script whose own filename happens to end with that string,
 // silently running main() as an import side effect.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main();
 }

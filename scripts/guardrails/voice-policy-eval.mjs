@@ -13,8 +13,9 @@
 // Prints ONE line: "<verdict>\t<why>". Exit 0 on a clean evaluation,
 // 2 on bad args or an unreadable policy (caller must fail safe).
 import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMain } from "../lib/is-main.mjs";
 
 export function evaluate(policy, act) {
   for (const r of policy.rules) {
@@ -32,10 +33,7 @@ export function evaluate(policy, act) {
 
 // CLI only when run directly. Without this guard, importing evaluate() from a
 // test runs the arg check and exits 2 before a single assertion executes.
-const invokedDirectly =
-  process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
-
-if (invokedDirectly) {
+if (isMain(import.meta.url)) {
   const [action] = process.argv.slice(2);
   if (!action) {
     process.stderr.write("voice-policy-eval: need <action>\n");

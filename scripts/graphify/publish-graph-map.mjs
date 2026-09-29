@@ -198,7 +198,7 @@ function main() {
 }
 
 // Run main() only as a CLI, not when imported by the test.
-import { fileURLToPath } from "node:url";
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+import { isMain } from "../lib/is-main.mjs";
+if (isMain(import.meta.url)) {
   try { main(); } catch (e) { process.stderr.write(`publish-graph-map: ERROR ${e.message}\n`); process.exit(1); }
 }
