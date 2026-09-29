@@ -177,6 +177,7 @@ assert ".harvest-run-state-<DATE>.jsonl documented" "yes" "$resume"
 echo "Test 9: fixture coverage — at least one per dispatch type + G-1 fixture"
 # Map fixture → expected type marker.
 # bash 3.2 has no `declare -A`; a case lookup keeps the same kind -> pattern map.
+# ponytail: case lookup stands in for an associative array (bash 3.2), drop once macOS CI runs bash >= 4, HIMMEL-3719.
 wanted_pat() {
     case "$1" in
         tweet) echo "^type:[[:space:]]*tweet$" ;;
