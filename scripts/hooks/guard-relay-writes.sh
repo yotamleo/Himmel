@@ -26,11 +26,7 @@
 #     <handover_root> fails to resolve, or the path itself fails to resolve
 #     (`readlink -f`, every "./" segment and every symlink including the
 #     final component included — denied fail-closed rather than silently
-#     skipping the guarded-path match; the one exception is a final component
-#     that does not exist yet, no trailing slash, under a parent that exists as
-#     a directory — GNU resolves that, and BSD/macOS `readlink -f` does not, so
-#     the parent is resolved instead; a missing intermediate directory still
-#     denies on every platform); or the PHYSICALLY resolved path is under
+#     skipping the guarded-path match); or the PHYSICALLY resolved path is under
 #     <handover_root>/inbox/, under a .../himmel-console/... rundir, under
 #     ${TMPDIR:-/tmp}/himmel-console-*, or its basename matches
 #     *-legN*-RESUME.md.
@@ -163,28 +159,8 @@ case "$tool" in
         # guarded dir slip past a literal-string glob (codex-1); readlink -f
         # only requires the path up to the last component to exist, so a
         # brand-new file under an existing directory still resolves cleanly.
-        if ! path_resolved="$(readlink -f -- "$path" 2>/dev/null)" || [ -z "$path_resolved" ]; then
-            # BSD/macOS `readlink -f` (realpath(3)) fails when the FINAL
-            # component does not exist yet, which GNU accepts - so a brand-new
-            # file under an existing directory would be denied on macOS. Give
-            # exactly that GNU case the same answer: a final component that is
-            # neither a file nor a (dangling) symlink, no trailing slash, under
-            # a parent that EXISTS as a directory and resolves. GNU also fails
-            # on a missing INTERMEDIATE component, so the [ -d ] test keeps that
-            # case a deny on every platform. Anything else stays a deny.
-            path_resolved=
-            if [ ! -e "$path" ] && [ ! -L "$path" ]; then
-                case "$path" in
-                    */) ;;
-                    *)
-                        [ -d "$(dirname -- "$path")" ] \
-                            && path_parent="$(readlink -f -- "$(dirname -- "$path")" 2>/dev/null)" || path_parent=
-                        [ -z "$path_parent" ] || path_resolved="${path_parent%/}/$(basename -- "$path")"
-                        ;;
-                esac
-            fi
-            [ -n "$path_resolved" ] || deny "unresolved-path" "$path"
-        fi
+        path_resolved="$(readlink -f -- "$path" 2>/dev/null)" || deny "unresolved-path" "$path"
+        [ -n "$path_resolved" ] || deny "unresolved-path" "$path"
         path_base=$(basename -- "$path_resolved")
 
         case "$path_resolved" in

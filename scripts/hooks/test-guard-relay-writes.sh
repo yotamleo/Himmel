@@ -249,54 +249,6 @@ RC_ROOT_FAIL="$?"
 assert_rc "handover_root failure denies fail-closed (rc=2)" 2 "$RC_ROOT_FAIL"
 assert_contains "handover_root failure deny reason" "handover-root-unresolved" "$(cat "$TMP/out-root-fail")"
 
-# GNU `readlink -f` also fails when an INTERMEDIATE component is missing; the
-# BSD fallback must not turn that deny into an allow. No shim: real host tools.
-RC_GNU_MP=$(run_relay gnu-missing-parent "$(write_payload Write "$ROOT/no-such-dir/x.md")")
-assert_rc "no shim: a missing parent dir denies (rc=2)" 2 "$RC_GNU_MP"
-assert_contains "no shim: missing parent denied as unresolved-path" "unresolved-path" "$(cat "$TMP/out-gnu-missing-parent")"
-
-echo ""
-echo "=== BSD-style readlink -f (a missing final component fails; stand-in for macOS) ==="
-# ponytail: a PATH shim models BSD realpath(3) only for `readlink -f` (every
-# component must exist); it is not a macOS run, upgrade path is the nightly
-# macOS shard (HIMMEL-3699).
-BSDBIN="$TMP/bsdbin"
-mkdir -p "$BSDBIN"
-REAL_READLINK="$(command -v readlink)"
-cat >"$BSDBIN/readlink" <<SHIM
-#!/bin/sh
-for a in "\$@"; do last="\$a"; done
-if [ "\$1" = -f ] && [ ! -e "\$last" ]; then exit 1; fi
-exec "$REAL_READLINK" "\$@"
-SHIM
-chmod +x "$BSDBIN/readlink"
-RC_SHIM=0
-PATH="$BSDBIN:$PATH" readlink -f -- "$ROOT/yotamleo/himmel/not-yet-there.md" >/dev/null 2>&1 || RC_SHIM=$?
-assert_rc "shim control: readlink -f of a missing final component fails" 1 "$RC_SHIM"
-
-ln -s "$ROOT/inbox/gone.md" "$TMP/dangling.md"
-bsd_relay() { # bsd_relay <name> <json>
-    printf '%s' "$2" | env PATH="$BSDBIN:$PATH" HANDOVER_DIR="$ROOT" HIMMEL_CONSOLE_RELAY=1 "$BASH_ABS" "$HOOK" >"$TMP/out-$1" 2>"$TMP/err-$1"
-    echo "$?"
-}
-RC_B=$(bsd_relay bsd-own-new "$(write_payload Edit "$OWN_DOC")")
-assert_rc "bsd readlink: new file under an existing non-guarded dir allows (rc=0)" 0 "$RC_B"
-assert_empty "bsd readlink: new non-guarded file: no output" "$(combined_output bsd-own-new)"
-RC_B=$(bsd_relay bsd-inbox-new "$(write_payload Write "$ROOT/inbox/brand-new.md")")
-assert_rc "bsd readlink: new file in the inbox still denies (rc=2)" 2 "$RC_B"
-assert_contains "bsd readlink: new inbox file denied as inbox-write" "inbox-write" "$(cat "$TMP/out-bsd-inbox-new")"
-RC_B=$(bsd_relay bsd-legdoc-new "$(write_payload Write "$ROOT/yotamleo/himmel/HIMMEL-1-b-legN9-2026-09-12-RESUME.md")")
-assert_rc "bsd readlink: new leg doc still denies (rc=2)" 2 "$RC_B"
-assert_contains "bsd readlink: new leg doc denied as leg-doc-write" "leg-doc-write" "$(cat "$TMP/out-bsd-legdoc-new")"
-RC_B=$(bsd_relay bsd-dangling "$(write_payload Write "$TMP/dangling.md")")
-assert_rc "bsd readlink: a dangling symlink into the inbox still denies (rc=2)" 2 "$RC_B"
-RC_B=$(bsd_relay bsd-trailing-slash "$(write_payload Write "$ROOT/yotamleo/himmel/newdir/")")
-assert_rc "bsd readlink: a missing path with a trailing slash still denies (rc=2)" 2 "$RC_B"
-assert_contains "bsd readlink: trailing slash denied as unresolved-path" "unresolved-path" "$(cat "$TMP/out-bsd-trailing-slash")"
-RC_B=$(bsd_relay bsd-missing-parent "$(write_payload Write "$ROOT/no-such-dir/x.md")")
-assert_rc "bsd readlink: a missing parent dir still denies (rc=2)" 2 "$RC_B"
-assert_contains "bsd readlink: missing parent denied as unresolved-path" "unresolved-path" "$(cat "$TMP/out-bsd-missing-parent")"
-
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
