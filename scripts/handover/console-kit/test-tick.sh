@@ -27,6 +27,12 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 contains() {
     case "$2" in *"$3"*) pass "$1" ;; *) fail "$1 (missing '$3' in '$2')" ;; esac
 }
+not_contains() {
+    case "$2" in *"$3"*) fail "$1 (found '$3' in '$2')" ;; *) pass "$1" ;; esac
+}
+skip() { printf 'skip - %s\n' "$1"; }
+# shellcheck source=../../lib/timeout-bin.sh
+. "$HERE/../../lib/timeout-bin.sh"
 
 mkdir -p "$W/repo/scripts/handover" "$W/repo/scripts/lib" "$W/repo/scripts/lanes/lib" "$W/handover/inbox/.cursor" "$W/bin" "$W/proc" "$W/himmel-shell-suite-test.lock"
 
@@ -173,6 +179,8 @@ export REPO="$W/repo"
 export TICK_TMPDIR="$W"
 export PS_FIXTURE="$W/ps-none.txt"
 export TICK_BANK_CACHE_FILE="$W/bank.json"
+# HIMMEL-3840: ciq= keeps the last tick's jobs_in_progress under here; never the real ~/.himmel.
+export TICK_STATE_DIR="$W/state"
 export CLAUDE_SESSIONS_PROC="$W/proc"
 # HIMMEL-3167: launch logs live in <work-dir>/<chain>/<name>.launch.log.
 export TICK_LAUNCH_DIR="$W/console-work"
@@ -181,7 +189,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip denials=skip'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip denials=skip ciq=unknown'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -1433,6 +1441,73 @@ mkdenial "$d3724i" 5 leg-a 'git push origin main'
 printf '%s\n' '{"ts":"2099-01-01T00:00:00Z","session_title":"leg-b","input_head":5}' >> "$d3724i"
 o3724i="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724i" bash "$SUT" 2>/dev/null)"
 contains 'a non-string input_head row is skipped, denials= stays populated (HIMMEL-3724)' "$o3724i" 'denials=leg-a:1:SHIP-STEP'
+
+# --- HIMMEL-3840: ciq= (queue-latency.sh -> compact field + SATURATED on two
+# consecutive full ticks). The stub prints $STUB_CIQ_OUT verbatim, after
+# STUB_CIQ_SLEEP seconds, and appends one line per call to $STUB_CIQ_CALLS.
+mkdir -p "$W/repo/scripts/ci"
+cat > "$W/repo/scripts/ci/queue-latency.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'x\n' >> "${STUB_CIQ_CALLS:-/dev/null}"
+[ -z "${STUB_CIQ_SLEEP:-}" ] || sleep "$STUB_CIQ_SLEEP"
+printf '%s\n' "$STUB_CIQ_OUT"
+STUB
+chmod +x "$W/repo/scripts/ci/queue-latency.sh"
+ciq_full='ci-queue: jobs_in_progress=20/20 macos=3/5 queued=4 oldest_wait=62m'
+ciq_idle='ci-queue: jobs_in_progress=0/20 macos=0/5 queued=0 oldest_wait=0m'
+ciq_calls="$W/ciq-calls.txt"
+ciq_tick() { STUB_CIQ_OUT="$1" STUB_CIQ_CALLS="$ciq_calls" bash "$SUT" 2>/dev/null; }
+
+rm -rf "$W/state"; : > "$ciq_calls"
+o3840a="$(ciq_tick "$ciq_idle")"
+contains 'an idle queue prints the compact ciq= field (HIMMEL-3840)' "$o3840a" 'ciq=0/20,mac=0/5,q=0,wait=0m'
+not_contains 'an idle queue is not flagged SATURATED (HIMMEL-3840)' "$o3840a" 'SATURATED'
+calls="$(wc -l < "$ciq_calls" | tr -d '[:space:]')"
+if [ "$calls" = 1 ]; then pass 'one tick runs the probe exactly once (HIMMEL-3840)'; else fail "probe calls per tick = $calls, want 1"; fi
+
+rm -rf "$W/state"
+o3840b="$(ciq_tick "$ciq_full")"
+contains 'one full tick prints the field (HIMMEL-3840)' "$o3840b" 'ciq=20/20,mac=3/5,q=4,wait=62m'
+not_contains 'one full tick is not yet SATURATED (HIMMEL-3840)' "$o3840b" 'SATURATED'
+o3840c="$(ciq_tick "$ciq_full")"
+contains 'two consecutive full ticks read SATURATED (HIMMEL-3840)' "$o3840c" 'ciq=20/20,mac=3/5,q=4,wait=62m,SATURATED'
+ciq_tick "$ciq_idle" >/dev/null
+o3840e="$(ciq_tick "$ciq_full")"
+not_contains 'a non-full tick between two full ones resets the streak (HIMMEL-3840)' "$o3840e" 'SATURATED'
+
+# unknown: neither sets nor clears. full, unknown, full -> SATURATED (state
+# survived); idle, unknown, full -> not saturated (unknown did not set it).
+rm -rf "$W/state"
+ciq_tick "$ciq_full" >/dev/null
+o3840f="$(ciq_tick 'ci-queue: unknown')"
+contains 'a failed probe prints ciq=unknown (HIMMEL-3840)' "$o3840f" 'ciq=unknown'
+o3840g="$(ciq_tick "$ciq_full")"
+contains 'unknown does not clear the saturation state (HIMMEL-3840)' "$o3840g" 'SATURATED'
+rm -rf "$W/state"
+ciq_tick "$ciq_full" >/dev/null
+ciq_tick "$ciq_idle" >/dev/null
+ciq_tick 'ci-queue: unknown' >/dev/null
+o3840h="$(ciq_tick "$ciq_full")"
+not_contains 'unknown does not set the saturation state (HIMMEL-3840)' "$o3840h" 'SATURATED'
+
+# a line with an empty numeric field is malformed: unknown, not a partial summary.
+o3840k="$(ciq_tick 'ci-queue: jobs_in_progress=/20 macos=0/5 queued=0 oldest_wait=0m')"
+contains 'an empty numeric field reads ciq=unknown (HIMMEL-3840)' "$o3840k" 'ciq=unknown'
+
+# probe timeout: a hung probe reads unknown inside the bound and leaves state alone.
+if [ -n "$_TIMEOUT_BIN" ]; then
+    rm -rf "$W/state"
+    ciq_tick "$ciq_full" >/dev/null
+    t0="$(date +%s)"
+    o3840i="$(STUB_CIQ_SLEEP=30 TICK_CIQ_TIMEOUT=1 STUB_CIQ_OUT="$ciq_full" bash "$SUT" 2>/dev/null)"
+    t1="$(date +%s)"
+    contains 'a hung probe reads ciq=unknown (HIMMEL-3840)' "$o3840i" 'ciq=unknown'
+    if [ $((t1 - t0)) -lt 15 ]; then pass 'a hung probe is cut off inside the bound (HIMMEL-3840)'; else fail "hung probe took $((t1 - t0))s"; fi
+    o3840j="$(ciq_tick "$ciq_full")"
+    contains 'a timed-out probe leaves the saturation state untouched (HIMMEL-3840)' "$o3840j" 'SATURATED'
+else
+    skip 'probe timeout rows: no timeout binary'
+fi
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

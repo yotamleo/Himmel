@@ -123,6 +123,14 @@ approaching the auto-mode pause threshold; REPEAT = 2+ in the window with
 neither. denials=none when the window is empty; denials=skip when jq or the
 log is unavailable.
 
+ciq=<in_progress>/<cap>,mac=<n>/<cap>,q=<queued>,wait=<m>m[,SATURATED]
+(HIMMEL-3840) is the GitHub Actions queue, from one scripts/ci/queue-latency.sh
+probe per tick (bounded by TICK_CIQ_TIMEOUT seconds, default 45). SATURATED =
+jobs_in_progress at the cap on two consecutive probes: hold dispatches until it
+clears. ciq=unknown = the probe failed, timed out or is missing; it neither
+sets nor clears the saturation state ($TICK_STATE_DIR/tick-ciq-last, default
+~/.himmel/state). Not part of console-wait's wake key.
+
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
 the Claude Code transcript root, which a plain tick must never do: a tick runs
@@ -968,6 +976,43 @@ if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
     fi
 fi
 
+# ciq=<in_progress>/<cap>,mac=<n>/<cap>,q=<queued>,wait=<m>m[,SATURATED]
+# (HIMMEL-3840): one scripts/ci/queue-latency.sh probe per tick. SATURATED =
+# jobs_in_progress at the cap on two consecutive probes; the previous probe's
+# "<in_progress>/<cap>" lives in $TICK_STATE_DIR/tick-ciq-last (default
+# ~/.himmel/state, like the denials log). ciq=unknown = the probe is missing,
+# failed, timed out or printed something else; it neither sets nor clears the
+# state. The probe is bounded by TICK_CIQ_TIMEOUT (default 45 s, well inside
+# console-wait's 120 s tick budget). console-wait.sh's wake key deliberately
+# does not carry ciq: a changing queue count must not wake the console.
+# ponytail: with no timeout binary the probe runs unbounded (queue-latency.sh
+# still bounds each gh call to 15 s); one probe is up to ~42 REST calls, so on
+# console-wait's 180 s cadence that is ~840 calls/h -- cache or cut MAX_RUNS if
+# the shared token's rate limit bites again (HIMMEL-3850).
+ciq_summary=unknown
+ciq_probe="$REPO/scripts/ci/queue-latency.sh"
+if [ -f "$ciq_probe" ]; then
+    # shellcheck source=../../lib/timeout-bin.sh
+    . "$HERE/../../lib/timeout-bin.sh" 2>/dev/null
+    ciq_bound="${TICK_CIQ_TIMEOUT:-45}"
+    case "$ciq_bound" in ''|*[!0-9]*) ciq_bound=45 ;; esac
+    ciq_out="$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 2 "$ciq_bound"} bash "$ciq_probe" 2>/dev/null)" || ciq_out=""
+    ciq_nums="$(printf '%s\n' "$ciq_out" | sed -n 's#^ci-queue: jobs_in_progress=\([0-9][0-9]*\)/\([0-9][0-9]*\) macos=\([0-9][0-9]*\)/\([0-9][0-9]*\) queued=\([0-9][0-9]*\) oldest_wait=\([0-9][0-9]*\)m$#\1 \2 \3 \4 \5 \6#p' | head -n 1)"
+    if [ -n "$ciq_nums" ]; then
+        read -r ciq_ip ciq_cap ciq_mac ciq_macmax ciq_q ciq_wait <<< "$ciq_nums"
+        ciq_state="${TICK_STATE_DIR:-$HOME/.himmel/state}/tick-ciq-last"
+        ciq_prev="$(cat "$ciq_state" 2>/dev/null)" || ciq_prev=""
+        ciq_summary="$ciq_ip/$ciq_cap,mac=$ciq_mac/$ciq_macmax,q=$ciq_q,wait=${ciq_wait}m"
+        if [ "$ciq_cap" -gt 0 ] && [ "$ciq_ip" -ge "$ciq_cap" ] && [ "$ciq_prev" = "$ciq_cap/$ciq_cap" ]; then
+            ciq_summary="$ciq_summary,SATURATED"
+        fi
+        # An in-progress count past the cap is stored as the cap, so the
+        # comparison above only ever has to match "<cap>/<cap>".
+        [ "$ciq_ip" -le "$ciq_cap" ] || ciq_ip="$ciq_cap"
+        { mkdir -p "$(dirname "$ciq_state")" && printf '%s/%s\n' "$ciq_ip" "$ciq_cap" > "$ciq_state"; } 2>/dev/null || true
+    fi
+fi
+
 # tick=ARMED|MISSING|UNKNOWN (HIMMEL-3144 D2): whether the periodic Monitor
 # call that is SUPPOSED to invoke this script every 60 min (the console
 # template's `## Monitors` tick row, armed in ACTION ZERO step 10) is
@@ -1049,6 +1094,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'leg set: %s\n' "$legset_summary"
     printf 'board: %s\n' "$board_summary"
     printf 'denials: %s\n' "$denials_summary"
+    printf 'ci queue: %s\n' "$ciq_summary"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
@@ -1056,13 +1102,13 @@ else
     # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them, and
     # `orphans=` (HIMMEL-2761) follows, `nonces=` (HIMMEL-3254) follows it, and
     # `legset=` (HIMMEL-3293) follows, `board=` (HIMMEL-3361) follows it, and
-    # `denials=` (HIMMEL-3724) is last.
+    # `denials=` (HIMMEL-3724) follows, and `ciq=` (HIMMEL-3840) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s denials=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$denials_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s denials=%s ciq=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$denials_summary" "$ciq_summary"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s denials=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$denials_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s denials=%s ciq=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$denials_summary" "$ciq_summary"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then
