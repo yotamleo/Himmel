@@ -372,7 +372,8 @@ done
 # copied-but-DLL-broken bash still resolves via command -v on MSys).
 PYFREE="$(scrub_path "$PATH" python3)"
 HPATH="$HBIN:$PYFREE"
-if PATH="$PYFREE" bash -c 'true' 2>/dev/null; then HPATH="$PYFREE"; fi
+# The probe also runs dirname (the script's first line needs it): on macOS bash lives outside /usr/bin but dirname does not, so the scrubbed path alone lost it (os-verify 36623326859).
+if PATH="$PYFREE" bash -c 'dirname /x >/dev/null' 2>/dev/null; then HPATH="$PYFREE"; fi
 # belt-and-braces: the chosen hermetic PATH must really lack python3.
 # bash 3.2: `command -v` answers from the shell's command hash (a python3 run earlier in this suite) and ignores a temporary PATH= -- hash -r in a subshell first.
 if ( hash -r; PATH="$HPATH" command -v python3 ) >/dev/null 2>&1; then

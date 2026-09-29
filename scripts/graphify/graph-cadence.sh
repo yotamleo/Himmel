@@ -342,6 +342,10 @@ done
 if [ -z "${HOME:-}" ]; then
     HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
 fi
+# macOS has no getent: its directory service answers via dscl.
+if [ -z "${HOME:-}" ] && command -v dscl >/dev/null 2>&1; then
+    HOME="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')"
+fi
 if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then
     echo "ERR graph-cadence: HOME is unset/unresolvable and no passwd fallback was found -- refusing to guess a persistent worktree location (never /tmp; see header). Set HOME in the environment this fires under." >&2
     exit 2
