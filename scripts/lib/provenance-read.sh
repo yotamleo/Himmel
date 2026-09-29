@@ -853,6 +853,9 @@ prov_read_drop_env_if_ours() {
 
 _PROV_READ_IID="" _PROV_READ_MODE="" PROV_READ_N_REMOVED=0 PROV_READ_N_RESTORED=0
 PROV_READ_N_KEPT=0 PROV_READ_N_FAILED=0 _PROV_READ_FAILED_BACKUPS="" _PROV_READ_DONE_BACKUPS=""
+# HIMMEL-3787 S3: one compact JSON record per outcome of THIS session (dry runs
+# included -- they write no ledger row, but the reconcile report still needs them).
+_PROV_READ_OUTCOMES="" PROV_READ_LAST_IID=""
 
 # prov_read_session_begin <wet|dry> <argv...> -- writes uninstall-begin. A
 # no-op (no append, no ledger created) unless PROV_READ_STATE is ok.
@@ -863,6 +866,7 @@ prov_read_session_begin() {
     PROV_READ_N_REMOVED=0 PROV_READ_N_RESTORED=0 PROV_READ_N_KEPT=0 PROV_READ_N_FAILED=0
     _PROV_READ_FAILED_BACKUPS=""
     _PROV_READ_DONE_BACKUPS=""
+    _PROV_READ_OUTCOMES=""
     [ "${PROV_READ_STATE:-}" = "ok" ] || return 0
     _PROV_READ_IID=$(_prov_new_iid)
     [ "$mode" = "dry" ] && return 0
@@ -874,9 +878,10 @@ prov_read_session_begin() {
         '{t:$t,iid:$iid,op:"uninstall-begin",argv:$argv,mode:$mode,ledger_rows:$rows,ledger_bad_rows:$bad,ledger_unknown_rows:$unknown}')" || return 1
 }
 
-# prov_read_outcome <removed|restored|kept|failed> <unit-json> <reason> [backup]
+# prov_read_outcome <removed|restored|kept|failed> <unit-json> <reason> [backup] [detail]
+# <detail> is free text for the reconcile report only (never written to the ledger).
 prov_read_outcome() {
-    local status="$1" u="$2" reason="$3" backup="${4:-}"
+    local status="$1" u="$2" reason="$3" backup="${4:-}" detail="${5:-}" _rec
     # HIMMEL-3787 S2c: a resolved unit's ours snapshot goes with its backup
     local snap=""
     case "$status" in removed|restored) snap=$(printf '%s' "$u" | jq -r '.eff_snap // empty' 2>/dev/null) ;; esac
@@ -896,6 +901,11 @@ $snap" ;;
 $backup" ;;
         *) _provread_err "prov_read_outcome: bad status $status"; return 2 ;;
     esac
+    _rec=$(printf '%s' "$u" | jq -c --arg st "$status" --arg reason "$reason" --arg bk "$backup" --arg detail "$detail" \
+        '{st:$st,reason:$reason,kind:(.kind // ""),path:(.path // ""),unit:(.unit // ""),
+          backup:(if $bk != "" then $bk else (.eff_pre.backup? // "") end),snap:(.eff_snap // ""),detail:$detail}' 2>/dev/null) || _rec=""
+    [ -n "$_rec" ] && _PROV_READ_OUTCOMES="$_PROV_READ_OUTCOMES$_rec
+"
     [ "${_PROV_READ_MODE:-}" = "dry" ] && return 0
     [ -n "${_PROV_READ_IID:-}" ] || return 0
     local ref path unit kind
@@ -923,6 +933,7 @@ prov_read_session_end() {
             --argjson kept "$PROV_READ_N_KEPT" --argjson failed "$PROV_READ_N_FAILED" \
             '{t:$t,iid:$iid,op:"uninstall-end",status:$status,removed:$removed,restored:$restored,kept:$kept,failed:$failed}')" || return 1
     fi
+    PROV_READ_LAST_IID="${_PROV_READ_IID:-}"
     _PROV_READ_IID=""
 }
 
@@ -997,4 +1008,81 @@ prov_read_owned() {
     done <<EOF
 $units
 EOF
+}
+
+# prov_read_reconcile_report -- HIMMEL-3787 S3 (design §7): the end-of-run
+# report, printed to stdout for a wet run and (labelled DRY:) a dry run. Fed by
+# this session's outcome records (_PROV_READ_OUTCOMES), so a dry run's kept
+# units show up too. Counts what was reverted / skipped, then lists every unit
+# that NEEDS the operator: path, kind, reason in plain words, the kept backup
+# and ours snapshot, and the hand commands. It never prints a command that
+# deletes the live file, and the take-back command saves it beside itself first.
+# ponytail: held backups are counted from THIS run's outcomes only, so a unit
+# in a project this run never visited is not listed (the --purge-state scan
+# still refuses on it); upgrade path is the purge scan's complete held set.
+prov_read_reconcile_report() {
+    local iid="${_PROV_READ_IID:-${PROV_READ_LAST_IID:-}}"
+    [ -n "$iid" ] || return 0
+    local dry="" nunits recs sep=$'\x1f' st reason kind path unit backup snap detail why shown dir d
+    local needs='(.st == "failed" or (.st == "kept" and (.reason | IN("user-modified","block-malformed","block-unrecorded-modified","identity-unreadable","no-backup"))))'
+    local resolved='(.st == "kept" and (.reason | IN("already-base","container-children")))'
+    [ "${_PROV_READ_MODE:-}" = "dry" ] && dry="DRY: "
+    nunits=$(prov_read_units 2>/dev/null | grep -c . || true)
+    recs=$(printf '%s' "$_PROV_READ_OUTCOMES" | jq -cs '.' 2>/dev/null) || recs=""
+    [ -n "$recs" ] || recs='[]'
+    printf '%sReconcile report - ledger %s, %s units\n' "$dry" "$iid" "${nunits:-0}"
+    local c_rm c_rs c_ab c_sg c_nd c_skn c_sk
+    c_rm=$(printf '%s' "$recs" | jq '[.[] | select(.st == "removed")] | length')
+    c_rs=$(printf '%s' "$recs" | jq '[.[] | select(.st == "restored")] | length')
+    c_ab=$(printf '%s' "$recs" | jq '[.[] | select(.st == "kept" and .reason == "already-base")] | length')
+    c_sg=$(printf '%s' "$recs" | jq '[.[] | select(.st == "kept" and .reason == "container-children")] | length')
+    c_nd=$(printf '%s' "$recs" | jq "[.[] | select($needs)] | length")
+    c_skn=$(printf '%s' "$recs" | jq "[.[] | select(.st == \"kept\" and ($needs | not) and ($resolved | not))] | length")
+    c_sk=$(printf '%s' "$recs" | jq -r "[.[] | select(.st == \"kept\" and ($needs | not) and ($resolved | not)) | .reason] | group_by(.) | map(\"\(.[0]) \(length)\") | join(\", \")")
+    printf '  reverted  %3d  (removed %d, restored %d, already-base %d, surgical %d)\n' \
+        "$((c_rm + c_rs + c_ab + c_sg))" "$c_rm" "$c_rs" "$c_ab" "$c_sg"
+    printf '  skipped   %3d  (%s)\n' "$c_skn" "${c_sk:-none}"
+    printf '  NEEDS YOU %3d\n' "$c_nd"
+    while IFS="$sep" read -r st reason kind path unit backup snap detail; do
+        [ -n "$st" ] || continue
+        case "$reason" in
+            user-modified) why="changed since install" ;;
+            block-malformed) why="himmel's block markers are torn, duplicated or unreadable" ;;
+            block-unrecorded-modified) why="no install record, and the block is not himmel's template text" ;;
+            identity-unreadable) why="could not verify it is himmel's" ;;
+            no-backup) why="himmel recorded no backup to restore from" ;;
+            step-failed) why="the step failed" ;;
+            *) why="$reason" ;;
+        esac
+        shown="${path:-$unit}"
+        printf '    %s  %s  %s\n' "$shown" "${kind:-unit}" "$why"
+        [ -n "$detail" ] && printf '      why: %s\n' "$detail"
+        if [ "$kind" = "block" ]; then
+            printf '      remove it by hand between the BEGIN/END markers (<!-- BEGIN HIMMEL:working-principles --> ... <!-- END HIMMEL:working-principles -->), then re-run uninstall.sh\n'
+        elif [ "$kind" = "file" ] && [ -n "$backup" ] && [ -n "$path" ] && [ -r "$backup" ]; then
+            printf '      what you had before himmel:  %s\n' "$backup"
+            [ -n "$snap" ] && printf "      himmel's version:            %s\n" "$snap"
+            printf '      compare:  diff -u %q %q\n' "$backup" "$path"
+            printf '      save yours, then take back what you had:  test ! -e %q && cp -p %q %q && cp %q %q\n' "$path.mine" "$path" "$path.mine" "$backup" "$path"
+        else
+            printf '      review it by hand: %s\n' "$shown"
+            if [ -n "$backup" ] && [ -r "$backup" ]; then
+                printf '      what you had before himmel:  %s\n' "$backup"
+            elif [ -n "$backup" ]; then
+                printf '      recorded backup is unavailable (missing or unreadable): %s\n' "$backup"
+            fi
+        fi
+    done <<EOF
+$(printf '%s' "$recs" | jq -r --arg s "$sep" ".[] | select($needs) | [.st, .reason, .kind, .path, .unit, .backup, .snap, .detail] | join(\$s)" 2>/dev/null)
+EOF
+    d=$(printf '%s' "$recs" | jq -r "[.[] | select((.st == \"failed\" or .st == \"kept\") and ($resolved | not)) | .backup | select(. != \"\")] | unique | length")
+    [ "${d:-0}" -gt 0 ] && printf '  backups held: %s (not deleted; --purge-state will refuse until resolved, or add --keep-backups to retain them)\n' "$d"
+    dir=$(prov_dir 2>/dev/null) || dir=""
+    if [ -n "$dir" ]; then
+        for d in "$dir"/retained-*; do
+            [ -d "$d" ] || continue
+            printf '  retained from an earlier purge: %s  (rm -rf %q when done)\n' "$d" "$d"
+        done
+    fi
+    return 0
 }

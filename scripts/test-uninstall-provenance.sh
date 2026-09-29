@@ -2463,6 +2463,113 @@ check "RED75b: file byte-identical" "$(cmp -s "$T75B" "$CASE_DIR/red75b.before" 
 check "RED75b: the run says kept (block-malformed)" "$(printf '%s\n' "$out75b" | grep -c 'kept (block-malformed)')" "1"
 check "RED75b: no sidecar" "$([ -e "$T75B.himmel-uninstall-backup" ] && echo present || echo none)" "none"
 
+
+# ── HIMMEL-3787 S3: the reconcile report ────────────────────────────────────
+# seed_kept_file <name> -- RED5's fixture: an adopter-script replace whose live
+# bytes the operator edited after install (verdict keep user-modified). Sets
+# S3_DEST and S3_BACKUP.
+seed_kept_file() {
+  mkdir -p "$CASE_DIR/cwd/scripts"
+  S3_DEST="$CASE_DIR/cwd/scripts/$1.sh"
+  printf '#!/bin/sh\necho original-user-script\n' > "$S3_DEST"
+  local snap; snap=$(mktemp "$SUITE_TMP/SNAP-$1.XXXXXX") || exit 1
+  cp -p "$S3_DEST" "$snap"
+  printf '#!/bin/sh\necho himmel-installed-script\n' > "$S3_DEST"
+  ( prov_begin --writer adopt.sh -- "seed-$1" >/dev/null
+    prov_record replace file "$S3_DEST" --scope project --class code --row adopter-scripts \
+      --writer adopt.sh --pre-file "$snap" --backup --post-file "$S3_DEST" >/dev/null
+    prov_end ok >/dev/null )
+  rm -f "$snap"
+  printf '#!/bin/sh\necho operator-edited-after-install\n' > "$S3_DEST"
+  S3_BACKUP=$(find "$(prov_dir)/provenance-backups" -type f ! -name '*.ours' 2>/dev/null | head -n1)
+}
+
+echo "==== RED76 (HIMMEL-3787 S3): a kept unit's report entry carries its backup path and hand commands ===="
+new_case red76
+seed_kept_file red76
+out76=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings); rc76=$?
+check "RED76: exits 0 (kept and reported)" "$rc76" "0"
+check "RED76: a Reconcile report heading is printed" "$(printf '%s\n' "$out76" | grep -c '^Reconcile report')" "1"
+check "RED76: it counts one unit NEEDS YOU" "$(printf '%s\n' "$out76" | grep -c -E '^  NEEDS YOU +1$')" "1"
+check "RED76: the entry names the live path and the plain-words reason" \
+  "$(printf '%s\n' "$out76" | grep -c -F "$S3_DEST  file  changed since install")" "1"
+check "RED76: the entry carries the backup path" "$(printf '%s\n' "$out76" | grep -c -F "what you had before himmel:  $S3_BACKUP")" "1"
+check "RED76: the entry carries the compare command" "$(printf '%s\n' "$out76" | grep -c -F "diff -u $S3_BACKUP $S3_DEST")" "1"
+check "RED76: the take-back command saves the live file first" \
+  "$(printf '%s\n' "$out76" | grep -c -F "cp -p $S3_DEST $S3_DEST.mine")" "1"
+check "RED76: the take-back command refuses to overwrite an existing .mine" \
+  "$(printf '%s\n' "$out76" | grep -c -F "test ! -e $S3_DEST.mine && cp -p $S3_DEST $S3_DEST.mine")" "1"
+check "RED76: the take-back command is printed" "$(printf '%s\n' "$out76" | grep -c -F "cp $S3_BACKUP $S3_DEST")" "1"
+check "RED76: no printed command deletes the live file" "$(printf '%s\n' "$out76" | grep -c -E "(rm|unlink|shred)( -[a-z]+)* .*$S3_DEST")" "0"
+check "RED76: the held-backups line counts it" "$(printf '%s\n' "$out76" | grep -c -E '^  backups held: 1 ')" "1"
+check "RED76: the backup is still on disk" "$([ -f "$S3_BACKUP" ] && echo yes || echo no)" "yes"
+
+echo "==== RED76b (HIMMEL-3787 S3): a DRY run labels the report DRY and still lists the kept unit ===="
+new_case red76b
+seed_kept_file red76b
+LEDGER76B_BEFORE=$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")
+out76b=$(run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings); rc76b=$?
+check "RED76b: exits 0" "$rc76b" "0"
+check "RED76b: the heading carries DRY:" "$(printf '%s\n' "$out76b" | grep -c '^DRY: Reconcile report')" "1"
+check "RED76b: the dry report carries the backup path" "$(printf '%s\n' "$out76b" | grep -c -F "what you had before himmel:  $S3_BACKUP")" "1"
+check "RED76b: ledger byte-identical after --dry-run" "$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")" "$LEDGER76B_BEFORE"
+
+echo "==== RED77 (HIMMEL-3787 S3, S2d Minor b): a DRY run's unrecorded kept block is DRY:-labelled and reaches the report ===="
+new_case red77
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T77="$HOME/.claude/CLAUDE.md"
+seed_block_unrecorded "$T77" $'# mine\n'
+awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T77" > "$T77.new" && mv "$T77.new" "$T77"
+( prov_begin --writer adopt.sh -- seed-empty >/dev/null; prov_end ok >/dev/null )
+LEDGER77_BEFORE=$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")
+out77=$(run_uninstall_fx --dry-run "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc77=$?
+check "RED77: exits 0" "$rc77" "0"
+check "RED77: ledger byte-identical after --dry-run" "$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")" "$LEDGER77_BEFORE"
+check "RED77: the kept line carries DRY:" "$(printf '%s\n' "$out77" | grep -c '^DRY: would keep (block-unrecorded-modified)')" "1"
+check "RED77: no bare 'kept (block-unrecorded-modified)' line under --dry-run" \
+  "$(printf '%s\n' "$out77" | grep -c '^  kept (block-unrecorded-modified)')" "0"
+check "RED77: the report sees it as NEEDS YOU" "$(printf '%s\n' "$out77" | grep -c -E '^  NEEDS YOU +1$')" "1"
+check "RED77: the entry says what to do by hand" "$(printf '%s\n' "$out77" | grep -c '^      remove it by hand between the BEGIN/END markers')" "1"
+
+echo "==== RED78 (HIMMEL-3787 S3, S2d Minor a): a block-malformed entry carries the scanner's own non-empty reason ===="
+new_case red78
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T78="$HOME/.claude/CLAUDE.md"
+seed_block_unrecorded "$T78" $'# mine\n'
+grep -v -x -F "$BLK_END" "$T78" > "$T78.new" && mv "$T78.new" "$T78"
+( prov_begin --writer adopt.sh -- seed-empty >/dev/null; prov_end ok >/dev/null )
+out78=$(run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc78=$?
+check "RED78: exits 0" "$rc78" "0"
+check "RED78: the scanner's reason is printed, not an empty indent" \
+  "$(printf '%s\n' "$out78" | grep -c -E '^    [^ ].*1 BEGIN and 0 END markers')" "1"
+check "RED78: the report lists it as NEEDS YOU with the same reason" "$(printf '%s\n' "$out78" | grep -c -E '^      why: .*1 BEGIN and 0 END markers')" "1"
+
+echo "==== RED79 (HIMMEL-3787 S3, Q7): a retained-* directory from an earlier purge is listed with its delete command ===="
+new_case red79
+seed_kept_file red79
+RET79="$(prov_dir)/retained-20260101T000000Z"
+mkdir -p "$RET79"
+out79=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings); rc79=$?
+check "RED79: exits 0" "$rc79" "0"
+check "RED79: the retained line names the dir and its delete command" \
+  "$(printf '%s\n' "$out79" | grep -c -F "retained from an earlier purge: $RET79  (rm -rf $RET79 when done)")" "1"
+check "RED79: the retained dir is not deleted" "$([ -d "$RET79" ] && echo yes || echo no)" "yes"
+
+echo "==== RED79b (HIMMEL-3787 S3): a clean uninstall reports zero NEEDS YOU, no held or retained line ===="
+new_case red79b
+mkdir -p "$CASE_DIR/cwd/scripts"
+DEST79B="$CASE_DIR/cwd/scripts/red79b.sh"
+printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST79B"
+( prov_begin --writer adopt.sh -- seed-red79b >/dev/null
+  prov_record create file "$DEST79B" --pre-absent --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --post-file "$DEST79B" >/dev/null
+  prov_end ok >/dev/null )
+out79b=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings); rc79b=$?
+check "RED79b: exits 0" "$rc79b" "0"
+check "RED79b: NEEDS YOU is zero" "$(printf '%s\n' "$out79b" | grep -c -E '^  NEEDS YOU +0$')" "1"
+check "RED79b: the created file is counted as reverted (removed 1)" "$(printf '%s\n' "$out79b" | grep -c -E '^  reverted +1 +\(removed 1,')" "1"
+check "RED79b: no held-backups line" "$(printf '%s\n' "$out79b" | grep -c '^  backups held')" "0"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \

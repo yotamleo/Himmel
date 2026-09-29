@@ -356,7 +356,8 @@ if [ "$rc" -eq 0 ] && [ ! -e "$TMP/w/scratch/junk" ]; then pass "(w5) real_home_
 # mktemp handoff files (EXIT traps, the crontab stderr, the lib's own
 # .provread temp files and the identity reader's per-run cache beside them),
 # and the lib's one `find -delete` runs right after a guarded check of the
-# same dir.
+# same dir. The reconcile report's retained-* line only PRINTS that command
+# for the operator (HIMMEL-3787 S3); nothing here runs it.
 _allowed=$(cat <<'EOF'
 trap 'prov_read_cleanup; rm -f "${_ledger_owned:-}"' EXIT
 rm -f "$_cron_err"
@@ -367,6 +368,7 @@ rm -f "$out"
 elif [ -n "$cache" ]; then rm -f "$cache"
 rm -f "$tmp"
 find "$bdir" -type d -empty -delete 2>/dev/null
+printf '  retained from an earlier purge: %s  (rm -rf %q when done)\n' "$d" "$d"
 EOF
 )
 _PRL="${CLI%/*}/lib/provenance-read.sh"

@@ -1185,6 +1185,49 @@ check "S2c fold: eff_snap follows the LAST row that produced eff_post" \
 prov_read_cleanup
 rm -f "$snap8"
 
+# HIMMEL-3787 S3: a legitimate row can carry a non-object eff_pre (`false`); a bare
+# `.eff_pre.backup` is a jq type error there, which used to drop the kept unit
+# from the reconcile report's counts and its NEEDS YOU list.
+reset
+prov_begin --iid EPF --writer t
+printf 'e-new\n' > "$w/ef.txt"
+prov_record create file "$w/ef.txt" --pre-absent --post-file "$w/ef.txt" --scope user --class code
+prov_end ok
+prov_read_load
+uef=$(u_for --path "$w/ef.txt" | jq -c '.eff_pre = false')
+prov_read_session_begin dry
+prov_read_outcome kept "$uef" user-modified
+rep_ef=$(prov_read_reconcile_report 2>&1)
+check "S3: a kept unit with eff_pre:false still reaches the report's NEEDS YOU" \
+    "$(printf '%s\n' "$rep_ef" | grep -c -E '^  NEEDS YOU +1$')" "1"
+check "S3: ... and its entry names the path and reason" "$(printf '%s\n' "$rep_ef" | grep -c -F "$w/ef.txt  file  changed since install")" "1"
+prov_read_cleanup
+
+# HIMMEL-3787 S3 (CodeRabbit): a recorded backup that is gone must not get a diff/cp
+# recovery command that cannot work; the report says it is unavailable instead.
+reset
+prov_begin --iid EPM --writer t
+printf 'm-old\n' > "$w/mb.txt"
+mb_snap=$(mktemp "$td/mb.XXXXXX") || exit 1; cp "$w/mb.txt" "$mb_snap"
+printf 'm-new\n' > "$w/mb.txt"
+prov_record replace file "$w/mb.txt" --pre-file "$mb_snap" --backup --post-file "$w/mb.txt" --scope user --class code
+prov_end ok
+prov_read_load
+umb=$(u_for --path "$w/mb.txt")
+mb_bk=$(printf '%s' "$umb" | jq -r '.eff_pre.backup')
+prov_read_session_begin dry
+prov_read_outcome kept "$umb" user-modified
+rep_ok=$(prov_read_reconcile_report 2>&1)
+check "S3: readable backup still gets its compare command" "$(printf '%s\n' "$rep_ok" | grep -c -F 'compare:  diff -u')" "1"
+rm -f "$mb_bk"
+prov_read_session_begin dry
+prov_read_outcome kept "$umb" user-modified
+rep_gone=$(prov_read_reconcile_report 2>&1)
+check "S3: a missing backup gets no diff/cp command" "$(printf '%s\n' "$rep_gone" | grep -c -E 'compare:|take back what you had')" "0"
+check "S3: ... and the report says the backup is unavailable" "$(printf '%s\n' "$rep_gone" | grep -c -F 'recorded backup is unavailable')" "1"
+prov_read_cleanup
+rm -f "$mb_snap"
+
 # ── HIMMEL-3787 S2d: kind block -- current / verdict / apply ────────────────
 # The block is installed by the REAL writer, so the fold sees exactly the row an
 # install records. blk_setup <file> [<pre-text>] leaves one loaded block unit in $ub.

@@ -3396,9 +3396,15 @@ EOF
         _ext_rc=0
         _ext_text="$(bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --extract "$_p" 2>/dev/null)" || _ext_rc=$?
         if [ "$_ext_rc" -ne 0 ] && [ "$_ext_rc" -ne 3 ]; then
-          echo "  kept (block-malformed): $_p — no install record, and its himmel markers are torn, duplicated or unreadable; fix or remove the block by hand"
-          # the scanner's own reason (CRLF markers, open fence ...), indented
-          bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --extract "$_p" 2>&1 >/dev/null | sed 's/^/    /'
+          # The scanner's own reason (CRLF markers, open fence, marker counts ...).
+          # --extract is silent, so ask the strip path: run in dry mode it refuses
+          # these same states with a reason and writes nothing (HIMMEL-3787 S3, S2d
+          # Minor a: this line used to print empty).
+          _ext_why="$(bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" "$_p" 1 2>&1 >/dev/null | sed 's/^unwire-user-claude-md: //')"
+          _kept_lbl="  kept"; [ "$_dry" -eq 1 ] && _kept_lbl="DRY: would keep"
+          echo "$_kept_lbl (block-malformed): $_p — no install record, and its himmel markers are torn, duplicated or unreadable; fix or remove the block by hand"
+          [ -n "$_ext_why" ] && echo "    $_ext_why"
+          prov_read_outcome kept "$(jq -nc --arg p "$_p" '{kind:"block",path:$p,unit:$p}')" block-malformed "" "$_ext_why"
           continue
         fi
         if [ "$_ext_rc" -eq 0 ]; then
@@ -3406,7 +3412,9 @@ EOF
           _tpl_text=""
           [ -f "$_tpl_file" ] && _tpl_text="$(sed -n '/<!-- BEGIN HIMMEL:working-principles -->/,/<!-- END HIMMEL:working-principles -->/p' "$_tpl_file")"
           if [ -z "$_tpl_text" ] || [ "$_ext_text" != "$_tpl_text" ]; then
-            echo "  kept (block-unrecorded-modified): $_p — no install record, and the block is not himmel's template text, so it may hold your edits; remove it by hand between the BEGIN/END markers if you want it gone"
+            _kept_lbl="  kept"; [ "$_dry" -eq 1 ] && _kept_lbl="DRY: would keep"
+            echo "$_kept_lbl (block-unrecorded-modified): $_p — no install record, and the block is not himmel's template text, so it may hold your edits; remove it by hand between the BEGIN/END markers if you want it gone"
+            prov_read_outcome kept "$(jq -nc --arg p "$_p" '{kind:"block",path:$p,unit:$p}')" block-unrecorded-modified
             continue
           fi
         fi
@@ -3961,6 +3969,13 @@ elif [ "$PURGE_STATE" -eq 1 ]; then
 fi
 qmd_print_stub_kept_line "$_qmd_stub_unit"
 echo ""
+
+# HIMMEL-3787 S3: the reconcile report -- what was reverted, what was skipped,
+# and every unit left for the operator with its backup and hand commands. It
+# prints while the ledger session is still open (a purge below deletes the
+# ledger) and before the INCOMPLETE summary, so a failed run still says what
+# it kept.
+[ "$LEDGER_OK" -eq 1 ] && { prov_read_reconcile_report; echo ""; }
 
 # HIMMEL-3332 S6: close the ledger session. On a halt, keep everything —
 # backups and (with --purge-state) the ledger itself — so a retry has the
