@@ -128,6 +128,8 @@ check "node crash (rc=5) -> hard error, not graceful skip" "$?" "2"
 
 # HIMMEL-3719: BSD sed (macOS) has no `\|` alternation in a BRE, so the list
 # id split silently fell through. Keep resume.sh free of it (use sed -E).
+# ponytail: a source grep, because Linux CI cannot execute BSD sed; the macOS
+# shard's --list epic-task row is the behavioural proof, HIMMEL-3719.
 o="$(grep -nE 'sed .*\\\|' "$R")"
 check "resume.sh: no GNU-only \\| alternation in sed" "$o" ""
 

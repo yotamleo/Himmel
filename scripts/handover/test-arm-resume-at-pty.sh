@@ -107,6 +107,8 @@ if [ "$HAVE_SCRIPT" -eq 1 ] && [ -r "$LIB" ]; then
     # shellcheck source=/dev/null
     if ! ( . "$LIB"; _himmel_pty_run true </dev/null >/dev/null 2>&1 ); then
         HAVE_PTY=0
+        # ponytail: real-pty cases stay unproven wherever BSD script(1) needs a
+        # tty on stdin (macOS CI); a pty-allocating seam would lift it, HIMMEL-3719.
         echo "SKIP P1-P6/Q1-Q2: script(1) cannot allocate a pty on this host (no controlling tty)"
     fi
 fi

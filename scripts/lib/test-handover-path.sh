@@ -452,6 +452,8 @@ fi
 # T11 (HIMMEL-3719): macOS folds identity case only when the lowercased path is
 # the SAME file (APFS case-insensitive). A hard link stands in for that on any
 # host: Foo11.md and foo11.md are one inode. Linux/Windows output is unchanged.
+# ponytail: hard link + lowercase symlink stand in for APFS, so the real
+# case-insensitive volume is only proven by the macOS shard (G1.4b), HIMMEL-3719.
 T11_DIR="$TMP/t11"; mkdir -p "$T11_DIR"
 printf 'x\n' > "$T11_DIR/Foo11.md"
 ln "$T11_DIR/Foo11.md" "$T11_DIR/foo11.md" 2>/dev/null
