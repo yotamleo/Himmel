@@ -23,7 +23,7 @@ const issue = (n: number, over: Partial<MirrorIssue['fields']> = {}): MirrorIssu
   },
 });
 
-interface Stub { issues: MirrorIssue[]; pageSize: number; failKeyList?: boolean; count?: number; calls: string[] }
+interface Stub { issues: MirrorIssue[]; pageSize: number; failKeyList?: boolean; count?: number; windowed?: MirrorIssue[]; calls: string[] }
 
 // Fake /search/jql (token paging), /search/approximate-count and comments.
 function makeReq(stub: Stub): Req {
@@ -34,8 +34,9 @@ function makeReq(stub: Stub): Req {
       const keysOnly = path.includes('fields=key&');
       if (keysOnly && stub.failKeyList) throw new Error('HTTP 500');
       const start = Number(/nextPageToken=(\d+)/.exec(path)?.[1] ?? 0);
-      const slice = stub.issues.slice(start, start + stub.pageSize);
-      const next = start + stub.pageSize < stub.issues.length ? String(start + stub.pageSize) : undefined;
+      const pool = stub.windowed && decodeURIComponent(path).includes('updated >=') ? stub.windowed : stub.issues;
+      const slice = pool.slice(start, start + stub.pageSize);
+      const next = start + stub.pageSize < pool.length ? String(start + stub.pageSize) : undefined;
       return { issues: slice, nextPageToken: next };
     }
     throw new Error(`unexpected ${method} ${path}`);
@@ -147,6 +148,18 @@ describe('runMirror', () => {
     stub.count = undefined;
     const r = await runMirror({ root, project: 'HIMMEL' }, makeReq(stub));
     expect(r.mode).toBe('full');
+  });
+
+  it('an incremental run that finds a live key missing locally drops the cursor', async () => {
+    const stub: Stub = { issues: [1, 2, 3].map((n) => issue(n)), pageSize: 10, calls: [] };
+    await runMirror({ root, project: 'HIMMEL' }, makeReq(stub));
+    rmSync(join(root, 'HIMMEL-2.md'));
+    stub.windowed = [];
+    const r = await runMirror({ root, project: 'HIMMEL', warn: vi.fn() }, makeReq(stub));
+    expect(r.mode).toBe('incremental');
+    expect(r.deleteSkipped).toBe('live keys missing locally');
+    stub.windowed = undefined;
+    expect((await runMirror({ root, project: 'HIMMEL' }, makeReq(stub))).mode).toBe('full');
   });
 
   it('a short run drops an existing cursor', async () => {
