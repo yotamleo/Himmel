@@ -265,7 +265,7 @@ got=$(route_of)
 got=$(route_of --implementer hermes)
 [ "$got" = "claude" ] || fail "--implementer hermes: expected claude, got '${got:-<none>}'"
 # HIMMEL-2059: the hermes reviewer now defaults to the critics.json-pinned
-# codex model (gpt-6.1-sol as of HIMMEL-3500; gpt-6-astra before it, HIMMEL-2546;
+# codex model (gpt-6.1-sol as of HIMMEL-3879; gpt-6-sol before it, HIMMEL-3500; gpt-6-astra before it, HIMMEL-2546;
 # gpt-5.6-sol before that — codex family either way), so a codex implementer
 # is SAME-family by default — the cross-family guarantee sends this to claude,
 # not hermes (pre-HIMMEL-2059 this asserted hermes, back when the default rode
@@ -360,11 +360,11 @@ rc=$?
 echo "  ok" >&2
 
 # 14. HIMMEL-2059: default (no --model, no HERMES_CRITIC_MODEL) resolves to
-#     the critics.json-pinned model (gpt-6.1-sol as of HIMMEL-3500; gpt-6-astra
+#     the critics.json-pinned model (gpt-6.1-sol as of HIMMEL-3879; gpt-6-sol before it, HIMMEL-3500; gpt-6-astra
 #     before it, HIMMEL-2546), with --provider openai-codex forced (family
 #     inference -> codex) — CR critics no longer ride the himmel_agent hermes
 #     profile default.
-echo "test: default hermes model pins gpt-6.1-sol (HIMMEL-2059/HIMMEL-3500)" >&2
+echo "test: default hermes model pins gpt-6.1-sol (HIMMEL-2059/HIMMEL-3879)" >&2
 STUB_MODEL_CAPTURE="$work/model-capture" \
     run_critic '{"passed": true, "security_concerns": [], "logic_errors": [], "architectural_mismatches": [], "suggestions": [], "summary": "ok"}' >/dev/null
 rc=$?
