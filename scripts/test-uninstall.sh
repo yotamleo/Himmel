@@ -1823,6 +1823,9 @@ for helper in unwire-statusline unwire-himmel-repo unwire-luna-vault unwire-hand
     cp "$(dirname "$CLI")/lib/$helper.sh" "$U_REPO/scripts/lib/"
 done
 cp "$(dirname "$CLI")/../docs/setup/settings-template.json" "$U_REPO/docs/setup/"
+# HIMMEL-3787 S2d: the unrecorded-block fallback compares against this template,
+# which uninstall.sh reads from $REPO_ROOT (the override), so the fixture ships it.
+cp "$(dirname "$CLI")/../docs/setup/user-scope-claude-md-template.md" "$U_REPO/docs/setup/"
 printf '# pre-commit sample only\n' > "$U_REPO/.git/hooks/pre-commit.sample"
 export CLAUDE_CALL_LOG="$TMP/u-claude.log"
 export STUB_PLUGINS_JSON="$TMP/u-plugins.json"
