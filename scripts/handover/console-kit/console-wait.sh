@@ -40,8 +40,9 @@
 # The text is the leg label, count and class ONLY. It also writes a page record
 # (denial-ack-lib.sh) BEFORE the send, which headed-arm-leg.sh reads to refuse
 # re-dispatching the leg until `ack-denial.sh <leg>` is run. Both steps fail
-# open; the send is bounded by CONSOLE_WAIT_PAGE_TIMEOUT (default 45 s), which
-# is also the most a hung sender can delay the WAKE block. It pages what THIS
+# open; the sends of one wake share ONE CONSOLE_WAIT_PAGE_TIMEOUT budget (default
+# 45 s, plus a 2 s kill grace), the most hung senders can delay the WAKE block;
+# a leg past the budget still gets its page record, just no message. It pages what THIS
 # waiter saw rise: a denial that lands while no waiter runs is not paged.
 # Everything else on the tick line (heartbeat, procs, fill, fleet, gql,
 # orphans...) moves without needing a console act and never wakes. Two consecutive samples must differ from the saved key (not
@@ -285,12 +286,14 @@ denial_pages() {
 # rc 0: a failed or hung send never breaks the waiter or delays the wake past
 # the bound.
 page_timeout="${CONSOLE_WAIT_PAGE_TIMEOUT:-45}"
-page_send() {
+page_send() {  # <text> <deadline epoch>: the timeout is what is left of the batch budget
+    local left=$(( $2 - $(date +%s) ))
+    [ "$left" -ge 1 ] || return 0
     if [ -n "${CONSOLE_WAIT_PAGE_CMD:-}" ]; then
-        timeout -k 2 "$page_timeout" "$CONSOLE_WAIT_PAGE_CMD" "$1" </dev/null >/dev/null 2>&1 9>&-  # gnu-ok: Linux-only kit
+        timeout -k 2 "$left" "$CONSOLE_WAIT_PAGE_CMD" "$1" </dev/null >/dev/null 2>&1 9>&-  # gnu-ok: Linux-only kit
     else
         # shellcheck disable=SC2016  # $1/$2 expand in the child bash, not here
-        timeout -k 2 "$page_timeout" bash -c '. "$1" && chat="$(_mba_operator_chat)" && [ -n "$chat" ] && _mba_send "$chat" "$2"' \
+        timeout -k 2 "$left" bash -c '. "$1" && chat="$(_mba_operator_chat)" && [ -n "$chat" ] && _mba_send "$chat" "$2"' \
             _ "$REPO/scripts/lib/merge-block-alert.sh" "$1" </dev/null >/dev/null 2>&1 9>&-  # gnu-ok: Linux-only kit
     fi
     return 0
@@ -301,10 +304,11 @@ page_send() {
 # fails; both steps fail open. The page text is the leg label, count and class
 # only: this file never reads the denial log, only tick.sh's denials= field.
 page_denials() {
-    local leg cls n
+    local leg cls n end
+    end=$(( $(date +%s) + page_timeout ))  # one budget for the whole batch, not one per leg
     denial_pages "$1" "$2" | while read -r leg cls n; do
         denial_page_write "$leg" "$n" "$cls" || true
-        page_send "DENIAL-PAGE $leg $cls x$n - a classifier denial parked this leg. Review it, then: ack-denial.sh $leg"
+        page_send "DENIAL-PAGE $leg $cls x$n - a classifier denial parked this leg. Review it, then: ack-denial.sh $leg" "$end"
     done
 }
 

@@ -507,6 +507,21 @@ chmod +x "$STUB/page-hang.sh"
 CONSOLE_WAIT_PAGE_CMD="$STUB/page-hang.sh" denials_rise p6b none 'N1:1:SHIP-STEP'
 check "(p6) a hung sender is cut off by the page timeout and the wake still lands" "0" "$rc"
 
+# Two legs rise at once and the sender hangs: the page timeout is ONE budget for
+# the batch, so the second leg is not sent (each send used to get a fresh 45 s),
+# but its page record is still written for the refusal.
+cat > "$STUB/page-hang-log.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$(dirname "$0")/hang-calls"
+sleep 30
+EOF
+chmod +x "$STUB/page-hang-log.sh"
+rm -f "$STUB/hang-calls"
+CONSOLE_WAIT_PAGE_CMD="$STUB/page-hang-log.sh" denials_rise p6d 'N1:1' 'N1:1:SHIP-STEP,N2:1:SHIP-STEP'
+check "(p6d) two hung sends still wake with rc 0" "0" "$rc"
+check "(p6d) only one send is attempted inside the shared budget" "1" "$(wc -l < "$STUB/hang-calls" 2>/dev/null | tr -d ' ')"
+check "(p6d) and both legs still get a page record" "N1 N2" "$(for k in N1 N2; do [ -f "$HIMMEL_DENIAL_ACK_DIR/$k.page" ] && printf '%s ' "$k"; done | sed 's/ $//')"
+
 # An unwritable record dir never breaks the wake either.
 # ponytail: as root chmod does not bind, so this case only proves the wake there; run it as a normal user for the real control, no ticket (test-audit finding, root CI has no upgrade path worth a fixture).
 mkdir -p "$WORK/ro" && chmod 500 "$WORK/ro"
