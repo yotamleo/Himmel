@@ -49,7 +49,7 @@ verdict=$(printf '%s' "$input" | jq -r '
     | ($ti.subagent_type | s | ascii_downcase) as $t
     | ($ti.prompt | s | test("(^|\n)[ \t]*ESCALATION:[ \t]*[^ \t\r\n]")) as $marked
     | if $tool != "Agent" or $m == "" or $marked then "allow"
-      elif ($m | test("^(claude-)?fable")) then "fable"
+      elif ($m | test("^(claude-)?fable([^a-z0-9]|$)")) then "fable"
       elif ($t | test("(^|:)console-judge$")) and ($m | test("^(claude-)?opus") | not) then "judge"
       else "allow" end' 2>/dev/null) || exit 0
 

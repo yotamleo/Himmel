@@ -56,6 +56,9 @@ check "model claude-fable-5-1, no marker -> deny" block "$(agent general-purpose
 check "model Fable (case) -> deny" block "$(agent '' Fable 'do the review')"
 check "model fable, marker -> allow" allow "$(agent general-purpose fable "$MARK")"
 check "model claude-fable-5-1, marker -> allow" allow "$(agent general-purpose claude-fable-5-1 "$MARK")"
+check "model fable[1m] (suffixed alias) -> deny" block "$(agent general-purpose 'fable[1m]' 'do the review')"
+check "model fablet (not a Fable alias) -> allow" allow "$(agent general-purpose fablet 'do the review')"
+check "model claude-fablet (not a Fable alias) -> allow" allow "$(agent general-purpose claude-fablet 'do the review')"
 check "model fable, empty marker -> deny" block "$(agent general-purpose fable "$EMPTY")"
 check "model fable, marker mid-line (not a line) -> deny" block \
     "$(agent general-purpose fable 'please note ESCALATION: x is fine')"
