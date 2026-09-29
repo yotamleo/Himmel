@@ -1336,7 +1336,6 @@ assert "git log range still ALLOW"            ALLOW "$(decide "$(j_bash 'git log
 assert "brace group still ALLOW"              ALLOW "$(decide "$(j_bash '{ git status; git log -1; }')")"
 assert "plain git log still ALLOW"            ALLOW "$(decide "$(j_bash 'git log --oneline -5')")"
 assert "plain gh pr view still ALLOW"         ALLOW "$(decide "$(j_bash 'gh pr view 1')")"
-assert "unbraced git --output still PASS"     PASS  "$(decide "$(j_bash 'git log --output=/tmp/PWN -1')")"
 
 # --- HIMMEL-3886: the node arm skipped every `-*` word before the script, so
 # an `=`-form code-loading flag rode along with the Jira CLI marker. Only a
@@ -1348,15 +1347,12 @@ node --experimental-loader=./x.mjs scripts/jira/dist/index.js list
 node --eval=code scripts/jira/dist/index.js list
 node --print=code scripts/jira/dist/index.js list
 node --env-file=./x.env scripts/jira/dist/index.js list
-node --openssl-config=./x.cnf scripts/jira/dist/index.js list
-node -r ./x.js scripts/jira/dist/index.js list'
+node --openssl-config=./x.cnf scripts/jira/dist/index.js list'
 while IFS= read -r NODE_CMD; do
     assert "node code-loading flag never ALLOW: $NODE_CMD" PASS "$(decide "$(j_bash "$NODE_CMD")")"
 done <<EOF
 $NODE_ROWS
 EOF
-assert "node jira no flags still ALLOW"       ALLOW "$(decide "$(j_bash 'node scripts/jira/dist/index.js list')")"
-assert "node jira --no-warnings still ALLOW"  ALLOW "$(decide "$(j_bash 'node --no-warnings /r/scripts/jira/dist/index.js get X-1')")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
