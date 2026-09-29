@@ -249,6 +249,12 @@ RC_ROOT_FAIL="$?"
 assert_rc "handover_root failure denies fail-closed (rc=2)" 2 "$RC_ROOT_FAIL"
 assert_contains "handover_root failure deny reason" "handover-root-unresolved" "$(cat "$TMP/out-root-fail")"
 
+# GNU `readlink -f` also fails when an INTERMEDIATE component is missing; the
+# BSD fallback must not turn that deny into an allow. No shim: real host tools.
+RC_GNU_MP=$(run_relay gnu-missing-parent "$(write_payload Write "$ROOT/no-such-dir/x.md")")
+assert_rc "no shim: a missing parent dir denies (rc=2)" 2 "$RC_GNU_MP"
+assert_contains "no shim: missing parent denied as unresolved-path" "unresolved-path" "$(cat "$TMP/out-gnu-missing-parent")"
+
 echo ""
 echo "=== BSD-style readlink -f (a missing final component fails; stand-in for macOS) ==="
 # ponytail: a PATH shim models BSD realpath(3) only for `readlink -f` (every
