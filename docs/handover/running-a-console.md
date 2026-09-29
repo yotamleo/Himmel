@@ -108,6 +108,14 @@ skipped GO verification. The console replies with
 `bun scripts/telegram/console-route.ts reply <chat_id> <text>`. Operator-side
 usage: [`../telegram-bridge.md`](../telegram-bridge.md#messaging-a-running-console).
 
+The same waiter **pages the operator** (HIMMEL-3724) when a leg's classifier
+denials reach `SHIP-STEP` or `PAUSE-RISK`: one Telegram message with the leg
+label, count and class, and nothing else. A paged leg is then **refused** on
+re-dispatch (`headed-arm-leg.sh` exits 14) until someone has looked and run
+`bash scripts/handover/console-kit/ack-denial.sh <leg-label-or-doc>`;
+`--ignore-denials` overrides. Detail:
+[`../internals/enforcement.md`](../internals/enforcement.md#log-classifier-denialsh--classifier-denial-tap-himmel-3724).
+
 ## Dispatching legs
 
 When drafting the brief's **Ship:** item, spell the attestation trailers'

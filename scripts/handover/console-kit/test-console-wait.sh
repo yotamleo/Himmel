@@ -52,6 +52,18 @@ export CONSOLE_WAIT_TICK="$STUB/tick.sh" CONSOLE_WAIT_BANK="$STUB/bank.sh"
 export CONSOLE_WAIT_INTERVAL=1 CONSOLE_WAIT_POLL_SEC=0.2
 # A failure streak wakes only in (f4); elsewhere a failed sample is just "not a change".
 export CONSOLE_WAIT_FAIL_WAKE=1000
+# HIMMEL-3724: a denials rise pages the operator. The suite owns the sender and
+# the record dir (never a real Telegram send, never ~/.himmel/state): the stub
+# appends each page text to $STUB/pages. CONSOLE_WAIT_PAGE_TIMEOUT is kept short
+# so the hung-sender case (p6) finishes fast.
+cat > "$STUB/page.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$STUB/pages"
+exit 0
+EOF
+chmod +x "$STUB/page.sh"  # the sender seam is exec'd directly, not run via bash
+export CONSOLE_WAIT_PAGE_CMD="$STUB/page.sh" CONSOLE_WAIT_PAGE_TIMEOUT=2
+export HIMMEL_DENIAL_ACK_DIR="$WORK/acks"
 
 # tick_line <legs> <board> [hb] [prs]: a tick line whose action fields are set.
 tick_line() {
@@ -426,6 +438,80 @@ tick_line "N1:FRESH" "ok" "1m" "#99"
 wait_exit "$WPID"
 check "(v) board-to-ok combined with a prs change still wakes" "0" "$rc"
 check "(v) the wake names only prs, not board" "WAKE tick changed=prs bank=PROCEED" "$(head -n1 "$WORK/v.out")"
+
+# --- (p) HIMMEL-3724: a denials rise to SHIP-STEP / PAUSE-RISK pages ---------
+# One page per rise (a new leg or a higher class), never per tick. The page
+# text carries the leg label, count and class ONLY.
+denials_rise() { # <case> <from> <to>  -> runs the waiter to its wake (or 8 s)
+    reset_stub; rm -f "$STUB/pages"; rm -rf "$HIMMEL_DENIAL_ACK_DIR"
+    sed -i "s/denials=none/denials=$2/" "$STUB/tick.line"  # gnu-ok: Linux-only kit
+    I="$(new_inbox "$1")"
+    start "$I" "$WORK/$1.out" --legs "N1.md"
+    wait_hb "$I" || fail "($1) no baseline heartbeat"
+    sed -i "s/denials=$2/denials=$3/" "$STUB/tick.line"  # gnu-ok: Linux-only kit
+    wait_exit "$WPID"
+}
+pages_n() { if [ -f "$STUB/pages" ]; then wc -l < "$STUB/pages" | tr -d ' '; else echo 0; fi; }
+
+denials_rise p1 none 'N1:1:SHIP-STEP'
+check "(p1) a SHIP-STEP appearing wakes" "0" "$rc"
+check "(p1) and pages exactly once" "1" "$(pages_n)"
+check "(p1) the page is exactly leg, count and class" "DENIAL-PAGE N1 SHIP-STEP x1 - a classifier denial parked this leg. Review it, then: ack-denial.sh N1" "$(head -n1 "$STUB/pages" 2>/dev/null)"
+check "(p1) a page record is written for the refusal check" "SHIP-STEP" "$(sed -n 's/^class=//p' "$HIMMEL_DENIAL_ACK_DIR/N1.page" 2>/dev/null)"
+check "(p1) the wake block is still exactly the tick wake (2 lines)" "2" "$(wc -l < "$WORK/p1.out" | tr -d ' ')"
+
+denials_rise p2 none 'N1:3:PAUSE-RISK'
+check "(p2) a PAUSE-RISK appearing pages once" "1" "$(pages_n)"
+check "(p2) naming the class" "yes" "$(grep -q 'PAUSE-RISK x3' "$STUB/pages" && echo yes)"
+
+denials_rise p3 none 'N1:2:REPEAT'
+check "(p3) a REPEAT is a wake but not a page" "0" "$(pages_n)"
+check "(p3) and writes no page record" "no" "$([ -e "$HIMMEL_DENIAL_ACK_DIR/N1.page" ] && echo yes || echo no)"
+
+denials_rise p4 'N1:3:PAUSE-RISK' 'N1:1:SHIP-STEP'
+check "(p4) a class rising to SHIP-STEP pages" "1" "$(pages_n)"
+
+denials_rise p5 'N1:1:SHIP-STEP' 'N1:2:SHIP-STEP'
+check "(p5) a count rise inside the same class wakes" "0" "$rc"
+check "(p5) but does not page again" "0" "$(pages_n)"
+
+denials_rise p5b 'N1:1:SHIP-STEP' none
+check "(p5b) a denial expiring out is neither wake nor page" "0" "$(pages_n)"
+[ "$rc" = running ] && { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
+
+denials_rise p5c 'N1:1' 'N1:1,N2:1:SHIP-STEP'
+check "(p5c) a second leg's SHIP-STEP pages under its own label" "DENIAL-PAGE N2 SHIP-STEP x1 - a classifier denial parked this leg. Review it, then: ack-denial.sh N2" "$(head -n1 "$STUB/pages" 2>/dev/null)"
+
+# A re-arm after the wake must not page the same rise again.
+denials_rise p5d none 'N1:1:SHIP-STEP'
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/p5d2.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(p5d) the re-arm after a paged wake is silent" "" "$(cat "$WORK/p5d2.out")"
+check "(p5d) and does not page the same rise again" "1" "$(pages_n)"
+
+# Fail open: a sender that fails, or hangs, never breaks the wake.
+cat > "$STUB/page-fail.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 7
+EOF
+chmod +x "$STUB/page-fail.sh"
+CONSOLE_WAIT_PAGE_CMD="$STUB/page-fail.sh" denials_rise p6a none 'N1:1:SHIP-STEP'
+check "(p6) a failing sender still wakes with rc 0" "0" "$rc"
+check "(p6) and the wake block is intact" "WAKE tick changed=denials bank=PROCEED" "$(head -n1 "$WORK/p6a.out")"
+check "(p6) and the page record is written even though the send failed" "SHIP-STEP" "$(sed -n 's/^class=//p' "$HIMMEL_DENIAL_ACK_DIR/N1.page" 2>/dev/null)"
+cat > "$STUB/page-hang.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+chmod +x "$STUB/page-hang.sh"
+CONSOLE_WAIT_PAGE_CMD="$STUB/page-hang.sh" denials_rise p6b none 'N1:1:SHIP-STEP'
+check "(p6) a hung sender is cut off by the page timeout and the wake still lands" "0" "$rc"
+
+# An unwritable record dir never breaks the wake either.
+# ponytail: as root chmod does not bind, so this case only proves the wake there; run it as a normal user for the real control, no ticket (test-audit finding, root CI has no upgrade path worth a fixture).
+mkdir -p "$WORK/ro" && chmod 500 "$WORK/ro"
+HIMMEL_DENIAL_ACK_DIR="$WORK/ro/sub" denials_rise p6c none 'N1:1:SHIP-STEP'
+check "(p6) an unwritable record dir still wakes with rc 0" "0" "$rc"
+chmod 700 "$WORK/ro"
 
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
