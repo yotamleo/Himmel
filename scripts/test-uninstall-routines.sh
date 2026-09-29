@@ -37,7 +37,7 @@ trap 'rm -rf "$SUITE_TMP"' EXIT
 
 fails=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
-has(){ case "$3" in *"$2"*) echo "ok - $1" ;; *) echo "FAIL - $1: [$2] not in output"; fails=$((fails+1)) ;; esac; }
+has(){ case "$3" in *"$2"*) echo "ok - $1" ;; *) echo "FAIL - $1: [$2] not in output"; printf '%s\n' "$3" | tail -n 15 | sed 's/^/    | /'; fails=$((fails+1)) ;; esac; }
 
 # ---- fakes ------------------------------------------------------------------
 mkdir -p "$SUITE_TMP/bin"

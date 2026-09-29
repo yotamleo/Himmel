@@ -40,7 +40,9 @@ SUITE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/uninstall-prov.XXXXXX")" || { echo "FAIL
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
 fails=0
-check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
+failed_labels=""
+check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; failed_labels="$failed_labels
+  $1"; fails=$((fails+1)); }; }
 
 # ---- fake claude stub (adapted from scripts/test-uninstall-plugins.sh) -----
 # One binary shared by every case; CLAUDE_CALL_LOG/STUB_PLUGINS_JSON/
@@ -2348,6 +2350,7 @@ cp "$T69B" "$CASE_DIR/red69b.before"
 # per-unit [k]eep/[d]elete offer if the block were ever offered one.
 rc69b=0
 out69b=$(RUN_TTY_ANSWER=$'y\nd' run_uninstall_fx --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks 2>&1) || rc69b=$?
+[ "$rc69b" -eq 0 ] || printf '%s\n' "$out69b" | tail -n 15 | sed 's/^/    | /'
 check "RED69b: the run got past the Proceed? confirm and exited 0" "$rc69b" "0"
 check "RED69b: the edited block file is byte-identical after a 'd' answer" \
   "$(cmp -s "$T69B" "$CASE_DIR/red69b.before" && echo same || echo differs)" "same"
@@ -2584,4 +2587,4 @@ REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \
   "$REAL_LEDGER_AFTER" "$REAL_LEDGER_BEFORE"
 
-[ "$fails" -eq 0 ] && echo "UNINSTALL-PROVENANCE ALL PASS" || { echo "$fails UNINSTALL-PROVENANCE FAILED"; exit 1; }
+[ "$fails" -eq 0 ] && echo "UNINSTALL-PROVENANCE ALL PASS" || { echo "failed checks:$failed_labels"; echo "$fails UNINSTALL-PROVENANCE FAILED"; exit 1; }
