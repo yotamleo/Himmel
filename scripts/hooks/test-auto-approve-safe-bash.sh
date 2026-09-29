@@ -865,9 +865,12 @@ assert "ctl: is brace in argument"           PASS "$(is_dec "$IS_W" "$IS_BR_ARG"
 # The raw brace payload fed to the hook through files, with no is_dec and no
 # nested-quote "$(...)" between the brace text and the hook's stdin.
 j_bash_cwd "$IS_W" "$IS_BR_COMMA" > "$IS_TMP/brace.json"
-HIMMEL_REPO="$IS_A" bash "$HOOK" < "$IS_TMP/brace.json" > "$IS_TMP/brace.out" 2>/dev/null
+IS_BR_RC=0
+HIMMEL_REPO="$IS_A" bash "$HOOK" < "$IS_TMP/brace.json" > "$IS_TMP/brace.out" 2>/dev/null || IS_BR_RC=$?
 if grep -qF '{impacted-suites,other}' "$IS_TMP/brace.json"; then IS_BR_RAW=ALLOW; else IS_BR_RAW=PASS; fi
 assert "precondition: raw brace payload carries the brace" ALLOW "$IS_BR_RAW"
+# A crashed hook also emits no allow; the row counts only a clean fall-through.
+assert "precondition: raw brace payload hook exited 0" 0 "$IS_BR_RC"
 if grep -qF '"permissionDecision":"allow"' "$IS_TMP/brace.out"; then IS_BR_RAW=ALLOW; else IS_BR_RAW=PASS; fi
 assert "ctl: is brace in path, raw payload"  PASS "$IS_BR_RAW"
 assert "ctl: is trailing &"                  PASS "$(is_dec "$IS_W" "$IS_REL $IS_R &")"
