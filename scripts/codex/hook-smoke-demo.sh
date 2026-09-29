@@ -44,6 +44,16 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 
+# `timeout` is a GNU coreutil; stock macOS has none, so a bare `timeout` call
+# exits 127 and fails every leg. Resolve it once and degrade to unbounded when
+# absent (a missing lib does the same).
+# ponytail: without a GNU timeout a hung leg or hook is not bounded, so it stalls
+# the run instead of reporting a failed leg; upgrade path is requiring coreutils on
+# the macOS runners (HIMMEL-3699).
+_TIMEOUT_BIN=""
+# shellcheck source=scripts/lib/timeout-bin.sh
+[ -r "$REPO/scripts/lib/timeout-bin.sh" ] && . "$REPO/scripts/lib/timeout-bin.sh"
+
 FROM="$REPO"
 KEEP=0
 LEG_TIMEOUT=180
@@ -305,7 +315,7 @@ if [ "$RUN_CODEX" = "1" ] && command -v codex >/dev/null 2>&1; then
     # just cloned ourselves from the checkout under test, which is precisely
     # the "automation that already vets hook sources" the flag documents.
     # The sandbox stays read-only regardless.
-    env "${INERT_ENV[@]}" timeout "$LEG_TIMEOUT" \
+    env "${INERT_ENV[@]}" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" "$LEG_TIMEOUT"} \
         codex exec --skip-git-repo-check -C "$DEMO" -s read-only \
         --dangerously-bypass-hook-trust -o "$CX_REPLY" "$PROMPT" \
         > "$CX_LOG" 2>&1
@@ -426,7 +436,7 @@ if [ "$RUN_CLAUDE" = "1" ] && command -v claude >/dev/null 2>&1 && command -v jq
         (
             cd "$DEMO" || exit 2
             # headless-claude-ok: hook-chain smoke demo (HIMMEL-2000); bank-gated above, --model haiku, one read-only turn
-            env "${INERT_ENV[@]}" timeout "$LEG_TIMEOUT" claude -p "$PROMPT" \
+            env "${INERT_ENV[@]}" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" "$LEG_TIMEOUT"} claude -p "$PROMPT" \
                 --model haiku --permission-mode default --output-format json
         ) > "$CL_LOG" 2>&1
         CL_RC=$?
@@ -498,7 +508,7 @@ if [ "$RUN_CLAUDE" = "1" ] && command -v jq >/dev/null 2>&1 && command -v node >
             # smoke is looking for - unbounded, it would stall the runner
             # instead of reporting a failed leg. The default matches the largest
             # timeout any entry in .claude/settings.json declares.
-            env "${INERT_ENV[@]}" timeout "$REPLAY_TIMEOUT" bash -c "$cmd" < "$CR_PAYLOAD" >/dev/null 2>&1
+            env "${INERT_ENV[@]}" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" "$REPLAY_TIMEOUT"} bash -c "$cmd" < "$CR_PAYLOAD" >/dev/null 2>&1
             _rc=$?
             case "$_rc" in
                 (0) ;;

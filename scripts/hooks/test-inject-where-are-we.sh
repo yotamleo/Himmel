@@ -47,8 +47,9 @@ trap 'rm -rf "$TMP"' EXIT
 # node_modules) and, for an active-ticket-branch render, `git branch
 # --show-current` (unused by any assertion below — every ON case either sets
 # WHERE_ARE_WE_BRANCH_OVERRIDE or ignores the render's content). COPY (not
-# symlink) that one subtree: dock.mjs's CLI-entry guard is
-# `import.meta.url === pathToFileURL(process.argv[1]).href`, and Node
+# symlink) that one subtree: dock.mjs's CLI-entry guard USED TO BE
+# `import.meta.url === pathToFileURL(process.argv[1]).href` (it is now the
+# realpath-safe isMain from scripts/lib/is-main.mjs, copied in below), and Node
 # resolves import.meta.url through symlinks to the REALPATH while argv[1]
 # stays the invoked (symlinked) path — a `scripts/` symlink here makes them
 # permanently mismatch, so the CLI branch silently never runs (empty stdout,
@@ -70,6 +71,10 @@ trap 'rm -rf "$TMP"' EXIT
 HERMETIC_ROOT="$TMP/hermetic-repo"
 mkdir -p "$HERMETIC_ROOT/scripts"
 cp -a "$REPO_ROOT/scripts/where-are-we" "$HERMETIC_ROOT/scripts/where-are-we"
+# dock.mjs imports the shared realpath-safe entry check (HIMMEL-3810) by the
+# relative path ../lib/is-main.mjs - the one file outside where-are-we/ it needs.
+mkdir -p "$HERMETIC_ROOT/scripts/lib"
+cp "$REPO_ROOT/scripts/lib/is-main.mjs" "$HERMETIC_ROOT/scripts/lib/is-main.mjs"
 [ -e "$HERMETIC_ROOT/.env" ] && { echo "FATAL: hermetic root unexpectedly has a .env" >&2; exit 1; }
 
 seed_ledger() {

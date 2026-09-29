@@ -5,8 +5,8 @@
 // SessionStart hook (scripts/hooks/inject-where-are-we.sh) consumes stdout +
 // the flag-file. main() takes injected deps so the logic is hermetically tested
 // (tests/dock.cli.test.mjs); only the thin CLI entry touches fs/clock.
-import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
+import { isMain } from '../lib/is-main.mjs';
 import { readRecords } from './lib/ledger.mjs';
 import { isStale, renderDock } from './lib/dock.mjs';
 
@@ -56,7 +56,7 @@ function defaultStatMtime(p) {
 
 // CLI entry (not exercised by hermetic tests). Always exit 0 (fail-open): the
 // hook treats us as advisory and must never break session start.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (isMain(import.meta.url)) {
   try {
     const a = parseArgs(process.argv.slice(2));
     const result = main(process.argv.slice(2), { statMtime: defaultStatMtime, readRecords, now: Date.now() });

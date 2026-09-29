@@ -42,6 +42,33 @@ bad() { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$1"; }
 
 git_t() { git -c user.email=t@t -c user.name=t "$@"; }
 
+# The hook bounds every git call with `timeout` and fails CLOSED without it, which
+# is right. Stock macOS ships no `timeout`, so on such a host every honoured-bypass
+# row would see a refusal. Give the suite a bounded stand-in on PATH there; the
+# "timeout missing from PATH" row below still builds its own scratch PATH without it.
+# ponytail: the stand-in supports only `timeout <secs> cmd...` and exits 143 (not 124)
+# on expiry, which is all the hook reads; swap for coreutils gtimeout once the macOS
+# runners install it (HIMMEL-3699).
+if ! command -v timeout >/dev/null 2>&1; then
+  TSHIM="$T/tshim"
+  mkdir -p "$TSHIM"
+  REAL_SLEEP="$(command -v sleep)"
+  cat > "$TSHIM/timeout" <<EOF
+#!/bin/sh
+secs="\$1"; shift
+"\$@" &
+pid=\$!
+( "$REAL_SLEEP" "\$secs"; kill "\$pid" ) >/dev/null 2>&1 </dev/null &
+wd=\$!
+wait "\$pid"
+rc=\$?
+kill "\$wd" >/dev/null 2>&1
+exit "\$rc"
+EOF
+  chmod +x "$TSHIM/timeout"
+  PATH="$TSHIM:$PATH"
+fi
+
 # ---- fixture: a primary checkout that tracks the hook, one remote, two linked worktrees
 PRIMARY="$T/primary"
 PINS="$T/pins"
