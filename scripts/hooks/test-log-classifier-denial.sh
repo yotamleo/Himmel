@@ -269,6 +269,13 @@ LOG11="$WORKDIR/fresh-dir/state/c11.jsonl"
 check_mode() { if [ "$(mode_of "$1")" = "$2" ]; then pass "$3"; else fail "$3 (got $(mode_of "$1"))"; fi; }
 check_mode "$LOG11" 600 "log file is created 0600 under a permissive caller umask"
 check_mode "$(dirname "$LOG11")" 700 "a state dir the hook creates is 0700"
+# A phase-1 log already on disk is 0644 (umask only governs NEW files), so the
+# hook must tighten an existing log too, and the rotated generation with it.
+LOG11B="$WORKDIR/c11b.jsonl"
+: > "$LOG11B"; : > "$LOG11B.1"; chmod 644 "$LOG11B" "$LOG11B.1"
+run_hook "$(payload s11b /tmp/repo Bash 'ls' '[X]')" "$LOG11B" >/dev/null
+check_mode "$LOG11B" 600 "an existing 0644 log is tightened to 0600 on the next append"
+check_mode "$LOG11B.1" 600 "an existing 0644 rotated generation is tightened to 0600"
 
 # --- 12. rotation: past the byte cap the log renames to .1 (one generation)
 # and a fresh file starts; the row that triggered it is not lost. ---

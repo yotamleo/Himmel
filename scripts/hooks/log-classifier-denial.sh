@@ -162,6 +162,10 @@ ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 mkdir -p "$(dirname "$OUT")" 2>/dev/null || exit 0
 
+# umask only governs files created from here on; a log a phase-1 hook left at
+# 0644 (and its rotated generation) is tightened too. Best-effort, fail open.
+chmod 600 "$OUT" "$OUT.1" 2>/dev/null || true
+
 # Rotation: past MAX_BYTES the log renames to <log>.1 (replacing the previous
 # generation, so at most two files ever exist) and a fresh log starts with
 # this row. Best-effort: a failed rename never skips the append. tick.sh reads
