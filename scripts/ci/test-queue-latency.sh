@@ -12,6 +12,7 @@ trap 'rm -rf "$TMP"' EXIT
 fails=0
 ok()  { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
+is()  { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1: want '$2' got '$3'"; fi; }
 
 mkdir -p "$TMP/bin" "$TMP/fx"
 cat > "$TMP/bin/gh" <<'EOF'
@@ -59,7 +60,7 @@ if bash -n "$SCRIPT"; then ok "syntax (bash -n)"; else bad "syntax"; fi
 reset
 runs_json in_progress > "$TMP/fx/runs-in_progress.json"; runs_json queued > "$TMP/fx/runs-queued.json"
 out="$(run)"
-[ "$out" = "ci-queue: jobs_in_progress=0/20 macos=0/5 queued=0 oldest_wait=0m" ] && ok "idle" || bad "idle: $out"
+is "idle" "ci-queue: jobs_in_progress=0/20 macos=0/5 queued=0 oldest_wait=0m" "$out"
 
 # saturated 20/20 across two runs, 2 queued jobs waiting 10m
 reset
@@ -68,14 +69,14 @@ jobs_json 12 0 0 "$t10" > "$TMP/fx/jobs-1.json"
 jobs_json 8 0 0 "$t10" > "$TMP/fx/jobs-2.json"
 jobs_json 0 0 2 "$t10" > "$TMP/fx/jobs-3.json"
 out="$(run)"
-[ "$out" = "ci-queue: jobs_in_progress=20/20 macos=0/5 queued=2 oldest_wait=10m" ] && ok "saturated 20/20" || bad "saturated: $out"
+is "saturated 20/20" "ci-queue: jobs_in_progress=20/20 macos=0/5 queued=2 oldest_wait=10m" "$out"
 
 # macOS 5/5 (counted inside the total)
 reset
 runs_json in_progress 1 > "$TMP/fx/runs-in_progress.json"; runs_json queued > "$TMP/fx/runs-queued.json"
 jobs_json 3 5 0 "$t3" > "$TMP/fx/jobs-1.json"
 out="$(run)"
-[ "$out" = "ci-queue: jobs_in_progress=8/20 macos=5/5 queued=0 oldest_wait=0m" ] && ok "macOS 5/5" || bad "macOS: $out"
+is "macOS 5/5" "ci-queue: jobs_in_progress=8/20 macos=5/5 queued=0 oldest_wait=0m" "$out"
 
 # a run in BOTH lists is counted once
 reset
@@ -89,18 +90,19 @@ reset
 runs_json in_progress > "$TMP/fx/runs-in_progress.json"; runs_json queued 7 8 > "$TMP/fx/runs-queued.json"
 echo '{"jobs":[]}' > "$TMP/fx/jobs-7.json"; echo '{"jobs":[]}' > "$TMP/fx/jobs-8.json"
 out="$(run)"
-[ "$out" = "ci-queue: jobs_in_progress=0/20 macos=0/5 queued=2 oldest_wait=10m" ] && ok "queued runs with 0 jobs" || bad "storm: $out"
+is "queued runs with 0 jobs" "ci-queue: jobs_in_progress=0/20 macos=0/5 queued=2 oldest_wait=10m" "$out"
 
 # API error -> unknown, exit 0
 reset
 out="$(FAKE_GH_FAIL=1 run)"; rc=$?
-[ "$out" = "ci-queue: unknown" ] && [ "$rc" -eq 0 ] && ok "API error -> unknown, rc 0" || bad "api error: rc=$rc out=$out"
+is "API error -> unknown" "ci-queue: unknown" "$out"
+is "API error -> rc 0" "0" "$rc"
 
 # a per-run jobs failure (no fixture) also degrades to unknown
 reset
 runs_json in_progress 1 > "$TMP/fx/runs-in_progress.json"; runs_json queued > "$TMP/fx/runs-queued.json"
 out="$(run)"
-[ "$out" = "ci-queue: unknown" ] && ok "per-run jobs failure -> unknown" || bad "jobs failure: $out"
+is "per-run jobs failure -> unknown" "ci-queue: unknown" "$out"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASSED"; exit 0; else echo "FAILED=$fails"; exit 1; fi
