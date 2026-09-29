@@ -39,11 +39,6 @@ done
 
 die() { echo "cancel-superseded-runs: $*; nothing cancelled" >&2; exit 1; }
 
-pr_args=(--state open --json "number,headRefName,headRefOid,isCrossRepository" --limit 200)
-[ -n "$BRANCH" ] && pr_args+=(--head "$BRANCH")
-prs="$(gh pr list "${pr_args[@]}")" || die "gh pr list failed"
-printf '%s' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1 || die "unparseable gh pr list output"
-
 # Runs whose branch has an open PR, live, not a schedule run, at a head other
 # than that PR's current one. Tab-separated: id, workflow, event, branch, sha, PR, PR head.
 # shellcheck disable=SC2016 # $-names here are jq variables, not shell
@@ -66,14 +61,26 @@ PICK='
   | [$r.databaseId, $r.workflowName, $r.event, $r.headBranch, $r.headSha[0:8], $pr.number, $pr.headRefOid[0:8]]
   | @tsv'
 
-picked=""
+# Order matters (HIMMEL-3588): the run lists are read FIRST and the PR list LAST.
+# A run seen here means its push already happened, so the later PR read returns
+# that head or a newer one; reading the PRs first would let a push in between
+# leave the only run at the PR's real head compared against a stale head.
+all_runs="[]"
 for wf in $WORKFLOWS; do
   runs="$(gh run list --workflow "$wf" --limit "$RUN_LIMIT" --json databaseId,status,event,headBranch,headSha,workflowName)" \
     || die "gh run list --workflow $wf failed"
   printf '%s' "$runs" | jq -e 'type == "array"' >/dev/null 2>&1 || die "unparseable gh run list output for $wf"
-  lines="$(printf '%s' "$runs" | jq -r --argjson prs "$prs" "$PICK")" || die "jq filter failed for $wf"
-  [ -n "$lines" ] && picked="$picked$lines"$'\n'
+  all_runs="$(printf '%s\n%s' "$all_runs" "$runs" | jq -c -s 'add')" || die "jq merge failed for $wf"
 done
+
+pr_args=(--state open --json "number,headRefName,headRefOid,isCrossRepository" --limit 200)
+[ -n "$BRANCH" ] && pr_args+=(--head "$BRANCH")
+prs="$(gh pr list "${pr_args[@]}")" || die "gh pr list failed"
+printf '%s' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1 || die "unparseable gh pr list output"
+printf '%s' "$prs" | jq -e 'length < 200' >/dev/null 2>&1 || die "gh pr list hit its 200 limit, PR heads may be hidden"
+
+picked="$(printf '%s' "$all_runs" | jq -r --argjson prs "$prs" "$PICK")" || die "jq filter failed"
+[ -n "$picked" ] && picked="$picked"$'\n'
 
 rc=0
 while IFS=$'\t' read -r id wf event branch sha pr prhead; do

@@ -20,6 +20,7 @@ cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 # fake gh. Fixtures live in $FX; cancels are appended to $FX/cancelled.
 # FAKE_GH_FAIL=pr|ci|gate|cancel:<id> makes that call fail.
+echo "$1 $2" >> "$FX/calls"
 case "$1 $2" in
   "pr list")
     [ "${FAKE_GH_FAIL:-}" = pr ] && { echo "fake-gh: pr list failed" >&2; exit 1; }
@@ -144,9 +145,26 @@ cat > "$TMP/fx/prs.json" <<'EOF'
  {"number":15,"headRefName":"feat/d","headRefOid":"D1","isCrossRepository":false},
  {"number":16,"headRefName":"feat/d","headRefOid":"D2","isCrossRepository":false}]
 EOF
-echo "[$sib,$(r 1 queued pull_request feat/d D1)]" > "$TMP/fx/runs-ci.json"
+echo "[$sib,$(r 1 queued pull_request feat/d D2)]" > "$TMP/fx/runs-ci.json"
 run >/dev/null
 is "branch with two open PRs at different heads kept" "9" "$(cancelled)"
+
+# the PR list is read AFTER both run lists: a run seen at read time means its
+# push already happened, so a push between the reads can never leave the only
+# run at the PR's real head compared against a stale head (HIMMEL-3588).
+reset
+echo "[$(r 1 queued pull_request feat/a OLD10)]" > "$TMP/fx/runs-ci.json"
+run >/dev/null
+is "reads: both run lists precede the PR list" "run list,run list,pr list," "$(grep -v 'run cancel' "$TMP/fx/calls" | tr '\n' ',')"
+
+# a full 200-PR page may have truncated the list (hiding a fork PR that shares a
+# branch name): cancel nothing, non-zero
+reset
+jq -n '[range(0;200) | {number:., headRefName:("feat/p\(.)"), headRefOid:"H\(.)", isCrossRepository:false}]' > "$TMP/fx/prs.json"
+echo "[$(r 1 queued pull_request feat/p1 OLD)]" > "$TMP/fx/runs-ci.json"
+out="$(run)"; rc=$?
+is "200 PRs (possible truncation): nothing cancelled" "none" "$(cancelled)"
+if [ "$rc" -ne 0 ]; then ok "200 PRs (possible truncation): non-zero exit"; else bad "200 PRs: exit was 0"; fi
 
 # nothing to cancel -> exit 0
 reset
