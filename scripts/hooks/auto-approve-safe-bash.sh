@@ -432,7 +432,8 @@ shell_word_value() {
 # Deliberately NOT shell_word_value: that returns early on a `$VAR`, before it
 # reaches a brace later in the same word (`{$x,--output=y}`). Only quotes and
 # backslash escapes are honored; every other character counts, so `${x,,}` is
-# treated as a brace span too (fail closed — it only loses an allow).
+# treated as a brace span too (fail closed — it only loses an allow). Unquoted
+# whitespace ends a word, so a whole segment may be passed in.
 word_has_brace_expansion() {
     local s="$1" n i=0 c st=0 bd=0 bf=0
     n=${#s}
@@ -453,6 +454,7 @@ word_has_brace_expansion() {
             "'") st=1 ;;
             '"') st=2 ;;
             "\\") i=$((i + 2)); continue ;;
+            [[:space:]]) bd=0; bf=0 ;;               # unquoted word boundary
             '{') bd=$((bd + 1)) ;;
             '}')
                 if [ "$bd" -gt 0 ]; then
@@ -1648,13 +1650,11 @@ case "$rd" in *'>'*) exit 0 ;; esac
 # node, the safe-bin set), not a per-arm patch. Each arm matches flags on
 # literal words, and a brace word explodes into argv words none of them saw.
 # The HIMMEL-2121 deny scan above runs first, so a braced root walk still
-# DENIES. A segment that will not tokenize is left to segment_is_safe, which
-# refuses it.
+# DENIES. The whole segment is scanned, not tokenize_seg_words' tokens: that
+# tokenizer splits at a backslash-space (the `find C:\ ` drive-root spelling),
+# while the shell keeps `{--output=a\ b,-1}` one word and expands it.
 while IFS= read -r seg; do
-    tokenize_seg_words "$seg" || continue
-    for w in ${RB_TOKENS[@]+"${RB_TOKENS[@]}"}; do
-        word_has_brace_expansion "$w" && exit 0
-    done
+    word_has_brace_expansion "$seg" && exit 0
 done <<EOF
 $SCAN_SEGS
 EOF

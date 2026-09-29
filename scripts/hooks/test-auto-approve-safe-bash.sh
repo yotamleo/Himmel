@@ -1289,6 +1289,7 @@ assert "a plain backslash-escaped & INSIDE quotes still ALLOW (control)" \
 # brace-expanded, by bash 3.2 either — HIMMEL-3880) and passed by variable.
 BR_ROWS='git log {--output=/tmp/PWN,-1}
 git log {--output,PWN} -1
+git log {--output=/tmp/brace\ proof,-1}
 git log --{output,x}=PWN
 git log --outpu{t..t}=PWN
 git log {{--output=PWN,a},b}
