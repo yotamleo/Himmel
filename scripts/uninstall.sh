@@ -169,7 +169,7 @@ while [ $# -gt 0 ]; do
     --skip-settings)       SKIP_SETTINGS=1 ;;
     --source-only)         SOURCE_ONLY=1 ;;
     -h|--help)
-      sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//' | head -n -1
+      sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'
       exit 0
       ;;
     *) echo "ERROR: unknown flag: $1" >&2; exit 2 ;;
