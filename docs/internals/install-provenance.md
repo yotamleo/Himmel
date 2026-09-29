@@ -251,7 +251,7 @@ run that later refuses or halts still shows it.
   `no-backup`, or a failed step): path, kind, the reason in plain words, the
   backup and `.ours` snapshot paths when present, and hand commands. A kept
   file gets a `diff -u` and a take-back command that saves the live file to
-  `<path>.mine` first. **No printed command deletes the live file.**
+  `<path>.mine` first (and refuses when a `.mine` already exists). **No printed command deletes the live file.**
 - `backups held: N` when kept backups block `--purge-state` (add
   `--keep-backups` to retain them), and one `retained from an earlier purge:
   <dir>  (rm -rf <dir> when done)` line per `retained-*` directory.

@@ -1063,7 +1063,7 @@ prov_read_reconcile_report() {
             printf '      what you had before himmel:  %s\n' "$backup"
             [ -n "$snap" ] && printf "      himmel's version:            %s\n" "$snap"
             printf '      compare:  diff -u %q %q\n' "$backup" "$path"
-            printf '      save yours, then take back what you had:  cp -p %q %q && cp %q %q\n' "$path" "$path.mine" "$backup" "$path"
+            printf '      save yours, then take back what you had:  test ! -e %q && cp -p %q %q && cp %q %q\n' "$path.mine" "$path" "$path.mine" "$backup" "$path"
         else
             printf '      review it by hand: %s\n' "$shown"
             [ -n "$backup" ] && printf '      what you had before himmel:  %s\n' "$backup"

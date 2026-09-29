@@ -2497,6 +2497,8 @@ check "RED76: the entry carries the backup path" "$(printf '%s\n' "$out76" | gre
 check "RED76: the entry carries the compare command" "$(printf '%s\n' "$out76" | grep -c -F "diff -u $S3_BACKUP $S3_DEST")" "1"
 check "RED76: the take-back command saves the live file first" \
   "$(printf '%s\n' "$out76" | grep -c -F "cp -p $S3_DEST $S3_DEST.mine")" "1"
+check "RED76: the take-back command refuses to overwrite an existing .mine" \
+  "$(printf '%s\n' "$out76" | grep -c -F "test ! -e $S3_DEST.mine && cp -p $S3_DEST $S3_DEST.mine")" "1"
 check "RED76: the take-back command is printed" "$(printf '%s\n' "$out76" | grep -c -F "cp $S3_BACKUP $S3_DEST")" "1"
 check "RED76: no printed command deletes the live file" "$(printf '%s\n' "$out76" | grep -c -E "(rm|unlink|shred)( -[a-z]+)* .*$S3_DEST")" "0"
 check "RED76: the held-backups line counts it" "$(printf '%s\n' "$out76" | grep -c -E '^  backups held: 1 ')" "1"
