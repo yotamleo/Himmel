@@ -13,8 +13,8 @@
 # and lives in the sibling test-arm-resume-fast.sh instead.
 #
 # So this suite is SUITE_TIER_DEFAULT `extended` in run-shell-tests.sh, not
-# SKIP_LIST: it runs nightly (SUITE_TIER_MODE=all, the schedule/force_all_os
-# leg of shell-unit-shard), same mechanism already proven by the sibling
+# SKIP_LIST: it runs nightly (SUITE_TIER_MODE=all, the schedule
+# (nightly) leg of shell-unit-shard), same mechanism already proven by the sibling
 # extended suites test-arm-resume-identity.sh / test-arm-resume-queue-lock.sh.
 # A nightly-only red is covered by scripts/ci/shell-extended-nightly-issue.sh
 # (HIMMEL-3132's non-silence requirement, same upsert-one-issue shape as

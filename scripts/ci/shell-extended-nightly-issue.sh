@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # scripts/ci/shell-extended-nightly-issue.sh — maintain ONE consolidated issue
-# for a red `shell-unit` gate on the nightly/dispatch-only extended tier
+# for a red `shell-unit` gate on the nightly-only extended tier
 # (HIMMEL-3132, same convention as scripts/ci/windows-nightly-issue.sh /
 # HIMMEL-3125).
 #
 # run-shell-tests.sh's SUITE_TIER_DEFAULT `extended` suites (currently
 # test-check-ci.sh, test-arm-resume-identity.sh and
 # test-arm-resume-1879.sh) only execute under SUITE_TIER_MODE=all, which
-# ci.yml sets only on the schedule/force_all_os leg of shell-unit-shard. A red
+# ci.yml sets only on the schedule (nightly) leg of shell-unit-shard. A red
 # extended suite therefore only ever reddens the `shell-unit` aggregating job
-# on that nightly/dispatch run — a run nobody is watching interactively — so
+# on that nightly run — a run nobody is watching interactively — so
 # without this script the failure is silent even though the job itself goes
 # red. This script does not distinguish which suite failed (same limitation
-# as windows-nightly-issue.sh vs. which bun test failed); on a schedule/
-# force_all_os run every fast-tier suite is already expected green (they gate
+# as windows-nightly-issue.sh vs. which bun test failed); on a nightly
+# run every fast-tier suite is already expected green (they gate
 # every PR), so in practice a nightly-only red here points at the extended
-# tier.
+# tier. A nightly macOS/Windows red is NOT filed here: it is a split slice,
+# see docs/internals/testing.md "A nightly OS red".
 #
 #   rc != 0 -> open the issue if absent, else refresh its body + add a "still
 #              red" comment.
@@ -71,12 +72,12 @@ build_body() {
   local body_file="$1"
   {
     echo "**Automated shell extended-tier nightly report** — maintained in"
-    echo "place by the \`shell-unit\` aggregating gate job's schedule/"
-    echo "force_all_os leg. Do not open duplicates; this issue is refreshed"
+    echo "place by the \`shell-unit\` aggregating gate job's schedule"
+    echo "(nightly) leg. Do not open duplicates; this issue is refreshed"
     echo "each run and auto-closed once the leg goes green again."
     echo ""
     echo "The SUITE_TIER_DEFAULT \`extended\` suites (run-shell-tests.sh) only"
-    echo "run under SUITE_TIER_MODE=all, i.e. only on this nightly/dispatch"
+    echo "run under SUITE_TIER_MODE=all, i.e. only on this nightly"
     echo "leg — never per-PR — so this issue is the only signal that one of"
     echo "them broke."
     echo ""
@@ -93,7 +94,7 @@ if [ "$RC" != 0 ]; then
   fi
   mut=0
   run gh label create "$LABEL" --color FBCA04 \
-      --description "Nightly/dispatch shell extended-tier CI tracking" --force || mut=1
+      --description "Nightly shell extended-tier CI tracking" --force || mut=1
   body_file="$(mktemp "${TMPDIR:-/tmp}/shell-extended-nightly-issue.XXXXXX")" || {
     echo "shell-extended-nightly-issue: mktemp failed" >&2
     exit 1

@@ -22,12 +22,14 @@ broken subject before it goes green.
 the same entrypoint CI's `shell-unit` job runs, matrixed over
 `ubuntu-latest` (the required, gating leg on every push/PR) plus
 `windows-latest` and `macos-latest` (advisory-only, `continue-on-error`,
-added on the nightly `schedule`). Running the
+added on the nightly `schedule` **only** — HIMMEL-3853 removed the
+`force_all_os` dispatch input, so no PR and no manual dispatch runs a Windows
+or macOS shard). Running the
 full corpus is slow and noisy — run it in a subagent rather than foregrounding
 it in an interactive session.
 
 To verify a branch on macOS or Windows on demand, dispatch `os-verify`
-(HIMMEL-3839), not `force_all_os`: it runs only the suites the branch impacts
+(HIMMEL-3839): it runs only the suites the branch impacts
 against `origin/main`, on one OS.
 
 ```bash
@@ -40,6 +42,31 @@ prefix so it cannot satisfy a required check by name. GitHub Free allows 20
 concurrent jobs and only 5 macOS, so keep to one OS unless the change is
 OS-specific. It needs `os-verify.yml` on the default branch, and a branch
 whose diff is docs-only reports `0 impacted shell suites` and passes.
+
+### A nightly OS red is a split slice, never a hold (HIMMEL-3853)
+
+Windows and macOS are verified by the nightly and nothing else: there is no
+per-PR all-OS proof, and a PR is never blocked on an OS it did not run. When
+the nightly goes red on Windows or macOS:
+
+- **The nightly files it.** A red `shell-unit` aggregator — including the
+  `check-macos-nightly-health.sh` step, which reads the Jobs API so
+  `continue-on-error` cannot mask a red macOS shard — runs
+  `scripts/ci/shell-extended-nightly-issue.sh`, which opens or refreshes ONE
+  consolidated issue (label `shell-extended-nightly-ci`) and closes it when the
+  nightly goes green. A red Windows `bun-suites` leg is filed the same way by
+  `scripts/ci/windows-nightly-issue.sh` (label `windows-alpha-ci`). A red
+  Windows *shell* shard is still masked by `continue-on-error` (HIMMEL-3699);
+  read the `shell-unit-shard (windows-latest, …)` jobs of the nightly run
+  directly.
+- **The console splits it.** The console turns each distinct failure cluster
+  into its own ticket under the epic that owns the OS-portability work
+  (HIMMEL-3719 for macOS), one slice per cluster. The slice is fixed and
+  verified like any other change; it is **never** a hold on an unrelated PR.
+- **Verifying a slice before the next nightly** is optional and operator-
+  requested only: the diagnostic `os-verify.yml` workflow (HIMMEL-3839)
+  dispatches the impacted suites on one OS. It is not a per-PR gate and no leg
+  dispatches it unasked.
 
 `bash scripts/ci/run-shell-tests.sh --list [scan-root]` prints the run/skip
 plan without executing anything — use it to check what a change would trigger

@@ -1,0 +1,47 @@
+name: Main Sweep Red
+
+# HIMMEL-3841 slice E (spec HIMMEL-3815 section 6.1 B). After each COMPLETED
+# push-to-main CI sweep, open or refresh ONE `main-red` issue when a job failed,
+# and close it only after a later sweep ran and passed every job it recorded
+# (scripts/ci/main-sweep-red-issue.sh).
+#
+# Why a workflow_run reporter and not a step inside ci.yml: a step there needs a
+# `needs:` edge on every CI job (brittle: ci-orchestrator's CODE_MATRIX_JOBS
+# lockstep, and a new job silently dropping out of the report), and it would
+# mean a `main-sweep` job on every PR/nightly run. workflow_run sees the whole
+# run's conclusion and job list from outside, adds no required context to any
+# PR, and never gates a merge.
+#
+# Trust: workflow_run always runs the DEFAULT branch's copy of this file and the
+# checkout below is the default branch, not the swept commit -- no push-sha code
+# runs with issues: write.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+# One report at a time, in order; a queued newer report replaces a pending older
+# one, which is fine -- each report reads the run's own jobs and the live issue.
+concurrency:
+  group: main-sweep-red
+  cancel-in-progress: false
+
+jobs:
+  main-sweep-red:
+    # Only the push-to-main sweep: PR runs, the nightly and dispatches are not
+    # main's health.
+    if: github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open, refresh or close the main-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/ci/main-sweep-red-issue.sh "${{ github.event.workflow_run.id }}"

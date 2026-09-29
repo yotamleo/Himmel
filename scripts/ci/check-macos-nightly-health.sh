@@ -24,7 +24,7 @@ if ! MACOS_OK=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --pa
   exit 1
 fi
 if [ -z "$MACOS_OK" ]; then
-  echo "::error::no macOS job actually passed on run $RUN_ID (missing entirely, or every macOS job was skipped) — cannot certify macOS health (this step should only run on the schedule/force_all_os leg, where the matrix always includes macos-latest)" >&2
+  echo "::error::no macOS job actually passed on run $RUN_ID (missing entirely, or every macOS job was skipped) — cannot certify macOS health (this step should only run on the schedule (nightly) leg, where the matrix always includes macos-latest)" >&2
   exit 1
 fi
 if ! FAILED=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \

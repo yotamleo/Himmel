@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/ci/windows-nightly-issue.sh — maintain ONE consolidated issue for the
-# nightly/dispatch-only Windows leg of ci.yml's bun-suites job (HIMMEL-3125).
+# nightly-only Windows leg of ci.yml's bun-suites job (HIMMEL-3125).
 #
 # Windows dropped off the per-PR path (alpha tier, not CI-gated per-PR) so a
 # red Windows run no longer blocks a merge — this script is what keeps that
@@ -65,7 +65,7 @@ build_body() {
   local body_file="$1"
   {
     echo "**Automated Windows-nightly report** — maintained in place by the"
-    echo "\`bun-suites\` (windows-latest) nightly/dispatch leg. Do not"
+    echo "\`bun-suites\` (windows-latest) nightly leg. Do not"
     echo "open duplicates; this issue is refreshed each run and auto-closed once"
     echo "the leg goes green again."
     echo ""
@@ -85,7 +85,7 @@ if [ "$RC" != 0 ]; then
   fi
   mut=0
   run gh label create "$LABEL" --color FBCA04 \
-      --description "Nightly/dispatch Windows CI tracking (alpha tier)" --force || mut=1
+      --description "Nightly Windows CI tracking (alpha tier)" --force || mut=1
   body_file="$(mktemp "${TMPDIR:-/tmp}/windows-nightly-issue.XXXXXX")" || {
     echo "windows-nightly-issue: mktemp failed" >&2
     exit 1
