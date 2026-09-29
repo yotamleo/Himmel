@@ -401,6 +401,19 @@ prov_read_current() {
                 printf 'ABSENT'
             fi
             ;;
+        block)
+            # HIMMEL-3787 S2d: the live BEGIN..END text, read by the strip's own
+            # scanner so the verdict and the strip agree on which lines are
+            # himmel's. Markers that cannot be told apart from text (torn,
+            # duplicated, CRLF, open fence) read MALFORMED, never a guess.
+            local ext erc
+            ext=$(bash "$_PROVREAD_LIB_DIR/unwire-user-claude-md.sh" --extract "$path" 2>/dev/null); erc=$?
+            case "$erc" in
+                0) prov_sha_text "$ext" ;;
+                3) printf 'ABSENT' ;;
+                *) printf 'MALFORMED' ;;
+            esac
+            ;;
         *)
             printf 'ABSENT'
             ;;
@@ -570,6 +583,7 @@ prov_read_verdict() {
     fi
     cur=$(prov_read_current "$u") || return 1
     if [ "$cur" = "ABSENT" ]; then printf 'keep already-absent\n'; return 0; fi
+    if [ "$cur" = "MALFORMED" ]; then printf 'keep block-malformed\n'; return 0; fi
     eff_post_sha=$(printf '%s' "$u" | jq -r '.eff_post.sha // ""')
     if [ "$cur" != "$eff_post_sha" ]; then
         local eff_pre_sha
@@ -582,6 +596,9 @@ prov_read_verdict() {
         fi
         printf 'keep user-modified\n'; return 0
     fi
+    # HIMMEL-3787 S2d: a block's whole delta is its own text -- there is no
+    # pre-state to restore, so an unmodified block is removed, never restored.
+    if [ "$kind" = "block" ]; then printf 'remove ours\n'; return 0; fi
     # F2 (parent review): `.eff_pre.state // "absent"` fail-coalesces a NULL
     # or missing eff_pre (no recorded pre-state at all) into the same
     # "absent" as an EXPLICIT `{"state":"absent"}` -- only the latter is real
@@ -642,8 +659,10 @@ prov_read_apply() {
     path=$(printf '%s' "$u" | jq -r '.path // ""')
     ptr=$(printf '%s' "$u" | jq -r '.unit // ""')
 
-    case "$kind" in file|json-key|json-elem) ;; *) _provread_err "prov_read_apply: unsupported kind $kind"; return 2 ;; esac
+    case "$kind" in file|json-key|json-elem|block) ;; *) _provread_err "prov_read_apply: unsupported kind $kind"; return 2 ;; esac
     case "$action" in remove|restore) ;; *) _provread_err "prov_read_apply: action must be remove or restore"; return 2 ;; esac
+    # HIMMEL-3787 S2d: himmel's block carries no pre-state -- nothing to restore.
+    if [ "$kind" = "block" ] && [ "$action" = "restore" ]; then _provread_err "prov_read_apply: a block has no restore"; return 2; fi
 
     if [ "$dry" = 1 ]; then
         if [ -n "$path" ]; then printf 'DRY: would %s %s %s %s\n' "$action" "$kind" "$ptr" "$path"
@@ -653,6 +672,25 @@ prov_read_apply() {
     fi
 
     case "$kind" in
+        block)
+            # Re-verify at apply time (the verdict may be stale): only the exact
+            # bytes install recorded are ever stripped. The strip itself is
+            # unwire-user-claude-md.sh's -- same scanner, same refusals, the
+            # sidecar copy of the file as found, and file_created decides
+            # whether an emptied file is deleted.
+            local cur post_sha fc fc_args
+            cur=$(prov_read_current "$u")
+            post_sha=$(printf '%s' "$u" | jq -r '.eff_post.sha // ""')
+            if [ -z "$post_sha" ] || [ "$cur" != "$post_sha" ]; then
+                _provread_err "$path: block changed since it was recorded -- refusing to strip it"
+                return 1
+            fi
+            fc_args=()
+            fc=$(printf '%s' "$u" | jq -r 'if .fields.file_created == null then empty else (.fields.file_created | tostring) end')
+            case "$fc" in true) fc_args=(--file-created yes) ;; false) fc_args=(--file-created no) ;; esac
+            bash "$_PROVREAD_LIB_DIR/unwire-user-claude-md.sh" ${fc_args[@]+"${fc_args[@]}"} "$path" 0 || return 1
+            return 0
+            ;;
         file)
             if [ "$action" = "remove" ]; then
                 if [ -f "$path" ] && [ ! -L "$path" ]; then _provread_guarded rm -f -- "$path" || { _provread_err "cannot remove $path"; return 1; }; fi

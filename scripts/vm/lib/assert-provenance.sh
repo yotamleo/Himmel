@@ -471,6 +471,26 @@ if [ -f "$L" ]; then
     }
     snap_check adopter-scripts
     snap_check hud-config
+    # HIMMEL-3787 S2d: the same for the marked block (kind block, no file bytes to
+    # compare against -- the snapshot holds exactly the BEGIN..END text, whose sha
+    # the row records as post.sha).
+    block_snap_check() {  # <row>
+        local row="$1" n=0 bad="" p s k ps
+        while IFS=$'\t' read -r p s ps k; do
+            [ -n "$p" ] || continue
+            n=$((n + 1))
+            if [ "$s" = null ]; then bad="$bad $(rel "$p")(snap ${k:-absent})"
+            elif [ -z "$(meta_of B "$s")" ]; then bad="$bad $(rel "$p")(no snapshot file at B)"
+            elif [ "$(sha_of B "$s")" != "$ps" ]; then bad="$bad $(rel "$p")(snapshot differs from the recorded block)"
+            fi
+        done < <(jq -rs --arg r "$row" '[.[] | select(.manifest_row == $r and .kind == "block" and .op == "insert")]
+            | group_by(.path) | .[] | .[-1] | "\(.path)\t\(.snap // "null")\t\(.post.sha // "-")\t\(.snap_skip // "")"' "$L" 2>/dev/null)
+        if [ "$n" -eq 0 ]; then check precondition precondition SKIP "ledger-snap-$row" "no block row for $row in the ledger"
+        elif [ -z "$bad" ]; then check ledger ledger PASS "ledger-snap-$row" "$n unit(s): the .ours snapshot exists and equals the recorded block"
+        else check ledger ledger FAIL "ledger-snap-$row" "missing or wrong snapshot for:$bad"; fi
+    }
+    block_snap_check user-claude-md
+    block_snap_check user-agents-md
 else
     check ledger ledger FAIL ledger-exists "no provenance.jsonl after install"
     : >"$D/ledger-paths.txt"

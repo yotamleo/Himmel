@@ -209,6 +209,37 @@ fi
 rm -f "$before6a" "$before6b"
 rm -rf "$home6"
 
+# ── Case 7 (HIMMEL-3787 S2d): a real install records a provenance block row ──
+# Only a write that happened is recorded: not a dry run, not an idempotent
+# re-run. Runs in a subshell so the sourced provenance lib does not leak.
+echo "== Case 7: provenance block row =="
+home7="$(mktemp -d "${TMPDIR:-/tmp}/h3787.XXXXXX")"
+ledger7="$home7/prov/provenance.jsonl"
+rows7() { jq -c 'select(.kind=="block")' "$ledger7" 2>/dev/null | grep -c .; }
+(
+  export HIMMEL_PROVENANCE_DIR="$home7/prov"
+  # shellcheck disable=SC1091
+  . "$SCRIPT_DIR/lib/provenance.sh"
+  prov_begin --writer adopt.sh -- case7 >/dev/null
+  DRY_RUN=1 wire_user_claude_md "$TEMPLATE" "$home7/.claude/CLAUDE.md" >/dev/null 2>&1
+  prov_end ok >/dev/null
+)
+if [ "$(rows7)" = "0" ] && [ ! -e "$home7/.claude/CLAUDE.md" ]; then pass "dry run: no file, no block row"; else fail "dry run wrote a file or a row"; fi
+(
+  export HIMMEL_PROVENANCE_DIR="$home7/prov"
+  # shellcheck disable=SC1091
+  . "$SCRIPT_DIR/lib/provenance.sh"
+  prov_begin --writer adopt.sh -- case7 >/dev/null
+  wire_user_claude_md "$TEMPLATE" "$home7/.claude/CLAUDE.md" >/dev/null 2>&1
+  wire_user_claude_md "$TEMPLATE" "$home7/.claude/CLAUDE.md" >/dev/null 2>&1
+  prov_end ok >/dev/null
+)
+if [ "$(rows7)" = "1" ]; then pass "create + idempotent re-run: exactly one block row"; else fail "expected 1 block row, got $(rows7)"; fi
+row7="$(jq -c 'select(.kind=="block")' "$ledger7" 2>/dev/null | head -n 1)"
+if [ "$(jq -r '[.op,.manifest_row,.marker,(.file_created|tostring)]|join(" ")' <<< "$row7")" = "insert user-claude-md $MARKER true" ]; then
+  pass "row: insert / user-claude-md / marker id / file_created=true"; else fail "row shape wrong: $row7"; fi
+rm -rf "$home7"
+
 # Final tally
 if [ "$failures" -eq 0 ]; then
   echo "OK: all cases passed"

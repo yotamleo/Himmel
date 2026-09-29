@@ -201,6 +201,39 @@ removes anything; if the save cannot be made the file is kept, the unit is
 recorded `failed` and the run exits non-zero. `--yes` and non-TTY runs never
 reach the prompt, so they never delete.
 
+### The marked block in `CLAUDE.md` / `AGENTS.md` (HIMMEL-3787 S2d)
+
+`wire_user_claude_md` (`scripts/lib/user-claude-md.sh`) records the
+`HIMMEL:working-principles` block it writes into `~/.claude/CLAUDE.md` and
+`~/.codex/AGENTS.md` as a `block` unit: op `insert`, `--unit
+himmel-working-principles`, manifest row `user-claude-md` / `user-agents-md`,
+`marker` and `file_created` (did install create the file, or append to the
+operator's) as top-level fields, `post.sha` of the BEGIN..END text and an `.ours`
+snapshot of exactly that text. Only a write that happened is recorded: a dry run
+or an idempotent re-run adds no row, and a snapshot skip never fails the install.
+
+Uninstall reads the block through `unwire-user-claude-md.sh --extract` (rc 0 the
+text, 3 no file or no marker, 1 torn / duplicated / CRLF markers / an open fence)
+and decides by comparing its sha with `eff_post`:
+
+| live file | verdict | outcome |
+|---|---|---|
+| block sha equals `eff_post` | `remove ours` | the block is stripped; a file install created that ends up empty is deleted, otherwise the operator's bytes come back exactly |
+| block text differs (an edit inside) | `keep user-modified` | file untouched, exit 0, a hand-removal hint is printed, no `[r]`/`[d]` prompt |
+| markers torn, duplicated, or not parseable | `keep block-malformed` | same |
+| file or markers gone | `keep already-absent` | nothing to do |
+
+The strip re-verifies the block at apply time, so an edit made between the
+verdict and the strip is refused, not overwritten. The helper's own refusals and
+`<path>.himmel-uninstall-backup` sidecar are reused; `restore` is not supported
+for a block (there is no pre-state to restore).
+
+**No ledger row** (a pre-S2d install, or an install by `adopt.ps1`, which does
+not record a block yet): the block is stripped only when it is byte-identical to
+`docs/setup/user-scope-claude-md-template.md`. Any other text is kept and
+reported as `kept (block-unrecorded-modified)`. The standalone uninstall bundle
+therefore ships that template.
+
 ## Known limits
 
 - No jq on `PATH`: the node dialect falls back to a pure-language
