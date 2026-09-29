@@ -48,7 +48,6 @@
 #   CHECK_CI_CACHE_DIR          default $HOME/.himmel/state/ci-cache
 #   CHECK_CI_CACHE_TTL          poll-read TTL, default 60
 #   CHECK_CI_DECIDE_TTL         terminal/decide-read TTL, default 5
-#   CHECK_CI_CACHE_ERR_TTL      error-entry TTL, default 10
 #   CHECK_CI_WATCH_INTERVAL     adaptive-interval floor, default 30
 #   CHECK_CI_WATCH_INTERVAL_MAX adaptive-interval ceiling, default 120
 #   CHECK_CI_API_FLOOR          wait for the reset under this many calls left,

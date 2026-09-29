@@ -31,7 +31,6 @@
 #
 # Env (all optional):
 #   CHECK_CI_CACHE_DIR       state dir (default $HOME/.himmel/state/ci-cache)
-#   CHECK_CI_CACHE_ERR_TTL   how long a non-rate-limit error is cached (default 10)
 #   CHECK_CI_API_FLOOR       remaining below this waits for the reset (default 300; 0 = never wait)
 #   CHECK_CI_LOCK_WAIT       seconds a waiter waits for the fetch lock (default 30)
 #   GH_BUDGET_JITTER_MAX     wake-up jitter seconds, shared with gh-graphql-budget.sh (default 15)
@@ -91,38 +90,33 @@ cic_init() {
 # Valid: same head as the bound one, and younger than <ttl> (an error entry is
 # also capped at the short error TTL). A future-dated entry (clock skew) is a miss.
 _cic_read() {
-    local ttl="$1" line ts head rc now age lim
+    local ttl="$1" line ts head rc now age
     [ -f "$CIC_FILE" ] || return 1
     IFS= read -r line < "$CIC_FILE" || return 1
     IFS=$'\t' read -r ts head rc <<EOF
 $line
 EOF
     case "$ts" in ''|*[!0-9]*) return 1 ;; esac
-    case "$rc" in 0|1) ;; *) return 1 ;; esac
+    [ "$rc" = 0 ] || return 1
     [ "$head" = "$CIC_HEAD" ] || return 1
     now=$(cic_now)
     age=$((now - ts))
     [ "$age" -ge 0 ] || return 1
-    lim=$ttl
-    if [ "$rc" = 1 ]; then
-        local etl="${CHECK_CI_CACHE_ERR_TTL:-10}"
-        case "$etl" in ''|*[!0-9]*) etl=10 ;; esac
-        [ "$etl" -lt "$lim" ] && lim=$etl
-    fi
-    [ "$age" -lt "$lim" ] || return 1
-    if [ "$rc" = 0 ]; then CIC_ROWS=$(sed 1d "$CIC_FILE"); CIC_ERR=""; else CIC_ERR=$(sed 1d "$CIC_FILE"); CIC_ROWS=""; fi
-    CIC_HIT_RC=$rc
+    [ "$age" -lt "$ttl" ] || return 1
+    CIC_ROWS=$(sed 1d "$CIC_FILE"); CIC_ERR=""
+    CIC_HIT_RC=0
     return 0
 }
 
-# _cic_write <rc> — tmp-then-mv, so a reader never sees half an entry.
+# _cic_write — tmp-then-mv, so a reader never sees half an entry. A failed write
+# (ENOSPC) is never promoted: a truncated row set could read as green.
 _cic_write() {
     local tmp="$CIC_FILE.$$.tmp"
-    {
-        printf '%s\t%s\t%s\n' "$(cic_now)" "$CIC_HEAD" "$1"
-        if [ "$1" = 0 ]; then printf '%s\n' "$CIC_ROWS"; else printf '%s\n' "$CIC_ERR" | tr '\n' ' '; echo; fi
-    } > "$tmp" 2>/dev/null
-    mv -f "$tmp" "$CIC_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    if { printf '%s\t%s\t0\n' "$(cic_now)" "$CIC_HEAD" && printf '%s\n' "$CIC_ROWS"; } > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$CIC_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    else
+        rm -f "$tmp" 2>/dev/null
+    fi
     # Opportunistic prune: another PR's entry untouched for a day is dead.
     find "$(dirname "$CIC_FILE")" -maxdepth 1 -name 'pr-*' -mtime +1 -exec rm -rf {} + 2>/dev/null || true
 }
@@ -211,6 +205,9 @@ _cic_budget_wait() {
     wait_s=$((reset - now + 2))
     [ "$wait_s" -lt 2 ] && wait_s=2
     human=$(date -u -d "@$reset" +%H:%M:%SZ 2>/dev/null || date -u -r "$reset" +%H:%M:%SZ 2>/dev/null || echo "epoch $reset")
+    # The pre-check is advisory: with the reset beyond the bound, fetch and spend what is left
+    # (as the legacy path does); only a real rate-limit error (force=1) refuses to proceed.
+    if [ "$max" -gt 0 ] && [ "$wait_s" -gt "$max" ] && [ "$force" != 1 ]; then return 0; fi
     if [ "$max" -gt 0 ] && [ "$wait_s" -gt "$max" ]; then
         CIC_ERR="GitHub API budget low (graphql=$gql_rem, floor=$floor), resets at $human (in ${wait_s}s) — longer than the ${max}s bound; not waiting"
         echo "check-ci: $CIC_ERR" >&"${CIC_NOTICE_FD:-2}"
@@ -251,7 +248,9 @@ cic_get() {
             head_after=$(_cic_head_now) || head_after=""
             # Cache only what is provably the bound head's: a push mid-fetch
             # leaves the rows ambiguous, so they are returned but never stored.
-            if [ "$head_after" = "$CIC_HEAD" ]; then _cic_write "$rc"; fi
+            # An error is never cached: one waiter's failure (a network blip, a bad token)
+            # must not become another waiter's exit 2.
+            if [ "$head_after" = "$CIC_HEAD" ] && [ "$rc" -eq 0 ]; then _cic_write; fi
             cic_unlock
         fi
         return "$rc"

@@ -227,23 +227,26 @@ echo rl-once > "$CASE_DIR/mode"
 cic_init "" ; cic_get 60 2>"$CASE_DIR/err"; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(sort -n "$CASE_DIR/sleeps.log" | tail -1)" -ge 60 ] 2>/dev/null; then pass "5 403 -> waited for the reset, then resumed rc 0 (sleeps: $(sleeps))"; else fail "5 403" "rc=$rc sleeps=$(sleeps) err=$(cat "$CASE_DIR/err")"; fi
 if [ -n "$CIC_ROWS" ]; then pass "5b rows arrived after the resume"; else fail "5b rows" "CIC_ROWS empty"; fi
-# a plain error is returned (rc 1), cached briefly, and is not a wait
+# a plain error is returned (rc 1), is not a wait, and is never cached: it is one caller's
+# failure (a blip, a bad token), not another waiter's exit 2
 new_case
 echo err > "$CASE_DIR/mode"
 cic_init "" ; cic_get 60 2>/dev/null; rc=$?
 if [ "$rc" -eq 1 ] && printf '%s' "$CIC_ERR" | grep -q 'error connecting'; then pass "5c non-rate-limit error: rc 1, text kept"; else fail "5c error" "rc=$rc err=$CIC_ERR"; fi
 cic_init "" ; cic_get 60 2>/dev/null; n=$(fetches)
-if [ "$n" -eq 1 ]; then pass "5d the error is cached for the short error TTL (no hammering)"; else fail "5d err ttl" "fetches=$n want 1"; fi
-setclock 1000000020
-cic_init "" ; cic_get 60 2>/dev/null; n=$(fetches)
-if [ "$n" -eq 2 ]; then pass "5e past the error TTL: retried"; else fail "5e" "fetches=$n want 2"; fi
+if [ "$n" -eq 2 ]; then pass "5d an error is never cached: the next caller refetches"; else fail "5d err cache" "fetches=$n want 2"; fi
 
-# 6 — reset beyond the bound.
+# 6 — reset beyond the bound: the pre-check is advisory (fetch, as the legacy path does); only
+# a real rate-limit error refuses to proceed.
 new_case
 echo 1000001000 > "$CASE_DIR/rl_reset"; echo 0 > "$CASE_DIR/rl_gql"
 CIC_MAX_WAIT=60 cic_init "" ; CIC_MAX_WAIT=60 cic_get 60 2>"$CASE_DIR/err"; rc=$?
-if [ "$rc" -eq 2 ]; then pass "6 reset beyond --max-wait: rc 2"; else fail "6 rc" "rc=$rc"; fi
-if [ ! -s "$CASE_DIR/sleeps.log" ] && [ "$(fetches)" -eq 0 ]; then pass "6b no sleep, no fetch"; else fail "6b" "sleeps=$(sleeps) fetches=$(fetches)"; fi
+if [ "$rc" -eq 0 ] && [ "$(fetches)" -eq 1 ]; then pass "6 low budget, reset beyond --max-wait: the pre-check fetches anyway (rc 0)"; else fail "6 rc" "rc=$rc fetches=$(fetches)"; fi
+if [ ! -s "$CASE_DIR/sleeps.log" ]; then pass "6b no sleep"; else fail "6b" "sleeps=$(sleeps)"; fi
+new_case
+echo rl-once > "$CASE_DIR/mode"
+CIC_MAX_WAIT=30 cic_init "" ; CIC_MAX_WAIT=30 cic_get 60 2>"$CASE_DIR/err"; rc=$?
+if [ "$rc" -eq 2 ] && [ ! -s "$CASE_DIR/sleeps.log" ]; then pass "6e a real 403 with the reset beyond --max-wait: rc 2, no sleep"; else fail "6e 403 bound" "rc=$rc sleeps=$(sleeps)"; fi
 
 # 6c — a killed gh (no rows, no stderr, exit above gh's own 1/8) is an error, never "no checks".
 new_case
@@ -366,7 +369,7 @@ else
     printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
     echo 0 > "$CASE_DIR/rl_gql"
     run_ci "$CASE_DIR/b" 42 --max-wait 60
-    if [ "$(cat "$CASE_DIR/b.rc")" -eq 2 ] && [ "$(maxsleep)" -lt 100 ]; then pass "10i graphql drained, reset beyond --max-wait -> exit 2, no long sleep (max sleep $(maxsleep)s)"; else fail "10i bound" "rc=$(cat "$CASE_DIR/b.rc") maxsleep=$(maxsleep) err=$(cat "$CASE_DIR/b.err")"; fi
+    if [ "$(cat "$CASE_DIR/b.rc")" -eq 0 ] && [ "$(maxsleep)" -lt 100 ]; then pass "10i graphql drained, reset beyond --max-wait -> same verdict as legacy (rc 0), no long sleep (max sleep $(maxsleep)s)"; else fail "10i bound" "rc=$(cat "$CASE_DIR/b.rc") maxsleep=$(maxsleep) err=$(cat "$CASE_DIR/b.err")"; fi
     new_case
     printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
     echo 0 > "$CASE_DIR/rl_core"
@@ -377,6 +380,16 @@ else
     run_ci "$CASE_DIR/x" 42 --max-wait 900
     RUN_SLEEP=: run_ci "$CASE_DIR/y" 42 --max-wait 900
     if [ "$(cat "$CASE_DIR/x.rc")" -eq "$(cat "$CASE_DIR/y.rc")" ] && [ "$(cat "$CASE_DIR/x.rc")" -eq 0 ]; then pass "10k a cancel beside passes gives the same verdict (rc 0) at any poll timing"; else fail "10k cancel" "rc=$(cat "$CASE_DIR/x.rc")/$(cat "$CASE_DIR/y.rc") err=$(cat "$CASE_DIR/x.err")"; fi
+    # The decidable early stop must rest on a decide-grade read: a 30 s-old snapshot where only
+    # CodeRabbit is pending, while the live rollup has a failure, must NOT end the watch green.
+    new_case
+    printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
+    run_ci "$CASE_DIR/w" 42 --max-wait 900
+    set -- "$CASE_DIR"/cache/pr-*.rows
+    { printf '%s\t%s\t0\n' 999999970 sha1; printf 'pass\tunit-tests\npending\tCodeRabbit\n'; } > "$1"
+    printf 'pending\tunit-tests\npending\tCodeRabbit\n' > "$CASE_DIR/rows"
+    run_ci "$CASE_DIR/z" 42 --max-wait 60
+    if [ "$(cat "$CASE_DIR/z.rc")" -ne 0 ]; then pass "10l a stale all-terminal snapshot never ends the watch green over a live pending check (rc $(cat "$CASE_DIR/z.rc"))"; else fail "10l stale decidable" "rc=$(cat "$CASE_DIR/z.rc") err=$(cat "$CASE_DIR/z.err") (0 = the stale snapshot was certified)"; fi
 
     # A second run inside the TTL reads the first run's snapshot.
     new_case
