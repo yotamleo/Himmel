@@ -1321,7 +1321,10 @@ bash "$HOOK" < "$BR_TMP/brace.json" > "$BR_TMP/brace.out" 2>/dev/null || BR_RC=$
 if grep -qF '{--output=/tmp/PWN,-1}' "$BR_TMP/brace.json"; then BR_RAW=ALLOW; else BR_RAW=PASS; fi
 assert "precondition: raw git brace payload carries the brace" ALLOW "$BR_RAW"
 assert "precondition: raw git brace payload hook exited 0" 0 "$BR_RC"
-if grep -qF '"permissionDecision":"allow"' "$BR_TMP/brace.out"; then BR_RAW=ALLOW; else BR_RAW=PASS; fi
+# grep rc 2 (an unreadable output file) is ERROR, never a PASS.
+BR_G=0
+grep -qF '"permissionDecision":"allow"' "$BR_TMP/brace.out" || BR_G=$?
+case "$BR_G" in 0) BR_RAW=ALLOW ;; 1) BR_RAW=PASS ;; *) BR_RAW=ERROR ;; esac
 assert "git log brace --output, raw payload" PASS "$BR_RAW"
 rm -rf "$BR_TMP"
 # Controls: a brace the shell does NOT expand (quoted, escaped, no comma or
