@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { request, projectKey } from '../client.js';
 import { adfToPlainText } from '../adf-render.js';
 import type { ADFDocument } from '../adf-render.js';
@@ -203,7 +203,7 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
   const fullKeys = new Set<string>();
 
   await searchPages(jql, FIELDS, req, async (issues) => {
-    await inChunks(issues, opts.concurrency ?? 5, async (issue) => {
+    await inChunks(issues, Math.max(1, Math.floor(opts.concurrency || 5)), async (issue) => {
       res.fetched++;
       fullKeys.add(issue.key);
       const c = issue.fields.comment;
@@ -265,7 +265,8 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
   // An incomplete mirror keeps no cursor, so the next run is a full backfill
   // instead of an incremental that never revisits unchanged, missing issues.
   if (res.jiraTotal !== null && res.mirrorCount < res.jiraTotal * COUNT_TOLERANCE) {
-    warn(`mirror holds ${res.mirrorCount} but Jira counts ${res.jiraTotal}; cursor not advanced`);
+    warn(`mirror holds ${res.mirrorCount} but Jira counts ${res.jiraTotal}; cursor dropped`);
+    if (existsSync(join(root, CURSOR_FILE))) unlinkSync(join(root, CURSOR_FILE));
     return res;
   }
   writeFileAtomic(
@@ -287,7 +288,7 @@ export function qmdRefresh(root: string, run: (args: string[]) => string = (a) =
       run(['collection', 'add', root, '--name', COLLECTION]);
     } else {
       const path = /^\s*Path:\s*(.+)$/m.exec(run(['collection', 'show', COLLECTION]))?.[1]?.trim();
-      if (path !== root) throw new Error(`collection ${COLLECTION} points at ${path ?? 'an unknown path'}, not ${root}`);
+      if (!path || resolve(path) !== resolve(root)) throw new Error(`collection ${COLLECTION} points at ${path ?? 'an unknown path'}, not ${root}`);
     }
     run(['update']);
     run(['embed', '-c', COLLECTION]);
