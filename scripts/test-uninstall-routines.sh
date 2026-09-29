@@ -32,6 +32,7 @@ real_ledger_state() {
 REAL_LEDGER_BEFORE=$(real_ledger_state)
 
 SUITE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/uninstall-routines.XXXXXX")" || { echo "FAIL: mktemp" >&2; exit 1; }
+SUITE_TMP="$(cd -P -- "$SUITE_TMP" && pwd)" || exit 1
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
 fails=0
@@ -263,6 +264,18 @@ run_uninstall "${BASE_FLAGS[@]}" >/dev/null
 check "B5 operator's unit bytes back" "$(grep -c operators-own "$UNIT" 2>/dev/null)" "1"
 check "B5 no disable --now" "$(grep -c 'disable --now' "$SYSTEMCTL_LOG")" "0"
 
+# pty_run <cmd-string> <uninstall.sh args...>: util-linux script(1) takes the
+# command as a string (-c); BSD/macOS script(1) has no -c/-e and takes the argv
+# after the file. Probed by --version (BSD script rejects it), not keyed off uname.
+pty_run() {
+  local cmd="$1"; shift
+  if script --version >/dev/null 2>&1; then
+    script -qec "$cmd" /dev/null
+  else
+    script -q /dev/null bash "$repo_root/scripts/uninstall.sh" "$@"
+  fi
+}
+
 # run_uninstall_tty <keystrokes> <flags...>: the same run under a pty with the
 # keystrokes typed, so the interactive [d]elete override is reachable.
 run_uninstall_tty() {
@@ -280,7 +293,7 @@ run_uninstall_tty() {
     FAKE_SYSTEMCTL_FAIL_ON="${FAKE_SYSTEMCTL_FAIL_ON:-}" \
     FAKE_AT_DIR="$CASE_DIR/at" FAKE_AT_LOG="$AT_LOG" \
     PATH="$SUITE_TMP/bin:$PATH" USER=tester \
-    script -qec "$cmd" /dev/null < <(printf '%b' "$keys") 2>&1 )
+    pty_run "$cmd" "$@" < <(printf '%b' "$keys") 2>&1 )
 }
 TTY_FLAGS=(--keep-telegram-state --skip-plugins --skip-hooks --skip-settings)
 

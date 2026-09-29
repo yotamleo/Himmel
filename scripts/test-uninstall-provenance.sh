@@ -36,6 +36,7 @@ real_ledger_state() {
 REAL_LEDGER_BEFORE=$(real_ledger_state)
 
 SUITE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/uninstall-prov.XXXXXX")" || { echo "FAIL: mktemp" >&2; exit 1; }
+SUITE_TMP="$(cd -P -- "$SUITE_TMP" && pwd)" || exit 1
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
 fails=0
@@ -235,8 +236,16 @@ run_uninstall() {
 # [ -t 0 ] && [ -t 1 ] TTY offers are reachable; otherwise stdin is /dev/null.
 _run_uninstall_inner() {
   if [ -n "${RUN_TTY_ANSWER:-}" ]; then
-    printf '%s\n' "$RUN_TTY_ANSWER" \
-      | script -qec "$(printf '%q ' bash "$repo_root/scripts/uninstall.sh" "$@")" /dev/null 2>&1
+    # util-linux script(1) takes the command as a string (-c); BSD/macOS has
+    # no -c/-e and takes the argv after the file. Probed by --version (BSD
+    # rejects it), not keyed off uname.
+    if script --version >/dev/null 2>&1; then
+      printf '%s\n' "$RUN_TTY_ANSWER" \
+        | script -qec "$(printf '%q ' bash "$repo_root/scripts/uninstall.sh" "$@")" /dev/null 2>&1
+    else
+      printf '%s\n' "$RUN_TTY_ANSWER" \
+        | script -q /dev/null bash "$repo_root/scripts/uninstall.sh" "$@" 2>&1
+    fi
   else
     bash "$repo_root/scripts/uninstall.sh" "$@" </dev/null 2>&1
   fi
