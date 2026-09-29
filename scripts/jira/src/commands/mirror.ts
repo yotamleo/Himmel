@@ -47,7 +47,7 @@ export interface MirrorIssue {
 interface SearchPage { issues: MirrorIssue[]; nextPageToken?: string }
 export type Req = typeof request;
 
-export interface Cursor { lastSync: string; total: number }
+export interface Cursor { lastSync: string; total: number; project?: string }
 
 export interface MirrorOptions {
   root: string;
@@ -169,8 +169,15 @@ async function inChunks<T>(items: T[], size: number, fn: (t: T) => Promise<void>
   for (let i = 0; i < items.length; i += size) await Promise.all(items.slice(i, i + size).map(fn));
 }
 
-const localKeys = (root: string): string[] =>
-  existsSync(root) ? readdirSync(root).filter((n) => /^[A-Z][A-Z0-9_]*-\d+\.md$/.test(n)).map((n) => n.slice(0, -3)) : [];
+const localKeys = (root: string, project?: string): string[] =>
+  existsSync(root)
+    ? readdirSync(root)
+        .filter((n) => /^[A-Z][A-Z0-9_]*-\d+\.md$/.test(n) && (!project || n.startsWith(`${project}-`)))
+        .map((n) => n.slice(0, -3))
+    : [];
+
+// The approximate count can lag a little; a listing this far short of it is truncated, not current.
+const COUNT_TOLERANCE = 0.98;
 
 export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorResult> {
   const { root, project } = opts;
@@ -179,7 +186,9 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
   const startedAt = now();
   mkdirSync(root, { recursive: true });
 
-  const cursor = opts.full ? null : readCursor(root);
+  const stored = opts.full ? null : readCursor(root);
+  // A cursor written for another project must not drive this run's incremental window.
+  const cursor = stored && (stored.project === undefined || stored.project === project) ? stored : null;
   const mode = cursor ? 'incremental' : 'full';
   let jql = `project = ${project} ORDER BY key ASC`;
   if (cursor) {
@@ -213,7 +222,13 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
 
   // Delete/move detection: authoritative key list. Fails SAFE — an error or a
   // suspiciously short list deletes nothing.
-  const local = localKeys(root);
+  const local = localKeys(root, project);
+  try {
+    const { count } = await req<{ count: number }>('POST', '/search/approximate-count', { jql: `project = ${project}` });
+    res.jiraTotal = typeof count === 'number' ? count : null;
+  } catch {
+    res.jiraTotal = null;
+  }
   let live: Set<string> | null = null;
   if (mode === 'full') live = fullKeys;
   else {
@@ -231,6 +246,10 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
     res.deleteSkipped = `key listing returned ${live.size} of ${local.length} local files (< ${DELETE_SAFETY_RATIO * 100}%)`;
     live = null;
   }
+  if (live && res.jiraTotal !== null && live.size < res.jiraTotal * COUNT_TOLERANCE) {
+    res.deleteSkipped = `key listing returned ${live.size} but Jira counts ${res.jiraTotal}`;
+    live = null;
+  }
   if (res.deleteSkipped) warn(`delete pass skipped — ${res.deleteSkipped}`);
   if (live) {
     for (const k of local) {
@@ -241,14 +260,11 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
     }
   }
 
-  res.mirrorCount = localKeys(root).length;
-  try {
-    const { count } = await req<{ count: number }>('POST', '/search/approximate-count', { jql: `project = ${project}` });
-    res.jiraTotal = typeof count === 'number' ? count : null;
-  } catch {
-    res.jiraTotal = null;
-  }
-  writeFileAtomic(join(root, CURSOR_FILE), JSON.stringify({ lastSync: startedAt.toISOString(), total: res.mirrorCount }) + '\n');
+  res.mirrorCount = localKeys(root, project).length;
+  writeFileAtomic(
+    join(root, CURSOR_FILE),
+    JSON.stringify({ lastSync: startedAt.toISOString(), total: res.mirrorCount, project }) + '\n',
+  );
   return res;
 }
 

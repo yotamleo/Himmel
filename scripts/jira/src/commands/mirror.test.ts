@@ -23,13 +23,13 @@ const issue = (n: number, over: Partial<MirrorIssue['fields']> = {}): MirrorIssu
   },
 });
 
-interface Stub { issues: MirrorIssue[]; pageSize: number; failKeyList?: boolean; calls: string[] }
+interface Stub { issues: MirrorIssue[]; pageSize: number; failKeyList?: boolean; count?: number; calls: string[] }
 
 // Fake /search/jql (token paging), /search/approximate-count and comments.
 function makeReq(stub: Stub): Req {
   return (async (method: string, path: string) => {
     stub.calls.push(`${method} ${path}`);
-    if (path.startsWith('/search/approximate-count')) return { count: stub.issues.length };
+    if (path.startsWith('/search/approximate-count')) return { count: stub.count ?? stub.issues.length };
     if (path.startsWith('/search/jql')) {
       const keysOnly = path.includes('fields=key&');
       if (keysOnly && stub.failKeyList) throw new Error('HTTP 500');
@@ -128,6 +128,27 @@ describe('runMirror', () => {
     expect(r.deleted).toBe(0);
     expect(r.deleteSkipped).toContain('%');
     expect(mdFiles()).toHaveLength(4);
+  });
+
+  it('fails safe: a listing well short of the Jira count deletes nothing', async () => {
+    const stub: Stub = { issues: [1, 2, 3, 4].map((n) => issue(n)), pageSize: 10, calls: [] };
+    await runMirror({ root, project: 'HIMMEL' }, makeReq(stub));
+    stub.issues = [issue(1), issue(2), issue(3)];
+    stub.count = 4;
+    const r = await runMirror({ root, project: 'HIMMEL', warn: vi.fn() }, makeReq(stub));
+    expect(r.deleted).toBe(0);
+    expect(r.deleteSkipped).toContain('Jira counts 4');
+    expect(mdFiles()).toHaveLength(4);
+  });
+
+  it('a cursor from another project neither drives the window nor lets deletes reach its files', async () => {
+    const other: Stub = { issues: [{ ...issue(1), key: 'OTHER-1' }], pageSize: 10, calls: [] };
+    await runMirror({ root, project: 'OTHER' }, makeReq(other));
+    const stub: Stub = { issues: [issue(1), issue(2)], pageSize: 10, calls: [] };
+    const r = await runMirror({ root, project: 'HIMMEL' }, makeReq(stub));
+    expect(r.mode).toBe('full');
+    expect(r.deleted).toBe(0);
+    expect(existsSync(join(root, 'OTHER-1.md'))).toBe(true);
   });
 
   it('does not refetch comments the search page already embedded in full', async () => {
