@@ -36,8 +36,7 @@
 // structurally; bench-report.test.mjs's round-4 guard test enforces it per
 // category.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from '../../lib/is-main.mjs';
 import { checkPromptHashParity, listRunManifests } from './run-manifest.mjs';
 import { aggregate } from './aggregate-tokens.mjs';
 
@@ -469,6 +468,6 @@ function main() {
 
 // Resolved-path comparison, not a filename suffix (codex CR) — `report.mjs` is
 // an especially collision-prone suffix (any `*-report.mjs` would match).
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main();
 }

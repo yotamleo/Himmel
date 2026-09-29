@@ -12,8 +12,7 @@
 // the lane's own ~90-99% refuse point, so a 2-3h, 20-dispatch batch cannot
 // die mid-run right at the boundary.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from '../../lib/is-main.mjs';
 import { parseBankStatusOutput } from '../bank-status-core.mjs';
 
 // CLAUDE_SEVEN_DAY_WINDOW_LABEL: readClaudeBank (scripts/observability/
@@ -147,6 +146,6 @@ async function main() {
 // Resolved-path comparison, not a filename suffix (codex CR) — a suffix match
 // also fires when this module is imported by a script whose own filename ends
 // with the same string, running main() as an import side effect.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main();
 }

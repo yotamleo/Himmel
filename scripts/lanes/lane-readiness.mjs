@@ -37,8 +37,9 @@
 // ledger. An unparseable output or non-zero exit fail-opens to READY there —
 // only a clean `down` verdict skips a lane.
 import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 import { ledgerPath } from './verify-return.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -125,6 +126,6 @@ function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main();
 }

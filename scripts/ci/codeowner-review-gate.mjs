@@ -30,7 +30,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 
 const WRITE_PERMISSIONS = new Set(['admin', 'write']);
 const WRITE_ROLES = new Set(['admin', 'maintain', 'write']);
@@ -314,7 +314,7 @@ function main(argv) {
   return evaluate(input);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isMain(import.meta.url)) {
   let v;
   try {
     v = main(process.argv.slice(2));

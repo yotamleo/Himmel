@@ -32,6 +32,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 
 const LOCAL = 'lean-skills@himmel';
 
@@ -120,8 +121,7 @@ export function findOverlap({ home, cwd, configDir, repoRoot }) {
 }
 
 const thisFile = fileURLToPath(import.meta.url);
-const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === thisFile;
-if (isMain) {
+if (isMain(import.meta.url)) {
   // `!== undefined` (not `||`) on every seam: an explicit empty string must
   // mean "skip this layer" (a test's deliberate no-cwd-walk hermetic seam),
   // not "unset, fall back to the real value" — `||` treated them the same and

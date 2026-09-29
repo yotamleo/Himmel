@@ -31,8 +31,8 @@
 // ledger write failure warns on stderr but never flips the verdict).
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { isMain } from '../lib/is-main.mjs';
 
 const CHECKS = [
   {
@@ -198,6 +198,6 @@ function main() {
   process.exitCode = result.verdict === 'PASS' ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main();
 }

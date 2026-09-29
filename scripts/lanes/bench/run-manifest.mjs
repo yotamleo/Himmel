@@ -18,8 +18,8 @@
 // core the enforcement calls.
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { isMain } from '../../lib/is-main.mjs';
 
 export const RUN_MANIFEST_FIELDS = [
   'run_id', 'task', 'cell', 'rep', 'model', 'effort', 'prompt_sha256',
@@ -204,6 +204,6 @@ function main() {
 
 // Resolved-path comparison, not a filename suffix (codex CR) — the last of the
 // four bench modules carrying this guard.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main();
 }

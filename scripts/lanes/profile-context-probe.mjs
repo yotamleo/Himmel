@@ -33,6 +33,7 @@ import { writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSy
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 import { createRequire } from 'node:module';
 import { loadRegistry, resolveProfileByName, readEnabledPluginIds } from './plugin-profiles.mjs';
 import { ledgerPath } from './verify-return.mjs';
@@ -356,6 +357,6 @@ function main() {
   process.exitCode = anyFailed ? 1 : 0;
 }
 
-if (process.argv[1] && (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileURLToPath(import.meta.url))) {
+if (isMain(import.meta.url)) {
   main();
 }

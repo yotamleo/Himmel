@@ -51,6 +51,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 
 import { EXPECTED_HOOKS } from './shadow-ledger.mjs';
 import { acquireLock } from '../lib/settings-lock.mjs';
@@ -751,4 +752,4 @@ async function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (isMain(import.meta.url)) main();

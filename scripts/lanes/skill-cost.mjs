@@ -20,7 +20,7 @@ import {
   resolve,
   sep,
 } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 
 const ROUTING_TEXT_CAP = 1536;
 const PLUGIN_SCAN_MAX_DEPTH = 6;
@@ -566,7 +566,7 @@ function runCli(argv) {
   if (skipped.length > 0) process.exitCode = 3;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   try {
     runCli(process.argv.slice(2));
   } catch (error) {
