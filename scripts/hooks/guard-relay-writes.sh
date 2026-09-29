@@ -26,7 +26,9 @@
 #     <handover_root> fails to resolve, or the path itself fails to resolve
 #     (`readlink -f`, every "./" segment and every symlink including the
 #     final component included — denied fail-closed rather than silently
-#     skipping the guarded-path match); or the PHYSICALLY resolved path is under
+#     skipping the guarded-path match; on a BSD readlink, detected by a
+#     one-time probe, a missing FINAL component alone is resolved through its
+#     parent, fail-closed — HIMMEL-3872); or the PHYSICALLY resolved path is under
 #     <handover_root>/inbox/, under a .../himmel-console/... rundir, under
 #     ${TMPDIR:-/tmp}/himmel-console-*, or its basename matches
 #     *-legN*-RESUME.md.
@@ -105,6 +107,69 @@ deny() {
     exit 2
 }
 
+# HIMMEL-3872 one-time capability probe: does this readlink -f resolve a
+# missing final component under an existing directory (GNU) or refuse it
+# (BSD/macOS realpath(3))? Succeeds only on an exact, positive GNU answer;
+# any error or ambiguity is "no", which merely lets the fail-closed fallback
+# below run. Called at most once, and only after readlink -f has failed.
+readlink_resolves_missing_leaf() {
+    local d d_resolved got
+    d="$(mktemp -d "${TMPDIR:-/tmp}/relay-probe.XXXXXX" 2>/dev/null)" || return 1
+    [ -n "$d" ] || return 1
+    d_resolved="$(readlink -f -- "$d" 2>/dev/null)" || d_resolved=""
+    got="$(readlink -f -- "$d/probe-leaf" 2>/dev/null)" || got=""
+    rmdir -- "$d" 2>/dev/null
+    [ -n "$d_resolved" ] && [ "$got" = "$d_resolved/probe-leaf" ]
+}
+
+# HIMMEL-3872 BSD fallback: resolve <parent>/<leaf> when ONLY the final
+# component is missing. Prints the resolved path, or returns 1 for every case
+# it cannot prove: a relative path, a trailing slash, a newline anywhere in
+# the path (command substitution would strip it), an empty/"."/".." leaf,
+# a parent that is not an existing traversable directory (a missing
+# intermediate dir, or a chmod-000 parent hiding a symlink), a leaf that
+# exists in any form (a dangling symlink included), a leaf longer than
+# NAME_MAX, or a result longer than PATH_MAX. Every path it resolves is one
+# GNU readlink -f resolves to the same string, so even a probe that wrongly
+# says "BSD" on GNU cannot widen an allow.
+resolve_missing_leaf() {
+    local p="$1" parent leaf parent_resolved name_max path_max leaf_len out out_len
+    case "$p" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case "$p" in
+        */ | *$'\n'*) return 1 ;;
+    esac
+    leaf="${p##*/}"
+    parent="${p%/*}"
+    [ -n "$parent" ] || parent="/"
+    case "$leaf" in
+        "" | . | ..) return 1 ;;
+    esac
+    { [ -d "$parent" ] && [ -x "$parent" ]; } || return 1
+    { [ ! -e "$p" ] && [ ! -L "$p" ]; } || return 1
+    parent_resolved="$(readlink -f -- "$parent" 2>/dev/null)" || return 1
+    { [ -n "$parent_resolved" ] && [ -d "$parent_resolved" ] && [ -x "$parent_resolved" ]; } || return 1
+    name_max="$(getconf NAME_MAX "$parent_resolved" 2>/dev/null)" || return 1
+    path_max="$(getconf PATH_MAX "$parent_resolved" 2>/dev/null)" || return 1
+    leaf_len="$(printf '%s' "$leaf" | LC_ALL=C wc -c 2>/dev/null)" || return 1
+    leaf_len="${leaf_len//[[:space:]]/}"
+    case "$parent_resolved" in
+        /) out="/$leaf" ;;
+        *) out="$parent_resolved/$leaf" ;;
+    esac
+    out_len="$(printf '%s' "$out" | LC_ALL=C wc -c 2>/dev/null)" || return 1
+    out_len="${out_len//[[:space:]]/}"
+    case "$name_max$path_max$leaf_len$out_len" in
+        *[!0-9]*) return 1 ;;
+    esac
+    { [ -n "$name_max" ] && [ -n "$path_max" ] && [ -n "$leaf_len" ] && [ -n "$out_len" ]; } || return 1
+    [ "$leaf_len" -le "$name_max" ] || return 1
+    [ "$out_len" -lt "$path_max" ] || return 1
+    printf '%s\n' "$out"
+}
+
 command -v jq >/dev/null 2>&1 || deny "unparseable-payload" "jq not on PATH"
 
 input=$(cat 2>/dev/null || true)
@@ -152,15 +217,25 @@ case "$tool" in
         [ -n "$root_resolved" ] || deny "handover-root-unresolved" "handover_root does not resolve: $root"
 
         # Physically resolve the WHOLE path — every "./" segment, and every
-        # symlink in every component including the final one (`readlink -f`,
-        # GNU coreutils, Linux-only per this hook's platform guard) — before
-        # matching against a guarded prefix. A dir-only resolution still lets
-        # an innocuously-named symlink whose FINAL component points into a
-        # guarded dir slip past a literal-string glob (codex-1); readlink -f
-        # only requires the path up to the last component to exist, so a
-        # brand-new file under an existing directory still resolves cleanly.
-        path_resolved="$(readlink -f -- "$path" 2>/dev/null)" || deny "unresolved-path" "$path"
-        [ -n "$path_resolved" ] || deny "unresolved-path" "$path"
+        # symlink in every component including the final one (`readlink -f`)
+        # — before matching against a guarded prefix. A dir-only resolution
+        # still lets an innocuously-named symlink whose FINAL component points
+        # into a guarded dir slip past a literal-string glob (codex-1). GNU
+        # readlink -f only requires the path up to the last component to
+        # exist, so a brand-new file under an existing directory resolves
+        # cleanly; BSD/macOS readlink -f (realpath(3)) refuses a missing final
+        # component (HIMMEL-3872). Only when resolution fails AND the one-time
+        # probe says this readlink is the BSD kind does the fallback run — on
+        # GNU it never runs, so GNU enforcement is identical by construction.
+        path_resolved=""
+        if path_resolved="$(readlink -f -- "$path" 2>/dev/null)" && [ -n "$path_resolved" ]; then
+            :
+        elif readlink_resolves_missing_leaf; then
+            deny "unresolved-path" "$path"
+        else
+            path_resolved="$(resolve_missing_leaf "$path")" || deny "unresolved-path" "$path"
+            [ -n "$path_resolved" ] || deny "unresolved-path" "$path"
+        fi
         path_base=$(basename -- "$path_resolved")
 
         case "$path_resolved" in

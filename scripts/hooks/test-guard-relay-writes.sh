@@ -39,7 +39,7 @@ if ! jq -nc --arg c "cat $FIXTURE_BASE/x/inbox/X.md" '{tool_name:"Bash", tool_in
 fi
 TMP="$FIXTURE_BASE/himmel-relay-guard-fixture.$$"
 mkdir "$TMP" || { echo "FATAL: mkdir $TMP failed" >&2; exit 1; }
-trap 'rm -rf "$TMP"' EXIT
+trap 'chmod 700 "$TMP/locked" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ROOT="$TMP/root"
 mkdir -p "$ROOT/inbox" "$ROOT/yotamleo/himmel"
@@ -248,6 +248,109 @@ printf '%s' "$(write_payload Write "$ROOT/some-file.md")" \
 RC_ROOT_FAIL="$?"
 assert_rc "handover_root failure denies fail-closed (rc=2)" 2 "$RC_ROOT_FAIL"
 assert_contains "handover_root failure deny reason" "handover-root-unresolved" "$(cat "$TMP/out-root-fail")"
+
+# HIMMEL-3872: BSD readlink -f refuses a missing final component, so the hook
+# falls back to resolving the parent — but only after a one-time probe says
+# the readlink is the BSD kind, and fail-closed for every case it cannot prove.
+run_relay_with() {
+    # run_relay_with <name> <json> <VAR=value>...
+    local name="$1" json="$2"
+    shift 2
+    printf '%s' "$json" | env HANDOVER_DIR="$ROOT" HIMMEL_CONSOLE_RELAY=1 "$@" "$BASH_ABS" "$HOOK" >"$TMP/out-$name" 2>"$TMP/err-$name"
+    echo "$?"
+}
+
+expect_row() {
+    # expect_row <name> <expected rc> <actual rc> [<deny-reason needle>]
+    local name="$1" expect="$2" rc="$3" needle="${4:-relay write-deny:}"
+    assert_rc "$name" "$expect" "$rc"
+    if [ "$expect" = "2" ]; then
+        assert_contains "$name deny reason" "$needle" "$(cat "$TMP/out-$name")"
+    else
+        assert_empty "$name allow: no output" "$(combined_output "$name")"
+    fi
+}
+
+# As root a chmod-000 dir is still traversable, so there the hidden symlink
+# resolves and the deny is inbox-write instead — still a deny.
+UNTRAVERSABLE_REASON="unresolved-path"
+[ "$(id -u)" = "0" ] && UNTRAVERSABLE_REASON="relay write-deny:"
+
+mkdir "$TMP/locked"
+ln -s "$ROOT/inbox/hidden.md" "$TMP/locked/looks-safe.md"
+chmod 000 "$TMP/locked"
+UNTRAVERSABLE_HIDDEN_SYMLINK="$TMP/locked/looks-safe.md"
+LONG_LEAF="$ROOT/yotamleo/himmel/$(printf '%300s' '' | tr ' ' a).md"
+MISSING_INTERMEDIATE="$ROOT/yotamleo/no-such-dir/new.md"
+TRAILING_SLASH_INBOX="$ROOT/inbox/new-dir/"
+NEW_OWN_DOC="$ROOT/yotamleo/himmel/HIMMEL-1-new-2026-09-29-RESUME.md"
+
+echo ""
+echo "=== HIMMEL-3872: native readlink, unresolvable writes deny (marker set) ==="
+expect_row native-untraversable-parent 2 "$(run_relay native-untraversable-parent "$(write_payload Write "$UNTRAVERSABLE_HIDDEN_SYMLINK")")" "$UNTRAVERSABLE_REASON"
+expect_row native-over-long-leaf 2 "$(run_relay native-over-long-leaf "$(write_payload Write "$LONG_LEAF")")" unresolved-path
+expect_row native-missing-intermediate 2 "$(run_relay native-missing-intermediate "$(write_payload Write "$MISSING_INTERMEDIATE")")" unresolved-path
+expect_row native-trailing-slash-inbox 2 "$(run_relay native-trailing-slash-inbox "$(write_payload Write "$TRAILING_SLASH_INBOX")")"
+
+echo ""
+echo "=== HIMMEL-3872: probe cannot run (unwritable TMPDIR) — still fail-closed ==="
+NO_TMP="TMPDIR=$TMP/no-such-tmpdir"
+expect_row noprobe-untraversable-parent 2 "$(run_relay_with noprobe-untraversable-parent "$(write_payload Write "$UNTRAVERSABLE_HIDDEN_SYMLINK")" "$NO_TMP")" "$UNTRAVERSABLE_REASON"
+expect_row noprobe-over-long-leaf 2 "$(run_relay_with noprobe-over-long-leaf "$(write_payload Write "$LONG_LEAF")" "$NO_TMP")" unresolved-path
+expect_row noprobe-missing-intermediate 2 "$(run_relay_with noprobe-missing-intermediate "$(write_payload Write "$MISSING_INTERMEDIATE")" "$NO_TMP")" unresolved-path
+expect_row noprobe-dangling-into-inbox 2 "$(run_relay_with noprobe-dangling-into-inbox "$(write_payload Write "$SYMLINK_INTO_INBOX")" "$NO_TMP")"
+expect_row noprobe-new-inbox-file 2 "$(run_relay_with noprobe-new-inbox-file "$(write_payload Write "$ROOT/inbox/new.md")" "$NO_TMP")" inbox-write
+expect_row noprobe-new-file 0 "$(run_relay_with noprobe-new-file "$(write_payload Write "$NEW_OWN_DOC")" "$NO_TMP")"
+
+# ponytail: on a GNU host the BSD readlink is modelled as `readlink -e` (every
+# component must exist, as realpath(3) requires), not BSD's exact errno set;
+# upgrade path: the macOS os-verify shard runs these same rows on the real BSD
+# readlink, unshimmed (HIMMEL-3872).
+mkdir "$TMP/probe-dir"
+BSD_PATH="$PATH"
+if readlink -f -- "$TMP/probe-dir/leaf" >/dev/null 2>&1; then
+    REAL_READLINK=$(command -v readlink)
+    mkdir "$TMP/shim"
+    # shellcheck disable=SC2016 # $a/$p are the shim's own variables
+    printf '#!/bin/sh\nfor a do p=$a; done\nexec "%s" -e -- "$p"\n' "$REAL_READLINK" >"$TMP/shim/readlink"
+    chmod +x "$TMP/shim/readlink"
+    BSD_PATH="$TMP/shim:$PATH"
+fi
+if env PATH="$BSD_PATH" readlink -f -- "$TMP/probe-dir/leaf" >/dev/null 2>&1; then
+    echo "FAIL bsd model: readlink -f resolves a missing leaf — the shim is not probe-negative"
+    fail=$((fail + 1))
+else
+    echo "ok   bsd model: readlink -f refuses a missing leaf"
+    pass=$((pass + 1))
+fi
+
+ln -s "$ROOT/inbox" "$TMP/inbox-alias"
+ln -s "$TMP/no-such-target/x.md" "$TMP/dangling.md"
+BSD="PATH=$BSD_PATH"
+
+echo ""
+echo "=== HIMMEL-3872: BSD readlink — every table row keeps its decision ==="
+i=0
+while [ "$i" -lt "${#ROWS_NAME[@]}" ]; do
+    name="bsd-${ROWS_NAME[$i]}"
+    expect_row "$name" "${ROWS_EXPECT[$i]}" "$(run_relay_with "$name" "${ROWS_JSON[$i]}" "$BSD")"
+    i=$((i + 1))
+done
+
+echo ""
+echo "=== HIMMEL-3872: BSD readlink — guarded matches through the fallback, fail-closed ==="
+expect_row bsd-new-inbox-file 2 "$(run_relay_with bsd-new-inbox-file "$(write_payload Write "$ROOT/inbox/new.md")" "$BSD")" inbox-write
+expect_row bsd-new-leg-doc 2 "$(run_relay_with bsd-new-leg-doc "$(write_payload Write "$ROOT/yotamleo/himmel/HIMMEL-1-b-legN4-2026-09-29-RESUME.md")" "$BSD")" leg-doc-write
+expect_row bsd-alias-parent-into-inbox 2 "$(run_relay_with bsd-alias-parent-into-inbox "$(write_payload Write "$TMP/inbox-alias/new.md")" "$BSD")" inbox-write
+expect_row bsd-dangling-symlink 2 "$(run_relay_with bsd-dangling-symlink "$(write_payload Write "$TMP/dangling.md")" "$BSD")" unresolved-path
+expect_row bsd-dangling-into-inbox 2 "$(run_relay_with bsd-dangling-into-inbox "$(write_payload Write "$SYMLINK_INTO_INBOX")" "$BSD")" unresolved-path
+expect_row bsd-trailing-slash 2 "$(run_relay_with bsd-trailing-slash "$(write_payload Write "$ROOT/yotamleo/himmel/new-dir/")" "$BSD")" unresolved-path
+expect_row bsd-missing-intermediate 2 "$(run_relay_with bsd-missing-intermediate "$(write_payload Write "$MISSING_INTERMEDIATE")" "$BSD")" unresolved-path
+expect_row bsd-untraversable-parent 2 "$(run_relay_with bsd-untraversable-parent "$(write_payload Write "$UNTRAVERSABLE_HIDDEN_SYMLINK")" "$BSD")" "$UNTRAVERSABLE_REASON"
+expect_row bsd-over-long-leaf 2 "$(run_relay_with bsd-over-long-leaf "$(write_payload Write "$LONG_LEAF")" "$BSD")" unresolved-path
+expect_row bsd-relative-path 2 "$(run_relay_with bsd-relative-path "$(write_payload Write "no-such-relative-3872.md")" "$BSD")" unresolved-path
+expect_row bsd-newline-in-path 2 "$(run_relay_with bsd-newline-in-path "$(write_payload Write "$ROOT/yotamleo/himmel/a
+b.md")" "$BSD")" unresolved-path
 
 echo ""
 echo "Results: $pass passed, $fail failed"
