@@ -2640,20 +2640,22 @@ u_run_fx
 assert_rc 'U19 wet run completes' 0 "$rc"
 u_same 'U19 text above and below the block is untouched' "$U_HOME/.claude/CLAUDE.md" "$TMP/u19-expect"
 
-# U20 — an ambiguous file (two BEGIN markers) is refused, never guessed at:
-# byte-identical, named, rc 2. A file with no block at all is a clean no-op.
+# U20 — an ambiguous file (two BEGIN markers, no install record) is refused,
+# never guessed at: byte-identical, named, kept (block-malformed), rc 0 (S2d
+# Q6: units that are kept and reported do not halt the run, so the files after
+# it are still processed). A file with no block at all is a clean no-op.
 u_residue_fixture u20
 { cat "$U_HOME/.claude/CLAUDE.md"; printf '%s\n' "$U17_BEGIN"; } > "$TMP/u20-doubled"
 cp "$TMP/u20-doubled" "$U_HOME/.claude/CLAUDE.md"
 cp "$U_HOME/.codex/AGENTS.md" "$TMP/u20-agents"
 cp "$U_HOME/.claude/claude-hud.json" "$TMP/u20-hud"
 u_run_fx
-assert_rc 'U20 doubled marker halts the run' 2 "$rc"
+assert_rc 'U20 doubled marker is kept, run completes' 0 "$rc"
 u_same 'U20 doubled-marker file left byte-identical' "$U_HOME/.claude/CLAUDE.md" "$TMP/u20-doubled"
 assert_has 'U20 refusal names the file' "$U_HOME/.claude/CLAUDE.md" "$out"
-# the halt is honoured inside the step: later files are not touched after it
-u_same 'U20 AGENTS.md not touched after the halt' "$U_HOME/.codex/AGENTS.md" "$TMP/u20-agents"
-u_same 'U20 hud config not touched after the halt' "$U_HOME/.claude/claude-hud.json" "$TMP/u20-hud"
+assert_has 'U20 refusal says block-malformed' 'kept (block-malformed)' "$out"
+# the kept file does not halt the step: the wired AGENTS.md after it is still stripped
+u_absent 'U20 AGENTS.md after it is still stripped' "$U_HOME/.codex/AGENTS.md"
 u_residue_fixture u20b
 printf 'notes mention HIMMEL:working-principles in prose only\n' > "$U_HOME/.claude/CLAUDE.md"
 cp "$U_HOME/.claude/CLAUDE.md" "$TMP/u20b-prose"
@@ -2853,8 +2855,9 @@ assert_not_has 'U27 no false STILL WIRED on a quoted block' 'STILL WIRED' "$out"
 u_absent 'U27 the wired AGENTS.md after it is still stripped' "$U_HOME/.codex/AGENTS.md"
 
 # U28 (HIMMEL-3333) — CRLF markers (an editor converted the file) are refused,
-# not read as "no block": the run halts, the file is byte-identical, and the
-# next file is not touched after the halt.
+# not read as "no block": the file is kept byte-identical and reported
+# (block-malformed, with the scanner's CRLF reason), the run exits 0, and the
+# next file is still processed.
 u_residue_fixture u28
 # Portable CRLF conversion: `sed 's/$/\r/'` is GNU-only (BSD/macOS sed writes a
 # literal r, leaving no CRLF and a fixture that asserts nothing). Each line gets
@@ -2866,10 +2869,10 @@ grep -q "$(printf '\r')" "$TMP/u28-crlf" || { echo "U28 fixture carries no CR �
 cp "$TMP/u28-crlf" "$U_HOME/.claude/CLAUDE.md"
 cp "$U_HOME/.codex/AGENTS.md" "$TMP/u28-agents"
 u_run_fx
-assert_rc 'U28 CRLF markers halt the run' 2 "$rc"
+assert_rc 'U28 CRLF markers are kept, run completes' 0 "$rc"
 u_same 'U28 CRLF file left byte-identical' "$U_HOME/.claude/CLAUDE.md" "$TMP/u28-crlf"
 assert_has 'U28 refusal says CRLF' 'CRLF' "$out"
-u_same 'U28 AGENTS.md not touched after the halt' "$U_HOME/.codex/AGENTS.md" "$TMP/u28-agents"
+u_absent 'U28 AGENTS.md after it is still stripped' "$U_HOME/.codex/AGENTS.md"
 
 # U29 (HIMMEL-3333) — the edit path keeps a copy of the file as found beside it;
 # the install-created AGENTS.md (nothing of the operator's) leaves no backup.

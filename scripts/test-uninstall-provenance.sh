@@ -2334,9 +2334,17 @@ T69B="$HOME/.claude/CLAUDE.md"
 seed_block "$T69B" $'# mine\n'
 awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T69B" > "$T69B.new" && mv "$T69B.new" "$T69B"
 cp "$T69B" "$CASE_DIR/red69b.before"
-RUN_TTY_ANSWER=d run_uninstall_fx --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null 2>&1
+# "y" answers the Proceed? confirm (a lone "d" would abort there and never reach
+# any unit -- the vacuous shape this row first shipped with), "d" would answer a
+# per-unit [k]eep/[d]elete offer if the block were ever offered one.
+rc69b=0
+out69b=$(RUN_TTY_ANSWER=$'y\nd' run_uninstall_fx --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks 2>&1) || rc69b=$?
+check "RED69b: the run got past the Proceed? confirm and exited 0" "$rc69b" "0"
 check "RED69b: the edited block file is byte-identical after a 'd' answer" \
   "$(cmp -s "$T69B" "$CASE_DIR/red69b.before" && echo same || echo differs)" "same"
+check "RED69b: outcome kept:user-modified" "$(block_outcomes)" "kept:user-modified"
+check "RED69b: no [d]elete offer was printed for the block" \
+  "$(printf '%s\n' "$out69b" | grep -c -F '[d]elete')" "0"
 
 echo "==== RED70 (HIMMEL-3787 S2d): torn markers -- a BEGIN with no END, an END with no BEGIN -- keep the file, reported, exit 0 ===="
 new_case red70
@@ -2441,6 +2449,19 @@ check "RED75: file byte-identical" "$(cmp -s "$T75" "$CASE_DIR/red75.before" && 
 check "RED75: the run says why" "$(printf '%s\n' "$out75" | grep -c 'kept (block-unrecorded-modified)')" "1"
 check "RED75: no sidecar" "$([ -e "$T75.himmel-uninstall-backup" ] && echo present || echo none)" "none"
 check "RED75: no STILL WIRED probe failure" "$(printf '%s\n' "$out75" | grep -c 'STILL WIRED')" "0"
+
+echo "==== RED75b (HIMMEL-3787 S2d, Q5): an UNRECORDED block with a torn marker is kept and reported, exit 0 -- not a halt ===="
+new_case red75b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T75B="$HOME/.claude/CLAUDE.md"
+seed_block_unrecorded "$T75B" $'# mine\n'
+grep -v -x -F "$BLK_END" "$T75B" > "$T75B.new" && mv "$T75B.new" "$T75B"
+cp "$T75B" "$CASE_DIR/red75b.before"
+out75b=$(run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc75b=$?
+check "RED75b: exits 0 (kept and reported)" "$rc75b" "0"
+check "RED75b: file byte-identical" "$(cmp -s "$T75B" "$CASE_DIR/red75b.before" && echo same || echo differs)" "same"
+check "RED75b: the run says kept (block-malformed)" "$(printf '%s\n' "$out75b" | grep -c 'kept (block-malformed)')" "1"
+check "RED75b: no sidecar" "$([ -e "$T75B.himmel-uninstall-backup" ] && echo present || echo none)" "none"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)

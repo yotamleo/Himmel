@@ -3390,11 +3390,17 @@ EOF
       # Windows install, a ledger-less box): HIMMEL-3787 Q5 -- strip it ONLY when
       # its text is byte-identical to the block the current himmel would write;
       # anything else may hold the operator's own edits, so it is kept and
-      # reported. A block the scanner refuses (torn, duplicated ...) falls
-      # through to the strip below, which refuses it and halts as before.
+      # reported. A block the scanner refuses (torn, duplicated ...) is kept and
+      # reported the same way, exit 0, like the recorded path's block-malformed.
       if [ -f "$_p" ]; then
         _ext_rc=0
         _ext_text="$(bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --extract "$_p" 2>/dev/null)" || _ext_rc=$?
+        if [ "$_ext_rc" -ne 0 ] && [ "$_ext_rc" -ne 3 ]; then
+          echo "  kept (block-malformed): $_p — no install record, and its himmel markers are torn, duplicated or unreadable; fix or remove the block by hand"
+          # the scanner's own reason (CRLF markers, open fence ...), indented
+          bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --extract "$_p" 2>&1 >/dev/null | sed 's/^/    /'
+          continue
+        fi
         if [ "$_ext_rc" -eq 0 ]; then
           _tpl_file="$REPO_ROOT/docs/setup/user-scope-claude-md-template.md"
           _tpl_text=""

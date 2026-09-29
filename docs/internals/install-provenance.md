@@ -218,13 +218,16 @@ and decides by comparing its sha with `eff_post`:
 
 | live file | verdict | outcome |
 |---|---|---|
-| block sha equals `eff_post` | `remove ours` | the block is stripped; a file install created that ends up empty is deleted, otherwise the operator's bytes come back exactly |
+| block sha equals `eff_post` | `remove ours` | the block is stripped; a file install created that ends up empty is deleted, otherwise only the block is removed and the operator's surrounding lines are left in place (separator whitespace the installer added around the block is not tracked, so it may remain) |
 | block text differs (an edit inside) | `keep user-modified` | file untouched, exit 0, a hand-removal hint is printed, no `[r]`/`[d]` prompt |
 | markers torn, duplicated, or not parseable | `keep block-malformed` | same |
 | file or markers gone | `keep already-absent` | nothing to do |
 
 The strip re-verifies the block at apply time, so an edit made between the
-verdict and the strip is refused, not overwritten. The helper's own refusals and
+verdict and the strip is refused, not overwritten. The re-check and the strip
+are two steps, not one atomic operation: `ponytail: an edit landing in the few
+milliseconds between the re-check and the rewrite can still be lost, upgrade
+path is a flock on the file around both steps (HIMMEL-3787 follow-up)`. The helper's own refusals and
 `<path>.himmel-uninstall-backup` sidecar are reused; `restore` is not supported
 for a block (there is no pre-state to restore).
 
