@@ -147,7 +147,8 @@ else
 fi
 # The hook finds its policy relative to itself, so a sandboxed copy with its own
 # policy exercises the data-driven path without a test-only env seam.
-SB="$(mktemp -d)"; trap 'rm -rf "$SB"' EXIT
+SB="$(mktemp -d)" || { echo "failed to create temporary directory" >&2; exit 1; }
+trap 'rm -rf "$SB"' EXIT
 mkdir -p "$SB/hooks" "$SB/guardrails"
 cp "$HOOK" "$SB/hooks/guard-agent-model.sh"
 SHIPPED_HOOK="$HOOK"; HOOK="$SB/hooks/guard-agent-model.sh"
