@@ -78,7 +78,7 @@ verdict=$(printf '%s' "$input" | jq -r --slurpfile pol "$policy" '
     | (if $status == "ok" then $good[0] else ($rs[0] // "") end) as $reason
     | (if $tool != "Agent" or $m == "" then "allow"
        elif ($pats | any(. as $r | $m | test($r))) then "blocked"
-       elif ($t | test("(^|:)console-judge$")) and ($m | test("^(claude-)?opus") | not) then "judge"
+       elif ($t | test("(^|:)console-judge$")) and ($m | test("^(claude-)?opus(-[0-9][0-9a-z.-]*)?(\\[[^\\]]*\\])?$") | not) then "judge"
        else "allow" end) as $kind
     | if $kind == "allow" then "allow" else [$kind, $status, $m, $reason] | join("\t") end' 2>/dev/null) || exit 0
 
