@@ -1059,14 +1059,18 @@ prov_read_reconcile_report() {
         [ -n "$detail" ] && printf '      why: %s\n' "$detail"
         if [ "$kind" = "block" ]; then
             printf '      remove it by hand between the BEGIN/END markers (<!-- BEGIN HIMMEL:working-principles --> ... <!-- END HIMMEL:working-principles -->), then re-run uninstall.sh\n'
-        elif [ "$kind" = "file" ] && [ -n "$backup" ] && [ -n "$path" ]; then
+        elif [ "$kind" = "file" ] && [ -n "$backup" ] && [ -n "$path" ] && [ -r "$backup" ]; then
             printf '      what you had before himmel:  %s\n' "$backup"
             [ -n "$snap" ] && printf "      himmel's version:            %s\n" "$snap"
             printf '      compare:  diff -u %q %q\n' "$backup" "$path"
             printf '      save yours, then take back what you had:  test ! -e %q && cp -p %q %q && cp %q %q\n' "$path.mine" "$path" "$path.mine" "$backup" "$path"
         else
             printf '      review it by hand: %s\n' "$shown"
-            [ -n "$backup" ] && printf '      what you had before himmel:  %s\n' "$backup"
+            if [ -n "$backup" ] && [ -r "$backup" ]; then
+                printf '      what you had before himmel:  %s\n' "$backup"
+            elif [ -n "$backup" ]; then
+                printf '      recorded backup is unavailable (missing or unreadable): %s\n' "$backup"
+            fi
         fi
     done <<EOF
 $(printf '%s' "$recs" | jq -r --arg s "$sep" ".[] | select($needs) | [.st, .reason, .kind, .path, .unit, .backup, .snap, .detail] | join(\$s)" 2>/dev/null)
