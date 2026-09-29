@@ -58,9 +58,9 @@ The payoff of running Claude Code through himmel rather than bare:
 - **Forge-agnostic.** The worktree→PR→merge loop, PR review threads, and
   luna-ingest work the same on GitHub or Bitbucket Cloud — the backend is chosen
   per-repo from the `origin` remote, so nothing in the day-to-day loop changes.
-- **Cross-platform, tiered.** Linux and macOS are CI-gated and adopter-verified;
-  Windows / Git Bash / WSL are alpha — code paths present, best effort, not
-  CI-gated. See [Support matrix](#support-matrix).
+- **Linux-supported, macOS best-effort.** Linux is CI-gated on every PR; macOS
+  is verified on the nightly only; Windows / Git Bash / WSL are not supported
+  in v1.0.0. See [Support matrix](#support-matrix).
 
 ## Quickstart
 
@@ -176,22 +176,28 @@ fires: [`docs/daily-loop.md`](docs/daily-loop.md).
 
 ## Support matrix
 
-Operator ruling (2026-09-17, HIMMEL-3125): development focus is Linux +
-macOS. Windows drops to **alpha** — the code paths stay in-tree and Windows
-issues are welcome, but Windows is no longer CI-gated on every PR or claimed
-as verified.
+Operator rulings: development focus is Linux + macOS (2026-09-17,
+HIMMEL-3125); **Windows is not supported in v1.0.0** (2026-09-29,
+HIMMEL-3699, confirmed). Windows code paths stay in-tree and Windows issues
+are welcome, but nothing about Windows is claimed as verified.
+
+The evidence source for every non-Linux claim below is the nightly `schedule`
+run of [`ci.yml`](.github/workflows/ci.yml) (07:17 UTC) —
+[its run history](https://github.com/yotamleo/Himmel/actions/workflows/ci.yml?query=event%3Aschedule).
+A dispatch or PR run stays `ubuntu-latest`-only.
 
 | Tier | Platforms | What it promises |
 |---|---|---|
-| **Supported** | Linux, macOS | Linux is CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified on both. macOS CI runs on the nightly only (same trigger as Alpha below, see [`ci.yml`](.github/workflows/ci.yml)) — not a per-PR required check, and not yet green: a verification run of HIMMEL-3699's fixes ([run 36254794000](https://github.com/yotamleo/Himmel/actions/runs/36254794000)) still showed all 8 macOS `shell-unit-shard` jobs red (91 suite failures, none in the clusters HIMMEL-3699 fixed); the nightly summary step now fails visibly on this instead of masking it. Remaining failures tracked in HIMMEL-3719; a nightly OS red becomes its own split slice ([`docs/internals/testing.md`](docs/internals/testing.md)). |
-| **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — verified by the nightly `schedule` run only (a dispatch stays `ubuntu-latest`-only). Bug reports welcome; no round-trip guarantee. |
+| **Supported** | Linux | CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified. |
+| **Best-effort** | macOS | Verified on the nightly only — not a per-PR required check, and not yet green: HIMMEL-3699 tracks getting the nightly's macOS `shell-unit-shard` jobs green, and a nightly OS red becomes its own split slice ([`docs/internals/testing.md`](docs/internals/testing.md)). Until that nightly is green, macOS carries no round-trip guarantee; bug reports welcome. |
+| **Not supported in v1.0.0** | Windows (Git Bash), WSL | Code paths are present but unverified; no CI gate, no guarantee. |
 
 **Install channels (HIMMEL-3059):**
 
 | Channel | Status |
 |---|---|
 | Release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`) | **Supported** (Linux) — the four-step path above. The end-to-end fresh-guest run is green (HIMMEL-3252, done). |
-| `git clone` + `himmelctl install` | **Supported** (Linux, macOS) |
+| `git clone` + `himmelctl install` | **Supported** (Linux); best-effort (macOS) |
 | Plugin marketplace (`marketplace/plugins/*`, 10 plugins) | **Supported** — installs through the Claude Code plugin marketplace, which owns that payload's file list, upgrade and removal (`claude plugin install/update/uninstall`), not `himmelctl`. |
 | AUR (`himmel`, recipe in [`packaging/aur/`](packaging/aur/)) | **Supported after the first AUR push** (Arch). `pacman` installs the payload to `/opt/himmel`; each user then runs `himmelctl install --scope user`, and `himmelctl update` defers to `pacman -Syu`. Remove in this order: `himmelctl uninstall` (each user), then `pacman -R himmel`. |
 | brew (Linux tap) | Not supported — runner-up channel; reopens only if macOS support makes a shared tap worthwhile (tracked in a separate ticket) |
