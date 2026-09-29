@@ -76,13 +76,13 @@ if [ "$rc" -eq 2 ]; then ok "no args -> exit 2"; else bad "no args exit=$rc (exp
 newcase red-open
 printf 'success%sbun-suites (ubuntu-latest)\nfailure%slint\nfailure%sshell-unit-shard (ubuntu-latest, 3)\nfailure%sshell-unit (ubuntu-latest)\n' "$tab" "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
 sweep
-[ "$rc" -eq 0 ] && ok "red/no-issue exits 0" || bad "red/no-issue exit=$rc; out: $out"
+if [ "$rc" -eq 0 ]; then ok "red/no-issue exits 0"; else bad "red/no-issue exit=$rc; out: $out"; fi
 has "gh issue create" "$log" "red/no-issue -> creates the issue"
 has "--label main-red" "$log" "created with the main-red label"
 hasnt "gh issue edit" "$log" "red/no-issue does not edit"
 hasnt "gh issue close" "$log" "red never closes"
 n_create="$(grep -c 'gh issue create' "$STUB/gh.log")"
-[ "$n_create" -eq 1 ] && ok "exactly one issue created" || bad "created $n_create issues"
+if [ "$n_create" -eq 1 ]; then ok "exactly one issue created"; else bad "created $n_create issues"; fi
 # The body file is removed by the script; the stub can't read it, so the body
 # is asserted through the script's own echo of what it filed.
 has "tested sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "$out" "report names the tested sha"
@@ -155,7 +155,7 @@ printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cancelled https://github
 printf '7\n' > "$STUB/open_issue"
 printf 'body\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
 sweep
-[ "$rc" -eq 0 ] && ok "0-job run exits 0" || bad "0-job run exit=$rc"
+if [ "$rc" -eq 0 ]; then ok "0-job run exits 0"; else bad "0-job run exit=$rc"; fi
 hasnt "gh issue \(create\|edit\|comment\|close\)" "$log" "0-job run makes no issue mutation"
 
 # 7. Partial clear while still red: a job that now passes drops out of the
@@ -174,7 +174,7 @@ newcase lookup-fail
 printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
 : > "$STUB/list_fail"
 sweep
-[ "$rc" -eq 1 ] && ok "red + lookup failure -> exit 1" || bad "red + lookup failure exit=$rc"
+if [ "$rc" -eq 1 ]; then ok "red + lookup failure -> exit 1"; else bad "red + lookup failure exit=$rc"; fi
 hasnt "gh issue create" "$log" "lookup failure never opens a duplicate"
 
 # 9. Last-green unknown: still opens the issue, states the range is unknown.

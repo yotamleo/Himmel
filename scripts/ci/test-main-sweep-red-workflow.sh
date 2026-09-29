@@ -41,8 +41,8 @@ if has "^[[:space:]]+workflows: \[$ci_name\]"; then
 else
   bad "workflow_run must name ci.yml's workflow '$ci_name'"
 fi
-has '^[[:space:]]+types: \[completed\]' && ok "fires on completed runs only" || bad "types must be [completed]"
-has '^[[:space:]]+branches: \[main\]' && ok "limited to runs on main" || bad "branches must be [main]"
+if has '^[[:space:]]+types: \[completed\]'; then ok "fires on completed runs only"; else bad "types must be [completed]"; fi
+if has '^[[:space:]]+branches: \[main\]'; then ok "limited to runs on main"; else bad "branches must be [main]"; fi
 
 # Only the push sweep is main's health.
 if has "github.event.workflow_run.event == 'push'"; then
@@ -81,7 +81,7 @@ if has 'bash scripts/ci/main-sweep-red-issue\.sh "\$\{\{ github\.event\.workflow
 else
   bad "must run scripts/ci/main-sweep-red-issue.sh with workflow_run.id"
 fi
-has 'GH_TOKEN: \$\{\{ github\.token \}\}' && ok "authenticates gh with the workflow token" || bad "GH_TOKEN must be github.token"
+if has 'GH_TOKEN: \$\{\{ github\.token \}\}'; then ok "authenticates gh with the workflow token"; else bad "GH_TOKEN must be github.token"; fi
 
 # It must not add a required context to any PR: no pull_request trigger.
 if has '^[[:space:]]+pull_request(_target)?:'; then

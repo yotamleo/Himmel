@@ -59,6 +59,7 @@ job_block() { awk -v j="$1" '$0 == "  " j ":" {f=1; next} f && /^  [a-zA-Z_-]+:/
 
 eval_matrix() {
   # $1 = job id; prints "event=os,os,os" per event, or FAIL text on stderr + rc 1.
+  # shellcheck disable=SC2016 # the python body is single-quoted on purpose; nothing in it is a shell expansion
   job_block "$1" | python3 -c '
 import json, re, sys
 from types import SimpleNamespace as NS
