@@ -3285,6 +3285,28 @@ on missing `jq`, malformed, or empty stdin. Claude lane only —
 `ScheduleWakeup` is a Claude Code tool, so `.codex/hooks.json` carries no twin.
 Suite: `scripts/hooks/test-guard-leg-wakeup.sh`.
 
+### `guard-agent-model.sh` — Fable model-override deny on Agent (HIMMEL-3847)
+
+Fires on `Agent`. Denies `tool_input.model` of `fable` / `claude-fable-*`, and a
+`console-judge` dispatch (`subagent_type` `console-judge`, plugin-namespaced or
+not) whose `model` is not Opus — its frontmatter tier — unless the prompt
+carries a line of its own `ESCALATION: <non-empty reason>` (the CLAUDE.md
+"Fable is the escalation target for ONE hard call" lane; a mid-sentence mention
+or an empty reason does not count). HIMMEL-3630 retired Fable as the judge
+default (Opus 5.5 high measured ~2.7x cheaper per verdict, $8.23 vs $21.94,
+HIMMEL-3595); `headed-arm-leg.sh --judge` pins that for judge *sessions*, but an
+in-process `Agent` call passing `model: fable` silently overrides the agent's
+frontmatter, so this is the structural twin. The deny names HIMMEL-3630, the
+marker and the measured reason. No `model` (frontmatter/default applies), any
+other model, another tool, or an unparseable payload → exit 0 with **no output**
+(workflow nudge, not a security fence: fails open, like `guard-leg-wakeup.sh`).
+The suite asserts `console-judge.md` still says `model: opus`, so a tier change
+there fails it. Not covered: a `Workflow` script's `agent()` dispatches — no
+per-dispatch hook seam is known (they run inside the one `Workflow` tool call;
+`ponytail:` in the hook header, follow-up ticket in the PR body). Claude lane only — `.codex/hooks.json` has no PreToolUse `Agent`
+matcher, so there is no twin.
+Suite: `scripts/hooks/test-guard-agent-model.sh`.
+
 ### `read-clamp.sh` — read-clamp PreToolUse hook (HIMMEL-2993)
 
 Fires on `Read`/`Grep` and `Bash`, keyed on `HIMMEL_CONSOLE_LEG=1` (same gate as

@@ -116,6 +116,11 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // console-spawned leg (HIMMEL_CONSOLE_LEG=1) from self-scheduling a polling
   // wakeup — each wake re-reads the leg's whole context to find "not yet".
   'guard-leg-wakeup.sh',
+  // PreToolUse `Agent` — its own matcher (HIMMEL-3847): denies model: fable (and
+  // a console-judge override off its opus tier) unless the prompt carries an
+  // `ESCALATION: <reason>` line — HIMMEL-3630's Opus judge default, made
+  // structural. Sits beside the Agent-matcher observability hook, un-chained.
+  'guard-agent-model.sh',
   // PreToolUse, one entry each.
   'block-backend-tier.sh',
   'auto-arm-on-cap.sh',
