@@ -455,15 +455,19 @@ echo "== part 4: gate script is self-contained =="
 # The PR that adds such an import is green regardless (its base still has the old
 # self-contained script), which is why this is asserted statically here.
 rel_imports() {
-  grep -nE "^[[:space:]]*(import|export)[^;]*[[:space:]]from[[:space:]]*['\"]\.|^[[:space:]]*import[[:space:]]*['\"]\.|import[[:space:]]*\([[:space:]]*['\"]\.|require[[:space:]]*\([[:space:]]*['\"]\." "$1" || true
+  # `from '.` is matched anywhere on a line so the closing line of a multiline
+  # `import {\n a,\n} from '../x.mjs'` is caught too.
+  grep -nE "[[:space:]}]from[[:space:]]*['\"]\.|^[[:space:]]*import[[:space:]]*['\"]\.|import[[:space:]]*\([[:space:]]*['\"]\.|require[[:space:]]*\([[:space:]]*['\"]\." "$1" || true
 }
 ri=$(rel_imports "$GATE")
 if [ -z "$ri" ]; then pass "gate script has no relative imports"; else fail "gate script has a relative import: $ri"; fi
 printf "import { x } from '../lib/x.mjs';\n" > "$TMP/rel-static.mjs"
 printf "const m = await import('./x.mjs');\n" > "$TMP/rel-dynamic.mjs"
+printf "import {\n  x,\n} from '../lib/x.mjs';\n" > "$TMP/rel-multiline.mjs"
 printf "import { readFileSync } from 'node:fs';\n" > "$TMP/rel-none.mjs"
 if [ -n "$(rel_imports "$TMP/rel-static.mjs")" ]; then pass "control: a static relative import is caught"; else fail "control: a static relative import NOT caught"; fi
 if [ -n "$(rel_imports "$TMP/rel-dynamic.mjs")" ]; then pass "control: a dynamic relative import is caught"; else fail "control: a dynamic relative import NOT caught"; fi
+if [ -n "$(rel_imports "$TMP/rel-multiline.mjs")" ]; then pass "control: a multiline relative import is caught"; else fail "control: a multiline relative import NOT caught"; fi
 if [ -z "$(rel_imports "$TMP/rel-none.mjs")" ]; then pass "control: a node: import is not flagged"; else fail "control: a node: import wrongly flagged"; fi
 
 echo

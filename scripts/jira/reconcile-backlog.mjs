@@ -391,8 +391,8 @@ async function main() {
 
 // Guarded so vitest can import the pure helpers above (parseArgs, loadConfig,
 // loadHygieneKeys, loadCommits) without triggering a live Jira run.
-// pathToFileURL (not a manually-built `file://` string) so this comparison
-// also holds on Windows and on paths with URL-reserved characters.
+// isMain realpaths both sides, so this holds through a symlinked invocation
+// path and on Windows / paths with URL-reserved characters.
 if (isMain(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`reconcile-backlog: ${err.stack ?? err.message}\n`);
