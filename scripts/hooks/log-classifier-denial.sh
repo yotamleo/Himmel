@@ -14,6 +14,12 @@
 # fails open on every error path (missing jq, unparseable JSON, unwritable
 # state dir) and always exits 0. A hook bug here must never park a leg.
 #
+# HARD RULE: input_head and reason_tag NEVER leave this host. They are
+# redacted best-effort, not scrubbed -- tick.sh reads them locally only to
+# classify (SHIP-STEP / REPEAT / PAUSE-RISK) and prints just leg:count:class.
+# The later Telegram page must obey the same rule; test-log-classifier-denial.sh
+# pins the set of files allowed to name either field.
+#
 # Hook input arrives on stdin as JSON (session_id, cwd, tool_name, tool_input,
 # denial_reason, ...). Nothing here writes unredacted command text: input_head
 # is capped to 200 chars and passed through redact() first, and input_sha
@@ -21,6 +27,10 @@
 # the raw bytes.
 set -uo pipefail
 trap 'exit 0' EXIT
+# The log holds redacted-but-still-sensitive command text: nothing this hook
+# creates (the state dir, the log, its rotated generation) may be group- or
+# world-readable. Set before ANY write.
+umask 077
 
 OUT="${HIMMEL_CLASSIFIER_DENIALS_LOG:-$HOME/.himmel/state/classifier-denials.jsonl}"
 
@@ -42,7 +52,14 @@ tool_input_flat=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | string
 # Not a full gitleaks port (that ruleset is upstream-maintained and huge) —
 # a bounded set of the shapes most likely to appear in a denied command:
 # GitHub/Slack/Telegram tokens, AWS keys, PEM key blocks, bearer auth headers,
-# and a generic key/secret/token/password assignment.
+# a key/secret/token/password/pass/pwd assignment of ANY value length (a short
+# DB_PASS=hunter2 is exactly as sensitive as a long one), and the flag forms
+# `--password X`, `--token X`, `mysql -pX`. The flag rules over-match
+# (`ssh -p2222` reads as a -pX password): a false redaction costs nothing here,
+# a leak does.
+# ponytail: flag names are matched lowercase only (no BSD-sed `I` flag) and a
+# space-separated `-p X` is not caught, upgrade: one awk pass if a real leak
+# shows up.
 redact() {
     printf '%s' "$1" | sed -E \
         -e 's/gh[pousr]_[A-Za-z0-9]{20,}/[REDACTED]/g' \
@@ -52,7 +69,11 @@ redact() {
         -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/[REDACTED]/g' \
         -e 's/[0-9]{8,10}:[A-Za-z0-9_-]{35}/[REDACTED]/g' \
         -e 's/([Bb]earer) [A-Za-z0-9._-]{20,}/\1 [REDACTED]/g' \
-        -e 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])([\"'"'"']?[[:space:]]*[:=][[:space:]]*[\"'"'"']?)[A-Za-z0-9._/+=-]{12,}/\1\2[REDACTED]/g' \
+        -e 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Aa][Ss][Ss]|[Pp][Ww][Dd])([\"'"'"']?[[:space:]]*[:=][[:space:]]*)\"[^\"]*\"/\1\2\"[REDACTED]\"/g' \
+        -e 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Aa][Ss][Ss]|[Pp][Ww][Dd])([\"'"'"']?[[:space:]]*[:=][[:space:]]*)'"'"'[^'"'"']*'"'"'/\1\2'"'"'[REDACTED]'"'"'/g' \
+        -e 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Aa][Ss][Ss]|[Pp][Ww][Dd])([\"'"'"']?[[:space:]]*[:=][[:space:]]*[\"'"'"']?)[^[:space:]\"'"'"']+/\1\2[REDACTED]/g' \
+        -e 's/(--[a-z-]*(password|passwd|token|secret|api-?key)[a-z-]*)[[:space:]]+[^[:space:]-][^[:space:]]*/\1 [REDACTED]/g' \
+        -e 's/(^|[[:space:]])-p[^[:space:]-][^[:space:]]*/\1-p[REDACTED]/g' \
         | awk '
             BEGIN { inkey = 0 }
             {
@@ -97,9 +118,18 @@ fi
 # so a bracket match on it) is classifier/reviewer text, not bounded by us,
 # and the row-fits-in-PIPE_BUF atomic-append claim below only holds if every
 # field is actually short.
-reason_tag=$(printf '%s' "$reason_tag" | cut -c1-200)
-cwd=$(printf '%s' "$cwd" | cut -c1-400)
-session_id=$(printf '%s' "$session_id" | cut -c1-200)
+# cwd, session_id and tool are session/harness text, not ours either: they
+# go through the same redact() (a secret can sit in a directory name or a
+# spoofed tool name), THEN the cap, so a cut can never leave half a secret.
+capped() {  # capped <max-chars> <text>
+    local r
+    r=$(redact "$2")
+    printf '%s' "$r" | tr '\n\r' '  ' | cut -c1-"$1"
+}
+reason_tag=$(printf '%s' "$reason_tag" | tr '\n\r' '  ' | cut -c1-200)
+cwd=$(capped 400 "$cwd")
+session_id=$(capped 200 "$session_id")
+tool=$(capped 200 "$tool")
 
 # Collapses git-SHA-shaped tokens and squeezes whitespace so two calls that
 # differ only by a commit sha or incidental spacing hash identically — this is
@@ -132,11 +162,36 @@ ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 mkdir -p "$(dirname "$OUT")" 2>/dev/null || exit 0
 
-# A single jq -c line is well under PIPE_BUF (4096 bytes): input_head,
-# reason_tag, cwd and session_id are all explicitly capped above (not just
-# "usually short" — denial_reason and cwd are classifier/session text, not
-# bounded by us), so a plain O_APPEND >> is atomic against concurrent legs
-# without needing a lock.
+# umask only governs files created from here on; a log a phase-1 hook left at
+# 0644 (and its rotated generation) is tightened too. Best-effort, fail open.
+chmod 600 "$OUT" "$OUT.1" 2>/dev/null || true
+
+# Rotation: past MAX_BYTES the log renames to <log>.1 (replacing the previous
+# generation, so at most two files ever exist) and a fresh log starts with
+# this row. Best-effort: a failed rename never skips the append. tick.sh reads
+# <log>.1 then the live file, so a window straddling a rotation still counts.
+# ponytail: unlocked, so two legs rotating in the same instant can drop one
+# generation's rows, upgrade: flock (not on macOS) if that ever shows up as a
+# missed PAUSE-RISK.
+max_bytes="${HIMMEL_CLASSIFIER_DENIALS_MAX_BYTES:-1048576}"
+case "$max_bytes" in ''|*[!0-9]*) max_bytes=1048576 ;; esac
+if [ -f "$OUT" ]; then  # fail-open-ok: observability tap, not a guard; an unreadable log reads size 0 so it only skips rotation
+    size=$(wc -c <"$OUT" 2>/dev/null | tr -d '[:space:]')
+    case "$size" in ''|*[!0-9]*) size=0 ;; esac
+    if [ "$size" -gt "$max_bytes" ]; then
+        mv -f "$OUT" "$OUT.1" 2>/dev/null || true
+    fi
+fi
+
+# A single jq -c line stays well under PIPE_BUF (4096 bytes) in the normal
+# case: input_head, reason_tag, cwd, session_id and tool are all explicitly
+# capped above (not just "usually short" — denial_reason and cwd are
+# classifier/session text, not bounded by us), so a plain O_APPEND >> is
+# atomic against concurrent legs without needing a lock.
+# ponytail: the caps count characters, so a row of pure 4-byte characters can
+# pass 4096 bytes; O_APPEND on a regular file is still one atomic write on
+# Linux, so this only matters on a filesystem that splits it, upgrade: byte
+# caps (LC_ALL=C cut -b) if one is ever in use.
 jq -n -c \
     --arg ts "$ts" \
     --arg session_id "$session_id" \

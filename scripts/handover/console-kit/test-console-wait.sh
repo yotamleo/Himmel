@@ -127,6 +127,45 @@ wait_exit "$WPID"
 check "(b3724) a denials= class change ends the wait with rc 0" "0" "$rc"
 check "(b3724) the wake names denials" "WAKE tick changed=denials bank=PROCEED" "$(head -n1 "$WORK/b3724.out")"
 
+# --- (b3724x) a denial EXPIRING out of tick.sh's window is not a wake ------
+# One denial wakes the console once (above); the same row aging out 30 min
+# later moves denials= to none (or lowers a count) and must not wake it again.
+denials_expiry() { # <case> <from> <to>
+    reset_stub
+    sed -i "s/denials=none/denials=$2/" "$STUB/tick.line"  # gnu-ok: Linux-only kit
+    I="$(new_inbox "$1")"
+    start "$I" "$WORK/$1.out" --legs "N1.md"
+    wait_hb "$I" || fail "($1) no baseline heartbeat"
+    sed -i "s/denials=$2/denials=$3/" "$STUB/tick.line"  # gnu-ok: Linux-only kit
+    wait_exit "$WPID"
+}
+denials_expiry b3724x1 'N1:1:SHIP-STEP' none
+check "(b3724x) a denial aging out to none does not wake" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+denials_expiry b3724x2 'N1:2:REPEAT' 'N1:1'
+check "(b3724x) a count falling as one row expires does not wake" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+denials_expiry b3724x3 'N1:1' 'N1:2:REPEAT'
+check "(b3724x) a count rising still wakes" "0" "$rc"
+check "(b3724x) and names denials" "WAKE tick changed=denials bank=PROCEED" "$(head -n1 "$WORK/b3724x3.out")"
+[ "$rc" = running ] && { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
+denials_expiry b3724x4 'N1:1' 'N1:1,N2:1'
+check "(b3724x) a second leg's denial wakes" "0" "$rc"
+[ "$rc" = running ] && { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
+# After an expiry the saved key follows it, so the NEXT denial wakes again.
+reset_stub
+sed -i 's/denials=none/denials=N1:1/' "$STUB/tick.line"  # gnu-ok: Linux-only kit
+I="$(new_inbox b3724x5)"
+start "$I" "$WORK/b3724x5.out" --legs "N1.md"
+wait_hb "$I" || fail "(b3724x5) no baseline heartbeat"
+sed -i 's/denials=N1:1/denials=none/' "$STUB/tick.line"  # gnu-ok: Linux-only kit
+sleep 3.5
+check "(b3724x) the waiter is still waiting after the expiry" "yes" "$(kill -0 "$WPID" 2>/dev/null && echo yes)"
+sed -i 's/denials=none/denials=N1:1/' "$STUB/tick.line"  # gnu-ok: Linux-only kit
+wait_exit "$WPID"
+check "(b3724x) a fresh denial after an expiry wakes again" "0" "$rc"
+[ "$rc" = running ] && { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
+
 # --- (c) noise fields do not wake: hb, board age, prs unchanged ------------
 reset_stub
 tick_line "N1:FRESH" "STALE:5m" "1m"

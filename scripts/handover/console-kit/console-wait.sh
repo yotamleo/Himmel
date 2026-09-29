@@ -24,9 +24,11 @@
 #
 # The action key is the tick fields a console acts on: legs=, livestate=,
 # prs=, tails=, legset=, board= (its class; the STALE age is dropped),
-# denials= (HIMMEL-3724 -- a new leg:count[:class] token, or the whole
-# denials= line moving off "none", is exactly the SHIP-STEP/REPEAT/PAUSE-RISK
-# alert this exists to surface) and the bank-preflight verdict word.
+# denials= (HIMMEL-3724 -- a new leg, a higher count or a higher class
+# (SHIP-STEP > PAUSE-RISK > REPEAT) is exactly the alert this exists to
+# surface; the same denial ageing out of tick.sh's 30-min window, moving it to
+# none or lowering a count, is NOT a wake, so one denial wakes once) and the
+# bank-preflight verdict word.
 # Everything else on the tick line (heartbeat, procs, fill, fleet, gql,
 # orphans...) moves without needing a console act and never wakes. Two consecutive samples must differ from the saved key (not
 # necessarily from each other), so one failed `gh` read (prs=none for a single
@@ -195,6 +197,43 @@ drop_board_ok() {
     done | paste -sd, -
 }
 
+# denials_rose: <old key> <new key> — succeeds only when the denials= value got
+# WORSE: a leg the old value lacked, a higher count, or a higher class
+# (SHIP-STEP > PAUSE-RISK > REPEAT > none). tick.sh's denials= is a trailing
+# window, so a lone denial ageing out (30 min later) moves it to none or
+# lowers a count; that is the window closing, not an event.
+denial_rank() { case "$1" in SHIP-STEP) echo 3 ;; PAUSE-RISK) echo 2 ;; REPEAT) echo 1 ;; *) echo 0 ;; esac; }
+denials_rose() {
+    local old new tok otok leg rest n cls on ocls found
+    old="$(key_field denials "$1")"; new="$(key_field denials "$2")"
+    for tok in $(printf '%s' "$new" | tr ',' ' '); do
+        leg="${tok%%:*}"
+        case "$leg" in none|skip) continue ;; esac
+        rest="${tok#*:}"; n="${rest%%:*}"; cls=""
+        case "$rest" in *:*) cls="${rest#*:}" ;; esac
+        found=""
+        for otok in $(printf '%s' "$old" | tr ',' ' '); do
+            [ "${otok%%:*}" = "$leg" ] || continue
+            found=1; rest="${otok#*:}"; on="${rest%%:*}"; ocls=""
+            case "$rest" in *:*) ocls="${rest#*:}" ;; esac
+            [ "$n" -gt "$on" ] 2>/dev/null && return 0
+            [ "$(denial_rank "$cls")" -gt "$(denial_rank "$ocls")" ] && return 0
+        done
+        [ -n "$found" ] || return 0
+    done
+    return 1
+}
+
+# drop_denials_expiry: <changed csv> <old key> <new key> — strips denials from
+# a changed= list unless denials_rose; a combined change keeps its other fields.
+drop_denials_expiry() {
+    if denials_rose "$2" "$3"; then printf '%s\n' "$1"; return; fi
+    printf '%s\n' "$1" | tr ',' '\n' | while IFS= read -r f; do
+        [ "$f" = denials ] && continue
+        printf '%s\n' "$f"
+    done | paste -sd, -
+}
+
 saved=""
 if [ -f "$key_file" ] && [ "$(sed -n 1p "$key_file")" = "$args_hash" ]; then
     saved="$(sed -n 2p "$key_file")"
@@ -250,6 +289,7 @@ while :; do
                 # never itself a wake (only a move to STALE/MISSING is), so
                 # it never appears in changed=; the key still saves.
                 real_changed="$(drop_board_ok "$(changed_fields "$saved" "$key")" "$key")"
+                real_changed="$(drop_denials_expiry "$real_changed" "$saved" "$key")"
                 if [ -z "$real_changed" ]; then
                     saved="$key"; save_key "$key"; pending=""
                 else

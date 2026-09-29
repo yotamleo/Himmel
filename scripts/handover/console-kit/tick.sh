@@ -117,11 +117,12 @@ whether the artifact was republished from it -- that stays the console's step.
 denials=<leg>:<n>[:SHIP-STEP|REPEAT|PAUSE-RISK] (HIMMEL-3724) is classifier
 denials seen by scripts/hooks/log-classifier-denial.sh in a trailing window
 (TICK_DENIALS_WINDOW_MIN minutes, default 30), grouped by the hook's own
-session_title, one leg per csv entry, joined ",". SHIP-STEP = a denied
+session_title (a worktree slug; any other cwd reads <dir>#<session_id[0:8]>),
+one leg per csv entry, joined ",". SHIP-STEP = a denied
 ship-step command; PAUSE-RISK = 3+ in the window or an all-time total
 approaching the auto-mode pause threshold; REPEAT = 2+ in the window with
-neither. denials=none when the window is empty; denials=skip when jq or the
-log is unavailable.
+neither. denials=none when the window is empty or the log does not exist yet;
+denials=skip when jq is missing or the log is unreadable.
 
 ciq=<in_progress>/<cap>,mac=<n>/<cap>,q=<queued>,wait=<m>m[,SATURATED]
 (HIMMEL-3840) is the GitHub Actions queue, from one scripts/ci/queue-latency.sh
@@ -918,8 +919,12 @@ fi
 # SHIP-STEP fires immediately on a denied ship-step command; PAUSE-RISK on 3+
 # in the window or an all-time total approaching the auto-mode pause
 # threshold (20); REPEAT on 2+ in the window with neither of the above.
-# denials=skip when jq or the log is unavailable; denials=none when the
-# window is empty. Stateless like every other field here (no persisted
+# denials=skip when jq is missing or the log is unreadable; denials=none when
+# the window is empty or the log does not exist yet. Grouping: a worktree
+# row by its slug, any other row by <dir>#<session_id[0:8]> so a re-dispatched
+# slug never inherits an old session's count. HARD RULE: input_head and
+# reason_tag classify HERE, on this host, and are never printed into the tick
+# line (or any later page) -- test-tick.sh and the hook's test pin it. Stateless like every other field here (no persisted
 # cross-tick cursor), so "since the last tick" is approximated by a trailing
 # window rather than a real cursor -- console-wait's own key-diffing is what
 # actually triggers a wake on a class change, not this field's count.
@@ -948,18 +953,31 @@ if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
         # which would otherwise fail the field access below, and a row whose
         # input_head is not a string would fail test()), then slurp
         # only the lines that survived.
-        denials_summary="$(tail -n "$denials_tail_max" "$denials_log" 2>/dev/null | jq -R -c 'fromjson? | select(type == "object" and (.input_head | type) == "string")' 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
+        # The hook rotates the log to <log>.1 past its byte cap, so read the
+        # previous generation first: a window straddling a rotation must not
+        # under-count and hide a PAUSE-RISK. (A missing .1 must not fail the
+        # pipeline under pipefail, hence the -r guard, not a bare cat.)
+        denials_summary="$( { [ -r "$denials_log.1" ] && cat "$denials_log.1"; cat "$denials_log"; } 2>/dev/null | tail -n "$denials_tail_max" | jq -R -c 'fromjson? | select(type == "object" and (.input_head | type) == "string")' 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
+            # A worktree row is labelled by its slug (the leg identity). Any
+            # other cwd is a bare directory name a re-dispatched leg would
+            # share with its predecessor, so it is labelled <name>#<sid8>
+            # instead: one session, one count.
+            def leg:
+                (.session_title // "unknown") as $t
+                | ((.session_id // "") | tostring | .[0:8]) as $sid
+                | if (((.cwd // "") | tostring | test("/worktrees/")) or $sid == "") then $t
+                  else "\($t)#\($sid)" end;
             . as $all
-            | ($all | group_by(.session_title // "unknown")
-               | map({key: (.[0].session_title // "unknown"), value: length})
+            | ($all | group_by(leg)
+               | map({key: (.[0] | leg), value: length})
                | from_entries) as $totals
             | ($all | map(select(.ts >= $cutoff))) as $recent
-            | ($recent | group_by(.session_title // "unknown")) as $rgroups
+            | ($recent | group_by(leg)) as $rgroups
             | if ($rgroups | length) == 0 then "none"
               else
                 $rgroups
                 | map(
-                    (.[0].session_title // "unknown") as $leg
+                    (.[0] | leg) as $leg
                     | length as $n
                     | (any(.[]; (.input_head // "") | test("merge-on-green|go\\.sh|git push|gh pr (create|merge)|write-verdicts|pr-check"))) as $ship
                     | ($totals[$leg] // $n) as $total
@@ -974,6 +992,10 @@ if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
         ' 2>/dev/null)" || denials_summary=""
         [ -n "$denials_summary" ] || denials_summary=skip
     fi
+elif command -v jq >/dev/null 2>&1 && [ ! -e "$denials_log" ]; then
+    # No log yet = the hook never fired = no denials. "skip" would read as a
+    # broken monitor and flap the console-wait key against "none".
+    denials_summary=none
 fi
 
 # ciq=<in_progress>/<cap>,mac=<n>/<cap>,q=<queued>,wait=<m>m[,SATURATED]
