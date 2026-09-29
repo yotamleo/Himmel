@@ -353,9 +353,15 @@ if [ "$(id -u)" -ne 0 ]; then
   N4="$WORK/t4n"; mkdir -p "$N4/out/locked" "$N4/open"; : > "$N4/out/locked/secret"; : > "$N4/open/file"
   chmod 000 "$N4/out/locked"
   t4n_check() {   # <case> <refuse|skip> <link-target>
-    local r="$N4/r-$1" raw rc
+    local r="$N4/r-$1" raw rc got
     mkdir -p "$r"
     if ! ln -s "$3" "$r/L" 2>/dev/null; then echo "SKIP T4o $1 cannot create the fixture link here"; return 0; fi
+    if [ "${4:-}" = exact ]; then   # byte-exact: $(readlink) strips trailing newlines everywhere, so a sentinel decides
+      got=$(readlink "$r/L"; printf x)
+      if [ "$got" != "$3"$'\n'x ]; then
+        echo "SKIP T4o $1 the platform did not store the target byte-exactly; readlink returned: $(printf %s "${got%x}" | od -An -tx1 | tr -s ' \n' ' ')"; return 0
+      fi
+    fi
     raw=$(sh -c "$(vm_guest_scan_cmd "$r" env)" 2>&1); rc=$?
     if [ "$2" = refuse ]; then
       if [ "$rc" -ne 0 ] && grep -q '^scan-unscanned: .*/L$' <<< "$raw"; then pass "T4o $1 REFUSES (scan-unscanned, rc=$rc)"
@@ -366,7 +372,7 @@ if [ "$(id -u)" -ne 0 ]; then
     fi
   }
   nl_tgt=$(printf '%s/out/locked/\n_' "$N4"); nl_tgt=${nl_tgt%_}
-  t4n_check newline refuse "$nl_tgt"
+  t4n_check newline refuse "$nl_tgt" exact
   pad=""; i=0; while [ "$i" -lt 2030 ]; do pad="$pad./"; i=$((i+1)); done
   if ! ln -s "${pad}../out/locked/secret" "$N4/probe-long" 2>/dev/null; then
     pad=""; i=0; while [ "$i" -lt 490 ]; do pad="$pad./"; i=$((i+1)); done   # macOS: symlink targets top out at 1024
