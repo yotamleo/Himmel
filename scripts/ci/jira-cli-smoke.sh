@@ -22,8 +22,9 @@ $BUILD >/dev/null || fail "build failed"
 [ -f "$DIST" ] || fail "no dist/index.js after build"
 
 help_out="$(node "$DIST" --help)" || fail "--help exited non-zero"
-printf '%s\n' "$help_out" | grep -q 'Jira CLI' || fail "--help output lacks the CLI banner"
-node "$DIST" --list-commands | grep -qx 'get' || fail "--list-commands does not list get"
+grep -q 'Jira CLI' <<< "$help_out" || fail "--help output lacks the CLI banner"
+cmds="$(node "$DIST" --list-commands)" || fail "--list-commands exited non-zero"
+grep -qx 'get' <<< "$cmds" || fail "--list-commands does not list get"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/jira-smoke.XXXXXX")" || fail "mktemp -d failed"
 srv=""
@@ -51,6 +52,6 @@ done
 out="$(JIRA_BASE_URL="http://127.0.0.1:$(cat "$TMP/port")" JIRA_EMAIL=smoke@example.invalid \
   JIRA_API_TOKEN=smoke-not-a-secret JIRA_PROJECT_KEY=SMOKE node "$DIST" get SMOKE-1 --short)" \
   || fail "mocked get exited non-zero"
-printf '%s\n' "$out" | grep -q 'SMOKE-1.*smoke summary' || fail "mocked get output unexpected: $out"
+grep -q 'SMOKE-1.*smoke summary' <<< "$out" || fail "mocked get output unexpected: $out"
 
 echo "jira-cli-smoke: OK"
