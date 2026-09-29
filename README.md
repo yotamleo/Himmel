@@ -141,8 +141,8 @@ node scripts/himmelctl/bin.js install
 Node-less machine? Bootstrap first: `bash scripts/himmelctl/bootstrap.sh`
 (Windows, unsupported in v1.0.0: `powershell -ExecutionPolicy Bypass -File scripts\himmelctl\bootstrap.ps1`), then re-run
 `install`. Under the hood the wizard runs `scripts/setup.sh` /
-`scripts\setup.ps1` for this standalone path — invoke those directly for the
-manual or CI path.
+`scripts\setup.ps1` (Windows, unsupported in v1.0.0) for this standalone
+path — invoke those directly for the manual or CI path.
 
 Minimum environment (set in the shell that launches Claude or your daily
 work shell):
