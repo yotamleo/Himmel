@@ -252,6 +252,13 @@ RC12=$?
 ROW12="$(ls "$LIVE_DIR"/*.json 2>/dev/null | head -1)"
 check "directory artifact: content-only update inside pre-existing dir exits 0" "0" "$RC12"
 check "directory artifact: status completed" "completed" "$(jq -r '.status' "$ROW12" 2>/dev/null)"
+if [ "$RC12" != 0 ]; then
+  # TEMP diagnostic (HIMMEL-3699): replay artifact_mtime's exact pipeline on the failing host.
+  D_NEW="$(find "$ARTDIR" -type f -exec date -r {} '+%s.%N' ';' 2>&1 | sed 's/\.N$/.000000000/' | sort -rn | head -1)"
+  echo "diag: pipeline='$D_NEW' status-row='$(cat "$ROW12" 2>&1 | head -c 600)'" >&2
+  echo "diag: awk-gt=$(awk -v a="$D_NEW" -v b=946684800.000000000 'BEGIN{print (a>b)}' 2>&1) ls=$(ls -A "$ARTDIR" 2>&1)" >&2
+  echo "diag: file-content='$(cat "$ARTDIR/existing-file.txt" 2>&1)'" >&2
+fi
 rm -f "$LIVE_DIR"/*.json
 
 # --- 12: a pre-existing directory containing ONLY subdirectories (no files
