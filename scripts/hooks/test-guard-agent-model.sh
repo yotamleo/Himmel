@@ -6,7 +6,11 @@
 # Covers: fable / claude-fable-5-1 -> deny; same WITH marker -> allow; empty marker
 # -> deny; opus/sonnet/haiku and no model -> allow; console-judge sonnet -> deny,
 # opus -> allow, no model -> allow, marked sonnet -> allow; other tool -> allow;
-# malformed/empty stdin -> allow (fail-open); allow path prints nothing.
+# malformed/empty stdin -> allow (fail-open); allow path prints nothing. A
+# placeholder / too-short ESCALATION reason -> deny; a marked override echoes its
+# reason on stderr; the blocked-model list is data in
+# scripts/guardrails/agent-model-policy.json (listed -> deny, removed -> allow,
+# broken policy -> allow).
 #
 # bash 3.2-safe. Platform guard (gitbash-only): jq checks only, no git/path work;
 # runs unchanged under Git Bash on Windows. No .ps1 twin needed.
@@ -105,6 +109,72 @@ check "empty stdin -> allow" allow ''
 check "no tool_input -> allow" allow '{"tool_name":"Agent"}'
 check "non-string model -> allow" allow '{"tool_name":"Agent","tool_input":{"model":7,"prompt":"x"}}'
 check "non-string prompt + fable -> deny" block '{"tool_name":"Agent","tool_input":{"model":"fable","prompt":7}}'
+
+echo "== ESCALATION reason quality (shipped policy) =="
+reasoned() { agent general-purpose fable "do the review"$'\n'"ESCALATION: $1"; }
+check "reason 'test' (placeholder) -> deny" block "$(reasoned 'test')"
+check "reason 'N/A.' (placeholder, punctuation) -> deny" block "$(reasoned 'N/A.')"
+check "reason 'TBD.....' (placeholder padded to length) -> deny" block "$(reasoned 'TBD.....')"
+check "reason 'not applicable' (placeholder over min length) -> deny" block "$(reasoned 'not applicable')"
+check "reason '----------' (no alphanumerics) -> deny" block "$(reasoned '----------')"
+check "reason 'hard call' (9 chars, under min) -> deny" block "$(reasoned 'hard call')"
+check "reason 'hard call!' (10 chars) -> allow" allow "$(reasoned 'hard call!')"
+check "weak line then a real line -> allow" allow \
+    "$(agent general-purpose fable $'x\nESCALATION: test\nESCALATION: needs taste on one verdict')"
+check "console-judge + sonnet + placeholder reason -> deny" block \
+    "$(agent console-judge sonnet $'x\nESCALATION: n/a')"
+out="$(reasoned 'test' | bash "$HOOK" 2>&1 >/dev/null)"
+case "$out" in
+    *placeholder*min_reason_chars*) ok "weak-reason deny explains the rule" ;;
+    *) bad "weak-reason deny does not explain the rule - got: $out" ;;
+esac
+
+echo "== a marked override is echoed for audit; nothing else is =="
+aud="$(agent general-purpose fable "$MARK" | bash "$HOOK" 2>&1 >/dev/null)"
+case "$aud" in
+    "agent-model-escalation: "*"one hard call, needs taste"*) ok "marked fable override echoes its reason on stderr" ;;
+    *) bad "no audit line for a marked override - got: $aud" ;;
+esac
+silent "marker with nothing to override (opus) -> no output" "$(agent general-purpose opus "$MARK")"
+silent "marker with no model -> no output" "$(agent general-purpose '' "$MARK")"
+
+echo "== the blocked-model list is DATA (agent-model-policy.json) =="
+POLICY="$HOOKS/../guardrails/agent-model-policy.json"
+if jq -e '(.blocked_model_patterns | type == "array" and length > 0) and (.min_reason_chars | type == "number") and (.placeholder_reasons | type == "array")' "$POLICY" >/dev/null 2>&1; then
+    ok "shipped policy parses and blocks at least one pattern"
+else
+    bad "shipped policy missing, unparseable or malformed: $POLICY"
+fi
+# The hook finds its policy relative to itself, so a sandboxed copy with its own
+# policy exercises the data-driven path without a test-only env seam.
+SB="$(mktemp -d)"; trap 'rm -rf "$SB"' EXIT
+mkdir -p "$SB/hooks" "$SB/guardrails"
+cp "$HOOK" "$SB/hooks/guard-agent-model.sh"
+SHIPPED_HOOK="$HOOK"; HOOK="$SB/hooks/guard-agent-model.sh"
+FABLE_RE='^(claude-)?fable([^a-z0-9]|$)'
+polset() { printf '%s' "$1" > "$SB/guardrails/agent-model-policy.json"; }
+
+polset "{\"blocked_model_patterns\":[\"$FABLE_RE\"],\"min_reason_chars\":10,\"placeholder_reasons\":[]}"
+check "pattern listed -> fable denied" block "$(agent general-purpose fable 'x')"
+polset '{"blocked_model_patterns":[],"min_reason_chars":10,"placeholder_reasons":[]}'
+check "pattern removed -> fable allowed" allow "$(agent general-purpose fable 'x')"
+silent "pattern removed -> no output" "$(agent general-purpose fable 'x')"
+polset '{"blocked_model_patterns":["^(claude-)?fable-6"],"min_reason_chars":10,"placeholder_reasons":[]}'
+check "future pattern listed -> claude-fable-6 denied" block "$(agent general-purpose claude-fable-6 'x')"
+check "future pattern listed -> fable (unlisted) allowed" allow "$(agent general-purpose fable 'x')"
+polset "{\"blocked_model_patterns\":[\"$FABLE_RE\"],\"min_reason_chars\":10,\"placeholder_reasons\":[\"needs taste\"]}"
+check "policy placeholder list is honoured" block "$(agent general-purpose fable $'x\nESCALATION: needs taste')"
+polset "{\"blocked_model_patterns\":[\"$FABLE_RE\"],\"min_reason_chars\":4,\"placeholder_reasons\":[]}"
+check "policy min_reason_chars is honoured (4)" allow "$(agent general-purpose fable $'x\nESCALATION: real')"
+polset '{"blocked_model_patterns":["("],"min_reason_chars":10,"placeholder_reasons":[]}'
+check "invalid regex in policy -> allow (fail-open)" allow "$(agent general-purpose fable 'x')"
+polset '{not json'
+check "malformed policy -> allow (fail-open)" allow "$(agent general-purpose fable 'x')"
+polset '[]'
+check "policy of the wrong shape -> allow (nothing blocked)" allow "$(agent general-purpose fable 'x')"
+rm -f "$SB/guardrails/agent-model-policy.json"
+check "missing policy -> allow (fail-open)" allow "$(agent general-purpose fable 'x')"
+HOOK="$SHIPPED_HOOK"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

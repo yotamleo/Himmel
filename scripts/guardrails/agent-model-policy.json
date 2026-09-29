@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "jira": "HIMMEL-3847",
+  "updated": "2026-09-29",
+  "doc": "Which Agent-tool model overrides scripts/hooks/guard-agent-model.sh denies unless the dispatch prompt carries an `ESCALATION: <reason>` line. Documented in docs/internals/enforcement.md.",
+  "why": [
+    "HIMMEL-3630 made Opus 5.5 high the judge default: about $8.23 vs $21.94 per verdict (HIMMEL-3595) with no missed finding. An in-process Agent call passing `model: fable` silently overrides console-judge's `model: opus` frontmatter, so the policy is structural rather than prose.",
+    "Today there is no standing case for Fable. A newer Fable model is expected: this file is the ONE place the block lives, so unblocking or re-targeting a model is a one-line reviewed change here, not a hook rewrite."
+  ],
+  "semantics": {
+    "blocked_model_patterns": "case-insensitive (input is lowercased) regexes, tested against the Agent call's `model`. A match is denied unless the prompt has an acceptable ESCALATION line. Remove an entry to unblock that model; an empty list blocks nothing.",
+    "min_reason_chars": "an ESCALATION reason shorter than this (after trimming) is treated as no reason.",
+    "placeholder_reasons": "reasons rejected outright. The reason is lowercased, every run of non-alphanumerics becomes one space, then compared, so `N/A.` matches `n a`.",
+    "not_covered": "a console-judge dispatch whose model is not opus stays denied by the hook itself (its frontmatter tier, not a model name); the same ESCALATION rule applies."
+  },
+  "blocked_model_patterns": [
+    "^(claude-)?fable([^a-z0-9]|$)"
+  ],
+  "min_reason_chars": 10,
+  "placeholder_reasons": [
+    "test",
+    "testing",
+    "na",
+    "n a",
+    "none",
+    "tbd",
+    "todo",
+    "asdf",
+    "xxx",
+    "because",
+    "reason",
+    "placeholder",
+    "no reason",
+    "not applicable"
+  ]
+}

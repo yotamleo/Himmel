@@ -3287,12 +3287,24 @@ Suite: `scripts/hooks/test-guard-leg-wakeup.sh`.
 
 ### `guard-agent-model.sh` — Fable model-override deny on Agent (HIMMEL-3847)
 
-Fires on `Agent`. Denies `tool_input.model` of `fable` / `claude-fable-*`, and a
+Fires on `Agent`. Denies a `tool_input.model` matching a pattern in
+`scripts/guardrails/agent-model-policy.json` (`blocked_model_patterns`; today
+`fable` / `claude-fable-*`, matched case-insensitively), and a
 `console-judge` dispatch (`subagent_type` `console-judge`, plugin-namespaced or
 not) whose `model` is not Opus — its frontmatter tier — unless the prompt
-carries a line of its own `ESCALATION: <non-empty reason>` (the CLAUDE.md
+carries a line of its own `ESCALATION: <reason>` (the CLAUDE.md
 "Fable is the escalation target for ONE hard call" lane; a mid-sentence mention
-or an empty reason does not count). HIMMEL-3630 retired Fable as the judge
+does not count). The reason must be real: empty, shorter than `min_reason_chars`
+(10) or a listed `placeholder_reasons` entry (`test`, `n/a`, `tbd`, …, compared
+after lowercasing and collapsing punctuation) is treated as no reason and still
+denies. A marker that rescues a would-be deny is echoed on stderr as
+`agent-model-escalation: … allowed by ESCALATION reason: <reason>` (exit 0) so
+overrides are auditable. **The block list is data, not code:** unblocking a
+future Fable is a one-line reviewed edit to the policy file (remove or narrow
+the pattern), not a hook rewrite; the suite proves a listed pattern denies and
+the same pattern removed allows. A missing or malformed policy file, or an
+invalid regex in it, fails open (the suite asserts the shipped file parses).
+HIMMEL-3630 retired Fable as the judge
 default (Opus 5.5 high measured ~2.7x cheaper per verdict, $8.23 vs $21.94,
 HIMMEL-3595); `headed-arm-leg.sh --judge` pins that for judge *sessions*, but an
 in-process `Agent` call passing `model: fable` silently overrides the agent's
