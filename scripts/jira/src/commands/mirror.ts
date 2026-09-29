@@ -261,7 +261,10 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
     }
   }
 
-  res.mirrorCount = localKeys(root, project).length;
+  const localNow = new Set(localKeys(root, project));
+  res.mirrorCount = localNow.size;
+  // A live key with no local file (within the count tolerance) also forces a full run.
+  if (!res.deleteSkipped && live && [...live].some((k) => !localNow.has(k))) res.deleteSkipped = 'live keys missing locally';
   // An incomplete mirror keeps no cursor, so the next run is a full backfill
   // instead of an incremental that never revisits unchanged, missing issues.
   if (res.deleteSkipped || (res.jiraTotal !== null && res.mirrorCount < res.jiraTotal * COUNT_TOLERANCE)) {
