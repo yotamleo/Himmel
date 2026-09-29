@@ -987,7 +987,7 @@ while IFS= read -r pj; do
 done < <(git -C "$ROOT" ls-files '*package.json' | grep -v -e '^node_modules/' -e '/fixtures/')
 if [ -z "$cov_missing" ]; then ok "pin-scan discovers every tracked package.json directory"; else bad "pin-scan missed:$cov_missing"; fi
 if grepq "$cov_out" -F 'scripts/hooks/check-oxlint-complexity.sh' && grepq "$cov_out" -F 'scripts/hooks/check-oxlint-hardening.sh'; then ok "pin-scan discovers both oxlint hook pins"; else bad "oxlint hook pins not discovered"; fi
-if grepq "$cov_out" -F 'gitleaks/gitleaks v8.21.2' || grepq "$cov_out" -F '.github/workflows/ci.yml'; then ok "pin-scan reads workflow pins"; else bad "workflow pins not discovered"; fi
+if grepq "$cov_out" -E '^  gh:gitleaks/gitleaks v[0-9.]+ \([^)]*\.github/workflows/ci\.yml[^)]*\.pre-commit-config\.yaml'; then ok "pin-scan reads the ci.yml gitleaks literal into the same row as the hook rev"; else bad "ci.yml gitleaks pin not discovered with the hook rev; $(printf '%s' "$cov_out" | grep gitleaks)"; fi
 rm -rf "$W12" "$PIN_EMPTY"
 
 echo ""

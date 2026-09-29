@@ -15,6 +15,9 @@ bad() { echo "FAIL - $1"; fails=$((fails + 1)); }
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/jira-smoke-test.XXXXXX")" || { echo "mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
+# ponytail: fixture dists stand in for the real CLI (the fail-cases prove only the
+# script's own exit paths), upgrade = the real-CLI case below, which CI runs via
+# the jira-cli-smoke job against an actual build.
 mkfix() {  # mkfix <name> <index.js body> -> fixture dir with dist/index.js
   mkdir -p "$TMP/$1/dist"
   printf '%s\n' "$2" > "$TMP/$1/dist/index.js"

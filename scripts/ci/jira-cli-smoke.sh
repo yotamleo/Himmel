@@ -31,6 +31,9 @@ srv=""
 cleanup() { [ -z "$srv" ] || kill "$srv" 2>/dev/null || true; rm -rf "$TMP"; }
 trap cleanup EXIT
 
+# ponytail: a loopback mock returns one canned issue, so this proves the CLI's
+# startup, arg parsing and `get` rendering only, not Jira API drift; upgrade =
+# a live-Jira smoke once CI holds a sandbox credential (no ticket yet).
 node -e '
 const http = require("http"), fs = require("fs");
 const s = http.createServer((q, r) => {
