@@ -135,8 +135,9 @@ export function readCursor(root: string): Cursor | null {
   }
 }
 
+// ponytail: no run lock, so two overlapping syncs of one root both write correct bytes but race on deletes/cursor; the cadence is one cron job, add a lock if a second caller appears.
 function writeFileAtomic(path: string, content: string): void {
-  const tmp = `${path}.tmp`;
+  const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, content);
   renameSync(tmp, path);
 }
