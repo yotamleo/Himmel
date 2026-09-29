@@ -1584,7 +1584,7 @@ FAILOPEN_NEG="$TMP/failopen-neg"
 rm -rf "$FAILOPEN_NEG"
 mkdir -p "$FAILOPEN_NEG"
 cp -R "$FAILOPEN/handover" "$FAILOPEN/lib" "$FAILOPEN_NEG/"
-sed '\#lib/telemetry\.sh#s# 2>/dev/null || true##' "$FAILOPEN/handover/arm-resume.sh" \
+sed -e '\#bash -n .*lib/telemetry\.sh#d' -e '\#lib/telemetry\.sh#s# 2>/dev/null || true##' "$FAILOPEN/handover/arm-resume.sh" \
     > "$FAILOPEN_NEG/handover/arm-resume.sh"
 # A no-op sed would make this control vacuous — the exact class of bug the
 # ticket is about — so prove the edit landed before trusting the result.
@@ -2950,7 +2950,7 @@ assert_contains "T-awkfail the new arm still stands" "RESUME ARMED" "$out"
 assert_not_contains "T-awkfail does NOT print the misleading success line" "removed crontab entry" "$out"
 n="$(grep -c 'HIMMEL-Resume-' "$AWKFAIL_CRON_STORE" 2>/dev/null)" || n=0
 if [ "$n" -eq 2 ]; then echo "PASS T-awkfail both the un-reaped old entry and the new arm remain (2 entries)"; else echo "FAIL T-awkfail expected 2 entries (old un-reaped + new), got $n"; FAILED=$((FAILED+1)); fi
-snap_path=$(printf '%s' "$out" | grep -oE '/[^ ]*crontab\.snap\.[A-Za-z0-9]+' | head -1)
+snap_path=$(printf '%s' "$out" | grep -oE '/[^ ]*crontab\.snap\.[A-Za-z0-9]+(\.[A-Za-z0-9]+)?' | head -1)  # BSD mktemp -t appends ".<rand>" after XXXXXX
 if [ -n "$snap_path" ] && [ -s "$snap_path" ]; then
     echo "PASS T-awkfail snapshot preserved ($snap_path)"
 else

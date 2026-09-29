@@ -1760,9 +1760,11 @@ fi
 # Format spec: docs/tool-adoption/telemetry.md.
 # shellcheck source=../lib/telemetry.sh
 # shellcheck disable=SC1091,SC2015
-# The [ -f ] guard (all four fail-open sources): macOS bash 3.2 exits the
-# whole script on a `.` of a MISSING file even under `|| true` (HIMMEL-3699).
+# The [ -f ] + bash -n guard (all four fail-open sources): macOS bash 3.2 exits the
+# whole script on a `.` of a MISSING or syntax-broken file even under `|| true`
+# (HIMMEL-3699).
 [ -f "$SCRIPT_DIR/../lib/telemetry.sh" ] \
+    && bash -n "$SCRIPT_DIR/../lib/telemetry.sh" 2>/dev/null \
     && . "$SCRIPT_DIR/../lib/telemetry.sh" 2>/dev/null || true
 command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 
@@ -1778,6 +1780,7 @@ command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 # shellcheck source=../lib/handover-path.sh
 # shellcheck disable=SC1091,SC2015
 [ -f "$SCRIPT_DIR/../lib/handover-path.sh" ] \
+    && bash -n "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null \
     && . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null || true
 command -v handover_root >/dev/null 2>&1 || handover_root() { return 2; }
 # Identity helpers are optional under the same fail-open contract. If this lib
@@ -1822,6 +1825,7 @@ command -v _hp_arms_record_matches_path >/dev/null 2>&1 || _hp_arms_record_match
 # shellcheck source=../lib/headroom-proxy.sh
 # shellcheck disable=SC1091
 [ -f "$SCRIPT_DIR/../lib/headroom-proxy.sh" ] \
+    && bash -n "$SCRIPT_DIR/../lib/headroom-proxy.sh" 2>/dev/null \
     && . "$SCRIPT_DIR/../lib/headroom-proxy.sh" 2>/dev/null \
     || echo "WARN arm-resume: headroom-proxy lib failed to load -- .env HIMMEL_HEADROOM_PROXY fallback disabled (process env still honored)" >&2
 command -v _headroom_proxy_env_file_active >/dev/null 2>&1 || _headroom_proxy_env_file_active() { return 1; }
@@ -1840,6 +1844,7 @@ command -v _headroom_proxy_env_file_active >/dev/null 2>&1 || _headroom_proxy_en
 # shellcheck source=../lib/cadence-format.sh
 # shellcheck disable=SC1091
 [ -f "$SCRIPT_DIR/../lib/cadence-format.sh" ] \
+    && bash -n "$SCRIPT_DIR/../lib/cadence-format.sh" 2>/dev/null \
     && . "$SCRIPT_DIR/../lib/cadence-format.sh" 2>/dev/null \
     || echo "WARN arm-resume: cadence-format lib failed to load -- cadence_cmd_escape falls back inline (caret-free single-parse escape)" >&2
 # Minimal single-parse fallback mirroring the lib's contract (% -> %% plus
