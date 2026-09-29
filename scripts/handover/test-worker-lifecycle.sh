@@ -129,6 +129,8 @@ export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 # Shield it. This suite exercises the reconciler and the pre-arm worker guard;
 # test-arm-resume.sh owns the shipped-work gate and sets this per-case.
 export ARM_SHIPPED_OK=1
+# HIMMEL-3846: keep the real bank-preflight's usage-cache refresh off the live cache.
+export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-cache.json"
 export ARM_BRIDGE_LIVE=0
 export ARM_MAX_SLOTS=0
 # This suite deliberately arms a $TMP fixture (resume_cwd is $WORK_REPO,

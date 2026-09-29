@@ -76,6 +76,8 @@ unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK 2>/dev/null || true
 # hits the HIMMEL-1365 temp-target refusal (rc=12). Same shield
 # test-arm-resume.sh carries (HIMMEL-1623).
 export ARM_TEMP_CWD_OK=1
+# HIMMEL-3846: keep the real bank-preflight's usage-cache refresh off the live cache.
+export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-cache.json"
 # Split-leg shield (HIMMEL-1830): this suite's fixtures are a flat POOL of
 # next-session-<N>.md files in ONE directory, all created seconds apart and
 # none of them ever a relaunch point — which is exactly the shape the split-leg

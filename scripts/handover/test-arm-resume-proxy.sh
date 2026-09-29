@@ -39,6 +39,8 @@ fleet_slots_shield "$TMP" || exit 1
 # FILE for append; keep that under the suite's TMP, not the operator's
 # real ~/.himmel/arm-resume.
 export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
+# HIMMEL-3846: keep the real bank-preflight's usage-cache refresh off the live cache.
+export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-cache.json"
 
 # Hermetic shields (same as test-arm-resume.sh / test-arm-resume-queue-lock.sh):
 # no real telemetry/trust writes, no operator-shell env bleed.

@@ -132,6 +132,8 @@ export WORKER_BRIDGE_ROOT="$TMP/bridge"
 # opt-out as test-arm-resume.sh; missing it cost 30 failures first caught by
 # the public wave-2k CI (the private repo runs no Actions by design).
 export ARM_TEMP_CWD_OK=1
+# HIMMEL-3846: keep the real bank-preflight's usage-cache refresh off the live cache.
+export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-cache.json"
 # Shipped-work shield (HIMMEL-2118): the HIMMEL-1331 preflight derives a ticket
 # ID from the handover (fixtures here name HIMMEL-1304) and probes LIVE Jira —
 # the day HIMMEL-1304 went Done, every fixture arm refused rc=11 (21/36 FAIL).

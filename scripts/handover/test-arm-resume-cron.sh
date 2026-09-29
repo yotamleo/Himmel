@@ -93,6 +93,9 @@ unset ARMAUTOMERGE CR_MERGE_GATE_OK HIMMEL_HEADROOM_PROXY 2>/dev/null || true
 # The log-directory seam under test: keep every fixture log under $TMP so
 # the suite never writes into the operator's real $HOME/.himmel.
 export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
+# HIMMEL-3846: a real arm runs the REAL bank-preflight; keep its usage-cache
+# refresh off the live /tmp/claude/statusline-usage-cache.json.
+export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-cache.json"
 # Runner-file seam (fold of Goomal's fix/arm-resume-macos-cron): every REAL
 # (non-dry-run) arm below now writes a generated runner file under
 # ${ARM_RUNNER_DIR:-$HOME/.claude/handover/arm-runners} -- point it at a

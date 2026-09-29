@@ -240,6 +240,14 @@ fleet_slots_shield "$TMP" || exit 1
 # ARM_RUNNER_DIR -- default that under $TMP too, for the same reason.
 export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
 export ARM_RUNNER_DIR="$TMP/arm-runners"
+# HIMMEL-3846: a non-dry-run arm runs the REAL bank-preflight, whose producer
+# refresh writes the usage cache; keep both cache knobs off the live
+# /tmp/claude/statusline-usage-cache.json (checked again before the summary).
+export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-cache.json"
+# Default: no other HIMMEL-* scheduled task, so the operator's real crontab
+# entries (same-minute fixtures -> rc=6) cannot decide a case. Cases testing the
+# collision path set the seam inline, which overrides this.
+export ARM_COLLISION_CANDIDATES=""
 
 # HIMMEL-1712: hermetic identity so every raw usage-cache fixture below can
 # stamp a matching account hash — resume-slot.sh now refuses (rc=2) a cache
@@ -6479,6 +6487,15 @@ fi
 # run started with -- any case that reached the real scheduler despite its
 # stub is a leak into the operator's own crontab/at, not a test failure to
 # shrug off.
+# HIMMEL-3846: a non-dry-run arm runs the REAL bank-preflight, whose producer
+# refresh writes the usage cache at $CADENCE_BANK_CACHE. The suite points that
+# at $TMP; the scratch file appearing proves a real arm reached the preflight
+# AND the redirect held (else it would have rewritten the operator's live
+# /tmp/claude/statusline-usage-cache.json). A --only run may skip every real arm.
+if [ -z "$ONLY_FILTERS" ] && [ ! -f "$TMP/bank-cache.json" ]; then
+    echo "FAIL bank-preflight cache not redirected to \$TMP -- a real arm may have rewritten the live usage cache (HIMMEL-3846)"
+    FAILED=$((FAILED + 1))
+fi
 CRONTAB_SNAPSHOT_AFTER=$(crontab -l 2>/dev/null || true)
 if [ "$CRONTAB_SNAPSHOT_AFTER" != "$CRONTAB_SNAPSHOT_BEFORE" ]; then
     echo "FAIL the real crontab changed during this run -- a case leaked into the operator's live crontab:"

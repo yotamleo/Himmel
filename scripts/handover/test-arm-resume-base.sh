@@ -36,6 +36,8 @@ export WORKER_BRIDGE_ROOT="$TMP/worker-bridge-shield"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
 export HIMMEL_FLOW_RUNS_LEDGER="$TMP/flow-runs.jsonl"
 export ARM_TEMP_CWD_OK=1
+# HIMMEL-3846: keep the real bank-preflight's usage-cache refresh off the live cache.
+export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-cache.json"
 export ARM_RESUME_DOTENV_ROOT="$TMP/dotenv-shield"
 mkdir -p "$ARM_RESUME_DOTENV_ROOT"
 unset ARMAUTOMERGE CR_MERGE_GATE_OK 2>/dev/null || true
