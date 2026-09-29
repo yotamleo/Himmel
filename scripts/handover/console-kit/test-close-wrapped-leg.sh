@@ -47,6 +47,19 @@ not_contains() { if grep -q -F -e "$3" <<< "$2"; then echo "FAIL - $1: output un
 # clean.sh twice; this counts exact-line occurrences so an extra/duplicate
 # call fails the assertion.
 exact_count() { local n; n=$(grep -c -F -x -e "$3" <<< "$2"); if [ "$n" = "$4" ]; then echo "ok - $1"; else echo "FAIL - $1: expected $4 occurrence(s) of [$3], got $n"; fails=$((fails+1)); fi; }
+# age_file <file> <days> - backdate a file's mtime. GNU touch takes a relative
+# `-d 'N days ago'`; BSD/macOS touch does not, so fall back to BSD `date -v`
+# feeding `touch -t`. Fails loudly if the file did not actually age: a decoy
+# that silently stayed fresh made the scoped-search cases pass or fail for the
+# wrong reason (HIMMEL-3699).
+age_file() {
+    touch -d "$2 days ago" "$1" 2>/dev/null \
+        || touch -t "$(date -v-"$2"d +%Y%m%d%H%M 2>/dev/null)" "$1" 2>/dev/null  # gnu-ok: console kit is Linux-only; BSD fallback
+    if [ -z "$(find "$1" -mtime +"$(($2 - 1))" 2>/dev/null)" ]; then
+        echo "FAIL - age_file: could not backdate $1 by $2 days (test setup broken)"
+        fails=$((fails+1))
+    fi
+}
 
 mkdir -p "$W/proc" "$W/bin" "$W/wt" "$W/handover-root"
 CALLS="$W/calls.log"
@@ -442,7 +455,7 @@ PROJDIR3="$W/esw-projects3"
 mkdir -p "$PROJDIR3"
 STALE_TRANSCRIPT="$PROJDIR3/sess-stale.jsonl"
 printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB3/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}" > "$STALE_TRANSCRIPT"
-touch -d '10 days ago' "$STALE_TRANSCRIPT" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$STALE_TRANSCRIPT" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+age_file "$STALE_TRANSCRIPT" 10
 FRESH_TRANSCRIPT="$PROJDIR3/sess-fresh.jsonl"
 {
     printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB3/proj\",\"timestamp\":\"2026-06-17T00:00:00Z\"}"
@@ -470,7 +483,7 @@ mkdir -p "$PROJDIR4"
 for i in $(seq 1 10); do
     stale="$PROJDIR4/stale-$i.jsonl"
     yes '{"customTitle":"not-this-leg","timestamp":"2020-01-01T00:00:00Z"}' 2>/dev/null | head -c 300000 > "$stale" || true
-    touch -d '30 days ago' "$stale" 2>/dev/null || touch -t "$(date -d '30 days ago' +%Y%m%d0000 2>/dev/null)" "$stale" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+    age_file "$stale" 30
 done
 ESW_SB4="$W/esw-sb4"
 mkdir -p "$ESW_SB4/vault" "$ESW_SB4/proj" "$ESW_SB4/home"
@@ -513,7 +526,7 @@ OLD_TRANSCRIPT="$PROJDIR5/sess-old.jsonl"
     printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB5/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
     printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB5/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
 } > "$OLD_TRANSCRIPT"
-touch -d '10 days ago' "$OLD_TRANSCRIPT" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+age_file "$OLD_TRANSCRIPT" 10
 mkdoc "- 10:00 WRAPPED - done"
 reset_calls
 rc=0
@@ -541,7 +554,7 @@ OLD_TRANSCRIPT6="$PROJDIR6/sess-old.jsonl"
     printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB6/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
     printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB6/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
 } > "$OLD_TRANSCRIPT6"
-touch -d '10 days ago' "$OLD_TRANSCRIPT6" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT6" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+age_file "$OLD_TRANSCRIPT6" 10
 mkdoc "- 10:00 WRAPPED - done"
 reset_calls
 rc=0
@@ -570,7 +583,7 @@ OLD_TRANSCRIPT7="$PROJDIR7/sess-old.jsonl"
     printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$ESW_SB7/proj\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
     printf '%s\n' "{\"timestamp\":\"2020-01-01T00:00:00Z\",\"cwd\":\"$ESW_SB7/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}}"
 } > "$OLD_TRANSCRIPT7"
-touch -d '10 days ago' "$OLD_TRANSCRIPT7" 2>/dev/null || touch -t "$(date -d '10 days ago' +%Y%m%d0000 2>/dev/null)" "$OLD_TRANSCRIPT7" 2>/dev/null || true  # gnu-ok: console kit is Linux-only
+age_file "$OLD_TRANSCRIPT7" 10
 mkdoc "- 10:00 WRAPPED - done"
 reset_calls
 rc=0
