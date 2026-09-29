@@ -10,7 +10,9 @@
 #                  [--turns N] [--min-turns N] <session.jsonl>...
 #       Did the event invalidate the prompt cache of the sessions live across
 #       it? Per session: cache_read vs cache_creation for the N turns before
-#       and after. A transition is a full-prefix REWRITE when cache_read
+#       and after; only the FIRST transition after the event is judged (a
+#       prefix change shows on the next turn, so a later rewrite is unrelated).
+#       A transition is a full-prefix REWRITE when cache_read
 #       collapses (< half the previous turn's) while cache_creation carries the
 #       load; a rewrite is then explained away as `compacted` (a
 #       compact_boundary row between the turns, or the context shrank > 25%)
@@ -121,7 +123,7 @@ def mean(k): if length == 0 then 0 else ((map(.[k]) | add) / length | floor) end
       else [ $sid, (if $f.cr > 0 then "warm" else "cold" end), $f.in, $f.cr, $f.cc, $sumcr, $sumall ] | @tsv end
   elif $mode == "idle-gap" then
     ([ range(1; $T | length) as $i | { p: $T[$i - 1], c: $T[$i] } ]
-      | map(. + { gap: (.c.t - .p.t), comp: comp(.p; .c) } | select(.comp | not))) as $P
+      | map(. + { gap: (.c.t - .p.t), comp: (comp(.p; .c) or ((.c | ctx) < 0.75 * (.p | ctx))) } | select(.comp | not))) as $P
     | ($P | map(select(.gap >= $ttl))) as $cold
     | ($P | map(select(.gap >= 60 and .gap < $ttl))) as $warm
     | [ $sid, $ttl, ($cold | length), ($cold | map(select(rewrite(.p; .c))) | length),
@@ -132,8 +134,7 @@ def mean(k): if length == 0 then 0 else ((map(.[k]) | add) / length | floor) end
     | if ($B | length) == 0 or ($A | length) == 0 then empty
       else
         ([ ($B | last) ] + $A) as $seq
-        | ([ range(1; $seq | length) as $i
-             | cls($seq[$i - 1]; $seq[$i]; comp($seq[$i - 1]; $seq[$i]); $ttl) ]) as $K
+        | ([ cls($seq[0]; $seq[1]; comp($seq[0]; $seq[1]); $ttl) ]) as $K
         | (if ($B | length) < $min or ($A | length) < $min then "inconclusive"
            elif ($K | index("invalidated")) != null then "invalidated"
            elif ($K | index("compacted")) != null then "compacted"

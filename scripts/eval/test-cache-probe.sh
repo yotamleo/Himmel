@@ -51,6 +51,11 @@ has "too-few-turns: classed inconclusive" "$LAST_OUT" "a	inconclusive"
 scenario ttl-expiry inconclusive 2 invalidation --event "$EVENT"
 has "ttl-expiry: classed ttl, not invalidated" "$LAST_OUT" "a	ttl"
 
+# An unexplained rewrite on the THIRD post-event turn is not the event's doing:
+# a prefix change shows on the first turn after it, so only that one is judged.
+scenario late-rewrite-unrelated not-invalidated 0 invalidation --event "$EVENT"
+has "late-rewrite-unrelated: classed kept" "$LAST_OUT" "a	kept"
+
 # --- the event forms --------------------------------------------------------
 scenario no-invalidation not-invalidated 0 invalidation --event 2026-01-01T00:10:00Z
 : > "$TMP/event-file"
@@ -62,6 +67,10 @@ scenario idle-ttl-5m ttl-consistent 0 idle-gap
 scenario idle-ttl-1h ttl-consistent 0 idle-gap
 scenario idle-ttl-violated ttl-inconsistent 1 idle-gap
 scenario idle-none inconclusive 2 idle-gap
+# A boundary-less compaction inside a warm gap is not a TTL miss, and one inside a
+# cold gap is not TTL evidence: both are excluded, as the invalidation mode does.
+scenario idle-compaction-lookalike ttl-consistent 0 idle-gap
+has "idle-compaction-lookalike: the compaction pair is excluded" "$LAST_OUT" "cold-expected=1 cold-rewrote=1 warm-expected=3 warm-rewrote=0"
 
 # --- first-turn: does a new session start warm ------------------------------
 scenario first-turn-warm warm-start 0 first-turn

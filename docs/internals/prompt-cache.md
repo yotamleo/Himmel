@@ -42,7 +42,7 @@ TRUE / FALSE / UNVERIFIED, each with the eval scenario (a fixture in
 | 4 | "himmel has never measured its own read-ratio" (`docs/token-economy.md`) | **FALSE** (stale) — updated with the measured 98.2% | live run L3 | `first-turn-warm` |
 | 5 | an idle leg re-primes cold when woken (`handover-system.md` § Operator-gated wrap; `*-next-session.md` clause) | **TRUE** — the wake re-pays the prefix; "burns" is figurative, an idle session costs nothing | live run L4: 113 of 126 gaps past the TTL rewrote, 41 of 14,659 shorter gaps did | `idle-ttl-5m`, `idle-ttl-1h`, `idle-none` |
 | 6 | the statusline's per-tier cache-expiry countdown (`docs/patches/2026-05-16-cache-statusline.md`) | **TRUE** — the TTL model holds on both tiers | live run L4; fixtures put a 10-minute gap warm on 1h and cold on 5m | `idle-ttl-5m`, `idle-ttl-1h`, `idle-ttl-violated` |
-| 7 | a cache-read collapse after a compaction or a long idle is not an external invalidation (the reading the probe applies) | **TRUE** — measured, not assumed | L1 classed 1 session `compacted`; fixtures | `compaction-lookalike`, `ttl-expiry` |
+| 7 | a cache-read collapse after a compaction or a long idle is not an external invalidation (the reading the probe applies) | **TRUE** — measured, not assumed | L1 classed 1 session `compacted`; fixtures | `compaction-lookalike`, `ttl-expiry`, `late-rewrite-unrelated`, `idle-compaction-lookalike` |
 | 8 | "the 76.5% read-ratio / `<40%` = structural issue" figures (`token-economy.md`) | **UNVERIFIED** — one-tweet heuristics from another workspace; himmel's measured 98.2% neither confirms nor refutes the threshold | — | none (no fixture: a threshold from elsewhere) |
 | 9 | "one extra cache write (~4k tokens) per session started or compacted after an index edit" (this doc, `SKILL.md` rail 6) | **UNVERIFIED** — an estimate from the index size, not a measured delta | — | none; ponytail: an estimate, upgrade path = a probe mode that diffs first-turn `cache_creation` before/after an edit (HIMMEL-3837 follow-up) |
 
@@ -92,6 +92,8 @@ A fix to a cache claim without a named scenario is not done.
 `ponytail:` the rewrite and compaction thresholds are fixed (read < 0.5× the
 previous turn, create > read, context drop > 25 %), chosen to separate the
 fixtures and the 2026-09-29 measurements; upgrade path: make them flags when a
-real run lands within 10 % of one. Timestamps are whole seconds and the TTL
+real run lands within 10 % of one. `invalidation` judges only the first
+transition after the event (a prefix change shows on the next turn; a later
+rewrite is unrelated). Timestamps are whole seconds and the TTL
 tier is inferred from `usage`, not from the request. A helper call that never
 reaches the transcript is invisible to the probe.
