@@ -28,6 +28,7 @@
 // Optional Live-state lines the console may keep (console-template.md):
 //   epics: HIMMEL-3332=4, HIMMEL-3340=2     declared totals; merged is counted from gh
 //   decisions: first?; second?              open operator decisions, ';'-separated
+//   versions: v1.0.0, v1.0.1                one `Release <v>` panel per Jira fixVersion (HIMMEL-3856)
 //
 // PLATFORM GUARD: no .ps1 twin, by design. The console kit is Linux-only (tick.sh
 // reads pgrep, atq and the konsole launch logs). Node ESM, no dependencies.
@@ -36,6 +37,12 @@
 // `gh pr list --search "KEY in:title"` (200 max); an epic whose PRs cite it only
 // in the branch name, or with more than 200 merged PRs, undercounts. The declared
 // total in `epics:` is the console's own number -- nothing derives it from Jira.
+//
+// ponytail: a Release panel is one Jira `list` per version (limit 1000; a version
+// with more tickets undercounts), a ticket is done when its status reads Done /
+// Closed / Resolved, and tick.sh never sees these counts, so tick's board= cannot go
+// STALE on one -- only --changed (the versions fingerprint meta) reports it. Upgrade
+// path: have tick.sh fold the counts into board-fp once #1421 lands.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -139,6 +146,8 @@ const epicsDeclared = liveField('epics').split(/[,\s]+/).filter(Boolean).map((e)
     const m = /^([A-Z][A-Z0-9]*-\d+)=(\d+)$/.exec(e);
     return m ? { key: m[1], total: Number(m[2]) } : null;
 }).filter(Boolean);
+// A version name lands inside a JQL string: only a plain release token is accepted.
+const versionsDeclared = liveField('versions').split(/[,\s]+/).filter((v) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(v));
 const decisions = liveField('decisions').split(';').map((d) => d.trim()).filter((d) => d && d !== 'none');
 const queueLine = liveField('queue');
 const lastGo = liveField('last GO').replace(/`/g, '');
@@ -262,6 +271,41 @@ const epics = epicsDeclared.map((e) => {
     const merged = found ? new Set(found.filter((p) => String(p.title).includes(`[${e.key}]`)).map((p) => p.number)).size : '?';
     return { ...e, merged };
 });
+
+// ---------------------------------------------------------------- releases
+// One Jira CLI `list` per declared version, by the PRIMARY checkout's absolute path
+// (a worktree has no dist/). BOARD_JIRA overrides it (test seam, mirrors BOARD_TICK).
+// Any failure -- missing CLI, non-zero exit, timeout, unparseable output -- is that
+// version's `unavailable`; the render never fails on it.
+const primaryRoot = () => {
+    try {
+        const common = execFileSync('git', ['-C', HERE, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+            { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        if (common) return dirname(common);
+    } catch { /* fall through to the tree this script sits in */ }
+    return resolve(HERE, '..', '..', '..');
+};
+const JIRA_CLI = process.env.BOARD_JIRA || (versionsDeclared.length ? join(primaryRoot(), 'scripts', 'jira', 'dist', 'index.js') : '');
+const DONE_STATUS = /^(done|closed|resolved)$/i;
+const releaseOf = (version) => {
+    const a = ['list', '--jql', `project = HIMMEL AND fixVersion = "${version}"`, '--labels', '--limit', '1000'];
+    let out;
+    try {
+        out = execFileSync(...(JIRA_CLI.endsWith('.js') ? ['node', [JIRA_CLI, ...a]] : [JIRA_CLI, a]),
+            { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { return { version, unavailable: true }; }
+    // `list --labels` rows: key, type, status, title, labels (tab-separated).
+    const rows = out.split('\n').map((l) => l.split('\t')).filter((f) => f.length >= 4 && /^[A-Z][A-Z0-9]*-\d+$/.test(f[0]))
+        .map((f) => ({ key: f[0], status: f[2].trim(), title: f[3], labels: (f[4] || '').split(',').map((x) => x.trim()) }));
+    // Output with content but no ticket row is a garbled answer, not an empty version.
+    if (!rows.length && out.trim()) return { version, unavailable: true };
+    const open = rows.filter((r) => !DONE_STATUS.test(r.status));
+    return { version, done: rows.length - open.length, total: rows.length, blockers: open.filter((r) => r.labels.includes('v1-blocker')) };
+};
+const releases = versionsDeclared.map(releaseOf);
+// A separate fingerprint (as the census one is): tick.sh never sees these counts.
+const releaseSig = releases.map((r) => (r.unavailable ? `${r.version}=unavailable`
+    : `${r.version}=${r.done}/${r.total}:${r.blockers.map((b) => `${b.key}@${b.status}`).join('+')}`)).join(',');
 const ciOf = (pr) => {
     const rollup = (pr && pr.statusCheckRollup) || [];
     // No checks reported yet is not a green build: it reads pending.
@@ -375,6 +419,12 @@ const epicRows = epics.map((e) => {
     const pct = e.merged === '?' ? 0 : Math.min(100, Math.round((e.merged / Math.max(1, e.total)) * 100));
     return `<li data-epic="${esc(e.key)}" data-merged="${e.merged}" data-total="${e.total}"><b>${esc(e.key)}</b> ${e.merged}/${e.total}<div class="bar"><i style="width:${pct}%"></i></div></li>`;
 }).join('\n');
+const releasePanel = (r) => {
+    if (r.unavailable) return `<section data-release="${esc(r.version)}" data-unavailable="1"><h2>Release ${safe(r.version)}</h2><p class="none">unavailable</p></section>`;
+    const pct = Math.round((r.done / Math.max(1, r.total)) * 100);
+    const blockers = r.blockers.map((b) => `<li data-blocker="${esc(b.key)}"><b>${esc(b.key)}</b> ${safe(b.title, 90)} <span class="pr">${safe(b.status)}</span></li>`).join('\n');
+    return `<section data-release="${esc(r.version)}" data-done="${r.done}" data-total="${r.total}"><h2>Release ${safe(r.version)}</h2><b>${r.done}/${r.total}</b><div class="bar"><i style="width:${pct}%"></i></div>${blockers ? `<ul>${blockers}</ul>` : '<p class="none">no open v1-blocker tickets</p>'}</section>`;
+};
 const prRows = (openPrs || []).map((p) => `<li data-ci="${ciOf(p)}"><b>#${p.number}</b> ${safe(p.title, 90)} <span class="pr">${ciOf(p)}${p.isDraft ? ' · draft' : ''}</span></li>`).join('\n');
 const mergedRows = (mergedPrs || []).map((p) => `<li><b>#${p.number}</b> ${safe(p.title, 90)}</li>`).join('\n');
 const logRows = consoleResults.map((l) => `<li>${safe(l.slice(2), 200)}</li>`).join('\n');
@@ -387,7 +437,7 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Console Board</title>
 ${fp ? `<meta name="console-board-fp" content="${fp}">` : ''}
-${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}
+${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}${releaseSig ? `\n<meta name="console-board-versions-fp" content="${esc(releaseSig)}">` : ''}
 <style>
 :root { --bg:#f6f7f9; --surface:#fff; --text:#1c2128; --muted:#5b6672; --line:#d9dee4; --accent:#2457c5; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1318; --surface:#181d24; --text:#e6e9ed; --muted:#96a1ad; --line:#2b333d; --accent:#7aa2ff; --ok:#3fb950; --warn:#d29922; --bad:#ff7b72; } }
@@ -431,7 +481,7 @@ ${ladder}
 </section>
 ${panel('Needs the console', needRows, 'nothing waiting on the console')}
 ${panel('Open operator decisions', decisions.map((d) => `<li>${safe(d)}</li>`).join('\n'), 'none recorded (Live state decisions:)')}
-${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}
+${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}${releases.map((r) => `\n${releasePanel(r)}`).join('')}
 <section class="wide">
 <h2>Legs</h2>
 ${legs.length ? `<ul>${legs.map(legCard).join('\n')}</ul>` : `<p class="none">${labelFailure ? 'leg labels unavailable' : 'no legs'}</p>`}
@@ -451,16 +501,18 @@ ${panel('Console log — newest last', logRows, 'no Results yet')}
 // the Artifact publish itself stays a separate, deliberate model step.
 let oldFp = null;
 let oldCensusSig = '';
+let oldReleaseSig = '';
 if (changedFlag && existsSync(outPath)) {
     const prev = readFileSync(outPath, 'utf8');
     oldFp = (/<meta name="console-board-fp" content="([0-9a-f]{16})">/.exec(prev) || [])[1] || null;
     oldCensusSig = (/<meta name="console-board-census-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
+    oldReleaseSig = (/<meta name="console-board-versions-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
 }
 const tmp = `${outPath}.tmp${process.pid}`;
 writeFileSync(tmp, html);
 renameSync(tmp, outPath);
 if (changedFlag) {
-    console.log(`${fp !== oldFp || censusSig !== oldCensusSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
+    console.log(`${fp !== oldFp || censusSig !== oldCensusSig || esc(releaseSig) !== oldReleaseSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
 } else {
     console.log(outPath);
 }

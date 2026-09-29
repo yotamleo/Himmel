@@ -274,6 +274,12 @@ decisions: none
 > `epics: <KEY>=<total>[, <KEY>=<total>]` (the total is yours; the board counts
 > merged PRs citing `[<KEY>]`) and `decisions: <first?>; <second?>` (open
 > operator decisions) are optional and render on the board; `none` shows none.
+> `versions: <v>[, <v>]` (e.g. `v1.0.0, v1.0.1`; omit the line for none) adds one
+> `Release <v>` panel per Jira fixVersion: done/total (Done, Closed and Resolved
+> count as done) plus the open tickets labelled `v1-blocker`. It costs one Jira CLI
+> call per version per render; a failing or missing CLI reads `unavailable` and the
+> render still succeeds. The counts fold into `board.mjs --changed`, not into the
+> tick's `board=` (tick.sh never sees Jira).
 
 ## Compact instructions
 

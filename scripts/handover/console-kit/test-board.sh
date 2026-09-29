@@ -361,6 +361,97 @@ same 'a WRAPPED leg gaining a live window flips CHANGED although tick-fp is unch
 out6="$(BOARD_SESSIONS="$W/bin/sessions-n5-alive.sh" run --out "$W/changed-census-board.html" --changed)"
 same 'the same still-open leg on a re-render reports UNCHANGED' "$out6" "UNCHANGED $W/changed-census-board.html"
 
+# --- HIMMEL-3856: `versions: v1.0.0, v1.0.1` renders one Release panel per fixVersion,
+# from ONE stubbed Jira CLI call per version (BOARD_JIRA seam, mirrors BOARD_TICK). The
+# stub answers from $JIRA_DIR/<version>.tsv in the CLI's `list --labels` row format
+# (key, type, status, title, labels; tab-separated) and never touches Jira.
+JD="$W/jira"
+mkdir -p "$JD"
+cat > "$W/bin/jira-stub" <<'STUB'
+#!/usr/bin/env bash
+printf 'project=%s args=%s\n' "${JIRA_PROJECT_KEY:-}" "$*" >> "$JIRA_ARGV_LOG"
+[ "${JIRA_STUB_FAIL:-0}" -eq 0 ] || exit 1
+v="$(printf '%s' "$*" | sed -n 's/.*fixVersion = "\([^"]*\)".*/\1/p')"  # gnu-ok: console kit is Linux-only
+[ -f "$JIRA_DIR/$v.tsv" ] && cat "$JIRA_DIR/$v.tsv" || exit 1
+STUB
+chmod +x "$W/bin/jira-stub"
+T="$(printf '\t')"
+write_v100() {  # write_v100 <done count: 3 or 4>
+    {
+        printf 'HIMMEL-9001%sBug%sIn Progress%sfix the blocker cachyos-x8664-pid777777 now%sci,v1-blocker\n' "$T" "$T" "$T" "$T"
+        printf 'HIMMEL-9002%sTask%sTo Do%snot a blocker%sci\n' "$T" "$T" "$T" "$T"
+        printf 'HIMMEL-9003%sTask%sTo Do%sblocker two%sv1-blocker\n' "$T" "$T" "$T" "$T"
+        printf 'HIMMEL-9004%sTask%sDone%sshipped a%sv1-blocker\n' "$T" "$T" "$T" "$T"
+        printf 'HIMMEL-9005%sTask%sDone%sshipped b%s\n' "$T" "$T" "$T" "$T"
+        printf 'HIMMEL-9006%sTask%sDone%sshipped c%sv1-blocker\n' "$T" "$T" "$T" "$T"
+        [ "$1" -lt 4 ] || printf 'HIMMEL-9007%sTask%sDone%sshipped d%s\n' "$T" "$T" "$T" "$T"
+    } > "$JD/v1.0.0.tsv"
+}
+write_v100 3
+{
+    printf 'HIMMEL-9101%sTask%sDone%sfirst%s\n' "$T" "$T" "$T" "$T"
+    printf 'HIMMEL-9102%sTask%sTo Do%ssecond%sv1-blocker\n' "$T" "$T" "$T" "$T"
+} > "$JD/v1.0.1.tsv"
+DOCV="$B/HIMMEL-nextleg-2026-09-21V-console-v.md"
+sed 's/^epics: .*/&\nversions: v1.0.0, v1.0.1/' "$DOC" > "$DOCV"  # gnu-ok: console kit is Linux-only
+runv() {  # runv <extra args...> -- like run, on the console doc that carries a versions: line
+    PATH="$W/bin:$PATH" BOARD_TICK="$W/bin/tick-stub" TICK_ARGV_LOG="$W/argv.log" \
+        BOARD_SESSIONS="$W/bin/sessions-empty.sh" BOARD_JIRA="${BOARD_JIRA:-$W/bin/jira-stub}" \
+        JIRA_ARGV_LOG="$W/jira-argv.log" JIRA_DIR="$JD" JIRA_PROJECT_KEY=HIMMEL \
+        GH_OPEN="$W/open.json" GH_MERGED="$W/merged.json" GH_EPIC="$W/epic.json" GH_VIEW="$W/view" \
+        node "$SUT" --doc "$DOCV" --repo "$W/repo" "$@" 2>"$W/stderr.log"
+}
+rm -f "$W/jira-argv.log"
+runv --out "$W/v-board.html" >/dev/null; rc=$?
+vhtml="$(cat "$W/v-board.html" 2>/dev/null)"
+jargv="$(cat "$W/jira-argv.log" 2>/dev/null)"
+contains 'a versions: line still renders a board (rc 0)' "rc=$rc" 'rc=0'
+contains 'each version renders done/total' "$vhtml" 'data-release="v1.0.0" data-done="3" data-total="6"'
+contains 'the second version renders its own counts' "$vhtml" 'data-release="v1.0.1" data-done="1" data-total="2"'
+contains 'the panel is titled Release <version>' "$vhtml" '<h2>Release v1.0.0</h2>'
+contains 'an open v1-blocker ticket is listed with its key' "$vhtml" 'data-blocker="HIMMEL-9001"'
+contains 'a listed blocker shows its status' "$vhtml" '<span class="pr">In Progress</span>'
+contains 'a second open blocker is listed' "$vhtml" 'data-blocker="HIMMEL-9003"'
+lacks 'an open ticket without the v1-blocker label is not listed' "$vhtml" 'HIMMEL-9002'
+lacks 'a done v1-blocker ticket is not listed as a blocker' "$vhtml" 'HIMMEL-9004'
+lacks 'a lock token in a blocker title is redacted' "$vhtml" 'pid777777'
+same 'one Jira call per version' "$(printf '%s\n' "$jargv" | grep -c .)" '2'
+contains 'the CLI is asked by fixVersion JQL' "$jargv" 'fixVersion = "v1.0.0"'
+contains 'the CLI is asked for labels' "$jargv" '--labels'
+contains 'the CLI is asked for a high limit' "$jargv" '--limit 1000'
+contains 'JIRA_PROJECT_KEY comes from the environment' "$jargv" 'project=HIMMEL'
+
+# A failing CLI reads unavailable per version and never fails the render.
+JIRA_STUB_FAIL=1 runv --out "$W/v-fail-board.html" >/dev/null; rc=$?
+vfail="$(cat "$W/v-fail-board.html" 2>/dev/null)"
+contains 'a failing Jira CLI still renders the board (rc 0)' "rc=$rc" 'rc=0'
+contains 'a failing Jira CLI reads unavailable' "$vfail" 'data-release="v1.0.0" data-unavailable="1"'
+lacks 'a failing Jira CLI fabricates no counts' "$vfail" 'data-done='
+# A missing CLI (nothing at the seam path) reads unavailable too.
+BOARD_JIRA="$W/bin/no-such-jira" runv --out "$W/v-missing-board.html" >/dev/null; rc=$?
+contains 'a missing Jira CLI still renders the board (rc 0)' "rc=$rc" 'rc=0'
+contains 'a missing Jira CLI reads unavailable' "$(cat "$W/v-missing-board.html")" 'data-release="v1.0.0" data-unavailable="1"'
+
+# No versions: line -> nothing extra, and Jira is never called.
+rm -f "$W/jira-argv.log"
+JIRA_ARGV_LOG="$W/jira-argv.log" BOARD_JIRA="$W/bin/jira-stub" run --out "$W/nov-board.html" >/dev/null
+lacks 'no versions: line renders no Release panel' "$(cat "$W/nov-board.html")" 'data-release'
+lacks 'no versions: line renders no release fingerprint' "$(cat "$W/nov-board.html")" 'console-board-versions-fp'
+if [ ! -e "$W/jira-argv.log" ]; then pass 'no versions: line makes no Jira call'; else fail 'no versions: line made a Jira call'; fi
+
+# The version rows fold into --changed: a count moving flips it, an identical render does not.
+rm -f "$W/v-changed.html"
+vc1="$(runv --out "$W/v-changed.html" --changed)"
+same 'versions --changed: first render reports CHANGED' "$vc1" "CHANGED $W/v-changed.html"
+vc2="$(runv --out "$W/v-changed.html" --changed)"
+same 'versions --changed: an identical re-render reports UNCHANGED' "$vc2" "UNCHANGED $W/v-changed.html"
+write_v100 4
+vc3="$(runv --out "$W/v-changed.html" --changed)"
+same 'a done count moving flips --changed although tick-fp is unchanged' "$vc3" "CHANGED $W/v-changed.html"
+contains 'the tick fingerprint meta is left as tick computed it' "$(cat "$W/v-changed.html")" '<meta name="console-board-fp" content="deadbeefdeadbeef">'
+vc4="$(JIRA_STUB_FAIL=1 runv --out "$W/v-changed.html" --changed)"
+same 'the CLI going unavailable flips --changed' "$vc4" "CHANGED $W/v-changed.html"
+
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
 contains 'no --doc is a usage error (rc 2)' "rc=$rc" 'rc=2'
