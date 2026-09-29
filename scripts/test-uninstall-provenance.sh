@@ -245,8 +245,13 @@ _run_uninstall_inner() {
       printf '%s\n' "$RUN_TTY_ANSWER" \
         | script -qec "$(printf '%q ' bash "$repo_root/scripts/uninstall.sh" "$@")" /dev/null 2>&1
     else
-      printf '%s\n' "$RUN_TTY_ANSWER" \
-        | script -q /dev/null bash "$repo_root/scripts/uninstall.sh" "$@" 2>&1
+      # ponytail: fixed 3s start delay + 1s per key, not prompt-synchronised;
+      # BSD script drops input written before the child reads, so the keys are
+      # fed paced. Upgrade to an expect-style prompt wait if a slow runner flakes.
+      { sleep 3
+        printf '%s\n' "$RUN_TTY_ANSWER" | while IFS= read -r _k || [ -n "$_k" ]; do printf '%s\n' "$_k"; sleep 1; done
+        sleep 2
+      } | script -q /dev/null bash "$repo_root/scripts/uninstall.sh" "$@" 2>&1
     fi
   else
     bash "$repo_root/scripts/uninstall.sh" "$@" </dev/null 2>&1

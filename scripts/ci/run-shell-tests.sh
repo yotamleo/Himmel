@@ -291,6 +291,12 @@ _suite_timeout_for() {
       # (CAP EXCEEDED); it takes ~211s on Linux. 1200s is ~2x the macOS figure;
       # SUITE_RUN_BUDGET stays the runaway backstop.
       printf '1200' ;;
+    scripts/test-uninstall-provenance.sh|*/scripts/test-uninstall-provenance.sh)
+      # HIMMEL-3699. os-verify run 36631325846 (macOS): killed at 603s against
+      # the 600s default (CAP EXCEEDED) with its assertions passing; ~212s on
+      # Linux. Same 1200s as test-uninstall.sh; SUITE_RUN_BUDGET stays the
+      # runaway backstop.
+      printf '1200' ;;
     scripts/test-check-ci.sh|*/scripts/test-check-ci.sh)
       # HIMMEL-1978. ~110 cases, each spawning dozens of gh-stub processes, so
       # it is the most load-sensitive suite here: measured 1009s on a swept box
