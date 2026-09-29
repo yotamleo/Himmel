@@ -110,6 +110,19 @@ hook blocks any API key before it can be committed or pushed; `.gitignore`
 (`.env`, `.single-writer`) is the second layer. With the flag off — or on but
 with no remote configured — it is a no-op (no commit, no network).
 
+**Stall alert.** A hook that keeps refusing the pending changes (a lint error
+in one scratch file, say) stops the vault committing without a word.
+`vault-autosync.sh` tracks the stall: once the refusals have lasted
+`LUNA_VAULT_STALL_THRESHOLD_MIN` minutes (default 30) it calls the executable
+named by `LUNA_VAULT_ALERT_CMD` **once per stall episode** with one argument,
+a message naming the failing hook and file. An episode ends at the next
+successful commit or clean tree. A sink that exits non-zero is retried on the
+next run; with no sink set the stall is only logged to stderr.
+
+```bash
+LUNA_VAULT_AUTOSYNC=1 LUNA_VAULT_ALERT_CMD=/path/to/notify.sh bash scripts/vault-autosync.sh
+```
+
 This sweeper is the template's default sync path. The bundled **GitHub Sync**
 Obsidian plugin is an alternative, opt-in mechanism (`bash scripts/upgrade.sh
 --with-github-sync`, or `LUNA_WITH_GITHUB_SYNC=1`) — pick one, not both: the
