@@ -1165,6 +1165,28 @@ run_clear "$tmp" 0 "cross-model required + claude + codex ok → exit 0"
 if marker_exists "$tmp"; then fail "cross-model met: marker should be GONE"; else pass; fi
 rm -rf "$tmp"
 
+# 4l1. HIMMEL-3818: the codex adversarial pass is removed, so a retired
+# `codex-adv` avail row is NOT cross-model evidence. Claude floor + ONLY a
+# codex-adv ok row → exit 14, marker REMAINS; with the panel's codex row beside
+# it the gate clears exactly as in 4l.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" \
+    "$(printf '{"kind":"avail","head":"%s","model":"codex-adv","status":"ok"}' "${sha:0:8}")"
+run_clear "$tmp" 14 "cross-model required + claude + ONLY a retired codex-adv row → exit 14"
+if marker_exists "$tmp"; then pass; else fail "codex-adv-only row must not satisfy 3b: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" \
+    "$(printf '{"kind":"avail","head":"%s","model":"codex-adv","status":"ok"}' "${sha:0:8}")" \
+    "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "cross-model required + claude + codex-adv + panel codex ok → exit 0 (panel row still satisfies 3b)"
+if marker_exists "$tmp"; then fail "panel codex row present: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
 # 4l2. HIMMEL-2026: a CURRENT docs-audit marker is allowed to clear under the
 # opt-in cross-model floor when the docs-audit lane recorded Claude AND a
 # non-Claude responder at the FULL head SHA. This guards the lane-specific

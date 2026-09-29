@@ -619,7 +619,7 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANC
           // one at this head wins - not just the "ok" rows gate 3 counts -
           // so a lane that stayed unavailable is visible to the floor-fallback
           // eligibility check below.
-          if (model && model !== "claude" && model !== "claude-floor") {
+          if (model && model !== "claude" && model !== "claude-floor" && model !== "codex-adv") {
               availByModel.set(model, {
                   status: (typeof o.status === "string" ? o.status : "").trim().toLowerCase(),
                   reason: (typeof o.reason === "string" ? o.reason : "").trim().toLowerCase(),
@@ -633,7 +633,10 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANC
               // when required. (Scope: this tightens the cross-model count
               // only — the gate-3 responders count is unchanged; a model-less
               // row cannot occur via ledger-append.sh, which requires --model.)
-              if (model && model !== "claude" && model !== "claude-floor") nonClaudeResponders++;
+              // HIMMEL-3818: "codex-adv" is a RETIRED lane (the adversarial pass
+              // was removed); a legacy row of that name is not cross-model
+              // evidence and not an exhaustion-tracked lane.
+              if (model && model !== "claude" && model !== "claude-floor" && model !== "codex-adv") nonClaudeResponders++;
               if (model === "claude") claudeOk = true;
               if (model === "claude-floor") floorOk = true;
           }

@@ -449,20 +449,11 @@ Check 'production source: blindClients assignment is NOT @()-wrapped' `
   ($callerSrc -match '\$blindClients\s*=\s*Get-BlindClientPids' -and $callerSrc -notmatch '\$blindClients\s*=\s*@\(\s*Get-BlindClientPids') `
   'caller line regressed to the @() wrap'
 
-# --- Test 6e: pr-check uses one lease-aware launcher at both render sites ------
-Write-Host "Test 6e: pr-check launcher wiring (HIMMEL-1474 Layer B)"
+# --- Test 6e: the lease writer exists (HIMMEL-3818: the adversarial runner that launched it is removed) ---
+Write-Host "Test 6e: lease writer presence (HIMMEL-1474 Layer B)"
 $RepoRoot = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
-$PrCheck = Join-Path $RepoRoot '.claude\commands\pr-check.md'
-$Runner = Join-Path $RepoRoot 'scripts\cr\run-codex-adversarial.sh'
 $LeaseWriter = Join-Path $RepoRoot 'scripts\cr\codex-render-client-lease.ps1'
-Check 'shared adversarial runner exists' (Test-Path -LiteralPath $Runner)
 Check 'PowerShell lease writer exists' (Test-Path -LiteralPath $LeaseWriter)
-$prCheckSrc = Get-Content -LiteralPath $PrCheck -Raw
-$runnerRefs = [regex]::Matches($prCheckSrc, 'bash scripts/cr/run-codex-adversarial\.sh').Count
-Check 'kickoff and retry both use shared runner' ($runnerRefs -eq 2) "got=$runnerRefs"
-$runnerSrc = Get-Content -LiteralPath $Runner -Raw
-Check 'runner starts client lease writer with translated client pid' `
-  ($runnerSrc -match 'codex-render-client-lease\.ps1' -and $runnerSrc -match '-ClientPid \"\$lease_client_pid\"')
 
 # --- Test 6f: execute the real writer and observe two heartbeats ---------------
 # Source-grep coverage missed the read-only `$PID` binder collision. This starts

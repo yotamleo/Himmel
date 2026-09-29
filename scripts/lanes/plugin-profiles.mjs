@@ -38,7 +38,7 @@ const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/queue-lock|handover\/c
 // scripts/cr/), always invoked bare with no documented argument form
 // (bug-ops.md), so it joins this exact-literal group rather than
 // GATE_SCRIPT_RE's ':*' tail group.
-const GATE_EXACT_RE = /^Bash\(bash scripts\/(?:cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory|pr-check-context)\.sh|known-findings\.sh --diff|pr-check-env\.sh CR_CLAUDE_AGENTS)|handover\/resolve-active-item\.sh)\)$/;
+const GATE_EXACT_RE = /^Bash\(bash scripts\/(?:cr\/(?:(?:doc-freshness-advisory|pr-check-context)\.sh|known-findings\.sh --diff|pr-check-env\.sh CR_CLAUDE_AGENTS)|handover\/resolve-active-item\.sh)\)$/;
 const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (?:scripts\/(?:handover\/console-kit\/|(?:handover|cr|git|hooks|guardrails|lib|luna|ci)\/)?|templates\/luna-second-brain\/scripts\/)test-\*\.sh\)$/;
 // HIMMEL-3491: the merge-gate ENTRY invocation runs from the $HIMMEL_REPO
 // anchor, not branch-controlled bytes, so it must carry a literal `$` the
@@ -491,7 +491,7 @@ function anchorRuleFromRelative(rule, anchor) {
 // wildcard-tail GATE_SCRIPT_RE rules (queue-lock, panel-first-pass,
 // clear-cr-marker, check-ci, and the rest of that set) plus the two extras
 // above. Deliberately excludes GATE_EXACT_RE's no-argument literals
-// (codex-adv-kickoff, pr-check-context, pr-check-env, …) and GATE_SUITE_RE's
+// (doc-freshness-advisory, pr-check-context, pr-check-env, …) and GATE_SUITE_RE's
 // test-suite rules: those either hand off to the anchor's own copy
 // internally (pr-check-context/pr-check-env, HIMMEL-3698) or must run
 // against the WORKTREE's bytes, never the anchor's (test suites exercise the

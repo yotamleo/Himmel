@@ -249,7 +249,7 @@ a subscription lands.
 
 ### openai-codex (codex plugin)
 
-**Tier:** ON-DEMAND (`codex@openai-codex` — installed, disabled by default; `plugin-profile.sh enable codex`, HIMMEL-2733). The codex adversarial critic lane needs the plugin INSTALLED for its cached companion script, never enabled — see `scripts/cr/codex-adv-kickoff.sh`.
+**Tier:** ON-DEMAND (`codex@openai-codex` — installed, disabled by default; `plugin-profile.sh enable codex`, HIMMEL-2733). The codex worker lanes need the plugin INSTALLED for its cached companion script, never enabled.
 **What:** The OpenAI codex companion plugin — the codex CLI runtime, the `codex:codex-rescue` / `codex:setup` skills, and the `codex-companion.mjs` script under `$HOME/.claude/plugins/cache/openai-codex/codex/<version>/` (the version segment drifts on plugin update — glob-resolve it, never hardcode).
 
 **Tiered vendor posture (operator ruling 2026-08-28):** large established
@@ -266,7 +266,7 @@ SessionEnd `Hook cancelled` 5s-timeout noise (HIMMEL-2148) is tracked upstream
 at openai/codex-plugin-cc#474. The `yotamleo/codex-plugin-cc` fork and tag
 `v1.0.6-himmel.1` remain parked, unreferenced by any marketplace entry.
 
-**ADOPTED (HIMMEL-694):** the companion's `adversarial-review` mode is integrated into `/pr-check` step 3.1 as an ADDITIONAL pre-merge cross-model pass of the paid/pair tier — **availability-gated** (it consumes the operator's OpenAI usage bank, so absence of codex ⇒ silently skipped with a one-line note, never an error; also skipped under `CR_PROFILE=none`). Its `[codex-adv-N]` findings are blocking candidates merged into the same adjudication flow as the free critic panel (VERDICT lines + step-4.5 ledger `--model codex-adv`). Runbook: `.claude/commands/pr-check.md` step 3.1.
+**RETIRED (HIMMEL-3818):** the companion's `adversarial-review` mode was integrated into `/pr-check` step 3.1 (HIMMEL-694) as an availability-gated extra cross-model pass, dormant since HIMMEL-1957; removed 2026-09-29 (same OpenAI bank as the panel `codex` critic, 6 % agreed vs 23 %).
 **Windows ACL hardening (HIMMEL-733):** aged Codex worktrees can lose inherited
 sandbox ACEs on child directories. Before an unattended Codex dispatch into an
 existing worktree, run `pwsh -NoProfile -File scripts\codex\normalize-worktree-acl.ps1 <worktree>`

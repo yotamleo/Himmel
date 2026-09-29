@@ -163,16 +163,15 @@ only 3 and 4 reach Claude-only; 1 and 2 BILL:
    availability row of its own. That pass is deleted (CodeRabbit is the App
    only), so the Claude floor is the sole remaining one. Under
    `CR_REQUIRE_CROSS_MODEL=1` a panel-wide outage is much closer to closed:
-   gate 3b requires a non-Claude `avail … ok` at the SHA, and exactly two
-   sources can still supply one — the panel itself, and the codex ADVERSARIAL
-   pass (`codex-adv-harvest.sh`, step 3.1), which records
-   `avail --model codex-adv` independently of the panel run. A Claude-only
-   floor keeps the marker closed (exit 14) until one of them responds.
+   gate 3b requires a non-Claude `avail … ok` at the SHA, and only the panel
+   itself can still supply one (the codex adversarial pass that used to record
+   `avail --model codex-adv` was removed in HIMMEL-3818, and a legacy row of
+   that name no longer counts). A Claude-only floor keeps the marker closed
+   (exit 14) until a panel critic responds.
 
-   The caveat that survives: both of those rows come from the SAME provider.
-   `codex-adv` is not cross-PROVIDER redundancy for the panel's `codex` row —
-   an OpenAI-side outage or an exhausted bank takes both out together, and then
-   nothing can satisfy gate 3b. That single point of failure is what
+   The caveat that survives: the panel's non-Claude rows can share a provider.
+   An OpenAI-side outage or an exhausted bank takes the `codex` row out, and
+   then nothing can satisfy gate 3b. That single point of failure is what
    HIMMEL-1904 re-introduced when the `glm` row was retired, and it is the
    reason HIMMEL-2711 is filed.
 4. **The panel cannot be run at all** — e.g. the diff could not be produced

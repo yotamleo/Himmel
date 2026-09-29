@@ -110,9 +110,6 @@ scripts/copilot/test-dispatch-copilot.sh	0
 scripts/cr/test-advisory-rows.sh	0
 scripts/cr/test-artifact-critic.sh	0
 scripts/cr/test-clear-cr-marker.sh	37
-scripts/cr/test-codex-adv-completion-check.sh	1
-scripts/cr/test-codex-adv-harvest.sh	2
-scripts/cr/test-codex-adv-kickoff.sh	2
 scripts/cr/test-cr-pending-audit.sh	2
 scripts/cr/test-cr-scores.sh	1
 scripts/cr/test-cr-tune.sh	0
@@ -141,7 +138,6 @@ scripts/cr/test-pr-check-external.sh	2
 scripts/cr/test-pr-check-pair.sh	1
 scripts/cr/test-pr-check-rounds.sh	6
 scripts/cr/test-pr-check-run.sh	2
-scripts/cr/test-run-codex-adversarial.sh	63
 scripts/cr/test-triviality-gate.sh	1
 scripts/cr/test-write-verdicts.sh	0
 scripts/docs/test-check-doc-terms.sh	0

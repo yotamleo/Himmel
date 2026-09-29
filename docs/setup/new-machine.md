@@ -1473,7 +1473,7 @@ or verified, or a bulk `lean`/`full` had any write refused (floor) or failed;
 | `luna-correlate@himmel` | Cross-vault correlation over luna (`HIMMEL_MCP_LUNA_CORRELATE` workflows) | `plugin-profile.sh enable luna-correlate` |
 | `obsidian-triage@himmel` | `/luna-ingest` and the luna clip pipeline. The pipeline itself does NOT need it enabled here — see the cadence exception below (HIMMEL-1036) | `plugin-profile.sh enable obsidian-triage` |
 | `telegram-himmel@himmel` | The `telegram` MCP behind `/telegram-clip` and the Telegram connector legs — disabling the plugin is what disables that MCP | `plugin-profile.sh enable telegram-himmel` |
-| `codex@openai-codex` | The codex adversarial critic lane (`scripts/cr/codex-adv-kickoff.sh` resolves its cached companion by glob) — needs the plugin INSTALLED, never enabled | `plugin-profile.sh enable codex` |
+| `codex@openai-codex` | The codex worker lanes resolve its cached companion by glob — needs the plugin INSTALLED, never enabled | `plugin-profile.sh enable codex` |
 
 An on-demand enable is a LIVE toggle only: an opt-in reconcile
 (`HIMMEL_RECONCILE_PLUGINS=1`, e.g. via `/himmel-update`) writes the

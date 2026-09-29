@@ -109,7 +109,7 @@ cr_diff_is_high_risk() {
 #   rc 1 = ordinary diff; stdout is empty
 #
 # Split out of cr_diff_is_high_risk so a caller that already HAS the path list
-# does not have to re-query GitHub for it — specifically codex-adv-kickoff.sh,
+# does not have to re-query GitHub for it — formerly codex-adv-kickoff.sh (removed, HIMMEL-3818),
 # which runs during /pr-check BEFORE the PR exists, so there is no PR number to
 # ask about and the paths can only come from `git diff --name-only`. The point
 # of the split is that there stays exactly ONE copy of the list below: this
