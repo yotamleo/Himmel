@@ -397,9 +397,48 @@ _prov_backup() {
     printf '%s' "$dest"
 }
 
+# _prov_snapshot <iid> <unit-path> <src-type file|text> <src-val> -- HIMMEL-3787 S2c:
+# copy himmel's OWN post-state (ours) to provenance-backups/<iid>/<seq>-<basename>.ours
+# (0600, the same <seq>- naming as _prov_backup). Call it WITHOUT a command
+# substitution: it reports through globals, which a subshell would drop. rc 0 sets
+# _PROV_SNAP_PATH; rc 1 sets _PROV_SNAP_REASON (too-large | unsafe-iid | backups-dir |
+# write-failed) -- a skip, never an install failure: the caller records
+# snap:null,snap_skip:<reason>.
+# ponytail: 1 MiB cap, raise it on a real >1 MiB unit (design §2).
+_PROV_SNAP_MAX=1048576
+_PROV_SNAP_PATH="" _PROV_SNAP_REASON=""
+_prov_snapshot() {
+    local iid="$1" upath="$2" stype="$3" sval="$4" dir bdir n dest _f sz
+    _PROV_SNAP_PATH="" _PROV_SNAP_REASON=""
+    case "$stype" in
+        file) sz=$(_prov_size "$sval" 2>/dev/null) || sz=0 ;;
+        *) sz=$(printf '%s' "$sval" | wc -c | tr -d ' ') ;;
+    esac
+    if [ "${sz:-0}" -gt "$_PROV_SNAP_MAX" ]; then _PROV_SNAP_REASON=too-large; return 1; fi
+    case "$iid" in ''|.|..|*[!A-Za-z0-9._-]*) _PROV_SNAP_REASON=unsafe-iid; return 1 ;; esac
+    dir=$(prov_dir 2>/dev/null) || { _PROV_SNAP_REASON=backups-dir; return 1; }
+    bdir="$dir/provenance-backups/$iid"
+    _prov_refuse_symlink "$dir/provenance-backups" "$bdir" 2>/dev/null || { _PROV_SNAP_REASON=backups-dir; return 1; }
+    ( umask 077; mkdir -p "$bdir" ) 2>/dev/null || { _PROV_SNAP_REASON=backups-dir; return 1; }
+    # failglob-safe: an empty $bdir must count 0, not abort the sourced caller
+    n=$(shopt -u failglob 2>/dev/null; c=1; for _f in "$bdir"/*; do [ -e "$_f" ] && c=$((c + 1)); done; echo "$c")
+    while :; do
+        dest="$bdir/$(printf '%03d-%s' "$n" "${upath##*/}").ours"
+        # reserve the name atomically (noclobber = O_EXCL), as _prov_backup does
+        if ( umask 077; set -C; : > "$dest" ) 2>/dev/null; then break; fi
+        [ -e "$dest" ] || { _PROV_SNAP_REASON=write-failed; return 1; }
+        n=$((n + 1))
+    done
+    case "$stype" in
+        file) ( umask 077; cat "$sval" > "$dest" ) 2>/dev/null ;;
+        *) ( umask 077; printf '%s' "$sval" > "$dest" ) 2>/dev/null ;;
+    esac || { rm -f "$dest"; _PROV_SNAP_REASON=write-failed; return 1; }
+    _PROV_SNAP_PATH="$dest"
+}
+
 _PROV_OPS=" create replace insert append register link noop "
 _PROV_KINDS=" file tree json-key json-elem block line plugin marketplace job unit shim symlink git-hook mcp collection tool "
-_PROV_RESERVED=" t iid op kind path unit scope class pre post writer manifest_row "
+_PROV_RESERVED=" t iid op kind path unit scope class pre post snap snap_skip writer manifest_row "
 
 # prov_record <op> <kind> <path|-> [flags]   -- append one artifact row.
 #   --unit U  --scope user|project|clone|machine  --class code|state|keep
@@ -409,12 +448,14 @@ _PROV_RESERVED=" t iid op kind path unit scope class pre post writer manifest_ro
 #   --post-file F | --post-json V | --post-text S
 #   --backup (copy the pre-state into the backups dir)   --dry-run
 # <path> "-" means no path (registrations). Row key order:
-#   t iid op kind path unit scope class <--field keys in call order> pre post writer manifest_row
+#   t iid op kind path unit scope class <--field keys in call order> pre post [snap [snap_skip]] writer manifest_row
+# snap/snap_skip (HIMMEL-3787 S2c) only on class-code create|replace|insert of file|shim|block
+# with a --post-file/--post-text: the path of the .ours snapshot, or null + a skip reason.
 prov_record() {
     [ $# -ge 3 ] || { _prov_err "prov_record: usage: prov_record <op> <kind> <path|-> [flags]"; return 2; }
     local op="$1" kind="$2" path="$3" unit="" scope="" class="" row="" writer=""
     local pre_t="" pre_v="" post_t="" post_v="" backup=0 dry=0 fields='{}' k v cpath="" iid implicit=0
-    local pre='null' post='null' bk='null' body
+    local pre='null' post='null' bk='null' body snapkv='{}'
     shift 3
     # one exact token: a quoted "create replace" must not match the space-delimited list
     case "$op" in ''|*[[:space:]]*) _prov_err "prov_record: unknown op '$op'"; return 2 ;; esac
@@ -478,12 +519,24 @@ prov_record() {
         pre=$(jq -nc --argjson b "$body" --argjson bk "$bk" '{state:"present"} + $b + {backup:$bk}') || return 1
     fi
     if [ -n "$post_t" ]; then post=$(_prov_body post "$kind" "$post_t" "$post_v") || return 1; fi
+    # HIMMEL-3787 S2c: ours bytes for whole-file/block code units (design §2). A row
+    # is v2 iff it carries the snap key; a snapshot problem is snap:null + a reason.
+    case " $kind " in
+        " file "|" shim "|" block ") case "$class:$op:$post_t" in
+            code:create:file|code:create:text|code:replace:file|code:replace:text|code:insert:file|code:insert:text)
+                if _prov_snapshot "$iid" "${cpath:-${unit:-unit}}" "$post_t" "$post_v"; then
+                    snapkv=$(jq -nc --arg v "$_PROV_SNAP_PATH" '{snap:$v}') || return 1
+                else
+                    snapkv=$(jq -nc --arg r "$_PROV_SNAP_REASON" '{snap:null,snap_skip:$r}') || return 1
+                fi ;;
+        esac ;;
+    esac
 
     [ "$implicit" = 1 ] && { _prov_append "$(_prov_begin_row "$iid" "$writer" "" "$_PROV_ROOT" '[]')" || return 1; }
     _prov_append "$(jq -nc --arg t "$(_prov_now)" --arg iid "$iid" --arg op "$op" --arg kind "$kind" \
         --arg path "$cpath" --arg unit "$unit" --arg scope "$scope" --arg class "$class" \
         --argjson fields "$fields" --argjson pre "$pre" --argjson post "$post" \
-        --arg writer "$writer" --arg row "$row" \
+        --argjson snapkv "$snapkv" --arg writer "$writer" --arg row "$row" \
         '{t:$t,iid:$iid,op:$op,kind:$kind}
          + (if $path != "" then {path:$path} else {} end)
          + (if $unit != "" then {unit:$unit} else {} end)
@@ -492,6 +545,7 @@ prov_record() {
          + $fields
          + (if $pre != null then {pre:$pre} else {} end)
          + (if $post != null then {post:$post} else {} end)
+         + $snapkv
          + (if $writer != "" then {writer:$writer} else {} end)
          + (if $row != "" then {manifest_row:$row} else {} end)')" || return 1
     if [ "$implicit" = 1 ]; then _prov_append "$(_prov_end_row "$iid" ok "")" || return 1; fi

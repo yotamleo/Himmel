@@ -264,6 +264,27 @@ else
     fail_case "D5 normal verdict: all-pass=$r_pass fail=$r_fail red-on-green=$r_red_green"; dump
 fi
 
+# D5b — HIMMEL-3787 S2c: the install-only ledger-snap-* checks ride the same
+# verdict. A lone ledger-direction FAIL (a missing .ours snapshot) fails a
+# normal run and is counted as ledger, never as a RED direction; a SKIP (no
+# class=code rows) is not a failure.
+SNAP_FAIL="$WORK/assert-snap-fail"
+{ cat "$ALL_PASS"; echo 'CHECK ledger ledger FAIL ledger-snap-adopter-scripts — missing or wrong snapshot for: ~/proj/scripts/w.sh(snap too-large)'; } >"$SNAP_FAIL"
+SNAP_SKIP="$WORK/assert-snap-skip"
+{ cat "$ALL_PASS"; echo 'CHECK precondition precondition SKIP ledger-snap-hud-config — no class=code file row for hud-config in the ledger'; } >"$SNAP_SKIP"
+run_rt "$SNAP_FAIL" f73a62f1
+r_snap_fail=$RC; snap_fail_out=$OUT
+run_rt "$SNAP_FAIL" f73a62f1 --expect-red
+r_snap_red=$RC
+run_rt "$SNAP_SKIP" f73a62f1
+r_snap_skip=$RC
+if [ "$r_snap_fail" -eq 1 ] && grep -q 'ledger=1 ' <<<"$snap_fail_out" && grep -q 'RESULT: FAIL' <<<"$snap_fail_out" \
+   && [ "$r_snap_red" -eq 1 ] && [ "$r_snap_skip" -eq 0 ]; then
+    pass "D5b a ledger-snap FAIL fails the run as a ledger check (not a RED direction); a SKIP does not"
+else
+    fail_case "D5b ledger-snap verdict: fail=$r_snap_fail red=$r_snap_red skip=$r_snap_skip"; printf '%s\n' "$snap_fail_out" | sed 's/^/    /'
+fi
+
 # D6 — no CHECK lines at all is a harness failure, never a verdict
 run_rt "$NO_CHECKS" f73a62f1 --expect-red
 if [ "$RC" -eq 2 ]; then pass "D6 zero CHECK lines exits 2"; else fail_case "D6 zero checks: rc=$RC"; dump; fi

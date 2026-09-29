@@ -450,6 +450,27 @@ if [ -f "$L" ]; then
       led_units marketplace | while IFS=$'\t' read -r m _; do
           case "$m" in ''|*[!A-Za-z0-9._-]*) ;; *) printf '%s\n' "$MK/$m" ;; esac
       done; } | sort -u >"$D/ledger-trees.txt"
+    # HIMMEL-3787 S2c: install-only -- the ledger's LAST class=code file row per
+    # path of these two rows names an .ours snapshot that exists at B and holds
+    # the very bytes install left in place. Judged at B because a resolved
+    # unit's snapshot is pruned by the uninstall (spec §5.3).
+    snap_check() {  # <row>
+        local row="$1" n=0 bad="" p s k
+        while IFS=$'\t' read -r p s k; do
+            [ -n "$p" ] || continue
+            n=$((n + 1))
+            if [ "$s" = null ]; then bad="$bad $(rel "$p")(snap ${k:-absent})"
+            elif [ -z "$(meta_of B "$s")" ]; then bad="$bad $(rel "$p")(no snapshot file at B)"
+            elif [ "$(sha_of B "$s")" != "$(sha_of B "$p")" ]; then bad="$bad $(rel "$p")(snapshot differs from the installed bytes)"
+            fi
+        done < <(jq -rs --arg r "$row" '[.[] | select(.manifest_row == $r and .kind == "file" and .class == "code" and (.op == "create" or .op == "replace"))]
+            | group_by(.path) | .[] | .[-1] | "\(.path)\t\(.snap // "null")\t\(.snap_skip // "")"' "$L" 2>/dev/null)
+        if [ "$n" -eq 0 ]; then check precondition precondition SKIP "ledger-snap-$row" "no class=code file row for $row in the ledger"
+        elif [ -z "$bad" ]; then check ledger ledger PASS "ledger-snap-$row" "$n unit(s): the .ours snapshot exists and equals the installed bytes"
+        else check ledger ledger FAIL "ledger-snap-$row" "missing or wrong snapshot for:$bad"; fi
+    }
+    snap_check adopter-scripts
+    snap_check hud-config
 else
     check ledger ledger FAIL ledger-exists "no provenance.jsonl after install"
     : >"$D/ledger-paths.txt"

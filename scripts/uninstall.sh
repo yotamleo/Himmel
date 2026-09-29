@@ -4042,8 +4042,9 @@ EOF
       # checks close that gap: (a) any bad row at all makes the ledger's
       # account of what's on disk unreliable, so refuse outright; (b) scan the
       # backup directory itself for files no VALID raw row's .pre.backup
-      # references at all -- an orphan left behind by exactly this failure
-      # mode, regardless of whether (a) already caught it.
+      # or .snap (S2c ours snapshot) references at all -- an orphan left
+      # behind by exactly this failure mode, regardless of whether (a)
+      # already caught it.
       if [ "${PROV_READ_BAD_ROWS:-0}" -gt 0 ] 2>/dev/null; then
         _prov_unrestored="${_prov_unrestored}(unparsable provenance ledger row(s): $PROV_READ_BAD_ROWS)"$'\n'
       fi
@@ -4055,7 +4056,7 @@ EOF
             | (if ($lines|length) > 0 and $lines[-1] == "" then $lines[0:-1] else $lines end)[]
             | (try fromjson catch null)
             | select(. != null)
-            | (.pre.backup? // empty)
+            | ((.pre.backup? // empty), (.snap? // empty))
           ' "$_prov_scan_ledger" 2>/dev/null)"
           _prov_known_backups="
 $_prov_known_backups

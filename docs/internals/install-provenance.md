@@ -42,7 +42,7 @@ of its own (`install-begin`, the one artifact row, `install-end ok`).
 |---|---|---|
 | `install-begin` | session start | `t iid op himmel_root himmel_head version argv home claude_config_dir target platform writer` |
 | `install-end` | session end | `t iid op status failed_step` (`status`: `ok` / `failed` / `partial`) |
-| artifact ops | one artifact | `t iid op kind path unit scope class <extra fields> pre post writer manifest_row` |
+| artifact ops | one artifact | `t iid op kind path unit scope class <extra fields> pre post [snap [snap_skip]] writer manifest_row` |
 
 Absent keys are omitted from an artifact row. `path` is absolute, with the
 parent chain resolved (a symlink basename is kept as the link) and forward
@@ -77,6 +77,28 @@ line; line = the line without its terminator.
 `--pre-text`. The backup's sha256 always equals `pre.sha`. The sequence number
 is reserved with an exclusive create, so concurrent writers sharing one `iid`
 never collide on a name.
+
+### Ours snapshots: `snap` / `snap_skip` (HIMMEL-3787 S2c)
+
+A `class=code` row of kind `file` / `shim` / `block` and op `create` / `replace`
+/ `insert` also snapshots what himmel wrote — its **post** bytes (`--post-file`,
+or `--post-text` for a block) — to `provenance-backups/<iid>/<seq>-<basename>.ours`
+(mode 0600, the same `<seq>` scheme and exclusive create as a backup). The row
+carries it as a **top-level** `snap` key (the absolute path), right after `post`;
+it is never inside `post`, and `snap` / `snap_skip` are reserved `--field` names.
+A revert can then tell "still exactly what himmel installed" from "the operator
+edited it" without trusting a hash alone, and merge the two.
+
+Anything that stops the snapshot never fails the install: the row gets
+`"snap":null` plus a `"snap_skip"` reason — `too-large` (post over 1 MiB),
+`unsafe-iid`, `backups-dir` (the backups dir is a symlink or cannot be created) or
+`write-failed`. Rows of any other class, kind or op carry neither key. A row is a
+**v2** row iff it has the `snap` key; v1 rows, written before S2c, have none and
+read as before. The bash and node writers emit byte-identical rows
+(`test-provenance-js.sh`).
+
+The fold (`provenance-read.sh`) carries `eff_snap`, the `snap` of the row that
+produced `eff_post`; json-elem units carry none.
 
 ## Calling contract
 
@@ -140,6 +162,13 @@ verdict of `keep already-base` / `surgical *`. Every other state — including
 `keep user-modified` and bare `keep already-absent` — holds its backup, and
 `prov_read_prune_backups` / `uninstall.sh --purge-state`'s scan both refuse to
 delete a held backup.
+
+The same predicate governs a unit's `.ours` snapshot (S2c): `prov_read_prune_backups`
+deletes a resolved unit's `eff_snap` together with its backup (a snap-only unit, such
+as a `create`, has no backup and is pruned by its snap alone), and a held unit keeps
+both. `--purge-state`'s orphan scan (any file under `provenance-backups/` that no valid
+ledger row names) accepts a row's top-level `.snap` as well as `.pre.backup`, so a v2
+install does not refuse its own purge.
 
 `--purge-state --keep-backups` no longer leaves the ledger deleted and
 `provenance-backups/` behind as a permanent orphan (J1393A Minor 1): it

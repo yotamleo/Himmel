@@ -1131,5 +1131,59 @@ prov_read_cleanup
 check "S16: prov_read_cleanup removes the identity cache" "$([ -e "$_s16_fold.identity.d" ] && echo yes || echo no)" "no"
 export PATH="$_s16_path_save"
 
+# ── HIMMEL-3787 S2c: the fold carries eff_snap; prune deletes a resolved
+#    unit's .ours snapshot with its backup. A snap is a top-level row key, so
+#    it must not leak into .fields. ─────────────────────────────────────────
+
+reset
+prov_begin --iid SN1 --writer t
+printf 'a-old\n' > "$w/sa.txt"
+snap7=$(mktemp "$td/snap7.XXXXXX") || exit 1; cp "$w/sa.txt" "$snap7"
+printf 'a-new\n' > "$w/sa.txt"
+prov_record replace file "$w/sa.txt" --pre-file "$snap7" --backup --post-file "$w/sa.txt" --scope user --class code
+printf 'c-new\n' > "$w/sc.txt"
+prov_record create file "$w/sc.txt" --pre-absent --post-file "$w/sc.txt" --scope user --class code
+printf 'k-new\n' > "$w/sk.txt"
+prov_record create file "$w/sk.txt" --pre-absent --post-file "$w/sk.txt" --scope user --class code
+prov_end ok
+prov_read_load
+usa=$(u_for --path "$w/sa.txt")
+usc=$(u_for --path "$w/sc.txt")
+usk=$(u_for --path "$w/sk.txt")
+snsa=$(field "$usa" '.eff_snap')
+snsc=$(field "$usc" '.eff_snap')
+snsk=$(field "$usk" '.eff_snap')
+check "S2c fold: eff_snap is the .ours path of the row that made eff_post" \
+    "$([ -f "$snsa" ] && [ "$(cat "$snsa")" = "a-new" ] && echo yes || echo no)" "yes"
+check "S2c fold: snap/snap_skip do not leak into .fields" \
+    "$(printf '%s' "$usa" | jq -c '.fields | has("snap") or has("snap_skip")')" "false"
+prov_read_session_begin wet
+prov_read_outcome restored "$usa" ours "$(field "$usa" '.eff_pre.backup')"
+prov_read_outcome removed "$usc" ours ""
+prov_read_outcome kept "$usk" user-modified
+prov_read_session_end ok
+prov_read_prune_backups
+check "S2c prune: restored unit's .ours snapshot is deleted" "$([ -f "$snsa" ] && echo yes || echo no)" "no"
+check "S2c prune: removed create unit's .ours snapshot is deleted" "$([ -f "$snsc" ] && echo yes || echo no)" "no"
+check "S2c prune: kept unit's .ours snapshot survives" "$([ -f "$snsk" ] && echo yes || echo no)" "yes"
+prov_read_cleanup
+rm -f "$snap7"
+
+# a later replace row's snap supersedes an earlier one in the fold
+reset
+prov_begin --iid SN2 --writer t
+printf 'v1\n' > "$w/sv.txt"
+prov_record create file "$w/sv.txt" --pre-absent --post-file "$w/sv.txt" --scope user --class code
+snap8=$(mktemp "$td/snap8.XXXXXX") || exit 1; cp "$w/sv.txt" "$snap8"
+printf 'v2\n' > "$w/sv.txt"
+prov_record replace file "$w/sv.txt" --pre-file "$snap8" --backup --post-file "$w/sv.txt" --scope user --class code
+prov_end ok
+prov_read_load
+usv=$(u_for --path "$w/sv.txt")
+check "S2c fold: eff_snap follows the LAST row that produced eff_post" \
+    "$(cat "$(field "$usv" '.eff_snap')")" "v2"
+prov_read_cleanup
+rm -f "$snap8"
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

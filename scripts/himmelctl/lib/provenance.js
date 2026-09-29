@@ -28,7 +28,12 @@ const KINDS = ['file', 'tree', 'json-key', 'json-elem', 'block', 'line', 'plugin
   'job', 'unit', 'shim', 'symlink', 'git-hook', 'mcp', 'collection', 'tool'];
 const SCOPES = ['user', 'project', 'clone', 'machine'];
 const CLASSES = ['code', 'state', 'keep'];
-const RESERVED = ['t', 'iid', 'op', 'kind', 'path', 'unit', 'scope', 'class', 'pre', 'post', 'writer', 'manifest_row'];
+const RESERVED = ['t', 'iid', 'op', 'kind', 'path', 'unit', 'scope', 'class', 'pre', 'post', 'snap', 'snap_skip', 'writer', 'manifest_row'];
+// HIMMEL-3787 S2c: ours snapshots (twin of _prov_snapshot in provenance.sh)
+const SNAP_KINDS = ['file', 'shim', 'block'];
+const SNAP_OPS = ['create', 'replace', 'insert'];
+// ponytail: 1 MiB cap, raise it on a real >1 MiB unit (design §2)
+const SNAP_MAX = 1048576;
 // a backslash is a separator on Windows only; on POSIX it is a legal filename character
 const fwd = (p) => (process.platform === 'win32' ? p.replace(/\\/g, '/') : p);
 const ROOT = fwd(path.resolve(__dirname, '..', '..', '..'));
@@ -306,6 +311,35 @@ function backup(iid, upath, type, val) {
   }
 }
 
+// snapshot(iid, upath, type file|text, val) -> { path } | { reason }. A skip, never a throw:
+// the caller records snap:null,snap_skip:<reason>. Reasons match provenance.sh.
+function snapshot(iid, upath, type, val) {
+  let size;
+  try { size = type === 'file' ? fs.statSync(val).size : Buffer.byteLength(val); } catch (_) { size = 0; }
+  if (size > SNAP_MAX) return { reason: 'too-large' };
+  if (!/^[A-Za-z0-9._-]+$/.test(iid) || iid === '.' || iid === '..') return { reason: 'unsafe-iid' };
+  const bdir = ledgerDir() + '/provenance-backups/' + iid;
+  try {
+    refuseSymlink(ledgerDir() + '/provenance-backups', bdir);
+    fs.mkdirSync(bdir, { recursive: true, mode: 0o700 });
+  } catch (_) { return { reason: 'backups-dir' }; }
+  let dest;
+  try {
+    let n = fs.readdirSync(bdir).length + 1;
+    for (;;) {
+      dest = bdir + '/' + pad(n, 3) + '-' + upath.slice(upath.lastIndexOf('/') + 1) + '.ours';
+      // reserve the name atomically (O_EXCL), as backup() does
+      try { fs.closeSync(fs.openSync(dest, 'wx', 0o600)); break; } catch (e) { if (e.code !== 'EEXIST') throw e; }
+      n++;
+    }
+    fs.writeFileSync(dest, type === 'file' ? fs.readFileSync(val) : val);
+    return { path: dest };
+  } catch (_) {
+    if (dest) { try { fs.unlinkSync(dest); } catch (__) { /* gone */ } }
+    return { reason: 'write-failed' };
+  }
+}
+
 function provRecord(args) {
   if (args.length < 3) throw usage('prov_record: usage: prov_record <op> <kind> <path|-> [flags]');
   const [op, kind, p0] = args;
@@ -373,6 +407,11 @@ function provRecord(args) {
     pre = b.slice(0, -1).replace(/^\{/, '{"state":"present",') + ',"backup":' + bk + '}';
   }
   const post = postT ? body(kind, postT, postV) : null;
+  // a row is v2 iff it carries the snap key (class-code create|replace|insert of file|shim|block)
+  let snap = null;
+  if (SNAP_KINDS.includes(kind) && cls === 'code' && SNAP_OPS.includes(op) && (postT === 'file' || postT === 'text')) {
+    snap = snapshot(iid, cpath || unit || 'unit', postT, postV);
+  }
 
   const pairs = [['t', jstr(now())], ['iid', jstr(iid)], ['op', jstr(op)], ['kind', jstr(kind)]];
   if (cpath) pairs.push(['path', jstr(cpath)]);
@@ -382,6 +421,10 @@ function provRecord(args) {
   for (const [k, v] of fields) pairs.push([k, v]);
   if (pre !== null) pairs.push(['pre', pre]);
   if (post !== null) pairs.push(['post', post]);
+  if (snap) {
+    if (snap.path) pairs.push(['snap', jstr(snap.path)]);
+    else pairs.push(['snap', 'null'], ['snap_skip', jstr(snap.reason)]);
+  }
   if (writer) pairs.push(['writer', jstr(writer)]);
   if (row) pairs.push(['manifest_row', jstr(row)]);
 

@@ -411,5 +411,79 @@ _prov_append '{"op":"register","kind":"marketplace","unit":"himmel","preexisted"
 check "registered_ours: preexisted=true after the boundary is NOT ours" \
     "$(prov_ledger_registered_ours marketplace himmel >/dev/null 2>&1 && echo yes || echo no)" "no"
 
+# ── HIMMEL-3787 S2c: ours snapshots (`snap` / `snap_skip`, design §2) ──────
+rm -f "$ledger"; rm -rf "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+printf 'old-bytes\n' > "$w/s.txt"; cp -p "$w/s.txt" "$w/s.pre"
+printf 'ours-bytes\n' > "$w/s.txt"
+prov_record replace file "$w/s.txt" --pre-file "$w/s.pre" --backup --post-file "$w/s.txt" \
+    --scope user --class code --row adopter-scripts --writer test
+sn=$(last | jq -r '.snap')
+check "snap: replace of a code file records a snap path" "$([ -n "$sn" ] && [ "$sn" != null ] && echo yes || echo no)" "yes"
+check "snap: .ours file holds the post bytes" "$(_prov_sha256 < "$sn" 2>/dev/null)" "$(sha 'ours-bytes
+')"
+check "snap: name is <seq>-<basename>.ours in the iid dir" "${sn#"$HIMMEL_PROVENANCE_DIR/provenance-backups/"}" "$(last | jq -r '.iid')/002-s.txt.ours"
+check "snap: mode 0600" "$(fmode "$sn")" "600"
+check "snap: top-level key, not inside post" "$(last | jq -c '[has("snap"), (.post|has("snap")), has("snap_skip")]')" "[true,false,false]"
+check "snap: key sits right after post" "$(last | jq -r 'keys_unsorted | index("snap") - index("post")')" "1"
+printf 'later\n' > "$w/s.txt"
+check "snap: later edits of the live file leave the snap alone" "$(_prov_sha256 < "$sn")" "$(sha 'ours-bytes
+')"
+
+# create (pre absent) also snapshots: the unit has no backup but still has ours bytes
+rm -rf "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+printf 'fresh\n' > "$w/c.txt"
+prov_record create file "$w/c.txt" --pre-absent --post-file "$w/c.txt" --scope user --class code --writer test
+sn=$(last | jq -r '.snap')
+check "snap: create with pre absent records a snap" "$(_prov_sha256 < "$sn" 2>/dev/null)" "$(sha 'fresh
+')"
+
+# a file over 1 MiB is not snapshotted
+rm -rf "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+dd if=/dev/zero of="$w/big.bin" bs=1024 count=1025 2>/dev/null
+prov_record create file "$w/big.bin" --pre-absent --post-file "$w/big.bin" --scope user --class code --writer test
+check "snap: >1 MiB row carries snap:null,snap_skip:too-large" "$(last | jq -c '[.snap, .snap_skip]')" '[null,"too-large"]'
+check "snap: >1 MiB writes no .ours file" "$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -name '*.ours' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# exactly 1 MiB is still snapshotted (the cap is "above")
+dd if=/dev/zero of="$w/cap.bin" bs=1024 count=1024 2>/dev/null
+prov_record create file "$w/cap.bin" --pre-absent --post-file "$w/cap.bin" --scope user --class code --writer test
+check "snap: exactly 1 MiB is snapshotted" "$(last | jq -r '.snap != null')" "true"
+
+# a sourced caller under failglob (test-wire-statusline) must not abort on the empty iid dir
+rm -rf "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+( shopt -s failglob; prov_record create file "$w/c.txt" --pre-absent --post-file "$w/c.txt" --scope user --class code --writer test ) 2>/dev/null
+check "snap: failglob caller with an empty iid dir still records a snap" "$(last | jq -r '.snap != null')" "true"
+
+# kinds/classes/ops outside the rule get no snap keys at all
+prov_record replace json-key "$w/j.json" --unit /env/X --pre-json '"a"' --post-json '"b"' --scope user --class code --writer test
+check "snap: json-key row has no snap key" "$(last | jq -c '[has("snap"), has("snap_skip")]')" "[false,false]"
+prov_record create file "$w/c.txt" --pre-absent --post-file "$w/c.txt" --scope user --class state --writer test
+check "snap: class state file has no snap key" "$(last | jq -c '[has("snap"), has("snap_skip")]')" "[false,false]"
+prov_record noop file "$w/c.txt" --post-file "$w/c.txt" --scope user --class code --writer test
+check "snap: noop file row has no snap key" "$(last | jq -c '[has("snap"), has("snap_skip")]')" "[false,false]"
+
+# a block snapshots its text (post-text)
+prov_record insert block "$w/c.txt" --unit user-claude-md --pre-absent --post-text 'BEGIN
+x
+END' --scope user --class code --writer test
+sn=$(last | jq -r '.snap')
+check "snap: block row snapshots its post text" "$(_prov_sha256 < "$sn" 2>/dev/null)" "$(sha 'BEGIN
+x
+END')"
+
+# an unwritable backups dir degrades to snap:null with a reason, never a failed record
+rm -rf "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+ln -s "$w" "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+prov_record create file "$w/c.txt" --pre-absent --post-file "$w/c.txt" --scope user --class code --writer test
+check "snap: snapshot failure still records the row (rc 0)" "$?" "0"
+check "snap: snapshot failure -> snap:null + a snap_skip reason" "$(last | jq -c '[.snap, (.snap_skip|type)]')" '[null,"string"]'
+rm -f "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+
+# snap / snap_skip are reserved field keys
+prov_record create file "$w/c.txt" --pre-absent --post-file "$w/c.txt" --field snap=1 >/dev/null 2>&1
+check "snap: --field snap is reserved (rc 2)" "$?" "2"
+prov_record create file "$w/c.txt" --pre-absent --post-file "$w/c.txt" --field snap_skip='"x"' >/dev/null 2>&1
+check "snap: --field snap_skip is reserved (rc 2)" "$?" "2"
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]
