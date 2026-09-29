@@ -464,7 +464,8 @@ printf 'x\n' > "$T11_DIR/Baz11.md"
 # dir with capitals needs a lowercase alias to stand in for that.
 _hp_ascii_lower "$TMP"; T11_ALIAS="$_HP_LOWER"
 T11_ALIAS_MADE=0
-[ "$T11_ALIAS" = "$TMP" ] || { ln -s "$TMP" "$T11_ALIAS" 2>/dev/null && T11_ALIAS_MADE=1; }
+T11_ALIAS_PARENT="${T11_ALIAS%/*}"
+[ "$T11_ALIAS" = "$TMP" ] || { mkdir -p "$T11_ALIAS_PARENT" && ln -s "$TMP" "$T11_ALIAS" 2>/dev/null && T11_ALIAS_MADE=1; }
 if [ "$T11_DIR/Foo11.md" -ef "$T11_DIR/foo11.md" ]; then
     assert_eq "T11a macos folds a case variant that is the same file" \
         "$(PLATFORM=macos _arm_identity_path "$T11_DIR/foo11.md")" "$(PLATFORM=macos _arm_identity_path "$T11_DIR/Foo11.md")"
@@ -483,7 +484,7 @@ else
     assert_eq "T11d macos keeps case when the lowercase name does not exist" \
         "$(_arm_realpath "$T11_DIR/Baz11.md")" "$(PLATFORM=macos _arm_identity_path "$T11_DIR/Baz11.md")"
 fi
-if [ "$T11_ALIAS_MADE" = 1 ]; then rm -f "$T11_ALIAS"; fi
+if [ "$T11_ALIAS_MADE" = 1 ]; then rm -f "$T11_ALIAS"; rmdir -p "$T11_ALIAS_PARENT" 2>/dev/null || true; fi
 
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
