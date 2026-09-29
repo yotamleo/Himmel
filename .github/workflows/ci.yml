@@ -3,9 +3,10 @@ name: CI
 on:
   # PR gating (HIMMEL-594): the cheap ubuntu-only jobs run on every PR so a
   # non-conventional commit, a secret, a shellcheck warning, or a failing shell
-  # suite blocks merge. The EXPENSIVE multi-OS matrix stays nightly-only — the
+  # suite blocks merge. The EXPENSIVE multi-OS matrix is nightly-only — the
   # shell-unit-shard matrix below expands to windows+macOS only on `schedule`
-  # (or a dispatch with force_all_os), so a PR never triggers the paid legs.
+  # (HIMMEL-3853: there is no dispatch input that widens it any more), so
+  # neither a PR nor a manual dispatch can occupy the paid legs.
   # `shell-unit` itself (HIMMEL-2872) is the aggregating gate over that
   # matrix — see its own comment block below.
   pull_request:
@@ -15,12 +16,10 @@ on:
   # legs are schedule-only), so this adds no multi-OS cost.
   push:
     branches: [main]
+  # A plain dispatch runs the ubuntu-only matrix, same as a push. It takes no
+  # inputs on purpose (HIMMEL-3853): a per-PR all-OS dispatch held 14 of the
+  # account's 20 concurrent job slots on 2026-09-29.
   workflow_dispatch:
-    inputs:
-      force_all_os:
-        description: 'Run shell-unit on all 3 OSes (verification aid for the nightly matrix)'
-        type: boolean
-        default: false
   schedule:
     - cron: '17 7 * * *'   # nightly, UTC
 
@@ -33,18 +32,25 @@ permissions:
 #   pull_request -> ci-pr-<PR number>: a PR's newer push cancels that PR's
 #                   older run, and never another PR's;
 #   push         -> ci-<github.ref>: push is restricted to `main` above, so
-#                   these runs share ONE group and a newer main push cancels
-#                   the older post-merge run;
+#                   these runs share ONE group (ci-refs/heads/main) and are
+#                   NOT cancelled while running (HIMMEL-3841 slice E): at most
+#                   one sweep runs and one waits, and a newer pending sweep
+#                   replaces the older pending one (verified on #1429: a
+#                   superseded pending run cancels with 0 jobs and leaves no
+#                   context). Each completed sweep therefore tests the tip at
+#                   its start, so the completed sweeps cover contiguous ranges
+#                   of merges and a red on main is always attributed to a
+#                   range (see main-sweep-red.yml);
 #   everything else (schedule, workflow_dispatch) -> ci-<run_id>: unique to the
-#                   run, so the nightly / a force_all_os dispatch is never
-#                   cancelled nor queued behind anything.
-# cancel-in-progress is scoped to exactly the two grouped events, so it stays
-# inert for the run_id group. A cancelled run only ever belongs to a superseded
+#                   run, so the nightly / a dispatch is never cancelled nor
+#                   queued behind anything.
+# cancel-in-progress is scoped to pull_request alone, so it stays inert for the
+# push and run_id groups. A cancelled run only ever belongs to a superseded
 # head: the required checks (incl. the `shell-unit` aggregator) are evaluated
 # on the PR's current head, whose own run this never cancels.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   secret-scan:
@@ -286,9 +292,9 @@ jobs:
   # tests bypass by pinning FROM/TO.
   #
   # HIMMEL-3125: Windows is now the alpha tier — dropped off the per-PR path,
-  # same pattern as shell-unit-shard below. A plain workflow_dispatch (and any
-  # non-schedule event) runs ubuntu only; `schedule` — or a dispatch with
-  # force_all_os=true — adds the windows-latest leg, paid once a night.
+  # same pattern as shell-unit-shard below. Every non-schedule event (a
+  # workflow_dispatch included) runs ubuntu only; `schedule` alone adds the
+  # windows-latest leg, paid once a night.
   # continue-on-error scopes non-gating to that leg alone; ubuntu-latest stays
   # the required check either way.
   #
@@ -306,11 +312,11 @@ jobs:
     # matrix.os keeps normal per-PR/per-ref ubuntu-latest runs from queuing on
     # each other (each PR branch gets its own group, via github.ref). The
     # windows-latest leg is the one that mutates the shared, repo-wide
-    # tracking issue, and a force_all_os dispatch can be run from ANY branch
-    # -- not only main -- so that leg drops github.ref from its group and
-    # shares ONE group across every ref, ensuring a manual dispatch always
-    # serializes against the nightly schedule regardless of which branch
-    # triggered it (CodeRabbit finding, PR #788). Queue
+    # tracking issue, and the windows leg once ran on a dispatch from ANY
+    # branch -- not only main -- so that leg drops github.ref from its group
+    # and shares ONE group across every ref (CodeRabbit finding, PR #788;
+    # HIMMEL-3853 removed the dispatch path, the shared group is kept as
+    # cheap insurance). Queue
     # (cancel-in-progress: false) rather than cancel, so neither run's
     # list-then-create against the tracking issue overlaps the other's.
     concurrency:
@@ -319,7 +325,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ (github.event_name == 'schedule' || inputs.force_all_os)
+        os: ${{ github.event_name == 'schedule'
                && fromJSON('["ubuntu-latest","windows-latest"]')
                || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
@@ -587,10 +593,12 @@ jobs:
       - name: npm audit signatures (production)
         run: bash scripts/hooks/check-npm-audit-signatures.sh
 
-  # Multi-OS, gated to the nightly to stay free-tier-cheap: a plain
-  # workflow_dispatch (and any non-schedule event) runs ubuntu only; `schedule`
-  # — or a dispatch with force_all_os=true — adds windows (2x) + macOS (10x),
-  # paid once a night. windows/macOS are NON-GATING this phase (continue-on-error
+  # Multi-OS, gated to the nightly to stay free-tier-cheap: every non-schedule
+  # event (a workflow_dispatch included) runs ubuntu only; `schedule` alone
+  # adds windows (2x) + macOS (10x), paid once a night (HIMMEL-3853: Windows
+  # and macOS are verified by the nightly only, never per PR). A red
+  # nightly OS leg becomes its own split slice — docs/internals/testing.md.
+  # windows/macOS are NON-GATING this phase (continue-on-error
   # scoped to the non-ubuntu legs): their per-suite PASS/FAIL is advisory in the
   # job log while ubuntu stays the required gate. Tightening the new OSes to
   # gating-green is the data-driven follow-up (HIMMEL-494 phase 3).
@@ -606,7 +614,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ (github.event_name == 'schedule' || inputs.force_all_os)
+        os: ${{ github.event_name == 'schedule'
                && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]')
                || fromJSON('["ubuntu-latest"]') }}
         # shard: [1..8] fans run-shell-tests.sh across 8 runners (HIMMEL-2872).
@@ -681,8 +689,8 @@ jobs:
       # failing assertion can be unrecoverable from Actions logs (HIMMEL-963).
       # SUITE_TIER_MODE (HIMMEL-2166): fast on every per-PR/post-merge leg
       # (pull_request, push, or a plain workflow_dispatch) — this job is
-      # ubuntu-only there. `all` stays the corpus on the nightly/force_all_os
-      # legs that expand to the paid windows+macOS matrix, matching the
+      # ubuntu-only there. `all` stays the corpus on the nightly leg that
+      # expands to the paid windows+macOS matrix, matching the
       # cadence/full-scan intent this ticket must not touch.
       # SUITE_CHANGED_SINCE: only on pull_request, where a base SHA exists —
       # a docs-only PR then skips the whole corpus (run-shell-tests.sh's own
@@ -692,7 +700,7 @@ jobs:
       - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8 .
         env:
           FAIL_LOG_DIR: failed-suite-logs
-          SUITE_TIER_MODE: ${{ (github.event_name == 'schedule' || inputs.force_all_os) && 'all' || 'fast' }}
+          SUITE_TIER_MODE: ${{ github.event_name == 'schedule' && 'all' || 'fast' }}
           SUITE_CHANGED_SINCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
       - name: Upload failed-suite logs
         if: failure()
@@ -711,7 +719,7 @@ jobs:
       #
       # HONEST SCOPE (preserved from the design, for when this is un-commented
       # on the public repo): the windows-latest leg of this job expands only
-      # on `schedule` / `force_all_os` and carries continue-on-error, so the
+      # on `schedule` and carries continue-on-error, so the
       # two Windows steps below would be a SIGNAL, not a gate — the real gate
       # is the local run in the LUNA-131 build. The correlator step is
       # cross-platform and would run on every PR's ubuntu leg, making IT the
@@ -780,20 +788,21 @@ jobs:
   #    by the shell-extended-nightly-issue.sh steps below — scoped to this
   #    job alone, same pattern as bun-suites' windows-nightly-issue.sh.
   #    HIMMEL-3132: SUITE_TIER_DEFAULT `extended` suites only run under
-  #    SUITE_TIER_MODE=all (the schedule/force_all_os leg, set above at
+  #    SUITE_TIER_MODE=all (the schedule leg, set above at
   #    shell-unit-shard), so a red extended suite only ever reddens THIS
   #    job on that leg — a run nobody watches interactively. Without these
   #    steps that failure is silent even though the job itself goes red.
   shell-unit:
     needs: shell-unit-shard
     if: always()
-    # HIMMEL-3788: a manual force_all_os dispatch exercises the same
-    # macOS-aggregate gate below on an arbitrary branch/PR head. Without a
-    # distinct name here, that run's check-run is literally
-    # "shell-unit (ubuntu-latest)" -- identical to (and newer than) the PR's
-    # own required check -- so GitHub's required-check evaluation and
-    # check-ci.sh both read the dispatch run's failure and shadow the PR's
-    # green one. schedule/pull_request/push keep the unchanged name.
+    # HIMMEL-3788: a manual dispatch on an arbitrary branch/PR head must not
+    # post a check-run literally named "shell-unit (ubuntu-latest)" --
+    # identical to (and newer than) the PR's own required check -- or GitHub's
+    # required-check evaluation and check-ci.sh both read the dispatch run's
+    # result and shadow the PR's. HIMMEL-3853 removed the all-OS dispatch input,
+    # so a dispatch is now ubuntu-only and can no longer go red on the macOS
+    # gate; the distinct name is kept as the name-collision guard.
+    # schedule/pull_request/push keep the unchanged name.
     name: shell-unit${{ github.event_name == 'workflow_dispatch' && ' (dispatch verify)' || '' }} (${{ matrix.os }})
     permissions:
       contents: read
@@ -823,29 +832,29 @@ jobs:
       # the Jobs API directly (it reports each job's real `conclusion`,
       # unaffected by continue-on-error) so a red macOS job is never silently
       # masked on the leg that is supposed to catch it. Scoped to the
-      # schedule/force_all_os leg only — the only leg where a macOS shard
+      # schedule leg only — the only leg where a macOS shard
       # runs at all. A repo script (not an inline run: block) so it is
       # unit-testable with a stubbed `gh` — see
       # scripts/ci/test-check-macos-nightly-health.sh.
       - name: macOS nightly jobs must have passed (continue-on-error can't mask this)
-        if: always() && (github.event_name == 'schedule' || inputs.force_all_os)
+        if: always() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
         run: bash scripts/ci/check-macos-nightly-health.sh
-      # Scoped to the schedule/force_all_os leg: that is the only leg where
+      # Scoped to the schedule leg: that is the only leg where
       # SUITE_TIER_MODE=all actually exercises the extended tier (see
       # shell-unit-shard above), so only there does a red here plausibly mean
       # an extended suite broke rather than double-reporting a per-PR fast-
       # tier failure the PR gate already surfaced.
       - name: Extended-tier nightly issue — clear on green
-        if: success() && (github.event_name == 'schedule' || inputs.force_all_os)
+        if: success() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/shell-extended-nightly-issue.sh 0 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
       - name: Extended-tier nightly issue — file/refresh on red
-        if: failure() && (github.event_name == 'schedule' || inputs.force_all_os)
+        if: failure() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/shell-extended-nightly-issue.sh 1 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

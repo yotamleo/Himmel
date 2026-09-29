@@ -99,6 +99,44 @@ check_no_continue_on_error() {
   ! grep -q 'continue-on-error' <<< "$(strip_comments "$1")"
 }
 
+# check_permissions_exact <file> -- rc 0 iff the top-level permissions block is
+# exactly `contents: read` (a dispatch can read the repo and nothing else).
+check_permissions_exact() {
+  [ "$(top_block "$1" permissions | sed '/^[[:space:]]*$/d')" = "  contents: read" ]
+}
+
+# check_concurrency <file> -- rc 0 iff a group keyed on the ref AND the os input
+# exists and never cancels a running proof (HIMMEL-3853).
+check_concurrency() {
+  local b
+  b="$(top_block "$1" concurrency)"
+  grep -q '^  group: .*github\.ref' <<< "$b" \
+    && grep -q '^  group: .*inputs\.os' <<< "$b" \
+    && grep -q '^  cancel-in-progress: false$' <<< "$b"
+}
+
+# run_bodies <file> -- the text of every `run:` step (one-liners and | / > blocks).
+run_bodies() {
+  strip_comments "$1" | awk '
+    inrun { match($0, /^ */); if (RLENGTH > ind || $0 ~ /^[[:space:]]*$/) { print; next } inrun = 0 }
+    $0 ~ /^[[:space:]]*(- )?run:/ {
+      match($0, /^[[:space:]]*(- )?/); ind = RLENGTH
+      s = $0; sub(/^[[:space:]]*(- )?run:/, "", s); print s
+      if (s ~ /^[[:space:]]*[|>]/) inrun = 1
+    }'
+}
+
+# check_no_inputs_in_run <file> -- rc 0 iff no run: body interpolates an input
+# (inputs reach the shell only through env:, never spliced into the script text).
+# A run: body that could not be extracted at all fails, so the check cannot pass
+# vacuously.
+check_no_inputs_in_run() {
+  local b
+  b="$(run_bodies "$1")"
+  grep -q 'run-shell-tests' <<< "$b" || return 1
+  ! grep -q 'inputs\.' <<< "$b"
+}
+
 if [ -f "$WF" ]; then ok "os-verify.yml exists"
 else bad "os-verify.yml does not exist at $WF"; echo "$fails failed" >&2; exit 1; fi
 
@@ -172,6 +210,14 @@ else bad "matrix has $nshards shards but --shard args say '${argn:-none}'"; fi
 if check_no_continue_on_error "$WF"; then ok "no continue-on-error: a red suite fails the job"
 else bad "continue-on-error present: a red suite would not fail the job"; fi
 
+# --- 6b. least privilege, injection-safe, non-stacking (HIMMEL-3853) ---------
+if check_permissions_exact "$WF"; then ok "permissions are exactly contents: read"
+else bad "permissions are not exactly contents: read"; fi
+if check_no_inputs_in_run "$WF"; then ok "no \${{ inputs.* }} inside a run: body (inputs reach the shell via env:)"
+else bad "a run: body interpolates an input (or no run: body was found)"; fi
+if check_concurrency "$WF"; then ok "concurrency group keys on github.ref + inputs.os, cancel-in-progress false"
+else bad "concurrency must be a group keyed on github.ref and inputs.os with cancel-in-progress false"; fi
+
 # --- 7. mutation controls: each check above must be able to fail --------------
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/os-verify-test.XXXXXX")" || { bad "mktemp failed"; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -187,6 +233,25 @@ else ok "control: a dropped os-verify prefix is detected"; fi
 awk '/^    runs-on:/ {print "    continue-on-error: true"} {print}' "$WF" > "$tmp/coe.yml"
 if check_no_continue_on_error "$tmp/coe.yml"; then bad "control: an added continue-on-error was not detected"
 else ok "control: an added continue-on-error is detected"; fi
+
+awk '{print} /^  contents: read$/ {print "  pull-requests: write"}' "$WF" > "$tmp/perm.yml"
+if check_permissions_exact "$tmp/perm.yml"; then bad "control: an extra write permission was not detected"
+else ok "control: an extra permission is detected"; fi
+
+# shellcheck disable=SC2016  # a literal GitHub expression spliced into a run: body
+sed 's|bash scripts/ci/run-shell-tests.sh --impacted|echo ${{ inputs.suites }}; &|' "$WF" > "$tmp/inj.yml"
+if check_no_inputs_in_run "$tmp/inj.yml"; then bad "control: an input spliced into a run: body was not detected"
+else ok "control: an input spliced into a run: body is detected"; fi
+: > "$tmp/empty.yml"
+if check_no_inputs_in_run "$tmp/empty.yml"; then bad "control: a file with no extractable run: body passed vacuously"
+else ok "control: no extractable run: body fails the check (not vacuous)"; fi
+
+sed 's/^  cancel-in-progress: false$/  cancel-in-progress: true/' "$WF" > "$tmp/cancel.yml"
+if check_concurrency "$tmp/cancel.yml"; then bad "control: cancel-in-progress true was not detected"
+else ok "control: cancel-in-progress true is detected"; fi
+sed 's/^  group: os-verify-.*$/  group: os-verify/' "$WF" > "$tmp/group.yml"
+if check_concurrency "$tmp/group.yml"; then bad "control: a group not keyed on ref + os was not detected"
+else ok "control: a group not keyed on ref + os is detected"; fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed" >&2

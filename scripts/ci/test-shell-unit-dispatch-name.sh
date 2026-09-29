@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # scripts/ci/test-shell-unit-dispatch-name.sh -- regression suite for
-# HIMMEL-3788: a manual `workflow_dispatch` run of ci.yml with force_all_os
-# must never produce a check-run named like the PR's own required
-# `shell-unit (ubuntu-latest)` check. Before the fix, the `shell-unit`
-# aggregating job had no `name:` override, so GitHub derived the check-run
-# name purely from the job id + matrix value -- identical for every trigger
-# event. A force_all_os dispatch on a PR branch posts that same-named check
-# at the PR head, and its "macOS nightly jobs must have passed" step fails
-# whenever any macOS shard is red (the normal state), shadowing the PR's own
-# green pull_request-triggered run. Pure text + evaluated-expression
+# HIMMEL-3788: a manual `workflow_dispatch` run of ci.yml must never produce a
+# check-run named like the PR's own required `shell-unit (ubuntu-latest)`
+# check. Before the fix, the `shell-unit` aggregating job had no `name:`
+# override, so GitHub derived the check-run name purely from the job id +
+# matrix value -- identical for every trigger event. A dispatch on a PR branch
+# posted that same-named check at the PR head (then failing on the macOS gate,
+# the normal state), shadowing the PR's own green pull_request-triggered run.
+# HIMMEL-3853 removed the all-OS dispatch input so a dispatch can no longer
+# reach the macOS gate at all; this suite keeps the name-collision guard, which
+# is independent of that. Pure text + evaluated-expression
 # assertions over the workflow file; no network.
 #
 # Usage: bash scripts/ci/test-shell-unit-dispatch-name.sh
@@ -37,7 +38,7 @@ else
 fi
 
 # Behavioural check: evaluate the name expression for the four trigger events
-# this workflow handles and assert the dispatch-with-force_all_os name never
+# this workflow handles and assert the workflow_dispatch name never
 # collides with the pull_request/push/schedule name (the PR's required check).
 if [ -n "$name_expr" ] && python3 - "$name_expr" <<'PY'
 import re, sys
@@ -73,7 +74,7 @@ REQUIRED_CHECK_NAME = "shell-unit (ubuntu-latest)"
 
 errs = []
 if names["dispatch"] == names["pull_request"]:
-    errs.append("workflow_dispatch resolves to the SAME check-run name as pull_request -- a force_all_os dispatch shadows the PR's required check")
+    errs.append("workflow_dispatch resolves to the SAME check-run name as pull_request -- a dispatch shadows the PR's required check")
 if names["pull_request"] != names["push"] or names["pull_request"] != names["schedule"]:
     errs.append("pull_request/push/schedule do not share one name -- the required-check name must stay stable across those events")
 if names["pull_request"] != REQUIRED_CHECK_NAME:
