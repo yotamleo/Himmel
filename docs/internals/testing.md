@@ -22,9 +22,24 @@ broken subject before it goes green.
 the same entrypoint CI's `shell-unit` job runs, matrixed over
 `ubuntu-latest` (the required, gating leg on every push/PR) plus
 `windows-latest` and `macos-latest` (advisory-only, `continue-on-error`,
-added on the nightly `schedule` or a `force_all_os` dispatch). Running the
+added on the nightly `schedule`). Running the
 full corpus is slow and noisy — run it in a subagent rather than foregrounding
 it in an interactive session.
+
+To verify a branch on macOS or Windows on demand, dispatch `os-verify`
+(HIMMEL-3839), not `force_all_os`: it runs only the suites the branch impacts
+against `origin/main`, on one OS.
+
+```bash
+gh workflow run os-verify.yml --ref <branch> -f os=macos -f suites=impacted
+# os: macos (default) | windows | both      suites: impacted (default) | all
+```
+
+It is dispatch-only, never required, and its job names carry an `os-verify / `
+prefix so it cannot satisfy a required check by name. GitHub Free allows 20
+concurrent jobs and only 5 macOS, so keep to one OS unless the change is
+OS-specific. It needs `os-verify.yml` on the default branch, and a branch
+whose diff is docs-only reports `0 impacted shell suites` and passes.
 
 `bash scripts/ci/run-shell-tests.sh --list [scan-root]` prints the run/skip
 plan without executing anything — use it to check what a change would trigger
