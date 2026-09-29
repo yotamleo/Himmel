@@ -253,7 +253,9 @@ else
   # (No backticks/`$` in this literal: this test file is itself copied into
   # the vault fixture's scripts/ tree and shellchecked there — SC2016 would
   # fire on a single-quoted string that LOOKS like it wants to expand.)
-  printf 'release-token: cachyos-x8664-pid199036\n' >"$VC/30-Resources/release-token.md"
+  # The value is assembled at runtime so no entropy-shaped token literal sits
+  # in this tracked file for a tree scan to flag.
+  printf 'release-token: %s-%s-pid%s\n' cachyos x8664 199036 >"$VC/30-Resources/release-token.md"
   (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") >/dev/null 2>&1
   assert_ok "D10 release-token allowlist: autosync commits (exit 0)" "$?"
   assert_eq "D11 release-token note IS in committed tree" "1" \

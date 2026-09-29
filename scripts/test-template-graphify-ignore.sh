@@ -91,19 +91,18 @@ else
     FIX="$WORK/fixtures"
     mkdir -p "$FIX"
     printf 'token="Y-N204-a68d71"\n' > "$FIX/nonce-alone.txt" # gitleaks:allow
-    # base64'd, never a contiguous Stripe-shaped literal in this tracked file
-    # — GitHub push protection (and our own gitleaks pre-commit hook) scans
-    # committed blobs for exactly that shape, so a real key literal here gets
-    # the whole push rejected even though it is only a test fixture
-    # (HIMMEL-3003 follow-up). A split-printf fixture was tried instead but
-    # still tripped the stripe-access-token rule: gitleaks scans by LINE, and
-    # one fragment alone ("sk_live_" + 10+ chars) still matches the rule's
-    # length threshold even split across printf arguments.
-    # `-d`/`-D` fallback: GNU coreutils base64 decodes with -d; BSD base64
-    # (macOS) requires -D — try both so the fixture builds on either.
-    if ! base64 -d <<<'dG9rZW49IlktTjIwNC1hNjhkNzEtc2tfbGl2ZV80ZUMzOUhxTHlqV0Rhcmp0VDF6ZHA3ZGMiCg==' > "$FIX/nonce-suffixed.txt" 2>/dev/null; then
-        base64 -D <<<'dG9rZW49IlktTjIwNC1hNjhkNzEtc2tfbGl2ZV80ZUMzOUhxTHlqV0Rhcmp0VDF6ZHA3ZGMiCg==' > "$FIX/nonce-suffixed.txt"
-    fi
+    # Built at runtime from short parts on separate lines, never a contiguous
+    # Stripe-shaped literal (or a base64 blob of one) in this tracked file —
+    # GitHub push protection and gitleaks (8.30.1 decodes base64 segments in a
+    # tree scan) flag committed blobs for exactly that shape, so a key literal
+    # here gets the push or the security-scan rejected even though it is only
+    # a test fixture (HIMMEL-3003 follow-up, HIMMEL-3807). gitleaks scans by
+    # LINE, so each part stays too short to match the stripe rule alone.
+    fx_a='Y-N204-a68d71-sk_'
+    fx_b='live_'
+    fx_c='4eC39HqLyj'
+    fx_d='WDarjtT1zdp7dc'
+    printf 'token="%s%s%s%s"\n' "$fx_a" "$fx_b" "$fx_c" "$fx_d" > "$FIX/nonce-suffixed.txt"
 
     # Baseline config = the template's own .gitleaks.toml with the new
     # RETASK-nonce allowlist regex stripped out, so it still carries
