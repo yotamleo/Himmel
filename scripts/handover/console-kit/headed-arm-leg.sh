@@ -37,6 +37,16 @@
 # (the same seams headed-arm.sh's own suite uses) to confirm the launched
 # argv matches what --dry-run predicted.
 #
+# --ignore-denials (HIMMEL-3724): launch a leg even though it has an un-acked
+# SHIP-STEP / PAUSE-RISK classifier-denial page on record. WITHOUT it the launch
+# is refused, exit 14, with a message naming `ack-denial.sh <leg>` (the normal
+# fix: review why the leg was parked, then ack it). The check keys on the
+# session name and on the worktree slug in the handover doc's resume_cwd, reads
+# only the page/ack records under ${HIMMEL_DENIAL_ACK_DIR:-~/.himmel/state/
+# denial-acks} (never the denial log), and fails open: no record, an acked one,
+# a REPEAT, or an unreadable record launches. Exit 14 joins 2 usage, 10 fleet
+# cap, 11 bank exhausted, 12 macOS whitespace.
+#
 # --headless (HIMMEL-3403; or LEG_HEADLESS=1 in the launching shell, the flag
 # wins): the same launch with no konsole - the leg runs as a Claude Code
 # background session (headed-arm.sh adds --bg), and its env goes into the
@@ -194,7 +204,7 @@ HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
 export HEADED_ARM_UNAME
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--ignore-denials] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 # leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
@@ -277,6 +287,7 @@ DRY_RUN=0
 RELAY=0
 JUDGE=0
 NO_PROFILE=0
+IGNORE_DENIALS=0
 HEADLESS=0
 [ "${LEG_HEADLESS:-}" = "1" ] && HEADLESS=1
 LANE="${LEG_LANE:-native}"
@@ -287,6 +298,7 @@ while :; do
         --dry-run) DRY_RUN=1; shift ;;
         --relay) RELAY=1; shift ;;
         --judge) JUDGE=1; shift ;;
+        --ignore-denials) IGNORE_DENIALS=1; shift ;;
         --no-profile) NO_PROFILE=1; shift ;;
         --headless) HEADLESS=1; shift ;;
         --lane)
@@ -479,6 +491,27 @@ fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HEADED_ARM="${HEADED_ARM_LEG_TARGET:-$HERE/../headed-arm.sh}"
+
+# HIMMEL-3724 phase 2b: refuse to re-dispatch a leg whose worktree slug (from the
+# handover doc's resume_cwd) or session name has an un-acked SHIP-STEP /
+# PAUSE-RISK page record newer than its latest ack (console-wait.sh writes the
+# page, ack-denial.sh the ack; see denial-ack-lib.sh). Exit 14, message naming
+# ack-denial.sh and the override. No record, an acked one, a REPEAT, an unreadable
+# lib or record all launch: this only ever fails OPEN. Runs before --dry-run's
+# exit so a dry-run predicts the refusal, and before any real-launch write.
+if [ "$IGNORE_DENIALS" -eq 0 ] && [ -r "$HERE/denial-ack-lib.sh" ]; then
+    # shellcheck source=scripts/handover/console-kit/denial-ack-lib.sh
+    . "$HERE/denial-ack-lib.sh"
+    for _den_label in "$NAME" "$(denial_doc_label "$DOC" 2>/dev/null)"; do
+        [ -n "$_den_label" ] || continue
+        _den_key="$(denial_key "$_den_label")" || continue
+        if _den_hit="$(denial_unacked "$_den_key")"; then
+            echo "headed-arm-leg: refusing to launch $NAME: an un-acked ${_den_hit%% *} classifier denial (x${_den_hit##* }) is on record for $_den_key. Review why the leg was parked, then run: bash $HERE/ack-denial.sh $_den_key   (or pass --ignore-denials to launch anyway)" >&2
+            exit 14
+        fi
+    done
+    unset _den_label _den_key _den_hit
+fi
 
 # HIMMEL-3155: a console-spawned leg that runs merge-on-green.sh from its own
 # (linked) worktree gets exit 17 "no console GO" - handover_root() falls back

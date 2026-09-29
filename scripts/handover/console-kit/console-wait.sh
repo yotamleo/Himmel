@@ -29,6 +29,21 @@
 # surface; the same denial ageing out of tick.sh's 30-min window, moving it to
 # none or lowering a count, is NOT a wake, so one denial wakes once) and the
 # bank-preflight verdict word.
+#
+# PAGE (HIMMEL-3724 phase 2b): when a wake's denials= change raised a leg's
+# class to SHIP-STEP or PAUSE-RISK (a new leg, or a higher class; a count rising
+# inside one class wakes but does not page), the waiter sends ONE operator
+# Telegram message per rise through the kit's existing bridge path
+# (scripts/lib/merge-block-alert.sh: first allowFrom of access.json ->
+# console-route.ts reply):
+#   DENIAL-PAGE <leg> <class> x<count> - a classifier denial parked this leg. ...
+# The text is the leg label, count and class ONLY. It also writes a page record
+# (denial-ack-lib.sh) BEFORE the send, which headed-arm-leg.sh reads to refuse
+# re-dispatching the leg until `ack-denial.sh <leg>` is run. Both steps fail
+# open; the sends of one wake share ONE CONSOLE_WAIT_PAGE_TIMEOUT budget (default
+# 45 s, plus a 2 s kill grace), the most hung senders can delay the WAKE block;
+# a leg past the budget still gets its page record, just no message. It pages what THIS
+# waiter saw rise: a denial that lands while no waiter runs is not paged.
 # Everything else on the tick line (heartbeat, procs, fill, fleet, gql,
 # orphans...) moves without needing a console act and never wakes. Two consecutive samples must differ from the saved key (not
 # necessarily from each other), so one failed `gh` read (prs=none for a single
@@ -69,7 +84,10 @@
 # seconds a tick may run before it counts as failed (default 120), so a hung
 # tick cannot freeze the Telegram path; CONSOLE_WAIT_FAIL_WAKE consecutive
 # failed samples before a tick-fail wake (default 3); CONSOLE_WAIT_TICK / CONSOLE_WAIT_BANK
-# replace tick.sh / the bank verdict command (tests).
+# replace tick.sh / the bank verdict command (tests); CONSOLE_WAIT_PAGE_CMD
+# replaces the Telegram sender (called as `$CMD <text>`, tests) and
+# CONSOLE_WAIT_PAGE_TIMEOUT bounds it (seconds, default 45); HIMMEL_DENIAL_ACK_DIR
+# relocates the page/ack records (default ~/.himmel/state/denial-acks).
 #
 # Leg messages (SendMessage) wake a console on their own; only the Telegram
 # and tick paths depend on this waiter.
@@ -92,6 +110,9 @@ if [ "$#" -lt 1 ] || [ -z "$1" ]; then
     exit 2
 fi
 inbox="$1"; shift
+# HIMMEL-3724: page/ack record helpers. A missing lib fails open: no records, the
+# page still sends.
+if [ -r "$HERE/denial-ack-lib.sh" ]; then . "$HERE/denial-ack-lib.sh"; else denial_page_write() { return 1; }; fi
 hb_file="$inbox.wait"
 key_file="$inbox.wait.state"
 interval="${CONSOLE_WAIT_INTERVAL:-180}"
@@ -234,6 +255,63 @@ drop_denials_expiry() {
     done | paste -sd, -
 }
 
+# denial_pages: <old key> <new key> — one `<leg> <class> <count>` line per leg
+# whose denials= class ROSE to SHIP-STEP or PAUSE-RISK between the two keys (a
+# new leg, or a higher class). A count rising inside one class is a wake but not
+# a page, so one class rise is one page. The label is reduced to a safe charset:
+# it goes into an operator message and a record filename.
+denial_pages() {
+    local old new tok otok leg rest n cls ocls
+    old="$(key_field denials "$1")"; new="$(key_field denials "$2")"
+    for tok in $(printf '%s' "$new" | tr ',' ' '); do
+        leg="$(printf '%s' "${tok%%:*}" | tr -cd 'A-Za-z0-9._#+-')"
+        case "$leg" in ''|none|skip) continue ;; esac
+        rest="${tok#*:}"; n="${rest%%:*}"; cls=""
+        case "$rest" in *:*) cls="${rest#*:}" ;; esac
+        [ "$(denial_rank "$cls")" -ge 2 ] || continue
+        ocls=""
+        for otok in $(printf '%s' "$old" | tr ',' ' '); do
+            [ "${otok%%:*}" = "${tok%%:*}" ] || continue
+            rest="${otok#*:}"; ocls=""
+            case "$rest" in *:*) ocls="${rest#*:}" ;; esac
+        done
+        [ "$(denial_rank "$cls")" -gt "$(denial_rank "$ocls")" ] && printf '%s %s %s\n' "$leg" "$cls" "$n"
+    done
+}
+
+# page_send: <text> — ONE operator Telegram message via the bridge path the kit
+# already uses (merge-block-alert.sh: the first positive allowFrom of access.json,
+# console-route.ts reply). CONSOLE_WAIT_PAGE_CMD replaces it (tests; called as
+# `$CMD <text>`). Bounded by CONSOLE_WAIT_PAGE_TIMEOUT (default 45 s) and always
+# rc 0: a failed or hung send never breaks the waiter or delays the wake past
+# the bound.
+page_timeout="${CONSOLE_WAIT_PAGE_TIMEOUT:-45}"
+page_send() {  # <text> <deadline epoch>: the timeout is what is left of the batch budget
+    local left=$(( $2 - $(date +%s) ))
+    [ "$left" -ge 1 ] || return 0
+    if [ -n "${CONSOLE_WAIT_PAGE_CMD:-}" ]; then
+        timeout -k 2 "$left" "$CONSOLE_WAIT_PAGE_CMD" "$1" </dev/null >/dev/null 2>&1 9>&-  # gnu-ok: Linux-only kit
+    else
+        # shellcheck disable=SC2016  # $1/$2 expand in the child bash, not here
+        timeout -k 2 "$left" bash -c '. "$1" && chat="$(_mba_operator_chat)" && [ -n "$chat" ] && _mba_send "$chat" "$2"' \
+            _ "$REPO/scripts/lib/merge-block-alert.sh" "$1" </dev/null >/dev/null 2>&1 9>&-  # gnu-ok: Linux-only kit
+    fi
+    return 0
+}
+
+# page_denials: <old key> <new key> — page each denial_pages leg. The page
+# record is written FIRST, so the re-dispatch refusal holds even when the send
+# fails; both steps fail open. The page text is the leg label, count and class
+# only: this file never reads the denial log, only tick.sh's denials= field.
+page_denials() {
+    local leg cls n end
+    end=$(( $(date +%s) + page_timeout ))  # one budget for the whole batch, not one per leg
+    denial_pages "$1" "$2" | while read -r leg cls n; do
+        denial_page_write "$leg" "$n" "$cls" || true
+        page_send "DENIAL-PAGE $leg $cls x$n - a classifier denial parked this leg. Review it, then: ack-denial.sh $leg" "$end"
+    done
+}
+
 saved=""
 if [ -f "$key_file" ] && [ "$(sed -n 1p "$key_file")" = "$args_hash" ]; then
     saved="$(sed -n 2p "$key_file")"
@@ -293,6 +371,7 @@ while :; do
                 if [ -z "$real_changed" ]; then
                     saved="$key"; save_key "$key"; pending=""
                 else
+                    page_denials "$saved" "$key"
                     printf 'WAKE tick changed=%s bank=%s\n%s\n' "$real_changed" "${key##*|bank=}" "$tick_line"
                     save_key "$key"
                     exit_reason='wake-tick'; exit 0

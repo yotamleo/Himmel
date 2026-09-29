@@ -4086,10 +4086,41 @@ and not again when it ages out of the 30-minute window.
 
 **Hard rule:** `input_head` and `reason_tag` never leave the host. They are
 redacted best-effort, not scrubbed; `tick.sh` classifies on them locally and
-prints only `leg:count:class`. Any later page (the Telegram slice) must send
-counts and classes at most. `test-log-classifier-denial.sh` pins the set of
+prints only `leg:count:class`. The page (phase 2b, below) sends the leg label,
+count and class and nothing else. `test-log-classifier-denial.sh` pins the set of
 files allowed to name either field, so a new reader fails the suite until that
-list is edited on purpose.
+list is edited on purpose. None of the phase 2b files reads the log: they see
+only the tick's `denials=` field.
+
+**Phase 2b: page, ack, refuse re-dispatch** (`scripts/handover/console-kit/`).
+- **Page.** When a `console-wait.sh` wake's `denials=` change raises a leg to
+  `SHIP-STEP` or `PAUSE-RISK` (a new leg, or a higher class; a count rising inside
+  one class wakes but does not page), the waiter sends ONE Telegram message per
+  rise through the kit's existing bridge path (`scripts/lib/merge-block-alert.sh`:
+  first `allowFrom` of `access.json`, `console-route.ts reply`; no new bot, token
+  or client): `DENIAL-PAGE <leg> <class> x<count> - a classifier denial parked
+  this leg. ...`. It fails open and is bounded by `CONSOLE_WAIT_PAGE_TIMEOUT`
+  (default 45 s, also the most a hung sender can delay the wake). It pages only
+  what a running waiter saw rise.
+- **Records.** Before the send, the waiter writes `<key>.page` (leg, count, class,
+  timestamp) to `${HIMMEL_DENIAL_ACK_DIR:-~/.himmel/state/denial-acks}` (dir 0700,
+  files 0600; format in `denial-ack-lib.sh`). The key is the leg label reduced to
+  `[A-Za-z0-9._#+-]`: the worktree slug, or `<dir>#<sid8>` for a non-worktree cwd.
+- **`ack-denial.sh <leg-label-or-handover-doc>`** writes `<key>.ack` (leg, the
+  paged count and class, timestamp). A doc resolves through its frontmatter
+  `resume_cwd` to the worktree slug. Idempotent; a leg never paged is a no-op.
+  Exit 0 acked / already acked / nothing to ack; 1 record dir not writable; 2
+  usage, unusable label, or a doc with no `resume_cwd`.
+- **Refusal.** `headed-arm-leg.sh` exits **14**, naming `ack-denial.sh`, when the
+  session name or the doc's worktree slug has a `SHIP-STEP`/`PAUSE-RISK` page
+  newer than its latest ack. `--ignore-denials` overrides. No record, an acked
+  one, a `REPEAT`, or an unreadable record launches (fail open); the check runs
+  before `--dry-run`'s exit, so a dry run predicts the refusal.
+- **Known limits.** Timestamps are 1 s granularity (a page in the same second as
+  an ack reads as acked). A `<dir>#<sid8>` leg can be paged and acked but a
+  launch cannot be matched to it. The refusal covers only denials a running
+  `console-wait.sh` paged. Tests: `test-ack-denial.sh`, `test-console-wait.sh`
+  (`p*` cases), `test-headed-arm-leg.sh` (case 38).
 
 ### `auto-arm-on-subagent-cap.sh` — subagent-result cap watchdog (HIMMEL-276)
 

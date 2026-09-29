@@ -132,6 +132,9 @@ export XDG_RUNTIME_DIR="$tmp/pinned-xdg-runtime"
 # cache dir; pinned so this suite never writes into the operator's real
 # ~/.claude/himmel (the HIMMEL-3260 lesson: a suite must not touch shared state).
 export HIMMELCTL_CACHE_DIR="$tmp/pinned-himmelctl-cache"
+# HIMMEL-3724: the re-dispatch refusal reads page/ack records from this dir;
+# pinned so no ambient ~/.himmel/state record can refuse (or pass) a case here.
+export HIMMEL_DENIAL_ACK_DIR="$tmp/pinned-denial-acks"
 mkdir -p "$HANDOVER_DIR" "$HIMMEL_FLEET_SLOTS" "$XDG_RUNTIME_DIR"
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
@@ -2642,6 +2645,74 @@ if [ -e "$d37b/HIMMEL-9999-leg2b.leg-mcp.json" ]; then
 else
   echo "ok - 37b leg 2 gets no mcp file (mcp-none has no mcpServers field)"
 fi
+
+# --- 38 (HIMMEL-3724). Re-dispatch refusal: a leg whose worktree slug (from the
+# handover doc's resume_cwd) or session name has an un-acked SHIP-STEP /
+# PAUSE-RISK page record newer than its latest ack is refused with exit 14 and
+# a message naming ack-denial.sh. --ignore-denials overrides; no record, an
+# acked record, a REPEAT, and an unreadable record all launch (fail open).
+# Dry-run is enough: the refusal runs before the --dry-run exit.
+doc38="$tmp/c38-doc.md"
+printf -- '---\nresume_cwd: /x/.claude/worktrees/feat+leg-38\ntemplate_version: 3\n---\n' > "$doc38"
+acks38="$HIMMEL_DENIAL_ACK_DIR"
+now38="$(date +%s)"
+page38() { # <label> <class> <ts>
+  mkdir -p "$acks38"
+  printf 'leg=%s\ncount=1\nclass=%s\nts=%s\n' "$1" "$2" "$3" > "$acks38/$1.page"
+}
+dry38() { # [extra flags...]  -> sets rc38/out38
+  rc38=0
+  out38="$(bash "$SCRIPT" --dry-run --no-profile "$@" HIMMEL-38-leg "$doc38" /tmp/nosig 99999999999 "$tmp/c38.log" claude-sonnet-5 2>&1)" || rc38=$?
+}
+rm -rf "$acks38"
+dry38
+check "38a no page record on file -> launch unaffected (dry-run rc 0)" "$rc38" "0"
+not_contains "38a and no denial message is printed" "$out38" "ack-denial.sh"
+
+page38 feat+leg-38 SHIP-STEP "$((now38 - 30))"
+dry38
+check "38b un-acked SHIP-STEP page under the doc's slug -> exit 14" "$rc38" "14"
+contains "38b the refusal names ack-denial.sh" "$out38" "ack-denial.sh"
+contains "38b the refusal names the override flag" "$out38" "--ignore-denials"
+
+dry38 --ignore-denials
+check "38c --ignore-denials launches despite the un-acked page" "$rc38" "0"
+
+printf 'leg=feat+leg-38\ncount=1\nclass=SHIP-STEP\nts=%s\n' "$((now38 - 10))" > "$acks38/feat+leg-38.ack"
+dry38
+check "38d an ack newer than the page -> launch (rc 0)" "$rc38" "0"
+
+page38 feat+leg-38 PAUSE-RISK "$((now38 + 60))"
+dry38
+check "38e a NEWER PAUSE-RISK page after the ack -> exit 14 again" "$rc38" "14"
+
+rm -rf "$acks38"
+page38 HIMMEL-38-leg SHIP-STEP "$((now38 - 30))"
+dry38
+check "38f a page keyed by the session name refuses too" "$rc38" "14"
+
+rm -rf "$acks38"
+page38 feat+leg-38 REPEAT "$((now38 - 30))"
+dry38
+check "38g a REPEAT page record is not a refusal" "$rc38" "0"
+
+rm -rf "$acks38"; mkdir -p "$acks38"
+printf 'garbage without fields\n' > "$acks38/feat+leg-38.page"
+dry38
+check "38h an unreadable/garbled page record fails open (rc 0)" "$rc38" "0"
+
+rm -rf "$acks38"
+page38 HIMMEL-38-real SHIP-STEP "$((now38 - 30))"
+d38="$tmp/c38"; mk_launch_stubs "$d38" "HIMMEL-38-real"; mkdir -p "$tmp/repo38"
+rc=0
+RUN_LEG_ARGS='--no-profile' run_leg "$d38" "$tmp/repo38" "HIMMEL-38-real" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+check "38i a REAL launch is refused too (rc 14)" "$rc" "14"
+if [ -e "$d38/env-record" ]; then
+  echo "FAIL - 38i a refused launch must not reach the launcher"; fails=$((fails+1))
+else
+  echo "ok - 38i a refused launch never reaches the launcher"
+fi
+rm -rf "$acks38"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then
