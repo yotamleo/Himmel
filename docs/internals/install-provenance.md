@@ -237,6 +237,29 @@ not record a block yet): the block is stripped only when it is byte-identical to
 reported as `kept (block-unrecorded-modified)`. The standalone uninstall bundle
 therefore ships that template.
 
+### The reconcile report (HIMMEL-3787 S3)
+
+Every uninstall, wet or `--dry-run` (headed `DRY: Reconcile report`), prints one
+report from this run's outcome records (`prov_read_reconcile_report`). It comes
+after every unit has been handled and before a purge deletes the ledger, so a
+run that later refuses or halts still shows it.
+
+- Counts: `reverted` (removed, restored, already-base, surgical),
+  `skipped` (kept for a benign reason, by reason), `NEEDS YOU`.
+- One entry per unit that needs the operator (`user-modified`,
+  `block-malformed`, `block-unrecorded-modified`, `identity-unreadable`,
+  `no-backup`, or a failed step): path, kind, the reason in plain words, the
+  backup and `.ours` snapshot paths when present, and hand commands. A kept
+  file gets a `diff -u` and a take-back command that saves the live file to
+  `<path>.mine` first. **No printed command deletes the live file.**
+- `backups held: N` when kept backups block `--purge-state` (add
+  `--keep-backups` to retain them), and one `retained from an earlier purge:
+  <dir>  (rm -rf <dir> when done)` line per `retained-*` directory.
+
+Exit code is unchanged: 0 when every unit is resolved or kept-and-reported, the
+`fail_step` path for refusals and failures. The held count covers units this run
+visited (`ponytail:` in the function; the purge scan is the complete check).
+
 ## Known limits
 
 - No jq on `PATH`: the node dialect falls back to a pure-language

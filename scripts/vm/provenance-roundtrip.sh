@@ -522,6 +522,16 @@ if [ -n "$S2A_CASE" ]; then
         [ "$UN_RC" -ne 0 ] || fail "s2a case a: expected --purge-state to refuse (nonzero rc), got rc=0"
         [ "$HALT_N" = 8 ] || fail "s2a case a: expected halt at [8/8], got halted-at=$HALT_AT"
         [ "$BACKUP_COUNT_1" -gt 0 ] || fail "s2a case a: expected the held backup to survive the refused purge, found none"
+        # HIMMEL-3787 S3: the refused purge still ends with the reconcile report,
+        # naming the held backup (it is why the purge refused).
+        printf '%s\n' "$UN_OUT" | grep -q -E '^\[uninstall-log\] Reconcile report - ledger ' \
+            || fail "s2a case a: the uninstall log carries no Reconcile report"
+        printf '%s\n' "$UN_OUT" | grep -q -E '^\[uninstall-log\]   NEEDS YOU +[1-9]' \
+            || fail "s2a case a: the Reconcile report does not count the held unit as NEEDS YOU"
+        printf '%s\n' "$UN_OUT" | grep -q -F 'what you had before himmel:' \
+            || fail "s2a case a: the Reconcile report entry names no backup path"
+        printf '%s\n' "$UN_OUT" | grep -q -E '^\[uninstall-log\]   backups held: [1-9]' \
+            || fail "s2a case a: the Reconcile report has no backups-held line"
         echo "RESULT: S2A-CASE-A PASS (backups-held=$BACKUP_COUNT_1 halted-at=$HALT_AT)"
         exit 0
     fi
@@ -550,6 +560,10 @@ if [ -n "$S2A_CASE" ]; then
     [ "$RETAINED_COUNT_2" -ge 2 ] || fail "s2a case b: expected >=2 retained-* dirs (earlier one kept + a new one), found $RETAINED_COUNT_2"
     STILL_THERE=$(vm_ssh "[ -d '$RETAINED_DIR_1' ] && echo yes || echo no")
     [ "$STILL_THERE" = yes ] || fail "s2a case b: the earlier retained-* dir ($RETAINED_DIR_1) was disturbed by the second purge"
+    # HIMMEL-3787 S3 (Q7): the second run's report lists the earlier retained-*
+    # dir with its delete command.
+    printf '%s\n' "$UN2_OUT" | grep -q -F "retained from an earlier purge: $RETAINED_DIR_1  (rm -rf $RETAINED_DIR_1 when done)" \
+        || fail "s2a case b: the second run's Reconcile report does not list the earlier retained dir with its delete command"
     echo "RESULT: S2A-CASE-B PASS (retained-before=1 retained-after=$RETAINED_COUNT_2, earlier dir untouched)"
     exit 0
 fi
