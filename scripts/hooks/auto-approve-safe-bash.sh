@@ -299,6 +299,10 @@ tokenize_seg_words() {
                 # delimits the next word instead of being consumed here.
                 case "$nx" in [[:space:]]) word="$word$c"; have=1; i=$((i + 1)); continue ;; esac
                 word="$word$c$nx"; have=1; i=$((i + 2)); continue ;;
+            # ponytail: splits on CR where bash does not (safe direction: a
+            # bash word still starts with its first sub-token, so a leading
+            # flag stays visible); revisit when any flag check relies on a
+            # word's END or suffix rather than its prefix (HIMMEL-3886).
             [[:space:]])
                 if [ "$have" -eq 1 ]; then
                     RB_TOKENS+=("$word"); word=""; have=0
@@ -1521,17 +1525,13 @@ case "$cmd" in
         ;;
 esac
 # HIMMEL-3886 (judge, PR 1468): the tokenizers below split on [[:space:]],
-# but bash splits words only on space, tab and newline, so a raw CR, FF or VT
+# but bash splits words only on space, tab and newline, so a raw FF or VT
 # makes them see different words than the shell runs. No allow for those
-# bytes. A CR survives only on native jq; the win-jq CR is jq's rendering.
+# bytes. CR is left to tokenize_seg_words' ponytail note (CRLF inputs must
+# keep their verdict, test-crlf-boundary.sh).
 case "$cmd" in
     *[$'\f\v']*) exit 0 ;;
 esac
-if [ "$win_crlf" = 0 ]; then
-    case "$cmd" in
-        *$'\r'*) exit 0 ;;
-    esac
-fi
 # HIMMEL-3750 round 3 (codex-1): a backslash-newline continuation is folded
 # away by the shell before parsing even INSIDE double quotes, so a quoted
 # `"$\<NL>=x"` reaches the shell as `"$=x"` — the raw-text tripwires below

@@ -1095,9 +1095,7 @@ assert "odd(3) backslash run + CRLF: still no continuation"  PASS "$(decide "$(j
 # Control: a lone CR (no following LF) is not a CRLF pair — fold_crlf() must
 # leave it untouched. It is not an exploit either way: the escaped CR merges
 # into the following word (no separator), so nothing hidden ever executes.
-# HIMMEL-3886 (judge, PR 1468): any raw CR on native jq now falls through
-# before the fold, so this is PASS (fail closed), not ALLOW.
-assert "lone CR (no LF) is untouched by fold_crlf, no exploit" PASS "$(decide "$(j_bash "echo hi \\"$'\r'"touch PWN15")")"
+assert "lone CR (no LF) is untouched by fold_crlf, no exploit" ALLOW "$(decide "$(j_bash "echo hi \\"$'\r'"touch PWN15")")"
 # Control: a genuine safe continuation with a real LF (no CR at all) must
 # still fold and ALLOW — fold_crlf() only withholds the fold for a
 # backslash-preceded CR, never for a bare backslash+LF.
@@ -1345,8 +1343,9 @@ assert "plain gh pr view still ALLOW"         ALLOW "$(decide "$(j_bash 'gh pr v
 # Judge (PR 1468): bash word-splits only on space, tab and newline, so a raw
 # CR, FF or VT stays inside the brace word and the flag still expands out of
 # it (`{--output=/tmp/PWN,-1,--,<CR>}` runs `git log --output=/tmp/PWN -1 --
-# <CR>`). The control byte must not end the brace word, and on native jq any
-# raw CR/FF/VT falls through.
+# <CR>`). The control byte must not end the brace word, and any raw FF/VT
+# falls through. A CR splits the hook's tokens where bash keeps one word, so
+# a leading flag must stay visible as the first sub-token.
 BR_CR='git log {--output=/tmp/PWN,-1,--,'$'\r''}'
 BR_FF='git log {--output=/tmp/PWN,-1'$'\f''}'
 BR_VT='git log {-1,--output=/tmp/PWN'$'\v''}'
@@ -1354,6 +1353,8 @@ assert "brace word with raw CR never ALLOW" PASS "$(decide "$(j_bash "$BR_CR")")
 assert "brace word with raw FF never ALLOW" PASS "$(decide "$(j_bash "$BR_FF")")"
 assert "brace word with raw VT never ALLOW" PASS "$(decide "$(j_bash "$BR_VT")")"
 assert "raw FF outside any brace never ALLOW" PASS "$(decide "$(j_bash 'git log -1'$'\f')")"
+assert "CR-joined --output word never ALLOW" PASS "$(decide "$(j_bash 'git log -1'$'\r''--output=/tmp/x')")"
+assert "CR-joined -c word never ALLOW" PASS "$(decide "$(j_bash 'git -c'$'\r''core.pager=x log')")"
 # Control: Windows jq.exe CRLF rendering of a multi-line command still ALLOWs.
 assert "win-jq: multi-line CRLF command still ALLOW" \
     ALLOW "$(decide_win "$(j_bash 'git status'$'\n''git log -1')")"
