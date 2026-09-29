@@ -295,17 +295,18 @@ const releaseOf = (version) => {
             { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
     } catch { return { version, unavailable: true }; }
     // `list --labels` rows: key, type, status, title, labels (tab-separated).
-    const rows = out.split('\n').map((l) => l.split('\t')).filter((f) => f.length >= 4 && /^[A-Z][A-Z0-9]*-\d+$/.test(f[0]))
+    // The CLI prints only ticket rows, so any other non-blank line means a garbled answer.
+    const lines = out.split('\n').filter((l) => l.trim()).map((l) => l.split('\t'));
+    const rows = lines.filter((f) => f.length >= 4 && /^[A-Z][A-Z0-9]*-\d+$/.test(f[0]))
         .map((f) => ({ key: f[0], status: f[2].trim(), title: f[3], labels: (f[4] || '').split(',').map((x) => x.trim()) }));
-    // Output with content but no ticket row is a garbled answer, not an empty version.
-    if (!rows.length && out.trim()) return { version, unavailable: true };
+    if (rows.length !== lines.length) return { version, unavailable: true };
     const open = rows.filter((r) => !DONE_STATUS.test(r.status));
     return { version, done: rows.length - open.length, total: rows.length, blockers: open.filter((r) => r.labels.includes('v1-blocker')) };
 };
 const releases = versionsDeclared.map(releaseOf);
 // A separate fingerprint (as the census one is): tick.sh never sees these counts.
 const releaseSig = releases.map((r) => (r.unavailable ? `${r.version}=unavailable`
-    : `${r.version}=${r.done}/${r.total}:${r.blockers.map((b) => `${b.key}@${b.status}`).join('+')}`)).join(',');
+    : `${r.version}=${r.done}/${r.total}:${r.blockers.map((b) => `${b.key}@${b.status}@${redact(b.title)}`).join('+')}`)).join(',');
 const ciOf = (pr) => {
     const rollup = (pr && pr.statusCheckRollup) || [];
     // No checks reported yet is not a green build: it reads pending.

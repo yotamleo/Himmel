@@ -415,6 +415,7 @@ contains 'a second open blocker is listed' "$vhtml" 'data-blocker="HIMMEL-9003"'
 lacks 'an open ticket without the v1-blocker label is not listed' "$vhtml" 'HIMMEL-9002'
 lacks 'a done v1-blocker ticket is not listed as a blocker' "$vhtml" 'HIMMEL-9004'
 lacks 'a lock token in a blocker title is redacted' "$vhtml" 'pid777777'
+contains 'the versions fingerprint meta is present' "$vhtml" 'console-board-versions-fp'
 same 'one Jira call per version' "$(printf '%s\n' "$jargv" | grep -c .)" '2'
 contains 'the CLI is asked by fixVersion JQL' "$jargv" 'fixVersion = "v1.0.0"'
 contains 'the CLI is asked for labels' "$jargv" '--labels'
@@ -451,6 +452,19 @@ same 'a done count moving flips --changed although tick-fp is unchanged' "$vc3" 
 contains 'the tick fingerprint meta is left as tick computed it' "$(cat "$W/v-changed.html")" '<meta name="console-board-fp" content="deadbeefdeadbeef">'
 vc4="$(JIRA_STUB_FAIL=1 runv --out "$W/v-changed.html" --changed)"
 same 'the CLI going unavailable flips --changed' "$vc4" "CHANGED $W/v-changed.html"
+# A blocker retitled in Jira changes what the panel shows, so it flips --changed too.
+runv --out "$W/v-changed.html" --changed >/dev/null
+sed -i 's/fix the blocker/renamed blocker/' "$JD/v1.0.0.tsv"  # gnu-ok: console kit is Linux-only
+vc5="$(runv --out "$W/v-changed.html" --changed)"
+same 'a retitled blocker flips --changed' "$vc5" "CHANGED $W/v-changed.html"
+# A partial answer (one row that does not parse among valid ones) is not complete totals.
+write_v100 3
+printf 'garbled line without tabs\n' >> "$JD/v1.0.0.tsv"
+runv --out "$W/v-partial.html" >/dev/null; rc=$?
+vpart="$(cat "$W/v-partial.html" 2>/dev/null)"
+contains 'a partial Jira answer still renders the board (rc 0)' "rc=$rc" 'rc=0'
+contains 'a partial Jira answer reads unavailable, not short totals' "$vpart" 'data-release="v1.0.0" data-unavailable="1"'
+contains 'a clean version beside a partial one still renders' "$vpart" 'data-release="v1.0.1" data-done="1" data-total="2"'
 
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
