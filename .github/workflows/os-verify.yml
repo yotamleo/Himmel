@@ -37,6 +37,14 @@ on:
 permissions:
   contents: read
 
+# HIMMEL-3853: one os-verify per ref and OS choice. cancel-in-progress is false
+# so a fresh dispatch never kills a running proof; it only stops dispatches from
+# stacking on the paid macOS/Windows slots (a repeat waits, and a newer pending
+# one replaces an older pending one).
+concurrency:
+  group: os-verify-${{ github.ref }}-${{ inputs.os }}
+  cancel-in-progress: false
+
 jobs:
   shell:
     name: os-verify / shell (${{ matrix.os }}, ${{ matrix.shard }})
