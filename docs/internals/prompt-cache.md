@@ -94,6 +94,20 @@ previous turn, create > read, context drop > 25 %), chosen to separate the
 fixtures and the 2026-09-29 measurements; upgrade path: make them flags when a
 real run lands within 10 % of one. `invalidation` judges only the first
 transition after the event (a prefix change shows on the next turn; a later
-rewrite is unrelated). Timestamps are whole seconds and the TTL
-tier is inferred from `usage`, not from the request. A helper call that never
+rewrite is unrelated). Timestamps are whole seconds. A helper call that never
 reaches the transcript is invisible to the probe.
+
+- `ponytail:` one TTL tier per session: any 1-hour write in a file sets 3600 s
+  for every gap in it, inferred from `usage`, not from the request. A session
+  that mixes tiers can have a 5-minute expiry read as `invalidated` (or a
+  `warm` idle gap that rewrote), so the error is toward over-flagging, never
+  toward hiding an invalidation; upgrade path: take the tier from the last
+  write turn before each pair (HIMMEL-3837 follow-up).
+- A rewrite is a read that falls below half the previous turn's with more
+  created than read. A partial-prefix invalidation that keeps at least half the
+  prior read (a late edit in a long history) reads as `kept`; the probe can rule
+  out a full-prefix rewrite, not a partial one. A `MEMORY.md` change sits in the
+  first message, so a real invalidation of it would drop the read far below half.
+- `read-ratio:` is cache_read over all input tokens for every counted turn of
+  every file given, in every mode; in `first-turn` it is not the first turn's
+  ratio (the `warm=`/`cold=` counts are).

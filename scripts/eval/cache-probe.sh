@@ -113,7 +113,7 @@ def mean(k): if length == 0 then 0 else ((map(.[k]) | add) / length | floor) end
   | select(.t != null) ] as $rows
 | ($rows | group_by(.id) | map(.[0]) | sort_by(.t, .id)) as $T
 | ([ .[] | select(.type == "system" and .subtype == "compact_boundary") | secs | select(. != null) ]) as $C
-| (if ($T | map(.h1) | add // 0) > 0 then 3600 else 300 end) as $ttl
+| (if ($T | map(.h1) | add // 0) > 0 then 3600 else 300 end) as $ttl  # ponytail: one tier per session, over-flags a mixed-tier one; take the tier from the last write turn (HIMMEL-3837 follow-up)
 | ($T | map(.cr) | add // 0) as $sumcr
 | ($T | map(.in + .cr + .cc) | add // 0) as $sumall
 | def comp($p; $c): any($C[]; . > $p.t and . <= $c.t);
