@@ -47,6 +47,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gitClean } from '../../lanes/git-clean.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -279,7 +280,7 @@ const epics = epicsDeclared.map((e) => {
 // version's `unavailable`; the render never fails on it.
 const primaryRoot = () => {
     try {
-        const common = execFileSync('git', ['-C', HERE, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+        const common = gitClean(['-C', HERE, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
             { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
         if (common) return dirname(common);
     } catch { /* fall through to the tree this script sits in */ }
