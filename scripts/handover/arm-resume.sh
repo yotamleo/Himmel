@@ -1239,7 +1239,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
         # bank-status READ.
         _arm_fleet_leg="${HANDOVER_PATH:-arm-resume}"
         _arm_fleet_leg="${_arm_fleet_leg//\//-}"
-        _arm_fleet_token="$(CADENCE_BANK_LEG="$_arm_fleet_leg" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_CALLER_PID="$$" bash "$_ARM_BANK_PREFLIGHT" </dev/null)"
+        # HIMMEL-3846: CADENCE_BANK_SKIP_REFRESH=1 -- only SKIPPED-FLEET is read
+        # from this call, and the producer refresh it would run rewrites the shared
+        # usage cache under the CALLER's identity (a test suite arming for real
+        # under a fixture CLAUDE_ACCOUNT_CONFIG stamped the live cache 233bed9c...
+        # and turned every bank read on the host BANK-UNKNOWN).
+        _arm_fleet_token="$(CADENCE_BANK_LEG="$_arm_fleet_leg" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_CALLER_PID="$$" CADENCE_BANK_SKIP_REFRESH=1 bash "$_ARM_BANK_PREFLIGHT" </dev/null)"
         if [ "$_arm_fleet_token" = SKIPPED-FLEET ]; then
             echo "ERR arm-resume: fleet-size cap reached (bank-preflight: SKIPPED-FLEET) — refusing to arm another leg. Override with FLEET_CAP_OK=1 in the LAUNCHING shell." >&2
             exit 22

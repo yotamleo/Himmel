@@ -299,7 +299,8 @@ if [ -f "$producer" ] && [ -n "$input" ]; then
     fi
     if [ "$prod_stale" -eq 1 ]; then
         # shellcheck disable=SC2086  # prod_to is the intentional "timeout N" seam word-split
-        printf '%s' "$input" | $prod_to bash "$producer" >/dev/null 2>&1 || true
+        # HIMMEL-3846: name this caller in the cache's produced_by stamp.
+        printf '%s' "$input" | USAGE_PRODUCER_CALLER=statusline $prod_to bash "$producer" >/dev/null 2>&1 || true
     fi
 fi
 

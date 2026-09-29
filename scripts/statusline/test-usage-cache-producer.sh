@@ -268,7 +268,7 @@ run_test "(10) HIMMEL-1712: rates path stamps account (16-hex hash, never the ra
   derived=$(jq -r ".derived_at // empty" "$CLAUDE_USAGE_CACHE");
   [ -n "$derived" ] && [ "$derived" -ge "$before" ] || exit 1;
   produced_by=$(jq -r ".produced_by // empty" "$CLAUDE_USAGE_CACHE");
-  [[ "$produced_by" =~ ^[0-9]+$ ]] || exit 1;
+  [[ "$produced_by" =~ ^[^:]+:[0-9]+$ ]] || exit 1;
 '
 
 run_test "(11) HIMMEL-1712: oauth path stamps account/derived_at/produced_by too" '
@@ -427,6 +427,43 @@ run_test "(21) HIMMEL-1712 item 5: a cross-account overwrite (rates path) emits 
   printf "%s" "{\"session_id\":\"sess-B\",\"rate_limits\":{\"five_hour\":{\"utilization\":11,\"resets_at\":\"R\"}}}" | bash "$PRODUCER" >/dev/null 2>"$W/err2.log";
   grep -qi "different account" "$W/err2.log" || exit 1;
   [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "11" ] || exit 1;
+'
+
+run_test "(22) HIMMEL-3846: a session-less OAuth write stamps the CURRENT identity hash and names its caller in produced_by (caller:pid)" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-22.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  . "$STATUSLINE_DIR/../lib/usage-cache-identity.sh"; want=$(current_account_hash); [ -n "$want" ] || exit 1;
+  stub="$W/stub.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20}}" "JSON" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub"; export USAGE_OAUTH_TTL=0;
+  export USAGE_PRODUCER_CALLER="bank-preflight/leg-x";
+  bash "$PRODUCER" </dev/null;
+  [ "$(jq -r ".account" "$CLAUDE_USAGE_CACHE")" = "$want" ] || exit 1;
+  [[ "$(jq -r ".produced_by" "$CLAUDE_USAGE_CACHE")" =~ ^bank-preflight/leg-x:[0-9]+$ ]] || exit 1;
+'
+
+run_test "(23) HIMMEL-3846: an unnamed caller is stamped unknown:pid; a caller name with shell/JSON-hostile bytes is sanitized" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-23.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD USAGE_PRODUCER_CALLER;
+  printf "%s" "{\"rate_limits\":{\"five_hour\":{\"utilization\":63.4,\"resets_at\":\"Z\"}}}" | bash "$PRODUCER";
+  [[ "$(jq -r ".produced_by" "$CLAUDE_USAGE_CACHE")" =~ ^unknown:[0-9]+$ ]] || exit 1;
+  export USAGE_CACHE_TTL=0; export USAGE_PRODUCER_CALLER="a b\"\$(x);c";
+  printf "%s" "{\"rate_limits\":{\"five_hour\":{\"utilization\":64,\"resets_at\":\"Z\"}}}" | bash "$PRODUCER";
+  [[ "$(jq -r ".produced_by" "$CLAUDE_USAGE_CACHE")" =~ ^a_b___x__c:[0-9]+$ ]] || exit 1;
+'
+
+run_test "(24) HIMMEL-3846: a real account switch STILL reads as a mismatch, an unchanged account never does (HIMMEL-1712 not weakened)" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-24.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  . "$STATUSLINE_DIR/../lib/usage-cache-identity.sh";
+  unset USAGE_OAUTH_CMD;
+  printf "%s" "{\"rate_limits\":{\"five_hour\":{\"utilization\":10,\"resets_at\":\"Z\"}}}" | bash "$PRODUCER";
+  usage_cache_account_mismatch "$CLAUDE_USAGE_CACHE" && exit 1;
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" > "$HOME/.claude.json";
+  usage_cache_account_mismatch "$CLAUDE_USAGE_CACHE" || exit 1;
 '
 
 # --- summary ------------------------------------------------------------------

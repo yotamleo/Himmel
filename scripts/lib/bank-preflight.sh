@@ -1012,7 +1012,7 @@ is_int "$MAX_AGE" || { echo "bank-preflight: invalid CADENCE_BANK_MAX_AGE '$MAX_
 # night. </dev/null is load-bearing too: the producer reads `input=$(cat)`
 # and blocks until EOF.
 if [ -z "${CADENCE_BANK_SKIP_REFRESH:-}" ] && [ -f "$PRODUCER" ]; then
-  CLAUDE_USAGE_CACHE="$CACHE" USAGE_OAUTH_TTL=0 \
+  CLAUDE_USAGE_CACHE="$CACHE" USAGE_OAUTH_TTL=0 USAGE_PRODUCER_CALLER="bank-preflight/${LEG:-unknown}" \
     bash "$PRODUCER" </dev/null >/dev/null 2>&1 || true
 fi
 

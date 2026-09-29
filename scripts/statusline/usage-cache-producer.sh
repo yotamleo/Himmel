@@ -178,7 +178,13 @@ account_for_session() {
   printf '%s' "$hash"
 }
 account_hash=$(account_for_session "$session_id")
-produced_by=$$
+# HIMMEL-3846: produced_by is "<caller>:<pid>", not the bare pid -- a pid that has
+# already exited attributed nothing when a session-less writer stamped the shared
+# cache with a fixture identity. A caller names itself via USAGE_PRODUCER_CALLER;
+# the value is scrubbed to a filename-safe alphabet and capped, since it lands in
+# a file every consumer reads.
+producer_caller=$(printf '%s' "${USAGE_PRODUCER_CALLER:-unknown}" | tr -c 'A-Za-z0-9._/-' '_' | cut -c1-48)
+produced_by="${producer_caller:-unknown}:$$"
 
 # Load the previous consumer cache as a JSON object, or "null". Requires an
 # object (statusline.sh:368-374 shape guard) — a bare string/number would make
