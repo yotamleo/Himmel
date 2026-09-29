@@ -108,7 +108,7 @@ OUT1="$(bash "$LINT" "$BAD" 2>&1)"; EC1=$?
 
 if [ "$EC1" -eq 1 ]; then pass "exit 1 on a file with issues"; else fail "expected exit 1, got $EC1" "$OUT1"; fi
 assert_contains "BOM detected" "BOM" "$OUT1"
-assert_contains "errexit (set -e) leak detected" "errexit" "$OUT1"
+assert_contains "errexit (set -e) leak detected" "[errexit]" "$OUT1"
 if [ "$HAVE_SHELLCHECK" -eq 1 ]; then
     assert_contains "shellcheck unused-var (SC2034) surfaced" "SC2034" "$OUT1"
 else
@@ -146,7 +146,7 @@ EOF
 
 OUT3="$(bash "$LINT" "$SL" 2>&1)"; EC3=$?
 if [ "$EC3" -eq 0 ]; then pass "statusline file skipped (exit 0)"; else fail "expected exit 0 (excluded), got $EC3" "$OUT3"; fi
-assert_not_contains "statusline findings not reported" "errexit" "$OUT3"
+assert_not_contains "statusline findings not reported" "[errexit]" "$OUT3"
 
 # ---------------------------------------------------------------------------
 # Case 4: --staged mode lints staged shell in a git repo
@@ -192,7 +192,7 @@ for variant in "set -eu" "set -euo pipefail" "set -o errexit"; do
     f="$TMP_ROOT/ee.sh"
     printf '#!/usr/bin/env bash\n%s\necho hi\n' "$variant" > "$f"
     o="$(bash "$LINT" "$f" 2>&1)"; e=$?
-    if [ "$e" -eq 1 ] && grepq "$o" -F errexit; then
+    if [ "$e" -eq 1 ] && grepq "$o" -F "[errexit]"; then
         pass "errexit flagged: '$variant'"
     else
         fail "errexit should be flagged: '$variant'" "$o"
@@ -203,7 +203,7 @@ for ok in "set -uo pipefail" "set -o pipefail" "set -u"; do
     f="$TMP_ROOT/ok.sh"
     printf '#!/usr/bin/env bash\n%s\necho ok\n' "$ok" > "$f"
     o="$(bash "$LINT" "$f" 2>&1)"; e=$?
-    if grepq "$o" -F errexit; then
+    if grepq "$o" -F "[errexit]"; then
         fail "errexit FALSE positive: '$ok'" "$o"
     else
         pass "errexit not flagged (correct): '$ok'"
@@ -227,7 +227,7 @@ OUTER
 
 OUT7="$(bash "$LINT" "$HD" 2>&1)"; EC7=$?
 if [ "$EC7" -eq 0 ]; then pass "heredoc-body set -e not flagged (exit 0)"; else fail "expected exit 0, got $EC7" "$OUT7"; fi
-assert_not_contains "no errexit false positive on heredoc body" "errexit" "$OUT7"
+assert_not_contains "no errexit false positive on heredoc body" "[errexit]" "$OUT7"
 
 # ---------------------------------------------------------------------------
 # Case 8: --staged works from a subdirectory (repo-root path resolution)
@@ -256,7 +256,7 @@ printf '\nCase 10: set -Ee flagged\n'
 EE2="$TMP_ROOT/ee2.sh"
 printf '#!/usr/bin/env bash\nset -Ee\necho hi\n' > "$EE2"
 OUT10="$(bash "$LINT" "$EE2" 2>&1)"; EC10=$?
-if [ "$EC10" -eq 1 ] && grepq "$OUT10" -F errexit; then
+if [ "$EC10" -eq 1 ] && grepq "$OUT10" -F "[errexit]"; then
     pass "set -Ee flagged as errexit"
 else
     fail "set -Ee should be flagged" "$OUT10"

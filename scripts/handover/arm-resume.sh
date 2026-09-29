@@ -6400,7 +6400,8 @@ cat <<EOF
   it just armed, exit before the fire time -- the relaunch starts a NEW
   claude on that same document, and two processes on one handover can
   race (file races, doubled API spend, double-pushes from auto-commit).
-  Exiting also gives the relaunch a clean prompt cache.
+  (Exiting does not change the relaunch's prompt cache: a new session's
+  first turn is normally warm -- docs/internals/prompt-cache.md.)
   Arming a different handover (e.g. a console arming a leg)? No exit
   is needed.
 ================================================================

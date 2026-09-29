@@ -25,6 +25,10 @@ same(){ if cmp -s "$2" "$3"; then echo "ok - $1"; else echo "FAIL - $1: $3 diffe
 
 command -v jq >/dev/null 2>&1 || { echo "test-e2e-symmetry-isolation: jq required" >&2; exit 2; }
 
+# canonical TMPDIR: uninstall.sh's real-home check compares resolved paths (macOS /var -> /private/var).
+# td itself stays a bare mktemp assignment: test-uninstall-real-home-callers.sh only accepts
+# a scratch HOME derived from td when every write to td is a guarded mktemp.
+TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 td="$(mktemp -d "${TMPDIR:-/tmp}/e2e-isolation.XXXXXX")" || { echo "test-e2e-symmetry-isolation: mktemp failed" >&2; exit 2; }
 trap 'rm -rf "$td"' EXIT
 mkdir -p "$td/cwd"

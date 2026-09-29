@@ -175,6 +175,7 @@ t "restore reseed" 0 --reseed
 # mirroring (2nd/3rd tracked file — not just settings.json).
 printf '{"m":1}' > "$FAKEHOME/.claude/plugins/installed_plugins.json"
 printf '{"k":1}' > "$FAKEHOME/.claude/plugins/known_marketplaces.json"
+touch -t 202001010000 "$FAKEHOME/.claude-routed/.seeded"   # bash 3.2 -nt is 1s-granular: back-date the sentinel
 t "manifest newer triggers reseed" 0
 [ -f "$FAKEHOME/.claude-routed/plugins/installed_plugins.json" ] || { echo "FAIL: installed_plugins not reseeded on manifest change"; FAILS=$((FAILS+1)); }
 [ -f "$FAKEHOME/.claude-routed/plugins/known_marketplaces.json" ] || { echo "FAIL: known_marketplaces not reseeded on manifest change"; FAILS=$((FAILS+1)); }

@@ -181,7 +181,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip denials=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -1360,6 +1360,79 @@ STUB
 chmod +x "$W/bin-3747c/pgrep"
 o3747c="$(PATH="$W/bin-3747c:$PATH" bash "$SUT" --legs "$W/handover/$w3747c.md")"
 contains 'a fatal census must not promote a live-looking leg to CLOSABLE (HIMMEL-3747 Ask 1)' "$o3747c" 'legs=N642:WRAPPED'
+
+# --- HIMMEL-3724: denials= (classifier-denial jsonl -> tick line, SHIP-STEP /
+# REPEAT / PAUSE-RISK / none / skip). mkdenial writes one row at an offset
+# (minutes before "now") so tests control window inclusion without a stale
+# fixture; row shape matches scripts/hooks/log-classifier-denial.sh's fields.
+mkdenial() {  # mkdenial <log> <mins-ago> <session_title> <input_head>
+    ts="$(date -u -d "-${2} minutes" +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"ts":"%s","session_title":"%s","input_head":"%s"}\n' "$ts" "$3" "$4" >> "$1"
+}
+
+d3724a="$W/denials-3724a.jsonl"
+: > "$d3724a"
+mkdenial "$d3724a" 5 leg-a 'git push origin main'
+o3724a="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724a" bash "$SUT" 2>/dev/null)"
+contains 'a denied ship-step command reads SHIP-STEP (HIMMEL-3724)' "$o3724a" 'denials=leg-a:1:SHIP-STEP'
+
+d3724b="$W/denials-3724b.jsonl"
+: > "$d3724b"
+mkdenial "$d3724b" 5 leg-a 'ls -la'
+mkdenial "$d3724b" 3 leg-a 'cat foo'
+o3724b="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724b" bash "$SUT" 2>/dev/null)"
+contains '2 non-ship denials in the window read REPEAT (HIMMEL-3724)' "$o3724b" 'denials=leg-a:2:REPEAT'
+
+d3724c="$W/denials-3724c.jsonl"
+: > "$d3724c"
+mkdenial "$d3724c" 5 leg-a 'ls -la'
+mkdenial "$d3724c" 4 leg-a 'cat foo'
+mkdenial "$d3724c" 3 leg-a 'pwd'
+o3724c="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724c" bash "$SUT" 2>/dev/null)"
+contains '3+ non-ship denials in the window read PAUSE-RISK (HIMMEL-3724)' "$o3724c" 'denials=leg-a:3:PAUSE-RISK'
+
+d3724d="$W/denials-3724d.jsonl"
+: > "$d3724d"
+i=0
+while [ "$i" -lt 17 ]; do
+    mkdenial "$d3724d" 90 leg-a 'ls -la'
+    i=$((i + 1))
+done
+mkdenial "$d3724d" 5 leg-a 'pwd'
+o3724d="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724d" bash "$SUT" 2>/dev/null)"
+contains 'an all-time total approaching 20 reads PAUSE-RISK even with 1 in-window (HIMMEL-3724)' "$o3724d" 'denials=leg-a:1:PAUSE-RISK'
+
+d3724e="$W/denials-3724e.jsonl"
+: > "$d3724e"
+mkdenial "$d3724e" 90 leg-a 'ls -la'
+o3724e="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724e" bash "$SUT" 2>/dev/null)"
+contains 'a denial older than the window is excluded, reading none (HIMMEL-3724)' "$o3724e" 'denials=none'
+
+d3724f="$W/denials-3724f.jsonl"
+: > "$d3724f"
+o3724f="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724f" bash "$SUT" 2>/dev/null)"
+contains 'an empty log reads none (HIMMEL-3724)' "$o3724f" 'denials=none'
+
+o3724g="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-3724-missing.jsonl" bash "$SUT" 2>/dev/null)"
+contains 'a missing log reads skip (HIMMEL-3724)' "$o3724g" 'denials=skip'
+
+# Valid non-object JSON lines (a scalar, an array) survive `fromjson?`; they
+# must be dropped, not abort the slurp and hide every real denial.
+d3724h="$W/denials-3724h.jsonl"
+: > "$d3724h"
+mkdenial "$d3724h" 5 leg-a 'git push origin main'
+printf '%s\n' '5' '[1]' >> "$d3724h"
+o3724h="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724h" bash "$SUT" 2>/dev/null)"
+contains 'scalar and array lines in the log keep denials= populated (HIMMEL-3724)' "$o3724h" 'denials=leg-a:1:SHIP-STEP'
+
+# A valid object whose input_head is not a string must be skipped, not make
+# test() fail and turn the whole column into skip.
+d3724i="$W/denials-3724i.jsonl"
+: > "$d3724i"
+mkdenial "$d3724i" 5 leg-a 'git push origin main'
+printf '%s\n' '{"ts":"2099-01-01T00:00:00Z","session_title":"leg-b","input_head":5}' >> "$d3724i"
+o3724i="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724i" bash "$SUT" 2>/dev/null)"
+contains 'a non-string input_head row is skipped, denials= stays populated (HIMMEL-3724)' "$o3724i" 'denials=leg-a:1:SHIP-STEP'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

@@ -55,7 +55,7 @@ export CONSOLE_WAIT_FAIL_WAKE=1000
 
 # tick_line <legs> <board> [hb] [prs]: a tick line whose action fields are set.
 tick_line() {
-    printf 'TICK 03:00 hb=%s legs=%s livestate=ok procs=2 models=x ceiling=ok atq=0 suites=0alive/0dead prs=%s bank=5h8/wk15/codex=? fill=40 tails=N1:LIVE inbox=none tick=UNKNOWN fleet=3/15 capacity=ok gql=4000/04:00 orphans=none nonces=ok legset=ok board=%s\n' \
+    printf 'TICK 03:00 hb=%s legs=%s livestate=ok procs=2 models=x ceiling=ok atq=0 suites=0alive/0dead prs=%s bank=5h8/wk15/codex=? fill=40 tails=N1:LIVE inbox=none tick=UNKNOWN fleet=3/15 capacity=ok gql=4000/04:00 orphans=none nonces=ok legset=ok board=%s denials=none\n' \
         "${3:-1m}" "$1" "${4:-#10}" "$2" > "$STUB/tick.line"
 }
 reset_stub() { rm -f "$STUB/tick.rc" "$STUB/tick.blip" "$STUB/tick.churn" "$STUB/tick.sleep" "$STUB/tick.failafter" "$STUB/tick.ignoreterm"; tick_line "N1:FRESH" "ok"; printf 'PROCEED\n' > "$STUB/bank"; }
@@ -116,6 +116,16 @@ check "(b) the exit reason is logged" "yes" "$(grep -q 'exit=wake-tick' "$I.wait
 timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/b2.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(b) the re-arm after the wake does not wake again for the same change" "" "$(cat "$WORK/b2.out")"
 check "(b) the re-arm is still waiting when the window closes (rc 124)" "124" "$rc"
+
+# --- (b3724) a denials= class change wakes, naming denials (HIMMEL-3724) ---
+reset_stub
+I="$(new_inbox b3724)"
+start "$I" "$WORK/b3724.out" --legs "N1.md"
+wait_hb "$I" || fail "(b3724) no baseline heartbeat"
+sed -i 's/denials=none/denials=N1:1:SHIP-STEP/' "$STUB/tick.line"  # gnu-ok: Linux-only kit
+wait_exit "$WPID"
+check "(b3724) a denials= class change ends the wait with rc 0" "0" "$rc"
+check "(b3724) the wake names denials" "WAKE tick changed=denials bank=PROCEED" "$(head -n1 "$WORK/b3724.out")"
 
 # --- (c) noise fields do not wake: hb, board age, prs unchanged ------------
 reset_stub

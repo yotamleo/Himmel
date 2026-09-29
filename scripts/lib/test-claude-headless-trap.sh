@@ -132,9 +132,9 @@ run_with_ambient_claude_pid() {
     esac
   done
   env CLAUDE_PID="$ambient" FAKE_ARTIFACT="$artifact" HIMMEL_CLAUDE_BIN="$FAKE_OK" \
-    "${envs[@]}" bash "$SUT" \
+    ${envs[@]+"${envs[@]}"} bash "$SUT" \
     --role test-role --ticket HIMMEL-2514 --worktree "$WORKTREE" --cwd "$WORKTREE" \
-    --artifact "$artifact" --prompt-file "$PROMPT_FILE" "${extra[@]}"
+    --artifact "$artifact" --prompt-file "$PROMPT_FILE" ${extra[@]+"${extra[@]}"}
 }
 
 # =====================================================================

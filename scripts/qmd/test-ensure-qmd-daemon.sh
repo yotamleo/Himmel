@@ -64,10 +64,36 @@ mkdir -p "$state"
 bin="$work/bin"
 mkdir -p "$bin"
 
+# ---- timeout stub for hosts without GNU timeout (stock macOS) -----------------
+# The script under test degrades to an UNBOUNDED daemon start when timeout(1)
+# is absent, so (e) could never pass there (HIMMEL-3719). Provide a minimal
+# GNU-shaped stub in $bin: `timeout [-k N] SECS cmd...`, rc 124 on a kill.
+# ponytail: the stub ignores -k's KILL grace (TERM only), so a TERM-ignoring child would hang; upgrade path is providing coreutils timeout on the macOS runner.
+if ! command -v timeout >/dev/null 2>&1; then
+  cat > "$bin/timeout" <<'TOEOF'
+#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then echo "timeout (test stub)"; exit 0; fi
+if [ "$1" = "-k" ]; then shift 2; fi
+secs="$1"; shift
+flag="${TMPDIR:-/tmp}/timeout-stub.$$"
+rm -f "$flag"
+"$@" &
+cpid=$!
+( sleep "$secs"; touch "$flag"; kill -TERM "$cpid" 2>/dev/null ) >/dev/null 2>&1 &
+wpid=$!
+wait "$cpid"; rc=$?
+kill "$wpid" 2>/dev/null
+if [ -f "$flag" ]; then rm -f "$flag"; exit 124; fi
+exit "$rc"
+TOEOF
+  chmod +x "$bin/timeout"
+fi
+
 # ---- SAFE_PATH: coreutil dirs only, captured before we scrub PATH ----------
 safe=""
 for t in sleep grep sed cat mkdir touch rm dirname env bash timeout date; do
-  d="$(dirname "$(command -v "$t")")"
+  p="$(command -v "$t")" || continue
+  d="$(dirname "$p")"
   case ":$safe:" in *":$d:"*) ;; *) safe="$safe:$d" ;; esac
 done
 safe="${safe#:}"

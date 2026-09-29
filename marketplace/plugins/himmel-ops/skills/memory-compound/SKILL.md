@@ -46,11 +46,19 @@ These are non-negotiable. The pass is zero-loss **only** if you keep this order.
 5. **Status is disposable, not durable.** PR numbers, "merged", ticket state,
    dates → drop them (already recoverable from Jira, git history, and the
    `sessions/` captures). Only the reusable gotcha / decision compounds.
-6. **Run in a DEDICATED session.** `MEMORY.md` loads into every session, so a
-   mid-task trim invalidates the prompt caches of every concurrent/armed
-   session, and a hurried inline trim loses recall hooks. When the size
-   warning fires mid-task: note it, finish the task, run `/memory-compound`
-   in its own session. (Adding a genuinely NEW entry mid-task stays fine.)
+6. **Run in a DEDICATED session.** A hurried inline trim loses recall hooks,
+   and the judgement (what compounds, what is disposable) deserves its own
+   context. When the size warning fires mid-task: note it, finish the task,
+   run `/memory-compound` in its own session. (Adding a genuinely NEW entry
+   mid-task stays fine.) **Cache cost is small, not a reason to defer:**
+   `MEMORY.md` is read at session start and after compaction and lives in
+   that session's message history, so an edit on disk does NOT invalidate a
+   running session's prompt cache — measured over 15 live sessions straddling
+   a real edit: 14 kept, 1 compacted, 0 invalidated. The cost is one extra cache write
+   (an estimate of ~4k tokens, not yet measured) per session started or
+   compacted afterwards, so still batch
+   the edits into ONE pass. Evidence and re-run:
+   `docs/internals/prompt-cache.md` (eval `no-invalidation`).
 7. **Memory does not propagate — adopter-generic learnings MUST land in
    himmel docs.** Auto-memory and the luna vault are operator-side only; a
    generic gotcha compounded only into luna is invisible to every other

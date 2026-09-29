@@ -4093,6 +4093,18 @@ always cheaper than a bricked session. Detail lives in
 [`scripts/observability/README.md`](../../scripts/observability/README.md)
 and [`../architecture.md`](../architecture.md), not duplicated here.
 
+### `log-classifier-denial.sh` — classifier-denial tap (HIMMEL-3724)
+
+Wired on `PermissionDenied`. Same fail-open, always-exit-0 contract as the taps
+above: it appends one redacted JSON line per denial to
+`~/.himmel/state/classifier-denials.jsonl` (session/tool/reason_tag, a capped
+and redacted `input_head`, and a normalised `input_sha` — never unredacted
+command text), and never blocks, delays, or `ask`s. `tick.sh` reads that log
+into a `denials=<leg>:<n>[:SHIP-STEP|REPEAT|PAUSE-RISK]` field so a console
+sees a repeated or escalating denial within one tick instead of only when a
+leg happens to report it. Paired smoke test:
+`scripts/hooks/test-log-classifier-denial.sh`.
+
 ### `auto-arm-on-subagent-cap.sh` — subagent-result cap watchdog (HIMMEL-276)
 
 Closes the detection gap left by `auto-arm-on-cap.sh`: when the cap hits

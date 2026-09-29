@@ -75,7 +75,7 @@ END {
   for (b in seen) print b, f[b SUBSEP "crit"]+0, f[b SUBSEP "imp"]+0, f[b SUBSEP "sug"]+0, r[b]+0
 }' "$RUN/merged-branches.txt" "$RUN/ledger-rows.tsv" | sort > "$RUN/ledger-per-branch.tsv"
 
-echo "merged_branches=$(wc -l < "$RUN/merged-branches.txt") with_ledger_rows=$(wc -l < "$RUN/ledger-per-branch.tsv")"
+echo "merged_branches=$(wc -l < "$RUN/merged-branches.txt" | tr -d ' ') with_ledger_rows=$(wc -l < "$RUN/ledger-per-branch.tsv" | tr -d ' ')"
 # HIMMEL-3269 coverage: the two inputs behind the stats below. PRs: every fetched
 # PR is in the window or out of it (a bad mergedAt fails the jq above); the
 # --limit cut is the one silent way that input is incomplete. Branches: a merged

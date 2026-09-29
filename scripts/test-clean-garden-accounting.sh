@@ -715,7 +715,9 @@ mk_plain_leftover() {
 # would make later assertions pass or fail for the wrong reason.
 stale_husk() {
     local dir="$1"
-    find "$dir" -exec touch -d "3 days ago" {} + 2>/dev/null
+    local stamp
+    stamp=$(date -d "3 days ago" +%Y%m%d%H%M 2>/dev/null || date -v-3d +%Y%m%d%H%M)
+    find "$dir" -exec touch -t "$stamp" {} + 2>/dev/null
     if [ -n "$(find "$dir" -mmin -1440 -print 2>/dev/null)" ]; then
         echo "FIXTURE ERROR: $dir did not back-date to stale" >&2
         return 1

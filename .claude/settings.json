@@ -97,6 +97,10 @@
       "Bash(bash scripts/quiet-run.sh suite -- bash scripts/luna/test-*.sh)",
       "Bash(bash scripts/quiet-run.sh suite -- bash scripts/ci/test-*.sh)",
       "Bash(bash scripts/quiet-run.sh suite -- bash templates/luna-second-brain/scripts/test-*.sh)",
+      "Bash(bash scripts/quiet-run.sh suite -- bash scripts/codex/test-*.sh)",
+      "Bash(bash scripts/quiet-run.sh suite -- bash scripts/hermes/test-*.sh)",
+      "Bash(bash scripts/quiet-run.sh suite -- bash scripts/himmelctl/test/test-*.sh)",
+      "Bash(bash scripts/quiet-run.sh suite -- bash scripts/graphify/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/handover/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/handover/console-kit/test-*.sh)",
@@ -108,6 +112,10 @@
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/luna/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/ci/test-*.sh)",
       "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash templates/luna-second-brain/scripts/test-*.sh)",
+      "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/codex/test-*.sh)",
+      "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/hermes/test-*.sh)",
+      "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/himmelctl/test/test-*.sh)",
+      "Bash(SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/graphify/test-*.sh)",
       "Bash(claude plugin *)",
       "Bash(sed *)",
       "Bash(awk *)",
@@ -485,6 +493,16 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" denied",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/log-classifier-denial.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/log-classifier-denial.sh\"; fi",
             "timeout": 10
           }
         ]

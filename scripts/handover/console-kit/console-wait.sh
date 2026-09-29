@@ -23,10 +23,12 @@
 #                               until a sample succeeds.
 #
 # The action key is the tick fields a console acts on: legs=, livestate=,
-# prs=, tails=, legset=, board= (its class; the STALE age is dropped) and the
-# bank-preflight verdict word. Everything else on the tick line (heartbeat,
-# procs, fill, fleet, gql, orphans...) moves without needing a console act and
-# never wakes. Two consecutive samples must differ from the saved key (not
+# prs=, tails=, legset=, board= (its class; the STALE age is dropped),
+# denials= (HIMMEL-3724 -- a new leg:count[:class] token, or the whole
+# denials= line moving off "none", is exactly the SHIP-STEP/REPEAT/PAUSE-RISK
+# alert this exists to surface) and the bank-preflight verdict word.
+# Everything else on the tick line (heartbeat, procs, fill, fleet, gql,
+# orphans...) moves without needing a console act and never wakes. Two consecutive samples must differ from the saved key (not
 # necessarily from each other), so one failed `gh` read (prs=none for a single
 # tick) is not an event. The first sample with no saved
 # key, or with a saved key taken under different tick args (a re-arm after a
@@ -156,7 +158,7 @@ sample() {
     # A failed or garbled bank read is a failed sample, not a verdict.
     bank="$(bank_word)" || { tick_state=fail; return; }
     tick_state=ok
-    for f in legs livestate prs tails legset board; do
+    for f in legs livestate prs tails legset board denials; do
         v="$(field "$f" "$tick_line")"
         # A field missing from a malformed/partial tick line is a failed
         # sample, never a key with an empty value baked in.

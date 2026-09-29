@@ -1,0 +1,98 @@
+name: os-verify
+
+# HIMMEL-3839 (HIMMEL-3815 slice A): on-demand verification of the IMPACTED
+# shell suites on ONE chosen OS. It replaces ci.yml's `force_all_os` dispatch,
+# which ran the whole corpus on ubuntu + windows + macOS (42 jobs) and took
+# 55 % of every runner-minute measured on 2026-09-29 while its windows/macOS
+# legs were advisory and mostly red. GitHub Free caps the account at 20
+# concurrent jobs, 5 of them macOS, so the default here is one OS, two shards.
+#
+# DISPATCH ONLY, by design: a pull_request/push/schedule trigger would put the
+# paid macOS/Windows legs back on every PR. Nothing here is a required check.
+# Every job name is prefixed `os-verify / ` so a dispatch on a PR head can never
+# post a check-run that satisfies, or shadows, one of the required contexts by
+# name (HIMMEL-3788 did the same for ci.yml's `shell-unit`).
+#
+# Dispatch (after this file is on main -- workflow_dispatch needs it there):
+#   gh workflow run os-verify.yml --ref <branch> -f os=macos -f suites=impacted
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'OS to verify on (both = macOS + Windows)'
+        type: choice
+        options:
+          - macos
+          - windows
+          - both
+        default: macos
+      suites:
+        description: 'impacted = suites referencing a file this branch changed vs origin/main; all = the whole corpus'
+        type: choice
+        options:
+          - impacted
+          - all
+        default: impacted
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: os-verify / shell (${{ matrix.os }}, ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ inputs.os == 'both' && fromJSON('["macos-latest","windows-latest"]')
+               || inputs.os == 'windows' && fromJSON('["windows-latest"]')
+               || fromJSON('["macos-latest"]') }}
+        # ponytail: two shards, spelled here and in the `--shard .../2` argument
+        # below (they must agree; the suite pins it) -- macOS has 5 account-wide
+        # slots, so an impacted run stays small; `suites=all` on two shards is
+        # slow, and the complete corpus is the nightly's job. Upgrade path: a
+        # shard-count input if a real `all` run is ever wanted here.
+        shard: [1, 2]
+    runs-on: ${{ matrix.os }}
+    # continue-on-error is deliberately absent: the verification is real, it is
+    # simply not required. The cap only bounds a hung Windows Git Bash suite.
+    timeout-minutes: 120
+    steps:
+      # fetch-depth: 0 so `git merge-base origin/main HEAD` can resolve on a
+      # dispatched feature branch.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - name: Install obsidian-triage tool deps (marketplace suites)
+        shell: bash
+        run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh
+      - name: Install pre-commit (scripts/test-template-nostash-hooks.sh)
+        shell: bash
+        run: python -m pip install --disable-pip-version-check pre-commit
+      # Explicit `bash`: windows-latest defaults to pwsh, but Git Bash is on
+      # PATH. SUITE_TIER_MODE=all so an impacted extended-tier suite still runs
+      # (the runner's default is already all; spelled so it cannot drift).
+      # An empty impacted set (a docs-only branch, or a dispatch on main itself)
+      # exits 0 saying "0 impacted shell suites" -- the honest answer.
+      - name: Run suites
+        shell: bash
+        env:
+          FAIL_LOG_DIR: failed-suite-logs
+          SUITE_TIER_MODE: all
+          SUITES: ${{ inputs.suites }}
+        run: |
+          if [ "$SUITES" = "all" ]; then
+            bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/2 .
+          else
+            base="$(git merge-base origin/main HEAD)"
+            echo "os-verify: impacted range ${base}..HEAD"
+            bash scripts/ci/run-shell-tests.sh --impacted "${base}..HEAD" --shard ${{ matrix.shard }}/2 .
+          fi
+      - name: Upload failed-suite logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: os-verify-failed-logs-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: failed-suite-logs/
+          if-no-files-found: ignore
+          retention-days: 14

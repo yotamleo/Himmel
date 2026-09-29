@@ -85,9 +85,24 @@ _SCAN_FN_TAIL = (
     " \\) ! -name '.env.example' ! -type d -print || exit 1; "
     'k=$(find -H "$d" -xdev -type l ! -exec test -d {} \\; -print) || exit 1; '
     "[ -z \"$k\" ] || printf '%s\\n' \"$k\" | while IFS= read -r y; do "
-    'find -L "$y" -prune >/dev/null 2>&1 || '
-    '{ printf "scan-unscanned: %s\\n" "$y" >&2; exit 1; }; '
-    'printf "scan-skipped: %s\\n" "$y" >&2; done || exit 1; '
+    't=$(readlink -- "$y" 2>/dev/null; printf _); t=${t%_}; t=${t%"$n"}; '
+    'if [ -z "$t" ]; then ok=0; else ok=1; cy="$y"; ct="$t"; hop=0; tsl=; while :; '
+    'do case "$ct" in /*) a="$ct";; *) a="${cy%/*}/$ct";; esac; '
+    'case "$a" in */) tsl=1;; esac; w=$(printf %s "$a" | LC_ALL=C wc -c); '
+    'if [ $((w)) -ge 1024 ]; then ok=0; break; fi; b="/"; s=${a#/}; f=""; ch=; '
+    'while [ -n "$s" ]; do e=${s%%/*}; case "$s" in */*) s=${s#*/};; *) s="";; '
+    'esac; [ -z "$e" ] && continue; f="$b$e"; if [ ! -e "$f" ] && [ ! -L "$f" ]; '
+    'then ok=1; f=""; break; fi; if [ ! -e "$f" ]; then hop=$((hop+1)); '
+    'if [ "$hop" -ge 40 ]; then ok=0; f=""; break; fi; '
+    'nt=$(readlink -- "$f" 2>/dev/null; printf _); nt=${nt%_}; nt=${nt%"$n"}; '
+    'if [ -z "$nt" ]; then ok=1; f=""; break; fi; if [ -n "$s" ]; '
+    'then ct="$nt/$s"; else ct="$nt"; fi; cy="$f"; ch=1; break; fi; '
+    'if [ -n "$s" ] && { [ ! -d "$f" ] || [ ! -x "$f" ]; }; then ok=0; f=""; '
+    'break; fi; b="$f/"; done; [ -n "$ch" ] && continue; [ -z "$f" ] && break; '
+    'if [ -e "$f" ]; then if [ -n "$tsl" ] && [ ! -d "$f" ]; then ok=0; else ok=1; '
+    'fi; break; fi; done; fi;'
+    ' if [ "$ok" = 1 ]; then printf "scan-skipped: %s\\n" "$y" >&2; '
+    'else printf "scan-unscanned: %s\\n" "$y" >&2; exit 1; fi; done || exit 1; '
     'l=$(find -H "$d" -xdev -type l -exec test -d {} \\; -print) || exit 1; '
     '[ -z "$l" ] || q="$q$l$n"; done ); ')
 

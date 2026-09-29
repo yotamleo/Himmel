@@ -25,6 +25,29 @@ fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Stock macOS ships neither `timeout` nor `gtimeout`, and the segment skips its
+# ledger node spawn entirely without one (C1), so every ledger-status row would
+# render no status. Put a minimal GNU-shaped stub on PATH there (HIMMEL-3719).
+# ponytail: the stub models TERM only and ignores -k, so a TERM-ignoring child would hang; upgrade path is coreutils timeout on the macOS runner.
+if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+    mkdir -p "$TMP/stubbin"
+    cat > "$TMP/stubbin/timeout" <<'TOEOF'
+#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then echo "timeout (test stub)"; exit 0; fi
+if [ "$1" = "-k" ]; then shift 2; fi
+secs="$1"; shift
+"$@" &
+cpid=$!
+( sleep "$secs"; kill "$cpid" 2>/dev/null ) &
+wpid=$!
+wait "$cpid"; rc=$?
+kill "$wpid" 2>/dev/null
+exit "$rc"
+TOEOF
+    chmod +x "$TMP/stubbin/timeout"
+    PATH="$TMP/stubbin:$PATH"
+fi
+
 # Fixtures ------------------------------------------------------------------
 HROOT="$TMP/handover"; mkdir -p "$HROOT/breadcrumbs"
 printf '%s\n' '{"version":1,"ticket":"HIMMEL-538","branch":"feat/HIMMEL-538-x","head_sha":"abc","next_step":"build"}' > "$HROOT/breadcrumbs/HIMMEL-538.json"

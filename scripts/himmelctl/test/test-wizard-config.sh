@@ -78,6 +78,11 @@ node_bin=$(command -v node)
 . "$repo_root/scripts/lib/hermetic-path.sh"
 
 work=$(mktemp -d)
+# ponytail: masks HIMMEL-3810 (main-guard no-op via symlinked path), remove when it merges
+# physical path: wire-trust-hooks.mjs only runs main() when argv[1] equals its
+# realpath'd import.meta.url, so a symlinked TMPDIR (macOS /var -> /private/var)
+# made 'trust status' a silent no-op
+work=$(cd "$work" && pwd -P)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 

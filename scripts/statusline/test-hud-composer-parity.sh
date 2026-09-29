@@ -306,6 +306,27 @@ sleep 3
 exec "$REAL_JQ" "\$@"
 STUBEOF
 chmod +x "$STUBDIR/jq"
+# Stock macOS ships neither `timeout` nor `gtimeout`, so the composer's bound
+# seam would degrade to unbounded and this row could never pass. Provide a
+# minimal GNU-shaped `timeout` stub there (HIMMEL-3719); a real one is used as-is.
+# ponytail: the stub models TERM only and ignores -k, so a TERM-ignoring child would hang; upgrade path is coreutils timeout on the macOS runner.
+if ! { command -v timeout >/dev/null 2>&1 && timeout --version >/dev/null 2>&1; } \
+   && ! command -v gtimeout >/dev/null 2>&1; then
+    cat > "$STUBDIR/timeout" <<'TOEOF'
+#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then echo "timeout (test stub)"; exit 0; fi
+if [ "$1" = "-k" ]; then shift 2; fi
+secs="$1"; shift
+"$@" &
+cpid=$!
+( sleep "$secs"; kill "$cpid" 2>/dev/null ) &
+wpid=$!
+wait "$cpid"; rc=$?
+kill "$wpid" 2>/dev/null
+exit "$rc"
+TOEOF
+    chmod +x "$STUBDIR/timeout"
+fi
 out_slow="$(printf '%s' "$stdin_json" | HIMMEL_SESSION_CACHE_TIMEOUT=1 PATH="$STUBDIR:$PATH" \
     HIMMEL_WHERE_ARE_WE=0 HIMMEL_STATUSLINE_ECON=1 CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$COMPOSER" 2>/dev/null)"; rc=$?
 if [ "$rc" -eq 0 ] && grepq "$out_slow" -E '^session~  r:\?  w:\?  hit:\?%$'; then

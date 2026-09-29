@@ -374,6 +374,18 @@ else
     fail "T4a: a whole worktree was reported NOT intact"
 fi
 
+# T4d: the caller's spelling of the path goes through a symlink (macOS TMPDIR
+# /var -> /private/var) while `git worktree list` prints the resolved one. A
+# logical `pwd` never matches that; the compare must resolve both (`pwd -P`).
+read -r T4D_REPO T4D_WT <<< "$(mk_wt)"
+T4D_LINK="$(dirname "$T4D_WT")-link"
+ln -s "$(dirname "$T4D_WT")" "$T4D_LINK"
+if worktree_intact "$T4D_REPO" "$T4D_LINK/$(basename "$T4D_WT")"; then
+    pass "T4d: a whole worktree reached through a symlinked path is intact"
+else
+    fail "T4d: a whole worktree reached through a symlinked path was reported NOT intact"
+fi
+
 # T4b: still registered in `worktree list`, but its own .git link is gone.
 read -r T4B_REPO T4B_WT <<< "$(mk_wt)"
 rm -f "$T4B_WT/.git"

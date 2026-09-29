@@ -122,7 +122,7 @@ rm -f "$LIVE_DIR"/*.json
 # only an artifact whose mtime advances DURING this dispatch counts.
 ART3B="$W/artifact3b-preexisting.txt"
 printf 'stale leftover from an earlier run\n' > "$ART3B"
-touch -d '2000-01-01' "$ART3B"
+touch -t 200001010000 "$ART3B"
 run_sut "$FAKE_NOARTIFACT" "$ART3B" >/dev/null 2>&1
 RC3B=$?
 ROW3B="$(ls "$LIVE_DIR"/*.json 2>/dev/null | head -1)"
@@ -236,7 +236,7 @@ rm -f "$LIVE_DIR"/*.json
 ARTDIR="$W/artifact-dir"
 mkdir -p "$ARTDIR"
 printf 'old content\n' > "$ARTDIR/existing-file.txt"
-touch -d '2000-01-01' "$ARTDIR/existing-file.txt" "$ARTDIR"
+touch -t 200001010000 "$ARTDIR/existing-file.txt" "$ARTDIR"
 FAKE_DIR_UPDATE="$W/fake-claude-dir-update.sh"
 cat > "$FAKE_DIR_UPDATE" <<'EOF'
 #!/usr/bin/env bash
@@ -260,7 +260,7 @@ rm -f "$LIVE_DIR"/*.json
 # check entirely (codex-1 round 4).
 ARTDIR2="$W/artifact-dir-onlysubdirs"
 mkdir -p "$ARTDIR2/subdir"
-touch -d '2000-01-01' "$ARTDIR2/subdir" "$ARTDIR2"
+touch -t 200001010000 "$ARTDIR2/subdir" "$ARTDIR2"
 run_sut "$FAKE_NOARTIFACT" "$ARTDIR2" >/dev/null 2>&1
 RC13=$?
 ROW13="$(ls "$LIVE_DIR"/*.json 2>/dev/null | head -1)"

@@ -105,7 +105,7 @@ done < "$FILES"
 sort "$DAYS" | uniq -c
 sc_cov_line "$(wc -l < "$FILES" | tr -d ' ')" "$SC_ROOT_COUNT"
 
-n_fail=$(wc -l < "$FAILS")
+n_fail=$(wc -l < "$FAILS" | tr -d ' ')
 if [ "$n_fail" -gt 0 ]; then
     echo "leg-over-by-day: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2
 fi

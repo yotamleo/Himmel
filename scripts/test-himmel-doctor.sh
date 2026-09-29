@@ -4208,8 +4208,10 @@ rm -rf "$t"
 # one -- the detector derives its repoRoot from its own path, so the fake
 # marketplace/plugins/lean-skills/skills tree is what it sees. The detector's
 # VENDORED_DUPES_* seams keep it off the operator's real ~/.claude and cwd walk.
+# pwd -P: the detector compares argv[1] against its realpath (import.meta.url), so a symlinked TMPDIR (macOS /var -> /private/var) would make it exit 0 without running.
 c37_setup() {
     c37_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c37.XXXXXX")" || { fail "C37 setup: mktemp -d failed"; exit 1; }
+    c37_t="$(cd "$c37_t" && pwd -P)"
     mkdir -p "$c37_t/scripts/lanes" "$c37_t/marketplace/plugins/lean-skills/skills/test-driven-development" "$c37_t/home" "$c37_t/cfg"
     ln -s "$REPO_ROOT/scripts/lib" "$c37_t/scripts/lib"
     cp "$REPO_ROOT/scripts/lanes/vendored-skill-dupes.mjs" "$c37_t/scripts/lanes/vendored-skill-dupes.mjs"

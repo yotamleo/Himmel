@@ -302,7 +302,8 @@ run_launcher_expect "guard-check: .salus on an ancestor of the checked dir refus
 setup
 MODEL="gpt-5.6-sol"
 mkdir -p "$FAKEHOME/.config/claude-glm" "$FAKEHOME/denied"
-printf '%s\n' "$FAKEHOME/denied" > "$FAKEHOME/.config/claude-glm/egress-denylist"
+# physical path: the launcher resolves the target with pwd -P (macOS /var -> /private/var)
+printf '%s\n' "$(cd "$FAKEHOME/denied" && pwd -P)" > "$FAKEHOME/.config/claude-glm/egress-denylist"
 run_launcher_expect "guard-check: egress-denylist (claude-glm cfg dir) refuses" 3 "egress denylist" --guard-check "$FAKEHOME/denied"
 
 # T16: no directory argument -> exit 2, usage message.

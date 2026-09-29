@@ -345,6 +345,49 @@ if [ "$(id -u)" -ne 0 ]; then
   else fail_case "T4l2 a plain dangling link refused or went unreported (rc=$ud_rc): $ud_raw"; fi
 else echo "SKIP T4l running as root (chmod 000 does not deny)"; fi
 
+# --- T4o (HIMMEL-3719, judge NO-GO on 03aa2ca9) the walk must not lose what the kernel would
+# refuse: a trailing-newline target, a resolved path at PATH_MAX, a trailing slash on a file, a
+# dangling link as a MIDDLE component, a chained hop, and a hop loop. Every link sits alone in
+# its own scanned root; the locked dir and the intermediate links live OUTSIDE it.
+if [ "$(id -u)" -ne 0 ]; then
+  N4="$WORK/t4n"; mkdir -p "$N4/out/locked" "$N4/open"; : > "$N4/out/locked/secret"; : > "$N4/open/file"
+  chmod 000 "$N4/out/locked"
+  t4n_check() {   # <case> <refuse|skip> <link-target>
+    local r="$N4/r-$1" raw rc got
+    mkdir -p "$r"
+    if ! ln -s "$3" "$r/L" 2>/dev/null; then echo "SKIP T4o $1 cannot create the fixture link here"; return 0; fi
+    if [ "${4:-}" = exact ]; then   # byte-exact: $(readlink) strips trailing newlines everywhere, so a sentinel decides
+      got=$(readlink "$r/L"; printf x)
+      if [ "$got" != "$3"$'\n'x ]; then
+        echo "SKIP T4o $1 the platform did not store the target byte-exactly; readlink returned: $(printf %s "${got%x}" | od -An -tx1 | tr -s ' \n' ' ')"; return 0
+      fi
+    fi
+    raw=$(sh -c "$(vm_guest_scan_cmd "$r" env)" 2>&1); rc=$?
+    if [ "$2" = refuse ]; then
+      if [ "$rc" -ne 0 ] && grep -q '^scan-unscanned: .*/L$' <<< "$raw"; then pass "T4o $1 REFUSES (scan-unscanned, rc=$rc)"
+      else fail_case "T4o $1 not refused (rc=$rc): $raw"; fi
+    else
+      if [ "$rc" -eq 0 ] && grep -q '^scan-skipped: .*/L$' <<< "$raw" && ! grep -q 'scan-unscanned' <<< "$raw"; then pass "T4o $1 is skipped, not refused"
+      else fail_case "T4o $1 wrongly refused or unreported (rc=$rc): $raw"; fi
+    fi
+  }
+  nl_tgt=$(printf '%s/out/locked/\n_' "$N4"); nl_tgt=${nl_tgt%_}
+  t4n_check newline refuse "$nl_tgt" exact
+  pad=""; i=0; while [ "$i" -lt 2030 ]; do pad="$pad./"; i=$((i+1)); done
+  if ! ln -s "${pad}../out/locked/secret" "$N4/probe-long" 2>/dev/null; then
+    pad=""; i=0; while [ "$i" -lt 490 ]; do pad="$pad./"; i=$((i+1)); done   # macOS: symlink targets top out at 1024
+  fi
+  t4n_check pathmax refuse "${pad}../out/locked/secret"
+  t4n_check trailing-slash-file refuse "$N4/open/file/"
+  ln -s "$N4/nowhere" "$N4/open/dang"
+  t4n_check middle-dangling skip "$N4/open/dang/x"
+  ln -s "$N4/out/locked/secret" "$N4/open/c2"; ln -s "$N4/open/c2" "$N4/open/c1"
+  t4n_check chained-hop refuse "$N4/open/c1"
+  ln -s "$N4/open/l2" "$N4/open/l1"; ln -s "$N4/open/l1" "$N4/open/l2"
+  t4n_check hop-loop refuse "$N4/open/l1"
+  chmod 755 "$N4/out/locked"
+else echo "SKIP T4o running as root (chmod 000 does not deny)"; fi
+
 # --- T4m (HIMMEL-3239) an inherited CDPATH must not redirect a RELATIVE root: cd would
 # resolve 'a b' through CDPATH and print the dir, so d became two lines (or the wrong dir)
 CDB="$WORK/cdpath/base"; CDO="$WORK/cdpath/other"; mkdir -p "$CDB/a b" "$CDO/a b" "$CDB/c d" "$CDO/c d"

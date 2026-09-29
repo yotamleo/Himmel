@@ -45,8 +45,14 @@ trap cleanup EXIT
 # suite exercises the code under test, not the last commit.
 tree_src="$work/tree"
 mkdir -p "$tree_src"
+# --ignore-failed-read is GNU tar only; bsdtar (macOS) rejects it as an unknown
+# option, so pass it only where supported (a tracked-but-deleted file then
+# fails the copy on bsdtar, which a clean CI checkout never has)
+tar_ifr=""
+tar_help=$(tar --help 2>&1)
+case "$tar_help" in *--ignore-failed-read*) tar_ifr="--ignore-failed-read" ;; esac
 git -C "$repo_root" ls-files -co --exclude-standard -z \
-  | tar -C "$repo_root" --null --ignore-failed-read -T - -cf - 2>/dev/null \
+  | tar -C "$repo_root" --null $tar_ifr -T - -cf - 2>/dev/null \
   | tar -xf - -C "$tree_src" || fail "could not copy the working tree"
 [ -f "$tree_src/scripts/himmelctl/bin.js" ] || fail "working-tree copy has no bin.js"
 # Stubs derive their root exactly as scripts/adopt.sh does (logical pwd), and

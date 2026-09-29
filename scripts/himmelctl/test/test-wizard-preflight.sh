@@ -172,7 +172,7 @@ set -e
 grepq "$out" 'Install missing tools now' \
   || fail "case3: interactive run should prompt to install (got: $out)"
 calls=0
-[ -f "$log3" ] && calls=$(wc -l < "$log3")
+[ -f "$log3" ] && calls=$(wc -l < "$log3" | tr -d ' ')
 [ "$calls" = "1" ] \
   || fail "case3: expected exactly 1 pkg-mgr call (got $calls): $(cat "$log3" 2>/dev/null)"
 grepq "$out" 'preflight OK' \
@@ -206,7 +206,7 @@ STUB
           "$node_bin" "$wizard" install <<<"y" 2>&1); rc=$?
     set -e
     [ "$rc" -eq 0 ] || fail "case3b: Git.Git install+recheck should reach preflight OK (got rc=$rc): $out"
-    calls=$(wc -l < "$log3b")
+    calls=$(wc -l < "$log3b" | tr -d ' ')
     [ "$calls" = "1" ] \
       || fail "case3b: bash + git must deduplicate to one Git.Git install (got $calls): $(cat "$log3b")"
     grep -q 'Git.Git' "$log3b" \

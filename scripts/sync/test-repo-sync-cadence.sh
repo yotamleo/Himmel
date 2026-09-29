@@ -89,6 +89,8 @@ done
 # Runner fixture suite — pure bash + real throwaway git repos, every platform.
 # ============================================================================
 
+# BSD touch has no `-d "N days ago"`; build a portable `touch -t` stamp (GNU date -d, else BSD date -v).
+STALE_STAMP=$(date -d "20 days ago" +%Y%m%d%H%M 2>/dev/null || date -v-20d +%Y%m%d%H%M)
 FIXROOT="$TMP_ROOT/fixtures"
 mkdir -p "$FIXROOT"
 
@@ -522,7 +524,7 @@ DOCS_ROOT="$FIXROOT-docs-wt-deleted"; mkdir -p "$DOCS_ROOT"
 WT="$DOCS_ROOT/wt-deleted"
 read -r PARENT _ <<< "$(mk_wt "$REMOTE" wt-deleted "$WT" wt-deleted-branch)"
 git -C "$WT" push -q -u origin wt-deleted-branch
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-deleted"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-deleted.jsonl"
 RESULTS="$TMP_ROOT/results-wt-deleted.jsonl"
@@ -548,7 +550,7 @@ WT="$DOCS_ROOT/wt-dirty"
 read -r PARENT _ <<< "$(mk_wt "$REMOTE" wt-dirty "$WT" wt-dirty-branch)"
 git -C "$WT" push -q -u origin wt-dirty-branch
 echo "uncommitted edit" >> "$WT/README.md"
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-dirty"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-dirty.jsonl"
 RESULTS="$TMP_ROOT/results-wt-dirty.jsonl"
@@ -568,7 +570,7 @@ read -r PARENT _ <<< "$(mk_wt "$REMOTE" wt-unpushed "$WT" wt-unpushed-branch)"
 git -C "$WT" push -q -u origin wt-unpushed-branch
 echo "local-only commit" >> "$WT/README.md"
 git -C "$WT" commit -q -am "not pushed"
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-unpushed"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-unpushed.jsonl"
 RESULTS="$TMP_ROOT/results-wt-unpushed.jsonl"
@@ -585,7 +587,7 @@ REMOTE=$(mk_remote wt-unique)
 DOCS_ROOT="$FIXROOT-docs-wt-unique"; mkdir -p "$DOCS_ROOT"
 WT="$DOCS_ROOT/wt-unique"
 read -r PARENT _ <<< "$(mk_wt "$REMOTE" wt-unique "$WT" wt-unique-branch)"
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-unique"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-unique.jsonl"
 RESULTS="$TMP_ROOT/results-wt-unique.jsonl"
@@ -619,7 +621,7 @@ REMOTE=$(mk_remote wt-standalone)
 DOCS_ROOT="$FIXROOT-docs-wt-standalone"; mkdir -p "$DOCS_ROOT"
 WT="$DOCS_ROOT/wt-standalone"
 git clone -q "$REMOTE" "$WT" >/dev/null 2>&1
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-standalone"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-standalone.jsonl"
 RESULTS="$TMP_ROOT/results-wt-standalone.jsonl"
@@ -642,7 +644,7 @@ git -C "$WT" add .gitignore
 git -C "$WT" commit -q -m "add gitignore"
 git -C "$WT" push -q origin wt-ignored-branch
 echo "local secret" > "$WT/secret.local"
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-ignored"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-ignored.jsonl"
 RESULTS="$TMP_ROOT/results-wt-ignored.jsonl"
@@ -669,7 +671,7 @@ DELETER="$FIXROOT/.deleter-wt-remote-deleted"
 git clone -q "$REMOTE" "$DELETER" >/dev/null 2>&1
 git -C "$DELETER" push -q origin --delete wt-remote-deleted-branch
 rm -rf "$DELETER"
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-remote-deleted"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-remote-deleted.jsonl"
 RESULTS="$TMP_ROOT/results-wt-remote-deleted.jsonl"
@@ -687,7 +689,7 @@ WT="$DOCS_ROOT/wt-locked"
 read -r PARENT _ <<< "$(mk_wt "$REMOTE" wt-locked "$WT" wt-locked-branch)"
 git -C "$WT" push -q -u origin wt-locked-branch
 git -C "$PARENT" worktree lock "$WT" --reason "held for pr-check fixture"
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-locked"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-locked.jsonl"
 RESULTS="$TMP_ROOT/results-wt-locked.jsonl"
@@ -707,7 +709,7 @@ read -r PARENT _ <<< "$(mk_wt "$REMOTE" wt-showuntracked "$WT" wt-showuntracked-
 git -C "$WT" push -q -u origin wt-showuntracked-branch
 git -C "$WT" config status.showUntrackedFiles no
 echo "untracked" > "$WT/untracked-file.txt"
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-showuntracked"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-showuntracked.jsonl"
 RESULTS="$TMP_ROOT/results-wt-showuntracked.jsonl"
@@ -737,7 +739,7 @@ DELETER="$FIXROOT/.deleter-wt-other-remote"
 git clone -q "$OTHER_REMOTE" "$DELETER" >/dev/null 2>&1
 git -C "$DELETER" push -q origin --delete wt-other-remote-branch
 rm -rf "$DELETER"
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-other-remote"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-other-remote.jsonl"
 RESULTS="$TMP_ROOT/results-wt-other-remote.jsonl"
@@ -757,7 +759,7 @@ read -r PARENT _ <<< "$(mk_wt "$REMOTE" wt-local-upstream "$WT" wt-local-upstrea
 # ANOTHER LOCAL branch instead, so branch.<name>.remote is "." not a remote.
 git -C "$WT" branch other-local
 git -C "$WT" branch --set-upstream-to=other-local wt-local-upstream-branch
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-local-upstream"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-local-upstream.jsonl"
 RESULTS="$TMP_ROOT/results-wt-local-upstream.jsonl"
@@ -787,7 +789,7 @@ git -C "$BARE_PARENT" remote add origin "$REMOTE"
 git -C "$BARE_PARENT" fetch -q origin
 git -C "$BARE_PARENT" worktree add -q "$WT" -b wt-bare-parent-branch origin/main >/dev/null 2>&1
 git -C "$WT" push -q -u origin wt-bare-parent-branch
-touch -d '20 days ago' "$WT"
+touch -t "$STALE_STAMP" "$WT"
 GH_ROOT="$TMP_ROOT/empty-github-wt-bare-parent"; mkdir -p "$GH_ROOT"
 LEDGER="$TMP_ROOT/ledger-wt-bare-parent.jsonl"
 RESULTS="$TMP_ROOT/results-wt-bare-parent.jsonl"

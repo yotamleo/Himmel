@@ -114,6 +114,15 @@ embeds -- one derivation, so the generator and this field cannot disagree.
 ponytail: board=ok says the LOCAL file matches the state; tick cannot see
 whether the artifact was republished from it -- that stays the console's step.
 
+denials=<leg>:<n>[:SHIP-STEP|REPEAT|PAUSE-RISK] (HIMMEL-3724) is classifier
+denials seen by scripts/hooks/log-classifier-denial.sh in a trailing window
+(TICK_DENIALS_WINDOW_MIN minutes, default 30), grouped by the hook's own
+session_title, one leg per csv entry, joined ",". SHIP-STEP = a denied
+ship-step command; PAUSE-RISK = 3+ in the window or an all-time total
+approaching the auto-mode pause threshold; REPEAT = 2+ in the window with
+neither. denials=none when the window is empty; denials=skip when jq or the
+log is unavailable.
+
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
 the Claude Code transcript root, which a plain tick must never do: a tick runs
@@ -894,6 +903,71 @@ if [ -f "$HERE/../../lib/gh-graphql-budget.sh" ]; then
     fi
 fi
 
+# denials=<leg>:<n>[:SHIP-STEP|REPEAT|PAUSE-RISK] (HIMMEL-3724 §4c): rows
+# scripts/hooks/log-classifier-denial.sh appended to the jsonl within the
+# trailing window, grouped by the hook's own session_title (the worktree
+# slug it captured) -- NOT reconciled against this tick's --legs labels.
+# SHIP-STEP fires immediately on a denied ship-step command; PAUSE-RISK on 3+
+# in the window or an all-time total approaching the auto-mode pause
+# threshold (20); REPEAT on 2+ in the window with neither of the above.
+# denials=skip when jq or the log is unavailable; denials=none when the
+# window is empty. Stateless like every other field here (no persisted
+# cross-tick cursor), so "since the last tick" is approximated by a trailing
+# window rather than a real cursor -- console-wait's own key-diffing is what
+# actually triggers a wake on a class change, not this field's count.
+# ponytail: leg-label reconciliation and a same-session success/flip check
+# for REPEAT are Phase 2 (HIMMEL-3724 comment), not implemented here.
+denials_window_min="${TICK_DENIALS_WINDOW_MIN:-30}"
+case "$denials_window_min" in ''|*[!0-9]*) denials_window_min=30 ;; esac
+denials_log="${HIMMEL_CLASSIFIER_DENIALS_LOG:-$HOME/.himmel/state/classifier-denials.jsonl}"
+denials_summary=skip
+if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
+    denials_cutoff="$(date -u -d "-${denials_window_min} minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"  # gnu-ok: Linux-only kit
+    if [ -n "$denials_cutoff" ]; then
+        # Bound the read (TICK_DENIALS_TAIL_MAX lines) so a tick's cost stays
+        # flat regardless of how large the all-time jsonl has grown -- this
+        # is a stateless trailing-window field (no persisted cursor), so a
+        # tick is already an approximation; the tail cap just keeps that
+        # approximation cheap too. The all-time total below counts within
+        # this same bounded tail, not the true unbounded all-time count.
+        denials_tail_max="${TICK_DENIALS_TAIL_MAX:-2000}"
+        case "$denials_tail_max" in ''|*[!0-9]*) denials_tail_max=2000 ;; esac
+        # jq -s needs the WHOLE input to parse before it emits anything, so
+        # one malformed line anywhere in the tail would hide every valid
+        # denial in it. Pre-filter line-by-line in raw-input mode first
+        # (fromjson? never aborts the read, it just drops what doesn't
+        # parse; select(type == "object") also drops valid scalars/arrays,
+        # which would otherwise fail the field access below, and a row whose
+        # input_head is not a string would fail test()), then slurp
+        # only the lines that survived.
+        denials_summary="$(tail -n "$denials_tail_max" "$denials_log" 2>/dev/null | jq -R -c 'fromjson? | select(type == "object" and (.input_head | type) == "string")' 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
+            . as $all
+            | ($all | group_by(.session_title // "unknown")
+               | map({key: (.[0].session_title // "unknown"), value: length})
+               | from_entries) as $totals
+            | ($all | map(select(.ts >= $cutoff))) as $recent
+            | ($recent | group_by(.session_title // "unknown")) as $rgroups
+            | if ($rgroups | length) == 0 then "none"
+              else
+                $rgroups
+                | map(
+                    (.[0].session_title // "unknown") as $leg
+                    | length as $n
+                    | (any(.[]; (.input_head // "") | test("merge-on-green|go\\.sh|git push|gh pr (create|merge)|write-verdicts|pr-check"))) as $ship
+                    | ($totals[$leg] // $n) as $total
+                    | (if $ship then "SHIP-STEP"
+                       elif ($total >= 18 or $n >= 3) then "PAUSE-RISK"
+                       elif ($n >= 2) then "REPEAT"
+                       else null end) as $class
+                    | if $class then "\($leg):\($n):\($class)" else "\($leg):\($n)" end
+                  )
+                | join(",")
+              end
+        ' 2>/dev/null)" || denials_summary=""
+        [ -n "$denials_summary" ] || denials_summary=skip
+    fi
+fi
+
 # tick=ARMED|MISSING|UNKNOWN (HIMMEL-3144 D2): whether the periodic Monitor
 # call that is SUPPOSED to invoke this script every 60 min (the console
 # template's `## Monitors` tick row, armed in ACTION ZERO step 10) is
@@ -974,19 +1048,21 @@ if [ "$verbose" -eq 1 ]; then
     printf 'nonces: %s\n' "$nonces_summary"
     printf 'leg set: %s\n' "$legset_summary"
     printf 'board: %s\n' "$board_summary"
+    printf 'denials: %s\n' "$denials_summary"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
     # after everything else, so a consumer keyed on the existing fields and
     # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them, and
     # `orphans=` (HIMMEL-2761) follows, `nonces=` (HIMMEL-3254) follows it, and
-    # `legset=` (HIMMEL-3293) follows, and `board=` (HIMMEL-3361) is last.
+    # `legset=` (HIMMEL-3293) follows, `board=` (HIMMEL-3361) follows it, and
+    # `denials=` (HIMMEL-3724) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s denials=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$denials_summary"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s denials=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$denials_summary"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then

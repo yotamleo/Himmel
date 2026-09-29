@@ -289,7 +289,7 @@ cmd_reconcile() {
             local frow
             frow="$(printf '%s\n' "$fixed_rows" | awk -F'\t' -v b="$pbranch" '$2==b{print; exit}')"
             if [ -z "$frow" ]; then
-                final="$final$pkey$TAB$pbranch$TAB—${TAB}blocked${TAB}(no result returned)${TAB}fix subagent did not return — manual triage"$'\n'
+                final="$final$pkey$TAB$pbranch${TAB}—${TAB}blocked${TAB}(no result returned)${TAB}fix subagent did not return — manual triage"$'\n'
                 n_noreturn=$((n_noreturn + 1))
                 continue
             fi
