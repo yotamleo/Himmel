@@ -73,8 +73,8 @@ export interface MirrorResult {
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
 export const scrubEmails = (s: string): string => s.replace(EMAIL_RE, '[email]');
 
-const q = (v: string | null | undefined): string => JSON.stringify(v ?? null);
-const list = (v: string[]): string => JSON.stringify(v);
+const q = (v: string | null | undefined): string => JSON.stringify(v == null ? null : scrubEmails(v));
+const list = (v: string[]): string => JSON.stringify(v.map(scrubEmails));
 
 function linkGroups(issue: MirrorIssue): { blocks: string[]; blocked_by: string[]; relates: string[] } {
   const g = { blocks: [] as string[], blocked_by: [] as string[], relates: [] as string[] };
@@ -159,7 +159,6 @@ async function searchPages(
       'GET',
       `/search/jql?jql=${encodeURIComponent(jql)}&fields=${fields}&maxResults=${PAGE_MAX}${cursor}`,
     );
-    if (page.issues.length === 0) break;
     await onPage(page.issues);
     token = page.nextPageToken;
   } while (token !== undefined);
@@ -262,6 +261,9 @@ export function qmdRefresh(root: string, run: (args: string[]) => string = (a) =
   try {
     if (!run(['collection', 'list']).includes(`${COLLECTION} (`)) {
       run(['collection', 'add', root, '--name', COLLECTION]);
+    } else {
+      const path = /^\s*Path:\s*(.+)$/m.exec(run(['collection', 'show', COLLECTION]))?.[1]?.trim();
+      if (path !== root) throw new Error(`collection ${COLLECTION} points at ${path ?? 'an unknown path'}, not ${root}`);
     }
     run(['update']);
     run(['embed', '-c', COLLECTION]);

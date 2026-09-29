@@ -55,6 +55,21 @@ describe('runMirror', () => {
     expect(mdFiles()).toHaveLength(5);
   });
 
+  it('keeps paging past an empty page that still carries a nextPageToken', async () => {
+    const stub: Stub = { issues: [issue(1), issue(2), issue(3)], pageSize: 2, calls: [] };
+    const inner = makeReq(stub);
+    let first = true;
+    const req = (async (m: string, p: string, b?: unknown) => {
+      if (first && p.startsWith('/search/jql') && !p.includes('nextPageToken')) {
+        first = false;
+        return { issues: [], nextPageToken: '0' };
+      }
+      return (inner as unknown as (m: string, p: string, b?: unknown) => Promise<unknown>)(m, p, b);
+    }) as unknown as Req;
+    const r = await runMirror({ root, project: 'HIMMEL' }, req);
+    expect(r.fetched).toBe(3);
+  });
+
   it('is idempotent: a second run with no changes writes nothing', async () => {
     const stub: Stub = { issues: [issue(1), issue(2)], pageSize: 10, calls: [] };
     await runMirror({ root, project: 'HIMMEL' }, makeReq(stub));
@@ -145,6 +160,12 @@ describe('renderIssue', () => {
     expect(md).not.toContain('bob@example.com');
   });
 
+  it('scrubs address-shaped text out of frontmatter values too', () => {
+    const md = renderIssue(issue(9, { labels: ['owner@corp.io'], fixVersions: [{ name: 'v1 x@y.org' }] }), []);
+    expect(md).not.toMatch(/@corp\.io|@y\.org/);
+    expect(md).toContain('[email]');
+  });
+
   it('scrubEmails replaces address-shaped text', () => {
     expect(scrubEmails('a.b+c@x.co and d@y.org')).toBe('[email] and [email]');
   });
@@ -177,10 +198,25 @@ describe('cursor + qmd', () => {
   });
 
   it('qmdRefresh does not re-register an existing collection and never throws', () => {
-    const run = vi.fn().mockReturnValueOnce('jira-himmel (qmd://jira-himmel/)').mockReturnValueOnce('').mockImplementation(() => { throw new Error('embed boom'); });
+    const run = vi.fn()
+      .mockReturnValueOnce('jira-himmel (qmd://jira-himmel/)')
+      .mockReturnValueOnce(`Collection: jira-himmel\n  Path:     ${root}\n`)
+      .mockReturnValueOnce('')
+      .mockImplementation(() => { throw new Error('embed boom'); });
     const msg = qmdRefresh(root, run);
     expect(msg).toContain('FAILED');
     expect(msg).toContain('sync itself succeeded');
     expect(run.mock.calls.some((c) => (c[0] as string[])[1] === 'add')).toBe(false);
+  });
+
+  it('qmdRefresh refuses to embed a collection that points at a different root', () => {
+    const run = vi.fn()
+      .mockReturnValueOnce('jira-himmel (qmd://jira-himmel/)')
+      .mockReturnValueOnce('Collection: jira-himmel\n  Path:     /elsewhere/OTHER\n')
+      .mockReturnValue('');
+    const msg = qmdRefresh(root, run);
+    expect(msg).toContain('FAILED');
+    expect(msg).toContain('/elsewhere/OTHER');
+    expect(run.mock.calls.some((c) => (c[0] as string[])[0] === 'embed')).toBe(false);
   });
 });
