@@ -136,6 +136,7 @@ for id in $(job_ids "$WF"); do
     for sh in ${shards:-1}; do
       name="${expr//\$\{\{ matrix.os \}\}/$os}"
       name="${name//\$\{\{ matrix.shard \}\}/$sh}"
+      # shellcheck disable=SC2016  # a literal GitHub expression opener, not a shell expansion
       case "$name" in
         *'${{'*) bad "job $id name has an expression the test cannot resolve: $expr"; continue ;;
       esac
@@ -161,6 +162,7 @@ else bad "checkout is shallow: git merge-base origin/main HEAD cannot resolve"; 
 
 # --- 5. the shard count is spelled twice and must agree ----------------------
 nshards=$(wc -w <<< "$shards")
+# shellcheck disable=SC2016  # a literal GitHub expression, not a shell expansion
 argn="$(grep -o -- '--shard \${{ matrix.shard }}/[0-9]*' <<< "$body" | sed 's|.*/||' | sort -u)"
 if [ "$nshards" -gt 0 ] && [ "$(wc -l <<< "$argn")" -eq 1 ] && [ "$argn" = "$nshards" ]; then
   ok "matrix shard list ($nshards) matches the --shard /N argument"
