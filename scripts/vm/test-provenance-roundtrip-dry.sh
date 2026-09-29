@@ -278,7 +278,7 @@ run_rt "$SNAP_FAIL" f73a62f1 --expect-red
 r_snap_red=$RC
 run_rt "$SNAP_SKIP" f73a62f1
 r_snap_skip=$RC
-if [ "$r_snap_fail" -eq 1 ] && printf '%s\n' "$snap_fail_out" | grep -q 'ledger=1 ' && printf '%s\n' "$snap_fail_out" | grep -q 'RESULT: FAIL' \
+if [ "$r_snap_fail" -eq 1 ] && grep -q 'ledger=1 ' <<<"$snap_fail_out" && grep -q 'RESULT: FAIL' <<<"$snap_fail_out" \
    && [ "$r_snap_red" -eq 1 ] && [ "$r_snap_skip" -eq 0 ]; then
     pass "D5b a ledger-snap FAIL fails the run as a ledger check (not a RED direction); a SKIP does not"
 else
