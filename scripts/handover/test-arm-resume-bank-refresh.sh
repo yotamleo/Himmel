@@ -23,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ARM="$SCRIPT_DIR/arm-resume.sh"
 PREFLIGHT="$SCRIPT_DIR/../lib/bank-preflight.sh"
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d) || { echo "FAIL: mktemp -d failed; refusing to run without a scratch dir" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 FAILED=0
@@ -88,8 +88,40 @@ case "\${1:-}" in
     *)  exit 0 ;;
 esac
 EOF
+# schtasks: on msys/MINGW arm-resume registers through it, so a real one would
+# create a real HIMMEL-Resume-* task. /create registers the name (the post-arm
+# existence verify reads /query), same shape as test-arm-resume-queue-lock.sh.
+cat > "$SCHED_STUB/schtasks" <<EOF
+#!/usr/bin/env bash
+db="$TMP/sched-stub.tasks"
+cmd="\${1:-}"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create|/delete)
+        if [ -f "\$db" ]; then
+            grep -vFx "\$tn" "\$db" > "\$db.tmp" 2>/dev/null || : > "\$db.tmp"
+            mv "\$db.tmp" "\$db"
+        fi
+        [ "\$cmd" = /create ] && printf '%s\\n' "\$tn" >> "\$db"
+        exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$SCHED_STUB/claude"
-chmod +x "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/crontab" "$SCHED_STUB/claude"
+chmod +x "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/crontab" "$SCHED_STUB/schtasks" "$SCHED_STUB/claude"
 export PATH="$SCHED_STUB:$PATH"
 
 # The producer under test is a marker stub; the cache is scratch. Either alone
@@ -129,6 +161,20 @@ case "$out" in *"dry-run complete"*) rc_dry=1 ;; *) rc_dry=0 ;; esac
 check "the arm was a real one, not a dry-run" "$rc_dry"
 if [ ! -f "$MARKER" ]; then ran=0; else ran=1; fi
 check "real arm did NOT run the usage-cache producer refresh (HIMMEL-3846)" "$ran"
+
+# --- --time auto / smart (live cache) READ the cache by mtime, so the refresh stays ---
+# (adversarial review of PR 1437: skipping it there left an old cache stale and
+# made the slot lookup fail). The result of the arm itself is not asserted -- the
+# slot lookup reads whatever cache the host has -- only that the refresh ran.
+rm -f "$MARKER"
+bash "$ARM" --time auto --handover "$HO" >/dev/null 2>&1
+if [ -f "$MARKER" ]; then ran_auto=0; else ran_auto=1; fi
+check "--time auto keeps the producer refresh (the slot lookup reads the cache)" "$ran_auto"
+
+rm -f "$MARKER"
+bash "$ARM" --time smart --handover "$HO" >/dev/null 2>&1
+if [ -f "$MARKER" ]; then ran_smart=0; else ran_smart=1; fi
+check "--time smart on the live cache keeps the producer refresh" "$ran_smart"
 
 if [ "$FAILED" -eq 0 ]; then
     echo "OK: all cases passed"
