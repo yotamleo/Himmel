@@ -29,7 +29,7 @@ ACCT="$(current_account_hash)"
 # Injects "account":"$ACCT" into a JSON object literal (every fixture below
 # starts with '{'), so a single call site stamps ad-hoc JSON without every
 # caller repeating the field.
-stamp_account() { printf '{"account":"%s",%s' "$ACCT" "${1#\{}"; }
+stamp_account() { local body="${1:1}"; printf '{"account":"%s",%s' "$ACCT" "$body"; }
 
 verdict() {
   printf '%s' "$(stamp_account "$1")" > "$W/c.json"
@@ -39,7 +39,7 @@ verdict() {
     bash "$SUT" </dev/null 2>"$W/err.log"
 }
 check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
-  else FAIL=$((FAIL+1)); echo "FAIL - $1: expected '$2' got '$3'"; fi; }
+  else FAIL=$((FAIL+1)); echo "FAIL - $1: expected '$2' got '$3' (acct-hash-len=${#ACCT} sut-stderr: $(tr '\n' ' ' < "$W/err.log" 2>/dev/null | cut -c1-200))"; fi; }
 NOW=$(date +%s)
 
 check "below threshold -> PROCEED" PROCEED \

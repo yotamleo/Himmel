@@ -199,7 +199,7 @@ if grep -q 'fetch-depth: 0' <<< "$body"; then ok "full-depth checkout (the merge
 else bad "checkout is shallow: git merge-base origin/main HEAD cannot resolve"; fi
 
 # --- 5. the shard count is spelled twice and must agree ----------------------
-nshards=$(wc -w <<< "$shards")
+nshards=$(wc -w <<< "$shards" | tr -d ' ')  # BSD wc pads its count with spaces
 # shellcheck disable=SC2016  # a literal GitHub expression, not a shell expansion
 argn="$(grep -o -- '--shard \${{ matrix.shard }}/[0-9]*' <<< "$body" | sed 's|.*/||' | sort -u)"
 if [ "$nshards" -gt 0 ] && [ "$(wc -l <<< "$argn")" -eq 1 ] && [ "$argn" = "$nshards" ]; then

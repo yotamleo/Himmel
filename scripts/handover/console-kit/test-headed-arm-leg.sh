@@ -122,6 +122,9 @@ HEADED_ARM="$HERE/../headed-arm.sh"
 unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE CLAUDE_CODE_EFFORT_LEVEL 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+# The launcher resolves every path it writes physically; macOS's TMPDIR sits
+# behind /var -> /private/var, so pin the fixture root to its physical path.
+tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 # HIMMEL-3186: pin every root this suite could resolve to its own temp dir, at
 # SUITE level. A console-spawned leg exports the LIVE HANDOVER_DIR into this
@@ -1182,6 +1185,9 @@ check "full launch --profile: seeded settings do NOT grant a root-wide handover 
 # additionalDirectories resolving a doc directory containing a space; the
 # .locks deny is built from HANDOVER_DIR directly, so it exercises the same
 # space handling on that side.
+# ponytail: HEADED_ARM_UNAME=Linux pins the plain-export branch because on a real
+# Darwin runner leg_propagate_env refuses a whitespace value (exit 12, covered
+# by the Darwin cases below); upgrade path: a Darwin-specific expectation here.
 d17s="$tmp/c17s"; mk_launch_stubs "$d17s" "HIMMEL-3333-space"; mkdir -p "$tmp/repo17s"
 space_root="$tmp/pinned handover root"
 space_doc_dir="$space_root/yotamleo/himmel"
@@ -1194,6 +1200,7 @@ HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
 KONSOLE_CMD="$d17s/konsole" PGREP_CMD="$d17s/pgrep" \
 LEG_REPO="$tmp/repo17s" HEADED_ARM_LOCK_DIR="$d17s/locks" HEADED_ARM_PROC="$d17s/proc" \
 HANDOVER_DIR="$space_root" \
+HEADED_ARM_UNAME=Linux \
   bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-space" "$space_doc" "$d17s/signal-never" "$PAST" "$d17s/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d17s" || true
 check "full launch --profile (space in handover root): exit 0" "$rc" "0"

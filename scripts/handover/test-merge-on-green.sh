@@ -1572,12 +1572,12 @@ mk_prune_fixture_quoted() {
 # would expect.
 wt_list_has() {
     local repo="$1" path="$2" path_pwd line wt wt_pwd
-    path_pwd=$(cd "$path" 2>/dev/null && pwd) || path_pwd="$path"
+    path_pwd=$(cd "$path" 2>/dev/null && pwd -P) || path_pwd="$path"
     while IFS= read -r line; do
         case "$line" in
             "worktree "*)
                 wt="${line#worktree }"
-                wt_pwd=$(cd "$wt" 2>/dev/null && pwd) || wt_pwd="$wt"
+                wt_pwd=$(cd "$wt" 2>/dev/null && pwd -P) || wt_pwd="$wt"
                 [ "$wt_pwd" = "$path_pwd" ] && return 0
                 ;;
         esac
@@ -2113,7 +2113,7 @@ SHEOF
                 *run-shell-tests.sh*) holder_named=1 ;;
                 *) holder_named=0 ;;
             esac
-            if [ "$holder_named" -ne 1 ] || [ "$holder_cwd" != "$(cd "$P_WT" && pwd)" ]; then
+            if [ "$holder_named" -ne 1 ] || [ "$holder_cwd" != "$(cd "$P_WT" && pwd -P)" ]; then
                 fail "11k9: the editor-shaped holder never reached the state under test (cmd='$holder_cmd' cwd='$holder_cwd')"
             else
                 # Both halves of the trap are demonstrably in place: the runner
@@ -2286,8 +2286,8 @@ esac
 # acceptable here; a PATH shim is.
 read -r P_REPO P_WT P_SHA <<< "$(mk_prune_fixture)"
 REAL_GIT=$(command -v git)
-P_REPO_NORM=$(cd "$P_REPO" && pwd)
-P_WT_NORM=$(cd "$P_WT" && pwd)
+P_REPO_NORM=$(cd "$P_REPO" && pwd -P)
+P_WT_NORM=$(cd "$P_WT" && pwd -P)
 shimdir=$(mktemp -d "${TMPDIR:-/tmp}/mog-gitshim.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 cat > "$shimdir/git" <<GITSHIM
 #!/usr/bin/env bash
@@ -2295,8 +2295,8 @@ REAL_GIT="$REAL_GIT"
 P_REPO_NORM="$P_REPO_NORM"
 P_WT_NORM="$P_WT_NORM"
 if [ "\$1" = "-C" ] && [ "\$3" = "worktree" ] && [ "\$4" = "remove" ]; then
-    c2=\$(cd "\$2" 2>/dev/null && pwd) || c2="\$2"
-    c5=\$(cd "\$5" 2>/dev/null && pwd) || c5="\$5"
+    c2=\$(cd "\$2" 2>/dev/null && pwd -P) || c2="\$2"
+    c5=\$(cd "\$5" 2>/dev/null && pwd -P) || c5="\$5"
     if [ "\$c2" = "\$P_REPO_NORM" ] && [ "\$c5" = "\$P_WT_NORM" ]; then
         # Reproduce the MEASURED HIMMEL-2227 wreck: contents + .git gone,
         # admin row pruned away, empty directory left, non-zero exit.

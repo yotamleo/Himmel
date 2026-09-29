@@ -68,7 +68,7 @@ fixture2="$tmp/tick.sh"
 cp "$REPO/scripts/handover/console-kit/tick.sh" "$fixture2"
 printf '\nclaude \\\n  -p "drive the merge"\n' >>"$fixture2"
 
-if joined2="$(sed -- ':a;N;$!ba;s/\\\n/ /g' "$fixture2")"; then
+if joined2="$(sed -e ':a' -e 'N' -e '$!ba' -e 's/\\\n/ /g' -- "$fixture2")"; then
     # pipefail-ok: capture full grep output (no -q) instead of piping into
     # `grep -q` — under `set -o pipefail`, `grep -q`'s early exit on first
     # match SIGPIPEs the producer, and the pipeline status can then reflect
@@ -109,7 +109,7 @@ for f in "${SHIP_TAIL_FILES[@]}"; do
         # only genuine continuations (not every line) and re-check, so
         # unrelated `claude`/`-p` mentions elsewhere in the file can't pair up
         # into a false positive.
-        if ! joined="$(sed -- ':a;N;$!ba;s/\\\n/ /g' "$path")"; then
+        if ! joined="$(sed -e ':a' -e 'N' -e '$!ba' -e 's/\\\n/ /g' -- "$path")"; then
             violations+=("$f:sed-error")
             continue
         fi
