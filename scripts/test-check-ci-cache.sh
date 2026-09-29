@@ -63,6 +63,7 @@ cat > "$BIN/gh" <<'EOF'
 #   mode        rl-once   first fetch fails "API rate limit exceeded" and drops the budget for 60 s
 #               headflip  the head moves the instant a fetch has been served
 #               err       fetch fails with a non-rate-limit error
+#               die       fetch is killed: exit 137, no output at all
 #               slow      fetch takes 0.4 s (widens a race)
 #   calls.log   every gh call, one line
 D="$GHC_DIR"
@@ -111,10 +112,11 @@ case " $* " in
         n=$(grep -c -- '--json bucket,name' "$D/calls.log")
         [ "$mode" = slow ] && sleep 0.4
         if [ "$mode" = rl-once ] && [ ! -f "$D/rlfired" ]; then
-            touch "$D/rlfired"; echo "$((clock + 60))" > "$D/rl_reset"; echo 0 > "$D/rl_core"
+            touch "$D/rlfired"; echo "$((clock + 60))" > "$D/rl_reset"; echo 0 > "$D/rl_gql"
             echo "HTTP 403: API rate limit exceeded for user ID 1." >&2; exit 1
         fi
         if [ "$mode" = err ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
+        if [ "$mode" = die ]; then exit 137; fi
         if [ -f "$D/rows.$n" ]; then cat "$D/rows.$n"; else cat "$D/rows" 2>/dev/null; fi
         [ "$mode" = headflip ] && echo sha2 > "$D/head"
         exit 0 ;;
@@ -195,27 +197,27 @@ n=$(fetches); if [ "$n" -eq 2 ]; then pass "3 a new head misses the old head's e
 new_case
 echo headflip > "$CASE_DIR/mode"
 cic_init "" && cic_get 60
-echo sha2 > "$CASE_DIR/head"; echo > "$CASE_DIR/mode"
+echo sha1 > "$CASE_DIR/head"; echo > "$CASE_DIR/mode"
 cic_init "" && cic_get 60
-n=$(fetches); if [ "$n" -eq 2 ]; then pass "3b a head that moved during the fetch is not cached"; else fail "3b bracket" "fetches=$n want 2 (a stale-head entry was served)"; fi
+n=$(fetches); if [ "$n" -eq 2 ]; then pass "3b a head that moved during the fetch is not cached (re-binding the ORIGINAL head must refetch)"; else fail "3b bracket" "fetches=$n want 2 (rows fetched across a head change were stored under the bound head)"; fi
 
-# 4 — remaining below the floor waits (core, then graphql).
+# 4 — graphql remaining below the floor waits; a drained REST core bucket does not.
 new_case
 echo 1000000090 > "$CASE_DIR/rl_reset"; echo 100 > "$CASE_DIR/rl_core"
 cic_init "" ; cic_get 60 2>"$CASE_DIR/err"; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(sort -n "$CASE_DIR/sleeps.log" | tail -1)" -ge 90 ] 2>/dev/null; then pass "4 core remaining 100 < floor 300: slept to the reset (sleeps: $(sleeps))"; else fail "4 core wait" "rc=$rc sleeps=$(sleeps)"; fi
-if [ "$(grep -c 'budget low' "$CASE_DIR/err")" -le 1 ]; then pass "4b at most one budget line"; else fail "4b line count" "$(cat "$CASE_DIR/err")"; fi
+if [ "$rc" -eq 0 ] && [ ! -s "$CASE_DIR/sleeps.log" ]; then pass "4 core remaining 100 < floor 300 but graphql healthy: no wait (gh pr is GraphQL)"; else fail "4 core no wait" "rc=$rc sleeps=$(sleeps)"; fi
+if ! grep -q "budget low" "$CASE_DIR/err"; then pass "4b no budget line for a REST-only shortfall"; else fail "4b line" "$(cat "$CASE_DIR/err")"; fi
 new_case
 echo 1000000090 > "$CASE_DIR/rl_reset"; echo 100 > "$CASE_DIR/rl_gql"
 cic_init "" ; cic_get 60 2>"$CASE_DIR/err"; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(sort -n "$CASE_DIR/sleeps.log" | tail -1)" -ge 90 ] 2>/dev/null; then pass "4c graphql remaining 100 < floor: slept to the reset"; else fail "4c graphql wait" "rc=$rc sleeps=$(sleeps)"; fi
 if grep -q 'budget low' "$CASE_DIR/err"; then pass "4d prints one line saying so"; else fail "4d message" "stderr: $(cat "$CASE_DIR/err")"; fi
 new_case
-echo 300 > "$CASE_DIR/rl_core"
+echo 300 > "$CASE_DIR/rl_gql"
 cic_init "" ; cic_get 60 2>/dev/null
 if [ ! -s "$CASE_DIR/sleeps.log" ]; then pass "4e remaining == floor: no wait"; else fail "4e floor edge" "sleeps=$(sleeps)"; fi
 new_case
-echo 100 > "$CASE_DIR/rl_core"
+echo 100 > "$CASE_DIR/rl_gql"
 CHECK_CI_API_FLOOR=0 cic_init "" ; CHECK_CI_API_FLOOR=0 cic_get 60 2>/dev/null
 if [ ! -s "$CASE_DIR/sleeps.log" ] && ! grep -q rate_limit "$CASE_DIR/calls.log"; then pass "4f CHECK_CI_API_FLOOR=0 opts out (no wait, no rate_limit call)"; else fail "4f opt-out" "sleeps=$(sleeps)"; fi
 
@@ -238,10 +240,23 @@ if [ "$n" -eq 2 ]; then pass "5e past the error TTL: retried"; else fail "5e" "f
 
 # 6 — reset beyond the bound.
 new_case
-echo 1000001000 > "$CASE_DIR/rl_reset"; echo 0 > "$CASE_DIR/rl_core"
+echo 1000001000 > "$CASE_DIR/rl_reset"; echo 0 > "$CASE_DIR/rl_gql"
 CIC_MAX_WAIT=60 cic_init "" ; CIC_MAX_WAIT=60 cic_get 60 2>"$CASE_DIR/err"; rc=$?
 if [ "$rc" -eq 2 ]; then pass "6 reset beyond --max-wait: rc 2"; else fail "6 rc" "rc=$rc"; fi
 if [ ! -s "$CASE_DIR/sleeps.log" ] && [ "$(fetches)" -eq 0 ]; then pass "6b no sleep, no fetch"; else fail "6b" "sleeps=$(sleeps) fetches=$(fetches)"; fi
+
+# 6c — a killed gh (no rows, no stderr, exit above gh's own 1/8) is an error, never "no checks".
+new_case
+echo die > "$CASE_DIR/mode"
+cic_init "" ; cic_get 60 2>/dev/null; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$CIC_ERR" | grep -q 'exited 137'; then pass "6c a killed gh is rc 1 with a reason (not an empty-rows rc 0)"; else fail "6c die" "rc=$rc err=$CIC_ERR rows=$CIC_ROWS"; fi
+
+# 6d — a lock whose holder died before writing its timestamp is broken, not waited out.
+new_case
+cic_init "" ; mkdir "$CIC_LOCK"
+start=$SECONDS
+cic_get 60 2>/dev/null; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(fetches)" -eq 1 ] && [ -f "$CIC_FILE" ] && [ ! -d "$CIC_LOCK" ] && [ $((SECONDS - start)) -lt 20 ]; then pass "6d a timestamp-less orphan lock is reclaimed (fetch cached, lock released, $((SECONDS - start))s)"; else fail "6d orphan lock" "rc=$rc fetches=$(fetches) file=$([ -f "$CIC_FILE" ] && echo y || echo n) lock=$([ -d "$CIC_LOCK" ] && echo held || echo free)"; fi
 fi
 
 # 7 — helper: adaptive interval.
@@ -279,7 +294,11 @@ else
     new_case
     printf 'cancel\tunit-tests\n' > "$CASE_DIR/rows"
     timeout_run bash "$HELPER" > "$CASE_DIR/out" 2>"$CASE_DIR/err"; rc=$?
-    if [ "$rc" -eq 1 ]; then pass "8c a cancelled check is never green (rc 1)"; else fail "8c cancel" "rc=$rc"; fi
+    if [ "$rc" -eq 0 ] && [ ! -s "$CASE_DIR/sleeps.log" ]; then pass "8c a cancelled check is neither red nor pending, as in gh (rc 0, no wait; a required one is refused by check-ci's required gate)"; else fail "8c cancel" "rc=$rc sleeps=$(sleeps)"; fi
+    new_case
+    printf 'pass\ta\ncancel\tb\npending\tc\n' > "$CASE_DIR/rows"; printf 'pass\ta\ncancel\tb\npass\tc\n' > "$CASE_DIR/rows.2"
+    timeout_run bash "$HELPER" > "$CASE_DIR/out" 2>"$CASE_DIR/err"; rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$(sleeps)" ]; then pass "8c2 a cancel beside a pending check still waits for the pending one"; else fail "8c2 cancel+pending" "rc=$rc sleeps=$(sleeps)"; fi
     new_case
     echo err > "$CASE_DIR/mode"
     timeout_run bash "$HELPER" > "$CASE_DIR/out" 2>"$CASE_DIR/err"; rc=$?
@@ -289,11 +308,13 @@ else
     timeout_run bash "$HELPER" > "$CASE_DIR/out" 2>"$CASE_DIR/err"; rc=$?
     if [ "$rc" -eq 1 ] && [ -s "$CASE_DIR/err" ]; then pass "8e no rows is an error, never green (fail closed)"; else fail "8e empty" "rc=$rc out=$(cat "$CASE_DIR/out")"; fi
     new_case
-    printf 'pass\ta\n' > "$CASE_DIR/rows"
-    echo headflip > "$CASE_DIR/mode"
-    timeout_run bash "$HELPER" >/dev/null 2>&1
-    n=$(fetches)
-    if [ "$n" -ge 2 ]; then pass "8f a green is confirmed with a fresh read (decide TTL), not the poll snapshot alone"; else fail "8f confirm" "fetches=$n want >= 2"; fi
+    # A 30 s-old cached "all pass" (inside the 60 s poll TTL, outside the 5 s decide TTL) while
+    # the live rollup has a pending check: the confirm read must refetch and NOT certify it.
+    printf 'pending\ta\n' > "$CASE_DIR/rows.1"; printf 'pass\ta\n' > "$CASE_DIR/rows"
+    cic_init "" || fail "8f setup" "cic_init failed"
+    { printf '%s\t%s\t0\n' 999999970 sha1; printf 'pass\ta\n'; } > "$CIC_FILE"
+    timeout_run bash "$HELPER" >/dev/null 2>&1; rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$(sleeps)" ] && [ "$(fetches)" -ge 1 ]; then pass "8f a green is confirmed on a decide-grade read: a 30 s-old snapshot is not certified"; else fail "8f confirm" "rc=$rc fetches=$(fetches) sleeps=$(sleeps) (0 fetches + no sleep = the stale snapshot was certified)"; fi
 fi
 
 # 9 — api-budget.sh
@@ -336,6 +357,24 @@ else
     printf 'pending\tCodeRabbit\npass\tunit-tests\n' > "$CASE_DIR/rows"
     run_ci "$CASE_DIR/c" 42 --max-wait 900
     if [ "$(cat "$CASE_DIR/c.rc")" -eq 0 ]; then pass "10e only CodeRabbit pending -> decidable, rc 0 unchanged"; else fail "10e decidable" "rc=$(cat "$CASE_DIR/c.rc") err=$(cat "$CASE_DIR/c.err")"; fi
+
+    # Budget waits taken by check-ci's own reads honour --max-wait and only follow GraphQL.
+    maxsleep() { awk 'BEGIN{m=0} $1>m{m=$1} END{print m}' "$CASE_DIR/sleeps.log"; }
+    new_case
+    printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
+    echo 0 > "$CASE_DIR/rl_gql"
+    run_ci "$CASE_DIR/b" 42 --max-wait 60
+    if [ "$(cat "$CASE_DIR/b.rc")" -eq 2 ] && [ "$(maxsleep)" -lt 100 ]; then pass "10i graphql drained, reset beyond --max-wait -> exit 2, no long sleep (max sleep $(maxsleep)s)"; else fail "10i bound" "rc=$(cat "$CASE_DIR/b.rc") maxsleep=$(maxsleep) err=$(cat "$CASE_DIR/b.err")"; fi
+    new_case
+    printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
+    echo 0 > "$CASE_DIR/rl_core"
+    run_ci "$CASE_DIR/k" 42 --max-wait 60
+    if [ "$(cat "$CASE_DIR/k.rc")" -eq 0 ] && [ "$(maxsleep)" -lt 100 ]; then pass "10j REST core drained, graphql healthy -> green rc 0, no budget wait"; else fail "10j core" "rc=$(cat "$CASE_DIR/k.rc") maxsleep=$(maxsleep) err=$(cat "$CASE_DIR/k.err")"; fi
+    new_case
+    printf 'pass\tunit-tests\npass\tCodeRabbit\ncancel\tflaky\n' > "$CASE_DIR/rows"
+    run_ci "$CASE_DIR/x" 42 --max-wait 900
+    RUN_SLEEP=: run_ci "$CASE_DIR/y" 42 --max-wait 900
+    if [ "$(cat "$CASE_DIR/x.rc")" -eq "$(cat "$CASE_DIR/y.rc")" ] && [ "$(cat "$CASE_DIR/x.rc")" -eq 0 ]; then pass "10k a cancel beside passes gives the same verdict (rc 0) at any poll timing"; else fail "10k cancel" "rc=$(cat "$CASE_DIR/x.rc")/$(cat "$CASE_DIR/y.rc") err=$(cat "$CASE_DIR/x.err")"; fi
 
     # A second run inside the TTL reads the first run's snapshot.
     new_case

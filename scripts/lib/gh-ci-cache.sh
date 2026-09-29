@@ -23,8 +23,9 @@
 # push therefore can never be answered with the previous head's green.
 #
 # Budget: before a fetch, ONE call to `gh api rate_limit` (free — it does not
-# count against any bucket) reads BOTH the core (REST) and graphql buckets; if
-# either is under CHECK_CI_API_FLOOR the caller sleeps until the reset (bounded
+# count against any bucket) reads the graphql bucket (gh pr view / gh pr checks
+# are GraphQL; a drained REST core bucket never stalls this path); if it is
+# under CHECK_CI_API_FLOOR the caller sleeps until the reset (bounded
 # by CIC_MAX_WAIT) instead of spending the last calls. A rate-limit error from
 # the fetch itself is waited out the same way and retried (max 3), never cached.
 #
@@ -134,14 +135,19 @@ cic_unlock() {
 
 # _cic_lock — 0 = held, 1 = gave up waiting (caller fetches directly, uncached).
 _cic_lock() {
-    local waited=0 max t now
+    local waited=0 notime=0 max t now
     max="${CHECK_CI_LOCK_WAIT:-30}"
     case "$max" in ''|*[!0-9]*) max=30 ;; esac
     max=$((max * 5))
     while ! mkdir "$CIC_LOCK" 2>/dev/null; do
         t=$(cat "$CIC_LOCK/t" 2>/dev/null); now=$(cic_now)
         # A lock older than 60 s belongs to a fetch that died: break it.
-        case "$t" in ''|*[!0-9]*) ;; *) [ $((now - t)) -gt 60 ] && rm -rf "$CIC_LOCK" 2>/dev/null ;; esac
+        # One that never got its timestamp (the holder died between the mkdir and
+        # the write, microseconds apart) is dead after 5 s.
+        case "$t" in
+            ''|*[!0-9]*) notime=$((notime + 1)); [ "$notime" -lt 25 ] || rm -rf "$CIC_LOCK" 2>/dev/null ;;
+            *) notime=0; [ $((now - t)) -le 60 ] || rm -rf "$CIC_LOCK" 2>/dev/null ;;
+        esac
         waited=$((waited + 1))
         [ "$waited" -ge "$max" ] && return 1
         sleep 0.2
@@ -152,23 +158,27 @@ _cic_lock() {
 }
 
 # _cic_fetch_raw — ONE `gh pr checks --json` call. rc 0 = rows (possibly none),
-# 1 = error text in CIC_ERR. gh's own exit status is ignored (it encodes the
-# rollup); only the presence of rows / stderr decides.
+# 1 = error text in CIC_ERR. gh's own exit status 1 / 8 is ignored (it encodes the
+# rollup); the presence of rows / stderr decides, and a status above 8 with neither
+# is a death, not "no checks".
 _cic_fetch_raw() {
-    local ef
+    local ef grc
     ef=$(mktemp "${TMPDIR:-/tmp}/cic-err.XXXXXX") || { CIC_ERR="mktemp failed"; CIC_ROWS=""; return 1; }
-    CIC_ROWS=$(_cic_gh checks --json bucket,name --jq '.[] | "\(.bucket)\t\(.name)"' 2>"$ef")
+    CIC_ROWS=$(_cic_gh checks --json bucket,name --jq '.[] | "\(.bucket)\t\(.name)"' 2>"$ef"); grc=$?
     CIC_ERR=$(tr '\n' ' ' < "$ef" | sed 's/ *$//')
     rm -f "$ef"
     if [ -n "$CIC_ROWS" ]; then CIC_ERR=""; return 0; fi
     [ -n "$CIC_ERR" ] && return 1
+    # No rows and no stderr, yet gh died (a kill, a crash): an error, not "no checks".
+    # gh's own 1 / 8 encode the rollup, so only a status above that is a death.
+    if [ "$grc" -gt 8 ]; then CIC_ERR="gh pr checks exited $grc with no output"; return 1; fi
     return 0
 }
 
 _cic_is_rl() { printf '%s' "${1:-}" | grep -i -E 'rate limit|RATE_LIMITED|abuse detection|secondary rate' >/dev/null 2>&1; }
 
-# _cic_budget_wait <force> — read the free rate_limit endpoint; when core or
-# graphql is under the floor (or <force>=1 after a rate-limit error), sleep until the reset.
+# _cic_budget_wait <force> — read the free rate_limit endpoint; when the
+# graphql bucket is under the floor (or <force>=1 after a rate-limit error), sleep until the reset.
 # rc 0 = fine / waited, 2 = the reset is beyond CIC_MAX_WAIT (nothing slept).
 _cic_budget_wait() {
     local force="${1:-0}" floor="${CHECK_CI_API_FLOOR:-300}" jmax="${GH_BUDGET_JITTER_MAX:-15}"
@@ -191,7 +201,8 @@ _cic_budget_wait() {
         core_rem=0; gql_rem=0; core_reset=$((now + 60)); gql_reset=$((now + 60))
     fi
     reset=0
-    if [ "$core_rem" -lt "$floor" ] && [ "$core_reset" -gt "$reset" ]; then reset=$core_reset; fi
+    # Only the graphql bucket is spent here (gh pr view / gh pr checks are GraphQL); a
+    # drained REST core bucket costs this path nothing, so it never waits on it.
     if [ "$gql_rem" -lt "$floor" ] && [ "$gql_reset" -gt "$reset" ]; then reset=$gql_reset; fi
     if [ "$reset" -eq 0 ]; then
         [ "$force" = 1 ] || return 0
@@ -201,14 +212,14 @@ _cic_budget_wait() {
     [ "$wait_s" -lt 2 ] && wait_s=2
     human=$(date -u -d "@$reset" +%H:%M:%SZ 2>/dev/null || date -u -r "$reset" +%H:%M:%SZ 2>/dev/null || echo "epoch $reset")
     if [ "$max" -gt 0 ] && [ "$wait_s" -gt "$max" ]; then
-        CIC_ERR="GitHub API budget low (core=$core_rem graphql=$gql_rem, floor=$floor), resets at $human (in ${wait_s}s) — longer than the ${max}s bound; not waiting"
+        CIC_ERR="GitHub API budget low (graphql=$gql_rem, floor=$floor), resets at $human (in ${wait_s}s) — longer than the ${max}s bound; not waiting"
         echo "check-ci: $CIC_ERR" >&"${CIC_NOTICE_FD:-2}"
         return 2
     fi
     jitter=0
     [ "$jmax" -gt 0 ] && jitter=$((RANDOM % (jmax + 1)))
     if [ "$max" -gt 0 ] && [ $((wait_s + jitter)) -gt "$max" ]; then jitter=$((max - wait_s)); fi
-    echo "check-ci: gh API budget low (core=$core_rem graphql=$gql_rem, floor=$floor) — sleeping ${wait_s}s (+${jitter}s jitter) until the reset at $human" >&"${CIC_NOTICE_FD:-2}"
+    echo "check-ci: gh API budget low (graphql=$gql_rem, floor=$floor) — sleeping ${wait_s}s (+${jitter}s jitter) until the reset at $human" >&"${CIC_NOTICE_FD:-2}"
     "$sleeper" "$wait_s"
     [ "$jitter" -gt 0 ] && "$sleeper" "$jitter"
     return 0

@@ -302,7 +302,8 @@ per-hook behavior: [internals/enforcement.md](internals/enforcement.md).
 **`check-ci.sh` API cost (HIMMEL-3850).** Many legs waiting on CI drain one shared
 GitHub quota (5,000/h REST core, 5,000/h GraphQL — `gh pr checks` is GraphQL), so
 the wait is cheap by construction: the first waiter in a TTL window fetches a PR's
-checks and every other waiter reads that snapshot from a shared cache; the poll
+checks and every other waiter reads that snapshot from a shared cache (a `cancel`
+bucket is neither red nor pending, as in gh; an unknown bucket is pending); the poll
 interval backs off while the rollup is unchanged; and when the budget runs low it
 sleeps until the reset instead of retrying. **Only cost changes — exit codes and
 every gate decision are unchanged.** All knobs are environment variables (set them
@@ -316,7 +317,7 @@ in `.env` or the launching shell):
 | `CHECK_CI_DECIDE_TTL` | `5` | max age of the snapshot a terminal verdict (green/red confirm, required-check gate) may rest on |
 | `CHECK_CI_CACHE_ERR_TTL` | `10` | how long a failed fetch is remembered (rate-limit errors never are) |
 | `CHECK_CI_WATCH_INTERVAL` / `CHECK_CI_WATCH_INTERVAL_MAX` | `30` / `120` | poll-interval floor / ceiling; doubles while the rollup is unchanged, resets on a change |
-| `CHECK_CI_API_FLOOR` | `300` | sleep until the reset when GitHub reports fewer calls than this remaining (or answers 403 rate-limit); `0` disables the preemptive check. The wait is bounded by `--max-wait`; past it the gate exits 2 as before |
+| `CHECK_CI_API_FLOOR` | `300` | sleep until the reset when the GraphQL bucket (what `gh pr checks` draws) reports fewer calls than this remaining (or gh answers 403 rate-limit); `0` disables the preemptive check. The wait is bounded by `--max-wait`; past it the gate exits 2 as before |
 | `CHECK_CI_LOCK_WAIT` | `30` | seconds a waiter waits for the fetching peer before fetching itself |
 | `GH_BUDGET_JITTER_MAX` | (existing) | random seconds added to a budget wait so waiters do not wake in lock-step |
 

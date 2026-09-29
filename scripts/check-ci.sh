@@ -451,6 +451,10 @@ pr_view() {
 # shellcheck source=scripts/lib/gh-ci-cache.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "$0")" && pwd)/lib/gh-ci-cache.sh"
+# A budget wait taken in this process is bounded by --max-wait and goes through the
+# same sleep seam as every other wait here (0 = unbounded, as --max-wait 0 is).
+CIC_MAX_WAIT="$MAX_WAIT"
+CIC_SLEEP_CMD="${CIC_SLEEP_CMD:-$CHECK_CI_SLEEP_CMD}"
 
 # pr_rows <ttl> — "<bucket>\t<name>" per check. Cached mode reads (or fetches once
 # for the whole fleet) a head-bound snapshot no older than <ttl> seconds; legacy
@@ -704,13 +708,24 @@ red_exit() {
 #
 # Fail-SAFE by construction: any unreadable/unparsable probe returns 1 (keep
 # watching) — this can only ever shorten a wait, never fabricate a verdict.
+# HIMMEL-3850: cached, a "decidable" answer on a poll-grade snapshot is only
+# accepted after the same test passes on a decide-grade one, so a check that went
+# pending inside the poll TTL is never stopped over.
 watch_decidable() {
+    if [ "$CACHE_ON" -eq 1 ]; then
+        _watch_decidable_at "$CACHE_TTL" && _watch_decidable_at "$DECIDE_TTL"
+    else
+        _watch_decidable_at 0
+    fi
+}
+
+_watch_decidable_at() {
     local rows first n low
     if [ "$CACHE_ON" -eq 1 ]; then
-        # HIMMEL-3850: from the shared snapshot (poll-grade TTL) instead of a gh
+        # HIMMEL-3850: from the shared snapshot ($1 = its max age) instead of a gh
         # call per probe. An empty snapshot is not "decidable" (fail-safe: keep
-        # watching); the terminal verdict is re-read at the decide TTL after.
-        rows=$(pr_rows "$CACHE_TTL") || return 1
+        # watching).
+        rows=$(pr_rows "$1") || return 1
         [ -n "$rows" ] || return 1
         rows=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "pass" && $1 != "skipping" && $1 != "fail" && $1 != "cancel" { print $2 }')
         rows="CHECKCI_OK${rows:+$'\n'$rows}"
