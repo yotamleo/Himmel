@@ -189,7 +189,7 @@ below already uses.
 | `codex` (paid, via hermes) | critic | — (critic pass) | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17); pins gpt-6.1-sol via `critics.json` (HIMMEL-3879, 2026-09-29; gpt-6-sol before it, HIMMEL-3500, 2026-09-23; gpt-6-astra before it, HIMMEL-2546, 2026-09-05) — the window figure predates and is independent of the model pin; least-verified of the five raised lanes | none (dashboard-omitted); opt-in `CR_PROFILE=paid` | calibrated — CR escalation / second opinions only |
 | `copilot-cli` — GitHub Copilot CLI (free tier) | bulk | small tasks; model tier is mini-class unless the caller overrides the auto pin | unverified/varies | none (dashboard-omitted); 2,000 completions/mo bank | **not calibrated yet** — worker-spawn-matrix row UNVERIFIED (live smoke pending eval); route only for free chores / second opinions, and only through the `dispatch-copilot.sh` chokepoint |
 | `hermes-oneshot` — hermes one-shot dispatch | impl | invoke.sh wall-clock timebox (default 1800s) + Nth-identical-deny abort (HIMMEL-2025) | 900000 — re-confirmed on ox-alpha (HIMMEL-2024, 2026-08-22: 300K/600K/900K probes all accepted); previously operator-verified inside hermes v0.20.2 (2026.8.16), upstream commit `bab7be3c` (2026-08-17), superseding 350000 (hermes-agent commit 522997543, 2026-08-16) | none (dashboard-omitted) — free while ox-alpha lasts | calibrated — live-proven spawn path; see [ox-alpha](#ox-alpha--the-current-hermes-himmel_agent-default-himmel-2024) |
-| `codex-exec` — codex CLI sandbox | impl | well-scoped chunks; job registry is per-workspace | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite the 360K rejection hermes measured on the gpt-5.5 pin it carried then (codex-exec now follows the `codex` critic's model, `gpt-6-sol`, HIMMEL-3500 (`gpt-6-astra` before it, HIMMEL-2811); that probe was not repeated there); least-verified of the five raised lanes | codex | calibrated (HIMMEL-741) |
+| `codex-exec` — codex CLI sandbox | impl | well-scoped chunks; job registry is per-workspace | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite the 360K rejection hermes measured on the gpt-5.5 pin it carried then (codex-exec now follows the `codex` critic's model, `gpt-6.1-sol`, HIMMEL-3879 (`gpt-6-sol` before it, HIMMEL-3500; `gpt-6-astra` before that, HIMMEL-2811); that probe was not repeated there); least-verified of the five raised lanes | codex | calibrated (HIMMEL-741) |
 | `codex-wsl` — codex WSL lane | impl | well-scoped chunks; brief via `--brief-file` | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite still pinning gpt-5.5, the same model hermes measured rejecting a 360K probe; least-verified of the five raised lanes | codex | calibrated (HIMMEL-999) |
 | `antigravity-cli` — Antigravity CLI (Google AI Plus) | bulk | simple tasks; `--output-format` drift seen on Windows builds | unverified/varies | none (dashboard-omitted); free AI-Plus bank | **not calibrated yet** — roster + quota shape TO VERIFY at eval (HIMMEL-772); parity/guards UNVERIFIED (permission flags only, no hook surface); egress-DENIED for vault corpora, himmel-code only; route only for free-bank chores / second opinions |
 | `ollama-local` — ollama (local models) | bulk | slow, small tasks | unverified/varies | none (dashboard-omitted); free, local wall-clock | calibrated — zero-egress guarantee is structural; the only salus-eligible backend |
@@ -359,8 +359,8 @@ not re-measured it):
 
 The ladder stays; only its resting point moves. Mind which model each lane runs:
 `codex-exec` follows the `codex` critic in `scripts/cr/critics.json` (currently
-`gpt-6-sol`, HIMMEL-3500), and the `claudex` launcher's own default model now
-matches it (`gpt-6-sol`, `CODEX_MODEL` in `scripts/claude-codex`, overridable) —
+`gpt-6.1-sol`, HIMMEL-3879), and the `claudex` launcher's own default model now
+matches it (`gpt-6.1-sol`, `CODEX_MODEL` in `scripts/claude-codex`, overridable) —
 both lanes run at effort medium by default; export
 `CLAUDE_CODE_EFFORT_LEVEL=high` there if `medium` under-delivers. The rungs:
 
@@ -387,7 +387,7 @@ codex-exec first**:
 
 1. **codex-exec** (`scripts/codex/dispatch-codex-exec.sh`; Sol — the wrapper's
    default model is the `codex` critic in `scripts/cr/critics.json`, currently
-   `gpt-6-sol` (HIMMEL-3500; `gpt-6-astra` before it) — at
+   `gpt-6.1-sol` (HIMMEL-3879; `gpt-6-sol` before it, HIMMEL-3500) — at
    **`--reasoning-effort medium`**, `low` for a mechanical
    chunk) — the default home of a well-specified implementation chunk, because
    it draws the codex bank rather than the Claude one.

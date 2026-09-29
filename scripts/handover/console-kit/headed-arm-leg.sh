@@ -94,7 +94,7 @@
 # otherwise lost and a silent claudex death is undiagnosable), and exports
 # CLAUDEX_LANE_OK=1 + CLAUDE_CODE_EFFORT_LEVEL=${LEG_EFFORT:-medium} into the
 # launched process via HEADED_ARM_LAUNCHER_ENV. An empty/omitted MODEL
-# defaults to gpt-6-sol for this lane (native's own --judge default,
+# defaults to gpt-6.1-sol for this lane (native's own --judge default,
 # claude-opus-5-5, is a Claude tier and would defeat the point of
 # switching lanes). Context stays this wrapper's standard pin:
 # --autocompact 200000 is the leg's ceiling; scripts/claude-codex's
@@ -451,7 +451,7 @@ fi
 # --judge defaults MODEL to the Opus tier at high effort, but ONLY on the
 # native lane - the tier gate below matches a claude-* prefix, so a claudex
 # judge would carry no cost gate at all under a borrowed default. --judge
-# --lane claudex is left to fall through to the claudex lane's own gpt-6-sol
+# --lane claudex is left to fall through to the claudex lane's own gpt-6.1-sol
 # default further down, unchanged: a known gap (design §3.2 P1), not this
 # ticket's to close. HIMMEL-3630: Fable is retired as the judge DEFAULT (Opus
 # 5.5 high measured ~2.7x cheaper per verdict than Fable 5.1 with comparable
@@ -987,7 +987,7 @@ if [ "$LANE" = "claudex" ]; then
     leg_propagate_env CLAUDEX_LANE_OK 1
     leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "${LEG_EFFORT:-medium}"
     export HEADED_ARM_RECORDER=1
-    [ -z "$MODEL" ] && MODEL="gpt-6-sol"
+    [ -z "$MODEL" ] && MODEL="gpt-6.1-sol"
 fi
 
 # --profile (HIMMEL-2830): resolve the plugin profile and point headed-arm.sh's

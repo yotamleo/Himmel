@@ -694,7 +694,7 @@ bank, and opens mixed subagent lanes that the plain codex CLI harness does not.
 | Var | Value |
 |---|---|
 | `CODEX_PROXY_BASE_URL` | `http://127.0.0.1:8317` by default |
-| `CODEX_MODEL` | `gpt-6-sol` by default |
+| `CODEX_MODEL` | `gpt-6.1-sol` by default |
 | `CODEX_HAIKU` | `$CODEX_MODEL` by default |
 | `CODEX_SUBAGENT_MODEL` | `$CODEX_MODEL` by default |
 | `CODEX_CONTEXT_WINDOW` | `272000` by default → `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (twin of `GLM_CONTEXT_WINDOW`). Without it Claude Code assumes its ~200k default for the unrecognized `gpt-5.6-sol` slug and compacts early. gpt-5.6's real window is **~372k** (95% effective ~353k, [openai/codex#32486](https://github.com/openai/codex/issues/32486)); **272k is the 2× pricing cliff, NOT a hard ceiling** — input past 272k bills 2× input / 1.5× output. `272000` is the cost-optimal default (compact at the cliff); raise to `353000` to use the full window at 2× cost past 272k. |
@@ -739,11 +739,11 @@ the stock Claude Code install; it has the same isolation contract as
 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`; Claude Code emits the effort as top-level
 `output_config.effort` in the `/v1/messages` body, and CLIProxyAPI forwards it
 **verbatim** as the codex thinking level — no clamping, no proxy-side default
-override, so a per-dispatch effort **downgrade does reach `gpt-6-sol`** (proxy
+override, so a per-dispatch effort **downgrade does reach `gpt-6.1-sol`** (proxy
 `apply.go` debug lines: `original config from request` == `processed config to
 apply`, `mode=level level=<X>`).
 
-| `CLAUDE_CODE_EFFORT_LEVEL` | Level sent to `gpt-6-sol` |
+| `CLAUDE_CODE_EFFORT_LEVEL` | Level sent to `gpt-6.1-sol` |
 |---|---|
 | _(unset — the lane default)_ | **`medium`** (the launcher pins `CLAUDE_CODE_EFFORT_LEVEL=medium` when unset, HIMMEL-2772; a truly bare invocation that bypasses the launcher still falls back to Claude Code's own implicit `xhigh`) |
 | `low` / `medium` / `high` / `xhigh` | `low` / `medium` / `high` / `xhigh` |
@@ -907,7 +907,7 @@ pointing back at this section.
 **Model tier (HIMMEL-1464):** `--model` is optional and selects the GPT-5.6
 tier for one dispatch by setting `CODEX_MODEL` in the worker's child env —
 exactly how `--effort` sets `CLAUDE_CODE_EFFORT_LEVEL`. Unset lets the
-launcher's own `${CODEX_MODEL:-gpt-6-sol}` default apply. Accepted values are
+launcher's own `${CODEX_MODEL:-gpt-6.1-sol}` default apply. Accepted values are
 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; anything else is a parse-time
 refusal (exit 2) pointing back at this section.
 
