@@ -309,6 +309,7 @@ chmod +x "$STUBDIR/jq"
 # Stock macOS ships neither `timeout` nor `gtimeout`, so the composer's bound
 # seam would degrade to unbounded and this row could never pass. Provide a
 # minimal GNU-shaped `timeout` stub there (HIMMEL-3719); a real one is used as-is.
+# ponytail: the stub models TERM only and ignores -k, so a TERM-ignoring child would hang; upgrade path is coreutils timeout on the macOS runner.
 if ! { command -v timeout >/dev/null 2>&1 && timeout --version >/dev/null 2>&1; } \
    && ! command -v gtimeout >/dev/null 2>&1; then
     cat > "$STUBDIR/timeout" <<'TOEOF'

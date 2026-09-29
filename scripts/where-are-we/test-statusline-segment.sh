@@ -28,6 +28,7 @@ trap 'rm -rf "$TMP"' EXIT
 # Stock macOS ships neither `timeout` nor `gtimeout`, and the segment skips its
 # ledger node spawn entirely without one (C1), so every ledger-status row would
 # render no status. Put a minimal GNU-shaped stub on PATH there (HIMMEL-3719).
+# ponytail: the stub models TERM only and ignores -k, so a TERM-ignoring child would hang; upgrade path is coreutils timeout on the macOS runner.
 if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
     mkdir -p "$TMP/stubbin"
     cat > "$TMP/stubbin/timeout" <<'TOEOF'

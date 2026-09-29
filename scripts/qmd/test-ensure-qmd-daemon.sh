@@ -68,6 +68,7 @@ mkdir -p "$bin"
 # The script under test degrades to an UNBOUNDED daemon start when timeout(1)
 # is absent, so (e) could never pass there (HIMMEL-3719). Provide a minimal
 # GNU-shaped stub in $bin: `timeout [-k N] SECS cmd...`, rc 124 on a kill.
+# ponytail: the stub ignores -k's KILL grace (TERM only), so a TERM-ignoring child would hang; upgrade path is providing coreutils timeout on the macOS runner.
 if ! command -v timeout >/dev/null 2>&1; then
   cat > "$bin/timeout" <<'TOEOF'
 #!/usr/bin/env bash
