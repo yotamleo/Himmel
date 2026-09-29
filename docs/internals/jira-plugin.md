@@ -48,6 +48,7 @@ For Jira ops in this repo, default to the local CLI at
 | Watchers    | `... watch HIMMEL-N [user]` / `... unwatch HIMMEL-N [user]` / `... watchers HIMMEL-N` (HIMMEL-437) | (none) |
 | Sprint      | `... boards` / `... sprints [--board N]` / `... sprint HIMMEL-N <sprintId\|backlog>` (Agile API `/rest/agile/1.0`; `JIRA_BOARD_ID` default) (HIMMEL-437) | (none — MCP has no Agile-board ops) |
 | Versions    | `... versions` / `... version-create <name> [--release-date YYYY-MM-DD] [--released] [--description ...]` / `... version-release <name> [--date YYYY-MM-DD]` / `... fix-version HIMMEL-N --add\|--remove <name>` (HIMMEL-3429; REST `/project/{key}/versions`, `/version`, and the issue `update.fixVersions` add/remove verbs, so other versions on the ticket are untouched) | (none — MCP has no version ops) |
+| Mirror      | `... mirror [--full] [--status] [--qmd] [--root DIR]` (HIMMEL-3889; read-only Jira → one `<KEY>.md` per issue under `~/.himmel/state/jira-mirror/<PROJECT>/`, first run full backfill, later runs `updated >=` cursor; `--qmd` registers/re-embeds the `jira-himmel` qmd collection, non-fatal; `--status` prints mirror age, no network; a failed or short key listing deletes nothing) | (none) |
 | Bug freeze  | `... freeze-check [--project KEY] [--limit N]` (HIMMEL-3411; Bugs created after the freeze cutoff in `v1.0.0` without `v1-blocker`; exit 1 if any) | (none) |
 
 **Use MCP only when the plugin lacks the operation** (custom-field
