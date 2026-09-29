@@ -68,6 +68,9 @@
 #   an unquoted brace/parameter expansion OR an unquoted glob (`*`, `?`,
 #   `[`) anywhere in the segment falls through instead — any of those could
 #   hide the write/delete/exec flag the guard is checking argv words for.
+#   HIMMEL-3886: a brace expansion (unquoted `{a,b}` / `{a..b}`) in ANY word
+#   of ANY segment falls through for every binary — one central refusal
+#   before all allow arms (see word_has_brace_expansion).
 #
 # Known residual (accepted; gate targets accidental hangs, not a determined
 # attacker — the deny-list + block-* hooks are the security backstop):
@@ -420,6 +423,48 @@ shell_word_value() {
         SW_VALUE="$SW_VALUE$c"; i=$((i + 1))
     done
     [ "$st" = 0 ]
+}
+
+# HIMMEL-3886: does this raw shell word carry a brace expansion — an unquoted
+# `{...}` span holding an unquoted `,` or `..`? The shell turns such a word into
+# several argv words, so a flag can hide in it from every literal-word match
+# (`git log {--output=/tmp/PWN,-1}` runs `git log --output=/tmp/PWN -1`).
+# Deliberately NOT shell_word_value: that returns early on a `$VAR`, before it
+# reaches a brace later in the same word (`{$x,--output=y}`). Only quotes and
+# backslash escapes are honored; every other character counts, so `${x,,}` is
+# treated as a brace span too (fail closed — it only loses an allow).
+word_has_brace_expansion() {
+    local s="$1" n i=0 c st=0 bd=0 bf=0
+    n=${#s}
+    while [ "$i" -lt "$n" ]; do
+        c="${s:$i:1}"
+        if [ "$st" = 1 ]; then                       # inside single quotes
+            [ "$c" = "'" ] && st=0
+            i=$((i + 1)); continue
+        fi
+        if [ "$st" = 2 ]; then                       # inside double quotes
+            case "$c" in
+                "\\") i=$((i + 2)); continue ;;
+                '"') st=0 ;;
+            esac
+            i=$((i + 1)); continue
+        fi
+        case "$c" in
+            "'") st=1 ;;
+            '"') st=2 ;;
+            "\\") i=$((i + 2)); continue ;;
+            '{') bd=$((bd + 1)) ;;
+            '}')
+                if [ "$bd" -gt 0 ]; then
+                    bd=$((bd - 1))
+                    [ "$bf" = 1 ] && return 0
+                fi ;;
+            ',') [ "$bd" -gt 0 ] && bf=1 ;;
+            '.') [ "$bd" -gt 0 ] && [ "${s:$((i + 1)):1}" = '.' ] && bf=1 ;;
+        esac
+        i=$((i + 1))
+    done
+    return 1
 }
 
 # Tokenizes a segment and resolves the binary it actually executes: skips
@@ -790,11 +835,17 @@ segment_is_safe() {
             # args. Reject inline-code flags outright. (Without this a marker
             # riding along as a later arg, e.g. `node -e <code> …/index.js`,
             # would grant arbitrary code execution.)
+            # HIMMEL-3886: only an ALLOWLIST of inert flags may precede the
+            # script. Skipping every `-*` word let an `=`-form code loader ride
+            # along (`--require=./x.js`, `--import=`, `--env-file=` feeding
+            # NODE_OPTIONS, `--openssl-config=` loading an engine) — an
+            # open-ended set, so no denylist is used.
             local k=$((i + 1)) scr=""
             while [ "$k" -lt "$n" ]; do
                 case "${a[$k]}" in
-                    -e|--eval|-p|--print|-) return 1 ;;
-                    -*) k=$((k + 1)) ;;
+                    --no-warnings|--no-deprecation|--trace-warnings|\
+                    --trace-deprecation|--enable-source-maps) k=$((k + 1)) ;;
+                    -*) return 1 ;;
                     *) scr="${a[$k]}"; break ;;
                 esac
             done
@@ -1591,6 +1642,22 @@ rd=$(printf '%s' "$SCAN_MASK" | sed -E \
     -e 's@[0-9]*>>?[[:space:]]*/dev/null([[:space:]]|$)@ @g' \
     -e 's@[0-9]*>&[0-9]([[:blank:];|&]|$)@ @g')
 case "$rd" in *'>'*) exit 0 ;; esac
+
+# HIMMEL-3886: a brace expansion in ANY word of ANY segment never reaches an
+# allow — one central refusal ahead of every arm below (queue-lock, git, gh,
+# node, the safe-bin set), not a per-arm patch. Each arm matches flags on
+# literal words, and a brace word explodes into argv words none of them saw.
+# The HIMMEL-2121 deny scan above runs first, so a braced root walk still
+# DENIES. A segment that will not tokenize is left to segment_is_safe, which
+# refuses it.
+while IFS= read -r seg; do
+    tokenize_seg_words "$seg" || continue
+    for w in ${RB_TOKENS[@]+"${RB_TOKENS[@]}"}; do
+        word_has_brace_expansion "$w" && exit 0
+    done
+done <<EOF
+$SCAN_SEGS
+EOF
 
 # --- Every segment must be safe ---
 # Segments come from scan_cmd's quote-aware walk (SCAN_SEGS): split on | || &&
