@@ -500,6 +500,7 @@ case "$verb" in
                     fi
                 fi ;;
             */rules/branches/*|*/rulesets/*)
+                # ponytail: canned JSON stands in for the live rules API (org-level rulesets and real response drift are unexercised), a read-only smoke against the live repo's rules if the shapes ever diverge (HIMMEL-3812).
                 # HIMMEL-3808 — the ruleset probe: effective rules for the base
                 # branch (rules/branches/<b>) then each contributing ruleset
                 # (rulesets/<id>). Real JSON through the SCRIPT'S OWN --jq via
@@ -1121,6 +1122,7 @@ if [ "$have_jq_2869" = "1" ]; then
 
     # 3808-6. HIMMEL_PROTECTION_SOURCE modes, via a sed'd copy of the script (the
     # literal is not env-overridable, exactly like HIMMEL_PUBLIC_ORIGIN_NWO).
+    # ponytail: a sed'd script copy is the only seam (by design there is no env override), a per-mode fixture if the knob ever becomes configurable.
     # Each copy is checked to carry the literal, so a sed that matched nothing
     # cannot leave the whole matrix silently testing the default.
     mode_dir=$(mktemp -d "${TMPDIR:-/tmp}/mog-mode.XXXXXX")
