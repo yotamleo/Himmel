@@ -221,6 +221,95 @@ else
     fail "multiline input_head capped at 200 chars in total (got ${head_len:-none})"
 fi
 
+# --- 8. SHORT secrets (< 12 chars) in key=value and flag forms: phase 1's
+# generic rule required 12+ chars, so DB_PASS=short leaked in the clear. ---
+short_leak() {  # short_leak <name> <command> <secret>
+    local log="$WORKDIR/short-$1.jsonl"
+    run_hook "$(payload sh "/tmp/repo" Bash "$2" '[X]')" "$log" >/dev/null
+    if grep -qF "$3" "$log" 2>/dev/null; then fail "short secret redacted: $1"; else pass "short secret redacted: $1"; fi
+}
+short_leak env-assign   'DB_PASS=hunter2 ./run.sh'                     hunter2
+short_leak token-assign 'curl -d token=tkz https://x.test'             tkz
+short_leak api-key      'export API_KEY=k1 && deploy'                  k1
+short_leak quoted-spc   'login --user u password="my pass" now'        'my pass'
+short_leak mysql-p      'mysql -uroot -pS3cret db'                     S3cret
+short_leak pw-flag-sp   'psql --password pw1 -h host'                  pw1
+short_leak pw-flag-eq   'psql --password=pw2 -h host'                  pw2
+# the secret carries non-hex letters: input_sha is hex and would collide with a short one
+short_leak mysql-pwd    'MYSQL_PWD=zq9 mysql db'                       zq9
+# The redactor must not eat the flag that FOLLOWS a value-less --password.
+LOGK="$WORKDIR/keep.jsonl"
+run_hook "$(payload sk /tmp/repo Bash 'psql --password --host db1' '[X]')" "$LOGK" >/dev/null
+if grep -qF -e '--host' "$LOGK" 2>/dev/null; then pass "a flag after a value-less --password survives"; else fail "a flag after a value-less --password survives"; fi
+
+# --- 9. cwd, session_title, session_id and tool go through redact() too. ---
+LOG9="$WORKDIR/c9.jsonl"
+S9="ghp_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"
+run_hook "$(payload "sid-$S9" "/w/token=zzz/worktrees/slug-$S9" "Tool$S9" 'ls' '[X]')" "$LOG9" >/dev/null
+for leak in "$S9" "zzz"; do
+    if grep -qF "$leak" "$LOG9" 2>/dev/null; then fail "secret '$leak' in cwd/session_id/tool/title is redacted"; else pass "secret '$leak' in cwd/session_id/tool/title is redacted"; fi
+done
+if [ -s "$LOG9" ]; then pass "a redacted-field denial still writes a row"; else fail "a redacted-field denial still writes a row"; fi
+
+# --- 10. every field is capped, tool included, so a row stays bounded. ---
+LOG10="$WORKDIR/c10.jsonl"
+BIG=$(printf 'x%.0s' $(seq 1 3000))
+run_hook "$(payload "$BIG" "/$BIG" "$BIG" "$BIG" "$BIG")" "$LOG10" >/dev/null
+row_bytes=$(LC_ALL=C wc -c <"$LOG10" | tr -d '[:space:]')
+tool_len=$(jq -r '.tool | length' "$LOG10" 2>/dev/null)
+if [ -n "$tool_len" ] && [ "$tool_len" -le 200 ]; then pass "tool field capped at 200 chars"; else fail "tool field capped at 200 chars (got ${tool_len:-none})"; fi
+if [ -n "$row_bytes" ] && [ "$row_bytes" -le 4096 ]; then pass "an oversized denial still fits one PIPE_BUF row"; else fail "an oversized denial still fits one PIPE_BUF row (got ${row_bytes:-none} bytes)"; fi
+
+# --- 11. umask 077: a fresh state dir is 700 and the log 600. ---
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
+LOG11="$WORKDIR/fresh-dir/state/c11.jsonl"
+( umask 022; run_hook "$(payload s11 /tmp/repo Bash 'ls' '[X]')" "$LOG11" >/dev/null )
+check_mode() { if [ "$(mode_of "$1")" = "$2" ]; then pass "$3"; else fail "$3 (got $(mode_of "$1"))"; fi; }
+check_mode "$LOG11" 600 "log file is created 0600 under a permissive caller umask"
+check_mode "$(dirname "$LOG11")" 700 "a state dir the hook creates is 0700"
+
+# --- 12. rotation: past the byte cap the log renames to .1 (one generation)
+# and a fresh file starts; the row that triggered it is not lost. ---
+LOG12="$WORKDIR/c12.jsonl"
+export HIMMEL_CLASSIFIER_DENIALS_MAX_BYTES=2000
+i=0; while [ "$i" -lt 12 ]; do run_hook "$(payload s12 /tmp/repo Bash "ls $i" '[X]')" "$LOG12" >/dev/null; i=$((i + 1)); done
+if [ -f "$LOG12.1" ]; then pass "log past the cap rotates to .1"; else fail "log past the cap rotates to .1"; fi
+cur_bytes=$(wc -c <"$LOG12" 2>/dev/null | tr -d '[:space:]')
+if [ -n "$cur_bytes" ] && [ "$cur_bytes" -le 2600 ]; then pass "live log stays near the cap"; else fail "live log stays near the cap (got ${cur_bytes:-none})"; fi
+total=$(cat "$LOG12" "$LOG12.1" 2>/dev/null | wc -l | tr -d '[:space:]')
+if [ "$total" = "12" ]; then pass "rotation keeps every row across the two generations"; else fail "rotation keeps every row across the two generations (got $total)"; fi
+i=0; while [ "$i" -lt 60 ]; do run_hook "$(payload s12 /tmp/repo Bash "ls $i" '[X]')" "$LOG12" >/dev/null; i=$((i + 1)); done
+if [ ! -e "$LOG12.2" ]; then pass "only one rotated generation is kept"; else fail "only one rotated generation is kept"; fi
+unset HIMMEL_CLASSIFIER_DENIALS_MAX_BYTES
+
+# --- 13. fail-open survives the new code: an unwritable state dir and an
+# unwritable rotation target both still exit 0. ---
+if [ "$(id -u)" != "0" ]; then
+    RO="$WORKDIR/ro"; mkdir -p "$RO"; chmod 500 "$RO"
+    rc=$(run_hook "$(payload s13 /tmp/repo Bash 'ls' '[X]')" "$RO/sub/c13.jsonl")
+    if [ "$rc" = "0" ]; then pass "unwritable state dir exits 0"; else fail "unwritable state dir exits 0 (rc=$rc)"; fi
+    chmod 700 "$RO"
+fi
+
+# --- 14. HARD RULE (HIMMEL-3724): input_head and reason_tag never leave the
+# host. Only these files may name them; a new consumer (the later Telegram
+# page) must not carry them, and adding one here is a conscious edit.
+# ponytail: a file-list pin is a coarse proxy (a reader can forward the fields
+# under another name); test-tick.sh pins the real tick-line output. Upgrade: an
+# egress test on the Telegram page when that slice lands. ---
+REPO_ROOT="$(cd "$(dirname "$HOOK")/../.." && pwd)"
+if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    readers=$(git -C "$REPO_ROOT" grep -l -E 'input_head|reason_tag' -- scripts ':!*.md' | sort | tr '\n' ' ')
+    want="scripts/handover/console-kit/test-tick.sh scripts/handover/console-kit/tick.sh scripts/hooks/log-classifier-denial.sh scripts/hooks/test-log-classifier-denial.sh "
+    if [ "$readers" = "$want" ]; then
+        pass "only the host-local files reference input_head / reason_tag"
+    else
+        fail "only the host-local files reference input_head / reason_tag (got: $readers)"
+    fi
+else
+    pass "input_head/reason_tag reader pin skipped (not a git checkout)"
+fi
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then
     echo "log-classifier-denial: all cases passed"

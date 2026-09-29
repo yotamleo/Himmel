@@ -188,8 +188,8 @@ mkdir -p "$W/console-work/chain"
 
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
-out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip denials=skip ciq=unknown'
+out="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"; rc=$?
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip denials=none ciq=unknown'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -1422,7 +1422,39 @@ o3724f="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724f" bash "$SUT" 2>/dev/null)"
 contains 'an empty log reads none (HIMMEL-3724)' "$o3724f" 'denials=none'
 
 o3724g="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-3724-missing.jsonl" bash "$SUT" 2>/dev/null)"
-contains 'a missing log reads skip (HIMMEL-3724)' "$o3724g" 'denials=skip'
+contains 'a missing log reads none, not skip: no log means no denials (HIMMEL-3724)' "$o3724g" 'denials=none'
+
+# Non-worktree sessions group by session id (not the cwd basename), so a
+# re-dispatched slug in the same directory does not inherit an old session's
+# count -> no false PAUSE-RISK. Worktree rows keep the slug as their label.
+mksess() {  # mksess <log> <mins-ago> <session_title> <session_id> <cwd> <input_head>
+    ts="$(date -u -d "-${2} minutes" +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"ts":"%s","session_title":"%s","session_id":"%s","cwd":"%s","input_head":"%s"}\n' "$ts" "$3" "$4" "$5" "$6" >> "$1"
+}
+d3724s="$W/denials-3724s.jsonl"
+: > "$d3724s"
+mksess "$d3724s" 6 repo aaaaaaaa11111111 /home/u/repo 'ls'
+mksess "$d3724s" 5 repo aaaaaaaa11111111 /home/u/repo 'cat x'
+mksess "$d3724s" 4 repo bbbbbbbb22222222 /home/u/repo 'pwd'
+o3724s="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724s" bash "$SUT" 2>/dev/null)"
+contains 'two sessions in one non-worktree cwd get separate labels (HIMMEL-3724)' "$o3724s" 'denials=repo#aaaaaaaa:2:REPEAT,repo#bbbbbbbb:1'
+not_contains 'and the second session does not inherit the first one count (HIMMEL-3724)' "$o3724s" 'PAUSE-RISK'
+d3724w="$W/denials-3724w.jsonl"
+: > "$d3724w"
+mksess "$d3724w" 5 feat+foo cccccccc33333333 /r/.claude/worktrees/feat+foo 'ls'
+o3724w="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724w" bash "$SUT" 2>/dev/null)"
+contains 'a worktree row keeps the bare slug as its label (HIMMEL-3724)' "$o3724w" 'denials=feat+foo:1 '
+
+# HARD RULE (HIMMEL-3724): input_head and reason_tag never leave the host --
+# they classify locally and must not be echoed into the tick line.
+d3724r="$W/denials-3724r.jsonl"
+: > "$d3724r"
+ts="$(date -u -d '-3 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"ts":"%s","session_title":"leg-r","input_head":"UNIQUE-HEAD-7f3a git push","reason_tag":"[UNIQUE-TAG-9c1e]"}\n' "$ts" >> "$d3724r"
+o3724r="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724r" bash "$SUT" 2>/dev/null)"
+contains 'a ship-step row still classifies SHIP-STEP (HIMMEL-3724)' "$o3724r" 'denials=leg-r:1:SHIP-STEP'
+not_contains 'the tick line never echoes input_head (HIMMEL-3724)' "$o3724r" 'UNIQUE-HEAD-7f3a'
+not_contains 'the tick line never echoes reason_tag (HIMMEL-3724)' "$o3724r" 'UNIQUE-TAG-9c1e'
 
 # Valid non-object JSON lines (a scalar, an array) survive `fromjson?`; they
 # must be dropped, not abort the slurp and hide every real denial.

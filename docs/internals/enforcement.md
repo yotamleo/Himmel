@@ -4139,6 +4139,25 @@ sees a repeated or escalating denial within one tick instead of only when a
 leg happens to report it. Paired smoke test:
 `scripts/hooks/test-log-classifier-denial.sh`.
 
+Hardening (phase 2a): every text field (`cwd`, `session_id`, `tool`,
+`session_title`, not just `input_head`) is redacted then capped; the redactor
+catches short secrets in `KEY=value` and flag forms (`DB_PASS=x`, `--password x`,
+`mysql -pX`), deliberately over-matching; the hook runs under `umask 077` (dir
+0700, log 0600); and the log rotates to `classifier-denials.jsonl.1` past
+`HIMMEL_CLASSIFIER_DENIALS_MAX_BYTES` (default 1 MiB, one generation kept).
+`tick.sh` labels a non-worktree row `<dir>#<session_id[0:8]>` so a re-dispatched
+slug never inherits an old session's count, and reads `denials=none` when the
+log does not exist yet. `console-wait.sh` wakes on `denials=` only when it gets
+worse (a new leg, a higher count or class), so one denial wakes the console once
+and not again when it ages out of the 30-minute window.
+
+**Hard rule:** `input_head` and `reason_tag` never leave the host. They are
+redacted best-effort, not scrubbed; `tick.sh` classifies on them locally and
+prints only `leg:count:class`. Any later page (the Telegram slice) must send
+counts and classes at most. `test-log-classifier-denial.sh` pins the set of
+files allowed to name either field, so a new reader fails the suite until that
+list is edited on purpose.
+
 ### `auto-arm-on-subagent-cap.sh` — subagent-result cap watchdog (HIMMEL-276)
 
 Closes the detection gap left by `auto-arm-on-cap.sh`: when the cap hits
