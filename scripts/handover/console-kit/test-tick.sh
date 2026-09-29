@@ -1490,6 +1490,10 @@ ciq_tick 'ci-queue: unknown' >/dev/null
 o3840h="$(ciq_tick "$ciq_full")"
 not_contains 'unknown does not set the saturation state (HIMMEL-3840)' "$o3840h" 'SATURATED'
 
+# a line with an empty numeric field is malformed: unknown, not a partial summary.
+o3840k="$(ciq_tick 'ci-queue: jobs_in_progress=/20 macos=0/5 queued=0 oldest_wait=0m')"
+contains 'an empty numeric field reads ciq=unknown (HIMMEL-3840)' "$o3840k" 'ciq=unknown'
+
 # probe timeout: a hung probe reads unknown inside the bound and leaves state alone.
 if [ -n "$_TIMEOUT_BIN" ]; then
     rm -rf "$W/state"

@@ -997,7 +997,7 @@ if [ -f "$ciq_probe" ]; then
     ciq_bound="${TICK_CIQ_TIMEOUT:-45}"
     case "$ciq_bound" in ''|*[!0-9]*) ciq_bound=45 ;; esac
     ciq_out="$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 2 "$ciq_bound"} bash "$ciq_probe" 2>/dev/null)" || ciq_out=""
-    ciq_nums="$(printf '%s\n' "$ciq_out" | sed -n 's#^ci-queue: jobs_in_progress=\([0-9]*\)/\([0-9]*\) macos=\([0-9]*\)/\([0-9]*\) queued=\([0-9]*\) oldest_wait=\([0-9]*\)m$#\1 \2 \3 \4 \5 \6#p' | head -n 1)"
+    ciq_nums="$(printf '%s\n' "$ciq_out" | sed -n 's#^ci-queue: jobs_in_progress=\([0-9][0-9]*\)/\([0-9][0-9]*\) macos=\([0-9][0-9]*\)/\([0-9][0-9]*\) queued=\([0-9][0-9]*\) oldest_wait=\([0-9][0-9]*\)m$#\1 \2 \3 \4 \5 \6#p' | head -n 1)"
     if [ -n "$ciq_nums" ]; then
         read -r ciq_ip ciq_cap ciq_mac ciq_macmax ciq_q ciq_wait <<< "$ciq_nums"
         ciq_state="${TICK_STATE_DIR:-$HOME/.himmel/state}/tick-ciq-last"
