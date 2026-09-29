@@ -175,7 +175,7 @@ else
 fi
 
 # Source-level pin plus invocation-level proof from the stub record.
-if grep -q '^OXLINT_VERSION=1\.81\.0$' "$GATE"; then
+if grep -q '^OXLINT_VERSION=1\.86\.0$' "$GATE"; then
     echo "PASS gate pins OXLINT_VERSION=1.86.0"
 else
     echo "FAIL gate must pin OXLINT_VERSION=1.86.0"
