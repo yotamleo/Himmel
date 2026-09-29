@@ -21,7 +21,7 @@ node_modules/
 # used to COMMIT or PR the graph now no-ops on this ignored path instead.
 graphify-out/*
 # .claudeignore
-# Claude Code prompt cache invalidated after every graphify extract Graphify writes output files (graph.json, graphify-out/) into the workspace. If those paths aren't ignored, every write invalidates Claude Code's prompt cache, forcing a full re-upload at cache-write rates on the next turn. Add them to .claudeignore:
+# graphify writes output files (graph.json, graphify-out/) into the workspace. Ignoring them keeps them out of file search and context. It is NOT a prompt-cache fix: a graph.json write does not invalidate a running session's prompt cache (measured: docs/internals/prompt-cache.md, eval no-invalidation). Add them to .claudeignore:
 graph.json
 graphify-out/
 /.claude/skills/graphify/

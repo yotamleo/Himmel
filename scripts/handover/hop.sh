@@ -271,9 +271,9 @@ case "$MODE" in
   PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW.
 
   The scheduler will spawn a NEW claude process at the scheduled
-  time. Closing now gives the next session a clean prompt cache
-  and avoids two concurrent claude processes operating on the
-  same handover state.
+  time. Closing now avoids two concurrent claude processes operating
+  on the same handover state (it does not change the next session's
+  prompt cache -- docs/internals/prompt-cache.md).
 ================================================================
 EOF
         ;;
