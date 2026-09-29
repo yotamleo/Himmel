@@ -79,7 +79,7 @@ flag="${TMPDIR:-/tmp}/timeout-stub.$$"
 rm -f "$flag"
 "$@" &
 cpid=$!
-( sleep "$secs"; kill -TERM "$cpid" 2>/dev/null && touch "$flag" ) >/dev/null 2>&1 &
+( sleep "$secs"; touch "$flag"; kill -TERM "$cpid" 2>/dev/null ) >/dev/null 2>&1 &
 wpid=$!
 wait "$cpid"; rc=$?
 kill "$wpid" 2>/dev/null
