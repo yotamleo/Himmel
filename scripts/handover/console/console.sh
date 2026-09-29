@@ -69,6 +69,9 @@ CONSOLE_LAUNCH_ENV="env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_COD
 # shellcheck disable=SC1091
 . "$HERE/../../lib/handover-path.sh"
 . "$HERE/../../lib/console-context.sh"
+# shellcheck source=../../lib/git-clean.sh
+# shellcheck disable=SC1091
+. "$HERE/../../lib/git-clean.sh"
 # HIMMEL-3533: pin to this script's OWN checkout, never the caller's CWD repo
 # (load_dotenv with no --root resolves via the process CWD's git repo — see
 # HIMMEL-3532 / bank-preflight.sh for the failure mode).
@@ -119,7 +122,7 @@ slugify() {
 # queue-lock.sh below must be himmel's, not that repo's (HIMMEL-3623 J1271O C1).
 resolve_repo() {
     local common
-    if common="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    if common="$(git_clean -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
         (cd "$(dirname "$common")" && pwd)
         return 0
     fi
@@ -327,7 +330,12 @@ if ! root="$(handover_root)"; then
     err "set HANDOVER_DIR or run /handover-setup."
     exit 2
 fi
-if ! slug="$(user_slug)"; then
+# #1410: resolve from this script's OWN checkout, like load_dotenv above --
+# user_slug's forge/git-config fallbacks read the cwd, and the plugin console
+# runs from any directory, so a foreign cwd forked the chain into another slug.
+# The subshell also scrubs GIT_DIR & co (git-clean.sh): an inherited one would
+# void the cd, git answering about ITS repo instead.
+if ! slug="$(cd "$HERE/../../.." && git_env_scrub && user_slug)"; then
     err "cannot resolve USER_SLUG. Set USER_SLUG or configure your forge login / git user.name."
     exit 2
 fi
