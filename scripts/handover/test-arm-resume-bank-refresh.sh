@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-arm-resume-bank-refresh.sh -- HIMMEL-3846 regression: a REAL (non-dry-run)
-# arm must not run the usage-cache producer refresh.
+# arm with an explicit HH:MM must not run the usage-cache producer refresh;
+# --time auto / smart-on-the-live-cache keep it (the slot lookup reads the cache).
 #
 # arm-resume.sh calls scripts/lib/bank-preflight.sh only to enforce the
 # fleet-size cap and discards every verdict but SKIPPED-FLEET. bank-preflight's
@@ -133,7 +134,7 @@ chmod +x "$PRODUCER_STUB"
 export CADENCE_BANK_PRODUCER="$PRODUCER_STUB"
 export CADENCE_BANK_CACHE="$TMP/bank-cache.json"
 export CADENCE_BANK_LEDGER="$TMP/bank-ledger.jsonl"
-unset CADENCE_BANK_SKIP_REFRESH CLAUDE_USAGE_CACHE 2>/dev/null || true
+unset CADENCE_BANK_SKIP_REFRESH CLAUDE_USAGE_CACHE RESUME_SLOT_CACHE 2>/dev/null || true
 
 # --- control: bank-preflight itself DOES run the producer refresh ---------------
 # Without this the stub wiring could be dead and the arm assertion below would
