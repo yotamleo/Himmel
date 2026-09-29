@@ -171,7 +171,7 @@ mkdir -p "$(dirname "$OUT")" 2>/dev/null || exit 0
 # tick read of <log>.1 if either ever shows up as a missed PAUSE-RISK.
 max_bytes="${HIMMEL_CLASSIFIER_DENIALS_MAX_BYTES:-1048576}"
 case "$max_bytes" in ''|*[!0-9]*) max_bytes=1048576 ;; esac
-if [ -f "$OUT" ]; then
+if [ -f "$OUT" ]; then  # fail-open-ok: observability tap, not a guard; an unreadable log reads size 0 so it only skips rotation
     size=$(wc -c <"$OUT" 2>/dev/null | tr -d '[:space:]')
     case "$size" in ''|*[!0-9]*) size=0 ;; esac
     if [ "$size" -gt "$max_bytes" ]; then
