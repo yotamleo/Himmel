@@ -9,7 +9,8 @@
 #
 # Never touched: a run at the current head (HIMMEL-3588: a CANCELLED context on
 # the current head blocks the rollup), a run on a branch with no open PR (main,
-# schedule, anything whose PR head cannot be read), a completed run.
+# schedule, anything whose PR head cannot be read or is ambiguous, e.g. a fork
+# PR sharing the branch name), a completed run.
 # Fails SAFE: every read happens before the first cancel, so any gh error or
 # unparseable reply cancels nothing and exits 1. A cancel that itself fails is
 # reported, the rest still go, and the exit is 1.
@@ -38,7 +39,7 @@ done
 
 die() { echo "cancel-superseded-runs: $*; nothing cancelled" >&2; exit 1; }
 
-pr_args=(--state open --json "number,headRefName,headRefOid" --limit 200)
+pr_args=(--state open --json "number,headRefName,headRefOid,isCrossRepository" --limit 200)
 [ -n "$BRANCH" ] && pr_args+=(--head "$BRANCH")
 prs="$(gh pr list "${pr_args[@]}")" || die "gh pr list failed"
 printf '%s' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1 || die "unparseable gh pr list output"
@@ -46,8 +47,17 @@ printf '%s' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1 || die "unparseable
 # Runs whose branch has an open PR, live, not a schedule run, at a head other
 # than that PR's current one. Tab-separated: id, workflow, event, branch, sha, PR, PR head.
 # shellcheck disable=SC2016 # $-names here are jq variables, not shell
+#
+# A branch name is attributed to a PR head only when that is unambiguous: never
+# main/master, never a name any cross-repository (fork) PR also uses, never one
+# with two open PRs at different heads, and never a PR whose head is unreadable.
 PICK='
-  ($prs | map({key: .headRefName, value: .}) | from_entries) as $by
+  ($prs | group_by(.headRefName)
+    | map(select(
+        (.[0].headRefName | IN("main", "master") | not)
+        and all(.[]; .isCrossRepository == false and (.headRefOid | type == "string" and length > 0))
+        and (map(.headRefOid) | unique | length) == 1))
+    | map({key: .[0].headRefName, value: .[0]}) | from_entries) as $by
   | .[]
   | select(.status | IN("queued", "pending", "in_progress", "waiting", "requested"))
   | select(.event != "schedule")

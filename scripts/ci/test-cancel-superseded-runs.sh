@@ -46,8 +46,8 @@ chmod +x "$TMP/bin/gh"
 
 # PR 10 (branch feat/a) head=NEW10; PR 11 (branch feat/b) head=NEW11.
 cat > "$TMP/prs.json" <<'EOF'
-[{"number":10,"headRefName":"feat/a","headRefOid":"NEW10"},
- {"number":11,"headRefName":"feat/b","headRefOid":"NEW11"}]
+[{"number":10,"headRefName":"feat/a","headRefOid":"NEW10","isCrossRepository":false},
+ {"number":11,"headRefName":"feat/b","headRefOid":"NEW11","isCrossRepository":false}]
 EOF
 # run <id> <status> <event> <branch> <sha> -> one gh run list element
 r() { printf '{"databaseId":%s,"status":"%s","event":"%s","headBranch":"%s","headSha":"%s","workflowName":"CI"}' "$@"; }
@@ -106,6 +106,47 @@ reset
 echo "[$(r 1 queued pull_request feat/b NEW10),$(r 2 queued pull_request feat/b NEW11)]" > "$TMP/fx/runs-ci.json"
 run >/dev/null
 is "each branch compared to its own PR head" "1" "$(cancelled)"
+
+# ambiguous or unreadable PR heads are left alone (fail safe). Each case has a
+# must-cancel sibling on feat/a so it cannot pass vacuously.
+sib="$(r 9 queued pull_request feat/a OLD10)"
+# a fork PR shares the branch name feat/x: its runs cannot be attributed to a head
+reset
+cat > "$TMP/fx/prs.json" <<'EOF'
+[{"number":10,"headRefName":"feat/a","headRefOid":"NEW10","isCrossRepository":false},
+ {"number":12,"headRefName":"feat/x","headRefOid":"FORKX","isCrossRepository":true}]
+EOF
+echo "[$sib,$(r 1 queued pull_request feat/x OLDX)]" > "$TMP/fx/runs-ci.json"
+run >/dev/null
+is "branch shared with a cross-repo (fork) PR kept" "9" "$(cancelled)"
+# a same-repo PR whose head branch is main: main is never touched
+reset
+cat > "$TMP/fx/prs.json" <<'EOF'
+[{"number":10,"headRefName":"feat/a","headRefOid":"NEW10","isCrossRepository":false},
+ {"number":13,"headRefName":"main","headRefOid":"MAINPR","isCrossRepository":false}]
+EOF
+echo "[$sib,$(r 1 queued push main OLDMAIN),$(r 2 queued pull_request main OLDMAIN)]" > "$TMP/fx/runs-ci.json"
+run >/dev/null
+is "main kept even when it is an open PR's head branch" "9" "$(cancelled)"
+# a PR entry with no readable headRefOid
+reset
+cat > "$TMP/fx/prs.json" <<'EOF'
+[{"number":10,"headRefName":"feat/a","headRefOid":"NEW10","isCrossRepository":false},
+ {"number":14,"headRefName":"feat/c","isCrossRepository":false}]
+EOF
+echo "[$sib,$(r 1 queued pull_request feat/c OLDC)]" > "$TMP/fx/runs-ci.json"
+run >/dev/null
+is "PR entry without headRefOid kept" "9" "$(cancelled)"
+# two open PRs from one branch with different heads (different bases): ambiguous
+reset
+cat > "$TMP/fx/prs.json" <<'EOF'
+[{"number":10,"headRefName":"feat/a","headRefOid":"NEW10","isCrossRepository":false},
+ {"number":15,"headRefName":"feat/d","headRefOid":"D1","isCrossRepository":false},
+ {"number":16,"headRefName":"feat/d","headRefOid":"D2","isCrossRepository":false}]
+EOF
+echo "[$sib,$(r 1 queued pull_request feat/d D1)]" > "$TMP/fx/runs-ci.json"
+run >/dev/null
+is "branch with two open PRs at different heads kept" "9" "$(cancelled)"
 
 # nothing to cancel -> exit 0
 reset
