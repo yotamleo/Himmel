@@ -322,7 +322,11 @@ export async function syncSprints(
   const lines: string[] = [];
   let drift = 0;
   for (const v of versions) {
-    let sprint = sprints.find((s) => s.name === v.name);
+    const named = sprints.filter((s) => s.name === v.name);
+    if (named.length > 1) {
+      throw new Error(`${v.name}: ${named.length} open sprints share this name (${named.map((s) => s.id).join(', ')}) — rename all but one`);
+    }
+    let sprint = named[0];
     const dates = { startDate: `${v.startDate}T00:00:00.000Z`, endDate: `${v.releaseDate}T23:59:00.000Z` };
     const staleDates = !!sprint && (day(sprint.startDate) !== v.startDate || day(sprint.endDate) !== v.releaseDate);
     const base = `project = ${project} AND fixVersion = "${v.name.replace(/"/g, '\\"')}" AND statusCategory != Done`;

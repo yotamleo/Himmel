@@ -306,6 +306,18 @@ describe('syncSprints', () => {
     expect(r.lines).toEqual(['v1.0.0: sprint 7 (dates updated), moved 0']);
   });
 
+  it('refuses when two open sprints share a version name', async () => {
+    const api = stub({ 'GET /project/HIMMEL/versions': versions.slice(0, 1) });
+    const agile = stub({
+      [sprintsRoute]: {
+        values: [sprint(7, 'v1.0.0', '2026-10-01', '2026-10-04'), sprint(11, 'v1.0.0', '2026-10-01', '2026-10-04')],
+        isLast: true,
+      },
+    });
+    await expect(syncSprints('HIMMEL', '166', false, api.req, agile.req)).rejects.toThrow(/2 open sprints share this name \(7, 11\)/);
+    expect(agile.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+  });
+
   it('keeps an issue on several dated versions in the earliest-releasing sprint', async () => {
     // HIMMEL-5 is on both versions and already sits in v1.0.0's sprint 7.
     const api = stub({
