@@ -38,6 +38,23 @@
 #                   first; either way the verdict is then derived structurally
 #                   instead of waited out.
 #
+# API cost (HIMMEL-3850): every checks read goes through a shared per-PR cache
+# (scripts/lib/gh-ci-cache.sh) — N concurrent waiters on one PR cost ONE fetch
+# per TTL — and the watch is scripts/lib/check-ci-watch.sh (adaptive interval)
+# instead of gh's own --watch. On a rate-limit 403, or when the remaining
+# budget is under the floor, it sleeps until the reset (bounded by --max-wait)
+# and prints one line. Exit codes and gate decisions are unchanged. Knobs (env):
+#   CHECK_CI_CACHE=0            legacy path: gh's own --watch, no cache
+#   CHECK_CI_CACHE_DIR          default $HOME/.himmel/state/ci-cache
+#   CHECK_CI_CACHE_TTL          poll-read TTL, default 60
+#   CHECK_CI_DECIDE_TTL         terminal/decide-read TTL, default 5
+#   CHECK_CI_CACHE_ERR_TTL      error-entry TTL, default 10
+#   CHECK_CI_WATCH_INTERVAL     adaptive-interval floor, default 30
+#   CHECK_CI_WATCH_INTERVAL_MAX adaptive-interval ceiling, default 120
+#   CHECK_CI_API_FLOOR          wait for the reset under this many calls left,
+#                               default 300 (0 = only wait on a 403)
+# Details + adopter notes: docs/configuration.md.
+#
 # The green verdict is bound to the PR head SHA: headRefOid is captured before
 # the first watch and re-read before exit 0 — a concurrent push (another live
 # session, automation) during the run means the certified commit is not the
@@ -224,6 +241,29 @@ case "$PROBE_INTERVAL" in
     ''|*[!0-9]*|0) echo "check-ci: CHECK_CI_PROBE_INTERVAL='$PROBE_INTERVAL' is not a positive integer — using 60" >&2
         PROBE_INTERVAL=60 ;;
 esac
+# HIMMEL-3850: the shared per-PR status cache (scripts/lib/gh-ci-cache.sh) and the
+# cache-backed watch helper (scripts/lib/check-ci-watch.sh). One cost knob per
+# concern; CHECK_CI_CACHE=0 restores the pre-cache behaviour exactly (gh's own
+# --watch and one gh call per probe). Every knob is validated here; the lib and
+# the helper re-read the same env names.
+CACHE_ON=1
+[ "${CHECK_CI_CACHE:-1}" = 0 ] && CACHE_ON=0
+CACHE_TTL="${CHECK_CI_CACHE_TTL:-60}"
+DECIDE_TTL="${CHECK_CI_DECIDE_TTL:-5}"
+WATCH_INTERVAL_MAX="${CHECK_CI_WATCH_INTERVAL_MAX:-120}"
+case "$CACHE_TTL" in
+    ''|*[!0-9]*|0) echo "check-ci: CHECK_CI_CACHE_TTL='$CACHE_TTL' is not a positive integer — using 60" >&2
+        CACHE_TTL=60 ;;
+esac
+case "$DECIDE_TTL" in
+    ''|*[!0-9]*|0) echo "check-ci: CHECK_CI_DECIDE_TTL='$DECIDE_TTL' is not a positive integer — using 5" >&2
+        DECIDE_TTL=5 ;;
+esac
+case "$WATCH_INTERVAL_MAX" in
+    ''|*[!0-9]*|0) echo "check-ci: CHECK_CI_WATCH_INTERVAL_MAX='$WATCH_INTERVAL_MAX' is not a positive integer — using 120" >&2
+        WATCH_INTERVAL_MAX=120 ;;
+esac
+export CHECK_CI_CACHE_TTL="$CACHE_TTL" CHECK_CI_DECIDE_TTL="$DECIDE_TTL"
 # Sleep seam (HIMMEL-1953). EVERY wall-clock wait below goes through this one
 # command word so a hermetic suite can inject `:` and never burn real seconds on
 # a simulated poll — a test that sleeps is a test that can hang, and a hang is
@@ -407,6 +447,36 @@ pr_view() {
     if [ -n "$selector" ]; then gh pr view "$selector" "$@"; else gh pr view "$@"; fi
 }
 
+# HIMMEL-3850 — the per-PR check rows through the shared cache.
+# shellcheck source=scripts/lib/gh-ci-cache.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "$0")" && pwd)/lib/gh-ci-cache.sh"
+
+# pr_rows <ttl> — "<bucket>\t<name>" per check. Cached mode reads (or fetches once
+# for the whole fleet) a head-bound snapshot no older than <ttl> seconds; legacy
+# mode is the one direct gh call it always was. rc 1 = unreadable.
+pr_rows() {
+    if [ "$CACHE_ON" -eq 1 ]; then
+        cic_get "$1" || return 1
+        [ -z "$CIC_ROWS" ] || printf '%s\n' "$CIC_ROWS"
+        return 0
+    fi
+    pr_checks --json bucket,name --jq '.[] | "\(.bucket)\t\(.name)"' 2>/dev/null
+}
+
+# _fail_count — how many checks are in the fail bucket, from a decide-grade read
+# (a terminal verdict is never older than CHECK_CI_DECIDE_TTL seconds). Prints
+# nothing when unreadable (callers fail closed on a non-numeric answer).
+_fail_count() {
+    local rows
+    if [ "$CACHE_ON" -eq 0 ]; then
+        pr_checks --json bucket --jq '[.[] | select(.bucket == "fail")] | length' 2>/dev/null
+        return
+    fi
+    rows=$(pr_rows "$DECIDE_TTL") || return 0
+    printf '%s\n' "$rows" | awk -F'\t' '$1 == "fail" { c++ } END { print c + 0 }'
+}
+
 # HIMMEL-3381 — the required-check gate. GitHub refuses a merge while a check the
 # base branch REQUIRES is failed or has never reported; watching cannot fix
 # either, so neither is waited on past --grace. `gh pr checks --watch` knows
@@ -450,7 +520,7 @@ _required_normalize() {
 
 # _required_rows — "<bucket>\t<name>" for every check on the PR.
 _required_rows() {
-    pr_checks --json bucket,name --jq '.[] | "\(.bucket)\t\(.name)"' 2>/dev/null
+    pr_rows "$DECIDE_TTL"
 }
 
 # _has_producer_ids <reqs> — true when any required entry names a producer.
@@ -636,7 +706,17 @@ red_exit() {
 # watching) — this can only ever shorten a wait, never fabricate a verdict.
 watch_decidable() {
     local rows first n low
-    rows=$(pr_checks --json bucket,name --jq '"CHECKCI_OK", (.[] | select(.bucket == "pending") | .name)' 2>/dev/null) || return 1
+    if [ "$CACHE_ON" -eq 1 ]; then
+        # HIMMEL-3850: from the shared snapshot (poll-grade TTL) instead of a gh
+        # call per probe. An empty snapshot is not "decidable" (fail-safe: keep
+        # watching); the terminal verdict is re-read at the decide TTL after.
+        rows=$(pr_rows "$CACHE_TTL") || return 1
+        [ -n "$rows" ] || return 1
+        rows=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "pass" && $1 != "skipping" && $1 != "fail" && $1 != "cancel" { print $2 }')
+        rows="CHECKCI_OK${rows:+$'\n'$rows}"
+    else
+        rows=$(pr_checks --json bucket,name --jq '"CHECKCI_OK", (.[] | select(.bucket == "pending") | .name)' 2>/dev/null) || return 1
+    fi
     first=${rows%%$'\n'*}
     [ "$first" = "CHECKCI_OK" ] || return 1
     # Every remaining line (if any) is a still-pending check name; all must be
@@ -667,6 +747,14 @@ watch_decidable() {
 # watch_decidable: an unreadable/unparsable probe reports zero names rather
 # than fabricating any; callers fall back to generic wording.
 _pending_checks_report() {
+    if [ "$CACHE_ON" -eq 1 ]; then
+        local rows
+        rows=$(pr_rows "$CACHE_TTL") || return 0
+        printf '%s\n' "$rows" | awk -F'\t' '
+            $1 != "pass" && $1 != "skipping" && $1 != "fail" && $1 != "cancel" && NF { n++; names = names (n > 1 ? ", " : "") $2 }
+            END { print n + 0; print names }'
+        return 0
+    fi
     # shellcheck disable=SC2016  # jq expression, not a shell expansion
     pr_checks --json bucket,name --jq \
         '[.[] | select(.bucket == "pending")] as $p | "\($p | length)", ($p | map(.name) | join(", "))' \
@@ -749,7 +837,13 @@ watch_round() {
         gh_rc=1
         trap 'printf "%s\n" "$gh_rc" >"$rc_file.tmp" 2>/dev/null && mv -f "$rc_file.tmp" "$rc_file" 2>/dev/null' EXIT
         (
-            if [ -n "$selector" ]; then exec gh pr checks "$selector" --watch --fail-fast --interval "$WATCH_INTERVAL"
+            if [ "$CACHE_ON" -eq 1 ]; then
+                # HIMMEL-3850: the cache-backed loop stands in for gh's own --watch
+                # (which polls per watcher and cannot be cached); same exit contract.
+                exec env CHECK_CI_WATCH_INTERVAL="$WATCH_INTERVAL" CHECK_CI_WATCH_INTERVAL_MAX="$WATCH_INTERVAL_MAX" \
+                    CHECK_CI_CACHE_HEAD="$cache_head" CHECK_CI_MAX_WAIT="$MAX_WAIT" CIC_NOTICE_FD=1 \
+                    bash "$(cd "$(dirname "$0")" && pwd)/lib/check-ci-watch.sh" ${selector:+"$selector"}
+            elif [ -n "$selector" ]; then exec gh pr checks "$selector" --watch --fail-fast --interval "$WATCH_INTERVAL"
             else exec gh pr checks --watch --fail-fast --interval "$WATCH_INTERVAL"
             fi
         ) 2>"$err_file" &
@@ -858,7 +952,7 @@ watch_round() {
             # rc 1 is ALSO gh's generic failure code — confirm the red
             # structurally (at least one check in the "fail" bucket) before
             # reporting exit 1.
-            failed=$(pr_checks --json bucket --jq '[.[] | select(.bucket == "fail")] | length' 2>/dev/null)
+            failed=$(_fail_count)
             case "$failed" in
                 ''|*[!0-9]*)
                     echo "check-ci: watch reported failure but the structured confirm failed — cannot evaluate the gate; re-run" >&2
@@ -952,7 +1046,7 @@ watch_round() {
         echo "check-ci: every non-CodeRabbit check is terminal — ending the watch early (HIMMEL-2062)" >&2
     fi
 
-    failed=$(pr_checks --json bucket --jq '[.[] | select(.bucket == "fail")] | length' 2>/dev/null)
+    failed=$(_fail_count)
     case "$failed" in
         ''|*[!0-9]*)
             echo "check-ci: the structured check probe failed after the bounded watch — cannot evaluate the gate; re-run" >&2
@@ -1000,9 +1094,30 @@ if [ "$THREADS_ONLY" -eq 0 ]; then
     # which produces the authoritative verdict. Any OTHER stderr (auth, network,
     # rate-limit) is a gate we cannot evaluate — exit 2, never a fake red.
     start=$SECONDS
+    # HIMMEL-3850: bind the cache to the head read up front; a PR gh cannot resolve
+    # (or a cache dir that cannot be made) drops to the uncached path, whose
+    # messages are the ones callers already know.
+    cache_head=""
+    if [ "$CACHE_ON" -eq 1 ]; then
+        cache_head=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
+        if [ -z "$cache_head" ] || ! cic_init "$selector" "$cache_head"; then CACHE_ON=0; fi
+    fi
     while :; do
-        err=$(pr_checks 2>&1 >/dev/null)
-        rc=$?
+        if [ "$CACHE_ON" -eq 1 ]; then
+            # Same three outcomes the direct probe below yields: rows = checks
+            # exist (rc 0, or a red the watch will report), an error = its text on
+            # stderr, nothing = "no checks reported".
+            if cic_get "$CACHE_TTL"; then
+                err=""; rc=0
+                [ -n "$CIC_ROWS" ] || { err="no checks reported"; rc=1; }
+            else
+                err="$CIC_ERR"; rc=1
+                [ -n "$err" ] || err="cannot read the PR's checks"
+            fi
+        else
+            err=$(pr_checks 2>&1 >/dev/null)
+            rc=$?
+        fi
         if [ "$rc" -eq 0 ] || [ "$rc" -eq 8 ]; then break; fi
         if [ -z "$err" ]; then break; fi
         if printf '%s' "$err" | grep -i 'no pull requests found' >/dev/null; then
@@ -1029,6 +1144,9 @@ if [ "$THREADS_ONLY" -eq 0 ]; then
         echo "check-ci: cannot read the PR head SHA — cannot bind the verdict; re-run" >&2
         exit 2
     fi
+    # A push landed since the cache was bound: its snapshots describe another head,
+    # so the rest of the run reads gh directly (the pre-cache behaviour).
+    if [ "$CACHE_ON" -eq 1 ] && [ "$head0" != "$cache_head" ]; then CACHE_ON=0; fi
 
 fi
 

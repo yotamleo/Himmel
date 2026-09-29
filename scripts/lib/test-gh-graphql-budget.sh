@@ -33,6 +33,11 @@
 #       range, jitter clamped to the bound, no waits when budget is healthy)
 set -uo pipefail
 
+# HIMMEL-3850 — these cases pin the HIMMEL-3190 budget behaviour of gh's own
+# --watch path; the shared status cache (CHECK_CI_CACHE, default on) has its own
+# suite, test-check-ci-cache.sh.
+export CHECK_CI_CACHE=0
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/gh-graphql-budget.sh"
 CHECK_CI="$SCRIPT_DIR/../check-ci.sh"

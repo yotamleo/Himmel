@@ -71,6 +71,12 @@ set -uo pipefail
 # one — case 58 below pins today's insensitivity.
 unset ARMAUTOMERGE CR_MERGE_GATE_OK
 
+# HIMMEL-3850 — this suite pins the pre-cache behaviour (gh's own --watch, one gh
+# call per probe) that CHECK_CI_CACHE=0 preserves; the cached path has its own
+# suite (test-check-ci-cache.sh). An ambient shared cache would also leak rows
+# between cases.
+export CHECK_CI_CACHE=0
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/check-ci.sh"
 # shellcheck source=scripts/lib/timeout-bin.sh

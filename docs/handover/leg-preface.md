@@ -270,7 +270,10 @@ by design.
 - Push → PR → review → `/pr-check` (run at the exact head you will `READY`) →
   one `scripts/check-ci.sh <pr> --max-wait <sec>` call, whose exit code
   decides — not repeated `gh pr checks`/`gh run list|view` reads in model
-  turns — → `READY <pr> <full head> GREEN` to the console.
+  turns — → `READY <pr> <full head> GREEN` to the console. Never leave a
+  background (`run_in_background`) poll loop against GitHub: wait on CI with
+  `scripts/check-ci.sh` in the foreground (its shared cache and rate-limit
+  backoff exist so the fleet stays under one API quota).
 - On an agreed review finding, **sweep the whole class** across every site
   before the next round and report the other sites, not just the cited line. A
   review round spent enumerating instances of a class you already understood is

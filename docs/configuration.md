@@ -299,6 +299,33 @@ per-hook behavior: [internals/enforcement.md](internals/enforcement.md).
 | Public merge (`scripts/merge-public-on-green.sh`, via Telegram `/mergepub`) | HARD human-authorization | operator-typed, non-forwarded `/mergepub <pr> <sha12>`; SHA must prefix-match the live head at read *and* fresh pre-merge re-verify; `check-ci.sh` exit 0 is the only pass; the script refuses outright if `CLAUDECODE` is set (i.e. if any agent tries to run it) |
 | `check-ci.sh` (the watcher those gates call) | mechanism, not a veto | exit 0 = green + threads resolved + no changes-requested; 1 = red; 2 = cannot evaluate; 64 = usage error, no gate ran (HIMMEL-3317); 3 = unresolved threads / changes requested; 5 = a required check (rulesets ∪ classic protection) never reported within `--grace`, or the required set is unreadable — fail-fast with one operator DM, never waited on (HIMMEL-3381); 4 = no longer emitted (the stale-CodeRabbit-anchor exit, retired by HIMMEL-3360: CodeRabbit is best effort and its absence prints a NOTE, never a failure) |
 
+**`check-ci.sh` API cost (HIMMEL-3850).** Many legs waiting on CI drain one shared
+GitHub quota (5,000/h REST core, 5,000/h GraphQL — `gh pr checks` is GraphQL), so
+the wait is cheap by construction: the first waiter in a TTL window fetches a PR's
+checks and every other waiter reads that snapshot from a shared cache; the poll
+interval backs off while the rollup is unchanged; and when the budget runs low it
+sleeps until the reset instead of retrying. **Only cost changes — exit codes and
+every gate decision are unchanged.** All knobs are environment variables (set them
+in `.env` or the launching shell):
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `CHECK_CI_CACHE` | `1` | `0` = no cache: gh's own `--watch` and one gh call per probe (the pre-cache behaviour) |
+| `CHECK_CI_CACHE_DIR` | `$HOME/.himmel/state/ci-cache` | shared cache dir; point every waiter at one dir (per user) |
+| `CHECK_CI_CACHE_TTL` | `60` | seconds a snapshot serves poll-grade reads |
+| `CHECK_CI_DECIDE_TTL` | `5` | max age of the snapshot a terminal verdict (green/red confirm, required-check gate) may rest on |
+| `CHECK_CI_CACHE_ERR_TTL` | `10` | how long a failed fetch is remembered (rate-limit errors never are) |
+| `CHECK_CI_WATCH_INTERVAL` / `CHECK_CI_WATCH_INTERVAL_MAX` | `30` / `120` | poll-interval floor / ceiling; doubles while the rollup is unchanged, resets on a change |
+| `CHECK_CI_API_FLOOR` | `300` | sleep until the reset when GitHub reports fewer calls than this remaining (or answers 403 rate-limit); `0` disables the preemptive check. The wait is bounded by `--max-wait`; past it the gate exits 2 as before |
+| `CHECK_CI_LOCK_WAIT` | `30` | seconds a waiter waits for the fetching peer before fetching itself |
+| `GH_BUDGET_JITTER_MAX` | (existing) | random seconds added to a budget wait so waiters do not wake in lock-step |
+
+The cache is a head-bound file per PR: a snapshot is used only for the head SHA
+the run bound at start, so a push never reads a stale-head green. `scripts/ci/api-budget.sh`
+prints the live budget as one read-only line (`gh-api: remaining=R/5000 reset=HH:MMZ graphql=G/5000`).
+Never run your own `gh pr checks` poll loop in the background — that is the spend
+this replaces; call `scripts/check-ci.sh` in the foreground.
+
 ## 4. The control surface
 
 ### 4.1 `.env` — the file-based config
