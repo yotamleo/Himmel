@@ -20,6 +20,7 @@ import { registerWatchers } from './commands/watchers.js';
 import { registerSprint } from './commands/sprint.js';
 import { registerVersions } from './commands/versions.js';
 import { registerFreezeCheck } from './commands/freeze-check.js';
+import { registerMirror } from './commands/mirror.js';
 
 const program = new Command();
 
@@ -48,6 +49,7 @@ registerWatchers(program);
 registerSprint(program);
 registerVersions(program);
 registerFreezeCheck(program);
+registerMirror(program);
 
 // HIMMEL-159: expose the CLI verbs over the Model Context Protocol on stdio.
 // The MCP SDK is heavy, so import it lazily inside the action — keeping it out
