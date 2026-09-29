@@ -85,10 +85,10 @@ cic_init() {
     return 0
 }
 
-# _cic_read <ttl> — a valid entry sets CIC_ROWS/CIC_ERR/CIC_HIT_RC (the fetch's
-# own rc: 0 rows, 1 error) and returns 0; rc 1 = miss.
-# Valid: same head as the bound one, and younger than <ttl> (an error entry is
-# also capped at the short error TTL). A future-dated entry (clock skew) is a miss.
+# _cic_read <ttl> — a valid entry sets CIC_ROWS (CIC_HIT_RC is always 0: only
+# successful fetches are ever cached) and returns 0; rc 1 = miss.
+# Valid: same head as the bound one, and younger than <ttl>. A future-dated entry
+# (clock skew) is a miss.
 _cic_read() {
     local ttl="$1" line ts head rc now age
     [ -f "$CIC_FILE" ] || return 1
