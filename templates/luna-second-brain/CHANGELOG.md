@@ -8,6 +8,13 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.63] — 2026-09-29
+
+### Fixed
+- `scripts/test-upgrade.sh`: the upgrade suite now runs on macOS (BSD `wc`
+  padding, and a `mktemp -t` probe that skips where it cannot fail). No
+  change to any vault-facing file.
+
 ## [0.4.62] — 2026-09-29
 
 ### Added
