@@ -3,7 +3,7 @@
 # handovers/**/verdicts/ (a console judge's probe/cases scripts, evidence its
 # verdict rests on — not shipped code) the same way it already excludes
 # handovers/**/specs/(console-kit-*|reports/*-artifacts)/, while a normal
-# scripts/*.sh path is still linted.
+# scripts/*.sh path is still linted. HIMMEL-3851 adds handovers/**/logs/.
 #
 # Extracts the shellcheck hook's `exclude` regex FROM the template's own
 # .pre-commit-config.yaml (never hand-copied) and runs it through
@@ -67,6 +67,25 @@ if kept == []:
     print(f"ok - {VERDICT_PATH} is excluded from shellcheck")
 else:
     print(f"FAIL - {VERDICT_PATH} is NOT excluded from shellcheck (kept={kept})")
+    fails += 1
+
+# HIMMEL-3851: legs and consoles write scratch sheets and launch artefacts under
+# handovers/**/logs/; one failing scratch .sh there stalled every vault commit.
+LOGS_PATH = "handovers/x/logs/scratch.sh"
+NOT_LOGS_PATH = "handovers/x/blogs/scratch.sh"
+
+kept = list(filter_by_include_exclude([LOGS_PATH], "", exclude))
+if kept == []:
+    print(f"ok - {LOGS_PATH} is excluded from shellcheck")
+else:
+    print(f"FAIL - {LOGS_PATH} is NOT excluded from shellcheck (kept={kept})")
+    fails += 1
+
+kept = list(filter_by_include_exclude([NOT_LOGS_PATH], "", exclude))
+if kept == [NOT_LOGS_PATH]:
+    print(f"ok - {NOT_LOGS_PATH} is still linted by shellcheck (logs/ match is a whole path segment)")
+else:
+    print(f"FAIL - {NOT_LOGS_PATH} was wrongly excluded from shellcheck (kept={kept})")
     fails += 1
 
 kept = list(filter_by_include_exclude([NORMAL_PATH], "", exclude))
