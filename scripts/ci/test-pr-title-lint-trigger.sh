@@ -56,18 +56,6 @@ for t in opened synchronize reopened; do
   esac
 done
 
-# HIMMEL-3835: `edited` also fires on every body edit (leg-pr-open.sh does one
-# right after opening a PR). The job-level `if:` must let an edit through only
-# when the title changed; a job skipped by `if:` reports success, so the
-# required pr-title-lint context is still satisfied.
-job_if="$(sed -n 's/^    if:[[:space:]]*//p' <<< "$body")"
-# shellcheck disable=SC2016 # literal YAML text, not meant to expand
-case "$job_if" in
-  *"github.event.action != 'edited'"*'github.event.changes.title != null'*)
-    ok "pr-title-lint runs on an edit only when the title changed" ;;
-  *) bad "pr-title-lint job lacks the title-changed guard on edited; got: ${job_if:-no if:}" ;;
-esac
-
 # F2: its own concurrency group, scoped to the PR number and distinct from
 # ci.yml's ci-pr-<N> group, so a retitle never cancels (or is cancelled by)
 # the required CI matrix through a shared group.

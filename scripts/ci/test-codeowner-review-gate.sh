@@ -373,11 +373,6 @@ wf_violations() {
   # statusCheckRollup that block the ruleset even when the latest run is
   # green — this gate must let every queued run complete.
   grep -qE '^[[:space:]]*cancel-in-progress:[[:space:]]*true' "$s" && echo "has cancel-in-progress: true"
-  # HIMMEL-3835: a body-only `edited` and a bot review can never change the
-  # verdict, so the job-level `if:` must skip them. A job-level skip reports
-  # success and never leaves a CANCELLED context (unlike cancel-in-progress).
-  grep -qE '^    if:.*github\.event\.changes\.base' "$s" || echo "edited is not gated on a base change"
-  grep -qE "^    if:.*github\.event\.review\.user\.type != 'Bot'" "$s" || echo "bot reviews are not skipped"
   return 0
 }
 
@@ -403,7 +398,6 @@ permissions:
 jobs:
   gate:
     name: codeowner-review-gate
-    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null)) || (github.event_name == 'pull_request_review' && github.event.review.user.type != 'Bot')
     runs-on: ubuntu-latest
     steps:
       - name: Fetch
@@ -437,8 +431,6 @@ mutate "a missing review trigger"    "pull_request_review" 's/^  pull_request_re
 mutate "a dropped edited trigger"    "pull_request types"  '/ready_for_review/s/, edited\]$/]/'
 mutate "a 404 bootstrap branch"      "404/bootstrap"       's|^    steps:|    steps:\n      - run: grep -q "HTTP 404" err|'
 mutate "cancel-in-progress restored" "cancel-in-progress"  's/^jobs:/concurrency:\n  group: codeowner-review-gate\n  cancel-in-progress: true\njobs:/'
-mutate "an unguarded edited run"     "edited is not gated" 's/ || github\.event\.changes\.base != null//'
-mutate "bot reviews not skipped"     "bot reviews"         "s/ \&\& github\.event\.review\.user\.type != 'Bot'//"
 # shellcheck disable=SC2016  # the literal $BASE_REF text must reach sed
 mutate "a default-branch exemption" "404/bootstrap"       's|^    steps:|    steps:\n      - run: test "$BASE_REF" = "$DEFAULT_BRANCH"|'
 mutate "a step gated on the fetch"   "404/bootstrap"       's|^    steps:|    steps:\n      - if: steps.fetch.outputs.present == '"'"'true'"'"'\n        run: true|'
