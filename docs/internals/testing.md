@@ -417,3 +417,16 @@ Three readings that look like evidence and are not:
 - `gh api rate_limit` can report thousands of REST calls left while GraphQL is
   exhausted — read the `X-Ratelimit-*` headers of a real call
   (`gh api -i graphql …`), not the summary endpoint.
+
+## Superseded runs under a runner backlog (HIMMEL-3811)
+
+With a large fleet the account's 20-job cap backs up, and superseded
+`pull_request` runs sit in workflow-level `queued` — the concurrency group does
+not cancel them, and `codeowner-review-gate` / `workflow_dispatch` runs are
+outside it by design. From a console, `bash scripts/ci/cancel-superseded-runs.sh
+--dry-run [--branch <b>]` lists, and without `--dry-run` cancels, every live CI
+or codeowner-review-gate run on an open PR's branch whose head is not that PR's
+current head. It never touches a run at the current head (HIMMEL-3588), main, a
+schedule run or a branch with no open PR, and any `gh` read error cancels
+nothing and exits 1. Cancels land ~20 s later. Console-run only; not yet wired
+into `tick.sh` or the leg ship flow.
