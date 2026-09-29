@@ -415,8 +415,16 @@ test("spawnSpec pins the opus/sonnet tier aliases to the 5.5 ids, leaves haiku a
   expect(model(spawnSpec("p", undefined, undefined, "opus"))).toBe("claude-opus-5-5");
   expect(model(spawnSpec("p", undefined, undefined, "sonnet"))).toBe("claude-sonnet-5-5");
   expect(model(spawnSpec("p", undefined, undefined, "haiku"))).toBe("haiku");
-  // GLM's "opus" is a Z.ai alias (ANTHROPIC_DEFAULT_OPUS_MODEL), never an Anthropic id
-  expect(model(spawnSpec("p", undefined, "glm"))).toBe(GLM_MODEL_ALIAS);
+  // GLM's "opus" is a Z.ai alias (ANTHROPIC_DEFAULT_OPUS_MODEL), never an Anthropic id;
+  // the glm lane needs a key (CI has none), so set one and put the ambient value back
+  const ambientKey = process.env.ZAI_API_KEY;
+  process.env.ZAI_API_KEY = "k-3848";
+  try {
+    expect(model(spawnSpec("p", undefined, "glm"))).toBe(GLM_MODEL_ALIAS);
+  } finally {
+    if (ambientKey === undefined) delete process.env.ZAI_API_KEY;
+    else process.env.ZAI_API_KEY = ambientKey;
+  }
 });
 
 // --- HIMMEL-3482: the lane registry's effort reaches a native dispatch ---
