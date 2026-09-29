@@ -88,7 +88,7 @@ check_job_names() {
   ids="$(job_ids "$1")"
   [ -n "$ids" ] || return 1
   for id in $ids; do
-    job_block "$1" "$id" | grep -q '^    name: os-verify / ' || return 1
+    grep -q '^    name: os-verify / ' <<< "$(job_block "$1" "$id")" || return 1
     n=$((n + 1))
   done
   [ "$n" -gt 0 ]
@@ -96,7 +96,7 @@ check_job_names() {
 
 # check_no_continue_on_error <file> -- rc 0 iff no job tolerates failure.
 check_no_continue_on_error() {
-  ! strip_comments "$1" | grep -q 'continue-on-error'
+  ! grep -q 'continue-on-error' <<< "$(strip_comments "$1")"
 }
 
 if [ -f "$WF" ]; then ok "os-verify.yml exists"
