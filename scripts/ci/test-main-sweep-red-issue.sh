@@ -41,7 +41,15 @@ printf '%s\n' "gh $*" >> "$STUB/gh.log"
 case "$*" in
   "api "*"/jobs"*)          cat "$STUB/jobs.tsv" 2>/dev/null ;;
   "api "*"/compare/"*)      cat "$STUB/range.txt" 2>/dev/null ;;
-  "api "*"/workflows/ci.yml/runs"*) cat "$STUB/lastgreen" 2>/dev/null ;;
+  "api "*"/workflows/ci.yml/runs"*)
+    if [ -e "$STUB/runs.json" ]; then
+      # Apply the caller's real --jq filter to a canned runs list (the filter is the unit under test).
+      f=""; prev=""
+      for a in "$@"; do [ "$prev" = "--jq" ] && f="$a"; prev="$a"; done
+      jq -r "$f" "$STUB/runs.json"
+    else
+      cat "$STUB/lastgreen" 2>/dev/null
+    fi ;;
   "api "*"/actions/runs/"*) cat "$STUB/run.txt" ;;
   "issue list"*)            [ -e "$STUB/list_fail" ] && exit 1; cat "$STUB/open_issue" 2>/dev/null ;;
   "issue view"*)            cat "$STUB/issue_body" 2>/dev/null ;;
@@ -184,6 +192,19 @@ printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
 sweep
 has "gh issue create" "$log" "no earlier green sweep -> still opens the issue"
 has "since last green: unknown" "$out" "range is reported unknown, not invented"
+
+# 10. Last green is the newest green sweep EARLIER than the reported run: a
+# delayed reporter for run 900 must not anchor its range on a newer green 950.
+if command -v jq >/dev/null 2>&1; then
+  newcase earlier-green
+  printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+  printf '%s\n' '{"workflow_runs":[{"id":950,"head_sha":"cccccccccccccccccccccccccccccccccccccccc"},{"id":800,"head_sha":"dddddddddddddddddddddddddddddddddddddddd"}]}' > "$STUB/runs.json"
+  sweep
+  has "since last green: dddddddddddddddddddddddddddddddddddddddd" "$out" "range anchors on the newest green sweep before the reported run"
+  if grep -q 'cccccccccccccccccccccccccccccccccccccccc' <<< "$out"; then bad "range anchored on a NEWER green sweep (950 > 900)"; else ok "a newer green sweep is never the range anchor"; fi
+else
+  ok "SKIP earlier-green case (jq not installed)"
+fi
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi

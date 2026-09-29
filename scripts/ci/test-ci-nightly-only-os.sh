@@ -116,7 +116,8 @@ else bad "shell-unit has only $n_if schedule-gated steps (expected >= 3)"; fi
 
 # 6. Non-ubuntu legs stay non-gating (advisory until HIMMEL-3699 / HIMMEL-3719 land).
 for job in shell-unit-shard bun-suites; do
-  if job_block "$job" | grep -q "continue-on-error: \${{ matrix.os != 'ubuntu-latest' }}"; then
+  blk="$(job_block "$job")"
+  if grep -q "continue-on-error: \${{ matrix.os != 'ubuntu-latest' }}" <<< "$blk"; then
     ok "$job: non-ubuntu legs stay continue-on-error"
   else
     bad "$job: continue-on-error scoping to non-ubuntu legs changed (out of scope)"

@@ -116,7 +116,7 @@ now() { date -u +'%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "unknown-time"; }
 range_text() {
   local green
   green="$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=5" \
-    --jq "[.workflow_runs[] | select(.id != $RUN_ID)] | .[0].head_sha // empty" 2>/dev/null)" || green=""
+    --jq "[.workflow_runs[] | select(.id < $RUN_ID)] | .[0].head_sha // empty" 2>/dev/null)" || green=""
   if [ -z "$green" ]; then
     echo "- since last green: unknown (no earlier green push sweep was found)"
     return
