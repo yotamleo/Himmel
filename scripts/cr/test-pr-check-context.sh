@@ -438,10 +438,11 @@ check "$(grep -c "\"kind\":\"delegation\".*\"head\":\"$head13\"" "$ledger13" 2>/
 # it and is sufficient to prove BOTH the anchor and the delegate are named.
 # ponytail: ledger-append.sh caps --detail at 200 chars, and two long tmp paths
 # (macOS /private/var/folders/...) overflow it, cutting the delegate's tail; the
-# delegate is then accepted when the detail is exactly at the cap. The delegate
+# delegate is then accepted when the detail is exactly at the cap AND still carries
+# the ` delegate=` field (the anchor is asserted by basename either way). The delegate
 # itself is pinned by himmel_dir + head above. Upgrade path: shorten the fixture
 # root or log the basenames first in the detail.
-check "$(L="$ledger13" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="delegation");console.log(o.detail.includes(process.argv[1])&&(o.detail.includes(process.argv[2])||o.detail.length===200))' "$(basename "$anchor13")" "$(basename "$wt13_toplevel")")" "true" "T13 delegation detail names both the anchor and the delegate (by basename, MSYS-mangling-proof)"
+check "$(L="$ledger13" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="delegation");console.log(o.detail.includes(process.argv[1])&&(o.detail.includes(process.argv[2])||(o.detail.length===200&&o.detail.includes(" delegate="))))' "$(basename "$anchor13")" "$(basename "$wt13_toplevel")")" "true" "T13 delegation detail names both the anchor and the delegate (by basename, MSYS-mangling-proof)"
 
 # T14. himmel lane, diff does NOT touch scripts/cr/ -> the anchor's own path
 # runs: delegated=no, ZERO delegation rows. Positive control for this "zero"
