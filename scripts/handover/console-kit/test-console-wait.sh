@@ -485,6 +485,7 @@ check "(p5c) a second leg's SHIP-STEP pages under its own label" "DENIAL-PAGE N2
 # A re-arm after the wake must not page the same rise again.
 denials_rise p5d none 'N1:1:SHIP-STEP'
 timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/p5d2.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(p5d) the re-arm keeps waiting until the timeout cuts it off (124)" "124" "$rc"
 check "(p5d) the re-arm after a paged wake is silent" "" "$(cat "$WORK/p5d2.out")"
 check "(p5d) and does not page the same rise again" "1" "$(pages_n)"
 
