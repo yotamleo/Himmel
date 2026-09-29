@@ -35,8 +35,8 @@ real_ledger_state() {
 }
 REAL_LEDGER_BEFORE=$(real_ledger_state)
 
+TMPDIR="$(cd -P -- "${TMPDIR:-/tmp}" && pwd)" || exit 1; export TMPDIR
 SUITE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/uninstall-prov.XXXXXX")" || { echo "FAIL: mktemp" >&2; exit 1; }
-SUITE_TMP="$(cd -P -- "$SUITE_TMP" && pwd)" || exit 1
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
 fails=0

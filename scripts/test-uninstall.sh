@@ -56,8 +56,8 @@ assert_not_has() {
 
 FAILED=0
 # HIMMEL-3699: physical path (macOS $TMPDIR is /var -> /private/var); uninstall.sh compares $HOME/.himmel lexically against the resolved ledger dir.
+TMPDIR=$(cd -P -- "${TMPDIR:-/tmp}" && pwd) || exit 1; export TMPDIR
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/uninstall-suite.XXXXXX") || { echo "FAIL could not create temp dir"; exit 1; }
-TMP=$(cd -P -- "$TMP" && pwd) || exit 1
 [ -n "$TMP" ] && [ -d "$TMP" ] || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
