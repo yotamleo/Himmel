@@ -100,6 +100,12 @@
 #       resolved to auto (never leaking into the launched leg's own env,
 #       same non-leak shape as case 10) and CONSOLE_CONTEXT=1m recorded, and
 #       the arm log records context=1m (operator-ruling).
+#   39. HIMMEL-3874: a doc whose resume_cwd resolves inside the handover root
+#       (symlinks followed, a not-yet-existing tail resolved through its
+#       deepest existing ancestor, ~ expanded, quotes stripped) is refused with
+#       exit 15 on --dry-run and a real launch alike, before konsole runs;
+#       ~/.cache scratch, a leg worktree, a string-prefix sibling of the root,
+#       a .. escape and a doc with no resume_cwd all launch unchanged.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -2713,6 +2719,62 @@ else
   echo "ok - 38i a refused launch never reaches the launcher"
 fi
 rm -rf "$acks38"
+
+# --- 39 (HIMMEL-3874). A leg or judge whose doc's resume_cwd resolves INSIDE the
+# handover root is refused (exit 15) before any launch: the root commonly lives
+# in an Obsidian vault, and a judge's repo-tree scratch there hung it twice
+# (609k files). The refusal names ~/.cache/himmel/verdicts/<qid>/. The path is
+# realpath'd (symlinks followed, a not-yet-existing tail resolved through its
+# deepest existing ancestor); a leg worktree, a ~/.cache path, a string-prefix
+# sibling of the root and a doc with no resume_cwd all launch unchanged.
+root39="$HANDOVER_DIR"
+mkdir -p "$root39/u/himmel" "${root39}-sibling" "$tmp/home39/.cache/himmel/verdicts/q1" "$tmp/wt39/.claude/worktrees/feat+leg-39"
+ln -s "$root39/u/himmel" "$tmp/home39/.cache/himmel/verdicts/q1/link"
+ln -s "$root39" "$tmp/rootlink39"
+dry39() { # <resume_cwd> [HOME override] -> sets rc39/out39
+  printf -- '---\nresume_cwd: %s\ntemplate_version: 1\n---\n' "$1" > "$tmp/c39-doc.md"
+  rc39=0
+  out39="$(HOME="${2:-$HOME}" bash "$SCRIPT" --dry-run --no-profile HIMMEL-39-leg "$tmp/c39-doc.md" /tmp/nosig 99999999999 "$tmp/c39.log" claude-sonnet-5 2>&1)" || rc39=$?
+}
+dry39 "$root39/u/himmel/scratch"
+check "39a resume_cwd inside the handover root (not yet existing) -> exit 15" "$rc39" "15"
+# shellcheck disable=SC2088  # the literal ~ is the text the refusal must print
+contains "39a the refusal names the verdicts scratch dir" "$out39" "~/.cache/himmel/verdicts/<qid>/"
+dry39 "$root39/u/himmel"
+check "39b resume_cwd = an existing dir inside the root -> exit 15" "$rc39" "15"
+dry39 "$root39"
+check "39c resume_cwd = the root itself -> exit 15" "$rc39" "15"
+dry39 "$tmp/home39/.cache/himmel/verdicts/q1/scratch"
+check "39d a ~/.cache verdicts scratch dir outside the root launches (rc 0)" "$rc39" "0"
+dry39 "$tmp/home39/.cache/himmel/verdicts/q1/link/sub"
+check "39e a symlink under ~/.cache pointing into the root -> exit 15" "$rc39" "15"
+dry39 "$tmp/rootlink39/u/himmel/scratch"
+check "39f a path reached through a symlink TO the root -> exit 15" "$rc39" "15"
+dry39 "$tmp/wt39/.claude/worktrees/feat+leg-39"
+check "39g a normal leg worktree resume_cwd launches (rc 0)" "$rc39" "0"
+dry39 "${root39}-sibling/x"
+check "39h a string-prefix sibling of the root is NOT inside it (rc 0)" "$rc39" "0"
+dry39 "$root39/../x39-missing/deep"
+check "39i a .. path that escapes the root is not inside it (rc 0)" "$rc39" "0"
+dry39 "\"$root39/u/himmel/scratch\""
+check "39j a quoted resume_cwd value is unquoted before the check -> exit 15" "$rc39" "15"
+# shellcheck disable=SC2088  # deliberately unexpanded: the launcher must expand it
+dry39 '~/u/himmel/scratch' "$root39"
+check "39k a leading ~ expands against HOME (HOME=root) -> exit 15" "$rc39" "15"
+printf -- '---\ntemplate_version: 1\n---\n' > "$tmp/c39-doc.md"
+rc39=0; out39="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-39-leg "$tmp/c39-doc.md" /tmp/nosig 99999999999 "$tmp/c39.log" claude-sonnet-5 2>&1)" || rc39=$?
+check "39l a doc with no resume_cwd is unaffected (rc 0)" "$rc39" "0"
+
+printf -- '---\nresume_cwd: %s\ntemplate_version: 1\n---\n' "$root39/u/himmel/scratch" > "$tmp/c39-doc.md"
+d39="$tmp/c39"; mk_launch_stubs "$d39" "HIMMEL-39-real"; mkdir -p "$tmp/repo39"
+rc=0
+some_doc="$tmp/c39-doc.md" RUN_LEG_ARGS='--no-profile' run_leg "$d39" "$tmp/repo39" "HIMMEL-39-real" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+check "39m a REAL launch with an in-root resume_cwd is refused (rc 15)" "$rc" "15"
+if [ -e "$d39/env-record" ]; then
+  echo "FAIL - 39m a refused launch must not reach the launcher"; fails=$((fails+1))
+else
+  echo "ok - 39m a refused launch never reaches the launcher"
+fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

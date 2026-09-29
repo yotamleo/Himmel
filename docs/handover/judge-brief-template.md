@@ -35,10 +35,19 @@ finished answer looks like, not what the answer should be.
 
 ---
 
+**`resume_cwd` is the judge's scratch directory, never a path under the
+handover root.** `headed-arm-leg.sh` refuses (exit 15) any leg or judge whose
+doc's `resume_cwd` resolves inside the handover root (symlinks followed;
+HIMMEL-3874) — the root commonly lives in an Obsidian vault, and a judge
+whose working tree is there hung it twice. Write `resume_cwd` as an absolute
+path (a leading `~` is not expanded by `arm-resume.sh`) and `mkdir -p` it
+before launch: a `resume_cwd` that is not yet a directory is ignored and the
+judge falls back to the console's own cwd. A judge that needs a real worktree
+uses one under the repo's `.claude/worktrees/` instead.
+
 ```markdown
 ---
-resume_cwd: <absolute path to the judge's worktree, or the console's own if
-  the question needs no worktree>
+resume_cwd: <absolute $HOME>/.cache/himmel/verdicts/<qid>/scratch
 template_version: 1
 ---
 

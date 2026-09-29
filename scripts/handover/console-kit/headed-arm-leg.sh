@@ -551,6 +551,62 @@ fi
 # propagated is a harmless no-op, not a double-add.
 [ -n "${HANDOVER_DIR:-}" ] && leg_propagate_env HANDOVER_DIR "$HANDOVER_DIR"
 
+# HIMMEL-3874: refuse a leg or judge whose handover doc's resume_cwd resolves
+# INSIDE the handover root (exit 15). The root commonly lives in an Obsidian
+# vault, which indexes every file regardless of .gitignore, so a judge whose
+# cwd is in the vault and whose scratch is a repo tree hung it twice (609k
+# files; HIMMEL-3705's docs-only fix never reached console-written briefs).
+# This is the one launcher every leg and judge goes through, so the gate lives
+# here. Both paths are realpath'd (symlinks followed) and the resume_cwd's
+# not-yet-existing tail is resolved through its deepest existing ancestor, so
+# neither a symlink under ~/.cache nor a fresh subdirectory dodges it. A leg
+# worktree, a ~/.cache path and a doc with no resume_cwd are untouched, and no
+# resolvable root (nothing to guard) launches as before. Runs before --dry-run's
+# exit, like the denial gate above, so a dry-run predicts the refusal.
+# ponytail: a `..` inside the NOT-yet-existing tail is not collapsed, so such a
+# path is judged by its literal tail; it cannot be entered anyway (the launch
+# cd fails on a missing component), upgrade path: normalise the tail lexically.
+_leg_phys_path() { # <path> -> physical path on stdout; a missing tail is kept verbatim
+    local p="$1" tail="" base
+    case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+    while [ ! -d "$p" ]; do
+        base="${p##*/}"
+        [ -n "$base" ] || { p="${p%/}"; [ -n "$p" ] || break; continue; }
+        tail="/$base$tail"
+        p="${p%/*}"
+        [ -n "$p" ] || p="/"
+    done
+    p="$(cd -P "$p" 2>/dev/null && pwd -P)" || return 1
+    [ "$p" = "/" ] && p=""
+    printf '%s%s\n' "$p" "$tail"
+}
+_leg_rcwd="$(awk '
+    /^---[[:space:]]*$/ { fm++; if (fm == 2) exit; next }
+    fm == 1 && /^resume_cwd:[[:space:]]*/ { sub(/^resume_cwd:[[:space:]]*/, ""); print; exit }
+' "$DOC" 2>/dev/null)"
+_leg_rcwd="${_leg_rcwd%"${_leg_rcwd##*[![:space:]]}"}"
+_leg_rcwd="${_leg_rcwd#\'}"; _leg_rcwd="${_leg_rcwd%\'}"
+_leg_rcwd="${_leg_rcwd#\"}"; _leg_rcwd="${_leg_rcwd%\"}"
+case "$_leg_rcwd" in \~|\~/*) _leg_rcwd="${HOME:-}${_leg_rcwd#\~}" ;; esac
+_leg_vroot="${HANDOVER_DIR:-}"
+if [ -z "$_leg_vroot" ] && command -v handover_root >/dev/null 2>&1; then
+    _leg_vroot="$(handover_root 2>/dev/null)" || _leg_vroot=""
+fi
+if [ -n "$_leg_rcwd" ] && [ -n "$_leg_vroot" ]; then
+    _leg_rcwd_phys="$(_leg_phys_path "$_leg_rcwd")" || _leg_rcwd_phys=""
+    _leg_vroot_phys="$(_leg_phys_path "$_leg_vroot")" || _leg_vroot_phys=""
+    if [ -n "$_leg_rcwd_phys" ] && [ -n "$_leg_vroot_phys" ]; then
+        case "$_leg_rcwd_phys" in
+        "$_leg_vroot_phys"|"$_leg_vroot_phys"/*)
+            echo "headed-arm-leg: refusing to launch $NAME: the doc's resume_cwd ($_leg_rcwd -> $_leg_rcwd_phys) is inside the handover root ($_leg_vroot_phys), which an Obsidian vault indexes file by file (HIMMEL-3874). Judge scratch belongs under ~/.cache/himmel/verdicts/<qid>/; a leg belongs in a worktree under its repo's .claude/worktrees." >&2
+            exit 15
+            ;;
+        esac
+    fi
+fi
+unset -f _leg_phys_path
+unset -v _leg_rcwd _leg_rcwd_phys _leg_vroot _leg_vroot_phys
+
 # Context resolution (HIMMEL-2766/HIMMEL-2779): off-values stay standard;
 # the one old 1m opt-in is resolved explicitly so the argv guard below can
 # reject it with a useful message rather than silently ignoring operator input.
