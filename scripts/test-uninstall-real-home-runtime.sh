@@ -15,12 +15,14 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CLI="$HERE/uninstall.sh"
 FAILED=0
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/uninstall-realhome.XXXXXX") || { echo "FAIL could not create temp dir"; exit 1; }
-# HIMMEL-3699: physical path. On macOS /tmp is a symlink to /private/tmp, and
-# uninstall.sh's real-home check (a) refuses a $HOME whose physical path
+# HIMMEL-3699: physical temp root. On macOS /tmp is a symlink to /private/tmp,
+# and uninstall.sh's real-home check (a) refuses a $HOME whose physical path
 # differs from its spelling — case (s3) builds its scratch HOME under $TMP and
-# was refused on the nightly. Every $TMP-derived path below is now canonical.
-TMP=$(cd "$TMP" && pwd -P) || { echo "FAIL could not canonicalise temp dir"; exit 1; }
+# was refused on the nightly. TMPDIR is canonicalised (not TMP itself) so the
+# mktemp line stays a scratch shape for test-uninstall-real-home-callers.sh.
+TMPDIR=$(cd "${TMPDIR:-/tmp}" && pwd -P) || { echo "FAIL could not canonicalise temp root"; exit 1; }
+export TMPDIR
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/uninstall-realhome.XXXXXX") || { echo "FAIL could not create temp dir"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 REAL_HOME="$HOME"
