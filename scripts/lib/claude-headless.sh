@@ -338,10 +338,14 @@ BANK_VERDICT="$(CADENCE_BANK_LEG="${CADENCE_BANK_LEG:-claude-headless:$ROLE}" ba
 # resolution there); GNU date never prints it, so its output is untouched.
 # ponytail: whole-second mtimes on BSD miss a same-second rewrite, switch to
 # stat -f %Fm or perl if a macOS same-second miss is ever observed.
+# The -exec terminator is quoted ';' (not \;): under macOS bash 3.2 a \; inside
+# "$( )" reached find as a broken operator, the scan came back empty and the
+# directory's own (unchanged) mtime was used, so a content-only update never
+# read as newer (os-verify run 36625273811).
 artifact_mtime() {
   local path="$1" newest
   if [ -d "$path" ]; then
-    newest="$(find "$path" -type f -exec date -r {} '+%s.%N' \; 2>/dev/null | sed 's/\.N$/.000000000/' | sort -rn | head -1)"
+    newest="$(find "$path" -type f -exec date -r {} '+%s.%N' ';' 2>/dev/null | sed 's/\.N$/.000000000/' | sort -rn | head -1)"
     if [ -n "$newest" ]; then printf '%s' "$newest"; else date -r "$path" '+%s.%N' 2>/dev/null | sed 's/\.N$/.000000000/' || true; fi
   else
     date -r "$path" '+%s.%N' 2>/dev/null | sed 's/\.N$/.000000000/' || true

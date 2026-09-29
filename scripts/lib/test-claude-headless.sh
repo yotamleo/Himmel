@@ -252,12 +252,6 @@ RC12=$?
 ROW12="$(ls "$LIVE_DIR"/*.json 2>/dev/null | head -1)"
 check "directory artifact: content-only update inside pre-existing dir exits 0" "0" "$RC12"
 check "directory artifact: status completed" "completed" "$(jq -r '.status' "$ROW12" 2>/dev/null)"
-if [ "$RC12" != 0 ]; then
-  # Diagnostic for hosts (macOS) where this fails and only the 100-line tail survives (HIMMEL-3699).
-  echo "diag: date=$(command -v date) awk=$(command -v awk) sort=$(command -v sort)" >&2
-  echo "diag: file mtime='$(date -r "$ARTDIR/existing-file.txt" '+%s.%N' 2>&1)' dir mtime='$(date -r "$ARTDIR" '+%s.%N' 2>&1)'" >&2
-  echo "diag: find -exec ='$(find "$ARTDIR" -type f -exec date -r {} '+%s.%N' \; 2>&1)'" >&2
-fi
 rm -f "$LIVE_DIR"/*.json
 
 # --- 12: a pre-existing directory containing ONLY subdirectories (no files
