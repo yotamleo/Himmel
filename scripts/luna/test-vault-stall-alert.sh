@@ -14,7 +14,7 @@ assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$2',
 
 command -v jq >/dev/null 2>&1 || { echo "SKIP all — jq not on PATH"; exit 0; }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/vault-stall-alert.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 printf '{"allowFrom":["4242"]}\n' >"$TMP/access.json"
 printf '{"allowFrom":[]}\n' >"$TMP/empty-access.json"

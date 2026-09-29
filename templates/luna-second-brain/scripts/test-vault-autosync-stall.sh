@@ -35,7 +35,7 @@ command -v pre-commit >/dev/null 2>&1 || {
 export GIT_AUTHOR_NAME=luna-test GIT_AUTHOR_EMAIL=luna-test@example.com
 export GIT_COMMITTER_NAME=luna-test GIT_COMMITTER_EMAIL=luna-test@example.com
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/vault-autosync-stall.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 # Keep the host's global git config (core.hooksPath, templatedir) out of the fixture.
 export GIT_CONFIG_GLOBAL="$TMP/gitconfig-isolated"
