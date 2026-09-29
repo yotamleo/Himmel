@@ -141,6 +141,14 @@ describe('runMirror', () => {
     expect(mdFiles()).toHaveLength(4);
   });
 
+  it('a truncated backfill keeps no cursor, so the next run is a full backfill', async () => {
+    const stub: Stub = { issues: [1, 2, 3].map((n) => issue(n)), pageSize: 10, calls: [], count: 10 };
+    await runMirror({ root, project: 'HIMMEL' }, makeReq(stub));
+    stub.count = undefined;
+    const r = await runMirror({ root, project: 'HIMMEL' }, makeReq(stub));
+    expect(r.mode).toBe('full');
+  });
+
   it('a cursor from another project neither drives the window nor lets deletes reach its files', async () => {
     const other: Stub = { issues: [{ ...issue(1), key: 'OTHER-1' }], pageSize: 10, calls: [] };
     await runMirror({ root, project: 'OTHER' }, makeReq(other));

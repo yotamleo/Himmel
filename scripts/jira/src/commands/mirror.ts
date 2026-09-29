@@ -246,6 +246,7 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
     res.deleteSkipped = `key listing returned ${live.size} of ${local.length} local files (< ${DELETE_SAFETY_RATIO * 100}%)`;
     live = null;
   }
+  // ponytail: Jira's count is approximate, so a listing within COUNT_TOLERANCE of it is trusted; tighten if the count proves exact.
   if (live && res.jiraTotal !== null && live.size < res.jiraTotal * COUNT_TOLERANCE) {
     res.deleteSkipped = `key listing returned ${live.size} but Jira counts ${res.jiraTotal}`;
     live = null;
@@ -261,6 +262,12 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
   }
 
   res.mirrorCount = localKeys(root, project).length;
+  // An incomplete mirror keeps no cursor, so the next run is a full backfill
+  // instead of an incremental that never revisits unchanged, missing issues.
+  if (res.jiraTotal !== null && res.mirrorCount < res.jiraTotal * COUNT_TOLERANCE) {
+    warn(`mirror holds ${res.mirrorCount} but Jira counts ${res.jiraTotal}; cursor not advanced`);
+    return res;
+  }
   writeFileAtomic(
     join(root, CURSOR_FILE),
     JSON.stringify({ lastSync: startedAt.toISOString(), total: res.mirrorCount, project }) + '\n',
