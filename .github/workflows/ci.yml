@@ -171,17 +171,41 @@ jobs:
     strategy:
       matrix:
         pkg: [jira, bitbucket, himmel-run, ci-orchestrator]
+        # HIMMEL-3813: the two plugin packages live under plugins/, not scripts/.
+        # `include` keeps the scripts/* context names (`node-suites (jira)`) that
+        # branch protection may require, and adds one per plugin.
+        include:
+          - pkg: himmel-gh
+            dir: plugins/himmel-gh
+          - pkg: himmel-jira
+            dir: plugins/himmel-jira
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: scripts/${{ matrix.pkg }}/package-lock.json
+          cache-dependency-path: ${{ matrix.dir || format('scripts/{0}', matrix.pkg) }}/package-lock.json
       - run: npm ci
-        working-directory: scripts/${{ matrix.pkg }}
+        working-directory: ${{ matrix.dir || format('scripts/{0}', matrix.pkg) }}
       - run: npm test
-        working-directory: scripts/${{ matrix.pkg }}
+        working-directory: ${{ matrix.dir || format('scripts/{0}', matrix.pkg) }}
+
+  # HIMMEL-3813: nothing built or ran the jira dist CLI end to end; the unit suite
+  # mocks `request`, so a broken tsc build or a dist that crashes at startup merged
+  # green. Offline and secret-free (dummy JIRA_* values, a local mock server).
+  jira-cli-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: scripts/jira/package-lock.json
+      - run: npm ci
+        working-directory: scripts/jira
+      - run: bash scripts/ci/jira-cli-smoke.sh
 
   lanes-and-trust-suites:
     # HIMMEL-689: scripts/lanes is a zero-dependency ESM test package — no
@@ -334,6 +358,12 @@ jobs:
       # lockfile is never regenerated (HIMMEL-553). HIMMEL-2620 wired the test
       # run for the suite that was always there under tests/.
       - run: cd marketplace/plugins/luna-correlate && bun install --frozen-lockfile && bun test
+      # HIMMEL-3813: telegram-himmel's own suite (tests/poller-gate-shape.test.ts)
+      # had no CI step. Ubuntu only, like the vault step: its fixtures are
+      # POSIX-shaped and a red non-gating Windows leg would file a spurious issue.
+      - name: telegram-himmel plugin tests (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cd marketplace/plugins/telegram-himmel && bun install --frozen-lockfile && bun test
       # A red Windows nightly must not fail silently now that it is non-gating
       # (HIMMEL-3125): upsert one consolidated issue rather than opening a new
       # one per run (same convention as scripts/ci/fork-drift-issue.sh). Two
@@ -496,17 +526,17 @@ jobs:
       - uses: oven-sh/setup-bun@v2
 
       # gitleaks: pinned to the SAME version as the pre-commit hook
-      # (.pre-commit-config.yaml → gitleaks rev v8.21.2) and reuses .gitleaks.toml,
+      # (.pre-commit-config.yaml → gitleaks rev v8.30.1) and reuses .gitleaks.toml,
       # so a secret the local hook catches is caught here too. `dir` scans the
       # checked-out working tree; gitleaks exits non-zero when a leak is found.
       - name: gitleaks secret scan (reuses .gitleaks.toml)
         run: |
-          ver=8.21.2
+          ver=8.30.1
           # Pin the exact release bytes: verify the published SHA256 before
           # extracting/executing, so a tampered or MITM'd download cannot run
           # (it would be silly for the SECURITY lane to run an unverified
           # scanner binary). Update `sha` in lockstep with `ver`.
-          sha=5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba
+          sha=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
           echo "${sha}  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
