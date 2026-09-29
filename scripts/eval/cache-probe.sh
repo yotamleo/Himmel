@@ -172,7 +172,7 @@ case "$MODE" in
       END {
         k = n["kept"] + 0; v = n["invalidated"] + 0; c = n["compacted"] + 0; t = n["ttl"] + 0; i = n["inconclusive"] + 0
         word = (v > 0) ? "invalidated" : (k > 0 ? "not-invalidated" : "inconclusive")
-        printf "read-ratio: %.1f%% over %d tokens\n", (all > 0 ? 100 * cr / all : 0), all
+        printf "read-ratio: %.1f%% over %.0f tokens\n", (all > 0 ? 100 * cr / all : 0), all
         printf "verdict: %s kept=%d invalidated=%d compacted=%d ttl=%d inconclusive=%d\n", word, k, v, c, t, i
         exit (word == "invalidated") ? 1 : (word == "inconclusive" ? 2 : 0)
       }'
@@ -188,7 +188,7 @@ case "$MODE" in
         if (ce == 0) word = "inconclusive"
         else if (cw >= 0.8 * ce && (we == 0 || ww <= 0.2 * we)) word = "ttl-consistent"
         else word = "ttl-inconsistent"
-        printf "read-ratio: %.1f%% over %d tokens\n", (all > 0 ? 100 * cr / all : 0), all
+        printf "read-ratio: %.1f%% over %.0f tokens\n", (all > 0 ? 100 * cr / all : 0), all
         printf "verdict: %s cold-expected=%d cold-rewrote=%d warm-expected=%d warm-rewrote=%d\n", word, ce, cw, we, ww
         exit (word == "ttl-consistent") ? 0 : (word == "ttl-inconsistent" ? 1 : 2)
       }'
@@ -201,7 +201,7 @@ case "$MODE" in
       NF { n++; if ($2 == "warm") w++; cr += $6; all += $7 }
       END {
         word = (n == 0) ? "inconclusive" : (2 * w >= n ? "warm-start" : "cold-start")
-        printf "read-ratio: %.1f%% over %d tokens\n", (all > 0 ? 100 * cr / all : 0), all
+        printf "read-ratio: %.1f%% over %.0f tokens\n", (all > 0 ? 100 * cr / all : 0), all
         printf "verdict: %s warm=%d cold=%d\n", word, w + 0, n - w
         exit (word == "warm-start") ? 0 : (word == "cold-start" ? 1 : 2)
       }'

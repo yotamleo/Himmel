@@ -19,8 +19,9 @@ the tree, and the exact re-run commands.
   <https://code.claude.com/docs/en/memory> (load and 200-line / 25 KB cap),
   <https://code.claude.com/docs/en/context-window>. The same holds for any
   workspace file a session is not re-reading (graph.json, graphify-out/).
-- The real cost of an index edit is one extra cache write (order of 4k tokens)
-  for each session **started or compacted afterwards**.
+- The cost of an index edit is one extra cache write for each session
+  **started or compacted afterwards**; its size (about 4k tokens) is an
+  estimate from the index size, not measured (audit row 9).
 - A session's first request reads a warm shared prefix (system + tools).
 - An idle gap at or past the session's TTL re-pays the whole prefix on wake; a
   shorter gap does not. That, not "burning" anything while idle, is the cost of
