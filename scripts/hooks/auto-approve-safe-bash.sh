@@ -433,7 +433,9 @@ shell_word_value() {
 # reaches a brace later in the same word (`{$x,--output=y}`). Only quotes and
 # backslash escapes are honored; every other character counts, so `${x,,}` is
 # treated as a brace span too (fail closed — it only loses an allow). Unquoted
-# whitespace ends a word, so a whole segment may be passed in.
+# whitespace ends a word, so a whole segment may be passed in: only space, tab
+# and newline, the bytes bash itself splits on (a CR, FF or VT stays inside
+# the brace word).
 word_has_brace_expansion() {
     local s="$1" n i=0 c st=0 bd=0 bf=0
     n=${#s}
@@ -454,7 +456,7 @@ word_has_brace_expansion() {
             "'") st=1 ;;
             '"') st=2 ;;
             "\\") i=$((i + 2)); continue ;;
-            [[:space:]]) bd=0; bf=0 ;;               # unquoted word boundary
+            ' '|$'\t'|$'\n') bd=0; bf=0 ;;           # unquoted word boundary
             '{') bd=$((bd + 1)) ;;
             '}')
                 if [ "$bd" -gt 0 ]; then
@@ -1518,6 +1520,18 @@ case "$cmd" in
         # continuation that hides the command after the CR) — never fold.
         ;;
 esac
+# HIMMEL-3886 (judge, PR 1468): the tokenizers below split on [[:space:]],
+# but bash splits words only on space, tab and newline, so a raw CR, FF or VT
+# makes them see different words than the shell runs. No allow for those
+# bytes. A CR survives only on native jq; the win-jq CR is jq's rendering.
+case "$cmd" in
+    *[$'\f\v']*) exit 0 ;;
+esac
+if [ "$win_crlf" = 0 ]; then
+    case "$cmd" in
+        *$'\r'*) exit 0 ;;
+    esac
+fi
 # HIMMEL-3750 round 3 (codex-1): a backslash-newline continuation is folded
 # away by the shell before parsing even INSIDE double quotes, so a quoted
 # `"$\<NL>=x"` reaches the shell as `"$=x"` — the raw-text tripwires below
