@@ -1185,5 +1185,65 @@ check "S2c fold: eff_snap follows the LAST row that produced eff_post" \
 prov_read_cleanup
 rm -f "$snap8"
 
+# ── HIMMEL-3787 S2d: kind block -- current / verdict / apply ────────────────
+# The block is installed by the REAL writer, so the fold sees exactly the row an
+# install records. blk_setup <file> [<pre-text>] leaves one loaded block unit in $ub.
+tpl="$here/../../docs/setup/user-scope-claude-md-template.md"
+blk_setup() {
+    reset
+    mkdir -p "$(dirname "$1")"
+    [ $# -ge 2 ] && printf '%s' "$2" > "$1"
+    ( . "$here/user-claude-md.sh"
+      prov_begin --iid B1 --writer adopt.sh >/dev/null
+      wire_user_claude_md "$tpl" "$1" >/dev/null 2>&1
+      prov_end ok >/dev/null )
+    prov_read_load
+    ub=$(u_for --path "$1" --kind block)
+}
+bf="$w/blk/CLAUDE.md"
+blk_setup "$bf"
+check "block: the fold sees one governed block unit" "$(field "$ub" '.kind')" "block"
+check "block: current is the sha of the BEGIN..END text on a clean file" \
+    "$(prov_read_current "$ub")" "$(field "$ub" '.eff_post.sha')"
+check "block: clean file -> remove ours" "$(prov_read_verdict "$ub")" "remove ours"
+prov_read_apply "$ub" restore 2>/dev/null; check "block: restore is unsupported (rc 2)" "$?" 2
+prov_read_apply "$ub" remove --dry-run >/dev/null; check "block: --dry-run rc 0" "$?" 0
+check "block: --dry-run leaves the file" "$([ -e "$bf" ] && echo present || echo gone)" "present"
+prov_read_apply "$ub" remove >/dev/null 2>&1; check "block: remove rc 0" "$?" 0
+check "block: a file install created is removed with its block" "$([ -e "$bf" ] && echo present || echo gone)" "gone"
+prov_read_cleanup
+
+blk_setup "$bf" $'# mine\n'
+prov_read_apply "$ub" remove >/dev/null 2>&1
+check "block: remove from a user file restores the user's own bytes" "$(cat "$bf"; printf x)" "$(printf '# mine\nx')"
+prov_read_cleanup
+
+blk_setup "$bf" $'# mine\n'
+awk '{print} /^<!-- BEGIN HIMMEL:working-principles -->$/{print "user line inside"}' "$bf" > "$bf.new" && mv "$bf.new" "$bf"
+check "block: an edit inside -> keep user-modified" "$(prov_read_verdict "$ub")" "keep user-modified"
+prov_read_apply "$ub" remove >/dev/null 2>&1; check "block: apply refuses a user-modified block (rc 1)" "$?" 1
+check "block: the edited file is untouched by the refused apply" "$(grep -c 'user line inside' "$bf")" "1"
+prov_read_cleanup
+
+blk_setup "$bf" $'# mine\n'
+grep -v '^<!-- END HIMMEL:working-principles -->$' "$bf" > "$bf.new" && mv "$bf.new" "$bf"
+check "block: torn (no END) -> keep block-malformed" "$(prov_read_verdict "$ub")" "keep block-malformed"
+prov_read_cleanup
+
+blk_setup "$bf" $'# mine\n'
+cat "$bf" "$bf" > "$bf.new" && mv "$bf.new" "$bf"
+check "block: duplicated -> keep block-malformed" "$(prov_read_verdict "$ub")" "keep block-malformed"
+prov_read_cleanup
+
+blk_setup "$bf" $'# mine\n'
+printf '# mine\n' > "$bf"
+check "block: markers gone (user removed it) -> keep already-absent" "$(prov_read_verdict "$ub")" "keep already-absent"
+prov_read_cleanup
+
+blk_setup "$bf" $'# mine\n'
+rm -f "$bf"
+check "block: file gone -> keep already-absent" "$(prov_read_verdict "$ub")" "keep already-absent"
+prov_read_cleanup
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

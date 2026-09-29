@@ -313,6 +313,28 @@ bash "$uw" --probe "$td/probe-none.md"; check "probe: no marker -> 0" "$?" 0
 bash "$uw" --probe >/dev/null 2>&1; check "probe: missing path -> usage 2" "$?" 2
 bash "$uw" >/dev/null 2>&1; check "no args -> usage 2" "$?" 2
 
+# ── --extract (HIMMEL-3787 S2d): print the marked block, read-only ──────────
+printf 'top\n\n%s\nbottom\n' "$BLOCK" > "$td/ext.md"; cp "$td/ext.md" "$td/ext.before"
+out="$(bash "$uw" --extract "$td/ext.md")"; rc=$?
+check "extract: intact block -> rc 0" "$rc" 0
+check "extract: prints exactly the BEGIN..END lines" "$out" "$BLOCK"
+same  "extract: file untouched" "$td/ext.md" "$td/ext.before"
+gone  "extract: no backup written" "$td/ext.md.himmel-uninstall-backup"
+printf 'top\n' > "$td/ext-none.md"
+bash "$uw" --extract "$td/ext-none.md" >/dev/null 2>&1; check "extract: no marker -> 3" "$?" 3
+bash "$uw" --extract "$td/ext-missing.md" >/dev/null 2>&1; check "extract: missing file -> 3" "$?" 3
+printf 'top\n%s\nbody\n' "$B" > "$td/ext-noend.md"
+out="$(bash "$uw" --extract "$td/ext-noend.md" 2>/dev/null)"; rc=$?
+check "extract: BEGIN with no END -> 1" "$rc" 1; check "extract: torn block prints nothing" "$out" ""
+printf 'top\nbody\n%s\n' "$E" > "$td/ext-nobegin.md"
+bash "$uw" --extract "$td/ext-nobegin.md" >/dev/null 2>&1; check "extract: END with no BEGIN -> 1" "$?" 1
+printf '%s\nbottom\n%s\n' "$BLOCK" "$BLOCK" > "$td/ext-dup.md"
+out="$(bash "$uw" --extract "$td/ext-dup.md" 2>/dev/null)"; rc=$?
+check "extract: duplicated block -> 1" "$rc" 1; check "extract: duplicated block prints nothing" "$out" ""
+printf 'top\n%s\r\nx\n%s\n' "$B" "$E" > "$td/ext-crlf.md"
+bash "$uw" --extract "$td/ext-crlf.md" >/dev/null 2>&1; check "extract: CRLF marker -> 1" "$?" 1
+bash "$uw" --extract >/dev/null 2>&1; check "extract: missing path -> usage 2" "$?" 2
+
 # nothing escapes the scratch dir
 check "hermetic: no temp files left by the helper" "$(find "$TMPDIR" -type f | wc -l | tr -d " ")" 0
 

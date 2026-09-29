@@ -592,6 +592,38 @@ snap_world norows; run_assert core 0
 has "no class=code rows: SKIP, never a vacuous PASS" 'CHECK precondition precondition SKIP ledger-snap-adopter-scripts '
 hasnt "no class=code rows: nothing passes" 'CHECK ledger ledger PASS ledger-snap-'
 
+# ---- 11. HIMMEL-3787 S2d: install-only -- the marked-block rows of user-claude-md
+# and user-agents-md name an .ours snapshot at B whose sha is the row's post.sha.
+block_world() {  # <ok|null|missing|differs>
+    fresh
+    local P1="$H/.claude/CLAUDE.md" P2="$H/.codex/AGENTS.md"
+    local S1="$H/.himmel/provenance-backups/I1/001-CLAUDE.md.ours" S2="$H/.himmel/provenance-backups/I1/002-AGENTS.md.ours"
+    local s1json="\"$S1\"" sh1 sh2
+    sh1=$(sha blk1); sh2=$(sha blk2)
+    [ "$1" != null ] || s1json='null,"snap_skip":"too-large"'
+    printf '%s\n' '{"op":"install-begin"}' \
+        "{\"kind\":\"block\",\"op\":\"insert\",\"class\":\"code\",\"manifest_row\":\"user-claude-md\",\"path\":\"$P1\",\"snap\":$s1json,\"post\":{\"sha\":\"$sh1\"}}" \
+        "{\"kind\":\"block\",\"op\":\"insert\",\"class\":\"code\",\"manifest_row\":\"user-agents-md\",\"path\":\"$P2\",\"snap\":\"$S2\",\"post\":{\"sha\":\"$sh2\"}}" \
+        '{"op":"install-end","status":"ok"}' >"$LB/ledger-B.jsonl"
+    inv B f "$P1" file1; inv B f "$P2" file2
+    [ "$1" = missing ] || inv B f "$S1" blk1
+    [ "$1" = differs ] && { drop B "$S1"; inv B f "$S1" not-blk1; }
+    inv B f "$S2" blk2
+    return 0
+}
+block_world ok; run_assert core 0
+has "block snap ok: CLAUDE.md snapshot equals the recorded block" 'CHECK ledger ledger PASS ledger-snap-user-claude-md '
+has "block snap ok: AGENTS.md snapshot equals the recorded block" 'CHECK ledger ledger PASS ledger-snap-user-agents-md '
+block_world null; run_assert core 0
+has "block snap null: a too-large skip FAILs and names why" 'CHECK ledger ledger FAIL ledger-snap-user-claude-md — .*snap too-large'
+has "block snap null: the other file is judged on its own" 'CHECK ledger ledger PASS ledger-snap-user-agents-md '
+block_world missing; run_assert core 0
+has "block snap file absent at B FAILs" 'CHECK ledger ledger FAIL ledger-snap-user-claude-md — .*no snapshot file at B'
+block_world differs; run_assert core 0
+has "block snap bytes differing from the recorded sha FAILs" 'CHECK ledger ledger FAIL ledger-snap-user-claude-md — .*snapshot differs from the recorded block'
+snap_world norows; run_assert core 0
+has "no block rows: SKIP, never a vacuous PASS" 'CHECK precondition precondition SKIP ledger-snap-user-claude-md '
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "test-assert-provenance: all passed"; exit 0; fi
 echo "test-assert-provenance: $FAILED FAILED"

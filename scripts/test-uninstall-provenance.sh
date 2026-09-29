@@ -2221,6 +2221,248 @@ check "RED65: no orphan-backup refusal for the .ours snapshot" \
 check "RED65: the snapshot is purged with the state (no orphan left behind)" \
   "$(find "$(prov_dir)/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
 
+# ---- HIMMEL-3787 S2d: the himmel-marked working-principles block ---------------
+# seed_block <target> [<preexisting-text>] -- install the block with the REAL
+# writer (wire_user_claude_md) inside a provenance session, so the ledger holds
+# exactly what an S2d install records. <preexisting-text> is written first, so
+# the block is APPENDED to a user file (file_created=false); omitted, the target
+# is absent and the writer creates it (file_created=true).
+BLK_TEMPLATE="$repo_root/docs/setup/user-scope-claude-md-template.md"
+BLK_BEGIN='<!-- BEGIN HIMMEL:working-principles -->'
+BLK_END='<!-- END HIMMEL:working-principles -->'
+seed_block() {
+  local target="$1"
+  mkdir -p "$(dirname "$target")"
+  [ $# -ge 2 ] && printf '%s' "$2" > "$target"
+  ( . "$lib/user-claude-md.sh"
+    prov_begin --writer adopt.sh -- seed-block >/dev/null
+    wire_user_claude_md "$BLK_TEMPLATE" "$target" >/dev/null
+    prov_end ok >/dev/null )
+}
+block_text() { sed -n "/$BLK_BEGIN/,/$BLK_END/p" "$BLK_TEMPLATE"; }
+# block_outcomes -- the uninstall outcome rows for block units, "op:reason ..."
+block_outcomes() {
+  jq -r 'select(.kind=="block" and (.op=="removed" or .op=="kept" or .op=="failed")) | .op + ":" + .reason' \
+    "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'
+}
+BLK_UNINSTALL_ARGS=(--yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks)
+
+echo "==== RED66 (HIMMEL-3787 S2d, spec 2): wire_user_claude_md records a block row -- sha of the BEGIN..END text, a snapshot, file_created ===="
+new_case red66
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T66="$HOME/.claude/CLAUDE.md"
+seed_block "$T66"
+ROW66=$(jq -c 'select(.kind=="block")' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" 2>/dev/null)
+check "RED66: exactly one block row for the created file" "$(printf '%s\n' "$ROW66" | grep -c .)" "1"
+check "RED66: insert, class code, row user-claude-md, file_created true" \
+  "$(printf '%s' "$ROW66" | jq -r '[.op,.class,.manifest_row,(.file_created|tostring)] | join(" ")' 2>/dev/null)" \
+  "insert code user-claude-md true"
+check "RED66: the marker id is recorded" "$(printf '%s' "$ROW66" | jq -r '.marker // ""')" "HIMMEL:working-principles"
+check "RED66: post.sha is the sha of the BEGIN..END text" \
+  "$(printf '%s' "$ROW66" | jq -r '.post.sha // ""')" "$(prov_sha_text "$(block_text)")"
+SNAP66=$(printf '%s' "$ROW66" | jq -r '.snap // ""')
+check "RED66: the .ours snapshot holds exactly the block text" \
+  "$([ -n "$SNAP66" ] && [ -f "$SNAP66" ] && [ "$(cat "$SNAP66")" = "$(block_text)" ] && echo same || echo differs)" "same"
+new_case red66b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T66B="$HOME/.claude/CLAUDE.md"
+seed_block "$T66B" $'# mine\nbe kind\n'
+check "RED66b: appended to a user file -> file_created false" \
+  "$(jq -r 'select(.kind=="block") | (.file_created|tostring)' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" 2>/dev/null)" "false"
+new_case red66c
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T66C="$HOME/.codex/AGENTS.md"
+seed_block "$T66C"
+check "RED66c: the Codex target records under row user-agents-md" \
+  "$(jq -r 'select(.kind=="block") | .manifest_row' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" 2>/dev/null)" "user-agents-md"
+
+echo "==== RED67 (HIMMEL-3787 S2d): a clean block is removed and recorded -- the file install created goes with it, in BOTH rule files ===="
+new_case red67
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T67C="$HOME/.claude/CLAUDE.md"
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T67A="$HOME/.codex/AGENTS.md"
+seed_block "$T67C"; seed_block "$T67A"
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc67=$?
+check "RED67: exits 0" "$rc67" "0"
+check "RED67: CLAUDE.md install created is gone" "$([ -e "$T67C" ] && echo present || echo gone)" "gone"
+check "RED67: AGENTS.md install created is gone" "$([ -e "$T67A" ] && echo present || echo gone)" "gone"
+check "RED67: an outcome row per block, both removed:ours" "$(block_outcomes)" "removed:ours removed:ours"
+
+echo "==== RED67b (HIMMEL-3787 S2d): a block appended to the user's file is stripped, the user's bytes come back exactly ===="
+new_case red67b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T67B="$HOME/.claude/CLAUDE.md"
+seed_block "$T67B" $'# mine\nbe kind\n'
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc67b=$?
+check "RED67b: exits 0" "$rc67b" "0"
+check "RED67b: the user's own bytes are back exactly" "$(cat "$T67B"; printf x)" "$(printf '# mine\nbe kind\nx')"
+check "RED67b: outcome removed:ours" "$(block_outcomes)" "removed:ours"
+
+echo "==== RED68 (HIMMEL-3787 S2d): a user edit OUTSIDE the block survives -- only himmel's block goes ===="
+new_case red68
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T68="$HOME/.claude/CLAUDE.md"
+seed_block "$T68" $'# mine\nbe kind\n'
+printf 'a line the user added after install\n' >> "$T68"
+sed -i.bak '1s/.*/# mine (edited)/' "$T68"; rm -f "$T68.bak"
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc68=$?
+check "RED68: exits 0" "$rc68" "0"
+check "RED68: both user edits kept, block gone" "$(cat "$T68"; printf x)" \
+  "$(printf '# mine (edited)\nbe kind\na line the user added after install\nx')"
+check "RED68: outcome removed:ours" "$(block_outcomes)" "removed:ours"
+
+echo "==== RED69 (HIMMEL-3787 S2d): a user edit INSIDE the block keeps the whole file, reported, exit 0 ===="
+new_case red69
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T69="$HOME/.claude/CLAUDE.md"
+seed_block "$T69" $'# mine\n'
+awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T69" > "$T69.new" && mv "$T69.new" "$T69"
+cp "$T69" "$CASE_DIR/red69.before"
+out69=$(run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc69=$?
+check "RED69: exits 0 (kept units are reported, not a failure)" "$rc69" "0"
+check "RED69: file byte-identical" "$(cmp -s "$T69" "$CASE_DIR/red69.before" && echo same || echo differs)" "same"
+check "RED69: outcome kept:user-modified" "$(block_outcomes)" "kept:user-modified"
+check "RED69: the run says the block was kept" "$(printf '%s\n' "$out69" | grep -c '^  kept .*CLAUDE.md (user-modified)$')" "1"
+check "RED69: no sidecar written for a kept block" "$([ -e "$T69.himmel-uninstall-backup" ] && echo present || echo none)" "none"
+check "RED69: no STILL WIRED probe failure" "$(printf '%s\n' "$out69" | grep -c 'STILL WIRED')" "0"
+
+echo "==== RED69b (HIMMEL-3787 S2d): a TTY [d]elete answer never deletes a user-edited block ===="
+new_case red69b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T69B="$HOME/.claude/CLAUDE.md"
+seed_block "$T69B" $'# mine\n'
+awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T69B" > "$T69B.new" && mv "$T69B.new" "$T69B"
+cp "$T69B" "$CASE_DIR/red69b.before"
+# "y" answers the Proceed? confirm (a lone "d" would abort there and never reach
+# any unit -- the vacuous shape this row first shipped with), "d" would answer a
+# per-unit [k]eep/[d]elete offer if the block were ever offered one.
+rc69b=0
+out69b=$(RUN_TTY_ANSWER=$'y\nd' run_uninstall_fx --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks 2>&1) || rc69b=$?
+check "RED69b: the run got past the Proceed? confirm and exited 0" "$rc69b" "0"
+check "RED69b: the edited block file is byte-identical after a 'd' answer" \
+  "$(cmp -s "$T69B" "$CASE_DIR/red69b.before" && echo same || echo differs)" "same"
+check "RED69b: outcome kept:user-modified" "$(block_outcomes)" "kept:user-modified"
+check "RED69b: no [d]elete offer was printed for the block" \
+  "$(printf '%s\n' "$out69b" | grep -c -F '[d]elete')" "0"
+
+echo "==== RED70 (HIMMEL-3787 S2d): torn markers -- a BEGIN with no END, an END with no BEGIN -- keep the file, reported, exit 0 ===="
+new_case red70
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T70="$HOME/.claude/CLAUDE.md"
+seed_block "$T70" $'# mine\n'
+grep -vxF "$BLK_END" "$T70" > "$T70.new"; mv "$T70.new" "$T70"
+cp "$T70" "$CASE_DIR/red70.before"
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc70=$?
+check "RED70: torn END -- exits 0" "$rc70" "0"
+check "RED70: torn END -- file byte-identical" "$(cmp -s "$T70" "$CASE_DIR/red70.before" && echo same || echo differs)" "same"
+check "RED70: torn END -- outcome kept:block-malformed" "$(block_outcomes)" "kept:block-malformed"
+new_case red70b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T70B="$HOME/.claude/CLAUDE.md"
+seed_block "$T70B" $'# mine\n'
+grep -vxF "$BLK_BEGIN" "$T70B" > "$T70B.new"; mv "$T70B.new" "$T70B"
+cp "$T70B" "$CASE_DIR/red70b.before"
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc70b=$?
+check "RED70b: torn BEGIN -- exits 0" "$rc70b" "0"
+check "RED70b: torn BEGIN -- file byte-identical" "$(cmp -s "$T70B" "$CASE_DIR/red70b.before" && echo same || echo differs)" "same"
+check "RED70b: torn BEGIN -- outcome kept:block-malformed" "$(block_outcomes)" "kept:block-malformed"
+
+echo "==== RED71 (HIMMEL-3787 S2d): a duplicated block is never guessed at -- kept, reported, exit 0 ===="
+new_case red71
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T71="$HOME/.claude/CLAUDE.md"
+seed_block "$T71" $'# mine\n'
+{ printf '\n'; block_text; } >> "$T71"
+cp "$T71" "$CASE_DIR/red71.before"
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc71=$?
+check "RED71: exits 0" "$rc71" "0"
+check "RED71: file byte-identical" "$(cmp -s "$T71" "$CASE_DIR/red71.before" && echo same || echo differs)" "same"
+check "RED71: outcome kept:block-malformed" "$(block_outcomes)" "kept:block-malformed"
+
+echo "==== RED72 (HIMMEL-3787 S2d): a missing file is kept as already-absent -- nothing created, exit 0 ===="
+new_case red72
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T72="$HOME/.claude/CLAUDE.md"
+seed_block "$T72"
+rm -f "$T72"
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc72=$?
+check "RED72: exits 0" "$rc72" "0"
+check "RED72: the file was not re-created" "$([ -e "$T72" ] && echo present || echo absent)" "absent"
+check "RED72: outcome kept:already-absent" "$(block_outcomes)" "kept:already-absent"
+
+echo "==== RED73 (HIMMEL-3787 S2d): --dry-run writes nothing -- the file, its sidecar, and the ledger are all untouched ===="
+new_case red73
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T73="$HOME/.claude/CLAUDE.md"
+seed_block "$T73" $'# mine\n'
+cp "$T73" "$CASE_DIR/red73.before"
+LEDGER73_BEFORE=$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")
+out73=$(run_uninstall_fx --dry-run "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc73=$?
+check "RED73: exits 0" "$rc73" "0"
+check "RED73: file byte-identical" "$(cmp -s "$T73" "$CASE_DIR/red73.before" && echo same || echo differs)" "same"
+check "RED73: no sidecar" "$([ -e "$T73.himmel-uninstall-backup" ] && echo present || echo none)" "none"
+check "RED73: ledger byte-identical" "$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")" "$LEDGER73_BEFORE"
+check "RED73: the dry run names the strip it would do" "$(printf '%s\n' "$out73" | grep -c 'DRY: would remove block')" "1"
+
+# seed_block_unrecorded <target> [<pre-text>] -- a block with NO ledger row (a
+# pre-S2d install): the real writer with prov_record unset in a subshell.
+seed_block_unrecorded() {
+  local target="$1"
+  mkdir -p "$(dirname "$target")"
+  [ $# -ge 2 ] && printf '%s' "$2" > "$target"
+  ( . "$lib/user-claude-md.sh"
+    unset -f prov_record
+    wire_user_claude_md "$BLK_TEMPLATE" "$target" >/dev/null )
+}
+
+echo "==== RED74 (HIMMEL-3787 S2d, Q5): an UNRECORDED block that is byte-identical to the template is still stripped ===="
+new_case red74
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T74="$HOME/.claude/CLAUDE.md"
+seed_block_unrecorded "$T74" $'# mine\n'
+check "RED74: no ledger at all" "$([ -e "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" ] && echo ledger || echo none)" "none"
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc74=$?
+check "RED74: exits 0" "$rc74" "0"
+check "RED74: the user's own bytes are back exactly" "$(cat "$T74"; printf x)" "$(printf '# mine\nx')"
+
+echo "==== RED74b (HIMMEL-3787 S2d, Q5): same when a ledger exists but holds no block row ===="
+new_case red74b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T74B="$HOME/.claude/CLAUDE.md"
+seed_block_unrecorded "$T74B" $'# mine\n'
+( prov_begin --writer adopt.sh -- seed-empty >/dev/null; prov_end ok >/dev/null )
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc74b=$?
+check "RED74b: exits 0" "$rc74b" "0"
+check "RED74b: the user's own bytes are back exactly" "$(cat "$T74B"; printf x)" "$(printf '# mine\nx')"
+
+echo "==== RED75 (HIMMEL-3787 S2d, Q5): an UNRECORDED block that differs from the template is kept -- it may hold the user's edits ===="
+new_case red75
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T75="$HOME/.claude/CLAUDE.md"
+seed_block_unrecorded "$T75" $'# mine\n'
+awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T75" > "$T75.new" && mv "$T75.new" "$T75"
+cp "$T75" "$CASE_DIR/red75.before"
+out75=$(run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc75=$?
+check "RED75: exits 0 (kept and reported)" "$rc75" "0"
+check "RED75: file byte-identical" "$(cmp -s "$T75" "$CASE_DIR/red75.before" && echo same || echo differs)" "same"
+check "RED75: the run says why" "$(printf '%s\n' "$out75" | grep -c 'kept (block-unrecorded-modified)')" "1"
+check "RED75: no sidecar" "$([ -e "$T75.himmel-uninstall-backup" ] && echo present || echo none)" "none"
+check "RED75: no STILL WIRED probe failure" "$(printf '%s\n' "$out75" | grep -c 'STILL WIRED')" "0"
+
+echo "==== RED75b (HIMMEL-3787 S2d, Q5): an UNRECORDED block with a torn marker is kept and reported, exit 0 -- not a halt ===="
+new_case red75b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T75B="$HOME/.claude/CLAUDE.md"
+seed_block_unrecorded "$T75B" $'# mine\n'
+grep -v -x -F "$BLK_END" "$T75B" > "$T75B.new" && mv "$T75B.new" "$T75B"
+cp "$T75B" "$CASE_DIR/red75b.before"
+out75b=$(run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc75b=$?
+check "RED75b: exits 0 (kept and reported)" "$rc75b" "0"
+check "RED75b: file byte-identical" "$(cmp -s "$T75B" "$CASE_DIR/red75b.before" && echo same || echo differs)" "same"
+check "RED75b: the run says kept (block-malformed)" "$(printf '%s\n' "$out75b" | grep -c 'kept (block-malformed)')" "1"
+check "RED75b: no sidecar" "$([ -e "$T75B.himmel-uninstall-backup" ] && echo present || echo none)" "none"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \

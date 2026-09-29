@@ -7,6 +7,7 @@
 # Usage:
 #   bash unwire-user-claude-md.sh [--file-created yes|no] <rule-file-path> [dry_run]
 #   bash unwire-user-claude-md.sh --probe <rule-file-path>
+#   bash unwire-user-claude-md.sh --extract <rule-file-path>
 #
 # --file-created yes|no overrides the "left empty" decision below with the
 # provenance ledger's own record instead of the blank-line guess (HIMMEL-3332
@@ -55,6 +56,12 @@
 # 3 = at least one marker line (a block, a fragment, or a CRLF one) is present;
 # 1 = unreadable. Read by uninstall.sh's read-back, which must agree with the
 # strip about what counts as a marker or a documented block trips it.
+# --extract (HIMMEL-3787 S2d): prints the block -- the exact BEGIN line through
+# the exact END line, byte for byte -- to stdout, rc 0; rc 3 = no marker line and
+# no file (nothing wired); rc 1 = the block cannot be told apart from text
+# (malformed / duplicated / CRLF / open-fence markers, or unreadable). The same
+# scan and the same refusals as the strip, so the ledger reader and the strip can
+# never disagree about which lines are himmel's.
 # Source it to call unwire_user_claude_md directly.
 set -euo pipefail
 
@@ -101,6 +108,18 @@ unwire_ucm_probe() {
   [ "$openfence" -eq 1 ] || fm=0
   [ "$((nb + ne + crlf + fm))" -eq 0 ] || return 3
   return 0
+}
+
+unwire_ucm_extract() {
+  local target="$1" scan nb ne lb le crlf openfence fm
+  [ -f "$target" ] || return 3
+  scan=$(_ucm_scan "$target" 2>/dev/null) || return 1
+  read -r nb ne lb le crlf openfence fm <<< "$scan"
+  if [ "$openfence" -eq 1 ] && [ "$fm" -gt 0 ]; then return 1; fi
+  [ "$crlf" -eq 0 ] || return 1
+  if [ "$nb" -eq 0 ] && [ "$ne" -eq 0 ]; then return 3; fi
+  if [ "$nb" -ne 1 ] || [ "$ne" -ne 1 ] || [ "$lb" -gt "$le" ]; then return 1; fi
+  sed -n "${lb},${le}p" "$target"
 }
 
 unwire_user_claude_md() {
@@ -239,6 +258,14 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       exit 2
     fi
     unwire_ucm_probe "$2"
+    exit $?
+  fi
+  if [ "${1:-}" = "--extract" ]; then
+    if [ "$#" -ne 2 ]; then
+      echo "usage: unwire-user-claude-md.sh --extract <rule-file-path>" >&2
+      exit 2
+    fi
+    unwire_ucm_extract "$2"
     exit $?
   fi
   _ucm_cli_file_created=""

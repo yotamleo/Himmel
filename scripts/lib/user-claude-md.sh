@@ -26,6 +26,11 @@
 #     payload), never truncate/overwrite.
 #   - target absent -> create it with just the payload.
 #
+# Provenance (HIMMEL-3787 S2d): when scripts/lib/provenance.sh is sourced, a
+# real append/create records a `block` unit (see _ucm_record_block) so uninstall
+# can strip exactly himmel's block. A skip or a dry run records nothing; a
+# recording failure only warns -- it never fails the install.
+#
 # Usage: wire_user_claude_md <template-md-path> <target-claude-md-path>
 # Honors $DRY_RUN (0/1, default 0), matching adopt.sh's run()/DRY_RUN
 # convention, without depending on adopt.sh's own run() helper (this file is
@@ -40,6 +45,23 @@ _HIMMEL_USER_CLAUDE_MD_MARKER="HIMMEL:working-principles"
 # Upgrade path: none planned, the cost of a rare double-append (operator just
 # deletes the duplicate block) is lower than the cost of a stricter matcher.
 _HIMMEL_USER_CLAUDE_MD_HEURISTIC="simplicity first"
+
+# _ucm_record_block <target> <payload> <file_created true|false> -- HIMMEL-3787
+# S2d: one provenance `block` row for the block just written, so uninstall can
+# tell himmel's block from the operator's own text (its sha is the BEGIN..END
+# text, the .ours snapshot holds the same bytes). Best-effort like adopt.sh's
+# other recorders: the block is in place whether or not the row lands, and a
+# standalone source (this file's own test) without provenance.sh records nothing.
+_ucm_record_block() {
+  local target="$1" payload="$2" created="$3" row=user-claude-md
+  command -v prov_record >/dev/null 2>&1 || return 0
+  case "${target##*/}" in AGENTS.md) row=user-agents-md ;; esac
+  prov_record insert block "$target" --unit himmel-working-principles --scope user --class code \
+    --row "$row" --writer adopt.sh --field "marker=\"${_HIMMEL_USER_CLAUDE_MD_MARKER}\"" \
+    --field "file_created=$created" --post-text "$payload" \
+    || echo "  warning: provenance record failed for $target (uninstall falls back to the template check)" >&2
+  return 0
+}
 
 wire_user_claude_md() {
   local template="$1" target="$2"
@@ -83,6 +105,7 @@ wire_user_claude_md() {
       return 0
     fi
     { printf '\n'; printf '%s\n' "$payload"; } >> "$target" || return 1
+    _ucm_record_block "$target" "$payload" false
     echo "  user CLAUDE.md: appended working-principles block → $target"
     return 0
   fi
@@ -93,5 +116,6 @@ wire_user_claude_md() {
   fi
   mkdir -p "$(dirname "$target")" || return 1
   printf '%s\n' "$payload" > "$target" || return 1
+  _ucm_record_block "$target" "$payload" true
   echo "  user CLAUDE.md: created $target with working-principles block"
 }

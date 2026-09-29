@@ -1875,7 +1875,9 @@ ledger_apply_unit() {
   local u="$1" _step="${2:-[6/8]}" verdict action reason unit backup _ans _apply_args
   verdict=$(prov_read_verdict "$u") || { fail_step "$_step ledger verdict: could not read current state for a unit"; return 0; }
   action="${verdict%% *}"; reason="${verdict#* }"
-  unit=$(printf '%s' "$u" | jq -r '.unit // .path // "?"')
+  # A block's unit id is the same constant in every rule file; the file is what
+  # the operator recognises.
+  unit=$(printf '%s' "$u" | jq -r 'if .kind == "block" then (.path // .unit // "?") else (.unit // .path // "?") end')
   _apply_args=()
   [ "$DRY_RUN" -eq 1 ] && _apply_args=(--dry-run)
   case "$action" in
@@ -1912,11 +1914,21 @@ $unit"
         echo "DRY: would keep $unit ($reason)"
       else
         echo "  kept $unit ($reason)"
+        if [ "$(printf '%s' "$u" | jq -r '.kind')" = "block" ]; then
+          # HIMMEL-3787 S2d: no [r]estore/[d]elete offer for a block -- there is no
+          # pre-state to restore, and a delete would take the operator's edits
+          # with it. Say what to do by hand instead.
+          case "$reason" in
+            user-modified|block-malformed)
+              echo "    remove himmel's block by hand: delete the lines from <!-- BEGIN HIMMEL:working-principles --> through <!-- END HIMMEL:working-principles --> in $unit" ;;
+          esac
+        fi
         # ponytail: the [k]eep/[r]estore-or-[d]elete override for a
         # user-modified unit only ever offers itself on a real TTY with no
         # --yes — a scripted/CI/--yes run always takes the safe default
         # (keep) rather than prompting into a pipe.
-        if [ "$reason" = "user-modified" ] && [ "$YES" -ne 1 ] && [ "$_TTY_FD8" -eq 1 ]; then
+        if [ "$reason" = "user-modified" ] && [ "$YES" -ne 1 ] && [ "$_TTY_FD8" -eq 1 ] \
+           && [ "$(printf '%s' "$u" | jq -r '.kind')" != "block" ]; then
           backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
           if [ -n "$backup" ] && [ -r "$backup" ]; then
             printf "  %s changed since install -- [k]eep / [r]estore what you had before himmel (your current file is saved first)? [k] " "$unit"
@@ -3174,7 +3186,7 @@ EOF
 # ledger-or-kept fallback -- so the computation is dropped as an orphan of
 # that fix rather than left unused.
 unwire_user_files() {
-  local _ix _p _dry=0 _probe_rc _hud_units _hu _hud_legacy _hud_sl_still_wired _fc_args _block_unit _fc _trust_units _tu
+  local _ix _p _dry=0 _probe_rc _hud_units _hu _hud_legacy _hud_sl_still_wired _block_unit _trust_units _tu _ext_rc _ext_text _tpl_file _tpl_text
   local _hud_legacy_unit _hud_legacy_backup _hud_legacy_args
   [ "$DRY_RUN" -eq 1 ] && _dry=1
   for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud" "$_ix_trust"; do
@@ -3347,25 +3359,59 @@ EOF
         echo "  kept (not in ledger): $_p — revoke it in Claude Code if you want it gone"
       fi
     else
-      _fc_args=()
+      _block_unit=""
       if [ "$LEDGER_OK" -eq 1 ]; then
-        # HIMMEL-3332 S6: pass the ledger's recorded file_created straight
-        # through, overriding the helper's own blank-line guess (see its
-        # header). No governed block unit recorded for this path (predates
-        # per-file recording) -> _fc_args stays empty, same as before S6.
         _block_unit="$(prov_read_units --path "$_p" --kind block | head -n1)"
-        if [ -n "$_block_unit" ] && [ "$(printf '%s' "$_block_unit" | jq -r '.governed')" = "true" ]; then
-          # codex-8 fix: `// empty` coalesces an explicit `false` the same
-          # as an absent field, dropping a recorded file_created=false into
-          # the no-args (helper-guesses) case instead of --file-created no.
-          _fc="$(printf '%s' "$_block_unit" | jq -r 'if .fields.file_created == null then empty else (.fields.file_created | tostring) end')"
-          case "$_fc" in
-            true|yes) _fc_args=(--file-created yes) ;;
-            false|no) _fc_args=(--file-created no) ;;
-          esac
+        [ -n "$_block_unit" ] && [ "$(printf '%s' "$_block_unit" | jq -r '.governed')" = "true" ] || _block_unit=""
+      fi
+      if [ -n "$_block_unit" ]; then
+        # HIMMEL-3787 S2d: install recorded this block, so the ledger decides.
+        # An unchanged block is stripped (file_created decides whether an
+        # emptied file goes too); an edited or torn one is KEPT and reported
+        # with exit 0 -- a unit left for the operator is not a failure.
+        if ledger_apply_unit "$_block_unit"; then
+          # 0 = the block was acted on: confirm the file really is clean. A kept
+          # block (rc 1) is still wired on purpose, so it skips the read-back.
+          if [ "$HALTED" -eq 0 ] && [ "$_dry" -eq 0 ] && [ -f "$_p" ]; then
+            _probe_rc=0
+            bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --probe "$_p" >/dev/null 2>&1 || _probe_rc=$?
+            if [ "$_probe_rc" -eq 3 ]; then
+              echo "  STILL WIRED: himmel working-principles block  [$_p]" >&2
+              fail_step "[6/8] read-back: himmel working-principles block still in $_p"
+            elif [ "$_probe_rc" -ne 0 ]; then
+              echo "  UNVERIFIED: could not re-read $_p after the strip (probe rc $_probe_rc)" >&2
+              fail_step "[6/8] read-back: could not verify $_p (probe rc $_probe_rc)"
+            fi
+          fi
+        fi
+        continue
+      fi
+      # No install record for this block (an install from before S2d, a
+      # Windows install, a ledger-less box): HIMMEL-3787 Q5 -- strip it ONLY when
+      # its text is byte-identical to the block the current himmel would write;
+      # anything else may hold the operator's own edits, so it is kept and
+      # reported. A block the scanner refuses (torn, duplicated ...) is kept and
+      # reported the same way, exit 0, like the recorded path's block-malformed.
+      if [ -f "$_p" ]; then
+        _ext_rc=0
+        _ext_text="$(bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --extract "$_p" 2>/dev/null)" || _ext_rc=$?
+        if [ "$_ext_rc" -ne 0 ] && [ "$_ext_rc" -ne 3 ]; then
+          echo "  kept (block-malformed): $_p — no install record, and its himmel markers are torn, duplicated or unreadable; fix or remove the block by hand"
+          # the scanner's own reason (CRLF markers, open fence ...), indented
+          bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --extract "$_p" 2>&1 >/dev/null | sed 's/^/    /'
+          continue
+        fi
+        if [ "$_ext_rc" -eq 0 ]; then
+          _tpl_file="$REPO_ROOT/docs/setup/user-scope-claude-md-template.md"
+          _tpl_text=""
+          [ -f "$_tpl_file" ] && _tpl_text="$(sed -n '/<!-- BEGIN HIMMEL:working-principles -->/,/<!-- END HIMMEL:working-principles -->/p' "$_tpl_file")"
+          if [ -z "$_tpl_text" ] || [ "$_ext_text" != "$_tpl_text" ]; then
+            echo "  kept (block-unrecorded-modified): $_p — no install record, and the block is not himmel's template text, so it may hold your edits; remove it by hand between the BEGIN/END markers if you want it gone"
+            continue
+          fi
         fi
       fi
-      if ! bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" ${_fc_args[@]+"${_fc_args[@]}"} "$_p" "$_dry"; then
+      if ! bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" "$_p" "$_dry"; then
         fail_step "[6/8] user rule file: could not strip himmel's block from $_p"
       elif [ "$_dry" -eq 0 ] && [ -f "$_p" ]; then
         # 0 = clean; 3 = a marker is still there; anything else = the probe

@@ -34,6 +34,8 @@ const BUNDLE_FILES_POSIX = [
   'scripts/lib/unwire-user-claude-md.sh',
   'scripts/machine-setup/uninstall-plugins.sh',
   'docs/setup/settings-template.json',
+  // HIMMEL-3787 S2d: uninstall.sh compares an unrecorded block to this template (Q5).
+  'docs/setup/user-scope-claude-md-template.md',
   'scripts/himmelctl/standalone.js',
   'scripts/himmelctl/lib/uninstall-wrapper.js',
   'scripts/himmelctl/lib/launcher.js',
