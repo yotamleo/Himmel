@@ -77,7 +77,7 @@ $1"; shift ;;
 done
 [ -n "$FILES" ] || die "no session files given"
 case "$TURNS$MIN_TURNS" in *[!0-9]*) die "--turns/--min-turns must be integers" ;; esac
-[ "${TURNS:-0}" -ge 1 ] && [ "${MIN_TURNS:-0}" -ge 1 ] || die "--turns/--min-turns must be >= 1"
+if [ "${TURNS:-0}" -lt 1 ] || [ "${MIN_TURNS:-0}" -lt 1 ]; then die "--turns/--min-turns must be >= 1"; fi
 
 EVENT=0
 if [ "$MODE" = invalidation ]; then
