@@ -34,6 +34,7 @@ if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1
     cat > "$TMP/stubbin/timeout" <<'TOEOF'
 #!/usr/bin/env bash
 if [ "$1" = "--version" ]; then echo "timeout (test stub)"; exit 0; fi
+if [ "$1" = "-k" ]; then shift 2; fi
 secs="$1"; shift
 "$@" &
 cpid=$!
