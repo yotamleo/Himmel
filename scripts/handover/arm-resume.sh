@@ -1776,7 +1776,7 @@ command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 # below WARN and skip (see their own guard), same as the existing dedup/
 # collision checks proceed unaffected.
 # shellcheck source=../lib/handover-path.sh
-# shellcheck disable=SC1091
+# shellcheck disable=SC1091,SC2015
 [ -f "$SCRIPT_DIR/../lib/handover-path.sh" ] \
     && . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null || true
 command -v handover_root >/dev/null 2>&1 || handover_root() { return 2; }
