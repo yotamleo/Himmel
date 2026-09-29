@@ -457,14 +457,18 @@ LEDGER_STARTED=1
 # verdict cannot be read is exactly the unobservable failure Invariant 8
 # exists to remove, so it is not an acceptable degraded mode. Refusing here,
 # before codex starts, also means nothing has been spent when it happens.
-if ! TIMEOUT_FLAG="$(mktemp 2>/dev/null)" || [ -z "$TIMEOUT_FLAG" ]; then
+#
+# The template is explicit: a BARE `mktemp` honours $TMPDIR on GNU but ignores it
+# on macOS/BSD (HIMMEL-3699), so the flag/event files would land outside the
+# caller's temp root. GNU's bare default is `$TMPDIR/tmp.XXXXXXXXXX`.
+if ! TIMEOUT_FLAG="$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX" 2>/dev/null)" || [ -z "$TIMEOUT_FLAG" ]; then
     echo "dispatch-codex-exec.sh: cannot create the watchdog flag file (mktemp failed; TMPDIR=${TMPDIR:-<unset>}) - refusing to run codex with an unreadable watchdog verdict" >&2
     exit 2
 fi
 # Observe stdout (JSON events with --json), not stderr startup diagnostics.
 # Retain only its first byte (HIMMEL-2806); the watchdog samples non-emptiness,
 # not content. The owned relay forwards that byte and then the remaining stdin.
-if ! EVENT_LOG="$(mktemp 2>/dev/null)" || [ -z "$EVENT_LOG" ]; then
+if ! EVENT_LOG="$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX" 2>/dev/null)" || [ -z "$EVENT_LOG" ]; then
     echo "dispatch-codex-exec.sh: cannot create the event log - refusing to run codex without timeout diagnostics" >&2
     exit 2
 fi

@@ -1084,6 +1084,14 @@ fi
 # =====================================================================
 if [ -n "$PYTHON_BIN" ]; then
     # --- T9a: an unsatisfiable budget refuses, naming the budget -------
+    # PLATFORM GUARD: the RAM guard reads Linux's /proc/meminfo and deliberately
+    # fails open where it does not exist (after-report.sh, HIMMEL-2676), so on
+    # macOS the refusal can never fire and the run would sit out the full ssh
+    # wait (180s). ponytail: T9a is Linux-only, upgrade path is a macOS RAM
+    # probe in after-report.sh (HIMMEL-3699); T9b below still runs everywhere.
+    if [ ! -r /proc/meminfo ]; then
+        echo "SKIP T9a: no /proc/meminfo (the RAM guard fails open off-Linux)"
+    else
     FAKE_VBOX_STATE="$WORK/vbox-t9a"
     mkdir -p "$FAKE_VBOX_STATE"
     : > "$FAKE_VBOX_STATE/registered.list"
@@ -1103,6 +1111,7 @@ if [ -n "$PYTHON_BIN" ]; then
     else
         fail_case "T9a — rc=$t9a_rc out:"
         printf '%s\n' "$t9a_out" | sed 's/^/    /'
+    fi
     fi
 
     # --- T9b: a trivially satisfiable budget does not fire -------------

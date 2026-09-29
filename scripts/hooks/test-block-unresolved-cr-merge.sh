@@ -329,8 +329,25 @@ done
 # Shadowing only: $NOTB_BIN is prepended, but the real gh stub (already
 # earlier on $PATH) and every other tool the hook needs stay reachable.
 NOTB_PATH="$NOTB_BIN:$PATH"
-REAL_TIMEOUT="$(command -v timeout || command -v gtimeout)"
-[ -n "$REAL_TIMEOUT" ] || { echo "FATAL: no real timeout/gtimeout on the test runner's own PATH"; exit 1; }
+# Bash-native cap for the RED measurement: stock macOS has no timeout/gtimeout
+# (HIMMEL-3699), so the runner's own bound cannot depend on one. Usage:
+# bounded_run <secs> <stdin-file> <cmd...>; rc 124 when it had to kill the
+# command, else the command's own rc. The command is backgrounded, so stdin is
+# passed as a file (an async list would otherwise read /dev/null).
+bounded_run() {
+    local _secs="$1" _in="$2" _pid _killer _flag _rc
+    shift 2
+    _flag="$TMP/bounded-run.$$.killed"
+    rm -f "$_flag"
+    "$@" < "$_in" &
+    _pid=$!
+    ( sleep "$_secs"; : > "$_flag"; kill "$_pid" 2>/dev/null ) &
+    _killer=$!
+    wait "$_pid"; _rc=$?
+    kill "$_killer" 2>/dev/null; wait "$_killer" 2>/dev/null
+    if [ -e "$_flag" ]; then rm -f "$_flag"; return 124; fi
+    return "$_rc"
+}
 
 printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
 
@@ -355,8 +372,8 @@ payload Bash "gh pr merge 42 --squash --match-head-commit abc123" > "$RED_NOTB_P
 RED_NOTB_OUT="$TMP/no-timeout-red-out"; RED_NOTB_ERR="$TMP/no-timeout-red-err"
 PATH="$NOTB_PATH" HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" \
     GH_STUB_MODE=repo-view-timeout GH_STUB_LOG="$TMP/calls-no-timeout-red.log" \
-    "$REAL_TIMEOUT" 8 bash "$RED_NOTB_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" \
-    < "$RED_NOTB_PAYLOAD" > "$RED_NOTB_OUT" 2>"$RED_NOTB_ERR"
+    bounded_run 8 "$RED_NOTB_PAYLOAD" bash "$RED_NOTB_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" \
+    > "$RED_NOTB_OUT" 2>"$RED_NOTB_ERR"
 red_notb_rc=$?
 if [ "$red_notb_rc" -eq 124 ]; then
     pass=$((pass+1)); echo "ok   red-control-no-timeout-bin-hangs (base hook ran unbounded past 8s with no timeout/gtimeout on PATH, as expected pre-fix)"

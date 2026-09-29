@@ -891,8 +891,16 @@ printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
 t34_notdir="$TMP/t34-not-a-dir"; printf 'x\n' > "$t34_notdir"
 # Precondition: mktemp really does fail under this TMPDIR (otherwise the case
 # would "pass" without ever exercising the abort).
-t34_mktemp_rc=$(TMPDIR="$t34_notdir" mktemp >/dev/null 2>&1; echo $?)
-if [ "$t34_mktemp_rc" -ne 0 ]; then pass "T34 setup: mktemp fails under the broken TMPDIR"; else fail "T34 setup: mktemp fails under the broken TMPDIR" "rc=0"; fi
+# The probe uses the same `mktemp -t` form upgrade.sh calls (a bare mktemp
+# ignores TMPDIR on macOS, so it would not prove the abort path).
+t34_mktemp_rc=$(TMPDIR="$t34_notdir" mktemp -t luna-upgrade-probe.XXXXXX >/dev/null 2>&1; echo $?)
+# PLATFORM GUARD: macOS `mktemp -t` can succeed under a non-directory TMPDIR, so
+# the abort path cannot be provoked there; skip rather than assert a vacuous pass.
+# ponytail: T34 unexercised on hosts whose mktemp -t survives a bad TMPDIR, needs a mktemp shim on PATH to force the failure (HIMMEL-3699).
+if [ "$t34_mktemp_rc" -eq 0 ]; then
+    echo "SKIP T34: mktemp -t succeeds under a non-directory TMPDIR on this platform"
+else
+pass "T34 setup: mktemp fails under the broken TMPDIR"
 t34_gitleaks_before=$(sha_of "$V/.gitleaks.toml")
 t34_out=$(TMPDIR="$t34_notdir" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t34_rc=$?
 assert_eq "T34 a failed snapshot scratch file aborts rather than writing" "$t34_gitleaks_before" "$(sha_of "$V/.gitleaks.toml")"
@@ -902,6 +910,7 @@ case "$t34_out" in
     *"aborting before any change"*) pass "T34 says it aborted before changing anything" ;;
     *) fail "T34 says it aborted before changing anything" "got: $t34_out" ;;
 esac
+fi
 
 
 # ---------------------------------------------------------------------------
@@ -1119,7 +1128,7 @@ chmod +x "$t38_stub/sha256sum"
 t38_other=$(PATH="$t38_stub:$PATH" sha256sum "$T/.gitleaks.toml" 2>/dev/null | cut -d' ' -f1)
 if [ -n "$t38_other" ]; then pass "T38 setup: the stub passes other files through"; else fail "T38 setup: the stub passes other files through" "empty"; fi
 t38_out=$(PATH="$t38_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t38_rc=$?
-t38_calls=$(wc -l < "$t38_count_file")
+t38_calls=$(wc -l < "$t38_count_file" | tr -d ' ')  # BSD wc pads the count
 assert_eq "T38 setup: the target file's sha256sum was called exactly 5 times, and the 5th failed" "5" "$t38_calls"
 assert_eq "T38 the pre-existing stamp is left byte-identical" "$t38_stamp_before" "$(sha_of "$V/.vault-template.json")"
 assert_eq "T38 the pre-existing snapshot map is untouched" "$t38_keys_before" "$(snap_keys "$V/.vault-template.json")"

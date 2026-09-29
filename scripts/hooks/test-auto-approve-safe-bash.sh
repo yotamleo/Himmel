@@ -83,9 +83,13 @@ decide_win() {
 # characters `\` and `t`/`n`, not TAB/LF (judge J1397A findings 2/3).
 POSIX_SED_SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/posix-sed-shim.XXXXXX")" || exit 1
 REAL_SED="$(command -v sed)"
+# GNU sed needs --posix to get POSIX-bracket semantics; BSD/macOS sed rejects
+# the flag (HIMMEL-3699) and already IS POSIX, so it is exec'd as-is there.
+POSIX_SED_FLAG="--posix"
+"$REAL_SED" --posix -n p </dev/null >/dev/null 2>&1 || POSIX_SED_FLAG=""
 cat > "$POSIX_SED_SHIM_DIR/sed" <<EOF
 #!/usr/bin/env bash
-exec "$REAL_SED" --posix "\$@"
+exec "$REAL_SED" $POSIX_SED_FLAG "\$@"
 EOF
 chmod +x "$POSIX_SED_SHIM_DIR/sed"
 decide_posix() {

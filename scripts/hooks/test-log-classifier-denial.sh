@@ -187,6 +187,33 @@ else
     fail "input_sha collapses differing SHAs to the same hash ($sha_a vs $sha_b)"
 fi
 
+# --- 4b. SHA boundary rule (HIMMEL-3699: BSD sed has no \b, so the collapse is
+# a perl lookaround). A 40-hex run bounded by non-word chars / start / end
+# collapses; one touching [A-Za-z0-9_] stays; 39/41-hex runs stay. ---
+LOG4B="$WORKDIR/c4b.jsonl"
+sha_of_cmd() {
+    : >"$LOG4B"
+    run_hook "$(payload s4b /tmp/repo Bash "$1" '[X]')" "$LOG4B" >/dev/null
+    jq -r .input_sha <"$LOG4B"
+}
+H40a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+H40b=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+assert_same() { # name cmd-a cmd-b
+    local a b; a=$(sha_of_cmd "$2"); b=$(sha_of_cmd "$3")
+    if [ -n "$a" ] && [ "$a" = "$b" ]; then pass "$1"; else fail "$1 ($a vs $b)"; fi
+}
+assert_differ() { # name cmd-a cmd-b
+    local a b; a=$(sha_of_cmd "$2"); b=$(sha_of_cmd "$3")
+    if [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]; then pass "$1"; else fail "$1 ($a vs $b)"; fi
+}
+assert_same "40-hex at start and end of the input collapses" "$H40a x $H40a" "$H40b x $H40b"
+assert_same "40-hex between punctuation collapses" "git show ($H40a):f" "git show ($H40b):f"
+assert_same "two SHAs separated by one space both collapse" "git log $H40a $H40b" "git log $H40b $H40a"
+assert_differ "40-hex touching a word char on the left stays" "g$H40a x" "g$H40b x"
+assert_differ "40-hex touching a word char on the right stays" "$H40a""_x" "$H40b""_x"
+assert_differ "39-hex run stays" "x ${H40a#a} y" "x ${H40b#b} y"
+assert_differ "41-hex run stays" "x a$H40a y" "x b$H40b y"
+
 # --- 5. session_title derives from a worktree cwd's slug ---
 LOG4="$WORKDIR/c4.jsonl"
 run_hook "$(payload s4 /repo/.claude/worktrees/feat+foo-bar Bash 'ls' '[X]')" "$LOG4" >/dev/null

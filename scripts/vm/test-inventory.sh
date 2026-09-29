@@ -44,8 +44,16 @@ run_inv "$LA"; rc_a=$?
 printf 'brave\n' > "$FIXHOME/sub/b.txt"   # same length: one content byte changes, no metadata does
 run_inv "$LB"; rc_b=$?
 
+# PLATFORM GUARD: inventory.sh is guest-side (GNU find -printf); BSD find on macOS
+# rejects -printf, so the rc==0 assertions (T1, T7c) cannot hold on such a host.
+# ponytail: rc==0 assertions skipped where find lacks -printf, port inventory.sh to a portable stat/find form if it ever runs off an Ubuntu guest (HIMMEL-3699).
+HAVE_FIND_PRINTF=1
+find "$WORK" -maxdepth 0 -printf '' >/dev/null 2>&1 || HAVE_FIND_PRINTF=0
+
 # rc must be 0 even where the host lacks dpkg-query (an optional probe: fail-open).
-if [ "$rc_a" -eq 0 ] && [ "$rc_b" -eq 0 ] \
+if [ "$HAVE_FIND_PRINTF" = 0 ]; then
+    echo "SKIP T1: find lacks -printf on this platform (inventory.sh runs on a GNU guest)"
+elif [ "$rc_a" -eq 0 ] && [ "$rc_b" -eq 0 ] \
    && [ -s "/tmp/inv-$LA/MANIFEST" ] && [ -s "/tmp/inv-$LA/home.sha" ] && [ -s "/tmp/inv-$LA/home.meta" ]; then
     pass "T1 inventory exits 0 and writes home.meta, home.sha and a MANIFEST under /tmp/inv-<label>"
 else
@@ -119,7 +127,9 @@ if [ "$rc" -ne 0 ] && grep -q 'required collection failed: etc.sha' <<< "$out"; 
     pass "T7b a failing sudo fails the inventory and names etc.sha"
 else fail_case "T7b rc=$rc: $out"; fi
 out=$(HOME="$FIXHOME" PATH="$WORK/bin-badprobe:$WORK/bin:$PATH" bash "$INV" "$LE" 2>&1 >/dev/null); rc=$?
-if [ "$rc" -eq 0 ] && ! grep -q 'required collection failed' <<< "$out"; then
+if [ "$HAVE_FIND_PRINTF" = 0 ]; then
+    echo "SKIP T7c: find lacks -printf on this platform (inventory.sh runs on a GNU guest)"
+elif [ "$rc" -eq 0 ] && ! grep -q 'required collection failed' <<< "$out"; then
     pass "T7c failing optional probes (dpkg-query, du, df, ps) stay fail-open: rc 0"
 else fail_case "T7c rc=$rc: $out"; fi
 
