@@ -330,7 +330,7 @@ const TIER_PIN: Record<string, string> = { opus: "claude-opus-5-5", sonnet: "cla
 export function spawnSpec(prompt: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, extraEnv?: Record<string, string>, mcpConfig?: string, registry?: LaneRegistry) {
   const picked = modelOverride ?? laneModel(lane);
   // the GLM alias is a Z.ai mapping (ANTHROPIC_DEFAULT_OPUS_MODEL), never an Anthropic id
-  const model = lane === "glm" || picked === undefined ? picked : (TIER_PIN[picked] ?? picked);
+  const model = lane === "glm" || picked === undefined ? picked : (Object.hasOwn(TIER_PIN, picked) ? TIER_PIN[picked] : picked);
   const { cmd } = buildRunArgs(prompt, permissionMode, model, settings, mcpConfig);
   const effort = lane === "glm" ? undefined : laneEffort(cmd[2], registry);
   const env = sessionEnv(lane, effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort, ...(extraEnv ?? {}) } : extraEnv);
