@@ -29,7 +29,7 @@ ACCT="$(current_account_hash)"
 # Injects "account":"$ACCT" into a JSON object literal (every fixture below
 # starts with '{'), so a single call site stamps ad-hoc JSON without every
 # caller repeating the field.
-stamp_account() { local body=${1#\{}; printf '{"account":"%s",%s' "$ACCT" "$body"; }
+stamp_account() { local body="${1:1}"; printf '{"account":"%s",%s' "$ACCT" "$body"; }
 
 verdict() {
   printf '%s' "$(stamp_account "$1")" > "$W/c.json"

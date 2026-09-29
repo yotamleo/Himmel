@@ -1185,6 +1185,9 @@ check "full launch --profile: seeded settings do NOT grant a root-wide handover 
 # additionalDirectories resolving a doc directory containing a space; the
 # .locks deny is built from HANDOVER_DIR directly, so it exercises the same
 # space handling on that side.
+# ponytail: HEADED_ARM_UNAME=Linux pins the plain-export branch because on a real
+# Darwin runner leg_propagate_env refuses a whitespace value (exit 12, covered
+# by the Darwin cases below); upgrade path: a Darwin-specific expectation here.
 d17s="$tmp/c17s"; mk_launch_stubs "$d17s" "HIMMEL-3333-space"; mkdir -p "$tmp/repo17s"
 space_root="$tmp/pinned handover root"
 space_doc_dir="$space_root/yotamleo/himmel"
@@ -1197,6 +1200,7 @@ HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
 KONSOLE_CMD="$d17s/konsole" PGREP_CMD="$d17s/pgrep" \
 LEG_REPO="$tmp/repo17s" HEADED_ARM_LOCK_DIR="$d17s/locks" HEADED_ARM_PROC="$d17s/proc" \
 HANDOVER_DIR="$space_root" \
+HEADED_ARM_UNAME=Linux \
   bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-space" "$space_doc" "$d17s/signal-never" "$PAST" "$d17s/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d17s" || true
 check "full launch --profile (space in handover root): exit 0" "$rc" "0"
