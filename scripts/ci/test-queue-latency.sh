@@ -8,6 +8,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/scripts/ci/queue-latency.sh"
 TMP="$(mktemp -d "/tmp/himmel-test-queue-latency.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 2; }
 trap 'rm -rf "$TMP"' EXIT
+# shellcheck source=../lib/timeout-bin.sh
+. "$ROOT/scripts/lib/timeout-bin.sh" 2>/dev/null
 
 fails=0
 ok()  { echo "ok - $1"; }
@@ -103,6 +105,14 @@ reset
 runs_json in_progress 1 > "$TMP/fx/runs-in_progress.json"; runs_json queued > "$TMP/fx/runs-queued.json"
 out="$(run)"
 is "per-run jobs failure -> unknown" "ci-queue: unknown" "$out"
+
+# `-R` with no argument must fail fast, not spin (shift 2 fails on a lone arg)
+if [ -n "$_TIMEOUT_BIN" ]; then
+  "$_TIMEOUT_BIN" 5 bash "$SCRIPT" -R >/dev/null 2>&1; rc=$?
+  is "-R without value exits 2" "2" "$rc"
+else
+  echo "skip - -R without value: no timeout binary"
+fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASSED"; exit 0; else echo "FAILED=$fails"; exit 1; fi

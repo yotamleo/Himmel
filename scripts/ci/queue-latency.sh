@@ -25,7 +25,8 @@ unknown() { echo "ci-queue: unknown"; exit 0; }
 REPO=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -R) REPO="${2:-}"; shift 2 ;;
+    -R) [ $# -ge 2 ] || { echo "usage: queue-latency.sh [-R owner/repo]" >&2; exit 2; }
+        REPO="$2"; shift 2 ;;
     *) echo "usage: queue-latency.sh [-R owner/repo]" >&2; exit 2 ;;
   esac
 done
