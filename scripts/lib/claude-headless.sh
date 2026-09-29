@@ -332,13 +332,23 @@ BANK_VERDICT="$(CADENCE_BANK_LEG="${CADENCE_BANK_LEG:-claude-headless:$ROLE}" ba
 # mtimes at all (sha over a sorted per-file digest list, same shape as
 # scripts/statusline/check-hud-drift.sh's own drift hash) — more correct,
 # meaningfully more expensive per check, not worth it until this is real.
+# BSD/macOS date has no %N and prints it as a literal "N" ("1759000000.N"),
+# which artifact_present's awk then compares as a STRING, so a genuine update
+# never reads as newer. Rewrite that ".N" tail to ".000000000" (whole-second
+# resolution there); GNU date never prints it, so its output is untouched.
+# ponytail: whole-second mtimes on BSD miss a same-second rewrite, switch to
+# stat -f %Fm or perl if a macOS same-second miss is ever observed.
+# The per-file dates come from a read loop, not `find -exec date -r {} +fmt ;`:
+# macOS find rejected that -exec ("find: ;: unknown primary or operator"), the
+# scan came back empty and the directory's own (unchanged) mtime was used, so a
+# content-only update never read as newer (os-verify runs 36625273811, 36629152153).
 artifact_mtime() {
   local path="$1" newest
   if [ -d "$path" ]; then
-    newest="$(find "$path" -type f -exec date -r {} '+%s.%N' \; 2>/dev/null | sort -rn | head -1)"
-    if [ -n "$newest" ]; then printf '%s' "$newest"; else date -r "$path" '+%s.%N' 2>/dev/null || true; fi
+    newest="$(find "$path" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do date -r "$f" '+%s.%N' 2>/dev/null; done | sed 's/\.N$/.000000000/' | sort -rn | head -1)"
+    if [ -n "$newest" ]; then printf '%s' "$newest"; else date -r "$path" '+%s.%N' 2>/dev/null | sed 's/\.N$/.000000000/' || true; fi
   else
-    date -r "$path" '+%s.%N' 2>/dev/null || true
+    date -r "$path" '+%s.%N' 2>/dev/null | sed 's/\.N$/.000000000/' || true
   fi
 }
 ARTIFACT_PRE_MTIME=""

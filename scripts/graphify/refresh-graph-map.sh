@@ -2594,7 +2594,18 @@ fi   # DO_EXTRACT -- end of the copy + extraction region (--promote-only rejoins
     # treating a NUL as just another byte is correct here, not a workaround.
     leak_line=""
     grep_rc=0
-    leak_line="$(grep -a -m1 -inE "$leak_pattern" "$scan_target")" || grep_rc=$?
+    # ponytail: BSD/macOS grep matches on C strings, so a NUL truncates the
+    # line it sits on and a leak AFTER the NUL is missed (T20 on macOS). Scan a
+    # NUL-stripped copy (newlines untouched, so the line number still indexes
+    # $scan_target); a failed strip fails CLOSED like an unreadable scan. Cost is
+    # one extra artifact copy per scan, revisit if the artifacts grow past RAM.
+    scan_nonul="$SCRATCH_OUT/.leak-scan-nonul"
+    if tr -d '\0' < "$scan_target" > "$scan_nonul" 2>/dev/null; then
+      leak_line="$(grep -a -m1 -inE "$leak_pattern" "$scan_nonul")" || grep_rc=$?
+    else
+      grep_rc=2
+    fi
+    rm -f "$scan_nonul"
     if [ "$grep_rc" -eq 0 ]; then
       # HIMMEL-1134 CR follow-up: do NOT echo $leak_line -- it's the matched
       # grep line, i.e. it CONTAINS the leaked host path. Printing it here

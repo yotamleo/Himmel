@@ -366,7 +366,10 @@ fi
 new_sem
 FAKE_PS_DIR="$SCRATCH/fake-ps-bin"
 mkdir -p "$FAKE_PS_DIR"
-printf '#!/bin/sh\nexit 1\n' >"$FAKE_PS_DIR/ps"
+# Fail ONLY the identity probe (lstart). macOS has no /proc, so the ancestor
+# walk (_suite_sem_ppid) also reads `ps`; failing every call would break
+# re-entrancy itself, not just the empty-identity condition under test.
+printf '#!/bin/sh\ncase "$*" in *lstart*) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v ps)" >"$FAKE_PS_DIR/ps"
 chmod +x "$FAKE_PS_DIR/ps"
 SNAP="$SCRATCH/owner17.snapshot"
 # shellcheck disable=SC2016  # $0/$1/$2 expand in the inner sh, not this shell
