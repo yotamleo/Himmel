@@ -264,8 +264,8 @@ export async function runMirror(opts: MirrorOptions, req: Req): Promise<MirrorRe
   res.mirrorCount = localKeys(root, project).length;
   // An incomplete mirror keeps no cursor, so the next run is a full backfill
   // instead of an incremental that never revisits unchanged, missing issues.
-  if (res.jiraTotal !== null && res.mirrorCount < res.jiraTotal * COUNT_TOLERANCE) {
-    warn(`mirror holds ${res.mirrorCount} but Jira counts ${res.jiraTotal}; cursor dropped`);
+  if (res.deleteSkipped || (res.jiraTotal !== null && res.mirrorCount < res.jiraTotal * COUNT_TOLERANCE)) {
+    warn(`mirror not verified complete (${res.deleteSkipped ?? `holds ${res.mirrorCount}, Jira counts ${res.jiraTotal}`}); cursor dropped`);
     if (existsSync(join(root, CURSOR_FILE))) unlinkSync(join(root, CURSOR_FILE));
     return res;
   }
