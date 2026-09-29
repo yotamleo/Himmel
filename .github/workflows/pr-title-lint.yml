@@ -27,6 +27,11 @@ concurrency:
 
 jobs:
   pr-title-lint:
+    # HIMMEL-3835: `edited` also fires on every body edit; re-lint only when the
+    # title changed. A job skipped by `if:` reports success, so the required
+    # pr-title-lint context stays satisfied (GitHub docs, "Using conditions to
+    # control job execution" / required status checks: a skipped job passes).
+    if: github.event.action != 'edited' || github.event.changes.title != null
     runs-on: ubuntu-latest
     env:
       TICKET_ID_REQUIRED: '1'

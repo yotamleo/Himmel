@@ -47,6 +47,12 @@ concurrency:
 jobs:
   gate:
     name: codeowner-review-gate
+    # HIMMEL-3835: skip what cannot change the verdict. A PR `edited` matters
+    # only when the base branch changed (new CODEOWNERS + base sha); a body or
+    # title edit does not. A Bot review (CodeRabbit) can neither satisfy nor
+    # revoke code-owner review. A job-level skip reports success and, unlike
+    # cancel-in-progress, never leaves a CANCELLED context (HIMMEL-3588).
+    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null)) || (github.event_name == 'pull_request_review' && github.event.review.user.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
