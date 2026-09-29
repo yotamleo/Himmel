@@ -68,7 +68,7 @@ has   "block-only: says why it was removed" "install created it" "$out"
 f="$td/was-empty.md"; printf '\n%s\n' "$BLOCK" > "$f"; cp "$f" "$td/was-empty.before"; run "$f"
 check "was-empty: rc 0" "$rc" 0
 there "was-empty: the operator's file is kept" "$f"
-check "was-empty: and is empty again" "$(wc -c < "$f")" 0
+check "was-empty: and is empty again" "$(wc -c < "$f" | tr -d " ")" 0
 same  "was-empty: backup is the file as found" "$f.himmel-uninstall-backup" "$td/was-empty.before"
 has   "was-empty: says it was empty before install" "empty again" "$out"
 # the operator's file was a lone newline: that newline is theirs and stays
@@ -90,7 +90,7 @@ f="$td/fc-no.md"; printf '%s\n' "$BLOCK" > "$f"
 run --file-created no "$f"
 check "fc-no: rc 0" "$rc" 0
 there "fc-no: file kept, never deleted" "$f"
-check "fc-no: and is empty" "$(wc -c < "$f")" 0
+check "fc-no: and is empty" "$(wc -c < "$f" | tr -d " ")" 0
 there "fc-no: backup taken" "$f.himmel-uninstall-backup"
 has  "fc-no: says empty again" "empty again" "$out"
 
@@ -100,7 +100,7 @@ ln -s "$td/fc-dots/CLAUDE.md" "$td/fc-symlink.md"
 run --file-created yes "$td/fc-symlink.md"
 check "fc-symlink-yes: rc 0" "$rc" 0
 [ -L "$td/fc-symlink.md" ] && ok "fc-symlink-yes: link preserved" || bad "fc-symlink-yes: link deleted"
-check "fc-symlink-yes: target emptied" "$(wc -c < "$td/fc-dots/CLAUDE.md")" 0
+check "fc-symlink-yes: target emptied" "$(wc -c < "$td/fc-dots/CLAUDE.md" | tr -d " ")" 0
 
 # invalid value -> usage exit 2, before any file is touched
 run --file-created bogus "$td/fc-invalid-target.md"
@@ -279,7 +279,17 @@ check "backup-file: stripped" "$(cat "$td/bk-file.md")" mine
 printf '%s\n' "$BLOCK" > "$td/dots/AGENTS.md"; ln -s "$td/dots/AGENTS.md" "$td/symlink-only.md"; run "$td/symlink-only.md"
 check "symlink-only: rc 0" "$rc" 0
 [ -L "$td/symlink-only.md" ] && ok "symlink-only: link never deleted" || bad "symlink-only: link gone"
-check "symlink-only: target emptied" "$(wc -c < "$td/dots/AGENTS.md")" 0
+check "symlink-only: target emptied" "$(wc -c < "$td/dots/AGENTS.md" | tr -d " ")" 0
+
+# BSD/macOS head rejects `-n 0`; a block at line 1 must not ask for it. The
+# shim stands in for BSD head on any host (it lives outside the checked TMPDIR).
+mkdir -p "$td/bsdbin"
+printf '%s\n' '#!/bin/sh' 'if [ "$1" = "-n" ] && [ "$2" = "0" ]; then echo "head: illegal line count -- 0" >&2; exit 1; fi' "exec $(command -v head) \"\$@\"" > "$td/bsdbin/head"
+chmod +x "$td/bsdbin/head"
+f="$td/bsd-head.md"; printf '%s\nafter\n' "$BLOCK" > "$f"; printf 'after\n' > "$td/bsd-head.expect"
+out="$(PATH="$td/bsdbin:$PATH" bash "$uw" "$f" 2>&1)"; rc=$?
+check "bsd-head: block at line 1 strips without head -n 0: rc 0" "$rc" 0
+same  "bsd-head: block at line 1 strips without head -n 0: bytes" "$f" "$td/bsd-head.expect"
 
 # ── idempotent + dry-run ────────────────────────────────────────────────────
 f="$td/twice.md"; printf 'top\n\n%s\nbottom\n' "$BLOCK" > "$f"; cp "$f" "$td/twice.before"
@@ -304,7 +314,7 @@ bash "$uw" --probe >/dev/null 2>&1; check "probe: missing path -> usage 2" "$?" 
 bash "$uw" >/dev/null 2>&1; check "no args -> usage 2" "$?" 2
 
 # nothing escapes the scratch dir
-check "hermetic: no temp files left by the helper" "$(find "$TMPDIR" -type f | wc -l)" 0
+check "hermetic: no temp files left by the helper" "$(find "$TMPDIR" -type f | wc -l | tr -d " ")" 0
 
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILURE(S)"; exit 1; fi

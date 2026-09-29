@@ -155,7 +155,10 @@ unwire_user_claude_md() {
   tmp=$(mktemp "${TMPDIR:-/tmp}/unwire-ucm.XXXXXX") || return 1
   # && not ;: a group's status is its LAST command's, so a failed head must not
   # hide behind a succeeding tail and pass a short temp file off as the result.
-  { head -n $((start - 1)) "$target" && tail -n +$((le + 1)) "$target"; } > "$tmp" || { rm -f "$tmp"; return 1; }
+  # BSD/macOS head rejects `-n 0` ("illegal line count"), and start=1 (block at
+  # the top of the file) is exactly that, so head only runs when there are lines
+  # before the block.
+  { { [ "$start" -le 1 ] || head -n $((start - 1)) "$target"; } && tail -n +$((le + 1)) "$target"; } > "$tmp" || { rm -f "$tmp"; return 1; }
   # WHY (HIMMEL-3332 S6): --file-created overrides the blank-line guess below
   # with the ledger's own record of whether install created this file.
   _ucm_delete_empty=0
