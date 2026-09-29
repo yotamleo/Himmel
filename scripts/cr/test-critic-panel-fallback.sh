@@ -856,29 +856,37 @@ JSON_SELF="$tmp/critics-self.json"
 printf '{"panel":[{"slug":"glm","model":"%s","provider":"zai","route_provider":"glm","tier":"free","timeout_secs":%s,"fallback_models":["%s"],"fallback_trigger":"any","fallback_provider":"glm"}]}' \
     "$PRI" "$SELF_TO" "$PRI" > "$JSON_SELF"
 
-: > "$tmp/selfcount20"
-printf '%s' "$DIFF" | SELF_COUNT="$tmp/selfcount20" CRITICS_JSON="$JSON_SELF" \
-    CRITIC_FIRST_PASS="$STUB_SELF" bash "$PANEL" >"$tmp/out20" 2>"$tmp/err20"
-check "20: a timed-out critic with trigger=any is RETRIED (2 attempts)" \
-    "$(cat "$tmp/selfcount20")" "2"
-check_not_contains "20: the member is NOT reported unavailable(timeout)" \
-    "$(cat "$tmp/err20")" "panel-availability: glm unavailable (timeout"
-check_contains "20: the retry is recorded as a responder" \
-    "$(cat "$tmp/err20")" "panel-availability: glm fallback($PRI)"
+# HIMMEL-3699: both cases assert a real `timeout` kill (rc 124); the panel
+# resolves it via scripts/lib/timeout-bin.sh and stock macOS has none, so they
+# SKIP there like 9p/10p/16 instead of failing on the missing binary.
+if [ -n "$_TIMEOUT_BIN" ]; then
+    : > "$tmp/selfcount20"
+    printf '%s' "$DIFF" | SELF_COUNT="$tmp/selfcount20" CRITICS_JSON="$JSON_SELF" \
+        CRITIC_FIRST_PASS="$STUB_SELF" bash "$PANEL" >"$tmp/out20" 2>"$tmp/err20"
+    check "20: a timed-out critic with trigger=any is RETRIED (2 attempts)" \
+        "$(cat "$tmp/selfcount20")" "2"
+    check_not_contains "20: the member is NOT reported unavailable(timeout)" \
+        "$(cat "$tmp/err20")" "panel-availability: glm unavailable (timeout"
+    check_contains "20: the retry is recorded as a responder" \
+        "$(cat "$tmp/err20")" "panel-availability: glm fallback($PRI)"
 
-# Case 21 (control): the SAME hang WITHOUT fallback_trigger must still be
-# terminal — the default contract (HIMMEL-729/737: only a quota signature on a
-# NON-timeout failure retries) is not widened for every other row.
-JSON_NOTRIG="$tmp/critics-self-notrigger.json"
-printf '{"panel":[{"slug":"glm","model":"%s","provider":"zai","route_provider":"glm","tier":"free","timeout_secs":%s,"fallback_models":["%s"],"fallback_provider":"glm"}]}' \
-    "$PRI" "$SELF_TO" "$PRI" > "$JSON_NOTRIG"
-: > "$tmp/selfcount21"
-printf '%s' "$DIFF" | SELF_COUNT="$tmp/selfcount21" CRITICS_JSON="$JSON_NOTRIG" \
-    CRITIC_FIRST_PASS="$STUB_SELF" bash "$PANEL" >"$tmp/out21" 2>"$tmp/err21"
-check "21: without trigger=any a timeout is NOT retried (1 attempt)" \
-    "$(cat "$tmp/selfcount21")" "1"
-check_contains "21: and it is reported unavailable(timeout)" \
-    "$(cat "$tmp/err21")" "panel-availability: glm unavailable (timeout"
+    # Case 21 (control): the SAME hang WITHOUT fallback_trigger must still be
+    # terminal — the default contract (HIMMEL-729/737: only a quota signature on a
+    # NON-timeout failure retries) is not widened for every other row.
+    JSON_NOTRIG="$tmp/critics-self-notrigger.json"
+    printf '{"panel":[{"slug":"glm","model":"%s","provider":"zai","route_provider":"glm","tier":"free","timeout_secs":%s,"fallback_models":["%s"],"fallback_provider":"glm"}]}' \
+        "$PRI" "$SELF_TO" "$PRI" > "$JSON_NOTRIG"
+    : > "$tmp/selfcount21"
+    printf '%s' "$DIFF" | SELF_COUNT="$tmp/selfcount21" CRITICS_JSON="$JSON_NOTRIG" \
+        CRITIC_FIRST_PASS="$STUB_SELF" bash "$PANEL" >"$tmp/out21" 2>"$tmp/err21"
+    check "21: without trigger=any a timeout is NOT retried (1 attempt)" \
+        "$(cat "$tmp/selfcount21")" "1"
+    check_contains "21: and it is reported unavailable(timeout)" \
+        "$(cat "$tmp/err21")" "panel-availability: glm unavailable (timeout"
+else
+    skip "20: no timeout binary"
+    skip "21: no timeout binary"
+fi
 
 # Case 22 (HIMMEL-1221) checked that the SHIPPED registry's glm row carried a
 # retry config. HIMMEL-1904 retired the glm critic row itself (subscription

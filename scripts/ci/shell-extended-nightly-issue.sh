@@ -15,8 +15,11 @@
 # as windows-nightly-issue.sh vs. which bun test failed); on a nightly
 # run every fast-tier suite is already expected green (they gate
 # every PR), so in practice a nightly-only red here points at the extended
-# tier. A nightly macOS/Windows red is NOT filed here: it is a split slice,
-# see docs/internals/testing.md "A nightly OS red".
+# tier. A red macOS shard IS filed here too (the aggregator also runs
+# check-macos-nightly-health.sh, which reads the Jobs API so continue-on-error
+# cannot mask it), so a red here is not always the extended tier — read the
+# failing job. A Windows shell shard stays masked by continue-on-error and is
+# not filed here; see docs/internals/testing.md "A nightly OS red".
 #
 #   rc != 0 -> open the issue if absent, else refresh its body + add a "still
 #              red" comment.
