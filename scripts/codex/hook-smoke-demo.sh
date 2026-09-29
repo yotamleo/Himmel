@@ -333,7 +333,10 @@ if [ "$RUN_CODEX" = "1" ] && command -v codex >/dev/null 2>&1; then
     : > "$CX_ROLLS"
     # CODEX_HOME relocates the whole codex state dir; hardcoding ~/.codex would
     # make every otherwise-clean run on such an install fail the rollout check.
-    find "${CODEX_HOME:-$HOME/.codex}/sessions" -name '*.jsonl' -newermt "@$CX_START" 2>/dev/null \
+    # `-mtime -1` only prunes the scan: BSD/macOS find cannot parse GNU's
+    # `-newermt "@epoch"` (HIMMEL-3699), and the CX_TAG grep below is what
+    # selects OUR rollout (the demo basename is unique per run).
+    find "${CODEX_HOME:-$HOME/.codex}/sessions" -name '*.jsonl' -mtime -1 2>/dev/null \
     | while IFS= read -r _roll; do
         [ -r "$_roll" ] || continue
         grep -q -F "$CX_TAG" "$_roll" 2>/dev/null || continue

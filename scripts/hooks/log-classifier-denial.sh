@@ -135,7 +135,8 @@ tool=$(capped 200 "$tool")
 # differ only by a commit sha or incidental spacing hash identically — this is
 # what lets tick.sh's REPEAT class notice "this exact call already ran once".
 normalize() {
-    printf '%s' "$1" | sed -E 's/\b[0-9a-f]{40}\b/<SHA>/g' | tr -s '[:space:]' ' '
+    # perl lookarounds, not sed \b: BSD sed (macOS) has no \b; same 40-hex boundary rule.
+    printf '%s' "$1" | perl -pe 's/(?<![A-Za-z0-9_])[0-9a-f]{40}(?![A-Za-z0-9_])/<SHA>/g' | tr -s '[:space:]' ' '
 }
 
 normalized=$(normalize "$tool_input_flat")

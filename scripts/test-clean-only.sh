@@ -201,6 +201,11 @@ expect "3d: message names the refusal" "$out" grepq "$out" "not a registered wor
 
 # ── case 4: a live process's cwd still blocks --only (worktree_in_use) ───────
 echo "CASE 4: live cwd holder"
+# PLATFORM GUARD: worktree-inuse detects a live cwd holder by scanning /proc; hosts
+# without it (macOS) fall back to a rename probe that cannot see a holder
+# (HIMMEL-2602), so the refusal cannot be provoked there and is skipped.
+# ponytail: holder refusal unexercised off Linux, add an lsof-based scan to worktree-inuse if macOS in-use detection is wanted (HIMMEL-2602).
+if [ -d /proc/self ]; then
 ( cd "$WT_HELD" && exec sleep 60 ) &
 HOLDER_PID=$!
 sleep 0.3
@@ -211,6 +216,9 @@ expect "4: message says in use" "$out" grepq "$out" "in use"
 kill "$HOLDER_PID" 2>/dev/null || true
 wait "$HOLDER_PID" 2>/dev/null || true
 HOLDER_PID=""
+else
+echo "  SKIP: 4: no /proc on this platform, live-cwd holder cannot be detected"
+fi
 out=$(run_clean "$CLEAN_GARDEN" --only "$WT_HELD")
 expect "4 control: same target with no holder is pruned" "$out" is_gone "$WT_HELD"
 
