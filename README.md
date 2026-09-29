@@ -91,7 +91,8 @@ pre-push, commit-msg) at step `[2/9]`. `bun` runs the handover armed-resume
 resolver, the qmd search index, the Telegram bridge, and the obsidian-triage
 tools. See
 [`docs/setup/new-machine.md`](docs/setup/new-machine.md) for the per-platform
-shell-and-package install (Linux / macOS / Windows Git Bash).
+shell-and-package install (Linux / macOS; its Windows Git Bash notes are
+unsupported in v1.0.0, see the [Support matrix](#support-matrix)).
 
 **Linux — from the release tarball (checksummed, pre-built, no clone, no `npm install`):**
 
@@ -138,7 +139,7 @@ node scripts/himmelctl/bin.js install
 ```
 
 Node-less machine? Bootstrap first: `bash scripts/himmelctl/bootstrap.sh`
-(Windows: `powershell -ExecutionPolicy Bypass -File scripts\himmelctl\bootstrap.ps1`), then re-run
+(Windows, unsupported in v1.0.0: `powershell -ExecutionPolicy Bypass -File scripts\himmelctl\bootstrap.ps1`), then re-run
 `install`. Under the hood the wizard runs `scripts/setup.sh` /
 `scripts\setup.ps1` for this standalone path — invoke those directly for the
 manual or CI path.
