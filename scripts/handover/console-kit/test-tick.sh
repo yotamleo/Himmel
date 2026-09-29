@@ -1445,6 +1445,15 @@ mksess "$d3724w" 5 feat+foo cccccccc33333333 /r/.claude/worktrees/feat+foo 'ls'
 o3724w="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724w" bash "$SUT" 2>/dev/null)"
 contains 'a worktree row keeps the bare slug as its label (HIMMEL-3724)' "$o3724w" 'denials=feat+foo:1 '
 
+# A window straddling a hook rotation: the earlier denial sits in <log>.1, the
+# later one in the live log. Both must count (REPEAT), not just the live one.
+d3724x="$W/denials-3724x.jsonl"
+: > "$d3724x"
+mksess "$d3724x.1" 6 repo dddddddd44444444 /home/u/repo 'ls'
+mksess "$d3724x" 4 repo dddddddd44444444 /home/u/repo 'cat x'
+o3724x="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$d3724x" bash "$SUT" 2>/dev/null)"
+contains 'a denial rotated into <log>.1 still counts inside the window (HIMMEL-3724)' "$o3724x" 'denials=repo#dddddddd:2:REPEAT'
+
 # HARD RULE (HIMMEL-3724): input_head and reason_tag never leave the host --
 # they classify locally and must not be echoed into the tick line.
 d3724r="$W/denials-3724r.jsonl"

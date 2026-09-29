@@ -953,7 +953,11 @@ if command -v jq >/dev/null 2>&1 && [ -f "$denials_log" ]; then
         # which would otherwise fail the field access below, and a row whose
         # input_head is not a string would fail test()), then slurp
         # only the lines that survived.
-        denials_summary="$(tail -n "$denials_tail_max" "$denials_log" 2>/dev/null | jq -R -c 'fromjson? | select(type == "object" and (.input_head | type) == "string")' 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
+        # The hook rotates the log to <log>.1 past its byte cap, so read the
+        # previous generation first: a window straddling a rotation must not
+        # under-count and hide a PAUSE-RISK. (A missing .1 must not fail the
+        # pipeline under pipefail, hence the -r guard, not a bare cat.)
+        denials_summary="$( { [ -r "$denials_log.1" ] && cat "$denials_log.1"; cat "$denials_log"; } 2>/dev/null | tail -n "$denials_tail_max" | jq -R -c 'fromjson? | select(type == "object" and (.input_head | type) == "string")' 2>/dev/null | jq -s -r --arg cutoff "$denials_cutoff" '
             # A worktree row is labelled by its slug (the leg identity). Any
             # other cwd is a bare directory name a re-dispatched leg would
             # share with its predecessor, so it is labelled <name>#<sid8>

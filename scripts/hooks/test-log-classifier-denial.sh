@@ -226,7 +226,9 @@ fi
 short_leak() {  # short_leak <name> <command> <secret>
     local log="$WORKDIR/short-$1.jsonl"
     run_hook "$(payload sh "/tmp/repo" Bash "$2" '[X]')" "$log" >/dev/null
-    if grep -qF "$3" "$log" 2>/dev/null; then fail "short secret redacted: $1"; else pass "short secret redacted: $1"; fi
+    # a row must exist: an unreadable or empty log would otherwise pass vacuously
+    if [ ! -s "$log" ]; then fail "short secret redacted: $1 (no row written)"
+    elif grep -qF "$3" "$log" 2>/dev/null; then fail "short secret redacted: $1"; else pass "short secret redacted: $1"; fi
 }
 short_leak env-assign   'DB_PASS=hunter2 ./run.sh'                     hunter2
 short_leak token-assign 'curl -d token=tkz https://x.test'             tkz

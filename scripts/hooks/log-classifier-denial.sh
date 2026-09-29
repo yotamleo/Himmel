@@ -164,11 +164,11 @@ mkdir -p "$(dirname "$OUT")" 2>/dev/null || exit 0
 
 # Rotation: past MAX_BYTES the log renames to <log>.1 (replacing the previous
 # generation, so at most two files ever exist) and a fresh log starts with
-# this row. Best-effort: a failed rename never skips the append.
+# this row. Best-effort: a failed rename never skips the append. tick.sh reads
+# <log>.1 then the live file, so a window straddling a rotation still counts.
 # ponytail: unlocked, so two legs rotating in the same instant can drop one
-# generation's rows, and tick.sh reads only the live file so a 30-min window
-# straddling a rotation under-counts once, upgrade: flock (not on macOS) or a
-# tick read of <log>.1 if either ever shows up as a missed PAUSE-RISK.
+# generation's rows, upgrade: flock (not on macOS) if that ever shows up as a
+# missed PAUSE-RISK.
 max_bytes="${HIMMEL_CLASSIFIER_DENIALS_MAX_BYTES:-1048576}"
 case "$max_bytes" in ''|*[!0-9]*) max_bytes=1048576 ;; esac
 if [ -f "$OUT" ]; then  # fail-open-ok: observability tap, not a guard; an unreadable log reads size 0 so it only skips rotation
