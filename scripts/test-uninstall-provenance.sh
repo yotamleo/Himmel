@@ -2249,6 +2249,7 @@ BLK_UNINSTALL_ARGS=(--yes --keep-telegram-state --skip-tasks --skip-plugins --sk
 
 echo "==== RED66 (HIMMEL-3787 S2d, spec 2): wire_user_claude_md records a block row -- sha of the BEGIN..END text, a snapshot, file_created ===="
 new_case red66
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T66="$HOME/.claude/CLAUDE.md"
 seed_block "$T66"
 ROW66=$(jq -c 'select(.kind=="block")' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" 2>/dev/null)
@@ -2263,11 +2264,13 @@ SNAP66=$(printf '%s' "$ROW66" | jq -r '.snap // ""')
 check "RED66: the .ours snapshot holds exactly the block text" \
   "$([ -n "$SNAP66" ] && [ -f "$SNAP66" ] && [ "$(cat "$SNAP66")" = "$(block_text)" ] && echo same || echo differs)" "same"
 new_case red66b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T66B="$HOME/.claude/CLAUDE.md"
 seed_block "$T66B" $'# mine\nbe kind\n'
 check "RED66b: appended to a user file -> file_created false" \
   "$(jq -r 'select(.kind=="block") | (.file_created|tostring)' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" 2>/dev/null)" "false"
 new_case red66c
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T66C="$HOME/.codex/AGENTS.md"
 seed_block "$T66C"
 check "RED66c: the Codex target records under row user-agents-md" \
@@ -2275,9 +2278,12 @@ check "RED66c: the Codex target records under row user-agents-md" \
 
 echo "==== RED67 (HIMMEL-3787 S2d): a clean block is removed and recorded -- the file install created goes with it, in BOTH rule files ===="
 new_case red67
-T67C="$HOME/.claude/CLAUDE.md"; T67A="$HOME/.codex/AGENTS.md"
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T67C="$HOME/.claude/CLAUDE.md"
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
+T67A="$HOME/.codex/AGENTS.md"
 seed_block "$T67C"; seed_block "$T67A"
-out67=$(run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc67=$?
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc67=$?
 check "RED67: exits 0" "$rc67" "0"
 check "RED67: CLAUDE.md install created is gone" "$([ -e "$T67C" ] && echo present || echo gone)" "gone"
 check "RED67: AGENTS.md install created is gone" "$([ -e "$T67A" ] && echo present || echo gone)" "gone"
@@ -2285,6 +2291,7 @@ check "RED67: an outcome row per block, both removed:ours" "$(block_outcomes)" "
 
 echo "==== RED67b (HIMMEL-3787 S2d): a block appended to the user's file is stripped, the user's bytes come back exactly ===="
 new_case red67b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T67B="$HOME/.claude/CLAUDE.md"
 seed_block "$T67B" $'# mine\nbe kind\n'
 run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc67b=$?
@@ -2294,6 +2301,7 @@ check "RED67b: outcome removed:ours" "$(block_outcomes)" "removed:ours"
 
 echo "==== RED68 (HIMMEL-3787 S2d): a user edit OUTSIDE the block survives -- only himmel's block goes ===="
 new_case red68
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T68="$HOME/.claude/CLAUDE.md"
 seed_block "$T68" $'# mine\nbe kind\n'
 printf 'a line the user added after install\n' >> "$T68"
@@ -2306,6 +2314,7 @@ check "RED68: outcome removed:ours" "$(block_outcomes)" "removed:ours"
 
 echo "==== RED69 (HIMMEL-3787 S2d): a user edit INSIDE the block keeps the whole file, reported, exit 0 ===="
 new_case red69
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T69="$HOME/.claude/CLAUDE.md"
 seed_block "$T69" $'# mine\n'
 awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T69" > "$T69.new" && mv "$T69.new" "$T69"
@@ -2320,6 +2329,7 @@ check "RED69: no STILL WIRED probe failure" "$(printf '%s\n' "$out69" | grep -c 
 
 echo "==== RED69b (HIMMEL-3787 S2d): a TTY [d]elete answer never deletes a user-edited block ===="
 new_case red69b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T69B="$HOME/.claude/CLAUDE.md"
 seed_block "$T69B" $'# mine\n'
 awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T69B" > "$T69B.new" && mv "$T69B.new" "$T69B"
@@ -2330,15 +2340,17 @@ check "RED69b: the edited block file is byte-identical after a 'd' answer" \
 
 echo "==== RED70 (HIMMEL-3787 S2d): torn markers -- a BEGIN with no END, an END with no BEGIN -- keep the file, reported, exit 0 ===="
 new_case red70
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T70="$HOME/.claude/CLAUDE.md"
 seed_block "$T70" $'# mine\n'
 grep -vxF "$BLK_END" "$T70" > "$T70.new"; mv "$T70.new" "$T70"
 cp "$T70" "$CASE_DIR/red70.before"
-out70=$(run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc70=$?
+run_uninstall_fx "${BLK_UNINSTALL_ARGS[@]}" >/dev/null 2>&1; rc70=$?
 check "RED70: torn END -- exits 0" "$rc70" "0"
 check "RED70: torn END -- file byte-identical" "$(cmp -s "$T70" "$CASE_DIR/red70.before" && echo same || echo differs)" "same"
 check "RED70: torn END -- outcome kept:block-malformed" "$(block_outcomes)" "kept:block-malformed"
 new_case red70b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T70B="$HOME/.claude/CLAUDE.md"
 seed_block "$T70B" $'# mine\n'
 grep -vxF "$BLK_BEGIN" "$T70B" > "$T70B.new"; mv "$T70B.new" "$T70B"
@@ -2350,6 +2362,7 @@ check "RED70b: torn BEGIN -- outcome kept:block-malformed" "$(block_outcomes)" "
 
 echo "==== RED71 (HIMMEL-3787 S2d): a duplicated block is never guessed at -- kept, reported, exit 0 ===="
 new_case red71
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T71="$HOME/.claude/CLAUDE.md"
 seed_block "$T71" $'# mine\n'
 { printf '\n'; block_text; } >> "$T71"
@@ -2361,6 +2374,7 @@ check "RED71: outcome kept:block-malformed" "$(block_outcomes)" "kept:block-malf
 
 echo "==== RED72 (HIMMEL-3787 S2d): a missing file is kept as already-absent -- nothing created, exit 0 ===="
 new_case red72
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T72="$HOME/.claude/CLAUDE.md"
 seed_block "$T72"
 rm -f "$T72"
@@ -2371,6 +2385,7 @@ check "RED72: outcome kept:already-absent" "$(block_outcomes)" "kept:already-abs
 
 echo "==== RED73 (HIMMEL-3787 S2d): --dry-run writes nothing -- the file, its sidecar, and the ledger are all untouched ===="
 new_case red73
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T73="$HOME/.claude/CLAUDE.md"
 seed_block "$T73" $'# mine\n'
 cp "$T73" "$CASE_DIR/red73.before"
@@ -2395,6 +2410,7 @@ seed_block_unrecorded() {
 
 echo "==== RED74 (HIMMEL-3787 S2d, Q5): an UNRECORDED block that is byte-identical to the template is still stripped ===="
 new_case red74
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T74="$HOME/.claude/CLAUDE.md"
 seed_block_unrecorded "$T74" $'# mine\n'
 check "RED74: no ledger at all" "$([ -e "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" ] && echo ledger || echo none)" "none"
@@ -2404,6 +2420,7 @@ check "RED74: the user's own bytes are back exactly" "$(cat "$T74"; printf x)" "
 
 echo "==== RED74b (HIMMEL-3787 S2d, Q5): same when a ledger exists but holds no block row ===="
 new_case red74b
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T74B="$HOME/.claude/CLAUDE.md"
 seed_block_unrecorded "$T74B" $'# mine\n'
 ( prov_begin --writer adopt.sh -- seed-empty >/dev/null; prov_end ok >/dev/null )
@@ -2413,6 +2430,7 @@ check "RED74b: the user's own bytes are back exactly" "$(cat "$T74B"; printf x)"
 
 echo "==== RED75 (HIMMEL-3787 S2d, Q5): an UNRECORDED block that differs from the template is kept -- it may hold the user's edits ===="
 new_case red75
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell
 T75="$HOME/.claude/CLAUDE.md"
 seed_block_unrecorded "$T75" $'# mine\n'
 awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T75" > "$T75.new" && mv "$T75.new" "$T75"

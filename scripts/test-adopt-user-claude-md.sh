@@ -217,6 +217,7 @@ home7="$(mktemp -d "${TMPDIR:-/tmp}/h3787.XXXXXX")"
 ledger7="$home7/prov/provenance.jsonl"
 rows7() { jq -c 'select(.kind=="block")' "$ledger7" 2>/dev/null | grep -c .; }
 (
+  # shellcheck disable=SC2030  # the ledger dir is deliberately subshell-local
   export HIMMEL_PROVENANCE_DIR="$home7/prov"
   # shellcheck disable=SC1091
   . "$SCRIPT_DIR/lib/provenance.sh"
@@ -226,6 +227,7 @@ rows7() { jq -c 'select(.kind=="block")' "$ledger7" 2>/dev/null | grep -c .; }
 )
 if [ "$(rows7)" = "0" ] && [ ! -e "$home7/.claude/CLAUDE.md" ]; then pass "dry run: no file, no block row"; else fail "dry run wrote a file or a row"; fi
 (
+  # shellcheck disable=SC2031  # the ledger dir is deliberately subshell-local
   export HIMMEL_PROVENANCE_DIR="$home7/prov"
   # shellcheck disable=SC1091
   . "$SCRIPT_DIR/lib/provenance.sh"
