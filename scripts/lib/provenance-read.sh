@@ -903,7 +903,7 @@ $backup" ;;
     esac
     _rec=$(printf '%s' "$u" | jq -c --arg st "$status" --arg reason "$reason" --arg bk "$backup" --arg detail "$detail" \
         '{st:$st,reason:$reason,kind:(.kind // ""),path:(.path // ""),unit:(.unit // ""),
-          backup:(if $bk != "" then $bk else (.eff_pre.backup // "") end),snap:(.eff_snap // ""),detail:$detail}' 2>/dev/null) || _rec=""
+          backup:(if $bk != "" then $bk else (.eff_pre.backup? // "") end),snap:(.eff_snap // ""),detail:$detail}' 2>/dev/null) || _rec=""
     [ -n "$_rec" ] && _PROV_READ_OUTCOMES="$_PROV_READ_OUTCOMES$_rec
 "
     [ "${_PROV_READ_MODE:-}" = "dry" ] && return 0

@@ -1185,6 +1185,24 @@ check "S2c fold: eff_snap follows the LAST row that produced eff_post" \
 prov_read_cleanup
 rm -f "$snap8"
 
+# HIMMEL-3787 S3: a legitimate row can carry a non-object eff_pre (`false`); a bare
+# `.eff_pre.backup` is a jq type error there, which used to drop the kept unit
+# from the reconcile report's counts and its NEEDS YOU list.
+reset
+prov_begin --iid EPF --writer t
+printf 'e-new\n' > "$w/ef.txt"
+prov_record create file "$w/ef.txt" --pre-absent --post-file "$w/ef.txt" --scope user --class code
+prov_end ok
+prov_read_load
+uef=$(u_for --path "$w/ef.txt" | jq -c '.eff_pre = false')
+prov_read_session_begin dry
+prov_read_outcome kept "$uef" user-modified
+rep_ef=$(prov_read_reconcile_report 2>&1)
+check "S3: a kept unit with eff_pre:false still reaches the report's NEEDS YOU" \
+    "$(printf '%s\n' "$rep_ef" | grep -c -E '^  NEEDS YOU +1$')" "1"
+check "S3: ... and its entry names the path and reason" "$(printf '%s\n' "$rep_ef" | grep -c -F "$w/ef.txt  file  changed since install")" "1"
+prov_read_cleanup
+
 # ── HIMMEL-3787 S2d: kind block -- current / verdict / apply ────────────────
 # The block is installed by the REAL writer, so the fold sees exactly the row an
 # install records. blk_setup <file> [<pre-text>] leaves one loaded block unit in $ub.

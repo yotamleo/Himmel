@@ -2507,10 +2507,12 @@ check "RED76: the backup is still on disk" "$([ -f "$S3_BACKUP" ] && echo yes ||
 echo "==== RED76b (HIMMEL-3787 S3): a DRY run labels the report DRY and still lists the kept unit ===="
 new_case red76b
 seed_kept_file red76b
+LEDGER76B_BEFORE=$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")
 out76b=$(run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks --skip-settings); rc76b=$?
 check "RED76b: exits 0" "$rc76b" "0"
 check "RED76b: the heading carries DRY:" "$(printf '%s\n' "$out76b" | grep -c '^DRY: Reconcile report')" "1"
 check "RED76b: the dry report carries the backup path" "$(printf '%s\n' "$out76b" | grep -c -F "what you had before himmel:  $S3_BACKUP")" "1"
+check "RED76b: ledger byte-identical after --dry-run" "$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")" "$LEDGER76B_BEFORE"
 
 echo "==== RED77 (HIMMEL-3787 S3, S2d Minor b): a DRY run's unrecorded kept block is DRY:-labelled and reaches the report ===="
 new_case red77
@@ -2519,8 +2521,10 @@ T77="$HOME/.claude/CLAUDE.md"
 seed_block_unrecorded "$T77" $'# mine\n'
 awk -v b="$BLK_BEGIN" '{print} $0==b{print "an edit the user made inside himmel block"}' "$T77" > "$T77.new" && mv "$T77.new" "$T77"
 ( prov_begin --writer adopt.sh -- seed-empty >/dev/null; prov_end ok >/dev/null )
+LEDGER77_BEFORE=$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")
 out77=$(run_uninstall_fx --dry-run "${BLK_UNINSTALL_ARGS[@]}" 2>&1); rc77=$?
 check "RED77: exits 0" "$rc77" "0"
+check "RED77: ledger byte-identical after --dry-run" "$(prov_sha_file "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")" "$LEDGER77_BEFORE"
 check "RED77: the kept line carries DRY:" "$(printf '%s\n' "$out77" | grep -c '^DRY: would keep (block-unrecorded-modified)')" "1"
 check "RED77: no bare 'kept (block-unrecorded-modified)' line under --dry-run" \
   "$(printf '%s\n' "$out77" | grep -c '^  kept (block-unrecorded-modified)')" "0"
