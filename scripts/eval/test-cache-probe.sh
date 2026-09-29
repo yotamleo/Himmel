@@ -87,6 +87,10 @@ out=$(bash "$PROBE" invalidation --event notatime "$FIX/no-invalidation/a.jsonl"
 eq "unparseable event: usage error" "$rc" "64"
 out=$(bash "$PROBE" first-turn "$TMP/does-not-exist.jsonl" 2>&1); rc=$?
 eq "missing file: usage error" "$rc" "64"
+out=$(bash "$PROBE" invalidation --event "$EVENT" --turns 0 "$FIX/no-invalidation/a.jsonl" 2>&1); rc=$?
+eq "--turns 0: usage error" "$rc" "64"
+out=$(bash "$PROBE" invalidation --event "$EVENT" --min-turns 0 "$FIX/no-invalidation/a.jsonl" 2>&1); rc=$?
+eq "--min-turns 0: usage error" "$rc" "64"
 
 # --- determinism: the same input twice is byte-identical --------------------
 a=$(bash "$PROBE" invalidation --event "$EVENT" "$FIX/real-invalidation"/*.jsonl)

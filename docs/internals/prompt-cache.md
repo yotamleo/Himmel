@@ -37,7 +37,7 @@ TRUE / FALSE / UNVERIFIED, each with the eval scenario (a fixture in
 
 | # | Claim (site) | Verdict | Evidence | `eval:` |
 |---|---|---|---|---|
-| 1 | "a mid-task MEMORY.md trim invalidates the prompt caches of every concurrent/armed session" (`memory-compound/SKILL.md` rail 6) | **FALSE** — fixed | official docs above; live run L1: 14 sessions across the 2026-09-29 01:49:04 edit, 14 kept / 0 invalidated | `no-invalidation`, `real-invalidation` (the probe does flag a genuine rewrite) |
+| 1 | "a mid-task MEMORY.md trim invalidates the prompt caches of every concurrent/armed session" (`memory-compound/SKILL.md` rail 6) | **FALSE** — fixed | official docs above; live run L1: 15 sessions across the 2026-09-29 01:49:04 edit, 14 kept / 1 compacted (explained) / 0 invalidated | `no-invalidation`, `real-invalidation` (the probe does flag a genuine rewrite) |
 | 2 | "every graphify write invalidates Claude Code's prompt cache … full re-upload" (`.gitignore:24`) | **FALSE** — fixed (reworded as file-search/context hygiene) | live run L2: 14 sessions across the graph.json write (03:15:18), 14 kept / 0 invalidated | `no-invalidation` |
 | 3 | "exiting gives the relaunch a clean prompt cache" (`arm-resume.sh` self-resume note, `hop.sh` /exit banner) | **FALSE** — fixed (the real reason, avoiding two processes on one handover, stays) | live run L3: a new session's first turn is warm in 1199 of 1210 sessions | `first-turn-warm`, `first-turn-cold` |
 | 4 | "himmel has never measured its own read-ratio" (`docs/token-economy.md`) | **FALSE** (stale) — updated with the measured 98.2% | live run L3 | `first-turn-warm` |

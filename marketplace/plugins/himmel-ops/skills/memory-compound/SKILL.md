@@ -53,8 +53,8 @@ These are non-negotiable. The pass is zero-loss **only** if you keep this order.
    mid-task stays fine.) **Cache cost is small, not a reason to defer:**
    `MEMORY.md` is read at session start and after compaction and lives in
    that session's message history, so an edit on disk does NOT invalidate a
-   running session's prompt cache — measured over 14 live sessions straddling
-   a real edit: 14 kept, 0 invalidated. The cost is one extra cache write
+   running session's prompt cache — measured over 15 live sessions straddling
+   a real edit: 14 kept, 1 compacted, 0 invalidated. The cost is one extra cache write
    (an estimate of ~4k tokens, not yet measured) per session started or
    compacted afterwards, so still batch
    the edits into ONE pass. Evidence and re-run:
