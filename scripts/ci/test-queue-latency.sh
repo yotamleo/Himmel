@@ -34,7 +34,7 @@ EOF
 chmod +x "$TMP/bin/gh"
 
 now=$(date +%s)
-iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }  # GNU || BSD
 t10=$(iso $((now - 600)))   # 10 minutes ago
 t3=$(iso $((now - 180)))    # 3 minutes ago
 

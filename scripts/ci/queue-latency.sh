@@ -35,9 +35,10 @@ if [ -z "$REPO" ]; then
 fi
 [ -n "$REPO" ] || unknown
 
-gh_api() {
-  if command -v timeout >/dev/null 2>&1; then timeout 15 gh api "$@" 2>/dev/null; else gh api "$@" 2>/dev/null; fi
-}
+# shellcheck source=../lib/timeout-bin.sh
+. "$(dirname "$0")/../lib/timeout-bin.sh" 2>/dev/null
+# GNU timeout (or gtimeout on macOS); no bound available = run unbounded.
+gh_api() { ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 15} gh api "$@" 2>/dev/null; }
 
 RUNS_JQ='.workflow_runs[] | [.id, .status, (.created_at | fromdateiso8601)] | @tsv'
 JOBS_JQ='[ ([.jobs[] | select(.status=="in_progress")] | length),
