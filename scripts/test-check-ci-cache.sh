@@ -298,7 +298,8 @@ else
     new_case
     printf 'pass\ta\ncancel\tb\npending\tc\n' > "$CASE_DIR/rows"; printf 'pass\ta\ncancel\tb\npass\tc\n' > "$CASE_DIR/rows.2"
     timeout_run bash "$HELPER" > "$CASE_DIR/out" 2>"$CASE_DIR/err"; rc=$?
-    if [ "$rc" -eq 0 ] && [ -n "$(sleeps)" ]; then pass "8c2 a cancel beside a pending check still waits for the pending one"; else fail "8c2 cancel+pending" "rc=$rc sleeps=$(sleeps)"; fi
+    slept=$(sleeps)
+    if [ "$rc" -eq 0 ] && [ -n "$slept" ]; then pass "8c2 a cancel beside a pending check still waits for the pending one"; else fail "8c2 cancel+pending" "rc=$rc sleeps=$slept"; fi
     new_case
     echo err > "$CASE_DIR/mode"
     timeout_run bash "$HELPER" > "$CASE_DIR/out" 2>"$CASE_DIR/err"; rc=$?
@@ -314,7 +315,8 @@ else
     cic_init "" || fail "8f setup" "cic_init failed"
     { printf '%s\t%s\t0\n' 999999970 sha1; printf 'pass\ta\n'; } > "$CIC_FILE"
     timeout_run bash "$HELPER" >/dev/null 2>&1; rc=$?
-    if [ "$rc" -eq 0 ] && [ -n "$(sleeps)" ] && [ "$(fetches)" -ge 1 ]; then pass "8f a green is confirmed on a decide-grade read: a 30 s-old snapshot is not certified"; else fail "8f confirm" "rc=$rc fetches=$(fetches) sleeps=$(sleeps) (0 fetches + no sleep = the stale snapshot was certified)"; fi
+    slept=$(sleeps)
+    if [ "$rc" -eq 0 ] && [ -n "$slept" ] && [ "$(fetches)" -ge 1 ]; then pass "8f a green is confirmed on a decide-grade read: a 30 s-old snapshot is not certified"; else fail "8f confirm" "rc=$rc fetches=$(fetches) sleeps=$slept (0 fetches + no sleep = the stale snapshot was certified)"; fi
 fi
 
 # 9 — api-budget.sh
