@@ -415,7 +415,12 @@ fi
 # fallback strips the fractional-seconds+Z suffix and parses with -j -f. Same
 # GNU-first/BSD-fallback shape as await-glm-worker.sh's iso_to_epoch.
 iso_to_epoch() {
-    date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${1%%.*}" +%s 2>/dev/null
+    # The registry's started_at is UTC (trailing Z): the BSD fallback drops the
+    # Z, so pin TZ=UTC or a non-UTC station reads it as local time and drifts
+    # the correlation window by the UTC offset (same pin as identity_started_epoch).
+    local iso="${1%%.*}"
+    iso="${iso%Z}"
+    date -d "$1" +%s 2>/dev/null || TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$iso" +%s 2>/dev/null
 }
 
 # identity_started_epoch <identity> -- given a proc_tree_process_identity

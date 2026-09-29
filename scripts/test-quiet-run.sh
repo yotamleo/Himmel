@@ -426,7 +426,7 @@ fi
 if command -v python3 >/dev/null 2>&1; then
     TTYIN="$SCRATCH/pty-stdin.py"
     cat > "$TTYIN" <<'TTYIN_EOF'
-import os, sys, time, signal, glob
+import os, sys, time, signal, glob, select
 try:
     import pty
 except ImportError:
@@ -440,6 +440,14 @@ time.sleep(1.0)
 os.write(fd, b"hello\n")
 rc = None
 for _ in range(20):
+    # Drain the pty master: macOS holds a session leader's exit until its
+    # unread tty output is read (Linux does not), so a never-read master
+    # looked like a hung wrapper although the command had already run.
+    try:
+        if select.select([fd], [], [], 0)[0]:
+            os.read(fd, 4096)
+    except OSError:
+        pass
     p, status = os.waitpid(pid, os.WNOHANG)
     if p:
         rc = os.waitstatus_to_exitcode(status)
