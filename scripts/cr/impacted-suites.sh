@@ -132,6 +132,9 @@ runner_for() {
         marketplace/plugins/luna-correlate/*.test.mjs|marketplace/plugins/luna-correlate/*.test.js|marketplace/plugins/luna-correlate/*.test.ts)
             rel="${path#marketplace/plugins/luna-correlate/}"
             printf 'cd marketplace/plugins/luna-correlate && bun test %q\n' "$rel" ;;
+        marketplace/plugins/telegram-himmel/*.test.mjs|marketplace/plugins/telegram-himmel/*.test.js|marketplace/plugins/telegram-himmel/*.test.ts)
+            rel="${path#marketplace/plugins/telegram-himmel/}"
+            printf 'cd marketplace/plugins/telegram-himmel && bun test %q\n' "$rel" ;;
         *)
             echo "impacted-suites.sh: --runner has no CI-runner mapping for '${path}' — refusing to guess" >&2
             return 2 ;;
@@ -171,6 +174,7 @@ luna-vitals|bun-test|scripts/luna-vitals && bun install
 telegram-suites|bun-test|bun test scripts/telegram --dots
 vault-suites|bun-test|bun test scripts/vault/tests --dots
 luna-correlate|bun-test|marketplace/plugins/luna-correlate && bun install
+telegram-himmel|bun-test|marketplace/plugins/telegram-himmel && bun install
 EOF
 }
 

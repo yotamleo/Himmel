@@ -80,6 +80,9 @@ assert_runner "scripts/vault/tests .test.ts -> bun test --dots, repo root" \
 assert_runner "marketplace/plugins/luna-correlate .test.ts -> bun test, own cwd" \
     "marketplace/plugins/luna-correlate/tests/foo.test.ts" \
     "cd marketplace/plugins/luna-correlate && bun test tests/foo.test.ts"
+assert_runner "marketplace/plugins/telegram-himmel .test.ts -> bun test, own cwd" \
+    "marketplace/plugins/telegram-himmel/tests/foo.test.ts" \
+    "cd marketplace/plugins/telegram-himmel && bun test tests/foo.test.ts"
 
 # --- unmapped path: refuse, never guess -----------------------------------
 out=$(bash "$IS" --runner scripts/fleet-control/tests/foo.test.mjs 2>&1 >/dev/null); rc=$?
