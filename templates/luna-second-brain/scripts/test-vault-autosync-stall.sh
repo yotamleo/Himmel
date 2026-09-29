@@ -154,6 +154,11 @@ s7_out="$(cd "$V" && env -u LUNA_VAULT_ALERT_CMD LUNA_VAULT_AUTOSYNC=1 LUNA_VAUL
 assert_has "S7 no sink configured: stall is logged, sync does not crash" "no operator alert sent" "$s7_out"
 assert_eq "S7b no sink configured: no alert delivered" "3" "$(alert_count)"
 
+# --- S8: a zero-padded threshold (08) is decimal, not an invalid octal ------
+THRESHOLD=08 run_sync
+assert_eq "S8 threshold 08: alert delivered, no arithmetic abort" "4" "$(alert_count)"
+assert_has "S8b alert names the file" "bad-fourth.sh" "$(tail -n 1 "$ALERTS")"
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then
   echo "PASS: vault-autosync-stall ($0)"

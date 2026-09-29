@@ -48,13 +48,14 @@ _stall_note() {
 
   thr="${LUNA_VAULT_STALL_THRESHOLD_MIN:-30}"
   case "$thr" in '' | *[!0-9]*) thr=30 ;; esac
+  thr=$((10#$thr)) # a zero-padded value (08) is decimal, not an invalid octal
   [ $((now - first)) -ge $((thr * 60)) ] || return 0
 
   # pre-commit prints `- hook id: <id>` per failing hook; a hook that reports the
   # file says `In <file> line N:` (shellcheck) or `File: <file>` (gitleaks).
   hook="$(printf '%s\n' "$out" | sed -n 's/^- hook id: //p' | head -n1)"
   file="$(printf '%s\n' "$out" | sed -n -e 's/^In \(.*\) line [0-9]*:$/\1/p' -e 's/^File:[[:space:]]*//p' | head -n1)"
-  msg="vault-autosync STALL: commit refused by pre-commit hook '${hook:-unknown}' (file: ${file:-unknown}) for $(((now - first) / 60)) min in $REPO_ROOT - pending changes are not being committed."
+  msg="vault-autosync STALL: commit refused (hook: ${hook:-none reported}, file: ${file:-none reported}) for $(((now - first) / 60)) min in $REPO_ROOT - pending changes are not being committed."
   log "$msg" >&2
   if [ -z "${LUNA_VAULT_ALERT_CMD:-}" ]; then
     log "LUNA_VAULT_ALERT_CMD is not set - no operator alert sent." >&2
