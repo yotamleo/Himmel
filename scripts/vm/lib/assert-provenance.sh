@@ -463,7 +463,7 @@ if [ -f "$L" ]; then
             elif [ -z "$(meta_of B "$s")" ]; then bad="$bad $(rel "$p")(no snapshot file at B)"
             elif [ "$(sha_of B "$s")" != "$(sha_of B "$p")" ]; then bad="$bad $(rel "$p")(snapshot differs from the installed bytes)"
             fi
-        done < <(jq -rs --arg r "$row" '[.[] | select(.row == $r and .kind == "file" and .class == "code" and (.op == "create" or .op == "replace"))]
+        done < <(jq -rs --arg r "$row" '[.[] | select(.manifest_row == $r and .kind == "file" and .class == "code" and (.op == "create" or .op == "replace"))]
             | group_by(.path) | .[] | .[-1] | "\(.path)\t\(.snap // "null")\t\(.snap_skip // "")"' "$L" 2>/dev/null)
         if [ "$n" -eq 0 ]; then check precondition precondition SKIP "ledger-snap-$row" "no class=code file row for $row in the ledger"
         elif [ -z "$bad" ]; then check ledger ledger PASS "ledger-snap-$row" "$n unit(s): the .ours snapshot exists and equals the installed bytes"

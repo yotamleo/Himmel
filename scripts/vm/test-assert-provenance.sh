@@ -567,10 +567,10 @@ snap_world() {  # <ok|null|missing|differs|norows>
         return
     fi
     printf '%s\n' '{"op":"install-begin"}' \
-        "{\"kind\":\"file\",\"op\":\"create\",\"class\":\"code\",\"row\":\"adopter-scripts\",\"path\":\"$P1\",\"snap\":\"$H/stale\"}" \
-        "{\"kind\":\"file\",\"op\":\"replace\",\"class\":\"code\",\"row\":\"adopter-scripts\",\"path\":\"$P1\",\"snap\":$s1json}" \
-        "{\"kind\":\"file\",\"op\":\"replace\",\"class\":\"code\",\"row\":\"hud-config\",\"path\":\"$P2\",\"snap\":\"$S2\"}" \
-        "{\"kind\":\"tree\",\"op\":\"replace\",\"class\":\"state\",\"row\":\"hud-config\",\"path\":\"$H/.claude/plugins/claude-hud\"}" \
+        "{\"kind\":\"file\",\"op\":\"create\",\"class\":\"code\",\"manifest_row\":\"adopter-scripts\",\"path\":\"$P1\",\"snap\":\"$H/stale\"}" \
+        "{\"kind\":\"file\",\"op\":\"replace\",\"class\":\"code\",\"manifest_row\":\"adopter-scripts\",\"path\":\"$P1\",\"snap\":$s1json}" \
+        "{\"kind\":\"file\",\"op\":\"replace\",\"class\":\"code\",\"manifest_row\":\"hud-config\",\"path\":\"$P2\",\"snap\":\"$S2\"}" \
+        "{\"kind\":\"tree\",\"op\":\"replace\",\"class\":\"state\",\"manifest_row\":\"hud-config\",\"path\":\"$H/.claude/plugins/claude-hud\"}" \
         '{"op":"install-end","status":"ok"}' >"$LB/ledger-B.jsonl"
     inv B f "$P1" ours1; inv B f "$P2" ours2
     [ "$1" = missing ] || inv B f "$S1" ours1
