@@ -280,7 +280,7 @@ else
 fi
 
 ANCHOR_SLUG="codex"
-ANCHOR_MODEL="gpt-6-sol"
+ANCHOR_MODEL="gpt-6.1-sol"
 # codex routes via the openai-codex provider (the hermes OAuth chokepoint), not
 # OpenRouter — the fallback rows carry it as the panel's --provider so a
 # registry-missing recovery routes the anchor to the right backend. (The free
