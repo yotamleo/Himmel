@@ -25,7 +25,12 @@ before(() => {
   fs.writeFileSync(ENTRY, `import { isMain } from ${JSON.stringify(IS_MAIN_URL)};\nprocess.stdout.write(String(isMain(import.meta.url)));\n`);
 });
 
-const run = (script) => spawnSync(process.execPath, [script], { encoding: 'utf8' });
+// Asserts a clean exit so a child that prints the verdict and then dies cannot pass.
+const run = (script) => {
+  const r = spawnSync(process.execPath, [script], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return r;
+};
 
 describe('isMain(import.meta.url)', () => {
   test('true on a direct invocation', () => {
