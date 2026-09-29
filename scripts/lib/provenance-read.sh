@@ -104,7 +104,7 @@ read -r -d '' _PROVREAD_FOLD_JQ <<'JQ'
 # writer that lands will record it as kind file.
 def is_register_kind: . as $k | (["plugin","marketplace","mcp","collection","job","unit","tool"] | index($k)) != null;
 def presha(r): if (r|has("pre"))|not then null elif r.pre.state=="absent" then "ABSENT" else r.pre.sha end;
-def extra_fields(r): r | del(.t,.iid,.op,.kind,.path,.unit,.scope,.class,.pre,.post,.writer,.manifest_row,._line);
+def extra_fields(r): r | del(.t,.iid,.op,.kind,.path,.unit,.scope,.class,.pre,.post,.snap,.snap_skip,.writer,.manifest_row,._line);
 def refline(r): (r.iid) + ":" + ((r._line)|tostring);
 def eff_pre_of($N):
   if ($N|length)==0 then null
@@ -162,6 +162,9 @@ def build_chains($rows):
           ours_posts: (if $isreg then ([ $rows[] | select(.preexisted==false and .post.sha!=null) | .post.sha ] | unique) else null end),
           eff_pre: (if ($N|length)>0 then eff_pre_of($N) else null end),
           eff_post: (if ($N|length)>0 then $N[-1].post else $lastRow.post end),
+          # HIMMEL-3787 S2c: the snap of the row that produced eff_post (null when that
+          # row predates snapshots or carries snap:null -- readers treat both alike)
+          eff_snap: (($lastForFields.snap // null)),
           fields: extra_fields($lastForFields),
           ref: refline($lastForFields),
           ops: [$rows[]|.op]
@@ -836,12 +839,19 @@ prov_read_session_begin() {
 # prov_read_outcome <removed|restored|kept|failed> <unit-json> <reason> [backup]
 prov_read_outcome() {
     local status="$1" u="$2" reason="$3" backup="${4:-}"
+    # HIMMEL-3787 S2c: a resolved unit's ours snapshot goes with its backup
+    local snap=""
+    case "$status" in removed|restored) snap=$(printf '%s' "$u" | jq -r '.eff_snap // empty' 2>/dev/null) ;; esac
     case "$status" in removed) PROV_READ_N_REMOVED=$((PROV_READ_N_REMOVED + 1))
             [ -n "$backup" ] && _PROV_READ_DONE_BACKUPS="$_PROV_READ_DONE_BACKUPS
-$backup" ;;
+$backup"
+            [ -n "$snap" ] && _PROV_READ_DONE_BACKUPS="$_PROV_READ_DONE_BACKUPS
+$snap" ;;
         restored) PROV_READ_N_RESTORED=$((PROV_READ_N_RESTORED + 1))
             [ -n "$backup" ] && _PROV_READ_DONE_BACKUPS="$_PROV_READ_DONE_BACKUPS
-$backup" ;;
+$backup"
+            [ -n "$snap" ] && _PROV_READ_DONE_BACKUPS="$_PROV_READ_DONE_BACKUPS
+$snap" ;;
         kept) PROV_READ_N_KEPT=$((PROV_READ_N_KEPT + 1)) ;;
         failed) PROV_READ_N_FAILED=$((PROV_READ_N_FAILED + 1))
             [ -n "$backup" ] && _PROV_READ_FAILED_BACKUPS="$_PROV_READ_FAILED_BACKUPS
@@ -887,7 +897,7 @@ prov_read_session_end() {
 # one predating per-file recording -- is left alone; a later run may still
 # need it. Refuses a symlinked backups dir.
 prov_read_prune_backups() {
-    local dir bdir f is_done done_list units u backup
+    local dir bdir f is_done done_list units u backup snap
     dir=$(prov_dir) || return 1
     bdir="$dir/provenance-backups"
     [ -e "$bdir" ] || return 0
@@ -902,9 +912,12 @@ prov_read_prune_backups() {
         while IFS= read -r u; do
             [ -n "$u" ] || continue
             backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
-            [ -n "$backup" ] || continue
+            snap=$(printf '%s' "$u" | jq -r '.eff_snap // empty')
+            [ -n "$backup$snap" ] || continue
             prov_read_unit_resolved "$u" "" || continue
-            done_list="$done_list$backup
+            [ -n "$backup" ] && done_list="$done_list$backup
+"
+            [ -n "$snap" ] && done_list="$done_list$snap
 "
         done <<EOF
 $units

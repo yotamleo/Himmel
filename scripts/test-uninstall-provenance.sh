@@ -1811,7 +1811,7 @@ printf '#!/bin/sh\necho himmel-installed-torn\n' > "$DEST_TORN55"
   prov_end ok >/dev/null )
 rm -f "$SNAP_GOOD55" "$SNAP_TORN55"
 LEDGER55="$HIMMEL_PROVENANCE_DIR/provenance.jsonl"
-BACKUPS55_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+BACKUPS55_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f ! -name '*.ours' 2>/dev/null | wc -l | tr -d ' ')
 check "RED55: setup actually created two backups (control is not vacuous)" "$BACKUPS55_BEFORE" "2"
 # truncate the TORN row's own line to half its length so it no longer
 # parses as JSON at all -- its backup, created above, is untouched.
@@ -1823,7 +1823,7 @@ awk -v n="$TORN55_LINE" -v r="$TORN55_HALF" 'NR==n{print r; next} {print}' "$LED
   && mv "$LEDGER55.next" "$LEDGER55"
 out55=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks --skip-settings)
 rc55=$?
-BACKUPS55_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+BACKUPS55_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f ! -name '*.ours' 2>/dev/null | wc -l | tr -d ' ')
 REFUSED55=$([ "$rc55" -ne 0 ] && echo yes || echo no)
 warn55=$(printf '%s\n' "$out55" | grep -c -F "refused to purge")
 check "RED55: --purge-state refuses (non-zero) when a torn ledger row's own backup is on disk" "$REFUSED55" "yes"
@@ -1881,11 +1881,11 @@ rm -f "$SNAP_GOOD57"
 mkdir -p "$HIMMEL_PROVENANCE_DIR/provenance-backups"
 ORPHAN57="$HIMMEL_PROVENANCE_DIR/provenance-backups/orphan-red57.pre.backup"
 printf 'orphan-backup-content-red57\n' > "$ORPHAN57"
-BACKUPS57_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+BACKUPS57_BEFORE=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f ! -name '*.ours' 2>/dev/null | wc -l | tr -d ' ')
 check "RED57: setup actually created two backups, one orphan (control is not vacuous)" "$BACKUPS57_BEFORE" "2"
 out57=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks --skip-settings)
 rc57=$?
-BACKUPS57_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')
+BACKUPS57_AFTER=$(find "$HIMMEL_PROVENANCE_DIR/provenance-backups" -type f ! -name '*.ours' 2>/dev/null | wc -l | tr -d ' ')
 REFUSED57=$([ "$rc57" -ne 0 ] && echo yes || echo no)
 warn57=$(printf '%s\n' "$out57" | grep -c -F "refused to purge")
 check "RED57: --purge-state refuses (non-zero) when an orphan backup has no ledger row at all" "$REFUSED57" "yes"
@@ -2199,6 +2199,27 @@ chmod 0755 "$(prov_dir)"
 check "RED63: fails fast (under 15 s)" "$([ "$_d63" -lt 15 ] && echo fast || echo slow:$_d63)" "fast"
 check "RED63: the real mkdir error is surfaced" \
   "$([ "$(printf '%s\n' "$out63" | grep -c -i 'permission denied')" -ge 1 ] && echo yes || echo no)" "yes"
+
+echo "==== RED65 (HIMMEL-3787 S2c, spec 5.3): a v2 install's .ours snapshots are accounted for -- --purge-state is not refused as an orphan ===="
+new_case red65
+mkdir -p "$CASE_DIR/cwd/scripts"
+DEST65="$CASE_DIR/cwd/scripts/red65.sh"
+printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST65"
+# A create (pre absent) holds NO .pre.backup -- its only file under
+# provenance-backups/ is the .ours snapshot, so the orphan scan can only
+# account for it by knowing the row's top-level .snap.
+( prov_begin --writer adopt.sh -- seed-red65 >/dev/null
+  prov_record create file "$DEST65" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-absent --post-file "$DEST65" >/dev/null
+  prov_end ok >/dev/null )
+SNAPS65=$(find "$(prov_dir)/provenance-backups" -type f -name '*.ours' | wc -l | tr -d ' ')
+check "RED65 setup: the writer left exactly one .ours snapshot" "$SNAPS65" "1"
+out65=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks 2>&1); rc65=$?
+check "RED65: --purge-state on a v2 install exits 0" "$rc65" "0"
+check "RED65: no orphan-backup refusal for the .ours snapshot" \
+  "$(printf '%s\n' "$out65" | grep -c 'orphan backup')" "0"
+check "RED65: the snapshot is purged with the state (no orphan left behind)" \
+  "$(find "$(prov_dir)/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)

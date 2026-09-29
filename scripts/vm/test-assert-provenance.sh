@@ -553,6 +553,45 @@ fresh
 FAKE_SYSTEMD_MANAGER_RC=0 FAKE_SYSTEMD_ANALYZE_RC=0 run_assert core 0
 has "manager reachable + a passing verify: unit:mine.service PASSes" 'CHECK parse too-much PASS unit:mine\.service —'
 
+# ---- 10. HIMMEL-3787 S2c: install-only -- every class=code file row of
+# adopter-scripts and hud-config names an .ours snapshot that exists at B and
+# equals the installed bytes. The row's LAST record per path is the one judged.
+snap_world() {  # <ok|null|missing|differs|norows>
+    fresh
+    local P1="$H/proj/scripts/w.sh" P2="$H/.claude/plugins/claude-hud/config.json"
+    local S1="$H/.himmel/provenance-backups/I1/001-w.sh.ours" S2="$H/.himmel/provenance-backups/I1/002-config.json.ours"
+    local s1json="\"$S1\""
+    [ "$1" != null ] || s1json='null,"snap_skip":"too-large"'
+    if [ "$1" = norows ]; then
+        printf '%s\n' '{"op":"install-begin"}' '{"op":"install-end","status":"ok"}' >"$LB/ledger-B.jsonl"
+        return
+    fi
+    printf '%s\n' '{"op":"install-begin"}' \
+        "{\"kind\":\"file\",\"op\":\"create\",\"class\":\"code\",\"row\":\"adopter-scripts\",\"path\":\"$P1\",\"snap\":\"$H/stale\"}" \
+        "{\"kind\":\"file\",\"op\":\"replace\",\"class\":\"code\",\"row\":\"adopter-scripts\",\"path\":\"$P1\",\"snap\":$s1json}" \
+        "{\"kind\":\"file\",\"op\":\"replace\",\"class\":\"code\",\"row\":\"hud-config\",\"path\":\"$P2\",\"snap\":\"$S2\"}" \
+        "{\"kind\":\"tree\",\"op\":\"replace\",\"class\":\"state\",\"row\":\"hud-config\",\"path\":\"$H/.claude/plugins/claude-hud\"}" \
+        '{"op":"install-end","status":"ok"}' >"$LB/ledger-B.jsonl"
+    inv B f "$P1" ours1; inv B f "$P2" ours2
+    [ "$1" = missing ] || inv B f "$S1" ours1
+    [ "$1" = differs ] && { drop B "$S1"; inv B f "$S1" not-ours1; }
+    inv B f "$S2" ours2
+    return 0
+}
+snap_world ok; run_assert core 0
+has "snap ok: adopter-scripts snapshots equal the installed bytes (last row wins)" 'CHECK ledger ledger PASS ledger-snap-adopter-scripts '
+has "snap ok: hud-config snapshot equals the installed bytes" 'CHECK ledger ledger PASS ledger-snap-hud-config '
+snap_world null; run_assert core 0
+has "snap null: a too-large skip on adopter-scripts FAILs and names why" 'CHECK ledger ledger FAIL ledger-snap-adopter-scripts — .*snap too-large'
+has "snap null: hud-config is judged on its own" 'CHECK ledger ledger PASS ledger-snap-hud-config '
+snap_world missing; run_assert core 0
+has "snap file absent at B FAILs" 'CHECK ledger ledger FAIL ledger-snap-adopter-scripts — .*no snapshot file at B'
+snap_world differs; run_assert core 0
+has "snap bytes differing from the installed file FAILs" 'CHECK ledger ledger FAIL ledger-snap-adopter-scripts — .*snapshot differs'
+snap_world norows; run_assert core 0
+has "no class=code rows: SKIP, never a vacuous PASS" 'CHECK precondition precondition SKIP ledger-snap-adopter-scripts '
+hasnt "no class=code rows: nothing passes" 'CHECK ledger ledger PASS ledger-snap-'
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "test-assert-provenance: all passed"; exit 0; fi
 echo "test-assert-provenance: $FAILED FAILED"

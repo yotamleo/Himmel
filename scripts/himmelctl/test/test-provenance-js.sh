@@ -51,6 +51,7 @@ n_end() { "$node_bin" "$jsw" end "$@"; }
 printf 'one\n' > "$w/f1"
 printf 'old2\n' > "$w/f2.snap"; printf 'new2\n' > "$w/f2"; chmod 640 "$w/f2.snap"
 printf 'l1\nl2\n' > "$w/rc"
+dd if=/dev/zero of="$w/big.bin" bs=1024 count=1025 2>/dev/null
 mkdir -p "$w/proj"
 
 scenario() { # <begin-fn> <rec-fn> <end-fn>
@@ -71,6 +72,9 @@ scenario() { # <begin-fn> <rec-fn> <end-fn>
     "$2" create file "$w/unicode ✓" --unit "$(printf 'a\177b\303\251\342\200\250"\\')" --post-file "$w/f1"
     "$2" create file relative.txt --post-file "$w/f1"
     "$2" replace file "$w/f2" --pre-file "$w/f2.snap" --backup --post-file "$w/f2"
+    # HIMMEL-3787 S2c: a >1 MiB file (snap:null,snap_skip) and a code block (post-text snap)
+    "$2" create file "$w/big.bin" --pre-absent --post-file "$w/big.bin" --scope user --class code
+    "$2" insert block "$w/rc" --unit user-claude-md --pre-absent --post-text $'BEGIN\nx\nEND' --scope user --class code
     "$3" failed step-9
 }
 
@@ -84,7 +88,15 @@ check "node scenario rc" "$?" "0"
 norm() { sed "s#$1#PROV#g" "$1/provenance.jsonl"; }
 norm "$tmp/pb" > "$tmp/pb.rows"
 norm "$tmp/pn" > "$tmp/pn.rows"
-check "scenario wrote 14 rows (bash)" "$(wc -l < "$tmp/pb.rows" | tr -d ' ')" "14"
+check "scenario wrote 16 rows (bash)" "$(wc -l < "$tmp/pb.rows" | tr -d ' ')" "16"
+# S2c: the byte-identity above only bites if the scenario really carries snap rows
+# (only class=code file/shim/block create|replace|insert rows: r-f1, f2, big.bin, the block)
+check "scenario rows carry snap: 3 paths + 1 too-large skip (bash)" \
+    "$(jq -r 'select(has("snap")) | if .snap == null then .snap_skip else "path" end' "$tmp/pb.rows" | paste -sd, -)" \
+    "path,path,too-large,path"
+check "scenario rows carry the same snap keys (node)" \
+    "$(jq -r 'select(has("snap")) | if .snap == null then .snap_skip else "path" end' "$tmp/pn.rows" | paste -sd, -)" \
+    "path,path,too-large,path"
 if cmp -s "$tmp/pb.rows" "$tmp/pn.rows"; then check "bash and node rows are byte-identical" same same
 else check "bash and node rows are byte-identical" differ same; diff "$tmp/pb.rows" "$tmp/pn.rows" | head -n 20; fi
 if diff -r "$tmp/pb/provenance-backups" "$tmp/pn/provenance-backups" >/dev/null 2>&1; then check "bash and node backup trees are identical" same same
@@ -102,7 +114,8 @@ implicit() { # <rec-fn> <dir>
 implicit b_rec "$tmp/ib"; implicit n_rec "$tmp/in"
 iid_b=$(jq -r .iid "$tmp/ib/provenance.jsonl" | head -n1); iid_n=$(jq -r .iid "$tmp/in/provenance.jsonl" | head -n1)
 check "implicit session (bash) = begin,create,end" "$(jq -r .op "$tmp/ib/provenance.jsonl" | paste -sd, -)" "install-begin,create,install-end"
-check "implicit rows byte-identical modulo the iid" "$(sed "s#$iid_n#IID#" "$tmp/in/provenance.jsonl" | _prov_sha256)" "$(sed "s#$iid_b#IID#" "$tmp/ib/provenance.jsonl" | _prov_sha256)"
+# (S2c: a code-class row's .snap is an absolute path under the ledger dir, so normalise that too)
+check "implicit rows byte-identical modulo the iid + ledger dir" "$(sed "s#$iid_n#IID#g;s#$tmp/in#D#g" "$tmp/in/provenance.jsonl" | _prov_sha256)" "$(sed "s#$iid_b#IID#g;s#$tmp/ib#D#g" "$tmp/ib/provenance.jsonl" | _prov_sha256)"
 
 # ── node behaviour ───────────────────────────────────────────────────────
 export HIMMEL_PROVENANCE_DIR="$tmp/pu"
