@@ -3396,7 +3396,7 @@ EOF
         _ext_rc=0
         _ext_text="$(bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --extract "$_p" 2>/dev/null)" || _ext_rc=$?
         if [ "$_ext_rc" -eq 0 ]; then
-          _tpl_file="$SCRIPT_DIR/../docs/setup/user-scope-claude-md-template.md"
+          _tpl_file="$REPO_ROOT/docs/setup/user-scope-claude-md-template.md"
           _tpl_text=""
           [ -f "$_tpl_file" ] && _tpl_text="$(sed -n '/<!-- BEGIN HIMMEL:working-principles -->/,/<!-- END HIMMEL:working-principles -->/p' "$_tpl_file")"
           if [ -z "$_tpl_text" ] || [ "$_ext_text" != "$_tpl_text" ]; then
