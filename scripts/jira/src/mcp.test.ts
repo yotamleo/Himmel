@@ -3,7 +3,7 @@ import { createTools, buildServer, type ToolDeps, type JiraTool } from './mcp.js
 
 // Unit coverage for the MCP surface (HIMMEL-159). We mock the underlying
 // client (`request` / `uploadAttachment`) and assert that every one of the
-// ten tools (a) is registered, (b) carries an input schema, and (c) on a
+// tools (a) is registered, (b) carries an input schema, and (c) on a
 // happy-path invocation routes to the client with the same payload the
 // corresponding CLI verb builds. The handlers reuse the SAME shared
 // functions the CLI verbs call, so this also pins parity.
@@ -19,6 +19,9 @@ const TOOL_NAMES = [
   'edit',
   'projects',
   'project-create',
+  'roadmap-set',
+  'roadmap-get',
+  'rank',
 ];
 
 function tool(name: string): JiraTool {
@@ -43,7 +46,7 @@ function mockDeps(reply: unknown = {}): {
 }
 
 describe('MCP tool registration', () => {
-  it('registers exactly the ten CLI verbs', () => {
+  it('registers exactly the CLI verbs', () => {
     const names = createTools().map((t) => t.name).sort();
     expect(names).toEqual([...TOOL_NAMES].sort());
   });
@@ -72,7 +75,7 @@ describe('MCP tool registration', () => {
 });
 
 describe('MCP server wiring', () => {
-  it('builds a server and lists all ten tools via the ListTools handler', async () => {
+  it('builds a server and lists all tools via the ListTools handler', async () => {
     const server = buildServer();
     // Reach into the registered handler the SDK installs for ListTools — the
     // same private _requestHandlers map the CallTool test below uses — and
@@ -83,7 +86,7 @@ describe('MCP server wiring', () => {
     expect(handler).toBeDefined();
     const result = await handler({ method: 'tools/list', params: {} }, {});
     expect(result.tools.map((t: JiraTool) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(result.tools).toHaveLength(10);
+    expect(result.tools).toHaveLength(TOOL_NAMES.length);
   });
 
   it('CallTool error path: non-Error throwable yields String() text (HIMMEL-292)', async () => {
@@ -317,5 +320,56 @@ describe('MCP tool happy-path routing', () => {
       '/project',
       expect.objectContaining({ leadAccountId: 'acct-explicit' }),
     );
+  });
+});
+
+describe('roadmap + rank tools (HIMMEL-3890)', () => {
+  const FIELDS = [
+    ['Readiness', 'customfield_10171'],
+    ['Theme', 'customfield_10172'],
+    ['Roadmap Goals', 'customfield_10173'],
+    ['Roadmap Impact', 'customfield_10174'],
+    ['Alignment', 'customfield_10175'],
+    ['ROI', 'customfield_10176'],
+    ['Audit date', 'customfield_10177'],
+    ['Audit evidence', 'customfield_10178'],
+    ['Close candidate', 'customfield_10179'],
+    ['Story point estimate', 'customfield_10016'],
+  ].map(([name, id]) => ({ name, id }));
+
+  function roadmapDeps(issueFields: Record<string, unknown>) {
+    const request = vi.fn(async (method: string, path: string) => {
+      if (path === '/field') return FIELDS;
+      if (method === 'GET') return { fields: issueFields };
+      return '';
+    });
+    return { deps: { request, uploadAttachment: vi.fn(), agileRequest: vi.fn(async () => '') } as unknown as ToolDeps, request };
+  }
+
+  it('roadmap-set writes the same fields the CLI builds, without ROI when noRoi', async () => {
+    const { deps, request } = roadmapDeps({});
+    const out = await tool('roadmap-set').handler({ key: 'HIMMEL-1', readiness: '4', effort: 'S', noRoi: true }, deps);
+    expect(request).toHaveBeenCalledWith('PUT', '/issue/HIMMEL-1', {
+      fields: { customfield_10171: 4, customfield_10016: 1 },
+    });
+    expect(out).toContain('HIMMEL-1');
+  });
+
+  it('roadmap-get prints the roadmap block', async () => {
+    const { deps } = roadmapDeps({ customfield_10171: 2, customfield_10016: 5 });
+    const out = await tool('roadmap-get').handler({ key: 'HIMMEL-1' }, deps);
+    expect(out).toContain('Readiness: 2');
+    expect(out).toContain('Effort: L (5)');
+  });
+
+  it('rank routes to the agile rank endpoint', async () => {
+    const { deps } = roadmapDeps({});
+    const out = await tool('rank').handler({ key: 'HIMMEL-2', after: 'HIMMEL-1' }, deps);
+    expect((deps as unknown as { agileRequest: ReturnType<typeof vi.fn> }).agileRequest).toHaveBeenCalledWith(
+      'PUT',
+      '/issue/rank',
+      { issues: ['HIMMEL-2'], rankAfterIssue: 'HIMMEL-1' },
+    );
+    expect(out).toBe('HIMMEL-2 ranked after HIMMEL-1');
   });
 });

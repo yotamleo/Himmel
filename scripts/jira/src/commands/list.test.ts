@@ -12,12 +12,12 @@ import { request } from '../client.js';
 const mockRequest = request as unknown as ReturnType<typeof vi.fn>;
 
 describe('jqlStatusClause (HIMMEL-112)', () => {
-  it('defaults to To Do + In Progress when status is undefined', () => {
-    expect(jqlStatusClause(undefined)).toBe('status in ("To Do","In Progress")');
+  it('defaults to the open statuses when status is undefined', () => {
+    expect(jqlStatusClause(undefined)).toBe('status in ("To Do","Planning","Ready","In Progress")');
   });
 
-  it('defaults to To Do + In Progress when status is empty string', () => {
-    expect(jqlStatusClause('')).toBe('status in ("To Do","In Progress")');
+  it('defaults to the open statuses when status is empty string', () => {
+    expect(jqlStatusClause('')).toBe('status in ("To Do","Planning","Ready","In Progress")');
   });
 
   it('quote-wraps a single multi-word status', () => {
@@ -51,7 +51,7 @@ describe('jqlStatusClause (HIMMEL-112)', () => {
   });
 
   it('falls back to defaults when arg is just commas/whitespace', () => {
-    expect(jqlStatusClause(',,, ,')).toBe('status in ("To Do","In Progress")');
+    expect(jqlStatusClause(',,, ,')).toBe('status in ("To Do","Planning","Ready","In Progress")');
   });
 
   it('escapes embedded double-quotes in status names', () => {
@@ -77,13 +77,13 @@ describe('resolveListJql (HIMMEL-215)', () => {
 
   it('treats an empty --jql as not supplied (falls through to default build)', () => {
     expect(resolveListJql({ jql: '', project: 'HIMMEL' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") ORDER BY created DESC',
     );
   });
 
   it('treats a whitespace-only --jql as not supplied (falls through to default build)', () => {
     expect(resolveListJql({ jql: '   ', project: 'HIMMEL' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") ORDER BY created DESC',
     );
   });
 
@@ -95,13 +95,13 @@ describe('resolveListJql (HIMMEL-215)', () => {
 
   it('builds the default project/status query when --jql is absent', () => {
     expect(resolveListJql({ project: 'HIMMEL' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") ORDER BY created DESC',
     );
   });
 
   it('appends issuetype filter when --type is set (no --jql)', () => {
     expect(resolveListJql({ project: 'HIMMEL', type: 'Task' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") AND issuetype="Task" ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") AND issuetype="Task" ORDER BY created DESC',
     );
   });
 
@@ -115,7 +115,7 @@ describe('resolveListJql (HIMMEL-215)', () => {
 describe('resolveListJql --label (HIMMEL-243)', () => {
   it('composes a labels clause into the built JQL', () => {
     expect(resolveListJql({ project: 'HIMMEL', label: 'ai-tasklist' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") AND labels = "ai-tasklist" ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") AND labels = "ai-tasklist" ORDER BY created DESC',
     );
   });
 
@@ -135,25 +135,25 @@ describe('resolveListJql --label (HIMMEL-243)', () => {
 
   it('trims the label value', () => {
     expect(resolveListJql({ project: 'HIMMEL', label: '  x  ' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") AND labels = "x" ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") AND labels = "x" ORDER BY created DESC',
     );
   });
 
   it('treats an empty --label as not supplied', () => {
     expect(resolveListJql({ project: 'HIMMEL', label: '' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") ORDER BY created DESC',
     );
   });
 
   it('treats a whitespace-only --label as not supplied', () => {
     expect(resolveListJql({ project: 'HIMMEL', label: '   ' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") ORDER BY created DESC',
     );
   });
 
   it('escapes embedded double-quotes in the label value', () => {
     expect(resolveListJql({ project: 'HIMMEL', label: 'a"b' })).toBe(
-      'project=HIMMEL AND status in ("To Do","In Progress") AND labels = "a\\"b" ORDER BY created DESC',
+      'project=HIMMEL AND status in ("To Do","Planning","Ready","In Progress") AND labels = "a\\"b" ORDER BY created DESC',
     );
   });
 });

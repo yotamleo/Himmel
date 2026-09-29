@@ -5,7 +5,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { request, projectKey, uploadAttachment } from './client.js';
+import { agileRequest, request, projectKey, uploadAttachment } from './client.js';
+import { roadmapGet, roadmapSet, type RoadmapSetOptions } from './commands/roadmap.js';
+import { rankIssue } from './commands/rank.js';
 import { markdownToAdf } from './adf.js';
 import { formatIssue, formatIssueWithDescription } from './output.js';
 import { resolveListJql } from './commands/list.js';
@@ -24,9 +26,9 @@ import type {
 /**
  * MCP surface for the himmel jira CLI (HIMMEL-159).
  *
- * Exposes the same ten verbs the Commander CLI registers — get, create,
- * list, transition, transitions, comment, attach, edit, projects,
- * project-create — over the Model Context Protocol on stdio. Each MCP tool
+ * Exposes the Commander CLI's verbs — get, create, list, transition,
+ * transitions, comment, attach, edit, projects, project-create, roadmap-set,
+ * roadmap-get, rank — over the Model Context Protocol on stdio. Each MCP tool
  * routes to the SAME underlying client functions (`request`,
  * `uploadAttachment`, `markdownToAdf`, `buildEditFields`, `resolveListJql`,
  * `findTransition`, …) the CLI verbs call. This module is purely additive:
@@ -44,9 +46,10 @@ import type {
 export interface ToolDeps {
   request: typeof request;
   uploadAttachment: typeof uploadAttachment;
+  agileRequest: typeof agileRequest;
 }
 
-const defaultDeps: ToolDeps = { request, uploadAttachment };
+const defaultDeps: ToolDeps = { request, uploadAttachment, agileRequest };
 
 /** JSON-Schema fragment for a tool's input. */
 type JsonSchema = {
@@ -67,7 +70,7 @@ export interface JiraTool {
 const str = (description: string) => ({ type: 'string', description });
 
 /**
- * Build the ten tools. The handlers mirror the CLI verbs in
+ * Build the tools. The handlers mirror the CLI verbs in
  * `src/commands/*` line-for-line in terms of which client function they call
  * and what payload they build — they just return a string instead of
  * `console.log`-ing it.
@@ -396,6 +399,64 @@ export function createTools(): JiraTool[] {
           leadAccountId,
         });
         return `Created ${result.key} (id=${result.id})`;
+      },
+    },
+    {
+      name: 'roadmap-set',
+      description: 'Set roadmap fields on an issue (HIMMEL-3890), then recompute ROI',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: str('Issue key'),
+          readiness: str('Readiness 0-4'),
+          theme: str('Theme option name'),
+          goals: str('Comma-separated goals: G1..G7, North Star, off, win'),
+          impact: str('Impact 1-5'),
+          alignment: str('Alignment 0.2-1.0 (default: derived from goals)'),
+          effort: str('Effort XS, S, M, L or XL'),
+          guard: { type: 'boolean', description: 'Non-trivial G1 guard work: effort x1.3' },
+          auditDate: str('Audit date YYYY-MM-DD'),
+          auditEvidence: str('Audit evidence URL'),
+          closeCandidate: str('yes or no'),
+          noRoi: { type: 'boolean', description: 'Do not recompute ROI' },
+        },
+        required: ['key'],
+        additionalProperties: false,
+      },
+      async handler(args, deps) {
+        const { key, ...opts } = args as unknown as { key: string } & RoadmapSetOptions;
+        return roadmapSet(key, opts, deps.request);
+      },
+    },
+    {
+      name: 'roadmap-get',
+      description: 'Print the roadmap fields of an issue (HIMMEL-3890)',
+      inputSchema: {
+        type: 'object',
+        properties: { key: str('Issue key') },
+        required: ['key'],
+        additionalProperties: false,
+      },
+      async handler(args, deps) {
+        return roadmapGet(args.key as string, deps.request);
+      },
+    },
+    {
+      name: 'rank',
+      description: 'Rank an issue before or after another issue (board order)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: str('Issue key to move'),
+          before: str('Rank above this issue'),
+          after: str('Rank below this issue'),
+        },
+        required: ['key'],
+        additionalProperties: false,
+      },
+      async handler(args, deps) {
+        const { key, before, after } = args as { key: string; before?: string; after?: string };
+        return rankIssue(key, { before, after }, deps.agileRequest);
       },
     },
   ];
