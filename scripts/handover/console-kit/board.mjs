@@ -298,7 +298,7 @@ const releaseOf = (version) => {
     // `list --labels` rows: key, type, status, title, labels (tab-separated).
     // The CLI prints only ticket rows, so any other non-blank line means a garbled answer.
     const lines = out.split('\n').filter((l) => l.trim()).map((l) => l.split('\t'));
-    const rows = lines.filter((f) => f.length >= 4 && /^[A-Z][A-Z0-9]*-\d+$/.test(f[0]))
+    const rows = lines.filter((f) => f.length >= 5 && /^[A-Z][A-Z0-9]*-\d+$/.test(f[0]))
         .map((f) => ({ key: f[0], status: f[2].trim(), title: f[3], labels: (f[4] || '').split(',').map((x) => x.trim()) }));
     if (rows.length !== lines.length) return { version, unavailable: true };
     const open = rows.filter((r) => !DONE_STATUS.test(r.status));

@@ -465,6 +465,11 @@ vpart="$(cat "$W/v-partial.html" 2>/dev/null)"
 contains 'a partial Jira answer still renders the board (rc 0)' "rc=$rc" 'rc=0'
 contains 'a partial Jira answer reads unavailable, not short totals' "$vpart" 'data-release="v1.0.0" data-unavailable="1"'
 contains 'a clean version beside a partial one still renders' "$vpart" 'data-release="v1.0.1" data-done="1" data-total="2"'
+# A row without the labels column (the CLI with --labels always emits it) would hide blockers.
+write_v100 3
+printf 'HIMMEL-9008%sTask%sTo Do%sno labels column\n' "$T" "$T" "$T" >> "$JD/v1.0.0.tsv"
+runv --out "$W/v-nolabels.html" >/dev/null
+contains 'a row missing the labels column reads unavailable' "$(cat "$W/v-nolabels.html" 2>/dev/null)" 'data-release="v1.0.0" data-unavailable="1"'
 
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
