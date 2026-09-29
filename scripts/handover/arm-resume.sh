@@ -1760,7 +1760,10 @@ fi
 # Format spec: docs/tool-adoption/telemetry.md.
 # shellcheck source=../lib/telemetry.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/telemetry.sh" 2>/dev/null || true
+# The [ -f ] + bash -n guard (all four fail-open sources): macOS bash 3.2 exits the
+# whole script on a failed or syntax-broken `.` even under `|| true` (HIMMEL-3699).
+{ [ -f "$SCRIPT_DIR/../lib/telemetry.sh" ] && bash -n "$SCRIPT_DIR/../lib/telemetry.sh" 2>/dev/null \
+    && . "$SCRIPT_DIR/../lib/telemetry.sh"; } 2>/dev/null || true
 command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 
 # handover_root (HIMMEL-856): resolves the single handover root (Mode A
@@ -1774,7 +1777,8 @@ command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 # collision checks proceed unaffected.
 # shellcheck source=../lib/handover-path.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null || true
+{ [ -f "$SCRIPT_DIR/../lib/handover-path.sh" ] && bash -n "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null \
+    && . "$SCRIPT_DIR/../lib/handover-path.sh"; } 2>/dev/null || true
 command -v handover_root >/dev/null 2>&1 || handover_root() { return 2; }
 # Identity helpers are optional under the same fail-open contract. If this lib
 # is absent or only partially deployed, degrade to the pre-HIMMEL-1304 raw-path
@@ -1817,7 +1821,8 @@ command -v _hp_arms_record_matches_path >/dev/null 2>&1 || _hp_arms_record_match
 # the .env flag deserves to know the fallback is disabled.
 # shellcheck source=../lib/headroom-proxy.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/headroom-proxy.sh" 2>/dev/null \
+{ [ -f "$SCRIPT_DIR/../lib/headroom-proxy.sh" ] && bash -n "$SCRIPT_DIR/../lib/headroom-proxy.sh" 2>/dev/null \
+    && . "$SCRIPT_DIR/../lib/headroom-proxy.sh"; } 2>/dev/null \
     || echo "WARN arm-resume: headroom-proxy lib failed to load -- .env HIMMEL_HEADROOM_PROXY fallback disabled (process env still honored)" >&2
 command -v _headroom_proxy_env_file_active >/dev/null 2>&1 || _headroom_proxy_env_file_active() { return 1; }
 
@@ -1834,7 +1839,8 @@ command -v _headroom_proxy_env_file_active >/dev/null 2>&1 || _headroom_proxy_en
 # turn a healthy arm into rc=1 (proxy-suite T7a/T7b/T7c).
 # shellcheck source=../lib/cadence-format.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/cadence-format.sh" 2>/dev/null \
+{ [ -f "$SCRIPT_DIR/../lib/cadence-format.sh" ] && bash -n "$SCRIPT_DIR/../lib/cadence-format.sh" 2>/dev/null \
+    && . "$SCRIPT_DIR/../lib/cadence-format.sh"; } 2>/dev/null \
     || echo "WARN arm-resume: cadence-format lib failed to load -- cadence_cmd_escape falls back inline (caret-free single-parse escape)" >&2
 # Minimal single-parse fallback mirroring the lib's contract (% -> %% plus
 # best-effort " -> \"). Used only if the source above failed; matches the
