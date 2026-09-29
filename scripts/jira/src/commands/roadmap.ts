@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { agileRequest, projectKey, request } from '../client.js';
 import { writeJiraBreadcrumb } from '../breadcrumb.js';
 import { resolveBoard } from './sprint.js';
+import { checkDate } from './versions.js';
 
 // HIMMEL-3890: the roadmap lives in Jira custom fields (design doc section 1,
 // scoring from the HIMMEL-3882 frame sections 2 and 5). Fields are always
@@ -49,7 +50,6 @@ const GUARD_FACTOR = 1.3;
 const CONFIDENCE: Record<number, number> = { 1: 0.25, 2: 0.5, 3: 0.75, 4: 1.0 };
 
 const round = (n: number, places: number) => Math.round(n * 10 ** places) / 10 ** places;
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 async function fieldIndex(req: Req): Promise<Map<string, string[]>> {
   const all = await req<Array<{ id: string; name: string }>>('GET', '/field');
@@ -174,10 +174,7 @@ export function buildRoadmapFields(ids: RoadmapIds, o: RoadmapSetOptions): Recor
   }
   if (o.guard && o.effort === undefined) throw new Error('--guard needs --effort');
   if (o.effort !== undefined) f[ids.effort] = effortPoints(o.effort, o.guard);
-  if (o.auditDate !== undefined) {
-    if (!ISO_DATE.test(o.auditDate)) throw new Error(`--audit-date must be YYYY-MM-DD (got "${o.auditDate}")`);
-    f[ids.auditDate] = o.auditDate;
-  }
+  if (o.auditDate !== undefined) f[ids.auditDate] = checkDate(o.auditDate, '--audit-date');
   if (o.auditEvidence !== undefined) {
     let ok = false;
     try {
@@ -282,7 +279,7 @@ export async function roadmapExport(
 }
 
 interface Version { id: string; name: string; released?: boolean; startDate?: string; releaseDate?: string }
-interface Sprint { id: number; name: string; state: string }
+interface Sprint { id: number; name: string; state: string; startDate?: string; endDate?: string }
 
 const MOVE_CHUNK = 50;
 
@@ -301,10 +298,14 @@ async function boardSprints(agile: Req, board: string): Promise<Sprint[]> {
 
 const preview = (keys: string[]) => keys.slice(0, 10).join(' ') + (keys.length > 10 ? ' …' : '');
 
+const day = (iso?: string) => (iso ? new Date(iso).toISOString().slice(0, 10) : undefined);
+
 /**
  * Design section 4: fixVersion is the source of truth, the sprint is the view.
  * Each unreleased version with a start and release date gets a same-named
- * sprint on the board, and its open issues are moved into it.
+ * sprint on the board carrying the version's dates, and its open issues are
+ * moved into it. An issue on several dated versions belongs to the one that
+ * releases first, so repeated runs never bounce it between sprints.
  */
 export async function syncSprints(
   project: string,
@@ -313,32 +314,39 @@ export async function syncSprints(
   req: Req = request,
   agile: Req = agileRequest,
 ): Promise<{ lines: string[]; drift: number }> {
-  const versions = (await req<Version[]>('GET', `/project/${encodeURIComponent(project)}/versions`)).filter(
-    (v) => !v.released && v.startDate && v.releaseDate,
-  );
+  const versions = (await req<Version[]>('GET', `/project/${encodeURIComponent(project)}/versions`))
+    .filter((v) => !v.released && v.startDate && v.releaseDate)
+    .sort((a, b) => (a.releaseDate! < b.releaseDate! ? -1 : a.releaseDate! > b.releaseDate! ? 1 : 0));
   const sprints = await boardSprints(agile, board);
+  const claimed = new Set<string>();
   const lines: string[] = [];
   let drift = 0;
   for (const v of versions) {
     let sprint = sprints.find((s) => s.name === v.name);
+    const dates = { startDate: `${v.startDate}T00:00:00.000Z`, endDate: `${v.releaseDate}T23:59:00.000Z` };
+    const staleDates = !!sprint && (day(sprint.startDate) !== v.startDate || day(sprint.endDate) !== v.releaseDate);
     const base = `project = ${project} AND fixVersion = "${v.name.replace(/"/g, '\\"')}" AND statusCategory != Done`;
-    const jql = sprint ? `${base} AND (sprint is EMPTY OR sprint != ${sprint.id})` : base;
-    const keys = (await searchKeys<{ key: string }>(req, jql, 'summary')).map((i) => i.key);
+    const all = (await searchKeys<{ key: string }>(req, base, 'summary')).map((i) => i.key);
+    const mine = new Set(all.filter((k) => !claimed.has(k)));
+    all.forEach((k) => claimed.add(k));
+    const outside = sprint
+      ? (await searchKeys<{ key: string }>(req, `${base} AND (sprint is EMPTY OR sprint != ${sprint.id})`, 'summary')).map((i) => i.key)
+      : all;
+    const keys = outside.filter((k) => mine.has(k));
     if (dryRun) {
-      drift += keys.length + (sprint ? 0 : 1);
-      const where = sprint ? `sprint ${sprint.id}` : `sprint missing (would create ${v.startDate}..${v.releaseDate})`;
-      lines.push(keys.length ? `${v.name}: ${where}, move ${keys.length} (${preview(keys)})` : `${v.name}: ${where}, in sync`);
+      drift += keys.length + (sprint ? 0 : 1) + (staleDates ? 1 : 0);
+      let where = sprint ? `sprint ${sprint.id}` : `sprint missing (would create ${v.startDate}..${v.releaseDate})`;
+      if (staleDates) where += ` (dates ${day(sprint!.startDate)}..${day(sprint!.endDate)}, would set ${v.startDate}..${v.releaseDate})`;
+      lines.push(keys.length ? `${v.name}: ${where}, move ${keys.length} (${preview(keys)})` : `${v.name}: ${where}, ${staleDates ? 'issues in sync' : 'in sync'}`);
       continue;
     }
-    let where = sprint ? `sprint ${sprint?.id}` : '';
+    let where = sprint ? `sprint ${sprint.id}` : '';
     if (!sprint) {
-      sprint = await agile<Sprint>('POST', '/sprint', {
-        name: v.name,
-        originBoardId: Number(board),
-        startDate: `${v.startDate}T00:00:00.000Z`,
-        endDate: `${v.releaseDate}T23:59:00.000Z`,
-      });
+      sprint = await agile<Sprint>('POST', '/sprint', { name: v.name, originBoardId: Number(board), ...dates });
       where = `created sprint ${sprint.id}`;
+    } else if (staleDates) {
+      await agile('POST', `/sprint/${sprint.id}`, dates);
+      where += ' (dates updated)';
     }
     for (let i = 0; i < keys.length; i += MOVE_CHUNK) {
       await agile('POST', `/sprint/${sprint.id}/issue`, { issues: keys.slice(i, i + MOVE_CHUNK) });

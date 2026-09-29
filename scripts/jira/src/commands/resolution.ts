@@ -11,7 +11,7 @@ import { writeJiraBreadcrumb } from '../breadcrumb.js';
 type Req = typeof request;
 
 interface IssueState {
-  fields: { status: { name: string }; resolution: { name: string } | null };
+  fields: { status: { id: string; name: string }; resolution: { name: string } | null };
 }
 
 const read = (req: Req, key: string) => req<IssueState>('GET', `/issue/${key}?fields=status,resolution`);
@@ -19,15 +19,16 @@ const read = (req: Req, key: string) => req<IssueState>('GET', `/issue/${key}?fi
 export async function syncResolution(key: string, req: Req = request): Promise<string> {
   const before = (await read(req, key)).fields;
   const status = before.status.name;
-  const { transitions } = await req<{ transitions: Array<{ id: string; name: string }> }>(
+  const { transitions } = await req<{ transitions: Array<{ id: string; name: string; to?: { id: string } }> }>(
     'GET',
     `/issue/${key}/transitions`,
   );
-  const self = transitions.find((t) => t.name === status);
+  // Matched by destination status id: a transition's name need not be its target's name.
+  const self = transitions.find((t) => t.to?.id === before.status.id);
   if (!self) throw new Error(`${key}: no self-transition for status "${status}" (not on the roadmap workflow?)`);
   await req('POST', `/issue/${key}/transitions`, { transition: { id: self.id } });
   const after = (await read(req, key)).fields;
-  if (after.status.name !== status) {
+  if (after.status.id !== before.status.id) {
     throw new Error(`${key}: status changed from "${status}" to "${after.status.name}" during the resolution sync`);
   }
   const name = (s: IssueState['fields']) => s.resolution?.name ?? '(none)';

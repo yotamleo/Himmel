@@ -141,6 +141,7 @@ describe('buildRoadmapFields', () => {
     expect(() => buildRoadmapFields(IDS, { alignment: '1.5' })).toThrow(/alignment/);
     expect(() => buildRoadmapFields(IDS, { theme: 'Nope' })).toThrow(/theme/);
     expect(() => buildRoadmapFields(IDS, { auditDate: '30/09/2026' })).toThrow(/YYYY-MM-DD/);
+    expect(() => buildRoadmapFields(IDS, { auditDate: '2026-02-30' })).toThrow(/YYYY-MM-DD/);
     expect(() => buildRoadmapFields(IDS, { auditEvidence: 'not a url' })).toThrow(/URL/);
     expect(() => buildRoadmapFields(IDS, { closeCandidate: 'maybe' })).toThrow(/yes\|no/);
     expect(() => buildRoadmapFields(IDS, { guard: true })).toThrow(/--guard/);
@@ -233,15 +234,21 @@ describe('syncSprints', () => {
     `project = HIMMEL AND fixVersion = "${v}" AND statusCategory != Done` +
     (sprint === undefined ? '' : ` AND (sprint is EMPTY OR sprint != ${sprint})`);
   const search = (j: string) => `GET /search/jql?jql=${encodeURIComponent(j)}&fields=summary&maxResults=100`;
+  const issues = (...keys: string[]) => ({ issues: keys.map((key) => ({ key })) });
+  const sprintsRoute = 'GET /board/166/sprint?state=active,future&maxResults=50';
+  const sprint = (id: number, name: string, start: string, end: string) => ({
+    id, name, state: 'future', startDate: `${start}T00:00:00.000Z`, endDate: `${end}T23:59:00.000Z`,
+  });
 
   it('dry-run reports a missing sprint and drifted issues without writing', async () => {
     const api = stub({
       'GET /project/HIMMEL/versions': versions,
-      [search(jql('v1.0.0', 7))]: { issues: [{ key: 'HIMMEL-1' }] },
-      [search(jql('v1.0.1'))]: { issues: [{ key: 'HIMMEL-2' }, { key: 'HIMMEL-3' }] },
+      [search(jql('v1.0.0'))]: issues('HIMMEL-1', 'HIMMEL-4'),
+      [search(jql('v1.0.0', 7))]: issues('HIMMEL-1'),
+      [search(jql('v1.0.1'))]: issues('HIMMEL-2', 'HIMMEL-3'),
     });
     const agile = stub({
-      'GET /board/166/sprint?state=active,future&maxResults=50': { values: [{ id: 7, name: 'v1.0.0', state: 'active' }], isLast: true },
+      [sprintsRoute]: { values: [sprint(7, 'v1.0.0', '2026-10-01', '2026-10-04')], isLast: true },
     });
     const r = await syncSprints('HIMMEL', '166', true, api.req, agile.req);
     expect(r.drift).toBe(4); // 3 issues + 1 missing sprint
@@ -273,5 +280,54 @@ describe('syncSprints', () => {
     const moves = agile.calls.filter((c) => c.path === '/sprint/9/issue').map((c) => (c.body as { issues: string[] }).issues.length);
     expect(moves).toEqual([50, 1]);
     expect(r.lines[0]).toBe('v1.0.1: created sprint 9, moved 51');
+  });
+
+  it('re-dates an existing sprint whose dates drifted from its version', async () => {
+    const routes = {
+      'GET /project/HIMMEL/versions': versions.slice(0, 1),
+      [search(jql('v1.0.0'))]: issues('HIMMEL-1'),
+      [search(jql('v1.0.0', 7))]: issues(),
+    };
+    const sprints = { [sprintsRoute]: { values: [sprint(7, 'v1.0.0', '2026-09-28', '2026-10-02')], isLast: true } };
+
+    const dry = await syncSprints('HIMMEL', '166', true, stub(routes).req, stub(sprints).req);
+    expect(dry).toEqual({
+      drift: 1,
+      lines: ['v1.0.0: sprint 7 (dates 2026-09-28..2026-10-02, would set 2026-10-01..2026-10-04), issues in sync'],
+    });
+
+    const agile = stub({ ...sprints, 'POST /sprint/7': '' });
+    const r = await syncSprints('HIMMEL', '166', false, stub(routes).req, agile.req);
+    expect(agile.calls.find((c) => c.method === 'POST')).toEqual({
+      method: 'POST',
+      path: '/sprint/7',
+      body: { startDate: '2026-10-01T00:00:00.000Z', endDate: '2026-10-04T23:59:00.000Z' },
+    });
+    expect(r.lines).toEqual(['v1.0.0: sprint 7 (dates updated), moved 0']);
+  });
+
+  it('keeps an issue on several dated versions in the earliest-releasing sprint', async () => {
+    // HIMMEL-5 is on both versions and already sits in v1.0.0's sprint 7.
+    const api = stub({
+      'GET /project/HIMMEL/versions': [versions[1], versions[0]],
+      [search(jql('v1.0.0'))]: issues('HIMMEL-5'),
+      [search(jql('v1.0.0', 7))]: issues(),
+      [search(jql('v1.0.1'))]: issues('HIMMEL-5', 'HIMMEL-6'),
+      [search(jql('v1.0.1', 8))]: issues('HIMMEL-5', 'HIMMEL-6'),
+    });
+    const sprints = {
+      [sprintsRoute]: {
+        values: [sprint(7, 'v1.0.0', '2026-10-01', '2026-10-04'), sprint(8, 'v1.0.1', '2026-10-05', '2026-10-08')],
+        isLast: true,
+      },
+    };
+    const dry = await syncSprints('HIMMEL', '166', true, api.req, stub(sprints).req);
+    expect(dry).toEqual({ drift: 1, lines: ['v1.0.0: sprint 7, in sync', 'v1.0.1: sprint 8, move 1 (HIMMEL-6)'] });
+
+    const agile = stub({ ...sprints, 'POST /sprint/8/issue': '' });
+    await syncSprints('HIMMEL', '166', false, api.req, agile.req);
+    expect(agile.calls.filter((c) => c.method === 'POST').map((c) => [c.path, c.body])).toEqual([
+      ['/sprint/8/issue', { issues: ['HIMMEL-6'] }],
+    ]);
   });
 });

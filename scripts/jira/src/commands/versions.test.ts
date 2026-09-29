@@ -84,6 +84,12 @@ describe('buildVersionCreateBody', () => {
     ).toThrow(/YYYY-MM-DD/);
   });
 
+  it('rejects a well-shaped date that is not a calendar day', () => {
+    expect(() =>
+      buildVersionCreateBody('HIMMEL', 'v1', { startDate: '2026-02-30' }),
+    ).toThrow(/YYYY-MM-DD/);
+  });
+
   it('rejects a blank version name', () => {
     expect(() => buildVersionCreateBody('HIMMEL', '  ', {})).toThrow(/name/);
   });

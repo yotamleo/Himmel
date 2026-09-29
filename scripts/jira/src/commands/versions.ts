@@ -27,8 +27,10 @@ export type VersionEditOptions = Pick<VersionCreateOptions, 'description' | 'sta
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-function checkDate(d: string, flag: string): string {
-  if (!ISO_DATE.test(d)) throw new Error(`${flag} must be YYYY-MM-DD (got "${d}")`);
+/** YYYY-MM-DD that is also a real calendar day (2026-02-30 is refused here, not by Jira). */
+export function checkDate(d: string, flag: string): string {
+  const real = ISO_DATE.test(d) && !Number.isNaN(Date.parse(d)) && new Date(d).toISOString().startsWith(d);
+  if (!real) throw new Error(`${flag} must be YYYY-MM-DD (got "${d}")`);
   return d;
 }
 
