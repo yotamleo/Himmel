@@ -23,7 +23,9 @@ permissions:
 
 concurrency:
   group: pr-title-lint-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  # HIMMEL-3835: never cancel a RUNNING lint (a CANCELLED context on the
+  # required check). A newer queued run replaces an older still-pending one.
+  cancel-in-progress: false
 
 jobs:
   pr-title-lint:

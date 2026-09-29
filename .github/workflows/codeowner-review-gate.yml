@@ -37,12 +37,15 @@ permissions:
 # HIMMEL-3588: no cancel-in-progress. A cancelled run still leaves its
 # CANCELLED context in the PR's statusCheckRollup, which blocks the ruleset's
 # merge evaluation even when the latest run is green. The job is cheap, so
-# grouped runs queue and each one runs to completion instead. queue: max
-# raises the default single-pending-run cap (100), so a burst of pushes
-# cannot silently drop a queued run before it gets a chance to run.
+# grouped runs never cancel a RUNNING one. HIMMEL-3835: `queue: max` is gone
+# (a burst of body edits and bot reviews queued dozens of runs during an
+# Actions stall). With cancel-in-progress: false GitHub keeps one running and
+# one pending run per group; a newer pending run replaces an older PENDING one
+# before it creates any job. No job-level `if:` skip either: a skipped job
+# reports success under the required context and would mask a red run.
 concurrency:
   group: codeowner-review-gate-${{ github.event.pull_request.number }}
-  queue: max
+  cancel-in-progress: false
 
 jobs:
   gate:

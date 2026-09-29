@@ -70,6 +70,20 @@ else
   bad "pr-title-lint's concurrency group string also appears in ci.yml (not distinct); got: $title_group"
 fi
 
+# HIMMEL-3835: a superseded run must be replaced while still pending, never
+# cancelled mid-run (a CANCELLED context), and the required job must carry no
+# job-level `if:` (a skipped job reports success and masks a red title).
+if grep -Eq '^[[:space:]]*cancel-in-progress:[[:space:]]*false' <<< "$body"; then
+  ok "pr-title-lint concurrency has cancel-in-progress: false"
+else
+  bad "pr-title-lint concurrency must set cancel-in-progress: false"
+fi
+if grep -Eq '^    if:' <<< "$body"; then
+  bad "pr-title-lint has a job-level if: (a skip masks a red title)"
+else
+  ok "pr-title-lint has no job-level if:"
+fi
+
 # F1: the PR author must be threaded into TICKET_ID_AUTHOR AND
 # TICKET_ID_TRUSTED_AUTHOR so the dependabot[bot] exemption
 # (scripts/hooks/check-commit-msg.sh) fires for a title the same way it

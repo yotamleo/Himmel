@@ -373,6 +373,13 @@ wf_violations() {
   # statusCheckRollup that block the ruleset even when the latest run is
   # green — this gate must let every queued run complete.
   grep -qE '^[[:space:]]*cancel-in-progress:[[:space:]]*true' "$s" && echo "has cancel-in-progress: true"
+  # HIMMEL-3835: collapse duplicate runs BEFORE they create jobs. With
+  # cancel-in-progress: false and no `queue: max`, a newer pending run replaces
+  # an older pending one. A job-level `if:` skip is forbidden: a skipped job
+  # reports success under the required context and masks an earlier red run.
+  grep -qE '^    if:' "$s" && echo "job-level if: on the required job (a skip masks a red run)"
+  grep -qE '^[[:space:]]*queue:' "$s" && echo "has queue: (pending runs must be replaced, not queued)"
+  grep -qE '^[[:space:]]*cancel-in-progress:[[:space:]]*false' "$s" || echo "cancel-in-progress: false is missing"
   return 0
 }
 
@@ -395,6 +402,9 @@ on:
 permissions:
   contents: read
   pull-requests: read
+concurrency:
+  group: codeowner-review-gate-1
+  cancel-in-progress: false
 jobs:
   gate:
     name: codeowner-review-gate
@@ -430,7 +440,10 @@ mutate "a wrong job name"            "job name"            's/^    name: codeown
 mutate "a missing review trigger"    "pull_request_review" 's/^  pull_request_review:/  issue_comment:/'
 mutate "a dropped edited trigger"    "pull_request types"  '/ready_for_review/s/, edited\]$/]/'
 mutate "a 404 bootstrap branch"      "404/bootstrap"       's|^    steps:|    steps:\n      - run: grep -q "HTTP 404" err|'
-mutate "cancel-in-progress restored" "cancel-in-progress"  's/^jobs:/concurrency:\n  group: codeowner-review-gate\n  cancel-in-progress: true\njobs:/'
+mutate "cancel-in-progress restored" "has cancel-in-progress" 's/cancel-in-progress: false/cancel-in-progress: true/'
+mutate "cancel-in-progress dropped"  "cancel-in-progress: false is missing" '/cancel-in-progress/d'
+mutate "queue: max restored"         "has queue:"          's/^  cancel-in-progress: false/  cancel-in-progress: false\n  queue: max/'
+mutate "a job-level if: skip"        "job-level if"        's/^    name: codeowner-review-gate$/    name: codeowner-review-gate\n    if: github.event.action != '"'"'edited'"'"'/'
 # shellcheck disable=SC2016  # the literal $BASE_REF text must reach sed
 mutate "a default-branch exemption" "404/bootstrap"       's|^    steps:|    steps:\n      - run: test "$BASE_REF" = "$DEFAULT_BRANCH"|'
 mutate "a step gated on the fetch"   "404/bootstrap"       's|^    steps:|    steps:\n      - if: steps.fetch.outputs.present == '"'"'true'"'"'\n        run: true|'
