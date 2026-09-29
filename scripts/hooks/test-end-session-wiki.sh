@@ -30,6 +30,23 @@ export STUB_MODE="noop"
 CRYSTALLIZE_PID_DIR="$(mktemp -d)"
 export CRYSTALLIZE_PID_DIR
 
+# Stock macOS has no setsid(1); the signal/timeout cases below launch the hook
+# under it (HIMMEL-3699). Where it is absent, put a stand-in first on PATH that
+# calls setsid(2) then execs in place, so the pid stays the new process-group
+# leader exactly as with the real tool. Where the real setsid exists nothing is
+# shimmed and PATH is untouched. ponytail: needs perl (stock on macOS), a
+# host with neither setsid nor perl still fails those three cases loudly.
+if ! command -v setsid >/dev/null 2>&1; then
+    SETSID_SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/esw-setsid-shim.XXXXXX")" || { echo "test-end-session-wiki: mktemp -d failed" >&2; exit 1; }
+    cat > "$SETSID_SHIM_DIR/setsid" <<'SETSIDSHIM'
+#!/bin/sh
+exec perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or die "setsid shim: $ARGV[0]: $!\n"' -- "$@"
+SETSIDSHIM
+    chmod +x "$SETSID_SHIM_DIR/setsid"
+    trap 'rm -rf "$SETSID_SHIM_DIR"' EXIT
+    export PATH="$SETSID_SHIM_DIR:$PATH"
+fi
+
 FAILED=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; FAILED=1; }
