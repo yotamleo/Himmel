@@ -494,7 +494,12 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" denied",
             "timeout": 10
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
           {
             "type": "command",
             "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/log-classifier-denial.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/log-classifier-denial.sh\"; fi",
