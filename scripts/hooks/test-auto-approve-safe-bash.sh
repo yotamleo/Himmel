@@ -842,7 +842,37 @@ assert "ctl: is backtick in quoted word"     PASS "$(is_dec "$IS_W" "bash \"\`pw
 assert "ctl: is <( in quoted word"           PASS "$(is_dec "$IS_W" "bash \"<(x)/scripts/cr/impacted-suites.sh\" $IS_R")"
 assert "ctl: is >( in quoted word"           PASS "$(is_dec "$IS_W" "bash \">(x)/scripts/cr/impacted-suites.sh\" $IS_R")"
 assert "ctl: is glob in path"                PASS "$(is_dec "$IS_W" "bash scripts/cr/impacted-suite?.sh $IS_R")"
-assert "ctl: is brace in path"               PASS "$(is_dec "$IS_W" "bash scripts/cr/{impacted-suites,other}.sh $IS_R")"
+# HIMMEL-3880: bash 3.2 brace-expands `{a,b}` in a double-quoted string nested
+# inside "$(...)", so the row once handed is_dec the plain impacted-suites
+# literal (a legit ALLOW) on macOS. Each brace command is assigned first (an
+# assignment is never brace-expanded), and a precondition proves it still
+# carries its brace.
+IS_BR_COMMA="bash scripts/cr/{impacted-suites,other}.sh $IS_R"
+IS_BR_RANGE="bash scripts/cr/impacted-suite{r..s}.sh $IS_R"
+IS_BR_NEST="bash scripts/cr/{{impacted-suites,other},x}.sh $IS_R"
+IS_BR_CMD="{bash,sh} scripts/cr/impacted-suites.sh $IS_R"
+IS_BR_ARG="$IS_REL --check {$IS_R,x}"
+IS_BR_KEPT=PASS
+case "$IS_BR_COMMA|$IS_BR_RANGE|$IS_BR_NEST|$IS_BR_CMD|$IS_BR_ARG" in
+    *'{impacted-suites,other}'*'{r..s}'*'{{impacted-suites,other},x}'*'{bash,sh}'*",x}") IS_BR_KEPT=ALLOW ;;
+esac
+assert "precondition: brace commands kept literal" ALLOW "$IS_BR_KEPT"
+assert "ctl: is brace in path"               PASS "$(is_dec "$IS_W" "$IS_BR_COMMA")"
+assert "ctl: is brace range in path"         PASS "$(is_dec "$IS_W" "$IS_BR_RANGE")"
+assert "ctl: is nested brace in path"        PASS "$(is_dec "$IS_W" "$IS_BR_NEST")"
+assert "ctl: is brace in command word"       PASS "$(is_dec "$IS_W" "$IS_BR_CMD")"
+assert "ctl: is brace in argument"           PASS "$(is_dec "$IS_W" "$IS_BR_ARG")"
+# The raw brace payload fed to the hook through files, with no is_dec and no
+# nested-quote "$(...)" between the brace text and the hook's stdin.
+j_bash_cwd "$IS_W" "$IS_BR_COMMA" > "$IS_TMP/brace.json"
+IS_BR_RC=0
+HIMMEL_REPO="$IS_A" bash "$HOOK" < "$IS_TMP/brace.json" > "$IS_TMP/brace.out" 2>/dev/null || IS_BR_RC=$?
+if grep -qF '{impacted-suites,other}' "$IS_TMP/brace.json"; then IS_BR_RAW=ALLOW; else IS_BR_RAW=PASS; fi
+assert "precondition: raw brace payload carries the brace" ALLOW "$IS_BR_RAW"
+# A crashed hook also emits no allow; the row counts only a clean fall-through.
+assert "precondition: raw brace payload hook exited 0" 0 "$IS_BR_RC"
+if grep -qF '"permissionDecision":"allow"' "$IS_TMP/brace.out"; then IS_BR_RAW=ALLOW; else IS_BR_RAW=PASS; fi
+assert "ctl: is brace in path, raw payload"  PASS "$IS_BR_RAW"
 assert "ctl: is trailing &"                  PASS "$(is_dec "$IS_W" "$IS_REL $IS_R &")"
 IS_OUT=$(j_bash_cwd "$IS_W" "$IS_REL $IS_R" | HIMMEL_REPO="$IS_W" bash "$HOOK" 2>/dev/null)
 assert "ctl: is HIMMEL_REPO = own worktree"  PASS "$(grepq "$IS_OUT" '"permissionDecision":"allow"' && echo ALLOW || echo PASS)"
