@@ -323,8 +323,15 @@ export function laneEffort(model: string, registry: LaneRegistry = loadLanes()):
 
 // argv + env of a bounded run, split out of runSession so the spawned env is
 // testable. The GLM lane is left alone: its alias names no claude tier.
+// A `model:opus|sonnet` tag reaches here as a bare alias, which the CLI
+// resolves to the previous generation (Opus 5 / Sonnet 5). Pin the two tiers
+// to their 5.5 full ids (HIMMEL-3848); haiku has no 5.5 twin and stays an alias.
+const TIER_PIN: Record<string, string> = { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5" };
 export function spawnSpec(prompt: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, extraEnv?: Record<string, string>, mcpConfig?: string, registry?: LaneRegistry) {
-  const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane), settings, mcpConfig);
+  const picked = modelOverride ?? laneModel(lane);
+  // the GLM alias is a Z.ai mapping (ANTHROPIC_DEFAULT_OPUS_MODEL), never an Anthropic id
+  const model = lane === "glm" || picked === undefined ? picked : (TIER_PIN[picked] ?? picked);
+  const { cmd } = buildRunArgs(prompt, permissionMode, model, settings, mcpConfig);
   const effort = lane === "glm" ? undefined : laneEffort(cmd[2], registry);
   const env = sessionEnv(lane, effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort, ...(extraEnv ?? {}) } : extraEnv);
   return { cmd, env };

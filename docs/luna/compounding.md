@@ -76,7 +76,7 @@ cadence:
 | Weekly (Sun 04:00) | Vault health | `/obsidian-health` |
 
 Each leg launches with an explicit cheap `--model` pin
-(harvest/synth = `sonnet`, health = `haiku` — HIMMEL-506) so the cadence
+(harvest/synth = `claude-sonnet-5-5`, health = `haiku` — HIMMEL-506) so the cadence
 never inherits the operator's saved default tier; the cheap pins are what
 make the daily synthesize frequency affordable.
 

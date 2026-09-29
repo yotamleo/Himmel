@@ -64,7 +64,7 @@ function defaultConfig() {
           synthesize: { time: '03:00' },
           health: { time: '04:00', day: 'SUN' },
         },
-        models: { harvest: 'sonnet', synthesize: 'sonnet', health: 'haiku' },
+        models: { harvest: 'claude-sonnet-5-5', synthesize: 'claude-sonnet-5-5', health: 'haiku' },
       },
       phi: { declared: false },
     },

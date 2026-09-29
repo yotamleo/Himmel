@@ -10,7 +10,7 @@
 # -> /synthesize-clips + /archive-clips), and HIMMEL-Pipeline-Health (daily
 # 04:00 -> vault-lint / obsidian-triage:vault-lint, HIMMEL-1383/HIMMEL-1386).
 # The three Claude legs launch with explicit --model pins
-# (harvest/synth=sonnet, health=haiku — HIMMEL-506); fetch health is a plain
+# (harvest/synth=claude-sonnet-5-5, health=haiku — HIMMEL-506); fetch health is a plain
 # Python script. All four legs are exercised throughout the dry-run / arm /
 # shape / status / dedup / force / disarm / rollback tests below.
 #
@@ -719,10 +719,10 @@ fi
 
 # Test C4c: per-leg --model pins (HIMMEL-506) — every runner carries an
 # explicit --model right after the binary so the cadence never inherits the
-# operator's saved default tier. Defaults: harvest/synth=sonnet, health=haiku.
+# operator's saved default tier. Defaults: harvest/synth=claude-sonnet-5-5, health=haiku.
 echo "TEST: cron runners carry the per-leg --model pin (HIMMEL-506)"
-assert_contains "harvest runner pins --model sonnet" "--model sonnet" "$harvest_sh"
-assert_contains "synth runner pins --model sonnet"   "--model sonnet" "$synth_sh"
+assert_contains "harvest runner pins --model claude-sonnet-5-5" "--model claude-sonnet-5-5" "$harvest_sh"
+assert_contains "synth runner pins --model claude-sonnet-5-5"   "--model claude-sonnet-5-5" "$synth_sh"
 assert_contains "health runner pins --model haiku"    "--model haiku"  "$health_sh"
 
 echo "TEST: cron runners omit the print-only bg-wait ceiling override (HIMMEL-951)"
@@ -904,8 +904,8 @@ harvest_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Harvest')
 synth_line=$(printf '%s\n' "$out"   | grep 'HIMMEL-Pipeline-Synthesize')
 health_line=$(printf '%s\n' "$out"  | grep 'HIMMEL-Pipeline-Health')
 assert_contains "cron harvest status line armed"      "ARMED"           "$harvest_line"
-assert_contains "cron harvest status shows model pin" "[model: sonnet]" "$harvest_line"
-assert_contains "cron synth status shows model pin"   "[model: sonnet]" "$synth_line"
+assert_contains "cron harvest status shows model pin" "[model: claude-sonnet-5-5]" "$harvest_line"
+assert_contains "cron synth status shows model pin"   "[model: claude-sonnet-5-5]" "$synth_line"
 assert_contains "cron health status shows model pin"  "[model: haiku]"  "$health_line"
 
 # Test C5b: status_log rotated-log message (#299) ------------------------------
@@ -946,7 +946,7 @@ assert_not_contains "cron synth runner-missing has no [model:] suffix" "[model:"
 # Other legs untouched — harvest still shows its pin, proving the pinned /
 # runner-missing states are distinguished in one status output.
 harvest_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Harvest')
-assert_contains "cron harvest still pinned while synth runner missing" "[model: sonnet]" "$harvest_line"
+assert_contains "cron harvest still pinned while synth runner missing" "[model: claude-sonnet-5-5]" "$harvest_line"
 mv "$CRON_DIR/pipeline-synthesize.sh.bak" "$CRON_DIR/pipeline-synthesize.sh"
 
 # Test C6: re-arm without --force -> dedup block -------------------------------
@@ -1311,7 +1311,7 @@ recdata=$(cat "$REC" 2>/dev/null || echo MISSING)
 # pinned model, --settings, the fragment path, the prompt.
 assert_contains "claude invoked with --model + --permission-mode + --settings injection" "argc=7" "$recdata"
 assert_contains "model flag passed to claude" "arg=--model" "$recdata"
-assert_contains "model value (sonnet) passed to claude" "arg=sonnet" "$recdata"
+assert_contains "model value (claude-sonnet-5-5) passed to claude" "arg=claude-sonnet-5-5" "$recdata"
 assert_contains "settings flag passed to claude" "arg=--settings" "$recdata"
 assert_contains "settings fragment path passed to claude" "cadence-settings.json" "$recdata"
 assert_contains "chained prompt intact as a SINGLE argv" \
@@ -1985,8 +1985,8 @@ done
 # Test 6c: per-leg --model pins in the .bat runners (HIMMEL-506) — every
 # runner carries `--model "<m>"` right after the binary.
 echo "TEST: .bat runners carry the per-leg --model pin (HIMMEL-506)"
-assert_contains "harvest bat pins --model sonnet" '--model "sonnet"' "$harvest_bat"
-assert_contains "synth bat pins --model sonnet"   '--model "sonnet"' "$synth_bat"
+assert_contains "harvest bat pins --model claude-sonnet-5-5" '--model "claude-sonnet-5-5"' "$harvest_bat"
+assert_contains "synth bat pins --model claude-sonnet-5-5"   '--model "claude-sonnet-5-5"' "$synth_bat"
 assert_contains "health bat pins --model haiku"    '--model "haiku"'  "$health_bat"
 
 echo "TEST: .bat runners omit the print-only bg-wait ceiling override (HIMMEL-951)"
@@ -2124,8 +2124,8 @@ harvest_line=$(printf '%s\n' "$out" | grep 'HIMMEL-Pipeline-Harvest')
 synth_line=$(printf '%s\n' "$out"   | grep 'HIMMEL-Pipeline-Synthesize')
 health_line=$(printf '%s\n' "$out"  | grep 'HIMMEL-Pipeline-Health')
 assert_contains "harvest status line armed"      "ARMED"           "$harvest_line"
-assert_contains "harvest status shows model pin" "[model: sonnet]" "$harvest_line"
-assert_contains "synth status shows model pin"   "[model: sonnet]" "$synth_line"
+assert_contains "harvest status shows model pin" "[model: claude-sonnet-5-5]" "$harvest_line"
+assert_contains "synth status shows model pin"   "[model: claude-sonnet-5-5]" "$synth_line"
 assert_contains "health status shows model pin"  "[model: haiku]"  "$health_line"
 
 # Test 7b: status surfaces the rotated .log.prev evidence ---------------------

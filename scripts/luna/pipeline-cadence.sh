@@ -13,10 +13,10 @@
 #
 #   HIMMEL-Pipeline-FetchHealth daily  (default 01:30, no LLM)          HIMMEL-1449
 #       python fetch-health.py
-#   HIMMEL-Pipeline-Harvest     daily   (default 02:00, model: sonnet)  HIMMEL-357/798
-#       claude --model sonnet "/harvest-clips ... then /triage-clips ... then /ig-media-enrich ..." < NUL
-#   HIMMEL-Pipeline-Synthesize  daily   (default 03:00, model: sonnet)
-#       claude --model sonnet "/synthesize-clips … then /archive-clips …" < NUL
+#   HIMMEL-Pipeline-Harvest     daily   (default 02:00, model: claude-sonnet-5-5)  HIMMEL-357/798
+#       claude --model claude-sonnet-5-5 "/harvest-clips ... then /triage-clips ... then /ig-media-enrich ..." < NUL
+#   HIMMEL-Pipeline-Synthesize  daily   (default 03:00, model: claude-sonnet-5-5)
+#       claude --model claude-sonnet-5-5 "/synthesize-clips … then /archive-clips …" < NUL
 #   HIMMEL-Pipeline-Health      daily   (default 04:00, model: haiku)
 #       claude --model haiku "vault-lint (obsidian-triage:vault-lint) …" < NUL
 #
@@ -33,7 +33,7 @@
 # health DAILY at 04:00 (HIMMEL-1383 — the weekly cadence meant vault
 # drift was only visible once a week, and the haiku pin makes nightly
 # affordable); machine assumed awake. Every leg
-# launches with an explicit --model pin (harvest/synth=sonnet,
+# launches with an explicit --model pin (harvest/synth=claude-sonnet-5-5,
 # health=haiku) so the cadence never inherits the operator's saved
 # default (the scarcest tier) — the cheap pins are what make the higher
 # frequencies affordable. All overridable via flags.
@@ -189,8 +189,8 @@ HEALTH_DAY="SUN"
 # Human-readable cadence label for the summary blocks; recomputed by
 # validate_arm_inputs once --health-day is canonicalised.
 HEALTH_CADENCE_LABEL="weekly  SUN 04:00"
-HARVEST_MODEL="sonnet"
-SYNTH_MODEL="sonnet"
+HARVEST_MODEL="claude-sonnet-5-5"
+SYNTH_MODEL="claude-sonnet-5-5"
 HEALTH_MODEL="haiku"
 
 # Bounded retry/resume for a claude leg killed by a TRANSIENT upstream API
@@ -255,8 +255,8 @@ Flags (arm only, except --dry-run):
                          demoted from daily by the 2026-08-23 cadence
                          audit; the finding count barely moves week to
                          week and nobody reads a nightly report)
-  --harvest-model <m>    claude --model for the harvest leg (default sonnet)
-  --synth-model <m>      claude --model for the synthesize leg (default sonnet)
+  --harvest-model <m>    claude --model for the harvest leg (default claude-sonnet-5-5)
+  --synth-model <m>      claude --model for the synthesize leg (default claude-sonnet-5-5)
   --health-model <m>     claude --model for the health leg (default haiku)
   --vault <PATH>         Luna vault root (default: $LUNA_VAULT_PATH if set,
                          else <user-profile>/Documents/luna — on Windows
