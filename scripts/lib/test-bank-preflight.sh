@@ -53,27 +53,27 @@ check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
 NOW=$(date +%s)
 
 check "below threshold -> PROCEED" PROCEED \
- "$(verdict "$(fx 10 20 $NOW "")")"
+ "$(verdict "$(fx 10 20 "$NOW" "")")"
 check "at threshold -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx 85 20 $NOW "")")"
+ "$(verdict "$(fx 85 20 "$NOW" "")")"
 check "mixed, seven_day over -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx 10 93 $NOW "")")"
+ "$(verdict "$(fx 10 93 "$NOW" "")")"
 check "extra_usage high, primaries low -> PROCEED" PROCEED \
- "$(verdict "$(fx 10 20 $NOW 99)")"
+ "$(verdict "$(fx 10 20 "$NOW" 99)")"
 check "one primary null, other below -> PROCEED" PROCEED \
- "$(verdict "$(fx null 20 $NOW "")")"
+ "$(verdict "$(fx null 20 "$NOW" "")")"
 check "one primary null, other over -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx null 91 $NOW "")")"
+ "$(verdict "$(fx null 91 "$NOW" "")")"
 check "both primaries null -> BANK-UNKNOWN" BANK-UNKNOWN \
- "$(verdict "$(fx null null $NOW "")")"
+ "$(verdict "$(fx null null "$NOW" "")")"
 check "bare dot utilization -> BANK-UNKNOWN" BANK-UNKNOWN \
- "$(verdict "$(fx "$Q_DOT" null $NOW "")")"
+ "$(verdict "$(fx "$Q_DOT" null "$NOW" "")")"
 check "stamp absent -> BANK-STALE" BANK-STALE \
  "$(verdict "$(fx 10 20 "" "")")"
 check "non-numeric max age -> BANK-UNKNOWN" BANK-UNKNOWN \
- "$(CADENCE_BANK_MAX_AGE=abc verdict "$(fx 10 20 $NOW "")")"
+ "$(CADENCE_BANK_MAX_AGE=abc verdict "$(fx 10 20 "$NOW" "")")"
 check "non-numeric max pct -> BANK-UNKNOWN" BANK-UNKNOWN \
- "$(CADENCE_BANK_MAX_PCT=abc verdict "$(fx 10 20 $NOW "")")"
+ "$(CADENCE_BANK_MAX_PCT=abc verdict "$(fx 10 20 "$NOW" "")")"
 check "valid max age, stamp too old -> BANK-STALE" BANK-STALE \
  "$(CADENCE_BANK_MAX_AGE=600 verdict "$(fx 10 20 $((NOW-99999)) "")")"
 check "non-integer stamp -> BANK-STALE" BANK-STALE \
@@ -570,10 +570,10 @@ for _c in "missing:$W/no-such-status-cmd" "failing:$S_FAIL" "empty:$S_EMPTY" "un
   case "$(bank_line)" in *' codex=?') PASS=$((PASS+1)); echo "ok - codex probe $_kind -> codex=?" ;;
     *) FAIL=$((FAIL+1)); echo "FAIL - codex probe $_kind: '$(bank_line)'" ;; esac
   check "codex probe $_kind, Claude bank at threshold -> SKIPPED-BANK (refusal unchanged)" SKIPPED-BANK \
-    "$(native_codex_run "$_cmd" "$(fx 90 20 $NOW "")")"
+    "$(native_codex_run "$_cmd" "$(fx 90 20 "$NOW" "")")"
 done
 check "codex funded but Claude bank at threshold -> SKIPPED-BANK (the codex figure never rescues a spent Claude bank)" SKIPPED-BANK \
-  "$(native_codex_run "$S_BOTH" "$(fx 90 20 $NOW "")")"
+  "$(native_codex_run "$S_BOTH" "$(fx 90 20 "$NOW" "")")"
 
 # A HUNG probe must not hang the preflight: bounded by CADENCE_BANK_CODEX_TIMEOUT,
 # and the grandchild it forked (a `sleep` holding the stdout pipe) must not keep

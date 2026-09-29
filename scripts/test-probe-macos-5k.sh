@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HIMMEL-3699 slice 5k TEMPORARY macOS probe. Deleted before READY.
 cd "$(dirname "$0")/.." || exit 1
-R=$PWD
+R=$PWD; export R
 T=$(mktemp -d)
 mkdir -p "$T/fake/scripts/handover" "$T/fake/scripts/lib" "$T/ho/handovers/X"
 cp scripts/handover/arm-resume.sh "$T/fake/scripts/handover/"
