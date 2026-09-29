@@ -59,7 +59,7 @@ set -f
 
 # test-guard-pr-check-literal.sh derives this set from the allow rows and
 # fails when the two drift apart.
-TARGETS='clear-cr-marker.sh codex-adv-harvest.sh codex-adv-kickoff.sh cr-scores.sh
+TARGETS='clear-cr-marker.sh cr-scores.sh
 doc-freshness-advisory.sh docs-audit-panel.sh impacted-suites.sh known-findings.sh
 ledger-append.sh orphan-check.sh panel-first-pass.sh pr-check-context.sh
 pr-check-env.sh review-round.sh write-verdicts.sh'
