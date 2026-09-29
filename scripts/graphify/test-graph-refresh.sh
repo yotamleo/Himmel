@@ -78,7 +78,10 @@ summary() {
     [ "$FAIL" -gt 0 ] && exit 1 || exit 0
 }
 
-TMP_ROOT=$(mktemp -d)
+# pwd -P: the script under test classifies the RESOLVED vault path, so the
+# phi-roots entry and the expected runner args must be spelled canonically too
+# (macOS mktemp hands out /var/..., a symlink to /private/var/...).
+TMP_ROOT=$(cd "$(mktemp -d)" && pwd -P)
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
 echo "test: TMP_ROOT=$TMP_ROOT"
 
