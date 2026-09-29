@@ -39,7 +39,7 @@ verdict() {
     bash "$SUT" </dev/null 2>"$W/err.log"
 }
 check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
-  else FAIL=$((FAIL+1)); echo "FAIL - $1: expected '$2' got '$3'"; fi; }
+  else FAIL=$((FAIL+1)); echo "FAIL - $1: expected '$2' got '$3' (acct-hash-len=${#ACCT} sut-stderr: $(tr '\n' ' ' < "$W/err.log" 2>/dev/null | cut -c1-200))"; fi; }
 NOW=$(date +%s)
 
 check "below threshold -> PROCEED" PROCEED \
