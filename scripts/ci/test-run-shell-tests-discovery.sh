@@ -1045,12 +1045,13 @@ fi
 rm -rf "$sb26/logs" "$sb26/inner"; mkdir -p "$sb26/inner"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$sb26/inner/test-inner.sh"; chmod +x "$sb26/inner/test-inner.sh"
 # shellcheck disable=SC2016 # the suite body must expand these itself, not this shell
-printf '#!/usr/bin/env bash\nbash "$RST_RUNNER" "$RST_INNER" >/dev/null 2>&1\n' > "$sb26/scripts/test-a-red.sh"
+printf '#!/usr/bin/env bash\nbash "$RST_RUNNER" "$RST_INNER" >/dev/null 2>&1 && : > "$RST_MARK"\n' > "$sb26/scripts/test-a-red.sh"
 chmod +x "$sb26/scripts/test-a-red.sh"
 # shellcheck disable=SC2016 # the inner bash -c expands $$ and its own args
-RST_PIDFILE="$sb26/pid" RST_RUNNER="$RUNNER" RST_INNER="$sb26/inner" FAIL_LOG_DIR="$sb26/logs" env -u SUITE_TIER_MODE \
+RST_PIDFILE="$sb26/pid" RST_RUNNER="$RUNNER" RST_INNER="$sb26/inner" RST_MARK="$sb26/inner-done" FAIL_LOG_DIR="$sb26/logs" env -u SUITE_TIER_MODE \
   bash -c 'echo $$ > "$RST_PIDFILE"; exec bash "$0" "$1"' "$RUNNER" "$sb26/scripts" >/dev/null 2>&1
-if [ ! -e "$sb26/logs/.run-complete" ]; then
+# the marker proves the nested runner really ran to a clean exit, so the absent sentinel is not vacuous
+if [ ! -e "$sb26/logs/.run-complete" ] && [ -e "$sb26/inner-done" ]; then
   pass "26d: a nested runner sharing FAIL_LOG_DIR does not write the outer run's sentinel"
 else
   fail "26d: nested runner wrote .run-complete under a killed outer run; ls: $(ls -A "$sb26/logs" 2>&1)"
