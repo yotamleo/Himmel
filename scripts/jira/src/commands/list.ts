@@ -8,7 +8,9 @@ import type { JiraIssue, JiraSearchResult } from '../types.js';
 // touching types.ts, which this ticket's scope excludes.
 type IssueWithLabels = JiraIssue & { fields: JiraIssue['fields'] & { labels?: string[] } };
 
-const DEFAULT_STATUSES = ['To Do', 'In Progress'];
+// HIMMEL-3890: Planning and Ready sit between To Do and In Progress in the roadmap
+// workflow; without them those tickets vanish from the default list.
+const DEFAULT_STATUSES = ['To Do', 'Planning', 'Ready', 'In Progress'];
 
 /**
  * Build a JQL `status in (...)` clause from a CLI --status arg.
@@ -144,7 +146,7 @@ export function registerList(program: Command): void {
     .option('--type <type>', 'Filter by issue type (Epic, Story, Task, Subtask)')
     .option(
       '--status <status>',
-      'Comma-separated status filter (default: "To Do,In Progress")',
+      'Comma-separated status filter (default: "To Do,Planning,Ready,In Progress")',
     )
     .option('--label <label>', 'Filter by a single label (composed into the built JQL)')
     .option(

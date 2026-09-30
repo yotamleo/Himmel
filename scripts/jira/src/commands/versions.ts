@@ -17,14 +17,20 @@ interface JiraVersion {
 
 export interface VersionCreateOptions {
   description?: string;
+  startDate?: string;
   releaseDate?: string;
   released?: boolean;
 }
 
+// HIMMEL-3890: the start date is what `roadmap sync-sprints` uses as a sprint start.
+export type VersionEditOptions = Pick<VersionCreateOptions, 'description' | 'startDate' | 'releaseDate'>;
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-function checkDate(d: string, flag: string): string {
-  if (!ISO_DATE.test(d)) throw new Error(`${flag} must be YYYY-MM-DD (got "${d}")`);
+/** YYYY-MM-DD that is also a real calendar day (2026-02-30 is refused here, not by Jira). */
+export function checkDate(d: string, flag: string): string {
+  const real = ISO_DATE.test(d) && !Number.isNaN(Date.parse(d)) && new Date(d).toISOString().startsWith(d);
+  if (!real) throw new Error(`${flag} must be YYYY-MM-DD (got "${d}")`);
   return d;
 }
 
@@ -36,9 +42,16 @@ export function buildVersionCreateBody(
   const trimmed = name.trim();
   if (!trimmed) throw new Error('version name must not be blank');
   const body: Record<string, unknown> = { name: trimmed, project };
-  if (opts.description !== undefined) body.description = opts.description;
-  if (opts.releaseDate !== undefined) body.releaseDate = checkDate(opts.releaseDate, '--release-date');
+  Object.assign(body, datedFields(opts));
   if (opts.released !== undefined) body.released = opts.released;
+  return body;
+}
+
+function datedFields(opts: VersionEditOptions): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (opts.description !== undefined) body.description = opts.description;
+  if (opts.startDate !== undefined) body.startDate = checkDate(opts.startDate, '--start-date');
+  if (opts.releaseDate !== undefined) body.releaseDate = checkDate(opts.releaseDate, '--release-date');
   return body;
 }
 
@@ -83,6 +96,21 @@ export async function releaseVersion(
   return `Released version ${name}`;
 }
 
+export async function editVersion(
+  project: string,
+  name: string,
+  opts: VersionEditOptions,
+): Promise<string> {
+  const body = datedFields(opts);
+  if (Object.keys(body).length === 0) {
+    throw new Error('version-edit: nothing to edit (pass --start-date, --release-date or --description)');
+  }
+  const found = (await fetchVersions(project)).find((v) => v.name === name);
+  if (!found) throw new Error(`no version named "${name}" in project ${project}`);
+  await request('PUT', `/version/${found.id}`, body);
+  return `Edited version ${name}`;
+}
+
 // HIMMEL-3713: shared validation so `edit --fix-version`/`--add-fix-version`
 // and `create --fix-version` fail loud on a typo'd version name instead of
 // silently no-oping or surfacing a bare Jira 400 with no project context.
@@ -123,23 +151,48 @@ export function registerVersions(program: Command): void {
     .command('version-create <name>')
     .description('Create a project version')
     .option('--project <key>', 'Project key (default: JIRA_PROJECT_KEY env var)')
+    .option('--start-date <date>', 'Start date, YYYY-MM-DD')
     .option('--release-date <date>', 'Release date, YYYY-MM-DD')
     .option('--released', 'Mark the version released')
     .option('--description <text>', 'Version description')
     .action(
       async (
         name: string,
-        options: { project?: string; releaseDate?: string; released?: boolean; description?: string },
+        options: {
+          project?: string;
+          startDate?: string;
+          releaseDate?: string;
+          released?: boolean;
+          description?: string;
+        },
       ) => {
         console.log(
           await createVersion(options.project ?? projectKey(), name, {
             description: options.description,
+            startDate: options.startDate,
             releaseDate: options.releaseDate,
             released: options.released,
           }),
         );
       },
     );
+
+  program
+    .command('version-edit <name>')
+    .description('Edit an existing project version (start date, release date, description)')
+    .option('--project <key>', 'Project key (default: JIRA_PROJECT_KEY env var)')
+    .option('--start-date <date>', 'Start date, YYYY-MM-DD')
+    .option('--release-date <date>', 'Release date, YYYY-MM-DD')
+    .option('--description <text>', 'Version description')
+    .action(async (name: string, options: VersionEditOptions & { project?: string }) => {
+      console.log(
+        await editVersion(options.project ?? projectKey(), name, {
+          description: options.description,
+          startDate: options.startDate,
+          releaseDate: options.releaseDate,
+        }),
+      );
+    });
 
   program
     .command('version-release <name>')

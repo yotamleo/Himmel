@@ -5,6 +5,7 @@ import {
   listVersions,
   createVersion,
   releaseVersion,
+  editVersion,
   setFixVersion,
   assertVersionExists,
 } from './versions.js';
@@ -80,6 +81,12 @@ describe('buildVersionCreateBody', () => {
   it('rejects a release date that is not YYYY-MM-DD', () => {
     expect(() =>
       buildVersionCreateBody('HIMMEL', 'v1', { releaseDate: '09/10/2026' }),
+    ).toThrow(/YYYY-MM-DD/);
+  });
+
+  it('rejects a well-shaped date that is not a calendar day', () => {
+    expect(() =>
+      buildVersionCreateBody('HIMMEL', 'v1', { startDate: '2026-02-30' }),
     ).toThrow(/YYYY-MM-DD/);
   });
 
@@ -190,5 +197,34 @@ describe('assertVersionExists (HIMMEL-3713)', () => {
     await expect(assertVersionExists('HIMMEL', 'v9.9.9')).rejects.toThrow(
       /no version named "v9\.9\.9" in project HIMMEL/,
     );
+  });
+});
+
+describe('start date + version-edit (HIMMEL-3890)', () => {
+  it('carries startDate on create and validates it', () => {
+    expect(buildVersionCreateBody('HIMMEL', 'v1.0.1', { startDate: '2026-10-05', releaseDate: '2026-10-08' })).toEqual({
+      name: 'v1.0.1',
+      project: 'HIMMEL',
+      startDate: '2026-10-05',
+      releaseDate: '2026-10-08',
+    });
+    expect(() => buildVersionCreateBody('HIMMEL', 'v1', { startDate: '5 Oct' })).toThrow(/--start-date/);
+  });
+
+  it('PUTs only the given fields on the named version', async () => {
+    const calls = stubJira({ 'GET /project/HIMMEL/versions': VERSIONS, 'PUT /version/10002': {} });
+    const out = await editVersion('HIMMEL', 'v1.0.0', { startDate: '2026-10-01', releaseDate: '2026-10-04' });
+    expect(calls[1]).toEqual({
+      method: 'PUT',
+      url: '/version/10002',
+      body: { startDate: '2026-10-01', releaseDate: '2026-10-04' },
+    });
+    expect(out).toBe('Edited version v1.0.0');
+  });
+
+  it('refuses an empty edit and an unknown version', async () => {
+    stubJira({ 'GET /project/HIMMEL/versions': VERSIONS });
+    await expect(editVersion('HIMMEL', 'v1.0.0', {})).rejects.toThrow(/nothing to edit/);
+    await expect(editVersion('HIMMEL', 'v9', { description: 'x' })).rejects.toThrow(/no version named "v9"/);
   });
 });
