@@ -1157,7 +1157,8 @@ split_unresolvable_mention() { # split_unresolvable_mention <raw command>
     for sx in "${sw[@]}"; do
         rest="$sx${tail#*"$sx"}"
         tail=${tail#*"$sx"}
-        uw=${sx//[\'\"]/}
+        # A backslash is shell quoting too: `\-S` reaches env as -S.
+        uw=${sx//[\'\"\\]/}
         if [ "$env_seen" -eq 0 ]; then
             # `(env`, `$(env`, `{ \env`, a backtick in front still runs env.
             uw=${uw##*[\(\`\\\{\$]}
