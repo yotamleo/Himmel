@@ -19,6 +19,10 @@ unset ARMAUTOMERGE CR_MERGE_GATE_OK
 # own dedicated cases further down, each setting HIMMEL_CONSOLE_LEG itself.
 unset HIMMEL_CONSOLE_LEG
 
+# HIMMEL-3903: an empty /tmp/.git kept appearing on this host. Record which of
+# these already exist so the end-of-suite guard fails if THIS suite creates one.
+GIT_LEAK_PRE=""; for _p in /tmp/.git "${TMPDIR:-/tmp}/.git"; do [ -e "$_p" ] && GIT_LEAK_PRE="$GIT_LEAK_PRE $_p"; done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$SCRIPT_DIR/block-unresolved-cr-merge.sh"
 TMP="$(mktemp -d)"
@@ -334,6 +338,14 @@ NOTB_PATH="$NOTB_BIN:$PATH"
 # bounded_run <secs> <stdin-file> <cmd...>; rc 124 when it had to kill the
 # command, else the command's own rc. The command is backgrounded, so stdin is
 # passed as a file (an async list would otherwise read /dev/null).
+# HIMMEL-3903: the kill takes the whole process tree (deepest first). A bash parked
+# in a foreground child defers a plain TERM until that child ends, so killing only
+# $_pid left the hook and its `sleep 30` gh stub alive after the EXIT trap removed $TMP.
+kill_tree() {
+    local _c
+    for _c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$_c"; done
+    kill "$1" 2>/dev/null
+}
 bounded_run() {
     local _secs="$1" _in="$2" _pid _killer _flag _rc
     shift 2
@@ -341,7 +353,7 @@ bounded_run() {
     rm -f "$_flag"
     "$@" < "$_in" &
     _pid=$!
-    ( sleep "$_secs"; : > "$_flag"; kill "$_pid" 2>/dev/null ) &
+    ( sleep "$_secs"; : > "$_flag"; kill_tree "$_pid" ) &
     _killer=$!
     wait "$_pid"; _rc=$?
     kill "$_killer" 2>/dev/null; wait "$_killer" 2>/dev/null
@@ -379,6 +391,17 @@ if [ "$red_notb_rc" -eq 124 ]; then
     pass=$((pass+1)); echo "ok   red-control-no-timeout-bin-hangs (base hook ran unbounded past 8s with no timeout/gtimeout on PATH, as expected pre-fix)"
 else
     fail=$((fail+1)); echo "FAIL red-control-no-timeout-bin-hangs rc=$red_notb_rc (want 124 -- expected the pre-HIMMEL-3585 hook to hang unbounded)"
+fi
+# HIMMEL-3903: bounded_run must reap the hook AND its gh-stub descendants. A hook
+# left running past this suite's EXIT trap keeps a deleted cwd under /tmp and
+# runs its git calls from there (the orphan seen alive at the moment an empty
+# /tmp/.git reappeared).
+if ! command -v pgrep >/dev/null 2>&1; then
+    fail=$((fail+1)); echo "FAIL red-control-no-timeout-bin-hook-reaped: pgrep is not available, cannot prove the hook was reaped"
+elif pgrep -f "$RED_NOTB_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" >/dev/null 2>&1; then
+    fail=$((fail+1)); echo "FAIL red-control-no-timeout-bin-hook-reaped: the killed hook (or its stub) is still running"
+else
+    pass=$((pass+1)); echo "ok   red-control-no-timeout-bin-hook-reaped"
 fi
 
 # GREEN — the shipped hook, same no-timeout PATH, same 30s-hanging gh stub:
@@ -935,6 +958,12 @@ if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/test-block-unresolved-cr-merge.sh" \
 else
     pass=$((pass+1)); echo "ok   lint-no-historical-git-show-extraction"
 fi
+
+# HIMMEL-3903: this suite must not leave a .git in /tmp or $TMPDIR.
+for _p in /tmp/.git "${TMPDIR:-/tmp}/.git"; do
+    case " $GIT_LEAK_PRE " in *" $_p "*) continue ;; esac
+    if [ -e "$_p" ]; then fail=$((fail+1)); echo "FAIL suite created $_p"; fi
+done
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -43,6 +43,9 @@ assert_not_has() {
 SRC_SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 SRC_ROOT="$(cd "$SRC_SCRIPTS/.." && pwd)"
 
+# HIMMEL-3903: an empty /tmp/.git kept appearing on this host. Record which of these
+# already exist so the end-of-suite guard fails if THIS suite creates one.
+GIT_LEAK_PRE=""; for _p in /tmp/.git "${TMPDIR:-/tmp}/.git"; do [ -e "$_p" ] && GIT_LEAK_PRE="$GIT_LEAK_PRE $_p"; done
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/uninstall-standalone.XXXXXX") || { echo "FAIL could not create temp dir"; exit 1; }
 [ -n "$TMP" ] && [ -d "$TMP" ] || exit 1
 trap 'kill "${FAKE_SUP_PID:-0}" 2>/dev/null; rm -rf "$TMP"' EXIT
@@ -443,6 +446,12 @@ out=$( (cd "$PROJECT_P" && run_versioned "$FLAT_P" "$PROV_P" --yes --skip-plugin
 rc=$?
 assert_rc "(p) missing VERSION marker halts" 2 "$rc"
 assert_has "(p) checkout identity unresolved" "checkout identity unresolved" "$out"
+
+# HIMMEL-3903: this suite must not leave a .git in /tmp or $TMPDIR.
+for _p in /tmp/.git "${TMPDIR:-/tmp}/.git"; do
+    case " $GIT_LEAK_PRE " in *" $_p "*) continue ;; esac
+    [ -e "$_p" ] && { echo "FAIL suite created $_p"; FAILED=$((FAILED + 1)); }
+done
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

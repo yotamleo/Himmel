@@ -57,7 +57,13 @@ assert_not_has() {
 FAILED=0
 # HIMMEL-3699: physical path (macOS $TMPDIR is /var -> /private/var); uninstall.sh compares $HOME/.himmel lexically against the resolved ledger dir.
 TMPDIR=$(cd -P -- "${TMPDIR:-/tmp}" && pwd) || exit 1; export TMPDIR
+# HIMMEL-3903: an empty /tmp/.git kept appearing on this host. Record which of these
+# already exist so the end-of-suite guard fails if THIS suite creates one.
+GIT_LEAK_PRE=""; for _p in /tmp/.git "${TMPDIR:-/tmp}/.git"; do [ -e "$_p" ] && GIT_LEAK_PRE="$GIT_LEAK_PRE $_p"; done
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/uninstall-suite.XXXXXX") || { echo "FAIL could not create temp dir"; exit 1; }
+# HIMMEL-3903: git discovery for every non-git fixture (SC6K/SC6M/SC6R) stops at $TMP,
+# so an ambient .git above it (an empty /tmp/.git) cannot change the verdict.
+export GIT_CEILING_DIRECTORIES="$TMP"
 [ -n "$TMP" ] && [ -d "$TMP" ] || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
@@ -881,6 +887,18 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$H_BIN5/pre-commit"
 chmod 755 "$H_BIN5/pre-commit"
 H_NONGIT="$TMP/h-nongit"
 mkdir -p "$H_NONGIT"
+# HIMMEL-3903: uninstall.sh's own ancestor walk (not git) treats ANY `.git` above the
+# fixture, even an empty stray /tmp/.git, as "cannot rule out a repo", and
+# GIT_CEILING_DIRECTORIES does not reach that walk. Name that cause once instead of
+# failing five rows with cryptic output.
+_h_ambient=""; _h_d="$H_NONGIT"
+while [ "$_h_d" != "/" ] && [ "$_h_d" != "." ]; do
+    _h_d=$(dirname "$_h_d")
+    if [ -e "$_h_d/.git" ] || [ -L "$_h_d/.git" ]; then _h_ambient="$_h_d/.git"; break; fi
+done
+if [ -n "$_h_ambient" ]; then
+    fail "SC6K needs no .git above $H_NONGIT but found $_h_ambient (a stray, e.g. an empty /tmp/.git, HIMMEL-3903): rmdir it when no suite is running"
+else
 out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel5" BRIDGE_ROOT="$TMP/h-none-bridge5" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache5" HIMMEL_UNINSTALL_REPO_ROOT="$H_NONGIT" \
@@ -891,6 +909,7 @@ assert_has "SC6K skip line names the non-git work tree" \
 assert_not_has "SC6K no git-hooks fail_step" "git hooks:" "$out"
 assert_has "SC6K step 6 still ran" "kept (--skip-settings)." "$out"
 assert_has "SC6K completion reported" "Uninstall complete." "$out"
+fi
 
 # ── SC6L (HIMMEL-2854, HIMMEL-2862): a git repo `rev-parse --is-inside-work-tree`
 # refuses for a reason OTHER than "no repo here" must NOT take the SC6K clean
@@ -2887,6 +2906,12 @@ assert_rc 'U29 wet run completes' 0 "$rc"
 u_same 'U29 backup of CLAUDE.md is the file as found' "$U_HOME/.claude/CLAUDE.md.himmel-uninstall-backup" "$TMP/u17-claude-md-full"
 u_absent 'U29 no backup for the install-created AGENTS.md' "$U_HOME/.codex/AGENTS.md.himmel-uninstall-backup"
 assert_has 'U29 output names the backup' "$U_HOME/.claude/CLAUDE.md.himmel-uninstall-backup" "$out"
+
+# HIMMEL-3903: this suite must not leave a .git in /tmp or $TMPDIR.
+for _p in /tmp/.git "${TMPDIR:-/tmp}/.git"; do
+    case " $GIT_LEAK_PRE " in *" $_p "*) continue ;; esac
+    [ -e "$_p" ] && fail "suite created $_p"
+done
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
