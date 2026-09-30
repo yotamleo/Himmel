@@ -406,8 +406,9 @@ assert_rc "'must land the change' (transitive) stays refused beside the 'land in
 RC88M=$(run_hook land-in-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in main today.')")
 assert_rc "'must land in main' is an integration order, stays refused" 2 "$RC88M"
 
+# shellcheck disable=SC2016 # the backticks are literal prompt text
 RC88N=$(run_hook land-in-main-span "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in `main` today.')")
-assert_rc "'must land in `main`' (code span) stays refused" 2 "$RC88N"
+assert_rc "'must land in main' as a code span stays refused" 2 "$RC88N"
 
 RC88O=$(run_hook land-origin-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land on origin/main today.')")
 assert_rc "'must land on origin/main' stays refused" 2 "$RC88O"
