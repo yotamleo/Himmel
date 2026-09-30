@@ -54,82 +54,60 @@ payload=$(cat) || exit 0
 # `gh  pr  merge` must NOT dodge the gate via the fast path (plan-critic #2);
 # non-merge commands mentioning "merge" fall through to the cheap regex below.
 case "$payload" in
-    *merge*) ;;
+    # A JSON backslash may split the word (`mer\ge`): let jq and the normalized
+    # detector below decide instead of skipping.
+    *merge*|*\\*|*\'*) ;;
     *) exit 0 ;;
 esac
 
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+cmd=$(printf '%s' "$cmd" | tr -d '\r')
 [ -z "$cmd" ] && exit 0
 
-# Quote-blindness guard (coderabbit CR round): match + tokenize on a copy with
-# each QUOTED SPAN replaced by the placeholder token Q - text inside quotes can
-# neither look like a command boundary (`git commit -m "done; gh pr merge 42"`
-# is NOT a merge - false-block vector) nor smuggle a quoted selector, while
-# token POSITIONS survive so value-taking flags (`--repo "o/r" 42`) still
-# consume exactly one token (coderabbit app round: full deletion collapsed
-# positions and let --repo eat the selector). An unbalanced quote leaves
-# residue whose worst case is a mis-extracted selector -> rc=3 re-anchor ->
-# fail-open, never a false block on quoted text.
-cmd_stripped=$(printf '%s' "$cmd" | sed -e "s/'[^']*'/Q/g" -e 's/"[^"]*"/Q/g')
+_deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 
-# Command-position anchor (POSIX classes - BSD grep lacks \s/\b; coderabbit
-# app round). `merge` must be followed by whitespace or end-of-string.
-# shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
-if ! printf '%s' "$cmd_stripped" | grep -qE '(^|[;&|`$(][[:space:]]*)gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
+# HIMMEL-3918: ONE structural rule instead of a grammar. Every parse rule this
+# hook grew for a chained, redirected, prefixed or quoted merge (HIMMEL-3915,
+# then more /pr-check rounds of the same class) became a hook-vs-bash
+# disagreement and so a bypass. A command that names `gh pr merge` must BE a
+# single plain command whose RAW text is only [A-Za-z0-9], space and _ . / : = - ,
+# - no quote of any kind, $, backslash, #, newline or metacharacter - and whose
+# first word is literally `gh` (which also covers every env/command/exec/nohup/
+# time/NAME=value prefix and cd/pushd/popd). With no quotes the tokenizer below
+# needs no quote-stripping, so the hook and bash always read the same words.
+# Accepted over-denies (HIMMEL-3917 precedent): ANY text mention of `gh pr
+# merge` that is not a plain merge (`git commit -m "gh pr merge"`, `echo gh pr
+# merge`), a custom --subject/--body (use scripts/handover/merge-on-green.sh),
+# and a path-qualified `/usr/bin/gh`.
+merge_re='gh[[:space:]]+pr[[:space:]]+merge'
+# The detector runs on a NORMALIZED copy of the raw text (backslash-newline
+# pairs removed, then every backslash, newlines to spaces): bash joins
+# `gh pr mer\<nl>ge` and reads `mer\ge` as `merge`.
+cmd_norm=$(printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' -e "s/['\"\$]//g" | tr '\n' ' ')
+if ! printf '%s' "$cmd_norm" | grep -E "$merge_re" >/dev/null; then
     exit 0
 fi
-
-# Isolate the SEGMENT containing `gh pr merge` before tokenizing. A whole-
-# command token walk trips on earlier `merge` words: `git merge main && gh pr
-# merge 42` would take "main" as the selector (plan-critic #1). Split on
-# ; && || and newlines (NOT |) with bash-native expansion - BSD sed leaves
-# \n LITERAL in replacements, which silently broke this split on macOS
-# (coderabbit app round) - then pick the first matching segment.
-merge_segment=""
-normalised=${cmd_stripped//&&/$'\n'}
-normalised=${normalised//||/$'\n'}
-normalised=${normalised//;/$'\n'}
-while IFS= read -r segment || [ -n "$segment" ]; do
-    # shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
-    if printf '%s' "$segment" | grep -qE '(^|[`$(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
-        merge_segment="$segment"
-        break
-    fi
-done <<EOF
-$normalised
-EOF
-[ -z "$merge_segment" ] && exit 0
-
-# Extract the selector + --repo from the merge segment only;
-# selector = first non-flag token after the `merge` verb.
-sel=""; repo=""; match_head=""
+case "$cmd" in
+    *[!A-Za-z0-9\ _./:=,-]*) plain=0 ;;
+    *) plain=1 ;;
+esac
 set -f
 # shellcheck disable=SC2086
-set -- $merge_segment
+set -- $cmd
 set +f
+if [ "$plain" != "1" ] || [ "${1-}" != "gh" ]; then
+    _deny "gh pr merge must be a single plain command with no quoting (only letters, digits, space and _ . / : = - , are allowed; no chaining, redirects, pipes, substitution, prefixes or quotes) — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh for a custom subject/body. (For help run: gh help pr merge)"
+fi
+
+# Extract the selector + --repo + head pin; selector = first non-flag token
+# after the `merge` verb.
+sel=""; repo=""; match_head=""
 seen_merge=0
 while [ "$#" -gt 0 ]; do
     if [ "$seen_merge" = "0" ]; then
         [ "$1" = "merge" ] && seen_merge=1
         shift; continue
     fi
-    # gh pr merge's own arguments end at the first | & > < (a pipe, a
-    # background, a redirect): what follows belongs to another command or a
-    # file, so `--squash | sort -h` / `& ls -h` / `> --help` must not read as
-    # merge flags (HIMMEL-3915 judge round).
-    stop_walk=0
-    case "$1" in
-        *[\|\&\>\<]*)
-            stop_walk=1; cur="${1%%[|&><]*}"
-            # `2>&1` / `42>x`: an all-digit prefix before a > or < is an fd
-            # number, not a selector - discard it (HIMMEL-3915 judge NO-GO).
-            # Only when the CUT character itself is > or <: `42|x>y` cut at |.
-            case "${1:${#cur}:1}" in
-                '>'|'<') case "$cur" in *[!0-9]*) ;; *) cur="" ;; esac ;;
-            esac
-            shift; set -- "$cur" "$@" ;;
-    esac
-    [ "$stop_walk" = "1" ] && [ -z "$1" ] && break
     case "$1" in
         --repo=*) repo="${1#--repo=}" ;;
         --repo|-R) if [ "$#" -ge 2 ]; then repo="$2"; shift; fi ;;
@@ -139,18 +117,17 @@ while [ "$#" -gt 0 ]; do
         --match-head-commit=*) match_head="${1#--match-head-commit=}" ;;
         --match-head-commit)
             if [ "$#" -ge 2 ]; then match_head="$2"; shift; fi ;;
-        # gh pr merge's own value-taking flags: consume the value token so it
-        # is never mistaken for the selector (coderabbit CR round; the rc=3
-        # re-anchor still backstops flags this list misses).
-        -b|--body|-F|--body-file|-t|--subject|-A|--author-email)
-            if [ "$#" -ge 2 ]; then shift; fi ;;
-        --*|-*) ;;             # other flags: ignore (an unknown value-taking
-                               # flag may feed a value token; a wrong selector
-                               # only fails gh pr view = rc 3 -> re-anchor,
-                               # never a false block)
-        *) [ -z "$sel" ] && sel="$1" ;;
+        # Closed token set (judge r3): the hook and gh must read the SAME words,
+        # and gh's pflag groups short flags (`-dt 5` = `-d -t 5`) and lets a
+        # value flag swallow the next word, so anything outside this set denies.
+        -s|--squash|-m|--merge|-r|--rebase|-d|--delete-branch|--disable-auto) ;;
+        -*) _deny "gh pr merge accepts only -s -m -r -d --squash --merge --rebase --delete-branch --disable-auto, -R/--repo <v> and --match-head-commit <v>; got '$1' (grouped or attached flags, -b/-t/-F/-A and unknown flags are refused): gh pr merge must be a single plain command — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh for a custom subject/body. (For help run: gh help pr merge)" ;;
+        *)
+            if [ -n "$sel" ]; then
+                _deny "gh pr merge takes at most one selector; got a second positional '$1': gh pr merge must be a single plain command — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+            fi
+            sel="$1" ;;
     esac
-    [ "$stop_walk" = "1" ] && break
     shift
 done
 
@@ -187,7 +164,7 @@ fi
 # own API reads, after this lookup has already succeeded. Each lookup is
 # bounded (10s); a timeout reads as unresolved.
 # _gate4_bounded <secs> <outfile> <cmd...> — run <cmd> with stdout to
-# <outfile>, killed after <secs>; rc is the command's, or 124 on timeout. Bash
+# <outfile> (stderr to $_gate4_err when set, else discarded), killed after <secs>; rc is the command's, or 124 on timeout. Bash
 # native (no timeout binary) so it bounds a shell function the same way on
 # every platform.
 # ponytail: kill -9 reaches the backgrounded subshell, not an in-flight gh it
@@ -196,7 +173,7 @@ fi
 _gate4_bounded() {
     local secs=$1 out=$2 pid ticks=0
     shift 2
-    "$@" >"$out" 2>/dev/null &
+    "$@" >"$out" 2>"${_gate4_err:-/dev/null}" &
     pid=$!
     while [ "$ticks" -lt $((secs * 5)) ] && kill -0 "$pid" 2>/dev/null; do
         sleep 0.2
@@ -210,7 +187,55 @@ _gate4_bounded() {
     wait "$pid"
 }
 go_tmp=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-view.XXXXXX" 2>/dev/null) || go_tmp=""
-trap 'rm -f "$go_tmp" "${trust_tmp:-}"' EXIT
+gh_t0=$SECONDS
+# HIMMEL-3918 (I1): ONE 45s budget for the whole hook (Claude Code kills it at
+# 60s and reads that as non-blocking). _budget_left <cap> prints min(cap, left).
+_budget_left() {
+    local left=$((45 - (SECONDS - gh_t0)))
+    [ "$left" -gt "$1" ] && left=$1
+    [ "$left" -lt 0 ] && left=0
+    echo "$left"
+}
+gh_to_flag=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-timeout.XXXXXX" 2>/dev/null) || gh_to_flag=""
+trap 'rm -f "$go_tmp" "$gh_to_flag" "${trust_tmp:-}"' EXIT
+# HIMMEL-3918 (3): every gh call the sourced gate libraries make (cr-merge-gate,
+# ci-green-gate and the cr-signal / cr-body-findings helpers they call) goes
+# through this shadow function, bounded (10s) like the lookup above. The libs
+# fail OPEN on a gh error (HIMMEL-936), and an unbounded hang would run out the
+# hook budget, which Claude Code reads as non-blocking - so a timeout is recorded
+# in $gh_to_flag and the hook DENIES after each gate call (_gh_timed_out). Set in
+# the hook, not the libs: it also bounds the transitive calls, and the libs'
+# other callers (check-ci, pr-merge.sh) keep their own behaviour.
+gh() {
+    local out errf rc=0 cap _gate4_err
+    # One timeout already means deny: skip later calls so a run of hung gh calls
+    # cannot each spend another 10s of the hook budget before the deny.
+    if [ -n "$gh_to_flag" ] && [ -s "$gh_to_flag" ]; then return 124; fi
+    # One shared budget (_budget_left) across every gh call in the hook: each
+    # call is capped to what remains, and none starts once it is spent, so the
+    # hook always denies before Claude Code's 60s timeout (non-blocking).
+    cap=$(_budget_left 10)
+    if [ "$cap" -le 0 ]; then
+        [ -n "$gh_to_flag" ] && echo 1 >"$gh_to_flag"
+        return 124
+    fi
+    out=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null) || out=""
+    errf=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-ghe.XXXXXX" 2>/dev/null) || errf=""
+    if [ -z "$out" ] || [ -z "$errf" ]; then
+        rm -f "$out" "$errf"
+        [ -n "$gh_to_flag" ] && echo 1 >"$gh_to_flag"
+        return 124   # cannot bound the call: read as a timeout (deny)
+    fi
+    # stderr is replayed: trust_path_check tells a 404 from an outage by it.
+    _gate4_err=$errf
+    _gate4_bounded "$cap" "$out" command gh "$@" || rc=$?
+    if [ "$rc" = "124" ] && [ -n "$gh_to_flag" ]; then echo 1 >"$gh_to_flag"; fi
+    cat "$out" 2>/dev/null
+    cat "$errf" >&2 2>/dev/null
+    rm -f "$out" "$errf"
+    return "$rc"
+}
+_gh_timed_out() { [ -z "$gh_to_flag" ] || [ -s "$gh_to_flag" ]; }
 # _go_view <selector> [repo] — sets go_meta ("" on any failure or timeout).
 _go_view() {
     go_meta=""
@@ -235,8 +260,15 @@ if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
     exit 2
 fi
 
+# HIMMEL-3918 (4): a gate library that will not load DENIES on a real merge (it
+# used to `|| exit 0`, so a missing/unreadable/truncated lib silently dropped the
+# CR and CI gates). Readability first, per scripts/hooks/CLAUDE.md: on bash 3.2 a
+# failed `.` exits the shell regardless of an `||` guard.
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/cr-merge-gate.sh" 2>/dev/null || exit 0
+if ! { [ -r "$SCRIPT_DIR/../lib/cr-merge-gate.sh" ] && . "$SCRIPT_DIR/../lib/cr-merge-gate.sh"; } 2>/dev/null \
+        || ! declare -F cr_merge_gate >/dev/null 2>&1; then
+    _deny "cannot load scripts/lib/cr-merge-gate.sh — refusing (the CR gate must fail closed, not silently no-op)"
+fi
 
 reason=""
 rc=0
@@ -254,6 +286,7 @@ if [ "$rc" = "3" ] && [ -n "$cwd_branch" ]; then
         reason=$(cr_merge_gate "$cwd_branch" "") || rc=$?
     fi
 fi
+_gh_timed_out && _deny "a gh call in the CR gate timed out (10s bound) or could not be bounded — refusing (GATE INTEGRITY: a hung read must not read as an allow). Retry, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 if [ "$rc" = "2" ]; then
     echo "block-unresolved-cr-merge: $reason (For help run: gh help pr merge)" >&2
     exit 2
@@ -265,7 +298,10 @@ fi
 # never coupled to CR_PROFILE. A guard bug must NEVER block a legit merge, so
 # every unresolvable/degraded path fails open (rc 0/3) inside ci_green_gate.
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/ci-green-gate.sh" 2>/dev/null || exit 0
+if ! { [ -r "$SCRIPT_DIR/../lib/ci-green-gate.sh" ] && . "$SCRIPT_DIR/../lib/ci-green-gate.sh"; } 2>/dev/null \
+        || ! declare -F ci_green_gate >/dev/null 2>&1; then
+    _deny "cannot load scripts/lib/ci-green-gate.sh — refusing (the CI gate must fail closed, not silently no-op)"
+fi
 
 ci_reason=""
 ci_rc=0
@@ -279,6 +315,7 @@ if [ "$ci_rc" = "3" ] && [ -n "$cwd_branch" ]; then
         ci_reason=$(ci_green_gate "$cwd_branch" "") || ci_rc=$?
     fi
 fi
+_gh_timed_out && _deny "a gh call in the CI gate timed out (10s bound) or could not be bounded — refusing (GATE INTEGRITY: a hung read must not read as an allow). Retry, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 if [ "$ci_rc" = "2" ]; then
     echo "block-red-ci-merge: $ci_reason" >&2
     exit 2
@@ -337,37 +374,10 @@ go_url=$(printf '%s' "$go_meta" | jq -r '.url // empty' 2>/dev/null || true)
 # shellcheck source=../lib/timeout-bin.sh
 . "$SCRIPT_DIR/../lib/timeout-bin.sh"
 go_nwo="$repo"
+# HIMMEL-3918 (I1): through the shadow gh (10s cap, shared hook budget), never
+# the real gh - a hang here must read as a refusal, not run out the hook budget.
 if [ -z "$go_nwo" ]; then
-    if [ -n "${_TIMEOUT_BIN:-}" ]; then
-        go_nwo=$("$_TIMEOUT_BIN" 5 gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
-    else
-        # HIMMEL-3585: neither `timeout` nor `gtimeout` is on PATH, so the
-        # bound above is unavailable — a bare `gh repo view` here would run
-        # UNBOUNDED and a hang would fail this fail-closed hook OPEN via
-        # Claude Code's own hook timeout instead of reading as a refusal.
-        # Bash-native bound: background `gh`, poll for up to 5s, then
-        # kill it and treat that exactly like a timeout (empty go_nwo).
-        _gh_out="$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null)" || _gh_out=""
-        if [ -z "$_gh_out" ]; then
-            go_nwo=""
-        else
-            gh repo view --json nameWithOwner --jq .nameWithOwner >"$_gh_out" 2>/dev/null &
-            _gh_pid=$!
-            _gh_waited=0
-            while [ "$_gh_waited" -lt 5 ] && kill -0 "$_gh_pid" 2>/dev/null; do
-                sleep 1
-                _gh_waited=$((_gh_waited + 1))
-            done
-            if kill -0 "$_gh_pid" 2>/dev/null; then
-                kill -9 "$_gh_pid" 2>/dev/null
-                go_nwo=""
-            else
-                go_nwo="$(cat "$_gh_out" 2>/dev/null)"
-            fi
-            wait "$_gh_pid" 2>/dev/null
-            rm -f "$_gh_out"
-        fi
-    fi
+    go_nwo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
 fi
 if [ -z "$go_nwo" ]; then
     echo "block-unresolved-cr-merge: cannot resolve this repo's owner/name for PR #$go_num — refusing (GATE INTEGRITY: the GO mac binds the repo, and the trust-path gate reads its list from it). Pass --repo <owner>/<name>, or run from a checkout gh can resolve." >&2
@@ -490,7 +500,9 @@ trust_branch=$(cat "$trust_tmp" 2>/dev/null) || trust_branch=""
 [ -n "$trust_branch" ] \
     || gate4_refuse "cannot read $go_nwo's default branch for the CI trust-path check of PR #$go_num — refusing"
 trust_rc=0
-_gate4_bounded 30 "$trust_tmp" trust_path_check "$go_nwo" "$go_num" "$go_sha" "$trust_branch" "$trust_anchor" || trust_rc=$?
+trust_secs=$(_budget_left 30)
+[ "$trust_secs" -gt 0 ] || gate4_refuse "the hook budget is spent before the CI trust-path check of PR #$go_num — refusing"
+_gate4_bounded "$trust_secs" "$trust_tmp" trust_path_check "$go_nwo" "$go_num" "$go_sha" "$trust_branch" "$trust_anchor" || trust_rc=$?
 trust_out=$(cat "$trust_tmp" 2>/dev/null) || trust_out=""
 if [ "$trust_rc" -eq 124 ]; then
     gate4_refuse "the CI trust-path check of PR #$go_num timed out — refusing"
@@ -518,4 +530,18 @@ case "$trust_out" in
         ;;
     *) gate4_refuse "CI trust-path check gave an unrecognised answer for PR #$go_num — refusing" ;;
 esac
+# HIMMEL-3918 (5) — runs LAST, so each gate keeps its own reason: head TOCTOU. Every gate read the PR at $go_sha, but a
+# bare `gh pr merge 42` merges whatever head the PR has at merge time - a push in
+# that window lands unreviewed code past the gates. Gates 3 and 4 already demanded
+# the pin when they applied; it is now required of EVERY direct merge, and it must
+# equal the head this hook read (gh then aborts if the head moved).
+# merge-on-green.sh pins the head itself in its own gh subprocess and never
+# reaches this hook, so it is unaffected.
+if [ -z "$match_head" ]; then
+    _deny "a direct gh pr merge must pin --match-head-commit $go_sha (the head the gates just read for PR #$go_num) — none was given; without it a push after the gates lands unreviewed. Or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+fi
+if [ "$match_head" != "$go_sha" ]; then
+    _deny "--match-head-commit $match_head does not equal the head $go_sha the gates read for PR #$go_num — refusing. Pin the full 40-char head. (For help run: gh help pr merge)"
+fi
+
 exit 0

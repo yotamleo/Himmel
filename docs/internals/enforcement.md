@@ -2602,24 +2602,58 @@ bounded to 10s per attempt. On a real merge command, an unresolved lookup (every
 attempt that ran failed, or timed out) DENIES for every session, naming
 `scripts/handover/merge-on-green.sh` as the sanctioned path; a refusal costs a
 retry. It used to exit 0 after the CR/CI gates, so a transient gh/auth error let
-a trust-path PR through with no GO. Only that INITIAL lookup is bounded: the CR
-and CI gates' own `gh pr view` calls (`cr-merge-gate.sh:212,214`) are still
-unbounded, so a hang there can still exhaust the hook budget (a hook timeout is
-non-blocking); that is not fixed here. The fail-open contract above covers the
-CR/CI gates' own API reads, and also a gate library that fails to load
-(`. cr-merge-gate.sh || exit 0`, `. ci-green-gate.sh || exit 0` skip gates 3/4).
-There is NO `--help`/`-h` carve-out: a help-flagged merge is gated (and fails
+a trust-path PR through with no GO. The fail-open contract above covers the
+CR/CI gates' own API reads (a non-timeout failure); the residuals that were
+open here are closed by HIMMEL-3918, below. There is NO `--help`/`-h` carve-out: a help-flagged merge is gated (and fails
 closed) like any other merge, and the deny text points at `gh help pr merge`,
 which is not a merge and does not match the command regex. Every spelling of the
 carve-out was a new bypass (an escaped space in a `--body` value, `$'..'`
-quoting, delimiters), so it was removed rather than patched again. The flag walk
-stops at the first `|`, `&`, `>` or `<`, and an all-digit prefix before a `>`/`<`
-is an fd number (`2>&1`, `42>x`), not a selector.
-Known remaining gaps: a merge with no selector AND no cwd branch still exits 0
-(nothing to resolve); the residuals filed as HIMMEL-3918 (cd-then-merge cwd
-mismatch, an env/`command` prefix escaping the command regex, the unbounded gate
-lookups, the lib-load fail-open, head TOCTOU incl. an unpinned operator merge of
-a non-trust PR that gained a trust-path file after the check).
+quoting, delimiters), so it was removed rather than patched again.
+Known remaining gap: a merge with no selector AND no cwd branch still exits 0
+(nothing to resolve).
+
+**HIMMEL-3918 — six residuals closed, by ONE deny rule rather than parsing**
+(five panel rounds each found a new redirect/prefix shape; every parse rule in
+this hook became a bypass in #1494 and again here). A command whose unquoted text
+names `gh pr merge` must be a **single plain command with no quoting**: the raw
+text may contain only `[A-Za-z0-9]`, space and `_ . / : = - ,`, and its first
+word must be literally `gh`; anything else denies. There is no quote-stripping
+(a strip that disagrees with bash on `'`, `"` and `$'..'` was a bypass, so every
+quote, `#`, `\`, `$`, redirect and separator is denied outright). The `gh pr
+merge` detector runs on a normalized copy (backslash-newline pairs removed, then
+every backslash, then every `'` `"` and `$`, newlines to spaces), so
+`gh pr mer\<newline>ge`, `m""erge`, `"merge"` and `$'merge'` are seen (word forms
+that need a real expansion, `${X:-merge}` and `{merge,}`, are HIMMEL-3929), and only a hit on that copy triggers the allowlist. Every word after `merge` must then be in a closed
+set (`-s -m -r -d --squash --merge --rebase --delete-branch
+--disable-auto`; `--auto` (the pin binds at enable time, a later push changes the head) and `--admin` (merges past required checks) deny, `-R`/`--repo <v>`, `--match-head-commit <v>`, at most one
+selector); grouped short flags (`-dt`), attached `-Rrepo`, `-b/-t/-F/-A`, unknown
+flags and a second positional deny, because gh's pflag reads those differently
+from the hook (`-dt 5` is `-d -t 5`). A custom subject/body
+goes through `scripts/handover/merge-on-green.sh`. Quoted mentions of `gh pr
+merge` (e.g. `echo "gh pr merge"`) are over-denied by design. That one rule replaces the
+earlier cd/pushd, prefix (`env`/`command`/`builtin`/`exec`/`NAME=value`) and
+redirect handling, all of which now deny ("single plain command"), each naming
+the merge-on-green chokepoint (`scripts/handover/`) as the sanctioned path. A
+merge-on-green invocation carries no `gh pr merge` text, so it is untouched.
+Over-denies, accepted (HIMMEL-3917 precedent): any mention such as
+`echo gh pr merge`, a path-qualified `/usr/bin/gh`, any quoted argument, and any
+chained merge (HIMMEL-3925 tracks narrowing the quoted case).
+1. *cwd mismatch, prefixes, redirects:* all covered by the rule above.
+2. *Bounded gate lookups:* the hook shadows `gh` with a 10 s bounded function for
+   everything the sourced gate libraries call (libs untouched) under ONE 45 s hook
+   budget: each call is capped to what remains (the repo-name lookup and the
+   trust-path check included, the latter to min(30 s, remaining)) and none starts
+   once it is spent, so the hook denies before Claude Code's 60 s timeout (which
+   reads as non-blocking). A timeout on a real merge denies ("timed out (10s
+   bound)"), never a hook-budget expiry.
+3. *Lib-load:* a gate lib that is missing, unreadable, unparseable, or lacks its
+   function denies (was `|| exit 0`).
+4. *Head TOCTOU:* every direct merge must pin `--match-head-commit` (space or
+   `=` form) equal to the head the gates read, else deny. Checked last so each
+   earlier gate keeps its own reason. The merge chokepoint pins its own head in a
+   subprocess the hook never sees, so it is unchanged.
+CRs are stripped from the command at the capture boundary. Not covered: `bash -c
+'...'` wrappers (the executor grammar, owned by the prlit backstop work).
 A degraded VERDICT query is the one exception that does not return early: the
 thread query still runs and its evidence still blocks, because an unresolved
 thread is evidence even when the status endpoint is down (observed live — GitHub
