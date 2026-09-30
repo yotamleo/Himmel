@@ -396,7 +396,9 @@ fi
 # left running past this suite's EXIT trap keeps a deleted cwd under /tmp and
 # runs its git calls from there (the orphan seen alive at the moment an empty
 # /tmp/.git reappeared).
-if pgrep -f "$RED_NOTB_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" >/dev/null 2>&1; then
+if ! command -v pgrep >/dev/null 2>&1; then
+    fail=$((fail+1)); echo "FAIL red-control-no-timeout-bin-hook-reaped: pgrep is not available, cannot prove the hook was reaped"
+elif pgrep -f "$RED_NOTB_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" >/dev/null 2>&1; then
     fail=$((fail+1)); echo "FAIL red-control-no-timeout-bin-hook-reaped: the killed hook (or its stub) is still running"
 else
     pass=$((pass+1)); echo "ok   red-control-no-timeout-bin-hook-reaped"
