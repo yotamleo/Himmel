@@ -2076,6 +2076,7 @@ not_contains "HIMMEL-3795: full --profile leg-impl launch, ambient LEG_CLAUDE_BI
 # (HIMMEL-3914): with no claude ancestor (CI) a marker plus the preflight seam
 # is refused. A real leg has a claude ancestor whose launch env carries both,
 # so run under a stand-in `claude` process (argv[0]) holding them.
+# shellcheck disable=SC2317,SC2329  # _as_claude is invoked indirectly, through RUN_LEG_WRAP
 _as_claude() { (exec -a claude bash -c '"$@"; exit $?' _ "$@"); }
 d28g="$tmp/c28g"; mk_launch_stubs "$d28g" "HIMMEL-3795-N3-effortleak"; mkdir -p "$tmp/repo28g"
 rc=0
