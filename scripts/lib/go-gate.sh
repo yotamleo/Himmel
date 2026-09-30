@@ -138,10 +138,10 @@ go_trust_gate() {
 # gh is ${GH:-gh}. The body is a subshell, so its temp-file trap, its helper
 # and its `exit`s never reach the sourcing caller.
 trust_path_check() (
-    nwo=$1 pr_num=$2 sha=$3 default_branch=$4 anchor=$5 gh_bin=${GH:-gh}
+    tp_nwo=$1 tp_pr=$2 tp_sha=$3 tp_branch=$4 anchor=$5 gh_bin=${GH:-gh}
     refuse() { printf '%s %s\n' "$1" "$2"; exit 2; }
     # other_repo — rc 0 only when the anchor's origin POSITIVELY names a
-    # github.com repo other than $nwo. An unreadable origin, an SSH host alias
+    # github.com repo other than $tp_nwo. An unreadable origin, an SSH host alias
     # or any non-github.com URL cannot prove the PR is on another repo, so it
     # is not "other" and a 404 refuses (fail closed).
     other_repo() {
@@ -155,44 +155,44 @@ trust_path_check() (
             *) return 1 ;;
         esac
         case "$url" in ''|*/*/*|*[!A-Za-z0-9._/-]*) return 1 ;; */*) ;; *) return 1 ;; esac
-        [ "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$nwo" | tr '[:upper:]' '[:lower:]')" ]
+        [ "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$tp_nwo" | tr '[:upper:]' '[:lower:]')" ]
     }
     tmp=$(mktemp "${TMPDIR:-/tmp}/mog-trust.XXXXXX") || refuse tmp "cannot create a temp file"
     trap 'rm -f "$tmp"' EXIT
     rc=0
-    raw=$("$gh_bin" api "repos/$nwo/contents/scripts/ci/ci-trust-paths.txt?ref=$default_branch" \
+    raw=$("$gh_bin" api "repos/$tp_nwo/contents/scripts/ci/ci-trust-paths.txt?ref=$tp_branch" \
         -H 'Accept: application/vnd.github.raw' 2>&1) || rc=$?
     if [ "$rc" -ne 0 ]; then
         case "$raw" in
             *"HTTP 404"*)
-                other_repo || refuse list "scripts/ci/ci-trust-paths.txt is missing on $nwo@$default_branch, and the harness anchor's origin does not prove it is another repo"
+                other_repo || refuse list "scripts/ci/ci-trust-paths.txt is missing on $tp_nwo@$tp_branch, and the harness anchor's origin does not prove it is another repo"
                 printf 'not-adopted\n'
                 exit 0 ;;
-            *) refuse list "cannot read scripts/ci/ci-trust-paths.txt from $nwo@$default_branch (gh exit $rc)" ;;
+            *) refuse list "cannot read scripts/ci/ci-trust-paths.txt from $tp_nwo@$tp_branch (gh exit $rc)" ;;
         esac
     fi
     # Strip \r and surrounding blanks first: a pattern carrying either matches
     # no path, and an unmatched pattern fails open.
     printf '%s\n' "$raw" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
         | grep -Ev '^(#|$)' > "$tmp"
-    [ -s "$tmp" ] || refuse list "scripts/ci/ci-trust-paths.txt on $default_branch has no patterns"
+    [ -s "$tmp" ] || refuse list "scripts/ci/ci-trust-paths.txt on $tp_branch has no patterns"
     grep -E -f "$tmp" </dev/null >/dev/null 2>&1
-    [ "$?" -eq 2 ] && refuse list "scripts/ci/ci-trust-paths.txt on $default_branch has an invalid pattern"
+    [ "$?" -eq 2 ] && refuse list "scripts/ci/ci-trust-paths.txt on $tp_branch has an invalid pattern"
     pr_jq='"\(.head.sha)|\(.changed_files)"'
-    meta=$("$gh_bin" api "repos/$nwo/pulls/$pr_num" --jq "$pr_jq" 2>/dev/null) \
-        || refuse files "cannot read PR #$pr_num's head and changed-file count"
-    [ "${meta%%|*}" = "$sha" ] || refuse files "PR #$pr_num's head is ${meta%%|*}, not the certified $sha"
+    meta=$("$gh_bin" api "repos/$tp_nwo/pulls/$tp_pr" --jq "$pr_jq" 2>/dev/null) \
+        || refuse files "cannot read PR #$tp_pr's head and changed-file count"
+    [ "${meta%%|*}" = "$tp_sha" ] || refuse files "PR #$tp_pr's head is ${meta%%|*}, not the certified $tp_sha"
     count=${meta#*|}
-    case "$count" in ''|*[!0-9]*) refuse files "PR #$pr_num's changed-file count is unreadable" ;; esac
-    files=$("$gh_bin" api "repos/$nwo/pulls/$pr_num/files" --paginate \
+    case "$count" in ''|*[!0-9]*) refuse files "PR #$tp_pr's changed-file count is unreadable" ;; esac
+    files=$("$gh_bin" api "repos/$tp_nwo/pulls/$tp_pr/files" --paginate \
         --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>/dev/null) \
-        || refuse files "cannot list PR #$pr_num's changed files"
+        || refuse files "cannot list PR #$tp_pr's changed files"
     listed=0
     [ -n "$files" ] && listed=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
     [ "$listed" -eq "$count" ] \
-        || refuse files "listed $listed of PR #$pr_num's $count changed files (the listing stops at 3000)"
-    meta=$("$gh_bin" api "repos/$nwo/pulls/$pr_num" --jq "$pr_jq" 2>/dev/null) || meta=""
-    [ "${meta%%|*}" = "$sha" ] || refuse files "PR #$pr_num's head moved while its files were listed"
+        || refuse files "listed $listed of PR #$tp_pr's $count changed files (the listing stops at 3000)"
+    meta=$("$gh_bin" api "repos/$tp_nwo/pulls/$tp_pr" --jq "$pr_jq" 2>/dev/null) || meta=""
+    [ "${meta%%|*}" = "$tp_sha" ] || refuse files "PR #$tp_pr's head moved while its files were listed"
     hit=$(printf '%s\n' "$files" | tr '\t' '\n' | grep -v '^$' | grep -E -f "$tmp" | head -n 1)
     if [ -z "$hit" ]; then
         printf 'none\n'
@@ -202,7 +202,7 @@ trust_path_check() (
         GIT_TERMINAL_PROMPT=0 git -C "$anchor" ls-remote origin HEAD 2>/dev/null | awk 'NR==1{print $1}')
     if [ -z "$tip" ] || ! (unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
             git -C "$anchor" merge-base --is-ancestor "$tip" HEAD 2>/dev/null); then
-        refuse anchor "PR #$pr_num touches trust path $hit and the anchor $anchor is behind origin (or origin is unreadable) — pull the primary checkout, then re-run"
+        refuse anchor "PR #$tp_pr touches trust path $hit and the anchor $anchor is behind origin (or origin is unreadable) — pull the primary checkout, then re-run"
     fi
     printf 'hit %s\n' "$hit"
 )
