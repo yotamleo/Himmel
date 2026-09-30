@@ -468,12 +468,20 @@ gv_b=REAL_HOME
 mkf scripts/guard-setter.sh "${gv_a}${gv_b}=1 bash x"
 mkf scripts/guard-plain.sh 'echo nothing'
 mkf scripts/test-uninstall-real-home-callers.sh 'grep -r "$V" scripts'
+mkf scripts/lib/sp-a.sh
+mkf scripts/lib/sp-b.sh 'source sp-a.sh'
+mkf scripts/lib/sp-c.sh '. sp-b.sh'
+mkf scripts/test-sp.sh 'bash "$d/lib/sp-c.sh"'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: closure fixtures"
 change scripts/lib/far.sh
 out="$(run_is "$range")"
 if grepq "$out" '^scripts/test-top\.sh$'; then pass "far.sh (2 source hops behind mid.sh) -> test-top.sh"; else fail "closure miss: $out"; fi
 if ! grepq "$out" 'test-noise\.sh'; then pass "a non-source mention of far.sh/deep.sh does not widen"; else fail "non-source line widened the closure: $out"; fi
+change scripts/lib/cyc-b.sh
+change scripts/lib/sp-a.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-sp\.sh$'; then pass "single-space 'source x' / '. x' forms are followed (2 hops)"; else fail "single-space source form missed: $out"; fi
 change scripts/lib/cyc-b.sh
 # gnu-ok: timeout is guarded by command -v and falls back to an unbounded run
 if command -v timeout >/dev/null 2>&1; then out="$( cd "$FX" && timeout 20 bash "$IS" "$range" 2>/dev/null )"; rc=$?; else out="$(run_is "$range")"; rc=0; fi

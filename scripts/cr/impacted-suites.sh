@@ -479,6 +479,13 @@ needle_ere() {
     esc=$(printf '%s' "$1" | sed 's/[.[\*^$+?(){}|]/\\&/g') || io_fail "escaping a needle"
     printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])' "$esc"
 }
+# needle_tail_ere <literal> — the needle without its leading boundary, for a
+# caller whose own pattern already ends in the separating character.
+needle_tail_ere() {
+    local esc
+    esc=$(printf '%s' "$1" | sed 's/[.[\*^$+?(){}|]/\\&/g') || io_fail "escaping a needle"
+    printf '%s($|[^A-Za-z0-9_-])' "$esc"
+}
 add_needle() {
     { needle_ere "$1"; printf '\n'; } >> "$pats" || io_fail "writing a needle"
 }
@@ -534,7 +541,7 @@ done <<< "$changed"
 while [ -s "$front" ]; do
     : > "$work/srcpats"
     while IFS= read -r f; do
-        { printf '(^|[[:space:];&|({])(source|\\.)[[:space:]]+[^#]*'; needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
+        { printf '(^|[[:space:];&|({])(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
     done < "$front"
     grep_rc=0
     git -c core.quotepath=off grep -l -E -f "$work/srcpats" "$head_sha" -- ':(glob)**/*.sh' > "$work/src.out" || grep_rc=$?
