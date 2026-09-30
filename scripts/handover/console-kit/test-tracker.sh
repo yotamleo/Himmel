@@ -177,13 +177,23 @@ contains 'the cap text names the override (HIMMEL-3979)' "$html4" 'v1.0.1 holds 
 contains 'the deferred bucket has no caps (HIMMEL-3979)' "$html4" '},null]'
 fp_ok 'override edit' fp4
 if [ "$fp3" != "$fp4" ]; then pass 'a cap override change moves the fingerprint (HIMMEL-3979)'; else fail 'a cap override change left the fingerprint'; fi
+# Multi-line dict literals parse too, as the old [^}]* pattern allowed for CAPS.
+printf '%s\n' '# synthetic placer' 'CAPS = {' "    'features': 0.10, 'bugs': 0.33," "    'enhancements': 0.12, 'audit': 0.03, 'misc': 0.05," '}' \
+    > "$plan/tools/stage3/place.py"
+printf '%s\n' 'VERSION_CAP_OVERRIDES = {' "    'v1.0.1': {'tickets': 31}," '}' > "$plan/tools/stage3/common.py"
+render >/dev/null
+html5="$(cat "$out" 2>/dev/null)"
+contains 'a multi-line CAPS literal still sets the layer caps (HIMMEL-3990)' "$html5" '"l":[0.33,'
+contains 'a multi-line override literal still sets the ticket cap (HIMMEL-3990)' "$html5" '"VC":[{"t":31,'
+write_caps 0.30
+printf '%s\n' "VERSION_CAP_OVERRIDES = {'v1.0.1': {'tickets': 30, 'bugs': 0.45}}" > "$plan/tools/stage3/common.py"
 
 # --- HIMMEL-3990 ask 5: a live leg marks its ticket in progress, with its label and phase.
 hb="$W/luna/handovers"
 bk="$hb/yotamleo/himmel"
 mkdir -p "$bk" "$hb/.locks/queue/live.lock" "$hb/.locks/queue/gone.lock"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf '%s\n' '# leg' '## Results' '- 10:00 LIVE — started' '- 10:20 LIVE — PR 1525 open, watching CI' > "$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md"
+printf '%s\n' '# leg' '- brief: follows PR 1999' '## Results' '- 10:00 LIVE — started' '- 10:20 LIVE — PR 1525 open, watching CI' '- a later note naming PR 1998' >"$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md"
 printf '%s\n' '# leg' '## Results' '- 09:00 READY 1600 abc GREEN' '- 09:30 WRAPPED — merged' > "$bk/HIMMEL-6-N56-wrapped-leg-2026-10-01.md"
 printf '%s\n' '# leg' '## Results' '- 08:00 LIVE — started' > "$bk/HIMMEL-7-N57-released-leg-2026-10-01.md"
 printf '{"session":"s1","handover":"%s","heartbeat":"%s"}\n' "$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md" "$now" > "$hb/.locks/queue/live.lock/owner.json"

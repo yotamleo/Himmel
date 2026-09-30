@@ -97,13 +97,15 @@ def held_docs():
 
 
 def leg_marker(path):
-    """(marker, pr) from a leg doc's Results bullets: leg-tail-status.sh's rule, and the newest PR number named."""
+    """(marker, pr) from a leg doc's Results bullets: leg-tail-status.sh's rule, and the newest PR a marker bullet names."""
     try:
         bl = [l.rstrip('\n') for l in open(path, encoding='utf-8', errors='replace') if l.startswith('- ')]
     except OSError:
         return None, None
     pr = None
     for l in bl:
+        if not MARK_RE.match(l):
+            continue
         for m in PR_RE.finditer(l):
             pr = int(m.group(1))
     if not bl:
@@ -162,11 +164,13 @@ def plan_rules(meta):
         return float(m.group(1)) if m else None
     sm = re.search(r'S-eq:\s*XS\s*([\d.]+)\s+S\s+([\d.]+)\s+M\s+([\d.]+)\s+L\s+([\d.]+)\s+XL\s+([\d.]+)', txt)
     def lit(f, name):
+        """A top-level `name = {...}` literal from the plan tool, single- or multi-line; never executed."""
         try:
-            m = re.search(r'^%s\s*=\s*(\{.*\})\s*$' % name, open(os.path.join(ROOT, 'tools', 'stage3', f),
-                                                               encoding='utf-8').read(), re.M)
-            v = ast.literal_eval(m.group(1)) if m else None
-        except (OSError, ValueError, SyntaxError):
+            tree = ast.parse(open(os.path.join(ROOT, 'tools', 'stage3', f), encoding='utf-8').read())
+            vs = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == name for t in n.targets)]
+            v = vs[-1] if vs else None
+        except (OSError, ValueError, SyntaxError, TypeError):
             v = None
         return v if isinstance(v, dict) else None
     return dict(tickets=val(r'ticket count\s*<\s*(\d+)'), total=val(r'total load within\s*([\d.]+)'),
