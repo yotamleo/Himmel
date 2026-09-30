@@ -154,7 +154,11 @@ if [ "$help_seen" = "1" ]; then
     # shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
     merge_count=$(printf '%s' "$cmd_stripped" | grep -oE '(^|[;&|`$(][[:space:]]*)gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' | wc -l)
     [ "$merge_count" -le 1 ] && exit 0
-    sel=""   # the help-flagged merge has no selector; gate the cwd branch
+    # Which PR the OTHER merge targets is not something this walk resolved, so
+    # gating the cwd branch would be checking the wrong PR: refuse and ask for
+    # the commands to be run separately.
+    echo "block-unresolved-cr-merge: a help-flagged 'gh pr merge' shares this command with another merge; run them as separate commands so each merge is gated on its own PR." >&2
+    exit 2
 fi
 
 # Strip surrounding quotes the tokenizer preserved: `gh pr merge "42"` must
