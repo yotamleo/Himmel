@@ -648,6 +648,30 @@ assert_rc "whitespace-only stdin" 2 "$(run_case '   ')"
 assert_rc "array command + rm -rf" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":["rm -rf /tmp/x"]}}')"
 assert_rc "object command + rm -rf" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":{"x":"rm -rf /tmp/x"}}}')"
 
+# HIMMEL-3650: recursive rm spelled with quoted/escaped flag characters. The
+# flag test also runs on a quote/backslash-stripped copy, so these deny like `rm -r`.
+# shellcheck disable=SC2016  # literal quote/$'..' payloads are the point
+assert_rc 'rm -"r" d (quoted r)'         2 "$(run_case "$(j_bash 'rm -"r" d')")"
+assert_rc 'rm "-"r d'                    2 "$(run_case "$(j_bash 'rm "-"r d')")"
+assert_rc 'rm -""r d'                    2 "$(run_case "$(j_bash 'rm -""r d')")"
+assert_rc "rm -''r d"                    2 "$(run_case "$(j_bash "rm -''r d")")"
+assert_rc 'rm -f"r" d'                   2 "$(run_case "$(j_bash 'rm -f"r" d')")"
+assert_rc 'rm "--"recursive d'           2 "$(run_case "$(j_bash 'rm "--"recursive d')")"
+assert_rc 'rm --"r"ecursive d'           2 "$(run_case "$(j_bash 'rm --"r"ecursive d')")"
+assert_rc 'rm -\r d (escaped r)'         2 "$(run_case "$(j_bash 'rm -\r d')")"
+assert_rc "rm -\$'r' d (ANSI-C quote)"   2 "$(run_case "$(j_bash "rm -\$'r' d")")"
+# shellcheck disable=SC2016  # literal $x payload
+assert_rc 'rm -$x d (unresolved option)' 2 "$(run_case "$(j_bash 'rm -$x d')")"
+assert_rc 'command rm -r d'              2 "$(run_case "$(j_bash 'command rm -r d')")"
+assert_rc 'command rm -"r" d'            2 "$(run_case "$(j_bash 'command rm -"r" d')")"
+# Quoted plain names stay allowed. `rm -- -r` (a file literally named -r) is
+# denied on purpose: the scan cannot tell it from the flag (HIMMEL-912).
+assert_rc 'rm "my file" allowed'         0 "$(run_case "$(j_bash 'rm "my file"')")"
+assert_rc 'rm -f "a-r.txt" allowed'      0 "$(run_case "$(j_bash 'rm -f "a-r.txt"')")"
+assert_rc "rm -f 'x' \"y z\" allowed"    0 "$(run_case "$(j_bash "rm -f 'x' \"y z\"")")"
+# shellcheck disable=SC2016  # literal $HOME payload
+assert_rc 'rm -f $HOME/x allowed'        0 "$(run_case "$(j_bash 'rm -f $HOME/x')")"
+
 # --- BYPASS case ---
 assert_rc "DESTRUCTIVE_OK bypass"       0 "$(run_case "$(j_bash 'rm -rf /tmp/x')" "DESTRUCTIVE_OK=1")"
 
