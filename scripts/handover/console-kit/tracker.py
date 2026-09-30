@@ -53,15 +53,90 @@ def read_tsv(path):
 
 
 def plan_globs():
-    """The stage1/stage2 row-field files and the placer (layer caps) the page reads (HIMMEL-3957)."""
+    """The stage1/stage2 row-field files and the placer's caps (layer caps, per-version overrides) the page reads."""
     return (sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.tsv'))) +
             sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.explain.tsv'))) +
             sorted(glob.glob(os.path.join(ROOT, 'stage2', 'C??.tsv'))) +
-            [p for p in [os.path.join(ROOT, 'tools', 'stage3', 'place.py')] if os.path.exists(p)])
+            [p for p in [os.path.join(ROOT, 'tools', 'stage3', f) for f in ('place.py', 'common.py')]
+             if os.path.exists(p)])
+
+
+# HIMMEL-3990 ask 5: a ticket is in progress when a live leg works it. A leg doc is HIMMEL-<n>-N<k>-*.md in the
+# bucket; it is live while its queue lock is held and fresh and its newest marker is not WRAPPED / HALTED.
+LEG_RE = re.compile(r'^HIMMEL-(\d+)-(N\d+[a-z]?)-.*\.md$')
+MARK_RE = re.compile(r'^- (?:\d{1,2}:\d{2}\s+)?(?:\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)(?:[^A-Za-z0-9_].*)?$')
+PR_RE = re.compile(r'\b(?:PR|READY|GO)\s+#?(\d{3,5})\b')
+
+
+def held_docs():
+    """Realpaths of handover docs whose queue lock is held and fresh (heartbeat within queue-lock.sh's TTL).
+
+    The lock dir is <handover root>/.locks/queue, found walking up from the bucket; none = no legs (read-only, no network)."""
+    d, q = HANDOVERS, None
+    for _ in range(4):
+        if os.path.isdir(os.path.join(d, '.locks', 'queue')):
+            q = os.path.join(d, '.locks', 'queue')
+            break
+        d = os.path.dirname(d)
+    if not q:
+        return set()
+    ttl, now, out = int(os.environ.get('QUEUE_LOCK_TTL_SECONDS') or 21600), time.time(), set()
+    for p in glob.glob(os.path.join(q, '*.lock', 'owner.json')):
+        try:
+            o = json.load(open(p, encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        try:
+            age = now - datetime.strptime(o.get('heartbeat', ''), '%Y-%m-%dT%H:%M:%SZ').replace(
+                tzinfo=timezone.utc).timestamp()
+        except (ValueError, TypeError):
+            age = 0  # an unparsable heartbeat is fresh, as queue-lock.sh status reads it
+        if age <= ttl and o.get('handover'):
+            out.add(os.path.realpath(o['handover']))
+    return out
+
+
+def leg_marker(path):
+    """(marker, pr) from a leg doc's Results bullets: leg-tail-status.sh's rule, and the newest PR number named."""
+    try:
+        bl = [l.rstrip('\n') for l in open(path, encoding='utf-8', errors='replace') if l.startswith('- ')]
+    except OSError:
+        return None, None
+    pr = None
+    for l in bl:
+        for m in PR_RE.finditer(l):
+            pr = int(m.group(1))
+    if not bl:
+        return 'LIVE', pr
+    m = MARK_RE.match(bl[-1])
+    if m:
+        return m.group(1), pr
+    if re.search(r'(^|[^A-Za-z0-9_])WRAPPED([^A-Za-z0-9_]|$)', bl[-1]):
+        return 'WRAPPED', pr
+    ms = [MARK_RE.match(l) for l in bl]
+    ms = [x.group(1) for x in ms if x]
+    return (ms[-1] if ms else 'LIVE'), pr
+
+
+def live_legs():
+    """{ticket number: [leg label, marker, pr or None]} for live legs; the newest doc wins per ticket."""
+    held, out = held_docs(), {}
+    if not held:
+        return out
+    docs = [p for p in glob.glob(os.path.join(HANDOVERS, 'HIMMEL-*-N*-*.md')) if LEG_RE.match(os.path.basename(p))]
+    for p in sorted(docs, key=lambda x: (os.path.getmtime(x), x)):
+        if os.path.realpath(p) not in held:
+            continue
+        mk, pr = leg_marker(p)
+        if mk in ('WRAPPED', 'HALTED'):
+            continue
+        n, lab = LEG_RE.match(os.path.basename(p)).groups()
+        out[int(n)] = [lab, mk, pr]
+    return out
 
 
 def fingerprint():
-    """16 hex over the mirror's newest `updated:` and the plan + stage1/stage2 files' bytes (what the page shows)."""
+    """16 hex over the mirror's newest `updated:`, the plan + stage1/stage2 files' bytes and the live legs (what the page shows)."""
     upd = ''
     for p in glob.glob(os.path.join(MIRROR, 'HIMMEL-*.md')):
         for l in open(p, encoding='utf-8', errors='replace'):
@@ -74,6 +149,7 @@ def fingerprint():
         h.update(open(p, 'rb').read() if os.path.exists(p) else b'-')
     for p in plan_globs():
         h.update(open(p, 'rb').read())
+    h.update(json.dumps(sorted(live_legs().items())).encode())
     return h.hexdigest()[:16]
 
 
@@ -85,16 +161,34 @@ def plan_rules(meta):
         m = re.search(pat, txt)
         return float(m.group(1)) if m else None
     sm = re.search(r'S-eq:\s*XS\s*([\d.]+)\s+S\s+([\d.]+)\s+M\s+([\d.]+)\s+L\s+([\d.]+)\s+XL\s+([\d.]+)', txt)
-    caps = None
-    try:
-        m = re.search(r'^CAPS\s*=\s*(\{[^}]*\})', open(os.path.join(ROOT, 'tools', 'stage3', 'place.py'),
-                                                       encoding='utf-8').read(), re.M)
-        caps = ast.literal_eval(m.group(1)) if m else None
-    except (OSError, ValueError, SyntaxError):
-        pass
+    def lit(f, name):
+        try:
+            m = re.search(r'^%s\s*=\s*(\{.*\})\s*$' % name, open(os.path.join(ROOT, 'tools', 'stage3', f),
+                                                               encoding='utf-8').read(), re.M)
+            v = ast.literal_eval(m.group(1)) if m else None
+        except (OSError, ValueError, SyntaxError):
+            v = None
+        return v if isinstance(v, dict) else None
     return dict(tickets=val(r'ticket count\s*<\s*(\d+)'), total=val(r'total load within\s*([\d.]+)'),
                 per=val(r'effort_mid\s*x\s*([\d.]+)'), seq=[float(x) for x in sm.groups()] if sm else None,
-                layers=caps if isinstance(caps, dict) else None)
+                layers=lit('place.py', 'CAPS'), over=lit('common.py', 'VERSION_CAP_OVERRIDES') or {})
+
+
+def intg(x):
+    return int(x) if isinstance(x, float) and x.is_integer() else x
+
+
+def version_caps(r, vers):
+    """Per-version caps (HIMMEL-3979): the plan default with its VERSION_CAP_OVERRIDES applied; None = deferred bucket."""
+    out = []
+    for v in vers:
+        if not VER_RE.match(v):
+            out.append(None)
+            continue
+        ov = r['over'].get(v) or {}
+        out.append(dict(t=intg(ov.get('tickets', r['tickets'])), tot=ov.get('total', r['total']),
+                        l=[ov.get(l, (r['layers'] or {}).get(l)) for l in LAYERS]))
+    return out
 
 
 def capacity_text(r, deferred):
@@ -103,6 +197,13 @@ def capacity_text(r, deferred):
     parts = ['at most %d tickets' % r['tickets'] if r['tickets'] is not None else 'a ticket cap ' + nr,
              'at most %g bank of load' % r['total'] if r['total'] is not None else 'a load cap ' + nr]
     out = ['Each v1.0.x version holds ' + ' and '.join(parts) + '; the plan puts every ticket in the earliest version with room.']
+    for v in sorted(r['over']):
+        ov = r['over'][v] if isinstance(r['over'][v], dict) else {}
+        ps = (['at most %d tickets' % ov['tickets']] if 'tickets' in ov else []) + \
+             (['at most %g bank of load' % ov['total']] if 'total' in ov else []) + \
+             ['a %s cap of %.2f' % (l, ov[l]) for l in LAYERS if l in ov]
+        if ps:
+            out.append('%s holds %s (a plan override of the default).' % (v, ' and '.join(ps)))
     lc = r['layers']
     out.append('Layer caps, in bank: ' + ' · '.join('%s %.2f' % (l, lc[l]) for l in LAYERS if l in lc) + '.'
                if lc else 'Layer caps: ' + nr + '.')
@@ -271,7 +372,9 @@ def main():
     ap.add_argument('--luna-map', required=True, help='luna-map.json cache path')
     ap.add_argument('--mirror-dir', default=MIRROR)
     ap.add_argument('--luna-root', default=LUNA)
-    ap.add_argument('--handovers', default='', help='handover tree to grep (default <luna-root>/handovers/yotamleo/himmel)')
+    ap.add_argument('--handovers', default=os.environ.get('TRACKER_HANDOVERS_DIR', ''),
+                    help='handover tree to grep for notes and live legs (default $TRACKER_HANDOVERS_DIR, '
+                         'else <luna-root>/handovers/yotamleo/himmel)')
     ap.add_argument('--refresh-luna', action='store_true')
     ap.add_argument('--emit-fp', action='store_true')
     a = ap.parse_args()
@@ -287,13 +390,18 @@ def main():
     S =os.path.join(ROOT, 'stage3')
     meta = json.load(open(os.path.join(S, 'meta.json'), encoding='utf-8'))
     mir = read_mirror()
+    legs = live_legs()
+    for n in legs:  # HIMMEL-3990: a live leg puts its ticket in progress, whatever Jira says (Done stays done)
+        m = mir.get('HIMMEL-%d' % n)
+        if m and m['st'] != 2:
+            m['st'] = 1
     vrows = read_tsv(os.path.join(S, 'versions.tsv'))[1]
     vers = [r['version'] for r in vrows]
     vidx = {v: i for i, v in enumerate(vers)}
     vload = [[round(float(r['load_' + l] or 0), 3) for l in
               ('bugs', 'enhancements', 'features', 'misc', 'audit')] +
              [round(float(r['load_total'] or 0), 3), round(float(r['est_legs'] or 0), 1)] for r in vrows]
-    theme, impact, uimp, ready, erange = {}, {}, {}, {}, {}
+    theme, impact, uimp, plain, ready, erange = {}, {}, {}, {}, {}, {}
     for p in sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.tsv'))):
         for r in read_tsv(p)[1]:
             theme[r['key']] = r.get('theme', '') or '(no theme)'
@@ -302,7 +410,8 @@ def main():
     # HIMMEL-3957 row fields: user-facing impact (stage1 explain), readiness + T-shirt range (stage2).
     for p in sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.explain.tsv'))):
         for r in read_tsv(p)[1]:
-            uimp[r['key']] = clip(r.get('user_impact') or '', 170)
+            uimp[r['key']] = clip(r.get('user_impact') or '', 400)
+            plain[r['key']] = clip(r.get('issue_plain') or '', 600)
     for p in sorted(glob.glob(os.path.join(ROOT, 'stage2', 'C??.tsv'))):
         for r in read_tsv(p)[1]:
             if (r.get('readiness') or '').isdigit():
@@ -311,8 +420,13 @@ def main():
             if lo or hi:
                 erange[r['key']] = lo if lo == hi or not hi else hi if not lo else lo + '–' + hi
 
-    def fields(k, sl=''):
-        return [uimp.get(k, ''), erange.get(k, ''), ready.get(k), impact.get(k), sl]
+    rules = plan_rules(meta)
+    seqm = dict(zip(('XS', 'S', 'M', 'L', 'XL'), rules['seq'] or []))
+
+    def fields(k, sl='', mid=0.0):
+        # P[14] issue_plain; P[15] the ticket's load in bank: effort_mid x per, or only its slice when planning comes first.
+        ld = None if rules['per'] is None else round((seqm.get(sl, 0) if sl else mid) * rules['per'], 4)
+        return [uimp.get(k, ''), erange.get(k, ''), ready.get(k), impact.get(k), sl, plain.get(k, ''), ld]
     themes = sorted(set(theme.values()) | {'(no theme)', '(unplanned)'})
     tidx = {t: i for i, t in enumerate(themes)}
 
@@ -340,7 +454,8 @@ def main():
                      m['st'] if m else 0, vidx[r['version']], LAYERS.index(lay) if lay in LAYERS else 3,
                      tidx[theme.get(k, '(no theme)')], round(float(r['effort_mid'] or 0), 1), fl,
                      [note_id(n) for n in lmap.get(k, [])]] +
-                    fields(k, (r.get('slice_effort') or 'S') if r.get('commit') == 'plan-first' else ''))
+                    fields(k, (r.get('slice_effort') or 'S') if r.get('commit') == 'plan-first' else '',
+                           float(r['effort_mid'] or 0)))
     n_plan = len(rows)
     for k, m in mir.items():
         if k in planned:
@@ -349,7 +464,7 @@ def main():
         if hit:
             rows.append([num(k), clip(m['title'], 62), m['st'], vidx[hit[0]],
                          0 if m['type'] == 'Bug' else 3, tidx.get(theme.get(k), tidx['(unplanned)']),
-                         0, 2, []] + fields(k))
+                         0, 2, []] + fields(k)[:-1] + [0])
     unpl = []
     for r in read_tsv(os.path.join(S, 'unplaced.tsv'))[1]:
         m = mir.get(r['key'])
@@ -364,11 +479,11 @@ def main():
                      clip(r.get('close_evidence', ''), 70)])
 
     upd = max((m['upd'] for m in mir.values()), default='')
-    rules = plan_rules(meta)
     lg, cur = ledger_lines(rows, vers)
     seq = rules['seq']
     data = dict(gen=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), mir=upd[:16].replace('T', ' '),
-                sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, L=LAYERS, T=themes, P=rows,
+                sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, VC=version_caps(rules, vers),
+                LEG={str(n): v for n, v in sorted(legs.items())}, L=LAYERS, T=themes, P=rows,
                 U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur,
                 CAP=dict(total=rules['total'], layers=[(rules['layers'] or {}).get(l) for l in LAYERS],
                          text=capacity_text(rules, [v for v in vers if not VER_RE.match(v)])),
@@ -391,326 +506,377 @@ def main():
           % (cov, n_plan, len(notes), time.time() - t0))
 
 
-TEMPLATE = r'''<title>Himmel Roadmap Tracker</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
+TEMPLATE = r'''<title>Himmel Roadmap</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500&family=Geist:wght@400;500;600&family=Geist+Mono&display=swap">
 <style>
-/* design plan: release-train dispatch board. Fonts: display = condensed signage, body = plain sans, mono = keys/paths only.
-   Colors: cool paper/ink neutrals + one rail-blue accent; semantic done / in-progress / to-do / drift kept apart from the
-   accent; five categorical layer hues (--l*, CVD-validated, no status hue reused) and a separate one-hue slate ramp
-   for load vs cap (--ld*). Layout: ledger line and version rail first, tabs per version, facets before board. */
-:root{--bg:#eef1f4;--panel:#fff;--ink:#101c28;--mute:#566574;--line:#cfd7de;--accent:#0b5cad;--accent-ink:#fff;
---done:#1f8a4c;--prog:#d98a00;--todo:#aab6c2;--drift:#c2255c;--l1:#e87ba4;--l2:#2a78d6;--l3:#eb6834;--l4:#4a3aa7;--l5:#0e9aa7;--ld1:#7b8da0;--ld2:#4f6377;--ld3:#26384a;
---f-disp:"Barlow Condensed","Arial Narrow","Helvetica Neue",Arial,sans-serif;--f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d151d;--panel:#152230;--ink:#e6edf3;--mute:#93a3b3;--line:#2a3b4c;--accent:#5aa9f0;--accent-ink:#06121e;
---done:#3fbf76;--prog:#f0a830;--todo:#4a5d70;--drift:#ff6b9a;--l1:#d55181;--l2:#3987e5;--l3:#d95926;--l4:#9085e9;--l5:#1aa3ae;--ld1:#6f8599;--ld2:#9fb3c7;--ld3:#d0dde9;color-scheme:dark}}
-:root[data-theme="dark"]{--bg:#0d151d;--panel:#152230;--ink:#e6edf3;--mute:#93a3b3;--line:#2a3b4c;--accent:#5aa9f0;--accent-ink:#06121e;
---done:#3fbf76;--prog:#f0a830;--todo:#4a5d70;--drift:#ff6b9a;--l1:#d55181;--l2:#3987e5;--l3:#d95926;--l4:#9085e9;--l5:#1aa3ae;--ld1:#6f8599;--ld2:#9fb3c7;--ld3:#d0dde9;color-scheme:dark}
+/* HIMMEL-3990 design: "the ship's log" — a typeset ledger, not a dashboard. One entry per version, written in sentences;
+   every number in a sentence is a button that opens the tickets behind it. Warm paper and ink; the only chroma is meaning
+   (done / live / to-do / over cap); --ldn is the neutral no-cap swatch (HIMMEL-3979). Serif for headlines and summaries,
+   sans for rows, mono for keys only. Two bars survive: progress and budget. */
+:root{--bg:#f5f4ef;--surface:#fff;--ink:#1a1a17;--muted:#6e6c64;--line:#e2e0d8;--accent:#1f4fd8;--done:#2e7d4f;--live:#b45f06;
+--todo:#b9b7ae;--warn:#c2410c;--ldn:#d8d6ce;--bar:#4b4a44;--scrim:rgba(26,26,23,.28);
+--f-serif:"Newsreader","Iowan Old Style","Charter",Georgia,serif;--f-sans:"Geist",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--f-mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121311;--surface:#1b1c19;--ink:#eceae2;--muted:#9a988f;--line:#2b2c28;--accent:#7b9cff;
+--done:#5cbf85;--live:#f5b14d;--todo:#4a4b46;--warn:#f08a5b;--ldn:#34352f;--bar:#c9c7be;--scrim:rgba(0,0,0,.5);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121311;--surface:#1b1c19;--ink:#eceae2;--muted:#9a988f;--line:#2b2c28;--accent:#7b9cff;
+--done:#5cbf85;--live:#f5b14d;--todo:#4a4b46;--warn:#f08a5b;--ldn:#34352f;--bar:#c9c7be;--scrim:rgba(0,0,0,.5);color-scheme:dark}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 var(--f-body);padding-inline:16px;padding-block:20px 48px;font-variant-numeric:tabular-nums}
-::selection{background:var(--accent);color:var(--accent-ink)}
-.wrap{max-width:1180px;margin-inline:auto}
-h1,h2,h3{font-family:var(--f-disp);text-transform:uppercase;letter-spacing:.04em;margin:0}
-h1{font-size:34px;line-height:1}h2{font-size:21px;margin-block:30px 10px}h3{font-size:16px;margin-block:0 8px}
-.key,code{font-family:var(--f-mono)}
-.stamp{color:var(--mute);font-size:12.5px;margin-block:6px 14px}
-.ledger{margin:0;font-size:16px;max-width:75ch}.ledger b{font-weight:600}
-.ledger .d{color:var(--done)}.ledger .p{color:var(--prog)}.ledger .x{color:var(--drift)}
-.overall{display:flex;height:12px;margin-block:10px 0;background:var(--todo)}.overall i{display:block}
-.seg-d{background:var(--done)}.seg-p{background:var(--prog)}.seg-t{background:var(--todo)}
-.filters{display:flex;flex-wrap:wrap;gap:8px;margin-block:16px 0}
-select,input[type=search],button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);padding:6px 10px;border-radius:2px;min-width:0}
-input[type=search]{flex:1 1 180px}
-button{cursor:pointer}
-:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
-.tabs{display:flex;gap:2px;overflow-x:auto;border-bottom:2px solid var(--ink);margin-block:20px 14px;scrollbar-width:thin;scrollbar-color:var(--todo) transparent}
-.tabs button{flex:none;border:0;background:none;font:600 16px var(--f-disp);text-transform:uppercase;letter-spacing:.05em;padding:8px 12px 7px;color:var(--mute);position:relative;border-radius:0}
-.tabs button[aria-selected=true]{background:var(--ink);color:var(--bg)}
-.tabs button .m{position:absolute;left:0;bottom:0;height:3px;background:var(--done)}
-.tabs button.cur::after{content:"";position:absolute;right:4px;top:5px;width:6px;height:6px;background:var(--accent)}
-.rail{overflow-x:auto;border:1px solid var(--line);background:var(--panel);padding:10px 8px 0}
-.train{display:flex;gap:4px;align-items:flex-end;width:max-content;border-bottom:3px solid var(--ink)}
-.car{all:unset;box-sizing:border-box;cursor:pointer;width:36px;text-align:center;padding-block:2px 0}
-.car:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
-.car .bar{display:flex;flex-direction:column-reverse;height:96px}
-.car small{display:block;font:11px var(--f-mono);color:var(--mute);padding-block:4px}
-.car.cur small{color:var(--accent);font-weight:600}
-.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--mute);margin-block:8px}
-.legend i{display:inline-block;width:10px;height:10px;margin-inline-end:5px}
-.facets{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-block:16px 22px}
-.facets>div{min-width:0}
-.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-@media(max-width:760px){.board{grid-template-columns:minmax(0,1fr)}}
-.col{min-width:0;background:var(--panel);border:1px solid var(--line);border-top:4px solid var(--todo)}
-.col.p{border-top-color:var(--prog)}.col.d{border-top-color:var(--done)}
-.col h3{padding:8px 10px 0}
-.card{padding:8px 10px;border-top:1px solid var(--line);min-width:0}
-.card .t{overflow-wrap:anywhere;font-size:13.5px}
-.meta{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:11.5px;color:var(--mute);margin-block-start:3px}
-.key{font-size:12px;font-weight:600;color:var(--ink)}
-.chip{display:inline-block;padding:0 6px;border-radius:2px;font-size:11px;line-height:17px;border:1px solid currentColor}
-.chip.drift{color:var(--drift);font-weight:600}
-.chip.l{color:var(--ink);border-color:var(--line)}.chip.l::before{content:"";display:inline-block;width:7px;height:7px;margin-inline-end:4px;background:var(--c)}
-.card details{border:0;margin:4px 0 0;padding:0;background:none}
-.card summary{font:11px var(--f-mono);text-transform:none;letter-spacing:0;padding:0;display:inline-block;color:var(--accent)}
-.nt{margin-block:6px 0;font-size:12px;min-width:0}
-.nt code{display:block;font-size:11px;color:var(--mute);overflow-wrap:anywhere;user-select:all}
-.nt .ti{overflow-wrap:anywhere}
-.more{margin:8px 10px}
-.unp{margin-block-start:16px;background:var(--panel);border:1px solid var(--line);padding:6px 10px 10px}
-.row{display:flex;flex-wrap:wrap;gap:2px 10px;padding-block:4px;border-top:1px solid var(--line);align-items:baseline;min-width:0}
-.row .t{flex:1 1 220px;min-width:0;overflow-wrap:anywhere;font-size:13px}
-.st{display:inline-block;width:9px;height:9px;border-radius:50%;flex:none}
-.st0{background:var(--todo)}.st1{background:var(--prog)}.st2{background:var(--done)}
-.chart{overflow-x:auto;border:1px solid var(--line);background:var(--panel);padding:10px 8px 0}
-.lcols{display:flex;gap:4px;align-items:flex-end;width:max-content;position:relative;border-bottom:3px solid var(--ink)}
-.lcol{width:36px;text-align:center}.lcol .bar{display:flex;flex-direction:column-reverse;height:110px}
-.lcol small{display:block;font:11px var(--f-mono);color:var(--mute);padding-block:4px}
-.cap{position:absolute;left:0;right:0;border-top:2px dashed var(--ink);pointer-events:none}
-.cap span{position:absolute;right:0;top:-18px;font:11px var(--f-mono);color:var(--ink);background:var(--panel);padding-inline:3px}
-.hbar{display:flex;height:20px;margin-block:6px;background:var(--todo)}.hbar i{display:block}
-.load{position:relative;height:20px;background:var(--bg);border:1px solid var(--line);margin-block:6px 4px;overflow:visible}
-.load i{display:block;position:absolute;top:0;bottom:0}
-.load b{position:absolute;top:-4px;bottom:-4px;border-left:2px dashed var(--ink)}
-.lrow{display:grid;grid-template-columns:minmax(0,7.5em) minmax(0,1fr) auto;gap:8px;align-items:center;font-size:12px;color:var(--mute)}
-.lrow .load{height:10px;margin:3px 0}.lrow b{font-weight:400}
-.capbox{background:var(--panel);border:1px solid var(--line);padding:6px 12px;margin-block:0 10px;font-size:13px;max-width:75ch}
-.capbox p{margin:4px 0}
-.card .ui{font-size:12.5px;color:var(--mute);overflow-wrap:anywhere;margin-block-start:2px}
-.fx{font:11px var(--f-mono);color:var(--ink)}
-.chip.off{color:var(--mute)}.chip.pf{color:var(--accent)}
-.ledger p{margin:0 0 3px}.ledger p:first-child{font-weight:600}.ledger .x{color:var(--drift)}
-.lg{display:grid;grid-template-columns:minmax(0,10em) minmax(0,1fr);gap:4px 14px;margin:0 0 10px;font-size:13px}
-.lg dt{font-weight:600}.lg dd{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--mute)}
-.lg .sw{display:inline-block;width:10px;height:10px;margin-inline:0 4px;vertical-align:baseline}
-@media(max-width:600px){.lg{grid-template-columns:minmax(0,1fr)}.lg dd{margin-block-end:6px}}
-.heat{overflow-x:auto;border:1px solid var(--line);background:var(--panel)}
-.heat table{border-collapse:collapse;font-size:11.5px}
-.heat th{font:400 11px var(--f-mono);color:var(--mute);padding:3px 2px}
-.heat th.tn{text-align:start;font:600 12px var(--f-body);color:var(--ink);padding:3px 10px;white-space:nowrap;position:sticky;left:0;background:var(--panel)}
-.heat td{width:30px;min-width:30px;height:26px;text-align:center;padding:0;border:1px solid var(--bg);cursor:pointer;color:var(--ink)}
-.heat td.z{cursor:default}
-.plist .r{display:grid;grid-template-columns:minmax(90px,200px) minmax(0,1fr) 62px;gap:10px;align-items:center;padding-block:3px;border-top:1px solid var(--line);font-size:13px}
-.plist .r span{min-width:0;overflow-wrap:anywhere}
-.plist .b{display:flex;height:10px;background:var(--todo)}.plist .b i{display:block}
-.burn{overflow-x:auto;border:1px solid var(--line);background:var(--panel)}
-.burn svg{display:block;min-width:600px;width:100%;height:auto}
-.burn text{font:11px var(--f-mono);fill:var(--mute)}
-details.sec{background:var(--panel);border:1px solid var(--line);margin-block:10px;padding:0 12px}
-details.sec>summary{cursor:pointer;padding-block:10px;font:600 17px var(--f-disp);text-transform:uppercase;letter-spacing:.05em}
-.flag{font:11px var(--f-mono);color:var(--mute)}
-.note{color:var(--mute);font-size:12.5px}
-@media(prefers-reduced-motion:no-preference){.car .bar div{transition:height .2s}}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--f-sans);font-variant-numeric:tabular-nums}
+::selection{background:var(--accent);color:var(--bg)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+code,.key{font-family:var(--f-mono);font-size:12.5px}
+button{font:inherit;color:inherit}
+.mast{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+.mast .in{max-width:760px;margin-inline:auto;padding:10px 16px;display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center}
+.mast b{font-weight:600}
+.mast .stamp{color:var(--muted);font-size:12.5px;flex:1 1 200px;min-width:0}
+.sw{display:inline-flex;gap:8px;align-items:center;font-size:13.5px;cursor:pointer;user-select:none}
+.sw input{appearance:none;-webkit-appearance:none;margin:0;width:32px;height:18px;border-radius:9px;background:var(--todo);position:relative;cursor:pointer;flex:none}
+.sw input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--surface)}
+.sw input:checked{background:var(--ink)}.sw input:checked::after{left:16px}
+.tbtn{border:1px solid var(--line);background:none;border-radius:4px;padding:3px 9px;font-size:12.5px;color:var(--muted);cursor:pointer}
+main{max-width:760px;margin-inline:auto;padding:24px 16px 64px}
+.train{font:500 17px/1.45 var(--f-serif);margin:0 0 40px;color:var(--muted)}
+.train .n{color:var(--ink)}
+h2.sec{font:500 13px var(--f-sans);color:var(--muted);margin:48px 0 0;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.head{font:500 28px/1.2 var(--f-serif);margin:0 0 12px;letter-spacing:-.005em}
+.head .v{font-variant-numeric:lining-nums}
+.sum{font:500 20px/1.4 var(--f-serif);margin:0 0 20px;max-width:62ch}
+.quotes{list-style:none;margin:-8px 0 24px;padding:0;display:grid;gap:10px;max-width:62ch}
+.quotes li{border-left:2px solid var(--line);padding-left:12px;font-size:15px;line-height:1.5}
+.quotes b{display:block;font:600 11.5px var(--f-sans);color:var(--muted);letter-spacing:.02em}
+.n{all:unset;cursor:pointer;color:inherit;text-decoration:underline dotted 1.5px;text-underline-offset:4px;text-decoration-color:var(--muted)}
+.n:hover{text-decoration-color:var(--ink)}
+.n:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.strip{display:flex;height:8px;border-radius:2px;overflow:hidden;background:var(--todo)}
+.strip i{display:block;height:100%}
+.strip .d{background:var(--done)}.strip .l{background:var(--live)}.strip .s{background:color-mix(in srgb,var(--live) 45%,var(--todo))}
+.cap{position:relative;height:8px;border-radius:2px;background:var(--line);margin-top:4px}
+.cap i{position:absolute;top:0;bottom:0;left:0;background:var(--bar);border-radius:2px 0 0 2px}
+.cap i.o{background:var(--warn);border-radius:0 2px 2px 0}
+.cap b{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--ink)}
+.cap.none{background:repeating-linear-gradient(45deg,var(--ldn) 0 3px,transparent 3px 7px)}
+.cap-line{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px;color:var(--muted);margin:8px 0 20px}
+.cap-line .n{color:var(--ink)}.cap-line .x{color:var(--warn)}
+.bars{display:grid;gap:10px;margin:0 0 4px}
+.work{margin:0 0 24px;padding:0;list-style:none}
+.work li{display:flex;gap:10px;align-items:baseline;padding:6px 0;font-size:14px;min-width:0}
+.work li span:last-child{min-width:0;overflow-wrap:anywhere}
+h3.grp{font:600 12.5px var(--f-sans);color:var(--muted);margin:24px 0 4px;display:flex;justify-content:space-between;gap:12px}
+h3.grp span{font-weight:400}
+.tk{border-top:1px solid var(--line)}
+.tk>summary{list-style:none;display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:4px 12px;align-items:start;padding:12px 0;cursor:pointer}
+.tk>summary::-webkit-details-marker{display:none}
+.tk>summary:hover .ui{text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+.tx{min-width:0;display:grid;gap:2px}
+.ui{font-size:16px;line-height:1.45;overflow-wrap:anywhere}
+.int{font-variant:small-caps;letter-spacing:.04em;color:var(--muted);font-size:14px}
+.sub{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tg{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);padding-top:3px;justify-content:flex-end;flex-wrap:wrap}
+.mk{width:10px;height:10px;border-radius:50%;margin-top:7px;border:1.5px solid var(--todo);display:block}
+.mk.done{background:var(--done);border-color:var(--done)}
+.mk.live{background:var(--live);border-color:var(--live)}
+.mk.started{border-color:var(--live);background:linear-gradient(90deg,var(--live) 50%,transparent 50%)}
+@media (prefers-reduced-motion:no-preference){.mk.live{animation:pulse 2s ease-in-out infinite}}
+@keyframes pulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--live) 25%,transparent)}}
+.chip{font:500 11.5px var(--f-mono);padding:1px 6px;border-radius:3px;border:1px solid var(--live);color:var(--ink);white-space:nowrap}
+.chip.READY{border-color:var(--done)}.chip.BLOCKED,.chip.FINDING{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.sz{font:500 11.5px var(--f-mono)}
+.dots{display:inline-flex;gap:2px}.dots i{width:4px;height:4px;border-radius:50%;background:var(--line)}.dots i.f{background:var(--muted)}
+.more{padding:0 0 14px 26px;font-size:14px;color:var(--muted);max-width:66ch}
+.more p{margin:0 0 8px;color:var(--ink)}
+.more ul{margin:0;padding-left:18px}.more li{margin:2px 0}
+.more a{color:var(--accent)}
+details.done-grp,details.q,details.t,details.fold{border-top:1px solid var(--line)}
+details.done-grp>summary,details.fold>summary{cursor:pointer;padding:12px 0;font-size:14px;color:var(--muted)}
+details.q>summary,details.t>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(4.2em,auto) minmax(0,1fr);gap:4px 16px;padding:14px 0}
+details.q>summary::-webkit-details-marker,details.t>summary::-webkit-details-marker{display:none}
+.q .ver,.t .ver{font:500 18px/1.3 var(--f-serif)}
+.q .meta,.t .meta{font-size:13px;color:var(--muted);display:flex;gap:12px;align-items:center}
+.q .meta .cap{flex:0 1 120px;margin:0}
+.q .line,.t .line{font-size:14px;color:var(--muted);grid-column:2;min-width:0}
+details.q[open]>summary .line,details.t[open]>summary .line{display:none}
+.qb{padding:4px 0 24px}
+.qb .sum{font-size:18px}
+.up{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
+.up span:last-child{grid-column:2;color:var(--muted);font-size:13px}
+.up .t{min-width:0;overflow-wrap:anywhere}
+footer{margin-top:64px;font-size:13px;color:var(--muted)}
+.terms{display:grid;grid-template-columns:minmax(0,9em) minmax(0,1fr);gap:8px 16px;margin:8px 0 16px}
+.terms dt{color:var(--ink);font-weight:500}.terms dd{margin:0}
+.terms .mk,.terms .cap{display:inline-block;vertical-align:middle;margin:0 4px 0 0}
+.terms .cap{width:40px}
+.rules p{margin:4px 0}
+#scrim{position:fixed;inset:0;background:var(--scrim);z-index:9}
+#drawer{position:fixed;z-index:10;top:0;right:0;bottom:0;width:min(440px,100%);background:var(--surface);border-left:1px solid var(--line);display:flex;flex-direction:column}
+#drawer[hidden],#scrim[hidden]{display:none}
+.dhd{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;padding:20px 20px 12px;border-bottom:1px solid var(--line)}
+.dhd h2{font:500 20px/1.3 var(--f-serif);margin:0}.dhd h2:focus{outline:none}
+.dhd button{border:0;background:none;font-size:22px;line-height:1;cursor:pointer;color:var(--muted);padding:2px 6px;border-radius:4px}
+#db{overflow:auto;padding:4px 20px 32px;overscroll-behavior:contain}
+#db .note{font-size:13px;color:var(--muted);margin:12px 0}
+#db .tk>summary{grid-template-columns:14px minmax(0,1fr)}
+#db .tk .tg{grid-column:2;justify-content:flex-start;padding-top:0}
+table.ld{width:100%;border-collapse:collapse;font-size:13.5px;margin:12px 0}
+table.ld th,table.ld td{text-align:right;padding:6px 0 6px 8px;border-bottom:1px solid var(--line)}
+table.ld th:first-child,table.ld td:first-child{text-align:left;padding-left:0}
+table.ld th{font-weight:500;color:var(--muted);font-size:12px}
+table.ld tr.x td{color:var(--warn)}
+ol.ct{list-style:none;margin:0 0 8px;padding:0}
+ol.ct li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:6px 0;border-top:1px solid var(--line);font-size:13.5px}
+ol.ct li .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ol.ct li .v{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+@media (max-width:560px){
+ .head{font-size:24px}.sum{font-size:18px}
+ .tk>summary{grid-template-columns:14px minmax(0,1fr)}.tg{grid-column:2;justify-content:flex-start;padding-top:0}
+ details.q>summary,details.t>summary{grid-template-columns:minmax(0,1fr)}.q .line,.t .line{grid-column:1}
+ #drawer{top:auto;left:0;width:100%;height:85vh;border-left:0;border-top:1px solid var(--line);border-radius:12px 12px 0 0}
+ .dhd::before{content:"";position:absolute;left:50%;top:6px;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--line)}
+ .terms{grid-template-columns:minmax(0,1fr)}
+}
 </style>
-<div class="wrap">
-<h1>Himmel Roadmap Tracker</h1>
-<p class="stamp" id="stamp"></p>
-<div class="ledger" id="ledger"></div>
-<div class="overall" id="overall" role="img"></div>
-<details class="sec" open><summary>How to read this page</summary>
-<dl class="lg">
-<dt>Status</dt><dd><span class="st st2"></span> done · <span class="st st1"></span> in progress · <span class="st st0"></span> to do, read from Jira when the page was generated.</dd>
-<dt>Readiness 0–4</dt><dd>How ready the fix is to build: 0 no plan yet · 1 problem stated · 2 fix named, not yet checked · 3 plan audited · 4 audited, with dependencies, risks and acceptance written down. Below 3 only a small planning slice is scheduled.</dd>
-<dt>Impact 1–5</dt><dd>How much it hurts today: 1 cosmetic or docs · 2 friction on a rare path · 3 daily friction · 4 a gate or guard reports the wrong thing · 5 blocks a release, loses data or allows an unsafe action.</dd>
-<dt>Effort XS–XL</dt><dd>The plan's low–high T-shirt estimate. In S-equivalents: <span id="eqs"></span>.</dd>
-<dt>Layers</dt><dd id="lgl"></dd>
-<dt>drift</dt><dd>Planned for this version, but Jira's fixVersion names another one.</dd>
-<dt>off-plan</dt><dd>In this version in Jira, but not in the roadmap plan. Done off-plan work still counts toward the version.</dd>
-<dt>plan first</dt><dd>Readiness below 3: this version schedules only a planning slice (XS or S), not the whole fix.</dd>
-<dt>vault notes</dt><dd>Luna vault notes that mention the ticket (cached text match, may miss some). Not a readiness signal.</dd>
-</dl></details>
-<div class="filters" role="group" aria-label="filters">
-<select id="fTheme" aria-label="theme"></select><select id="fLayer" aria-label="layer"></select>
-<input type="search" id="fQ" placeholder="search key or title" aria-label="search"><button id="fClr">Clear</button></div>
-<div class="tabs" role="tablist" id="tabs" aria-label="versions"></div>
-<div id="pane"></div>
-<p class="note">Status is read from the Jira mirror at generation time; plan fields (impact, effort, readiness, caps) come from the roadmap plan.</p>
-</div>
+<header class="mast"><div class="in"><b>Himmel roadmap</b><span class="stamp" id="stamp"></span>
+<label class="sw"><input type="checkbox" role="switch" id="rem"> Remaining only</label>
+<button class="tbtn" id="theme" type="button">Theme</button></div></header>
+<main id="main">
+<p class="train" id="train"></p>
+<section id="now" aria-label="running version"></section>
+<h2 class="sec">The queue</h2><div id="queue"></div>
+<h2 class="sec">By theme</h2><div id="themes"></div>
+<h2 class="sec">Without a place</h2><div id="unpl"></div>
+<footer>
+<details class="fold"><summary>Terms</summary>
+<dl class="terms" id="terms"></dl></details>
+<details class="fold" id="pvj"><summary id="pvjs">Plan vs Jira</summary><div id="pvjb"></div></details>
+<details class="fold"><summary>Budget rules</summary><div class="rules" id="rules"></div></details>
+<p id="prov"></p>
+</footer>
+</main>
+<div id="scrim" hidden></div>
+<aside id="drawer" role="dialog" aria-modal="true" aria-labelledby="dh" hidden><div class="dhd"><h2 id="dh" tabindex="-1"></h2><button type="button" id="dx" aria-label="Close">×</button></div><div id="db"></div></aside>
 <script type="application/json" id="data">__DATA__</script>
 <script>
 (function(){
 var D=JSON.parse(document.getElementById("data").textContent);
-var V=D.V,L=D.L,T=D.T,P=D.P,LC=["--l1","--l2","--l3","--l4","--l5"],LD=["--ld1","--ld2","--ld3"],CAP=D.CAP.total,LAST=V.length-1;
-function ldc(n,c){return "var("+LD[c==null?1:n<c*.5?0:n<c*.8?1:2]+")"}
-var K="hrt3882",S={tab:"",th:"",ly:"",q:""},cap={0:40,1:40,2:40};
+/*MODEL*/
+// Pure model (HIMMEL-3990): every figure on the page and every drill-down list comes from here; test-tracker.sh runs it under node.
+function model(D){
+ var V=D.V,P=D.P,T=D.T,LEG=D.LEG||{};
+ var KIND=["bugs","improvements","features","other","audits"];
+ var READY=["no plan yet","problem stated","fix named, not yet checked","plan audited","spec ready"];
+ function train(i){return /^v1\.0\.\d+$/.test(V[i])}
+ function keep(rem){return function(p){return !rem||p[2]!=2}}
+ function inV(i,rem){return P.filter(function(p){return p[3]==i}).filter(keep(rem))}
+ function inT(t,rem){return P.filter(function(p){return p[5]==t&&train(p[3])}).filter(keep(rem))}
+ function inTrain(rem){return P.filter(function(p){return train(p[3])}).filter(keep(rem))}
+ function leg(p){return p[2]!=2&&LEG[String(p[0])]||null}
+ function tally(a){var r={n:a.length,done:0,prog:0,todo:0,live:0};
+  a.forEach(function(p){if(p[2]==2)r.done++;else if(p[2]==1)r.prog++;else r.todo++;if(leg(p))r.live++});r.left=r.n-r.done;return r}
+ function r4(x){return Math.round(x*10000)/10000}
+ function ld(p){return p[7]==2?0:(p[15]||0)}
+ function rank(p){return p[2]==2?3:leg(p)?0:p[2]==1?1:2}
+ function order(a){return a.slice().sort(function(x,y){return rank(x)-rank(y)||(y[12]||0)-(x[12]||0)||x[0]-y[0]})}
+ // load(i): the version's budget by kind of work, each kind with its tickets (heaviest first); caps are the version's own (VC).
+ function load(i,rem){
+  var a=inV(i,rem),c=D.VC[i],tot=0;
+  var kinds=KIND.map(function(k,j){var t=a.filter(function(p){return p[4]==j&&ld(p)>0}).sort(function(x,y){return ld(y)-ld(x)||x[0]-y[0]}),u=0;
+   t.forEach(function(p){u+=ld(p)});tot+=u;var cap=c?c.l[j]:null;
+   return {kind:k,used:r4(u),cap:cap,head:cap==null?null:r4(cap-u),over:cap!=null&&u>cap+1e-9,tickets:t}});
+  var planned=a.filter(function(p){return p[7]!=2}).length;
+  return {used:r4(tot),cap:c?c.tot:null,planned:planned,tcap:c?c.t:null,kinds:kinds,deferred:!c}}
+ function isInt(p){return /^internal\b/i.test(p[9]||"")}
+ function isUser(p){return !!p[9]&&!isInt(p)}
+ function best(a){return a.slice().sort(function(x,y){return (y[12]||0)-(x[12]||0)||(x[6]||0)-(y[6]||0)||x[0]-y[0]})[0]}
+ function pl(n,one,many){return n+" "+(n==1?one:many)}
+ // summary(a, by): deterministic words from the tickets' user impact. by "theme" for a version, "version" for a theme.
+ function summary(a,by){
+  var u=a.filter(isUser),i=a.filter(isInt).length,g={},col=by=="theme"?5:3;
+  function name(k){return by=="theme"?T[k]:V[k]}
+  u.forEach(function(p){var k=p[col];g[k]=g[k]||{k:k,n:0,s:0,a:[]};g[k].n++;g[k].s+=p[12]||0;g[k].a.push(p)});
+  var gs=Object.keys(g).map(function(k){return g[k]}).sort(function(x,y){return y.s-x.s||y.n-x.n||String(name(x.k)).localeCompare(String(name(y.k)))});
+  var s;
+  if(!a.length)s="Nothing left here.";
+  else if(!u.length&&i)s="Housekeeping only: "+pl(i,"internal change","internal changes")+".";
+  else if(!u.length)s=pl(a.length,"ticket","tickets")+", none described in the plan yet.";
+  else{s="Ships "+pl(u.length,"change","changes")+" for users"+(i?" and "+pl(i,"internal one","internal ones"):"");
+   if(by=="theme"){var nm=gs.filter(function(x){return !/^\(/.test(T[x.k])}).slice(0,2);
+    if(nm.length)s+="; mostly "+nm.map(function(x){return T[x.k]+" ("+x.n+")"}).join(" and ")}
+   else{var vs=a.map(function(p){return p[3]}).sort(function(x,y){return x-y});s+=", from "+V[vs[0]]+(vs[vs.length-1]!=vs[0]?" to "+V[vs[vs.length-1]]:"")}
+   s+="."}
+  return {lead:s,quotes:gs.slice(0,3).map(function(x){var p=best(x.a);return {p:p,text:p[9]}})}}
+ // drill(kind, scope): the tickets behind one figure; scope {v:i} or {t:i} or {train:1}.
+ function drill(kind,scope,rem){
+  var a=scope.v!=null?inV(scope.v,rem):scope.t!=null?inT(scope.t,rem):inTrain(rem);
+  var f={all:function(){return true},done:function(p){return p[2]==2},left:function(p){return p[2]!=2},
+   live:function(p){return !!leg(p)},prog:function(p){return p[2]==1},todo:function(p){return p[2]==0}}[kind];
+  return order(a.filter(f))}
+ function current(rem){for(var i=0;i<V.length;i++)if(train(i)&&inV(i).some(function(p){return p[2]!=2}))return i;return null}
+ return {KIND:KIND,READY:READY,train:train,inV:inV,inT:inT,inTrain:inTrain,leg:leg,tally:tally,load:load,summary:summary,
+  drill:drill,order:order,isUser:isUser,current:current,ld:ld}}
+/*END MODEL*/
+var M=model(D),V=D.V,T=D.T,REM=false,OPEN={},opener=null;
 function $(i){return document.getElementById(i)}
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
-function svg(t,a){var e=document.createElementNS("http://www.w3.org/2000/svg",t);for(var k in a)e.setAttribute(k,a[k]);return e}
-function tid(v){return v.replace("/","-")}
-function lab(i){return i==LAST?"v2/3":V[i].replace("v1.0.","")}
-try{var s=JSON.parse(localStorage.getItem(K)||"{}");for(var k in s)if(k in S)S[k]=s[k]}catch(e){}
-function save(){try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}}
-function tally(a){var r=[0,0,0];a.forEach(function(p){r[p[2]]++});return r}
-function inV(i){return P.filter(function(p){return p[3]==i})}
-var cur=D.CUR,sel=cur==null?LAST:cur;  // cur is null once the whole train is done; sel is only the default tab
-function tabIndex(id){if(id==="overview")return -2;for(var i=0;i<V.length;i++)if(tid(V[i])===id)return i;return -1}
-var h="";try{h=decodeURIComponent(location.hash.replace(/^#/,""))}catch(e){}
-if(tabIndex(h)==-1)h=S.tab;if(tabIndex(h)==-1)h=tid(V[sel]);S.tab=h;
-function setTab(id){S.tab=id;save();try{history.replaceState(null,"","#"+id)}catch(e){try{location.hash=id}catch(e2){}}render();window.scrollTo(0,0)}
-window.addEventListener("hashchange",function(){var id="";try{id=decodeURIComponent(location.hash.replace(/^#/,""))}catch(e){}if(id&&tabIndex(id)!=-1&&id!==S.tab){S.tab=id;save();render()}});
-function match(p){
- if(S.th!==""&&T[p[5]]!==S.th)return false;
- if(S.ly!==""&&L[p[4]]!==S.ly)return false;
- if(S.q){var q=S.q.toLowerCase();if(("himmel-"+p[0]+" "+p[1]).toLowerCase().indexOf(q)<0)return false}
- return true}
-function subset(){return P.filter(match)}
-function layerChip(p){var l=el("span","chip l",L[p[4]]);l.style.setProperty("--c","var("+LC[p[4]]+")");return l}
-function notePath(n){return D.DR[n[0]]+"/"+n[1]}
-function card(p){
- var c=el("div","card");c.appendChild(el("div","t",p[1]));if(p[9])c.appendChild(el("div","ui",p[9]));
- var m=el("div","meta");m.appendChild(el("span","key","HIMMEL-"+p[0]));m.appendChild(layerChip(p));
- if(p[10])m.appendChild(el("span","fx","effort "+p[10]));else if(p[6])m.appendChild(el("span","fx","effort "+p[6]+" S-eq"));
- if(p[13])m.appendChild(el("span","chip pf","plan first: "+p[13]+" slice"));
- if(p[11]!=null)m.appendChild(el("span","fx","ready "+p[11]+"/4"));
- if(p[12]!=null)m.appendChild(el("span","fx","impact "+p[12]+"/5"));
- m.appendChild(el("span",null,T[p[5]]));
- if(p[7]==1)m.appendChild(el("span","chip drift","drift"));
- if(p[7]==2)m.appendChild(el("span","chip off","off-plan"));
- c.appendChild(m);
- if(p[8]&&p[8].length){var d=el("details"),s=el("summary",null,"vault notes ("+p[8].length+")");d.appendChild(s);
-  d.appendChild(el("div","nt","Jira key: HIMMEL-"+p[0]));
-  p[8].forEach(function(i){var n=D.N[i],pa=notePath(n),b=el("div","nt");b.appendChild(el("div","ti",n[2]));
-   b.appendChild(el("code",null,pa));b.appendChild(el("code",null,"obsidian://open?vault=luna&file="+encodeURIComponent(pa.replace(/\.md$/,""))));d.appendChild(b)});
-  c.appendChild(d)}
- return c}
-function row(p){
- var r=el("div","row");r.appendChild(el("span","st st"+p[2]));r.appendChild(el("span","key","HIMMEL-"+p[0]));r.appendChild(el("span","t",p[1]));r.appendChild(layerChip(p));if(p[7]==1)r.appendChild(el("span","chip drift","drift"));return r}
-function seg(cls,n,tot){var i=el("i",cls);i.style.width=(100*n/(tot||1))+"%";return i}
-function pctf(n,t){return t?Math.round(100*n/t):0}
-function ledger(){
- var a=P.filter(function(p){return /^v1\.0\.\d+$/.test(V[p[3]])}),t=tally(a),tot=a.length;
- $("stamp").textContent="Generated "+D.gen+" from mirror updated "+D.mir+"; plan built at main "+D.sha+".";
- var l=$("ledger");l.textContent="";
- D.LG.forEach(function(x){l.appendChild(el("p",x.indexOf("Needs attention")==0?"x":null,x))});
- var o=$("overall");o.textContent="";o.appendChild(seg("seg-d",t[2],tot));o.appendChild(seg("seg-p",t[1],tot));
- o.setAttribute("aria-label","v1.0.x: "+t[2]+" done, "+t[1]+" in progress, "+t[0]+" to do")}
-function tabs(){
- var t=$("tabs");t.textContent="";var sel=null;
- [["overview","Overview",null]].concat(V.map(function(v,i){return[tid(v),v,i]})).forEach(function(x){
-  var b=el("button",x[2]==cur?"cur":"",x[1]);b.setAttribute("role","tab");b.setAttribute("aria-selected",x[0]===S.tab);
-  if(x[2]!==null){var tl=tally(inV(x[2])),n=tl[0]+tl[1]+tl[2];var m=el("span","m");m.style.width=pctf(tl[2],n)+"%";b.appendChild(m);b.title=V[x[2]]+": "+tl[2]+"/"+n+" done"}
-  b.addEventListener("click",function(){setTab(x[0])});t.appendChild(b);if(x[0]===S.tab)sel=b});
- if(sel&&sel.scrollIntoView){try{t.scrollLeft=Math.max(0,sel.offsetLeft-t.clientWidth/2+sel.offsetWidth/2)}catch(e){}}}
-function layerMix(f){
- var w=el("div"),c=L.map(function(_,i){return f.filter(function(p){return p[4]==i}).length});
- var hb=el("div","hbar");c.forEach(function(n,i){if(!n)return;var d=el("i");d.style.width=(100*n/(f.length||1))+"%";d.style.background="var("+LC[i]+")";d.title=L[i]+" "+n;hb.appendChild(d)});w.appendChild(hb);
- var lg=el("div","legend");L.forEach(function(l,i){if(!c[i])return;var s=el("span"),b=el("i");b.style.background="var("+LC[i]+")";s.appendChild(b);s.appendChild(document.createTextNode(l+" "+c[i]));lg.appendChild(s)});w.appendChild(lg);return w}
-function meter(n,c){
- var mx=Math.max(c!=null?c*1.2:0,n,0.001),ld=el("div","load"),d=el("i");d.style.left="0";d.style.width=(100*n/mx)+"%";d.style.background=ldc(n,c);ld.appendChild(d);
- if(c!=null){var b=el("b");b.style.left=(100*c/mx)+"%";ld.appendChild(b)}return ld}
-function loadBar(v){
- var w=el("div"),vl=D.VL[v],dfr=!/^v1\.0\.\d+$/.test(V[v]),c=dfr?null:CAP;
- w.appendChild(meter(vl[5],c));
- w.appendChild(el("div","note","Total load "+vl[5].toFixed(2)+(c!=null?" of "+c+" bank cap"+(c?" ("+Math.round(100*vl[5]/c)+"%)":""):dfr?" (deferred bucket: no cap)":" (cap not recorded in the plan)")+", ~"+vl[6]+" legs. Dashed line = cap."));
- if(!dfr)L.forEach(function(l,i){var lc=D.CAP.layers[i],r=el("div","lrow");r.appendChild(el("span",null,l));r.appendChild(meter(vl[i],lc));
-  r.appendChild(el("b",null,vl[i].toFixed(2)+" / "+(lc==null?"–":lc.toFixed(2))));w.appendChild(r)});
- return w}
-function themeList(f){
- var pl=el("div","plist"),used=T.map(function(_,i){return i}).filter(function(i){return f.some(function(p){return p[5]==i})});
- used.map(function(ti){var a=f.filter(function(p){return p[5]==ti});return[ti,a,tally(a)]}).sort(function(x,y){return y[1].length-x[1].length}).forEach(function(x){
-  var r=el("div","r");r.appendChild(el("span",null,T[x[0]]));var b=el("div","b");b.appendChild(seg("seg-d",x[2][2],x[1].length));b.appendChild(seg("seg-p",x[2][1],x[1].length));r.appendChild(b);
-  r.appendChild(el("span","flag",x[2][2]+"/"+x[1].length));pl.appendChild(r)});return pl}
-function versionTab(pane,v){
- // HIMMEL-3957: Done off-plan work sits in the Done column (it counts toward this version); only open off-plan work is listed apart.
- var f=subset().filter(function(p){return p[3]==v}),pl=f.filter(function(p){return p[7]!=2||p[2]==2}),un=f.filter(function(p){return p[7]==2&&p[2]!=2}),dr=f.filter(function(p){return p[7]==1}),t=tally(f);
- var off=f.filter(function(p){return p[7]==2}).length,xs=[];
- if(off)xs.push(off+" off-plan ("+(off-un.length)+" of them done)");if(dr.length)xs.push(dr.length+" drifted");
- pane.appendChild(el("h2",null,V[v]+(v==cur?" (running now)":"")));
- pane.appendChild(el("p","ledger",t[2]+" of "+f.length+" done ("+pctf(t[2],f.length)+" %), "+t[1]+" in progress, "+t[0]+" to do. "+(f.length-off)+" planned"+(xs.length?", "+xs.join(", "):"")+"."));
- var o=el("div","overall");o.appendChild(seg("seg-d",t[2],f.length));o.appendChild(seg("seg-p",t[1],f.length));pane.appendChild(o);
- var fc=el("div","facets"),a=el("div");a.appendChild(el("h3",null,"Layer mix"));a.appendChild(layerMix(f));
- var b=el("div");b.appendChild(el("h3",null,"Effort load vs bank cap"));b.appendChild(loadBar(v));
- var c=el("div");c.appendChild(el("h3",null,"Themes (done/total)"));c.appendChild(themeList(f));
- fc.appendChild(a);fc.appendChild(b);fc.appendChild(c);pane.appendChild(fc);
- var g=el("div","board");
- [[0,"To do",""],[1,"In progress","p"],[2,"Done","d"]].forEach(function(cd){
-  var col=el("div","col "+cd[2]),items=pl.filter(function(p){return p[2]==cd[0]});
-  col.appendChild(el("h3",null,cd[1]+" ("+items.length+")"));
-  items.slice(0,cap[cd[0]]).forEach(function(p){col.appendChild(card(p))});
-  if(items.length>cap[cd[0]]){var bt=el("button","more","Show "+(items.length-cap[cd[0]])+" more");bt.addEventListener("click",function(){cap[cd[0]]+=1000;render()});col.appendChild(bt)}
-  g.appendChild(col)});
- pane.appendChild(g);
- if(dr.length){var d=el("div","unp");d.appendChild(el("h3",null,"Drift ("+dr.length+")"));d.appendChild(el("div","note","Planned here, but Jira fixVersion names other versions."));dr.forEach(function(p){d.appendChild(row(p))});pane.appendChild(d)}
- if(un.length){var u=el("div","unp");u.appendChild(el("h3",null,"Off-plan, still open in "+V[v]+" ("+un.length+")"));u.appendChild(el("div","note","In this fixVersion in Jira but not in the roadmap plan."));un.forEach(function(p){u.appendChild(row(p))});pane.appendChild(u)}}
-function strip(pane,f){
- var by=V.map(function(_,i){return tally(f.filter(function(p){return p[3]==i}))}),mx=1;by.forEach(function(t){mx=Math.max(mx,t[0]+t[1]+t[2])});
- var r=el("div","rail"),tr=el("div","train");
- V.forEach(function(v,i){var b=el("button","car"+(i==cur?" cur":"")),t=by[i];b.title=v+": "+t[2]+" done, "+t[1]+" in progress, "+t[0]+" to do";
-  var bar=el("div","bar");[[t[2],"seg-d"],[t[1],"seg-p"],[t[0],"seg-t"]].forEach(function(x){if(!x[0])return;var d=el("div",x[1]);d.style.height=Math.max(3,Math.round(96*x[0]/mx))+"px";bar.appendChild(d)});
-  b.appendChild(bar);b.appendChild(el("small",null,lab(i)));b.addEventListener("click",function(){setTab(tid(v))});tr.appendChild(b)});
- r.appendChild(tr);pane.appendChild(r);
- var lg=el("div","legend");[["seg-d","done"],["seg-p","in progress"],["seg-t","to do"]].forEach(function(x){var s=el("span"),i=el("i",x[0]);s.appendChild(i);s.appendChild(document.createTextNode(x[1]));lg.appendChild(s)});
- lg.appendChild(el("span",null,"Bar height = tickets in that version (planned + unplanned). Click a bar to open its tab."));pane.appendChild(lg)}
-function burnup(pane,f){
- var W=760,H=220,ml=44,mr=90,mt=12,mb=26,n=LAST,cs=0,cd=0,cp=0,sc=[],dn=[],pg=[];
- for(var i=0;i<n;i++){var t=tally(f.filter(function(p){return p[3]==i}));cs+=t[0]+t[1]+t[2];cd+=t[2];cp+=t[1];sc.push(cs);dn.push(cd);pg.push(cd+cp)}
- var mx=Math.max(1,cs),X=function(i){return ml+(W-ml-mr)*i/(n-1)},Y=function(v){return H-mb-(H-mt-mb)*v/mx};
- var s=svg("svg",{viewBox:"0 0 "+W+" "+H,role:"img","aria-label":"Cumulative tickets across versions: scope "+cs+", done "+cd});
- for(var k=0;k<=4;k++){var v=Math.round(mx*k/4),y=Y(v);s.appendChild(svg("line",{x1:ml,x2:W-mr,y1:y,y2:y,stroke:"var(--line)"}));var tx=svg("text",{x:ml-6,y:y+4,"text-anchor":"end"});tx.textContent=v;s.appendChild(tx)}
- for(i=0;i<n;i+=5){var tx2=svg("text",{x:X(i),y:H-8,"text-anchor":"middle"});tx2.textContent=lab(i);s.appendChild(tx2)}
- var area="M"+X(0)+","+Y(0);dn.forEach(function(v,i){area+=" L"+X(i)+","+Y(v)});area+=" L"+X(n-1)+","+Y(0)+"Z";
- s.appendChild(svg("path",{d:area,fill:"var(--done)","fill-opacity":".35"}));
- function line(a,col,dash,txt){var d="";a.forEach(function(v,i){d+=(i?" L":"M")+X(i)+","+Y(v)});var p=svg("path",{d:d,fill:"none",stroke:col,"stroke-width":2});if(dash)p.setAttribute("stroke-dasharray","5 4");s.appendChild(p);
-  var e=svg("text",{x:X(n-1)+6,y:Y(a[n-1])+4});e.style.fill=col;e.textContent=txt+" "+a[n-1];s.appendChild(e)}
- line(dn,"var(--done)",0,"done");line(pg,"var(--prog)",0,"+active");line(sc,"var(--ink)",1,"scope");
- var b=el("div","burn");b.appendChild(s);pane.appendChild(b);
- pane.appendChild(el("div","legend")).appendChild(el("span",null,"Cumulative across v1.0.1 to v1.0.42: done, done + in progress, and total scope (planned + unplanned)."))}
-function capBox(pane){var b=el("div","capbox");D.CAP.text.forEach(function(x){b.appendChild(el("p",null,x))});pane.appendChild(b)}
-function loadChart(pane){
- // one magnitude per version on the slate load ramp (LD), stepped by share of the cap; never the layer hues.
- var mx=1e-3;V.forEach(function(_,i){if(/^v1\.0\.\d+$/.test(V[i]))mx=Math.max(mx,D.VL[i][5])});mx=Math.max(mx,(CAP||0)*1.15);
- var ch=el("div","chart"),cols=el("div","lcols");
- V.forEach(function(v,i){var col=el("div","lcol"),bar=el("div","bar"),n=D.VL[i][5],dfr=!/^v1\.0\.\d+$/.test(v);
-  var off=n>mx;  // a load past the train's scale (the deferred bucket) is clipped, and says so
-  if(n){var d=el("div");d.style.height=Math.max(2,Math.round(110*Math.min(n,mx)/mx))+"px";d.style.background=ldc(n,dfr?null:CAP);d.title=v+": load "+n.toFixed(2)+(CAP!=null&&!dfr?" of "+CAP+(CAP?" ("+Math.round(100*n/CAP)+"%)":""):dfr?" (deferred, no cap)":"")+(off?"; off the scale, bar clipped":"");bar.appendChild(d)}
-  col.appendChild(bar);col.appendChild(el("small",null,lab(i)+(off?" ▲":"")));cols.appendChild(col)});
- if(CAP!=null){var c=el("div","cap");c.style.bottom=(26+110*CAP/mx)+"px";c.appendChild(el("span",null,"cap "+CAP));cols.appendChild(c)}
- ch.appendChild(cols);pane.appendChild(ch);
- var lg=el("div","legend");["under half the cap","half to 80 %","80 % or more"].forEach(function(x,k){var s=el("span"),i=el("i");i.style.background="var("+LD[k]+")";s.appendChild(i);s.appendChild(document.createTextNode(x));lg.appendChild(s)});
- lg.appendChild(el("span",null,"Dashed line = total cap. ▲ = load off the scale, bar clipped. Per-layer load vs its own cap is on each version's tab."));pane.appendChild(lg)}
-function layerChart(pane,f){
- var per=V.map(function(_,v){return f.filter(function(p){return p[3]==v})}),mx=1;per.forEach(function(a){mx=Math.max(mx,a.length)});
- var ch=el("div","chart"),cols=el("div","lcols");
- per.forEach(function(a,v){var col=el("div","lcol"),bar=el("div","bar");
-  L.forEach(function(_,i){var n=a.filter(function(p){return p[4]==i}).length;if(!n)return;var d=el("div");d.style.height=Math.max(2,Math.round(110*n/mx))+"px";d.style.background="var("+LC[i]+")";d.title=V[v]+" "+L[i]+" "+n;bar.appendChild(d)});
-  col.appendChild(bar);col.appendChild(el("small",null,lab(v)));cols.appendChild(col)});
- ch.appendChild(cols);pane.appendChild(ch)}
-function heat(pane,f){
- var box=el("div","heat"),tb=el("table"),hr=el("tr");hr.appendChild(el("th"));
- V.forEach(function(v,i){hr.appendChild(el("th",null,lab(i)))});tb.appendChild(hr);
- T.map(function(_,i){return i}).filter(function(i){return f.some(function(p){return p[5]==i})}).forEach(function(ti){var r=el("tr");r.appendChild(el("th","tn",T[ti]));
-  V.forEach(function(v,vi){var a=f.filter(function(p){return p[5]==ti&&p[3]==vi}),td=el("td",a.length?"":"z",a.length||"");
-   if(a.length){var d=a.filter(function(p){return p[2]==2}).length/a.length;td.style.background="color-mix(in srgb,var(--done) "+Math.round(d*100)+"%,color-mix(in srgb,var(--todo) 30%,var(--panel)))";td.title=T[ti]+" "+v+": "+a.length+" tickets, "+Math.round(d*100)+"% done";
-    td.addEventListener("click",function(){setTab(tid(v))})}
-   r.appendChild(td)});tb.appendChild(r)});
- box.appendChild(tb);pane.appendChild(box)}
-function details(pane){
- var q=(S.q||"").toLowerCase();
- function keep(a){return a.filter(function(x){return !q||("himmel-"+x[0]+" "+x[1]+" "+x[3]).toLowerCase().indexOf(q)>=0})}
- var u=keep(D.U);
- var d2=el("details","sec");d2.appendChild(el("summary",null,"Parked / unplaced ("+u.length+")"));
- u.forEach(function(x){var r=el("div","row");r.appendChild(el("span","st st"+x[2]));r.appendChild(el("span","key","HIMMEL-"+x[0]));r.appendChild(el("span","t",x[1]));r.appendChild(el("span","flag",x[3]));d2.appendChild(r)});
- pane.appendChild(d2)}
-function overview(pane){
- var f=subset();
- pane.appendChild(el("h2",null,"Version train"));strip(pane,f);
- pane.appendChild(el("h2",null,"Burn-up"));burnup(pane,f);
- pane.appendChild(el("h2",null,"Effort load per version vs bank cap"));capBox(pane);loadChart(pane);
- pane.appendChild(el("h2",null,"Layer mix"));pane.appendChild(layerMix(f));layerChart(pane,f);
- pane.appendChild(el("h2",null,"Theme by version"));pane.appendChild(el("div","note","Cell = ticket count; green share = done. Click a cell to open that version."));heat(pane,f);
- pane.appendChild(el("h2",null,"Theme progress"));pane.appendChild(themeList(f));
- pane.appendChild(el("h2",null,"Outside the plan"));details(pane)}
-function render(){
- ledger();tabs();var p=$("pane");p.textContent="";var i=tabIndex(S.tab);
- if(i<0)overview(p);else versionTab(p,i)}
-function fill(sel,arr,cv,lb){sel.textContent="";var o=el("option",null,lb);o.value="";sel.appendChild(o);arr.forEach(function(x){var o2=el("option",null,x);o2.value=x;sel.appendChild(o2)});sel.value=cv}
-$("eqs").textContent=D.EQ;
-L.forEach(function(l,i){var s=el("span"),b=el("i","sw");b.style.background="var("+LC[i]+")";s.appendChild(b);s.appendChild(document.createTextNode(l+(i<L.length-1?" · ":"")));$("lgl").appendChild(s)});
-fill($("fTheme"),T,S.th,"All themes");fill($("fLayer"),L,S.ly,"All layers");$("fQ").value=S.q;
-if($("fTheme").value!==S.th)S.th="";if($("fLayer").value!==S.ly)S.ly="";
-$("fTheme").addEventListener("change",function(){S.th=this.value;save();render()});
-$("fLayer").addEventListener("change",function(){S.ly=this.value;save();render()});
-$("fQ").addEventListener("input",function(){S.q=this.value;save();render()});
-$("fClr").addEventListener("click",function(){S.th=S.ly=S.q="";$("fTheme").value="";$("fLayer").value="";$("fQ").value="";save();render()});
+function txt(s){return document.createTextNode(s)}
+function add(p){for(var i=1;i<arguments.length;i++){var c=arguments[i];if(c==null)continue;p.appendChild(typeof c=="string"?txt(c):c)}return p}
+function pl(n,one,many){return n+" "+(n==1?one:many)}
+function f2(x){return x==null?"–":x.toFixed(2)}
+function pct(n,d){return d?Math.round(100*n/d):0}
+function nb(label,kind,scope,title){var b=el("button","n",label);b.type="button";
+ b.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();openDrill(kind,scope,title,b)});return b}
+function keyOf(p){return "HIMMEL-"+p[0]}
+function dots(n){var d=el("span","dots");d.setAttribute("role","img");d.setAttribute("aria-label","impact "+n+" of 5");d.title="impact "+n+" of 5";
+ for(var i=1;i<=5;i++)d.appendChild(el("i",i<=n?"f":null));return d}
+function chip(lg){var t=lg[0]+" · "+(lg[1]=="LIVE"&&lg[2]?"PR #"+lg[2]:lg[1]);var c=el("span","chip "+lg[1],t);c.title="leg "+lg[0]+", last marker "+lg[1]+(lg[2]?", PR "+lg[2]:"");return c}
+function mark(p){var lg=M.leg(p),c=p[2]==2?"done":lg?"live":p[2]==1?"started":"todo",
+ w={done:"done",live:"a leg is on it",started:"started in Jira, no leg",todo:"to do"}[c];var m=el("span","mk "+c);m.setAttribute("role","img");m.setAttribute("aria-label",w);m.title=w;return m}
+function impactText(p,host){
+ if(!p[9]){host.textContent=p[1];return host}
+ var m=/^internal:\s*/i.exec(p[9]);if(m){add(host,el("span","int","Internal")," "+p[9].slice(m[0].length))}else host.textContent=p[9];return host}
+function ticket(p){
+ var d=el("details","tk"),s=el("summary"),tx=el("span","tx"),sub=el("span","sub"),tg=el("span","tg"),lg=M.leg(p);
+ add(sub,el("code",null,keyOf(p)),p[9]?" · "+p[1]:null);sub.title=p[1];
+ add(tx,impactText(p,el("span","ui")),sub);
+ if(lg)tg.appendChild(chip(lg));if(p[10])add(tg,el("span","sz",p[10]));if(p[12]!=null)tg.appendChild(dots(p[12]));
+ add(s,mark(p),tx,tg);d.appendChild(s);
+ d.addEventListener("toggle",function(){if(d.open&&!d.dataset.f){d.dataset.f="1";d.appendChild(more(p))}});return d}
+function more(p){
+ var m=el("div","more"),u=el("ul");if(p[14])m.appendChild(el("p",null,p[14]));
+ if(p[11]!=null)u.appendChild(el("li",null,"Ready to build: "+M.READY[p[11]]+" ("+p[11]+" of 4)."));
+ if(p[10])u.appendChild(el("li",null,"Size "+p[10]+(p[6]?", about "+p[6]+" S-equivalents":"")+(p[15]?"; uses "+p[15].toFixed(3)+" of "+V[p[3]]+"'s budget":"")+"."));
+ if(p[13])u.appendChild(el("li",null,"Planning slice only ("+p[13]+"): not ready enough to build, so "+V[p[3]]+" schedules the plan, not the fix."));
+ u.appendChild(el("li",null,"Theme: "+T[p[5]]+" · kind: "+M.KIND[p[4]]+" · "+V[p[3]]+"."));
+ if(p[7]==1)u.appendChild(el("li",null,"Jira names a different version than the plan."));
+ if(p[7]==2)u.appendChild(el("li",null,"Not in the plan: Jira puts it in "+V[p[3]]+"."));
+ var lg=M.leg(p);if(lg)u.appendChild(el("li",null,"Leg "+lg[0]+" is on it; its last marker is "+lg[1]+(lg[2]?", PR "+lg[2]:"")+"."));
+ m.appendChild(u);
+ if(p[8]&&p[8].length){var n=el("ul");p[8].forEach(function(i){var x=D.N[i],pa=D.DR[x[0]]+"/"+x[1],a=el("a",null,x[2]);
+  a.href="obsidian://open?vault=luna&file="+encodeURIComponent(pa.replace(/\.md$/,""));a.title=pa;n.appendChild(add(el("li"),a))});
+  add(m,el("p",null,"Vault notes that mention it:"),n)}
+ return m}
+function strip(t){var s=el("div","strip");s.setAttribute("role","img");
+ s.setAttribute("aria-label",t.done+" done, "+t.live+" with a leg, "+(t.prog-t.live)+" started, "+t.todo+" to do");
+ [["d",REM?0:t.done],["l",t.live],["s",t.prog-t.live]].forEach(function(x){if(x[1]>0){var i=el("i",x[0]);i.style.width=(100*x[1]/(t.n||1))+"%";s.appendChild(i)}});return s}
+function capBar(ld){var c=el("div","cap");c.setAttribute("role","img");
+ if(ld.deferred||ld.cap==null){c.className="cap none";c.setAttribute("aria-label","no cap");return c}
+ var sc=Math.max(ld.cap,ld.used)||1,f=el("i");f.style.width=(100*Math.min(ld.used,ld.cap)/sc)+"%";c.appendChild(f);
+ if(ld.used>ld.cap){var o=el("i","o");o.style.left=(100*ld.cap/sc)+"%";o.style.width=(100*(ld.used-ld.cap)/sc)+"%";c.appendChild(o)}
+ var k=el("b");k.style.left=(100*ld.cap/sc)+"%";c.appendChild(k);c.setAttribute("aria-label","budget "+f2(ld.used)+" of "+f2(ld.cap));return c}
+function capLine(i,ld){var l=el("div","cap-line");
+ if(ld.deferred){add(l,"Deferred bucket: no cap. ",nb(f2(ld.used)+" budget","load",{v:i},V[i]+": budget by kind")," parked here.");return l}
+ var over=ld.kinds.filter(function(k){return k.over});
+ add(l,el("span",null,"Budget used "),nb(f2(ld.used)+(ld.cap!=null?" of "+f2(ld.cap):""),"load",{v:i},V[i]+": budget by kind"),
+  el("span",null,pl(ld.planned,"planned ticket","planned tickets")+(ld.tcap!=null?" of a "+ld.tcap+" cap":"")));
+ if(over.length)l.appendChild(el("span","x",over.map(function(k){return k.kind}).join(", ")+" over cap"));return l}
+function headline(i,t){var h=el("h2","head");add(h,el("span","v",V[i])," — ");
+ if(!t.left&&t.n){add(h,"shipped, ",nb(pl(t.n,"ticket","tickets"),"all",{v:i},V[i]+": every ticket"),".");return h}
+ if(REM)add(h,nb(t.left+" left","left",{v:i},V[i]+": what is left"));
+ else add(h,nb(t.left+" of "+t.n,"left",{v:i},V[i]+": what is left")," left");
+ if(t.live)add(h,", ",nb(pl(t.live,"leg","legs"),"live",{v:i},V[i]+": legs on it now")," on it now");
+ return add(h,".")}
+// sumPara: the lead sentence, then each top group's best ticket quoted verbatim under its group's name.
+function sumPara(sm,by){var f=document.createDocumentFragment(),u=el("ul","quotes");f.appendChild(el("p","sum",sm.lead));
+ sm.quotes.forEach(function(q){if(q.text)u.appendChild(add(el("li"),el("b",null,by=="version"?V[q.p[3]]:T[q.p[5]]),q.text))});
+ if(u.firstChild)f.appendChild(u);return f}
+function counts(i,t){var l=el("div","cap-line");
+ if(!REM&&t.done)l.appendChild(nb(t.done+" done ("+pct(t.done,t.n)+" %)","done",{v:i},V[i]+": done"));
+ if(t.live)l.appendChild(nb(pl(t.live,"leg","legs")+" working","live",{v:i},V[i]+": legs on it now"));
+ if(t.prog-t.live)l.appendChild(nb((t.prog-t.live)+" started, no leg","prog",{v:i},V[i]+": in progress"));
+ l.appendChild(nb(t.todo+" to do","todo",{v:i},V[i]+": to do"));return l}
+function ticketList(host,a,groupCol,groupName,cmp){
+ var open=M.order(a.filter(function(p){return p[2]!=2})),done=M.order(a.filter(function(p){return p[2]==2})),g={},ks=[];
+ open.forEach(function(p){var k=p[groupCol];if(!g[k]){g[k]=[];ks.push(k)}g[k].push(p)});
+ ks.sort(cmp||function(x,y){return g[y].length-g[x].length||String(groupName(x)).localeCompare(String(groupName(y)))});
+ ks.forEach(function(k){host.appendChild(add(el("h3","grp"),groupName(k),el("span",null,g[k].length+" left")));g[k].forEach(function(p){host.appendChild(ticket(p))})});
+ if(done.length){var d=el("details","done-grp");d.appendChild(el("summary",null,done.length+" done ›"));
+  d.addEventListener("toggle",function(){if(d.open&&!d.dataset.f){d.dataset.f="1";done.forEach(function(p){d.appendChild(ticket(p))})}});host.appendChild(d)}}
+function versionBody(i,host){
+ var a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM);
+ host.appendChild(sumPara(M.summary(a,"theme"),"theme"));
+ var b=el("div","bars");add(b,strip(t),counts(i,t),capBar(ld),capLine(i,ld));host.appendChild(b);
+ var w=a.filter(function(p){return M.leg(p)});
+ if(w.length){host.appendChild(add(el("h3","grp"),"Working now",el("span",null,pl(w.length,"leg","legs"))));
+  var ul=el("ul","work");w.forEach(function(p){ul.appendChild(add(el("li"),chip(M.leg(p)),impactText(p,el("span"))))});host.appendChild(ul)}
+ ticketList(host,a,5,function(k){return T[k]})}
+function lazy(d,id,fill){if(OPEN[id])d.open=true;
+ function f(){if(d.open&&!d.dataset.f){d.dataset.f="1";fill()}}
+ d.addEventListener("toggle",function(){OPEN[id]=d.open;f()});f()}
+function renderNow(cur){var s=$("now");s.textContent="";
+ if(cur==null){s.appendChild(el("h2","head","Every v1.0.x ticket is done."));return}
+ var a=M.inV(cur,REM),t=M.tally(a);s.appendChild(headline(cur,t));versionBody(cur,s)}
+function renderQueue(cur){var q=$("queue");q.textContent="";
+ V.forEach(function(v,i){if(i===cur)return;var a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM),d=el("details","q"),s=el("summary");
+  if(!a.length&&REM)return;
+  var meta=el("span","meta");add(meta,t.left?t.left+" left"+(REM?"":" of "+t.n):"shipped",capBar(ld),t.live?pl(t.live,"leg","legs"):null);
+  add(s,el("span","ver",v),meta,el("span","line",M.summary(a,"theme").lead));d.appendChild(s);
+  lazy(d,"q"+i,function(){var b=el("div","qb");b.appendChild(headline(i,t));versionBody(i,b);d.appendChild(b)});q.appendChild(d)})}
+function renderThemes(){var h=$("themes");h.textContent="";
+ T.map(function(_,i){return i}).map(function(ti){return [ti,M.inT(ti,REM)]}).filter(function(x){return x[1].length})
+ .sort(function(x,y){return M.tally(y[1]).left-M.tally(x[1]).left||T[x[0]].localeCompare(T[y[0]])}).forEach(function(x){
+  var ti=x[0],a=x[1],t=M.tally(a),d=el("details","t"),s=el("summary"),first=Math.min.apply(null,a.filter(function(p){return p[2]!=2}).map(function(p){return p[3]}).concat([1e9]));
+  var meta=el("span","meta",(REM?t.left+" left":t.left+" of "+t.n+" left")+(first<1e9?" · first in "+V[first]:"")+(t.live?" · "+pl(t.live,"leg","legs"):""));
+  add(s,el("span","ver",T[ti]),meta,el("span","line",M.summary(a,"version").lead));d.appendChild(s);
+  lazy(d,"t"+ti,function(){var b=el("div","qb"),l=el("div","cap-line");
+   if(!REM&&t.done)l.appendChild(nb(t.done+" done","done",{t:ti},T[ti]+": done"));
+   l.appendChild(nb(t.left+" left","left",{t:ti},T[ti]+": what is left"));
+   if(t.live)l.appendChild(nb(pl(t.live,"leg","legs")+" working","live",{t:ti},T[ti]+": legs on it now"));
+   add(b,sumPara(M.summary(a,"version"),"version"),l);ticketList(b,a,3,function(k){return V[k]},function(x,y){return x-y});d.appendChild(b)});
+  h.appendChild(d)})}
+function renderUnplaced(){var h=$("unpl");h.textContent="";var u=D.U.filter(function(x){return !REM||x[2]!=2});
+ var d=el("details","fold");d.appendChild(el("summary",null,pl(u.length,"ticket","tickets")+" parked or not placed ›"));
+ lazy(d,"unpl",function(){u.forEach(function(x){d.appendChild(add(el("div","up"),el("code",null,"HIMMEL-"+x[0]),el("span","t",x[1]),el("span",null,x[3])))})});h.appendChild(d)}
+function renderTrain(){var a=M.inTrain(REM),t=M.tally(a),p=$("train");p.textContent="";
+ add(p,"The v1.0.x train: ");
+ if(REM)add(p,nb(t.left+" tickets left","left",{train:1},"The v1.0.x train: what is left"));
+ else add(p,nb(t.done+" of "+t.n+" done","done",{train:1},"The v1.0.x train: done")," (",pct(t.done,t.n)+" %), ",nb(t.left+" left","left",{train:1},"The v1.0.x train: what is left"));
+ if(t.live)add(p,", ",nb(pl(t.live,"leg","legs")+" working now","live",{train:1},"Legs working now"));add(p,".")}
+function renderPvj(){var a=M.inTrain(REM),dr=a.filter(function(p){return p[7]==1}),off=a.filter(function(p){return p[7]==2&&p[2]!=2}),b=$("pvjb");
+ $("pvjs").textContent="Plan vs Jira: "+(dr.length+off.length?(dr.length+off.length)+" differ ›":"they agree");b.textContent="";
+ if(dr.length){b.appendChild(el("p",null,pl(dr.length,"ticket is","tickets are")+" planned for one version while Jira names another."));M.order(dr).forEach(function(p){b.appendChild(ticket(p))})}
+ if(off.length){b.appendChild(el("p",null,pl(off.length,"open ticket sits","open tickets sit")+" in a version in Jira but not in the plan."));M.order(off).forEach(function(p){b.appendChild(ticket(p))})}}
+function render(){var cur=D.CUR;renderTrain();renderNow(cur);renderQueue(cur);renderThemes();renderUnplaced();renderPvj()}
+// drawer: numbers open it; focus moves in, Tab is trapped, Esc closes and focus returns to the number that opened it.
+function openDrill(kind,scope,title,from){
+ var db=$("db");db.textContent="";$("dh").textContent=title;opener=from;
+ if(kind=="load")loadView(scope.v,db);else{var a=M.drill(kind,scope,REM);
+  db.appendChild(el("p","note",pl(a.length,"ticket","tickets")+(REM?", done ones hidden":"")+"."));a.forEach(function(p){db.appendChild(ticket(p))})}
+ $("scrim").hidden=false;$("drawer").hidden=false;$("main").inert=true;document.querySelector(".mast").inert=true;$("dh").focus()}
+function closeDrill(){if($("drawer").hidden)return;$("drawer").hidden=true;$("scrim").hidden=true;$("main").inert=false;document.querySelector(".mast").inert=false;
+ if(opener&&document.contains(opener))opener.focus();opener=null}
+function loadView(i,db){var ld=M.load(i,REM),tb=el("table","ld"),hr=el("tr");
+ ["Kind","Used","Cap","Headroom"].forEach(function(x){hr.appendChild(el("th",null,x))});tb.appendChild(hr);
+ ld.kinds.forEach(function(k){var r=el("tr",k.over?"x":null);[k.kind,f2(k.used),k.cap==null?"no cap":f2(k.cap),k.head==null?"–":f2(k.head)].forEach(function(x){r.appendChild(el("td",null,x))});tb.appendChild(r)});
+ var tr=el("tr");[ "total",f2(ld.used),ld.cap==null?"no cap":f2(ld.cap),ld.cap==null?"–":f2(ld.cap-ld.used)].forEach(function(x){tr.appendChild(el("td",null,x))});tb.appendChild(tr);
+ add(db,el("p","note",(ld.deferred?"Deferred bucket: no caps apply. ":"Caps are "+V[i]+"'s own, overrides included. ")+pl(ld.planned,"planned ticket","planned tickets")+(ld.tcap!=null?" of a "+ld.tcap+"-ticket cap":"")+(REM?"; done tickets left out.":".")),tb);
+ ld.kinds.forEach(function(k){if(!k.tickets.length)return;var d=el("details","fold");d.open=k.over;
+  d.appendChild(el("summary",null,k.kind+": "+pl(k.tickets.length,"ticket","tickets")+", "+f2(k.used)+(k.cap!=null?" of "+f2(k.cap):"")+" ›"));
+  var ol=el("ol","ct");k.tickets.forEach(function(p){var li=el("li"),t=el("span","t");add(t,el("code",null,keyOf(p))," ",p[9]?p[9].replace(/^internal:\s*/i,""):p[1]);t.title=p[9]||p[1];
+   add(li,t,el("span","v",M.ld(p).toFixed(3)+" · "+pct(M.ld(p),ld.used)+" %"));ol.appendChild(li)});d.appendChild(ol);db.appendChild(d)})}
+document.addEventListener("keydown",function(e){if($("drawer").hidden)return;
+ if(e.key=="Escape"){e.preventDefault();closeDrill();return}
+ if(e.key!="Tab")return;var f=[].slice.call($("drawer").querySelectorAll("button,summary,a[href],[tabindex]")).filter(function(x){return x.offsetParent!==null||x===$("dh")});
+ if(!f.length)return;var i=f.indexOf(document.activeElement);
+ if(e.shiftKey&&i<=0){e.preventDefault();f[f.length-1].focus()}else if(!e.shiftKey&&i==f.length-1){e.preventDefault();f[0].focus()}});
+$("dx").addEventListener("click",closeDrill);$("scrim").addEventListener("click",closeDrill);
+$("rem").addEventListener("change",function(){REM=this.checked;render()});
+var TK="hrt-theme";function applyTheme(m){if(m)document.documentElement.setAttribute("data-theme",m);else document.documentElement.removeAttribute("data-theme")}
+try{applyTheme(localStorage.getItem(TK))}catch(e){}
+$("theme").addEventListener("click",function(){var dk=getComputedStyle(document.documentElement).colorScheme=="dark",m=dk?"light":"dark";applyTheme(m);try{localStorage.setItem(TK,m)}catch(e){}});
+$("stamp").textContent="Rendered "+D.gen+" · Jira "+D.mir+" · plan @"+D.sha;
+$("prov").textContent="Status is read from the Jira mirror, and a leg with a held queue lock counts its ticket as in progress. Impact text, sizes, readiness and budgets come from the roadmap plan.";
+(function(){var t=$("terms"),mk=function(c){return el("span","mk "+c)};
+ [["Status",[mk("done"),"done · ",mk("live"),"a leg is on it · ",mk("started"),"started in Jira, no leg · ",mk("todo"),"to do"]],
+  ["Leg chip",["N123 · LIVE: the leg's label and its last marker (or its PR number while it is live)."]],
+  ["Size",["The plan's T-shirt estimate, low–high. In S-equivalents: "+D.EQ+"."]],
+  ["Impact",[dots(4)," how much it hurts today, 1 cosmetic to 5 blocks a release. A secondary tag: the sentence is the impact."]],
+  ["Ready to build",["0 no plan yet · 1 problem stated · 2 fix named, not yet checked · 3 plan audited · 4 spec ready. Below 3 a version schedules only a planning slice."]],
+  ["Budget",[capBar({used:.45,cap:.6,kinds:[]})," used of the version's cap; the tick is the cap, orange is over it."]],
+  ["No cap",[capBar({deferred:true})," ","no cap — deferred bucket"]],
+  ["Remaining only",["Hides done tickets everywhere; every count, budget and summary is recomputed from what is left."]]
+ ].forEach(function(x){t.appendChild(el("dt",null,x[0]));var d=el("dd");x[1].forEach(function(c){add(d,c)});t.appendChild(d)})})();
+D.CAP.text.forEach(function(x){$("rules").appendChild(el("p",null,x))});
 render();
 })();
 </script>
