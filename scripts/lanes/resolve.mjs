@@ -32,6 +32,18 @@ const die = (code, msg) => { process.stderr.write(msg + '\n'); process.exit(code
 // registry lanes outside it stay on their real probes. Absence of the allowlist
 // preserves the pre-HIMMEL-1428 behaviour for existing installs, while absence
 // of the scope preserves the original global-allowlist semantics for old files.
+//
+// HIMMEL-1448: the persisted scope is a FIXED install-time snapshot, so a
+// wizard-managed lane added or renamed in the registry afterwards falls outside
+// it. The registry itself therefore marks those lanes (`profileManaged`), and a
+// marked lane is constrained regardless of the snapshot: absent from the
+// allowlist = suppressed. Fail closed — only an absent marker or a literal
+// `false` leaves a lane unmanaged; any other value (typo'd "false", 0, null)
+// counts as managed. The scope is still honoured (union), never the only gate.
+export function isProfileManaged(lane) {
+  return lane?.profileManaged !== undefined && lane.profileManaged !== false;
+}
+
 export function resolveLaneInventory(registry, ctx) {
   const allowlist = Array.isArray(registry.profileAllowlist)
     ? new Set(registry.profileAllowlist)
@@ -45,7 +57,7 @@ export function resolveLaneInventory(registry, ctx) {
       lane,
       suppressedByProfile: Boolean(allowlist)
         && lane.class !== 'claude-tier'
-        && (!allowlistScope || allowlistScope.has(lane.id))
+        && (!allowlistScope || allowlistScope.has(lane.id) || isProfileManaged(lane))
         && !allowlist.has(lane.id),
     }));
 }

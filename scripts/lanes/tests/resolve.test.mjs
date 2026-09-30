@@ -162,6 +162,70 @@ test('profile allowlist scope leaves lanes outside the wizard-owned subset on th
   );
 });
 
+// HIMMEL-1448: the persisted profileAllowlistScope is a FIXED install-time
+// snapshot; a wizard-managed lane added or renamed in the registry afterwards
+// is outside it. The registry's own `profileManaged` marker keeps such a lane
+// constrained on a `lanes: none` install (empty allowlist).
+const noneInstall = (lanes) => ({
+  profileAllowlist: [],
+  profileAllowlistScope: ['codex-exec', 'hermes-oneshot'],
+  lanes,
+});
+const suppressedIds = (registry) => resolveLaneInventory(registry, ctx())
+  .filter((row) => row.suppressedByProfile).map((row) => row.lane.id);
+
+test('HIMMEL-1448 (a): a NEW profile-managed lane added after install stays suppressed', () => {
+  const registry = noneInstall([
+    { id: 'codex-exec', class: 'impl', profileManaged: true, probe: { kind: 'always' } },
+    { id: 'brand-new-lane', class: 'impl', profileManaged: true, probe: { kind: 'always' } },
+  ]);
+  assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), []);
+  assert.deepEqual(suppressedIds(registry), ['codex-exec', 'brand-new-lane']);
+});
+test('HIMMEL-1448 (b): a RENAMED profile-managed lane stays suppressed', () => {
+  const registry = noneInstall([
+    { id: 'codex-exec-v2', class: 'impl', profileManaged: true, probe: { kind: 'always' } },
+  ]);
+  assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), []);
+});
+test('HIMMEL-1448 (c): an allowlisted profile-managed lane stays routable', () => {
+  const registry = {
+    ...noneInstall([
+      { id: 'codex-exec', class: 'impl', profileManaged: true, probe: { kind: 'always' } },
+      { id: 'brand-new-lane', class: 'impl', profileManaged: true, probe: { kind: 'always' } },
+    ]),
+    profileAllowlist: ['codex-exec'],
+  };
+  assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['codex-exec']);
+});
+test('HIMMEL-1448 (d): an unmarked lane outside the scope is unaffected', () => {
+  const registry = noneInstall([
+    { id: 'unmarked', class: 'impl', probe: { kind: 'always' } },
+    { id: 'explicit-false', class: 'impl', profileManaged: false, probe: { kind: 'always' } },
+  ]);
+  assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['unmarked', 'explicit-false']);
+});
+test('HIMMEL-1448: a malformed marker fails CLOSED; Claude tiers are never constrained', () => {
+  const registry = noneInstall([
+    { id: 'str', class: 'impl', profileManaged: 'false', probe: { kind: 'always' } },
+    { id: 'num', class: 'impl', profileManaged: 0, probe: { kind: 'always' } },
+    { id: 'nul', class: 'impl', profileManaged: null, probe: { kind: 'always' } },
+    { id: 'tier', class: 'claude-tier', profileManaged: true, probe: { kind: 'always' } },
+  ]);
+  assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['tier']);
+});
+test('HIMMEL-1448: every lane the wizard offers carries the profileManaged marker in lanes.json', () => {
+  for (const id of ['codex-exec', 'hermes-oneshot']) {
+    assert.equal(REG.lanes.find((l) => l.id === id)?.profileManaged, true, `${id} must be profileManaged`);
+  }
+});
+test('HIMMEL-1448: force-on of a managed lane outside the persisted scope still extends the allowlist', () => {
+  const local = { lanes: [], profileAllowlist: [], profileAllowlistScope: ['codex-exec'] };
+  const next = applyLaneOverride(local, 'brand-new-lane', 'always', true);
+  assert.deepEqual(next.profileAllowlist, ['brand-new-lane']);
+  assert.deepEqual(applyLaneOverride(local, 'brand-new-lane', 'always').profileAllowlist, []);
+});
+
 test('absent profile allowlist preserves the pre-profile inventory', () => {
   const registry = { lanes: [{ id: 'optional', class: 'impl', probe: { kind: 'always' } }] };
   assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['optional']);
