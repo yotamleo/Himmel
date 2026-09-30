@@ -426,6 +426,36 @@ RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$).*--r[a-z-]*([^[:alnum
 if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
     deny "recursive rm"
 fi
+# HIMMEL-3650: the literal `-r`/`--r` scans above never see a flag the shell
+# only assembles at parse time (`rm -"r" d`, `rm -f"r" d`, `rm "--"recursive d`,
+# `rm -\r d`, `rm -$'r' d`, `command rm -r d`). Normalise instead of adding
+# spellings: strip every quote and backslash (the shell would drop them) and a
+# `command` wrapper, then run the same two flag scans on the result. A `$`
+# glued to a quote (`$'-r'`, `$"-r"`) is dropped with it, so a word the quoting
+# starts (`rm $'-r' d`) normalises to `-r`; a `$` the shell cannot resolve
+# (`rm -$x`) stays in an option word and denies. An ANSI-C string holding a
+# backslash (`$'\x2dr'`, `$'\055r'`) is unresolvable and denies outright.
+# Over-deny only: `rm -- -r` (a file literally named -r) and
+# `rm "my -r file"` deny - the word-level fix is HIMMEL-912.
+_sq="'"
+RM_ANSIC_ESC_PAT="(^|[^[:alnum:]_.-])rm(\\.exe)?([^|;&]*)\\\$${_sq}[^${_sq}]*\\\\"
+if [[ $rm_scrub =~ $RM_ANSIC_ESC_PAT ]]; then
+    deny "recursive rm (ANSI-C escape in rm argument)"
+fi
+rm_norm="${rm_scrub//\$[\"\']/}"
+rm_norm="${rm_norm//[\"\'\\]/}"
+rm_norm="${rm_norm//$'\t'/ }"
+while [[ $rm_norm == *'  '* ]]; do rm_norm="${rm_norm//  / }"; done
+# `command` plus any option run (`-p`, `--`, `-p --`) before rm: drop the wrapper.
+_cmd_pat='command( -[-[:alnum:]]*)* rm'
+_cmd_n=8
+while (( _cmd_n-- > 0 )) && [[ $rm_norm =~ $_cmd_pat ]]; do
+    rm_norm="${rm_norm/"${BASH_REMATCH[0]}"/rm}"
+done
+RM_OPT_DOLLAR_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})-[^[:space:]|;&]*\$'
+if [[ $rm_norm =~ $RM_R_PAT ]] || [[ $rm_norm =~ $RM_RECURSIVE_PAT ]] || [[ $rm_norm =~ $RM_OPT_DOLLAR_PAT ]]; then
+    deny "recursive rm (quote/escape-normalised)"
+fi
 # HIMMEL-2610 J1267R R1: the quote/comment/`--`-terminator scan above has no
 # model of backslash escaping, so an escaped char can fake any of its
 # boundaries - an escaped space can pose as the real space around a `--`
