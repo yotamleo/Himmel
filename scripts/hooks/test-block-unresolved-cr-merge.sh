@@ -196,7 +196,11 @@ grep -q "cannot resolve the PR" "$TMP/err-lookup-fail-selector-and-reanchor-deni
 grep -q "merge-on-green.sh" "$TMP/err-lookup-fail-selector-and-reanchor-denies" || { echo "FAIL lookup-fail deny does not name merge-on-green.sh"; fail=$((fail+1)); }
 # A hung lookup is bounded (10s) and reads as unresolved, never as the hook
 # budget expiring open. sel == cwd branch: exactly one lookup, so ~10s.
+hang_t0=$SECONDS
 GH_STUB_MODE=clean GH_STUB_PRVIEW=hang t lookup-timeout-denies 2 Bash "gh pr merge trunk --squash"
+# The stub sleeps 30s: returning inside 25s proves the 10s bound fired rather
+# than the hang running out and failing on its own.
+[ $((SECONDS - hang_t0)) -lt 25 ] || { echo "FAIL lookup-timeout took $((SECONDS - hang_t0))s - lookup is not bounded"; fail=$((fail+1)); }
 grep -q "cannot resolve the PR" "$TMP/err-lookup-timeout-denies" || { echo "FAIL lookup-timeout deny names no lookup reason"; fail=$((fail+1)); }
 # Non-merges stay untouched even with a broken lookup.
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-pr-view-passthrough 0 Bash "gh pr view 42"
