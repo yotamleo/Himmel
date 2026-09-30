@@ -214,7 +214,8 @@ def main():
         print(fingerprint())
         return
     t0 = time.time()
-    S = os.path.join(ROOT, 'stage3')
+    fp0 = fingerprint()  # taken before any input is read, so an edit mid-render leaves the page STALE, never falsely ok
+    S =os.path.join(ROOT, 'stage3')
     meta = json.load(open(os.path.join(S, 'meta.json'), encoding='utf-8'))
     mir = read_mirror()
     vrows = read_tsv(os.path.join(S, 'versions.tsv'))[1]
@@ -283,7 +284,7 @@ def main():
     outp = OUT
     os.makedirs(os.path.dirname(outp), exist_ok=True)
     open(outp, 'w', encoding='utf-8').write(html)
-    open(outp + '.fp', 'w', encoding='utf-8').write(fingerprint() + '\n')
+    open(outp + '.fp', 'w', encoding='utf-8').write(fp0 + '\n')
     unp = sum(1 for r in rows if r[7] == 2)
     drift = sum(1 for r in rows if r[7] == 1)
     cov = sum(1 for r in rows[:n_plan] if r[8])
