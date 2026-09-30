@@ -188,7 +188,11 @@ render_template() {
         # path or handover root containing '&' would silently corrupt the
         # render (worse: it re-inserts a literal "{{...}}", which then trips
         # the unresolved-placeholder guard below and deletes the output).
-        content="${content//"{{$1}}"/"$2"}"
+        # No OUTER double quotes on this assignment: bash 3.2 (macOS
+        # /bin/bash) keeps the inner quotes of a quoted replacement LITERAL
+        # when the whole expansion is double-quoted, so every value came out
+        # wrapped in '"..."' (HIMMEL-3912). An assignment never word-splits.
+        content=${content//"{{$1}}"/"$2"}
         shift 2
     done
     printf '%s\n' "$content" > "$out"

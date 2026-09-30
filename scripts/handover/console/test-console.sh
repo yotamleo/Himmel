@@ -54,7 +54,7 @@ export HIMMELCTL_CACHE_DIR="$tmp/himmelctl-cache"
 export HANDOVER_REGISTRY="$tmp/no-registry-for-this-suite.json"
 
 fails=0
-check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
+check() { [ "$2" = "$3" ] && echo "ok - $1 [t=${SECONDS}s]" || { echo "FAIL - $1: [$2]!=[$3] [t=${SECONDS}s]"; fails=$((fails+1)); }; }
 
 fixture_repo="$tmp/repo"
 mkdir -p "$fixture_repo"
