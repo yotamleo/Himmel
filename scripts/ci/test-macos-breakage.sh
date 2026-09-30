@@ -88,6 +88,13 @@ cat > "$TMP/fake/gh" <<'GH'
 # fake gh: `run list ... --jq <expr>` applies <expr> to $FAKE_RUNS; `run download <id> -n <name> -D <dir>`
 # copies $FAKE_DIR/<id>.json to <dir>/record.json, or fails when there is none.
 set -u
+if [ "${1:-}" = api ]; then
+  # api repos/o/r/actions/runs/<id>/artifacts...: prints an artifact id iff the run has a record.
+  [ -z "${FAKE_API_FAIL:-}" ] || { echo "fake-gh: api failed" >&2; exit 1; }
+  id="${2#*runs/}"; id="${id%%/*}"
+  [ -f "$FAKE_DIR/$id.json" ] && echo 1
+  exit 0
+fi
 [ "${1:-}" = run ] || { echo "fake-gh: unsupported: $*" >&2; exit 1; }
 sub="$2"; shift 2
 case "$sub" in
@@ -131,6 +138,20 @@ if grep -Eq '2026-W40[[:space:]]+runs=2[[:space:]]+new_breakages=1' <<< "$rep" \
    && grep -Eq '2026-W41[[:space:]]+runs=1[[:space:]]+new_breakages=1' <<< "$rep"; then
   ok "report totals runs and new breakages per ISO week"
 else bad "report week totals wrong: $rep"; fi
+
+# a lookup failure must NOT read as "no earlier record" (fail closed, rc 2).
+PATH="$TMP/fake:$PATH" FAKE_API_FAIL=1 FAKE_RUNS="$TMP/runs.json" FAKE_DIR="$TMP/recs" \
+  bash "$SCRIPT" prev-record --repo o/r --run-id 40 --dest "$TMP/prev-err.json" >/dev/null 2>&1
+rc=$?
+if [ "$rc" = 2 ]; then ok "prev-record fails closed (rc 2) when the artifact lookup errors"
+else bad "prev-record rc=$rc on a lookup failure (want 2, not the baseline rc 1)"; fi
+
+# fewer shard reports than expected is infra_suspect even when the shards said success.
+mkdir -p "$TMP/fd1"; echo "s/a.sh" > "$TMP/fd1/failed.txt"
+bash "$SCRIPT" record --run-id 5 --head-sha h5 --run-at 2026-09-30T00:00:00Z --shards-result success \
+  --failed-dir "$TMP/fd1" --shards-expected 8 --out "$TMP/rec5.json" >/dev/null
+if jq -e '.infra_suspect == true' "$TMP/rec5.json" >/dev/null; then ok "1 of 8 reports on a success run is infra_suspect"
+else bad "incomplete report set not flagged infra_suspect"; fi
 
 # option without a value must fail fast, not spin (shift 2 fails on 1 arg).
 if timeout 10 bash "$SCRIPT" record --run-id >/dev/null 2>&1; then bad "record with a value-less option succeeded"

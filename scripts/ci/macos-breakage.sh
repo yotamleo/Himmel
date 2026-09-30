@@ -90,7 +90,7 @@ cmd_record() {
     '{run_id: $run_id, head_sha: $head_sha, run_at: $run_at, shards_result: $shards_result,
       failed: $failed, prev_run_id: $prev_id, prev_head_sha: $prev_sha,
       new_breakages: [],
-      infra_suspect: ($shards_result != "success" and (($failed | length) == 0 or $reported < $expected))}' > "$out.tmp" \
+      infra_suspect: ($reported < $expected or ($shards_result != "success" and ($failed | length) == 0))}' > "$out.tmp" \
     || die "record: building the record failed"
 
   local new_json
@@ -105,14 +105,20 @@ cmd_record() {
   jq -r '
     "| run | head | previous head | shards | red suites | new breakages |",
     "|---|---|---|---|---|---|",
-    "| \(.run_id) | \(.head_sha[0:9]) | \(if .prev_head_sha then .prev_head_sha[0:9] else "baseline" end) | \(.shards_result)\(if .infra_suspect then " (infra suspect: red with no failed suite)" else "" end) | \(.failed | length) | \(if (.new_breakages | length) > 0 then (.new_breakages | join(", ")) else "none" end) |"' "$out"
+    "| \(.run_id) | \(.head_sha[0:9]) | \(if .prev_head_sha then .prev_head_sha[0:9] else "baseline" end) | \(.shards_result)\(if .infra_suspect then " (infra suspect: incomplete shard reports)" else "" end) | \(.failed | length) | \(if (.new_breakages | length) > 0 then (.new_breakages | join(", ")) else "none" end) |"' "$out"
 }
 
-# Downloads the record of one run into <dir>/record.json; rc 0 iff it exists.
+# Downloads the record of one run into <dir>/record.json.
+# rc 0 = fetched, 1 = the run has no unexpired record, 2 = the lookup or the
+# download itself failed (auth, network, API). Callers fail closed on 2 and
+# never read it as "no record".
 fetch_record() {
-  local repo="$1" id="$2" dir="$3"
+  local repo="$1" id="$2" dir="$3" found
   mkdir -p "$dir"
-  gh run download "$id" -R "$repo" -n "$ARTIFACT" -D "$dir" >/dev/null 2>&1 && [ -f "$dir/record.json" ]
+  found="$(gh api "repos/$repo/actions/runs/$id/artifacts?per_page=100" \
+    --jq ".artifacts[] | select(.name == \"$ARTIFACT\" and (.expired | not)) | .id")" || return 2
+  [ -n "$found" ] || return 1
+  gh run download "$id" -R "$repo" -n "$ARTIFACT" -D "$dir" >/dev/null 2>&1 && [ -f "$dir/record.json" ] || return 2
 }
 
 list_run_ids() {
@@ -134,14 +140,18 @@ cmd_prev_record() {
   done
   # shellcheck disable=SC2015 # die is the intended else-branch; the tests cannot fail
   [ -n "$repo" ] && [ -n "$run_id" ] && [ -n "$dest" ] || die "prev-record: --repo --run-id --dest are required"
-  local tmp id ids
+  local tmp id ids rc
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/macos-breakage.XXXXXX")" || die "mktemp failed"
   ids="$(list_run_ids "$repo" 30)" || { rm -rf "$tmp"; die "prev-record: gh run list failed"; }
   for id in $ids; do
     # only runs before this one: a rerun of an older run must not pick a newer predecessor
     [ "$id" -ge "$run_id" ] && continue
+    rc=0
+    fetch_record "$repo" "$id" "$tmp/$id" || rc=$?
+    [ "$rc" = 1 ] && continue
+    [ "$rc" = 0 ] || { rm -rf "$tmp"; die "prev-record: could not read the record of run $id"; }
     # skip an incomplete predecessor: suites missing from its report would read as green
-    if fetch_record "$repo" "$id" "$tmp/$id" && jq -e '.infra_suspect | not' "$tmp/$id/record.json" >/dev/null 2>&1; then
+    if jq -e '.infra_suspect | not' "$tmp/$id/record.json" >/dev/null 2>&1; then
       cp "$tmp/$id/record.json" "$dest"
       rm -rf "$tmp"
       return 0
@@ -162,11 +172,15 @@ cmd_report() {
     esac
   done
   [ -n "$repo" ] || die "report: --repo is required"
-  local tmp id ids files=""
+  local tmp id ids rc files=""
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/macos-breakage.XXXXXX")" || die "mktemp failed"
   ids="$(list_run_ids "$repo" "$limit")" || { rm -rf "$tmp"; die "report: gh run list failed"; }
   for id in $ids; do
-    if fetch_record "$repo" "$id" "$tmp/$id"; then files="$files $tmp/$id/record.json"; fi
+    rc=0
+    fetch_record "$repo" "$id" "$tmp/$id" || rc=$?
+    [ "$rc" = 1 ] && continue
+    [ "$rc" = 0 ] || { rm -rf "$tmp"; die "report: could not read the record of run $id"; }
+    files="$files $tmp/$id/record.json"
   done
   if [ -z "$files" ]; then
     echo "no os:macos cadence run in the last $limit has a $ARTIFACT artifact yet"
