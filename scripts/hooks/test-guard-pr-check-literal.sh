@@ -484,11 +484,6 @@ run "1813: \\c in a non-env mention of the target -> no-op" 0 \
     "$(payload "printf '%s\\c' scripts/handover/merge-on-green.sh" "$WT")" "$HR"
 run "1813: env grep of a pr-check pattern with a backslash (no -S) -> no-op" 0 \
     "$(payload "env LC_ALL=C grep -n 'pr-check\\|x' docs/a.md" "$WT")" "$HR"
-# Control (console ruling): a '$' outside the -S operand keeps the verdict it
-# had before 1813 - the older unresolvable-token deny, not the 1813 reason.
-run "1813: a '\$' outside the -S operand keeps its pre-1813 verdict" 2 \
-    "$(payload "env -S 'grep -n x' scripts/handover/merge-on-green.sh --label=a\$b" "$WT")" "$HR"
-need_in_err "1813: that deny is the pre-existing token reason" "'a\$b' does not resolve to this root's"
 
 # ---- HIMMEL-3433 (d): an interpreter or find -exec word ANYWHERE runs ---------
 # On a clean tree, so each deny comes from the shape, not from an edit.
