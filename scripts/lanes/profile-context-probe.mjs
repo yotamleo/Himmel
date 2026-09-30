@@ -217,13 +217,13 @@ export function resolveLedgerTarget({ ledgerFlag, noLedger }, env) {
 
 // ── live spawn (never imported by the CI-safe test) ────────────────────────
 
-// spawnSync('claude', …) directly — no shell wrapper: the `claude` this repo
+// Spawned directly — no shell wrapper: the `claude` this repo
 // targets is the native installer binary (not an npm .cmd shim), so win32
 // PATH resolution finds it without cmd.exe in the loop.
-// headless-claude-ok: HIMMEL-2189 measured profile probe
 function spawnClaude(extraArgs) {
   const args = ['-p', '--model', 'haiku', '--max-turns', '1', '--permission-mode', 'dontAsk',
     '--output-format', 'stream-json', '--verbose', ...extraArgs, BASELINE_PROMPT];
+  // headless-claude-ok: HIMMEL-2189 measured profile probe
   return spawnSync('claude', args, {
     cwd: REPO_ROOT,
     encoding: 'utf8',

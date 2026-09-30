@@ -181,6 +181,53 @@ case "$out" in
     *) echo "FAIL T18 stderr did not name file:line"; FAILED=$((FAILED + 1)) ;;
 esac
 
+# HIMMEL-2195: argv-array spawns of claude (flags live in a separate array)
+# T19-T23: unmarked spawn-family call with literal "claude" as program → BLOCK
+printf "%s\n" "const r = spawnSync('claude', args, { encoding: 'utf8' });" > "$TMP/spawn.mjs"
+rc=$(run_hook "spawn.mjs")
+assert_rc "T19 spawnSync('claude', args) unmarked" 1 "$rc"
+
+printf "%s\n" 'const p = Bun.spawn(["claude", ...flags]);' > "$TMP/bun.ts"
+rc=$(run_hook "bun.ts")
+assert_rc "T20 Bun.spawn([\"claude\", ...]) unmarked" 1 "$rc"
+
+printf "%s\n" 'execFileSync("claude", a);' > "$TMP/efs.js"
+rc=$(run_hook "efs.js")
+assert_rc "T21 execFileSync(\"claude\", a) unmarked" 1 "$rc"
+
+printf "%s\n" 'subprocess.run(["claude", *a])' > "$TMP/sp.py"
+rc=$(run_hook "sp.py")
+assert_rc "T22 subprocess.run([\"claude\", *a]) unmarked" 1 "$rc"
+
+printf "%s\n" 'os.execvp("claude", ["claude", *a])' > "$TMP/osexec.py"
+rc=$(run_hook "osexec.py")
+assert_rc "T23 os.execvp(\"claude\", ...) unmarked" 1 "$rc"
+
+# T24: same-line marker on an argv spawn → CLEAN
+printf "%s\n" "const r = spawnSync('claude', args); // headless-claude-ok: probe" > "$TMP/spawn_ok.mjs"
+rc=$(run_hook "spawn_ok.mjs")
+assert_rc "T24 argv spawn, same-line marker" 0 "$rc"
+
+# T25: preceding-line marker on an argv spawn → CLEAN
+printf "%s\n%s\n" "// headless-claude-ok: probe" "const r = spawnSync('claude', args);" > "$TMP/spawn_above.mjs"
+rc=$(run_hook "spawn_above.mjs")
+assert_rc "T25 argv spawn, preceding-line marker" 0 "$rc"
+
+# T26: claude is an ARGUMENT, not the program → CLEAN
+printf "%s\n" "spawnSync('git', ['claude']);" > "$TMP/git.mjs"
+rc=$(run_hook "git.mjs")
+assert_rc "T26 claude not the program" 0 "$rc"
+
+# T27: a different program whose name merely contains claude → CLEAN
+printf "%s\n" "spawnSync('myclaude', args);" > "$TMP/myspawn.mjs"
+rc=$(run_hook "myspawn.mjs")
+assert_rc "T27 spawnSync('myclaude') not matched" 0 "$rc"
+
+# T28: existing scoping kept — markdown under docs/ exempt → CLEAN
+printf "%s\n" "Do not spawnSync('claude', args) without a marker." > "$TMP/docs/spawn.md"
+rc=$(run_hook "docs/spawn.md")
+assert_rc "T28 docs/ still exempt for argv form" 0 "$rc"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

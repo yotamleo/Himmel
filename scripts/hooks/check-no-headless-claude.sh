@@ -43,11 +43,26 @@ set -uo pipefail
 # only: `\bclaude\b` followed by space-then-flag.
 PATTERN='(^|[^A-Za-z0-9_-])claude[[:space:]]+(-p|--print|--bg)($|[^A-Za-z0-9_-])'
 
+# HIMMEL-2195: argv-array spawns keep the flags in a separate array
+# (`spawnSync('claude', args)`), so PATTERN cannot see `-p`. Deny-leaning by
+# design, no variable tracing: any spawn-family call whose program argument is
+# the literal "claude" needs the same opt-in marker, wherever the flags are.
+# Covers spawn/exec/execFile[Sync], Bun.spawn[Sync], child_process.*, python
+# subprocess.{run,call,check_call,check_output,Popen} and os.exec*/spawn*.
+# The program must be the first argument (optionally the first array
+# element) and exactly `claude`, so `spawnSync('git', ['claude'])` and
+# `spawnSync('myclaude', …)` stay clean.
+SPAWN_PATTERN='(^|[^A-Za-z0-9_])(spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|Popen|run|call|check_call|check_output|execv|execvp|execve|execvpe|execl|execlp|execle|execlpe|spawnv|spawnvp|spawnl|spawnlp)[[:space:]]*\([[:space:]]*\[?[[:space:]]*["'"'"']claude["'"'"']'
+
 # Self-test: a known-positive sample must match. Catches accidental
 # regex de-anchoring or syntax break before the gate quietly approves
 # every commit.
 if ! printf 'claude -p "test"\n' | grep -E "$PATTERN" >/dev/null 2>&1; then
     echo "check-no-headless-claude: PATTERN failed self-test — refusing" >&2
+    exit 1
+fi
+if ! printf 'spawnSync("claude", args)\n' | grep -E "$SPAWN_PATTERN" >/dev/null 2>&1; then
+    echo "check-no-headless-claude: SPAWN_PATTERN failed self-test — refusing" >&2
     exit 1
 fi
 
@@ -123,7 +138,7 @@ for f in "${files[@]}"; do
         if ! has_optin_marker "$f" "$line_no"; then
             violations+=("$f:$line_no")
         fi
-    done < <(grep -En "$PATTERN" -- "$f" 2>/dev/null)
+    done < <(grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" -- "$f" 2>/dev/null)
 done
 
 # ADVISORY (HIMMEL-1867): warn when a staged file carrying the opt-in marker
@@ -154,7 +169,7 @@ native_auth_pin_advisory
 
 if [ "${#violations[@]}" -gt 0 ]; then
     {
-        echo "check-no-headless-claude: headless 'claude -p' / '--print' / '--bg' call(s) without opt-in marker:"
+        echo "check-no-headless-claude: headless 'claude -p' / '--print' / '--bg' call(s), or spawn(\"claude\", …) argv spawns, without opt-in marker:"
         for v in "${violations[@]}"; do
             echo "    $v"
         done
