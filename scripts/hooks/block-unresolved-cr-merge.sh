@@ -111,7 +111,7 @@ esac
 # segment after leading VAR=val assignments.
 if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -qE '(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)'; then
     # shellcheck disable=SC2020 # five separators each map to a newline, by design
-    printf '%s' "$cmd" | tr ';&|(\n''\n\n\n\n\n' \
+    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' \
         | sed -E -e 's/^[[:space:]]+//' -e ':a' -e 's/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//' -e 'ta' \
         | grep -qE "^[^[:space:]]*[\$\`\\\\'\"]" && fires=1
 fi
