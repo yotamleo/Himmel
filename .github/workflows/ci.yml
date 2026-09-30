@@ -4,16 +4,18 @@ on:
   # PR gating (HIMMEL-594): the cheap ubuntu-only jobs run on every PR so a
   # non-conventional commit, a secret, a shellcheck warning, or a failing shell
   # suite blocks merge. The EXPENSIVE multi-OS matrix is nightly-only — the
-  # shell-unit-shard matrix below expands to windows+macOS only on `schedule`
+  # shell-unit-shard matrix below expands to windows only on `schedule`
   # (HIMMEL-3853: there is no dispatch input that widens it any more), so
-  # neither a PR nor a manual dispatch can occupy the paid legs.
+  # neither a PR nor a manual dispatch can occupy the paid legs. macOS is not in
+  # this file at all (HIMMEL-3902): it runs on its own twice-weekly workflow,
+  # macos-cadence.yml, so a macOS red can never turn this run -- or main -- red.
   # `shell-unit` itself (HIMMEL-2872) is the aggregating gate over that
   # matrix — see its own comment block below.
   pull_request:
   # Post-merge verification (HIMMEL-511): re-run the cheap ubuntu gates when code
   # lands on main, catching anything that reached main outside the PR path. The
-  # shell-unit-shard matrix stays ubuntu-only on `push` (the paid windows/macOS
-  # legs are schedule-only), so this adds no multi-OS cost.
+  # shell-unit-shard matrix stays ubuntu-only on `push` (the paid windows leg
+  # is schedule-only), so this adds no multi-OS cost.
   push:
     branches: [main]
   # A plain dispatch runs the ubuntu-only matrix, same as a push. It takes no
@@ -64,9 +66,9 @@ jobs:
   # (one-true-awk) — `gawk --posix`/`--lint=fatal` both accept the broken
   # regex (J1288O), so a lint substitute would not catch this class of
   # regression, and Ubuntu PR CI runs everything else under gawk. The only
-  # prior BWK coverage was the nightly macOS shell-unit-shard leg, which is
-  # continue-on-error (advisory), so a regression here previously reached
-  # main unnoticed. This job builds a pinned one-true-awk commit from source
+  # prior BWK coverage was the nightly macOS shell-unit-shard leg (now the
+  # os:macos cadence, macos-cadence.yml), which is advisory to main, so a
+  # regression here previously reached main unnoticed. This job builds a pinned one-true-awk commit from source
   # (never a branch) and runs the gate's own suite under it, gating every PR.
   bwk-awk-mktemp-gate:
     runs-on: ubuntu-latest
@@ -595,12 +597,13 @@ jobs:
 
   # Multi-OS, gated to the nightly to stay free-tier-cheap: every non-schedule
   # event (a workflow_dispatch included) runs ubuntu only; `schedule` alone
-  # adds windows (2x) + macOS (10x), paid once a night (HIMMEL-3853: Windows
-  # and macOS are verified by the nightly only, never per PR). A red
-  # nightly OS leg becomes its own split slice — docs/internals/testing.md.
-  # windows/macOS are NON-GATING this phase (continue-on-error
-  # scoped to the non-ubuntu legs): their per-suite PASS/FAIL is advisory in the
-  # job log while ubuntu stays the required gate. Tightening the new OSes to
+  # adds windows (2x), paid once a night (HIMMEL-3853: Windows is verified by
+  # the nightly only, never per PR). macOS (10x) is NOT here (HIMMEL-3902): it
+  # is the os:macos cadence, macos-cadence.yml. A red nightly OS leg becomes
+  # its own split slice — docs/internals/testing.md.
+  # windows is NON-GATING this phase (continue-on-error scoped to the
+  # non-ubuntu legs): its per-suite PASS/FAIL is advisory in the job log while
+  # ubuntu stays the required gate. Tightening the new OSes to
   # gating-green is the data-driven follow-up (HIMMEL-494 phase 3).
   #
   # This is the working matrix — sharded per OS (HIMMEL-2872) so the ubuntu
@@ -615,7 +618,7 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ github.event_name == 'schedule'
-               && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]')
+               && fromJSON('["ubuntu-latest","windows-latest"]')
                || fromJSON('["ubuntu-latest"]') }}
         # shard: [1..8] fans run-shell-tests.sh across 8 runners (HIMMEL-2872).
         # The `8` here and the `/8` in the run step below are two spellings of
@@ -643,7 +646,7 @@ jobs:
       # enables at/atd). GitHub's ubuntu image ships without `at`, so CI fell back
       # to the crontab path and ~2 arm-resume cases diverged from a real install.
       # Install + enable it on Linux so CI mirrors the supported runtime
-      # (HIMMEL-619). Scoped to Linux: no-op on the nightly windows/macOS legs.
+      # (HIMMEL-619). Scoped to Linux: no-op on the nightly windows leg.
       # HIMMEL-2871: the runner image preinstalls third-party apt sources
       # (Google Chrome, Microsoft, Azure CLI) we never use; when one of those
       # goes inconsistent upstream, `apt-get update` exits 100 and this step
@@ -690,7 +693,7 @@ jobs:
       # SUITE_TIER_MODE (HIMMEL-2166): fast on every per-PR/post-merge leg
       # (pull_request, push, or a plain workflow_dispatch) — this job is
       # ubuntu-only there. `all` stays the corpus on the nightly leg that
-      # expands to the paid windows+macOS matrix, matching the
+      # expands to the paid windows matrix, matching the
       # cadence/full-scan intent this ticket must not touch.
       # SUITE_CHANGED_SINCE: only on pull_request, where a base SHA exists —
       # a docs-only PR then skips the whole corpus (run-shell-tests.sh's own
@@ -767,7 +770,7 @@ jobs:
   #    was sharded. Sharding the work must not rename the gate.
   # 2. `needs.shell-unit-shard.result` is the matrix ROLLUP, `success` only
   #    when every leg that CAN fail the matrix succeeded. A job-level
-  #    `continue-on-error` failure (the nightly windows/macOS legs) is NOT
+  #    `continue-on-error` failure (the nightly windows leg) is NOT
   #    counted against that rollup, so those legs stay advisory exactly as
   #    they are today — this job never has to name any OS itself.
   # 3. `if: always()` plus the explicit `!= success` test below is the
@@ -800,14 +803,13 @@ jobs:
     # identical to (and newer than) the PR's own required check -- or GitHub's
     # required-check evaluation and check-ci.sh both read the dispatch run's
     # result and shadow the PR's. HIMMEL-3853 removed the all-OS dispatch input,
-    # so a dispatch is now ubuntu-only and can no longer go red on the macOS
-    # gate; the distinct name is kept as the name-collision guard.
+    # so a dispatch is now ubuntu-only; the distinct name is kept as the
+    # name-collision guard.
     # schedule/pull_request/push keep the unchanged name.
     name: shell-unit${{ github.event_name == 'workflow_dispatch' && ' (dispatch verify)' || '' }} (${{ matrix.os }})
     permissions:
       contents: read
       issues: write
-      actions: read
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -824,25 +826,6 @@ jobs:
             exit 1
           fi
           echo "OK: every gating shell-unit shard passed."
-      # HIMMEL-3699: shell-unit-shard sets `continue-on-error: true` for
-      # macOS/windows so a red nightly leg stays advisory (point 2 above) —
-      # but that also means the matrix ROLLUP this job reads never reflects a
-      # macOS failure, so the nightly run can read "success" while every
-      # macOS shard is red. scripts/ci/check-macos-nightly-health.sh queries
-      # the Jobs API directly (it reports each job's real `conclusion`,
-      # unaffected by continue-on-error) so a red macOS job is never silently
-      # masked on the leg that is supposed to catch it. Scoped to the
-      # schedule leg only — the only leg where a macOS shard
-      # runs at all. A repo script (not an inline run: block) so it is
-      # unit-testable with a stubbed `gh` — see
-      # scripts/ci/test-check-macos-nightly-health.sh.
-      - name: macOS nightly jobs must have passed (continue-on-error can't mask this)
-        if: always() && github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-          REPO: ${{ github.repository }}
-        run: bash scripts/ci/check-macos-nightly-health.sh
       # Scoped to the schedule leg: that is the only leg where
       # SUITE_TIER_MODE=all actually exercises the extended tier (see
       # shell-unit-shard above), so only there does a red here plausibly mean

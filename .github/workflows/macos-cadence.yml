@@ -1,0 +1,139 @@
+name: "CI (os:macos cadence)"
+
+# HIMMEL-3902: macOS shell-unit lives HERE, not in ci.yml. Operator ruling
+# 2026-09-30: fleet velocity beats macOS coverage breadth. While macOS legs sat
+# in the nightly `CI` run, a macOS-only red turned that run -- and so main --
+# red (the shell-unit aggregator's health step, HIMMEL-3699), and the red-main
+# policy then pulled legs into macOS triage. Now a macOS red is a red of THIS
+# workflow (`os:macos`), never of `CI`, and each run records which suites
+# newly broke since the previous one (scripts/ci/macos-breakage.sh) so the
+# trade-off is measurable: docs/internals/testing.md.
+#
+# Cadence: Tuesday + Friday 05:43 UTC -- twice a week, so a macOS regression is
+# seen within ~3-4 days instead of the next morning, at ~2/7ths of the nightly's
+# 10x-billed macOS runner cost (and off the nightly's 07:17 slot).
+#
+# NOT on pull_request/push, ever: that would put the paid macOS legs back on
+# every PR (HIMMEL-3853). Dispatch (needs this file on main):
+#   gh workflow run macos-cadence.yml --ref main
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '43 5 * * 2,5'   # Tue + Fri, UTC
+
+permissions:
+  contents: read
+
+# One cadence run per ref. cancel-in-progress is false so a dispatch never kills
+# a running scheduled run (and with it a breakage record); a repeat just waits.
+concurrency:
+  group: macos-cadence-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  shell:
+    name: macos-cadence / shell (${{ matrix.os }}, ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+        # shard: same partition as ci.yml's shell-unit-shard. The `8` here, the
+        # `/8` in the run step and `--shards-expected 8` in `summary` are three
+        # spellings of one number and must agree (pinned by
+        # test-macos-cadence-workflow.sh).
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: ${{ matrix.os }}
+    # No continue-on-error: a red macOS shard reddens THIS run and nothing else.
+    # The cap only bounds a hung suite.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - name: Install obsidian-triage tool deps (marketplace suites)
+        run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh
+      - name: Install pre-commit (scripts/test-template-nostash-hooks.sh)
+        run: python -m pip install --disable-pip-version-check pre-commit
+      # SUITE_TIER_MODE=all: the whole corpus, extended tier included -- the
+      # coverage the nightly's macOS legs had.
+      - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8 .
+        env:
+          FAIL_LOG_DIR: failed-suite-logs
+          SUITE_TIER_MODE: all
+      # Always, even when the run step above went red: this is the per-shard
+      # input to the breakage metric. Its absence (a shard that died before
+      # here) is itself visible to `summary` as a missing report.
+      - name: List failed suites (breakage metric input)
+        if: always()
+        run: |
+          mkdir -p macos-failed
+          bash scripts/ci/macos-breakage.sh suites-from-logs failed-suite-logs > macos-failed/failed.txt
+      - name: Upload failed-suite list
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-failed-suites-shard${{ matrix.shard }}
+          path: macos-failed/failed.txt
+          if-no-files-found: ignore
+          retention-days: 90
+      - name: Upload failed-suite logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-cadence-failed-logs-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: failed-suite-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Verdict + breakage metric. actions:read is for `gh run download/list` of
+  # this and earlier cadence runs; nothing here writes to the repo.
+  summary:
+    name: macos-cadence / summary
+    needs: shell
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Record breakages against the previous cadence run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          SHARDS_RESULT: ${{ needs.shell.result }}
+        run: |
+          mkdir -p failed-artifacts
+          gh run download "$RUN_ID" -R "$REPO" -p 'macos-failed-suites-*' -D failed-artifacts || echo "no failed-suite artifacts on this run"
+          prev=""
+          if bash scripts/ci/macos-breakage.sh prev-record --repo "$REPO" --run-id "$RUN_ID" --dest prev-record.json; then
+            prev="--prev-file prev-record.json"
+          else
+            echo "no earlier recorded cadence run: this run is the baseline"
+          fi
+          # $prev is intentionally unquoted: it is empty or two words.
+          # shellcheck disable=SC2086
+          bash scripts/ci/macos-breakage.sh record --run-id "$RUN_ID" --head-sha "$HEAD_SHA" \
+            --run-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --shards-result "$SHARDS_RESULT" \
+            --shards-expected 8 --failed-dir failed-artifacts $prev \
+            --out record.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload breakage record
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-breakage-record
+          path: record.json
+          if-no-files-found: warn
+          retention-days: 90
+      # HIMMEL-3699: the guard that a macOS job actually PASSED on this run
+      # (missing entirely / all skipped is not health), reading the Jobs API.
+      - name: macOS jobs must have passed
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/ci/check-macos-nightly-health.sh

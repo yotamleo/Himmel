@@ -43,27 +43,56 @@ concurrent jobs and only 5 macOS, so keep to one OS unless the change is
 OS-specific. It needs `os-verify.yml` on the default branch, and a branch
 whose diff is docs-only reports `0 impacted shell suites` and passes.
 
+### macOS runs on its own cadence, not the nightly (HIMMEL-3902)
+
+macOS shell-unit is `.github/workflows/macos-cadence.yml` (`CI (os:macos
+cadence)`): Tuesday + Friday 05:43 UTC, the same 8-shard partition and
+`SUITE_TIER_MODE=all` corpus the nightly's macOS legs had. `ci.yml` contains no
+macOS job and no macOS health step, so a macOS red is a red of *that* workflow
+and never of `CI` or main. It is not on `pull_request`/`push`, and a red shard
+is not `continue-on-error`: it reddens the cadence run, which is the point.
+
+```bash
+gh workflow run macos-cadence.yml --ref main     # dispatch (the file must be on the ref's default branch)
+gh run list --workflow macos-cadence.yml         # its runs, apart from the nightly `CI` runs
+```
+
+**Breakage metric.** Every cadence run's `summary` job records which suites are
+red now that were green on the previous completed cadence run
+(`scripts/ci/macos-breakage.sh`): a row in the run's job summary (both head
+shas + the new breakages), and a `macos-breakage-record` artifact
+(`record.json`, kept 90 days). A red run with no failed suite, or with fewer
+shard reports than expected, is flagged `infra_suspect` — a shard died before
+reporting, so the list is incomplete. To read it back:
+
+```bash
+bash scripts/ci/macos-breakage.sh report --repo yotamleo/Himmel --limit 12
+```
+
+It prints one line per recorded run (date, run id, head, previous head,
+red/new counts, new suites) then `runs` and `new_breakages` per ISO week.
+
 ### A nightly OS red is a split slice, never a hold (HIMMEL-3853)
 
-Windows and macOS are verified by the nightly and nothing else: there is no
-per-PR all-OS proof, and a PR is never blocked on an OS it did not run. When
-the nightly goes red on Windows or macOS:
+Windows is verified by the nightly and macOS by the cadence above; nothing else
+runs them: there is no per-PR all-OS proof, and a PR is never blocked on an OS
+it did not run. When the nightly goes red on Windows, or the macOS cadence goes
+red:
 
-- **The nightly files it.** A red `shell-unit` aggregator — including the
-  `check-macos-nightly-health.sh` step, which reads the Jobs API so
-  `continue-on-error` cannot mask a red macOS shard — runs
+- **The nightly files it.** A red `shell-unit` aggregator runs
   `scripts/ci/shell-extended-nightly-issue.sh`, which opens or refreshes ONE
   consolidated issue (label `shell-extended-nightly-ci`) and closes it when the
   nightly goes green. A red Windows `bun-suites` leg is filed the same way by
   `scripts/ci/windows-nightly-issue.sh` (label `windows-alpha-ci`). A red
   Windows *shell* shard is still masked by `continue-on-error` (HIMMEL-3699);
   read the `shell-unit-shard (windows-latest, …)` jobs of the nightly run
-  directly.
+  directly. A red macOS cadence run files nothing: read the run's summary
+  (new breakages) or `macos-breakage.sh report`.
 - **The console splits it.** The console turns each distinct failure cluster
   into its own ticket under the epic that owns the OS-portability work
   (HIMMEL-3719 for macOS), one slice per cluster. The slice is fixed and
   verified like any other change; it is **never** a hold on an unrelated PR.
-- **Verifying a slice before the next nightly** is optional and operator-
+- **Verifying a slice before the next cadence run** is optional and operator-
   requested only: the diagnostic `os-verify.yml` workflow (HIMMEL-3839)
   dispatches the impacted suites on one OS. It is not a per-PR gate and no leg
   dispatches it unasked.

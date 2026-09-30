@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # scripts/ci/check-macos-nightly-health.sh — HIMMEL-3699
 #
-# shell-unit-shard sets `continue-on-error: true` for macOS/windows so a red
-# nightly leg stays advisory, but that also means the matrix ROLLUP the
-# shell-unit job reads never reflects a macOS failure — the nightly run can
+# HIMMEL-3902: now run by the summary job of macos-cadence.yml (the os:macos
+# cadence), no longer by ci.yml's shell-unit; it certifies that a macOS job
+# actually passed, and reports any that failed. Original motivation:
+# shell-unit-shard set `continue-on-error: true` for macOS/windows so a red
+# nightly leg stayed advisory, but that also meant the matrix ROLLUP the
+# shell-unit job reads never reflected a macOS failure — the nightly run can
 # read "success" while every macOS shard is red. This queries the Jobs API
 # directly (it reports each job's real `conclusion`, unaffected by
 # continue-on-error) so a red macOS job is never silently masked on the leg
