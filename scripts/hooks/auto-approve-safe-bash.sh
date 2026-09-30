@@ -879,6 +879,45 @@ segment_is_safe() {
                     esac
                 done
                 [ "$xops" -ge 2 ] && return 1 ;;         # infile + outfile = write
+            uniq)                          # HIMMEL-3668: `uniq in out` — a 2nd operand
+                                           # is an OUTPUT file. Value-taking options'
+                                           # values are not operands.
+                local uops=0 uskip=0 udd=0
+                for k in "${a[@]:$((i + 1))}"; do
+                    shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # a glob could expand into a 2nd operand
+                    if [ "$uskip" = 1 ]; then uskip=0; continue; fi
+                    if [ "$udd" = 1 ]; then uops=$((uops + 1)); continue; fi
+                    case "$SW_VALUE" in
+                        --) udd=1 ;;
+                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) ;;  # redirect token, not an operand
+                        --*=*) ;;
+                        --*) guard_is_long_abbrev "skip-fields" "$SW_VALUE" && uskip=1
+                             guard_is_long_abbrev "skip-chars" "$SW_VALUE" && uskip=1
+                             guard_is_long_abbrev "check-chars" "$SW_VALUE" && uskip=1 ;;
+                        -?*)   # cluster: f/s/w takes the rest as its value, else the next word
+                            case "${SW_VALUE#-}" in
+                                *[fsw]) uskip=1 ;;
+                            esac ;;
+                        *) uops=$((uops + 1)) ;;
+                    esac
+                done
+                [ "$uops" -ge 2 ] && return 1 ;;     # input + output = write
+            rg|ripgrep|ag)                 # HIMMEL-3668: `--pre`/`--hostname-bin` run a
+                                           # program per file, `-z` runs decompressors,
+                                           # `ag --pager` runs a program. FAIL CLOSED.
+                for k in "${a[@]}"; do
+                    shell_word_value "$k" || return 1
+                    [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # a glob could expand into one of these
+                    case "$SW_VALUE" in
+                        --*)
+                            guard_is_long_abbrev "pre-glob" "$SW_VALUE" && return 1
+                            guard_is_long_abbrev "hostname-bin" "$SW_VALUE" && return 1
+                            guard_is_long_abbrev "search-zip" "$SW_VALUE" && return 1
+                            guard_is_long_abbrev "pager" "$SW_VALUE" && return 1 ;;
+                        -[!-]*) case "${SW_VALUE#-}" in *z*) return 1 ;; esac ;;
+                    esac
+                done ;;
             tree)                          # `tree -o FILE` / `--output FILE` writes
                 for k in "${a[@]}"; do
                     shell_word_value "$k" || return 1
