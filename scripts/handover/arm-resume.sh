@@ -5410,7 +5410,11 @@ schedule_arm() {
                         exit 2
                         ;;
                 esac
-                wsl_launch="${wsl_command//%/%%}"
+                # A pattern-leading `%` is the end-anchor in some bash 3.2
+                # builds, so the %->%% doubling silently no-ops on macOS
+                # (HIMMEL-3699); keep the % out of the pattern's literal text.
+                local _pct='%'
+                wsl_launch="${wsl_command//$_pct/%%}"
             fi
             local bash_win flow_lib_m
             if ! bash_win=$(cygpath -w "$bash_posix" 2>&1); then

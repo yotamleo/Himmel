@@ -3102,6 +3102,7 @@ out=$(HIMMEL_HEADROOM_PROXY=0 WSL_STUB_MODE=ok \
 rc=$?
 assert_rc "T-wsl prompt metachar escaping exits 0" 0 "$rc"
 assert_contains "T-wsl prompt survives bash+CMD escaping" "wsl-prompt-'\\''-%%-&.md" "$out"
+case "$out" in *"wsl-prompt-'\\''-%%-&.md"*) ;; *) printf '  T-wsl out: %s\n' "$out" ;; esac
 
 # A double quote in the payload cannot be escaped inside the .bat line's CMD
 # quotes (CMD toggles on every unescaped quote) — the arm must REFUSE, never
