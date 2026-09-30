@@ -30,7 +30,7 @@
 #      ssh://aur@aur.archlinux.org/himmel.git and push
 
 pkgname=himmel
-pkgver=0.3.0pre8
+pkgver=1.0.0
 pkgrel=1
 _tag="${pkgver/pre/-pre.}"
 pkgdesc='Harness for running Claude Code as a managed agent: hooks, guardrails, commands, handover'
@@ -45,7 +45,7 @@ optdepends=('github-cli: gh attestation verify, PR workflow'
 options=('!strip' '!debug')
 install=himmel.install
 source=("https://github.com/yotamleo/Himmel/releases/download/v${_tag}/himmel-${_tag}-linux.tar.gz")
-sha256sums=('517ed66cea93d43063a3c9a1c8806149a2ca090ac6c589e32b3bd725b374bab7')
+sha256sums=('3e635b0f7d934201225ab080e50d2f73c0a99bd097632a2bfb5c1e7c8d1f5a33')
 
 package() {
   install -d "$pkgdir/opt"
