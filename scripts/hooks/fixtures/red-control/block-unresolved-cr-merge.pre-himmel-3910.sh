@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse hook: block-unresolved-cr-merge.sh
 #
-# Blocks `gh pr merge` on FOUR independent gates, run in order:
+# Blocks `gh pr merge` on THREE independent gates, run in order:
 #   1. CR gate (HIMMEL-936): unresolved CodeRabbit review threads or a
 #      CodeRabbit check-run still running on the head SHA (except a proven old
 #      zombie backed by success status + zero unresolved threads, HIMMEL-980;
@@ -20,18 +20,13 @@
 #      same as merge-on-green.sh's own console-GO gate, which this one shares
 #      its predicate with (scripts/lib/go-gate.sh) so the two cannot drift.
 #      Untouched for a non-leg session (HIMMEL_CONSOLE_LEG unset/falsy skips it
-#      whole).
-#   4. CI trust-path gate (HIMMEL-3910): for EVERY session, a PR touching a CI
-#      trust path (scripts/ci/ci-trust-paths.txt on the default branch) needs a
-#      trust-reviewed console GO (go.sh --trust-reviewed) and a merge pinned
-#      to its head — merge-on-green.sh's rule (HIMMEL-3895), asked through the
-#      same trust_path_check in scripts/lib/go-gate.sh. Fails closed.
+#      whole, no extra gh call).
 # Sibling of check-cr-marker-on-pr-create.sh / block-merged-pr-commit.sh.
 #
 # Exit: 0 allow (incl. every fail-open path), 2 block (stderr shown to model).
 # Bypass: CR_MERGE_GATE_OK=1 and/or CI_MERGE_GATE_OK=1 in the LAUNCHING shell
 # (each gates its own check independently). CR_PROFILE=none skips the CR gate.
-# The console-GO and trust-path gates have no bypass (see gates 3 and 4 above).
+# The console-GO gate has no bypass (see gate 3 above).
 set -uo pipefail
 # NOT set -e: fail-open hook, must never abort on a sub-call's rc 1.
 
@@ -206,10 +201,10 @@ fi
 # and CI — see the header comment for gate 3. Only binds a console-spawned leg
 # (console_leg truthy, scripts/lib/go-gate.sh — HIMMEL-3149); a non-leg
 # session (HIMMEL_CONSOLE_LEG unset/empty, by far the common case) never
-# reaches the `. go-gate.sh` below, so gate 3 never turns a broken library
-# into a blocker for sessions it was never meant to bind. (Gate 4, the
-# trust-path gate at the end, does load go-gate.sh for EVERY session — see
-# there, HIMMEL-3910.)
+# reaches the `. go-gate.sh` below, so it costs an ordinary merge nothing —
+# including the case where go-gate.sh itself is missing or broken; this gate
+# must never turn a broken library into a blocker for sessions it was never
+# meant to bind.
 #
 # console_leg lives in scripts/lib/go-gate.sh beside go_gate() itself, shared
 # with merge-on-green.sh's own console-GO gate and go.sh's own refusal, so
@@ -236,84 +231,31 @@ if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
 else
     is_leg=0
 fi
-
-# Resolve pr-number + head-sha (shared by gates 3 and 4) the same way
-# cr_merge_gate/ci_green_gate do above (own `gh pr view`, same $sel/$repo,
-# same re-anchor to $cwd_branch on an unresolvable selector) — an
-# unresolvable selector here would also fail the `gh pr merge` this hook is
-# gating, so it fails OPEN like its siblings. Everything after it is
-# fail-closed (GATE INTEGRITY): once the PR and head are known, an ambiguous
-# or missing GO, or a trust-path check that cannot run, must never read as
-# "no gate".
-go_meta=""
-if [ -n "$repo" ]; then
-    go_meta=$(gh pr view "$sel" --repo "$repo" --json number,headRefOid 2>/dev/null) || go_meta=""
-else
-    go_meta=$(gh pr view "$sel" --json number,headRefOid 2>/dev/null) || go_meta=""
-fi
-go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
-go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
-if { [ -z "$go_num" ] || [ -z "$go_sha" ]; } && [ -n "$cwd_branch" ] && { [ "$cwd_branch" != "$sel" ] || [ -n "$repo" ]; }; then
-    go_meta=$(gh pr view "$cwd_branch" --json number,headRefOid 2>/dev/null) || go_meta=""
+if [ "$is_leg" -eq 1 ]; then
+    # Resolve pr-number + head-sha the same way cr_merge_gate/ci_green_gate
+    # do above (own `gh pr view`, same $sel/$repo, same re-anchor to
+    # $cwd_branch on an unresolvable selector) — an unresolvable selector
+    # here would also fail the `gh pr merge` this hook is gating, so it
+    # fails OPEN like its siblings. Only the GO FILE check below is
+    # fail-closed (GATE INTEGRITY): once the PR and head are known, an
+    # ambiguous or missing GO must never read as "no gate".
+    go_meta=""
+    if [ -n "$repo" ]; then
+        go_meta=$(gh pr view "$sel" --repo "$repo" --json number,headRefOid 2>/dev/null) || go_meta=""
+    else
+        go_meta=$(gh pr view "$sel" --json number,headRefOid 2>/dev/null) || go_meta=""
+    fi
     go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
     go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
-fi
-if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
-    exit 0
-fi
-
-# HIMMEL-3578: the GO mac binds the repo, and gate 4 reads the trust list from
-# it, so resolve nwo the same way merge-on-green.sh does — from an explicit
-# --repo/-R on the merge command itself when given (already extracted into
-# $repo above), else the current checkout. `gh repo view` is timeout-bounded:
-# this hook runs on a budget, and a hang here must read as a refusal, never
-# as an allow.
-# HIMMEL-3578 (round 2): resolve the GNU-semantics `timeout` through the
-# shared resolver, which also tries `gtimeout` — a bare `timeout` check alone
-# left every merge refused on stock macOS (no coreutils). Gate 4 bounds its
-# own calls with it too.
-# shellcheck disable=SC1091
-# shellcheck source=../lib/timeout-bin.sh
-. "$SCRIPT_DIR/../lib/timeout-bin.sh"
-go_nwo="$repo"
-if [ -z "$go_nwo" ]; then
-    if [ -n "${_TIMEOUT_BIN:-}" ]; then
-        go_nwo=$("$_TIMEOUT_BIN" 5 gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
-    else
-        # HIMMEL-3585: neither `timeout` nor `gtimeout` is on PATH, so the
-        # bound above is unavailable — a bare `gh repo view` here would run
-        # UNBOUNDED and a hang would fail this fail-closed hook OPEN via
-        # Claude Code's own hook timeout instead of reading as a refusal.
-        # Bash-native bound: background `gh`, poll for up to 5s, then
-        # kill it and treat that exactly like a timeout (empty go_nwo).
-        _gh_out="$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null)" || _gh_out=""
-        if [ -z "$_gh_out" ]; then
-            go_nwo=""
-        else
-            gh repo view --json nameWithOwner --jq .nameWithOwner >"$_gh_out" 2>/dev/null &
-            _gh_pid=$!
-            _gh_waited=0
-            while [ "$_gh_waited" -lt 5 ] && kill -0 "$_gh_pid" 2>/dev/null; do
-                sleep 1
-                _gh_waited=$((_gh_waited + 1))
-            done
-            if kill -0 "$_gh_pid" 2>/dev/null; then
-                kill -9 "$_gh_pid" 2>/dev/null
-                go_nwo=""
-            else
-                go_nwo="$(cat "$_gh_out" 2>/dev/null)"
-            fi
-            wait "$_gh_pid" 2>/dev/null
-            rm -f "$_gh_out"
-        fi
+    if { [ -z "$go_num" ] || [ -z "$go_sha" ]; } && [ -n "$cwd_branch" ] && { [ "$cwd_branch" != "$sel" ] || [ -n "$repo" ]; }; then
+        go_meta=$(gh pr view "$cwd_branch" --json number,headRefOid 2>/dev/null) || go_meta=""
+        go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
+        go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
     fi
-fi
-if [ -z "$go_nwo" ]; then
-    echo "block-unresolved-cr-merge: cannot resolve this repo's owner/name for PR #$go_num — refusing (GATE INTEGRITY: the GO mac binds the repo, and the trust-path gate reads its list from it). Pass --repo <owner>/<name>, or run from a checkout gh can resolve." >&2
-    exit 2
-fi
+    if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
+        exit 0
+    fi
 
-if [ "$is_leg" -eq 1 ]; then
     go_root=""
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
@@ -331,6 +273,55 @@ if [ "$is_leg" -eq 1 ]; then
     # console_leg but not the rest).
     if ! declare -F go_gate >/dev/null 2>&1 || ! declare -F go_mac >/dev/null 2>&1; then
         echo "block-unresolved-cr-merge: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
+        exit 2
+    fi
+    # HIMMEL-3578: the GO mac binds the repo, so resolve nwo the same way
+    # merge-on-green.sh does — from an explicit --repo/-R on the merge command
+    # itself when given (already extracted into $repo above), else the
+    # current checkout. `gh repo view` is timeout-bounded: this hook runs on
+    # a budget, and a hang here must read as a refusal, never as an allow.
+    go_nwo="$repo"
+    if [ -z "$go_nwo" ]; then
+        # HIMMEL-3578 (round 2): resolve the GNU-semantics `timeout` through
+        # the shared resolver, which also tries `gtimeout` — a bare `timeout`
+        # check alone left every merge refused on stock macOS (no coreutils),
+        # since the block below was skipped whole and go_nwo stayed empty.
+        # shellcheck disable=SC1091
+        # shellcheck source=../lib/timeout-bin.sh
+        . "$SCRIPT_DIR/../lib/timeout-bin.sh"
+        if [ -n "${_TIMEOUT_BIN:-}" ]; then
+            go_nwo=$("$_TIMEOUT_BIN" 5 gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
+        else
+            # HIMMEL-3585: neither `timeout` nor `gtimeout` is on PATH, so the
+            # bound above is unavailable — a bare `gh repo view` here would run
+            # UNBOUNDED and a hang would fail this fail-closed hook OPEN via
+            # Claude Code's own hook timeout instead of reading as a refusal.
+            # Bash-native bound: background `gh`, poll for up to 5s, then
+            # kill it and treat that exactly like a timeout (empty go_nwo).
+            _gh_out="$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null)" || _gh_out=""
+            if [ -z "$_gh_out" ]; then
+                go_nwo=""
+            else
+                gh repo view --json nameWithOwner --jq .nameWithOwner >"$_gh_out" 2>/dev/null &
+                _gh_pid=$!
+                _gh_waited=0
+                while [ "$_gh_waited" -lt 5 ] && kill -0 "$_gh_pid" 2>/dev/null; do
+                    sleep 1
+                    _gh_waited=$((_gh_waited + 1))
+                done
+                if kill -0 "$_gh_pid" 2>/dev/null; then
+                    kill -9 "$_gh_pid" 2>/dev/null
+                    go_nwo=""
+                else
+                    go_nwo="$(cat "$_gh_out" 2>/dev/null)"
+                fi
+                wait "$_gh_pid" 2>/dev/null
+                rm -f "$_gh_out"
+            fi
+        fi
+    fi
+    if [ -z "$go_nwo" ]; then
+        echo "block-unresolved-cr-merge: cannot resolve this repo's owner/name for PR #$go_num — refusing (GATE INTEGRITY: the GO mac binds the repo). Pass --repo <owner>/<name>, or run from a checkout gh can resolve." >&2
         exit 2
     fi
     go_reason=""
@@ -362,91 +353,4 @@ if [ "$is_leg" -eq 1 ]; then
         exit 2
     fi
 fi
-
-# ── Trust-path gate (HIMMEL-3910) — runs FOURTH, for EVERY session. A PR
-# touching a CI trust path (scripts/ci/ci-trust-paths.txt) needs a
-# trust-reviewed console GO, pinned to its head. merge-on-green.sh has asked
-# this since HIMMEL-3895; a direct `gh pr merge` used to pass the same PR on an
-# ordinary GO (a leg) or on none (the operator). The question itself is
-# trust_path_check in scripts/lib/go-gate.sh, shared with merge-on-green.sh so
-# the two entry points cannot drift. Unlike gate 3 this binds the operator too,
-# exactly as merge-on-green.sh does for every caller: go.sh --trust-reviewed is
-# the operator's route through it. Every failure below refuses — a trust check
-# that cannot run must never read as "no trust path".
-gate4_refuse() {
-    echo "block-unresolved-cr-merge: $1" >&2
-    exit 2
-}
-# _gate4_bounded <secs> <outfile> <cmd...> — run <cmd> with stdout to
-# <outfile>, killed after <secs>; rc is the command's, or 124 on timeout. Bash
-# native (no timeout binary) so it bounds a shell function the same way on
-# every platform: this hook runs on a 60s budget, and a hang must read as a
-# refusal, never as Claude Code's hook timeout failing it open.
-# ponytail: kill -9 reaches the backgrounded subshell, not an in-flight gh it
-# spawned (orphaned, it finishes on its own), upgrade path: a process-group
-# kill if an orphaned gh is ever seen outliving its hook.
-_gate4_bounded() {
-    local secs=$1 out=$2 pid ticks=0
-    shift 2
-    "$@" >"$out" 2>/dev/null &
-    pid=$!
-    while [ "$ticks" -lt $((secs * 5)) ] && kill -0 "$pid" 2>/dev/null; do
-        sleep 0.2
-        ticks=$((ticks + 1))
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -9 "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null
-        return 124
-    fi
-    wait "$pid"
-}
-# Drop every go-gate name already in scope (a leg sourced the file for gate 3;
-# an inherited `export -f` would otherwise survive) so only the anchor file's
-# own definitions can satisfy the declare -F checks.
-unset -f trust_path_check go_trust_gate go_trust_id_ok go_gate _go_gate_verify console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
-# shellcheck source=scripts/lib/go-gate.sh
-# shellcheck disable=SC1091
-if ! { [ -r "$SCRIPT_DIR/../lib/go-gate.sh" ] && . "$SCRIPT_DIR/../lib/go-gate.sh"; } 2>/dev/null \
-        || ! declare -F trust_path_check >/dev/null 2>&1 || ! declare -F go_trust_gate >/dev/null 2>&1; then
-    gate4_refuse "cannot load trust_path_check and go_trust_gate from scripts/lib/go-gate.sh — refusing (the CI trust-path gate must fail closed, not silently no-op)"
-fi
-trust_anchor=$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd -P) || trust_anchor=""
-[ -n "$trust_anchor" ] || gate4_refuse "cannot resolve the harness anchor for the CI trust-path check of PR #$go_num — refusing"
-trust_tmp=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-trust.XXXXXX" 2>/dev/null) \
-    || gate4_refuse "cannot create a temp file for the CI trust-path check of PR #$go_num — refusing"
-trap 'rm -f "$trust_tmp"' EXIT
-_gate4_bounded 10 "$trust_tmp" gh repo view "$go_nwo" --json defaultBranchRef --jq '.defaultBranchRef.name // ""' || true
-trust_branch=$(cat "$trust_tmp" 2>/dev/null) || trust_branch=""
-[ -n "$trust_branch" ] \
-    || gate4_refuse "cannot read $go_nwo's default branch for the CI trust-path check of PR #$go_num — refusing"
-trust_rc=0
-_gate4_bounded 30 "$trust_tmp" trust_path_check "$go_nwo" "$go_num" "$go_sha" "$trust_branch" "$trust_anchor" || trust_rc=$?
-trust_out=$(cat "$trust_tmp" 2>/dev/null) || trust_out=""
-if [ "$trust_rc" -eq 124 ]; then
-    gate4_refuse "the CI trust-path check of PR #$go_num timed out — refusing"
-fi
-if [ "$trust_rc" -ne 0 ]; then
-    gate4_refuse "CI trust-path check refused PR #$go_num (${trust_out:-trust_path_check exited $trust_rc with no reason})"
-fi
-case "$trust_out" in
-    none|not-adopted) ;;
-    "hit "?*)
-        trust_hit=${trust_out#hit }
-        trust_root=""
-        # shellcheck source=scripts/lib/handover-path.sh
-        # shellcheck disable=SC1091
-        if . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null && declare -F go_resolve_root >/dev/null 2>&1; then
-            trust_root=$(go_resolve_root "$SCRIPT_DIR/../.." 2>/dev/null) || trust_root=""
-        fi
-        trust_id=$(go_trust_gate "$go_num" "$go_sha" "$trust_root" "$go_nwo") \
-            || gate4_refuse "PR #$go_num touches CI trust path $trust_hit and needs a trust-reviewed GO: ${trust_id:-go_trust_gate refused with no reason}"
-        # The trust GO is bound to $go_sha — the merge command must pin it, for
-        # the operator as for a leg (same reason as gate 3's pin).
-        if [ "$match_head" != "$go_sha" ]; then
-            gate4_refuse "PR #$go_num touches CI trust path $trust_hit — the merge must pin --match-head-commit $go_sha (the head its trust-reviewed GO $trust_id is bound to); got '${match_head:-none}'"
-        fi
-        ;;
-    *) gate4_refuse "CI trust-path check gave an unrecognised answer for PR #$go_num — refusing" ;;
-esac
 exit 0

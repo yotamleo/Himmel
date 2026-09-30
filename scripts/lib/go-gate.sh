@@ -116,6 +116,97 @@ go_trust_gate() {
     printf '%s\n' "$trust"
 }
 
+# trust_path_check <nwo> <pr-num> <head-sha> <default-branch> <anchor> —
+# HIMMEL-3910. Does PR <pr-num> touch a CI trust path? Moved out of
+# merge-on-green.sh (HIMMEL-3895) so block-unresolved-cr-merge.sh asks the
+# exact same question: a direct `gh pr merge` used to pass a trust-path PR on
+# an ordinary GO. Every fail-closed case below is merge-on-green's, unchanged.
+#   - The list comes from the DEFAULT branch through the API, never the PR head,
+#     a worktree or a local ref (all branch-controlled), so a PR editing it is
+#     judged by the list it would replace. Unreadable, empty or invalid →
+#     refuse. A 404 refuses unless the anchor's origin URL positively names a
+#     different github.com repo, where it means the gate is not adopted there;
+#     an unresolvable identity refuses.
+#   - The file list is the REST listing, paginated (renames' old names
+#     included), and must account for every one of the PR's changed_files (the
+#     endpoint stops at 3000), with the PR head re-read on both sides of it
+#     equal to <head-sha>.
+#   - On a match, <anchor> must contain origin's HEAD: a stale anchor runs a
+#     stale gate.
+# rc 0 prints one line: `none`, `not-adopted`, or `hit <first matching path>`.
+# rc 2 prints `<phase> <reason>` (phase: tmp, list, files or anchor) — refused.
+# gh is ${GH:-gh}. The body is a subshell, so its temp-file trap, its helper
+# and its `exit`s never reach the sourcing caller.
+trust_path_check() (
+    nwo=$1 pr_num=$2 sha=$3 default_branch=$4 anchor=$5 gh_bin=${GH:-gh}
+    refuse() { printf '%s %s\n' "$1" "$2"; exit 2; }
+    # other_repo — rc 0 only when the anchor's origin POSITIVELY names a
+    # github.com repo other than $nwo. An unreadable origin, an SSH host alias
+    # or any non-github.com URL cannot prove the PR is on another repo, so it
+    # is not "other" and a 404 refuses (fail closed).
+    other_repo() {
+        local url
+        url=$(git -C "$anchor" config --get remote.origin.url 2>/dev/null) || return 1
+        url=${url%/}; url=${url%.git}
+        case "$url" in
+            https://github.com/*) url=${url#https://github.com/} ;;
+            ssh://git@github.com/*) url=${url#ssh://git@github.com/} ;;
+            git@github.com:*) url=${url#git@github.com:} ;;
+            *) return 1 ;;
+        esac
+        case "$url" in ''|*/*/*|*[!A-Za-z0-9._/-]*) return 1 ;; */*) ;; *) return 1 ;; esac
+        [ "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$nwo" | tr '[:upper:]' '[:lower:]')" ]
+    }
+    tmp=$(mktemp "${TMPDIR:-/tmp}/mog-trust.XXXXXX") || refuse tmp "cannot create a temp file"
+    trap 'rm -f "$tmp"' EXIT
+    rc=0
+    raw=$("$gh_bin" api "repos/$nwo/contents/scripts/ci/ci-trust-paths.txt?ref=$default_branch" \
+        -H 'Accept: application/vnd.github.raw' 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        case "$raw" in
+            *"HTTP 404"*)
+                other_repo || refuse list "scripts/ci/ci-trust-paths.txt is missing on $nwo@$default_branch, and the harness anchor's origin does not prove it is another repo"
+                printf 'not-adopted\n'
+                exit 0 ;;
+            *) refuse list "cannot read scripts/ci/ci-trust-paths.txt from $nwo@$default_branch (gh exit $rc)" ;;
+        esac
+    fi
+    # Strip \r and surrounding blanks first: a pattern carrying either matches
+    # no path, and an unmatched pattern fails open.
+    printf '%s\n' "$raw" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+        | grep -Ev '^(#|$)' > "$tmp"
+    [ -s "$tmp" ] || refuse list "scripts/ci/ci-trust-paths.txt on $default_branch has no patterns"
+    grep -E -f "$tmp" </dev/null >/dev/null 2>&1
+    [ "$?" -eq 2 ] && refuse list "scripts/ci/ci-trust-paths.txt on $default_branch has an invalid pattern"
+    pr_jq='"\(.head.sha)|\(.changed_files)"'
+    meta=$("$gh_bin" api "repos/$nwo/pulls/$pr_num" --jq "$pr_jq" 2>/dev/null) \
+        || refuse files "cannot read PR #$pr_num's head and changed-file count"
+    [ "${meta%%|*}" = "$sha" ] || refuse files "PR #$pr_num's head is ${meta%%|*}, not the certified $sha"
+    count=${meta#*|}
+    case "$count" in ''|*[!0-9]*) refuse files "PR #$pr_num's changed-file count is unreadable" ;; esac
+    files=$("$gh_bin" api "repos/$nwo/pulls/$pr_num/files" --paginate \
+        --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>/dev/null) \
+        || refuse files "cannot list PR #$pr_num's changed files"
+    listed=0
+    [ -n "$files" ] && listed=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
+    [ "$listed" -eq "$count" ] \
+        || refuse files "listed $listed of PR #$pr_num's $count changed files (the listing stops at 3000)"
+    meta=$("$gh_bin" api "repos/$nwo/pulls/$pr_num" --jq "$pr_jq" 2>/dev/null) || meta=""
+    [ "${meta%%|*}" = "$sha" ] || refuse files "PR #$pr_num's head moved while its files were listed"
+    hit=$(printf '%s\n' "$files" | tr '\t' '\n' | grep -v '^$' | grep -E -f "$tmp" | head -n 1)
+    if [ -z "$hit" ]; then
+        printf 'none\n'
+        exit 0
+    fi
+    tip=$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
+        GIT_TERMINAL_PROMPT=0 git -C "$anchor" ls-remote origin HEAD 2>/dev/null | awk 'NR==1{print $1}')
+    if [ -z "$tip" ] || ! (unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
+            git -C "$anchor" merge-base --is-ancestor "$tip" HEAD 2>/dev/null); then
+        refuse anchor "PR #$pr_num touches trust path $hit and the anchor $anchor is behind origin (or origin is unreadable) — pull the primary checkout, then re-run"
+    fi
+    printf 'hit %s\n' "$hit"
+)
+
 # --- HIMMEL-3543/HIMMEL-3578: GO authentication ------------------------------
 # A GO used to be the mere existence of a file with a head= line, so any
 # process able to write the handover root (a console-spawned leg included)

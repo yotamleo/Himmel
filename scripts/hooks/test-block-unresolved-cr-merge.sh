@@ -107,10 +107,30 @@ case "$1 $2" in
   # GH_STUB_NWO overrides the default (o/r, matching the fixture repo's
   # origin); repo-view-timeout/repo-view-fail simulate an unresolvable repo
   # so the timeout-bound refusal path can be exercised.
+  # HIMMEL-3910: the trust-path gate (gate 4) reads the trust list from the
+  # default branch, the PR's head + changed-file count, and its file listing.
+  # Default: a one-pattern list and a PR touching only README.md (no hit), so
+  # every unrelated case passes gate 4. GH_STUB_TRUST_FILE names the one
+  # changed file (GH_STUB_TRUST_PREV its pre-rename name);
+  # GH_STUB_TRUST=list-fail/list-404/files-fail break a read.
+  "api repos/o/r/contents/scripts/ci/ci-trust-paths.txt"*)
+    case "${GH_STUB_TRUST:-}" in
+      list-fail) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;;
+      list-404)  echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+    esac
+    printf '# trust paths\n^scripts/ci/\n' ;;
+  "api repos/o/r/pulls/42/files"*)
+    [ "${GH_STUB_TRUST:-}" = files-fail ] && exit 1
+    printf '%s\t%s\n' "${GH_STUB_TRUST_FILE:-README.md}" "${GH_STUB_TRUST_PREV:-}" ;;
+  "api repos/o/r/pulls/42")
+    echo 'abc123|1' ;;
   "repo view")
     case "$GH_STUB_MODE" in
       repo-view-timeout) sleep 30 ;;
       repo-view-fail)    exit 1 ;;
+    esac
+    case "$*" in
+      *defaultBranchRef*) printf '%s' "${GH_STUB_DEFAULT_BRANCH-main}"; exit 0 ;;
     esac
     printf '%s' "${GH_STUB_NWO:-o/r}" ;;
   *) echo '{}' ;;
@@ -784,10 +804,15 @@ GH_STUB_MODE=clean GH_STUB_LOG="$TMP/calls-broken-gogate-nonleg.log" \
     bash "$BROKEN_GOGATE_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" \
     < "$BROKEN_GOGATE_PAYLOAD" > "$BROKEN_GOGATE_NONLEG_OUT" 2>"$BROKEN_GOGATE_NONLEG_ERR"
 broken_gogate_nonleg_rc=$?
-if [ "$broken_gogate_nonleg_rc" -eq 0 ] && ! grep -qi "cannot load" "$BROKEN_GOGATE_NONLEG_ERR"; then
-    pass=$((pass+1)); echo "ok   broken-go-gate-nonleg-untouched"
+# HIMMEL-3910 supersedes the non-leg half: gate 3 still never touches a non-leg
+# session (no console-leg marker refusal), but gate 4 — the CI trust-path gate —
+# binds every session, as merge-on-green.sh does, and cannot ask its question
+# without go-gate.sh, so it refuses.
+if [ "$broken_gogate_nonleg_rc" -eq 2 ] && grep -q "cannot load trust_path_check" "$BROKEN_GOGATE_NONLEG_ERR" \
+        && ! grep -q "console-leg marker" "$BROKEN_GOGATE_NONLEG_ERR"; then
+    pass=$((pass+1)); echo "ok   broken-go-gate-nonleg-refused-by-trust-gate-only"
 else
-    fail=$((fail+1)); echo "FAIL broken-go-gate-nonleg-untouched rc=$broken_gogate_nonleg_rc (want 0, no 'cannot load' on stderr) err=$(cat "$BROKEN_GOGATE_NONLEG_ERR")"
+    fail=$((fail+1)); echo "FAIL broken-go-gate-nonleg-refused-by-trust-gate-only rc=$broken_gogate_nonleg_rc (want 2, gate 4's 'cannot load trust_path_check', not gate 3's marker refusal) err=$(cat "$BROKEN_GOGATE_NONLEG_ERR")"
 fi
 
 BROKEN_GOGATE_LEG_OUT="$TMP/broken-gogate-leg-out"
@@ -956,6 +981,106 @@ RUNEOF
 
     unset -f go_gate
 fi
+
+# ── HIMMEL-3910: the CI trust-path gate (gate 4). A PR touching a CI trust
+# path needs a trust-reviewed GO pinned to its head — for a leg and the
+# operator alike, merge-on-green.sh's rule since HIMMEL-3895, asked through the
+# same trust_path_check. A hit consults the anchor's origin, so the hit rows
+# run a copy of the hook in a scratch anchor that is a git repo containing its
+# origin's HEAD (a local bare clone) — hermetic, never the network.
+TRUST_ANCHOR="$TMP/trust-anchor"
+mkdir -p "$TRUST_ANCHOR/scripts/hooks"
+cp -R "$SCRIPT_DIR/../lib" "$TRUST_ANCHOR/scripts/lib"
+cp "$HOOK" "$TRUST_ANCHOR/scripts/hooks/block-unresolved-cr-merge.sh"
+git -C "$TRUST_ANCHOR" init -q
+git -C "$TRUST_ANCHOR" add -A
+git -C "$TRUST_ANCHOR" -c user.name=t -c user.email=t@t commit -qm anchor
+git clone -q --bare "$TRUST_ANCHOR" "$TMP/trust-origin.git"
+git -C "$TRUST_ANCHOR" remote add origin "$TMP/trust-origin.git"
+TRUST_GO="$GOROOT/.locks/go/42.abc123"
+TRUST_MAC_42="$(bash -c '. "$1"; go_mac 42 abc123 o/r judge-3910' _ "$SCRIPT_DIR/../lib/go-gate.sh")"
+[ "${#TRUST_MAC_42}" -eq 64 ] || { fail=$((fail+1)); echo "FAIL setup: could not mint the trust-reviewed GO mac"; }
+write_ordinary_go() { printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$TRUST_GO"; }
+write_trust_go() { printf 'pr=42\nhead=abc123\nby=test\nat=now\ntrust-reviewed=judge-3910\nmac=%s\n' "$TRUST_MAC_42" > "$TRUST_GO"; }
+PIN="gh pr merge 42 --squash --match-head-commit abc123"
+MAIN_HOOK="$HOOK"
+HOOK="$TRUST_ANCHOR/scripts/hooks/block-unresolved-cr-merge.sh"
+
+# RED control first: the base hook (e902b6c8, before this ticket) lets both
+# trust-path merges through — the gap this ticket closes.
+cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-himmel-3910.sh" "$HOOK"
+write_ordinary_go
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t red-control-3910-pre-fix-leg-ordinary-go-allowed 0 Bash "$PIN"
+rm -f "$TRUST_GO"
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t red-control-3910-pre-fix-operator-no-go-allowed 0 Bash "$PIN"
+cp "$MAIN_HOOK" "$HOOK"
+
+# Trust path + an ordinary GO → refused, for a leg (the #1479 gap).
+write_ordinary_go
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-leg-ordinary-go-blocks 2 Bash "$PIN"
+grep -q "not trust-reviewed" "$TMP/err-trust-path-leg-ordinary-go-blocks" \
+    || { fail=$((fail+1)); echo "FAIL trust-path-leg-ordinary-go-blocks: reason does not name the missing trust review"; }
+# The operator gets the same rule: an ordinary GO or none is refused.
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-operator-ordinary-go-blocks 2 Bash "$PIN"
+rm -f "$TRUST_GO"
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-operator-no-go-blocks 2 Bash "$PIN"
+grep -q "no console GO" "$TMP/err-trust-path-operator-no-go-blocks" \
+    || { fail=$((fail+1)); echo "FAIL trust-path-operator-no-go-blocks: reason does not name the missing GO"; }
+# A renamed-away trust path counts too (previous_filename).
+write_ordinary_go
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=docs/run.sh GH_STUB_TRUST_PREV=scripts/ci/run.sh \
+    t trust-path-renamed-away-blocks 2 Bash "$PIN"
+grep -q "trust path scripts/ci/run.sh" "$TMP/err-trust-path-renamed-away-blocks" \
+    || { fail=$((fail+1)); echo "FAIL trust-path-renamed-away-blocks: reason does not name the matched old path"; }
+
+# Trust path + a trust-reviewed GO, pinned → allowed, leg and operator.
+write_trust_go
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-leg-trust-go-allows 0 Bash "$PIN"
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-operator-trust-go-allows 0 Bash "$PIN"
+# ...but an operator merge must still pin the GO-bound head.
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-operator-unpinned-blocks 2 Bash "gh pr merge 42 --squash"
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-operator-wrong-pin-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit def456"
+
+# A non-trust PR with an ordinary GO still passes (leg), and the operator
+# still needs no GO at all.
+write_ordinary_go
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean \
+    t non-trust-leg-ordinary-go-allows 0 Bash "$PIN"
+rm -f "$TRUST_GO"
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean \
+    t non-trust-operator-no-go-allows 0 Bash "gh pr merge 42 --squash"
+
+# Every unreadable input fails closed, leg and operator alike — even with a
+# valid GO in place: a trust check that cannot run is never "no trust path".
+write_ordinary_go
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST=list-fail \
+    t trust-list-unreadable-leg-blocks 2 Bash "$PIN"
+grep -q "cannot read scripts/ci/ci-trust-paths.txt" "$TMP/err-trust-list-unreadable-leg-blocks" \
+    || { fail=$((fail+1)); echo "FAIL trust-list-unreadable-leg-blocks: reason missing"; }
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST=list-fail \
+    t trust-list-unreadable-operator-blocks 2 Bash "gh pr merge 42 --squash"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST=files-fail \
+    t trust-files-unreadable-leg-blocks 2 Bash "$PIN"
+grep -q "cannot list PR #42's changed files" "$TMP/err-trust-files-unreadable-leg-blocks" \
+    || { fail=$((fail+1)); echo "FAIL trust-files-unreadable-leg-blocks: reason missing"; }
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST=files-fail \
+    t trust-files-unreadable-operator-blocks 2 Bash "gh pr merge 42 --squash"
+# A 404 list on a repo the anchor's origin cannot prove is another one.
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST=list-404 \
+    t trust-list-404-unproven-blocks 2 Bash "gh pr merge 42 --squash"
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_DEFAULT_BRANCH='' \
+    t trust-default-branch-unreadable-blocks 2 Bash "gh pr merge 42 --squash"
+rm -f "$TRUST_GO"
+HOOK="$MAIN_HOOK"
 
 # passthrough cases must not touch gh at all (coderabbit: assert EVERY one)
 for pt in non-merge-passthrough string-literal-passthrough quoted-merge-text-passthrough; do
