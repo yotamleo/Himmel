@@ -438,7 +438,7 @@ fi
 # Over-deny only: `rm -- -r` (a file literally named -r) and
 # `rm "my -r file"` deny - the word-level fix is HIMMEL-912.
 _sq="'"
-RM_ANSIC_ESC_PAT="${CMDPOS}rm(\\.exe)?([^|;&]*)\\\$${_sq}[^${_sq}]*\\\\"
+RM_ANSIC_ESC_PAT="(^|[^[:alnum:]_.-])rm(\\.exe)?([^|;&]*)\\\$${_sq}[^${_sq}]*\\\\"
 if [[ $rm_scrub =~ $RM_ANSIC_ESC_PAT ]]; then
     deny "recursive rm (ANSI-C escape in rm argument)"
 fi

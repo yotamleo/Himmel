@@ -676,6 +676,8 @@ assert_rc "rm \$'-'r d"                  2 "$(run_case "$(j_bash "rm \$'-'r d")"
 assert_rc "rm -f \$'-r' d"               2 "$(run_case "$(j_bash "rm -f \$'-r' d")")"
 assert_rc "rm \$'\\x2dr' d (hex escape)" 2 "$(run_case "$(j_bash "rm \$'\\x2dr' d")")"
 assert_rc "rm \$'\\055r' d (octal esc)"  2 "$(run_case "$(j_bash "rm \$'\\055r' d")")"
+assert_rc "command rm \$'\\x2dr' d"      2 "$(run_case "$(j_bash "command rm \$'\\x2dr' d")")"
+assert_rc "command -p rm \$'\\055r' d"   2 "$(run_case "$(j_bash "command -p rm \$'\\055r' d")")"
 # Quoted plain names stay allowed.`rm -- -r` (a file literally named -r) is
 # denied on purpose: the scan cannot tell it from the flag (HIMMEL-912).
 assert_rc 'rm "my file" allowed'         0 "$(run_case "$(j_bash 'rm "my file"')")"
