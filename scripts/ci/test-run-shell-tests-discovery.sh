@@ -1002,5 +1002,72 @@ else
 fi
 rm -rf "$sb21f"
 
+# --------------------------------------------------------------------------
+# Case 26 — FAIL_LOG_DIR/.run-complete completion sentinel (HIMMEL-3906).
+# Written when the suite loop runs to its end (pass or fail), never when the
+# runner is killed mid-loop, so a partial log set is distinguishable from a
+# complete one.
+# --------------------------------------------------------------------------
+echo "== Case 26: FAIL_LOG_DIR completion sentinel (HIMMEL-3906) =="
+sb26=$(mktemp -d "${TMPDIR:-/tmp}/rst-case26.XXXXXX") || { fail "26: mktemp failed"; sb26=""; }
+if [ -n "$sb26" ]; then
+mkdir -p "$sb26/scripts"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$sb26/scripts/test-a-red.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sb26/scripts/test-b-green.sh"
+chmod +x "$sb26/scripts/test-a-red.sh" "$sb26/scripts/test-b-green.sh"
+FAIL_LOG_DIR="$sb26/logs" env -u SUITE_TIER_MODE bash "$RUNNER" "$sb26/scripts" >/dev/null 2>&1
+if [ -f "$sb26/logs/.run-complete" ] && [ -f "$sb26/logs/test-a-red.sh.log" ]; then
+  pass "26a: a completed run (one red suite) writes .run-complete beside the failed logs"
+else
+  fail "26a: expected .run-complete + the red suite's log; ls: $(ls -A "$sb26/logs" 2>&1)"
+fi
+# a run with no failures still leaves the sentinel (dir created for it)
+rm -rf "$sb26/logs"; rm -f "$sb26/scripts/test-a-red.sh"
+FAIL_LOG_DIR="$sb26/logs" env -u SUITE_TIER_MODE bash "$RUNNER" "$sb26/scripts" >/dev/null 2>&1
+if [ -f "$sb26/logs/.run-complete" ]; then pass "26b: an all-green run still writes .run-complete"
+else fail "26b: no sentinel after an all-green run"; fi
+# killed mid-loop: the 2nd suite SIGKILLs the runner (exec keeps the pid); a stale sentinel must not survive
+printf '#!/usr/bin/env bash\nexit 1\n' > "$sb26/scripts/test-a-red.sh"
+# shellcheck disable=SC2016 # the suite body must expand $RST_PIDFILE itself, not this shell
+printf '#!/usr/bin/env bash\nkill -9 "$(cat "$RST_PIDFILE")"\nsleep 5\n' > "$sb26/scripts/test-b-green.sh"
+chmod +x "$sb26/scripts/test-a-red.sh" "$sb26/scripts/test-b-green.sh"
+mkdir -p "$sb26/logs"; : > "$sb26/logs/.run-complete"  # stale sentinel left by the previous (complete) run
+# shellcheck disable=SC2016 # the inner bash -c expands $$ and its own args
+RST_PIDFILE="$sb26/pid" FAIL_LOG_DIR="$sb26/logs" env -u SUITE_TIER_MODE \
+  bash -c 'echo $$ > "$RST_PIDFILE"; exec bash "$0" "$1"' "$RUNNER" "$sb26/scripts" >/dev/null 2>&1
+if [ ! -e "$sb26/logs/.run-complete" ] && [ -f "$sb26/logs/test-a-red.sh.log" ]; then
+  pass "26c: a runner killed mid-loop leaves the partial logs and NO .run-complete (stale one cleared)"
+else
+  fail "26c: expected partial logs without the sentinel; ls: $(ls -A "$sb26/logs" 2>&1)"
+fi
+# nested runner inheriting the outer FAIL_LOG_DIR (the shard runs the runner's own self-tests):
+# its normal completion must not vouch for the outer run, which is then killed mid-loop
+rm -rf "$sb26/logs" "$sb26/inner"; mkdir -p "$sb26/inner"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sb26/inner/test-inner.sh"; chmod +x "$sb26/inner/test-inner.sh"
+# shellcheck disable=SC2016 # the suite body must expand these itself, not this shell
+printf '#!/usr/bin/env bash\nbash "$RST_RUNNER" "$RST_INNER" >/dev/null 2>&1\n' > "$sb26/scripts/test-a-red.sh"
+chmod +x "$sb26/scripts/test-a-red.sh"
+# shellcheck disable=SC2016 # the inner bash -c expands $$ and its own args
+RST_PIDFILE="$sb26/pid" RST_RUNNER="$RUNNER" RST_INNER="$sb26/inner" FAIL_LOG_DIR="$sb26/logs" env -u SUITE_TIER_MODE \
+  bash -c 'echo $$ > "$RST_PIDFILE"; exec bash "$0" "$1"' "$RUNNER" "$sb26/scripts" >/dev/null 2>&1
+if [ ! -e "$sb26/logs/.run-complete" ]; then
+  pass "26d: a nested runner sharing FAIL_LOG_DIR does not write the outer run's sentinel"
+else
+  fail "26d: nested runner wrote .run-complete under a killed outer run; ls: $(ls -A "$sb26/logs" 2>&1)"
+fi
+# run budget expires mid-loop: the remaining suites are skipped (never ran), so the loop
+# ends normally but the run is NOT complete and must not write the sentinel
+rm -rf "$sb26/logs"
+printf '#!/usr/bin/env bash\nsleep 2\nexit 1\n' > "$sb26/scripts/test-a-red.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sb26/scripts/test-b-green.sh"
+chmod +x "$sb26/scripts/test-a-red.sh" "$sb26/scripts/test-b-green.sh"
+SUITE_RUN_BUDGET=1 FAIL_LOG_DIR="$sb26/logs" env -u SUITE_TIER_MODE bash "$RUNNER" "$sb26/scripts" >"$sb26/budget.out" 2>&1
+if [ ! -e "$sb26/logs/.run-complete" ] && grep -q "budget" "$sb26/budget.out"; then
+  pass "26e: a run whose SUITE_RUN_BUDGET expired (suites skipped) writes no .run-complete"
+else
+  fail "26e: expected budget expiry without a sentinel; ls: $(ls -A "$sb26/logs" 2>&1); out: $(head -c 300 "$sb26/budget.out")"
+fi
+rm -rf "$sb26"
+fi
 
 rst_tally
