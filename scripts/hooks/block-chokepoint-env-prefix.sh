@@ -1346,7 +1346,10 @@ scan_segment() {
         while [ "$j" -lt "$nw" ] && [[ ${W[$j]} =~ $ASSIGN_RE ]]; do j=$((j + 1)); done
         k=reader
         case "$cmd" in *'|'*|*\$\(*|*'`'*|*'<('*|*'>('*) k='' ;; esac
-        case "$k${W[$j]##*/}" in
+        # `-`: a redirect-only segment (`<<< x`) has no command word, and an
+        # unbound W[$j] under nounset would abort the hook (rc=1 = no deny).
+        w=${W[$j]-}
+        case "$k${w##*/}" in
         readergrep|readercat|readerwc|readerhead|readertail|readertee|readerdiff|readercmp) : ;;
         *)
             k=$seg

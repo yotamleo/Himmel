@@ -485,7 +485,7 @@ assert_deny_unres() {  # assert_deny_unres <label> <json>
     decision=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
     CASES=$((CASES + 1))
     if [ "$RC" = "2" ] && [ "$decision" = "deny" ] \
-       && printf '%s' "$ERR" | grep -q "cannot be fully resolved"; then
+       && printf '%s' "$ERR" | grep -q "cannot be fully resolved"; then  # pipefail-ok: ERR is one short deny message, far under the pipe buffer (same shape as assert_deny)
         echo "PASS $label (denied as unresolvable)"
     else
         echo "FAIL $label -- expected rc=2 + permissionDecision=deny + unresolvable message, got rc=$RC decision='$decision'"
@@ -914,6 +914,10 @@ assert_allow "1813 backstop control: env ls with 2>&1"                 "$(j "env
 assert_allow "1813 backstop control: grep here-string of a variable"   "$(j 'grep x <<< "$y"')"
 assert_allow "1813 backstop control: ls piped to tee"                  "$(j "ls 2>&1 | tee out.txt")"
 assert_allow "1813 backstop control: env -S naming no chokepoint"      "$(j "env -S 'echo hi'")"
+# A redirect-only here-string leaves no command word; the reader lookup must
+# not abort the hook under nounset (rc=1 is a hook error, not a deny).
+assert_allow "1813 redirect-only here-string (no command word)"       "$(j "<<< hello")"
+assert_deny  "1813 redirect-only here-string, then a seam segment"    "$(j "<<< hello; ${SW_VAR}=1 bash $STOP_WORKER")"
 assert_allow "1813 backstop control: bare chokepoint, no seam, no -S"  "$(j "bash $STOP_WORKER")"
 
 # --- ALLOWED: fail-open proofs ---
