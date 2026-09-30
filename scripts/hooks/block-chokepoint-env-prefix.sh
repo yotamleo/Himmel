@@ -265,6 +265,9 @@ case "$tool" in
 esac
 
 [ -n "$cmd" ] || exit 0
+# HIMMEL-1813: the untouched command, newlines included, for the
+# parse-independent backstop (raw_mention) that runs after scan_text.
+raw_cmd=$cmd
 
 # Backslash-newline is a line CONTINUATION -- join it BEFORE the newline
 # fold below, or the continuation's two halves land in different segments
@@ -862,8 +865,71 @@ deny_unresolvable() {  # deny_unresolvable <script-path> -- from OUR
     exit 2
 }
 
+deny_raw_mention() {  # deny_raw_mention <script-path> -- from OUR registry,
+                      # never raw command text (HIMMEL-1813 backstop).
+    local script="$1" msg reason
+    msg="block-chokepoint-env-prefix: refusing a command that names a sanctioned chokepoint together with its seam variable or an env -S / --split-string.
+
+    ${script}
+
+    This check runs on the raw command text before any parsing, so it
+    ignores quoting, comments, functions and nesting, and it can over-deny
+    (e.g. a command that only PRINTS the chokepoint name next to one of its
+    seam variables). himmel's rule: set env overrides in the
+    LAUNCHING shell, never per call; run the chokepoint bare. If the text
+    only mentions the chokepoint, move it into a file and pass the file.
+
+    To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
+    shell that launched Claude Code (a per-call prefix does not reach a
+    hook process); restart without it to re-enable the guard."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: command names a sanctioned chokepoint with its seam variable or env -S -- run the chokepoint bare"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+}
+
 CR=$'\r'
 NL=$'\n'
+
+# raw_mention <text> <any> -- HIMMEL-1813 parse-independent backstop (console
+# ruling at b8ae2143, after a new spelling surfaced every parser round). Deny
+# (deny_raw_mention) when <text> names a registered chokepoint's basename AND,
+# anywhere in the same text, an assignment to one of that chokepoint's own
+# seam vars (`SEAM=`) or an `env` word
+# later followed by -S / an -xS cluster / --s... (--split-string and its
+# abbreviations); any=1 drops the second condition (the scan_text depth cap).
+# The name match runs on the text with quotes and backslashes removed, and
+# again with every ${...} also dropped -- both only JOIN characters, so a name
+# quoted, escaped or \${}-split apart still matches. Over-deny is accepted.
+raw_mention() {
+    local t="$1" any="$2" u script_path vars_list base v env_s=0
+    local re='^(.*)\$\{[^}]*\}(.*)$'
+    local env_re='(^|[^[:alnum:]_-])env([^[:alnum:]_-].*)?(^|[^[:alnum:]_-])-(-s|[[:alnum:]]*S)'
+    t=${t//\\$'\r\n'/}
+    t=${t//\\$'\n'/}
+    t=${t//[\'\"\\]/}
+    u=$t
+    while [[ $u =~ $re ]]; do u="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    t="$t$NL$u"
+    [[ $t =~ $env_re ]] && env_s=1
+    while IFS=$'\t' read -r script_path vars_list; do
+        script_path=${script_path%"$CR"}
+        vars_list=${vars_list%"$CR"}
+        base=${script_path##*/}
+        [ -n "$base" ] || continue
+        case "$t" in *"$base"*) ;; *) continue ;; esac
+        [ "$any$env_s" = 00 ] || deny_raw_mention "$script_path"
+        # Seam arm = an ASSIGNMENT only (console X ruling 07:05): the whole
+        # identifier followed by `=` (SEAM=1 cmd, export/declare -x SEAM=,
+        # env SEAM=, empty SEAM=). A bare read, `unset SEAM` and `env -u SEAM`
+        # are the legitimate clear-and-prove spellings and stay out.
+        for v in $vars_list; do
+            [[ $t =~ (^|[^[:alnum:]_])$v= ]] && deny_raw_mention "$script_path"
+        done
+    done <<<"$REG_LINES"
+    return 0
+}
 
 # HIMMEL-2927: names cleared by an in-shell `unset` or `export -n` seen so
 # far -- accumulates left-to-right across the whole payload, carried to
@@ -1684,7 +1750,8 @@ scan_segment() {
 scan_text() {
     local text="$1" inames="$2" depth="$3" line pdepth seg cur=0 force=0
     local -a PSNAP
-    [ "$depth" -le 5 ] || return 0
+    # HIMMEL-1813: past the depth cap a chokepoint mention denies (fail-closed).
+    [ "$depth" -le 5 ] || { raw_mention "$text" 1; return 0; }
     [ "$depth" -gt 0 ] && force=1
     while IFS= read -r line; do
         pdepth=${line%%$'\t'*}
@@ -1723,5 +1790,9 @@ while IFS=$'\t' read -r _reg_path _reg_vars; do
 done <<<"$REG_LINES"
 
 scan_text "$cmd_flat" "" 0
+# HIMMEL-1813 backstop, on the untouched command. It runs after scan_text
+# only so the more specific deny messages win; scan_text never exits except
+# to deny, so every command still reaches it.
+raw_mention "$raw_cmd" 0
 
 exit 0
