@@ -22,11 +22,19 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
     cat <<'USAGE'
 usage: tick.sh [--verbose] [--burn] [--emit-fp] [--doc PATH] [--token TOKEN]
-               [--legs "DOC ..."] [--handover-dir DIR] [--repo DIR]
+               [--legs "DOC ..."] [--legs-from MANIFEST] [--handover-dir DIR]
+               [--repo DIR]
 
-env equivalents: DOC TOKEN LEGS HANDOVER_DIR REPO
+env equivalents: DOC TOKEN LEGS LEGS_FROM HANDOVER_DIR REPO
 Relative DOC/LEGS resolve under the handover root; include the bucket prefix
 when HANDOVER_DIR names a global state root.
+
+--legs-from MANIFEST (HIMMEL-3748) reads the leg docs from a fleet manifest
+(console-kit/fleet-manifest.sh writes it) on every run, so a dispatch or wrap
+edits that file and a waiter forwarding the same argv needs no restart. Its
+legs join any --legs ones (a doc on both is judged once). A manifest that is
+missing or not valid schema-1 JSON fails the tick (rc 1, no TICK line) -- never
+an empty leg set that reads as every leg gone.
 
 --legs accepts space- and/or comma-separated leg docs -- both spellings
 produce identical output: --legs "N1.md N2.md" and --legs "N1.md,N2.md" are
@@ -145,6 +153,7 @@ emit_fp=0
 DOC="${DOC:-}"
 TOKEN="${TOKEN:-}"
 LEGS="${LEGS:-}"
+LEGS_FROM="${LEGS_FROM:-}"
 REPO="${REPO:-$(cd "$HERE/../../.." && pwd)}"
 
 while [ "$#" -gt 0 ]; do
@@ -152,12 +161,13 @@ while [ "$#" -gt 0 ]; do
         --verbose) verbose=1; shift ;;
         --burn) burn=1; shift ;;
         --emit-fp) emit_fp=1; shift ;;
-        --doc|--token|--legs|--handover-dir|--repo)
+        --doc|--token|--legs|--legs-from|--handover-dir|--repo)
             [ "$#" -ge 2 ] || { usage >&2; exit 2; }
             case "$1" in
                 --doc) DOC="$2" ;;
                 --token) TOKEN="$2" ;;
                 --legs) LEGS="$2" ;;
+                --legs-from) LEGS_FROM="$2" ;;
                 --handover-dir) HANDOVER_DIR="$2" ;;
                 --repo) REPO="$2" ;;
             esac
@@ -171,6 +181,15 @@ done
 # queue-lock.sh is a child process and must resolve the same external root when
 # --handover-dir (rather than an already-exported env var) supplied it.
 [ -z "${HANDOVER_DIR:-}" ] || export HANDOVER_DIR
+
+# HIMMEL-3748: the fleet manifest is re-read on every run. An unreadable one is
+# a failed tick (before the heartbeat or any other side effect), never an empty
+# fleet that reads as every leg gone.
+from_docs=""
+if [ -n "$LEGS_FROM" ] && ! from_docs="$(bash "$HERE/fleet-manifest.sh" list "$LEGS_FROM")"; then
+    printf 'tick: cannot read fleet manifest: %s\n' "$LEGS_FROM" >&2
+    exit 1
+fi
 
 if [ -n "${HANDOVER_DIR:-}" ]; then
     root="$(handover_root 2>/dev/null)" || root=""
@@ -229,6 +248,12 @@ fi
 # spaces once so both loops below (this one and the --burn loop) split
 # identically regardless of which separator was used.
 LEGS_SPLIT="${LEGS//,/ }"
+# HIMMEL-3748: --legs-from adds the fleet manifest's docs (read above, before
+# any side effect). A doc named on both is judged once (first spelling wins).
+if [ -n "$LEGS_FROM" ]; then
+    # shellcheck disable=SC2086  # word-splitting the leg list is the point
+    LEGS_SPLIT="$(printf '%s\n' $LEGS_SPLIT $from_docs | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
+fi
 
 legs_summary=""
 tails_summary=""

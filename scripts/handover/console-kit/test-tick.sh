@@ -239,6 +239,48 @@ else
     fail "legs= entry count mismatch (legs_field='$legs_field' count=$legs_count, expected 2)"
 fi
 
+# --- HIMMEL-3748: --legs-from <fleet manifest> ------------------------------
+# The console's leg set lives in one JSON file (fleet-manifest.sh writes it);
+# tick reads it on every run, so a dispatch or wrap edits the file and the
+# waiter needs no restart. RED control (tick.sh before this change): every
+# --legs-from run below exited 2 with the usage text (unknown option).
+fm="$W/handover/console.fleet.json"
+fm_n61="$W/handover/HIMMEL-111-legN61.md"
+fm_n65="$W/handover/HIMMEL-222-legN65.md"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N61"},{"doc":"%s","label":"N65"}]}\n' "$fm_n61" "$fm_n65" > "$fm"
+from_out="$(LEGS='' bash "$SUT" --legs-from "$fm")"; from_rc=$?
+argv_out="$(LEGS='' bash "$SUT" --legs "$fm_n61 $fm_n65")"; argv_rc=$?
+if [ "$from_rc" -eq 0 ] && [ "$argv_rc" -eq 0 ] && [ "$from_out" = "$argv_out" ]; then
+    pass '--legs-from a manifest produces byte-identical output to the equivalent --legs (HIMMEL-3748)'
+else
+    fail "--legs-from vs --legs mismatch (rc=$from_rc/$argv_rc from='$from_out' argv='$argv_out')"
+fi
+contains '--legs-from resolves every manifest leg (HIMMEL-3748)' "$from_out" ' legs=N61:FRESH,N65:FREE '
+# The manifest is re-read on every run: editing it between two samples changes
+# the judged leg set with the same argv -- no waiter restart.
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N61"}]}\n' "$fm_n61" > "$fm"
+contains 'a manifest edit between two runs changes legs= with the same argv (HIMMEL-3748)' \
+    "$(LEGS='' bash "$SUT" --legs-from "$fm")" ' legs=N61:FRESH '
+# A leg on both --legs and the manifest is judged once, not twice.
+contains '--legs and --legs-from union without duplicates (HIMMEL-3748)' \
+    "$(LEGS='' bash "$SUT" --legs "$fm_n61 $fm_n65" --legs-from "$fm")" ' legs=N61:FRESH,N65:FREE '
+# An unreadable or invalid manifest is a failed tick (no TICK line, rc != 0),
+# never an empty fleet that reads as every leg gone.
+printf 'not json\n' > "$fm"
+bad_out="$(LEGS='' bash "$SUT" --legs-from "$fm" 2>/dev/null)"; bad_rc=$?
+if [ "$bad_rc" -ne 0 ] && [ -z "$bad_out" ]; then
+    pass 'an invalid manifest fails the tick instead of reading as no legs (HIMMEL-3748)'
+else
+    fail "invalid manifest (rc=$bad_rc out='$bad_out')"
+fi
+miss_out="$(LEGS='' bash "$SUT" --legs-from "$W/handover/no-such.fleet.json" 2>/dev/null)"; miss_rc=$?
+if [ "$miss_rc" -ne 0 ] && [ -z "$miss_out" ]; then
+    pass 'a missing manifest fails the tick (HIMMEL-3748)'
+else
+    fail "missing manifest (rc=$miss_rc out='$miss_out')"
+fi
+rm -f "$fm"
+
 # --- HIMMEL-2973 S1: livestate= drift field --------------------------------
 # legs=N61:FRESH,N65:FREE above -- only N61 is actually held (the stub
 # queue-lock only reports FRESH for a doc path containing "N61"). Each

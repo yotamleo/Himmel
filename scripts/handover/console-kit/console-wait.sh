@@ -50,7 +50,8 @@
 # necessarily from each other), so one failed `gh` read (prs=none for a single
 # tick) is not an event. The first sample with no saved
 # key, or with a saved key taken under different tick args (a re-arm after a
-# dispatch or wrap), is a silent baseline. A tick.sh that exits non-zero or
+# dispatch or wrap) -- or, with --legs-from, under a different manifest leg
+# set (HIMMEL-3748: a dispatch or wrap needs no re-arm) -- is a silent baseline. A tick.sh that exits non-zero or
 # prints no TICK line, or a bank read that fails or is not a verdict token, is
 # a failed sample: never a change, and only a streak of them wakes.
 #
@@ -147,7 +148,27 @@ trap "exit_reason='signal-TERM'; exit 143" TERM
 trap "exit_reason='signal-INT'; exit 130" INT
 trap "exit_reason='signal-HUP'; exit 129" HUP
 
-args_hash="$(printf '%s\n' "$*" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit (PLATFORM GUARD)
+# HIMMEL-3748: with --legs-from (or LEGS_FROM) the argv never changes when the
+# console dispatches or wraps, so the manifest's leg list is folded into the
+# args hash, re-read before every sample: a leg-set change made through the
+# manifest is a silent baseline, the same as a re-arm with a new --legs. An
+# unreadable manifest hashes as empty (its tick fails that sample anyway).
+legs_from="${LEGS_FROM:-}"
+prev_arg=""
+for a in "$@"; do
+    [ "$prev_arg" = --legs-from ] && legs_from="$a"
+    prev_arg="$a"
+done
+args_hash_of() { # <tick args...>
+    local set=""
+    [ -z "$legs_from" ] || set="$(bash "$HERE/fleet-manifest.sh" list "$legs_from" 2>/dev/null | sort)"
+    printf '%s\n%s\n' "$*" "$set" | sha256sum | cut -c1-16  # gnu-ok: Linux-only kit (PLATFORM GUARD)
+}
+if [ -n "$legs_from" ]; then
+    args_hash="$(args_hash_of "$@")"
+else
+    args_hash="$(printf '%s\n' "$*" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit (PLATFORM GUARD)
+fi
 
 # bank_word: prints the bank-preflight verdict token; non-zero when the read
 # failed, timed out, or its last line is not one of the verdict tokens.
@@ -357,6 +378,12 @@ while :; do
         # The Telegram path is blocked while a tick runs (up to twice
         # CONSOLE_WAIT_TICK_TIMEOUT with the bank read); say so in the heartbeat.
         heartbeat sampling
+        if [ -n "$legs_from" ]; then
+            new_hash="$(args_hash_of "$@" 9>&-)"
+            if [ "$new_hash" != "$args_hash" ]; then
+                args_hash="$new_hash"; saved=""; pending=""
+            fi
+        fi
         sample "$@" 9>&-
         if [ -n "$key" ]; then
             fail_streak=0

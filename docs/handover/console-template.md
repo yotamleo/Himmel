@@ -160,6 +160,16 @@ Run these, in order, and write the result as the first bullet under
     process census, so with more than one console on the host it can name
     another console's legs. `tick.sh`'s own `tick=` field still reads `UNKNOWN`
     (see its `ponytail:` comment); the heartbeat above is the liveness signal.
+
+    **Or arm from a fleet manifest and skip the re-starts** (HIMMEL-3748):
+    keep the leg set in `<this file's stem>.fleet.json` next to this doc and
+    start the waiter with `--legs-from "<that file>"` in place of `--legs`.
+    On each dispatch run `bash "{{KIT}}/fleet-manifest.sh" add "<manifest>"
+    "<absolute leg doc>"`; on each wrap, `… remove "<manifest>" <N-label>`.
+    The tick re-reads the manifest every sample and the waiter takes a silent
+    baseline when its leg set changes, so neither needs a re-start; the
+    `legset=`/`unwatched=` checks above then compare against the manifest.
+    `## Live state` is still yours to edit by hand in this slice.
 11. **Open your Telegram inbox** (HIMMEL-3355). The operator can message you
     from Telegram with `/console {{SESSION_NAME}} <text>`; the bridge appends
     one line per message to your inbox file, but only if the file already
