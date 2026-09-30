@@ -460,6 +460,81 @@ run "mention (not run) of the edited file -> no-op" 0 \
     "$(payload "git diff -- scripts/handover/merge-on-green.sh" "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/handover/merge-on-green.sh
 
+# ---- HIMMEL-1813: deny-on-unresolvable for an env -S mention ---------------
+# On a clean tree. $flat drops every backslash, so GNU env -S's \c ("ignore
+# the rest") hid the target from the text scan (merge-on-green.shc). An env
+# -S command that mentions a target and carries a backslash, '#' or '$' is
+# not resolvable by its text, and denies; outside that intersection nothing
+# changes.
+for v in \
+    "env -S 'ARMAUTOMERGE=1 bash scripts/handover/merge-on-green.sh\\c ignored'" \
+    "env -S 'ARMAUTOMERGE=1 bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -vS 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env --split-string='bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -S 'bash scripts/handover/merge-on-green.sh\\t'" \
+    "env -S 'bash scripts/handover/merge-on-green.sh#'" \
+    "env -S 'bash scripts/cr/clear-cr-marker.sh\\c'" \
+    "env -S 'bash scripts/handover/console-kit/go.sh\\c'" \
+    "env -S 'ARMAUTOMERGE=1 bash"$'\n'"scripts/handover/merge-on-green.sh\\c'" \
+    "env -S 'true;bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -S 'true|bash scripts/handover/merge-on-green.sh\\c'" \
+    "(env -S 'bash scripts/cr/pr-check-context.sh\\c')" \
+    "echo \$(env -S 'bash scripts/cr/pr-check-context.sh\\c')" \
+    "\\env -S 'bash scripts/cr/pr-check-context.sh\\c'" \
+    "{ env -S 'bash scripts/cr/pr-check-context.sh\\c'; }" \
+    "env -u X -S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -u 'X Y' -S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env 'A=1 B' -S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env \\-S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -\\S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env --split\\-string='bash scripts/handover/merge-on-green.sh\\c'"; do
+    run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+    need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
+done
+# These already deny through an earlier rule (hit=1: the glued word does not
+# resolve), which pre-empts the 1813 check; pinned as denies only.
+for v in \
+    "echo \`env -S 'bash scripts/cr/pr-check-context.sh\\c'\`" \
+    "env -S 'bash"$'\v'"scripts/handover/merge-on-green.sh'" \
+    "env -S 'bash"$'\f'"scripts/handover/merge-on-green.sh'" \
+    "env -S 'bash"$'\r'"scripts/handover/merge-on-green.sh'" \
+    "env -S 'bash scripts/handover/merge-\${Z}on-green.sh'" \
+    "env -S 'bash scripts/cr/clear-\${Z}cr-marker.sh\\c'" \
+    "env -S 'bash scripts/hand\${Z}over/merge-on-green.sh'" \
+    "env -S 'bash scripts/c\${Z}r/clear-cr-marker.sh\\c'" \
+    "env >|/dev/null -S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env {fd}>&1 -S 'bash scripts/handover/merge-on-green.sh\\c'"; do
+    run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# A here-string is a script unless a non-executing reader consumes it.
+for v in \
+    "source /dev/stdin <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
+    ". /dev/stdin <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
+    "mksh <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
+    "mksh <<< 'echo ok' <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
+    "cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\" | bash" \
+    "source <(cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\")" \
+    "<<< x bash <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""; do
+    run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+    need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
+done
+run "1813: redirect-only here-string (no command word) -> no-op" 0 \
+    "$(payload "<<< hello" "$WT")" "$HR"
+run "1813: cat of a here-string naming a target -> no-op" 0 \
+    "$(payload "cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" "$WT")" "$HR"
+run "1813: unresolvable env -S with no target mention -> no-op" 0 \
+    "$(payload "env -S 'bash scripts/other/x.sh\\c'" "$WT")" "$HR"
+run "1813: \${VAR} split of a target name outside env -S -> no-op" 0 \
+    "$(payload "echo scripts/c\${Z}r/clear-cr-marker.sh" "$WT")" "$HR"
+run "1813: \${VAR} in an env -S string naming no target -> no-op" 0 \
+    "$(payload "env -S 'echo \${HOME}/x'" "$WT")" "$HR"
+run "1813: \\c in a non-env mention of the target -> no-op" 0 \
+    "$(payload "printf '%s\\c' scripts/handover/merge-on-green.sh" "$WT")" "$HR"
+run "1813: env grep of a pr-check pattern with a backslash (no -S) -> no-op" 0 \
+    "$(payload "env LC_ALL=C grep -n 'pr-check\\|x' docs/a.md" "$WT")" "$HR"
+run "1813: the program's own -S-like flag is not env's (git log --stat) -> no-op" 0 \
+    "$(payload "env GIT_PAGER=cat git log --stat --grep='pr-check\\|x'" "$WT")" "$HR"
+
 # ---- HIMMEL-3433 (d): an interpreter or find -exec word ANYWHERE runs ---------
 # On a clean tree, so each deny comes from the shape, not from an edit.
 run "2>&1 before the literal, clean root -> deny" 2 \

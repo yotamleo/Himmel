@@ -679,6 +679,16 @@ names_target() { # names_target <text> - mentions pr-check, a scripts/cr/
 }
 mentions=0
 names_target "$flat" && mentions=1
+# HIMMEL-1813: GNU env -S expands ${VAR}, an unset one to nothing, so a name
+# split apart by one is still a mention when an env split option is present.
+drop_braced_vars() { # drop_braced_vars <text> - print it with every ${...} removed
+    local t="$1" re='^(.*)\$\{[^}]*\}(.*)$'
+    while [[ $t =~ $re ]]; do t="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    printf '%s' "$t"
+}
+if [ "$mentions" -eq 0 ] && [[ $cmd == *env*\$\{* ]] && [[ $cmd =~ -[a-zA-Z]*S|--s ]]; then
+    names_target "$(drop_braced_vars "${cmd//[\'\"\\]/}")" && mentions=1
+fi
 case "$flat" in *[cC][rR]/*|*[hH]andover/*|*[][*?]*|*'{'*) ;; *) [ "$mentions" -eq 1 ] || exit 0 ;; esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
@@ -1080,6 +1090,136 @@ for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
         esac
     fi
 done
+# HIMMEL-1813: GNU env -S re-splits its operand with its own grammar (\c
+# ignores the rest, \t and friends, '#' comments, ${VAR} expansion), which
+# $flat's quote/backslash strip does not model - `merge-on-green.sh\c` reads
+# as `merge-on-green.shc` above and never hits. When an env-wrapped command
+# carries a -S/--split-string whose operand holds a backslash, '#' or '$'
+# AND whose operand or appended words (to the end of its segment) name a
+# guarded target, its argv cannot be resolved here: deny rather than
+# simulate. Only the operand's raw text is tested for those characters, so
+# an unrelated '$' elsewhere keeps its verdict.
+split_operand() { # split_operand <raw text starting at the operand> - print
+    # the operand's raw shell word: up to the first unquoted blank.
+    local s="$1" c i=0 n q=''
+    n=${#s}
+    while [ "$i" -lt "$n" ]; do
+        c=${s:i:1}
+        case "$q$c" in
+            "''"|'""') q='' ;;
+            \'|\") q=$c ;;
+            \\|\"\\) i=$((i + 1)) ;;
+            ' '|$'\t') break ;;
+        esac
+        i=$((i + 1))
+    done
+    printf '%s' "${s:0:i}"
+}
+env_split_option() { # env_split_option <raw command> - false only when
+    # st_tokenize proves no env word carries its OWN -S/--split-string:
+    # env's options run up to its first program word (git log --stat is
+    # git's), -u/-C/-a take the next word. A glob, a live '$', a $'...'
+    # word or an untokenizable command may hide one, so they return true.
+    local i j e w sk
+    st_tokenize "$1" || return 0
+    [ "$ST_ANSIC" = 0 ] || return 0
+    i=0
+    while [ "$i" -lt "$ST_N" ]; do
+        e=$i
+        i=$((i + 1))
+        w=${ST_W[$e]}
+        [ "${w##*/}" = env ] || continue
+        sk=0
+        j=$i
+        while [ "$j" -lt "$ST_N" ] && [ "${ST_S[$j]}" = "${ST_S[$e]}" ]; do
+            w=${ST_W[$j]}
+            [ "${ST_G[$j]}${ST_X[$j]}" = 00 ] || return 0
+            if [ -n "${ST_RO[$j]}" ]; then j=$((j + 1)); continue; fi
+            j=$((j + 1))
+            if [ "$sk" -eq 1 ]; then sk=0; continue; fi
+            case "$w" in
+                --) break ;;
+                --s*) return 0 ;;
+                --u*=*|--c*=*|--a*=*) ;;
+                --u*|--c*|--a*) sk=1 ;;
+                --*) ;;
+                -*S*) return 0 ;;
+                -*[uCa]) sk=1 ;;
+                -*|*=*) ;;
+                *) break ;;
+            esac
+        done
+    done
+    return 1
+}
+split_unresolvable_mention() { # split_unresolvable_mention <raw command>
+    # One scan over the whole command, not per ;&|/newline segment: those
+    # characters can sit INSIDE the quoted operand (GNU env -S splits on a
+    # newline too), and cutting there would part env from the target it
+    # names. Blanking them keeps a glued `x;env` word separable; the operand
+    # test and the mention both run on the text from the option to the END
+    # of the command, which can only deny more, never less.
+    local s sw sx uw rest tail op env_seen=0
+    env_split_option "$1" || return 1
+    s=${1//[;&|$'\n']/ }
+    read -r -a sw <<<"$s"
+    tail=$s
+    for sx in ${sw[@]+"${sw[@]}"}; do
+        rest="$sx${tail#*"$sx"}"
+        tail=${tail#*"$sx"}
+        # A backslash is shell quoting too: `\-S` reaches env as -S.
+        uw=${sx//[\'\"\\]/}
+        if [ "$env_seen" -eq 0 ]; then
+            # `(env`, `$(env`, `{ \env`, a backtick in front still runs env.
+            uw=${uw##*[\(\`\\\{\$]}
+            [ "${uw##*/}" = env ] && env_seen=1
+            continue
+        fi
+        case "$uw" in --s*) ;; --*) continue ;; -*S*) ;; *) continue ;; esac
+        case "$uw" in
+            --s*=*) op=${rest#*=} ;;
+            --s*|-*S)
+                op=${rest#"$sx"}
+                op=${op#"${op%%[![:blank:]]*}"} ;;
+            *) op=${rest#*S} ;;
+        esac
+        op=$(split_operand "$op")
+        case "$op" in *\\*|*'#'*|*'$'*|*$'\v'*|*$'\f'*|*$'\r'*) ;; *) continue ;; esac
+        names_target "${rest//[\'\"\\]/}" && return 0
+    done
+    return 1
+}
+herestring_split_mention() { # herestring_split_mention <raw command> - true
+    # when a `<<<` operand holds an unresolvable env -S naming a target and
+    # the command is not a non-executing reader: any other command (a shell,
+    # `source /dev/stdin`) may run the operand as a script. Every operand is
+    # tested; the command reads the last. A reader's output can itself
+    # reach a shell (a pipe, `$(`, a backtick, `<(` / `>(`), so the reader
+    # exemption holds only when the command has none of those.
+    local k op hw w i=0
+    [[ $1 == *'<<<'* ]] || return 1
+    read -r -a hw <<<"${1%%<<<*}"
+    while [ "$i" -lt "${#hw[@]}" ] && [[ ${hw[$i]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do i=$((i + 1)); done
+    # A leading `<<<` leaves no command word before it; under nounset an
+    # unguarded hw[$i] aborts the hook (rc=1, a hook error, not a deny).
+    w=${hw[$i]-}
+    case "$1" in
+    *'|'*|*\$\(*|*'`'*|*'<('*|*'>('*) ;;
+    *) case "${w##*/}" in grep|cat|wc|head|tail|tee|diff|cmp) return 1 ;; esac ;;
+    esac
+    k=$1
+    while [[ $k == *'<<<'* ]]; do
+        k=${k#*<<<}
+        op=$(split_operand "${k#"${k%%[![:blank:]]*}"}")
+        case "$op" in \"*\"|\'*\') op=${op:1:${#op}-2} ;; esac
+        split_unresolvable_mention "$op" && return 0
+    done
+    return 1
+}
+if [ "$hit" -eq 0 ] && [ "$mentions" -eq 1 ] && [ "$wrapped" -eq 1 ] \
+    && { split_unresolvable_mention "$cmd" || herestring_split_mention "$cmd"; }; then
+    deny "an env -S / --split-string string naming a guarded target cannot be fully resolved (a backslash escape, '#' or '\$' - GNU env -S: \\c ignores the rest, '#' comments, \${VAR} expands), so which script runs is unprovable; run the target by its literal spelling with no env -S wrapper (HIMMEL-1813)."
+fi
 [ "$hit" -eq 1 ] || exit 0
 # ponytail: a glob through a directory symlink the text does not spell as
 # scripts/cr (`bash scripts/lnk/*`, lnk -> cr) is not a candidate - the same

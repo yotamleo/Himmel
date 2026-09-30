@@ -265,6 +265,9 @@ case "$tool" in
 esac
 
 [ -n "$cmd" ] || exit 0
+# HIMMEL-1813: the untouched command, newlines included, for the
+# parse-independent backstop (raw_mention) that runs before scan_text.
+raw_cmd=$cmd
 
 # Backslash-newline is a line CONTINUATION -- join it BEFORE the newline
 # fold below, or the continuation's two halves land in different segments
@@ -291,8 +294,9 @@ if ! jq -e 'type == "object"' "$REGISTRY" >/dev/null 2>&1; then  # fail-open-ok:
     exit 0
 fi
 
-# A shell-word that opens an assignment: NAME= with a valid variable name.
-ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
+# A shell-word that opens an assignment: NAME= or NAME+= (append, HIMMEL-1813)
+# with a valid variable name.
+ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*[+]?='
 
 # HIMMEL-3185: segment_cmd tags an arithmetic body it lifted out of a
 # `(( ... ))` / `$(( ... ))` with this prefix so scan_segment can tell it from
@@ -450,7 +454,7 @@ arith_fold() {
 # dependency on it.
 segment_cmd() {
     local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}" bdepth=0
-    local cmdpos=1 kind='' lb='' nx=''
+    local cmdpos=1 kind='' lb='' nx='' ro=0
     local -a pkind
     local ptop=0
     n=${#s}
@@ -618,7 +622,22 @@ segment_cmd() {
             fi
             i=$((i + 1))
             ;;
-        \;|\&|\||\`|$'\n')
+        \&)
+            # HIMMEL-1813: `>&`, `<&` (after an UNESCAPED < or >) and `&>`
+            # are redirection operators, never a command separator.
+            if [ "$ro" = "1" ] || [ "${s:$((i + 1)):1}" = ">" ]; then
+                seg="$seg$c"; i=$((i + 1)); ro=0; continue
+            fi
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
+            ;;
+        \|)
+            # HIMMEL-1813: `>|` (noclobber override) is a redirection.
+            if [ "$ro" = "1" ]; then
+                seg="$seg$c"; i=$((i + 1)); ro=0; continue
+            fi
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
+            ;;
+        \;|\`|$'\n')
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
             ;;
         ' ' | $'\t')
@@ -626,8 +645,10 @@ segment_cmd() {
             ;;
         * )
             seg="$seg$c"; i=$((i + 1)); cmdpos=0
+            case "$c" in '<'|'>') ro=1; continue ;; esac
             ;;
         esac
+        ro=0
     done
     printf '%s\t%s\n' "$pdepth" "$seg"
 }
@@ -672,8 +693,18 @@ tokenize_seg() {
                 c=${s:i:1}
                 if [ "$c" = '"' ]; then i=$((i + 1)); break; fi
                 if [ "$c" = "\\" ]; then
+                    # bash drops a double-quoted backslash only before
+                    # $ ` " \ (newline is already folded to ';'); before
+                    # anything else it stays word content (HIMMEL-1813:
+                    # dropping it hid "...\c" from split_unresolvable).
                     i=$((i + 1))
-                    [ "$i" -lt "$n" ] && { w="$w${s:i:1}"; i=$((i + 1)); }
+                    if [ "$i" -lt "$n" ]; then
+                        case "${s:i:1}" in
+                        '$'|'`'|'"'|\\) : ;;
+                        *) w="$w\\" ;;
+                        esac
+                        w="$w${s:i:1}"; i=$((i + 1))
+                    fi
                     continue
                 fi
                 w="$w$c"; i=$((i + 1))
@@ -728,7 +759,30 @@ tokenize_seg() {
             while [ "$i" -lt "$n" ]; do
                 case "${s:i:1}" in '<'|'>') i=$((i + 1)) ;; *) break ;; esac
             done
+            # HIMMEL-1813: `>&` / `<&` (fd duplication) -- the '&' is part
+            # of the operator; its operand (1, -, a file) is not a word.
+            # `>|` likewise: the '|' is part of the operator.
+            if [ "${TOK_ENV_SPLIT:-0}" != "1" ]; then
+                case "${s:i:1}" in '&'|'|') i=$((i + 1)) ;; esac
+            fi
             skip_word=1   # the operator's operand is not a word
+            ;;
+        '&')
+            if [ "${TOK_ENV_SPLIT:-0}" != "1" ] && [ "${s:$((i + 1)):1}" = ">" ]; then
+                # HIMMEL-1813: `&>` / `&>>` redirect stdout+stderr: a word
+                # before it ends there, the operator and operand are dropped.
+                if [ "$have" = "1" ]; then
+                    if [ "$skip_word" = "1" ]; then skip_word=0; else printf ':%s\n' "$w"; fi
+                    w=''; have=0
+                fi
+                i=$((i + 1))
+                while [ "$i" -lt "$n" ]; do
+                    case "${s:i:1}" in '>') i=$((i + 1)) ;; *) break ;; esac
+                done
+                skip_word=1
+            else
+                w="$w$c"; i=$((i + 1)); have=1
+            fi
             ;;
         * )
             w="$w$c"; i=$((i + 1)); have=1
@@ -788,8 +842,95 @@ deny() {  # deny <script-path> <var-name> -- both from OUR registry, never
     exit 2
 }
 
+deny_unresolvable() {  # deny_unresolvable <script-path> -- from OUR
+                       # registry, never raw command text (HIMMEL-1813).
+    local script="$1" msg reason
+    msg="block-chokepoint-env-prefix: refusing an env -S / --split-string invocation that mentions a sanctioned chokepoint.
+
+    ${script}
+
+    The split string cannot be fully resolved: it carries an escape, quote
+    or character (e.g. \\c, \\t, '#', '\${') whose effect on the resulting
+    argv this guard does not model, so it cannot prove no seam variable
+    reaches the chokepoint. himmel's rule: set env overrides in the
+    LAUNCHING shell, never per call. Run the chokepoint bare; if the text
+    only mentions the chokepoint, move it into a file and pass the file.
+
+    To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
+    shell that launched Claude Code (a per-call prefix does not reach a
+    hook process); restart without it to re-enable the guard."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: env -S string mentioning a sanctioned chokepoint cannot be fully resolved -- run the chokepoint bare"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+}
+
+deny_raw_mention() {  # deny_raw_mention <script-path> -- from OUR registry,
+                      # never raw command text (HIMMEL-1813 backstop).
+    local script="$1" msg reason
+    msg="block-chokepoint-env-prefix: refusing a command that names a sanctioned chokepoint together with its seam variable or an env -S / --split-string.
+
+    ${script}
+
+    This check runs on the raw command text before any parsing, so it
+    ignores quoting, comments, functions and nesting, and it can over-deny
+    (e.g. a command that only PRINTS the chokepoint name next to one of its
+    seam variables). himmel's rule: set env overrides in the
+    LAUNCHING shell, never per call; run the chokepoint bare. If the text
+    only mentions the chokepoint, move it into a file and pass the file.
+
+    To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
+    shell that launched Claude Code (a per-call prefix does not reach a
+    hook process); restart without it to re-enable the guard."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: command names a sanctioned chokepoint with its seam variable or env -S -- run the chokepoint bare"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+}
+
 CR=$'\r'
 NL=$'\n'
+
+# raw_mention <text> <any> -- HIMMEL-1813 parse-independent backstop (console
+# ruling at b8ae2143, after a new spelling surfaced every parser round). Deny
+# (deny_raw_mention) when <text> names a registered chokepoint's basename AND,
+# anywhere in the same text, an assignment to one of that chokepoint's own
+# seam vars (`SEAM=`) or an `env` word
+# later followed by -S / an -xS cluster / --s... (--split-string and its
+# abbreviations); any=1 drops the second condition (the scan_text depth cap).
+# The name match runs on the text with quotes and backslashes removed, and
+# again with every ${...} also dropped -- both only JOIN characters, so a name
+# quoted, escaped or \${}-split apart still matches. Over-deny is accepted.
+raw_mention() {
+    local t="$1" any="$2" u script_path vars_list base v env_s=0
+    local re='^(.*)\$\{[^}]*\}(.*)$'
+    local env_re='(^|[^[:alnum:]_-])env([^[:alnum:]_-].*)?(^|[^[:alnum:]_-])-(-s|[[:alnum:]]*S)'
+    t=${t//\\$'\r\n'/}
+    t=${t//\\$'\n'/}
+    t=${t//[\'\"\\]/}
+    u=$t
+    while [[ $u =~ $re ]]; do u="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    t="$t$NL$u"
+    [[ $t =~ $env_re ]] && env_s=1
+    while IFS=$'\t' read -r script_path vars_list; do
+        script_path=${script_path%"$CR"}
+        vars_list=${vars_list%"$CR"}
+        base=${script_path##*/}
+        [ -n "$base" ] || continue
+        case "$t" in *"$base"*) ;; *) continue ;; esac
+        [ "$any$env_s" = 00 ] || deny_raw_mention "$script_path"
+        # Seam arm = an ASSIGNMENT only (console X ruling 07:05): the whole
+        # identifier followed by `=` (SEAM=1 cmd, export/declare -x SEAM=,
+        # env SEAM=, empty SEAM=). A bare read, `unset SEAM` and `env -u SEAM`
+        # are the legitimate clear-and-prove spellings and stay out.
+        for v in $vars_list; do
+            [[ $t =~ (^|[^[:alnum:]_])${v}[+]?= ]] && deny_raw_mention "$script_path"
+        done
+    done <<<"$REG_LINES"
+    return 0
+}
 
 # HIMMEL-2927: names cleared by an in-shell `unset` or `export -n` seen so
 # far -- accumulates left-to-right across the whole payload, carried to
@@ -1046,10 +1187,79 @@ EOF
 # exact), and re-enter scan_segment AT THE ENV PHASE. Depth-capped like
 # scan_text: deeper reconstruction stays the documented determined-bypass
 # residual.
+#
+# split_unresolvable <split-string text> -- HIMMEL-1813: true when GNU env's
+# split-string grammar can produce an argv tokenize_seg does not model.
+# After seven rounds of spelling enumeration (r7 = "\c", ignore the rest)
+# the rule inverts: only an explicit resolvable set passes -- plain text,
+# quotes, and the escapes \_ \\ \" \' outside quotes, \\ \" inside double
+# quotes. Anything else is unresolvable: every other escape (\c, \t, ...),
+# any backslash inside single quotes, a trailing backslash, any '#'
+# (comment), any '$' (${VAR} expansion), and the separators GNU splits on
+# but tokenize_seg does not: ';' (cmd_flat's fold of newline and CR),
+# vertical tab, form feed and CR.
+split_unresolvable() {
+    local s="$1" c i=0 n q=''
+    n=${#s}
+    case "$s" in *'#'*|*'$'*|*';'*|*$'\v'*|*$'\f'*|*$'\r'*) return 0 ;; esac
+    while [ "$i" -lt "$n" ]; do
+        c=${s:i:1}
+        i=$((i + 1))
+        case "$q$c" in
+        "'\\") return 0 ;;
+        "''"|'""') q='' ;;
+        \'|\") q=$c ;;
+        "'"*|'"'[!\\]) : ;;
+        *\\)
+            [ "$i" -lt "$n" ] || return 0
+            c=${s:i:1}
+            i=$((i + 1))
+            if [ "$q" = '"' ]; then
+                case "$c" in \\|\") ;; *) return 0 ;; esac
+            else
+                case "$c" in _|\\|\"|\') ;; *) return 0 ;; esac
+            fi
+            ;;
+        esac
+    done
+    return 1
+}
+
+# split_mention <text> -- deny (deny_unresolvable) when <text>, with quote
+# and backslash characters removed, contains the basename of any registered
+# chokepoint path. Quote/backslash removal only ever JOINS characters, so a
+# name quoted or escaped apart still matches.
+split_mention() {
+    local t="$1" script_path vars_list base re='^(.*)\$\{[^}]*\}(.*)$'
+    t=${t//[\'\"\\]/}
+    # GNU env -S expands ${VAR} (an unset one to nothing): drop every
+    # ${...} so a name split apart by one still matches.
+    while [[ $t =~ $re ]]; do t="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    while IFS=$'\t' read -r script_path vars_list; do
+        script_path=${script_path%"$CR"}
+        [ -n "$script_path" ] || continue
+        base=${script_path##*/}
+        [ -n "$base" ] || continue
+        case "$t" in *"$base"*) deny_unresolvable "$script_path" ;; esac
+    done <<<"$REG_LINES"
+    return 0
+}
+
 scan_split_argv() {
     local text="$1" inames="$2" depth="$3" appended="$4"
     local words='' seg_text=''
-    [ "$depth" -le 5 ] || return 0
+    # HIMMEL-1813: past the depth cap nothing is simulated, so a split
+    # string that mentions a registered chokepoint is denied there too.
+    if [ "$depth" -gt 5 ]; then
+        split_mention "$text$NL$appended"
+        return 0
+    fi
+    # HIMMEL-1813: a split string the simulation cannot fully model, when
+    # it or the appended words mention a registered chokepoint, is denied
+    # outright rather than simulated.
+    if split_unresolvable "$text"; then
+        split_mention "$text$NL$appended"
+    fi
     TOK_ENV_SPLIT=1
     words=$(tokenize_seg "$text")
     TOK_ENV_SPLIT=0
@@ -1126,6 +1336,33 @@ scan_segment() {
         [ -n "$w" ] || continue
         W[nw]="${w#:}"; nw=$((nw + 1))
     done <<<"$(tokenize_seg "$seg")"
+    # HIMMEL-1813: a here-string is scanned as a script (the heredoc body
+    # is already scanned through the newline fold) UNLESS its command is a
+    # non-executing reader. Fail-closed: any other command, a shell or a
+    # `source /dev/stdin`, may run it. Every operand is scanned: the
+    # command reads the last, so none is safe to skip. A reader's output
+    # can itself reach a shell (a pipe, `$(`, a backtick, `<(` / `>(`), so
+    # the reader exemption holds only when the command has none of those.
+    if [[ $seg == *'<<<'* ]]; then
+        while [ "$j" -lt "$nw" ] && [[ ${W[$j]} =~ $ASSIGN_RE ]]; do j=$((j + 1)); done
+        k=reader
+        case "$cmd" in *'|'*|*\$\(*|*'`'*|*'<('*|*'>('*) k='' ;; esac
+        # `-`: a redirect-only segment (`<<< x`) has no command word, and an
+        # unbound W[$j] under nounset would abort the hook (rc=1 = no deny).
+        w=${W[$j]-}
+        case "$k${w##*/}" in
+        readergrep|readercat|readerwc|readerhead|readertail|readertee|readerdiff|readercmp) : ;;
+        *)
+            k=$seg
+            while [[ $k == *'<<<'* ]]; do
+                k=${k#*<<<}
+                IFS= read -r w <<<"$(tokenize_seg "$k")"
+                scan_text "${w#:}" "$names" $((depth + 1))
+            done
+            ;;
+        esac
+        j=0
+    fi
     while [ "$j" -lt "$nw" ]; do
         w=${W[$j]}
         case "$phase" in
@@ -1267,20 +1504,25 @@ scan_segment() {
                 esac
             fi
             if [[ $w =~ $ASSIGN_RE ]]; then
-                names="$names ${w%%=*}"; j=$((j + 1)); continue
+                w=${w%%=*}; names="$names ${w%+}"; j=$((j + 1)); continue
             fi
             phase=start; asg_ok=0
             continue    # reprocess this word at command position
             ;;
         start)
             if [ "$asg_ok" = "1" ] && [[ $w =~ $ASSIGN_RE ]]; then
-                names="$names ${w%%=*}"; j=$((j + 1)); continue
+                w=${w%%=*}; names="$names ${w%+}"; j=$((j + 1)); continue
             fi
             case "$w" in
             env|*/env)
                 # A fresh env process: its option parsing starts over
                 # ("env -- A=1 env -S '...'": the outer "--" must not
                 # leak into the inner env's option scan).
+                # HIMMEL-1813: a redirect word of any shape in an env
+                # segment makes env's options unresolvable (the tokenizer
+                # drops it, so its operand's role is a guess): deny when
+                # the segment mentions a registered chokepoint.
+                [[ $seg == *[\<\>]* ]] && split_mention "$seg"
                 phase='env'; env_endopts=0; j=$((j + 1)); continue ;;
             eval)
                 # eval joins its arguments and re-parses them as a new
@@ -1512,7 +1754,8 @@ scan_segment() {
 scan_text() {
     local text="$1" inames="$2" depth="$3" line pdepth seg cur=0 force=0
     local -a PSNAP
-    [ "$depth" -le 5 ] || return 0
+    # HIMMEL-1813: past the depth cap a chokepoint mention denies (fail-closed).
+    [ "$depth" -le 5 ] || { raw_mention "$text" 1; return 0; }
     [ "$depth" -gt 0 ] && force=1
     while IFS= read -r line; do
         pdepth=${line%%$'\t'*}
@@ -1550,6 +1793,11 @@ while IFS=$'\t' read -r _reg_path _reg_vars; do
     ALL_SEAM_VARS="$ALL_SEAM_VARS $_reg_vars"
 done <<<"$REG_LINES"
 
+# HIMMEL-1813 backstop, on the untouched command. It runs BEFORE scan_text
+# so a nounset abort or a hook timeout inside the parser cannot skip it
+# (console X ruling at 64bc44b1); where both would deny, the backstop's
+# message now fires instead of the parser's more specific one.
+raw_mention "$raw_cmd" 0
 scan_text "$cmd_flat" "" 0
 
 exit 0
