@@ -1015,7 +1015,8 @@ export function composeDispatchGitState(worktree: string, branch: string, baseSh
     : ancestry(gitCapture(["merge-base", "--is-ancestor", remoteSha, localSha], worktree).code, branch, remoteSha, localSha);
   const count = baseSha ? gitCapture(["rev-list", "--count", `${baseSha}..HEAD`], worktree) : undefined;
   const commits = count && count.code === 0 && /^\d+$/.test(count.stdout.trim()) ? count.stdout.trim() : "unknown";
-  const status = gitCapture(["status", "--porcelain"], worktree);
+  // Explicit flags: user/repo config (status.showUntrackedFiles=no, diff.ignoreSubmodules=all) must not read as clean.
+  const status = gitCapture(["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"], worktree);
   const clean = status.code !== 0 ? "unknown" : status.stdout.trim() === "" ? "yes" : "no";
   return [`pushed: ${pushed}`, `commits: ${commits}`, `worktree_clean: ${clean}`];
 }
