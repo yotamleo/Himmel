@@ -2446,6 +2446,25 @@ shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 `eval`/`bash -c` recursion. Bypass: `ENV_PREFIX_GUARD_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-chokepoint-env-prefix.sh`.
 
+**Text layer for detached and non-Linux launches (HIMMEL-3921).** The
+in-session seam guard (`scripts/lib/chokepoint-seam-guard.sh`, HIMMEL-3914)
+only sees calls under a claude ancestor on Linux; `setsid -f`, `at`, a
+pure-bash double-fork, `systemd-run --user`, cron and non-Linux hosts bypass
+it. The hook therefore adds a parse-free, deny-leaning scan of the raw command
+(`raw_obfuscated`, plus two arms in `raw_mention`): (1) a seam write
+(`NAME=`, `export`/`env`/`read`/`printf -v`/`declare`/...) beside a `scripts/`
+path word carrying a glob/brace metachar, `$var` piece or ANSI-C `$'` is
+denied; (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
+beside a chokepoint word is denied; (3) CLEARING a seam or
+`HIMMEL_CONSOLE_LEG` (`env -u`/`--unset`, `unset`, `export -n`) beside a
+chokepoint word is denied — this reverses the old "clear-and-prove" allow and
+over-denies subshell-scoped clears (the raw scan cannot model scope). The lib
+also fails closed (exit 96) on Linux when `/proc/self/stat` is unreadable (a
+fake no-`/proc` view via `unshare -rm` + tmpfs); genuine non-Linux stays
+hook-only. Residuals (ponytail): an obfuscated seam NAME beside a LITERAL
+chokepoint path (`export "$n=1"`), a program word that hides both its
+`scripts/` anchor and its glob, and S2/S4 (HIMMEL-3930).
+
 **Suite concurrency budget (HIMMEL-1818).** Test suites share a machine-wide
 semaphore (`scripts/lib/suite-semaphore.sh`): `HIMMEL_SUITE_SLOTS` slots
 (default 3) under `${TMPDIR:-/tmp}/himmel-suite-semaphore.d`. Only the two

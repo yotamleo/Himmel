@@ -893,8 +893,66 @@ deny_raw_mention() {  # deny_raw_mention <script-path> -- from OUR registry,
     exit 2
 }
 
+deny_text_layer() {  # deny_text_layer <reason constant> -- OUR text only
+                     # (HIMMEL-3921), never raw command text.
+    local why="$1" msg reason
+    msg="block-chokepoint-env-prefix: refusing a command that ${why}.
+
+    This is the text layer for detached / non-Linux launches (setsid -f, at,
+    a double-fork) where the in-session seam guard cannot see the call. It
+    runs on the raw command text, ignores parsing and can over-deny.
+    himmel's rule: set env overrides in the LAUNCHING shell, never per call;
+    run the chokepoint bare with a literal path.
+
+    To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
+    shell that launched Claude Code (a per-call prefix does not reach a
+    hook process); restart without it to re-enable the guard."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: obfuscated chokepoint path, shell-startup seam or seam clear beside a chokepoint -- set env overrides in the LAUNCHING shell, not per call"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+}
+
 CR=$'\r'
 NL=$'\n'
+
+# raw_obfuscated <raw text> -- HIMMEL-3921 text layer, run on the UNTOUCHED
+# command. Deny-leaning and parse-free on purpose: every special-case parse
+# rule in a guard became a bypass (PR 1494/1501/1508), so this is a plain scan.
+# Deny when a shell word names a `scripts/` path with a glob/brace metachar
+# (* ? [ {) or a $ after it, or carries an ANSI-C $', AND the text writes a
+# seam: a registered seam NAME= assignment, or an export/env/read/printf/
+# declare/typeset/readonly/let/eval word (the verb alone denies, so the
+# obfuscated seam NAME -- export "$n=1" -- is covered when the path is also
+# obfuscated; an obfuscated NAME beside a LITERAL chokepoint path stays a
+# residual of this layer). ponytail: a program word that hides BOTH its
+# `scripts/` anchor and its glob (`$D/m*.sh`, a word assembled from
+# variables) is not a scripts/ word, so only the basename backstop sees it;
+# close it by registering the assembled path forms or by the structural guard
+# once HIMMEL-3930 lands.
+raw_obfuscated() {
+    local t="$1" w rest obf=0 v wv write=0 SQ="'"
+    wv='(^|[^[:alnum:]_])(export|env|read|printf|declare|typeset|readonly|let|eval)([^[:alnum:]_]|$)'
+    set -f
+    for w in $(printf '%s' "$t" | tr ';|&()<>' '       '); do
+        case "$w" in
+            *'$'"$SQ"*) obf=1 ;;
+            *scripts/*)
+                rest=${w#*scripts/}
+                case "$rest" in *[\*\?\[\{\$]*) obf=1 ;; esac ;;
+        esac
+    done
+    set +f
+    [ "$obf" = 1 ] || return 0
+    [[ $t =~ $wv ]] && write=1
+    for v in $ALL_SEAM_VARS; do
+        case "$v" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+        [[ $t =~ (^|[^[:alnum:]_])${v}[+]?= ]] && write=1
+    done
+    [ "$write" = 1 ] || return 0
+    deny_text_layer "writes a seam variable beside an obfuscated (glob, brace, ANSI-C or \$var) path under scripts/"
+}
 
 # raw_mention <text> <any> -- HIMMEL-1813 parse-independent backstop (console
 # ruling at b8ae2143, after a new spelling surfaced every parser round). Deny
@@ -950,10 +1008,27 @@ raw_mention() {
         # Seam arm = an ASSIGNMENT only (console X ruling 07:05): the whole
         # identifier followed by `=` (SEAM=1 cmd, export/declare -x SEAM=,
         # env SEAM=, empty SEAM=). A bare read, `unset SEAM` and `env -u SEAM`
-        # are the legitimate clear-and-prove spellings and stay out.
+        # were the legitimate clear-and-prove spellings and stay out of THIS
+        # arm; since HIMMEL-3921 the clear arm below denies them beside the
+        # chokepoint word.
         for v in $vars_list; do
             [[ $t =~ (^|[^[:alnum:]_])${v}[+]?= ]] && deny_raw_mention "$script_path"
         done
+        # HIMMEL-3921, beside a chokepoint word: bash startup state that runs
+        # before the chokepoint's own first line (BASH_ENV, BASH_FUNC_*,
+        # SHELLOPTS, BASHOPTS, extdebug) is refused on sight, and so is CLEARING
+        # a seam or the console marker (env -u / --unset / unset / export -n),
+        # which the assignment arm above does not see. A detached or
+        # double-forked call has no claude ancestor, so the structural guard
+        # cannot catch a removal there.
+        [[ $t =~ (^|[^[:alnum:]_])(BASH_ENV|BASH_FUNC_|SHELLOPTS|BASHOPTS) || $t =~ extdebug ]] \
+            && deny_text_layer "sets bash startup state (BASH_ENV, BASH_FUNC_*, SHELLOPTS, BASHOPTS, extdebug) beside a sanctioned chokepoint"
+        if [[ $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) || $t =~ (^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n || $t =~ (^|[^[:alnum:]_-])env[[:space:]].*[[:space:]]-(-unset|[[:alnum:]]*u) ]]; then
+            for v in $vars_list HIMMEL_CONSOLE_LEG; do
+                [[ $t =~ (^|[^[:alnum:]_])${v}([^[:alnum:]_]|$) ]] \
+                    && deny_text_layer "clears a seam or the console marker (env -u / unset / export -n) beside a sanctioned chokepoint"
+            done
+        fi
     done <<<"$REG_LINES"
     return 0
 }
@@ -1889,6 +1964,7 @@ done <<<"$REG_LINES"
 # so a nounset abort or a hook timeout inside the parser cannot skip it
 # (console X ruling at 64bc44b1); where both would deny, the backstop's
 # message now fires instead of the parser's more specific one.
+raw_obfuscated "$raw_cmd"
 raw_mention "$raw_cmd" 0
 scan_text "$cmd_flat" "" 0
 

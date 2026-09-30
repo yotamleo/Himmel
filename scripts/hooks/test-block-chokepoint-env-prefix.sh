@@ -530,7 +530,7 @@ assert_deny_unres "1813: &> redirect before -S"                "$(j "env &>/dev/
 assert_deny_unres "1813: fd redirect before --split-string="   "$(j "env 2>&1 --split-string='${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'")"
 assert_deny "1813: unquoted TAB separates the -S words"        "$(j "env -S ${MOG_VAR}=1"$'\t'"bash"$'\t'"$MERGE_ON_GREEN")"
 assert_deny "1813: unquoted TAB, direct chokepoint path"       "$(j "env -S ${MOG_VAR}=1"$'\t'"$MERGE_ON_GREEN")"
-assert_deny_unres "1813: \${VAR} splits the chokepoint name"   "$(j "env -S '${SW_VAR}=1 bash ${STOP_WORKER%stop-worker.sh}stop-\${Z}worker.sh'")"
+assert_deny "1813: \${VAR} splits the chokepoint name"   "$(j "env -S '${SW_VAR}=1 bash ${STOP_WORKER%stop-worker.sh}stop-\${Z}worker.sh'")"
 assert_deny_unres "1813: herestring feeds an env -S \\c to bash" "$(j "bash <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
 assert_deny_unres "1813: the LAST of two herestrings is scanned" "$(j "bash <<< 'echo ok' <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
 # Judge round 3: a redirect word of ANY shape between env and its command
@@ -635,10 +635,13 @@ probe_env "'' as the command word (exec fails)"               env '' HM_1803_PRO
 # invoked in the SAME subshell as the clear, an outer clear reaching INTO a
 # later subshell, an unbalanced paren, and every unresolved form ($( ),
 # `{ }` groups, `bash -c` strings) all stay denied. ---
-assert_allow "subshell-scoped unset (dropped at the closing paren)"        "$(j "(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
-assert_allow "subshell-scoped export -n (dropped at the closing paren)"    "$(j "(export -n HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+# HIMMEL-3921: the raw-text layer cannot model subshell scope, so an unset /
+# export -n of a seam or HIMMEL_CONSOLE_LEG beside a chokepoint word now denies
+# even when the closing paren would drop it (documented over-deny, deny-leaning).
+assert_deny "subshell-scoped unset (dropped at the closing paren)"        "$(j "(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_deny "subshell-scoped export -n (dropped at the closing paren)"    "$(j "(export -n HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
 assert_deny "1813 backstop over-deny (console X ruling 07:05): subshell-scoped bare assignment (dropped at the closing paren)" "$(j "(HIMMEL_CONSOLE_LEG=0); bash $MERGE_ON_GREEN 1")"
-assert_allow "subshell-scoped unset then && chokepoint"                    "$(j "(unset HIMMEL_CONSOLE_LEG) && bash $MERGE_ON_GREEN 1")"
+assert_deny "subshell-scoped unset then && chokepoint"                    "$(j "(unset HIMMEL_CONSOLE_LEG) && bash $MERGE_ON_GREEN 1")"
 # codex-1 rounds 1-2 each found a false ALLOW in a kind-tracking model that
 # tried to tell `((`/`$(` apart from a real subshell paren-by-paren (round 1:
 # an adjacent `((` run misread as two real subshells; round 2: a grouping
@@ -654,7 +657,7 @@ assert_deny "a paren nested inside \`((...))\` inherits opaque from the stack" "
 # $(...), so real bash never sees the clear outside its own subshell --
 # the positive rule now recognizes that precisely instead of over-denying
 # every command that also happens to contain a $(...) anywhere else.
-assert_allow "a closed subshell clear survives an unrelated sibling \$(...)" "$(j "(unset HIMMEL_CONSOLE_LEG); echo \$(true); bash $MERGE_ON_GREEN 1")"
+assert_deny "a closed subshell clear survives an unrelated sibling \$(...)" "$(j "(unset HIMMEL_CONSOLE_LEG); echo \$(true); bash $MERGE_ON_GREEN 1")"
 assert_deny "chokepoint invoked INSIDE the same subshell as the clear"     "$(j "(unset HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1)")"
 assert_deny "outer clear reaches into a later subshell's chokepoint"       "$(j "unset HIMMEL_CONSOLE_LEG; (bash $MERGE_ON_GREEN 1)")"
 assert_deny "outer clear reaches into a nested subshell's chokepoint"      "$(j "(unset HIMMEL_CONSOLE_LEG; (bash $MERGE_ON_GREEN 1))")"
@@ -686,8 +689,8 @@ assert_deny "eval string recursion: paren-scoped clear+chokepoint inside the str
 # are special-cased. Rows below are the 20-row probe corpus (RESUME doc);
 # literal duplicates of assertions already above are omitted.
 assert_deny "1813 backstop over-deny (console X ruling 07:05): whitespace-padded genuine subshell (spaces inside the parens)" "$(j "( HIMMEL_CONSOLE_LEG=0 ); bash $MERGE_ON_GREEN 1")"
-assert_allow "prior assignment segment, then a genuine subshell"            "$(j "x=1; (unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
-assert_allow "genuine subshell after && following an unrelated command"    "$(j "true && (unset HIMMEL_CONSOLE_LEG) && bash $MERGE_ON_GREEN 1")"
+assert_deny "prior assignment segment, then a genuine subshell"            "$(j "x=1; (unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_deny "genuine subshell after && following an unrelated command"    "$(j "true && (unset HIMMEL_CONSOLE_LEG) && bash $MERGE_ON_GREEN 1")"
 assert_deny "\$( ) as an argument to a preceding command word stays denied" "$(j "echo \$(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
 assert_deny "bare backtick command substitution stays denied"              "$(j "\`unset HIMMEL_CONSOLE_LEG\`; bash $MERGE_ON_GREEN 1")"
 assert_deny "legacy \$[(...)] arithmetic paren is not a subshell"           "$(j "echo \$[(HIMMEL_CONSOLE_LEG=0)]; bash $MERGE_ON_GREEN 1")"
@@ -1007,6 +1010,45 @@ assert_allow "3914 word boundary: env -S naming tools/cargo.sh" "$(j "env -S 'ba
 assert_deny "3914 word boundary control: seam prefix + ./go.sh" "$(j "HIMMEL_REPO=/x bash ./go.sh")"
 assert_deny "3914 word boundary control: seam prefix + \$x\"go.sh\" (x empty)" "$(j "HIMMEL_REPO=/x bash \$x\"go.sh\"")"
 assert_deny "3914 word boundary control: env -S naming go.sh" "$(j "env -S 'bash scripts/handover/console-kit/go.sh'")"
+
+# --- HIMMEL-3921: the text layer for detached / non-Linux launches. A seam
+# write (VAR=, export, env, read, printf -v) beside a program word under a
+# chokepoint directory that carries a glob/brace metachar, an ANSI-C $' or a
+# $var piece is denied even when setsid -f / at / a double-fork hides the
+# program position; BASH_ENV, BASH_FUNC_*, SHELLOPTS, BASHOPTS and extdebug are
+# refused beside a chokepoint word; and CLEARING a seam or HIMMEL_CONSOLE_LEG
+# (env -u / unset) beside a chokepoint word is refused too. The obfuscated seam
+# NAME (export "$n=1") stays a documented residual. ---
+GOK='scripts/handover/console-kit'
+assert_deny "3921 setsid -f: VAR= prefix, globbed go.sh"          "$(j "HIMMEL_CONSOLE_LEG=1 setsid -f bash $GOK/g*.sh")"
+assert_deny "3921 setsid -f: export, ? glob"                      "$(j "export HIMMEL_CONSOLE_LEG=1; setsid -f bash $GOK/g?.sh")"
+assert_deny "3921 setsid -f: env assignment, [] glob"             "$(j "env HIMMEL_CONSOLE_LEG=1 setsid -f bash $GOK/go.s[h]")"
+assert_deny "3921 setsid -f: read, brace"                         "$(j "read -r HIMMEL_CONSOLE_LEG <<<1; setsid -f bash $GOK/{go}.sh")"
+assert_deny "3921 setsid -f: printf -v, ANSI-C word"              "$(j "printf -v HIMMEL_CONSOLE_LEG 1; setsid -f bash $GOK/"'$'"'go.sh'")"
+assert_deny "3921 setsid -f: \$var piece in the path word"        "$(j "HIMMEL_CONSOLE_LEG=1 setsid -f bash $GOK/\$n.sh")"
+assert_deny "3921 at: VAR= prefix, globbed go.sh"                 "$(j "echo 'HIMMEL_CONSOLE_LEG=1 bash $GOK/g*.sh' | at now")"
+assert_deny "3921 at: export, ? glob"                             "$(j "echo 'export HIMMEL_CONSOLE_LEG=1; bash $GOK/g?.sh' | at now")"
+assert_deny "3921 at: env assignment, [] glob"                    "$(j "echo 'env HIMMEL_CONSOLE_LEG=1 bash $GOK/go.s[h]' | at now")"
+assert_deny "3921 at: read, brace"                                "$(j "echo 'read -r HIMMEL_CONSOLE_LEG <<<1; bash $GOK/{go}.sh' | at now")"
+assert_deny "3921 at: printf -v, \$var piece"                     "$(j "echo 'printf -v HIMMEL_CONSOLE_LEG 1; bash $GOK/\$n.sh' | at now")"
+assert_deny "3921 double-fork: seam write + globbed merge"        "$(j "( (sleep 1; HIMMEL_CONSOLE_LEG=1 exec bash scripts/handover/merge-on-g*.sh) & )")"
+assert_deny "3921 BASH_ENV beside a chokepoint"                   "$(j "BASH_ENV=/tmp/x bash $MERGE_ON_GREEN")"
+assert_deny "3921 exported BASH_FUNC_ beside a chokepoint"        "$(j "export 'BASH_FUNC_printf%%=() { :; }'; bash $MERGE_ON_GREEN")"
+assert_deny "3921 SHELLOPTS beside a chokepoint"                  "$(j "SHELLOPTS=xtrace bash $MERGE_ON_GREEN")"
+assert_deny "3921 BASHOPTS beside a chokepoint"                   "$(j "BASHOPTS=extdebug bash $MERGE_ON_GREEN")"
+assert_deny "3921 extdebug (shopt) beside a chokepoint"           "$(j "shopt -s extdebug; bash $MERGE_ON_GREEN")"
+assert_deny "3921 extdebug (-O) beside a chokepoint"              "$(j "bash -O extdebug $MERGE_ON_GREEN")"
+assert_deny "3921 clear: env -u HIMMEL_CONSOLE_LEG + merge"       "$(j "env -u HIMMEL_CONSOLE_LEG setsid -f bash $MERGE_ON_GREEN")"
+assert_deny "3921 clear: double-fork env -u marker + merge"       "$(j "( (sleep 1; env -u HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN) & )")"
+assert_deny "3921 clear: unset marker then detached merge"        "$(j "unset HIMMEL_CONSOLE_LEG; setsid -f bash $MERGE_ON_GREEN")"
+assert_deny "3921 clear: env --unset=seam inside at"              "$(j "echo 'env --unset=HIMMEL_CONSOLE_LEG bash $GOK/go.sh' | at now")"
+assert_allow "3921 literal merge, no seam write"                  "$(j "bash $MERGE_ON_GREEN")"
+assert_allow "3921 literal merge --jira-transition"               "$(j "bash $MERGE_ON_GREEN --jira-transition")"
+assert_allow "3921 literal go.sh as the console kit calls it"     "$(j "bash $GOK/go.sh 1515 0123456789abcdef0123456789abcdef01234567")"
+assert_allow "3921 setsid -f literal merge"                       "$(j "setsid -f bash $MERGE_ON_GREEN")"
+assert_allow "3921 at literal merge"                              "$(j "echo 'bash $MERGE_ON_GREEN' | at now")"
+assert_allow "3921 a glob over scripts with no seam write"        "$(j "ls scripts/handover/*.sh")"
+assert_allow "3921 unset of an unrelated var beside no chokepoint" "$(j "unset FOO; ls scripts/handover/*.sh")"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
