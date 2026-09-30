@@ -133,6 +133,17 @@ n=0
 while [ "$(alive "$gc")" = alive ] && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
 assert_eq "T2f signalled caller: grandchild is reaped within the grace" "dead" "$(alive "$gc")"
 
+# T2g: the launcher exits on its own (or is killed by someone else) before the
+# deadline and leaves a TERM-ignoring child: the group is reaped anyway.
+EXITER="$TMP/exiter.sh"
+printf '%s\n' '#!/bin/sh' '( trap "" TERM; exec sleep 30 ) &' 'echo $! >"$1"' 'exit 0' >"$EXITER"
+chmod +x "$EXITER"
+rm -f "$TMP/t2g.pid"
+qmd_bounded 30 "$EXITER" "$TMP/t2g.pid"; rc=$?
+gc=$(pid_of "$TMP/t2g.pid")
+assert_eq "T2g launcher exits early: its own rc" "0" "$rc"
+assert_eq "T2g launcher exits early: leftover child is dead" "dead" "$(alive "$gc")"
+
 # T3: deadline 0 runs unbounded; a malformed deadline is refused.
 out=$(qmd_bounded 0 sh -c 'echo ok'); rc=$?
 assert_eq "T3a deadline 0 runs the command" "ok|0" "$out|$rc"

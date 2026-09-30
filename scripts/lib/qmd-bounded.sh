@@ -11,8 +11,10 @@
 #   <secs>  whole seconds; 0 runs the command unbounded
 #   QMD_KILL_GRACE_SECS  seconds between the group SIGTERM and the SIGKILL (5)
 #
-# qmd_timeout_secs prints the default deadline: $QMD_TIMEOUT_SECS, else 3600.
-# An embed cut short by it is resumable; the next run carries on.
+# qmd_timeout_secs prints the SOURCED callers' default (qmd_cmd, qmd-reindex,
+# qmd-staleness): $QMD_TIMEOUT_SECS, else 3600 - longer than the executed
+# path's 300 s because those run embeds. An embed cut short by it is
+# resumable; the next run carries on.
 #
 # Why not plain `timeout N qmd …`: the qmd launcher (bin/qmd in the fork) is a
 # node trampoline that spawns `bun src/cli/qmd.ts` and forwards no signals.
@@ -23,7 +25,8 @@
 # for ~15 h. Here the command gets its own process group (`set -m`) and a
 # watchdog outside it SIGTERMs, then SIGKILLs, the whole group — whatever the
 # direct child did. The watchdog is also its own group, so it still enforces
-# the deadline if the caller itself is killed.
+# the deadline if the caller itself is killed. When the direct child ends
+# first, anything it left in the group is reaped the same way before return.
 #
 # ponytail: bounds the orphan, not the upstream launcher's missing signal
 # forwarding — HIMMEL-3958 (tobi/qmd issue) removes the cause. Only callers
@@ -93,8 +96,7 @@ qmd_bounded() {
     # Both groups exist now; job control off again silences bash's "[1] Exit"
     # job notices on the caller's stderr.
     set +m
-    sig=""
-    trap 'sig=1; kill -TERM -- "-$pid" 2>/dev/null' TERM INT HUP
+    trap 'kill -TERM -- "-$pid" 2>/dev/null' TERM INT HUP
     wait "$pid"
     rc=$?
     # A trapped signal interrupts wait with rc > 128; wait again for the real rc.
@@ -109,10 +111,12 @@ qmd_bounded() {
       rm -rf "$fdir"
       exit 124
     fi
-    if [ -n "$sig" ]; then
-      # A caller's signal was forwarded and the direct child is gone, but a
-      # TERM-ignoring descendant (bun) may not be: escalate as the watchdog
-      # would before cancelling it.
+    # The direct child is gone before the deadline - it exited, was killed by
+    # someone else, or took a forwarded caller signal - but a TERM-ignoring
+    # descendant (bun) may not be. Escalate as the watchdog would before
+    # cancelling it; an empty group costs one kill -0.
+    if kill -0 -- "-$pid" 2>/dev/null; then
+      kill -TERM -- "-$pid" 2>/dev/null
       n=0
       while kill -0 -- "-$pid" 2>/dev/null && [ "$n" -lt "$grace" ]; do
         sleep 1
