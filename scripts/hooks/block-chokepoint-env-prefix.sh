@@ -852,8 +852,8 @@ deny_unresolvable() {  # deny_unresolvable <script-path> -- from OUR
     or character (e.g. \\c, \\t, '#', '\${') whose effect on the resulting
     argv this guard does not model, so it cannot prove no seam variable
     reaches the chokepoint. himmel's rule: set env overrides in the
-    LAUNCHING shell, never per call. Run the chokepoint bare, or spell the
-    env -S string with plain words and \\_ separators only.
+    LAUNCHING shell, never per call. Run the chokepoint bare; if the text
+    only mentions the chokepoint, move it into a file and pass the file.
 
     To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
     shell that launched Claude Code (a per-call prefix does not reach a
