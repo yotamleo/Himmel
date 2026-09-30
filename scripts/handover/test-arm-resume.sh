@@ -1613,6 +1613,7 @@ if [ "$rc" != "0" ] && grepq "$out" -F 'syntax error'; then
     echo "PASS T24c without the fail-open the broken telemetry.sh breaks the arm and surfaces its parse error (rc=$rc) — T24 can still fail for its intended reason"
 else
     echo "FAIL T24c expected a nonzero rc AND a leaked parse error with the fail-open REMOVED (got rc=$rc) — the control is not proving its cause"
+    printf "T24c-out: %s\n" "$(printf "%s" "$out" | head -c 600)"
     FAILED=$((FAILED + 1))
 fi
 fi
