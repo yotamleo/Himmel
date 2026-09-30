@@ -77,7 +77,7 @@ case "$1 $2" in
     # deadbeef simulates a mis-extracted selector (a value-taking flag's
     # argument) that resolves to no PR - drives the rc=3 re-anchor path.
     [ "${3:-}" = "deadbeef" ] && exit 1
-    echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}' ;;
+    echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/'"${GH_STUB_PR_NWO:-o/r}"'/pull/42"}' ;;
   "api graphql")
     case "$GH_STUB_MODE" in
       unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
@@ -119,6 +119,9 @@ case "$1 $2" in
       list-404)  echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     esac
     printf '# trust paths\n^scripts/ci/\n' ;;
+  # Any other name (another repo, or a `github.com/o/r` spelling) has no list.
+  "api repos/"*"/contents/scripts/ci/ci-trust-paths.txt"*)
+    echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   "api repos/o/r/pulls/42/files"*)
     [ "${GH_STUB_TRUST:-}" = files-fail ] && exit 1
     printf '%s\t%s\n' "${GH_STUB_TRUST_FILE:-README.md}" "${GH_STUB_TRUST_PREV:-}" ;;
@@ -310,7 +313,7 @@ grep -qi "does not match" "$TMP/err-leg-valid-go-wrong-pin-blocks" || { echo "FA
 # required case, since a leg could otherwise point --repo at a repo it
 # controls and reuse a GO minted for the console's real repo.
 printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
-HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-cross-repo-go-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123 --repo other/repo"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo t leg-cross-repo-go-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123 --repo other/repo"
 grep -qi "mac" "$TMP/err-leg-cross-repo-go-blocks" || { echo "FAIL leg-cross-repo-go-blocks reason missing"; fail=$((fail+1)); }
 
 # ── HIMMEL-3578 (3): a v1-tagged mac (himmel-go-v1|<pr>|<sha>, no nwo bound
@@ -996,7 +999,11 @@ git -C "$TRUST_ANCHOR" init -q
 git -C "$TRUST_ANCHOR" add -A
 git -C "$TRUST_ANCHOR" -c user.name=t -c user.email=t@t commit -qm anchor
 git clone -q --bare "$TRUST_ANCHOR" "$TMP/trust-origin.git"
-git -C "$TRUST_ANCHOR" remote add origin "$TMP/trust-origin.git"
+# The origin names github.com/o/r (the stub PR's repo), so a list 404 can tell
+# o/r from another repo; insteadOf maps it to the bare clone for the hit
+# path's ls-remote.
+git -C "$TRUST_ANCHOR" remote add origin https://github.com/o/r.git
+git -C "$TRUST_ANCHOR" config "url.$TMP/trust-origin.git.insteadOf" https://github.com/o/r.git
 TRUST_GO="$GOROOT/.locks/go/42.abc123"
 TRUST_MAC_42="$(bash -c '. "$1"; go_mac 42 abc123 o/r judge-3910' _ "$SCRIPT_DIR/../lib/go-gate.sh")"
 [ "${#TRUST_MAC_42}" -eq 64 ] || { fail=$((fail+1)); echo "FAIL setup: could not mint the trust-reviewed GO mac"; }
@@ -1079,7 +1086,35 @@ HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST=list-404 \
     t trust-list-404-unproven-blocks 2 Bash "gh pr merge 42 --squash"
 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_DEFAULT_BRANCH='' \
     t trust-default-branch-unreadable-blocks 2 Bash "gh pr merge 42 --squash"
+
+# Judge round: a --repo value that is not the PR's bare owner/name must not
+# read as "another repo". Before the fix both rows 404'd on the typed name and
+# passed as not-adopted. `-R github.com/o/r` names o/r, so the trust path is
+# found and the missing trust-reviewed GO refuses. A quoted value is masked to
+# the placeholder Q by the tokenizer, which names no repo the PR resolved on,
+# so it is refused as a mismatch.
 rm -f "$TRUST_GO"
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-host-prefixed-repo-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123 -R github.com/o/r"
+grep -q "no console GO" "$TMP/err-trust-path-host-prefixed-repo-blocks" \
+    || { fail=$((fail+1)); echo "FAIL trust-path-host-prefixed-repo-blocks: not refused by the trust gate"; }
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-path-quoted-host-repo-blocks 2 Bash "gh pr merge --repo \\\"github.com/o/r\\\" 42 --squash --match-head-commit abc123"
+grep -q "does not name the repo PR #42 resolved on (o/r)" "$TMP/err-trust-path-quoted-host-repo-blocks" \
+    || { fail=$((fail+1)); echo "FAIL trust-path-quoted-host-repo-blocks: not refused as a repo mismatch"; }
+# Control: a PR genuinely on another repo (no list there, the anchor's origin
+# is o/r) is still not-adopted and passes with no GO.
+HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+    t trust-other-repo-not-adopted-allows 0 Bash "gh pr merge 42 --squash --repo other/repo"
+# The same rule at the lib, which merge-on-green.sh shares: a non-canonical
+# nwo's 404 is refused, never "not-adopted", even without the hook's guard.
+tp_rc=0
+tp_out=$(GH_STUB_MODE=clean GH_STUB_LOG="$TMP/calls-trust-lib.log" bash -c '. "$1/scripts/lib/go-gate.sh"; trust_path_check github.com/o/r 42 abc123 main "$1"' _ "$TRUST_ANCHOR" 2>&1) || tp_rc=$?
+if [ "$tp_rc" -eq 2 ] && case "$tp_out" in "list "*"does not prove it is another repo") true ;; *) false ;; esac; then
+    pass=$((pass+1)); echo "ok   trust-lib-noncanonical-nwo-404-refuses"
+else
+    fail=$((fail+1)); echo "FAIL trust-lib-noncanonical-nwo-404-refuses rc=$tp_rc out=$tp_out"
+fi
 HOOK="$MAIN_HOOK"
 
 # passthrough cases must not touch gh at all (coderabbit: assert EVERY one)

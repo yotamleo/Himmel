@@ -247,20 +247,21 @@ fi
 # "no gate".
 go_meta=""
 if [ -n "$repo" ]; then
-    go_meta=$(gh pr view "$sel" --repo "$repo" --json number,headRefOid 2>/dev/null) || go_meta=""
+    go_meta=$(gh pr view "$sel" --repo "$repo" --json number,headRefOid,url 2>/dev/null) || go_meta=""
 else
-    go_meta=$(gh pr view "$sel" --json number,headRefOid 2>/dev/null) || go_meta=""
+    go_meta=$(gh pr view "$sel" --json number,headRefOid,url 2>/dev/null) || go_meta=""
 fi
 go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
 go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
 if { [ -z "$go_num" ] || [ -z "$go_sha" ]; } && [ -n "$cwd_branch" ] && { [ "$cwd_branch" != "$sel" ] || [ -n "$repo" ]; }; then
-    go_meta=$(gh pr view "$cwd_branch" --json number,headRefOid 2>/dev/null) || go_meta=""
+    go_meta=$(gh pr view "$cwd_branch" --json number,headRefOid,url 2>/dev/null) || go_meta=""
     go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
     go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
 fi
 if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
     exit 0
 fi
+go_url=$(printf '%s' "$go_meta" | jq -r '.url // empty' 2>/dev/null || true)
 
 # HIMMEL-3578: the GO mac binds the repo, and gate 4 reads the trust list from
 # it, so resolve nwo the same way merge-on-green.sh does — from an explicit
@@ -312,6 +313,39 @@ if [ -z "$go_nwo" ]; then
     echo "block-unresolved-cr-merge: cannot resolve this repo's owner/name for PR #$go_num — refusing (GATE INTEGRITY: the GO mac binds the repo, and the trust-path gate reads its list from it). Pass --repo <owner>/<name>, or run from a checkout gh can resolve." >&2
     exit 2
 fi
+
+# HIMMEL-3910 (judge round): gates 3 and 4 use the PR's CANONICAL owner/name,
+# read from the url of the PR gh resolved — never the --repo text as typed.
+# gh accepts `-R github.com/o/r` (HOST/OWNER/REPO); fed verbatim to the trust
+# list read, that spelling 404s, and a 404 reads as "another repo"
+# (not-adopted), so a trust-path PR merged with no trust-reviewed GO. The
+# typed or resolved nwo must name the same repo as the PR url (host and .git
+# dropped, case-insensitive); anything else is refused, never guessed.
+go_canon=""
+case "$go_url" in
+    https://*/*/*/pull/*)
+        go_canon=${go_url#https://*/}
+        go_canon=${go_canon%/pull/*} ;;
+esac
+case "$go_canon" in
+    */*/*|/*|*/|*[!A-Za-z0-9._/-]*) go_canon="" ;;
+    */*) ;;
+    *) go_canon="" ;;
+esac
+if [ -z "$go_canon" ]; then
+    echo "block-unresolved-cr-merge: cannot read PR #$go_num's owner/name from its url ('$go_url') — refusing (GATE INTEGRITY: the GO mac and the trust-path gate bind the canonical repo)." >&2
+    exit 2
+fi
+go_typed=${go_nwo#https://}
+go_typed=${go_typed#http://}
+go_typed=${go_typed%/}
+go_typed=${go_typed%.git}
+case "$go_typed" in */*/*) go_typed=${go_typed#*/} ;; esac
+if [ "$(printf '%s' "$go_typed" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$go_canon" | tr '[:upper:]' '[:lower:]')" ]; then
+    echo "block-unresolved-cr-merge: '$go_nwo' does not name the repo PR #$go_num resolved on ($go_canon) — refusing (GATE INTEGRITY). Pass --repo $go_canon." >&2
+    exit 2
+fi
+go_nwo=$go_canon
 
 if [ "$is_leg" -eq 1 ]; then
     go_root=""

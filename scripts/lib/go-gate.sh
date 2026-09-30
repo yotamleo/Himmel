@@ -146,9 +146,12 @@ trust_path_check() (
     # other_repo — rc 0 only when the anchor's origin POSITIVELY names a
     # github.com repo other than $tp_nwo. An unreadable origin, an SSH host alias
     # or any non-github.com URL cannot prove the PR is on another repo, so it
-    # is not "other" and a 404 refuses (fail closed).
+    # is not "other" and a 404 refuses (fail closed). So can a non-canonical
+    # $tp_nwo (a `github.com/o/r` spelling that itself 404s): only a bare
+    # owner/name is ever compared.
     other_repo() {
         local url
+        case "$tp_nwo" in ''|*/*/*|*[!A-Za-z0-9._/-]*) return 1 ;; */*) ;; *) return 1 ;; esac
         url=$(git -C "$anchor" config --get remote.origin.url 2>/dev/null) || return 1
         url=${url%/}; url=${url%.git}
         case "$url" in
