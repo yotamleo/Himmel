@@ -55,7 +55,10 @@ export function resolveLaneInventory(registry, ctx) {
     .map((lane) => ({
       lane,
       suppressedByProfile: Boolean(allowlist)
-        && lane.class !== 'claude-tier'
+        // HIMMEL-3927: the marker is checked BEFORE the claude-tier exemption. A
+        // local patch may set `class`, but never `profileManaged`, so a marked lane
+        // cannot escape the allowlist by claiming class claude-tier.
+        && (lane.class !== 'claude-tier' || isProfileManaged(lane))
         && (!allowlistScope || allowlistScope.has(lane.id) || isProfileManaged(lane))
         && !allowlist.has(lane.id),
     }));
