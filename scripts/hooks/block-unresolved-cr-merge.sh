@@ -113,6 +113,15 @@ while [ "$#" -gt 0 ]; do
         [ "$1" = "merge" ] && seen_merge=1
         shift; continue
     fi
+    # gh pr merge's own arguments end at the first | & > < (a pipe, a
+    # background, a redirect): what follows belongs to another command or a
+    # file, so `--squash | sort -h` / `& ls -h` / `> --help` must not read as
+    # merge flags (HIMMEL-3915 judge round).
+    stop_walk=0
+    case "$1" in
+        *[\|\&\>\<]*) stop_walk=1; cur="${1%%[|&><]*}"; shift; set -- "$cur" "$@" ;;
+    esac
+    [ "$stop_walk" = "1" ] && [ -z "$1" ] && break
     case "$1" in
         --repo=*) repo="${1#--repo=}" ;;
         --repo|-R) if [ "$#" -ge 2 ]; then repo="$2"; shift; fi ;;
@@ -134,6 +143,7 @@ while [ "$#" -gt 0 ]; do
                                # never a false block)
         *) [ -z "$sel" ] && sel="$1" ;;
     esac
+    [ "$stop_walk" = "1" ] && break
     shift
 done
 

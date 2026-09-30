@@ -205,6 +205,13 @@ grep -q "cannot resolve the PR" "$TMP/err-lookup-timeout-denies" || { echo "FAIL
 # Non-merges stay untouched even with a broken lookup.
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-pr-view-passthrough 0 Bash "gh pr view 42"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-merge-help-passthrough 0 Bash "gh pr merge --help"
+# `--help`/`-h` is honoured ONLY as gh pr merge's own argument. The segment is
+# split on ; && || but NOT on | & or redirects, so a later `-h`/`--help` in the
+# same segment must not turn a real merge into a passthrough.
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-pipe-h-still-gated 2 Bash "gh pr merge 42 --squash | sort -h"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-bg-h-still-gated 2 Bash "gh pr merge 42 --squash & ls -h"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-redirect-help-still-gated 2 Bash "gh pr merge 42 > --help"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-pipe-passthrough 0 Bash "gh pr merge --help | cat"
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
 # advisory only. The removed `zombie*`/`young` cases here drove the HIMMEL-980
 # override off a CodeRabbit CHECK-RUN that production never emits; the
