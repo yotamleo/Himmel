@@ -289,7 +289,7 @@ run_test "tag-only drift (no new commits) reports true staleness, not a misleadi
     if ($checkOutput -notmatch '^STALE gen-changelog: CHANGELOG\.md structure changed with no new entries') { throw "missing new drift wording: $checkOutput" }
 }
 
-run_test "same-commit tags: release sorts before pre-release on an ancestry tie" {
+run_test "same-commit tags: the release absorbs its own series pre-release (HIMMEL-3603)" {
     $r = setup_commits
     Set-Location $r
     git -C $r tag v0.1.0-rc.1
@@ -297,7 +297,22 @@ run_test "same-commit tags: release sorts before pre-release on an ancestry tie"
     pwsh -File $GEN
     $content = Get-Content (Join-Path $r 'CHANGELOG.md') -Raw
     $order = [regex]::Matches($content, '^## \[[^\]]*\]', 'Multiline') | ForEach-Object { $_.Value }
-    $expected = @('## [Unreleased]', '## [v0.1.0]', '## [v0.1.0-rc.1]')
+    $expected = @('## [Unreleased]', '## [v0.1.0]')
+    if (@(Compare-Object $order $expected -SyncWindow 0).Count -ne 0) { throw "section order was $($order -join ', ')" }
+}
+
+run_test "same-commit fold keeps a pre-release at a DIFFERENT commit and a different series' pre-release" {
+    $r = setup_commits
+    Set-Location $r
+    git -C $r tag v0.1.0-rc.1 HEAD~1
+    git -C $r tag v0.2.0-rc.1
+    git -C $r tag v0.2.0
+    git -C $r commit --allow-empty -q -m 'feat: [T-9] later work'
+    git -C $r tag v0.3.0-rc.1
+    pwsh -File $GEN
+    $content = Get-Content (Join-Path $r 'CHANGELOG.md') -Raw
+    $order = [regex]::Matches($content, '^## \[[^\]]*\]', 'Multiline') | ForEach-Object { $_.Value }
+    $expected = @('## [Unreleased]', '## [v0.3.0-rc.1]', '## [v0.2.0]', '## [v0.1.0-rc.1]')
     if (@(Compare-Object $order $expected -SyncWindow 0).Count -ne 0) { throw "section order was $($order -join ', ')" }
 }
 
