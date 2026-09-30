@@ -1886,7 +1886,17 @@ for _t in "P|block|$_P" "W|allow|$_W"; do
     _subst_row "75g-$_tag \$( \$( ... > f ) ) doubly nested"                "$_v" "x=\"\$(echo \$(echo hi > $_f))\""
     _subst_row "75h-$_tag redirect after a nested \$( ) in the same body"   "$_v" "x=\"\$(echo \$(pwd) > $_f)\""
     _subst_row "75i-$_tag tee inside a dq-quoted \$( )"                     "$_v" "x=\"\$(echo hi | tee $_f)\""
+    _subst_row "75o-$_tag case item ) does not end the body (codex-2)"      "$_v" "x=\"\$(case a in a) echo hi > $_f ;; esac)\""
 done
+# The body runs where its clause runs: a later `cd` must not move it, and a
+# `cd` inside a body (its own subshell) must not leak out of it (codex-1).
+_PR="$FIX/primary"; _WR="$FIX/wt"
+_subst_row "75n-P body judged at its own cwd, a later cd must not move it" block "cd $_PR; x=\"\$(echo hi > subst-rel.txt)\"; cd $_WR"
+_subst_row "75n-W same shape aimed at the worktree (ALLOW)"               allow "cd $_WR; x=\"\$(echo hi > subst-rel.txt)\"; cd $_PR"
+_subst_row "75p-P a cd inside a body does not leak to the next clause"    block "cd $_PR; x=\"\$(cd $_WR)\"; echo hi > subst-rel.txt"
+_subst_row "75p-W same shape aimed at the worktree (ALLOW)"               allow "cd $_WR; x=\"\$(cd $_PR)\"; echo hi > subst-rel.txt"
+_subst_row "75q-P a cd in an outer body reaches the nested body"          block "x=\"\$(cd $_PR; echo \"\$(echo hi > subst-rel.txt)\")\""
+_subst_row "75q-W same shape aimed at the worktree (ALLOW)"               allow "x=\"\$(cd $_WR; echo \"\$(echo hi > subst-rel.txt)\")\""
 # The heredoc idiom with target-shaped words in the body text stays ALLOW.
 _subst_row "75j commit heredoc idiom, message mentions '> file' and a paren (ALLOW)" allow "git commit -m \"\$(cat <<'EOF'
 fix: a > b (and 'it')

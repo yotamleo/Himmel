@@ -123,9 +123,10 @@
 #     bodies were scanned as ordinary text, which was false inside a
 #     double-quoted span — the scanner treats the whole span as inert, so
 #     `x="$(echo hi > P/f)"` wrote into the primary unseen). Now
-#     `_bwimc_subst_bodies` extracts every `$(...)`/backtick body at any
-#     nesting depth (single-quoted text excluded) and the REDIRECT/tee arm (a)
-#     scans each as its own command. Not covered: the verb arms (cp/mv/rm/
+#     `_bwimc_subst_split` extracts every `$(...)`/backtick body (nested ones
+#     by recursion; single-quoted text excluded) and the REDIRECT/tee arm (a)
+#     scans each as its own command, right after its clause and from that
+#     clause's cwd. Not covered: the verb arms (cp/mv/rm/
 #     touch/sed/ln/git) still do not look inside a substitution body, and
 #     `$((...))` is treated as arithmetic, never a substitution.
 #   - Interpreter bodies: heredoc payloads and `python3 -c '...'` (or any
@@ -1791,17 +1792,28 @@ _bwimc_check_interp_body() {
 # never closes, so an unterminated body is scanned to the end, never dropped).
 # The body is a fresh command context: a fresh scanner state, so only ACTIVE
 # parens count (a `)` inside quotes is text) and a backtick span is skipped
-# whole. Clobbers the shared scanner state — callers save/restore it.
+# whole. A `case` item's `)` is not a terminator: active `case`/`esac` words
+# are counted and a `)` inside an open `case` is skipped (an argument spelled
+# `case` over-extends the body to the end of TEXT, which only over-scans).
+# Clobbers the shared scanner state — callers save/restore it.
 _bwimc_subst_paren_end() {
-    local text="$1" j="$2" len=${#1} depth=1 ch
+    local text="$1" j="$2" len=${#1} depth=1 ch w="" cs=0
     _bwimc_scan_init
     while [ "$j" -lt "$len" ]; do
         ch="${text:$j:1}"
         _bwimc_scan_step "$ch"
         if [ "$_BWIMC_ACT" = 1 ]; then
             case "$ch" in
+                [A-Za-z0-9_]) w="$w$ch"; j=$((j+1)); continue ;;
+            esac
+            case "$w" in
+                'case') cs=$((cs+1)) ;;
+                'esac') [ "$cs" -gt 0 ] && cs=$((cs-1)) ;;
+            esac
+            w=""
+            case "$ch" in
                 '(') depth=$((depth+1)) ;;
-                ')') depth=$((depth-1)); [ "$depth" -gt 0 ] || break ;;
+                ')') [ "$cs" -gt 0 ] || { depth=$((depth-1)); [ "$depth" -gt 0 ] || break; } ;;
                 '`')
                     j=$((j+1))
                     while [ "$j" -lt "$len" ] && [ "${text:$j:1}" != '`' ]; do
@@ -1817,20 +1829,25 @@ _bwimc_subst_paren_end() {
     _BWIMC_PEND=$j
 }
 
-# _bwimc_subst_bodies TEXT — HIMMEL-3622. Prints the body of every command
-# substitution in TEXT, `$(...)` and backtick alike, at ANY nesting depth, one
-# body per record (a body may itself span lines). A substitution runs as its
-# own command even inside a double-quoted span, where the shared scanner marks
-# every character inert — so a redirect in `x="$(echo hi > P/f)"` was invisible
-# to the redirect arm. Only a SINGLE-quoted span or an escaped `$`/backtick is
-# literal text. Each body is found with its own fresh scan (so quotes inside it
-# do not confuse the outer walk) and is then recursed into for nested ones; the
-# outer walk jumps over the body, which keeps its own quote state intact.
+# _bwimc_subst_split TEXT — HIMMEL-3622. Splits TEXT into a SKELETON and the
+# bodies of its TOP-LEVEL command substitutions, `$(...)` and backtick alike:
+# _BWIMC_SKEL is TEXT with each substitution body replaced by one \001 byte
+# (`$(\001)`, backtick-\001-backtick), and _BWIMC_BODIES lists the bodies in
+# order. A substitution runs as its own command even inside a double-quoted
+# span, where the shared scanner marks every character inert — so a redirect in
+# `x="$(echo hi > P/f)"` was invisible to the redirect arm. Only a SINGLE-quoted
+# span or an escaped `$`/backtick is literal text. Each body is found with its
+# own fresh scan (so quotes inside it do not confuse the outer walk) and the
+# outer walk jumps over it; a nested body is reached when the caller splits the
+# body it got. The skeleton, not TEXT, is what gets cut into clauses: a quote
+# nested inside a double-quoted substitution pairs differently from the way the
+# scanner reads it, so clause-splitting raw TEXT tore such a body apart.
 # `$((` is arithmetic, not a substitution. Callers run this on the
 # heredoc-BLANKED text, so `git commit -m "$(cat <<'EOF' … EOF)"` yields only
 # `cat <<'EOF'` plus blank lines: message text never becomes a phantom target.
-_bwimc_subst_bodies() {
+_bwimc_subst_split() {
     local text="$1" i=0 len=${#1} c q e body sq se sa j end
+    _BWIMC_SKEL=""; _BWIMC_BODIES=()
     _bwimc_scan_init
     while [ "$i" -lt "$len" ]; do
         c="${text:$i:1}"; q="$_BWIMC_Q"; e="$_BWIMC_ESC"
@@ -1855,30 +1872,43 @@ _bwimc_subst_bodies() {
             fi
         fi
         if [ "$end" -ge 0 ]; then
-            printf '%s\n' "$body"
-            sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
-            _bwimc_subst_bodies "$body"
-            _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"
+            _BWIMC_BODIES+=("$body")
+            if [ "$c" = '`' ]; then
+                _BWIMC_SKEL="$_BWIMC_SKEL"'`'$'\001''`'
+            else
+                # shellcheck disable=SC2016  # literal `$(`, not an expansion
+                _BWIMC_SKEL="$_BWIMC_SKEL"'$('$'\001'')'
+            fi
             i=$((end+1))
             continue
         fi
+        _BWIMC_SKEL="$_BWIMC_SKEL$c"
         _bwimc_scan_step "$c"
         i=$((i+1))
     done
 }
 
-# The redirect arm scans the command AND every substitution body as if each
-# were its own command (HIMMEL-3622). The cheap glob guard keeps the ordinary
-# command on the old path.
-_bwimc_hb_redir="$_bwimc_hb"
+# _bwimc_redir_scan_text TEXT — arm (a), the redirect/tee per-clause walk, as a
+# function so it can recurse (HIMMEL-3622). After each clause is walked, the
+# command substitutions inside THAT clause are scanned as their own commands,
+# from the cwd state the clause left and with that state restored after, so a
+# body's `cd` never leaks out and a body sees the `cd` that preceded it.
+_bwimc_redir_scan_text() {
+local _bwimc_rclause _bwimc_rclause_sp _bwimc_rtoks _bwimc_t _bwimc_rn _bwimc_teecmd \
+    _bwimc_pfx _bwimc_pflag _bwimc_ri _bwimc_teecollect _bwimc_tee_dd _bwimc_rt \
+    _bwimc_rt2 _bwimc_skel _bwimc_sbodies _bwimc_sbi _bwimc_stubs _bwimc_sn \
+    _bwimc_sb_ecwd _bwimc_sb_unres _bwimc_sb_pushn
+_bwimc_skel="$1"; _bwimc_sbodies=(); _bwimc_sbi=0
 # shellcheck disable=SC2016  # literal `$(` is the glob pattern, not an expansion
-case "$_bwimc_hb" in
-    *'$('*|*'`'*) _bwimc_hb_redir="${_bwimc_hb}"$'\n'"$(_bwimc_subst_bodies "$_bwimc_hb")" ;;
+case "$1" in
+    *'$('*|*'`'*)
+        _bwimc_subst_split "$1"
+        _bwimc_skel="$_BWIMC_SKEL"
+        for _bwimc_sn in ${_BWIMC_BODIES[@]+"${!_BWIMC_BODIES[@]}"}; do
+            _bwimc_sbodies+=("${_BWIMC_BODIES[$_bwimc_sn]}")
+        done
+        ;;
 esac
-
-_bwimc_ecwd="$_bwimc_cwd"
-_bwimc_ecwd_unres=0
-_bwimc_ecwd_pushn=0
 while IFS= read -r _bwimc_rclause; do
     [ -n "$(printf '%s' "$_bwimc_rclause" | tr -d '[:space:]')" ] || continue
     _bwimc_rclause_sp=$(_bwimc_space_before_redirects "$_bwimc_rclause")
@@ -2012,7 +2042,21 @@ while IFS= read -r _bwimc_rclause; do
             _bwimc_ri=$((_bwimc_ri+1))
         fi
     done
-done < <(_bwimc_split_clauses "$_bwimc_hb_redir")
+    # The bodies of THIS clause's stubs, in order, each as a command of its own.
+    _bwimc_stubs="${_bwimc_rclause//[!$'\001']/}"
+    _bwimc_sn=${#_bwimc_stubs}
+    while [ "$_bwimc_sn" -gt 0 ] && [ "$_bwimc_sbi" -lt "${#_bwimc_sbodies[@]}" ]; do
+        _bwimc_sb_ecwd="$_bwimc_ecwd"; _bwimc_sb_unres="$_bwimc_ecwd_unres"; _bwimc_sb_pushn="$_bwimc_ecwd_pushn"
+        _bwimc_redir_scan_text "${_bwimc_sbodies[$_bwimc_sbi]}"
+        _bwimc_ecwd="$_bwimc_sb_ecwd"; _bwimc_ecwd_unres="$_bwimc_sb_unres"; _bwimc_ecwd_pushn="$_bwimc_sb_pushn"
+        _bwimc_sbi=$((_bwimc_sbi+1)); _bwimc_sn=$((_bwimc_sn-1))
+    done
+done < <(_bwimc_split_clauses "$_bwimc_skel")
+}
+_bwimc_ecwd="$_bwimc_cwd"
+_bwimc_ecwd_unres=0
+_bwimc_ecwd_pushn=0
+_bwimc_redir_scan_text "$_bwimc_hb"
 
 # ---- (g) HIMMEL-3401: git commands that rewrite a PROTECTED checkout ----
 #
