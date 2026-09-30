@@ -41,6 +41,12 @@ mkdir -p "$TMP/logs"
 : > "$TMP/logs/test-slowpoke.sh.log"
 # run from a subdirectory: the tracked lookup must not depend on the caller's cwd
 sfl() ( cd "$ROOT/scripts/ci" && bash "$SCRIPT" suites-from-logs "$@" )
+# HIMMEL-3906: no completion sentinel = a killed shard's partial log set -> no report, distinct rc 3
+got="$(sfl "$TMP/logs" 2>"$TMP/sfl-nosent.err")"; rc=$?
+if [ "$rc" = 3 ] && [ -z "$got" ] && grep -q 'run-complete' "$TMP/sfl-nosent.err"; then
+  ok "suites-from-logs without the completion sentinel emits nothing and exits 3"
+else bad "no-sentinel: rc=$rc out='$got' err='$(cat "$TMP/sfl-nosent.err")'"; fi
+: > "$TMP/logs/.run-complete"
 got="$(sfl "$TMP/logs" 2>"$TMP/sfl.err" | tr '\n' ' ')"
 if [ "$got" = "scripts/ci/test-macos-breakage.sh scripts/handover/test-arm-resume.sh " ]; then
   ok "suites-from-logs keeps tracked suites (incl. one in a subdirectory) and drops self-test fixture logs"
@@ -48,11 +54,16 @@ else bad "suites-from-logs gave '$got'"; fi
 if grep -q 'dropped 2' "$TMP/sfl.err" && grep -q 'test-127-3.sh' "$TMP/sfl.err" && grep -q 'test-slowpoke.sh' "$TMP/sfl.err"; then
   ok "suites-from-logs reports the dropped fixtures on stderr (count + names)"
 else bad "stderr gave '$(cat "$TMP/sfl.err")'"; fi
-got="$(sfl "$TMP/no-such-dir")"
-if [ -z "$got" ]; then ok "suites-from-logs on a missing dir is empty"; else bad "missing dir gave '$got'"; fi
+got="$(sfl "$TMP/no-such-dir" 2>/dev/null)"; rc=$?
+if [ "$rc" = 3 ] && [ -z "$got" ]; then ok "suites-from-logs on a missing dir (no sentinel) is no report, rc 3"
+else bad "missing dir: rc=$rc out='$got'"; fi
 mkdir -p "$TMP/emptylogs"
-got="$(sfl "$TMP/emptylogs" 2>&1)"
-if [ -z "$got" ]; then ok "suites-from-logs on an empty dir is empty and quiet"; else bad "empty dir gave '$got'"; fi
+got="$(sfl "$TMP/emptylogs" 2>&1)"; rc=$?
+if [ "$rc" = 3 ]; then ok "suites-from-logs on an empty dir without the sentinel is rc 3"; else bad "empty dir no sentinel: rc=$rc"; fi
+: > "$TMP/emptylogs/.run-complete"
+got="$(sfl "$TMP/emptylogs" 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && [ -z "$got" ]; then ok "a sentinel-only dir (complete, all green) is an empty, quiet, rc 0 report"
+else bad "sentinel-only dir: rc=$rc out='$got'"; fi
 
 # --- record: union the shard lists, diff against the previous record --------
 mkdir -p "$TMP/art/macos-failed-suites-shard1" "$TMP/art/macos-failed-suites-shard2"
@@ -165,6 +176,18 @@ bash "$SCRIPT" record --run-id 5 --head-sha h5 --run-at 2026-09-30T00:00:00Z --s
   --failed-dir "$TMP/fd1" --shards-expected 8 --out "$TMP/rec5.json" >/dev/null
 if jq -e '.infra_suspect == true' "$TMP/rec5.json" >/dev/null; then ok "1 of 8 reports on a success run is infra_suspect"
 else bad "incomplete report set not flagged infra_suspect"; fi
+
+# HIMMEL-3906: a TMPDIR containing spaces must not split report's record list
+SPTMP="$TMP/tmp with space"; mkdir -p "$SPTMP"
+rep="$(TMPDIR="$SPTMP" PATH="$TMP/fake:$PATH" FAKE_RUNS="$TMP/runs.json" FAKE_DIR="$TMP/recs" \
+       bash "$SCRIPT" report --repo o/r --limit 10 2>&1)"
+if grep -q 'h20' <<< "$rep" && grep -q 'h40' <<< "$rep" && grep -Eq '2026-W41[[:space:]]+runs=1' <<< "$rep"; then
+  ok "report works with a TMPDIR containing spaces"
+else bad "report under a spaced TMPDIR: $rep"; fi
+TMPDIR="$SPTMP" PATH="$TMP/fake:$PATH" FAKE_RUNS="$TMP/runs.json" FAKE_DIR="$TMP/recs" \
+  bash "$SCRIPT" prev-record --repo o/r --run-id 40 --dest "$TMP/prev-sp.json" >/dev/null 2>&1
+if jq -e '.run_id == 20' "$TMP/prev-sp.json" >/dev/null 2>&1; then ok "prev-record works with a TMPDIR containing spaces"
+else bad "prev-record under a spaced TMPDIR"; fi
 
 # option without a value must fail fast, not spin (shift 2 fails on 1 arg).
 tmo="$(command -v timeout || command -v gtimeout || true)"  # absent on stock macOS: then a regression hangs instead of failing

@@ -10,7 +10,8 @@
 #
 #   suites-from-logs <dir>   suite relpaths of the *.log files in <dir> (the
 #                            runner's FAIL_LOG_DIR; decodes its injective
-#                            escape: _s -> /, _u -> _)
+#                            escape: _s -> /, _u -> _). Exit 3, no output, when
+#                            <dir>/.run-complete is absent (run killed mid-loop)
 #   diff <prev.json> <cur.json>
 #                            suites in cur.failed and not in prev.failed, one
 #                            per line, sorted. A missing prev is a baseline.
@@ -38,7 +39,14 @@ die() { echo "macos-breakage: $*" >&2; exit 2; }
 
 cmd_suites_from_logs() {
   local dir="${1:?suites-from-logs <dir>}"
-  [ -d "$dir" ] || return 0
+  # HIMMEL-3906: run-shell-tests writes .run-complete only when its suite loop ran
+  # to the end. Without it the logs are a killed shard's partial set: emit no
+  # report (rc 3) so `summary` flags the shard infra_suspect instead of reading
+  # the suites it never ran as green.
+  if [ ! -f "$dir/.run-complete" ]; then
+    echo "macos-breakage: $dir has no .run-complete sentinel (run killed mid-loop?): no report" >&2
+    return 3
+  fi
   # run-shell-tests' own self-tests leave fixture logs (test-127-3.sh,
   # test-slowpoke.sh) in FAIL_LOG_DIR; keep only git-tracked test-*.sh suites so
   # they do not count as reds. Dropped names go to stderr (count + names).
@@ -195,7 +203,8 @@ cmd_report() {
     esac
   done
   [ -n "$repo" ] || die "report: --repo is required"
-  local tmp id ids rc files=""
+  local tmp id ids rc
+  local files=()
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/macos-breakage.XXXXXX")" || die "mktemp failed"
   ids="$(list_run_ids "$repo" "$limit")" || { rm -rf "$tmp"; die "report: gh run list failed"; }
   for id in $ids; do
@@ -203,14 +212,13 @@ cmd_report() {
     fetch_record "$repo" "$id" "$tmp/$id" || rc=$?
     [ "$rc" = 1 ] && continue
     [ "$rc" = 0 ] || { rm -rf "$tmp"; die "report: could not read the record of run $id"; }
-    files="$files $tmp/$id/record.json"
+    files+=("$tmp/$id/record.json")
   done
-  if [ -z "$files" ]; then
+  if [ "${#files[@]}" -eq 0 ]; then
     echo "no os:macos cadence run in the last $limit has a $ARTIFACT artifact yet"
     rm -rf "$tmp"
     return 0
   fi
-  # shellcheck disable=SC2086 # ponytail: assumes TMPDIR has no spaces (true on GitHub runners), upgrade to an array if the report runs where it can
 
   jq -rs '
     sort_by(.run_at) as $runs
@@ -222,7 +230,7 @@ cmd_report() {
       "",
       ( $runs | group_by(.run_at | fromdateiso8601 | strftime("%G-W%V"))
         | .[] | "\(.[0].run_at | fromdateiso8601 | strftime("%G-W%V"))\truns=\(length)\tnew_breakages=\(map(.new_breakages | length) | add)" )
-  ' $files
+  ' "${files[@]}"
   rc=$?
   rm -rf "$tmp"
   return "$rc"

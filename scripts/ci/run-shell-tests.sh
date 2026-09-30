@@ -3597,6 +3597,10 @@ fi
 # remaining suite paths — the runner then reported OK over a list it had
 # silently eaten. Suites now get /dev/null (below), which also means an
 # unattended run can never block on a prompt.
+# HIMMEL-3906: FAIL_LOG_DIR/.run-complete marks a loop that ran to its end (pass
+# or fail); a killed run never writes it, so a consumer can tell a partial log
+# set from a complete one. Cleared first so a stale one cannot vouch for this run.
+[ -z "${FAIL_LOG_DIR:-}" ] || rm -f "$FAIL_LOG_DIR/.run-complete"
 while IFS= read -r suite <&3; do
   [ -n "$suite" ] || continue
 
@@ -3868,6 +3872,10 @@ while IFS= read -r suite <&3; do
   fi
   rm -f "$log"
 done 3< "$suites_file"
+
+if [ "$list_only" -eq 0 ] && [ -n "${FAIL_LOG_DIR:-}" ]; then
+  mkdir -p "$FAIL_LOG_DIR" && : > "$FAIL_LOG_DIR/.run-complete"
+fi
 
 # A selected suite the loop never saw (deleted, renamed, outside the scan
 # root) is named, so the aggregator can tell it from one a shard dropped.

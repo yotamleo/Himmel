@@ -87,6 +87,14 @@ else bad "the record step has no 'shell: bash': a die in record is masked by | t
 if step_of "Upload breakage record" | grep -q 'if-no-files-found: error'; then ok "a missing record.json fails the upload"
 else bad "the record upload does not use if-no-files-found: error"; fi
 
+# 10. HIMMEL-3906: a shard without the completion sentinel (suites-from-logs rc 3)
+# uploads NO failed.txt, so `summary` sees a missing report (infra_suspect).
+lst="$(step_of "List failed suites")"
+# shellcheck disable=SC2016 # literal workflow text, not an expansion
+if grep -q 'suites-from-logs' <<< "$lst" && grep -q '"\$rc" = 3' <<< "$lst" && grep -q 'rm -f macos-failed/failed.txt' <<< "$lst"; then
+  ok "the list step drops failed.txt when suites-from-logs reports no sentinel (rc 3)"
+else bad "the list step does not handle suites-from-logs rc 3 by removing failed.txt"; fi
+
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed" >&2
 exit 1
