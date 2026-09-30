@@ -1422,7 +1422,10 @@ xxd --r in
 file -bC -m magic
 file -zC x
 tree -ao out
-base64 -io out'
+base64 -io out
+git log ""*
+git log "-"*
+gh pr view 1 ""*'
 while IFS= read -r CL_CMD; do
     assert "cluster/abbrev/quoted flag or leading glob never ALLOW: $CL_CMD" PASS "$(decide "$(j_bash "$CL_CMD")")"
 done <<EOF
@@ -1439,7 +1442,8 @@ git push --force-with-lease '"'"'-f'"'"' origin feat/x
 git push --force-with-lease \-f origin feat/x
 git push --force-with-lease origin "main"
 git push --force-with-lease origin '"'"'HEAD:main'"'"'
-git push --force-with-lease origin *'
+git push --force-with-lease origin *
+git push --force-with-lease origin ""*'
 while IFS= read -r CL_CMD; do
     assert "lease push cluster/abbrev/quoted force, quoted main or glob never ALLOW: $CL_CMD" PASS "$(decide_in "$FWL_REPO" "$(j_bash "$CL_CMD")")"
 done <<EOF

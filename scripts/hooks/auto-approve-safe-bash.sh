@@ -130,6 +130,10 @@ cook_argv_words() {
         shell_word_value "$w" || return 1
         if [ "$dd" -eq 0 ]; then
             case "$w" in '*'*|'?'*|'['*) return 1 ;; esac
+            # A glob behind quoted text (`""*`, `"-"*`) expands the same way.
+            if [ "$SW_HAS_UNQUOTED_GLOB" = 1 ]; then
+                case "$SW_VALUE" in '-'*|'*'*|'?'*|'['*) return 1 ;; esac
+            fi
             [ "$w" = "--" ] && dd=1
         fi
         CW+=("$SW_VALUE")
