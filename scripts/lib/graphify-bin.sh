@@ -1277,7 +1277,10 @@ graphify_price_hooks() {
 
   if [ -n "$_node" ]; then
     local _pgh_out _pgh_rc=0
-    _pgh_out="$("$_node" - "$_pgh_native_root" <<'PRICE_JS'
+    # Script body read into a variable, NOT a heredoc inside $(...): bash 3.2
+    # (stock macOS) fails "bad substitution: no closing )" on that shape.
+    local _pgh_js
+    IFS= read -r -d '' _pgh_js <<'PRICE_JS' || true
 const fs = require('fs');
 const path = require('path');
 const root = process.argv[2];
@@ -1483,7 +1486,7 @@ for (const line of [
   console.log('  graphify hook pricing -- ' + line);
 }
 PRICE_JS
-)" || _pgh_rc=$?
+    _pgh_out="$(printf '%s\n' "$_pgh_js" | "$_node" - "$_pgh_native_root")" || _pgh_rc=$?
     printf '%s\n' "$_pgh_out"
     # A non-zero exit here (e.g. atomicWrite rethrowing on EACCES/ENOSPC, an
     # unremovable rename) must NOT reach the caller: this function is
@@ -1505,7 +1508,8 @@ PRICE_JS
   # python3 and not jq).
   if command -v python3 >/dev/null 2>&1; then
     local _pgh_out _pgh_rc=0
-    _pgh_out="$(python3 - "$_pgh_native_root" <<'PRICE_PY'
+    local _pgh_py
+    IFS= read -r -d '' _pgh_py <<'PRICE_PY' || true
 import json
 import os
 import re
@@ -1716,7 +1720,7 @@ for line in (
 ):
     print('  graphify hook pricing -- ' + line)
 PRICE_PY
-)" || _pgh_rc=$?
+    _pgh_out="$(printf '%s\n' "$_pgh_py" | python3 - "$_pgh_native_root")" || _pgh_rc=$?
     printf '%s\n' "$_pgh_out"
     # See the node engine's matching comment above: a non-zero exit here must
     # not propagate through this `set -e`-sensitive assignment shape and abort

@@ -812,7 +812,11 @@ mentions_primary_or_home() {
     # `<dir>/primary/...`).
     if [ "$is_primary_cwd" = "0" ] && [ -n "$own_root_lc" ]; then
         if ! has_traversal_dots "$c_noquotes"; then
-            c_noquotes=${c_noquotes//"$own_root_lc/"/}
+            # Pattern in a variable: bash 3.2 drops the quoted trailing `/` of an
+            # inline `"$own_root_lc/"`, so it blanked the bare prefix (`<dir>/prim`
+            # out of `<dir>/primary/...`) and hid the primary's own path.
+            local own_root_pat="$own_root_lc/"
+            c_noquotes=${c_noquotes//"$own_root_pat"/}
         fi
     fi
     # Only the primary root's OWN .claude counts as live — matching
