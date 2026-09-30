@@ -715,7 +715,8 @@ cat > "$WS/t11-a.sh" <<'WORKER_A'
 set -u
 source "$PROTOCOL11"
 EXTRACTION_LOCK="$LOCK11"
-EXTRACTION_LOCK_TIMEOUT_SECONDS=10
+# ponytail: B holds the lock for a COUNT of sleeps (500 x 0.01s), so a host with slow process spawn (macOS) stretches it past 10s and A gave up first; 60s keeps A waiting, revisit if B's hold is ever made time-based.
+EXTRACTION_LOCK_TIMEOUT_SECONDS=60
 EXTRACTION_LOCK_STALE_SECONDS=7200
 EXTRACTION_LOCK_HELD=0
 EXTRACTION_LOCK_TOKEN=""

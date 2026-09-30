@@ -105,6 +105,9 @@ assert_eq() {
 }
 
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/graph-cadence-test.XXXXXX") || { echo "FAIL: mktemp -d failed"; exit 1; }
+# Physical path: git prints worktree paths resolved (macOS /tmp -> /private/tmp),
+# and Test 6 greps `git worktree list` for the primary's own row by exact path.
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P) || { echo "FAIL: cannot resolve TMP_ROOT"; exit 1; }
 
 # Hermeticity, and the mirror of this suite-file class one level up
 # (CodeRabbit + panel codex-1, PR #2209): flow_run_ledger_path() lets

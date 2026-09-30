@@ -671,7 +671,8 @@ printf '%s|%s' "$(gh)" "$PATH"
 EOF
         chmod +x "$hook_dir/gh-which-hook.sh"
 
-        cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-which-hook.sh\""
+        # ponytail: the three PATH-order cases exec /bin/sh, not `command -p sh`, because bash 3.2 (macOS) leaves the confstr default PATH in the child's env, hiding the inherited order under test; the `command -p sh` wiring stays covered by the launcher-chain cases above, revisit if macOS ships bash >= 4.
+        cmd="/bin/sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-which-hook.sh\""
         # Starting PATH = wrapper dir first, then UTILS_DIR; the fallback list
         # names UTILS_DIR again (already present — must not be duplicated) and
         # the fallback dir carrying the SHADOWING gh.
@@ -733,7 +734,7 @@ EOF
             fail "precondition broken: the shared dir's gh does not run"
         fi
 
-        cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-which-hook.sh\""
+        cmd="/bin/sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-which-hook.sh\""
         out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT PATH="$wrapper_dir:$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$shared_dir" RUN_NODE_EXTRA_PATH_DIRS="" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
         rc=$?
         err="$(cat "$tmp/err.txt")"
@@ -772,7 +773,7 @@ printf '%s|%s|%s' "$(gh)" "$(command -v node >/dev/null 2>&1 && echo NODE_FOUND 
 EOF
         chmod +x "$hook_dir/reach-hook.sh"
 
-        cmd="if [ -n \"\$PATH\" ]; then echo PRECONDITION_BROKEN_NONEMPTY_PATH >&2; exit 3; fi; command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/reach-hook.sh\""
+        cmd="if [ -n \"\$PATH\" ]; then echo PRECONDITION_BROKEN_NONEMPTY_PATH >&2; exit 3; fi; /bin/sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/reach-hook.sh\""
         out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT RESOLVE_NODE_PROBE_DIRS="$node_link_dir" RUN_NODE_EXTRA_PATH_DIRS="$fallback_dir:$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "PATH=''; export PATH; $cmd" 2>"$tmp/err.txt")"
         rc=$?
         err="$(cat "$tmp/err.txt")"

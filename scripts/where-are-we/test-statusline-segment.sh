@@ -219,7 +219,7 @@ fi
 # A node that never returns must be killed by the segment's timeout (not the
 # wrapper's) → no status, ticket still shown, returns quickly.
 hangnode="$TMP/hangnode.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'sleep 30' > "$hangnode"; chmod +x "$hangnode"
+printf '%s\n' '#!/usr/bin/env bash' 'exec sleep 30' > "$hangnode"; chmod +x "$hangnode"
 if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
     start="$(date +%s)"
     o="$(HIMMEL_WHERE_ARE_WE=1 HANDOVER_DIR="$HROOT" HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR_COLD" \

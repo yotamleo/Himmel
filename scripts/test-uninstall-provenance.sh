@@ -35,11 +35,14 @@ real_ledger_state() {
 }
 REAL_LEDGER_BEFORE=$(real_ledger_state)
 
+TMPDIR="$(cd -P -- "${TMPDIR:-/tmp}" && pwd)" || exit 1; export TMPDIR
 SUITE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/uninstall-prov.XXXXXX")" || { echo "FAIL: mktemp" >&2; exit 1; }
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
 fails=0
-check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
+failed_labels=""
+check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; failed_labels="$failed_labels
+  $1"; fails=$((fails+1)); }; }
 
 # ---- fake claude stub (adapted from scripts/test-uninstall-plugins.sh) -----
 # One binary shared by every case; CLAUDE_CALL_LOG/STUB_PLUGINS_JSON/
@@ -235,8 +238,21 @@ run_uninstall() {
 # [ -t 0 ] && [ -t 1 ] TTY offers are reachable; otherwise stdin is /dev/null.
 _run_uninstall_inner() {
   if [ -n "${RUN_TTY_ANSWER:-}" ]; then
-    printf '%s\n' "$RUN_TTY_ANSWER" \
-      | script -qec "$(printf '%q ' bash "$repo_root/scripts/uninstall.sh" "$@")" /dev/null 2>&1
+    # util-linux script(1) takes the command as a string (-c); BSD/macOS has
+    # no -c/-e and takes the argv after the file. Probed by --version (BSD
+    # rejects it), not keyed off uname.
+    if script --version >/dev/null 2>&1; then
+      printf '%s\n' "$RUN_TTY_ANSWER" \
+        | script -qec "$(printf '%q ' bash "$repo_root/scripts/uninstall.sh" "$@")" /dev/null 2>&1
+    else
+      # ponytail: fixed 3s start delay + 1s per key, not prompt-synchronised;
+      # BSD script drops input written before the child reads, so the keys are
+      # fed paced. Upgrade to an expect-style prompt wait if a slow runner flakes.
+      { sleep 3
+        printf '%s\n' "$RUN_TTY_ANSWER" | while IFS= read -r _k || [ -n "$_k" ]; do printf '%s\n' "$_k"; sleep 1; done
+        sleep 2
+      } | script -q /dev/null bash "$repo_root/scripts/uninstall.sh" "$@" 2>&1
+    fi
   else
     bash "$repo_root/scripts/uninstall.sh" "$@" </dev/null 2>&1
   fi
@@ -2339,6 +2355,7 @@ cp "$T69B" "$CASE_DIR/red69b.before"
 # per-unit [k]eep/[d]elete offer if the block were ever offered one.
 rc69b=0
 out69b=$(RUN_TTY_ANSWER=$'y\nd' run_uninstall_fx --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks 2>&1) || rc69b=$?
+[ "$rc69b" -eq 0 ] || printf '%s\n' "$out69b" | tail -n 15 | sed 's/^/    | /'
 check "RED69b: the run got past the Proceed? confirm and exited 0" "$rc69b" "0"
 check "RED69b: the edited block file is byte-identical after a 'd' answer" \
   "$(cmp -s "$T69B" "$CASE_DIR/red69b.before" && echo same || echo differs)" "same"
@@ -2575,4 +2592,4 @@ REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \
   "$REAL_LEDGER_AFTER" "$REAL_LEDGER_BEFORE"
 
-[ "$fails" -eq 0 ] && echo "UNINSTALL-PROVENANCE ALL PASS" || { echo "$fails UNINSTALL-PROVENANCE FAILED"; exit 1; }
+[ "$fails" -eq 0 ] && echo "UNINSTALL-PROVENANCE ALL PASS" || { echo "failed checks:$failed_labels"; echo "$fails UNINSTALL-PROVENANCE FAILED"; exit 1; }
