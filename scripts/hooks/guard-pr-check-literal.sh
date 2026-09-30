@@ -1106,31 +1106,36 @@ split_operand() { # split_operand <raw text starting at the operand> - print
     printf '%s' "${s:0:i}"
 }
 split_unresolvable_mention() { # split_unresolvable_mention <raw command>
-    local seg sw sx uw rest op env_seen
-    while IFS= read -r seg; do
-        read -r -a sw <<<"$seg"
-        env_seen=0
-        for sx in "${sw[@]}"; do
-            uw=${sx//[\'\"]/}
-            if [ "$env_seen" -eq 0 ]; then
-                [ "${uw##*/}" = env ] && env_seen=1
-                continue
-            fi
-            case "$uw" in --s*) ;; --*) continue ;; -*S*) ;; *) continue ;; esac
-            rest="$sx${seg#*"$sx"}"
-            case "$uw" in
-                --s*=*) op=${rest#*=} ;;
-                --s*|-*S)
-                    op=${rest#"$sx"}
-                    op=${op#"${op%%[![:blank:]]*}"} ;;
-                *) op=${rest#*S} ;;
-            esac
-            op=$(split_operand "$op")
-            case "$op" in *\\*|*'#'*|*'$'*) ;; *) break ;; esac
-            names_target "${rest//[\'\"\\]/}" && return 0
-            break
-        done
-    done <<<"${1//[;&|]/$'\n'}"
+    # One scan over the whole command, not per ;&|/newline segment: those
+    # characters can sit INSIDE the quoted operand (GNU env -S splits on a
+    # newline too), and cutting there would part env from the target it
+    # names. Blanking them keeps a glued `x;env` word separable; the operand
+    # test and the mention both run on the text from the option to the END
+    # of the command, which can only deny more, never less.
+    local s sw sx uw rest tail op env_seen=0
+    s=${1//[;&|$'\n']/ }
+    read -r -a sw <<<"$s"
+    tail=$s
+    for sx in "${sw[@]}"; do
+        rest="$sx${tail#*"$sx"}"
+        tail=${tail#*"$sx"}
+        uw=${sx//[\'\"]/}
+        if [ "$env_seen" -eq 0 ]; then
+            [ "${uw##*/}" = env ] && env_seen=1
+            continue
+        fi
+        case "$uw" in --s*) ;; --*) continue ;; -*S*) ;; *) continue ;; esac
+        case "$uw" in
+            --s*=*) op=${rest#*=} ;;
+            --s*|-*S)
+                op=${rest#"$sx"}
+                op=${op#"${op%%[![:blank:]]*}"} ;;
+            *) op=${rest#*S} ;;
+        esac
+        op=$(split_operand "$op")
+        case "$op" in *\\*|*'#'*|*'$'*) ;; *) continue ;; esac
+        names_target "${rest//[\'\"\\]/}" && return 0
+    done
     return 1
 }
 if [ "$hit" -eq 0 ] && [ "$mentions" -eq 1 ] && [ "$wrapped" -eq 1 ] \

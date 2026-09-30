@@ -474,7 +474,10 @@ for v in \
     "env -S 'bash scripts/handover/merge-on-green.sh\\t'" \
     "env -S 'bash scripts/handover/merge-on-green.sh#'" \
     "env -S 'bash scripts/cr/clear-cr-marker.sh\\c'" \
-    "env -S 'bash scripts/handover/console-kit/go.sh\\c'"; do
+    "env -S 'bash scripts/handover/console-kit/go.sh\\c'" \
+    "env -S 'ARMAUTOMERGE=1 bash"$'\n'"scripts/handover/merge-on-green.sh\\c'" \
+    "env -S 'true;bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -S 'true|bash scripts/handover/merge-on-green.sh\\c'"; do
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
     need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
 done
