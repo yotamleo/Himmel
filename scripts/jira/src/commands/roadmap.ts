@@ -256,7 +256,6 @@ async function searchKeys<T>(req: Req, jql: string, fields: string): Promise<T[]
     );
     out.push(...page.issues);
     token = page.nextPageToken;
-    if (page.issues.length === 0) break;
   } while (token !== undefined);
   return out;
 }

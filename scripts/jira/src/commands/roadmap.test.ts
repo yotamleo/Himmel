@@ -221,6 +221,21 @@ describe('roadmapExport', () => {
       issues: [{ key: 'HIMMEL-1', fields: {} }, { key: 'HIMMEL-2', fields: {} }],
     });
   });
+
+  it('follows the token past an empty page', async () => {
+    const fields = ['summary', 'issuetype', 'status', 'priority', 'parent', 'fixVersions', 'issuelinks', 'labels', 'customfield_10020', ...Object.values(IDS)].join(',');
+    const jql = 'project = HIMMEL AND statusCategory != Done ORDER BY fixVersion ASC, Rank ASC';
+    const page = (tok?: string) =>
+      `GET /search/jql?jql=${encodeURIComponent(jql)}&fields=${fields}&maxResults=100${tok ? `&nextPageToken=${tok}` : ''}`;
+    const { req } = stub({
+      'GET /field': [...FIELD_LIST, { id: 'customfield_10020', name: 'Sprint' }],
+      'GET /project/HIMMEL/versions': [],
+      [page()]: { issues: [], nextPageToken: 'p2' },
+      [page('p2')]: { issues: [{ key: 'HIMMEL-2', fields: {} }] },
+    });
+    const out = await roadmapExport('HIMMEL', req, () => '2026-09-30T00:00:00.000Z');
+    expect(out.issues).toEqual([{ key: 'HIMMEL-2', fields: {} }]);
+  });
 });
 
 describe('syncSprints', () => {
