@@ -932,15 +932,29 @@ NL=$'\n'
 # close it by registering the assembled path forms or by the structural guard
 # once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest obf=0 v wv write=0 SQ="'"
+    local t="$1" w rest pre sp v wv write=0 obf=0 SQ="'"
     wv='(^|[^[:alnum:]_])(export|env|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     set -f
     for w in $(printf '%s' "$t" | tr ';|&()<>' '       '); do
         case "$w" in
-            *'$'"$SQ"*) obf=1 ;;
+            # A bare $'\t' / $'\n' is ordinary shell; only an ANSI-C word that
+            # names a path or carries a hex/unicode/octal escape is obfuscation.
+            *'$'"$SQ"*)
+                case "$w" in
+                    */*|*.sh*|*'\x'*|*'\u'*|*\\[0-7]*) obf=1 ;;
+                esac ;;
             *scripts/*)
+                # A glob only counts when its literal prefix could resolve to a
+                # registered chokepoint (scripts/hooks/*.sh is an ordinary glob).
                 rest=${w#*scripts/}
-                case "$rest" in *[\*\?\[\{\$]*) obf=1 ;; esac ;;
+                case "$rest" in
+                    *[\*\?\[\{\$]*)
+                        pre="scripts/${rest%%[\*\?\[\{\$]*}"
+                        while IFS=$'\t' read -r sp _; do
+                            sp=${sp%"$CR"}
+                            case "$sp" in "$pre"*) obf=1 ;; esac
+                        done <<<"$REG_LINES" ;;
+                esac ;;
         esac
     done
     set +f
@@ -1029,7 +1043,18 @@ raw_mention() {
         # after `env`. A chokepoint is never called through `env -<opt>`.
         [[ $t =~ (^|[^[:alnum:]_-])env[[:space:]]+- ]] \
             && deny_text_layer "env with an option (clears or rewrites the environment) beside a sanctioned chokepoint"
-        if [[ $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) || $t =~ (^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n ]]; then
+        # Deny-leaning, no var-name needed, beside a chokepoint word: a
+        # declare/typeset/local +x (drops the export attribute), exec with an
+        # option (-c clears the env), ${!prefix*} indirect names, export -n,
+        # and any standalone -u* / -i* / --unset* token (env -u spelled through
+        # a $var, a glob or an attached NAME).
+        [[ $t =~ (declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x \
+            || $t =~ (^|[^[:alnum:]_-])exec[[:space:]]+- \
+            || $t == *\$\{!* \
+            || $t =~ (^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n \
+            || $t =~ (^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(u|i|-unset)[^[:space:]]* ]] \
+            && deny_text_layer "drops or rewrites the environment (declare +x, exec -c, \${!, export -n, -u/-i/--unset) beside a sanctioned chokepoint"
+        if [[ $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) ]]; then
             for v in $vars_list HIMMEL_CONSOLE_LEG; do
                 [[ $t =~ (^|[^[:alnum:]_])${v}([^[:alnum:]_]|$) ]] \
                     && deny_text_layer "clears a seam or the console marker (env -u / unset / export -n) beside a sanctioned chokepoint"

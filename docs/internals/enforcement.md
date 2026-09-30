@@ -2453,16 +2453,22 @@ pure-bash double-fork, `systemd-run --user`, cron and non-Linux hosts bypass
 it. The hook therefore adds a parse-free, deny-leaning scan of the raw command
 (`raw_obfuscated`, plus two arms in `raw_mention`): (1) a seam write
 (`NAME=`, `export`/`env`/`read`/`printf -v`/`declare`/...) beside a `scripts/`
-path word carrying a glob/brace metachar, `$var` piece or ANSI-C `$'` is
-denied; (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
+path word whose glob/brace/`$var` prefix could resolve to a registered
+chokepoint (`scripts/hooks/*.sh` is an ordinary glob and allowed), or an
+ANSI-C `$'` word naming a path or carrying a hex/unicode/octal escape (a bare
+`$'\t'` is allowed), is denied; (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
 beside a chokepoint word is denied; (3) CLEARING a seam or
-`HIMMEL_CONSOLE_LEG` (`unset`, `export -n`, and `env` carrying ANY option
-token, so `-u NAME`/`-uNAME`/`-iu`/`--unset[=]NAME`/`-C` all deny) beside a
+`HIMMEL_CONSOLE_LEG` (`unset`, any `export -n`, `declare|typeset|local +x`,
+`exec -<opt>`, `${!`, and any standalone `-u*`/`-i*`/`--unset*` token, so
+`env -u NAME`/`-uNAME`/`-iu`/`$x-uNAME`/a globbed `en?` all deny) beside a
 chokepoint word is denied — this reverses the old "clear-and-prove" allow and
 over-denies subshell-scoped clears (the raw scan cannot model scope). The lib
-also fails closed (exit 96) on Linux when `/proc/self/stat` is unreadable (a
-fake no-`/proc` view via `unshare -rm` + tmpfs); genuine non-Linux stays
-hook-only. Residuals (ponytail): an obfuscated seam NAME beside a LITERAL
+also fails closed (exit 96) on Linux when `/proc` is unreadable or is not a
+real procfs mount (`stat -f -c %T /proc` must be `proc`; a fake view via
+`unshare -rm` + tmpfs is refused); genuine non-Linux stays hook-only.
+Deliberate over-deny: `quiet-run.sh ... -- env -u X bash test` and a
+leg-launch argv whose brief text mentions `env -u` or `extdebug` deny beside
+a chokepoint word; put the control in a script file and run that instead. Residuals (ponytail): an obfuscated seam NAME beside a LITERAL
 chokepoint path (`export "$n=1"`), a program word that hides both its
 `scripts/` anchor and its glob, and S2/S4 (HIMMEL-3930).
 

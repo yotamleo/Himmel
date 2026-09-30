@@ -1063,8 +1063,28 @@ assert_allow "3921 a glob over scripts with no seam write"        "$(j "ls scrip
 assert_deny "3921 unset beside a globbed scripts/ word (over-deny)" "$(j "unset FOO; ls scripts/handover/*.sh")"
 assert_allow "3921 unset of an unrelated var, no scripts/ glob"    "$(j "unset FOO; ls docs")"
 
+# 3921 judge C1: ordinary commands are not obfuscated chokepoint paths.
+assert_allow "3921 C1 printf with an ANSI-C tab/newline"      "$(j 'printf $'"'"'a\tb\n'"'")"
+# shellcheck disable=SC2016
+assert_allow "3921 C1 IFS=ANSI-C tab in a read loop"         "$(j 'while IFS=$'"'"'\t'"'"' read -r a b; do echo $a; done < f')"
+assert_allow "3921 C1 cut -d ANSI-C tab then export"          "$(j 'cut -d$'"'"'\t'"'"' -f1 f; export LC_ALL=C')"
+assert_allow "3921 C1 printf over an unrelated scripts glob"  "$(j "printf '%s\\n' scripts/hooks/*.sh")"
+assert_allow "3921 C1 grep env over an unrelated scripts glob" "$(j "grep -ln env scripts/hooks/*.sh")"
+assert_allow "3921 C1 git log pathspec glob then read"        "$(j "git log -- scripts/hooks/*.sh; read -r x")"
+# 3921 judge I1: clear spellings the first arm missed, beside a chokepoint word.
+assert_deny "3921 I1 declare +x then setsid merge"   "$(j "declare +x HIMMEL_CONSOLE_LEG; setsid -f bash $MERGE_ON_GREEN")"
+assert_deny "3921 I1 typeset +x"                     "$(j "typeset +x HIMMEL_CONSOLE_LEG; setsid -f bash $MERGE_ON_GREEN")"
+assert_deny "3921 I1 declare +rx"                    "$(j "declare +rx HIMMEL_CONSOLE_LEG; setsid -f bash $MERGE_ON_GREEN")"
+assert_deny "3921 I1 env \$x -u NAME"                "$(j "env \$x -u HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3921 I1 env \$x-uNAME"                  "$(j "env \$x-uHIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3921 I1 globbed env binary -u"          "$(j "/usr/bin/en? -u HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3921 I1 unset \${!PREFIX*} in a subshell" "$(j "( (unset \${!HIMMEL_CON*}; exec bash $MERGE_ON_GREEN) & )")"
+assert_deny "3921 I1 export -n \${!PREFIX@}"         "$(j "export -n \${!HIMMEL_@}; bash $MERGE_ON_GREEN")"
+assert_deny "3921 I1 exec -c"                        "$(j "( (exec -c bash $MERGE_ON_GREEN) & )")"
+assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
+
 CASES=$((CASES + 1))
-if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
+if grep -q "block-chokepoint-env-prefix.sh""$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
 else
     echo "WARN settings.json does not reference block-chokepoint-env-prefix.sh yet (not counted as a failure)"

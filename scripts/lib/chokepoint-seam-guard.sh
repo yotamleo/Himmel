@@ -70,8 +70,9 @@
 # Fails CLOSED (exit 96) once enforcement applies: a walk error, an unreadable
 # or empty environ, an unreadable registry entry, or any seam mismatch. The
 # only allows are "no /proc on a non-Linux host" and "no claude ancestor"
-# outside the marker rule. On Linux an unreadable /proc denies (HIMMEL-3921: a
-# fake no-/proc view via unshare -rm + tmpfs is not a real platform).
+# outside the marker rule. On Linux an unreadable /proc, or a /proc that is not
+# a procfs mount (stat -f %T), denies (HIMMEL-3921: a fake view via unshare -rm
+# + tmpfs is not a real platform).
 # ponytail: R1 a detached launch with no Claude Code marker in its env (env -i,
 # systemd-run, cron) and no claude ancestor is allowed; R2 a fresh `claude`
 # launched with a forged env is indistinguishable from a legit launch; R3
@@ -333,7 +334,17 @@ _csg_deny() {
 # proc root and start pid are fixed here; _csg_gate takes them only so the
 # suite can drive the whole gate on a fake /proc tree.
 chokepoint_seam_guard() {
+    # HIMMEL-3921: on Linux /proc must be a real procfs, not a tmpfs with a few
+    # written stat files (unshare -rm). A missing /proc is _csg_gate's case.
+    if [ -r /proc/self/stat ] && [ "$("$(_csg_bin uname)" -s 2>/dev/null)" = Linux ]; then
+        _csg_procfs /proc || _csg_deny "${1##*/}" "/proc is not a procfs mount on a Linux host"
+    fi
     _csg_gate /proc "$$" "$1"
+}
+
+# _csg_procfs <proc-root> - rc 0 when <proc-root> is a procfs mount.
+_csg_procfs() {
+    [ "$("$(_csg_bin stat)" -f -c %T "$1" 2>/dev/null)" = proc ]
 }
 
 _csg_gate() {
