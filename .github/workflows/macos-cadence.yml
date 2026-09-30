@@ -65,6 +65,7 @@ jobs:
       # Even when the run step above went red: this is the per-shard input to
       # the breakage metric. Skipped when setup died before the tests ran, so
       # `summary` sees a missing report (infra_suspect), not an empty one.
+      # ponytail: a shard killed mid-run still reports its partial logs as complete, HIMMEL-3906 adds a completion sentinel.
       - name: List failed suites (breakage metric input)
         if: always() && steps.tests.outcome != 'skipped'
         run: |

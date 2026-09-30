@@ -123,10 +123,11 @@ if PATH="$TMP/fake:$PATH" FAKE_RUNS="$TMP/runs.json" FAKE_DIR="$TMP/recs" \
   ok "prev-record skips the current run and a record-less run, returns the newest recorded one"
 else bad "prev-record did not return run 20"; fi
 
-if PATH="$TMP/fake:$PATH" FAKE_RUNS="$TMP/runs.json" FAKE_DIR="$TMP/none" \
-   bash "$SCRIPT" prev-record --repo o/r --run-id 40 --dest "$TMP/prev-none.json"; then
-  bad "prev-record returned 0 with no recorded run at all"
-else ok "prev-record exits non-zero (baseline) when no earlier run has a record"; fi
+PATH="$TMP/fake:$PATH" FAKE_RUNS="$TMP/runs.json" FAKE_DIR="$TMP/none" \
+  bash "$SCRIPT" prev-record --repo o/r --run-id 40 --dest "$TMP/prev-none.json" >/dev/null 2>&1
+rc=$?
+if [ "$rc" = 1 ]; then ok "prev-record exits 1 (baseline) when no earlier run has a record"
+else bad "prev-record rc=$rc with no recorded run (want exactly 1)"; fi
 
 rep="$(PATH="$TMP/fake:$PATH" FAKE_RUNS="$TMP/runs.json" FAKE_DIR="$TMP/recs" \
        bash "$SCRIPT" report --repo o/r --limit 10 2>&1)"
@@ -154,7 +155,9 @@ if jq -e '.infra_suspect == true' "$TMP/rec5.json" >/dev/null; then ok "1 of 8 r
 else bad "incomplete report set not flagged infra_suspect"; fi
 
 # option without a value must fail fast, not spin (shift 2 fails on 1 arg).
-if timeout 10 bash "$SCRIPT" record --run-id >/dev/null 2>&1; then bad "record with a value-less option succeeded"
+tmo="$(command -v timeout || command -v gtimeout || true)"  # absent on stock macOS: then a regression hangs instead of failing
+# shellcheck disable=SC2086 # $tmo is empty or one command name
+if ${tmo:+$tmo 10} bash "$SCRIPT" record --run-id >/dev/null 2>&1; then bad "record with a value-less option succeeded"
 else rc=$?; if [ "$rc" = 2 ]; then ok "a value-less option is refused (rc 2), no infinite loop"; else bad "value-less option rc=$rc (124 = hung)"; fi; fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }

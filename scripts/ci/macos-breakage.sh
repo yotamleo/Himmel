@@ -189,7 +189,8 @@ cmd_report() {
     rm -rf "$tmp"
     return 0
   fi
-  # shellcheck disable=SC2086 # $files is a space-joined list of mktemp paths (no spaces)
+  # shellcheck disable=SC2086 # ponytail: assumes TMPDIR has no spaces (true on GitHub runners), upgrade to an array if the report runs where it can
+
   jq -rs '
     sort_by(.run_at) as $runs
     | ($runs[] | [ (.run_at | .[0:10]), (.run_id | tostring), (.head_sha[0:9]),
@@ -201,7 +202,9 @@ cmd_report() {
       ( $runs | group_by(.run_at | fromdateiso8601 | strftime("%G-W%V"))
         | .[] | "\(.[0].run_at | fromdateiso8601 | strftime("%G-W%V"))\truns=\(length)\tnew_breakages=\(map(.new_breakages | length) | add)" )
   ' $files
+  rc=$?
   rm -rf "$tmp"
+  return "$rc"
 }
 
 sub="${1:-}"
