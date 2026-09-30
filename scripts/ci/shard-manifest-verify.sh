@@ -66,9 +66,27 @@ fi
 # Suite paths are carried as the space-delimited fields above, so one holding
 # whitespace would be split and mis-accounted: refuse it, naming the path
 # (HIMMEL-3916).
-ws_bad=$( { sed -n -e 's/^suite //p' "$selection" | sed 's/^/selection: /'
-            sed -n -e 's/^\[RUN \] //p' -e 's/^\[SKIP\] \(.*\) — .*/\1/p' "$discovered" | sed 's/^/discovered: /'; } \
-          | grep -E '^[a-z]+: .*[[:space:]]' || true)
+#
+# A `[SKIP]` line carries ` — <reason>` after its path, so the reason's own
+# spaces must not read as path whitespace: past the first field only empty or a
+# ` — ` reason is legal there. Byte-literal `case` matches, so the check does
+# not depend on the runner's locale.
+ws_bad=$(sed -n -e 's/^suite //p' "$selection" | grep -E '[[:space:]]' | sed 's/^/selection: /' || true)
+while IFS= read -r l; do
+  case "$l" in
+    '[RUN ] '*)
+      p=${l#'[RUN ] '}
+      case "$p" in *[[:space:]]*) ws_bad="${ws_bad}${ws_bad:+$'\n'}discovered: $p" ;; esac ;;
+    '[SKIP] '*)
+      p=${l#'[SKIP] '}
+      first=${p%% *}
+      rest=${p#"$first"}
+      case "$rest" in
+        ''|' — '*) ;;
+        *) ws_bad="${ws_bad}${ws_bad:+$'\n'}discovered: $p" ;;
+      esac ;;
+  esac
+done < "$discovered"
 if [ -n "$ws_bad" ]; then
   while IFS= read -r l; do echo "FAIL: suite path contains whitespace ($l)"; done <<< "$ws_bad"
   echo "shard-manifest-verify: REFUSED — a suite path with whitespace cannot be accounted"
