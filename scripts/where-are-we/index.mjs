@@ -1,5 +1,5 @@
 // scripts/where-are-we/index.mjs
-import { pathToFileURL } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 import { UsageError } from './lib/errors.mjs';
 import { readRecords } from './lib/ledger.mjs';
 import { fold } from './lib/fold.mjs';
@@ -37,7 +37,7 @@ export function run(argv) {
 }
 
 // CLI entry (not exercised by hermetic tests)
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (isMain(import.meta.url)) {
   try { process.stdout.write(run(process.argv.slice(2))); }
   catch (e) {
     // Clean message for UsageError, full stack otherwise (rationale: lib/errors.mjs).
