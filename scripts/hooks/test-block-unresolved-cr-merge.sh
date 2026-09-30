@@ -284,6 +284,7 @@ GH_STUB_MODE=unresolved t allow-gh-run-list       0 Bash "gh run list"
 GH_STUB_MODE=unresolved t allow-gh-api-pr         0 Bash "gh api repos/o/r/pulls/42"
 GH_STUB_MODE=unresolved t allow-git-merge-then-gh 0 Bash "git merge main && gh pr view 42"
 GH_STUB_MODE=unresolved t allow-gh-alias-list     0 Bash "gh alias list"
+GH_STUB_MODE=unresolved t allow-gh-pr-view-mergeable 0 Bash "gh pr view 42 --json mergeable,mergeStateStatus"
 GH_STUB_MODE=unresolved t allow-computed-prog     0 Bash "\"\$PY\" x.py"
 GH_STUB_MODE=unresolved t allow-computed-prog-path 0 Bash "\"\$HOME/bin/tool\" run"
 # merge-on-green's own argv shape is the plain direct form and must stay allowed.

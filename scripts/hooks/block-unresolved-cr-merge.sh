@@ -99,7 +99,7 @@ cmd_sq=$(_norm "$(printf '%s' "$cmd" | sed -e 's/\$[{(][^})]*[})]//g')")
 gh_re='(^|[[:space:];&|(])(/[^[:space:]]*/)?gh'
 fires=0
 for _n in "$cmd_norm" "$cmd_sq"; do
-    printf '%s' "$_n" | grep -E "${gh_re}.*merge" >/dev/null && fires=1
+    printf '%s' "$_n" | grep -E "${gh_re}.*(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)" >/dev/null && fires=1
 done
 # Any expansion can build the verb's letters (`$'m\x65rge'`, `m${X:-er}ge`) in a
 # way no text copy reads: a gh word plus a `$` or backtick fires too.
@@ -109,8 +109,9 @@ esac
 # The mirror case: a computed program word (`$'\x67\x68' pr merge`, `${G} pr
 # merge`) next to a literal merge word fires too. Program word = first word of a
 # segment after leading VAR=val assignments.
-if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -q 'merge'; then
-    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' \
+if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -qE '(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)'; then
+    # shellcheck disable=SC2020 # five separators each map to a newline, by design
+    printf '%s' "$cmd" | tr ';&|(\n''\n\n\n\n\n' \
         | sed -E -e 's/^[[:space:]]+//' -e ':a' -e 's/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//' -e 'ta' \
         | grep -qE "^[^[:space:]]*[\$\`\\\\'\"]" && fires=1
 fi
