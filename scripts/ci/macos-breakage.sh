@@ -95,7 +95,8 @@ cmd_record() {
 
   local new_json
   if [ "$prev_id" != "null" ]; then
-    new_json="$(cmd_diff "$prev_file" "$out.tmp" | jq -R . | jq -s .)"
+    new_json="$(cmd_diff "$prev_file" "$out.tmp")" || die "record: diffing against the previous run failed"
+    new_json="$(printf '%s\n' "$new_json" | sed '/^$/d' | jq -R . | jq -s .)" || die "record: encoding new breakages failed"
   else
     new_json="[]"
   fi
@@ -123,7 +124,8 @@ fetch_record() {
 
 list_run_ids() {
   local repo="$1" limit="$2"
-  gh run list --workflow "$WORKFLOW" -R "$repo" --status completed --limit "$limit" \
+  # main only: a feature-branch dispatch must not become main's predecessor.
+  gh run list --workflow "$WORKFLOW" -R "$repo" --branch "${MACOS_BREAKAGE_BRANCH:-main}" --status completed --limit "$limit" \
     --json databaseId,headSha --jq '.[].databaseId'
 }
 
