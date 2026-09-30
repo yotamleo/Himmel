@@ -3600,7 +3600,15 @@ fi
 # HIMMEL-3906: FAIL_LOG_DIR/.run-complete marks a loop that ran to its end (pass
 # or fail); a killed run never writes it, so a consumer can tell a partial log
 # set from a complete one. Cleared first so a stale one cannot vouch for this run.
-[ -z "${FAIL_LOG_DIR:-}" ] || rm -f "$FAIL_LOG_DIR/.run-complete"
+# Only the runner that first sees a given FAIL_LOG_DIR owns its sentinel: a nested
+# runner (a suite that runs this script) inherits the dir and RST_SENTINEL_DIR, so
+# its own completion cannot vouch for the still-running outer run.
+sentinel_owner=0
+if [ -n "${FAIL_LOG_DIR:-}" ] && [ "${RST_SENTINEL_DIR:-}" != "$FAIL_LOG_DIR" ]; then
+  sentinel_owner=1
+  export RST_SENTINEL_DIR="$FAIL_LOG_DIR"
+  rm -f "$FAIL_LOG_DIR/.run-complete"
+fi
 while IFS= read -r suite <&3; do
   [ -n "$suite" ] || continue
 
@@ -3873,7 +3881,7 @@ while IFS= read -r suite <&3; do
   rm -f "$log"
 done 3< "$suites_file"
 
-if [ "$list_only" -eq 0 ] && [ -n "${FAIL_LOG_DIR:-}" ]; then
+if [ "$list_only" -eq 0 ] && [ "$sentinel_owner" -eq 1 ]; then
   mkdir -p "$FAIL_LOG_DIR" && : > "$FAIL_LOG_DIR/.run-complete"
 fi
 
