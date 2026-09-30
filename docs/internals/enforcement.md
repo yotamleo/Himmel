@@ -3689,8 +3689,8 @@ rather than an unbounded call. The GNU part is load-bearing on Windows:
 *sleep*, not a command runner — invoking it GNU-style fails instantly, and the
 hook would read that as the guard's own rc 1 and print a MISCONFIGURED
 advisory blaming the operator's env vars while never checking the index.
-`qmd-cadence.sh`'s liveness probe carries the same `timeout --version` /
-`*oreutils*` discriminator for the same reason. The distinction is not academic: the
+`qmd-cadence.sh`'s liveness probe sidesteps the question entirely: it runs
+under `qmd_bounded` (HIMMEL-3956), which needs no `timeout` binary. The distinction is not academic: the
 SessionStart entry's own timeout bounds the hang by killing the hook *process*,
 and the hook prints nothing until the guard returns — so an unbounded fallback
 meant a hung qmd took the warning down with it and the session heard silence on

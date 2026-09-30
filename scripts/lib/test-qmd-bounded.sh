@@ -60,10 +60,15 @@ pid_of() {
 export QMD_KILL_GRACE_SECS=1
 
 # Precondition (the bug): plain timeout returns and the grandchild lives on.
-timeout 1 "$TRAMP" "$TMP/plain.pid"
-gc=$(pid_of "$TMP/plain.pid")
-sleep 2
-assert_eq "precondition: plain timeout orphans the grandchild" "alive" "$(alive "$gc")"
+# Needs GNU timeout; macOS ships none and Git Bash may resolve timeout.exe.
+case "$(timeout --version 2>/dev/null)" in
+    *oreutils*)
+        timeout 1 "$TRAMP" "$TMP/plain.pid"  # gnu-ok: guarded by the coreutils check above
+        gc=$(pid_of "$TMP/plain.pid")
+        sleep 2
+        assert_eq "precondition: plain timeout orphans the grandchild" "alive" "$(alive "$gc")" ;;
+    *) echo "SKIP precondition: no GNU timeout on PATH" ;;
+esac
 
 # T1: the deadline kills the whole group, grandchild included, and rc is 124.
 start=$(date +%s)
