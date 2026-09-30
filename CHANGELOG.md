@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- [HIMMEL-3906] macos shard uploads failed.txt only after a completion sentinel (#1492)
+- [HIMMEL-3916] shard-manifest-verify fails closed on a suite path containing whitespace (#1493)
+
+## [v1.0.0] - 2026-09-30
+
 ### Added
 - [HIMMEL-3897] PR CI runs only impacted suites in the fixed shards, aggregator verifies manifests (#1487)
 - [HIMMEL-3895] merge-on-green refuses trust-path PRs without a trust-reviewed GO (#1479)
@@ -86,6 +92,7 @@
 - [HIMMEL-3788] give the shell-unit dispatch leg a distinct check-run name (#1395)
 
 ### Changed
+- chore(release): [HIMMEL-3603] v1.0.0 pre-cut - VERSION 1.0.0, CHANGELOG, release date, macOS supported (#1495)
 - chore(ci): [HIMMEL-3902] move macOS to its own os:macos cadence workflow + breakage metric (#1477)
 - chore(cr): [HIMMEL-3905] fold the 2026-09-30 learnings export and add detectors for the hottest classes (#1474)
 - chore(plugins): [HIMMEL-1033] pin that no shipped profile enables atlassian (#1475)
