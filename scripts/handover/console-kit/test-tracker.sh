@@ -156,6 +156,7 @@ fp_ok() {
     if [ "$rc" -eq 0 ]; then pass "$1: --emit-fp exits 0 (HIMMEL-3979)"; else fail "$1: --emit-fp exited $rc"; fi
     printf -v "$2" '%s' "$o"
 }
+fp1='' fp2='' fp3='' fp4='' fp5='' fp6='' fp7=''  # each set by fp_ok through printf -v
 fp_ok 'base' fp1
 printf '%s\t%s\t%s\t%s\n' key readiness effort_low effort_high HIMMEL-1 4 M L > "$plan/stage2/C01.tsv"
 fp_ok 'stage2 edit' fp2
