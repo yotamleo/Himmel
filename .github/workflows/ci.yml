@@ -634,6 +634,12 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
+    # HIMMEL-3919: bound the job (default is 6 h; main-push runs share one
+    # non-cancelling concurrency group, so one hung shard queued every later
+    # main run). Slowest measured shard ~18 min (suite-durations.tsv: 6984 s over
+    # 8 shards, largest suite 653 s) -> 60 min is ~3x headroom, incl. the slower
+    # nightly windows leg.
+    timeout-minutes: 60
     steps:
       # fetch-depth: 0 (not the default shallow clone) so --changed-since below
       # can resolve a pull_request's base SHA, which a depth-1 checkout of the
@@ -657,11 +663,15 @@ jobs:
       # files, and a suffix-anchored glob silently matched nothing.
       - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
         if: runner.os == 'Linux'
+        # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. Step cap 10
+        # min; each apt call gets a 5 min `timeout` and a 2 min dpkg-lock wait so
+        # a lock fails fast and visibly instead of blocking silently.
+        timeout-minutes: 10
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y --no-install-recommends at
-          sudo systemctl enable --now atd || sudo service atd start || true
+          sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
+          sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at
+          sudo timeout 60 systemctl enable --now atd || sudo service atd start || true
       # HIMMEL-2742: same shape as HIMMEL-2587 (lanes-and-trust-suites) — a
       # suite in this corpus (test-wizard-luna-sections.sh) shells out to bun
       # and fails closed ("required test tool not found before PATH scrub:

@@ -133,6 +133,25 @@ for job in shell-unit-shard bun-suites; do
   fi
 done
 
+# 7. HIMMEL-3919: the shard job and its apt/at install step are bounded (a hung
+# apt lock once held a shard ~1.5 h; the 6 h default queued every later main run).
+blk="$(job_block shell-unit-shard)"
+if grep -Eq '^    timeout-minutes: [0-9]+$' <<< "$blk"; then
+  ok "shell-unit-shard: job-level timeout-minutes set"
+else
+  bad "shell-unit-shard: no job-level timeout-minutes (defaults to 6 h)"
+fi
+if grep -Eq '^        timeout-minutes: [0-9]+$' <<< "$blk"; then
+  ok "shell-unit-shard: at/atd install step has its own timeout-minutes"
+else
+  bad "shell-unit-shard: at/atd install step has no step-level timeout-minutes"
+fi
+if grep -q 'apt-get .*DPkg::Lock::Timeout=' <<< "$blk"; then
+  ok "shell-unit-shard: apt-get calls carry DPkg::Lock::Timeout"
+else
+  bad "shell-unit-shard: apt-get calls lack DPkg::Lock::Timeout"
+fi
+
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed" >&2
 exit 1
