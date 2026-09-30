@@ -54,7 +54,7 @@ export HIMMELCTL_CACHE_DIR="$tmp/himmelctl-cache"
 export HANDOVER_REGISTRY="$tmp/no-registry-for-this-suite.json"
 
 fails=0
-check() { [ "$2" = "$3" ] && echo "ok - $1 [t=${SECONDS}s]" || { echo "FAIL - $1: [$2]!=[$3] [t=${SECONDS}s]"; fails=$((fails+1)); }; }
+check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
 fixture_repo="$tmp/repo"
 mkdir -p "$fixture_repo"
@@ -112,22 +112,6 @@ token_of() {
     printf '%s' "$t"
 }
 
-#DIAG-3912-BEGIN
-# shellcheck disable=SC2016
-echo "DIAG start t=${SECONDS}s bash=$BASH_VERSION"
-git -C "$fixture_repo" rev-parse --path-format=absolute --git-common-dir >/dev/null 2>&1; echo "DIAG P1 git-common-dir rc=$? t=${SECONDS}s"
-bash -c ". '$fixture_repo/scripts/lib/handover-path.sh'" >/dev/null 2>&1; echo "DIAG P2 source handover-path rc=$? t=${SECONDS}s"
-bash -c ". '$fixture_repo/scripts/lib/user-slug.sh'; USER_SLUG=tester user_slug" >/dev/null 2>&1; echo "DIAG P3 user_slug rc=$? t=${SECONDS}s"
-mkdir -p "$root/tester/probe"; : > "$root/tester/probe/DEMO-probe.md"
-HANDOVER_DIR="$root" bash "$QL" acquire "$root/tester/probe/DEMO-probe.md" >/dev/null 2>&1; echo "DIAG P4 queue-lock acquire rc=$? t=${SECONDS}s"
-console new --bucket d1 >/dev/null 2>&1; echo "DIAG P5 console new rc=$? t=${SECONDS}s"
-# shellcheck disable=SC2016
-( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" env SHELLOPTS=xtrace PS4='+T$(date +%s) ' bash "$C" new --bucket d2 >/dev/null 2>"$tmp/trace3912" ); echo "DIAG P6 traced new rc=$? lines=$(wc -l < "$tmp/trace3912") t=${SECONDS}s"
-# shellcheck disable=SC2016
-awk '/^\++T[0-9]+ /{ split($0,a," "); t=substr(a[1],index(a[1],"T")+1)+0; if (p && t-p>=3) print "DIAG SLOW " (t-p) "s at: " substr(prev,1,220); p=t; prev=$0 }' "$tmp/trace3912"
-echo "DIAG end t=${SECONDS}s"
-[ "${DIAG3912_CONTINUE:-0}" = 1 ] || exit 1
-#DIAG-3912-END
 # --- 1/2/3/4: new, placeholder cleanliness, lock lifecycle, idempotent bump
 docA="$root/tester/demorepo/DEMO-nextleg-${today}A-console.md"
 docB="$root/tester/demorepo/DEMO-nextleg-${today}B-console.md"
@@ -147,7 +131,11 @@ HANDOVER_DIR="$root" bash "$QL" status "$docA" >/dev/null 2>&1 || rc_freed=$?
 check "3 lock freed after release" "$rc_freed" "0"
 
 sumA_before="$(cksum < "$docA")"
+t4_start=$SECONDS
 out4="$(console new --bucket demorepo)"
+# HIMMEL-3912: bash 3.2's ${var//pat/rep} render burned ~60 s per call on macOS
+# (Linux: <1 s). Generous bound; RED only reproduces on bash 3.2 / macOS.
+check "4 new renders in bounded time" "$([ $((SECONDS - t4_start)) -lt 20 ] && echo yes)" "yes"
 check "4 second new writes B" "$([ -f "$docB" ] && echo yes)" "yes"
 sumA_after="$(cksum < "$docA")"
 check "4 A byte-identical after second new" "$sumA_before" "$sumA_after"

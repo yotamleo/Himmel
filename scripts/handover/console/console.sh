@@ -178,24 +178,34 @@ letter_value() {
 # never needs escaping). Fails loudly, naming the placeholder, if any
 # {{...}} survives in the written output.
 render_template() {
-    local template="$1" out="$2" content leftover
+    local template="$1" out="$2" leftover n=0
     shift 2
-    content="$(cat "$template")"
+    # One awk pass, literal index()/substr() replacement; the pairs travel in
+    # the environment so no value needs escaping ('/', '&', backslash). NOT
+    # bash ${var//pat/rep}: bash 3.2 (macOS /bin/bash) is quadratic on this
+    # 34 KB UTF-8 template (~60 s per render, 604 s across test-console.sh),
+    # it keeps a quoted replacement's inner quotes literal, and bash 5.2+
+    # patsub treats '&' in the replacement as the match (HIMMEL-3912).
     while [ "$#" -gt 0 ]; do
-        # The replacement ($2) is QUOTED: on bash 5.2+ with the
-        # patsub_replacement option, an UNQUOTED replacement in
-        # ${var//pat/repl} treats '&' as "insert the matched text" — a repo
-        # path or handover root containing '&' would silently corrupt the
-        # render (worse: it re-inserts a literal "{{...}}", which then trips
-        # the unresolved-placeholder guard below and deletes the output).
-        # No OUTER double quotes on this assignment: bash 3.2 (macOS
-        # /bin/bash) keeps the inner quotes of a quoted replacement LITERAL
-        # when the whole expansion is double-quoted, so every value came out
-        # wrapped in '"..."' (HIMMEL-3912). An assignment never word-splits.
-        content=${content//"{{$1}}"/"$2"}
+        export "RT_K$n=$1" "RT_V$n=$2"
+        n=$((n + 1))
         shift 2
     done
-    printf '%s\n' "$content" > "$out"
+    RT_N=$n awk '
+        BEGIN { n = ENVIRON["RT_N"] + 0 }
+        {
+            line = $0
+            for (i = 0; i < n; i++) {
+                key = "{{" ENVIRON["RT_K" i] "}}"; val = ENVIRON["RT_V" i]
+                res = ""
+                while ((p = index(line, key)) > 0) {
+                    res = res substr(line, 1, p - 1) val
+                    line = substr(line, p + length(key))
+                }
+                line = res line
+            }
+            print line
+        }' "$template" > "$out"
     leftover="$(grep -oE '\{\{[A-Za-z_]+\}\}' "$out" 2>/dev/null | sort -u | head -n 1)" || leftover=""
     if [ -n "$leftover" ]; then
         rm -f "$out"
