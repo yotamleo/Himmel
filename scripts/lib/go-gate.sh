@@ -139,6 +139,9 @@ go_trust_gate() {
 # and its `exit`s never reach the sourcing caller.
 trust_path_check() (
     tp_nwo=$1 tp_pr=$2 tp_sha=$3 tp_branch=$4 anchor=$5 gh_bin=${GH:-gh}
+    # HIMMEL-3570 scrub: `git -C "$anchor"` below must read the anchor, not an
+    # inherited GIT_DIR. Subshell body, so the caller's env is untouched.
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
     refuse() { printf '%s %s\n' "$1" "$2"; exit 2; }
     # other_repo — rc 0 only when the anchor's origin POSITIVELY names a
     # github.com repo other than $tp_nwo. An unreadable origin, an SSH host alias
