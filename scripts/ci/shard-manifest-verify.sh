@@ -81,9 +81,12 @@ while IFS= read -r l; do
       p=${l#'[SKIP] '}
       first=${p%% *}
       rest=${p#"$first"}
-      case "$rest" in
-        ''|' — '*) ;;
-        *) ws_bad="${ws_bad}${ws_bad:+$'\n'}discovered: $p" ;;
+      case "$first" in
+        *[[:space:]]*) ws_bad="${ws_bad}${ws_bad:+$'\n'}discovered: $p" ;;
+        *) case "$rest" in
+             ''|' — '*) ;;
+             *) ws_bad="${ws_bad}${ws_bad:+$'\n'}discovered: $p" ;;
+           esac ;;
       esac ;;
   esac
 done < "$discovered"

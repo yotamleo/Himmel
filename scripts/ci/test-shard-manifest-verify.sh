@@ -274,6 +274,12 @@ expect "MV23: a SKIP-listed suite path with whitespace is refused" 1 "$d" 1 'whi
 # --- MV24 --------------------------------------------------------------------
 # The runner's real SKIP lines carry a multi-word reason after the path; its
 # spaces are not path whitespace (PR 1493's first head refused exactly these).
+d=$(case_dir mv23t); header impacted scripts/test-a.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh
+printf '[SKIP] scripts/test\tt.sh — tier\n' >> "$d/disc.txt"
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh'
+expect "MV23: a SKIP-listed suite path with a tab is refused" 1 "$d" 1 'whitespace.*scripts/test'
+
 d=$(case_dir mv23r); header impacted scripts/test-a.sh > "$d/sel.txt"
 disc "$d" RUN scripts/test-a.sh
 printf '%s\n' "[SKIP] scripts/test-h.sh — integration: needs a live 'claude' (--print relaunch)" \
