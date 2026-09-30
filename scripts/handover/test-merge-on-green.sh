@@ -250,6 +250,8 @@ mog_build_fixture() {
     cp "$SCRIPT_DIR/../lib/check-pr-title.sh" "$tmp/scripts/lib/check-pr-title.sh"
     cp "$SCRIPT_DIR/../hooks/check-commit-msg.sh" "$tmp/scripts/hooks/check-commit-msg.sh"
     chmod +x "$tmp/scripts/lib/check-pr-title.sh" "$tmp/scripts/hooks/check-commit-msg.sh"
+    # HIMMEL-3895: what the gh stub serves as the DEFAULT branch's trust list.
+    cp "$SCRIPT_DIR/../ci/ci-trust-paths.txt" "$tmp/trust-paths.base"
     # SC2016 is the point: $1/$2/$STUB_ALERT_FAIL must reach the stub FILE unexpanded.
     # shellcheck disable=SC2016
     printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "$1" "$2" >> "%s/alerts.log"\n[ -z "${STUB_ALERT_FAIL:-}" ]\n' "$tmp" > "$tmp/bin/alert-sender"
@@ -304,6 +306,7 @@ json=""
 jqexpr=""
 while [ $# -gt 0 ]; do case "$1" in --json) json="${2:-}";; --jq) jqexpr="${2:-}";; esac; shift; done
 nwo="${STUB_NWO:-owner/repo}"
+def_files='[{"filename":"README.md"}]'
 case "$verb" in
     "pr view")
         [ "${STUB_NO_PR:-0}" = "1" ] && { echo 'no pull requests found for branch "x"' >&2; exit 1; }
@@ -529,6 +532,32 @@ case "$verb" in
                 [ -n "$json_val" ] || { echo "gh: HTTP 404 (no ruleset)" >&2; exit 1; }
                 printf '%s' "$json_val" | jq -r "$jqexpr"
                 ;;
+            */contents/scripts/ci/ci-trust-paths.txt\?ref=*)
+                # HIMMEL-3895 — the trust-path list, read from the DEFAULT
+                # branch. Defaults to the real list (copied into the fixture as
+                # trust-paths.base), so every case runs against what ships.
+                [ "${STUB_TRUST_LIST_404:-0}" = "1" ] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+                [ "${STUB_TRUST_LIST_FAIL:-0}" = "1" ] && { echo "gh: HTTP 502" >&2; exit 1; }
+                if [ -n "${STUB_TRUST_LIST+x}" ]; then
+                    printf '%s' "$STUB_TRUST_LIST"
+                else
+                    cat "$(dirname "$0")/../trust-paths.base"
+                fi ;;
+            */pulls/[0-9]*/files)
+                # HIMMEL-3895 — the PR's changed files. Real JSON through the
+                # SCRIPT'S OWN --jq via real jq. Default: one non-trust file.
+                [ -n "$jqexpr" ] || { echo "gh stub: pulls/N/files missing --jq" >&2; exit 93; }
+                [ "${STUB_PR_FILES_FAIL:-0}" = "1" ] && { echo "gh: HTTP 502" >&2; exit 1; }
+                printf '%s' "${STUB_PR_FILES_JSON:-$def_files}" | jq -r "$jqexpr" ;;
+            */pulls/[0-9]*)
+                # HIMMEL-3895 — head sha + changed_files, read before AND after
+                # the file listing (routed by call order, as for protection).
+                [ -n "$jqexpr" ] || { echo "gh stub: pulls/N missing --jq" >&2; exit 93; }
+                n=$(grep -cE 'pulls/[0-9]+( |$)' "$GH_LOG" 2>/dev/null || echo 1)
+                ph="${STUB_PR_HEAD:-${STUB_SHA-abc123def456}}"
+                [ "${n:-1}" -gt 1 ] && ph="${STUB_PR_HEAD_SECOND:-$ph}"
+                cf="${STUB_PR_CHANGED_FILES:-$(printf '%s' "${STUB_PR_FILES_JSON:-$def_files}" | jq length)}"
+                printf '{"head":{"sha":"%s"},"changed_files":%s}' "$ph" "$cf" | jq -r "$jqexpr" ;;
             *) echo "gh stub: unhandled 'api' path: $api_path" >&2; exit 90 ;;
         esac
         ;;
@@ -611,6 +640,25 @@ run_mog() {
         if ! printf '#!/usr/bin/env bash\n: > "%s/poison.ran"\nexit 42\n' "$tmp" > "$tmp/scripts/$MOG_POISON" \
             || ! chmod +x "$tmp/scripts/$MOG_POISON"; then
             LAST_TMP="$tmp"; fail "$name (setup: could not plant the MOG_POISON mutant $MOG_POISON)"; return
+        fi
+    fi
+
+    # HIMMEL-3895: MOG_ANCHOR_GIT=1 makes the fixture anchor a git repo whose
+    # origin (https://github.com/owner/repo.git, the stub's own nwo) is rewritten
+    # by insteadOf to a local bare clone, so the trust gate's anchor-behind
+    # ls-remote runs for real and offline. MOG_ANCHOR_BEHIND=1 puts origin one
+    # commit ahead of the anchor; MOG_ANCHOR_URL overrides the origin URL.
+    if [ "${MOG_ANCHOR_GIT:-0}" = "1" ]; then
+        local g="git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null"
+        { $g init -q "$tmp" && $g -C "$tmp" add -A && $g -C "$tmp" commit -qm fixture \
+            && $g clone -q --bare "$tmp" "$tmp/origin.git" \
+            && $g -C "$tmp" config url."$tmp/origin.git".insteadOf "${MOG_ANCHOR_URL:-https://github.com/owner/repo.git}" \
+            && $g -C "$tmp" remote add origin "${MOG_ANCHOR_URL:-https://github.com/owner/repo.git}"; } >/dev/null 2>&1 \
+            || { LAST_TMP="$tmp"; fail "$name (setup: MOG_ANCHOR_GIT)"; return; }
+        if [ "${MOG_ANCHOR_BEHIND:-0}" = "1" ]; then
+            { $g -C "$tmp" commit -q --allow-empty -m ahead && $g -C "$tmp" push -q origin HEAD \
+                && $g -C "$tmp" reset -q --hard HEAD~1; } >/dev/null 2>&1 \
+                || { LAST_TMP="$tmp"; fail "$name (setup: MOG_ANCHOR_BEHIND)"; return; }
         fi
     fi
 
@@ -2798,6 +2846,133 @@ if [ "$(cat "$LAST_GH_LOG")" = "$GO_B_GHLOG" ]; then pass; else fail "2919-b/d: 
 HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
     run_mog 0 "2919-d2: HIMMEL_CONSOLE_LEG=0, no GO → merged"
 rm -rf "$GO_ROOT"
+
+# --- 3895. Trust-path gate — a PR touching a base-sourced trust path merges only
+# on a trust-reviewed GO for the certified head, leg or not ------------------
+TP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/mog-tp.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+TP_ROOT=$(cd "$TP_ROOT" && pwd)
+TP_GO="$TP_ROOT/.locks/go"
+TP_CI='[{"filename":".github/workflows/ci.yml"}]'
+tp_mint() { HANDOVER_DIR="$TP_ROOT" PATH="$GO_WRITER_BIN:$PATH" bash "$GO_WRITER" "$@" >/dev/null 2>&1; }
+tp_run() {
+    MOG_ANCHOR_GIT=1 HANDOVER_DIR="$TP_ROOT" STUB_SHA="$GO_SHA" STUB_PR_FILES_JSON="${STUB_PR_FILES_JSON-$TP_CI}" run_mog "$@"
+}
+
+# 3895-a (RED) — a PR touching .github/workflows/ci.yml, operator path, no GO:
+# merged before this gate; refused now, before any merge call or marker clear.
+tp_run 21 "3895-a: trust-path PR with no GO → exit 21"
+assert_audit_has "3895-a: audited as a trust-path refusal" "REFUSED reason=trust-path"
+assert_err_has "3895-a: stderr names the matched path" ".github/workflows/ci.yml"
+assert_gh_has "3895-a: the list is read from the default branch" "contents/scripts/ci/ci-trust-paths.txt?ref=main"
+assert_clear_not_invoked "3895-a: nothing mutated before the refusal"
+no_merge_call "3895-a: no merge call"
+
+# 3895-a2 — the dry run reports the same refusal.
+tp_run 21 "3895-a2: dry-run trust-path PR with no GO → exit 21" -- --dry-run
+assert_audit_lacks "3895-a2: no DRYRUN would-merge line" "DRYRUN"
+
+# 3895-a3 — a console leg holding an ORDINARY GO for the head: the console-GO
+# gate passes, the trust gate still refuses.
+tp_mint 77 "$GO_SHA"
+HIMMEL_CONSOLE_LEG=1 tp_run 21 "3895-a3: console leg with an ordinary GO on a trust-path PR → exit 21"
+assert_err_has "3895-a3: stderr asks for a trust-reviewed GO" "trust-reviewed"
+no_merge_call "3895-a3: no merge call"
+
+# 3895-b — a trust-reviewed GO minted by go.sh for this PR at this head merges,
+# for a console leg and for the operator path alike.
+tp_mint --trust-reviewed judge-N9 77 "$GO_SHA"
+HIMMEL_CONSOLE_LEG=1 tp_run 0 "3895-b: console leg with a trust-reviewed GO → merged"
+assert_merge_has "3895-b: merge pins the certified head" "--match-head-commit $GO_SHA"
+assert_audit_has "3895-b: the trust review rides the audit" "trust=judge-N9"
+tp_run 0 "3895-b2: operator path with a trust-reviewed GO → merged"
+
+# 3895-c — forged: the trust id edited after signing breaks the mac.
+sed -i.bak 's/^trust-reviewed=.*/trust-reviewed=judge-FORGED/' "$TP_GO/77.$GO_SHA"
+tp_run 21 "3895-c: a trust GO whose id was edited → exit 21"
+no_merge_call "3895-c: no merge call"
+# 3895-c2 — an ORDINARY GO with a trust-reviewed line appended: its mac never
+# covered the id, so it verifies as neither form.
+tp_mint 77 "$GO_SHA"
+printf 'trust-reviewed=judge-N9\n' >> "$TP_GO/77.$GO_SHA"
+tp_run 21 "3895-c2: an ordinary GO with an appended trust line → exit 21"
+# 3895-c3 — stale: a trust GO for an older head, renamed onto this head.
+rm -f "$TP_GO/77.$GO_SHA"
+tp_mint --trust-reviewed judge-N9 77 "$GO_OLD"
+mv "$TP_GO/77.$GO_OLD" "$TP_GO/77.$GO_SHA"
+tp_run 21 "3895-c3: a trust GO for another head, renamed → exit 21"
+# 3895-c4 — a trust GO for another PR at this head, renamed onto this PR.
+tp_mint --trust-reviewed judge-N9 78 "$GO_SHA"
+mv "$TP_GO/78.$GO_SHA" "$TP_GO/77.$GO_SHA"
+tp_run 21 "3895-c4: a trust GO for another PR, renamed → exit 21"
+no_merge_call "3895-c4: no merge call"
+rm -f "$TP_GO/77.$GO_SHA"
+
+# 3895-d — a PR editing ci-trust-paths.txt itself is judged by the DEFAULT
+# branch's list (the stub serves main's copy), so emptying it on the head buys
+# nothing: the edit is itself a trust path.
+STUB_PR_FILES_JSON='[{"filename":"scripts/ci/ci-trust-paths.txt"}]' \
+    tp_run 21 "3895-d: a PR shrinking ci-trust-paths.txt → exit 21"
+assert_gh_has "3895-d: base-sourced read" "ci-trust-paths.txt?ref=main"
+# 3895-d2 — a rename OUT of a trust path is caught by previous_filename.
+STUB_PR_FILES_JSON='[{"filename":"docs/x.yml","previous_filename":".github/workflows/ci.yml"}]' \
+    tp_run 21 "3895-d2: a rename out of .github/ → exit 21"
+
+# 3895-e — a PR touching no trust path is unchanged: merged, no trust audit.
+STUB_PR_FILES_JSON='[{"filename":"README.md"},{"filename":"docs/a.md"}]' \
+    tp_run 0 "3895-e: non-trust PR, no GO → merged"
+assert_audit_lacks "3895-e: no trust refusal" "trust-path"
+
+# 3895-f — fail closed on everything the gate cannot prove.
+STUB_PR_CHANGED_FILES=3001 \
+    tp_run 21 "3895-f: listed files short of changed_files (3000-file cap) → exit 21"
+STUB_PR_HEAD_SECOND=fedcba9876543210fedcba9876543210fedcba98 \
+    tp_run 21 "3895-f2: head moved while listing files → exit 21"
+STUB_PR_HEAD=fedcba9876543210fedcba9876543210fedcba98 STUB_PR_FILES_JSON='[{"filename":"README.md"}]' \
+    tp_run 21 "3895-f3: PR head is not the certified sha → exit 21"
+STUB_PR_FILES_FAIL=1 STUB_PR_FILES_JSON='[{"filename":"README.md"}]' \
+    tp_run 21 "3895-f4: file list unreadable → exit 21"
+STUB_TRUST_LIST_FAIL=1 STUB_PR_FILES_JSON='[{"filename":"README.md"}]' \
+    tp_run 21 "3895-f5: trust list unreadable → exit 21"
+STUB_TRUST_LIST=$'# only comments\n\n' STUB_PR_FILES_JSON='[{"filename":"README.md"}]' \
+    tp_run 21 "3895-f6: empty trust list → exit 21"
+STUB_TRUST_LIST=$'^scripts/[\n' STUB_PR_FILES_JSON='[{"filename":"README.md"}]' \
+    tp_run 21 "3895-f7: invalid trust regex → exit 21"
+STUB_TRUST_LIST_404=1 STUB_PR_FILES_JSON='[{"filename":"README.md"}]' \
+    tp_run 21 "3895-f8: no trust list on the harness's own repo → exit 21"
+# 3895-f10 — a list saved with CRLF endings, or with blanks around a pattern,
+# must still match: a pattern carrying a stray \r or space matches nothing,
+# which would wave a trust-path PR through (fail open).
+STUB_TRUST_LIST=$(sed 's/$/\r/' "$SCRIPT_DIR/../ci/ci-trust-paths.txt") \
+    tp_run 21 "3895-f10: CRLF trust list, trust-path PR with no GO → exit 21"
+no_merge_call "3895-f10: no merge call"
+STUB_TRUST_LIST=$(sed 's/^\(.\)/  \1/; s/$/ 	 /' "$SCRIPT_DIR/../ci/ci-trust-paths.txt") \
+    tp_run 21 "3895-f11: blank-padded trust list, trust-path PR with no GO → exit 21"
+no_merge_call "3895-f11: no merge call"
+# 3895-f9 — the anchor is one commit behind origin: a trust-path PR is judged
+# by a possibly stale gate, so it refuses (a non-trust PR is not affected).
+tp_mint --trust-reviewed judge-N9 77 "$GO_SHA"
+MOG_ANCHOR_BEHIND=1 tp_run 21 "3895-f9: anchor behind origin, trust-path PR → exit 21"
+assert_err_has "3895-f9: stderr says to pull the anchor" "behind"
+MOG_ANCHOR_BEHIND=1 STUB_PR_FILES_JSON='[{"filename":"README.md"}]' \
+    tp_run 0 "3895-f10: anchor behind origin, non-trust PR → merged (unchanged)"
+rm -f "$TP_GO/77.$GO_SHA"
+
+# 3895-g — another repo with no list has not adopted the gate: unchanged, but
+# audited so the absence is visible.
+STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 0 "3895-g: no trust list on a non-harness repo → merged"
+assert_audit_has "3895-g: not-adopted is audited" "trust=not-adopted"
+# 3895-h — an origin that does not positively name another github.com repo (an
+# SSH host alias) cannot prove the 404 is off the harness's own repo: refuse.
+MOG_ANCHOR_URL=git@gh-alias:owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 21 "3895-h: no trust list, anchor origin is an SSH alias → exit 21"
+MOG_ANCHOR_URL=https://notgithub.com/owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 21 "3895-h2: no trust list, anchor origin host only ends in github.com → exit 21"
+MOG_ANCHOR_URL=https://evil.example/github.com/owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 21 "3895-h3: no trust list, github.com only in the origin path → exit 21"
+MOG_ANCHOR_URL=git@github.com:owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 0 "3895-h4: no trust list, scp-form github.com origin names another repo → merged"
+rm -rf "$TP_ROOT"
 
 # HIMMEL-3142 CR round 3: RED control — the pre-fix script tested
 # `[ "$go_rc" = "2" ]`, enumerating go_gate's one documented refusal code

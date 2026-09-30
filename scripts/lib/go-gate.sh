@@ -50,23 +50,70 @@ console_leg() {
 #          no key to verify with, or a missing/invalid mac — never a generic
 #          "not allowed".
 go_gate() {
+    local reason="" rc=0
+    reason=$(_go_gate_verify "$@") || rc=$?
+    # A refusal passes its reason and exit code through unchanged.
+    [ "$rc" -eq 0 ] || [ -z "$reason" ] || printf '%s\n' "$reason"
+    return "$rc"
+}
+
+# _go_gate_verify <pr-num> <head-sha> <go-root> <nwo> — go_gate's body. rc 0
+# prints the verified trust id (empty for an ordinary GO); rc 2 prints the
+# refusal. The GO file is read ONCE and head=, trust-reviewed= and mac= are all
+# parsed from that one copy: a verifier that re-read it could check the mac on
+# one file and take the trust id from another swapped in between (judge NO-GO
+# on PR 1479). go_trust_gate takes the id from here, never from the file.
+_go_gate_verify() {
     local pr_num="$1" head_sha="$2" go_root="$3" nwo="$4"
     local go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$head_sha"
-    local want="" got=""
-    if [ -z "$go_root" ] || ! grep -qxF "head=$head_sha" "$go_file" 2>/dev/null; then
+    local body="" want="" got="" trust=""
+    if [ -n "$go_root" ]; then body=$(cat "$go_file" 2>/dev/null) || body=""; fi
+    if [ -z "$go_root" ] || ! grep -qxF "head=$head_sha" <<< "$body"; then
         printf 'PR #%s at %s has no console GO (%s) — this is a console-spawned leg; send READY to your console and wait for GO; a GO for an older head is stale, never reuse it.\n' "$pr_num" "$head_sha" "$go_file"
         return 2
     fi
-    if ! want=$(go_mac "$pr_num" "$head_sha" "$nwo"); then
+    # HIMMEL-3895: a trust-reviewed GO signs its reviewer id too (go_mac's 4th
+    # arg), so verify whichever form the file carries — a trust line added to an
+    # ordinary GO, or edited in a trust GO, verifies as neither.
+    trust=$(printf '%s\n' "$body" | sed -n 's/^trust-reviewed=//p' | head -n 1)
+    if ! want=$(go_mac "$pr_num" "$head_sha" "$nwo" "$trust"); then
         printf 'PR #%s at %s: cannot verify the console GO (%s) — no readable GO key at %s, or openssl is missing; send BLOCKED to your console (the console re-runs go.sh, which mints the key).\n' "$pr_num" "$head_sha" "$go_file" "$(go_key_file)"
         return 2
     fi
-    got=$(sed -n 's/^mac=//p' "$go_file" 2>/dev/null | head -n 1)
+    got=$(printf '%s\n' "$body" | sed -n 's/^mac=//p' | head -n 1)
     if [ -z "$got" ] || [ "$got" != "$want" ]; then
         printf 'PR #%s at %s: the GO file (%s) has no/invalid mac — not written by the console'"'"'s go.sh (or written before HIMMEL-3543); send BLOCKED to your console: the console re-runs go.sh %s %s.\n' "$pr_num" "$head_sha" "$go_file" "$pr_num" "$head_sha"
         return 2
     fi
-    return 0
+    printf '%s\n' "$trust"
+}
+
+# go_trust_id_ok <id> — rc 0 iff <id> is a well-formed trust-reviewer id:
+# 1-128 of [A-Za-z0-9._:-]. Shared by go.sh (what it will sign) and
+# go_trust_gate (what it will accept), so the two cannot drift.
+go_trust_id_ok() {
+    case "$1" in ''|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+    [ "${#1}" -le 128 ]
+}
+
+# go_trust_gate <pr-num> <head-sha> <go-root> <nwo> — HIMMEL-3895. rc 0 iff
+# go_gate passes AND the GO is trust-reviewed (a well-formed trust-reviewed=
+# id, covered by the verified mac); the id on stdout. rc 2 = refused, the
+# reason on stdout. A merge touching a trust path (scripts/ci/ci-trust-paths.txt)
+# needs this, for a console leg and the operator path alike.
+go_trust_gate() {
+    local pr_num="$1" head_sha="$2" go_root="$3" nwo="$4" reason="" trust=""
+    local go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$head_sha"
+    if ! trust=$(_go_gate_verify "$pr_num" "$head_sha" "$go_root" "$nwo"); then
+        reason=$trust
+        printf '%s\n' "${reason:-PR #$pr_num at $head_sha: no valid console GO ($go_file)}"
+        return 2
+    fi
+    if ! go_trust_id_ok "$trust"; then
+        printf 'PR #%s at %s touches a CI trust path, and its GO (%s) is not trust-reviewed — an independent judge must review the trust-path change; send READY to your console, which grants it with go.sh --trust-reviewed <reviewer-id> %s %s.\n' "$pr_num" "$head_sha" "$go_file" "$pr_num" "$head_sha"
+        return 2
+    fi
+    printf '%s\n' "$trust"
 }
 
 # --- HIMMEL-3543/HIMMEL-3578: GO authentication ------------------------------
@@ -101,9 +148,16 @@ go_key_file() {
 # user's `ps` could see it. HMAC is built by hand (RFC 2104) because openssl's
 # own HMAC takes its key on argv. The v1→v2 domain-tag bump means a GO minted
 # before HIMMEL-3578 fails this verification by construction — it must be
-# re-minted once.
+# re-minted once. HIMMEL-3895: an optional 4th arg <trust-id> switches to the
+# separate domain tag "himmel-go-trust-v1|<nwo>|<pr>|<sha>|<trust-id>", so a
+# trust-reviewed mac never verifies as an ordinary one, nor the reverse.
 go_mac() {
-    local key="" kfile i b hx ipad="" opad="" inner="" nwo="$3"
+    local key="" kfile i b hx ipad="" opad="" inner="" nwo="$3" msg
+    if [ -n "${4:-}" ]; then
+        msg="himmel-go-trust-v1|$nwo|$1|$2|$4"
+    else
+        msg="himmel-go-v2|$nwo|$1|$2"
+    fi
     [ -n "${HOME:-}" ] || return 1
     [ -n "$nwo" ] || return 1
     kfile=$(go_key_file)
@@ -123,7 +177,7 @@ go_mac() {
         i=$((i + 2))
     done
     # shellcheck disable=SC2059  # the format IS the \x-escaped pad bytes
-    inner=$({ printf "$ipad"; printf 'himmel-go-v2|%s|%s|%s' "$nwo" "$1" "$2"; } \
+    inner=$({ printf "$ipad"; printf '%s' "$msg"; } \
         | openssl dgst -sha256 -binary | od -An -v -tx1 | tr -d ' \n')
     [ "${#inner}" -eq 64 ] || return 1
     inner=$(printf '%s' "$inner" | sed 's/../\\x&/g')

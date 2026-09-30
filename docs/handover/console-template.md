@@ -380,6 +380,19 @@ ticket checked by hand.
 Never merge with open review threads, and never read a handoff calling a PR
 clean as evidence — query that PR yourself.
 
+**Trust-path PRs (HIMMEL-3895).** A PR whose diff touches a pattern in
+`scripts/ci/ci-trust-paths.txt` (CI workflows, `scripts/ci/`, the suite
+selector and shared libs, the merge gate and GO writer — the list is read
+from the default branch, never the PR head, so a PR cannot shrink it) does
+not merge through `merge-on-green.sh` on an ordinary GO: it exits 21. Such a
+PR needs an independent adversarial review first; only on the judge's GO for
+that exact head run `console-kit/go.sh --trust-reviewed <judge-id> <pr>
+<head>`, where `<judge-id>` names that review (e.g. the judge session name,
+`[A-Za-z0-9._:-]`, ≤128 chars). The id is signed into the GO's mac, so it
+cannot be added or edited after the fact, and a push after it needs a fresh
+trust-reviewed GO. A trust-path PR also refuses while the anchor checkout is
+behind `origin` (pull the primary first), so the gate it runs is current.
+
 To cut a pre-release tag yourself (HIMMEL-3572), run
 `bash scripts/handover/console-kit/cut-tag.sh <version> <sha>` (`--dry-run`
 first to see the plan) — it creates the tag through the GitHub API, never
