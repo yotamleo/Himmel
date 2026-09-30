@@ -2624,7 +2624,9 @@ up to the merge word must match `^[A-Za-z0-9_./+=-]+$` (quote chars ignored),
 else it fires (`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`, `env
 /usr/bin/g[h] pr merge`): an allowlist, so no expansion, glob or wrapper
 spelling needs listing. A word that globs to `merge` (`m?rge`) next to a gh word
-fires too. Once fired, the raw-char allowlist
+fires too, and so does ANY unquoted glob word (a bare `*` included) in a segment
+that has a gh word and a `pr` word; `ls *` has no such precondition and stays
+allowed. Once fired, the raw-char allowlist
 above refuses every expansion spelling, and the command must parse as exactly
 `gh [-R v | --repo v | --repo=v]* pr [same]* merge <closed tokens>`; `gh api
 .../pulls/N/merge` (and `mergePullRequest` GraphQL), `gh alias set|import` naming a

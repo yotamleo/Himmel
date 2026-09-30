@@ -119,6 +119,20 @@ for _w in $cmd; do
     esac
 done
 set +f
+# Simplest deny-leaning form: in a segment with a gh word and a `pr` word, ANY
+# unquoted glob word (a bare `*` included, it can glob to a file named `merge`)
+# fires. `ls *` has no gh+pr precondition and stays allowed.
+if [ "$fires" = "0" ]; then
+    # shellcheck disable=SC2020 # five separators each map to a newline, by design
+    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g' \
+        | awk '{ g = 0; p = 0; s = 0
+            for (i = 1; i <= NF; i++) { w = $i
+                if (w == "gh" || w ~ "/gh$") g = 1
+                if (w == "pr") p = 1
+                if (w ~ "[*?[]") s = 1 }
+            if (g && p && s) f = 1 }
+            END { exit !f }' && fires=1
+fi
 # The mirror case: in a segment with a `pr` word then a merge word, EVERY word
 # up to the merge word must be plain (`^[A-Za-z0-9_./+=-]+$`, quote chars
 # ignored); a computed, globbed or wrapper-hidden word (`$'\x67\x68' pr merge`,
