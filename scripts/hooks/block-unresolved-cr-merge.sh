@@ -101,10 +101,10 @@ fires=0
 for _n in "$cmd_norm" "$cmd_sq"; do
     printf '%s' "$_n" | grep -E "${gh_re}.*merge" >/dev/null && fires=1
 done
-# ANSI-C / locale quoting hides letters behind escapes (`$'m\x65rge'`) that the
-# normalized copy cannot read: a gh word plus one of them fires too.
+# Any expansion can build the verb's letters (`$'m\x65rge'`, `m${X:-er}ge`) in a
+# way no text copy reads: a gh word plus a `$` or backtick fires too.
 case "$cmd" in
-    *\$\'*|*\$\"*) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;;
+    *\$*|*\`*) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;;
 esac
 [ "$fires" = "1" ] || exit 0
 case "$cmd" in

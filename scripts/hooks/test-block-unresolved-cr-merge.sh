@@ -264,6 +264,7 @@ for _row in "api-put|gh api -X PUT repos/o/r/pulls/42/merge" \
             "var-before|gh pr \${X}merge 42 $PIN" \
             "var-inside|gh pr m\${X}erge 42 $PIN" \
             "ifs|gh\${IFS}pr\${IFS}merge 42 $PIN" \
+            "var-default|gh pr m\${X:-er}ge 42 $PIN" \
             "subst|gh pr \$(echo merge) 42 $PIN" \
             "ansi-c|gh pr \$'m\\\\x65rge' 42 $PIN" \
             "quote-split|gh pr mer''ge 42 $PIN" \
