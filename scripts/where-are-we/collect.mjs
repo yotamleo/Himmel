@@ -1,7 +1,8 @@
 // scripts/where-are-we/collect.mjs
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { isMain } from '../lib/is-main.mjs';
 import { jiraRecords, prRecords, gitRecords } from './lib/collect.mjs';
 import { branchToKey } from './lib/query.mjs';
 import { appendRecords } from './lib/append.mjs';
@@ -186,7 +187,7 @@ export function main(argv, { readers } = {}) {
 // CLI entry
 // ---------------------------------------------------------------------------
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (isMain(import.meta.url)) {
   try {
     console.log(main(process.argv.slice(2)));
   } catch (e) {
