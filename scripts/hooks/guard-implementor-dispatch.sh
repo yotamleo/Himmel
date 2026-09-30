@@ -178,8 +178,23 @@ imperative_verb=0
 #      ... [^[:alnum:]_]|$) so it cannot eat the "fixed" inside "prefixed",
 #      "affixed", or "unfixed" — an unbounded s/fixed/ /g garbles those words
 #      and removes signal (HIMMEL-1624).
-implementation_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
+# HIMMEL-1608: quoted data is not an instruction. Drop closed fenced blocks,
+# markdown table rows (lines starting with "|") and inline-code spans first, so
+# a "fix:" cell in a statistics table cannot read as an order to fix something.
+# An unclosed fence is kept verbatim (it must not swallow the rest of the prompt).
+# ponytail: an implementation instruction written ONLY inside a fence, table row
+# or code span is allowed through, prose-level intent is still checked; an
+# explicit intent marker (HIMMEL-1608 preference 3) would close it.
+data_stripped_text=$(printf '%s\n' "$text" | awk '
+    /^[[:space:]]*```/ { if (inf) { inf = 0; buf = ""; next } inf = 1; buf = $0 "\n"; next }
+    inf { buf = buf $0 "\n"; next }
+    /^[[:space:]]*\|/ { next }
+    { print }
+    END { if (inf) printf "%s", buf }
+' | sed -E 's/`[^`]*`/ /g')
+implementation_text=$(printf '%s' "$data_stripped_text" | tr '[:upper:]' '[:lower:]' | sed -E '
     s/how[[:space:]]+to[[:space:]]+(implement|fix|land)/ /g
+    s/(must|should|will|would|can|could|may|might)[[:space:]]+land[[:space:]]+(in|on|at|into|within)([^[:alnum:]_]|$)/ /g
     s/(apply|commit|push|land|merge|ship)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?fix/applyprotected/g
     s/((this|that|its|prior|previous|earlier|existing)[[:space:]]+|committed[[:space:]]+(a|the)[[:space:]]+|(a|an|the)[[:space:]]+)fix(ed)?/ /g
     s/(^|[^[:alnum:]_])fixed([^[:alnum:]_]|$)/\1 \2/g
@@ -673,7 +688,7 @@ case "$lane" in
 esac
 
 if [ -n "$replacement" ]; then
-    printf 'guard-implementor-dispatch: refusing implementation-shaped Agent dispatch while %s is available; use: %s (override: relaunch with IMPL_GUARD_OK=1)\n' "$lane" "$replacement" >&2
+    printf 'guard-implementor-dispatch: refusing implementation-shaped Agent dispatch while %s is available; use: %s (read-only research/planning: dispatch with subagent_type: "Plan", lane-exempt; override: relaunch with IMPL_GUARD_OK=1)\n' "$lane" "$replacement" >&2
     exit 2
 fi
 

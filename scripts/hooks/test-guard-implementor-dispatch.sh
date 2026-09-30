@@ -305,6 +305,30 @@ assert_empty "research-shaped dispatch silent" "$(combined_output research)"
 RC4=$(run_hook research-then-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Investigate and fix HIMMEL-1513' 'Research the cause and then implement the fix.')")
 assert_rc "research followed by implementation refuses" 2 "$RC4"
 
+# HIMMEL-1608: data is not an action verb, and the refusal names the Plan route.
+TABLE_STATS=$'Cluster the tickets by subject and rank by value.\n\n| prefix | commits |\n|---|---|\n| fix: | 112 |\n| feat: | 40 |'
+RC4T=$(run_hook table-data "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster backlog' "$TABLE_STATS")")
+assert_rc "1608: fix: in a stats table is allowed" 0 "$RC4T"
+assert_empty "1608: table-data dispatch silent" "$(combined_output table-data)"
+
+CODE_SPAN=$'Cluster commit churn by theme; the `fix:` share is high.'
+RC4S=$(run_hook code-span "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Group churn' "$CODE_SPAN")")
+assert_rc "1608: fix: in an inline-code span is allowed" 0 "$RC4S"
+
+FENCED=$'Cluster the churn below by theme.\n```\nfix: 112\nfeat: 40\n```'
+RC4F=$(run_hook fenced-data "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Group churn' "$FENCED")")
+assert_rc "1608: fix: in a fenced block is allowed" 0 "$RC4F"
+
+UNCLOSED=$'Cluster the churn, then\n```\nfix the parser and commit the changes.'
+RC4X=$(run_hook unclosed-fence "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Group churn' "$UNCLOSED")")
+assert_rc "1608: an unclosed fence does not hide an implementation instruction" 2 "$RC4X"
+
+IMPL_PLUS_TABLE=$'Implement the parser change and commit the changes.\n\n| prefix | commits |\n|---|---|\n| fix: | 112 |'
+RC4U=$(run_hook impl-plus-table "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement parser' "$IMPL_PLUS_TABLE")")
+assert_rc "1608: implementation prompt that also has a table still refuses" 2 "$RC4U"
+assert_contains "1608: refusal names the Plan route" 'subagent_type: "Plan"' "$(cat "$TMP/err-impl-plus-table")"
+assert_rc "1608: refusal stays one line" 1 "$(wc -l < "$TMP/err-impl-plus-table" | tr -d ' ')"
+
 RC4A=$(run_hook resolve-review-findings "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Resolve review findings' 'Resolve the review findings.')")
 assert_rc "resolve review findings refuses" 2 "$RC4A"
 
@@ -350,18 +374,18 @@ RC87=$(run_hook pure-research-himmel-1534 "$REG_CLAUDEX" "$(payload general-purp
 assert_rc "pure research with no action transition remains allowed" 0 "$RC87"
 assert_empty "pure research with no action transition is silent" "$(combined_output pure-research-himmel-1534)"
 
-# GREEN control (HIMMEL-1608 class, out of scope here): a judgment dispatch
-# that merely QUOTES 'fix:' inside a markdown table already trips the bare-verb
-# implementation regex on main ("fix:" satisfies the word boundary) and is
-# already refused for that separate, pre-existing, deferred (v1.0.1) reason --
-# unrelated to followed_by_action/gate ordering. This pins that the HIMMEL-1534
-# fix does not change its verdict either way.
+# HIMMEL-1608: a judgment dispatch that merely QUOTES 'fix:' inside a markdown
+# table used to trip the bare-verb implementation regex ("fix:" satisfies the
+# word boundary) and was refused; table rows are now stripped as data first.
 RC88=$(run_hook fix-colon-in-table "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster tickets' 'Cluster these tickets by subject. | Type | Count |
 |---|---|
 | fix: | 112 |
 | feat: | 70 |
 Every open ticket must land in exactly one theme.')")
-assert_rc "'fix:' quoted in a table stays refused (pre-existing HIMMEL-1608 gap, unchanged)" 2 "$RC88"
+assert_rc "'fix:' quoted in a table is data, allowed (HIMMEL-1608)" 0 "$RC88"
+
+RC88L=$(run_hook land-transitive "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'You must land the change today.')")
+assert_rc "'must land the change' (transitive) stays refused beside the 'land in' strip" 2 "$RC88L"
 
 # CodeRabbit (PR #1388): "write" is ambiguous between prose output and a
 # code/file write. Making followed_by_action a gate disjunct (RC81/82 above)
