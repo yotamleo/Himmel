@@ -1164,7 +1164,7 @@ split_unresolvable_mention() { # split_unresolvable_mention <raw command>
     s=${1//[;&|$'\n']/ }
     read -r -a sw <<<"$s"
     tail=$s
-    for sx in "${sw[@]}"; do
+    for sx in ${sw[@]+"${sw[@]}"}; do
         rest="$sx${tail#*"$sx"}"
         tail=${tail#*"$sx"}
         # A backslash is shell quoting too: `\-S` reaches env as -S.
