@@ -21,3 +21,15 @@ cat "$p"
 echo "$aid $aid2 $nm"
 tt=$(jq -r '.agent_id // empty | type' f.json)
 echo "$tt"
+rm -f "$t/missing"
+wait
+[ -n "$t" ] && flag=1
+rm -f "$t/x" || true
+wait "$pid"
+[ "$(date +%m)" -gt 8 ] && echo late
+[[ "$(date +%m)" -gt 8 ]] && echo late
+# git-env-ok: detector fixture, never executed
+gd=$(git rev-parse --git-common-dir)
+top=$(git rev-parse --show-toplevel)
+t2=$(mktemp -d 2>/dev/null)
+pid=$$; echo "$flag $gd $top $t2 $pid"
