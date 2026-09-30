@@ -559,8 +559,15 @@ case "$*" in
   *"reviews(last:"*)
     echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"abc123"},"state":"COMMENTED","body":"looks fine","comments":{"totalCount":1}}]}}}}}'
     exit 0 ;;
+  # HIMMEL-3910: gate 4 (trust path) resolves the nwo + default branch, then
+  # reads the trust list and the PR's file listing: README.md only, no hit.
+  *"repo view"*defaultBranchRef*) printf main; exit 0 ;;
+  *"repo view"*) printf o/r; exit 0 ;;
 esac
 case "$1 $2" in
+  "api repos/o/r/contents/scripts/ci/ci-trust-paths.txt"*) printf '^scripts/ci/\n' ;;
+  "api repos/o/r/pulls/42/files"*) printf 'README.md\t\n' ;;
+  "api repos/o/r/pulls/42") echo 'abc123|1' ;;
   "pr view") echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}' ;;
   "api graphql")
     case "$GH_STUB_MODE" in

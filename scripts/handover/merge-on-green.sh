@@ -810,16 +810,12 @@ fi
 # (console-kit/go.sh --trust-reviewed) for this exact PR and certified head —
 # checked for EVERY caller, not only a console leg (HIMMEL_CONSOLE_LEG is an
 # env value the caller controls). A PR touching none is unaffected.
-#   - The list comes from the DEFAULT branch through the API, never the PR head,
-#     this worktree or a local ref (all branch-controlled), so a PR editing it
-#     is judged by the list it would replace. Unreadable, empty or invalid →
-#     refuse. A 404 refuses unless the anchor's origin URL positively names a
-#     different github.com repo, where it means the gate is not adopted there
-#     (audited, merge unchanged); an unresolvable identity refuses.
-#   - The file list is the REST listing, paginated, and must account for every
-#     one of the PR's changed_files (the endpoint stops at 3000), with the PR
-#     head re-read on both sides of it equal to the certified $sha.
-#   - The anchor must contain origin's HEAD: a stale anchor runs a stale gate.
+# The detection (the default-branch list, the paginated file listing, every
+# fail-closed case and the anchor-behind-origin check) is trust_path_check in
+# the anchor's scripts/lib/go-gate.sh (HIMMEL-3910), shared with
+# block-unresolved-cr-merge.sh so a direct `gh pr merge` asks the same
+# question. The library is loaded for EVERY caller here: without it the gate
+# cannot prove a PR touches no trust path, so it refuses.
 # Placed after the console-GO gate and before the marker clear and DRY_RUN, so
 # a refusal mutates nothing and a dry run reports it. Base-binding every PR to
 # the manifest (spec H1) is HIMMEL-3897's.
@@ -828,76 +824,25 @@ trust_refuse() {
     audit "REFUSED reason=trust-path phase=$1 repo=$nwo pr=#$pr_num sha=$sha"
     exit 21
 }
-# trust_other_repo — rc 0 only when the anchor's origin POSITIVELY names a
-# github.com repo other than $nwo. An unreadable origin, an SSH host alias or
-# any non-github.com URL cannot prove the PR is on another repo, so it is not
-# "other" and a 404 refuses (fail closed).
-trust_other_repo() {
-    local url
-    url=$(git -C "$himmel_repo" config --get remote.origin.url 2>/dev/null) || return 1
-    url=${url%/}; url=${url%.git}
-    case "$url" in
-        https://github.com/*) url=${url#https://github.com/} ;;
-        ssh://git@github.com/*) url=${url#ssh://git@github.com/} ;;
-        git@github.com:*) url=${url#git@github.com:} ;;
-        *) return 1 ;;
-    esac
-    case "$url" in ''|*/*/*|*[!A-Za-z0-9._/-]*) return 1 ;; */*) ;; *) return 1 ;; esac
-    [ "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$nwo" | tr '[:upper:]' '[:lower:]')" ]
-}
-trust_tmp=$(mktemp "${TMPDIR:-/tmp}/mog-trust.XXXXXX") || trust_refuse tmp "cannot create a temp file"
-trap 'rm -f "$trust_tmp"' EXIT
-trust_rc=0
-trust_raw=$("$GH" api "repos/$nwo/contents/scripts/ci/ci-trust-paths.txt?ref=$default_branch" \
-    -H 'Accept: application/vnd.github.raw' 2>&1) || trust_rc=$?
-trust_state=checked
-if [ "$trust_rc" -ne 0 ]; then
-    case "$trust_raw" in
-        *"HTTP 404"*)
-            trust_other_repo || trust_refuse list "scripts/ci/ci-trust-paths.txt is missing on $nwo@$default_branch, and the harness anchor's origin does not prove it is another repo"
-            trust_state=not-adopted ;;
-        *) trust_refuse list "cannot read scripts/ci/ci-trust-paths.txt from $nwo@$default_branch (gh exit $trust_rc)" ;;
-    esac
+unset -f go_gate _go_gate_verify go_trust_gate go_trust_id_ok trust_path_check console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
+# shellcheck source=scripts/lib/go-gate.sh
+# shellcheck disable=SC1091
+if ! . "$himmel_repo/scripts/lib/go-gate.sh" 2>/dev/null || ! declare -F trust_path_check >/dev/null 2>&1 \
+        || ! declare -F go_trust_gate >/dev/null 2>&1; then
+    trust_refuse go-lib "cannot load trust_path_check and go_trust_gate from the anchor's scripts/lib/go-gate.sh"
 fi
-if [ "$trust_state" = "not-adopted" ]; then
-    audit "TRUST not-adopted repo=$nwo pr=#$pr_num sha=$sha trust=not-adopted"
-else
-    # Strip \r and surrounding blanks first: a pattern carrying either matches
-    # no path, and an unmatched pattern fails open.
-    printf '%s\n' "$trust_raw" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
-        | grep -Ev '^(#|$)' > "$trust_tmp"
-    [ -s "$trust_tmp" ] || trust_refuse list "scripts/ci/ci-trust-paths.txt on $default_branch has no patterns"
-    grep -E -f "$trust_tmp" </dev/null >/dev/null 2>&1
-    [ "$?" -eq 2 ] && trust_refuse list "scripts/ci/ci-trust-paths.txt on $default_branch has an invalid pattern"
-    trust_pr_jq='"\(.head.sha)|\(.changed_files)"'
-    trust_meta=$("$GH" api "repos/$nwo/pulls/$pr_num" --jq "$trust_pr_jq" 2>/dev/null) \
-        || trust_refuse files "cannot read PR #$pr_num's head and changed-file count"
-    [ "${trust_meta%%|*}" = "$sha" ] || trust_refuse files "PR #$pr_num's head is ${trust_meta%%|*}, not the certified $sha"
-    trust_count=${trust_meta#*|}
-    case "$trust_count" in ''|*[!0-9]*) trust_refuse files "PR #$pr_num's changed-file count is unreadable" ;; esac
-    trust_files=$("$GH" api "repos/$nwo/pulls/$pr_num/files" --paginate \
-        --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>/dev/null) \
-        || trust_refuse files "cannot list PR #$pr_num's changed files"
-    trust_listed=0
-    [ -n "$trust_files" ] && trust_listed=$(printf '%s\n' "$trust_files" | wc -l | tr -d ' ')
-    [ "$trust_listed" -eq "$trust_count" ] \
-        || trust_refuse files "listed $trust_listed of PR #$pr_num's $trust_count changed files (the listing stops at 3000)"
-    trust_meta=$("$GH" api "repos/$nwo/pulls/$pr_num" --jq "$trust_pr_jq" 2>/dev/null) || trust_meta=""
-    [ "${trust_meta%%|*}" = "$sha" ] || trust_refuse files "PR #$pr_num's head moved while its files were listed"
-    trust_hit=$(printf '%s\n' "$trust_files" | tr '\t' '\n' | grep -v '^$' | grep -E -f "$trust_tmp" | head -n 1)
-    if [ -n "$trust_hit" ]; then
-        trust_tip=$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
-            GIT_TERMINAL_PROMPT=0 git -C "$himmel_repo" ls-remote origin HEAD 2>/dev/null | awk 'NR==1{print $1}')
-        if [ -z "$trust_tip" ] || ! (unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
-                git -C "$himmel_repo" merge-base --is-ancestor "$trust_tip" HEAD 2>/dev/null); then
-            trust_refuse anchor "PR #$pr_num touches trust path $trust_hit and the anchor $himmel_repo is behind origin (or origin is unreadable) — pull the primary checkout, then re-run"
-        fi
-        unset -f go_gate _go_gate_verify go_trust_gate go_trust_id_ok console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
-        # shellcheck source=scripts/lib/go-gate.sh
-        # shellcheck disable=SC1091
-        if ! . "$himmel_repo/scripts/lib/go-gate.sh" 2>/dev/null || ! declare -F go_trust_gate >/dev/null 2>&1; then
-            trust_refuse go-lib "cannot load go_trust_gate from the anchor's scripts/lib/go-gate.sh"
-        fi
+trust_rc=0
+trust_out=$(trust_path_check "$nwo" "$pr_num" "$sha" "$default_branch" "$himmel_repo") || trust_rc=$?
+if [ "$trust_rc" -ne 0 ]; then
+    [ -n "$trust_out" ] || trust_out="check trust_path_check exited $trust_rc with no reason"
+    trust_refuse "${trust_out%% *}" "${trust_out#* }"
+fi
+case "$trust_out" in
+    none) ;;
+    not-adopted)
+        audit "TRUST not-adopted repo=$nwo pr=#$pr_num sha=$sha trust=not-adopted" ;;
+    "hit "?*)
+        trust_hit=${trust_out#hit }
         trust_root=""
         # shellcheck source=scripts/lib/handover-path.sh
         # shellcheck disable=SC1091
@@ -906,9 +851,9 @@ else
         fi
         trust_id=$(go_trust_gate "$pr_num" "$sha" "$trust_root" "$nwo") \
             || trust_refuse go "PR #$pr_num touches trust path $trust_hit and needs a trust-reviewed GO: $trust_id"
-        audit "TRUST reviewed repo=$nwo pr=#$pr_num sha=$sha path=$trust_hit trust=$trust_id"
-    fi
-fi
+        audit "TRUST reviewed repo=$nwo pr=#$pr_num sha=$sha path=$trust_hit trust=$trust_id" ;;
+    *) trust_refuse check "trust_path_check gave an unrecognised answer" ;;
+esac
 
 # MARKER CLEAR (HIMMEL-1346) — a merge used to leave the branch's cr-pending
 # marker behind, and because the marker lives in the SHARED git-common-dir while
