@@ -2621,8 +2621,9 @@ word must be literally `gh`; anything else denies. There is no quote-stripping
 (a strip that disagrees with bash on `'`, `"` and `$'..'` was a bypass, so every
 quote, `#`, `\`, `$`, redirect and separator is denied outright). The `gh pr
 merge` detector runs on a normalized copy (backslash-newline pairs removed, then
-every backslash, newlines to spaces), so `gh pr mer\<newline>ge` and `mer\ge` are
-seen, and only a hit on that copy triggers the allowlist. A custom subject/body
+every backslash, then every `'` `"` and `$`, newlines to spaces), so
+`gh pr mer\<newline>ge`, `m""erge`, `"merge"` and `$'merge'` are seen (word forms
+that need a real expansion, `${X:-merge}` and `{merge,}`, are HIMMEL-3929), and only a hit on that copy triggers the allowlist. A custom subject/body
 goes through `scripts/handover/merge-on-green.sh`. Quoted mentions of `gh pr
 merge` (e.g. `echo "gh pr merge"`) are over-denied by design. That one rule replaces the
 earlier cd/pushd, prefix (`env`/`command`/`builtin`/`exec`/`NAME=value`) and

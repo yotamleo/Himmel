@@ -56,7 +56,7 @@ payload=$(cat) || exit 0
 case "$payload" in
     # A JSON backslash may split the word (`mer\ge`): let jq and the normalized
     # detector below decide instead of skipping.
-    *merge*|*\\*) ;;
+    *merge*|*\\*|*\'*) ;;
     *) exit 0 ;;
 esac
 
@@ -83,7 +83,7 @@ merge_re='gh[[:space:]]+pr[[:space:]]+merge'
 # The detector runs on a NORMALIZED copy of the raw text (backslash-newline
 # pairs removed, then every backslash, newlines to spaces): bash joins
 # `gh pr mer\<nl>ge` and reads `mer\ge` as `merge`.
-cmd_norm=$(printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' | tr '\n' ' ')
+cmd_norm=$(printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' -e "s/['\"\$]//g" | tr '\n' ' ')
 if ! printf '%s' "$cmd_norm" | grep -E "$merge_re" >/dev/null; then
     exit 0
 fi

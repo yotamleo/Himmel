@@ -292,6 +292,10 @@ for _row in "redir-fd-dup|gh pr merge 2>&1 42 $PIN" \
             "quote-b1b|gh pr merge --body \\\"x\\\\\\\" 5 $PIN \\\" 7" \
             "quote-b1c|gh pr merge --body \$'\\\\'' 7 $PIN" \
             "quote-body-hash|gh pr merge 42 $PIN --body \\\"fixes #5\\\"" \
+            "quote-split-verb-empty|gh pr m\\\"\\\"erge 42 --squash" \
+            "quote-split-verb-single|gh pr mer''ge 42 --squash" \
+            "quote-wrapped-verb|gh pr \\\"merge\\\" 42 --squash" \
+            "quote-dollar-verb|gh pr \$'merge' 42 --squash" \
             "cd-and|cd /tmp && gh pr merge 42 $PIN" \
             "cd-semicolon|cd /tmp; gh pr merge 42 $PIN" \
             "cd-subshell|(cd /tmp; gh pr merge 42 $PIN)" \
