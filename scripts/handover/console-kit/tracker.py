@@ -530,7 +530,7 @@ details.sec>summary{cursor:pointer;padding-block:10px;font:600 17px var(--f-disp
 (function(){
 var D=JSON.parse(document.getElementById("data").textContent);
 var V=D.V,L=D.L,T=D.T,P=D.P,LC=["--l1","--l2","--l3","--l4","--l5"],LD=["--ld1","--ld2","--ld3"],CAP=D.CAP.total,LAST=V.length-1;
-function ldc(n,c){return "var("+LD[!c?1:n<c*.5?0:n<c*.8?1:2]+")"}
+function ldc(n,c){return "var("+LD[c==null?1:n<c*.5?0:n<c*.8?1:2]+")"}
 var K="hrt3882",S={tab:"",th:"",ly:"",q:""},cap={0:40,1:40,2:40};
 function $(i){return document.getElementById(i)}
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
@@ -595,12 +595,12 @@ function layerMix(f){
  var hb=el("div","hbar");c.forEach(function(n,i){if(!n)return;var d=el("i");d.style.width=(100*n/(f.length||1))+"%";d.style.background="var("+LC[i]+")";d.title=L[i]+" "+n;hb.appendChild(d)});w.appendChild(hb);
  var lg=el("div","legend");L.forEach(function(l,i){if(!c[i])return;var s=el("span"),b=el("i");b.style.background="var("+LC[i]+")";s.appendChild(b);s.appendChild(document.createTextNode(l+" "+c[i]));lg.appendChild(s)});w.appendChild(lg);return w}
 function meter(n,c){
- var mx=Math.max(c?c*1.2:0,n,0.001),ld=el("div","load"),d=el("i");d.style.left="0";d.style.width=(100*n/mx)+"%";d.style.background=ldc(n,c);ld.appendChild(d);
- if(c){var b=el("b");b.style.left=(100*c/mx)+"%";ld.appendChild(b)}return ld}
+ var mx=Math.max(c!=null?c*1.2:0,n,0.001),ld=el("div","load"),d=el("i");d.style.left="0";d.style.width=(100*n/mx)+"%";d.style.background=ldc(n,c);ld.appendChild(d);
+ if(c!=null){var b=el("b");b.style.left=(100*c/mx)+"%";ld.appendChild(b)}return ld}
 function loadBar(v){
  var w=el("div"),vl=D.VL[v],dfr=!/^v1\.0\.\d+$/.test(V[v]),c=dfr?null:CAP;
  w.appendChild(meter(vl[5],c));
- w.appendChild(el("div","note","Total load "+vl[5].toFixed(2)+(c?" of "+c+" bank cap ("+Math.round(100*vl[5]/c)+"%)":dfr?" (deferred bucket: no cap)":" (cap not recorded in the plan)")+", ~"+vl[6]+" legs. Dashed line = cap."));
+ w.appendChild(el("div","note","Total load "+vl[5].toFixed(2)+(c!=null?" of "+c+" bank cap"+(c?" ("+Math.round(100*vl[5]/c)+"%)":""):dfr?" (deferred bucket: no cap)":" (cap not recorded in the plan)")+", ~"+vl[6]+" legs. Dashed line = cap."));
  if(!dfr)L.forEach(function(l,i){var lc=D.CAP.layers[i],r=el("div","lrow");r.appendChild(el("span",null,l));r.appendChild(meter(vl[i],lc));
   r.appendChild(el("b",null,vl[i].toFixed(2)+" / "+(lc==null?"–":lc.toFixed(2))));w.appendChild(r)});
  return w}
@@ -661,9 +661,9 @@ function loadChart(pane){
  var ch=el("div","chart"),cols=el("div","lcols");
  V.forEach(function(v,i){var col=el("div","lcol"),bar=el("div","bar"),n=D.VL[i][5],dfr=!/^v1\.0\.\d+$/.test(v);
   var off=n>mx;  // a load past the train's scale (the deferred bucket) is clipped, and says so
-  if(n){var d=el("div");d.style.height=Math.max(2,Math.round(110*Math.min(n,mx)/mx))+"px";d.style.background=ldc(n,dfr?null:CAP);d.title=v+": load "+n.toFixed(2)+(CAP&&!dfr?" of "+CAP+" ("+Math.round(100*n/CAP)+"%)":dfr?" (deferred, no cap)":"")+(off?"; off the scale, bar clipped":"");bar.appendChild(d)}
+  if(n){var d=el("div");d.style.height=Math.max(2,Math.round(110*Math.min(n,mx)/mx))+"px";d.style.background=ldc(n,dfr?null:CAP);d.title=v+": load "+n.toFixed(2)+(CAP!=null&&!dfr?" of "+CAP+(CAP?" ("+Math.round(100*n/CAP)+"%)":""):dfr?" (deferred, no cap)":"")+(off?"; off the scale, bar clipped":"");bar.appendChild(d)}
   col.appendChild(bar);col.appendChild(el("small",null,lab(i)+(off?" ▲":"")));cols.appendChild(col)});
- if(CAP){var c=el("div","cap");c.style.bottom=(26+110*CAP/mx)+"px";c.appendChild(el("span",null,"cap "+CAP));cols.appendChild(c)}
+ if(CAP!=null){var c=el("div","cap");c.style.bottom=(26+110*CAP/mx)+"px";c.appendChild(el("span",null,"cap "+CAP));cols.appendChild(c)}
  ch.appendChild(cols);pane.appendChild(ch);
  var lg=el("div","legend");["under half the cap","half to 80 %","80 % or more"].forEach(function(x,k){var s=el("span"),i=el("i");i.style.background="var("+LD[k]+")";s.appendChild(i);s.appendChild(document.createTextNode(x));lg.appendChild(s)});
  lg.appendChild(el("span",null,"Dashed line = total cap. ▲ = load off the scale, bar clipped. Per-layer load vs its own cap is on each version's tab."));pane.appendChild(lg)}

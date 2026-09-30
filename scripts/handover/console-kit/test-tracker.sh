@@ -145,6 +145,10 @@ not_contains 'the version load bar does not use the layer palette (HIMMEL-3957)'
 contains 'the load palette is its own token set (HIMMEL-3957)' "$html" '--ld1:'
 not_contains 'the load cap line is not the drift colour (HIMMEL-3957)' "$html" 'dashed var(--drift)'
 contains 'a bar clipped by the load scale is marked (HIMMEL-3957)' "$lc" 'off the scale'
+# A recorded cap of 0 is a cap, not a missing one: the checks test null, not truthiness.
+not_contains 'the meter does not test the cap by truthiness (HIMMEL-3957)' "$html" 'if(c){var b=el'
+not_contains 'the load chart does not test the cap by truthiness (HIMMEL-3957)' "$lc" 'if(CAP){'
+not_contains 'the total-load note does not test the cap by truthiness (HIMMEL-3957)' "$lb" '(c?" of "'
 # With no running version (whole train done) the default tab is not labelled "running now".
 not_contains 'no running version falls back without a running-now label (HIMMEL-3957)' "$html" 'var cur=D.CUR==null?LAST:D.CUR'
 contains 'the default tab is chosen apart from the running version (HIMMEL-3957)' "$html" 'sel=cur==null?LAST:cur'
