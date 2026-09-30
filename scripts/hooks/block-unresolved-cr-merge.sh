@@ -151,9 +151,10 @@ done
 # ONLY merge in the command: `gh pr merge --help | gh pr merge 42` (or `; …`)
 # still runs a real one this segment walk never inspected, so it stays gated.
 if [ "$help_seen" = "1" ]; then
-    # Unanchored on purpose: an over-count only refuses, while the command-
-    # position anchor would miss an indented merge on a later line.
-    merge_count=$(printf '%s' "$cmd_stripped" | grep -oE 'gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' | wc -l)
+    # Unanchored and with no word-boundary tail on purpose: an over-count only
+    # refuses, while the command-position anchor would miss an indented merge
+    # on a later line and the tail would miss `gh pr merge;`.
+    merge_count=$(printf '%s' "$cmd_stripped" | grep -oE 'gh[[:space:]]+pr[[:space:]]+merge' | wc -l)
     [ "$merge_count" -le 1 ] && exit 0
     # Which PR the OTHER merge targets is not something this walk resolved, so
     # gating the cwd branch would be checking the wrong PR: refuse and ask for

@@ -216,6 +216,7 @@ GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-pipe-passthrough 0 Bash
 # one later in the same command must still be gated.
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-piped-into-real-merge-gated 2 Bash "gh pr merge --help | gh pr merge 42 --squash"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-real-merge-gated 2 Bash "gh pr merge --help; gh pr merge 42 --squash"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-selectorless-merge-gated 2 Bash "gh pr merge --help; gh pr merge; true"
 # ...including an INDENTED merge on a later line (\n is the JSON escape).
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-indented-merge-gated 2 Bash "gh pr merge --help\n  gh pr merge 42 --squash"
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
