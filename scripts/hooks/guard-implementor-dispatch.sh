@@ -194,7 +194,9 @@ data_stripped_text=$(printf '%s\n' "$text" | awk '
 ' | sed -E 's/`[^`]*`/ /g')
 implementation_text=$(printf '%s' "$data_stripped_text" | tr '[:upper:]' '[:lower:]' | sed -E '
     s/how[[:space:]]+to[[:space:]]+(implement|fix|land)/ /g
+    s/land[[:space:]]+(in|on|into)[[:space:]]+(main|master|trunk)([^[:alnum:]_]|$)/landprotected \2\3/g
     s/(must|should|will|would|can|could|may|might)[[:space:]]+land[[:space:]]+(in|on|at|into|within)([^[:alnum:]_]|$)/ /g
+    s/landprotected/land/g
     s/(apply|commit|push|land|merge|ship)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?fix/applyprotected/g
     s/((this|that|its|prior|previous|earlier|existing)[[:space:]]+|committed[[:space:]]+(a|the)[[:space:]]+|(a|an|the)[[:space:]]+)fix(ed)?/ /g
     s/(^|[^[:alnum:]_])fixed([^[:alnum:]_]|$)/\1 \2/g

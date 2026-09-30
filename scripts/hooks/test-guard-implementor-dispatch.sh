@@ -387,6 +387,9 @@ assert_rc "'fix:' quoted in a table is data, allowed (HIMMEL-1608)" 0 "$RC88"
 RC88L=$(run_hook land-transitive "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'You must land the change today.')")
 assert_rc "'must land the change' (transitive) stays refused beside the 'land in' strip" 2 "$RC88L"
 
+RC88M=$(run_hook land-in-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in main today.')")
+assert_rc "'must land in main' is an integration order, stays refused" 2 "$RC88M"
+
 # CodeRabbit (PR #1388): "write" is ambiguous between prose output and a
 # code/file write. Making followed_by_action a gate disjunct (RC81/82 above)
 # newly exposed the pre-existing "write" entry in that regex, which used to
