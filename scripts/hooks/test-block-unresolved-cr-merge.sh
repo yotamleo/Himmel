@@ -274,6 +274,8 @@ for _row in "api-put|gh api -X PUT repos/o/r/pulls/42/merge" \
             "pr-twice|gh pr pr merge 42 $PIN" \
             "prog-ansi-c|\$'\\\\x67\\\\x68' pr merge 42 $PIN" \
             "prog-var|G=gh; \${G} pr merge 42 $PIN" \
+            "prog-glob-bracket|/usr/bin/g[h] pr merge 42 $PIN" \
+            "prog-glob-question|/usr/bin/g? pr merge 42 $PIN" \
             "verb-first|gh merge pr 42 $PIN"; do
     GH_STUB_MODE=clean t "detector-${_row%%|*}-denies" 2 Bash "${_row#*|}"
 done
@@ -285,6 +287,7 @@ GH_STUB_MODE=unresolved t allow-gh-api-pr         0 Bash "gh api repos/o/r/pulls
 GH_STUB_MODE=unresolved t allow-git-merge-then-gh 0 Bash "git merge main && gh pr view 42"
 GH_STUB_MODE=unresolved t allow-gh-alias-list     0 Bash "gh alias list"
 GH_STUB_MODE=unresolved t allow-gh-pr-view-mergeable 0 Bash "gh pr view 42 --json mergeable,mergeStateStatus"
+GH_STUB_MODE=unresolved t allow-bare-bracket-merge-word 0 Bash "[ -n x ] && echo merge"
 GH_STUB_MODE=unresolved t allow-computed-prog     0 Bash "\"\$PY\" x.py"
 GH_STUB_MODE=unresolved t allow-computed-prog-path 0 Bash "\"\$HOME/bin/tool\" run"
 # merge-on-green's own argv shape is the plain direct form and must stay allowed.

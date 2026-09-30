@@ -113,7 +113,7 @@ if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -qE '(^|[^
     # shellcheck disable=SC2020 # five separators each map to a newline, by design
     printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' \
         | sed -E -e 's/^[[:space:]]+//' -e ':a' -e 's/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//' -e 'ta' \
-        | grep -qE "^[^[:space:]]*[\$\`\\\\'\"]" && fires=1
+        | grep -qE "^[^[:space:]]*[\$\`\\\\'\"*?]|^[^[:space:]]+\\[" && fires=1
 fi
 # ponytail: both the program word AND the verb shell-computed (or `bash -c` fed
 # from a variable holding both) stay undetectable by text, structural backstop

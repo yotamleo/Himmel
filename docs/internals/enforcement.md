@@ -2620,8 +2620,9 @@ normalized copy, which now also drops `{` `}` and backticks; a second copy with
 `${..}` / `$(..)` removed catches `m${X}erge`; a `gh` word plus any `$` or
 backtick fires too (expansion can build letters, `$'m\x65rge'`, `m${X:-er}ge`);
 and the mirror case, a computed program word (first word of a segment after
-`VAR=val` assignments containing `$` backtick `\` or a quote) plus a merge word
-fires (`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`). Once fired, the raw-char allowlist
+`VAR=val` assignments containing `$` backtick `\` a quote or a glob char `*` `?`
+`[`) plus a merge word fires (`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`,
+`/usr/bin/g[h] pr merge`). Once fired, the raw-char allowlist
 above refuses every expansion spelling, and the command must parse as exactly
 `gh [-R v | --repo v | --repo=v]* pr [same]* merge <closed tokens>`; `gh api
 .../pulls/N/merge` (and `mergePullRequest` GraphQL), `gh alias set|import` naming a
