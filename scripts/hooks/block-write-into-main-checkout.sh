@@ -1871,6 +1871,7 @@ _bwimc_subst_bodies() {
 # were its own command (HIMMEL-3622). The cheap glob guard keeps the ordinary
 # command on the old path.
 _bwimc_hb_redir="$_bwimc_hb"
+# shellcheck disable=SC2016  # literal `$(` is the glob pattern, not an expansion
 case "$_bwimc_hb" in
     *'$('*|*'`'*) _bwimc_hb_redir="${_bwimc_hb}"$'\n'"$(_bwimc_subst_bodies "$_bwimc_hb")" ;;
 esac
