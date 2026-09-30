@@ -94,6 +94,16 @@ lst="$(step_of "List failed suites")"
 if grep -q 'suites-from-logs' <<< "$lst" && grep -q '"\$rc" = 3' <<< "$lst" && grep -q 'rm -f macos-failed/failed.txt' <<< "$lst"; then
   ok "the list step drops failed.txt when suites-from-logs reports no sentinel (rc 3)"
 else bad "the list step does not handle suites-from-logs rc 3 by removing failed.txt"; fi
+# Any other nonzero rc (a crash) also leaves the `>`-created failed.txt behind for
+# the always-running upload: the rm must come first, before the step exits.
+rm_ln="$(grep -n 'rm -f macos-failed/failed.txt' <<< "$lst" | head -1 | cut -d: -f1)"
+# shellcheck disable=SC2016 # literal workflow text, not an expansion
+exit_ln="$(grep -n 'exit "\$rc"' <<< "$lst" | head -1 | cut -d: -f1)"
+# shellcheck disable=SC2016 # literal workflow text, not an expansion
+ne_ln="$(grep -n '"\$rc" != 0' <<< "$lst" | head -1 | cut -d: -f1)"
+if [ -n "$ne_ln" ] && [ -n "$rm_ln" ] && [ -n "$exit_ln" ] && [ "$ne_ln" -lt "$rm_ln" ] && [ "$rm_ln" -lt "$exit_ln" ]; then
+  ok "any nonzero suites-from-logs status removes failed.txt before the step exits"
+else bad "a nonzero suites-from-logs status other than 3 exits without removing failed.txt"; fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed" >&2

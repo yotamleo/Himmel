@@ -74,11 +74,10 @@ jobs:
           mkdir -p macos-failed
           rc=0
           bash scripts/ci/macos-breakage.sh suites-from-logs failed-suite-logs > macos-failed/failed.txt || rc=$?
-          if [ "$rc" = 3 ]; then
+          if [ "$rc" != 0 ]; then
             rm -f macos-failed/failed.txt
-            echo "::warning::shard ${{ matrix.shard }} has no completion sentinel; no failed-suite report uploaded"
-          elif [ "$rc" != 0 ]; then
-            exit "$rc"
+            echo "::warning::shard ${{ matrix.shard }}: suites-from-logs exited $rc (3 = no completion sentinel); no failed-suite report uploaded"
+            [ "$rc" = 3 ] || exit "$rc"
           fi
       - name: Upload failed-suite list
         if: always()
