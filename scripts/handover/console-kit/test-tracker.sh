@@ -57,7 +57,9 @@ mk 7 'In Progress' '["v1.0.1"]' 'active unplanned'
 out="$W/out.html"
 stdout="$(python3 "$HERE/tracker.py" --plan-dir "$plan" --out "$out" --luna-map "$W/luna-map.json" \
     --mirror-dir "$mir" --luna-root "$W/luna" 2>&1)"
+render_rc=$?
 html="$(cat "$out" 2>/dev/null)"
+[ "$render_rc" -eq 0 ] && pass 'tracker.py exits 0' || fail "tracker.py exited $render_rc"
 
 not_contains 'no Closed-by-roadmap section (HIMMEL-3954)' "$html" 'Closed by roadmap'
 contains 'the park-ns key renders in the page data (HIMMEL-3954)' "$html" '"parked ticket"'
