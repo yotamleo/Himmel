@@ -136,10 +136,26 @@ done
 # 7. HIMMEL-3919: the shard job and its apt/at install step are bounded (a hung
 # apt lock once held a shard ~1.5 h; the 6 h default queued every later main run).
 blk="$(job_block shell-unit-shard)"
-if grep -Eq '^    timeout-minutes: [0-9]+$' <<< "$blk"; then
-  ok "shell-unit-shard: job-level timeout-minutes set"
+# The cap must be OS-conditional: nightly windows shards run 79-128 min, so a
+# flat cap cancels them (a timed-out job is `cancelled`, which continue-on-error
+# does not absorb). Shape: `${{ matrix.os == 'windows-latest' && <win> || <other> }}`.
+tm_re="^    timeout-minutes: \\\$\{\{ matrix\.os == 'windows-latest' && ([0-9]+) \|\| ([0-9]+) \}\}\$"
+tm_line="$(grep -E '^    timeout-minutes:' <<< "$blk")"
+if [[ "$tm_line" =~ $tm_re ]]; then
+  win="${BASH_REMATCH[1]}"; other="${BASH_REMATCH[2]}"
+  if [ "$win" -ge 180 ] && [ "$other" -ge 1 ] && [ "$other" -lt "$win" ]; then
+    ok "shell-unit-shard: job-level timeout-minutes is OS-conditional (windows $win, other $other)"
+  else
+    bad "shell-unit-shard: OS-conditional timeout-minutes needs windows >= 180 and other < windows (got $win / $other)"
+  fi
 else
-  bad "shell-unit-shard: no job-level timeout-minutes (defaults to 6 h)"
+  bad "shell-unit-shard: job-level timeout-minutes is not the OS-conditional windows-latest form (flat or missing): $tm_line"
+fi
+# A timed-out shard is `cancelled`, so its failed-suite logs must upload then too.
+if grep -Eq "^        if: failure\(\) \|\| cancelled\(\)$" <<< "$(awk '/name: Upload failed-suite logs/ {f=1; next} f {print; exit}' <<< "$blk")"; then
+  ok "shell-unit-shard: failed-suite logs upload on failure() || cancelled()"
+else
+  bad "shell-unit-shard: failed-suite logs upload does not cover a cancelled (timed-out) shard"
 fi
 # The at/atd install step alone: from its `- name:` line to the next step.
 step="$(awk '/^      - name: Install \+ enable at\/atd/ {f=1; print; next} f && /^      - / {f=0} f' <<< "$blk")"
