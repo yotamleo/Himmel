@@ -1068,9 +1068,11 @@ assert_allow "3921 C1 printf with an ANSI-C tab/newline"      "$(j 'printf $'"'"
 # shellcheck disable=SC2016
 assert_allow "3921 C1 IFS=ANSI-C tab in a read loop"         "$(j 'while IFS=$'"'"'\t'"'"' read -r a b; do echo $a; done < f')"
 assert_allow "3921 C1 cut -d ANSI-C tab then export"          "$(j 'cut -d$'"'"'\t'"'"' -f1 f; export LC_ALL=C')"
-assert_allow "3921 C1 printf over an unrelated scripts glob"  "$(j "printf '%s\\n' scripts/hooks/*.sh")"
-assert_allow "3921 C1 grep env over an unrelated scripts glob" "$(j "grep -ln env scripts/hooks/*.sh")"
-assert_allow "3921 C1 git log pathspec glob then read"        "$(j "git log -- scripts/hooks/*.sh; read -r x")"
+# r11 (console ruling): the prefix compare is gone, so a scripts/ glob beside a
+# write verb now denies even when unrelated to a chokepoint (over-deny, HIMMEL-3955).
+assert_deny "3921 r11 (was C1 allow) printf over a scripts glob"  "$(j "printf '%s\\n' scripts/hooks/*.sh")"
+assert_deny "3921 r11 (was C1 allow) grep env over a scripts glob" "$(j "grep -ln env scripts/hooks/*.sh")"
+assert_deny "3921 r11 (was C1 allow) git log glob then read"       "$(j "git log -- scripts/hooks/*.sh; read -r x")"
 # 3921 judge I1: clear spellings the first arm missed, beside a chokepoint word.
 assert_deny "3921 I1 declare +x then setsid merge"   "$(j "declare +x HIMMEL_CONSOLE_LEG; setsid -f bash $MERGE_ON_GREEN")"
 assert_deny "3921 I1 typeset +x"                     "$(j "typeset +x HIMMEL_CONSOLE_LEG; setsid -f bash $MERGE_ON_GREEN")"
@@ -1108,6 +1110,12 @@ assert_deny "3921 r9 handover .. segment + glob"   "$(j "setsid -f env FOO=1 bas
 assert_deny "3921 r10 absolute path .. segment + glob"  "$(j "STOP_WORKER_GRACE_SECS=0 setsid -f bash /home/overlord/Documents/github/himmel/scripts/lanes/../lanes/stop-w*.sh")"
 assert_deny "3921 r10 leading dir scripts// + glob"     "$(j "STOP_WORKER_GRACE_SECS=0 setsid -f bash x/scripts//lanes/stop-w*.sh")"
 assert_deny "3921 r10 absolute path /./ segment + glob" "$(j "FLEET_CAP_OK=1 setsid -f bash /abs/scripts/lib/./bank-pre*.sh")"
+# 3921 r11: any glob after scripts/ beside a write/clear token denies, no prefix compare.
+assert_deny "3921 r11 quote-split segment before a glob"  "$(j "HIMMEL_CONSOLE_LEG=1 setsid -f bash scripts/handover/con\"sole\"-kit/g*.sh")"
+assert_deny "3921 r11 backslash-split segment before a glob" "$(j "HIMMEL_CONSOLE_LEG=1 setsid -f bash scripts/handover/con\\sole-kit/g*.sh")"
+assert_deny "3921 r11 \$v piece before a glob"            "$(j "HIMMEL_CONSOLE_LEG=1 setsid -f bash scripts/handover/\$v/g*.sh")"
+assert_allow "3921 r11 ls of a scripts glob, no write token"   "$(j "ls scripts/*.sh")"
+assert_allow "3921 r11 grep over a scripts glob, no write token" "$(j "grep x scripts/cr/*")"
 assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
 
 CASES=$((CASES + 1))

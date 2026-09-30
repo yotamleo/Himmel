@@ -2453,8 +2453,10 @@ pure-bash double-fork, `systemd-run --user`, cron and non-Linux hosts bypass
 it. The hook therefore adds a parse-free, deny-leaning scan of the raw command
 (`raw_obfuscated`, plus two arms in `raw_mention`): (1) a seam write
 (`NAME=`, `export`/`env`/`read`/`printf -v`/`declare`/...) beside a `scripts/`
-path word whose glob/brace/`$var` prefix could resolve to a registered
-chokepoint (`scripts/hooks/*.sh` is an ordinary glob and allowed), any
+path word carrying ANY glob/brace/`$var` character after `scripts/` (no prefix
+compare or registry resolution: every quote- or escape-split spelling mis-resolved
+it, so an unrelated `scripts/hooks/*.sh` beside a write verb also denies, an
+accepted over-deny; `ls scripts/*.sh` with no write token is allowed), any
 word containing `scripts/` (relative, `./` or absolute) spelled with a `/.` or `//` segment (no
 normaliser: `scripts/lanes/../lanes/stop-w*.sh` denies), or an
 ANSI-C `$'` word naming a path or carrying any backslash escape other than the

@@ -932,7 +932,7 @@ NL=$'\n'
 # close it by registering the assembled path forms or by the structural guard
 # once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest pre sp v wv clr write=0 obf=0 SQ="'"
+    local t="$1" w rest v wv clr write=0 obf=0 SQ="'"
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
     set -f
@@ -949,20 +949,17 @@ raw_obfuscated() {
                     *) [[ $w =~ $ansi_esc ]] && obf=1 ;;
                 esac ;;
             *scripts/*)
-                # A glob only counts when its literal prefix could resolve to a
-                # registered chokepoint (scripts/hooks/*.sh is an ordinary glob).
+                # Any glob/brace/$var after scripts/ counts, unconditionally: no
+                # prefix compare or registry resolution (every spelling of a
+                # split or quoted segment mis-resolved it). The deny still needs
+                # a write or env-clearing token in the same command.
                 rest=${w#*scripts/}
                 # Blunt, no normaliser: any word containing scripts/ (absolute,
                 # ./, or with a leading directory) spelled with a `/.`
                 # (`/./`, `/../`) or `//` segment can name any path, so it counts.
                 case "$w" in *'/.'*|*//*) obf=1 ;; esac
                 case "$rest" in
-                    *[\*\?\[\{\$]*)
-                        pre="scripts/${rest%%[\*\?\[\{\$]*}"
-                        while IFS=$'\t' read -r sp _; do
-                            sp=${sp%"$CR"}
-                            case "$sp" in "$pre"*) obf=1 ;; esac
-                        done <<<"$REG_LINES" ;;
+                    *[\*\?\[\{\$]*) obf=1 ;;
                 esac ;;
         esac
     done
