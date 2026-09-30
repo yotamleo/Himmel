@@ -125,6 +125,39 @@ path, rather than guessing, when the path has no mapping; `--runner-check` is
 a drift guard that fails when ci.yml runs a JS/TS test invocation the map does
 not yet cover.
 
+### PR shards run the impacted suites (HIMMEL-3897)
+
+On a pull request to `main`, the 8 `shell-unit-shard` jobs run only the
+suites that the **base** commit's `scripts/ci/impacted-selection.sh` selects
+for the PR's diff (`SUITE_IMPACTED_FROM_BASE`). The script decides on the
+**full** sweep in any of these cases:
+
+- the PR changes a path listed in `scripts/ci/ci-trust-paths.txt` (ci.yml,
+  the runner, the selector, the trust list itself);
+- the base is not on `origin/main`;
+- the base predates the script;
+- the selector errors.
+
+A docs-only PR's shards exit 0 with nothing to run, so all required contexts
+still report. Each shard writes a manifest (`SUITE_MANIFEST`) that holds the
+selection header and every suite's fate. The `shell-unit` aggregator
+recomputes the selection and runs `scripts/ci/shard-manifest-verify.sh`, which
+fails the check when:
+
+- a manifest is missing;
+- a manifest comes from another sha, or its header differs from the
+  selection;
+- a selected suite never ran;
+- a suite ran twice;
+- a suite ran red;
+- a suite was left unrun.
+
+Push to main and the nightly schedule keep the full sweep. When a main-push
+sweep is red, the aggregator records
+`impacted-suites.sh --selector-miss` rows in the step summary and in the
+`selector-miss-ledger` artifact. Those rows name the red suites a PR run
+would not have selected.
+
 ## Scan roots — what the corpus covers (HIMMEL-3193)
 
 The default scan root is `scripts` (a scoped run: `run-shell-tests.sh scripts/hooks`).

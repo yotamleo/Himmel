@@ -700,11 +700,34 @@ jobs:
       # docs-only fast lane); push/schedule/dispatch have no PR base to diff.
       # Scan root `.` (HIMMEL-3193) = scripts/ + templates/ + marketplace/; the
       # duration ledger keys all three, so the bin-pack balances across them.
+      # SUITE_IMPACTED_FROM_BASE (HIMMEL-3897): on a pull_request to the default
+      # branch, the shards run only the suites the BASE commit's
+      # scripts/ci/impacted-selection.sh selects for the PR diff — or the full
+      # sweep, which it decides for any trust-path change (this file,
+      # run-shell-tests.sh, the selector, the trust list), a base that is not on
+      # main (spec hole H1), or any doubt. A PR to another branch, push, schedule
+      # and dispatch pass '' = the full sweep. The 8 shards stay 8 required
+      # contexts either way; a docs-only PR's shards exit 0 with nothing to run.
+      # SUITE_MANIFEST: the selection this shard acted on and every suite's fate,
+      # uploaded below and verified by the shell-unit aggregator.
       - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8 .
         env:
           FAIL_LOG_DIR: failed-suite-logs
           SUITE_TIER_MODE: ${{ github.event_name == 'schedule' && 'all' || 'fast' }}
           SUITE_CHANGED_SINCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          SUITE_IMPACTED_FROM_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.base.sha || '' }}
+          SUITE_MANIFEST: shard-manifest/manifest-shard${{ matrix.shard }}.txt
+      - name: Upload shard manifest
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shell-unit-manifest-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: shard-manifest/
+          if-no-files-found: ignore
+          retention-days: 14
+          # A re-run shard replaces its manifest, so the aggregator reads the
+          # latest attempt's.
+          overwrite: true
       - name: Upload failed-suite logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -815,7 +838,11 @@ jobs:
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # Full history: impacted-selection.sh diffs base...HEAD and checks the
+      # base is on origin/main, exactly as the shards did.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Every gating shell-unit shard must have passed
         env:
           SHARDS_RESULT: ${{ needs.shell-unit-shard.result }}
@@ -826,6 +853,52 @@ jobs:
             exit 1
           fi
           echo "OK: every gating shell-unit shard passed."
+      - name: Download shard manifests
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v7
+        with:
+          pattern: shell-unit-manifest-ubuntu-latest-shard*
+          path: shard-manifest/
+          merge-multiple: true
+      # HIMMEL-3897: green shards are not enough once a PR's shards run only
+      # the impacted suites. Recompute the selection here (same base-sourced
+      # script, same base, same merge commit) and require every ubuntu shard's
+      # manifest to carry it verbatim, and the shards together to have run each
+      # selected suite exactly once and green. A missing manifest, one from
+      # another sha, or a shard that ran less than selected is red.
+      - name: Every shard ran exactly the selection
+        env:
+          IMPACTED_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.base.sha || '' }}
+        run: |
+          bash scripts/ci/impacted-selection.sh "$IMPACTED_BASE" HEAD > shard-selection.txt
+          head -n 2 shard-selection.txt
+          bash scripts/ci/shard-manifest-verify.sh --dir shard-manifest --shards 8 --selection shard-selection.txt
+      # HIMMEL-3897 / HIMMEL-3896: the post-merge full sweep is where a
+      # selector miss shows up — a suite red on main that the merged PR's
+      # impacted selection did not list. Recorded, never blocking: the red
+      # shards already fail this job; this names which reds a PR run would
+      # have missed, for the selector's miss ledger.
+      - name: Selector-miss ledger (main push, red sweep)
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          RANGE: ${{ github.event.before }}..${{ github.sha }}
+        run: |
+          awk '$1 == "ran" && $2 != "0" { print $3 }' shard-manifest/manifest-shard*.txt 2>/dev/null | sort -u > shard-red-suites.txt
+          echo "red suites on this sweep: $(wc -l < shard-red-suites.txt)"
+          rc=0
+          bash scripts/cr/impacted-suites.sh --selector-miss "$RANGE" --red-file shard-red-suites.txt > selector-miss.txt || rc=$?
+          { echo "### Selector-miss ledger ($RANGE, rc $rc)"; echo '```'; cat selector-miss.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat selector-miss.txt
+      - name: Upload selector-miss ledger
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: selector-miss-ledger
+          path: |
+            selector-miss.txt
+            shard-red-suites.txt
+          if-no-files-found: ignore
+          retention-days: 90
       # Scoped to the schedule leg: that is the only leg where
       # SUITE_TIER_MODE=all actually exercises the extended tier (see
       # shell-unit-shard above), so only there does a red here plausibly mean
