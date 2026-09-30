@@ -1035,6 +1035,8 @@ assert_deny "3921 double-fork: seam write + globbed merge"        "$(j "( (sleep
 assert_deny "3921 codex-1: unset marker beside globbed go.sh"     "$(j "unset HIMMEL_CONSOLE_LEG; setsid -f bash $GOK/g*.sh")"
 assert_deny "3921 codex-1: BASH_ENV beside globbed go.sh"         "$(j "BASH_ENV=/tmp/x setsid -f bash $GOK/g*.sh")"
 assert_deny "3921 codex-1: extdebug beside globbed merge"         "$(j "setsid -f bash -O extdebug scripts/handover/merge-on-g*.sh")"
+assert_deny "3921 r2: env -u (one space) beside a chokepoint"     "$(j "setsid -f env -u HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3921 r2: env --unset= beside a chokepoint"           "$(j "setsid -f env --unset=HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
 assert_deny "3921 BASH_ENV beside a chokepoint"                   "$(j "BASH_ENV=/tmp/x bash $MERGE_ON_GREEN")"
 assert_deny "3921 exported BASH_FUNC_ beside a chokepoint"        "$(j "export 'BASH_FUNC_printf%%=() { :; }'; bash $MERGE_ON_GREEN")"
 assert_deny "3921 SHELLOPTS beside a chokepoint"                  "$(j "SHELLOPTS=xtrace bash $MERGE_ON_GREEN")"

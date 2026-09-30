@@ -341,7 +341,7 @@ _csg_gate() {
     if [ ! -r "$proc/self/stat" ]; then
         # HIMMEL-3921: a Linux host with no readable /proc (unshare -rm + a tmpfs
         # over /proc) is not a real platform - deny. Genuine non-Linux stays allowed.
-        [ -n "$os" ] || os=$("$(_csg_bin uname)" -s 2>/dev/null) || os=""
+        [ -n "$os" ] || os=$("$(_csg_bin uname)" -s 2>/dev/null) || os=Linux # unknown platform fails closed
         [ "$os" != Linux ] || _csg_deny "$name" "no readable /proc on a Linux host"
         return 0
     fi
