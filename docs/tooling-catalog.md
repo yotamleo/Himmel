@@ -110,9 +110,11 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 **Usage:** Searching local knowledge base, notes, docs.
 
 **CLI install (HIMMEL-877, pinned HIMMEL-911):** the standalone `qmd` CLI
-installs from a **local clone of upstream `tobi/qmd`** (HIMMEL-3045 —
-previously a himmel-owned fork, `yotamleo/qmd`, until its carried fixes landed
-upstream), pinned to an
+installs from a **local clone of the carried fork `yotamleo/qmd`** until
+tobi/qmd#1029 is fixed upstream (HIMMEL-3956: two commits on `tobi/qmd` main
+that make the launcher forward signals to bun, upstream PR tobi/qmd#1030;
+HIMMEL-3982 pins back to `tobi/qmd`, and `qmd_install` re-points an existing
+clone's origin in place), pinned to an
 immutable commit SHA (the literal lives in `_qmd_fork_ref`; read it there
 rather than copying it here) rather than a mutable branch, via `scripts/lib/qmd-bin.sh`'s `qmd_install` (clone → fetch/checkout
 the pinned SHA → `bun install && bun run build` → junction/symlink onto the

@@ -51,10 +51,19 @@ qmd_bounded() {
     "$@"
     return $?
   fi
+  # No watchdog is possible without these (a hermetic test PATH); a sleep that
+  # fails at once would fire the deadline immediately. Run unbounded instead.
+  if ! command -v sleep >/dev/null 2>&1 || ! command -v mktemp >/dev/null 2>&1; then
+    echo "qmd_bounded: sleep/mktemp not on PATH - running unbounded" >&2
+    "$@"
+    return $?
+  fi
   (
     grace="${QMD_KILL_GRACE_SECS:-5}"
-    fired="$(mktemp "${TMPDIR:-/tmp}/qmd-bounded.XXXXXX")" || exit 2
-    rm -f "$fired"
+    # The watchdog creates the marker; it never exists before, so a failed
+    # cleanup (no rm on a hermetic PATH) cannot read as a fired deadline.
+    fdir="$(mktemp -d "${TMPDIR:-/tmp}/qmd-bounded.XXXXXX")" || exit 2
+    fired="$fdir/fired"
     # bash hands a background job /dev/null for stdin; keep the caller's on fd
     # 3 so a piped input still reaches the command. A CLOSED stdin becomes
     # /dev/null: a closed fd 0 lets the command's own pipes land on it.
@@ -93,10 +102,11 @@ qmd_bounded() {
       # The direct child is gone; the watchdog is still reaping the rest of
       # the group (bun, in the qmd case). Return only once it has.
       wait "$wd"
-      rm -f "$fired"
+      rm -rf "$fdir"
       exit 124
     fi
     kill -- "-$wd" 2>/dev/null
+    rm -rf "$fdir" 2>/dev/null
     exit "$rc"
   )
 }

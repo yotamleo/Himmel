@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016,SC2030,SC2031,SC2329  # literal $ payloads; PATH scoped to subshells on purpose; cleanup runs via trap
+# shellcheck disable=SC2016,SC2030,SC2031,SC2123,SC2329  # literal $ payloads; PATH scoped to subshells on purpose; cleanup runs via trap
 # Tests for scripts/lib/qmd-bounded.sh (HIMMEL-3956).
 # Usage: bash scripts/lib/test-qmd-bounded.sh
 # Hermetic: a sh trampoline stands in for the qmd launcher (node, which forwards
@@ -87,6 +87,22 @@ assert_eq "T2 capture returns without waiting for the deadline" "yes" "$([ "$too
 assert_eq "T2b piped stdin reaches the command" "piped" "$(echo piped | qmd_bounded 5 cat)"
 out=$(qmd_bounded 3 sh -c 'x=$(cat); echo "[$x]"' <&-); rc=$?
 assert_eq "T2b closed stdin reads as empty" "[]|0" "$out|$rc"
+
+# T2c: a PATH without rm (a hermetic probe env) must not read as a fired
+# deadline — the fast command still returns at once with its own rc.
+mkdir -p "$TMP/norm"
+for t in mktemp sleep; do ln -s "$(command -v "$t")" "$TMP/norm/$t"; done
+start=$(date +%s)
+out=$(PATH="$TMP/norm"; qmd_bounded 20 echo fast); rc=$?
+took=$(( $(date +%s) - start ))
+assert_eq "T2c no rm on PATH: rc + stdout pass through" "fast|0" "$out|$rc"
+assert_eq "T2c no rm on PATH: returns without waiting for the deadline" "yes" "$([ "$took" -le 2 ] && echo yes || echo "no (${took}s)")"
+
+# T2d: without sleep/mktemp on PATH no watchdog can run; the command must run
+# unbounded rather than be killed at once or refused.
+mkdir -p "$TMP/nosleep"
+out=$(PATH="$TMP/nosleep"; qmd_bounded 20 echo fast 2>/dev/null); rc=$?
+assert_eq "T2d no sleep/mktemp on PATH: runs unbounded" "fast|0" "$out|$rc"
 
 # T3: deadline 0 runs unbounded; a malformed deadline is refused.
 out=$(qmd_bounded 0 sh -c 'echo ok'); rc=$?

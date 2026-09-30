@@ -25,6 +25,8 @@ const BUNDLE_FILES_POSIX = [
   'scripts/lib/provenance.sh',
   'scripts/lib/canon-path.sh',
   'scripts/lib/qmd-bin.sh',
+  // HIMMEL-3956: qmd-bin.sh sources it (qmd_cmd runs under qmd_bounded).
+  'scripts/lib/qmd-bounded.sh',
   'scripts/lib/unwire-statusline.sh',
   'scripts/lib/unwire-himmel-repo.sh',
   'scripts/lib/unwire-luna-vault.sh',
