@@ -1023,7 +1023,13 @@ raw_mention() {
         # cannot catch a removal there.
         [[ $t =~ (^|[^[:alnum:]_])(BASH_ENV|BASH_FUNC_|SHELLOPTS|BASHOPTS) || $t =~ extdebug ]] \
             && deny_text_layer "sets bash startup state (BASH_ENV, BASH_FUNC_*, SHELLOPTS, BASHOPTS, extdebug) beside a sanctioned chokepoint"
-        if [[ $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) || $t =~ (^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n || $t =~ (^|[^[:alnum:]_-])env[[:space:]]+(.*[[:space:]])?-(-unset|[[:alnum:]]*u) ]]; then
+        # `env` carrying ANY option token (-u NAME, -uNAME, -iu, --unset[=]NAME,
+        # -S, -C) denies with no per-spelling parse: GNU env stops option
+        # parsing at its first non-option, so the option is the word right
+        # after `env`. A chokepoint is never called through `env -<opt>`.
+        [[ $t =~ (^|[^[:alnum:]_-])env[[:space:]]+- ]] \
+            && deny_text_layer "env with an option (clears or rewrites the environment) beside a sanctioned chokepoint"
+        if [[ $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) || $t =~ (^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n ]]; then
             for v in $vars_list HIMMEL_CONSOLE_LEG; do
                 [[ $t =~ (^|[^[:alnum:]_])${v}([^[:alnum:]_]|$) ]] \
                     && deny_text_layer "clears a seam or the console marker (env -u / unset / export -n) beside a sanctioned chokepoint"

@@ -143,7 +143,7 @@ assert_deny "export -pn (reordered cluster); then the chokepoint" "$(j "export -
 # Over-match controls: these must stay ALLOWED -- the widened predicate is
 # scoped to REGISTERED seam names of a chokepoint actually in the SAME
 # payload, never a general env/unset ban.
-assert_allow "env -u UNREGISTERED name stays allowed"             "$(j "env -u SOME_OTHER_VAR bash $MERGE_ON_GREEN 1")"
+assert_deny "env -u UNREGISTERED name beside a chokepoint (3921 r3 over-deny: any env option)" "$(j "env -u SOME_OTHER_VAR bash $MERGE_ON_GREEN 1")"
 assert_allow "unset with no chokepoint in the payload"            "$(j "unset HIMMEL_CONSOLE_LEG; echo hi")"
 assert_allow "env -u registered name, non-chokepoint program"     "$(j "env -u HIMMEL_CONSOLE_LEG bash scripts/some/unregistered-script.sh")"
 
@@ -973,7 +973,7 @@ assert_allow "3904 control: chrt around chokepoint, no seam"    "$(j "chrt -b 0 
 assert_allow "3904 control: chrt -b omitted priority, non-chokepoint" "$(j "chrt -b env -u ${MOG_VAR} ls")"
 assert_allow "3904 control: stacked wrappers, no seam"          "$(j "nice -n 5 timeout 5 bash $MERGE_ON_GREEN")"
 assert_allow "3904 control: unknown option, no chokepoint named" "$(j "nice --bogus-opt env -u ${MOG_VAR} ls")"
-assert_allow "3904 control: seam of a different chokepoint"     "$(j "nice env -u ${MOG_VAR} bash $STOP_WORKER --list")"
+assert_deny "3904 control: seam of a different chokepoint (3921 r3 over-deny: env option beside a chokepoint)" "$(j "nice env -u ${MOG_VAR} bash $STOP_WORKER --list")"
 
 # --- ALLOWED: fail-open proofs ---
 assert_allow "bare sanctioned invocation (no prefix)"  "$(j "bash $MERGE_ON_GREEN")"
@@ -1037,6 +1037,12 @@ assert_deny "3921 codex-1: BASH_ENV beside globbed go.sh"         "$(j "BASH_ENV
 assert_deny "3921 codex-1: extdebug beside globbed merge"         "$(j "setsid -f bash -O extdebug scripts/handover/merge-on-g*.sh")"
 assert_deny "3921 r2: env -u (one space) beside a chokepoint"     "$(j "setsid -f env -u HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
 assert_deny "3921 r2: env --unset= beside a chokepoint"           "$(j "setsid -f env --unset=HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3921 r3: env -uNAME (attached) beside a chokepoint"  "$(j "setsid -f env -uHIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3921 r3: env -iu NAME (clustered) beside a chokepoint" "$(j "setsid -f env -iu HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3921 r3: env --unset NAME beside a chokepoint"       "$(j "setsid -f env --unset HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3921 r3: env -C dir beside a chokepoint"             "$(j "setsid -f env -C / bash $MERGE_ON_GREEN")"
+assert_allow "3921 r3: plain chokepoint call, no env option"      "$(j "bash $MERGE_ON_GREEN --jira-transition")"
+assert_allow "3921 r3: env NAME=v (no option) with chokepoint flag" "$(j "env FOO=1 bash $MERGE_ON_GREEN --jira-transition")"
 assert_deny "3921 BASH_ENV beside a chokepoint"                   "$(j "BASH_ENV=/tmp/x bash $MERGE_ON_GREEN")"
 assert_deny "3921 exported BASH_FUNC_ beside a chokepoint"        "$(j "export 'BASH_FUNC_printf%%=() { :; }'; bash $MERGE_ON_GREEN")"
 assert_deny "3921 SHELLOPTS beside a chokepoint"                  "$(j "SHELLOPTS=xtrace bash $MERGE_ON_GREEN")"

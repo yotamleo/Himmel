@@ -2456,7 +2456,8 @@ it. The hook therefore adds a parse-free, deny-leaning scan of the raw command
 path word carrying a glob/brace metachar, `$var` piece or ANSI-C `$'` is
 denied; (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
 beside a chokepoint word is denied; (3) CLEARING a seam or
-`HIMMEL_CONSOLE_LEG` (`env -u`/`--unset`, `unset`, `export -n`) beside a
+`HIMMEL_CONSOLE_LEG` (`unset`, `export -n`, and `env` carrying ANY option
+token, so `-u NAME`/`-uNAME`/`-iu`/`--unset[=]NAME`/`-C` all deny) beside a
 chokepoint word is denied — this reverses the old "clear-and-prove" allow and
 over-denies subshell-scoped clears (the raw scan cannot model scope). The lib
 also fails closed (exit 96) on Linux when `/proc/self/stat` is unreadable (a
