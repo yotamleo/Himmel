@@ -952,6 +952,11 @@ raw_obfuscated() {
                 # A glob only counts when its literal prefix could resolve to a
                 # registered chokepoint (scripts/hooks/*.sh is an ordinary glob).
                 rest=${w#*scripts/}
+                # Blunt, no normaliser: a scripts/ word spelled with a `/.`
+                # (`/./`, `/../`) or `//` segment can name any path, so it counts.
+                case "$w" in
+                    scripts/*|./scripts/*) case "$w" in *'/.'*|*//*) obf=1 ;; esac ;;
+                esac
                 case "$rest" in
                     *[\*\?\[\{\$]*)
                         pre="scripts/${rest%%[\*\?\[\{\$]*}"

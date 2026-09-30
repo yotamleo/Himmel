@@ -1098,6 +1098,13 @@ assert_allow "3921 r3 printf ANSI-C newline/tab/quote" "$(j "printf \$'a\\tb\\n\
 # 3921 r8: an env-clearing token beside a globbed kit path needs no write verb.
 assert_deny "3921 r8 held env -i then a globbed kit path"  "$(j "e=/usr/bin/env; setsid -f \"\$e\" -i bash scripts/handover/console-kit/g*.sh")"
 assert_deny "3921 r8 held env -u X then a globbed kit path" "$(j "setsid -f \"\$e\" -u X scripts/handover/console-kit/g*.sh")"
+# 3921 r9: dot-segment / double-slash spellings of a scripts/ path (blunt deny).
+assert_deny "3921 r9 lanes .. segment + glob"      "$(j "STOP_WORKER_GRACE_SECS=0 setsid -f bash scripts/lanes/../lanes/stop-w*.sh")"
+assert_deny "3921 r9 lanes /./ segment + glob"     "$(j "STOP_WORKER_GRACE_SECS=0 setsid -f bash scripts/lanes/./stop-w*.sh")"
+assert_deny "3921 r9 scripts// double slash"       "$(j "STOP_WORKER_GRACE_SECS=0 setsid -f bash scripts//lanes/stop-w*.sh")"
+assert_deny "3921 r9 lib .. segment + glob"        "$(j "FLEET_CAP_OK=1 setsid -f bash scripts/lib/../lib/bank-pre*.sh")"
+assert_deny "3921 r9 env -i quiet-run .. glob"     "$(j "setsid -f env -i bash scripts/x/../quiet-r*.sh")"
+assert_deny "3921 r9 handover .. segment + glob"   "$(j "setsid -f env FOO=1 bash scripts/handover/../handover/console-kit/g*.sh")"
 assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
 
 CASES=$((CASES + 1))
