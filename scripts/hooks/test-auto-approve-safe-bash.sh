@@ -1428,7 +1428,12 @@ git log "-"*
 gh pr view 1 ""*
 git log --grep -- *
 git grep -e -- *
-gh pr view 1 -- *'
+gh pr view 1 -- *
+git -C p* status
+git --git-dir g* log
+git --work-tree w* show
+git -C "p"* diff
+git symbolic-ref H*'
 while IFS= read -r CL_CMD; do
     assert "cluster/abbrev/quoted flag or leading glob never ALLOW: $CL_CMD" PASS "$(decide "$(j_bash "$CL_CMD")")"
 done <<EOF

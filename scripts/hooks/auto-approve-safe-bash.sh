@@ -124,19 +124,23 @@ is_safe_bin() {
 # starts with an unquoted glob character, which can expand into a `-`-leading
 # file name that reads as a flag. A `--` does not exempt later words: it may
 # be an option's argument (`--grep --`), not the terminator. CW_GLOB=1 when
-# any word carries an unquoted glob at all.
+# any word carries an unquoted glob at all; CW_FIRST_GLOB is that word's index
+# (a glob can expand to several words and shift every position after it).
 cook_argv_words() {
-    local w
+    local w i=0
     CW=()
     CW_GLOB=0
+    CW_FIRST_GLOB=999999
     for w in "$@"; do
         shell_word_value "$w" || return 1
         case "$w" in '*'*|'?'*|'['*) return 1 ;; esac
         # A glob behind quoted text (`""*`, `"-"*`) expands the same way.
         if [ "$SW_HAS_UNQUOTED_GLOB" = 1 ]; then
+            [ "$CW_GLOB" = 1 ] || CW_FIRST_GLOB=$i
             CW_GLOB=1
             case "$SW_VALUE" in '-'*|'*'*|'?'*|'['*) return 1 ;; esac
         fi
+        i=$((i + 1))
         CW+=("$SW_VALUE")
     done
     return 0
@@ -169,6 +173,9 @@ git_subcmd_is_read() {
         esac
     done
     [ "$j" -ge "$n" ] && return 1
+    # A glob at or before the subcommand word can expand into extra words and
+    # move which word git reads as the subcommand.
+    [ "$CW_FIRST_GLOB" -le "$j" ] && return 1
     # ls-remote is DELIBERATELY EXCLUDED: it speaks to a <repository> that can
     # be `ext::<cmd>` (remote-helper transport ACE) or carry `--upload-pack=<cmd>`
     # — both run an arbitrary shell command. Like fetch/clone/pull it is a
@@ -184,6 +191,8 @@ git_subcmd_is_read() {
     # Given a 2nd non-flag operand (`git symbolic-ref HEAD refs/heads/x`) it
     # REWRITES the ref — a mutating side effect. Reject that form.
     if [ "${g[$j]}" = "symbolic-ref" ]; then
+        # A glob operand can expand into the name + value write form.
+        [ "$CW_GLOB" = 1 ] && return 1
         local sj=$((j + 1)) ops=0 w
         while [ "$sj" -lt "$n" ]; do
             w="${CW[$sj]}"
