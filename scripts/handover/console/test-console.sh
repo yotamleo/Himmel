@@ -136,6 +136,20 @@ out4="$(console new --bucket demorepo)"
 # HIMMEL-3912: bash 3.2's ${var//pat/rep} render burned ~60 s per call on macOS
 # (Linux: <1 s). Generous bound; RED only reproduces on bash 3.2 / macOS.
 check "4 new renders in bounded time" "$([ $((SECONDS - t4_start)) -lt 20 ] && echo yes)" "yes"
+# HIMMEL-3912: render_template must splice values LITERALLY ('&', backslash,
+# '/', '$', quotes, newline).
+(
+    err() { echo "$@" >&2; }
+    eval "$(sed -n '/^render_template() {/,/^}/p' "$C")"
+    tpl="$REPO_REAL/docs/handover/console-template.md"
+    rv='a&b\c/$d"q
+line2'
+    set --
+    for _k in $(grep -o '{{[A-Z_]*}}' "$tpl" | sort -u | tr -d '{}'); do set -- "$@" "$_k" "$rv-$_k"; done
+    render_template "$tpl" "$tmp/render-new.md" "$@"
+) || echo "render row setup failed" >&2
+check "4 render_template: every placeholder became the literal value" "$(grep -oF 'a&b\c/$d"q' "$tmp/render-new.md" | wc -l | tr -d ' ')" "$(grep -o '{{[A-Z_]*}}' "$REPO_REAL/docs/handover/console-template.md" | wc -l | tr -d ' ')"
+check "4 render_template: no placeholder survives" "$(grep -c '{{[A-Z_]*}}' "$tmp/render-new.md")" "0"
 check "4 second new writes B" "$([ -f "$docB" ] && echo yes)" "yes"
 sumA_after="$(cksum < "$docA")"
 check "4 A byte-identical after second new" "$sumA_before" "$sumA_after"
