@@ -3881,7 +3881,7 @@ while IFS= read -r suite <&3; do
   rm -f "$log"
 done 3< "$suites_file"
 
-if [ "$list_only" -eq 0 ] && [ "$sentinel_owner" -eq 1 ]; then
+if [ "$list_only" -eq 0 ] && [ "$sentinel_owner" -eq 1 ] && [ "$budget_expired" -eq 0 ]; then
   mkdir -p "$FAIL_LOG_DIR" && : > "$FAIL_LOG_DIR/.run-complete"
 fi
 

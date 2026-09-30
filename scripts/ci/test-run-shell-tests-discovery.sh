@@ -1055,6 +1055,18 @@ if [ ! -e "$sb26/logs/.run-complete" ]; then
 else
   fail "26d: nested runner wrote .run-complete under a killed outer run; ls: $(ls -A "$sb26/logs" 2>&1)"
 fi
+# run budget expires mid-loop: the remaining suites are skipped (never ran), so the loop
+# ends normally but the run is NOT complete and must not write the sentinel
+rm -rf "$sb26/logs"
+printf '#!/usr/bin/env bash\nsleep 2\nexit 1\n' > "$sb26/scripts/test-a-red.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sb26/scripts/test-b-green.sh"
+chmod +x "$sb26/scripts/test-a-red.sh" "$sb26/scripts/test-b-green.sh"
+SUITE_RUN_BUDGET=1 FAIL_LOG_DIR="$sb26/logs" env -u SUITE_TIER_MODE bash "$RUNNER" "$sb26/scripts" >"$sb26/budget.out" 2>&1
+if [ ! -e "$sb26/logs/.run-complete" ] && grep -q "budget" "$sb26/budget.out"; then
+  pass "26e: a run whose SUITE_RUN_BUDGET expired (suites skipped) writes no .run-complete"
+else
+  fail "26e: expected budget expiry without a sentinel; ls: $(ls -A "$sb26/logs" 2>&1); out: $(head -c 300 "$sb26/budget.out")"
+fi
 rm -rf "$sb26"
 fi
 
