@@ -472,6 +472,12 @@ mkf scripts/lib/sp-a.sh
 mkf scripts/lib/sp-b.sh 'source sp-a.sh'
 mkf scripts/lib/sp-c.sh '. sp-b.sh'
 mkf scripts/test-sp.sh 'bash "$d/lib/sp-c.sh"'
+mkf scripts/lib/vs-lib.sh
+mkf scripts/vs-user.sh $'_VS_LIB="$d/lib/vs-lib.sh"\nfor _l in "$_VS_LIB"; do\n  . "$_l"\ndone'
+mkf scripts/test-vs.sh 'bash "$d/vs-user.sh"'
+mkf scripts/lib/dr-lib.sh
+mkf scripts/dr-user.sh $'# shellcheck source=lib/dr-lib.sh\n. "$(pick_lib)"'
+mkf scripts/test-dr.sh 'bash "$d/dr-user.sh"'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: closure fixtures"
 change scripts/lib/far.sh
@@ -482,6 +488,12 @@ change scripts/lib/cyc-b.sh
 change scripts/lib/sp-a.sh
 out="$(run_is "$range")"
 if grepq "$out" '^scripts/test-sp\.sh$'; then pass "single-space 'source x' / '. x' forms are followed (2 hops)"; else fail "single-space source form missed: $out"; fi
+change scripts/lib/vs-lib.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-vs\.sh$'; then pass "variable sourcing (_LIB=...; . \"\$_l\") is followed (backfill-sessions idiom)"; else fail "variable-sourcing miss: $out"; fi
+change scripts/lib/dr-lib.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-dr\.sh$'; then pass "a '# shellcheck source=<path>' directive is followed"; else fail "shellcheck-directive miss: $out"; fi
 change scripts/lib/cyc-b.sh
 # gnu-ok: timeout is guarded by command -v and falls back to an unbounded run
 if command -v timeout >/dev/null 2>&1; then out="$( cd "$FX" && timeout 20 bash "$IS" "$range" 2>/dev/null )"; rc=$?; else out="$(run_is "$range")"; rc=0; fi

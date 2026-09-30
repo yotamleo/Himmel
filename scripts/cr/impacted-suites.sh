@@ -531,27 +531,58 @@ while IFS= read -r f; do
     esac
 done <<< "$changed"
 
-# Source closure (HIMMEL-3896): every shell file with a `source`/`.` line naming
-# a file already in the closure joins it, and its own name becomes a needle, so
-# a suite that names only the outermost helper is still reached. The visited
-# set ($seen) makes a source cycle terminate; each round is one git grep.
-# ponytail: line-oriented — a backslash-continued `source \` with the filename on
-# the next line is not followed, upgrade path is joining continuations before the
-# grep if one ever appears in-tree (none does today).
+# Source closure (HIMMEL-3896): a shell file joins the closure as a sourcer when
+# (a) a `source`/`.` line names a file already in the closure, (b) it assigns a
+# name containing one (`_LIB="$DIR/x.sh"`, `libs=(x.sh y.sh)`) AND has a
+# `source`/`.` line whose operand is a `$var` — the repo idiom, `. "$_lib"` —
+# or (c) it carries a `# shellcheck source=<path>` directive for it. Its own
+# name then becomes a needle, so a suite that names only the outermost helper is
+# still reached. Fail-wide: a variable-sourcing file that assigns the helper's
+# name joins even if the variable is not the one sourced. Naming the helper
+# anywhere plus any source line was tried and cascades to every suite (557 of
+# 557 on a 2-file diff), so (b) is deliberately the narrower idiom.
+# The visited set ($seen) makes a source cycle terminate; each round is a few greps.
+# ponytail: non-.sh sourcers, `exec` edges, JS imports, a name built at run time
+# (`"$dir/$name"`) and a backslash-continued `source \` are not followed —
+# upgrade path is a real dataflow pass if a T6 selector-miss row shows one.
+varsrc="$work/varsrc"   # every .sh file that sources a "$variable"
+grep_rc=0
+git -c core.quotepath=off grep -l -E '(^|[[:space:];&|({])(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
+if [ "$grep_rc" -gt 1 ]; then
+    echo "impacted-suites: git grep failed (rc=$grep_rc) listing variable-sourcing files — cannot tell which suites are impacted" >&2
+    exit 2
+fi
+sed "s/^${head_sha}://" "$work/varsrc.raw" > "$varsrc" || io_fail "listing variable-sourcing files"
+# closure_grep <patfile> <outfile> <what> — the .sh files at head matching any pattern.
+closure_grep() {
+    grep_rc=0
+    git -c core.quotepath=off grep -l -E -f "$1" "$head_sha" -- ':(glob)**/*.sh' > "$2.raw" || grep_rc=$?
+    if [ "$grep_rc" -gt 1 ]; then
+        echo "impacted-suites: git grep failed (rc=$grep_rc) $3 — cannot tell which suites are impacted" >&2
+        exit 2
+    fi
+    sed "s/^${head_sha}://" "$2.raw" > "$2" || io_fail "reading $3"
+}
 while [ -s "$front" ]; do
     : > "$work/srcpats"
+    : > "$work/asgpats"
+    : > "$work/dirpats"
     while IFS= read -r f; do
         { printf '(^|[[:space:];&|({])(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
+        { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
+        { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
     done < "$front"
-    grep_rc=0
-    git -c core.quotepath=off grep -l -E -f "$work/srcpats" "$head_sha" -- ':(glob)**/*.sh' > "$work/src.out" || grep_rc=$?
-    if [ "$grep_rc" -gt 1 ]; then
-        echo "impacted-suites: git grep failed (rc=$grep_rc) walking the source closure — cannot tell which suites are impacted" >&2
-        exit 2
+    closure_grep "$work/srcpats" "$work/hit.src" "walking the source closure"
+    closure_grep "$work/dirpats" "$work/hit.dir" "reading shellcheck source directives"
+    closure_grep "$work/asgpats" "$work/hit.asg" "reading variable assignments"
+    cat "$work/hit.src" "$work/hit.dir" > "$work/src.out" || io_fail "merging source-closure hits"
+    if [ -s "$work/hit.asg" ] && [ -s "$varsrc" ]; then
+        grep_rc=0
+        grep -Fx -f "$varsrc" "$work/hit.asg" >> "$work/src.out" || grep_rc=$?
+        [ "$grep_rc" -le 1 ] || io_fail "intersecting variable sourcers"
     fi
     : > "$work/next"
     while IFS= read -r hit; do
-        hit="${hit#"${head_sha}":}"
         [ -n "$hit" ] || continue
         if grep -Fxq -- "$hit" "$seen"; then continue; fi
         printf '%s\n' "$hit" >> "$seen" || io_fail "growing the source closure"
