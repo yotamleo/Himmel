@@ -266,6 +266,8 @@ done
 # A redirect TARGET is never the selector: `> 42` is a file named 42.
 GH_STUB_MODE=clean t redir-target-not-selector 0 Bash "gh pr merge > 42 $PIN"
 grep -q "^pr view 42 " "$TMP/calls-redir-target-not-selector.log" && { echo "FAIL redir-target-not-selector read the redirect target as the selector"; fail=$((fail+1)); }
+# HIMMEL-3918 codex-1: a spaced redirect target of `f|cat` must not let the walk run on to the pin
+GH_STUB_MODE=clean t redir-target-pipe-no-pin 2 Bash "gh pr merge 42 > f|cat --match-head-commit abc123"
 # (2) env / command / builtin / exec / assignment prefixes: gated, not skipped.
 for _row in "prefix-env|env gh pr merge 42 --squash $PIN" \
             "prefix-env-flags|env -i FOO=1 gh pr merge 42 $PIN" \

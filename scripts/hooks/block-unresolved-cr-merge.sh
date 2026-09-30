@@ -81,14 +81,14 @@ _deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 # env -i, `command -p`, ...), and every clever parse rule here has been a bypass
 # (HIMMEL-3915), so a prefixed merge is DENIED, not parsed.
 # shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
-if printf '%s' "$cmd_stripped" | grep -qE '(^|[;&|`$(]|[[:space:]])(env|command|builtin|exec|nohup|time|sudo|xargs)[[:space:]]+([^;&|]*[[:space:]])?gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
+if printf '%s' "$cmd_stripped" | grep -E '(^|[;&|`$(]|[[:space:]])(env|command|builtin|exec|nohup|time|sudo|xargs)[[:space:]]+([^;&|]*[[:space:]])?gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
     _deny "a gh pr merge behind an env/command/builtin/exec prefix or a NAME=value assignment is not parsed — refusing (GATE INTEGRITY). Run it bare with --match-head-commit, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 fi
 
 # Command-position anchor (POSIX classes - BSD grep lacks \s/\b; coderabbit
 # app round). `merge` must be followed by whitespace or end-of-string.
 # shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
-if ! printf '%s' "$cmd_stripped" | grep -qE '(^|[;&|`$(][[:space:]]*)gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
+if ! printf '%s' "$cmd_stripped" | grep -E '(^|[;&|`$(][[:space:]]*)gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
     exit 0
 fi
 
@@ -107,7 +107,7 @@ while IFS= read -r segment || [ -n "$segment" ]; do
     # HIMMEL-3918: the boundary set matches the command-position anchor above (a
     # bare `&` / `|` is not a segment split, so `sleep 1 & gh pr merge 42` and
     # `x | gh pr merge 42` must still find their merge here, not fall to exit 0).
-    if printf '%s' "$segment" | grep -qE '(^|[;&|`$(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
+    if printf '%s' "$segment" | grep -E '(^|[;&|`$(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
         merge_segment="$segment"
         break
     fi
@@ -120,7 +120,7 @@ EOF
 # payload's cwd, but a `cd`/`pushd` earlier in the same command moves gh into
 # another checkout, so the gates would gate the WRONG branch. Resolving that
 # correctly needs a shell interpreter; deny any directory change instead.
-if printf '%s' "$cmd_stripped" | grep -qE '(^|[^[:alnum:]_./-])(cd|pushd|popd)([^[:alnum:]_./-]|$)'; then
+if printf '%s' "$cmd_stripped" | grep -E '(^|[^[:alnum:]_./-])(cd|pushd|popd)([^[:alnum:]_./-]|$)' >/dev/null; then
     _deny "a directory change (cd/pushd/popd) in the same command as gh pr merge — the gates resolve the PR from the hook's cwd, not where the merge would run — refusing (GATE INTEGRITY). Run the merge from its own checkout, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 fi
 
@@ -164,7 +164,10 @@ while [ "$#" -gt 0 ]; do
         rest_ops="${rest%%[!<>&|]*}"
         rest_tgt="${rest#"$rest_ops"}"
         case "$rest_tgt" in
-            '') skip_next=1 ;;
+            # A spaced target that itself carries a | or & (`> f|cat`) ends the walk
+            # too: what follows belongs to another command, not to this merge.
+            '') skip_next=1
+                case "${2-}" in *[\|\&]*) stop_walk=1 ;; esac ;;
             *[\|\&]*) stop_walk=1 ;;
         esac
     fi
@@ -269,6 +272,9 @@ trap 'rm -f "$go_tmp" "$gh_to_flag" "${trust_tmp:-}"' EXIT
 # other callers (check-ci, pr-merge.sh) keep their own behaviour.
 gh() {
     local out errf rc=0 _gate4_err
+    # One timeout already means deny: skip later calls so a run of hung gh calls
+    # cannot each spend another 10s of the hook budget before the deny.
+    if [ -n "$gh_to_flag" ] && [ -s "$gh_to_flag" ]; then return 124; fi
     out=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null) || out=""
     errf=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-ghe.XXXXXX" 2>/dev/null) || errf=""
     if [ -z "$out" ] || [ -z "$errf" ]; then
