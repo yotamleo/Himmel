@@ -1262,13 +1262,18 @@ scan_segment() {
         W[nw]="${w#:}"; nw=$((nw + 1))
     done <<<"$(tokenize_seg "$seg")"
     # HIMMEL-1813: a here-string fed to a shell is that shell's script (the
-    # heredoc body is already scanned through the newline fold).
+    # heredoc body is already scanned through the newline fold). Every
+    # operand is scanned: the shell reads the last, so none is safe to skip.
     if [[ $seg == *'<<<'* ]]; then
         while [ "$j" -lt "$nw" ]; do
             case "${W[$j]##*/}" in
             bash|sh|dash|zsh|ksh)
-                IFS= read -r w <<<"$(tokenize_seg "${seg#*<<<}")"
-                scan_text "${w#:}" "$names" $((depth + 1))
+                k=$seg
+                while [[ $k == *'<<<'* ]]; do
+                    k=${k#*<<<}
+                    IFS= read -r w <<<"$(tokenize_seg "$k")"
+                    scan_text "${w#:}" "$names" $((depth + 1))
+                done
                 break ;;
             esac
             j=$((j + 1))

@@ -530,6 +530,7 @@ assert_deny "1813: unquoted TAB separates the -S words"        "$(j "env -S ${MO
 assert_deny "1813: unquoted TAB, direct chokepoint path"       "$(j "env -S ${MOG_VAR}=1"$'\t'"$MERGE_ON_GREEN")"
 assert_deny_unres "1813: \${VAR} splits the chokepoint name"   "$(j "env -S '${SW_VAR}=1 bash ${STOP_WORKER%stop-worker.sh}stop-\${Z}worker.sh'")"
 assert_deny_unres "1813: herestring feeds an env -S \\c to bash" "$(j "bash <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
+assert_deny_unres "1813: the LAST of two herestrings is scanned" "$(j "bash <<< 'echo ok' <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
 assert_allow "1813: herestring fed to a non-shell is data"     "$(j "grep x <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
 assert_allow "1813: 2>&1 after a plain command stays allowed"  "$(j "bash $MERGE_ON_GREEN 2>&1")"
 assert_deny "1813: an escaped > before & still separates"     "$(j "echo \\>& ${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
