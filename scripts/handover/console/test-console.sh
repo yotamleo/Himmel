@@ -115,10 +115,16 @@ token_of() {
 #DIAG-3912-BEGIN
 # shellcheck disable=SC2016
 echo "DIAG start t=${SECONDS}s bash=$BASH_VERSION"
-console new --bucket d1 >/dev/null 2>&1; echo "DIAG call1 rc=$? t=${SECONDS}s"
-console new --bucket d2 >/dev/null 2>&1; echo "DIAG call2 rc=$? t=${SECONDS}s"
+git -C "$fixture_repo" rev-parse --path-format=absolute --git-common-dir >/dev/null 2>&1; echo "DIAG P1 git-common-dir rc=$? t=${SECONDS}s"
+bash -c ". '$fixture_repo/scripts/lib/handover-path.sh'" >/dev/null 2>&1; echo "DIAG P2 source handover-path rc=$? t=${SECONDS}s"
+bash -c ". '$fixture_repo/scripts/lib/user-slug.sh'; USER_SLUG=tester user_slug" >/dev/null 2>&1; echo "DIAG P3 user_slug rc=$? t=${SECONDS}s"
+mkdir -p "$root/tester/probe"; : > "$root/tester/probe/DEMO-probe.md"
+HANDOVER_DIR="$root" bash "$QL" acquire "$root/tester/probe/DEMO-probe.md" >/dev/null 2>&1; echo "DIAG P4 queue-lock acquire rc=$? t=${SECONDS}s"
+console new --bucket d1 >/dev/null 2>&1; echo "DIAG P5 console new rc=$? t=${SECONDS}s"
 # shellcheck disable=SC2016
-( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" env SHELLOPTS=xtrace PS4='+T$(date +%s) ' bash "$C" new --bucket diag3912 ) 2>&1 >/dev/null | awk 'NR<=3{print "RAW " substr($0,1,200)} /^\++T[0-9]+ /{ split($0,a," "); t=substr(a[1],index(a[1],"T")+1)+0; if (p && t-p>=2) print "SLOW " (t-p) "s BEFORE: " $0 "  AFTER: " prev; p=t; prev=$0 } END{print "DIAG total lines " NR}'
+( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" env SHELLOPTS=xtrace PS4='+T$(date +%s) ' bash "$C" new --bucket d2 >/dev/null 2>"$tmp/trace3912" ); echo "DIAG P6 traced new rc=$? lines=$(wc -l < "$tmp/trace3912") t=${SECONDS}s"
+# shellcheck disable=SC2016
+awk '/^\++T[0-9]+ /{ split($0,a," "); t=substr(a[1],index(a[1],"T")+1)+0; if (p && t-p>=3) print "DIAG SLOW " (t-p) "s at: " substr(prev,1,220); p=t; prev=$0 }' "$tmp/trace3912"
 echo "DIAG end t=${SECONDS}s"
 [ "${DIAG3912_CONTINUE:-0}" = 1 ] || exit 1
 #DIAG-3912-END
