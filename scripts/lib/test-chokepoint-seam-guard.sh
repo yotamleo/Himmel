@@ -182,6 +182,12 @@ assert_eq "P7 a self-parented pid -> rc 2" "2|" "$(walk "$F6" 20)"
 assert_eq "P8 a non-numeric start pid -> rc 2" "2|" "$(walk "$F1" abc)"
 F7="$TMP/proc7"; mkdir -p "$F7/20"; printf '%s\n' '20 bash S 1' > "$F7/20/stat"
 assert_eq "P9 a stat without the comm close -> rc 2" "2|" "$(walk "$F7" 20)"
+F8="$TMP/proc8"
+mkproc "$F8" 1 0 systemd - /sbin/init
+mkproc "$F8" 10 1 node /usr/bin/node node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js
+mkproc "$F8" 15 10 node /usr/bin/node node /srv/app/cli.js
+mkproc "$F8" 20 15 bash /usr/bin/bash bash
+assert_eq "P11 an npm claude (node running claude-code/cli.js) matches; other node does not" "0|10" "$(walk "$F8" 20)"
 live=$(walk /proc "$$")
 assert_eq "P10 the real /proc walks cleanly from this shell" "0" "${live%%|*}"
 
@@ -242,6 +248,7 @@ assert_eq "G7 launch anchor is another tree -> ALLOW despite a mismatch" "0" "$(
 Q3="$TMP/gproc3"; mkclaude "$Q3" "$GA" PATH=/bin "HOME=$GH" HIMMEL_CONSOLE_LEG=1
 assert_eq "G8a no HIMMEL_REPO: the claude cwd's primary checkout is the anchor -> ALLOW when equal" "0" "$(gate "$Q3" "$GO" HIMMEL_CONSOLE_LEG=1)"
 assert_eq "G8b no HIMMEL_REPO: the cwd fallback still enforces -> 96" "96" "$(gate "$Q3" "$GO" HIMMEL_CONSOLE_LEG=0)"
+assert_eq "G8c a caller's git config env cannot blank the cwd fallback -> 96" "96" "$(gate "$Q3" "$GO" HIMMEL_CONSOLE_LEG=0 "GIT_CONFIG_PARAMETERS='bad" "GIT_CEILING_DIRECTORIES=$TMP")"
 Q4="$TMP/gproc4"; mkclaude "$Q4" - PATH=/bin "HOME=$GH" "HIMMEL_REPO=$GA"
 assert_eq "G9 the claude cwd is unreadable -> 96" "96" "$(gate "$Q4" "$GO" "HIMMEL_REPO=$GA")"
 Q5="$TMP/gproc5"; mkclaude "$Q5" "$GA" PATH=/bin; rm -f "$Q5/10/environ"

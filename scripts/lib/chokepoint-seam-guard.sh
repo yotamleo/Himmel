@@ -138,15 +138,20 @@ _csg_verdict() {
     return "$rc"
 }
 
-# _csg_is_claude <proc-root> <pid> - rc 0 when exe or argv[0] basename is `claude`.
+# _csg_is_claude <proc-root> <pid> - rc 0 when exe or argv[0] basename is
+# `claude`, or a node process runs @anthropic-ai/claude-code's cli (npm install).
 _csg_is_claude() {
-    local exe a0=""
+    local exe a0="" a1=""
     exe=$("$(_csg_bin readlink)" "$1/$2/exe" 2>/dev/null) || exe=""
     [ "${exe##*/}" = claude ] && return 0
     if [ -r "$1/$2/cmdline" ]; then
-        IFS= read -r -d '' a0 < "$1/$2/cmdline" || true
+        { IFS= read -r -d '' a0; IFS= read -r -d '' a1; } < "$1/$2/cmdline" || true
     fi
-    [ -n "$a0" ] && [ "${a0##*/}" = claude ]
+    [ -n "$a0" ] && [ "${a0##*/}" = claude ] && return 0
+    case "${a0##*/}|$a1" in
+        node\|*/@anthropic-ai/claude-code/cli.js | node\|*/@anthropic-ai/claude-code/cli.mjs) return 0 ;;
+    esac
+    return 1
 }
 
 # _csg_find_outermost <proc-root> <start-pid> - print the outermost claude
@@ -234,7 +239,8 @@ _csg_gate() {
         *) anchor="" ;;
     esac
     if [ -z "$anchor" ]; then
-        common=$("$(_csg_bin env)" -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR "$(_csg_bin git)" -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+        # env -i: no caller GIT_* (config, ceiling, dir) can blank the anchor.
+        common=$("$(_csg_bin env)" -i "$(_csg_bin git)" -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
         case "$common" in
             */.git) anchor="${common%/.git}" ;;
         esac
