@@ -16,7 +16,6 @@ HOOK="$(cd "$(dirname "$0")" && pwd)/block-edit-live-settings.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK"
 
 FAILED=0
-echo "PROBE3699 bash=$BASH_VERSION" # PROBE3699-TEMP
 
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
