@@ -34,13 +34,25 @@ else bad "baseline diff gave '$got' (want empty)"; fi
 
 # --- suites-from-logs: decode FAIL_LOG_DIR's injective escape ---------------
 mkdir -p "$TMP/logs"
-: > "$TMP/logs/scripts_sci_stest_ux.sh.log"
-: > "$TMP/logs/scripts_stest-plain.sh.log"
-got="$(bash "$SCRIPT" suites-from-logs "$TMP/logs" | tr '\n' ' ')"
-if [ "$got" = "scripts/ci/test_x.sh scripts/test-plain.sh " ]; then ok "suites-from-logs decodes _s -> / and _u -> _"
+: > "$TMP/logs/scripts_sci_stest-macos-breakage.sh.log"
+: > "$TMP/logs/scripts_shandover_stest-arm-resume.sh.log"
+# fixture logs as run-shell-tests' own self-tests name them (HIMMEL-3906)
+: > "$TMP/logs/test-127-3.sh.log"
+: > "$TMP/logs/test-slowpoke.sh.log"
+# suites-from-logs asks git which suites are tracked, so run it from the checkout
+sfl() ( cd "$ROOT" && bash "$SCRIPT" suites-from-logs "$@" )
+got="$(sfl "$TMP/logs" 2>"$TMP/sfl.err" | tr '\n' ' ')"
+if [ "$got" = "scripts/ci/test-macos-breakage.sh scripts/handover/test-arm-resume.sh " ]; then
+  ok "suites-from-logs keeps tracked suites (incl. one in a subdirectory) and drops self-test fixture logs"
 else bad "suites-from-logs gave '$got'"; fi
-got="$(bash "$SCRIPT" suites-from-logs "$TMP/no-such-dir")"
+if grep -q 'dropped 2' "$TMP/sfl.err" && grep -q 'test-127-3.sh' "$TMP/sfl.err" && grep -q 'test-slowpoke.sh' "$TMP/sfl.err"; then
+  ok "suites-from-logs reports the dropped fixtures on stderr (count + names)"
+else bad "stderr gave '$(cat "$TMP/sfl.err")'"; fi
+got="$(sfl "$TMP/no-such-dir")"
 if [ -z "$got" ]; then ok "suites-from-logs on a missing dir is empty"; else bad "missing dir gave '$got'"; fi
+mkdir -p "$TMP/emptylogs"
+got="$(sfl "$TMP/emptylogs" 2>&1)"
+if [ -z "$got" ]; then ok "suites-from-logs on an empty dir is empty and quiet"; else bad "empty dir gave '$got'"; fi
 
 # --- record: union the shard lists, diff against the previous record --------
 mkdir -p "$TMP/art/macos-failed-suites-shard1" "$TMP/art/macos-failed-suites-shard2"

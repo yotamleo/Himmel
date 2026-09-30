@@ -39,8 +39,27 @@ die() { echo "macos-breakage: $*" >&2; exit 2; }
 cmd_suites_from_logs() {
   local dir="${1:?suites-from-logs <dir>}"
   [ -d "$dir" ] || return 0
+  # run-shell-tests' own self-tests leave fixture logs (test-127-3.sh,
+  # test-slowpoke.sh) in FAIL_LOG_DIR; keep only git-tracked test-*.sh suites so
+  # they do not count as reds. Dropped names go to stderr (count + names).
+  local tracked decoded name kept="" dropped="" ndrop=0
+  tracked="$(git ls-files 2>/dev/null)"
   # shellcheck disable=SC2012 # names are run-shell-tests' escaped suite paths (alnum + _), never odd bytes
-  ls "$dir" 2>/dev/null | sed -n -e 's/\.log$//p' | sed -e 's/_s/\//g' -e 's/_u/_/g' | sort
+  decoded="$(ls "$dir" 2>/dev/null | sed -n -e 's/\.log$//p' | sed -e 's/_s/\//g' -e 's/_u/_/g' | sort)"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "${name##*/}" in test-*.sh) ;; *) name="" ;; esac
+    # here-string, not a pipe: grep -q exiting early would SIGPIPE printf and fail under pipefail
+    if [ -n "$name" ] && grep -Fxq -- "$name" <<<"$tracked"; then
+      kept="$kept$name"$'\n'
+    else
+      ndrop=$((ndrop + 1)); dropped="$dropped ${name:-?}"
+    fi
+  done <<EOF
+$decoded
+EOF
+  [ -z "$kept" ] || printf '%s' "$kept"
+  [ "$ndrop" -eq 0 ] || echo "macos-breakage: dropped $ndrop untracked fixture log(s):$dropped" >&2
 }
 
 cmd_diff() {
