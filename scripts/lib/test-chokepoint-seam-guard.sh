@@ -276,6 +276,7 @@ Q7="$TMP/gproc7"; mkclaude "$Q7" "$GA" PATH=/bin "HIMMEL_REPO=$GA"; rm -rf "$Q7/
 # HIMMEL-3921: a Linux host with no readable /proc (unshare -rm + a tmpfs over
 # /proc) is not a real platform - deny. A genuine non-Linux host stays hook-only.
 assert_eq "G12 no readable /proc on Linux -> 96 (fails closed)" "96" "$(gate "$Q7" "$GO" HIMMEL_CONSOLE_LEG=1)"
+# shellcheck disable=SC2016 # $1..$3 expand in the child bash, by design
 assert_eq "G12b no /proc, genuine non-Linux (Darwin) -> ALLOW" "0" "$(env -u HIMMEL_CONSOLE_LEG bash -c '. "$1" && _csg_gate "$2" 20 "$3" Darwin' _ "$GA/scripts/lib/chokepoint-seam-guard.sh" "$Q7" "$GO" 2>/dev/null; printf %s "$?")"
 Q8="$TMP/gproc8"; mkdir -p "$Q8/self"; : > "$Q8/self/stat"
 mkproc "$Q8" 1 0 systemd - /sbin/init
