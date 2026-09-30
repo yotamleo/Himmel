@@ -114,8 +114,13 @@ token_of() {
 
 #DIAG-3912-BEGIN
 # shellcheck disable=SC2016
+echo "DIAG start t=${SECONDS}s bash=$BASH_VERSION"
+console new --bucket d1 >/dev/null 2>&1; echo "DIAG call1 rc=$? t=${SECONDS}s"
+console new --bucket d2 >/dev/null 2>&1; echo "DIAG call2 rc=$? t=${SECONDS}s"
+# shellcheck disable=SC2016
 ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" env SHELLOPTS=xtrace PS4='+T$(date +%s) ' bash "$C" new --bucket diag3912 ) 2>&1 >/dev/null | awk 'NR<=3{print "RAW " substr($0,1,200)} /^\++T[0-9]+ /{ split($0,a," "); t=substr(a[1],index(a[1],"T")+1)+0; if (p && t-p>=2) print "SLOW " (t-p) "s BEFORE: " $0 "  AFTER: " prev; p=t; prev=$0 } END{print "DIAG total lines " NR}'
-[ "${DIAG3912_CONTINUE:-0}" = 1 ] || exit 0
+echo "DIAG end t=${SECONDS}s"
+[ "${DIAG3912_CONTINUE:-0}" = 1 ] || exit 1
 #DIAG-3912-END
 # --- 1/2/3/4: new, placeholder cleanliness, lock lifecycle, idempotent bump
 docA="$root/tester/demorepo/DEMO-nextleg-${today}A-console.md"
