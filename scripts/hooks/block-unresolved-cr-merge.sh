@@ -64,51 +64,39 @@ cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null 
 cmd=$(printf '%s' "$cmd" | tr -d '\r')
 [ -z "$cmd" ] && exit 0
 
-# Quote-blindness guard (coderabbit CR round): match + tokenize on a copy with
-# each QUOTED SPAN replaced by the placeholder token Q - text inside quotes can
-# neither look like a command boundary (`git commit -m "done; gh pr merge 42"`
-# is NOT a merge - false-block vector) nor smuggle a quoted selector, while
-# token POSITIONS survive so value-taking flags (`--repo "o/r" 42`) still
-# consume exactly one token (coderabbit app round: full deletion collapsed
-# positions and let --repo eat the selector). An unbalanced quote leaves
-# residue whose worst case is a mis-extracted selector -> rc=3 re-anchor ->
-# fail-open, never a false block on quoted text.
-cmd_stripped=$(printf '%s' "$cmd" | sed -e "s/'[^']*'/Q/g" -e 's/"[^"]*"/Q/g')
-
 _deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 
 # HIMMEL-3918: ONE structural rule instead of a grammar. Every parse rule this
-# hook grew for a chained, redirected or prefixed merge (HIMMEL-3915, then five
-# more /pr-check rounds of the same class) became a bypass. So a command that
-# names `gh pr merge` ANYWHERE outside quotes must BE a single plain command:
-# no ; & | < > backtick $( or newline, and its first word is literally `gh`
-# (which also covers every env/command/exec/nohup/time/NAME=value prefix and any
-# cd/pushd/popd, since those can only precede the merge by chaining or as the
-# first word). Accepted over-deny (HIMMEL-3917 precedent): an unquoted text
-# mention such as `echo gh pr merge`, and a path-qualified `/usr/bin/gh`. The
-# selector walk below then only ever sees plain tokens.
+# hook grew for a chained, redirected, prefixed or quoted merge (HIMMEL-3915,
+# then more /pr-check rounds of the same class) became a hook-vs-bash
+# disagreement and so a bypass. A command that names `gh pr merge` must BE a
+# single plain command whose RAW text is only [A-Za-z0-9], space and _ . / : = - ,
+# - no quote of any kind, $, backslash, #, newline or metacharacter - and whose
+# first word is literally `gh` (which also covers every env/command/exec/nohup/
+# time/NAME=value prefix and cd/pushd/popd). With no quotes the tokenizer below
+# needs no quote-stripping, so the hook and bash always read the same words.
+# Accepted over-denies (HIMMEL-3917 precedent): ANY text mention of `gh pr
+# merge` that is not a plain merge (`git commit -m "gh pr merge"`, `echo gh pr
+# merge`), a custom --subject/--body (use scripts/handover/merge-on-green.sh),
+# and a path-qualified `/usr/bin/gh`.
 merge_re='gh[[:space:]]+pr[[:space:]]+merge'
-# The detector runs on a NORMALIZED copy (backslash-newline pairs removed, then
-# every backslash, newlines to spaces): bash joins `gh pr mer\<nl>ge` and reads
-# `mer\ge` as `merge`, which the raw text would not match. The plain-command
-# check below still runs on cmd_stripped, where an unquoted backslash or `#`
-# (bash starts a comment at an unquoted one, so hook and bash would read
-# different commands) is itself a deny.
-cmd_norm=$(printf '%s' "$cmd_stripped" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' | tr '\n' ' ')
+# The detector runs on a NORMALIZED copy of the raw text (backslash-newline
+# pairs removed, then every backslash, newlines to spaces): bash joins
+# `gh pr mer\<nl>ge` and reads `mer\ge` as `merge`.
+cmd_norm=$(printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' | tr '\n' ' ')
 if ! printf '%s' "$cmd_norm" | grep -E "$merge_re" >/dev/null; then
     exit 0
 fi
-# shellcheck disable=SC2016  # literal backtick/$( in the deny list - intentional
-case "$cmd_stripped" in
-    *[\;\&\|\<\>\`\\\#]*|*'$('*|*$'\n'*) plain=0 ;;
+case "$cmd" in
+    *[!A-Za-z0-9\ _./:=,-]*) plain=0 ;;
     *) plain=1 ;;
 esac
 set -f
 # shellcheck disable=SC2086
-set -- $cmd_stripped
+set -- $cmd
 set +f
 if [ "$plain" != "1" ] || [ "${1-}" != "gh" ]; then
-    _deny "gh pr merge must be run as a single plain command (no chaining, redirects, pipes, substitution or prefixes) — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh, or run the bare merge on its own. (For help run: gh help pr merge)"
+    _deny "gh pr merge must be a single plain command with no quoting (only letters, digits, space and _ . / : = - , are allowed; no chaining, redirects, pipes, substitution, prefixes or quotes) — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh for a custom subject/body. (For help run: gh help pr merge)"
 fi
 
 # Extract the selector + --repo + head pin; selector = first non-flag token

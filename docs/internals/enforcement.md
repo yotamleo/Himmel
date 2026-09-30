@@ -2615,20 +2615,23 @@ Known remaining gap: a merge with no selector AND no cwd branch still exits 0
 **HIMMEL-3918 — six residuals closed, by ONE deny rule rather than parsing**
 (five panel rounds each found a new redirect/prefix shape; every parse rule in
 this hook became a bypass in #1494 and again here). A command whose unquoted text
-names `gh pr merge` must be a **single plain command**: it denies when the
-quote-stripped command contains any of `;` `&` `|` `<` `>` `` ` `` `$(` `\` `#`
-or a newline, or when its first word is not literally `gh` (an unquoted `#`
-starts a bash comment and a `\` joins or escapes words, so the hook and bash
-would read different commands; a quoted one stays allowed). The `gh pr merge`
-detector itself runs on a normalized copy (backslash-newline pairs removed, then
+names `gh pr merge` must be a **single plain command with no quoting**: the raw
+text may contain only `[A-Za-z0-9]`, space and `_ . / : = - ,`, and its first
+word must be literally `gh`; anything else denies. There is no quote-stripping
+(a strip that disagrees with bash on `'`, `"` and `$'..'` was a bypass, so every
+quote, `#`, `\`, `$`, redirect and separator is denied outright). The `gh pr
+merge` detector runs on a normalized copy (backslash-newline pairs removed, then
 every backslash, newlines to spaces), so `gh pr mer\<newline>ge` and `mer\ge` are
-seen. That one rule replaces the
+seen, and only a hit on that copy triggers the allowlist. A custom subject/body
+goes through `scripts/handover/merge-on-green.sh`. Quoted mentions of `gh pr
+merge` (e.g. `echo "gh pr merge"`) are over-denied by design. That one rule replaces the
 earlier cd/pushd, prefix (`env`/`command`/`builtin`/`exec`/`NAME=value`) and
 redirect handling, all of which now deny ("single plain command"), each naming
 the merge-on-green chokepoint (`scripts/handover/`) as the sanctioned path. A
 merge-on-green invocation carries no `gh pr merge` text, so it is untouched.
-Over-denies, accepted (HIMMEL-3917 precedent): an unquoted mention such as
-`echo gh pr merge`, a path-qualified `/usr/bin/gh`, and any chained merge.
+Over-denies, accepted (HIMMEL-3917 precedent): any mention such as
+`echo gh pr merge`, a path-qualified `/usr/bin/gh`, any quoted argument, and any
+chained merge (HIMMEL-3925 tracks narrowing the quoted case).
 1. *cwd mismatch, prefixes, redirects:* all covered by the rule above.
 2. *Bounded gate lookups:* the hook shadows `gh` with a 10 s bounded function for
    everything the sourced gate libraries call (libs untouched) under ONE 45 s hook

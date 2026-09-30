@@ -288,6 +288,10 @@ for _row in "redir-fd-dup|gh pr merge 2>&1 42 $PIN" \
             "contin-space|gh pr \\\\\\nmerge 5 $PIN" \
             "contin-mid-word|gh pr mer\\\\\\nge 5 $PIN" \
             "backslash-mid-word|gh pr mer\\\\ge 5 $PIN" \
+            "quote-b1a|gh pr merge --body \\\"it's\\\" 7 --subject 'a 5 $PIN" \
+            "quote-b1b|gh pr merge --body \\\"x\\\\\\\" 5 $PIN \\\" 7" \
+            "quote-b1c|gh pr merge --body \$'\\\\'' 7 $PIN" \
+            "quote-body-hash|gh pr merge 42 $PIN --body \\\"fixes #5\\\"" \
             "cd-and|cd /tmp && gh pr merge 42 $PIN" \
             "cd-semicolon|cd /tmp; gh pr merge 42 $PIN" \
             "cd-subshell|(cd /tmp; gh pr merge 42 $PIN)" \
@@ -301,12 +305,16 @@ done
 # merge-on-green (its own gh subprocess never appears in the command text).
 GH_STUB_MODE=clean t plain-merge-allows 0 Bash "gh pr merge 42 --squash $PIN"
 GH_STUB_MODE=clean t plain-merge-admin-allows 0 Bash "gh pr merge 42 --squash --admin $PIN"
+GH_STUB_MODE=clean t plain-merge-delete-branch-allows 0 Bash "gh pr merge 42 --squash --delete-branch $PIN"
+GH_STUB_MODE=clean t plain-merge-auto-allows 0 Bash "gh pr merge 42 --auto --squash $PIN"
+GH_STUB_MODE=clean t plain-merge-repo-allows 0 Bash "gh pr merge 42 -R o/r --squash $PIN"
+GH_STUB_MODE=clean t plain-merge-40hex-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 grep -q "^pr view 42 " "$TMP/calls-plain-merge-allows.log" || { echo "FAIL plain-merge-allows did not look up selector 42"; fail=$((fail+1)); }
 GH_STUB_MODE=clean t merge-on-green-allows 0 Bash "bash /opt/himmel/scripts/handover/merge-on-green.sh --jira-transition"
 GH_STUB_MODE=clean t prefix-lookalike-nonmerge-allows 0 Bash "env gh pr view 42"
-GH_STUB_MODE=clean t prefix-lookalike-quoted-allows 0 Bash "git commit -m \\\"env gh pr merge 42\\\""
-GH_STUB_MODE=clean t cd-word-quoted-allows 0 Bash "gh pr merge 42 $PIN --body \\\"cd here\\\""
-GH_STUB_MODE=clean t hash-quoted-allows 0 Bash "gh pr merge 42 $PIN --body \\\"fixes #5\\\""
+GH_STUB_MODE=clean t prefix-lookalike-quoted-denies 2 Bash "git commit -m \\\"env gh pr merge 42\\\""
+GH_STUB_MODE=clean t cd-word-quoted-denies 2 Bash "gh pr merge 42 $PIN --body \\\"cd here\\\""
+GH_STUB_MODE=clean t hash-quoted-denies 2 Bash "gh pr merge 42 $PIN --body \\\"fixes #5\\\""
 # (I1) one hook budget: every gh call sleeps 9s (under the 10s per-call cap), so
 # only the shared 45s budget can stop the hook; it must DENY before Claude Code's
 # 60s hook timeout (which reads as non-blocking).
@@ -379,7 +387,7 @@ GH_STUB_MODE=ci-green t merge-over-green-ci-allows  0 Bash "gh pr merge 42 --squ
 CR_MERGE_GATE_OK=1 GH_STUB_MODE=ci-red t cr-bypass-still-ci-blocks      2 Bash "gh pr merge 42 --squash"
 CR_PROFILE=none    GH_STUB_MODE=ci-red t cr-profile-none-still-ci-blocks 2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=unresolved t non-merge-passthrough          0 Bash "gh pr view 42"
-GH_STUB_MODE=unresolved t string-literal-passthrough     0 Bash "echo \\\"gh pr merge 42\\\""
+GH_STUB_MODE=unresolved t string-literal-denies         2 Bash "echo \\\"gh pr merge 42\\\""
 GH_STUB_MODE=unresolved t powershell-payload-blocks      2 PowerShell "gh pr merge 42 --squash"
 GH_STUB_MODE=unresolved t merge-with-repo-flag-blocks    2 Bash "gh pr merge 42 --squash --repo o/r"
 GH_STUB_MODE=unresolved t compound-earlier-merge-blocks  2 Bash "git merge main && gh pr merge 42 --squash"
@@ -390,8 +398,8 @@ GH_STUB_MODE=unresolved t quoted-selector-blocks         2 Bash "gh pr merge \\\
 # codex-1/coderabbit: a value-taking flag's argument is consumed, the real
 # selector still gates
 GH_STUB_MODE=unresolved t flag-value-selector-reanchors  2 Bash "gh pr merge --match-head-commit deadbeef 42 --squash"
-# coderabbit false-block vector: a merge phrase INSIDE quotes is not a merge
-GH_STUB_MODE=unresolved t quoted-merge-text-passthrough  0 Bash "git commit -m \\\"done; gh pr merge 42\\\""
+# HIMMEL-3918 B1: text naming a merge inside quotes is DENIED (no quoting allowed)
+GH_STUB_MODE=unresolved t quoted-merge-text-denies       2 Bash "git commit -m \\\"done; gh pr merge 42\\\""
 # coderabbit app round: quoted --repo value must not eat the selector (token
 # positions preserved by the Q placeholder; bogus repo re-anchors repo-less)
 GH_STUB_MODE=unresolved t quoted-repo-value-blocks       2 Bash "gh pr merge --repo \\\"o/r\\\" 42 --squash"
@@ -1270,8 +1278,8 @@ grep -q "no console GO" "$TMP/err-trust-path-host-prefixed-repo-blocks" \
     || { fail=$((fail+1)); echo "FAIL trust-path-host-prefixed-repo-blocks: not refused by the trust gate"; }
 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
     t trust-path-quoted-host-repo-blocks 2 Bash "gh pr merge --repo \\\"github.com/o/r\\\" 42 --squash --match-head-commit abc123"
-grep -q "does not name the repo PR #42 resolved on (o/r)" "$TMP/err-trust-path-quoted-host-repo-blocks" \
-    || { fail=$((fail+1)); echo "FAIL trust-path-quoted-host-repo-blocks: not refused as a repo mismatch"; }
+grep -q "single plain command" "$TMP/err-trust-path-quoted-host-repo-blocks" \
+    || { fail=$((fail+1)); echo "FAIL trust-path-quoted-host-repo-blocks: a quoted repo is not refused by the plain-command rule (HIMMEL-3918 B1)"; }
 # Control: a PR genuinely on another repo (no list there, the anchor's origin
 # is o/r) is still not-adopted and passes with no GO.
 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo GH_STUB_TRUST_FILE=scripts/ci/run.sh \
