@@ -154,7 +154,7 @@ check "no root: exit 1" "$rc" "1"
 # hand-rolled substitute (all cases above invoke go.sh by ABSOLUTE path, so
 # none of them exercises the relative door — this is the first).
 # shellcheck disable=SC2016  # the literal line go.sh carries, not an expansion
-GO_ENTRY_SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/../../cr/anchor-handoff.sh" || exit 2'
+GO_ENTRY_SOURCE_LINE='. "$_ah_d/../../cr/anchor-handoff.sh" || exit 2'
 mk_go_entry_tree() {  # <root> <label>
   mkdir -p "$1/scripts/handover/console-kit" "$1/scripts/cr"
   git init -q "$1"

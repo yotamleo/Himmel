@@ -20,7 +20,8 @@
 # Exit: 0 (advisory — a match is NOT a failure), 2 usage / missing input.
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
+case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
+. "$_ah_d/anchor-handoff.sh" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KF="${KNOWN_FINDINGS_FILE:-$SCRIPT_DIR/known-findings.json}"

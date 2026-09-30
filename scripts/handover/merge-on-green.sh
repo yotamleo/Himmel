@@ -239,7 +239,8 @@ set -uo pipefail
 # and must fail CLOSED with its own codes, never abort mid-gate.
 # HIMMEL-3437: a relative-entry copy that is not the anchor's hands off to it
 # (the same one-hop, fail-closed pattern scripts/cr/anchor-handoff.sh uses).
-. "$(dirname "${BASH_SOURCE[0]}")/../cr/anchor-handoff.sh" || exit 2
+case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
+. "$_ah_d/../cr/anchor-handoff.sh" || exit 2
 # Parameter expansion, not dirname: a PATH-shadowed dirname must not pick
 # what is sourced before the seam guard (HIMMEL-3914).
 case "${BASH_SOURCE[0]}" in */*) _csg_dir="${BASH_SOURCE[0]%/*}" ;; *) _csg_dir=. ;; esac
