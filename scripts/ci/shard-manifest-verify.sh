@@ -63,6 +63,18 @@ if [ -z "$disc_lines" ]; then
   exit 2
 fi
 
+# Suite paths are carried as the space-delimited fields above, so one holding
+# whitespace would be split and mis-accounted: refuse it, naming the path
+# (HIMMEL-3916).
+ws_bad=$( { sed -n -e 's/^suite //p' "$selection" | sed 's/^/selection: /'
+            sed -n -e 's/^\[RUN \] //p' -e 's/^\[SKIP\] \(.*\) — .*/\1/p' "$discovered" | sed 's/^/discovered: /'; } \
+          | grep -E '^[a-z]+: .*[[:space:]]' || true)
+if [ -n "$ws_bad" ]; then
+  while IFS= read -r l; do echo "FAIL: suite path contains whitespace ($l)"; done <<< "$ws_bad"
+  echo "shard-manifest-verify: REFUSED — a suite path with whitespace cannot be accounted"
+  exit 1
+fi
+
 HDR_RE='^(mode|reason|base|head|selector|changed|suite) '
 want_hdr=$(grep -E "$HDR_RE" "$selection")
 want_head=$(grep -m1 '^head ' "$selection")
@@ -89,6 +101,11 @@ while [ "$k" -le "$shards" ]; do
   fi
   if [ "$got_shard" != "shard $k/$shards" ]; then
     echo "FAIL: shard$k: want 'shard $k/$shards', found '${got_shard:-no shard line}'"
+    bad=1
+  fi
+  ws_m=$(sed -n -e 's/^ran [^ ]* //p' -e 's/^\(skip\|unrun\|notfound\) //p' "$m" | grep -E '[[:space:]]' || true)
+  if [ -n "$ws_m" ]; then
+    while IFS= read -r l; do echo "FAIL: shard$k: suite path contains whitespace ($l)"; done <<< "$ws_m"
     bad=1
   fi
   bodies="${bodies}$(grep -E '^(ran|skip|unrun|notfound) ' "$m" | sed "s/^/$k /")"$'\n'
