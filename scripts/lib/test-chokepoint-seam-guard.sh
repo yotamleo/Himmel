@@ -254,6 +254,17 @@ Q8="$TMP/gproc8"; mkdir -p "$Q8/self"; : > "$Q8/self/stat"
 mkproc "$Q8" 1 0 systemd - /sbin/init
 mkproc "$Q8" 20 1 bash /usr/bin/bash bash
 assert_eq "G13 no claude ancestor (CI, a plain terminal) -> ALLOW" "0" "$(gate "$Q8" "$GO" HIMMEL_CONSOLE_LEG=1)"
+# A PATH-shadowed jq/readlink/git would forge an empty seam list or a foreign
+# anchor; the gate resolves its tools from fixed system dirs instead.
+EVIL="$TMP/evil-bin"; mkdir -p "$EVIL"
+for t in jq readlink git env; do
+    printf '#!/bin/sh\nexit 0\n' > "$EVIL/$t"; chmod +x "$EVIL/$t"
+done
+assert_eq "G14 a PATH-shadowed jq/readlink/git cannot forge an allow -> 96" "96" "$(gate "$Q1" "$GO" "HIMMEL_REPO=$GA" "PATH=$EVIL:$PATH")"
+# A curated PATH holding only bash (test-bank-preflight's no-timeout case)
+# must not break the gate: equal seams still ALLOW.
+BARE="$TMP/bare-bin"; mkdir -p "$BARE"; ln -s "$(command -v bash)" "$BARE/bash"
+assert_eq "G15 a curated PATH without jq/readlink/git still resolves -> ALLOW" "0" "$(gate "$Q1" "$GO" "HIMMEL_REPO=$GA" HIMMEL_CONSOLE_LEG=1 "PATH=$BARE")"
 
 # --- Wiring: every chokepoint sources the lib and calls the gate first -------
 KEYS=$(jq -r 'keys[]' "$REGISTRY")

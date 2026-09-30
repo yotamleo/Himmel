@@ -414,6 +414,8 @@ cp "$W/repo/scripts/handover/queue-lock.sh" "$W/foreign-repo/scripts/handover/qu
 cp "$W/repo/scripts/context-fill.sh" "$W/foreign-repo/scripts/context-fill.sh"
 cp "$W/repo/scripts/lanes/leg-burn.sh" "$W/foreign-repo/scripts/lanes/leg-burn.sh"
 cp "$W/repo/scripts/lib/bank-preflight.sh" "$W/foreign-repo/scripts/lib/bank-preflight.sh"
+# HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
+cp "$W/repo/scripts/lib/chokepoint-seam-guard.sh" "$W/foreign-repo/scripts/lib/chokepoint-seam-guard.sh"
 foreign_out="$(REPO="$W/foreign-repo" PATH="$W/bin:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61')"
 contains 'a foreign REPO (no scripts/lanes/lib/) still counts a live leg (#1335)' "$foreign_out" 'procs=1'
 contains 'a foreign REPO still buckets its model' "$foreign_out" 'models=sonnet:1'

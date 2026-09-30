@@ -35,6 +35,8 @@ own="$W/own-checkout"
 mkdir -p "$own/scripts/lib"
 cp "$REPO/scripts/lib/bank-preflight.sh" "$own/scripts/lib/bank-preflight.sh"
 cp "$REPO/scripts/lib/load-dotenv.sh" "$own/scripts/lib/load-dotenv.sh"
+# HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
+cp "$REPO/scripts/lib/chokepoint-seam-guard.sh" "$own/scripts/lib/chokepoint-seam-guard.sh"
 printf 'HIMMEL_FLEET_CAP=15\n' > "$own/.env"
 SUT="$own/scripts/lib/bank-preflight.sh"
 

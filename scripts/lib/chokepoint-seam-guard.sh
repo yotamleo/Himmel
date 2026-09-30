@@ -52,9 +52,24 @@
 # indistinguishable from a legit launch; R3 non-Linux (no /proc environ) keeps
 # today's hook-only posture; R4 an operator (or an obfuscated Bash write the
 # hook's text scan misses) editing a guarded settings file changes the
-# baseline - HIMMEL-3921 tracks the text-level (a) layer for R1/R3.
+# baseline; R5 external tools come from fixed system dirs, but an exported
+# BASH_FUNC_* shadowing a bash builtin (printf, read, [) is still imported by
+# the chokepoint's own bash - HIMMEL-3921 tracks the text-level (a) layer for
+# R1/R3/R5.
 
 CSG_DENY_RC=96
+
+# _csg_bin <tool> - print the tool's path from the fixed system dirs, never
+# PATH: a PATH-shadowed (or exported-function) jq/git/readlink could forge an
+# empty seam list or a foreign anchor, and a curated PATH must not break it.
+_csg_bin() {
+    local d
+    for d in /usr/bin /bin /usr/local/bin; do
+        if [ -x "$d/$1" ]; then printf '%s' "$d/$1"; return 0; fi
+    done
+    printf '%s' "/nonexistent/$1"
+    return 1
+}
 
 # _csg_env_get <nul-separated-environ-file> <name> - print the value; rc 0 set, 1 unset.
 _csg_env_get() {
@@ -73,7 +88,8 @@ _csg_env_get() {
 _csg_settings_get() {
     local out
     [ -r "$1" ] || return 1
-    out=$(jq -j --arg n "$2" 'if (.env|type)=="object" and (.env|has($n)) then "1" + (.env[$n]|tostring) else "0" end' "$1" 2>/dev/null; printf x)
+    # shellcheck disable=SC2016 # a jq program, not shell
+    out=$("$(_csg_bin jq)" -j --arg n "$2" 'if (.env|type)=="object" and (.env|has($n)) then "1" + (.env[$n]|tostring) else "0" end' "$1" 2>/dev/null; printf x)
     case "$out" in
         1*) out="${out#1}"; printf '%s' "${out%x}"; return 0 ;;
     esac
@@ -125,7 +141,7 @@ _csg_verdict() {
 # _csg_is_claude <proc-root> <pid> - rc 0 when exe or argv[0] basename is `claude`.
 _csg_is_claude() {
     local exe a0=""
-    exe=$(readlink "$1/$2/exe" 2>/dev/null) || exe=""
+    exe=$("$(_csg_bin readlink)" "$1/$2/exe" 2>/dev/null) || exe=""
     [ "${exe##*/}" = claude ] && return 0
     if [ -r "$1/$2/cmdline" ]; then
         IFS= read -r -d '' a0 < "$1/$2/cmdline" || true
@@ -168,7 +184,8 @@ EOF
 # (seam_env_vars minus internal_seams), space-joined; rc!=0 when unreadable or
 # the key is absent.
 _csg_registry_seams() {
-    jq -er --arg k "$2" '.[$k] | select(. != null) | ((.seam_env_vars // []) - (.internal_seams // [])) | join(" ")' "$1" 2>/dev/null
+    # shellcheck disable=SC2016 # a jq program, not shell
+    "$(_csg_bin jq)" -er --arg k "$2" '.[$k] | select(. != null) | ((.seam_env_vars // []) - (.internal_seams // [])) | join(" ")' "$1" 2>/dev/null
 }
 
 # _csg_overlay_files <claude-cwd> <anchor> <environ-file> - print the settings
@@ -206,8 +223,8 @@ _csg_gate() {
     fi
     [ -n "$pid" ] || return 0
     env="$proc/$pid/environ"
-    cwd=$(readlink "$proc/$pid/cwd" 2>/dev/null) || _csg_deny "$name" "cannot read the claude session's cwd (pid $pid)"
-    root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd -P) || _csg_deny "$name" "cannot resolve this copy's tree"
+    cwd=$("$(_csg_bin readlink)" "$proc/$pid/cwd" 2>/dev/null) || _csg_deny "$name" "cannot read the claude session's cwd (pid $pid)"
+    root=$(cd "${BASH_SOURCE[0]%/*}/../.." 2>/dev/null && pwd -P) || _csg_deny "$name" "cannot resolve this copy's tree"
     [ -r "$env" ] || _csg_deny "$name" "cannot read the claude session's launch environment (pid $pid)"
     if anchor=$(_csg_env_get "$env" HIMMEL_REPO); then :; else
         anchor=""
@@ -217,7 +234,7 @@ _csg_gate() {
         *) anchor="" ;;
     esac
     if [ -z "$anchor" ]; then
-        common=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+        common=$("$(_csg_bin env)" -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR "$(_csg_bin git)" -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
         case "$common" in
             */.git) anchor="${common%/.git}" ;;
         esac
@@ -241,6 +258,6 @@ EOF
             2) _csg_deny "$name" "the claude session's launch environment (pid $pid) is unreadable or empty" ;;
         esac
     fi
-    bad=$(printf '%s' "$bad" | tr '\n' ' ')
+    bad=${bad//$'\n'/ }
     _csg_deny "$name" "seam(s) ${bad% } differ from this session's launch environment. A chokepoint seam must come from the launching shell, not a per-call prefix, export or unset - set it in the launching shell (e.g. SEAM=1 claude)"
 }

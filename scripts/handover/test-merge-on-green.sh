@@ -243,6 +243,8 @@ mog_build_fixture() {
     # HIMMEL-3381: the GitHub-blocked alert lib (sourced next to cr-available.sh).
     # Its sender is a stub that only logs, so the suite can never DM the operator.
     cp "$SCRIPT_DIR/../lib/merge-block-alert.sh" "$tmp/scripts/lib/merge-block-alert.sh"
+    # HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
+    cp "$SCRIPT_DIR/../lib/chokepoint-seam-guard.sh" "$tmp/scripts/lib/chokepoint-seam-guard.sh"
     # HIMMEL-3616: the pre-merge title guard (3c) calls this sibling, which in
     # turn invokes check-commit-msg.sh — both must be copied into the fixture
     # tree, since HIMMEL_REPO defaults to the fixture tree itself (himmel_repo_dir
