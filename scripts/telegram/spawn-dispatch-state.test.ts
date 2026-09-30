@@ -50,6 +50,29 @@ test("dirty tree reports worktree_clean: no", () => {
   } finally { f.cleanup(); }
 }, GIT_TEST_TIMEOUT_MS);
 
+// HIMMEL-3926: repo/user status config must not hide outstanding changes.
+test("status.showUntrackedFiles=no does not hide an untracked file", () => {
+  const f = fixture();
+  try {
+    f.commit("a");
+    git(f.repo, ["config", "status.showUntrackedFiles", "no"]);
+    writeFileSync(join(f.repo, "untracked"), "x");
+    expect(composeDispatchGitState(f.repo, "worker/x", f.base)).toContain("worktree_clean: no");
+  } finally { f.cleanup(); }
+}, GIT_TEST_TIMEOUT_MS);
+
+test("diff.ignoreSubmodules=all does not hide a dirty submodule", () => {
+  const f = fixture();
+  const sub = initHermeticRepo("dispatch-state-sub-");
+  try {
+    git(f.repo, ["-c", "protocol.file.allow=always", "submodule", "add", sub.repo, "sub"]);
+    git(f.repo, ["commit", "-m", "add sub"]);
+    git(f.repo, ["config", "diff.ignoreSubmodules", "all"]);
+    writeFileSync(join(f.repo, "sub", "dirty"), "x");
+    expect(composeDispatchGitState(f.repo, "worker/x", f.base)).toContain("worktree_clean: no");
+  } finally { f.cleanup(); removeFixture(sub.repo); }
+}, GIT_TEST_TIMEOUT_MS);
+
 test("zero commits reports commits: 0", () => {
   const f = fixture();
   try {
