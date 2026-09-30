@@ -1273,3 +1273,21 @@ test('HIMMEL-3567: CLI run from a leg worktree emits the PRIMARY absolute merge 
   assert.ok(!allow.some((r) => r.includes('.claude/worktrees')), allow.join('\n'));
   for (const rule of REG.gateAllow) assert.ok(allow.includes(rule), `lost ${rule}`);
 });
+
+// HIMMEL-1033: Jira is CLI-first (block-backend-tier), so no shipped profile may
+// enable the atlassian plugin. It stays a catalog member so deny-by-default
+// writes it `false`; a floor/base/enable entry would flip that to `true`.
+const ATLASSIAN = 'atlassian@claude-plugins-official';
+const noProfileEnablesAtlassian = (reg) => {
+  return Object.keys(reg.profiles).filter((n) => resolveProfile(reg, n)?.enabledPlugins?.[ATLASSIAN] === true);
+};
+
+test('HIMMEL-1033: no shipped profile enables atlassian', () => {
+  assert.deepEqual(noProfileEnablesAtlassian(REG), []);
+});
+
+test('HIMMEL-1033: the atlassian guard detects a profile that enables it (control)', () => {
+  const bad = structuredClone(REG);
+  bad.profiles.__probe = { enable: [ATLASSIAN] };
+  assert.deepEqual(noProfileEnablesAtlassian(bad), ['__probe']);
+});
