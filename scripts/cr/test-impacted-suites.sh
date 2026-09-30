@@ -463,7 +463,9 @@ mkf scripts/test-noise.sh 'bash "$d/lib/noise.sh"'
 mkf scripts/lib/cyc-a.sh '. "$here/cyc-b.sh"'
 mkf scripts/lib/cyc-b.sh '. "$here/cyc-a.sh"'
 mkf scripts/test-cyc.sh 'bash "$d/lib/cyc-a.sh"'
-mkf scripts/guard-setter.sh 'HIMMEL_UNINSTALL_""REAL_HOME=1 bash x'
+gv_a=HIMMEL_UNINSTALL_   # name split across two variables so this file never matches the callers scan itself
+gv_b=REAL_HOME
+mkf scripts/guard-setter.sh "${gv_a}${gv_b}=1 bash x"
 mkf scripts/guard-plain.sh 'echo nothing'
 mkf scripts/test-uninstall-real-home-callers.sh 'grep -r "$V" scripts'
 git -C "$FX" add -A
