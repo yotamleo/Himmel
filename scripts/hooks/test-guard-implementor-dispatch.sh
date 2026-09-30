@@ -42,6 +42,7 @@ mkdir -p "$FAKE_REPO_NO_CLAUDEX/scripts/lanes" "$FAKE_REPO_NO_CLAUDEX/scripts/te
 cp "$REPO_ROOT/scripts/lanes/resolve.mjs" "$FAKE_REPO_NO_CLAUDEX/scripts/lanes/resolve.mjs"
 cp "$REPO_ROOT/scripts/lanes/probe.mjs" "$FAKE_REPO_NO_CLAUDEX/scripts/lanes/probe.mjs"
 cp "$REPO_ROOT/scripts/lanes/bank-status-core.mjs" "$FAKE_REPO_NO_CLAUDEX/scripts/lanes/bank-status-core.mjs"
+cp "$REPO_ROOT/scripts/lanes/profile-managed.cjs" "$FAKE_REPO_NO_CLAUDEX/scripts/lanes/profile-managed.cjs"
 : > "$FAKE_REPO_NO_CLAUDEX/scripts/telegram/spawn-glm.ts"
 
 # HIMMEL-1513 funded-bank fixtures. A fake project root carrying BOTH dispatchers
@@ -53,6 +54,7 @@ mkdir -p "$FAKE_REPO_NO_BANK/scripts/lanes" "$FAKE_REPO_NO_BANK/scripts/telegram
 cp "$REPO_ROOT/scripts/lanes/resolve.mjs" "$FAKE_REPO_NO_BANK/scripts/lanes/resolve.mjs"
 cp "$REPO_ROOT/scripts/lanes/probe.mjs" "$FAKE_REPO_NO_BANK/scripts/lanes/probe.mjs"
 cp "$REPO_ROOT/scripts/lanes/bank-status-core.mjs" "$FAKE_REPO_NO_BANK/scripts/lanes/bank-status-core.mjs"
+cp "$REPO_ROOT/scripts/lanes/profile-managed.cjs" "$FAKE_REPO_NO_BANK/scripts/lanes/profile-managed.cjs"
 : > "$FAKE_REPO_NO_BANK/scripts/telegram/spawn-claudex.ts"
 : > "$FAKE_REPO_NO_BANK/scripts/telegram/spawn-glm.ts"
 

@@ -156,6 +156,7 @@ make_fixture() {
   cp "$repo_root/scripts/lanes/lanes.json" "$_d/scripts/lanes/lanes.json"
   cp "$repo_root/scripts/lanes/probe.mjs" "$_d/scripts/lanes/probe.mjs"
   cp "$repo_root/scripts/lanes/resolve.mjs" "$_d/scripts/lanes/resolve.mjs"
+  cp "$repo_root/scripts/lanes/profile-managed.cjs" "$_d/scripts/lanes/profile-managed.cjs"
   cp "$repo_root/scripts/guardrails/lib.sh" "$_d/scripts/guardrails/lib.sh"
   # HIMMEL-2308: ONE execution engine now — deriveCommand() always targets
   # adopt.sh (the dev overlay's setup.sh/setup.ps1 is an ADDITIONAL command

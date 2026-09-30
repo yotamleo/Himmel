@@ -90,6 +90,7 @@ build_fixture() {
   mkdir -p "$_d/scripts/lib" "$_d/scripts/lanes" "$_d/scripts/machine-setup"
   cp "$repo_root/scripts/lib/set-env-var.sh" "$_d/scripts/lib/set-env-var.sh"
   cp "$repo_root/scripts/lanes/set-lane-override.mjs" "$_d/scripts/lanes/set-lane-override.mjs"
+  cp "$repo_root/scripts/lanes/profile-managed.cjs" "$_d/scripts/lanes/profile-managed.cjs"
   cp "$repo_root/scripts/lanes/lanes.json" "$_d/scripts/lanes/lanes.json"
   cp "$repo_root/scripts/machine-setup/full-plugin-enable.json" "$_d/scripts/machine-setup/full-plugin-enable.json"
 }
@@ -365,6 +366,7 @@ echo "ok: caseI interactive config with closed stdin quits immediately (rc=0), n
 # this proves the READ side actually applies the override).
 fxJ="$work/fixtureJ"; mkdir -p "$fxJ"
 cp "$resolve_mjs" "$fxJ/resolve.mjs"
+cp "$repo_root/scripts/lanes/profile-managed.cjs" "$fxJ/profile-managed.cjs"
 cp "$probe_mjs" "$fxJ/probe.mjs"
 cp "$bank_status_core_mjs" "$fxJ/bank-status-core.mjs"
 cat > "$fxJ/lanes.json" <<'JSON'
