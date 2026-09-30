@@ -671,7 +671,7 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
           sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
           sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at
-          sudo timeout 60 systemctl enable --now atd || sudo service atd start || true
+          sudo systemctl enable --now atd || sudo service atd start || true
       # HIMMEL-2742: same shape as HIMMEL-2587 (lanes-and-trust-suites) — a
       # suite in this corpus (test-wizard-luna-sections.sh) shells out to bun
       # and fails closed ("required test tool not found before PATH scrub:
