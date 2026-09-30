@@ -2957,6 +2957,12 @@ assert_audit_has "3895-g: not-adopted is audited" "trust=not-adopted"
 # SSH host alias) cannot prove the 404 is off the harness's own repo: refuse.
 MOG_ANCHOR_URL=git@gh-alias:owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
     tp_run 21 "3895-h: no trust list, anchor origin is an SSH alias → exit 21"
+MOG_ANCHOR_URL=https://notgithub.com/owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 21 "3895-h2: no trust list, anchor origin host only ends in github.com → exit 21"
+MOG_ANCHOR_URL=https://evil.example/github.com/owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 21 "3895-h3: no trust list, github.com only in the origin path → exit 21"
+MOG_ANCHOR_URL=git@github.com:owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 0 "3895-h4: no trust list, scp-form github.com origin names another repo → merged"
 rm -rf "$TP_ROOT"
 
 # HIMMEL-3142 CR round 3: RED control — the pre-fix script tested

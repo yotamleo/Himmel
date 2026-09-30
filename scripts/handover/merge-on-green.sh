@@ -836,7 +836,12 @@ trust_other_repo() {
     local url
     url=$(git -C "$himmel_repo" config --get remote.origin.url 2>/dev/null) || return 1
     url=${url%/}; url=${url%.git}
-    case "$url" in *github.com[:/]*) url=${url##*github.com[:/]} ;; *) return 1 ;; esac
+    case "$url" in
+        https://github.com/*) url=${url#https://github.com/} ;;
+        ssh://git@github.com/*) url=${url#ssh://git@github.com/} ;;
+        git@github.com:*) url=${url#git@github.com:} ;;
+        *) return 1 ;;
+    esac
     case "$url" in ''|*/*/*|*[!A-Za-z0-9._/-]*) return 1 ;; */*) ;; *) return 1 ;; esac
     [ "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$nwo" | tr '[:upper:]' '[:lower:]')" ]
 }
