@@ -85,6 +85,14 @@ if printf '%s' "$cmd_stripped" | grep -E '(^|[;&|`$(]|[[:space:]])(env|command|b
     _deny "a gh pr merge behind an env/command/builtin/exec prefix or a NAME=value assignment is not parsed — refusing (GATE INTEGRITY). Run it bare with --match-head-commit, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 fi
 
+# A redirect ahead of `gh` in the same segment (`>/dev/null gh pr merge 42`,
+# `FOO=1 >/dev/null gh ...`) also moves it out of command position: deny it too.
+# fd dups (`2>&1`) are removed first so they cannot count as the redirect.
+cmd_nodup=$(printf '%s' "$cmd_stripped" | sed -E 's/[0-9]*[<>]&[0-9-]+//g')
+if printf '%s' "$cmd_nodup" | grep -E '[<>][^;&|]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
+    _deny "a redirect before gh pr merge is not parsed — refusing (GATE INTEGRITY). Put the redirect after the merge, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+fi
+
 # Command-position anchor (POSIX classes - BSD grep lacks \s/\b; coderabbit
 # app round). `merge` must be followed by whitespace or end-of-string.
 # shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
@@ -167,7 +175,10 @@ while [ "$#" -gt 0 ]; do
             # A spaced target that itself carries a | or & (`> f|cat`) ends the walk
             # too: what follows belongs to another command, not to this merge.
             '') skip_next=1
-                case "${2-}" in *[\|\&]*) stop_walk=1 ;; esac ;;
+                case "${2-}" in
+                    *[\|\&]*) stop_walk=1 ;;
+                    *[\<\>]*) _deny "an ambiguous chained redirect before the selector — refusing (GATE INTEGRITY). Run the merge without chained redirects, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)" ;;
+                esac ;;
             # A second redirect inside the token (`>a> b`) leaves a target this
             # walk cannot place: end the walk rather than guess (deny over parse).
             *[\|\&\>\<]*)
