@@ -933,7 +933,7 @@ NL=$'\n'
 # once HIMMEL-3930 lands.
 raw_obfuscated() {
     local t="$1" w rest pre sp v wv write=0 obf=0 SQ="'"
-    wv='(^|[^[:alnum:]_])(export|env|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
+    wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     set -f
     for w in $(printf '%s' "$t" | tr ';|&()<>' '       '); do
         case "$w" in
