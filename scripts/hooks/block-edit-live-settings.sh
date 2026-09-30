@@ -78,7 +78,7 @@
 #      chaining or redirection metacharacter anywhere (so a trailing
 #      `&& rm -rf /` can't ride in on an allowlisted first verb).
 #   2. Does it target the primary's `.claude/` DIRECTORY itself as a
-#      destination (cp/mv/install/rsync/ln/dd/tee/tar/gtar/bsdtar/unzip, git
+#      destination (cp/mv/install/rsync/ln/dd/tee/truncate/tar/gtar/bsdtar/unzip, git
 #      checkout/restore, or a `-t`/`--target-directory` flag) without
 #      necessarily naming settings.json in the text (`cp x .claude/`)?
 # Either question denies ONLY when the mention resolves to a LIVE file: cwd
@@ -699,6 +699,42 @@ check_target() {
     echo "allow"
 }
 
+# check_claude_dir_target RAW_OPERAND — the Bash arm's operand check
+# (HIMMEL-3700, J1329O I1): like check_target, but the resolved path need not
+# be a settings-named leaf. It is judged by its NEAREST `.claude` ancestor-or-
+# self (the operand IS the directory, or sits anywhere inside it), and that
+# directory is classified exactly as check_target classifies a settings file's
+# parent — so a symlinked directory that resolves onto the primary's or
+# $HOME's `.claude/` denies whatever the leaf is called. A path under
+# `<...>/.claude/worktrees/` is a linked worktree's own tree, never live.
+# Prints "deny …", "allow" or "unknown" like check_target.
+check_claude_dir_target() {
+    local raw="$1" t real d
+    case "$raw" in
+        /*|[A-Za-z]:/*|[A-Za-z]:\\*) t="$raw" ;;
+        *) t="$cwd/$raw" ;;
+    esac
+    real=""; real=$(canon "$t") || real=""
+    if [ -z "$real" ]; then
+        echo "unknown"
+        return
+    fi
+    d="$real"
+    while [ -n "$d" ] && [ "$d" != "/" ]; do
+        case "${d##*/}" in
+            [.][cC][lL][aA][uU][dD][eE])
+                case "${real#"$d"}" in
+                    /[wW][oO][rR][kK][tT][rR][eE][eE][sS]|/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*) echo "allow"; return ;;
+                esac
+                check_target "$d/settings.json"
+                return
+                ;;
+        esac
+        d="${d%/*}"
+    done
+    echo "allow"
+}
+
 deny_message() { # deny_message TOOL_LABEL ORIGINAL_TARGET REASON
     cat >&2 <<EOF
 ⛔ block-edit-live-settings: refusing $1 on \`$2\` — $3.
@@ -1255,7 +1291,7 @@ _unzip_verb_mode() {
 # cross-worktree `-C` reference, not this check.
 has_write_verb_or_target_flag() {
     local c="$1" n="$2" out seg
-    out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee)([^a-z0-9_]|$)') || true
+    out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee|truncate)([^a-z0-9_]|$)') || true
     [ -n "$out" ] && return 0
 
     # A Bash command is judged per segment from its tokens (_tok_verb_write,
@@ -1512,7 +1548,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # tokenizer could not vouch for (heredoc, ANSI-C word) fall back to the
     # whitespace split, same documented ceiling every other TOK=0 fallback
     # in this file already accepts.
-    _check_write_operand() {
+    _check_one_operand() {
         local w="$1" resolved wabs wparent wleaf result
         [ -n "$w" ] || return 0
         if [ -n "$nested_wt_primary" ]; then
@@ -1536,7 +1572,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # is a second stat-family builtin, no subprocess, and catches the
         # symlink itself so canon() still resolves where it points.
         if [ -e "$wabs" ] || [ -L "$wabs" ]; then
-            result=$(check_target "$w")
+            result=$(check_claude_dir_target "$w")
             case "$result" in deny\ *) symlink_dest=1 ;; esac
             return
         fi
@@ -1571,17 +1607,50 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         wparent="${wabs%/*}"
         [ -n "$wparent" ] || wparent="/"
         if [ -e "$wparent" ]; then
-            result=$(check_target "$w")
+            result=$(check_claude_dir_target "$w")
             case "$result" in deny\ *) symlink_dest=1 ;; esac
         fi
     }
+    # HIMMEL-3700 (J1329O I2, I4): a word can carry its path glued to an
+    # option — dd's `of=<path>`, `--target-directory=<dir>`, or a short-option
+    # cluster ending in t whose argument follows without a space (`-t<dir>`,
+    # `-rt<dir>`) — so the operand is judged as spelled AND with that prefix
+    # removed. A candidate that names no path is inert (it does not exist).
+    _check_write_operand() {
+        local w="$1" cand=''
+        _check_one_operand "$w"
+        case "$w" in
+            of=*) cand=${w#of=} ;;
+            --target-directory=*) cand=${w#--target-directory=} ;;
+            --*) : ;;
+            -*t*) cand=${w#-*t} ;;
+        esac
+        [ -z "$cand" ] || _check_one_operand "$cand"
+    }
     dirdest_climb=0
     symlink_dest=0
+    # The operand scan runs for a write verb (every word) and, since
+    # HIMMEL-3700 (I2), for any other writer's redirect target: `echo x > s`
+    # writes through a symlink `s` exactly as `cp y s` does. A command the
+    # tokenizer could not model has no redirect targets to pick out, so a `>`
+    # anywhere in it scans every word (the same fallback a write verb gets).
+    op_scan=0
     if [ "$write_verb" = 1 ]; then
+        op_scan=1
+    elif [ "$TOK" = 1 ]; then
+        op_scan=2
+    else
+        case "$cmd_n" in *'>'*) op_scan=1 ;; esac
+    fi
+    if [ "$op_scan" != 0 ]; then
         if [ "$TOK" = 1 ]; then
             widx=0
             while [ "$widx" -lt "$ST_N" ]; do
-                _check_write_operand "${ST_W[widx]}"
+                if [ "$op_scan" = 1 ]; then
+                    _check_write_operand "${ST_W[widx]}"
+                else
+                    case "${ST_RO[widx]}" in *'>'*) _check_write_operand "${ST_W[widx]}" ;; esac
+                fi
                 widx=$((widx + 1))
             done
         else
@@ -1610,11 +1679,14 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
 
     # HIMMEL-3686 item 2: a brace group in the text is refused outright
     # whenever it could hide a climb that matters — the text already names
-    # a live settings file or a primary .claude dir-dest, or $cwd is itself
-    # a nested worktree a hidden `../` could climb out of.
+    # a live settings file (any writer: `sed -i`, `perl -pi` and others the
+    # verb list does not know, HIMMEL-3700 I3), or, under a write verb, a
+    # primary .claude dir-dest, or $cwd is itself a nested worktree a hidden
+    # `../` could climb out of.
     brace_dir_dest=0
-    if [ "$write_verb" = 1 ] && has_unquoted_brace_group "$cmd_n" \
-        && { [ "$mentions_settings" = "1" ] || [ "$dir_dest" = "1" ] || [ -n "$nested_wt_primary" ]; }; then
+    if has_unquoted_brace_group "$cmd_n" \
+        && { [ "$mentions_settings" = "1" ] \
+            || { [ "$write_verb" = 1 ] && { [ "$dir_dest" = "1" ] || [ -n "$nested_wt_primary" ]; }; }; }; then
         brace_dir_dest=1
     fi
 
@@ -1677,7 +1749,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     if [ "$mentions_settings" = "1" ]; then
         deny_message "a $tool_name command" "$cmd" "the command text names a live settings.json/settings.local.json (worktree-relative spellings of the worktree's OWN copy are exempt; this one resolves to the primary checkout or \$HOME)"
     else
-        deny_message "a $tool_name command" "$cmd" "the command targets the primary checkout's .claude/ directory itself (cp/mv/install/rsync/ln/dd/tee/tar/gtar/bsdtar/unzip, git checkout/restore, or a -t/--target-directory destination)"
+        deny_message "a $tool_name command" "$cmd" "the command targets the primary checkout's .claude/ directory itself (cp/mv/install/rsync/ln/dd/tee/truncate/tar/gtar/bsdtar/unzip, git checkout/restore, or a -t/--target-directory destination)"
     fi
     exit 2
 fi

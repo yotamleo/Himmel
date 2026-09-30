@@ -1689,7 +1689,7 @@ leg's worktree for every hook-wiring change.
 HIMMEL-3499, HIMMEL-3555).** It does not parse commands. It fires when the
 command text names `settings.json`/`settings.local.json` (rule 1, any verb)
 or names a `.claude` directory together with a copy/extract/checkout-shaped
-verb (`cp`/`mv`/`install`/`rsync`/`ln`/`dd`/`tee`/`tar`/`gtar`/`bsdtar`/
+verb (`cp`/`mv`/`install`/`rsync`/`ln`/`dd`/`tee`/`truncate`/`tar`/`gtar`/`bsdtar`/
 `unzip`/`checkout`/`restore`) or `-t`/`--target-directory` (rule 2). A
 `.claude/worktrees/<name>` mention (every linked worktree's own container
 path) is stripped before this match, so an ordinary cross-worktree
@@ -1729,20 +1729,28 @@ as plain text, no filesystem access) — landing on the primary's `.claude`
 itself, or anywhere under it outside `worktrees/`, denies, even though the
 text names neither `.claude` nor `settings` (a bare `cp -r x/. ../..` from
 the worktree). (2) An unquoted `{…,…}` brace group in the text denies
-outright — braces are never expanded — when the text also names `.claude`
-or `settings`, or `dir_dest` already matched, or the cwd is a nested
+outright — braces are never expanded — when the text names `settings.json`
+or `settings.local.json` (any command, so `sed -i` and `perl -pi` count), or,
+under a write verb, when `dir_dest` already matched or the cwd is a nested
 worktree; this catches a brace group hiding a `..` climb from every check
 above, none of which expand braces (`tee .{,.}/.{,.}/settings.json`). (3)
-Every write-destination word that names a path EXISTING on disk, OR that is
+Every write-destination word — every word of a write-verb command, and only
+the redirect targets (`>`, `>>`, `&>`, `>|`) of any other command — that names a path EXISTING on disk, OR that is
 itself a symlink even if DANGLING (CR round 3, codex-1: `-e` follows a
 symlink and reports false when its target does not exist yet, e.g. a live
 settings.json that has not been created — `-L` is a second stat-family
 builtin, no extra subprocess, and catches the symlink itself so `canon()`
 still resolves where it points), is resolved with `canon()` (the same
 `realpath -m`-or-Python `resolve()` this hook already uses, which follows
-symlinks); a destination that already exists (or exists as a symlink) into a
-live settings file or the primary's `.claude/` outside worktrees/ denies even
-though the text is otherwise silent — this is the one place the hook reads
+symlinks); a destination that already exists (or exists as a symlink) and
+resolves to a live settings file, or to ANY path at or inside a primary
+checkout's or `$HOME`'s `.claude/` outside `worktrees/` whatever its leaf name
+(HIMMEL-3700 I1: a symlinked directory such as `cp -r x/. dlink`), denies even
+though the text is otherwise silent — the nearest `.claude` ancestor of the
+resolved path is judged as if `settings.json` were written inside it. Glued
+forms are judged too (I4): `of=<path>`, `-t<dir>`, `-rt<dir>` and
+`--target-directory=<dir>` are each checked as spelled and with the value
+stripped out. This is the one place the hook reads
 the filesystem, and only for destination operands. When
 the word's leaf case-folds to `settings.json`/`settings.local.json` but the
 full path does not exist yet, the check also fires on the PARENT directory
@@ -1834,9 +1842,14 @@ does not name the file or its directory in a form above:
 - an ANSI-C word that escapes the `settings` or `claude` letters themselves
   (`$'\x73ettings.json'`);
 - a symlink the command itself creates and then writes through in the same
-  invocation (a pre-existing symlink destination is now resolved and caught
-  — HIMMEL-3686 — but the destination-existence check runs at PreToolUse,
-  before the command's own `ln` would have created it);
+  invocation (a pre-existing symlink destination — file or directory — is
+  resolved and caught, HIMMEL-3686 / HIMMEL-3700, but the
+  destination-existence check runs at PreToolUse, before the command's own
+  `ln` would have created it);
+- a writer outside the verb list whose command does not name `settings.json`
+  and has no redirect (`sed -i`, `perl -pi`, `awk -i inplace` on a symlink
+  operand): only write-verb operands and redirect targets are scanned for
+  symlink resolution (HIMMEL-3700);
 - an absolute path into a second clone of the repo, other than this
   session's own primary checkout;
 - a POSIX-mount spelling (`/c/Users/…`) of a Windows drive root.
