@@ -575,7 +575,8 @@ while IFS= read -r f; do
     # exists but cannot be read fails closed rather than dropping the suite.
     : > "$work/content" || io_fail "resetting the content-rule scratch file"
     for rev in "$head_sha" "$mb"; do
-        if git cat-file -e "${rev}:${f}" 2>/dev/null; then
+        git ls-tree --name-only "$rev" -- "$f" > "$work/lstree" || io_fail "probing ${f} at ${rev} for the content rules"
+        if [ -s "$work/lstree" ]; then
             git show "${rev}:${f}" >> "$work/content" || io_fail "reading ${f} at ${rev} for the content rules"
         fi
     done
