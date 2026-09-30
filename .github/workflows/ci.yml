@@ -865,14 +865,17 @@ jobs:
       # script, same base, same merge commit) and require every ubuntu shard's
       # manifest to carry it verbatim, and the shards together to have run each
       # selected suite exactly once and green. A missing manifest, one from
-      # another sha, or a shard that ran less than selected is red.
+      # another sha, or a shard that ran less than selected is red. The
+      # aggregator's own `--list .` is the discovery a shard's `notfound` is
+      # checked against: a selected suite it finds that no shard did is red.
       - name: Every shard ran exactly the selection
         env:
           IMPACTED_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.base.sha || '' }}
         run: |
           bash scripts/ci/impacted-selection.sh "$IMPACTED_BASE" HEAD > shard-selection.txt
           head -n 2 shard-selection.txt
-          bash scripts/ci/shard-manifest-verify.sh --dir shard-manifest --shards 8 --selection shard-selection.txt
+          bash scripts/ci/run-shell-tests.sh --list . > shard-discovered.txt
+          bash scripts/ci/shard-manifest-verify.sh --dir shard-manifest --shards 8 --selection shard-selection.txt --discovered shard-discovered.txt
       # HIMMEL-3897 / HIMMEL-3896: the post-merge full sweep is where a
       # selector miss shows up — a suite red on main that the merged PR's
       # impacted selection did not list. Recorded, never blocking: the red

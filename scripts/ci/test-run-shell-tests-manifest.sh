@@ -15,6 +15,8 @@
 #   RM4  the two env vars never reach a suite the runner starts
 #   RM5  two shards: the union of their manifests verifies; dropping one
 #        shard's `ran` line makes the verify refuse
+#   RM6  a shard that records a listed suite as `notfound` is refused
+#        (the aggregator's real `--list .` output is the check)
 #
 # Platform guard: bash-only, no .ps1 twin; the shards run on Linux CI.
 #
@@ -82,10 +84,13 @@ shard_run() {
   out=$(SUITE_IMPACTED_FROM_BASE="$BASE" SUITE_MANIFEST="$SB/m/manifest-shard$1.txt" \
         bash "$RUN" --shard "$1/$2" . 2>&1); rc=$?
 }
-# aggregate <n> — the aggregator: recompute the selection, verify manifests.
+# aggregate <n> — the aggregator, as ci.yml runs it: recompute the selection,
+# list discovery, verify manifests.
 aggregate() {
   (cd "$SB" && bash scripts/ci/impacted-selection.sh "$BASE" HEAD) > "$SB/sel.txt"
-  vout=$(bash "$VERIFY" --dir "$SB/m" --shards "$1" --selection "$SB/sel.txt" 2>&1); vrc=$?
+  bash "$RUN" --list . > "$SB/disc.txt" 2>&1
+  vout=$(bash "$VERIFY" --dir "$SB/m" --shards "$1" --selection "$SB/sel.txt" \
+         --discovered "$SB/disc.txt" 2>&1); vrc=$?
 }
 fresh() { rm -rf "$SB/m"; : > "$RM_LOG"; }
 
@@ -148,5 +153,15 @@ aggregate 2
 if [ "$vrc" -eq 1 ] && grepq "$vout" 'never ran'; then
   pass "RM5: a shard that drops its ran lines is refused"
 else fail "RM5: verify rc=$vrc: $vout"; fi
+
+# --- RM6 ---------------------------------------------------------------------
+pr hide scripts/tools/foo.sh; fresh
+shard_run 1 1
+sed -i.bak 's#^ran 0 scripts/test-foo.sh$#notfound scripts/test-foo.sh#' "$SB/m/manifest-shard1.txt"
+rm -f "$SB/m/manifest-shard1.txt.bak"
+aggregate 1
+if [ "$vrc" -eq 1 ] && grepq "$vout" 'scripts/test-foo.sh is discoverable'; then
+  pass "RM6: a shard claiming notfound for a suite the runner lists is refused"
+else fail "RM6: verify rc=$vrc: $vout"; fi
 
 rst_tally

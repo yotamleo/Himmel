@@ -19,6 +19,10 @@
 #   MV12  a manifest that claims another shard number           -> rc 1
 #   MV13  docs-only: impacted, empty selection, nothing ran     -> rc 0
 #   MV14  usage error / unreadable selection                    -> rc 2
+#   MV15  `notfound`, but the aggregator's `--list .` finds it  -> rc 1
+#   MV16  `notfound`, and absent from `--list .` (deleted)      -> rc 0
+#   MV17  `notfound` with no --discovered list (fail closed)    -> rc 1
+#   MV18  a --discovered list naming no suite                   -> rc 2
 #
 # Platform guard: bash-only, no .ps1 twin; the aggregator runs on Linux.
 #
@@ -60,7 +64,9 @@ manifest() {
     > "$d/m/manifest-shard$k.txt"
 }
 
-verify() { bash "$VERIFY" --dir "$1/m" --shards "$2" --selection "$1/sel.txt" 2>&1; }
+# DISC, when set, is passed as --discovered (the aggregator's `--list .` output).
+DISC=""
+verify() { bash "$VERIFY" --dir "$1/m" --shards "$2" --selection "$1/sel.txt" ${DISC:+--discovered "$DISC"} 2>&1; }
 
 # expect <label> <want-rc> <dir> <n> [<grep-ERE the output must match>]
 expect() {
@@ -158,5 +164,28 @@ out=$(bash "$VERIFY" --dir "$T" 2>&1); rc=$?
 if [ "$rc" -eq 2 ]; then pass "MV14: missing arguments -> rc 2"; else fail "MV14: rc=$rc out: $out"; fi
 out=$(bash "$VERIFY" --dir "$T" --shards 1 --selection "$T/nope.txt" 2>&1); rc=$?
 if [ "$rc" -eq 2 ]; then pass "MV14: unreadable selection -> rc 2"; else fail "MV14: rc=$rc out: $out"; fi
+
+# --- MV15-MV18: a selected suite a shard recorded as `notfound` ---------------
+# The aggregator lists discovery at the same head; a suite it finds that a shard
+# did not is a shard that skipped discovery, not a deleted suite.
+d=$(case_dir mv15); header impacted scripts/test-a.sh scripts/test-b.sh > "$d/sel.txt"
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh' 'notfound scripts/test-b.sh'
+printf '[RUN ] scripts/test-a.sh\n[RUN ] scripts/test-b.sh\n[SKIP] scripts/test-c.sh — tier\n' > "$d/disc.txt"
+DISC="$d/disc.txt"
+expect "MV15: notfound but discoverable at this head is refused" 1 "$d" 1 'scripts/test-b\.sh.*discover'
+
+d=$(case_dir mv16); header impacted scripts/test-a.sh scripts/test-gone.sh > "$d/sel.txt"
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh' 'notfound scripts/test-gone.sh'
+printf '[RUN ] scripts/test-a.sh\n' > "$d/disc.txt"
+DISC="$d/disc.txt"
+expect "MV16: notfound and not discoverable (deleted suite) is a NOTE" 0 "$d" 1 'NOTE.*scripts/test-gone\.sh'
+
+DISC=""
+expect "MV17: notfound without a --discovered list fails closed" 1 "$d" 1 'scripts/test-gone\.sh.*--discovered'
+
+: > "$d/empty.txt"
+DISC="$d/empty.txt"
+expect "MV18: a discovered list naming no suite is a usage error" 2 "$d" 1 'names no suite'
+DISC=""
 
 rst_tally
