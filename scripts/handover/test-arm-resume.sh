@@ -6517,8 +6517,11 @@ fi
 # shrug off.
 # HIMMEL-3846: a non-dry-run arm runs the REAL bank-preflight, whose producer
 # refresh writes the usage cache at $CADENCE_BANK_CACHE. The suite points that
-# at $TMP; the scratch file appearing proves a real arm reached the preflight
-# AND the redirect held (else it would have rewritten the operator's live
+# at $TMP and swaps in a stub producer that logs the cache path each refresh
+# was handed (HIMMEL-3911: the scratch file only appears if a live OAuth fetch
+# succeeds, so it proved nothing on hosts where it fails). A non-empty log
+# proves a real arm reached the preflight; every line being $TMP/bank-cache.json
+# proves the redirect held (else it would have rewritten the operator's live
 # /tmp/claude/statusline-usage-cache.json). A --only run may skip every real arm.
 if [ -z "$ONLY_FILTERS" ]; then
     if [ ! -s "$BANK_PRODUCER_LOG" ]; then
