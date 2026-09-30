@@ -1331,7 +1331,11 @@ rm -rf "$BR_TMP"
 # Controls: a brace the shell does NOT expand (quoted, escaped, no comma or
 # `..`, a git reflog selector, a lone group brace) keeps its old decision.
 assert "git log quoted brace still ALLOW"     ALLOW "$(decide "$(j_bash "git log '{--output=PWN,-1}'")")"
-assert "git log dq brace still ALLOW"         ALLOW "$(decide "$(j_bash 'git log "{--output=PWN,-1}"')")"
+# HIMMEL-3894: build this payload in a variable first. Nested inside
+# "$(… "$(j_bash '…')")", bash 3.2 brace-expands the inner `"{a,b}"` and the
+# hook would see `git log "--output=PWN"` instead (the HIMMEL-3880 shape).
+BR_DQ=$(j_bash 'git log "{--output=PWN,-1}"')
+assert "git log dq brace still ALLOW"         ALLOW "$(decide "$BR_DQ")"
 assert "git log escaped brace still ALLOW"    ALLOW "$(decide "$(j_bash 'git log \{--output=PWN,-1\}')")"
 assert "git log quoted comma still ALLOW"     ALLOW "$(decide "$(j_bash 'git log {a",b"}')")"
 assert "git log reflog selector still ALLOW"  ALLOW "$(decide "$(j_bash 'git log -1 HEAD@{1}')")"
@@ -1375,6 +1379,83 @@ while IFS= read -r NODE_CMD; do
 done <<EOF
 $NODE_ROWS
 EOF
+
+# --- HIMMEL-3894: the git/gh/xxd/file/tree/base64 arms matched flags on raw
+# tokens with exact or `-X*` patterns. A denied short flag packed into a
+# cluster, a unique-prefix abbreviation of a denied long option, a quoted or
+# escaped spelling, and a leading glob all reach the option unseen. Every row
+# must fall through (PASS), never ALLOW.
+CL_ROWS='git grep -iOtouch_PWN x
+git grep -nOtouch_PWN x
+git log --outp=/tmp/PWN -1
+git log --out /tmp/PWN
+git diff --ext HEAD
+git diff --ext-d HEAD
+git show --textc HEAD
+git show --filt HEAD
+git grep --open-files=touch_PWN x
+git grep --open x
+git log "--output=/tmp/PWN" -1
+git log '"'"'--output'"'"'=/tmp/PWN -1
+git log --"output"=/tmp/PWN
+git log \--output=/tmp/PWN
+git diff "--ext-diff"
+git show '"'"'--textconv'"'"' HEAD
+git grep -"O"touch_PWN x
+git grep --"open-files-in-pager"=touch_PWN x
+git show "--filters" HEAD
+git --"exec-path"=/tmp log
+git -"C" status push
+git log *
+git grep x ?x -- a
+gh pr view 1 -wR o/r
+gh pr view -cw 1
+gh pr view 1 --we
+gh pr view 1 "--web"
+gh pr view 1 '"'"'-w'"'"'
+gh pr view 1 \-\-web
+gh pr view 1 --"web"
+gh pr list *
+xxd -rp in
+xxd -revers in
+xxd --r in
+file -bC -m magic
+file -zC x
+tree -ao out
+base64 -io out'
+while IFS= read -r CL_CMD; do
+    assert "cluster/abbrev/quoted flag or leading glob never ALLOW: $CL_CMD" PASS "$(decide "$(j_bash "$CL_CMD")")"
+done <<EOF
+$CL_ROWS
+EOF
+# The lease push arm reads the current branch, so its rows run on a feature
+# branch in the throwaway repo.
+git -C "$FWL_REPO" checkout -q feat/x
+CL_FWL_ROWS='git push -uf --force-with-lease origin feat/x
+git push -fv --force-with-lease
+git push --force-with-lease --forc origin feat/x
+git push --force-with-lease "--force" origin feat/x
+git push --force-with-lease '"'"'-f'"'"' origin feat/x
+git push --force-with-lease \-f origin feat/x
+git push --force-with-lease origin "main"
+git push --force-with-lease origin '"'"'HEAD:main'"'"'
+git push --force-with-lease origin *'
+while IFS= read -r CL_CMD; do
+    assert "lease push cluster/abbrev/quoted force, quoted main or glob never ALLOW: $CL_CMD" PASS "$(decide_in "$FWL_REPO" "$(j_bash "$CL_CMD")")"
+done <<EOF
+$CL_FWL_ROWS
+EOF
+# Controls: plain reads, a real option that merely prefixes a denied one, a
+# pathspec glob after `--`, and the literal lease push still ALLOW.
+assert "git log -5 still ALLOW"            ALLOW "$(decide "$(j_bash 'git log -5')")"
+assert "git status still ALLOW"            ALLOW "$(decide "$(j_bash 'git status')")"
+assert "gh pr view 1 still ALLOW"          ALLOW "$(decide "$(j_bash 'gh pr view 1')")"
+assert "git diff --text still ALLOW"       ALLOW "$(decide "$(j_bash 'git diff --text HEAD')")"
+assert "git diff -- glob still ALLOW"      ALLOW "$(decide "$(j_bash 'git diff -- *.sh')")"
+assert "git log quoted grep still ALLOW"   ALLOW "$(decide "$(j_bash 'git log --grep="a b" -3')")"
+assert "gh pr checks --watch still ALLOW"  ALLOW "$(decide "$(j_bash 'gh pr checks 1 --watch')")"
+assert "xxd -ps still ALLOW"               ALLOW "$(decide "$(j_bash 'xxd -ps in')")"
+assert "lease push literal still ALLOW"    ALLOW "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin feat/x')")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

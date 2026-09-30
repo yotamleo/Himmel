@@ -117,6 +117,26 @@ is_safe_bin() {
     return 1
 }
 
+# HIMMEL-3894: cook every argv word of a git/gh command into CW (index-aligned
+# with the raw words) so flag checks see the argv text, not a quoted or escaped
+# spelling (`"--output=x"`, `\-f`). Fails — the caller falls through — when a
+# word cannot be cooked (an unquoted `$VAR`, a brace span), or when a word
+# before a `--` terminator starts with an unquoted glob character, which can
+# expand into a `-`-leading file name that reads as a flag.
+cook_argv_words() {
+    local w dd=0
+    CW=()
+    for w in "$@"; do
+        shell_word_value "$w" || return 1
+        if [ "$dd" -eq 0 ]; then
+            case "$w" in '*'*|'?'*|'['*) return 1 ;; esac
+            [ "$w" = "--" ] && dd=1
+        fi
+        CW+=("$SW_VALUE")
+    done
+    return 0
+}
+
 # git read-only subcommands (no mutating form). Deliberately EXCLUDES
 # branch/tag/remote/config/worktree/stash/reflog/notes (have write forms)
 # and commit/push/pull/merge/rebase/checkout/reset/clean (mutating) — those
@@ -124,13 +144,19 @@ is_safe_bin() {
 git_subcmd_is_read() {
     local -a g=("$@")            # g[0] == git
     local n=${#g[@]} j=1 t
+    cook_argv_words "$@" || return 1
     while [ "$j" -lt "$n" ]; do  # skip global flags (some take a separate arg)
         t="${g[$j]}"
-        case "$t" in
+        case "${CW[$j]}" in
             # Exec sinks — `-c diff.external=cmd`, `-c core.pager=cmd`, config
             # injection, and `--exec-path` (relocates git's subcommand dir).
             # NEVER auto-approve these; fall through to a prompt.
             -c|--config-env|--config-env=*|--exec-path|--exec-path=*) return 1 ;;
+            # HIMMEL-3894: a quoted/escaped global flag would be skipped by the
+            # raw walk below with the wrong arity; fall through.
+            -*) [ "$t" = "${CW[$j]}" ] || return 1 ;;
+        esac
+        case "$t" in
             --git-dir=*|--work-tree=*|--namespace=*) j=$((j + 1)); continue ;;  # =form: no separate arg
             -C|--git-dir|--work-tree|--namespace) j=$((j + 2)); continue ;;     # space form: skip arg
             -*) j=$((j + 1)); continue ;;
@@ -155,7 +181,7 @@ git_subcmd_is_read() {
     if [ "${g[$j]}" = "symbolic-ref" ]; then
         local sj=$((j + 1)) ops=0 w
         while [ "$sj" -lt "$n" ]; do
-            w="${g[$sj]}"
+            w="${CW[$sj]}"
             case "$w" in -*) ;; *) ops=$((ops + 1)) ;; esac
             sj=$((sj + 1))
         done
@@ -165,12 +191,22 @@ git_subcmd_is_read() {
     #   --output[=F] (diff/log/show write to a file)   --ext-diff (runs diff.external)
     #   -O[cmd] / --open-files-in-pager[=cmd] (git grep execs a pager command)
     #   --textconv / --filters (run gitattributes-configured filter commands)
+    # HIMMEL-3894: matched on the cooked words. git accepts a unique prefix of
+    # a long option (`--outp=F`) and packs short flags (`-iO<cmd>`), so a long
+    # word is matched as an abbreviation and any single-dash word holding an
+    # `O` falls through. `--text` is its own option, not a `--textconv` prefix.
     local f
-    for f in "${g[@]}"; do
+    for f in "${CW[@]}"; do
         case "$f" in
-            --output|--output=*|-O|-O*|--open-files-in-pager|--open-files-in-pager=*|\
-            --ext-diff|--textconv|--filters)
-                return 1 ;;
+            --text) ;;
+            --*)
+                guard_is_long_abbrev "output" "$f" && return 1
+                guard_is_long_abbrev "open-files-in-pager" "$f" && return 1
+                guard_is_long_abbrev "ext-diff" "$f" && return 1
+                guard_is_long_abbrev "textconv" "$f" && return 1
+                guard_is_long_abbrev "filters" "$f" && return 1 ;;
+            -*)
+                case "${f#-}" in *O*) return 1 ;; esac ;;
         esac
     done
     return 0
@@ -196,12 +232,16 @@ git_subcmd_is_read() {
 git_push_force_with_lease_is_safe() {
     local -a g=("$@")            # g[0] == git
     local n=${#g[@]} j=1 t
+    cook_argv_words "$@" || return 1
     # Skip git global flags to land on the subcommand. Exec-sink flags
     # (-c / --exec-path) are rejected outright (same set as git_subcmd_is_read).
     while [ "$j" -lt "$n" ]; do
         t="${g[$j]}"
-        case "$t" in
+        case "${CW[$j]}" in
             -c|--config-env|--config-env=*|--exec-path|--exec-path=*) return 1 ;;
+            -*) [ "$t" = "${CW[$j]}" ] || return 1 ;;   # HIMMEL-3894: quoted global flag
+        esac
+        case "$t" in
             --git-dir=*|--work-tree=*|--namespace=*) j=$((j + 1)); continue ;;
             -C|--git-dir|--work-tree|--namespace) j=$((j + 2)); continue ;;
             -*) j=$((j + 1)); continue ;;
@@ -210,11 +250,23 @@ git_push_force_with_lease_is_safe() {
     done
     [ "$j" -ge "$n" ] && return 1
     [ "${g[$j]}" = "push" ] || return 1
-    local has_lease=0 has_bare_force=0 targets_main=0 k
-    for k in "${g[@]:$((j + 1))}"; do
-        case "$k" in
+    local has_lease=0 has_bare_force=0 targets_main=0 k m=$((j + 1))
+    while [ "$m" -lt "$n" ]; do
+        # The lease itself must be a literal word (a quoted spelling never
+        # grants); every denial below is matched on the cooked word.
+        case "${g[$m]}" in
             --force-with-lease|--force-with-lease=*) has_lease=1 ;;
-            --force|-f)                              has_bare_force=1 ;;
+        esac
+        k="${CW[$m]}"
+        m=$((m + 1))
+        case "$k" in
+            --force-with-lease|--force-with-lease=*) ;;
+            # HIMMEL-3894: a bare force spelled as a unique prefix (`--forc`)
+            # or packed into a short cluster (`-uf`).
+            --*) guard_is_long_abbrev "force" "$k" && has_bare_force=1 ;;
+            -*)  case "${k#-}" in *f*) has_bare_force=1 ;; esac ;;
+        esac
+        case "$k" in
             # Any refspec that writes remote main OR master (both protected
             # defaults, HIMMEL-297) — incl. the `+`-force prefix (`+main` ≡
             # `+main:main`) and explicit `src:main` colon forms.
@@ -241,8 +293,14 @@ git_push_force_with_lease_is_safe() {
 gh_subcmd_is_read() {
     local -a g=("$@")            # g[0] == gh
     local n=${#g[@]} j=1 k
-    for k in "${g[@]}"; do       # `--web`/`-w` launches a browser → not read
-        case "$k" in --web|-w) return 1 ;; esac
+    cook_argv_words "$@" || return 1
+    # `--web`/`-w` launches a browser → not read. HIMMEL-3894: matched on the
+    # cooked words, as a long-option prefix and inside a short cluster (`-wR`).
+    for k in "${CW[@]}"; do
+        case "$k" in
+            --*) guard_is_long_abbrev "web" "$k" && return 1 ;;
+            -*)  case "${k#-}" in *w*) return 1 ;; esac ;;
+        esac
     done
     while [ "$j" -lt "$n" ]; do  # leading global flags → group word
         case "${g[$j]}" in -*) j=$((j + 1)) ;; *) break ;; esac
@@ -792,7 +850,9 @@ segment_is_safe() {
                     shell_word_value "$k" || return 1
                     [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -r/-revert or a 2nd positional
                     case "$SW_VALUE" in
-                        -r|-revert) return 1 ;;          # reverse = write binary
+                        # reverse = write binary. xxd takes any `-r…` word as
+                        # -r (HIMMEL-3894), so any flag word holding an r falls through.
+                        -*r*) return 1 ;;
                         [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) ;;  # redirect token, not a positional
                         -*) ;;                           # other flags take no file
                         *) xops=$((xops + 1)) ;;
@@ -804,8 +864,8 @@ segment_is_safe() {
                     shell_word_value "$k" || return 1
                     [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -o/--output
                     case "$SW_VALUE" in
-                        -o|-o*) return 1 ;;
                         --*) guard_is_long_abbrev "output" "$SW_VALUE" && return 1 ;;
+                        -*) case "${SW_VALUE#-}" in *o*) return 1 ;; esac ;;  # HIMMEL-3894: clustered -o
                     esac
                 done ;;
             base64)                        # BSD `base64 -o FILE` writes a file
@@ -813,8 +873,8 @@ segment_is_safe() {
                     shell_word_value "$k" || return 1
                     [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -o/--output
                     case "$SW_VALUE" in
-                        -o|-o*) return 1 ;;
                         --*) guard_is_long_abbrev "output" "$SW_VALUE" && return 1 ;;
+                        -*) case "${SW_VALUE#-}" in *o*) return 1 ;; esac ;;  # HIMMEL-3894: clustered -o
                     esac
                 done ;;
             file)                          # `file -C [-m mf]` compiles/writes <mf>.mgc
@@ -822,8 +882,8 @@ segment_is_safe() {
                     shell_word_value "$k" || return 1
                     [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # HIMMEL-3660: a glob could expand into -C
                     case "$SW_VALUE" in
-                        -C) return 1 ;;
                         --*) guard_is_long_abbrev "compile" "$SW_VALUE" && return 1 ;;
+                        -*) case "${SW_VALUE#-}" in *C*) return 1 ;; esac ;;  # HIMMEL-3894: clustered -C
                     esac
                 done ;;
         esac
