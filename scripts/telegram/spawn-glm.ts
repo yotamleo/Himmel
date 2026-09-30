@@ -978,12 +978,46 @@ export type CheckpointRun = (cmd: string[], cwd: string, env?: Record<string, st
 // all throw on a nonzero rc — correct for setup steps that must abort the
 // dispatch, wrong for a checkpoint, which is best-effort armor bolted onto a
 // run that has already ended and whose exit code must survive unchanged.
-export function gitCapture(cmd: string[], cwd: string, env?: Record<string, string>): { code: number; stdout: string } {
+export function gitCapture(cmd: string[], cwd: string, env?: Record<string, string>, timeoutMs?: number): { code: number; stdout: string } {
   const r = Bun.spawnSync(["git", "-C", cwd, ...cmd], {
-    stdout: "pipe", stderr: "pipe",
+    stdout: "pipe", stderr: "pipe", ...(timeoutMs ? { timeout: timeoutMs } : {}),
     env: env ? { ...process.env, ...env } : process.env,
   });
   return { code: r.exitCode ?? -1, stdout: r.stdout.toString() };
+}
+
+// HIMMEL-1687: the dispatch summary's git-state lines. `exit: 0` cannot tell
+// "committed, parent owns the push (expected)" from "produced nothing", so the
+// parent reads these instead of running `git ls-remote` per branch. Computed
+// from git at summary time, never from the worker's own claims; any git read
+// that fails prints `unknown`, never a guess. Read-only (ls-remote uses the
+// fetch URL, so the pushurl quarantine is untouched). Shared by both lanes.
+// merge-base --is-ancestor: 0 = ancestor (remote lags), 1 = not an ancestor, anything else
+// is a git error (e.g. the remote tip was never fetched), which must read `unknown`.
+function ancestry(code: number, branch: string, remoteSha: string, localSha: string): string {
+  if (code === 0) return `partial (origin/${branch} at ${remoteSha}, local HEAD ${localSha})`;
+  if (code === 1) return `differs (origin/${branch} at ${remoteSha}, local HEAD ${localSha}; not an ancestor)`;
+  return "unknown";
+}
+
+export function composeDispatchGitState(worktree: string, branch: string, baseSha: string | undefined): string[] {
+  // Bounded and non-interactive: a stalled remote or a credential prompt must not
+  // hold an already-finished worker's result hostage; a kill reads as `unknown`.
+  const ls = gitCapture(["ls-remote", "--heads", "origin", `refs/heads/${branch}`], worktree, { GIT_TERMINAL_PROMPT: "0" }, 15_000);
+  const remoteSha = ls.stdout.trim().split(/\s+/)[0];
+  const head = gitCapture(["rev-parse", "HEAD"], worktree);
+  const localSha = head.code === 0 ? head.stdout.trim() : "";
+  // A remote branch that lags local HEAD is NOT "pushed": the worker's newest commits are still local.
+  const pushed = ls.code !== 0 ? "unknown"
+    : !remoteSha ? "no (by design, parent owns push)"
+    : !localSha ? "unknown"
+    : remoteSha === localSha ? `yes (origin/${branch} at ${remoteSha})`
+    : ancestry(gitCapture(["merge-base", "--is-ancestor", remoteSha, localSha], worktree).code, branch, remoteSha, localSha);
+  const count = baseSha ? gitCapture(["rev-list", "--count", `${baseSha}..HEAD`], worktree) : undefined;
+  const commits = count && count.code === 0 && /^\d+$/.test(count.stdout.trim()) ? count.stdout.trim() : "unknown";
+  const status = gitCapture(["status", "--porcelain"], worktree);
+  const clean = status.code !== 0 ? "unknown" : status.stdout.trim() === "" ? "yes" : "no";
+  return [`pushed: ${pushed}`, `commits: ${commits}`, `worktree_clean: ${clean}`];
 }
 
 // PLUMBING, deliberately. write-tree/commit-tree/update-ref run NO hooks at
@@ -1611,6 +1645,9 @@ async function main(): Promise<void> {
   // HIMMEL-1094: onSetupFail runs ONLY if the profile resolve below throws —
   // i.e. before ANY of the worker's state exists. The own-branch caller passes a
   // teardown; shared mode passes nothing (runSharedDispatch calls runBody()).
+  // HIMMEL-1687: the worker branch's tip BEFORE the worker runs (own-branch:
+  // the cut point; shared: the pre-existing tip), the base for `commits:`.
+  let baseSha: string | undefined;
   const runBody = async (onSetupFail?: () => void): Promise<number> => {
     // HIMMEL-1778: runBody is the one seam that covers BOTH modes after the
     // branch exists and BEFORE the worker launches (own-branch: minted just
@@ -1731,6 +1768,8 @@ async function main(): Promise<void> {
     // work is stranded — would otherwise skip the checkpoint entirely. That is
     // the exact hole moving this call out of executeRun was meant to avoid.
     let code: number;
+    const head0 = gitCapture(["rev-parse", "HEAD"], worktree);
+    baseSha = head0.code === 0 ? head0.stdout.trim() : undefined;
     try {
       ({ code } = await executeRun({ runSession, prompt, worktree, permMode, sessionDir, metaPath, runningMeta, capGuard, settings }));
     } finally {
@@ -1773,6 +1812,7 @@ async function main(): Promise<void> {
   console.log(`session-dir: ${sessionDir}`);
   console.log(`transcript-dir: ${transcriptDirFor(worktree)}`);
   console.log(PUSH_PROTECTION_DISCLOSURE);
+  for (const line of composeDispatchGitState(worktree, branch, baseSha)) console.log(line);
   console.log(`exit: ${code}`);
   process.exit(code);
 }
