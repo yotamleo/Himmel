@@ -450,7 +450,7 @@ arith_fold() {
 # dependency on it.
 segment_cmd() {
     local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}" bdepth=0
-    local cmdpos=1 kind='' lb='' nx=''
+    local cmdpos=1 kind='' lb='' nx='' ro=0
     local -a pkind
     local ptop=0
     n=${#s}
@@ -618,7 +618,15 @@ segment_cmd() {
             fi
             i=$((i + 1))
             ;;
-        \;|\&|\||\`|$'\n')
+        \&)
+            # HIMMEL-1813: `>&`, `<&` (after an UNESCAPED < or >) and `&>`
+            # are redirection operators, never a command separator.
+            if [ "$ro" = "1" ] || [ "${s:$((i + 1)):1}" = ">" ]; then
+                seg="$seg$c"; i=$((i + 1)); ro=0; continue
+            fi
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
+            ;;
+        \;|\||\`|$'\n')
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
             ;;
         ' ' | $'\t')
@@ -626,8 +634,10 @@ segment_cmd() {
             ;;
         * )
             seg="$seg$c"; i=$((i + 1)); cmdpos=0
+            case "$c" in '<'|'>') ro=1; continue ;; esac
             ;;
         esac
+        ro=0
     done
     printf '%s\t%s\n' "$pdepth" "$seg"
 }
@@ -738,7 +748,29 @@ tokenize_seg() {
             while [ "$i" -lt "$n" ]; do
                 case "${s:i:1}" in '<'|'>') i=$((i + 1)) ;; *) break ;; esac
             done
+            # HIMMEL-1813: `>&` / `<&` (fd duplication) -- the '&' is part
+            # of the operator; its operand (1, -, a file) is not a word.
+            if [ "${TOK_ENV_SPLIT:-0}" != "1" ] && [ "${s:i:1}" = "&" ]; then
+                i=$((i + 1))
+            fi
             skip_word=1   # the operator's operand is not a word
+            ;;
+        '&')
+            if [ "${TOK_ENV_SPLIT:-0}" != "1" ] && [ "${s:$((i + 1)):1}" = ">" ]; then
+                # HIMMEL-1813: `&>` / `&>>` redirect stdout+stderr: a word
+                # before it ends there, the operator and operand are dropped.
+                if [ "$have" = "1" ]; then
+                    if [ "$skip_word" = "1" ]; then skip_word=0; else printf ':%s\n' "$w"; fi
+                    w=''; have=0
+                fi
+                i=$((i + 1))
+                while [ "$i" -lt "$n" ]; do
+                    case "${s:i:1}" in '>') i=$((i + 1)) ;; *) break ;; esac
+                done
+                skip_word=1
+            else
+                w="$w$c"; i=$((i + 1)); have=1
+            fi
             ;;
         * )
             w="$w$c"; i=$((i + 1)); have=1
@@ -1123,8 +1155,11 @@ split_unresolvable() {
 # chokepoint path. Quote/backslash removal only ever JOINS characters, so a
 # name quoted or escaped apart still matches.
 split_mention() {
-    local t="$1" script_path vars_list base
+    local t="$1" script_path vars_list base re='^(.*)\$\{[^}]*\}(.*)$'
     t=${t//[\'\"\\]/}
+    # GNU env -S expands ${VAR} (an unset one to nothing): drop every
+    # ${...} so a name split apart by one still matches.
+    while [[ $t =~ $re ]]; do t="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
     while IFS=$'\t' read -r script_path vars_list; do
         script_path=${script_path%"$CR"}
         [ -n "$script_path" ] || continue
@@ -1226,6 +1261,20 @@ scan_segment() {
         [ -n "$w" ] || continue
         W[nw]="${w#:}"; nw=$((nw + 1))
     done <<<"$(tokenize_seg "$seg")"
+    # HIMMEL-1813: a here-string fed to a shell is that shell's script (the
+    # heredoc body is already scanned through the newline fold).
+    if [[ $seg == *'<<<'* ]]; then
+        while [ "$j" -lt "$nw" ]; do
+            case "${W[$j]##*/}" in
+            bash|sh|dash|zsh|ksh)
+                IFS= read -r w <<<"$(tokenize_seg "${seg#*<<<}")"
+                scan_text "${w#:}" "$names" $((depth + 1))
+                break ;;
+            esac
+            j=$((j + 1))
+        done
+        j=0
+    fi
     while [ "$j" -lt "$nw" ]; do
         w=${W[$j]}
         case "$phase" in
