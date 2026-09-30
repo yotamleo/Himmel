@@ -183,6 +183,9 @@ bullet can be wrong — recover the real one from
 `IDLE-HELD?` is heartbeat age, not death: a leg inside a long foreground suite
 makes no tool calls. Verify with `pgrep` against the leg's session name;
 never force-release on the flag alone.
+`tick.sh --legs-from <manifest>` (HIMMEL-3748) reads the same absolute docs
+from a fleet manifest that `console-kit/fleet-manifest.sh add|remove` keeps,
+re-read every sample, so a dispatch or wrap needs no waiter re-start.
 
 ## Claudex legs: the inbox is the only channel
 

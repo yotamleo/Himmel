@@ -565,6 +565,42 @@ wait_exit "$WPID"
 check "(w3) a tick line with no tracker= field is still a valid sample" "running" "$rc"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
+# --- (m3748) a leg-set change made through --legs-from is a silent baseline --
+# HIMMEL-3748: with --legs-from the argv never changes, so the waiter folds the
+# manifest's leg list into its args hash each sample. A dispatch (manifest add)
+# that moves legs=/tails= is the console's own act -- a silent baseline, the
+# same as a restart with new --legs -- while a real change on the same leg set
+# still wakes. RED control (console-wait.sh before this change): the dispatch
+# below woke with changed=legs.
+reset_stub
+I="$(new_inbox m3748)"
+M="$WORK/m3748/console.fleet.json"
+printf '{"schema":1,"legs":[{"doc":"/x/HIMMEL-1-N1-a.md","label":"N1"}]}\n' > "$M"
+start "$I" "$WORK/m3748.out" --legs-from "$M"
+wait_hb "$I" || fail "(m3748) no baseline heartbeat"
+# The stub tick ignores the manifest, so its line moves first: a sample
+# between the two writes sees a changed key under the OLD leg set (pending,
+# not yet a wake), and the next one sees the new leg set and re-baselines.
+tick_line "N1:FRESH,N2:FRESH" "ok"
+printf '{"schema":1,"legs":[{"doc":"/x/HIMMEL-1-N1-a.md","label":"N1"},{"doc":"/x/HIMMEL-2-N2-b.md","label":"N2"}]}\n' > "$M"
+sleep 2
+wait_exit "$WPID"
+check "(m3748) a dispatch through the manifest does not wake the console" "running" "$rc"
+check "(m3748) and prints nothing" "" "$(cat "$WORK/m3748.out")"
+# A remove + re-add reorders the manifest, and tick prints legs in manifest
+# order: the same set in a new order is the console's own act too.
+tick_line "N2:FRESH,N1:FRESH" "ok"
+printf '{"schema":1,"legs":[{"doc":"/x/HIMMEL-2-N2-b.md","label":"N2"},{"doc":"/x/HIMMEL-1-N1-a.md","label":"N1"}]}\n' > "$M"
+sleep 2
+wait_exit "$WPID"
+check "(m3748) a reorder through the manifest does not wake the console" "running" "$rc"
+check "(m3748) and still prints nothing" "" "$(cat "$WORK/m3748.out")"
+tick_line "N2:FREE,N1:FRESH" "ok"
+wait_exit "$WPID"
+check "(m3748) a real change on the new leg set still wakes (rc 0)" "0" "$rc"
+check "(m3748) naming legs" "WAKE tick changed=legs bank=PROCEED" "$(head -n1 "$WORK/m3748.out")"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
 check "(k) no inbox argument is a usage error (rc 2)" "2" "$rc"
