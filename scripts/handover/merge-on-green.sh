@@ -240,8 +240,11 @@ set -uo pipefail
 # HIMMEL-3437: a relative-entry copy that is not the anchor's hands off to it
 # (the same one-hop, fail-closed pattern scripts/cr/anchor-handoff.sh uses).
 . "$(dirname "${BASH_SOURCE[0]}")/../cr/anchor-handoff.sh" || exit 2
+# Parameter expansion, not dirname: a PATH-shadowed dirname must not pick
+# what is sourced before the seam guard (HIMMEL-3914).
+case "${BASH_SOURCE[0]}" in */*) _csg_dir="${BASH_SOURCE[0]%/*}" ;; *) _csg_dir=. ;; esac
 # HIMMEL-3914: refuse a chokepoint seam that differs from the session's launch env.
-_csg_lib="$(dirname "${BASH_SOURCE[0]}")/../lib/chokepoint-seam-guard.sh"
+_csg_lib="$_csg_dir/../lib/chokepoint-seam-guard.sh"
 # shellcheck source=scripts/lib/chokepoint-seam-guard.sh
 # shellcheck disable=SC1091
 if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then

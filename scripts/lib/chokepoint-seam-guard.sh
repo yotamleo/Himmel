@@ -3,7 +3,8 @@
 # that differs from the Claude Code session's LAUNCH environment (HIMMEL-3914).
 # Sourced, never run, near the top of every chokepoint in scripts/chokepoints.json:
 #
-#   _csg_lib="$(dirname "${BASH_SOURCE[0]}")/<rel>/lib/chokepoint-seam-guard.sh"
+#   case "${BASH_SOURCE[0]}" in */*) _csg_dir="${BASH_SOURCE[0]%/*}" ;; *) _csg_dir=. ;; esac
+#   _csg_lib="$_csg_dir/<rel>/lib/chokepoint-seam-guard.sh"   # never PATH's dirname
 #   if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then echo ... >&2; exit 96; fi
 #   chokepoint_seam_guard <registry key>
 #

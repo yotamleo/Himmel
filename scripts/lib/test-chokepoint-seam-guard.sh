@@ -357,8 +357,13 @@ for key in $KEYS; do
     assert_eq "W2 $key: the gate precedes the first seam reference" "yes" "$([ -z "$sl" ] || [ "$gl" -lt "$sl" ] && echo yes || echo no)"
     hl=$(grep -n -E '^\. .*anchor-handoff\.sh' "$f" | head -n 1 | cut -d: -f1)
     assert_eq "W3 $key: the gate runs after any anchor hand-off" "yes" "$([ -z "$hl" ] || [ "$hl" -lt "$gl" ] && echo yes || echo no)"
-    rel=$(grep -E '^_csg_lib=' "$f" | head -n 1 | sed -E 's#^_csg_lib="\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)/(.*)"$#\1#')
+    # shellcheck disable=SC2016  # a literal $_csg_dir, matched in the source text
+    rel=$(grep -E '^_csg_lib=' "$f" | head -n 1 | sed -n -E 's#^_csg_lib="\$_csg_dir/(.*)"$#\1#p')
     assert_eq "W4 $key: the sourced path resolves to this lib" "yes" "$([ -n "$rel" ] && [ "$(dirname "$f")/$rel" -ef "$LIB" ] && echo yes || echo no)"
+    # ponytail: the HIMMEL-3437 anchor-handoff.sh source line still uses PATH's
+    # dirname (a shared, suite-pinned pattern); HIMMEL-3932 sweeps it.
+    pre=$(head -n "$gl" "$f" | grep -v -E '^[[:space:]]*#' | grep -v -F '/anchor-handoff.sh" || exit 2' | grep -c -w dirname)
+    assert_eq "W5 $key: nothing before the gate but the hand-off runs a PATH-resolved dirname" "0" "$pre"
 done
 
 # --- Fail closed: a chokepoint whose lib is missing refuses with 96 ---------
@@ -374,6 +379,25 @@ for key in $KEYS; do
     out=$(cd "$FC/home" && env -i PATH="/usr/bin:/bin" HOME="$FC/home" bash "$FC/$key" --help </dev/null 2>&1); rc=$?
     case "$out" in *"cannot load"*"HIMMEL-3914"*) said=named ;; *) said=silent ;; esac
     assert_eq "F1 $key without its lib -> rc 96, names the lib" "96|named" "$rc|$said"
+done
+
+# --- A PATH-shadowed dirname cannot pick what is sourced before the gate -----
+# The fake dirname points every relative lib path at an evil tree whose lib
+# no-ops the gate and leaves a sentinel. The copy (still without its real lib)
+# must refuse - 96, or 2 where the hand-off source (HIMMEL-3932) fails first -
+# and never source the evil lib.
+EV="$TMP/evil"; SENT="$TMP/evil-sourced"
+mkdir -p "$EV/fakebin" "$EV/a/b/c/lib" "$EV/a/b/lib" "$EV/a/lib"
+printf '#!/bin/sh\necho %s/a/b/c\n' "$EV" > "$EV/fakebin/dirname"
+chmod +x "$EV/fakebin/dirname"
+for ev in a/b/c/lib a/b/lib a/lib a/b/c; do
+    printf ': > %s\nchokepoint_seam_guard() { :; }\n' "$SENT" > "$EV/$ev/chokepoint-seam-guard.sh"
+done
+for key in $KEYS; do
+    rm -f "$SENT"
+    (cd "$FC/home" && env -i PATH="$EV/fakebin:/usr/bin:/bin" HOME="$FC/home" bash "$FC/$key" --help </dev/null >/dev/null 2>&1); rc=$?
+    case "$rc" in 2|96) rc=refused ;; esac
+    assert_eq "F2 $key: a PATH-shadowed dirname -> refused, evil lib never sourced" "refused|clean" "$rc|$([ -e "$SENT" ] && echo sourced || echo clean)"
 done
 
 if [ "$FAILED" -eq 0 ]; then
