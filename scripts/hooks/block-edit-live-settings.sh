@@ -1628,13 +1628,13 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # `--t…=<dir>` whose name is a prefix of `--target-directory` (`--target=`,
     # `--targ=`, `--t=`) is that same option.
     _check_write_operand() {
-        local w="$1" cand='' lname
+        local w="$1" cand='' lname longopt='--target-directory'
         _check_one_operand "$w"
         case "$w" in
             of=*) cand=${w#of=} ;;
             --t*=*)
                 lname=${w%%=*}
-                case "--target-directory" in "$lname"*) cand=${w#*=} ;; esac
+                case "$longopt" in "$lname"*) cand=${w#*=} ;; esac
                 ;;
             --*) : ;;
             -*t*) cand=${w#-*t} ;;
