@@ -43,11 +43,34 @@ set -uo pipefail
 # only: `\bclaude\b` followed by space-then-flag.
 PATTERN='(^|[^A-Za-z0-9_-])claude[[:space:]]+(-p|--print|--bg)($|[^A-Za-z0-9_-])'
 
+# HIMMEL-2195: argv-array spawns keep the flags in a separate array
+# (`spawnSync('claude', args)`), so PATTERN cannot see `-p`. Deny-leaning by
+# design, no variable tracing: any spawn-family call whose program argument is
+# the literal "claude" needs the same opt-in marker, wherever the flags are.
+# Covers spawn/exec/execFile[Sync], Bun.spawn[Sync], child_process.*, python
+# subprocess.{run,call,check_call,check_output,Popen} and os.exec*/spawn*.
+# The program must be the first argument (optionally the first array
+# element) and exactly `claude`, so `spawnSync('git', ['claude'])` and
+# `spawnSync('myclaude', …)` stay clean.
+# `claude.exe` (Windows) counts as the literal too, and Bun's object form
+# `Bun.spawn({ cmd: ["claude", …] })` is covered.
+SPAWN_PATTERN='(^|[^A-Za-z0-9_])(spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|Popen|run|call|check_call|check_output|execv|execvp|execve|execvpe|execl|execlp|execle|execlpe)[[:space:]]*\([[:space:]]*(\{[^)]*cmd[[:space:]]*:[[:space:]]*)?\[?[[:space:]]*["'"'"']claude(\.exe)?["'"'"']|(^|[^A-Za-z0-9_])spawn(v|l)p?e?[[:space:]]*\([^,)]*,[[:space:]]*["'"'"']claude(\.exe)?["'"'"']'
+# A call may span lines. The awk pass below joins a window that starts at a
+# line with an unclosed `(` / `[` / `{` and runs while the depth stays open
+# (bounded to SPAWN_WINDOW lines), tests the joined text, and reports the line
+# carrying the program literal. A `headless-claude-ok` marker anywhere from the
+# line above the window through that program line covers the call.
+SPAWN_WINDOW=8
+
 # Self-test: a known-positive sample must match. Catches accidental
 # regex de-anchoring or syntax break before the gate quietly approves
 # every commit.
 if ! printf 'claude -p "test"\n' | grep -E "$PATTERN" >/dev/null 2>&1; then
     echo "check-no-headless-claude: PATTERN failed self-test — refusing" >&2
+    exit 1
+fi
+if ! printf 'spawnSync("claude", args)\n' | grep -E "$SPAWN_PATTERN" >/dev/null 2>&1; then
+    echo "check-no-headless-claude: SPAWN_PATTERN failed self-test — refusing" >&2
     exit 1
 fi
 
@@ -123,7 +146,32 @@ for f in "${files[@]}"; do
         if ! has_optin_marker "$f" "$line_no"; then
             violations+=("$f:$line_no")
         fi
-    done < <(grep -En "$PATTERN" -- "$f" 2>/dev/null)
+    done < <({
+        grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" -- "$f" 2>/dev/null
+        SPAWN_RE="$SPAWN_PATTERN" SPAWN_WIN="$SPAWN_WINDOW" awk '
+            BEGIN { re = ENVIRON["SPAWN_RE"]; win = ENVIRON["SPAWN_WIN"] + 0 }
+            function depth(s,   t, o, c) {
+                t = s; o = gsub(/[(\[{]/, "&", t)
+                t = s; c = gsub(/[)\]}]/, "&", t)
+                return o - c
+            }
+            { L[NR] = $0 }
+            END {
+                for (i = 1; i <= NR; i++) {
+                    d = depth(L[i]); if (d <= 0) continue
+                    j = i; J = L[i]; hit = 0
+                    while (d > 0 && j < NR && j < i + win) {
+                        j++; J = J " " L[j]; d += depth(L[j])
+                        if (!hit && J ~ re) { hit = j }
+                    }
+                    if (!hit) continue
+                    ok = 0
+                    for (k = (i > 1 ? i - 1 : 1); k <= hit; k++)
+                        if (L[k] ~ /headless-claude-ok/) ok = 1
+                    if (!ok) print hit ":" L[hit]
+                }
+            }' "$f" 2>/dev/null
+    } | sort -n -u)
 done
 
 # ADVISORY (HIMMEL-1867): warn when a staged file carrying the opt-in marker
@@ -154,7 +202,7 @@ native_auth_pin_advisory
 
 if [ "${#violations[@]}" -gt 0 ]; then
     {
-        echo "check-no-headless-claude: headless 'claude -p' / '--print' / '--bg' call(s) without opt-in marker:"
+        echo "check-no-headless-claude: headless 'claude -p' / '--print' / '--bg' call(s), or spawn(\"claude\", …) argv spawns, without opt-in marker:"
         for v in "${violations[@]}"; do
             echo "    $v"
         done
@@ -179,6 +227,8 @@ if [ "${#violations[@]}" -gt 0 ]; then
         echo "reason on the same line or the line immediately above:"
         echo "    # headless-claude-ok: <one-line reason>"
         echo "    claude --print \"\$prompt\""
+        echo "For a multi-line call the marker may sit on any line from the one above"
+        echo "the call's opening line through the reported (program) line."
         echo ""
         echo "Refs: HIMMEL-1748; scripts/lib/bank-preflight.sh;"
         echo "docs/internals/enforcement.md#claude-invocation-billing-himmel-128;"
