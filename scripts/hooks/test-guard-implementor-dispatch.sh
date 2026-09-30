@@ -307,6 +307,41 @@ assert_empty "research-shaped dispatch silent" "$(combined_output research)"
 RC4=$(run_hook research-then-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Investigate and fix HIMMEL-1513' 'Research the cause and then implement the fix.')")
 assert_rc "research followed by implementation refuses" 2 "$RC4"
 
+# HIMMEL-1608: data is not an action verb, and the refusal names the Plan route.
+TABLE_STATS=$'Cluster the tickets by subject and rank by value.\n\n| prefix | commits |\n|---|---|\n| fix: | 112 |\n| feat: | 40 |'
+RC4T=$(run_hook table-data "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster backlog' "$TABLE_STATS")")
+assert_rc "1608: a table row is NOT stripped (an order in a step table is an order), over-refusal accepted" 2 "$RC4T"
+
+TABLE_ORDER=$'Do the steps below.\n| 1 | Implement the retry in foo.sh |'
+RC4TO=$(run_hook table-order "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Steps' "$TABLE_ORDER")")
+assert_rc "1608: an order written in a table row refuses" 2 "$RC4TO"
+
+CODE_SPAN=$'Cluster commit churn by theme; the `fix:` share is high.'
+RC4S=$(run_hook code-span "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Group churn' "$CODE_SPAN")")
+assert_rc "1608: fix: in an inline-code span is allowed" 0 "$RC4S"
+
+FENCED=$'Cluster the churn below by theme.\n```\nfix: 112\nfeat: 40\n```'
+RC4F=$(run_hook fenced-data "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Group churn' "$FENCED")")
+assert_rc "1608: fix: in a fenced block is allowed" 0 "$RC4F"
+
+UNCLOSED=$'Look at this\n```\nFix the parser bug in parse.sh.'
+RC4X=$(run_hook unclosed-fence "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Group churn' "$UNCLOSED")")
+assert_rc "1608: an unclosed fence strips nothing (its only signal follows the fence)" 2 "$RC4X"
+
+FENCE4=$'Cluster the churn.\n````\nquote\n```\nmore\n````\nFix the parser bug in parse.sh.\n```'
+RC4W=$(run_hook fence-four-inner-three "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Group churn' "$FENCE4")")
+assert_rc "1608: a 3-backtick line inside a 4-backtick block does not close it (CommonMark), the order after it refuses" 2 "$RC4W"
+
+TILDE=$'Cluster the churn below by theme.\n~~~\nfix: 112\n~~~'
+RC4V=$(run_hook tilde-fence "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Group churn' "$TILDE")")
+assert_rc "1608: fix: in a tilde fence is allowed" 0 "$RC4V"
+
+IMPL_PLUS_TABLE=$'Implement the parser change and commit the changes.\n\n| prefix | commits |\n|---|---|\n| fix: | 112 |'
+RC4U=$(run_hook impl-plus-table "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement parser' "$IMPL_PLUS_TABLE")")
+assert_rc "1608: implementation prompt that also has a table still refuses" 2 "$RC4U"
+assert_contains "1608: refusal names the Plan route" 'subagent_type: "Plan"' "$(cat "$TMP/err-impl-plus-table")"
+assert_rc "1608: refusal stays one line" 1 "$(wc -l < "$TMP/err-impl-plus-table" | tr -d ' ')"
+
 RC4A=$(run_hook resolve-review-findings "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Resolve review findings' 'Resolve the review findings.')")
 assert_rc "resolve review findings refuses" 2 "$RC4A"
 
@@ -352,18 +387,67 @@ RC87=$(run_hook pure-research-himmel-1534 "$REG_CLAUDEX" "$(payload general-purp
 assert_rc "pure research with no action transition remains allowed" 0 "$RC87"
 assert_empty "pure research with no action transition is silent" "$(combined_output pure-research-himmel-1534)"
 
-# GREEN control (HIMMEL-1608 class, out of scope here): a judgment dispatch
-# that merely QUOTES 'fix:' inside a markdown table already trips the bare-verb
-# implementation regex on main ("fix:" satisfies the word boundary) and is
-# already refused for that separate, pre-existing, deferred (v1.0.1) reason --
-# unrelated to followed_by_action/gate ordering. This pins that the HIMMEL-1534
-# fix does not change its verdict either way.
+# HIMMEL-1608: a judgment dispatch that merely QUOTES 'fix:' inside a markdown
+# table trips the bare-verb implementation regex ("fix:" satisfies the word
+# boundary) and is refused. That over-refusal is accepted (judge I1: an order in
+# a step table is an order); the refusal names the Plan route. Fences and
+# inline-code spans are stripped as quoted material; table rows are not.
 RC88=$(run_hook fix-colon-in-table "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster tickets' 'Cluster these tickets by subject. | Type | Count |
 |---|---|
 | fix: | 112 |
 | feat: | 70 |
 Every open ticket must land in exactly one theme.')")
-assert_rc "'fix:' quoted in a table stays refused (pre-existing HIMMEL-1608 gap, unchanged)" 2 "$RC88"
+assert_rc "'fix:' in a table row still refuses (table rows are not stripped, HIMMEL-1608 judge I1)" 2 "$RC88"
+
+RC88P=$(run_hook land-in-theme "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster tickets' 'Cluster these tickets by subject. Every open ticket must land in exactly one theme.')")
+assert_rc "'must land in exactly one theme' over-refuses, no modal strip (HIMMEL-1608 judge C1, HIMMEL-3922)" 2 "$RC88P"
+
+# Judge C1 round 2: every integration-target spelling refuses, because the modal
+# "land in" strip is gone. One row per bypass the judge found.
+RC88R=$(run_hook land-in-linebreak "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in
+main today.')")
+assert_rc "'must land in' then a line break then main refuses" 2 "$RC88R"
+
+RC88S=$(run_hook land-in-quoted-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' "This PR must land in 'main' or **main** or [main] today.")")
+assert_rc "'must land in' with quoted or marked-up main refuses" 2 "$RC88S"
+
+RC88T=$(run_hook land-within-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land within main today.')")
+assert_rc "'must land within main' refuses" 2 "$RC88T"
+
+RC88U=$(run_hook land-origin-space-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land on origin main today.')")
+assert_rc "'must land on origin main' refuses" 2 "$RC88U"
+
+RC88V=$(run_hook land-in-develop "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in develop, then release/2.0, then production.')")
+assert_rc "'must land in develop' (non-main target) refuses" 2 "$RC88V"
+
+# Judge round 2 (2): a line holding a run of 2+ backticks is not span-stripped.
+# shellcheck disable=SC2016 # the backticks are literal prompt text
+RC88W=$(run_hook double-backtick "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster the churn' 'Quote it as ``a`b`` then. Fix the parser bug in parse.sh. See `c`.')")
+assert_rc "a double-backtick line is not span-stripped, the order after it refuses" 2 "$RC88W"
+
+# Judge round 2 (3): a fence line indented 4+ spaces is not a fence (CommonMark).
+# shellcheck disable=SC2016 # the backticks are literal prompt text
+RC88X=$(run_hook indented-fence "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster the churn' 'Cluster the churn.
+    ```
+Fix the parser bug in parse.sh.
+    ```')")
+assert_rc "a 4-space-indented fence strips nothing, the order inside refuses" 2 "$RC88X"
+
+RC88L=$(run_hook land-transitive "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'You must land the change today.')")
+assert_rc "'must land the change' (transitive) stays refused beside the 'land in' strip" 2 "$RC88L"
+
+RC88M=$(run_hook land-in-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in main today.')")
+assert_rc "'must land in main' is an integration order, stays refused" 2 "$RC88M"
+
+# shellcheck disable=SC2016 # the backticks are literal prompt text
+RC88N=$(run_hook land-in-main-span "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in `main` today.')")
+assert_rc "'must land in main' as a code span stays refused" 2 "$RC88N"
+
+RC88O=$(run_hook land-origin-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land on origin/main today.')")
+assert_rc "'must land on origin/main' stays refused" 2 "$RC88O"
+
+RC88Q=$(run_hook land-main-branch "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in the main branch today.')")
+assert_rc "'must land in the main branch' stays refused" 2 "$RC88Q"
 
 # CodeRabbit (PR #1388): "write" is ambiguous between prose output and a
 # code/file write. Making followed_by_action a gate disjunct (RC81/82 above)

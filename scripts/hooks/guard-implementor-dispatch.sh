@@ -178,7 +178,38 @@ imperative_verb=0
 #      ... [^[:alnum:]_]|$) so it cannot eat the "fixed" inside "prefixed",
 #      "affixed", or "unfixed" — an unbounded s/fixed/ /g garbles those words
 #      and removes signal (HIMMEL-1624).
-implementation_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
+# HIMMEL-1608: quoted material is not an instruction. Drop closed fenced blocks
+# (CommonMark: at most 3 leading spaces, the closing fence is the same character,
+# at least as long as the opener, with nothing after it) and single-backtick
+# inline-code spans first, so a "fix:" quoted in a code block cannot read as an
+# order. An UNCLOSED fence strips nothing (its buffered text is kept), and a line
+# holding any run of 2+ backticks is not span-stripped, so a mismatch can only
+# strip less. Markdown table rows are NOT stripped: an order in a step table is
+# an order. A sentence containing "land" is refused as on origin/main, including
+# "land in main": a modal strip cannot enumerate every integration target.
+# ponytail: an implementation instruction written ONLY inside a fence or code
+# span is allowed through, and "land in <theme>" prose over-refuses (the refusal
+# names the Plan route); a future allowlist design, not a strip (HIMMEL-3922).
+# shellcheck disable=SC2016 # the backticks are literal regex, not expansions
+data_stripped_text=$(printf '%s\n' "$text" | tr '[:upper:]' '[:lower:]' | awk '
+    {
+        s = $0; ind = match(s, /^ */) ? RLENGTH : 0; sub(/^ +/, "", s)
+        c = substr(s, 1, 1); n = 0; rest = ""
+        if (ind <= 3 && (c == "`" || c == "~")) {
+            while (substr(s, n + 1, 1) == c) n++
+            rest = substr(s, n + 1)
+        } else c = ""
+    }
+    inf {
+        if (c == fc && n >= fl && rest ~ /^[[:space:]]*$/) { inf = 0; buf = ""; next }
+        buf = buf $0 "\n"; next
+    }
+    n >= 3 && !(c == "`" && index(rest, "`")) { inf = 1; fc = c; fl = n; buf = $0 "\n"; next }
+    index($0, "``") { print; next }
+    { gsub(/`[^`]*`/, " "); print }
+    END { if (inf) printf "%s", buf }
+')
+implementation_text=$(printf '%s' "$data_stripped_text" | sed -E '
     s/how[[:space:]]+to[[:space:]]+(implement|fix|land)/ /g
     s/(apply|commit|push|land|merge|ship)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?fix/applyprotected/g
     s/((this|that|its|prior|previous|earlier|existing)[[:space:]]+|committed[[:space:]]+(a|the)[[:space:]]+|(a|an|the)[[:space:]]+)fix(ed)?/ /g
@@ -673,7 +704,7 @@ case "$lane" in
 esac
 
 if [ -n "$replacement" ]; then
-    printf 'guard-implementor-dispatch: refusing implementation-shaped Agent dispatch while %s is available; use: %s (override: relaunch with IMPL_GUARD_OK=1)\n' "$lane" "$replacement" >&2
+    printf 'guard-implementor-dispatch: refusing implementation-shaped Agent dispatch while %s is available; use: %s (read-only research/planning: dispatch with subagent_type: "Plan", lane-exempt; override: relaunch with IMPL_GUARD_OK=1)\n' "$lane" "$replacement" >&2
     exit 2
 fi
 
