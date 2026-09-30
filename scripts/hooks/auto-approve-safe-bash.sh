@@ -825,6 +825,17 @@ segment_is_rootwalk_find() {
     [ "$has_root" -eq 1 ] && [ "$has_maxdepth" -eq 0 ]
 }
 
+# HIMMEL-3668: a word is a redirect only when it has no quoting (raw == cooked)
+# and the text before its first < or > is empty, all digits, or `&`. A glob
+# like `[0-9]*>` would also match `9x<in`, where bash passes `9x` as an operand
+# (an output file for uniq/xxd), so it must still count as a positional.
+is_redirect_word() {
+    [ "$1" = "$2" ] || return 1
+    case "$2" in *'<'*|*'>'*) ;; *) return 1 ;; esac
+    local pre="${2%%[<>]*}"
+    [[ "$pre" =~ ^([0-9]*|&)$ ]]
+}
+
 segment_is_safe() {
     resolve_seg_binary "$1"
     case "$RB_STATUS" in
@@ -873,9 +884,8 @@ segment_is_safe() {
                         # reverse = write binary. xxd takes any `-r…` word as
                         # -r (HIMMEL-3894), so any flag word holding an r falls through.
                         -*r*) return 1 ;;
-                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) ;;  # redirect token, not a positional
                         -*) ;;                           # other flags take no file
-                        *) xops=$((xops + 1)) ;;
+                        *) is_redirect_word "$k" "$SW_VALUE" || xops=$((xops + 1)) ;;  # redirect token, not a positional
                     esac
                 done
                 [ "$xops" -ge 2 ] && return 1 ;;         # infile + outfile = write
@@ -891,11 +901,7 @@ segment_is_safe() {
                     # An unquoted redirect token is not an operand. Only a token with no
                     # quoting/escaping at all (raw == cooked) can be one: `'>out'`,
                     # `1'>'out` and `\>out` are filenames, so they stay operands.
-                    if [ "$k" = "$SW_VALUE" ]; then
-                        case "$SW_VALUE" in
-                            [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) continue ;;
-                        esac
-                    fi
+                    is_redirect_word "$k" "$SW_VALUE" && continue
                     case "$SW_VALUE" in
                         --) udd=1 ;;
                         --*=*) ;;
