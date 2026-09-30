@@ -477,9 +477,23 @@ for v in \
     "env -S 'bash scripts/handover/console-kit/go.sh\\c'" \
     "env -S 'ARMAUTOMERGE=1 bash"$'\n'"scripts/handover/merge-on-green.sh\\c'" \
     "env -S 'true;bash scripts/handover/merge-on-green.sh\\c'" \
-    "env -S 'true|bash scripts/handover/merge-on-green.sh\\c'"; do
+    "env -S 'true|bash scripts/handover/merge-on-green.sh\\c'" \
+    "(env -S 'bash scripts/cr/pr-check-context.sh\\c')" \
+    "echo \$(env -S 'bash scripts/cr/pr-check-context.sh\\c')" \
+    "\\env -S 'bash scripts/cr/pr-check-context.sh\\c'" \
+    "{ env -S 'bash scripts/cr/pr-check-context.sh\\c'; }" \
+    "env -u X -S 'bash scripts/handover/merge-on-green.sh\\c'"; do
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
     need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
+done
+# These already deny through an earlier rule (hit=1: the glued word does not
+# resolve), which pre-empts the 1813 check; pinned as denies only.
+for v in \
+    "echo \`env -S 'bash scripts/cr/pr-check-context.sh\\c'\`" \
+    "env -S 'bash"$'\v'"scripts/handover/merge-on-green.sh'" \
+    "env -S 'bash"$'\f'"scripts/handover/merge-on-green.sh'" \
+    "env -S 'bash"$'\r'"scripts/handover/merge-on-green.sh'"; do
+    run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 run "1813: unresolvable env -S with no target mention -> no-op" 0 \
     "$(payload "env -S 'bash scripts/other/x.sh\\c'" "$WT")" "$HR"
@@ -487,6 +501,8 @@ run "1813: \\c in a non-env mention of the target -> no-op" 0 \
     "$(payload "printf '%s\\c' scripts/handover/merge-on-green.sh" "$WT")" "$HR"
 run "1813: env grep of a pr-check pattern with a backslash (no -S) -> no-op" 0 \
     "$(payload "env LC_ALL=C grep -n 'pr-check\\|x' docs/a.md" "$WT")" "$HR"
+run "1813: the program's own -S-like flag is not env's (git log --stat) -> no-op" 0 \
+    "$(payload "env GIT_PAGER=cat git log --stat --grep='pr-check\\|x'" "$WT")" "$HR"
 
 # ---- HIMMEL-3433 (d): an interpreter or find -exec word ANYWHERE runs ---------
 # On a clean tree, so each deny comes from the shape, not from an edit.

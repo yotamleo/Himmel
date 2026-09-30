@@ -1112,7 +1112,10 @@ split_unresolvable_mention() { # split_unresolvable_mention <raw command>
     # names. Blanking them keeps a glued `x;env` word separable; the operand
     # test and the mention both run on the text from the option to the END
     # of the command, which can only deny more, never less.
-    local s sw sx uw rest tail op env_seen=0
+    # Only env's OWN options are read: the first word that is neither an
+    # option, an option's argument nor an assignment is the program, and
+    # its flags (git log --stat) are not env's.
+    local s sw sx uw rest tail op env_seen=0 skip_next=0
     s=${1//[;&|$'\n']/ }
     read -r -a sw <<<"$s"
     tail=$s
@@ -1121,10 +1124,24 @@ split_unresolvable_mention() { # split_unresolvable_mention <raw command>
         tail=${tail#*"$sx"}
         uw=${sx//[\'\"]/}
         if [ "$env_seen" -eq 0 ]; then
-            [ "${uw##*/}" = env ] && env_seen=1
+            # `(env`, `$(env`, `{env`, a backtick or a backslash in front
+            # still runs env.
+            uw=${uw##*[\(\`\\\{\$]}
+            [ "${uw##*/}" = env ] && { env_seen=1; skip_next=0; }
             continue
         fi
-        case "$uw" in --s*) ;; --*) continue ;; -*S*) ;; *) continue ;; esac
+        if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
+        case "$uw" in
+            --) env_seen=0; continue ;;
+            --s*) ;;
+            --u*=*|--c*=*|--a*=*) continue ;;
+            --u*|--c*|--a*) skip_next=1; continue ;;
+            --*) continue ;;
+            -*S*) ;;
+            -*[uCa]) skip_next=1; continue ;;
+            -*|*=*) continue ;;
+            *) env_seen=0; continue ;;
+        esac
         case "$uw" in
             --s*=*) op=${rest#*=} ;;
             --s*|-*S)
@@ -1133,7 +1150,7 @@ split_unresolvable_mention() { # split_unresolvable_mention <raw command>
             *) op=${rest#*S} ;;
         esac
         op=$(split_operand "$op")
-        case "$op" in *\\*|*'#'*|*'$'*) ;; *) continue ;; esac
+        case "$op" in *\\*|*'#'*|*'$'*|*$'\v'*|*$'\f'*|*$'\r'*) ;; *) continue ;; esac
         names_target "${rest//[\'\"\\]/}" && return 0
     done
     return 1

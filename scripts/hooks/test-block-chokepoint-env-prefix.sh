@@ -461,7 +461,8 @@ assert_deny  "env -S string: leading -- ends its options"  "$(j "env -S '-- ${MO
 assert_deny  "env -S option-only string; command rides the outer words" "$(j "env -S '-i' ${MOG_VAR}=x bash $MERGE_ON_GREEN")"
 assert_deny  "env -S: \_ is the argument separator"        "$(j "env -S '${MOG_VAR}=x bash\\_$MERGE_ON_GREEN'")"
 assert_allow "env -S option state, no seam var"            "$(j "env -S '-u X bash $MERGE_ON_GREEN'")"
-assert_allow "env -S: ; inside the string is a word character" "$(j "env -S 'echo ok; ${MOG_VAR}=x bash $MERGE_ON_GREEN'")"
+# (The former "; inside the string is a word character" ALLOW moved to the
+# HIMMEL-1813 block below, now a deny: see the note there.)
 
 # --- HIMMEL-1803 round 7: an unquoted # at argument start discards the
 # rest of an env -S string; an escaped \# remains literal word content. ---
@@ -506,6 +507,17 @@ assert_deny_unres "1813: \${VARNAME} expansion"              "$(j "env -S '\${HM
 assert_deny_unres "1813: newline inside the -S string"        "$(j "env -S '${MOG_VAR}=1 bash"$'\n'"$MERGE_ON_GREEN\\c'")"
 assert_deny_unres "1813: ; inside the -S string"              "$(j "env -S 'true;bash $MERGE_ON_GREEN\\c'")"
 assert_deny_unres "1813: | inside the -S string"              "$(j "env -S 'true|bash $MERGE_ON_GREEN\\c'")"
+assert_deny_unres "1813: \\c inside outer double quotes"      "$(j "env -S \"bash $STOP_WORKER\\c\"")"
+assert_deny "1813: \\_ inside outer double quotes reaches env" "$(j "env -S \"${SW_VAR}=0\\_bash\\_$STOP_WORKER\"")"
+assert_deny_unres "1813: ; alone inside the -S string"        "$(j "env -S '${MOG_VAR}=1 true;bash $MERGE_ON_GREEN'")"
+# GNU keeps a literal ';' as a word character, but cmd_flat folds a newline
+# (which GNU -S DOES split on) into ';' too, so a ';' in the string is
+# ambiguous: formerly an ALLOW row, it denies once a chokepoint is named.
+assert_deny_unres "1813: ; inside the string is unresolvable" "$(j "env -S 'echo ok; ${MOG_VAR}=x bash $MERGE_ON_GREEN'")"
+assert_deny_unres "1813: vertical tab inside the -S string"   "$(j "env -S '${MOG_VAR}=1 bash"$'\v'"$MERGE_ON_GREEN'")"
+assert_deny_unres "1813: form feed inside the -S string"      "$(j "env -S '${MOG_VAR}=1 bash"$'\f'"$MERGE_ON_GREEN'")"
+assert_deny_unres "1813: CR inside the -S string"             "$(j "env -S '${MOG_VAR}=1 bash"$'\r'"$MERGE_ON_GREEN'")"
+assert_deny_unres "1813: -S nested past the depth cap"        "$(j "env -S 'env -S env -S env -S env -S env -S env -S env -S env ${MOG_VAR}=1 bash $MERGE_ON_GREEN'")"
 assert_allow "1813: unresolvable -S not mentioning a chokepoint" "$(j "env -S '${MOG_VAR}=1 bash scripts/not-registered.sh\\c'")"
 assert_allow "1813: \\c outside env -S is shell text"        "$(j "printf '%s\\c' $MERGE_ON_GREEN")"
 assert_allow "1813: resolvable -S keeps the simulation verdict" "$(j "env -S 'bash\\_$MERGE_ON_GREEN'")"

@@ -672,8 +672,18 @@ tokenize_seg() {
                 c=${s:i:1}
                 if [ "$c" = '"' ]; then i=$((i + 1)); break; fi
                 if [ "$c" = "\\" ]; then
+                    # bash drops a double-quoted backslash only before
+                    # $ ` " \ (newline is already folded to ';'); before
+                    # anything else it stays word content (HIMMEL-1813:
+                    # dropping it hid "...\c" from split_unresolvable).
                     i=$((i + 1))
-                    [ "$i" -lt "$n" ] && { w="$w${s:i:1}"; i=$((i + 1)); }
+                    if [ "$i" -lt "$n" ]; then
+                        case "${s:i:1}" in
+                        '$'|'`'|'"'|\\) : ;;
+                        *) w="$w\\" ;;
+                        esac
+                        w="$w${s:i:1}"; i=$((i + 1))
+                    fi
                     continue
                 fi
                 w="$w$c"; i=$((i + 1))
@@ -1078,11 +1088,13 @@ EOF
 # quotes, and the escapes \_ \\ \" \' outside quotes, \\ \" inside double
 # quotes. Anything else is unresolvable: every other escape (\c, \t, ...),
 # any backslash inside single quotes, a trailing backslash, any '#'
-# (comment) and any '$' (${VAR} expansion).
+# (comment), any '$' (${VAR} expansion), and the separators GNU splits on
+# but tokenize_seg does not: ';' (cmd_flat's fold of newline and CR),
+# vertical tab, form feed and CR.
 split_unresolvable() {
     local s="$1" c i=0 n q=''
     n=${#s}
-    case "$s" in *'#'*|*'$'*) return 0 ;; esac
+    case "$s" in *'#'*|*'$'*|*';'*|*$'\v'*|*$'\f'*|*$'\r'*) return 0 ;; esac
     while [ "$i" -lt "$n" ]; do
         c=${s:i:1}
         i=$((i + 1))
@@ -1126,7 +1138,12 @@ split_mention() {
 scan_split_argv() {
     local text="$1" inames="$2" depth="$3" appended="$4"
     local words='' seg_text=''
-    [ "$depth" -le 5 ] || return 0
+    # HIMMEL-1813: past the depth cap nothing is simulated, so a split
+    # string that mentions a registered chokepoint is denied there too.
+    if [ "$depth" -gt 5 ]; then
+        split_mention "$text$NL$appended"
+        return 0
+    fi
     # HIMMEL-1813: a split string the simulation cannot fully model, when
     # it or the appended words mention a registered chokepoint, is denied
     # outright rather than simulated.
