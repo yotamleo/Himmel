@@ -261,7 +261,8 @@ MAC_T8=$(sed -n 's/^mac=//p' "$GO13" 2>/dev/null)
 . "$HERE/../../lib/go-gate.sh"
 rc=0; out=$(go_trust_gate 81 "$SHA" "$ROOT13" o/r) || rc=$?
 check "3895: go_trust_gate accepts go.sh's trust GO" "$rc:$out" "0:judge-N8"
-command sed -i.bak 's/^trust-reviewed=.*/trust-reviewed=judge-N7/' "$GO13"  # command: SC2218, the read-race test below defines sed()
+# shellcheck disable=SC2218  # the read-race test below defines a sed() hook; this is the binary
+sed -i.bak 's/^trust-reviewed=.*/trust-reviewed=judge-N7/' "$GO13"
 rc=0; go_trust_gate 81 "$SHA" "$ROOT13" o/r >/dev/null || rc=$?
 check "3895: go_trust_gate refuses an edited trust id" "$rc" "2"
 HANDOVER_DIR="$ROOT13" bash "$SCRIPT" 81 "$SHA" >/dev/null 2>&1
@@ -277,6 +278,7 @@ check "3895: go_gate still accepts the ordinary GO" "$rc" "0"
 # first call, deterministically; the verifier must read the file once.
 cp "$GO13" "$GO13.forged"
 printf 'trust-reviewed=forged\n' >> "$GO13.forged"
+# shellcheck disable=SC2317  # invoked indirectly, by the verifier under test
 sed() { command sed "$@"; local r=$?; [ -f "$GO13.forged" ] && mv -f "$GO13.forged" "$GO13"; return "$r"; }
 rc=0; out=$(go_trust_gate 81 "$SHA" "$ROOT13" o/r) || rc=$?
 unset -f sed
