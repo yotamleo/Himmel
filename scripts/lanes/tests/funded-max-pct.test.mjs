@@ -6,7 +6,7 @@
 // bank-status and the dispatcher can no longer disagree in the 90-98 % band.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_FUNDED_MAX_PCT, parseFundedMaxPct, resolveFundedMaxPct } from '../funded-max-pct.mjs';
+import { DEFAULT_FUNDED_MAX_PCT, fundedMaxPctForBank, parseFundedMaxPct, resolveFundedMaxPct } from '../funded-max-pct.mjs';
 import { guardState } from '../bank-status-core.mjs';
 
 test('negative values fall back to 90 (the regression: -1 read every bank as spent)', () => {
@@ -57,4 +57,17 @@ test('HIMMEL-1700 band: codex weekly at 95% is spent under the shared default (w
   const at95 = { kind: 'measured', readings: [{ window: 'weekly', usedPct: 95 }] };
   assert.equal(guardState(at95, active, resolveFundedMaxPct({})), 'spent');
   assert.equal(guardState({ kind: 'measured', readings: [{ window: 'weekly', usedPct: 89 }] }, active, resolveFundedMaxPct({})), 'funded');
+});
+
+test('HIMMEL-1700 scope: only codex takes the shared 90; claude/glm keep 99 and a 95% reading stays funded', () => {
+  assert.equal(fundedMaxPctForBank('codex', {}), 90);
+  assert.equal(fundedMaxPctForBank('codex', { CLAUDEX_BANK_REFUSE_PCT: '70' }), 70);
+  for (const bank of ['claude', 'glm']) {
+    assert.equal(fundedMaxPctForBank(bank, {}), 99);
+    assert.equal(fundedMaxPctForBank(bank, { CLAUDEX_BANK_REFUSE_PCT: '70' }), 99); // alias is codex-only
+    assert.equal(fundedMaxPctForBank(bank, { LANE_FUNDED_MAX_PCT: '60' }), 60); // override still honored
+    const active = { ok: true, path: { kind: 'subscription', windows: ['weekly'] } };
+    const at95 = { kind: 'measured', readings: [{ window: 'weekly', usedPct: 95 }] };
+    assert.equal(guardState(at95, active, fundedMaxPctForBank(bank, {})), 'funded');
+  }
 });

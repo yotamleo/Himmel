@@ -31,3 +31,14 @@ export function resolveFundedMaxPct(env) {
   const alias = parseFundedMaxPct(env.CLAUDEX_BANK_REFUSE_PCT);
   return parseFundedMaxPct(env.LANE_FUNDED_MAX_PCT, alias);
 }
+
+// Only the codex bank shares spawn-claudex's refuse point. Every other bank
+// keeps its pre-HIMMEL-1700 default of 99 (LANE_FUNDED_MAX_PCT still overrides)
+// because no other dispatcher refuses at 90.
+export const OTHER_BANK_FUNDED_MAX_PCT = 99;
+
+export function fundedMaxPctForBank(bank, env) {
+  return bank === 'codex'
+    ? resolveFundedMaxPct(env)
+    : parseFundedMaxPct(env.LANE_FUNDED_MAX_PCT, OTHER_BANK_FUNDED_MAX_PCT);
+}
