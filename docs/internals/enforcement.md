@@ -615,7 +615,9 @@ are live only after `/himmel-update` (marketplace re-sync) + a fresh session.
 pins, no job registry, and no watchdog, so a wedged raw run is exactly the
 HIMMEL-1788 invisible hang; bypass `CODEX_EXEC_RAW_OK=1`) fail CLOSED only for
 suspicious-token commands when jq is missing or parsing fails; `block-unresolved-cr-merge.sh` blocks when it can
-evaluate but fails OPEN on every API/dependency error (HIMMEL-936 design);
+evaluate but fails OPEN on every CR/CI-gate API/dependency error (HIMMEL-936
+design) — except the bounded initial PR lookup on a real merge, which fails
+CLOSED (HIMMEL-3915);
 `guard-implementor-dispatch.sh` is a COST guard and fails OPEN (see its own
 section below); `guard-console-dispatch.sh` is a WORKFLOW fence and fails
 OPEN (see its own section below); `block-glm-external-writes.sh` fails CLOSED on a detected
@@ -2560,6 +2562,32 @@ the cwd branch rather than letting a quoted/mis-tokenized selector dodge the gat
 (top-level consumers treat any non-2 rc as allow). Each emits a
 ``cr-merge-gate: degraded (<why>) - failing open`` note to stderr so the
 uncertainty is visible without blocking. A broken query is not evidence.
+
+**HIMMEL-3915 — the PR lookup fails CLOSED.** The hook resolves the PR number
+and head with its own `gh pr view` (selector, then, when the selector is not
+already the cwd branch, one re-anchor to the cwd branch) BEFORE any gate runs,
+bounded to 10s per attempt. On a real merge command, an unresolved lookup (every
+attempt that ran failed, or timed out) DENIES for every session, naming
+`scripts/handover/merge-on-green.sh` as the sanctioned path; a refusal costs a
+retry. It used to exit 0 after the CR/CI gates, so a transient gh/auth error let
+a trust-path PR through with no GO. Only that INITIAL lookup is bounded: the CR
+and CI gates' own `gh pr view` calls (`cr-merge-gate.sh:212,214`) are still
+unbounded, so a hang there can still exhaust the hook budget (a hook timeout is
+non-blocking); that is not fixed here. The fail-open contract above covers the
+CR/CI gates' own API reads, and also a gate library that fails to load
+(`. cr-merge-gate.sh || exit 0`, `. ci-green-gate.sh || exit 0` skip gates 3/4).
+There is NO `--help`/`-h` carve-out: a help-flagged merge is gated (and fails
+closed) like any other merge, and the deny text points at `gh help pr merge`,
+which is not a merge and does not match the command regex. Every spelling of the
+carve-out was a new bypass (an escaped space in a `--body` value, `$'..'`
+quoting, delimiters), so it was removed rather than patched again. The flag walk
+stops at the first `|`, `&`, `>` or `<`, and an all-digit prefix before a `>`/`<`
+is an fd number (`2>&1`, `42>x`), not a selector.
+Known remaining gaps: a merge with no selector AND no cwd branch still exits 0
+(nothing to resolve); the residuals filed as HIMMEL-3918 (cd-then-merge cwd
+mismatch, an env/`command` prefix escaping the command regex, the unbounded gate
+lookups, the lib-load fail-open, head TOCTOU incl. an unpinned operator merge of
+a non-trust PR that gained a trust-path file after the check).
 A degraded VERDICT query is the one exception that does not return early: the
 thread query still runs and its evidence still blocks, because an unresolved
 thread is evidence even when the status endpoint is down (observed live — GitHub
@@ -2597,8 +2625,9 @@ hook additionally REQUIRES the merge command to pin `--match-head-commit`
 or mismatched pin exits 2, because the GO was bound to this hook's own `gh pr
 view` read and a separate `gh pr merge` could otherwise land a different commit.
 Only the GO/pin half is fail-CLOSED (a missing `go-gate.sh`, or one that
-sources but lacks `go_gate`, exits 2); an unresolvable PR selector still fails
-open like the CR/CI siblings. `merge-on-green.sh` runs the same
+sources but lacks `go_gate`, exits 2); an unresolvable PR selector on a real
+merge is now fail-CLOSED too (HIMMEL-3915, above), no longer open like the CR/CI
+siblings. `merge-on-green.sh` runs the same
 `console_leg`/`go_gate` pair as its own gate (below), using the `$sha` check-ci
 certified — the same head its `--match-head-commit` pins — and `go.sh` uses
 `console_leg` for its refusal, so none of the three can drift on "is this a

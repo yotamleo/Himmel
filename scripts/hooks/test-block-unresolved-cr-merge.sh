@@ -77,9 +77,15 @@ case "$1 $2" in
     # deadbeef simulates a mis-extracted selector (a value-taking flag's
     # argument) that resolves to no PR - drives the rc=3 re-anchor path.
     [ "${3:-}" = "deadbeef" ] && exit 1
+    # HIMMEL-3915: lookup-only faults (the CR/CI reads stay healthy).
+    case "${GH_STUB_PRVIEW:-}" in
+      fail) exit 1 ;;
+      hang) sleep 30; exit 1 ;;
+    esac
     echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/'"${GH_STUB_PR_NWO:-o/r}"'/pull/42"}' ;;
   "api graphql")
     case "$GH_STUB_MODE" in
+      cr-ci-api-error) exit 1 ;;
       unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
       other-author) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"someuser"}}]}}]}}}}}' ;;
       *) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
@@ -88,6 +94,7 @@ case "$1 $2" in
   # tests/lint/build signal the CI gate reads.
   "api repos/o/r/commits/abc123/check-runs"*)
     case "$GH_STUB_MODE" in
+      cr-ci-api-error) exit 1 ;;
       ci-red)   echo '{"check_runs":[{"name":"tests","status":"completed","conclusion":"failure"}]}' ;;
       ci-green) echo '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}' ;;
       *)        echo '{"check_runs":[]}' ;;
@@ -97,6 +104,7 @@ case "$1 $2" in
   # silently falls through to the `*)` catch-all and degrades the gate open.
   "api repos/o/r/commits/abc123/statuses"*)
     case "$GH_STUB_MODE" in
+      cr-ci-api-error) exit 1 ;;
       inflight)   echo '[{"context":"CodeRabbit","state":"pending","created_at":"2026-07-16T19:08:46Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       cr-absent)  echo '[]' ;;
       cr-spoofed) echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":999999,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
@@ -177,7 +185,58 @@ fi
 
 GH_STUB_MODE=unresolved t merge-with-unresolved-blocks   2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=error      t api-error-fails-open           0 Bash "gh pr merge 42 --squash"
+# HIMMEL-3915: the contract is split. The PR LOOKUP fails closed on a real merge
+# (every gh call erroring = lookup unresolved = DENY; was fail-open, rc 0). The
+# CR/CI gates' own API-read errors stay fail-open (HIMMEL-936) once the lookup
+# resolved.
+GH_STUB_MODE=error      t api-error-lookup-fails-closed  2 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=cr-ci-api-error t cr-ci-api-error-fails-open 0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-selector-and-reanchor-denies 2 Bash "gh pr merge 42 --squash"
+grep -q "cannot resolve the PR" "$TMP/err-lookup-fail-selector-and-reanchor-denies" || { echo "FAIL lookup-fail deny names no lookup reason"; fail=$((fail+1)); }
+grep -q "merge-on-green.sh" "$TMP/err-lookup-fail-selector-and-reanchor-denies" || { echo "FAIL lookup-fail deny does not name merge-on-green.sh"; fail=$((fail+1)); }
+# A hung lookup is bounded (10s) and reads as unresolved, never as the hook
+# budget expiring open. sel == cwd branch: exactly one lookup, so ~10s.
+hang_t0=$SECONDS
+GH_STUB_MODE=clean GH_STUB_PRVIEW=hang t lookup-timeout-denies 2 Bash "gh pr merge trunk --squash"
+# The stub sleeps 30s: returning inside 25s proves the 10s bound fired rather
+# than the hang running out and failing on its own.
+[ $((SECONDS - hang_t0)) -lt 25 ] || { echo "FAIL lookup-timeout took $((SECONDS - hang_t0))s - lookup is not bounded"; fail=$((fail+1)); }
+grep -q "cannot resolve the PR" "$TMP/err-lookup-timeout-denies" || { echo "FAIL lookup-timeout deny names no lookup reason"; fail=$((fail+1)); }
+# Non-merges stay untouched even with a broken lookup.
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-pr-view-passthrough 0 Bash "gh pr view 42"
+# HIMMEL-3915 judge NO-GO: there is NO --help/-h carve-out. Every spelling of it
+# was a new bypass, so a help-flagged merge is gated / fail-closed like any other
+# merge; the deny text points at `gh help pr merge`, which is not a merge.
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-fails-closed 2 Bash "gh pr merge 42 --help"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-short-help-fails-closed 2 Bash "gh pr merge 42 -h"
+grep -q "gh help pr merge" "$TMP/err-merge-help-fails-closed" || { echo "FAIL deny text does not point at gh help pr merge"; fail=$((fail+1)); }
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t gh-help-pr-merge-allowed 0 Bash "gh help pr merge"
+# A -h/--help riding an escaped space or a $'..' string is a body VALUE, not help:
+# the real merge must reach the gates (lookup fails here, so it must DENY).
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-escaped-space-h-gated 2 Bash "gh pr merge 42 --squash --body x\\\\ -h"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-body-eq-escaped-h-gated 2 Bash "gh pr merge 42 --squash --body=x\\\\ -h"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-subject-escaped-help-gated 2 Bash "gh pr merge 42 -t a\\\\ --help"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-ansi-c-quote-h-gated 2 Bash "gh pr merge 42 --squash --body \$'a\\\\' -h \\\\'b'"
+# Delimiter forms stay gated.
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-pipe-h-still-gated 2 Bash "gh pr merge 42 --squash | sort -h"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-bg-h-still-gated 2 Bash "gh pr merge 42 --squash & ls -h"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-redirect-help-still-gated 2 Bash "gh pr merge 42 > --help"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-real-merge-gated 2 Bash "gh pr merge --help; gh pr merge 42 --squash"
+# An fd redirect is not a selector: `2>&1` must not look up PR #2 (the hook then
+# anchors on the cwd branch, `trunk`).
+GH_STUB_MODE=clean t merge-fd-redirect-not-selector 0 Bash "gh pr merge 2>&1"
+grep -q "^pr view 2 " "$TMP/calls-merge-fd-redirect-not-selector.log" && { echo "FAIL merge-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
+grep -q "^pr view trunk " "$TMP/calls-merge-fd-redirect-not-selector.log" || { echo "FAIL merge-fd-redirect-not-selector did not anchor on the cwd branch"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t merge-squash-fd-redirect-not-selector 0 Bash "gh pr merge --squash 2>/dev/null"
+grep -q "^pr view 2 " "$TMP/calls-merge-squash-fd-redirect-not-selector.log" && { echo "FAIL merge-squash-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t merge-selector-fd-redirect-not-selector 0 Bash "gh pr merge 42>x"
+grep -q "^pr view 42 " "$TMP/calls-merge-selector-fd-redirect-not-selector.log" && { echo "FAIL merge-selector-fd-redirect looked up the fd-prefixed number"; fail=$((fail+1)); }
+# The fd rule keys on the CUT character: `42|x>y` / `42&2>x` cut at | or & and
+# 42 IS the selector (a digit before a LATER > must not discard it).
+GH_STUB_MODE=clean t merge-pipe-then-redirect-keeps-selector 0 Bash "gh pr merge 42|base64>x"
+grep -q "^pr view 42 " "$TMP/calls-merge-pipe-then-redirect-keeps-selector.log" || { echo "FAIL merge-pipe-then-redirect dropped selector 42"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t merge-amp-then-fd-redirect-keeps-selector 0 Bash "gh pr merge 42&2>x"
+grep -q "^pr view 42 " "$TMP/calls-merge-amp-then-fd-redirect-keeps-selector.log" || { echo "FAIL merge-amp-then-fd-redirect dropped selector 42"; fail=$((fail+1)); }
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
 # advisory only. The removed `zombie*`/`young` cases here drove the HIMMEL-980
 # override off a CodeRabbit CHECK-RUN that production never emits; the
