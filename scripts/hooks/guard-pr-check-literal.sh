@@ -689,6 +689,39 @@ drop_braced_vars() { # drop_braced_vars <text> - print it with every ${...} remo
 if [ "$mentions" -eq 0 ] && [[ $cmd == *env*\$\{* ]] && [[ $cmd =~ -[a-zA-Z]*S|--s ]]; then
     names_target "$(drop_braced_vars "${cmd//[\'\"\\]/}")" && mentions=1
 fi
+# HIMMEL-3913: a parse-independent raw-text backstop, the twin of HIMMEL-1813's
+# in block-chokepoint-env-prefix.sh. The tokenizer reads quoted here-string text
+# as inert and the reader exemption below trusts a reader's name, so a reader
+# can write a guarded script's text to a FILE that a later segment runs
+# (`tee F <<< '...'; bash F`), or a shell function can shadow the reader's name.
+# The raw text is scanned, whatever the parser made of it: it names a guarded
+# target AND writes text (a here-string, a redirect, tee) next to an executor
+# left over once every literal `bash <target-path>` is removed, or shadows a
+# reader with a function or alias -> deny. Over-denial is acceptable (a compound
+# that runs a guarded script and another script beside a redirect splits in two);
+# a bare literal spelling has no writer channel and falls through untouched.
+prlit_nl=$'\n'
+prlit_reader='(cat|tee|grep|wc|head|tail|diff|cmp)'
+PRLIT_ALLOWED_RE='(bash|sh|source|\.)[[:space:]]+["'"'"']?[^[:space:]"'"'"';&|()]*(scripts/cr/[A-Za-z0-9_.-]+\.sh|scripts/handover/merge-on-green\.sh|scripts/handover/console-kit/go\.sh)["'"'"']?'
+PRLIT_EXEC_RE="(^|[;&|(\`{${prlit_nl}]|[[:space:]](then|else|do))[[:space:]]*((env|command|nohup|sudo|time|exec|builtin)[[:space:]]+)*([^[:space:];&|()\"']*/)?(bash|sh|dash|zsh|ksh|mksh|source|\\.|eval|exec)([[:space:]]|\$|[;&|)])"
+PRLIT_CHANNEL_RE='(<<<|(^|[^[:alnum:]_.-])tee([^[:alnum:]_.-]|$)|[^-=>|&]>>?[[:space:]]*[^&>=[:space:]])'
+PRLIT_SHADOW_RE="(^|[;&|(\`{}${prlit_nl}[:space:]])(function[[:space:]]+${prlit_reader}([[:space:]]|\\()|${prlit_reader}[[:space:]]*\\(\\)|alias[[:space:]]+${prlit_reader}=)"
+prlit_backstop() { # prlit_backstop <raw command> - true when the raw text is a reader-to-file-then-run shape
+    local t=$1 m
+    names_target "${t//[\'\"\\]/}" || return 1
+    [[ $t =~ $PRLIT_SHADOW_RE ]] && return 0
+    [[ $t =~ $PRLIT_CHANNEL_RE ]] || return 1
+    while [[ $t =~ $PRLIT_ALLOWED_RE ]]; do
+        m=${BASH_REMATCH[0]}
+        t="${t%%"$m"*} ${t#*"$m"}"
+    done
+    [[ $t =~ $PRLIT_EXEC_RE ]]
+}
+if prlit_backstop "$cmd"; then
+    shown=${cmd//$'\n'/ }
+    shown=${shown:0:200}
+    deny "the command names a guarded script and writes text (a here-string, redirect or tee) beside another executor (bash, sh, source, '.', eval, exec), or shadows a reader (cat, tee, ...) with a function or alias - text written to a file and run later executes what the parser read as inert, so it cannot be proven safe (HIMMEL-3913). Move any mention-only text into a file with the Write tool, and run each script as its own literal command."
+fi
 case "$flat" in *[cC][rR]/*|*[hH]andover/*|*[][*?]*|*'{'*) ;; *) [ "$mentions" -eq 1 ] || exit 0 ;; esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is

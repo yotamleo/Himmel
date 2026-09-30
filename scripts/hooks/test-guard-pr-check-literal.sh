@@ -516,7 +516,14 @@ for v in \
     "source <(cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\")" \
     "<<< x bash <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""; do
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
-    need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
+    # HIMMEL-3913: the raw backstop runs first, so a reader/shell here-string that
+    # also carries an executor now denies with its message; either is a deny.
+    if grep -qF -- "cannot be fully resolved" <<<"$LAST_ERR" || grep -qF -- "written to a file and run" <<<"$LAST_ERR"; then
+        echo "PASS 1813: [$v] deny names the unresolvable split string or the 3913 backstop"
+    else
+        echo "FAIL 1813: [$v] deny names neither message: $LAST_ERR"
+        FAILED=$((FAILED + 1))
+    fi
 done
 run "1813: redirect-only here-string (no command word) -> no-op" 0 \
     "$(payload "<<< hello" "$WT")" "$HR"
@@ -534,6 +541,52 @@ run "1813: env grep of a pr-check pattern with a backslash (no -S) -> no-op" 0 \
     "$(payload "env LC_ALL=C grep -n 'pr-check\\|x' docs/a.md" "$WT")" "$HR"
 run "1813: the program's own -S-like flag is not env's (git log --stat) -> no-op" 0 \
     "$(payload "env GIT_PAGER=cat git log --stat --grep='pr-check\\|x'" "$WT")" "$HR"
+
+# ---- HIMMEL-3913: raw-text backstop - a reader writes text to a file, a later ----
+# ---- executor runs it. The tokenizer reads the quoted here-string as inert, so
+# ---- only the raw scan can see it. Clean root: every deny below is the backstop's.
+while IFS= read -r v; do
+    run "3913: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+    need_in_err "3913: [$v] deny points at the move-into-a-file route" "written to a file and run"
+done <<'BACKSTOP'
+tee /tmp/f <<< "env -S 'bash scripts/handover/merge-on-green.sh\c'"; bash /tmp/f
+cat <<< "env -S 'bash scripts/handover/merge-on-green.sh\c'" > /tmp/f && sh /tmp/f
+tee /tmp/f <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"; source /tmp/f
+tee /tmp/f <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"; . /tmp/f
+tee /tmp/f <<< "env -S 'bash scripts/handover/console-kit/go.sh\c'"; eval "$(cat /tmp/f)"
+cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'" > /tmp/f; exec bash /tmp/f
+cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'" >> /tmp/f; /bin/bash /tmp/f
+cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'" > /tmp/f; env bash /tmp/f
+tee /tmp/f <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"; (bash /tmp/f)
+tee /tmp/f <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"; if true; then bash /tmp/f; fi
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; bash /tmp/f
+cat() { bash "$@"; }; cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
+tee() { sh "$@"; }; tee /tmp/f <<< 'scripts/cr/clear-cr-marker.sh'
+function cat { bash "$@"; }; cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
+alias cat=bash; cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
+BACKSTOP
+run "3913: [tee ...<<< then newline then bash] clean root -> deny" 2 \
+    "$(payload "tee /tmp/f <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""$'\n'"bash /tmp/f" "$WT")" "$HR"
+need_in_err "3913: newline form deny points at the move-into-a-file route" "written to a file and run"
+run "3913: [cat <<< > f then newline then . f] clean root -> deny" 2 \
+    "$(payload "cat <<< \"env -S 'bash scripts/cr/clear-cr-marker.sh\\c'\" > /tmp/f"$'\n'". /tmp/f" "$WT")" "$HR"
+# The literal allowed spellings, and a mention that nothing runs, stay as they were.
+while IFS= read -r v; do
+    run "3913: allowed spelling [$v] clean root -> no-op" 0 "$(payload "$v" "$WT")" "$HR"
+done <<'BACKSTOP_ALLOW'
+bash scripts/handover/console-kit/go.sh GO 1 abc
+bash scripts/handover/merge-on-green.sh --jira-transition
+bash scripts/cr/write-verdicts.sh --from-file /tmp/v.txt
+echo 'run bash scripts/cr/pr-check-context.sh later' > /tmp/note
+BACKSTOP_ALLOW
+for v in \
+    "bash \"$PRIMARY/scripts/handover/merge-on-green.sh\" --jira-transition" \
+    "bash \"$PRIMARY/scripts/handover/console-kit/go.sh\" GO 1 abc" \
+    "bash \"$PRIMARY/scripts/cr/write-verdicts.sh\" --from-file /tmp/v.txt" \
+    "bash \"$PRIMARY/scripts/cr/pr-check-step0.sh\"" \
+    "bash \"$PRIMARY/scripts/cr/pr-check-env.sh\" CR_CLAUDE_AGENTS"; do
+    run "3913: anchored spelling [$v] clean root -> no-op" 0 "$(payload "$v" "$WT")" "$HR"
+done
 
 # ---- HIMMEL-3433 (d): an interpreter or find -exec word ANYWHERE runs ---------
 # On a clean tree, so each deny comes from the shape, not from an edit.
