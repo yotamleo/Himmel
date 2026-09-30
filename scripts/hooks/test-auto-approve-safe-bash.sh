@@ -1473,6 +1473,25 @@ assert "gh pr checks --watch still ALLOW"  ALLOW "$(decide "$(j_bash 'gh pr chec
 assert "xxd -ps still ALLOW"               ALLOW "$(decide "$(j_bash 'xxd -ps in')")"
 assert "lease push literal still ALLOW"    ALLOW "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease origin feat/x')")"
 
+# --- HIMMEL-3907: a value-taking option before the git subcommand / gh verb
+# shifts which word the tool reads as the subcommand. Fail closed: only known
+# value-less git globals are skipped; any dash word before the gh verb falls
+# through. Rows are decision checks only; nothing here runs the command.
+assert "git --attr-source sep value falls through"   PASS  "$(decide "$(j_bash 'git --attr-source log branch -D foo')")"
+assert "git --attr-source= joined falls through"     PASS  "$(decide "$(j_bash 'git --attr-source=HEAD log -1')")"
+assert "git unknown global falls through"            PASS  "$(decide "$(j_bash 'git --list-cmds log -1')")"
+assert "lease push unknown-value global falls through" PASS "$(decide_in "$FWL_REPO" "$(j_bash 'git --attr-source push --force-with-lease origin feat/x')")"
+assert "gh pr -R value shifts verb falls through"    PASS  "$(decide "$(j_bash 'gh pr -R view merge 1')")"
+assert "gh pr --repo value shifts verb falls through" PASS "$(decide "$(j_bash 'gh pr --repo view merge 1')")"
+assert "gh flag before group falls through"          PASS  "$(decide "$(j_bash 'gh -R pr view merge 1')")"
+assert "gh --hostname before group falls through"    PASS  "$(decide "$(j_bash 'gh --hostname h pr view 1')")"
+assert "git --no-pager log still ALLOW"              ALLOW "$(decide "$(j_bash 'git --no-pager log -1')")"
+assert "git --git-dir x log still ALLOW"             ALLOW "$(decide "$(j_bash 'git --git-dir x log')")"
+assert "git --no-advice -P status still ALLOW"       ALLOW "$(decide "$(j_bash 'git --no-advice -P status')")"
+assert "gh pr view 1 -R o/r still ALLOW"             ALLOW "$(decide "$(j_bash 'gh pr view 1 -R o/r')")"
+assert "gh pr list --repo o/r still ALLOW"           ALLOW "$(decide "$(j_bash 'gh pr list --repo o/r')")"
+assert "lease push --no-pager still ALLOW"           ALLOW "$(decide_in "$FWL_REPO" "$(j_bash 'git --no-pager push --force-with-lease origin feat/x')")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

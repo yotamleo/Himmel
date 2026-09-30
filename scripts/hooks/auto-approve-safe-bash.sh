@@ -168,7 +168,10 @@ git_subcmd_is_read() {
         case "$t" in
             --git-dir=*|--work-tree=*|--namespace=*) j=$((j + 1)); continue ;;  # =form: no separate arg
             -C|--git-dir|--work-tree|--namespace) j=$((j + 2)); continue ;;     # space form: skip arg
-            -*) j=$((j + 1)); continue ;;
+            # HIMMEL-3907: only known VALUE-LESS globals are skipped; any other
+            # dash word may take a value that shifts the subcommand → fall through.
+            -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs) j=$((j + 1)); continue ;;
+            -*) return 1 ;;
             *) break ;;
         esac
     done
@@ -260,7 +263,9 @@ git_push_force_with_lease_is_safe() {
         case "$t" in
             --git-dir=*|--work-tree=*|--namespace=*) j=$((j + 1)); continue ;;
             -C|--git-dir|--work-tree|--namespace) j=$((j + 2)); continue ;;
-            -*) j=$((j + 1)); continue ;;
+            # HIMMEL-3907: same value-less allowlist as git_subcmd_is_read.
+            -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs) j=$((j + 1)); continue ;;
+            -*) return 1 ;;
             *) break ;;
         esac
     done
@@ -318,14 +323,13 @@ gh_subcmd_is_read() {
             -*)  case "${k#-}" in *w*) return 1 ;; esac ;;
         esac
     done
-    while [ "$j" -lt "$n" ]; do  # leading global flags → group word
-        case "${g[$j]}" in -*) j=$((j + 1)) ;; *) break ;; esac
-    done
+    # HIMMEL-3907: a dash word before the group or between group and verb may
+    # take a value that shifts which word gh reads as the verb → fall through.
+    # Flags AFTER the verb are unaffected.
     local grp="${g[$j]:-}"
+    case "$grp" in -*) return 1 ;; esac
     k=$((j + 1))
-    while [ "$k" -lt "$n" ]; do  # flags between group and verb
-        case "${g[$k]}" in -*) k=$((k + 1)) ;; *) break ;; esac
-    done
+    case "${g[$k]:-}" in -*) return 1 ;; esac
     local verb="${g[$k]:-}"
     case "$grp" in
         pr)       case "$verb" in view|list|diff|checks|status) return 0 ;; esac ;;
