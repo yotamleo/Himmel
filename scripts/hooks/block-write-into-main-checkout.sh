@@ -1897,7 +1897,8 @@ _bwimc_redir_scan_text() {
 local _bwimc_rclause _bwimc_rclause_sp _bwimc_rtoks _bwimc_t _bwimc_rn _bwimc_teecmd \
     _bwimc_pfx _bwimc_pflag _bwimc_ri _bwimc_teecollect _bwimc_tee_dd _bwimc_rt \
     _bwimc_rt2 _bwimc_skel _bwimc_sbodies _bwimc_sbi _bwimc_stubs _bwimc_sn \
-    _bwimc_sb_ecwd _bwimc_sb_unres _bwimc_sb_pushn
+    _bwimc_sb_ecwd _bwimc_sb_unres _bwimc_sb_pushn \
+    _bwimc_pre_ecwd _bwimc_pre_unres _bwimc_pre_pushn
 _bwimc_skel="$1"; _bwimc_sbodies=(); _bwimc_sbi=0
 # shellcheck disable=SC2016  # literal `$(` is the glob pattern, not an expansion
 case "$1" in
@@ -1912,6 +1913,9 @@ esac
 while IFS= read -r _bwimc_rclause; do
     [ -n "$(printf '%s' "$_bwimc_rclause" | tr -d '[:space:]')" ] || continue
     _bwimc_rclause_sp=$(_bwimc_space_before_redirects "$_bwimc_rclause")
+    # A body expands BEFORE its own clause runs, so it is judged at the cwd the
+    # clause STARTS in, not the one the clause (a `cd` it carries) leaves.
+    _bwimc_pre_ecwd="$_bwimc_ecwd"; _bwimc_pre_unres="$_bwimc_ecwd_unres"; _bwimc_pre_pushn="$_bwimc_ecwd_pushn"
     _bwimc_ecwd_track "$_bwimc_rclause_sp"
     _bwimc_rtoks=()
     while IFS= read -r _bwimc_t; do _bwimc_rtoks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_rclause_sp")
@@ -2047,6 +2051,7 @@ while IFS= read -r _bwimc_rclause; do
     _bwimc_sn=${#_bwimc_stubs}
     while [ "$_bwimc_sn" -gt 0 ] && [ "$_bwimc_sbi" -lt "${#_bwimc_sbodies[@]}" ]; do
         _bwimc_sb_ecwd="$_bwimc_ecwd"; _bwimc_sb_unres="$_bwimc_ecwd_unres"; _bwimc_sb_pushn="$_bwimc_ecwd_pushn"
+        _bwimc_ecwd="$_bwimc_pre_ecwd"; _bwimc_ecwd_unres="$_bwimc_pre_unres"; _bwimc_ecwd_pushn="$_bwimc_pre_pushn"
         _bwimc_redir_scan_text "${_bwimc_sbodies[$_bwimc_sbi]}"
         _bwimc_ecwd="$_bwimc_sb_ecwd"; _bwimc_ecwd_unres="$_bwimc_sb_unres"; _bwimc_ecwd_pushn="$_bwimc_sb_pushn"
         _bwimc_sbi=$((_bwimc_sbi+1)); _bwimc_sn=$((_bwimc_sn-1))

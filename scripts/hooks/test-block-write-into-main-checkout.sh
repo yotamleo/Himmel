@@ -1868,9 +1868,9 @@ check_both "74g REGRESSION CONTROL: echo 'don\`t' still ALLOWS" allow "$BTQ_LIT_
 # DENY rows aim at the primary; ALLOW twins aim the identical shape at the
 # worktree so a blanket "deny anything with $(" cannot pass.
 echo "== HIMMEL-3622 redirects inside command substitutions =="
-_subst_row() { # label verdict command
+_subst_row() { # label verdict command [cwd]
     local j
-    j="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$3" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+    j="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$3" | jq -Rs .),\"cwd\":\"${4:-$FIX/wt}\"}}"
     check_both "$1" "$2" "$j"
 }
 _P="$FIX/primary/subst-new.txt"
@@ -1897,6 +1897,10 @@ _subst_row "75p-P a cd inside a body does not leak to the next clause"    block 
 _subst_row "75p-W same shape aimed at the worktree (ALLOW)"               allow "cd $_WR; x=\"\$(cd $_PR)\"; echo hi > subst-rel.txt"
 _subst_row "75q-P a cd in an outer body reaches the nested body"          block "x=\"\$(cd $_PR; echo \"\$(echo hi > subst-rel.txt)\")\""
 _subst_row "75q-W same shape aimed at the worktree (ALLOW)"               allow "x=\"\$(cd $_WR; echo \"\$(echo hi > subst-rel.txt)\")\""
+# A body expands BEFORE its own clause runs: judged at the cwd the clause
+# starts in, not the one its own cd leaves (panel round 2, codex-1).
+_subst_row "75r-P body in a cd clause runs at the pre-cd cwd (primary)"      block "cd $_WR 2>\"\$(echo hi > subst-rel.txt)\"" "$_PR"
+_subst_row "75r-W same shape, pre-cd cwd is the worktree (ALLOW)"           allow "cd $_PR 2>\"\$(echo hi > subst-rel.txt)\"" "$_WR"
 # The heredoc idiom with target-shaped words in the body text stays ALLOW.
 _subst_row "75j commit heredoc idiom, message mentions '> file' and a paren (ALLOW)" allow "git commit -m \"\$(cat <<'EOF'
 fix: a > b (and 'it')
