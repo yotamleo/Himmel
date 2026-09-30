@@ -338,22 +338,23 @@ NOTB_PATH="$NOTB_BIN:$PATH"
 # bounded_run <secs> <stdin-file> <cmd...>; rc 124 when it had to kill the
 # command, else the command's own rc. The command is backgrounded, so stdin is
 # passed as a file (an async list would otherwise read /dev/null).
-# HIMMEL-3903: the kill takes the whole process tree (deepest first). A bash parked
-# in a foreground child defers a plain TERM until that child ends, so killing only
-# $_pid left the hook and its `sleep 30` gh stub alive after the EXIT trap removed $TMP.
-kill_tree() {
-    local _c
-    for _c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$_c"; done
-    kill "$1" 2>/dev/null
-}
+# HIMMEL-3903/3909: the kill takes the whole process GROUP. A bash parked in a
+# foreground child defers a plain TERM until that child ends, so killing only $_pid
+# left the hook and its `sleep 30` gh stub alive after the EXIT trap removed $TMP; a
+# pgrep -P walk misses anything forked after the snapshot or re-parented to init.
+# `set -m` (bash job control, present on bash 3.2 and macOS, unlike the setsid
+# binary) gives the backgrounded command its own group, pgid == $_pid; it is turned
+# straight back off so the rest of the suite runs without job control.
 bounded_run() {
     local _secs="$1" _in="$2" _pid _killer _flag _rc
     shift 2
     _flag="$TMP/bounded-run.$$.killed"
     rm -f "$_flag"
+    set -m
     "$@" < "$_in" &
     _pid=$!
-    ( sleep "$_secs"; : > "$_flag"; kill_tree "$_pid" ) &
+    set +m
+    ( sleep "$_secs"; : > "$_flag"; kill -TERM -- "-$_pid" 2>/dev/null; sleep 1; kill -KILL -- "-$_pid" 2>/dev/null ) &
     _killer=$!
     wait "$_pid"; _rc=$?
     kill "$_killer" 2>/dev/null; wait "$_killer" 2>/dev/null
@@ -402,6 +403,25 @@ elif pgrep -f "$RED_NOTB_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" >/dev/
     fail=$((fail+1)); echo "FAIL red-control-no-timeout-bin-hook-reaped: the killed hook (or its stub) is still running"
 else
     pass=$((pass+1)); echo "ok   red-control-no-timeout-bin-hook-reaped"
+fi
+# HIMMEL-3909: a descendant that double-forked (`( cmd & )`) is re-parented to init
+# and is invisible to a pgrep -P walk from the bounded pid, so the reap has to take
+# the process GROUP. The marker rides in the orphan's argv[0] via `exec -a`.
+DF_MARK="bounded-run-double-fork-$$"
+DF_SCRIPT="$TMP/double-fork.sh"
+printf '( exec -a "%s" sleep 300 & )\nsleep 300\n' "$DF_MARK" > "$DF_SCRIPT"
+: > "$TMP/double-fork.in"
+bounded_run 2 "$TMP/double-fork.in" bash "$DF_SCRIPT" >/dev/null 2>&1
+df_rc=$?
+if ! command -v pgrep >/dev/null 2>&1; then
+    fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant: pgrep is not available"
+elif [ "$df_rc" -ne 124 ]; then
+    fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant rc=$df_rc (want 124)"
+elif pgrep -f "$DF_MARK" >/dev/null 2>&1; then
+    fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant: a double-forked descendant survived the kill"
+    pkill -f "$DF_MARK" 2>/dev/null
+else
+    pass=$((pass+1)); echo "ok   bounded-run-reaps-double-forked-descendant"
 fi
 
 # GREEN — the shipped hook, same no-timeout PATH, same 30s-hanging gh stub:
