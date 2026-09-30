@@ -895,7 +895,7 @@ bun scripts/telegram/spawn-claudex.ts "<prompt>" [--cwd <dir>] [--name <slug>] [
 5h) — fail-**OPEN** on any read error (a cold/absent log never bricks a
 dispatch). WARNs to stderr at `CLAUDEX_BANK_WARN_PCT` (default `80`);
 **REFUSES (exit 2) BEFORE any worktree side-effect** at `CLAUDEX_BANK_REFUSE_PCT`
-(default `90`) unless overridden (`CLAUDEX_BANK_OK=1` or `--force`) — a
+(default `90`; the same shared threshold `bank-status` uses via `LANE_FUNDED_MAX_PCT`, which takes precedence — HIMMEL-1700) unless overridden (`CLAUDEX_BANK_OK=1` or `--force`) — a
 capped worker dies mid-run, so the tree survives but the work is lost.
 
 **Effort (HIMMEL-1001):** `--effort` is optional; unset lets the launcher's

@@ -49,6 +49,7 @@ import { parseAddPlugins } from "../lanes/plugin-profiles.mjs";
 // GLM_FLAG_TABLE for the twin.
 import { parseLaneArgs, type FlagTable } from "./lane-args";
 import { CODEX_BANK_PROBE_REMEDY, readCodexBankCache } from "../lanes/bank-status-core.mjs";
+import { resolveFundedMaxPct } from "../lanes/funded-max-pct.mjs";
 
 export function claudexSessionRoot(): string {
   return join(process.env.BRIDGE_ROOT ?? join(homedir(), ".claude", "handover", "bridge"), "claudex-sessions");
@@ -1265,7 +1266,7 @@ async function main(): Promise<void> {
   const bankOverride = force || process.env.CLAUDEX_BANK_OK === "1";
   const bank = evaluateCodexBankPreflight(bankRead.usedPct, {
     warnPct: parsePct(process.env.CLAUDEX_BANK_WARN_PCT, 80),
-    refusePct: parsePct(process.env.CLAUDEX_BANK_REFUSE_PCT, 90),
+    refusePct: resolveFundedMaxPct(process.env),
     override: bankOverride,
     reason: bankRead.reason,
   });

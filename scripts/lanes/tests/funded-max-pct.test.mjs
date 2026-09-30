@@ -1,19 +1,22 @@
 // scripts/lanes/tests/funded-max-pct.test.mjs
 // HIMMEL-1624 — the LANE_FUNDED_MAX_PCT clamp. Number.isFinite alone accepts
 // negatives, which made every live bank read "spent". The parser must require a
-// sane 0..100 value and fall back to 99 otherwise.
+// sane 0..100 value and fall back to the default otherwise.
+// HIMMEL-1700 — the default is 90, the SAME refuse point spawn-claudex uses, so
+// bank-status and the dispatcher can no longer disagree in the 90-98 % band.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseFundedMaxPct } from '../funded-max-pct.mjs';
+import { DEFAULT_FUNDED_MAX_PCT, fundedMaxPctForBank, parseFundedMaxPct, resolveFundedMaxPct } from '../funded-max-pct.mjs';
+import { guardState } from '../bank-status-core.mjs';
 
-test('negative values fall back to 99 (the regression: -1 read every bank as spent)', () => {
-  assert.equal(parseFundedMaxPct('-1'), 99);
-  assert.equal(parseFundedMaxPct('-0.5'), 99);
+test('negative values fall back to 90 (the regression: -1 read every bank as spent)', () => {
+  assert.equal(parseFundedMaxPct('-1'), 90);
+  assert.equal(parseFundedMaxPct('-0.5'), 90);
 });
 
-test('values above 100 fall back to 99', () => {
-  assert.equal(parseFundedMaxPct('101'), 99);
-  assert.equal(parseFundedMaxPct('999'), 99);
+test('values above 100 fall back to 90', () => {
+  assert.equal(parseFundedMaxPct('101'), 90);
+  assert.equal(parseFundedMaxPct('999'), 90);
 });
 
 test('0 and 100 are accepted at the boundaries', () => {
@@ -26,14 +29,45 @@ test('an in-range threshold is honored', () => {
   assert.equal(parseFundedMaxPct('99.5'), 99.5);
 });
 
-test('non-numeric / empty / undefined fall back to 99 (the documented default)', () => {
-  assert.equal(parseFundedMaxPct(undefined), 99);
-  assert.equal(parseFundedMaxPct(''), 99);
-  assert.equal(parseFundedMaxPct('abc'), 99);
+test('non-numeric / empty / undefined fall back to 90 (the documented default)', () => {
+  assert.equal(parseFundedMaxPct(undefined), 90);
+  assert.equal(parseFundedMaxPct(''), 90);
+  assert.equal(parseFundedMaxPct('abc'), 90);
 });
 
-test('partially numeric values fall back to 99 (CR round 2: parseFloat accepted them)', () => {
-  assert.equal(parseFundedMaxPct('50%'), 99);
-  assert.equal(parseFundedMaxPct('0invalid'), 99);
+test('partially numeric values fall back to 90 (CR round 2: parseFloat accepted them)', () => {
+  assert.equal(parseFundedMaxPct('50%'), 90);
+  assert.equal(parseFundedMaxPct('0invalid'), 90);
   assert.equal(parseFundedMaxPct(' 50 '), 50); // trimmed whole-string numeric is fine
+});
+
+test('resolveFundedMaxPct: default 90; LANE_FUNDED_MAX_PCT wins; CLAUDEX_BANK_REFUSE_PCT is an alias', () => {
+  assert.equal(DEFAULT_FUNDED_MAX_PCT, 90);
+  assert.equal(resolveFundedMaxPct({}), 90);
+  assert.equal(resolveFundedMaxPct({ CLAUDEX_BANK_REFUSE_PCT: '70' }), 70);
+  assert.equal(resolveFundedMaxPct({ LANE_FUNDED_MAX_PCT: '60' }), 60);
+  assert.equal(resolveFundedMaxPct({ LANE_FUNDED_MAX_PCT: '60', CLAUDEX_BANK_REFUSE_PCT: '70' }), 60);
+  // an invalid primary falls through to the alias, an invalid alias to the default
+  assert.equal(resolveFundedMaxPct({ LANE_FUNDED_MAX_PCT: 'abc', CLAUDEX_BANK_REFUSE_PCT: '70' }), 70);
+  assert.equal(resolveFundedMaxPct({ LANE_FUNDED_MAX_PCT: '', CLAUDEX_BANK_REFUSE_PCT: '-3' }), 90);
+});
+
+test('HIMMEL-1700 band: codex weekly at 95% is spent under the shared default (was funded at 99)', () => {
+  const active = { ok: true, path: { kind: 'subscription', windows: ['weekly'] } };
+  const at95 = { kind: 'measured', readings: [{ window: 'weekly', usedPct: 95 }] };
+  assert.equal(guardState(at95, active, resolveFundedMaxPct({})), 'spent');
+  assert.equal(guardState({ kind: 'measured', readings: [{ window: 'weekly', usedPct: 89 }] }, active, resolveFundedMaxPct({})), 'funded');
+});
+
+test('HIMMEL-1700 scope: only codex takes the shared 90; claude/glm keep 99 and a 95% reading stays funded', () => {
+  assert.equal(fundedMaxPctForBank('codex', {}), 90);
+  assert.equal(fundedMaxPctForBank('codex', { CLAUDEX_BANK_REFUSE_PCT: '70' }), 70);
+  for (const bank of ['claude', 'glm']) {
+    assert.equal(fundedMaxPctForBank(bank, {}), 99);
+    assert.equal(fundedMaxPctForBank(bank, { CLAUDEX_BANK_REFUSE_PCT: '70' }), 99); // alias is codex-only
+    assert.equal(fundedMaxPctForBank(bank, { LANE_FUNDED_MAX_PCT: '60' }), 60); // override still honored
+    const active = { ok: true, path: { kind: 'subscription', windows: ['weekly'] } };
+    const at95 = { kind: 'measured', readings: [{ window: 'weekly', usedPct: 95 }] };
+    assert.equal(guardState(at95, active, fundedMaxPctForBank(bank, {})), 'funded');
+  }
 });
