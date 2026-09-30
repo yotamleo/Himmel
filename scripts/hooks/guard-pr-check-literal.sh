@@ -1196,13 +1196,16 @@ herestring_split_mention() { # herestring_split_mention <raw command> - true
     # tested; the command reads the last. A reader's output can itself
     # reach a shell (a pipe, `$(`, a backtick, `<(` / `>(`), so the reader
     # exemption holds only when the command has none of those.
-    local k op hw i=0
+    local k op hw w i=0
     [[ $1 == *'<<<'* ]] || return 1
     read -r -a hw <<<"${1%%<<<*}"
     while [ "$i" -lt "${#hw[@]}" ] && [[ ${hw[$i]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do i=$((i + 1)); done
+    # A leading `<<<` leaves no command word before it; under nounset an
+    # unguarded hw[$i] aborts the hook (rc=1, a hook error, not a deny).
+    w=${hw[$i]-}
     case "$1" in
     *'|'*|*\$\(*|*'`'*|*'<('*|*'>('*) ;;
-    *) case "${hw[$i]##*/}" in grep|cat|wc|head|tail|tee|diff|cmp) return 1 ;; esac ;;
+    *) case "${w##*/}" in grep|cat|wc|head|tail|tee|diff|cmp) return 1 ;; esac ;;
     esac
     k=$1
     while [[ $k == *'<<<'* ]]; do

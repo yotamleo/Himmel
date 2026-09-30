@@ -513,10 +513,13 @@ for v in \
     "mksh <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
     "mksh <<< 'echo ok' <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
     "cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\" | bash" \
-    "source <(cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\")"; do
+    "source <(cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\")" \
+    "<<< x bash <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""; do
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
     need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
 done
+run "1813: redirect-only here-string (no command word) -> no-op" 0 \
+    "$(payload "<<< hello" "$WT")" "$HR"
 run "1813: cat of a here-string naming a target -> no-op" 0 \
     "$(payload "cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" "$WT")" "$HR"
 run "1813: unresolvable env -S with no target mention -> no-op" 0 \
