@@ -140,7 +140,8 @@ cmd_prev_record() {
   for id in $ids; do
     # only runs before this one: a rerun of an older run must not pick a newer predecessor
     [ "$id" -ge "$run_id" ] && continue
-    if fetch_record "$repo" "$id" "$tmp/$id"; then
+    # skip an incomplete predecessor: suites missing from its report would read as green
+    if fetch_record "$repo" "$id" "$tmp/$id" && jq -e '.infra_suspect | not' "$tmp/$id/record.json" >/dev/null 2>&1; then
       cp "$tmp/$id/record.json" "$dest"
       rm -rf "$tmp"
       return 0
