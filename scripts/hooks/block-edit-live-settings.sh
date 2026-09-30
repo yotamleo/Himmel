@@ -700,16 +700,16 @@ check_target() {
 }
 
 # check_claude_dir_target RAW_OPERAND — the Bash arm's operand check
-# (HIMMEL-3700, J1329O I1): like check_target, but the resolved path need not
-# be a settings-named leaf. It is judged by its NEAREST `.claude` ancestor-or-
-# self (the operand IS the directory, or sits anywhere inside it), and that
-# directory is classified exactly as check_target classifies a settings file's
-# parent — so a symlinked directory that resolves onto the primary's or
-# $HOME's `.claude/` denies whatever the leaf is called. A path under
-# `<...>/.claude/worktrees/` is a linked worktree's own tree, never live.
-# Prints "deny …", "allow" or "unknown" like check_target.
+# (HIMMEL-3700, J1329O I1): like check_target, but an operand that resolves to
+# a `.claude` DIRECTORY ITSELF (a symlinked dir used as a dir-destination) is
+# classified exactly as check_target classifies a settings file's parent, so
+# a symlink onto the primary's or $HOME's `.claude/` denies whatever the
+# operand is called. Anything else — including a path deep under `.claude/` —
+# is judged by check_target alone (a settings leaf denies; a deeper path
+# cannot become the live settings.json, and denying it broke ordinary
+# reads/appends of `.claude/logs/*`). Prints "deny …", "allow" or "unknown".
 check_claude_dir_target() {
-    local raw="$1" t real d
+    local raw="$1" t real
     case "$raw" in
         /*|[A-Za-z]:/*|[A-Za-z]:\\*) t="$raw" ;;
         *) t="$cwd/$raw" ;;
@@ -719,20 +719,13 @@ check_claude_dir_target() {
         echo "unknown"
         return
     fi
-    d="$real"
-    while [ -n "$d" ] && [ "$d" != "/" ]; do
-        case "${d##*/}" in
-            [.][cC][lL][aA][uU][dD][eE])
-                case "${real#"$d"}" in
-                    /[wW][oO][rR][kK][tT][rR][eE][eE][sS]|/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*) echo "allow"; return ;;
-                esac
-                check_target "$d/settings.json"
-                return
-                ;;
-        esac
-        d="${d%/*}"
-    done
-    echo "allow"
+    case "${real##*/}" in
+        [.][cC][lL][aA][uU][dD][eE])
+            check_target "$real/settings.json"
+            return
+            ;;
+    esac
+    check_target "$raw"
 }
 
 deny_message() { # deny_message TOOL_LABEL ORIGINAL_TARGET REASON
@@ -1381,6 +1374,21 @@ lex_resolve() {
 has_unquoted_brace_group() {
     [[ "$1" =~ \{[^{}]*,[^{}]*\} ]]
 }
+# has_brace_climb_word WORD — HIMMEL-3700 (judge r1, I3 sibling): ONE word that
+# is a path (has a `/`), holds a `{…,…}` group, and could expand to a `..`
+# component — a literal `..`, a `.` inside a group alternative, or a `.` beside
+# a group with an EMPTY alternative (`.{x,}.` -> `..`). Judged per word, never
+# on the whole text, and whatever the leaf spells (`sett{ings,x}.json` names
+# no settings file the text search could find).
+has_brace_climb_word() {
+    local w="$1"
+    case "$w" in */*) : ;; *) return 1 ;; esac
+    [[ "$w" =~ \{[^{}]*,[^{}]*\} ]] || return 1
+    case "$w" in *..*) return 0 ;; esac
+    [[ "$w" =~ \{[^{}]*\.[^{}]*\} ]] && return 0
+    case "$w" in *.*) [[ "$w" =~ \{,|,\}|,, ]] && return 0 ;; esac
+    return 1
+}
 # ponytail: matching against already quote-stripped text means a genuinely
 # quoted brace-containing filename (e.g. a file literally named `.{,.}`,
 # passed as `'.{,.}'`) is denied the same as a real unquoted, expandable
@@ -1616,12 +1624,18 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # cluster ending in t whose argument follows without a space (`-t<dir>`,
     # `-rt<dir>`) — so the operand is judged as spelled AND with that prefix
     # removed. A candidate that names no path is inert (it does not exist).
+    # GNU getopt accepts any unambiguous prefix of a long option, so every
+    # `--t…=<dir>` whose name is a prefix of `--target-directory` (`--target=`,
+    # `--targ=`, `--t=`) is that same option.
     _check_write_operand() {
-        local w="$1" cand=''
+        local w="$1" cand='' lname
         _check_one_operand "$w"
         case "$w" in
             of=*) cand=${w#of=} ;;
-            --target-directory=*) cand=${w#--target-directory=} ;;
+            --t*=*)
+                lname=${w%%=*}
+                case "--target-directory" in "$lname"*) cand=${w#*=} ;; esac
+                ;;
             --*) : ;;
             -*t*) cand=${w#-*t} ;;
         esac
@@ -1688,6 +1702,28 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         && { [ "$mentions_settings" = "1" ] \
             || { [ "$write_verb" = 1 ] && { [ "$dir_dest" = "1" ] || [ -n "$nested_wt_primary" ]; }; }; }; then
         brace_dir_dest=1
+    fi
+    # A writer that is not a recognised verb (sed -i, perl -pi, ...) from a
+    # nested worktree: one word that is a path with a brace group that could
+    # spell a `..` climb denies whatever its leaf spells (HIMMEL-3700, judge
+    # r1). The whole-text search above cannot see a leaf like `sett{ings,x}.json`.
+    if [ "$brace_dir_dest" = 0 ] && [ "$write_verb" = 0 ] && [ -n "$nested_wt_primary" ] \
+        && has_unquoted_brace_group "$cmd_n"; then
+        if [ "$TOK" = 1 ]; then
+            widx=0
+            while [ "$widx" -lt "$ST_N" ]; do
+                if has_brace_climb_word "${ST_W[widx]}"; then brace_dir_dest=1; break; fi
+                widx=$((widx + 1))
+            done
+        else
+            # noglob for this loop only, as in the operand scan above
+            case $- in *f*) _had_noglob=1 ;; *) _had_noglob=0 ;; esac
+            set -f
+            for w in $cmd_n; do
+                if has_brace_climb_word "$w"; then brace_dir_dest=1; break; fi
+            done
+            if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
+        fi
     fi
 
     if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ] && [ "$dirdest_climb" = "0" ] \
