@@ -2458,9 +2458,11 @@ chokepoint (`scripts/hooks/*.sh` is an ordinary glob and allowed), or an
 ANSI-C `$'` word naming a path or carrying a hex/unicode/octal escape (a bare
 `$'\t'` is allowed), is denied; (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
 beside a chokepoint word is denied; (3) CLEARING a seam or
-`HIMMEL_CONSOLE_LEG` (`unset`, any `export -n`, `declare|typeset|local +x`,
-`exec -<opt>`, `${!`, and any standalone `-u*`/`-i*`/`--unset*` token, so
-`env -u NAME`/`-uNAME`/`-iu`/`$x-uNAME`/a globbed `en?` all deny) beside a
+`HIMMEL_CONSOLE_LEG` (ANY `unset` whatever its argument, any `export -n`,
+`declare|typeset|local +x`, `exec -<opt>`, `${!`, and any standalone
+`-u*`/`-i*`/`--u*`/`--i*`/bare `-` token, so
+`env -u NAME`/`-uNAME`/`-iu`/`$x-uNAME`/a globbed `en?` with a long option
+all deny) beside a
 chokepoint word is denied — this reverses the old "clear-and-prove" allow and
 over-denies subshell-scoped clears (the raw scan cannot model scope). The lib
 also fails closed (exit 96) on Linux when `/proc` is unreadable or is not a

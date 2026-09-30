@@ -1046,20 +1046,17 @@ raw_mention() {
         # Deny-leaning, no var-name needed, beside a chokepoint word: a
         # declare/typeset/local +x (drops the export attribute), exec with an
         # option (-c clears the env), ${!prefix*} indirect names, export -n,
-        # and any standalone -u* / -i* / --unset* token (env -u spelled through
-        # a $var, a glob or an attached NAME).
+        # ANY unset (whatever its argument: an ANSI-C-split, command-substituted
+        # or concatenated name defeats a name match), and any standalone -u* /
+        # -i* / --u* / --i* / bare - token (env -u spelled through a $var, a
+        # glob, an attached NAME or a long option).
         [[ $t =~ (declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x \
             || $t =~ (^|[^[:alnum:]_-])exec[[:space:]]+- \
             || $t == *\$\{!* \
             || $t =~ (^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n \
-            || $t =~ (^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(u|i|-unset)[^[:space:]]* ]] \
-            && deny_text_layer "drops or rewrites the environment (declare +x, exec -c, \${!, export -n, -u/-i/--unset) beside a sanctioned chokepoint"
-        if [[ $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) ]]; then
-            for v in $vars_list HIMMEL_CONSOLE_LEG; do
-                [[ $t =~ (^|[^[:alnum:]_])${v}([^[:alnum:]_]|$) ]] \
-                    && deny_text_layer "clears a seam or the console marker (env -u / unset / export -n) beside a sanctioned chokepoint"
-            done
-        fi
+            || $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) \
+            || $t =~ (^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$) ]] \
+            && deny_text_layer "drops or rewrites the environment (unset of anything, declare +x, exec -c, \${!, export -n, -u/-i/--u*/--i*/bare -) beside a sanctioned chokepoint"
     done <<<"$REG_LINES"
     return 0
 }
