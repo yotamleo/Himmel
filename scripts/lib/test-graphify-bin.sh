@@ -1490,6 +1490,7 @@ cat > "$pos_fixture/.codex/hooks.json" <<'EOF'
 EOF
 
 out=$(bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_price_hooks "$1"; echo "RC=$?"' _ "$pos_fixture" 2>&1)
+echo "PROBE3699 bash=$BASH_VERSION out=[$out]" >&2 # PROBE3699-TEMP
 assert "positive control: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "positive control: settings reported repriced" price_verdict "$out" "repriced" ".claude/settings.json"
 assert "positive control: codex reported repriced" price_verdict "$out" "repriced" ".codex/hooks.json"

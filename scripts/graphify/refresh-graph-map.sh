@@ -2605,6 +2605,7 @@ fi   # DO_EXTRACT -- end of the copy + extraction region (--promote-only rejoins
     else
       grep_rc=2
     fi
+    echo "PROBE3699 art=$leak_artifact_name grep_rc=$grep_rc sz=$(wc -c < "$scan_target") $(tr -d '\0' < "$scan_target" | grep -c Users)" >&2 # PROBE3699-TEMP
     rm -f "$scan_nonul"
     if [ "$grep_rc" -eq 0 ]; then
       # HIMMEL-1134 CR follow-up: do NOT echo $leak_line -- it's the matched
