@@ -264,32 +264,34 @@ def main():
             rows.append([num(k), clip(m['title'], 62), m['st'], vidx[hit[0]],
                          0 if m['type'] == 'Bug' else 3, tidx.get(theme.get(k), tidx['(unplanned)']),
                          0, 2, []])
-    closures = []
-    for r in read_tsv(os.path.join(S, 'closures.tsv'))[1]:
-        m = mir.get(r['key'])
-        closures.append([num(r['key']), clip(m['title'] if m else '', 60), m['st'] if m else 0,
-                         r['close_flag'], clip(r.get('close_evidence', ''), 70)])
     unpl = []
     for r in read_tsv(os.path.join(S, 'unplaced.tsv'))[1]:
         m = mir.get(r['key'])
         unpl.append([num(r['key']), clip(m['title'] if m else '', 60), m['st'] if m else 0,
                      clip(r['reason'], 60)])
+    # HIMMEL-3954: parked closures stay visible (evidence = the reason); other closure flags are not shown.
+    for r in read_tsv(os.path.join(S, 'closures.tsv'))[1]:
+        if r['close_flag'] != 'park-ns':
+            continue
+        m = mir.get(r['key'])
+        unpl.append([num(r['key']), clip(m['title'] if m else '', 60), m['st'] if m else 0,
+                     clip(r.get('close_evidence', ''), 70)])
 
     upd = max((m['upd'] for m in mir.values()), default='')
     data = dict(gen=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), mir=upd[:16].replace('T', ' '),
                 sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, L=LAYERS, T=themes, P=rows,
-                C=closures, U=unpl, DR=dirs, N=notes)
+                U=unpl, DR=dirs, N=notes)
     blob = json.dumps(data, separators=(',', ':'), ensure_ascii=False).replace('<', '\\u003c')
     html = TEMPLATE.replace('__DATA__', blob)
     outp = OUT
     os.makedirs(os.path.dirname(outp), exist_ok=True)
     open(outp, 'w', encoding='utf-8').write(html)
     open(outp + '.fp', 'w', encoding='utf-8').write(fp0 + '\n')
-    unp = sum(1 for r in rows if r[7] == 2)
+    unp = sum(1 for r in rows if r[7] == 2 and r[2] != 2)  # open only
     drift = sum(1 for r in rows if r[7] == 1)
     cov = sum(1 for r in rows[:n_plan] if r[8])
-    print('wrote %s (%.1f KB): %d planned, %d unplanned, %d drift, %d closures, %d unplaced; mirror %d issues'
-          % (outp, os.path.getsize(outp) / 1024, n_plan, unp, drift, len(closures), len(unpl), len(mir)))
+    print('wrote %s (%.1f KB): %d planned, %d unplanned, %d drift, %d unplaced; mirror %d issues'
+          % (outp, os.path.getsize(outp) / 1024, n_plan, unp, drift, len(unpl), len(mir)))
     print('luna-map coverage: %d/%d placed keys with >=1 note; %d distinct notes; %.1fs'
           % (cov, n_plan, len(notes), time.time() - t0))
 
@@ -449,7 +451,7 @@ function row(p){
 function seg(cls,n,tot){var i=el("i",cls);i.style.width=(100*n/(tot||1))+"%";return i}
 function pctf(n,t){return t?Math.round(100*n/t):0}
 function ledger(){
- var a=P.filter(function(p){return p[3]<LAST}),t=tally(a),tot=a.length,dr=a.filter(function(p){return p[7]==1}).length,un=a.filter(function(p){return p[7]==2}).length;
+ var a=P.filter(function(p){return p[3]<LAST}),t=tally(a),tot=a.length,dr=a.filter(function(p){return p[7]==1}).length,un=a.filter(function(p){return p[7]==2&&p[2]!=2}).length;
  $("stamp").textContent="Generated "+D.gen+" from mirror updated "+D.mir+"; plan built at main "+D.sha+".";
  var l=$("ledger");l.textContent="";
  function add(x,c){l.appendChild(c?el("b",c,x):document.createTextNode(x))}
@@ -546,13 +548,10 @@ function heat(pane,f){
 function details(pane){
  var q=(S.q||"").toLowerCase();
  function keep(a){return a.filter(function(x){return !q||("himmel-"+x[0]+" "+x[1]+" "+x[3]).toLowerCase().indexOf(q)>=0})}
- var c=keep(D.C),u=keep(D.U),fc={};D.C.forEach(function(x){fc[x[3]]=(fc[x[3]]||0)+1});
- var d1=el("details","sec");d1.appendChild(el("summary",null,"Closed by roadmap ("+c.length+")"));
- d1.appendChild(el("div","note",Object.keys(fc).map(function(k){return k+" "+fc[k]}).join(", ")+". Dot = current Jira status."));
- c.forEach(function(x){var r=el("div","row");r.appendChild(el("span","st st"+x[2]));r.appendChild(el("span","key","HIMMEL-"+x[0]));r.appendChild(el("span","chip l",x[3]));r.appendChild(el("span","t",x[1]+(x[4]?" | "+x[4]:"")));d1.appendChild(r)});
+ var u=keep(D.U);
  var d2=el("details","sec");d2.appendChild(el("summary",null,"Parked / unplaced ("+u.length+")"));
  u.forEach(function(x){var r=el("div","row");r.appendChild(el("span","st st"+x[2]));r.appendChild(el("span","key","HIMMEL-"+x[0]));r.appendChild(el("span","t",x[1]));r.appendChild(el("span","flag",x[3]));d2.appendChild(r)});
- pane.appendChild(d1);pane.appendChild(d2)}
+ pane.appendChild(d2)}
 function overview(pane){
  var f=subset();
  pane.appendChild(el("h2",null,"Version train"));strip(pane,f);
