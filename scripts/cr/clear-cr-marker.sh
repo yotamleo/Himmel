@@ -120,6 +120,18 @@
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
 . "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
+# Parameter expansion, not dirname: a PATH-shadowed dirname must not pick
+# what is sourced before the seam guard (HIMMEL-3914).
+case "${BASH_SOURCE[0]}" in */*) _csg_dir="${BASH_SOURCE[0]%/*}" ;; *) _csg_dir=. ;; esac
+# HIMMEL-3914: refuse a chokepoint seam that differs from the session's launch env.
+_csg_lib="$_csg_dir/../lib/chokepoint-seam-guard.sh"
+# shellcheck source=scripts/lib/chokepoint-seam-guard.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
+    echo "clear-cr-marker.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
+    exit 96
+fi
+chokepoint_seam_guard scripts/cr/clear-cr-marker.sh || exit 96
 # NOT set -e: this script inspects sub-call exit codes explicitly and must fail
 # CLOSED with its own codes, never abort mid-gate.
 # HIMMEL-3666: every git call below (ls-remote, ancestry/base checks) resolves

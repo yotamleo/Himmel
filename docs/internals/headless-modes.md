@@ -70,6 +70,15 @@ in the launching shell; the flag wins) — same profile injection, model and
   (`headed-arm.sh:1037-1049`). `--headless` therefore requires a profile —
   `--no-profile` is refused (`headed-arm-leg.sh:396`) — and is native-lane
   only (`headed-arm-leg.sh:401`).
+- **Chokepoints refuse seams (HIMMEL-3914):** the seam guard
+  (`scripts/lib/chokepoint-seam-guard.sh`) takes its baseline from the
+  outermost claude ancestor, which for a `--bg` session is the
+  `claude daemon run` service. It deliberately ignores the per-leg settings
+  file, because a session can write to that file. Any registered seam that
+  differs from the daemon's env therefore exits 96 with "headless (--bg) legs
+  cannot pass seams to chokepoints". This includes `ARMAUTOMERGE` for
+  `merge-on-green.sh`. Ship from a headed leg. The design for a headless
+  equivalent is HIMMEL-3930.
 - **Permission mode:** declared explicitly as `--permission-mode auto`
   (`headed-arm.sh:574`), matching what a headed leg runs under by default
   (comment at `headed-arm.sh:570-573`), never `bypassPermissions`.

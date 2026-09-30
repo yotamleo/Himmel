@@ -280,7 +280,7 @@ run_leg() {
   HEADED_ARM_LEG_PREFLIGHT="$preflight" \
   KONSOLE_CMD="$stubdir/konsole" PGREP_CMD="$stubdir/pgrep" \
   LEG_REPO="$repo" HEADED_ARM_LOCK_DIR="$stubdir/locks" HEADED_ARM_PROC="$stubdir/proc" \
-    bash "$SCRIPT" ${RUN_LEG_ARGS-$RUN_LEG_DEFAULT_ARGS} "$name" "$some_doc" "$stubdir/signal-never" "$PAST" "$stubdir/log" "$model"
+    ${RUN_LEG_WRAP-} bash "$SCRIPT" ${RUN_LEG_ARGS-$RUN_LEG_DEFAULT_ARGS} "$name" "$some_doc" "$stubdir/signal-never" "$PAST" "$stubdir/log" "$model"
 }
 
 # --- 1-2. usage/arg-shape ---------------------------------------------------
@@ -2072,10 +2072,16 @@ not_contains "HIMMEL-3795: full --profile leg-impl launch, ambient LEG_CLAUDE_BI
 # Finding 2: a leg's own ambient CLAUDE_CODE_EFFORT_LEVEL=low (inherited from
 # ITS OWN low-effort launch) must not override a judge it arms - the judge
 # still gets high.
+# CLAUDE_CODE_EFFORT_LEVEL is a Claude Code marker to the seam guard
+# (HIMMEL-3914): with no claude ancestor (CI) a marker plus the preflight seam
+# is refused. A real leg has a claude ancestor whose launch env carries both,
+# so run under a stand-in `claude` process (argv[0]) holding them.
+# shellcheck disable=SC2317,SC2329  # _as_claude is invoked indirectly, through RUN_LEG_WRAP
+_as_claude() { (exec -a claude bash -c '"$@"; exit $?' _ "$@"); }
 d28g="$tmp/c28g"; mk_launch_stubs "$d28g" "HIMMEL-3795-N3-effortleak"; mkdir -p "$tmp/repo28g"
 rc=0
-CLAUDE_CODE_EFFORT_LEVEL=low \
-  RUN_LEG_ARGS='--judge' run_leg "$d28g" "$tmp/repo28g" "HIMMEL-3795-N3-effortleak" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+CLAUDE_CODE_EFFORT_LEVEL=low HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  RUN_LEG_ARGS='--judge' RUN_LEG_WRAP=_as_claude run_leg "$d28g" "$tmp/repo28g" "HIMMEL-3795-N3-effortleak" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d28g" || true
 env28g="$(cat "$d28g/env-record" 2>/dev/null || true)"
 check "HIMMEL-3795: full --judge launch, ambient CLAUDE_CODE_EFFORT_LEVEL=low: exit 0" "$rc" "0"

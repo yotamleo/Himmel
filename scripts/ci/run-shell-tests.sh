@@ -166,6 +166,18 @@
 #
 # bash 3.2-safe (macOS ships 3.2): no mapfile, no associative arrays.
 set -uo pipefail
+# HIMMEL-3914: refuse a chokepoint seam that differs from the session's launch env.
+# Parameter expansion, not dirname: a PATH-shadowed dirname must not pick
+# what is sourced before the seam guard (HIMMEL-3914).
+case "${BASH_SOURCE[0]}" in */*) _csg_dir="${BASH_SOURCE[0]%/*}" ;; *) _csg_dir=. ;; esac
+_csg_lib="$_csg_dir/../lib/chokepoint-seam-guard.sh"
+# shellcheck source=scripts/lib/chokepoint-seam-guard.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
+    echo "run-shell-tests.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
+    exit 96
+fi
+chokepoint_seam_guard scripts/ci/run-shell-tests.sh || exit 96
 
 # REPO_ROOT is used only to source libs the runner itself needs; it is NOT
 # used for discovery. Discovery uses $scan (the positional scan-root arg).

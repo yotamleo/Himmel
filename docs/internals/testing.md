@@ -16,6 +16,17 @@ that fails for an unrelated reason). Before removing a test it requires a
 candidate-evidence record. A new or repaired assertion is shown RED against the
 broken subject before it goes green.
 
+## Chokepoint fixtures and the seam guard (HIMMEL-3914)
+
+Every chokepoint in `scripts/chokepoints.json` sources
+`scripts/lib/chokepoint-seam-guard.sh` and exits 96 if that lib is missing.
+A fixture that copies a chokepoint into a scratch tree must therefore copy the
+lib beside it, at the same relative path (`<tree>/scripts/lib/`). The guard
+enforces only on the anchor checkout's own copy. A scratch copy's tree root is
+never the anchor, so a fixture can still set seams per call. A suite that
+drives the anchor's REAL copy with a seam set from inside a Claude session
+gets exit 96 by design. Point it at a scratch copy instead.
+
 ## Shell suites
 
 `bash scripts/ci/run-shell-tests.sh` runs the full shell-test corpus. It is

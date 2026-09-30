@@ -202,7 +202,7 @@ NOTREPO="$SCRATCH/notrepo"
 mkdir -p "$NOTREPO/scripts" "$NOTREPO/lib"
 cp "$QUIET_RUN" "$NOTREPO/quiet-run.sh"
 # label `suite` sources its semaphore lib beside it (HIMMEL-1818).
-cp "$(dirname "$QUIET_RUN")/lib/suite-semaphore.sh" "$(dirname "$QUIET_RUN")/lib/proc-tree.sh" "$NOTREPO/lib/"
+cp "$(dirname "$QUIET_RUN")/lib/suite-semaphore.sh" "$(dirname "$QUIET_RUN")/lib/proc-tree.sh" "$(dirname "$QUIET_RUN")/lib/chokepoint-seam-guard.sh" "$NOTREPO/lib/"
 printf '#!/usr/bin/env bash\necho hi\n' > "$NOTREPO/scripts/test-x.sh"
 OUT=$(cd "$NOTREPO" && GIT_CEILING_DIRECTORIES="$SCRATCH" bash quiet-run.sh suite -- bash scripts/test-x.sh 2>&1)
 RC=$?
@@ -220,8 +220,10 @@ assert_rc "outside git repo: '..' still refused" 2 "$RC"
 # directories)"). A caller with corrupted git metadata must not be able to
 # smuggle an untracked suite past the tracked-file check.
 BROKENGIT="$SCRATCH/brokengit"
-mkdir -p "$BROKENGIT/scripts"
+mkdir -p "$BROKENGIT/scripts" "$BROKENGIT/lib"
 cp "$QUIET_RUN" "$BROKENGIT/quiet-run.sh"
+# HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
+cp "$(dirname "$QUIET_RUN")/lib/chokepoint-seam-guard.sh" "$BROKENGIT/lib/"
 printf '#!/usr/bin/env bash\necho hi\n' > "$BROKENGIT/scripts/test-x.sh"
 OUT=$(cd "$BROKENGIT" && GIT_DIR="$SCRATCH/does-not-exist" bash quiet-run.sh suite -- bash scripts/test-x.sh 2>&1)
 RC=$?
@@ -250,6 +252,9 @@ rm -rf "${DIRBYPASS:?}/test-x.sh"
 printf '#!/usr/bin/env bash\necho pwned\n' > "$DIRBYPASS/test-x.sh"
 chmod +x "$DIRBYPASS/test-x.sh"
 cp "$QUIET_RUN" "$DIRBYPASS/quiet-run.sh"
+# HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
+mkdir -p "$DIRBYPASS/lib"
+cp "$(dirname "$QUIET_RUN")/lib/chokepoint-seam-guard.sh" "$DIRBYPASS/lib/"
 OUT=$(cd "$DIRBYPASS" && bash quiet-run.sh suite -- bash test-x.sh 2>&1)
 RC=$?
 assert_rc "directory-pathspec bypass refused" 2 "$RC"

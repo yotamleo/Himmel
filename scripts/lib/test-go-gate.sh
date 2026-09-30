@@ -149,6 +149,12 @@ chmod +x "$ROOT/bin/gh"
 export PATH="$ROOT/bin:$PATH"
 export STUB_NWO="o/r"
 
+# HIMMEL_CONSOLE_LEG is a Claude Code marker (any value): run from an anchor
+# checkout with no claude ancestor (CI) and HANDOVER_DIR set, go.sh refuses 96
+# (HIMMEL-3914 I3). A console always runs under its claude session, so run
+# under a fake one.
+_as_claude() { (exec -a claude bash -c '"$@"; exit $?' _ "$@"); }
+
 old_ifs="$IFS"
 IFS='
 '
@@ -159,7 +165,7 @@ for row in $SPELLINGS; do
     exp_truthy="${row##*|}"
     val="${val#\"}"; val="${val%\"}"
     rc=0
-    HANDOVER_DIR="$ROOT" HIMMEL_CONSOLE_LEG="$val" bash "$GO_SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
+    HANDOVER_DIR="$ROOT" HIMMEL_CONSOLE_LEG="$val" _as_claude bash "$GO_SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
     if [ "$exp_truthy" -eq 1 ]; then
         if [ "$rc" -ne 3 ]; then
             fail "go.sh HIMMEL_CONSOLE_LEG='$val' expected refusal (rc 3), got rc=$rc"

@@ -906,6 +906,29 @@ NL=$'\n'
 # The name match runs on the text with quotes and backslashes removed, and
 # again with every ${...} also dropped -- both only JOIN characters, so a name
 # quoted, escaped or \${}-split apart still matches. Over-deny is accepted.
+# names_base <text> <basename> -- rc 0 when <basename> occurs in <text> at the
+# start of a path component: the character before it (if any) is not a
+# filename character [A-Za-z0-9_.-]. So `go.sh` matches `x/go.sh` but not
+# `cargo.sh` (HIMMEL-3914). Left boundary only: the text is backslash-stripped,
+# so `go.sh\c` arrives as `go.shc` and a right boundary would miss it. The text
+# is also quote-stripped, so `$x"go.sh"` (x empty -> go.sh) arrives as
+# `$xgo.sh`: a `$` + identifier run on the left also counts as a boundary.
+# Over-deny (`go.sh.bak`) is accepted.
+names_base() {
+    local t="$1" b="$2" pre l
+    while :; do
+        case "$t" in *"$b"*) ;; *) return 1 ;; esac
+        pre=${t%%"$b"*}
+        l=${pre#"${pre%?}"}
+        case "$l" in
+            [A-Za-z0-9_]) case "$pre" in *'$'*) case "${pre##*\$}" in *[!A-Za-z0-9_]*) ;; *) return 0 ;; esac ;; esac ;;
+            [.-]) ;;
+            *) return 0 ;;
+        esac
+        t=${t#"$pre"?}
+    done
+}
+
 raw_mention() {
     local t="$1" any="$2" u script_path vars_list base v env_s=0
     local re='^(.*)\$\{[^}]*\}(.*)$'
@@ -922,7 +945,7 @@ raw_mention() {
         vars_list=${vars_list%"$CR"}
         base=${script_path##*/}
         [ -n "$base" ] || continue
-        case "$t" in *"$base"*) ;; *) continue ;; esac
+        names_base "$t" "$base" || continue
         [ "$any$env_s" = 00 ] || deny_raw_mention "$script_path"
         # Seam arm = an ASSIGNMENT only (console X ruling 07:05): the whole
         # identifier followed by `=` (SEAM=1 cmd, export/declare -x SEAM=,
@@ -1243,7 +1266,7 @@ split_mention() {
         [ -n "$script_path" ] || continue
         base=${script_path##*/}
         [ -n "$base" ] || continue
-        case "$t" in *"$base"*) deny_unresolvable "$script_path" ;; esac
+        names_base "$t" "$base" && deny_unresolvable "$script_path"
     done <<<"$REG_LINES"
     return 0
 }

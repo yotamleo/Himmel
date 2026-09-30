@@ -102,16 +102,21 @@ check "rewrite: no temp file left behind" "$leftover" "0"
 
 # --- 5. a console-spawned leg cannot write its own GO ------------------------
 LEGROOT="$tmp/legroot"; mkdir -p "$LEGROOT"
-rc=0; out="$(HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=1 bash "$SCRIPT" 77 "$SHA" 2>&1)" || rc=$?
+# HIMMEL_CONSOLE_LEG is a Claude Code marker (any value): from an anchor checkout
+# with no claude ancestor (CI) and HANDOVER_DIR set, go.sh refuses 96
+# (HIMMEL-3914 I3). A leg always runs under its claude session, so these rows
+# run under a fake one.
+_as_claude() { (exec -a claude bash -c '"$@"; exit $?' _ "$@"); }
+rc=0; out="$(HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=1 _as_claude bash "$SCRIPT" 77 "$SHA" 2>&1)" || rc=$?
 check "leg marker: exit 3" "$rc" "3"
 contains "leg marker: names the reason" "$out" "console-spawned leg"
 check "leg marker: nothing written" "$(ls -A "$LEGROOT")" ""
 # HIMMEL-3543: a leg must not mint (or even create) the GO key either.
 LEGHOME="$tmp/leghome"; mkdir -p "$LEGHOME"
-rc=0; HOME="$LEGHOME" HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=1 bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
+rc=0; HOME="$LEGHOME" HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=1 _as_claude bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
 check "leg marker: exit 3 with a fresh HOME" "$rc" "3"
 check "leg marker: no GO key minted" "$(find "$LEGHOME" -type f | wc -l | tr -d ' ')" "0"
-rc=0; HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=0 bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
+rc=0; HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=0 _as_claude bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
 check "leg marker: a falsy marker is no marker" "$rc" "0"
 
 # --- 6. HIMMEL_CONSOLE_RELAY refuses on its own (HIMMEL-2975), nothing written.

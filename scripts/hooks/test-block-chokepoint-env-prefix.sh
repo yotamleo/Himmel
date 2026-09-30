@@ -997,6 +997,17 @@ assert_allow "empty stdin"                  ''
 # the hook (review lanes cannot always edit settings.json) -- a hard gate
 # here would turn that sequencing into a false red. The hookspath-misconfig
 # pre-commit hook validates settings.json hook references independently.
+# --- HIMMEL-3914: the basename backstops (raw_mention, split_mention) match a
+# WHOLE path component, so a longer file name that merely ends in a
+# registered basename (cargo.sh vs go.sh) no longer over-denies. The quote-
+# stripped `$x"go.sh"` (x empty runs go.sh) still denies: a `$`+identifier
+# run on the left counts as a boundary. ---
+assert_allow "3914 word boundary: seam prefix + tools/cargo.sh is not go.sh" "$(j "HIMMEL_REPO=/x bash tools/cargo.sh")"
+assert_allow "3914 word boundary: env -S naming tools/cargo.sh" "$(j "env -S 'bash tools/cargo.sh'")"
+assert_deny "3914 word boundary control: seam prefix + ./go.sh" "$(j "HIMMEL_REPO=/x bash ./go.sh")"
+assert_deny "3914 word boundary control: seam prefix + \$x\"go.sh\" (x empty)" "$(j "HIMMEL_REPO=/x bash \$x\"go.sh\"")"
+assert_deny "3914 word boundary control: env -S naming go.sh" "$(j "env -S 'bash scripts/handover/console-kit/go.sh'")"
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"

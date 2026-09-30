@@ -485,7 +485,7 @@ assert_not_contains "T12: no DOUBLE-ARM warning on a clean arm" "DOUBLE-ARM DETE
 FAKE="$TMP/no-ql"
 mkdir -p "$FAKE/handover" "$FAKE/lib"
 cp "$SCRIPT_DIR/arm-resume.sh" "$FAKE/handover/arm-resume.sh"
-for lib in console-context py-armor handover-path telemetry macos-app-resolve; do
+for lib in console-context py-armor handover-path telemetry macos-app-resolve chokepoint-seam-guard; do
     cp "$SCRIPT_DIR/../lib/$lib.sh" "$FAKE/lib/$lib.sh"
 done
 # HIMMEL-3165 guard: a lib arm-resume.sh hard-sources (column-0 `. .../lib/X.sh`

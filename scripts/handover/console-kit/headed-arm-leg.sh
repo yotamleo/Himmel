@@ -54,6 +54,10 @@
 # not ours. Needs a profile; native lane only. End a headless leg: `kill <pid>`
 # (the pid= in the log's `headless=1` line, or `claude agents --json`), then
 # `claude rm <short-id>`. Where -p vs --bg fits which job: HIMMEL-3410.
+# A headless leg cannot pass seams to chokepoints (HIMMEL-3914): the seam
+# guard ignores the per-leg settings file and refuses (exit 96) whenever a
+# seam differs from the claude daemon's env, so merge-on-green.sh and go.sh
+# refuse there. Use a headed leg for anything that ships; design: HIMMEL-3930.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin; the Windows station
@@ -193,6 +197,18 @@
 # that will never get one (machine-generated class), never to ration or
 # sequence it. Opt-out, default ON: unset changes nothing.
 set -u
+# HIMMEL-3914: refuse a chokepoint seam that differs from the session's launch env.
+# Parameter expansion, not dirname: a PATH-shadowed dirname must not pick
+# what is sourced before the seam guard (HIMMEL-3914).
+case "${BASH_SOURCE[0]}" in */*) _csg_dir="${BASH_SOURCE[0]%/*}" ;; *) _csg_dir=. ;; esac
+_csg_lib="$_csg_dir/../../lib/chokepoint-seam-guard.sh"
+# shellcheck source=scripts/lib/chokepoint-seam-guard.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
+    echo "headed-arm-leg.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
+    exit 96
+fi
+chokepoint_seam_guard scripts/handover/console-kit/headed-arm-leg.sh || exit 96
 
 # HEADED_ARM_UNAME (HIMMEL-2534 follow-up) - same seam name and default-
 # expansion idiom headed-arm.sh itself defines; resolved again HERE because

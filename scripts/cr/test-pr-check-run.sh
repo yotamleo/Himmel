@@ -109,8 +109,11 @@ make_repo() {
     ) >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
     sha=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x) || { rm -rf "$tmp"; return 1; }
     [ -n "$sha" ] || { rm -rf "$tmp"; return 1; }
-    mkdir -p "$tmp/scripts/cr"
+    mkdir -p "$tmp/scripts/cr" "$tmp/scripts/lib"
     cp "$CLEAR" "$tmp/scripts/cr/clear-cr-marker.sh" || { rm -rf "$tmp"; return 1; }
+    # HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
+    cp "$(dirname "$CLEAR")/../lib/chokepoint-seam-guard.sh" "$tmp/scripts/lib/chokepoint-seam-guard.sh" || { rm -rf "$tmp"; return 1; }
+    cp "$(dirname "$CLEAR")/../chokepoints.json" "$tmp/scripts/chokepoints.json" || { rm -rf "$tmp"; return 1; }
     cp "$(dirname "$CLEAR")/anchor-handoff.sh" "$tmp/scripts/cr/anchor-handoff.sh" || { rm -rf "$tmp"; return 1; }
 }
 

@@ -21,9 +21,11 @@
     "seam_env_vars": ["FLEET_CAP_OK", "FLEET_PS_CMD", "FLEET_PROC", "HIMMEL_FLEET_CAP", "HEADED_ARM_LEG_PREFLIGHT"]
   },
   "scripts/quiet-run.sh": {
-    "seam_env_vars": ["HIMMEL_SUITE_SLOTS", "HIMMEL_SUITE_SLOT_HELD", "HIMMEL_SUITE_SEMAPHORE_DIR", "HIMMEL_SUITE_SLOT_TTL"]
+    "seam_env_vars": ["HIMMEL_SUITE_SLOTS", "HIMMEL_SUITE_SLOT_HELD", "HIMMEL_SUITE_SEMAPHORE_DIR", "HIMMEL_SUITE_SLOT_TTL"],
+    "internal_seams": ["HIMMEL_SUITE_SLOT_HELD"]
   },
   "scripts/ci/run-shell-tests.sh": {
-    "seam_env_vars": ["HIMMEL_SUITE_SLOTS", "HIMMEL_SUITE_SLOT_HELD", "HIMMEL_SUITE_SEMAPHORE_DIR", "HIMMEL_SUITE_SLOT_TTL"]
+    "seam_env_vars": ["HIMMEL_SUITE_SLOTS", "HIMMEL_SUITE_SLOT_HELD", "HIMMEL_SUITE_SEMAPHORE_DIR", "HIMMEL_SUITE_SLOT_TTL"],
+    "internal_seams": ["HIMMEL_SUITE_SLOT_HELD"]
   }
 }

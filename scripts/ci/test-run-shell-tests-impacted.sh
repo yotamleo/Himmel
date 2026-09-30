@@ -55,6 +55,8 @@ trap 'rm -rf "$SB" "$SUITE_LOCK_SANDBOX"' EXIT
 mkdir -p "$SB/scripts/ci" "$SB/scripts/lib" "$SB/scripts/cr" \
          "$SB/scripts/machine-setup" "$SB/tests" "$SB/docs"
 cp "$RUNNER" "$SB/scripts/ci/run-shell-tests.sh"
+# HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
+cp "$SRC_ROOT/scripts/lib/chokepoint-seam-guard.sh" "$SB/scripts/lib/chokepoint-seam-guard.sh"
 cp "$IS_SRC" "$SB/scripts/cr/impacted-suites.sh"
 # impacted-suites.sh sources its anchor hand-off first (HIMMEL-3495).
 cp "$SRC_ROOT/scripts/cr/anchor-handoff.sh" "$SB/scripts/cr/anchor-handoff.sh"
