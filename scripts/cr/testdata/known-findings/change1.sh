@@ -28,6 +28,7 @@ rm -f "$t/x" || true
 wait "$pid"
 [ "$(date +%m)" -gt 8 ] && echo late
 [[ "$(date +%m)" -gt 8 ]] && echo late
+# git-env-ok: detector fixture, never executed
 gd=$(git rev-parse --git-common-dir)
 top=$(git rev-parse --show-toplevel)
 t2=$(mktemp -d 2>/dev/null)
