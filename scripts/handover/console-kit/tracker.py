@@ -541,10 +541,10 @@ try{var s=JSON.parse(localStorage.getItem(K)||"{}");for(var k in s)if(k in S)S[k
 function save(){try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}}
 function tally(a){var r=[0,0,0];a.forEach(function(p){r[p[2]]++});return r}
 function inV(i){return P.filter(function(p){return p[3]==i})}
-var cur=D.CUR==null?LAST:D.CUR;
+var cur=D.CUR,sel=cur==null?LAST:cur;  // cur is null once the whole train is done; sel is only the default tab
 function tabIndex(id){if(id==="overview")return -2;for(var i=0;i<V.length;i++)if(tid(V[i])===id)return i;return -1}
 var h="";try{h=decodeURIComponent(location.hash.replace(/^#/,""))}catch(e){}
-if(tabIndex(h)==-1)h=S.tab;if(tabIndex(h)==-1)h=tid(V[cur]);S.tab=h;
+if(tabIndex(h)==-1)h=S.tab;if(tabIndex(h)==-1)h=tid(V[sel]);S.tab=h;
 function setTab(id){S.tab=id;save();try{history.replaceState(null,"","#"+id)}catch(e){try{location.hash=id}catch(e2){}}render();window.scrollTo(0,0)}
 window.addEventListener("hashchange",function(){var id="";try{id=decodeURIComponent(location.hash.replace(/^#/,""))}catch(e){}if(id&&tabIndex(id)!=-1&&id!==S.tab){S.tab=id;save();render()}});
 function match(p){
@@ -660,12 +660,13 @@ function loadChart(pane){
  var mx=1e-3;V.forEach(function(_,i){if(/^v1\.0\.\d+$/.test(V[i]))mx=Math.max(mx,D.VL[i][5])});mx=Math.max(mx,(CAP||0)*1.15);
  var ch=el("div","chart"),cols=el("div","lcols");
  V.forEach(function(v,i){var col=el("div","lcol"),bar=el("div","bar"),n=D.VL[i][5],dfr=!/^v1\.0\.\d+$/.test(v);
-  if(n){var d=el("div");d.style.height=Math.max(2,Math.round(110*Math.min(n,mx)/mx))+"px";d.style.background=ldc(n,dfr?null:CAP);d.title=v+": load "+n.toFixed(2)+(CAP&&!dfr?" of "+CAP+" ("+Math.round(100*n/CAP)+"%)":dfr?" (deferred, no cap)":"");bar.appendChild(d)}
-  col.appendChild(bar);col.appendChild(el("small",null,lab(i)));cols.appendChild(col)});
+  var off=n>mx;  // a load past the train's scale (the deferred bucket) is clipped, and says so
+  if(n){var d=el("div");d.style.height=Math.max(2,Math.round(110*Math.min(n,mx)/mx))+"px";d.style.background=ldc(n,dfr?null:CAP);d.title=v+": load "+n.toFixed(2)+(CAP&&!dfr?" of "+CAP+" ("+Math.round(100*n/CAP)+"%)":dfr?" (deferred, no cap)":"")+(off?"; off the scale, bar clipped":"");bar.appendChild(d)}
+  col.appendChild(bar);col.appendChild(el("small",null,lab(i)+(off?" ▲":"")));cols.appendChild(col)});
  if(CAP){var c=el("div","cap");c.style.bottom=(26+110*CAP/mx)+"px";c.appendChild(el("span",null,"cap "+CAP));cols.appendChild(c)}
  ch.appendChild(cols);pane.appendChild(ch);
  var lg=el("div","legend");["under half the cap","half to 80 %","80 % or more"].forEach(function(x,k){var s=el("span"),i=el("i");i.style.background="var("+LD[k]+")";s.appendChild(i);s.appendChild(document.createTextNode(x));lg.appendChild(s)});
- lg.appendChild(el("span",null,"Dashed line = total cap. Per-layer load vs its own cap is on each version's tab."));pane.appendChild(lg)}
+ lg.appendChild(el("span",null,"Dashed line = total cap. ▲ = load off the scale, bar clipped. Per-layer load vs its own cap is on each version's tab."));pane.appendChild(lg)}
 function layerChart(pane,f){
  var per=V.map(function(_,v){return f.filter(function(p){return p[3]==v})}),mx=1;per.forEach(function(a){mx=Math.max(mx,a.length)});
  var ch=el("div","chart"),cols=el("div","lcols");

@@ -144,6 +144,10 @@ not_contains 'the load chart does not use the layer palette (HIMMEL-3957)' "$lc"
 not_contains 'the version load bar does not use the layer palette (HIMMEL-3957)' "$lb" 'LC['
 contains 'the load palette is its own token set (HIMMEL-3957)' "$html" '--ld1:'
 not_contains 'the load cap line is not the drift colour (HIMMEL-3957)' "$html" 'dashed var(--drift)'
+contains 'a bar clipped by the load scale is marked (HIMMEL-3957)' "$lc" 'off the scale'
+# With no running version (whole train done) the default tab is not labelled "running now".
+not_contains 'no running version falls back without a running-now label (HIMMEL-3957)' "$html" 'var cur=D.CUR==null?LAST:D.CUR'
+contains 'the default tab is chosen apart from the running version (HIMMEL-3957)' "$html" 'sel=cur==null?LAST:cur'
 # The new plan inputs move the freshness fingerprint.
 fp1="$(render --emit-fp)"
 printf '%s\t%s\t%s\t%s\n' key readiness effort_low effort_high HIMMEL-1 4 M L > "$plan/stage2/C01.tsv"
