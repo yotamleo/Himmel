@@ -280,6 +280,18 @@ for _row in "api-put|gh api -X PUT repos/o/r/pulls/42/merge" \
             "wrapper-nice-var|nice \$G pr merge 1 $PIN" \
             "verb-glob|command gh pr m?rge 1 $PIN" \
             "verb-star|gh pr * 42 --squash $PIN" \
+            "r1-verb-dq|gh pr \\\"\$M\\\" 1 $PIN" \
+            "r1-verb-bare|gh pr \$M 1 $PIN" \
+            "r1-verb-brace|gh pr \\\"\${VERB}\\\" 1 $PIN" \
+            "r1-verb-subst|gh pr \\\"\$(printf merg)e\\\" 1 $PIN" \
+            "r1-verb-backtick|gh pr \`printf merge\` 1 $PIN" \
+            "r1-sub-var|A=\\\"pr merge\\\"; gh \$A 42 $PIN" \
+            "r1-sub-at|set -- pr merge; gh \\\"\$@\\\" 42 $PIN" \
+            "r2-api-put|G=gh; \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "r2-api-put-bare|G=gh; \$G api -X PUT repos/o/r/pulls/1/merge" \
+            "r2-graphql|G=gh; \\\"\$G\\\" api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:1}){clientMutationId}}'" \
+            "verb-glob-bang|gh pr [!x]erge 42 $PIN" \
+            "verb-glob-caret|gh pr [^x]erge 42 $PIN" \
             "c1-var-dq|C=\\\"gh pr merge 42\\\"; \$C" \
             "c1-var-sq|C='gh pr merge 42'; \$C" \
             "c1-eval|C=\\\"gh pr merge 42\\\"; eval \\\"\$C\\\"" \

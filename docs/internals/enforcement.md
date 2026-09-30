@@ -2628,7 +2628,14 @@ a word whose literal residue is letters of `merge` (`m${X:-er}ge`,
 `$'m\x65rge'`, `gh${IFS}pr${IFS}merge`); a non-merge gh command with `$` or a
 substitution (`gh pr view "$PR"`) is untouched. (C) a segment with a gh word, a
 `pr` word and an unquoted glob word that globs to `merge` (`m?rge`, `[m]erge`, a
-bare `*`) fires; `ls *` has no such precondition. (D) the mirror case: in a segment
+bare `*`, `[!x]erge`, `[^x]erge`) fires; `ls *` has no such precondition. (E) one
+shell-computed word, by position: a literal `gh` word then an expansion or
+substitution in the subcommand position or, after `pr`, in the verb position
+(`gh pr "$M" 1`, `gh $A 42`, `gh "$@" 42`), or a segment whose FIRST word is an
+expansion followed by `api` and a merge-ish word or a PUT to a `pulls/` path
+(`G=gh; "$G" api -X PUT repos/o/r/pulls/1/merge`), fires; `gh pr view "$PR"` never
+has an expansion in those positions. Note the new deny of the GET form
+`gh api .../pulls/N/merge`, which the merge rule cannot tell from the PUT. (D) the mirror case: in a segment
 with a `pr` word then a merge word, every word up to the merge word must match
 `^[A-Za-z0-9_./+=-]+$` (quote chars and backslashes ignored), else it fires
 (`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`, `"$G" pr me\rge`). Once fired, the
@@ -2644,7 +2651,8 @@ text's own pointer). Non-merge gh (`gh pr view`, `gh api .../pulls/N`, `gh run`,
 A gh alias that expands to a merge and is invoked by its own name (`gh mm 8`) is
 not visible to a text detector; defining one is what the alias rule denies.
 Known residual: BOTH the program word AND the verb shell-computed (or a `bash -c`
-fed from a variable holding both) is undecidable by text and is not detected;
+fed from a variable holding both), or a computed merge path such as
+`gh api -X PUT "$U"`, is undecidable by text and is not detected;
 the structural backstop (a gh- or credential-level merge gate) is HIMMEL-3945.
 Fail closed also for the nested sources: `scripts/lib/cr-merge-gate.sh` returns 1
 (so the hook's load check denies) when one of its five helpers is missing, and the
