@@ -129,7 +129,7 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
     # config-subcommand flags carry the same optional-VALUE tolerance as the
     # git-level flags (`--file <path>` before the url key), else a value-taking
     # config flag breaks the anchor and lets a url rewrite slip through (CR).
-    gu_shape='(git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url|git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+[^[:space:];&|]*(url|insteadof)[[:space:]]+[^[:space:];&|]|git(\.exe)?[[:space:]]+([^;&|]*[[:space:]])?(-c|--config-env)[=[:space:]]*[^[:space:];&|]*insteadof=)'
+    gu_shape='(git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url|git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*([[:space:]]+(set|add|replace-all))?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+[^[:space:];&|]*(url|insteadof)[[:space:]]+[^[:space:];&|]|git(\.exe)?[[:space:]]+([^;&|]*[[:space:]])?(-c|--config-env)[=[:space:]]*[^[:space:];&|]*insteadof=)'
     gh_shape='gh(\.exe)?([[:space:]]|$)'
     gh_allow='gh(\.exe)?[[:space:]]+(issue([[:space:]]|$)|pr[[:space:]]+(view|diff|checks|status|list)([[:space:]]|$)|run[[:space:]]+(view|list|watch)([[:space:]]|$))'
     net_shape='(curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)(\.exe)?([[:space:]]|$)'

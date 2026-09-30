@@ -2021,7 +2021,7 @@ count_cmd() {
 # fail-closed: an unset/absent grants file or any invalid grant line leaves the
 # arm at its builtin allowance and it still denies.
 gp_shape='git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+push([[:space:]]|$)'
-gu_shape='(git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url|git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[a-z-]+)*[[:space:]]+[^[:space:];&|]*url|git[[:space:]]+([^;&|]*[[:space:]])?(-c|--config-env)[=[:space:]]*[^[:space:];&|]*insteadof=)'
+gu_shape='(git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url|git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[a-z-]+)*([[:space:]]+(set|add|replace-all))?([[:space:]]+-[a-z-]+)*[[:space:]]+[^[:space:];&|]*url|git[[:space:]]+([^;&|]*[[:space:]])?(-c|--config-env)[=[:space:]]*[^[:space:];&|]*insteadof=)'
 gh_shape='gh([[:space:]]|$)'
 gh_allow='gh[[:space:]]+(issue([[:space:]]|$)|pr[[:space:]]+(view|diff|checks|status|list)([[:space:]]|$)|run[[:space:]]+(view|list|watch)([[:space:]]|$))'
 net_shape='(curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)([[:space:]]|$)'

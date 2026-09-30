@@ -929,7 +929,7 @@ _ENGINE_UNTRUSTED = re.compile(r"z\.ai|glm|zhipu|deepseek")
 EXT_GIT_PUSH = re.compile(_CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+push(?:\s|$)")
 EXT_GIT_URL = re.compile(
     _CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+"
-    r"(?:remote\s+set-url|config(?:\s+-\S+(?:\s+\S+)?)*\s+\S*(?i:url|insteadof)\s+\S+)"
+    r"(?:remote\s+set-url|config(?:\s+-\S+(?:\s+\S+)?)*(?:\s+(?:set|add|replace-all))?(?:\s+-\S+(?:\s+\S+)?)*\s+\S*(?i:url|insteadof)\s+\S+)"
     r"|" + _CMDPOS + r"git(?:\.exe)?\s+(?:[^;&|]*\s)?(?:-c|--config-env)[=\s]*\S*(?i:insteadof)=")
 EXT_GH_ANY = re.compile(_CMDPOS + r"gh(?:\.exe)?(?:\s|$)")
 # Audited-lane carve-out (block-glm-external-writes.sh policy, 2026-07-03): gh
