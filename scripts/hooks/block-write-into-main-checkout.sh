@@ -1873,8 +1873,21 @@ _bwimc_subst_split() {
                     j=$((j+1))
                 done
                 [ "$j" -le "$len" ] || j=$len
-                body="${text:$((i+1)):$((j-i-1))}"
-                body="${body//\\\`/\`}"
+                # Bash drops the backslash before `$`, a backtick and `\` (and
+                # before `"` inside double quotes) in ONE left-to-right pass;
+                # a `\$(` left escaped would hide a nested body from the recursion.
+                sa="${text:$((i+1)):$((j-i-1))}"; body=""; se=0
+                while [ "$se" -lt "${#sa}" ]; do
+                    sq="${sa:$se:1}"
+                    if [ "$sq" = "\\" ]; then
+                        case "${sa:$((se+1)):1}" in
+                            '$'|'`'|"\\") se=$((se+1)) ;;
+                            '"') [ "$q" = '"' ] && se=$((se+1)) ;;
+                        esac
+                        sq="${sa:$se:1}"
+                    fi
+                    body="$body$sq"; se=$((se+1))
+                done
                 end=$j
             elif [ "$c" = '$' ] && [ "${text:$((i+1)):1}" = '(' ] && [ "${text:$((i+2)):1}" != '(' ]; then
                 sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"

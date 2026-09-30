@@ -1907,6 +1907,8 @@ _subst_row "75s-P quoted paren in a nested quoted body keeps the outer body open
 _subst_row "75s-W same shape aimed at the worktree (ALLOW)"                allow "x=\"\$(cd $_WR; echo \"\$(echo \")\" > subst-rel.txt)\")\""
 _subst_row "75t-P backtick with a quoted paren inside a quoted body"       block "x=\"\$(cd $_PR; echo \`echo \")\"\` > subst-rel.txt)\""
 _subst_row "75t-W same shape aimed at the worktree (ALLOW)"                allow "x=\"\$(cd $_WR; echo \`echo \")\"\` > subst-rel.txt)\""
+_subst_row "75u-P backtick body holds an escaped \$( that Bash unescapes"  block "x=\`echo \"\\\$(echo hi > $_PR/subst-rel.txt)\"\`"
+_subst_row "75u-W same shape aimed at the worktree (ALLOW)"                allow "x=\`echo \"\\\$(echo hi > $_WR/subst-rel.txt)\"\`"
 # The heredoc idiom with target-shaped words in the body text stays ALLOW.
 _subst_row "75j commit heredoc idiom, message mentions '> file' and a paren (ALLOW)" allow "git commit -m \"\$(cat <<'EOF'
 fix: a > b (and 'it')
