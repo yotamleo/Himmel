@@ -966,7 +966,9 @@ def terminal_external_write_reason(cmd_norm: str):
     if EXT_GIT_PUSH.search(cmd_norm):
         return ("git push is refused on an untrusted/unknown engine — commit "
                 "locally; the trusted main tier / operator pushes (HIMMEL-695).")
-    if EXT_GIT_URL.search(cmd_norm):
+    # HIMMEL-844: the shell dequotes words before git sees them; delete every quote
+    # and backslash so a quoted / backslashed / $'' config key matches the same shape.
+    if EXT_GIT_URL.search(re.sub(r"['\"\\]", "", cmd_norm)):
         return ("Rewriting a git remote / push URL is refused on an untrusted/"
                 "unknown engine (HIMMEL-695).")
     if len(EXT_GH_ANY.findall(cmd_norm)) > len(EXT_GH_ALLOW.findall(cmd_norm)):

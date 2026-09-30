@@ -137,7 +137,11 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
     if [ "$(count_cmd "$gp_shape")" -gt 0 ]; then
         deny_ext "git push is refused (external-write class)."
     fi
-    if [ "$(count_cmd "$gu_shape")" -gt 0 ]; then
+    # HIMMEL-844: the shell dequotes words before git sees them, so `'url.x.insteadOf'`,
+    # `"url.x.insteadOf"`, `ur\l.x…` and `$'url.x…'` are all the same key. Delete every
+    # quote and backslash before matching (deny-leaning: no per-spelling parser).
+    cmd_dq=$(printf '%s' "$cmd_lc" | LC_ALL=C tr -d "'\"\\\\")
+    if [ "$(cmd_lc=$cmd_dq count_cmd "$gu_shape")" -gt 0 ]; then
         deny_ext "rewriting a git remote / push URL is refused (external-write class)."
     fi
     if [ "$(count_cmd "$gh_shape")" -gt "$(count_cmd "$gh_allow")" ]; then

@@ -2027,7 +2027,10 @@ gh_allow='gh[[:space:]]+(issue([[:space:]]|$)|pr[[:space:]]+(view|diff|checks|st
 net_shape='(curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)([[:space:]]|$)'
 
 gp_total=$(count_cmd "$gp_shape"); gp_allowed=0
-gu_total=$(count_cmd "$gu_shape"); gu_allowed=0
+# HIMMEL-844: the shell dequotes words before git sees them, so a quoted / backslashed /
+# $'' config key is the same key; delete every quote and backslash before matching.
+cmd_dq=$(printf '%s' "$cmd_lc" | LC_ALL=C tr -d "'\"\\\\")
+gu_total=$(cmd_lc=$cmd_dq count_cmd "$gu_shape"); gu_allowed=0
 gh_total=$(count_cmd "$gh_shape"); gh_allowed=$(count_cmd "$gh_allow")
 net_total=$(count_cmd "$net_shape"); net_allowed=0
 

