@@ -786,10 +786,7 @@ resolve_repo_context() {
 # <base>..<head>` run from a linked worktree; a both-sides-only boundary check
 # then let a glued short option through undetected — HIMMEL-3675 judge NO-GO).
 has_traversal_dots() {
-    # Pattern in a variable: bash 3.2 (stock macOS) matches an inline RHS with
-    # any backslash-quoted char as a LITERAL string, so the check never fired.
-    local re='(^|[^a-z0-9_])\.\.|\.\.([^a-z0-9_]|$)'
-    [[ "$1" =~ $re ]]
+    [[ "$1" =~ (^|[^a-z0-9_])\.\.|\.\.([^a-z0-9_]|$) ]]
 }
 
 # mentions_primary_or_home CMD_LC — true when the command text contains the
@@ -815,7 +812,11 @@ mentions_primary_or_home() {
     # `<dir>/primary/...`).
     if [ "$is_primary_cwd" = "0" ] && [ -n "$own_root_lc" ]; then
         if ! has_traversal_dots "$c_noquotes"; then
-            c_noquotes=${c_noquotes//"$own_root_lc/"/}
+            # Pattern in a variable: bash 3.2 drops the quoted trailing `/` of an
+            # inline `"$own_root_lc/"`, so it blanked the bare prefix (`<dir>/prim`
+            # out of `<dir>/primary/...`) and hid the primary's own path.
+            local own_root_pat="$own_root_lc/"
+            c_noquotes=${c_noquotes//"$own_root_pat"/}
         fi
     fi
     # Only the primary root's OWN .claude counts as live — matching
@@ -1342,8 +1343,7 @@ lex_resolve() {
 # expanded here either — a match just denies outright, the same fail-closed
 # shape as an unresolvable canon().
 has_unquoted_brace_group() {
-    local re='\{[^{}]*,[^{}]*\}' # in a variable: bash 3.2 reads an inline backslash-quoted RHS literally
-    [[ "$1" =~ $re ]]
+    [[ "$1" =~ \{[^{}]*,[^{}]*\} ]]
 }
 # ponytail: matching against already quote-stripped text means a genuinely
 # quoted brace-containing filename (e.g. a file literally named `.{,.}`,

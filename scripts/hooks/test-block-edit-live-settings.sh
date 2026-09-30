@@ -1175,7 +1175,9 @@ pad_to() { # pad_to PREFIX FILLER SUFFIX BYTES — PREFIX FILLER… SUFFIX, abou
     local n=$(( ($4 - ${#1} - ${#3}) / ${#2} ))
     printf '%s%s%s' "$1" "$(rep "$n" "$2")" "$3"
 }
-TIMING_BUDGET_MS=5000
+# 12 s: macOS runners measured 9.2 s for row 190 (Linux ~1 s); the bound only
+# has to stay under the runner's 15 s member timeout (HIMMEL-3699).
+TIMING_BUDGET_MS=12000
 if command -v node >/dev/null 2>&1; then
     RUNNER="$(dirname "$HOOK")/run-hook-with-bash.js"
     for sz in 8190 13600; do
@@ -1317,8 +1319,11 @@ assert_rc "207 cp a b inside worktree allows" 0 \
 # 208: `tee .{,.}/.{,.}/settings.json` from the nested worktree hides
 # `../../settings.json` inside an unexpanded brace group — no literal ".."
 # in the text, so has_traversal_dots never fired at base.
+# The command sits in a variable: bash 3.2 brace-expands a quoted literal
+# written inside "$(...)", running the hook 4x on the expansions.
+cmd208='tee .{,.}/.{,.}/settings.json'
 assert_rc "208 tee brace-hidden traversal from nested worktree denies" 2 \
-    "$(bash_rc_of "$NESTED_WT" "tee .{,.}/.{,.}/settings.json")"
+    "$(bash_rc_of "$NESTED_WT" "$cmd208")"
 
 # 209 (control): a brace group with no .claude/settings mention, outside a
 # nested worktree, and mkdir isn't in the write-verb list either way —
