@@ -1313,8 +1313,21 @@ wrapper_skip() {
         *) return 0 ;;
         esac
     done
-    # timeout's DURATION and chrt's PRIORITY are one positional operand.
-    case "$kind" in timeout|chrt) [ "$i" -ge "$nw" ] || i=$((i + 1)) ;; esac
+    # timeout's DURATION is one positional operand. chrt's PRIORITY is a number,
+    # optional for -b/-i/-o (util-linux 2.42), and may be followed by its own
+    # `--`: consume it only when numeric, so `chrt -b env ...` keeps env.
+    case "$kind" in
+    timeout) [ "$i" -ge "$nw" ] || i=$((i + 1)) ;;
+    chrt)
+        if [ "$i" -lt "$nw" ]; then
+            case "${W[$i]}" in
+            *[!0-9]*) ;;
+            *)
+                i=$((i + 1))
+                if [ "$i" -lt "$nw" ] && [ "${W[$i]}" = "--" ]; then i=$((i + 1)); fi ;;
+            esac
+        fi ;;
+    esac
     [ "$i" -le "$nw" ] || i=$nw
     WRAP_NEXT=$i
     return 0
