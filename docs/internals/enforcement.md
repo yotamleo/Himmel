@@ -2624,8 +2624,9 @@ hook additionally REQUIRES the merge command to pin `--match-head-commit`
 or mismatched pin exits 2, because the GO was bound to this hook's own `gh pr
 view` read and a separate `gh pr merge` could otherwise land a different commit.
 Only the GO/pin half is fail-CLOSED (a missing `go-gate.sh`, or one that
-sources but lacks `go_gate`, exits 2); an unresolvable PR selector still fails
-open like the CR/CI siblings. `merge-on-green.sh` runs the same
+sources but lacks `go_gate`, exits 2); an unresolvable PR selector on a real
+merge is now fail-CLOSED too (HIMMEL-3915, above), no longer open like the CR/CI
+siblings. `merge-on-green.sh` runs the same
 `console_leg`/`go_gate` pair as its own gate (below), using the `$sha` check-ci
 certified — the same head its `--match-head-commit` pins — and `go.sh` uses
 `console_leg` for its refusal, so none of the three can drift on "is this a
