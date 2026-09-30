@@ -995,9 +995,14 @@ export function gitCapture(cmd: string[], cwd: string, env?: Record<string, stri
 export function composeDispatchGitState(worktree: string, branch: string, baseSha: string | undefined): string[] {
   const ls = gitCapture(["ls-remote", "--heads", "origin", `refs/heads/${branch}`], worktree);
   const remoteSha = ls.stdout.trim().split(/\s+/)[0];
+  const head = gitCapture(["rev-parse", "HEAD"], worktree);
+  const localSha = head.code === 0 ? head.stdout.trim() : "";
+  // A remote branch that lags local HEAD is NOT "pushed": the worker's newest commits are still local.
   const pushed = ls.code !== 0 ? "unknown"
-    : remoteSha ? `yes (origin/${branch} at ${remoteSha})`
-    : "no (by design, parent owns push)";
+    : !remoteSha ? "no (by design, parent owns push)"
+    : !localSha ? "unknown"
+    : remoteSha === localSha ? `yes (origin/${branch} at ${remoteSha})`
+    : `partial (origin/${branch} at ${remoteSha}, local HEAD ${localSha})`;
   const count = baseSha ? gitCapture(["rev-list", "--count", `${baseSha}..HEAD`], worktree) : undefined;
   const commits = count && count.code === 0 && /^\d+$/.test(count.stdout.trim()) ? count.stdout.trim() : "unknown";
   const status = gitCapture(["status", "--porcelain"], worktree);

@@ -67,6 +67,19 @@ test("a real push is reported as pushed with the remote sha", () => {
   } finally { f.cleanup(); }
 }, GIT_TEST_TIMEOUT_MS);
 
+test("a remote branch behind local HEAD is partial, not pushed", () => {
+  const f = fixture();
+  try {
+    f.commit("a");
+    git(f.repo, ["push", "origin", "worker/x"]);
+    const pushedSha = git(f.repo, ["rev-parse", "HEAD"]);
+    f.commit("b");
+    const head = git(f.repo, ["rev-parse", "HEAD"]);
+    expect(composeDispatchGitState(f.repo, "worker/x", f.base)[0])
+      .toBe(`pushed: partial (origin/worker/x at ${pushedSha}, local HEAD ${head})`);
+  } finally { f.cleanup(); }
+}, GIT_TEST_TIMEOUT_MS);
+
 test("an unreadable git dir reports unknown for every field", () => {
   const gone = join(fixtureDir("dispatch-state-gone-"), "nope");
   try {
