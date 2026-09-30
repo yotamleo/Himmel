@@ -1090,6 +1090,11 @@ assert_deny "3921 r2 I-B globbed env --ignore-environment" "$(j "/usr/bin/en? --
 assert_deny "3921 r2 I-B globbed env --unset=NAME"         "$(j "/usr/bin/en? --unset=HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
 assert_deny "3921 r2 I-B env bare dash"                    "$(j "\$e - bash $MERGE_ON_GREEN")"
 assert_allow "3921 r2 unset with no chokepoint word"       "$(j "unset FOO; echo hi")"
+# 3921 judge r3: ANSI-C escapes are an allowlist (whitespace/quote only).
+assert_deny "3921 r3 fully \\U-encoded path word"  "$(j "setsid -f env FOO=1 \$'\\U0000002fbin\\U0000002fsh'")"
+assert_deny "3921 r3 \\c control escape word"      "$(j "setsid -f env FOO=1 \$'\\cAx'")"
+assert_deny "3921 r3 \\e escape word"              "$(j "setsid -f env FOO=1 \$'\\e[0m'")"
+assert_allow "3921 r3 printf ANSI-C newline/tab/quote" "$(j "printf \$'a\\tb\\n\\'c\\\\'; export LC_ALL=C")"
 assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
 
 CASES=$((CASES + 1))

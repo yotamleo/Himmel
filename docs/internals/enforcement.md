@@ -2455,8 +2455,9 @@ it. The hook therefore adds a parse-free, deny-leaning scan of the raw command
 (`NAME=`, `export`/`env`/`read`/`printf -v`/`declare`/...) beside a `scripts/`
 path word whose glob/brace/`$var` prefix could resolve to a registered
 chokepoint (`scripts/hooks/*.sh` is an ordinary glob and allowed), or an
-ANSI-C `$'` word naming a path or carrying a hex/unicode/octal escape (a bare
-`$'\t'` is allowed), is denied; (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
+ANSI-C `$'` word naming a path or carrying any backslash escape other than the
+plain whitespace/quote ones (`\n \t \r \\ \' \" \a \b \f \v`; an allowlist, so
+`\x \u \U \c \e` and octal all count; a bare `$'\t'` is allowed), is denied; (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
 beside a chokepoint word is denied; (3) CLEARING a seam or
 `HIMMEL_CONSOLE_LEG` (ANY `unset` whatever its argument, any `export -n`,
 `declare|typeset|local +x`, `exec -<opt>`, `${!`, and any standalone

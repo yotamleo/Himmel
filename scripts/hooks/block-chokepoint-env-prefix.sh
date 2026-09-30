@@ -934,6 +934,7 @@ NL=$'\n'
 raw_obfuscated() {
     local t="$1" w rest pre sp v wv write=0 obf=0 SQ="'"
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
+    local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
     set -f
     for w in $(printf '%s' "$t" | tr ';|&()<>' '       '); do
         case "$w" in
@@ -941,7 +942,11 @@ raw_obfuscated() {
             # names a path or carries a hex/unicode/octal escape is obfuscation.
             *'$'"$SQ"*)
                 case "$w" in
-                    */*|*.sh*|*'\x'*|*'\u'*|*\\[0-7]*) obf=1 ;;
+                    */*|*.sh*) obf=1 ;;
+                    # Allowlist: only plain whitespace/quote escapes are benign;
+                    # ANY other backslash escape (\x \u \U \c \e octal, future
+                    # ones) counts as obfuscation.
+                    *) [[ $w =~ $ansi_esc ]] && obf=1 ;;
                 esac ;;
             *scripts/*)
                 # A glob only counts when its literal prefix could resolve to a
