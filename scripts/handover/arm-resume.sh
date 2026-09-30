@@ -5267,8 +5267,17 @@ schedule_arm() {
             # appends its random tail AFTER a .bat suffix, so the file neither
             # landed in the caller's dir nor matched the prune's `*.bat` glob.
             # Mint under an explicit dir, then add the suffix.
-            bat_path=$(mktemp "${TMPDIR:-/tmp}/himmel-resume.XXXXXX") \
-                && mv "$bat_path" "$bat_path.bat" && bat_path="$bat_path.bat"
+            # An && list is exempt from set -e, so each step aborts explicitly.
+            bat_path=$(mktemp "${TMPDIR:-/tmp}/himmel-resume.XXXXXX") || {
+                echo "ERR arm-resume: mktemp failed minting the resume .bat" >&2
+                return 1
+            }
+            mv "$bat_path" "$bat_path.bat" || {
+                echo "ERR arm-resume: could not rename $bat_path to .bat" >&2
+                rm -f "$bat_path"
+                return 1
+            }
+            bat_path="$bat_path.bat"
             # HIMMEL-1606: prune our own leaked siblings. The .bat deletes its
             # own scheduled task on its first line but never removes ITSELF, so
             # every arm since 2026-06-28 left one behind -- 1665 files / 2.1 MB
