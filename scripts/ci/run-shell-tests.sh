@@ -2019,7 +2019,8 @@ _suite_lock_orphan_reap() {
   # pgrep rc 1 = no children; anything else = discovery failed, so do not guess.
   [ "$_prc" -le 1 ] || _bad=1
   for _k in $_pk; do
-    _ki=$(proc_tree_process_identity "$_k") && [ -n "$_ki" ] || { _bad=1; continue; }
+    _ki=$(proc_tree_process_identity "$_k") || _ki=
+    if [ -z "$_ki" ]; then _bad=1; continue; fi
     _kids[${#_kids[@]}]="$_k"
     _kid_ids[${#_kid_ids[@]}]="$_ki"
   done
