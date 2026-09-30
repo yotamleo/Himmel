@@ -212,6 +212,106 @@ id-token: write\
 attestations: write' "$WORKFLOW" > "$mut/toplevel-perms.yml"
 check_not "RED: id-token/attestations at the top level (not the job) is rejected" attest_ok "$mut/toplevel-perms.yml"
 
+# --- T8: HIMMEL-3920 -- release notes are the curated file, or bounded generated ---
+# notes_ok <file> -- 0 iff "Ensure the release exists" (a) skips when the release
+# exists, (b) validates the tag shape BEFORE building the notes path, (c) uses the
+# curated docs/release/<TAG>-notes.md via --notes-file, (d) bounds generated notes
+# with --notes-start-tag, and (e) never runs a bare --generate-notes as the only path
+# when a predecessor exists.
+# shellcheck disable=SC2016  # the single quotes are deliberate: literal $VAR text to grep for in the workflow
+notes_ok() {
+  local f="$1" step
+  step="$(awk '/- name: Ensure the release exists/{on=1;next} on&&/- name:/{on=0} on' "$f")"
+  [ -n "$step" ] || return 1
+  grep -Fq 'gh release view "$TAG"' <<< "$step" || return 1
+  grep -Fq 'already exists' <<< "$step" || return 1
+  grep -Fq -- '--notes-file "$notes"' <<< "$step" || return 1
+  grep -Fq 'notes="docs/release/${TAG}-notes.md"' <<< "$step" || return 1
+  grep -Fq -- '--notes-start-tag "$prev"' <<< "$step" || return 1
+  # the tag-shape gate must come BEFORE the path is built from the tag
+  local gate_line path_line
+  gate_line="$(grep -n "grep -Eq '\^v\[0-9\]" <<< "$step" | head -1 | cut -d: -f1)"
+  path_line="$(grep -n 'notes="docs/release/' <<< "$step" | head -1 | cut -d: -f1)"
+  [ -n "$gate_line" ] && [ -n "$path_line" ] && [ "$gate_line" -lt "$path_line" ] || return 1
+  # no ${{ }} expansion inside the run: block (env: only)
+  ! grep -Fq '${{' <<< "$step" || return 1
+  return 0
+}
+check "workflow: curated notes file, bounded generated notes, tag-shape gate" notes_ok "$WORKFLOW"
+
+# RED: the pre-HIMMEL-3920 step (bare --generate-notes) must be rejected.
+cat > "$mut/old-step.yml" <<'EOF'
+      - name: Ensure the release exists
+        run: |
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
+
+      - name: Upload both assets
+EOF
+check_not "RED: the old bare --generate-notes step is rejected" notes_ok "$mut/old-step.yml"
+grep -v -- '--notes-file' "$WORKFLOW" > "$mut/no-notes-file.yml"
+check_not "RED: a step with no --notes-file path is rejected" notes_ok "$mut/no-notes-file.yml"
+grep -v -- '--notes-start-tag' "$WORKFLOW" > "$mut/no-start-tag.yml"
+check_not "RED: a step whose generated notes are not bounded is rejected" notes_ok "$mut/no-start-tag.yml"
+grep -v 'already exists' "$WORKFLOW" > "$mut/no-skip.yml"
+check_not "RED: a step that lost the release-exists skip is rejected" notes_ok "$mut/no-skip.yml"
+grep -v "grep -Eq '^v\[0-9\]" "$WORKFLOW" > "$mut/no-tag-gate.yml"
+check_not "RED: a step with no tag-shape gate before the notes path is rejected" notes_ok "$mut/no-tag-gate.yml"
+
+# Behavioural half (HIMMEL-3920 CR round 1): EXECUTE the step's shell with stubbed
+# gh/git, so control flow -- not just token presence -- is asserted.
+# run_notes_step <workflow> <tag> <have-notes:0|1> <exists:0|1> <tags-newline-list> -- prints the
+# `gh release create` argv the step issued (empty when it issued none); rc = the step's rc.
+run_notes_step() {
+  local wf="$1" tag="$2" have_notes="$3" exists="$4" tags="$5" d
+  d="$(mktemp -d "$tmp/step.XXXXXX")" || { echo "rc=mktemp-failed"; return 0; }
+  mkdir -p "$d/bin" "$d/docs/release"
+  awk '/- name: Ensure the release exists/{on=1;next} on&&/^ +run: \|/{r=1;next} on&&/- name:/{exit} on&&r{sub(/^          /,"");print}' "$wf" > "$d/step.sh"
+  [ "$have_notes" = 1 ] && echo "notes" > "$d/docs/release/${tag}-notes.md"
+  cat > "$d/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1 $2" = "release view" ]; then exit "${STUB_VIEW_RC:-1}"; fi
+if [ "$1 $2" = "release create" ]; then echo "$*" >> "$STUB_LOG"; exit 0; fi
+exit 0
+EOF
+  cat > "$d/bin/git" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in *" tag "*) printf '%s\n' "$STUB_TAGS" ;; *) : ;; esac
+EOF
+  chmod +x "$d/bin/gh" "$d/bin/git"
+  ( cd "$d" && TAG="$tag" STUB_LOG="$d/log" STUB_VIEW_RC="$([ "$exists" = 1 ] && echo 0 || echo 1)" \
+      STUB_TAGS="$tags" PATH="$d/bin:$PATH" bash -e -o pipefail step.sh >/dev/null 2>&1 )
+  local rc=$?
+  [ -f "$d/log" ] && cat "$d/log"
+  echo "rc=$rc"
+}
+tags_list=$'v1.0.0\nv1.0.0-pre.1\nv0.9.0'
+out="$(run_notes_step "$WORKFLOW" v1.0.0 1 0 "$tags_list")"
+[[ "$out" == *"--notes-file docs/release/v1.0.0-notes.md"* && "$out" != *"--generate-notes"* && "$out" == *"rc=0"* ]] \
+  && ok "step: curated notes file present -> --notes-file, never --generate-notes" || bad "step: notes-file branch" "got: $out"
+out="$(run_notes_step "$WORKFLOW" v1.0.0 0 0 "$tags_list")"
+[[ "$out" == *"--generate-notes --notes-start-tag v1.0.0-pre.1"* && "$out" == *"rc=0"* ]] \
+  && ok "step: no notes file -> generated notes bounded to the previous tag" || bad "step: bounded branch" "got: $out"
+out="$(run_notes_step "$WORKFLOW" v0.9.0 0 0 "$tags_list")"
+[[ "$out" == *"--generate-notes"* && "$out" != *"--notes-start-tag"* && "$out" == *"rc=0"* ]] \
+  && ok "step: first tag (no predecessor) -> generated notes, no start tag" || bad "step: first-tag branch" "got: $out"
+out="$(run_notes_step "$WORKFLOW" v1.0.0 1 1 "$tags_list")"
+[ "$out" = "rc=0" ] && ok "step: release already exists -> clean exit, no create" || bad "step: exists skip" "got: $out"
+out="$(run_notes_step "$WORKFLOW" 'v1/../x' 1 0 "$tags_list")"
+[[ "$out" != *"rc=0"* && "$out" != *"--verify-tag"* ]] && ok "step: a malformed tag is refused (non-zero, no create)" || bad "step: malformed tag accepted" "got: $out"
+# RED controls: mutants that keep every token but break the flow must fail these rows.
+sed '/skipping create/{n;s/exit 0/true/}' "$WORKFLOW" > "$mut/no-exit.yml"
+check_not "the no-exit mutant really differs from the workflow" cmp -s "$WORKFLOW" "$mut/no-exit.yml"
+out="$(run_notes_step "$mut/no-exit.yml" v1.0.0 1 1 "$tags_list")"
+[[ "$out" == *"--verify-tag"* ]] && ok "RED: dropping the exists-skip 'exit 0' is caught (create still issued)" || bad "RED: no-exit mutant not caught"
+# shellcheck disable=SC2016  # literal $notes in the sed pattern
+sed 's/^\( *\)if \[ -s "\$notes" \]; then/\1if false; then/' "$WORKFLOW" > "$mut/no-notes-branch.yml"
+check_not "the dead-notes mutant really differs from the workflow" cmp -s "$WORKFLOW" "$mut/no-notes-branch.yml"
+out="$(run_notes_step "$mut/no-notes-branch.yml" v1.0.0 1 0 "$tags_list")"
+[[ "$out" != *"--notes-file"* && "$out" == *"rc=0"* ]] && ok "RED: a dead notes-file branch is caught" || bad "RED: dead-notes mutant not caught"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
