@@ -48,7 +48,7 @@ HIMMEL-2058 block in `scripts/cr/test-critic-first-pass.sh` (prompt injection).
 
 | id | kind | source | detector | title |
 |---|---|---|---|---|
-| `errexit-false-positive` | rebuttal | coderabbit-learning | — | errexit hazards claimed in scripts that do not (or do not relevantly) use set -e |
+| `errexit-false-positive` | rebuttal | coderabbit-learning | added-line-regex | errexit hazards claimed in scripts that do not (or do not relevantly) use set -e |
 | `octal-leading-zero` | rebuttal | coderabbit-learning | added-line-regex | leading-zero operands: decimal in `[ ]`, octal only in arithmetic contexts |
 | `handover-root-bootstrap` | rebuttal | coderabbit-learning | added-line-regex | handover-path.sh / handover_root demanded of a script that touches no handover path |
 | `mktemp-no-template` | fix | coderabbit-learning | added-line-regex | bare `mktemp` / `mktemp -d` without a template (BSD/macOS portability) |

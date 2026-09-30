@@ -72,8 +72,20 @@ not_contains "diff: bare cat control excluded" "$out" "scripts/foo.sh:20"
 # by the main pattern needing `//`, never by an exclude clause.
 contains "diff: jq // with a trailing |type still fires" "$out" "scripts/foo.sh:22"
 contains "diff: summary line counts classes"   "$out" "class(es) match this diff"
-# rebuttal-only classes have no detector and must not appear in the checklist
-not_contains "diff: errexit rebuttal not a checklist item" "$out" "[errexit-false-positive]"
+# HIMMEL-3905 red-first bait/control pairs for the hottest rebuttal classes
+# (change1.sh lines 24-33): the detector pre-flags the exact shape critics
+# re-raise, and stays silent on the near-miss one line below it.
+contains "diff: errexit rebuttal pre-flagged"       "$out" "[errexit-false-positive]"
+contains "diff: errexit bare rm -f cites line 24"   "$out" "scripts/foo.sh:24"
+contains "diff: errexit bare wait cites line 25"    "$out" "scripts/foo.sh:25"
+contains "diff: errexit [ ] && assign cites line 26" "$out" "scripts/foo.sh:26"
+not_contains "diff: rm -f || true compound excluded" "$out" "scripts/foo.sh:27"
+not_contains "diff: wait with an operand excluded"  "$out" "scripts/foo.sh:28"
+contains "diff: octal single-bracket date -gt cites line 29" "$out" "scripts/foo.sh:29"
+not_contains "diff: octal [[ ]] is arithmetic, not the rebuttal shape" "$out" "scripts/foo.sh:30"
+contains "diff: handover git-common-dir cites line 31" "$out" "scripts/foo.sh:31"
+not_contains "diff: handover --show-toplevel excluded" "$out" "scripts/foo.sh:32"
+contains "diff: mktemp with a redirect cites line 33" "$out" "scripts/foo.sh:33"
 
 # --json: parseable, hits carry id + where
 jout="$(cd "$repo" && bash "$SCRIPT" --diff "$base...HEAD" --json 2>&1)"

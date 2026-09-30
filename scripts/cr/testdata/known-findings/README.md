@@ -15,6 +15,15 @@ followed by the correct spelling it must NOT flag:
 | 19-20 | hardcoded `/usr/bin/cat` | the bare `cat "$p"` |
 | 22 | `.agent_id // empty \| type` — buggy DESPITE the trailing `\| type` | (its control is line 15 above) |
 
+HIMMEL-3905 added lines 24-33, bait/control pairs for the hottest rebuttal classes:
+
+| line | bait (must fire) | control (must stay silent) |
+|---|---|---|
+| 24-26 | whole-line `rm -f`, whole-line `wait`, `[ ... ] && flag=1` (errexit) | 27 `rm -f ... \|\| true`, 28 `wait "$pid"` |
+| 29 | single-bracket `-gt` against `date +%m` (octal) | 30 the `[[ ]]` form, which IS arithmetic |
+| 31 | `git rev-parse --git-common-dir` (handover-root) | 32 `--show-toplevel` |
+| 33 | `mktemp -d 2>/dev/null` (redirect, no template) | line 5 templated form |
+
 Line 22 exists because the jq class's exclude once carried a whole-line
 `\| type` clause, which suppressed exactly this line. The pair that matters is
 22 (must fire) against 15 (must stay silent): 15 is spared by the main pattern
