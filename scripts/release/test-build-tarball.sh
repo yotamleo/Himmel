@@ -285,7 +285,7 @@ EOF
       STUB_TAGS="$tags" PATH="$d/bin:$PATH" bash -e -o pipefail step.sh >/dev/null 2>&1 )
   local rc=$?
   [ -f "$d/log" ] && cat "$d/log"
-  return "$rc"
+  echo "rc=$rc"
 }
 tags_list=$'v1.0.0\nv1.0.0-pre.1\nv0.9.0'
 out="$(run_notes_step "$WORKFLOW" v1.0.0 1 0 "$tags_list")"
@@ -298,16 +298,19 @@ out="$(run_notes_step "$WORKFLOW" v0.9.0 0 0 "$tags_list")"
 [[ "$out" == *"--generate-notes"* && "$out" != *"--notes-start-tag"* ]] \
   && ok "step: first tag (no predecessor) -> generated notes, no start tag" || bad "step: first-tag branch" "got: $out"
 out="$(run_notes_step "$WORKFLOW" v1.0.0 1 1 "$tags_list")"
-[ -z "$out" ] && ok "step: release already exists -> no create" || bad "step: exists skip" "got: $out"
-if run_notes_step "$WORKFLOW" 'v1/../x' 1 0 "$tags_list" >/dev/null; then bad "step: malformed tag accepted"; else ok "step: a malformed tag is refused"; fi
+[ "$out" = "rc=0" ] && ok "step: release already exists -> clean exit, no create" || bad "step: exists skip" "got: $out"
+out="$(run_notes_step "$WORKFLOW" 'v1/../x' 1 0 "$tags_list")"
+[[ "$out" != *"rc=0"* && "$out" != *"--verify-tag"* ]] && ok "step: a malformed tag is refused (non-zero, no create)" || bad "step: malformed tag accepted" "got: $out"
 # RED controls: mutants that keep every token but break the flow must fail these rows.
 sed '/skipping create/{n;s/exit 0/true/}' "$WORKFLOW" > "$mut/no-exit.yml"
+check_not "the no-exit mutant really differs from the workflow" cmp -s "$WORKFLOW" "$mut/no-exit.yml"
 out="$(run_notes_step "$mut/no-exit.yml" v1.0.0 1 1 "$tags_list")"
-[ -n "$out" ] && ok "RED: dropping the exists-skip 'exit 0' is caught (create still issued)" || bad "RED: no-exit mutant not caught"
+[[ "$out" == *"--verify-tag"* ]] && ok "RED: dropping the exists-skip 'exit 0' is caught (create still issued)" || bad "RED: no-exit mutant not caught"
 # shellcheck disable=SC2016  # literal $notes in the sed pattern
-sed 's/^\( *\)if \[ -s "\$notes" \]; then/\1if false; then/'"$WORKFLOW" > "$mut/no-notes-branch.yml"
+sed 's/^\( *\)if \[ -s "\$notes" \]; then/\1if false; then/' "$WORKFLOW" > "$mut/no-notes-branch.yml"
+check_not "the dead-notes mutant really differs from the workflow" cmp -s "$WORKFLOW" "$mut/no-notes-branch.yml"
 out="$(run_notes_step "$mut/no-notes-branch.yml" v1.0.0 1 0 "$tags_list")"
-[[ "$out" != *"--notes-file"* ]] && ok "RED: a dead notes-file branch is caught" || bad "RED: dead-notes mutant not caught"
+[[ "$out" != *"--notes-file"* && "$out" == *"rc=0"* ]] && ok "RED: a dead notes-file branch is caught" || bad "RED: dead-notes mutant not caught"
 
 echo
 echo "RESULT: $pass passed, $fail failed"
