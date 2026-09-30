@@ -31,3 +31,4 @@ wait "$pid"
 gd=$(git rev-parse --git-common-dir)
 top=$(git rev-parse --show-toplevel)
 t2=$(mktemp -d 2>/dev/null)
+pid=$$; echo "$flag $gd $top $t2 $pid"
