@@ -976,7 +976,7 @@ segment_is_safe() {
 scan_cmd() {
     local s="$1" n i c nx p ppe st seg NL cm aws pesc
     NL=$'\n'
-    n=${#s}; i=0; st=0; cm=0; aws=1; seg=""; SCAN_SEGS=""; SCAN_MASK=""; pesc=0
+    n=${#s}; i=0; st=0; cm=0; aws=1; seg=""; SCAN_SEGS=""; SCAN_MASK=""; SCAN_ESC_AMP=0; pesc=0
     while [ "$i" -lt "$n" ]; do
         c="${s:$i:1}"
         # HIMMEL-3777: was s[i-1] itself the escaped byte of a `\x` pair (so it
@@ -1041,6 +1041,11 @@ scan_cmd() {
                 # backslash is never itself a boundary char nor a separator
                 # any downstream SCAN_MASK consumer looks for, so this cannot
                 # newly satisfy any of them — it can only stop a false match.
+                # An unquoted `\&` is a literal & word byte, not a separator —
+                # but it lands as an operand real tools may treat as an output
+                # file (`uniq -c f \&` creates `&`). Flag it so the walk's
+                # caller falls through instead of approving.
+                [ "$nx" = '&' ] && SCAN_ESC_AMP=1
                 seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK\\ "; aws=0; pesc=1; i=$((i + 2)); continue ;;
             ';'|"$NL")                               # statement separator
                 SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
@@ -1738,6 +1743,13 @@ rd=$(printf '%s' "$SCAN_MASK" | sed -E \
     -e 's@[0-9]*>>?[[:space:]]*/dev/null([[:space:]]|$)@ @g' \
     -e 's@[0-9]*>&[0-9]([[:blank:];|&]|$)@ @g')
 case "$rd" in *'>'*) exit 0 ;; esac
+
+# HIMMEL-3793 (J1397A finding 4): an unquoted backslash-escaped `&` is a
+# literal operand byte, which real tools may treat as an output file
+# (`uniq -c f \&` creates `&`, `uniq -c f a\&\&b` creates `a&&b`). Uniform
+# fall-through here (after the deny scans, so a DENY still wins) — no
+# per-binary logic, an earlier uniq-specific guard kept yielding bypasses.
+[ "$SCAN_ESC_AMP" = 1 ] && exit 0
 
 # HIMMEL-3886: a brace expansion in ANY word of ANY segment never reaches an
 # allow — one central refusal ahead of every arm below (queue-lock, git, gh,

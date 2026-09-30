@@ -1142,10 +1142,11 @@ assert "escaped amp, odd (3) backslashes: still escapes (HIDDEN-RAN)" \
     PASS "$(decide "$(j_bash 'echo hi \\\&& touch M')")"
 assert "escaped amp, even (2) backslashes: real && (HIDDEN-RAN, pre-existing PASS)" \
     PASS "$(decide "$(j_bash 'echo hi \\&& touch M')")"
-# Control: BOTH &s individually backslash-escaped is truly literal text — no
-# operator ever reaches the &-branch, no hidden run, must stay ALLOW.
-assert "both amps escaped: literal, no hidden run (control, stays ALLOW)" \
-    ALLOW "$(decide "$(j_bash 'echo a\&\&b touch M')")"
+# BOTH &s individually backslash-escaped is truly literal text — no operator
+# ever reaches the &-branch, no hidden run. HIMMEL-3793: it still falls through
+# now (uniform rule: any unquoted `\&` stops auto-approving), a harmless prompt.
+assert "both amps escaped: literal, no hidden run (falls through, HIMMEL-3793)" \
+    PASS "$(decide "$(j_bash 'echo a\&\&b touch M')")"
 # Controls: an escaped `;` or `|` is likewise fully consumed as literal data
 # by the existing single-character escape walk (no lookback involved), so
 # these were never part of this bug — confirm no regression.
@@ -1255,21 +1256,19 @@ assert "fd-dup >&2 + trailing backslash writes a junk file (must not ALLOW)" \
 # that literal survives as uniq's 2nd positional, which real uniq treats as
 # an OUTPUT file, not another input. VERIFIED (real bash): `uniq -c f \&`
 # creates a file named `&`; `uniq -c f a\&\&b` creates `a&&b`.
-#
-# NOT fixed by this PR (console ruling, HIMMEL-3793): an earlier draft of
-# this PR added a uniq-specific "2nd positional = output file" guard to
-# close these two, but three straight /pr-check panel rounds each found a
-# new real bypass in that guard (a bare "-" miscounted as a flag, a quoted
-# `'>' ` miscounted as a redirect, a backslash-escaped `2\>` miscounted as a
-# redirect, and finally `uniq -- -input output` miscounted post-`--`). A
-# guard that keeps yielding a new real bypass every round gets cut, not
-# patched further — so these two remain ALLOWed on this head, same as main,
-# and stay open on HIMMEL-3793 as part of the broader "uniq/sort-style
-# positional output operand" class (ticket comment has the full bypass list).
-assert "uniq 2nd positional via escaped bare & still ALLOW (known gap, HIMMEL-3793 stays open)" \
-    ALLOW "$(decide "$(j_bash 'uniq -c f \&')")"
-assert "uniq 2nd positional via escaped & inside a word still ALLOW (known gap, HIMMEL-3793 stays open)" \
-    ALLOW "$(decide "$(j_bash 'uniq -c f a\&\&b')")"
+# Fix: ANY unquoted backslash-escaped `&` now falls through (no ALLOW) —
+# uniform, no per-binary logic; an earlier uniq-specific guard kept yielding
+# new bypasses each review round and was cut in favour of this.
+assert "uniq 2nd positional via escaped bare & writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash 'uniq -c f \&')")"
+assert "uniq 2nd positional via escaped & inside a word writes a junk file (must not ALLOW)" \
+    PASS "$(decide "$(j_bash 'uniq -c f a\&\&b')")"
+assert "escaped & as a grep operand also falls through (uniform, not uniq-specific)" \
+    PASS "$(decide "$(j_bash 'grep x f\&')")"
+assert "escaped & inside double quotes is a plain quoted char: still ALLOW (control)" \
+    ALLOW "$(decide "$(j_bash 'grep "a\&b" f')")"
+assert "single-quoted backslash-& is literal: still ALLOW (control)" \
+    ALLOW "$(decide "$(j_bash "grep 'a\\&b' f")")"
 # Controls: ordinary fd-dups must keep ALLOWing — this fix must not regress
 # anything main already approves.
 assert "fd-dup >&2, no escape, still ALLOW (control)" \
