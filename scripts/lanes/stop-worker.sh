@@ -51,7 +51,7 @@ if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
     echo "stop-worker.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
     exit 96
 fi
-chokepoint_seam_guard scripts/lanes/stop-worker.sh
+chokepoint_seam_guard scripts/lanes/stop-worker.sh || exit 96
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

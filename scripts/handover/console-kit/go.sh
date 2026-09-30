@@ -54,7 +54,7 @@ if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
     echo "go.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
     exit 96
 fi
-chokepoint_seam_guard scripts/handover/console-kit/go.sh
+chokepoint_seam_guard scripts/handover/console-kit/go.sh || exit 96
 
 usage() {
     echo "usage: go.sh [--trust-reviewed <reviewer-id>] <pr-number> <full-40-hex-head-sha>" >&2

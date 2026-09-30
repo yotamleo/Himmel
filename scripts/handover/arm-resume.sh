@@ -260,7 +260,7 @@ if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
     echo "arm-resume.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
     exit 96
 fi
-chokepoint_seam_guard scripts/handover/arm-resume.sh
+chokepoint_seam_guard scripts/handover/arm-resume.sh || exit 96
 
 RESUME_TIME=""
 _TIME_GIVEN=0

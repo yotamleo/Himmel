@@ -188,6 +188,19 @@ mkproc "$F8" 10 1 node /usr/bin/node node /usr/lib/node_modules/@anthropic-ai/cl
 mkproc "$F8" 15 10 node /usr/bin/node node /srv/app/cli.js
 mkproc "$F8" 20 15 bash /usr/bin/bash bash
 assert_eq "P11 an npm claude (node running claude-code/cli.js) matches; other node does not" "0|10" "$(walk "$F8" 20)"
+F9="$TMP/proc9"
+mkproc "$F9" 1 0 systemd - /sbin/init
+mkproc "$F9" 10 1 2.1.285 /home/u/.local/share/claude/versions/2.1.285 2.1.285 daemon run
+mkproc "$F9" 20 10 bash /usr/bin/bash bash
+assert_eq "P12 a native versioned exe whose argv[0] is the version string matches" "0|10" "$(walk "$F9" 20)"
+mkproc "$F9" 30 1 node /usr/bin/node node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js daemon run
+mkproc "$F9" 40 1 claude /opt/claude/versions/2.1.285 claude -p "daemon run"
+mkproc "$F9" 50 1 claude /opt/claude/versions/2.1.285 claude --model x daemon run
+dm=""
+for p in 10 30 40 50 20; do
+    if _csg_is_daemon "$F9" "$p"; then dm="$dm$p:y "; else dm="$dm$p:n "; fi
+done
+assert_eq "D1 daemon detection: native + npm yes; a prompt or later argv words no" "10:y 30:y 40:n 50:n 20:n " "$dm"
 if [ -r /proc/self/stat ]; then
     live=$(walk /proc "$$")
     assert_eq "P10 the real /proc walks cleanly from this shell" "0" "${live%%|*}"
@@ -276,13 +289,58 @@ assert_eq "G14 a PATH-shadowed jq/readlink/git cannot forge an allow -> 96" "96"
 # must not break the gate: equal seams still ALLOW.
 BARE="$TMP/bare-bin"; mkdir -p "$BARE"; ln -s "$(command -v bash)" "$BARE/bash"
 assert_eq "G15 a curated PATH without jq/readlink/git still resolves -> ALLOW" "0" "$(gate "$Q1" "$GO" "HIMMEL_REPO=$GA" HIMMEL_CONSOLE_LEG=1 "PATH=$BARE")"
+# The tree root comes from a fixed readlink, not the cd/pwd builtins an
+# exported function can shadow into a foreign (non-anchor) root.
+assert_eq "G16 an exported pwd function cannot move the root off the anchor -> 96" "96" "$(gate "$Q1" "$GO" "HIMMEL_REPO=$GA" "BASH_FUNC_pwd%%=() { printf '%s' $TMP/other; }")"
+# Headless (--bg): the outermost claude is the daemon, launched from a cwd
+# outside any repo, with no HIMMEL_REPO. It must refuse, never fail open.
+NOGIT="$TMP/nogit"; mkdir -p "$NOGIT"
+Q9="$TMP/gproc9"; mkdir -p "$Q9/self"; : > "$Q9/self/stat"
+mkproc "$Q9" 1 0 systemd - /sbin/init
+mkproc "$Q9" 10 1 2.1.285 /opt/claude/versions/2.1.285 /opt/claude/versions/2.1.285 daemon run
+mkproc "$Q9" 15 10 2.1.285 /opt/claude/versions/2.1.285 /opt/claude/versions/2.1.285 --settings x
+mkproc "$Q9" 20 15 bash /usr/bin/bash bash
+ln -s "$NOGIT" "$Q9/10/cwd"
+mkenv "$Q9/10/environ" PATH=/bin "HOME=$GH"
+assert_eq "G17 headless: a seam under a claude daemon ancestor -> 96" "96" "$(gate "$Q9" "$GO" HIMMEL_CONSOLE_LEG=1)"
+case "$(cat "$TMP/gate.err")" in
+    *"headless (--bg) legs cannot pass seams to chokepoints"*) said=headless ;;
+    *) said=other ;;
+esac
+assert_eq "G17b the headless refusal says so and names the remedy" "headless" "$said"
+assert_eq "G17c headless: no seam passed -> ALLOW" "0" "$(gate "$Q9" "$GO")"
+# An operator session whose cwd is outside the anchor (luna, salus) with
+# HIMMEL_REPO only in the guarded user settings file.
+GH2="$TMP/ghome2"; mkdir -p "$GH2/.claude"
+printf '{"env":{"HIMMEL_REPO":"%s"}}\n' "$GA" > "$GH2/.claude/settings.json"
+Q10="$TMP/gproc10"; mkclaude "$Q10" "$NOGIT" PATH=/bin "HOME=$GH2"
+assert_eq "G18 HIMMEL_REPO from the user settings overlay makes the anchor -> 96" "96" "$(gate "$Q10" "$GO" HIMMEL_CONSOLE_LEG=1)"
+assert_eq "G18b ... and equal seams still ALLOW" "0" "$(gate "$Q10" "$GO" "HIMMEL_REPO=$GA")"
+# No claude ancestor, but this process's own exec-time environ says it came
+# from a Claude Code session (a setsid'd call, or a daemon not recognised).
+# mkorphan <proc-root> <environ k=v...> - pid 1 <- 20 bash, no claude.
+mkorphan() {
+    local root="$1"
+    shift
+    mkdir -p "$root/self"; : > "$root/self/stat"
+    mkproc "$root" 1 0 systemd - /sbin/init
+    mkproc "$root" 20 1 bash /usr/bin/bash bash
+    mkenv "$root/20/environ" "$@"
+}
+Q11="$TMP/gproc11"; mkorphan "$Q11" PATH=/bin CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli
+assert_eq "G19 no ancestor, Claude Code markers AND a seam set -> 96" "96" "$(gate "$Q11" "$GO" HIMMEL_CONSOLE_LEG=1)"
+assert_eq "G19b an at-style job: markers, no registered seam set -> ALLOW" "0" "$(gate "$Q11" "$GO" CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1)"
+Q12="$TMP/gproc12"; mkorphan "$Q12" PATH=/bin HOME=/h
+assert_eq "G19c no ancestor, no marker (CI), a seam set -> ALLOW" "0" "$(gate "$Q12" "$GO" HIMMEL_CONSOLE_LEG=1)"
+Q13="$TMP/gproc13"; mkorphan "$Q13" PATH=/bin HIMMEL_CONSOLE_LEG=1
+assert_eq "G19d HIMMEL_CONSOLE_LEG alone is a marker -> 96 with a seam set" "96" "$(gate "$Q13" "$MOG" ARMAUTOMERGE=1)"
 
 # --- Wiring: every chokepoint sources the lib and calls the gate first -------
 KEYS=$(jq -r 'keys[]' "$REGISTRY")
 for key in $KEYS; do
     f="$REPO/$key"
-    gl=$(grep -n -x "chokepoint_seam_guard $key" "$f" | head -n 1 | cut -d: -f1)
-    assert_eq "W1 $key calls the gate with its own registry key" "yes" "$([ -n "$gl" ] && echo yes || echo no)"
+    gl=$(grep -n -x "chokepoint_seam_guard $key || exit 96" "$f" | head -n 1 | cut -d: -f1)
+    assert_eq "W1 $key calls the gate with its own registry key, || exit 96" "yes" "$([ -n "$gl" ] && echo yes || echo no)"
     [ -n "$gl" ] || continue
     alt=$(jq -r --arg k "$key" '.[$k].seam_env_vars | join("|")' "$REGISTRY")
     sl=$(grep -n -E "(^|[^A-Za-z0-9_])($alt)([^A-Za-z0-9_]|$)" "$f" | grep -v -E '^[0-9]+:[[:space:]]*#' | head -n 1 | cut -d: -f1)

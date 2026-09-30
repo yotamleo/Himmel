@@ -34,7 +34,7 @@ if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
     echo "bank-preflight.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
     exit 96
 fi
-chokepoint_seam_guard scripts/lib/bank-preflight.sh
+chokepoint_seam_guard scripts/lib/bank-preflight.sh || exit 96
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 PRODUCER="${CADENCE_BANK_PRODUCER:-$REPO/scripts/statusline/usage-cache-producer.sh}"

@@ -44,18 +44,41 @@
 # Worktree and fixture copies are branch bytes a leg can run anyway, so a seam
 # there adds no capability - that is what keeps every test suite working.
 #
+# Anchor: the baseline's HIMMEL_REPO, else HIMMEL_REPO from the guarded user
+# settings file (an operator session whose cwd is luna or salus), else the
+# primary checkout of the claude cwd's repo. The project settings files need no
+# step of their own: they are read only when the cwd IS the anchor, which the
+# cwd step already yields.
+#
+# Headless (--bg) legs: the outermost claude ancestor is the `claude daemon
+# run` service, whose environ is the daemon spawner's, and the leg's own env
+# rides only in the excluded --settings file. So a seam a headless leg passes
+# to a chokepoint always differs, and the guard refuses with a headless-specific
+# message - headless legs cannot pass seams to chokepoints (console ruling on
+# HIMMEL-3914; HIMMEL-3930 tracks a proper headless design).
+#
+# No claude ancestor (CI, a detached at/setsid launch, a daemon not
+# recognised): allowed, UNLESS this is the anchor copy, this process's
+# exec-time environ carries a Claude Code marker (CLAUDECODE, CLAUDE_CODE_*,
+# HIMMEL_CONSOLE_LEG) AND one of the chokepoint's registered seams is set - a
+# session that lost its ancestry cannot use that to pass a seam. An at job
+# armed from a session carries the markers (at snapshots the env) but no seam,
+# so it still runs.
+#
 # Fails CLOSED (exit 96) once enforcement applies: a walk error, an unreadable
 # or empty environ, an unreadable registry entry, or any seam mismatch. The
-# only allows are "no /proc" and "no claude ancestor at all".
-# ponytail: R1 a detached launch (setsid/at/systemd-run/tmux/cron) has no claude
-# ancestor and is allowed; R2 a fresh `claude` launched with a forged env is
-# indistinguishable from a legit launch; R3 non-Linux (no /proc environ) keeps
-# today's hook-only posture; R4 an operator (or an obfuscated Bash write the
-# hook's text scan misses) editing a guarded settings file changes the
-# baseline; R5 external tools come from fixed system dirs, but an exported
-# BASH_FUNC_* shadowing a bash builtin (printf, read, [) is still imported by
-# the chokepoint's own bash - HIMMEL-3921 tracks the text-level (a) layer for
-# R1/R3/R5.
+# only allows are "no /proc" and "no claude ancestor" outside the marker rule.
+# ponytail: R1 a detached launch with no Claude Code marker in its env (env -i,
+# systemd-run, cron) and no claude ancestor is allowed; R2 a fresh `claude`
+# launched with a forged env is indistinguishable from a legit launch; R3
+# macOS/Git Bash (no /proc) keeps the unchanged hook-only posture - no guard
+# runs there; R4 an operator (or an obfuscated Bash write the hook's text scan
+# misses) editing a guarded settings file changes the baseline; R5 external
+# tools come from fixed system dirs, but bash itself still honours inherited
+# state before this lib runs: an exported BASH_FUNC_* shadowing a builtin
+# (printf, read, [), BASH_ENV sourced at startup, SHELLOPTS/BASHOPTS turning on
+# options, and an extdebug DEBUG trap - HIMMEL-3921 tracks the text-level (a)
+# layer for R1/R3/R5.
 
 CSG_DENY_RC=96
 
@@ -139,11 +162,16 @@ _csg_verdict() {
 }
 
 # _csg_is_claude <proc-root> <pid> - rc 0 when exe or argv[0] basename is
-# `claude`, or a node process runs @anthropic-ai/claude-code's cli (npm install).
+# `claude`, the exe is a native install's versioned binary
+# (.../claude/versions/<v>, whose comm and argv[0] can be the version string),
+# or a node process runs @anthropic-ai/claude-code's cli (npm install).
 _csg_is_claude() {
     local exe a0="" a1=""
     exe=$("$(_csg_bin readlink)" "$1/$2/exe" 2>/dev/null) || exe=""
     [ "${exe##*/}" = claude ] && return 0
+    case "$exe" in
+        */claude/versions/*) return 0 ;;
+    esac
     if [ -r "$1/$2/cmdline" ]; then
         { IFS= read -r -d '' a0; IFS= read -r -d '' a1; } < "$1/$2/cmdline" || true
     fi
@@ -151,6 +179,36 @@ _csg_is_claude() {
     case "${a0##*/}|$a1" in
         node\|*/@anthropic-ai/claude-code/cli.js | node\|*/@anthropic-ai/claude-code/cli.mjs) return 0 ;;
     esac
+    return 1
+}
+
+# _csg_is_daemon <proc-root> <pid> - rc 0 when a claude pid is the background
+# service: the subcommand `daemon run` right after the program - argv[1..2]
+# for a native install (argv[0] may be the versioned binary, so argv[0] is not
+# checked), argv[2..3] behind `node <cli.js>` for an npm install. Fixed
+# positions, so a prompt or a later argv word reading "daemon run" is not it.
+# A daemon this misses is still the outermost claude, so its seams still
+# refuse; only the message is the generic one.
+_csg_is_daemon() {
+    local a0="" a1="" a2="" a3=""
+    [ -r "$1/$2/cmdline" ] || return 1
+    { IFS= read -r -d '' a0; IFS= read -r -d '' a1; IFS= read -r -d '' a2; IFS= read -r -d '' a3; } < "$1/$2/cmdline" || true
+    [ "$a1" = daemon ] && [ "$a2" = run ] && return 0
+    [ "${a0##*/}" = node ] && [ "$a2" = daemon ] && [ "$a3" = run ] && return 0
+    return 1
+}
+
+# _csg_has_marker <nul-separated-environ-file> - rc 0 when the environ carries
+# a non-empty Claude Code marker: CLAUDECODE, any CLAUDE_CODE_*, or
+# HIMMEL_CONSOLE_LEG.
+_csg_has_marker() {
+    local kv
+    [ -r "$1" ] || return 1
+    while IFS= read -r -d '' kv; do
+        case "$kv" in
+            CLAUDECODE=?* | CLAUDE_CODE_*=?* | HIMMEL_CONSOLE_LEG=?*) return 0 ;;
+        esac
+    done < "$1"
     return 1
 }
 
@@ -208,6 +266,53 @@ _csg_overlay_files() {
     return 0
 }
 
+# _csg_valid_anchor <path> - print it when absolute and an existing dir, else nothing.
+_csg_valid_anchor() {
+    case "$1" in
+        /*) [ -d "$1" ] && printf '%s' "$1" ;;
+    esac
+    return 0
+}
+
+# _csg_primary_of <dir> - print the primary checkout of dir's repo, else nothing.
+# env -i: no caller GIT_* (config, ceiling, dir) can blank or move it.
+_csg_primary_of() {
+    local common
+    common=$("$(_csg_bin env)" -i "$(_csg_bin git)" -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+    case "$common" in
+        */.git) printf '%s' "${common%/.git}" ;;
+    esac
+    return 0
+}
+
+# _csg_orphan <proc-root> <start-pid> <key> <name> <root> - no claude ancestor.
+# Allowed, except on the anchor copy (this tree is its own primary checkout)
+# when this process's exec-time environ carries a Claude Code marker AND one of
+# the chokepoint's registered seams is set: a session that lost its ancestry
+# (setsid, a daemon not recognised) must not pass a seam that way. An at job
+# armed from a session carries the markers but no seam, so it still runs.
+_csg_orphan() {
+    local primary seams seam set=""
+    _csg_has_marker "$1/$2/environ" || return 0
+    primary=$(_csg_primary_of "$5")
+    [ -n "$primary" ] && [ "$5" -ef "$primary" ] || return 0
+    if seams=$(_csg_registry_seams "$5/scripts/chokepoints.json" "$3"); then :; else
+        _csg_deny "$4" "cannot read its seams from scripts/chokepoints.json"
+    fi
+    for seam in $seams; do
+        case "$seam" in
+            [A-Za-z_]*) ;;
+            *) continue ;;
+        esac
+        case "$seam" in
+            *[!A-Za-z0-9_]*) continue ;;
+        esac
+        [ -n "${!seam:-}" ] && set="$set $seam"
+    done
+    [ -z "$set" ] && return 0
+    _csg_deny "$4" "no Claude Code session ancestor, yet this process carries Claude Code markers and seam(s)${set} are set - a detached or headless (--bg) launch cannot pass seams to chokepoints (HIMMEL-3914); use a headed leg"
+}
+
 _csg_deny() {
     echo "$1: $2 - refusing (HIMMEL-3914)" >&2
     exit "$CSG_DENY_RC"
@@ -221,29 +326,38 @@ chokepoint_seam_guard() {
 }
 
 _csg_gate() {
-    local proc="$1" start="$2" key="$3" name="${3##*/}" pid env cwd anchor="" root seams common bad files f
+    local proc="$1" start="$2" key="$3" name="${3##*/}" pid env cwd anchor="" root seams bad files f home daemon=0
     [ -r "$proc/self/stat" ] || return 0
     if pid=$(_csg_find_outermost "$proc" "$start"); then :; else
         _csg_deny "$name" "cannot walk this process's ancestry in /proc"
     fi
-    [ -n "$pid" ] || return 0
+    # readlink -f from a fixed dir, not cd/pwd: both are shadowable builtins.
+    root=$("$(_csg_bin readlink)" -f "${BASH_SOURCE[0]%/*}/../.." 2>/dev/null) || root=""
+    [ -n "$root" ] || _csg_deny "$name" "cannot resolve this copy's tree"
+    if [ -z "$pid" ]; then
+        _csg_orphan "$proc" "$start" "$key" "$name" "$root"
+        return 0
+    fi
+    _csg_is_daemon "$proc" "$pid" && daemon=1
     env="$proc/$pid/environ"
     cwd=$("$(_csg_bin readlink)" "$proc/$pid/cwd" 2>/dev/null) || _csg_deny "$name" "cannot read the claude session's cwd (pid $pid)"
-    root=$(cd "${BASH_SOURCE[0]%/*}/../.." 2>/dev/null && pwd -P) || _csg_deny "$name" "cannot resolve this copy's tree"
     [ -r "$env" ] || _csg_deny "$name" "cannot read the claude session's launch environment (pid $pid)"
     if anchor=$(_csg_env_get "$env" HIMMEL_REPO); then :; else
         anchor=""
     fi
-    case "$anchor" in
-        /*) [ -d "$anchor" ] || anchor="" ;;
-        *) anchor="" ;;
-    esac
-    if [ -z "$anchor" ]; then
-        # env -i: no caller GIT_* (config, ceiling, dir) can blank the anchor.
-        common=$("$(_csg_bin env)" -i "$(_csg_bin git)" -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
-        case "$common" in
-            */.git) anchor="${common%/.git}" ;;
-        esac
+    anchor=$(_csg_valid_anchor "$anchor")
+    if [ -z "$anchor" ] && ! _csg_env_get "$env" CLAUDE_CONFIG_DIR >/dev/null && home=$(_csg_env_get "$env" HOME); then
+        if anchor=$(_csg_settings_get "$home/.claude/settings.json" HIMMEL_REPO); then :; else
+            anchor=""
+        fi
+        anchor=$(_csg_valid_anchor "$anchor")
+    fi
+    [ -n "$anchor" ] || anchor=$(_csg_primary_of "$cwd")
+    # A daemon's cwd is wherever its spawner ran; when nothing above resolves,
+    # fall back to this copy's own primary so the headless refusal cannot fail
+    # open on an unrelated daemon cwd.
+    if [ -z "$anchor" ] && [ "$daemon" -eq 1 ]; then
+        anchor=$(_csg_primary_of "$root")
     fi
     [ -n "$anchor" ] || return 0
     [ "$root" -ef "$anchor" ] || return 0
@@ -265,5 +379,8 @@ EOF
         esac
     fi
     bad=${bad//$'\n'/ }
+    if [ "$daemon" -eq 1 ]; then
+        _csg_deny "$name" "seam(s) ${bad% } differ from the claude daemon's environment - headless (--bg) legs cannot pass seams to chokepoints (HIMMEL-3914); use a headed leg"
+    fi
     _csg_deny "$name" "seam(s) ${bad% } differ from this session's launch environment. A chokepoint seam must come from the launching shell, not a per-call prefix, export or unset - set it in the launching shell (e.g. SEAM=1 claude)"
 }

@@ -128,7 +128,7 @@ if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
     echo "clear-cr-marker.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
     exit 96
 fi
-chokepoint_seam_guard scripts/cr/clear-cr-marker.sh
+chokepoint_seam_guard scripts/cr/clear-cr-marker.sh || exit 96
 # NOT set -e: this script inspects sub-call exit codes explicitly and must fail
 # CLOSED with its own codes, never abort mid-gate.
 # HIMMEL-3666: every git call below (ls-remote, ancestry/base checks) resolves

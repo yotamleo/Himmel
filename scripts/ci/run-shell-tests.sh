@@ -174,7 +174,7 @@ if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
     echo "run-shell-tests.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
     exit 96
 fi
-chokepoint_seam_guard scripts/ci/run-shell-tests.sh
+chokepoint_seam_guard scripts/ci/run-shell-tests.sh || exit 96
 
 # REPO_ROOT is used only to source libs the runner itself needs; it is NOT
 # used for discovery. Discovery uses $scan (the positional scan-root arg).

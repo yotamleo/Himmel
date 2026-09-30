@@ -18,7 +18,7 @@ if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
     echo "quiet-run.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
     exit 96
 fi
-chokepoint_seam_guard scripts/quiet-run.sh
+chokepoint_seam_guard scripts/quiet-run.sh || exit 96
 
 usage() {
     echo "Usage: $0 <label> -- <command...>" >&2
