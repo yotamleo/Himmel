@@ -8,8 +8,9 @@
 #   3. remove by label and by doc; removing an absent leg is not an error
 #   4. a relative doc is refused (tick would resolve it against a different root)
 #   5. keys the writer does not own survive a rewrite (room for HIMMEL-1873)
-#   6. list on a missing or invalid manifest fails; add refuses to clobber an
-#      invalid one
+#   6. list on a missing or invalid manifest fails (a bad leg entry included);
+#      add refuses to clobber an invalid one
+#   6b. add refuses a doc with whitespace or a glob character (tick word-splits)
 #   7. concurrent adds (two dispatches at once) lose no entry
 #
 # Hermetic: temp dir only. PLATFORM GUARD: no .ps1 twin, by design -- the
@@ -82,6 +83,17 @@ check '6. and leaves it untouched' 'not json' "$(cat "$tmp/bad.fleet.json")"
 printf '{"schema":2,"legs":[]}\n' > "$tmp/v2.fleet.json"
 bash "$SCRIPT" list "$tmp/v2.fleet.json" >/dev/null 2>&1; rc=$?
 check '6. an unknown schema version is refused' 1 "$rc"
+for bad in '{"doc":""}' '{"doc":"rel/x.md"}' '{"doc":7}' '{}' '{"doc":"/a b.md"}' '{"doc":"/a*.md"}'; do
+    printf '{"schema":1,"legs":[%s]}\n' "$bad" > "$tmp/leg.fleet.json"
+    bash "$SCRIPT" list "$tmp/leg.fleet.json" >/dev/null 2>&1; rc=$?
+    check "6. a leg entry $bad is refused (tick would read it as a smaller fleet)" 1 "$rc"
+done
+
+# 6b. tick splits leg paths on whitespace, so the writer refuses what tick cannot carry.
+for bad in "$tmp/a b.md" "$tmp/a*.md" "$tmp/a?.md" "$tmp/a[1].md"; do
+    bash "$SCRIPT" add "$m" "$bad" >/dev/null 2>&1; rc=$?
+    check "6b. a doc tick cannot carry is a usage error (rc 2): $bad" 2 "$rc"
+done
 
 # 7. concurrent adds lose nothing.
 c="$tmp/race.fleet.json"

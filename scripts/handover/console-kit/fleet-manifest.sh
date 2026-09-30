@@ -21,7 +21,9 @@
 #
 # add is idempotent (a doc already listed is left alone); removing a leg that is
 # not listed is not an error. A doc must be absolute: tick resolves a relative
-# one against the handover root, the writer's cwd would be a different one.
+# one against the handover root, the writer's cwd would be a different one. It
+# must also carry no whitespace or glob character, which tick's word-split leg
+# list cannot hold.
 #
 # Writes hold an exclusive flock on <manifest>.lock and replace the file with a
 # temp file renamed into place in the same directory (the inbox-send.sh
@@ -47,7 +49,11 @@ usage: fleet-manifest.sh add    <manifest> <leg doc>...
 USAGE
 }
 
-VALID='type == "object" and .schema == 1 and (.legs | type == "array")'
+# Every leg's doc is an absolute path with no whitespace or glob character:
+# tick word-splits its leg list, so anything else would silently shrink the
+# fleet it judges.
+VALID='type == "object" and .schema == 1 and (.legs | type == "array")
+    and all(.legs[]; type == "object" and (.doc | type == "string" and test("^/[^[:space:]*?\\[]+$")))'
 
 [ "$#" -ge 2 ] || { usage >&2; exit 2; }
 verb="$1"; manifest="$2"; shift 2
@@ -71,6 +77,11 @@ if [ "$verb" = add ]; then
         case "$doc" in
             /*) ;;
             *) echo "fleet-manifest: leg doc must be an absolute path: $doc" >&2; exit 2 ;;
+        esac
+        case "$doc" in
+            *[[:space:]]*|*'*'*|*'?'*|*'['*)
+                echo "fleet-manifest: leg doc must not contain whitespace or a glob character (tick word-splits it): $doc" >&2
+                exit 2 ;;
         esac
     done
 fi
