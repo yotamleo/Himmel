@@ -1985,14 +1985,15 @@ _suite_lock_claim() {
 # TERM runs the owner's EXIT trap, which releases the lock. A bounded wait
 # follows; an owner that survives keeps the lock (taking it over would be a
 # double hold) and the caller's ordinary wait continues.
-# The owner's direct children (its suite, a process group of its own) are
-# terminated after it exits, so the taker never runs beside a survivor.
+# The owner is frozen (STOP), its direct children (its suite, a process group
+# of its own) terminated and checked, and only then is it TERMed, so the taker
+# never runs beside a survivor. A child that will not die keeps the lock.
 # ponytail: only direct children are followed, and a run launched detached on
 # purpose (parent exits by design) reads as an orphan;
 # Windows Git Bash has no ps -o ppid, so it keeps today's wait — revisit if
 # either bites.
 _suite_lock_orphan_reap() {
-  local _pid="$1" _ident="$2" _oppid="$3" _raw="$4" _cur _n=0 _k _ki
+  local _pid="$1" _ident="$2" _oppid="$3" _raw="$4" _cur _n=0 _k _ki _bad=0
   local -a _kids=() _kid_ids=()
   [ -n "$_pid" ] && [ -n "$_ident" ] || return 1
   case "$_oppid" in ''|*[!0-9]*) return 1 ;; esac
@@ -2005,28 +2006,33 @@ _suite_lock_orphan_reap() {
   case "$_cur" in ''|*[!0-9]*) return 1 ;; esac
   [ "$_cur" != "$_oppid" ] || return 1
   [ "$(_suite_lock_owner_raw "$SUITE_LOCK_DIR")" = "$_raw" ] || return 1
-  # Snapshot the owner's child suites (with identity) before it dies: once it
-  # does they are re-parented and no longer findable, and left running they
-  # would share the tree with whoever takes the lock.
+  printf 'NOTE: ORPHAN-REAP: suite lock owner pid=%s lost its parent (recorded ppid=%s, now %s); reaping it and its suite so %s can be taken\n' \
+    "$_pid" "$_oppid" "$_cur" "$SUITE_LOCK_DIR" >&2
+  # Freeze the owner first: it cannot start another suite or release the lock
+  # while its children are being cleared, so the lock is only ever freed with
+  # nothing of the orphan left running. Its direct children (identity
+  # snapshotted, then their groups terminated) are the suite it was running.
+  kill -STOP "$_pid" 2>/dev/null || return 1
   for _k in $(pgrep -P "$_pid" 2>/dev/null); do
     _ki=$(proc_tree_process_identity "$_k") || continue
     [ -n "$_ki" ] || continue
     _kids[${#_kids[@]}]="$_k"
     _kid_ids[${#_kid_ids[@]}]="$_ki"
   done
-  printf 'NOTE: ORPHAN-REAP: suite lock owner pid=%s lost its parent (recorded ppid=%s, now %s); sending TERM so its trap releases %s\n' \
-    "$_pid" "$_oppid" "$_cur" "$SUITE_LOCK_DIR" >&2
-  kill -TERM "$_pid" 2>/dev/null || return 1
+  while [ "$_n" -lt "${#_kids[@]}" ]; do
+    proc_tree_terminate "${_kids[$_n]}" 3 "${_kid_ids[$_n]}" >/dev/null 2>&1
+    case "$?" in 0|3) ;; *) _bad=1 ;; esac
+    _n=$((_n + 1))
+  done
+  # A child that would not die: thaw the owner untouched and keep waiting, as
+  # before this reaper existed. Otherwise TERM is delivered on CONT.
+  if [ "$_bad" -ne 0 ]; then kill -CONT "$_pid" 2>/dev/null; return 1; fi
+  kill -TERM "$_pid" 2>/dev/null
+  kill -CONT "$_pid" 2>/dev/null
+  _n=0
   while [ "$_n" -lt 50 ]; do
     proc_tree_process_alive "$_pid"
-    if [ "$?" -eq 1 ]; then
-      _n=0
-      while [ "$_n" -lt "${#_kids[@]}" ]; do
-        proc_tree_terminate "${_kids[$_n]}" 3 "${_kid_ids[$_n]}" >/dev/null 2>&1
-        _n=$((_n + 1))
-      done
-      return 0
-    fi
+    [ "$?" -eq 1 ] && return 0
     sleep 0.1
     _n=$((_n + 1))
   done
