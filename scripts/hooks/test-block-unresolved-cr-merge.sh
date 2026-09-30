@@ -354,11 +354,19 @@ bounded_run() {
     "$@" < "$_in" &
     _pid=$!
     set +m
-    ( sleep "$_secs"; : > "$_flag"; kill -TERM -- "-$_pid" 2>/dev/null; sleep 1; kill -KILL -- "-$_pid" 2>/dev/null ) &
+    ( sleep "$_secs"; : > "$_flag"; kill -TERM -- "-$_pid" 2>/dev/null ) &
     _killer=$!
     wait "$_pid"; _rc=$?
     kill "$_killer" 2>/dev/null; wait "$_killer" 2>/dev/null
-    if [ -e "$_flag" ]; then rm -f "$_flag"; return 124; fi
+    # The direct child exiting on TERM says nothing about the rest of its group: a
+    # descendant that ignores TERM is only taken by the KILL sweep, so it runs here,
+    # after the watchdog has been stopped, not inside the watchdog.
+    if [ -e "$_flag" ]; then
+        sleep 1
+        kill -KILL -- "-$_pid" 2>/dev/null
+        rm -f "$_flag"
+        return 124
+    fi
     return "$_rc"
 }
 
@@ -409,7 +417,7 @@ fi
 # the process GROUP. The marker rides in the orphan's argv[0] via `exec -a`.
 DF_MARK="bounded-run-double-fork-$$"
 DF_SCRIPT="$TMP/double-fork.sh"
-printf '( exec -a "%s" sleep 300 & )\nsleep 300\n' "$DF_MARK" > "$DF_SCRIPT"
+printf '( trap "" TERM; exec -a "%s" sleep 300 & )\nsleep 300\n' "$DF_MARK" > "$DF_SCRIPT"
 : > "$TMP/double-fork.in"
 bounded_run 2 "$TMP/double-fork.in" bash "$DF_SCRIPT" >/dev/null 2>&1
 df_rc=$?
@@ -417,11 +425,17 @@ if ! command -v pgrep >/dev/null 2>&1; then
     fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant: pgrep is not available"
 elif [ "$df_rc" -ne 124 ]; then
     fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant rc=$df_rc (want 124)"
-elif pgrep -f "$DF_MARK" >/dev/null 2>&1; then
-    fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant: a double-forked descendant survived the kill"
-    pkill -f "$DF_MARK" 2>/dev/null
 else
-    pass=$((pass+1)); echo "ok   bounded-run-reaps-double-forked-descendant"
+    pgrep -f "$DF_MARK" >/dev/null 2>&1
+    df_pgrep_rc=$?
+    if [ "$df_pgrep_rc" -eq 1 ]; then
+        pass=$((pass+1)); echo "ok   bounded-run-reaps-double-forked-descendant"
+    elif [ "$df_pgrep_rc" -eq 0 ]; then
+        fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant: a double-forked, TERM-ignoring descendant survived the kill"
+        pkill -f "$DF_MARK" 2>/dev/null
+    else
+        fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant: pgrep failed rc=$df_pgrep_rc, cannot prove the descendant was reaped"
+    fi
 fi
 
 # GREEN — the shipped hook, same no-timeout PATH, same 30s-hanging gh stub:
