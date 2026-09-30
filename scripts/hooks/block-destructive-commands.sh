@@ -435,6 +435,9 @@ fi
 # and denies. Over-deny only: `rm -- -r` (a file literally named -r) and
 # `rm "my -r file"` deny - the word-level fix is HIMMEL-912.
 rm_norm="${rm_scrub//[\"\'\\]/}"
+rm_norm="${rm_norm//$'\t'/ }"
+while [[ $rm_norm == *'  '* ]]; do rm_norm="${rm_norm//  / }"; done
+rm_norm="${rm_norm//command -p rm/rm}"
 rm_norm="${rm_norm//command rm/rm}"
 RM_OPT_DOLLAR_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})-[^[:space:]|;&]*\$'
 if [[ $rm_norm =~ $RM_R_PAT ]] || [[ $rm_norm =~ $RM_RECURSIVE_PAT ]] || [[ $rm_norm =~ $RM_OPT_DOLLAR_PAT ]]; then

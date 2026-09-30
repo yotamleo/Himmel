@@ -664,7 +664,9 @@ assert_rc "rm -\$'r' d (ANSI-C quote)"   2 "$(run_case "$(j_bash "rm -\$'r' d")"
 assert_rc 'rm -$x d (unresolved option)' 2 "$(run_case "$(j_bash 'rm -$x d')")"
 assert_rc 'command rm -r d'              2 "$(run_case "$(j_bash 'command rm -r d')")"
 assert_rc 'command rm -"r" d'            2 "$(run_case "$(j_bash 'command rm -"r" d')")"
-# Quoted plain names stay allowed. `rm -- -r` (a file literally named -r) is
+assert_rc 'command -p rm -"r" d'         2 "$(run_case "$(j_bash 'command -p rm -"r" d')")"
+assert_rc 'command  rm -"r" d (2 spaces)' 2 "$(run_case "$(j_bash 'command  rm -"r" d')")"
+# Quoted plain names stay allowed.`rm -- -r` (a file literally named -r) is
 # denied on purpose: the scan cannot tell it from the flag (HIMMEL-912).
 assert_rc 'rm "my file" allowed'         0 "$(run_case "$(j_bash 'rm "my file"')")"
 assert_rc 'rm -f "a-r.txt" allowed'      0 "$(run_case "$(j_bash 'rm -f "a-r.txt"')")"
