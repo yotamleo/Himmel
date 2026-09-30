@@ -39,6 +39,7 @@ die() { echo "macos-breakage: $*" >&2; exit 2; }
 cmd_suites_from_logs() {
   local dir="${1:?suites-from-logs <dir>}"
   [ -d "$dir" ] || return 0
+  # shellcheck disable=SC2012 # names are run-shell-tests' escaped suite paths (alnum + _), never odd bytes
   ls "$dir" 2>/dev/null | sed -n -e 's/\.log$//p' | sed -e 's/_s/\//g' -e 's/_u/_/g' | sort
 }
 
@@ -64,6 +65,7 @@ cmd_record() {
       *) die "record: unknown argument $1" ;;
     esac
   done
+  # shellcheck disable=SC2015 # die is the intended else-branch; the tests cannot fail
   [ -n "$run_id" ] && [ -n "$head_sha" ] && [ -n "$run_at" ] && [ -n "$shards_result" ] && [ -n "$out" ] \
     || die "record: --run-id --head-sha --run-at --shards-result --out are required"
 
@@ -128,6 +130,7 @@ cmd_prev_record() {
       *) die "prev-record: unknown argument $1" ;;
     esac
   done
+  # shellcheck disable=SC2015 # die is the intended else-branch; the tests cannot fail
   [ -n "$repo" ] && [ -n "$run_id" ] && [ -n "$dest" ] || die "prev-record: --repo --run-id --dest are required"
   local tmp id ids
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/macos-breakage.XXXXXX")" || die "mktemp failed"

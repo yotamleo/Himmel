@@ -48,6 +48,7 @@ if [ "$(grep -c '^    name: ' <<< "$s")" = "$(grep -cE '^  [a-z][a-z-]*:$' <<< "
    && ! grep '^    name: ' <<< "$s" | grep -qv 'macos-cadence / '; then
   ok "every job name starts with 'macos-cadence / '"
 else bad "a job has no name or one without the 'macos-cadence / ' prefix"; fi
+# shellcheck disable=SC2016 # the ${{ }} is literal workflow text
 if grep -q 'os: \[macos-latest\]' <<< "$s" && grep -q 'runs-on: \${{ matrix.os }}' <<< "$s"; then ok "shard matrix is macos-latest"
 else bad "shard matrix is not macos-latest"; fi
 if grep -q "SUITE_TIER_MODE: all" <<< "$s"; then ok "SUITE_TIER_MODE is all (the nightly's macOS coverage)"
@@ -65,6 +66,7 @@ else bad "shard spellings disagree: list=$n_list run=/$n_run expected=$n_exp ci.
 
 # 7. same pinned action versions as ci.yml.
 unpinned=""
+# shellcheck disable=SC2013 # action refs contain no whitespace
 for u in $(grep -o 'uses: [^ ]*' <<< "$s" | sed 's/uses: //' | sort -u); do
   grep -q "uses: $u\$" <<< "$(strip "$CI_YML")" || unpinned="$unpinned $u"
 done
