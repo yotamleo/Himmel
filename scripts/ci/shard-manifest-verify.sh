@@ -63,6 +63,39 @@ if [ -z "$disc_lines" ]; then
   exit 2
 fi
 
+# Suite paths are carried as the space-delimited fields above, so one holding
+# whitespace would be split and mis-accounted: refuse it, naming the path
+# (HIMMEL-3916).
+#
+# A `[SKIP]` line carries ` — <reason>` after its path, so the reason's own
+# spaces must not read as path whitespace: past the first field only empty or a
+# ` — ` reason is legal there. Byte-literal `case` matches, so the check does
+# not depend on the runner's locale.
+ws_bad=$(sed -n -e 's/^suite //p' "$selection" | grep -E '[[:space:]]' | sed 's/^/selection: /' || true)
+while IFS= read -r l; do
+  case "$l" in
+    '[RUN ] '*)
+      p=${l#'[RUN ] '}
+      case "$p" in *[[:space:]]*) ws_bad="${ws_bad}${ws_bad:+$'\n'}discovered: $p" ;; esac ;;
+    '[SKIP] '*)
+      p=${l#'[SKIP] '}
+      first=${p%% *}
+      rest=${p#"$first"}
+      case "$first" in
+        *[[:space:]]*) ws_bad="${ws_bad}${ws_bad:+$'\n'}discovered: $p" ;;
+        *) case "$rest" in
+             ''|' — '*) ;;
+             *) ws_bad="${ws_bad}${ws_bad:+$'\n'}discovered: $p" ;;
+           esac ;;
+      esac ;;
+  esac
+done < "$discovered"
+if [ -n "$ws_bad" ]; then
+  while IFS= read -r l; do echo "FAIL: suite path contains whitespace ($l)"; done <<< "$ws_bad"
+  echo "shard-manifest-verify: REFUSED — a suite path with whitespace cannot be accounted"
+  exit 1
+fi
+
 HDR_RE='^(mode|reason|base|head|selector|changed|suite) '
 want_hdr=$(grep -E "$HDR_RE" "$selection")
 want_head=$(grep -m1 '^head ' "$selection")
@@ -89,6 +122,11 @@ while [ "$k" -le "$shards" ]; do
   fi
   if [ "$got_shard" != "shard $k/$shards" ]; then
     echo "FAIL: shard$k: want 'shard $k/$shards', found '${got_shard:-no shard line}'"
+    bad=1
+  fi
+  ws_m=$(sed -n -e 's/^ran [^ ]* //p' -e 's/^\(skip\|unrun\|notfound\) //p' "$m" | grep -E '[[:space:]]' || true)
+  if [ -n "$ws_m" ]; then
+    while IFS= read -r l; do echo "FAIL: shard$k: suite path contains whitespace ($l)"; done <<< "$ws_m"
     bad=1
   fi
   bodies="${bodies}$(grep -E '^(ran|skip|unrun|notfound) ' "$m" | sed "s/^/$k /")"$'\n'

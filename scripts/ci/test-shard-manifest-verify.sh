@@ -252,4 +252,49 @@ if [ "$rc" -eq 1 ] && grepq "$out" -E 'accounting.*failed'; then
   pass "MV22: a failing accounting pass is refused (rc $rc)"
 else fail "MV22: want rc 1 matching /accounting.*failed/, got rc $rc: $out"; fi
 
+# --- MV23 --------------------------------------------------------------------
+# A suite path holding whitespace would be split at the first space by every
+# space-delimited field, so the verifier refuses it, naming the path, wherever
+# it appears (HIMMEL-3916). The control keeps normal paths passing.
+d=$(case_dir mv23); header impacted scripts/test-a.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh RUN "scripts/test b.sh"
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh' 'skip scripts/test b.sh'
+expect "MV23: a discovered suite path with whitespace is refused" 1 "$d" 1 'whitespace.*scripts/test b\.sh'
+
+d=$(case_dir mv23s); header impacted "scripts/test b.sh" > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh'
+expect "MV23: a selected suite path with whitespace is refused" 1 "$d" 1 'whitespace.*scripts/test b\.sh'
+
+d=$(case_dir mv23k); header impacted scripts/test-a.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh SKIP "scripts/test c.sh"
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh'
+expect "MV23: a SKIP-listed suite path with whitespace is refused" 1 "$d" 1 'whitespace.*scripts/test c\.sh'
+
+# --- MV24 --------------------------------------------------------------------
+# The runner's real SKIP lines carry a multi-word reason after the path; its
+# spaces are not path whitespace (PR 1493's first head refused exactly these).
+d=$(case_dir mv23t); header impacted scripts/test-a.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh
+printf '[SKIP] scripts/test\tt.sh — tier\n' >> "$d/disc.txt"
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh'
+expect "MV23: a SKIP-listed suite path with a tab is refused" 1 "$d" 1 'whitespace.*scripts/test'
+
+d=$(case_dir mv23r); header impacted scripts/test-a.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh
+printf '%s\n' "[SKIP] scripts/test-h.sh — integration: needs a live 'claude' (--print relaunch)" \
+  "[SKIP] scripts/test-i.sh — tier: extended (SUITE_TIER_MODE=fast)" >> "$d/disc.txt"
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh'
+expect "MV23: a SKIP line whose reason holds spaces is not a whitespace path" 0 "$d" 1 '^OK'
+
+d=$(case_dir mv24); header impacted scripts/test-a.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh' 'notfound scripts/test d.sh'
+expect "MV24: a manifest entry with whitespace in the path is refused" 1 "$d" 1 'shard1.*whitespace.*scripts/test d\.sh'
+
+d=$(case_dir mv24r); header impacted scripts/test-a.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test a.sh'
+expect "MV24: a ran entry with whitespace in the path is refused" 1 "$d" 1 'shard1.*whitespace.*scripts/test a\.sh'
+
 rst_tally
