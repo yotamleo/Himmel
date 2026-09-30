@@ -1459,6 +1459,127 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# 219-238 (HIMMEL-3700, J1329O I1-I4): four pre-existing ways a live
+# settings.json landed past the guard. Each DENY row below ALLOWed at base.
+
+# I1: a symlinked DIRECTORY (-> the primary's .claude/) used as the
+# destination; the leaf of the resolved path is not a settings name.
+ln -s "$PRIMARY/.claude" "$WT2/dlink"
+assert_rc "219 cp -r xs/. dlink (symlinked dir to live .claude) denies" 2 \
+    "$(bash_rc_of "$WT2" "cp -r xs/. dlink")"
+assert_rc "220 rsync -a xs/ dlink/ denies" 2 \
+    "$(bash_rc_of "$WT2" "rsync -a xs/ dlink/")"
+assert_rc "221 mv xs/settings.json dlink/ denies" 2 \
+    "$(bash_rc_of "$WT2" "mv xs/settings.json dlink/")"
+ln -s "$PRIMARY/.claude/worktrees/sibling" "$WT2/dlink-ok"
+assert_rc "222 cp -r xs/. dlink-ok (symlinked dir staying inside worktrees/) allows" 0 \
+    "$(bash_rc_of "$WT2" "cp -r xs/. dlink-ok")"
+
+# I2: writers outside cp/mv/install/rsync/ln/dd/tee — redirects, truncate, and
+# dd's glued of=<path> — through a pre-existing symlink to live settings.json.
+ln -s "$PRIMARY/.claude/settings.json" "$WT2/slink"
+assert_rc "223 echo x > slink denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > slink")"
+assert_rc "224 echo x >slink (glued) denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x >slink")"
+assert_rc "225 echo x >> slink denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x >> slink")"
+assert_rc "226 truncate -s0 slink denies" 2 \
+    "$(bash_rc_of "$WT2" "truncate -s0 slink")"
+assert_rc "227 dd if=y of=slink (glued of=) denies" 2 \
+    "$(bash_rc_of "$WT2" "dd if=y of=slink")"
+printf 'plain\n' > "$WT2/plainfile"
+assert_rc "228 echo x > plainfile (ordinary existing file) allows" 0 \
+    "$(bash_rc_of "$WT2" "echo x > plainfile")"
+assert_rc "229 cat slink > out (the symlink is only READ) allows" 0 \
+    "$(bash_rc_of "$WT2" "cat slink > out")"
+
+# I3: a brace group hiding the `..` climb from a writer that is not one of
+# the recognised verbs (sed -i, perl -pi, truncate).
+cmd_b1='sed -i s/a/b/ .{,.}/.{,.}/settings.json'
+assert_rc "230 sed -i brace-hidden climb from nested worktree denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "$cmd_b1")"
+cmd_b2='perl -pi -e s/a/b/ .{,.}/.{,.}/settings.json'
+assert_rc "231 perl -pi brace-hidden climb from nested worktree denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "$cmd_b2")"
+cmd_b3='truncate -s0 .{,.}/.{,.}/settings.json'
+assert_rc "232 truncate brace-hidden climb from nested worktree denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "$cmd_b3")"
+cmd_b4='grep -E a{1,2} notes.txt'
+assert_rc "233 grep with a brace regex, no settings mention, allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "$cmd_b4")"
+
+# I4: a glued target-directory option hides the climb from the operand scan.
+assert_rc "234 cp -r --target-directory=../.. x/. denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp -r --target-directory=../.. x/.")"
+assert_rc "235 cp -r x/. -t../.. denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp -r x/. -t../..")"
+assert_rc "236 cp -rt../.. x/. denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp -rt../.. x/.")"
+assert_rc "237 cp -rt../other x/. (stays inside worktrees/) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp -rt../other x/.")"
+assert_rc "238 cp --target-directory=../other x/. allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp --target-directory=../other x/.")"
+
+# 239-256 (HIMMEL-3700, judge r1 NO-GO on #1513): two regressions the first
+# cut introduced and three trivial siblings of I3/I4 it left open.
+
+# C1: the nearest-.claude walk must terminate on a Windows drive-form path
+# (canon() returns `C:/...` there, and `${d%/*}` of `C:` is `C:` forever).
+mkdir -p "$SANDBOX/shim"
+printf '#!/bin/sh\nprintf "C:/fake/dir/file\\n"\n' > "$SANDBOX/shim/realpath"
+chmod +x "$SANDBOX/shim/realpath"
+TMO=""
+command -v timeout >/dev/null 2>&1 && TMO="timeout 10"
+RC_DRIVE=$(jq -n --arg cmd "echo x >> plainfile" --arg cwd "$WT2" \
+    '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+    | $TMO env PATH="$SANDBOX/shim:$PATH" CANON_FORCE=realpath-m bash "$HOOK" >/dev/null 2>&1; echo $?)
+assert_rc "239 existing operand whose canon() is drive-form returns promptly (allow, not a hang)" 0 "$RC_DRIVE"
+
+# I-a: only the .claude directory ITSELF (a dir-destination) or a settings
+# leaf can become the live settings.json; anything deeper cannot.
+mkdir -p "$PRIMARY/.claude/logs" "$PRIMARY/.claude/plans" "$PRIMARY/.claude/agents"
+printf 'l\n' > "$PRIMARY/.claude/logs/existing.log"
+printf 'p\n' > "$PRIMARY/.claude/plans/p.md"
+assert_rc "240 echo x >> <primary>/.claude/logs/existing.log (deep, non-settings) allows" 0 \
+    "$(bash_rc_of "$WT2" "echo x >> $PRIMARY/.claude/logs/existing.log")"
+assert_rc "241 jq . y > <primary>/.claude/plans/p.md allows" 0 \
+    "$(bash_rc_of "$WT2" "jq . y > $PRIMARY/.claude/plans/p.md")"
+assert_rc "242 cp -r dlink/agents x/ (SOURCE deep under a symlinked .claude) allows" 0 \
+    "$(bash_rc_of "$WT2" "cp -r dlink/agents x/")"
+assert_rc "243 a heredoc body that merely cites a deep .claude path allows" 0 \
+    "$(bash_rc_of "$WT2" $'cat > out.md <<\'EOF\'\nsee '"$PRIMARY"$'/.claude/plans/p.md\nEOF')"
+assert_rc "244 echo x > dlink/settings.json (settings leaf through the dir symlink) denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > dlink/settings.json")"
+
+# I-b: GNU long-option abbreviations (`--target=`, `--targ=`) are the glued
+# --target-directory spelling too.
+assert_rc "245 cp -r --target=../.. x/. denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp -r --target=../.. x/.")"
+assert_rc "246 cp -r --targ=../.. x/. denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp -r --targ=../.. x/.")"
+assert_rc "247 mv --target=../.. y denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "mv --target=../.. y")"
+assert_rc "248 cp --target=../other x/. (stays inside worktrees/) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp --target=../other x/.")"
+
+# I-c: a brace group that SPELLS the leaf still hides the climb from a
+# writer that is not a recognised verb; judged per word.
+assert_rc "249 sed -i with a brace-spelled leaf sett{ings,x}.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'sed -i s/a/b/ .{,.}/.{,.}/sett{ings,x}.json')"
+assert_rc "250 sed -i with settings.{json,x} denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'sed -i s/a/b/ .{,.}/.{,.}/settings.{json,x}')"
+assert_rc "251 sed -i ../../settings.{json,x} denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'sed -i s/a/b/ ../../settings.{json,x}')"
+assert_rc "252 perl -pi with s{etting,x}s.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'perl -pi -e s/a/b/ .{,.}/.{,.}/s{etting,x}s.json')"
+assert_rc "253 sed -i with an empty-alternative dot group .{x,}./y denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'sed -i s/a/b/ .{x,}./.{x,}./y.txt')"
+assert_rc "254 ls src/{a,b}/x.ts (brace word with no climb) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'ls src/{a,b}/x.ts')"
+assert_rc "255 jq with a brace object word and no path separator allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "jq '{a: .x, b: .y}' in.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
