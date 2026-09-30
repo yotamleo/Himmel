@@ -249,6 +249,7 @@ export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-c
 # A stub producer records the cache path each refresh was handed instead: the
 # end-of-run row asserts a real refresh ran AND none was aimed at the live cache.
 BANK_PRODUCER_LOG="$TMP/bank-producer.log"
+: > "$BANK_PRODUCER_LOG"
 export CADENCE_BANK_PRODUCER="$TMP/bank-producer-stub.sh"
 # shellcheck disable=SC2016 # $CLAUDE_USAGE_CACHE must expand in the stub, not here
 printf '#!/bin/bash\nprintf "%%s\\n" "$CLAUDE_USAGE_CACHE" >> "%s"\n' "$BANK_PRODUCER_LOG" > "$CADENCE_BANK_PRODUCER"
