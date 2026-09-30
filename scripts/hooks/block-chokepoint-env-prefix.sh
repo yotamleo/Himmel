@@ -626,7 +626,14 @@ segment_cmd() {
             fi
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
             ;;
-        \;|\||\`|$'\n')
+        \|)
+            # HIMMEL-1813: `>|` (noclobber override) is a redirection.
+            if [ "$ro" = "1" ]; then
+                seg="$seg$c"; i=$((i + 1)); ro=0; continue
+            fi
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
+            ;;
+        \;|\`|$'\n')
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
             ;;
         ' ' | $'\t')
@@ -750,8 +757,9 @@ tokenize_seg() {
             done
             # HIMMEL-1813: `>&` / `<&` (fd duplication) -- the '&' is part
             # of the operator; its operand (1, -, a file) is not a word.
-            if [ "${TOK_ENV_SPLIT:-0}" != "1" ] && [ "${s:i:1}" = "&" ]; then
-                i=$((i + 1))
+            # `>|` likewise: the '|' is part of the operator.
+            if [ "${TOK_ENV_SPLIT:-0}" != "1" ]; then
+                case "${s:i:1}" in '&'|'|') i=$((i + 1)) ;; esac
             fi
             skip_word=1   # the operator's operand is not a word
             ;;
@@ -1261,23 +1269,24 @@ scan_segment() {
         [ -n "$w" ] || continue
         W[nw]="${w#:}"; nw=$((nw + 1))
     done <<<"$(tokenize_seg "$seg")"
-    # HIMMEL-1813: a here-string fed to a shell is that shell's script (the
-    # heredoc body is already scanned through the newline fold). Every
-    # operand is scanned: the shell reads the last, so none is safe to skip.
+    # HIMMEL-1813: a here-string is scanned as a script (the heredoc body
+    # is already scanned through the newline fold) UNLESS its command is a
+    # non-executing reader. Fail-closed: any other command, a shell or a
+    # `source /dev/stdin`, may run it. Every operand is scanned: the
+    # command reads the last, so none is safe to skip.
     if [[ $seg == *'<<<'* ]]; then
-        while [ "$j" -lt "$nw" ]; do
-            case "${W[$j]##*/}" in
-            bash|sh|dash|zsh|ksh)
-                k=$seg
-                while [[ $k == *'<<<'* ]]; do
-                    k=${k#*<<<}
-                    IFS= read -r w <<<"$(tokenize_seg "$k")"
-                    scan_text "${w#:}" "$names" $((depth + 1))
-                done
-                break ;;
-            esac
-            j=$((j + 1))
-        done
+        while [ "$j" -lt "$nw" ] && [[ ${W[$j]} =~ $ASSIGN_RE ]]; do j=$((j + 1)); done
+        case "${W[$j]##*/}" in
+        grep|cat|wc|head|tail|tee|diff|cmp) : ;;
+        *)
+            k=$seg
+            while [[ $k == *'<<<'* ]]; do
+                k=${k#*<<<}
+                IFS= read -r w <<<"$(tokenize_seg "$k")"
+                scan_text "${w#:}" "$names" $((depth + 1))
+            done
+            ;;
+        esac
         j=0
     fi
     while [ "$j" -lt "$nw" ]; do
@@ -1435,6 +1444,11 @@ scan_segment() {
                 # A fresh env process: its option parsing starts over
                 # ("env -- A=1 env -S '...'": the outer "--" must not
                 # leak into the inner env's option scan).
+                # HIMMEL-1813: a redirect word of any shape in an env
+                # segment makes env's options unresolvable (the tokenizer
+                # drops it, so its operand's role is a guess): deny when
+                # the segment mentions a registered chokepoint.
+                [[ $seg == *[\<\>]* ]] && split_mention "$seg"
                 phase='env'; env_endopts=0; j=$((j + 1)); continue ;;
             eval)
                 # eval joins its arguments and re-parses them as a new

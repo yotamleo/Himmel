@@ -531,6 +531,18 @@ assert_deny "1813: unquoted TAB, direct chokepoint path"       "$(j "env -S ${MO
 assert_deny_unres "1813: \${VAR} splits the chokepoint name"   "$(j "env -S '${SW_VAR}=1 bash ${STOP_WORKER%stop-worker.sh}stop-\${Z}worker.sh'")"
 assert_deny_unres "1813: herestring feeds an env -S \\c to bash" "$(j "bash <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
 assert_deny_unres "1813: the LAST of two herestrings is scanned" "$(j "bash <<< 'echo ok' <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
+# Judge round 3: a redirect word of ANY shape between env and its command
+# makes env's options unresolvable, and a here-string naming a chokepoint
+# denies unless a non-executing reader consumes it.
+assert_deny "1813: >| redirect before -S"                     "$(j "env >|/dev/null -S '${SW_VAR}=1 bash $STOP_WORKER\\c'")"
+assert_deny "1813: {fd}>&1 redirect before -S"                "$(j "env {fd}>&1 -S '${SW_VAR}=1 bash $STOP_WORKER\\c'")"
+assert_deny "1813: <> redirect before -S"                     "$(j "env <>/dev/null -S '${SW_VAR}=1 bash $STOP_WORKER\\c'")"
+assert_deny "1813: source /dev/stdin reads a herestring"      "$(j "source /dev/stdin <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\"")"
+assert_deny "1813: . /dev/stdin reads a herestring"           "$(j ". /dev/stdin <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\"")"
+assert_deny "1813: an unlisted shell reads a herestring"      "$(j "mksh <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\"")"
+assert_deny "1813: source /dev/stdin reads a heredoc"         "$(j "source /dev/stdin <<EOF"$'\n'"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'"$'\n'"EOF")"
+assert_allow "1813: cat of a herestring is data"              "$(j "cat <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\"")"
+assert_allow "1813: a redirect before a plain env command"    "$(j "env >/dev/null FOO=1 ls")"
 assert_allow "1813: herestring fed to a non-shell is data"     "$(j "grep x <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
 assert_allow "1813: 2>&1 after a plain command stays allowed"  "$(j "bash $MERGE_ON_GREEN 2>&1")"
 assert_deny "1813: an escaped > before & still separates"     "$(j "echo \\>& ${MOG_VAR}=1 bash $MERGE_ON_GREEN")"

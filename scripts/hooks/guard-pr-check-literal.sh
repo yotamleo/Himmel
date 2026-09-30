@@ -1189,8 +1189,27 @@ split_unresolvable_mention() { # split_unresolvable_mention <raw command>
     done
     return 1
 }
+herestring_split_mention() { # herestring_split_mention <raw command> - true
+    # when a `<<<` operand holds an unresolvable env -S naming a target and
+    # the command is not a non-executing reader: any other command (a shell,
+    # `source /dev/stdin`) may run the operand as a script. Every operand is
+    # tested; the command reads the last.
+    local k op hw i=0
+    [[ $1 == *'<<<'* ]] || return 1
+    read -r -a hw <<<"${1%%<<<*}"
+    while [ "$i" -lt "${#hw[@]}" ] && [[ ${hw[$i]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do i=$((i + 1)); done
+    case "${hw[$i]##*/}" in grep|cat|wc|head|tail|tee|diff|cmp) return 1 ;; esac
+    k=$1
+    while [[ $k == *'<<<'* ]]; do
+        k=${k#*<<<}
+        op=$(split_operand "${k#"${k%%[![:blank:]]*}"}")
+        case "$op" in \"*\"|\'*\') op=${op:1:${#op}-2} ;; esac
+        split_unresolvable_mention "$op" && return 0
+    done
+    return 1
+}
 if [ "$hit" -eq 0 ] && [ "$mentions" -eq 1 ] && [ "$wrapped" -eq 1 ] \
-    && split_unresolvable_mention "$cmd"; then
+    && { split_unresolvable_mention "$cmd" || herestring_split_mention "$cmd"; }; then
     deny "an env -S / --split-string string naming a guarded target cannot be fully resolved (a backslash escape, '#' or '\$' - GNU env -S: \\c ignores the rest, '#' comments, \${VAR} expands), so which script runs is unprovable; run the target by its literal spelling with no env -S wrapper (HIMMEL-1813)."
 fi
 [ "$hit" -eq 1 ] || exit 0

@@ -501,9 +501,22 @@ for v in \
     "env -S 'bash scripts/handover/merge-\${Z}on-green.sh'" \
     "env -S 'bash scripts/cr/clear-\${Z}cr-marker.sh\\c'" \
     "env -S 'bash scripts/hand\${Z}over/merge-on-green.sh'" \
-    "env -S 'bash scripts/c\${Z}r/clear-cr-marker.sh\\c'"; do
+    "env -S 'bash scripts/c\${Z}r/clear-cr-marker.sh\\c'" \
+    "env >|/dev/null -S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env {fd}>&1 -S 'bash scripts/handover/merge-on-green.sh\\c'"; do
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
+# A here-string is a script unless a non-executing reader consumes it.
+for v in \
+    "source /dev/stdin <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
+    ". /dev/stdin <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
+    "mksh <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
+    "mksh <<< 'echo ok' <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""; do
+    run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+    need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
+done
+run "1813: cat of a here-string naming a target -> no-op" 0 \
+    "$(payload "cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" "$WT")" "$HR"
 run "1813: unresolvable env -S with no target mention -> no-op" 0 \
     "$(payload "env -S 'bash scripts/other/x.sh\\c'" "$WT")" "$HR"
 run "1813: \${VAR} split of a target name outside env -S -> no-op" 0 \
