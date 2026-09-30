@@ -36,6 +36,9 @@ real_ledger_state() {
 REAL_LEDGER_BEFORE=$(real_ledger_state)
 
 TMPDIR="$(cd -P -- "${TMPDIR:-/tmp}" && pwd)" || exit 1; export TMPDIR
+# HIMMEL-3903: an empty /tmp/.git kept appearing on this host. Record which of these
+# already exist so the end-of-suite guard fails if THIS suite creates one.
+GIT_LEAK_PRE=""; for _p in /tmp/.git "${TMPDIR:-/tmp}/.git"; do [ -e "$_p" ] && GIT_LEAK_PRE="$GIT_LEAK_PRE $_p"; done
 SUITE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/uninstall-prov.XXXXXX")" || { echo "FAIL: mktemp" >&2; exit 1; }
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
@@ -2599,5 +2602,11 @@ echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \
   "$REAL_LEDGER_AFTER" "$REAL_LEDGER_BEFORE"
+
+# HIMMEL-3903: this suite must not leave a .git in /tmp or $TMPDIR.
+for _p in /tmp/.git "${TMPDIR:-/tmp}/.git"; do
+  case " $GIT_LEAK_PRE " in *" $_p "*) continue ;; esac
+  [ -e "$_p" ] && check "suite created $_p" present absent
+done
 
 [ "$fails" -eq 0 ] && echo "UNINSTALL-PROVENANCE ALL PASS" || { echo "failed checks:$failed_labels"; echo "$fails UNINSTALL-PROVENANCE FAILED"; exit 1; }
