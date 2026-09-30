@@ -1447,7 +1447,10 @@ git push --force-with-lease origin "main"
 git push --force-with-lease origin '"'"'HEAD:main'"'"'
 git push --force-with-lease origin *
 git push --force-with-lease origin ""*
-git push --force-with-lease origin -- *'
+git push --force-with-lease origin -- *
+git push --force-with-lease origin +*
+git push --force-with-lease origin HEAD:*
+git push --force-with-lease origin m?in'
 while IFS= read -r CL_CMD; do
     assert "lease push cluster/abbrev/quoted force, quoted main or glob never ALLOW: $CL_CMD" PASS "$(decide_in "$FWL_REPO" "$(j_bash "$CL_CMD")")"
 done <<EOF

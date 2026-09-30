@@ -123,15 +123,18 @@ is_safe_bin() {
 # word cannot be cooked (an unquoted `$VAR`, a brace span), or when a word
 # starts with an unquoted glob character, which can expand into a `-`-leading
 # file name that reads as a flag. A `--` does not exempt later words: it may
-# be an option's argument (`--grep --`), not the terminator.
+# be an option's argument (`--grep --`), not the terminator. CW_GLOB=1 when
+# any word carries an unquoted glob at all.
 cook_argv_words() {
     local w
     CW=()
+    CW_GLOB=0
     for w in "$@"; do
         shell_word_value "$w" || return 1
         case "$w" in '*'*|'?'*|'['*) return 1 ;; esac
         # A glob behind quoted text (`""*`, `"-"*`) expands the same way.
         if [ "$SW_HAS_UNQUOTED_GLOB" = 1 ]; then
+            CW_GLOB=1
             case "$SW_VALUE" in '-'*|'*'*|'?'*|'['*) return 1 ;; esac
         fi
         CW+=("$SW_VALUE")
@@ -235,6 +238,8 @@ git_push_force_with_lease_is_safe() {
     local -a g=("$@")            # g[0] == git
     local n=${#g[@]} j=1 t
     cook_argv_words "$@" || return 1
+    # A glob can expand into a protected refspec (`+*`, `HEAD:*`) unseen.
+    [ "$CW_GLOB" = 1 ] && return 1
     # Skip git global flags to land on the subcommand. Exec-sink flags
     # (-c / --exec-path) are rejected outright (same set as git_subcmd_is_read).
     while [ "$j" -lt "$n" ]; do
