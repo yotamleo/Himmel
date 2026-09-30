@@ -583,6 +583,10 @@ run "3913: [tee ...<<< then newline then bash] clean root -> deny" 2 \
 need_in_err "3913: newline form deny points at the move-into-a-file route" "written to a file and run"
 run "3913: [cat <<< > f then newline then . f] clean root -> deny" 2 \
     "$(payload "cat <<< \"env -S 'bash scripts/cr/clear-cr-marker.sh\\c'\" > /tmp/f"$'\n'". /tmp/f" "$WT")" "$HR"
+# A variable-named write target is invisible to the backstop, but the parser still
+# refuses an absolute path outside the root, so the run half denies (rc only).
+run "3913: [variable write target then run of an outside scripts/cr path] clean root -> deny" 2 \
+    "$(payload "out=/tmp/scripts/cr/f.sh; tee \"\$out\" <<< 'bash scripts/cr/write-verdicts.sh'; bash /tmp/scripts/cr/f.sh" "$WT")" "$HR"
 # The literal allowed spellings, and a mention that nothing runs, stay as they were.
 while IFS= read -r v; do
     run "3913: allowed spelling [$v] clean root -> no-op" 0 "$(payload "$v" "$WT")" "$HR"
