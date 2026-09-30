@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016,SC2030,SC2031,SC2123,SC2329  # literal $ payloads; PATH scoped to subshells on purpose; cleanup runs via trap
+# shellcheck disable=SC2016,SC2030,SC2031,SC2123,SC2317,SC2329  # literal $ payloads; PATH scoped to subshells on purpose; cleanup runs via trap
 # Tests for scripts/lib/qmd-bounded.sh (HIMMEL-3956).
 # Usage: bash scripts/lib/test-qmd-bounded.sh
 # Hermetic: a sh trampoline stands in for the qmd launcher (node, which forwards
