@@ -39,8 +39,8 @@ mkdir -p "$TMP/logs"
 # fixture logs as run-shell-tests' own self-tests name them (HIMMEL-3906)
 : > "$TMP/logs/test-127-3.sh.log"
 : > "$TMP/logs/test-slowpoke.sh.log"
-# suites-from-logs asks git which suites are tracked, so run it from the checkout
-sfl() ( cd "$ROOT" && bash "$SCRIPT" suites-from-logs "$@" )
+# run from a subdirectory: the tracked lookup must not depend on the caller's cwd
+sfl() ( cd "$ROOT/scripts/ci" && bash "$SCRIPT" suites-from-logs "$@" )
 got="$(sfl "$TMP/logs" 2>"$TMP/sfl.err" | tr '\n' ' ')"
 if [ "$got" = "scripts/ci/test-macos-breakage.sh scripts/handover/test-arm-resume.sh " ]; then
   ok "suites-from-logs keeps tracked suites (incl. one in a subdirectory) and drops self-test fixture logs"

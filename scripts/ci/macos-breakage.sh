@@ -43,7 +43,9 @@ cmd_suites_from_logs() {
   # test-slowpoke.sh) in FAIL_LOG_DIR; keep only git-tracked test-*.sh suites so
   # they do not count as reds. Dropped names go to stderr (count + names).
   local tracked decoded name kept="" dropped="" ndrop=0
-  tracked="$(git ls-files 2>/dev/null)"
+  # list from this script's own checkout root, not the caller's cwd (a subdir
+  # would yield cwd-relative paths); an unreadable index must not read as "no reds"
+  tracked="$(git -C "$(dirname "$0")/../.." ls-files)" || die "suites-from-logs: git ls-files failed"
   # shellcheck disable=SC2012 # names are run-shell-tests' escaped suite paths (alnum + _), never odd bytes
   decoded="$(ls "$dir" 2>/dev/null | sed -n -e 's/\.log$//p' | sed -e 's/_s/\//g' -e 's/_u/_/g' | sort)"
   while IFS= read -r name; do
