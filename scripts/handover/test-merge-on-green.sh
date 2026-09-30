@@ -2939,6 +2939,15 @@ STUB_TRUST_LIST=$'^scripts/[\n' STUB_PR_FILES_JSON='[{"filename":"README.md"}]' 
     tp_run 21 "3895-f7: invalid trust regex → exit 21"
 STUB_TRUST_LIST_404=1 STUB_PR_FILES_JSON='[{"filename":"README.md"}]' \
     tp_run 21 "3895-f8: no trust list on the harness's own repo → exit 21"
+# 3895-f10 — a list saved with CRLF endings, or with blanks around a pattern,
+# must still match: a pattern carrying a stray \r or space matches nothing,
+# which would wave a trust-path PR through (fail open).
+STUB_TRUST_LIST=$(sed 's/$/\r/' "$SCRIPT_DIR/../ci/ci-trust-paths.txt") \
+    tp_run 21 "3895-f10: CRLF trust list, trust-path PR with no GO → exit 21"
+no_merge_call "3895-f10: no merge call"
+STUB_TRUST_LIST=$(sed 's/^\(.\)/  \1/; s/$/ 	 /' "$SCRIPT_DIR/../ci/ci-trust-paths.txt") \
+    tp_run 21 "3895-f11: blank-padded trust list, trust-path PR with no GO → exit 21"
+no_merge_call "3895-f11: no merge call"
 # 3895-f9 — the anchor is one commit behind origin: a trust-path PR is judged
 # by a possibly stale gate, so it refuses (a non-trust PR is not affected).
 tp_mint --trust-reviewed judge-N9 77 "$GO_SHA"

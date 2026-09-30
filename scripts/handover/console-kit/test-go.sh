@@ -270,6 +270,18 @@ check "3895: go_trust_gate refuses an ordinary GO" "$rc" "2"
 contains "3895: and says how to grant one" "$out" "--trust-reviewed"
 rc=0; go_gate 81 "$SHA" "$ROOT13" o/r >/dev/null || rc=$?
 check "3895: go_gate still accepts the ordinary GO" "$rc" "0"
+# Read race (judge NO-GO on PR 1479): a copy of the ordinary GO with a forged
+# trust line keeps the ordinary mac. Swapped in after the verifier's first read
+# of the file, a verifier that re-reads it checks the mac against the genuine
+# copy and takes the trust id from the forged one. The sed hook swaps on its
+# first call, deterministically; the verifier must read the file once.
+cp "$GO13" "$GO13.forged"
+printf 'trust-reviewed=forged\n' >> "$GO13.forged"
+sed() { command sed "$@"; local r=$?; [ -f "$GO13.forged" ] && mv -f "$GO13.forged" "$GO13"; return "$r"; }
+rc=0; out=$(go_trust_gate 81 "$SHA" "$ROOT13" o/r) || rc=$?
+unset -f sed
+check "3895: a GO swapped between reads never yields a trust id" "$rc" "2"
+rm -f "$GO13.forged"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

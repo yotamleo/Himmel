@@ -755,7 +755,7 @@ fi
 # satisfy the declare -F checks that follow.
 is_leg=1
 if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
-    unset -f go_gate console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
+    unset -f go_gate _go_gate_verify console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
     # HIMMEL-3475: from the anchor, never this script's own worktree sibling —
     # a malicious go-gate.sh here (e.g. console_leg() always returning false)
     # would silently skip the console-GO requirement entirely.
@@ -862,7 +862,10 @@ fi
 if [ "$trust_state" = "not-adopted" ]; then
     audit "TRUST not-adopted repo=$nwo pr=#$pr_num sha=$sha trust=not-adopted"
 else
-    printf '%s\n' "$trust_raw" | grep -Ev '^[[:space:]]*(#|$)' > "$trust_tmp"
+    # Strip \r and surrounding blanks first: a pattern carrying either matches
+    # no path, and an unmatched pattern fails open.
+    printf '%s\n' "$trust_raw" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+        | grep -Ev '^(#|$)' > "$trust_tmp"
     [ -s "$trust_tmp" ] || trust_refuse list "scripts/ci/ci-trust-paths.txt on $default_branch has no patterns"
     grep -E -f "$trust_tmp" </dev/null >/dev/null 2>&1
     [ "$?" -eq 2 ] && trust_refuse list "scripts/ci/ci-trust-paths.txt on $default_branch has an invalid pattern"
@@ -889,7 +892,7 @@ else
                 git -C "$himmel_repo" merge-base --is-ancestor "$trust_tip" HEAD 2>/dev/null); then
             trust_refuse anchor "PR #$pr_num touches trust path $trust_hit and the anchor $himmel_repo is behind origin (or origin is unreadable) — pull the primary checkout, then re-run"
         fi
-        unset -f go_gate go_trust_gate go_trust_id_ok console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
+        unset -f go_gate _go_gate_verify go_trust_gate go_trust_id_ok console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
         # shellcheck source=scripts/lib/go-gate.sh
         # shellcheck disable=SC1091
         if ! . "$himmel_repo/scripts/lib/go-gate.sh" 2>/dev/null || ! declare -F go_trust_gate >/dev/null 2>&1; then
