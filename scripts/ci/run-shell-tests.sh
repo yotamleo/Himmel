@@ -1993,7 +1993,7 @@ _suite_lock_claim() {
 # Windows Git Bash has no ps -o ppid, so it keeps today's wait — revisit if
 # either bites.
 _suite_lock_orphan_reap() {
-  local _pid="$1" _ident="$2" _oppid="$3" _raw="$4" _cur _n=0 _k _ki _bad=0
+  local _pid="$1" _ident="$2" _oppid="$3" _raw="$4" _cur _n=0 _k _ki _bad=0 _pk _prc
   local -a _kids=() _kid_ids=()
   [ -n "$_pid" ] && [ -n "$_ident" ] || return 1
   case "$_oppid" in ''|*[!0-9]*) return 1 ;; esac
@@ -2013,22 +2013,27 @@ _suite_lock_orphan_reap() {
   # nothing of the orphan left running. Its direct children (identity
   # snapshotted, then their groups terminated) are the suite it was running.
   kill -STOP "$_pid" 2>/dev/null || return 1
-  for _k in $(pgrep -P "$_pid" 2>/dev/null); do
-    _ki=$(proc_tree_process_identity "$_k") || continue
-    [ -n "$_ki" ] || continue
+  # A waiter killed mid-teardown must not strand a frozen owner.
+  trap 'kill -CONT "$_pid" 2>/dev/null; exit 143' INT TERM HUP
+  _pk=$(pgrep -P "$_pid" 2>/dev/null); _prc=$?
+  # pgrep rc 1 = no children; anything else = discovery failed, so do not guess.
+  [ "$_prc" -le 1 ] || _bad=1
+  for _k in $_pk; do
+    _ki=$(proc_tree_process_identity "$_k") && [ -n "$_ki" ] || { _bad=1; continue; }
     _kids[${#_kids[@]}]="$_k"
     _kid_ids[${#_kid_ids[@]}]="$_ki"
   done
-  while [ "$_n" -lt "${#_kids[@]}" ]; do
+  while [ "$_bad" -eq 0 ] && [ "$_n" -lt "${#_kids[@]}" ]; do
     proc_tree_terminate "${_kids[$_n]}" 3 "${_kid_ids[$_n]}" >/dev/null 2>&1
     case "$?" in 0|3) ;; *) _bad=1 ;; esac
     _n=$((_n + 1))
   done
-  # A child that would not die: thaw the owner untouched and keep waiting, as
-  # before this reaper existed. Otherwise TERM is delivered on CONT.
-  if [ "$_bad" -ne 0 ]; then kill -CONT "$_pid" 2>/dev/null; return 1; fi
+  # Discovery or a child kill failed: thaw the owner untouched and keep waiting,
+  # as before this reaper existed. Otherwise TERM is delivered on CONT.
+  if [ "$_bad" -ne 0 ]; then trap - INT TERM HUP; kill -CONT "$_pid" 2>/dev/null; return 1; fi
   kill -TERM "$_pid" 2>/dev/null
   kill -CONT "$_pid" 2>/dev/null
+  trap - INT TERM HUP
   _n=0
   while [ "$_n" -lt 50 ]; do
     proc_tree_process_alive "$_pid"

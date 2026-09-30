@@ -81,6 +81,8 @@ elif ! wait_lock "$w"; then
 else
   hp=$(owner_pid "$w")
   bgpids+=("$hp")
+  # The suite must be running before the reap, or there is no child to assert on.
+  n=0; while [ ! -s "$w/suite.pid" ] && [ "$n" -lt 200 ]; do sleep 0.05; n=$((n + 1)); done
   start=$(date +%s)
   run_runner "$w" fast SUITE_LOCK_WAIT=25 SUITE_LOCK_WAIT_INTERVAL=1 > "$w/waiter.out" 2>&1
   wrc=$?
