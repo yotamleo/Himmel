@@ -57,6 +57,11 @@
 # scripts/adopt.ps1) can delegate to this ONE implementation instead of
 # duplicating the clone/build/link recipe natively.
 
+# qmd_cmd runs qmd under qmd_bounded (HIMMEL-3956): a deadline that kills the
+# whole process tree, since `timeout` alone orphans qmd's bun child.
+# shellcheck source=scripts/lib/qmd-bounded.sh
+. "$(dirname "${BASH_SOURCE[0]}")/qmd-bounded.sh"
+
 # Fork config -- overridable per call (env var set before sourcing/calling).
 _qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/tobi/qmd.git}"; }
 _qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-04e4dbd8245c527a88f1a8f0bda547aef9ca81fb}"; }
@@ -694,9 +699,9 @@ qmd_cmd() {
   local bun_qmd
   bun_qmd="$(_qmd_bun_js)"
   if [ -f "$bun_qmd" ] && command -v bun >/dev/null 2>&1; then
-    bun "$bun_qmd" "$@"
+    qmd_bounded "$(qmd_timeout_secs)" bun "$bun_qmd" "$@"
   elif command -v qmd >/dev/null 2>&1; then
-    qmd "$@"
+    qmd_bounded "$(qmd_timeout_secs)" qmd "$@"
   else
     return 127
   fi

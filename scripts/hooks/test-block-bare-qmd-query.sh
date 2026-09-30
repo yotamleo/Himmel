@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2088  # the literal ~ and $(...) are the payloads under test
+# Tests for scripts/hooks/block-bare-qmd-query.sh (HIMMEL-3956 / HIMMEL-3960).
+#
+# Usage: bash scripts/hooks/test-block-bare-qmd-query.sh
+#
+# Exit codes:
+#   0 - all cases passed
+#   1 - at least one case failed
+set -uo pipefail
+
+HOOK="$(cd "$(dirname "$0")" && pwd)/block-bare-qmd-query.sh"
+
+FAILED=0
+
+run_case() {
+    local input="$1"
+    local env_assign="${2:-}"
+    if [ -n "$env_assign" ]; then
+        printf '%s' "$input" | env -u QMD_UNBOUNDED_OK "$env_assign" bash "$HOOK" >/dev/null 2>&1
+    else
+        printf '%s' "$input" | env -u QMD_UNBOUNDED_OK bash "$HOOK" >/dev/null 2>&1
+    fi
+    echo "$?"
+}
+
+assert_rc() {
+    local label="$1" expected="$2" actual="$3"
+    if [ "$actual" = "$expected" ]; then
+        echo "PASS $label (rc=$actual)"
+    else
+        echo "FAIL $label - expected rc=$expected, got rc=$actual"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+j_bash() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
+deny() { assert_rc "deny: $1" 2 "$(run_case "$(j_bash "$1")")"; }
+allow() { assert_rc "allow: $1" 0 "$(run_case "$(j_bash "$1")")"; }
+
+# --- DENY: a qmd search verb reached without the group deadline ---
+deny 'qmd query "why does the reindex hang"'
+deny 'qmd search reindex'
+deny 'qmd vsearch reindex'
+deny 'qmd query -c luna "HIMMEL-3956 orphaned qmd query"'
+deny '~/.local/bin/qmd query x'
+deny '/home/u/.himmel/qmd-fork/bin/qmd search x'
+deny '"qmd" query x'
+deny 'qmd.cmd query x'
+deny 'qmd --index luna query x'
+deny 'qmd --json query x'
+# The launcher chain itself: the bun child is what orphans.
+deny 'bun ~/.himmel/qmd-fork/src/cli/qmd.ts query -c luna x'
+deny '~/.bun/bin/bun run /opt/qmd/src/cli/qmd.ts search x'
+deny 'node ~/.himmel/qmd-fork/bin/qmd vsearch x'
+deny 'bunx @tobilu/qmd query x'
+# Wrappers: plain timeout is exactly what fails to reap bun, so it is no bound.
+deny 'timeout 60 qmd query x'
+deny 'timeout -k 5 60 qmd query x'
+deny 'timeout --signal=KILL 2m qmd search x'
+deny 'env FOO=1 qmd query x'
+deny 'QMD_TIMEOUT_SECS=5 qmd query x'
+deny 'nice -n 10 qmd query x'
+deny 'nohup qmd query x'
+deny 'setsid qmd query x'
+deny 'command qmd query x'
+deny 'exec qmd query x'
+deny 'time qmd query x'
+deny 'sudo qmd query x'
+deny 'bash -c "qmd query x"'
+deny "sh -lc 'qmd search x'"
+deny 'printf x | xargs qmd query'
+# Command positions.
+deny 'cd /tmp && qmd query x'
+deny 'git status; qmd search x'
+deny 'out=$(qmd query x)'
+deny '(qmd query x)'
+deny 'if qmd query x; then echo y; fi'
+deny 'git status
+qmd query x'
+deny 'qmd \
+  query x'
+
+# --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
+allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
+allow 'bash /home/u/himmel/scripts/lib/qmd-bounded.sh search x'
+allow 'QMD_TIMEOUT_SECS=60 bash scripts/lib/qmd-bounded.sh vsearch x'
+allow "bash -c '. scripts/lib/qmd-bounded.sh; qmd_bounded 60 qmd query x'"
+allow 'qmd status'
+allow 'qmd update'
+allow 'qmd embed'
+allow 'qmd collection list'
+allow 'qmd get notes/query.md'
+allow 'qmd --version'
+allow 'bash scripts/luna/qmd-reindex.sh'
+allow 'grep -rn "qmd query" scripts/'
+allow "git log --grep 'qmd search'"
+allow 'echo qmd query'
+allow 'git status'
+allow 'qmd queryx'
+assert_rc "allow: non-Bash tool" 0 \
+    "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
+assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \
+    "$(run_case "$(j_bash 'qmd query x')" QMD_UNBOUNDED_OK=1)"
+
+# --- FAIL CLOSED: an unreadable payload denies, like the sibling guards ---
+assert_rc "deny: empty stdin" 2 "$(run_case '')"
+assert_rc "deny: malformed JSON" 2 "$(run_case '{"tool_name":')"
+
+# The deny text names the bounded replacement.
+msg=$(printf '%s' "$(j_bash 'qmd query x')" | env -u QMD_UNBOUNDED_OK bash "$HOOK" 2>&1 >/dev/null)
+case "$msg" in
+    *qmd-bounded.sh*) echo "PASS deny text names qmd-bounded.sh" ;;
+    *) echo "FAIL deny text does not name qmd-bounded.sh: $msg"; FAILED=$((FAILED + 1)) ;;
+esac
+
+if [ "$FAILED" -eq 0 ]; then
+    echo "ALL PASS"
+    exit 0
+fi
+echo "$FAILED FAILED"
+exit 1
