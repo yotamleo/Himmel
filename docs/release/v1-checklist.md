@@ -81,6 +81,13 @@ Drop `--dry-run` once the plan is confirmed. The tag is created through
 `gh api .../git/refs`, not `git tag` — this script never writes the primary
 checkout's own refs.
 
+Before cutting, commit `docs/release/<TAG>-notes.md` (e.g.
+`docs/release/v1.0.0-notes.md`). The Release workflow publishes a bare release
+with that curated file (`--notes-file`, read at the tag); it does not rely on
+`--generate-notes` — with no notes file it falls back to generated notes bounded
+to the previous tag, but the first non-prerelease tag's unbounded generated notes
+exceed GitHub's 125000-char limit and fail (HIMMEL-3920).
+
 ## 6. After the tag
 
 - Confirm the release-tarball build (`scripts/release/build-tarball.sh

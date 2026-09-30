@@ -40,11 +40,35 @@ jobs:
 
       - name: Ensure the release exists
         run: |
+          # HIMMEL-3920: a bare --generate-notes on the first non-prerelease tag spans the
+          # whole history and 422s (body > 125000 chars). Notes come from the curated
+          # docs/release/<TAG>-notes.md at the tag when it exists, else generated notes
+          # bounded to the previous tag in version order.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; skipping create"
+            exit 0
+          fi
+          # The notes path is built from the tag only after it matches a strict version shape.
+          printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
+            || { echo "unexpected tag shape: $TAG" >&2; exit 1; }
           # A tag with a `-` (v0.3.0-pre.4) is a prerelease, matching the existing releases.
           flags=()
           case "$TAG" in *-*) flags+=(--prerelease) ;; esac
-          gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
+          notes="docs/release/${TAG}-notes.md"
+          if [ -s "$notes" ]; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$notes" "${flags[@]}"
+          else
+            # Previous tag = the next one down in version order (prereleases sort below
+            # their release via versionsort.suffix). The checkout is shallow, so fetch tags.
+            git fetch --tags --force --quiet origin
+            prev="$(git -c versionsort.suffix=- tag --list 'v*' --sort=-version:refname | awk -v t="$TAG" 'f{print;exit} $0==t{f=1}')"
+            if [ -n "$prev" ]; then
+              gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes --notes-start-tag "$prev" "${flags[@]}"
+            else
+              # Very first tag: no predecessor, so the whole history IS the first release's range.
+              gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
+            fi
+          fi
 
       - name: Upload both assets
         run: |

@@ -212,6 +212,54 @@ id-token: write\
 attestations: write' "$WORKFLOW" > "$mut/toplevel-perms.yml"
 check_not "RED: id-token/attestations at the top level (not the job) is rejected" attest_ok "$mut/toplevel-perms.yml"
 
+# --- T8: HIMMEL-3920 -- release notes are the curated file, or bounded generated ---
+# notes_ok <file> -- 0 iff "Ensure the release exists" (a) skips when the release
+# exists, (b) validates the tag shape BEFORE building the notes path, (c) uses the
+# curated docs/release/<TAG>-notes.md via --notes-file, (d) bounds generated notes
+# with --notes-start-tag, and (e) never runs a bare --generate-notes as the only path
+# when a predecessor exists.
+# shellcheck disable=SC2016  # the single quotes are deliberate: literal $VAR text to grep for in the workflow
+notes_ok() {
+  local f="$1" step
+  step="$(awk '/- name: Ensure the release exists/{on=1;next} on&&/- name:/{on=0} on' "$f")"
+  [ -n "$step" ] || return 1
+  grep -Fq 'gh release view "$TAG"' <<< "$step" || return 1
+  grep -Fq 'already exists' <<< "$step" || return 1
+  grep -Fq -- '--notes-file "$notes"' <<< "$step" || return 1
+  grep -Fq 'notes="docs/release/${TAG}-notes.md"' <<< "$step" || return 1
+  grep -Fq -- '--notes-start-tag "$prev"' <<< "$step" || return 1
+  # the tag-shape gate must come BEFORE the path is built from the tag
+  local gate_line path_line
+  gate_line="$(grep -n "grep -Eq '\^v\[0-9\]" <<< "$step" | head -1 | cut -d: -f1)"
+  path_line="$(grep -n 'notes="docs/release/' <<< "$step" | head -1 | cut -d: -f1)"
+  [ -n "$gate_line" ] && [ -n "$path_line" ] && [ "$gate_line" -lt "$path_line" ] || return 1
+  # no ${{ }} expansion inside the run: block (env: only)
+  ! grep -Fq '${{' <<< "$step" || return 1
+  return 0
+}
+check "workflow: curated notes file, bounded generated notes, tag-shape gate" notes_ok "$WORKFLOW"
+
+# RED: the pre-HIMMEL-3920 step (bare --generate-notes) must be rejected.
+cat > "$mut/old-step.yml" <<'EOF'
+      - name: Ensure the release exists
+        run: |
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
+
+      - name: Upload both assets
+EOF
+check_not "RED: the old bare --generate-notes step is rejected" notes_ok "$mut/old-step.yml"
+grep -v -- '--notes-file' "$WORKFLOW" > "$mut/no-notes-file.yml"
+check_not "RED: a step with no --notes-file path is rejected" notes_ok "$mut/no-notes-file.yml"
+grep -v -- '--notes-start-tag' "$WORKFLOW" > "$mut/no-start-tag.yml"
+check_not "RED: a step whose generated notes are not bounded is rejected" notes_ok "$mut/no-start-tag.yml"
+grep -v 'already exists' "$WORKFLOW" > "$mut/no-skip.yml"
+check_not "RED: a step that lost the release-exists skip is rejected" notes_ok "$mut/no-skip.yml"
+grep -v "grep -Eq '^v\[0-9\]" "$WORKFLOW" > "$mut/no-tag-gate.yml"
+check_not "RED: a step with no tag-shape gate before the notes path is rejected" notes_ok "$mut/no-tag-gate.yml"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
