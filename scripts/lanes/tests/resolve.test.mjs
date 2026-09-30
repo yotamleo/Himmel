@@ -7,6 +7,7 @@ import { delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { resolveLanes, resolveLaneInventory, formatCodexHealth, buildCtx, fmtCtx, formatContextAnnotation, formatQuotaAnnotation, mergeLocalOverlay, unknownOverlayKeys } from '../resolve.mjs';
 import { applyLaneOverride, applyProfileAllowlist, writeProfileAllowlist } from '../set-lane-override.mjs';
 
@@ -215,9 +216,19 @@ test('HIMMEL-1448: a malformed marker fails CLOSED; Claude tiers are never const
   assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['tier']);
 });
 test('HIMMEL-1448: every lane the wizard offers carries the profileManaged marker in lanes.json', () => {
-  for (const id of ['codex-exec', 'hermes-oneshot']) {
+  // Derived from the wizard's own table, so a new V1_LANES entry whose
+  // lanes.json row lacks the marker turns this RED.
+  const { V1_LANES } = createRequire(import.meta.url)('../../himmelctl/lib/adopter-profile.js');
+  assert.ok(V1_LANES.length > 0);
+  for (const id of V1_LANES.map((l) => l.registryId)) {
     assert.equal(REG.lanes.find((l) => l.id === id)?.profileManaged, true, `${id} must be profileManaged`);
   }
+});
+test('HIMMEL-1448: a lanes.local.json patch cannot clear the registry profileManaged marker', () => {
+  const base = noneInstall([{ id: 'codex-exec', class: 'impl', profileManaged: true, probe: { kind: 'always' } }]);
+  const merged = mergeLocalOverlay(base, { lanes: [{ id: 'codex-exec', profileManaged: false }] });
+  assert.equal(merged.lanes[0].profileManaged, true);
+  assert.deepEqual(resolveLanes(merged, ctx()).map((l) => l.id), []);
 });
 test('HIMMEL-1448: force-on of a managed lane outside the persisted scope still extends the allowlist', () => {
   const local = { lanes: [], profileAllowlist: [], profileAllowlistScope: ['codex-exec'] };

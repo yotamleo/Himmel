@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync, renameSync, accessSync, constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_FILE = join(SCRIPT_DIR, 'lanes.local.json');
@@ -289,10 +290,11 @@ export function writeProfileAllowlist(file, laneIds, scopeLaneIds) {
 // Same fail-closed rule as resolve.mjs's isProfileManaged, read from the shared
 // registry (the only place the marker lives). An unreadable registry counts as
 // managed: extending the allowlist for an explicit force-on is the safe side.
+const { isProfileManaged } = createRequire(import.meta.url)('./profile-managed.cjs');
 function sharedLaneIsManaged(laneId) {
   try {
     const lane = JSON.parse(readFileSync(SHARED_REGISTRY, 'utf8')).lanes.find((l) => l && l.id === laneId);
-    return lane?.profileManaged !== undefined && lane.profileManaged !== false;
+    return isProfileManaged(lane);
   } catch { return true; }
 }
 
