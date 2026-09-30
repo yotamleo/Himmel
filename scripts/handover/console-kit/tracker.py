@@ -31,7 +31,7 @@ MIRROR = os.path.expanduser('~/.himmel/state/jira-mirror/HIMMEL')
 LUNA = os.path.expanduser('~/Documents/luna')
 HANDOVERS = ''
 LAYERS = ['bugs', 'enhancements', 'features', 'misc', 'audit']
-VER_RE = re.compile(r'^v1\.0\.(\d+)$')
+VER_RE = re.compile(r'^v1\.0\.(\d+)([b-z]?)$')  # a trail '<version>b', 'c', ... takes its parent's overflow
 SKIP_RE = re.compile(r'HIMMEL-3882|/dashboard|/artifacts|backlog|\.bak|/graphify-out/')
 KEY_RE = re.compile(r'HIMMEL-\d+')
 MAX_NOTES, TTL = 5, 7 * 86400
@@ -175,29 +175,59 @@ def plan_rules(meta):
         except (OSError, ValueError, SyntaxError, TypeError):
             v = None
         return v if isinstance(v, dict) else None
-    return dict(tickets=val(r'ticket count\s*<\s*(\d+)'), total=val(r'total load within\s*([\d.]+)'),
-                per=val(r'effort_mid\s*x\s*([\d.]+)'), seq=[float(x) for x in sm.groups()] if sm else None,
-                layers=lit('place.py', 'CAPS'), over=lit('common.py', 'VERSION_CAP_OVERRIDES') or {})
+    em = meta.get('effort_model') if isinstance(meta.get('effort_model'), dict) else {}
+
+    def emv(k):
+        return em[k] if isinstance(em.get(k), (int, float)) else None
+    # Effort model B (HIMMEL-3992) words the caps "a version holds < N" / "total mean load within X" and carries
+    # the bank rate as effort_model.bank_per_seq; the older wording still parses.
+    return dict(tickets=val(r'(?:ticket count|version holds)\s*<\s*(\d+)'), total=val(r'total (?:mean )?load within\s*([\d.]+)'),
+                per=emv('bank_per_seq') if emv('bank_per_seq') is not None else val(r'effort_mid\s*x\s*([\d.]+)'),
+                seq=[float(x) for x in sm.groups()] if sm else None,
+                layers=lit('place.py', 'CAPS'), over=lit('common.py', 'VERSION_CAP_OVERRIDES') or {},
+                p90=emv('p90_cap'), model=bool(em))
 
 
 def intg(x):
     return int(x) if isinstance(x, float) and x.is_integer() else x
 
 
+def ver_key(v):
+    """Plan order (HIMMEL-3990): v1.0.1 < v1.0.1b < v1.0.2 < v1.0.10; buckets such as v2/v3 follow the train."""
+    m = VER_RE.match(v)
+    return (0, int(m.group(1)), m.group(2)) if m else (1, 0, '')
+
+
+def trail_parent(v):
+    """The version a trail continues ('v1.0.2b' -> 'v1.0.2'); None for anything else."""
+    m = VER_RE.match(v)
+    return 'v1.0.' + m.group(1) if m and m.group(2) else None
+
+
+def vlabel(v):
+    """A trail reads as its parent's overflow, not a new release (the page's vname() says the same)."""
+    m = VER_RE.match(v)
+    if not (m and m.group(2)):
+        return v
+    k = ord(m.group(2)) - ord('a')
+    return 'v1.0.%s · overflow%s' % (m.group(1), '' if k == 1 else ' %d' % k)
+
+
 def version_caps(r, vers):
-    """Per-version caps (HIMMEL-3979): the plan default with its VERSION_CAP_OVERRIDES applied; None = deferred bucket."""
+    """Per-version caps (HIMMEL-3979): the plan default with its VERSION_CAP_OVERRIDES applied; None = deferred bucket.
+    A trail keeps its parent's caps, overrides included, unless the overrides name the trail itself."""
     out = []
     for v in vers:
         if not VER_RE.match(v):
             out.append(None)
             continue
-        ov = r['over'].get(v) or {}
+        ov = r['over'].get(v if v in r['over'] else trail_parent(v)) or {}
         out.append(dict(t=intg(ov.get('tickets', r['tickets'])), tot=ov.get('total', r['total']),
-                        l=[ov.get(l, (r['layers'] or {}).get(l)) for l in LAYERS]))
+                        l=[ov.get(l, (r['layers'] or {}).get(l)) for l in LAYERS], p9=r['p90']))
     return out
 
 
-def capacity_text(r, deferred):
+def capacity_text(r, deferred, trails=()):
     """Plain-language cap panel lines; a rule the plan does not record says so instead of guessing."""
     nr = 'not recorded in the plan'
     parts = ['at most %d tickets' % r['tickets'] if r['tickets'] is not None else 'a ticket cap ' + nr,
@@ -210,10 +240,17 @@ def capacity_text(r, deferred):
              ['a %s cap of %.2f' % (l, ov[l]) for l in LAYERS if l in ov]
         if ps:
             out.append('%s holds %s (a plan override of the default).' % (v, ' and '.join(ps)))
+    if trails:
+        out.append('A trail version such as %s takes the overflow of %s and keeps its caps, overrides included, '
+                   'unless the plan names the trail; later versions are never renumbered.' % (trails[0], trail_parent(trails[0])))
+    if r['p90'] is not None:
+        out.append('Likely load is the average outcome; cautious load is the level 9 times in 10 stay under (P90). '
+                   'Each version keeps its cautious load within %g bank.' % r['p90'])
     lc = r['layers']
     out.append('Layer caps, in bank: ' + ' · '.join('%s %.2f' % (l, lc[l]) for l in LAYERS if l in lc) + '.'
                if lc else 'Layer caps: ' + nr + '.')
-    out.append('Load = effort in S-equivalents × %g bank; a plan-first ticket counts only its slice.' % r['per']
+    out.append(('Load = the average effort in S-equivalents, overruns included, × %g bank; a plan-first ticket counts only its slice.'
+                if r['model'] else 'Load = effort in S-equivalents × %g bank; a plan-first ticket counts only its slice.') % r['per']
                if r['per'] is not None else 'How load is derived from effort: ' + nr + '.')
     out += ['%s is a deferred bucket: no caps apply.' % v for v in deferred]
     return out
@@ -229,7 +266,7 @@ def ledger_lines(rows, vers):
         return '%s%d of %d done (%d %%), %d in progress, %d to do.' % (
             label, t[2], len(a), int(100.0 * t[2] / len(a) + 0.5) if a else 0, t[1], t[0])
     cur = next((i for i in train if any(r[3] == i and r[2] != 2 for r in rows)), None)
-    out = [line('Running now: %s — ' % vers[cur], {cur}) if cur is not None
+    out = [line('Running now: %s — ' % vlabel(vers[cur]), {cur}) if cur is not None
            else 'Running now: nothing — every v1.0.x ticket is done.', line('Whole v1.0.x train: ', set(train))]
     dr = sum(1 for r in rows if r[3] in train and r[7] == 1)
     un = sum(1 for r in rows if r[3] in train and r[7] == 2 and r[2] != 2)
@@ -401,7 +438,7 @@ def main():
         m = mir.get('HIMMEL-%d' % n)
         if m and m['st'] != 2:
             m['st'] = 1
-    vrows = read_tsv(os.path.join(S, 'versions.tsv'))[1]
+    vrows = sorted(read_tsv(os.path.join(S, 'versions.tsv'))[1], key=lambda r: ver_key(r['version']))
     vers = [r['version'] for r in vrows]
     vidx = {v: i for i, v in enumerate(vers)}
     vload = [[round(float(r['load_' + l] or 0), 3) for l in
@@ -487,12 +524,15 @@ def main():
     upd = max((m['upd'] for m in mir.values()), default='')
     lg, cur = ledger_lines(rows, vers)
     seq = rules['seq']
+    p90 = meta.get('version_p90_fw') if isinstance(meta.get('version_p90_fw'), dict) else {}
     data = dict(gen=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), mir=upd[:16].replace('T', ' '),
                 sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, VC=version_caps(rules, vers),
                 LEG={str(n): v for n, v in sorted(legs.items())}, L=LAYERS, T=themes, P=rows,
                 U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur,
                 CAP=dict(total=rules['total'], layers=[(rules['layers'] or {}).get(l) for l in LAYERS],
-                         text=capacity_text(rules, [v for v in vers if not VER_RE.match(v)])),
+                         text=capacity_text(rules, [v for v in vers if not VER_RE.match(v)],
+                                            [v for v in vers if trail_parent(v)])),
+                VP=[p90.get(v) if isinstance(p90.get(v), (int, float)) else None for v in vers],
                 EQ=' · '.join('%s %g' % x for x in zip(('XS', 'S', 'M', 'L', 'XL'), seq)) + ' S-equivalents'
                 if seq else 'not recorded in the plan')
     blob = json.dumps(data, separators=(',', ':'), ensure_ascii=False).replace('<', '\\u003c')
@@ -600,6 +640,7 @@ details.done-grp>summary,details.fold>summary{cursor:pointer;padding:12px 0;font
 details.q>summary,details.t>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(4.2em,auto) minmax(0,1fr);gap:4px 16px;padding:14px 0}
 details.q>summary::-webkit-details-marker,details.t>summary::-webkit-details-marker{display:none}
 .q .ver,.t .ver{font:500 18px/1.3 var(--f-serif)}
+details.q.trail{margin-left:1.2em}.q.trail .ver{font-size:15px;color:var(--muted)}
 .q .meta,.t .meta{font-size:13px;color:var(--muted);display:flex;gap:12px;align-items:center}
 .q .meta .cap{flex:0 1 120px;margin:0}
 .q .line,.t .line{font-size:14px;color:var(--muted);grid-column:2;min-width:0}
@@ -672,7 +713,9 @@ function model(D){
  var V=D.V,P=D.P,T=D.T,LEG=D.LEG||{};
  var KIND=["bugs","improvements","features","other","audits"];
  var READY=["no plan yet","problem stated","fix named, not yet checked","plan audited","spec ready"];
- function train(i){return /^v1\.0\.\d+$/.test(V[i])}
+ function train(i){return /^v1\.0\.\d+[b-z]?$/.test(V[i])}
+ // vname(i): a trail (v1.0.2b, c, ...) reads as its parent's overflow, not a new release.
+ function vname(i){var m=/^(v1\.0\.\d+)([b-z])$/.exec(V[i]);return m?m[1]+" · overflow"+(m[2]=="b"?"":" "+(m[2].charCodeAt(0)-97)):V[i]}
  function keep(rem){return function(p){return !rem||p[2]!=2}}
  function inV(i,rem){return P.filter(function(p){return p[3]==i}).filter(keep(rem))}
  function inT(t,rem){return P.filter(function(p){return p[5]==t&&train(p[3])}).filter(keep(rem))}
@@ -691,7 +734,9 @@ function model(D){
    t.forEach(function(p){u+=ld(p)});tot+=u;var cap=c?c.l[j]:null;
    return {kind:k,used:r4(u),cap:cap,head:cap==null?null:r4(cap-u),over:cap!=null&&u>cap+1e-9,tickets:t}});
   var planned=a.filter(function(p){return p[7]!=2}).length;
-  return {used:r4(tot),cap:c?c.tot:null,planned:planned,tcap:c?c.t:null,kinds:kinds,deferred:!c}}
+  // p90: the plan's cautious load for the whole version (effort model P90), next to its cap; null when not recorded.
+  var p9=D.VP&&D.VP[i]!=null?D.VP[i]:null;
+  return {used:r4(tot),cap:c?c.tot:null,planned:planned,tcap:c?c.t:null,kinds:kinds,deferred:!c,p90:p9,p90cap:c&&c.p9!=null?c.p9:null}}
  function isInt(p){return /^internal\b/i.test(p[9]||"")}
  function isUser(p){return !!p[9]&&!isInt(p)}
  function best(a){return a.slice().sort(function(x,y){return (y[12]||0)-(x[12]||0)||(x[6]||0)-(y[6]||0)||x[0]-y[0]})[0]}
@@ -699,7 +744,7 @@ function model(D){
  // summary(a, by): deterministic words from the tickets' user impact. by "theme" for a version, "version" for a theme.
  function summary(a,by){
   var u=a.filter(isUser),i=a.filter(isInt).length,g={},col=by=="theme"?5:3;
-  function name(k){return by=="theme"?T[k]:V[k]}
+  function name(k){return by=="theme"?T[k]:vname(k)}
   u.forEach(function(p){var k=p[col];g[k]=g[k]||{k:k,n:0,s:0,a:[]};g[k].n++;g[k].s+=p[12]||0;g[k].a.push(p)});
   var gs=Object.keys(g).map(function(k){return g[k]}).sort(function(x,y){return y.s-x.s||y.n-x.n||String(name(x.k)).localeCompare(String(name(y.k)))});
   var s;
@@ -709,7 +754,7 @@ function model(D){
   else{s="Ships "+pl(u.length,"change","changes")+" for users"+(i?" and "+pl(i,"internal one","internal ones"):"");
    if(by=="theme"){var nm=gs.filter(function(x){return !/^\(/.test(T[x.k])}).slice(0,2);
     if(nm.length)s+="; mostly "+nm.map(function(x){return T[x.k]+" ("+x.n+")"}).join(" and ")}
-   else{var vs=a.map(function(p){return p[3]}).sort(function(x,y){return x-y});s+=", from "+V[vs[0]]+(vs[vs.length-1]!=vs[0]?" to "+V[vs[vs.length-1]]:"")}
+   else{var vs=a.map(function(p){return p[3]}).sort(function(x,y){return x-y});s+=", from "+vname(vs[0])+(vs[vs.length-1]!=vs[0]?" to "+vname(vs[vs.length-1]):"")}
    s+="."}
   return {lead:s,quotes:gs.slice(0,3).map(function(x){var p=best(x.a);return {p:p,text:p[9]}})}}
  // drill(kind, scope): the tickets behind one figure; scope {v:i} or {t:i} or {train:1}.
@@ -719,10 +764,10 @@ function model(D){
    live:function(p){return !!leg(p)},prog:function(p){return p[2]==1&&!leg(p)},todo:function(p){return p[2]==0}}[kind];
   return order(a.filter(f))}
  function current(rem){for(var i=0;i<V.length;i++)if(train(i)&&inV(i).some(function(p){return p[2]!=2}))return i;return null}
- return {KIND:KIND,READY:READY,train:train,inV:inV,inT:inT,inTrain:inTrain,leg:leg,tally:tally,load:load,summary:summary,
+ return {KIND:KIND,READY:READY,train:train,vname:vname,inV:inV,inT:inT,inTrain:inTrain,leg:leg,tally:tally,load:load,summary:summary,
   drill:drill,order:order,isUser:isUser,current:current,ld:ld}}
 /*END MODEL*/
-var M=model(D),V=D.V,T=D.T,REM=false,OPEN={},opener=null;
+var M=model(D),V=D.V.map(function(_,i){return M.vname(i)}),T=D.T,REM=false,OPEN={},opener=null;
 function $(i){return document.getElementById(i)}
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 function txt(s){return document.createTextNode(s)}
@@ -813,7 +858,7 @@ function renderNow(cur){var s=$("now");s.textContent="";
  if(cur==null){s.appendChild(el("h2","head","Every v1.0.x ticket is done."));return}
  var a=M.inV(cur,REM),t=M.tally(a);s.appendChild(headline(cur,t));versionBody(cur,s)}
 function renderQueue(cur){var q=$("queue");q.textContent="";
- V.forEach(function(v,i){if(i===cur)return;var a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM),d=el("details","q"),s=el("summary");
+ V.forEach(function(v,i){if(i===cur)return;var a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM),d=el("details",/[b-z]$/.test(D.V[i])?"q trail":"q"),s=el("summary");
   if(!a.length&&REM)return;
   var meta=el("span","meta");add(meta,t.left?t.left+" left"+(REM?"":" of "+t.n):"shipped",capBar(ld),t.live?pl(t.live,"leg","legs"):null);
   add(s,el("span","ver",v),meta,el("span","line",M.summary(a,"theme").lead));d.appendChild(s);
@@ -856,6 +901,8 @@ function loadView(i,db){var ld=M.load(i,REM),tb=el("table","ld"),hr=el("tr");
  ld.kinds.forEach(function(k){var r=el("tr",k.over?"x":null);[k.kind,f2(k.used),k.cap==null?"no cap":f2(k.cap),k.head==null?"–":f2(k.head)].forEach(function(x){r.appendChild(el("td",null,x))});tb.appendChild(r)});
  var tr=el("tr");[ "total",f2(ld.used),ld.cap==null?"no cap":f2(ld.cap),ld.cap==null?"–":f2(ld.cap-ld.used)].forEach(function(x){tr.appendChild(el("td",null,x))});tb.appendChild(tr);
  add(db,el("p","note",(ld.deferred?"Deferred bucket: no caps apply. ":"Caps are "+V[i]+"'s own, overrides included. ")+pl(ld.planned,"planned ticket","planned tickets")+(ld.tcap!=null?" of a "+ld.tcap+"-ticket cap":"")+(REM?"; done tickets left out.":".")),tb);
+ if(ld.p90!=null)add(db,add(el("p","note"),el("b",null,"Likely load "),f2(ld.used)+(ld.cap!=null?" of "+f2(ld.cap):"")+": the average outcome. ",
+  el("b",null,"Cautious load "),f2(ld.p90)+(ld.p90cap!=null?" of "+f2(ld.p90cap):"")+": 9 times in 10 the work lands at or under this"+(REM?" (as planned, done tickets included).":".")));
  ld.kinds.forEach(function(k){if(!k.tickets.length)return;var d=el("details","fold");d.open=k.over;
   d.appendChild(el("summary",null,k.kind+": "+pl(k.tickets.length,"ticket","tickets")+", "+f2(k.used)+(k.cap!=null?" of "+f2(k.cap):"")+" ›"));
   var ol=el("ol","ct");k.tickets.forEach(function(p){var li=el("li"),t=el("span","t");add(t,el("code",null,keyOf(p))," ",p[9]?p[9].replace(/^internal:\s*/i,""):p[1]);t.title=p[9]||p[1];

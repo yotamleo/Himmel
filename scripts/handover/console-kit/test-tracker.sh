@@ -34,10 +34,10 @@ fi
 plan="$W/plan"
 mir="$W/mirror"
 mkdir -p "$plan/stage1" "$plan/stage2" "$plan/stage3" "$plan/tools/stage3" "$mir"
-# write_meta <ticket cap> <total cap> — synthetic placement-rule notes in the plan's shapes (HIMMEL-3957).
+# write_meta <ticket cap> <total cap> [extra json members] — synthetic placement-rule notes in the plan's shapes (HIMMEL-3957).
 write_meta() {
-    printf '{"main_sha_at_build":"abcdef123456","notes":["effort S-eq: XS .44 S 1 M 2.2 L 5 XL 11.1; synthetic","load (bank) = committed: effort_mid x 0.009; plan-first: slice S-eq x 0.009","v2/v3 is deferred","first fit: earliest version whose ticket count < %s, layer load within cap and total load within %s"]}\n' \
-        "$1" "$2" > "$plan/stage3/meta.json"
+    printf '{"main_sha_at_build":"abcdef123456","notes":["effort S-eq: XS .44 S 1 M 2.2 L 5 XL 11.1; synthetic","load (bank) = committed: effort_mid x 0.009; plan-first: slice S-eq x 0.009","v2/v3 is deferred","first fit: earliest version whose ticket count < %s, layer load within cap and total load within %s"]%s}\n' \
+        "$1" "$2" "${3:-}" > "$plan/stage3/meta.json"
 }
 write_caps() {  # write_caps <bugs cap>
     printf '%s\n' '# synthetic placer' "CAPS = {'features': 0.10, 'bugs': $1, 'enhancements': 0.12, 'audit': 0.03, 'misc': 0.05}" \
@@ -218,6 +218,41 @@ if [ "$fp6" = "$fp7" ]; then pass 'the fingerprint is stable when nothing moved 
 rm -rf "$hb/.locks/queue/live.lock"
 render >/dev/null
 not_contains 'a released lock clears the live leg (HIMMEL-3990)' "$(cat "$out")" '"1":["N55"'
+
+# --- HIMMEL-3990 expansion: trail versions (<version>b, c, ...) and the effort model's P90 (cautious load).
+# versions.tsv lists them out of order on purpose; the plan's order is v1.0.1 < v1.0.1b < v1.0.2 < v1.0.10.
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' version load_bugs load_enhancements load_features load_misc load_audit load_total est_legs \
+    v1.0.2 0 0 0 0 0 0 0 v1.0.1b 0.01 0 0 0 0 0.01 1 v1.0.10 0 0 0 0 0 0 0 v1.0.1 0.1 0 0 0 0 0.1 1 v2/v3 0 0 0 0 0 0 0 \
+    > "$plan/stage3/versions.tsv"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' key version layer effort_mid commit slice_effort HIMMEL-1 v1.0.1 bugs 1 committed '' \
+    HIMMEL-8 v1.0.1b bugs 1 committed '' > "$plan/stage3/placement.tsv"
+mk 8 'To Do' '["v1.0.1b"]' 'planned trail bug'
+mk 11 'To Do' '["v1.0.1b"]' 'trail unplanned'
+write_meta 20 0.6 ',"effort_model":{"p90_cap":0.8},"version_p90_fw":{"v1.0.1":0.7,"v1.0.1b":0.05}'
+render >/dev/null
+html7="$(cat "$out" 2>/dev/null)"
+contains 'trail versions sort after their parent, numerically (HIMMEL-3990)' "$html7" '"V":["v1.0.1","v1.0.1b","v1.0.2","v1.0.10","v2/v3"]'
+contains 'a trail inherits its parent override (HIMMEL-3990)' "$html7" \
+    '"VC":[{"t":30,"tot":0.6,"l":[0.45,0.12,0.1,0.05,0.03],"p9":0.8},{"t":30,"tot":0.6,"l":[0.45,0.12,0.1,0.05,0.03],"p9":0.8},{"t":20,'
+contains 'a Jira fixVersion naming a trail counts in that trail (HIMMEL-3990)' "$html7" '[11,"trail unplanned",0,1,'
+contains 'the cap text says a trail keeps its parent caps (HIMMEL-3990)' "$html7" 'takes the overflow of v1.0.1 and keeps its caps'
+contains 'the page carries each version P90 (HIMMEL-3990)' "$html7" '"VP":[0.7,0.05,null,null,null]'
+contains 'the cap text names the cautious-load cap (HIMMEL-3990)' "$html7" 'cautious load'
+contains 'the drawer words P90 as cautious load (HIMMEL-3990)' "$html7" '"Cautious load "'
+printf '%s\n' "VERSION_CAP_OVERRIDES = {'v1.0.1': {'tickets': 30, 'bugs': 0.45}, 'v1.0.1b': {'tickets': 5}}" > "$plan/tools/stage3/common.py"
+render >/dev/null
+contains 'a trail named in the overrides takes only its own (HIMMEL-3990)' "$(cat "$out")" '},{"t":5,"tot":0.6,"l":[0.3,'
+printf '%s\n' "VERSION_CAP_OVERRIDES = {'v1.0.1': {'tickets': 30, 'bugs': 0.45}}" > "$plan/tools/stage3/common.py"
+# Effort model B words its rules differently and carries the bank rate in effort_model.
+printf '%s\n' '{"main_sha_at_build":"abcdef123456","effort_model":{"p90_cap":0.8,"bank_per_seq":0.009},"notes":["effort S-eq: XS .44 S 1 M 2.2 L 5 XL 11.1; synthetic","load (bank) = median x exp(sigma^2/2) x 0.009 bank per S-eq (the log-normal MEAN)","a version holds < 18 tickets, layer load within cap, total mean load within 0.55 and P90 within the model cap"]}' \
+    > "$plan/stage3/meta.json"
+render >/dev/null
+html8="$(cat "$out" 2>/dev/null)"
+contains 'model B wording: the ticket cap (HIMMEL-3990)' "$html8" 'at most 18 tickets'
+contains 'model B wording: the mean load cap (HIMMEL-3990)' "$html8" 'at most 0.55 bank of load'
+contains 'model B wording: the bank rate, overruns included (HIMMEL-3990)' "$html8" 'overruns included, × 0.009 bank'
+contains 'model B wording: a row loads its mean effort (HIMMEL-3990)' "$html8" '"changed impact","M–L",4,4,"","plain",0.009]'
+write_meta 20 0.6
 
 # --- HIMMEL-3990: the page's model — drill-downs, budget by kind and ticket, summaries, remaining-only.
 if command -v node >/dev/null 2>&1; then

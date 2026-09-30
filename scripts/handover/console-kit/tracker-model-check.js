@@ -67,6 +67,14 @@ eq('remaining-only recomputes the budget (HIMMEL-3990)', [M.load(0, true).used, 
 eq('remaining-only recomputes the summary (HIMMEL-3990)', [M.summary(M.inV(0, true), 'theme').lead, M.summary(M.inV(0, true), 'theme').quotes[0].text],
     ['Ships 1 change for users and 1 internal one; mostly tooling (1).', 'Users get B']);
 
+// Trail versions: a trail reads as its parent's overflow, belongs to the train, and shows its P90 (cautious load).
+const M2 = model({ V: ['v1.0.1', 'v1.0.1b', 'v1.0.2', 'v1.0.2c', 'v2/v3'], T: ['tooling'], P: [],
+    VC: [caps, Object.assign({ p9: 0.8 }, caps), caps, caps, null], VP: [0.7, 0.05, null, null, null] });
+eq('a trail is named as its parent overflow (HIMMEL-3990)', [0, 1, 2, 3, 4].map(M2.vname),
+    ['v1.0.1', 'v1.0.1 · overflow', 'v1.0.2', 'v1.0.2 · overflow 2', 'v2/v3']);
+eq('a trail rides the v1.0.x train (HIMMEL-3990)', [M2.train(1), M2.train(3), M2.train(4)], [true, true, false]);
+eq('the budget carries the P90 and its cap (HIMMEL-3990)', [M2.load(1).p90, M2.load(1).p90cap, M2.load(0).p90cap], [0.05, 0.8, null]);
+
 // The page's own data runs through the same model (the Python blob and the JS agree on shapes).
 const m = /<script type="application\/json" id="data">([\s\S]*?)<\/script>/.exec(html);
 const R = model(JSON.parse(m[1]));
