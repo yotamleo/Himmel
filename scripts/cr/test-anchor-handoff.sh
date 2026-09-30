@@ -11,6 +11,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRITERS="write-verdicts clear-cr-marker panel-first-pass docs-audit-panel doc-freshness-advisory known-findings ledger-append review-round orphan-check impacted-suites cr-scores"
 # shellcheck disable=SC2016  # the literal line each writer carries, not an expansion
 SOURCE_DOT='. "$_ah_d/anchor-handoff.sh" || exit 2'
+# shellcheck disable=SC2016  # the literal line each writer carries, not an expansion
 SOURCE_CASE='case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac'
 SOURCE_LINE="$SOURCE_CASE
 $SOURCE_DOT"
