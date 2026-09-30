@@ -224,21 +224,6 @@ GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-pipe-h-still-gated 2 Bash "gh pr 
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-bg-h-still-gated 2 Bash "gh pr merge 42 --squash & ls -h"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-redirect-help-still-gated 2 Bash "gh pr merge 42 > --help"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-real-merge-gated 2 Bash "gh pr merge --help; gh pr merge 42 --squash"
-# An fd redirect is not a selector: `2>&1` must not look up PR #2 (the hook then
-# anchors on the cwd branch, `trunk`).
-GH_STUB_MODE=clean t merge-fd-redirect-not-selector 0 Bash "gh pr merge 2>&1 --match-head-commit abc123"
-grep -q "^pr view 2 " "$TMP/calls-merge-fd-redirect-not-selector.log" && { echo "FAIL merge-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
-grep -q "^pr view trunk " "$TMP/calls-merge-fd-redirect-not-selector.log" || { echo "FAIL merge-fd-redirect-not-selector did not anchor on the cwd branch"; fail=$((fail+1)); }
-GH_STUB_MODE=clean t merge-squash-fd-redirect-not-selector 0 Bash "gh pr merge --squash 2>/dev/null --match-head-commit abc123"
-grep -q "^pr view 2 " "$TMP/calls-merge-squash-fd-redirect-not-selector.log" && { echo "FAIL merge-squash-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
-GH_STUB_MODE=clean t merge-selector-fd-redirect-not-selector 0 Bash "gh pr merge 42>x --match-head-commit abc123"
-grep -q "^pr view 42 " "$TMP/calls-merge-selector-fd-redirect-not-selector.log" && { echo "FAIL merge-selector-fd-redirect looked up the fd-prefixed number"; fail=$((fail+1)); }
-# The fd rule keys on the CUT character: `42|x>y` / `42&2>x` cut at | or & and
-# 42 IS the selector (a digit before a LATER > must not discard it).
-GH_STUB_MODE=clean t merge-pipe-then-redirect-keeps-selector 0 Bash "gh pr merge --match-head-commit abc123 42|base64>x"
-grep -q "^pr view 42 " "$TMP/calls-merge-pipe-then-redirect-keeps-selector.log" || { echo "FAIL merge-pipe-then-redirect dropped selector 42"; fail=$((fail+1)); }
-GH_STUB_MODE=clean t merge-amp-then-fd-redirect-keeps-selector 0 Bash "gh pr merge --match-head-commit abc123 42&2>x"
-grep -q "^pr view 42 " "$TMP/calls-merge-amp-then-fd-redirect-keeps-selector.log" || { echo "FAIL merge-amp-then-fd-redirect dropped selector 42"; fail=$((fail+1)); }
 # ── HIMMEL-3918: six residual gaps. Every row below is RED on 4822509f. Each
 # uses GH_STUB_MODE=clean plus a valid pin, so the ONLY thing that can produce
 # rc 2 is the rule under test (a vacuous deny from another gate cannot pass).
@@ -249,67 +234,68 @@ grep -q "must pin --match-head-commit abc123" "$TMP/err-pin-missing-denies" || {
 GH_STUB_MODE=clean t pin-mismatch-denies 2 Bash "gh pr merge 42 --squash --match-head-commit deadbeef"
 grep -q "does not equal the head abc123" "$TMP/err-pin-mismatch-denies" || { echo "FAIL pin-mismatch deny text"; fail=$((fail+1)); }
 GH_STUB_MODE=clean t pin-eq-form-allows 0 Bash "gh pr merge 42 --squash --match-head-commit=abc123"
-# (6) a redirect before the selector must not end the walk: gh merges #42, so the
-# hook must look up 42 - not re-anchor to the cwd branch (`trunk`).
+# HIMMEL-3918 (RETASK simplify): ONE structural rule. A command naming `gh pr merge`
+# outside quotes must be a single plain command - no ; & | < > backtick $( or
+# newline, first word literally `gh`. Every redirect / prefix / chain / cd shape
+# from the /pr-check rounds 1-5 is a DENY row under that one rule (rc 2, the one
+# message), never a parse. GH_STUB_MODE=clean plus a valid pin means the ONLY thing
+# that can produce rc 2 is the rule under test.
 for _row in "redir-fd-dup|gh pr merge 2>&1 42 $PIN" \
+            "redir-fd-dup-noselector|gh pr merge 2>&1 --match-head-commit abc123" \
             "redir-devnull|gh pr merge 2>/dev/null 42 --squash $PIN" \
             "redir-spaced|gh pr merge > f 42 $PIN" \
             "redir-attached|gh pr merge >f 42 $PIN" \
             "redir-amp-both|gh pr merge &>/dev/null 42 $PIN" \
             "redir-append-spaced|gh pr merge --squash >> f 42 $PIN" \
-            "redir-input|gh pr merge < f 42 $PIN"; do
-    _n=${_row%%|*}; _c=${_row#*|}
-    GH_STUB_MODE=clean t "$_n" 0 Bash "$_c"
-    grep -q "^pr view 42 " "$TMP/calls-$_n.log" || { echo "FAIL $_n did not look up selector 42 (walk stopped at the redirect)"; fail=$((fail+1)); }
-    grep -q "^pr view trunk " "$TMP/calls-$_n.log" && { echo "FAIL $_n re-anchored on the cwd branch"; fail=$((fail+1)); }
-done
-# A redirect TARGET is never the selector: `> 42` is a file named 42.
-GH_STUB_MODE=clean t redir-target-not-selector 0 Bash "gh pr merge > 42 $PIN"
-grep -q "^pr view 42 " "$TMP/calls-redir-target-not-selector.log" && { echo "FAIL redir-target-not-selector read the redirect target as the selector"; fail=$((fail+1)); }
-# HIMMEL-3918 codex-1: a spaced redirect target of `f|cat` must not let the walk run on to the pin
-GH_STUB_MODE=clean t redir-target-pipe-no-pin 2 Bash "gh pr merge 42 > f|cat --match-head-commit abc123"
-# HIMMEL-3918 round 2 codex-1: chained redirects `>a> b` must not make `b` the selector
-GH_STUB_MODE=clean t redir-chained-no-pin 2 Bash "gh pr merge >a> b 42 --match-head-commit abc123"
-# round 4 codex-1/2: a redirect ahead of gh, and a spaced chained-redirect target
-GH_STUB_MODE=clean t redir-before-gh 2 Bash "FOO=1 >/dev/null gh pr merge 42 --match-head-commit abc123"
-GH_STUB_MODE=clean t redir-before-gh-bare 2 Bash ">/dev/null gh pr merge 42 --match-head-commit abc123"
-GH_STUB_MODE=clean t redir-spaced-chained 2 Bash "gh pr merge --match-head-commit abc123 > a> b 42"
-GH_STUB_MODE=clean t redir-dup-before-gh 2 Bash "2>&1 gh pr merge 42 --match-head-commit abc123"
-GH_STUB_MODE=clean t redir-dup-before-gh-ok 0 Bash "echo x 2>&1 && gh pr merge 42 --match-head-commit abc123"
-# round 3 codex-1: a pin BEFORE the chained redirect must not let the wrong PR pass
-GH_STUB_MODE=clean t redir-chained-pin-first 2 Bash "gh pr merge --match-head-commit abc123 >a> b 42"
-# (2) env / command / builtin / exec / assignment prefixes: gated, not skipped.
-for _row in "prefix-env|env gh pr merge 42 --squash $PIN" \
+            "redir-input|gh pr merge < f 42 $PIN" \
+            "redir-target-42|gh pr merge > 42 $PIN" \
+            "redir-selector-fd|gh pr merge 42>x $PIN" \
+            "redir-target-pipe|gh pr merge 42 > f|cat $PIN" \
+            "redir-chained|gh pr merge >a> b 42 $PIN" \
+            "redir-chained-pin-first|gh pr merge $PIN >a> b 42" \
+            "redir-spaced-chained|gh pr merge $PIN > a> b 42" \
+            "redir-before-gh-assign|FOO=1 >/dev/null gh pr merge 42 $PIN" \
+            "redir-before-gh|>/dev/null gh pr merge 42 $PIN" \
+            "redir-dup-before-gh|2>&1 gh pr merge 42 $PIN" \
+            "redir-pipe-then-redirect|gh pr merge $PIN 42|base64>x" \
+            "redir-amp-then-fd|gh pr merge $PIN 42&2>x" \
+            "prefix-env|env gh pr merge 42 --squash $PIN" \
             "prefix-env-flags|env -i FOO=1 gh pr merge 42 $PIN" \
             "prefix-command|command gh pr merge 42 $PIN" \
             "prefix-builtin|builtin gh pr merge 42 $PIN" \
             "prefix-exec|exec gh pr merge 42 $PIN" \
+            "prefix-nohup|nohup gh pr merge 42 $PIN" \
             "prefix-assign|FOO=1 gh pr merge 42 $PIN" \
             "prefix-assign-two|A=1 B=2 gh pr merge 42 $PIN" \
+            "prefix-path-gh|/usr/bin/gh pr merge 42 $PIN" \
             "prefix-after-pipe|true | env gh pr merge 42 $PIN" \
-            "prefix-after-and|true && command gh pr merge 42 $PIN"; do
-    _n=${_row%%|*}; _c=${_row#*|}
-    GH_STUB_MODE=clean t "$_n" 2 Bash "$_c"
-    grep -q "prefix or a NAME=value" "$TMP/err-$_n" || { echo "FAIL $_n deny text is not the prefix refusal"; fail=$((fail+1)); }
-done
-# The single-`&` / `|` command position (an existing hole of the same class):
-GH_STUB_MODE=unresolved t merge-after-bg-amp-gated 2 Bash "sleep 1 & gh pr merge 42 --squash $PIN"
-GH_STUB_MODE=unresolved t merge-after-pipe-gated 2 Bash "echo x | gh pr merge 42 --squash $PIN"
-# Prefix look-alikes stay untouched: no merge, or the words are only text.
-GH_STUB_MODE=clean t prefix-lookalike-nonmerge-allows 0 Bash "env gh pr view 42"
-GH_STUB_MODE=clean t prefix-lookalike-quoted-allows 0 Bash "git commit -m \\\"env gh pr merge 42\\\""
-# (1) a directory change earlier in the command moves gh off the hook's cwd.
-for _row in "cd-and|cd /tmp && gh pr merge 42 $PIN" \
+            "prefix-after-and|true && command gh pr merge 42 $PIN" \
+            "chain-after-bg-amp|sleep 1 & gh pr merge 42 --squash $PIN" \
+            "chain-after-pipe|echo x | gh pr merge 42 --squash $PIN" \
+            "chain-after-and|git -C /tmp status && gh pr merge 42 $PIN" \
+            "chain-then-more|gh pr merge 42 $PIN && echo done" \
+            "chain-semicolon|gh pr merge 42 $PIN; echo done" \
+            "chain-backtick|echo \`gh pr merge 42 $PIN\`" \
+            "chain-subst|echo \$(gh pr merge 42 $PIN)" \
+            "chain-newline|true\\ngh pr merge 42 $PIN" \
+            "cd-and|cd /tmp && gh pr merge 42 $PIN" \
             "cd-semicolon|cd /tmp; gh pr merge 42 $PIN" \
             "cd-subshell|(cd /tmp; gh pr merge 42 $PIN)" \
             "cd-pushd|pushd /tmp >/dev/null && gh pr merge 42 $PIN" \
             "cd-builtin|builtin cd /tmp && gh pr merge 42 $PIN"; do
     _n=${_row%%|*}; _c=${_row#*|}
     GH_STUB_MODE=clean t "$_n" 2 Bash "$_c"
-    grep -q "directory change" "$TMP/err-$_n" || { echo "FAIL $_n deny text is not the directory-change refusal"; fail=$((fail+1)); }
+    grep -q "single plain command" "$TMP/err-$_n" || { echo "FAIL $_n deny text is not the plain-command refusal"; fail=$((fail+1)); }
 done
+# Allow rows: the canonical bare merge, the quoted-text look-alikes, non-merges, and
+# merge-on-green (its own gh subprocess never appears in the command text).
+GH_STUB_MODE=clean t plain-merge-allows 0 Bash "gh pr merge 42 --squash $PIN"
+GH_STUB_MODE=clean t plain-merge-admin-allows 0 Bash "gh pr merge 42 --squash --admin $PIN"
+grep -q "^pr view 42 " "$TMP/calls-plain-merge-allows.log" || { echo "FAIL plain-merge-allows did not look up selector 42"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t merge-on-green-allows 0 Bash "bash /opt/himmel/scripts/handover/merge-on-green.sh --jira-transition"
+GH_STUB_MODE=clean t prefix-lookalike-nonmerge-allows 0 Bash "env gh pr view 42"
+GH_STUB_MODE=clean t prefix-lookalike-quoted-allows 0 Bash "git commit -m \\\"env gh pr merge 42\\\""
 GH_STUB_MODE=clean t cd-word-quoted-allows 0 Bash "gh pr merge 42 $PIN --body \\\"cd here\\\""
-GH_STUB_MODE=clean t git-dash-C-allows 0 Bash "git -C /tmp status && gh pr merge 42 $PIN"
 # (3) every gate-library gh call is bounded (10s); a hang = DENY, never the hook
 # budget expiring open. The stub sleeps 30s: <25s proves the bound fired.
 for _row in "cr-graphql-hang|cr-hang" "ci-checkruns-hang|ci-hang"; do

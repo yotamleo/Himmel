@@ -75,129 +75,41 @@ cmd_stripped=$(printf '%s' "$cmd" | sed -e "s/'[^']*'/Q/g" -e 's/"[^"]*"/Q/g')
 
 _deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 
-# HIMMEL-3918 (2): a prefix before `gh` (env / command / builtin / exec / ...,
-# or a NAME=value assignment) moved `gh` out of command position, so the anchor
-# below skipped the merge entirely. Stripping prefixes needs a grammar (env -u X,
-# env -i, `command -p`, ...), and every clever parse rule here has been a bypass
-# (HIMMEL-3915), so a prefixed merge is DENIED, not parsed.
-# shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
-if printf '%s' "$cmd_stripped" | grep -E '(^|[;&|`$(]|[[:space:]])(env|command|builtin|exec|nohup|time|sudo|xargs)[[:space:]]+([^;&|]*[[:space:]])?gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
-    _deny "a gh pr merge behind an env/command/builtin/exec prefix or a NAME=value assignment is not parsed — refusing (GATE INTEGRITY). Run it bare with --match-head-commit, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
-fi
-
-# A redirect ahead of `gh` in the same segment (`>/dev/null gh pr merge 42`,
-# `FOO=1 >/dev/null gh ...`) also moves it out of command position: deny it too.
-# An fd dup (`2>&1 gh ...`) counts too; a dup earlier in the command joined to
-# gh by && / ; / | is safe because the class below excludes those.
-if printf '%s' "$cmd_stripped" | grep -E '[<>](&[0-9-]+)?([^;&|]*[[:space:]])?gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
-    _deny "a redirect before gh pr merge is not parsed — refusing (GATE INTEGRITY). Put the redirect after the merge, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
-fi
-
-# Command-position anchor (POSIX classes - BSD grep lacks \s/\b; coderabbit
-# app round). `merge` must be followed by whitespace or end-of-string.
-# shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
-if ! printf '%s' "$cmd_stripped" | grep -E '(^|[;&|`$(][[:space:]]*)gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
+# HIMMEL-3918: ONE structural rule instead of a grammar. Every parse rule this
+# hook grew for a chained, redirected or prefixed merge (HIMMEL-3915, then five
+# more /pr-check rounds of the same class) became a bypass. So a command that
+# names `gh pr merge` ANYWHERE outside quotes must BE a single plain command:
+# no ; & | < > backtick $( or newline, and its first word is literally `gh`
+# (which also covers every env/command/exec/nohup/time/NAME=value prefix and any
+# cd/pushd/popd, since those can only precede the merge by chaining or as the
+# first word). Accepted over-deny (HIMMEL-3917 precedent): an unquoted text
+# mention such as `echo gh pr merge`, and a path-qualified `/usr/bin/gh`. The
+# selector walk below then only ever sees plain tokens.
+merge_re='gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'
+if ! printf '%s' "$cmd_stripped" | grep -E "$merge_re" >/dev/null; then
     exit 0
 fi
-
-# Isolate the SEGMENT containing `gh pr merge` before tokenizing. A whole-
-# command token walk trips on earlier `merge` words: `git merge main && gh pr
-# merge 42` would take "main" as the selector (plan-critic #1). Split on
-# ; && || and newlines (NOT |) with bash-native expansion - BSD sed leaves
-# \n LITERAL in replacements, which silently broke this split on macOS
-# (coderabbit app round) - then pick the first matching segment.
-merge_segment=""
-normalised=${cmd_stripped//&&/$'\n'}
-normalised=${normalised//||/$'\n'}
-normalised=${normalised//;/$'\n'}
-while IFS= read -r segment || [ -n "$segment" ]; do
-    # shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
-    # HIMMEL-3918: the boundary set matches the command-position anchor above (a
-    # bare `&` / `|` is not a segment split, so `sleep 1 & gh pr merge 42` and
-    # `x | gh pr merge 42` must still find their merge here, not fall to exit 0).
-    if printf '%s' "$segment" | grep -E '(^|[;&|`$(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
-        merge_segment="$segment"
-        break
-    fi
-done <<EOF
-$normalised
-EOF
-[ -z "$merge_segment" ] && exit 0
-
-# HIMMEL-3918 (1): the cwd-branch anchor (and every gh call) resolves against the
-# payload's cwd, but a `cd`/`pushd` earlier in the same command moves gh into
-# another checkout, so the gates would gate the WRONG branch. Resolving that
-# correctly needs a shell interpreter; deny any directory change instead.
-if printf '%s' "$cmd_stripped" | grep -E '(^|[^[:alnum:]_./-])(cd|pushd|popd)([^[:alnum:]_./-]|$)' >/dev/null; then
-    _deny "a directory change (cd/pushd/popd) in the same command as gh pr merge — the gates resolve the PR from the hook's cwd, not where the merge would run — refusing (GATE INTEGRITY). Run the merge from its own checkout, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
-fi
-
-# Extract the selector + --repo from the merge segment only;
-# selector = first non-flag token after the `merge` verb.
-sel=""; repo=""; match_head=""
+# shellcheck disable=SC2016  # literal backtick/$( in the deny list - intentional
+case "$cmd_stripped" in
+    *[\;\&\|\<\>\`]*|*'$('*|*$'\n'*) plain=0 ;;
+    *) plain=1 ;;
+esac
 set -f
 # shellcheck disable=SC2086
-set -- $merge_segment
+set -- $cmd_stripped
 set +f
+if [ "$plain" != "1" ] || [ "${1-}" != "gh" ]; then
+    _deny "gh pr merge must be run as a single plain command (no chaining, redirects, pipes, substitution or prefixes) — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh, or run the bare merge on its own. (For help run: gh help pr merge)"
+fi
+
+# Extract the selector + --repo + head pin; selector = first non-flag token
+# after the `merge` verb.
+sel=""; repo=""; match_head=""
 seen_merge=0
 while [ "$#" -gt 0 ]; do
     if [ "$seen_merge" = "0" ]; then
         [ "$1" = "merge" ] && seen_merge=1
         shift; continue
-    fi
-    # gh pr merge's own arguments end at the first | & > < (a pipe, a
-    # background, a redirect): what follows belongs to another command or a
-    # file, so `--squash | sort -h` / `& ls -h` / `> --help` must not read as
-    # merge flags (HIMMEL-3915 judge round).
-    # HIMMEL-3918 (6): only a | or & ENDS the walk; a redirect (`2>&1`, `>f`,
-    # `> f`, `&>f`) is skipped, with a spaced target consumed, and the walk goes
-    # on - `gh pr merge 2>&1 42` merges #42, so stopping at the redirect made the
-    # hook gate the cwd branch instead.
-    stop_walk=0; skip_next=0; cur="$1"; rest=""
-    case "$1" in
-        '&>'*) cur=""; rest="${1#&}" ;;
-        *[\|\&\>\<]*)
-            cur="${1%%[|&><]*}"
-            case "${1:${#cur}:1}" in
-                '>'|'<') rest="${1:${#cur}}" ;;
-                *) stop_walk=1 ;;
-            esac ;;
-    esac
-    if [ -n "$rest" ]; then
-        # `2>&1` / `42>x`: an all-digit prefix before a > or < is an fd number,
-        # not a selector - discard it (HIMMEL-3915 judge NO-GO).
-        case "$cur" in *[!0-9]*) ;; *) cur="" ;; esac
-        # The redirect target: nothing after the operator run means the NEXT token
-        # is the target; a | or & inside it ends the walk (`>f|cat`).
-        rest_ops="${rest%%[!<>&|]*}"
-        rest_tgt="${rest#"$rest_ops"}"
-        case "$rest_tgt" in
-            # A spaced target that itself carries a | or & (`> f|cat`) ends the walk
-            # too: what follows belongs to another command, not to this merge.
-            '') skip_next=1
-                case "${2-}" in
-                    *[\|\&]*) stop_walk=1 ;;
-                    *[\<\>]*) _deny "an ambiguous chained redirect before the selector — refusing (GATE INTEGRITY). Run the merge without chained redirects, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)" ;;
-                esac ;;
-            # A second redirect inside the token (`>a> b`) leaves a target this
-            # walk cannot place: end the walk rather than guess (deny over parse).
-            *[\|\&\>\<]*)
-                # `>a> b 42` hides the selector: deny outright (a stopped walk
-                # would gate the cwd PR, and a shared head would pass the pin).
-                case "$rest_tgt" in
-                    *[\|\&]*) stop_walk=1 ;;
-                    *) _deny "an ambiguous chained redirect before the selector — refusing (GATE INTEGRITY). Run the merge without chained redirects, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)" ;;
-                esac ;;
-        esac
-    fi
-    if [ "$cur" != "$1" ]; then
-        shift
-        [ "$skip_next" = "1" ] && [ "$#" -ge 1 ] && shift
-        if [ -z "$cur" ]; then
-            [ "$stop_walk" = "1" ] && break
-            continue
-        fi
-        set -- "$cur" "$@"
     fi
     case "$1" in
         --repo=*) repo="${1#--repo=}" ;;
@@ -219,7 +131,6 @@ while [ "$#" -gt 0 ]; do
                                # never a false block)
         *) [ -z "$sel" ] && sel="$1" ;;
     esac
-    [ "$stop_walk" = "1" ] && break
     shift
 done
 

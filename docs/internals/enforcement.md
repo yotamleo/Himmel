@@ -2608,39 +2608,35 @@ open here are closed by HIMMEL-3918, below. There is NO `--help`/`-h` carve-out:
 closed) like any other merge, and the deny text points at `gh help pr merge`,
 which is not a merge and does not match the command regex. Every spelling of the
 carve-out was a new bypass (an escaped space in a `--body` value, `$'..'`
-quoting, delimiters), so it was removed rather than patched again. The flag walk
-stops at the first `|` or `&` (HIMMEL-3918 item 6: a redirect no longer ends it).
+quoting, delimiters), so it was removed rather than patched again.
 Known remaining gap: a merge with no selector AND no cwd branch still exits 0
 (nothing to resolve).
 
-**HIMMEL-3918 — six residuals closed, all by DENY rather than parsing** (every
-special-case parse rule in this hook became a bypass in #1494). Each deny names
-`scripts/handover/merge-on-green.sh` as the sanctioned path.
-1. *cwd mismatch:* a `cd`/`pushd`/`popd` anywhere before the merge denies
-   ("directory change"), since the hook resolves against its own cwd, not gh's.
-2. *Prefixes:* `env`/`command`/`builtin`/`exec`/`nohup`/`time`/`sudo`/`xargs`
-   or a `NAME=value` assignment before `gh pr merge` denies ("prefix or a
-   NAME=value"). The command-position boundary also now includes a single `&`,
-   `|` and `` ` ``/`$(`, so `sleep 1 & gh pr merge` and `x | gh pr merge` are gated.
-3. *Bounded gate lookups:* the hook shadows `gh` with a 10 s bounded function for
-   everything the sourced gate libraries call (libs untouched); a timeout on a
-   real merge denies ("timed out (10s bound)"), never a hook-budget expiry.
-4. *Lib-load:* a gate lib that is missing, unreadable, unparseable, or lacks its
+**HIMMEL-3918 — six residuals closed, by ONE deny rule rather than parsing**
+(five panel rounds each found a new redirect/prefix shape; every parse rule in
+this hook became a bypass in #1494 and again here). A command whose unquoted text
+names `gh pr merge` must be a **single plain command**: it denies when the
+quote-stripped command contains any of `;` `&` `|` `<` `>` `` ` `` `$(` or a
+newline, or when its first word is not literally `gh`. That one rule replaces the
+earlier cd/pushd, prefix (`env`/`command`/`builtin`/`exec`/`NAME=value`) and
+redirect handling, all of which now deny ("single plain command"), each naming
+the merge-on-green chokepoint (`scripts/handover/`) as the sanctioned path. A
+merge-on-green invocation carries no `gh pr merge` text, so it is untouched.
+Over-denies, accepted (HIMMEL-3917 precedent): an unquoted mention such as
+`echo gh pr merge`, a path-qualified `/usr/bin/gh`, and any chained merge.
+1. *cwd mismatch, prefixes, redirects:* all covered by the rule above.
+2. *Bounded gate lookups:* the hook shadows `gh` with a 10 s bounded function for
+   everything the sourced gate libraries call (libs untouched) under a 40 s shared
+   deadline; a timeout on a real merge denies ("timed out (10s bound)"), never a
+   hook-budget expiry.
+3. *Lib-load:* a gate lib that is missing, unreadable, unparseable, or lacks its
    function denies (was `|| exit 0`).
-5. *Head TOCTOU:* every direct merge must pin `--match-head-commit` (space or
+4. *Head TOCTOU:* every direct merge must pin `--match-head-commit` (space or
    `=` form) equal to the head the gates read, else deny. Checked last so each
-   earlier gate keeps its own reason. `merge-on-green.sh` pins its own head in a
+   earlier gate keeps its own reason. The merge chokepoint pins its own head in a
    subprocess the hook never sees, so it is unchanged.
-6. *Redirects:* the selector walk skips redirect tokens (and the target of a
-   spaced `> f`, and an fd prefix) instead of stopping at them. A redirect
-   target that carries a `|`, `&`, `<` or `>` (`> f|cat`, `>a> b`) ends the walk
-   instead (deny over parse), so the pin check then denies an unpinned merge.
-The directory-change match is deliberately not command-position-aware: a
-selector or flag value spelled `cd`/`pushd`/`popd` (a branch named `cd`) is
-refused too. That false positive is accepted; use `merge-on-green.sh`.
-CRs are stripped from the command at the capture boundary. Not covered: a
-path-qualified `gh` (`/usr/bin/gh`, `\gh`) and `bash -c '...'` wrappers (the
-executor grammar, owned by the prlit backstop work).
+CRs are stripped from the command at the capture boundary. Not covered: `bash -c
+'...'` wrappers (the executor grammar, owned by the prlit backstop work).
 A degraded VERDICT query is the one exception that does not return early: the
 thread query still runs and its evidence still blocks, because an unresolved
 thread is evidence even when the status endpoint is down (observed live — GitHub
