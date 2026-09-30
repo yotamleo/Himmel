@@ -155,6 +155,7 @@ done
 # each found a new one. So it is a structural rule, not a count: help alone is
 # ungated, help alongside anything is refused.
 if [ "$help_seen" = "1" ]; then
+    # shellcheck disable=SC2016  # literal $( in the pattern - intentional
     case "$cmd_stripped" in
         *[\;\&\|\<\>\`]*|*'$('*|*"$NL"*) ;;
         *) exit 0 ;;
