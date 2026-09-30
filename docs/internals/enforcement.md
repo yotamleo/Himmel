@@ -2455,7 +2455,7 @@ it. The hook therefore adds a parse-free, deny-leaning scan of the raw command
 (`NAME=`, `export`/`env`/`read`/`printf -v`/`declare`/...) beside a `scripts/`
 path word whose glob/brace/`$var` prefix could resolve to a registered
 chokepoint (`scripts/hooks/*.sh` is an ordinary glob and allowed), any
-`scripts/` (or `./scripts/`) word spelled with a `/.` or `//` segment (no
+word containing `scripts/` (relative, `./` or absolute) spelled with a `/.` or `//` segment (no
 normaliser: `scripts/lanes/../lanes/stop-w*.sh` denies), or an
 ANSI-C `$'` word naming a path or carrying any backslash escape other than the
 plain whitespace/quote ones (`\n \t \r \\ \' \" \a \b \f \v`; an allowlist, so

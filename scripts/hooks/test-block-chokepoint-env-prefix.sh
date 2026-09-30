@@ -1105,6 +1105,9 @@ assert_deny "3921 r9 scripts// double slash"       "$(j "STOP_WORKER_GRACE_SECS=
 assert_deny "3921 r9 lib .. segment + glob"        "$(j "FLEET_CAP_OK=1 setsid -f bash scripts/lib/../lib/bank-pre*.sh")"
 assert_deny "3921 r9 env -i quiet-run .. glob"     "$(j "setsid -f env -i bash scripts/x/../quiet-r*.sh")"
 assert_deny "3921 r9 handover .. segment + glob"   "$(j "setsid -f env FOO=1 bash scripts/handover/../handover/console-kit/g*.sh")"
+assert_deny "3921 r10 absolute path .. segment + glob"  "$(j "STOP_WORKER_GRACE_SECS=0 setsid -f bash /home/overlord/Documents/github/himmel/scripts/lanes/../lanes/stop-w*.sh")"
+assert_deny "3921 r10 leading dir scripts// + glob"     "$(j "STOP_WORKER_GRACE_SECS=0 setsid -f bash x/scripts//lanes/stop-w*.sh")"
+assert_deny "3921 r10 absolute path /./ segment + glob" "$(j "FLEET_CAP_OK=1 setsid -f bash /abs/scripts/lib/./bank-pre*.sh")"
 assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
 
 CASES=$((CASES + 1))
