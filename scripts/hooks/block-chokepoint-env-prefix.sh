@@ -266,7 +266,7 @@ esac
 
 [ -n "$cmd" ] || exit 0
 # HIMMEL-1813: the untouched command, newlines included, for the
-# parse-independent backstop (raw_mention) that runs after scan_text.
+# parse-independent backstop (raw_mention) that runs before scan_text.
 raw_cmd=$cmd
 
 # Backslash-newline is a line CONTINUATION -- join it BEFORE the newline
@@ -294,8 +294,9 @@ if ! jq -e 'type == "object"' "$REGISTRY" >/dev/null 2>&1; then  # fail-open-ok:
     exit 0
 fi
 
-# A shell-word that opens an assignment: NAME= with a valid variable name.
-ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
+# A shell-word that opens an assignment: NAME= or NAME+= (append, HIMMEL-1813)
+# with a valid variable name.
+ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*[+]?='
 
 # HIMMEL-3185: segment_cmd tags an arithmetic body it lifted out of a
 # `(( ... ))` / `$(( ... ))` with this prefix so scan_segment can tell it from
@@ -925,7 +926,7 @@ raw_mention() {
         # env SEAM=, empty SEAM=). A bare read, `unset SEAM` and `env -u SEAM`
         # are the legitimate clear-and-prove spellings and stay out.
         for v in $vars_list; do
-            [[ $t =~ (^|[^[:alnum:]_])$v= ]] && deny_raw_mention "$script_path"
+            [[ $t =~ (^|[^[:alnum:]_])${v}[+]?= ]] && deny_raw_mention "$script_path"
         done
     done <<<"$REG_LINES"
     return 0
@@ -1503,14 +1504,14 @@ scan_segment() {
                 esac
             fi
             if [[ $w =~ $ASSIGN_RE ]]; then
-                names="$names ${w%%=*}"; j=$((j + 1)); continue
+                w=${w%%=*}; names="$names ${w%+}"; j=$((j + 1)); continue
             fi
             phase=start; asg_ok=0
             continue    # reprocess this word at command position
             ;;
         start)
             if [ "$asg_ok" = "1" ] && [[ $w =~ $ASSIGN_RE ]]; then
-                names="$names ${w%%=*}"; j=$((j + 1)); continue
+                w=${w%%=*}; names="$names ${w%+}"; j=$((j + 1)); continue
             fi
             case "$w" in
             env|*/env)
@@ -1792,10 +1793,11 @@ while IFS=$'\t' read -r _reg_path _reg_vars; do
     ALL_SEAM_VARS="$ALL_SEAM_VARS $_reg_vars"
 done <<<"$REG_LINES"
 
-scan_text "$cmd_flat" "" 0
-# HIMMEL-1813 backstop, on the untouched command. It runs after scan_text
-# only so the more specific deny messages win; scan_text never exits except
-# to deny, so every command still reaches it.
+# HIMMEL-1813 backstop, on the untouched command. It runs BEFORE scan_text
+# so a nounset abort or a hook timeout inside the parser cannot skip it
+# (console X ruling at 64bc44b1); where both would deny, the backstop's
+# message now fires instead of the parser's more specific one.
 raw_mention "$raw_cmd" 0
+scan_text "$cmd_flat" "" 0
 
 exit 0

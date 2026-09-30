@@ -478,6 +478,8 @@ assert_deny  "env -S: escaped \# stays literal before a later comment" "$(j "env
 # '$') denies when the split string or its appended words MENTION a
 # registered chokepoint. Outside that intersection the guard stays
 # fail-open; the pinned ALLOWs below are resolvable and keep their verdict. ---
+# The raw backstop runs before the parser (console X ruling at 64bc44b1), so
+# where both deny, its message fires instead: either message counts.
 assert_deny_unres() {  # assert_deny_unres <label> <json>
     local label="$1"; shift
     run "$@"
@@ -485,7 +487,7 @@ assert_deny_unres() {  # assert_deny_unres <label> <json>
     decision=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
     CASES=$((CASES + 1))
     if [ "$RC" = "2" ] && [ "$decision" = "deny" ] \
-       && printf '%s' "$ERR" | grep -q "cannot be fully resolved"; then  # pipefail-ok: ERR is one short deny message, far under the pipe buffer (same shape as assert_deny)
+       && printf '%s' "$ERR" | grep -qE "cannot be fully resolved|together with its seam variable or an env -S"; then  # pipefail-ok: ERR is one short deny message, far under the pipe buffer (same shape as assert_deny)
         echo "PASS $label (denied as unresolvable)"
     else
         echo "FAIL $label -- expected rc=2 + permissionDecision=deny + unresolvable message, got rc=$RC decision='$decision'"
@@ -918,6 +920,9 @@ assert_allow "1813 backstop control: env -S naming no chokepoint"      "$(j "env
 # not abort the hook under nounset (rc=1 is a hook error, not a deny).
 assert_allow "1813 redirect-only here-string (no command word)"       "$(j "<<< hello")"
 assert_deny  "1813 redirect-only here-string, then a seam segment"    "$(j "<<< hello; ${SW_VAR}=1 bash $STOP_WORKER")"
+# NAME+= is a real prefix assignment too (judge r5, console X NO-GO at 64bc44b1).
+assert_deny  "1813 append-assignment SEAM+= prefix"                   "$(j "STOP_WORKER_GRACE_SECS+=1 bash scripts/lanes/stop-worker.sh")"
+assert_deny  "1813 append-assignment SEAM+= prefix through env"       "$(j "HIMMEL_CONSOLE_LEG+=1 env bash $MERGE_ON_GREEN 1")"
 assert_allow "1813 backstop control: bare chokepoint, no seam, no -S"  "$(j "bash $STOP_WORKER")"
 
 # --- ALLOWED: fail-open proofs ---
