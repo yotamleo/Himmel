@@ -2027,16 +2027,55 @@ gh_allow='gh[[:space:]]+(issue([[:space:]]|$)|pr[[:space:]]+(view|diff|checks|st
 net_shape='(curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)([[:space:]]|$)'
 
 gp_total=$(count_cmd "$gp_shape"); gp_allowed=0
-# HIMMEL-844: the shell dequotes words before git sees them, so a quoted / backslashed /
-# $'' config key is the same key; delete every quote and backslash before matching.
-cmd_dq=$(printf '%s' "$cmd_lc" | LC_ALL=C tr -d "'\"\\\\")
-# Round 6: one blunt substring rule, no anchoring. A command mentioning `git` and
-# `insteadof` (dequoted), or `git` and an ANSI-C `$'` (escapes cannot be decoded
-# here), counts once toward the gu arm. Accepted overmatch: `git log --format=$'%h'`.
+# Round 7: decode every ANSI-C dollar-quote segment (bash's own escape set) BEFORE the
+# dequote/lowercase step, so hex/octal/unicode-escaped `git`, `config` and `insteadof` read
+# as the words git sees. An unterminated / undecodable segment appends `insteadof` (deny-leaning).
+ansic_decode() {
+    LC_ALL=C awk '
+    function hv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
+    function ch(code) { return (code > 0 && code < 128) ? sprintf("%c", code) : "#" }
+    { s = (NR > 1 ? s "\n" : "") $0 }
+    END {
+        q = "\047"; n = length(s); i = 1; out = ""; bad = 0
+        while (i <= n) {
+            c = substr(s, i, 1)
+            if (c != "$" || substr(s, i + 1, 1) != q) { out = out c; i++; continue }
+            i += 2; closed = 0
+            while (i <= n) {
+                c = substr(s, i, 1)
+                if (c == q) { closed = 1; i++; break }
+                if (c != "\\") { out = out c; i++; continue }
+                e = substr(s, i + 1, 1); i += 2
+                if (e == "") { bad = 1; break }
+                if ((k = index("abeEfnrtv\\\047\"?", e)) > 0) {
+                    out = out substr("\007\010\033\033\014\012\015\011\013\\\047\"?", k, 1); continue
+                }
+                if (e ~ /[0-7]/) {
+                    v = e + 0; d = 1
+                    while (d < 3 && substr(s, i, 1) ~ /[0-7]/) { v = v * 8 + substr(s, i, 1); i++; d++ }
+                    out = out ch(v % 256); continue
+                }
+                if (e == "x" || e == "u" || e == "U") {
+                    mx = (e == "x") ? 2 : (e == "u") ? 4 : 8; v = 0; d = 0
+                    while (d < mx && hv(substr(s, i, 1)) >= 0) { v = v * 16 + hv(substr(s, i, 1)); i++; d++ }
+                    if (d == 0) bad = 1
+                    out = out ch(v); continue
+                }
+                if (e == "c") { if (i > n) bad = 1; else i++; out = out "#"; continue }
+                out = out "\\" e
+            }
+            if (!closed) bad = 1
+        }
+        printf "%s", out
+        if (bad) printf " insteadof "
+    }'
+}
+cmd_dq=$(printf '%s' "$cmd_joined" | ansic_decode | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;' | LC_ALL=C tr -d "'\"\\\\")
+# Blunt rule: decoded + dequoted + lowercased text containing `git` AND `insteadof`.
+# Accepted overmatch: `git log --grep insteadof`.
 gu_blunt=0
 case $cmd_dq in
-    *git*) case $cmd_dq in *insteadof*) gu_blunt=1 ;; esac
-           case $cmd_lc in *\$\'*) gu_blunt=1 ;; esac ;;
+    *git*) case $cmd_dq in *insteadof*) gu_blunt=1 ;; esac ;;
 esac
 gu_total=$(( $(cmd_lc=$cmd_dq count_cmd "$gu_shape") + gu_blunt )); gu_allowed=0
 gh_total=$(count_cmd "$gh_shape"); gh_allowed=$(count_cmd "$gh_allow")

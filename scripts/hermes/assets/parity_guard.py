@@ -959,21 +959,92 @@ def _external_writes_allowed() -> bool:
     return False  # unknown / absent engine signal -> fail-closed (refuse)
 
 
-def terminal_external_write_reason(cmd_norm: str):
+_ANSI_SIMPLE = {"a": "\x07", "b": "\x08", "e": "\x1b", "E": "\x1b", "f": "\x0c",
+                "n": "\n", "r": "\r", "t": "\t", "v": "\x0b", "\\": "\\",
+                "'": "'", '"': '"', "?": "?"}
+_ANSI_HEX = {"x": 2, "u": 4, "U": 8}
+
+
+def _ansi_c_code(code: int) -> str:
+    return chr(code) if 0 < code < 128 else "#"
+
+
+def _ansi_c_decode(s: str) -> str:
+    """Decode every ANSI-C dollar-quote segment with bash's own finite escape set
+    (HIMMEL-844). An unterminated / undecodable segment appends ` insteadof `, so the
+    caller's `git` + `insteadof` rule denies (deny-leaning). Code points >= 128 become
+    a placeholder: only ASCII words matter to the rule."""
+    out, i, n, bad = [], 0, len(s), False
+    while i < n:
+        if not (s[i] == "$" and s[i + 1:i + 2] == "'"):
+            out.append(s[i])
+            i += 1
+            continue
+        i += 2
+        closed = False
+        while i < n:
+            c = s[i]
+            if c == "'":
+                closed = True
+                i += 1
+                break
+            if c != "\\":
+                out.append(c)
+                i += 1
+                continue
+            e = s[i + 1:i + 2]
+            i += 2
+            if not e:
+                bad = True
+                break
+            if e in _ANSI_SIMPLE:
+                out.append(_ANSI_SIMPLE[e])
+            elif e in "01234567":
+                d = 1
+                v = int(e)
+                while d < 3 and s[i:i + 1] and s[i] in "01234567":
+                    v = v * 8 + int(s[i])
+                    i += 1
+                    d += 1
+                out.append(_ansi_c_code(v % 256))
+            elif e in _ANSI_HEX:
+                d = 0
+                v = 0
+                while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
+                    v = v * 16 + int(s[i], 16)
+                    i += 1
+                    d += 1
+                if d == 0:
+                    bad = True
+                out.append(_ansi_c_code(v))
+            elif e == "c":
+                if i >= n:
+                    bad = True
+                else:
+                    i += 1
+                out.append("#")
+            else:
+                out.append("\\" + e)
+        if not closed:
+            bad = True
+    text = "".join(out)
+    return text + " insteadof " if bad else text
+
+
+def terminal_external_write_reason(cmd_norm: str, raw_cmd: str = ""):
     """Return a block reason if `cmd_norm` (already norm()-ed) is an external-write
     shape (git push / remote-URL rewrite / gh PR-mutation / network CLI), else
-    None. The caller gates this on an untrusted / unknown engine."""
+    None. `raw_cmd` is the un-norm()-ed command (norm() destroys backslash escapes).
+    The caller gates this on an untrusted / unknown engine."""
     if EXT_GIT_PUSH.search(cmd_norm):
         return ("git push is refused on an untrusted/unknown engine — commit "
                 "locally; the trusted main tier / operator pushes (HIMMEL-695).")
-    # HIMMEL-844: the shell dequotes words before git sees them; delete every quote
-    # and backslash so a quoted / backslashed / $'' config key matches the same shape.
-    cmd_dq = re.sub(r"['\"\\]", "", cmd_norm)
-    # Round 6: blunt substring rule — `git` with `insteadof` (dequoted) or with an
-    # ANSI-C `$'` (escapes cannot be decoded). Overmatch accepted: `git log --format=$'%h'`.
-    dq_lc = cmd_dq.lower()
-    if EXT_GIT_URL.search(cmd_dq) or ("git" in dq_lc and (
-            "insteadof" in dq_lc or "$'" in cmd_norm.lower())):
+    # HIMMEL-844 round 7: decode every ANSI-C dollar-quote segment (bash's own escape set)
+    # from the RAW command (norm() already mangled backslashes), then delete every quote and
+    # backslash and lowercase: the words git sees. Blunt rule: `git` AND `insteadof` denies.
+    # Accepted overmatch: `git log --grep insteadof`.
+    dq_lc = re.sub(r"['\"\\]", "", _ansi_c_decode(raw_cmd or cmd_norm)).lower()
+    if EXT_GIT_URL.search(dq_lc) or ("git" in dq_lc and "insteadof" in dq_lc):
         return ("Rewriting a git remote / push URL is refused on an untrusted/"
                 "unknown engine (HIMMEL-695).")
     if len(EXT_GH_ANY.findall(cmd_norm)) > len(EXT_GH_ALLOW.findall(cmd_norm)):
@@ -1294,7 +1365,7 @@ def _command_checks(raw_cmd: str, cmd: str, payload: dict, args: dict) -> None:
     # PR-mutation / network CLIs unless the engine is an affirmed trusted
     # main tier (fail-closed on an unknown engine).
     if not _external_writes_allowed():
-        reason = terminal_external_write_reason(cmd)
+        reason = terminal_external_write_reason(cmd, raw_cmd)
         if reason:
             block(reason)
 

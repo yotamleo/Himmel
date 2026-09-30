@@ -314,21 +314,13 @@ allow "remote -v"                           "$W" "git remote -v"
 allow "fetch -c advice.*=false origin"      "$W" "git -c advice.detachedHead=false fetch origin"
 
 echo "== DENY: ANSI-C / locale quoting of the verb (AB delta review C2-a) =="
-deny_direct "\$'git' -C <primary> checkout"        "$W" "\$'git' -C $P checkout feat/x -- README.md"
+deny "\$'git' -C <primary> checkout"        "$W" "\$'git' -C $P checkout feat/x -- README.md"
 deny "\$\"git\" -C <primary> checkout"      "$W" "\$\"git\" -C $P checkout feat/x -- README.md"
-deny_direct "\$'\\x67it' hex escape"               "$W" "\$'\\x67it' -C $P checkout feat/x -- README.md"
-deny_direct "\$'\\147it' octal escape"             "$W" "\$'\\147it' -C $P checkout feat/x -- README.md"
-deny_direct "\$'\\u0067it' unicode escape"         "$W" "\$'\\u0067it' -C $P checkout feat/x -- README.md"
-deny_direct "git \$'-C' <primary> checkout"        "$W" "git \$'-C' $P checkout feat/x -- README.md"
-allow_direct "\$'git' -C <primary> status"         "$W" "\$'git' -C $P status"
-# HIMMEL-844 round 6: the codex fence's blunt insteadOf rule denies any command
-# holding `git` and an ANSI-C `$'` BEFORE it sources this hook, so the rows above
-# are pinned direct-exec only; the fence side is pinned as an accepted overmatch.
-if [ "$(_rc "$FENCE" "$(payload "\$'git' -C $P status" "$W")")" = block ]; then
-    ok "\$'git' status denied by the fence (accepted overmatch) [${FENCE##*/}]"
-else
-    bad "\$'git' status denied by the fence (accepted overmatch) [${FENCE##*/}] — expected block"
-fi
+deny "\$'\\x67it' hex escape"               "$W" "\$'\\x67it' -C $P checkout feat/x -- README.md"
+deny "\$'\\147it' octal escape"             "$W" "\$'\\147it' -C $P checkout feat/x -- README.md"
+deny "\$'\\u0067it' unicode escape"         "$W" "\$'\\u0067it' -C $P checkout feat/x -- README.md"
+deny "git \$'-C' <primary> checkout"        "$W" "git \$'-C' $P checkout feat/x -- README.md"
+allow "\$'git' -C <primary> status"         "$W" "\$'git' -C $P status"
 
 echo "== DENY: backslash-escaped spellings (adversarial review C2) =="
 deny "\\git -C <primary> checkout"          "$W" "\\git -C $P checkout feat/x -- README.md"
