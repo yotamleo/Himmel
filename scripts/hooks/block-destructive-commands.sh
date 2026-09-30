@@ -437,8 +437,12 @@ fi
 rm_norm="${rm_scrub//[\"\'\\]/}"
 rm_norm="${rm_norm//$'\t'/ }"
 while [[ $rm_norm == *'  '* ]]; do rm_norm="${rm_norm//  / }"; done
-rm_norm="${rm_norm//command -p rm/rm}"
-rm_norm="${rm_norm//command rm/rm}"
+# `command` plus any option run (`-p`, `--`, `-p --`) before rm: drop the wrapper.
+_cmd_pat='command( -[-[:alnum:]]*)* rm'
+_cmd_n=8
+while (( _cmd_n-- > 0 )) && [[ $rm_norm =~ $_cmd_pat ]]; do
+    rm_norm="${rm_norm/"${BASH_REMATCH[0]}"/rm}"
+done
 RM_OPT_DOLLAR_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})-[^[:space:]|;&]*\$'
 if [[ $rm_norm =~ $RM_R_PAT ]] || [[ $rm_norm =~ $RM_RECURSIVE_PAT ]] || [[ $rm_norm =~ $RM_OPT_DOLLAR_PAT ]]; then
     deny "recursive rm (quote/escape-normalised)"
