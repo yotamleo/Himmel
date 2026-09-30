@@ -3095,6 +3095,7 @@ _log_has_skip_line() {
 # below; advances for every one of them regardless of which shard claims it
 # (HIMMEL-2872).
 run_index=0
+shard_assigned=0   # suites this shard claimed; 0 = an empty shard, a pass (HIMMEL-3699)
 # HIMMEL-2517 — how many failures were rc=127 (command or path not found).
 rc127=0
 failed_suites=""
@@ -3596,6 +3597,7 @@ while IFS= read -r suite <&3; do
     fi
     run_index=$((run_index + 1))
     [ "$_shard_mine" -eq 1 ] || continue
+    shard_assigned=$((shard_assigned + 1))
   fi
 
   if [ "$list_only" -eq 1 ]; then
@@ -4041,8 +4043,17 @@ if [ "$ran" -eq 0 ]; then
     echo "OK: docs-only diff — 0 shell suites needed ($skip skipped)"
     exit 0
   fi
+  # A shard assigned ZERO suites is a pass (HIMMEL-3699): os-verify splits a
+  # short impacted list across a fixed shard count, so the surplus cells are
+  # legitimately empty (an EMPTY run list is not: nothing was eligible). A shard
+  # that WAS assigned suites and ran none is still
+  # the misconfiguration below.
+  if [ "$shard_total" -gt 0 ] && [ "$shard_assigned" -eq 0 ] && [ "$run_index" -gt 0 ]; then
+    echo "OK: shard $shard_spec: 0 suites in this shard (run list held $run_index suite(s) across $shard_total shard(s))"
+    exit 0
+  fi
   if [ "$shard_total" -gt 0 ]; then
-    printf 'ERROR: shard %s ran 0 suites under scan root "%s" — refusing to report green. The run list held %s suite(s) across %s shard(s), so this shard was assigned nothing: either the shard count exceeds the run list, or every suite it was assigned was skipped. Both are misconfigurations, not a pass.\n' \
+    printf 'ERROR: shard %s ran 0 suites under scan root "%s" — refusing to report green. The run list held %s suite(s) across %s shard(s), so every suite it was assigned was skipped — a misconfiguration, not a pass.\n' \
       "$shard_spec" "$scan" "$run_index" "$shard_total" >&2
     exit 1
   fi
