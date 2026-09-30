@@ -292,6 +292,14 @@ for _row in "redir-fd-dup|gh pr merge 2>&1 42 $PIN" \
             "quote-b1b|gh pr merge --body \\\"x\\\\\\\" 5 $PIN \\\" 7" \
             "quote-b1c|gh pr merge --body \$'\\\\'' 7 $PIN" \
             "quote-body-hash|gh pr merge 42 $PIN --body \\\"fixes #5\\\"" \
+            "grouped-flags-dt-sb|gh pr merge -dt 5 -sb --match-head-commit=aaa5" \
+            "grouped-flags-cross-repo|gh pr merge -dt 5 -sR o/other -sb --match-head-commit=aaa5 8" \
+            "grouped-flags-two-positional|gh pr merge -sb 5 8 --match-head-commit aaa5" \
+            "attached-repo-flag|gh pr merge 42 -Ro/r $PIN" \
+            "body-flag-denies|gh pr merge 42 -b x $PIN" \
+            "subject-flag-denies|gh pr merge 42 --subject x $PIN" \
+            "unknown-flag-denies|gh pr merge 42 --frobnicate $PIN" \
+            "second-positional-denies|gh pr merge 42 43 $PIN" \
             "quote-split-verb-empty|gh pr m\\\"\\\"erge 42 --squash" \
             "quote-split-verb-single|gh pr mer''ge 42 --squash" \
             "quote-wrapped-verb|gh pr \\\"merge\\\" 42 --squash" \

@@ -117,16 +117,16 @@ while [ "$#" -gt 0 ]; do
         --match-head-commit=*) match_head="${1#--match-head-commit=}" ;;
         --match-head-commit)
             if [ "$#" -ge 2 ]; then match_head="$2"; shift; fi ;;
-        # gh pr merge's own value-taking flags: consume the value token so it
-        # is never mistaken for the selector (coderabbit CR round; the rc=3
-        # re-anchor still backstops flags this list misses).
-        -b|--body|-F|--body-file|-t|--subject|-A|--author-email)
-            if [ "$#" -ge 2 ]; then shift; fi ;;
-        --*|-*) ;;             # other flags: ignore (an unknown value-taking
-                               # flag may feed a value token; a wrong selector
-                               # only fails gh pr view = rc 3 -> re-anchor,
-                               # never a false block)
-        *) [ -z "$sel" ] && sel="$1" ;;
+        # Closed token set (judge r3): the hook and gh must read the SAME words,
+        # and gh's pflag groups short flags (`-dt 5` = `-d -t 5`) and lets a
+        # value flag swallow the next word, so anything outside this set denies.
+        -s|--squash|-m|--merge|-r|--rebase|-d|--delete-branch|--auto|--admin|--disable-auto) ;;
+        -*) _deny "gh pr merge accepts only -s -m -r -d --squash --merge --rebase --delete-branch --auto --admin --disable-auto, -R/--repo <v> and --match-head-commit <v>; got '$1' (grouped or attached flags, -b/-t/-F/-A and unknown flags are refused): gh pr merge must be a single plain command — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh for a custom subject/body. (For help run: gh help pr merge)" ;;
+        *)
+            if [ -n "$sel" ]; then
+                _deny "gh pr merge takes at most one selector; got a second positional '$1': gh pr merge must be a single plain command — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+            fi
+            sel="$1" ;;
     esac
     shift
 done
