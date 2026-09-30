@@ -238,10 +238,10 @@ run_test "same-commit tags: the release absorbs its own series pre-release (HIMM
 run_test "same-commit fold keeps a pre-release at a DIFFERENT commit and a different series' pre-release" '
   setup_commits && cd "$R" || exit 1;
   git tag v0.1.0-rc.1 HEAD~1 && git commit -q --allow-empty -m "fix: another" &&
-  git tag v0.2.0-rc.1 && git tag v0.2.0 && git commit -q --allow-empty -m "feat: next" && git tag v0.3.0-rc.1 &&
+  git tag v0.1.0 && git tag v0.2.0-rc.1 && git tag v0.2.0 && git commit -q --allow-empty -m "feat: next" && git tag v0.3.0-rc.1 &&
   bash "$GEN" &&
   grep -oE "^## \[[^]]*\]" CHANGELOG.md > order.txt &&
-  printf "%s\n" "## [Unreleased]" "## [v0.3.0-rc.1]" "## [v0.2.0]" "## [v0.1.0-rc.1]" > expected_order.txt &&
+  printf "%s\n" "## [Unreleased]" "## [v0.3.0-rc.1]" "## [v0.2.0]" "## [v0.1.0]" "## [v0.1.0-rc.1]" > expected_order.txt &&
   diff -q expected_order.txt order.txt
 '
 

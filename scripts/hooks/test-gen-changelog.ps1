@@ -305,6 +305,7 @@ run_test "same-commit fold keeps a pre-release at a DIFFERENT commit and a diffe
     $r = setup_commits
     Set-Location $r
     git -C $r tag v0.1.0-rc.1 HEAD~1
+    git -C $r tag v0.1.0
     git -C $r tag v0.2.0-rc.1
     git -C $r tag v0.2.0
     git -C $r commit --allow-empty -q -m 'feat: [T-9] later work'
@@ -312,7 +313,7 @@ run_test "same-commit fold keeps a pre-release at a DIFFERENT commit and a diffe
     pwsh -File $GEN
     $content = Get-Content (Join-Path $r 'CHANGELOG.md') -Raw
     $order = [regex]::Matches($content, '^## \[[^\]]*\]', 'Multiline') | ForEach-Object { $_.Value }
-    $expected = @('## [Unreleased]', '## [v0.3.0-rc.1]', '## [v0.2.0]', '## [v0.1.0-rc.1]')
+    $expected = @('## [Unreleased]', '## [v0.3.0-rc.1]', '## [v0.2.0]', '## [v0.1.0]', '## [v0.1.0-rc.1]')
     if (@(Compare-Object $order $expected -SyncWindow 0).Count -ne 0) { throw "section order was $($order -join ', ')" }
 }
 
