@@ -185,6 +185,7 @@ imperative_verb=0
 # ponytail: an implementation instruction written ONLY inside a fence, table row
 # or code span is allowed through, prose-level intent is still checked; an
 # explicit intent marker (HIMMEL-1608 preference 3) would close it.
+# shellcheck disable=SC2016 # the backticks are literal regex, not expansions
 data_stripped_text=$(printf '%s\n' "$text" | awk '
     /^[[:space:]]*```/ { if (inf) { inf = 0; buf = ""; next } inf = 1; buf = $0 "\n"; next }
     inf { buf = buf $0 "\n"; next }
