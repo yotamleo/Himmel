@@ -244,6 +244,15 @@ export ARM_RUNNER_DIR="$TMP/arm-runners"
 # refresh writes the usage cache; keep both cache knobs off the live
 # /tmp/claude/statusline-usage-cache.json (checked again before the summary).
 export CADENCE_BANK_CACHE="$TMP/bank-cache.json" CLAUDE_USAGE_CACHE="$TMP/bank-cache.json"
+# HIMMEL-3911: the real producer only writes the cache when a live OAuth fetch
+# succeeds, so "the scratch cache file exists" was host- and network-dependent.
+# A stub producer records the cache path each refresh was handed instead: the
+# end-of-run row asserts a real refresh ran AND none was aimed at the live cache.
+BANK_PRODUCER_LOG="$TMP/bank-producer.log"
+: > "$BANK_PRODUCER_LOG"
+export CADENCE_BANK_PRODUCER="$TMP/bank-producer-stub.sh"
+# shellcheck disable=SC2016 # $CLAUDE_USAGE_CACHE must expand in the stub, not here
+printf '#!/bin/bash\nprintf "%%s\\n" "$CLAUDE_USAGE_CACHE" >> "%s"\n' "$BANK_PRODUCER_LOG" > "$CADENCE_BANK_PRODUCER"
 # Default: no other HIMMEL-* scheduled task, so the operator's real crontab
 # entries (same-minute fixtures -> rc=6) cannot decide a case. Cases testing the
 # collision path set the seam inline, which overrides this.
@@ -1519,6 +1528,17 @@ if [ -s "$TELEMETRY_T23B/skill-usage.jsonl" ]; then
 else
     echo "PASS T23b failed create appends no telemetry"
 fi
+
+# HIMMEL-3911: the one case that guarantees a non-dry arm reaches the
+# bank-preflight producer refresh (--time auto never skips it), so the
+# end-of-run cache-redirect row cannot pass vacuously. Only the refresh is
+# under test: the arm's own outcome is T23b's business, not asserted here.
+_refresh_before=$(wc -l < "$BANK_PRODUCER_LOG" 2>/dev/null || echo 0)
+HO=$(make_handover "$WORK_REPO")
+TMPDIR="$TMP" SCHTASKS_CMD="$CREATEFAIL_STUB/schtasks" PATH="$CREATEFAIL_STUB:$PATH" SKILL_TELEMETRY_DIR="$TMP/telemetry-t23b-3911" \
+    bash "$ARM" --time auto --handover "$HO" >/dev/null 2>&1 || true
+_refresh_after=$(wc -l < "$BANK_PRODUCER_LOG" 2>/dev/null || echo 0)
+assert_rc "T23b-3911 a non-dry auto arm reached the producer refresh" 1 "$([ "$_refresh_after" -gt "$_refresh_before" ] && echo 1 || echo 0)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -6498,12 +6518,21 @@ fi
 # shrug off.
 # HIMMEL-3846: a non-dry-run arm runs the REAL bank-preflight, whose producer
 # refresh writes the usage cache at $CADENCE_BANK_CACHE. The suite points that
-# at $TMP; the scratch file appearing proves a real arm reached the preflight
-# AND the redirect held (else it would have rewritten the operator's live
+# at $TMP and swaps in a stub producer that logs the cache path each refresh
+# was handed (HIMMEL-3911: the scratch file only appears if a live OAuth fetch
+# succeeds, so it proved nothing on hosts where it fails). A non-empty log
+# proves a real arm reached the preflight; every line being $TMP/bank-cache.json
+# proves the redirect held (else it would have rewritten the operator's live
 # /tmp/claude/statusline-usage-cache.json). A --only run may skip every real arm.
-if [ -z "$ONLY_FILTERS" ] && [ ! -f "$TMP/bank-cache.json" ]; then
-    echo "FAIL bank-preflight cache not redirected to \$TMP -- a real arm may have rewritten the live usage cache (HIMMEL-3846)"
-    FAILED=$((FAILED + 1))
+if [ -z "$ONLY_FILTERS" ]; then
+    if [ ! -s "$BANK_PRODUCER_LOG" ]; then
+        echo "FAIL no non-dry-run arm reached the bank-preflight producer refresh -- the cache-redirect check below would be vacuous (HIMMEL-3911)"
+        FAILED=$((FAILED + 1))
+    elif grep -qvxF "$TMP/bank-cache.json" "$BANK_PRODUCER_LOG"; then
+        echo "FAIL a bank-preflight refresh was aimed at a cache other than \$TMP/bank-cache.json -- a real arm may have rewritten the live usage cache (HIMMEL-3846):"
+        grep -vxF "$TMP/bank-cache.json" "$BANK_PRODUCER_LOG"
+        FAILED=$((FAILED + 1))
+    fi
 fi
 CRONTAB_SNAPSHOT_AFTER=$(crontab -l 2>/dev/null || true)
 if [ "$CRONTAB_SNAPSHOT_AFTER" != "$CRONTAB_SNAPSHOT_BEFORE" ]; then
