@@ -2612,21 +2612,27 @@ quoting, delimiters), so it was removed rather than patched again.
 Known remaining gap: a merge with no selector AND no cwd branch still exits 0
 (nothing to resolve).
 
-**HIMMEL-3929 — the detector over-fires instead of recognising spellings.** The
-detector used to be the text regexp `gh pr merge`, so every spelling it missed
-merged with no gate. It now fires on a `gh` word (start of text, after a space,
-`;` `&` `|` `(`, or a `/path/to/gh`) followed anywhere by `merge` in the
-normalized copy, which now also drops `{` `}` and backticks; a second copy with
-`${..}` / `$(..)` removed catches `m${X}erge`; a `gh` word plus any `$` or
-backtick fires too (expansion can build letters, `$'m\x65rge'`, `m${X:-er}ge`);
-and the mirror case, in a segment with a `pr` word then a merge word every word
-up to the merge word must match `^[A-Za-z0-9_./+=-]+$` (quote chars ignored),
-else it fires (`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`, `env
-/usr/bin/g[h] pr merge`): an allowlist, so no expansion, glob or wrapper
-spelling needs listing. A word that globs to `merge` (`m?rge`) next to a gh word
-fires too, and so does ANY unquoted glob word (a bare `*` included) in a segment
-that has a gh word and a `pr` word; `ls *` has no such precondition and stays
-allowed. Once fired, the raw-char allowlist
+**HIMMEL-3929 — the detector only ever adds to main's.** The detector used to be
+the text regexp `gh pr merge`, so every spelling it missed merged with no gate.
+That regexp still runs byte for byte (on its own normalized copy) and never
+stops firing: every rule below only ADDS a deny, so nothing the old detector
+denied can pass (`C="gh pr merge 42"; $C`, `eval "$C"`, `./gh pr merge` stay
+denied). The added rules, each per segment (split on `;` `&` `|` `(`): (A) a `gh`
+word, then only flags (`-R`/`--repo` take a value), then a `pr` word, then a
+`merge` word, or `gh api` / `gh alias` followed by any merge-ish word
+(`.../pulls/N/merge`, `mutation{mergePullRequest`, `alias set mm pr merge`);
+`gh pr view`, `gh pr list --search "merge conflict"` and `gh pr diff | grep merge`
+never reach a merge word there. (B) a segment with a `gh` word, a `$` or backtick
+and a merge-ish word fires, where merge-ish is a literal merge word in any copy or
+a word whose literal residue is letters of `merge` (`m${X:-er}ge`,
+`$'m\x65rge'`, `gh${IFS}pr${IFS}merge`); a non-merge gh command with `$` or a
+substitution (`gh pr view "$PR"`) is untouched. (C) a segment with a gh word, a
+`pr` word and an unquoted glob word that globs to `merge` (`m?rge`, `[m]erge`, a
+bare `*`) fires; `ls *` has no such precondition. (D) the mirror case: in a segment
+with a `pr` word then a merge word, every word up to the merge word must match
+`^[A-Za-z0-9_./+=-]+$` (quote chars and backslashes ignored), else it fires
+(`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`, `"$G" pr me\rge`). Once fired, the
+raw-char allowlist
 above refuses every expansion spelling, and the command must parse as exactly
 `gh [-R v | --repo v | --repo=v]* pr [same]* merge <closed tokens>`; `gh api
 .../pulls/N/merge` (and `mergePullRequest` GraphQL), `gh alias set|import` naming a

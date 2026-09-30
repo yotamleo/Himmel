@@ -280,6 +280,15 @@ for _row in "api-put|gh api -X PUT repos/o/r/pulls/42/merge" \
             "wrapper-nice-var|nice \$G pr merge 1 $PIN" \
             "verb-glob|command gh pr m?rge 1 $PIN" \
             "verb-star|gh pr * 42 --squash $PIN" \
+            "c1-var-dq|C=\\\"gh pr merge 42\\\"; \$C" \
+            "c1-var-sq|C='gh pr merge 42'; \$C" \
+            "c1-eval|C=\\\"gh pr merge 42\\\"; eval \\\"\$C\\\"" \
+            "c1-bash-c|C=\\\"gh pr merge 42\\\"; bash -c \\\"\$C\\\"" \
+            "c1-dot-gh|./gh pr merge 42 $PIN" \
+            "c1-bin-gh|bin/gh pr merge 42 $PIN" \
+            "c1-alias|gh alias set mm \\\"pr merge\\\"; gh mm 8" \
+            "graphql-nospace|gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:\\\"X\\\"}){clientMutationId}}'" \
+            "i2-backslash-verb|\\\"\$G\\\" pr me\\\\rge 42 $PIN" \
             "verb-first|gh merge pr 42 $PIN"; do
     GH_STUB_MODE=clean t "detector-${_row%%|*}-denies" 2 Bash "${_row#*|}"
 done
@@ -291,12 +300,17 @@ GH_STUB_MODE=unresolved t allow-gh-api-pr         0 Bash "gh api repos/o/r/pulls
 GH_STUB_MODE=unresolved t allow-git-merge-then-gh 0 Bash "git merge main && gh pr view 42"
 GH_STUB_MODE=unresolved t allow-gh-alias-list     0 Bash "gh alias list"
 GH_STUB_MODE=unresolved t allow-gh-pr-view-mergeable 0 Bash "gh pr view 42 --json mergeable,mergeStateStatus"
+GH_STUB_MODE=unresolved t allow-i1-view-var 0 Bash "gh pr view \\\"\$PR\\\""
+GH_STUB_MODE=unresolved t allow-i1-checks-var 0 Bash "gh pr checks \\\"\$PR\\\""
+GH_STUB_MODE=unresolved t allow-i1-view-subst 0 Bash "gh pr view \\\"\$(git branch --show-current)\\\""
+GH_STUB_MODE=unresolved t allow-i1-diff-grep 0 Bash "gh pr diff 42 | grep merge"
+GH_STUB_MODE=unresolved t allow-i1-list-search 0 Bash "gh pr list --search \\\"merge conflict\\\""
 GH_STUB_MODE=unresolved t allow-bare-bracket 0 Bash "[ -f x ]"
 GH_STUB_MODE=unresolved t allow-ls-star 0 Bash "ls *"
 GH_STUB_MODE=unresolved t allow-gh-pr-view-quoted-jq 0 Bash "gh pr view 42 --jq '.[0]'"
 GH_STUB_MODE=unresolved t allow-abs-gh-pr-view 0 Bash "/usr/bin/gh pr view 42 --json mergeable"
-GH_STUB_MODE=unresolved t allow-computed-prog     0 Bash "\"\$PY\" x.py"
-GH_STUB_MODE=unresolved t allow-computed-prog-path 0 Bash "\"\$HOME/bin/tool\" run"
+GH_STUB_MODE=unresolved t allow-computed-prog     0 Bash "\\\"\$PY\\\" x.py"
+GH_STUB_MODE=unresolved t allow-computed-prog-path 0 Bash "\\\"\$HOME/bin/tool\\\" run"
 # merge-on-green's own argv shape is the plain direct form and must stay allowed.
 GH_STUB_MODE=clean      t allow-mog-argv          0 Bash "gh pr merge 42 --repo o/r --squash $PIN"
 # ── HIMMEL-3918: six residual gaps. Every row below is RED on 4822509f. Each

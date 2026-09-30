@@ -95,33 +95,61 @@ _deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 _norm() {
     printf '%s' "$1" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' -e "s/['\"\$\`{}]//g" | tr '\n' ' '
 }
+# Monotone versus main: main's own detector runs byte for byte and every rule
+# below only ADDS a deny, so nothing main denied can pass (judge r1, C1).
+merge_re='gh[[:space:]]+pr[[:space:]]+merge'
+cmd_old=$(printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' -e "s/['\"\$]//g" | tr '\n' ' ')
+fires=0
+printf '%s' "$cmd_old" | grep -E "$merge_re" >/dev/null && fires=1
 cmd_norm=$(_norm "$cmd")
 cmd_sq=$(_norm "$(printf '%s' "$cmd" | sed -e 's/\$[{(][^})]*[})]//g')")
-gh_re='(^|[[:space:];&|(])(/[^[:space:]]*/)?gh'
-fires=0
+# Rule A, per segment: gh, then only flags (-R/--repo take a value) and ONE `pr`,
+# then a `merge` word; or `gh api` / `gh alias` followed by a merge-ish word
+# (`.../pulls/8/merge`, `mutation{mergePullRequest`, `alias set mm pr merge`).
+# `gh pr view`, `gh pr list --search "merge conflict"`, `gh pr diff | grep merge`
+# never reach a merge word here.
 for _n in "$cmd_norm" "$cmd_sq"; do
-    printf '%s' "$_n" | grep -E "${gh_re}.*(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)" >/dev/null && fires=1
+    # shellcheck disable=SC2020 # four separators each map to a newline, by design
+    printf '%s' "$_n" | tr ';&|(' '\n\n\n\n' | awk '{ g = 0; pr = 0; skip = 0; api = 0; al = 0
+        for (i = 1; i <= NF; i++) { w = $i
+            if (!g) { if (w == "gh" || w ~ "/gh$") g = 1; continue }
+            if (skip) { skip = 0; continue }
+            if (w ~ "^-") { if (w == "-R" || w == "--repo") skip = 1; if ((api || al) && w ~ "merge") f = 1; continue }
+            if (pr && w ~ "^merge([^A-Za-z0-9]|$|PullRequest)") f = 1
+            if (api || al) { if (w ~ "merge") f = 1; continue }
+            if (w == "pr") { pr = 1; continue }
+            if (pr) { g = 0; pr = 0; continue }
+            if (w ~ "^merge([^A-Za-z0-9]|$|PullRequest)") f = 1
+            if (w == "api") api = 1; else if (w == "alias") al = 1; else g = 0 } }
+        END { exit !f }' && fires=1
 done
-# Any expansion can build the verb's letters (`$'m\x65rge'`, `m${X:-er}ge`) in a
-# way no text copy reads: a gh word plus a `$` or backtick fires too.
-case "$cmd" in
-    *\$*|*\`*) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;;
-esac
-# A word that only GLOBS to `merge` (`m?rge`, `[m]erge`) hides the verb from
-# every text copy: with a gh word it fires too (set -f: no real expansion).
-set -f
-for _w in $cmd; do
-    case "$_w" in
-        *[*?[]*) case "$_w" in *[!*]*)
-            # shellcheck disable=SC2194,SC2254 # the word IS the glob under test
-            case merge in $_w) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;; esac ;;
-        esac ;;
-    esac
-done
-set +f
-# Simplest deny-leaning form: in a segment with a gh word and a `pr` word, ANY
-# unquoted glob word (a bare `*` included, it can glob to a file named `merge`)
-# fires. `ls *` has no gh+pr precondition and stays allowed.
+# Expansion-built verbs, scoped to a segment that has a gh word, a `$`/backtick
+# AND a merge-ish word (a literal merge word in any copy, or a word whose literal
+# residue is letters of `merge`: `m${X:-er}ge`, `$'m\x65rge'`). A non-merge gh
+# command (`gh pr view "$PR"`) never fires.
+if [ "$fires" = "0" ]; then
+    # shellcheck disable=SC2020,SC2016 # five separators map to newlines; the sed pattern is literal
+    printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\$(/$ /g' | tr ';&|(\n' '\n\n\n\n\n' \
+        | awk -v q="'" 'function res(w,  t) { t = w; gsub("[$]" q, "", t)
+                gsub(/\\x[0-9a-fA-F]+|\\u[0-9a-fA-F]+|\\[0-7]+/, "", t)
+                gsub(/[$][{][^}]*[}]/, "", t); gsub(/[$][A-Za-z_][A-Za-z0-9_]*/, "", t)
+                gsub("[$`{}\\\\\"" q "]", "", t); return t }
+            { g = 0; d = 0; m = 0
+            for (i = 1; i <= NF; i++) { w = $i; s = w; gsub("[\"" q "]", "", s)
+                if (s == "gh" || s ~ "/gh$") g = 1
+                if (w ~ /[$`]/) d = 1
+                t1 = w; gsub("[$`{}\\\\\"" q "]", "", t1)
+                t2 = w; gsub(/[$][{][^}]*[}]/, " ", t2); gsub("[$`{}\\\\\"" q "]", " ", t2)
+                n = split(t2, a, " "); for (j = 1; j <= n; j++) if (a[j] == "gh" || a[j] ~ "/gh$") g = 1
+                r = res(w)
+                if (t1 ~ "(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)" || t2 ~ "(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)" \
+                    || t1 ~ "mergePullRequest" || (length(r) >= 3 && r ~ /^m?e?r?g?e?$/)) m = 1 }
+            if (g && d && m) f = 1 }
+            END { exit !f }' && fires=1
+fi
+# A word that only GLOBS to `merge` (`m?rge`, `[m]erge`, a bare `*`) hides the verb
+# from every text copy: a segment with a gh word, a `pr` word and such a word fires
+# (quoted spans are dropped first; `ls *` has no gh+pr precondition).
 if [ "$fires" = "0" ]; then
     # shellcheck disable=SC2020 # five separators each map to a newline, by design
     printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g' \
@@ -129,18 +157,19 @@ if [ "$fires" = "0" ]; then
             for (i = 1; i <= NF; i++) { w = $i
                 if (w == "gh" || w ~ "/gh$") g = 1
                 if (w == "pr") p = 1
-                if (w ~ "[*?[]") s = 1 }
+                if (w ~ "[*?[]") { re = w; gsub(/[.]/, "[.]", re); gsub(/[*]/, ".*", re); gsub(/[?]/, ".", re)
+                    if ("merge" ~ ("^" re "$")) s = 1 } }
             if (g && p && s) f = 1 }
-            END { exit !f }' && fires=1
+            END { exit !f }' 2>/dev/null && fires=1
 fi
 # The mirror case: in a segment with a `pr` word then a merge word, EVERY word
-# up to the merge word must be plain (`^[A-Za-z0-9_./+=-]+$`, quote chars
-# ignored); a computed, globbed or wrapper-hidden word (`$'\x67\x68' pr merge`,
-# `${G} pr merge`, `env /usr/bin/g[h] pr merge`) fires. An allowlist, so no
+# up to the merge word must be plain (`^[A-Za-z0-9_./+=-]+$`, quote chars and
+# backslashes ignored); a computed, globbed or wrapper-hidden word (`$'\x67\x68'
+# pr merge`, `${G} pr merge`, `"$G" pr me\rge`) fires. An allowlist, so no
 # spelling needs listing.
 if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -qE '(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)'; then
     # shellcheck disable=SC2020 # five separators each map to a newline, by design
-    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' | tr -d "'\"" \
+    printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' | tr ';&|(\n' '\n\n\n\n\n' | tr -d "'\"" \
         | awk '{ pr = 0; bad = 0
             for (i = 1; i <= NF; i++) { w = $i
                 if (w ~ "^[A-Za-z0-9_./+=-]+$") {
