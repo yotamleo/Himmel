@@ -2236,6 +2236,38 @@ canonical anchored fence is exempt only in its exact shape; only its echo text
 may vary. Classification uses bash builtins only, so a missing tool cannot turn
 it into a no-op. Text classification has limits, and the hook's `ponytail:` names them.
 
+**Write-channel backstop (HIMMEL-3913, HIMMEL-3917).** Before any of the above,
+the hook reads the raw text. The inert drop and the here-string reader exemption
+(HIMMEL-1813) both let text that names a target pass as data. That text can
+leave its reader only through a write: a redirect into a file, or `tee`'s file
+operands. Whatever later runs the file cannot be enumerated. It may be a shell,
+`command -p source`, `$(cat F)`, `xargs`, `awk '{system($0)}'`, or `chmod +x F;
+F`, or a later tool call that never names a target, such as a write into
+`~/.bashrc`. So the backstop denies the channel, not the executor. A command whose
+dequoted text names a target denies if any of these holds:
+
+- it contains `<<<`;
+- it contains a `tee` word, in the raw text or after dequoting;
+- it shadows a reader with a function or alias;
+- a `>` is left after removing the only provably inert redirects. Those are fd
+  dups (`2>&1`, `>&2`, `N>&-`) and a redirect to exactly `/dev/null`
+  (`>/dev/null`, `2>/dev/null`, `&>/dev/null`, with or without a space).
+  `>/dev/nullx`, `>/dev/stdout`, `>/dev/fd/3`, `>/proc/self/fd/1` and `>>/dev/null`
+  all deny.
+
+The rule has no allowed-literal carve-out and no executor list. Every allowed
+spelling carries no channel by construction, and the canonical fence's only
+redirect is `>&2`. A `>` inside quoted text counts too. So a commit message, PR
+body or `append-results.sh` bullet that names a guarded script and has an ASCII
+arrow `->` denies. The remedy is to write the text with the Write tool and pass
+the file (`-F`, `--body-file`, `--comment-file`), or to use `→` / `to`.
+`append-results.sh` takes its text as an argument only, so a Results bullet
+never contains `>`. Heredocs are not a channel here, because the main path
+judges their body as raw text. The residuals are a file written by the
+Write/Edit tools (this is a Bash matcher) and text that never spells a target;
+the backstop's `ponytail:` names them. Running either matches no allow rule,
+so the classifier decides.
+
 **Why the anchor, not a ref.** The compare base is the anchor's working-tree
 bytes, never `refs/remotes/origin/main`. Refs live in the common git dir, which
 a leg can write (`git update-ref`), so a ref-based base could be moved onto the

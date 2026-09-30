@@ -500,4 +500,10 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    ZERO; releasing on the `touch` alone leaves an unattended fleet if the arm
    failed.
 
+Write every bullet below with
+`bash scripts/handover/console-kit/append-results.sh <doc> '<text>'`. A bullet
+never contains `>`; write `→` or `to` (`MERGED #n → <sha>`). The text is an
+argument, since the script takes no file, so a `>` beside a guarded script
+name is refused as a write channel (HIMMEL-3917).
+
 ## Results (newest at the bottom)

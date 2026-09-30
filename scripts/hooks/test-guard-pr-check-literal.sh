@@ -518,8 +518,8 @@ for v in \
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
     # HIMMEL-3913: the raw backstop runs first, so a reader/shell here-string that
     # also carries an executor now denies with its message; either is a deny.
-    if grep -qF -- "cannot be fully resolved" <<<"$LAST_ERR" || grep -qF -- "written to a file and run" <<<"$LAST_ERR"; then
-        echo "PASS 1813: [$v] deny names the unresolvable split string or the 3913 backstop"
+    if grep -qF -- "cannot be fully resolved" <<<"$LAST_ERR" || grep -qF -- "can write text to a file" <<<"$LAST_ERR"; then
+        echo "PASS 1813: [$v] deny names the unresolvable split string or the 3913/3917 backstop"
     else
         echo "FAIL 1813: [$v] deny names neither message: $LAST_ERR"
         FAILED=$((FAILED + 1))
@@ -527,7 +527,7 @@ for v in \
 done
 run "1813: redirect-only here-string (no command word) -> no-op" 0 \
     "$(payload "<<< hello" "$WT")" "$HR"
-run "1813: cat of a here-string naming a target -> no-op" 0 \
+run "1813/3917: cat of a here-string naming a target -> deny (any <<< beside a target, HIMMEL-3917)" 2 \
     "$(payload "cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" "$WT")" "$HR"
 run "1813: unresolvable env -S with no target mention -> no-op" 0 \
     "$(payload "env -S 'bash scripts/other/x.sh\\c'" "$WT")" "$HR"
@@ -547,7 +547,7 @@ run "1813: the program's own -S-like flag is not env's (git log --stat) -> no-op
 # ---- only the raw scan can see it. Clean root: every deny below is the backstop's.
 while IFS= read -r v; do
     run "3913: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
-    need_in_err "3913: [$v] deny points at the move-into-a-file route" "written to a file and run"
+    need_in_err "3913: [$v] deny points at the move-into-a-file route" "can write text to a file"
 done <<'BACKSTOP'
 tee /tmp/f <<< "env -S 'bash scripts/handover/merge-on-green.sh\c'"; bash /tmp/f
 cat <<< "env -S 'bash scripts/handover/merge-on-green.sh\c'" > /tmp/f && sh /tmp/f
@@ -585,7 +585,7 @@ tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; s""h /tmp/f
 BACKSTOP
 run "3913: [tee ...<<< then newline then bash] clean root -> deny" 2 \
     "$(payload "tee /tmp/f <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""$'\n'"bash /tmp/f" "$WT")" "$HR"
-need_in_err "3913: newline form deny points at the move-into-a-file route" "written to a file and run"
+need_in_err "3913: newline form deny points at the move-into-a-file route" "can write text to a file"
 run "3913: [cat <<< > f then newline then . f] clean root -> deny" 2 \
     "$(payload "cat <<< \"env -S 'bash scripts/cr/clear-cr-marker.sh\\c'\" > /tmp/f"$'\n'". /tmp/f" "$WT")" "$HR"
 # A variable-named write target is invisible to the backstop, but the parser still
@@ -599,7 +599,6 @@ done <<'BACKSTOP_ALLOW'
 bash scripts/handover/console-kit/go.sh GO 1 abc
 bash scripts/handover/merge-on-green.sh --jira-transition
 bash scripts/cr/write-verdicts.sh --from-file /tmp/v.txt
-echo 'run bash scripts/cr/pr-check-context.sh later' > /tmp/note
 BACKSTOP_ALLOW
 for v in \
     "bash \"$PRIMARY/scripts/handover/merge-on-green.sh\" --jira-transition" \
@@ -609,6 +608,97 @@ for v in \
     "bash \"$PRIMARY/scripts/cr/pr-check-env.sh\" CR_CLAUDE_AGENTS"; do
     run "3913: anchored spelling [$v] clean root -> no-op" 0 "$(payload "$v" "$WT")" "$HR"
 done
+
+# ---- HIMMEL-3917: the backstop denies the WRITE CHANNEL, never an executor ------
+# No executor is recognised any more, so each row writes with a plain `>` (no
+# here-string) and runs the file through something the old executor grammar
+# never listed - or never runs it in this command at all (a later tool call).
+# Clean root: every deny below is the backstop's.
+while IFS= read -r v; do
+    run "3917: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+    need_in_err "3917: [$v] deny is the write-channel backstop's" "can write text to a file"
+done <<'CHANNEL'
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; command -p source /tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; builtin source /tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; exec -a x bash /tmp/f
+out=/tmp/f; echo 'bash scripts/cr/write-verdicts.sh' >"$out"; bash "$out"
+echo 'bash scripts/cr/write-verdicts.sh' >$F
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; eval "$(cat /tmp/f)"
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; $(cat /tmp/f)
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; xargs -a /tmp/f env
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; awk '{system($0)}' /tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; chmod +x /tmp/f; /tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; "$SHELL" /tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f; python3 /tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' > /tmp/f
+echo 'run bash scripts/cr/pr-check-context.sh later' > /tmp/note
+printf '%s\n' 'bash scripts/cr/write-verdicts.sh' >> ~/.bashrc
+echo 'bash scripts/cr/write-verdicts.sh' &>/tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' >&/tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' >&2x
+>/tmp/f echo 'bash scripts/cr/write-verdicts.sh'
+echo 'bash scripts/cr/write-verdicts.sh'->/tmp/f
+echo 'bash scripts/cr/write-verdicts.sh'=>/tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' >|/tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' 1<>/tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' > >(cat)
+echo 'bash scripts/cr/write-verdicts.sh' >/dev/nullx
+echo 'bash scripts/cr/write-verdicts.sh' >/dev/null.d/f
+echo 'bash scripts/cr/write-verdicts.sh' >/dev/stdout
+echo 'bash scripts/cr/write-verdicts.sh' >/dev/fd/3
+echo 'bash scripts/cr/write-verdicts.sh' >/proc/self/fd/1
+echo 'bash scripts/cr/write-verdicts.sh' >>/dev/null
+echo 'bash scripts/cr/write-verdicts.sh' | t''ee /tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' | "tee" /tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' | /usr/bin/tee /tmp/f
+git commit -m 'fix scripts/cr/review-round.sh -> deny'
+CHANNEL
+# Writers the backstop does not spell (dd, an ANSI-C-quoted tee) sit in a second
+# pipeline segment, which switches both exemptions off: the main path denies.
+while IFS= read -r v; do
+    run "3917: [$v] other writer beside a target -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done <<'OTHERWRITER'
+echo 'bash scripts/cr/write-verdicts.sh' | dd of=/tmp/f
+echo 'bash scripts/cr/write-verdicts.sh' | $'t\145e' /tmp/f
+OTHERWRITER
+# The Results-bullet case the console ruling measured: an arrow in the text of a
+# bullet naming a guarded writer denies, and the deny names the remedy.
+run "3917: [append-results bullet naming merge-on-green with an arrow] -> deny" 2 \
+    "$(payload "bash scripts/handover/console-kit/append-results.sh /tmp/d.md 'MERGED via scripts/handover/merge-on-green.sh -> abc'" "$WT")" "$HR"
+need_in_err "3917: arrow deny names the Write-tool remedy" "write it with the Write tool and pass the file"
+need_in_err "3917: arrow deny names the arrow remedy" "use '→' / 'to' instead"
+# Only an fd dup or a redirect to exactly /dev/null is inert: the backstop stays
+# silent on these (the main path decides, as before HIMMEL-3917).
+while IFS= read -r v; do
+    run "3917: inert redirect [$v] clean root -> no-op" 0 "$(payload "$v" "$WT")" "$HR"
+done <<'INERT'
+echo 'bash scripts/cr/write-verdicts.sh' 2>&1
+echo 'bash scripts/cr/write-verdicts.sh' 2>& 1
+echo 'bash scripts/cr/write-verdicts.sh' >&2
+echo 'bash scripts/cr/write-verdicts.sh' 3>&-
+echo 'bash scripts/cr/write-verdicts.sh' >/dev/null
+echo 'bash scripts/cr/write-verdicts.sh' > /dev/null
+echo 'bash scripts/cr/write-verdicts.sh' 2>/dev/null
+echo 'bash scripts/cr/write-verdicts.sh' 2> /dev/null
+echo 'bash scripts/cr/write-verdicts.sh' &>/dev/null
+echo 'bash scripts/cr/write-verdicts.sh' &> /dev/null
+echo 'bash scripts/cr/write-verdicts.sh' >/dev/null 2>&1
+git commit -m 'fix scripts/cr/review-round.sh to deny'
+INERT
+# A real run with an inert redirect: the main path still refuses it as not one
+# simple command (HIMMEL-3458), but the backstop must stay silent.
+while IFS= read -r v; do
+    run "3917: inert redirect on a run [$v] -> main-path deny" 2 "$(payload "$v" "$WT")" "$HR"
+    if grep -qF -- "HIMMEL-3917" <<<"$LAST_ERR"; then
+        echo "FAIL 3917: [$v] the write-channel backstop fired on an inert redirect: $LAST_ERR"
+        FAILED=$((FAILED + 1))
+    else
+        echo "PASS 3917: [$v] backstop silent on an inert redirect"
+    fi
+done <<'INERTRUN'
+bash scripts/handover/merge-on-green.sh --jira-transition >/dev/null 2>&1
+bash scripts/cr/pr-check-context.sh 2>&1
+INERTRUN
 
 # ---- HIMMEL-3433 (d): an interpreter or find -exec word ANYWHERE runs ---------
 # On a clean tree, so each deny comes from the shape, not from an edit.
@@ -846,8 +936,13 @@ printf '%s\n' 'bash scripts/cr/pr-check-context.sh; x'
 grep -E 'a|bash scripts/cr/pr-check-context.sh' docs/a.md
 jq 'test("a|b") or .x == "scripts/cr/pr-check-context.sh"' docs/a.md
 bash scripts/cr/ledger-append.sh amend --head abc --id codex-1 --set verdict=deferred --deferred-to HIMMEL-3547 --reason "same gap as prior round, already tracked via Jira comment; deferred to S18"
-bash scripts/cr/ledger-append.sh --reason 'a|b & c > d'
+bash scripts/cr/ledger-append.sh --reason 'a|b & c → d'
 INERT
+# HIMMEL-3917: a quoted '>' beside a target is a write channel to the raw-text
+# backstop even as inert data - the ruled remedy is '→' / 'to' or a file.
+run "3917: quoted '>' in a guarded script's argument -> deny" 2 \
+    "$(payload "bash scripts/cr/ledger-append.sh --reason 'a|b & c > d'" "$WT")" "$HR"
+need_in_err "3917: quoted '>' deny names the arrow remedy" "use '→' / 'to' instead"
 # Controls: quoted text that reaches an interpreter, a substitution or a
 # second command is not inert - every one still denies.
 # HIMMEL-3458: the 2>&1 fd-dup forms stay denied too.
