@@ -888,9 +888,11 @@ segment_is_safe() {
                     [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # a glob could expand into a 2nd operand
                     if [ "$uskip" = 1 ]; then uskip=0; continue; fi
                     if [ "$udd" = 1 ]; then uops=$((uops + 1)); continue; fi
+                    case "$k" in               # RAW token: a quoted '>out' starts with a quote, so it stays an operand
+                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) continue ;;  # unquoted redirect token, not an operand
+                    esac
                     case "$SW_VALUE" in
                         --) udd=1 ;;
-                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) ;;  # redirect token, not an operand
                         --*=*) ;;
                         --*) guard_is_long_abbrev "skip-fields" "$SW_VALUE" && uskip=1
                              guard_is_long_abbrev "skip-chars" "$SW_VALUE" && uskip=1
