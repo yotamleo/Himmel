@@ -118,10 +118,16 @@
 #     UNQUOTED and inside a DOUBLE-quoted span; inside a SINGLE-quoted span
 #     a backslash is LITERAL and does not prevent the closing quote, because
 #     bash has no escape there. That asymmetry is deliberate and is pinned by
-#     the suite's MIRROR rows. Not modelled: `$'...'` ANSI-C quoting, and
-#     `$(...)`/backtick nesting — a command substitution's body is scanned as
-#     ordinary text, so a redirect inside one is seen (fails toward MORE
-#     candidates, never fewer).
+#     the suite's MIRROR rows. Not modelled: `$'...'` ANSI-C quoting.
+#   - Command substitutions (HIMMEL-3622; this bullet used to claim their
+#     bodies were scanned as ordinary text, which was false inside a
+#     double-quoted span — the scanner treats the whole span as inert, so
+#     `x="$(echo hi > P/f)"` wrote into the primary unseen). Now
+#     `_bwimc_subst_bodies` extracts every `$(...)`/backtick body at any
+#     nesting depth (single-quoted text excluded) and the REDIRECT/tee arm (a)
+#     scans each as its own command. Not covered: the verb arms (cp/mv/rm/
+#     touch/sed/ln/git) still do not look inside a substitution body, and
+#     `$((...))` is treated as arithmetic, never a substitution.
 #   - Interpreter bodies: heredoc payloads and `python3 -c '...'` (or any
 #     other non-shell `-c`) are NOT parsed for writes — heredoc bodies are
 #     blanked before scanning specifically so a `>` inside one (`if a > b:`)
@@ -1780,6 +1786,95 @@ _bwimc_check_interp_body() {
     _bwimc_ecwd_pushn="$_bwimc_ibody_saved_pushn"
 }
 
+# _bwimc_subst_paren_end TEXT START — HIMMEL-3622. Sets _BWIMC_PEND to the index
+# of the `)` that closes a `$(` whose body begins at START (TEXT length when it
+# never closes, so an unterminated body is scanned to the end, never dropped).
+# The body is a fresh command context: a fresh scanner state, so only ACTIVE
+# parens count (a `)` inside quotes is text) and a backtick span is skipped
+# whole. Clobbers the shared scanner state — callers save/restore it.
+_bwimc_subst_paren_end() {
+    local text="$1" j="$2" len=${#1} depth=1 ch
+    _bwimc_scan_init
+    while [ "$j" -lt "$len" ]; do
+        ch="${text:$j:1}"
+        _bwimc_scan_step "$ch"
+        if [ "$_BWIMC_ACT" = 1 ]; then
+            case "$ch" in
+                '(') depth=$((depth+1)) ;;
+                ')') depth=$((depth-1)); [ "$depth" -gt 0 ] || break ;;
+                '`')
+                    j=$((j+1))
+                    while [ "$j" -lt "$len" ] && [ "${text:$j:1}" != '`' ]; do
+                        [ "${text:$j:1}" = "\\" ] && j=$((j+1))
+                        j=$((j+1))
+                    done
+                    ;;
+            esac
+        fi
+        j=$((j+1))
+    done
+    [ "$j" -le "$len" ] || j=$len
+    _BWIMC_PEND=$j
+}
+
+# _bwimc_subst_bodies TEXT — HIMMEL-3622. Prints the body of every command
+# substitution in TEXT, `$(...)` and backtick alike, at ANY nesting depth, one
+# body per record (a body may itself span lines). A substitution runs as its
+# own command even inside a double-quoted span, where the shared scanner marks
+# every character inert — so a redirect in `x="$(echo hi > P/f)"` was invisible
+# to the redirect arm. Only a SINGLE-quoted span or an escaped `$`/backtick is
+# literal text. Each body is found with its own fresh scan (so quotes inside it
+# do not confuse the outer walk) and is then recursed into for nested ones; the
+# outer walk jumps over the body, which keeps its own quote state intact.
+# `$((` is arithmetic, not a substitution. Callers run this on the
+# heredoc-BLANKED text, so `git commit -m "$(cat <<'EOF' … EOF)"` yields only
+# `cat <<'EOF'` plus blank lines: message text never becomes a phantom target.
+_bwimc_subst_bodies() {
+    local text="$1" i=0 len=${#1} c q e body sq se sa j end
+    _bwimc_scan_init
+    while [ "$i" -lt "$len" ]; do
+        c="${text:$i:1}"; q="$_BWIMC_Q"; e="$_BWIMC_ESC"
+        body=""; end=-1
+        if [ "$e" != 1 ] && [ "$q" != "'" ]; then
+            if [ "$c" = '`' ]; then
+                j=$((i+1))
+                while [ "$j" -lt "$len" ] && [ "${text:$j:1}" != '`' ]; do
+                    [ "${text:$j:1}" = "\\" ] && j=$((j+1))
+                    j=$((j+1))
+                done
+                [ "$j" -le "$len" ] || j=$len
+                body="${text:$((i+1)):$((j-i-1))}"
+                body="${body//\\\`/\`}"
+                end=$j
+            elif [ "$c" = '$' ] && [ "${text:$((i+1)):1}" = '(' ] && [ "${text:$((i+2)):1}" != '(' ]; then
+                sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
+                _bwimc_subst_paren_end "$text" $((i+2))
+                _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"
+                end=$_BWIMC_PEND
+                body="${text:$((i+2)):$((end-i-2))}"
+            fi
+        fi
+        if [ "$end" -ge 0 ]; then
+            printf '%s\n' "$body"
+            sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
+            _bwimc_subst_bodies "$body"
+            _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"
+            i=$((end+1))
+            continue
+        fi
+        _bwimc_scan_step "$c"
+        i=$((i+1))
+    done
+}
+
+# The redirect arm scans the command AND every substitution body as if each
+# were its own command (HIMMEL-3622). The cheap glob guard keeps the ordinary
+# command on the old path.
+_bwimc_hb_redir="$_bwimc_hb"
+case "$_bwimc_hb" in
+    *'$('*|*'`'*) _bwimc_hb_redir="${_bwimc_hb}"$'\n'"$(_bwimc_subst_bodies "$_bwimc_hb")" ;;
+esac
+
 _bwimc_ecwd="$_bwimc_cwd"
 _bwimc_ecwd_unres=0
 _bwimc_ecwd_pushn=0
@@ -1916,7 +2011,7 @@ while IFS= read -r _bwimc_rclause; do
             _bwimc_ri=$((_bwimc_ri+1))
         fi
     done
-done < <(_bwimc_split_clauses "$_bwimc_hb")
+done < <(_bwimc_split_clauses "$_bwimc_hb_redir")
 
 # ---- (g) HIMMEL-3401: git commands that rewrite a PROTECTED checkout ----
 #

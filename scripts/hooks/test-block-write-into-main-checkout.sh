@@ -1860,6 +1860,42 @@ check_both "74f REGRESSION CONTROL: sed -n '/\\\$(/p' f still ALLOWS" allow "$SD
 BTQ_LIT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo 'don\`t'\",\"cwd\":\"$FIX/wt\"}}"
 check_both "74g REGRESSION CONTROL: echo 'don\`t' still ALLOWS" allow "$BTQ_LIT_JSON"
 
+# HIMMEL-3622: a redirect INSIDE a command substitution writes exactly like a
+# top-level one. The shared quote scanner marks everything inside a
+# double-quoted span inert, so `x="$(echo hi > P/f)"` hid the redirect; the
+# fix extracts every substitution body (any nesting, `$(...)` and backticks,
+# skipping single-quoted text) and runs the SAME redirect-target check on it.
+# DENY rows aim at the primary; ALLOW twins aim the identical shape at the
+# worktree so a blanket "deny anything with $(" cannot pass.
+echo "== HIMMEL-3622 redirects inside command substitutions =="
+_subst_row() { # label verdict command
+    local j
+    j="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$3" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+    check_both "$1" "$2" "$j"
+}
+_P="$FIX/primary/subst-new.txt"
+_W="$FIX/wt/subst-new.txt"
+for _t in "P|block|$_P" "W|allow|$_W"; do
+    _tag="${_t%%|*}"; _rest="${_t#*|}"; _v="${_rest%%|*}"; _f="${_rest#*|}"
+    _subst_row "75a-$_tag assignment of a dq-quoted \$(echo > f)"           "$_v" "x=\"\$(echo hi > $_f)\""
+    _subst_row "75b-$_tag echo dq-quoted \$(printf >f) (no space)"          "$_v" "echo \"\$(printf x >$_f)\""
+    _subst_row "75c-$_tag unquoted assignment \$(echo > f)"                 "$_v" "x=\$(echo hi > $_f)"
+    _subst_row "75d-$_tag backtick in dq span"                              "$_v" "x=\"\`echo hi > $_f\`\""
+    _subst_row "75e-$_tag backtick, unquoted"                               "$_v" "x=\`echo hi > $_f\`"
+    _subst_row "75f-$_tag backtick nested inside \$( ) (J1285O fail-open)"  "$_v" "x=\"\$(echo \`echo hi > $_f\`)\""
+    _subst_row "75g-$_tag \$( \$( ... > f ) ) doubly nested"                "$_v" "x=\"\$(echo \$(echo hi > $_f))\""
+    _subst_row "75h-$_tag redirect after a nested \$( ) in the same body"   "$_v" "x=\"\$(echo \$(pwd) > $_f)\""
+    _subst_row "75i-$_tag tee inside a dq-quoted \$( )"                     "$_v" "x=\"\$(echo hi | tee $_f)\""
+done
+# The heredoc idiom with target-shaped words in the body text stays ALLOW.
+_subst_row "75j commit heredoc idiom, message mentions '> file' and a paren (ALLOW)" allow "git commit -m \"\$(cat <<'EOF'
+fix: a > b (and 'it')
+EOF
+)\""
+_subst_row "75k single-quoted \$(echo > P) is literal text (ALLOW)" allow "echo '\$(echo hi > $_P)'"
+_subst_row "75l read redirect inside a substitution (ALLOW)" allow "x=\"\$(cat < $FIX/primary/existing.txt)\""
+_subst_row "75m fd-dup inside a substitution (ALLOW)" allow "x=\"\$(ls 2>&1)\""
+
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
 # WHY THIS EXISTS: three CR rounds each found one more cell of the SAME finite
