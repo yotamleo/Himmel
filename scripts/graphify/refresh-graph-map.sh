@@ -2491,9 +2491,9 @@ fi   # DO_EXTRACT -- end of the copy + extraction region (--promote-only rejoins
       # Fail loudly on either awk or mv failing, and clean up the tmp file
       # on both paths (belt-and-braces -- it now lives inside $SCRATCH, so
       # the EXIT trap's `rm -rf "$SCRATCH"` would also catch it).
-      # tail, not awk, for the body: BSD awk truncates a record at a NUL byte,
-      # which dropped the rest of the report before the leak scan (macOS T20).
-      if { printf '%s\n' "$report_header"; tail -n +2 "$SCRATCH_REPORT"; } > "$SCRATCH_REPORT.tmp"; then
+      # NULs stripped first: BSD awk truncates a record at a NUL byte, which
+      # dropped the rest of the report before the leak scan (macOS T20).
+      if tr -d '\0' < "$SCRATCH_REPORT" | awk -v h="$report_header" 'NR==1 { print h; next } { print }' > "$SCRATCH_REPORT.tmp"; then
         if ! mv "$SCRATCH_REPORT.tmp" "$SCRATCH_REPORT"; then
           echo "refresh-graph-map: failed to install sanitized report header" >&2
           rm -f "$SCRATCH_REPORT.tmp"
