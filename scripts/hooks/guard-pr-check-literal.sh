@@ -703,12 +703,8 @@ fi
 prlit_nl=$'\n'
 prlit_reader='(cat|tee|grep|wc|head|tail|diff|cmp)'
 PRLIT_ALLOWED_RE='(bash|sh|source|\.)[[:space:]]+["'"'"']?[^[:space:]"'"'"';&|()]*(scripts/cr/[A-Za-z0-9_.-]+\.sh|scripts/handover/merge-on-green\.sh|scripts/handover/console-kit/go\.sh)["'"'"']?'
-prlit_word='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|()"'"'"']+)'
-# Words that may precede the command word: `VAR=x`, a redirection (`</dev/null`,
-# `2>&1`, `<<< text`) and `!`, so `</dev/null bash F` is still an executor.
-prlit_pre="((([A-Za-z_][A-Za-z0-9_]*=${prlit_word}?)|([0-9]*[<>]+&?[[:space:]]*${prlit_word})|!)[[:space:]]+)*"
-PRLIT_EXEC_RE="(^|[;&|(\`{${prlit_nl}]|[[:space:]](then|else|do))[[:space:]]*${prlit_pre}((env|command|nohup|sudo|time|exec|builtin)[[:space:]]+)*([^[:space:];&|()\"']*/)?(bash|sh|dash|zsh|ksh|mksh|source|\\.|eval|exec)([[:space:]]|\$|[;&|)])"
 PRLIT_SHELL_RE='(^|[^[:alnum:]_.-])(bash|sh|dash|zsh|ksh|mksh)([^[:alnum:]_.-]|$)'
+PRLIT_BUILTIN_RE='(^|[^[:alnum:]_.-])(source|eval|exec)([^[:alnum:]_.-]|$)|(^|[[:space:];&|(])\.([[:space:]]|$)'
 PRLIT_CHANNEL_RE='(<<<|(^|[^[:alnum:]_.-])tee([^[:alnum:]_.-]|$)|[^-=>|&]>>?[[:space:]]*[^&>=[:space:]])'
 PRLIT_SHADOW_RE="(^|[;&|(\`{}${prlit_nl}[:space:]])(function[[:space:]]+${prlit_reader}([[:space:]]|\\()|${prlit_reader}[[:space:]]*\\(\\)|alias[[:space:]]+${prlit_reader}=)"
 prlit_backstop() { # prlit_backstop <raw command> - true when the raw text is a reader-to-file-then-run shape
@@ -729,11 +725,11 @@ prlit_backstop() { # prlit_backstop <raw command> - true when the raw text is a 
         t="${t%%"$m"*} ${t#*"$m"}"
     done
     # A shell name anywhere is an executor (a quoted name or a wrapper's options
-    # cannot hide it); source/eval/exec/'.' keep the command-position match.
+    # cannot hide it), and so is a source/eval/exec/'.' word anywhere.
     [[ $t =~ $PRLIT_SHELL_RE ]] && return 0
-    [[ $t =~ $PRLIT_EXEC_RE ]] && return 0
+    [[ $t =~ $PRLIT_BUILTIN_RE ]] && return 0
     t=${t//[\'\"\\]/}
-    [[ $t =~ $PRLIT_EXEC_RE ]]
+    [[ $t =~ $PRLIT_BUILTIN_RE ]]
 }
 if prlit_backstop "$cmd"; then
     shown=${cmd//$'\n'/ }
