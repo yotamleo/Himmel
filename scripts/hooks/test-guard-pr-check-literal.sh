@@ -579,6 +579,9 @@ tee /tmp/scripts/cr/f.sh <<< 'bash scripts/cr/write-verdicts.sh'; bash /tmp//scr
 tee ./scripts/cr/f.sh <<< 'bash scripts/cr/write-verdicts.sh'; bash scripts/cr/f.sh
 tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; command -p source /tmp/f
 tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; builtin source /tmp/f
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; ba''sh /tmp/f
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; b\ash /tmp/f
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; s""h /tmp/f
 BACKSTOP
 run "3913: [tee ...<<< then newline then bash] clean root -> deny" 2 \
     "$(payload "tee /tmp/f <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""$'\n'"bash /tmp/f" "$WT")" "$HR"

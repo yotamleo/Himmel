@@ -729,6 +729,7 @@ prlit_backstop() { # prlit_backstop <raw command> - true when the raw text is a 
     [[ $t =~ $PRLIT_SHELL_RE ]] && return 0
     [[ $t =~ $PRLIT_BUILTIN_RE ]] && return 0
     t=${t//[\'\"\\]/}
+    [[ $t =~ $PRLIT_SHELL_RE ]] && return 0
     [[ $t =~ $PRLIT_BUILTIN_RE ]]
 }
 if prlit_backstop "$cmd"; then
