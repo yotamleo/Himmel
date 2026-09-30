@@ -186,7 +186,10 @@
 # posture -- the determined-bypass class this belt does not target,
 # HIMMEL-912; the classifier still sees these commands): deliberately
 # case-varied paths/vars, a path assembled from shell variables ($X.sh),
-# PowerShell-native $env: syntax, sudo / xargs / find -exec wrappers,
+# PowerShell-native $env: syntax, sudo / xargs / find -exec wrappers (the
+# transparent nice / timeout / stdbuf / ionice / chrt wrappers are NOT a
+# residual since HIMMEL-3904: scan_segment steps over them, and an option
+# wrapper_skip cannot model denies when the segment names a chokepoint),
 # multi-statement command substitutions inside double quotes, and string
 # reconstruction deeper than the bounded eval / `bash -c` recursion.
 #
@@ -1273,6 +1276,50 @@ scan_split_argv() {
     return 0
 }
 
+# wrapper_skip <nice|timeout|stdbuf|ionice|chrt> <index> -- HIMMEL-3904.
+# Step over a transparent process wrapper's own options and operand (W/nw
+# come from scan_segment's dynamic scope) and set WRAP_NEXT to the index of the
+# wrapped command's first word, or -1 when an option cannot be modelled (the
+# caller then denies if the segment names a chokepoint). Options are matched
+# against an explicit list per wrapper, never a general getopt model: an
+# option not on the list is unmodelled, so its operand's role is a guess.
+WRAP_NEXT=-1
+wrapper_skip() {
+    local kind="$1" i="$2" w
+    WRAP_NEXT=-1
+    while [ "$i" -lt "$nw" ]; do
+        w=${W[$i]}
+        case "$w" in
+        --) i=$((i + 1)); break ;;
+        -?*) ;;
+        *) break ;;
+        esac
+        case "$kind:$w" in
+        nice:-n|nice:--adjustment|timeout:-s|timeout:-k|timeout:--signal|timeout:--kill-after|\
+        stdbuf:-i|stdbuf:-o|stdbuf:-e|stdbuf:--input|stdbuf:--output|stdbuf:--error|\
+        ionice:-c|ionice:-n|ionice:--class|ionice:--classdata)
+            i=$((i + 2)) ;;
+        nice:-n?*|nice:--adjustment=*|nice:-[0-9]*|\
+        timeout:-s?*|timeout:-k?*|timeout:--signal=*|timeout:--kill-after=*|\
+        timeout:--preserve-status|timeout:--foreground|timeout:-v|timeout:--verbose|\
+        stdbuf:-i?*|stdbuf:-o?*|stdbuf:-e?*|stdbuf:--input=*|stdbuf:--output=*|stdbuf:--error=*|\
+        ionice:-c?*|ionice:-n?*|ionice:-t|ionice:--ignore|ionice:--class=*|ionice:--classdata=*|\
+        chrt:--batch|chrt:--deadline|chrt:--fifo|chrt:--idle|chrt:--other|chrt:--rr|\
+        chrt:--reset-on-fork|chrt:--verbose|chrt:--max|chrt:--all-tasks)
+            i=$((i + 1)) ;;
+        chrt:--*) return 0 ;;
+        chrt:-*[!abdfimorRv]*) return 0 ;;
+        chrt:-*) i=$((i + 1)) ;;
+        *) return 0 ;;
+        esac
+    done
+    # timeout's DURATION and chrt's PRIORITY are one positional operand.
+    case "$kind" in timeout|chrt) [ "$i" -ge "$nw" ] || i=$((i + 1)) ;; esac
+    [ "$i" -le "$nw" ] || i=$nw
+    WRAP_NEXT=$i
+    return 0
+}
+
 # scan_segment <segment> <inherited assignment names> <depth> [phase] --
 # walk the segment's words to its command position, collecting the leading
 # assignment names that bind to it, then hand the invoked-program token to
@@ -1533,6 +1580,15 @@ scan_segment() {
                 return 0 ;;
             bash|sh|*/bash|*/sh|bash.exe|*/bash.exe|sh.exe|*/sh.exe|.|source)
                 phase=interp; j=$((j + 1)); continue ;;
+            nice|*/nice|timeout|*/timeout|stdbuf|*/stdbuf|ionice|*/ionice|chrt|*/chrt)
+                # HIMMEL-3904: a transparent process wrapper re-enters
+                # command position (`nice env SEAM=x bash chokepoint`), and
+                # its operands are words, not assignments. An option the
+                # list in wrapper_skip cannot model fails CLOSED when the
+                # segment names a chokepoint.
+                wrapper_skip "${w##*/}" $((j + 1))
+                if [ "$WRAP_NEXT" -lt 0 ]; then split_mention "$seg"; return 0; fi
+                asg_ok=0; j=$WRAP_NEXT; continue ;;
             command|exec|nohup)
                 # These re-enter command position but their arguments are
                 # words, not assignments (command VAR=x foo does not export
