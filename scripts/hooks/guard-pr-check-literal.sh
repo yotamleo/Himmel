@@ -708,6 +708,7 @@ prlit_word='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|()"'"'"']+)'
 # `2>&1`, `<<< text`) and `!`, so `</dev/null bash F` is still an executor.
 prlit_pre="((([A-Za-z_][A-Za-z0-9_]*=${prlit_word}?)|([0-9]*[<>]+&?[[:space:]]*${prlit_word})|!)[[:space:]]+)*"
 PRLIT_EXEC_RE="(^|[;&|(\`{${prlit_nl}]|[[:space:]](then|else|do))[[:space:]]*${prlit_pre}((env|command|nohup|sudo|time|exec|builtin)[[:space:]]+)*([^[:space:];&|()\"']*/)?(bash|sh|dash|zsh|ksh|mksh|source|\\.|eval|exec)([[:space:]]|\$|[;&|)])"
+PRLIT_SHELL_RE='(^|[^[:alnum:]_.-])(bash|sh|dash|zsh|ksh|mksh)([^[:alnum:]_.-]|$)'
 PRLIT_CHANNEL_RE='(<<<|(^|[^[:alnum:]_.-])tee([^[:alnum:]_.-]|$)|[^-=>|&]>>?[[:space:]]*[^&>=[:space:]])'
 PRLIT_SHADOW_RE="(^|[;&|(\`{}${prlit_nl}[:space:]])(function[[:space:]]+${prlit_reader}([[:space:]]|\\()|${prlit_reader}[[:space:]]*\\(\\)|alias[[:space:]]+${prlit_reader}=)"
 prlit_backstop() { # prlit_backstop <raw command> - true when the raw text is a reader-to-file-then-run shape
@@ -719,6 +720,11 @@ prlit_backstop() { # prlit_backstop <raw command> - true when the raw text is a 
         m=${BASH_REMATCH[0]}
         t="${t%%"$m"*} ${t#*"$m"}"
     done
+    # A shell name anywhere is an executor (a quoted name or a wrapper's options
+    # cannot hide it); source/eval/exec/'.' keep the command-position match.
+    [[ $t =~ $PRLIT_SHELL_RE ]] && return 0
+    [[ $t =~ $PRLIT_EXEC_RE ]] && return 0
+    t=${t//[\'\"\\]/}
     [[ $t =~ $PRLIT_EXEC_RE ]]
 }
 if prlit_backstop "$cmd"; then
