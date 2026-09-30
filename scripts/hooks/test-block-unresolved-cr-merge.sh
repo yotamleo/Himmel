@@ -276,6 +276,9 @@ for _row in "api-put|gh api -X PUT repos/o/r/pulls/42/merge" \
             "prog-var|G=gh; \${G} pr merge 42 $PIN" \
             "prog-glob-bracket|/usr/bin/g[h] pr merge 42 $PIN" \
             "prog-glob-question|/usr/bin/g? pr merge 42 $PIN" \
+            "wrapper-env-glob|env /usr/bin/g[h] pr merge 42 $PIN" \
+            "wrapper-nice-var|nice \$G pr merge 1 $PIN" \
+            "verb-glob|command gh pr m?rge 1 $PIN" \
             "verb-first|gh merge pr 42 $PIN"; do
     GH_STUB_MODE=clean t "detector-${_row%%|*}-denies" 2 Bash "${_row#*|}"
 done

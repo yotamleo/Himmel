@@ -57,7 +57,8 @@ case "$payload" in
     # A JSON backslash may split the word (`mer\ge`): let jq and the normalized
     # detector below decide instead of skipping.
     # HIMMEL-3929: so may an expansion (`m${X}erge`, a backtick pair).
-    *merge*|*\\*|*\'*|*\$*|*\`*) ;;
+    # A glob word can spell the verb (`m?rge`).
+    *merge*|*\\*|*\'*|*\$*|*\`*|*\**|*\?*|*\[*) ;;
     *) exit 0 ;;
 esac
 
@@ -106,16 +107,34 @@ done
 case "$cmd" in
     *\$*|*\`*) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;;
 esac
-# The mirror case: with a merge word present, every segment's program word must
-# be plain (`^[A-Za-z0-9_./+-]+$`); anything else (`$'\x67\x68' pr merge`,
-# `${G} pr merge`, `g[h]`) fires. Program word = first word of a segment after
-# leading VAR=val assignments. An allowlist, so no spelling needs listing.
+# A word that only GLOBS to `merge` (`m?rge`, `[m]erge`) hides the verb from
+# every text copy: with a gh word it fires too (set -f: no real expansion).
+set -f
+for _w in $cmd; do
+    case "$_w" in
+        *[*?[]*) case "$_w" in *[!*]*)
+            # shellcheck disable=SC2194,SC2254 # the word IS the glob under test
+            case merge in $_w) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;; esac ;;
+        esac ;;
+    esac
+done
+set +f
+# The mirror case: in a segment with a `pr` word then a merge word, EVERY word
+# up to the merge word must be plain (`^[A-Za-z0-9_./+=-]+$`, quote chars
+# ignored); a computed, globbed or wrapper-hidden word (`$'\x67\x68' pr merge`,
+# `${G} pr merge`, `env /usr/bin/g[h] pr merge`) fires. An allowlist, so no
+# spelling needs listing.
 if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -qE '(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)'; then
     # shellcheck disable=SC2020 # five separators each map to a newline, by design
-    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' \
-        | sed -E -e 's/^[[:space:]]+//' -e ':a' -e 's/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//' -e 'ta' \
-        | sed -E -e '/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*$/d' -e 's/[[:space:]].*$//' \
-        | grep -v '^$' | grep -qvE '^[A-Za-z0-9_./+-]+$' && fires=1
+    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' | tr -d "'\"" \
+        | awk '{ pr = 0; bad = 0
+            for (i = 1; i <= NF; i++) { w = $i
+                if (w ~ "^[A-Za-z0-9_./+=-]+$") {
+                    if (w == "pr") pr = 1
+                    else if (w == "merge" && pr && bad) f = 1
+                } else { bad = 1
+                    if (pr && w ~ "(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$)") f = 1 } } }
+            END { exit !f }' && fires=1
 fi
 # ponytail: both the program word AND the verb shell-computed (or `bash -c` fed
 # from a variable holding both) stay undetectable by text, structural backstop
