@@ -354,7 +354,7 @@ bounded_run() {
     "$@" < "$_in" &
     _pid=$!
     set +m
-    ( sleep "$_secs"; : > "$_flag"; kill -TERM -- "-$_pid" 2>/dev/null ) &
+    ( sleep "$_secs"; : > "$_flag"; kill -TERM -- "-$_pid" 2>/dev/null; sleep 1; kill -KILL -- "-$_pid" 2>/dev/null ) &
     _killer=$!
     wait "$_pid"; _rc=$?
     kill "$_killer" 2>/dev/null; wait "$_killer" 2>/dev/null
@@ -417,12 +417,19 @@ fi
 # the process GROUP. The marker rides in the orphan's argv[0] via `exec -a`.
 DF_MARK="bounded-run-double-fork-$$"
 DF_SCRIPT="$TMP/double-fork.sh"
-printf '( trap "" TERM; exec -a "%s" sleep 300 & )\nsleep 300\n' "$DF_MARK" > "$DF_SCRIPT"
+DF_READY="$TMP/double-fork.ready"
+rm -f "$DF_READY"
+# The script records that the marked orphan is alive BEFORE the timeout, so a failed
+# launch cannot make the absence check below pass vacuously.
+printf '( trap "" TERM; exec -a "%s" sleep 300 & )\nsleep 1\npgrep -f "%s" >/dev/null 2>&1 && : > "%s"\nsleep 300\n' "$DF_MARK" "$DF_MARK" "$DF_READY" > "$DF_SCRIPT"
 : > "$TMP/double-fork.in"
-bounded_run 2 "$TMP/double-fork.in" bash "$DF_SCRIPT" >/dev/null 2>&1
+bounded_run 3 "$TMP/double-fork.in" bash "$DF_SCRIPT" >/dev/null 2>&1
 df_rc=$?
 if ! command -v pgrep >/dev/null 2>&1; then
     fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant: pgrep is not available"
+elif [ ! -e "$DF_READY" ]; then
+    fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant: the marked orphan never started, the absence check would be vacuous"
+    pkill -f "$DF_MARK" 2>/dev/null
 elif [ "$df_rc" -ne 124 ]; then
     fail=$((fail+1)); echo "FAIL bounded-run-reaps-double-forked-descendant rc=$df_rc (want 124)"
 else
