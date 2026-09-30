@@ -141,15 +141,19 @@ if grep -Eq '^    timeout-minutes: [0-9]+$' <<< "$blk"; then
 else
   bad "shell-unit-shard: no job-level timeout-minutes (defaults to 6 h)"
 fi
-if grep -Eq '^        timeout-minutes: [0-9]+$' <<< "$blk"; then
+# The at/atd install step alone: from its `- name:` line to the next step.
+step="$(awk '/^      - name: Install \+ enable at\/atd/ {f=1; print; next} f && /^      - / {f=0} f' <<< "$blk")"
+if grep -Eq '^        timeout-minutes: [0-9]+$' <<< "$step"; then
   ok "shell-unit-shard: at/atd install step has its own timeout-minutes"
 else
   bad "shell-unit-shard: at/atd install step has no step-level timeout-minutes"
 fi
-if grep -q 'apt-get .*DPkg::Lock::Timeout=' <<< "$blk"; then
-  ok "shell-unit-shard: apt-get calls carry DPkg::Lock::Timeout"
+apt_total="$(grep -c 'apt-get ' <<< "$step")"
+apt_locked="$(grep -c 'apt-get .*DPkg::Lock::Timeout=' <<< "$step")"
+if [ "$apt_total" -gt 0 ] && [ "$apt_total" -eq "$apt_locked" ]; then
+  ok "shell-unit-shard: every apt-get call in the install step carries DPkg::Lock::Timeout ($apt_locked/$apt_total)"
 else
-  bad "shell-unit-shard: apt-get calls lack DPkg::Lock::Timeout"
+  bad "shell-unit-shard: apt-get calls in the install step lacking DPkg::Lock::Timeout ($apt_locked/$apt_total)"
 fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
