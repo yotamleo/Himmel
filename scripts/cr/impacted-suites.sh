@@ -528,6 +528,9 @@ done <<< "$changed"
 # a file already in the closure joins it, and its own name becomes a needle, so
 # a suite that names only the outermost helper is still reached. The visited
 # set ($seen) makes a source cycle terminate; each round is one git grep.
+# ponytail: line-oriented — a backslash-continued `source \` with the filename on
+# the next line is not followed, upgrade path is joining continuations before the
+# grep if one ever appears in-tree (none does today).
 while [ -s "$front" ]; do
     : > "$work/srcpats"
     while IFS= read -r f; do
@@ -561,10 +564,23 @@ EOF
 }
 while IFS= read -r f; do
     [ -n "$f" ] || continue
-    { git show "${head_sha}:${f}" 2>/dev/null; git show "${mb}:${f}" 2>/dev/null; } > "$work/content" || true
+    # A side that does not exist (file added or deleted) is skipped; a side that
+    # exists but cannot be read fails closed rather than dropping the suite.
+    : > "$work/content" || io_fail "resetting the content-rule scratch file"
+    for rev in "$head_sha" "$mb"; do
+        if git cat-file -e "${rev}:${f}" 2>/dev/null; then
+            git show "${rev}:${f}" >> "$work/content" || io_fail "reading ${f} at ${rev} for the content rules"
+        fi
+    done
     while IFS='|' read -r re rule_suite; do
         [ -n "$re" ] || continue
-        if grep -Eq -- "$re" "$work/content" && grep -Fxq -- "$rule_suite" <<< "$suites"; then
+        cgrep_rc=0
+        grep -Eq -- "$re" "$work/content" || cgrep_rc=$?
+        if [ "$cgrep_rc" -gt 1 ]; then
+            echo "impacted-suites: content-rule grep failed (rc=$cgrep_rc) on ${f} — cannot tell which suites are impacted" >&2
+            exit 2
+        fi
+        if [ "$cgrep_rc" -eq 0 ] && grep -Fxq -- "$rule_suite" <<< "$suites"; then
             printf '%s\n' "$rule_suite" >> "$found" || io_fail "recording a content-rule suite"
         fi
     done < <(content_rules)

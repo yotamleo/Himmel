@@ -475,6 +475,7 @@ out="$(run_is "$range")"
 if grepq "$out" '^scripts/test-top\.sh$'; then pass "far.sh (2 source hops behind mid.sh) -> test-top.sh"; else fail "closure miss: $out"; fi
 if ! grepq "$out" 'test-noise\.sh'; then pass "a non-source mention of far.sh/deep.sh does not widen"; else fail "non-source line widened the closure: $out"; fi
 change scripts/lib/cyc-b.sh
+# gnu-ok: timeout is guarded by command -v and falls back to an unbounded run
 if command -v timeout >/dev/null 2>&1; then out="$( cd "$FX" && timeout 20 bash "$IS" "$range" 2>/dev/null )"; rc=$?; else out="$(run_is "$range")"; rc=0; fi
 if [ "$rc" -eq 0 ] && grepq "$out" '^scripts/test-cyc\.sh$'; then pass "source cycle terminates and still lists test-cyc.sh"; else fail "cycle rc=$rc out=$out"; fi
 
