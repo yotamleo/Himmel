@@ -309,6 +309,16 @@ case "$(cat "$TMP/gate.err")" in
 esac
 assert_eq "G17b the headless refusal says so and names the remedy" "headless" "$said"
 assert_eq "G17c headless: no seam passed -> ALLOW" "0" "$(gate "$Q9" "$GO")"
+# The daemon's cwd is wherever its spawner ran - another repo must not become
+# the anchor and fail the headless refusal open.
+OTHERGIT="$TMP/othergit"; git -c init.defaultBranch=main init -q "$OTHERGIT"
+Q11="$TMP/gproc11"; mkdir -p "$Q11/self"; : > "$Q11/self/stat"
+mkproc "$Q11" 1 0 systemd - /sbin/init
+mkproc "$Q11" 10 1 2.1.285 /opt/claude/versions/2.1.285 /opt/claude/versions/2.1.285 daemon run
+mkproc "$Q11" 20 10 bash /usr/bin/bash bash
+ln -s "$OTHERGIT" "$Q11/10/cwd"
+mkenv "$Q11/10/environ" PATH=/bin "HOME=$GH"
+assert_eq "G17d headless: a daemon started in another repo still refuses a seam -> 96" "96" "$(gate "$Q11" "$GO" HIMMEL_CONSOLE_LEG=1)"
 # An operator session whose cwd is outside the anchor (luna, salus) with
 # HIMMEL_REPO only in the guarded user settings file.
 GH2="$TMP/ghome2"; mkdir -p "$GH2/.claude"

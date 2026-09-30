@@ -46,7 +46,8 @@
 #
 # Anchor: the baseline's HIMMEL_REPO, else HIMMEL_REPO from the guarded user
 # settings file (an operator session whose cwd is luna or salus), else the
-# primary checkout of the claude cwd's repo. The project settings files need no
+# primary checkout of the claude cwd's repo - or, under a daemon, whose cwd is
+# only its spawner's, this copy's own primary. The project settings files need no
 # step of their own: they are read only when the cwd IS the anchor, which the
 # cwd step already yields.
 #
@@ -352,13 +353,13 @@ _csg_gate() {
         fi
         anchor=$(_csg_valid_anchor "$anchor")
     fi
-    [ -n "$anchor" ] || anchor=$(_csg_primary_of "$cwd")
-    # A daemon's cwd is wherever its spawner ran; when nothing above resolves,
-    # fall back to this copy's own primary so the headless refusal cannot fail
-    # open on an unrelated daemon cwd.
+    # A daemon's cwd is wherever its spawner ran (another repo, or none), so it
+    # never names the anchor: use this copy's own primary instead, and the
+    # headless refusal cannot fail open on an unrelated daemon cwd.
     if [ -z "$anchor" ] && [ "$daemon" -eq 1 ]; then
         anchor=$(_csg_primary_of "$root")
     fi
+    [ -n "$anchor" ] || anchor=$(_csg_primary_of "$cwd")
     [ -n "$anchor" ] || return 0
     [ "$root" -ef "$anchor" ] || return 0
     if seams=$(_csg_registry_seams "$root/scripts/chokepoints.json" "$key"); then :; else
