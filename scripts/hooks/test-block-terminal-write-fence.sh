@@ -106,7 +106,7 @@ check "round 6 git log --oneline allowed" allow '{"tool_name":"Bash","tool_input
 check "round 7 escaped executable + escaped key" block '{"tool_name":"Bash","tool_input":{"command":"$'"'"'\\x67it'"'"' config $'"'"'url.https://evil.example/.\\x69nsteadOf'"'"' https://source.example/","cwd":"'"$SWR"'"}}'
 check "round 7 octal executable" block '{"tool_name":"Bash","tool_input":{"command":"$'"'"'\\147\\151\\164'"'"' config url.x.insteadof Y","cwd":"'"$SWR"'"}}'
 check "round 7 escaped config subcommand" block '{"tool_name":"Bash","tool_input":{"command":"git $'"'"'\\x63onfig'"'"' url.x.insteadof Y","cwd":"'"$SWR"'"}}'
-check "round 7 split executable g$'\x69'"t"" block '{"tool_name":"Bash","tool_input":{"command":"g$'"'"'\\x69'"'"'\"t\" -c url.x.insteadof=y","cwd":"'"$SWR"'"}}'
+check "round 7 split executable, hex-escaped middle letter" block '{"tool_name":"Bash","tool_input":{"command":"g$'"'"'\\x69'"'"'\"t\" -c url.x.insteadof=y","cwd":"'"$SWR"'"}}'
 check "round 7 unterminated ANSI-C segment" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.x.insteadof Y","cwd":"'"$SWR"'"}}'
 check "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'","cwd":"'"$SWR"'"}}'
 check "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'","cwd":"'"$SWR"'"}}'
