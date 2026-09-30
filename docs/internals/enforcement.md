@@ -2576,14 +2576,13 @@ unbounded, so a hang there can still exhaust the hook budget (a hook timeout is
 non-blocking); that is not fixed here. The fail-open contract above covers the
 CR/CI gates' own API reads, and also a gate library that fails to load
 (`. cr-merge-gate.sh || exit 0`, `. ci-green-gate.sh || exit 0` skip gates 3/4).
-`--help`/`-h` is not a merge and is never gated, but only as the merge's own
-argument: the flag walk stops at the first `|`, `&`, `>` or `<`, so a merge
-followed by a piped `sort -h`, a backgrounded `ls -h`, or a redirect to a file
-named `--help` is still gated, and a help-flagged merge is a passthrough only
-when the command is nothing else: any shell delimiter (`; & | < >`, newline,
-backtick, `$(`) alongside it is refused, so a real merge cannot ride along,
-however it is spelled (counting merges was tried and found bypassable three
-times).
+There is NO `--help`/`-h` carve-out: a help-flagged merge is gated (and fails
+closed) like any other merge, and the deny text points at `gh help pr merge`,
+which is not a merge and does not match the command regex. Every spelling of the
+carve-out was a new bypass (an escaped space in a `--body` value, `$'..'`
+quoting, delimiters), so it was removed rather than patched again. The flag walk
+stops at the first `|`, `&`, `>` or `<`, and an all-digit prefix before a `>`/`<`
+is an fd number (`2>&1`, `42>x`), not a selector.
 Known remaining gaps: a merge with no selector AND no cwd branch still exits 0
 (nothing to resolve); the residuals filed as HIMMEL-3918 (cd-then-merge cwd
 mismatch, an env/`command` prefix escaping the command regex, the unbounded gate

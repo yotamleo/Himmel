@@ -204,25 +204,33 @@ GH_STUB_MODE=clean GH_STUB_PRVIEW=hang t lookup-timeout-denies 2 Bash "gh pr mer
 grep -q "cannot resolve the PR" "$TMP/err-lookup-timeout-denies" || { echo "FAIL lookup-timeout deny names no lookup reason"; fail=$((fail+1)); }
 # Non-merges stay untouched even with a broken lookup.
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-pr-view-passthrough 0 Bash "gh pr view 42"
-GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-merge-help-passthrough 0 Bash "gh pr merge --help"
-# `--help`/`-h` is honoured ONLY as gh pr merge's own argument. The segment is
-# split on ; && || but NOT on | & or redirects, so a later `-h`/`--help` in the
-# same segment must not turn a real merge into a passthrough.
+# HIMMEL-3915 judge NO-GO: there is NO --help/-h carve-out. Every spelling of it
+# was a new bypass, so a help-flagged merge is gated / fail-closed like any other
+# merge; the deny text points at `gh help pr merge`, which is not a merge.
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-fails-closed 2 Bash "gh pr merge 42 --help"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-short-help-fails-closed 2 Bash "gh pr merge 42 -h"
+grep -q "gh help pr merge" "$TMP/err-merge-help-fails-closed" || { echo "FAIL deny text does not point at gh help pr merge"; fail=$((fail+1)); }
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t gh-help-pr-merge-allowed 0 Bash "gh help pr merge"
+# A -h/--help riding an escaped space or a $'..' string is a body VALUE, not help:
+# the real merge must reach the gates (lookup fails here, so it must DENY).
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-escaped-space-h-gated 2 Bash "gh pr merge 42 --squash --body x\\\\ -h"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-body-eq-escaped-h-gated 2 Bash "gh pr merge 42 --squash --body=x\\\\ -h"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-subject-escaped-help-gated 2 Bash "gh pr merge 42 -t a\\\\ --help"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-ansi-c-quote-h-gated 2 Bash "gh pr merge 42 --squash --body \$'a\\\\' -h \\\\'b'"
+# Delimiter forms stay gated.
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-pipe-h-still-gated 2 Bash "gh pr merge 42 --squash | sort -h"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-bg-h-still-gated 2 Bash "gh pr merge 42 --squash & ls -h"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-redirect-help-still-gated 2 Bash "gh pr merge 42 > --help"
-GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-with-pipe-refused 2 Bash "gh pr merge --help | cat"
-# A help-flagged merge is a passthrough only when it is the ONLY merge: a real
-# one later in the same command must still be gated.
-GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-piped-into-real-merge-gated 2 Bash "gh pr merge --help | gh pr merge 42 --squash"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-real-merge-gated 2 Bash "gh pr merge --help; gh pr merge 42 --squash"
-GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-selectorless-merge-gated 2 Bash "gh pr merge --help; gh pr merge; true"
-# Shell-equivalent spellings a literal count cannot see (a backslash inside a word).
-GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-escaped-merge-gated 2 Bash "gh pr merge --help; gh pr mer\\\\ge 42 --squash"
-# A help-flagged merge on its own stays ungated, with or without other flags.
-GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-alone-passthrough 0 Bash "gh pr merge 42 --help"
-# ...including an INDENTED merge on a later line (\n is the JSON escape).
-GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-indented-merge-gated 2 Bash "gh pr merge --help\n  gh pr merge 42 --squash"
+# An fd redirect is not a selector: `2>&1` must not look up PR #2 (the hook then
+# anchors on the cwd branch, `trunk`).
+GH_STUB_MODE=clean t merge-fd-redirect-not-selector 0 Bash "gh pr merge 2>&1"
+grep -q "^pr view 2 " "$TMP/calls-merge-fd-redirect-not-selector.log" && { echo "FAIL merge-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
+grep -q "^pr view trunk " "$TMP/calls-merge-fd-redirect-not-selector.log" || { echo "FAIL merge-fd-redirect-not-selector did not anchor on the cwd branch"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t merge-squash-fd-redirect-not-selector 0 Bash "gh pr merge --squash 2>/dev/null"
+grep -q "^pr view 2 " "$TMP/calls-merge-squash-fd-redirect-not-selector.log" && { echo "FAIL merge-squash-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t merge-selector-fd-redirect-not-selector 0 Bash "gh pr merge 42>x"
+grep -q "^pr view 42 " "$TMP/calls-merge-selector-fd-redirect-not-selector.log" && { echo "FAIL merge-selector-fd-redirect looked up the fd-prefixed number"; fail=$((fail+1)); }
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
 # advisory only. The removed `zombie*`/`young` cases here drove the HIMMEL-980
 # override off a CodeRabbit CHECK-RUN that production never emits; the

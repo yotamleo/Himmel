@@ -107,7 +107,7 @@ set -f
 # shellcheck disable=SC2086
 set -- $merge_segment
 set +f
-seen_merge=0; help_seen=0; NL=$'\n'
+seen_merge=0
 while [ "$#" -gt 0 ]; do
     if [ "$seen_merge" = "0" ]; then
         [ "$1" = "merge" ] && seen_merge=1
@@ -119,7 +119,14 @@ while [ "$#" -gt 0 ]; do
     # merge flags (HIMMEL-3915 judge round).
     stop_walk=0
     case "$1" in
-        *[\|\&\>\<]*) stop_walk=1; cur="${1%%[|&><]*}"; shift; set -- "$cur" "$@" ;;
+        *[\|\&\>\<]*)
+            stop_walk=1; cur="${1%%[|&><]*}"
+            # `2>&1` / `42>x`: an all-digit prefix before a > or < is an fd
+            # number, not a selector - discard it (HIMMEL-3915 judge NO-GO).
+            case "$1" in
+                *[0-9]\>*|*[0-9]\<*) case "$cur" in *[!0-9]*) ;; *) cur="" ;; esac ;;
+            esac
+            shift; set -- "$cur" "$@" ;;
     esac
     [ "$stop_walk" = "1" ] && [ -z "$1" ] && break
     case "$1" in
@@ -136,7 +143,6 @@ while [ "$#" -gt 0 ]; do
         # re-anchor still backstops flags this list misses).
         -b|--body|-F|--body-file|-t|--subject|-A|--author-email)
             if [ "$#" -ge 2 ]; then shift; fi ;;
-        --help|-h) help_seen=1 ;;   # merges nothing; exit decided after the walk
         --*|-*) ;;             # other flags: ignore (an unknown value-taking
                                # flag may feed a value token; a wrong selector
                                # only fails gh pr view = rc 3 -> re-anchor,
@@ -147,22 +153,9 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-# `gh pr merge --help` merges nothing (HIMMEL-3915) - but only when the command
-# is NOTHING ELSE. Any shell delimiter (; & | < > newline, backtick, $( ) means
-# another command may follow that this segment walk never inspected, and
-# counting literal `gh pr merge` occurrences misses shell-equivalent spellings
-# (`gh pr mer\ge`, `gh pr merge;`, an indented later line): three review rounds
-# each found a new one. So it is a structural rule, not a count: help alone is
-# ungated, help alongside anything is refused.
-if [ "$help_seen" = "1" ]; then
-    # shellcheck disable=SC2016  # literal $( in the pattern - intentional
-    case "$cmd_stripped" in
-        *[\;\&\|\<\>\`]*|*'$('*|*"$NL"*) ;;
-        *) exit 0 ;;
-    esac
-    echo "block-unresolved-cr-merge: 'gh pr merge --help' shares this command with other shell commands; run it on its own so a real merge cannot ride along ungated." >&2
-    exit 2
-fi
+# No --help/-h carve-out (HIMMEL-3915): every spelling of it was a new bypass
+# (escaped spaces, $'..' quoting, delimiters). A help-flagged merge is gated like
+# any other; the deny text points at `gh help pr merge`, which is not a merge.
 
 # Strip surrounding quotes the tokenizer preserved: `gh pr merge "42"` must
 # not hand the literal `"42"` to gh (codex-adv-1 — quoted selector dodged the
@@ -237,7 +230,7 @@ if { [ -z "$go_num" ] || [ -z "$go_sha" ]; } && [ -n "$cwd_branch" ] && { [ "$cw
     go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
 fi
 if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
-    echo "block-unresolved-cr-merge: cannot resolve the PR for '$sel' (gh pr view failed or timed out) — refusing (GATE INTEGRITY: the CR, CI, leg-GO and trust-path gates need the PR number and head). Retry the merge, or use scripts/handover/merge-on-green.sh." >&2
+    echo "block-unresolved-cr-merge: cannot resolve the PR for '$sel' (gh pr view failed or timed out) — refusing (GATE INTEGRITY: the CR, CI, leg-GO and trust-path gates need the PR number and head). Retry the merge, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)" >&2
     exit 2
 fi
 
@@ -261,7 +254,7 @@ if [ "$rc" = "3" ] && [ -n "$cwd_branch" ]; then
     fi
 fi
 if [ "$rc" = "2" ]; then
-    echo "block-unresolved-cr-merge: $reason" >&2
+    echo "block-unresolved-cr-merge: $reason (For help run: gh help pr merge)" >&2
     exit 2
 fi
 
