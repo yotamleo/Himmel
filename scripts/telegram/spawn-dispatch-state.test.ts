@@ -94,6 +94,22 @@ test("a diverged remote branch is differs, not partial", () => {
   } finally { f.cleanup(); }
 }, GIT_TEST_TIMEOUT_MS);
 
+test("a remote tip absent locally is unknown, not differs", () => {
+  const f = fixture();
+  const other = fixtureDir("dispatch-state-other-");
+  try {
+    f.commit("a");
+    git(f.repo, ["push", "origin", "worker/x"]);
+    git(other, ["clone", git(f.repo, ["remote", "get-url", "origin"]), "."]);
+    git(other, ["checkout", "worker/x"]);
+    writeFileSync(join(other, "theirs"), "theirs");
+    git(other, ["add", "theirs"]);
+    git(other, ["commit", "-m", "theirs"]);
+    git(other, ["push", "origin", "worker/x"]);
+    expect(composeDispatchGitState(f.repo, "worker/x", f.base)[0]).toBe("pushed: unknown");
+  } finally { f.cleanup(); removeFixture(other); }
+}, GIT_TEST_TIMEOUT_MS);
+
 test("an unreadable git dir reports unknown for every field", () => {
   const gone = join(fixtureDir("dispatch-state-gone-"), "nope");
   try {

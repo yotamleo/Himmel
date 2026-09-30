@@ -992,6 +992,14 @@ export function gitCapture(cmd: string[], cwd: string, env?: Record<string, stri
 // from git at summary time, never from the worker's own claims; any git read
 // that fails prints `unknown`, never a guess. Read-only (ls-remote uses the
 // fetch URL, so the pushurl quarantine is untouched). Shared by both lanes.
+// merge-base --is-ancestor: 0 = ancestor (remote lags), 1 = not an ancestor, anything else
+// is a git error (e.g. the remote tip was never fetched), which must read `unknown`.
+function ancestry(code: number, branch: string, remoteSha: string, localSha: string): string {
+  if (code === 0) return `partial (origin/${branch} at ${remoteSha}, local HEAD ${localSha})`;
+  if (code === 1) return `differs (origin/${branch} at ${remoteSha}, local HEAD ${localSha}; not an ancestor)`;
+  return "unknown";
+}
+
 export function composeDispatchGitState(worktree: string, branch: string, baseSha: string | undefined): string[] {
   // Bounded and non-interactive: a stalled remote or a credential prompt must not
   // hold an already-finished worker's result hostage; a kill reads as `unknown`.
@@ -1004,9 +1012,7 @@ export function composeDispatchGitState(worktree: string, branch: string, baseSh
     : !remoteSha ? "no (by design, parent owns push)"
     : !localSha ? "unknown"
     : remoteSha === localSha ? `yes (origin/${branch} at ${remoteSha})`
-    : gitCapture(["merge-base", "--is-ancestor", remoteSha, localSha], worktree).code === 0
-      ? `partial (origin/${branch} at ${remoteSha}, local HEAD ${localSha})`
-    : `differs (origin/${branch} at ${remoteSha}, local HEAD ${localSha}; not an ancestor)`;
+    : ancestry(gitCapture(["merge-base", "--is-ancestor", remoteSha, localSha], worktree).code, branch, remoteSha, localSha);
   const count = baseSha ? gitCapture(["rev-list", "--count", `${baseSha}..HEAD`], worktree) : undefined;
   const commits = count && count.code === 0 && /^\d+$/.test(count.stdout.trim()) ? count.stdout.trim() : "unknown";
   const status = gitCapture(["status", "--porcelain"], worktree);
