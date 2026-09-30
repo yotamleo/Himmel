@@ -2004,8 +2004,11 @@ _arm_marker_is_new_arm() {
 # _bash_single_quote <value> — quote one value for the in-distro bash -lc
 # command. The result is composed completely before CMD escaping is applied.
 _bash_single_quote() {
-    local v="$1"
-    v="${v//\'/\'\\\'\'}"
+    local v="$1" _sq="'" _rep
+    # Replacement held in a variable: bash 3.2 (macOS) keeps the backslashes of
+    # an inline `\'\\\'\'` replacement literally, yielding \'\\'\' not '\''.
+    _rep="'\\''"
+    v="${v//$_sq/$_rep}"
     printf "'%s'" "$v"
 }
 
