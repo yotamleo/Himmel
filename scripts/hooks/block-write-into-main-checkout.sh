@@ -1791,16 +1791,36 @@ _bwimc_check_interp_body() {
 # of the `)` that closes a `$(` whose body begins at START (TEXT length when it
 # never closes, so an unterminated body is scanned to the end, never dropped).
 # The body is a fresh command context: a fresh scanner state, so only ACTIVE
-# parens count (a `)` inside quotes is text) and a backtick span is skipped
-# whole. A `case` item's `)` is not a terminator: active `case`/`esac` words
+# parens count (a `)` inside quotes is text); a nested `$(...)` (recursively)
+# or backtick span is skipped whole, quoted or not. A `case` item's `)` is not a terminator: active `case`/`esac` words
 # are counted and a `)` inside an open `case` is skipped (an argument spelled
 # `case` over-extends the body to the end of TEXT, which only over-scans).
 # Clobbers the shared scanner state — callers save/restore it.
 _bwimc_subst_paren_end() {
-    local text="$1" j="$2" len=${#1} depth=1 ch w="" cs=0
+    local text="$1" j="$2" len=${#1} depth=1 ch w="" cs=0 sq se sa
     _bwimc_scan_init
     while [ "$j" -lt "$len" ]; do
         ch="${text:$j:1}"
+        # A nested substitution is parsed on its own, in or out of double
+        # quotes: its body has a quote state of its own, so the flat scan here
+        # would pair the quotes inside it wrongly and end THIS body early.
+        if [ "$_BWIMC_ESC" != 1 ] && [ "$_BWIMC_Q" != "'" ]; then
+            if [ "$ch" = '$' ] && [ "${text:$((j+1)):1}" = '(' ] && [ "${text:$((j+2)):1}" != '(' ]; then
+                sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
+                _bwimc_subst_paren_end "$text" $((j+2))
+                _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"
+                j=$((_BWIMC_PEND+1)); w=""
+                continue
+            elif [ "$ch" = '`' ]; then
+                j=$((j+1))
+                while [ "$j" -lt "$len" ] && [ "${text:$j:1}" != '`' ]; do
+                    [ "${text:$j:1}" = "\\" ] && j=$((j+1))
+                    j=$((j+1))
+                done
+                j=$((j+1)); w=""
+                continue
+            fi
+        fi
         _bwimc_scan_step "$ch"
         if [ "$_BWIMC_ACT" = 1 ]; then
             case "$ch" in
@@ -1814,13 +1834,6 @@ _bwimc_subst_paren_end() {
             case "$ch" in
                 '(') depth=$((depth+1)) ;;
                 ')') [ "$cs" -gt 0 ] || { depth=$((depth-1)); [ "$depth" -gt 0 ] || break; } ;;
-                '`')
-                    j=$((j+1))
-                    while [ "$j" -lt "$len" ] && [ "${text:$j:1}" != '`' ]; do
-                        [ "${text:$j:1}" = "\\" ] && j=$((j+1))
-                        j=$((j+1))
-                    done
-                    ;;
             esac
         fi
         j=$((j+1))
