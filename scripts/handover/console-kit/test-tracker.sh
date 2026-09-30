@@ -246,8 +246,12 @@ printf '%s\n' "VERSION_CAP_OVERRIDES = {'v1.0.1': {'tickets': 30, 'bugs': 0.45}}
 # Effort model B words its rules differently and carries the bank rate in effort_model.
 printf '%s\n' '{"main_sha_at_build":"abcdef123456","effort_model":{"p90_cap":0.8,"bank_per_seq":0.009},"notes":["effort S-eq: XS .44 S 1 M 2.2 L 5 XL 11.1; synthetic","load (bank) = median x exp(sigma^2/2) x 0.009 bank per S-eq (the log-normal MEAN)","a version holds < 18 tickets, layer load within cap, total mean load within 0.55 and P90 within the model cap"]}' \
     > "$plan/stage3/meta.json"
+# Under model B a plan-first row's effort_mid already holds its slice mean (XS 0.44 plus overrun = 0.49).
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' key version layer effort_mid commit slice_effort HIMMEL-1 v1.0.1 bugs 1 committed '' \
+    HIMMEL-8 v1.0.1b bugs 0.49 plan-first XS > "$plan/stage3/placement.tsv"
 render >/dev/null
 html8="$(cat "$out" 2>/dev/null)"
+contains 'model B: a plan-first row loads the placer slice mean, as the placer sums it (HIMMEL-3990)' "$html8" '"XS","",0.0044]'
 contains 'model B wording: the ticket cap (HIMMEL-3990)' "$html8" 'at most 18 tickets'
 contains 'model B wording: the mean load cap (HIMMEL-3990)' "$html8" 'at most 0.55 bank of load'
 contains 'model B wording: the bank rate, overruns included (HIMMEL-3990)' "$html8" 'overruns included, × 0.009 bank'

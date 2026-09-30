@@ -468,7 +468,8 @@ def main():
 
     def fields(k, sl='', mid=0.0):
         # P[14] issue_plain; P[15] the ticket's load in bank: effort_mid x per, or only its slice when planning comes first.
-        ld = None if rules['per'] is None else round((seqm.get(sl, 0) if sl else mid) * rules['per'], 4)
+        # Under an effort model the placer's effort_mid already is the slice's mean (overrun included), so it is used as is.
+        ld = None if rules['per'] is None else round((seqm.get(sl, 0) if sl and not rules['model'] else mid) * rules['per'], 4)
         return [uimp.get(k, ''), erange.get(k, ''), ready.get(k), impact.get(k), sl, plain.get(k, ''), ld]
     themes = sorted(set(theme.values()) | {'(no theme)', '(unplanned)'})
     tidx = {t: i for i, t in enumerate(themes)}
