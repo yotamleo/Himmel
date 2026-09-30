@@ -86,6 +86,7 @@ case "$1 $2" in
   "api graphql")
     case "$GH_STUB_MODE" in
       cr-ci-api-error) exit 1 ;;
+      cr-hang) sleep 30; exit 1 ;;   # HIMMEL-3918: a hung GraphQL read
       unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
       other-author) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"someuser"}}]}}]}}}}}' ;;
       *) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
@@ -95,6 +96,7 @@ case "$1 $2" in
   "api repos/o/r/commits/abc123/check-runs"*)
     case "$GH_STUB_MODE" in
       cr-ci-api-error) exit 1 ;;
+      ci-hang)  sleep 30; exit 1 ;;   # HIMMEL-3918: a hung check-runs read
       ci-red)   echo '{"check_runs":[{"name":"tests","status":"completed","conclusion":"failure"}]}' ;;
       ci-green) echo '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}' ;;
       *)        echo '{"check_runs":[]}' ;;
@@ -184,13 +186,13 @@ if [ "${HIMMEL_1495_SELF:-0}" = "1" ]; then
 fi
 
 GH_STUB_MODE=unresolved t merge-with-unresolved-blocks   2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 # HIMMEL-3915: the contract is split. The PR LOOKUP fails closed on a real merge
 # (every gh call erroring = lookup unresolved = DENY; was fail-open, rc 0). The
 # CR/CI gates' own API-read errors stay fail-open (HIMMEL-936) once the lookup
 # resolved.
 GH_STUB_MODE=error      t api-error-lookup-fails-closed  2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=cr-ci-api-error t cr-ci-api-error-fails-open 0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=cr-ci-api-error t cr-ci-api-error-fails-open 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-selector-and-reanchor-denies 2 Bash "gh pr merge 42 --squash"
 grep -q "cannot resolve the PR" "$TMP/err-lookup-fail-selector-and-reanchor-denies" || { echo "FAIL lookup-fail deny names no lookup reason"; fail=$((fail+1)); }
 grep -q "merge-on-green.sh" "$TMP/err-lookup-fail-selector-and-reanchor-denies" || { echo "FAIL lookup-fail deny does not name merge-on-green.sh"; fail=$((fail+1)); }
@@ -224,44 +226,138 @@ GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-redirect-help-still-gated 2 Bash 
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-real-merge-gated 2 Bash "gh pr merge --help; gh pr merge 42 --squash"
 # An fd redirect is not a selector: `2>&1` must not look up PR #2 (the hook then
 # anchors on the cwd branch, `trunk`).
-GH_STUB_MODE=clean t merge-fd-redirect-not-selector 0 Bash "gh pr merge 2>&1"
+GH_STUB_MODE=clean t merge-fd-redirect-not-selector 0 Bash "gh pr merge 2>&1 --match-head-commit abc123"
 grep -q "^pr view 2 " "$TMP/calls-merge-fd-redirect-not-selector.log" && { echo "FAIL merge-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
 grep -q "^pr view trunk " "$TMP/calls-merge-fd-redirect-not-selector.log" || { echo "FAIL merge-fd-redirect-not-selector did not anchor on the cwd branch"; fail=$((fail+1)); }
-GH_STUB_MODE=clean t merge-squash-fd-redirect-not-selector 0 Bash "gh pr merge --squash 2>/dev/null"
+GH_STUB_MODE=clean t merge-squash-fd-redirect-not-selector 0 Bash "gh pr merge --squash 2>/dev/null --match-head-commit abc123"
 grep -q "^pr view 2 " "$TMP/calls-merge-squash-fd-redirect-not-selector.log" && { echo "FAIL merge-squash-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
-GH_STUB_MODE=clean t merge-selector-fd-redirect-not-selector 0 Bash "gh pr merge 42>x"
+GH_STUB_MODE=clean t merge-selector-fd-redirect-not-selector 0 Bash "gh pr merge 42>x --match-head-commit abc123"
 grep -q "^pr view 42 " "$TMP/calls-merge-selector-fd-redirect-not-selector.log" && { echo "FAIL merge-selector-fd-redirect looked up the fd-prefixed number"; fail=$((fail+1)); }
 # The fd rule keys on the CUT character: `42|x>y` / `42&2>x` cut at | or & and
 # 42 IS the selector (a digit before a LATER > must not discard it).
-GH_STUB_MODE=clean t merge-pipe-then-redirect-keeps-selector 0 Bash "gh pr merge 42|base64>x"
+GH_STUB_MODE=clean t merge-pipe-then-redirect-keeps-selector 0 Bash "gh pr merge --match-head-commit abc123 42|base64>x"
 grep -q "^pr view 42 " "$TMP/calls-merge-pipe-then-redirect-keeps-selector.log" || { echo "FAIL merge-pipe-then-redirect dropped selector 42"; fail=$((fail+1)); }
-GH_STUB_MODE=clean t merge-amp-then-fd-redirect-keeps-selector 0 Bash "gh pr merge 42&2>x"
+GH_STUB_MODE=clean t merge-amp-then-fd-redirect-keeps-selector 0 Bash "gh pr merge --match-head-commit abc123 42&2>x"
 grep -q "^pr view 42 " "$TMP/calls-merge-amp-then-fd-redirect-keeps-selector.log" || { echo "FAIL merge-amp-then-fd-redirect dropped selector 42"; fail=$((fail+1)); }
+# ── HIMMEL-3918: six residual gaps. Every row below is RED on 4822509f. Each
+# uses GH_STUB_MODE=clean plus a valid pin, so the ONLY thing that can produce
+# rc 2 is the rule under test (a vacuous deny from another gate cannot pass).
+PIN="--match-head-commit abc123"
+# (5) head TOCTOU: a direct merge must pin the head the gates read.
+GH_STUB_MODE=clean t pin-missing-denies 2 Bash "gh pr merge 42 --squash"
+grep -q "must pin --match-head-commit abc123" "$TMP/err-pin-missing-denies" || { echo "FAIL pin-missing deny text does not name the head to pin"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t pin-mismatch-denies 2 Bash "gh pr merge 42 --squash --match-head-commit deadbeef"
+grep -q "does not equal the head abc123" "$TMP/err-pin-mismatch-denies" || { echo "FAIL pin-mismatch deny text"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t pin-eq-form-allows 0 Bash "gh pr merge 42 --squash --match-head-commit=abc123"
+# (6) a redirect before the selector must not end the walk: gh merges #42, so the
+# hook must look up 42 - not re-anchor to the cwd branch (`trunk`).
+for _row in "redir-fd-dup|gh pr merge 2>&1 42 $PIN" \
+            "redir-devnull|gh pr merge 2>/dev/null 42 --squash $PIN" \
+            "redir-spaced|gh pr merge > f 42 $PIN" \
+            "redir-attached|gh pr merge >f 42 $PIN" \
+            "redir-amp-both|gh pr merge &>/dev/null 42 $PIN" \
+            "redir-append-spaced|gh pr merge --squash >> f 42 $PIN" \
+            "redir-input|gh pr merge < f 42 $PIN"; do
+    _n=${_row%%|*}; _c=${_row#*|}
+    GH_STUB_MODE=clean t "$_n" 0 Bash "$_c"
+    grep -q "^pr view 42 " "$TMP/calls-$_n.log" || { echo "FAIL $_n did not look up selector 42 (walk stopped at the redirect)"; fail=$((fail+1)); }
+    grep -q "^pr view trunk " "$TMP/calls-$_n.log" && { echo "FAIL $_n re-anchored on the cwd branch"; fail=$((fail+1)); }
+done
+# A redirect TARGET is never the selector: `> 42` is a file named 42.
+GH_STUB_MODE=clean t redir-target-not-selector 0 Bash "gh pr merge > 42 $PIN"
+grep -q "^pr view 42 " "$TMP/calls-redir-target-not-selector.log" && { echo "FAIL redir-target-not-selector read the redirect target as the selector"; fail=$((fail+1)); }
+# (2) env / command / builtin / exec / assignment prefixes: gated, not skipped.
+for _row in "prefix-env|env gh pr merge 42 --squash $PIN" \
+            "prefix-env-flags|env -i FOO=1 gh pr merge 42 $PIN" \
+            "prefix-command|command gh pr merge 42 $PIN" \
+            "prefix-builtin|builtin gh pr merge 42 $PIN" \
+            "prefix-exec|exec gh pr merge 42 $PIN" \
+            "prefix-assign|FOO=1 gh pr merge 42 $PIN" \
+            "prefix-assign-two|A=1 B=2 gh pr merge 42 $PIN" \
+            "prefix-after-pipe|true | env gh pr merge 42 $PIN" \
+            "prefix-after-and|true && command gh pr merge 42 $PIN"; do
+    _n=${_row%%|*}; _c=${_row#*|}
+    GH_STUB_MODE=clean t "$_n" 2 Bash "$_c"
+    grep -q "prefix or a NAME=value" "$TMP/err-$_n" || { echo "FAIL $_n deny text is not the prefix refusal"; fail=$((fail+1)); }
+done
+# The single-`&` / `|` command position (an existing hole of the same class):
+GH_STUB_MODE=unresolved t merge-after-bg-amp-gated 2 Bash "sleep 1 & gh pr merge 42 --squash $PIN"
+GH_STUB_MODE=unresolved t merge-after-pipe-gated 2 Bash "echo x | gh pr merge 42 --squash $PIN"
+# Prefix look-alikes stay untouched: no merge, or the words are only text.
+GH_STUB_MODE=clean t prefix-lookalike-nonmerge-allows 0 Bash "env gh pr view 42"
+GH_STUB_MODE=clean t prefix-lookalike-quoted-allows 0 Bash "git commit -m \\\"env gh pr merge 42\\\""
+# (1) a directory change earlier in the command moves gh off the hook's cwd.
+for _row in "cd-and|cd /tmp && gh pr merge 42 $PIN" \
+            "cd-semicolon|cd /tmp; gh pr merge 42 $PIN" \
+            "cd-subshell|(cd /tmp; gh pr merge 42 $PIN)" \
+            "cd-pushd|pushd /tmp >/dev/null && gh pr merge 42 $PIN" \
+            "cd-builtin|builtin cd /tmp && gh pr merge 42 $PIN"; do
+    _n=${_row%%|*}; _c=${_row#*|}
+    GH_STUB_MODE=clean t "$_n" 2 Bash "$_c"
+    grep -q "directory change" "$TMP/err-$_n" || { echo "FAIL $_n deny text is not the directory-change refusal"; fail=$((fail+1)); }
+done
+GH_STUB_MODE=clean t cd-word-quoted-allows 0 Bash "gh pr merge 42 $PIN --body \\\"cd here\\\""
+GH_STUB_MODE=clean t git-dash-C-allows 0 Bash "git -C /tmp status && gh pr merge 42 $PIN"
+# (3) every gate-library gh call is bounded (10s); a hang = DENY, never the hook
+# budget expiring open. The stub sleeps 30s: <25s proves the bound fired.
+for _row in "cr-graphql-hang|cr-hang" "ci-checkruns-hang|ci-hang"; do
+    _n=${_row%%|*}; _m=${_row#*|}
+    _t0=$SECONDS
+    GH_STUB_MODE=$_m t "$_n" 2 Bash "gh pr merge 42 --squash $PIN"
+    [ $((SECONDS - _t0)) -lt 25 ] || { echo "FAIL $_n took $((SECONDS - _t0))s - the gate's gh calls are not bounded"; fail=$((fail+1)); }
+    grep -q "timed out (10s bound)" "$TMP/err-$_n" || { echo "FAIL $_n deny text is not the gate-timeout refusal"; fail=$((fail+1)); }
+done
+# (4) a gate library that will not load DENIES on a real merge (was `|| exit 0`).
+for _lib in cr-merge-gate ci-green-gate; do
+    _root="$TMP/nolib-$_lib"
+    mkdir -p "$_root/scripts/hooks"
+    cp -R "$SCRIPT_DIR/../lib" "$_root/scripts/lib"
+    cp "$HOOK" "$_root/scripts/hooks/block-unresolved-cr-merge.sh"
+    rm -f "$_root/scripts/lib/$_lib.sh"
+    _rc=0
+    payload Bash "gh pr merge 42 --squash $PIN" | GH_STUB_MODE=clean GH_STUB_LOG="$TMP/calls-nolib-$_lib.log" \
+        bash "$_root/scripts/hooks/block-unresolved-cr-merge.sh" >/dev/null 2>"$TMP/err-nolib-$_lib" || _rc=$?
+    if [ "$_rc" = "2" ] && grep -q "cannot load scripts/lib/$_lib.sh" "$TMP/err-nolib-$_lib"; then
+        pass=$((pass+1)); echo "ok   lib-missing-$_lib-denies"
+    else
+        fail=$((fail+1)); echo "FAIL lib-missing-$_lib-denies (rc=$_rc want 2) err=$(cat "$TMP/err-nolib-$_lib")"
+    fi
+    # An unparseable lib (a truncated file) is the same refusal.
+    printf 'if this is not valid bash (((\n' > "$_root/scripts/lib/$_lib.sh"
+    _rc=0
+    payload Bash "gh pr merge 42 --squash $PIN" | GH_STUB_MODE=clean GH_STUB_LOG="$TMP/calls-badlib-$_lib.log" \
+        bash "$_root/scripts/hooks/block-unresolved-cr-merge.sh" >/dev/null 2>"$TMP/err-badlib-$_lib" || _rc=$?
+    if [ "$_rc" = "2" ] && grep -q "cannot load scripts/lib/$_lib.sh" "$TMP/err-badlib-$_lib"; then
+        pass=$((pass+1)); echo "ok   lib-unparseable-$_lib-denies"
+    else
+        fail=$((fail+1)); echo "FAIL lib-unparseable-$_lib-denies (rc=$_rc want 2) err=$(cat "$TMP/err-badlib-$_lib")"
+    fi
+done
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
 # advisory only. The removed `zombie*`/`young` cases here drove the HIMMEL-980
 # override off a CodeRabbit CHECK-RUN that production never emits; the
 # HIMMEL-1072 `pending`/`absent`/identity-mismatch BLOCK cases they replaced
 # are themselves demoted below — only the thread + body-findings gates still
 # block a merge.
-GH_STUB_MODE=inflight   t inflight-review-allows         0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=inflight   t inflight-review-allows         0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 # An unreviewed head no longer blocks a merge on its own — the #1243
 # regression fixture, but HIMMEL-3360 supersedes HIMMEL-1072's stance.
-GH_STUB_MODE=cr-absent  t absent-review-allows           0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=cr-absent  t absent-review-allows           0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 # Identity over display name (HIMMEL-1058): still resolves to `absent`, still
 # advisory only.
-GH_STUB_MODE=cr-spoofed t spoofed-creator-id-allows      0 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=other-author t other-author-thread-allows 0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=cr-spoofed t spoofed-creator-id-allows      0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
+GH_STUB_MODE=other-author t other-author-thread-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 # HIMMEL-3360: the review-FRESHNESS mechanism (HIMMEL-1181) is removed from
 # cr-merge-gate.sh entirely — a stale-anchored review object no longer blocks.
 # Regression pin: allow, and the freshness endpoint is never even queried.
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-no-longer-blocks 0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-no-longer-blocks 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 grep -qi "reviews(last:" "$TMP/calls-freshness-stale-no-longer-blocks.log" && { echo "FAIL freshness-stale-no-longer-blocks still queries the removed freshness endpoint"; fail=$((fail+1)); }
 # ── HIMMEL-1043: CI-green gate runs SECOND (after the CR gate) ──
 # ci-red: CR gate passes (resolved CodeRabbit thread + a success CodeRabbit
 # STATUS), but a non-CodeRabbit check-run ("tests") failed -> CI gate
 # blocks. ci-green: every check-run green -> merge allowed.
 GH_STUB_MODE=ci-red   t merge-over-red-ci-blocks    2 Bash "gh pr merge 42 --squash"
-GH_STUB_MODE=ci-green t merge-over-green-ci-allows  0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=ci-green t merge-over-green-ci-allows  0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 # CodeRabbit #1230: a CR-gate bypass must NOT disable the independent CI gate.
 # A red-CI merge with CR_MERGE_GATE_OK=1 (or CR_PROFILE=none) is STILL blocked
 # by the CI gate. (Under the old top early-exit these returned 0 — the bug.)
@@ -284,9 +380,9 @@ GH_STUB_MODE=unresolved t quoted-merge-text-passthrough  0 Bash "git commit -m \
 # coderabbit app round: quoted --repo value must not eat the selector (token
 # positions preserved by the Q placeholder; bogus repo re-anchors repo-less)
 GH_STUB_MODE=unresolved t quoted-repo-value-blocks       2 Bash "gh pr merge --repo \\\"o/r\\\" 42 --squash"
-GH_STUB_MODE=unresolved CR_MERGE_GATE_OK=1 t bypass-allows 0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=unresolved CR_MERGE_GATE_OK=1 t bypass-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 unset CR_MERGE_GATE_OK
-GH_STUB_MODE=unresolved CR_PROFILE=none t profile-none-allows 0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=unresolved CR_PROFILE=none t profile-none-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 unset CR_PROFILE
 
 # ── HIMMEL-3142 gate 3: console-GO merge gate — runs only when
@@ -341,7 +437,7 @@ rm -f "$GOROOT/.locks/go/42.abc123"
 
 # HIMMEL_CONSOLE_LEG=0 is the falsy convention (go.sh/merge-on-green.sh share
 # it) -> gate 3 never activates, no GO file needed
-HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-falsy-allows 0 Bash "gh pr merge 42 --squash"
+HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-falsy-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 
 # inversion control: a VALID matching GO file present, marker flipped OFF ->
 # still allowed. Discriminates the marker from the go_root/file as the thing
@@ -350,14 +446,14 @@ HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-fals
 # that is really keying off go_root/file presence rather than the marker; a
 # GO file genuinely present here removes that ambiguity.
 printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
-HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-falsy-with-go-present-allows 0 Bash "gh pr merge 42 --squash"
+HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-falsy-with-go-present-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 rm -f "$GOROOT/.locks/go/42.abc123"
 
 # a non-leg session (HIMMEL_CONSOLE_LEG unset, the suite default) is
 # completely untouched by gate 3 even with an unresolvable go_root
 # (HANDOVER_DIR left unset here) -- "a gate that blocks everything is not a
 # gate".
-GH_STUB_MODE=clean t non-leg-untouched-by-go-gate 0 Bash "gh pr merge 42 --squash"
+GH_STUB_MODE=clean t non-leg-untouched-by-go-gate 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 
 grep -qi "no console GO" "$TMP/err-leg-no-go-blocks" || { echo "FAIL leg-no-go reason missing"; fail=$((fail+1)); }
 grep -q "42.abc123" "$TMP/err-leg-no-go-blocks" || { echo "FAIL leg-no-go reason missing GO path"; fail=$((fail+1)); }
@@ -1123,7 +1219,7 @@ HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean \
     t non-trust-leg-ordinary-go-allows 0 Bash "$PIN"
 rm -f "$TRUST_GO"
 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean \
-    t non-trust-operator-no-go-allows 0 Bash "gh pr merge 42 --squash"
+    t non-trust-operator-no-go-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 
 # Every unreadable input fails closed, leg and operator alike — even with a
 # valid GO in place: a trust check that cannot run is never "no trust path".
@@ -1164,7 +1260,7 @@ grep -q "does not name the repo PR #42 resolved on (o/r)" "$TMP/err-trust-path-q
 # Control: a PR genuinely on another repo (no list there, the anchor's origin
 # is o/r) is still not-adopted and passes with no GO.
 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo GH_STUB_TRUST_FILE=scripts/ci/run.sh \
-    t trust-other-repo-not-adopted-allows 0 Bash "gh pr merge 42 --squash --repo other/repo"
+    t trust-other-repo-not-adopted-allows 0 Bash "gh pr merge 42 --squash --repo other/repo --match-head-commit abc123"
 # The same rule at the lib, which merge-on-green.sh shares: a non-canonical
 # nwo's 404 is refused, never "not-adopted", even without the hook's guard.
 tp_rc=0

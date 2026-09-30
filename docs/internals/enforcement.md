@@ -2602,24 +2602,40 @@ bounded to 10s per attempt. On a real merge command, an unresolved lookup (every
 attempt that ran failed, or timed out) DENIES for every session, naming
 `scripts/handover/merge-on-green.sh` as the sanctioned path; a refusal costs a
 retry. It used to exit 0 after the CR/CI gates, so a transient gh/auth error let
-a trust-path PR through with no GO. Only that INITIAL lookup is bounded: the CR
-and CI gates' own `gh pr view` calls (`cr-merge-gate.sh:212,214`) are still
-unbounded, so a hang there can still exhaust the hook budget (a hook timeout is
-non-blocking); that is not fixed here. The fail-open contract above covers the
-CR/CI gates' own API reads, and also a gate library that fails to load
-(`. cr-merge-gate.sh || exit 0`, `. ci-green-gate.sh || exit 0` skip gates 3/4).
-There is NO `--help`/`-h` carve-out: a help-flagged merge is gated (and fails
+a trust-path PR through with no GO. The fail-open contract above covers the
+CR/CI gates' own API reads (a non-timeout failure); the residuals that were
+open here are closed by HIMMEL-3918, below. There is NO `--help`/`-h` carve-out: a help-flagged merge is gated (and fails
 closed) like any other merge, and the deny text points at `gh help pr merge`,
 which is not a merge and does not match the command regex. Every spelling of the
 carve-out was a new bypass (an escaped space in a `--body` value, `$'..'`
 quoting, delimiters), so it was removed rather than patched again. The flag walk
-stops at the first `|`, `&`, `>` or `<`, and an all-digit prefix before a `>`/`<`
-is an fd number (`2>&1`, `42>x`), not a selector.
-Known remaining gaps: a merge with no selector AND no cwd branch still exits 0
-(nothing to resolve); the residuals filed as HIMMEL-3918 (cd-then-merge cwd
-mismatch, an env/`command` prefix escaping the command regex, the unbounded gate
-lookups, the lib-load fail-open, head TOCTOU incl. an unpinned operator merge of
-a non-trust PR that gained a trust-path file after the check).
+stops at the first `|` or `&` (HIMMEL-3918 item 6: a redirect no longer ends it).
+Known remaining gap: a merge with no selector AND no cwd branch still exits 0
+(nothing to resolve).
+
+**HIMMEL-3918 — six residuals closed, all by DENY rather than parsing** (every
+special-case parse rule in this hook became a bypass in #1494). Each deny names
+`scripts/handover/merge-on-green.sh` as the sanctioned path.
+1. *cwd mismatch:* a `cd`/`pushd`/`popd` anywhere before the merge denies
+   ("directory change"), since the hook resolves against its own cwd, not gh's.
+2. *Prefixes:* `env`/`command`/`builtin`/`exec`/`nohup`/`time`/`sudo`/`xargs`
+   or a `NAME=value` assignment before `gh pr merge` denies ("prefix or a
+   NAME=value"). The command-position boundary also now includes a single `&`,
+   `|` and `` ` ``/`$(`, so `sleep 1 & gh pr merge` and `x | gh pr merge` are gated.
+3. *Bounded gate lookups:* the hook shadows `gh` with a 10 s bounded function for
+   everything the sourced gate libraries call (libs untouched); a timeout on a
+   real merge denies ("timed out (10s bound)"), never a hook-budget expiry.
+4. *Lib-load:* a gate lib that is missing, unreadable, unparseable, or lacks its
+   function denies (was `|| exit 0`).
+5. *Head TOCTOU:* every direct merge must pin `--match-head-commit` (space or
+   `=` form) equal to the head the gates read, else deny. Checked last so each
+   earlier gate keeps its own reason. `merge-on-green.sh` pins its own head in a
+   subprocess the hook never sees, so it is unchanged.
+6. *Redirects:* the selector walk skips redirect tokens (and the target of a
+   spaced `> f`, and an fd prefix) instead of stopping at them.
+CRs are stripped from the command at the capture boundary. Not covered: a
+path-qualified `gh` (`/usr/bin/gh`, `\gh`) and `bash -c '...'` wrappers (the
+executor grammar, owned by the prlit backstop work).
 A degraded VERDICT query is the one exception that does not return early: the
 thread query still runs and its evidence still blocks, because an unresolved
 thread is evidence even when the status endpoint is down (observed live — GitHub

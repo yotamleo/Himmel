@@ -59,6 +59,7 @@ case "$payload" in
 esac
 
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+cmd=$(printf '%s' "$cmd" | tr -d '\r')
 [ -z "$cmd" ] && exit 0
 
 # Quote-blindness guard (coderabbit CR round): match + tokenize on a copy with
@@ -71,6 +72,18 @@ cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null 
 # residue whose worst case is a mis-extracted selector -> rc=3 re-anchor ->
 # fail-open, never a false block on quoted text.
 cmd_stripped=$(printf '%s' "$cmd" | sed -e "s/'[^']*'/Q/g" -e 's/"[^"]*"/Q/g')
+
+_deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
+
+# HIMMEL-3918 (2): a prefix before `gh` (env / command / builtin / exec / ...,
+# or a NAME=value assignment) moved `gh` out of command position, so the anchor
+# below skipped the merge entirely. Stripping prefixes needs a grammar (env -u X,
+# env -i, `command -p`, ...), and every clever parse rule here has been a bypass
+# (HIMMEL-3915), so a prefixed merge is DENIED, not parsed.
+# shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
+if printf '%s' "$cmd_stripped" | grep -qE '(^|[;&|`$(]|[[:space:]])(env|command|builtin|exec|nohup|time|sudo|xargs)[[:space:]]+([^;&|]*[[:space:]])?gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
+    _deny "a gh pr merge behind an env/command/builtin/exec prefix or a NAME=value assignment is not parsed — refusing (GATE INTEGRITY). Run it bare with --match-head-commit, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+fi
 
 # Command-position anchor (POSIX classes - BSD grep lacks \s/\b; coderabbit
 # app round). `merge` must be followed by whitespace or end-of-string.
@@ -91,7 +104,10 @@ normalised=${normalised//||/$'\n'}
 normalised=${normalised//;/$'\n'}
 while IFS= read -r segment || [ -n "$segment" ]; do
     # shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
-    if printf '%s' "$segment" | grep -qE '(^|[`$(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
+    # HIMMEL-3918: the boundary set matches the command-position anchor above (a
+    # bare `&` / `|` is not a segment split, so `sleep 1 & gh pr merge 42` and
+    # `x | gh pr merge 42` must still find their merge here, not fall to exit 0).
+    if printf '%s' "$segment" | grep -qE '(^|[;&|`$(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
         merge_segment="$segment"
         break
     fi
@@ -99,6 +115,14 @@ done <<EOF
 $normalised
 EOF
 [ -z "$merge_segment" ] && exit 0
+
+# HIMMEL-3918 (1): the cwd-branch anchor (and every gh call) resolves against the
+# payload's cwd, but a `cd`/`pushd` earlier in the same command moves gh into
+# another checkout, so the gates would gate the WRONG branch. Resolving that
+# correctly needs a shell interpreter; deny any directory change instead.
+if printf '%s' "$cmd_stripped" | grep -qE '(^|[^[:alnum:]_./-])(cd|pushd|popd)([^[:alnum:]_./-]|$)'; then
+    _deny "a directory change (cd/pushd/popd) in the same command as gh pr merge — the gates resolve the PR from the hook's cwd, not where the merge would run — refusing (GATE INTEGRITY). Run the merge from its own checkout, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+fi
 
 # Extract the selector + --repo from the merge segment only;
 # selector = first non-flag token after the `merge` verb.
@@ -117,19 +141,42 @@ while [ "$#" -gt 0 ]; do
     # background, a redirect): what follows belongs to another command or a
     # file, so `--squash | sort -h` / `& ls -h` / `> --help` must not read as
     # merge flags (HIMMEL-3915 judge round).
-    stop_walk=0
+    # HIMMEL-3918 (6): only a | or & ENDS the walk; a redirect (`2>&1`, `>f`,
+    # `> f`, `&>f`) is skipped, with a spaced target consumed, and the walk goes
+    # on - `gh pr merge 2>&1 42` merges #42, so stopping at the redirect made the
+    # hook gate the cwd branch instead.
+    stop_walk=0; skip_next=0; cur="$1"; rest=""
     case "$1" in
+        '&>'*) cur=""; rest="${1#&}" ;;
         *[\|\&\>\<]*)
-            stop_walk=1; cur="${1%%[|&><]*}"
-            # `2>&1` / `42>x`: an all-digit prefix before a > or < is an fd
-            # number, not a selector - discard it (HIMMEL-3915 judge NO-GO).
-            # Only when the CUT character itself is > or <: `42|x>y` cut at |.
+            cur="${1%%[|&><]*}"
             case "${1:${#cur}:1}" in
-                '>'|'<') case "$cur" in *[!0-9]*) ;; *) cur="" ;; esac ;;
-            esac
-            shift; set -- "$cur" "$@" ;;
+                '>'|'<') rest="${1:${#cur}}" ;;
+                *) stop_walk=1 ;;
+            esac ;;
     esac
-    [ "$stop_walk" = "1" ] && [ -z "$1" ] && break
+    if [ -n "$rest" ]; then
+        # `2>&1` / `42>x`: an all-digit prefix before a > or < is an fd number,
+        # not a selector - discard it (HIMMEL-3915 judge NO-GO).
+        case "$cur" in *[!0-9]*) ;; *) cur="" ;; esac
+        # The redirect target: nothing after the operator run means the NEXT token
+        # is the target; a | or & inside it ends the walk (`>f|cat`).
+        rest_ops="${rest%%[!<>&|]*}"
+        rest_tgt="${rest#"$rest_ops"}"
+        case "$rest_tgt" in
+            '') skip_next=1 ;;
+            *[\|\&]*) stop_walk=1 ;;
+        esac
+    fi
+    if [ "$cur" != "$1" ]; then
+        shift
+        [ "$skip_next" = "1" ] && [ "$#" -ge 1 ] && shift
+        if [ -z "$cur" ]; then
+            [ "$stop_walk" = "1" ] && break
+            continue
+        fi
+        set -- "$cur" "$@"
+    fi
     case "$1" in
         --repo=*) repo="${1#--repo=}" ;;
         --repo|-R) if [ "$#" -ge 2 ]; then repo="$2"; shift; fi ;;
@@ -187,7 +234,7 @@ fi
 # own API reads, after this lookup has already succeeded. Each lookup is
 # bounded (10s); a timeout reads as unresolved.
 # _gate4_bounded <secs> <outfile> <cmd...> — run <cmd> with stdout to
-# <outfile>, killed after <secs>; rc is the command's, or 124 on timeout. Bash
+# <outfile> (stderr to $_gate4_err when set, else discarded), killed after <secs>; rc is the command's, or 124 on timeout. Bash
 # native (no timeout binary) so it bounds a shell function the same way on
 # every platform.
 # ponytail: kill -9 reaches the backgrounded subshell, not an in-flight gh it
@@ -196,7 +243,7 @@ fi
 _gate4_bounded() {
     local secs=$1 out=$2 pid ticks=0
     shift 2
-    "$@" >"$out" 2>/dev/null &
+    "$@" >"$out" 2>"${_gate4_err:-/dev/null}" &
     pid=$!
     while [ "$ticks" -lt $((secs * 5)) ] && kill -0 "$pid" 2>/dev/null; do
         sleep 0.2
@@ -210,7 +257,35 @@ _gate4_bounded() {
     wait "$pid"
 }
 go_tmp=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-view.XXXXXX" 2>/dev/null) || go_tmp=""
-trap 'rm -f "$go_tmp" "${trust_tmp:-}"' EXIT
+gh_to_flag=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-timeout.XXXXXX" 2>/dev/null) || gh_to_flag=""
+trap 'rm -f "$go_tmp" "$gh_to_flag" "${trust_tmp:-}"' EXIT
+# HIMMEL-3918 (3): every gh call the sourced gate libraries make (cr-merge-gate,
+# ci-green-gate and the cr-signal / cr-body-findings helpers they call) goes
+# through this shadow function, bounded (10s) like the lookup above. The libs
+# fail OPEN on a gh error (HIMMEL-936), and an unbounded hang would run out the
+# hook budget, which Claude Code reads as non-blocking - so a timeout is recorded
+# in $gh_to_flag and the hook DENIES after each gate call (_gh_timed_out). Set in
+# the hook, not the libs: it also bounds the transitive calls, and the libs'
+# other callers (check-ci, pr-merge.sh) keep their own behaviour.
+gh() {
+    local out errf rc=0 _gate4_err
+    out=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null) || out=""
+    errf=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-ghe.XXXXXX" 2>/dev/null) || errf=""
+    if [ -z "$out" ] || [ -z "$errf" ]; then
+        rm -f "$out" "$errf"
+        [ -n "$gh_to_flag" ] && echo 1 >"$gh_to_flag"
+        return 124   # cannot bound the call: read as a timeout (deny)
+    fi
+    # stderr is replayed: trust_path_check tells a 404 from an outage by it.
+    _gate4_err=$errf
+    _gate4_bounded 10 "$out" command gh "$@" || rc=$?
+    if [ "$rc" = "124" ] && [ -n "$gh_to_flag" ]; then echo 1 >"$gh_to_flag"; fi
+    cat "$out" 2>/dev/null
+    cat "$errf" >&2 2>/dev/null
+    rm -f "$out" "$errf"
+    return "$rc"
+}
+_gh_timed_out() { [ -z "$gh_to_flag" ] || [ -s "$gh_to_flag" ]; }
 # _go_view <selector> [repo] — sets go_meta ("" on any failure or timeout).
 _go_view() {
     go_meta=""
@@ -235,8 +310,15 @@ if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
     exit 2
 fi
 
+# HIMMEL-3918 (4): a gate library that will not load DENIES on a real merge (it
+# used to `|| exit 0`, so a missing/unreadable/truncated lib silently dropped the
+# CR and CI gates). Readability first, per scripts/hooks/CLAUDE.md: on bash 3.2 a
+# failed `.` exits the shell regardless of an `||` guard.
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/cr-merge-gate.sh" 2>/dev/null || exit 0
+if ! { [ -r "$SCRIPT_DIR/../lib/cr-merge-gate.sh" ] && . "$SCRIPT_DIR/../lib/cr-merge-gate.sh"; } 2>/dev/null \
+        || ! declare -F cr_merge_gate >/dev/null 2>&1; then
+    _deny "cannot load scripts/lib/cr-merge-gate.sh — refusing (the CR gate must fail closed, not silently no-op)"
+fi
 
 reason=""
 rc=0
@@ -254,6 +336,7 @@ if [ "$rc" = "3" ] && [ -n "$cwd_branch" ]; then
         reason=$(cr_merge_gate "$cwd_branch" "") || rc=$?
     fi
 fi
+_gh_timed_out && _deny "a gh call in the CR gate timed out (10s bound) or could not be bounded — refusing (GATE INTEGRITY: a hung read must not read as an allow). Retry, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 if [ "$rc" = "2" ]; then
     echo "block-unresolved-cr-merge: $reason (For help run: gh help pr merge)" >&2
     exit 2
@@ -265,7 +348,10 @@ fi
 # never coupled to CR_PROFILE. A guard bug must NEVER block a legit merge, so
 # every unresolvable/degraded path fails open (rc 0/3) inside ci_green_gate.
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/ci-green-gate.sh" 2>/dev/null || exit 0
+if ! { [ -r "$SCRIPT_DIR/../lib/ci-green-gate.sh" ] && . "$SCRIPT_DIR/../lib/ci-green-gate.sh"; } 2>/dev/null \
+        || ! declare -F ci_green_gate >/dev/null 2>&1; then
+    _deny "cannot load scripts/lib/ci-green-gate.sh — refusing (the CI gate must fail closed, not silently no-op)"
+fi
 
 ci_reason=""
 ci_rc=0
@@ -279,6 +365,7 @@ if [ "$ci_rc" = "3" ] && [ -n "$cwd_branch" ]; then
         ci_reason=$(ci_green_gate "$cwd_branch" "") || ci_rc=$?
     fi
 fi
+_gh_timed_out && _deny "a gh call in the CI gate timed out (10s bound) or could not be bounded — refusing (GATE INTEGRITY: a hung read must not read as an allow). Retry, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 if [ "$ci_rc" = "2" ]; then
     echo "block-red-ci-merge: $ci_reason" >&2
     exit 2
@@ -518,4 +605,18 @@ case "$trust_out" in
         ;;
     *) gate4_refuse "CI trust-path check gave an unrecognised answer for PR #$go_num — refusing" ;;
 esac
+# HIMMEL-3918 (5) — runs LAST, so each gate keeps its own reason: head TOCTOU. Every gate read the PR at $go_sha, but a
+# bare `gh pr merge 42` merges whatever head the PR has at merge time - a push in
+# that window lands unreviewed code past the gates. Gates 3 and 4 already demanded
+# the pin when they applied; it is now required of EVERY direct merge, and it must
+# equal the head this hook read (gh then aborts if the head moved).
+# merge-on-green.sh pins the head itself in its own gh subprocess and never
+# reaches this hook, so it is unaffected.
+if [ -z "$match_head" ]; then
+    _deny "a direct gh pr merge must pin --match-head-commit $go_sha (the head the gates just read for PR #$go_num) — none was given; without it a push after the gates lands unreviewed. Or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+fi
+if [ "$match_head" != "$go_sha" ]; then
+    _deny "--match-head-commit $match_head does not equal the head $go_sha the gates read for PR #$go_num — refusing. Pin the full 40-char head. (For help run: gh help pr merge)"
+fi
+
 exit 0
