@@ -73,16 +73,22 @@ mk_sandbox
 bash -c '"$@" > "$0/holder.out" 2>&1 & n=0; while [ ! -f "$0/tmp/suite.lock/owner" ] && [ "$n" -lt 200 ]; do sleep 0.05; n=$((n + 1)); done' "$w" \
   env HOME="$w/home" TMPDIR="$w/tmp" SUITE_LOCK_DIR="$w/tmp/suite.lock" \
   HIMMEL_SUITE_SEMAPHORE_DIR="$w/tmp/sem" bash "$RUNNER" "$w/slow"
-if ! wait_lock "$w"; then
+if case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) true ;; *) false ;; esac; then
+  # ponytail: Windows Git Bash has no ps -o ppid, so the reaper keeps the old wait there; revisit when a Windows-safe parent probe exists.
+  pass "SKIP: orphan reaping is not supported on Windows Git Bash"
+elif ! wait_lock "$w"; then
   fail "holder never took the lock"; cat "$w/holder.out"
 else
   hp=$(owner_pid "$w")
+  bgpids+=("$hp")
   start=$(date +%s)
   run_runner "$w" fast SUITE_LOCK_WAIT=25 SUITE_LOCK_WAIT_INTERVAL=1 > "$w/waiter.out" 2>&1
   wrc=$?
   el=$(( $(date +%s) - start ))
-  if [ "$wrc" -eq 0 ] && ! kill -0 "$hp" 2>/dev/null && grep -q "ORPHAN-REAP" "$w/waiter.out"; then
-    pass "waiter took the lock in ${el}s; orphan pid $hp gone"
+  sp=$(cat "$w/suite.pid" 2>/dev/null)
+  # The owner's child suite must be gone too, or the waiter would run beside it.
+  if [ "$wrc" -eq 0 ] && ! kill -0 "$hp" 2>/dev/null && [ -n "$sp" ] && ! kill -0 "$sp" 2>/dev/null && grep -q "ORPHAN-REAP" "$w/waiter.out"; then
+    pass "waiter took the lock in ${el}s; orphan pid $hp and its suite $sp gone"
   else
     fail "orphan not reaped (waiter rc=$wrc after ${el}s, holder alive=$(kill -0 "$hp" 2>/dev/null && echo yes || echo no))"
     cat "$w/waiter.out"
