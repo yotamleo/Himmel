@@ -87,9 +87,9 @@ fi
 
 # A redirect ahead of `gh` in the same segment (`>/dev/null gh pr merge 42`,
 # `FOO=1 >/dev/null gh ...`) also moves it out of command position: deny it too.
-# fd dups (`2>&1`) are removed first so they cannot count as the redirect.
-cmd_nodup=$(printf '%s' "$cmd_stripped" | sed -E 's/[0-9]*[<>]&[0-9-]+//g')
-if printf '%s' "$cmd_nodup" | grep -E '[<>][^;&|]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
+# An fd dup (`2>&1 gh ...`) counts too; a dup earlier in the command joined to
+# gh by && / ; / | is safe because the class below excludes those.
+if printf '%s' "$cmd_stripped" | grep -E '[<>](&[0-9-]+)?([^;&|]*[[:space:]])?gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null; then
     _deny "a redirect before gh pr merge is not parsed — refusing (GATE INTEGRITY). Put the redirect after the merge, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 fi
 

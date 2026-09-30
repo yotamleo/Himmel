@@ -274,6 +274,7 @@ GH_STUB_MODE=clean t redir-chained-no-pin 2 Bash "gh pr merge >a> b 42 --match-h
 GH_STUB_MODE=clean t redir-before-gh 2 Bash "FOO=1 >/dev/null gh pr merge 42 --match-head-commit abc123"
 GH_STUB_MODE=clean t redir-before-gh-bare 2 Bash ">/dev/null gh pr merge 42 --match-head-commit abc123"
 GH_STUB_MODE=clean t redir-spaced-chained 2 Bash "gh pr merge --match-head-commit abc123 > a> b 42"
+GH_STUB_MODE=clean t redir-dup-before-gh 2 Bash "2>&1 gh pr merge 42 --match-head-commit abc123"
 GH_STUB_MODE=clean t redir-dup-before-gh-ok 0 Bash "echo x 2>&1 && gh pr merge 42 --match-head-commit abc123"
 # round 3 codex-1: a pin BEFORE the chained redirect must not let the wrong PR pass
 GH_STUB_MODE=clean t redir-chained-pin-first 2 Bash "gh pr merge --match-head-commit abc123 >a> b 42"
