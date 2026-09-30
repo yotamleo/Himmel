@@ -231,6 +231,12 @@ GH_STUB_MODE=clean t merge-squash-fd-redirect-not-selector 0 Bash "gh pr merge -
 grep -q "^pr view 2 " "$TMP/calls-merge-squash-fd-redirect-not-selector.log" && { echo "FAIL merge-squash-fd-redirect-not-selector looked up PR 2"; fail=$((fail+1)); }
 GH_STUB_MODE=clean t merge-selector-fd-redirect-not-selector 0 Bash "gh pr merge 42>x"
 grep -q "^pr view 42 " "$TMP/calls-merge-selector-fd-redirect-not-selector.log" && { echo "FAIL merge-selector-fd-redirect looked up the fd-prefixed number"; fail=$((fail+1)); }
+# The fd rule keys on the CUT character: `42|x>y` / `42&2>x` cut at | or & and
+# 42 IS the selector (a digit before a LATER > must not discard it).
+GH_STUB_MODE=clean t merge-pipe-then-redirect-keeps-selector 0 Bash "gh pr merge 42|base64>x"
+grep -q "^pr view 42 " "$TMP/calls-merge-pipe-then-redirect-keeps-selector.log" || { echo "FAIL merge-pipe-then-redirect dropped selector 42"; fail=$((fail+1)); }
+GH_STUB_MODE=clean t merge-amp-then-fd-redirect-keeps-selector 0 Bash "gh pr merge 42&2>x"
+grep -q "^pr view 42 " "$TMP/calls-merge-amp-then-fd-redirect-keeps-selector.log" || { echo "FAIL merge-amp-then-fd-redirect dropped selector 42"; fail=$((fail+1)); }
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
 # advisory only. The removed `zombie*`/`young` cases here drove the HIMMEL-980
 # override off a CodeRabbit CHECK-RUN that production never emits; the

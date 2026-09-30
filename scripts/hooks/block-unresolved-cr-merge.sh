@@ -123,8 +123,9 @@ while [ "$#" -gt 0 ]; do
             stop_walk=1; cur="${1%%[|&><]*}"
             # `2>&1` / `42>x`: an all-digit prefix before a > or < is an fd
             # number, not a selector - discard it (HIMMEL-3915 judge NO-GO).
-            case "$1" in
-                *[0-9]\>*|*[0-9]\<*) case "$cur" in *[!0-9]*) ;; *) cur="" ;; esac ;;
+            # Only when the CUT character itself is > or <: `42|x>y` cut at |.
+            case "${1:${#cur}:1}" in
+                '>'|'<') case "$cur" in *[!0-9]*) ;; *) cur="" ;; esac ;;
             esac
             shift; set -- "$cur" "$@" ;;
     esac
