@@ -141,7 +141,15 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
     # `"url.x.insteadOf"`, `ur\l.x…` and `$'url.x…'` are all the same key. Delete every
     # quote and backslash before matching (deny-leaning: no per-spelling parser).
     cmd_dq=$(printf '%s' "$cmd_lc" | LC_ALL=C tr -d "'\"\\\\")
-    if [ "$(cmd_lc=$cmd_dq count_cmd "$gu_shape")" -gt 0 ]; then
+    # Round 4/5: position-free. In any `git … config|-c|--config-env …` command, ANY
+    # dequoted word shaped `url.*insteadof` (or `url.*$…`, a variable that could hide
+    # it) denies — no flag/value position to get wrong — and so does any `$'` (ANSI-C
+    # escapes such as `\x69` cannot be decoded here).
+    gu_cfg='git(\.exe)?[[:space:]]+([^;&|]*[[:space:]])?(config|-c|--config-env)[^;&|]*url[.][^[:space:];&|]*(insteadof|[$])'
+    gu_ansi="git(\\.exe)?[[:space:]]+([^;&|]*[[:space:]])?(config|-c|--config-env)[^;&|]*[\$]'"
+    if [ "$(cmd_lc=$cmd_dq count_cmd "$gu_shape")" -gt 0 ] ||
+       [ "$(cmd_lc=$cmd_dq count_cmd "$gu_cfg")" -gt 0 ] ||
+       [ "$(count_cmd "$gu_ansi")" -gt 0 ]; then
         deny_ext "rewriting a git remote / push URL is refused (external-write class)."
     fi
     if [ "$(count_cmd "$gh_shape")" -gt "$(count_cmd "$gh_allow")" ]; then
