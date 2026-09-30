@@ -2612,6 +2612,28 @@ quoting, delimiters), so it was removed rather than patched again.
 Known remaining gap: a merge with no selector AND no cwd branch still exits 0
 (nothing to resolve).
 
+**HIMMEL-3929 — the detector over-fires instead of recognising spellings.** The
+detector used to be the text regexp `gh pr merge`, so every spelling it missed
+merged with no gate. It now fires on a `gh` word (start of text, after a space,
+`;` `&` `|` `(`, or a `/path/to/gh`) followed anywhere by `merge` in the
+normalized copy, which now also drops `{` `}` and backticks; a second copy with
+`${..}` / `$(..)` removed catches `m${X}erge`; and a `gh` word plus `$'` or `$"`
+fires too (escapes hide letters, `$'m\x65rge'`). Once fired, the raw-char allowlist
+above refuses every expansion spelling, and the command must parse as exactly
+`gh [-R v | --repo v | --repo=v]* pr [same]* merge <closed tokens>`; `gh api
+.../pulls/N/merge` (and `mergePullRequest` GraphQL), `gh alias set|import` naming a
+merge, `bash -c`/`sh -c`/`eval`/`env` wrappers, a prefix or chain, and any other
+flag placement deny. The `-R`/`--repo` value found before the verb is the gated repo
+exactly like one after it. The one exact exception is `gh help pr merge` (the deny
+text's own pointer). Non-merge gh (`gh pr view`, `gh api .../pulls/N`, `gh run`,
+`gh alias list`) and `git merge main && gh ...` (merge before gh) are untouched.
+A gh alias that expands to a merge and is invoked by its own name (`gh mm 8`) is
+not visible to a text detector; defining one is what the alias rule denies.
+Fail closed also for the nested sources: `scripts/lib/cr-merge-gate.sh` returns 1
+(so the hook's load check denies) when one of its five helpers is missing, and the
+hook denies when `timeout-bin.sh` will not load. Fixtures that copy
+`cr-merge-gate.sh` into a scratch tree must copy its helpers too.
+
 **HIMMEL-3918 — six residuals closed, by ONE deny rule rather than parsing**
 (five panel rounds each found a new redirect/prefix shape; every parse rule in
 this hook became a bypass in #1494 and again here). A command whose unquoted text
@@ -2623,7 +2645,7 @@ quote, `#`, `\`, `$`, redirect and separator is denied outright). The `gh pr
 merge` detector runs on a normalized copy (backslash-newline pairs removed, then
 every backslash, then every `'` `"` and `$`, newlines to spaces), so
 `gh pr mer\<newline>ge`, `m""erge`, `"merge"` and `$'merge'` are seen (word forms
-that need a real expansion, `${X:-merge}` and `{merge,}`, are HIMMEL-3929), and only a hit on that copy triggers the allowlist. Every word after `merge` must then be in a closed
+that need a real expansion, `${X:-merge}` and `{merge,}`, are closed by HIMMEL-3929, below), and only a hit on that copy triggers the allowlist. Every word after `merge` must then be in a closed
 set (`-s -m -r -d --squash --merge --rebase --delete-branch
 --disable-auto`; `--auto` (the pin binds at enable time, a later push changes the head) and `--admin` (merges past required checks) deny, `-R`/`--repo <v>`, `--match-head-commit <v>`, at most one
 selector); grouped short flags (`-dt`), attached `-Rrepo`, `-b/-t/-F/-A`, unknown

@@ -56,7 +56,8 @@ payload=$(cat) || exit 0
 case "$payload" in
     # A JSON backslash may split the word (`mer\ge`): let jq and the normalized
     # detector below decide instead of skipping.
-    *merge*|*\\*|*\'*) ;;
+    # HIMMEL-3929: so may an expansion (`m${X}erge`, a backtick pair).
+    *merge*|*\\*|*\'*|*\$*|*\`*) ;;
     *) exit 0 ;;
 esac
 
@@ -79,14 +80,33 @@ _deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 # merge` that is not a plain merge (`git commit -m "gh pr merge"`, `echo gh pr
 # merge`), a custom --subject/--body (use scripts/handover/merge-on-green.sh),
 # and a path-qualified `/usr/bin/gh`.
-merge_re='gh[[:space:]]+pr[[:space:]]+merge'
-# The detector runs on a NORMALIZED copy of the raw text (backslash-newline
-# pairs removed, then every backslash, newlines to spaces): bash joins
-# `gh pr mer\<nl>ge` and reads `mer\ge` as `merge`.
-cmd_norm=$(printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' -e "s/['\"\$]//g" | tr '\n' ' ')
-if ! printf '%s' "$cmd_norm" | grep -E "$merge_re" >/dev/null; then
-    exit 0
-fi
+# HIMMEL-3929: the detector is DENY-LEANING instead of a text regexp for one
+# spelling. It fires on a `gh` word (command position, or after a wrapper/
+# separator, or a /path/to/gh) followed anywhere by `merge` in a NORMALIZED
+# copy of the text (backslash-newline pairs removed, then every backslash,
+# quote, $, brace and backtick, newlines to spaces: bash joins `gh pr mer\<nl>ge`
+# and reads `mer''ge`, `{merge,8}`, `${IFS}` and an empty backtick pair as
+# `merge`). A second copy has `${..}`/`$(..)` dropped first (`m${X}erge`). Once
+# it fires, the raw-char allowlist below refuses every expansion spelling and the
+# command must parse as exactly `gh [-R v]* pr [-R v]* merge <closed tokens>`:
+# `gh api .../merge`, `gh alias set mm "pr merge"`, `bash -c`, `eval`, a prefix or
+# any other flag placement DENIES. No per-spelling grammar to drift.
+_norm() {
+    printf '%s' "$1" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' -e "s/['\"\$\`{}]//g" | tr '\n' ' '
+}
+cmd_norm=$(_norm "$cmd")
+cmd_sq=$(_norm "$(printf '%s' "$cmd" | sed -e 's/\$[{(][^})]*[})]//g')")
+gh_re='(^|[[:space:];&|(])(/[^[:space:]]*/)?gh'
+fires=0
+for _n in "$cmd_norm" "$cmd_sq"; do
+    printf '%s' "$_n" | grep -E "${gh_re}.*merge" >/dev/null && fires=1
+done
+# ANSI-C / locale quoting hides letters behind escapes (`$'m\x65rge'`) that the
+# normalized copy cannot read: a gh word plus one of them fires too.
+case "$cmd" in
+    *\$\'*|*\$\"*) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;;
+esac
+[ "$fires" = "1" ] || exit 0
 case "$cmd" in
     *[!A-Za-z0-9\ _./:=,-]*) plain=0 ;;
     *) plain=1 ;;
@@ -102,12 +122,29 @@ fi
 # Extract the selector + --repo + head pin; selector = first non-flag token
 # after the `merge` verb.
 sel=""; repo=""; match_head=""
-seen_merge=0
+# `gh help pr merge` (the deny text's own pointer) only prints help.
+[ "$*" = "gh help pr merge" ] && exit 0
+# HIMMEL-3929: up to the verb the ONLY tokens are `gh`, -R/--repo <v> (before or
+# after `pr`) and one `pr`; the repo found here is the gated repo exactly like one
+# after the verb. Anything else (api, alias, a wrapper word, another flag) denies.
+shift
+seen_pr=0; seen_merge=0
+while [ "$#" -gt 0 ] && [ "$seen_merge" = "0" ]; do
+    case "$1" in
+        --repo=*) repo="${1#--repo=}" ;;
+        --repo|-R)
+            [ "$#" -ge 2 ] || _deny "gh pr merge: -R/--repo needs a value — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+            repo="$2"; shift ;;
+        pr) [ "$seen_pr" = "0" ] || _deny "gh pr merge: a second 'pr' word — the command must be exactly gh [-R <v>] pr [-R <v>] merge <args>: refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+            seen_pr=1 ;;
+        merge) [ "$seen_pr" = "1" ] || _deny "gh: 'merge' before 'pr' — the command must be exactly gh [-R <v>] pr [-R <v>] merge <args>: refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+            seen_merge=1 ;;
+        *) _deny "a command naming a merge must be exactly gh [-R <v>] pr [-R <v>] merge <args> (gh api, gh alias, wrappers and other flag placements are refused); got '$1' — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)" ;;
+    esac
+    shift
+done
+[ "$seen_merge" = "1" ] || _deny "a command naming a merge must be exactly gh [-R <v>] pr [-R <v>] merge <args>; no merge verb found — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 while [ "$#" -gt 0 ]; do
-    if [ "$seen_merge" = "0" ]; then
-        [ "$1" = "merge" ] && seen_merge=1
-        shift; continue
-    fi
     case "$1" in
         --repo=*) repo="${1#--repo=}" ;;
         --repo|-R) if [ "$#" -ge 2 ]; then repo="$2"; shift; fi ;;
@@ -372,7 +409,11 @@ go_url=$(printf '%s' "$go_meta" | jq -r '.url // empty' 2>/dev/null || true)
 # own calls with it too.
 # shellcheck disable=SC1091
 # shellcheck source=../lib/timeout-bin.sh
-. "$SCRIPT_DIR/../lib/timeout-bin.sh"
+# HIMMEL-3929: a missing/unreadable timeout-bin.sh DENIES (readability first, as
+# for the libraries above) instead of running on with no resolver.
+if ! { [ -r "$SCRIPT_DIR/../lib/timeout-bin.sh" ] && . "$SCRIPT_DIR/../lib/timeout-bin.sh"; } 2>/dev/null; then
+    _deny "cannot load scripts/lib/timeout-bin.sh — refusing (the bounded gate calls must fail closed, not silently lose their timeout resolver)"
+fi
 go_nwo="$repo"
 # HIMMEL-3918 (I1): through the shadow gh (10s cap, shared hook budget), never
 # the real gh - a hang here must read as a refusal, not run out the hook budget.
