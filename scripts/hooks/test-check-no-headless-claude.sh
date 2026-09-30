@@ -223,6 +223,24 @@ printf "%s\n" "spawnSync('myclaude', args);" > "$TMP/myspawn.mjs"
 rc=$(run_hook "myspawn.mjs")
 assert_rc "T27 spawnSync('myclaude') not matched" 0 "$rc"
 
+# T29: multiline call — program on the line after the open paren → BLOCK
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  'claude'," "  args);" > "$TMP/ml.mjs"
+rc=$(run_hook "ml.mjs")
+assert_rc "T29 multiline spawnSync( newline 'claude' unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "// headless-claude-ok: probe" "const r = spawnSync(" "  'claude', args);" > "$TMP/ml_ok.mjs"
+rc=$(run_hook "ml_ok.mjs")
+assert_rc "T29b multiline argv spawn, marker above call line" 0 "$rc"
+
+printf "%s\n%s\n" "const r = spawnSync(" "  'git', ['claude']);" > "$TMP/ml_git.mjs"
+rc=$(run_hook "ml_git.mjs")
+assert_rc "T29c multiline, claude not the program" 0 "$rc"
+
+# T30: os.spawn* takes a mode argument before the program → BLOCK
+printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
+rc=$(run_hook "osspawn.py")
+assert_rc "T30 os.spawnlp(mode, \"claude\") unmarked" 1 "$rc"
+
 # T28: existing scoping kept — markdown under docs/ exempt → CLEAN
 printf "%s\n" "Do not spawnSync('claude', args) without a marker." > "$TMP/docs/spawn.md"
 rc=$(run_hook "docs/spawn.md")
