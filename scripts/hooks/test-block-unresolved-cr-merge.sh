@@ -275,6 +275,10 @@ for _row in "redir-fd-dup|gh pr merge 2>&1 42 $PIN" \
             "chain-after-and|git -C /tmp status && gh pr merge 42 $PIN" \
             "chain-then-more|gh pr merge 42 $PIN && echo done" \
             "chain-semicolon|gh pr merge 42 $PIN; echo done" \
+            "chain-bare-semicolon|gh pr merge; true" \
+            "chain-bare-amp|gh pr merge& true" \
+            "chain-bare-redirect|gh pr merge>x" \
+            "chain-bare-pipe|gh pr merge|cat" \
             "chain-backtick|echo \`gh pr merge 42 $PIN\`" \
             "chain-subst|echo \$(gh pr merge 42 $PIN)" \
             "chain-newline|true\\ngh pr merge 42 $PIN" \

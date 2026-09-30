@@ -85,7 +85,7 @@ _deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 # first word). Accepted over-deny (HIMMEL-3917 precedent): an unquoted text
 # mention such as `echo gh pr merge`, and a path-qualified `/usr/bin/gh`. The
 # selector walk below then only ever sees plain tokens.
-merge_re='gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'
+merge_re='gh[[:space:]]+pr[[:space:]]+merge'
 if ! printf '%s' "$cmd_stripped" | grep -E "$merge_re" >/dev/null; then
     exit 0
 fi
