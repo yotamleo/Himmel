@@ -47,7 +47,6 @@ const installEngineLib = require('./lib/install-engine.js');
 const probesLib = require('./lib/probes.js');
 const depsEngineLib = require('./lib/deps-engine.js');
 const adopterProfileLib = require('./lib/adopter-profile.js');
-const { isProfileManaged } = require('../lanes/profile-managed.cjs');
 const contributorProfileLib = require('./lib/contributor-profile.js');
 // HIMMEL-2176 Stage-1 PR-C Task 8: luna cadence / secrets walk / bridge
 // sections. bridge-persistence.js ships primitives only (never called at
@@ -7136,6 +7135,7 @@ function laneProfileState(base, local, laneId) {
   const scope = Array.isArray(local.profileAllowlistScope) ? local.profileAllowlistScope : null;
   // Shared predicate with resolve.mjs (HIMMEL-1448): a registry-marked lane
   // is constrained even when outside the persisted scope snapshot.
+  const { isProfileManaged } = require('../lanes/profile-managed.cjs');
   const managed = isProfileManaged(lane);
   if (scope && scope.indexOf(laneId) === -1 && !managed) return 'not constrained by adopter profile';
   return local.profileAllowlist.indexOf(laneId) === -1
