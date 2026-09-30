@@ -1425,7 +1425,7 @@ check "60b no-URL predecessor yields tracker: none on the successor, never empty
     "$(grep -Fxc 'tracker: none' "$doc60bC" 2>/dev/null)" "1"
 # HIMMEL-3933: a published tracker URL is carried to the successor.
 trackerurl60b='https://claude.ai/artifact/fixture-3933-tracker'
-sed -i "s|^tracker: none|tracker: $trackerurl60b|" "$doc60bA"
+sed "s|^tracker: none|tracker: $trackerurl60b|" "$doc60bA" >"$doc60bA.new" && mv "$doc60bA.new" "$doc60bA"
 rm -f "$doc60bB"
 console next --bucket boarddst --doc "$doc60bA" >/dev/null 2>&1 || rc60b=$?
 check "60b successor doc's tracker: line carries the predecessor's tracker URL" \
