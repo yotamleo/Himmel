@@ -168,7 +168,9 @@ while [ "$#" -gt 0 ]; do
             # too: what follows belongs to another command, not to this merge.
             '') skip_next=1
                 case "${2-}" in *[\|\&]*) stop_walk=1 ;; esac ;;
-            *[\|\&]*) stop_walk=1 ;;
+            # A second redirect inside the token (`>a> b`) leaves a target this
+            # walk cannot place: end the walk rather than guess (deny over parse).
+            *[\|\&\>\<]*) stop_walk=1 ;;
         esac
     fi
     if [ "$cur" != "$1" ]; then

@@ -2632,7 +2632,12 @@ special-case parse rule in this hook became a bypass in #1494). Each deny names
    earlier gate keeps its own reason. `merge-on-green.sh` pins its own head in a
    subprocess the hook never sees, so it is unchanged.
 6. *Redirects:* the selector walk skips redirect tokens (and the target of a
-   spaced `> f`, and an fd prefix) instead of stopping at them.
+   spaced `> f`, and an fd prefix) instead of stopping at them. A redirect
+   target that carries a `|`, `&`, `<` or `>` (`> f|cat`, `>a> b`) ends the walk
+   instead (deny over parse), so the pin check then denies an unpinned merge.
+The directory-change match is deliberately not command-position-aware: a
+selector or flag value spelled `cd`/`pushd`/`popd` (a branch named `cd`) is
+refused too. That false positive is accepted; use `merge-on-green.sh`.
 CRs are stripped from the command at the capture boundary. Not covered: a
 path-qualified `gh` (`/usr/bin/gh`, `\gh`) and `bash -c '...'` wrappers (the
 executor grammar, owned by the prlit backstop work).
