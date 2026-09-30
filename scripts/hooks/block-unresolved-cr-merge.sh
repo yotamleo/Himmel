@@ -29,6 +29,8 @@
 # Sibling of check-cr-marker-on-pr-create.sh / block-merged-pr-commit.sh.
 #
 # Exit: 0 allow (incl. every fail-open path), 2 block (stderr shown to model).
+# HIMMEL-3915: the PR lookup itself (bounded `gh pr view`) fails CLOSED on a
+# real merge; the CR/CI gates' own API errors stay fail-open (HIMMEL-936).
 # Bypass: CR_MERGE_GATE_OK=1 and/or CI_MERGE_GATE_OK=1 in the LAUNCHING shell
 # (each gates its own check independently). CR_PROFILE=none skips the CR gate.
 # The console-GO and trust-path gates have no bypass (see gates 3 and 4 above).
@@ -125,6 +127,7 @@ while [ "$#" -gt 0 ]; do
         # re-anchor still backstops flags this list misses).
         -b|--body|-F|--body-file|-t|--subject|-A|--author-email)
             if [ "$#" -ge 2 ]; then shift; fi ;;
+        --help|-h) exit 0 ;;   # `gh pr merge --help` merges nothing (HIMMEL-3915)
         --*|-*) ;;             # other flags: ignore (an unknown value-taking
                                # flag may feed a value token; a wrong selector
                                # only fails gh pr view = rc 3 -> re-anchor,
@@ -152,6 +155,64 @@ fi
 # No explicit selector: gh infers the current branch; do the same.
 [ -z "$sel" ] && sel="$cwd_branch"
 [ -z "$sel" ] && exit 0   # cannot resolve target: fail open
+
+# ── Resolve the PR (number + head, shared by gates 3 and 4) — FIRST, before any
+# gate, and BOUNDED. HIMMEL-3915: on a real merge command an UNRESOLVED lookup
+# (selector AND cwd-branch re-anchor) fails CLOSED for every session. It used to
+# exit 0 after the CR/CI gates, so a transient gh/auth error let a trust-path PR
+# through with no GO; and an unbounded `gh pr view` hang (here or in the gates'
+# own lookups) exhausted the hook budget, which Claude Code reads as non-blocking.
+# The HIMMEL-936 api-error-fails-open contract now covers only the CR/CI gates'
+# own API reads, after this lookup has already succeeded. Each lookup is
+# bounded (10s); a timeout reads as unresolved.
+# _gate4_bounded <secs> <outfile> <cmd...> — run <cmd> with stdout to
+# <outfile>, killed after <secs>; rc is the command's, or 124 on timeout. Bash
+# native (no timeout binary) so it bounds a shell function the same way on
+# every platform.
+# ponytail: kill -9 reaches the backgrounded subshell, not an in-flight gh it
+# spawned (orphaned, it finishes on its own), upgrade path: a process-group
+# kill if an orphaned gh is ever seen outliving its hook.
+_gate4_bounded() {
+    local secs=$1 out=$2 pid ticks=0
+    shift 2
+    "$@" >"$out" 2>/dev/null &
+    pid=$!
+    while [ "$ticks" -lt $((secs * 5)) ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.2
+        ticks=$((ticks + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        return 124
+    fi
+    wait "$pid"
+}
+go_tmp=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-view.XXXXXX" 2>/dev/null) || go_tmp=""
+trap 'rm -f "$go_tmp" "${trust_tmp:-}"' EXIT
+# _go_view <selector> [repo] — sets go_meta ("" on any failure or timeout).
+_go_view() {
+    go_meta=""
+    [ -n "$go_tmp" ] || return 1
+    if [ -n "${2:-}" ]; then
+        _gate4_bounded 10 "$go_tmp" gh pr view "$1" --repo "$2" --json number,headRefOid,url || return 1
+    else
+        _gate4_bounded 10 "$go_tmp" gh pr view "$1" --json number,headRefOid,url || return 1
+    fi
+    go_meta=$(cat "$go_tmp" 2>/dev/null) || go_meta=""
+}
+_go_view "$sel" "$repo" || go_meta=""
+go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
+go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
+if { [ -z "$go_num" ] || [ -z "$go_sha" ]; } && [ -n "$cwd_branch" ] && { [ "$cwd_branch" != "$sel" ] || [ -n "$repo" ]; }; then
+    _go_view "$cwd_branch" "" || go_meta=""
+    go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
+    go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
+fi
+if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
+    echo "block-unresolved-cr-merge: cannot resolve the PR for '$sel' (gh pr view failed or timed out) — refusing (GATE INTEGRITY: the CR, CI, leg-GO and trust-path gates need the PR number and head). Retry the merge, or use scripts/handover/merge-on-green.sh." >&2
+    exit 2
+fi
 
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/cr-merge-gate.sh" 2>/dev/null || exit 0
@@ -237,30 +298,8 @@ else
     is_leg=0
 fi
 
-# Resolve pr-number + head-sha (shared by gates 3 and 4) the same way
-# cr_merge_gate/ci_green_gate do above (own `gh pr view`, same $sel/$repo,
-# same re-anchor to $cwd_branch on an unresolvable selector) — an
-# unresolvable selector here would also fail the `gh pr merge` this hook is
-# gating, so it fails OPEN like its siblings. Everything after it is
-# fail-closed (GATE INTEGRITY): once the PR and head are known, an ambiguous
-# or missing GO, or a trust-path check that cannot run, must never read as
-# "no gate".
-go_meta=""
-if [ -n "$repo" ]; then
-    go_meta=$(gh pr view "$sel" --repo "$repo" --json number,headRefOid,url 2>/dev/null) || go_meta=""
-else
-    go_meta=$(gh pr view "$sel" --json number,headRefOid,url 2>/dev/null) || go_meta=""
-fi
-go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
-go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
-if { [ -z "$go_num" ] || [ -z "$go_sha" ]; } && [ -n "$cwd_branch" ] && { [ "$cwd_branch" != "$sel" ] || [ -n "$repo" ]; }; then
-    go_meta=$(gh pr view "$cwd_branch" --json number,headRefOid,url 2>/dev/null) || go_meta=""
-    go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
-    go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
-fi
-if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
-    exit 0
-fi
+# PR number + head-sha (shared by gates 3 and 4) were resolved up front
+# (HIMMEL-3915, see "Resolve the PR" above).
 go_url=$(printf '%s' "$go_meta" | jq -r '.url // empty' 2>/dev/null || true)
 
 # HIMMEL-3578: the GO mac binds the repo, and gate 4 reads the trust list from
@@ -411,30 +450,6 @@ gate4_refuse() {
     echo "block-unresolved-cr-merge: $1" >&2
     exit 2
 }
-# _gate4_bounded <secs> <outfile> <cmd...> — run <cmd> with stdout to
-# <outfile>, killed after <secs>; rc is the command's, or 124 on timeout. Bash
-# native (no timeout binary) so it bounds a shell function the same way on
-# every platform: this hook runs on a 60s budget, and a hang must read as a
-# refusal, never as Claude Code's hook timeout failing it open.
-# ponytail: kill -9 reaches the backgrounded subshell, not an in-flight gh it
-# spawned (orphaned, it finishes on its own), upgrade path: a process-group
-# kill if an orphaned gh is ever seen outliving its hook.
-_gate4_bounded() {
-    local secs=$1 out=$2 pid ticks=0
-    shift 2
-    "$@" >"$out" 2>/dev/null &
-    pid=$!
-    while [ "$ticks" -lt $((secs * 5)) ] && kill -0 "$pid" 2>/dev/null; do
-        sleep 0.2
-        ticks=$((ticks + 1))
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -9 "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null
-        return 124
-    fi
-    wait "$pid"
-}
 # Drop every go-gate name already in scope (a leg sourced the file for gate 3;
 # an inherited `export -f` would otherwise survive) so only the anchor file's
 # own definitions can satisfy the declare -F checks.
@@ -449,7 +464,6 @@ trust_anchor=$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd -P) || trust_anchor=""
 [ -n "$trust_anchor" ] || gate4_refuse "cannot resolve the harness anchor for the CI trust-path check of PR #$go_num — refusing"
 trust_tmp=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-trust.XXXXXX" 2>/dev/null) \
     || gate4_refuse "cannot create a temp file for the CI trust-path check of PR #$go_num — refusing"
-trap 'rm -f "$trust_tmp"' EXIT
 _gate4_bounded 10 "$trust_tmp" gh repo view "$go_nwo" --json defaultBranchRef --jq '.defaultBranchRef.name // ""' || true
 trust_branch=$(cat "$trust_tmp" 2>/dev/null) || trust_branch=""
 [ -n "$trust_branch" ] \

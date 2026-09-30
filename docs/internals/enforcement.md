@@ -615,7 +615,9 @@ are live only after `/himmel-update` (marketplace re-sync) + a fresh session.
 pins, no job registry, and no watchdog, so a wedged raw run is exactly the
 HIMMEL-1788 invisible hang; bypass `CODEX_EXEC_RAW_OK=1`) fail CLOSED only for
 suspicious-token commands when jq is missing or parsing fails; `block-unresolved-cr-merge.sh` blocks when it can
-evaluate but fails OPEN on every API/dependency error (HIMMEL-936 design);
+evaluate but fails OPEN on every CR/CI-gate API/dependency error (HIMMEL-936
+design) — except the bounded PR lookup on a real merge, which fails CLOSED
+(HIMMEL-3915);
 `guard-implementor-dispatch.sh` is a COST guard and fails OPEN (see its own
 section below); `guard-console-dispatch.sh` is a WORKFLOW fence and fails
 OPEN (see its own section below); `block-glm-external-writes.sh` fails CLOSED on a detected
@@ -2560,6 +2562,19 @@ the cwd branch rather than letting a quoted/mis-tokenized selector dodge the gat
 (top-level consumers treat any non-2 rc as allow). Each emits a
 ``cr-merge-gate: degraded (<why>) - failing open`` note to stderr so the
 uncertainty is visible without blocking. A broken query is not evidence.
+
+**HIMMEL-3915 — the PR lookup fails CLOSED.** The hook resolves the PR number
+and head with its own `gh pr view` (selector, then the cwd-branch re-anchor)
+BEFORE any gate runs, bounded to 10s per attempt. On a real merge command, an
+unresolved lookup (both attempts failed, or timed out) DENIES for every session,
+naming `scripts/handover/merge-on-green.sh` as the sanctioned path; a refusal
+costs a retry. It used to exit 0 after the CR/CI gates, so a transient gh/auth
+error let a trust-path PR through with no GO, and an unbounded hang exhausted the
+hook budget (a hook timeout is non-blocking). The fail-open contract above
+therefore covers only the CR/CI gates' own API reads, once the PR has resolved.
+`gh pr merge --help`/`-h` is not a merge and is never gated. Known remaining
+gap (out of scope): an unpinned operator merge of a non-trust PR can land a head
+that gained a trust-path file after the check.
 A degraded VERDICT query is the one exception that does not return early: the
 thread query still runs and its evidence still blocks, because an unresolved
 thread is evidence even when the status endpoint is down (observed live — GitHub
