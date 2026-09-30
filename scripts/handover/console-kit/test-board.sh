@@ -43,7 +43,7 @@ cat > "$W/bin/tick-stub" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$TICK_ARGV_LOG"
 [ "${TICK_STUB_FAIL:-0}" -eq 0 ] || exit 1
-printf '%s\n' 'TICK 12:34 hb=skip legs=N1:FRESH,N2:FRESH,N3:FRESH,N4:FRESH,N5:WRAPPED,N6:FRESH,N7:FRESH,N12:STALE livestate=ok procs=6 models=sonnet:6 ceiling=ok atq=0 suites=0alive/0dead prs=#2001,#2002 bank=5h8/wk42/codex=? fill=28 tails=N1:LIVE,N2:LIVE,N3:READY,N4:LIVE,N5:WRAPPED,N6:READY,N7:BLOCKED,N12:FINDING inbox=none tick=UNKNOWN fleet=9/15 capacity=UNDERFILLED:6 gql=4321/13:00 orphans=none nonces=ok legset=ok board=MISSING'
+printf '%s\n' 'TICK 12:34 hb=skip legs=N1:FRESH,N2:FRESH,N3:FRESH,N4:FRESH,N5:WRAPPED,N6:FRESH,N7:FRESH,N12:STALE livestate=ok procs=6 models=sonnet:6 ceiling=ok atq=0 suites=0alive/0dead prs=#2001,#2002 bank=5h8/wk42/codex=? fill=28 tails=N1:LIVE,N2:LIVE,N3:READY,N4:LIVE,N5:WRAPPED,N6:READY,N7:BLOCKED,N12:FINDING inbox=none tick=UNKNOWN fleet='"${TICK_STUB_FLEET:-9/15}"' capacity=UNDERFILLED:6 gql=4321/13:00 orphans=none nonces=ok legset=ok board=MISSING'
 printf '%s\n' 'board-fp=deadbeefdeadbeef'
 STUB
 chmod +x "$W/bin/tick-stub"
@@ -178,7 +178,7 @@ printf '%s\n' '# console' '' '## Live state' '' \
 run() {  # run <extra args...> -- prints board.mjs stdout; rc in $rc
     PATH="$W/bin:$PATH" BOARD_TICK="$W/bin/tick-stub" TICK_ARGV_LOG="$W/argv.log" \
         BOARD_SESSIONS="${BOARD_SESSIONS:-$W/bin/sessions-empty.sh}" \
-        GH_OPEN="$W/open.json" GH_MERGED="$W/merged.json" GH_EPIC="$W/epic.json" GH_VIEW="$W/view" \
+        GH_OPEN="${BOARD_TEST_GH_OPEN:-$W/open.json}" GH_MERGED="$W/merged.json" GH_EPIC="$W/epic.json" GH_VIEW="$W/view" \
         node "$SUT" --doc "$DOC" --repo "$W/repo" "$@" 2>"$W/stderr.log"
 }
 
@@ -360,6 +360,17 @@ out5="$(BOARD_SESSIONS="$W/bin/sessions-n5-alive.sh" run --out "$W/changed-censu
 same 'a WRAPPED leg gaining a live window flips CHANGED although tick-fp is unchanged' "$out5" "CHANGED $W/changed-census-board.html"
 out6="$(BOARD_SESSIONS="$W/bin/sessions-n5-alive.sh" run --out "$W/changed-census-board.html" --changed)"
 same 'the same still-open leg on a re-render reports UNCHANGED' "$out6" "UNCHANGED $W/changed-census-board.html"
+
+# --- HIMMEL-3768: tick keeps CI colour and fleet capacity out of board-fp on purpose,
+# but the page SHOWS them, so --changed folds a signature of those cells in separately.
+rm -f "$W/changed-cf.html"
+run --out "$W/changed-cf.html" --changed >/dev/null
+same 'ci/fleet --changed: an identical re-render reports UNCHANGED' "$(run --out "$W/changed-cf.html" --changed)" "UNCHANGED $W/changed-cf.html"
+sed 's/"conclusion":"FAILURE"/"conclusion":"SUCCESS"/' "$W/open.json" > "$W/open-ci-moved.json"
+same 'only a PR CI colour moving (failing to pending) flips --changed' "$(BOARD_TEST_GH_OPEN="$W/open-ci-moved.json" run --out "$W/changed-cf.html" --changed)" "CHANGED $W/changed-cf.html"
+same 'and the moved CI colour, re-rendered again, reads UNCHANGED' "$(BOARD_TEST_GH_OPEN="$W/open-ci-moved.json" run --out "$W/changed-cf.html" --changed)" "UNCHANGED $W/changed-cf.html"
+same 'only fleet capacity moving flips --changed' "$(BOARD_TEST_GH_OPEN="$W/open-ci-moved.json" TICK_STUB_FLEET=10/15 run --out "$W/changed-cf.html" --changed)" "CHANGED $W/changed-cf.html"
+contains 'the tick fingerprint meta is still exactly tick'"'"'s' "$(cat "$W/changed-cf.html")" '<meta name="console-board-fp" content="deadbeefdeadbeef">'
 
 # --- HIMMEL-3856: `versions: v1.0.0, v1.0.1` renders one Release panel per fixVersion,
 # from ONE stubbed Jira CLI call per version (BOARD_JIRA seam, mirrors BOARD_TICK). The

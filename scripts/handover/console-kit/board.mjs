@@ -392,6 +392,10 @@ if (censusNames && wrappedLegs.length) {
 // board-fp; --changed folds this signature in separately (below) rather than
 // asking tick.sh to account for a read it never performs.
 const censusSig = legs.filter((l) => l.phase === 'WRAPPED, window still open').map((l) => l.label).sort().join(',');
+// HIMMEL-3768: tick keeps CI colour and fleet capacity out of board-fp on purpose (they
+// move without a console act), but the page shows them, so --changed must see them too.
+// board.mjs is the only reader that knows what it rendered; tick.sh stays untouched.
+const ciFleetSig = [fleetOk ? `${fleetLive}/${fleetCap}` : '', ...(openPrs || []).map((p) => `#${p.number}=${ciOf(p)}`), ...legs.filter((l) => l.ci).map((l) => `${l.label}=${l.ci}`)].join(',');
 
 // ---------------------------------------------------------------- render
 const now = new Date();
@@ -439,7 +443,7 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Console Board</title>
 ${fp ? `<meta name="console-board-fp" content="${fp}">` : ''}
-${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}${releaseSig ? `\n<meta name="console-board-versions-fp" content="${esc(releaseSig)}">` : ''}
+${ciFleetSig ? `<meta name="console-board-cifleet-fp" content="${esc(ciFleetSig)}">\n` : ''}${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}${releaseSig ? `\n<meta name="console-board-versions-fp" content="${esc(releaseSig)}">` : ''}
 <style>
 :root { --bg:#f6f7f9; --surface:#fff; --text:#1c2128; --muted:#5b6672; --line:#d9dee4; --accent:#2457c5; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1318; --surface:#181d24; --text:#e6e9ed; --muted:#96a1ad; --line:#2b333d; --accent:#7aa2ff; --ok:#3fb950; --warn:#d29922; --bad:#ff7b72; } }
@@ -504,17 +508,19 @@ ${panel('Console log — newest last', logRows, 'no Results yet')}
 let oldFp = null;
 let oldCensusSig = '';
 let oldReleaseSig = '';
+let oldCiFleetSig = '';
 if (changedFlag && existsSync(outPath)) {
     const prev = readFileSync(outPath, 'utf8');
     oldFp = (/<meta name="console-board-fp" content="([0-9a-f]{16})">/.exec(prev) || [])[1] || null;
     oldCensusSig = (/<meta name="console-board-census-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
+    oldCiFleetSig = (/<meta name="console-board-cifleet-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
     oldReleaseSig = (/<meta name="console-board-versions-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
 }
 const tmp = `${outPath}.tmp${process.pid}`;
 writeFileSync(tmp, html);
 renameSync(tmp, outPath);
 if (changedFlag) {
-    console.log(`${fp !== oldFp || censusSig !== oldCensusSig || esc(releaseSig) !== oldReleaseSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
+    console.log(`${fp !== oldFp || censusSig !== oldCensusSig || esc(ciFleetSig) !== oldCiFleetSig || esc(releaseSig) !== oldReleaseSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
 } else {
     console.log(outPath);
 }
