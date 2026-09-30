@@ -124,7 +124,8 @@ acct=$( { grep '^suite ' "$selection" | sed 's/^suite /sel /'
       if (p in drun)                       printf "FAIL: selected %s never ran on any shard, though discovery lists it to run here\n", p
       else if ((p in missing) && (p in dskip)) printf "FAIL: selected %s was recorded notfound, but discovery finds it here\n", p
       else if (p in missing)               printf "NOTE: selected %s was not discovered by the runner or the discovered list\n", p
-      else if (p in skipped)               printf "NOTE: selected %s was skipped by a standing filter (discovery skips it too)\n", p
+      else if ((p in skipped) && (p in dskip)) printf "NOTE: selected %s was skipped by a standing filter (discovery skips it too)\n", p
+      else if (p in skipped)               printf "FAIL: selected %s was skipped by a shard, but discovery does not list it\n", p
       else                                 printf "FAIL: selected %s never ran on any shard\n", p
     }
   }')

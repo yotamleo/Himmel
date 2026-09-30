@@ -26,6 +26,7 @@
 #   MV18  a --discovered list naming no suite                   -> rc 2
 #   MV19  impacted: a shard `skip`s a selected suite listed RUN -> rc 1
 #   MV20  full: a suite listed RUN that no shard ran            -> rc 1
+#   MV21  impacted: a shard `skip`s a selected suite not listed -> rc 1
 #
 # Platform guard: bash-only, no .ps1 twin; the aggregator runs on Linux.
 #
@@ -228,5 +229,13 @@ disc "$d" RUN scripts/test-x.sh RUN scripts/test-y.sh
 manifest "$d" 1 2 "$d/sel.txt" 'ran 0 scripts/test-x.sh'
 manifest "$d" 2 2 "$d/sel.txt"
 expect "MV20: full mode, a suite listed RUN that no shard ran is refused" 1 "$d" 2 'scripts/test-y\.sh.*discovery lists it'
+
+# --- MV21 --------------------------------------------------------------------
+# A shard's `skip` of a selected suite the list does not name at all has no
+# standing filter to point to: refused, not a NOTE.
+d=$(case_dir mv21); header impacted scripts/test-a.sh scripts/test-b.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh' 'skip scripts/test-b.sh'
+expect "MV21: a selected suite skipped by a shard but absent from the list is refused" 1 "$d" 1 'scripts/test-b\.sh.*skipped.*discovery does not'
 
 rst_tally
