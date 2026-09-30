@@ -2560,6 +2560,16 @@ shard_given=0
 impacted_range=""
 # OPT-IN conditional filter (HIMMEL-1589). Env is the default; the flag overrides.
 changed_since="${SUITE_CHANGED_SINCE:-}"
+# PR shard selection + manifest (HIMMEL-3897). CI-only env, read once and
+# unset at once so no nested suite (the runner's own self-tests included)
+# inherits a selection or a manifest path meant for THIS run:
+#   SUITE_IMPACTED_FROM_BASE=<pr base sha>  run only the suites the BASE-sourced
+#     scripts/ci/impacted-selection.sh picks (it may decide `full`).
+#   SUITE_MANIFEST=<path>  record the selection header, this shard, and every
+#     suite's fate there, for scripts/ci/shard-manifest-verify.sh.
+impacted_from_base="${SUITE_IMPACTED_FROM_BASE:-}"
+manifest_path="${SUITE_MANIFEST:-}"
+unset SUITE_IMPACTED_FROM_BASE SUITE_MANIFEST
 # OPT-IN after-report PR comment (HIMMEL-2383). Env is the default; the flag
 # overrides. Never default-on and never posted without one of these set.
 report_pr="${SUITE_REPORT_PR:-}"
@@ -2761,6 +2771,51 @@ ${_impacted_out}
   done <<EOF
 $_impacted_out
 EOF
+fi
+
+# HIMMEL-3897 — the PR shards' selection, decided by the BASE commit's copy of
+# scripts/ci/impacted-selection.sh (a PR cannot narrow its own run: every file
+# that decides is a trust path, which that script turns into `full`). An
+# explicit --impacted wins. A selector that fails to answer means the FULL
+# sweep, never an empty one; the aggregator recomputes the same selection and
+# refuses any shard whose manifest header differs.
+manifest_root=$(pwd -P)
+manifest_hdr=""
+_sel_list=""
+mf_rel=""
+_mf_seen=""
+if [ -z "$impacted_range" ] && { [ -n "$impacted_from_base" ] || [ -n "$manifest_path" ]; }; then
+  if ! manifest_hdr=$(bash "$REPO_ROOT/scripts/ci/impacted-selection.sh" "$impacted_from_base" HEAD); then
+    echo "NOTE: impacted-selection.sh could not decide — running the FULL sweep" >&2
+    manifest_hdr="mode full
+reason selection-error"
+  fi
+  case "$manifest_hdr" in
+    "mode impacted"*)
+      impacted_active=1
+      impacted_repo_root="$manifest_root"
+      impacted_range="${impacted_from_base}...HEAD (base-sourced)"
+      _sel_list=$(printf '%s\n' "$manifest_hdr" | sed -n 's/^suite //p')
+      impacted_nl="
+${_sel_list}
+"
+      ;;
+  esac
+  printf '%s\n' "$manifest_hdr" | sed -n '1,2s/^/selection: /p'
+fi
+if [ -n "$manifest_path" ]; then
+  mkdir -p "$(dirname "$manifest_path")"
+  if [ "$shard_total" -gt 0 ]; then _mf_shard="$((shard_offset + 1))/$shard_total"; else _mf_shard="1/1"; fi
+  printf '%s\nshard %s\n' "${manifest_hdr:-mode full
+reason --impacted flag}" "$_mf_shard" > "$manifest_path"
+fi
+# manifest_add <line> — one suite's fate, for shard-manifest-verify.sh.
+manifest_add() { [ -z "$manifest_path" ] || printf '%s\n' "$1" >> "$manifest_path"; }
+if [ "$impacted_active" -eq 1 ] && [ -n "$manifest_hdr" ] && [ -z "$_sel_list" ]; then
+  # A docs-only PR: the selection is empty, so this shard has nothing to run.
+  # Every required context still reports; the aggregator verifies the header.
+  echo "run-shell-tests.sh: ${impacted_range}: 0 impacted shell suites — nothing to run"
+  exit 0
 fi
 
 # HIMMEL-2517 — the scan root can be DELETED while this run is live, and the
@@ -3554,6 +3609,12 @@ while IFS= read -r suite <&3; do
   #                (symlink, junction, absolute, "./", trailing slash).
   relpath="${suite#"${scan}"/}"
   suite_key="${scan_resolved}/${relpath}"
+  # The manifest's spelling: repo-relative, as impacted-selection.sh prints.
+  if [ -n "$manifest_path" ]; then
+    mf_rel="${suite_key#"$manifest_root"/}"
+    _mf_seen="${_mf_seen}${mf_rel}
+"
+  fi
 
   # Every skip filter, in one call (HIMMEL-2894). SKIP_LIST -> docs-only ->
   # tier -> conditional -> capability, in that precedence, with the reason the
@@ -3563,6 +3624,7 @@ while IFS= read -r suite <&3; do
   if suite_filter_reason "$relpath" "$suite_key"; then
     skip=$((skip + 1))
     printf '[SKIP] %s — %s\n' "$suite" "$_filter_reason"
+    manifest_add "skip ${mf_rel:-}"
     continue
   fi
 
@@ -3620,6 +3682,7 @@ while IFS= read -r suite <&3; do
     fi
     unrun_suites="${unrun_suites}  ${suite}
 "
+    manifest_add "unrun ${mf_rel:-}"
     continue
   fi
 
@@ -3717,6 +3780,7 @@ while IFS= read -r suite <&3; do
 
   dur=$(( SECONDS - start ))
   ran=$((ran + 1))
+  manifest_add "ran $rc ${mf_rel:-}"
 
   if [ "$rc" -eq 0 ]; then
     pass=$((pass + 1))
@@ -3804,6 +3868,19 @@ while IFS= read -r suite <&3; do
   fi
   rm -f "$log"
 done 3< "$suites_file"
+
+# A selected suite the loop never saw (deleted, renamed, outside the scan
+# root) is named, so the aggregator can tell it from one a shard dropped.
+if [ -n "$manifest_path" ] && [ -n "$_sel_list" ]; then
+  while IFS= read -r _mf_p; do
+    case "$_mf_seen" in
+      "${_mf_p}${_shard_nl}"*|*"${_shard_nl}${_mf_p}${_shard_nl}"*) ;;
+      *) manifest_add "notfound $_mf_p" ;;
+    esac
+  done <<EOF
+$_sel_list
+EOF
+fi
 
 # HIMMEL-2517 — second re-stat, before even the Summary HEADER is written. This
 # is the one that keeps the artifact off the PR: the --pr post below happens in
@@ -4041,6 +4118,13 @@ fi
 if [ "$ran" -eq 0 ]; then
   if [ "$docs_only_skip_active" -eq 1 ]; then
     echo "OK: docs-only diff — 0 shell suites needed ($skip skipped)"
+    exit 0
+  fi
+  # A base-sourced impacted run whose every selected suite was filtered (tier,
+  # platform, conditional): the manifest names each skip, and the aggregator's
+  # shard-manifest-verify.sh accounts for every selected suite (HIMMEL-3897).
+  if [ "$impacted_active" -eq 1 ] && [ -n "$manifest_hdr" ] && [ "$shard_assigned" -eq 0 ]; then
+    echo "OK: ${impacted_range}: 0 selected suites eligible on this shard ($skip skipped)"
     exit 0
   fi
   # A shard assigned ZERO suites is a pass (HIMMEL-3699): os-verify splits a
