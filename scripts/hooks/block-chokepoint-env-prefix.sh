@@ -1273,11 +1273,15 @@ scan_segment() {
     # is already scanned through the newline fold) UNLESS its command is a
     # non-executing reader. Fail-closed: any other command, a shell or a
     # `source /dev/stdin`, may run it. Every operand is scanned: the
-    # command reads the last, so none is safe to skip.
+    # command reads the last, so none is safe to skip. A reader's output
+    # can itself reach a shell (a pipe, `$(`, a backtick, `<(` / `>(`), so
+    # the reader exemption holds only when the command has none of those.
     if [[ $seg == *'<<<'* ]]; then
         while [ "$j" -lt "$nw" ] && [[ ${W[$j]} =~ $ASSIGN_RE ]]; do j=$((j + 1)); done
-        case "${W[$j]##*/}" in
-        grep|cat|wc|head|tail|tee|diff|cmp) : ;;
+        k=reader
+        case "$cmd" in *'|'*|*\$\(*|*'`'*|*'<('*|*'>('*) k='' ;; esac
+        case "$k${W[$j]##*/}" in
+        readergrep|readercat|readerwc|readerhead|readertail|readertee|readerdiff|readercmp) : ;;
         *)
             k=$seg
             while [[ $k == *'<<<'* ]]; do

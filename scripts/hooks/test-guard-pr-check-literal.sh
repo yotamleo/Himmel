@@ -511,7 +511,9 @@ for v in \
     "source /dev/stdin <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
     ". /dev/stdin <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
     "mksh <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
-    "mksh <<< 'echo ok' <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""; do
+    "mksh <<< 'echo ok' <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\"" \
+    "cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\" | bash" \
+    "source <(cat <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\")"; do
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
     need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
 done
