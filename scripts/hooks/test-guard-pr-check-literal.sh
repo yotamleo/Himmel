@@ -497,11 +497,19 @@ for v in \
     "echo \`env -S 'bash scripts/cr/pr-check-context.sh\\c'\`" \
     "env -S 'bash"$'\v'"scripts/handover/merge-on-green.sh'" \
     "env -S 'bash"$'\f'"scripts/handover/merge-on-green.sh'" \
-    "env -S 'bash"$'\r'"scripts/handover/merge-on-green.sh'"; do
+    "env -S 'bash"$'\r'"scripts/handover/merge-on-green.sh'" \
+    "env -S 'bash scripts/handover/merge-\${Z}on-green.sh'" \
+    "env -S 'bash scripts/cr/clear-\${Z}cr-marker.sh\\c'" \
+    "env -S 'bash scripts/hand\${Z}over/merge-on-green.sh'" \
+    "env -S 'bash scripts/c\${Z}r/clear-cr-marker.sh\\c'"; do
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 run "1813: unresolvable env -S with no target mention -> no-op" 0 \
     "$(payload "env -S 'bash scripts/other/x.sh\\c'" "$WT")" "$HR"
+run "1813: \${VAR} split of a target name outside env -S -> no-op" 0 \
+    "$(payload "echo scripts/c\${Z}r/clear-cr-marker.sh" "$WT")" "$HR"
+run "1813: \${VAR} in an env -S string naming no target -> no-op" 0 \
+    "$(payload "env -S 'echo \${HOME}/x'" "$WT")" "$HR"
 run "1813: \\c in a non-env mention of the target -> no-op" 0 \
     "$(payload "printf '%s\\c' scripts/handover/merge-on-green.sh" "$WT")" "$HR"
 run "1813: env grep of a pr-check pattern with a backslash (no -S) -> no-op" 0 \

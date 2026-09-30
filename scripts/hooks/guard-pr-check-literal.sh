@@ -679,6 +679,16 @@ names_target() { # names_target <text> - mentions pr-check, a scripts/cr/
 }
 mentions=0
 names_target "$flat" && mentions=1
+# HIMMEL-1813: GNU env -S expands ${VAR}, an unset one to nothing, so a name
+# split apart by one is still a mention when an env split option is present.
+drop_braced_vars() { # drop_braced_vars <text> - print it with every ${...} removed
+    local t="$1" re='^(.*)\$\{[^}]*\}(.*)$'
+    while [[ $t =~ $re ]]; do t="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    printf '%s' "$t"
+}
+if [ "$mentions" -eq 0 ] && [[ $cmd == *env*\$\{* ]] && [[ $cmd =~ -[a-zA-Z]*S|--s ]]; then
+    names_target "$(drop_braced_vars "${cmd//[\'\"\\]/}")" && mentions=1
+fi
 case "$flat" in *[cC][rR]/*|*[hH]andover/*|*[][*?]*|*'{'*) ;; *) [ "$mentions" -eq 1 ] || exit 0 ;; esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
