@@ -54,7 +54,9 @@ payload=$(cat) || exit 0
 # `gh  pr  merge` must NOT dodge the gate via the fast path (plan-critic #2);
 # non-merge commands mentioning "merge" fall through to the cheap regex below.
 case "$payload" in
-    *merge*) ;;
+    # A JSON backslash may split the word (`mer\ge`): let jq and the normalized
+    # detector below decide instead of skipping.
+    *merge*|*\\*) ;;
     *) exit 0 ;;
 esac
 
@@ -86,12 +88,19 @@ _deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 # mention such as `echo gh pr merge`, and a path-qualified `/usr/bin/gh`. The
 # selector walk below then only ever sees plain tokens.
 merge_re='gh[[:space:]]+pr[[:space:]]+merge'
-if ! printf '%s' "$cmd_stripped" | grep -E "$merge_re" >/dev/null; then
+# The detector runs on a NORMALIZED copy (backslash-newline pairs removed, then
+# every backslash, newlines to spaces): bash joins `gh pr mer\<nl>ge` and reads
+# `mer\ge` as `merge`, which the raw text would not match. The plain-command
+# check below still runs on cmd_stripped, where an unquoted backslash or `#`
+# (bash starts a comment at an unquoted one, so hook and bash would read
+# different commands) is itself a deny.
+cmd_norm=$(printf '%s' "$cmd_stripped" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' | tr '\n' ' ')
+if ! printf '%s' "$cmd_norm" | grep -E "$merge_re" >/dev/null; then
     exit 0
 fi
 # shellcheck disable=SC2016  # literal backtick/$( in the deny list - intentional
 case "$cmd_stripped" in
-    *[\;\&\|\<\>\`]*|*'$('*|*$'\n'*) plain=0 ;;
+    *[\;\&\|\<\>\`\\\#]*|*'$('*|*$'\n'*) plain=0 ;;
     *) plain=1 ;;
 esac
 set -f
@@ -191,6 +200,14 @@ _gate4_bounded() {
 }
 go_tmp=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-view.XXXXXX" 2>/dev/null) || go_tmp=""
 gh_t0=$SECONDS
+# HIMMEL-3918 (I1): ONE 45s budget for the whole hook (Claude Code kills it at
+# 60s and reads that as non-blocking). _budget_left <cap> prints min(cap, left).
+_budget_left() {
+    local left=$((45 - (SECONDS - gh_t0)))
+    [ "$left" -gt "$1" ] && left=$1
+    [ "$left" -lt 0 ] && left=0
+    echo "$left"
+}
 gh_to_flag=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-timeout.XXXXXX" 2>/dev/null) || gh_to_flag=""
 trap 'rm -f "$go_tmp" "$gh_to_flag" "${trust_tmp:-}"' EXIT
 # HIMMEL-3918 (3): every gh call the sourced gate libraries make (cr-merge-gate,
@@ -202,13 +219,15 @@ trap 'rm -f "$go_tmp" "$gh_to_flag" "${trust_tmp:-}"' EXIT
 # the hook, not the libs: it also bounds the transitive calls, and the libs'
 # other callers (check-ci, pr-merge.sh) keep their own behaviour.
 gh() {
-    local out errf rc=0 _gate4_err
+    local out errf rc=0 cap _gate4_err
     # One timeout already means deny: skip later calls so a run of hung gh calls
     # cannot each spend another 10s of the hook budget before the deny.
     if [ -n "$gh_to_flag" ] && [ -s "$gh_to_flag" ]; then return 124; fi
-    # A shared 40s deadline across every gate lookup: calls each just under 10s
-    # never set the flag but could still run out the hook budget (fail-open).
-    if [ $((SECONDS - gh_t0)) -ge 40 ]; then
+    # One shared budget (_budget_left) across every gh call in the hook: each
+    # call is capped to what remains, and none starts once it is spent, so the
+    # hook always denies before Claude Code's 60s timeout (non-blocking).
+    cap=$(_budget_left 10)
+    if [ "$cap" -le 0 ]; then
         [ -n "$gh_to_flag" ] && echo 1 >"$gh_to_flag"
         return 124
     fi
@@ -221,7 +240,7 @@ gh() {
     fi
     # stderr is replayed: trust_path_check tells a 404 from an outage by it.
     _gate4_err=$errf
-    _gate4_bounded 10 "$out" command gh "$@" || rc=$?
+    _gate4_bounded "$cap" "$out" command gh "$@" || rc=$?
     if [ "$rc" = "124" ] && [ -n "$gh_to_flag" ]; then echo 1 >"$gh_to_flag"; fi
     cat "$out" 2>/dev/null
     cat "$errf" >&2 2>/dev/null
@@ -367,37 +386,10 @@ go_url=$(printf '%s' "$go_meta" | jq -r '.url // empty' 2>/dev/null || true)
 # shellcheck source=../lib/timeout-bin.sh
 . "$SCRIPT_DIR/../lib/timeout-bin.sh"
 go_nwo="$repo"
+# HIMMEL-3918 (I1): through the shadow gh (10s cap, shared hook budget), never
+# the real gh - a hang here must read as a refusal, not run out the hook budget.
 if [ -z "$go_nwo" ]; then
-    if [ -n "${_TIMEOUT_BIN:-}" ]; then
-        go_nwo=$("$_TIMEOUT_BIN" 5 gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
-    else
-        # HIMMEL-3585: neither `timeout` nor `gtimeout` is on PATH, so the
-        # bound above is unavailable — a bare `gh repo view` here would run
-        # UNBOUNDED and a hang would fail this fail-closed hook OPEN via
-        # Claude Code's own hook timeout instead of reading as a refusal.
-        # Bash-native bound: background `gh`, poll for up to 5s, then
-        # kill it and treat that exactly like a timeout (empty go_nwo).
-        _gh_out="$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null)" || _gh_out=""
-        if [ -z "$_gh_out" ]; then
-            go_nwo=""
-        else
-            gh repo view --json nameWithOwner --jq .nameWithOwner >"$_gh_out" 2>/dev/null &
-            _gh_pid=$!
-            _gh_waited=0
-            while [ "$_gh_waited" -lt 5 ] && kill -0 "$_gh_pid" 2>/dev/null; do
-                sleep 1
-                _gh_waited=$((_gh_waited + 1))
-            done
-            if kill -0 "$_gh_pid" 2>/dev/null; then
-                kill -9 "$_gh_pid" 2>/dev/null
-                go_nwo=""
-            else
-                go_nwo="$(cat "$_gh_out" 2>/dev/null)"
-            fi
-            wait "$_gh_pid" 2>/dev/null
-            rm -f "$_gh_out"
-        fi
-    fi
+    go_nwo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
 fi
 if [ -z "$go_nwo" ]; then
     echo "block-unresolved-cr-merge: cannot resolve this repo's owner/name for PR #$go_num — refusing (GATE INTEGRITY: the GO mac binds the repo, and the trust-path gate reads its list from it). Pass --repo <owner>/<name>, or run from a checkout gh can resolve." >&2
@@ -520,7 +512,9 @@ trust_branch=$(cat "$trust_tmp" 2>/dev/null) || trust_branch=""
 [ -n "$trust_branch" ] \
     || gate4_refuse "cannot read $go_nwo's default branch for the CI trust-path check of PR #$go_num — refusing"
 trust_rc=0
-_gate4_bounded 30 "$trust_tmp" trust_path_check "$go_nwo" "$go_num" "$go_sha" "$trust_branch" "$trust_anchor" || trust_rc=$?
+trust_secs=$(_budget_left 30)
+[ "$trust_secs" -gt 0 ] || gate4_refuse "the hook budget is spent before the CI trust-path check of PR #$go_num — refusing"
+_gate4_bounded "$trust_secs" "$trust_tmp" trust_path_check "$go_nwo" "$go_num" "$go_sha" "$trust_branch" "$trust_anchor" || trust_rc=$?
 trust_out=$(cat "$trust_tmp" 2>/dev/null) || trust_out=""
 if [ "$trust_rc" -eq 124 ]; then
     gate4_refuse "the CI trust-path check of PR #$go_num timed out — refusing"

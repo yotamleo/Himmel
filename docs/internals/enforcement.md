@@ -2616,8 +2616,13 @@ Known remaining gap: a merge with no selector AND no cwd branch still exits 0
 (five panel rounds each found a new redirect/prefix shape; every parse rule in
 this hook became a bypass in #1494 and again here). A command whose unquoted text
 names `gh pr merge` must be a **single plain command**: it denies when the
-quote-stripped command contains any of `;` `&` `|` `<` `>` `` ` `` `$(` or a
-newline, or when its first word is not literally `gh`. That one rule replaces the
+quote-stripped command contains any of `;` `&` `|` `<` `>` `` ` `` `$(` `\` `#`
+or a newline, or when its first word is not literally `gh` (an unquoted `#`
+starts a bash comment and a `\` joins or escapes words, so the hook and bash
+would read different commands; a quoted one stays allowed). The `gh pr merge`
+detector itself runs on a normalized copy (backslash-newline pairs removed, then
+every backslash, newlines to spaces), so `gh pr mer\<newline>ge` and `mer\ge` are
+seen. That one rule replaces the
 earlier cd/pushd, prefix (`env`/`command`/`builtin`/`exec`/`NAME=value`) and
 redirect handling, all of which now deny ("single plain command"), each naming
 the merge-on-green chokepoint (`scripts/handover/`) as the sanctioned path. A
@@ -2626,9 +2631,12 @@ Over-denies, accepted (HIMMEL-3917 precedent): an unquoted mention such as
 `echo gh pr merge`, a path-qualified `/usr/bin/gh`, and any chained merge.
 1. *cwd mismatch, prefixes, redirects:* all covered by the rule above.
 2. *Bounded gate lookups:* the hook shadows `gh` with a 10 s bounded function for
-   everything the sourced gate libraries call (libs untouched) under a 40 s shared
-   deadline; a timeout on a real merge denies ("timed out (10s bound)"), never a
-   hook-budget expiry.
+   everything the sourced gate libraries call (libs untouched) under ONE 45 s hook
+   budget: each call is capped to what remains (the repo-name lookup and the
+   trust-path check included, the latter to min(30 s, remaining)) and none starts
+   once it is spent, so the hook denies before Claude Code's 60 s timeout (which
+   reads as non-blocking). A timeout on a real merge denies ("timed out (10s
+   bound)"), never a hook-budget expiry.
 3. *Lib-load:* a gate lib that is missing, unreadable, unparseable, or lacks its
    function denies (was `|| exit 0`).
 4. *Head TOCTOU:* every direct merge must pin `--match-head-commit` (space or

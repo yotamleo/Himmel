@@ -46,6 +46,7 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "${GH_STUB_LOG:?}"
+[ -n "${GH_STUB_SLOW:-}" ] && sleep "$GH_STUB_SLOW"
 case "${GH_STUB_MODE:?}" in
   error) exit 1 ;;
 esac
@@ -282,6 +283,11 @@ for _row in "redir-fd-dup|gh pr merge 2>&1 42 $PIN" \
             "chain-backtick|echo \`gh pr merge 42 $PIN\`" \
             "chain-subst|echo \$(gh pr merge 42 $PIN)" \
             "chain-newline|true\\ngh pr merge 42 $PIN" \
+            "hash-selector|gh pr merge #5 $PIN" \
+            "hash-comment-drops-pin|gh pr merge 5 # $PIN" \
+            "contin-space|gh pr \\\\\\nmerge 5 $PIN" \
+            "contin-mid-word|gh pr mer\\\\\\nge 5 $PIN" \
+            "backslash-mid-word|gh pr mer\\\\ge 5 $PIN" \
             "cd-and|cd /tmp && gh pr merge 42 $PIN" \
             "cd-semicolon|cd /tmp; gh pr merge 42 $PIN" \
             "cd-subshell|(cd /tmp; gh pr merge 42 $PIN)" \
@@ -300,6 +306,13 @@ GH_STUB_MODE=clean t merge-on-green-allows 0 Bash "bash /opt/himmel/scripts/hand
 GH_STUB_MODE=clean t prefix-lookalike-nonmerge-allows 0 Bash "env gh pr view 42"
 GH_STUB_MODE=clean t prefix-lookalike-quoted-allows 0 Bash "git commit -m \\\"env gh pr merge 42\\\""
 GH_STUB_MODE=clean t cd-word-quoted-allows 0 Bash "gh pr merge 42 $PIN --body \\\"cd here\\\""
+GH_STUB_MODE=clean t hash-quoted-allows 0 Bash "gh pr merge 42 $PIN --body \\\"fixes #5\\\""
+# (I1) one hook budget: every gh call sleeps 9s (under the 10s per-call cap), so
+# only the shared 45s budget can stop the hook; it must DENY before Claude Code's
+# 60s hook timeout (which reads as non-blocking).
+_t0=$SECONDS
+GH_STUB_SLOW=9 GH_STUB_MODE=clean t slow-gh-budget-denies 2 Bash "gh pr merge 42 --squash $PIN"
+[ $((SECONDS - _t0)) -lt 55 ] || { echo "FAIL slow-gh-budget-denies took $((SECONDS - _t0))s - past the hook budget"; fail=$((fail+1)); }
 # (3) every gate-library gh call is bounded (10s); a hang = DENY, never the hook
 # budget expiring open. The stub sleeps 30s: <25s proves the bound fired.
 for _row in "cr-graphql-hang|cr-hang" "ci-checkruns-hang|ci-hang"; do
