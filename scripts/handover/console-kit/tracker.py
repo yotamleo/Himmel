@@ -1,7 +1,8 @@
 """Living roadmap tracker for HIMMEL-3882: one self-contained HTML page, re-run to refresh.
 
-Plan (static) comes from <plan-dir>/stage3/placement|versions|closures|unplaced + meta.json
-and the stage1 theme column. Status (live) comes from the Jira mirror, never from the plan,
+Plan (static) comes from <plan-dir>/stage3/placement|versions|closures|unplaced + meta.json,
+the stage1 theme/impact columns and explain files (user impact), stage2 (readiness, effort range)
+and the placer's layer caps (tools/stage3/place.py). Status (live) comes from the Jira mirror, never from the plan,
 so progress moves as work lands. Related luna notes per placed ticket are cached in the
 luna-map file (qmd lexical search + a key grep of the handover tree); only keys missing or
 older than 7 days are re-queried, `--refresh-luna` forces all.
@@ -16,6 +17,7 @@ Writes --out, the sidecar <out>.fp (the fingerprint tick.sh compares for tracker
 --luna-map (stdlib only).
 """
 import argparse
+import ast
 import glob
 import hashlib
 import json
@@ -50,8 +52,16 @@ def read_tsv(path):
     return head, rows, nf
 
 
+def plan_globs():
+    """The stage1/stage2 row-field files and the placer (layer caps) the page reads (HIMMEL-3957)."""
+    return (sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.tsv'))) +
+            sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.explain.tsv'))) +
+            sorted(glob.glob(os.path.join(ROOT, 'stage2', 'C??.tsv'))) +
+            [p for p in [os.path.join(ROOT, 'tools', 'stage3', 'place.py')] if os.path.exists(p)])
+
+
 def fingerprint():
-    """16 hex over the mirror's newest `updated:` and the plan + stage1 theme files' bytes (what the page shows)."""
+    """16 hex over the mirror's newest `updated:` and the plan + stage1/stage2 files' bytes (what the page shows)."""
     upd = ''
     for p in glob.glob(os.path.join(MIRROR, 'HIMMEL-*.md')):
         for l in open(p, encoding='utf-8', errors='replace'):
@@ -62,9 +72,68 @@ def fingerprint():
     for f in PLAN_FILES:
         p = os.path.join(ROOT, 'stage3', f)
         h.update(open(p, 'rb').read() if os.path.exists(p) else b'-')
-    for p in sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.tsv'))):
+    for p in plan_globs():
         h.update(open(p, 'rb').read())
     return h.hexdigest()[:16]
+
+
+def plan_rules(meta):
+    """Capacity rules as the plan records them: meta.json notes + the placer's CAPS. None = not recorded."""
+    txt = ' '.join(n for n in meta.get('notes', []) if isinstance(n, str))
+
+    def val(pat):
+        m = re.search(pat, txt)
+        return float(m.group(1)) if m else None
+    sm = re.search(r'S-eq:\s*XS\s*([\d.]+)\s+S\s+([\d.]+)\s+M\s+([\d.]+)\s+L\s+([\d.]+)\s+XL\s+([\d.]+)', txt)
+    caps = None
+    try:
+        m = re.search(r'^CAPS\s*=\s*(\{[^}]*\})', open(os.path.join(ROOT, 'tools', 'stage3', 'place.py'),
+                                                       encoding='utf-8').read(), re.M)
+        caps = ast.literal_eval(m.group(1)) if m else None
+    except (OSError, ValueError, SyntaxError):
+        pass
+    return dict(tickets=val(r'ticket count\s*<\s*(\d+)'), total=val(r'total load within\s*([\d.]+)'),
+                per=val(r'effort_mid\s*x\s*([\d.]+)'), seq=[float(x) for x in sm.groups()] if sm else None,
+                layers=caps if isinstance(caps, dict) else None)
+
+
+def capacity_text(r, deferred):
+    """Plain-language cap panel lines; a rule the plan does not record says so instead of guessing."""
+    nr = 'not recorded in the plan'
+    parts = ['at most %d tickets' % r['tickets'] if r['tickets'] is not None else 'a ticket cap ' + nr,
+             'at most %g bank of load' % r['total'] if r['total'] is not None else 'a load cap ' + nr]
+    out = ['Each v1.0.x version holds ' + ' and '.join(parts) + '; the plan puts every ticket in the earliest version with room.']
+    lc = r['layers']
+    out.append('Layer caps, in bank: ' + ' · '.join('%s %.2f' % (l, lc[l]) for l in LAYERS if l in lc) + '.'
+               if lc else 'Layer caps: ' + nr + '.')
+    out.append('Load = effort in S-equivalents × %g bank; a plan-first ticket counts only its slice.' % r['per']
+               if r['per'] is not None else 'How load is derived from effort: ' + nr + '.')
+    out += ['%s is a deferred bucket: no caps apply.' % v for v in deferred]
+    return out
+
+
+def ledger_lines(rows, vers):
+    """Header ledger (HIMMEL-3957): the running version, the whole v1.0.x train, and drift/unplanned only when non-zero."""
+    train = [i for i, v in enumerate(vers) if VER_RE.match(v)]
+
+    def line(label, sel):
+        a = [r for r in rows if r[3] in sel]
+        t = [sum(1 for r in a if r[2] == s) for s in (0, 1, 2)]
+        return '%s%d of %d done (%d %%), %d in progress, %d to do.' % (
+            label, t[2], len(a), int(100.0 * t[2] / len(a) + 0.5) if a else 0, t[1], t[0])
+    cur = next((i for i in train if any(r[3] == i and r[2] != 2 for r in rows)), None)
+    out = [line('Running now: %s — ' % vers[cur], {cur}) if cur is not None
+           else 'Running now: nothing — every v1.0.x ticket is done.', line('Whole v1.0.x train: ', set(train))]
+    dr = sum(1 for r in rows if r[3] in train and r[7] == 1)
+    un = sum(1 for r in rows if r[3] in train and r[7] == 2 and r[2] != 2)
+    att = []
+    if dr:
+        att.append('%d %s from the plan (Jira names another version)' % (dr, 'ticket drifted' if dr == 1 else 'tickets drifted'))
+    if un:
+        att.append('%d open %s in a version but not in the plan' % (un, 'ticket sits' if un == 1 else 'tickets sit'))
+    if att:
+        out.append('Needs attention: ' + '; '.join(att) + '.')
+    return out, cur
 
 
 def num(key):
@@ -224,10 +293,26 @@ def main():
     vload = [[round(float(r['load_' + l] or 0), 3) for l in
               ('bugs', 'enhancements', 'features', 'misc', 'audit')] +
              [round(float(r['load_total'] or 0), 3), round(float(r['est_legs'] or 0), 1)] for r in vrows]
-    theme = {}
+    theme, impact, uimp, ready, erange = {}, {}, {}, {}, {}
     for p in sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.tsv'))):
         for r in read_tsv(p)[1]:
             theme[r['key']] = r.get('theme', '') or '(no theme)'
+            if (r.get('impact') or '').isdigit():
+                impact[r['key']] = int(r['impact'])
+    # HIMMEL-3957 row fields: user-facing impact (stage1 explain), readiness + T-shirt range (stage2).
+    for p in sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.explain.tsv'))):
+        for r in read_tsv(p)[1]:
+            uimp[r['key']] = clip(r.get('user_impact') or '', 170)
+    for p in sorted(glob.glob(os.path.join(ROOT, 'stage2', 'C??.tsv'))):
+        for r in read_tsv(p)[1]:
+            if (r.get('readiness') or '').isdigit():
+                ready[r['key']] = int(r['readiness'])
+            lo, hi = r.get('effort_low') or '', r.get('effort_high') or ''
+            if lo or hi:
+                erange[r['key']] = lo if lo == hi or not hi else hi if not lo else lo + '–' + hi
+
+    def fields(k, sl=''):
+        return [uimp.get(k, ''), erange.get(k, ''), ready.get(k), impact.get(k), sl]
     themes = sorted(set(theme.values()) | {'(no theme)', '(unplanned)'})
     tidx = {t: i for i, t in enumerate(themes)}
 
@@ -254,7 +339,8 @@ def main():
         rows.append([num(k), clip(m['title'] if m else '(not in mirror)', 62),
                      m['st'] if m else 0, vidx[r['version']], LAYERS.index(lay) if lay in LAYERS else 3,
                      tidx[theme.get(k, '(no theme)')], round(float(r['effort_mid'] or 0), 1), fl,
-                     [note_id(n) for n in lmap.get(k, [])]])
+                     [note_id(n) for n in lmap.get(k, [])]] +
+                    fields(k, (r.get('slice_effort') or 'S') if r.get('commit') == 'plan-first' else ''))
     n_plan = len(rows)
     for k, m in mir.items():
         if k in planned:
@@ -263,7 +349,7 @@ def main():
         if hit:
             rows.append([num(k), clip(m['title'], 62), m['st'], vidx[hit[0]],
                          0 if m['type'] == 'Bug' else 3, tidx.get(theme.get(k), tidx['(unplanned)']),
-                         0, 2, []])
+                         0, 2, []] + fields(k))
     unpl = []
     for r in read_tsv(os.path.join(S, 'unplaced.tsv'))[1]:
         m = mir.get(r['key'])
@@ -278,9 +364,16 @@ def main():
                      clip(r.get('close_evidence', ''), 70)])
 
     upd = max((m['upd'] for m in mir.values()), default='')
+    rules = plan_rules(meta)
+    lg, cur = ledger_lines(rows, vers)
+    seq = rules['seq']
     data = dict(gen=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), mir=upd[:16].replace('T', ' '),
                 sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, L=LAYERS, T=themes, P=rows,
-                U=unpl, DR=dirs, N=notes)
+                U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur,
+                CAP=dict(total=rules['total'], layers=[(rules['layers'] or {}).get(l) for l in LAYERS],
+                         text=capacity_text(rules, [v for v in vers if not VER_RE.match(v)])),
+                EQ=' · '.join('%s %g' % x for x in zip(('XS', 'S', 'M', 'L', 'XL'), seq)) + ' S-equivalents'
+                if seq else 'not recorded in the plan')
     blob = json.dumps(data, separators=(',', ':'), ensure_ascii=False).replace('<', '\\u003c')
     html = TEMPLATE.replace('__DATA__', blob)
     outp = OUT
@@ -292,6 +385,8 @@ def main():
     cov = sum(1 for r in rows[:n_plan] if r[8])
     print('wrote %s (%.1f KB): %d planned, %d unplanned, %d drift, %d unplaced; mirror %d issues'
           % (outp, os.path.getsize(outp) / 1024, n_plan, unp, drift, len(unpl), len(mir)))
+    for l in lg:
+        print('ledger: ' + l)
     print('luna-map coverage: %d/%d placed keys with >=1 note; %d distinct notes; %.1fs'
           % (cov, n_plan, len(notes), time.time() - t0))
 
@@ -301,14 +396,15 @@ TEMPLATE = r'''<title>Himmel Roadmap Tracker</title>
 <style>
 /* design plan: release-train dispatch board. Fonts: display = condensed signage, body = plain sans, mono = keys/paths only.
    Colors: cool paper/ink neutrals + one rail-blue accent; semantic done / in-progress / to-do / drift kept apart from the
-   accent; five bucket hues for layers. Layout: ledger line and version rail first, tabs per version, facets before board. */
+   accent; five categorical layer hues (--l*, CVD-validated, no status hue reused) and a separate one-hue slate ramp
+   for load vs cap (--ld*). Layout: ledger line and version rail first, tabs per version, facets before board. */
 :root{--bg:#eef1f4;--panel:#fff;--ink:#101c28;--mute:#566574;--line:#cfd7de;--accent:#0b5cad;--accent-ink:#fff;
---done:#1f8a4c;--prog:#d98a00;--todo:#aab6c2;--drift:#c2255c;--l1:#c2255c;--l2:#0b5cad;--l3:#7048c7;--l4:#7d8a97;--l5:#0c8f8f;
+--done:#1f8a4c;--prog:#d98a00;--todo:#aab6c2;--drift:#c2255c;--l1:#e87ba4;--l2:#2a78d6;--l3:#eb6834;--l4:#4a3aa7;--l5:#0e9aa7;--ld1:#7b8da0;--ld2:#4f6377;--ld3:#26384a;
 --f-disp:"Barlow Condensed","Arial Narrow","Helvetica Neue",Arial,sans-serif;--f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d151d;--panel:#152230;--ink:#e6edf3;--mute:#93a3b3;--line:#2a3b4c;--accent:#5aa9f0;--accent-ink:#06121e;
---done:#3fbf76;--prog:#f0a830;--todo:#4a5d70;--drift:#ff6b9a;--l1:#ff6b9a;--l2:#5aa9f0;--l3:#a98bf0;--l4:#8797a6;--l5:#3fc7c7;color-scheme:dark}}
+--done:#3fbf76;--prog:#f0a830;--todo:#4a5d70;--drift:#ff6b9a;--l1:#d55181;--l2:#3987e5;--l3:#d95926;--l4:#9085e9;--l5:#1aa3ae;--ld1:#6f8599;--ld2:#9fb3c7;--ld3:#d0dde9;color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#0d151d;--panel:#152230;--ink:#e6edf3;--mute:#93a3b3;--line:#2a3b4c;--accent:#5aa9f0;--accent-ink:#06121e;
---done:#3fbf76;--prog:#f0a830;--todo:#4a5d70;--drift:#ff6b9a;--l1:#ff6b9a;--l2:#5aa9f0;--l3:#a98bf0;--l4:#8797a6;--l5:#3fc7c7;color-scheme:dark}
+--done:#3fbf76;--prog:#f0a830;--todo:#4a5d70;--drift:#ff6b9a;--l1:#d55181;--l2:#3987e5;--l3:#d95926;--l4:#9085e9;--l5:#1aa3ae;--ld1:#6f8599;--ld2:#9fb3c7;--ld3:#d0dde9;color-scheme:dark}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 var(--f-body);padding-inline:16px;padding-block:20px 48px;font-variant-numeric:tabular-nums}
 ::selection{background:var(--accent);color:var(--accent-ink)}
@@ -369,12 +465,24 @@ button{cursor:pointer}
 .lcols{display:flex;gap:4px;align-items:flex-end;width:max-content;position:relative;border-bottom:3px solid var(--ink)}
 .lcol{width:36px;text-align:center}.lcol .bar{display:flex;flex-direction:column-reverse;height:110px}
 .lcol small{display:block;font:11px var(--f-mono);color:var(--mute);padding-block:4px}
-.cap{position:absolute;left:0;right:0;border-top:2px dashed var(--drift);pointer-events:none}
-.cap span{position:absolute;right:0;top:-18px;font:11px var(--f-mono);color:var(--drift);background:var(--panel);padding-inline:3px}
+.cap{position:absolute;left:0;right:0;border-top:2px dashed var(--ink);pointer-events:none}
+.cap span{position:absolute;right:0;top:-18px;font:11px var(--f-mono);color:var(--ink);background:var(--panel);padding-inline:3px}
 .hbar{display:flex;height:20px;margin-block:6px;background:var(--todo)}.hbar i{display:block}
 .load{position:relative;height:20px;background:var(--bg);border:1px solid var(--line);margin-block:6px 4px;overflow:visible}
 .load i{display:block;position:absolute;top:0;bottom:0}
-.load b{position:absolute;top:-4px;bottom:-4px;border-left:2px dashed var(--drift)}
+.load b{position:absolute;top:-4px;bottom:-4px;border-left:2px dashed var(--ink)}
+.lrow{display:grid;grid-template-columns:minmax(0,7.5em) minmax(0,1fr) auto;gap:8px;align-items:center;font-size:12px;color:var(--mute)}
+.lrow .load{height:10px;margin:3px 0}.lrow b{font-weight:400}
+.capbox{background:var(--panel);border:1px solid var(--line);padding:6px 12px;margin-block:0 10px;font-size:13px;max-width:75ch}
+.capbox p{margin:4px 0}
+.card .ui{font-size:12.5px;color:var(--mute);overflow-wrap:anywhere;margin-block-start:2px}
+.fx{font:11px var(--f-mono);color:var(--ink)}
+.chip.off{color:var(--mute)}.chip.pf{color:var(--accent)}
+.ledger p{margin:0 0 3px}.ledger p:first-child{font-weight:600}.ledger .x{color:var(--drift)}
+.lg{display:grid;grid-template-columns:minmax(0,10em) minmax(0,1fr);gap:4px 14px;margin:0 0 10px;font-size:13px}
+.lg dt{font-weight:600}.lg dd{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--mute)}
+.lg .sw{display:inline-block;width:10px;height:10px;margin-inline:0 4px;vertical-align:baseline}
+@media(max-width:600px){.lg{grid-template-columns:minmax(0,1fr)}.lg dd{margin-block-end:6px}}
 .heat{overflow-x:auto;border:1px solid var(--line);background:var(--panel)}
 .heat table{border-collapse:collapse;font-size:11.5px}
 .heat th{font:400 11px var(--f-mono);color:var(--mute);padding:3px 2px}
@@ -396,20 +504,33 @@ details.sec>summary{cursor:pointer;padding-block:10px;font:600 17px var(--f-disp
 <div class="wrap">
 <h1>Himmel Roadmap Tracker</h1>
 <p class="stamp" id="stamp"></p>
-<p class="ledger" id="ledger"></p>
+<div class="ledger" id="ledger"></div>
 <div class="overall" id="overall" role="img"></div>
+<details class="sec" open><summary>How to read this page</summary>
+<dl class="lg">
+<dt>Status</dt><dd><span class="st st2"></span> done · <span class="st st1"></span> in progress · <span class="st st0"></span> to do, read from Jira when the page was generated.</dd>
+<dt>Readiness 0–4</dt><dd>How ready the fix is to build: 0 no plan yet · 1 problem stated · 2 fix named, not yet checked · 3 plan audited · 4 audited, with dependencies, risks and acceptance written down. Below 3 only a small planning slice is scheduled.</dd>
+<dt>Impact 1–5</dt><dd>How much it hurts today: 1 cosmetic or docs · 2 friction on a rare path · 3 daily friction · 4 a gate or guard reports the wrong thing · 5 blocks a release, loses data or allows an unsafe action.</dd>
+<dt>Effort XS–XL</dt><dd>The plan's low–high T-shirt estimate. In S-equivalents: <span id="eqs"></span>.</dd>
+<dt>Layers</dt><dd id="lgl"></dd>
+<dt>drift</dt><dd>Planned for this version, but Jira's fixVersion names another one.</dd>
+<dt>off-plan</dt><dd>In this version in Jira, but not in the roadmap plan. Done off-plan work still counts toward the version.</dd>
+<dt>plan first</dt><dd>Readiness below 3: this version schedules only a planning slice (XS or S), not the whole fix.</dd>
+<dt>vault notes</dt><dd>Luna vault notes that mention the ticket (cached text match, may miss some). Not a readiness signal.</dd>
+</dl></details>
 <div class="filters" role="group" aria-label="filters">
 <select id="fTheme" aria-label="theme"></select><select id="fLayer" aria-label="layer"></select>
 <input type="search" id="fQ" placeholder="search key or title" aria-label="search"><button id="fClr">Clear</button></div>
 <div class="tabs" role="tablist" id="tabs" aria-label="versions"></div>
 <div id="pane"></div>
-<p class="note">Status is read from the Jira mirror at generation time. Drift = the mirror carries fixVersions but not the planned one. Notes = luna vault notes that mention the ticket (cached lexical match, may miss).</p>
+<p class="note">Status is read from the Jira mirror at generation time; plan fields (impact, effort, readiness, caps) come from the roadmap plan.</p>
 </div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
 (function(){
 var D=JSON.parse(document.getElementById("data").textContent);
-var V=D.V,L=D.L,T=D.T,P=D.P,LC=["--l1","--l2","--l3","--l4","--l5"],CAP=0.6,LAST=V.length-1;
+var V=D.V,L=D.L,T=D.T,P=D.P,LC=["--l1","--l2","--l3","--l4","--l5"],LD=["--ld1","--ld2","--ld3"],CAP=D.CAP.total,LAST=V.length-1;
+function ldc(n,c){return "var("+LD[!c?1:n<c*.5?0:n<c*.8?1:2]+")"}
 var K="hrt3882",S={tab:"",th:"",ly:"",q:""},cap={0:40,1:40,2:40};
 function $(i){return document.getElementById(i)}
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
@@ -420,7 +541,7 @@ try{var s=JSON.parse(localStorage.getItem(K)||"{}");for(var k in s)if(k in S)S[k
 function save(){try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}}
 function tally(a){var r=[0,0,0];a.forEach(function(p){r[p[2]]++});return r}
 function inV(i){return P.filter(function(p){return p[3]==i})}
-var cur=LAST;for(var i=0;i<LAST;i++){var t=tally(inV(i));if(t[0]+t[1]>0){cur=i;break}}
+var cur=D.CUR==null?LAST:D.CUR;
 function tabIndex(id){if(id==="overview")return -2;for(var i=0;i<V.length;i++)if(tid(V[i])===id)return i;return -1}
 var h="";try{h=decodeURIComponent(location.hash.replace(/^#/,""))}catch(e){}
 if(tabIndex(h)==-1)h=S.tab;if(tabIndex(h)==-1)h=tid(V[cur]);S.tab=h;
@@ -435,28 +556,31 @@ function subset(){return P.filter(match)}
 function layerChip(p){var l=el("span","chip l",L[p[4]]);l.style.setProperty("--c","var("+LC[p[4]]+")");return l}
 function notePath(n){return D.DR[n[0]]+"/"+n[1]}
 function card(p){
- var c=el("div","card");c.appendChild(el("div","t",p[1]));
+ var c=el("div","card");c.appendChild(el("div","t",p[1]));if(p[9])c.appendChild(el("div","ui",p[9]));
  var m=el("div","meta");m.appendChild(el("span","key","HIMMEL-"+p[0]));m.appendChild(layerChip(p));
- m.appendChild(el("span",null,T[p[5]]));if(p[6])m.appendChild(el("span",null,"eff "+p[6]));
+ if(p[10])m.appendChild(el("span","fx","effort "+p[10]));else if(p[6])m.appendChild(el("span","fx","effort "+p[6]+" S-eq"));
+ if(p[13])m.appendChild(el("span","chip pf","plan first: "+p[13]+" slice"));
+ if(p[11]!=null)m.appendChild(el("span","fx","ready "+p[11]+"/4"));
+ if(p[12]!=null)m.appendChild(el("span","fx","impact "+p[12]+"/5"));
+ m.appendChild(el("span",null,T[p[5]]));
  if(p[7]==1)m.appendChild(el("span","chip drift","drift"));
+ if(p[7]==2)m.appendChild(el("span","chip off","off-plan"));
  c.appendChild(m);
- if(p[8]&&p[8].length){var d=el("details"),s=el("summary",null,"notes: "+p[8].length);d.appendChild(s);
+ if(p[8]&&p[8].length){var d=el("details"),s=el("summary",null,"vault notes ("+p[8].length+")");d.appendChild(s);
   d.appendChild(el("div","nt","Jira key: HIMMEL-"+p[0]));
   p[8].forEach(function(i){var n=D.N[i],pa=notePath(n),b=el("div","nt");b.appendChild(el("div","ti",n[2]));
    b.appendChild(el("code",null,pa));b.appendChild(el("code",null,"obsidian://open?vault=luna&file="+encodeURIComponent(pa.replace(/\.md$/,""))));d.appendChild(b)});
-  c.appendChild(d)}else if(p[7]!=2)m.appendChild(el("span","flag","notes: 0"));
+  c.appendChild(d)}
  return c}
 function row(p){
  var r=el("div","row");r.appendChild(el("span","st st"+p[2]));r.appendChild(el("span","key","HIMMEL-"+p[0]));r.appendChild(el("span","t",p[1]));r.appendChild(layerChip(p));if(p[7]==1)r.appendChild(el("span","chip drift","drift"));return r}
 function seg(cls,n,tot){var i=el("i",cls);i.style.width=(100*n/(tot||1))+"%";return i}
 function pctf(n,t){return t?Math.round(100*n/t):0}
 function ledger(){
- var a=P.filter(function(p){return p[3]<LAST}),t=tally(a),tot=a.length,dr=a.filter(function(p){return p[7]==1}).length,un=a.filter(function(p){return p[7]==2&&p[2]!=2}).length;
+ var a=P.filter(function(p){return /^v1\.0\.\d+$/.test(V[p[3]])}),t=tally(a),tot=a.length;
  $("stamp").textContent="Generated "+D.gen+" from mirror updated "+D.mir+"; plan built at main "+D.sha+".";
  var l=$("ledger");l.textContent="";
- function add(x,c){l.appendChild(c?el("b",c,x):document.createTextNode(x))}
- add("Now running ");add(V[cur],"");add(". Across v1.0.x: ");add(t[2]+" done","d");add(" ("+pctf(t[2],tot)+"%), ");add(t[1]+" in progress","p");add(", "+t[0]+" to do, of "+tot+" tickets. ");
- add(dr+" drifted from plan","x");add(", "+un+" unplanned in a version.");
+ D.LG.forEach(function(x){l.appendChild(el("p",x.indexOf("Needs attention")==0?"x":null,x))});
  var o=$("overall");o.textContent="";o.appendChild(seg("seg-d",t[2],tot));o.appendChild(seg("seg-p",t[1],tot));
  o.setAttribute("aria-label","v1.0.x: "+t[2]+" done, "+t[1]+" in progress, "+t[0]+" to do")}
 function tabs(){
@@ -470,20 +594,28 @@ function layerMix(f){
  var w=el("div"),c=L.map(function(_,i){return f.filter(function(p){return p[4]==i}).length});
  var hb=el("div","hbar");c.forEach(function(n,i){if(!n)return;var d=el("i");d.style.width=(100*n/(f.length||1))+"%";d.style.background="var("+LC[i]+")";d.title=L[i]+" "+n;hb.appendChild(d)});w.appendChild(hb);
  var lg=el("div","legend");L.forEach(function(l,i){if(!c[i])return;var s=el("span"),b=el("i");b.style.background="var("+LC[i]+")";s.appendChild(b);s.appendChild(document.createTextNode(l+" "+c[i]));lg.appendChild(s)});w.appendChild(lg);return w}
+function meter(n,c){
+ var mx=Math.max(c?c*1.2:0,n,0.001),ld=el("div","load"),d=el("i");d.style.left="0";d.style.width=(100*n/mx)+"%";d.style.background=ldc(n,c);ld.appendChild(d);
+ if(c){var b=el("b");b.style.left=(100*c/mx)+"%";ld.appendChild(b)}return ld}
 function loadBar(v){
- var w=el("div"),vl=D.VL[v],mx=Math.max(CAP*1.2,vl[5]),x=0,ld=el("div","load");
- vl.slice(0,5).forEach(function(n,i){if(!n)return;var d=el("i");d.style.left=(100*x/mx)+"%";d.style.width=(100*n/mx)+"%";d.style.background="var("+LC[i]+")";d.title=L[i]+" "+n;ld.appendChild(d);x+=n});
- var b=el("b");b.style.left=(100*CAP/mx)+"%";ld.appendChild(b);w.appendChild(ld);
- w.appendChild(el("div","note","load "+vl[5].toFixed(2)+" of "+CAP+" bank cap ("+Math.round(100*vl[5]/CAP)+"%), ~"+vl[6]+" legs. Dashed line = cap."));return w}
+ var w=el("div"),vl=D.VL[v],dfr=!/^v1\.0\.\d+$/.test(V[v]),c=dfr?null:CAP;
+ w.appendChild(meter(vl[5],c));
+ w.appendChild(el("div","note","Total load "+vl[5].toFixed(2)+(c?" of "+c+" bank cap ("+Math.round(100*vl[5]/c)+"%)":dfr?" (deferred bucket: no cap)":" (cap not recorded in the plan)")+", ~"+vl[6]+" legs. Dashed line = cap."));
+ if(!dfr)L.forEach(function(l,i){var lc=D.CAP.layers[i],r=el("div","lrow");r.appendChild(el("span",null,l));r.appendChild(meter(vl[i],lc));
+  r.appendChild(el("b",null,vl[i].toFixed(2)+" / "+(lc==null?"–":lc.toFixed(2))));w.appendChild(r)});
+ return w}
 function themeList(f){
  var pl=el("div","plist"),used=T.map(function(_,i){return i}).filter(function(i){return f.some(function(p){return p[5]==i})});
  used.map(function(ti){var a=f.filter(function(p){return p[5]==ti});return[ti,a,tally(a)]}).sort(function(x,y){return y[1].length-x[1].length}).forEach(function(x){
   var r=el("div","r");r.appendChild(el("span",null,T[x[0]]));var b=el("div","b");b.appendChild(seg("seg-d",x[2][2],x[1].length));b.appendChild(seg("seg-p",x[2][1],x[1].length));r.appendChild(b);
   r.appendChild(el("span","flag",x[2][2]+"/"+x[1].length));pl.appendChild(r)});return pl}
 function versionTab(pane,v){
- var f=subset().filter(function(p){return p[3]==v}),pl=f.filter(function(p){return p[7]!=2}),un=f.filter(function(p){return p[7]==2}),dr=f.filter(function(p){return p[7]==1}),t=tally(f);
- pane.appendChild(el("h2",null,V[v]+(v==cur?" (current)":"")));
- pane.appendChild(el("p","ledger",t[2]+" of "+f.length+" done ("+pctf(t[2],f.length)+"%), "+t[1]+" in progress, "+t[0]+" to do. "+pl.length+" planned, "+un.length+" unplanned, "+dr.length+" drifted."));
+ // HIMMEL-3957: Done off-plan work sits in the Done column (it counts toward this version); only open off-plan work is listed apart.
+ var f=subset().filter(function(p){return p[3]==v}),pl=f.filter(function(p){return p[7]!=2||p[2]==2}),un=f.filter(function(p){return p[7]==2&&p[2]!=2}),dr=f.filter(function(p){return p[7]==1}),t=tally(f);
+ var off=f.filter(function(p){return p[7]==2}).length,xs=[];
+ if(off)xs.push(off+" off-plan ("+(off-un.length)+" of them done)");if(dr.length)xs.push(dr.length+" drifted");
+ pane.appendChild(el("h2",null,V[v]+(v==cur?" (running now)":"")));
+ pane.appendChild(el("p","ledger",t[2]+" of "+f.length+" done ("+pctf(t[2],f.length)+" %), "+t[1]+" in progress, "+t[0]+" to do. "+(f.length-off)+" planned"+(xs.length?", "+xs.join(", "):"")+"."));
  var o=el("div","overall");o.appendChild(seg("seg-d",t[2],f.length));o.appendChild(seg("seg-p",t[1],f.length));pane.appendChild(o);
  var fc=el("div","facets"),a=el("div");a.appendChild(el("h3",null,"Layer mix"));a.appendChild(layerMix(f));
  var b=el("div");b.appendChild(el("h3",null,"Effort load vs bank cap"));b.appendChild(loadBar(v));
@@ -498,7 +630,7 @@ function versionTab(pane,v){
   g.appendChild(col)});
  pane.appendChild(g);
  if(dr.length){var d=el("div","unp");d.appendChild(el("h3",null,"Drift ("+dr.length+")"));d.appendChild(el("div","note","Planned here, but Jira fixVersion names other versions."));dr.forEach(function(p){d.appendChild(row(p))});pane.appendChild(d)}
- if(un.length){var u=el("div","unp");u.appendChild(el("h3",null,"Unplanned in "+V[v]+" ("+un.length+")"));u.appendChild(el("div","note","In this fixVersion in Jira but not in the roadmap plan."));un.forEach(function(p){u.appendChild(row(p))});pane.appendChild(u)}}
+ if(un.length){var u=el("div","unp");u.appendChild(el("h3",null,"Off-plan, still open in "+V[v]+" ("+un.length+")"));u.appendChild(el("div","note","In this fixVersion in Jira but not in the roadmap plan."));un.forEach(function(p){u.appendChild(row(p))});pane.appendChild(u)}}
 function strip(pane,f){
  var by=V.map(function(_,i){return tally(f.filter(function(p){return p[3]==i}))}),mx=1;by.forEach(function(t){mx=Math.max(mx,t[0]+t[1]+t[2])});
  var r=el("div","rail"),tr=el("div","train");
@@ -522,13 +654,18 @@ function burnup(pane,f){
  line(dn,"var(--done)",0,"done");line(pg,"var(--prog)",0,"+active");line(sc,"var(--ink)",1,"scope");
  var b=el("div","burn");b.appendChild(s);pane.appendChild(b);
  pane.appendChild(el("div","legend")).appendChild(el("span",null,"Cumulative across v1.0.1 to v1.0.42: done, done + in progress, and total scope (planned + unplanned)."))}
+function capBox(pane){var b=el("div","capbox");D.CAP.text.forEach(function(x){b.appendChild(el("p",null,x))});pane.appendChild(b)}
 function loadChart(pane){
- var mx=CAP*1.15,ch=el("div","chart"),cols=el("div","lcols");
- V.forEach(function(v,i){var col=el("div","lcol"),bar=el("div","bar"),vl=D.VL[i];
-  vl.slice(0,5).forEach(function(n,k){if(!n)return;var d=el("div");d.style.height=Math.max(2,Math.round(110*n/mx))+"px";d.style.background="var("+LC[k]+")";d.title=v+" "+L[k]+" "+n;bar.appendChild(d)});
+ // one magnitude per version on the slate load ramp (LD), stepped by share of the cap; never the layer hues.
+ var mx=1e-3;V.forEach(function(_,i){if(/^v1\.0\.\d+$/.test(V[i]))mx=Math.max(mx,D.VL[i][5])});mx=Math.max(mx,(CAP||0)*1.15);
+ var ch=el("div","chart"),cols=el("div","lcols");
+ V.forEach(function(v,i){var col=el("div","lcol"),bar=el("div","bar"),n=D.VL[i][5],dfr=!/^v1\.0\.\d+$/.test(v);
+  if(n){var d=el("div");d.style.height=Math.max(2,Math.round(110*Math.min(n,mx)/mx))+"px";d.style.background=ldc(n,dfr?null:CAP);d.title=v+": load "+n.toFixed(2)+(CAP&&!dfr?" of "+CAP+" ("+Math.round(100*n/CAP)+"%)":dfr?" (deferred, no cap)":"");bar.appendChild(d)}
   col.appendChild(bar);col.appendChild(el("small",null,lab(i)));cols.appendChild(col)});
- var c=el("div","cap");c.style.bottom=(26+110*CAP/mx)+"px";c.appendChild(el("span",null,"cap "+CAP));cols.appendChild(c);
- ch.appendChild(cols);pane.appendChild(ch)}
+ if(CAP){var c=el("div","cap");c.style.bottom=(26+110*CAP/mx)+"px";c.appendChild(el("span",null,"cap "+CAP));cols.appendChild(c)}
+ ch.appendChild(cols);pane.appendChild(ch);
+ var lg=el("div","legend");["under half the cap","half to 80 %","80 % or more"].forEach(function(x,k){var s=el("span"),i=el("i");i.style.background="var("+LD[k]+")";s.appendChild(i);s.appendChild(document.createTextNode(x));lg.appendChild(s)});
+ lg.appendChild(el("span",null,"Dashed line = total cap. Per-layer load vs its own cap is on each version's tab."));pane.appendChild(lg)}
 function layerChart(pane,f){
  var per=V.map(function(_,v){return f.filter(function(p){return p[3]==v})}),mx=1;per.forEach(function(a){mx=Math.max(mx,a.length)});
  var ch=el("div","chart"),cols=el("div","lcols");
@@ -556,7 +693,7 @@ function overview(pane){
  var f=subset();
  pane.appendChild(el("h2",null,"Version train"));strip(pane,f);
  pane.appendChild(el("h2",null,"Burn-up"));burnup(pane,f);
- pane.appendChild(el("h2",null,"Effort load per version vs bank cap"));loadChart(pane);
+ pane.appendChild(el("h2",null,"Effort load per version vs bank cap"));capBox(pane);loadChart(pane);
  pane.appendChild(el("h2",null,"Layer mix"));pane.appendChild(layerMix(f));layerChart(pane,f);
  pane.appendChild(el("h2",null,"Theme by version"));pane.appendChild(el("div","note","Cell = ticket count; green share = done. Click a cell to open that version."));heat(pane,f);
  pane.appendChild(el("h2",null,"Theme progress"));pane.appendChild(themeList(f));
@@ -565,6 +702,8 @@ function render(){
  ledger();tabs();var p=$("pane");p.textContent="";var i=tabIndex(S.tab);
  if(i<0)overview(p);else versionTab(p,i)}
 function fill(sel,arr,cv,lb){sel.textContent="";var o=el("option",null,lb);o.value="";sel.appendChild(o);arr.forEach(function(x){var o2=el("option",null,x);o2.value=x;sel.appendChild(o2)});sel.value=cv}
+$("eqs").textContent=D.EQ;
+L.forEach(function(l,i){var s=el("span"),b=el("i","sw");b.style.background="var("+LC[i]+")";s.appendChild(b);s.appendChild(document.createTextNode(l+(i<L.length-1?" · ":"")));$("lgl").appendChild(s)});
 fill($("fTheme"),T,S.th,"All themes");fill($("fLayer"),L,S.ly,"All layers");$("fQ").value=S.q;
 if($("fTheme").value!==S.th)S.th="";if($("fLayer").value!==S.ly)S.ly="";
 $("fTheme").addEventListener("change",function(){S.th=this.value;save();render()});
