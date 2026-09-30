@@ -12,9 +12,9 @@ prepares the mechanics.
 
 ## 1. Bump `VERSION`
 
-`VERSION` currently reads `0.3.0` and is deliberately **left unbumped** by
-this PR (see the "VERSION" section below for why). Before cutting the real
-tag:
+`VERSION` was deliberately left unbumped at `0.3.0` until the pre-cut PR (see
+the "VERSION" section below for why); HIMMEL-3603's pre-cut PR bumped it to
+`1.0.0`. The steps that PR performed:
 
 1. On `main`, edit `VERSION` to `1.0.0` (bare, no `v` prefix, no trailing
    content beyond the newline).

@@ -58,8 +58,8 @@ The payoff of running Claude Code through himmel rather than bare:
 - **Forge-agnostic.** The worktree→PR→merge loop, PR review threads, and
   luna-ingest work the same on GitHub or Bitbucket Cloud — the backend is chosen
   per-repo from the `origin` remote, so nothing in the day-to-day loop changes.
-- **Linux-supported, macOS best-effort.** Linux is CI-gated on every PR; macOS
-  is verified on the nightly only; Windows / Git Bash / WSL are not supported
+- **Linux and macOS supported.** Linux is CI-gated on every PR; macOS is
+  verified on the nightly only; Windows / Git Bash / WSL are not supported
   in v1.0.0. See [Support matrix](#support-matrix).
 
 ## Quickstart
@@ -190,15 +190,15 @@ A dispatch or PR run stays `ubuntu-latest`-only.
 | Tier | Platforms | What it promises |
 |---|---|---|
 | **Supported** | Linux | CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified. |
-| **Best-effort** | macOS | Verified on the nightly only — not a per-PR required check, and not yet green: HIMMEL-3699 tracks getting the nightly's macOS `shell-unit-shard` jobs green, and a nightly OS red becomes its own split slice ([`docs/internals/testing.md`](docs/internals/testing.md)). Until that nightly is green, macOS carries no round-trip guarantee; bug reports welcome. |
-| **Not supported in v1.0.0** | Windows (Git Bash), WSL | Code paths are present but unverified; no CI gate, no guarantee. |
+| **Supported** | macOS | Verified on the nightly only — not a per-PR required check. The nightly is green: [macos-cadence run 36684756128](https://github.com/yotamleo/Himmel/actions/runs/36684756128) (8/8 shards, 0 red suites, `ba419292`, HIMMEL-3699). The [`macos-cadence`](.github/workflows/macos-cadence.yml) workflow is the ongoing check, and a nightly OS red becomes its own split slice ([`docs/internals/testing.md`](docs/internals/testing.md)). |
+| **Not supported in v1.0.0** | Windows (Git Bash), WSL | Code paths are present but unverified; no CI gate, no guarantee. Unsupported until v1.0.1. |
 
 **Install channels (HIMMEL-3059):**
 
 | Channel | Status |
 |---|---|
 | Release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`) | **Supported** (Linux) — the four-step path above. The end-to-end fresh-guest run is green (HIMMEL-3252, done). |
-| `git clone` + `himmelctl install` | **Supported** (Linux); best-effort (macOS) |
+| `git clone` + `himmelctl install` | **Supported** (Linux, macOS) |
 | Plugin marketplace (`marketplace/plugins/*`, 10 plugins) | **Supported** — installs through the Claude Code plugin marketplace, which owns that payload's file list, upgrade and removal (`claude plugin install/update/uninstall`), not `himmelctl`. |
 | AUR (`himmel`, recipe in [`packaging/aur/`](packaging/aur/)) | **Supported after the first AUR push** (Arch). `pacman` installs the payload to `/opt/himmel`; each user then runs `himmelctl install --scope user`, and `himmelctl update` defers to `pacman -Syu`. Remove in this order: `himmelctl uninstall` (each user), then `pacman -R himmel`. |
 | brew (Linux tap) | Not supported — runner-up channel; reopens only if macOS support makes a shared tap worthwhile (tracked in a separate ticket) |
