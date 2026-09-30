@@ -978,9 +978,9 @@ export type CheckpointRun = (cmd: string[], cwd: string, env?: Record<string, st
 // all throw on a nonzero rc — correct for setup steps that must abort the
 // dispatch, wrong for a checkpoint, which is best-effort armor bolted onto a
 // run that has already ended and whose exit code must survive unchanged.
-export function gitCapture(cmd: string[], cwd: string, env?: Record<string, string>): { code: number; stdout: string } {
+export function gitCapture(cmd: string[], cwd: string, env?: Record<string, string>, timeoutMs?: number): { code: number; stdout: string } {
   const r = Bun.spawnSync(["git", "-C", cwd, ...cmd], {
-    stdout: "pipe", stderr: "pipe",
+    stdout: "pipe", stderr: "pipe", ...(timeoutMs ? { timeout: timeoutMs } : {}),
     env: env ? { ...process.env, ...env } : process.env,
   });
   return { code: r.exitCode ?? -1, stdout: r.stdout.toString() };
@@ -993,7 +993,9 @@ export function gitCapture(cmd: string[], cwd: string, env?: Record<string, stri
 // that fails prints `unknown`, never a guess. Read-only (ls-remote uses the
 // fetch URL, so the pushurl quarantine is untouched). Shared by both lanes.
 export function composeDispatchGitState(worktree: string, branch: string, baseSha: string | undefined): string[] {
-  const ls = gitCapture(["ls-remote", "--heads", "origin", `refs/heads/${branch}`], worktree);
+  // Bounded and non-interactive: a stalled remote or a credential prompt must not
+  // hold an already-finished worker's result hostage; a kill reads as `unknown`.
+  const ls = gitCapture(["ls-remote", "--heads", "origin", `refs/heads/${branch}`], worktree, { GIT_TERMINAL_PROMPT: "0" }, 15_000);
   const remoteSha = ls.stdout.trim().split(/\s+/)[0];
   const head = gitCapture(["rev-parse", "HEAD"], worktree);
   const localSha = head.code === 0 ? head.stdout.trim() : "";
@@ -1002,7 +1004,9 @@ export function composeDispatchGitState(worktree: string, branch: string, baseSh
     : !remoteSha ? "no (by design, parent owns push)"
     : !localSha ? "unknown"
     : remoteSha === localSha ? `yes (origin/${branch} at ${remoteSha})`
-    : `partial (origin/${branch} at ${remoteSha}, local HEAD ${localSha})`;
+    : gitCapture(["merge-base", "--is-ancestor", remoteSha, localSha], worktree).code === 0
+      ? `partial (origin/${branch} at ${remoteSha}, local HEAD ${localSha})`
+    : `differs (origin/${branch} at ${remoteSha}, local HEAD ${localSha}; not an ancestor)`;
   const count = baseSha ? gitCapture(["rev-list", "--count", `${baseSha}..HEAD`], worktree) : undefined;
   const commits = count && count.code === 0 && /^\d+$/.test(count.stdout.trim()) ? count.stdout.trim() : "unknown";
   const status = gitCapture(["status", "--porcelain"], worktree);

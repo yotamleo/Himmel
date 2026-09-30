@@ -80,6 +80,20 @@ test("a remote branch behind local HEAD is partial, not pushed", () => {
   } finally { f.cleanup(); }
 }, GIT_TEST_TIMEOUT_MS);
 
+test("a diverged remote branch is differs, not partial", () => {
+  const f = fixture();
+  try {
+    f.commit("a");
+    git(f.repo, ["push", "origin", "worker/x"]);
+    const remoteSha = git(f.repo, ["rev-parse", "HEAD"]);
+    git(f.repo, ["reset", "--hard", f.base]);
+    f.commit("c");
+    const head = git(f.repo, ["rev-parse", "HEAD"]);
+    expect(composeDispatchGitState(f.repo, "worker/x", f.base)[0])
+      .toBe(`pushed: differs (origin/worker/x at ${remoteSha}, local HEAD ${head}; not an ancestor)`);
+  } finally { f.cleanup(); }
+}, GIT_TEST_TIMEOUT_MS);
+
 test("an unreadable git dir reports unknown for every field", () => {
   const gone = join(fixtureDir("dispatch-state-gone-"), "nope");
   try {
