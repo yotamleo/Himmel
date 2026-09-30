@@ -106,6 +106,11 @@ assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \
 # --- FAIL CLOSED: an unreadable payload denies, like the sibling guards ---
 assert_rc "deny: empty stdin" 2 "$(run_case '')"
 assert_rc "deny: malformed JSON" 2 "$(run_case '{"tool_name":')"
+# A present `command: false` must not fall through `//` to a benign `cmd`.
+assert_rc "deny: command false beside a string cmd" 2 \
+    "$(run_case '{"tool_name":"Bash","tool_input":{"command":false,"cmd":"ls"}}')"
+assert_rc "deny: non-string command" 2 \
+    "$(run_case '{"tool_name":"Bash","tool_input":{"command":7}}')"
 
 # The deny text names the bounded replacement.
 msg=$(printf '%s' "$(j_bash 'qmd query x')" | env -u QMD_UNBOUNDED_OK bash "$HOOK" 2>&1 >/dev/null)

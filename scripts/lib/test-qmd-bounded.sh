@@ -109,6 +109,30 @@ mkdir -p "$TMP/nosleep"
 out=$(PATH="$TMP/nosleep"; qmd_bounded 20 echo fast 2>/dev/null); rc=$?
 assert_eq "T2d no sleep/mktemp on PATH: runs unbounded" "fast|0" "$out|$rc"
 
+# T2e: an errexit caller (qmd-reindex, qmd-staleness) still gets rc 124 and
+# no grandchild — a non-zero wait must not abort the subshell early.
+rm -f "$TMP/t2e.pid"
+( set -e; qmd_bounded 1 "$TRAMP" "$TMP/t2e.pid" ); rc=$?
+gc=$(pid_of "$TMP/t2e.pid")
+assert_eq "T2e errexit caller: deadline -> rc 124" "124" "$rc"
+assert_eq "T2e errexit caller: grandchild is dead" "dead" "$(alive "$gc")"
+
+# T2f: a signal to the caller is forwarded, and a TERM-ignoring grandchild is
+# still reaped (the watchdog is not cancelled while it lives).
+rm -f "$TMP/t2f.pid"
+set -m
+bash -c '. "$1"; qmd_bounded 30 "$2" "$3"' _ "$LIB_DIR/qmd-bounded.sh" "$TRAMP" "$TMP/t2f.pid" &
+caller=$!
+set +m
+gc=$(pid_of "$TMP/t2f.pid")
+kill -TERM -- "-$caller" 2>/dev/null
+wait "$caller" 2>/dev/null
+# The group signal kills `bash -c` at once; the qmd_bounded subshell reaps
+# through its grace period, so allow grace + 2 s rather than 0.
+n=0
+while [ "$(alive "$gc")" = alive ] && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
+assert_eq "T2f signalled caller: grandchild is reaped within the grace" "dead" "$(alive "$gc")"
+
 # T3: deadline 0 runs unbounded; a malformed deadline is refused.
 out=$(qmd_bounded 0 sh -c 'echo ok'); rc=$?
 assert_eq "T3a deadline 0 runs the command" "ok|0" "$out|$rc"

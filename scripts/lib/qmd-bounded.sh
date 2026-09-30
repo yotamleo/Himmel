@@ -59,6 +59,9 @@ qmd_bounded() {
     return $?
   fi
   (
+    # Sourced by errexit callers: a non-zero `wait` must not abort this
+    # subshell before the rc is mapped and the watchdog is cancelled.
+    set +e
     grace="${QMD_KILL_GRACE_SECS:-5}"
     # The watchdog creates the marker; it never exists before, so a failed
     # cleanup (no rm on a hermetic PATH) cannot read as a fired deadline.
@@ -90,7 +93,8 @@ qmd_bounded() {
     # Both groups exist now; job control off again silences bash's "[1] Exit"
     # job notices on the caller's stderr.
     set +m
-    trap 'kill -TERM -- "-$pid" 2>/dev/null' TERM INT HUP
+    sig=""
+    trap 'sig=1; kill -TERM -- "-$pid" 2>/dev/null' TERM INT HUP
     wait "$pid"
     rc=$?
     # A trapped signal interrupts wait with rc > 128; wait again for the real rc.
@@ -104,6 +108,17 @@ qmd_bounded() {
       wait "$wd"
       rm -rf "$fdir"
       exit 124
+    fi
+    if [ -n "$sig" ]; then
+      # A caller's signal was forwarded and the direct child is gone, but a
+      # TERM-ignoring descendant (bun) may not be: escalate as the watchdog
+      # would before cancelling it.
+      n=0
+      while kill -0 -- "-$pid" 2>/dev/null && [ "$n" -lt "$grace" ]; do
+        sleep 1
+        n=$((n + 1))
+      done
+      kill -KILL -- "-$pid" 2>/dev/null
     fi
     kill -- "-$wd" 2>/dev/null
     rm -rf "$fdir" 2>/dev/null

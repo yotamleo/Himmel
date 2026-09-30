@@ -62,7 +62,7 @@ case "$input" in
     *[![:space:]]*) ;;
     *) echo "block-bare-qmd-query: empty/blank stdin - failing closed" >&2; exit 2 ;;
 esac
-if ! result=$(jq -r 'if (. == null or . == false) then error("bad-shape") else ((try (.tool_input.command // .tool_input.cmd) catch null) as $c | if ($c != null and ($c|type) != "string") then error("non-string-command") else (((try (.tool_name) catch null) // "" | tostring) + "\n" + ($c // "")) end) end' <<<"$input" 2>/dev/null); then
+if ! result=$(jq -r 'if (. == null or . == false) then error("bad-shape") else ((try (.tool_input | if has("command") then .command else .cmd end) catch null) as $c | if ($c != null and ($c|type) != "string") then error("non-string-command") else (((try (.tool_name) catch null) // "" | tostring) + "\n" + ($c // "")) end) end' <<<"$input" 2>/dev/null); then
     echo "block-bare-qmd-query: malformed/truncated JSON on stdin - failing closed" >&2
     exit 2
 fi
