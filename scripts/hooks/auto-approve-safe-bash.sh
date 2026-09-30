@@ -888,9 +888,14 @@ segment_is_safe() {
                     [ "$SW_HAS_UNQUOTED_GLOB" = 1 ] && return 1   # a glob could expand into a 2nd operand
                     if [ "$uskip" = 1 ]; then uskip=0; continue; fi
                     if [ "$udd" = 1 ]; then uops=$((uops + 1)); continue; fi
-                    case "$k" in               # RAW token: a quoted '>out' starts with a quote, so it stays an operand
-                        [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) continue ;;  # unquoted redirect token, not an operand
-                    esac
+                    # An unquoted redirect token is not an operand. Only a token with no
+                    # quoting/escaping at all (raw == cooked) can be one: `'>out'`,
+                    # `1'>'out` and `\>out` are filenames, so they stay operands.
+                    if [ "$k" = "$SW_VALUE" ]; then
+                        case "$SW_VALUE" in
+                            [0-9]*'>'*|[0-9]*'<'*|'>'*|'<'*|'&>'*) continue ;;
+                        esac
+                    fi
                     case "$SW_VALUE" in
                         --) udd=1 ;;
                         --*=*) ;;
