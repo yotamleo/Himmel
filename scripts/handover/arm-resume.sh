@@ -1759,8 +1759,13 @@ fi
 # below), and telemetry_emit itself always returns 0 under our set -e.
 # Format spec: docs/tool-adoption/telemetry.md.
 # shellcheck source=../lib/telemetry.sh
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/telemetry.sh" 2>/dev/null || true
+# shellcheck disable=SC1091,SC2015
+# The [ -f ] + bash -n guard (all four fail-open sources): macOS bash 3.2 exits the
+# whole script on a `.` of a MISSING or syntax-broken file even under `|| true`
+# (HIMMEL-3699).
+[ -f "$SCRIPT_DIR/../lib/telemetry.sh" ] \
+    && bash -n "$SCRIPT_DIR/../lib/telemetry.sh" 2>/dev/null \
+    && . "$SCRIPT_DIR/../lib/telemetry.sh" 2>/dev/null || true
 command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 
 # handover_root (HIMMEL-856): resolves the single handover root (Mode A
@@ -1773,8 +1778,10 @@ command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 # below WARN and skip (see their own guard), same as the existing dedup/
 # collision checks proceed unaffected.
 # shellcheck source=../lib/handover-path.sh
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null || true
+# shellcheck disable=SC1091,SC2015
+[ -f "$SCRIPT_DIR/../lib/handover-path.sh" ] \
+    && bash -n "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null \
+    && . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null || true
 command -v handover_root >/dev/null 2>&1 || handover_root() { return 2; }
 # Identity helpers are optional under the same fail-open contract. If this lib
 # is absent or only partially deployed, degrade to the pre-HIMMEL-1304 raw-path
@@ -1817,7 +1824,9 @@ command -v _hp_arms_record_matches_path >/dev/null 2>&1 || _hp_arms_record_match
 # the .env flag deserves to know the fallback is disabled.
 # shellcheck source=../lib/headroom-proxy.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/headroom-proxy.sh" 2>/dev/null \
+[ -f "$SCRIPT_DIR/../lib/headroom-proxy.sh" ] \
+    && bash -n "$SCRIPT_DIR/../lib/headroom-proxy.sh" 2>/dev/null \
+    && . "$SCRIPT_DIR/../lib/headroom-proxy.sh" 2>/dev/null \
     || echo "WARN arm-resume: headroom-proxy lib failed to load -- .env HIMMEL_HEADROOM_PROXY fallback disabled (process env still honored)" >&2
 command -v _headroom_proxy_env_file_active >/dev/null 2>&1 || _headroom_proxy_env_file_active() { return 1; }
 
@@ -1834,7 +1843,9 @@ command -v _headroom_proxy_env_file_active >/dev/null 2>&1 || _headroom_proxy_en
 # turn a healthy arm into rc=1 (proxy-suite T7a/T7b/T7c).
 # shellcheck source=../lib/cadence-format.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/cadence-format.sh" 2>/dev/null \
+[ -f "$SCRIPT_DIR/../lib/cadence-format.sh" ] \
+    && bash -n "$SCRIPT_DIR/../lib/cadence-format.sh" 2>/dev/null \
+    && . "$SCRIPT_DIR/../lib/cadence-format.sh" 2>/dev/null \
     || echo "WARN arm-resume: cadence-format lib failed to load -- cadence_cmd_escape falls back inline (caret-free single-parse escape)" >&2
 # Minimal single-parse fallback mirroring the lib's contract (% -> %% plus
 # best-effort " -> \"). Used only if the source above failed; matches the
@@ -1993,8 +2004,11 @@ _arm_marker_is_new_arm() {
 # _bash_single_quote <value> — quote one value for the in-distro bash -lc
 # command. The result is composed completely before CMD escaping is applied.
 _bash_single_quote() {
-    local v="$1"
-    v="${v//\'/\'\\\'\'}"
+    local v="$1" _sq="'" _rep
+    # Replacement held in a variable: bash 3.2 (macOS) keeps the backslashes of
+    # an inline `\'\\\'\'` replacement literally, yielding \'\\'\' not '\''.
+    _rep="'\\''"
+    v="${v//$_sq/$_rep}"
     printf "'%s'" "$v"
 }
 
@@ -5249,7 +5263,21 @@ schedule_arm() {
             # wrote to a path NAMED %TEMP%\himmel-resume.bat instead
             # of $TEMP-resolved.
             local bat_path
-            bat_path=$(mktemp -t himmel-resume.XXXXXX.bat)
+            # Portability only (HIMMEL-3699): BSD `mktemp -t` ignores $TMPDIR and
+            # appends its random tail AFTER a .bat suffix, so the file neither
+            # landed in the caller's dir nor matched the prune's `*.bat` glob.
+            # Mint under an explicit dir, then add the suffix.
+            # An && list is exempt from set -e, so each step aborts explicitly.
+            bat_path=$(mktemp "${TMPDIR:-/tmp}/himmel-resume.XXXXXX") || {
+                echo "ERR arm-resume: mktemp failed minting the resume .bat" >&2
+                return 1
+            }
+            mv "$bat_path" "$bat_path.bat" || {
+                echo "ERR arm-resume: could not rename $bat_path to .bat" >&2
+                rm -f "$bat_path"
+                return 1
+            }
+            bat_path="$bat_path.bat"
             # HIMMEL-1606: prune our own leaked siblings. The .bat deletes its
             # own scheduled task on its first line but never removes ITSELF, so
             # every arm since 2026-06-28 left one behind -- 1665 files / 2.1 MB
@@ -5394,7 +5422,11 @@ schedule_arm() {
                         exit 2
                         ;;
                 esac
-                wsl_launch="${wsl_command//%/%%}"
+                # A pattern-leading `%` is the end-anchor in some bash 3.2
+                # builds, so the %->%% doubling silently no-ops on macOS
+                # (HIMMEL-3699); keep the % out of the pattern's literal text.
+                local _pct='%'
+                wsl_launch="${wsl_command//$_pct/%%}"
             fi
             local bash_win flow_lib_m
             if ! bash_win=$(cygpath -w "$bash_posix" 2>&1); then

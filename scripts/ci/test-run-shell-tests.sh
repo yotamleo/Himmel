@@ -1350,16 +1350,18 @@ fi
 rm -rf "$sb22d"
 fi
 
-# 22e — a shard that is assigned NOTHING is a refusal, not a pass. This is the
-# n > run-list-length case, which is the shape a mis-sized CI matrix takes.
+# 22e — a shard that is assigned NOTHING (ZERO suites) is a pass, not a refusal
+# (HIMMEL-3699): os-verify splits a short impacted list across a fixed shard
+# count, and a matrix cell with no suites must not turn the run red. It says so
+# explicitly, so a green cell is never silent about running nothing.
 sb22e=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22e.XXXXXX") || { fail "22e: mktemp failed"; sb22e=""; }
 if [ -n "$sb22e" ]; then
 mk_shard_sandbox "$sb22e" 2
 out22e=$(bash "$RUNNER" --shard 3/3 "$sb22e" 2>&1); rc22e=$?
-if [ "$rc22e" -eq 1 ] && grepq "$out22e" -F 'shard 3/3 ran 0 suites'; then
-  pass "22e: an empty shard refuses (exit 1) and names itself"
+if [ "$rc22e" -eq 0 ] && grepq "$out22e" -F '0 suites in this shard' && ! grepq "$out22e" -F 'refusing to report green'; then
+  pass "22e: an empty shard (0 assigned) passes (exit 0) and says '0 suites in this shard'"
 else
-  fail "22e: expected exit 1 naming shard 3/3; rc=$rc22e out: $out22e"
+  fail "22e: expected exit 0 with '0 suites in this shard' for shard 3/3; rc=$rc22e out: $out22e"
 fi
 # The control: the two shards that DO get a suite still pass.
 out22e1=$(bash "$RUNNER" --shard 1/3 "$sb22e" 2>&1); rc22e1=$?

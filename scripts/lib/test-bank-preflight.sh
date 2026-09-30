@@ -31,6 +31,16 @@ ACCT="$(current_account_hash)"
 # caller repeating the field.
 stamp_account() { local body="${1:1}"; printf '{"account":"%s",%s' "$ACCT" "$body"; }
 
+# fx <five_hour> <seven_day> [stamp] [extra_usage]: one fixture body. Used
+# instead of an inline "{\"...\"}" literal, which bash 3.2 (macOS) misparses
+# when nested in "$( ... )".
+Q_DOT='"."'; Q_VER='"1.2.3"'
+fx() {
+  local ex='' st=''
+  [ -n "${4:-}" ] && ex=',"extra_usage":{"utilization":'"$4"'}'
+  [ -n "${3:-}" ] && st=',"primaries_refreshed_at":'"$3"
+  printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":%s}%s%s}' "$1" "$2" "$ex" "$st"
+}
 verdict() {
   printf '%s' "$(stamp_account "$1")" > "$W/c.json"
   CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
@@ -43,31 +53,31 @@ check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
 NOW=$(date +%s)
 
 check "below threshold -> PROCEED" PROCEED \
- "$(verdict "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+ "$(verdict "$(fx 10 20 "$NOW" "")")"
 check "at threshold -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "{\"five_hour\":{\"utilization\":85},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+ "$(verdict "$(fx 85 20 "$NOW" "")")"
 check "mixed, seven_day over -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":93},\"primaries_refreshed_at\":$NOW}")"
+ "$(verdict "$(fx 10 93 "$NOW" "")")"
 check "extra_usage high, primaries low -> PROCEED" PROCEED \
- "$(verdict "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"extra_usage\":{\"utilization\":99},\"primaries_refreshed_at\":$NOW}")"
+ "$(verdict "$(fx 10 20 "$NOW" 99)")"
 check "one primary null, other below -> PROCEED" PROCEED \
- "$(verdict "{\"five_hour\":{\"utilization\":null},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+ "$(verdict "$(fx null 20 "$NOW" "")")"
 check "one primary null, other over -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "{\"five_hour\":{\"utilization\":null},\"seven_day\":{\"utilization\":91},\"primaries_refreshed_at\":$NOW}")"
+ "$(verdict "$(fx null 91 "$NOW" "")")"
 check "both primaries null -> BANK-UNKNOWN" BANK-UNKNOWN \
- "$(verdict "{\"five_hour\":{\"utilization\":null},\"seven_day\":{\"utilization\":null},\"primaries_refreshed_at\":$NOW}")"
+ "$(verdict "$(fx null null "$NOW" "")")"
 check "bare dot utilization -> BANK-UNKNOWN" BANK-UNKNOWN \
- "$(verdict "{\"five_hour\":{\"utilization\":\".\"},\"seven_day\":{\"utilization\":null},\"primaries_refreshed_at\":$NOW}")"
+ "$(verdict "$(fx "$Q_DOT" null "$NOW" "")")"
 check "stamp absent -> BANK-STALE" BANK-STALE \
- "$(verdict "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20}}")"
+ "$(verdict "$(fx 10 20 "" "")")"
 check "non-numeric max age -> BANK-UNKNOWN" BANK-UNKNOWN \
- "$(CADENCE_BANK_MAX_AGE=abc verdict "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+ "$(CADENCE_BANK_MAX_AGE=abc verdict "$(fx 10 20 "$NOW" "")")"
 check "non-numeric max pct -> BANK-UNKNOWN" BANK-UNKNOWN \
- "$(CADENCE_BANK_MAX_PCT=abc verdict "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+ "$(CADENCE_BANK_MAX_PCT=abc verdict "$(fx 10 20 "$NOW" "")")"
 check "valid max age, stamp too old -> BANK-STALE" BANK-STALE \
- "$(CADENCE_BANK_MAX_AGE=600 verdict "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$((NOW-99999))}")"
+ "$(CADENCE_BANK_MAX_AGE=600 verdict "$(fx 10 20 $((NOW-99999)) "")")"
 check "non-integer stamp -> BANK-STALE" BANK-STALE \
- "$(verdict "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":\"1.2.3\"}")"
+ "$(verdict "$(fx 10 20 "$Q_VER" "")")"
 # CADENCE_BANK_LEDGER is required here too — without it the SUT falls back to
 # its default and this "hermetic" suite appends a row outside $W on every run.
 check "missing cache -> BANK-UNKNOWN" BANK-UNKNOWN \
@@ -560,10 +570,10 @@ for _c in "missing:$W/no-such-status-cmd" "failing:$S_FAIL" "empty:$S_EMPTY" "un
   case "$(bank_line)" in *' codex=?') PASS=$((PASS+1)); echo "ok - codex probe $_kind -> codex=?" ;;
     *) FAIL=$((FAIL+1)); echo "FAIL - codex probe $_kind: '$(bank_line)'" ;; esac
   check "codex probe $_kind, Claude bank at threshold -> SKIPPED-BANK (refusal unchanged)" SKIPPED-BANK \
-    "$(native_codex_run "$_cmd" "{\"five_hour\":{\"utilization\":90},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+    "$(native_codex_run "$_cmd" "$(fx 90 20 "$NOW" "")")"
 done
 check "codex funded but Claude bank at threshold -> SKIPPED-BANK (the codex figure never rescues a spent Claude bank)" SKIPPED-BANK \
-  "$(native_codex_run "$S_BOTH" "{\"five_hour\":{\"utilization\":90},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+  "$(native_codex_run "$S_BOTH" "$(fx 90 20 "$NOW" "")")"
 
 # A HUNG probe must not hang the preflight: bounded by CADENCE_BANK_CODEX_TIMEOUT,
 # and the grandchild it forked (a `sleep` holding the stdout pipe) must not keep
