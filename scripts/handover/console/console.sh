@@ -205,7 +205,7 @@ render_template() {
                 line = res line
             }
             print line
-        }' "$template" > "$out"
+        }' "$template" > "$out" || { rm -f "$out"; err "render failed for $template"; exit 1; }
     leftover="$(grep -oE '\{\{[A-Za-z_]+\}\}' "$out" 2>/dev/null | sort -u | head -n 1)" || leftover=""
     if [ -n "$leftover" ]; then
         rm -f "$out"
