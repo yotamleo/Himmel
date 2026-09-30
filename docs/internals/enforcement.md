@@ -2617,8 +2617,11 @@ detector used to be the text regexp `gh pr merge`, so every spelling it missed
 merged with no gate. It now fires on a `gh` word (start of text, after a space,
 `;` `&` `|` `(`, or a `/path/to/gh`) followed anywhere by `merge` in the
 normalized copy, which now also drops `{` `}` and backticks; a second copy with
-`${..}` / `$(..)` removed catches `m${X}erge`; and a `gh` word plus `$'` or `$"`
-fires too (escapes hide letters, `$'m\x65rge'`). Once fired, the raw-char allowlist
+`${..}` / `$(..)` removed catches `m${X}erge`; a `gh` word plus any `$` or
+backtick fires too (expansion can build letters, `$'m\x65rge'`, `m${X:-er}ge`);
+and the mirror case, a computed program word (first word of a segment after
+`VAR=val` assignments containing `$` backtick `\` or a quote) plus a merge word
+fires (`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`). Once fired, the raw-char allowlist
 above refuses every expansion spelling, and the command must parse as exactly
 `gh [-R v | --repo v | --repo=v]* pr [same]* merge <closed tokens>`; `gh api
 .../pulls/N/merge` (and `mergePullRequest` GraphQL), `gh alias set|import` naming a
@@ -2629,6 +2632,9 @@ text's own pointer). Non-merge gh (`gh pr view`, `gh api .../pulls/N`, `gh run`,
 `gh alias list`) and `git merge main && gh ...` (merge before gh) are untouched.
 A gh alias that expands to a merge and is invoked by its own name (`gh mm 8`) is
 not visible to a text detector; defining one is what the alias rule denies.
+Known residual: BOTH the program word AND the verb shell-computed (or a `bash -c`
+fed from a variable holding both) is undecidable by text and is not detected;
+the structural backstop (a gh- or credential-level merge gate) is HIMMEL-3945.
 Fail closed also for the nested sources: `scripts/lib/cr-merge-gate.sh` returns 1
 (so the hook's load check denies) when one of its five helpers is missing, and the
 hook denies when `timeout-bin.sh` will not load. Fixtures that copy

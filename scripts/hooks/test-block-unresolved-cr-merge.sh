@@ -272,6 +272,8 @@ for _row in "api-put|gh api -X PUT repos/o/r/pulls/42/merge" \
             "chain-after-other|git status; gh -R o/r pr merge 42 $PIN" \
             "second-verb|gh pr merge merge 42 $PIN" \
             "pr-twice|gh pr pr merge 42 $PIN" \
+            "prog-ansi-c|\$'\\\\x67\\\\x68' pr merge 42 $PIN" \
+            "prog-var|G=gh; \${G} pr merge 42 $PIN" \
             "verb-first|gh merge pr 42 $PIN"; do
     GH_STUB_MODE=clean t "detector-${_row%%|*}-denies" 2 Bash "${_row#*|}"
 done
@@ -282,6 +284,8 @@ GH_STUB_MODE=unresolved t allow-gh-run-list       0 Bash "gh run list"
 GH_STUB_MODE=unresolved t allow-gh-api-pr         0 Bash "gh api repos/o/r/pulls/42"
 GH_STUB_MODE=unresolved t allow-git-merge-then-gh 0 Bash "git merge main && gh pr view 42"
 GH_STUB_MODE=unresolved t allow-gh-alias-list     0 Bash "gh alias list"
+GH_STUB_MODE=unresolved t allow-computed-prog     0 Bash "\"\$PY\" x.py"
+GH_STUB_MODE=unresolved t allow-computed-prog-path 0 Bash "\"\$HOME/bin/tool\" run"
 # merge-on-green's own argv shape is the plain direct form and must stay allowed.
 GH_STUB_MODE=clean      t allow-mog-argv          0 Bash "gh pr merge 42 --repo o/r --squash $PIN"
 # ── HIMMEL-3918: six residual gaps. Every row below is RED on 4822509f. Each

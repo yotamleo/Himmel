@@ -106,6 +106,17 @@ done
 case "$cmd" in
     *\$*|*\`*) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;;
 esac
+# The mirror case: a computed program word (`$'\x67\x68' pr merge`, `${G} pr
+# merge`) next to a literal merge word fires too. Program word = first word of a
+# segment after leading VAR=val assignments.
+if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -q 'merge'; then
+    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' \
+        | sed -E -e 's/^[[:space:]]+//' -e ':a' -e 's/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//' -e 'ta' \
+        | grep -qE "^[^[:space:]]*[\$\`\\\\'\"]" && fires=1
+fi
+# ponytail: both the program word AND the verb shell-computed (or `bash -c` fed
+# from a variable holding both) stay undetectable by text, structural backstop
+# is a gh- or credential-level merge gate (HIMMEL-3945).
 [ "$fires" = "1" ] || exit 0
 case "$cmd" in
     *[!A-Za-z0-9\ _./:=,-]*) plain=0 ;;
