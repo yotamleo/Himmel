@@ -170,7 +170,13 @@ while [ "$#" -gt 0 ]; do
                 case "${2-}" in *[\|\&]*) stop_walk=1 ;; esac ;;
             # A second redirect inside the token (`>a> b`) leaves a target this
             # walk cannot place: end the walk rather than guess (deny over parse).
-            *[\|\&\>\<]*) stop_walk=1 ;;
+            *[\|\&\>\<]*)
+                # `>a> b 42` hides the selector: deny outright (a stopped walk
+                # would gate the cwd PR, and a shared head would pass the pin).
+                case "$rest_tgt" in
+                    *[\|\&]*) stop_walk=1 ;;
+                    *) _deny "an ambiguous chained redirect before the selector — refusing (GATE INTEGRITY). Run the merge without chained redirects, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)" ;;
+                esac ;;
         esac
     fi
     if [ "$cur" != "$1" ]; then
@@ -262,6 +268,7 @@ _gate4_bounded() {
     wait "$pid"
 }
 go_tmp=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-view.XXXXXX" 2>/dev/null) || go_tmp=""
+gh_t0=$SECONDS
 gh_to_flag=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-timeout.XXXXXX" 2>/dev/null) || gh_to_flag=""
 trap 'rm -f "$go_tmp" "$gh_to_flag" "${trust_tmp:-}"' EXIT
 # HIMMEL-3918 (3): every gh call the sourced gate libraries make (cr-merge-gate,
@@ -277,6 +284,12 @@ gh() {
     # One timeout already means deny: skip later calls so a run of hung gh calls
     # cannot each spend another 10s of the hook budget before the deny.
     if [ -n "$gh_to_flag" ] && [ -s "$gh_to_flag" ]; then return 124; fi
+    # A shared 40s deadline across every gate lookup: calls each just under 10s
+    # never set the flag but could still run out the hook budget (fail-open).
+    if [ $((SECONDS - gh_t0)) -ge 40 ]; then
+        [ -n "$gh_to_flag" ] && echo 1 >"$gh_to_flag"
+        return 124
+    fi
     out=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null) || out=""
     errf=$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-ghe.XXXXXX" 2>/dev/null) || errf=""
     if [ -z "$out" ] || [ -z "$errf" ]; then
