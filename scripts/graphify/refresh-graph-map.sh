@@ -2491,7 +2491,9 @@ fi   # DO_EXTRACT -- end of the copy + extraction region (--promote-only rejoins
       # Fail loudly on either awk or mv failing, and clean up the tmp file
       # on both paths (belt-and-braces -- it now lives inside $SCRATCH, so
       # the EXIT trap's `rm -rf "$SCRATCH"` would also catch it).
-      if awk -v h="$report_header" 'NR==1 { print h; next } { print }' "$SCRATCH_REPORT" > "$SCRATCH_REPORT.tmp"; then
+      # tail, not awk, for the body: BSD awk truncates a record at a NUL byte,
+      # which dropped the rest of the report before the leak scan (macOS T20).
+      if { printf '%s\n' "$report_header"; tail -n +2 "$SCRATCH_REPORT"; } > "$SCRATCH_REPORT.tmp"; then
         if ! mv "$SCRATCH_REPORT.tmp" "$SCRATCH_REPORT"; then
           echo "refresh-graph-map: failed to install sanitized report header" >&2
           rm -f "$SCRATCH_REPORT.tmp"
@@ -2605,7 +2607,6 @@ fi   # DO_EXTRACT -- end of the copy + extraction region (--promote-only rejoins
     else
       grep_rc=2
     fi
-    echo "PROBE3699 art=$leak_artifact_name grep_rc=$grep_rc sz=$(wc -c < "$scan_target") $(tr -d '\0' < "$scan_target" | grep -c Users)" >&2 # PROBE3699-TEMP
     rm -f "$scan_nonul"
     if [ "$grep_rc" -eq 0 ]; then
       # HIMMEL-1134 CR follow-up: do NOT echo $leak_line -- it's the matched
