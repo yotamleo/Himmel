@@ -5260,7 +5260,12 @@ schedule_arm() {
             # wrote to a path NAMED %TEMP%\himmel-resume.bat instead
             # of $TEMP-resolved.
             local bat_path
-            bat_path=$(mktemp -t himmel-resume.XXXXXX.bat)
+            # Portability only (HIMMEL-3699): BSD `mktemp -t` ignores $TMPDIR and
+            # appends its random tail AFTER a .bat suffix, so the file neither
+            # landed in the caller's dir nor matched the prune's `*.bat` glob.
+            # Mint under an explicit dir, then add the suffix.
+            bat_path=$(mktemp "${TMPDIR:-/tmp}/himmel-resume.XXXXXX") \
+                && mv "$bat_path" "$bat_path.bat" && bat_path="$bat_path.bat"
             # HIMMEL-1606: prune our own leaked siblings. The .bat deletes its
             # own scheduled task on its first line but never removes ITSELF, so
             # every arm since 2026-06-28 left one behind -- 1665 files / 2.1 MB

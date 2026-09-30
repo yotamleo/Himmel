@@ -1599,6 +1599,13 @@ fi
 # instead of rc=0, and the "rc != 0" below would read as PASS for a reason that
 # has nothing to do with the fail-open — a control whose green can come from a
 # second cause is the vacuous shape this whole case exists to remove.
+# bash 3.2 (macOS) does not abort on a `.` of a syntax-broken file: it returns
+# nonzero and carries on, so there is no nonzero rc or leaked parse error to
+# assert and the control cannot fail for its cause there (HIMMEL-3699). T24(b)
+# above still proves the guard on bash 3.2; the control needs bash >= 4.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    echo "SKIP T24c bash ${BASH_VERSION%%[^0-9.]*} continues after a failed source — the removed-fail-open control needs bash >= 4"
+else
 HO_T24C=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
     bash "$FAILOPEN_NEG/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO_T24C" 2>&1)
@@ -1613,8 +1620,8 @@ if [ "$rc" != "0" ] && grepq "$out" -F 'syntax error'; then
     echo "PASS T24c without the fail-open the broken telemetry.sh breaks the arm and surfaces its parse error (rc=$rc) — T24 can still fail for its intended reason"
 else
     echo "FAIL T24c expected a nonzero rc AND a leaked parse error with the fail-open REMOVED (got rc=$rc) — the control is not proving its cause"
-    printf "T24c-out: %s\n" "$(printf "%s" "$out" | head -c 600)"
     FAILED=$((FAILED + 1))
+fi
 fi
 fi
 
@@ -5008,7 +5015,7 @@ fi
 # a recent (1d) sibling and this arm's own freshly-minted .bat both survive.
 # Reuses the ARMED_STUB scheduler stub (T23) so the arm completes without
 # touching the real scheduler, and points TMPDIR at a sandbox (same seam
-# T_PRUNE uses) so arm-resume's own `mktemp -t himmel-resume.XXXXXX.bat`
+# T_PRUNE uses) so arm-resume's own `himmel-resume.XXXXXX.bat`
 # lands next to the fixtures and the prune actually sees them.
 # ---------------------------------------------------------------------------
 if _sec_selected "T_PRUNE_REAL"; then
