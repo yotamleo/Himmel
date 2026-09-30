@@ -78,6 +78,15 @@ if grep -q 'scripts/ci/macos-breakage.sh record' <<< "$s" && grep -q 'macos-brea
    && grep -q 'GITHUB_STEP_SUMMARY' <<< "$s"; then ok "the summary job records the breakage metric (record + artifact + step summary)"
 else bad "breakage metric is not wired into the workflow"; fi
 
+# 9. fail closed: the record step pipes into tee, so it needs `shell: bash`
+# (pipefail; the default `bash -e {0}` reports tee's status and a die inside
+# record goes green), and a missing record.json must fail the upload.
+step_of() { awk -v n="$1" 'index($0, "- name: " n) {f=1; print; next} f && /^      - / {f=0} f' <<< "$s"; }
+if step_of "Record breakages" | grep -q '^        shell: bash$'; then ok "the record step runs under shell: bash (pipefail through | tee)"
+else bad "the record step has no 'shell: bash': a die in record is masked by | tee"; fi
+if step_of "Upload breakage record" | grep -q 'if-no-files-found: error'; then ok "a missing record.json fails the upload"
+else bad "the record upload does not use if-no-files-found: error"; fi
+
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed" >&2
 exit 1

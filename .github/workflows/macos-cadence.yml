@@ -103,6 +103,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Record breakages against the previous cadence run
+        # shell: bash = `bash -e -o pipefail`: without it the step's status is
+        # tee's and a die inside `record` (rc 2) would go green.
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
@@ -136,7 +139,7 @@ jobs:
           name: macos-breakage-record
           overwrite: true
           path: record.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 90
       # HIMMEL-3699: the guard that a macOS job actually PASSED on this run
       # (missing entirely / all skipped is not health), reading the Jobs API.
