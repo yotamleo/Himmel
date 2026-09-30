@@ -2030,12 +2030,15 @@ gp_total=$(count_cmd "$gp_shape"); gp_allowed=0
 # HIMMEL-844: the shell dequotes words before git sees them, so a quoted / backslashed /
 # $'' config key is the same key; delete every quote and backslash before matching.
 cmd_dq=$(printf '%s' "$cmd_lc" | LC_ALL=C tr -d "'\"\\\\")
-# Round 4/5: position-free. In any `git … config|-c|--config-env …` command, ANY
-# dequoted word shaped `url.*insteadof` (or `url.*$…`) denies, and so does any `$'`
-# (ANSI-C escapes cannot be decoded here). Folded into the ONE gu count.
-gu_cfg='git[[:space:]]+([^;&|]*[[:space:]])?(config|-c|--config-env)[^;&|]*url[.][^[:space:];&|]*(insteadof|[$])'
-gu_ansi="git[[:space:]]+([^;&|]*[[:space:]])?(config|-c|--config-env)[^;&|]*[\$]'"
-gu_total=$(( $(cmd_lc=$cmd_dq count_cmd "$gu_shape") + $(cmd_lc=$cmd_dq count_cmd "$gu_cfg") + $(count_cmd "$gu_ansi") )); gu_allowed=0
+# Round 6: one blunt substring rule, no anchoring. A command mentioning `git` and
+# `insteadof` (dequoted), or `git` and an ANSI-C `$'` (escapes cannot be decoded
+# here), counts once toward the gu arm. Accepted overmatch: `git log --format=$'%h'`.
+gu_blunt=0
+case $cmd_dq in
+    *git*) case $cmd_dq in *insteadof*) gu_blunt=1 ;; esac
+           case $cmd_lc in *\$\'*) gu_blunt=1 ;; esac ;;
+esac
+gu_total=$(( $(cmd_lc=$cmd_dq count_cmd "$gu_shape") + gu_blunt )); gu_allowed=0
 gh_total=$(count_cmd "$gh_shape"); gh_allowed=$(count_cmd "$gh_allow")
 net_total=$(count_cmd "$net_shape"); net_allowed=0
 

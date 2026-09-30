@@ -931,12 +931,6 @@ EXT_GIT_URL = re.compile(
     _CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+"
     r"(?:remote\s+set-url|config(?:\s+-\S+(?:\s+\S+)?)*(?:\s+(?:set|add|replace-all))?(?:\s+-\S+(?:\s+\S+)?)*\s+\S*(?i:url|insteadof)\s+\S+)"
     r"|" + _CMDPOS + r"git(?:\.exe)?\s+(?:[^;&|]*\s)?(?:-c|--config-env)[=\s]*\S*(?i:insteadof)=")
-# Round 4/5 (HIMMEL-844): position-free. In any `git … config|-c|--config-env …`
-# command, ANY dequoted word shaped `url.*insteadof` (or `url.*$…`) denies, and so
-# does any `$'` (ANSI-C escapes cannot be decoded here).
-_GIT_CFG = _CMDPOS + r"git(?:\.exe)?\s+(?:[^;&|]*\s)?(?:config|-c|--config-env)[^;&|]*"
-EXT_GIT_CFG = re.compile(_GIT_CFG + r"url[.]\S*(?:insteadof|[$])", re.IGNORECASE)
-EXT_GIT_ANSI = re.compile(_GIT_CFG + r"[$]'", re.IGNORECASE)
 EXT_GH_ANY = re.compile(_CMDPOS + r"gh(?:\.exe)?(?:\s|$)")
 # Audited-lane carve-out (block-glm-external-writes.sh policy, 2026-07-03): gh
 # issue (reads AND writes — cr-deferred followups are audited gh issues) + the
@@ -975,8 +969,11 @@ def terminal_external_write_reason(cmd_norm: str):
     # HIMMEL-844: the shell dequotes words before git sees them; delete every quote
     # and backslash so a quoted / backslashed / $'' config key matches the same shape.
     cmd_dq = re.sub(r"['\"\\]", "", cmd_norm)
-    if (EXT_GIT_URL.search(cmd_dq) or EXT_GIT_CFG.search(cmd_dq)
-            or EXT_GIT_ANSI.search(cmd_norm)):
+    # Round 6: blunt substring rule — `git` with `insteadof` (dequoted) or with an
+    # ANSI-C `$'` (escapes cannot be decoded). Overmatch accepted: `git log --format=$'%h'`.
+    dq_lc = cmd_dq.lower()
+    if EXT_GIT_URL.search(cmd_dq) or ("git" in dq_lc and (
+            "insteadof" in dq_lc or "$'" in cmd_norm.lower())):
         return ("Rewriting a git remote / push URL is refused on an untrusted/"
                 "unknown engine (HIMMEL-695).")
     if len(EXT_GH_ANY.findall(cmd_norm)) > len(EXT_GH_ALLOW.findall(cmd_norm)):
