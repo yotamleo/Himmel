@@ -120,13 +120,16 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
     # `-\S+`) so an attached-value long flag like `--git-dir=/x` before `push`
     # cannot break the anchor (CR under-block).
     gp_shape='git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+push([[:space:]]|$)'
+    # HIMMEL-844: `url.<base>.insteadOf` / `.pushInsteadOf` rewrite every remote
+    # URL without ending in `url`, so the key may also end in `insteadof` (both
+    # spellings; cmd_lc is lowercased), and the one-shot `git -c <k>.insteadof=`.
     # config-url branch requires a VALUE token after the url key, so a read
     # (`git config --get remote.origin.url`, no trailing value) is NOT blocked
     # (CR codex-2); only a `config …url <newvalue>` rewrite matches.
     # config-subcommand flags carry the same optional-VALUE tolerance as the
     # git-level flags (`--file <path>` before the url key), else a value-taking
     # config flag breaks the anchor and lets a url rewrite slip through (CR).
-    gu_shape='(git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url|git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+[^[:space:];&|]*url[[:space:]]+[^[:space:];&|])'
+    gu_shape='(git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url|git(\.exe)?([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[^[:space:];&|]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+[^[:space:];&|]*(url|insteadof)[[:space:]]+[^[:space:];&|]|git(\.exe)?[[:space:]]+([^;&|]*[[:space:]])?-c[[:space:]]*[^[:space:];&|]*insteadof=)'
     gh_shape='gh(\.exe)?([[:space:]]|$)'
     gh_allow='gh(\.exe)?[[:space:]]+(issue([[:space:]]|$)|pr[[:space:]]+(view|diff|checks|status|list)([[:space:]]|$)|run[[:space:]]+(view|list|watch)([[:space:]]|$))'
     net_shape='(curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)(\.exe)?([[:space:]]|$)'

