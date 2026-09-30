@@ -482,7 +482,9 @@ for v in \
     "echo \$(env -S 'bash scripts/cr/pr-check-context.sh\\c')" \
     "\\env -S 'bash scripts/cr/pr-check-context.sh\\c'" \
     "{ env -S 'bash scripts/cr/pr-check-context.sh\\c'; }" \
-    "env -u X -S 'bash scripts/handover/merge-on-green.sh\\c'"; do
+    "env -u X -S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -u 'X Y' -S 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env 'A=1 B' -S 'bash scripts/handover/merge-on-green.sh\\c'"; do
     run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
     need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
 done

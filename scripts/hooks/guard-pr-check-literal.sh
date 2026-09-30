@@ -1105,6 +1105,43 @@ split_operand() { # split_operand <raw text starting at the operand> - print
     done
     printf '%s' "${s:0:i}"
 }
+env_split_option() { # env_split_option <raw command> - false only when
+    # st_tokenize proves no env word carries its OWN -S/--split-string:
+    # env's options run up to its first program word (git log --stat is
+    # git's), -u/-C/-a take the next word. A glob, a live '$', a $'...'
+    # word or an untokenizable command may hide one, so they return true.
+    local i j e w sk
+    st_tokenize "$1" || return 0
+    [ "$ST_ANSIC" = 0 ] || return 0
+    i=0
+    while [ "$i" -lt "$ST_N" ]; do
+        e=$i
+        i=$((i + 1))
+        w=${ST_W[$e]}
+        [ "${w##*/}" = env ] || continue
+        sk=0
+        j=$i
+        while [ "$j" -lt "$ST_N" ] && [ "${ST_S[$j]}" = "${ST_S[$e]}" ]; do
+            w=${ST_W[$j]}
+            [ "${ST_G[$j]}${ST_X[$j]}" = 00 ] || return 0
+            if [ -n "${ST_RO[$j]}" ]; then j=$((j + 1)); continue; fi
+            j=$((j + 1))
+            if [ "$sk" -eq 1 ]; then sk=0; continue; fi
+            case "$w" in
+                --) break ;;
+                --s*) return 0 ;;
+                --u*=*|--c*=*|--a*=*) ;;
+                --u*|--c*|--a*) sk=1 ;;
+                --*) ;;
+                -*S*) return 0 ;;
+                -*[uCa]) sk=1 ;;
+                -*|*=*) ;;
+                *) break ;;
+            esac
+        done
+    done
+    return 1
+}
 split_unresolvable_mention() { # split_unresolvable_mention <raw command>
     # One scan over the whole command, not per ;&|/newline segment: those
     # characters can sit INSIDE the quoted operand (GNU env -S splits on a
@@ -1112,10 +1149,8 @@ split_unresolvable_mention() { # split_unresolvable_mention <raw command>
     # names. Blanking them keeps a glued `x;env` word separable; the operand
     # test and the mention both run on the text from the option to the END
     # of the command, which can only deny more, never less.
-    # Only env's OWN options are read: the first word that is neither an
-    # option, an option's argument nor an assignment is the program, and
-    # its flags (git log --stat) are not env's.
-    local s sw sx uw rest tail op env_seen=0 skip_next=0
+    local s sw sx uw rest tail op env_seen=0
+    env_split_option "$1" || return 1
     s=${1//[;&|$'\n']/ }
     read -r -a sw <<<"$s"
     tail=$s
@@ -1124,24 +1159,12 @@ split_unresolvable_mention() { # split_unresolvable_mention <raw command>
         tail=${tail#*"$sx"}
         uw=${sx//[\'\"]/}
         if [ "$env_seen" -eq 0 ]; then
-            # `(env`, `$(env`, `{env`, a backtick or a backslash in front
-            # still runs env.
+            # `(env`, `$(env`, `{ \env`, a backtick in front still runs env.
             uw=${uw##*[\(\`\\\{\$]}
-            [ "${uw##*/}" = env ] && { env_seen=1; skip_next=0; }
+            [ "${uw##*/}" = env ] && env_seen=1
             continue
         fi
-        if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
-        case "$uw" in
-            --) env_seen=0; continue ;;
-            --s*) ;;
-            --u*=*|--c*=*|--a*=*) continue ;;
-            --u*|--c*|--a*) skip_next=1; continue ;;
-            --*) continue ;;
-            -*S*) ;;
-            -*[uCa]) skip_next=1; continue ;;
-            -*|*=*) continue ;;
-            *) env_seen=0; continue ;;
-        esac
+        case "$uw" in --s*) ;; --*) continue ;; -*S*) ;; *) continue ;; esac
         case "$uw" in
             --s*=*) op=${rest#*=} ;;
             --s*|-*S)
