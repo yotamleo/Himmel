@@ -1281,6 +1281,101 @@ assert "uniq single positional (no 2nd/output arg) still ALLOW (control)" \
 assert "a plain backslash-escaped & INSIDE quotes still ALLOW (control)" \
     ALLOW "$(decide "$(j_bash 'grep "\&" f')")"
 
+# --- HIMMEL-3886: an unquoted brace span (`{a,b}` / `{a..b}`) in ANY word must
+# never reach an allow. The shell expands it into several argv words before the
+# command runs, so `git log {--output=/tmp/PWN,-1}` runs `git log
+# --output=/tmp/PWN -1` while every arm's literal-word match sees one harmless
+# token. Each command is held in a single-quoted assignment (never
+# brace-expanded, by bash 3.2 either — HIMMEL-3880) and passed by variable.
+BR_ROWS='git log {--output=/tmp/PWN,-1}
+git log {--output,PWN} -1
+git log {--output=/tmp/brace\ proof,-1}
+git log --{output,x}=PWN
+git log --outpu{t..t}=PWN
+git log {{--output=PWN,a},b}
+git log "--out"{put=PWN,x}
+git log {--output=PWN,"-1"}
+git grep {-Otouch_PWN,x}
+git grep -{O,e}touch_PWN x
+git diff {--ext-diff,HEAD}
+git show {--textconv,HEAD}
+gh pr view {--web,1}
+gh pr view --{web,x}
+cat {a,b}
+ls {a..c}
+for f in {--output=PWN,-1}; do cat f; done
+cat a && git log {--output=PWN,-1}'
+while IFS= read -r BR_CMD; do
+    case "$BR_CMD" in *'{'*'}'*) BR_KEPT=ALLOW ;; *) BR_KEPT=PASS ;; esac
+    assert "precondition: brace row kept literal: $BR_CMD" ALLOW "$BR_KEPT"
+    assert "brace-hidden word never ALLOW: $BR_CMD" PASS "$(decide "$(j_bash "$BR_CMD")")"
+done <<EOF
+$BR_ROWS
+EOF
+# The raw payload through a file, with no nested "$(...)" between the brace
+# text and the hook's stdin (the HIMMEL-3880 macOS shape).
+BR_TMP="$(mktemp -d "${TMPDIR:-/tmp}/aasb-brace.XXXXXX")" || exit 1
+BR_CMD='git log {--output=/tmp/PWN,-1}'
+j_bash "$BR_CMD" > "$BR_TMP/brace.json"
+BR_RC=0
+bash "$HOOK" < "$BR_TMP/brace.json" > "$BR_TMP/brace.out" 2>/dev/null || BR_RC=$?
+if grep -qF '{--output=/tmp/PWN,-1}' "$BR_TMP/brace.json"; then BR_RAW=ALLOW; else BR_RAW=PASS; fi
+assert "precondition: raw git brace payload carries the brace" ALLOW "$BR_RAW"
+assert "precondition: raw git brace payload hook exited 0" 0 "$BR_RC"
+# grep rc 2 (an unreadable output file) is ERROR, never a PASS.
+BR_G=0
+grep -qF '"permissionDecision":"allow"' "$BR_TMP/brace.out" || BR_G=$?
+case "$BR_G" in 0) BR_RAW=ALLOW ;; 1) BR_RAW=PASS ;; *) BR_RAW=ERROR ;; esac
+assert "git log brace --output, raw payload" PASS "$BR_RAW"
+rm -rf "$BR_TMP"
+# Controls: a brace the shell does NOT expand (quoted, escaped, no comma or
+# `..`, a git reflog selector, a lone group brace) keeps its old decision.
+assert "git log quoted brace still ALLOW"     ALLOW "$(decide "$(j_bash "git log '{--output=PWN,-1}'")")"
+assert "git log dq brace still ALLOW"         ALLOW "$(decide "$(j_bash 'git log "{--output=PWN,-1}"')")"
+assert "git log escaped brace still ALLOW"    ALLOW "$(decide "$(j_bash 'git log \{--output=PWN,-1\}')")"
+assert "git log quoted comma still ALLOW"     ALLOW "$(decide "$(j_bash 'git log {a",b"}')")"
+assert "git log reflog selector still ALLOW"  ALLOW "$(decide "$(j_bash 'git log -1 HEAD@{1}')")"
+assert "git show stash@{0} still ALLOW"       ALLOW "$(decide "$(j_bash 'git show stash@{0}')")"
+assert "git log range still ALLOW"            ALLOW "$(decide "$(j_bash 'git log main@{1}..HEAD')")"
+assert "brace group still ALLOW"              ALLOW "$(decide "$(j_bash '{ git status; git log -1; }')")"
+assert "plain git log still ALLOW"            ALLOW "$(decide "$(j_bash 'git log --oneline -5')")"
+assert "plain gh pr view still ALLOW"         ALLOW "$(decide "$(j_bash 'gh pr view 1')")"
+# Judge (PR 1468): bash word-splits only on space, tab and newline, so a raw
+# CR, FF or VT stays inside the brace word and the flag still expands out of
+# it (`{--output=/tmp/PWN,-1,--,<CR>}` runs `git log --output=/tmp/PWN -1 --
+# <CR>`). The control byte must not end the brace word, and any raw FF/VT
+# falls through. A CR splits the hook's tokens where bash keeps one word, so
+# a leading flag must stay visible as the first sub-token.
+BR_CR='git log {--output=/tmp/PWN,-1,--,'$'\r''}'
+BR_FF='git log {--output=/tmp/PWN,-1'$'\f''}'
+BR_VT='git log {-1,--output=/tmp/PWN'$'\v''}'
+assert "brace word with raw CR never ALLOW" PASS "$(decide "$(j_bash "$BR_CR")")"
+assert "brace word with raw FF never ALLOW" PASS "$(decide "$(j_bash "$BR_FF")")"
+assert "brace word with raw VT never ALLOW" PASS "$(decide "$(j_bash "$BR_VT")")"
+assert "raw FF outside any brace never ALLOW" PASS "$(decide "$(j_bash 'git log -1'$'\f')")"
+assert "CR-joined --output word never ALLOW" PASS "$(decide "$(j_bash 'git log -1'$'\r''--output=/tmp/x')")"
+assert "CR-joined -c word never ALLOW" PASS "$(decide "$(j_bash 'git -c'$'\r''core.pager=x log')")"
+# Control: Windows jq.exe CRLF rendering of a multi-line command still ALLOWs.
+assert "win-jq: multi-line CRLF command still ALLOW" \
+    ALLOW "$(decide_win "$(j_bash 'git status'$'\n''git log -1')")"
+
+# --- HIMMEL-3886: the node arm skipped every `-*` word before the script, so
+# an `=`-form code-loading flag rode along with the Jira CLI marker. Only a
+# small allowlist of inert flags may precede the script now.
+NODE_ROWS='node --require=./x.js scripts/jira/dist/index.js list
+node --import=./x.mjs scripts/jira/dist/index.js list
+node --loader=./x.mjs scripts/jira/dist/index.js list
+node --experimental-loader=./x.mjs scripts/jira/dist/index.js list
+node --eval=code scripts/jira/dist/index.js list
+node --print=code scripts/jira/dist/index.js list
+node --env-file=./x.env scripts/jira/dist/index.js list
+node --openssl-config=./x.cnf scripts/jira/dist/index.js list'
+while IFS= read -r NODE_CMD; do
+    assert "node code-loading flag never ALLOW: $NODE_CMD" PASS "$(decide "$(j_bash "$NODE_CMD")")"
+done <<EOF
+$NODE_ROWS
+EOF
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."
