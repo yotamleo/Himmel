@@ -249,10 +249,19 @@ fi
 # identically regardless of which separator was used.
 LEGS_SPLIT="${LEGS//,/ }"
 # HIMMEL-3748: --legs-from adds the fleet manifest's docs (read above, before
-# any side effect). A doc named on both is judged once (first spelling wins).
+# any side effect). A doc named on both is judged once (first spelling wins),
+# compared by the path it resolves to, so a relative --legs entry matches its
+# absolute manifest entry.
 if [ -n "$LEGS_FROM" ]; then
-    # shellcheck disable=SC2086  # word-splitting the leg list is the point
-    LEGS_SPLIT="$(printf '%s\n' $LEGS_SPLIT $from_docs | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
+    legs_seen=" "
+    legs_union=""
+    for leg in $LEGS_SPLIT $from_docs; do
+        leg_key="$(resolve_doc "$leg")"
+        case "$legs_seen" in *" $leg_key "*) continue ;; esac
+        legs_seen="$legs_seen$leg_key "
+        legs_union="$legs_union $leg"
+    done
+    LEGS_SPLIT="$legs_union"
 fi
 
 legs_summary=""

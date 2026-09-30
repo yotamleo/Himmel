@@ -264,6 +264,9 @@ contains 'a manifest edit between two runs changes legs= with the same argv (HIM
 # A leg on both --legs and the manifest is judged once, not twice.
 contains '--legs and --legs-from union without duplicates (HIMMEL-3748)' \
     "$(LEGS='' bash "$SUT" --legs "$fm_n61 $fm_n65" --legs-from "$fm")" ' legs=N61:FRESH,N65:FREE '
+# The same doc spelled relative on --legs and absolute in the manifest is one leg.
+contains 'a relative --legs spelling and its absolute manifest entry are judged once (HIMMEL-3748)' \
+    "$(LEGS='' bash "$SUT" --legs HIMMEL-111-legN61 --legs-from "$fm")" ' legs=N61:FRESH '
 # An unreadable or invalid manifest is a failed tick (no TICK line, rc != 0),
 # never an empty fleet that reads as every leg gone.
 printf 'not json\n' > "$fm"
