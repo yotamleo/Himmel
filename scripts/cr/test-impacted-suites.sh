@@ -452,6 +452,50 @@ change docs/bar/other-26.md
 out="$( cd "$FX" && bash "$IS" --check "$range" --from-file "$FX/empty-25.txt" 2>&1 )"; rc=$?
 if [ "$rc" -eq 0 ] && grepq "$out" '0 impacted'; then pass "--from-file empty path with an empty impacted set -> rc0 '0 impacted'"; else fail "--from-file empty path against no impacted suites: rc=$rc out=$out"; fi
 
+# --- 27. HIMMEL-3896: source closure. A suite that names only mid.sh must be
+# listed when far.sh (two source hops behind mid.sh) changes. -----------------
+mkf scripts/lib/far.sh
+mkf scripts/lib/deep.sh '. "$here/far.sh"'
+mkf scripts/lib/mid.sh 'source "$here/deep.sh"'
+mkf scripts/test-top.sh 'bash "$d/lib/mid.sh"'
+mkf scripts/lib/noise.sh 'echo "see far.sh and deep.sh"'
+mkf scripts/test-noise.sh 'bash "$d/lib/noise.sh"'
+mkf scripts/lib/cyc-a.sh '. "$here/cyc-b.sh"'
+mkf scripts/lib/cyc-b.sh '. "$here/cyc-a.sh"'
+mkf scripts/test-cyc.sh 'bash "$d/lib/cyc-a.sh"'
+mkf scripts/guard-setter.sh 'HIMMEL_UNINSTALL_""REAL_HOME=1 bash x'
+mkf scripts/guard-plain.sh 'echo nothing'
+mkf scripts/test-uninstall-real-home-callers.sh 'grep -r "$V" scripts'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: closure fixtures"
+change scripts/lib/far.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-top\.sh$'; then pass "far.sh (2 source hops behind mid.sh) -> test-top.sh"; else fail "closure miss: $out"; fi
+if ! grepq "$out" 'test-noise\.sh'; then pass "a non-source mention of far.sh/deep.sh does not widen"; else fail "non-source line widened the closure: $out"; fi
+change scripts/lib/cyc-b.sh
+if command -v timeout >/dev/null 2>&1; then out="$( cd "$FX" && timeout 20 bash "$IS" "$range" 2>/dev/null )"; rc=$?; else out="$(run_is "$range")"; rc=0; fi
+if [ "$rc" -eq 0 ] && grepq "$out" '^scripts/test-cyc\.sh$'; then pass "source cycle terminates and still lists test-cyc.sh"; else fail "cycle rc=$rc out=$out"; fi
+
+# --- 28. HIMMEL-3868: a file that sets the fence-lifting variable pulls in the
+# path-scanning callers suite, which never names it. -------------------------
+change scripts/guard-setter.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-uninstall-real-home-callers\.sh$'; then pass "fence-lifting setter -> callers scan listed"; else fail "3868 miss: $out"; fi
+change scripts/guard-plain.sh
+out="$(run_is "$range")"
+if ! grepq "$out" 'real-home-callers'; then pass "a file without the variable does not pull the callers scan"; else fail "callers scan over-selected: $out"; fi
+
+# --- 29. selector-miss: a red suite the PR's selection skipped is recorded. --
+change scripts/lib/far.sh
+printf 'scripts/test-other.sh\nscripts/test-top.sh\n' > "$FX/red-29.txt"
+out="$( cd "$FX" && bash "$IS" --selector-miss "$range" --red-file "$FX/red-29.txt" 2>/dev/null )"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" '^selector-miss: scripts/test-other\.sh scripts/lib/far\.sh$' && ! grepq "$out" 'test-top'; then pass "selector-miss row for the skipped red suite only (rc1)"; else fail "selector-miss rc=$rc out=$out"; fi
+printf 'scripts/test-top.sh\n' > "$FX/red-29b.txt"
+out="$( cd "$FX" && bash "$IS" --selector-miss "$range" --red-file "$FX/red-29b.txt" 2>/dev/null )"; rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then pass "every red suite was selected -> no rows (rc0)"; else fail "selector-miss clean case rc=$rc out=$out"; fi
+( cd "$FX" && bash "$IS" --selector-miss "$range" >/dev/null 2>&1 ); rc=$?
+if [ "$rc" -eq 2 ]; then pass "--selector-miss without --red-file -> rc2"; else fail "selector-miss usage rc=$rc"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"

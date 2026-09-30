@@ -20,6 +20,19 @@
 #       test-*.sh (what run-shell-tests.sh can run); the *.test.mjs / .js / .ts
 #       suites are listed without it and are run by their own runner — see
 #       --runner below for which one.
+#       The union is widened over the SOURCE CLOSURE (HIMMEL-3896): a suite that
+#       reaches a changed file only through helpers it `source`s / `.`s (suite ->
+#       A.sh -> changed B.sh, any depth) is listed too. A file that sets the
+#       fence-lifting HIMMEL_UNINSTALL_REAL_HOME variable also lists the
+#       path-scanning callers suite that never names it (HIMMEL-3868).
+#   impacted-suites.sh --selector-miss <base>..<head> --red-file <path>
+#       Selector-miss evidence (HIMMEL-3896). <path> lists suites (one per line)
+#       that went red on a main-push full sweep. For each red suite the PR's
+#       selection did NOT list, print `selector-miss: <suite> <changed-file>`
+#       per changed file of the range, exit 1; exit 0 and print nothing when
+#       every red suite was selected. Meant to be called by the post-merge
+#       full-sweep job (HIMMEL-3897 owns wiring it into ci.yml) with the merged
+#       PR's range, and its rows kept as the miss ledger.
 #   impacted-suites.sh --check <base>..<head> [--from-file <path>]
 #       The verdict gate. Reads one line per impacted suite from stdin, or
 #       from --from-file <path> when given (HIMMEL-3798 round 3: replaces the
@@ -75,11 +88,13 @@
 # (or searched) is an ERROR, never an empty list: an empty impacted set reads
 # as "nothing to run". --run otherwise exits with the suite's own exit code.
 #
-# ponytail: references are DIRECT and textual. A suite that reaches a changed
-# file only through an intermediate script it calls (no mention of the changed
-# file's basename), or builds the path at runtime ("$dir/uninstall-$kind.sh"),
-# is not found — the union under-approximates. Widen a suite's text with the
-# basename of what it really drives rather than adding a transitive walk here.
+# ponytail: the closure follows `source`/`.` edges between shell files only, by
+# basename (HIMMEL-3896). A suite that reaches a changed file through a script
+# it EXECUTES (bash a.sh, no source line), or builds the path at runtime
+# ("$dir/uninstall-$kind.sh"), is still not found — the union under-
+# approximates there; the --selector-miss ledger is how such a gap surfaces, and
+# a suite can widen its own text with the basename it really drives. A
+# path-scanning suite (HIMMEL-3868) is covered by content_rules, one row each.
 # A basename shared by many files (lib.sh) over-approximates on purpose; the
 # safe direction for a gate is a suite too many, never one too few.
 #
@@ -324,6 +339,8 @@ runner_path=""
 runner_check_mode=0
 run_path=""
 from_file=""
+selector_miss=0
+red_file=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --check) check=1; shift ;;
@@ -335,6 +352,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { echo "impacted-suites.sh: --runner requires a path" >&2; exit 2; }
             runner_path="$2"; shift 2 ;;
         --runner-check) runner_check_mode=1; shift ;;
+        --selector-miss) selector_miss=1; shift ;;
+        --red-file)
+            [ "$#" -ge 2 ] || { echo "impacted-suites.sh: --red-file requires a path" >&2; exit 2; }
+            red_file="$2"; shift 2 ;;
         --run)
             [ "$#" -ge 2 ] || { echo "impacted-suites.sh: --run requires a path" >&2; exit 2; }
             run_path="$2"; shift 2 ;;
@@ -350,6 +371,20 @@ done
 
 if [ -n "$from_file" ] && [ "$check" -eq 0 ]; then
     echo "impacted-suites.sh: --from-file requires --check" >&2; exit 2
+fi
+if [ "$selector_miss" -eq 1 ] && [ "$check" -eq 1 ]; then
+    echo "impacted-suites.sh: --selector-miss and --check are separate modes" >&2; exit 2
+fi
+if [ "$selector_miss" -eq 1 ] && [ -z "$red_file" ]; then
+    echo "impacted-suites.sh: --selector-miss requires --red-file <path>" >&2; exit 2
+fi
+if [ -n "$red_file" ] && [ "$selector_miss" -eq 0 ]; then
+    echo "impacted-suites.sh: --red-file requires --selector-miss" >&2; exit 2
+fi
+if [ -n "$red_file" ]; then
+    if [ -L "$red_file" ] || [ ! -f "$red_file" ] || [ ! -r "$red_file" ]; then
+        echo "impacted-suites.sh: --red-file is not a readable regular file (symlinks refused): $red_file" >&2; exit 2
+    fi
 fi
 # HIMMEL-3798 round 4: same fail-closed contract as write-verdicts.sh's
 # --from-file — refuse a symlinked, missing or unreadable path before the
@@ -437,13 +472,37 @@ suites=$(grep -E "$suite_re" <<< "$tree"); [ $? -le 1 ] || io_fail "listing suit
 # (a repo-root file has no parent, so it falls back to the bare name).
 generic_re='^(README\.md|CLAUDE\.md|SKILL\.md|CHANGELOG\.md|index\.(js|mjs|ts)|package\.json|package-lock\.json|\.gitignore|LICENSE)$'
 
-# add_needle <literal> — one ERE per needle: a literal bounded so `install.sh`
+# needle_ere <literal> — one ERE per needle: a literal bounded so `install.sh`
 # never matches `uninstall.sh` and `/pr-check` never matches `/pr-check_x`.
-add_needle() {
+needle_ere() {
     local esc
     esc=$(printf '%s' "$1" | sed 's/[.[\*^$+?(){}|]/\\&/g') || io_fail "escaping a needle"
-    printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])\n' "$esc" >> "$pats" || io_fail "writing a needle"
+    printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])' "$esc"
 }
+add_needle() {
+    { needle_ere "$1"; printf '\n'; } >> "$pats" || io_fail "writing a needle"
+}
+
+# file_literal <path> — the text a suite would use to name the file: its
+# basename, or "<parent>/<name>" for a generic one.
+file_literal() {
+    local f="$1" name="${1##*/}" parent
+    if grep -Eq "$generic_re" <<< "$name"; then
+        case "$f" in
+            */*) parent="${f%/*}"; printf '%s/%s\n' "${parent##*/}" "$name" ;;
+            # Repo root: no parent to qualify it, so the bare name is the only
+            # needle — it also matches sub-directory copies (over-approximates).
+            *) printf '%s\n' "$name" ;;
+        esac
+    else
+        printf '%s\n' "$name"
+    fi
+}
+
+seen="$work/seen"     # every file already in the source closure (visited set)
+front="$work/front"   # the files whose sourcers the next round looks for
+: > "$seen"
+: > "$front"
 
 while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -454,22 +513,61 @@ while IFS= read -r f; do
         if grep -Fxq -- "$f" <<< "$suites"; then printf '%s\n' "$f" >> "$found" || io_fail "recording a changed suite"; fi
     fi
     name="${f##*/}"
-    if grep -Eq "$generic_re" <<< "$name"; then
-        case "$f" in
-            */*) parent="${f%/*}"; add_needle "${parent##*/}/$name" ;;
-            # Repo root: no parent to qualify it, so the bare name is the only
-            # needle — it also matches sub-directory copies (over-approximates).
-            *) add_needle "$name" ;;
-        esac
-    else
-        add_needle "$name"
-    fi
+    add_needle "$(file_literal "$f")"
+    printf '%s\n' "$f" >> "$seen" || io_fail "seeding the source closure"
+    printf '%s\n' "$f" >> "$front" || io_fail "seeding the source closure"
     case "$f" in
         .claude/commands/*.md|marketplace/plugins/*/commands/*.md)
             add_needle "/${name%.md}" ;;
         */skills/*/SKILL.md)
             skill="${f%/SKILL.md}"; add_needle "/${skill##*/}" ;;
     esac
+done <<< "$changed"
+
+# Source closure (HIMMEL-3896): every shell file with a `source`/`.` line naming
+# a file already in the closure joins it, and its own name becomes a needle, so
+# a suite that names only the outermost helper is still reached. The visited
+# set ($seen) makes a source cycle terminate; each round is one git grep.
+while [ -s "$front" ]; do
+    : > "$work/srcpats"
+    while IFS= read -r f; do
+        { printf '(^|[[:space:];&|({])(source|\\.)[[:space:]]+[^#]*'; needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
+    done < "$front"
+    grep_rc=0
+    git -c core.quotepath=off grep -l -E -f "$work/srcpats" "$head_sha" -- ':(glob)**/*.sh' > "$work/src.out" || grep_rc=$?
+    if [ "$grep_rc" -gt 1 ]; then
+        echo "impacted-suites: git grep failed (rc=$grep_rc) walking the source closure — cannot tell which suites are impacted" >&2
+        exit 2
+    fi
+    : > "$work/next"
+    while IFS= read -r hit; do
+        hit="${hit#"${head_sha}":}"
+        [ -n "$hit" ] || continue
+        if grep -Fxq -- "$hit" "$seen"; then continue; fi
+        printf '%s\n' "$hit" >> "$seen" || io_fail "growing the source closure"
+        printf '%s\n' "$hit" >> "$work/next" || io_fail "growing the source closure"
+        add_needle "$(file_literal "$hit")"
+    done < "$work/src.out"
+    cp "$work/next" "$front" || io_fail "advancing the source closure"
+done
+
+# content_rules — one `ERE|suite` row per path-scanning suite that never names
+# the files it guards (HIMMEL-3868): a changed file whose text (at the base or
+# the head) matches the ERE lists the suite. Add a row, not a new mechanism.
+content_rules() {
+    cat <<'EOF'
+HIMMEL_UNINSTALL_[^A-Za-z]{0,3}REAL_HOME|scripts/test-uninstall-real-home-callers.sh
+EOF
+}
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    { git show "${head_sha}:${f}" 2>/dev/null; git show "${mb}:${f}" 2>/dev/null; } > "$work/content" || true
+    while IFS='|' read -r re rule_suite; do
+        [ -n "$re" ] || continue
+        if grep -Eq -- "$re" "$work/content" && grep -Fxq -- "$rule_suite" <<< "$suites"; then
+            printf '%s\n' "$rule_suite" >> "$found" || io_fail "recording a content-rule suite"
+        fi
+    done < <(content_rules)
 done <<< "$changed"
 
 if [ -s "$pats" ]; then
@@ -498,6 +596,22 @@ if [ "$shell_only" -eq 1 ]; then
     sort -u "$work/shell" > "$impacted" || io_fail "sorting the impacted list"
 else
     sort -u "$found" > "$impacted" || io_fail "sorting the impacted list"
+fi
+
+if [ "$selector_miss" -eq 1 ]; then
+    miss=0
+    while IFS= read -r red || [ -n "$red" ]; do
+        red="${red%$'\r'}"
+        [ -n "$red" ] || continue
+        if ! grep -Fxq -- "$red" "$impacted"; then
+            miss=1
+            while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                printf 'selector-miss: %s %s\n' "$red" "$f"
+            done <<< "$changed"
+        fi
+    done < "$red_file"
+    exit "$miss"
 fi
 
 if [ "$check" -eq 0 ]; then
