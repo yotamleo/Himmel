@@ -240,6 +240,15 @@ set -uo pipefail
 # HIMMEL-3437: a relative-entry copy that is not the anchor's hands off to it
 # (the same one-hop, fail-closed pattern scripts/cr/anchor-handoff.sh uses).
 . "$(dirname "${BASH_SOURCE[0]}")/../cr/anchor-handoff.sh" || exit 2
+# HIMMEL-3914: refuse a chokepoint seam that differs from the session's launch env.
+_csg_lib="$(dirname "${BASH_SOURCE[0]}")/../lib/chokepoint-seam-guard.sh"
+# shellcheck source=scripts/lib/chokepoint-seam-guard.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
+    echo "merge-on-green.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
+    exit 96
+fi
+chokepoint_seam_guard scripts/handover/merge-on-green.sh
 
 GH="gh"
 # The ONE public repo armed auto-merge may target (HIMMEL-2869). Deliberately a

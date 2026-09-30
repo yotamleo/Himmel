@@ -26,6 +26,15 @@
 # it never launches anything, so cap-driven concurrency has nothing to do
 # with it.
 set -u
+# HIMMEL-3914: refuse a chokepoint seam that differs from the session's launch env.
+_csg_lib="$(dirname "${BASH_SOURCE[0]}")/chokepoint-seam-guard.sh"
+# shellcheck source=scripts/lib/chokepoint-seam-guard.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
+    echo "bank-preflight.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
+    exit 96
+fi
+chokepoint_seam_guard scripts/lib/bank-preflight.sh
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 PRODUCER="${CADENCE_BANK_PRODUCER:-$REPO/scripts/statusline/usage-cache-producer.sh}"

@@ -193,6 +193,15 @@
 # that will never get one (machine-generated class), never to ration or
 # sequence it. Opt-out, default ON: unset changes nothing.
 set -u
+# HIMMEL-3914: refuse a chokepoint seam that differs from the session's launch env.
+_csg_lib="$(dirname "${BASH_SOURCE[0]}")/../../lib/chokepoint-seam-guard.sh"
+# shellcheck source=scripts/lib/chokepoint-seam-guard.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
+    echo "headed-arm-leg.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
+    exit 96
+fi
+chokepoint_seam_guard scripts/handover/console-kit/headed-arm-leg.sh
 
 # HEADED_ARM_UNAME (HIMMEL-2534 follow-up) - same seam name and default-
 # expansion idiom headed-arm.sh itself defines; resolved again HERE because

@@ -252,6 +252,15 @@
 #      ARM time (before the scheduler entry is created), --dry-run exempt.
 #      Set FLEET_CAP_OK=1 in the LAUNCHING shell to arm anyway.
 set -euo pipefail
+# HIMMEL-3914: refuse a chokepoint seam that differs from the session's launch env.
+_csg_lib="$(dirname "${BASH_SOURCE[0]}")/../lib/chokepoint-seam-guard.sh"
+# shellcheck source=scripts/lib/chokepoint-seam-guard.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
+    echo "arm-resume.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
+    exit 96
+fi
+chokepoint_seam_guard scripts/handover/arm-resume.sh
 
 RESUME_TIME=""
 _TIME_GIVEN=0
