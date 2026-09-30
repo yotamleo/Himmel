@@ -668,6 +668,14 @@ assert_rc 'command -p rm -"r" d'         2 "$(run_case "$(j_bash 'command -p rm 
 assert_rc 'command -- rm -"r" d'         2 "$(run_case "$(j_bash 'command -- rm -"r" d')")"
 assert_rc 'command -p -- rm -"r" d'      2 "$(run_case "$(j_bash 'command -p -- rm -"r" d')")"
 assert_rc 'command  rm -"r" d (2 spaces)' 2 "$(run_case "$(j_bash 'command  rm -"r" d')")"
+# A `$'..'`/`$".."` quote that STARTS the word (judge r1 C1), and ANSI-C escapes.
+assert_rc "rm \$'-r' d"                  2 "$(run_case "$(j_bash "rm \$'-r' d")")"
+assert_rc "rm \$'-rf' d"                 2 "$(run_case "$(j_bash "rm \$'-rf' d")")"
+assert_rc 'rm $"-r" d'                   2 "$(run_case "$(j_bash 'rm $"-r" d')")"
+assert_rc "rm \$'-'r d"                  2 "$(run_case "$(j_bash "rm \$'-'r d")")"
+assert_rc "rm -f \$'-r' d"               2 "$(run_case "$(j_bash "rm -f \$'-r' d")")"
+assert_rc "rm \$'\\x2dr' d (hex escape)" 2 "$(run_case "$(j_bash "rm \$'\\x2dr' d")")"
+assert_rc "rm \$'\\055r' d (octal esc)"  2 "$(run_case "$(j_bash "rm \$'\\055r' d")")"
 # Quoted plain names stay allowed.`rm -- -r` (a file literally named -r) is
 # denied on purpose: the scan cannot tell it from the flag (HIMMEL-912).
 assert_rc 'rm "my file" allowed'         0 "$(run_case "$(j_bash 'rm "my file"')")"

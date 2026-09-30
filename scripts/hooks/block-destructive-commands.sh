@@ -430,11 +430,20 @@ fi
 # only assembles at parse time (`rm -"r" d`, `rm -f"r" d`, `rm "--"recursive d`,
 # `rm -\r d`, `rm -$'r' d`, `command rm -r d`). Normalise instead of adding
 # spellings: strip every quote and backslash (the shell would drop them) and a
-# `command` wrapper, then run the same two flag scans on the result. `$'r'`
-# normalises to `$r`, so any option word still holding a `$` is unresolvable
-# and denies. Over-deny only: `rm -- -r` (a file literally named -r) and
+# `command` wrapper, then run the same two flag scans on the result. A `$`
+# glued to a quote (`$'-r'`, `$"-r"`) is dropped with it, so a word the quoting
+# starts (`rm $'-r' d`) normalises to `-r`; a `$` the shell cannot resolve
+# (`rm -$x`) stays in an option word and denies. An ANSI-C string holding a
+# backslash (`$'\x2dr'`, `$'\055r'`) is unresolvable and denies outright.
+# Over-deny only: `rm -- -r` (a file literally named -r) and
 # `rm "my -r file"` deny - the word-level fix is HIMMEL-912.
-rm_norm="${rm_scrub//[\"\'\\]/}"
+_sq="'"
+RM_ANSIC_ESC_PAT="${CMDPOS}rm(\\.exe)?([^|;&]*)\\\$${_sq}[^${_sq}]*\\\\"
+if [[ $rm_scrub =~ $RM_ANSIC_ESC_PAT ]]; then
+    deny "recursive rm (ANSI-C escape in rm argument)"
+fi
+rm_norm="${rm_scrub//\$[\"\']/}"
+rm_norm="${rm_norm//[\"\'\\]/}"
 rm_norm="${rm_norm//$'\t'/ }"
 while [[ $rm_norm == *'  '* ]]; do rm_norm="${rm_norm//  / }"; done
 # `command` plus any option run (`-p`, `--`, `-p --`) before rm: drop the wrapper.
