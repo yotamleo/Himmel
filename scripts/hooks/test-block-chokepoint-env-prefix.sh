@@ -1084,7 +1084,7 @@ assert_deny "3921 I1 exec -c"                        "$(j "( (exec -c bash $MERG
 assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
 
 CASES=$((CASES + 1))
-if grep -q "block-chokepoint-env-prefix.sh""$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
+if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
 else
     echo "WARN settings.json does not reference block-chokepoint-env-prefix.sh yet (not counted as a failure)"
