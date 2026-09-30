@@ -3346,13 +3346,18 @@ SUITE_LOCK_DIR="$lockw19" SUITE_LOCK_WAIT=8 SUITE_LOCK_WAIT_INTERVAL=1 \
   bash "$RUNNER" "$sbw19" >"$sbw19/waiter.log" 2>&1 &
 w19_pid=$!
 
+# Wait for the BRANDED owner file, not the directory (HIMMEL-3953): the join
+# is mkdir then a temp-write + mv brand, and deleting the ticket inside that
+# window makes the brand fail, so the waiter gives up its ticket ("proceeding
+# without one") and jumps the queue -- the setup racing the waiter, not the
+# restore under test. Under load that was 4-6 of 24 runs red.
 _spin=0
-while [ ! -d "$lockw19.q/$w19_pid" ] && [ "$_spin" -lt 100 ]; do
+while ! grep -q '^started=.' "$lockw19.q/$w19_pid/owner" 2>/dev/null && [ "$_spin" -lt 100 ]; do
   sleep 0.1
   _spin=$((_spin + 1))
 done
-if [ ! -d "$lockw19.q/$w19_pid" ]; then
-  fail "W19 setup -- the waiter under test never took its own ticket within 10s; cannot run the case"
+if ! grep -q '^started=.' "$lockw19.q/$w19_pid/owner" 2>/dev/null; then
+  fail "W19 setup -- the waiter under test never branded its own ticket within 10s; cannot run the case"
   kill "$w19_pid" "$w19_helper_pid" 2>/dev/null
   wait "$w19_pid" 2>/dev/null
   wait "$w19_helper_pid" 2>/dev/null
