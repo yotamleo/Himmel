@@ -51,7 +51,7 @@ def read_tsv(path):
 
 
 def fingerprint():
-    """16 hex over the mirror's newest `updated:` and the plan files' bytes (what the page shows)."""
+    """16 hex over the mirror's newest `updated:` and the plan + stage1 theme files' bytes (what the page shows)."""
     upd = ''
     for p in glob.glob(os.path.join(MIRROR, 'HIMMEL-*.md')):
         for l in open(p, encoding='utf-8', errors='replace'):
@@ -62,6 +62,8 @@ def fingerprint():
     for f in PLAN_FILES:
         p = os.path.join(ROOT, 'stage3', f)
         h.update(open(p, 'rb').read() if os.path.exists(p) else b'-')
+    for p in sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.tsv'))):
+        h.update(open(p, 'rb').read())
     return h.hexdigest()[:16]
 
 
