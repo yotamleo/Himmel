@@ -564,6 +564,11 @@ cat() { bash "$@"; }; cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
 tee() { sh "$@"; }; tee /tmp/f <<< 'scripts/cr/clear-cr-marker.sh'
 function cat { bash "$@"; }; cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
 alias cat=bash; cat <<< "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; </dev/null bash /tmp/f
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; 2>/dev/null sh /tmp/f
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; X=1 bash /tmp/f
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; ! bash /tmp/f
+tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; <<< 'a b' bash /tmp/f
 BACKSTOP
 run "3913: [tee ...<<< then newline then bash] clean root -> deny" 2 \
     "$(payload "tee /tmp/f <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""$'\n'"bash /tmp/f" "$WT")" "$HR"
