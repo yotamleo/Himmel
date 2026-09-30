@@ -694,48 +694,50 @@ fi
 # as inert and the reader exemption below trusts a reader's name, so a reader
 # can write a guarded script's text to a FILE that a later segment runs
 # (`tee F <<< '...'; bash F`), or a shell function can shadow the reader's name.
-# The raw text is scanned, whatever the parser made of it: it names a guarded
-# target AND writes text (a here-string, a redirect, tee) next to an executor
-# left over once every literal `bash <target-path>` is removed, or shadows a
-# reader with a function or alias -> deny. Over-denial is acceptable (a compound
-# that runs a guarded script and another script beside a redirect splits in two);
-# a bare literal spelling has no writer channel and falls through untouched.
+# HIMMEL-3917: the rule denies the WRITE CHANNEL, never an executor. Guarded
+# text escapes the run analysis below only through its two exemptions - the
+# HIMMEL-3546 inert drop (a single-segment reader's quoted words) and the
+# HIMMEL-1813 here-string reader exemption - and once exempted it can leave
+# only by being written to a file (a redirect, or tee's file operands) or fed
+# in as a here-string. Whatever runs that file cannot be enumerated: a shell,
+# `command -p source`, `$(cat F)`, xargs, awk's system(), `chmod +x F; F`, or a
+# LATER tool call that names no target at all (`>> ~/.bashrc`). So the raw
+# text is scanned, whatever the parser made of it: it names a guarded target
+# AND carries a `<<<`, a tee word, or any `>` left once the provably inert
+# redirects (an fd dup, a redirect to exactly /dev/null) are removed, or it
+# shadows a reader with a function or alias -> deny. A `>` inside quotes counts
+# too: over-denial is accepted here (the text moves into a file). A bare or
+# anchored literal spelling carries no channel and falls through untouched.
+# ponytail: text-channel ceiling - a file written by the Write/Edit tools (this
+# is a Bash matcher) or text that never spells a target (`printf 'scripts/c%s'`)
+# is not seen here; running either matches no allow rule, so the classifier
+# decides. Upgrade path: a Write/Edit-matcher twin if a smuggled file recurs.
 prlit_nl=$'\n'
 prlit_reader='(cat|tee|grep|wc|head|tail|diff|cmp)'
-PRLIT_ALLOWED_RE='(bash|sh|source|\.)[[:space:]]+["'"'"']?[^[:space:]"'"'"';&|()]*(scripts/cr/[A-Za-z0-9_.-]+\.sh|scripts/handover/merge-on-green\.sh|scripts/handover/console-kit/go\.sh)["'"'"']?'
-PRLIT_SHELL_RE='(^|[^[:alnum:]_.-])(bash|sh|dash|zsh|ksh|mksh)([^[:alnum:]_.-]|$)'
-PRLIT_BUILTIN_RE='(^|[^[:alnum:]_.-])(source|eval|exec)([^[:alnum:]_.-]|$)|(^|[[:space:];&|(])\.([[:space:]]|$)'
-PRLIT_CHANNEL_RE='(<<<|(^|[^[:alnum:]_.-])tee([^[:alnum:]_.-]|$)|[^-=>|&]>>?[[:space:]]*[^&>=[:space:]])'
+PRLIT_TEE_RE='(^|[^[:alnum:]_.-])tee([^[:alnum:]_.-]|$)'
+# The only redirects that cannot hold text: N>&M, >&M, N>&- (an fd dup whose
+# target is digits or `-` followed by a boundary - `>&2x` or `>&F` is bash's
+# `&>` file form), and [N]> or &> onto exactly /dev/null. Nothing else.
+PRLIT_INERT_REDIR_RE='(^|[^0-9&])([0-9]*>&[[:space:]]*([0-9]+|-)|([0-9]*|&)>[[:space:]]*/dev/null)([[:space:];&|)]|$)'
 PRLIT_SHADOW_RE="(^|[;&|(\`{}${prlit_nl}[:space:]])(function[[:space:]]+${prlit_reader}([[:space:]]|\\()|${prlit_reader}[[:space:]]*\\(\\)|alias[[:space:]]+${prlit_reader}=)"
-prlit_backstop() { # prlit_backstop <raw command> - true when the raw text is a reader-to-file-then-run shape
-    local t=$1 m p
+prlit_backstop() { # prlit_backstop <raw command> - true when the raw text names a target and can persist text
+    local t=$1 m rep
     names_target "${t//[\'\"\\]/}" || return 1
     [[ $t =~ $PRLIT_SHADOW_RE ]] && return 0
-    [[ $t =~ $PRLIT_CHANNEL_RE ]] || return 1
-    while [[ $t =~ $PRLIT_ALLOWED_RE ]]; do
+    [[ $t == *'<<<'* ]] && return 0
+    [[ $t =~ $PRLIT_TEE_RE ]] && return 0
+    [[ ${t//[\'\"\\]/} =~ $PRLIT_TEE_RE ]] && return 0
+    while [[ $t =~ $PRLIT_INERT_REDIR_RE ]]; do
         m=${BASH_REMATCH[0]}
-        # The matched path is not proof it is a guarded script: `scripts/cr/` under
-        # a writable dir matches too. Strip it only when it is spelled once (a path
-        # a channel also writes is spelled twice) and carries no `..`, `//`, `/./`.
-        p=${m#*[[:space:]]}
-        p=${p#"${p%%[![:space:]]*}"}
-        p=${p//[\'\"]/}
-        case "$p" in *..* | *//* | */./*) return 0 ;; esac
-        case "${t#*"$p"}" in *"$p"*) return 0 ;; esac
-        t="${t%%"$m"*} ${t#*"$m"}"
+        rep="${BASH_REMATCH[1]} ${BASH_REMATCH[5]}"
+        t="${t%%"$m"*}${rep}${t#*"$m"}"
     done
-    # A shell name anywhere is an executor (a quoted name or a wrapper's options
-    # cannot hide it), and so is a source/eval/exec/'.' word anywhere.
-    [[ $t =~ $PRLIT_SHELL_RE ]] && return 0
-    [[ $t =~ $PRLIT_BUILTIN_RE ]] && return 0
-    t=${t//[\'\"\\]/}
-    [[ $t =~ $PRLIT_SHELL_RE ]] && return 0
-    [[ $t =~ $PRLIT_BUILTIN_RE ]]
+    [[ $t == *'>'* ]]
 }
 if prlit_backstop "$cmd"; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
-    deny "the command names a guarded script and writes text (a here-string, redirect or tee) beside another executor (bash, sh, source, '.', eval, exec), or shadows a reader (cat, tee, ...) with a function or alias - text written to a file and run later executes what the parser read as inert, so it cannot be proven safe (HIMMEL-3913). Move any mention-only text into a file with the Write tool, and run each script as its own literal command."
+    deny "the command names a guarded script and can write text to a file or feed it as input (a '>' redirect that is not an fd dup or /dev/null, a <<< here-string, or tee), or shadows a reader (cat, tee, ...) with a function or alias - whatever later runs that file cannot be enumerated, so it cannot be proven safe (HIMMEL-3917, HIMMEL-3913). If the text contains '>' (an arrow in a message, a Results bullet), write it with the Write tool and pass the file (-F, --body-file, --comment-file), or use '→' / 'to' instead. Run each script as its own literal command."
 fi
 case "$flat" in *[cC][rR]/*|*[hH]andover/*|*[][*?]*|*'{'*) ;; *) [ "$mentions" -eq 1 ] || exit 0 ;; esac
 

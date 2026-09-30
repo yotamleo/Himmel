@@ -51,7 +51,10 @@ The console's tick reads the marker on your **newest marker-bearing bullet**
   `leg_tail_status` (the parser `close-wrapped-leg.sh` and `tick.sh` share)
   reads only the doc's LAST `- ` line — a misordered WRAPPED is invisible to
   it and your wrap is refused. It stamps the `HH:MM` itself; pass the marker
-  and text only.
+  and text only. **A bullet never contains `>`**: write `→` or `to`
+  (`MERGED #n → <sha>`). The text is an argument, and `append-results.sh`
+  takes no file, so a `>` beside a guarded script name is refused as a write
+  channel (HIMMEL-3917).
 - **A `FINDING` stays your status until you retire it.** When the console has
   ruled on it, write `- HH:MM RESOLVED — <what was ruled>` as soon as you act
   on the ruling. Until then the console reads `FINDING` and must assume it owes
