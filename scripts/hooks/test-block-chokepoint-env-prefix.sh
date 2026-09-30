@@ -1032,6 +1032,9 @@ assert_deny "3921 at: env assignment, [] glob"                    "$(j "echo 'en
 assert_deny "3921 at: read, brace"                                "$(j "echo 'read -r HIMMEL_CONSOLE_LEG <<<1; bash $GOK/{go}.sh' | at now")"
 assert_deny "3921 at: printf -v, \$var piece"                     "$(j "echo 'printf -v HIMMEL_CONSOLE_LEG 1; bash $GOK/\$n.sh' | at now")"
 assert_deny "3921 double-fork: seam write + globbed merge"        "$(j "( (sleep 1; HIMMEL_CONSOLE_LEG=1 exec bash scripts/handover/merge-on-g*.sh) & )")"
+assert_deny "3921 codex-1: unset marker beside globbed go.sh"     "$(j "unset HIMMEL_CONSOLE_LEG; setsid -f bash $GOK/g*.sh")"
+assert_deny "3921 codex-1: BASH_ENV beside globbed go.sh"         "$(j "BASH_ENV=/tmp/x setsid -f bash $GOK/g*.sh")"
+assert_deny "3921 codex-1: extdebug beside globbed merge"         "$(j "setsid -f bash -O extdebug scripts/handover/merge-on-g*.sh")"
 assert_deny "3921 BASH_ENV beside a chokepoint"                   "$(j "BASH_ENV=/tmp/x bash $MERGE_ON_GREEN")"
 assert_deny "3921 exported BASH_FUNC_ beside a chokepoint"        "$(j "export 'BASH_FUNC_printf%%=() { :; }'; bash $MERGE_ON_GREEN")"
 assert_deny "3921 SHELLOPTS beside a chokepoint"                  "$(j "SHELLOPTS=xtrace bash $MERGE_ON_GREEN")"
@@ -1048,7 +1051,9 @@ assert_allow "3921 literal go.sh as the console kit calls it"     "$(j "bash $GO
 assert_allow "3921 setsid -f literal merge"                       "$(j "setsid -f bash $MERGE_ON_GREEN")"
 assert_allow "3921 at literal merge"                              "$(j "echo 'bash $MERGE_ON_GREEN' | at now")"
 assert_allow "3921 a glob over scripts with no seam write"        "$(j "ls scripts/handover/*.sh")"
-assert_allow "3921 unset of an unrelated var beside no chokepoint" "$(j "unset FOO; ls scripts/handover/*.sh")"
+# Over-deny by design (codex-1 sweep): any unset beside a globbed scripts/ word is refused.
+assert_deny "3921 unset beside a globbed scripts/ word (over-deny)" "$(j "unset FOO; ls scripts/handover/*.sh")"
+assert_allow "3921 unset of an unrelated var, no scripts/ glob"    "$(j "unset FOO; ls docs")"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
