@@ -161,7 +161,9 @@ for a in "$@"; do
 done
 args_hash_of() { # <tick args...>
     local set=""
-    [ -z "$legs_from" ] || set="$(bash "$HERE/fleet-manifest.sh" list "$legs_from" 2>/dev/null | sort)"
+    # In manifest order, not sorted: tick prints legs in that order, so a
+    # reorder (remove + re-add) moves legs= and must re-baseline too.
+    [ -z "$legs_from" ] || set="$(bash "$HERE/fleet-manifest.sh" list "$legs_from" 2>/dev/null)"
     printf '%s\n%s\n' "$*" "$set" | sha256sum | cut -c1-16  # gnu-ok: Linux-only kit (PLATFORM GUARD)
 }
 if [ -n "$legs_from" ]; then

@@ -587,7 +587,15 @@ sleep 2
 wait_exit "$WPID"
 check "(m3748) a dispatch through the manifest does not wake the console" "running" "$rc"
 check "(m3748) and prints nothing" "" "$(cat "$WORK/m3748.out")"
-tick_line "N1:FRESH,N2:FREE" "ok"
+# A remove + re-add reorders the manifest, and tick prints legs in manifest
+# order: the same set in a new order is the console's own act too.
+tick_line "N2:FRESH,N1:FRESH" "ok"
+printf '{"schema":1,"legs":[{"doc":"/x/HIMMEL-2-N2-b.md","label":"N2"},{"doc":"/x/HIMMEL-1-N1-a.md","label":"N1"}]}\n' > "$M"
+sleep 2
+wait_exit "$WPID"
+check "(m3748) a reorder through the manifest does not wake the console" "running" "$rc"
+check "(m3748) and still prints nothing" "" "$(cat "$WORK/m3748.out")"
+tick_line "N2:FREE,N1:FRESH" "ok"
 wait_exit "$WPID"
 check "(m3748) a real change on the new leg set still wakes (rc 0)" "0" "$rc"
 check "(m3748) naming legs" "WAKE tick changed=legs bank=PROCEED" "$(head -n1 "$WORK/m3748.out")"
