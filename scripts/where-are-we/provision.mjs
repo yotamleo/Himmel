@@ -8,7 +8,7 @@
 // takes injected deps (readRecords/appendRecords) so tests stay hermetic —
 // local-fs-only (a temp ledger), no network/collector surface. Mirrors
 // collect.mjs / index.mjs.
-import { pathToFileURL } from 'node:url';
+import { isMain } from '../lib/is-main.mjs';
 import { readRecords } from './lib/ledger.mjs';
 import { appendRecords } from './lib/append.mjs';
 import { fold } from './lib/fold.mjs';
@@ -72,7 +72,7 @@ export function main(argv, deps = { readRecords, appendRecords }) {
 
 // CLI entry (not exercised by hermetic tests). slice is fail-open (exit 0 even on
 // empty); UsageError → clean message + exit 1; unexpected → stack + exit 1.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (isMain(import.meta.url)) {
   try {
     const out = main(process.argv.slice(2));
     process.stdout.write(out.endsWith('\n') || out === '' ? out : out + '\n');

@@ -69,7 +69,7 @@ edges() {
       | grep -vE '^[[:space:]]*#' | grep -oE "$PATH_RE"
     grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null | grep -oE "$CMD_RE" | grep -oE "$PATH_RE"
     grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null | grep -E "$ASSIGN_RE" | grep -oE "$PATH_RE"
-    grep -oE "(require\\(|import\\([[:space:]]*|from[[:space:]]+|import[[:space:]]+)['\"]\\.{1,2}/[^'\"]+['\"]" "$ROOT/$f" 2>/dev/null \
+    grep -oE "(require\\(|createRequire\\([^)]*\\)\\(|import\\([[:space:]]*|from[[:space:]]+|import[[:space:]]+)['\"]\\.{1,2}/[^'\"]+['\"]" "$ROOT/$f" 2>/dev/null \
       | grep -oE "\\.{1,2}/[^'\"]+"
   } | while IFS= read -r raw; do
     tail="$raw"

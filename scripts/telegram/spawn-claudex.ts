@@ -31,7 +31,7 @@ import { join, resolve, dirname } from "node:path";
 import { spawn } from "bun";
 import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, NON_INTERACTIVE_EDITOR_ENV, type PermissionMode } from "./run";
 import { SPAWN_OWN_GROUP } from "../lib/kill-tree.mjs";
-import { transcriptDirFor, PUSH_PROTECTION_DISCLOSURE, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, STASH_BAN_LINE, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta, readBriefFile, armStartupWatchdog, resolveFailfastWindowMs } from "./spawn-glm";
+import { transcriptDirFor, PUSH_PROTECTION_DISCLOSURE, composeDispatchGitState, gitCapture, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, STASH_BAN_LINE, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta, readBriefFile, armStartupWatchdog, resolveFailfastWindowMs } from "./spawn-glm";
 // HIMMEL-1553: symptom-brief loop breaker, two-stage — shared with spawn-glm
 // so both worker lanes carry one decision table: invariant required at the
 // warn stage, cheap lane refused at the escalate stage. Thresholds live in
@@ -49,6 +49,7 @@ import { parseAddPlugins } from "../lanes/plugin-profiles.mjs";
 // GLM_FLAG_TABLE for the twin.
 import { parseLaneArgs, type FlagTable } from "./lane-args";
 import { CODEX_BANK_PROBE_REMEDY, readCodexBankCache } from "../lanes/bank-status-core.mjs";
+import { resolveFundedMaxPct } from "../lanes/funded-max-pct.mjs";
 
 export function claudexSessionRoot(): string {
   return join(process.env.BRIDGE_ROOT ?? join(homedir(), ".claude", "handover", "bridge"), "claudex-sessions");
@@ -1265,7 +1266,7 @@ async function main(): Promise<void> {
   const bankOverride = force || process.env.CLAUDEX_BANK_OK === "1";
   const bank = evaluateCodexBankPreflight(bankRead.usedPct, {
     warnPct: parsePct(process.env.CLAUDEX_BANK_WARN_PCT, 80),
-    refusePct: parsePct(process.env.CLAUDEX_BANK_REFUSE_PCT, 90),
+    refusePct: resolveFundedMaxPct(process.env),
     override: bankOverride,
     reason: bankRead.reason,
   });
@@ -1387,6 +1388,8 @@ async function main(): Promise<void> {
   // HIMMEL-1094: onSetupFail runs ONLY if the profile resolve below throws —
   // i.e. before ANY of the worker's state exists. The own-branch caller passes a
   // teardown; shared mode passes nothing (runSharedDispatch calls runBody()).
+  // HIMMEL-1687: the worker branch's tip BEFORE the worker runs, the base for `commits:`.
+  let baseSha: string | undefined;
   const runBody = async (onSetupFail?: () => void): Promise<number> => {
     // HIMMEL-1778: same seam as spawn-glm's twin — runBody runs in BOTH modes
     // after the branch exists and before the worker launches. Warn-only.
@@ -1431,6 +1434,8 @@ async function main(): Promise<void> {
     // by the pre-launch auth preflight in main() (HIMMEL-1037), never by
     // re-running a worker (which could duplicate the worker's allowed side
     // effects). No retry wrapper here.
+    const head0 = gitCapture(["rev-parse", "HEAD"], worktree);
+    baseSha = head0.code === 0 ? head0.stdout.trim() : undefined;
     const { code } = await executeClaudexRun({ run: runClaudexSession, prompt, worktree, permMode, effort, model, repoRoot: REPO_ROOT, sessionDir, metaPath, runningMeta, settings });
     return code;
   };
@@ -1466,6 +1471,7 @@ async function main(): Promise<void> {
   console.log(`session-dir: ${sessionDir}`);
   console.log(`transcript-dir: ${claudexTranscriptDirFor(worktree)}`);
   console.log(PUSH_PROTECTION_DISCLOSURE);
+  for (const line of composeDispatchGitState(worktree, branch, baseSha)) console.log(line);
   console.log(`exit: ${code}`);
   process.exit(code);
 }

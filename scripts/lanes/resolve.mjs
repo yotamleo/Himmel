@@ -5,6 +5,7 @@ import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:
 import { execFileSync } from 'node:child_process';
 import { dirname, join, delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { evalProbe } from './probe.mjs';
 import { formatBankAnnotation, parseBankStatusOutput } from './bank-status-core.mjs';
@@ -32,6 +33,16 @@ const die = (code, msg) => { process.stderr.write(msg + '\n'); process.exit(code
 // registry lanes outside it stay on their real probes. Absence of the allowlist
 // preserves the pre-HIMMEL-1428 behaviour for existing installs, while absence
 // of the scope preserves the original global-allowlist semantics for old files.
+//
+// HIMMEL-1448: the persisted scope is a FIXED install-time snapshot, so a
+// wizard-managed lane added or renamed in the registry afterwards falls outside
+// it. The registry itself therefore marks those lanes (`profileManaged`), and a
+// marked lane is constrained regardless of the snapshot: absent from the
+// allowlist = suppressed. Fail closed — only an absent marker or a literal
+// `false` leaves a lane unmanaged; any other value (typo'd "false", 0, null)
+// counts as managed. The scope is still honoured (union), never the only gate.
+export const { isProfileManaged } = createRequire(import.meta.url)('./profile-managed.cjs');
+
 export function resolveLaneInventory(registry, ctx) {
   const allowlist = Array.isArray(registry.profileAllowlist)
     ? new Set(registry.profileAllowlist)
@@ -45,7 +56,7 @@ export function resolveLaneInventory(registry, ctx) {
       lane,
       suppressedByProfile: Boolean(allowlist)
         && lane.class !== 'claude-tier'
-        && (!allowlistScope || allowlistScope.has(lane.id))
+        && (!allowlistScope || allowlistScope.has(lane.id) || isProfileManaged(lane))
         && !allowlist.has(lane.id),
     }));
 }
@@ -91,8 +102,11 @@ export function mergeLocalOverlay(base, local) {
   const baseLanes = (base && base.lanes) || [];
   const localLanes = (local && local.lanes) || [];
   const byId = new Map(baseLanes.map((l) => [l.id, l]));
-  for (const patch of localLanes) {
-    if (!patch || !patch.id) continue;
+  for (const rawPatch of localLanes) {
+    if (!rawPatch || !rawPatch.id) continue;
+    // HIMMEL-1448: `profileManaged` is registry-owned; a local patch must never
+    // set or clear it (a local `false` would un-constrain a wizard lane).
+    const { profileManaged: _ignored, ...patch } = rawPatch;
     const existing = byId.get(patch.id);
     if (existing && existing.dispatch && patch.dispatch) {
       const dispatch = {

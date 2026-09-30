@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync, renameSync, accessSync, constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_FILE = join(SCRIPT_DIR, 'lanes.local.json');
@@ -35,7 +36,9 @@ const SHARED_REGISTRY = join(SCRIPT_DIR, 'lanes.json');
 // { id, probe } entry when laneId isn't already present in `local.lanes`.
 // Force-on also extends an active adopter profile when the lane is in its
 // wizard-owned scope; every other lane entry remains unchanged.
-export function applyLaneOverride(local, laneId, probeKind) {
+// `managed` (HIMMEL-1448): the registry marks the lane profileManaged, so it is
+// constrained even when absent from the persisted scope snapshot.
+export function applyLaneOverride(local, laneId, probeKind, managed = false) {
   const lanes = (local && Array.isArray(local.lanes)) ? local.lanes : [];
   const idx = lanes.findIndex((l) => l && l.id === laneId);
   const probe = { kind: probeKind };
@@ -57,7 +60,8 @@ export function applyLaneOverride(local, laneId, probeKind) {
   if (probeKind === 'always'
       && Array.isArray(next.profileAllowlist)
       && (!Array.isArray(next.profileAllowlistScope)
-        || next.profileAllowlistScope.includes(laneId))
+        || next.profileAllowlistScope.includes(laneId)
+        || managed)
       && !next.profileAllowlist.includes(laneId)) {
     next.profileAllowlist = [...next.profileAllowlist, laneId];
   }
@@ -283,6 +287,17 @@ export function writeProfileAllowlist(file, laneIds, scopeLaneIds) {
   return preservedLegacyGlobal;
 }
 
+// Same fail-closed rule as resolve.mjs's isProfileManaged, read from the shared
+// registry (the only place the marker lives). An unreadable registry counts as
+// managed: extending the allowlist for an explicit force-on is the safe side.
+const { isProfileManaged } = createRequire(import.meta.url)('./profile-managed.cjs');
+function sharedLaneIsManaged(laneId) {
+  try {
+    const lane = JSON.parse(readFileSync(SHARED_REGISTRY, 'utf8')).lanes.find((l) => l && l.id === laneId);
+    return isProfileManaged(lane);
+  } catch { return true; }
+}
+
 function main(argv) {
   let laneId = null;
   let probeKind = null;
@@ -312,7 +327,7 @@ function main(argv) {
   // and the atomic sibling-temp rename for every overlay update.
   let extendedProfileAllowlist = false;
   writeLocal(file, (local) => {
-    const next = applyLaneOverride(local, laneId, probeKind);
+    const next = applyLaneOverride(local, laneId, probeKind, sharedLaneIsManaged(laneId));
     extendedProfileAllowlist = Array.isArray(local.profileAllowlist)
       && Array.isArray(next.profileAllowlist)
       && !local.profileAllowlist.includes(laneId)

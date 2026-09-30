@@ -7133,7 +7133,11 @@ function laneProfileState(base, local, laneId) {
   if (!lane) return 'unknown (lane absent from base registry)';
   if (lane.class === 'claude-tier') return 'not constrained (Claude tier)';
   const scope = Array.isArray(local.profileAllowlistScope) ? local.profileAllowlistScope : null;
-  if (scope && scope.indexOf(laneId) === -1) return 'not constrained by adopter profile';
+  // Shared predicate with resolve.mjs (HIMMEL-1448): a registry-marked lane
+  // is constrained even when outside the persisted scope snapshot.
+  const { isProfileManaged } = require('../lanes/profile-managed.cjs');
+  const managed = isProfileManaged(lane);
+  if (scope && scope.indexOf(laneId) === -1 && !managed) return 'not constrained by adopter profile';
   return local.profileAllowlist.indexOf(laneId) === -1
     ? 'suppressed-by-profile'
     : 'allowlisted by adopter profile';
