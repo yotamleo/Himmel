@@ -198,7 +198,7 @@ mkproc "$F9" 40 1 claude /opt/claude/versions/2.1.285 claude -p "daemon run"
 mkproc "$F9" 50 1 claude /opt/claude/versions/2.1.285 claude --model x daemon run
 dm=""
 for p in 10 30 40 50 20; do
-    if _csg_is_daemon "$F9" "$p"; then dm="$dm$p:y "; else dm="$dm$p:n "; fi
+    if _csg_is_bg_service "$F9" "$p"; then dm="$dm$p:y "; else dm="$dm$p:n "; fi
 done
 assert_eq "D1 daemon detection: native + npm yes; a prompt or later argv words no" "10:y 30:y 40:n 50:n 20:n " "$dm"
 if [ -r /proc/self/stat ]; then

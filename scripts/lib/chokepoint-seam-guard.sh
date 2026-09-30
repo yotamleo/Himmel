@@ -183,19 +183,19 @@ _csg_is_claude() {
     return 1
 }
 
-# _csg_is_daemon <proc-root> <pid> - rc 0 when a claude pid is the background
+# _csg_is_bg_service <proc-root> <pid> - rc 0 when a claude pid is the background
 # service: the subcommand `daemon run` right after the program - argv[1..2]
 # for a native install (argv[0] may be the versioned binary, so argv[0] is not
 # checked), argv[2..3] behind `node <cli.js>` for an npm install. Fixed
 # positions, so a prompt or a later argv word reading "daemon run" is not it.
 # A daemon this misses is still the outermost claude, so its seams still
 # refuse; only the message is the generic one.
-_csg_is_daemon() {
+_csg_is_bg_service() {
     local a0="" a1="" a2="" a3=""
     [ -r "$1/$2/cmdline" ] || return 1
     { IFS= read -r -d '' a0; IFS= read -r -d '' a1; IFS= read -r -d '' a2; IFS= read -r -d '' a3; } < "$1/$2/cmdline" || true
-    [ "$a1" = daemon ] && [ "$a2" = run ] && return 0
-    [ "${a0##*/}" = node ] && [ "$a2" = daemon ] && [ "$a3" = run ] && return 0
+    [ "$a1" = daemon ] && [ "$a2" = run ] && return 0 # t13b-ok: matches an existing claude service argv, starts nothing
+    [ "${a0##*/}" = node ] && [ "$a2" = daemon ] && [ "$a3" = run ] && return 0 # t13b-ok: matches an existing claude service argv, starts nothing
     return 1
 }
 
@@ -327,7 +327,7 @@ chokepoint_seam_guard() {
 }
 
 _csg_gate() {
-    local proc="$1" start="$2" key="$3" name="${3##*/}" pid env cwd anchor="" root seams bad files f home daemon=0
+    local proc="$1" start="$2" key="$3" name="${3##*/}" pid env cwd anchor="" root seams bad files f home bgsvc=0
     [ -r "$proc/self/stat" ] || return 0
     if pid=$(_csg_find_outermost "$proc" "$start"); then :; else
         _csg_deny "$name" "cannot walk this process's ancestry in /proc"
@@ -339,7 +339,7 @@ _csg_gate() {
         _csg_orphan "$proc" "$start" "$key" "$name" "$root"
         return 0
     fi
-    _csg_is_daemon "$proc" "$pid" && daemon=1
+    _csg_is_bg_service "$proc" "$pid" && bgsvc=1
     env="$proc/$pid/environ"
     cwd=$("$(_csg_bin readlink)" "$proc/$pid/cwd" 2>/dev/null) || _csg_deny "$name" "cannot read the claude session's cwd (pid $pid)"
     [ -r "$env" ] || _csg_deny "$name" "cannot read the claude session's launch environment (pid $pid)"
@@ -356,7 +356,7 @@ _csg_gate() {
     # A daemon's cwd is wherever its spawner ran (another repo, or none), so it
     # never names the anchor: use this copy's own primary instead, and the
     # headless refusal cannot fail open on an unrelated daemon cwd.
-    if [ -z "$anchor" ] && [ "$daemon" -eq 1 ]; then
+    if [ -z "$anchor" ] && [ "$bgsvc" -eq 1 ]; then
         anchor=$(_csg_primary_of "$root")
     fi
     [ -n "$anchor" ] || anchor=$(_csg_primary_of "$cwd")
@@ -380,8 +380,8 @@ EOF
         esac
     fi
     bad=${bad//$'\n'/ }
-    if [ "$daemon" -eq 1 ]; then
-        _csg_deny "$name" "seam(s) ${bad% } differ from the claude daemon's environment - headless (--bg) legs cannot pass seams to chokepoints (HIMMEL-3914); use a headed leg"
+    if [ "$bgsvc" -eq 1 ]; then
+        _csg_deny "$name" "seam(s) ${bad% } differ from the claude background service's environment - headless (--bg) legs cannot pass seams to chokepoints (HIMMEL-3914); use a headed leg"
     fi
     _csg_deny "$name" "seam(s) ${bad% } differ from this session's launch environment. A chokepoint seam must come from the launching shell, not a per-call prefix, export or unset - set it in the launching shell (e.g. SEAM=1 claude)"
 }
