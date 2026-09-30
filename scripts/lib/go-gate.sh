@@ -68,7 +68,7 @@ _go_gate_verify() {
     local go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$head_sha"
     local body="" want="" got="" trust=""
     if [ -n "$go_root" ]; then body=$(cat "$go_file" 2>/dev/null) || body=""; fi
-    if [ -z "$go_root" ] || ! printf '%s\n' "$body" | grep -qxF "head=$head_sha"; then
+    if [ -z "$go_root" ] || ! grep -qxF "head=$head_sha" <<< "$body"; then
         printf 'PR #%s at %s has no console GO (%s) — this is a console-spawned leg; send READY to your console and wait for GO; a GO for an older head is stale, never reuse it.\n' "$pr_num" "$head_sha" "$go_file"
         return 2
     fi
