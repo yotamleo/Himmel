@@ -1083,6 +1083,7 @@ cmd_new() {
         FILL_PERCENT "$fill_percent" \
         RELEASE_TOKEN "$release_token" \
         BOARD_URL "none yet — publish it at ACTION ZERO step 12" \
+        TRACKER_URL "none" \
         MODEL "$model" \
         PROJECT "$project_doc_value"
 
@@ -1168,7 +1169,7 @@ cmd_next() {
     [ -f "$console_template" ] || { err "missing template $console_template"; exit 2; }
     [ -f "$handoff_template" ] || { err "missing template $handoff_template"; exit 2; }
 
-    local predecessor_doc predecessor_base predecessor_stem predecessor_prefix_part predecessor_letter predecessor_live_state predecessor_board
+    local predecessor_doc predecessor_base predecessor_stem predecessor_prefix_part predecessor_letter predecessor_live_state predecessor_board predecessor_tracker
     predecessor_doc="$(resolve_predecessor)" || { err "no predecessor console doc found under $state_dir for '$name' — pass --doc <path>"; exit 1; }
     # An explicit --doc / CONSOLE_DOC is used as given, with no existence
     # check inside resolve_predecessor (the auto-discovery branches already
@@ -1197,6 +1198,9 @@ cmd_next() {
     case "$predecessor_board" in
         ""|"none yet"*) predecessor_board="none yet — publish it at ACTION ZERO step 12" ;;
     esac
+    # HIMMEL-3933: the roadmap tracker's URL rides on `tracker:` the same way.
+    predecessor_tracker="$(printf '%s\n' "$predecessor_live_state" | sed -n 's/^tracker:[[:space:]]*//p' | head -n 1)"
+    [ -n "$predecessor_tracker" ] || predecessor_tracker="none"
     predecessor_base="$(basename "$predecessor_doc")"
     predecessor_stem="${predecessor_base%.md}"
     predecessor_prefix_part="${predecessor_stem%-"$name"}"
@@ -1316,6 +1320,7 @@ cmd_next() {
         FILL_PERCENT "$fill_percent" \
         RELEASE_TOKEN "none yet — acquire your own at ACTION ZERO and record it here" \
         BOARD_URL "$predecessor_board" \
+        TRACKER_URL "$predecessor_tracker" \
         MODEL "$model" \
         PROJECT "$project_doc_value"
 

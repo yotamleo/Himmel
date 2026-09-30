@@ -529,6 +529,42 @@ HIMMEL_DENIAL_ACK_DIR="$WORK/ro/sub" denials_rise p6c none 'N1:1:SHIP-STEP'
 check "(p6) an unwritable record dir still wakes with rc 0" "0" "$rc"
 chmod 700 "$WORK/ro"
 
+# --- (w) HIMMEL-3933: tracker= wakes on a class change exactly as board= does:
+# ok to STALE wakes naming tracker, a move to ok alone does not, and a tick
+# line with no tracker= field (an older tick.sh) stays a valid sample ----------
+tracker_line() { sed "s/ denials=none/ tracker=$1 denials=none/" "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"; }
+reset_stub
+tracker_line ok
+I="$(new_inbox w)"
+start "$I" "$WORK/w.out" --legs "N1.md"
+wait_hb "$I" || fail "(w) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+tracker_line STALE:3h
+wait_exit "$WPID"
+check "(w) a tracker move to STALE ends the wait" "0" "$rc"
+check "(w) the wake names tracker" "WAKE tick changed=tracker bank=PROCEED" "$(head -n1 "$WORK/w.out")"
+
+reset_stub
+tick_line "N1:FRESH" "ok"
+tracker_line STALE:3h
+I="$(new_inbox w2)"
+start "$I" "$WORK/w2.out" --legs "N1.md"
+wait_hb "$I" || fail "(w2) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+tracker_line ok
+wait_exit "$WPID"
+check "(w2) a tracker move to ok alone does not wake" "running" "$rc"
+check "(w2) the saved key still moved to tracker=ok" "yes" "$(grep -q 'tracker=ok' "$I.wait.state" && echo yes)"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+reset_stub
+I="$(new_inbox w3)"
+start "$I" "$WORK/w3.out" --legs "N1.md"
+wait_hb "$I" || fail "(w3) no baseline heartbeat"
+wait_exit "$WPID"
+check "(w3) a tick line with no tracker= field is still a valid sample" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
 check "(k) no inbox argument is a usage error (rc 2)" "2" "$rc"

@@ -802,6 +802,41 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     fi
 fi
 
+# HIMMEL-3933: the roadmap tracker's freshness. tracker.py --emit-fp is the one
+# derivation (the mirror's newest updated + the plan files), the same value it
+# writes to <page>.fp when it renders; a tracker that moved past its render reads
+# STALE, aged by the page's mtime. skip = no (or `none`) `tracker:` Live state line.
+# ponytail: tracker=ok says the LOCAL page matches Jira + the plan; tick cannot see
+# whether the artifact was republished, and it reads the mirror on disk, so a stale
+# mirror reads ok until the console refreshes it (node scripts/jira/dist/index.js mirror).
+tracker_summary=skip
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    tracker_url="$(sed -n 's/^tracker:[[:space:]]*//p' "$console_doc" 2>/dev/null | head -n 1)"
+    case "$tracker_url" in ''|none*) ;; *)
+        tracker_dir="${console_doc%/*}"
+        tracker_plan="$(sed -n 's/^tracker-plan:[[:space:]]*//p' "$console_doc" 2>/dev/null | head -n 1)"
+        [ -n "$tracker_plan" ] || tracker_plan="$tracker_dir/specs/plan/HIMMEL-3882"
+        tracker_file="$tracker_dir/roadmap-tracker.html"
+        tracker_want="$(python3 "$HERE/tracker.py" --emit-fp --plan-dir "$tracker_plan" --out "$tracker_file" --luna-map "$tracker_dir/roadmap-luna-map.json" ${TICK_TRACKER_MIRROR_DIR:+--mirror-dir "$TICK_TRACKER_MIRROR_DIR"} 2>/dev/null)" || tracker_want=""
+        if [ ! -f "$tracker_file" ]; then
+            tracker_summary=MISSING
+        elif [ -z "$tracker_want" ]; then
+            tracker_summary=skip  # cannot derive the reference (no python3, bad plan dir): no verdict
+        elif [ "$(cat "$tracker_file.fp" 2>/dev/null)" = "$tracker_want" ]; then
+            tracker_summary=ok
+        else
+            tracker_mtime="$(stat -c %Y "$tracker_file" 2>/dev/null)" || tracker_mtime=""  # gnu-ok: console kit is Linux-only
+            tracker_age=0
+            case "$tracker_mtime" in ''|*[!0-9]*) ;; *) tracker_age=$(( $(date +%s) - tracker_mtime )) ;; esac
+            [ "$tracker_age" -ge 0 ] || tracker_age=0
+            if [ "$tracker_age" -ge 172800 ]; then tracker_summary="STALE:$((tracker_age / 86400))d"
+            elif [ "$tracker_age" -ge 3600 ]; then tracker_summary="STALE:$((tracker_age / 3600))h"
+            else tracker_summary="STALE:$((tracker_age / 60))m"; fi
+        fi
+        ;;
+    esac
+fi
+
 bank_cache="${TICK_BANK_CACHE_FILE:-/tmp/claude/statusline-usage-cache.json}"
 fh="$(jq -r '.five_hour.utilization | if type == "number" then floor else empty end' "$bank_cache" 2>/dev/null)" || fh=""
 wk="$(jq -r '.seven_day.utilization | if type == "number" then floor else empty end' "$bank_cache" 2>/dev/null)" || wk=""
@@ -1115,6 +1150,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'nonces: %s\n' "$nonces_summary"
     printf 'leg set: %s\n' "$legset_summary"
     printf 'board: %s\n' "$board_summary"
+    printf 'tracker: %s\n' "$tracker_summary"
     printf 'denials: %s\n' "$denials_summary"
     printf 'ci queue: %s\n' "$ciq_summary"
 else
@@ -1124,13 +1160,14 @@ else
     # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them, and
     # `orphans=` (HIMMEL-2761) follows, `nonces=` (HIMMEL-3254) follows it, and
     # `legset=` (HIMMEL-3293) follows, `board=` (HIMMEL-3361) follows it, and
-    # `denials=` (HIMMEL-3724) follows, and `ciq=` (HIMMEL-3840) is last.
+    # `tracker=` (HIMMEL-3933) follows `board=`, `denials=` (HIMMEL-3724) follows,
+    # and `ciq=` (HIMMEL-3840) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s denials=%s ciq=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$denials_summary" "$ciq_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s denials=%s ciq=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$denials_summary" "$ciq_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then
