@@ -154,7 +154,7 @@ cmd_prev_record() {
     [ "$rc" = 0 ] || { rm -rf "$tmp"; die "prev-record: could not read the record of run $id"; }
     # skip an incomplete predecessor: suites missing from its report would read as green
     if jq -e '.infra_suspect | not' "$tmp/$id/record.json" >/dev/null 2>&1; then
-      cp "$tmp/$id/record.json" "$dest"
+      cp "$tmp/$id/record.json" "$dest" || { rm -rf "$tmp"; die "prev-record: could not write $dest"; }
       rm -rf "$tmp"
       return 0
     fi
