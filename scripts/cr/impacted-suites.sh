@@ -102,7 +102,8 @@
 # under Git Bash on Windows. No .ps1 twin — it is a git + grep pipeline.
 set -uo pipefail
 # HIMMEL-3495: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
+case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
+. "$_ah_d/anchor-handoff.sh" || exit 2
 
 # io_fail <what> — a step that builds the impacted list or the verdict set did
 # not run; an empty or partial list must never read as "nothing to run".

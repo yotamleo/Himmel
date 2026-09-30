@@ -3638,7 +3638,7 @@ mog_build_fixture "$mog3437_wt"
 # real git repo (a bare `git init -q` — no commit needed).
 git init -q "$mog3437_wt"
 # shellcheck disable=SC2016  # the literal line merge-on-green.sh carries, not an expansion
-mog3437_src_line='. "$(dirname "${BASH_SOURCE[0]}")/../cr/anchor-handoff.sh" || exit 2'
+mog3437_src_line='. "$_ah_d/../cr/anchor-handoff.sh" || exit 2'
 awk -v src="$mog3437_src_line" '{ print } $0 == src { exit }' "$mog3437_wt/scripts/handover/merge-on-green.sh" > "$mog3437_wt/scripts/handover/merge-on-green.sh.head"
 if grep -qxF "$mog3437_src_line" "$mog3437_wt/scripts/handover/merge-on-green.sh.head"; then
     cp "$mog3437_wt/scripts/handover/merge-on-green.sh.head" "$mog3437_wt/scripts/handover/merge-on-green.sh"
