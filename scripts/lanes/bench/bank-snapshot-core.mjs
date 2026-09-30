@@ -7,9 +7,9 @@
 // instead of re-parsing raw bank-status output a second, divergent way.
 //
 // Two thresholds here are DELIBERATELY DIFFERENT from bank-status.ts's own
-// funded/spent verdict (LANE_FUNDED_MAX_PCT, default 99): this bench refuses
-// at codex weekly >= 80% or Claude seven_day >= 70% (spec §7.2) — well below
-// the lane's own ~90-99% refuse point, so a 2-3h, 20-dispatch batch cannot
+// funded/spent verdict (LANE_FUNDED_MAX_PCT, default 90): this bench refuses
+// at codex weekly >= 80% or Claude seven_day >= 70% (spec §7.2) — below
+// the lane's own 90% refuse point, so a 2-3h, 20-dispatch batch cannot
 // die mid-run right at the boundary.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { isMain } from '../../lib/is-main.mjs';

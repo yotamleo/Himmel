@@ -45,10 +45,9 @@
 // true of the funded verdict): the guard's documented fall-through —
 // guard-implementor-dispatch.sh lane_funded() "skipping it, not refusing
 // toward it" — fires only on `spent`. A `funded` verdict does the OPPOSITE:
-// it refuses the in-process Agent dispatch and names that lane, and
-// funded-max-pct defaults to 99 while spawn-claudex refuses at 90 — that
-// 90-98% disagreement band is pre-existing and tracked in HIMMEL-1700, not
-// introduced here.
+// it refuses the in-process Agent dispatch and names that lane. HIMMEL-1700:
+// the funded threshold and spawn-claudex's refuse point are now ONE value
+// (funded-max-pct.mjs, default 90), so no 90-98% disagreement band remains.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -65,7 +64,7 @@ import {
   type LaneQuotaTargets,
 } from "../observability/quota-sources";
 import { ledgerPath as quotaGaugeLedgerPath } from "../telegram/quota-gauge";
-import { parseFundedMaxPct } from "./funded-max-pct.mjs";
+import { resolveFundedMaxPct } from "./funded-max-pct.mjs";
 import {
   CODEX_BANK_PROBE_REMEDY,
   formatMeasured,
@@ -84,7 +83,7 @@ const LOCAL_LANES_PATH = join(SCRIPT_DIR, "lanes.local.json");
 // HIMMEL-1678: codex bank read comes from the probe's TTL'd cache (default
 // TTL 6h). See the header for why bank-status only ever READS this file.
 const CODEX_BANK_TTL_DEFAULT_SECONDS = 6 * 60 * 60;
-const MAX_PCT = parseFundedMaxPct(process.env.LANE_FUNDED_MAX_PCT);
+const MAX_PCT = resolveFundedMaxPct(process.env);
 const nowMs = Date.now();
 const env = process.env;
 const home = env.HOME ?? homedir();
