@@ -1859,7 +1859,11 @@ _bwimc_subst_paren_end() {
 # heredoc-BLANKED text, so `git commit -m "$(cat <<'EOF' … EOF)"` yields only
 # `cat <<'EOF'` plus blank lines: message text never becomes a phantom target.
 _bwimc_subst_split() {
-    local text="$1" i=0 len=${#1} c q e body sq se sa j end
+    # \001 is the stub marker, so a real one in the input would be counted as a
+    # stub and consume a body in the wrong clause; bash treats it as a plain
+    # word byte, so `_` keeps every word and path boundary intact.
+    local text="${1//$'\001'/_}" i=0 len c q e body sq se sa j end
+    len=${#text}
     _BWIMC_SKEL=""; _BWIMC_BODIES=()
     _bwimc_scan_init
     while [ "$i" -lt "$len" ]; do
