@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/ci/test-ci-nightly-only-os.sh -- regression suite for HIMMEL-3853:
-# Windows and macOS are verified by the NIGHTLY (`schedule`) only. ci.yml has no
+# Windows is verified by the NIGHTLY (`schedule`) only (macOS by its own cadence
+# workflow, macos-cadence.yml -- HIMMEL-3902). ci.yml has no
 # `force_all_os` dispatch input, so no manually dispatched run can occupy the
 # paid Windows/macOS runner slots (2026-09-29: per-PR dispatches held 14 of the
 # account's 20 concurrent job slots and queued ~287 jobs behind them).
@@ -97,7 +98,7 @@ check_matrix() {
   else bad "$job: schedule matrix is '$got' (expected $want_sched)"; fi
 }
 
-check_matrix shell-unit-shard "ubuntu-latest,windows-latest,macos-latest"
+check_matrix shell-unit-shard "ubuntu-latest,windows-latest"
 check_matrix bun-suites "ubuntu-latest,windows-latest"
 
 # 4. SUITE_TIER_MODE=all (the full corpus) only on the nightly.
@@ -111,8 +112,16 @@ esac
 # 5. The aggregator's nightly-only steps are keyed on schedule alone.
 agg="$(job_block shell-unit)"
 n_if="$(grep -c "github.event_name == 'schedule'" <<< "$agg")"
-if [ "$n_if" -ge 3 ]; then ok "shell-unit's macOS-health + issue steps are gated on schedule ($n_if if:s)"
-else bad "shell-unit has only $n_if schedule-gated steps (expected >= 3)"; fi
+if [ "$n_if" -ge 2 ]; then ok "shell-unit's extended-tier issue steps are gated on schedule ($n_if if:s)"
+else bad "shell-unit has only $n_if schedule-gated steps (expected >= 2)"; fi
+
+# 5b. HIMMEL-3902: macOS is not in ci.yml at all -- no matrix leg, no health
+# step -- it runs on macos-cadence.yml, so a macOS red can never redden `CI`.
+if grep -qi 'macos' <<< "$stripped"; then
+  bad "ci.yml still runs or reads a macOS job: $(grep -i -m1 'macos' <<< "$stripped")"
+else
+  ok "no macOS job or macOS health step remains in the executable part of ci.yml"
+fi
 
 # 6. Non-ubuntu legs stay non-gating (advisory until HIMMEL-3699 / HIMMEL-3719 land).
 for job in shell-unit-shard bun-suites; do
