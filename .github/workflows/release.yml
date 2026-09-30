@@ -61,7 +61,7 @@ jobs:
             # Previous tag = the next one down in version order (prereleases sort below
             # their release via versionsort.suffix). The checkout is shallow, so fetch tags.
             git fetch --tags --force --quiet origin
-            prev="$(git -c versionsort.suffix=- tag --list 'v*' --sort=-version:refname | awk -v t="$TAG" 'f{print;exit} $0==t{f=1}')"
+            prev="$(git -c versionsort.suffix=- tag --list 'v*' --sort=-version:refname | awk -v t="$TAG" 'f && !p{print;p=1} $0==t{f=1}')"
             if [ -n "$prev" ]; then
               gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes --notes-start-tag "$prev" "${flags[@]}"
             else
