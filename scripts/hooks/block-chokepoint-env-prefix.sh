@@ -788,6 +788,30 @@ deny() {  # deny <script-path> <var-name> -- both from OUR registry, never
     exit 2
 }
 
+deny_unresolvable() {  # deny_unresolvable <script-path> -- from OUR
+                       # registry, never raw command text (HIMMEL-1813).
+    local script="$1" msg reason
+    msg="block-chokepoint-env-prefix: refusing an env -S / --split-string invocation that mentions a sanctioned chokepoint.
+
+    ${script}
+
+    The split string cannot be fully resolved: it carries an escape, quote
+    or character (e.g. \\c, \\t, '#', '\${') whose effect on the resulting
+    argv this guard does not model, so it cannot prove no seam variable
+    reaches the chokepoint. himmel's rule: set env overrides in the
+    LAUNCHING shell, never per call. Run the chokepoint bare, or spell the
+    env -S string with plain words and \\_ separators only.
+
+    To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
+    shell that launched Claude Code (a per-call prefix does not reach a
+    hook process); restart without it to re-enable the guard."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: env -S string mentioning a sanctioned chokepoint cannot be fully resolved -- run the chokepoint bare"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+}
+
 CR=$'\r'
 NL=$'\n'
 
@@ -1046,10 +1070,69 @@ EOF
 # exact), and re-enter scan_segment AT THE ENV PHASE. Depth-capped like
 # scan_text: deeper reconstruction stays the documented determined-bypass
 # residual.
+#
+# split_unresolvable <split-string text> -- HIMMEL-1813: true when GNU env's
+# split-string grammar can produce an argv tokenize_seg does not model.
+# After seven rounds of spelling enumeration (r7 = "\c", ignore the rest)
+# the rule inverts: only an explicit resolvable set passes -- plain text,
+# quotes, and the escapes \_ \\ \" \' outside quotes, \\ \" inside double
+# quotes. Anything else is unresolvable: every other escape (\c, \t, ...),
+# any backslash inside single quotes, a trailing backslash, any '#'
+# (comment) and any '$' (${VAR} expansion).
+split_unresolvable() {
+    local s="$1" c i=0 n q=''
+    n=${#s}
+    case "$s" in *'#'*|*'$'*) return 0 ;; esac
+    while [ "$i" -lt "$n" ]; do
+        c=${s:i:1}
+        i=$((i + 1))
+        case "$q$c" in
+        "'\\") return 0 ;;
+        "''"|'""') q='' ;;
+        \'|\") q=$c ;;
+        "'"*|'"'[!\\]) : ;;
+        *\\)
+            [ "$i" -lt "$n" ] || return 0
+            c=${s:i:1}
+            i=$((i + 1))
+            if [ "$q" = '"' ]; then
+                case "$c" in \\|\") ;; *) return 0 ;; esac
+            else
+                case "$c" in _|\\|\"|\') ;; *) return 0 ;; esac
+            fi
+            ;;
+        esac
+    done
+    return 1
+}
+
+# split_mention <text> -- deny (deny_unresolvable) when <text>, with quote
+# and backslash characters removed, contains the basename of any registered
+# chokepoint path. Quote/backslash removal only ever JOINS characters, so a
+# name quoted or escaped apart still matches.
+split_mention() {
+    local t="$1" script_path vars_list base
+    t=${t//[\'\"\\]/}
+    while IFS=$'\t' read -r script_path vars_list; do
+        script_path=${script_path%"$CR"}
+        [ -n "$script_path" ] || continue
+        base=${script_path##*/}
+        [ -n "$base" ] || continue
+        case "$t" in *"$base"*) deny_unresolvable "$script_path" ;; esac
+    done <<<"$REG_LINES"
+    return 0
+}
+
 scan_split_argv() {
     local text="$1" inames="$2" depth="$3" appended="$4"
     local words='' seg_text=''
     [ "$depth" -le 5 ] || return 0
+    # HIMMEL-1813: a split string the simulation cannot fully model, when
+    # it or the appended words mention a registered chokepoint, is denied
+    # outright rather than simulated.
+    if split_unresolvable "$text"; then
+        split_mention "$text$NL$appended"
+    fi
     TOK_ENV_SPLIT=1
     words=$(tokenize_seg "$text")
     TOK_ENV_SPLIT=0

@@ -1080,6 +1080,63 @@ for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
         esac
     fi
 done
+# HIMMEL-1813: GNU env -S re-splits its operand with its own grammar (\c
+# ignores the rest, \t and friends, '#' comments, ${VAR} expansion), which
+# $flat's quote/backslash strip does not model - `merge-on-green.sh\c` reads
+# as `merge-on-green.shc` above and never hits. When an env-wrapped command
+# carries a -S/--split-string whose operand holds a backslash, '#' or '$'
+# AND whose operand or appended words (to the end of its segment) name a
+# guarded target, its argv cannot be resolved here: deny rather than
+# simulate. Only the operand's raw text is tested for those characters, so
+# an unrelated '$' elsewhere keeps its verdict.
+split_operand() { # split_operand <raw text starting at the operand> - print
+    # the operand's raw shell word: up to the first unquoted blank.
+    local s="$1" c i=0 n q=''
+    n=${#s}
+    while [ "$i" -lt "$n" ]; do
+        c=${s:i:1}
+        case "$q$c" in
+            "''"|'""') q='' ;;
+            \'|\") q=$c ;;
+            \\|\"\\) i=$((i + 1)) ;;
+            ' '|$'\t') break ;;
+        esac
+        i=$((i + 1))
+    done
+    printf '%s' "${s:0:i}"
+}
+split_unresolvable_mention() { # split_unresolvable_mention <raw command>
+    local seg sw sx uw rest op env_seen
+    while IFS= read -r seg; do
+        read -r -a sw <<<"$seg"
+        env_seen=0
+        for sx in "${sw[@]}"; do
+            uw=${sx//[\'\"]/}
+            if [ "$env_seen" -eq 0 ]; then
+                [ "${uw##*/}" = env ] && env_seen=1
+                continue
+            fi
+            case "$uw" in --s*) ;; --*) continue ;; -*S*) ;; *) continue ;; esac
+            rest="$sx${seg#*"$sx"}"
+            case "$uw" in
+                --s*=*) op=${rest#*=} ;;
+                --s*|-*S)
+                    op=${rest#"$sx"}
+                    op=${op#"${op%%[![:blank:]]*}"} ;;
+                *) op=${rest#*S} ;;
+            esac
+            op=$(split_operand "$op")
+            case "$op" in *\\*|*'#'*|*'$'*) ;; *) break ;; esac
+            names_target "${rest//[\'\"\\]/}" && return 0
+            break
+        done
+    done <<<"${1//[;&|]/$'\n'}"
+    return 1
+}
+if [ "$hit" -eq 0 ] && [ "$mentions" -eq 1 ] && [ "$wrapped" -eq 1 ] \
+    && split_unresolvable_mention "$cmd"; then
+    deny "an env -S / --split-string string naming a guarded target cannot be fully resolved (a backslash escape, '#' or '\$' - GNU env -S: \\c ignores the rest, '#' comments, \${VAR} expands), so which script runs is unprovable; run the target by its literal spelling with no env -S wrapper (HIMMEL-1813)."
+fi
 [ "$hit" -eq 1 ] || exit 0
 # ponytail: a glob through a directory symlink the text does not spell as
 # scripts/cr (`bash scripts/lnk/*`, lnk -> cr) is not a candidate - the same

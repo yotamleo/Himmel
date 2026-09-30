@@ -469,6 +469,47 @@ assert_deny  "env -S: leading # comment discards the string" "$(j "env -S '# ign
 assert_deny  "env -S: mid-string # comment discards the rest" "$(j "env -S '-u X # ignored' ${MOG_VAR}=x bash $MERGE_ON_GREEN")"
 assert_deny  "env -S: escaped \# stays literal before a later comment" "$(j "env -S '-u \\# # ignored' ${MOG_VAR}=x bash $MERGE_ON_GREEN")"
 
+# --- HIMMEL-1813: deny-on-unresolvable. Round 7 (GNU's \c "ignore the rest")
+# tripped the judgment pass's convergence tripwire, so the -S grammar is no
+# longer simulated spelling by spelling: a split string carrying anything
+# outside a small resolvable set (a backslash escape other than \_ \\ \" \'
+# unquoted or \\ \" double-quoted, any backslash in single quotes, a '#', a
+# '$') denies when the split string or its appended words MENTION a
+# registered chokepoint. Outside that intersection the guard stays
+# fail-open; the pinned ALLOWs below are resolvable and keep their verdict. ---
+assert_deny_unres() {  # assert_deny_unres <label> <json>
+    local label="$1"; shift
+    run "$@"
+    local decision
+    decision=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
+    CASES=$((CASES + 1))
+    if [ "$RC" = "2" ] && [ "$decision" = "deny" ] \
+       && printf '%s' "$ERR" | grep -q "cannot be fully resolved"; then
+        echo "PASS $label (denied as unresolvable)"
+    else
+        echo "FAIL $label -- expected rc=2 + permissionDecision=deny + unresolvable message, got rc=$RC decision='$decision'"
+        FAILED=$((FAILED + 1))
+    fi
+}
+assert_deny_unres "1813: \\c with trailing text"             "$(j "env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c ignored'")"
+assert_deny_unres "1813: \\c at end of string"               "$(j "env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'")"
+assert_deny_unres "1813: \\c, no seam var"                   "$(j "env -S 'bash $MERGE_ON_GREEN\\c'")"
+assert_deny_unres "1813: \\c, chokepoint in appended words"  "$(j "env -S '${MOG_VAR}=1 bash\\c' $MERGE_ON_GREEN")"
+assert_deny_unres "1813: \\c via clustered -vS"              "$(j "env -vS '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'")"
+assert_deny_unres "1813: \\c via --split-string="            "$(j "env --split-string='${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'")"
+assert_deny_unres "1813: \\c on the stop-worker chokepoint"  "$(j "env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'")"
+assert_deny_unres "1813: other escape (\\t)"                 "$(j "env -S 'bash $MERGE_ON_GREEN\\t'")"
+assert_deny_unres "1813: backslash inside single quotes"     "$(j "env -S \"bash '$MERGE_ON_GREEN\\\\c'\"")"
+assert_deny_unres "1813: \\_ inside double quotes"           "$(j "env -S '\"${MOG_VAR}=1\\_\" bash $MERGE_ON_GREEN'")"
+assert_deny_unres "1813: mid-word #"                         "$(j "env -S 'bash $MERGE_ON_GREEN#'")"
+assert_deny_unres "1813: \${VARNAME} expansion"              "$(j "env -S '\${HM_1813_X} bash $MERGE_ON_GREEN'")"
+assert_allow "1813: unresolvable -S not mentioning a chokepoint" "$(j "env -S '${MOG_VAR}=1 bash scripts/not-registered.sh\\c'")"
+assert_allow "1813: \\c outside env -S is shell text"        "$(j "printf '%s\\c' $MERGE_ON_GREEN")"
+assert_allow "1813: resolvable -S keeps the simulation verdict" "$(j "env -S 'bash\\_$MERGE_ON_GREEN'")"
+assert_allow "1813 pinned: bash -c 'str' <path> (path at \$0)" "$(j "${MOG_VAR}=1 bash -c 'echo hi' $MERGE_ON_GREEN")"
+assert_allow "1813 pinned: an UNREGISTERED variable"         "$(j "HM_1813_UNREGISTERED=1 bash $MERGE_ON_GREEN")"
+assert_allow "1813 pinned: a bare invocation"                "$(j "bash $MERGE_ON_GREEN")"
+
 # --- HIMMEL-1803 round 6: ZERO-LENGTH WORDS keep their argv slot. The
 # invariant the whole r1-r6 family violated piecemeal: the scan is a
 # positional simulation of the argv each interpreter really receives, so

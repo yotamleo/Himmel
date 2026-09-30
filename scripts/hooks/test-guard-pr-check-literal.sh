@@ -460,6 +460,36 @@ run "mention (not run) of the edited file -> no-op" 0 \
     "$(payload "git diff -- scripts/handover/merge-on-green.sh" "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/handover/merge-on-green.sh
 
+# ---- HIMMEL-1813: deny-on-unresolvable for an env -S mention ---------------
+# On a clean tree. $flat drops every backslash, so GNU env -S's \c ("ignore
+# the rest") hid the target from the text scan (merge-on-green.shc). An env
+# -S command that mentions a target and carries a backslash, '#' or '$' is
+# not resolvable by its text, and denies; outside that intersection nothing
+# changes.
+for v in \
+    "env -S 'ARMAUTOMERGE=1 bash scripts/handover/merge-on-green.sh\\c ignored'" \
+    "env -S 'ARMAUTOMERGE=1 bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -vS 'bash scripts/handover/merge-on-green.sh\\c'" \
+    "env --split-string='bash scripts/handover/merge-on-green.sh\\c'" \
+    "env -S 'bash scripts/handover/merge-on-green.sh\\t'" \
+    "env -S 'bash scripts/handover/merge-on-green.sh#'" \
+    "env -S 'bash scripts/cr/clear-cr-marker.sh\\c'" \
+    "env -S 'bash scripts/handover/console-kit/go.sh\\c'"; do
+    run "1813: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+    need_in_err "1813: [$v] deny names the unresolvable split string" "cannot be fully resolved"
+done
+run "1813: unresolvable env -S with no target mention -> no-op" 0 \
+    "$(payload "env -S 'bash scripts/other/x.sh\\c'" "$WT")" "$HR"
+run "1813: \\c in a non-env mention of the target -> no-op" 0 \
+    "$(payload "printf '%s\\c' scripts/handover/merge-on-green.sh" "$WT")" "$HR"
+run "1813: env grep of a pr-check pattern with a backslash (no -S) -> no-op" 0 \
+    "$(payload "env LC_ALL=C grep -n 'pr-check\\|x' docs/a.md" "$WT")" "$HR"
+# Control (console ruling): a '$' outside the -S operand keeps the verdict it
+# had before 1813 - the older unresolvable-token deny, not the 1813 reason.
+run "1813: a '\$' outside the -S operand keeps its pre-1813 verdict" 2 \
+    "$(payload "env -S 'grep -n x' scripts/handover/merge-on-green.sh --label=a\$b" "$WT")" "$HR"
+need_in_err "1813: that deny is the pre-existing token reason" "'a\$b' does not resolve to this root's"
+
 # ---- HIMMEL-3433 (d): an interpreter or find -exec word ANYWHERE runs ---------
 # On a clean tree, so each deny comes from the shape, not from an edit.
 run "2>&1 before the literal, clean root -> deny" 2 \
