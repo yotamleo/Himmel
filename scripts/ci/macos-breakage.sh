@@ -53,6 +53,7 @@ cmd_diff() {
 cmd_record() {
   local run_id="" head_sha="" run_at="" shards_result="" failed_dir="" out="" prev_file="" expected=0
   while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || die "$1 needs a value"
     case "$1" in
       --shards-expected) expected="${2:-0}"; shift 2 ;;
       --run-id) run_id="${2:-}"; shift 2 ;;
@@ -123,6 +124,7 @@ list_run_ids() {
 cmd_prev_record() {
   local repo="" run_id="" dest=""
   while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || die "$1 needs a value"
     case "$1" in
       --repo) repo="${2:-}"; shift 2 ;;
       --run-id) run_id="${2:-}"; shift 2 ;;
@@ -136,7 +138,8 @@ cmd_prev_record() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/macos-breakage.XXXXXX")" || die "mktemp failed"
   ids="$(list_run_ids "$repo" 30)" || { rm -rf "$tmp"; die "prev-record: gh run list failed"; }
   for id in $ids; do
-    [ "$id" = "$run_id" ] && continue
+    # only runs before this one: a rerun of an older run must not pick a newer predecessor
+    [ "$id" -ge "$run_id" ] && continue
     if fetch_record "$repo" "$id" "$tmp/$id"; then
       cp "$tmp/$id/record.json" "$dest"
       rm -rf "$tmp"
@@ -150,6 +153,7 @@ cmd_prev_record() {
 cmd_report() {
   local repo="" limit=12
   while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || die "$1 needs a value"
     case "$1" in
       --repo) repo="${2:-}"; shift 2 ;;
       --limit) limit="${2:-}"; shift 2 ;;

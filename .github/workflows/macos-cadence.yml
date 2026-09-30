@@ -57,15 +57,16 @@ jobs:
         run: python -m pip install --disable-pip-version-check pre-commit
       # SUITE_TIER_MODE=all: the whole corpus, extended tier included -- the
       # coverage the nightly's macOS legs had.
-      - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8 .
+      - id: tests
+        run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8 .
         env:
           FAIL_LOG_DIR: failed-suite-logs
           SUITE_TIER_MODE: all
-      # Always, even when the run step above went red: this is the per-shard
-      # input to the breakage metric. Its absence (a shard that died before
-      # here) is itself visible to `summary` as a missing report.
+      # Even when the run step above went red: this is the per-shard input to
+      # the breakage metric. Skipped when setup died before the tests ran, so
+      # `summary` sees a missing report (infra_suspect), not an empty one.
       - name: List failed suites (breakage metric input)
-        if: always()
+        if: always() && steps.tests.outcome != 'skipped'
         run: |
           mkdir -p macos-failed
           bash scripts/ci/macos-breakage.sh suites-from-logs failed-suite-logs > macos-failed/failed.txt
@@ -109,10 +110,15 @@ jobs:
           mkdir -p failed-artifacts
           gh run download "$RUN_ID" -R "$REPO" -p 'macos-failed-suites-*' -D failed-artifacts || echo "no failed-suite artifacts on this run"
           prev=""
-          if bash scripts/ci/macos-breakage.sh prev-record --repo "$REPO" --run-id "$RUN_ID" --dest prev-record.json; then
+          rc=0
+          bash scripts/ci/macos-breakage.sh prev-record --repo "$REPO" --run-id "$RUN_ID" --dest prev-record.json || rc=$?
+          if [ "$rc" = 0 ]; then
             prev="--prev-file prev-record.json"
-          else
+          elif [ "$rc" = 1 ]; then
             echo "no earlier recorded cadence run: this run is the baseline"
+          else
+            echo "previous-record lookup failed (rc=$rc): not treating this run as a baseline" >&2
+            exit "$rc"
           fi
           # $prev is intentionally unquoted: it is empty or two words.
           # shellcheck disable=SC2086

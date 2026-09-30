@@ -132,6 +132,10 @@ if grep -Eq '2026-W40[[:space:]]+runs=2[[:space:]]+new_breakages=1' <<< "$rep" \
   ok "report totals runs and new breakages per ISO week"
 else bad "report week totals wrong: $rep"; fi
 
+# option without a value must fail fast, not spin (shift 2 fails on 1 arg).
+if timeout 10 bash "$SCRIPT" record --run-id >/dev/null 2>&1; then bad "record with a value-less option succeeded"
+else rc=$?; if [ "$rc" = 2 ]; then ok "a value-less option is refused (rc 2), no infinite loop"; else bad "value-less option rc=$rc (124 = hung)"; fi; fi
+
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed" >&2
 exit 1
