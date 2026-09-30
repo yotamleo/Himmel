@@ -116,9 +116,7 @@ acct=$( { grep '^suite ' "$selection" | sed 's/^suite /sel /'
     if (mode != "impacted") {
       for (i = 1; i <= ndisc; i++)
         if (!(dorder[i] in runs)) printf "FAIL: %s never ran on any shard, though discovery lists it to run here\n", dorder[i]
-      exit
-    }
-    for (i = 1; i <= nsel; i++) {
+    } else for (i = 1; i <= nsel; i++) {
       p = order[i]
       if (p in runs) continue
       if (p in drun)                       printf "FAIL: selected %s never ran on any shard, though discovery lists it to run here\n", p
@@ -128,7 +126,17 @@ acct=$( { grep '^suite ' "$selection" | sed 's/^suite /sel /'
       else if (p in skipped)               printf "FAIL: selected %s was skipped by a shard, but discovery does not list it\n", p
       else                                 printf "FAIL: selected %s never ran on any shard\n", p
     }
+    print "ACCOUNTED"
   }')
+acct_rc=$?
+# Fail closed: a crashed or truncated accounting pass (non-zero rc, or no
+# closing sentinel line) must never read as OK.
+if [ "$acct_rc" -ne 0 ] || [ "$(tail -n 1 <<< "$acct")" != ACCOUNTED ]; then
+  echo "FAIL: suite accounting failed (rc $acct_rc) — coverage was not checked"
+  echo "shard-manifest-verify: REFUSED — the shards did not run the selection ($mode mode)"
+  exit 1
+fi
+acct=$(grep -v '^ACCOUNTED$' <<< "$acct")
 [ -z "$acct" ] || printf '%s\n' "$acct"
 grep -q '^FAIL' <<< "$acct" && bad=1
 

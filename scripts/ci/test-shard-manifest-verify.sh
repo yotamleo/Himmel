@@ -27,6 +27,7 @@
 #   MV19  impacted: a shard `skip`s a selected suite listed RUN -> rc 1
 #   MV20  full: a suite listed RUN that no shard ran            -> rc 1
 #   MV21  impacted: a shard `skip`s a selected suite not listed -> rc 1
+#   MV22  the accounting awk fails                              -> rc 1
 #
 # Platform guard: bash-only, no .ps1 twin; the aggregator runs on Linux.
 #
@@ -237,5 +238,18 @@ d=$(case_dir mv21); header impacted scripts/test-a.sh scripts/test-b.sh > "$d/se
 disc "$d" RUN scripts/test-a.sh
 manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh' 'skip scripts/test-b.sh'
 expect "MV21: a selected suite skipped by a shard but absent from the list is refused" 1 "$d" 1 'scripts/test-b\.sh.*skipped.*discovery does not'
+
+# --- MV22 --------------------------------------------------------------------
+# A crashed accounting pass must not read as OK: an awk that exits non-zero
+# with no output fails the verify closed.
+d=$(case_dir mv22); header impacted scripts/test-a.sh > "$d/sel.txt"
+disc "$d" RUN scripts/test-a.sh
+manifest "$d" 1 1 "$d/sel.txt" 'ran 0 scripts/test-a.sh'
+mkdir -p "$d/stub"
+printf '#!/bin/sh\nexit 2\n' > "$d/stub/awk"; chmod +x "$d/stub/awk"
+out=$(PATH="$d/stub:$PATH" bash "$VERIFY" --dir "$d/m" --shards 1 --selection "$d/sel.txt" --discovered "$d/disc.txt" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" -E 'accounting.*failed'; then
+  pass "MV22: a failing accounting pass is refused (rc $rc)"
+else fail "MV22: want rc 1 matching /accounting.*failed/, got rc $rc: $out"; fi
 
 rst_tally
