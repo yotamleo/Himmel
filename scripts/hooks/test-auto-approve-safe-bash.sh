@@ -1425,7 +1425,10 @@ tree -ao out
 base64 -io out
 git log ""*
 git log "-"*
-gh pr view 1 ""*'
+gh pr view 1 ""*
+git log --grep -- *
+git grep -e -- *
+gh pr view 1 -- *'
 while IFS= read -r CL_CMD; do
     assert "cluster/abbrev/quoted flag or leading glob never ALLOW: $CL_CMD" PASS "$(decide "$(j_bash "$CL_CMD")")"
 done <<EOF
@@ -1443,19 +1446,20 @@ git push --force-with-lease \-f origin feat/x
 git push --force-with-lease origin "main"
 git push --force-with-lease origin '"'"'HEAD:main'"'"'
 git push --force-with-lease origin *
-git push --force-with-lease origin ""*'
+git push --force-with-lease origin ""*
+git push --force-with-lease origin -- *'
 while IFS= read -r CL_CMD; do
     assert "lease push cluster/abbrev/quoted force, quoted main or glob never ALLOW: $CL_CMD" PASS "$(decide_in "$FWL_REPO" "$(j_bash "$CL_CMD")")"
 done <<EOF
 $CL_FWL_ROWS
 EOF
 # Controls: plain reads, a real option that merely prefixes a denied one, a
-# pathspec glob after `--`, and the literal lease push still ALLOW.
+# non-leading pathspec glob, and the literal lease push still ALLOW.
 assert "git log -5 still ALLOW"            ALLOW "$(decide "$(j_bash 'git log -5')")"
 assert "git status still ALLOW"            ALLOW "$(decide "$(j_bash 'git status')")"
 assert "gh pr view 1 still ALLOW"          ALLOW "$(decide "$(j_bash 'gh pr view 1')")"
 assert "git diff --text still ALLOW"       ALLOW "$(decide "$(j_bash 'git diff --text HEAD')")"
-assert "git diff -- glob still ALLOW"      ALLOW "$(decide "$(j_bash 'git diff -- *.sh')")"
+assert "git diff -- dir glob still ALLOW"  ALLOW "$(decide "$(j_bash 'git diff -- scripts/*.sh')")"
 assert "git log quoted grep still ALLOW"   ALLOW "$(decide "$(j_bash 'git log --grep="a b" -3')")"
 assert "gh pr checks --watch still ALLOW"  ALLOW "$(decide "$(j_bash 'gh pr checks 1 --watch')")"
 assert "xxd -ps still ALLOW"               ALLOW "$(decide "$(j_bash 'xxd -ps in')")"

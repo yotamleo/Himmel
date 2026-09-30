@@ -121,20 +121,18 @@ is_safe_bin() {
 # with the raw words) so flag checks see the argv text, not a quoted or escaped
 # spelling (`"--output=x"`, `\-f`). Fails — the caller falls through — when a
 # word cannot be cooked (an unquoted `$VAR`, a brace span), or when a word
-# before a `--` terminator starts with an unquoted glob character, which can
-# expand into a `-`-leading file name that reads as a flag.
+# starts with an unquoted glob character, which can expand into a `-`-leading
+# file name that reads as a flag. A `--` does not exempt later words: it may
+# be an option's argument (`--grep --`), not the terminator.
 cook_argv_words() {
-    local w dd=0
+    local w
     CW=()
     for w in "$@"; do
         shell_word_value "$w" || return 1
-        if [ "$dd" -eq 0 ]; then
-            case "$w" in '*'*|'?'*|'['*) return 1 ;; esac
-            # A glob behind quoted text (`""*`, `"-"*`) expands the same way.
-            if [ "$SW_HAS_UNQUOTED_GLOB" = 1 ]; then
-                case "$SW_VALUE" in '-'*|'*'*|'?'*|'['*) return 1 ;; esac
-            fi
-            [ "$w" = "--" ] && dd=1
+        case "$w" in '*'*|'?'*|'['*) return 1 ;; esac
+        # A glob behind quoted text (`""*`, `"-"*`) expands the same way.
+        if [ "$SW_HAS_UNQUOTED_GLOB" = 1 ]; then
+            case "$SW_VALUE" in '-'*|'*'*|'?'*|'['*) return 1 ;; esac
         fi
         CW+=("$SW_VALUE")
     done
