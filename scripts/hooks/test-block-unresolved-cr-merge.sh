@@ -211,12 +211,16 @@ GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t lookup-fail-merge-help-passthrough 0 Ba
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-pipe-h-still-gated 2 Bash "gh pr merge 42 --squash | sort -h"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-bg-h-still-gated 2 Bash "gh pr merge 42 --squash & ls -h"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-redirect-help-still-gated 2 Bash "gh pr merge 42 > --help"
-GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-pipe-passthrough 0 Bash "gh pr merge --help | cat"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-with-pipe-refused 2 Bash "gh pr merge --help | cat"
 # A help-flagged merge is a passthrough only when it is the ONLY merge: a real
 # one later in the same command must still be gated.
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-piped-into-real-merge-gated 2 Bash "gh pr merge --help | gh pr merge 42 --squash"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-real-merge-gated 2 Bash "gh pr merge --help; gh pr merge 42 --squash"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-selectorless-merge-gated 2 Bash "gh pr merge --help; gh pr merge; true"
+# Shell-equivalent spellings a literal count cannot see (a backslash inside a word).
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-escaped-merge-gated 2 Bash "gh pr merge --help; gh pr mer\\\\ge 42 --squash"
+# A help-flagged merge on its own stays ungated, with or without other flags.
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-alone-passthrough 0 Bash "gh pr merge 42 --help"
 # ...including an INDENTED merge on a later line (\n is the JSON escape).
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-indented-merge-gated 2 Bash "gh pr merge --help\n  gh pr merge 42 --squash"
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is

@@ -107,7 +107,7 @@ set -f
 # shellcheck disable=SC2086
 set -- $merge_segment
 set +f
-seen_merge=0; help_seen=0
+seen_merge=0; help_seen=0; NL=$'\n'
 while [ "$#" -gt 0 ]; do
     if [ "$seen_merge" = "0" ]; then
         [ "$1" = "merge" ] && seen_merge=1
@@ -147,19 +147,19 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-# `gh pr merge --help` merges nothing (HIMMEL-3915) - but only when it is the
-# ONLY merge in the command: `gh pr merge --help | gh pr merge 42` (or `; …`)
-# still runs a real one this segment walk never inspected, so it stays gated.
+# `gh pr merge --help` merges nothing (HIMMEL-3915) - but only when the command
+# is NOTHING ELSE. Any shell delimiter (; & | < > newline, backtick, $( ) means
+# another command may follow that this segment walk never inspected, and
+# counting literal `gh pr merge` occurrences misses shell-equivalent spellings
+# (`gh pr mer\ge`, `gh pr merge;`, an indented later line): three review rounds
+# each found a new one. So it is a structural rule, not a count: help alone is
+# ungated, help alongside anything is refused.
 if [ "$help_seen" = "1" ]; then
-    # Unanchored and with no word-boundary tail on purpose: an over-count only
-    # refuses, while the command-position anchor would miss an indented merge
-    # on a later line and the tail would miss `gh pr merge;`.
-    merge_count=$(printf '%s' "$cmd_stripped" | grep -oE 'gh[[:space:]]+pr[[:space:]]+merge' | wc -l)
-    [ "$merge_count" -le 1 ] && exit 0
-    # Which PR the OTHER merge targets is not something this walk resolved, so
-    # gating the cwd branch would be checking the wrong PR: refuse and ask for
-    # the commands to be run separately.
-    echo "block-unresolved-cr-merge: a help-flagged 'gh pr merge' shares this command with another merge; run them as separate commands so each merge is gated on its own PR." >&2
+    case "$cmd_stripped" in
+        *[\;\&\|\<\>\`]*|*'$('*|*"$NL"*) ;;
+        *) exit 0 ;;
+    esac
+    echo "block-unresolved-cr-merge: 'gh pr merge --help' shares this command with other shell commands; run it on its own so a real merge cannot ride along ungated." >&2
     exit 2
 fi
 

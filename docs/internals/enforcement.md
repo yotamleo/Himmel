@@ -2580,8 +2580,10 @@ CR/CI gates' own API reads, and also a gate library that fails to load
 argument: the flag walk stops at the first `|`, `&`, `>` or `<`, so a merge
 followed by a piped `sort -h`, a backgrounded `ls -h`, or a redirect to a file
 named `--help` is still gated, and a help-flagged merge is a passthrough only
-when it is the sole merge in the command (a real one piped or chained after it
-is refused, to be run as separate commands).
+when the command is nothing else: any shell delimiter (`; & | < >`, newline,
+backtick, `$(`) alongside it is refused, so a real merge cannot ride along,
+however it is spelled (counting merges was tried and found bypassable three
+times).
 Known remaining gaps: a merge with no selector AND no cwd branch still exits 0
 (nothing to resolve); the residuals filed as HIMMEL-3918 (cd-then-merge cwd
 mismatch, an env/`command` prefix escaping the command regex, the unbounded gate
