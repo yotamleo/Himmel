@@ -99,9 +99,11 @@ def held_docs():
 def leg_marker(path):
     """(marker, pr) from a leg doc's Results bullets: leg-tail-status.sh's rule, and the newest PR a marker bullet names."""
     try:
-        bl = [l.rstrip('\n') for l in open(path, encoding='utf-8', errors='replace') if l.startswith('- ')]
+        ls = [l.rstrip('\n') for l in open(path, encoding='utf-8', errors='replace')]
     except OSError:
         return None, None
+    rs = [i for i, l in enumerate(ls) if l.startswith('## Results')]
+    bl = [l for l in ls[rs[-1] + 1 if rs else 0:] if l.startswith('- ')]
     pr = None
     for l in bl:
         if not MARK_RE.match(l):
@@ -714,7 +716,7 @@ function model(D){
  function drill(kind,scope,rem){
   var a=scope.v!=null?inV(scope.v,rem):scope.t!=null?inT(scope.t,rem):inTrain(rem);
   var f={all:function(){return true},done:function(p){return p[2]==2},left:function(p){return p[2]!=2},
-   live:function(p){return !!leg(p)},prog:function(p){return p[2]==1},todo:function(p){return p[2]==0}}[kind];
+   live:function(p){return !!leg(p)},prog:function(p){return p[2]==1&&!leg(p)},todo:function(p){return p[2]==0}}[kind];
   return order(a.filter(f))}
  function current(rem){for(var i=0;i<V.length;i++)if(train(i)&&inV(i).some(function(p){return p[2]!=2}))return i;return null}
  return {KIND:KIND,READY:READY,train:train,inV:inV,inT:inT,inTrain:inTrain,leg:leg,tally:tally,load:load,summary:summary,

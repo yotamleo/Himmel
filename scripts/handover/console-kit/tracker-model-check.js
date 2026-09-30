@@ -36,6 +36,7 @@ eq('the version tally counts done, in progress, to do and live legs (HIMMEL-3990
 eq('done % drills to the done tickets (HIMMEL-3990)', nums(M.drill('done', { v: 0 })), [10]);
 eq('what is left drills to open tickets, live leg first (HIMMEL-3990)', nums(M.drill('left', { v: 0 })), [11, 12, 13]);
 eq('the legs figure drills to the tickets a leg is on (HIMMEL-3990)', nums(M.drill('live', { v: 0 })), [11]);
+eq('the started-no-leg figure drills to started tickets without a leg (HIMMEL-3990)', nums(M.drill('prog', { v: 0 })), []);
 eq('a done ticket shows no leg even if its doc lingers (HIMMEL-3990)', M.leg(P[0]), null);
 eq('a theme drills across the train only (HIMMEL-3990)', nums(M.drill('all', { t: 0 })), [11, 14, 10]);
 eq('the train figure spans every v1.0.x version (HIMMEL-3990)', M.tally(M.inTrain()).n, 5);
