@@ -106,14 +106,16 @@ done
 case "$cmd" in
     *\$*|*\`*) printf '%s' "$cmd_norm" | grep -E "$gh_re" >/dev/null && fires=1 ;;
 esac
-# The mirror case: a computed program word (`$'\x67\x68' pr merge`, `${G} pr
-# merge`) next to a literal merge word fires too. Program word = first word of a
-# segment after leading VAR=val assignments.
+# The mirror case: with a merge word present, every segment's program word must
+# be plain (`^[A-Za-z0-9_./+-]+$`); anything else (`$'\x67\x68' pr merge`,
+# `${G} pr merge`, `g[h]`) fires. Program word = first word of a segment after
+# leading VAR=val assignments. An allowlist, so no spelling needs listing.
 if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -qE '(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)'; then
     # shellcheck disable=SC2020 # five separators each map to a newline, by design
     printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' \
         | sed -E -e 's/^[[:space:]]+//' -e ':a' -e 's/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//' -e 'ta' \
-        | grep -qE "^[^[:space:]]*[\$\`\\\\'\"*?]|^[^[:space:]]+\\[" && fires=1
+        | sed -E -e '/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*$/d' -e 's/[[:space:]].*$//' \
+        | grep -v '^$' | grep -qvE '^[A-Za-z0-9_./+-]+$' && fires=1
 fi
 # ponytail: both the program word AND the verb shell-computed (or `bash -c` fed
 # from a variable holding both) stay undetectable by text, structural backstop

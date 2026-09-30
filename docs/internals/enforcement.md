@@ -2619,10 +2619,10 @@ merged with no gate. It now fires on a `gh` word (start of text, after a space,
 normalized copy, which now also drops `{` `}` and backticks; a second copy with
 `${..}` / `$(..)` removed catches `m${X}erge`; a `gh` word plus any `$` or
 backtick fires too (expansion can build letters, `$'m\x65rge'`, `m${X:-er}ge`);
-and the mirror case, a computed program word (first word of a segment after
-`VAR=val` assignments containing `$` backtick `\` a quote or a glob char `*` `?`
-`[`) plus a merge word fires (`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`,
-`/usr/bin/g[h] pr merge`). Once fired, the raw-char allowlist
+and the mirror case, with a merge word present every segment's program word
+(first word after `VAR=val` assignments) must match `^[A-Za-z0-9_./+-]+$`, else
+it fires (`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`, `/usr/bin/g[h] pr
+merge`): an allowlist, so no expansion, quote or glob spelling needs listing. Once fired, the raw-char allowlist
 above refuses every expansion spelling, and the command must parse as exactly
 `gh [-R v | --repo v | --repo=v]* pr [same]* merge <closed tokens>`; `gh api
 .../pulls/N/merge` (and `mergePullRequest` GraphQL), `gh alias set|import` naming a
