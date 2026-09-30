@@ -296,6 +296,8 @@ for _row in "redir-fd-dup|gh pr merge 2>&1 42 $PIN" \
             "grouped-flags-cross-repo|gh pr merge -dt 5 -sR o/other -sb --match-head-commit=aaa5 8" \
             "grouped-flags-two-positional|gh pr merge -sb 5 8 --match-head-commit aaa5" \
             "attached-repo-flag|gh pr merge 42 -Ro/r $PIN" \
+            "auto-flag-denies|gh pr merge 42 --auto --squash $PIN" \
+            "admin-flag-denies|gh pr merge 42 --squash --admin $PIN" \
             "body-flag-denies|gh pr merge 42 -b x $PIN" \
             "subject-flag-denies|gh pr merge 42 --subject x $PIN" \
             "unknown-flag-denies|gh pr merge 42 --frobnicate $PIN" \
@@ -316,9 +318,8 @@ done
 # Allow rows: the canonical bare merge, the quoted-text look-alikes, non-merges, and
 # merge-on-green (its own gh subprocess never appears in the command text).
 GH_STUB_MODE=clean t plain-merge-allows 0 Bash "gh pr merge 42 --squash $PIN"
-GH_STUB_MODE=clean t plain-merge-admin-allows 0 Bash "gh pr merge 42 --squash --admin $PIN"
 GH_STUB_MODE=clean t plain-merge-delete-branch-allows 0 Bash "gh pr merge 42 --squash --delete-branch $PIN"
-GH_STUB_MODE=clean t plain-merge-auto-allows 0 Bash "gh pr merge 42 --auto --squash $PIN"
+GH_STUB_MODE=clean t plain-merge-disable-auto-allows 0 Bash "gh pr merge 42 --disable-auto $PIN"
 GH_STUB_MODE=clean t plain-merge-repo-allows 0 Bash "gh pr merge 42 -R o/r --squash $PIN"
 GH_STUB_MODE=clean t plain-merge-40hex-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 grep -q "^pr view 42 " "$TMP/calls-plain-merge-allows.log" || { echo "FAIL plain-merge-allows did not look up selector 42"; fail=$((fail+1)); }

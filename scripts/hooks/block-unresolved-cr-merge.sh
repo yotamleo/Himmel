@@ -120,8 +120,8 @@ while [ "$#" -gt 0 ]; do
         # Closed token set (judge r3): the hook and gh must read the SAME words,
         # and gh's pflag groups short flags (`-dt 5` = `-d -t 5`) and lets a
         # value flag swallow the next word, so anything outside this set denies.
-        -s|--squash|-m|--merge|-r|--rebase|-d|--delete-branch|--auto|--admin|--disable-auto) ;;
-        -*) _deny "gh pr merge accepts only -s -m -r -d --squash --merge --rebase --delete-branch --auto --admin --disable-auto, -R/--repo <v> and --match-head-commit <v>; got '$1' (grouped or attached flags, -b/-t/-F/-A and unknown flags are refused): gh pr merge must be a single plain command — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh for a custom subject/body. (For help run: gh help pr merge)" ;;
+        -s|--squash|-m|--merge|-r|--rebase|-d|--delete-branch|--disable-auto) ;;
+        -*) _deny "gh pr merge accepts only -s -m -r -d --squash --merge --rebase --delete-branch --disable-auto, -R/--repo <v> and --match-head-commit <v>; got '$1' (grouped or attached flags, -b/-t/-F/-A and unknown flags are refused): gh pr merge must be a single plain command — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh for a custom subject/body. (For help run: gh help pr merge)" ;;
         *)
             if [ -n "$sel" ]; then
                 _deny "gh pr merge takes at most one selector; got a second positional '$1': gh pr merge must be a single plain command — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"

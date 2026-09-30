@@ -2624,8 +2624,8 @@ merge` detector runs on a normalized copy (backslash-newline pairs removed, then
 every backslash, then every `'` `"` and `$`, newlines to spaces), so
 `gh pr mer\<newline>ge`, `m""erge`, `"merge"` and `$'merge'` are seen (word forms
 that need a real expansion, `${X:-merge}` and `{merge,}`, are HIMMEL-3929), and only a hit on that copy triggers the allowlist. Every word after `merge` must then be in a closed
-set (`-s -m -r -d --squash --merge --rebase --delete-branch --auto --admin
---disable-auto`, `-R`/`--repo <v>`, `--match-head-commit <v>`, at most one
+set (`-s -m -r -d --squash --merge --rebase --delete-branch
+--disable-auto`; `--auto` (the pin binds at enable time, a later push changes the head) and `--admin` (merges past required checks) deny, `-R`/`--repo <v>`, `--match-head-commit <v>`, at most one
 selector); grouped short flags (`-dt`), attached `-Rrepo`, `-b/-t/-F/-A`, unknown
 flags and a second positional deny, because gh's pflag reads those differently
 from the hook (`-dt 5` is `-d -t 5`). A custom subject/body
