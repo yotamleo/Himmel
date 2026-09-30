@@ -206,12 +206,12 @@ test('HIMMEL-1448 (d): an unmarked lane outside the scope is unaffected', () => 
   ]);
   assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['unmarked', 'explicit-false']);
 });
-test('HIMMEL-1448: a malformed marker fails CLOSED; Claude tiers are never constrained', () => {
+test('HIMMEL-1448: a malformed marker fails CLOSED; unmarked Claude tiers are never constrained', () => {
   const registry = noneInstall([
     { id: 'str', class: 'impl', profileManaged: 'false', probe: { kind: 'always' } },
     { id: 'num', class: 'impl', profileManaged: 0, probe: { kind: 'always' } },
     { id: 'nul', class: 'impl', profileManaged: null, probe: { kind: 'always' } },
-    { id: 'tier', class: 'claude-tier', profileManaged: true, probe: { kind: 'always' } },
+    { id: 'tier', class: 'claude-tier', probe: { kind: 'always' } },
   ]);
   assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), ['tier']);
 });
@@ -229,6 +229,33 @@ test('HIMMEL-1448: a lanes.local.json patch cannot clear the registry profileMan
   const merged = mergeLocalOverlay(base, { lanes: [{ id: 'codex-exec', profileManaged: false }] });
   assert.equal(merged.lanes[0].profileManaged, true);
   assert.deepEqual(resolveLanes(merged, ctx()).map((l) => l.id), []);
+});
+// HIMMEL-3927: the claude-tier exemption must not run before the marker check.
+// A local patch may set `class` (only `profileManaged` is stripped), so a marked
+// lane patched to claude-tier would otherwise escape the allowlist.
+const markedRegistryLane = () => {
+  const { V1_LANES } = createRequire(import.meta.url)('../../himmelctl/lib/adopter-profile.js');
+  return REG.lanes.find((l) => l.id === V1_LANES[0].registryId);
+};
+test('HIMMEL-3927: a local class patch to claude-tier cannot free a registry profileManaged lane', () => {
+  const marked = markedRegistryLane();
+  assert.equal(marked.profileManaged, true);
+  const base = { profileAllowlist: [], profileAllowlistScope: [marked.id], lanes: [{ ...marked, probe: { kind: 'always' } }] };
+  const merged = mergeLocalOverlay(base, { lanes: [{ id: marked.id, class: 'claude-tier' }] });
+  assert.equal(merged.lanes[0].class, 'claude-tier');
+  assert.deepEqual(resolveLanes(merged, ctx()).map((l) => l.id), []);
+  assert.deepEqual(suppressedIds(merged), [marked.id]);
+});
+test('HIMMEL-3927: an unmarked lane patched to claude-tier keeps today\'s exemption', () => {
+  const base = noneInstall([{ id: 'unmarked', class: 'impl', probe: { kind: 'always' } }]);
+  const merged = mergeLocalOverlay(base, { lanes: [{ id: 'unmarked', class: 'claude-tier' }] });
+  assert.deepEqual(resolveLanes(merged, ctx()).map((l) => l.id), ['unmarked']);
+});
+test('HIMMEL-3927: genuine registry claude-tier lanes stay exempt', () => {
+  const tiers = REG.lanes.filter((l) => l.class === 'claude-tier');
+  assert.ok(tiers.length > 0);
+  const registry = noneInstall(tiers.map((l) => ({ ...l, probe: { kind: 'always' } })));
+  assert.deepEqual(resolveLanes(registry, ctx()).map((l) => l.id), tiers.map((l) => l.id));
 });
 test('HIMMEL-1448: force-on of a managed lane outside the persisted scope still extends the allowlist', () => {
   const local = { lanes: [], profileAllowlist: [], profileAllowlistScope: ['codex-exec'] };
