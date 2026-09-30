@@ -2579,7 +2579,9 @@ CR/CI gates' own API reads, and also a gate library that fails to load
 `--help`/`-h` is not a merge and is never gated, but only as the merge's own
 argument: the flag walk stops at the first `|`, `&`, `>` or `<`, so a merge
 followed by a piped `sort -h`, a backgrounded `ls -h`, or a redirect to a file
-named `--help` is still gated.
+named `--help` is still gated, and a help-flagged merge is a passthrough only
+when it is the sole merge in the command (a real one piped or chained after it
+is gated on the cwd branch).
 Known remaining gaps: a merge with no selector AND no cwd branch still exits 0
 (nothing to resolve); the residuals filed as HIMMEL-3918 (cd-then-merge cwd
 mismatch, an env/`command` prefix escaping the command regex, the unbounded gate

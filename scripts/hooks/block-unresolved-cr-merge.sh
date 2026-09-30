@@ -107,7 +107,7 @@ set -f
 # shellcheck disable=SC2086
 set -- $merge_segment
 set +f
-seen_merge=0
+seen_merge=0; help_seen=0
 while [ "$#" -gt 0 ]; do
     if [ "$seen_merge" = "0" ]; then
         [ "$1" = "merge" ] && seen_merge=1
@@ -136,7 +136,7 @@ while [ "$#" -gt 0 ]; do
         # re-anchor still backstops flags this list misses).
         -b|--body|-F|--body-file|-t|--subject|-A|--author-email)
             if [ "$#" -ge 2 ]; then shift; fi ;;
-        --help|-h) exit 0 ;;   # `gh pr merge --help` merges nothing (HIMMEL-3915)
+        --help|-h) help_seen=1 ;;   # merges nothing; exit decided after the walk
         --*|-*) ;;             # other flags: ignore (an unknown value-taking
                                # flag may feed a value token; a wrong selector
                                # only fails gh pr view = rc 3 -> re-anchor,
@@ -146,6 +146,16 @@ while [ "$#" -gt 0 ]; do
     [ "$stop_walk" = "1" ] && break
     shift
 done
+
+# `gh pr merge --help` merges nothing (HIMMEL-3915) - but only when it is the
+# ONLY merge in the command: `gh pr merge --help | gh pr merge 42` (or `; …`)
+# still runs a real one this segment walk never inspected, so it stays gated.
+if [ "$help_seen" = "1" ]; then
+    # shellcheck disable=SC2016  # literal backtick/$( in the class - intentional
+    merge_count=$(printf '%s' "$cmd_stripped" | grep -oE '(^|[;&|`$(][[:space:]]*)gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' | wc -l)
+    [ "$merge_count" -le 1 ] && exit 0
+    sel=""   # the help-flagged merge has no selector; gate the cwd branch
+fi
 
 # Strip surrounding quotes the tokenizer preserved: `gh pr merge "42"` must
 # not hand the literal `"42"` to gh (codex-adv-1 — quoted selector dodged the

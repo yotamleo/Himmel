@@ -212,6 +212,10 @@ GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-pipe-h-still-gated 2 Bash "gh pr 
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-bg-h-still-gated 2 Bash "gh pr merge 42 --squash & ls -h"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-redirect-help-still-gated 2 Bash "gh pr merge 42 > --help"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-pipe-passthrough 0 Bash "gh pr merge --help | cat"
+# A help-flagged merge is a passthrough only when it is the ONLY merge: a real
+# one later in the same command must still be gated.
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-piped-into-real-merge-gated 2 Bash "gh pr merge --help | gh pr merge 42 --squash"
+GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-real-merge-gated 2 Bash "gh pr merge --help; gh pr merge 42 --squash"
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
 # advisory only. The removed `zombie*`/`young` cases here drove the HIMMEL-980
 # override off a CodeRabbit CHECK-RUN that production never emits; the
