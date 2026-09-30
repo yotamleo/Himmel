@@ -712,12 +712,20 @@ PRLIT_SHELL_RE='(^|[^[:alnum:]_.-])(bash|sh|dash|zsh|ksh|mksh)([^[:alnum:]_.-]|$
 PRLIT_CHANNEL_RE='(<<<|(^|[^[:alnum:]_.-])tee([^[:alnum:]_.-]|$)|[^-=>|&]>>?[[:space:]]*[^&>=[:space:]])'
 PRLIT_SHADOW_RE="(^|[;&|(\`{}${prlit_nl}[:space:]])(function[[:space:]]+${prlit_reader}([[:space:]]|\\()|${prlit_reader}[[:space:]]*\\(\\)|alias[[:space:]]+${prlit_reader}=)"
 prlit_backstop() { # prlit_backstop <raw command> - true when the raw text is a reader-to-file-then-run shape
-    local t=$1 m
+    local t=$1 m p
     names_target "${t//[\'\"\\]/}" || return 1
     [[ $t =~ $PRLIT_SHADOW_RE ]] && return 0
     [[ $t =~ $PRLIT_CHANNEL_RE ]] || return 1
     while [[ $t =~ $PRLIT_ALLOWED_RE ]]; do
         m=${BASH_REMATCH[0]}
+        # The matched path is not proof it is a guarded script: `scripts/cr/` under
+        # a writable dir matches too. Strip it only when it is spelled once (a path
+        # a channel also writes is spelled twice) and carries no `..`, `//`, `/./`.
+        p=${m#*[[:space:]]}
+        p=${p#"${p%%[![:space:]]*}"}
+        p=${p//[\'\"]/}
+        case "$p" in *..* | *//* | */./*) return 0 ;; esac
+        case "${t#*"$p"}" in *"$p"*) return 0 ;; esac
         t="${t%%"$m"*} ${t#*"$m"}"
     done
     # A shell name anywhere is an executor (a quoted name or a wrapper's options

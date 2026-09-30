@@ -574,6 +574,9 @@ tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; env -i bash /tmp/f
 tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; sudo -E sh /tmp/f
 tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; "source" /tmp/f
 tee /tmp/f <<< 'bash scripts/cr/write-verdicts.sh'; exec -a x bash /tmp/f
+tee /tmp/scripts/cr/f.sh <<< 'bash scripts/cr/write-verdicts.sh'; bash /tmp/scripts/cr/f.sh
+tee /tmp/scripts/cr/f.sh <<< 'bash scripts/cr/write-verdicts.sh'; bash /tmp//scripts/cr/f.sh
+tee ./scripts/cr/f.sh <<< 'bash scripts/cr/write-verdicts.sh'; bash scripts/cr/f.sh
 BACKSTOP
 run "3913: [tee ...<<< then newline then bash] clean root -> deny" 2 \
     "$(payload "tee /tmp/f <<< \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""$'\n'"bash /tmp/f" "$WT")" "$HR"
