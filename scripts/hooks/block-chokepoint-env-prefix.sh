@@ -932,7 +932,7 @@ NL=$'\n'
 # close it by registering the assembled path forms or by the structural guard
 # once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest pre sp v wv write=0 obf=0 SQ="'"
+    local t="$1" w rest pre sp v wv clr write=0 obf=0 SQ="'"
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
     set -f
@@ -965,6 +965,11 @@ raw_obfuscated() {
     set +f
     [ "$obf" = 1 ] || return 0
     [[ $t =~ $wv ]] && write=1
+    # Any env-CLEARING token anywhere counts too (no anchoring on a program word
+    # or verb): standalone -u*/-i*/--u*/--i*/bare -, declare/typeset +x,
+    # export -n, exec -<opt>, ${! (same set as raw_mention's clear arm).
+    clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n|(^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$)'
+    [[ $t =~ $clr ]] && write=1
     for v in $ALL_SEAM_VARS; do
         case "$v" in ''|*[!A-Za-z0-9_]*) continue ;; esac
         [[ $t =~ (^|[^[:alnum:]_])${v}[+]?= ]] && write=1
