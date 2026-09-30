@@ -245,6 +245,9 @@ mog_build_fixture() {
     cp "$SCRIPT_DIR/../lib/merge-block-alert.sh" "$tmp/scripts/lib/merge-block-alert.sh"
     # HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
     cp "$SCRIPT_DIR/../lib/chokepoint-seam-guard.sh" "$tmp/scripts/lib/chokepoint-seam-guard.sh"
+    # ...and its registry: a MOG_ANCHOR_GIT fixture IS the anchor, so a marked
+    # run with no claude ancestor (CI) reads the seams from here.
+    cp "$SCRIPT_DIR/../chokepoints.json" "$tmp/scripts/chokepoints.json"
     # HIMMEL-3616: the pre-merge title guard (3c) calls this sibling, which in
     # turn invokes check-commit-msg.sh — both must be copied into the fixture
     # tree, since HIMMEL_REPO defaults to the fixture tree itself (himmel_repo_dir
@@ -691,7 +694,7 @@ run_mog() {
           TELEGRAM_ACCESS_PATH="$tmp/access.json" STUB_ALERT_FAIL="${STUB_ALERT_FAIL:-}" \
           CR_APP="${MOG_CR_APP:-}" \
           HIMMEL_REPO="$himmel_repo_dir" \
-          env ${MOG_UNSET_HIMMEL_REPO:+-u HIMMEL_REPO} \
+          ${MOG_WRAP-} env ${MOG_UNSET_HIMMEL_REPO:+-u HIMMEL_REPO} \
           bash -c 'cd "$1" || exit 1; shift; exec bash "$@"' _ "${MOG_CWD:-$tmp}" \
           "$tmp/scripts/handover/merge-on-green.sh" "$@" >/dev/null 2>"$tmp/err"
     rc=$?
@@ -2876,14 +2879,19 @@ assert_audit_lacks "3895-a2: no DRYRUN would-merge line" "DRYRUN"
 # 3895-a3 — a console leg holding an ORDINARY GO for the head: the console-GO
 # gate passes, the trust gate still refuses.
 tp_mint 77 "$GO_SHA"
-HIMMEL_CONSOLE_LEG=1 tp_run 21 "3895-a3: console leg with an ordinary GO on a trust-path PR → exit 21"
+# HIMMEL_CONSOLE_LEG is a Claude Code marker: with no claude ancestor (CI) and
+# seams set, the anchor copy refuses 96 (HIMMEL-3914 I3). A console leg always
+# runs under its claude session, so these rows run under a fake one.
+# shellcheck disable=SC2317,SC2329  # _as_claude is invoked indirectly, through MOG_WRAP
+_as_claude() { (exec -a claude bash -c '"$@"; exit $?' _ "$@"); }
+MOG_WRAP=_as_claude HIMMEL_CONSOLE_LEG=1 tp_run 21 "3895-a3: console leg with an ordinary GO on a trust-path PR → exit 21"
 assert_err_has "3895-a3: stderr asks for a trust-reviewed GO" "trust-reviewed"
 no_merge_call "3895-a3: no merge call"
 
 # 3895-b — a trust-reviewed GO minted by go.sh for this PR at this head merges,
 # for a console leg and for the operator path alike.
 tp_mint --trust-reviewed judge-N9 77 "$GO_SHA"
-HIMMEL_CONSOLE_LEG=1 tp_run 0 "3895-b: console leg with a trust-reviewed GO → merged"
+MOG_WRAP=_as_claude HIMMEL_CONSOLE_LEG=1 tp_run 0 "3895-b: console leg with a trust-reviewed GO → merged"
 assert_merge_has "3895-b: merge pins the certified head" "--match-head-commit $GO_SHA"
 assert_audit_has "3895-b: the trust review rides the audit" "trust=judge-N9"
 tp_run 0 "3895-b2: operator path with a trust-reviewed GO → merged"
