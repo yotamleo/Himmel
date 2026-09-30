@@ -160,7 +160,7 @@ shard_run 1 1
 sed -i.bak 's#^ran 0 scripts/test-foo.sh$#notfound scripts/test-foo.sh#' "$SB/m/manifest-shard1.txt"
 rm -f "$SB/m/manifest-shard1.txt.bak"
 aggregate 1
-if [ "$vrc" -eq 1 ] && grepq "$vout" 'scripts/test-foo.sh is discoverable'; then
+if [ "$vrc" -eq 1 ] && grepq "$vout" 'scripts/test-foo.sh never ran.*discovery lists it'; then
   pass "RM6: a shard claiming notfound for a suite the runner lists is refused"
 else fail "RM6: verify rc=$vrc: $vout"; fi
 

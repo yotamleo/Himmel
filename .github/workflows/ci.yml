@@ -867,10 +867,15 @@ jobs:
       # selected suite exactly once and green. A missing manifest, one from
       # another sha, or a shard that ran less than selected is red. The
       # aggregator's own `--list .` is the discovery a shard's `notfound` is
-      # checked against: a selected suite it finds that no shard did is red.
+      # checked against: a suite it lists to RUN that no shard ran is red, so a
+      # shard cannot drop one by filtering it or claiming notfound. Its tier and
+      # changed-since filters MUST match the shards' env above (the impacted
+      # filter stays off: the selection is checked separately).
       - name: Every shard ran exactly the selection
         env:
           IMPACTED_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.base.sha || '' }}
+          SUITE_TIER_MODE: ${{ github.event_name == 'schedule' && 'all' || 'fast' }}
+          SUITE_CHANGED_SINCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
         run: |
           bash scripts/ci/impacted-selection.sh "$IMPACTED_BASE" HEAD > shard-selection.txt
           head -n 2 shard-selection.txt
