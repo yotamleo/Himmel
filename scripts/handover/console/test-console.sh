@@ -152,6 +152,7 @@ line2'
 ) || echo "render row setup failed" >&2
 # shellcheck disable=SC2016  # literal, unexpanded on purpose
 check "4 render_template: every placeholder became the literal value" "$(grep -oF 'a&b\c/$d"q' "$tmp/render-new.md" | wc -l | tr -d ' ')" "$(grep -o '{{[A-Z_]*}}' "$REPO_REAL/docs/handover/console-template.md" | wc -l | tr -d ' ')"
+check "4 render_template: multiline value tail preserved" "$(grep -oE 'line2-[A-Z_]+' "$tmp/render-new.md" | wc -l | tr -d ' ')" "$(grep -o '{{[A-Z_]*}}' "$REPO_REAL/docs/handover/console-template.md" | wc -l | tr -d ' ')"
 check "4 render_template: no placeholder survives" "$(grep -c '{{[A-Z_]*}}' "$tmp/render-new.md")" "0"
 check "4 second new writes B" "$([ -f "$docB" ] && echo yes)" "yes"
 sumA_after="$(cksum < "$docA")"
