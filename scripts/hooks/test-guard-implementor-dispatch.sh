@@ -398,7 +398,38 @@ Every open ticket must land in exactly one theme.')")
 assert_rc "'fix:' in a table row still refuses (table rows are not stripped, HIMMEL-1608 judge I1)" 2 "$RC88"
 
 RC88P=$(run_hook land-in-theme "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster tickets' 'Cluster these tickets by subject. Every open ticket must land in exactly one theme.')")
-assert_rc "'must land in exactly one theme' is prose, allowed (HIMMEL-1608)" 0 "$RC88P"
+assert_rc "'must land in exactly one theme' over-refuses, no modal strip (HIMMEL-1608 judge C1, HIMMEL-3922)" 2 "$RC88P"
+
+# Judge C1 round 2: every integration-target spelling refuses, because the modal
+# "land in" strip is gone. One row per bypass the judge found.
+RC88R=$(run_hook land-in-linebreak "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in
+main today.')")
+assert_rc "'must land in' then a line break then main refuses" 2 "$RC88R"
+
+RC88S=$(run_hook land-in-quoted-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' "This PR must land in 'main' or **main** or [main] today.")")
+assert_rc "'must land in' with quoted or marked-up main refuses" 2 "$RC88S"
+
+RC88T=$(run_hook land-within-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land within main today.')")
+assert_rc "'must land within main' refuses" 2 "$RC88T"
+
+RC88U=$(run_hook land-origin-space-main "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land on origin main today.')")
+assert_rc "'must land on origin main' refuses" 2 "$RC88U"
+
+RC88V=$(run_hook land-in-develop "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'This PR must land in develop, then release/2.0, then production.')")
+assert_rc "'must land in develop' (non-main target) refuses" 2 "$RC88V"
+
+# Judge round 2 (2): a line holding a run of 2+ backticks is not span-stripped.
+# shellcheck disable=SC2016 # the backticks are literal prompt text
+RC88W=$(run_hook double-backtick "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster the churn' 'Quote it as ``a`b`` then. Fix the parser bug in parse.sh. See `c`.')")
+assert_rc "a double-backtick line is not span-stripped, the order after it refuses" 2 "$RC88W"
+
+# Judge round 2 (3): a fence line indented 4+ spaces is not a fence (CommonMark).
+# shellcheck disable=SC2016 # the backticks are literal prompt text
+RC88X=$(run_hook indented-fence "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Cluster the churn' 'Cluster the churn.
+    ```
+Fix the parser bug in parse.sh.
+    ```')")
+assert_rc "a 4-space-indented fence strips nothing, the order inside refuses" 2 "$RC88X"
 
 RC88L=$(run_hook land-transitive "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Ship work' 'You must land the change today.')")
 assert_rc "'must land the change' (transitive) stays refused beside the 'land in' strip" 2 "$RC88L"
