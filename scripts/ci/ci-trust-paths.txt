@@ -1,0 +1,33 @@
+# ci-trust-paths.txt — HIMMEL-3895 (HIMMEL-3815 slice F, threat T2).
+#
+# One extended regex (grep -E) per line, matched against every path a PR
+# changes — both the new filename and, for a rename, the previous one. A PR
+# touching ANY match cannot merge through scripts/handover/merge-on-green.sh
+# without a trust-reviewed console GO (console-kit/go.sh --trust-reviewed).
+#
+# merge-on-green reads THIS FILE FROM THE REPO'S DEFAULT BRANCH via the GitHub
+# API (never the PR head, the worktree or a local ref), so a PR that edits it
+# cannot shrink the list it is judged by. An unreadable, empty or invalid list
+# refuses. Blank lines and # comments are ignored; anchor every pattern.
+
+# CI definitions and every script CI runs outside a suite (H2).
+^\.github/
+^scripts/ci/
+^marketplace/plugins/obsidian-triage/tools/ensure-deps\.sh$
+
+# The suite selector (HIMMEL-3896) and its libraries.
+^scripts/cr/impacted-
+^scripts/lib/
+^scripts/hooks/lib/
+
+# The merge gate, its GO writer and every helper it runs or sources.
+^scripts/handover/merge-on-green\.sh$
+^scripts/handover/console-kit/go\.sh$
+^scripts/check-ci\.sh$
+^scripts/cr/anchor-handoff\.sh$
+^scripts/cr/clear-cr-marker\.sh$
+^scripts/hooks/check-commit-msg\.sh$
+
+# Hook wiring and the pre-commit gate set.
+^\.claude/settings\.json$
+^\.pre-commit-config\.yaml$

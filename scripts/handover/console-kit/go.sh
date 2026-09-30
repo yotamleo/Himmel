@@ -9,8 +9,16 @@
 # scripts/lib/go-gate.sh). The console's SendMessage GO is only the
 # notification. A GO binds ONE head: a push after it needs a fresh GO.
 #
-# Usage: go.sh <pr-number> <full-40-hex-head-sha>
+# Usage: go.sh [--trust-reviewed <reviewer-id>] <pr-number> <full-40-hex-head-sha>
 # Prints the written path. Re-running overwrites (idempotent).
+#
+# --trust-reviewed (HIMMEL-3895): a PR touching a CI trust path
+# (scripts/ci/ci-trust-paths.txt, read from the default branch) merges through
+# merge-on-green.sh only on a trust-reviewed GO. The id names the independent
+# review (1-128 of [A-Za-z0-9._:-], e.g. the judge session) and is written as a
+# trust-reviewed= line INSIDE the mac (a separate domain tag, go-gate.sh's
+# go_mac), so it cannot be added to, or edited in, a GO after signing. Grant it
+# only on the judge's GO for that exact head.
 #
 # Exit codes:
 #   0  written
@@ -18,7 +26,8 @@
 #      HIMMEL-3572), the GO key cannot be minted or read, or the write failed; also scripts/lib/go-gate.sh
 #      failed to source or did not define console_leg (fail closed - writing a GO
 #      is sensitive enough that a broken shared lib must never read as "not a leg")
-#   2  usage (arg count, non-digit PR, sha not exactly 40 lowercase hex); also
+#   2  usage (arg count, non-digit PR, sha not exactly 40 lowercase hex, a
+#      malformed --trust-reviewed id); also
 #      a relative-entry copy handed off (anchor-handoff.sh, HIMMEL-3437) and
 #      refused - HIMMEL_REPO unset/empty, or the anchor carries no copy
 #   3  refused: run from a console-spawned leg (a judge included - HIMMEL-3133,
@@ -39,9 +48,15 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/../../cr/anchor-handoff.sh" || exit 2
 
 usage() {
-    echo "usage: go.sh <pr-number> <full-40-hex-head-sha>" >&2
+    echo "usage: go.sh [--trust-reviewed <reviewer-id>] <pr-number> <full-40-hex-head-sha>" >&2
 }
 
+TRUST=""
+TRUST_SET=0
+if [ "${1:-}" = "--trust-reviewed" ]; then
+    TRUST="${2:-}"; TRUST_SET=1
+    shift 2 2>/dev/null || shift "$#"
+fi
 if [ "$#" -ne 2 ]; then
     usage
     exit 2
@@ -71,13 +86,19 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # gate against, so it must use their exact rule, not a hand-rolled copy of it.
 # Fail closed: this write is sensitive enough that a broken/missing shared lib
 # must never be read as "not a leg".
-unset -f console_leg go_gate go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
+unset -f console_leg go_gate go_trust_gate go_trust_id_ok go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
 # shellcheck source=scripts/lib/go-gate.sh
 # shellcheck disable=SC1091
 if ! . "$HERE/../../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1 \
-        || ! declare -F go_mac >/dev/null 2>&1 || ! declare -F go_resolve_root >/dev/null 2>&1; then
+        || ! declare -F go_mac >/dev/null 2>&1 || ! declare -F go_resolve_root >/dev/null 2>&1 \
+        || ! declare -F go_trust_id_ok >/dev/null 2>&1; then
     echo "go: cannot load scripts/lib/go-gate.sh - refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
     exit 1
+fi
+if [ "$TRUST_SET" -eq 1 ] && ! go_trust_id_ok "$TRUST"; then
+    usage
+    echo "go: --trust-reviewed needs a reviewer id of 1-128 chars from [A-Za-z0-9._:-] (got '$TRUST')" >&2
+    exit 2
 fi
 if console_leg; then
     echo "go: refusing - this is a console-spawned leg (HIMMEL_CONSOLE_LEG is set); only the console writes a GO. Send READY to your console and wait for GO." >&2
@@ -162,7 +183,7 @@ if [ -e "$KEY" ] && ! grep -qxE '[0-9a-f]{64}' "$KEY" 2>/dev/null; then
     echo "go: the GO key at $KEY exists but is not 64 lowercase hex chars - remedy: remove $KEY (it was left behind by a previously failed mint) and re-run go.sh so it can mint a fresh one; no GO written" >&2
     exit 1
 fi
-if ! MAC=$(go_mac "$PR" "$SHA" "$NWO"); then
+if ! MAC=$(go_mac "$PR" "$SHA" "$NWO" "$TRUST"); then
     echo "go: cannot sign the GO - the key at $KEY is unreadable or not 64 hex chars, or openssl is missing; no GO written" >&2
     exit 1
 fi
@@ -177,7 +198,9 @@ if ! mkdir -p "$DIR" || ! TMP=$(mktemp "$DIR/.go.XXXXXX"); then
     echo "go: cannot create a temp file under $DIR" >&2
     exit 1
 fi
-if ! printf 'pr=%s\nhead=%s\nby=%s\nat=%s\nmac=%s\n' "$PR" "$SHA" "$BY" "$AT" "$MAC" > "$TMP" || ! mv -f "$TMP" "$DEST"; then
+if ! { printf 'pr=%s\nhead=%s\nby=%s\nat=%s\n' "$PR" "$SHA" "$BY" "$AT" \
+        && { [ -z "$TRUST" ] || printf 'trust-reviewed=%s\n' "$TRUST"; } \
+        && printf 'mac=%s\n' "$MAC"; } > "$TMP" || ! mv -f "$TMP" "$DEST"; then
     rm -f "$TMP"
     echo "go: could not write $DEST" >&2
     exit 1

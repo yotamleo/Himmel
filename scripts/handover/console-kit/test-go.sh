@@ -13,6 +13,7 @@
 #   6. HIMMEL_CONSOLE_RELAY set -> exit 3, and its message names the console, never
 #      a judge, as the writer (HIMMEL-3133 fixed pre-existing stale wording here).
 #   7. unresolvable handover root -> exit 1.
+#   13. --trust-reviewed <id> (HIMMEL-3895): id validated, signed into the mac.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+.
 set -uo pipefail
@@ -231,6 +232,44 @@ MAC_CD=$(sed -n 's/^mac=//p' "$ROOT12B/.locks/go/80.$SHA" 2>/dev/null)
 [ -n "$MAC_AB" ] && [ -n "$MAC_CD" ] && [ "$MAC_AB" != "$MAC_CD" ] \
   && echo "ok - 3578: different nwo -> different mac for the same pr/sha" \
   || { echo "FAIL - 3578: mac [$MAC_AB] does not vary with nwo (got [$MAC_CD] for c/d)"; fails=$((fails+1)); }
+
+# --- 13. HIMMEL-3895: --trust-reviewed signs the reviewer id -----------------
+ROOT13="$tmp/root13"; mkdir -p "$ROOT13"
+GO13="$ROOT13/.locks/go/81.$SHA"
+for bad in "" "a b" "x;y" "id|z" "$(printf '%0129d' 0)"; do
+  rc=0; HANDOVER_DIR="$ROOT13" bash "$SCRIPT" --trust-reviewed "$bad" 81 "$SHA" >/dev/null 2>&1 || rc=$?
+  check "3895: --trust-reviewed [$bad] -> exit 2" "$rc" "2"
+done
+rc=0; HANDOVER_DIR="$ROOT13" bash "$SCRIPT" --trust-reviewed judge-N9 >/dev/null 2>&1 || rc=$?
+check "3895: --trust-reviewed with no pr/sha -> exit 2" "$rc" "2"
+check "3895: nothing written on usage errors" "$(find "$ROOT13" -type f | wc -l | tr -d ' ')" "0"
+rc=0; HANDOVER_DIR="$ROOT13" bash "$SCRIPT" 81 "$SHA" >/dev/null 2>&1 || rc=$?
+MAC_PLAIN=$(sed -n 's/^mac=//p' "$GO13" 2>/dev/null)
+check "3895: an ordinary GO has no trust line" "$(grep -c '^trust-reviewed=' "$GO13" 2>/dev/null)" "0"
+rc=0; HANDOVER_DIR="$ROOT13" bash "$SCRIPT" --trust-reviewed judge-N9 81 "$SHA" >/dev/null 2>&1 || rc=$?
+check "3895: --trust-reviewed judge-N9 -> exit 0" "$rc" "0"
+contains "3895: trust-reviewed= line written" "$(cat "$GO13" 2>/dev/null)" "trust-reviewed=judge-N9"
+MAC_T9=$(sed -n 's/^mac=//p' "$GO13" 2>/dev/null)
+HANDOVER_DIR="$ROOT13" bash "$SCRIPT" --trust-reviewed judge-N8 81 "$SHA" >/dev/null 2>&1
+MAC_T8=$(sed -n 's/^mac=//p' "$GO13" 2>/dev/null)
+[ -n "$MAC_T9" ] && [ "$MAC_T9" != "$MAC_PLAIN" ] && [ "$MAC_T9" != "$MAC_T8" ] \
+  && echo "ok - 3895: the mac covers the trust id (differs from the ordinary mac and per id)" \
+  || { echo "FAIL - 3895: trust mac [$MAC_T9] vs plain [$MAC_PLAIN] vs N8 [$MAC_T8]"; fails=$((fails+1)); }
+# The shared verifier accepts what the writer signed, and refuses an edited id.
+# shellcheck source=scripts/lib/go-gate.sh
+# shellcheck disable=SC1091
+. "$HERE/../../lib/go-gate.sh"
+rc=0; out=$(go_trust_gate 81 "$SHA" "$ROOT13" o/r) || rc=$?
+check "3895: go_trust_gate accepts go.sh's trust GO" "$rc:$out" "0:judge-N8"
+sed -i.bak 's/^trust-reviewed=.*/trust-reviewed=judge-N7/' "$GO13"
+rc=0; go_trust_gate 81 "$SHA" "$ROOT13" o/r >/dev/null || rc=$?
+check "3895: go_trust_gate refuses an edited trust id" "$rc" "2"
+HANDOVER_DIR="$ROOT13" bash "$SCRIPT" 81 "$SHA" >/dev/null 2>&1
+rc=0; out=$(go_trust_gate 81 "$SHA" "$ROOT13" o/r) || rc=$?
+check "3895: go_trust_gate refuses an ordinary GO" "$rc" "2"
+contains "3895: and says how to grant one" "$out" "--trust-reviewed"
+rc=0; go_gate 81 "$SHA" "$ROOT13" o/r >/dev/null || rc=$?
+check "3895: go_gate still accepts the ordinary GO" "$rc" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then
