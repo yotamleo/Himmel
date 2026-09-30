@@ -178,24 +178,41 @@ imperative_verb=0
 #      ... [^[:alnum:]_]|$) so it cannot eat the "fixed" inside "prefixed",
 #      "affixed", or "unfixed" — an unbounded s/fixed/ /g garbles those words
 #      and removes signal (HIMMEL-1624).
-# HIMMEL-1608: quoted data is not an instruction. Drop closed fenced blocks,
-# markdown table rows (lines starting with "|") and inline-code spans first, so
-# a "fix:" cell in a statistics table cannot read as an order to fix something.
-# An unclosed fence is kept verbatim (it must not swallow the rest of the prompt).
-# ponytail: an implementation instruction written ONLY inside a fence, table row
-# or code span is allowed through, prose-level intent is still checked; an
-# explicit intent marker (HIMMEL-1608 preference 3) would close it.
+# HIMMEL-1608: quoted material is not an instruction. Drop closed fenced blocks
+# (CommonMark: the closing fence is the same character, at least as long as the
+# opener, with nothing after it) and inline-code spans first, so a "fix:" quoted
+# in a code block cannot read as an order. An UNCLOSED fence strips nothing (its
+# buffered text is kept), so a mismatch can only strip less. Markdown table rows
+# are NOT stripped: an order in a step table is an order.
+# "land in/on <main|master|trunk>" (bare, in a code span, origin/main, "the main
+# branch") is an integration order: it is protected on the ORIGINAL text, before
+# any strip, and the modal strip below never sees it.
+# ponytail: an implementation instruction written ONLY inside a fence or code
+# span is allowed through and the protected land-in targets are a closed list
+# (HIMMEL-3922); prose-level intent is still checked. An explicit intent marker
+# (HIMMEL-1608 preference 3) would close both.
 # shellcheck disable=SC2016 # the backticks are literal regex, not expansions
-data_stripped_text=$(printf '%s\n' "$text" | awk '
-    /^[[:space:]]*```/ { if (inf) { inf = 0; buf = ""; next } inf = 1; buf = $0 "\n"; next }
-    inf { buf = buf $0 "\n"; next }
-    /^[[:space:]]*\|/ { next }
+protected_text=$(printf '%s\n' "$text" | tr '[:upper:]' '[:lower:]' | sed -E 's/land([[:space:]]+(in|on|into|at)[[:space:]]+(the[[:space:]]+)?`?(origin\/|upstream\/)?(main|master|trunk)([^[:alnum:]_]|$))/landprotected\1/g')
+# shellcheck disable=SC2016 # the backticks are literal regex, not expansions
+data_stripped_text=$(printf '%s\n' "$protected_text" | awk '
+    {
+        s = $0; sub(/^[[:space:]]+/, "", s)
+        c = substr(s, 1, 1); n = 0; rest = ""
+        if (c == "`" || c == "~") {
+            while (substr(s, n + 1, 1) == c) n++
+            rest = substr(s, n + 1)
+        }
+    }
+    inf {
+        if (c == fc && n >= fl && rest ~ /^[[:space:]]*$/) { inf = 0; buf = ""; next }
+        buf = buf $0 "\n"; next
+    }
+    n >= 3 && !(c == "`" && index(rest, "`")) { inf = 1; fc = c; fl = n; buf = $0 "\n"; next }
     { print }
     END { if (inf) printf "%s", buf }
 ' | sed -E 's/`[^`]*`/ /g')
-implementation_text=$(printf '%s' "$data_stripped_text" | tr '[:upper:]' '[:lower:]' | sed -E '
+implementation_text=$(printf '%s' "$data_stripped_text" | sed -E '
     s/how[[:space:]]+to[[:space:]]+(implement|fix|land)/ /g
-    s/land[[:space:]]+(in|on|into)[[:space:]]+(main|master|trunk)([^[:alnum:]_]|$)/landprotected \2\3/g
     s/(must|should|will|would|can|could|may|might)[[:space:]]+land[[:space:]]+(in|on|at|into|within)([^[:alnum:]_]|$)/ /g
     s/landprotected/land/g
     s/(apply|commit|push|land|merge|ship)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?fix/applyprotected/g
