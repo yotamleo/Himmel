@@ -188,8 +188,12 @@ mkproc "$F8" 10 1 node /usr/bin/node node /usr/lib/node_modules/@anthropic-ai/cl
 mkproc "$F8" 15 10 node /usr/bin/node node /srv/app/cli.js
 mkproc "$F8" 20 15 bash /usr/bin/bash bash
 assert_eq "P11 an npm claude (node running claude-code/cli.js) matches; other node does not" "0|10" "$(walk "$F8" 20)"
-live=$(walk /proc "$$")
-assert_eq "P10 the real /proc walks cleanly from this shell" "0" "${live%%|*}"
+if [ -r /proc/self/stat ]; then
+    live=$(walk /proc "$$")
+    assert_eq "P10 the real /proc walks cleanly from this shell" "0" "${live%%|*}"
+else
+    echo "SKIP P10 no /proc on this host"
+fi
 
 # --- The gate on a non-anchor copy -----------------------------------------
 # This file's tree is never the anchor under a suite (a worktree, a CI checkout
