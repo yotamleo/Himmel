@@ -23,7 +23,8 @@
 #                               until a sample succeeds.
 #
 # The action key is the tick fields a console acts on: legs=, livestate=,
-# prs=, tails=, legset=, board= (its class; the STALE age is dropped),
+# prs=, tails=, legset=, board= and tracker= (HIMMEL-3933; class only, the STALE
+# age is dropped; tracker= is absent from an older tick line, never a failure),
 # denials= (HIMMEL-3724 -- a new leg, a higher count or a higher class
 # (SHIP-STEP > PAUSE-RISK > REPEAT) is exactly the alert this exists to
 # surface; the same denial ageing out of tick.sh's 30-min window, moving it to
@@ -53,7 +54,7 @@
 # prints no TICK line, or a bank read that fails or is not a verdict token, is
 # a failed sample: never a change, and only a streak of them wakes.
 #
-# board= is asymmetric: a class move TO ok is never itself a wake (the
+# board= (and tracker=, the same way) is asymmetric: a class move TO ok is never itself a wake (the
 # console just rendered its own board — nothing for it to act on), only a
 # move to STALE or MISSING is. The key still saves silently on a move to ok,
 # so a later move to STALE wakes again. A sample where board moves to ok AND
@@ -181,12 +182,15 @@ sample() {
     # A failed or garbled bank read is a failed sample, not a verdict.
     bank="$(bank_word)" || { tick_state=fail; return; }
     tick_state=ok
-    for f in legs livestate prs tails legset board denials; do
+    for f in legs livestate prs tails legset board tracker denials; do
         v="$(field "$f" "$tick_line")"
+        # HIMMEL-3933: tracker= is newer than the other fields; a tick line
+        # without it (an older kit) just has no tracker key, not a failed sample.
+        if [ "$f" = tracker ] && [ -z "$v" ]; then continue; fi
         # A field missing from a malformed/partial tick line is a failed
         # sample, never a key with an empty value baked in.
         if [ -z "$v" ]; then tick_state=fail; key=""; return; fi
-        [ "$f" = board ] && v="${v%%:*}"
+        case "$f" in board|tracker) v="${v%%:*}" ;; esac
         key="$key$f=$v|"
     done
     key="${key}bank=$bank"
@@ -210,10 +214,12 @@ key_field() {
 # itself a wake (only a move to STALE/MISSING is); strip it from a changed=
 # list so a combined change still names its other real fields.
 drop_board_ok() {
-    local board_new
+    local board_new tracker_new
     board_new="$(key_field board "$2")"
+    tracker_new="$(key_field tracker "$2")"
     printf '%s\n' "$1" | tr ',' '\n' | while IFS= read -r f; do
         [ "$f" = board ] && [ "$board_new" = ok ] && continue
+        [ "$f" = tracker ] && [ "$tracker_new" = ok ] && continue
         printf '%s\n' "$f"
     done | paste -sd, -
 }

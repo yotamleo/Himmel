@@ -206,6 +206,19 @@ Run these, in order, and write the result as the first bullet under
     LOCAL file matches the current state; republishing the artifact stays your
     step.
 
+    **Keep the roadmap tracker current** (HIMMEL-3933; only when `## Live state`
+    has a `tracker:` URL, else skip). On every MERGED and WRAPPED, and whenever
+    the tick reads `tracker=STALE:<age>` or `tracker=MISSING`: refresh the Jira
+    mirror (`node <primary>/scripts/jira/dist/index.js mirror`), re-render with
+    `python3 "{{KIT}}/tracker.py" --plan-dir <plan dir> --out <handover bucket>/roadmap-tracker.html`
+    plus the vault-map cache argument (`tracker.py --help` names every
+    argument; `--out` and `--plan-dir` must be the paths the tick reads, so the
+    render then reports `tracker=ok`), and republish that file to the `tracker:` URL with the `Artifact` tool. A
+    successor's FIRST publish to a carried `tracker:` URL must `Artifact read`
+    it first, exactly as for `board:`. The vault-map cache refreshes
+    incrementally (only keys that are missing or older than 7 days), so a render
+    is cheap.
+
 ## Live state
 
 > **Authority-bearing state — not a summary.** Per-leg RETASK nonces, lock
@@ -266,11 +279,16 @@ queue: <held queue-lock docs in launch order, or "none">
 last GO: <`<pr>:<sha>`, or "none this shift">
 acked: <relay escalation ids acked this shift (only when a relay is live), or "none">
 board: {{BOARD_URL}}
+tracker: {{TRACKER_URL}}
 epics: none
 decisions: none
 
 > `board:` is the published console-board artifact URL (ACTION ZERO step 12);
 > `console.sh next` carries it to your successor with the rest of this section.
+> `tracker:` is the roadmap-tracker artifact URL (HIMMEL-3933); `none` (the
+> default) turns the tick's `tracker=` field off (`skip`), and `console.sh next`
+> carries the URL too. An optional `tracker-plan: <dir>` line overrides the plan
+> directory (default `<handover bucket>/specs/plan/HIMMEL-3882`).
 > `epics: <KEY>=<total>[, <KEY>=<total>]` (the total is yours; the board counts
 > merged PRs citing `[<KEY>]`) and `decisions: <first?>; <second?>` (open
 > operator decisions) are optional and render on the board; `none` shows none.
@@ -306,7 +324,7 @@ re-arm.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 180 s, wakes on change | **Runs inside the step-10 waiter, not here** — the only unconditional check of the five, so its absence is the one that goes structurally unnoticed; the waiter's heartbeat (`<inbox>.wait`) is how you see it is live. The waiter passes its args to `tick.sh`: `--doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), **`UNVERIFIED`** (a lock *named* for the leg doc exists but records a path that does not resolve here, so `queue-lock.sh` can neither attribute it nor rule it out — **not** free: find its owner before anything else, never reclaim on it; HIMMEL-3290), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-start the waiter, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12 |
+| tick | 180 s, wakes on change | **Runs inside the step-10 waiter, not here** — the only unconditional check of the five, so its absence is the one that goes structurally unnoticed; the waiter's heartbeat (`<inbox>.wait`) is how you see it is live. The waiter passes its args to `tick.sh`: `--doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), **`UNVERIFIED`** (a lock *named* for the leg doc exists but records a path that does not resolve here, so `queue-lock.sh` can neither attribute it nor rule it out — **not** free: find its owner before anything else, never reclaim on it; HIMMEL-3290), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-start the waiter, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12. Next comes `tracker=<ok\|STALE:<age>\|MISSING\|skip>` (HIMMEL-3933) — whether `roadmap-tracker.html` still matches the Jira mirror and the plan files (`skip` with no `tracker:` URL); `STALE`/`MISSING` means refresh, re-render and republish the tracker (step 12) |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
@@ -449,6 +467,10 @@ own end-of-session hook still writing — re-run `--only` on it shortly.
 - **Keep the board current.** On every dispatch, GO, MERGED and WRAPPED,
   re-render and republish the console board (ACTION ZERO step 12); a tick
   reading `board=STALE:<age>` or `board=MISSING` is a step you skipped.
+- **Keep the roadmap tracker current** (when `tracker:` is set). On every
+  MERGED and WRAPPED, and on `tracker=STALE` or `tracker=MISSING`, refresh the
+  mirror, re-render and republish to the `tracker:` URL (ACTION ZERO step 12);
+  a successor `Artifact read`s the URL before its first publish.
 - **Every judge question leaves four fields, whichever grade asked it:**
   `grade: call|session` · `prior: <one line, written BEFORE asking>` ·
   `answer: <verdict line>` · `flipped: y|n`. Write `prior:` before you ask —

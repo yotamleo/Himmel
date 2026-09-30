@@ -189,7 +189,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip denials=none ciq=unknown'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip denials=none ciq=unknown'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -1550,6 +1550,61 @@ if [ -n "$_TIMEOUT_BIN" ]; then
     contains 'a timed-out probe leaves the saturation state untouched (HIMMEL-3840)' "$o3840j" 'SATURATED'
 else
     skip 'probe timeout rows: no timeout binary'
+fi
+
+# --- HIMMEL-3933: tracker=<ok|STALE:<age>|MISSING|skip> -- the roadmap tracker page
+# (roadmap-tracker.html, rendered by tracker.py next to the console doc) is checked
+# against the Jira mirror's newest updated time plus the plan files, like board=.
+# RED control (pre-change tick.sh): no tracker= field, so a tracker that drifted from
+# Jira is invisible. The plan dir rides on an optional `tracker-plan:` Live state line.
+if command -v python3 >/dev/null 2>&1; then
+    t3933_dir="$W/tracker3933"
+    t3933_plan="$t3933_dir/plan"
+    t3933_mir="$t3933_dir/mirror"
+    t3933_out="$W/handover/roadmap-tracker.html"
+    mkdir -p "$t3933_plan/stage1" "$t3933_plan/stage3" "$t3933_mir"
+    printf '%s\n' '{"main_sha_at_build":"abcdef123456"}' > "$t3933_plan/stage3/meta.json"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' version load_bugs load_enhancements load_features load_misc load_audit load_total est_legs \
+        v1.0.1 0.1 0 0 0 0 0.1 1 > "$t3933_plan/stage3/versions.tsv"
+    printf '%s\t%s\t%s\t%s\n' key version layer effort_mid HIMMEL-1 v1.0.1 bugs 1 > "$t3933_plan/stage3/placement.tsv"
+    printf '%s\t%s\t%s\n' key close_flag close_evidence > "$t3933_plan/stage3/closures.tsv"
+    printf '%s\t%s\n' key reason > "$t3933_plan/stage3/unplaced.tsv"
+    printf '%s\t%s\n' key theme HIMMEL-1 tooling > "$t3933_plan/stage1/C01.tsv"
+    write_mirror3933() {  # write_mirror3933 <updated> <statusCategory>
+        printf '%s\n' '---' 'key: "HIMMEL-1"' "updated: \"$1\"" "statusCategory: \"$2\"" 'fixVersions: ["v1.0.1"]' 'type: "Bug"' '---' '# HIMMEL-1: a planned bug' \
+            > "$t3933_mir/HIMMEL-1.md"
+    }
+    # shellcheck disable=SC2016  # backtick leg span, literal fixture text
+    write_console3933() {  # write_console3933 [tracker: value, omitted = no line]
+        printf '%s\n' '# console' '' '## Live state' '' \
+            'legs: `N361:J-N361-0a1b2c9d:cachyos-x8664-pid361:361`' 'queue: N361 (3361)' 'last GO: none' 'acked: none' \
+            ${1:+"tracker: $1"} "tracker-plan: $t3933_plan" '' \
+            '## Results (newest at the bottom)' '- 12:00 DISPATCH N361' > "$W/handover/console.md"
+    }
+    t3933() { PATH="$W/bin-3361:$PATH" TICK_TRACKER_MIRROR_DIR="$t3933_mir" bash "$SUT" --legs "$W/handover/$b3361.md" "$@"; }
+    t3933_render() { python3 "$HERE/tracker.py" --plan-dir "$t3933_plan" --out "$t3933_out" --luna-map "$W/tracker3933/luna-map.json" --mirror-dir "$t3933_mir" --luna-root "$W/tracker3933/luna" >/dev/null; }
+    rm -f "$t3933_out" "$t3933_out.fp"
+    write_mirror3933 2026-09-30T10:00:00.000+0000 'To Do'
+    write_console3933
+    contains 'a console with no tracker: line reads tracker=skip (HIMMEL-3933)' "$(t3933)" ' tracker=skip'
+    write_console3933 none
+    contains 'tracker: none reads tracker=skip (HIMMEL-3933)' "$(t3933)" ' tracker=skip'
+    write_console3933 'https://claude.ai/artifact/x'
+    contains 'a tracker: line with no rendered page reads tracker=MISSING (HIMMEL-3933)' "$(t3933)" ' tracker=MISSING'
+    contains '--verbose labels the tracker (HIMMEL-3933)' "$(t3933 --verbose)" 'tracker: MISSING'
+    t3933_render
+    contains 'a freshly rendered tracker reads tracker=ok (HIMMEL-3933)' "$(t3933)" ' tracker=ok'
+    # A ticket in a planned version changes status in Jira: the mirror's updated moves.
+    write_mirror3933 2026-09-30T11:30:00.000+0000 Done
+    touch -d '3 hours ago' "$t3933_out"  # gnu-ok: console kit is Linux-only
+    contains 'a mirror that moved past the render reads tracker=STALE:<age> (HIMMEL-3933)' "$(t3933)" ' tracker=STALE:3h'
+    t3933_render
+    contains 're-rendering after the change reads tracker=ok again (HIMMEL-3933)' "$(t3933)" ' tracker=ok'
+    # A plan file edit is a staleness too, not only the mirror.
+    printf '%s\t%s\t%s\t%s\n' HIMMEL-2 v1.0.1 bugs 1 >> "$t3933_plan/stage3/placement.tsv"
+    contains 'a plan file change reads tracker=STALE (HIMMEL-3933)' "$(t3933)" ' tracker=STALE:'
+else
+    skip 'tracker= rows: no python3'
 fi
 
 if [ "$fails" -eq 0 ]; then
