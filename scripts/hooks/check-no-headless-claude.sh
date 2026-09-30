@@ -54,7 +54,8 @@ PATTERN='(^|[^A-Za-z0-9_-])claude[[:space:]]+(-p|--print|--bg)($|[^A-Za-z0-9_-])
 # `spawnSync('myclaude', …)` stay clean.
 SPAWN_PATTERN='(^|[^A-Za-z0-9_])(spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|Popen|run|call|check_call|check_output|execv|execvp|execve|execvpe|execl|execlp|execle|execlpe)[[:space:]]*\([[:space:]]*\[?[[:space:]]*["'"'"']claude["'"'"']|(^|[^A-Za-z0-9_])spawn(v|l)p?e?[[:space:]]*\([^,)]*,[[:space:]]*["'"'"']claude["'"'"']'
 # A call whose opening line ends in `(` or `[` has its program on the NEXT
-# line; the awk pass below joins the pair and reports the opening line.
+# line (or two lines on, `Bun.spawn(` / `[` / `"claude"`); the awk pass below
+# joins up to three lines and reports the opening line.
 
 # Self-test: a known-positive sample must match. Catches accidental
 # regex de-anchoring or syntax break before the gate quietly approves
@@ -145,6 +146,8 @@ for f in "${files[@]}"; do
         SPAWN_RE="$SPAWN_PATTERN" awk '
             BEGIN { re = ENVIRON["SPAWN_RE"] }
             { if (open && (prev " " $0) ~ re) print prevno ":" prev
+              if (open2 && open && (prev2 " " prev " " $0) ~ re) print prev2no ":" prev2
+              open2 = open; prev2 = prev; prev2no = prevno
               open = ($0 ~ /[(\[][[:space:]]*$/); prev = $0; prevno = NR }' "$f" 2>/dev/null
     } | sort -n -u)
 done

@@ -236,6 +236,15 @@ printf "%s\n%s\n" "const r = spawnSync(" "  'git', ['claude']);" > "$TMP/ml_git.
 rc=$(run_hook "ml_git.mjs")
 assert_rc "T29c multiline, claude not the program" 0 "$rc"
 
+# T31: call, array bracket and program on three separate lines → BLOCK
+printf "%s\n%s\n%s\n%s\n" "const p = Bun.spawn(" "  [" '    "claude", ...flags' "  ]);" > "$TMP/ml3.ts"
+rc=$(run_hook "ml3.ts")
+assert_rc "T31 three-line Bun.spawn( [ claude unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n%s\n%s\n" "// headless-claude-ok: probe" "const p = Bun.spawn(" "  [" '    "claude", ...flags' "  ]);" > "$TMP/ml3_ok.ts"
+rc=$(run_hook "ml3_ok.ts")
+assert_rc "T31b three-line argv spawn, marker above" 0 "$rc"
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")
