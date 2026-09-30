@@ -266,7 +266,7 @@ check_not "RED: a step with no tag-shape gate before the notes path is rejected"
 # `gh release create` argv the step issued (empty when it issued none); rc = the step's rc.
 run_notes_step() {
   local wf="$1" tag="$2" have_notes="$3" exists="$4" tags="$5" d
-  d="$(mktemp -d "$tmp/step.XXXXXX")"
+  d="$(mktemp -d "$tmp/step.XXXXXX")" || { echo "rc=mktemp-failed"; return 0; }
   mkdir -p "$d/bin" "$d/docs/release"
   awk '/- name: Ensure the release exists/{on=1;next} on&&/^ +run: \|/{r=1;next} on&&/- name:/{exit} on&&r{sub(/^          /,"");print}' "$wf" > "$d/step.sh"
   [ "$have_notes" = 1 ] && echo "notes" > "$d/docs/release/${tag}-notes.md"
@@ -289,13 +289,13 @@ EOF
 }
 tags_list=$'v1.0.0\nv1.0.0-pre.1\nv0.9.0'
 out="$(run_notes_step "$WORKFLOW" v1.0.0 1 0 "$tags_list")"
-[[ "$out" == *"--notes-file docs/release/v1.0.0-notes.md"* && "$out" != *"--generate-notes"* ]] \
+[[ "$out" == *"--notes-file docs/release/v1.0.0-notes.md"* && "$out" != *"--generate-notes"* && "$out" == *"rc=0"* ]] \
   && ok "step: curated notes file present -> --notes-file, never --generate-notes" || bad "step: notes-file branch" "got: $out"
 out="$(run_notes_step "$WORKFLOW" v1.0.0 0 0 "$tags_list")"
-[[ "$out" == *"--generate-notes --notes-start-tag v1.0.0-pre.1"* ]] \
+[[ "$out" == *"--generate-notes --notes-start-tag v1.0.0-pre.1"* && "$out" == *"rc=0"* ]] \
   && ok "step: no notes file -> generated notes bounded to the previous tag" || bad "step: bounded branch" "got: $out"
 out="$(run_notes_step "$WORKFLOW" v0.9.0 0 0 "$tags_list")"
-[[ "$out" == *"--generate-notes"* && "$out" != *"--notes-start-tag"* ]] \
+[[ "$out" == *"--generate-notes"* && "$out" != *"--notes-start-tag"* && "$out" == *"rc=0"* ]] \
   && ok "step: first tag (no predecessor) -> generated notes, no start tag" || bad "step: first-tag branch" "got: $out"
 out="$(run_notes_step "$WORKFLOW" v1.0.0 1 1 "$tags_list")"
 [ "$out" = "rc=0" ] && ok "step: release already exists -> clean exit, no create" || bad "step: exists skip" "got: $out"
