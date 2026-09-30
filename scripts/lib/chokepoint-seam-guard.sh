@@ -309,7 +309,8 @@ _csg_orphan() {
         case "$seam" in
             *[!A-Za-z0-9_]*) continue ;;
         esac
-        [ -n "${!seam:-}" ] && set="$set $seam"
+        # Presence, not non-emptiness: an empty seam can still change behaviour.
+        [ -n "${!seam+x}" ] && set="$set $seam"
     done
     [ -z "$set" ] && return 0
     _csg_deny "$4" "no Claude Code session ancestor, yet this process carries Claude Code markers and seam(s)${set} are set - a detached or headless (--bg) launch cannot pass seams to chokepoints (HIMMEL-3914); use a headed leg"

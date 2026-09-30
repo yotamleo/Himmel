@@ -344,6 +344,7 @@ Q12="$TMP/gproc12"; mkorphan "$Q12" PATH=/bin HOME=/h
 assert_eq "G19c no ancestor, no marker (CI), a seam set -> ALLOW" "0" "$(gate "$Q12" "$GO" HIMMEL_CONSOLE_LEG=1)"
 Q13="$TMP/gproc13"; mkorphan "$Q13" PATH=/bin HIMMEL_CONSOLE_LEG=1
 assert_eq "G19d HIMMEL_CONSOLE_LEG alone is a marker -> 96 with a seam set" "96" "$(gate "$Q13" "$MOG" ARMAUTOMERGE=1)"
+assert_eq "G19e a seam set to the EMPTY string is still set -> 96" "96" "$(gate "$Q11" "$GO" HIMMEL_CONSOLE_LEG=)"
 
 # --- Wiring: every chokepoint sources the lib and calls the gate first -------
 KEYS=$(jq -r 'keys[]' "$REGISTRY")
