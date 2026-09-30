@@ -43,7 +43,7 @@ cat > "$W/bin/tick-stub" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$TICK_ARGV_LOG"
 [ "${TICK_STUB_FAIL:-0}" -eq 0 ] || exit 1
-printf '%s\n' 'TICK 12:34 hb=skip legs=N1:FRESH,N2:FRESH,N3:FRESH,N4:FRESH,N5:WRAPPED,N6:FRESH,N7:FRESH,N12:STALE livestate=ok procs=6 models=sonnet:6 ceiling=ok atq=0 suites=0alive/0dead prs=#2001,#2002 bank=5h8/wk42/codex=? fill=28 tails=N1:LIVE,N2:LIVE,N3:READY,N4:LIVE,N5:WRAPPED,N6:READY,N7:BLOCKED,N12:FINDING inbox=none tick=UNKNOWN fleet='"${TICK_STUB_FLEET:-9/15}"' capacity=UNDERFILLED:6gql=4321/13:00 orphans=none nonces=ok legset=ok board=MISSING'
+printf '%s\n' 'TICK 12:34 hb=skip legs=N1:FRESH,N2:FRESH,N3:FRESH,N4:FRESH,N5:WRAPPED,N6:FRESH,N7:FRESH,N12:STALE livestate=ok procs=6 models=sonnet:6 ceiling=ok atq=0 suites=0alive/0dead prs=#2001,#2002 bank=5h8/wk42/codex=? fill=28 tails=N1:LIVE,N2:LIVE,N3:READY,N4:LIVE,N5:WRAPPED,N6:READY,N7:BLOCKED,N12:FINDING inbox=none tick=UNKNOWN fleet='"${TICK_STUB_FLEET:-9/15}"' capacity=UNDERFILLED:6 gql=4321/13:00 orphans=none nonces=ok legset=ok board=MISSING'
 printf '%s\n' 'board-fp=deadbeefdeadbeef'
 STUB
 chmod +x "$W/bin/tick-stub"
