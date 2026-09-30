@@ -647,13 +647,13 @@ run_mog() {
     # origin (https://github.com/owner/repo.git, the stub's own nwo) is rewritten
     # by insteadOf to a local bare clone, so the trust gate's anchor-behind
     # ls-remote runs for real and offline. MOG_ANCHOR_BEHIND=1 puts origin one
-    # commit ahead of the anchor.
+    # commit ahead of the anchor; MOG_ANCHOR_URL overrides the origin URL.
     if [ "${MOG_ANCHOR_GIT:-0}" = "1" ]; then
         local g="git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null"
         { $g init -q "$tmp" && $g -C "$tmp" add -A && $g -C "$tmp" commit -qm fixture \
             && $g clone -q --bare "$tmp" "$tmp/origin.git" \
-            && $g -C "$tmp" config url."$tmp/origin.git".insteadOf https://github.com/owner/repo.git \
-            && $g -C "$tmp" remote add origin https://github.com/owner/repo.git; } >/dev/null 2>&1 \
+            && $g -C "$tmp" config url."$tmp/origin.git".insteadOf "${MOG_ANCHOR_URL:-https://github.com/owner/repo.git}" \
+            && $g -C "$tmp" remote add origin "${MOG_ANCHOR_URL:-https://github.com/owner/repo.git}"; } >/dev/null 2>&1 \
             || { LAST_TMP="$tmp"; fail "$name (setup: MOG_ANCHOR_GIT)"; return; }
         if [ "${MOG_ANCHOR_BEHIND:-0}" = "1" ]; then
             { $g -C "$tmp" commit -q --allow-empty -m ahead && $g -C "$tmp" push -q origin HEAD \
@@ -2953,6 +2953,10 @@ rm -f "$TP_GO/77.$GO_SHA"
 STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
     tp_run 0 "3895-g: no trust list on a non-harness repo → merged"
 assert_audit_has "3895-g: not-adopted is audited" "trust=not-adopted"
+# 3895-h — an origin that does not positively name another github.com repo (an
+# SSH host alias) cannot prove the 404 is off the harness's own repo: refuse.
+MOG_ANCHOR_URL=git@gh-alias:owner/repo.git STUB_NWO=other/repo STUB_TRUST_LIST_404=1 \
+    tp_run 21 "3895-h: no trust list, anchor origin is an SSH alias → exit 21"
 rm -rf "$TP_ROOT"
 
 # HIMMEL-3142 CR round 3: RED control — the pre-fix script tested

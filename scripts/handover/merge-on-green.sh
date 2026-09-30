@@ -813,8 +813,9 @@ fi
 #   - The list comes from the DEFAULT branch through the API, never the PR head,
 #     this worktree or a local ref (all branch-controlled), so a PR editing it
 #     is judged by the list it would replace. Unreadable, empty or invalid →
-#     refuse. A 404 refuses on the anchor's own repo; on another repo it means
-#     the gate is not adopted there (audited, merge unchanged).
+#     refuse. A 404 refuses unless the anchor's origin URL positively names a
+#     different github.com repo, where it means the gate is not adopted there
+#     (audited, merge unchanged); an unresolvable identity refuses.
 #   - The file list is the REST listing, paginated, and must account for every
 #     one of the PR's changed_files (the endpoint stops at 3000), with the PR
 #     head re-read on both sides of it equal to the certified $sha.
@@ -827,12 +828,17 @@ trust_refuse() {
     audit "REFUSED reason=trust-path phase=$1 repo=$nwo pr=#$pr_num sha=$sha"
     exit 21
 }
-trust_is_anchor_repo() {
+# trust_other_repo — rc 0 only when the anchor's origin POSITIVELY names a
+# github.com repo other than $nwo. An unreadable origin, an SSH host alias or
+# any non-github.com URL cannot prove the PR is on another repo, so it is not
+# "other" and a 404 refuses (fail closed).
+trust_other_repo() {
     local url
     url=$(git -C "$himmel_repo" config --get remote.origin.url 2>/dev/null) || return 1
     url=${url%/}; url=${url%.git}
     case "$url" in *github.com[:/]*) url=${url##*github.com[:/]} ;; *) return 1 ;; esac
-    [ "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$nwo" | tr '[:upper:]' '[:lower:]')" ]
+    case "$url" in ''|*/*/*|*[!A-Za-z0-9._/-]*) return 1 ;; */*) ;; *) return 1 ;; esac
+    [ "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$nwo" | tr '[:upper:]' '[:lower:]')" ]
 }
 trust_tmp=$(mktemp "${TMPDIR:-/tmp}/mog-trust.XXXXXX") || trust_refuse tmp "cannot create a temp file"
 trap 'rm -f "$trust_tmp"' EXIT
@@ -843,7 +849,7 @@ trust_state=checked
 if [ "$trust_rc" -ne 0 ]; then
     case "$trust_raw" in
         *"HTTP 404"*)
-            trust_is_anchor_repo && trust_refuse list "scripts/ci/ci-trust-paths.txt is missing on $nwo@$default_branch, the harness's own repo"
+            trust_other_repo || trust_refuse list "scripts/ci/ci-trust-paths.txt is missing on $nwo@$default_branch, and the harness anchor's origin does not prove it is another repo"
             trust_state=not-adopted ;;
         *) trust_refuse list "cannot read scripts/ci/ci-trust-paths.txt from $nwo@$default_branch (gh exit $trust_rc)" ;;
     esac
