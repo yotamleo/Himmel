@@ -1934,8 +1934,10 @@ _suite_lock_claim() {
   # long enough for a second run to read it as a crash husk and reclaim it —
   # two holders. Now nothing between the mkdir and the write forks.
   local _brand
-  _brand=$(printf 'pid=%s\nhost=%s\nstarted=%s\nscan=%s\nidentity=%s\n' \
-    "$$" "$(_suite_lock_host)" "$(date +%s)" "$scan" \
+  # ppid (HIMMEL-3923): the owner's parent, so a waiter can tell an orphan
+  # (parent dead, owner re-parented) from a run that simply has a long parent.
+  _brand=$(printf 'pid=%s\nhost=%s\nstarted=%s\nscan=%s\nppid=%s\nidentity=%s\n' \
+    "$$" "$(_suite_lock_host)" "$(date +%s)" "$scan" "$PPID" \
     "$(proc_tree_process_identity "$$" 2>/dev/null || printf '')"; printf x)
   _brand=${_brand%x}
   if ! mkdir "$SUITE_LOCK_DIR" 2>/dev/null; then
@@ -1967,6 +1969,80 @@ _suite_lock_claim() {
   suite_lock_owned=1
   export HIMMEL_SUITE_LOCK_HELD="$SUITE_LOCK_DIR"
   return 0
+}
+
+# _suite_lock_orphan_reap <pid> <identity> <recorded-ppid> <owner-raw> — 0 when
+# <pid> was proven an ORPHANED owner, TERMed, and is gone (HIMMEL-3923: a
+# cap-killed worker left a live owner holding the lock 17 minutes with its
+# parent dead; only a dead PID was reclaimable, so nothing noticed). 1 leaves
+# the lock alone. Every condition must hold before anything is signalled:
+#   - the owner records an identity and it still matches (a recycled pid is
+#     never hit) and a parent pid (older locks carry none: wait as before);
+#   - the recorded parent is CONFIRMED dead and the owner's parent has changed
+#     (re-parented to init or a subreaper), so a live parent is never touched;
+#   - the lock still carries the exact owner generation judged, re-read just
+#     before the signal.
+# TERM runs the owner's EXIT trap, which releases the lock. A bounded wait
+# follows; an owner that survives keeps the lock (taking it over would be a
+# double hold) and the caller's ordinary wait continues.
+# The owner is frozen (STOP), its direct children (its suite, a process group
+# of its own) terminated and checked, and only then is it TERMed, so the taker
+# never runs beside a survivor. A child that will not die keeps the lock.
+# ponytail: only direct children are followed, and a run launched detached on
+# purpose (parent exits by design) reads as an orphan;
+# Windows Git Bash has no ps -o ppid, so it keeps today's wait — revisit if
+# either bites.
+_suite_lock_orphan_reap() {
+  local _pid="$1" _ident="$2" _oppid="$3" _raw="$4" _cur _n=0 _k _ki _bad=0 _pk _prc
+  local -a _kids=() _kid_ids=()
+  [ -n "$_pid" ] && [ -n "$_ident" ] || return 1
+  case "$_oppid" in ''|*[!0-9]*) return 1 ;; esac
+  proc_tree_is_windows && return 1
+  proc_tree_process_identity_matches "$_pid" "$_ident" || return 1
+  proc_tree_process_alive "$_oppid"
+  [ "$?" -eq 1 ] || return 1
+  _cur=$(ps -o ppid= -p "$_pid" 2>/dev/null) || return 1
+  _cur=${_cur//[[:space:]]/}
+  case "$_cur" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$_cur" != "$_oppid" ] || return 1
+  [ "$(_suite_lock_owner_raw "$SUITE_LOCK_DIR")" = "$_raw" ] || return 1
+  printf 'NOTE: ORPHAN-REAP: suite lock owner pid=%s lost its parent (recorded ppid=%s, now %s); reaping it and its suite so %s can be taken\n' \
+    "$_pid" "$_oppid" "$_cur" "$SUITE_LOCK_DIR" >&2
+  # Freeze the owner first: it cannot start another suite or release the lock
+  # while its children are being cleared, so the lock is only ever freed with
+  # nothing of the orphan left running. Its direct children (identity
+  # snapshotted, then their groups terminated) are the suite it was running.
+  kill -STOP "$_pid" 2>/dev/null || return 1
+  # A waiter killed mid-teardown must not strand a frozen owner.
+  trap 'kill -CONT "$_pid" 2>/dev/null; exit 143' INT TERM HUP
+  _pk=$(pgrep -P "$_pid" 2>/dev/null); _prc=$?
+  # pgrep rc 1 = no children; anything else = discovery failed, so do not guess.
+  [ "$_prc" -le 1 ] || _bad=1
+  for _k in $_pk; do
+    _ki=$(proc_tree_process_identity "$_k") || _ki=
+    if [ -z "$_ki" ]; then _bad=1; continue; fi
+    _kids[${#_kids[@]}]="$_k"
+    _kid_ids[${#_kid_ids[@]}]="$_ki"
+  done
+  while [ "$_bad" -eq 0 ] && [ "$_n" -lt "${#_kids[@]}" ]; do
+    proc_tree_terminate "${_kids[$_n]}" 3 "${_kid_ids[$_n]}" >/dev/null 2>&1
+    case "$?" in 0|3) ;; *) _bad=1 ;; esac
+    _n=$((_n + 1))
+  done
+  # Discovery or a child kill failed: thaw the owner untouched and keep waiting,
+  # as before this reaper existed. Otherwise TERM is delivered on CONT.
+  if [ "$_bad" -ne 0 ]; then trap - INT TERM HUP; kill -CONT "$_pid" 2>/dev/null; return 1; fi
+  kill -TERM "$_pid" 2>/dev/null
+  kill -CONT "$_pid" 2>/dev/null
+  trap - INT TERM HUP
+  _n=0
+  while [ "$_n" -lt 50 ]; do
+    proc_tree_process_alive "$_pid"
+    [ "$?" -eq 1 ] && return 0
+    sleep 0.1
+    _n=$((_n + 1))
+  done
+  return 1
 }
 
 # suite_lock_acquire — 0 to proceed, 1 to refuse (caller exits 2).
@@ -2094,6 +2170,13 @@ suite_lock_acquire() {
       1) stale=1 ;;
       *) pid_unknown=1 ;;
     esac
+    # HIMMEL-3923: alive but orphaned (see _suite_lock_orphan_reap).
+    if [ "$pid_present" -eq 1 ] && \
+       _suite_lock_orphan_reap "$o_pid" "$o_identity" \
+         "$(_suite_lock_owner_field "$SUITE_LOCK_DIR/owner" ppid)" "$o_raw"; then
+      pid_present=0
+      stale=1
+    fi
   fi
   [ "$age" -ge "$SUITE_LOCK_TTL" ] && stale=1
   # A lock we could neither date nor probe is abandoned, not held: a foreign
