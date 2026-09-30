@@ -4,7 +4,8 @@
 # HIMMEL-3437). Sourced, never run, as the FIRST statement of each pre-approved
 # gate-writer entry script:
 #
-#   . "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh"
+#   case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
+#   . "$_ah_d/anchor-handoff.sh"
 #
 # WHY: plugin-profiles.json / .claude/settings.json pre-approve the RELATIVE
 # literals of a set of gate-writer entry scripts — the nine original
@@ -65,8 +66,28 @@ _ah_self="${BASH_SOURCE[1]:-$0}"
 case "$_ah_self" in
     /* | [A-Za-z]:[\\/]*) ;;
     *)
-        _ah_name="$(basename "$_ah_self")"
-        _ah_dir="$(cd "$(dirname "$_ah_self")" && pwd)"
+        # HIMMEL-3932: nothing below resolves an external command through PATH
+        # where the answer steers the hand-off. Names and dirs come from
+        # parameter expansion (never basename/dirname); git, env and cmp come
+        # from the fixed system dirs, the same order chokepoint-seam-guard.sh
+        # uses; the hand-off re-exec uses "$BASH", not PATH's bash.
+        # ponytail: a tool absent from those dirs (git under Git-Bash lives in
+        # /mingw64/bin) falls back to PATH's, so a PATH-shadowed tool is only
+        # shut out where the system dirs carry the real one; upgrade path is a
+        # per-platform tool dir list if a station hits it.
+        _ah_bin() {
+            local _d
+            for _d in /usr/bin /bin /usr/local/bin; do
+                if [ -x "$_d/$1" ]; then printf '%s' "$_d/$1"; return 0; fi
+            done
+            printf '%s' "$1"
+        }
+        _ah_git="$(_ah_bin git)"
+        _ah_env="$(_ah_bin env)"
+        _ah_cmp="$(_ah_bin cmp)"
+        unset -f _ah_bin
+        _ah_name="${_ah_self##*/}"
+        case "$_ah_self" in */*) _ah_dir="$(cd "${_ah_self%/*}" && pwd)" ;; *) _ah_dir="$(pwd)" ;; esac
         _ah_anchor="${HIMMEL_REPO:-}"
         # HIMMEL-3451: a relative HIMMEL_REPO (".", "..", a bare name) resolves
         # against whatever cwd happens to be at `-ef` test time below, so it can
@@ -88,7 +109,7 @@ case "$_ah_self" in
         # would believe it was ALREADY the anchor and skip the hand-off,
         # running its own (possibly branch) bytes under the anchor's name.
         # cwd is the only trusted signal for "where does this file live".
-        _ah_root="$(cd "$_ah_dir" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --show-toplevel 2>/dev/null)"
+        _ah_root="$(cd "$_ah_dir" && "$_ah_env" -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR "$_ah_git" rev-parse --show-toplevel 2>/dev/null)"
         _ah_prefix=""
         # Tracks whether $_ah_root came from a genuine git toplevel resolve
         # (below) rather than the non-git walk-up fallback further down -
@@ -104,7 +125,7 @@ case "$_ah_self" in
             # string-subtraction this replaced (HIMMEL-3437 F1: a symlinked
             # worktree path made that subtraction a no-op, leaving _ah_rel
             # absolute instead of relative and breaking the hand-off).
-            _ah_prefix="$(cd "$_ah_dir" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --show-prefix 2>/dev/null)"
+            _ah_prefix="$(cd "$_ah_dir" && "$_ah_env" -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR "$_ah_git" rev-parse --show-prefix 2>/dev/null)"
             # Belt-and-suspenders on top of the -u fix above: the resolved
             # root+prefix must actually reconstruct $_ah_dir. If some OTHER
             # env var this fix doesn't know about ever steers git the same
@@ -140,7 +161,8 @@ case "$_ah_self" in
                     _ah_root="$_ah_anchor"
                     break
                 fi
-                _ah_parent="$(dirname "$_ah_walk")"
+                _ah_parent="${_ah_walk%/*}"
+                [ -n "$_ah_parent" ] || _ah_parent=/
                 [ "$_ah_parent" = "$_ah_walk" ] && break
                 _ah_walk="$_ah_parent"
             done
@@ -171,7 +193,7 @@ case "$_ah_self" in
         # in this file's header, not something this check can close.
         _ah_anchor_common=""
         if [ -d "$_ah_anchor" ]; then
-            _ah_anchor_common="$(cd "$_ah_anchor" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+            _ah_anchor_common="$(cd "$_ah_anchor" && "$_ah_env" -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR "$_ah_git" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
         fi
         if [ -n "$_ah_anchor_common" ] && ! [ "$_ah_anchor_common" -ef "$_ah_anchor/.git" ]; then
             echo "$_ah_name: HIMMEL_REPO ($_ah_anchor) is not the anchor's own checkout - its git-common-dir ($_ah_anchor_common) is not $_ah_anchor/.git, so it is a linked worktree, not the primary anchor - refusing" >&2
@@ -210,7 +232,7 @@ case "$_ah_self" in
                 # unset GIT_DIR made F4's rev-parse calls report the anchor
                 # as the toplevel - same fail-open class, this call just
                 # missed it.
-                env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$_ah_anchor" ls-files --error-unmatch -- "$_ah_rel" >/dev/null 2>&1 && _ah_is_anchor=1
+                "$_ah_env" -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE "$_ah_git" -C "$_ah_anchor" ls-files --error-unmatch -- "$_ah_rel" >/dev/null 2>&1 && _ah_is_anchor=1
             else
                 _ah_is_anchor=1
             fi
@@ -268,9 +290,9 @@ case "$_ah_self" in
             # is physical, and a symlinked worktree makes the two diverge -
             # a string-subtraction against $_ah_root then leaves this empty
             # and wrongly refuses hand-off through a symlinked path (T14).
-            _ah_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-            if _ah_self_prefix="$(cd "$_ah_self_dir" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --show-prefix 2>/dev/null)"; then
-                _ah_self_rel="${_ah_self_prefix}$(basename "${BASH_SOURCE[0]}")"
+            case "${BASH_SOURCE[0]}" in */*) _ah_self_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)" ;; *) _ah_self_dir="$(pwd)" ;; esac
+            if _ah_self_prefix="$(cd "$_ah_self_dir" && "$_ah_env" -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR "$_ah_git" rev-parse --show-prefix 2>/dev/null)"; then
+                _ah_self_rel="${_ah_self_prefix}${BASH_SOURCE[0]##*/}"
             else
                 _ah_self_rel=""
             fi
@@ -283,7 +305,7 @@ case "$_ah_self" in
                 _ah_dep_local="$_ah_root/$_ah_dep"
                 _ah_dep_anchor="$_ah_anchor/$_ah_dep"
                 if [ -f "$_ah_dep_local" ]; then
-                    if [ ! -f "$_ah_dep_anchor" ] || ! cmp -s "$_ah_dep_local" "$_ah_dep_anchor"; then
+                    if [ ! -f "$_ah_dep_anchor" ] || ! "$_ah_cmp" -s "$_ah_dep_local" "$_ah_dep_anchor"; then
                         echo "$_ah_name: this tree's $_ah_dep differs from the anchor's ($_ah_anchor) - refusing to hand off; run the anchored \"<himmel_dir>/$_ah_rel\" spelling instead" >&2
                         exit 2
                     fi
@@ -292,9 +314,9 @@ case "$_ah_self" in
             unset _ah_dep _ah_dep_local _ah_dep_anchor _ah_self_dir _ah_self_rel
             export CR_ANCHOR_HANDED_OFF=1
             echo "$_ah_name: entered through a non-anchor copy ($_ah_root) - handing off to the anchor's copy ($_ah_anchor/$_ah_rel)" >&2
-            exec bash "$_ah_anchor/$_ah_rel" "$@"
+            exec "$BASH" "$_ah_anchor/$_ah_rel" "$@"
         fi
-        unset _ah_name _ah_dir _ah_root _ah_rel _ah_anchor _ah_prefix _ah_is_anchor _ah_via_git
+        unset _ah_git _ah_env _ah_cmp _ah_name _ah_dir _ah_root _ah_rel _ah_anchor _ah_prefix _ah_is_anchor _ah_via_git
         ;;
 esac
-unset _ah_self
+unset _ah_self _ah_d

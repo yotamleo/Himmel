@@ -6,7 +6,8 @@
 # Platform guard: requires POSIX Bash 3.2+; on Windows, run under Git Bash.
 set -uo pipefail
 # HIMMEL-3495: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
+case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
+. "$_ah_d/anchor-handoff.sh" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

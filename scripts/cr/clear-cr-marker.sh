@@ -119,7 +119,8 @@
 # PATH — never via a caller-settable seam.
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
+case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
+. "$_ah_d/anchor-handoff.sh" || exit 2
 # Parameter expansion, not dirname: a PATH-shadowed dirname must not pick
 # what is sourced before the seam guard (HIMMEL-3914).
 case "${BASH_SOURCE[0]}" in */*) _csg_dir="${BASH_SOURCE[0]%/*}" ;; *) _csg_dir=. ;; esac

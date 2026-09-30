@@ -10,7 +10,10 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WRITERS="write-verdicts clear-cr-marker panel-first-pass docs-audit-panel doc-freshness-advisory known-findings ledger-append review-round orphan-check impacted-suites cr-scores"
 # shellcheck disable=SC2016  # the literal line each writer carries, not an expansion
-SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2'
+SOURCE_DOT='. "$_ah_d/anchor-handoff.sh" || exit 2'
+SOURCE_CASE='case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac'
+SOURCE_LINE="$SOURCE_CASE
+$SOURCE_DOT"
 
 fail=0
 pass=0
@@ -30,8 +33,8 @@ make_tree() {  # <root> <label>
     mkdir -p "$1/scripts/cr"
     git init -q "$1"
     cp "$DIR/anchor-handoff.sh" "$1/scripts/cr/anchor-handoff.sh"
-    awk -v src="$SOURCE_LINE" '{ print } $0 == src { exit }' "$DIR/clear-cr-marker.sh" > "$1/scripts/cr/clear-cr-marker.sh.head"
-    if grep -qxF "$SOURCE_LINE" "$1/scripts/cr/clear-cr-marker.sh.head"; then
+    awk -v src="$SOURCE_DOT" '{ print } $0 == src { exit }' "$DIR/clear-cr-marker.sh" > "$1/scripts/cr/clear-cr-marker.sh.head"
+    if grep -qxF "$SOURCE_DOT" "$1/scripts/cr/clear-cr-marker.sh.head"; then
         head=$(cat "$1/scripts/cr/clear-cr-marker.sh.head")
     else
         head='#!/usr/bin/env bash
@@ -101,7 +104,7 @@ git init -q "$red"
 git init -q "$red_anchor"
 sed 's/"\$@"/$*/' "$DIR/anchor-handoff.sh" > "$red/scripts/cr/anchor-handoff.sh"
 # shellcheck disable=SC2016  # the literal line to look for, not an expansion
-if grep -qF 'exec bash "$_ah_anchor/$_ah_rel" "$@"' "$red/scripts/cr/anchor-handoff.sh"; then
+if grep -qF 'exec "$BASH" "$_ah_anchor/$_ah_rel" "$@"' "$red/scripts/cr/anchor-handoff.sh"; then
     echo "FAIL: T9c setup — mutant exec line unchanged, control proves nothing" >&2
     fail=1
 fi
@@ -129,7 +132,7 @@ cp "$DIR/anchor-handoff.sh" "$wt/scripts/cr/anchor-handoff.sh"
 # 10. Every auto-allowed writer sources the helper as its first statement
 # after `set -uo pipefail` — before it reads cwd, a .env or any other file.
 for w in $WRITERS; do
-    first=$(grep -v -E '^[[:space:]]*(#|$)' "$DIR/$w.sh" | sed -n 2p)
+    first=$(grep -v -E '^[[:space:]]*(#|$)' "$DIR/$w.sh" | sed -n 2,3p)
     check "$first" "$SOURCE_LINE" "T10 $w sources the hand-off first"
 done
 
@@ -140,7 +143,7 @@ done
 # cross-directory instead, exercised separately by test-merge-on-green.sh /
 # test-go.sh — this fixture just proves the resolver itself is depth-agnostic).
 # shellcheck disable=SC2016  # the literal line each writer carries, not an expansion
-D3_SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2'
+D3_SOURCE_LINE="$SOURCE_LINE"
 make_d3_tree() {  # <root> <label>
     mkdir -p "$1/scripts/handover/console-kit"
     git init -q "$1"
@@ -281,7 +284,8 @@ check "$(run "$depmismatch" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' 
 # that resolved to a nonexistent scripts/handover/anchor-handoff.sh, so the
 # `[ -f ]` guard silently skipped the compare and the hand-off ran unchecked.
 # shellcheck disable=SC2016  # the literal line the real go.sh/merge-on-green.sh carry, not an expansion
-D3T_SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/../../cr/anchor-handoff.sh" || exit 2'
+D3T_SOURCE_LINE="$SOURCE_CASE
+. \"\$_ah_d/../../cr/anchor-handoff.sh\" || exit 2"
 d3t_anchor="$tmp/d3t_anchor"; d3t_wt="$tmp/d3t_wt"
 mkdir -p "$d3t_anchor/scripts/cr" "$d3t_anchor/scripts/handover/console-kit" "$d3t_wt/scripts/cr" "$d3t_wt/scripts/handover/console-kit"
 git init -q "$d3t_anchor"
@@ -294,6 +298,34 @@ printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:%s"\n' "$D3T_SOURCE
 git -C "$d3t_anchor" add -A
 git -C "$d3t_wt" add -A
 check "$(run "$d3t_wt" "$d3t_anchor" scripts/handover/console-kit/go-stub.sh | tr '\n' ' ')" "rc=2 " "T24 depth-3 entry refuses a tampered scripts/cr/anchor-handoff.sh (the real go.sh/merge-on-green.sh shape)"
+
+# T25 (HIMMEL-3932): the hand-off source line of EVERY real entry script must
+# not resolve its directory through a PATH-resolved dirname. Each entry's own
+# source line(s) are lifted verbatim into a stub at the entry's relative path;
+# a PATH-shadowed dirname points at an evil tree whose anchor-handoff.sh drops
+# a sentinel. RED at base (the line calls dirname, the evil file is sourced).
+REPO_ROOT="$(cd "$DIR/../.." && pwd)"
+ev="$tmp/t25"; sent="$tmp/t25-sourced"
+mkdir -p "$ev/fakebin" "$ev/a/b/c" "$ev/a/b/cr" "$ev/a/cr"
+printf '#!/bin/sh\necho %s/a/b/c\n' "$ev" > "$ev/fakebin/dirname"
+chmod +x "$ev/fakebin/dirname"
+for d in a/b/c a/b/cr a/cr; do
+    printf ': > %s\n' "$sent" > "$ev/$d/anchor-handoff.sh"
+done
+t25_n=0
+for entry in $(git -C "$REPO_ROOT" grep -l -F '/anchor-handoff.sh" || exit 2' -- scripts/cr scripts/handover ':!*test-*'); do
+    t25_n=$((t25_n + 1))
+    fx="$tmp/t25fx/$t25_n"
+    mkdir -p "$fx/scripts/cr" "$fx/$(dirname "$entry")"
+    cp "$DIR/anchor-handoff.sh" "$fx/scripts/cr/anchor-handoff.sh"
+    { printf '#!/usr/bin/env bash\n'
+      grep -E '^case "\$\{BASH_SOURCE\[0\]\}" in .*_ah_d=|/anchor-handoff\.sh" \|\| exit 2$' "$REPO_ROOT/$entry"
+      printf 'echo REACHED\n'; } > "$fx/$entry"
+    rm -f "$sent"
+    out=$(cd "$fx" && env -i PATH="$ev/fakebin:/usr/bin:/bin" HOME="$fx" bash "$fx/$entry" 2>&1 </dev/null | tr '\n' ' ')
+    check "$out|$([ -e "$sent" ] && echo sourced || echo clean)" "REACHED |clean" "T25 $entry: a PATH-shadowed dirname must not pick the sourced hand-off"
+done
+check "$t25_n" "13" "T25 found all 13 hand-off source lines"
 
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"

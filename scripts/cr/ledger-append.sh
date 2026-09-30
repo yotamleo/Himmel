@@ -70,7 +70,8 @@
 # key on `kind`, so the row is ignored by every gate/scorecard reader.
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
+case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
+. "$_ah_d/anchor-handoff.sh" || exit 2
 kind="${1:-}"; shift || true
 case "$kind" in
   finding|avail|usage|amend|attempt|delegation|score) ;;

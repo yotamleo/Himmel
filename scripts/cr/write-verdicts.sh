@@ -76,7 +76,8 @@
 # `Bash(bash <primary-checkout>/scripts/cr/write-verdicts.sh:*)`.
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
+case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
+. "$_ah_d/anchor-handoff.sh" || exit 2
 
 mode="${1:-}"; shift || true
 case "$mode" in
