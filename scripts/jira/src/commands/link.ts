@@ -4,6 +4,8 @@ import { writeJiraBreadcrumb } from '../breadcrumb.js';
 
 interface IssueLinkType {
   name: string;
+  inward?: string;
+  outward?: string;
 }
 
 interface IssueLink {
@@ -46,6 +48,26 @@ export function findLinkType(
   name: string,
 ): IssueLinkType | undefined {
   return types.find((t) => t.name.toLowerCase() === name.toLowerCase());
+}
+
+/**
+ * Create the link and return the relationship as Jira STORES it: the inward
+ * issue reads with the type's inward text ("HIM-1 is blocked by HIM-2"), which
+ * is what `links` shows afterwards (HIMMEL-3901). inwardKey/outwardKey map
+ * directly to Jira's inwardIssue/outwardIssue.
+ */
+export async function createIssueLink(
+  inwardKey: string,
+  outwardKey: string,
+  type: IssueLinkType,
+  requestFn: RequestFn = request,
+): Promise<string> {
+  await requestFn('POST', '/issueLink', {
+    type: { name: type.name },
+    inwardIssue: { key: inwardKey },
+    outwardIssue: { key: outwardKey },
+  });
+  return `Linked: ${inwardKey} ${type.inward ?? type.name} ${outwardKey}`;
 }
 
 function directedIssueLink(
@@ -146,7 +168,11 @@ export async function unlinkIssueLink(
 export function registerLink(program: Command): void {
   program
     .command('link <inwardKey> <outwardKey>')
-    .description('Create an issue link between two issues')
+    .description(
+      'Create an issue link. For directional types the FIRST key is the inward ' +
+      'issue (reads "is blocked by" for Blocks) and the SECOND the outward ' +
+      'issue (reads "blocks"): `link A B --type Blocks` stores "A is blocked by B".',
+    )
     .option(
       '--type <type>',
       'Link type name (Relates, Blocks, Duplicate, Cloners)',
@@ -165,16 +191,9 @@ export function registerLink(program: Command): void {
           for (const t of issueLinkTypes) console.error(`- ${t.name}`);
           process.exit(1);
         }
-        // inwardKey/outwardKey map directly to Jira's inwardIssue/outwardIssue.
-        // Directionality is whatever Jira defines for the type (e.g. for
-        // "Blocks", outwardIssue blocks inwardIssue). Relates is symmetric.
-        await request('POST', '/issueLink', {
-          type: { name: match.name },
-          inwardIssue: { key: inwardKey },
-          outwardIssue: { key: outwardKey },
-        });
+        const line = await createIssueLink(inwardKey, outwardKey, match);
         writeJiraBreadcrumb(inwardKey);
-        console.log(`Linked ${inwardKey} ${match.name} ${outwardKey}`);
+        console.log(line);
       },
     );
 

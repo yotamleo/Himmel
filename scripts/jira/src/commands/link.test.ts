@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  createIssueLink,
   findLinkType,
   formatIssueLinks,
   unlinkIssueLink,
@@ -122,5 +123,32 @@ describe('unlinkIssueLink', () => {
       'No issue link found with inward=HIMTEST-1, outward=HIMTEST-2.',
     );
     expect(request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createIssueLink', () => {
+  it('prints the relationship as Jira stores it (inward text), not positional order', async () => {
+    const request = vi.fn().mockResolvedValue(undefined);
+    const line = await createIssueLink('HIMTEST-1', 'HIMTEST-2', blocks, request);
+    expect(request).toHaveBeenCalledWith('POST', '/issueLink', {
+      type: { name: 'Blocks' },
+      inwardIssue: { key: 'HIMTEST-1' },
+      outwardIssue: { key: 'HIMTEST-2' },
+    });
+    expect(line).toBe('Linked: HIMTEST-1 is blocked by HIMTEST-2');
+  });
+
+  it('prints a symmetric type with its shared text', async () => {
+    const request = vi.fn().mockResolvedValue(undefined);
+    expect(await createIssueLink('HIMTEST-1', 'HIMTEST-2', relates, request)).toBe(
+      'Linked: HIMTEST-1 relates to HIMTEST-2',
+    );
+  });
+
+  it('falls back to the type name when Jira omits the inward text', async () => {
+    const request = vi.fn().mockResolvedValue(undefined);
+    expect(await createIssueLink('HIMTEST-1', 'HIMTEST-2', { name: 'Odd' }, request)).toBe(
+      'Linked: HIMTEST-1 Odd HIMTEST-2',
+    );
   });
 });
