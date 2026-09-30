@@ -245,6 +245,49 @@ printf "%s\n%s\n%s\n%s\n%s\n" "// headless-claude-ok: probe" "const p = Bun.spaw
 rc=$(run_hook "ml3_ok.ts")
 assert_rc "T31b three-line argv spawn, marker above" 0 "$rc"
 
+# T32 (judge I1): marker on the program line of a multi-line call → CLEAN
+printf "%s\n%s\n" "const r = spawnSync(" "  'claude', args); // headless-claude-ok: x" > "$TMP/ml_inline.mjs"
+rc=$(run_hook "ml_inline.mjs")
+assert_rc "T32 multiline, same-line marker on the program line" 0 "$rc"
+
+printf "%s\n%s\n%s\n%s\n" "const p = Bun.spawn(" "  [" '    "claude", ...flags // headless-claude-ok: x' "  ]);" > "$TMP/ml3_inline.ts"
+rc=$(run_hook "ml3_inline.ts")
+assert_rc "T32b three-line, marker on the program line" 0 "$rc"
+
+# T33 (judge I2): os.spawn* with a mode argument across lines → BLOCK / marker → CLEAN
+printf "%s\n%s\n%s\n" "os.spawnlp(" "    os.P_WAIT," '    "claude", "claude", *a)' > "$TMP/osml.py"
+rc=$(run_hook "osml.py")
+assert_rc "T33 multiline os.spawnlp(mode, claude) unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n%s\n" "# headless-claude-ok: x" "os.spawnlp(" "    os.P_WAIT," '    "claude", "claude", *a)' > "$TMP/osml_ok.py"
+rc=$(run_hook "osml_ok.py")
+assert_rc "T33b multiline os.spawnlp, marker above the call" 0 "$rc"
+
+# T34: Windows program literal claude.exe → BLOCK; a lookalike stays clean
+printf "%s\n" "spawnSync('claude.exe', args);" > "$TMP/exe.mjs"
+rc=$(run_hook "exe.mjs")
+assert_rc "T34 spawnSync('claude.exe') unmarked" 1 "$rc"
+
+printf "%s\n" "spawnSync('claude.exe.bak', args);" > "$TMP/exebak.mjs"
+rc=$(run_hook "exebak.mjs")
+assert_rc "T34b claude.exe.bak not matched" 0 "$rc"
+
+# T35: Bun object form { cmd: ["claude", ...] } → BLOCK
+printf "%s\n" 'const p = Bun.spawn({ cmd: ["claude", ...a] });' > "$TMP/bobj.ts"
+rc=$(run_hook "bobj.ts")
+assert_rc "T35 Bun.spawn({ cmd: [\"claude\"] }) unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "const p = Bun.spawn({" '  cmd: ["claude", ...a],' "});" > "$TMP/bobj_ml.ts"
+rc=$(run_hook "bobj_ml.ts")
+assert_rc "T35b multiline Bun.spawn({ cmd: [claude] }) unmarked" 1 "$rc"
+
+# T36: error text says where the marker goes for a multi-line call
+out=$(cd "$TMP" && bash "$HOOK" "ml.mjs" 2>&1 1>/dev/null) || true
+case "$out" in
+    *"multi-line"*) echo "PASS T36 error text covers multi-line marker placement" ;;
+    *) echo "FAIL T36 error text silent on multi-line marker placement"; FAILED=$((FAILED + 1)) ;;
+esac
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")
