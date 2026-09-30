@@ -2101,6 +2101,7 @@ seed_modified_unit "$DEST61"
 SIDE61="$DEST61.himmel-uninstall-backup"
 # "y" answers the Proceed? confirm, "r" the per-unit [k]eep/[r]estore offer.
 out61=$(RUN_TTY_ANSWER=$'y\nr' run_uninstall --skip-tasks --skip-plugins --skip-hooks)
+check "RED61: uninstall completed" "$(printf '%s\n' "$out61" | tr -d '\r' | grep -c '^Uninstall complete\.$')" "1"
 check "RED61: the sidecar holds the operator's live bytes" \
   "$(cat "$SIDE61" 2>/dev/null)" "$(printf '#!/bin/sh\necho operator-edited-after-install')"
 check "RED61: the file was restored to the pre-himmel original" \
@@ -2112,7 +2113,8 @@ echo "==== RED61b (HIMMEL-3787 S2b): --yes never restores, even on a TTY, and wr
 new_case red61b
 DEST61B="$CASE_DIR/cwd/scripts/red61b.sh"
 seed_modified_unit "$DEST61B"
-RUN_TTY_ANSWER=r run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
+out61b=$(RUN_TTY_ANSWER=r run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks)
+check "RED61b: uninstall completed" "$(printf '%s\n' "$out61b" | tr -d '\r' | grep -c '^Uninstall complete\.$')" "1"
 check "RED61b: --yes leaves the operator's edit in place" \
   "$(cat "$DEST61B")" "$(printf '#!/bin/sh\necho operator-edited-after-install')"
 check "RED61b: --yes writes no sidecar" \
@@ -2125,7 +2127,8 @@ seed_modified_unit "$DEST61C"
 # an earlier save already sits at the sidecar path: never clobbered, so the
 # save is refused and the restore must not run.
 printf 'earlier-save\n' > "$DEST61C.himmel-uninstall-backup"
-RUN_TTY_ANSWER=$'y\nr' run_uninstall --skip-tasks --skip-plugins --skip-hooks >/dev/null
+out61c=$(RUN_TTY_ANSWER=$'y\nr' run_uninstall --skip-tasks --skip-plugins --skip-hooks)
+check "RED61c: uninstall reported INCOMPLETE, not complete" "$(printf '%s\n' "$out61c" | tr -d '\r' | grep -c '^Uninstall INCOMPLETE')" "1"
 check "RED61c: the live file is NOT restored" \
   "$(cat "$DEST61C")" "$(printf '#!/bin/sh\necho operator-edited-after-install')"
 check "RED61c: the earlier save is untouched" \
@@ -2154,6 +2157,7 @@ DEST64="$CASE_DIR/cwd/scripts/red64.sh"
 seed_created_unit "$DEST64"
 SIDE64="$DEST64.himmel-uninstall-backup"
 out64=$(RUN_TTY_ANSWER=$'y\nd' run_uninstall --skip-tasks --skip-plugins --skip-hooks)
+check "RED64: uninstall completed" "$(printf '%s\n' "$out64" | tr -d '\r' | grep -c '^Uninstall complete\.$')" "1"
 check "RED64: the sidecar holds the operator's live bytes" \
   "$(cat "$SIDE64" 2>/dev/null)" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
 check "RED64: the file was deleted" "$([ -e "$DEST64" ] && echo present || echo gone)" "gone"
@@ -2164,10 +2168,12 @@ echo "==== RED64b (HIMMEL-3787 S2b): Enter keeps the file; --yes (tty or not) ne
 new_case red64b
 DEST64B="$CASE_DIR/cwd/scripts/red64b.sh"
 seed_created_unit "$DEST64B"
-RUN_TTY_ANSWER=$'y\n' run_uninstall --skip-tasks --skip-plugins --skip-hooks >/dev/null
+out64b=$(RUN_TTY_ANSWER=$'y\n' run_uninstall --skip-tasks --skip-plugins --skip-hooks)
+check "RED64b (Enter): uninstall completed" "$(printf '%s\n' "$out64b" | tr -d '\r' | grep -c '^Uninstall complete\.$')" "1"
 check "RED64b: the default (Enter) keeps the operator's edit" \
   "$(cat "$DEST64B")" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
-RUN_TTY_ANSWER=d run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
+out64b2=$(RUN_TTY_ANSWER=d run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks)
+check "RED64b (--yes tty): uninstall completed" "$(printf '%s\n' "$out64b2" | tr -d '\r' | grep -c '^Uninstall complete\.$')" "1"
 check "RED64b: --yes on a tty never deletes" \
   "$(cat "$DEST64B")" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
 run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
@@ -2181,8 +2187,9 @@ new_case red64c
 DEST64C="$CASE_DIR/cwd/scripts/red64c.sh"
 seed_created_unit "$DEST64C"
 printf 'earlier-save\n' > "$DEST64C.himmel-uninstall-backup"
-RUN_TTY_ANSWER=$'y\nd' run_uninstall --skip-tasks --skip-plugins --skip-hooks >/dev/null
+out64c=$(RUN_TTY_ANSWER=$'y\nd' run_uninstall --skip-tasks --skip-plugins --skip-hooks)
 rc64c=$?
+check "RED64c: uninstall reported INCOMPLETE, not complete" "$(printf '%s\n' "$out64c" | tr -d '\r' | grep -c '^Uninstall INCOMPLETE')" "1"
 check "RED64c: the live file is NOT deleted" \
   "$(cat "$DEST64C")" "$(printf '#!/bin/sh\necho operator-edited-created-file')"
 check "RED64c: the earlier save is untouched" \
@@ -2357,6 +2364,7 @@ rc69b=0
 out69b=$(RUN_TTY_ANSWER=$'y\nd' run_uninstall_fx --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks 2>&1) || rc69b=$?
 [ "$rc69b" -eq 0 ] || printf '%s\n' "$out69b" | tail -n 15 | sed 's/^/    | /'
 check "RED69b: the run got past the Proceed? confirm and exited 0" "$rc69b" "0"
+check "RED69b: uninstall completed" "$(printf '%s\n' "$out69b" | tr -d '\r' | grep -c '^Uninstall complete\.$')" "1"
 check "RED69b: the edited block file is byte-identical after a 'd' answer" \
   "$(cmp -s "$T69B" "$CASE_DIR/red69b.before" && echo same || echo differs)" "same"
 check "RED69b: outcome kept:user-modified" "$(block_outcomes)" "kept:user-modified"

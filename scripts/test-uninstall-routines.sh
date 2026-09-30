@@ -308,6 +308,7 @@ new_case b7
 seed_unit false
 printf '[Service]\nExecStart=/bin/edited-by-user\n' > "$UNIT"
 out=$(run_uninstall_tty 'y\nd\n' "${TTY_FLAGS[@]}")
+check "B7 uninstall completed" "$(printf '%s\n' "$out" | tr -d '\r' | grep -c '^Uninstall complete\.$')" "1"
 check "B7 edited unit kept despite a typed d" "$(grep -c edited-by-user "$UNIT")" "1"
 check "B7 no systemctl call" "$(grep -c . "$SYSTEMCTL_LOG")" "0"
 check "B7 no loginctl call" "$(grep -c . "$LOGINCTL_LOG")" "0"
