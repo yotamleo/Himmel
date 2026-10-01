@@ -1142,6 +1142,21 @@ BSNL=$'\\\n'
 assert_deny "3955 globbed env, backslash-newline, then -i"   "$(j "/usr/bin/en? ${BSNL}-i bash scripts/handover/console-kit/g*.sh")"
 assert_deny "3955 globbed env, backslash-newline, -i beside a chokepoint word" "$(j "/usr/bin/en? ${BSNL}-i bash $MERGE_ON_GREEN")"
 assert_deny "3955 env short option operand then -u"    "$(j "/usr/bin/en? -C /tmp -u HIMMEL_CONSOLE_LEG bash scripts/handover/console-kit/g*.sh")"
+# Judge round (HIMMEL-4031): a redirection, a $(..)/backtick word, a zsh glob
+# group or a split word between the env word and -i must not end env position.
+assert_deny "3955 env, 2>/dev/null, -i"   "$(j '/usr/bin/en? 2>/dev/null -i bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 env, 2>&1, -i"          "$(j '/usr/bin/en? 2>&1 -i bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 env, >&2, -u PATH"      "$(j '/usr/bin/en? >&2 -u PATH bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 env, </dev/null, -i"    "$(j '/usr/bin/en? </dev/null -i bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 env, > file (spaced), -i" "$(j '/usr/bin/en? > /tmp/o -i bash scripts/handover/console-kit/go.sh')"
+# shellcheck disable=SC2016 # the $( and backtick are the probe text, not expansions
+assert_deny "3955 env, \$(true), -i"    "$(j '/usr/bin/en? $(true) -i bash scripts/handover/merge-on-green.sh')"
+# shellcheck disable=SC2016 # the backtick is the probe text, not an expansion
+assert_deny "3955 env, backticks, -i"   "$(j '/usr/bin/en? `true` -i bash scripts/handover/merge-on-green.sh')"
+assert_deny "3955 zsh en(v|x) -i"         "$(j '/usr/bin/en(v|x) -i bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 zsh (env) -i"           "$(j '/usr/bin/(env) -i bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 env name split by backslash-newline" "$(j "/usr/bin/e${BSNL}nv -i bash scripts/handover/console-kit/g*.sh")"
+assert_deny "3955 seam arm after 2>/dev/null --debug" "$(j '/usr/bin/en? 2>/dev/null --debug ARMAUTOMERGE=1 bash scripts/h*/m*.sh')"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then

@@ -921,32 +921,67 @@ NL=$'\n'
 # could be `env`: a $var / brace word, or one whose basename, read as a glob,
 # matches `env` (en?, e*, [e]nv, the literal env). HIMMEL-3955.
 env_like_word() {
-    local base=${1##*/}
-    case "$1" in *'$'*|*'{'*) return 0 ;; esac
+    local w=$1 base
+    while [[ $w == '('* ]]; do w=${w#(}; done # a subshell opener is not part of the word
+    base=${w##*/}
+    case "$w" in *'$'*|*'{'*|*'('*|*'`'*) return 0 ;; esac
     [ -n "$base" ] || return 1
     # shellcheck disable=SC2254,SC2194 # the word is a glob PATTERN on purpose
     case env in $base) return 0 ;; esac
     return 1
 }
 
+# split_simple <text> -- HIMMEL-3955. Prints <text> one simple command per line.
+# Only ; & | and newline separate commands, and not inside ( ) or backticks
+# (`$(true) -i`, zsh `en(v|x) -i`): there ; & and newline still break a line
+# but | does not. `2>&1`, `>&2` and `&>f` are redirections, not a separator.
+split_simple() {
+    local t="$1" i c p="" n depth=0 bt=0 out="" len=${#1}
+    for ((i = 0; i < len; i++)); do
+        c=${t:i:1} n=${t:i+1:1}
+        case "$c" in
+            '(') depth=$((depth + 1)); out+=$c ;;
+            ')') [ "$depth" -gt 0 ] && depth=$((depth - 1)); out+=$c ;;
+            '`') bt=$((1 - bt)); out+=$c ;;
+            ';'|"$NL") out+=$NL ;;
+            '&') case "$p$n" in [\<\>]?|?'>') out+=' ' ;; *) out+=$NL ;; esac ;;
+            '|') if [ "$depth" -gt 0 ] || [ "$bt" = 1 ]; then out+=' '; else out+=$NL; fi ;;
+            *) out+=$c ;;
+        esac
+        p=$c
+    done
+    printf '%s\n' "$out"
+}
+
+# redir_word <word> -- rc 0 when the word is a redirection (`2>/dev/null`, `>`,
+# `<f`); rc 2 when it is the bare operator, whose operand is the NEXT word.
+redir_word() {
+    [[ $1 =~ ^[0-9]*[\<\>] ]] || return 1
+    [[ $1 =~ [\<\>]$ ]] && return 2
+    return 0
+}
+
 # env_clear_opt <text> -- HIMMEL-3955. rc 0 when a standalone -u*/-i*/--u*/--i*/
-# bare - token sits in env position: in a simple command (split on ; | & ( )
-# ` < > newline), after an env-like word with only option and NAME=val words
+# bare - token sits in env position: in a simple command (split_simple; a
+# redirection word and its operand are skipped), after an env-like word with only option and NAME=val words
 # between (any other plain word, e.g. grep/sed/diff/ls/sort/bash, ends the
 # position), or a $var-glued option (`$x-uNAME`). So `grep -i`, `sed -i`,
 # `diff -u`, `ls -i` and a `--id N` flag are not env-clearing; `env -i`,
 # `"$e" -u X`, `en? -u`, `setsid -f env -i` and `$e - bash` still are.
 env_clear_opt() {
-    local t="$1" line w w2 prev head hit=1 noglob=0
+    local t="$1" line w w2 prev head skip hit=1 noglob=0 rc
     local opt='(^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$)'
     local bsnl=$'\\\n'
-    t=${t//"$bsnl"/ } # a backslash-newline continuation joins the line
+    t=${t//"$bsnl"/} # a backslash-newline continuation joins with nothing (e\<nl>nv)
     case $- in *f*) noglob=1 ;; esac
     set -f
     while IFS= read -r line; do
-        head=0 prev=''
+        head=0 prev='' skip=0
         for w in $line; do
             w2=${w//[\'\"\\]/}
+            if [ "$skip" = 1 ]; then skip=0; continue; fi
+            redir_word "$w2" && rc=0 || rc=$?
+            if [ "$rc" != 1 ]; then [ "$rc" = 2 ] && skip=1; continue; fi
             if [[ $w2 =~ $opt ]] && { [ "$head" = 1 ] || [[ $w2 == *'$'* ]]; }; then
                 hit=0
                 break 2
@@ -956,13 +991,13 @@ env_clear_opt() {
                 # A plain word right after an option is that option's operand
                 # (`env --chdir /tmp -i`), so it does not end the position.
                 case "$w2" in
-                    -*|*=*) ;;
+                    -*|*=*|*')'*) ;; # `)` closes a zsh glob group (en(v|x)); not a new word
                     *) case "$prev" in -*=*) head=0 ;; -*) ;; *) head=0 ;; esac ;;
                 esac
             fi
             prev=$w2
         done
-    done <<<"$(printf '%s\n' "$t" | tr ';|&()`<>' '\n')"
+    done <<<"$(split_simple "$t")"
     [ "$noglob" = 1 ] || set +f
     return $hit
 }
@@ -974,13 +1009,18 @@ env_clear_opt() {
 # raw_obfuscated only: raw_mention (a chokepoint is named) keeps the plain
 # match, since `stop-worker.sh --dry-run VAR=9` is a pinned deny.
 seam_assigned() {
-    local t="$1" v="$2" line w prev el hit=1 noglob=0
+    local t="$1" v="$2" line w prev el skip hit=1 noglob=0 rc
     local re="(^|[^[:alnum:]_])${v}[+]?="
+    local bsnl=$'\\\n'
+    t=${t//"$bsnl"/}
     case $- in *f*) noglob=1 ;; esac
     set -f
     while IFS= read -r line; do
-        prev='' el=0
+        prev='' el=0 skip=0
         for w in $line; do
+            if [ "$skip" = 1 ]; then skip=0; continue; fi
+            redir_word "${w//[\'\"\\]/}" && rc=0 || rc=$?
+            if [ "$rc" != 1 ]; then [ "$rc" = 2 ] && skip=1; continue; fi
             if [[ $w =~ $re ]]; then
                 case "$prev" in
                     *=*) hit=0; break 2 ;;
@@ -991,7 +1031,7 @@ seam_assigned() {
             env_like_word "${w//[\'\"\\]/}" && el=1
             prev=$w
         done
-    done <<<"$(printf '%s\n' "$t" | tr ';|&()`<>' '\n')"
+    done <<<"$(split_simple "$t")"
     [ "$noglob" = 1 ] || set +f
     return $hit
 }
