@@ -10,5 +10,25 @@
     "track": "release",
     "synced_base": "skill-v4.3.1",
     "tag_prefix": "skill-v"
+  },
+  "ui-ux-pro-max": {
+    "upstream_repo": "nextlevelbuilder/ui-ux-pro-max-skill",
+    "track": "release",
+    "synced_base": "v2.15.0"
+  },
+  "motion-lexicon": {
+    "upstream_repo": "Ryan-yang125/motion-lexicon",
+    "track": "release",
+    "synced_base": "v6.0.0"
+  },
+  "frontend-slides": {
+    "upstream_repo": "zarazhangrui/frontend-slides",
+    "track": "release",
+    "synced_base": "v2.1.0"
+  },
+  "anydesign": {
+    "upstream_repo": "uxKero/anydesign",
+    "track": "release",
+    "synced_base": "v0.6.0"
   }
 }

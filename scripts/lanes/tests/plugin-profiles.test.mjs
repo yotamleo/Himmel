@@ -573,13 +573,82 @@ test('design profile enables plannotator-effective-html on top of the base floor
 
 test('design profile enables the full design pack (HIMMEL-4012)', () => {
   const { enabledPlugins: p } = resolveProfile(REG, 'design', { installed: [] });
-  for (const id of ['frontend-design@claude-plugins-official', 'ui-ux-pro-max@ui-ux-pro-max-skill', 'impeccable@himmel']) {
+  for (const id of ['frontend-design@claude-plugins-official', 'ui-ux-pro-max@himmel', 'impeccable@himmel']) {
     assert.equal(p[id], true, `${id} must be enabled for design`);
   }
   for (const name of ['user', 'leg-impl', 'lane-impl']) {
     const q = resolveProfile(REG, name, { installed: [] }).enabledPlugins;
     assert.notEqual(q['impeccable@himmel'], true, `${name} must not enable impeccable`);
   }
+});
+
+// HIMMEL-4012 PR2b: the design core plus the add-on kit profiles. The core is
+// the always-with-design set; every add-on stacks on base only (never on the
+// core), so an unproven manifest-less shape in an add-on cannot break
+// `--profile design`.
+const DESIGN_CORE = ['plannotator-effective-html@himmel', 'frontend-design@claude-plugins-official',
+  'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel',
+  'context7@claude-plugins-official'];
+const DESIGN_ADDONS = {
+  'design-motion': ['emilkowalski-skills@himmel', 'animejs-skills@himmel', 'gsap-skills@himmel',
+    'lottie-motion-design@himmel', 'motion-lexicon@himmel', 'playground@claude-plugins-official'],
+  'design-3d': ['threejs-skills@himmel'],
+  'design-imagegen': ['taste-skill-imagegen@himmel', 'ai-image-prompts@himmel'],
+  'design-a11y': ['platform-design-skills@himmel'],
+  'design-diagram': ['diagram-design@himmel', 'builder-visual@himmel'],
+  'design-slides': ['frontend-slides@himmel'],
+  'design-reference': ['design-dna@himmel', 'anydesign@himmel', 'taste-skill-styles@himmel', 'anthropic-design-skills@himmel'],
+  'design-trial': ['hallmark@himmel'],
+};
+
+test('design profile enables exactly the 7-member core on top of base (HIMMEL-4012 PR2b)', () => {
+  assert.deepEqual([...REG.profiles.design.enable].sort(), [...DESIGN_CORE].sort());
+});
+
+test('each design add-on profile enables its set on base, never the design core (HIMMEL-4012 PR2b)', () => {
+  for (const [name, ids] of Object.entries(DESIGN_ADDONS)) {
+    assert.ok(REG.profiles[name], `profile ${name} missing`);
+    assert.deepEqual([...REG.profiles[name].enable].sort(), [...ids].sort(), `${name} members`);
+    const { enabledPlugins: p } = resolveProfile(REG, name, { installed: [] });
+    for (const id of ids) assert.equal(p[id], true, `${name} must enable ${id}`);
+    for (const id of DESIGN_CORE.filter((c) => !ids.includes(c))) assert.notEqual(p[id], true, `${name} must not stack the design core (${id})`);
+    assert.equal(p['lean-skills@himmel'], true, `${name} inherits base`);
+  }
+});
+
+test('no add-on id leaks into the design core and the superseded ui-ux-pro-max id is gone (HIMMEL-4012 PR2b)', () => {
+  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official');
+  for (const id of addonIds) assert.ok(!REG.profiles.design.enable.includes(id), `${id} must stay out of the design core`);
+  assert.ok(!REG.catalog.includes('ui-ux-pro-max@ui-ux-pro-max-skill'), 'old ui-ux-pro-max id replaced by the pinned himmel entry');
+});
+
+test('every design kit himmel id is in the catalog, enabledPlugins:false and onDemandPlugins of the template (HIMMEL-4012 PR2b)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const tmpl = JSON.parse(readFileSync(join(REPO_ROOT, 'docs', 'setup', 'settings-template.json'), 'utf8'));
+  const ids = [...DESIGN_CORE, ...Object.values(DESIGN_ADDONS).flat()].filter((i) => i.endsWith('@himmel'));
+  for (const id of ids) {
+    assert.ok(REG.catalog.includes(id), `${id} missing from catalog`);
+    assert.equal(tmpl.enabledPlugins[id], false, `${id} must be enabledPlugins:false in the template`);
+    assert.ok(Object.hasOwn(tmpl.onDemandPlugins, id), `${id} must be an onDemandPlugins key (install-plugins installs from it)`);
+  }
+});
+
+test('marketplace kit entries are pinned and carry an explicit skills list when strict:false (HIMMEL-4012 PR2b)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const mp = JSON.parse(readFileSync(join(REPO_ROOT, 'marketplace', '.claude-plugin', 'marketplace.json'), 'utf8'));
+  const byName = new Map(mp.plugins.map((x) => [x.name, x]));
+  const kit = [...DESIGN_CORE, ...Object.values(DESIGN_ADDONS).flat()].filter((i) => i.endsWith('@himmel')).map((i) => i.split('@')[0]);
+  for (const name of kit) {
+    const e = byName.get(name);
+    assert.ok(e, `${name} missing from marketplace.json`);
+    if (typeof e.source === 'string') continue; // himmel-owned local plugin (shadcn-mcp)
+    assert.match(e.source.url, /^https:\/\/github\.com\/[^/]+\/[^/]+\.git$/, `${name}: explicit HTTPS git url`);
+    assert.ok(/^[0-9a-f]{40}$/.test(e.source.sha ?? '') || typeof e.source.ref === 'string', `${name}: pinned by full sha or release tag`);
+    if (e.strict === false) {
+      assert.ok(Array.isArray(e.skills) && e.skills.length > 0 && e.skills.every((k) => /^\.\//.test(k)), `${name}: strict:false needs an explicit ./ skills list`);
+    }
+  }
+  assert.ok(!byName.get('emilkowalski-skills').skills.some((k) => /animate-expo|mobile-native|write-swift/.test(k)), 'emil excludes the 3 native-app skills');
 });
 
 // HIMMEL-4012 role-coverage table: what each profile's ROLE requires, so a
