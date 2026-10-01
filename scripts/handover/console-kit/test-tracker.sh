@@ -47,8 +47,8 @@ write_meta 20 0.6
 write_caps 0.30
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' version load_bugs load_enhancements load_features load_misc load_audit load_total est_legs \
     v1.0.1 0.1 0 0 0 0 0.1 1 v2/v3 0 0 0 0 0 0 0 > "$plan/stage3/versions.tsv"
-printf '%s\t%s\t%s\t%s\t%s\t%s\n' key version layer effort_mid commit slice_effort HIMMEL-1 v1.0.1 bugs 1 committed '' \
-    > "$plan/stage3/placement.tsv"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' key version layer effort_mid commit slice_effort reason \
+    HIMMEL-1 v1.0.1 bugs 1 committed '' 'P1; pinned to v1.0.1 (ruling)' > "$plan/stage3/placement.tsv"
 printf '%s\t%s\t%s\n' key user_impact issue_plain HIMMEL-1 'operators lose the synthetic widget on restart' 'plain text' \
     > "$plan/stage1/C01.explain.tsv"
 printf '%s\t%s\t%s\t%s\n' key readiness effort_low effort_high HIMMEL-1 3 M L > "$plan/stage2/C01.tsv"
@@ -86,6 +86,7 @@ not_contains 'no Closed-by-roadmap section (HIMMEL-3954)' "$html" 'Closed by roa
 contains 'the park-ns key renders in the page data (HIMMEL-3954)' "$html" '"parked ticket"'
 contains 'the park-ns evidence is the parked reason (HIMMEL-3954)' "$html" 'parked evidence text'
 contains 'the unplaced row still renders' "$html" 'unplaced reason text'
+contains 'a ticket the plan pins to its version is listed as pinned (HIMMEL-3990)' "$html" '"PIN":[1]'
 not_contains 'a non-park closure is not rendered' "$html" 'fixed evidence text'
 contains 'summary counts 2 unplaced (1 unplaced + 1 parked)' "$stdout" '2 unplaced'
 # Done HIMMEL-5 is unplanned but not counted; open HIMMEL-6 and in-progress HIMMEL-7 are.
@@ -147,6 +148,9 @@ contains 'Escape closes the drill-down (HIMMEL-3990)' "$html" 'if(e.key=="Escape
 contains 'closing returns focus to the number (HIMMEL-3990)' "$html" 'opener.focus()'
 contains 'the pulse respects reduced motion (HIMMEL-3990)' "$html" '@media (prefers-reduced-motion:no-preference)'
 contains 'caps are tested by null, never truthiness: a cap of 0 is a cap (HIMMEL-3957)' "$html" 'cap==null?null:r4(cap-u)'
+contains 'the desk renders the decisions queue (HIMMEL-3990)' "$html" 'renderTiles(ds);renderDecisions(ds);renderSteer();renderVers();renderGains()'
+contains 'a lever words its console instruction (HIMMEL-3990)' "$html" 'lines.push("open trail "+toName)'
+contains 'a nested drill keeps the first opener (HIMMEL-3990)' "$html" 'if($("drawer").hidden)opener=from;'
 # The new plan inputs move the freshness fingerprint; each render must itself succeed (HIMMEL-3979).
 # fp_ok <label> <var> -- render --emit-fp into <var>, failing the test when the render exits non-zero.
 fp_ok() {

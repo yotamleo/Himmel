@@ -534,6 +534,7 @@ def main():
                          text=capacity_text(rules, [v for v in vers if not VER_RE.match(v)],
                                             [v for v in vers if trail_parent(v)])),
                 VP=[p90.get(v) if isinstance(p90.get(v), (int, float)) else None for v in vers],
+                PIN=sorted(num(r['key']) for r in placed if re.search(r'\bpinned to ' + re.escape(r['version']) + r'\b', r.get('reason') or '')),
                 EQ=' · '.join('%s %g' % x for x in zip(('XS', 'S', 'M', 'L', 'XL'), seq)) + ' S-equivalents'
                 if seq else 'not recorded in the plan')
     blob = json.dumps(data, separators=(',', ':'), ensure_ascii=False).replace('<', '\\u003c')
@@ -557,10 +558,11 @@ TEMPLATE = r'''<title>Himmel Roadmap</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500&family=Geist:wght@400;500;600&family=Geist+Mono&display=swap">
 <style>
-/* HIMMEL-3990 design: "the ship's log" — a typeset ledger, not a dashboard. One entry per version, written in sentences;
-   every number in a sentence is a button that opens the tickets behind it. Warm paper and ink; the only chroma is meaning
-   (done / live / to-do / over cap); --ldn is the neutral no-cap swatch (HIMMEL-3979). Serif for headlines and summaries,
-   sans for rows, mono for keys only. Two bars survive: progress and budget. */
+/* HIMMEL-3990 design: "the release desk" — a release manager's dashboard. Four tiles say where the release stands; the unit
+   of the page is the decision: every risk is one card with its levers, each lever shows what it would change (before → after,
+   caps met or over) and the line to send the console — the page never acts. The versions strip reads every cap at a glance;
+   tickets live in drawers. Warm paper and ink; the only chroma is meaning (done / live / to-do / over cap); --ldn is the
+   neutral no-cap swatch (HIMMEL-3979). Serif only for what users gained; mono for keys and instructions. */
 :root{--bg:#f5f4ef;--surface:#fff;--ink:#1a1a17;--muted:#6e6c64;--line:#e2e0d8;--accent:#1f4fd8;--done:#2e7d4f;--live:#b45f06;
 --todo:#b9b7ae;--warn:#c2410c;--ldn:#d8d6ce;--bar:#4b4a44;--scrim:rgba(26,26,23,.28);
 --f-serif:"Newsreader","Iowan Old Style","Charter",Georgia,serif;--f-sans:"Geist",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--f-mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace}
@@ -576,7 +578,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--f-sans);
 code,.key{font-family:var(--f-mono);font-size:12.5px}
 button{font:inherit;color:inherit}
 .mast{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
-.mast .in{max-width:760px;margin-inline:auto;padding:10px 16px;display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center}
+.mast .in{max-width:1200px;margin-inline:auto;padding:10px 16px;display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center}
 .mast b{font-weight:600}
 .mast .stamp{color:var(--muted);font-size:12.5px;flex:1 1 200px;min-width:0}
 .sw{display:inline-flex;gap:8px;align-items:center;font-size:13.5px;cursor:pointer;user-select:none}
@@ -584,13 +586,63 @@ button{font:inherit;color:inherit}
 .sw input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--surface)}
 .sw input:checked{background:var(--ink)}.sw input:checked::after{left:16px}
 .tbtn{border:1px solid var(--line);background:none;border-radius:4px;padding:3px 9px;font-size:12.5px;color:var(--muted);cursor:pointer}
-main{max-width:760px;margin-inline:auto;padding:24px 16px 64px}
-.train{font:500 17px/1.45 var(--f-serif);margin:0 0 40px;color:var(--muted)}
-.train .n{color:var(--ink)}
-h2.sec{font:500 13px var(--f-sans);color:var(--muted);margin:48px 0 0;padding-bottom:8px;border-bottom:1px solid var(--line)}
-.head{font:500 28px/1.2 var(--f-serif);margin:0 0 12px;letter-spacing:-.005em}
-.head .v{font-variant-numeric:lining-nums}
-.sum{font:500 20px/1.4 var(--f-serif);margin:0 0 20px;max-width:62ch}
+main{max-width:1200px;margin-inline:auto;padding:20px 24px 64px}
+h2.sec{font:500 13px var(--f-sans);color:var(--muted);margin:40px 0 0;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.sum{font:500 18px/1.4 var(--f-serif);margin:12px 0 20px;max-width:62ch}
+.head{font:500 22px/1.25 var(--f-serif);margin:0 0 8px}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.tile{all:unset;box-sizing:border-box;display:flex;flex-direction:column;gap:4px;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:6px;cursor:pointer;min-width:0}
+.tile:hover{border-color:var(--muted)}.tile:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tile .lb{font-size:12px;color:var(--muted)}
+.tile .fig{font:600 28px/1.15 var(--f-sans);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile .sb{font-size:13px;color:var(--muted)}
+.tile.hot{border-color:var(--warn)}.tile.hot .fig{color:var(--warn)}
+.tile .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.tile .cap{margin-top:6px}
+.desk{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:32px;align-items:start}
+.desk h2.sec{margin-top:32px}
+#vers{position:sticky;top:48px}
+section:focus{outline:none}
+ol.decl{list-style:none;margin:0;padding:0}
+.card{border-bottom:1px solid var(--line);padding:14px 0}
+.band{display:inline-block;font:600 10.5px var(--f-sans);letter-spacing:.05em;text-transform:uppercase;padding:1px 6px;border-radius:3px;margin-right:8px;vertical-align:2px;border:1px solid var(--line);color:var(--muted)}
+.band.b0{color:var(--warn);border-color:var(--warn)}.band.b1{color:var(--ink);border-color:var(--ink)}
+.ctl{font-size:15px;font-weight:500;overflow-wrap:anywhere}
+.fact{font-size:13px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
+.levers{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.lv{border:1px solid var(--line);background:var(--surface);border-radius:4px;padding:4px 10px;font-size:13px;cursor:pointer}
+.lv:hover{border-color:var(--muted)}
+.lv[aria-pressed="true"]{border-color:var(--ink);background:var(--ink);color:var(--bg)}
+.wi{margin-top:10px;padding:12px 14px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+.wi .two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.wi table.ld{margin:0}
+.met{color:var(--done)}.ovr{color:var(--warn)}
+.wi h4{font:600 12px var(--f-sans);color:var(--muted);margin:14px 0 2px}
+.fall{list-style:none;margin:0;padding:0}
+.fall li{display:grid;grid-template-columns:5.6em minmax(0,1fr) auto;gap:10px;align-items:baseline;padding:5px 0;border-top:1px solid var(--line);font-size:13px}
+.fall label{display:inline-flex;gap:4px;align-items:center;color:var(--muted);font-size:12px;cursor:pointer;white-space:nowrap}
+.fall .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.copy{display:flex;gap:8px;align-items:flex-start;margin-top:12px}
+.copy pre{flex:1;min-width:0;margin:0;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:4px;font:12.5px/1.55 var(--f-mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.vrow{all:unset;box-sizing:border-box;display:grid;grid-template-columns:7.2em minmax(0,1fr) auto;gap:12px;align-items:center;width:100%;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px}
+.vrow:hover .nm{text-decoration:underline;text-underline-offset:3px}
+.vrow:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.vrow.trail .nm{color:var(--muted);padding-left:14px}
+.vmore{margin-top:10px}
+.vrow .nm{font:500 13px var(--f-mono);white-space:nowrap}
+.vrow .fg{color:var(--muted);white-space:nowrap;text-align:right}
+.x{color:var(--warn)}
+.vrow .cap{margin:0}
+.cur-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--live);margin-right:6px;vertical-align:1px}
+.cap .p9{position:absolute;top:50%;width:7px;height:7px;margin:-4.5px 0 0 -4.5px;transform:rotate(45deg);border:1.5px solid var(--ink);border-radius:1px;background:var(--surface)}
+.cap .p9.x{background:var(--warn);border-color:var(--warn)}
+.gains{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px;margin-top:16px}
+.gain{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 16px;min-width:0}
+.gain h3{font:600 14px var(--f-sans);margin:0 0 4px}
+.gain .gl{font-size:13px;color:var(--muted);margin:0 0 10px}
+.gain ul{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.gain li{font:500 16px/1.4 var(--f-serif);padding-left:16px;position:relative;overflow-wrap:anywhere}
+.gain li::before{content:"";position:absolute;left:0;top:.55em;width:7px;height:7px;border-radius:50%;background:var(--done)}
 .quotes{list-style:none;margin:-8px 0 24px;padding:0;display:grid;gap:10px;max-width:62ch}
 .quotes li{border-left:2px solid var(--line);padding-left:12px;font-size:15px;line-height:1.5}
 .quotes b{display:block;font:600 11.5px var(--f-sans);color:var(--muted);letter-spacing:.02em}
@@ -636,18 +688,8 @@ h3.grp span{font-weight:400}
 .more p{margin:0 0 8px;color:var(--ink)}
 .more ul{margin:0;padding-left:18px}.more li{margin:2px 0}
 .more a{color:var(--accent)}
-details.done-grp,details.q,details.t,details.fold{border-top:1px solid var(--line)}
+details.done-grp,details.fold{border-top:1px solid var(--line)}
 details.done-grp>summary,details.fold>summary{cursor:pointer;padding:12px 0;font-size:14px;color:var(--muted)}
-details.q>summary,details.t>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(4.2em,auto) minmax(0,1fr);gap:4px 16px;padding:14px 0}
-details.q>summary::-webkit-details-marker,details.t>summary::-webkit-details-marker{display:none}
-.q .ver,.t .ver{font:500 18px/1.3 var(--f-serif)}
-details.q.trail{margin-left:1.2em}.q.trail .ver{font-size:15px;color:var(--muted)}
-.q .meta,.t .meta{font-size:13px;color:var(--muted);display:flex;gap:12px;align-items:center}
-.q .meta .cap{flex:0 1 120px;margin:0}
-.q .line,.t .line{font-size:14px;color:var(--muted);grid-column:2;min-width:0}
-details.q[open]>summary .line,details.t[open]>summary .line{display:none}
-.qb{padding:4px 0 24px}
-.qb .sum{font-size:18px}
 .up{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
 .up span:last-child{grid-column:2;color:var(--muted);font-size:13px}
 .up .t{min-width:0;overflow-wrap:anywhere}
@@ -676,24 +718,34 @@ ol.ct{list-style:none;margin:0 0 8px;padding:0}
 ol.ct li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:6px 0;border-top:1px solid var(--line);font-size:13.5px}
 ol.ct li .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 ol.ct li .v{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+@media (max-width:900px){
+ .tiles{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+ .desk{grid-template-columns:minmax(0,1fr);gap:0}#vers{position:static}
+}
 @media (max-width:560px){
- .head{font-size:24px}.sum{font-size:18px}
+ main{padding:16px 16px 48px}.mast .in{padding:8px 16px}
+ .tiles{gap:8px}.tile{padding:10px 12px}.tile .fig{font-size:22px}.tile .chips{display:none}
+ .sum{font-size:17px}
+ .wi{padding:10px}.wi .two{grid-template-columns:minmax(0,1fr)}
+ .fall li{grid-template-columns:auto minmax(0,1fr);row-gap:2px}.fall li>:last-child{text-align:right}.fall .t{grid-column:1/-1;order:3}
+ .vrow{grid-template-columns:6.4em minmax(0,1fr);row-gap:4px}.vrow .fg{grid-column:1/-1;text-align:left}
  .tk>summary{grid-template-columns:14px minmax(0,1fr)}.tg{grid-column:2;justify-content:flex-start;padding-top:0}
- details.q>summary,details.t>summary{grid-template-columns:minmax(0,1fr)}.q .line,.t .line{grid-column:1}
  #drawer{top:auto;left:0;width:100%;height:85vh;border-left:0;border-top:1px solid var(--line);border-radius:12px 12px 0 0}
  .dhd::before{content:"";position:absolute;left:50%;top:6px;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--line)}
  .terms{grid-template-columns:minmax(0,1fr)}
 }
 </style>
 <header class="mast"><div class="in"><b>Himmel roadmap</b><span class="stamp" id="stamp"></span>
-<label class="sw"><input type="checkbox" role="switch" id="rem"> Remaining only</label>
+<label class="sw" title="Hides done tickets from counts, bars and lists. Decisions and levers always weigh the full planned load."><input type="checkbox" role="switch" id="rem"> Remaining only</label>
 <button class="tbtn" id="theme" type="button">Theme</button></div></header>
 <main id="main">
-<p class="train" id="train"></p>
-<section id="now" aria-label="running version"></section>
-<h2 class="sec">The queue</h2><div id="queue"></div>
-<h2 class="sec">By theme</h2><div id="themes"></div>
-<h2 class="sec">Without a place</h2><div id="unpl"></div>
+<section class="tiles" id="tiles" aria-label="Where the release stands"></section>
+<div class="desk">
+<div><section id="dec" tabindex="-1" aria-labelledby="dech"><h2 class="sec" id="dech">Needs your input</h2><ol class="decl" id="decl"></ol></section>
+<section id="steer" aria-labelledby="steerh"><h2 class="sec" id="steerh">Steer</h2><div id="steerb"></div></section></div>
+<section id="vers" aria-labelledby="versh"><h2 class="sec" id="versh">Versions</h2><div id="vlist"></div></section>
+</div>
+<section id="gain" tabindex="-1" aria-labelledby="gainh"><h2 class="sec" id="gainh">What users gained</h2><div class="gains" id="gains"></div></section>
 <footer>
 <details class="fold"><summary>Terms</summary>
 <dl class="terms" id="terms"></dl></details>
@@ -765,10 +817,70 @@ function model(D){
    live:function(p){return !!leg(p)},prog:function(p){return p[2]==1&&!leg(p)},todo:function(p){return p[2]==0}}[kind];
   return order(a.filter(f))}
  function current(rem){for(var i=0;i<V.length;i++)if(train(i)&&inV(i).some(function(p){return p[2]!=2}))return i;return null}
+ // Steering (the release desk). The page cannot act: it computes what a lever would change and words the instruction.
+ function pinned(p){return (D.PIN||[]).indexOf(p[0])>=0}
+ function planned(p){return p[7]!=2}
+ function roi(p){return (p[12]||0)/Math.max(p[6]||0,.1)}
+ // trail(i): the overflow version that takes i's work: v1.0.2 → v1.0.2b, v1.0.2b → v1.0.2c; i -1 when it does not exist yet.
+ function trail(i){var m=/^(v1\.0\.\d+)([b-z]?)$/.exec(V[i]);if(!m)return null;
+  var n=m[1]+(m[2]?String.fromCharCode(m[2].charCodeAt(0)+1):"b");return {i:V.indexOf(n),name:n}}
+ function parent(i){var m=/^(v1\.0\.\d+)[b-z]$/.exec(V[i]);return m?V.indexOf(m[1]):-1}
+ function base(i){var m=0;inV(i).forEach(function(p){if(planned(p))m+=ld(p)});return m}
+ // ratio(i): P90 per unit of mean in version i, so a what-if can move the P90 with the mean.
+ // ponytail: the P90 after a move is scaled from the plan's own P90 by mean (≈), not re-simulated; re-run the placer to confirm.
+ function ratio(i){var b=base(i),v=D.VP&&D.VP[i];return v!=null&&b>0?v/b:null}
+ // stats(i, a, r): a ticket set's load in version i (i -1: a trail not yet made): planned count, mean, per kind, and P90 (≈).
+ function stats(i,a,r){var k=[0,0,0,0,0],m=0,n=0;a.forEach(function(p){if(!planned(p))return;n++;m+=ld(p);k[p[4]]+=ld(p)});
+  var v=i>=0&&D.VP?D.VP[i]:null,b=i>=0?base(i):0,q=i>=0?ratio(i):null,p9=null;
+  if(v!=null)p9=v+(m-b)*(q!=null?q:r||0);else if(r!=null&&m>0)p9=m*r;
+  return {n:n,m:r4(m),k:k.map(r4),p9:p9==null?null:r4(Math.max(p9,0))}}
+ function capsOf(i,from){return i>=0?D.VC[i]:D.VC[from]}
+ // breaches(i, st, c): every cap the stats break: mean, tickets, P90, then each kind.
+ function breaches(i,st,c){c=c||D.VC[i];if(!c)return [];var b=[],e=1e-9;
+  if(c.tot!=null&&st.m>c.tot+e)b.push({what:"mean",used:st.m,cap:c.tot});
+  if(c.t!=null&&st.n>c.t)b.push({what:"tickets",used:st.n,cap:c.t});
+  if(c.p9!=null&&st.p9!=null&&st.p9>c.p9+e)b.push({what:"P90",used:st.p9,cap:c.p9});
+  KIND.forEach(function(k,j){if(c.l&&c.l[j]!=null&&st.k[j]>c.l[j]+e)b.push({what:k,used:st.k[j],cap:c.l[j]})});return b}
+ // peel(i, {keep, unpin}): take the open, leg-free, unpinned tickets by lowest return (impact per size) until every cap holds;
+ // each step takes the first candidate that eases a cap still broken. keep: tickets the viewer pins here; unpin: plan pins released.
+ function peel(i,o){o=o||{};var keep=o.keep||[],un=o.unpin||[],a=inV(i).filter(planned),cur=a.slice(),out=[];
+  var cand=a.filter(function(p){return p[2]!=2&&!leg(p)&&keep.indexOf(p[0])<0&&(!pinned(p)||un.indexOf(p[0])>=0)})
+   .sort(function(x,y){return roi(x)-roi(y)||(y[6]||0)-(x[6]||0)||x[0]-y[0]});
+  for(;;){var b=breaches(i,stats(i,cur));if(!b.length)break;
+   var w=b.map(function(x){return x.what}),j=-1;
+   for(var q=0;q<cand.length&&j<0;q++){var p=cand[q];
+    if(w.indexOf("tickets")>=0||(ld(p)>0&&(w.indexOf("mean")>=0||w.indexOf("P90")>=0||w.indexOf(KIND[p[4]])>=0)))j=q}
+   if(j<0)break;out.push(cand[j]);cur.splice(cur.indexOf(cand[j]),1);cand.splice(j,1)}
+  return {moved:out,left:breaches(i,stats(i,cur)),held:a.filter(function(p){return pinned(p)&&p[2]!=2&&un.indexOf(p[0])<0})}}
+ // whatIf(i, moved, to): both versions before and after moving the tickets from i to `to` (-1: the trail not yet made).
+ function whatIf(i,moved,to){var a=inV(i),r=ratio(i),ta=to>=0?inV(to):[],c=capsOf(to,i);
+  var fa=a.filter(function(p){return moved.indexOf(p)<0}),f0=stats(i,a),f1=stats(i,fa),t0=stats(to,ta,r),t1=stats(to,ta.concat(moved),r);
+  f0.b=breaches(i,f0);f1.b=breaches(i,f1);t0.b=breaches(to,t0,c);t1.b=breaches(to,t1,c);
+  return {from:{i:i,before:f0,after:f1},to:{i:to,before:t0,after:t1,caps:c}}}
+ // fold(i): the trail's open tickets, best return first, that its parent can take back without breaking a cap.
+ function fold(i){var pr=parent(i);if(pr<0)return [];var cur=inV(pr).slice(),out=[];
+  if(breaches(pr,stats(pr,cur)).length)return [];
+  inV(i).filter(function(p){return p[2]!=2&&planned(p)&&!leg(p)}).sort(function(x,y){return roi(y)-roi(x)||x[0]-y[0]}).forEach(function(p){
+   if(!breaches(pr,stats(pr,cur.concat([p]))).length){cur.push(p);out.push(p)}});return out}
+ // decisions(): what needs input, ordered. Band 0 stops now (a BLOCKED or FINDING leg); band 1 blocks the release (the running
+ // version and the next: caps, drift); band 2 queue health (later caps, drift, the unplaced, a trail its parent can take back).
+ function decisions(){var cur=D.CUR,nx=cur!=null&&cur+1<V.length&&train(cur+1)?cur+1:-1,out=[];
+  function near(i){return i==cur||i==nx}
+  P.forEach(function(p){var lg=leg(p);if(lg&&(lg[1]=="BLOCKED"||lg[1]=="FINDING"))out.push({band:0,type:"leg",i:p[3],p:p,s:lg[1]=="BLOCKED"?0:1})});
+  V.forEach(function(_,i){var b=breaches(i,stats(i,inV(i)));if(b.length)out.push({band:near(i)?1:2,type:"cap",i:i,b:b})});
+  P.forEach(function(p){if(p[7]&&p[2]!=2&&train(p[3]))out.push({band:near(p[3])?1:2,type:"drift",i:p[3],p:p})});
+  V.forEach(function(_,i){var f=fold(i);if(f.length)out.push({band:2,type:"fold",i:i,f:f})});
+  var u=(D.U||[]).filter(function(x){return x[2]!=2});if(u.length)out.push({band:2,type:"unplaced",i:u.length,u:u,last:1});
+  var TR={leg:0,cap:1,drift:2,fold:3,unplaced:4};
+  return out.sort(function(x,y){return x.band-y.band||(x.last||0)-(y.last||0)||x.i-y.i||TR[x.type]-TR[y.type]||(x.s||0)-(y.s||0)||(x.p?x.p[0]:0)-(y.p?y.p[0]:0)})}
+ // gains(): done work per train version, newest first: what users got.
+ function gains(){var g=[];for(var i=V.length-1;i>=0;i--){if(!train(i))continue;var d=order(inV(i).filter(function(p){return p[2]==2}));
+  if(d.length)g.push({i:i,done:d,n:inV(i).length,s:summary(d,"theme")})}return g}
  return {KIND:KIND,READY:READY,train:train,vname:vname,inV:inV,inT:inT,inTrain:inTrain,leg:leg,tally:tally,load:load,summary:summary,
-  drill:drill,order:order,isUser:isUser,current:current,ld:ld}}
+  drill:drill,order:order,isUser:isUser,current:current,ld:ld,pinned:pinned,roi:roi,trail:trail,parent:parent,stats:stats,breaches:breaches,
+  peel:peel,whatIf:whatIf,fold:fold,decisions:decisions,gains:gains}}
 /*END MODEL*/
-var M=model(D),V=D.V.map(function(_,i){return M.vname(i)}),T=D.T,REM=false,OPEN={},opener=null;
+var M=model(D),V=D.V.map(function(_,i){return M.vname(i)}),T=D.T,REM=false,opener=null;
 function $(i){return document.getElementById(i)}
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 function txt(s){return document.createTextNode(s)}
@@ -813,9 +925,12 @@ function strip(t){var s=el("div","strip");s.setAttribute("role","img");
  [["d",REM?0:t.done],["l",t.live],["s",t.prog-t.live]].forEach(function(x){if(x[1]>0){var i=el("i",x[0]);i.style.width=(100*x[1]/(t.n||1))+"%";s.appendChild(i)}});return s}
 function capBar(ld){var c=el("div","cap");c.setAttribute("role","img");
  if(ld.deferred||ld.cap==null){c.className="cap none";c.setAttribute("aria-label","no cap");return c}
- var sc=Math.max(ld.cap,ld.used)||1,f=el("i");f.style.width=(100*Math.min(ld.used,ld.cap)/sc)+"%";c.appendChild(f);
+ // the P90 diamond sits where the cautious load falls against its own cap, drawn on the mean's scale.
+ var q=ld.p90!=null&&ld.p90cap?ld.cap*ld.p90/ld.p90cap:null,sc=Math.max(ld.cap,ld.used,q||0)||1,f=el("i");f.style.width=(100*Math.min(ld.used,ld.cap)/sc)+"%";c.appendChild(f);
  if(ld.used>ld.cap){var o=el("i","o");o.style.left=(100*ld.cap/sc)+"%";o.style.width=(100*(ld.used-ld.cap)/sc)+"%";c.appendChild(o)}
- var k=el("b");k.style.left=(100*ld.cap/sc)+"%";c.appendChild(k);c.setAttribute("aria-label","budget "+f2(ld.used)+" of "+f2(ld.cap));return c}
+ var k=el("b");k.style.left=(100*ld.cap/sc)+"%";c.appendChild(k);
+ if(q!=null){var d=el("i",ld.p90>ld.p90cap+1e-9?"p9 x":"p9");d.style.left=(100*q/sc)+"%";c.appendChild(d)}
+ c.setAttribute("aria-label","budget "+f2(ld.used)+" of "+f2(ld.cap)+(q!=null?", cautious "+f2(ld.p90)+" of "+f2(ld.p90cap):""));return c}
 function capLine(i,ld){var l=el("div","cap-line");
  if(ld.deferred){add(l,"Deferred bucket: no cap. ",nb(f2(ld.used)+" budget","load",{v:i},V[i]+": budget by kind")," parked here.");return l}
  var over=ld.kinds.filter(function(k){return k.over});
@@ -852,47 +967,135 @@ function versionBody(i,host){
  if(w.length){host.appendChild(add(el("h3","grp"),"Working now",el("span",null,pl(w.length,"leg","legs"))));
   var ul=el("ul","work");w.forEach(function(p){ul.appendChild(add(el("li"),chip(M.leg(p)),impactText(p,el("span"))))});host.appendChild(ul)}
  ticketList(host,a,5,function(k){return T[k]})}
-function lazy(d,id,fill){if(OPEN[id])d.open=true;
- function f(){if(d.open&&!d.dataset.f){d.dataset.f="1";fill()}}
- d.addEventListener("toggle",function(){OPEN[id]=d.open;f()});f()}
-function renderNow(cur){var s=$("now");s.textContent="";
- if(cur==null){s.appendChild(el("h2","head","Every v1.0.x ticket is done."));return}
- var a=M.inV(cur,REM),t=M.tally(a);s.appendChild(headline(cur,t));versionBody(cur,s)}
-function renderQueue(cur){var q=$("queue");q.textContent="";
- V.forEach(function(v,i){if(i===cur)return;var a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM),d=el("details",/[b-z]$/.test(D.V[i])?"q trail":"q"),s=el("summary");
-  if(!a.length&&REM)return;
-  var meta=el("span","meta");add(meta,t.left?t.left+" left"+(REM?"":" of "+t.n):"shipped",capBar(ld),t.live?pl(t.live,"leg","legs"):null);
-  add(s,el("span","ver",v),meta,el("span","line",M.summary(a,"theme").lead));d.appendChild(s);
-  lazy(d,"q"+i,function(){var b=el("div","qb");b.appendChild(headline(i,t));versionBody(i,b);d.appendChild(b)});q.appendChild(d)})}
-function renderThemes(){var h=$("themes");h.textContent="";
- T.map(function(_,i){return i}).map(function(ti){return [ti,M.inT(ti,REM)]}).filter(function(x){return x[1].length})
- .sort(function(x,y){return M.tally(y[1]).left-M.tally(x[1]).left||T[x[0]].localeCompare(T[y[0]])}).forEach(function(x){
-  var ti=x[0],a=x[1],t=M.tally(a),d=el("details","t"),s=el("summary"),first=Math.min.apply(null,a.filter(function(p){return p[2]!=2}).map(function(p){return p[3]}).concat([1e9]));
-  var meta=el("span","meta",(REM?t.left+" left":t.left+" of "+t.n+" left")+(first<1e9?" · first in "+V[first]:"")+(t.live?" · "+pl(t.live,"leg","legs"):""));
-  add(s,el("span","ver",T[ti]),meta,el("span","line",M.summary(a,"version").lead));d.appendChild(s);
-  lazy(d,"t"+ti,function(){var b=el("div","qb"),l=el("div","cap-line");
-   if(!REM&&t.done)l.appendChild(nb(t.done+" done","done",{t:ti},T[ti]+": done"));
-   l.appendChild(nb(t.left+" left","left",{t:ti},T[ti]+": what is left"));
-   if(t.live)l.appendChild(nb(pl(t.live,"leg","legs")+" working","live",{t:ti},T[ti]+": legs on it now"));
-   add(b,sumPara(M.summary(a,"version"),"version"),l);ticketList(b,a,3,function(k){return V[k]},function(x,y){return x-y});d.appendChild(b)});
-  h.appendChild(d)})}
-function renderUnplaced(){var h=$("unpl");h.textContent="";var u=D.U.filter(function(x){return !REM||x[2]!=2});
- var d=el("details","fold");d.appendChild(el("summary",null,pl(u.length,"ticket","tickets")+" parked or not placed ›"));
- lazy(d,"unpl",function(){u.forEach(function(x){d.appendChild(add(el("div","up"),el("code",null,"HIMMEL-"+x[0]),el("span","t",x[1]),el("span",null,x[3])))})});h.appendChild(d)}
-function renderTrain(){var a=M.inTrain(REM),t=M.tally(a),p=$("train");p.textContent="";
- add(p,"The v1.0.x train: ");
- if(REM)add(p,nb(t.left+" tickets left","left",{train:1},"The v1.0.x train: what is left"));
- else add(p,nb(t.done+" of "+t.n+" done","done",{train:1},"The v1.0.x train: done")," (",pct(t.done,t.n)+" %), ",nb(t.left+" left","left",{train:1},"The v1.0.x train: what is left"));
- if(t.live)add(p,", ",nb(pl(t.live,"leg","legs")+" working now","live",{train:1},"Legs working now"));add(p,".")}
+// The release desk: tiles, the decisions queue with its levers, the versions strip, what users gained.
+var WI={},ALL=false,BAND=["Stops now","Blocks release","Queue health"];
+function num(x){return x==null?"–":x===Math.round(x)?String(x):f2(x)}
+function bw(b){return b.what+" "+num(b.used)+" of "+num(b.cap)}
+function tile(lb,fig,sb,on,hot){var b=el("button",hot?"tile hot":"tile");b.type="button";add(b,el("span","lb",lb),el("span","fig",fig));
+ if(sb!=null)b.appendChild(typeof sb=="string"?el("span","sb",sb):sb);b.addEventListener("click",function(){on(b)});return b}
+function jump(id){var s=$(id);s.scrollIntoView({block:"start"});s.focus({preventScroll:true})}
+function renderTiles(ds){var h=$("tiles"),cur=D.CUR;h.textContent="";
+ if(cur!=null){var t=M.tally(M.inV(cur)),ld=M.load(cur),r=tile("Running",D.V[cur],t.done+" of "+t.n+" done · "+(ld.cap!=null?f2(ld.used)+" of "+f2(ld.cap)+" budget":"no cap"),
+  function(b){openDrill("version",{v:cur},V[cur],b)});r.appendChild(capBar(ld));h.appendChild(r)}
+ else h.appendChild(tile("Running","–","Every v1.0.x ticket is done.",function(){jump("gain")}));
+ var lv=D.P.filter(function(p){return M.leg(p)}),ch=el("span","chips");
+ lv.slice(0,3).forEach(function(p){ch.appendChild(chip(M.leg(p)))});if(lv.length>3)ch.appendChild(el("span","sb","+"+(lv.length-3)));
+ var mv=tile("Moving now",pl(lv.length,"leg","legs"),lv.length?null:"No leg is on a ticket.",function(b){openDrill("live",{train:1},"Legs working now",b)});
+ if(lv.length)mv.appendChild(ch);h.appendChild(mv);
+ var tr=M.tally(M.inTrain());
+ h.appendChild(tile("Gained",tr.done+" shipped",pct(tr.done,tr.n)+" % of the v1.0.x train",function(){jump("gain")}));
+ var c=[0,0,0];ds.forEach(function(d){c[d.band]++});
+ h.appendChild(tile("Needs your input",pl(ds.length,"decision","decisions"),BAND.map(function(n,j){return c[j]?c[j]+" "+n.toLowerCase():null}).filter(Boolean).join(" · ")||"Nothing waits on you.",
+  function(){jump("dec")},c[0]+c[1]>0))}
+// copyLine: the instruction to paste to the console. The page never acts on it.
+function copyLine(lines){var w=el("div","copy"),pre=el("pre",null,lines.join("\n")),b=el("button","lv","Copy");b.type="button";
+ b.addEventListener("click",function(){function sel(){var r=document.createRange();r.selectNodeContents(pre);var s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent="Selected, press copy"}
+  try{navigator.clipboard.writeText(pre.textContent).then(function(){b.textContent="Copied"},sel)}catch(e){sel()}});
+ return add(w,pre,b)}
+function wiTable(name,x,c){var tb=el("table","ld"),hr=el("tr");[name,"Now","After","Cap"].forEach(function(h){hr.appendChild(el("th",null,h))});tb.appendChild(hr);
+ function row(lab,b,a,cap){var r=el("tr");add(r,el("td",null,lab),el("td",null,num(b)),el("td",cap==null||a==null?null:a>cap+1e-9?"ovr":"met",num(a)),el("td",null,cap==null?"no cap":num(cap)));tb.appendChild(r)}
+ row("Planned",x.before.n,x.after.n,c?c.t:null);row("Mean",x.before.m,x.after.m,c?c.tot:null);row("P90 ≈",x.before.p9,x.after.p9,c?c.p9:null);return tb}
+function verdict(name,b){return b.length?name+" still over: "+b.map(bw).join(", ")+".":name+": every cap met."}
+function wiBox(w,fromName,toName){var box=el("div","wi"),two=el("div","two");
+ add(two,wiTable(fromName,w.from,D.VC[w.from.i]),wiTable(toName,w.to,w.to.caps));box.appendChild(two);
+ box.appendChild(el("p","fact",verdict(fromName,w.from.after.b)+" "+verdict(toName,w.to.after.b)));return box}
+function lever(label,on,pressed,f){var b=el("button","lv",label);b.type="button";b.setAttribute("aria-pressed",pressed?"true":"false");b.dataset.f=f;b.addEventListener("click",on);return b}
+function tline(p){return add(el("span","t"),el("code",null,keyOf(p))," ",p[9]?p[9].replace(/^internal:\s*/i,""):p[1])}
+function toggle(a,k){var j=a.indexOf(k);if(j<0)a.push(k);else a.splice(j,1)}
+// capCard: peel the lowest-return tickets to the trail or to v2/v3; each ticket's box keeps it here (pin) or releases a plan pin.
+function capBody(d,li,id,paint){var i=d.i,st=WI[id]||(WI[id]={lv:null,keep:[],unpin:[]}),tr=M.trail(i),cut=D.V.indexOf("v2/v3");
+ add(li,el("div","ctl",D.V[i]+" is over its cap"),el("div","fact",d.b.map(bw).join(" · ")));
+ var lv=el("div","levers");function pick(k){return function(){st.lv=st.lv==k?null:k;paint("lv-"+k)}}
+ if(tr)lv.appendChild(lever("Move to "+tr.name,pick("trail"),st.lv=="trail","lv-trail"));
+ if(cut>=0&&cut!=i)lv.appendChild(lever("Cut to v2/v3",pick("cut"),st.lv=="cut","lv-cut"));
+ lv.appendChild(lever("Open "+D.V[i],function(){openDrill("version",{v:i},V[i],this)},false,"lv-open"));li.appendChild(lv);
+ if(!st.lv)return;
+ var to=st.lv=="trail"?tr.i:cut,toName=st.lv=="trail"?tr.name:"v2/v3",pe=M.peel(i,{keep:st.keep,unpin:st.unpin}),box=wiBox(M.whatIf(i,pe.moved,to),D.V[i],toName);
+ var seen={},rows=[];pe.moved.concat(M.inV(i).filter(function(p){return st.keep.indexOf(p[0])>=0||st.unpin.indexOf(p[0])>=0}),pe.held).forEach(function(p){if(!seen[p[0]]){seen[p[0]]=1;rows.push(p)}});
+ if(rows.length){box.appendChild(el("h4",null,"What moves, lowest return first"));var ul=el("ul","fall");
+  rows.forEach(function(p){var pin=M.pinned(p),cb=el("input"),lb=el("label"),f="cb-"+p[0],mv=pe.moved.indexOf(p)>=0;cb.type="checkbox";cb.dataset.f=f;
+   cb.checked=pin?st.unpin.indexOf(p[0])<0:st.keep.indexOf(p[0])>=0;
+   cb.addEventListener("change",function(){toggle(pin?st.unpin:st.keep,p[0]);paint(f)});add(lb,cb,pin?"pinned":"keep here");
+   ul.appendChild(add(el("li"),lb,tline(p),el("span",mv?"ovr":"met",mv?"→ "+toName:"stays")))});box.appendChild(ul)}
+ var lines=[];if(pe.moved.length&&to<0)lines.push("open trail "+toName);
+ pe.moved.forEach(function(p){lines.push((st.lv=="cut"?"defer ":"move ")+keyOf(p)+" "+D.V[i]+" → "+toName)});
+ st.keep.forEach(function(k){lines.push("pin HIMMEL-"+k+" "+D.V[i])});st.unpin.forEach(function(k){lines.push("unpin HIMMEL-"+k+" "+D.V[i])});
+ if(!pe.moved.length)box.appendChild(el("p","fact","Nothing can move: every open ticket here is pinned, has a leg, or eases no broken cap."));
+ if(lines.length)box.appendChild(copyLine(lines));li.appendChild(box)}
+function one(p,li,f,label){li.appendChild(el("div","levers")).appendChild(lever(label||"Open the ticket",function(){openDrill("one",{k:p[0]},keyOf(p),this)},false,f))}
+function body(d,li,id,paint){li.appendChild(el("span","band b"+d.band,BAND[d.band]));
+ if(d.type=="cap")return capBody(d,li,id,paint);
+ var st=WI[id]||(WI[id]={lv:null});function pick(k){return function(){st.lv=st.lv==k?null:k;paint("lv-"+k)}}
+ if(d.type=="leg"){var lg=M.leg(d.p);add(li,el("div","ctl","Leg "+lg[0]+" is "+lg[1]+" on "+keyOf(d.p)),impactText(d.p,el("div","fact")));
+  li.appendChild(el("p","fact","The leg waits on its console; its ruling unblocks "+D.V[d.p[3]]+"."));one(d.p,li,"lv-one");return}
+ if(d.type=="drift"){var p=d.p,v=D.V[p[3]],lv=el("div","levers"),k=keyOf(p);
+  add(li,el("div","ctl",p[7]==1?k+": the plan and Jira name different versions":k+": in Jira's "+v+", not in the plan"),impactText(p,el("div","fact")));
+  var opts=p[7]==1?[["plan","Adopt plan","set-fixversion "+k+" "+v],["jira","Adopt Jira","place "+k]]:[["jira","Place in "+v,"place "+k+" "+v],["plan","Adopt plan","set-fixversion "+k+" none"]];
+  opts.forEach(function(o){lv.appendChild(lever(o[1],pick(o[0]),st.lv==o[0],"lv-"+o[0]))});li.appendChild(lv);
+  opts.forEach(function(o){if(st.lv==o[0])li.appendChild(add(el("div","wi"),el("p","fact",o[0]=="plan"?"Jira follows the plan; no budget moves.":"The plan follows Jira; the placer re-weighs "+v+"."),copyLine([o[2]])))});return}
+ if(d.type=="fold"){var pr=M.parent(d.i),w=M.whatIf(d.i,d.f,pr);
+  add(li,el("div","ctl",D.V[pr]+" can take back "+pl(d.f.length,"ticket","tickets")+" from "+D.V[d.i]),el("div","fact","Its caps hold with them; the best return comes first."));
+  var fl=el("div","levers");fl.appendChild(lever("Fold back",pick("fold"),st.lv=="fold","lv-fold"));li.appendChild(fl);
+  if(st.lv=="fold"){var bx=wiBox(w,D.V[d.i],D.V[pr]),ul=el("ul","fall");d.f.forEach(function(p){ul.appendChild(add(el("li"),el("span"),tline(p),el("span","met","→ "+D.V[pr])))});
+   add(bx,ul,copyLine(d.f.map(function(p){return "move "+keyOf(p)+" "+D.V[d.i]+" → "+D.V[pr]})));li.appendChild(bx)}return}
+ if(d.type=="unplaced"){add(li,el("div","ctl",pl(d.u.length,"open ticket has","open tickets have")+" no version"),el("div","fact","Parked or never placed: none of them counts against a cap."));
+  var ul2=el("div","levers");ul2.appendChild(lever("Place",pick("place"),st.lv=="place","lv-place"));li.appendChild(ul2);
+  if(st.lv=="place"){var b2=el("div","wi"),l2=el("ul","fall");d.u.forEach(function(x){l2.appendChild(add(el("li"),el("span"),add(el("span","t"),el("code",null,"HIMMEL-"+x[0])," ",x[1]),el("span","fact",x[3])))});
+   add(b2,l2,copyLine(d.u.map(function(x){return "place HIMMEL-"+x[0]})));li.appendChild(b2)}}}
+function card(d,id){var li=el("li","card");function paint(f){li.textContent="";body(d,li,id,paint);if(f){var x=li.querySelector('[data-f="'+f+'"]');if(x)x.focus()}}paint();return li}
+function renderDecisions(ds){var ol=$("decl");ol.textContent="";$("dech").textContent="Needs your input · "+ds.length;
+ if(!ds.length){ol.appendChild(el("li","card fact","Nothing needs a decision: every cap holds, no leg waits, Jira and the plan agree."));return}
+ var id={};(ALL?ds:ds.slice(0,40)).forEach(function(d){var k=d.type+":"+d.i+":"+(d.p?d.p[0]:"");id[k]=(id[k]||0)+1;ol.appendChild(card(d,k+":"+id[k]))});
+ if(!ALL&&ds.length>40){var b=el("button","lv","+"+(ds.length-40)+" more");b.type="button";b.addEventListener("click",function(){ALL=true;renderDecisions(ds)});ol.appendChild(add(el("li","card"),b))}}
+// renderSteer: the running version's levers when no cap forces one. Tick tickets (lowest return first) to see what moving
+// them to the trail or cutting them to v2/v3 would change, and the line that asks the console to do it.
+var STEER={to:"trail",sel:[],all:false};
+function renderSteer(f){var h=$("steerb"),i=D.CUR;h.textContent="";if(i==null){$("steer").hidden=true;return}
+ var tr=M.trail(i),cut=D.V.indexOf("v2/v3"),lv=el("div","levers"),to=STEER.to=="cut"&&cut>=0?cut:tr?tr.i:-1,toName=STEER.to=="cut"&&cut>=0?"v2/v3":tr?tr.name:"";
+ $("steerh").textContent="Steer "+D.V[i];
+ function pick(k){return function(){STEER.to=k;renderSteer("lv-"+k)}}
+ if(tr)lv.appendChild(lever("Move to "+tr.name,pick("trail"),STEER.to=="trail","lv-trail"));
+ if(cut>=0&&cut!=i)lv.appendChild(lever("Cut to v2/v3",pick("cut"),STEER.to=="cut","lv-cut"));
+ add(h,el("p","fact","Take work out of "+D.V[i]+" to ship it sooner. Lowest return (impact per size) first; tickets with a leg on them stay."),lv);
+ var c=M.inV(i).filter(function(p){return p[2]!=2&&p[7]!=2&&!M.leg(p)}).sort(function(x,y){return M.roi(x)-M.roi(y)||(y[6]||0)-(x[6]||0)||x[0]-y[0]}),
+  sel=c.filter(function(p){return STEER.sel.indexOf(p[0])>=0}),ul=el("ul","fall");
+ (STEER.all?c:c.slice(0,8)).forEach(function(p){var cb=el("input"),lb=el("label"),k="st-"+p[0],on=STEER.sel.indexOf(p[0])>=0;cb.type="checkbox";cb.dataset.f=k;cb.checked=on;
+  cb.addEventListener("change",function(){toggle(STEER.sel,p[0]);renderSteer(k)});add(lb,cb,"move");
+  ul.appendChild(add(el("li"),lb,tline(p),el("span",on?"ovr":"fact",on?"→ "+toName:(M.pinned(p)?"pinned · ":"")+(p[10]||""))))});h.appendChild(ul);
+ if(!STEER.all&&c.length>8){var m=lever("+"+(c.length-8)+" more",function(){STEER.all=true;renderSteer("lv-more")},false,"lv-more");h.appendChild(add(el("div","levers"),m))}
+ if(!sel.length){h.appendChild(el("p","fact","Tick a ticket to see what the move would change."))}
+ else{var box=wiBox(M.whatIf(i,sel,to),D.V[i],toName),lines=[];if(to<0)lines.push("open trail "+toName);
+  sel.forEach(function(p){if(M.pinned(p))lines.push("unpin "+keyOf(p)+" "+D.V[i]);lines.push((STEER.to=="cut"?"defer ":"move ")+keyOf(p)+" "+D.V[i]+" → "+toName)});
+  box.appendChild(copyLine(lines));h.appendChild(box)}
+ if(f){var x=h.querySelector('[data-f="'+f+'"]');if(x)x.focus()}}
+// renderVers: the first 12 rows from the running version on, plus any version over a cap; the rest behind one button.
+var VALL=false;
+function renderVers(){var h=$("vlist"),shown=0,hid=0;h.textContent="";
+ V.forEach(function(_,i){var a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM),tr=M.parent(i)>=0;if(!a.length&&REM)return;
+  var bx=M.breaches(i,M.stats(i,M.inV(i)));if(!VALL&&shown>=12&&!bx.length){hid++;return}shown++;
+  var b=el("button",tr?"vrow trail":"vrow"),nm=el("span","nm"),fg=el("span","fg");b.type="button";
+  if(i===D.CUR){var cd=el("span","cur-dot");cd.title="running";nm.appendChild(cd)}add(nm,(tr?"↳ ":"")+D.V[i]);
+  add(fg,t.left?t.left+" left":"shipped");if(t.live)add(fg," · "+pl(t.live,"leg","legs"));if(bx.length)add(fg," · ",el("span","x",bx.map(function(x){return x.what}).join(", ")+" over"));
+  add(b,nm,capBar(ld),fg);b.addEventListener("click",function(){openDrill("version",{v:i},V[i],b)});h.appendChild(b)});
+ if(hid){var m=el("button","lv vmore","Show "+pl(hid,"later version","later versions"));m.type="button";m.addEventListener("click",function(){VALL=true;renderVers()});h.appendChild(m)}}
+function renderGains(){var h=$("gains");h.textContent="";
+ var g=M.gains().sort(function(x,y){return y.done.filter(M.isUser).length-x.done.filter(M.isUser).length||y.done.length-x.done.length||x.i-y.i}).slice(0,4);
+ if(!g.length){h.appendChild(el("p","fact","Nothing has shipped on the v1.0.x train yet."));return}
+ g.forEach(function(x){var c=el("article","gain"),u=el("ul");
+  add(c,el("h3",null,D.V[x.i]),add(el("p","gl"),nb(x.done.length+" of "+x.n+" done","done",{v:x.i},V[x.i]+": done"),". "+x.s.lead));
+  x.done.filter(M.isUser).slice(0,3).forEach(function(p){u.appendChild(el("li",null,p[9]))});if(u.firstChild)c.appendChild(u);h.appendChild(c)})}
 function renderPvj(){var a=M.inTrain(REM),dr=a.filter(function(p){return p[7]==1}),off=a.filter(function(p){return p[7]==2&&p[2]!=2}),b=$("pvjb");
  $("pvjs").textContent="Plan vs Jira: "+(dr.length+off.length?(dr.length+off.length)+" differ ›":"they agree");b.textContent="";
  if(dr.length){b.appendChild(el("p",null,pl(dr.length,"ticket is","tickets are")+" planned for one version while Jira names another."));M.order(dr).forEach(function(p){b.appendChild(ticket(p))})}
  if(off.length){b.appendChild(el("p",null,pl(off.length,"open ticket sits","open tickets sit")+" in a version in Jira but not in the plan."));M.order(off).forEach(function(p){b.appendChild(ticket(p))})}}
-function render(){var cur=D.CUR;renderTrain();renderNow(cur);renderQueue(cur);renderThemes();renderUnplaced();renderPvj()}
+function render(){var ds=M.decisions();renderTiles(ds);renderDecisions(ds);renderSteer();renderVers();renderGains();renderPvj()}
 // drawer: numbers open it; focus moves in, Tab is trapped, Esc closes and focus returns to the number that opened it.
 function openDrill(kind,scope,title,from){
- var db=$("db");db.textContent="";$("dh").textContent=title;opener=from;
- if(kind=="load")loadView(scope.v,db);else{var a=M.drill(kind,scope,REM);
+ var db=$("db");db.textContent="";$("dh").textContent=title;if($("drawer").hidden)opener=from;
+ if(kind=="load")loadView(scope.v,db);
+ else if(kind=="version"){db.appendChild(headline(scope.v,M.tally(M.inV(scope.v,REM))));versionBody(scope.v,db)}
+ else if(kind=="one")D.P.filter(function(p){return p[0]==scope.k}).forEach(function(p){var t=ticket(p);t.open=true;db.appendChild(t)});
+ else{var a=M.drill(kind,scope,REM);
   db.appendChild(el("p","note",pl(a.length,"ticket","tickets")+(REM?", done ones hidden":"")+"."));a.forEach(function(p){db.appendChild(ticket(p))})}
  $("scrim").hidden=false;$("drawer").hidden=false;$("main").inert=true;document.querySelector(".mast").inert=true;$("dh").focus()}
 function closeDrill(){if($("drawer").hidden)return;$("drawer").hidden=true;$("scrim").hidden=true;$("main").inert=false;document.querySelector(".mast").inert=false;
