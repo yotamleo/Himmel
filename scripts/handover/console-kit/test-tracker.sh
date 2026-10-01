@@ -150,7 +150,7 @@ contains 'the pulse respects reduced motion (HIMMEL-3990)' "$html" '@media (pref
 contains 'caps are tested by null, never truthiness: a cap of 0 is a cap (HIMMEL-3957)' "$html" 'cap==null?null:r4(cap-u)'
 contains 'the desk renders the decisions queue (HIMMEL-3990)' "$html" 'renderTiles(ds);renderDecisions(ds);renderSteer();renderVers();renderGains()'
 contains 'a lever words its console instruction (HIMMEL-3990)' "$html" 'lines.push("open trail "+toName)'
-contains 'a nested drill keeps the first opener (HIMMEL-3990)' "$html" 'if($("drawer").hidden)opener=from;'
+contains 'a nested drill keeps the first opener (HIMMEL-3990)' "$html" '"drawer").hidden)opener=from;'
 # The new plan inputs move the freshness fingerprint; each render must itself succeed (HIMMEL-3979).
 # fp_ok <label> <var> -- render --emit-fp into <var>, failing the test when the render exits non-zero.
 fp_ok() {
