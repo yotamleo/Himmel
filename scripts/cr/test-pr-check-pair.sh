@@ -1009,7 +1009,9 @@ fi
 # spelling only for the drifted/adopter case.
 for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     n=$(basename "$(dirname "$f")")/$(basename "$f")
-    if grep -qF 'HIMMEL-4040: relative literal for EVERY scripts/cr call' "$f"; then
+    if grep -qF 'HIMMEL-4040: relative literal for EVERY scripts/cr call' "$f" \
+        && grep -qF "matches the anchor's" "$f" \
+        && grep -qF 'drifted or adopter case' "$f"; then
         pass "$n: HIMMEL-4040 relative-literal-for-every-call rule present"
     else
         fail "$n: HIMMEL-4040 relative-literal-for-every-call rule missing -- a leg following the absolute fence is classifier-denied [Out-of-Place Publication]"
