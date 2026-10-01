@@ -108,6 +108,20 @@ for p in $pids; do wait "$p"; done
 check '7. twelve concurrent adds keep all twelve legs' 12 "$(jq '.legs | length' "$c" 2>/dev/null)"
 check '7. no temp file is left behind' 0 "$(find "$tmp" -name 'race.fleet.json.*' ! -name '*.lock' | wc -l | tr -d ' ')"
 
+# 7b. HIMMEL-3981: two concatenated schema-1 objects are not one manifest
+# (jq reads a stream, so a per-value check would pass it).
+s="$tmp/stream.fleet.json"
+printf '%s\n%s\n' "{\"schema\":1,\"legs\":[{\"doc\":\"$d1\"}]}" "{\"schema\":1,\"legs\":[{\"doc\":\"$d2\"}]}" > "$s"
+before="$(cat "$s")"
+bash "$SCRIPT" list "$s" >/dev/null 2>&1; rc=$?
+check '7b. list refuses a multi-object stream (rc 1)' 1 "$rc"
+bash "$SCRIPT" add "$s" "$tmp/HIMMEL-3-N66-c.md" >/dev/null 2>&1; rc=$?
+check '7b. add refuses a multi-object stream (rc 1)' 1 "$rc"
+check '7b. the multi-object file is left unchanged' "$before" "$(cat "$s")"
+printf '' > "$s"
+bash "$SCRIPT" list "$s" >/dev/null 2>&1; rc=$?
+check '7b. list refuses an empty file (rc 1)' 1 "$rc"
+
 # 8. usage.
 bash "$SCRIPT" >/dev/null 2>&1; rc=$?
 check '8. no verb is a usage error (rc 2)' 2 "$rc"
