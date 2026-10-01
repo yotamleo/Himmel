@@ -1167,6 +1167,10 @@ assert_deny "3955 nix develop -i -c"        "$(j 'nix develop -i -c bash scripts
 assert_deny "3955 sudo -i"                  "$(j 'sudo -i bash scripts/handover/console-kit/go.sh')"
 assert_deny "3955 su - root -c"             "$(j 'su - root -c scripts/handover/console-kit/go.sh')"
 assert_deny "3955 ENV -i (any case)"        "$(j 'ENV -i bash scripts/handover/console-kit/go.sh')"
+# A leading assignment can swap the program (PATH) or its behaviour: no relief.
+assert_deny "3955 PATH= before grep"        "$(j 'PATH=/attacker/bin grep -i scripts/handover/merge-on-green.sh')"
+assert_deny "3955 LD_PRELOAD= before grep"  "$(j 'LD_PRELOAD=/x/y.so grep -i scripts/handover/merge-on-green.sh')"
+assert_deny "3955 GREP_OPTIONS= before grep" "$(j 'GREP_OPTIONS=--foo grep -i scripts/handover/merge-on-green.sh')"
 # The relief is an ALLOWLIST: only plain unquoted words, no glob, redirection or
 # separator. Anything else takes main's plain match.
 assert_deny "3955 attached redirection hides the env word" "$(j '/usr/bin/en?>/dev/null -i bash scripts/handover/console-kit/g*.sh')"

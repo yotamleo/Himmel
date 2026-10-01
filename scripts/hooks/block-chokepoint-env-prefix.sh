@@ -924,7 +924,7 @@ NL=$'\n'
 # takes main's plain whole-text match unchanged, so the relief can never loosen
 # main on a shape it cannot model (four rounds of blocklisting such shapes each
 # missed one). An allowlist, not a parser. And the command's first
-# non-assignment word (basename) must be a read-only program that cannot exec or
+# word must be a read-only program (no leading assignment: PATH= or LD_PRELOAD= before it turns the relief off) that cannot exec or
 # clear the environment (grep diff ls cat head tail wc stat file cut uniq cmp
 # basename dirname realpath readlink echo printf); sed, sort, rg, git, find,
 # xargs, shells and every launcher (env sudo su bwrap nix systemd-run
@@ -937,7 +937,7 @@ relief_off() {
     for w in $1; do
         case "$(printf '%s' "${w##*/}" | tr '[:upper:]' '[:lower:]')" in env) return 0 ;; esac
         [ -n "$prog" ] && continue
-        [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*[+]?= ]] && continue
+        [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*[+]?= ]] && return 0 # a leading assignment (PATH=, LD_PRELOAD=) can swap the program: no relief
         prog=$w # a path (./grep) is not the bare program name, so it never matches
     done
     case "$prog" in
