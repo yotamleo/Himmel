@@ -953,6 +953,18 @@ split_simple() {
     printf '%s\n' "$out"
 }
 
+# relief_off <text> -- HIMMEL-3955. rc 0 when <text> holds a shape the scoped
+# scan cannot model: `$(`, a backtick, `<(` / `>(`, a backslash-newline, or a
+# zsh paren glob (`en(v|x)`, `/usr/bin/(env)`: a `(` glued to a word). There
+# env_clear_opt / seam_assigned fall back to main's plain whole-text match, so
+# the relief never loosens main (three rounds of depth-aware splitting did).
+relief_off() {
+    local bsnl=$'\\\n'
+    # shellcheck disable=SC2016 # `$(` is matched literally, not expanded
+    [[ $1 == *'$('* || $1 == *'`'* || $1 == *'<('* || $1 == *'>('* || $1 == *"$bsnl"* ]] && return 0
+    [[ $1 =~ [^[:space:]\;\&\|\(\<\>]\( ]]
+}
+
 # redir_word <word> -- rc 0 when the word is a redirection (`2>/dev/null`, `>`,
 # `<f`); rc 2 when it is the bare operator, whose operand is the NEXT word.
 redir_word() {
@@ -971,8 +983,8 @@ redir_word() {
 env_clear_opt() {
     local t="$1" line w w2 prev head skip hit=1 noglob=0 rc
     local opt='(^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$)'
-    local bsnl=$'\\\n'
-    t=${t//"$bsnl"/} # a backslash-newline continuation joins with nothing (e\<nl>nv)
+    # Fail closed: a substitution/continuation shape takes main's plain match.
+    if relief_off "$t"; then [[ $t =~ $opt ]]; return; fi
     case $- in *f*) noglob=1 ;; esac
     set -f
     while IFS= read -r line; do
@@ -1011,8 +1023,7 @@ env_clear_opt() {
 seam_assigned() {
     local t="$1" v="$2" line w prev el skip hit=1 noglob=0 rc
     local re="(^|[^[:alnum:]_])${v}[+]?="
-    local bsnl=$'\\\n'
-    t=${t//"$bsnl"/}
+    if relief_off "$t"; then [[ $t =~ $re ]]; return; fi
     case $- in *f*) noglob=1 ;; esac
     set -f
     while IFS= read -r line; do

@@ -1157,6 +1157,11 @@ assert_deny "3955 zsh en(v|x) -i"         "$(j '/usr/bin/en(v|x) -i bash scripts
 assert_deny "3955 zsh (env) -i"           "$(j '/usr/bin/(env) -i bash scripts/handover/console-kit/go.sh')"
 assert_deny "3955 env name split by backslash-newline" "$(j "/usr/bin/e${BSNL}nv -i bash scripts/handover/console-kit/g*.sh")"
 assert_deny "3955 seam arm after 2>/dev/null --debug" "$(j '/usr/bin/en? 2>/dev/null --debug ARMAUTOMERGE=1 bash scripts/h*/m*.sh')"
+# Substitution shapes fail closed (main's plain match): the relief never runs there.
+# shellcheck disable=SC2016 # the $( is probe text, not an expansion
+assert_deny "3955 env, \$(true; true), -i" "$(j '/usr/bin/en? $(true; true) -i bash scripts/handover/console-kit/g*.sh')"
+# shellcheck disable=SC2016 # the $( is probe text, not an expansion
+assert_deny "3955 seam in \$( ) after long option" "$(j 'echo --flag $(ARMAUTOMERGE=1 bash scripts/h*/m*.sh)')"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
