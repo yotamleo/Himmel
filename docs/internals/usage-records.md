@@ -1,15 +1,15 @@
 # Per-ticket usage records (HIMMEL-3994)
 
 One append-only record per ticket answers "what did it cost and how many review
-rounds did it take". It joins four computations that previously lived apart and
-is computed once; consumers read the store, never transcript JSONL.
+rounds did it take". It joins two computations that previously lived apart and
+is computed once; consumers read the store, never transcript JSONL. The PR/CI
+join (`gh`) is deliberately not here: it is a follow-up that must fail closed
+by construction.
 
 | Input | Source |
 |---|---|
 | per-session tokens | `scripts/lib/bank-attribution.sh` output (HIMMEL-2764), reused not re-parsed |
 | CR rounds, verdicts, estimated critic tokens | the CR critic ledger (`scripts/cr/ledger-append.sh`) |
-| PR numbers, created/merged, outcome | `gh pr list` |
-| CI runs and wall seconds | `gh run list` per PR branch |
 
 ## Commands
 
@@ -21,8 +21,11 @@ bash scripts/usage/usage-read.sh [--ticket KEY] [--all]                # latest 
 
 Flags: `--projects` (default `~/.claude/projects`), `--ledger` (default the
 repo's `cr-critic-scores.jsonl`), `--store` (default `~/.himmel/state/usage`,
-or `HIMMEL_USAGE_STORE`), `--gh`, `--since`. The store is
-`<store>/records.jsonl`, outside the tree.
+or `HIMMEL_USAGE_STORE`), `--since`, and one selector, `--range` or
+`--tickets` (never both). `--range` is `KEY-a..KEY-b` with one key prefix;
+`--tickets` is comma-separated `KEY-n` entries and must match at least one
+ticket; `--since ""` is rejected. The store is `<store>/records.jsonl`,
+outside the tree.
 
 ## Join keys
 
@@ -46,8 +49,6 @@ or `HIMMEL_USAGE_STORE`), `--gh`, `--since`. The store is
 | `legs[]` | per session: `name`, `kind`, `turns`, `input`, `cache_read`, `cache_create`, `output`, `sub_*` (same five for its subagents) |
 | `totals.leg`, `totals.console`, `totals.judge` | the same ten counters summed per kind, as separate fields |
 | `cr` | `rounds` (distinct reviewed heads), `findings` (count by final verdict after amends; `open` when none), `est_tokens` (the ledger's estimated critic tokens) |
-| `pr` | `numbers`, `created`, `merged`, `outcome` (`MERGED`/`OPEN`/`CLOSED`/null); null when gh is unavailable |
-| `ci` | `runs`, `secs` (sum of updated minus started); null when gh is unavailable |
 | `digest` | sha256 of the record without this field |
 
 Numbers and ids only: the store never holds message text.
@@ -71,20 +72,14 @@ will feed it: PR-body cost aggregation (HIMMEL-4003) and the CR-loop ledger
 
 ## Limits
 
-`--since` windows session tokens only; CR, PR and CI stay all-time, so use it
+`--since` windows session tokens only; CR stays all-time, so use it
 for token questions, not for a stored record you mean to compare across runs.
 A whole compute-then-append run holds a `<store>/.lock` directory, so an older
-snapshot never publishes after a newer one. PR lookup reads the 50 most recent
-title matches per ticket (older PRs are not counted). Table parsing assumes session titles contain no ` | `. Sessions are keyed by
-title, so distinct sessions sharing a title merge into one `legs[]` entry.
-Judge calls are counted as `judge`-titled sessions only. `ci` is taken from ONE
-PR, the highest-numbered title match (its head branch), not summed across PRs:
-`runs` and `secs` cover the latest 200 runs on that branch that carry both a
-start and an update time (a run missing either is not counted in either field),
-wall time, not billed minutes. A ticket with PR/CI activity but no
-session and no CR ledger row has no record. A failed `gh run list`, or a run
-timestamp that does not parse, makes `ci` null rather than zero. An explicit
-`--projects`, `--ledger` or `--gh` that is missing or unreadable exits non-zero
-before anything is written; the default projects dir and default ledger may be
-absent (a note on stderr, treated as empty). `cr.rounds` counts heads with a responding review
+snapshot never publishes after a newer one. Table parsing assumes session
+titles contain no ` | `. Sessions are keyed by title, so distinct sessions
+sharing a title merge into one `legs[]` entry. Judge calls are counted as
+`judge`-titled sessions only. An explicit `--projects` or `--ledger` that is
+missing or unreadable exits non-zero before anything is written; the default
+projects dir and default ledger may be absent (a note on stderr, treated as
+empty). `cr.rounds` counts heads with a responding review
 (`unavailable` availability rows are not rounds).

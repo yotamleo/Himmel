@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/usage/test-usage.sh -- fixture test for usage-compute.sh and
-# usage-read.sh (HIMMEL-3994). Synthetic transcripts + a synthetic CR ledger +
-# a stub gh under mktemp -d; never a real transcript.
+# usage-read.sh (HIMMEL-3994). Synthetic transcripts and a synthetic CR ledger
+# only: no real transcript, no network.
 # Platform guard (gitbash-only): pure bash 3.2-safe + jq, no .ps1 twin needed.
 set -euo pipefail
 
@@ -53,19 +53,10 @@ cat > "$LEDGER" <<'L'
 {"kind":"avail","ts":"2026-01-01T02:00:00Z","branch":"feat/himmel-9002-other","head":"h9","model":"codex","status":"ok"}
 L
 
-mkdir -p "$ROOT/bin"
-cat > "$ROOT/bin/gh" <<'G'
-#!/usr/bin/env bash
-case "$*" in
-  *"pr list"*) echo '[{"number":77,"title":"feat: [HIMMEL-9001] thing","headRefName":"feat/himmel-9001-thing","createdAt":"2026-01-01T00:00:00Z","mergedAt":"2026-01-01T03:00:00Z","state":"MERGED"},{"number":78,"title":"other [HIMMEL-9002]","headRefName":"x","createdAt":"2026-01-01T00:00:00Z","mergedAt":null,"state":"OPEN"}]' ;;
-  *"run list"*) echo '[{"startedAt":"2026-01-01T00:10:00Z","updatedAt":"2026-01-01T00:20:00Z"},{"startedAt":"2026-01-01T01:00:00Z","updatedAt":"2026-01-01T01:05:00Z"}]' ;;
-  *) exit 1 ;;
-esac
-G
-chmod +x "$ROOT/bin/gh"
+
 
 STORE="$ROOT/store"
-run() { bash "$COMPUTE" --projects "$PROJ" --ledger "$LEDGER" --gh "$ROOT/bin/gh" --range HIMMEL-9001..HIMMEL-9002 "$@"; }
+run() { bash "$COMPUTE" --projects "$PROJ" --ledger "$LEDGER" --range HIMMEL-9001..HIMMEL-9002 "$@"; }
 
 # 1. per-session totals equal bank-attribution.sh on the same fixture
 BA="$(bash "$BANK" "$PROJ")"
@@ -84,46 +75,26 @@ check "totals.judge" "4" "$(printf '%s' "$rec" | jq -r '.totals.judge.input')"
 check "console not attributed to ticket" "0" "$(printf '%s' "$rec" | jq -r '.totals.console.input')"
 check "console pool record, unallocated" "3" "$(printf '%s\n' "$OUT" | jq -r 'select(.ticket=="_console")|.totals.console.input')"
 
-# 3. CR + CI + PR
+# 3. CR
 check "cr rounds" "2" "$(printf '%s' "$rec" | jq -r '.cr.rounds')"
 check "cr findings by verdict" '{"agreed":1,"disproved":1}' "$(printf '%s' "$rec" | jq -c '.cr.findings')"
 check "cr est tokens" "1500" "$(printf '%s' "$rec" | jq -r '.cr.est_tokens')"
-check "ci secs" "900" "$(printf '%s' "$rec" | jq -r '.ci.secs')"
-check "pr merged outcome" "MERGED" "$(printf '%s' "$rec" | jq -r '.pr.outcome')"
-check "pr only title-matched" "[77]" "$(printf '%s' "$rec" | jq -c '.pr.numbers')"
-
-# 3b. a failed gh run list is null ci, never zero; unavailable avail is not a round
-sed 's/\*"run list"\*) echo .*;;/*"run list"*) exit 1 ;;/' "$ROOT/bin/gh" > "$ROOT/bin/gh-nociruns"; chmod +x "$ROOT/bin/gh-nociruns"
-check "failed run list gives null ci" "null" "$(run --print --gh "$ROOT/bin/gh-nociruns" | jq -c 'select(.ticket=="HIMMEL-9001")|.ci')"
-sed 's/feat: \[HIMMEL-9001\] thing/HIMMEL-9001: thing/' "$ROOT/bin/gh" > "$ROOT/bin/gh-unbracketed"; chmod +x "$ROOT/bin/gh-unbracketed"
-check "unbracketed title still joins" "[77]" "$(run --print --gh "$ROOT/bin/gh-unbracketed" | jq -c 'select(.ticket=="HIMMEL-9001")|.pr.numbers')"
-sed 's/"startedAt":"2026-01-01T00:10:00Z"/"startedAt":"garbage"/' "$ROOT/bin/gh" > "$ROOT/bin/gh-badts"; chmod +x "$ROOT/bin/gh-badts"
-check "bad run timestamp gives null ci" "null" "$(run --print --gh "$ROOT/bin/gh-badts" | jq -c 'select(.ticket=="HIMMEL-9001")|.ci')"
-# CI comes from one PR (the highest number); a run without both timestamps is not counted
-cat > "$ROOT/bin/gh-twopr" <<'G'
-#!/usr/bin/env bash
-case "$*" in
-  *"pr list"*) echo '[{"number":77,"title":"[HIMMEL-9001] a","headRefName":"b77","createdAt":"2026-01-01T00:00:00Z","mergedAt":null,"state":"OPEN"},{"number":80,"title":"[HIMMEL-9001] b","headRefName":"b80","createdAt":"2026-01-02T00:00:00Z","mergedAt":null,"state":"OPEN"}]' ;;
-  *"run list"*) echo "$*" >> "$GH_CALLS"; echo '[{"startedAt":"2026-01-01T00:10:00Z","updatedAt":"2026-01-01T00:20:00Z"},{"startedAt":null,"updatedAt":"2026-01-01T00:30:00Z"}]' ;;
-  *) exit 1 ;;
-esac
-G
-chmod +x "$ROOT/bin/gh-twopr"
-GH_CALLS="$ROOT/gh-calls" run --print --gh "$ROOT/bin/gh-twopr" | jq -c 'select(.ticket=="HIMMEL-9001")|.ci' > "$ROOT/ci-twopr"
-check "one run-list call for two PRs" "1" "$(wc -l < "$ROOT/gh-calls" | tr -d ' ')"
-check "run-list used the highest PR branch" "1" "$(grep -c -- '--branch b80 ' "$ROOT/gh-calls" || true)"
-check "ci.runs counts only runs that count in secs" '{"runs":1,"secs":600}' "$(cat "$ROOT/ci-twopr")"
 
 # explicit inputs that are missing fail closed and write nothing
-export GH_CALLS="$ROOT/gh-calls"
 FC="$ROOT/store-fc"
-rc=0; bash "$COMPUTE" --projects "$PROJ" --ledger "$ROOT/no-such-ledger" --gh "$ROOT/bin/gh" --range HIMMEL-9001..HIMMEL-9002 --store "$FC" >/dev/null 2>&1 || rc=$?
+rc=0; bash "$COMPUTE" --projects "$PROJ" --ledger "$ROOT/no-such-ledger" --range HIMMEL-9001..HIMMEL-9002 --store "$FC" >/dev/null 2>&1 || rc=$?
 check "missing explicit ledger fails closed" "1" "$rc"
-rc=0; bash "$COMPUTE" --projects "$ROOT/no-such-dir" --ledger "$LEDGER" --gh "$ROOT/bin/gh" --range HIMMEL-9001..HIMMEL-9002 --store "$FC" >/dev/null 2>&1 || rc=$?
+rc=0; bash "$COMPUTE" --projects "$ROOT/no-such-dir" --ledger "$LEDGER" --range HIMMEL-9001..HIMMEL-9002 --store "$FC" >/dev/null 2>&1 || rc=$?
 check "missing explicit projects fails closed" "1" "$rc"
-rc=0; bash "$COMPUTE" --projects "$PROJ" --ledger "$LEDGER" --gh "$ROOT/no-such-gh" --range HIMMEL-9001..HIMMEL-9002 --store "$FC" >/dev/null 2>&1 || rc=$?
-check "missing explicit gh fails closed" "1" "$rc"
 check "fail-closed runs wrote nothing" "no" "$([ -e "$FC" ] && echo yes || echo no)"
+# selector validation: --tickets as strict as --range, nothing-matches and conflicts fail closed
+sel() { rc=0; bash "$COMPUTE" --projects "$PROJ" --ledger "$LEDGER" --store "$FC" "$@" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
+check "--tickets bad key fails" "1" "$(sel --tickets 'not a key')"
+check "--tickets empty element fails" "1" "$(sel --tickets 'HIMMEL-9001,')"
+check "--tickets matching nothing fails" "1" "$(sel --tickets HIMMEL-7777)"
+check "--tickets valid still works" "0" "$(sel --tickets HIMMEL-9001 --print)"
+check "--since empty fails" "1" "$(sel --since '' --print)"
+check "--range with --tickets fails" "1" "$(sel --range HIMMEL-9001..HIMMEL-9002 --tickets HIMMEL-9001 --print)"
 
 printf '%s\n' '{"kind":"avail","ts":"2026-01-01T03:00:00Z","branch":"feat/himmel-9001-thing","head":"h3","model":"codex","status":"unavailable"}' >> "$LEDGER"
 check "unavailable avail not a round" "2" "$(run --print | jq -r 'select(.ticket=="HIMMEL-9001")|.cr.rounds')"
