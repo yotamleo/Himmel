@@ -879,7 +879,9 @@ fi
 # 900) so a busy mirror cannot cause back-to-back embeds; REFRESHING = launched or running;
 # FAIL:<why> = the last refresh failed (same interval backs off the relaunch); skip = no
 # plan dir. The console doc dir is NOT watched: its bucket changes on every Results bullet.
-# ponytail: a kill -9 mid-refresh leaves OUT/.lock, read as FAIL:lock-stuck after an hour
+# The wrapper takes OUT/.launch first, so an overlapping tick's duplicate exits before it can
+# clobber the live refresh's .run.log/.last-fail/.last-run.
+# ponytail: a SIGKILL mid-refresh leaves OUT/.lock or .launch, read as FAIL:lock-stuck after an hour
 # until removed by hand; a pid-aware takeover when it bites.
 plan_index_summary=skip
 if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
@@ -895,8 +897,9 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         pi_age() { local m; m="$(stat -c %Y "$1" 2>/dev/null)" || m=""; case "$m" in ''|*[!0-9]*) echo 999999999 ;; *) echo $(( $(date +%s) - m )) ;; esac; }  # gnu-ok: console kit is Linux-only
         if bash "$HERE/../../roadmap/plan-index.sh" --check "${pi_args[@]}" >/dev/null 2>&1; then
             plan_index_summary=ok
-        elif [ -d "$pi_out/.lock" ]; then
-            if [ "$(pi_age "$pi_out/.lock")" -ge 3600 ]; then plan_index_summary=FAIL:lock-stuck; else plan_index_summary=REFRESHING; fi
+        elif [ -d "$pi_out/.lock" ] || [ -d "$pi_out/.launch" ]; then
+            pi_lk="$pi_out/.lock"; [ -d "$pi_lk" ] || pi_lk="$pi_out/.launch"
+            if [ "$(pi_age "$pi_lk")" -ge 3600 ]; then plan_index_summary=FAIL:lock-stuck; else plan_index_summary=REFRESHING; fi
         elif [ -f "$pi_out/.last-fail" ] && [ "$(pi_age "$pi_out/.last-fail")" -lt "$pi_min" ]; then
             plan_index_summary="FAIL:$(head -c 60 "$pi_out/.last-fail" 2>/dev/null | tr -c '[:alnum:] ._:-' '_')"
         elif [ -f "$pi_out/.fp" ] && [ -d "$pi_out/docs" ] && [ "$(pi_age "$pi_out/.fp")" -lt "$pi_min" ]; then
@@ -904,7 +907,7 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         elif mkdir -p "$pi_out" 2>/dev/null; then
             rm -f "$pi_out/.last-run"
             # shellcheck disable=SC2016  # the -c script is single-quoted on purpose: $1/$@ belong to the detached shell
-            setsid nohup bash -c 'o=$1; shift; if "$@" >"$o/.run.log" 2>&1; then rc=0; rm -f "$o/.last-fail"; else rc=$?; tail -n 1 "$o/.run.log" >"$o/.last-fail"; fi; echo "$rc" >"$o/.last-run"' _ "$pi_out" bash "$HERE/../../roadmap/plan-index.sh" --refresh "${pi_args[@]}" </dev/null >/dev/null 2>&1 &
+            setsid nohup bash -c 'o=$1; shift; mkdir "$o/.launch" 2>/dev/null || exit 0; trap "rmdir \"$o/.launch\"" EXIT; if "$@">"$o/.run.log" 2>&1; then rc=0; rm -f "$o/.last-fail"; else rc=$?; tail -n 1 "$o/.run.log" >"$o/.last-fail"; fi; echo "$rc" >"$o/.last-run"' _ "$pi_out" bash "$HERE/../../roadmap/plan-index.sh" --refresh "${pi_args[@]}" </dev/null >/dev/null 2>&1 &
             plan_index_summary=REFRESHING
         else
             plan_index_summary=FAIL:no-out-dir

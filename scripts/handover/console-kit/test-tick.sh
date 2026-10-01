@@ -1739,6 +1739,16 @@ STUB
     [ "$e4051" -le 2 ] && pass "the tick does not wait on the refresh (${e4051}s, HIMMEL-4051)" || fail "tick waited ${e4051}s on a 4s qmd (HIMMEL-4051)"
     contains 'while the refresh holds the lock the tick reads REFRESHING (HIMMEL-4051)' "$(t4051)" ' plan-index=REFRESHING'
     wait4051
+
+    # an overlapping launch (OUT/.launch held) reads REFRESHING and a duplicate wrapper exits
+    # without touching the live refresh's bookkeeping (codex-1)
+    echo five >> "$p4051_mir/HIMMEL-111.md"
+    mkdir "$p4051_out/.launch"; echo 77 > "$p4051_out/.last-run"
+    n4051="$(wc -l < "$p4051_calls")"
+    contains 'a held launch lock reads plan-index=REFRESHING (HIMMEL-4051)' "$(TICK_PLAN_INDEX_MIN_SECS=0 t4051)" ' plan-index=REFRESHING'
+    bash -c 'o=$1; shift; mkdir "$o/.launch" 2>/dev/null || exit 0; echo clobbered > "$o/.last-run"' _ "$p4051_out"
+    [ "$(cat "$p4051_out/.last-run")" = 77 ] && [ "$(wc -l < "$p4051_calls")" = "$n4051" ] && pass 'a held launch lock blocks a duplicate refresh (HIMMEL-4051)' || fail 'duplicate refresh ran past .launch (HIMMEL-4051)'
+    rmdir "$p4051_out/.launch"
 else
     skip 'plan-index= rows: no python3'
 fi
