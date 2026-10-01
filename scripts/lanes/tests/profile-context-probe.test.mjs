@@ -283,10 +283,12 @@ test('expectedSkillNames: skills of the required plugin only, latest cached vers
   assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'])].sort(), ['impeccable:audit', 'impeccable:impeccable']);
 });
 
-test('expectedSkillNames: the installed version wins over a newer cached one; unmatched installs fall back to latest', () => {
+test('expectedSkillNames: the installed version wins over a newer cached one, even when it has zero skills; no installed set falls back to latest', () => {
   const entries = [scanned('impeccable', 'old-only', '0.9'), scanned('impeccable', 'new-only', '2.0')];
   assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable@himmel', new Set(['0.9'])]]))], ['impeccable:old-only']);
-  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable@himmel', new Set(['9.9'])]]))], ['impeccable:new-only']);
+  // HIMMEL-4064: installed 9.9 has no SKILL.md, the session loads none; do not borrow another version's
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable@himmel', new Set(['9.9'])]]))], []);
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map())], ['impeccable:new-only']);
 });
 
 test('expectedSkillNames: a same-named plugin from another marketplace is not counted', () => {
@@ -304,8 +306,14 @@ test('installedVersionsOf: reads installed_plugins.json, null when unreadable', 
       { scope: 'project', projectPath: '/work/here', version: '0.9' },
       { scope: 'project', projectPath: '/work/elsewhere', version: '0.5' },
     ] } }));
+    for (const v of ['1.0', '0.9', '0.5']) mkdirSync(join(dir, 'plugins', 'cache', 'himmel', 'impeccable', v), { recursive: true });
     assert.deepEqual([...installedVersionsOf(dir, '/work/here').get('impeccable@himmel')].sort(), ['0.9', '1.0']);
     assert.deepEqual([...installedVersionsOf(dir, '/work/other').get('impeccable@himmel')], ['1.0']);
+    // HIMMEL-4064: a version whose cache dir is ABSENT is not installed for our purposes (falls back)
+    rmSync(join(dir, 'plugins', 'cache', 'himmel', 'impeccable', '0.9'), { recursive: true });
+    assert.deepEqual([...installedVersionsOf(dir, '/work/here').get('impeccable@himmel')], ['1.0']);
+    rmSync(join(dir, 'plugins', 'cache', 'himmel', 'impeccable', '1.0'), { recursive: true });
+    assert.equal(installedVersionsOf(dir, '/work/other').has('impeccable@himmel'), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

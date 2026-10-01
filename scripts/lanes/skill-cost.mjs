@@ -253,8 +253,9 @@ export function pluginCacheOf(path) {
 // HIMMEL-4060: listing entries of skills-dir command trees
 // (`<configDir>/skills/<tree>/commands/*.md`, surfaced as `<tree>:<command>`),
 // which scanSkillCosts does not see. Returns null when <configDir>/skills is
-// unreadable, so the caller can fall back to a constant.
-export function scanCommandTrees(configDir) {
+// unreadable, so the caller can fall back to a constant. Paths the scan could not
+// read (EACCES/EPERM/ELOOP) are pushed onto `skipped`, as scanSkillCosts reports them.
+export function scanCommandTrees(configDir, skipped = []) {
   const root = join(resolve(configDir), 'skills');
   let trees;
   try {
@@ -263,7 +264,6 @@ export function scanCommandTrees(configDir) {
     return null;
   }
   const entries = [];
-  const skipped = [];
   for (const tree of trees) {
     for (const e of scanCommands(join(root, tree.name, 'commands'), 'skills-dir-commands', skipped)) entries.push({ ...e, tree: tree.name });
   }

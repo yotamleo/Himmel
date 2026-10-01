@@ -4,7 +4,8 @@
 // live claude spawn (the measured half lives in profile-context-probe.mjs).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { scanCommandTrees } from '../skill-cost.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -91,6 +92,27 @@ test('reserve: an empty skills dir shrinks the reserve below the fixed constant'
 
 test('reserve: an unscannable configDir falls back to the fixed constant', () => {
   assert.deepEqual(skillListingSettings({ ...base, configDir: '/nonexistent/claude-config-4060' }), skillListingSettings(base));
+});
+
+// HIMMEL-4064 item 2: a command tree path the scan could not read is reported, as scanSkillCosts does.
+test('scanCommandTrees: a skipped (ELOOP) command path lands in the caller\'s skipped array, entries still returned', () => {
+  const dir = mkConfigDir({ t: { 'ok.md': '---\ndescription: d\n---\nbody\n' } });
+  symlinkSync('loop.md', join(dir, 'skills', 't', 'commands', 'loop.md'));
+  const skipped = [];
+  const entries = scanCommandTrees(dir, skipped);
+  assert.deepEqual(entries.map((e) => e.name), ['ok']);
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0].code, 'ELOOP');
+});
+
+test('reserve: a skipped command path is warned about on stderr, not silently dropped', () => {
+  const dir = mkConfigDir({ t: { 'ok.md': 'x\n' } });
+  symlinkSync('loop.md', join(dir, 'skills', 't', 'commands', 'loop.md'));
+  const lines = [];
+  const orig = process.stderr.write;
+  process.stderr.write = (s) => { lines.push(String(s)); return true; };
+  try { skillListingSettings({ ...base, configDir: dir }); } finally { process.stderr.write = orig; }
+  assert.match(lines.join(''), /skill-listing: .*ELOOP.*loop\.md/);
 });
 
 test('no required plugins: nothing emitted', () => {
