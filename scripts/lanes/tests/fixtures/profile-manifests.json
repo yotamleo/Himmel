@@ -11,12 +11,15 @@
   },
   "design": {
     "enabled": [
+      "frontend-design@claude-plugins-official",
       "handover@himmel",
       "himmel-ops@himmel",
+      "impeccable@himmel",
       "lean-skills@himmel",
       "plannotator-effective-html@himmel",
       "pr-review-toolkit-himmel@himmel",
-      "qmd@himmel"
+      "qmd@himmel",
+      "ui-ux-pro-max@ui-ux-pro-max-skill"
     ],
     "contextBudget": 50000
   },

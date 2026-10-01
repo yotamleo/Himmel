@@ -59,6 +59,9 @@ everywhere), ON-DEMAND (installed, disabled — `plugin-profile.sh enable
 | `typescript-lsp` | TypeScript language server integration | ON-DEMAND |
 | `pyright-lsp` | Python type checking via Pyright | NOT INSTALLED |
 | `plannotator-effective-html` | HTML design/UI artifact kit (design-artifact, html, html-diagram/-plan/-prototype/-wireframe) | ON-DEMAND — `design` profile only (HIMMEL-3064): measured 1 invocation in 1628 transcripts against ~630 tok/session cost, so it opts in per-dispatch instead of riding the ALWAYS tier |
+| `frontend-design` | Anthropic's frontend-design skill (official marketplace, local-path entry) | ON-DEMAND — `design` profile only (HIMMEL-4012); needs a one-time operator install |
+| `ui-ux-pro-max` | UI/UX design intelligence (7 skills under `.claude/skills/`: ui-ux-pro-max, design, design-system, brand, banner-design, slides, ui-styling) | ON-DEMAND — `design` profile only (HIMMEL-4012); catalog id `ui-ux-pro-max@ui-ux-pro-max-skill` |
+| `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.3.1` over HTTPS (HIMMEL-3069 precedent) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
 
 himmel's lean floor also carries `plugin-dev`, `agent-sdk-dev`, `hookify`,
 `playground`, and `atlassian` (all NOT INSTALLED) — see the full re-enable

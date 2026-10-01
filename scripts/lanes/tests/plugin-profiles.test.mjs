@@ -2,11 +2,12 @@
 // HIMMEL-1040 — resolver invariants for the named plugin-profile registry.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from 'node:fs';
 import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 import { resolveProfile, validateRegistry, parseAddPlugins, loadRegistry, readEnabledPluginIds, resolveProfileByName, mcpServersForProfile, collectMcpServerDefs } from '../plugin-profiles.mjs';
 import * as PP from '../plugin-profiles.mjs';
 
@@ -567,6 +568,68 @@ test('design profile enables plannotator-effective-html on top of the base floor
   assert.equal(p['lean-skills@himmel'], true, 'base still applies to design');
   assert.equal(p['pr-review-toolkit-himmel@himmel'], true, 'base still applies to design');
   assert.equal(REG.profiles.design.contextBudget, 50000);
+});
+
+test('design profile enables the full design pack (HIMMEL-4012)', () => {
+  const { enabledPlugins: p } = resolveProfile(REG, 'design', { installed: [] });
+  for (const id of ['frontend-design@claude-plugins-official', 'ui-ux-pro-max@ui-ux-pro-max-skill', 'impeccable@himmel']) {
+    assert.equal(p[id], true, `${id} must be enabled for design`);
+  }
+  for (const name of ['user', 'leg-impl', 'lane-impl']) {
+    const q = resolveProfile(REG, name, { installed: [] }).enabledPlugins;
+    assert.notEqual(q['impeccable@himmel'], true, `${name} must not enable impeccable`);
+  }
+});
+
+// HIMMEL-4012 role-coverage table: what each profile's ROLE requires, so a
+// profile that ships without its role's tools fails here instead of passing a
+// test that merely pins whatever the profile happens to contain (the HIMMEL-3064
+// design profile shipped with one plugin and its test pinned exactly that one).
+const ROLE_REQUIRES = {
+  user: ['lean-skills@himmel'],
+  design: ['plannotator-effective-html@himmel', 'frontend-design@claude-plugins-official',
+    'ui-ux-pro-max@ui-ux-pro-max-skill', 'impeccable@himmel'],
+  'lane-impl': ['pr-review-toolkit-himmel@himmel'],
+  'leg-impl': ['pr-review-toolkit-himmel@himmel'],
+  'lane-review': ['pr-review-toolkit-himmel@himmel'],
+  'lane-content': ['claude-obsidian@himmel', 'obsidian-triage@himmel'],
+  telegram: ['claude-obsidian@himmel', 'obsidian-triage@himmel'],
+  bare: [], 'console-relay': [], 'console-judge': [],
+};
+
+test('every shipped profile declares its role requirements and resolves them (HIMMEL-4012)', () => {
+  const shipped = Object.keys(REG.profiles).filter((n) => REG.profiles[n] !== null);
+  assert.deepEqual([...shipped].sort(), Object.keys(ROLE_REQUIRES).sort(), 'a profile with no ROLE_REQUIRES row is untested');
+  for (const name of shipped) {
+    const { enabledPlugins: p } = resolveProfile(REG, name, { installed: [] });
+    for (const id of ROLE_REQUIRES[name]) assert.equal(p[id], true, `${name} must enable ${id}`);
+  }
+});
+
+test('every himmel-marketplace catalog id exists in the himmel marketplace (HIMMEL-4012)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const mp = JSON.parse(readFileSync(join(REPO_ROOT, 'marketplace', '.claude-plugin', 'marketplace.json'), 'utf8'));
+  const names = new Set(mp.plugins.map((x) => x.name));
+  for (const id of REG.catalog.filter((i) => i.endsWith('@himmel'))) {
+    assert.ok(names.has(id.split('@')[0]), `${id} is not in marketplace/.claude-plugin/marketplace.json`);
+  }
+});
+
+test('every official catalog id is installable: local-path sourced in the live marketplace snapshot (HIMMEL-4012)', (t) => {
+  const snap = join(homedir(), '.claude', 'plugins', 'marketplaces', 'claude-plugins-official', '.claude-plugin', 'marketplace.json');
+  if (!existsSync(snap)) return t.skip('no claude-plugins-official snapshot on this machine');
+  const byName = new Map(JSON.parse(readFileSync(snap, 'utf8')).plugins.map((x) => [x.name, x]));
+  for (const id of REG.catalog.filter((i) => i.endsWith('@claude-plugins-official'))) {
+    const entry = byName.get(id.split('@')[0]);
+    assert.ok(entry, `${id} is not in the official marketplace`);
+    assert.equal(typeof entry.source, 'string', `${id} is url-sourced upstream (no install path - /plugin lists it as failed to load)`);
+  }
+});
+
+test('catalog carries no url-sourced official id that has no install path (HIMMEL-4012)', () => {
+  for (const id of ['atlassian', 'atomic-agents', 'chrome-devtools-mcp', 'firecrawl', 'huggingface-skills', 'vercel']) {
+    assert.ok(!REG.catalog.includes(`${id}@claude-plugins-official`), `${id} dropped from catalog (failed to load)`);
+  }
 });
 
 test('settings-template enabledPlugins mirrors the registry `user` profile (HIMMEL-1044 wiring)', () => {
