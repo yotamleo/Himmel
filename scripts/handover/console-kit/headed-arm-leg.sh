@@ -220,7 +220,7 @@ HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
 export HEADED_ARM_UNAME
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--ignore-denials] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--ignore-denials] [--lane native|claudex] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 # leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
@@ -302,6 +302,8 @@ leg_env_drop_token() {
 DRY_RUN=0
 RELAY=0
 JUDGE=0
+CONSULT=0
+READONLY_ROLE=0   # judge or consult: no implementation permissions, raised read clamp
 NO_PROFILE=0
 IGNORE_DENIALS=0
 HEADLESS=0
@@ -314,6 +316,7 @@ while :; do
         --dry-run) DRY_RUN=1; shift ;;
         --relay) RELAY=1; shift ;;
         --judge) JUDGE=1; shift ;;
+        --consult) CONSULT=1; shift ;;
         --ignore-denials) IGNORE_DENIALS=1; shift ;;
         --no-profile) NO_PROFILE=1; shift ;;
         --headless) HEADLESS=1; shift ;;
@@ -374,6 +377,47 @@ if [ "$JUDGE" -eq 1 ]; then
     fi
     PROFILE="console-judge"
 fi
+
+# --consult (HIMMEL-4014): a short read-only session that borrows the plugin set
+# of the REQUESTED profile list (--profile design,design-motion). Unlike --judge
+# it forces nothing, so the profile must be explicit (flag or LEG_PROFILE, never
+# the brief's `profile:` line), and it refuses every non-additive profile even as
+# a single name: operator/bare inject nothing, and the console/relay/judge role
+# profiles carry guard semantics a consult must not inherit. It also refuses a
+# leg-worktree cwd (an explicit LEG_REPO/HEADED_ARM_REPO under .claude/worktrees/):
+# a consult reads, it never runs inside a leg's checkout.
+if [ "$CONSULT" -eq 1 ]; then
+    if [ "$JUDGE" -eq 1 ] || [ "$RELAY" -eq 1 ] || [ "$NO_PROFILE" -eq 1 ]; then
+        usage
+        echo "headed-arm-leg: --consult refuses --judge, --relay and --no-profile (a consult is its own role and needs the requested profile)" >&2
+        exit 2
+    fi
+    if [ -z "$PROFILE" ]; then
+        usage
+        echo "headed-arm-leg: --consult refuses an empty profile: pass --profile <name[,name...]> (the plugin set to consult with)" >&2
+        exit 2
+    fi
+    _consult_rest="$PROFILE,"
+    while [ -n "$_consult_rest" ]; do
+        _consult_m="${_consult_rest%%,*}"; _consult_rest="${_consult_rest#*,}"
+        case "$_consult_m" in
+            operator|bare|console|console-relay|console-judge)
+                usage
+                echo "headed-arm-leg: --consult refuses profile \"$_consult_m\": non-additive or role profiles cannot back a consult (got: $PROFILE)" >&2
+                exit 2
+                ;;
+        esac
+    done
+    case "${LEG_REPO:-}${HEADED_ARM_REPO:-}" in
+        */.claude/worktrees/*)
+            usage
+            echo "headed-arm-leg: --consult refuses a leg worktree cwd (LEG_REPO/HEADED_ARM_REPO under .claude/worktrees/): launch it from the console's own checkout" >&2
+            exit 2
+            ;;
+    esac
+fi
+
+[ "$JUDGE" -eq 1 ] || [ "$CONSULT" -eq 1 ] && READONLY_ROLE=1
 
 # --no-profile (HIMMEL-3267) is the deliberate opt-out; a profile from ANY
 # source (flag, LEG_PROFILE, or the one --relay/--judge just forced) is a real
@@ -449,7 +493,7 @@ NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-}"
 # profile from the doc would silently end the unprofiled-launch refusal below.
 if [ -z "$PROFILE" ] && [ "$NO_PROFILE" -eq 0 ] && [ -f "$DOC" ]; then
     # shellcheck disable=SC2016  # backticks in the sed regex are literal
-    PROFILE="$(head -n 60 "$DOC" | sed -n -E 's/^[>* -]*profile:[[:space:]]*`?([A-Za-z0-9._-]+)`?[[:space:]]*$/\1/p' | head -n 1)"
+    PROFILE="$(head -n 60 "$DOC" | sed -n -E 's/^[>* -]*profile:[[:space:]]*`?([A-Za-z0-9._,-]+)`?[[:space:]]*$/\1/p' | head -n 1)"
 fi
 
 # HIMMEL-3267: same stance as the Tier-line refusal below - this wrapper
@@ -510,6 +554,11 @@ fi
 # a second, deliberate-only channel (a leg's own shell never reaches it -
 # headed-arm.sh unsets HEADED_ARM_LAUNCHER_ENV before a leg's own children
 # launch), unaffected by this ticket and not a bug to fix here.
+if [ "$CONSULT" -eq 1 ] && [ "$LANE" = "native" ]; then
+    # HIMMEL-4014: a consult is a short question, not a verdict - Sonnet at medium.
+    [ -z "$MODEL" ] && MODEL=claude-sonnet-5-5
+    CLAUDE_CODE_EFFORT_LEVEL="${HIMMEL_CONSOLE_JUDGE_EFFORT:-medium}"
+fi
 if [ "$JUDGE" -eq 1 ] && [ "$LANE" = "native" ]; then
     [ -z "$MODEL" ] && MODEL=claude-opus-5-5
     CLAUDE_CODE_EFFORT_LEVEL="${HIMMEL_CONSOLE_JUDGE_EFFORT:-high}"
@@ -642,9 +691,10 @@ unset -v _leg_rcwd _leg_rcwd_phys _leg_vroot _leg_vroot_phys
 # LEG_CONTEXT or brief Context line is needed; every other profile keeps the
 # 200000 ceiling and a bare LEG_CONTEXT=1m is still refused below.
 DESIGN_CONTEXT_REASON=""
-if [ "$PROFILE" = "design" ]; then
-    DESIGN_CONTEXT_REASON="design profile (HIMMEL-4012 operator ruling: no early compaction on design legs)"
-fi
+case ",$PROFILE," in
+*,design,*)
+    DESIGN_CONTEXT_REASON="design profile (HIMMEL-4012 operator ruling: no early compaction on design legs)" ;;
+esac
 if [ "${LEG_CONTEXT:-}" = "1m" ] || [ -n "$DESIGN_CONTEXT_REASON" ]; then
     CONTEXT="1m"
     RESOLVED_AUTOCOMPACT="auto"
@@ -922,7 +972,7 @@ fi
 # exported for it. The --dry-run report below reads both via ${VAR:-<unset>}
 # rather than a bare $VAR, since a judge launch never sets them at all and
 # this script runs under `set -u`.
-if [ "$JUDGE" -ne 1 ]; then
+if [ "$READONLY_ROLE" -ne 1 ]; then
     leg_propagate_env IMPL_GUARD_OK 1
     leg_propagate_env INLINE_IMPL_OK 1
 fi
@@ -991,7 +1041,7 @@ unset -f _console_name_ok
 # 400, generous for a design-sized doc without reopening the clamp entirely,
 # which stays HIMMEL_READ_CLAMP_OK's own, operator-only lever. The repeat-read
 # half of the clamp (read-clamp.sh's per-range dedup) is untouched.
-[ "$JUDGE" -eq 1 ] && leg_propagate_env HIMMEL_READ_CLAMP_LINES 4000
+[ "$READONLY_ROLE" -eq 1 ] && leg_propagate_env HIMMEL_READ_CLAMP_LINES 4000
 # HIMMEL_CONSOLE_RELAY=1 (HIMMEL-2975): marks this leg as the Sonnet relay half
 # of a split console. inbox-send.sh's Guard C already refuses --token under it
 # (#733); the Task 26 write-deny hook denies writes under it. Both key off
@@ -1063,6 +1113,8 @@ if [ -n "$PROFILE" ]; then
     # DEFAULT changes.
     if [ "$JUDGE" -eq 1 ]; then
         LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/judge-preface.md}"
+    elif [ "$CONSULT" -eq 1 ]; then
+        LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/consult-preface.md}"
     else
         LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/leg-preface.md}"
     fi
@@ -1216,10 +1268,27 @@ if [ -n "$PROFILE" ]; then
     # (never the relay), plus JUDGE: a judge does not implement (design 3.2,
     # Guard E above) and never needs to write a LEG's handover doc, so it
     # must not gain this grant even though it resolves its own DOC too.
-    if [ "$RELAY" -eq 0 ] && [ "$JUDGE" -eq 0 ] && [ -n "$_leg_doc_path" ]; then
+    if [ "$RELAY" -eq 0 ] && [ "$READONLY_ROLE" -eq 0 ] && [ -n "$_leg_doc_path" ]; then
         if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" \
             '.permissions.allow = ((.permissions.allow // []) + ["Edit(" + $doc + ")"])')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the handover-doc Edit allow to settings JSON" >&2
+            exit 2
+        fi
+    fi
+    # (HIMMEL-4014) --consult read-only envelope. The file-edit tools are denied
+    # by BARE name, so no path-scoped allow can re-open them (deny wins), and the
+    # session carries NO Edit allow at all. Its answer goes through exactly one
+    # Bash allow: append-results.sh on its own consult doc.
+    # ponytail: file tools denied, Bash not sandboxed (same ceiling as --judge), upgrade when a consult is observed writing outside its doc or a sandboxed-Bash primitive exists (HIMMEL-4061)
+    if [ "$CONSULT" -eq 1 ]; then
+        if [ -z "$_leg_doc_path" ]; then
+            echo "headed-arm-leg: --consult: cannot resolve the consult doc path for $DOC" >&2
+            exit 2
+        fi
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" \
+            '.permissions.deny = ((.permissions.deny // []) + ["Edit","Write","NotebookEdit"] | unique)
+             | .permissions.allow = ((.permissions.allow // []) + ["Bash(bash scripts/handover/console-kit/append-results.sh " + $doc + ":*)"])')"; then
+            echo "headed-arm-leg: --consult: cannot build the read-only envelope in settings JSON" >&2
             exit 2
         fi
     fi
@@ -1334,6 +1403,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
     if [ "$JUDGE" -eq 1 ]; then
         printf 'headed-arm-leg: judge=%s read-clamp-lines=%s preface-source=%s\n' \
             "$JUDGE" "${HIMMEL_READ_CLAMP_LINES:-<unset>}" "$LEG_PREFACE"
+    fi
+    if [ "$CONSULT" -eq 1 ]; then
+        printf 'headed-arm-leg: consult=%s read-clamp-lines=%s preface-source=%s\n' \
+            "$CONSULT" "${HIMMEL_READ_CLAMP_LINES:-<unset>}" "$LEG_PREFACE"
     fi
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"
@@ -1510,9 +1583,14 @@ if [ -n "$_ll_cache" ]; then
     _ll_role=leg
     [ "$RELAY" -eq 1 ] && _ll_role=relay
     [ "$JUDGE" -eq 1 ] && _ll_role=judge
+    [ "$CONSULT" -eq 1 ] && _ll_role=consult
+    # HIMMEL-4014: a consult line also names who asked; every other role's line
+    # keeps its exact key set (the cost cohort reader and test 28c pin it).
+    _ll_asker=""
+    [ "$CONSULT" -eq 1 ] && _ll_asker=" asker=${CONSOLE_FLAG:-unknown}"
     if ! ( umask 077 && mkdir -p "$_ll_cache/launch-logs" && \
-        printf 'headed-arm-leg: profile=%s lane=%s model=%s role=%s session=%s launched=%s\n' \
-            "${PROFILE:-none}" "$LANE" "${MODEL:-default}" "$_ll_role" "$NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        printf 'headed-arm-leg: profile=%s lane=%s model=%s role=%s session=%s launched=%s%s\n' \
+            "${PROFILE:-none}" "$LANE" "${MODEL:-default}" "$_ll_role" "$NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ll_asker" \
             >> "$_ll_cache/launch-logs/$NAME.log" ) 2>/dev/null; then
         echo "$(date +%F_%T) headed-arm-leg: WARN launch record NOT written under $_ll_cache/launch-logs (the cost cohort cannot see this launch)" >> "$LOG"
     fi

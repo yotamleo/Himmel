@@ -26,6 +26,15 @@ and what it must not touch. `headed-arm-leg.sh` **refuses** (exit 2) a launch
 with no `--profile` (HIMMEL-3267); `--no-profile` is the explicit opt-out, and
 then the preface is not injected, so paste it into the brief yourself or the
 leg is under-briefed.
+
+**Composed profiles (HIMMEL-4014).** `--profile` and the brief's `profile:` line
+take a comma list (`design,design-motion`, no spaces): the leg gets the union of
+the members' plugin sets. `operator`, `bare` and the console/relay/judge role
+profiles cannot be members. A leg that needs a skill outside its fixed profile
+asks its console for a read-only consult instead (`CONSULT <list> :: <question>
+:: read: <paths>`, see `leg-preface.md`); the console launches it with
+`headed-arm-leg.sh --consult --profile <list> --console <name> …` and relays the
+answer back with `console-kit/consult-relay.sh <consult-doc> <asker>`.
 Claudex briefs no longer paste the coordination paragraph: `--lane claudex`
 always appends [`leg-preface-claudex.md`](leg-preface-claudex.md).
 

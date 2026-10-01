@@ -380,6 +380,7 @@ export function validateRegistry(registry) {
 // skips step 1: it resolves to floor-only-plus-overlay so a dispatch can
 // compose a one-off surface purely from --add-plugins with no registry entry.
 export function resolveProfile(registry, name, opts = {}) {
+  if (String(name).includes(',')) return composeProfiles(registry, name, opts);
   const profiles = registry.profiles ?? {};
   // Own-property test, NOT `name in profiles` — `in` walks the prototype chain,
   // so a --profile value colliding with an Object.prototype member (constructor,
@@ -445,19 +446,46 @@ export function resolveProfile(registry, name, opts = {}) {
         if (rule && !allow.includes(rule)) allow.push(rule);
       }
     }
-    return { enabledPlugins, permissions: { allow }, ...listingSettings(name, enabledPlugins, opts) };
+    return { enabledPlugins, permissions: { allow }, ...listingSettings([name], enabledPlugins, opts) };
   }
-  return { enabledPlugins, ...listingSettings(name, enabledPlugins, opts) };
+  return { enabledPlugins, ...listingSettings([name], enabledPlugins, opts) };
+}
+
+// HIMMEL-4014: profiles that cannot be members of a `--profile a,b` list: operator
+// injects nothing, bare skips base, and the role profiles carry guard semantics, so
+// none of them is additive. Shared with the launcher's --consult refusal.
+export const NON_ADDITIVE_PROFILES = ['operator', 'bare', 'console', 'console-relay', 'console-judge'];
+
+// HIMMEL-4014: a comma list resolves to the UNION of its members. enabledPlugins is
+// an OR (a member's drop never switches off another member's enable), the floor
+// stays on (every member forces it), permissions.allow is the de-duplicated union,
+// and the skill listing runs ONCE over the union with the union of required ids.
+function composeProfiles(registry, list, opts) {
+  const members = list.split(',');
+  if (members.some((m) => !/^[A-Za-z0-9._-]+$/.test(m)) || new Set(members).size !== members.length) {
+    throw new Error(`plugin-profiles: malformed profile list "${list}" (names joined by single commas, no spaces, empty or repeated members)`);
+  }
+  const resolved = members.map((m) => {
+    const r = resolveProfile(registry, m, { ...opts, skillEntries: undefined });
+    if (NON_ADDITIVE_PROFILES.includes(m)) {
+      throw new Error(`plugin-profiles: profile "${m}" cannot be composed in a profile list (${NON_ADDITIVE_PROFILES.join(', ')} are not additive)`);
+    }
+    return r;
+  });
+  const enabledPlugins = {};
+  for (const r of resolved) for (const [id, on] of Object.entries(r.enabledPlugins)) enabledPlugins[id] = enabledPlugins[id] || on;
+  const allow = [...new Set(resolved.flatMap((r) => r.permissions?.allow ?? []))];
+  return { enabledPlugins, ...(allow.length ? { permissions: { allow } } : {}), ...listingSettings(members, enabledPlugins, opts) };
 }
 
 // HIMMEL-4038: opts.skillEntries (a scanSkillCosts().entries scan) opts a caller
 // in to skillOverrides + skillListingBudgetFraction; absent = unchanged output,
 // so the pure registry goldens stay byte-identical.
-function listingSettings(name, enabledPlugins, opts) {
+function listingSettings(names, enabledPlugins, opts) {
   if (!opts.skillEntries) return {};
   const enabledIds = Object.entries(enabledPlugins).filter(([, on]) => on).map(([id]) => id);
   if (!listingLib) throw new Error('plugin-profiles: opts.skillEntries needs `await loadListingLib()` first');
-  return listingLib.skillListingSettings({ entries: opts.skillEntries, enabledIds, requiredIds: listingLib.requiredIdsFor(name) });
+  return listingLib.skillListingSettings({ entries: opts.skillEntries, enabledIds, requiredIds: [...new Set(names.flatMap((n) => listingLib.requiredIdsFor(n)))] });
 }
 
 // HIMMEL-3567/HIMMEL-3572: the permission matcher compares literal command
@@ -564,6 +592,10 @@ export function resolveProfileByName(name, opts = {}, path = REGISTRY) {
 // distinct from an explicit [], which means "strip everything"). Mirrors
 // resolveProfile's own-property fail-closed check on an unknown name.
 export function mcpServersForProfile(registry, name) {
+  if (String(name).includes(',')) {
+    const lists = name.split(',').map((m) => mcpServersForProfile(registry, m));
+    return lists.every((l) => l === undefined) ? undefined : [...new Set(lists.flatMap((l) => l ?? []))];
+  }
   const profiles = registry.profiles ?? {};
   if (!Object.hasOwn(profiles, name)) {
     throw new Error(`plugin-profiles: unknown profile "${name}" (known: ${Object.keys(profiles).join(', ')})`);

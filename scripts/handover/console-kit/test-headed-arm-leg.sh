@@ -2844,6 +2844,95 @@ for variant in good missing bad none; do
   esac
 done
 
+# --- 41. HIMMEL-4014: composable --profile lists + the read-only --consult mode --
+# (a) a comma list resolves to the UNION of its members' plugin sets; (b) --consult
+# launches a plugin-scoped session whose settings deny the file-edit tools, carry
+# the requested profile, and allow exactly one Bash call (append-results.sh on the
+# consult doc); (c) --consult refuses guard-carrying/non-additive profiles even as
+# a SINGLE name, a worktree cwd, and every conflicting flag; (d) the launch ledger
+# line records role=consult with the asker and the profile list.
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile design,design-motion HIMMEL-4014-list "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41a dry-run --profile design,design-motion: exit 0" "$rc" "0"
+contains "41a dry-run reports the composed list" "$out" "profile=design,design-motion "
+contains "41a a design member keeps the 1m context ruling" "$out" " 1m"$'\n'
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile design,operator HIMMEL-4014-list "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41a a non-additive member in a list refuses (exit 2)" "$rc" "2"
+contains "41a refusal names the cause" "$out" "cannot be composed"
+
+d41="$tmp/c41"; mk_launch_stubs "$d41" "HIMMEL-4014-list"; mkdir -p "$tmp/repo41"
+RUN_LEG_ARGS='--profile design,design-motion' run_leg "$d41" "$tmp/repo41" "HIMMEL-4014-list" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d41" || true
+set41="$(cat "$d41/HIMMEL-4014-list.leg-settings.json" 2>/dev/null || true)"
+check "41a real launch: the settings enable a design-core id" "$(printf '%s' "$set41" | jq -r '.enabledPlugins["impeccable@himmel"]' 2>/dev/null)" "true"
+check "41a real launch: the settings enable a design-motion id" "$(printf '%s' "$set41" | jq -r '.enabledPlugins["gsap-skills@himmel"]' 2>/dev/null)" "true"
+
+for bad41 in operator bare console console-relay console-judge design,console-judge; do
+  rc=0; out="$(bash "$SCRIPT" --dry-run --consult --profile "$bad41" HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41c --consult --profile $bad41 refuses (exit 2)" "$rc" "2"
+  contains "41c --consult --profile $bad41: refusal says why" "$out" "--consult refuses"
+done
+for flags41 in "--judge --profile design-motion" "--relay --profile design-motion" "--no-profile" ""; do
+  rc=0; out="$(bash "$SCRIPT" --dry-run --consult $flags41 HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41c --consult ${flags41:-<no profile>}: exit 2" "$rc" "2"
+done
+rc=0; out="$(LEG_REPO="$tmp/.claude/worktrees/feat+x" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41c --consult from a leg worktree cwd refuses (exit 2)" "$rc" "2"
+contains "41c worktree refusal says why" "$out" "worktree"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --consult --profile design-motion --console HIMMEL-4014-console HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41b dry-run --consult --profile design-motion: exit 0" "$rc" "0"
+contains "41b dry-run reports consult=1" "$out" "consult=1"
+contains "41b dry-run uses the consult preface" "$out" "docs/handover/consult-preface.md"
+contains "41b dry-run defaults the model to sonnet" "$out" "claude-sonnet-5-5"
+contains "41b dry-run withholds IMPL_GUARD_OK" "$out" "IMPL_GUARD_OK=<unset>"
+
+d41c="$tmp/c41c"; mk_launch_stubs "$d41c" "HIMMEL-4014-ask"; mkdir -p "$tmp/repo41c"
+rc=0
+IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d41c/konsole" PGREP_CMD="$d41c/pgrep" \
+LEG_REPO="$tmp/repo41c" HEADED_ARM_LOCK_DIR="$d41c/locks" HEADED_ARM_PROC="$d41c/proc" \
+  bash "$SCRIPT" --consult --profile design-motion --console HIMMEL-4014-console HIMMEL-4014-ask "$some_doc" "$d41c/signal-never" "$PAST" "$d41c/log" >/dev/null 2>&1 || rc=$?
+wait_record "$d41c" || true
+check "41b real --consult launch: exit 0" "$rc" "0"
+cset41="$(cat "$d41c/HIMMEL-4014-ask.leg-settings.json" 2>/dev/null || true)"
+some_doc_canon41="$(cd -P "$(dirname "$some_doc")" && pwd -P)/$(basename "$some_doc")"
+check "41b consult settings carry the requested profile (design-motion id on)" "$(printf '%s' "$cset41" | jq -r '.enabledPlugins["gsap-skills@himmel"]' 2>/dev/null)" "true"
+check "41b consult settings deny the file-edit tools" "$(printf '%s' "$cset41" | jq -c '[.permissions.deny[] | select(. == "Edit" or . == "Write" or . == "NotebookEdit")] | sort' 2>/dev/null)" '["Edit","NotebookEdit","Write"]'
+check "41b consult settings carry NO Edit/Write allow at all" "$(printf '%s' "$cset41" | jq '[(.permissions.allow // [])[] | select(startswith("Edit") or startswith("Write") or startswith("NotebookEdit"))] | length' 2>/dev/null)" "0"
+check "41b consult settings allow exactly one Bash call: append-results on the consult doc" "$(printf '%s' "$cset41" | jq -c '[(.permissions.allow // [])[] | select(startswith("Bash"))]' 2>/dev/null)" \
+  "[\"Bash(bash scripts/handover/console-kit/append-results.sh $some_doc_canon41:*)\"]"
+cenv41="$(cat "$d41c/env-record" 2>/dev/null || true)"
+not_contains "41b consult never gets IMPL_GUARD_OK" "$cenv41" "IMPL_GUARD_OK=1"
+contains "41b consult is still a leg for Guard E (HIMMEL_CONSOLE_LEG=1)" "$cenv41" "HIMMEL_CONSOLE_LEG=1"
+cll41="$(ll_line HIMMEL-4014-ask)"
+contains "41d ledger line names role=consult" "$cll41" " role=consult "
+contains "41d ledger line names the profile list" "$cll41" " profile=design-motion "
+contains "41d ledger line names the asker" "$cll41" " asker=HIMMEL-4014-console"
+
+# Round trip: request text -> the consult appends its ANSWER with the ONE allowed
+# command (append-results.sh) -> the relay text the console forwards to the asker.
+RELAY41="$HERE/consult-relay.sh"
+cdoc41="$tmp/consult-doc41.md"; printf '# consult\n\n## Results\n' > "$cdoc41"
+rc=0; bash "$RELAY41" "$cdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
+check "41f relay: no ANSWER yet -> exit 3" "$rc" "3"
+bash "$HERE/append-results.sh" "$cdoc41" "ANSWER use easing X, see design.md:12" >/dev/null 2>&1 || true
+bash "$HERE/append-results.sh" "$cdoc41" "WRAPPED — answered" >/dev/null 2>&1 || true
+rc=0; relay41="$(bash "$RELAY41" "$cdoc41" HIMMEL-4014-ask 2>&1)" || rc=$?
+check "41f relay: answered -> exit 0" "$rc" "0"
+contains "41f relay text carries the CONSULT-ANSWER header" "$relay41" "CONSULT-ANSWER HIMMEL-4014-ask $cdoc41"
+contains "41f relay text carries the consult's answer" "$relay41" "use easing X, see design.md:12"
+bdoc41="$tmp/consult-blocked41.md"; printf '# consult\n\n## Results\n' > "$bdoc41"
+bash "$HERE/append-results.sh" "$bdoc41" "BLOCKED — path missing" >/dev/null 2>&1 || true
+rc=0; bash "$RELAY41" "$bdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
+check "41f relay: BLOCKED with no answer -> exit 4" "$rc" "4"
+rc=0; bash "$RELAY41" "$cdoc41" 'bad name' >/dev/null 2>&1 || rc=$?
+check "41f relay: bad asker -> exit 2" "$rc" "2"
+
+# The envelope is the same one the preface promises: both documents exist and say so.
+check "41e consult-preface.md exists" "$([ -f "$HERE/../../../docs/handover/consult-preface.md" ] && echo yes || echo no)" "yes"
+check "41e leg-preface documents the CONSULT request" "$(grep -c 'CONSULT' "$HERE/../../../docs/handover/leg-preface.md" | tr -d '[:space:]' | awk '{print ($1>0)}')" "1"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-headed-arm-leg.sh"
