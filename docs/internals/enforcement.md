@@ -2463,11 +2463,17 @@ ANSI-C `$'` word naming a path or carrying any backslash escape other than the
 plain whitespace/quote ones (`\n \t \r \\ \' \" \a \b \f \v`; an allowlist, so
 `\x \u \U \c \e` and octal all count; a bare `$'\t'` is allowed), is denied (any
 clearing token of arm (3) below anywhere in the command also counts as the
-write here, with no verb or program-word anchoring); (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
+write here, with no verb anchoring; a seam `NAME=` passed as the value of a
+`--long-option` with no env-like word before it, e.g. `ledger-append.sh amend
+--set k=v`, is an argument and not a write here); (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
 beside a chokepoint word is denied; (3) CLEARING a seam or
 `HIMMEL_CONSOLE_LEG` (ANY `unset` whatever its argument, any `export -n`,
 `declare|typeset|local +x`, `exec -<opt>`, `${!`, and any standalone
-`-u*`/`-i*`/`--u*`/`--i*`/bare `-` token, so
+`-u*`/`-i*`/`--u*`/`--i*`/bare `-` token in env position (HIMMEL-3955: the
+token follows an env-like word, `env`, a `$var`/brace word or a glob that
+matches `env`, with only option and `NAME=val` words between, in the same
+simple command; `grep -i`, `sed -i`, `diff -u`, `ls -i`, `sort -u` and a
+`--id N` flag are not env-clearing), so
 `env -u NAME`/`-uNAME`/`-iu`/`$x-uNAME`/a globbed `en?` with a long option
 all deny) beside a
 chokepoint word is denied — this reverses the old "clear-and-prove" allow and

@@ -1117,6 +1117,25 @@ assert_deny "3921 r11 \$v piece before a glob"            "$(j "HIMMEL_CONSOLE_L
 assert_allow "3921 r11 ls of a scripts glob, no write token"   "$(j "ls scripts/*.sh")"
 assert_allow "3921 r11 grep over a scripts glob, no write token" "$(j "grep x scripts/cr/*")"
 assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
+# HIMMEL-3955: the standalone -u*/-i*/--u*/--i*/bare - token counts only in env
+# position (after an env-like word), so these ordinary commands stop over-denying.
+assert_allow "3955 ledger-append amend: --id, --set k=v, ? in the reason" "$(j "bash scripts/cr/ledger-append.sh amend --id 4 --set verdict=deferred --set deferred_to=HIMMEL-3929 --reason \"see scripts/hooks/x? why?\"")"
+assert_allow "3955 grep -i over a scripts glob"      "$(j "grep -i foo scripts/hooks/*.sh")"
+assert_allow "3955 sed -i over a scripts glob (not a seam or env write)" "$(j "sed -i s/a/b/ scripts/hooks/*.sh")"
+assert_allow "3955 diff -u over a scripts glob"      "$(j "diff -u scripts/a.sh scripts/b*.sh")"
+assert_allow "3955 ls -i / sort -u over a scripts glob" "$(j "ls -i scripts/hooks/*.sh; sort -u scripts/hooks/*.sh")"
+assert_allow "3955 grep -n of a chokepoint file"     "$(j "grep -n deferred scripts/cr/clear-cr-marker.sh")"
+assert_allow "3955 grep -i beside a chokepoint word" "$(j "grep -i deferred scripts/cr/clear-cr-marker.sh")"
+assert_allow "3955 diff -u beside a chokepoint word" "$(j "diff -u $MERGE_ON_GREEN /tmp/x.sh")"
+assert_allow "3955 --long-option VAR=x argument, no chokepoint named" "$(j "bash scripts/cr/ledger-append.sh amend --set ${MOG_VAR}=1 --reason \"scripts/hooks/x?\"")"
+# 3955 controls: env position still denies, including beside a plain program word.
+assert_deny "3955 env -i, then a globbed kit path"       "$(j "setsid -f env -i bash scripts/handover/console-kit/g*.sh")"
+assert_deny "3955 env -i after grep in another segment"  "$(j "grep x f; env -i bash scripts/handover/console-kit/g*.sh")"
+assert_deny "3955 env -i in a subshell after grep"       "$(j "grep x \$(env -i bash scripts/handover/console-kit/g*.sh)")"
+assert_deny "3955 env with an option beside grep -i"     "$(j "grep -i x f; env -u HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN")"
+assert_deny "3955 env -i beside a chokepoint word"       "$(j "env -i bash $MERGE_ON_GREEN")"
+assert_deny "3955 seam assignment beside a globbed kit path" "$(j "${MOG_VAR}=1 setsid -f bash scripts/handover/console-kit/g*.sh")"
+assert_deny "3955 env VAR=x (no long option) then a globbed kit path" "$(j "setsid -f env --ignore-environment ${MOG_VAR}=1 bash scripts/handover/console-kit/g*.sh")"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
