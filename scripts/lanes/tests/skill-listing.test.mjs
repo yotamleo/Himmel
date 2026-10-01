@@ -94,10 +94,24 @@ test('reserve: an unscannable configDir falls back to the fixed constant', () =>
   assert.deepEqual(skillListingSettings({ ...base, configDir: '/nonexistent/claude-config-4060' }), skillListingSettings(base));
 });
 
+// HIMMEL-4065: symlinkSync throws EPERM on Windows without Developer Mode. Skip the two ELOOP
+// tests explicitly (never a silent pass) instead of erroring the suite. FORCE_EPERM simulates it.
+const selfLoop = (t, dir) => {
+  try {
+    if (process.env.SKILL_LISTING_FORCE_EPERM) throw Object.assign(new Error('forced'), { code: 'EPERM' });
+    symlinkSync('loop.md', join(dir, 'skills', 't', 'commands', 'loop.md'));
+    return true;
+  } catch (e) {
+    if (e.code !== 'EPERM') throw e;
+    t.skip('symlinkSync EPERM (no symlink privilege on this host)');
+    return false;
+  }
+};
+
 // HIMMEL-4064 item 2: a command tree path the scan could not read is reported, as scanSkillCosts does.
-test('scanCommandTrees: a skipped (ELOOP) command path lands in the caller\'s skipped array, entries still returned', () => {
+test('scanCommandTrees: a skipped (ELOOP) command path lands in the caller\'s skipped array, entries still returned', (t) => {
   const dir = mkConfigDir({ t: { 'ok.md': '---\ndescription: d\n---\nbody\n' } });
-  symlinkSync('loop.md', join(dir, 'skills', 't', 'commands', 'loop.md'));
+  if (!selfLoop(t, dir)) return;
   const skipped = [];
   const entries = scanCommandTrees(dir, skipped);
   assert.deepEqual(entries.map((e) => e.name), ['ok']);
@@ -105,9 +119,9 @@ test('scanCommandTrees: a skipped (ELOOP) command path lands in the caller\'s sk
   assert.equal(skipped[0].code, 'ELOOP');
 });
 
-test('reserve: a skipped command path is warned about on stderr, not silently dropped', () => {
+test('reserve: a skipped command path is warned about on stderr, not silently dropped', (t) => {
   const dir = mkConfigDir({ t: { 'ok.md': 'x\n' } });
-  symlinkSync('loop.md', join(dir, 'skills', 't', 'commands', 'loop.md'));
+  if (!selfLoop(t, dir)) return;
   const lines = [];
   const orig = process.stderr.write;
   process.stderr.write = (s) => { lines.push(String(s)); return true; };
