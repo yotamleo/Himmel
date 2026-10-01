@@ -6,14 +6,15 @@
 // is excluded from the CI node --test glob because it bills real usage.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   parseStreamJsonLines, findInitEvent, findResultEvent, firstTurnTokens,
   pluginSourceDiff, namespaceExtras, evaluateProfile, formatNote, roleCoverageProblems, countLoadedSkills,
   parseProbeArgs, resolveLedgerTarget, buildLedgerRow,
-  findContextUsage, isNameOnlySkill, listingProblems, expectedSkillNames, listingReport, requiredBudget,
+  findContextUsage, isNameOnlySkill, listingProblems, expectedSkillNames, installedVersionsOf, listingReport, requiredBudget,
 } from '../profile-context-probe.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -275,6 +276,22 @@ test('expectedSkillNames: skills of the required plugin only, latest cached vers
   const entries = [scanned('impeccable', 'impeccable'), scanned('impeccable', 'audit'), scanned('impeccable', 'old', '0.9'),
     scanned('other', 'x'), { ...scanned('other', 'impeccable'), path: '/h/.claude/plugins/cache/himmel/other/1.0/skills/impeccable/SKILL.md' }];
   assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'])].sort(), ['impeccable:audit', 'impeccable:impeccable']);
+});
+
+test('expectedSkillNames: the installed version wins over a newer cached one; unmatched installs fall back to latest', () => {
+  const entries = [scanned('impeccable', 'old-only', '0.9'), scanned('impeccable', 'new-only', '2.0')];
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable', new Set(['0.9'])]]))], ['impeccable:old-only']);
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable', new Set(['9.9'])]]))], ['impeccable:new-only']);
+});
+
+test('installedVersionsOf: reads installed_plugins.json, null when unreadable', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'inst-'));
+  try {
+    assert.equal(installedVersionsOf(dir), null);
+    mkdirSync(join(dir, 'plugins'), { recursive: true });
+    writeFileSync(join(dir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'impeccable@himmel': [{ version: '0.9' }, { version: '1.0' }] } }));
+    assert.deepEqual([...installedVersionsOf(dir).get('impeccable')].sort(), ['0.9', '1.0']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('listingProblems: a required skill absent from a non-empty listing is flagged by name', () => {

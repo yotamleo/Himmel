@@ -29,7 +29,7 @@
 //                       no CLI flag at all.
 //   (nothing set)        no ledger write — the safe default.
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -195,13 +195,33 @@ export function requiredBudget(contextUsage, requiredIds, costEntries) {
 // skill under the plugin's LATEST cached version (an older cached version can
 // carry skills the current one dropped). Matches the plugin-cache directory
 // component, not a path substring (HIMMEL-4060).
-export function expectedSkillNames(costEntries, requiredIds) {
+// The versions Claude loads come from <configDir>/plugins/installed_plugins.json
+// (Map plugin -> Set(version)); null when unreadable, so callers fall back to
+// the latest cached version.
+export function installedVersionsOf(configDir) {
+  try {
+    const doc = JSON.parse(readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'));
+    const out = new Map();
+    for (const [key, installs] of Object.entries(doc.plugins ?? {})) {
+      const versions = (Array.isArray(installs) ? installs : []).map((i) => String(i?.version ?? '')).filter(Boolean);
+      if (versions.length) out.set(key.split('@')[0], new Set(versions));
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+export function expectedSkillNames(costEntries, requiredIds, installedVersions) {
   const names = new Set();
   for (const id of requiredIds) {
     const plugin = pluginName(id);
     const mine = costEntries.filter((e) => e.scope === 'plugin-skills').map((e) => ({ e, c: pluginCacheOf(e.path) })).filter((x) => x.c?.plugin === plugin);
-    const latest = mine.map((x) => x.c.version).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1);
-    for (const x of mine) if (x.c.version === latest) names.add(`${plugin}:${x.e.name}`);
+    const installed = installedVersions?.get(plugin);
+    const want = installed?.size && mine.some((x) => installed.has(x.c.version))
+      ? installed
+      : new Set([mine.map((x) => x.c.version).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1)]);
+    for (const x of mine) if (want.has(x.c.version)) names.add(`${plugin}:${x.e.name}`);
   }
   return names;
 }
@@ -465,7 +485,7 @@ function main() {
       }
 
       const requiredIds = ROLE_REQUIRES[name] ?? [];
-      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds) });
+      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds, installedVersionsOf(configDir)) });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
       const need = requiredBudget(ctxRun.contextUsage, requiredIds, costEntries());

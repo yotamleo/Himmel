@@ -2,9 +2,9 @@
 // HIMMEL-4038 — per-profile skillOverrides (non-plugin skills name-only) and a
 // computed skillListingBudgetFraction. Pure functions + the resolver hook; no
 // live claude spawn (the measured half lives in profile-context-probe.mjs).
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -63,8 +63,11 @@ test('fraction: a skill DIRECTORY named like an enabled plugin does not count to
 });
 
 // HIMMEL-4060 item 5: the unscanned reserve is a scan of skills-dir command trees.
+const tmpDirs = [];
+after(() => { for (const d of tmpDirs) rmSync(d, { recursive: true, force: true }); });
 const mkConfigDir = (trees) => {
   const dir = mkdtempSync(join(tmpdir(), 'skill-listing-'));
+  tmpDirs.push(dir);
   mkdirSync(join(dir, 'skills'), { recursive: true });
   for (const [tree, files] of Object.entries(trees)) {
     mkdirSync(join(dir, 'skills', tree, 'commands'), { recursive: true });
