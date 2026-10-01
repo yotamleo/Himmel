@@ -27,6 +27,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$HERE/../../lib"
 # shellcheck disable=SC1091
 . "$LIB/handover-path.sh"
+# shellcheck source=scripts/lib/git-clean.sh
+. "$LIB/git-clean.sh"
+git_env_scrub
 
 pf="$(bash "$LIB/bank-preflight.sh" 2>&1)" || true
 case "$(printf '%s\n' "$pf" | tail -n 1)" in

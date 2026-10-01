@@ -2984,7 +2984,12 @@ done
 rc=0; out="$(LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --lane claudex --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41g --consult --lane claudex refuses (exit 2)" "$rc" "2"
 rc=0; out="$(bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
-check "41g derived repo inside .claude/worktrees refuses (this checkout is one)" "$rc" "$(case "$HERE" in */.claude/worktrees/*) echo 2 ;; *) echo 0 ;; esac)"
+# A worktree checkout refuses on the worktree rule; any checkout whose committed settings
+# carry additionalDirectories (himmel's do, HIMMEL-4069) refuses on the scope-merge rule.
+exp41g=0
+case "$HERE" in */.claude/worktrees/*) exp41g=2 ;; esac
+grep -q additionalDirectories "$HERE/../../../.claude/settings.json" 2>/dev/null && exp41g=2
+check "41g derived repo refuses (worktree, or committed settings widen the sandbox)" "$rc" "$exp41g"
 mkdir -p "$tmp/real41/.claude/worktrees/feat+y"; ln -s "$tmp/real41/.claude/worktrees/feat+y" "$tmp/link41"
 rc=0; out="$(LEG_REPO="$tmp/link41" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41g a symlink into a worktree refuses (exit 2)" "$rc" "2"
