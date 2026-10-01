@@ -35,13 +35,15 @@ RANGE=""
 TICKETS=""
 SINCE=""
 PRINT=0
+PROJECTS_SET=0
+GH_SET=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --projects) PROJECTS="${2:-}"; shift 2 ;;
+    --projects) PROJECTS="${2:-}"; PROJECTS_SET=1; shift 2 ;;
     --ledger)   LEDGER="${2:-}"; shift 2 ;;
     --store)    STORE="${2:-}"; shift 2 ;;
-    --gh)       GH="${2:-}"; shift 2 ;;
+    --gh)       GH="${2:-}"; GH_SET=1; shift 2 ;;
     --range)    RANGE="${2:-}"; shift 2 ;;
     --tickets)  TICKETS="${2:-}"; shift 2 ;;
     --since)    SINCE="${2:-}"; shift 2 ;;
@@ -50,9 +52,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -d "$PROJECTS" ] || die "not a directory: $PROJECTS"
-if [ -z "$LEDGER" ]; then
+# An explicit input that is missing or unreadable fails closed before anything
+# is written; a default may be absent (noted, treated as empty).
+if [ "$PROJECTS_SET" = 1 ]; then
+  [ -d "$PROJECTS" ] && [ -r "$PROJECTS" ] || die "--projects is not a readable directory: $PROJECTS"
+elif [ ! -d "$PROJECTS" ]; then
+  echo "usage-compute: note: default projects dir absent ($PROJECTS); no sessions" >&2
+  PROJECTS=""
+fi
+if [ -n "$LEDGER" ]; then
+  [ -f "$LEDGER" ] && [ -r "$LEDGER" ] || die "--ledger is not a readable file: $LEDGER"
+else
   LEDGER="$(git rev-parse --git-common-dir 2>/dev/null || true)/cr-critic-scores.jsonl"
+  [ -f "$LEDGER" ] || echo "usage-compute: note: default CR ledger absent ($LEDGER); no CR data" >&2
+fi
+if [ "$GH_SET" = 1 ]; then
+  command -v "$GH" >/dev/null 2>&1 || die "--gh is not an executable: $GH"
 fi
 
 # Ticket selector -> {prefix, lo, hi} or {list} or {} (all).
@@ -69,6 +84,7 @@ fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/usage-compute.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+[ -n "$PROJECTS" ] || { PROJECTS="$WORK/noprojects"; mkdir "$PROJECTS"; }
 
 # Serialize the whole compute-then-append (mkdir is atomic), so an older
 # snapshot can never publish after a newer one. --print touches no store.
@@ -90,7 +106,7 @@ BA_ARGS=("$PROJECTS")
 bash "$BANK" "${BA_ARGS[@]}" > "$WORK/bank.md" || die "bank-attribution failed (incomplete totals refused)"
 
 : > "$WORK/ledger.jsonl"
-[ ! -f "$LEDGER" ] || cp "$LEDGER" "$WORK/ledger.jsonl"
+[ ! -f "$LEDGER" ] || cp "$LEDGER" "$WORK/ledger.jsonl" || die "cannot read ledger: $LEDGER"
 
 # --- 2. join: sessions + CR ledger -> base records (no gh yet) --------------
 # shellcheck disable=SC2016  # jq's own $vars
@@ -158,12 +174,14 @@ for t in $(jq -r '.[].ticket | select(startswith("_") | not)' "$WORK/base.json")
   if prs="$($GH pr list --state all --search "$t in:title" --json number,title,headRefName,createdAt,mergedAt,state --limit 50 2>/dev/null)" \
       && printf '%s' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1; then
     prs="$(printf '%s' "$prs" | jq -c --arg t "$t" '[.[] | select(.title | test("(^|[^A-Za-z0-9-])" + $t + "([^0-9]|$)"))]')"
+    # CI comes from ONE PR: the highest-numbered match (its head branch).
     runs='[]'; cifail=0
-    for b in $(printf '%s' "$prs" | jq -r '[.[].headRefName] | unique | .[]'); do
+    b="$(printf '%s' "$prs" | jq -r 'max_by(.number) | .headRefName // empty')"
+    if [ -n "$b" ]; then
       r="$($GH run list --branch "$b" --json startedAt,updatedAt --limit 200 2>/dev/null)" || { cifail=1; r='[]'; }
       printf '%s' "$r" | jq -e 'type == "array"' >/dev/null 2>&1 || { cifail=1; r='[]'; }
-      runs="$(jq -nc --argjson a "$runs" --argjson b "$r" '$a + $b')"
-    done
+      runs="$r"
+    fi
     one="$(jq -nc --argjson prs "$prs" --argjson runs "$runs" --argjson cifail "$cifail" '
       def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
       { pr: { numbers: ([$prs[].number] | sort),
@@ -175,7 +193,7 @@ for t in $(jq -r '.[].ticket | select(startswith("_") | not)' "$WORK/base.json")
         ci: (([$runs[] | select(.startedAt != null and .updatedAt != null)
                        | (try ((.updatedAt | ts) - (.startedAt | ts)) catch null)]) as $d
              | if $cifail == 1 or any($d[]; . == null) then null
-               else { runs: ($runs | length), secs: ($d | add // 0) } end) }')"
+               else { runs: ($d | length), secs: ($d | add // 0) } end) }')"
   else
     one='{"pr":null,"ci":null}'
   fi

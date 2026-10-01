@@ -77,9 +77,14 @@ A whole compute-then-append run holds a `<store>/.lock` directory, so an older
 snapshot never publishes after a newer one. PR lookup reads the 50 most recent
 title matches per ticket (older PRs are not counted). Table parsing assumes session titles contain no ` | `. Sessions are keyed by
 title, so distinct sessions sharing a title merge into one `legs[]` entry.
-Judge calls are counted as `judge`-titled sessions only. CI seconds are wall
-time of runs on the PR branches, not billed minutes, over the latest 200 runs
-per branch (older runs are not counted). A ticket with PR/CI activity but no
-session and no CR ledger row has no record. A failed `gh run list` makes `ci`
-null rather than zero. `cr.rounds` counts heads with a responding review
+Judge calls are counted as `judge`-titled sessions only. `ci` is taken from ONE
+PR, the highest-numbered title match (its head branch), not summed across PRs:
+`runs` and `secs` cover the latest 200 runs on that branch that carry both a
+start and an update time (a run missing either is not counted in either field),
+wall time, not billed minutes. A ticket with PR/CI activity but no
+session and no CR ledger row has no record. A failed `gh run list`, or a run
+timestamp that does not parse, makes `ci` null rather than zero. An explicit
+`--projects`, `--ledger` or `--gh` that is missing or unreadable exits non-zero
+before anything is written; the default projects dir and default ledger may be
+absent (a note on stderr, treated as empty). `cr.rounds` counts heads with a responding review
 (`unavailable` availability rows are not rounds).

@@ -99,6 +99,32 @@ sed 's/feat: \[HIMMEL-9001\] thing/HIMMEL-9001: thing/' "$ROOT/bin/gh" > "$ROOT/
 check "unbracketed title still joins" "[77]" "$(run --print --gh "$ROOT/bin/gh-unbracketed" | jq -c 'select(.ticket=="HIMMEL-9001")|.pr.numbers')"
 sed 's/"startedAt":"2026-01-01T00:10:00Z"/"startedAt":"garbage"/' "$ROOT/bin/gh" > "$ROOT/bin/gh-badts"; chmod +x "$ROOT/bin/gh-badts"
 check "bad run timestamp gives null ci" "null" "$(run --print --gh "$ROOT/bin/gh-badts" | jq -c 'select(.ticket=="HIMMEL-9001")|.ci')"
+# CI comes from one PR (the highest number); a run without both timestamps is not counted
+cat > "$ROOT/bin/gh-twopr" <<'G'
+#!/usr/bin/env bash
+case "$*" in
+  *"pr list"*) echo '[{"number":77,"title":"[HIMMEL-9001] a","headRefName":"b77","createdAt":"2026-01-01T00:00:00Z","mergedAt":null,"state":"OPEN"},{"number":80,"title":"[HIMMEL-9001] b","headRefName":"b80","createdAt":"2026-01-02T00:00:00Z","mergedAt":null,"state":"OPEN"}]' ;;
+  *"run list"*) echo "$*" >> "$GH_CALLS"; echo '[{"startedAt":"2026-01-01T00:10:00Z","updatedAt":"2026-01-01T00:20:00Z"},{"startedAt":null,"updatedAt":"2026-01-01T00:30:00Z"}]' ;;
+  *) exit 1 ;;
+esac
+G
+chmod +x "$ROOT/bin/gh-twopr"
+GH_CALLS="$ROOT/gh-calls" run --print --gh "$ROOT/bin/gh-twopr" | jq -c 'select(.ticket=="HIMMEL-9001")|.ci' > "$ROOT/ci-twopr"
+check "one run-list call for two PRs" "1" "$(wc -l < "$ROOT/gh-calls" | tr -d ' ')"
+check "run-list used the highest PR branch" "1" "$(grep -c -- '--branch b80 ' "$ROOT/gh-calls" || true)"
+check "ci.runs counts only runs that count in secs" '{"runs":1,"secs":600}' "$(cat "$ROOT/ci-twopr")"
+
+# explicit inputs that are missing fail closed and write nothing
+export GH_CALLS="$ROOT/gh-calls"
+FC="$ROOT/store-fc"
+rc=0; bash "$COMPUTE" --projects "$PROJ" --ledger "$ROOT/no-such-ledger" --gh "$ROOT/bin/gh" --range HIMMEL-9001..HIMMEL-9002 --store "$FC" >/dev/null 2>&1 || rc=$?
+check "missing explicit ledger fails closed" "1" "$rc"
+rc=0; bash "$COMPUTE" --projects "$ROOT/no-such-dir" --ledger "$LEDGER" --gh "$ROOT/bin/gh" --range HIMMEL-9001..HIMMEL-9002 --store "$FC" >/dev/null 2>&1 || rc=$?
+check "missing explicit projects fails closed" "1" "$rc"
+rc=0; bash "$COMPUTE" --projects "$PROJ" --ledger "$LEDGER" --gh "$ROOT/no-such-gh" --range HIMMEL-9001..HIMMEL-9002 --store "$FC" >/dev/null 2>&1 || rc=$?
+check "missing explicit gh fails closed" "1" "$rc"
+check "fail-closed runs wrote nothing" "no" "$([ -e "$FC" ] && echo yes || echo no)"
+
 printf '%s\n' '{"kind":"avail","ts":"2026-01-01T03:00:00Z","branch":"feat/himmel-9001-thing","head":"h3","model":"codex","status":"unavailable"}' >> "$LEDGER"
 check "unavailable avail not a round" "2" "$(run --print | jq -r 'select(.ticket=="HIMMEL-9001")|.cr.rounds')"
 
