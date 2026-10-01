@@ -14,6 +14,16 @@
 # Usage:
 #   bash scripts/handover/reconcile-workers.sh
 #   bash scripts/handover/reconcile-workers.sh --list-live
+#   bash scripts/handover/reconcile-workers.sh --report
+#
+# --report (HIMMEL-1880) reconciles exactly like the default mode and also
+# prints one line per running seat to stdout, then a count summary:
+#   SEAT <DIED|NEVER-STARTED|STILL-RUNNING> <lane>/<task> pid=<pid> detail=<why> meta=<path>
+#   reconcile-report: died=<n> never-started=<n> still-running=<n>
+# DIED is a confirmed-dead pid past the grace window (the row is orphaned);
+# NEVER-STARTED is a row with no recorded pid AND no started_at; everything
+# else -- live, settling, unprobeable -- is STILL-RUNNING and is never reaped.
+# The periodic runner is reconcile-cadence.sh.
 #
 # Env:
 #   WORKER_BRIDGE_ROOT   Bridge root override (default: BRIDGE_ROOT, then
@@ -51,9 +61,9 @@ RECONCILE_GRACE_SECS="${RECONCILE_GRACE_SECS:-120}"
 RECONCILE_UNPROBEABLE_CEILING_SECS="${RECONCILE_UNPROBEABLE_CEILING_SECS:-172800}"
 
 case "$MODE" in
-    reconcile|--list-live) : ;;
+    reconcile|--list-live|--report) : ;;
     -h|--help)
-        echo "usage: reconcile-workers.sh [--list-live]"
+        echo "usage: reconcile-workers.sh [--list-live|--report]"
         exit 0
         ;;
     *)
@@ -132,7 +142,7 @@ worker_pid_alive() {
 # Reads newline-delimited "origPath\x1fopenPath" pairs on stdin (always
 # $BRIDGE/<lane>-sessions/<session>/meta.json -- no newlines in practice) and
 # writes one row per PARSEABLE file to stdout:
-# "origPath\x1fstatus\x1fpid\x1fshared_branch\x1frepo_dir\x1flane\x1ftask_name\n"
+# "origPath\x1fstatus\x1fpid\x1fshared_branch\x1frepo_dir\x1flane\x1ftask_name\x1fstarted_at\x1fpid_probe\n"
 # -- same unit-separator convention as before (survives bash 3.2's `read`
 # with empty fields). A file that fails to parse writes
 # "ERR reconcile-workers: cannot parse <origPath>: <msg>" to stderr and NO
@@ -169,7 +179,7 @@ rl.on("line", (line) => {
         failed = true;
         return;
     }
-    const vals = [o.status, o.pid, o.shared_branch, o.repo_dir, o.lane, o.task_name];
+    const vals = [o.status, o.pid, o.shared_branch, o.repo_dir, o.lane, o.task_name, o.started_at, o.pid_probe];
     process.stdout.write(origPath + "\x1f" + vals.map(v => v == null ? "" : String(v)).join("\x1f") + "\n");
 });
 rl.on("close", () => { process.exit(failed ? 2 : 0); });
@@ -317,6 +327,25 @@ _worker_release_dead_lock() {
 
 FAILED=0
 
+# MUTATE: the modes allowed to rewrite metadata and release locks. --report is
+# reconcile plus classification output, so it mutates exactly as reconcile does.
+MUTATE=0
+case "$MODE" in reconcile|--report) MUTATE=1 ;; esac
+
+# _report_seat <STATE> <detail> -- --report only; reads the loop's row vars.
+N_DIED=0
+N_NEVER=0
+N_RUNNING=0
+_report_seat() {
+    [ "$MODE" = "--report" ] || return 0
+    case "$1" in
+        DIED) N_DIED=$((N_DIED + 1)) ;;
+        NEVER-STARTED) N_NEVER=$((N_NEVER + 1)) ;;
+        *) N_RUNNING=$((N_RUNNING + 1)) ;;
+    esac
+    printf 'SEAT %s %s/%s pid=%s detail=%s meta=%s\n' "$1" "${lane:-unknown}" "${task_name:-unknown}" "${pid:-absent}" "$2" "$meta"
+}
+
 # HIMMEL-2066: gather every meta.json path FIRST, then hand the whole batch
 # to one _worker_census node process below, instead of spawning node once
 # per file inside this loop. Zero files -> census_paths stays empty ->
@@ -367,7 +396,7 @@ if [ -n "$census_paths" ]; then
     # are single-line JSON scalars from this codebase's own writers (status/
     # pid/branch/etc. are never multi-line strings), so a bare newline always
     # means "next row" -- there's no embedded-newline case to guard against.
-    while IFS=$'\x1f' read -r meta status pid branch repo_dir lane task_name <&3; do
+    while IFS=$'\x1f' read -r meta status pid branch repo_dir lane task_name started_at pid_probe <&3; do
         [ -n "$meta" ] || continue
         [ "$status" = "running" ] || continue
 
@@ -375,6 +404,7 @@ if [ -n "$census_paths" ]; then
             if [ "$MODE" = "--list-live" ]; then
                 printf '%s task=%s pid=%s meta=%s\n' "${lane:-unknown}" "${task_name:-unknown}" "$pid" "$meta"
             fi
+            _report_seat STILL-RUNNING alive
             continue
         else
             probe_rc=$?
@@ -387,9 +417,13 @@ if [ -n "$census_paths" ]; then
             # A pid that failed to PROBE (tasklist/probe-command failure)
             # keeps a real recorded pid here and is deliberately excluded --
             # that stays a pure grace-based case, not the relic shape.
+            # HIMMEL-1880: a never-written pid with no started_at and no
+            # unprobeable-write marker never recorded a start at all.
+            never_started=0
             case "$pid" in
                 ''|*[!0-9]*|0)
-                    if [ "$MODE" = "reconcile" ] && _worker_unprobeable_ceiling_exceeded "$meta"; then
+                    [ -z "$started_at" ] && [ -z "$pid_probe" ] && never_started=1
+                    if [ "$MUTATE" -eq 1 ] && _worker_unprobeable_ceiling_exceeded "$meta"; then
                         _worker_mark_orphaned_unprobeable "$meta"
                         rc=$?
                         if [ "$rc" -eq 0 ]; then
@@ -401,10 +435,18 @@ if [ -n "$census_paths" ]; then
                                 fi
                             fi
                             echo "$summary"
+                            # Reaped by the ceiling backstop, never by a probe:
+                            # DIED only if a start was recorded.
+                            if [ "$never_started" -eq 1 ]; then
+                                _report_seat NEVER-STARTED unprobeable-ceiling
+                            else
+                                _report_seat DIED unprobeable-ceiling
+                            fi
                             continue
                         fi
                         if [ "$rc" -ne 3 ]; then
                             FAILED=1
+                            _report_seat STILL-RUNNING error
                             continue
                         fi
                     fi
@@ -414,6 +456,11 @@ if [ -n "$census_paths" ]; then
             if [ "$MODE" = "--list-live" ]; then
                 printf '%s task=%s pid=%s state=unprobeable meta=%s\n' "${lane:-unknown}" "${task_name:-unknown}" "${pid:-absent}" "$meta"
             fi
+            if [ "$never_started" -eq 1 ]; then
+                _report_seat NEVER-STARTED no-pid-no-start
+            else
+                _report_seat STILL-RUNNING unprobeable
+            fi
             continue
         fi
 
@@ -422,23 +469,27 @@ if [ -n "$census_paths" ]; then
             if [ "$MODE" = "--list-live" ]; then
                 printf '%s task=%s pid=%s state=settling meta=%s\n' "${lane:-unknown}" "${task_name:-unknown}" "${pid:-absent}" "$meta"
             fi
+            _report_seat STILL-RUNNING settling
             continue
         else
             freshness_rc=$?
         fi
         if [ "$freshness_rc" -ne 1 ]; then
             FAILED=1
+            _report_seat STILL-RUNNING error
             continue
         fi
-        [ "$MODE" = "reconcile" ] || continue
+        [ "$MUTATE" -eq 1 ] || continue
 
         _worker_mark_orphaned "$meta" "$pid"
         rc=$?
         if [ "$rc" -eq 3 ]; then
+            # A terminal writer won the race: no longer a running seat.
             continue
         fi
         if [ "$rc" -ne 0 ]; then
             FAILED=1
+            _report_seat STILL-RUNNING error
             continue
         fi
 
@@ -450,7 +501,12 @@ if [ -n "$census_paths" ]; then
             fi
         fi
         echo "$summary"
+        _report_seat DIED confirmed-dead
     done 3<<< "$census_rows"
+fi
+
+if [ "$MODE" = "--report" ]; then
+    echo "reconcile-report: died=$N_DIED never-started=$N_NEVER still-running=$N_RUNNING"
 fi
 
 [ "$FAILED" -eq 0 ] || exit 2
