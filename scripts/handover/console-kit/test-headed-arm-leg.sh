@@ -2974,9 +2974,11 @@ check "41f relay: ANSWER, WRAPPED, then BLOCKED -> exit 4 (last terminal marker 
 wxdoc41="$tmp/consult-wholeword41.md"; printf '# consult\n\n## Results\n' > "$wxdoc41"
 bash "$HERE/append-results.sh" "$wxdoc41" "ANSWER use easing X" >/dev/null 2>&1 || true
 bash "$HERE/append-results.sh" "$wxdoc41" "WRAPPEDX — not a marker" >/dev/null 2>&1 || true
+check "41f setup: the WRAPPEDX bullet was written" "$(grep -c 'WRAPPEDX' "$wxdoc41")" "1"
 rc=0; bash "$RELAY41" "$wxdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: WRAPPEDX is not a WRAPPED bullet -> exit 3" "$rc" "3"
 bash "$HERE/append-results.sh" "$wxdoc41" "BLOCKEDish — not a marker" >/dev/null 2>&1 || true
+check "41f setup: the BLOCKEDish bullet was written" "$(grep -c 'BLOCKEDish' "$wxdoc41")" "1"
 rc=0; bash "$RELAY41" "$wxdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: BLOCKEDish is not a BLOCKED bullet -> exit 3 (not 4)" "$rc" "3"
 rc=0; bash "$RELAY41" "$cdoc41" 'bad name' >/dev/null 2>&1 || rc=$?
