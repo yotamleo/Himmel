@@ -2927,6 +2927,31 @@ d41n="$tmp/c41n"; mk_launch_stubs "$d41n" "HIMMEL-4061-n"
 RUN_LEG_ARGS="--profile design-motion" run_leg "$d41n" "$tmp/repo41c" "HIMMEL-4061-n" "claude-sonnet-5-5" >/dev/null 2>&1 || true
 wait_record "$d41n" || true
 check "41h a NON-consult profiled launch carries no .sandbox key" "$(jq 'has("sandbox")' "$d41n/HIMMEL-4061-n.leg-settings.json" 2>/dev/null)" "false"
+# HIMMEL-4061 NO-GO round: additionalDirectories is a sandbox WRITE ROOT, so a consult
+# must never get its doc's directory (the shared handover bucket) granted. The doc here
+# sits in a bucket SUBDIR of the handover root (the real caller shape), not in $tmp.
+b41="$HANDOVER_DIR/u41/r41"; mkdir -p "$b41"; : >"$b41/consult41.md"; ln -sf "$b41/consult41.md" "$b41/consult41-link.md"
+b41c="$(cd -P "$b41" && pwd -P)"
+for k41 in consult plain; do
+  d41k="$tmp/c41k-$k41"; mk_launch_stubs "$d41k" "HIMMEL-4061-$k41"
+  if [ "$k41" = consult ]; then kf41="--consult --profile design-motion --console HIMMEL-4014-console"; else kf41="--profile design-motion"; fi
+  # shellcheck disable=SC2086  # $kf41 is a deliberate multi-word flag set
+  IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d41k/konsole" PGREP_CMD="$d41k/pgrep" \
+  LEG_REPO="$tmp/repo41c" HEADED_ARM_LOCK_DIR="$d41k/locks" HEADED_ARM_PROC="$d41k/proc" \
+    bash "$SCRIPT" $kf41 "HIMMEL-4061-$k41" "$b41/consult41.md" "$d41k/signal-never" "$PAST" "$d41k/log" >/dev/null 2>&1 || true
+  wait_record "$d41k" || true
+done
+k41set_consult="$(cat "$tmp/c41k-consult/HIMMEL-4061-consult.leg-settings.json" 2>/dev/null || true)"
+k41set_plain="$(cat "$tmp/c41k-plain/HIMMEL-4061-plain.leg-settings.json" 2>/dev/null || true)"
+check "41h consult: the doc's bucket dir is NOT in additionalDirectories (it is a sandbox write root)" "$(printf '%s' "$k41set_consult" | jq --arg d "$b41c" '(.permissions.additionalDirectories // []) | map(select(. == $d)) | length' 2>/dev/null)" "0"
+check "41h consult: additionalDirectories is absent or empty" "$(printf '%s' "$k41set_consult" | jq '(.permissions.additionalDirectories // []) | length' 2>/dev/null)" "0"
+check "41h consult (bucket subdir doc): allowWrite is still only the doc file" "$(printf '%s' "$k41set_consult" | jq -c '.sandbox.filesystem.allowWrite' 2>/dev/null)" "[\"$b41c/consult41.md\"]"
+check "41h non-consult launch keeps the doc-dir additionalDirectories grant" "$(printf '%s' "$k41set_plain" | jq --arg d "$b41c" '(.permissions.additionalDirectories // []) | map(select(. == $d)) | length' 2>/dev/null)" "1"
+rc=0; out="$(LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4061-l "$b41/consult41-link.md" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41h a symlink consult doc refuses (exit 2)" "$rc" "2"
+contains "41h symlink refusal says symlink" "$out" "symlink"
 if [ "$(uname -s)" = "Linux" ]; then
   rc=0; out="$(CONSULT_BWRAP_BIN=bwrap-missing-4061 LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4061-m "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
   check "41h missing bwrap refuses the consult (exit 2)" "$rc" "2"

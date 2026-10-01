@@ -1255,6 +1255,9 @@ if [ -n "$PROFILE" ]; then
         fi
         if [ "$_leg_doc_is_root_or_ancestor" -eq 1 ]; then
             echo "headed-arm-leg: --profile $PROFILE: leg doc directory ($_leg_doc_dir) is the handover root or an ancestor of it, or HANDOVER_DIR could not be resolved (HANDOVER_DIR='${HANDOVER_DIR:-}') - skipping additionalDirectories grant for it" >&2
+        elif [ "$CONSULT" -eq 1 ]; then
+            # additionalDirectories become sandbox write roots: a consult's write set is its doc FILE only.
+            :
         elif ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_doc_dir" \
             '.permissions.additionalDirectories = ((.permissions.additionalDirectories // []) + [$dir])')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the leg doc's directory to additionalDirectories" >&2
@@ -1311,11 +1314,18 @@ if [ -n "$PROFILE" ]; then
     # would otherwise hand the consult its ship-step allows (merge-on-green etc.).
     # The Bash sandbox (HIMMEL-4061) is ADDED to the classifier, not swapped for it:
     # autoAllowBashIfSandboxed stays false, so every Bash call is still classifier-gated.
-    # Writes are confined to the one doc FILE (append-results.sh only appends with >>,
-    # so a file bind is enough; the parent dir is the shared handover bucket and is
-    # never granted) and denied in the repo; network is the sandbox default (blocked).
+    # Writes: the one doc FILE (append-results.sh only appends with >>, so a file bind
+    # is enough) plus Claude Code's own temp dirs; the doc's parent dir (the shared
+    # handover bucket) is never granted, and the additionalDirectories grant above is
+    # skipped under --consult because Claude Code turns those into sandbox write roots.
+    # The repo is denied. Network follows the MERGED settings, so a user/project scope
+    # can widen it (HIMMEL-4066 R2); a doc inside the repo is always denied (HIMMEL-4066).
     # ponytail: file tools denied, one append allow, Bash sandboxed to one writable file but reads open and settings-scope allowWrite arrays merge, upgrade on a consult observed reading secrets or widening its writes (HIMMEL-4061 follow-ups)
     if [ "$CONSULT" -eq 1 ]; then
+        if [ -L "$DOC" ]; then
+            echo "headed-arm-leg: --consult: the consult doc must not be a symlink ($DOC): the sandbox binds the resolved file" >&2
+            exit 2
+        fi
         if [ -z "$_leg_doc_path" ]; then
             echo "headed-arm-leg: --consult: cannot resolve the consult doc path for $DOC" >&2
             exit 2
