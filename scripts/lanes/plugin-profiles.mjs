@@ -10,8 +10,14 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { skillListingSettings, requiredIdsFor } from './skill-listing.mjs';
-import { scanSkillCosts } from './skill-cost.mjs';
+// HIMMEL-4038: skill-listing.mjs / skill-cost.mjs are imported lazily, only by a
+// caller that opts in via opts.skillEntries. The telegram poller's cachebust loader
+// copies THIS file alone into a tmp dir (scripts/telegram/poller.ts), so a static
+// local import would break every poller load.
+let listingLib;
+export async function loadListingLib() {
+  return (listingLib ??= await import('./skill-listing.mjs'));
+}
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REGISTRY = process.env.PLUGIN_PROFILES_REGISTRY || join(SCRIPT_DIR, 'plugin-profiles.json');
@@ -450,7 +456,8 @@ export function resolveProfile(registry, name, opts = {}) {
 function listingSettings(name, enabledPlugins, opts) {
   if (!opts.skillEntries) return {};
   const enabledIds = Object.entries(enabledPlugins).filter(([, on]) => on).map(([id]) => id);
-  return skillListingSettings({ entries: opts.skillEntries, enabledIds, requiredIds: requiredIdsFor(name) });
+  if (!listingLib) throw new Error('plugin-profiles: opts.skillEntries needs `await loadListingLib()` first');
+  return listingLib.skillListingSettings({ entries: opts.skillEntries, enabledIds, requiredIds: listingLib.requiredIdsFor(name) });
 }
 
 // HIMMEL-3567/HIMMEL-3572: the permission matcher compares literal command
@@ -687,6 +694,8 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     // behind $HIMMEL_REPO (or behind this script), never a worktree.
     const anchor = primaryCheckout(process.env.HIMMEL_REPO || SCRIPT_DIR);
     // HIMMEL-4038: the skill scan feeds skillOverrides + the listing budget fraction.
+    await loadListingLib();
+    const { scanSkillCosts } = await import('./skill-cost.mjs');
     const skillEntries = scanSkillCosts({ cwd: process.cwd(), configDir: process.env.CLAUDE_CONFIG_DIR || undefined }).entries;
     const settings = resolveProfileByName(name, { addPlugins, installed, anchor: anchor ?? undefined, skillEntries });
     if (settings === null) process.exit(0); // operator: nothing to inject

@@ -35,7 +35,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from '../lib/is-main.mjs';
 import { createRequire } from 'node:module';
-import { loadRegistry, resolveProfileByName, readEnabledPluginIds } from './plugin-profiles.mjs';
+import { loadRegistry, resolveProfileByName, readEnabledPluginIds, loadListingLib } from './plugin-profiles.mjs';
 import { ledgerPath } from './verify-return.mjs';
 import { ROLE_REQUIRES } from './role-requires.mjs';
 import { scanSkillCosts } from './skill-cost.mjs';
@@ -463,5 +463,6 @@ function main() {
 }
 
 if (isMain(import.meta.url)) {
+  await loadListingLib();
   main();
 }

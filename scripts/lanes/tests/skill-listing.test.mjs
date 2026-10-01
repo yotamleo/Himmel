@@ -7,7 +7,9 @@ import assert from 'node:assert/strict';
 import {
   skillListingSettings, DEFAULT_FRACTION, MAX_FRACTION, BUILTIN_SKILL_NAMES,
 } from '../skill-listing.mjs';
-import { resolveProfile } from '../plugin-profiles.mjs';
+import { resolveProfile, loadListingLib } from '../plugin-profiles.mjs';
+
+await loadListingLib();
 
 const plugin = (name, routing, p = name) => ({
   scope: 'plugin-skills', name, countedRoutingChars: routing, chars: name.length + 2 + routing,
