@@ -547,7 +547,22 @@ _bwimc_split_clauses() {
                         _bwimc_split_emit "$clause"; clause=""; _bwimc_sp_pipe=1
                     fi
                     ;;
-                ';'|'&'|'('|"$_BWIMC_NL") _bwimc_split_emit "$clause"; clause="" ;;
+                ';'|'&'|"$_BWIMC_NL") _bwimc_split_emit "$clause"; clause="" ;;
+                '(')
+                    _bwimc_split_emit "$clause"; clause=""
+                    # `cd P || ( :; cd W )`: a ( reached while the flag is
+                    # pending opens a group the flag must outlive.
+                    [ "$_bwimc_sp_pipe" = 1 ] && _bwimc_sp_grp=$((_bwimc_sp_grp+1))
+                    ;;
+                ')')
+                    if [ "$_bwimc_sp_grp" -gt 0 ]; then
+                        _bwimc_split_emit "$clause"; clause=""
+                        _bwimc_sp_grp=$((_bwimc_sp_grp-1))
+                        [ "$_bwimc_sp_grp" -gt 0 ] || _bwimc_sp_pipe=0
+                    else
+                        clause="${clause}${c}"
+                    fi
+                    ;;
                 *) clause="${clause}${c}" ;;
             esac
         else

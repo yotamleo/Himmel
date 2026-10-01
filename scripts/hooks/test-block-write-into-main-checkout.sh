@@ -3040,6 +3040,13 @@ check_both "85 fromW: cd primary || { :; cd wt; }; echo x > a.txt denies (flag s
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || { :; cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "85b fromW: cd primary || { echo a; echo b; cd wt; }; echo x > a.txt denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || { echo a; echo b; cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 85d (codex-1 round 2): same for a ( ) subshell group.
+check_both "85d fromW: cd primary || ( :; cd wt; ); echo x > a.txt denies (flag survives the subshell group)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || ( :; cd $FIX/wt; ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85e fromW: cd primary || ( echo a; cd wt ); echo x > a.txt denies (no ; before the close paren)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || ( echo a; cd $FIX/wt ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85f control: cd wt || ( echo no; exit 1 ); echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || ( echo no; exit 1 ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 # 85c (control): the flag ends with the group, so a later cd is judged normally.
 check_both "85c control: cd wt || { echo no; exit 1; }; echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || { echo no; exit 1; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
