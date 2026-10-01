@@ -128,5 +128,24 @@ bash "$SCRIPT" "$con9" >/dev/null 2>&1
 bash "$SCRIPT" "$con9" >/dev/null 2>&1
 check '9. an empty render is a stable single none' 'legs: none' "$(grep '^legs:' "$con9")"
 
+# 10. a backslash in the preserved prose survives the rewrite (not awk-interpreted).
+con10="$HANDOVER_DIR/b/HIMMEL-nextleg-W-console.md"
+printf '# c\n\n## Live state\n\nlegs: `N61:n10:tok-one:10` note a\\nb \\t end\nqueue: none\n' > "$con10"
+bash "$FM" add "${con10%.md}.fleet.json" "$d1" >/dev/null 2>&1
+bash "$SCRIPT" "$con10" >/dev/null 2>&1
+check '10. backslashes in prose are written verbatim' 'legs: `N61:n10:tok-one:10` note a\nb \t end' "$(grep '^legs:' "$con10")"
+check '10. the doc keeps its line count' 6 "$(wc -l < "$con10" | tr -d ' ')"
+
+# 11. a lock status failure (not "free") refuses and leaves the doc untouched.
+con11="$HANDOVER_DIR/b/HIMMEL-nextleg-V-console.md"
+printf '# c\n\n## Live state\n\nlegs: `N61:n11:tok-one:11`\n' > "$con11"
+bash "$FM" add "${con11%.md}.fleet.json" "$d1" >/dev/null 2>&1
+before11="$(cat "$con11")"
+cp -R "$HERE/.." "$tmp/kitcopy" 2>/dev/null
+printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/kitcopy/queue-lock.sh"
+bash "$tmp/kitcopy/console-kit/live-state.sh" "$con11" >/dev/null 2>&1; rc=$?
+check '11. a lock status failure refuses' 1 "$rc"
+check '11. the refused run leaves the doc untouched' "$before11" "$(cat "$con11")"
+
 [ "$t1" = tok-one ] || { echo "FAIL - setup: lock token [$t1]"; fails=$((fails+1)); }
 [ "$fails" -eq 0 ] && echo "PASS" || { echo "$fails FAILED"; exit 1; }

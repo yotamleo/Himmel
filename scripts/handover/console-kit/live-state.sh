@@ -84,7 +84,11 @@ missing=""
 while IFS=$'\t' read -r label ldoc; do
     [ -n "$label" ] || continue
     out="$(bash "$HERE/../queue-lock.sh" status "$ldoc" 2>/dev/null)"; rc=$?
-    case "$rc" in 11|12) ;; *) echo "live-state: $label holds no lock, left out" >&2; continue ;; esac
+    case "$rc" in
+        11|12) ;;
+        0) echo "live-state: $label holds no lock, left out" >&2; continue ;;
+        *) echo "live-state: $label: lock status failed (rc=$rc), doc not rewritten" >&2; exit 1 ;;
+    esac
     token="$(printf '%s\n' "$out" | head -1 | jq -r '.session // empty' 2>/dev/null)"
     [ -n "$token" ] || { echo "live-state: $label: unreadable lock owner, left out" >&2; continue; }
     old="$(printf '%s\n' "$old_entries" | awk -F: -v l="$label" '$1 == l { print; exit }')"
@@ -117,10 +121,10 @@ fi
 
 tmp="$(mktemp "$doc.XXXXXX")" || { echo "live-state: cannot create a temp file next to $doc" >&2; exit 1; }
 chmod --reference="$doc" "$tmp" 2>/dev/null  # gnu-ok: Linux-only kit; the rewrite keeps the doc mode
-if ! awk -v nl="$new_line" '
+if ! NL="$new_line" awk '
     $0 == "## Live state" { s = 1; print; next }
     s && /^## / { s = 0 }
-    s && /^legs:/ { f = 1; print nl; next }
+    s && /^legs:/ { f = 1; print ENVIRON["NL"]; next }
     f && (/^[[:space:]]*$/ || /^[A-Za-z][A-Za-z ]*:/ || /^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]/ || /^[[:space:]]*[>#]/) { f = 0 }
     f { next }
     { print }' "$doc" > "$tmp" || ! mv -f "$tmp" "$doc"; then
