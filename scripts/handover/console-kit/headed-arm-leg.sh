@@ -88,7 +88,11 @@
 # headed-arm.sh's own exit codes (0-9 and 13), since this wrapper never
 # reaches headed-arm.sh in any of these cases.
 #
-# --lane (HIMMEL-2782): native (default) or claudex. --lane claudex (or
+# --lane (HIMMEL-2782 / HIMMEL-4076): native (default), claudex or openrouter.
+# OpenRouter uses HEADED_ARM_LEG_OPENROUTER_BIN (default ../../claude-openrouter),
+# the same recorder/profile shim, a pinned Sonnet 5.5 slug and LEG_LANE=openrouter.
+# Its backend credit floor replaces subscription-bank admission, not fleet admission.
+# --lane claudex (or
 # LEG_LANE=claudex in the launching shell - the flag wins if both are
 # given) routes the leg through scripts/claude-codex on the codex weekly
 # bank instead of the Claude subscription bank: it routes headed-arm.sh's
@@ -220,7 +224,7 @@ HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
 export HEADED_ARM_UNAME
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--ignore-denials] [--lane native|claudex] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--ignore-denials] [--lane native|claudex|openrouter] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 # leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
@@ -327,7 +331,7 @@ while :; do
             # `--lane` again forever. Require a value before consuming it.
             if [ "$#" -lt 2 ]; then
                 usage
-                echo "headed-arm-leg: --lane requires a value (native or claudex)" >&2
+                echo "headed-arm-leg: --lane requires a value (native, claudex or openrouter)" >&2
                 exit 2
             fi
             LANE="$2"; shift 2 ;;
@@ -457,10 +461,10 @@ if [ "$NO_PROFILE" -eq 1 ] && [ -n "$PROFILE" ]; then
 fi
 
 case "$LANE" in
-    native|claudex) ;;
+    native|claudex|openrouter) ;;
     *)
         usage
-        echo "headed-arm-leg: unknown lane: $LANE (expected native or claudex)" >&2
+        echo "headed-arm-leg: unknown lane: $LANE (expected native, claudex or openrouter)" >&2
         exit 2
         ;;
 esac
@@ -900,8 +904,8 @@ fi
 # guard above - a suffix (e.g. claude-opus-5[1m]) must not dodge the gate.
 TIER_GATE=""
 case "$MODEL" in
-    claude-opus-*) TIER_GATE="opus" ;;
-    claude-fable-*) TIER_GATE="fable" ;;
+    claude-opus-*|anthropic/claude-opus-*) TIER_GATE="opus" ;;
+    claude-fable-*|anthropic/claude-fable-*) TIER_GATE="fable" ;;
 esac
 if [ -n "$TIER_GATE" ]; then
     TIER_REASON="$(grep -m1 -E "^> \*\*Tier:\*\* $TIER_GATE — " "$DOC" 2>/dev/null | sed -E "s/^> \*\*Tier:\*\* $TIER_GATE — //")"
@@ -1126,6 +1130,32 @@ if [ "$LANE" = "claudex" ]; then
     leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "${LEG_EFFORT:-medium}"
     export HEADED_ARM_RECORDER=1
     [ -z "$MODEL" ] && MODEL="gpt-6.1-sol"
+fi
+
+# OpenRouter (HIMMEL-4076): only the independently verified 1M tier slugs
+# are admitted. Unknown ids fail closed; the metered backend gates credit
+# before inference. Dry runs never query a remote API.
+if [ "$LANE" = "openrouter" ]; then
+    OR_MODEL="${MODEL:-anthropic/claude-sonnet-5.5}"
+    OR_MODEL="${OR_MODEL%\[1m\]}"
+    case "$OR_MODEL" in
+        claude-sonnet-5-5) OR_MODEL=anthropic/claude-sonnet-5.5 ;;
+        claude-opus-5-5) OR_MODEL=anthropic/claude-opus-5.5 ;;
+        claude-fable-5-1) OR_MODEL=anthropic/claude-fable-5.1 ;;
+    esac
+    case "$OR_MODEL" in
+        anthropic/claude-sonnet-5.5) MODEL=sonnet ;;
+        anthropic/claude-opus-5.5) MODEL=opus ;;
+        anthropic/claude-fable-5.1) MODEL="$OR_MODEL" ;;
+        *) echo "headed-arm-leg: unsupported OpenRouter model: $OR_MODEL (no verified 1M slug; Haiku is not a leg tier)" >&2; exit 2 ;;
+    esac
+    OR_BIN="${HEADED_ARM_LEG_OPENROUTER_BIN:-$HERE/../../claude-openrouter}"
+    export HEADED_ARM_LAUNCHER="$OR_BIN"
+    leg_env_drop_token OPENROUTER_MODEL
+    leg_propagate_env OPENROUTER_MODEL "$OR_MODEL"
+    leg_propagate_env LEG_LANE openrouter
+    leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "${LEG_EFFORT:-medium}"
+    export HEADED_ARM_RECORDER=1
 fi
 
 # --profile (HIMMEL-2830): resolve the plugin profile and point headed-arm.sh's
@@ -1463,7 +1493,7 @@ EOF_CS_FILES
     # coordination preface untouched. Resolved even under --dry-run, same
     # reasoning as the profile/mcp resolution above: a jq failure here must
     # fail the same way either way.
-    if [ "$LANE" != "claudex" ]; then
+    if [ "$LANE" = "native" ]; then
         # %q shell-quotes PROFILE_CONTRACT (log dir + leg name are caller
         # args, HIMMEL-2990 CR round 1): the generated command is re-parsed
         # by a DIFFERENT shell when the hook fires, so an unescaped quote or
@@ -1511,10 +1541,14 @@ fi
 # HIMMEL-2953: every claudex leg gets its document-channel coordination
 # rules, even without a profile. Claude accepts one preface file, so a
 # profiled leg gets its own concatenation, with the lane override last.
-if [ "$LANE" = "claudex" ]; then
-    CLAUDEX_PREFACE="$HERE/../../../docs/handover/leg-preface-claudex.md"
+if [ "$LANE" = "claudex" ] || [ "$LANE" = "openrouter" ]; then
+    CLAUDEX_PREFACE="$HERE/../../../docs/handover/leg-preface-$LANE.md"
     export HEADED_ARM_LAUNCHER="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
-    leg_propagate_env LEG_CLAUDE_BIN "$CLAUDEX_BIN"
+    if [ "$LANE" = "openrouter" ]; then
+        leg_propagate_env LEG_CLAUDE_BIN "$OR_BIN"
+    else
+        leg_propagate_env LEG_CLAUDE_BIN "$CLAUDEX_BIN"
+    fi
     for _leg_need in "$CLAUDEX_PREFACE" "$HEADED_ARM_LAUNCHER"; do
         if [ ! -f "$_leg_need" ]; then
             echo "headed-arm-leg: --lane claudex: required file missing: $_leg_need" >&2
@@ -1576,8 +1610,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
     fi
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"
-    if [ "$LANE" = "claudex" ]; then
-        printf ' exec-target=%s preface=%s' "$LEG_CLAUDE_BIN" "$LEG_PROFILE_PREFACE"
+    if [ "$LANE" = "claudex" ] || [ "$LANE" = "openrouter" ]; then
+        printf ' exec-target=%s preface=%s recorder=%s' "$LEG_CLAUDE_BIN" "$LEG_PROFILE_PREFACE" "$HEADED_ARM_RECORDER"
     fi
     printf '\n'
     # Printed ONLY under --profile: with the flag omitted this whole line is
@@ -1613,9 +1647,9 @@ if [ -n "$PROFILE" ]; then
         exit 2
     fi
     chmod 600 "$PROFILE_SETTINGS" 2>/dev/null || true
-    if [ "$LANE" = "claudex" ]; then
+    if [ "$LANE" = "claudex" ] || [ "$LANE" = "openrouter" ]; then
         if ! cat "$LEG_PREFACE" "$CLAUDEX_PREFACE" > "$LEG_PROFILE_PREFACE"; then
-            echo "headed-arm-leg: --lane claudex: cannot write preface to $LEG_PROFILE_PREFACE" >&2
+            echo "headed-arm-leg: --lane $LANE: cannot write preface to $LEG_PROFILE_PREFACE" >&2
             exit 2
         fi
         chmod 600 "$LEG_PROFILE_PREFACE" 2>/dev/null || true

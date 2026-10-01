@@ -181,6 +181,8 @@ is_int "$FLEET_CAP" || FLEET_CAP=4
 _fleet_lane_of() {
   if tr '\0' '\n' < "${FLEET_PROC:-/proc}/$1/environ" 2>/dev/null | grep -qx 'CLAUDEX_LANE_OK=1'; then
     echo claudex
+  elif tr '\0' '\n' < "${FLEET_PROC:-/proc}/$1/environ" 2>/dev/null | grep -qx 'LEG_LANE=openrouter'; then
+    echo openrouter
   else
     echo native
   fi
@@ -530,6 +532,7 @@ _fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
 fleet_n=0
 fleet_native=0
 fleet_claudex=0
+fleet_openrouter=0
 _fleet_live_names=""
 _fleet_procfs_warned=0
 
@@ -563,7 +566,7 @@ _fleet_cmdline_name() {
 # failed census; returns 1 without touching the counters on failure so a
 # caller can fall back to the last-known-good snapshot instead of zeroing it.
 _fleet_census() {
-  local _fc_n=0 _fc_native=0 _fc_claudex=0 _fc_names="" _fc_raw
+  local _fc_n=0 _fc_native=0 _fc_claudex=0 _fc_openrouter=0 _fc_names="" _fc_raw
   # Plain (non-IFS=) `read` here is deliberate: a real `ps -eo pid=,args=`
   # right-justifies the PID column with LEADING spaces for every row
   # narrower than the widest pid in the table, and default `read` field
@@ -625,11 +628,11 @@ $_fleet_name"
       continue
     fi
     _fc_n=$((_fc_n + 1))
-    if [ "$(_fleet_lane_of "$_fleet_pid")" = claudex ]; then
-      _fc_claudex=$((_fc_claudex + 1))
-    else
-      _fc_native=$((_fc_native + 1))
-    fi
+    case "$(_fleet_lane_of "$_fleet_pid")" in
+      claudex) _fc_claudex=$((_fc_claudex + 1)) ;;
+      openrouter) _fc_openrouter=$((_fc_openrouter + 1)) ;;
+      *) _fc_native=$((_fc_native + 1)) ;;
+    esac
   done <<FLEET_CANDIDATES
 $(printf '%s\n' "$_fc_raw" \
   | grep -E -- '-n[[:space:]]+(HIMMEL|LUNA)-' \
@@ -638,6 +641,7 @@ FLEET_CANDIDATES
   fleet_n=$_fc_n
   fleet_native=$_fc_native
   fleet_claudex=$_fc_claudex
+  fleet_openrouter=$_fc_openrouter
   _fleet_live_names=$_fc_names
   return 0
 }
@@ -819,7 +823,7 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   fi
 fi
 
-echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex reserved=$fleet_reserved total=$fleet_n/$FLEET_CAP" >&2
+echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex openrouter=$fleet_openrouter reserved=$fleet_reserved total=$fleet_n/$FLEET_CAP" >&2
 
 if [ "$_fleet_admitted" -eq 0 ]; then
   echo "bank-preflight: could not acquire the fleet admission lock ($SLOTS/.admit) after $_fleet_admit_iters retries — cannot verify the fleet is under cap" >&2
@@ -976,6 +980,14 @@ fi
 # refusals above as well as this final one — goes through it.
 if [ "$_fleet_admitted" -eq 1 ]; then
   _fleet_release_admit "$SLOTS/.admit"
+fi
+
+# HIMMEL-4076: fleet admission above applies to every lane. OpenRouter's
+# backend gates on credits and key limit_remaining; neither subscription
+# bank applies, and no bank probe or fabricated utilization is needed here.
+if [ "$LANE" = openrouter ]; then
+  echo "bank-preflight: openrouter lane — leg=$LEG proceeding to backend credit floor" >&2
+  emit PROCEED
 fi
 
 # HIMMEL-2782: claudex lane parks on the codex weekly bank instead of the

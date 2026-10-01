@@ -327,6 +327,34 @@ seed_lock_is_stale() {
   [ "$(( $(date +%s) - lock_mt ))" -ge "$SEED_LOCK_STALE" ]
 }
 
+seed_leg_trust() {
+  # The dispatch authorizes only this launcher's primary checkout, not an
+  # arbitrary inherited cwd. The existing seed lock serializes this update.
+  # shellcheck source=lib/git-clean.sh
+  . "$HERE/lib/git-clean.sh"
+  or_common="$(git_clean -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || seed_fail "resolve the primary checkout for leg trust"
+  or_primary="$(dirname "$or_common")"
+  node -e '
+const fs=require("fs"), p=process.argv[1], root=process.argv[2];
+try {
+  const j=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};
+  const object=v=>v && typeof v==="object" && !Array.isArray(v);
+  if (!object(j) || (j.projects!==undefined && !object(j.projects))) throw Error("invalid lane config object");
+  j.projects=j.projects||{};
+  const project=j.projects[root]||{};
+  if (!object(project)) throw Error("invalid primary project object");
+  if (j.hasCompletedOnboarding===true && project.hasTrustDialogAccepted===true) process.exit(0);
+  j.hasCompletedOnboarding=true;
+  project.hasTrustDialogAccepted=true;
+  j.projects[root]=project;
+  const temp=p+".tmp."+process.pid;
+  fs.writeFileSync(temp,JSON.stringify(j,null,2)+"\n",{mode:0o600});
+  fs.renameSync(temp,p);
+} catch(e) { console.error("claude-openrouter: leg onboarding seed failed: "+e.message); process.exit(4); }
+' "$CONFIG_DIR/.claude.json" "$or_primary" || seed_fail "seed leg onboarding and primary-root trust"
+}
+
 seed_with_lock() {
   seed_lock_ticks=0
   seed_lock_max=$(( SEED_LOCK_TIMEOUT * 2 ))
@@ -346,11 +374,12 @@ seed_with_lock() {
   if [ "$RESEED" -eq 1 ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then
     seed_config_dir
   fi
+  [ "${LEG_LANE:-}" != openrouter ] || seed_leg_trust
   trap - EXIT
   rmdir "$LOCK" 2>/dev/null || echo "claude-openrouter: WARNING - failed to release seed lock $LOCK (not empty or busy); it self-heals via stale steal after ${SEED_LOCK_STALE}s but concurrent launches wait/time out until then." >&2
 }
 
-if [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then
+if [ "${LEG_LANE:-}" = openrouter ] || [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then
   seed_with_lock
 fi
 
@@ -433,9 +462,32 @@ export ANTHROPIC_BASE_URL="$OPENROUTER_ANTHROPIC_BASE_URL"
 export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
 export ANTHROPIC_API_KEY=""
 export ANTHROPIC_MODEL="$OPENROUTER_MODEL"
+if [ "${LEG_LANE:-}" = openrouter ]; then
+  OPENROUTER_HAIKU="$OPENROUTER_MODEL"
+  case "$OPENROUTER_MODEL" in
+    anthropic/claude-sonnet-*) export ANTHROPIC_MODEL=sonnet ;;
+    anthropic/claude-opus-*) export ANTHROPIC_MODEL=opus ;;
+  esac
+fi
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$OPENROUTER_HAIKU"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$OPENROUTER_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$OPENROUTER_MODEL"
+# Labels are cosmetic; all three aliases execute the pinned leg tier.
+or_label="$OPENROUTER_MODEL"
+case "$OPENROUTER_MODEL" in
+  anthropic/claude-sonnet-*) or_label="Sonnet ${OPENROUTER_MODEL#anthropic/claude-sonnet-} (OpenRouter)" ;;
+  anthropic/claude-opus-*) or_label="Opus ${OPENROUTER_MODEL#anthropic/claude-opus-} (OpenRouter)" ;;
+  anthropic/claude-fable-*) or_label="Fable ${OPENROUTER_MODEL#anthropic/claude-fable-} (OpenRouter)" ;;
+esac
+export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="$or_label"
+export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="$or_label"
+export ANTHROPIC_DEFAULT_OPUS_MODEL_NAME="$or_label"
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
+if [ "${LEG_LANE:-}" = openrouter ]; then
+  echo "claude-openrouter: lane=openrouter slug=$OPENROUTER_MODEL alias=$ANTHROPIC_MODEL labels=$or_label" >&2
+fi
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$OPENROUTER_CONTEXT_WINDOW"
 export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
 exec claude "$@"

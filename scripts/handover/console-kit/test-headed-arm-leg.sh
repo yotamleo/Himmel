@@ -848,6 +848,125 @@ rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /
 contains "dry-run, no --lane: reports lane=native" "$out" "lane=native"
 not_contains "dry-run, no --lane: no claude-codex launcher" "$out" "claude-codex"
 
+# HIMMEL-4076: a lane typo, missing model mapping or dropped backend must
+# never silently start a native/subscription session. Dry runs make no calls.
+rc=0; out="$(LEG_LANE=native bash "$SCRIPT" --dry-run --no-profile --lane openrouter HIMMEL-9999-or "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/or.log" 2>&1)" || rc=$?
+check "openrouter: flag selects lane" "$rc" "0"
+contains "openrouter: lane reported" "$out" "lane=openrouter"
+contains "openrouter: default Sonnet slug pinned" "$out" "OPENROUTER_MODEL=anthropic/claude-sonnet-5.5"
+contains "openrouter: backend is claude-openrouter" "$out" "claude-openrouter"
+contains "openrouter: alias route uses sonnet" "$out" " sonnet "
+contains "openrouter: recorder enabled" "$out" "recorder=1"
+rc=0; out="$(LEG_LANE=openrouter bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-or "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/or.log" claude-sonnet-5-5 2>&1)" || rc=$?
+check "openrouter: ambient lane composes with profile" "$rc" "0"
+contains "openrouter: Claude id mapped" "$out" "OPENROUTER_MODEL=anthropic/claude-sonnet-5.5"
+contains "openrouter: profile retains backend" "$out" "LEG_CLAUDE_BIN="
+for bad_or_model in claude-haiku-4-5 gpt-6.1-sol claude-sonnet-99-9 anthropic/claude-haiku-4.5; do
+  rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --lane openrouter HIMMEL-9999-or "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/or.log" "$bad_or_model" 2>&1)" || rc=$?
+  check "openrouter: refuses unsupported $bad_or_model" "$rc" "2"
+  contains "openrouter: refusal explains model mapping" "$out" "OpenRouter model"
+done
+
+# Actual backend boundary: curl and Claude are hermetic executables. These
+# checks catch overwritten pins, missing labels and a first-action billing dialog.
+or_home="$tmp/or-home"; or_bin="$tmp/or-bin"
+mkdir -p "$or_home/.claude-openrouter" "$or_bin"
+: > "$or_home/.claude-openrouter/.seeded"
+printf '%s' '{"keep":"preserved","projects":{"/other":{"hasTrustDialogAccepted":false}}}' > "$or_home/.claude-openrouter/.claude.json"
+cat > "$or_bin/claude" <<'OR_CLAUDE'
+#!/usr/bin/env bash
+for v in ANTHROPIC_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME ANTHROPIC_DEFAULT_SONNET_MODEL_NAME ANTHROPIC_DEFAULT_OPUS_MODEL_NAME CLAUDE_CODE_AUTO_MODE_SERVER; do
+    eval 'printf "%s=%s\\n" "$v" "${'"$v"'-}"'
+done
+OR_CLAUDE
+cat > "$or_bin/curl" <<'OR_CURL'
+#!/usr/bin/env bash
+cat >/dev/null
+for last in "$@"; do :; done
+case "$last" in
+    */key) if [ -n "${OR_KEY_BODY:-}" ]; then printf '%s' "$OR_KEY_BODY"; else printf '%s' '{"data":{"limit":25,"limit_remaining":12}}'; fi ;;
+    *) if [ -n "${OR_CREDIT_BODY:-}" ]; then printf '%s' "$OR_CREDIT_BODY"; else printf '%s' '{"data":{"total_credits":20,"total_usage":1}}'; fi ;;
+esac
+OR_CURL
+chmod 755 "$or_bin/claude" "$or_bin/curl"
+printf '%s' '{"providers":{"openrouter":{}},"rules":[{"corpus":"*","provider":"openrouter","purpose":"inference","verdict":"allow"}]}' > "$tmp/or-matrix.json"
+rc=0; out="$(HOME="$or_home" PATH="$or_bin:$PATH" LEG_LANE=openrouter OPENROUTER_API_KEY=hermetic-fixture OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 OPENROUTER_HAIKU=wrong CLAUDE_OPENROUTER_EGRESS_MATRIX="$tmp/or-matrix.json" bash "$HERE/../../claude-openrouter" --model sonnet 2>&1)" || rc=$?
+check "openrouter backend: launches stub" "$rc" "0"
+contains "openrouter backend: model alias Sonnet" "$out" "ANTHROPIC_MODEL=sonnet"
+for tier in HAIKU SONNET OPUS; do
+    contains "openrouter backend: $tier model pinned" "$out" "ANTHROPIC_DEFAULT_${tier}_MODEL=anthropic/claude-sonnet-5.5"
+    contains "openrouter backend: $tier label" "$out" "ANTHROPIC_DEFAULT_${tier}_MODEL_NAME=Sonnet 5.5 (OpenRouter)"
+done
+contains "openrouter backend: client auto classifier" "$out" "CLAUDE_CODE_AUTO_MODE_SERVER=0"
+contains "openrouter backend: credit and cap minimum logged" "$out" "effective balance \$12.00 (key limit_remaining)"
+
+# Seed only the primary checkout trust, preserving every unrelated field.
+or_primary="$(dirname "$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)")"
+check "openrouter onboarding: completed" "$(jq -r '.hasCompletedOnboarding' "$or_home/.claude-openrouter/.claude.json")" "true"
+check "openrouter onboarding: primary root trusted" "$(jq -r --arg root "$or_primary" '.projects[$root].hasTrustDialogAccepted' "$or_home/.claude-openrouter/.claude.json")" "true"
+check "openrouter onboarding: unrelated top-level data preserved" "$(jq -r '.keep' "$or_home/.claude-openrouter/.claude.json")" "preserved"
+check "openrouter onboarding: unrelated trust preserved" "$(jq -r '.projects["/other"].hasTrustDialogAccepted' "$or_home/.claude-openrouter/.claude.json")" "false"
+or_mtime="$(node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$or_home/.claude-openrouter/.claude.json")"
+rc=0; out="$(HOME="$or_home" PATH="$or_bin:$PATH" LEG_LANE=openrouter OPENROUTER_API_KEY=hermetic-fixture OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 CLAUDE_OPENROUTER_EGRESS_MATRIX="$tmp/or-matrix.json" bash "$HERE/../../claude-openrouter" --model sonnet 2>&1)" || rc=$?
+check "openrouter onboarding: second launch succeeds" "$rc" "0"
+check "openrouter onboarding: second launch does not rewrite config" "$(node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$or_home/.claude-openrouter/.claude.json")" "$or_mtime"
+rc=0; out="$(GIT_DIR="$tmp/not-a-git-dir" GIT_COMMON_DIR="$tmp/not-a-git-common-dir" HOME="$or_home" PATH="$or_bin:$PATH" LEG_LANE=openrouter OPENROUTER_API_KEY=hermetic-fixture OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 CLAUDE_OPENROUTER_EGRESS_MATRIX="$tmp/or-matrix.json" bash "$HERE/../../claude-openrouter" --model sonnet 2>&1)" || rc=$?
+check "openrouter onboarding: poisoned Git env cannot steer trust lookup" "$rc" "0"
+
+# The real backend child boundary must refuse before executing Claude,
+# even though the headed parent's fleet/subscription preflight proceeded.
+for or_case in low-credit exhausted-key unknown-credit unknown-cap; do
+    or_credit_body='{"data":{"total_credits":20,"total_usage":1}}'
+    or_key_body='{"data":{"limit":25,"limit_remaining":12}}'
+    case "$or_case" in
+        low-credit) or_credit_body='{"data":{"total_credits":20,"total_usage":18}}' ;;
+        exhausted-key) or_key_body='{"data":{"limit":25,"limit_remaining":0}}' ;;
+        unknown-credit) or_credit_body='not-json' ;;
+        unknown-cap) or_key_body='not-json' ;;
+    esac
+    rc=0; out="$(HOME="$or_home" PATH="$or_bin:$PATH" LEG_LANE=openrouter \
+      OPENROUTER_API_KEY=hermetic-fixture OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 \
+      OR_CREDIT_BODY="$or_credit_body" OR_KEY_BODY="$or_key_body" \
+      CLAUDE_OPENROUTER_EGRESS_MATRIX="$tmp/or-matrix.json" \
+      bash "$HERE/../../claude-openrouter" --model sonnet 2>&1)" || rc=$?
+    check "openrouter backend: $or_case refuses" "$rc" "5"
+    not_contains "openrouter backend: $or_case never executes Claude" "$out" 'ANTHROPIC_MODEL=sonnet'
+done
+or_valid_config="$(cat "$or_home/.claude-openrouter/.claude.json")"
+printf '%s' 'not-json' > "$or_home/.claude-openrouter/.claude.json"
+rc=0; out="$(HOME="$or_home" PATH="$or_bin:$PATH" LEG_LANE=openrouter \
+  OPENROUTER_API_KEY=hermetic-fixture OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 \
+  CLAUDE_OPENROUTER_EGRESS_MATRIX="$tmp/or-matrix.json" \
+  bash "$HERE/../../claude-openrouter" --model sonnet 2>&1)" || rc=$?
+check "openrouter trust: malformed lane config refuses" "$rc" "4"
+check "openrouter trust: malformed config is preserved" "$(cat "$or_home/.claude-openrouter/.claude.json")" 'not-json'
+not_contains "openrouter trust: malformed config never executes Claude" "$out" 'ANTHROPIC_MODEL=sonnet'
+printf '%s' "$or_valid_config" > "$or_home/.claude-openrouter/.claude.json"
+
+# Slugs must not bypass the existing premium-tier dispatch permission.
+for premium_or in anthropic/claude-opus-5.5 anthropic/claude-fable-5.1; do
+  rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --lane openrouter HIMMEL-9999-or "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/or.log" "$premium_or" 2>&1)" || rc=$?
+  check "openrouter: premium slug $premium_or needs Tier reason" "$rc" "2"
+  contains "openrouter: premium refusal names Tier" "$out" "Tier:"
+done
+
+# Full arm path must carry the same backend, preface, alias and recorder.
+d_or="$tmp/or-arm"; mk_launch_stubs "$d_or" "HIMMEL-9999-or-arm"
+mkdir -p "$tmp/or-repo"
+rc=0
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" HEADED_ARM_LEG_OPENROUTER_BIN="$HERE/../../claude-openrouter" \
+KONSOLE_CMD="$d_or/konsole" PGREP_CMD="$d_or/pgrep" LEG_REPO="$tmp/or-repo" \
+HEADED_ARM_LOCK_DIR="$d_or/locks" HEADED_ARM_PROC="$d_or/proc" \
+  bash "$SCRIPT" --lane openrouter --profile leg-impl HIMMEL-9999-or-arm "$some_doc" "$d_or/no-signal" "$PAST" "$d_or/log" >/dev/null 2>&1 || rc=$?
+wait_record "$d_or" || true
+check "openrouter arm: exit 0" "$rc" "0"
+rec_or="$(cat "$d_or/record" 2>/dev/null || true)"
+contains "openrouter arm: recorder uses log" "$rec_or" "script -q -a -f $d_or/log -c"
+contains "openrouter arm: alias argv" "$rec_or" "--model sonnet"
+contains "openrouter arm: pinned slug reaches child" "$rec_or" "OPENROUTER_MODEL=anthropic/claude-sonnet-5.5"
+contains "openrouter arm: backend retained" "$(cat "$d_or/env-record" 2>/dev/null || true)" "LEG_CLAUDE_BIN=$HERE/../../claude-openrouter"
+contains "openrouter arm: namespace channel appended" "$(cat "$d_or/HIMMEL-9999-or-arm.leg-preface.md" 2>/dev/null || true)" "# OpenRouter coordination"
+
 # --- 16 (HIMMEL-2782). full (non-dry) launch, --lane claudex: proves the
 # non-dry path builds the argv --dry-run predicted, via headed-arm.sh's real
 # HEADED_ARM_LAUNCHER/HEADED_ARM_LAUNCHER_ENV/HEADED_ARM_RECORDER seams. A
@@ -2852,6 +2971,8 @@ export CONSULT_BWRAP_BIN=true CONSULT_SOCAT_BIN=true
 # suite off the operator's live files (the 41i cases point these at fixtures).
 mkdir -p "$tmp/home41"
 export CONSULT_SETTINGS_HOME="$tmp/home41" CONSULT_MANAGED_SETTINGS="$tmp/home41/managed-none.json"
+# Config-dir settings are another user scope; never read a live lane's grants.
+export CLAUDE_CONFIG_DIR="$tmp/home41/config"
 # --- 41. HIMMEL-4014: composable --profile lists + the read-only --consult mode --
 # (a) a comma list resolves to the UNION of its members' plugin sets; (b) --consult
 # launches a plugin-scoped session whose settings deny the file-edit tools, carry

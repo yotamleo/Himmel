@@ -392,6 +392,42 @@ function Test-SeedLockStale {
   } catch { return $false }
 }
 
+function Invoke-LegTrustSeed {
+  # Only the primary checkout is trusted, under the existing seed lock.
+  $savedGitEnv = @{}
+  try {
+    foreach ($name in 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE') {
+      $savedGitEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+      [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+    $common = & git -C $RepoRoot rev-parse --path-format=absolute --git-common-dir
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve primary checkout for leg trust' }
+    $primary = Split-Path -Parent $common
+  } finally {
+    foreach ($name in $savedGitEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedGitEnv[$name], 'Process') }
+  }
+  $trustJs = @'
+const fs=require("fs"), p=process.argv[1], root=process.argv[2];
+try {
+  const j=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};
+  const object=v=>v && typeof v==="object" && !Array.isArray(v);
+  if (!object(j) || (j.projects!==undefined && !object(j.projects))) throw Error("invalid lane config object");
+  j.projects=j.projects||{};
+  const project=j.projects[root]||{};
+  if (!object(project)) throw Error("invalid primary project object");
+  if (j.hasCompletedOnboarding===true && project.hasTrustDialogAccepted===true) process.exit(0);
+  j.hasCompletedOnboarding=true;
+  project.hasTrustDialogAccepted=true;
+  j.projects[root]=project;
+  const temp=p+".tmp."+process.pid;
+  fs.writeFileSync(temp,JSON.stringify(j,null,2)+"\n",{mode:0o600});
+  fs.renameSync(temp,p);
+} catch(e) { console.error("claude-openrouter: leg onboarding seed failed: "+e.message); process.exit(4); }
+'@
+  & node -e $trustJs (Join-Path $ConfigDir '.claude.json') $primary
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to seed leg onboarding and primary-root trust' }
+}
+
 function Invoke-SeedWithLock {
   $ticks = 0
   $maxTicks = $SeedLockTimeout * 2
@@ -421,13 +457,17 @@ function Invoke-SeedWithLock {
     if ($Reseed -or (-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or (Test-ConfigSeedStale)) {
       Copy-SeedConfig
     }
+    if ($env:LEG_LANE -eq 'openrouter') { Invoke-LegTrustSeed }
+  } catch {
+    [Console]::Error.WriteLine("claude-openrouter: leg seed failed: $($_.Exception.Message)")
+    exit 4
   } finally {
     try { [System.IO.Directory]::Delete($Lock) }
     catch { [Console]::Error.WriteLine("claude-openrouter: WARNING - failed to release seed lock $Lock (not empty or busy); it self-heals via stale steal after ${SeedLockStale}s but concurrent launches wait/time out until then.") }
   }
 }
 
-if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
+if (($env:LEG_LANE -eq 'openrouter') -or (-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
   Invoke-SeedWithLock
 }
 
@@ -510,9 +550,28 @@ $env:ANTHROPIC_BASE_URL             = $OpenRouterAnthropicBaseUrl
 $env:ANTHROPIC_AUTH_TOKEN           = $key
 $env:ANTHROPIC_API_KEY              = ''
 $env:ANTHROPIC_MODEL                = $OpenRouterModel
+if ($env:LEG_LANE -eq 'openrouter') {
+  $OpenRouterHaiku = $OpenRouterModel
+  if ($OpenRouterModel -like 'anthropic/claude-sonnet-*') { $env:ANTHROPIC_MODEL = 'sonnet' }
+  elseif ($OpenRouterModel -like 'anthropic/claude-opus-*') { $env:ANTHROPIC_MODEL = 'opus' }
+}
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $OpenRouterHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $OpenRouterModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $OpenRouterModel
+$orLabel = $OpenRouterModel
+if ($OpenRouterModel -match '^anthropic/claude-(sonnet|opus|fable)-(.+)$') {
+  $family = $Matches[1]
+  $orLabel = $family.Substring(0, 1).ToUpperInvariant() + $family.Substring(1) + ' ' + $Matches[2] + ' (OpenRouter)'
+}
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  = $orLabel
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = $orLabel
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   = $orLabel
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+$env:CLAUDE_CODE_AUTO_MODE_SERVER = '0'
+if ($env:LEG_LANE -eq 'openrouter') {
+  [Console]::Error.WriteLine("claude-openrouter: lane=openrouter slug=$OpenRouterModel alias=$($env:ANTHROPIC_MODEL) labels=$orLabel")
+}
 $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $OpenRouterContextWindow
 $env:CLAUDE_CONFIG_DIR              = $ConfigDir
 

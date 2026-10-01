@@ -1005,6 +1005,26 @@ else
     capacity=unknown
 fi
 
+# HIMMEL-4076: reuse the fleet census, never read the metered account when
+# no OpenRouter leg is live. This informational field is deliberately absent
+# from console-wait.sh's action key, so changing credit never wakes a waiter.
+openrouter='?'
+or_live="$(printf '%s\n' "$fleet_out" | sed -n 's/^bank-preflight: FLEET .*openrouter=\([0-9][0-9]*\) .*/\1/p' | tail -n 1)"
+case "$or_live" in
+    ''|*[!0-9]*) : ;;
+    *)
+        if [ "$or_live" -eq 0 ]; then
+            openrouter=skip
+        elif [ -r "$REPO/scripts/lanes/openrouter-cost.sh" ]; then
+            or_cost="$(bash "$REPO/scripts/lanes/openrouter-cost.sh" 2>/dev/null)" || or_cost=''
+            or_balance="${or_cost%% *}"
+            case "$or_balance" in
+                balance=\?|balance=[0-9]*:credit|balance=[0-9]*:key-limit_remaining) openrouter="${or_balance#balance=}" ;;
+            esac
+        fi
+        ;;
+esac
+
 # orphans= (HIMMEL-2761): shell-tool wrappers older than TICK_ORPHAN_MIN minutes,
 # joined to the owning session name -- a poll loop that outlives its wrapped
 # leg (TaskStop on an agent does not reap the shell it spawned) surfaces at the
@@ -1239,6 +1259,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'denials: %s\n' "$denials_summary"
     printf 'ci queue: %s\n' "$ciq_summary"
     printf 'plan-index: %s\n' "$plan_index_summary"
+    printf 'OpenRouter: %s\n' "$openrouter"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
@@ -1249,11 +1270,11 @@ else
     # `tracker=` (HIMMEL-3933) follows `board=`, `denials=` (HIMMEL-3724) follows,
     # and `ciq=` (HIMMEL-3840) follows, `plan-index=` (HIMMEL-4051) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then
