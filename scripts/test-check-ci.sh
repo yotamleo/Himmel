@@ -2381,7 +2381,7 @@ fail:codeowner-review-gate"
 run cr-completed
 assert_rc 1 "4071-a a FAILED required check still exits 1"
 assert_err_has "gh api --allow-escape-sequences repos/octo/demo/actions/jobs/4242/logs" "4071-a the failed job's log command is printed"
-if printf '%s' "$ERR" | grep -q 'jobs/9/logs'; then fail "4071-b a non-Actions link names no job log"; else pass "4071-b a non-Actions link names no job log"; fi
+if grep -qF 'jobs/9/logs' <<< "$ERR"; then fail "4071-b a non-Actions link names no job log"; else pass "4071-b a non-Actions link names no job log"; fi
 unset GH_STUB_FAILLINKS
 
 # 3381-g — dedupe: the SAME head refused twice sends ONE alert; the printed line

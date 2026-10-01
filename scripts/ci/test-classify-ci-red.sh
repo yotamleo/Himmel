@@ -49,7 +49,15 @@ for line in "getaddrinfo EAI_AGAIN registry.npmjs.org" "HTTP 503 Service Unavail
     clear_markers
     run "$line" "diff --git a/x b/x" "zzz-case"
     eq "1b: '$line' is MAIN-RED" 0 "$RC"
+    has "via signature" "$OUT" "1b: '$line' is decided by the signature step"
 done
+
+# 1c. a PR that changes a dependency manifest may own an audit/registry failure:
+#     the signature step is skipped, so the same log reads PR-RED.
+clear_markers
+run "found 2 high severity vulnerabilities" "diff --git a/package-lock.json b/package-lock.json
++x" "package-lock"
+eq "1c: signature skipped when the PR changes a lockfile" 1 "$RC"
 
 # 2. DIFF: no signature; the failing case is untouched by and unreferenced from
 #    the PR diff -> MAIN-RED.
@@ -58,6 +66,7 @@ run "FAIL: widget parser case 7" "diff --git a/scripts/other.sh b/scripts/other.
 +echo hi" "widget parser"
 eq "2: unrelated diff exits 0" 0 "$RC"
 has "via diff" "$OUT" "2: deciding step is the diff"
+if [ -z "$(ls "$T/markers" 2>/dev/null)" ]; then ok "2: the diff heuristic writes no marker"; else bad "2: the diff heuristic writes no marker"; fi
 
 # 2b. control: the diff references the case -> the PR's own red (rc 1).
 clear_markers
@@ -81,9 +90,23 @@ eq "3: an existing marker exits 0 before any diagnosis" 0 "$RC"
 has "via marker" "$OUT" "3: deciding step is the marker"
 has "pr=3" "$OUT" "3: prints the first leg's evidence"
 
+# 3b. a marker is keyed on job+case only: when THIS PR's diff references the case
+#     the marker is ignored (another PR's verdict does not excuse this one).
+printf 'FAIL: widget parser\n' > "$T/job.log"
+printf 'diff --git a/scripts/widget.sh b/scripts/widget.sh\n+# widget parser change\n' > "$T/diff.txt"
+RC=0
+OUT=$(MAIN_RED_MARKER_DIR="$T/markers" CLASSIFY_DIFF_FILE="$T/diff.txt" \
+    bash "$SCRIPT" --log "$T/job.log" --job "unit tests" --case "widget parser" 2>&1) || RC=$?
+eq "3b: a marker is ignored when the PR diff references the case" 1 "$RC"
+
 # 4. usage: no --log is a usage error (64), never a verdict.
 RC=0; OUT=$(bash "$SCRIPT" --job x 2>&1) || RC=$?
 eq "4: missing --log exits 64" 64 "$RC"
+
+# 4b. an option with no value is a usage error, not an endless loop (bounded by
+#     timeout: a hang reads as 124, not 64).
+RC=0; OUT=$(timeout 10 bash "$SCRIPT" --log 2>&1) || RC=$?
+eq "4b: an option missing its value exits 64" 64 "$RC"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "classify-ci-red: all passed"; else echo "classify-ci-red: $fails failed"; fi
