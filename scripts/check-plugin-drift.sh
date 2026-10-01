@@ -318,11 +318,14 @@ def repo_of(s):
     return ""
 for p in m.get("plugins", []):
     s = p.get("source")
-    if isinstance(s, dict) and s.get("source") in ("github", "url") and (s.get("ref") or s.get("sha")):
+    # git-subdir (HIMMEL-4012): claude-plugins-official's own shape for a plugin
+    # living in a repo subdirectory; it carries the same url + ref|sha.
+    if isinstance(s, dict) and s.get("source") in ("github", "url", "git-subdir") and (s.get("ref") or s.get("sha")):
         o = ups.get(p["name"]) or {}
         ref = s.get("ref") or s.get("sha")
         print("|".join([p["name"], repo_of(s), ref,
-                        o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", "")]))
+                        o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", ""),
+                        o.get("tag_prefix", "")]))
 PY
   pins_out="$(python3 -c "$_pins_py" "$MJSON" "$UPSTREAMS" 2>/dev/null | tr -d '\r')"
   pins_rc=$?  # pipefail makes this the pipeline's status (= python3's, if it failed)
@@ -330,7 +333,7 @@ PY
     echo "  ? marketplace.json / plugin-upstreams.json parse failed (python3 error) — pinned-remote class UNCHECKED."
     incomplete=1
   else
-    while IFS='|' read -r name repo ref up_repo up_track up_base; do
+    while IFS='|' read -r name repo ref up_repo up_track up_base up_prefix; do
       [ -n "$name" ] || continue
       # Sub-case (b): fork with a true-upstream override. The marketplace `repo`
       # is OUR fork; check the named upstream's latest STABLE version TAG against
@@ -367,7 +370,16 @@ PY
         # BEHIND against a current base. A real new stable release still trips
         # the BEHIND path. highest_version, not `sort -V | tail -1`: BSD sort
         # has no -V, and this was the last live GNU-only site (HIMMEL-1054).
-        latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
+        # tag_prefix (HIMMEL-4012): a repo with several tag streams (impeccable:
+        # skill-v* is the skill, engine-v* the CLI) names the one it pins; only
+        # that stream is compared. The prefix is stripped for the semver sort and
+        # restored on the winner so it compares equal to synced_base.
+        if [ -n "$up_prefix" ]; then
+          latest="$(printf '%s\n' "$tags_raw" | grep -F -- "$up_prefix" | sed -n "s|^$up_prefix||p" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
+          [ -z "$latest" ] || latest="$up_prefix$latest"
+        else
+          latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
+        fi
         if [ -z "$latest" ]; then
           echo "  $name: ? no stable version tags found on $up_repo — UNCHECKED"
           incomplete=1
