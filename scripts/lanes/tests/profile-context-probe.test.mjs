@@ -252,8 +252,15 @@ test('listingProblems: a required plugin whose skills are name-only FAILS (descr
   assert.match(p[0], /impeccable@himmel.*name-only/);
 });
 
-test('listingProblems: described skills pass; one described skill is enough', () => {
-  assert.deepEqual(listingProblems(CTX([NAME_ONLY, FULL]), ['impeccable@himmel']), []);
+// HIMMEL-4038: EVERY required skill must be described, not just one per plugin.
+test('listingProblems: all described skills pass', () => {
+  assert.deepEqual(listingProblems(CTX([FULL, { ...FULL, name: 'impeccable:other' }]), ['impeccable@himmel']), []);
+});
+
+test('listingProblems: one name-only skill among described ones FAILS and is named', () => {
+  const p = listingProblems(CTX([NAME_ONLY, FULL]), ['impeccable@himmel']);
+  assert.equal(p.length, 1);
+  assert.match(p[0], /impeccable@himmel.*1 of 2.*name-only.*impeccable:impeccable/s);
 });
 
 test('listingProblems: a required plugin absent from the listing fails, unless it has no skills (agent-only)', () => {

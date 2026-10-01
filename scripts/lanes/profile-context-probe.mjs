@@ -35,7 +35,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from '../lib/is-main.mjs';
 import { createRequire } from 'node:module';
-import { loadRegistry, resolveProfileByName, readEnabledPluginIds } from './plugin-profiles.mjs';
+import { loadRegistry, resolveProfileByName, readEnabledPluginIds, loadListingLib } from './plugin-profiles.mjs';
 import { ledgerPath } from './verify-return.mjs';
 import { ROLE_REQUIRES } from './role-requires.mjs';
 import { scanSkillCosts } from './skill-cost.mjs';
@@ -188,7 +188,7 @@ export function requiredBudget(contextUsage, requiredIds, costEntries) {
   return { listingTokens, extraTokens, unmatched, fraction: Math.ceil(((listingTokens + extraTokens) / rawMax) * 1000) / 1000 };
 }
 
-// A required plugin must reach the model with at least one DESCRIBED skill.
+// EVERY skill of a required plugin must reach the model DESCRIBED (HIMMEL-4038).
 // skillPlugins (names of plugins that expose skills in the init event) lets an
 // agent-only plugin skip the check; omitted = every required plugin has skills.
 export function listingProblems(contextUsage, requiredIds, { skillPlugins } = {}) {
@@ -199,8 +199,9 @@ export function listingProblems(contextUsage, requiredIds, { skillPlugins } = {}
     const skills = pluginSkills(contextUsage, id);
     if (!skills.length) {
       if (!skillPlugins || skillPlugins.has(pluginName(id))) problems.push(`role-required plugin ${id} is missing from the post-cap skill listing`);
-    } else if (skills.every(isNameOnlySkill)) {
-      problems.push(`role-required plugin ${id} has only name-only skill entries in the post-cap listing (${skills.length} skill(s), descriptions dropped by the listing budget)`);
+    } else {
+      const bare = skills.filter(isNameOnlySkill);
+      if (bare.length) problems.push(`role-required plugin ${id} has ${bare.length} of ${skills.length} skill(s) name-only in the post-cap listing (descriptions dropped by the listing budget): ${bare.map((s) => s.name).join(', ')}`);
     }
   }
   return problems;
@@ -411,7 +412,7 @@ function main() {
   }
 
   let scanned;
-  const costEntries = () => (scanned ??= scanSkillCosts({ cwd: REPO_ROOT }).entries);
+  const costEntries = () => (scanned ??= scanSkillCosts({ cwd: REPO_ROOT, configDir: process.env.CLAUDE_CONFIG_DIR || undefined }).entries);
   let anyFailed = false;
   // Private per-run tmpdir (mkdtempSync is exclusive/unpredictable), not a
   // shared predictable path — a predictable path + non-exclusive writeFileSync
@@ -421,7 +422,7 @@ function main() {
     for (const name of profileNames) {
       let settings;
       try {
-        settings = resolveProfileByName(name, { installed });
+        settings = resolveProfileByName(name, { installed, skillEntries: costEntries() });
       } catch (e) {
         process.stderr.write(`profile-context-probe: ${e.message}\n`);
         process.exitCode = 2;
@@ -462,5 +463,6 @@ function main() {
 }
 
 if (isMain(import.meta.url)) {
+  await loadListingLib();
   main();
 }

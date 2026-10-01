@@ -9,8 +9,10 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
 } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import {
   basename,
@@ -20,7 +22,15 @@ import {
   resolve,
   sep,
 } from 'node:path';
-import { isMain } from '../lib/is-main.mjs';
+// HIMMEL-4038: inline (not ../lib/is-main.mjs) — plugin-profiles.mjs imports this
+// module from sandboxes that copy scripts/lanes/ alone (arm-resume suites).
+function isMain(importMetaUrl) {
+  try {
+    return process.argv[1] && realpathSync(fileURLToPath(importMetaUrl)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
 
 const ROUTING_TEXT_CAP = 1536;
 const PLUGIN_SCAN_MAX_DEPTH = 6;
