@@ -11,6 +11,7 @@
   },
   "design": {
     "enabled": [
+      "context7@claude-plugins-official",
       "frontend-design@claude-plugins-official",
       "handover@himmel",
       "himmel-ops@himmel",
@@ -19,7 +20,107 @@
       "plannotator-effective-html@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel",
-      "ui-ux-pro-max@ui-ux-pro-max-skill"
+      "shadcn-mcp@himmel",
+      "taste-skill-core@himmel",
+      "ui-ux-pro-max@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-motion": {
+    "enabled": [
+      "animejs-skills@himmel",
+      "emilkowalski-skills@himmel",
+      "gsap-skills@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "lottie-motion-design@himmel",
+      "motion-lexicon@himmel",
+      "playground@claude-plugins-official",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-3d": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "threejs-skills@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-imagegen": {
+    "enabled": [
+      "ai-image-prompts@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "taste-skill-imagegen@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-a11y": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "platform-design-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-diagram": {
+    "enabled": [
+      "builder-visual@himmel",
+      "diagram-design@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-slides": {
+    "enabled": [
+      "frontend-slides@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-reference": {
+    "enabled": [
+      "anthropic-design-skills@himmel",
+      "anydesign@himmel",
+      "design-dna@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "taste-skill-styles@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-trial": {
+    "enabled": [
+      "hallmark@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
     ],
     "contextBudget": 50000
   },

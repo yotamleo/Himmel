@@ -1,0 +1,10 @@
+{
+  "name": "shadcn-mcp",
+  "version": "0.1.0",
+  "description": "[himmel] shadcn/ui registry MCP server (browse, search and add components). No API key. Runs `npx shadcn@4.21.0 mcp` on use; the version is pinned in .mcp.json.",
+  "author": {
+    "name": "yotamleo"
+  },
+  "license": "MIT",
+  "keywords": ["himmel", "design", "shadcn", "mcp"]
+}

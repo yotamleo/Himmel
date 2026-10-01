@@ -68,7 +68,7 @@
     "lean-skills@himmel",
     "plannotator-effective-html@himmel",
     "impeccable@himmel",
-    "ui-ux-pro-max@ui-ux-pro-max-skill",
+    "ui-ux-pro-max@himmel",
     "context7@claude-plugins-official",
     "code-review@claude-plugins-official",
     "code-simplifier@claude-plugins-official",
@@ -98,7 +98,26 @@
     "pr-review-toolkit-himmel@himmel",
     "telegram-himmel@himmel",
     "qmd@himmel",
-    "codex@openai-codex"
+    "codex@openai-codex",
+    "taste-skill-core@himmel",
+    "animejs-skills@himmel",
+    "gsap-skills@himmel",
+    "lottie-motion-design@himmel",
+    "motion-lexicon@himmel",
+    "threejs-skills@himmel",
+    "taste-skill-imagegen@himmel",
+    "ai-image-prompts@himmel",
+    "platform-design-skills@himmel",
+    "diagram-design@himmel",
+    "builder-visual@himmel",
+    "frontend-slides@himmel",
+    "design-dna@himmel",
+    "anydesign@himmel",
+    "taste-skill-styles@himmel",
+    "anthropic-design-skills@himmel",
+    "hallmark@himmel",
+    "shadcn-mcp@himmel",
+    "emilkowalski-skills@himmel"
   ],
   "profiles": {
     "operator": null,
@@ -110,12 +129,81 @@
       "contextBudget": 50000
     },
     "design": {
-      "_comment": "HIMMEL-3064: plannotator-effective-html@himmel is deliberately NOT in the always-on `user` tier -- its 6 skills (design-artifact, html, html-diagram, html-plan, html-prototype, html-wireframe) cost ~630 tok of session-start listing every session, and across 1628 local transcripts it was invoked exactly once. Design/UI work opts in via this profile instead. HIMMEL-4012: the profile now enables the full design pack (plannotator-effective-html, frontend-design, ui-ux-pro-max, impeccable) - it shipped with plannotator only and its test pinned exactly that, so a design leg ran with almost no design tooling. design legs also launch on the 1m context (headed-arm-leg.sh, operator ruling 2026-10-01).",
+      "_comment": "HIMMEL-3064: plannotator-effective-html@himmel is deliberately NOT in the always-on `user` tier -- its 6 skills (design-artifact, html, html-diagram, html-plan, html-prototype, html-wireframe) cost ~630 tok of session-start listing every session, and across 1628 local transcripts it was invoked exactly once. Design/UI work opts in via this profile instead. HIMMEL-4012: the profile now enables the full design pack (plannotator-effective-html, frontend-design, ui-ux-pro-max, impeccable) - it shipped with plannotator only and its test pinned exactly that, so a design leg ran with almost no design tooling. design legs also launch on the 1m context (headed-arm-leg.sh, operator ruling 2026-10-01). HIMMEL-4012 PR2b: the core is 7 members (adds taste-skill-core, shadcn-mcp, context7; ui-ux-pro-max is now the pinned himmel entry). The kit add-ons after this profile (design-motion ... design-trial) each stack on base ONLY, never on this core: until HIMMEL-4014 composes profiles, a design leg adds one with `--profile design --add-plugins <ids>`. Root-skill repos (animejs, ai-image-prompts, design-dna, anydesign: `skills: [\"./\"]`, install shape UNPROVEN) live only in add-ons so an unproven shape cannot break `--profile design`.",
       "enable": [
         "plannotator-effective-html@himmel",
         "frontend-design@claude-plugins-official",
-        "ui-ux-pro-max@ui-ux-pro-max-skill",
-        "impeccable@himmel"
+        "ui-ux-pro-max@himmel",
+        "impeccable@himmel",
+        "taste-skill-core@himmel",
+        "shadcn-mcp@himmel",
+        "context7@claude-plugins-official"
+      ],
+      "contextBudget": 50000
+    },
+    "design-motion": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "emilkowalski-skills@himmel",
+        "animejs-skills@himmel",
+        "gsap-skills@himmel",
+        "lottie-motion-design@himmel",
+        "motion-lexicon@himmel",
+        "playground@claude-plugins-official"
+      ],
+      "contextBudget": 50000
+    },
+    "design-3d": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "threejs-skills@himmel"
+      ],
+      "contextBudget": 50000
+    },
+    "design-imagegen": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "taste-skill-imagegen@himmel",
+        "ai-image-prompts@himmel"
+      ],
+      "contextBudget": 50000
+    },
+    "design-a11y": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "platform-design-skills@himmel"
+      ],
+      "contextBudget": 50000
+    },
+    "design-diagram": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "diagram-design@himmel",
+        "builder-visual@himmel"
+      ],
+      "contextBudget": 50000
+    },
+    "design-slides": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "frontend-slides@himmel"
+      ],
+      "contextBudget": 50000
+    },
+    "design-reference": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "design-dna@himmel",
+        "anydesign@himmel",
+        "taste-skill-styles@himmel",
+        "anthropic-design-skills@himmel"
+      ],
+      "contextBudget": 50000
+    },
+    "design-trial": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "hallmark@himmel"
       ],
       "contextBudget": 50000
     },

@@ -60,6 +60,26 @@
     "lean-skills@himmel": true,
     "plannotator-effective-html@himmel": false,
     "impeccable@himmel": false,
+    "ui-ux-pro-max@himmel": false,
+    "taste-skill-core@himmel": false,
+    "animejs-skills@himmel": false,
+    "gsap-skills@himmel": false,
+    "lottie-motion-design@himmel": false,
+    "motion-lexicon@himmel": false,
+    "threejs-skills@himmel": false,
+    "taste-skill-imagegen@himmel": false,
+    "ai-image-prompts@himmel": false,
+    "platform-design-skills@himmel": false,
+    "diagram-design@himmel": false,
+    "builder-visual@himmel": false,
+    "frontend-slides@himmel": false,
+    "design-dna@himmel": false,
+    "anydesign@himmel": false,
+    "taste-skill-styles@himmel": false,
+    "anthropic-design-skills@himmel": false,
+    "hallmark@himmel": false,
+    "shadcn-mcp@himmel": false,
+    "emilkowalski-skills@himmel": false,
     "context7@claude-plugins-official": false,
     "code-review@claude-plugins-official": false,
     "code-simplifier@claude-plugins-official": false,
@@ -121,6 +141,66 @@
     },
     "impeccable@himmel": {
       "neededBy": "Design/UI work via the `design` lane profile (HIMMEL-4012), which enables it. Installed but disabled by default - reachable via `/profile enable impeccable@himmel`."
+    },
+    "ui-ux-pro-max@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable ui-ux-pro-max@himmel`."
+    },
+    "taste-skill-core@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable taste-skill-core@himmel`."
+    },
+    "animejs-skills@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-motion` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable animejs-skills@himmel`."
+    },
+    "gsap-skills@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-motion` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable gsap-skills@himmel`."
+    },
+    "lottie-motion-design@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-motion` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable lottie-motion-design@himmel`."
+    },
+    "motion-lexicon@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-motion` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable motion-lexicon@himmel`."
+    },
+    "threejs-skills@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-3d` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable threejs-skills@himmel`."
+    },
+    "taste-skill-imagegen@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-imagegen` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable taste-skill-imagegen@himmel`."
+    },
+    "ai-image-prompts@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-imagegen` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable ai-image-prompts@himmel`."
+    },
+    "platform-design-skills@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-a11y` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable platform-design-skills@himmel`."
+    },
+    "diagram-design@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-diagram` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable diagram-design@himmel`."
+    },
+    "builder-visual@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-diagram` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable builder-visual@himmel`."
+    },
+    "frontend-slides@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-slides` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable frontend-slides@himmel`."
+    },
+    "design-dna@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-reference` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable design-dna@himmel`."
+    },
+    "anydesign@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-reference` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable anydesign@himmel`."
+    },
+    "taste-skill-styles@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-reference` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable taste-skill-styles@himmel`."
+    },
+    "anthropic-design-skills@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-reference` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable anthropic-design-skills@himmel`."
+    },
+    "hallmark@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-trial` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable hallmark@himmel`."
+    },
+    "shadcn-mcp@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable shadcn-mcp@himmel`."
+    },
+    "emilkowalski-skills@himmel": {
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-motion` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable emilkowalski-skills@himmel`."
     }
   },
   "_onDemandConnectorsComment": "HIMMEL-2733: on-demand capabilities himmel does NOT install and therefore cannot ship a disabled state for — they are per-machine toggles in the Chrome extension and in claude.ai's connector settings. Listed here so the tier is DISCOVERABLE and the install summary can name them; no installer reads this key to write anything.",
