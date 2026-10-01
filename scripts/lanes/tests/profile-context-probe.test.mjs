@@ -276,7 +276,20 @@ test('listingReport: per-plugin measured tokens and name-only count', () => {
 test('requiredBudget: adds the uncapped description cost of name-only required skills to the current listing', () => {
   const ctx = { raw_max_tokens: 10000, skills: [NAME_ONLY, { name: 'other:x', plugin_name: 'other', tokens: 94 }] };
   const entries = [{ name: 'impeccable', chars: 400, path: '/h/.claude/plugins/cache/himmel/impeccable/1.0/skills/impeccable/SKILL.md' }];
-  assert.deepEqual(requiredBudget(ctx, ['impeccable@himmel'], entries), { listingTokens: 100, extraTokens: 97, fraction: 0.02 });
+  assert.deepEqual(requiredBudget(ctx, ['impeccable@himmel'], entries), { listingTokens: 100, extraTokens: 97, unmatched: 0, fraction: 0.02 });
+});
+
+test('requiredBudget: a name-only required skill missing from the scan is counted, not silently free', () => {
+  assert.equal(requiredBudget({ raw_max_tokens: 1000, skills: [NAME_ONLY] }, ['impeccable@himmel'], []).unmatched, 1);
+});
+
+test('evaluateProfile: a null contextUsage (failed /context spawn) fails a profile with required plugins', () => {
+  const { pass, problems } = evaluateProfile({
+    enabledIds: ['impeccable@himmel'], requiredIds: ['impeccable@himmel'],
+    initEvent: { ...LOADED, skills: ['impeccable:impeccable'] }, measuredTokens: 100, budget: 40000, contextUsage: null,
+  });
+  assert.equal(pass, false);
+  assert.ok(problems.some((x) => /no context_usage/.test(x)));
 });
 
 test('requiredBudget: null when the window size is unknown; already-described skills add nothing', () => {

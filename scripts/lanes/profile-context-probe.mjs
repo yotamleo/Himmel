@@ -173,16 +173,19 @@ export function requiredBudget(contextUsage, requiredIds, costEntries) {
   if (!Number.isFinite(rawMax) || rawMax <= 0) return null;
   const listingTokens = (contextUsage.skills ?? []).reduce((a, s) => a + (s.tokens ?? 0), 0);
   let extraTokens = 0;
+  let unmatched = 0;
   for (const id of requiredIds) {
     const plugin = pluginName(id);
     for (const s of pluginSkills(contextUsage, id).filter(isNameOnlySkill)) {
       const bare = s.name.slice(plugin.length + 1);
       // several cached versions of one plugin can match: take the largest
-      const chars = Math.max(0, ...costEntries.filter((e) => e.name === bare && e.path.includes(`/${plugin}/`)).map((e) => e.chars));
+      const matches = costEntries.filter((e) => e.name === bare && e.path.includes(`/${plugin}/`));
+      if (!matches.length) unmatched += 1;
+      const chars = Math.max(0, ...matches.map((e) => e.chars));
       extraTokens += Math.max(0, Math.ceil((chars + plugin.length + 1) / 4) - s.tokens);
     }
   }
-  return { listingTokens, extraTokens, fraction: Math.ceil(((listingTokens + extraTokens) / rawMax) * 1000) / 1000 };
+  return { listingTokens, extraTokens, unmatched, fraction: Math.ceil(((listingTokens + extraTokens) / rawMax) * 1000) / 1000 };
 }
 
 // A required plugin must reach the model with at least one DESCRIBED skill.
@@ -439,11 +442,11 @@ function main() {
       }
 
       const requiredIds = ROLE_REQUIRES[name] ?? [];
-      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage });
+      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
       const need = requiredBudget(ctxRun.contextUsage, requiredIds, costEntries());
-      if (need) process.stdout.write(`  budget to fit required set: skillListingBudgetFraction >= ${need.fraction} (listing ${need.listingTokens} tok + ${need.extraTokens} tok of descriptions)\n`);
+      if (need) process.stdout.write(`  budget to fit required set: skillListingBudgetFraction >= ${need.fraction} (listing ${need.listingTokens} tok + ${need.extraTokens} tok of descriptions${need.unmatched ? `; ${need.unmatched} name-only skill(s) not in the skill-cost scan, so this is a lower bound` : ''})\n`);
       for (const r of listingReport(ctxRun.contextUsage, requiredIds)) process.stdout.write(`  listing ${r.plugin}: ${r.skills} skill(s), ${r.nameOnly} name-only, ${r.tokens} tok\n`);
       for (const p of problems) process.stdout.write(`  - ${p}\n`);
       appendLedger(name, note, pass ? 0 : 1, ledgerTarget);
