@@ -12,5 +12,6 @@ export const ROLE_REQUIRES = {
   'lane-review': ['pr-review-toolkit-himmel@himmel'],
   'lane-content': ['claude-obsidian@himmel', 'obsidian-triage@himmel'],
   telegram: ['claude-obsidian@himmel', 'obsidian-triage@himmel'],
+  console: ['lean-skills@himmel'],
   bare: [], 'console-relay': [], 'console-judge': [],
 };

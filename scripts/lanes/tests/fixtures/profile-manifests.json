@@ -85,6 +85,15 @@
     ],
     "contextBudget": 45000
   },
+  "console": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
   "console-relay": {
     "enabled": [
       "handover@himmel",

@@ -698,6 +698,44 @@ matching GO, with a 30-minute timeout, re-issued rather than open-ended), and
 required because a merge is irreversible. See also `docs/internals/retask-channel.md` for the token
 discipline governing the GO itself. No other wait qualifies.
 
+## Every launch path applies a role-matched plugin profile (HIMMEL-4013)
+
+A claude session's plugin set is fixed at launch by `--settings <profile file>`
+(`scripts/lanes/plugin-profiles.json`). Before HIMMEL-4013 only `headed-arm-leg.sh`
+did this; the console arm, `arm-resume.sh`, `hop.sh`, `schedule-resume.sh`, the
+morning-briefing `--llm` call and the CR critic launched claude with the
+operator's FULL plugin set. They now all go through
+`scripts/lanes/profile-settings.sh <profile>` (writes
+`~/.himmel/launch-profiles/<profile>.json`, **exit 2 = refuse**, never a silent
+fallback to the full set) and the profile is picked from the role:
+
+| Launch path | Profile |
+|---|---|
+| `console.sh` arm / `headed-arm.sh --role console` | `console` (handover, himmel-ops, qmd, lean-skills; no pr-review-toolkit) |
+| `arm-resume.sh`, `schedule-resume.sh` | from the resumed doc via `scripts/lanes/role-profile.sh`; `--profile <name>` overrides (arm-resume) |
+| `hop.sh` | `HOP_PROFILE`, else console / leg-impl from the caller's role env, else `user` |
+| leg brief (`headed-arm-leg.sh`) | `--profile` / `LEG_PROFILE` win; else a `profile: <name>` line in the brief's first 60 lines; else the unprofiled-launch refusal stands |
+| `generate-morning-briefing.sh --llm`, `cr/hermes-critic.sh` | `bare` (floor plugins only) |
+
+`role-profile.sh` precedence: explicit `profile:` line, then console doc, then a
+doc carrying a `RETASK token` (`leg-impl`), else `user`. Sites that deliberately
+run with no profile (the probes, `claude-headless.sh`, the cadence runners)
+carry a `launch-profile-ok:` reason; `scripts/lanes/test-launch-site-profiles.sh`
+scans `scripts/` and fails on any other claude exec.
+
+**Fanout and overnight-shift subagents inherit the parent's plugins** (see
+"Subagents inherit" above - there is no per-subagent plugin control). So the
+parent must be armed with the profile its CHILDREN need, not just the one it
+needs itself: a console that dispatches design work arms with a profile that
+carries the design tools, and a fanout parent that will spawn reviewers arms with
+a profile that includes the review plugins. Pick it when arming (`--profile`
+on the leg, `profile:` in the brief, `--profile` on `arm-resume.sh`); it cannot
+be fixed from inside a running session.
+
+Known gap: the Windows `.bat`/WSL branch of `arm-resume.sh` still relaunches
+without `--settings` (the profile file lives in the WSL home); tracked as a
+follow-up.
+
 ## Cost posture
 
 Fable stays **conserved** (limited release) — the spread optimizes
