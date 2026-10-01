@@ -585,6 +585,10 @@ if [ "$HEADLESS" = "1" ]; then
     # rely on the default (CLAUDE.md "Claude invocation billing").
     # headless-claude-ok: HIMMEL-3403 console-armed leg; headed-arm-leg.sh ran the bank/fleet preflight
     LAUNCH_ARGV=("$LAUNCHER" --bg --permission-mode auto --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
+    # HIMMEL-4052: the rebuild above would drop the console profile --settings.
+    if [ "$ROLE" = "console" ]; then
+        LAUNCH_ARGV=("$LAUNCHER" --settings "$_console_profile_settings" "${LAUNCH_ARGV[@]:1}")
+    fi
 fi
 
 # HIMMEL-2779: headed-arm-leg.sh sets this required value. Validate the same

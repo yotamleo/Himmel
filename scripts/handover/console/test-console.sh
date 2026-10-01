@@ -270,6 +270,7 @@ log7B="$tmp/work/tester-armrepo-${root_digest}/launch-${session7B}.log"
 
 cat > "$tmp/stub-arm.sh" <<'STUB'
 #!/usr/bin/env bash
+[ "$1" = --role ] && shift 2
 echo "armed: name=$1 doc=$2 signal=$3 deadline=$4" >> "$5"
 STUB
 chmod +x "$tmp/stub-arm.sh"
@@ -1298,8 +1299,8 @@ out56b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     bash "$C" next --bucket rolerepo --arm --deadline-min 0 ) )"
 check "56 next --arm reports armed" "$(printf '%s\n' "$out56b" | grep -c '^armed: ')" "1"
 check "56 CONSOLE_ROLE=console (retired): the stub was invoked" "$(grep -c '' "$record56" 2>/dev/null)" "1"
-check "56 CONSOLE_ROLE=console (retired): stub record has no --role" \
-    "$(grep -c -- '--role' "$record56" 2>/dev/null)" "0"
+check "56 CONSOLE_ROLE=console (retired): the arm is launched --role console (HIMMEL-4052)" \
+    "$(grep -c -- '--role console ' "$record56" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc56A" "$token56a" >/dev/null 2>&1
 
 doc57A="$root/tester/rolerepo2/DEMO-nextleg-${today}A-console.md"
@@ -1316,8 +1317,8 @@ out57b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     CONSOLE_HEADED_ARM="$tmp/stub-arm-role-57.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
     bash "$C" next --bucket rolerepo2 --arm --deadline-min 0 ) )"
 check "57 next --arm reports armed" "$(printf '%s\n' "$out57b" | grep -c '^armed: ')" "1"
-check "57 no CONSOLE_ROLE: stub record has no --role" \
-    "$(grep -c -- '--role' "$record57" 2>/dev/null)" "0"
+check "57 no CONSOLE_ROLE: the arm is launched --role console (HIMMEL-4052)" \
+    "$(grep -c -- '--role console ' "$record57" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc57A" "$token57a" >/dev/null 2>&1
 
 # --- 58 (HIMMEL-3136 R2): a stale CONSOLE_ROLE=relay in the environment no
@@ -1342,9 +1343,33 @@ out58b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
 check "58 CONSOLE_ROLE=relay (retired): exits 0" "$rc58b" "0"
 check "58 CONSOLE_ROLE=relay (retired): armed line printed" "$(printf '%s\n' "$out58b" | grep -c '^armed: ')" "1"
 check "58 CONSOLE_ROLE=relay (retired): stub invoked" "$([ -e "$record58" ] && echo 1 || echo 0)" "1"
-check "58 CONSOLE_ROLE=relay (retired): stub record has no --role" \
-    "$(grep -c -- '--role' "$record58" 2>/dev/null)" "0"
+check "58 CONSOLE_ROLE=relay (retired): --role console, never relay (HIMMEL-4052)" \
+    "$(grep -c -- '--role console ' "$record58" 2>/dev/null)$(grep -c -- '--role relay' "$record58" 2>/dev/null)" "10"
 HANDOVER_DIR="$root" bash "$QL" release "$doc58A" "$token58a" >/dev/null 2>&1
+
+# --- 58b (HIMMEL-4052): a console profile refusal (profile-settings.sh rc 2)
+# inside launch_cmd must fail the whole command. It ran inside $(...) at the
+# `launch:` / `would-launch:` echoes, so the exit 2 was lost and the arm went on
+# (rc 0) with no profiled launch line. HIMMEL_PROFILE_SETTINGS_DIR under /dev/null
+# makes the resolver's mkdir fail, which is its fail-closed rc 2.
+record58b="$tmp/role-record-58b"
+cat > "$tmp/stub-arm-role-58b.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record58b"
+STUB
+chmod +x "$tmp/stub-arm-role-58b.sh"
+rc58n=0
+out58n="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HIMMEL_PROFILE_SETTINGS_DIR=/dev/null/no-such CONSOLE_HEADED_ARM="$tmp/stub-arm-role-58b.sh" \
+    CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    bash "$C" new --bucket rolerepo4 --arm --deadline-min 0 ) 2>&1 )" || rc58n=$?
+check "58b new --arm with an unresolvable console profile: exit 2" "$rc58n" "2"
+check "58b refusal: no launch line printed" "$(printf '%s\n' "$out58n" | grep -c '^launch: ')" "0"
+check "58b refusal: the arm was never started" "$([ -e "$record58b" ] && echo 1 || echo 0)" "0"
+rc58d=0
+( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HIMMEL_PROFILE_SETTINGS_DIR=/dev/null/no-such bash "$C" new --bucket rolerepo4 --dry-run ) >/dev/null 2>&1 || rc58d=$?
+check "58b new --dry-run with an unresolvable console profile: exit 2" "$rc58d" "2"
 
 # --- 60: HIMMEL-2973 Delta 6 -- `next` copies the predecessor's
 # `## Live state` verbatim into the successor's HANDOFF `## In flight`
@@ -1462,6 +1487,7 @@ check "61 CONSOLE_MODEL=claude-fable-5-1 still launches Fable" \
 record61="$tmp/record-61"
 cat > "$tmp/stub-arm-model-61.sh" <<STUB
 #!/usr/bin/env bash
+[ "\$1" = --role ] && shift 2
 printf '%s\n' "\$6" >> "$record61"
 STUB
 chmod +x "$tmp/stub-arm-model-61.sh"
@@ -1578,6 +1604,7 @@ check "64 step 8 no longer calls held the only expected state" \
 # .env of its own and none of the three vars exported by the caller.
 own65="$tmp/own-checkout-65"
 mkdir -p "$own65/scripts"
+cp -r "$REPO_REAL/scripts/lanes" "$own65/scripts/lanes"  # HIMMEL-4052: launch_cmd refusals now propagate, so the fixture needs the profile resolver
 cp -r "$REPO_REAL/scripts/lib" "$own65/scripts/lib"
 cp -r "$REPO_REAL/scripts/handover" "$own65/scripts/handover"
 ln -s "$REPO_REAL/docs" "$own65/docs"
