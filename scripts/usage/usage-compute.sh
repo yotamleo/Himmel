@@ -55,13 +55,13 @@ done
 # An explicit input that is missing or unreadable fails closed before anything
 # is written; a default may be absent (noted, treated as empty).
 if [ "$PROJECTS_SET" = 1 ]; then
-  [ -d "$PROJECTS" ] && [ -r "$PROJECTS" ] || die "--projects is not a readable directory: $PROJECTS"
+  if [ ! -d "$PROJECTS" ] || [ ! -r "$PROJECTS" ]; then die "--projects is not a readable directory: $PROJECTS"; fi
 elif [ ! -d "$PROJECTS" ]; then
   echo "usage-compute: note: default projects dir absent ($PROJECTS); no sessions" >&2
   PROJECTS=""
 fi
 if [ -n "$LEDGER" ]; then
-  [ -f "$LEDGER" ] && [ -r "$LEDGER" ] || die "--ledger is not a readable file: $LEDGER"
+  if [ ! -f "$LEDGER" ] || [ ! -r "$LEDGER" ]; then die "--ledger is not a readable file: $LEDGER"; fi
 else
   LEDGER="$(git rev-parse --git-common-dir 2>/dev/null || true)/cr-critic-scores.jsonl"
   [ -f "$LEDGER" ] || echo "usage-compute: note: default CR ledger absent ($LEDGER); no CR data" >&2
