@@ -58,9 +58,10 @@ fi
 # Ticket selector -> {prefix, lo, hi} or {list} or {} (all).
 SEL='{}'
 if [ -n "$RANGE" ]; then
-  [[ "$RANGE" =~ ^([A-Z][A-Z0-9]*)-([0-9]+)\.\.([A-Z][A-Z0-9]*)-([0-9]+)$ ]] \
-    && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[3]}" ] \
-    || die "--range must be KEY-a..KEY-b with one key prefix: $RANGE"
+  if ! [[ "$RANGE" =~ ^([A-Z][A-Z0-9]*)-([0-9]+)\.\.([A-Z][A-Z0-9]*)-([0-9]+)$ ]] \
+    || [ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[3]}" ]; then
+    die "--range must be KEY-a..KEY-b with one key prefix: $RANGE"
+  fi
   SEL="$(jq -nc --arg p "${BASH_REMATCH[1]}" --argjson lo "${BASH_REMATCH[2]}" --argjson hi "${BASH_REMATCH[4]}" '{prefix:$p,lo:$lo,hi:$hi}')"
 elif [ -n "$TICKETS" ]; then
   SEL="$(jq -nc --arg l "$TICKETS" '{list: ($l | split(","))}')"
