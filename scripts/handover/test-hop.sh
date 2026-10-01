@@ -195,6 +195,7 @@ assert_contains "T18 snapshot under own-checkout's HANDOVER_DIR, not the foreign
 stubrepo="$TMP/stub-origin"
 mkdir -p "$stubrepo/scripts/handover" "$TMP/handovers/stub"
 ( cd "$stubrepo" && git init -q )
+# shellcheck disable=SC2016 # the stub must expand STUB_ARM_RC itself, not this shell
 printf '#!/usr/bin/env bash\nexit "${STUB_ARM_RC:-0}"\n' > "$stubrepo/scripts/handover/arm-resume.sh"
 
 # T19: arm-resume refuses (rc 2) → hop exits 2 with the failure diagnostic.
