@@ -182,6 +182,15 @@ if [ "$first_apt" = "apt-get install" ] && grep -Eq '^ +if sudo timeout [0-9]+ a
 else
   bad "shell-unit-shard: at/atd install does not try the plain install before an update fallback"
 fi
+# The fallback path runs every apt call once, so the sum of their `timeout N`
+# values must fit inside the step cap (CR round 1: 300+300+300 > 600).
+apt_sum="$(grep -o 'sudo timeout [0-9]* apt-get' <<< "$step" | awk '{s+=$3} END {print s+0}')"
+cap_min="$(grep -Eo '^        timeout-minutes: [0-9]+$' <<< "$step" | grep -Eo '[0-9]+$')"
+if [ -n "$cap_min" ] && [ "$apt_sum" -gt 0 ] && [ "$apt_sum" -le $((cap_min * 60)) ]; then
+  ok "shell-unit-shard: at/atd install worst-case apt time (${apt_sum}s) fits the step cap (${cap_min}m)"
+else
+  bad "shell-unit-shard: at/atd install worst-case apt time (${apt_sum}s) exceeds the step cap (${cap_min:-none}m)"
+fi
 if grep -q 'echo .*skipped' <<< "$step" && grep -q 'echo .*falling back' <<< "$step"; then
   ok "shell-unit-shard: at/atd install logs which path ran"
 else

@@ -669,16 +669,18 @@ jobs:
       # files, and a suffix-anchored glob silently matched nothing.
       - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
         if: runner.os == 'Linux'
-        # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. Step cap 10
-        # min; each apt call gets a 5 min `timeout` and a 2 min dpkg-lock wait so
-        # a lock fails fast and visibly instead of blocking silently.
-        timeout-minutes: 10
+        # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. Each apt call
+        # gets a `timeout` and a dpkg-lock wait so a lock fails fast and visibly
+        # instead of blocking silently. HIMMEL-4073: worst case is the 2 min
+        # plain install + 5 min refresh + 5 min retry = 12 min, so the step cap
+        # is 13 (it was 10 when the whole step was refresh + install).
+        timeout-minutes: 13
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
           # HIMMEL-4073: try the plain install first (the runner's package
           # index is usually fresh enough); only a failure pays for an index
           # refresh and a retry. Each branch logs which path ran.
-          if sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at; then
+          if sudo timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 at; then
             echo "at/atd install: plain install succeeded, index refresh skipped"
           else
             echo "at/atd install: plain install failed, falling back to index refresh + retry"
