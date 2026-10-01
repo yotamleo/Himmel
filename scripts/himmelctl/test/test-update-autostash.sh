@@ -56,6 +56,16 @@ export HIMMELCTL_CACHE_DIR="$TMP/himmelctl-cache"
 mkdir -p "$HIMMELCTL_CACHE_DIR"
 unset HIMMEL_UPDATE_CHANNEL
 
+# HIMMEL-4008: T0/T1/T1b run the FULL himmel-update.sh chain in the copied
+# clone, so steps 2-6 reach whatever station state the ambient env names. A
+# real `claude plugin marketplace update himmel` (or a real hermes checkout /
+# luna vault) failing under concurrent station load flipped chain_rc and made
+# T0 exit 1 after the pull itself had succeeded. Point every managed step at
+# nothing: an absent claude bin, an empty HERMES_HOME, no vault.
+export HIMMEL_UPDATE_CLAUDE_BIN="$TMP/no-claude"
+export HERMES_HOME="$TMP/no-hermes"
+unset LUNA_VAULT_PATH
+
 pass=0
 fail=0
 assert_pass() { pass=$((pass + 1)); echo "  PASS: $1"; }
@@ -165,6 +175,14 @@ if [ "${1:-}" = "--selftest-hermetic" ]; then
     HIMMEL_UPDATE_AUTOSTASH=1 run_update_pull "$CLONE"
     exit 0
 fi
+# --selftest-chain: the T0 scenario through the FULL script, printing its rc.
+if [ "${1:-}" = "--selftest-chain" ]; then
+    build_scenario f.txt
+    rc=0
+    (cd "$CLONE" && bash "$CLONE/scripts/himmel-update.sh" >/dev/null 2>&1) || rc=$?
+    echo "rc=$rc"
+    exit 0
+fi
 
 echo "== suite hermeticity (HIMMEL-2902) =="
 # A station's real install-profile.json (channel: stable) must not leak into
@@ -182,6 +200,15 @@ else
     assert_fail "suite is hermetic to a station install profile (station_rc=$station_rc clean_rc=$clean_rc station='$station' clean='$clean')"
 fi
 
+# The managed chain must not reach real station state: a failing ambient claude
+# CLI / a hermes checkout in the caller's env must not change the outcome.
+# --selftest-chain re-applies this file's preamble, so the control sets the
+# ambient env on the recursion and the suite override must win.
+FAIL_CLAUDE="$TMP/failing-claude"
+printf '#!/bin/sh\nexit 1\n' > "$FAIL_CLAUDE"; chmod +x "$FAIL_CLAUDE"
+chain="$(HIMMEL_UPDATE_CLAUDE_BIN="$FAIL_CLAUDE" bash "$0" --selftest-chain)"
+assert_eq "suite is hermetic to a failing station claude CLI" "rc=0" "$chain"
+
 # ─── T0: untracked-only dirt → pulls clean, no refusal (HIMMEL-3078) ─────────
 echo "T0: untracked-only stray, env unset → pulls clean, no refusal"
 build_scenario f.txt
@@ -189,6 +216,7 @@ printf 'stray\n' > "$CLONE/untracked-stray.txt"
 rc=0
 out=$(cd "$CLONE" && bash "$CLONE/scripts/himmel-update.sh" 2>&1) || rc=$?
 assert_eq "T0: exit 0" "0" "$rc"
+[ "$rc" -eq 0 ] || echo "    T0 output: $out"
 assert_not_contains "T0: no refusal" "refusing to pull into a dirty tree" "$out"
 assert_eq "T0: HEAD advanced to upstream" \
     "$(git -C "$CLONE" rev-parse origin/main)" "$(git -C "$CLONE" rev-parse HEAD)"
