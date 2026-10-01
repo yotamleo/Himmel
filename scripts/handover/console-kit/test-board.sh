@@ -482,6 +482,41 @@ printf 'HIMMEL-9008%sTask%sTo Do%sno labels column\n' "$T" "$T" "$T" >> "$JD/v1.
 runv --out "$W/v-nolabels.html" >/dev/null
 contains 'a row missing the labels column reads unavailable' "$(cat "$W/v-nolabels.html" 2>/dev/null)" 'data-release="v1.0.0" data-unavailable="1"'
 
+# --- HIMMEL-3988: with no --legs, the leg set is the console's fleet manifest
+# (<console doc stem>.fleet.json, read through fleet-manifest.sh list -- the same
+# validation tick --legs-from uses); no manifest keeps the RESUME-doc scan; an
+# explicit --legs wins; a manifest change moves --changed (the tick stub's
+# fingerprint is constant, so only board.mjs's own manifest signature can).
+M="$W/mf"
+mkdir -p "$M"
+printf '%s\n' '# console' '## Live state' 'epics: none' '' '## Results' > "$M/console-m.md"
+for n in 901 902; do printf '%s\n' "# leg N$n" '## Results' '- 10:00 LIVE — working' > "$M/HIMMEL-9$n-N$n-x-RESUME.md"; done
+MDOC="$M/console-m.md"
+MFLEET="$M/console-m.fleet.json"
+mrun() {
+    PATH="$W/bin:$PATH" BOARD_TICK="$W/bin/tick-stub" TICK_ARGV_LOG="$W/argv.log" \
+        BOARD_SESSIONS="$W/bin/sessions-empty.sh" \
+        GH_OPEN="$W/open.json" GH_MERGED="$W/merged.json" GH_EPIC="$W/epic.json" GH_VIEW="$W/view" \
+        node "$SUT" --doc "$MDOC" --repo "$W/repo" --out "$M/board.html" "$@" 2>"$W/stderr.log"
+}
+mrun >/dev/null
+lacks 'no manifest: tick gets no --legs (the RESUME-doc scan stays the fallback, HIMMEL-3988)' "$(cat "$W/argv.log")" "$M/HIMMEL-9901"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N901","added":"2026-10-01T00:00:00Z"}]}\n' "$M/HIMMEL-9901-N901-x-RESUME.md" > "$MFLEET"
+mrun --changed >/dev/null
+contains 'manifest present: tick is armed with the manifest legs (HIMMEL-3988)' "$(cat "$W/argv.log")" "--legs $M/HIMMEL-9901-N901-x-RESUME.md"
+lacks 'manifest present: a RESUME doc it does not list is not armed (HIMMEL-3988)' "$(cat "$W/argv.log")" 'HIMMEL-9902'
+contains 'manifest present: the listed leg is on the board' "$(cat "$M/board.html")" 'data-label="N901"'
+same 'manifest unchanged: --changed reports UNCHANGED' "$(mrun --changed)" "UNCHANGED $M/board.html"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N901"},{"doc":"%s","label":"N902"}]}\n' "$M/HIMMEL-9901-N901-x-RESUME.md" "$M/HIMMEL-9902-N902-x-RESUME.md" > "$MFLEET"
+same 'manifest gained a leg: --changed reports CHANGED (HIMMEL-3988)' "$(mrun --changed)" "CHANGED $M/board.html"
+mrun --legs "$M/HIMMEL-9902-N902-x-RESUME.md" >/dev/null
+contains 'an explicit --legs wins over the manifest' "$(cat "$W/argv.log")" "--legs $M/HIMMEL-9902-N902-x-RESUME.md"
+lacks 'an explicit --legs wins over the manifest (manifest leg not armed)' "$(cat "$W/argv.log")" 'HIMMEL-9901'
+printf '%s\n' 'not json' > "$MFLEET"
+mrun >/dev/null; rc=$?
+contains 'an invalid manifest falls back to the scan, rc 0' "rc=$rc" 'rc=0'
+contains 'an invalid manifest is reported on stderr, not silently ignored' "$(cat "$W/stderr.log")" 'fleet manifest'
+
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
 contains 'no --doc is a usage error (rc 2)' "rc=$rc" 'rc=2'
