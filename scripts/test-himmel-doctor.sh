@@ -5384,14 +5384,14 @@ else
     fail "C47 overrides -> age=[$(printf '%s' "$out" | grep C47)] cpu=[$(printf '%s' "$out_cpu" | grep C47)]"
 fi
 
-echo "== C47: a real busy loop (self-terminating, group-killed) is reported and left running =="
+echo "== C47: a real busy loop (self-terminating after 40 s, killed by the test) is reported and left running =="
 # shellcheck disable=SC2016 # $SECONDS expands in the child shell
-setsid bash -c 'while [ "$SECONDS" -lt 40 ]; do :; done' hook.sh-c47-fixture &
+bash -c 'while [ "$SECONDS" -lt 40 ]; do :; done' hook.sh-c47-fixture &
 c47_pid=$!
 sleep 2
-out="$(HIMMEL_DOCTOR_RUNAWAY_MIN_AGE_MIN=0 HIMMEL_DOCTOR_RUNAWAY_PS=ps CLAUDE_DIR="$c47_t/claude" HOME="$c47_t/home" bash "$DOC" --no-color 2>&1)"
+out="$(HIMMEL_DOCTOR_RUNAWAY_MIN_AGE_MIN=0 HIMMEL_DOCTOR_RUNAWAY_CPU_PCT=50 HIMMEL_DOCTOR_RUNAWAY_PS=ps CLAUDE_DIR="$c47_t/claude" HOME="$c47_t/home" bash "$DOC" --no-color 2>&1)"
 c47_alive=no; kill -0 "$c47_pid" 2>/dev/null && c47_alive=yes
-kill -- "-$c47_pid" 2>/dev/null; kill "$c47_pid" 2>/dev/null; wait "$c47_pid" 2>/dev/null
+kill "$c47_pid" 2>/dev/null; wait "$c47_pid" 2>/dev/null
 if grepq "$out" 'WARN C47-runaway-procs' && grepq "$out" -F "pid $c47_pid" && [ "$c47_alive" = yes ]; then
     pass "C47 reports a live busy loop and leaves it running"
 else
