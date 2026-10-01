@@ -108,6 +108,8 @@ check "round 7 octal executable" block '{"tool_name":"Bash","tool_input":{"comma
 check "round 7 escaped config subcommand" block '{"tool_name":"Bash","tool_input":{"command":"git $'"'"'\\x63onfig'"'"' url.x.insteadof Y","cwd":"'"$SWR"'"}}'
 check "round 7 split executable, hex-escaped middle letter" block '{"tool_name":"Bash","tool_input":{"command":"g$'"'"'\\x69'"'"'\"t\" -c url.x.insteadof=y","cwd":"'"$SWR"'"}}'
 check "round 7 unterminated ANSI-C segment" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.x.insteadof Y","cwd":"'"$SWR"'"}}'
+check "round 7 NUL octal ends the segment, Of joins" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.x.instead\\0junk'"'"'Of Y","cwd":"'"$SWR"'"}}'
+check "round 7 NUL hex ends the segment, Of joins" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.x.instead\\x00junk'"'"'Of Y","cwd":"'"$SWR"'"}}'
 check "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'","cwd":"'"$SWR"'"}}'
 check "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'","cwd":"'"$SWR"'"}}'
 check "config user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.name x","cwd":"'"$SWR"'"}}'

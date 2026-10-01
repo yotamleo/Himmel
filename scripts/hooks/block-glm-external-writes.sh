@@ -2033,37 +2033,41 @@ gp_total=$(count_cmd "$gp_shape"); gp_allowed=0
 ansic_decode() {
     LC_ALL=C awk '
     function hv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
-    function ch(code) { return (code > 0 && code < 128) ? sprintf("%c", code) : "#" }
+    function ch(code) {
+        if (code == 0) { if (!nul) { nul = 1; cut = length(seg) }; return "" }
+        return (code < 128) ? sprintf("%c", code) : "#"
+    }
     { s = (NR > 1 ? s "\n" : "") $0 }
     END {
         q = "\047"; n = length(s); i = 1; out = ""; bad = 0
         while (i <= n) {
             c = substr(s, i, 1)
             if (c != "$" || substr(s, i + 1, 1) != q) { out = out c; i++; continue }
-            i += 2; closed = 0
+            i += 2; closed = 0; seg = ""; nul = 0; cut = 0
             while (i <= n) {
                 c = substr(s, i, 1)
                 if (c == q) { closed = 1; i++; break }
-                if (c != "\\") { out = out c; i++; continue }
+                if (c != "\\") { seg = seg c; i++; continue }
                 e = substr(s, i + 1, 1); i += 2
                 if (e == "") { bad = 1; break }
                 if ((k = index("abeEfnrtv\\\047\"?", e)) > 0) {
-                    out = out substr("\007\010\033\033\014\012\015\011\013\\\047\"?", k, 1); continue
+                    seg = seg substr("\007\010\033\033\014\012\015\011\013\\\047\"?", k, 1); continue
                 }
                 if (e ~ /[0-7]/) {
                     v = e + 0; d = 1
                     while (d < 3 && substr(s, i, 1) ~ /[0-7]/) { v = v * 8 + substr(s, i, 1); i++; d++ }
-                    out = out ch(v % 256); continue
+                    seg = seg ch(v % 256); continue
                 }
                 if (e == "x" || e == "u" || e == "U") {
                     mx = (e == "x") ? 2 : (e == "u") ? 4 : 8; v = 0; d = 0
                     while (d < mx && hv(substr(s, i, 1)) >= 0) { v = v * 16 + hv(substr(s, i, 1)); i++; d++ }
                     if (d == 0) bad = 1
-                    out = out ch(v); continue
+                    seg = seg ch(v); continue
                 }
-                if (e == "c") { if (i > n) bad = 1; else i++; out = out "#"; continue }
-                out = out "\\" e
+                if (e == "c") { if (i > n) bad = 1; else i++; seg = seg "#"; continue }
+                seg = seg "\\" e
             }
+            out = out (nul ? substr(seg, 1, cut) : seg)
             if (!closed) bad = 1
         }
         printf "%s", out

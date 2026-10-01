@@ -966,7 +966,8 @@ _ANSI_HEX = {"x": 2, "u": 4, "U": 8}
 
 
 def _ansi_c_code(code: int) -> str:
-    return chr(code) if 0 < code < 128 else "#"
+    # NUL is "" here; the caller truncates the segment at it (bash ends a $'...' string at NUL).
+    return chr(code) if 0 <= code < 128 else "#"
 
 
 def _ansi_c_decode(s: str) -> str:
@@ -982,6 +983,7 @@ def _ansi_c_decode(s: str) -> str:
             continue
         i += 2
         closed = False
+        seg = []
         while i < n:
             c = s[i]
             if c == "'":
@@ -989,7 +991,7 @@ def _ansi_c_decode(s: str) -> str:
                 i += 1
                 break
             if c != "\\":
-                out.append(c)
+                seg.append(c)
                 i += 1
                 continue
             e = s[i + 1:i + 2]
@@ -998,7 +1000,7 @@ def _ansi_c_decode(s: str) -> str:
                 bad = True
                 break
             if e in _ANSI_SIMPLE:
-                out.append(_ANSI_SIMPLE[e])
+                seg.append(_ANSI_SIMPLE[e])
             elif e in "01234567":
                 d = 1
                 v = int(e)
@@ -1006,7 +1008,7 @@ def _ansi_c_decode(s: str) -> str:
                     v = v * 8 + int(s[i])
                     i += 1
                     d += 1
-                out.append(_ansi_c_code(v % 256))
+                seg.append(_ansi_c_code(v % 256))
             elif e in _ANSI_HEX:
                 d = 0
                 v = 0
@@ -1016,15 +1018,16 @@ def _ansi_c_decode(s: str) -> str:
                     d += 1
                 if d == 0:
                     bad = True
-                out.append(_ansi_c_code(v))
+                seg.append(_ansi_c_code(v))
             elif e == "c":
                 if i >= n:
                     bad = True
                 else:
                     i += 1
-                out.append("#")
+                seg.append("#")
             else:
-                out.append("\\" + e)
+                seg.append("\\" + e)
+        out.extend(seg[:seg.index("\x00")] if "\x00" in seg else seg)
         if not closed:
             bad = True
     text = "".join(out)
