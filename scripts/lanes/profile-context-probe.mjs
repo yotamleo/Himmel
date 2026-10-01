@@ -135,19 +135,66 @@ export function roleCoverageProblems(initEvent, requiredIds) {
   return requiredIds.filter((id) => !exposed.has(pluginName(id))).map((id) => `role-required plugin ${id} exposes no skill, command or agent (enabled but not loaded)`);
 }
 
+// HIMMEL-4036: `claude -p /context` replies with an assistant event carrying
+// context_usage, whose skills[] is the POST-cap listing (what the model is sent).
+export function findContextUsage(events) {
+  const e = events.find((x) => x?.type === 'assistant' && (x.context_usage || x.message?.context_usage));
+  return e ? (e.context_usage ?? e.message.context_usage) : null;
+}
+
+// Past the 1% listing budget Claude Code keeps every skill NAME and drops the
+// description, so a name-only entry costs about name-length/3 tokens. Heuristic
+// (measured: bare entries 2-13 tok, described ones far above).
+export function isNameOnlySkill(skill) {
+  return (skill?.tokens ?? 0) <= Math.ceil(String(skill?.name ?? '').length / 3) + 2;
+}
+
+const pluginSkills = (contextUsage, id) => (contextUsage?.skills ?? []).filter((s) => s.plugin_name === pluginName(id));
+
+// Per required plugin: how many skills reached the listing, how many are
+// name-only, and their summed tokens.
+export function listingReport(contextUsage, requiredIds) {
+  return requiredIds.map((id) => {
+    const skills = pluginSkills(contextUsage, id);
+    return { plugin: pluginName(id), skills: skills.length, nameOnly: skills.filter(isNameOnlySkill).length, tokens: skills.reduce((a, s) => a + (s.tokens ?? 0), 0) };
+  });
+}
+
+// A required plugin must reach the model with at least one DESCRIBED skill.
+// skillPlugins (names of plugins that expose skills in the init event) lets an
+// agent-only plugin skip the check; omitted = every required plugin has skills.
+export function listingProblems(contextUsage, requiredIds, { skillPlugins } = {}) {
+  if (!requiredIds.length) return [];
+  if (!contextUsage) return ['no context_usage in /context output (cannot verify the post-cap skill listing)'];
+  const problems = [];
+  for (const id of requiredIds) {
+    const skills = pluginSkills(contextUsage, id);
+    if (!skills.length) {
+      if (!skillPlugins || skillPlugins.has(pluginName(id))) problems.push(`role-required plugin ${id} is missing from the post-cap skill listing`);
+    } else if (skills.every(isNameOnlySkill)) {
+      problems.push(`role-required plugin ${id} has only name-only skill entries in the post-cap listing (${skills.length} skill(s), descriptions dropped by the listing budget)`);
+    }
+  }
+  return problems;
+}
+
 export function countLoadedSkills(initEvent) {
   return (initEvent?.skills?.length ?? 0) + (initEvent?.slash_commands?.length ?? 0);
 }
 
 // The full per-profile verdict: plugin injection correctness + the
 // contextBudget ceiling. Returns { pass, problems } — problems is [] iff pass.
-export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget }) {
+export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget, contextUsage }) {
   const problems = [];
   if (!initEvent) {
     problems.push('no init event in probe output (spawn failure, timeout, or unexpected stream shape)');
     return { pass: false, problems };
   }
   problems.push(...roleCoverageProblems(initEvent, requiredIds));
+  if (contextUsage !== undefined) {
+    const skillPlugins = new Set((initEvent.skills ?? []).map((x) => /^([^:]+):/.exec(x)?.[1]).filter(Boolean));
+    problems.push(...listingProblems(contextUsage, requiredIds, { skillPlugins }));
+  }
   const { extra, missing } = pluginSourceDiff(initEvent, enabledIds);
   if (extra.length) problems.push(`extra plugin(s) loaded (bloat): ${extra.join(', ')}`);
   if (missing.length) problems.push(`expected plugin(s) did not load: ${missing.join(', ')}`);
@@ -239,9 +286,9 @@ export function resolveLedgerTarget({ ledgerFlag, noLedger }, env) {
 // Spawned directly — no shell wrapper: the `claude` this repo
 // targets is the native installer binary (not an npm .cmd shim), so win32
 // PATH resolution finds it without cmd.exe in the loop.
-function spawnClaude(extraArgs) {
+function spawnClaude(extraArgs, prompt) {
   const args = ['-p', '--model', 'haiku', '--max-turns', '1', '--permission-mode', 'dontAsk',
-    '--output-format', 'stream-json', '--verbose', ...extraArgs, BASELINE_PROMPT];
+    '--output-format', 'stream-json', '--verbose', ...extraArgs, prompt];
   // headless-claude-ok: HIMMEL-2189 measured profile probe
   return spawnSync('claude', args, {
     cwd: REPO_ROOT,
@@ -264,11 +311,11 @@ function spawnClaude(extraArgs) {
 // profile's content: the SAME profile re-run standalone, seconds later,
 // measured cleanly). Retrying once turns that ordinary API-latency noise
 // into a real regression signal instead of a coin-flip FAILED row.
-function runClaude(extraArgs, retriesLeft = 1) {
-  const r = spawnClaude(extraArgs);
+function runClaude(extraArgs, prompt = BASELINE_PROMPT, retriesLeft = 1) {
+  const r = spawnClaude(extraArgs, prompt);
   if (r.error?.code === 'ETIMEDOUT' && retriesLeft > 0) {
     process.stderr.write('profile-context-probe: spawn timed out — retrying once\n');
-    return runClaude(extraArgs, retriesLeft - 1);
+    return runClaude(extraArgs, prompt, retriesLeft - 1);
   }
   if (r.error || typeof r.stdout !== 'string') {
     process.stderr.write(`profile-context-probe: spawn failed: ${r.error?.message ?? `signal ${r.signal}`}\n`);
@@ -281,7 +328,7 @@ function runClaude(extraArgs, retriesLeft = 1) {
     return { initEvent: null, resultEvent: null, measured: null };
   }
   const resultEvent = findResultEvent(events);
-  return { initEvent: findInitEvent(events), resultEvent, measured: firstTurnTokens(resultEvent) };
+  return { initEvent: findInitEvent(events), resultEvent, measured: firstTurnTokens(resultEvent), contextUsage: findContextUsage(events) };
 }
 
 function main() {
@@ -354,17 +401,21 @@ function main() {
 
       const settingsPath = join(settingsDir, `${name}.json`).replace(/\\/g, '/');
       writeFileSync(settingsPath, JSON.stringify(settings));
-      let run;
+      let run, ctxRun;
       try {
         run = runClaude(['--settings', settingsPath]);
+        // /context is answered locally by Claude Code (no model turn) and reports
+        // the post-cap skill listing the model actually receives (HIMMEL-4036).
+        ctxRun = runClaude(['--settings', settingsPath], '/context');
       } finally {
         try { unlinkSync(settingsPath); } catch { /* best-effort cleanup */ }
       }
 
       const requiredIds = ROLE_REQUIRES[name] ?? [];
-      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget });
+      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
+      for (const r of listingReport(ctxRun.contextUsage, requiredIds)) process.stdout.write(`  listing ${r.plugin}: ${r.skills} skill(s), ${r.nameOnly} name-only, ${r.tokens} tok\n`);
       for (const p of problems) process.stdout.write(`  - ${p}\n`);
       appendLedger(name, note, pass ? 0 : 1, ledgerTarget);
       if (!pass) anyFailed = true;

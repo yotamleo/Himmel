@@ -13,6 +13,7 @@ import {
   parseStreamJsonLines, findInitEvent, findResultEvent, firstTurnTokens,
   pluginSourceDiff, namespaceExtras, evaluateProfile, formatNote, roleCoverageProblems, countLoadedSkills,
   parseProbeArgs, resolveLedgerTarget, buildLedgerRow,
+  findContextUsage, isNameOnlySkill, listingProblems, listingReport,
 } from '../profile-context-probe.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -226,4 +227,46 @@ test('evaluateProfile: a missing role-required skill fails the profile', () => {
 test('countLoadedSkills counts skills plus slash_commands', () => {
   assert.equal(countLoadedSkills({ skills: ['a:b', 'c'], slash_commands: ['d'] }), 3);
   assert.equal(countLoadedSkills(null), 0);
+});
+
+// HIMMEL-4036: the post-cap skill listing. Claude Code keeps every skill NAME but
+// drops descriptions past the 1% listing budget, so "loaded" can mean "a bare name".
+const CTX = (skills) => ({ skills });
+const NAME_ONLY = { name: 'impeccable:impeccable', source: 'plugin', plugin_name: 'impeccable', tokens: 6 };
+const FULL = { name: 'impeccable:impeccable', source: 'plugin', plugin_name: 'impeccable', tokens: 74 };
+
+test('findContextUsage reads context_usage off the assistant event', () => {
+  const ev = [{ type: 'system' }, { type: 'assistant', context_usage: { skills: [] } }];
+  assert.deepEqual(findContextUsage(ev), { skills: [] });
+  assert.equal(findContextUsage([{ type: 'system' }]), null);
+});
+
+test('isNameOnlySkill: a name-sized entry is name-only, a described one is not', () => {
+  assert.equal(isNameOnlySkill(NAME_ONLY), true);
+  assert.equal(isNameOnlySkill(FULL), false);
+});
+
+test('listingProblems: a required plugin whose skills are name-only FAILS (descriptions dropped)', () => {
+  const p = listingProblems(CTX([NAME_ONLY]), ['impeccable@himmel']);
+  assert.equal(p.length, 1);
+  assert.match(p[0], /impeccable@himmel.*name-only/);
+});
+
+test('listingProblems: described skills pass; one described skill is enough', () => {
+  assert.deepEqual(listingProblems(CTX([NAME_ONLY, FULL]), ['impeccable@himmel']), []);
+});
+
+test('listingProblems: a required plugin absent from the listing fails, unless it has no skills (agent-only)', () => {
+  assert.match(listingProblems(CTX([]), ['impeccable@himmel'], { skillPlugins: new Set(['impeccable']) })[0], /missing from the post-cap skill listing/);
+  assert.deepEqual(listingProblems(CTX([]), ['impeccable@himmel'], { skillPlugins: new Set() }), []);
+});
+
+test('listingProblems: no context_usage is a problem when plugins are required', () => {
+  assert.match(listingProblems(null, ['impeccable@himmel'])[0], /no context_usage/);
+  assert.deepEqual(listingProblems(null, []), []);
+});
+
+test('listingReport: per-plugin measured tokens and name-only count', () => {
+  assert.deepEqual(listingReport(CTX([NAME_ONLY, FULL, { ...FULL, plugin_name: 'x', name: 'x:y' }]), ['impeccable@himmel']),
+    [{ plugin: 'impeccable', skills: 2, nameOnly: 1, tokens: 80 }]);
 });
