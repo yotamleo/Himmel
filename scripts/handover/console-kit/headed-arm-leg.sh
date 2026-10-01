@@ -430,6 +430,18 @@ if [ "$CONSULT" -eq 1 ]; then
             exit 2
             ;;
     esac
+    # (HIMMEL-4061) The envelope below sandboxes the consult's Bash (bubblewrap +
+    # socat on Linux; macOS uses the built-in Seatbelt). Claude Code's own
+    # failIfUnavailable already fails closed, but only as a dead window: refuse at
+    # arm time instead. CONSULT_*_BIN are test seams.
+    if [ "$(uname -s)" = "Linux" ]; then
+        if ! command -v "${CONSULT_BWRAP_BIN:-bwrap}" >/dev/null 2>&1 || ! command -v "${CONSULT_SOCAT_BIN:-socat}" >/dev/null 2>&1; then
+            usage
+            echo "headed-arm-leg: --consult needs bwrap (bubblewrap) AND socat on PATH for its Bash sandbox: install both, then relaunch" >&2
+            exit 2
+        fi
+    fi
+    CONSULT_REPO_CANON="$_consult_repo"
     unset -v _consult_raw _consult_repo
 fi
 
@@ -1243,6 +1255,9 @@ if [ -n "$PROFILE" ]; then
         fi
         if [ "$_leg_doc_is_root_or_ancestor" -eq 1 ]; then
             echo "headed-arm-leg: --profile $PROFILE: leg doc directory ($_leg_doc_dir) is the handover root or an ancestor of it, or HANDOVER_DIR could not be resolved (HANDOVER_DIR='${HANDOVER_DIR:-}') - skipping additionalDirectories grant for it" >&2
+        elif [ "$CONSULT" -eq 1 ]; then
+            # additionalDirectories become sandbox write roots: a consult's write set is its doc FILE only.
+            :
         elif ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_doc_dir" \
             '.permissions.additionalDirectories = ((.permissions.additionalDirectories // []) + [$dir])')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the leg doc's directory to additionalDirectories" >&2
@@ -1297,15 +1312,31 @@ if [ -n "$PROFILE" ]; then
     # Bash allow: append-results.sh on its own consult doc. The allow list is
     # REPLACED, not appended to: a gateAllow profile (lane-impl, lane-content...)
     # would otherwise hand the consult its ship-step allows (merge-on-green etc.).
-    # ponytail: file tools denied, one append allow, Bash otherwise classifier-gated and not sandboxed, upgrade when a consult is observed writing outside its doc or a sandboxed-Bash primitive exists (HIMMEL-4061)
+    # The Bash sandbox (HIMMEL-4061) is ADDED to the classifier, not swapped for it:
+    # autoAllowBashIfSandboxed stays false, so every Bash call is still classifier-gated.
+    # Writes: the one doc FILE (append-results.sh only appends with >>, so a file bind
+    # is enough) plus Claude Code's own temp dirs; the doc's parent dir (the shared
+    # handover bucket) is never granted, and the additionalDirectories grant above is
+    # skipped under --consult because Claude Code turns those into sandbox write roots.
+    # The repo is denied. Network follows the MERGED settings, so a user/project scope
+    # can widen it (HIMMEL-4066 R2); a doc inside the repo is always denied (HIMMEL-4066).
+    # ponytail: file tools denied, one append allow, Bash sandboxed to one writable file but reads open and settings-scope allowWrite arrays merge, upgrade on a consult observed reading secrets or widening its writes (HIMMEL-4061 follow-ups)
     if [ "$CONSULT" -eq 1 ]; then
+        if [ -L "$DOC" ]; then
+            echo "headed-arm-leg: --consult: the consult doc must not be a symlink ($DOC): the sandbox binds the resolved file" >&2
+            exit 2
+        fi
         if [ -z "$_leg_doc_path" ]; then
             echo "headed-arm-leg: --consult: cannot resolve the consult doc path for $DOC" >&2
             exit 2
         fi
-        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" \
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" --arg repo "$CONSULT_REPO_CANON" \
             '.permissions.deny = ((.permissions.deny // []) + ["Edit","Write","NotebookEdit"] | unique)
-             | .permissions.allow = ["Bash(bash scripts/handover/console-kit/append-results.sh " + $doc + ":*)"]')"; then
+             | .permissions.allow = ["Bash(bash scripts/handover/console-kit/append-results.sh " + $doc + ":*)"]
+             | del(.permissions.additionalDirectories)
+             | .sandbox = {enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
+                           autoAllowBashIfSandboxed: false,
+                           filesystem: {allowWrite: [$doc], denyWrite: [$repo]}}')"; then
             echo "headed-arm-leg: --consult: cannot build the read-only envelope in settings JSON" >&2
             exit 2
         fi
