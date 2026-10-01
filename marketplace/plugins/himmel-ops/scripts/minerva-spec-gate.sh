@@ -11,7 +11,10 @@
 set -u
 
 spec="${1:-}"
-[ -n "$spec" ] && [ -f "$spec" ] || { echo "minerva-spec-gate: spec file not found: ${spec:-<none>}" >&2; exit 2; }
+if [ ! -f "$spec" ]; then
+  echo "minerva-spec-gate: spec file not found: ${spec:-<none>}" >&2
+  exit 2
+fi
 
 missing=""
 add(){ missing="${missing}  - $1
@@ -27,6 +30,7 @@ section_has_body(){
 
 line="$(grep -i -m1 '^[[:space:]]*Estimate record:' "$spec" || true)"
 rec="${line#*:}"
+# shellcheck disable=SC2016  # the backticks are literal characters to strip, not a command substitution
 rec="$(printf '%s' "$rec" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^`//; s/`$//')"
 if [ -z "$rec" ]; then
   add "estimate record: no 'Estimate record: <path>' line (run effort-assess ticket, save its JSON, reference it)"
