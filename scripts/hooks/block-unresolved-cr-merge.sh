@@ -109,7 +109,7 @@ cmd_sq=$(_norm "$(printf '%s' "$cmd" | sed -e 's/\$[{(][^})]*[})]//g')")
 # Whole-command substring rule, ignoring segmentation: the GraphQL mutation name is
 # never legitimate in a read, so `mergepullrequest` anywhere (dequoted, lowercased)
 # denies, whatever `(` or `;` splits around it.
-printf '%s' "$cmd_norm" | tr 'A-Z' 'a-z' | grep -q 'mergepullrequest' && fires=1
+printf '%s' "$cmd_norm" | tr '[:upper:]' '[:lower:]' | grep -q 'mergepullrequest' && fires=1
 # Rule A, per segment: gh, then only flags (-R/--repo take a value) and ONE `pr`,
 # then a `merge` word; or `gh api` / `gh alias` followed by a merge-ish word
 # (`.../pulls/8/merge`, `mutation{mergePullRequest`, `alias set mm pr merge`).
