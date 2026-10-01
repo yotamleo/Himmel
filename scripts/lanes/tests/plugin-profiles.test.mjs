@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { resolveProfile, validateRegistry, parseAddPlugins, loadRegistry, readEnabledPluginIds, resolveProfileByName, mcpServersForProfile, collectMcpServerDefs } from '../plugin-profiles.mjs';
 import * as PP from '../plugin-profiles.mjs';
+import { ROLE_REQUIRES } from '../role-requires.mjs';
 
 const REG = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.json'), 'utf8'));
 const FLOOR = REG.floor;
@@ -585,17 +586,8 @@ test('design profile enables the full design pack (HIMMEL-4012)', () => {
 // profile that ships without its role's tools fails here instead of passing a
 // test that merely pins whatever the profile happens to contain (the HIMMEL-3064
 // design profile shipped with one plugin and its test pinned exactly that one).
-const ROLE_REQUIRES = {
-  user: ['lean-skills@himmel'],
-  design: ['plannotator-effective-html@himmel', 'frontend-design@claude-plugins-official',
-    'ui-ux-pro-max@ui-ux-pro-max-skill', 'impeccable@himmel'],
-  'lane-impl': ['pr-review-toolkit-himmel@himmel'],
-  'leg-impl': ['pr-review-toolkit-himmel@himmel'],
-  'lane-review': ['pr-review-toolkit-himmel@himmel'],
-  'lane-content': ['claude-obsidian@himmel', 'obsidian-triage@himmel'],
-  telegram: ['claude-obsidian@himmel', 'obsidian-triage@himmel'],
-  bare: [], 'console-relay': [], 'console-judge': [],
-};
+// The table lives in role-requires.mjs; profile-context-probe.mjs checks the same
+// ids against a live init event.
 
 test('every shipped profile declares its role requirements and resolves them (HIMMEL-4012)', () => {
   const shipped = Object.keys(REG.profiles).filter((n) => REG.profiles[n] !== null);
