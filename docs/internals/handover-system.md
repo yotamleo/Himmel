@@ -301,17 +301,20 @@ for a fresh cold-start. Test: `bash scripts/handover/test-leg-resume-brief.sh`.
 arm triggered it, so an idle fleet never noticed a dead worker seat.
 `scripts/handover/reconcile-cadence.sh arm [--interval-min N]` (cron;
 `reconcile-cadence.ps1 -Action Arm` registers the Task Scheduler twin) runs
-`reconcile-workers.sh --report` every N minutes (default 10), appending to
+`reconcile-workers.sh --report` every N minutes (default 10; N must divide 60,
+and arm requires `timeout` so a hung tick cannot overlap the next), appending to
 `~/.claude/handover/reconcile-cadence.log`; arming twice replaces the one
 tagged job, and `disarm`/`status` manage it. Arm from the primary checkout:
 the job runs the script path it was armed from. Every running seat gets one
 `SEAT` line in one of three states. **DIED**: the recorded pid is confirmed
 dead and `meta.json` is older than `RECONCILE_GRACE_SECS`, so the row is
-orphaned and a dead holder's shared lock released. **NEVER-STARTED**: no pid
-and no `started_at` was ever written; the row is reaped only past the 48h
-`RECONCILE_UNPROBEABLE_CEILING_SECS` backstop. **STILL-RUNNING**: everything
-else (live, settling inside the grace, or unprobeable), and it is never
-reaped. A pid recycled to an unrelated live process reads as live, erring
+orphaned and a dead holder's shared lock released (`detail=confirmed-dead`);
+a seat that recorded a start but never a pid is also reported DIED once it
+passes the 48h `RECONCILE_UNPROBEABLE_CEILING_SECS` backstop
+(`detail=unprobeable-ceiling`). **NEVER-STARTED**: no pid and no `started_at`
+was ever written; the row is reaped only past that same ceiling.
+**STILL-RUNNING**: everything else (live, settling inside the grace, or
+unprobeable inside the ceiling), and it is never reaped. A pid recycled to an unrelated live process reads as live, erring
 toward never reaping. A dead seat is reported within one interval, plus the grace if it died
 within the grace of its last `meta.json` write. Test:
 `bash scripts/handover/test-reconcile-cadence.sh`.

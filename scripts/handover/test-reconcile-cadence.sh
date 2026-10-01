@@ -205,6 +205,34 @@ out=$(bash "$CADENCE" arm --interval-min 1 2>&1)
 rc=$?
 assert_rc "C5 interval below the reap grace is refused" 2 "$rc"
 
+# --- C9: */N is only uniform when N divides 60 (*/59 fires :59 then :00).
+out=$(bash "$CADENCE" arm --interval-min 7 2>&1)
+rc=$?
+assert_rc "C9 interval that does not divide 60 is refused" 2 "$rc"
+out=$(bash "$CADENCE" arm --interval-min 59 2>&1)
+rc=$?
+assert_rc "C9 interval 59 is refused" 2 "$rc"
+
+# --- C10: a leading-zero interval is decimal, not octal.
+out=$(bash "$CADENCE" arm --interval-min 010 2>&1)
+rc=$?
+assert_rc "C10 leading-zero interval accepted" 0 "$rc"
+assert_file_contains "C10 leading-zero interval normalised to decimal" '*/10 * * * *' "$CRON_FILE"
+
+# --- C11: the overrides arm validated are baked into the job.
+out=$(RECONCILE_GRACE_SECS=180 bash "$CADENCE" arm 2>&1)
+assert_file_contains "C11 job carries the armed grace" 'RECONCILE_GRACE_SECS=180' "$CRON_FILE"
+assert_file_contains "C11 job carries the armed bridge root" 'WORKER_BRIDGE_ROOT=' "$CRON_FILE"
+
+# --- C12: arming without a timeout binary is refused (ticks would be unbounded).
+NOTIMEOUT="$TMP/no-timeout-bin"
+mkdir -p "$NOTIMEOUT"
+for t in bash dirname mktemp grep cat rm; do ln -s "$(command -v "$t")" "$NOTIMEOUT/$t"; done
+out=$(PATH="$NOTIMEOUT" "$(command -v bash)" "$CADENCE" arm 2>&1)
+rc=$?
+assert_rc "C12 arm without timeout is refused" 2 "$rc"
+assert_contains "C12 refusal names timeout" "timeout" "$out"
+
 out=$(bash "$CADENCE" disarm 2>&1)
 rc=$?
 assert_rc "C6 disarm exits 0" 0 "$rc"

@@ -11,7 +11,7 @@
 #
 # Usage:
 #   bash scripts/handover/reconcile-cadence.sh run
-#   bash scripts/handover/reconcile-cadence.sh arm [--interval-min N]   # default 10
+#   bash scripts/handover/reconcile-cadence.sh arm [--interval-min N]   # default 10; N divides 60
 #   bash scripts/handover/reconcile-cadence.sh disarm
 #   bash scripts/handover/reconcile-cadence.sh status
 #
@@ -121,18 +121,29 @@ cmd_arm() {
         esac
     done
     case "$interval" in ''|*[!0-9]*) die "--interval-min must be an integer" ;; esac
-    if [ "$interval" -lt 1 ] || [ "$interval" -gt 59 ]; then die "--interval-min must be 1..59"; fi
+    interval=$((10#$interval))
+    # */N only fires every N minutes when N divides 60 (*/59 fires :59 then :00).
+    case "$interval" in
+        1|2|3|4|5|6|10|12|15|20|30) ;;
+        *) die "--interval-min must divide 60 (1 2 3 4 5 6 10 12 15 20 30)" ;;
+    esac
     # A tick shorter than the grace window cannot confirm a death any sooner,
     # and one shorter than the tick timeout could overlap the previous tick.
     [ $((interval * 60)) -ge "$GRACE_SECS" ] || die "--interval-min $interval is shorter than RECONCILE_GRACE_SECS=${GRACE_SECS}s"
     [ $((interval * 60)) -gt "$TIMEOUT_SECS" ] || die "--interval-min $interval does not exceed the ${TIMEOUT_SECS}s tick timeout"
     windows_refuse Arm
+    # Without timeout a hung tick would overlap the next one.
+    command -v timeout >/dev/null 2>&1 || die "timeout not on PATH; ticks would be unbounded (macOS: brew install coreutils)"
 
-    # Bake the arming shell's PATH: cron's minimal PATH lacks node, which
-    # reconcile-workers.sh needs.
-    local bash_bin entry
+    # Bake the arming shell's PATH (cron's minimal PATH lacks node, which
+    # reconcile-workers.sh needs) and every override arm validated or the tick
+    # reads, so the job reconciles the same fleet under the same limits.
+    local bash_bin entry envs="" v
     bash_bin=$(command -v bash) || die "bash not on PATH"
-    entry="*/$interval * * * * PATH=$(cron_escape "$PATH") $(cron_escape "$bash_bin") $(cron_escape "$SCRIPT_DIR/reconcile-cadence.sh") run # $TAG"
+    for v in RECONCILE_GRACE_SECS RECONCILE_UNPROBEABLE_CEILING_SECS RECONCILE_CADENCE_TIMEOUT_SECS RECONCILE_CADENCE_LOG WORKER_BRIDGE_ROOT BRIDGE_ROOT; do
+        if [ -n "${!v:-}" ]; then envs="$envs $v=$(cron_escape "${!v}")"; fi
+    done
+    entry="*/$interval * * * * PATH=$(cron_escape "$PATH")$envs $(cron_escape "$bash_bin") $(cron_escape "$SCRIPT_DIR/reconcile-cadence.sh") run # $TAG"
     cron_read
     cron_write "$entry"
     echo "reconcile-cadence: armed every ${interval}m (log: $LOG)"

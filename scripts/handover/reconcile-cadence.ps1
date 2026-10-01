@@ -18,8 +18,10 @@
   Arm | Disarm | Status | Run (Run invokes one tick in the foreground).
 
 .PARAMETER IntervalMin
-  Minutes between ticks (2..59, default 10). Must not be shorter than the
-  reconcile grace window or the tick timeout (see reconcile-cadence.sh).
+  Minutes between ticks (2..59, default 10). Must not be shorter than
+  RECONCILE_GRACE_SECS (default 120) and must exceed
+  RECONCILE_CADENCE_TIMEOUT_SECS (default 110). Both, and any other override
+  the tick reads, are baked into the task when set.
 
 .PARAMETER BashPath
   Git Bash bash.exe. Default: derived from git.exe on PATH (never the WSL
@@ -57,11 +59,21 @@ switch ($Action) {
         exit $LASTEXITCODE
     }
     'Arm' {
-        if ($IntervalMin * 60 -le 110) { throw "IntervalMin $IntervalMin does not exceed the 110s tick timeout" }
+        # Same limits as reconcile-cadence.sh arm, from the same env overrides.
+        $timeoutSecs = if ($env:RECONCILE_CADENCE_TIMEOUT_SECS) { [int]$env:RECONCILE_CADENCE_TIMEOUT_SECS } else { 110 }
+        $graceSecs = if ($env:RECONCILE_GRACE_SECS) { [int]$env:RECONCILE_GRACE_SECS } else { 120 }
+        if ($IntervalMin * 60 -lt $graceSecs) { throw "IntervalMin $IntervalMin is shorter than RECONCILE_GRACE_SECS=${graceSecs}s" }
+        if ($IntervalMin * 60 -le $timeoutSecs) { throw "IntervalMin $IntervalMin does not exceed the ${timeoutSecs}s tick timeout" }
         $bash = Resolve-GitBash
         $gitRoot = Split-Path -Parent (Split-Path -Parent $bash)
         $pathPrefix = (Join-Path $gitRoot 'usr\bin') + ';' + (Join-Path $gitRoot 'bin') + ';'
-        $command = '$env:PATH = ' + (Quote-Ps $pathPrefix) + ' + $env:PATH; & ' + (Quote-Ps $bash) + ' ' + (Quote-Ps ($Runner -replace '\\', '/')) + ' run; exit $LASTEXITCODE'
+        # Bake the overrides arm validated or the tick reads, as the cron entry does.
+        $envSet = ''
+        foreach ($v in 'RECONCILE_GRACE_SECS', 'RECONCILE_UNPROBEABLE_CEILING_SECS', 'RECONCILE_CADENCE_TIMEOUT_SECS', 'RECONCILE_CADENCE_LOG', 'WORKER_BRIDGE_ROOT', 'BRIDGE_ROOT') {
+            $val = [Environment]::GetEnvironmentVariable($v)
+            if ($val) { $envSet += '$env:' + $v + ' = ' + (Quote-Ps $val) + '; ' }
+        }
+        $command = $envSet + '$env:PATH = ' + (Quote-Ps $pathPrefix) + ' + $env:PATH; & ' + (Quote-Ps $bash) + ' ' + (Quote-Ps ($Runner -replace '\\', '/')) + ' run; exit $LASTEXITCODE'
         $actionObj = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -WindowStyle Hidden -Command "' + ($command -replace '"', '\"') + '"')
         $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMin)
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable

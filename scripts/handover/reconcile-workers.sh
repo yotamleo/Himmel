@@ -20,9 +20,11 @@
 # prints one line per running seat to stdout, then a count summary:
 #   SEAT <DIED|NEVER-STARTED|STILL-RUNNING> <lane>/<task> pid=<pid> detail=<why> meta=<path>
 #   reconcile-report: died=<n> never-started=<n> still-running=<n>
-# DIED is a confirmed-dead pid past the grace window (the row is orphaned);
-# NEVER-STARTED is a row with no recorded pid AND no started_at; everything
-# else -- live, settling, unprobeable -- is STILL-RUNNING and is never reaped.
+# DIED is a confirmed-dead pid past the grace window (detail=confirmed-dead),
+# or a started seat whose pid was never written, past the unprobeable ceiling
+# (detail=unprobeable-ceiling); either way the row is orphaned. NEVER-STARTED
+# is a row with no recorded pid AND no started_at. Everything else -- live,
+# settling, unprobeable inside the ceiling -- is STILL-RUNNING, never reaped.
 # The periodic runner is reconcile-cadence.sh.
 #
 # Env:
