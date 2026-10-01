@@ -70,6 +70,18 @@ fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/usage-compute.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# Serialize the whole compute-then-append (mkdir is atomic), so an older
+# snapshot can never publish after a newer one. --print touches no store.
+if [ "$PRINT" != 1 ]; then
+  mkdir -p "$STORE"
+  LOCK="$STORE/.lock"; n=0
+  until mkdir "$LOCK" 2>/dev/null; do
+    n=$((n + 1)); [ "$n" -lt 600 ] || die "store locked: $LOCK (remove it if no run is active)"
+    sleep 0.5
+  done
+  trap 'rmdir "$LOCK" 2>/dev/null; rm -rf "$WORK"' EXIT
+fi
+
 # --- 1. per-session tokens (reuse bank-attribution, do not re-parse JSONL) --
 BA_ARGS=("$PROJECTS")
 [ -z "$SINCE" ] || BA_ARGS+=(--since "$SINCE")
@@ -185,13 +197,6 @@ fi
 mkdir -p "$STORE"
 FILE="$STORE/records.jsonl"
 touch "$FILE"
-# serialize read-latest-then-append across concurrent runs (mkdir is atomic)
-LOCK="$STORE/.lock"; n=0
-until mkdir "$LOCK" 2>/dev/null; do
-  n=$((n + 1)); [ "$n" -lt 300 ] || die "store locked: $LOCK (remove it if no run is active)"
-  sleep 0.1
-done
-trap 'rmdir "$LOCK" 2>/dev/null; rm -rf "$WORK"' EXIT
 added=0; kept=0
 while IFS= read -r line; do
   t="$(printf '%s' "$line" | jq -r .ticket)"

@@ -73,7 +73,9 @@ will feed it: PR-body cost aggregation (HIMMEL-4003) and the CR-loop ledger
 
 `--since` windows session tokens only; CR, PR and CI stay all-time, so use it
 for token questions, not for a stored record you mean to compare across runs.
-Appends are serialized by a `<store>/.lock` directory. Table parsing assumes session titles contain no ` | `. Sessions are keyed by
+A whole compute-then-append run holds a `<store>/.lock` directory, so an older
+snapshot never publishes after a newer one. PR lookup reads the 50 most recent
+title matches per ticket (older PRs are not counted). Table parsing assumes session titles contain no ` | `. Sessions are keyed by
 title, so distinct sessions sharing a title merge into one `legs[]` entry.
 Judge calls are counted as `judge`-titled sessions only. CI seconds are wall
 time of runs on the PR branches, not billed minutes, over the latest 200 runs
