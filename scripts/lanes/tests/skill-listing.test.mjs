@@ -154,3 +154,13 @@ test('resolveProfile: a profile with no required plugins (bare) gets no override
   const r = resolveProfile(registry, 'bare', { skillEntries: [user('find-docs')] });
   assert.deepEqual(Object.keys(r), ['enabledPlugins']);
 });
+
+// HIMMEL-4068: the listing line is `<manifest name>:<skill> ...`, and the manifest
+// name (strict:true) can differ from the marketplace entry name the cache dir carries.
+test('fraction: a plugin listed under a longer manifest name costs more than under its entry name', () => {
+  const entries = Array.from({ length: 4 }, (_, i) => plugin(`s${i}`, 1000, 'p1'));
+  const base = { entries, enabledIds: ['p1@himmel'], requiredIds: ['p1@himmel'] };
+  const same = skillListingSettings(base).skillListingBudgetFraction;
+  const longer = skillListingSettings({ ...base, runtimeNames: new Map([['p1@himmel', 'x'.repeat(300)]]) }).skillListingBudgetFraction;
+  assert.ok(longer > same, `${longer} vs ${same}`);
+});

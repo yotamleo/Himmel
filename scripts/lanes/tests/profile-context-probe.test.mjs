@@ -14,7 +14,7 @@ import {
   parseStreamJsonLines, findInitEvent, findResultEvent, firstTurnTokens,
   pluginSourceDiff, namespaceExtras, evaluateProfile, formatNote, roleCoverageProblems, countLoadedSkills,
   parseProbeArgs, resolveLedgerTarget, buildLedgerRow,
-  findContextUsage, isNameOnlySkill, listingProblems, expectedSkillNames, installedVersionsOf, listingReport, requiredBudget,
+  findContextUsage, isNameOnlySkill, listingProblems, expectedSkillNames, installedVersionsOf, listingReport, requiredBudget, runtimeNamesOf,
 } from '../profile-context-probe.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -371,4 +371,36 @@ test('evaluateProfile: a null contextUsage (failed /context spawn) fails a profi
 test('requiredBudget: null when the window size is unknown; already-described skills add nothing', () => {
   assert.equal(requiredBudget({ skills: [NAME_ONLY] }, ['impeccable@himmel'], []), null);
   assert.equal(requiredBudget({ raw_max_tokens: 1000, skills: [FULL] }, ['impeccable@himmel'], []).extraTokens, 0);
+});
+
+// HIMMEL-4068: under strict:true Claude Code namespaces by the upstream plugin.json
+// `name`, not the marketplace entry name (taste-skill-core -> taste-skill).
+test('runtimeNamesOf: resolves the namespace from the installed plugin.json name, not the entry name', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rtnames-'));
+  try {
+    const ip = join(dir, 'ip');
+    mkdirSync(join(ip, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(ip, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'taste-skill' }));
+    mkdirSync(join(dir, 'plugins'), { recursive: true });
+    writeFileSync(join(dir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: {
+      'taste-skill-core@himmel': [{ scope: 'user', installPath: ip }],
+      'plain@himmel': [{ scope: 'user', installPath: join(dir, 'none') }],
+    } }));
+    const names = runtimeNamesOf(dir);
+    assert.equal(names.get('taste-skill-core@himmel'), 'taste-skill');
+    assert.equal(names.has('plain@himmel'), false);
+    assert.equal(runtimeNamesOf(join(dir, 'missing')).size, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('manifest name != entry name: coverage, namespace extras and listing use the runtime name', () => {
+  const names = new Map([['taste-skill-core@himmel', 'taste-skill']]);
+  const init = { ...LOADED, skills: ['taste-skill:minimalist'] };
+  assert.deepEqual(roleCoverageProblems(init, ['taste-skill-core@himmel'], names), []);
+  assert.equal(roleCoverageProblems(init, ['taste-skill-core@himmel']).length, 1); // fails without the map
+  assert.deepEqual(namespaceExtras(init, ['taste-skill-core@himmel'], names), []);
+  assert.equal(namespaceExtras(init, ['taste-skill-core@himmel']).length, 1);
+  const ctx = { raw_max_tokens: 1000, skills: [{ name: 'taste-skill:minimalist', plugin_name: 'taste-skill', tokens: 50 }] };
+  assert.equal(listingReport(ctx, ['taste-skill-core@himmel'], names)[0].skills, 1);
+  assert.deepEqual(listingProblems(ctx, ['taste-skill-core@himmel'], { names }), []);
 });
