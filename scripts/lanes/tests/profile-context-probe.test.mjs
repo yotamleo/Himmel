@@ -13,7 +13,7 @@ import {
   parseStreamJsonLines, findInitEvent, findResultEvent, firstTurnTokens,
   pluginSourceDiff, namespaceExtras, evaluateProfile, formatNote, roleCoverageProblems, countLoadedSkills,
   parseProbeArgs, resolveLedgerTarget, buildLedgerRow,
-  findContextUsage, isNameOnlySkill, listingProblems, listingReport,
+  findContextUsage, isNameOnlySkill, listingProblems, listingReport, requiredBudget,
 } from '../profile-context-probe.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -269,4 +269,17 @@ test('listingProblems: no context_usage is a problem when plugins are required',
 test('listingReport: per-plugin measured tokens and name-only count', () => {
   assert.deepEqual(listingReport(CTX([NAME_ONLY, FULL, { ...FULL, plugin_name: 'x', name: 'x:y' }]), ['impeccable@himmel']),
     [{ plugin: 'impeccable', skills: 2, nameOnly: 1, tokens: 80 }]);
+});
+
+// HIMMEL-4038 feed: the listing budget that would let the required set keep
+// descriptions (all other skills name-only), estimated from the uncapped scan.
+test('requiredBudget: adds the uncapped description cost of name-only required skills to the current listing', () => {
+  const ctx = { raw_max_tokens: 10000, skills: [NAME_ONLY, { name: 'other:x', plugin_name: 'other', tokens: 94 }] };
+  const entries = [{ name: 'impeccable', chars: 400, path: '/h/.claude/plugins/cache/himmel/impeccable/1.0/skills/impeccable/SKILL.md' }];
+  assert.deepEqual(requiredBudget(ctx, ['impeccable@himmel'], entries), { listingTokens: 100, extraTokens: 97, fraction: 0.02 });
+});
+
+test('requiredBudget: null when the window size is unknown; already-described skills add nothing', () => {
+  assert.equal(requiredBudget({ skills: [NAME_ONLY] }, ['impeccable@himmel'], []), null);
+  assert.equal(requiredBudget({ raw_max_tokens: 1000, skills: [FULL] }, ['impeccable@himmel'], []).extraTokens, 0);
 });

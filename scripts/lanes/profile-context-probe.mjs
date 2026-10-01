@@ -38,6 +38,7 @@ import { createRequire } from 'node:module';
 import { loadRegistry, resolveProfileByName, readEnabledPluginIds } from './plugin-profiles.mjs';
 import { ledgerPath } from './verify-return.mjs';
 import { ROLE_REQUIRES } from './role-requires.mjs';
+import { scanSkillCosts } from './skill-cost.mjs';
 
 // The SAME interpreter resolution the wired hooks get. On Windows an unresolved
 // shell can be the WSL launcher or a 0-byte WindowsApps alias, so we need the
@@ -158,6 +159,30 @@ export function listingReport(contextUsage, requiredIds) {
     const skills = pluginSkills(contextUsage, id);
     return { plugin: pluginName(id), skills: skills.length, nameOnly: skills.filter(isNameOnlySkill).length, tokens: skills.reduce((a, s) => a + (s.tokens ?? 0), 0) };
   });
+}
+
+// The listing budget (a fraction of the context window) at which every
+// role-required skill keeps its description while all other skills sit
+// name-only: current listing tokens plus the uncapped cost of each name-only
+// required skill's description, over raw_max_tokens. costEntries come from
+// skill-cost.mjs's scan, matched by skill name under a `/<plugin>/` path (the
+// plugin cache); chars/4 is the estimate. Feeds HIMMEL-4038's skillOverrides +
+// skillListingBudgetFraction. null when the window size is unknown.
+export function requiredBudget(contextUsage, requiredIds, costEntries) {
+  const rawMax = contextUsage?.raw_max_tokens;
+  if (!Number.isFinite(rawMax) || rawMax <= 0) return null;
+  const listingTokens = (contextUsage.skills ?? []).reduce((a, s) => a + (s.tokens ?? 0), 0);
+  let extraTokens = 0;
+  for (const id of requiredIds) {
+    const plugin = pluginName(id);
+    for (const s of pluginSkills(contextUsage, id).filter(isNameOnlySkill)) {
+      const bare = s.name.slice(plugin.length + 1);
+      // several cached versions of one plugin can match: take the largest
+      const chars = Math.max(0, ...costEntries.filter((e) => e.name === bare && e.path.includes(`/${plugin}/`)).map((e) => e.chars));
+      extraTokens += Math.max(0, Math.ceil((chars + plugin.length + 1) / 4) - s.tokens);
+    }
+  }
+  return { listingTokens, extraTokens, fraction: Math.ceil(((listingTokens + extraTokens) / rawMax) * 1000) / 1000 };
 }
 
 // A required plugin must reach the model with at least one DESCRIBED skill.
@@ -381,6 +406,8 @@ function main() {
     profileNames = [opts.profile];
   }
 
+  let scanned;
+  const costEntries = () => (scanned ??= scanSkillCosts({ cwd: REPO_ROOT }).entries);
   let anyFailed = false;
   // Private per-run tmpdir (mkdtempSync is exclusive/unpredictable), not a
   // shared predictable path — a predictable path + non-exclusive writeFileSync
@@ -415,6 +442,8 @@ function main() {
       const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
+      const need = requiredBudget(ctxRun.contextUsage, requiredIds, costEntries());
+      if (need) process.stdout.write(`  budget to fit required set: skillListingBudgetFraction >= ${need.fraction} (listing ${need.listingTokens} tok + ${need.extraTokens} tok of descriptions)\n`);
       for (const r of listingReport(ctxRun.contextUsage, requiredIds)) process.stdout.write(`  listing ${r.plugin}: ${r.skills} skill(s), ${r.nameOnly} name-only, ${r.tokens} tok\n`);
       for (const p of problems) process.stdout.write(`  - ${p}\n`);
       appendLedger(name, note, pass ? 0 : 1, ledgerTarget);
