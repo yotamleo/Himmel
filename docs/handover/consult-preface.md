@@ -33,11 +33,14 @@ call `AskUserQuestion`** (it parks you and blocks your inbox) and **never call
   Do not `cd` into a leg's worktree and do not read its uncommitted state unless
   the request names a path there.
 
-**This is not a sandbox.** The envelope removes the file-edit tools; Bash is
-still gated only by the auto-mode classifier and this preface (the same ceiling
-as a judge). Do not use Bash to write, move or delete anything, and do not run
-anything with side effects: no `git commit`, no `git push`, no `gh pr`, no
-installs, no network writes.
+**A partial sandbox, not a guarantee.** The envelope removes the file-edit
+tools, and Bash runs in Claude Code's sandbox: writes are confined to your
+consult doc file, the repo is write-denied and the network is blocked. Reads
+stay open, and every Bash call is still gated by the auto-mode classifier and
+this preface (the sandbox is added to the classifier, not a replacement for it).
+Do not use Bash to write, move or delete anything, and do not run anything with
+side effects: no `git commit`, no `git push`, no `gh pr`, no installs, no
+network writes. A sandbox error is the envelope working: do not retry around it.
 
 ## How you answer
 

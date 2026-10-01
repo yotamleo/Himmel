@@ -2844,6 +2844,10 @@ for variant in good missing bad none; do
   esac
 done
 
+# HIMMEL-4061: a Linux --consult launch preflights bubblewrap + socat; the suite
+# must not depend on the CI runner having them, so case 41 points the preflight
+# at `true` (the 41h cases below point it at a missing binary to prove the refusal).
+export CONSULT_BWRAP_BIN=true CONSULT_SOCAT_BIN=true
 # --- 41. HIMMEL-4014: composable --profile lists + the read-only --consult mode --
 # (a) a comma list resolves to the UNION of its members' plugin sets; (b) --consult
 # launches a plugin-scoped session whose settings deny the file-edit tools, carry
@@ -2912,6 +2916,27 @@ cll41="$(ll_line HIMMEL-4014-ask)"
 contains "41d ledger line names role=consult" "$cll41" " role=consult "
 contains "41d ledger line names the profile list" "$cll41" " profile=design-motion "
 contains "41d ledger line names the launching console" "$cll41" " console=HIMMEL-4014-console"
+# HIMMEL-4061: the consult's Bash is sandboxed IN ADDITION to the classifier.
+check "41h consult settings enable the sandbox" "$(printf '%s' "$cset41" | jq -r '.sandbox.enabled' 2>/dev/null)" "true"
+check "41h consult sandbox fails closed when unavailable" "$(printf '%s' "$cset41" | jq -r '.sandbox.failIfUnavailable' 2>/dev/null)" "true"
+check "41h consult sandbox has no unsandboxed retry" "$(printf '%s' "$cset41" | jq -r '.sandbox.allowUnsandboxedCommands' 2>/dev/null)" "false"
+check "41h consult sandbox does NOT auto-allow Bash (classifier still gates)" "$(printf '%s' "$cset41" | jq -r '.sandbox.autoAllowBashIfSandboxed' 2>/dev/null)" "false"
+check "41h consult sandbox allowWrite is exactly the consult doc FILE" "$(printf '%s' "$cset41" | jq -c '.sandbox.filesystem.allowWrite' 2>/dev/null)" "[\"$some_doc_canon41\"]"
+check "41h consult sandbox denyWrite is the repo" "$(printf '%s' "$cset41" | jq -c '.sandbox.filesystem.denyWrite' 2>/dev/null)" "[\"$(cd -P "$tmp/repo41c" && pwd -P)\"]"
+d41n="$tmp/c41n"; mk_launch_stubs "$d41n" "HIMMEL-4061-n"
+RUN_LEG_ARGS="--profile design-motion" run_leg "$d41n" "$tmp/repo41c" "HIMMEL-4061-n" "claude-sonnet-5-5" >/dev/null 2>&1 || true
+wait_record "$d41n" || true
+check "41h a NON-consult profiled launch carries no .sandbox key" "$(jq 'has("sandbox")' "$d41n/HIMMEL-4061-n.leg-settings.json" 2>/dev/null)" "false"
+if [ "$(uname -s)" = "Linux" ]; then
+  rc=0; out="$(CONSULT_BWRAP_BIN=bwrap-missing-4061 LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4061-m "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41h missing bwrap refuses the consult (exit 2)" "$rc" "2"
+  contains "41h missing-bwrap refusal names bwrap" "$out" "bwrap"
+  contains "41h missing-bwrap refusal names socat" "$out" "socat"
+  rc=0; out="$(CONSULT_SOCAT_BIN=socat-missing-4061 LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4061-m "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41h missing socat refuses the consult (exit 2)" "$rc" "2"
+  contains "41h missing-socat refusal names bwrap" "$out" "bwrap"
+  contains "41h missing-socat refusal names socat" "$out" "socat"
+fi
 # NO-GO round: a gateAllow member must not hand the consult its ship-step allows,
 # single or composed; the allow list is exactly the one append rule.
 for gp41 in lane-content design,lane-content; do
