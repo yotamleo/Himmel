@@ -9,9 +9,10 @@
 # --watch P (repeatable): the Jira mirror dir, a handover status file/dir, the
 # fleet manifest. Their size+mtime joins the plan files' content hashes in the
 # change key. --out defaults to ~/.himmel/state/roadmap-plan (outside any repo or
-# vault; docs land in <out>/docs, the key in <out>/.fp). The key is written ONLY
-# after the rebuild and the qmd register+embed both succeed, so a failed run is
-# retried next time; a missing or failing qmd exits non-zero. ROADMAP_QMD_BIN
+# vault; docs land in <out>/docs, the graphify graph.json (HIMMEL-4050) in
+# <out>/graph.json, the key in <out>/.fp). The key is written ONLY
+# after the rebuild (docs AND graph: a failed emit fails the refresh) and the qmd
+# register+embed both succeed, so a failed run is retried next time; a missing or failing qmd exits non-zero. ROADMAP_QMD_BIN
 # overrides the qmd binary (test seam).
 #
 # Exit: 0 ok/unchanged (--check: fresh), 1 failure or (--check) stale, 2 usage.
@@ -42,8 +43,8 @@ fi
 want="$(python3 "$HERE/plan_docs.py" --plan-dir "$plan" --emit-fp ${watches[@]+"${watches[@]}"})"
 have="$(cat "$out/.fp" 2>/dev/null || true)"
 
-# fresh = the inputs match AND the generated docs still exist (a deleted docs dir with a kept key is stale)
-fresh=0; [ "$want" = "$have" ] && [ -d "$out/docs" ] && fresh=1
+# fresh = the inputs match AND the generated docs and graph.json still exist (a deleted docs dir or graph with a kept key is stale)
+fresh=0; [ "$want" = "$have" ] && [ -d "$out/docs" ] && [ -f "$out/graph.json" ] && fresh=1
 if [ "$mode" = check ]; then
     if [ "$fresh" = 1 ]; then echo "plan-index: fresh"; exit 0; fi
     echo "plan-index: stale"; exit 1
@@ -61,7 +62,7 @@ mkdir -p "$out"
 # ponytail: a kill -9 leaves .lock behind (remove it by hand), a pid-aware stale-lock takeover when it bites
 mkdir "$out/.lock" 2>/dev/null || { echo "plan-index: another refresh holds $out/.lock" >&2; exit 1; }
 trap 'rmdir "$out/.lock" 2>/dev/null || true' EXIT
-python3 "$HERE/plan_docs.py" --plan-dir "$plan" --docs "$out/docs" ${watches[@]+"${watches[@]}"}
+python3 "$HERE/plan_docs.py" --plan-dir "$plan" --docs "$out/docs" --graph "$out/graph.json" ${watches[@]+"${watches[@]}"}
 registered="$("$qmd" collection list 2>/dev/null | grep -F "$COLLECTION (" || true)"
 if [ -z "$registered" ]; then
     "$qmd" collection add "$out/docs" --name "$COLLECTION" || { echo "plan-index: qmd collection add failed" >&2; exit 1; }
