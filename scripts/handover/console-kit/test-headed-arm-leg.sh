@@ -2872,7 +2872,8 @@ for bad41 in operator bare console console-relay console-judge design,console-ju
   contains "41c --consult --profile $bad41: refusal says why" "$out" "--consult refuses"
 done
 for flags41 in "--judge --profile design-motion" "--relay --profile design-motion" "--no-profile" ""; do
-  rc=0; out="$(bash "$SCRIPT" --dry-run --consult $flags41 HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  # shellcheck disable=SC2086  # $flags41 is a deliberate multi-word flag set
+  rc=0; out="$(bash "$SCRIPT" --dry-run --consult $flags41HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
   check "41c --consult ${flags41:-<no profile>}: exit 2" "$rc" "2"
 done
 rc=0; out="$(LEG_REPO="$tmp/.claude/worktrees/feat+x" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
