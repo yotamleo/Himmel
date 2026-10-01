@@ -1358,7 +1358,12 @@ $_cs_home/.claude/remote-settings.json
 ${CLAUDE_CONFIG_DIR:-/nonexistent}/settings.json
 ${CLAUDE_CONFIG_DIR:-/nonexistent}/remote-settings.json
 $_cs_managed"
+        _cs_mgd="$_cs_managed
+$_cs_home/.claude/remote-settings.json
+${CLAUDE_CONFIG_DIR:-/nonexistent}/remote-settings.json"
         for _cs_d in "$(dirname "$_cs_managed")"/managed-settings.d/*.json; do
+            _cs_mgd="$_cs_mgd
+$_cs_d"
             _cs_files="$_cs_files
 $_cs_d"
         done
@@ -1393,10 +1398,45 @@ EOF_CS_ROOTS
                 echo "headed-arm-leg: --consult: $_cs_f carries $_cs_n, which merges into the consult's sandbox and would widen it: remove or scope it (or launch the consult from a context that does not load it). A user scope with Edit allows cannot run consults until they are scoped; additionalDirectories becomes a sandbox write root and no confinement is proven yet: HIMMEL-4069" >&2
                 exit 2
             fi
+            # MANAGED scopes outrank the consult's own --settings, so the pins below cannot beat
+            # them: refuse a managed scope that turns on env scrub (its sandbox adds allowWrite
+            # /home /tmp /var ...), sets a permissive defaultMode, or carries a policyHelper(s).
+            if printf '%s\n' "$_cs_mgd" | grep -Fxq -- "$_cs_f"; then
+                if ! _cs_n="$(jq -r '
+                    first(
+                      ((.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB // empty) | tostring | ascii_downcase
+                        | select(. != "" and . != "0" and . != "false") | "env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
+                      ((.permissions.defaultMode // empty) | select(. == "bypassPermissions" or . == "acceptEdits")
+                        | "permissions.defaultMode " + .),
+                      ((.. | objects | keys[] | select(. == "policyHelper" or . == "policyHelpers"))
+                        | "key " + .)
+                    ) // empty' "$_cs_f" 2>/dev/null)"; then
+                    echo "headed-arm-leg: --consult: cannot parse $_cs_f, so it cannot be shown not to widen the sandbox: fix or remove it" >&2
+                    exit 2
+                fi
+                if [ -n "$_cs_n" ]; then
+                    echo "headed-arm-leg: --consult: managed scope $_cs_f carries $_cs_n, which the consult's own settings cannot override and would widen the sandbox or its permissions: HIMMEL-4066" >&2
+                    exit 2
+                fi
+            fi
         done <<EOF_CS_FILES
 $_cs_files
 EOF_CS_FILES
-        unset -v _cs_f _CS_SAFE_SANDBOX _cs_n _cs_d _cs_r _cs_roots _cs_top _cs_gc _cs_files _cs_home _cs_managed
+        # ~/.claude.json top-level env is not a settings scope but is merged into the process env:
+        # refuse a truthy env scrub there too (the flag-scope pin should win; belt and braces).
+        for _cs_f in "$_cs_home/.claude.json" "${CLAUDE_CONFIG_DIR:-/nonexistent}/.claude.json"; do
+            [ -f "$_cs_f" ] || continue
+            if ! _cs_n="$(jq -r '(.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB // empty) | tostring | ascii_downcase
+                | select(. != "" and . != "0" and . != "false")' "$_cs_f" 2>/dev/null)"; then
+                echo "headed-arm-leg: --consult: cannot parse $_cs_f, so it cannot be shown not to turn on env scrub: fix or remove it" >&2
+                exit 2
+            fi
+            if [ -n "$_cs_n" ]; then
+                echo "headed-arm-leg: --consult: $_cs_f sets env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, whose sandbox adds write roots (/home /tmp /var ...): remove it: HIMMEL-4066" >&2
+                exit 2
+            fi
+        done
+        unset -v _cs_f _CS_SAFE_SANDBOX _cs_n _cs_d _cs_r _cs_roots _cs_top _cs_gc _cs_files _cs_home _cs_managed _cs_mgd
         if [ -L "$DOC" ]; then
             echo "headed-arm-leg: --consult: the consult doc must not be a symlink ($DOC): the sandbox binds the resolved file" >&2
             exit 2
@@ -1409,6 +1449,8 @@ EOF_CS_FILES
             '.permissions.deny = ((.permissions.deny // []) + ["Edit","Write","NotebookEdit"] | unique)
              | .permissions.allow = ["Bash(bash scripts/handover/console-kit/append-results.sh " + $doc + ":*)"]
              | del(.permissions.additionalDirectories)
+             | .permissions.defaultMode = "auto"
+             | .env = ((.env // {}) + {CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0"})
              | .sandbox = {enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
                            autoAllowBashIfSandboxed: false,
                            filesystem: {allowWrite: [$doc], denyWrite: [$repo]}}')"; then
