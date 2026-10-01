@@ -375,7 +375,7 @@ PY
         # that stream is compared. The prefix is stripped for the semver sort and
         # restored on the winner so it compares equal to synced_base.
         if [ -n "$up_prefix" ]; then
-          latest="$(printf '%s\n' "$tags_raw" | grep -F -- "$up_prefix" | sed -n "s|^$up_prefix||p" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
+          latest="$(printf '%s\n' "$tags_raw" | awk -v p="$up_prefix" 'index($0, p) == 1 { print substr($0, length(p) + 1) }' | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
           [ -z "$latest" ] || latest="$up_prefix$latest"
         else
           latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"

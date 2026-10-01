@@ -1001,7 +1001,7 @@ rm -rf "$W12" "$PIN_EMPTY"
 #         tags — the engine-v* stream and bare semver tags must not win;
 #     (b) a `git-subdir` source with a sha is read like a url source (HEAD
 #         compare) instead of silently vanishing from the inventory.
-W13="$(mktemp -d)"; mkdir -p "$W13/bin" "$W13/state"
+W13="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-stream.XXXXXX")" || { bad "tag_prefix/git-subdir fixture: mktemp -d failed"; exit 1; }; mkdir -p "$W13/bin" "$W13/state"
 cat >"$W13/bin/gh" <<'GH'
 #!/usr/bin/env bash
 a="$*"
