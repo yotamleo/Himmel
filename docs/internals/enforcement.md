@@ -2491,7 +2491,9 @@ token follows an env-like word, `env`, a `$var`/brace word or a glob that
 matches `env`, with only option and `NAME=val` words between, in the same
 simple command; the relief is an ALLOWLIST (`relief_off`): it runs only when
 the whole command is plain words (`[A-Za-z0-9_./=:@%+,-]+`) joined by spaces or
-tabs, and any quote, backslash, `$`, backtick, redirection, separator, paren,
+tabs, its first non-assignment word is a bare read-only program (`grep diff ls
+cat head tail wc stat file cut uniq cmp basename dirname realpath readlink echo
+printf`) and no word is `env` in any case; any quote, backslash, `$`, backtick, redirection, separator, paren,
 brace, glob metachar or newline takes the old plain whole-text match, so the
 relief never loosens the old deny (a glob-path `grep -i … scripts/hooks/*.sh`
 therefore still denies); `grep -i`, `sed -i`, `diff -u`, `ls -i`, `sort -u` and a

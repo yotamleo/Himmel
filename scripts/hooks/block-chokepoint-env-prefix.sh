@@ -923,9 +923,26 @@ NL=$'\n'
 # metachar or newline. rc 0 (relief OFF) for anything else, and the caller
 # takes main's plain whole-text match unchanged, so the relief can never loosen
 # main on a shape it cannot model (four rounds of blocklisting such shapes each
-# missed one). An allowlist, not a parser.
+# missed one). An allowlist, not a parser. And the command's first
+# non-assignment word (basename) must be a read-only program that cannot exec or
+# clear the environment (grep diff ls cat head tail wc stat file cut uniq cmp
+# basename dirname realpath readlink echo printf); sed, sort, rg, git, find,
+# xargs, shells and every launcher (env sudo su bwrap nix systemd-run
+# flatpak-spawn timeout nice stdbuf setsid nohup exec command busybox) are NOT
+# in the set, because main's anywhere-match caught their clearing options. No
+# word may be env-like (any case) either.
 relief_off() {
-    [[ $1 =~ ^[A-Za-z0-9_./=:@%+,[:blank:]-]*$ ]] && return 1
+    local w prog=''
+    [[ $1 =~ ^[A-Za-z0-9_./=:@%+,[:blank:]-]*$ ]] || return 0
+    for w in $1; do
+        case "$(printf '%s' "${w##*/}" | tr '[:upper:]' '[:lower:]')" in env) return 0 ;; esac
+        [ -n "$prog" ] && continue
+        [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*[+]?= ]] && continue
+        prog=$w # a path (./grep) is not the bare program name, so it never matches
+    done
+    case "$prog" in
+        grep|diff|ls|cat|head|tail|wc|stat|file|cut|uniq|cmp|basename|dirname|realpath|readlink|echo|printf) return 1 ;;
+    esac
     return 0
 }
 

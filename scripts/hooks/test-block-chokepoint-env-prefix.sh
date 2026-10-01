@@ -1157,6 +1157,16 @@ assert_deny "3955 zsh en(v|x) -i"         "$(j '/usr/bin/en(v|x) -i bash scripts
 assert_deny "3955 zsh (env) -i"           "$(j '/usr/bin/(env) -i bash scripts/handover/console-kit/go.sh')"
 assert_deny "3955 env name split by backslash-newline" "$(j "/usr/bin/e${BSNL}nv -i bash scripts/handover/console-kit/g*.sh")"
 assert_deny "3955 seam arm after 2>/dev/null --debug" "$(j '/usr/bin/en? 2>/dev/null --debug ARMAUTOMERGE=1 bash scripts/h*/m*.sh')"
+# The relief also needs a read-only first program (grep diff ls cat ...): other
+# env-clearing launchers keep main's anywhere-match deny.
+assert_deny "3955 bwrap --unsetenv leg var" "$(j 'bwrap --unsetenv HIMMEL_CONSOLE_LEG --dev-bind / / bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 bwrap --unsetenv seam"    "$(j "bwrap --unsetenv ${MOG_VAR} --dev-bind / / bash $MERGE_ON_GREEN")"
+assert_deny "3955 flatpak-spawn --unset-env" "$(j 'flatpak-spawn --unset-env=HIMMEL_CONSOLE_LEG bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 systemd-run --unset-environment" "$(j 'systemd-run --user --unset-environment=HIMMEL_CONSOLE_LEG bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 nix develop -i -c"        "$(j 'nix develop -i -c bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 sudo -i"                  "$(j 'sudo -i bash scripts/handover/console-kit/go.sh')"
+assert_deny "3955 su - root -c"             "$(j 'su - root -c scripts/handover/console-kit/go.sh')"
+assert_deny "3955 ENV -i (any case)"        "$(j 'ENV -i bash scripts/handover/console-kit/go.sh')"
 # The relief is an ALLOWLIST: only plain unquoted words, no glob, redirection or
 # separator. Anything else takes main's plain match.
 assert_deny "3955 attached redirection hides the env word" "$(j '/usr/bin/en?>/dev/null -i bash scripts/handover/console-kit/g*.sh')"
