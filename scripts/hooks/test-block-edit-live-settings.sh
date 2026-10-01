@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # payloads carry literal $HOME / $DATA text the hook must see unexpanded
 # Smoke test for scripts/hooks/block-edit-live-settings.sh (HIMMEL-2360).
 #
 # Usage: bash scripts/hooks/test-block-edit-live-settings.sh

@@ -1450,7 +1450,7 @@ changes_directory() {
 # $HOME's value (text only; the hook never sees the shell's expansion).
 _EH=''
 _exp_home() {
-    # shellcheck disable=SC2088 # `~/` is matched as the literal text typed
+    # shellcheck disable=SC2088,SC2016 # `~/` and `$HOME` are matched as the literal text typed
     case "$1" in
         '$HOME'|'${HOME}'|'~') _EH=${HOME:-} ;;
         '$HOME/'*) _EH=${HOME:-}/${1#'$HOME/'} ;;
