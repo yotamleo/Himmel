@@ -262,11 +262,14 @@ function Get-LiveMap([object[]]$Lines) {
     if ($line -match '^\s*Status:\s+\S+\s+(enabled|disabled)\s*$') {
       if ($stage -ne 3) { Stop-UnrecognizedList }
       $state = $Matches[1]
-      # One stanza per (spec, scope): a repeat is contradictory, never last-wins.
-      $key = "$spec|$scope"
-      if ($seen.ContainsKey($key)) { Stop-UnrecognizedList }
-      $seen[$key] = $true
-      if ($scope -ceq 'user') { $map[$spec] = $state }
+      # One USER stanza per spec: a repeat is contradictory, never last-wins.
+      # Non-user rows legitimately repeat (one per project, HIMMEL-4025) and are
+      # never read, so they are not de-duplicated.
+      if ($scope -ceq 'user') {
+        if ($seen.ContainsKey($spec)) { Stop-UnrecognizedList }
+        $seen[$spec] = $true
+        $map[$spec] = $state
+      }
       $stage = 0
       continue
     }
@@ -275,7 +278,33 @@ function Get-LiveMap([object[]]$Lines) {
   if ($stage -ne 0 -or $count -eq 0) { Stop-UnrecognizedList }
   return $map
 }
-try { $LiveMap = Get-LiveMap $listOutput } catch {
+# Preferred read (HIMMEL-4025): `claude plugin list --json` -- typed rows (id,
+# scope, enabled), only scope=user is read. Returns $null when the CLI has no
+# --json or the payload is not the expected row array (caller falls back to the
+# text parser); throws on a repeated USER row (contradictory, fail closed).
+function Get-LiveMapJson {
+  $raw = @(& claude plugin list --json 2>$null)
+  if ($LASTEXITCODE -ne 0) { return $null }
+  $text = (($raw | ForEach-Object { ([string]$_).TrimEnd("`r") }) -join "`n").Trim()
+  if (-not $text.StartsWith('[')) { return $null }
+  try { $rows = @($text | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
+  $map = @{}
+  foreach ($row in $rows) {
+    if ($null -eq $row) { continue }
+    if (-not ($row.id -is [string] -and $row.scope -is [string] -and $row.enabled -is [bool])) { return $null }
+    if ($row.scope -ceq 'user') {
+      if ($map.ContainsKey($row.id)) { Stop-UnrecognizedList }
+      $map[$row.id] = $(if ($row.enabled) { 'enabled' } else { 'disabled' })
+    }
+  }
+  return $map
+}
+function Get-LiveMapPreferred([object[]]$TextLines) {
+  $m = Get-LiveMapJson
+  if ($null -ne $m) { return $m }
+  return (Get-LiveMap $TextLines)
+}
+try { $LiveMap = Get-LiveMapPreferred $listOutput } catch {
   Die "plugin-profile: 'claude plugin list' returned an unrecognized response -- cannot read live plugin state" 1
 }
 
@@ -283,6 +312,8 @@ try { $LiveMap = Get-LiveMap $listOutput } catch {
 # of an exit so Invoke-Apply can report the write as unverified.
 function Read-LiveMap {
   try {
+    $m = Get-LiveMapJson
+    if ($null -ne $m) { return $m }
     $raw = @(& claude plugin list 2>&1)
     if ($LASTEXITCODE -ne 0) { return $null }
     return (Get-LiveMap $raw)
