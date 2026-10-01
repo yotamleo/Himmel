@@ -123,5 +123,26 @@ sed -i.bak 's/Knowledge substrate/Guard-safety/' "$W/plan3/stage1/C01.tsv"; rm -
 ROADMAP_QMD_BIN="$W/qmd" bash "$SUT" --refresh --plan-dir "$W/plan3" --out "$W/out3" >/dev/null 2>&1
 [ "$(find "$W/out3/docs" -name 'theme-*.md' | wc -l)" = 2 ] && pass "slug collision: both theme docs kept" || fail "slug collision overwrote a theme doc"
 
+# --out inside/over the plan dir never deletes the plan
+cp -r "$plan" "$W/plan4"; before4="$(cd "$W/plan4" && find . -type f | sort | xargs sha256sum | sha256sum)"
+ROADMAP_QMD_BIN="$W/qmd" bash "$SUT" --refresh --plan-dir "$W/plan4" --out "$W/plan4/stage1/.." >/dev/null 2>&1; rc2=$?
+[ "$rc2" != 0 ] && pass "out overlapping the plan dir: refresh non-zero" || fail "overlapping out rc=0"
+[ "$before4" = "$(cd "$W/plan4" && find . -type f | sort | xargs sha256sum | sha256sum)" ] && pass "overlapping out: plan dir intact" || fail "overlapping out destroyed the plan dir"
+
+# deleted docs with a kept key are stale, and a refresh restores them
+rm -rf "$out/docs"
+r="$(run --check 2>&1)"; rc=$?
+[ "$rc" != 0 ] && pass "missing docs: --check stale despite kept key" || fail "--check fresh with docs deleted"
+r="$(run --refresh 2>&1)"; contains "missing docs: refresh rebuilds" "$r" "rebuilt"
+[ -f "$out/docs/HIMMEL-111.md" ] && pass "missing docs: restored" || fail "docs not restored"
+
+# a held lock refuses a concurrent refresh
+mkdir "$out/.lock"; echo seven >> "$mir/HIMMEL-111.md"
+r="$(run --refresh 2>&1)"; rc=$?
+[ "$rc" != 0 ] && pass "held lock: refresh non-zero" || fail "refresh ran under a held lock"
+rmdir "$out/.lock"
+r="$(run --refresh 2>&1)"; contains "released lock: refresh proceeds" "$r" "rebuilt"
+[ ! -e "$out/.lock" ] && pass "lock released after refresh" || fail "lock left behind"
+
 if [ "$fails" = 0 ]; then echo "all passed"; exit 0; fi
 echo "$fails failed"; exit 1

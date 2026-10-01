@@ -84,6 +84,9 @@ def build(plan, docs):
     for p in placement:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*-[0-9]+", p["key"]):
             sys.exit("plan_docs: refusing ticket key %r (not a plain KEY-n)" % p["key"])
+    rp, rd = os.path.realpath(plan), os.path.realpath(docs)
+    if rd == rp or rd.startswith(rp + os.sep) or rp.startswith(rd + os.sep):
+        sys.exit("plan_docs: --docs %s overlaps the plan dir %s; refusing to delete it" % (docs, plan))
     tmp = docs + ".new"
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)

@@ -41,12 +41,14 @@ fi
 want="$(python3 "$HERE/plan_docs.py" --plan-dir "$plan" --emit-fp ${watches[@]+"${watches[@]}"})"
 have="$(cat "$out/.fp" 2>/dev/null || true)"
 
+# fresh = the inputs match AND the generated docs still exist (a deleted docs dir with a kept key is stale)
+fresh=0; [ "$want" = "$have" ] && [ -d "$out/docs" ] && fresh=1
 if [ "$mode" = check ]; then
-    if [ "$want" = "$have" ]; then echo "plan-index: fresh"; exit 0; fi
+    if [ "$fresh" = 1 ]; then echo "plan-index: fresh"; exit 0; fi
     echo "plan-index: stale"; exit 1
 fi
 
-if [ "$force" = 0 ] && [ "$want" = "$have" ]; then
+if [ "$force" = 0 ] && [ "$fresh" = 1 ]; then
     echo "plan-index: unchanged"; exit 0
 fi
 
@@ -54,6 +56,10 @@ qmd="${ROADMAP_QMD_BIN:-qmd}"
 command -v "$qmd" >/dev/null 2>&1 || { echo "plan-index: qmd not found ($qmd); not rebuilding" >&2; exit 1; }
 
 mkdir -p "$out"
+# one refresh at a time: generation, indexing and the key publish share docs.new and the qmd index
+# ponytail: a kill -9 leaves .lock behind (remove it by hand), a pid-aware stale-lock takeover when it bites
+mkdir "$out/.lock" 2>/dev/null || { echo "plan-index: another refresh holds $out/.lock" >&2; exit 1; }
+trap 'rmdir "$out/.lock" 2>/dev/null || true' EXIT
 python3 "$HERE/plan_docs.py" --plan-dir "$plan" --docs "$out/docs" ${watches[@]+"${watches[@]}"}
 registered="$("$qmd" collection list 2>/dev/null | grep -F "$COLLECTION (" || true)"
 if [ -z "$registered" ]; then
