@@ -871,6 +871,46 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     esac
 fi
 
+# HIMMEL-4051: keep the roadmap-plan qmd index (HIMMEL-4000) fresh WITHOUT ever waiting
+# on it: the tick runs under the waiter's 120 s timeout and a refresh runs qmd embed. Only
+# `plan-index.sh --check` (a fingerprint) runs inline; stale + due launches --refresh
+# DETACHED (plan-index.sh's own lock keeps it to one). ok = fresh; ok:pending = stale but
+# inside the minimum interval since the last success (TICK_PLAN_INDEX_MIN_SECS, default
+# 900) so a busy mirror cannot cause back-to-back embeds; REFRESHING = launched or running;
+# FAIL:<why> = the last refresh failed (same interval backs off the relaunch); skip = no
+# plan dir. The console doc dir is NOT watched: its bucket changes on every Results bullet.
+# ponytail: a kill -9 mid-refresh leaves OUT/.lock, read as FAIL:lock-stuck after an hour
+# until removed by hand; a pid-aware takeover when it bites.
+plan_index_summary=skip
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    pi_dir="${console_doc%/*}"
+    pi_plan="$(sed -n 's/^tracker-plan:[[:space:]]*//p' "$console_doc" 2>/dev/null | head -n 1)"
+    [ -n "$pi_plan" ] || pi_plan="$pi_dir/specs/plan/HIMMEL-3882"
+    if [ -d "$pi_plan" ]; then
+        pi_out="${TICK_PLAN_INDEX_OUT:-${HOME:-/tmp}/.himmel/state/roadmap-plan}"
+        pi_min="${TICK_PLAN_INDEX_MIN_SECS:-900}"
+        case "$pi_min" in ''|*[!0-9]*) pi_min=900 ;; esac
+        pi_args=(--plan-dir "$pi_plan" --out "$pi_out" --watch "${TICK_TRACKER_MIRROR_DIR:-${HOME:-/tmp}/.himmel/state/jira-mirror/HIMMEL}")
+        [ -z "$LEGS_FROM" ] || pi_args+=(--watch "$LEGS_FROM")
+        pi_age() { local m; m="$(stat -c %Y "$1" 2>/dev/null)" || m=""; case "$m" in ''|*[!0-9]*) echo 999999999 ;; *) echo $(( $(date +%s) - m )) ;; esac; }  # gnu-ok: console kit is Linux-only
+        if bash "$HERE/../../roadmap/plan-index.sh" --check "${pi_args[@]}" >/dev/null 2>&1; then
+            plan_index_summary=ok
+        elif [ -d "$pi_out/.lock" ]; then
+            if [ "$(pi_age "$pi_out/.lock")" -ge 3600 ]; then plan_index_summary=FAIL:lock-stuck; else plan_index_summary=REFRESHING; fi
+        elif [ -f "$pi_out/.last-fail" ] && [ "$(pi_age "$pi_out/.last-fail")" -lt "$pi_min" ]; then
+            plan_index_summary="FAIL:$(head -c 60 "$pi_out/.last-fail" 2>/dev/null | tr -c '[:alnum:] ._:-' '_')"
+        elif [ -f "$pi_out/.fp" ] && [ -d "$pi_out/docs" ] && [ "$(pi_age "$pi_out/.fp")" -lt "$pi_min" ]; then
+            plan_index_summary=ok:pending
+        elif mkdir -p "$pi_out" 2>/dev/null; then
+            rm -f "$pi_out/.last-run"
+            setsid nohup bash -c 'o=$1; shift; if "$@" >"$o/.run.log" 2>&1; then rc=0; rm -f "$o/.last-fail"; else rc=$?; tail -n 1 "$o/.run.log" >"$o/.last-fail"; fi; echo "$rc" >"$o/.last-run"' _ "$pi_out" bash "$HERE/../../roadmap/plan-index.sh" --refresh "${pi_args[@]}" </dev/null >/dev/null 2>&1 &
+            plan_index_summary=REFRESHING
+        else
+            plan_index_summary=FAIL:no-out-dir
+        fi
+    fi
+fi
+
 bank_cache="${TICK_BANK_CACHE_FILE:-/tmp/claude/statusline-usage-cache.json}"
 fh="$(jq -r '.five_hour.utilization | if type == "number" then floor else empty end' "$bank_cache" 2>/dev/null)" || fh=""
 wk="$(jq -r '.seven_day.utilization | if type == "number" then floor else empty end' "$bank_cache" 2>/dev/null)" || wk=""
@@ -1187,6 +1227,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'tracker: %s\n' "$tracker_summary"
     printf 'denials: %s\n' "$denials_summary"
     printf 'ci queue: %s\n' "$ciq_summary"
+    printf 'plan-index: %s\n' "$plan_index_summary"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
@@ -1195,13 +1236,13 @@ else
     # `orphans=` (HIMMEL-2761) follows, `nonces=` (HIMMEL-3254) follows it, and
     # `legset=` (HIMMEL-3293) follows, `board=` (HIMMEL-3361) follows it, and
     # `tracker=` (HIMMEL-3933) follows `board=`, `denials=` (HIMMEL-3724) follows,
-    # and `ciq=` (HIMMEL-3840) is last.
+    # and `ciq=` (HIMMEL-3840) follows, `plan-index=` (HIMMEL-4051) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then
