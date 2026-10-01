@@ -118,6 +118,7 @@ def addz($a; $b): reduce (zero | keys[]) as $f ($a; .[$f] += ($b[$f] // 0));
       ($a.target_head + "|" + $a.finding_id) as $key
       | if has($key) and ($a.set.verdict != null) then .[$key].verdict = $a.set.verdict else . end) ) as $fin
 | ( [ $L[] | select(.kind == "finding" or .kind == "avail" or .kind == "score" or .kind == "usage")
+      | select(.kind != "avail" or .status == "ok")
       | select(tk(.branch) != null) | {t: tk(.branch), head: .head, est: (if .kind == "usage" then (.est_total_tokens // 0) else 0 end)} ]
     | group_by(.t) | map({key: .[0].t, value: {rounds: ([.[].head] | unique | length), est_tokens: ([.[].est] | add)}}) | from_entries ) as $crt
 
@@ -143,13 +144,13 @@ for t in $(jq -r '.[].ticket | select(startswith("_") | not)' "$WORK/base.json")
   if prs="$($GH pr list --state all --search "$t in:title" --json number,title,headRefName,createdAt,mergedAt,state --limit 50 2>/dev/null)" \
       && printf '%s' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1; then
     prs="$(printf '%s' "$prs" | jq -c --arg t "[$t]" '[.[] | select(.title | contains($t))]')"
-    runs='[]'
+    runs='[]'; cifail=0
     for b in $(printf '%s' "$prs" | jq -r '[.[].headRefName] | unique | .[]'); do
-      r="$($GH run list --branch "$b" --json startedAt,updatedAt --limit 200 2>/dev/null)" || r='[]'
-      printf '%s' "$r" | jq -e 'type == "array"' >/dev/null 2>&1 || r='[]'
+      r="$($GH run list --branch "$b" --json startedAt,updatedAt --limit 200 2>/dev/null)" || { cifail=1; r='[]'; }
+      printf '%s' "$r" | jq -e 'type == "array"' >/dev/null 2>&1 || { cifail=1; r='[]'; }
       runs="$(jq -nc --argjson a "$runs" --argjson b "$r" '$a + $b')"
     done
-    one="$(jq -nc --argjson prs "$prs" --argjson runs "$runs" '
+    one="$(jq -nc --argjson prs "$prs" --argjson runs "$runs" --argjson cifail "$cifail" '
       def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
       { pr: { numbers: ([$prs[].number] | sort),
               created: ([$prs[].createdAt] | min),
@@ -157,8 +158,9 @@ for t in $(jq -r '.[].ticket | select(startswith("_") | not)' "$WORK/base.json")
               outcome: (if ($prs | length) == 0 then null
                         elif any($prs[]; .state == "MERGED") then "MERGED"
                         elif any($prs[]; .state == "OPEN") then "OPEN" else "CLOSED" end) },
-        ci: { runs: ($runs | length),
-              secs: ([$runs[] | select(.startedAt != null and .updatedAt != null) | (.updatedAt | ts) - (.startedAt | ts)] | add // 0) } }')"
+        ci: (if $cifail == 1 then null else
+             { runs: ($runs | length),
+               secs: ([$runs[] | select(.startedAt != null and .updatedAt != null) | (.updatedAt | ts) - (.startedAt | ts)] | add // 0) } end) }')"
   else
     one='{"pr":null,"ci":null}'
   fi

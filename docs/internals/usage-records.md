@@ -71,6 +71,11 @@ will feed it: PR-body cost aggregation (HIMMEL-4003) and the CR-loop ledger
 
 ## Limits
 
-Table parsing assumes session titles contain no ` | `. Judge calls are
-counted as `judge`-titled sessions only. CI seconds are wall time of runs on
-the PR branches, not billed minutes.
+Table parsing assumes session titles contain no ` | `. Sessions are keyed by
+title, so distinct sessions sharing a title merge into one `legs[]` entry.
+Judge calls are counted as `judge`-titled sessions only. CI seconds are wall
+time of runs on the PR branches, not billed minutes, over the latest 200 runs
+per branch (older runs are not counted). A ticket with PR/CI activity but no
+session and no CR ledger row has no record. A failed `gh run list` makes `ci`
+null rather than zero. `cr.rounds` counts heads with a responding review
+(`unavailable` availability rows are not rounds).

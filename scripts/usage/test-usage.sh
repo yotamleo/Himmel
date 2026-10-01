@@ -91,6 +91,12 @@ check "ci secs" "900" "$(printf '%s' "$rec" | jq -r '.ci.secs')"
 check "pr merged outcome" "MERGED" "$(printf '%s' "$rec" | jq -r '.pr.outcome')"
 check "pr only title-matched" "[77]" "$(printf '%s' "$rec" | jq -c '.pr.numbers')"
 
+# 3b. a failed gh run list is null ci, never zero; unavailable avail is not a round
+sed 's/\*"run list"\*) echo .*;;/*"run list"*) exit 1 ;;/' "$ROOT/bin/gh" > "$ROOT/bin/gh-nociruns"; chmod +x "$ROOT/bin/gh-nociruns"
+check "failed run list gives null ci" "null" "$(run --print --gh "$ROOT/bin/gh-nociruns" | jq -c 'select(.ticket=="HIMMEL-9001")|.ci')"
+printf '%s\n' '{"kind":"avail","ts":"2026-01-01T03:00:00Z","branch":"feat/himmel-9001-thing","head":"h3","model":"codex","status":"unavailable"}' >> "$LEDGER"
+check "unavailable avail not a round" "2" "$(run --print | jq -r 'select(.ticket=="HIMMEL-9001")|.cr.rounds')"
+
 # 4. idempotency: byte-identical print + store unchanged on rerun
 OUT2="$(run --print)"
 check "print byte-identical" "$OUT" "$OUT2"
