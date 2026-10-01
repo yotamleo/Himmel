@@ -972,7 +972,7 @@ def _ansi_c_decode(s: str) -> str:
     \\c`) truncates a segment in bash, so the pass runs twice: NUL kept as `#`, and NUL dropping
     everything through the next unescaped quote. Code points >= 128 become `#`. Over-approximation
     only: the caller's `git` + `insteadof` rule runs on both streams."""
-    streams, n = [], len(s)
+    streams, n = [s], len(s)  # raw first: plain `ins\teadOf` is `insteadOf` to bash
     for drop in (False, True):
         out, i = [], 0
         while i < n:

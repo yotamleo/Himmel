@@ -590,6 +590,8 @@ g "round 9 decoy + split executable" block '{"tool_name":"terminal","tool_input"
 g "round 9 decoy + split executable + escaped key" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config $'"'"'url.x.\\x69nsteadOf'"'"' y"}}'
 g "round 10 codex-1 NUL via \\c@ ends the segment" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.x.instead\\c@junk'"'"'Of y"}}'
 g "round 10 codex-2 decoy + two adjacent split segments" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'$'"'"'\\x74'"'"' config url.x.insteadOf y"}}'
+g "round 10 plain backslash-t inside the key" block '{"tool_name":"terminal","tool_input":{"command":"git config url.x.ins\\teadOf y"}}'
+g "round 10 plain backslash-r inside url" block '{"tool_name":"terminal","tool_input":{"command":"git config remote.origin.u\\rl https://evil"}}'
 g "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'"}}'
 g "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'"}}'
 g "config user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.name x"}}'

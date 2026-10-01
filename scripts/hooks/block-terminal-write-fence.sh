@@ -175,7 +175,7 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
             return out
         }
         { s = (NR > 1 ? s "\n" : "") $0 }
-        END { q = "\047"; n = length(s); printf "%s\n%s", flat(0), flat(1) }'
+        END { q = "\047"; n = length(s); printf "%s\n%s\n%s", s, flat(0), flat(1) }'
     }
     cmd_dq=$(printf '%s' "$cmd" | ansic_decode | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;' | LC_ALL=C tr -d "'\"\\\\")
     # Blunt rule: decoded + dequoted + lowercased text containing `git` AND `insteadof`.
