@@ -92,6 +92,15 @@ exists to prevent.
 
 6. Report what was dispatched where, and what's still running.
 
+## Estimate-driven effort (optional, HIMMEL-3997)
+
+An item may carry `estimate`: an `effort-assess` record. The validator then adds
+`recommended_effort`, `review` and `advisory` to that plan entry (advisory only;
+`effort` is never overridden, and no tier is ever set). A `type: "implementation"`
+item whose record says plan-first (sigma >= 1.2, or a refused DoD) is REFUSED:
+dispatch a plan-first or split item instead. Items with no `estimate` behave
+exactly as before. Thresholds live in `scripts/lanes/effort-routing.json`.
+
 ## Notes
 
 - `scripts/lanes/fanout-plan.mjs` consults `scripts/lanes/resolve.mjs --json`

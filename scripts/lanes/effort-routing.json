@@ -1,0 +1,7 @@
+{
+  "_comment": "HIMMEL-3997 routing thresholds, read at run time by effort-route.mjs (the seam HIMMEL-4001 absorbs). Units: mean in S-eq. KNOWN GAP: the research table (HIMMEL-3992 section c) is silent for sigma in (high.sigma_max, plan_first_sigma_gte), i.e. 0.85-1.2; we route that band to high effort + independent review (the conservative side). HIMMEL-4001 should confirm or change it.",
+  "medium": {"mean_max": 1, "sigma_max": 0.5},
+  "high": {"mean_max": 3, "sigma_max": 0.85},
+  "review_mean_gt": 3,
+  "plan_first_sigma_gte": 1.2
+}

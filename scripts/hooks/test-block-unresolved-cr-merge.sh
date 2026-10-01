@@ -146,6 +146,10 @@ case "$1 $2" in
     case "$*" in
       *defaultBranchRef*) printf '%s' "${GH_STUB_DEFAULT_BRANCH-main}"; exit 0 ;;
     esac
+    # HIMMEL-2141: a directory carrying .stub-nwo is a DIFFERENT repo's checkout.
+    [ -f "$PWD/.stub-nwo" ] && { cat "$PWD/.stub-nwo"; exit 0; }
+    # HIMMEL-2141: --json url answers the repo URL (the hook compares hosts too).
+    case "$*" in *"json url"*) printf 'https://%s/%s' "${GH_STUB_HOST:-github.com}" "${GH_STUB_NWO:-o/r}"; exit 0 ;; esac
     printf '%s' "${GH_STUB_NWO:-o/r}" ;;
   *) echo '{}' ;;
 esac
@@ -158,7 +162,7 @@ export PATH="$TMP/bin:$PATH"
 git init -q -b trunk "$TMP" 2>/dev/null || git init -q "$TMP"
 
 payload() { # payload <tool_name> <command>
-  printf '{"tool_name":"%s","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$2" "$TMP"
+  printf '{"tool_name":"%s","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$2" "${PAYLOAD_CWD:-$TMP}"
 }
 
 # HIMMEL-3929: cr-merge-gate.sh now fails closed on a missing nested helper, so a
@@ -195,6 +199,32 @@ if [ "${HIMMEL_1495_SELF:-0}" = "1" ]; then
     [ "$probe_rc" = "2" ] || exit 1
     exit 0
 fi
+
+# ── HIMMEL-2141: the PR number binds to ITS repo. PR 42 exists in both o/r (the
+# project repo) and x/y; a merge whose effective repo (-R, else the payload cwd's
+# repo) is not the project repo must never be evaluated against o/r's PR 42.
+mkdir -p "$TMP/other"; printf 'x/y' > "$TMP/other/.stub-nwo"
+PIN2141="--match-head-commit abc123"
+PAYLOAD_CWD="$TMP/other" GH_STUB_MODE=clean t xrepo-cwd-other-refuses 2 Bash "gh pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-cwd-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-cwd-other-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-cwd-other-names-repos"; fi
+[ -r "$TMP/calls-xrepo-cwd-other-refuses.log" ] || { fail=$((fail+1)); echo "FAIL xrepo-calls-log-unreadable"; }
+if grep -q "^pr view" "$TMP/calls-xrepo-cwd-other-refuses.log"; then fail=$((fail+1)); echo "FAIL xrepo-cwd-other-never-looked-up-pr"; else pass=$((pass+1)); echo "ok   xrepo-cwd-other-never-looked-up-pr"; fi
+mkdir -p "$TMP/otherhost"; printf 'https://enterprise.example/o/r' > "$TMP/otherhost/.stub-nwo"
+PAYLOAD_CWD="$TMP/otherhost" GH_STUB_MODE=clean t xrepo-cwd-other-host-same-nwo-refuses 2 Bash "gh pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-cwd-other-host-same-nwo-refuses"; then pass=$((pass+1)); echo "ok   xrepo-cwd-other-host-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-cwd-other-host-names-repos"; fi
+GH_STUB_MODE=clean t xrepo-dash-R-other-refuses 2 Bash "gh pr merge 42 --squash -R x/y $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-dash-R-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-dash-R-other-refuses-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-dash-R-other-refuses-names-repos"; fi
+GH_STUB_MODE=clean t xrepo-long-repo-other-refuses 2 Bash "gh --repo x/y pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-long-repo-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-long-repo-other-refuses-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-long-repo-other-refuses-names-repos"; fi
+GH_STUB_MODE=clean t xrepo-cd-chain-refuses 2 Bash "cd $TMP/other && gh pr merge 42 --squash $PIN2141"
+GH_STUB_MODE=clean t xrepo-same-repo-R-allows 0 Bash "gh pr merge 42 --squash -R o/r $PIN2141"
+# Positive control for the never-looked-up-pr matcher above: a same-repo merge DOES read the PR.
+if grep -q "^pr view" "$TMP/calls-xrepo-same-repo-R-allows.log"; then pass=$((pass+1)); echo "ok   xrepo-lookup-matcher-detects-pr-view"; else fail=$((fail+1)); echo "FAIL xrepo-lookup-matcher-detects-pr-view"; fi
+GH_STUB_MODE=clean t xrepo-other-host-same-nwo-refuses 2 Bash "gh pr merge 42 --squash -R enterprise.example/o/r $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-other-host-same-nwo-refuses"; then pass=$((pass+1)); echo "ok   xrepo-other-host-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-other-host-names-repos"; fi
+GH_STUB_MODE=clean t xrepo-same-repo-R-host-allows 0 Bash "gh pr merge 42 --squash -R github.com/O/R $PIN2141"
+CR_MERGE_GATE_OK=1 PAYLOAD_CWD="$TMP/other" GH_STUB_MODE=clean t xrepo-bypass-skips-refusal 2 Bash "gh pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-bypass-skips-refusal"; then fail=$((fail+1)); echo "FAIL xrepo-bypass-names-no-refusal"; else pass=$((pass+1)); echo "ok   xrepo-bypass-names-no-refusal"; fi
 
 GH_STUB_MODE=unresolved t merge-with-unresolved-blocks   2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
@@ -634,7 +664,8 @@ grep -qi "does not match" "$TMP/err-leg-valid-go-wrong-pin-blocks" || { echo "FA
 # required case, since a leg could otherwise point --repo at a repo it
 # controls and reuse a GO minted for the console's real repo.
 printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
-HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo t leg-cross-repo-go-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123 --repo other/repo"
+# HIMMEL-2141: a cross-repo merge is refused up front unless CR_MERGE_GATE_OK=1; this row is about the GO mac.
+CR_MERGE_GATE_OK=1 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo t leg-cross-repo-go-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123 --repo other/repo"
 grep -qi "mac" "$TMP/err-leg-cross-repo-go-blocks" || { echo "FAIL leg-cross-repo-go-blocks reason missing"; fail=$((fail+1)); }
 
 # ── HIMMEL-3578 (3): a v1-tagged mac (himmel-go-v1|<pr>|<sha>, no nwo bound
@@ -1435,8 +1466,9 @@ HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
 grep -q "single plain command" "$TMP/err-trust-path-quoted-host-repo-blocks" \
     || { fail=$((fail+1)); echo "FAIL trust-path-quoted-host-repo-blocks: a quoted repo is not refused by the plain-command rule (HIMMEL-3918 B1)"; }
 # Control: a PR genuinely on another repo (no list there, the anchor's origin
-# is o/r) is still not-adopted and passes with no GO.
-HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+# is o/r) is still not-adopted and passes with no GO (HIMMEL-2141: past the
+# cross-repo refusal, via CR_MERGE_GATE_OK=1).
+CR_MERGE_GATE_OK=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo GH_STUB_TRUST_FILE=scripts/ci/run.sh \
     t trust-other-repo-not-adopted-allows 0 Bash "gh pr merge 42 --squash --repo other/repo --match-head-commit abc123"
 # The same rule at the lib, which merge-on-green.sh shares: a non-canonical
 # nwo's 404 is refused, never "not-adopted", even without the hook's guard.

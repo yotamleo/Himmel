@@ -28,6 +28,8 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { recommend, describe, loadConfig } from './effort-route.mjs';
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 const TYPE_LANE = { judgement: 'fable', reasoning: 'opus', research: 'sonnet', bulk: 'haiku', implementation: 'sonnet' };
@@ -61,6 +63,17 @@ export function buildFanoutPlan(items, liveLanes) {
       continue;
     }
 
+    // HIMMEL-3997: an effort record, when supplied, may refuse an implementation
+    // leg (sigma too wide) and adds advisory fields; no record = no change.
+    let rec = null;
+    if (item?.estimate) {
+      rec = recommend(item.estimate, loadConfig());
+      if (type === 'implementation' && rec.action === 'plan-first') {
+        errors.push(`${id}: estimate says plan-first — ${describe(rec)}. Dispatch a plan-first or split leg, not implementation.`);
+        continue;
+      }
+    }
+
     const laneId = type === 'implementation' ? (item?.lane || TYPE_LANE.implementation) : TYPE_LANE[type];
     const lane = byId.get(laneId);
     if (!lane) {
@@ -89,7 +102,9 @@ export function buildFanoutPlan(items, liveLanes) {
     // `lane.label` — a prior draft emitted the label here, which the Agent
     // tool's model param would reject verbatim (codex CR, HIMMEL-1829 bundle
     // round).
-    plan.push({ id, type, destructive, lane: laneId, model: laneId, label: lane.label, effort: item?.effort || 'medium', why: item?.why || '' });
+    const entry = { id, type, destructive, lane: laneId, model: laneId, label: lane.label, effort: item?.effort || 'medium', why: item?.why || '' };
+    if (rec) Object.assign(entry, { recommended_effort: rec.effort, review: rec.review, advisory: describe(rec) });
+    plan.push(entry);
   }
   return { plan, errors };
 }

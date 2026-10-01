@@ -267,8 +267,11 @@ case "$MODE" in
         echo "hop: relaunched session will cd into origin repo: $ORIGIN_REPO"
         arm_args=(--time "$hop_time" --handover "$SNAPSHOT" --cwd "$ORIGIN_REPO" --profile "$hop_profile")
         [ "$FORCE" -eq 1 ] && arm_args+=(--force)
-        if ! bash "$ORIGIN_REPO/scripts/handover/arm-resume.sh" "${arm_args[@]}"; then
-            rc=$?
+        # `if ! cmd; then rc=$?` would capture the negation's status (0), hiding
+        # a refusal (HIMMEL-4054) — take the real status first.
+        rc=0
+        bash "$ORIGIN_REPO/scripts/handover/arm-resume.sh" "${arm_args[@]}" || rc=$?
+        if [ "$rc" -ne 0 ]; then
             echo "ERR hop: arm-resume.sh failed (rc=$rc) — snapshot written but no relaunch scheduled" >&2
             echo "    Snapshot is still at: $SNAPSHOT" >&2
             echo "    Resume manually: claude --settings '$hop_settings' \"$RESUME_PROMPT\"" >&2

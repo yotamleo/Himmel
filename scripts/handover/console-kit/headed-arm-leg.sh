@@ -865,6 +865,30 @@ if [ -n "$TIER_GATE" ]; then
     fi
 fi
 
+# HIMMEL-3997: advisory effort recommendation. Only when the brief carries
+# '> **Effort-record:** <path>' (an effort-assess record). One stderr line;
+# it never changes the launch, the exit code or the Tier gate, and any failure
+# (missing/unreadable record, node absent, bad JSON) degrades to an
+# 'unavailable' line. Absent marker = no output at all.
+EFFORT_REC="$(grep -m1 -E '^> \*\*Effort-record:\*\* ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Effort-record:\*\* //; s/[[:space:]]+$//')" || EFFORT_REC=""
+if [ -n "$EFFORT_REC" ]; then
+    EFFORT_WHY=""
+    EFFORT_JSON=""
+    if [ ! -r "$EFFORT_REC" ]; then
+        EFFORT_WHY="record not readable: $EFFORT_REC"
+    elif ! EFFORT_JSON="$(node "$HERE/../../lanes/effort-route.mjs" "$EFFORT_REC" 2>&1)"; then
+        EFFORT_WHY="effort-route failed: $(printf '%s' "$EFFORT_JSON" | head -n 1)"
+    else
+        EFFORT_LINE="$(printf '%s' "$EFFORT_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).advisory||"")}catch(e){}})' 2>/dev/null)" || EFFORT_LINE=""
+        if [ -n "$EFFORT_LINE" ]; then
+            echo "headed-arm-leg: advisory: recommended $EFFORT_LINE; launching LEG_EFFORT=${LEG_EFFORT:-<unset>}" >&2
+        else
+            EFFORT_WHY="effort-route output not parseable"
+        fi
+    fi
+    [ -z "$EFFORT_WHY" ] || echo "headed-arm-leg: advisory: unavailable ($EFFORT_WHY)" >&2
+fi
+
 # LEG_REPO folds onto headed-arm.sh's own HEADED_ARM_REPO override seam -
 # the one thing the two prior kit-local copies differed on.
 if [ -n "${LEG_REPO:-}" ]; then
