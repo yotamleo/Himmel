@@ -1340,6 +1340,9 @@ if [ -n "$PROFILE" ]; then
         _cs_home="${CONSULT_SETTINGS_HOME:-$HOME}"
         _cs_managed="${CONSULT_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"
         _cs_roots="$CONSULT_REPO_CANON"
+        # shellcheck source=scripts/lib/git-clean.sh
+        . "$HERE/../../lib/git-clean.sh"
+        git_env_scrub
         _cs_top="$(git -C "$CONSULT_REPO_CANON" rev-parse --show-toplevel 2>/dev/null)" || _cs_top=""
         _cs_gc="$(git -C "$CONSULT_REPO_CANON" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || _cs_gc=""
         [ -n "$_cs_top" ] && _cs_roots="$_cs_roots
