@@ -11,6 +11,7 @@ import { writeJiraBreadcrumb } from '../breadcrumb.js';
 interface JiraVersion {
   id: string;
   name: string;
+  self?: string;
   released?: boolean;
   releaseDate?: string;
 }
@@ -111,6 +112,43 @@ export async function editVersion(
   return `Edited version ${name}`;
 }
 
+export interface VersionMoveOptions {
+  after?: string;
+  position?: string;
+}
+
+const MOVE_POSITIONS = ['First', 'Last'];
+
+// HIMMEL-4006: Jira appends a new version at the END of the release list; this
+// repositions one (POST /version/{id}/move) so a trail version sits by its parent.
+export async function moveVersion(
+  project: string,
+  name: string,
+  opts: VersionMoveOptions,
+): Promise<string> {
+  if ((opts.after === undefined) === (opts.position === undefined)) {
+    throw new Error('version-move needs exactly one of --after <name> or --position First|Last');
+  }
+  if (opts.position !== undefined && !MOVE_POSITIONS.includes(opts.position)) {
+    throw new Error(`--position must be one of ${MOVE_POSITIONS.join('|')} (got "${opts.position}")`);
+  }
+  const versions = await fetchVersions(project);
+  const find = (n: string) => {
+    const v = versions.find((x) => x.name === n);
+    if (!v) throw new Error(`no version named "${n}" in project ${project}`);
+    return v;
+  };
+  const moving = find(name);
+  if (opts.after !== undefined) {
+    const anchor = find(opts.after);
+    if (!anchor.self) throw new Error(`version "${opts.after}" has no self URL in the Jira response`);
+    await request('POST', `/version/${moving.id}/move`, { after: anchor.self });
+    return `Moved version ${name} after ${opts.after}`;
+  }
+  await request('POST', `/version/${moving.id}/move`, { position: opts.position });
+  return `Moved version ${name} to ${opts.position}`;
+}
+
 // HIMMEL-3713: shared validation so `edit --fix-version`/`--add-fix-version`
 // and `create --fix-version` fail loud on a typo'd version name instead of
 // silently no-oping or surfacing a bare Jira 400 with no project context.
@@ -201,6 +239,21 @@ export function registerVersions(program: Command): void {
     .option('--date <date>', 'Release date, YYYY-MM-DD')
     .action(async (name: string, options: { project?: string; date?: string }) => {
       console.log(await releaseVersion(options.project ?? projectKey(), name, options.date));
+    });
+
+  program
+    .command('version-move <name>')
+    .description('Reposition a project version in the release list (after another version, or First/Last)')
+    .option('--project <key>', 'Project key (default: JIRA_PROJECT_KEY env var)')
+    .option('--after <name>', 'Place directly after this version')
+    .option('--position <pos>', 'First or Last')
+    .action(async (name: string, options: VersionMoveOptions & { project?: string }) => {
+      console.log(
+        await moveVersion(options.project ?? projectKey(), name, {
+          after: options.after,
+          position: options.position,
+        }),
+      );
     });
 
   program
