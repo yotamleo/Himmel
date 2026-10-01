@@ -3234,23 +3234,29 @@ check_c46_plugin_enabled_missing() {
         return
     fi
     command -v jq >/dev/null 2>&1 || { emit INFO C46-plugin-enabled-missing "jq not found -- enabled-but-not-installed plugin scan skipped"; return; }
-    local installed
-    installed="$("$bin" plugin list --json 2>/dev/null | jq -r '.[].id' 2>/dev/null | sort -u)" || installed=""
-    if [ -z "$installed" ]; then
-        emit INFO C46-plugin-enabled-missing "'claude plugin list --json' returned no plugins -- scan skipped"
+    # A failed or non-array listing is a skip; a valid EMPTY array is a real
+    # answer (nothing installed, so every enabled entry is missing).
+    local list_json installed
+    if ! list_json="$("$bin" plugin list --json 2>/dev/null)" || ! installed="$(printf '%s' "$list_json" | jq -r 'if type == "array" then .[].id // empty else error("not an array") end' 2>/dev/null | sort -u)"; then
+        emit INFO C46-plugin-enabled-missing "'claude plugin list --json' failed or was not a JSON array -- scan skipped"
         return
     fi
-    local f id n=0 detail=""
+    local f id ids n=0 detail="" bad=""
     for f in "$SETTINGS" "$CLAUDE_DIR_R/settings.local.json" "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/.claude/settings.local.json"; do
         [ -f "$f" ] || continue
+        if ! ids="$(jq -r '(.enabledPlugins // {}) | to_entries[] | select(.value == true) | .key' "$f" 2>/dev/null)"; then
+            bad="$bad $f;"; continue
+        fi
         while IFS= read -r id; do
             [ -n "$id" ] || continue
-            printf '%s\n' "$installed" | grep -qxF "$id" && continue
+            case $'\n'"$installed"$'\n' in *$'\n'"$id"$'\n'*) continue ;; esac
             n=$((n+1)); detail="$detail $id ($f);"
-        done < <(jq -r '(.enabledPlugins // {}) | to_entries[] | select(.value == true) | .key' "$f" 2>/dev/null)
+        done <<< "$ids"
     done
     if [ "$n" -gt 0 ]; then
         emit WARN C46-plugin-enabled-missing "$n plugin(s) enabled but not installed:$detail" "set them false in the named file (or 'claude plugin install <id>'); /plugin Errors tab reports the same"
+    elif [ -n "$bad" ]; then
+        emit INFO C46-plugin-enabled-missing "could not parse enabledPlugins in:$bad scan incomplete"
     else
         emit OK C46-plugin-enabled-missing "every enabledPlugins=true entry is installed"
     fi
