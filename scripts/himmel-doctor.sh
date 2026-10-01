@@ -3237,7 +3237,7 @@ check_c46_plugin_enabled_missing() {
     # A failed or non-array listing is a skip; a valid EMPTY array is a real
     # answer (nothing installed, so every enabled entry is missing).
     local list_json installed
-    if ! list_json="$("$bin" plugin list --json 2>/dev/null)" || ! installed="$(printf '%s' "$list_json" | jq -r 'if type == "array" then .[].id // empty else error("not an array") end' 2>/dev/null | sort -u)"; then
+    if ! list_json="$("$bin" plugin list --json 2>/dev/null)" || [ -z "$list_json" ] || ! installed="$(printf '%s' "$list_json" | jq -r 'if type == "array" then .[].id // empty else error("not an array") end' 2>/dev/null | sort -u)"; then
         emit INFO C46-plugin-enabled-missing "'claude plugin list --json' failed or was not a JSON array -- scan skipped"
         return
     fi

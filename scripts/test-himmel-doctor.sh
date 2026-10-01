@@ -5201,6 +5201,13 @@ if grepq "$out" 'INFO C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-pl
 else
     fail "C46 failing list -> $(printf '%s' "$out" | grep -A1 C46)"
 fi
+printf '#!/usr/bin/env bash\nexit 0\n' > "$t/claude-blank"; chmod +x "$t/claude-blank"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-blank" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
+    pass "C46 blank list output -> INFO skip"
+else
+    fail "C46 blank list output -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
 echo '{ not json' > "$t/claude/settings.json"
 out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'INFO C46-plugin-enabled-missing' && grepq "$out" -F "$t/claude/settings.json" && ! grepq "$out" 'OK   C46-plugin-enabled-missing'; then
