@@ -41,6 +41,7 @@ root="$(handover_root)"
 scratch="$root/.smoke-consult-$$"
 work="$(mktemp -d "${TMPDIR:-/tmp}/smoke-consult.XXXXXX")"
 probe="$primary/.smoke-consult-probe-$$"
+# shellcheck disable=SC2317  # invoked via the EXIT trap
 cleanup() { rm -rf "$scratch" "$work"; rm -f "$probe"; }
 trap cleanup EXIT
 
