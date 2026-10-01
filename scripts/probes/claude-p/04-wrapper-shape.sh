@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 4 (HIMMEL-2179): combined wrapper shape — stdin prompt,
 # --append-system-prompt-file, --output-format json --json-schema. Verify by
 # ARTIFACT: does the envelope carry a schema-conformant `structured_output`.
