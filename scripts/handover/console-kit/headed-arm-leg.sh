@@ -1318,10 +1318,34 @@ if [ -n "$PROFILE" ]; then
     # is enough) plus Claude Code's own temp dirs; the doc's parent dir (the shared
     # handover bucket) is never granted, and the additionalDirectories grant above is
     # skipped under --consult because Claude Code turns those into sandbox write roots.
-    # The repo is denied. Network follows the MERGED settings, so a user/project scope
-    # can widen it (HIMMEL-4066 R2); a doc inside the repo is always denied (HIMMEL-4066).
-    # ponytail: file tools denied, one append allow, Bash sandboxed to one writable file but reads open and settings-scope allowWrite arrays merge, upgrade on a consult observed reading secrets or widening its writes (HIMMEL-4061 follow-ups)
+    # The repo is denied. Outer settings scopes MERGE their arrays into the consult's
+    # (HIMMEL-4066): sandbox allowWrite, network allowedDomains and permissions.additionalDirectories
+    # (a sandbox write root: himmel's own project settings list the luna vault) are refused at
+    # arm time below. A doc inside the repo is always denied, so it is refused too.
+    # ponytail: Bash sandboxed to the doc file plus Claude Code's temp dirs, reads open (no denyRead) and the symlink check is launch-time, upgrade to denyRead once the smoke test proves plugin reads survive (HIMMEL-4066 follow-ups)
+    # ponytail: refuses every consult in a repo whose committed settings grant additionalDirectories (himmel itself), upgrade path HIMMEL-4069
     if [ "$CONSULT" -eq 1 ]; then
+        case "$_leg_doc_path/" in
+            "$CONSULT_REPO_CANON"/*)
+                echo "headed-arm-leg: --consult: the consult doc ($_leg_doc_path) is inside the repo ($CONSULT_REPO_CANON), which the sandbox always write-denies: put the doc under the handover root" >&2
+                exit 2
+                ;;
+        esac
+        for _cs_f in "${CONSULT_SETTINGS_HOME:-$HOME}/.claude/settings.json" "$CONSULT_REPO_CANON/.claude/settings.json" "$CONSULT_REPO_CANON/.claude/settings.local.json" "${CONSULT_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"; do
+            [ -f "$_cs_f" ] || continue
+            for _cs_k in sandbox.filesystem.allowWrite sandbox.network.allowedDomains permissions.additionalDirectories; do
+                # An unreadable or malformed file is no signal (jq fails, count stays empty).
+                _cs_n="$(jq -r --arg k "$_cs_k" 'getpath($k | split(".")) | if type == "array" then length else 0 end' "$_cs_f" 2>/dev/null)" || _cs_n=""
+                case "$_cs_n" in
+                    ''|0) ;;
+                    *)
+                        echo "headed-arm-leg: --consult: $_cs_f sets $_cs_k, which merges into the consult's sandbox and would widen it: remove it (or launch the consult from a context that does not load it). additionalDirectories becomes a sandbox write root and no confinement is proven yet: HIMMEL-4069" >&2
+                        exit 2
+                        ;;
+                esac
+            done
+        done
+        unset -v _cs_f _cs_k _cs_n
         if [ -L "$DOC" ]; then
             echo "headed-arm-leg: --consult: the consult doc must not be a symlink ($DOC): the sandbox binds the resolved file" >&2
             exit 2

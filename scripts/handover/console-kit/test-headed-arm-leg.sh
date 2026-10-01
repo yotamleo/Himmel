@@ -2848,6 +2848,10 @@ done
 # must not depend on the CI runner having them, so case 41 points the preflight
 # at `true` (the 41h cases below point it at a missing binary to prove the refusal).
 export CONSULT_BWRAP_BIN=true CONSULT_SOCAT_BIN=true
+# HIMMEL-4066: the consult arm-time scope check reads user/managed settings; keep the
+# suite off the operator's live files (the 41i cases point these at fixtures).
+mkdir -p "$tmp/home41"
+export CONSULT_SETTINGS_HOME="$tmp/home41" CONSULT_MANAGED_SETTINGS="$tmp/home41/managed-none.json"
 # --- 41. HIMMEL-4014: composable --profile lists + the read-only --consult mode --
 # (a) a comma list resolves to the UNION of its members' plugin sets; (b) --consult
 # launches a plugin-scoped session whose settings deny the file-edit tools, carry
@@ -2988,6 +2992,46 @@ rc=0; out="$(LEG_REPO="$tmp/real41/.claude/worktrees/../worktrees/feat+y/." bash
 check "41g a dot-dot path into a worktree refuses (exit 2)" "$rc" "2"
 rc=0; out="$(LEG_REPO="$tmp/nonexistent41" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41g an unresolvable repo fails closed (exit 2)" "$rc" "2"
+
+# HIMMEL-4066 (a): a consult doc INSIDE the repo is always write-denied (the repo is in
+# denyWrite), so arm time refuses it instead of launching a window that cannot answer.
+mkdir -p "$tmp/repo41c/docs"; : > "$tmp/repo41c/docs/in-repo-consult.md"
+rc=0; out="$(LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-a "$tmp/repo41c/docs/in-repo-consult.md" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a consult doc inside the repo refuses (exit 2)" "$rc" "2"
+contains "41i in-repo refusal says why" "$out" "inside the repo"
+rc=0; out="$(LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-a "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a consult doc outside the repo still passes (exit 0)" "$rc" "0"
+# (b) the ponytail text no longer claims one writable file.
+check "41i ponytail no longer says 'one writable file'" "$(grep -c 'one writable file' "$SCRIPT")" "0"
+# (c) outer settings scopes widen the consult's arrays (allowWrite, network allowedDomains): refuse.
+for sc41 in user project local managed; do
+  for kv41 in 'sandbox.filesystem.allowWrite|{"sandbox":{"filesystem":{"allowWrite":["/x"]}}}' 'sandbox.network.allowedDomains|{"sandbox":{"network":{"allowedDomains":["example.com"]}}}' 'permissions.additionalDirectories|{"permissions":{"additionalDirectories":["~/Documents/luna"]}}'; do
+    k41="${kv41%%|*}"; j41="${kv41#*|}"
+    h41="$tmp/home41-$sc41"; rm -rf "$h41"; mkdir -p "$h41/.claude" "$tmp/repo41c/.claude"; rm -f "$tmp/repo41c/.claude/settings.json" "$tmp/repo41c/.claude/settings.local.json"
+    cm41="$h41/managed-none.json"
+    case "$sc41" in
+      user) printf '%s' "$j41" > "$h41/.claude/settings.json" ;;
+      project) printf '%s' "$j41" > "$tmp/repo41c/.claude/settings.json" ;;
+      local) printf '%s' "$j41" > "$tmp/repo41c/.claude/settings.local.json" ;;
+      managed) printf '%s' "$j41" > "$h41/managed.json"; cm41="$h41/managed.json" ;;
+    esac
+    rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$cm41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+    check "41i $sc41 scope carrying $k41 refuses (exit 2)" "$rc" "2"
+    contains "41i $sc41/$k41 refusal names the key" "$out" "$k41"
+    case "$k41" in permissions.additionalDirectories) contains "41i $sc41/$k41 refusal names HIMMEL-4069" "$out" "HIMMEL-4069" ;; esac
+  done
+done
+h41="$tmp/home41-ad"; rm -rf "$h41"; mkdir -p "$h41/.claude" "$tmp/repo41c/.claude"; rm -f "$tmp/repo41c/.claude/settings.json" "$tmp/repo41c/.claude/settings.local.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a clean consult (no outer-scope widening) passes (exit 0)" "$rc" "0"
+# A malformed outer settings file is no signal, not a refusal.
+printf '%s' 'not json' > "$h41/.claude/settings.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a malformed outer settings file is not a refusal (exit 0)" "$rc" "0"
+# (d) the live smoke test is skipped unless CONSULT_SMOKE=1.
+rc=0; out="$(bash "$HERE/smoke-consult-sandbox.sh" 2>&1)" || rc=$?
+check "41i smoke test skips by default (exit 0)" "$rc" "0"
+contains "41i smoke test says SKIP" "$out" "SKIP"
 
 # Round trip: request text -> the consult appends its ANSWER with the ONE allowed
 # command (append-results.sh) -> the relay text the console forwards to the asker.
