@@ -567,9 +567,10 @@ marker may be cleared only from evidence persisted by
            echo 'CR ledger amend failed for finding <slug>-N — marker retained' >&2
        fi
 
-   A `deferred` verdict additionally carries its ticket and the reason the gate
-   reads: `--set verdict=deferred --set deferred_to=HIMMEL-<n> --set 'reason=<why
-   out of scope>'`. `--set reason=` is a different field from the `--reason`
+   A `deferred` verdict additionally carries its ticket, its follow-up class and
+   the reason the gate reads: `--set verdict=deferred --set deferred_to=HIMMEL-<n>
+   --set fu_class=<escape|hardening|polish> --set 'reason=<why out of scope>'`
+   (without a class the append exits 2). `--set reason=` is a different field from the `--reason`
    above — the gate reads the finding's `reason`, `--reason` only records why
    the ledger row changed.
    A `disproved` verdict on a finding whose text names a shell or platform

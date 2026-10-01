@@ -113,7 +113,7 @@ _cmg_outside_block() {
         else
             prefix="CodeRabbit's review body "
         fi
-        echo "BLOCK: ${prefix}reports $od_n outside-diff-range finding(s) on head $gate_head of PR #$num, $((od_n - od_ok)) not dispositioned:$od_list — these carry no thread to resolve. Fix them, or record an explicit disposition at head $gate_head (ledger-append.sh finding --model coderabbit-outside --verdict deferred --deferred-to <TICKET> --reason <why>; check-ci.sh prints the full recipe), or --verdict fixed --reason \"fixed in <sha>\"; or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated.$extra"
+        echo "BLOCK: ${prefix}reports $od_n outside-diff-range finding(s) on head $gate_head of PR #$num, $((od_n - od_ok)) not dispositioned:$od_list — these carry no thread to resolve. Fix them, or record an explicit disposition at head $gate_head (ledger-append.sh finding --model coderabbit-outside --verdict deferred --deferred-to <TICKET> --fu-class <escape|hardening|polish> --reason <why>; check-ci.sh prints the full recipe), or --verdict fixed --reason \"fixed in <sha>\"; or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated.$extra"
         return 2
     fi
     echo "ALLOW: PR #$num — CodeRabbit's review body reports outside-diff dispositioned=$od_ok (each has an explicit ledger disposition at head $gate_head)." >&2
