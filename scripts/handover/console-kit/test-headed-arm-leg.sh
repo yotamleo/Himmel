@@ -2919,6 +2919,8 @@ cdoc41="$tmp/consult-doc41.md"; printf '# consult\n\n## Results\n' > "$cdoc41"
 rc=0; bash "$RELAY41" "$cdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: no ANSWER yet -> exit 3" "$rc" "3"
 bash "$HERE/append-results.sh" "$cdoc41" "ANSWER use easing X, see design.md:12" >/dev/null 2>&1 || true
+rc=0; bash "$RELAY41" "$cdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
+check "41f relay: ANSWER without WRAPPED -> exit 3 (partial answer)" "$rc" "3"
 bash "$HERE/append-results.sh" "$cdoc41" "WRAPPED — answered" >/dev/null 2>&1 || true
 rc=0; relay41="$(bash "$RELAY41" "$cdoc41" HIMMEL-4014-ask 2>&1)" || rc=$?
 check "41f relay: answered -> exit 0" "$rc" "0"
