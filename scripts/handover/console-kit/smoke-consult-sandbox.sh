@@ -39,9 +39,9 @@ primary="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)"
 primary="$(cd -P "$primary/.." && pwd -P)"
 root="$(handover_root)"
 scratch="$root/.smoke-consult-$$"
-work="$(mktemp -d "${TMPDIR:-/tmp}/smoke-consult.XXXXXX")"
+work="$(mktemp -d "${TMPDIR:-/tmp}/smoke-consult.XXXXXX")" || { echo "FAIL smoke-consult-sandbox: mktemp failed"; exit 1; }
 probe="$primary/.smoke-consult-probe-$$"
-# shellcheck disable=SC2317  # invoked via the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked via the EXIT trap
 cleanup() { rm -rf "$scratch" "$work"; rm -f "$probe"; }
 trap cleanup EXIT
 
@@ -102,11 +102,14 @@ fail=0
 if grep -q 'LIVE smoke-ok' "$doc"; then echo "ok - the append to the consult doc landed"; else echo "FAIL - the append to the consult doc did NOT land"; fail=1; fi
 if [ "$(cat "$sibling")" = "untouched" ]; then echo "ok - the sibling file in the bucket is untouched"; else echo "FAIL - a sandboxed write reached a SIBLING file in the bucket"; fail=1; fi
 if [ ! -e "$probe" ]; then echo "ok - no file was written inside the repo"; else echo "FAIL - a sandboxed write reached the repo"; fail=1; fi
-# Not vacuous: the model must have ATTEMPTED the probes and seen the sandbox refuse them.
-if jq -r '.result // ""' "$work/claude.json" 2>/dev/null | grep -qiE 'read-only file system|operation not permitted|permission denied'; then
-    echo "ok - the probes were attempted and refused by the sandbox"
+# Not vacuous: the model must have ATTEMPTED BOTH sibling and repo probes and seen the
+# sandbox refuse each (two refusal lines), not merely one refusal phrase.
+result="$(jq -r '.result // ""' "$work/claude.json" 2>/dev/null)"
+refusals="$(printf '%s\n' "$result" | grep -ciE 'read-only file system|operation not permitted|permission denied')"
+if [ "${refusals:-0}" -ge 2 ]; then
+    echo "ok - both probes were attempted and refused by the sandbox"
 else
-    echo "FAIL - no sandbox refusal text in the result (probes may not have run): $(jq -r '.result // "no result"' "$work/claude.json" 2>/dev/null | head -c 400)"; fail=1
+    echo "FAIL - fewer than two sandbox refusal lines in the result (a probe may not have run, or a hook refused it): $(printf '%s' "$result" | head -c 400)"; fail=1
 fi
 [ "$fail" -eq 0 ] && echo "PASS smoke-consult-sandbox" || echo "FAIL smoke-consult-sandbox"
 exit "$fail"
