@@ -205,6 +205,7 @@ mkdir -p "$TMP/other"; printf 'x/y' > "$TMP/other/.stub-nwo"
 PIN2141="--match-head-commit abc123"
 PAYLOAD_CWD="$TMP/other" GH_STUB_MODE=clean t xrepo-cwd-other-refuses 2 Bash "gh pr merge 42 --squash $PIN2141"
 if grep -q "project repo" "$TMP/err-xrepo-cwd-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-cwd-other-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-cwd-other-names-repos"; fi
+[ -r "$TMP/calls-xrepo-cwd-other-refuses.log" ] || { fail=$((fail+1)); echo "FAIL xrepo-calls-log-unreadable"; }
 if grep -q "^pr view" "$TMP/calls-xrepo-cwd-other-refuses.log"; then fail=$((fail+1)); echo "FAIL xrepo-cwd-other-never-looked-up-pr"; else pass=$((pass+1)); echo "ok   xrepo-cwd-other-never-looked-up-pr"; fi
 GH_STUB_MODE=clean t xrepo-dash-R-other-refuses 2 Bash "gh pr merge 42 --squash -R x/y $PIN2141"
 if grep -q "project repo" "$TMP/err-xrepo-dash-R-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-dash-R-other-refuses-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-dash-R-other-refuses-names-repos"; fi
@@ -212,6 +213,10 @@ GH_STUB_MODE=clean t xrepo-long-repo-other-refuses 2 Bash "gh --repo x/y pr merg
 if grep -q "project repo" "$TMP/err-xrepo-long-repo-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-long-repo-other-refuses-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-long-repo-other-refuses-names-repos"; fi
 GH_STUB_MODE=clean t xrepo-cd-chain-refuses 2 Bash "cd $TMP/other && gh pr merge 42 --squash $PIN2141"
 GH_STUB_MODE=clean t xrepo-same-repo-R-allows 0 Bash "gh pr merge 42 --squash -R o/r $PIN2141"
+# Positive control for the never-looked-up-pr matcher above: a same-repo merge DOES read the PR.
+if grep -q "^pr view" "$TMP/calls-xrepo-same-repo-R-allows.log"; then pass=$((pass+1)); echo "ok   xrepo-lookup-matcher-detects-pr-view"; else fail=$((fail+1)); echo "FAIL xrepo-lookup-matcher-detects-pr-view"; fi
+GH_STUB_MODE=clean t xrepo-other-host-same-nwo-refuses 2 Bash "gh pr merge 42 --squash -R enterprise.example/o/r $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-other-host-same-nwo-refuses"; then pass=$((pass+1)); echo "ok   xrepo-other-host-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-other-host-names-repos"; fi
 GH_STUB_MODE=clean t xrepo-same-repo-R-host-allows 0 Bash "gh pr merge 42 --squash -R github.com/O/R $PIN2141"
 CR_MERGE_GATE_OK=1 PAYLOAD_CWD="$TMP/other" GH_STUB_MODE=clean t xrepo-bypass-skips-refusal 2 Bash "gh pr merge 42 --squash $PIN2141"
 if grep -q "project repo" "$TMP/err-xrepo-bypass-skips-refusal"; then fail=$((fail+1)); echo "FAIL xrepo-bypass-names-no-refusal"; else pass=$((pass+1)); echo "ok   xrepo-bypass-names-no-refusal"; fi

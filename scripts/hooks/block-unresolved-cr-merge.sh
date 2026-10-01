@@ -404,8 +404,13 @@ _go_view() {
 _nwo_key() {
     local n=${1#https://}
     n=${n#http://}; n=${n%/}; n=${n%.git}
-    case "$n" in */*/*) n=${n#*/} ;; esac
-    printf '%s' "$n" | tr '[:upper:]' '[:lower:]'
+    n=$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')
+    # A HOST/OWNER/REPO spelling keeps any host other than github.com, so another
+    # host's o/r never compares equal to this repo's o/r.
+    case "$n" in
+        github.com/*/*) n=${n#*/} ;;
+    esac
+    printf '%s' "$n"
 }
 proj_nwo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || proj_nwo=""
 eff_nwo=$repo
