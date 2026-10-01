@@ -917,6 +917,93 @@ deny_text_layer() {  # deny_text_layer <reason constant> -- OUR text only
 CR=$'\r'
 NL=$'\n'
 
+# relief_off <text> -- HIMMEL-3955. The scoped scans below run ONLY on a command
+# made of plain words (`[A-Za-z0-9_./=:@%+,-]+`) joined by spaces or tabs: no
+# quote, backslash, $, backtick, redirection, separator, paren, brace, glob
+# metachar or newline. rc 0 (relief OFF) for anything else, and the caller
+# takes main's plain whole-text match unchanged, so the relief can never loosen
+# main on a shape it cannot model (four rounds of blocklisting such shapes each
+# missed one). An allowlist, not a parser. And the command's first
+# word must be a read-only program (no leading assignment: PATH= or LD_PRELOAD= before it turns the relief off) that cannot exec or
+# clear the environment (grep diff ls cat head tail wc stat file cut uniq cmp
+# basename dirname realpath readlink echo printf); sed, sort, rg, git, find,
+# xargs, shells and every launcher (env sudo su bwrap nix systemd-run
+# flatpak-spawn timeout nice stdbuf setsid nohup exec command busybox) are NOT
+# in the set, because main's anywhere-match caught their clearing options. No
+# word may be env-like (any case) either.
+relief_off() {
+    local w prog=''
+    [[ $1 =~ ^[A-Za-z0-9_./=:@%+,[:blank:]-]*$ ]] || return 0
+    for w in $1; do
+        case "$(printf '%s' "${w##*/}" | tr '[:upper:]' '[:lower:]')" in env) return 0 ;; esac
+        [ -n "$prog" ] && continue
+        [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*[+]?= ]] && return 0 # a leading assignment (PATH=, LD_PRELOAD=) can swap the program: no relief
+        prog=$w # a path (./grep) is not the bare program name, so it never matches
+    done
+    case "$prog" in
+        grep|diff|ls|cat|head|tail|wc|stat|file|cut|uniq|cmp|basename|dirname|realpath|readlink|echo|printf) return 1 ;;
+    esac
+    return 0
+}
+
+# env_like_word <plain word> -- rc 0 when its basename is `env`. HIMMEL-3955.
+env_like_word() {
+    local base=${1##*/}
+    [ "$base" = env ]
+}
+
+# env_clear_opt <text> -- HIMMEL-3955. rc 0 when a standalone -u*/-i*/--u*/--i*/
+# bare - token sits in env position: after an `env` word with only option and
+# NAME=val words between (any other plain word, e.g. grep/sed/diff/ls/sort/bash,
+# ends the position). So `grep -i`, `sed -i`, `diff -u`, `ls -i` and a `--id N`
+# flag are not env-clearing; `env -i`, `/usr/bin/env -u X` and
+# `setsid -f env -i` still are. Any text relief_off keeps out takes main's
+# whole-text match.
+env_clear_opt() { # <text> [<text the allowlist gates on; default <text>>]
+    local t="$1" w prev head=0 hit=1
+    local opt='(^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$)'
+    if relief_off "${2-$t}"; then [[ $t =~ $opt ]]; return; fi
+    prev=''
+    for w in $t; do
+        if [[ $w =~ $opt ]] && [ "$head" = 1 ]; then hit=0; break; fi
+        if env_like_word "$w"; then head=1
+        else
+            # A plain word right after an option is that option's operand
+            # (`env --chdir /tmp -i`), so it does not end the position.
+            case "$w" in
+                -*|*=*) ;;
+                *) case "$prev" in -*=*) head=0 ;; -*) ;; *) head=0 ;; esac ;;
+            esac
+        fi
+        prev=$w
+    done
+    return $hit
+}
+
+# seam_assigned <text> <var> -- HIMMEL-3955. rc 0 when <text> assigns <var>
+# (`VAR=`/`VAR+=`) the way a launch would. A `--long-option VAR=x` VALUE with no
+# `env` word before it is an ARGUMENT of that program (ledger-append amend
+# --set k=v), not an assignment, and does not count. raw_obfuscated only:
+# raw_mention (a chokepoint is named) keeps the plain match, since
+# `stop-worker.sh --dry-run VAR=9` is a pinned deny.
+seam_assigned() {
+    local t="$1" v="$2" w prev='' el=0
+    local re="(^|[^[:alnum:]_])${v}[+]?="
+    if relief_off "$t"; then [[ $t =~ $re ]]; return; fi
+    for w in $t; do
+        if [[ $w =~ $re ]]; then
+            case "$prev" in
+                *=*) return 0 ;;
+                --[A-Za-z]*) [ "$el" = 1 ] && return 0 ;;
+                *) return 0 ;;
+            esac
+        fi
+        env_like_word "$w" && el=1
+        prev=$w
+    done
+    return 1
+}
+
 # raw_obfuscated <raw text> -- HIMMEL-3921 text layer, run on the UNTOUCHED
 # command. Deny-leaning and parse-free on purpose: every special-case parse
 # rule in a guard became a bypass (PR 1494/1501/1508), so this is a plain scan.
@@ -968,12 +1055,16 @@ raw_obfuscated() {
     [[ $t =~ $wv ]] && write=1
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
     # or verb): standalone -u*/-i*/--u*/--i*/bare -, declare/typeset +x,
-    # export -n, exec -<opt>, ${! (same set as raw_mention's clear arm).
-    clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n|(^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$)'
+    # export -n, exec -<opt>, ${! (same set as raw_mention's clear arm). The
+    # standalone -u*/-i*/--u*/--i*/bare - token counts only in env position
+    # (env_clear_opt, HIMMEL-3955); a seam NAME= counts as an assignment, not
+    # as a --long-option's value (seam_assigned).
+    clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     [[ $t =~ $clr ]] && write=1
+    env_clear_opt "$t" && write=1
     for v in $ALL_SEAM_VARS; do
         case "$v" in ''|*[!A-Za-z0-9_]*) continue ;; esac
-        [[ $t =~ (^|[^[:alnum:]_])${v}[+]?= ]] && write=1
+        seam_assigned "$t" "$v" && write=1
     done
     [ "$write" = 1 ] || return 0
     deny_text_layer "writes a seam variable beside an obfuscated (glob, brace, ANSI-C or \$var) path under scripts/"
@@ -1065,8 +1156,11 @@ raw_mention() {
             || $t =~ (^|[^[:alnum:]_-])exec[[:space:]]+- \
             || $t == *\$\{!* \
             || $t =~ (^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n \
-            || $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) \
-            || $t =~ (^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$) ]] \
+            || $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) ]] \
+            && deny_text_layer "drops or rewrites the environment (unset of anything, declare +x, exec -c, \${!, export -n, -u/-i/--u*/--i*/bare -) beside a sanctioned chokepoint"
+        # The standalone -u*/-i*/--u*/--i*/bare - token counts only in env
+        # position (HIMMEL-3955): grep -i, sed -i, diff -u, a --id flag do not.
+        env_clear_opt "$t" "$1" \
             && deny_text_layer "drops or rewrites the environment (unset of anything, declare +x, exec -c, \${!, export -n, -u/-i/--u*/--i*/bare -) beside a sanctioned chokepoint"
     done <<<"$REG_LINES"
     return 0
