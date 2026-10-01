@@ -12,7 +12,7 @@
 // path: an upstream Claude Code change making skillOverrides reach plugin skills
 // (then size the fraction on the required set only).
 import { ROLE_REQUIRES } from './role-requires.mjs';
-import { pluginCacheOf, scanCommandTrees } from './skill-cost.mjs';
+import { pluginCacheOf, scanCommandTrees, runtimeNamesOf } from './skill-cost.mjs';
 
 export const DEFAULT_FRACTION = 0.01;
 export const MAX_FRACTION = 0.05;
@@ -58,7 +58,11 @@ const describedTokens = (e, plugin) => Math.ceil((plugin.length + 1 + e.name.len
 
 // entries = scanSkillCosts().entries. Returns {} when the profile requires no
 // plugin (nothing to protect), else { skillOverrides, skillListingBudgetFraction }.
-export function skillListingSettings({ entries, enabledIds, requiredIds, window = WINDOW, configDir }) {
+// runtimeNames (skill-cost's runtimeNamesOf, read from configDir when omitted): the
+// plugin.json name Claude lists a strict:true plugin's skills under, which sets
+// each listing line's length (HIMMEL-4068); the cache DIRECTORY (entry name)
+// still selects the entries.
+export function skillListingSettings({ entries, enabledIds, requiredIds, window = WINDOW, configDir, runtimeNames = configDir === undefined ? undefined : runtimeNamesOf(configDir) }) {
   if (!requiredIds.length) return {};
   const skillOverrides = {};
   let tokens = 0;
@@ -74,7 +78,7 @@ export function skillListingSettings({ entries, enabledIds, requiredIds, window 
     for (const e of entries) {
       if (e.scope !== 'plugin-skills' || pluginCacheOf(e.path)?.plugin !== plugin) continue;
       const key = `${plugin}:${e.name}`;
-      best.set(key, Math.max(best.get(key) ?? 0, describedTokens(e, plugin)));
+      best.set(key, Math.max(best.get(key) ?? 0, describedTokens(e, runtimeNames?.get(id) ?? plugin)));
     }
   }
   for (const t of best.values()) tokens += t;

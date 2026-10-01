@@ -38,7 +38,9 @@ import { createRequire } from 'node:module';
 import { loadRegistry, resolveProfileByName, readEnabledPluginIds, loadListingLib } from './plugin-profiles.mjs';
 import { ledgerPath } from './verify-return.mjs';
 import { ROLE_REQUIRES } from './role-requires.mjs';
-import { scanSkillCosts, pluginCacheOf } from './skill-cost.mjs';
+import { scanSkillCosts, pluginCacheOf, runtimeNamesOf } from './skill-cost.mjs';
+
+export { runtimeNamesOf };
 
 // The SAME interpreter resolution the wired hooks get. On Windows an unresolved
 // shell can be the WSL launcher or a 0-byte WindowsApps alias, so we need the
@@ -85,8 +87,10 @@ export function firstTurnTokens(resultEvent) {
 // init-event schema note in the HIMMEL-2189 discovery probe). Not unique
 // across marketplaces (two catalog entries can share a name), which is fine
 // here: this is a membership check, not an identity check.
-function pluginName(id) {
-  return id.split('@')[0];
+// HIMMEL-4068: `names` (runtimeNamesOf) maps an id to its plugin.json name, which
+// is the real namespace under strict:true; absent = the entry name.
+function pluginName(id, names) {
+  return names?.get(id) ?? id.split('@')[0];
 }
 
 // initEvent.plugins[].source EXACT-diffed against the resolved enabled-true
@@ -105,8 +109,8 @@ export function pluginSourceDiff(initEvent, enabledIds) {
 // (`plugin:<name>:<server>`) whose namespace does not map to an enabled
 // plugin. UN-namespaced entries (no ':', or the un-namespaced user/project
 // tiers) are not this check's concern — they load regardless of profile.
-export function namespaceExtras(initEvent, enabledIds) {
-  const names = new Set(enabledIds.map(pluginName));
+export function namespaceExtras(initEvent, enabledIds, runtimeNames) {
+  const names = new Set(enabledIds.map((id) => pluginName(id, runtimeNames)));
   const extras = [];
   for (const skill of initEvent?.skills ?? []) {
     const m = /^([^:]+):/.exec(skill);
@@ -127,7 +131,7 @@ export function namespaceExtras(initEvent, enabledIds) {
 // resolved set, so "enabled" proves nothing. Each role-required plugin must
 // expose at least one skill, slash command or agent namespaced `<name>:` in the
 // init event. Returns one problem string per plugin that exposes nothing.
-export function roleCoverageProblems(initEvent, requiredIds) {
+export function roleCoverageProblems(initEvent, requiredIds, runtimeNames) {
   const exposed = new Set();
   for (const entry of [...(initEvent?.skills ?? []), ...(initEvent?.slash_commands ?? []), ...(initEvent?.agents ?? [])]) {
     const m = /^([^:]+):/.exec(typeof entry === 'string' ? entry : entry?.name ?? '');
@@ -139,7 +143,7 @@ export function roleCoverageProblems(initEvent, requiredIds) {
     const m = /^plugin:([^:]+):/.exec(srv?.name ?? '');
     if (m) exposed.add(m[1]);
   }
-  return requiredIds.filter((id) => !exposed.has(pluginName(id))).map((id) => `role-required plugin ${id} exposes no skill, command, agent or MCP server (enabled but not loaded)`);
+  return requiredIds.filter((id) => !exposed.has(pluginName(id, runtimeNames))).map((id) => `role-required plugin ${id} exposes no skill, command, agent or MCP server (enabled but not loaded)`);
 }
 
 // HIMMEL-4036: `claude -p /context` replies with an assistant event carrying
@@ -156,14 +160,14 @@ export function isNameOnlySkill(skill) {
   return (skill?.tokens ?? 0) <= Math.ceil(String(skill?.name ?? '').length / 3) + 2;
 }
 
-const pluginSkills = (contextUsage, id) => (contextUsage?.skills ?? []).filter((s) => s.plugin_name === pluginName(id));
+const pluginSkills = (contextUsage, id, names) => (contextUsage?.skills ?? []).filter((s) => s.plugin_name === pluginName(id, names));
 
 // Per required plugin: how many skills reached the listing, how many are
 // name-only, and their summed tokens.
-export function listingReport(contextUsage, requiredIds) {
+export function listingReport(contextUsage, requiredIds, runtimeNames) {
   return requiredIds.map((id) => {
-    const skills = pluginSkills(contextUsage, id);
-    return { plugin: pluginName(id), skills: skills.length, nameOnly: skills.filter(isNameOnlySkill).length, tokens: skills.reduce((a, s) => a + (s.tokens ?? 0), 0) };
+    const skills = pluginSkills(contextUsage, id, runtimeNames);
+    return { plugin: pluginName(id, runtimeNames),skills: skills.length, nameOnly: skills.filter(isNameOnlySkill).length, tokens: skills.reduce((a, s) => a + (s.tokens ?? 0), 0) };
   });
 }
 
@@ -174,18 +178,19 @@ export function listingReport(contextUsage, requiredIds) {
 // skill-cost.mjs's scan, matched by skill name under a `/<plugin>/` path (the
 // plugin cache); chars/4 is the estimate. Feeds HIMMEL-4038's skillOverrides +
 // skillListingBudgetFraction. null when the window size is unknown.
-export function requiredBudget(contextUsage, requiredIds, costEntries) {
+export function requiredBudget(contextUsage, requiredIds, costEntries, runtimeNames) {
   const rawMax = contextUsage?.raw_max_tokens;
   if (!Number.isFinite(rawMax) || rawMax <= 0) return null;
   const listingTokens = (contextUsage.skills ?? []).reduce((a, s) => a + (s.tokens ?? 0), 0);
   let extraTokens = 0;
   let unmatched = 0;
   for (const id of requiredIds) {
-    const plugin = pluginName(id);
-    for (const s of pluginSkills(contextUsage, id).filter(isNameOnlySkill)) {
+    const plugin = pluginName(id, runtimeNames); // the listing namespace
+    const entry = id.split('@')[0]; // the plugin-cache directory
+    for (const s of pluginSkills(contextUsage, id, runtimeNames).filter(isNameOnlySkill)) {
       const bare = s.name.slice(plugin.length + 1);
       // several cached versions of one plugin can match: take the largest
-      const matches = costEntries.filter((e) => e.name === bare && pluginCacheOf(e.path)?.plugin === plugin);
+      const matches = costEntries.filter((e) => e.name === bare && pluginCacheOf(e.path)?.plugin === entry);
       if (!matches.length) unmatched += 1;
       const chars = Math.max(0, ...matches.map((e) => e.chars));
       extraTokens += Math.max(0, Math.ceil((chars + plugin.length + 1) / 4) - s.tokens);
@@ -225,10 +230,11 @@ export function installedVersionsOf(configDir, cwd) {
 // LATEST cached version (an older cached version can carry skills the current one
 // dropped). Matches the plugin-cache directory components (marketplace + plugin),
 // not a path substring (HIMMEL-4060).
-export function expectedSkillNames(costEntries, requiredIds, installedVersions) {
+export function expectedSkillNames(costEntries, requiredIds, installedVersions, runtimeNames) {
   const names = new Set();
   for (const id of requiredIds) {
-    const plugin = pluginName(id);
+    const plugin = id.split('@')[0]; // the plugin-cache directory
+    const ns = pluginName(id, runtimeNames); // the listing namespace
     const marketplace = id.split('@')[1];
     const mine = costEntries.filter((e) => e.scope === 'plugin-skills').map((e) => ({ e, c: pluginCacheOf(e.path) }))
       .filter((x) => x.c?.plugin === plugin && (!marketplace || x.c.marketplace === marketplace));
@@ -237,27 +243,28 @@ export function expectedSkillNames(costEntries, requiredIds, installedVersions) 
     const want = installed?.size
       ? installed
       : new Set([mine.map((x) => x.c.version).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1)]);
-    for (const x of mine) if (want.has(x.c.version)) names.add(`${plugin}:${x.e.name}`);
+    for (const x of mine) if (want.has(x.c.version)) names.add(`${ns}:${x.e.name}`);
   }
   return names;
 }
 
 // expectedSkills (a Set of `<plugin>:<name>` from expectedSkillNames) additionally
 // flags a required skill that never reached the listing at all (HIMMEL-4060).
-export function listingProblems(contextUsage, requiredIds, { skillPlugins, expectedSkills } = {}) {
+export function listingProblems(contextUsage, requiredIds, { skillPlugins, expectedSkills, names: runtimeNames } = {}) {
   if (!requiredIds.length) return [];
   if (!contextUsage) return ['no context_usage in /context output (cannot verify the post-cap skill listing)'];
   const problems = [];
   for (const id of requiredIds) {
-    const skills = pluginSkills(contextUsage, id);
+    const ns = pluginName(id, runtimeNames);
+    const skills = pluginSkills(contextUsage, id, runtimeNames);
     if (!skills.length) {
-      const expectsSkills = [...(expectedSkills ?? [])].some((n) => n.startsWith(`${pluginName(id)}:`));
-      if (!skillPlugins || expectsSkills || skillPlugins.has(pluginName(id))) problems.push(`role-required plugin ${id} is missing from the post-cap skill listing`);
+      const expectsSkills = [...(expectedSkills ?? [])].some((n) => n.startsWith(`${ns}:`));
+      if (!skillPlugins || expectsSkills || skillPlugins.has(ns)) problems.push(`role-required plugin ${id} is missing from the post-cap skill listing`);
     } else {
       const bare = skills.filter(isNameOnlySkill);
       if (bare.length) problems.push(`role-required plugin ${id} has ${bare.length} of ${skills.length} skill(s) name-only in the post-cap listing (descriptions dropped by the listing budget): ${bare.map((s) => s.name).join(', ')}`);
       const listed = new Set(skills.map((s) => s.name));
-      const absent = [...(expectedSkills ?? [])].filter((n) => n.startsWith(`${pluginName(id)}:`) && !listed.has(n));
+      const absent = [...(expectedSkills ?? [])].filter((n) => n.startsWith(`${ns}:`) && !listed.has(n));
       if (absent.length) problems.push(`role-required plugin ${id} has ${absent.length} expected skill(s) absent from the post-cap listing: ${absent.sort().join(', ')}`);
     }
   }
@@ -270,21 +277,21 @@ export function countLoadedSkills(initEvent) {
 
 // The full per-profile verdict: plugin injection correctness + the
 // contextBudget ceiling. Returns { pass, problems } — problems is [] iff pass.
-export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget, contextUsage, expectedSkills }) {
+export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget, contextUsage, expectedSkills, runtimeNames }) {
   const problems = [];
   if (!initEvent) {
     problems.push('no init event in probe output (spawn failure, timeout, or unexpected stream shape)');
     return { pass: false, problems };
   }
-  problems.push(...roleCoverageProblems(initEvent, requiredIds));
+  problems.push(...roleCoverageProblems(initEvent, requiredIds, runtimeNames));
   if (contextUsage !== undefined) {
     const skillPlugins = new Set((initEvent.skills ?? []).map((x) => /^([^:]+):/.exec(x)?.[1]).filter(Boolean));
-    problems.push(...listingProblems(contextUsage, requiredIds, { skillPlugins, expectedSkills }));
+    problems.push(...listingProblems(contextUsage, requiredIds, { skillPlugins, expectedSkills, names: runtimeNames }));
   }
   const { extra, missing } = pluginSourceDiff(initEvent, enabledIds);
   if (extra.length) problems.push(`extra plugin(s) loaded (bloat): ${extra.join(', ')}`);
   if (missing.length) problems.push(`expected plugin(s) did not load: ${missing.join(', ')}`);
-  const nsExtras = namespaceExtras(initEvent, enabledIds);
+  const nsExtras = namespaceExtras(initEvent, enabledIds, runtimeNames);
   if (nsExtras.length) problems.push(`namespaced entries from a disabled/unknown plugin: ${nsExtras.join(', ')}`);
   // An errored turn can still carry a usage block (tokens were spent before the
   // failure), which would otherwise let a crashed/refused claude call PASS on
@@ -502,12 +509,13 @@ function main() {
       }
 
       const requiredIds = ROLE_REQUIRES[name] ?? [];
-      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds, installedVersionsOf(configDir, REPO_ROOT)) });
+      const runtimeNames = runtimeNamesOf(configDir);
+      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds, installedVersionsOf(configDir, REPO_ROOT), runtimeNames), runtimeNames });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
-      const need = requiredBudget(ctxRun.contextUsage, requiredIds, costEntries());
+      const need = requiredBudget(ctxRun.contextUsage, requiredIds, costEntries(), runtimeNames);
       if (need) process.stdout.write(`  budget to fit required set: skillListingBudgetFraction >= ${need.fraction} (listing ${need.listingTokens} tok + ${need.extraTokens} tok of descriptions${need.unmatched ? `; ${need.unmatched} name-only skill(s) not in the skill-cost scan, so this is a lower bound` : ''})\n`);
-      for (const r of listingReport(ctxRun.contextUsage, requiredIds)) process.stdout.write(`  listing ${r.plugin}: ${r.skills} skill(s), ${r.nameOnly} name-only, ${r.tokens} tok\n`);
+      for (const r of listingReport(ctxRun.contextUsage, requiredIds, runtimeNames)) process.stdout.write(`  listing ${r.plugin}: ${r.skills} skill(s), ${r.nameOnly} name-only, ${r.tokens} tok\n`);
       for (const p of problems) process.stdout.write(`  - ${p}\n`);
       appendLedger(name, note, pass ? 0 : 1, ledgerTarget);
       if (!pass) anyFailed = true;

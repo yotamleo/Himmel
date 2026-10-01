@@ -250,6 +250,28 @@ export function pluginCacheOf(path) {
   return null;
 }
 
+// HIMMEL-4068: under strict:true Claude Code namespaces a plugin's skills by the
+// upstream plugin.json `name`, not the marketplace entry name. Map `<entry>@<mkt>`
+// -> that manifest name, for installs whose installPath ships one (read from
+// <configDir>/plugins/installed_plugins.json); an id absent from the map falls
+// back to the id's own name. Empty when the file is unreadable.
+export function runtimeNamesOf(configDir) {
+  const out = new Map();
+  try {
+    const doc = JSON.parse(readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'));
+    for (const [id, installs] of Object.entries(doc.plugins ?? {})) {
+      for (const i of Array.isArray(installs) ? installs : []) {
+        if (typeof i?.installPath !== 'string') continue;
+        try {
+          const name = JSON.parse(readFileSync(join(i.installPath, '.claude-plugin', 'plugin.json'), 'utf8'))?.name;
+          if (typeof name === 'string' && name) { out.set(id, name); break; }
+        } catch { /* no manifest at this install: the entry name applies */ }
+      }
+    }
+  } catch { /* unreadable: every id falls back to its entry name */ }
+  return out;
+}
+
 // HIMMEL-4060: listing entries of skills-dir command trees
 // (`<configDir>/skills/<tree>/commands/*.md`, surfaced as `<tree>:<command>`),
 // which scanSkillCosts does not see. Returns null when <configDir>/skills is
