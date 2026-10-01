@@ -3218,6 +3218,44 @@ check_c44_skill_index() {
     emit OK C44-skill-index "'skills' qmd collection present ($count files)"
 }
 
+# --- C46: enabledPlugins true for a plugin that is not installed (HIMMEL-4037) --
+# The /plugin Errors tab reports "enabled in project settings but isn't
+# installed here" for exactly this. WARN, naming the settings file, so the
+# source is findable. Scopes read: user (+ local) under CLAUDE_DIR and this
+# checkout's project/local files. ponytail: parent-directory .claude/ files
+# above the checkout are not scanned, add them if one ever bites.
+# HIMMEL_DOCTOR_CLAUDE_BIN (test seam, mirrors C44's): the claude executable
+# that answers `plugin list --json`; a missing one is an INFO skip.
+check_c46_plugin_enabled_missing() {
+    local bin="${HIMMEL_DOCTOR_CLAUDE_BIN:-claude}"
+    if [ "$bin" = claude ]; then bin="$(command -v claude 2>/dev/null || true)"; fi
+    if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+        emit INFO C46-plugin-enabled-missing "claude not resolvable -- enabled-but-not-installed plugin scan skipped"
+        return
+    fi
+    command -v jq >/dev/null 2>&1 || { emit INFO C46-plugin-enabled-missing "jq not found -- enabled-but-not-installed plugin scan skipped"; return; }
+    local installed
+    installed="$("$bin" plugin list --json 2>/dev/null | jq -r '.[].id' 2>/dev/null | sort -u)" || installed=""
+    if [ -z "$installed" ]; then
+        emit INFO C46-plugin-enabled-missing "'claude plugin list --json' returned no plugins -- scan skipped"
+        return
+    fi
+    local f id n=0 detail=""
+    for f in "$SETTINGS" "$CLAUDE_DIR_R/settings.local.json" "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/.claude/settings.local.json"; do
+        [ -f "$f" ] || continue
+        while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            printf '%s\n' "$installed" | grep -qxF "$id" && continue
+            n=$((n+1)); detail="$detail $id ($f);"
+        done < <(jq -r '(.enabledPlugins // {}) | to_entries[] | select(.value == true) | .key' "$f" 2>/dev/null)
+    done
+    if [ "$n" -gt 0 ]; then
+        emit WARN C46-plugin-enabled-missing "$n plugin(s) enabled but not installed:$detail" "set them false in the named file (or 'claude plugin install <id>'); /plugin Errors tab reports the same"
+    else
+        emit OK C46-plugin-enabled-missing "every enabledPlugins=true entry is installed"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3266,6 +3304,7 @@ check_c42_sweep_health
 check_c43_rtk_bare_hook
 check_c44_skill_index
 check_c45_qmd_daemon  # t13b-ok: doctor row that reads ps only, starts nothing
+check_c46_plugin_enabled_missing
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
