@@ -188,6 +188,15 @@ for pair in "-p" "--output-format json" "--permission-mode plan" "--max-turns 1"
         *) fail "claude route: expected '$pair' in claude argv, got: $argv_joined" ;;
     esac
 done
+# HIMMEL-4013: the critic runs under the `bare` plugin profile (--settings <file>),
+# not the operator's full plugin set. The file must exist and enable no plugin
+# beyond the floor (no pr-review-toolkit-himmel).
+settings_file="$(awk 'p==1{ print; exit } /^--settings$/{ p=1 }' "$work/claude-argv")"
+# shellcheck disable=SC2015  # fail exits; A && B || C is the intended guard
+[ -n "$settings_file" ] && [ -f "$settings_file" ] \
+    || fail "claude route: --settings <profile file> missing or unreadable (got '$settings_file')"
+node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).enabledPlugins||{}; process.exit(p["pr-review-toolkit-himmel@himmel"]===true?1:0)' "$settings_file" \
+    || fail "claude route: the critic profile enables the review toolkit, or its settings do not parse (not the bare profile)"
 # --tools must be present AND its value empty (the whole built-in toolset off).
 # Checked on the raw one-arg-per-line capture, since an empty arg vanishes in
 # the joined form.

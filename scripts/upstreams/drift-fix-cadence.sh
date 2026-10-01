@@ -421,6 +421,7 @@ emit_bat() {
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_esc" "$log_esc" "$log_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$root_esc" "$log_esc"
+    # launch-profile-ok: HIMMEL-4013 audited, NOT folded: this Windows .bat runs the drift-fix/fork-resync runbooks, which need the himmel + pr-review plugin skills the operator's default set carries; a named profile for it is follow-up work, and the .bat cannot call plugin-profiles.mjs at arm time
     printf 'call "%s" --model "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_esc" "$model_esc" "$prompt_esc" "$log_esc"
     printf 'echo [exit rc=%%ERRORLEVEL%%] >> "%s"\r\n' "$log_esc"
     printf 'exit /b %%ERRORLEVEL%%\r\n'

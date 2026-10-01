@@ -485,6 +485,8 @@ assert_not_contains "T12: no DOUBLE-ARM warning on a clean arm" "DOUBLE-ARM DETE
 FAKE="$TMP/no-ql"
 mkdir -p "$FAKE/handover" "$FAKE/lib"
 cp "$SCRIPT_DIR/arm-resume.sh" "$FAKE/handover/arm-resume.sh"
+# HIMMEL-4013: arm-resume resolves its plugin profile through ../lanes (fail-closed).
+cp -R "$SCRIPT_DIR/../lanes" "$FAKE/lanes"
 for lib in console-context py-armor handover-path telemetry macos-app-resolve chokepoint-seam-guard; do
     cp "$SCRIPT_DIR/../lib/$lib.sh" "$FAKE/lib/$lib.sh"
 done

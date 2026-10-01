@@ -381,6 +381,7 @@ JSON_SCHEMA=""
 if [ -n "$JSON_SCHEMA_FILE" ]; then JSON_SCHEMA="$(cat "$JSON_SCHEMA_FILE")"; fi
 
 CLAUDE_BIN="${HIMMEL_CLAUDE_BIN:-claude}"
+# launch-profile-ok: profile-agnostic chokepoint; its callers own the plugin-profile choice (HIMMEL-4013)
 CMD=("$CLAUDE_BIN" -p --output-format json --permission-mode "$PERMISSION_MODE" --max-turns "$MAX_TURNS")
 [ -z "$MODEL" ] || CMD+=(--model "$MODEL")
 [ -z "$ALLOWED_TOOLS" ] || CMD+=(--allowedTools "$ALLOWED_TOOLS")

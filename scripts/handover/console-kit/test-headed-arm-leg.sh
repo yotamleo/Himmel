@@ -516,6 +516,23 @@ not_contains "dry-run --profile leg-impl: no operator-ruling context" "$out" "op
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run --profile leg-impl + LEG_CONTEXT=1m: still refused" "$rc" "2"
 
+# --- HIMMEL-4013 role-to-profile rule: a brief `profile:` line selects the
+# profile when no --profile / LEG_PROFILE is given; the flag overrides it; a
+# brief with no field still hits the unprofiled-launch refusal.
+rule_doc="$tmp/rule-brief-design.md"
+printf '%s\n' '# fixture brief' '> profile: design' > "$rule_doc"
+rc=0; out="$(LEG_PROFILE='' LEG_CONTEXT='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$rule_doc" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "brief profile: design line selects design: exit 0" "$rc" "0"
+contains "brief profile: design line selects design (1m operator-ruling)" "$out" "context=1m (operator-ruling)"
+rc=0; out="$(LEG_PROFILE='' LEG_CONTEXT='' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$rule_doc" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "explicit --profile overrides the brief line: exit 0" "$rc" "0"
+not_contains "explicit --profile leg-impl overrides the brief's design" "$out" "operator-ruling"
+rule_doc2="$tmp/rule-brief-none.md"
+printf '%s\n' '# fixture brief' 'no profile field here' > "$rule_doc2"
+rc=0; out="$(LEG_PROFILE='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$rule_doc2" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "brief with no profile field still refused" "$rc" "2"
+contains "brief with no profile field: refusal text" "$out" "refusing an unprofiled launch"
+
 # --- 6b (HIMMEL-2975). --relay: forces the console-relay profile + the
 # HIMMEL_CONSOLE_RELAY env marker Guard C (inbox-send.sh) and the Task 26
 # write-deny hook key off. No value; defaults MODEL to claude-sonnet-5-5 when

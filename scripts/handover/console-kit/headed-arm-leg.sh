@@ -442,6 +442,16 @@ fi
 
 NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-}"
 
+# HIMMEL-4013 role-to-profile rule: a `profile: <name>` line in the brief's first
+# 60 lines selects the leg's profile when neither --profile nor LEG_PROFILE did
+# (an explicit flag/env is the override and always wins; --no-profile opts out
+# and is left alone). Only the explicit field is honoured here - inferring a
+# profile from the doc would silently end the unprofiled-launch refusal below.
+if [ -z "$PROFILE" ] && [ "$NO_PROFILE" -eq 0 ] && [ -f "$DOC" ]; then
+    # shellcheck disable=SC2016  # backticks in the sed regex are literal
+    PROFILE="$(head -n 60 "$DOC" | sed -n -E 's/^[>* -]*profile:[[:space:]]*`?([A-Za-z0-9._-]+)`?[[:space:]]*$/\1/p' | head -n 1)"
+fi
+
 # HIMMEL-3267: same stance as the Tier-line refusal below - this wrapper
 # refuses an under-specified dispatch rather than launching it. No profile and
 # no explicit --no-profile would launch a leg with no standing preface and no

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 1 (HIMMEL-2179): does resuming a session in -p mode and sending
 # "/compact" actually compact? Verify by ARTIFACT: find the session JSONL and look for a
 # `system` message with subtype "compact_boundary" (compact_metadata.pre_tokens,

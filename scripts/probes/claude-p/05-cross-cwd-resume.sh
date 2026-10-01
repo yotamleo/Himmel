@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 5 (HIMMEL-2179): start a session in the worktree, then --resume it
 # from a different cwd ($TEMP). CLI is 2.1.250; docs claim cross-directory
 # resume since 2.1.223. Verify by ARTIFACT: does the resumed call actually

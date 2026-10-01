@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 1b (HIMMEL-2179, RETASK RTK-2179-8f3a1c): the SDK docs show /compact
 # dispatched with --continue (same cwd, no session id), not --resume. Does
 # --continue expand slash commands where --resume (probe 1) did not? Verify

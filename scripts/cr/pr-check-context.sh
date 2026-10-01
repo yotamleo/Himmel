@@ -801,7 +801,7 @@ scripts/telegram/log-timestamp.ts scripts/telegram/gate.ts scripts/telegram/run.
 scripts/telegram/triage.ts scripts/telegram/transcribe.ts scripts/telegram/spawn-glm.ts
 scripts/telegram/glm-env.ts scripts/telegram/grants.ts scripts/telegram/huge-diff-guard.ts
 scripts/telegram/lane-args.ts scripts/telegram/phi-egress-guard.ts scripts/telegram/round-guard.ts
-scripts/lanes/plugin-profiles.mjs scripts/lanes/leg-pr-open.sh scripts/lanes/leg-burn.sh scripts/lanes/lib/burn-weights.sh"
+scripts/lanes/plugin-profiles.mjs scripts/lanes/profile-settings.sh scripts/lanes/leg-pr-open.sh scripts/lanes/leg-burn.sh scripts/lanes/lib/burn-weights.sh"
 cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails/lib.sh' ':(top)scripts/check-ci.sh'
     ':(top)scripts/handover/resolve-active-item.sh'
     ':(top)scripts/handover/resolve-active-item-report.sh'
@@ -829,7 +829,7 @@ cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails
     ':(top)scripts/telegram/glm-env.ts' ':(top)scripts/telegram/grants.ts'
     ':(top)scripts/telegram/huge-diff-guard.ts' ':(top)scripts/telegram/lane-args.ts'
     ':(top)scripts/telegram/phi-egress-guard.ts' ':(top)scripts/telegram/round-guard.ts'
-    ':(top)scripts/lanes/plugin-profiles.mjs'
+    ':(top)scripts/lanes/plugin-profiles.mjs' ':(top)scripts/lanes/profile-settings.sh'
     ':(top)scripts/lanes/leg-pr-open.sh' ':(top)scripts/lanes/leg-burn.sh' ':(top)scripts/lanes/lib/burn-weights.sh'
     ':(top,exclude,glob)scripts/**/__pycache__/**')
 cr_manifest() { # cr_manifest <root> - "<mode> <blob-id> <path>" per guarded file, sorted

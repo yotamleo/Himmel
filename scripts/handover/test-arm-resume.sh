@@ -1563,6 +1563,9 @@ mkdir -p "$FAILOPEN/handover" "$FAILOPEN/lib"
 # wholesale means the next fail-closed sibling does not repeat this.
 cp "$(dirname "$ARM")"/*.sh "$FAILOPEN/handover/" 2>/dev/null || true
 cp "$(dirname "$ARM")/../lib"/*.sh "$FAILOPEN/lib/" 2>/dev/null || true
+# HIMMEL-4013: arm-resume resolves its plugin profile through ../lanes (fail-closed).
+mkdir -p "$FAILOPEN/lanes"
+cp "$(dirname "$ARM")/../lanes"/* "$FAILOPEN/lanes/" 2>/dev/null || true
 # telemetry.sh is the SUBJECT of this test — it must be the only thing missing.
 rm -f "$FAILOPEN/lib/telemetry.sh"
 # (a) lib ABSENT — dedup must still block rc 3 with the ERR text intact.
@@ -1603,7 +1606,7 @@ assert_not_contains "T24 broken lib: the parse error is not leaked to the operat
 FAILOPEN_NEG="$TMP/failopen-neg"
 rm -rf "$FAILOPEN_NEG"
 mkdir -p "$FAILOPEN_NEG"
-cp -R "$FAILOPEN/handover" "$FAILOPEN/lib" "$FAILOPEN_NEG/"
+cp -R "$FAILOPEN/handover" "$FAILOPEN/lib" "$FAILOPEN/lanes" "$FAILOPEN_NEG/"
 sed -e '\#bash -n .*lib/telemetry\.sh#d' -e '\#lib/telemetry\.sh#s# 2>/dev/null || true##' "$FAILOPEN/handover/arm-resume.sh" \
     > "$FAILOPEN_NEG/handover/arm-resume.sh"
 # A no-op sed would make this control vacuous — the exact class of bug the
