@@ -274,6 +274,7 @@ mog_build_fixture() {
         # points at a distinct anchor tree; asserting only the exit code is
         # weaker and can pass vacuously (a fixture where the two trees agree
         # would look identical either way).
+        # shellcheck disable=SC2016 # the stub's own ${MERGE_WATCH_POST_GO} must stay literal here
         printf '#!/usr/bin/env bash\n: > "%s/scripts/check-ci.ran"\nprintf "%%s" "${MERGE_WATCH_POST_GO:-}" > "%s/scripts/check-ci.postgo"\nexit %s\n' "$tmp" "$tmp" "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
         chmod +x "$tmp/scripts/check-ci.sh"
     fi
