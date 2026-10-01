@@ -3045,6 +3045,21 @@ h41="$tmp/home41-remote"; rm -rf "$h41"; mkdir -p "$h41/.claude"
 printf '%s' "$wj41" > "$h41/.claude/remote-settings.json"
 rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41i a remote-settings.json carrying additionalDirectories refuses (exit 2)" "$rc" "2"
+# Allowlist scan: an Edit allow rule, excludedCommands, allowUnixSockets and any unknown
+# sandbox key refuse; the safe set (enabled/failIfUnavailable true) passes.
+for kv41 in 'Edit allow|{"permissions":{"allow":["Edit(//x/**)"]}}|permissions.allow rule Edit' 'excludedCommands|{"sandbox":{"excludedCommands":["python3"]}}|sandbox.excludedCommands' 'allowUnixSockets|{"sandbox":{"network":{"allowUnixSockets":["/var/run/docker.sock"]}}}|sandbox.network.allowUnixSockets' 'unknown sandbox key|{"sandbox":{"someFutureKey":1}}|sandbox.someFutureKey' 'sandbox disabled|{"sandbox":{"enabled":false}}|sandbox.enabled'; do
+  n41="${kv41%%|*}"; r41="${kv41#*|}"; j41="${r41%%|*}"; w41="${r41#*|}"
+  h41="$tmp/home41-allow"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+  printf '%s' "$j41" > "$h41/.claude/settings.json"
+  rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i allowlist: $n41 refuses (exit 2)" "$rc" "2"
+  contains "41i allowlist: $n41 refusal names the key" "$out" "$w41"
+  contains "41i allowlist: $n41 refusal names the file" "$out" "$h41/.claude/settings.json"
+done
+h41="$tmp/home41-safe"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+printf '%s' '{"sandbox":{"enabled":true,"failIfUnavailable":true},"permissions":{"allow":["Bash(ls:*)"]}}' > "$h41/.claude/settings.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i allowlist: the safe set passes (exit 0)" "$rc" "0"
 g41="$tmp/g41"; rm -rf "$g41"; mkdir -p "$g41/sub" "$g41/.claude"
 git -C "$g41" init -q
 printf '%s' "$wj41" > "$g41/.claude/settings.local.json"

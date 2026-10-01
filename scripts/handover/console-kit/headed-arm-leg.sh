@@ -1338,7 +1338,11 @@ if [ -n "$PROFILE" ]; then
         # managed-settings.d/*.json drop-in. CONSULT_SETTINGS_HOME / CONSULT_MANAGED_SETTINGS are
         # test seams that are honoured in production too.
         _cs_home="${CONSULT_SETTINGS_HOME:-$HOME}"
-        _cs_managed="${CONSULT_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"
+        _CS_SAFE_SANDBOX='["sandbox.enabled","sandbox.failIfUnavailable"]'
+        case "$(uname -s)" in
+            Darwin) _cs_managed="${CONSULT_MANAGED_SETTINGS:-/Library/Application Support/ClaudeCode/managed-settings.json}" ;;
+            *) _cs_managed="${CONSULT_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}" ;;
+        esac
         _cs_roots="$CONSULT_REPO_CANON"
         # shellcheck source=scripts/lib/git-clean.sh
         . "$HERE/../../lib/git-clean.sh"
@@ -1368,25 +1372,31 @@ $_cs_roots
 EOF_CS_ROOTS
         while IFS= read -r _cs_f; do
             [ -f "$_cs_f" ] || continue
-            for _cs_k in sandbox.filesystem.allowWrite sandbox.network.allowedDomains permissions.additionalDirectories; do
-                # Fail closed: an existing scope file jq cannot read (malformed, JSONC, a
-                # non-object intermediate) cannot be shown not to widen the sandbox.
-                if ! _cs_n="$(jq -r --arg k "$_cs_k" 'getpath($k | split(".")) | if type == "array" then length else 0 end' "$_cs_f" 2>/dev/null)"; then
-                    echo "headed-arm-leg: --consult: cannot parse $_cs_f, so it cannot be shown not to widen the sandbox: fix or remove it" >&2
-                    exit 2
-                fi
-                case "$_cs_n" in
-                    ''|0) ;;
-                    *)
-                        echo "headed-arm-leg: --consult: $_cs_f sets $_cs_k, which merges into the consult's sandbox and would widen it: remove it (or launch the consult from a context that does not load it). additionalDirectories becomes a sandbox write root and no confinement is proven yet: HIMMEL-4069" >&2
-                        exit 2
-                        ;;
-                esac
-            done
+            # ALLOWLIST: refuse (a) any Edit/Write/NotebookEdit permissions.allow rule (merged into
+            # the sandbox write roots), (b) non-empty permissions.additionalDirectories, (c) any
+            # sandbox.* leaf outside _CS_SAFE_SANDBOX set to true. An unknown sandbox key refuses.
+            # Fail closed: an existing scope file jq cannot read (malformed, JSONC, a
+            # non-object intermediate) cannot be shown not to widen the sandbox.
+            if ! _cs_n="$(jq -r --argjson safe "$_CS_SAFE_SANDBOX" '
+                first(
+                  ((.permissions.allow // [])[] | select(type == "string" and test("^(Edit|Write|NotebookEdit)(\\(|$)")) | "permissions.allow rule " + .),
+                   (if ((.permissions.additionalDirectories // []) | length) > 0 then "permissions.additionalDirectories" else empty end),
+                   ((.sandbox // {}) as $sb | $sb | paths(type != "object") as $p
+                    | ($p | map(tostring) | join(".")) as $j
+                    | select(($safe | index("sandbox." + $j)) == null or ($sb | getpath($p)) != true)
+                    | "sandbox." + $j)
+                ) // empty' "$_cs_f" 2>/dev/null)"; then
+                echo "headed-arm-leg: --consult: cannot parse $_cs_f, so it cannot be shown not to widen the sandbox: fix or remove it" >&2
+                exit 2
+            fi
+            if [ -n "$_cs_n" ]; then
+                echo "headed-arm-leg: --consult: $_cs_f carries $_cs_n, which merges into the consult's sandbox and would widen it: remove or scope it (or launch the consult from a context that does not load it). A user scope with Edit allows cannot run consults until they are scoped; additionalDirectories becomes a sandbox write root and no confinement is proven yet: HIMMEL-4069" >&2
+                exit 2
+            fi
         done <<EOF_CS_FILES
 $_cs_files
 EOF_CS_FILES
-        unset -v _cs_f _cs_k _cs_n _cs_d _cs_r _cs_roots _cs_top _cs_gc _cs_files _cs_home _cs_managed
+        unset -v _cs_f _CS_SAFE_SANDBOX _cs_n _cs_d _cs_r _cs_roots _cs_top _cs_gc _cs_files _cs_home _cs_managed
         if [ -L "$DOC" ]; then
             echo "headed-arm-leg: --consult: the consult doc must not be a symlink ($DOC): the sandbox binds the resolved file" >&2
             exit 2
