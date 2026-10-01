@@ -394,7 +394,7 @@
         "url": "https://github.com/anthropics/skills.git",
         "sha": "8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4"
       },
-      "description": "[anthropics/skills, Apache-2.0 per skill LICENSE.txt, vendor + attribution only, no carried delta] anthropics/skills: the whole upstream skills/ dir loads (a marketplace skills list cannot subset it, HIMMEL-4068), including the source-available docx/pdf/pptx/xlsx; the design ones are theme-factory, brand-guidelines, canvas-design. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 8a1541c4a3ff per himmel supply-chain policy (HIMMEL-3069). Design kit, design-reference profile (HIMMEL-4012).",
+      "description": "[anthropics/skills, mixed per skill LICENSE.txt: Apache-2.0 for the design skills, source-available for docx/pdf/pptx/xlsx, vendor + attribution only, no carried delta] anthropics/skills: the whole upstream skills/ dir loads (a marketplace skills list cannot subset it, HIMMEL-4068), including the source-available docx/pdf/pptx/xlsx; the design ones are theme-factory, brand-guidelines, canvas-design. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 8a1541c4a3ff per himmel supply-chain policy (HIMMEL-3069). Design kit, design-reference profile (HIMMEL-4012).",
       "strict": false,
       "author": {
         "name": "anthropics",
