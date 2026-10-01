@@ -263,11 +263,11 @@ do_arm() {
     # explicitly with LEG_REPO=<project> (headed-arm-leg.sh), never by the
     # console inheriting a repo override.
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
-        bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
+        bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
-        setsid nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        setsid nohup bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     else
-        nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        nohup bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     fi
     echo "armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
     echo "arm-log: $log"
@@ -993,7 +993,8 @@ cmd_new() {
         if [ -n "$project_dir" ]; then
             echo "would-project: $project_dir"
         fi
-        echo "would-launch: $(launch_cmd "$session" "$doc")"
+        launch_line=$(launch_cmd "$session" "$doc") || exit $?
+        echo "would-launch: $launch_line"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -1094,7 +1095,8 @@ cmd_new() {
 
     printf '%s\n' "$lock_out"
 
-    echo "launch: $(launch_cmd "$session" "$doc")"
+    launch_line=$(launch_cmd "$session" "$doc") || exit $?
+    echo "launch: $launch_line"
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"
@@ -1275,7 +1277,8 @@ cmd_next() {
         if [ -n "$project_dir" ]; then
             echo "would-project: $project_dir"
         fi
-        echo "would-launch: $(launch_cmd "$session" "$doc")"
+        launch_line=$(launch_cmd "$session" "$doc") || exit $?
+        echo "would-launch: $launch_line"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -1370,9 +1373,12 @@ cmd_next() {
             exit 1
         fi
     fi
+    # HIMMEL-4052: resolved BEFORE the cleanup trap is cleared, so a profile
+    # refusal (exit 2) removes the claimed successor doc and a retry is not
+    # blocked by "successor doc already exists".
+    launch_line=$(launch_cmd "$session" "$doc") || exit $?
     trap - EXIT
-
-    echo "launch: $(launch_cmd "$session" "$doc")"
+    echo "launch: $launch_line"
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"

@@ -2122,4 +2122,15 @@ rec42b="$(cat "$d42b/record" 2>/dev/null || true)"
 check "42b macOS + RECORDER=1 + explicit KONSOLE_CMD: exit 0, not the refusal" "$rc42b" "0"
 contains "42b explicit KONSOLE_CMD: the util-linux script(1) wrapper still reaches the argv" "$rec42b" "script -q -a -f $d42b/log -c"
 
+# --- 43 (HIMMEL-4052): a headless console arm keeps the console profile. The
+# HEADED_ARM_HEADLESS=1 argv rebuild used to drop --settings (HIMMEL-4013).
+d43="$tmp/c43"; mkdir -p "$d43"
+rc43=0
+out43=$(HEADED_ARM_HEADLESS=1 LEG_PROFILE_SETTINGS=/dev/null HEADED_ARM_CLAUDE_CLI=true \
+  KONSOLE_CMD="$d43/konsole" PGREP_CMD=true HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43/locks" HEADED_ARM_PROC="$d43/proc" \
+  bash "$SCRIPT" --dry-run --role console "HIMMEL-hl43" "doc43.md" "$d43/signal-never" "$PAST" "$d43/log" 2>&1) || rc43=$?
+check "43 headless console --dry-run: exit 0" "$rc43" "0"
+contains "43 headless console: argv is the background launch" "$out43" "--bg"
+contains "43 headless console: argv keeps the console --settings (HIMMEL-4052)" "$out43" "--settings"
+
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
