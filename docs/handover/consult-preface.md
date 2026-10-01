@@ -36,7 +36,18 @@ call `AskUserQuestion`** (it parks you and blocks your inbox) and **never call
 **A partial sandbox, not a guarantee.** The envelope removes the file-edit
 tools, and Bash runs in Claude Code's sandbox: writes go to your consult doc
 file plus Claude Code's own temp dirs, the repo is write-denied, and the network
-follows the merged settings (a user or project scope can widen it, HIMMEL-4066).
+follows the merged settings (a user or project scope can widen it, HIMMEL-4066), so
+arming refuses a consult while any settings scope carries an Edit/Write/NotebookEdit
+allow rule, a non-empty permissions.additionalDirectories, or any sandbox key outside
+a small safe set (an unknown key refuses; HIMMEL-4069). A station whose user scope
+carries Edit allows cannot run consults until they are scoped.
+The consult's own settings pin `permissions.defaultMode` to `auto` (the
+classifier-gated mode this preface describes; never `bypassPermissions` or
+`acceptEdits`) and `env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` to `0` (scrub mode adds
+broad sandbox write roots), so a user, project or local value of either cannot
+reach it. A managed scope outranks those pins, so arming refuses a managed scope
+that turns scrub on, sets `bypassPermissions` or `acceptEdits`, or carries a
+`policyHelper`/`policyHelpers`; it also refuses a truthy scrub in `~/.claude.json`.
 Reads stay open, and every Bash call is still gated by the auto-mode classifier and
 this preface (the sandbox is added to the classifier, not a replacement for it).
 Do not use Bash to write, move or delete anything, and do not run anything with

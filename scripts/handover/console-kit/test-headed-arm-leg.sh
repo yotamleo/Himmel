@@ -2848,6 +2848,10 @@ done
 # must not depend on the CI runner having them, so case 41 points the preflight
 # at `true` (the 41h cases below point it at a missing binary to prove the refusal).
 export CONSULT_BWRAP_BIN=true CONSULT_SOCAT_BIN=true
+# HIMMEL-4066: the consult arm-time scope check reads user/managed settings; keep the
+# suite off the operator's live files (the 41i cases point these at fixtures).
+mkdir -p "$tmp/home41"
+export CONSULT_SETTINGS_HOME="$tmp/home41" CONSULT_MANAGED_SETTINGS="$tmp/home41/managed-none.json"
 # --- 41. HIMMEL-4014: composable --profile lists + the read-only --consult mode --
 # (a) a comma list resolves to the UNION of its members' plugin sets; (b) --consult
 # launches a plugin-scoped session whose settings deny the file-edit tools, carry
@@ -2922,6 +2926,11 @@ check "41h consult sandbox fails closed when unavailable" "$(printf '%s' "$cset4
 check "41h consult sandbox has no unsandboxed retry" "$(printf '%s' "$cset41" | jq -r '.sandbox.allowUnsandboxedCommands' 2>/dev/null)" "false"
 check "41h consult sandbox does NOT auto-allow Bash (classifier still gates)" "$(printf '%s' "$cset41" | jq -r '.sandbox.autoAllowBashIfSandboxed' 2>/dev/null)" "false"
 check "41h consult sandbox allowWrite is exactly the consult doc FILE" "$(printf '%s' "$cset41" | jq -c '.sandbox.filesystem.allowWrite' 2>/dev/null)" "[\"$some_doc_canon41\"]"
+# HIMMEL-4066 round 6: the consult's own settings PIN env scrub off and defaultMode to auto
+# (the classifier-gated mode the preface describes), so a user/local scrub=1 or
+# bypassPermissions cannot reach it; flag scope outranks user/project/local.
+check "41j consult settings pin CLAUDE_CODE_SUBPROCESS_ENV_SCRUB to 0" "$(printf '%s' "$cset41" | jq -r '.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB' 2>/dev/null)" "0"
+check "41j consult settings pin permissions.defaultMode to auto" "$(printf '%s' "$cset41" | jq -r '.permissions.defaultMode' 2>/dev/null)" "auto"
 check "41h consult sandbox denyWrite is the repo" "$(printf '%s' "$cset41" | jq -c '.sandbox.filesystem.denyWrite' 2>/dev/null)" "[\"$(cd -P "$tmp/repo41c" && pwd -P)\"]"
 d41n="$tmp/c41n"; mk_launch_stubs "$d41n" "HIMMEL-4061-n"
 RUN_LEG_ARGS="--profile design-motion" run_leg "$d41n" "$tmp/repo41c" "HIMMEL-4061-n" "claude-sonnet-5-5" >/dev/null 2>&1 || true
@@ -2980,7 +2989,13 @@ done
 rc=0; out="$(LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --lane claudex --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41g --consult --lane claudex refuses (exit 2)" "$rc" "2"
 rc=0; out="$(bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
-check "41g derived repo inside .claude/worktrees refuses (this checkout is one)" "$rc" "$(case "$HERE" in */.claude/worktrees/*) echo 2 ;; *) echo 0 ;; esac)"
+# A worktree checkout refuses on the worktree rule; any checkout whose committed settings
+# carry additionalDirectories (himmel's do, HIMMEL-4069) refuses on the scope-merge rule.
+exp41g=0; want41g=""
+case "$HERE" in */.claude/worktrees/*) exp41g=2; want41g=".claude/worktrees" ;; esac
+if [ "$exp41g" = 0 ] && [ "$(jq -r '(.permissions.additionalDirectories // []) | length' "$HERE/../../../.claude/settings.json" 2>/dev/null)" -gt 0 ] 2>/dev/null; then exp41g=2; want41g="HIMMEL-4069"; fi
+check "41g derived repo refuses (worktree, or committed settings widen the sandbox)" "$rc" "$exp41g"
+[ -z "$want41g" ] || contains "41g derived repo refusal names its cause" "$out" "$want41g"
 mkdir -p "$tmp/real41/.claude/worktrees/feat+y"; ln -s "$tmp/real41/.claude/worktrees/feat+y" "$tmp/link41"
 rc=0; out="$(LEG_REPO="$tmp/link41" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41g a symlink into a worktree refuses (exit 2)" "$rc" "2"
@@ -2988,6 +3003,133 @@ rc=0; out="$(LEG_REPO="$tmp/real41/.claude/worktrees/../worktrees/feat+y/." bash
 check "41g a dot-dot path into a worktree refuses (exit 2)" "$rc" "2"
 rc=0; out="$(LEG_REPO="$tmp/nonexistent41" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41g an unresolvable repo fails closed (exit 2)" "$rc" "2"
+
+# HIMMEL-4066 (a): a consult doc INSIDE the repo is always write-denied (the repo is in
+# denyWrite), so arm time refuses it instead of launching a window that cannot answer.
+mkdir -p "$tmp/repo41c/docs"; : > "$tmp/repo41c/docs/in-repo-consult.md"
+rc=0; out="$(LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-a "$tmp/repo41c/docs/in-repo-consult.md" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a consult doc inside the repo refuses (exit 2)" "$rc" "2"
+contains "41i in-repo refusal says why" "$out" "inside the repo"
+rc=0; out="$(LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-a "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a consult doc outside the repo still passes (exit 0)" "$rc" "0"
+# (b) the ponytail text no longer claims one writable file.
+check "41i ponytail no longer says 'one writable file'" "$(grep -c 'one writable file' "$SCRIPT")" "0"
+# (c) outer settings scopes widen the consult's arrays (allowWrite, network allowedDomains): refuse.
+for sc41 in user project local managed; do
+  for kv41 in 'sandbox.filesystem.allowWrite|{"sandbox":{"filesystem":{"allowWrite":["/x"]}}}' 'sandbox.network.allowedDomains|{"sandbox":{"network":{"allowedDomains":["example.com"]}}}' 'permissions.additionalDirectories|{"permissions":{"additionalDirectories":["~/Documents/luna"]}}'; do
+    k41="${kv41%%|*}"; j41="${kv41#*|}"
+    h41="$tmp/home41-$sc41"; rm -rf "$h41"; mkdir -p "$h41/.claude" "$tmp/repo41c/.claude"; rm -f "$tmp/repo41c/.claude/settings.json" "$tmp/repo41c/.claude/settings.local.json"
+    cm41="$h41/managed-none.json"
+    case "$sc41" in
+      user) printf '%s' "$j41" > "$h41/.claude/settings.json" ;;
+      project) printf '%s' "$j41" > "$tmp/repo41c/.claude/settings.json" ;;
+      local) printf '%s' "$j41" > "$tmp/repo41c/.claude/settings.local.json" ;;
+      managed) printf '%s' "$j41" > "$h41/managed.json"; cm41="$h41/managed.json" ;;
+    esac
+    rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$cm41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+    check "41i $sc41 scope carrying $k41 refuses (exit 2)" "$rc" "2"
+    contains "41i $sc41/$k41 refusal names the key" "$out" "$k41"
+    case "$k41" in permissions.additionalDirectories) contains "41i $sc41/$k41 refusal names HIMMEL-4069" "$out" "HIMMEL-4069" ;; esac
+  done
+done
+h41="$tmp/home41-ad"; rm -rf "$h41"; mkdir -p "$h41/.claude" "$tmp/repo41c/.claude"; rm -f "$tmp/repo41c/.claude/settings.json" "$tmp/repo41c/.claude/settings.local.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a clean consult (no outer-scope widening) passes (exit 0)" "$rc" "0"
+# A malformed outer settings file fails closed: refuse, naming the file.
+printf '%s' 'not json' > "$h41/.claude/settings.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a malformed outer settings file refuses (exit 2)" "$rc" "2"
+contains "41i malformed refusal names the file" "$out" "$h41/.claude/settings.json"
+# Managed drop-ins, the cached server policy, and local settings at the git root / main checkout.
+wj41='{"permissions":{"additionalDirectories":["/x"]}}'
+h41="$tmp/home41-dropin"; rm -rf "$h41"; mkdir -p "$h41/.claude" "$h41/managed-settings.d"
+printf '%s' "$wj41" > "$h41/managed-settings.d/50-x.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a managed-settings.d drop-in carrying additionalDirectories refuses (exit 2)" "$rc" "2"
+h41="$tmp/home41-remote"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+printf '%s' "$wj41" > "$h41/.claude/remote-settings.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a remote-settings.json carrying additionalDirectories refuses (exit 2)" "$rc" "2"
+# Allowlist scan: an Edit allow rule, excludedCommands, allowUnixSockets and any unknown
+# sandbox key refuse; the safe set (enabled/failIfUnavailable true) passes.
+for kv41 in 'Edit allow|{"permissions":{"allow":["Edit(//x/**)"]}}|permissions.allow rule Edit' 'excludedCommands|{"sandbox":{"excludedCommands":["python3"]}}|sandbox.excludedCommands' 'allowUnixSockets|{"sandbox":{"network":{"allowUnixSockets":["/var/run/docker.sock"]}}}|sandbox.network.allowUnixSockets' 'unknown sandbox key|{"sandbox":{"someFutureKey":1}}|sandbox.someFutureKey' 'sandbox disabled|{"sandbox":{"enabled":false}}|sandbox.enabled'; do
+  n41="${kv41%%|*}"; r41="${kv41#*|}"; j41="${r41%%|*}"; w41="${r41#*|}"
+  h41="$tmp/home41-allow"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+  printf '%s' "$j41" > "$h41/.claude/settings.json"
+  rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i allowlist: $n41 refuses (exit 2)" "$rc" "2"
+  contains "41i allowlist: $n41 refusal names the key" "$out" "$w41"
+  contains "41i allowlist: $n41 refusal names the file" "$out" "$h41/.claude/settings.json"
+done
+h41="$tmp/home41-safe"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+printf '%s' '{"sandbox":{"enabled":true,"failIfUnavailable":true},"permissions":{"allow":["Bash(ls:*)"]}}' > "$h41/.claude/settings.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i allowlist: the safe set passes (exit 0)" "$rc" "0"
+g41="$tmp/g41"; rm -rf "$g41"; mkdir -p "$g41/sub" "$g41/.claude"
+git -C "$g41" init -q
+printf '%s' "$wj41" > "$g41/.claude/settings.local.json"
+h41="$tmp/home41-git"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$g41/sub" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i local settings at the git toplevel (LEG_REPO a subdir) refuse (exit 2)" "$rc" "2"
+# A custom CLAUDE_CONFIG_DIR is a user scope too (codex-1 round 2).
+cfg41="$tmp/cfg41"; rm -rf "$cfg41"; mkdir -p "$cfg41"
+printf '%s' '{"sandbox":{"filesystem":{"allowWrite":["/x"]}}}' > "$cfg41/settings.json"
+printf '%s' '{}' > "$h41/.claude/settings.json"
+rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg41" CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a widening CLAUDE_CONFIG_DIR settings file is refused (exit 2)" "$rc" "2"
+# Round 6 (HIMMEL-4066): Write/NotebookEdit allows refuse; managed scopes cannot be overridden by
+# the consult's own pins, so they refuse on env scrub, a permissive defaultMode and policyHelper(s);
+# ~/.claude.json env scrub refuses; user-scope scrub/bypassPermissions is NOT scanned (the pin wins).
+for kv41 in 'Write allow|{"permissions":{"allow":["Write(//x/**)"]}}|permissions.allow rule Write' 'NotebookEdit allow|{"permissions":{"allow":["NotebookEdit"]}}|permissions.allow rule NotebookEdit'; do
+  n41="${kv41%%|*}"; r41="${kv41#*|}"; j41="${r41%%|*}"; w41="${r41#*|}"
+  h41="$tmp/home41-wn"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+  printf '%s' "$j41" > "$h41/.claude/settings.json"
+  rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41j $n41 refuses (exit 2)" "$rc" "2"
+  contains "41j $n41 refusal names the key" "$out" "$w41"
+done
+for kv41 in 'managed scrub=1|{"env":{"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"1"}}|CLAUDE_CODE_SUBPROCESS_ENV_SCRUB' 'managed scrub=true number|{"env":{"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":1}}|CLAUDE_CODE_SUBPROCESS_ENV_SCRUB' 'managed bypassPermissions|{"permissions":{"defaultMode":"bypassPermissions"}}|bypassPermissions' 'managed acceptEdits|{"permissions":{"defaultMode":"acceptEdits"}}|acceptEdits' 'managed policyHelper|{"policyHelper":{"command":"x"}}|policyHelper' 'managed policyHelpers nested|{"permissions":{"policyHelpers":[]}}|policyHelpers'; do
+  n41="${kv41%%|*}"; r41="${kv41#*|}"; j41="${r41%%|*}"; w41="${r41#*|}"
+  for where41 in managed dropin remote; do
+    h41="$tmp/home41-mg"; rm -rf "$h41"; mkdir -p "$h41/.claude" "$h41/managed-settings.d"
+    cm41="$h41/managed-none.json"
+    case "$where41" in
+      managed) printf '%s' "$j41" > "$h41/managed.json"; cm41="$h41/managed.json" ;;
+      dropin) printf '%s' "$j41" > "$h41/managed-settings.d/50-x.json" ;;
+      remote) printf '%s' "$j41" > "$h41/.claude/remote-settings.json" ;;
+    esac
+    rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$cm41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+    check "41j $n41 ($where41) refuses (exit 2)" "$rc" "2"
+    contains "41j $n41 ($where41) refusal names the key" "$out" "$w41"
+  done
+done
+# Controls: a managed scrub=0 passes; the same keys at USER scope do not refuse (pinned instead).
+h41="$tmp/home41-mgok"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+printf '%s' '{"env":{"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"0"},"permissions":{"defaultMode":"default"}}' > "$h41/managed.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41j managed scrub=0 + defaultMode default passes (exit 0)" "$rc" "0"
+printf '%s' '{"env":{"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"1"},"permissions":{"defaultMode":"bypassPermissions"}}' > "$h41/.claude/settings.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41j user-scope scrub=1 + bypassPermissions passes (overridden by the pins, exit 0)" "$rc" "0"
+# ~/.claude.json top-level env scrub refuses (home and CLAUDE_CONFIG_DIR).
+h41="$tmp/home41-cj"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+printf '%s' '{"env":{"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"1"}}' > "$h41/.claude.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41j ~/.claude.json env scrub=1 refuses (exit 2)" "$rc" "2"
+contains "41j ~/.claude.json refusal names the file" "$out" "$h41/.claude.json"
+printf '%s' '{"env":{"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"0"}}' > "$h41/.claude.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41j ~/.claude.json env scrub=0 passes (exit 0)" "$rc" "0"
+cfgj41="$tmp/cfgj41"; rm -rf "$cfgj41"; mkdir -p "$cfgj41"
+printf '%s' '{"env":{"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"true"}}' > "$cfgj41/.claude.json"
+rc=0; out="$(CLAUDE_CONFIG_DIR="$cfgj41" CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41j CLAUDE_CONFIG_DIR/.claude.json env scrub refuses (exit 2)" "$rc" "2"
+# Darwin branch: the macOS managed path is scanned (a text pin: the path cannot be planted in a test).
+check "41j the launcher scans the macOS managed path" "$(grep -c '/Library/Application Support/ClaudeCode/managed-settings.json' "$SCRIPT")" "1"
+# (d) the live smoke test is skipped unless CONSULT_SMOKE=1.
+rc=0; out="$(bash "$HERE/smoke-consult-sandbox.sh" 2>&1)" || rc=$?
+check "41i smoke test skips by default (exit 0)" "$rc" "0"
+contains "41i smoke test says SKIP" "$out" "SKIP"
 
 # Round trip: request text -> the consult appends its ANSWER with the ONE allowed
 # command (append-results.sh) -> the relay text the console forwards to the asker.
