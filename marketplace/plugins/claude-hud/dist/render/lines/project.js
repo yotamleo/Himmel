@@ -62,7 +62,7 @@ export function renderProjectLine(ctx) {
         addedDirsPart = rendered.join(' ');
     }
     let gitPart = '';
-    const vcs = getVcsDisplayState(ctx.gitStatus, ctx.config);
+    const vcs = getVcsDisplayState(ctx.gitStatus, ctx.config, ctx.stdin.workspace?.git_worktree);
     const gitConfig = ctx.config.gitStatus ?? DEFAULT_CONFIG.gitStatus;
     const branchOverflow = vcs?.branchOverflow ?? gitConfig.branchOverflow;
     if (vcs) {
@@ -91,6 +91,9 @@ export function renderProjectLine(ctx) {
         }
         const vcsLabel = vcs.kind === 'jj' ? 'jj:(' : 'git:(';
         gitPart = `${gitColor(vcsLabel, colors)}${gitInner.join(' ')}${gitColor(')', colors)}`;
+        if (vcs.worktree) {
+            gitPart += ` ${gitColor(`⎇ ${vcs.worktree}`, colors)}`;
+        }
     }
     const projectWithDirs = projectPart && addedDirsPart
         ? `${projectPart} ${addedDirsPart}`

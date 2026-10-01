@@ -99,6 +99,7 @@ Save as `language: "en"`, `language: "zh-Hans"`, or `language: "zh-Hant"`.
   - "Usage reset label" - show or hide the `resets in` prefix
   - "Compact usage" - 5h: 25% (1h 30m) shorter format
   - "Model-scoped usage" - Fable ██░░ 38% per-model weekly windows
+  - "Usage pace" - 70% ▲ amber/red when on track to run out early
   - "Session duration" - ⏱️ 5m
   - "Session name" - fix-auth-bug (session slug or custom title)
   - "Session tokens" - Tokens 12.8M (in: 7k, out: 28k, cache-w: 12.8M)
@@ -167,6 +168,7 @@ If user chooses "Enter custom text", use AskUserQuestion to get their text. Save
   - "Usage reset label" - show or hide the `resets in` prefix
   - "Compact usage" - 5h: 25% (1h 30m) shorter format (only if usageCompact is false)
   - "Model-scoped usage" - Fable ██░░ 38% per-model weekly windows (only if showModelScopedUsage is true)
+  - "Usage pace" - 70% ▲ amber/red when on track to run out early (only if usagePace is true)
 
 If more than 4 items ON, show Activity items (Tools, Agents, Todos, Project, Git) first.
 Info items (Counts, Tokens, Usage, Speed, Duration) can be turned off via "Reset to Minimal" in Q4.
@@ -184,6 +186,7 @@ Info items (Counts, Tokens, Usage, Speed, Duration) can be turned off via "Reset
   - "Usage reset label" - show or hide the `resets in` prefix
   - "Compact usage" - 5h: 25% (1h 30m) shorter format (only if usageCompact is false)
   - "Model-scoped usage" - Fable ██░░ 38% per-model weekly windows (only if showModelScopedUsage is false)
+  - "Usage pace" - 70% ▲ amber/red when on track to run out early (only if usagePace is false)
   - "Added directories" - +repo +shared workspace directories from /add-dir
   - "Jujutsu status" - jj:(bookmark*) opt-in indicator
   - "Session name" - fix-auth-bug (session slug or custom title)
@@ -327,12 +330,14 @@ If user chooses "Remove", set `display.customLine` to `""` in config.
 | Session cost | `display.showCost` |
 | Routed provider cost | `display.showRoutedCost` |
 | Daily cost | `display.showDailyCost` |
+| Weekly cost | `display.showWeeklyCost` |
 | Usage limits | `display.showUsage` |
 | Usage bar style | `display.usageBarEnabled` |
 | Compact usage | `display.usageCompact` |
 | Usage value | `display.usageValue` |
 | Usage reset label | `display.showResetLabel` |
 | Model-scoped usage | `display.showModelScopedUsage` (per-model weekly windows, e.g. Fable) |
+| Usage pace | `display.usagePace` (amber/red pace colour and `▲` marker on usage windows) |
 | Session name | `display.showSessionName` |
 | Auth method | `display.showAuth` (plan label, e.g. "Claude Max 20x", own segment at end of first line) |
 | Auth user | `display.showAuthUser` (login account, truncated to `display.authUserLength` chars, 0 = full) |

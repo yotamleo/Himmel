@@ -4,7 +4,7 @@ import { sanitizeDisplayText } from '../utils/sanitize.js';
  * Resolve VCS-specific visibility once so compact and expanded layouts cannot
  * drift. jj never inherits Git-only ahead/behind or file-stat settings.
  */
-export function getVcsDisplayState(status, config) {
+export function getVcsDisplayState(status, config, gitWorktree) {
     if (!status)
         return null;
     const kind = status.vcs === 'jj' ? 'jj' : 'git';
@@ -25,6 +25,9 @@ export function getVcsDisplayState(status, config) {
         fileStats: isGit && gitConfig.showFileStats ? status.fileStats : undefined,
         lineDiff: isGit && gitConfig.showFileStats ? status.lineDiff : undefined,
         branchUrl: isGit ? status.branchUrl : undefined,
+        worktree: isGit && gitConfig.showWorktree && gitWorktree
+            ? sanitizeDisplayText(gitWorktree).trim() || undefined
+            : undefined,
         branchOverflow: gitConfig.branchOverflow,
     };
 }

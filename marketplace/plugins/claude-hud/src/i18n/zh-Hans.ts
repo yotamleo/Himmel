@@ -7,11 +7,13 @@ export const zhHans: Messages = {
   "label.weekly": "本周",
   "label.approxRam": "内存",
   "label.promptCache": "缓存",
+  "label.cacheHitRate": "缓存命中",
   "label.rules": "规则",
   "label.hooks": "钩子",
   "label.estimatedCost": "估算",
   "label.cost": "费用",
   "label.today": "今日",
+  "label.week": "本周",
   "label.tokens": "词元",
   "label.sessionStarted": "开始",
   "label.lastReply": "上次回复",
@@ -42,6 +44,7 @@ export const zhHans: Messages = {
   "format.tokPerSec": "tok/s",
   "format.justNow": "刚刚",
   "format.relativeTime": "{value} 前",
+  "format.elapsed": "已过 {value}%",
 
   // Init
   "init.initializing": "[claude-hud] 正在初始化...",

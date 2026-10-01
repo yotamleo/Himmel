@@ -1,6 +1,7 @@
 import { isBedrockModelId, isClaudexLane, isVertexModelId } from './stdin.js';
 const TOKENS_PER_MILLION = 1_000_000;
 const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_WRITE_ONE_HOUR_MULTIPLIER = 2;
 const CACHE_READ_MULTIPLIER = 0.1;
 // Patterns are tried in order; the first match wins. Families with more specific
 // model lines (Haiku 4.x differs from Haiku 3.5) must come before any broader
@@ -61,9 +62,10 @@ export function getModelPricing(stdin) {
     }
     return null;
 }
-// Cache convention shared with estimateSessionCost: a model that does not
+// Cache convention mirrored from estimateSessionCost: a model that does not
 // publish explicit cache rates is priced at the standard prompt-caching
-// multipliers off its input rate (write = 1.25x, read = 0.1x).
+// multipliers off its input rate (write = 1.25x, read = 0.1x). Flat 5-minute
+// write rate only; estimateSessionCost additionally prices 1-hour writes at 2x.
 export function resolveEffectiveCachePricing(pricing) {
     const cacheWriteUsdPerMillion = pricing.cacheWriteUsdPerMillion === undefined
         ? pricing.inputUsdPerMillion * CACHE_WRITE_MULTIPLIER
@@ -94,8 +96,13 @@ export function estimateSessionCost(stdin, sessionTokens, options) {
         return null;
     }
     const inputUsd = calculateUsd(sessionTokens.inputTokens, pricing.inputUsdPerMillion);
-    const { cacheReadUsdPerMillion, cacheWriteUsdPerMillion } = resolveEffectiveCachePricing(pricing);
-    const cacheCreationUsd = calculateUsd(sessionTokens.cacheCreationTokens, cacheWriteUsdPerMillion);
+    // 5-minute writes cost 1.25x input and 1-hour writes 2x; a published cache-write rate covers both.
+    const publishedCacheWrite = pricing.cacheWriteUsdPerMillion === undefined
+        ? undefined
+        : pricing.cacheWriteUsdPerMillion ?? 0;
+    const oneHourWrites = Math.min(sessionTokens.cacheCreationOneHourTokens ?? 0, sessionTokens.cacheCreationTokens);
+    const cacheCreationUsd = calculateUsd(sessionTokens.cacheCreationTokens - oneHourWrites, publishedCacheWrite ?? pricing.inputUsdPerMillion * CACHE_WRITE_MULTIPLIER) + calculateUsd(oneHourWrites, publishedCacheWrite ?? pricing.inputUsdPerMillion * CACHE_WRITE_ONE_HOUR_MULTIPLIER);
+    const cacheReadUsdPerMillion = pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion * CACHE_READ_MULTIPLIER;
     const cacheReadUsd = calculateUsd(sessionTokens.cacheReadTokens, cacheReadUsdPerMillion);
     const outputUsd = calculateUsd(sessionTokens.outputTokens, pricing.outputUsdPerMillion);
     return {

@@ -7,7 +7,7 @@ import { getJjStatus, isJjRepo } from "./jj.js";
 import { loadConfig } from "./config.js";
 import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand, shouldRunCustomLine } from "./custom-line-cmd.js";
-import { getClaudeCodeVersion } from "./version.js";
+import { getClaudeCodeVersion, resolveStdinClaudeCodeVersion } from "./version.js";
 import { getMemoryUsage } from "./memory.js";
 import { getAllSessionsCacheEconomics, runCacheEconomicsRefresh, REFRESH_CACHE_ECONOMICS_FLAG, getRefreshLockTokenFromArgv, } from "./cache-economics.js";
 import { readAuthInfo } from "./auth.js";
@@ -150,7 +150,8 @@ export async function main(overrides = {}) {
             : null;
         const sessionDuration = formatSessionDuration(transcript.sessionStart, deps.now);
         const claudeCodeVersion = config.display.showClaudeCodeVersion
-            ? await deps.getClaudeCodeVersion()
+            ? (resolveStdinClaudeCodeVersion(stdin.version)
+                ?? await deps.getClaudeCodeVersion())
             : undefined;
         const effortInfo = config.display.showEffortLevel
             ? resolveEffortLevel(stdin.effort, { ultracodeActive: transcript.ultracodeActive })

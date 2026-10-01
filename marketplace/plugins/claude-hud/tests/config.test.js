@@ -45,6 +45,7 @@ test('loadConfig returns valid config structure', async () => {
   assert.equal(typeof config.gitStatus.enabled, 'boolean');
   assert.equal(typeof config.gitStatus.showDirty, 'boolean');
   assert.equal(typeof config.gitStatus.showAheadBehind, 'boolean');
+  assert.equal(config.gitStatus.showWorktree, false);
   assert.ok(['truncate', 'wrap'].includes(config.gitStatus.branchOverflow), 'branchOverflow should be valid');
   assert.equal(typeof config.gitStatus.pushWarningThreshold, 'number');
   assert.equal(typeof config.gitStatus.pushCriticalThreshold, 'number');
@@ -184,6 +185,22 @@ test('mergeConfig defaults showPromptCache to false', () => {
 test('mergeConfig preserves explicit showPromptCache=true', () => {
   const config = mergeConfig({ display: { showPromptCache: true } });
   assert.equal(config.display.showPromptCache, true);
+});
+
+test('mergeConfig defaults showCacheHitRate to false', () => {
+  const config = mergeConfig({});
+  assert.equal(config.display.showCacheHitRate, false);
+  assert.equal(DEFAULT_CONFIG.display.showCacheHitRate, false);
+});
+
+test('mergeConfig preserves explicit showCacheHitRate=true', () => {
+  const config = mergeConfig({ display: { showCacheHitRate: true } });
+  assert.equal(config.display.showCacheHitRate, true);
+});
+
+test('mergeConfig rejects non-boolean showCacheHitRate', () => {
+  const config = mergeConfig({ display: { showCacheHitRate: 'yes' } });
+  assert.equal(config.display.showCacheHitRate, false);
 });
 
 test('mergeConfig preserves promptCacheTtlSeconds as a validated fallback', () => {
@@ -454,6 +471,49 @@ test('mergeConfig sanitizes invalid external usage fallback settings', () => {
   });
   assert.equal(config.display.externalUsagePath, '');
   assert.equal(config.display.externalUsageFreshnessMs, 0);
+});
+
+test('mergeConfig expands ~ in external usage paths', () => {
+  const config = mergeConfig({
+    display: {
+      externalUsagePath: '~/usage.json',
+      externalUsageWritePath: '~/write-usage.json',
+    },
+  });
+  assert.equal(config.display.externalUsagePath, path.join(os.homedir(), 'usage.json'));
+  assert.equal(config.display.externalUsageWritePath, path.join(os.homedir(), 'write-usage.json'));
+});
+
+test('mergeConfig expands ${VAR} in external usage paths without re-expanding values', () => {
+  const original = { A: process.env.CLAUDE_HUD_TEST_A, B: process.env.CLAUDE_HUD_TEST_B };
+  process.env.CLAUDE_HUD_TEST_A = '/opt/claude-hud';
+  process.env.CLAUDE_HUD_TEST_B = '${CLAUDE_HUD_TEST_A}';
+  try {
+    const config = mergeConfig({
+      display: {
+        externalUsagePath: '${CLAUDE_HUD_TEST_A}/usage.json',
+        externalUsageWritePath: '${CLAUDE_HUD_TEST_B}/usage.json',
+      },
+    });
+    assert.equal(config.display.externalUsagePath, '/opt/claude-hud/usage.json');
+    assert.equal(config.display.externalUsageWritePath, '${CLAUDE_HUD_TEST_A}/usage.json');
+  } finally {
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) {
+        delete process.env[`CLAUDE_HUD_TEST_${key}`];
+      } else {
+        process.env[`CLAUDE_HUD_TEST_${key}`] = value;
+      }
+    }
+  }
+});
+
+test('mergeConfig leaves an unresolved variable reference untouched', () => {
+  delete process.env.CLAUDE_HUD_MISSING_VAR;
+  const config = mergeConfig({
+    display: { externalUsagePath: '${CLAUDE_HUD_MISSING_VAR}/usage.json' },
+  });
+  assert.equal(config.display.externalUsagePath, '${CLAUDE_HUD_MISSING_VAR}/usage.json');
 });
 
 test('mergeConfig falls back to empty for non-string modelOverride', () => {
@@ -1285,6 +1345,23 @@ test('mergeConfig rejects non-boolean showModelScopedUsage', () => {
   // probe alone would still pass under a Boolean()-coercing implementation.
   assert.equal(mergeConfig({ display: { showModelScopedUsage: 0 } }).display.showModelScopedUsage, true);
   assert.equal(mergeConfig({ display: { showModelScopedUsage: 'no' } }).display.showModelScopedUsage, true);
+});
+
+test('mergeConfig defaults usagePace to false', () => {
+  const config = mergeConfig({});
+  assert.equal(config.display.usagePace, false);
+  assert.equal(DEFAULT_CONFIG.display.usagePace, false);
+});
+
+test('mergeConfig preserves explicit usagePace=true', () => {
+  const config = mergeConfig({ display: { usagePace: true } });
+  assert.equal(config.display.usagePace, true);
+});
+
+test('mergeConfig rejects non-boolean usagePace', () => {
+  // A truthy probe is the load-bearing one against a `false` default.
+  assert.equal(mergeConfig({ display: { usagePace: 1 } }).display.usagePace, false);
+  assert.equal(mergeConfig({ display: { usagePace: 'yes' } }).display.usagePace, false);
 });
 
 test('mergeConfig preserves explicit showAdvisor=true', () => {

@@ -34,7 +34,7 @@ export type HourCycleMode = 'auto' | 'h11' | 'h12' | 'h23' | 'h24';
  *   'full':    Show the entire absolute path from root (e.g. "/Users/name/…")
  */
 export type PathLevels = 1 | 2 | 3 | 'full';
-export type HudElement = 'project' | 'addedDirs' | 'context' | 'usage' | 'promptCache' | 'memory' | 'environment' | 'tools' | 'skills' | 'mcp' | 'agents' | 'todos' | 'sessionTime';
+export type HudElement = 'project' | 'addedDirs' | 'context' | 'usage' | 'promptCache' | 'cacheHitRate' | 'memory' | 'environment' | 'tools' | 'skills' | 'mcp' | 'agents' | 'todos' | 'sessionTime';
 /**
  * Coarse, orderable segments of the first HUD line (the identity/project
  * line). Shared by the expanded project line and the compact session line:
@@ -88,6 +88,7 @@ export interface HudConfig {
         showDirty: boolean;
         showAheadBehind: boolean;
         showFileStats: boolean;
+        showWorktree: boolean;
         branchOverflow: GitBranchOverflowMode;
         pushWarningThreshold: number;
         pushCriticalThreshold: number;
@@ -108,6 +109,7 @@ export interface HudConfig {
         showCost: boolean;
         showRoutedCost: boolean;
         showDailyCost: boolean;
+        showWeeklyCost: boolean;
         showDuration: boolean;
         showSpeed: boolean;
         showTokenBreakdown: boolean;
@@ -117,11 +119,13 @@ export interface HudConfig {
         showResetLabel: boolean;
         usageCompact: boolean;
         showModelScopedUsage: boolean;
+        usagePace: boolean;
         showTools: boolean;
         showSkills: boolean;
         showMcp: boolean;
         toolNameMaxLength: number;
         toolsMaxVisible: number;
+        skillsMaxVisible: number;
         showAgents: boolean;
         showTodos: boolean;
         showSessionName: boolean;
@@ -134,6 +138,7 @@ export interface HudConfig {
         showMemoryUsage: boolean;
         showPromptCache: boolean;
         promptCacheTtlSeconds: number;
+        showCacheHitRate: boolean;
         showPromptCacheEconomics: boolean;
         showSessionTokens: boolean;
         showOutputStyle: boolean;

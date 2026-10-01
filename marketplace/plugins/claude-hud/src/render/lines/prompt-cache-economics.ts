@@ -14,6 +14,7 @@ const EMPTY_TOKENS: SessionTokenUsage = {
   inputTokens: 0,
   outputTokens: 0,
   cacheCreationTokens: 0,
+  cacheCreationOneHourTokens: 0,
   cacheReadTokens: 0,
 };
 
