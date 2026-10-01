@@ -36,7 +36,7 @@ for (const f of walk(join(root, "scripts"))) {
   if (lines.some((l) => FILE_OK.test(l))) continue;
   lines.forEach((l, i) => {
     const t = l.trim();
-    if (t.startsWith("#") || t.startsWith("//") || t.startsWith("echo ") || t.startsWith("printf '") && !/claude --/.test(t) ) return;
+    if (t.startsWith("#") || t.startsWith("//") || (t.startsWith("echo ") || t.startsWith("printf '")) && !/claude --/.test(t)) return;
     if (!SITE.test(l)) return;
     if (/`claude|claude --model (for|pin)|quota_gauge_row claude/.test(l)) return; // prose / usage text / gauge row, not a launch
     const win = lines.slice(Math.max(0, i - 12), i + 4).join("\n");

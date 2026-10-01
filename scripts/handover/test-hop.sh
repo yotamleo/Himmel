@@ -44,17 +44,18 @@ assert_not_contains() {
 }
 
 FAILED=0
+# HIMMEL-4013: redirect profile settings to scratch BEFORE the first hop, so no
+# case can overwrite the operator's persistent profile files.
+export HIMMEL_PROFILE_SETTINGS_DIR="$TMP/profiles"
 
 # T1: --print --dry-run with a message, custom handover root
 out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message "test message" --print --dry-run 2>&1)
 rc=$?
 assert_rc "T1 print dry-run rc=0" 0 "$rc"
 assert_contains "T1 mentions snapshot path" "$TMP/handovers/$SLUG/context-hop-" "$out"
-export HIMMEL_PROFILE_SETTINGS_DIR="$TMP/profiles"
 assert_contains "T1 prints operator command" "\"load" "$out"
 assert_contains "T1 embeds message in snapshot body" "test message" "$out"
 # HIMMEL-4013: the printed command carries the role-matched profile settings.
-export HIMMEL_PROFILE_SETTINGS_DIR="$TMP/profiles"
 assert_contains "T1 operator command applies --settings" "claude --settings '" "$out"
 assert_contains "T1 default role profile is user" "/user.json'" "$out"
 out=$(env HIMMEL_CONSOLE_DOC=/x/doc.md bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --print --dry-run 2>&1)
