@@ -31,8 +31,11 @@ const UNSCANNED_RESERVE = 2500;
 const UNSCANNED_MARGIN = 250;
 
 const commandTreeReserve = (configDir) => {
-  const cmds = configDir === undefined ? null : scanCommandTrees(configDir);
+  const skipped = [];
+  const cmds = configDir === undefined ? null : scanCommandTrees(configDir, skipped);
   if (!cmds) return UNSCANNED_RESERVE;
+  // the reserve is understated by whatever the scan could not read: say so
+  for (const s of skipped) process.stderr.write(`skill-listing: command tree path skipped (${s.code}): ${s.path}\n`);
   return UNSCANNED_MARGIN + cmds.reduce((a, e) => a + describedTokens(e, e.tree), 0);
 };
 

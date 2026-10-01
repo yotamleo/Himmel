@@ -29,7 +29,7 @@
 //                       no CLI flag at all.
 //   (nothing set)        no ledger write — the safe default.
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -203,7 +203,9 @@ export function installedVersionsOf(configDir, cwd) {
     for (const [key, installs] of Object.entries(doc.plugins ?? {})) {
       const versions = (Array.isArray(installs) ? installs : [])
         .filter((i) => i?.scope === 'user' || (cwd && i?.projectPath === cwd))
-        .map((i) => String(i?.version ?? '')).filter(Boolean);
+        .map((i) => String(i?.version ?? '')).filter(Boolean)
+        // HIMMEL-4064: an install whose cache dir is gone is not what the session loads (falls back to latest)
+        .filter((v) => key.includes('@') && existsSync(join(configDir, 'plugins', 'cache', key.split('@')[1], key.split('@')[0], v)));
       if (versions.length) out.set(key, new Set(versions));
     }
     return out;
@@ -225,7 +227,8 @@ export function expectedSkillNames(costEntries, requiredIds, installedVersions) 
     const mine = costEntries.filter((e) => e.scope === 'plugin-skills').map((e) => ({ e, c: pluginCacheOf(e.path) }))
       .filter((x) => x.c?.plugin === plugin && (!marketplace || x.c.marketplace === marketplace));
     const installed = installedVersions?.get(id);
-    const want = installed?.size && mine.some((x) => installed.has(x.c.version))
+    // an installed version with zero skills counts zero; only no (present) install falls back to latest
+    const want = installed?.size
       ? installed
       : new Set([mine.map((x) => x.c.version).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1)]);
     for (const x of mine) if (want.has(x.c.version)) names.add(`${plugin}:${x.e.name}`);
