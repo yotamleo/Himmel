@@ -266,6 +266,8 @@ const MEMBERS = {
   'block-edit-on-main.sh': `sleep 3`,
   // HIMMEL-3669: the memory-index form guard is must-run too.
   'guard-memory-capture.sh': `sleep 3`,
+  // HIMMEL-3956: the bare-qmd-query fence is must-run too.
+  'block-bare-qmd-query.sh': `sleep 3`,
   // HIMMEL-3601: a must-run member that CRASHES (not a timeout) — named like
   // a real must-run guard so MUST_RUN_CHAIN_MEMBERS fires, exits 1 the way a
   // `set -u` abort or a failed `.` source would.
@@ -600,6 +602,7 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
   assert.deepEqual(
     [...MUST_RUN_CHAIN_MEMBERS].sort(),
     [
+      'block-bare-qmd-query.sh',
       'block-chokepoint-env-prefix.sh',
       'block-destructive-commands.sh',
       'block-edit-live-settings.sh',
@@ -1094,6 +1097,25 @@ test('a starved guard-memory-capture.sh DENIES the chain instead of being skippe
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /DENY guard-memory-capture\.sh \(budget=500ms/);
     assert.equal(ran(dir, 'allow.sh'), false, 'a starved memory-capture guard must deny, not skip past it');
+  });
+});
+
+// HIMMEL-3956: block-bare-qmd-query.sh denies (exit 2) a bare qmd search verb;
+// a starved run must deny too, or the orphaning call goes through.
+test('a starved block-bare-qmd-query.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'block-bare-qmd-query.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY block-bare-qmd-query\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved bare-qmd-query guard must deny, not skip past it');
   });
 });
 

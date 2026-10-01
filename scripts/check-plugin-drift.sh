@@ -58,13 +58,13 @@
 #
 # Fork-delta audit is split by storage shape. A registry entry carrying a
 # `fork` block is mechanically rebased + classified by
-# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence — no
-# entry currently carries one (qmd de-forked HIMMEL-3045, claude-obsidian
-# retired at v2.2.0 HIMMEL-2925, so every eligible entry reports SKIP), but the
-# mechanism stays ready for a future fork: an ADDITIVE result is expected for a
-# well-behaved fork, a NON-ADDITIVE result would be a genuine regression worth
-# investigating, and the unattended cadence stops after reporting, never
-# pushes.
+# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence — qmd
+# carries one again (HIMMEL-3956, launcher signal forwarding until
+# tobi/qmd#1030 lands; claude-obsidian retired at v2.2.0 HIMMEL-2925). An
+# ADDITIVE result is expected for a well-behaved fork; a NON-ADDITIVE result is
+# a regression worth investigating unless the entry's own note says the delta
+# modifies upstream files (qmd's does), and the unattended cadence stops after
+# reporting, never pushes.
 # Vendored single-file forks (telegram-himmel, pr-review-toolkit-himmel) still
 # require a manual file-level delta judgment when their UPSTREAM_PIN changes.
 #

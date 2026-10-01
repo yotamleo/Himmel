@@ -31,7 +31,7 @@ MIRROR = os.path.expanduser('~/.himmel/state/jira-mirror/HIMMEL')
 LUNA = os.path.expanduser('~/Documents/luna')
 HANDOVERS = ''
 LAYERS = ['bugs', 'enhancements', 'features', 'misc', 'audit']
-VER_RE = re.compile(r'^v1\.0\.(\d+)$')
+VER_RE = re.compile(r'^v1\.0\.(\d+)[a-z]?$')
 SKIP_RE = re.compile(r'HIMMEL-3882|/dashboard|/artifacts|backlog|\.bak|/graphify-out/')
 KEY_RE = re.compile(r'HIMMEL-\d+')
 MAX_NOTES, TTL = 5, 7 * 86400
@@ -577,7 +577,7 @@ function row(p){
 function seg(cls,n,tot){var i=el("i",cls);i.style.width=(100*n/(tot||1))+"%";return i}
 function pctf(n,t){return t?Math.round(100*n/t):0}
 function ledger(){
- var a=P.filter(function(p){return /^v1\.0\.\d+$/.test(V[p[3]])}),t=tally(a),tot=a.length;
+ var a=P.filter(function(p){return /^v1\.0\.\d+[a-z]?$/.test(V[p[3]])}),t=tally(a),tot=a.length;
  $("stamp").textContent="Generated "+D.gen+" from mirror updated "+D.mir+"; plan built at main "+D.sha+".";
  var l=$("ledger");l.textContent="";
  D.LG.forEach(function(x){l.appendChild(el("p",x.indexOf("Needs attention")==0?"x":null,x))});
@@ -598,7 +598,7 @@ function meter(n,c){
  var mx=Math.max(c!=null?c*1.2:0,n,0.001),ld=el("div","load"),d=el("i");d.style.left="0";d.style.width=(100*n/mx)+"%";d.style.background=ldc(n,c);ld.appendChild(d);
  if(c!=null){var b=el("b");b.style.left=(100*c/mx)+"%";ld.appendChild(b)}return ld}
 function loadBar(v){
- var w=el("div"),vl=D.VL[v],dfr=!/^v1\.0\.\d+$/.test(V[v]),c=dfr?null:CAP;
+ var w=el("div"),vl=D.VL[v],dfr=!/^v1\.0\.\d+[a-z]?$/.test(V[v]),c=dfr?null:CAP;
  w.appendChild(meter(vl[5],c));
  w.appendChild(el("div","note","Total load "+vl[5].toFixed(2)+(c!=null?" of "+c+" bank cap"+(c?" ("+Math.round(100*vl[5]/c)+"%)":""):dfr?" (deferred bucket: no cap)":" (cap not recorded in the plan)")+", ~"+vl[6]+" legs. Dashed line = cap."));
  if(!dfr)L.forEach(function(l,i){var lc=D.CAP.layers[i],r=el("div","lrow");r.appendChild(el("span",null,l));r.appendChild(meter(vl[i],lc));

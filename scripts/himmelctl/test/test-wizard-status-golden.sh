@@ -122,6 +122,8 @@ fixtureRepo="$work/repo"
 mkdir -p "$fixtureRepo/scripts/install" "$fixtureRepo/scripts/lib" "$fixtureRepo/scripts/jira/dist"
 cp "$manifest_path" "$fixtureRepo/scripts/install/manifest.json"
 cp "$qmd_bin_lib" "$fixtureRepo/scripts/lib/qmd-bin.sh"
+# qmd-bin.sh sources its sibling qmd-bounded.sh (HIMMEL-3956).
+cp "$repo_root/scripts/lib/qmd-bounded.sh" "$fixtureRepo/scripts/lib/qmd-bounded.sh"
 cp "$handover_path_lib" "$fixtureRepo/scripts/lib/handover-path.sh"
 # HIMMEL-3322: wiring-statusline's verifyScript resolution target for flip 3
 # below — created once up front (same convention as the qmd stubs) so the

@@ -55,6 +55,9 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'read-clamp.sh',
   'block-destructive-commands.sh',
   'block-git-stash.sh',
+  // HIMMEL-3956: a bare `qmd query|search|vsearch` orphans a GPU-bound bun
+  // child when killed; routes agents to scripts/lib/qmd-bounded.sh.
+  'block-bare-qmd-query.sh',
   'block-rogue-claude-schedule.sh',
   'block-chokepoint-env-prefix.sh',
   'require-quiet-run.sh',

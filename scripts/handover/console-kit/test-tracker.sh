@@ -161,5 +161,18 @@ printf '%s\t%s\t%s\n' key user_impact issue_plain HIMMEL-1 'changed impact' 'pla
 fp3="$(render --emit-fp)"
 if [ "$fp2" != "$fp3" ]; then pass 'an explain change moves the fingerprint (HIMMEL-3957)'; else fail "an explain change left the fingerprint at '$fp2'"; fi
 
+# --- HIMMEL-4026: trail versions (v1.0.1a, v1.0.2b) stay in the train, in train order.
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' version load_bugs load_enhancements load_features load_misc load_audit load_total est_legs \
+    v1.0.1 0.1 0 0 0 0 0.1 1 v1.0.1a 0 0 0 0 0 0 0 v1.0.2 0 0 0 0 0 0 0 v1.0.2b 0 0 0 0 0 0 0 v2/v3 0 0 0 0 0 0 0 > "$plan/stage3/versions.tsv"
+mk 8 'To Do' '["v1.0.1a"]' 'trail a ticket'
+mk 9 'To Do' '["v1.0.2b"]' 'trail b ticket'
+tstdout="$(render)"
+thtml="$(cat "$out" 2>/dev/null)"
+contains 'a v1.0.1a ticket renders (HIMMEL-4026)' "$thtml" '"trail a ticket"'
+contains 'a v1.0.2b ticket renders (HIMMEL-4026)' "$thtml" '"trail b ticket"'
+contains 'trail versions sit in train order (HIMMEL-4026)' "$thtml" '"v1.0.1","v1.0.1a","v1.0.2","v1.0.2b"'
+contains 'the whole-train ledger counts trail tickets (HIMMEL-4026)' "$tstdout" 'Whole v1.0.x train: 1 of 6 done'
+contains 'the JS train test accepts a trail suffix (HIMMEL-4026)' "$thtml" '/^v1\.0\.\d+[a-z]?$/'
+
 printf '%s\n' "$fails failure(s)"
 [ "$fails" -eq 0 ]

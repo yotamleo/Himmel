@@ -1,0 +1,29 @@
+{
+  "version": "B-2026-10-01",
+  "source": "HIMMEL-3992 variant B (log-normal effort model), calibrated on 24 tickets; sigma is biased low by survivorship",
+  "sizes": {"XS": 0.44, "S": 1.0, "M": 2.2, "L": 5.0, "XL": 11.1},
+  "size_order": ["XS", "S", "M", "L", "XL"],
+  "floor": 1.0,
+  "kappa": 0.681,
+  "g1_mult": 1.2,
+  "sigma_g1": 0.85,
+  "sigma_base": 0.45,
+  "sigma_step": 0.25,
+  "sigma_plan_first": 0.45,
+  "bank_per_seq": 0.009,
+  "mean_cap": 0.6,
+  "p90_cap": 0.8,
+  "percentile_z": {
+    "p30": -0.5244, "p40": -0.2533, "p50": 0.0, "p60": 0.2533, "p70": 0.5244,
+    "p80": 0.8416, "p90": 1.2816
+  },
+  "mc_seed": 3992,
+  "mc_draws": 20000,
+  "mc_fw_tol": 0.05,
+  "dod": {
+    "max_range_steps": 1,
+    "plan_first_sizes": ["XS", "S"],
+    "sigma_ceiling": 1.2
+  },
+  "pilot": {"min_pairs": 60, "min_shipped_versions": 2}
+}

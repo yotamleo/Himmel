@@ -503,6 +503,19 @@ for off in "standard" "yes" "true" "1M" ""; do
   ends_with "dry-run LEG_CONTEXT=[$off]: stays on standard (fail toward the cheaper default)" "$out" "standard"
 done
 
+# --- HIMMEL-4012: only `--profile design` resolves the 1m context with no
+# env var or brief line; every other profile keeps the 200000 ceiling.
+rc=0; out="$(LEG_CONTEXT='' bash "$SCRIPT" --dry-run --profile design HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --profile design: exit 0" "$rc" "0"
+contains "dry-run --profile design: reports context=1m (operator-ruling)" "$out" "context=1m (operator-ruling)"
+ends_with "dry-run --profile design: context=1m" "$out" "1m"
+rc=0; out="$(LEG_CONTEXT='' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --profile leg-impl: exit 0" "$rc" "0"
+ends_with "dry-run --profile leg-impl: stays standard" "$out" "standard"
+not_contains "dry-run --profile leg-impl: no operator-ruling context" "$out" "operator-ruling"
+rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --profile leg-impl + LEG_CONTEXT=1m: still refused" "$rc" "2"
+
 # --- 6b (HIMMEL-2975). --relay: forces the console-relay profile + the
 # HIMMEL_CONSOLE_RELAY env marker Guard C (inbox-send.sh) and the Task 26
 # write-deny hook key off. No value; defaults MODEL to claude-sonnet-5-5 when
