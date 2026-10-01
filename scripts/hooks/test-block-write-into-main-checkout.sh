@@ -3067,6 +3067,11 @@ check_both "87 fromW: cd primary || case x in x) :; cd wt;; esac; echo x > a.txt
 # 88 (control): a plain && chain keeps the cwd resolved.
 check_both "88 control: cd wt && echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 89 (CR rd5): a leading `!` (repeatable) must not hide a compound opener from the taint.
+check_both "89 fromW: cd primary; ! if false; then cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "89b fromW: cd primary; ! ! if false; then cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! ! if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.

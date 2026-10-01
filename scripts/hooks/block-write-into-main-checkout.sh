@@ -511,6 +511,10 @@ _bwimc_sp_pipe=0
 _bwimc_split_emit() {
     if [ -n "${1//[[:space:]]/}" ]; then
         local _fw="${1#"${1%%[![:space:]]*}"}"
+        # a leading `!` (repeatable) negates a pipeline; it must not hide the opener
+        while [ "${_fw%%[[:space:]]*}" = '!' ] && [ "$_fw" != '!' ]; do
+            _fw="${_fw#!}"; _fw="${_fw#"${_fw%%[![:space:]]*}"}"
+        done
         _fw="${_fw%%[[:space:]]*}"
         case "$_fw" in
             '{'|if|while|until|for|select|case) _bwimc_sp_pipe=1 ;;
