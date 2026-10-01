@@ -169,7 +169,12 @@ Run these, in order, and write the result as the first bullet under
     The tick re-reads the manifest every sample and the waiter takes a silent
     baseline when its leg set changes, so neither needs a re-start; the
     `legset=`/`unwatched=` checks above then compare against the manifest.
-    `## Live state` is still yours to edit by hand in this slice.
+    Then render the `legs:` entries from it (HIMMEL-3987) instead of editing
+    them: `bash "{{KIT}}/live-state.sh" "<this doc>" [--nonce <N-label>=<nonce>]`.
+    It reads each leg's lock token from its held lock and keeps the nonce and
+    pid already on the line; a leg not yet listed needs `--nonce` (the nonce is
+    yours, never read from the leg or the manifest). A manifest leg holding no
+    lock is left out. The rest of `## Live state` is still yours to edit.
     **Your manifest:** `{{FLEET_MANIFEST}}` — {{FLEET_MANIFEST_NOTE}}.
 11. **Open your Telegram inbox** (HIMMEL-3355). The operator can message you
     from Telegram with `/console {{SESSION_NAME}} <text>`; the bridge appends
