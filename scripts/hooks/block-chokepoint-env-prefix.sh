@@ -939,6 +939,8 @@ env_like_word() {
 env_clear_opt() {
     local t="$1" line w w2 prev head hit=1 noglob=0
     local opt='(^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$)'
+    local bsnl=$'\\\n'
+    t=${t//"$bsnl"/ } # a backslash-newline continuation joins the line
     case $- in *f*) noglob=1 ;; esac
     set -f
     while IFS= read -r line; do
