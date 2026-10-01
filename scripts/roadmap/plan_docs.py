@@ -44,6 +44,8 @@ def slug(text):
 
 def fingerprint(plan, watches):
     h = hashlib.sha256()
+    with open(os.path.abspath(__file__), "rb") as fh:  # the generator itself: a change to it stales the docs
+        h.update(b"generator\0" + hashlib.sha256(fh.read()).digest())
     for stage in ("stage1", "stage3"):
         d = os.path.join(plan, stage)
         if not os.path.isdir(d):
