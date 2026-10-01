@@ -33,7 +33,10 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-[ -n "$mode" ] && [ -d "$plan" ] || { echo "usage: plan-index.sh --refresh|--check --plan-dir D [--out DIR] [--watch P]..." >&2; exit 2; }
+if [ -z "$mode" ] || [ ! -d "$plan" ]; then
+    echo "usage: plan-index.sh --refresh|--check --plan-dir D [--out DIR] [--watch P]..." >&2
+    exit 2
+fi
 
 want="$(python3 "$HERE/plan_docs.py" --plan-dir "$plan" --emit-fp ${watches[@]+"${watches[@]}"})"
 have="$(cat "$out/.fp" 2>/dev/null || true)"
