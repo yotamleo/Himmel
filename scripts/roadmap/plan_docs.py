@@ -81,6 +81,9 @@ def build(plan, docs):
         for r in read_tsv(f):
             explain[r["key"]] = r
     placement = read_tsv(os.path.join(plan, "stage3", "placement.tsv"))
+    for p in placement:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*-[0-9]+", p["key"]):
+            sys.exit("plan_docs: refusing ticket key %r (not a plain KEY-n)" % p["key"])
     tmp = docs + ".new"
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
@@ -109,9 +112,14 @@ def build(plan, docs):
         if ex.get("user_impact"):
             body += ["User impact: %s" % ex["user_impact"], ""]
         write(os.path.join(tmp, "%s.md" % key), "\n".join(body))
+    used = set()
     for kind, members in groups.items():
         for name, rows in members.items():
-            write(os.path.join(tmp, "%s-%s.md" % (kind, slug(name))), group_doc(kind, name, rows))
+            fname, n = "%s-%s.md" % (kind, slug(name)), 2
+            while fname in used:  # distinct names can share a slug; never overwrite
+                fname, n = "%s-%s-%d.md" % (kind, slug(name), n), n + 1
+            used.add(fname)
+            write(os.path.join(tmp, fname), group_doc(kind, name, rows))
     shutil.rmtree(docs, ignore_errors=True)
     os.rename(tmp, docs)
 

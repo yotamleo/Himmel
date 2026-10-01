@@ -58,7 +58,15 @@ python3 "$HERE/plan_docs.py" --plan-dir "$plan" --docs "$out/docs" ${watches[@]+
 registered="$("$qmd" collection list 2>/dev/null | grep -F "$COLLECTION (" || true)"
 if [ -z "$registered" ]; then
     "$qmd" collection add "$out/docs" --name "$COLLECTION" || { echo "plan-index: qmd collection add failed" >&2; exit 1; }
+else
+    # the name alone is not enough: a collection of this name over another directory would be embedded instead
+    cpath="$("$qmd" collection show "$COLLECTION" 2>/dev/null | sed -n 's/^[[:space:]]*Path:[[:space:]]*//p' | head -n 1)"
+    if [ "$cpath" != "$out/docs" ] && [ "$(cd "$cpath" 2>/dev/null && pwd -P)" != "$(cd "$out/docs" && pwd -P)" ]; then
+        echo "plan-index: collection $COLLECTION points at ${cpath:-an unknown path}, not $out/docs" >&2; exit 1
+    fi
 fi
+# update rescans the files (embed alone only embeds what the index already knows)
+"$qmd" update || { echo "plan-index: qmd update failed" >&2; exit 1; }
 "$qmd" embed -c "$COLLECTION" || { echo "plan-index: qmd embed failed" >&2; exit 1; }
 printf '%s\n' "$want" > "$out/.fp"
 echo "plan-index: rebuilt"

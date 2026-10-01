@@ -30,10 +30,17 @@ printf '{"stage":3}\n' > "$plan/stage3/meta.json"
 echo one > "$mir/HIMMEL-111.md"
 plan_sum() { (cd "$plan" && find . -type f | sort | xargs sha256sum | sha256sum); }
 
-# stub qmd: records every call; QMD_FAIL=1 fails the embed step.
+# stub qmd: records every call and remembers the registered path (a file beside the
+# call log); QMD_FAIL=1 fails the embed step.
 cat > "$W/qmd" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$QMD_CALLS"
+reg="$QMD_CALLS.registered"
+case "$1 ${2:-}" in
+    "collection list") [ -f "$reg" ] && echo "roadmap-plan (3 files)"; exit 0 ;;
+    "collection add") printf '%s\n' "$3" > "$reg"; exit 0 ;;
+    "collection show") [ -f "$reg" ] && echo "Path: $(cat "$reg")"; exit 0 ;;
+esac
 if [ "${QMD_FAIL:-0}" = 1 ] && [ "$1" = embed ]; then exit 3; fi
 exit 0
 STUB
@@ -88,6 +95,33 @@ r="$(ROADMAP_QMD_BIN="$W/no-such-qmd" bash "$SUT" --refresh --plan-dir "$plan" -
 
 r="$(run --check 2>&1)"; rc=$?
 if [ "$rc" != 0 ]; then contains "--check reports stale" "$r" "stale"; else fail "--check on stale should be non-zero"; fi
+
+# an existing collection is rescanned: `update` runs before `embed`
+: > "$calls"; echo five >> "$mir/HIMMEL-111.md"
+run --refresh >/dev/null 2>&1
+u="$(grep -n '^update' "$calls" | head -1 | cut -d: -f1)"; e="$(grep -n '^embed' "$calls" | head -1 | cut -d: -f1)"
+[ -n "$u" ] && [ -n "$e" ] && [ "$u" -lt "$e" ] && pass "qmd update runs before embed" || fail "update did not precede embed: $(cat "$calls")"
+
+# a collection of the same name pointing at another directory is refused
+printf '%s\n' "$W/elsewhere" > "$calls.registered"
+echo six >> "$mir/HIMMEL-111.md"; cp "$out/.fp" "$W/fp.keep"
+r="$(run --refresh 2>&1)"; rc=$?
+[ "$rc" != 0 ] && pass "collection pointing elsewhere: refresh non-zero" || fail "collection elsewhere rc=0"
+[ "$(cat "$out/.fp")" = "$(cat "$W/fp.keep")" ] && pass "collection elsewhere: fingerprint not advanced" || fail "fingerprint advanced on wrong collection path"
+printf '%s\n' "$out/docs" > "$calls.registered"
+
+# a ticket key that is not a plain key never becomes a path outside the docs dir
+cp -r "$plan" "$W/plan2"
+printf '../../escape\t1\t1\t1\t3\tv1\tc\t\tbugs\tx\n' >> "$W/plan2/stage3/placement.tsv"
+r="$(ROADMAP_QMD_BIN="$W/qmd" bash "$SUT" --refresh --plan-dir "$W/plan2" --out "$W/out2" 2>&1)"; rc=$?
+[ "$rc" != 0 ] && pass "bad ticket key: refresh non-zero" || fail "bad ticket key rc=0"
+[ ! -e "$W/out2/escape.md" ] && pass "bad ticket key: nothing written outside docs" || fail "path-traversal key wrote a file"
+
+# two group names with one slug each keep their own doc
+cp -r "$plan" "$W/plan3"
+sed -i.bak 's/Knowledge substrate/Guard-safety/' "$W/plan3/stage1/C01.tsv"; rm -f "$W/plan3/stage1/C01.tsv.bak"
+ROADMAP_QMD_BIN="$W/qmd" bash "$SUT" --refresh --plan-dir "$W/plan3" --out "$W/out3" >/dev/null 2>&1
+[ "$(find "$W/out3/docs" -name 'theme-*.md' | wc -l)" = 2 ] && pass "slug collision: both theme docs kept" || fail "slug collision overwrote a theme doc"
 
 if [ "$fails" = 0 ]; then echo "all passed"; exit 0; fi
 echo "$fails failed"; exit 1
