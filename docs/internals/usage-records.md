@@ -71,7 +71,9 @@ will feed it: PR-body cost aggregation (HIMMEL-4003) and the CR-loop ledger
 
 ## Limits
 
-Table parsing assumes session titles contain no ` | `. Sessions are keyed by
+`--since` windows session tokens only; CR, PR and CI stay all-time, so use it
+for token questions, not for a stored record you mean to compare across runs.
+Appends are serialized by a `<store>/.lock` directory. Table parsing assumes session titles contain no ` | `. Sessions are keyed by
 title, so distinct sessions sharing a title merge into one `legs[]` entry.
 Judge calls are counted as `judge`-titled sessions only. CI seconds are wall
 time of runs on the PR branches, not billed minutes, over the latest 200 runs

@@ -29,6 +29,7 @@ JDG="cccccccc-0000-0000-0000-000000000003"
   row $LEG false 2026-01-01T00:00:02.000Z r1 10 100 5 20
   row $LEG false 2026-01-01T00:00:02.000Z r1 10 100 5 20
   row $LEG false 2026-01-01T00:00:03.000Z r2 11 101 6 21
+  echo '{"type":"user","sessionId":"'$LEG'","message":{"content":"subagent prompt SECRETSENTINEL"}}'
 } > "$SLUG/$LEG.jsonl"
 mkdir -p "$SLUG/$LEG/subagents"
 row $LEG true 2026-01-01T00:00:04.000Z s1 50 500 25 100 > "$SLUG/$LEG/subagents/agent-1.jsonl"
@@ -117,6 +118,6 @@ check "read latest turns" "3" "$(bash "$READ" --store "$STORE" --ticket HIMMEL-9
 check "read all versions" "2" "$(bash "$READ" --store "$STORE" --ticket HIMMEL-9001 --all | wc -l | tr -d ' ')"
 
 # 7. no message text anywhere in the output
-check "no transcript text leaks" "0" "$(printf '%s' "$OUT" | grep -c 'subagent prompt' || true)"
+check "no transcript text leaks" "0" "$(grep -c 'SECRETSENTINEL' "$STORE/records.jsonl" || true)"
 
 if [ "$FAIL" -eq 0 ]; then echo "PASS"; else echo "FAILED" >&2; exit 1; fi
