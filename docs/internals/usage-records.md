@@ -77,8 +77,12 @@ completed). "No PR" (`no-pr`) is distinct from a PR with zero runs (`runs:0`).
 (auth, network, rate limit, a wrong repo), malformed or unexpected JSON, a
 100-row truncation, or a negative duration aborts the WHOLE run with exit 1
 before anything is appended; the store, and every ticket's previous version,
-is untouched and the lock is released. `usage-read.sh` takes the same store
-lock, so it never reads a torn last line.
+is untouched and the lock is released. An unknown run status (outside gh's
+`queued`, `in_progress`, `completed`, `waiting`, `requested`, `pending`) is
+malformed JSON for this purpose. `usage-read.sh` takes the same store lock, so
+it never reads a torn last line; on a store the reader cannot write (shared or
+read-only) it cannot lock, so it reads lock-free and exits 1 if the file does
+not end in a newline.
 
 ## Idempotency and append-only
 

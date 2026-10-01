@@ -246,4 +246,22 @@ rc=0; wait "$rp" || rc=$?
 check "reader proceeds once the lock drops" "0" "$rc"
 check "reader released its own lock" "no" "$([ -d "$SJ/.lock" ] && echo yes || echo no)"
 
+# a store the reader cannot lock is read lock-free, but a torn last line fails closed
+RO="$ROOT/store-ro"; mkdir "$RO"; cp "$SJ/records.jsonl" "$RO/records.jsonl"; chmod 555 "$RO"
+check "read-only store with an intact file is read" "0" "$(frc bash "$READ" --store "$RO")"
+chmod 755 "$RO"; printf '{"ticket":"HIMMEL-1"}' >> "$RO/records.jsonl"; chmod 555 "$RO"   # valid JSON, newline not yet written
+check "read-only store with a torn last line aborts" "1" "$(frc bash "$READ" --store "$RO")"
+chmod 755 "$RO"
+
+# an unknown run status aborts the whole run (gh's set only)
+cp -R "$GHFIX" "$ROOT/fix-status"
+echo '[{"databaseId":1,"status":"bogus","conclusion":"","createdAt":"2026-01-01T00:00:00Z","startedAt":null,"updatedAt":"2026-01-01T00:00:10Z"}]' > "$ROOT/fix-status/run-feat_himmel-9001-thing.json"
+hs="$(cksum < "$SJ/records.jsonl")"
+check "unknown run status aborts" "1" "$(GHFIX="$ROOT/fix-status" frc jrun --store "$SJ")"
+check "unknown run status left the store byte-identical" "$hs" "$(cksum < "$SJ/records.jsonl")"
+for st in queued in_progress completed waiting requested pending; do
+  echo "[{\"databaseId\":1,\"status\":\"$st\",\"conclusion\":\"\",\"createdAt\":\"2026-01-01T00:00:00Z\",\"startedAt\":null,\"updatedAt\":\"2026-01-01T00:00:10Z\"}]" > "$ROOT/fix-status/run-feat_himmel-9001-thing.json"
+  check "gh status $st is accepted" "0" "$(GHFIX="$ROOT/fix-status" frc jrun --print)"
+done
+
 if [ "$FAIL" -eq 0 ]; then echo "PASS"; else echo "FAILED" >&2; exit 1; fi

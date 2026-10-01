@@ -27,9 +27,12 @@ FILE="$STORE/records.jsonl"
 [ -f "$FILE" ] || { echo "usage-read: no store at $FILE" >&2; exit 1; }
 
 # Take the store lock that usage-compute.sh holds while it appends, so a read
-# never sees a torn last line. A store the reader cannot write has no writer
-# either, so it is read without the lock.
-if [ -w "$STORE" ]; then
+# never sees a torn last line. A store the reader cannot write (a shared or
+# read-only mount) cannot be locked, so it is read without the lock and fails
+# closed on a last line with no newline, the mark of an append in flight.
+if [ ! -w "$STORE" ]; then
+  [ -z "$(tail -c1 "$FILE")" ] || { echo "usage-read: $FILE ends mid-line (writer active on a store this reader cannot lock); retry" >&2; exit 1; }
+else
   LOCK="$STORE/.lock"; n=0
   until mkdir "$LOCK" 2>/dev/null; do
     n=$((n + 1)); [ "$n" -lt 120 ] || { echo "usage-read: store locked: $LOCK (remove it if no run is active)" >&2; exit 1; }
