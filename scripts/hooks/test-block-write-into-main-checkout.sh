@@ -3021,12 +3021,11 @@ check_both "81 fromW: cd wt || cd primary; echo x > a.txt (the cd reached via ||
 # follows the ||, so no cd is reached via a boundary and the cwd stays resolved.
 check_both "82 control: cd wt || exit; echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || exit; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
-# 83/83b (decision): `cd <wt> | cat` runs the cd in a pipeline subshell, so the
-# real cwd never moves. The cd is the pipeline's LEFT side, not reached across
-# a boundary, so it stays modelled: from a wt cwd the write is safe (ALLOW, and
-# correct), from a primary cwd row 50 already denies. A cd on the RIGHT of a |
-# (83b) is reached across the boundary and fails closed.
-check_both "83 fromW: cd wt | cat; echo x > a.txt allows (cd is the pipeline's left side; real cwd stays wt)" allow \
+# 83/83b (decision, rd4): a cd left of a single `|` runs in a pipeline subshell,
+# so the real cwd never moves while the model would move it. The sticky taint
+# marks the cwd UNRESOLVED for both sides of a `|`; `cd <wt> | cat` from the
+# wt cwd is therefore an accepted OVER-DENY (the write would have been safe).
+check_both "83 fromW: cd wt | cat; echo x > a.txt denies (accepted over-deny: cd left of a pipe)" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "83b fromW: echo | cd wt; echo x > a.txt denies (cd reached across a | boundary)" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo | cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
@@ -3054,9 +3053,20 @@ check_both "85h fromW: cd primary || for i in 1; do :; cd wt; done; echo x > a.t
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || for i in 1; do :; cd $FIX/wt; done; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "85i control: cd wt || if true; then exit 1; fi; echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || if true; then exit 1; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
-# 85c (control): the flag ends with the group, so a later cd is judged normally.
+# 85c (control): no cd follows the ||, so the cwd stays resolved.
 check_both "85c control: cd wt || { echo no; exit 1; }; echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || { echo no; exit 1; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 86 (codex-2 rd4): a pipeline-left cd runs in a subshell; after `cd primary` the
+# real cwd is primary, but a tracker that models the left cd would say wt.
+check_both "86 fromW: cd primary; cd wt | cat; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt | cat; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 87 (codex-1 rd4): case arms.
+check_both "87 fromW: cd primary || case x in x) :; cd wt;; esac; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || case x in x) :; cd $FIX/wt;; esac; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 88 (control): a plain && chain keeps the cwd resolved.
+check_both "88 control: cd wt && echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.

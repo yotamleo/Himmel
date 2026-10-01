@@ -493,31 +493,31 @@ _bwimc_blank_heredocs() {
 # are untouched: in both the character before the `|` is `|` or the `|` is
 # followed by `&`, never a bare `>`.
 #
-# HIMMEL-3685: a clause reached across an unquoted `|` or `||` boundary (the
-# `cd <wt>` in `cd <primary> || cd <wt>`) may never run — or, after `|`, runs in
-# a pipeline subshell — so the modelled cwd after it is a guess. Such a clause
-# is emitted with a leading $_BWIMC_PIPE sentinel byte; every consumer strips
-# it with _bwimc_clause_unpipe and passes the flag to _bwimc_ecwd_track. A flag
-# set by `|` survives the blank clause `||` yields and clears at the next
-# non-blank clause. The splitter runs in a process substitution, so the flag
-# travels in the line itself, never in a global.
+# HIMMEL-3685: a cd the model cannot place with certainty — one reached after an
+# unquoted `|`/`||`, after a `(`, or inside an if/while/until/for/select/case/
+# `{` construct (`cd P || cd W`, `cd W | cat`, `( cd W )`, `case x in x) cd W;;`),
+# or one that is the LEFT side of a single `|` — may never run, or runs in a
+# subshell, so the modelled cwd after it is a guess. One blunt, position-free
+# rule, no grammar tracking: once any such trigger is seen the taint is sticky,
+# and every later nonblank clause is emitted with a leading $_BWIMC_PIPE
+# sentinel byte; every consumer strips it with _bwimc_clause_unpipe and passes
+# the flag to _bwimc_ecwd_track, which marks the cwd UNRESOLVED (fail closed).
+# Accepted over-deny: any cd after such a trigger, e.g. `cd W || exit; cd X`.
+# The splitter runs in a process substitution, so the taint travels in the
+# line itself, never in a global the caller reads.
 # \002, not \001: \001 is _bwimc_subst_split's stub marker, counted per clause.
 _BWIMC_PIPE=$'\002'
 _bwimc_sp_pipe=0
-# A flagged clause that opens a `{ ... }` group (`cd P || { :; cd W; }`) keeps
-# the flag for the whole group: _bwimc_sp_grp is the open-brace depth.
-_bwimc_sp_grp=0
 _bwimc_split_emit() {
-    if [ "$_bwimc_sp_pipe" = 1 ] && [ -n "${1//[[:space:]]/}" ]; then
-        printf '%s%s\n' "$_BWIMC_PIPE" "$1"
+    if [ -n "${1//[[:space:]]/}" ]; then
         local _fw="${1#"${1%%[![:space:]]*}"}"
         _fw="${_fw%%[[:space:]]*}"
         case "$_fw" in
-            # `case` is not tracked: its `pat)` arms would unbalance the ( ) count.
-            '{'|if|while|until|for|select) _bwimc_sp_grp=$((_bwimc_sp_grp+1)) ;;
-            '}'|fi|done) [ "$_bwimc_sp_grp" -gt 0 ] && _bwimc_sp_grp=$((_bwimc_sp_grp-1)) ;;
+            '{'|if|while|until|for|select|case) _bwimc_sp_pipe=1 ;;
         esac
-        [ "$_bwimc_sp_grp" -gt 0 ] || _bwimc_sp_pipe=0
+    fi
+    if [ "$_bwimc_sp_pipe" = 1 ] && [ -n "${1//[[:space:]]/}" ]; then
+        printf '%s%s\n' "$_BWIMC_PIPE" "$1"
     else
         printf '%s\n' "$1"
     fi
@@ -534,7 +534,7 @@ _bwimc_clause_unpipe() {
 _bwimc_split_clauses() {
     local text="$1"
     local i=0 len=${#text} c clause="" prevact=""
-    _bwimc_sp_pipe=0 _bwimc_sp_grp=0
+    _bwimc_sp_pipe=0
     _bwimc_scan_init
     while [ "$i" -lt "$len" ]; do
         c="${text:$i:1}"
@@ -545,25 +545,18 @@ _bwimc_split_clauses() {
                     if [ "$prevact" = '>' ]; then
                         clause="${clause}${c}"
                     else
-                        _bwimc_split_emit "$clause"; clause=""; _bwimc_sp_pipe=1
+                        # A single `|` taints its own left clause too (`cd W | cat`
+                        # runs the cd in a subshell); `||` only taints what follows.
+                        if [ "$prevact" != '|' ] && [ "${text:$((i+1)):1}" != '|' ]; then
+                            _bwimc_sp_pipe=1; _bwimc_split_emit "$clause"
+                        else
+                            _bwimc_split_emit "$clause"; _bwimc_sp_pipe=1
+                        fi
+                        clause=""
                     fi
                     ;;
                 ';'|'&'|"$_BWIMC_NL") _bwimc_split_emit "$clause"; clause="" ;;
-                '(')
-                    _bwimc_split_emit "$clause"; clause=""
-                    # `cd P || ( :; cd W )`: a ( reached while the flag is
-                    # pending opens a group the flag must outlive.
-                    [ "$_bwimc_sp_pipe" = 1 ] && _bwimc_sp_grp=$((_bwimc_sp_grp+1))
-                    ;;
-                ')')
-                    if [ "$_bwimc_sp_grp" -gt 0 ]; then
-                        _bwimc_split_emit "$clause"; clause=""
-                        _bwimc_sp_grp=$((_bwimc_sp_grp-1))
-                        [ "$_bwimc_sp_grp" -gt 0 ] || _bwimc_sp_pipe=0
-                    else
-                        clause="${clause}${c}"
-                    fi
-                    ;;
+                '(') _bwimc_split_emit "$clause"; clause=""; _bwimc_sp_pipe=1 ;;
                 *) clause="${clause}${c}" ;;
             esac
         else
