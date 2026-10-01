@@ -117,6 +117,14 @@ python3 "$tool" ticket "${blank[@]}" >"$td/bl.json" 2>"$td/bl.err"; rc=$?
 echo '[{"median_seq": -1, "sigma": 0.45}]' >"$td/ver-neg.json"
 python3 "$tool" version --in "$td/ver-neg.json" >/dev/null 2>"$td/vn.err"; rc=$?
 [ "$rc" -eq 1 ] && grep -q "invalid record" "$td/vn.err" && ok "negative median -> clean refusal" || bad "negative median: rc=$rc"
+for shape in '[null]' '[{"median_seq": 1.0, "sigma": 0.45, "dod": null}]' '{"median_seq": 1.0}'; do
+  echo "$shape" >"$td/ver-shape.json"
+  python3 "$tool" version --in "$td/ver-shape.json" >/dev/null 2>"$td/vs.err"; rc=$?
+  [ "$rc" -eq 1 ] && grep -qE "invalid|no ticket records" "$td/vs.err" && ok "bad shape $shape -> clean refusal" || bad "bad shape $shape: rc=$rc"
+done
+echo '[{"median_seq": "1.0", "sigma": 0.45}]' >"$td/ver-str.json"
+python3 "$tool" version --in "$td/ver-str.json" >/dev/null 2>"$td/vt.err"; rc=$?
+[ "$rc" -eq 1 ] && grep -q "invalid" "$td/vt.err" && ok "numeric string -> clean refusal" || bad "numeric string: rc=$rc"
 echo '[{"median_seq": 1.0}]' >"$td/ver-miss.json"
 python3 "$tool" version --in "$td/ver-miss.json" >/dev/null 2>"$td/vm.err"; rc=$?
 [ "$rc" -eq 1 ] && grep -q "invalid record" "$td/vm.err" && ok "missing sigma -> clean refusal" || bad "missing sigma: rc=$rc"

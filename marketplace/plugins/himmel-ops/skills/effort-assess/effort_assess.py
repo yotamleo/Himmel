@@ -111,28 +111,32 @@ def version(cfg, a):
         rows = json.load(f)
     bps, z = cfg["bank_per_seq"], cfg["percentile_z"]
     tol = cfg["mc_fw_tol"] if a.tol is None else a.tol
-    if not rows:
-        sys.stderr.write("effort-assess: no ticket records in %s\n" % a.infile)
+    if not isinstance(rows, list) or not rows:
+        sys.stderr.write("effort-assess: no ticket records (need a non-empty JSON list) in %s\n" % a.infile)
         return 1
-    refused = [i for i, r in enumerate(rows) if r.get("dod", {}).get("passed") is False]
+
+    def num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+    pairs, invalid, refused = [], [], []
+    for i, r in enumerate(rows):
+        if not isinstance(r, dict) or ("dod" in r and not isinstance(r["dod"], dict)) \
+                or not (num(r.get("median_seq")) and num(r.get("sigma")) and r["median_seq"] > 0 and r["sigma"] >= 0):
+            invalid.append(i)
+        elif r.get("dod", {}).get("passed") is False:
+            refused.append("%d: %s" % (i, ", ".join(map(str, r["dod"].get("failed") or []))))
+        else:
+            pairs.append((float(r["median_seq"]), float(r["sigma"])))
     if refused:
-        sys.stderr.write("effort-assess: REFUSED records in version input (index: failed DoD items): %s\n" % "; ".join(
-            "%d: %s" % (i, ", ".join(rows[i]["dod"].get("failed", []))) for i in refused))
+        sys.stderr.write("effort-assess: REFUSED records in version input (index: failed DoD items): %s\n" % "; ".join(refused))
         return 1
-    def valid(r):
-        try:
-            m, s = float(r["median_seq"]), float(r["sigma"])
-        except (KeyError, TypeError, ValueError):
-            return False
-        return math.isfinite(m) and m > 0 and math.isfinite(s) and s >= 0
-    invalid = [i for i, r in enumerate(rows) if not valid(r)]
     if invalid:
-        sys.stderr.write("effort-assess: invalid record(s) at index %s: need finite median_seq > 0 and sigma >= 0\n"
-                         % ", ".join(map(str, invalid)))
+        sys.stderr.write("effort-assess: invalid record(s) at index %s: need an object with numeric median_seq > 0, "
+                         "sigma >= 0 and, if present, an object dod\n" % ", ".join(map(str, invalid)))
         return 1
     mean = var = 0.0
-    for r in rows:
-        m, s = r["median_seq"] * bps, r["sigma"]
+    for med, s in pairs:
+        m = med * bps
         mean += m * math.exp(s * s / 2)
         var += (math.exp(s * s) - 1) * m * m * math.exp(s * s)
     s2 = math.log(1 + var / (mean * mean))  # Fenton-Wilkinson: the sum as one log-normal
@@ -141,7 +145,7 @@ def version(cfg, a):
         return math.exp(math.log(mean) - s2 / 2 + zq * math.sqrt(s2))
 
     rng = random.Random(cfg["mc_seed"])
-    sums = sorted(sum(r["median_seq"] * bps * math.exp(r["sigma"] * rng.gauss(0, 1)) for r in rows)
+    sums = sorted(sum(med * bps * math.exp(s * rng.gauss(0, 1)) for med, s in pairs)
                   for _ in range(cfg["mc_draws"]))
     out = {
         "config_version": cfg["version"],
