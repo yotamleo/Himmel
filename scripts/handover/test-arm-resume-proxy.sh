@@ -537,6 +537,10 @@ done
 BASH_ABS=$(command -v bash)
 RESTRICTED_PATH="$SCHED_STUB:$NOCURL"
 [ -n "$PY3BIN" ] && [ ! -e "$NOCURL/python3" ] && RESTRICTED_PATH="$RESTRICTED_PATH:$(dirname "$PY3BIN")"
+# HIMMEL-4013: arm-resume resolves its plugin profile with node (fail-closed);
+# CI keeps node outside /usr/bin, so name its dir too.
+NODEBIN=$(command -v node 2>/dev/null || true)
+[ -n "$NODEBIN" ] && [ ! -e "$NOCURL/node" ] && RESTRICTED_PATH="$RESTRICTED_PATH:$(dirname "$NODEBIN")"
 if env PATH="$RESTRICTED_PATH" "$BASH_ABS" -c 'command -v curl' >/dev/null 2>&1; then
     echo "SKIP T9 (curl still resolvable on the restricted PATH; cannot fake a curl-less arm here)"
 else
