@@ -1370,6 +1370,18 @@ rc58d=0
 ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     HIMMEL_PROFILE_SETTINGS_DIR=/dev/null/no-such bash "$C" new --bucket rolerepo4 --dry-run ) >/dev/null 2>&1 || rc58d=$?
 check "58b new --dry-run with an unresolvable console profile: exit 2" "$rc58d" "2"
+# `next` refusal must also remove the claimed successor doc (else a retry dies
+# on "successor doc already exists").
+out58x="$(console new --bucket rolerepo5)"
+token58x="$(token_of "$out58x")"
+doc58xA="$root/tester/rolerepo5/DEMO-nextleg-${today}A-console.md"
+doc58xB="$root/tester/rolerepo5/DEMO-nextleg-${today}B-console.md"
+rc58x=0
+( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HIMMEL_PROFILE_SETTINGS_DIR=/dev/null/no-such bash "$C" next --bucket rolerepo5 ) >/dev/null 2>&1 || rc58x=$?
+check "58b next with an unresolvable console profile: exit 2" "$rc58x" "2"
+check "58b next refusal: successor doc removed" "$([ -e "$doc58xB" ] && echo 1 || echo 0)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc58xA" "$token58x" >/dev/null 2>&1
 
 # --- 60: HIMMEL-2973 Delta 6 -- `next` copies the predecessor's
 # `## Live state` verbatim into the successor's HANDOFF `## In flight`

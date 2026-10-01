@@ -1373,9 +1373,11 @@ cmd_next() {
             exit 1
         fi
     fi
-    trap - EXIT
-
+    # HIMMEL-4052: resolved BEFORE the cleanup trap is cleared, so a profile
+    # refusal (exit 2) removes the claimed successor doc and a retry is not
+    # blocked by "successor doc already exists".
     launch_line=$(launch_cmd "$session" "$doc") || exit $?
+    trap - EXIT
     echo "launch: $launch_line"
 
     if [ "$ARM" -eq 1 ]; then
