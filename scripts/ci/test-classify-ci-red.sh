@@ -83,12 +83,19 @@ clear_markers
 mkdir -p "$T/markers"
 printf 'evidence=npm audit\npr=3\nhead=deadbeef\n' > "$T/markers/unit_tests__widget_parser"
 printf 'FAIL: widget parser\n' > "$T/job.log"
+printf 'diff --git a/scripts/other.sh b/scripts/other.sh\n+echo hi\n' > "$T/unrelated.diff"
 RC=0
-OUT=$(MAIN_RED_MARKER_DIR="$T/markers" CLASSIFY_DIFF_FILE="$T/does-not-exist" \
+OUT=$(MAIN_RED_MARKER_DIR="$T/markers" CLASSIFY_DIFF_FILE="$T/unrelated.diff" \
     bash "$SCRIPT" --log "$T/job.log" --job "unit tests" --case "widget parser" 2>&1) || RC=$?
 eq "3: an existing marker exits 0 before any diagnosis" 0 "$RC"
 has "via marker" "$OUT" "3: deciding step is the marker"
 has "pr=3" "$OUT" "3: prints the first leg's evidence"
+
+# 3a. an unreadable diff cannot show the marker still applies: PR-RED, not MAIN-RED.
+RC=0
+MAIN_RED_MARKER_DIR="$T/markers" CLASSIFY_DIFF_FILE="$T/does-not-exist" \
+    bash "$SCRIPT" --log "$T/job.log" --job "unit tests" --case "widget parser" >/dev/null 2>&1 || RC=$?
+eq "3a: an unreadable diff never trusts a marker" 1 "$RC"
 
 # 3b. a marker is keyed on job+case only: when THIS PR's diff references the case
 #     the marker is ignored (another PR's verdict does not excuse this one).
@@ -102,6 +109,27 @@ eq "3b: a marker is ignored when the PR diff references the case" 1 "$RC"
 # 4. usage: no --log is a usage error (64), never a verdict.
 RC=0; OUT=$(bash "$SCRIPT" --job x 2>&1) || RC=$?
 eq "4: missing --log exits 64" 64 "$RC"
+
+# 4a. --job and --case are required: without them a signature hit would write a
+#     shared marker named `__`.
+RC=0; OUT=$(bash "$SCRIPT" --log "$T/job.log" 2>&1) || RC=$?
+eq "4a: missing --job/--case exits 64" 64 "$RC"
+
+# 4c. a lockfile change also bars the diff heuristic: an unchanged case can be
+#     broken by a changed dependency.
+clear_markers
+run "FAIL: widget parser case 7" "diff --git a/package-lock.json b/package-lock.json
++x" "widget parser"
+eq "4c: the diff heuristic is not used when the PR changes a lockfile" 1 "$RC"
+
+# 4d. a signature only in the early part of a long log is not the failure.
+clear_markers
+{ echo "npm audit found 1 high severity vulnerabilities"; i=0; while [ "$i" -lt 250 ]; do echo "line $i"; i=$((i+1)); done; echo "FAIL: widget parser"; } > "$T/long.log"
+printf 'diff --git a/scripts/widget.sh b/scripts/widget.sh\n+# widget parser\n' > "$T/diff.txt"
+RC=0
+OUT=$(MAIN_RED_MARKER_DIR="$T/markers" CLASSIFY_DIFF_FILE="$T/diff.txt" \
+    bash "$SCRIPT" --log "$T/long.log" --job "unit tests" --case "widget parser" 2>&1) || RC=$?
+eq "4d: a signature outside the log tail is ignored" 1 "$RC"
 
 # 4b. an option with no value is a usage error, not an endless loop (bounded by
 #     timeout: a hang reads as 124, not 64).

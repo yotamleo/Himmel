@@ -55,7 +55,7 @@ while [ $# -gt 0 ]; do
         *) echo "classify-ci-red: unknown argument: $1" >&2; exit 64 ;;
     esac
 done
-if [ -z "$log" ] || [ ! -r "$log" ]; then
+if [ -z "$log" ] || [ ! -r "$log" ] || [ -z "$job" ] || [ -z "$cs" ]; then
     usage
 fi
 
@@ -99,16 +99,18 @@ if [ "$have" = 1 ]; then
 fi
 
 # 1. MARKER — read before diagnosing anything.
-if [ -n "$marker" ] && [ -r "$marker" ] && [ "$refs" = 0 ]; then
+if [ -n "$marker" ] && [ -r "$marker" ] && [ "$have" = 1 ] && [ "$refs" = 0 ]; then
     main_red marker "$(tr '\n' ' ' < "$marker")"
 fi
 
 # 2. SIGNATURE
 sigs="${CLASSIFY_SIGNATURES:-$DIR/main-red-signatures.txt}"
-if [ "$deps" = 0 ] && [ -r "$sigs" ]; then
+if [ "$have" = 1 ] && [ "$deps" = 0 ] && [ -r "$sigs" ]; then
     pat=$(grep -vE '^[[:space:]]*(#|$)' "$sigs")
     if [ -n "$pat" ]; then
-        hit=$(grep -iE -m1 -e "$pat" "$log" 2>/dev/null) || hit=""
+        # The failure summary sits at the end of a job log; an earlier non-fatal
+        # match (an audit summary, an expected ENOTFOUND in test output) is not it.
+        hit=$(tail -n 200 "$log" 2>/dev/null | grep -iE -m1 -e "$pat") || hit=""
         if [ -n "$hit" ]; then
             write_marker "signature: $hit"
             main_red signature "$hit"
@@ -118,7 +120,7 @@ fi
 
 # 3. DIFF — only decidable with a case name and a readable diff. No marker: the
 #    verdict is a heuristic and a marker would carry it to every later PR.
-if [ -n "$cs" ] && [ "$have" = 1 ] && [ "$refs" = 0 ]; then
+if [ "$have" = 1 ] && [ "$refs" = 0 ] && [ "$deps" = 0 ]; then
     main_red diff "case '$cs' is untouched by and unreferenced from the PR diff (heuristic: confirm no shared dependency of the case changed)"
 fi
 
