@@ -168,7 +168,11 @@ assert 'fork' not in co
 
 qmd = entries['qmd']
 assert qmd['tracked_repo'] == 'tobi/qmd'
-assert 'fork' not in qmd
+# HIMMEL-3956 re-carried the fork (launcher signal forwarding) until
+# tobi/qmd#1030 lands; HIMMEL-3982 drops this block again.
+assert qmd['fork']['fork_repo'] == 'https://github.com/yotamleo/qmd.git'
+assert qmd['fork']['upstream_repo'] == 'https://github.com/tobi/qmd.git'
+assert qmd['fork']['pin_file'] == 'scripts/lib/qmd-bin.sh'
 assert 'version_pin' not in qmd
 
 plugin_root = root / 'templates/luna-second-brain/.obsidian/plugins'
@@ -212,7 +216,7 @@ PY
 )"
 audit_rc=$?
 if [ "$audit_rc" -eq 0 ]; then
-  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd (plain pin, de-forked HIMMEL-3045), the five default-installed luna plugins + the opt-in github-sync (HIMMEL-3066), scripts/lib pins, codex dynamic discovery, and explicit skips"
+  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd (carried fork, HIMMEL-3956), the five default-installed luna plugins + the opt-in github-sync (HIMMEL-3066), scripts/lib pins, codex dynamic discovery, and explicit skips"
 else
   bad "zero-gap inventory invalid: $audit_out"
 fi

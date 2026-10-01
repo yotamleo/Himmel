@@ -807,39 +807,16 @@ validate_arm_inputs() {
     # one would wedge `arm` forever with no output — a worse outcome than the
     # broken stub this check exists for, since the operator gets nothing to act
     # on. qmd opens a SQLite index that another process may hold, so a stall is
-    # a live possibility, not a hypothetical. `timeout` is used when present and
-    # the call degrades to a direct invocation when it is not (macOS ships no
-    # coreutils `timeout` by default) — the same graceful-degrade convention
-    # critic-panel.sh uses for its per-member cap.
-    # Build the probe as ONE argv rather than branching timeout × QMD_JS into
-    # four near-identical invocations — four copies of the same command line is
-    # four places for a future change to half-land. The array is never empty
-    # (QMD_BIN is always appended), so "${probe_cmd[@]}" is safe under set -u.
+    # a live possibility, not a hypothetical. The bound is qmd_bounded
+    # (HIMMEL-3956), not timeout(1): timeout returns when qmd's node launcher
+    # dies and orphans its bun child, and on Git Bash PATH can resolve Windows'
+    # timeout.exe, which is a sleep, not a command runner.
+    # Build the probe as ONE argv rather than branching on QMD_JS — two copies
+    # of the same command line is two places for a future change to half-land.
     local probe_out probe_rc=0 probe_timeout="${QMD_PROBE_TIMEOUT_SECS:-60}"
-    local probe_cmd=()
-    # `command -v timeout` is NOT enough on Git Bash (public-PR CR). Windows
-    # ships C:\Windows\System32\timeout.exe, which is a SLEEP, not a command
-    # runner: it has no -k and takes no subcommand. If PATH resolves to that one,
-    # `timeout -k 5 60 qmd collection list` fails instantly, the probe reports a
-    # perfectly healthy qmd as HUNG, and `arm` is blocked on a supported
-    # platform — a false negative that sends the operator hunting an index lock
-    # that does not exist.
-    #
-    # Only GNU coreutils names itself in --version (the Windows one answers with
-    # an "Invalid value for timeout (/T)" error on stderr and nothing on stdout),
-    # so that is the discriminator. Captured into a variable rather than piped
-    # into grep -q: an early-exiting reader can SIGPIPE the producer, and under
-    # `set -o pipefail` that would read as "not GNU" and silently drop the
-    # bounded probe on the very hosts that have it.
-    local _timeout_ver=""
-    _timeout_ver="$(timeout --version 2>/dev/null || true)"
-    case "$_timeout_ver" in
-        *oreutils*) probe_cmd=(timeout -k 5 "$probe_timeout") ;;
-        *)          : ;;   # absent, or Windows timeout.exe -> run the probe UNBOUNDED rather than break it
-    esac
-    probe_cmd+=("$QMD_BIN")
+    local probe_cmd=("$QMD_BIN")
     [ -n "$QMD_JS" ] && probe_cmd+=("$QMD_JS")
-    probe_out=$("${probe_cmd[@]}" collection list 2>&1) || probe_rc=$?
+    probe_out=$(qmd_bounded "$probe_timeout" "${probe_cmd[@]}" collection list 2>&1) || probe_rc=$?
     if [ "$probe_rc" -ne 0 ]; then
         {
             # 124/137 are timeout's own codes — name that case, because "rc=124"

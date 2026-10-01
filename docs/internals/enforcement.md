@@ -2179,6 +2179,23 @@ The brief-level twin is `STASH_BAN_LINE` in the lane worker prompts. Fails
 CLOSED on missing `jq` or malformed JSON. Bypass: `GIT_STASH_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-git-stash.sh`.
 
+### `block-bare-qmd-query.sh` — unbounded qmd search verbs (HIMMEL-3960, HIMMEL-3956)
+
+Fires on Bash. The qmd launcher is a node trampoline that forwards no signals,
+so a `timeout N qmd query …` kills node and orphans the bun child; five such
+orphans ran at ~99 % CPU for ~15 h. Refuses `qmd query|search|vsearch` at
+COMMAND POSITION (the `block-git-stash.sh` grammar, widened to wrappers such as
+`timeout`, `env`, `nice`, `setsid`, `xargs`, `sh -c` and a `bun`/`node`/`npx`
+runtime prefix, and stepping over global options before the verb). Other verbs
+(`status`, `update`, `embed`, `get`) and non-command-position text
+(`grep 'qmd query' log`) pass. The deny names the bounded replacement,
+`bash scripts/lib/qmd-bounded.sh <verb> …` (deadline `$QMD_TIMEOUT_SECS`, else
+300 s, killing the whole process group), or the `mcp__qmd__query` tool. A
+must-run chain member in `run-hook-with-bash.js`: a starved run denies. Fails
+CLOSED on missing `jq` or malformed JSON. PowerShell is unguarded (ponytail in
+the hook). Bypass: `QMD_UNBOUNDED_OK=1` (launching shell). Spec:
+`scripts/hooks/test-block-bare-qmd-query.sh`.
+
 ### `guard-pr-check-literal.sh` — relative `scripts/cr/` gate spellings (HIMMEL-3383, HIMMEL-3495)
 
 Every leg profile allow-lists `bash scripts/cr/pr-check-context.sh` and
@@ -3758,8 +3775,8 @@ rather than an unbounded call. The GNU part is load-bearing on Windows:
 *sleep*, not a command runner — invoking it GNU-style fails instantly, and the
 hook would read that as the guard's own rc 1 and print a MISCONFIGURED
 advisory blaming the operator's env vars while never checking the index.
-`qmd-cadence.sh`'s liveness probe carries the same `timeout --version` /
-`*oreutils*` discriminator for the same reason. The distinction is not academic: the
+`qmd-cadence.sh`'s liveness probe sidesteps the question entirely: it runs
+under `qmd_bounded` (HIMMEL-3956), which needs no `timeout` binary. The distinction is not academic: the
 SessionStart entry's own timeout bounds the hang by killing the hook *process*,
 and the hook prints nothing until the guard returns — so an unbounded fallback
 meant a hung qmd took the warning down with it and the session heard silence on

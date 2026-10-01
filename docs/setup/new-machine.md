@@ -1273,9 +1273,11 @@ same PHI-tier refusal, but subtree-wide.
 qmd is a local markdown search engine (BM25 + vector + rerank). himmel's clone
 runs it as a **shared HTTP daemon** (`localhost:8181`, HIMMEL-592) auto-brought-up
 by the `qmd` plugin's SessionStart hook, so every session shares one read-only
-index. The standalone CLI installs from a **local clone of upstream
-`tobi/qmd`** (HIMMEL-3045 — previously a himmel-owned fork, `yotamleo/qmd`,
-until its carried fixes landed upstream), pinned to an immutable commit SHA
+index. The standalone CLI installs from a **local clone of the carried fork
+`yotamleo/qmd`** until tobi/qmd#1029 is fixed upstream (HIMMEL-3956: the
+launcher forwards signals to bun, upstream PR tobi/qmd#1030; HIMMEL-3982 pins
+back to `tobi/qmd`, and re-running the install re-points an existing clone's
+origin in place), pinned to an immutable commit SHA
 rather than a mutable branch (HIMMEL-911) — never `bun add -g @tobilu/qmd`
 directly, which EPERM-wedges on this project's machines (zombie `qmd mcp`
 stdio processes hold locks) and bun blocks its postinstall script
