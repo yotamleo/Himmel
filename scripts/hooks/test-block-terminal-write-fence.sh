@@ -113,6 +113,8 @@ check "round 7 NUL hex ends the segment, Of joins" block '{"tool_name":"Bash","t
 check "round 8 single-quoted decoy" block '{"tool_name":"Bash","tool_input":{"command":"echo '"'"'$'"'"' ; git config $'"'"'url.x.\\x69nsteadOf'"'"' y","cwd":"'"$SWR"'"}}'
 check "round 8 double-quoted decoy" block '{"tool_name":"Bash","tool_input":{"command":"echo \"$'"'"'\" ; git config $'"'"'url.x.\\x69nsteadOf'"'"' y","cwd":"'"$SWR"'"}}'
 check "round 8 comment decoy" block '{"tool_name":"Bash","tool_input":{"command":"# $'"'"'\ngit config $'"'"'url.x.\\x69nsteadOf'"'"' y","cwd":"'"$SWR"'"}}'
+check "round 9 decoy + split executable" block '{"tool_name":"Bash","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config url.x.insteadOf y","cwd":"'"$SWR"'"}}'
+check "round 9 decoy + split executable + escaped key" block '{"tool_name":"Bash","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config $'"'"'url.x.\\x69nsteadOf'"'"' y","cwd":"'"$SWR"'"}}'
 check "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'","cwd":"'"$SWR"'"}}'
 check "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'","cwd":"'"$SWR"'"}}'
 check "config user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.name x","cwd":"'"$SWR"'"}}'

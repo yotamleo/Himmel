@@ -2069,7 +2069,7 @@ ansic_decode() {
     }
     { s = (NR > 1 ? s "\n" : "") $0 }
     END {
-        q = "\047"; n = length(s); i = 1; out = ""; bad = 0
+        q = "\047"; n = length(s); i = 1; out = ""; bad = 0; cnt = 0
         while (i <= n) {
             c = substr(s, i, 1)
             if (c != "$" || substr(s, i + 1, 1) != q) { out = out c; i++; continue }
@@ -2079,10 +2079,16 @@ ansic_decode() {
         # over-approximation: a decoy opener inside quotes/comments can swallow a real segment above,
         # so every opener is also decoded on its own and appended (no quote-state lexer).
         for (p = 1; p < n; p++) {
-            if (substr(s, p, 1) == "$" && substr(s, p + 1, 1) == q) { cand = cdec(p + 2); out = out " " cand }
+            if (substr(s, p, 1) == "$" && substr(s, p + 1, 1) == q) {
+            # one variant per opener: ONLY candidate p decoded in place, the rest left raw
+            if (++cnt > 64) continue
+            cand = cdec(p + 2)
+            out = out " " cand " " substr(s, 1, p - 1) cand substr(s, ni)
+        }
         }
         printf "%s", out
         if (bad) printf " insteadof "
+    if (cnt > 64) printf " git insteadof "
     }'
 }
 cmd_dq=$(printf '%s' "$cmd_joined" | ansic_decode | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;' | LC_ALL=C tr -d "'\"\\\\")

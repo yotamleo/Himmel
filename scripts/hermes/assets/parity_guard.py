@@ -1041,10 +1041,18 @@ def _ansi_c_decode(s: str) -> str:
         out.append(text)
         if seg_bad or not closed:
             bad = True
+    cnt = 0
     for p in range(n - 1):
         if s[p] == "$" and s[p + 1] == "'":
-            out.append(" " + _ansi_c_segment(s, p + 2)[0])
+            cnt += 1
+            if cnt > 64:
+                continue
+            # one variant per opener: ONLY candidate p decoded in place, the rest left raw
+            cand, j, _closed, _bad = _ansi_c_segment(s, p + 2)
+            out.append(" " + cand + " " + s[:p] + cand + s[j:])
     text = "".join(out)
+    if cnt > 64:
+        text += " git insteadof "
     return text + " insteadof " if bad else text
 
 
