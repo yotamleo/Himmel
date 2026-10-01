@@ -1771,6 +1771,9 @@ STUB
     p4051_out="$p4051/out-nolauncher"
     contains 'a missing launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER=no-such-launcher-4059 t4051)" ' plan-index=FAIL:no-launcher'
     [ -s "$p4051_out/.last-fail" ] && pass 'a missing launcher writes .last-fail (HIMMEL-4059)' || fail 'no .last-fail for a missing launcher (HIMMEL-4059)'
+    # one installed word must not mask a missing one (codex-1: command -v passes if ANY operand exists)
+    rm -rf "$p4051_out"
+    contains 'a half-installed launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER='env no-such-launcher-4059' t4051)" ' plan-index=FAIL:no-launcher'
     p4051_out="$p4051_out_save"
 else
     skip 'plan-index= rows: no python3'

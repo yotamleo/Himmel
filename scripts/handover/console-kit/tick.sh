@@ -907,7 +907,9 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         elif mkdir -p "$pi_out" 2>/dev/null; then
             rm -f "$pi_out/.last-run"
             read -r -a pi_launcher <<<"${TICK_PLAN_INDEX_LAUNCHER:-setsid nohup}"
-            if command -v "${pi_launcher[@]}" >/dev/null 2>&1; then
+            pi_have=1
+            for pi_w in "${pi_launcher[@]}"; do command -v "$pi_w" >/dev/null 2>&1 || pi_have=0; done  # command -v with several operands passes if ANY exists
+            if [ "$pi_have" = 1 ]; then
                 "${pi_launcher[@]}" bash "$HERE/plan-index-launch.sh" "$pi_out" bash "$HERE/../../roadmap/plan-index.sh" --refresh "${pi_args[@]}" </dev/null >/dev/null 2>&1 &
                 plan_index_summary=REFRESHING
             else
