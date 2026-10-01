@@ -95,6 +95,10 @@ check "pr only title-matched" "[77]" "$(printf '%s' "$rec" | jq -c '.pr.numbers'
 # 3b. a failed gh run list is null ci, never zero; unavailable avail is not a round
 sed 's/\*"run list"\*) echo .*;;/*"run list"*) exit 1 ;;/' "$ROOT/bin/gh" > "$ROOT/bin/gh-nociruns"; chmod +x "$ROOT/bin/gh-nociruns"
 check "failed run list gives null ci" "null" "$(run --print --gh "$ROOT/bin/gh-nociruns" | jq -c 'select(.ticket=="HIMMEL-9001")|.ci')"
+sed 's/feat: \[HIMMEL-9001\] thing/HIMMEL-9001: thing/' "$ROOT/bin/gh" > "$ROOT/bin/gh-unbracketed"; chmod +x "$ROOT/bin/gh-unbracketed"
+check "unbracketed title still joins" "[77]" "$(run --print --gh "$ROOT/bin/gh-unbracketed" | jq -c 'select(.ticket=="HIMMEL-9001")|.pr.numbers')"
+sed 's/"startedAt":"2026-01-01T00:10:00Z"/"startedAt":"garbage"/' "$ROOT/bin/gh" > "$ROOT/bin/gh-badts"; chmod +x "$ROOT/bin/gh-badts"
+check "bad run timestamp gives null ci" "null" "$(run --print --gh "$ROOT/bin/gh-badts" | jq -c 'select(.ticket=="HIMMEL-9001")|.ci')"
 printf '%s\n' '{"kind":"avail","ts":"2026-01-01T03:00:00Z","branch":"feat/himmel-9001-thing","head":"h3","model":"codex","status":"unavailable"}' >> "$LEDGER"
 check "unavailable avail not a round" "2" "$(run --print | jq -r 'select(.ticket=="HIMMEL-9001")|.cr.rounds')"
 

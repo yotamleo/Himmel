@@ -81,6 +81,8 @@ if [ "$PRINT" != 1 ]; then
   done
   trap 'rmdir "$LOCK" 2>/dev/null; rm -rf "$WORK"' EXIT
 fi
+# a signal exits through the EXIT trap, so the lock never outlives the run
+trap 'exit 130' INT TERM HUP
 
 # --- 1. per-session tokens (reuse bank-attribution, do not re-parse JSONL) --
 BA_ARGS=("$PROJECTS")
@@ -155,7 +157,7 @@ PRCI='{}'
 for t in $(jq -r '.[].ticket | select(startswith("_") | not)' "$WORK/base.json"); do
   if prs="$($GH pr list --state all --search "$t in:title" --json number,title,headRefName,createdAt,mergedAt,state --limit 50 2>/dev/null)" \
       && printf '%s' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1; then
-    prs="$(printf '%s' "$prs" | jq -c --arg t "[$t]" '[.[] | select(.title | contains($t))]')"
+    prs="$(printf '%s' "$prs" | jq -c --arg t "$t" '[.[] | select(.title | test("(^|[^A-Za-z0-9-])" + $t + "([^0-9]|$)"))]')"
     runs='[]'; cifail=0
     for b in $(printf '%s' "$prs" | jq -r '[.[].headRefName] | unique | .[]'); do
       r="$($GH run list --branch "$b" --json startedAt,updatedAt --limit 200 2>/dev/null)" || { cifail=1; r='[]'; }
@@ -170,9 +172,10 @@ for t in $(jq -r '.[].ticket | select(startswith("_") | not)' "$WORK/base.json")
               outcome: (if ($prs | length) == 0 then null
                         elif any($prs[]; .state == "MERGED") then "MERGED"
                         elif any($prs[]; .state == "OPEN") then "OPEN" else "CLOSED" end) },
-        ci: (if $cifail == 1 then null else
-             { runs: ($runs | length),
-               secs: ([$runs[] | select(.startedAt != null and .updatedAt != null) | (.updatedAt | ts) - (.startedAt | ts)] | add // 0) } end) }')"
+        ci: (([$runs[] | select(.startedAt != null and .updatedAt != null)
+                       | (try ((.updatedAt | ts) - (.startedAt | ts)) catch null)]) as $d
+             | if $cifail == 1 or any($d[]; . == null) then null
+               else { runs: ($runs | length), secs: ($d | add // 0) } end) }')"
   else
     one='{"pr":null,"ci":null}'
   fi
