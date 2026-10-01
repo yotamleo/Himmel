@@ -970,66 +970,80 @@ def _ansi_c_code(code: int) -> str:
     return chr(code) if 0 <= code < 128 else "#"
 
 
+def _ansi_c_segment(s: str, i: int):
+    """Decode one ANSI-C body starting at s[i] (just past a dollar-quote opener) up to the
+    next unescaped single quote. Returns (text, next_index, closed, bad). A NUL escape ends
+    the string (bash truncates there): the rest is dropped, the text after the closing quote
+    is kept by the caller."""
+    n, seg, closed, bad = len(s), [], False, False
+    while i < n:
+        c = s[i]
+        if c == "'":
+            closed = True
+            i += 1
+            break
+        if c != "\\":
+            seg.append(c)
+            i += 1
+            continue
+        e = s[i + 1:i + 2]
+        i += 2
+        if not e:
+            bad = True
+            break
+        if e in _ANSI_SIMPLE:
+            seg.append(_ANSI_SIMPLE[e])
+        elif e in "01234567":
+            d = 1
+            v = int(e)
+            while d < 3 and s[i:i + 1] and s[i] in "01234567":
+                v = v * 8 + int(s[i])
+                i += 1
+                d += 1
+            seg.append(_ansi_c_code(v % 256))
+        elif e in _ANSI_HEX:
+            d = 0
+            v = 0
+            while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
+                v = v * 16 + int(s[i], 16)
+                i += 1
+                d += 1
+            if d == 0:
+                bad = True
+            seg.append(_ansi_c_code(v))
+        elif e == "c":
+            if i >= n:
+                bad = True
+            else:
+                i += 1
+            seg.append("#")
+        else:
+            seg.append("\\" + e)
+    text = "".join(seg)
+    return (text.split("\x00", 1)[0], i, closed, bad)
+
+
 def _ansi_c_decode(s: str) -> str:
     """Decode every ANSI-C dollar-quote segment with bash's own finite escape set
     (HIMMEL-844). An unterminated / undecodable segment appends ` insteadof `, so the
     caller's `git` + `insteadof` rule denies (deny-leaning). Code points >= 128 become
-    a placeholder: only ASCII words matter to the rule."""
+    a placeholder: only ASCII words matter to the rule. Over-approximation: there is no
+    quote-state lexer, so a decoy dollar-quote inside '...', "..." or a comment can swallow
+    a real segment in the in-line pass; every opener is therefore ALSO decoded on its own and
+    appended, and the caller's rule runs on the union."""
     out, i, n, bad = [], 0, len(s), False
     while i < n:
         if not (s[i] == "$" and s[i + 1:i + 2] == "'"):
             out.append(s[i])
             i += 1
             continue
-        i += 2
-        closed = False
-        seg = []
-        while i < n:
-            c = s[i]
-            if c == "'":
-                closed = True
-                i += 1
-                break
-            if c != "\\":
-                seg.append(c)
-                i += 1
-                continue
-            e = s[i + 1:i + 2]
-            i += 2
-            if not e:
-                bad = True
-                break
-            if e in _ANSI_SIMPLE:
-                seg.append(_ANSI_SIMPLE[e])
-            elif e in "01234567":
-                d = 1
-                v = int(e)
-                while d < 3 and s[i:i + 1] and s[i] in "01234567":
-                    v = v * 8 + int(s[i])
-                    i += 1
-                    d += 1
-                seg.append(_ansi_c_code(v % 256))
-            elif e in _ANSI_HEX:
-                d = 0
-                v = 0
-                while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
-                    v = v * 16 + int(s[i], 16)
-                    i += 1
-                    d += 1
-                if d == 0:
-                    bad = True
-                seg.append(_ansi_c_code(v))
-            elif e == "c":
-                if i >= n:
-                    bad = True
-                else:
-                    i += 1
-                seg.append("#")
-            else:
-                seg.append("\\" + e)
-        out.extend(seg[:seg.index("\x00")] if "\x00" in seg else seg)
-        if not closed:
+        text, i, closed, seg_bad = _ansi_c_segment(s, i + 2)
+        out.append(text)
+        if seg_bad or not closed:
             bad = True
+    for p in range(n - 1):
+        if s[p] == "$" and s[p + 1] == "'":
+            out.append(" " + _ansi_c_segment(s, p + 2)[0])
     text = "".join(out)
     return text + " insteadof " if bad else text
 
