@@ -547,8 +547,15 @@ done <<< "$changed"
 # (`"$dir/$name"`) and a backslash-continued `source \` are not followed —
 # upgrade path is a real dataflow pass if a T6 selector-miss row shows one.
 varsrc="$work/varsrc"   # every .sh file that sources a "$variable"
+# HIMMEL-3963: the start of a source-edge match. The keyword is preceded by the
+# line start / an indent, or by a separator after a first character that is not
+# `#` — so the word "source" in a full-line comment (bank-preflight.sh:
+# "# Same source and spelling as tick.sh's ...") is prose, never an edge. Only a
+# line whose first non-blank character is `#` is skipped: a `#` later in a line
+# (a quoted string, a trailing comment after a real source) never hides one.
+src_lead='(^[[:space:]]*[({]?|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
 grep_rc=0
-git -c core.quotepath=off grep -l -E '(^|[[:space:];&|({])(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
+git -c core.quotepath=off grep -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
 if [ "$grep_rc" -gt 1 ]; then
     echo "impacted-suites: git grep failed (rc=$grep_rc) listing variable-sourcing files — cannot tell which suites are impacted" >&2
     exit 2
@@ -569,7 +576,7 @@ while [ -s "$front" ]; do
     : > "$work/asgpats"
     : > "$work/dirpats"
     while IFS= read -r f; do
-        { printf '(^|[[:space:];&|({])(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
+        { printf '%s(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?' "$src_lead"; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
         { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
         { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
     done < "$front"
