@@ -207,7 +207,10 @@ for a relay that is not coming.
   (HIMMEL-3020). The one exception is a denied `scripts/cr/` call spelled
   with an absolute `<himmel_dir>` path (the `/pr-check` marker panel): retry it
   ONCE as the relative literal `bash scripts/cr/<script>.sh <args>` from the
-  worktree root before it goes to the console (HIMMEL-4040).
+  worktree root before it goes to the console (HIMMEL-4040) — only in a himmel
+  worktree root whose `scripts/cr/` matches the `HIMMEL_REPO` anchor's (the
+  condition `guard-pr-check-literal.sh` enforces); in an adopter or drifted
+  checkout keep the absolute spelling.
 - First choice for opening or updating a PR is
   `bash scripts/lanes/leg-pr-open.sh <title-file> <body-file>` (HIMMEL-3031):
   title and body are files, so the Bash command a leg types is always the
