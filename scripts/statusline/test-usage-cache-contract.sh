@@ -225,7 +225,7 @@ run_test "(4a) producer(Branch B) -> bank-preflight: PROCEED below threshold" '
   mk_empty_fleet_stub "$W";
   v=$(CADENCE_BANK_CACHE="$W/cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/l.jsonl" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" HIMMEL_FLEET_SLOTS="$W/slots" HIMMEL_FLEET_CAP=4 bash "$PREFLIGHT" </dev/null 2>"$W/pf.err");
   [ "$v" = "PROCEED" ] || exit 1;
-  grep -q "FLEET native=0 claudex=0 reserved=0 total=0/4" "$W/pf.err" || exit 1;
+  grep -q "FLEET native=0 claudex=0 openrouter=0 reserved=0 total=0/4" "$W/pf.err" || exit 1;
 '
 
 run_test "(4b) producer(Branch B) -> bank-preflight: SKIPPED-BANK above threshold" '
@@ -235,7 +235,7 @@ run_test "(4b) producer(Branch B) -> bank-preflight: SKIPPED-BANK above threshol
   mk_empty_fleet_stub "$W";
   v=$(CADENCE_BANK_CACHE="$W/cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/l.jsonl" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" HIMMEL_FLEET_SLOTS="$W/slots" HIMMEL_FLEET_CAP=4 bash "$PREFLIGHT" </dev/null 2>"$W/pf.err");
   [ "$v" = "SKIPPED-BANK" ] || exit 1;
-  grep -q "FLEET native=0 claudex=0 reserved=0 total=0/4" "$W/pf.err" || exit 1;
+  grep -q "FLEET native=0 claudex=0 openrouter=0 reserved=0 total=0/4" "$W/pf.err" || exit 1;
 '
 
 run_test "(4c) HIMMEL-1866: partial fetch cannot make stale seven_day fresh" '
@@ -251,7 +251,7 @@ run_test "(4c) HIMMEL-1866: partial fetch cannot make stale seven_day fresh" '
   mk_empty_fleet_stub "$W";
   v=$(CADENCE_BANK_CACHE="$CLAUDE_USAGE_CACHE" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_MAX_AGE=60 CADENCE_BANK_LEDGER="$W/l.jsonl" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" HIMMEL_FLEET_SLOTS="$W/slots" HIMMEL_FLEET_CAP=4 bash "$PREFLIGHT" </dev/null 2>"$W/pf.err");
   [ "$v" = "BANK-STALE" ] || exit 1;
-  grep -q "FLEET native=0 claudex=0 reserved=0 total=0/4" "$W/pf.err" || exit 1;
+  grep -q "FLEET native=0 claudex=0 openrouter=0 reserved=0 total=0/4" "$W/pf.err" || exit 1;
 '
 
 # --- HIMMEL-1712: account-mismatched cache -> every DECISION consumer treats it as UNKNOWN, preserving its own existing missing/unusable-cache contract exactly ---
