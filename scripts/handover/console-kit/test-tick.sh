@@ -1774,6 +1774,8 @@ STUB
     # one installed word must not mask a missing one (codex-1: command -v passes if ANY operand exists)
     rm -rf "$p4051_out"
     contains 'a half-installed launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER='env no-such-launcher-4059' t4051)" ' plan-index=FAIL:no-launcher'
+    rm -rf "$p4051_out"
+    contains 'a blank launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER=' ' t4051)" ' plan-index=FAIL:no-launcher'
     p4051_out="$p4051_out_save"
 else
     skip 'plan-index= rows: no python3'
