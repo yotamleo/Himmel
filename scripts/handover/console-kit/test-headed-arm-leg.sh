@@ -2931,7 +2931,7 @@ check "41h consult sandbox allowWrite is exactly the consult doc FILE" "$(printf
 # bypassPermissions cannot reach it; flag scope outranks user/project/local.
 check "41j consult settings pin CLAUDE_CODE_SUBPROCESS_ENV_SCRUB to 0" "$(printf '%s' "$cset41" | jq -r '.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB' 2>/dev/null)" "0"
 check "41j consult settings pin permissions.defaultMode to auto" "$(printf '%s' "$cset41" | jq -r '.permissions.defaultMode' 2>/dev/null)" "auto"
-check "41h consult sandbox denyWrite is the repo""$(printf '%s' "$cset41" | jq -c '.sandbox.filesystem.denyWrite' 2>/dev/null)" "[\"$(cd -P "$tmp/repo41c" && pwd -P)\"]"
+check "41h consult sandbox denyWrite is the repo" "$(printf '%s' "$cset41" | jq -c '.sandbox.filesystem.denyWrite' 2>/dev/null)" "[\"$(cd -P "$tmp/repo41c" && pwd -P)\"]"
 d41n="$tmp/c41n"; mk_launch_stubs "$d41n" "HIMMEL-4061-n"
 RUN_LEG_ARGS="--profile design-motion" run_leg "$d41n" "$tmp/repo41c" "HIMMEL-4061-n" "claude-sonnet-5-5" >/dev/null 2>&1 || true
 wait_record "$d41n" || true
