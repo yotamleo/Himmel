@@ -4,5 +4,11 @@
     "upstream_repo": "AgriciDaniel/claude-obsidian",
     "track": "release",
     "synced_base": "v2.2.0"
+  },
+  "impeccable": {
+    "upstream_repo": "pbakaus/impeccable",
+    "track": "release",
+    "synced_base": "skill-v4.3.1",
+    "tag_prefix": "skill-v"
   }
 }
