@@ -214,7 +214,7 @@ join_ticket() {
   branches="$(jq -r '[.[].headRefName] | unique | .[]' <<<"$mine")"
   while IFS= read -r b; do
     runs="$(gh_json run list -R "$REPO" --branch "$b" --limit 100 --json databaseId,status,conclusion,createdAt,startedAt,updatedAt)"
-    jq -e 'type == "array" and all(.[]; (.databaseId | type == "number") and (.status | type == "string") and (.createdAt | type == "string") and (.updatedAt | type == "string") and (.startedAt == null or (.startedAt | type == "string")))' <<<"$runs" >/dev/null 2>&1 \
+    jq -e 'type == "array" and all(.[]; (.databaseId | type == "number") and (.status | IN("queued","in_progress","completed","waiting","requested","pending")) and (.createdAt | type == "string") and (.updatedAt | type == "string") and (.startedAt == null or (.startedAt | type == "string")))' <<<"$runs" >/dev/null 2>&1 \
       || die "gh run list returned an unexpected shape for $t on $b"
     n="$(jq 'length' <<<"$runs")"
     [ "$n" -lt 100 ] || die "gh run list hit its 100-row limit for $t on $b; refusing a truncated join"
