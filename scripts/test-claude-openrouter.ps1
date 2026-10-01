@@ -64,9 +64,9 @@ $PortFile    = Join-Path $TMP 'port.txt'
 $ServerJs    = Join-Path $TMP 'credits-server.js'
 @'
 const http = require("http"), fs = require("fs");
-const [file, portFile] = process.argv.slice(2);
+const [file, portFile, keyFile] = process.argv.slice(2);
 http.createServer((q, r) => {
-  try { const b = fs.readFileSync(file); r.writeHead(200, {"content-type": "application/json"}); r.end(b); }
+  try { const b = fs.readFileSync(/\/key$/.test(q.url) ? keyFile : file); r.writeHead(200, {"content-type": "application/json"}); r.end(b); }
   catch (_) { r.writeHead(500); r.end("no balance"); }
 }).listen(0, "127.0.0.1", function () { fs.writeFileSync(portFile, String(this.address().port)); });
 '@ | Set-Content -LiteralPath $ServerJs
@@ -74,13 +74,22 @@ function Set-Credits([double]$Total, [double]$Used) {
   ('{"data":{"total_credits":' + $Total.ToString([Globalization.CultureInfo]::InvariantCulture) + ',"total_usage":' + $Used.ToString([Globalization.CultureInfo]::InvariantCulture) + '}}') |
     Set-Content -LiteralPath $CreditsFile -NoNewline
 }
+$KeyFile = Join-Path $TMP 'key.json'
+# Set-KeyLimit: $null = uncapped key (limit null); a number = limit_remaining.
+function Set-KeyLimit($Remaining) {
+  if ($null -eq $Remaining) { '{"data":{"limit":null,"limit_remaining":null}}' }
+  else { '{"data":{"limit":50,"limit_remaining":' + ([double]$Remaining).ToString([Globalization.CultureInfo]::InvariantCulture) + '}}' }
+}
+function Write-KeyLimit($Remaining) { Set-KeyLimit $Remaining | Set-Content -LiteralPath $KeyFile -NoNewline }
 Set-Credits 21 1
-$ServerProc = Start-Process node -ArgumentList @($ServerJs, $CreditsFile, $PortFile) -PassThru -WindowStyle Hidden
+Write-KeyLimit $null
+$ServerProc = Start-Process node -ArgumentList @($ServerJs, $CreditsFile, $PortFile, $KeyFile) -PassThru -WindowStyle Hidden
 for ($i = 0; $i -lt 50 -and -not (Test-Path -LiteralPath $PortFile); $i++) { Start-Sleep -Milliseconds 100 }
 $script:CreditPort = if (Test-Path -LiteralPath $PortFile) { (Get-Content -LiteralPath $PortFile -Raw).Trim() } else { '1' }
 
 function New-Sandbox {
   Set-Credits 21 1   # default balance: $20 remaining
+  Write-KeyLimit $null   # default: uncapped key
   # fresh sandbox: fake HOME whose ~/.claude ALREADY carries settings.json (the
   # exact fixture the round-3 regression needed), mock claude.cmd in BIN.
   $id = [Guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -254,6 +263,21 @@ try {
   $env:OPENROUTER_MIN_CREDIT_USD = 'junk'
   Assert-Exit (Invoke-Launcher) 0 'garbage floor falls back to 3 (3.00 admitted)'
   Remove-Item Env:OPENROUTER_MIN_CREDIT_USD -ErrorAction SilentlyContinue
+
+  # --- T5b: the per-key monthly cap (GET /key) gates too (HIMMEL-4076). ---
+  Set-Credits 21 1
+  Write-KeyLimit 1.5
+  Assert-Exit (Invoke-Launcher) 5 'key limit_remaining 1.50 below floor refuses (exit 5)'
+  if (FileHas $OutTxt 'key limit_remaining') { Pass 'refusal names the key limit' } else { Fail 'refusal does not name the key limit' }
+  Write-KeyLimit 0
+  Assert-Exit (Invoke-Launcher) 5 'key limit exhausted refuses (exit 5)'
+  Remove-Item -LiteralPath $KeyFile -Force
+  Assert-Exit (Invoke-Launcher) 5 'key endpoint unreadable refuses (exit 5)'
+  Write-KeyLimit 19.5
+  Assert-Exit (Invoke-Launcher) 0 'key limit_remaining 19.50 admits'
+  if (FileHas $OutTxt 'effective balance $19.50 (key limit_remaining)') { Pass 'smaller of credit and key reported' } else { Fail 'effective balance line missing' }
+  Write-KeyLimit $null
+  Assert-Exit (Invoke-Launcher) 0 'null key limit (uncapped) admits'
 
   # --- T6: claude flags pass through verbatim; a LEADING -Reseed is consumed.
   # Pins the manual flag loop (a param() block would swallow -p/-d as common

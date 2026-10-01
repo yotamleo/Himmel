@@ -370,12 +370,18 @@ if command -v curl >/dev/null 2>&1; then
   # Parse total_credits - total_usage → remaining. node returns the number on
   # stdout (exit 0) only on a clean parse of the expected shape; anything else
   # exits nonzero and the launcher reports UNKNOWN.
-  credit_rem="$(printf '%s' "$credit_raw" | node -e '
+  # The same block also parses GET /key (HIMMEL-4076): {limit, limit_remaining};
+  # a null limit prints "none" (uncapped), a capped key prints limit_remaining.
+  or_parse() { node -e '
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
   try { const j=JSON.parse(s); const d=j.data||j; const t=Number(d.total_credits), u=Number(d.total_usage);
-    if (Number.isFinite(t)&&Number.isFinite(u)) { process.stdout.write((t-u).toFixed(2)); return; } } catch(_) {}
+    if (Number.isFinite(t)&&Number.isFinite(u)) { process.stdout.write((t-u).toFixed(2)); return; }
+    if (d.limit===null) { process.stdout.write("none"); return; }
+    const l=Number(d.limit_remaining);
+    if (d.limit!==undefined&&d.limit_remaining!==null&&Number.isFinite(l)) { process.stdout.write(l.toFixed(2)); return; } } catch(_) {}
   process.exit(2);
-});' 2>/dev/null || true)"
+});' 2>/dev/null || true; }
+  credit_rem="$(printf '%s' "$credit_raw" | or_parse)"
   [ -n "$credit_rem" ] && credit_surfaced=1
 fi
 if [ "$credit_surfaced" -ne 1 ]; then
@@ -390,6 +396,26 @@ if ! awk -v r="$credit_rem" -v f="$credit_floor" 'BEGIN{exit !(r+0>=f+0)}'; then
   echo "claude-openrouter: remaining credit \$$credit_rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$credit_floor); refusing to launch (exit 5)." >&2
   exit 5
 fi
+# Per-key monthly cap (GET /key): /credits cannot see it, and an exhausted cap
+# answers 403 mid-session. Uncapped (limit null -> "none") passes; an unreadable
+# answer or limit_remaining under the same floor refuses.
+key_raw="$(printf 'header "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
+  | curl -s -m 5 --noproxy '*' -K - "$OPENROUTER_API_BASE/key" 2>/dev/null || true)"
+key_rem="$(printf '%s' "$key_raw" | or_parse)"
+if [ -z "$key_rem" ]; then
+  echo "claude-openrouter: key limit_remaining: UNKNOWN (could not read $OPENROUTER_API_BASE/key); refusing to launch (exit 5)." >&2
+  exit 5
+fi
+credit_eff="$credit_rem"; credit_eff_src="credit"
+if [ "$key_rem" != "none" ]; then
+  echo "claude-openrouter: key limit_remaining: \$$key_rem (OpenRouter per-key cap at $OPENROUTER_API_BASE/key)." >&2
+  if ! awk -v r="$key_rem" -v f="$credit_floor" 'BEGIN{exit !(r+0>=f+0)}'; then
+    echo "claude-openrouter: key limit_remaining \$$key_rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$credit_floor) or exhausted; refusing to launch (exit 5)." >&2
+    exit 5
+  fi
+  if awk -v k="$key_rem" -v c="$credit_rem" 'BEGIN{exit !(k+0<c+0)}'; then credit_eff="$key_rem"; credit_eff_src="key limit_remaining"; fi
+fi
+echo "claude-openrouter: effective balance \$$credit_eff ($credit_eff_src)." >&2
 
 command -v claude >/dev/null 2>&1 || { echo "claude-openrouter: 'claude' not found on PATH" >&2; exit 2; }
 

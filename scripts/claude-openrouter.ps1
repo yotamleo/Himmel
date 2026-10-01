@@ -461,6 +461,40 @@ if ($remVal -lt $minCredit) {
   [Console]::Error.WriteLine("claude-openrouter: remaining credit `$$rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$minCredit); refusing to launch (exit 5).")
   exit 5
 }
+# Per-key monthly cap (GET /key): null limit = uncapped; unreadable or
+# limit_remaining under the floor refuses (exit 5). Twin of the bash gate.
+$keyKnown = $false
+$keyCapped = $false
+$keyVal = 0.0
+try {
+  $kresp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -NoProxy -Method Get `
+    -Headers @{Authorization="Bearer $key"} -Uri "$OpenRouterApiBase/key"
+  $kj = $kresp.Content | ConvertFrom-Json -ErrorAction Stop
+  $kd = if ($kj.data) { $kj.data } else { $kj }
+  if ($null -eq $kd.limit) { $keyKnown = $true }
+  elseif ($null -ne $kd.limit_remaining) {
+    $keyVal = [Math]::Round([double]$kd.limit_remaining, 2)
+    $keyKnown = $true
+    $keyCapped = $true
+  }
+} catch { }
+if (-not $keyKnown) {
+  [Console]::Error.WriteLine("claude-openrouter: key limit_remaining: UNKNOWN (could not read $OpenRouterApiBase/key); refusing to launch (exit 5).")
+  exit 5
+}
+$effVal = $remVal
+$effSrc = 'credit'
+if ($keyCapped) {
+  $krem = $keyVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+  [Console]::Error.WriteLine("claude-openrouter: key limit_remaining: `$$krem (OpenRouter per-key cap at $OpenRouterApiBase/key).")
+  if ($keyVal -lt $minCredit) {
+    [Console]::Error.WriteLine("claude-openrouter: key limit_remaining `$$krem is below the floor (OPENROUTER_MIN_CREDIT_USD=$minCredit) or exhausted; refusing to launch (exit 5).")
+    exit 5
+  }
+  if ($keyVal -lt $remVal) { $effVal = $keyVal; $effSrc = 'key limit_remaining' }
+}
+$eff = $effVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+[Console]::Error.WriteLine("claude-openrouter: effective balance `$$eff ($effSrc).")
 
 # --- launch: env contract mirrors the bash twin ------------------------------
 # ANTHROPIC_API_KEY is DELIBERATELY set EMPTY — load-bearing, not cosmetic: an

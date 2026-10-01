@@ -60,11 +60,14 @@ MOCK
   # needs a deterministic balance. Body comes from $BIN/credits.json (default: $20
   # remaining); a missing file makes the stub fail like an unreachable API.
   printf '{"data":{"total_credits":21,"total_usage":1}}' > "$BIN/credits.json"
-  cat > "$BIN/curl" <<'CURLSTUB'
+  printf '{"data":{"limit":null,"limit_remaining":null}}' > "$BIN/key.json"
+cat > "$BIN/curl" <<'CURLSTUB'
 #!/usr/bin/env bash
 cat >/dev/null
-[ -f "$(dirname "$0")/credits.json" ] || exit 7
-cat "$(dirname "$0")/credits.json"
+for last in "$@"; do :; done
+case "$last" in */key) f=key.json ;; *) f=credits.json ;; esac
+[ -f "$(dirname "$0")/$f" ] || exit 7
+cat "$(dirname "$0")/$f"
 CURLSTUB
   chmod +x "$BIN/curl"
   export MOCK_ENV_OUT="$WORK/child-env.txt"
@@ -384,6 +387,30 @@ OPENROUTER_MIN_CREDIT_USD=1 t "env floor 1 admits a 3.00 balance" 0
 OPENROUTER_MIN_CREDIT_USD=junk t "garbage floor falls back to 3 (3.00 admitted)" 0
 printf '{"data":{"total_credits":21,"total_usage":20}}' > "$BIN/credits.json"
 OPENROUTER_MIN_CREDIT_USD=junk t "garbage floor falls back to 3 (1.00 refused)" 5
+
+# --- T9b: the per-key MONTHLY cap (GET /key limit_remaining) gates too (HIMMEL-4076):
+# a 403 "Key limit exceeded" hit a real probe while /credits still showed $19+.
+# limit null = no cap (launch); an unreadable /key refuses; limit_remaining under
+# the floor or exhausted refuses; otherwise the smaller figure is reported.
+setup; KEY="or-test-123"
+write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"
+printf '{"data":{"limit":10,"limit_remaining":1.5}}' > "$BIN/key.json"
+t "key limit_remaining 1.50 below floor refuses (exit 5)" 5
+grep -q "key limit_remaining" "$WORK/out.txt" || { echo "FAIL: refusal does not name the key limit"; FAILS=$((FAILS+1)); }
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude with key cap under floor"; FAILS=$((FAILS+1)); }
+printf '{"data":{"limit":10,"limit_remaining":0}}' > "$BIN/key.json"
+t "key limit exhausted refuses (exit 5)" 5
+rm -f "$BIN/key.json"
+t "key endpoint unreadable refuses (exit 5)" 5
+printf '{"data":{"limit":10,"limit_remaining":9}}' > "$BIN/key.json"
+t "key limit_remaining 9.00 admits and is reported" 0
+grep -q 'key limit_remaining' "$WORK/out.txt" || { echo "FAIL: key limit not reported"; FAILS=$((FAILS+1)); }
+printf '{"data":{"limit":null,"limit_remaining":null}}' > "$BIN/key.json"
+t "key with no limit (null) admits" 0
+printf '{"data":{"limit":50,"limit_remaining":19.5}}' > "$BIN/key.json"
+printf '{"data":{"total_credits":21,"total_usage":1}}' > "$BIN/credits.json"
+t "smaller of credit 20.00 and key 19.50 reported" 0
+grep -q 'effective balance \$19.50 (key limit_remaining)' "$WORK/out.txt" || { echo "FAIL: effective balance line missing"; FAILS=$((FAILS+1)); }
 
 # --- T10: claude flags pass through verbatim; leading --reseed is consumed
 setup; KEY="or-test-123"
