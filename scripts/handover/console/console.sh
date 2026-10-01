@@ -1086,6 +1086,8 @@ cmd_new() {
     fi
 
     render_template "$console_template" "$doc" \
+        FLEET_MANIFEST "${doc%.md}.fleet.json" \
+        FLEET_MANIFEST_NOTE "none carried (first console of the chain); create it with fleet-manifest.sh add" \
         LETTER "$letter" \
         PREDECESSOR "none — first console of the chain" \
         PREDECESSOR_HANDOFF "none" \
@@ -1323,7 +1325,21 @@ cmd_next() {
     # An honest, explicit placeholder rather than an empty string: the
     # successor's own ACTION ZERO acquires and records it, exactly as the
     # console-template's own instructions already tell it to.
+    # HIMMEL-3989: carry the predecessor's fleet manifest to the successor's
+    # stem so its waiter can start with --legs-from and keep watching the same
+    # legs. A COPY, not a rename: the outgoing console's waiter still reads
+    # its own until that console releases. No manifest = no-op.
+    local predecessor_manifest successor_manifest manifest_note
+    predecessor_manifest="$predecessor_dir/${predecessor_stem}.fleet.json"
+    successor_manifest="${doc%.md}.fleet.json"
+    manifest_note="none carried (the predecessor had no manifest); create it with fleet-manifest.sh add"
+    if [ -f "$predecessor_manifest" ]; then
+        cp "$predecessor_manifest" "$successor_manifest" || { err "could not copy fleet manifest $predecessor_manifest to $successor_manifest"; exit 1; }
+        manifest_note="carried from the predecessor, already in place: start the waiter with --legs-from on it"
+    fi
     render_template "$console_template" "$doc" \
+        FLEET_MANIFEST "$successor_manifest" \
+        FLEET_MANIFEST_NOTE "$manifest_note" \
         LETTER "$successor_letter" \
         PREDECESSOR "$predecessor_base" \
         PREDECESSOR_HANDOFF "$predecessor_handoff_ref" \
