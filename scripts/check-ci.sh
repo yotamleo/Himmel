@@ -609,6 +609,21 @@ _status_only() {
     printf '%s' "$hit"
 }
 
+# _job_log_hint — HIMMEL-4071: the pre-READY red is the LEG's to fix, so name each
+# failed GitHub Actions job's log command the moment a red is known (job id from
+# the check's link; `gh run view --log-failed` refuses until the whole run ends).
+# Best effort: an unreadable read or a non-Actions link (an external status)
+# prints nothing, and never changes the verdict.
+_job_log_hint() {
+    local links name link id
+    links=$(pr_checks --json bucket,name,link --jq '.[] | select(.bucket == "fail") | "\(.name)\t\(.link)"' 2>/dev/null) || return 0
+    while IFS=$'\t' read -r name link; do
+        case "$link" in */actions/runs/*/job/*) id=${link##*/job/} ;; *) continue ;; esac
+        case "$id" in ''|*[!0-9]*) continue ;; esac
+        echo "check-ci: failed job '$name' — pull its log now: gh api --allow-escape-sequences repos/$owner/$repo/actions/jobs/$id/logs > <scratch file>" >&2
+    done <<< "$links"
+}
+
 _join_by_status() { printf '%s\n' "$2" | awk -F'\t' -v s="$1" '$1 == s { print $2 }' | paste -sd, - | sed 's/,/, /g'; }
 
 # required_gate <wait> — 1 = a missing required check may register within
@@ -644,6 +659,7 @@ required_gate() {
         failed=$(_join_by_status fail "$st")
         if [ -n "$failed" ]; then
             echo "check-ci: checks FAILED — required check(s) failed: $failed (HIMMEL-3381)" >&2
+            _job_log_hint
             _alert "required check(s) FAILED: $failed — GitHub will refuse this merge until they pass"
             exit 1
         fi
@@ -694,6 +710,7 @@ red_exit() {
     if [ "$2" -le 20 ]; then
         echo "check-ci: hint — all-red within seconds is usually a GitHub Actions billing/permissions block, not a code failure; check the run annotations before debugging the diff" >&2
     fi
+    _job_log_hint
     _red_alert
     exit 1
 }

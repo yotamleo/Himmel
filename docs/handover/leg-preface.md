@@ -305,6 +305,28 @@ by design.
   background (`run_in_background`) poll loop against GitHub: wait on CI with
   `scripts/check-ci.sh` in the foreground (its shared cache and rate-limit
   backoff exist so the fleet stays under one API quota).
+- **A red CI job on your PR is yours to triage (HIMMEL-4071) — and you never
+  tell the console about it, unless it is not the PR's fault.** The moment ONE
+  required job fails, do not wait for the run to end and do not report the red.
+  `scripts/check-ci.sh` prints each failed Actions job's log command; if it did
+  not, take the job id from `gh pr checks` and pull the log yourself:
+  `gh api --allow-escape-sequences repos/<o>/<r>/actions/jobs/<job-id>/logs > <scratch>`
+  (`gh run view --log-failed` refuses until the whole run ends). Then decide
+  BEFORE touching code whether the PR caused it, from data that already exists
+  (never re-run the failing job or main's): the failed job's log, your own diff
+  (does it touch or reference the failing case, or change a dependency
+  manifest or lockfile?), main's latest completed run of the same job
+  (`gh run list -b main -w <workflow> -L 1`, then that run's job log), and the
+  same job in other open PRs' check-runs. If the PR caused it, or you cannot
+  show otherwise, fix it at once; escalate only if the fix is outside your brief.
+  If the evidence shows a GENERAL red (an advisory, an outage, a runner or
+  registry failure, the same case failing on main or on unrelated PRs), do NOT
+  fix it in your PR and do not loop on it. Send the console one
+  `MAIN-RED <job> <failing case>` with that evidence, then carry on with
+  whatever does not depend on it; the console has it fixed once, and after that
+  merges you rebase onto the new main. If you suspect it is general but the data
+  does not settle it, report `MAIN-RED? <job> <case> inconclusive` with what you
+  saw.
 - On an agreed review finding, **sweep the whole class** across every site
   before the next round and report the other sites, not just the cited line. A
   review round spent enumerating instances of a class you already understood is

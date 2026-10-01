@@ -709,10 +709,13 @@ CR_STATE=$(cr_app_state "$PWD" 2>/dev/null) || CR_STATE=""
 CR_STATE=${CR_STATE:-unknown}
 
 ci_rc=0
+# HIMMEL-4071: this script runs only after the console's GO, so a red here is
+# the console's (merge_watch_alert routes it to the console inbox); a leg's own
+# pre-GO check-ci watch never sets MERGE_WATCH_POST_GO and is not routed.
 if [ -n "$selector" ]; then
-    bash "$CHECK_CI" "$selector"
+    MERGE_WATCH_POST_GO=1 bash "$CHECK_CI" "$selector"
 else
-    bash "$CHECK_CI"
+    MERGE_WATCH_POST_GO=1 bash "$CHECK_CI"
 fi || ci_rc=$?
 if [ "$ci_rc" -eq 5 ]; then
     # HIMMEL-3381: check-ci exit 5 = GitHub will refuse this merge (a required

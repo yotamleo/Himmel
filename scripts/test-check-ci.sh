@@ -567,6 +567,8 @@ case " $* " in
                 # HIMMEL-3381: the required gate's own row read ("<bucket><TAB><name>").
                 # GH_STUB_CHECKS is a newline list of "<bucket>:<name>".
                 case " $* " in
+                    # HIMMEL-4071: the failed-job link read ("<name><TAB><link>").
+                    *'\(.name)\t\(.link)'*) printf '%b' "${GH_STUB_FAILLINKS:-}"; exit 0 ;;
                     *'\(.bucket)\t\(.name)'*)
                         # late:<n>     first read lacks <n>, later reads carry it green
                         # flipfail:<n> first read has <n> pending, later reads carry it failed
@@ -912,6 +914,7 @@ run() {
         GH_STUB_PRODUCERS="$PRODUCERS_OVERRIDE" \
         GH_STUB_STATUSCTX="$STATUSCTX_OVERRIDE" \
         GH_STUB_CHECKS="$CHECKS_OVERRIDE" \
+        HIMMEL_CONSOLE_LEG=0 \
         GH_STUB_MERGE_STATE="$MERGE_STATE_OVERRIDE" \
         GH_STUB_MERGE_HEAD="$MERGE_HEAD_OVERRIDE" \
         GH_STUB_MSC="$STUBDIR/msc" \
@@ -2369,6 +2372,18 @@ assert_err_has "codeowner-review-gate" "3381-f the refusal names the failed requ
 if [ "$(wc -l < "$STUBDIR/sleepcount" | tr -d ' ')" = 0 ]; then pass "3381-f a failed required check is never slept on"; else fail "3381-f a failed required check is never slept on" "sleeps=$(wc -l < "$STUBDIR/sleepcount")"; fi
 if [ "$(alert_count)" = 1 ]; then pass "3381-f one alert for a failed required check"; else fail "3381-f one alert for a failed required check" "count=$(alert_count)"; fi
 
+# 4071 — the leg owns a pre-READY red, so a failed REQUIRED check names the
+# failed job's log command (job id from the check's link) at once; a failed check
+# whose link is not an Actions job (an external status) names no log command.
+export GH_STUB_FAILLINKS='codeowner-review-gate\thttps://github.com/octo/demo/actions/runs/777/job/4242\nunit-tests\thttps://ci.example/build/9\n'
+RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests
+fail:codeowner-review-gate"
+run cr-completed
+assert_rc 1 "4071-a a FAILED required check still exits 1"
+assert_err_has "gh api --allow-escape-sequences repos/octo/demo/actions/jobs/4242/logs" "4071-a the failed job's log command is printed"
+if grep -qF 'jobs/9/logs' <<< "$ERR"; then fail "4071-b a non-Actions link names no job log"; else pass "4071-b a non-Actions link names no job log"; fi
+unset GH_STUB_FAILLINKS
+
 # 3381-g — dedupe: the SAME head refused twice sends ONE alert; the printed line
 # still appears both times.
 KEEP_ALERT_STATE=0
@@ -2712,5 +2727,5 @@ assert_grep_lacks "3473-g --threads-only makes no mergeStateStatus read" "found 
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 189 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 189"; exit 1; fi
+if [ "$COUNT" -ne 190 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 190"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

@@ -110,6 +110,12 @@ merge_block_alert() {
 # genuinely refused merge, so those always DM the operator regardless of
 # console context.
 #
+# HIMMEL-4071: the console route below applies ONLY post-GO
+# (MERGE_WATCH_POST_GO=1, set by merge-on-green.sh around its check-ci call). A
+# console-spawned leg's own pre-GO watch red prints the MERGE-BLOCKED line and
+# stops: the leg has the exit code and owns the fix, and nothing wakes the
+# console or pages the operator.
+#
 # When this leg is console-spawned (console_leg(), from go-gate.sh) AND its
 # console's session name is known (HIMMEL_CONSOLE_NAME — exported into every
 # leg by the launcher since HIMMEL-3435), the alert is appended to that
@@ -211,6 +217,15 @@ merge_watch_alert() {
     fi
 
     if console_leg; then
+        # HIMMEL-4071: a red on the leg's OWN pre-GO watch is the leg's to fix —
+        # it already has check-ci's exit code, so neither the console inbox
+        # (which wakes a full-context console) nor the operator is told.
+        # merge-on-green.sh runs only after the console's GO and marks its
+        # check-ci call MERGE_WATCH_POST_GO=1: that red is the console's.
+        if [ "${MERGE_WATCH_POST_GO:-}" != "1" ]; then
+            echo "MERGE-BLOCKED ${repo}#${pr} @${short:-unknown-head}: ${rule}" >&2
+            return 0
+        fi
         local dir key
         dir="${MERGE_BLOCK_ALERT_DIR:-}"
         if [ -z "$dir" ]; then
