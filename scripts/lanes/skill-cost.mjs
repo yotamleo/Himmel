@@ -239,13 +239,13 @@ function findPluginSkillDirectories(root, skipped) {
 
 // HIMMEL-4060: the plugin-cache DIRECTORY COMPONENT of a scanned path —
 // `<configDir>/plugins/cache/<marketplace>/<plugin>/<version>/...` — as
-// { plugin, version }, or null for a path outside that layout. Matching this
+// { marketplace, plugin, version }, or null for a path outside that layout. Matching this
 // component (not a `/<plugin>/` substring) keeps a skill directory that merely
 // shares a plugin's name from being attributed to that plugin.
 export function pluginCacheOf(path) {
   const parts = resolve(path).split(sep);
   for (let i = 0; i + 4 < parts.length; i++) {
-    if (parts[i] === 'plugins' && parts[i + 1] === 'cache') return { plugin: parts[i + 3], version: parts[i + 4] };
+    if (parts[i] === 'plugins' && parts[i + 1] === 'cache') return { marketplace: parts[i + 2], plugin: parts[i + 3], version: parts[i + 4] };
   }
   return null;
 }

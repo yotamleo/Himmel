@@ -280,8 +280,13 @@ test('expectedSkillNames: skills of the required plugin only, latest cached vers
 
 test('expectedSkillNames: the installed version wins over a newer cached one; unmatched installs fall back to latest', () => {
   const entries = [scanned('impeccable', 'old-only', '0.9'), scanned('impeccable', 'new-only', '2.0')];
-  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable', new Set(['0.9'])]]))], ['impeccable:old-only']);
-  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable', new Set(['9.9'])]]))], ['impeccable:new-only']);
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable@himmel', new Set(['0.9'])]]))], ['impeccable:old-only']);
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable@himmel', new Set(['9.9'])]]))], ['impeccable:new-only']);
+});
+
+test('expectedSkillNames: a same-named plugin from another marketplace is not counted', () => {
+  const entries = [scanned('impeccable', 'mine'), { ...scanned('impeccable', 'theirs'), path: '/h/.claude/plugins/cache/other-mkt/impeccable/1.0/skills/theirs/SKILL.md' }];
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'])], ['impeccable:mine']);
 });
 
 test('installedVersionsOf: reads installed_plugins.json, null when unreadable', () => {
@@ -289,8 +294,13 @@ test('installedVersionsOf: reads installed_plugins.json, null when unreadable', 
   try {
     assert.equal(installedVersionsOf(dir), null);
     mkdirSync(join(dir, 'plugins'), { recursive: true });
-    writeFileSync(join(dir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'impeccable@himmel': [{ version: '0.9' }, { version: '1.0' }] } }));
-    assert.deepEqual([...installedVersionsOf(dir).get('impeccable')].sort(), ['0.9', '1.0']);
+    writeFileSync(join(dir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'impeccable@himmel': [
+      { scope: 'user', version: '1.0' },
+      { scope: 'project', projectPath: '/work/here', version: '0.9' },
+      { scope: 'project', projectPath: '/work/elsewhere', version: '0.5' },
+    ] } }));
+    assert.deepEqual([...installedVersionsOf(dir, '/work/here').get('impeccable@himmel')].sort(), ['0.9', '1.0']);
+    assert.deepEqual([...installedVersionsOf(dir, '/work/other').get('impeccable@himmel')], ['1.0']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
