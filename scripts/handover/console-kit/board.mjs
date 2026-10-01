@@ -15,6 +15,9 @@
 // what the file on disk carried before this render; the Artifact publish
 // itself stays a model step, never done here.
 //
+// Leg set (HIMMEL-3988): --legs wins; else the console's fleet manifest
+// (<console doc stem>.fleet.json, via fleet-manifest.sh list); else the Live-state scan.
+//
 // State comes from tick.sh (leg locks, tails, fleet, open PRs, and the board
 // fingerprint via --emit-fp), the console doc's `## Live state` block, the leg
 // docs' Results bullets, `gh` (open + merged PRs), and -- for a WRAPPED leg
@@ -179,9 +182,24 @@ const primeLabels = (names) => {
 const labelOf = (name) => legLabel.get(name) || '';
 const ticketOf = (file) => (/^([A-Z][A-Z0-9]*-\d+)/.exec(basename(file)) || [])[1] || '';
 const newer = (a, b) => (statSync(a).mtimeMs >= statSync(b).mtimeMs ? a : b);
+// HIMMEL-3988: with no --legs, the console's fleet manifest (<console doc stem>.fleet.json,
+// the file tick.sh --legs-from reads) IS the leg set. It is read through
+// fleet-manifest.sh list -- the one validation -- never a second parser here. No manifest
+// keeps the Live-state scan below; one that fails validation is reported and falls back.
+const manifestPath = join(bucket, `${basename(docPath).replace(/\.md$/, '')}.fleet.json`);
+let manifestDocs = null;
+if (opt.legs === undefined && existsSync(manifestPath)) {
+    try {
+        manifestDocs = execFileSync('bash', [join(HERE, 'fleet-manifest.sh'), 'list', manifestPath],
+            { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean);
+    } catch { console.error(`board: warning: fleet manifest unreadable (${manifestPath}); falling back to the Live-state leg scan`); }
+}
+// --changed folds this in: the tick fingerprint only moves with a lock or tail, so a leg
+// added to the manifest before it holds a lock would otherwise read UNCHANGED.
+const manifestSig = manifestDocs ? manifestDocs.join(',') : '';
 let legFiles;
-if (opt.legs !== undefined) {
-    legFiles = opt.legs.split(/[\s,]+/).filter(Boolean).map((f) => resolve(f));
+if (opt.legs !== undefined || manifestDocs) {
+    legFiles = (opt.legs !== undefined ? opt.legs.split(/[\s,]+/).filter(Boolean) : manifestDocs).map((f) => resolve(f));
     primeLabels([...liveEntries.map((e) => e.stem), ...legFiles.map((f) => basename(f))]);
 } else {
     const docs = readdirSync(bucket).filter((f) => f.endsWith('-RESUME.md'));
@@ -443,7 +461,7 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Console Board</title>
 ${fp ? `<meta name="console-board-fp" content="${fp}">` : ''}
-${ciFleetSig ? `<meta name="console-board-cifleet-fp" content="${esc(ciFleetSig)}">\n` : ''}${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}${releaseSig ? `\n<meta name="console-board-versions-fp" content="${esc(releaseSig)}">` : ''}
+${ciFleetSig ? `<meta name="console-board-cifleet-fp" content="${esc(ciFleetSig)}">\n` : ''}${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}${releaseSig ? `\n<meta name="console-board-versions-fp" content="${esc(releaseSig)}">` : ''}${manifestSig ? `\n<meta name="console-board-manifest-fp" content="${esc(manifestSig)}">` : ''}
 <style>
 :root { --bg:#f6f7f9; --surface:#fff; --text:#1c2128; --muted:#5b6672; --line:#d9dee4; --accent:#2457c5; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1318; --surface:#181d24; --text:#e6e9ed; --muted:#96a1ad; --line:#2b333d; --accent:#7aa2ff; --ok:#3fb950; --warn:#d29922; --bad:#ff7b72; } }
@@ -509,18 +527,20 @@ let oldFp = null;
 let oldCensusSig = '';
 let oldReleaseSig = '';
 let oldCiFleetSig = '';
+let oldManifestSig = '';
 if (changedFlag && existsSync(outPath)) {
     const prev = readFileSync(outPath, 'utf8');
     oldFp = (/<meta name="console-board-fp" content="([0-9a-f]{16})">/.exec(prev) || [])[1] || null;
     oldCensusSig = (/<meta name="console-board-census-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
     oldCiFleetSig = (/<meta name="console-board-cifleet-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
     oldReleaseSig = (/<meta name="console-board-versions-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
+    oldManifestSig = (/<meta name="console-board-manifest-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
 }
 const tmp = `${outPath}.tmp${process.pid}`;
 writeFileSync(tmp, html);
 renameSync(tmp, outPath);
 if (changedFlag) {
-    console.log(`${fp !== oldFp || censusSig !== oldCensusSig || esc(ciFleetSig) !== oldCiFleetSig || esc(releaseSig) !== oldReleaseSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
+    console.log(`${fp !== oldFp || censusSig !== oldCensusSig || esc(ciFleetSig) !== oldCiFleetSig || esc(releaseSig) !== oldReleaseSig || esc(manifestSig) !== oldManifestSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
 } else {
     console.log(outPath);
 }
