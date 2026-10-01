@@ -242,7 +242,8 @@ export function listingProblems(contextUsage, requiredIds, { skillPlugins, expec
   for (const id of requiredIds) {
     const skills = pluginSkills(contextUsage, id);
     if (!skills.length) {
-      if (!skillPlugins || skillPlugins.has(pluginName(id))) problems.push(`role-required plugin ${id} is missing from the post-cap skill listing`);
+      const expectsSkills = [...(expectedSkills ?? [])].some((n) => n.startsWith(`${pluginName(id)}:`));
+      if (!skillPlugins || expectsSkills || skillPlugins.has(pluginName(id))) problems.push(`role-required plugin ${id} is missing from the post-cap skill listing`);
     } else {
       const bare = skills.filter(isNameOnlySkill);
       if (bare.length) problems.push(`role-required plugin ${id} has ${bare.length} of ${skills.length} skill(s) name-only in the post-cap listing (descriptions dropped by the listing budget): ${bare.map((s) => s.name).join(', ')}`);

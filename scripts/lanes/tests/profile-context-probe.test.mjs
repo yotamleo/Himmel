@@ -264,6 +264,11 @@ test('listingProblems: one name-only skill among described ones FAILS and is nam
   assert.match(p[0], /impeccable@himmel.*1 of 2.*name-only.*impeccable:impeccable/s);
 });
 
+test('listingProblems: an expected-skills inventory defeats the agent-only exemption', () => {
+  const p = listingProblems(CTX([]), ['impeccable@himmel'], { skillPlugins: new Set(), expectedSkills: new Set(['impeccable:audit']) });
+  assert.match(p[0], /missing from the post-cap skill listing/);
+});
+
 test('listingProblems: a required plugin absent from the listing fails, unless it has no skills (agent-only)', () => {
   assert.match(listingProblems(CTX([]), ['impeccable@himmel'], { skillPlugins: new Set(['impeccable']) })[0], /missing from the post-cap skill listing/);
   assert.deepEqual(listingProblems(CTX([]), ['impeccable@himmel'], { skillPlugins: new Set() }), []);
