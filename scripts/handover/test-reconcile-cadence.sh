@@ -259,8 +259,9 @@ assert_file_contains "C7 runner tick stamps the fire time" "[fired " "$RECONCILE
 
 # --- C8: the Windows twin parses (only where pwsh exists).
 if command -v pwsh >/dev/null 2>&1; then
+    # -Command does not bind trailing args to $args, so the path goes by env.
     # shellcheck disable=SC2016  # PowerShell source, not shell expansion.
-    out=$(pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$null,[ref]$e); if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }' "$CADENCE_PS1" 2>&1)
+    out=$(CADENCE_PS1_PATH="$CADENCE_PS1" pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:CADENCE_PS1_PATH,[ref]$null,[ref]$e); if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }' 2>&1)
     rc=$?
     assert_rc "C8 reconcile-cadence.ps1 parses ($out)" 0 "$rc"
 else
