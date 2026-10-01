@@ -626,7 +626,16 @@ unset -v _leg_rcwd _leg_rcwd_phys _leg_vroot _leg_vroot_phys
 # Context resolution (HIMMEL-2766/HIMMEL-2779): off-values stay standard;
 # the one old 1m opt-in is resolved explicitly so the argv guard below can
 # reject it with a useful message rather than silently ignoring operator input.
-if [ "${LEG_CONTEXT:-}" = "1m" ]; then
+#
+# HIMMEL-4012: the `design` profile (and only it) resolves 1m by itself - an
+# operator ruling (2026-10-01) that early compaction hurts design work, so no
+# LEG_CONTEXT or brief Context line is needed; every other profile keeps the
+# 200000 ceiling and a bare LEG_CONTEXT=1m is still refused below.
+DESIGN_CONTEXT_REASON=""
+if [ "$PROFILE" = "design" ]; then
+    DESIGN_CONTEXT_REASON="design profile (HIMMEL-4012 operator ruling: no early compaction on design legs)"
+fi
+if [ "${LEG_CONTEXT:-}" = "1m" ] || [ -n "$DESIGN_CONTEXT_REASON" ]; then
     CONTEXT="1m"
     RESOLVED_AUTOCOMPACT="auto"
 else
@@ -776,7 +785,8 @@ leg_env_drop_token HEADED_ARM_LEG_CLAUDE_BIN
 # no-op for every existing caller.
 CONTEXT_REASON=""
 if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
-    CONTEXT_REASON="$(grep -m1 -E '^> \*\*Context:\*\* 1m — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* 1m — operator-ruling: //')"
+    CONTEXT_REASON="$DESIGN_CONTEXT_REASON"
+    [ -n "$CONTEXT_REASON" ] || CONTEXT_REASON="$(grep -m1 -E '^> \*\*Context:\*\* 1m — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* 1m — operator-ruling: //')"
     CONTEXT_REASON="$(printf '%s' "$CONTEXT_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$CONTEXT_REASON" ]; then
         echo "headed-arm-leg: refusing leg launch: resolved argv lacks the required --autocompact 200000 ceiling (got --autocompact $RESOLVED_AUTOCOMPACT). unset LEG_CONTEXT and retry, or add '> **Context:** 1m — operator-ruling: <reason>' to $DOC for a sanctioned opt-in; use a console arm, not a leg, for unsanctioned 1m context." >&2

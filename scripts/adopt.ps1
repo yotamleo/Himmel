@@ -451,9 +451,9 @@ function FillEnv-Core {
 # $env:BUN_INSTALL for relocated bun roots.
 $QmdBunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
 $QmdBunJs = Join-Path $QmdBunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
-# HIMMEL-877: qmd installs from a local clone of upstream tobi/qmd (HIMMEL-
-# 3045; previously a himmel-owned fork, yotamleo/qmd, until its carried fixes
-# landed upstream), pinned to an immutable commit SHA rather than a mutable
+# HIMMEL-877: qmd installs from a local clone of the carried fork
+# yotamleo/qmd (HIMMEL-3956: launcher signal forwarding, until tobi/qmd#1030
+# merges -- HIMMEL-3982 pins back to upstream tobi/qmd), pinned to an immutable commit SHA rather than a mutable
 # branch (HIMMEL-911 — via scripts/lib/qmd-bin.sh), never `bun add -g
 # @tobilu/qmd` directly -- that command EPERM-wedges on this project's
 # machines and bun blocks its postinstall script.
@@ -491,7 +491,7 @@ function Resolve-QmdGitBash {
 }
 
 # Delegates to the ONE clone/build/junction implementation (HIMMEL-877):
-# `bash scripts/lib/qmd-bin.sh install` (git-clone the pinned tobi/qmd commit,
+# `bash scripts/lib/qmd-bin.sh install` (git-clone the pinned qmd commit,
 # `bun install && bun run build`, then junction/symlink it onto the bun-global
 # @tobilu/qmd path -- idempotent, WARN-not-fail). Returns an honest int rc.
 function Install-Qmd {

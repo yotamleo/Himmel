@@ -447,6 +447,8 @@ launched with a per-session `--settings` overlay whose `statusLine` command was
 statusline stdin — `model.id`, `model.display_name`, and
 `context_window.context_window_size` — without an API turn.
 
+**`design` legs (HIMMEL-4012):** `headed-arm-leg.sh --profile design` resolves `context=1m` on its own (operator ruling: no early compaction on design legs), with no `LEG_CONTEXT` or brief line. Every other profile keeps the 200000 pin, and a bare `LEG_CONTEXT=1m` is still refused.
+
 ### Which model strings accept the `[1m]` suffix
 
 `--model <argument>` → the `model.id` and `display_name` Claude Code reports:

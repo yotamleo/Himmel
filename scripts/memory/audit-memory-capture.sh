@@ -205,7 +205,11 @@ fi
 #    failure or MEMORY_AUDIT_SKIP_QMD=1 (tests set the latter for hermeticity).
 #    Staleness (updated-age parsing) is a future refinement — only absence here.
 if [ "$QMD_SKIP" != "1" ] && command -v qmd >/dev/null 2>&1; then
-    if qmd_status="$(qmd status 2>/dev/null)"; then
+    # Group-bounded (HIMMEL-3956): a plain `qmd status` can wedge, and
+    # timeout(1) would orphan qmd's bun child.
+    # shellcheck source=../lib/qmd-bounded.sh
+    . "$(dirname "${BASH_SOURCE[0]}")/../lib/qmd-bounded.sh"
+    if qmd_status="$(qmd_bounded "${QMD_TIMEOUT_SECS:-60}" qmd status 2>/dev/null)"; then
         if ! printf '%s\n' "$qmd_status" | grep -qF -- 'luna-curated (qmd://luna-curated/)'; then
             note "COLLECTION FRESHNESS: qmd is on PATH but the luna-curated collection is absent — re-landed facts may not be findable"
         fi

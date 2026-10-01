@@ -37,6 +37,7 @@ import { isMain } from '../lib/is-main.mjs';
 import { createRequire } from 'node:module';
 import { loadRegistry, resolveProfileByName, readEnabledPluginIds } from './plugin-profiles.mjs';
 import { ledgerPath } from './verify-return.mjs';
+import { ROLE_REQUIRES } from './role-requires.mjs';
 
 // The SAME interpreter resolution the wired hooks get. On Windows an unresolved
 // shell can be the WSL launcher or a 0-byte WindowsApps alias, so we need the
@@ -121,14 +122,32 @@ export function namespaceExtras(initEvent, enabledIds) {
   return extras;
 }
 
+// HIMMEL-4012: an enabled plugin that fails to load still shows in the
+// resolved set, so "enabled" proves nothing. Each role-required plugin must
+// expose at least one skill, slash command or agent namespaced `<name>:` in the
+// init event. Returns one problem string per plugin that exposes nothing.
+export function roleCoverageProblems(initEvent, requiredIds) {
+  const exposed = new Set();
+  for (const entry of [...(initEvent?.skills ?? []), ...(initEvent?.slash_commands ?? []), ...(initEvent?.agents ?? [])]) {
+    const m = /^([^:]+):/.exec(typeof entry === 'string' ? entry : entry?.name ?? '');
+    if (m) exposed.add(m[1]);
+  }
+  return requiredIds.filter((id) => !exposed.has(pluginName(id))).map((id) => `role-required plugin ${id} exposes no skill, command or agent (enabled but not loaded)`);
+}
+
+export function countLoadedSkills(initEvent) {
+  return (initEvent?.skills?.length ?? 0) + (initEvent?.slash_commands?.length ?? 0);
+}
+
 // The full per-profile verdict: plugin injection correctness + the
 // contextBudget ceiling. Returns { pass, problems } — problems is [] iff pass.
-export function evaluateProfile({ enabledIds, initEvent, resultEvent, measuredTokens, budget }) {
+export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget }) {
   const problems = [];
   if (!initEvent) {
     problems.push('no init event in probe output (spawn failure, timeout, or unexpected stream shape)');
     return { pass: false, problems };
   }
+  problems.push(...roleCoverageProblems(initEvent, requiredIds));
   const { extra, missing } = pluginSourceDiff(initEvent, enabledIds);
   if (extra.length) problems.push(`extra plugin(s) loaded (bloat): ${extra.join(', ')}`);
   if (missing.length) problems.push(`expected plugin(s) did not load: ${missing.join(', ')}`);
@@ -342,8 +361,9 @@ function main() {
         try { unlinkSync(settingsPath); } catch { /* best-effort cleanup */ }
       }
 
-      const { pass, problems } = evaluateProfile({ enabledIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget });
-      const note = formatNote(name, { pass, measured: run.measured, budget, baseline });
+      const requiredIds = ROLE_REQUIRES[name] ?? [];
+      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget });
+      const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
       for (const p of problems) process.stdout.write(`  - ${p}\n`);
       appendLedger(name, note, pass ? 0 : 1, ledgerTarget);

@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   parseStreamJsonLines, findInitEvent, findResultEvent, firstTurnTokens,
-  pluginSourceDiff, namespaceExtras, evaluateProfile, formatNote,
+  pluginSourceDiff, namespaceExtras, evaluateProfile, formatNote, roleCoverageProblems, countLoadedSkills,
   parseProbeArgs, resolveLedgerTarget, buildLedgerRow,
 } from '../profile-context-probe.mjs';
 
@@ -187,4 +187,43 @@ test('buildLedgerRow: run_id includes the profile name, so two profiles measured
   assert.notEqual(rowA.run_id, rowB.run_id);
   assert.match(rowA.run_id, /^profile-context-bare-\d{8}T\d{4}-123$/);
   assert.match(rowB.run_id, /^profile-context-lane-full-\d{8}T\d{4}-123$/);
+});
+
+// HIMMEL-4012: an enabled plugin that fails to load must FAIL the probe.
+const LOADED = {
+  type: 'system', subtype: 'init',
+  plugins: [{ source: 'impeccable@himmel' }, { source: 'frontend-design@claude-plugins-official' }],
+  skills: ['impeccable:impeccable', 'frontend-design:frontend-design'],
+  slash_commands: [], agents: [], mcp_servers: [],
+};
+
+test('roleCoverageProblems: passes when every required plugin exposes a skill, command or agent', () => {
+  assert.deepEqual(roleCoverageProblems(LOADED, ['impeccable@himmel', 'frontend-design@claude-plugins-official']), []);
+});
+
+test('roleCoverageProblems: an enabled plugin that exposes nothing is reported', () => {
+  const init = { ...LOADED, skills: ['frontend-design:frontend-design'] };
+  const p = roleCoverageProblems(init, ['impeccable@himmel', 'frontend-design@claude-plugins-official']);
+  assert.equal(p.length, 1);
+  assert.match(p[0], /impeccable@himmel/);
+});
+
+test('roleCoverageProblems: an agent-only plugin counts as loaded', () => {
+  const init = { ...LOADED, skills: [], agents: ['impeccable:finish-reviewer'] };
+  assert.deepEqual(roleCoverageProblems(init, ['impeccable@himmel']), []);
+});
+
+test('evaluateProfile: a missing role-required skill fails the profile', () => {
+  const init = { ...LOADED, skills: [] };
+  const { pass, problems } = evaluateProfile({
+    enabledIds: ['impeccable@himmel', 'frontend-design@claude-plugins-official'], requiredIds: ['impeccable@himmel'],
+    initEvent: init, measuredTokens: 100, budget: 40000,
+  });
+  assert.equal(pass, false);
+  assert.ok(problems.some((x) => /role-required/.test(x)));
+});
+
+test('countLoadedSkills counts skills plus slash_commands', () => {
+  assert.equal(countLoadedSkills({ skills: ['a:b', 'c'], slash_commands: ['d'] }), 3);
+  assert.equal(countLoadedSkills(null), 0);
 });

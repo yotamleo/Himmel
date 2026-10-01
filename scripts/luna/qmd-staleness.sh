@@ -271,9 +271,9 @@ fi
 
 run_qmd() {
     if [ -n "$QMD_JS" ]; then
-        "$QMD_BIN" "$QMD_JS" "$@"
+        qmd_bounded "$(qmd_timeout_secs)" "$QMD_BIN" "$QMD_JS" "$@"
     else
-        "$QMD_BIN" "$@"
+        qmd_bounded "$(qmd_timeout_secs)" "$QMD_BIN" "$@"
     fi
 }
 

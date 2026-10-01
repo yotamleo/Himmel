@@ -59,6 +59,9 @@ everywhere), ON-DEMAND (installed, disabled — `plugin-profile.sh enable
 | `typescript-lsp` | TypeScript language server integration | ON-DEMAND |
 | `pyright-lsp` | Python type checking via Pyright | NOT INSTALLED |
 | `plannotator-effective-html` | HTML design/UI artifact kit (design-artifact, html, html-diagram/-plan/-prototype/-wireframe) | ON-DEMAND — `design` profile only (HIMMEL-3064): measured 1 invocation in 1628 transcripts against ~630 tok/session cost, so it opts in per-dispatch instead of riding the ALWAYS tier |
+| `frontend-design` | Anthropic's frontend-design skill (official marketplace, local-path entry) | ON-DEMAND — `design` profile only (HIMMEL-4012); needs a one-time operator install |
+| `ui-ux-pro-max` | UI/UX design intelligence (7 skills under `.claude/skills/`: ui-ux-pro-max, design, design-system, brand, banner-design, slides, ui-styling) | ON-DEMAND — `design` profile only (HIMMEL-4012); catalog id `ui-ux-pro-max@ui-ux-pro-max-skill` |
+| `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.3.1` over HTTPS (HIMMEL-3069 precedent) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
 
 himmel's lean floor also carries `plugin-dev`, `agent-sdk-dev`, `hookify`,
 `playground`, and `atlassian` (all NOT INSTALLED) — see the full re-enable
@@ -110,9 +113,11 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 **Usage:** Searching local knowledge base, notes, docs.
 
 **CLI install (HIMMEL-877, pinned HIMMEL-911):** the standalone `qmd` CLI
-installs from a **local clone of upstream `tobi/qmd`** (HIMMEL-3045 —
-previously a himmel-owned fork, `yotamleo/qmd`, until its carried fixes landed
-upstream), pinned to an
+installs from a **local clone of the carried fork `yotamleo/qmd`** until
+tobi/qmd#1029 is fixed upstream (HIMMEL-3956: two commits on `tobi/qmd` main
+that make the launcher forward signals to bun, upstream PR tobi/qmd#1030;
+HIMMEL-3982 pins back to `tobi/qmd`, and `qmd_install` re-points an existing
+clone's origin in place), pinned to an
 immutable commit SHA (the literal lives in `_qmd_fork_ref`; read it there
 rather than copying it here) rather than a mutable branch, via `scripts/lib/qmd-bin.sh`'s `qmd_install` (clone → fetch/checkout
 the pinned SHA → `bun install && bun run build` → junction/symlink onto the
@@ -339,7 +344,7 @@ Astra surfaces (`~/.codex/config.toml`, `scripts/cr/critics.json`) are already a
 
 **Tier:** ALWAYS — installed + enabled on every himmel machine; one of the three harness-operational plugins `plugin-profile.sh disable` refuses (HIMMEL-2733).
 **What:** Harness-meta operational skills for himmel.
-**Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (grill→brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428; the one front door for grill / stress-test / brainstorm, HIMMEL-2039), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493), `himmel-ops:memory-compound` (lean-invoke auto-memory→vault compaction with a qmd findability gate, HIMMEL-569).
+**Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (grill→brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428; the one front door for grill / stress-test / brainstorm, HIMMEL-2039), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493), `himmel-ops:memory-compound` (lean-invoke auto-memory→vault compaction with a qmd findability gate, HIMMEL-569), `himmel-ops:effort-assess` (PILOT reference-class effort record with a DoD refusal and a version tail check, HIMMEL-3995).
 **Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass; `/fanout` — validates + confirms + dispatches N work items to the invariant-policy lane by type, refusing destructive/irreversible items below the judgement tier and any dormant lane (HIMMEL-1829).
 **Hook:** `hooks/hooks.json` wires a PreToolUse(`matcher: "Skill"`) hook `inject-minerva-critic.sh` (HIMMEL-429) — injects the minerva critic loop when `lean-skills:brainstorming`/`lean-skills:writing-plans` fires without `/minerva`, and routes `lean-skills:grilling` into minerva Stage 1a (HIMMEL-2039). The match is namespace-agnostic (substring on `brainstorming`/`writing-plans`), so retained `superpowers:` aliases still trigger it. Advisory, fail-open; kill switch `MINERVA_HOOK_DISABLE=1`.
 **Plugin path:** `marketplace/plugins/himmel-ops/`

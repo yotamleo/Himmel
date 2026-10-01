@@ -46,3 +46,9 @@ answer honestly (e.g. "does this pattern actually occur" requires running a
 read-only check, which is fine — `Bash`/`Grep`/`Glob` for reading and
 searching are exactly what they are here for), stop at the boundary between
 reading and changing anything.
+
+When a check runs a hook or script against a fixture, run it under a deadline
+that kills its whole process group — `qmd_bounded` from
+`scripts/lib/qmd-bounded.sh`, or Python `Popen(start_new_session=True)` plus
+`os.killpg` — and give it a stdin, never a closed one. `subprocess.run(timeout=)`
+kills only the direct child and orphans a looping subshell (HIMMEL-3956).

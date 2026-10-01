@@ -31,18 +31,19 @@ is_excluded() {
 }
 
 # normalize_ref <raw match> -- turns a $SCRIPT_DIR/... or $REPO_ROOT/...
-# (or ${_PROV_LIB_DIR}/... / ${_PROVREAD_LIB_DIR}/..., both == scripts/lib)
-# match into a repo-relative path, or prints nothing if it's not a concrete
-# file reference (a bare directory, no trailing name).
+# (or ${_PROV_LIB_DIR}/... / ${_PROVREAD_LIB_DIR}/... / ${_QMDBIN_LIB_DIR}/...,
+# all == scripts/lib) match into a repo-relative path, or prints nothing if
+# it's not a concrete file reference (a bare directory, no trailing name).
 normalize_ref() {
   local raw="$1" rel
   rel="${raw#\$\{SCRIPT_DIR\}/}"; rel="${rel#\$SCRIPT_DIR/}"
   rel="${rel#\$\{REPO_ROOT\}/}"; rel="${rel#\$REPO_ROOT/}"
   rel="${rel#\$\{_PROV_LIB_DIR\}/}"; rel="${rel#\$_PROV_LIB_DIR/}"
   rel="${rel#\$\{_PROVREAD_LIB_DIR\}/}"; rel="${rel#\$_PROVREAD_LIB_DIR/}"
+  rel="${rel#\$\{_QMDBIN_LIB_DIR\}/}"; rel="${rel#\$_QMDBIN_LIB_DIR/}"
   case "$raw" in
     \$\{SCRIPT_DIR\}/*|\$SCRIPT_DIR/*) rel="scripts/$rel" ;;
-    \$\{_PROV_LIB_DIR\}/*|\$_PROV_LIB_DIR/*|\$\{_PROVREAD_LIB_DIR\}/*|\$_PROVREAD_LIB_DIR/*) rel="scripts/lib/$rel" ;;
+    \$\{_PROV_LIB_DIR\}/*|\$_PROV_LIB_DIR/*|\$\{_PROVREAD_LIB_DIR\}/*|\$_PROVREAD_LIB_DIR/*|\$\{_QMDBIN_LIB_DIR\}/*|\$_QMDBIN_LIB_DIR/*) rel="scripts/lib/$rel" ;;
   esac
   [ -n "$rel" ] && [ "${rel%/}" = "$rel" ] && printf '%s\n' "$rel"
 }
@@ -56,8 +57,8 @@ walk_broad() {
 # walk_narrow <file> -- design §3.2 step 2: only paths reached via a source
 # or an exec call (`. "$…"`, `source "$…"`, `bash "$…"`, `node "$…"`).
 walk_narrow() {
-  grep -ohE '(\.|source) "\$\{?(SCRIPT_DIR|REPO_ROOT|_PROV_LIB_DIR|_PROVREAD_LIB_DIR)\}?/[A-Za-z0-9_./-]+|(bash|node) "\$\{?(SCRIPT_DIR|REPO_ROOT|_PROV_LIB_DIR|_PROVREAD_LIB_DIR)\}?/[A-Za-z0-9_./-]+' "$1" 2>/dev/null \
-    | grep -oE '\$\{?(SCRIPT_DIR|REPO_ROOT|_PROV_LIB_DIR|_PROVREAD_LIB_DIR)\}?/[A-Za-z0-9_./-]+' || true
+  grep -ohE '(\.|source) "\$\{?(SCRIPT_DIR|REPO_ROOT|_PROV_LIB_DIR|_PROVREAD_LIB_DIR|_QMDBIN_LIB_DIR)\}?/[A-Za-z0-9_./-]+|(bash|node) "\$\{?(SCRIPT_DIR|REPO_ROOT|_PROV_LIB_DIR|_PROVREAD_LIB_DIR|_QMDBIN_LIB_DIR)\}?/[A-Za-z0-9_./-]+' "$1" 2>/dev/null \
+    | grep -oE '\$\{?(SCRIPT_DIR|REPO_ROOT|_PROV_LIB_DIR|_PROVREAD_LIB_DIR|_QMDBIN_LIB_DIR)\}?/[A-Za-z0-9_./-]+' || true
 }
 
 # Expand the dynamic `for helper in … ; do` loop by hand (design §3.2's own

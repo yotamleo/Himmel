@@ -169,12 +169,13 @@ EOF
 
 # Invoke the resolved qmd. Two tokens when --qmd-js is in play (`bun <js> …`),
 # one otherwise — each quoted separately so a space in either path (a Windows
-# certainty) cannot split it (HIMMEL-1283).
+# certainty) cannot split it (HIMMEL-1283). Group-bounded by qmd_bounded, from
+# qmd-bin.sh (HIMMEL-3956); an embed cut short resumes on the next fire.
 run_qmd() {
     if [ -n "$QMD_JS" ]; then
-        "$QMD_BIN" "$QMD_JS" "$@"
+        qmd_bounded "$(qmd_timeout_secs)" "$QMD_BIN" "$QMD_JS" "$@"
     else
-        "$QMD_BIN" "$@"
+        qmd_bounded "$(qmd_timeout_secs)" "$QMD_BIN" "$@"
     fi
 }
 
