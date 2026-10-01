@@ -6,7 +6,11 @@ compute the change fingerprint plan-index.sh gates a rebuild on.
 Read-only against the plan dir and every --watch path; writes only --docs.
 
   plan_docs.py --plan-dir D --emit-fp [--watch P]...
-  plan_docs.py --plan-dir D --docs OUT [--watch P]...
+  plan_docs.py --plan-dir D --docs OUT [--graph FILE] [--watch P]...
+
+--graph also writes a deterministic graphify node_link graph.json (no LLM, no
+egress): ticket nodes with typed edges inversion (version), intheme, inepic,
+servesgoal to their version/theme/epic/goal nodes.
 
 Inputs: stage1/C<NN>.tsv (theme, epic, goals), stage1/C<NN>.explain.tsv (plain
 text), stage3/placement.tsv (version, layer, rank, reason; the placed set).
@@ -14,6 +18,7 @@ text), stage3/placement.tsv (version, layer, rank, reason; the placed set).
 import argparse
 import csv
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -78,7 +83,41 @@ def overlaps(a, b):
     return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
 
 
-def build(plan, docs, watches=()):
+def write_graph(path, placement, stage1):
+    nodes, links = {}, set()
+
+    def node(kind, name, source=""):
+        nid = "%s:%s" % (kind, name)
+        nodes.setdefault(nid, {"id": nid, "label": name, "file_type": "document", "source_file": source})
+        return nid
+
+    for p in placement:
+        key = p["key"]
+        s1 = stage1.get(key, {})
+        t = node("ticket", key, "%s.md" % key)
+        goals = [g for g in re.split(r"[;,\s]+", s1.get("goals", "")) if g]
+        for rel, kind, val in [("inversion", "version", p.get("version", "")),
+                               ("intheme", "theme", s1.get("theme", "")),
+                               ("inepic", "epic", s1.get("epic", ""))] + [("servesgoal", "goal", g) for g in goals]:
+            if val:
+                links.add((t, node(kind, val), rel))
+    doc = {"directed": True, "multigraph": False, "graph": {},
+           "nodes": [nodes[k] for k in sorted(nodes)],
+           "links": [{"source": s, "target": t, "relation": r, "confidence": "EXTRACTED"}
+                     for s, t, r in sorted(links)]}
+    fd, tmp = tempfile.mkstemp(prefix=".plan-graph-", dir=os.path.dirname(os.path.abspath(path)))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=1, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def build(plan, docs, watches=(), graph=None):
     stage1, explain = {}, {}
     for f in chunk_files(plan, "stage1", r"C\d+\.tsv"):
         for r in read_tsv(f):
@@ -93,6 +132,11 @@ def build(plan, docs, watches=()):
     for src in [plan] + list(watches):  # the one guard for the only path this deletes and replaces
         if overlaps(docs, src):
             sys.exit("plan_docs: --docs %s overlaps source input %s; refusing to replace it" % (docs, src))
+    if graph:
+        for src in [plan] + list(watches):
+            if overlaps(graph, src):
+                sys.exit("plan_docs: --graph %s overlaps source input %s; refusing to write it" % (graph, src))
+        write_graph(graph, placement, stage1)  # first: a failed emit leaves the docs untouched too
     # staging is a fresh unique dir (never a fixed sibling name), so nothing existing is ever deleted for it
     tmp = tempfile.mkdtemp(prefix=".plan-docs-", dir=os.path.dirname(os.path.abspath(docs)))
     groups = {"version": {}, "theme": {}, "epic": {}}
@@ -136,6 +180,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan-dir", required=True)
     ap.add_argument("--docs")
+    ap.add_argument("--graph")
     ap.add_argument("--watch", action="append", default=[])
     ap.add_argument("--emit-fp", action="store_true")
     a = ap.parse_args()
@@ -144,7 +189,7 @@ def main():
         return 0
     if not a.docs:
         ap.error("--docs required unless --emit-fp")
-    build(a.plan_dir, a.docs, a.watch)
+    build(a.plan_dir, a.docs, a.watch, a.graph)
     return 0
 
 
