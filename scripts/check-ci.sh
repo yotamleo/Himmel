@@ -452,6 +452,7 @@ pr_view() {
 . "$(cd "$(dirname "$0")" && pwd)/lib/gh-ci-cache.sh"
 # A budget wait taken in this process is bounded by --max-wait and goes through the
 # same sleep seam as every other wait here (0 = unbounded, as --max-wait 0 is).
+# shellcheck disable=SC2034  # read by the sourced lib/gh-ci-cache.sh
 CIC_MAX_WAIT="$MAX_WAIT"
 CIC_SLEEP_CMD="${CIC_SLEEP_CMD:-$CHECK_CI_SLEEP_CMD}"
 

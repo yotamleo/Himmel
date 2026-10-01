@@ -62,4 +62,6 @@ check "jira failure exits 2" "$rc" "2"
 bash "$RPT" --store "$tmp/store" >/dev/null 2>&1; rc=$?
 check "missing --version exits 1" "$rc" "1"
 
-[ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
+if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
+echo "$fails FAILED"
+exit 1

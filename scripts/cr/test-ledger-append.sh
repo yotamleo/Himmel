@@ -788,7 +788,7 @@ check "amend --set reason lands in set, not on the amend reason" "$(L="$AM" node
 FU="$tmp/fu-class.jsonl"
 CR_LEDGER="$FU" bash "$LA" finding --branch b --head FU1 --model m --id fu-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason r 2>/dev/null
 check "finding --deferred-to without --fu-class is refused" "$?" "2"
-check "  ...and nothing was written" "$(cat "$FU" 2>/dev/null | wc -l | tr -d ' ')" "0"
+check "  ...and nothing was written" "$(wc -l <"$FU" 2>/dev/null | tr -d ' ')" "0"
 CR_LEDGER="$FU" bash "$LA" finding --branch b --head FU1 --model m --id fu-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason r --fu-class nonsense 2>/dev/null
 check "finding --fu-class outside escape|hardening|polish is refused" "$?" "2"
 CR_LEDGER="$FU" bash "$LA" finding --branch b --head FU1 --model m --id fu-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason r --fu-class hardening
