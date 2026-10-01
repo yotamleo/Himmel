@@ -403,21 +403,25 @@ if command -v curl >/dev/null 2>&1; then
   # a null limit prints "none" (uncapped), a capped key prints limit_remaining.
   or_parse() { node -e '
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
-  try { const j=JSON.parse(s); const d=j.data||j; const t=Number(d.total_credits), u=Number(d.total_usage);
-    if (Number.isFinite(t)&&Number.isFinite(u)) { process.stdout.write((t-u).toFixed(2)); return; }
-    if (d.limit===null) { process.stdout.write("none"); return; }
-    const l=Number(d.limit_remaining);
-    if (d.limit!==undefined&&d.limit_remaining!==null&&Number.isFinite(l)) { process.stdout.write(l.toFixed(2)); return; } } catch(_) {}
+  try { const j=JSON.parse(s); const d=j.data||j;
+    if (process.argv[1]==="credits") {
+      const t=d.total_credits, u=d.total_usage;
+      if (Number.isFinite(t)&&Number.isFinite(u)&&Number.isFinite(t-u)) { process.stdout.write(String(t-u)); return; }
+    } else {
+      if (d.limit===null) { process.stdout.write("none"); return; }
+      if (Number.isFinite(d.limit)&&Number.isFinite(d.limit_remaining)) { process.stdout.write(String(d.limit_remaining)); return; }
+    } } catch(_) {}
   process.exit(2);
-});' 2>/dev/null || true; }
-  credit_rem="$(printf '%s' "$credit_raw" | or_parse)"
+});' "$1" 2>/dev/null || true; }
+  credit_rem="$(printf '%s' "$credit_raw" | or_parse credits)"
   [ -n "$credit_rem" ] && credit_surfaced=1
 fi
 if [ "$credit_surfaced" -ne 1 ]; then
   echo "claude-openrouter: remaining metered credit: UNKNOWN (could not query $OPENROUTER_API_BASE/credits). The metered balance is NOT verified; refusing to launch (exit 5)." >&2
   exit 5
 fi
-echo "claude-openrouter: remaining metered credit: \$$credit_rem (OpenRouter balance at $OPENROUTER_API_BASE/credits)." >&2
+credit_display="$(awk -v r="$credit_rem" 'BEGIN{printf "%.2f",r}')"
+echo "claude-openrouter: remaining metered credit: \$$credit_display (OpenRouter balance at $OPENROUTER_API_BASE/credits)." >&2
 # awk does the float compare (bash 3.2 has none); a non-numeric floor becomes 3.
 credit_floor="$OPENROUTER_MIN_CREDIT_USD"
 case "$credit_floor" in ''|.|*[!0-9.]*|*.*.*) credit_floor=3 ;; esac
@@ -430,7 +434,7 @@ fi
 # answer or limit_remaining under the same floor refuses.
 key_raw="$(printf 'header "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
   | curl -s -m 5 --noproxy '*' -K - "$OPENROUTER_API_BASE/key" 2>/dev/null || true)"
-key_rem="$(printf '%s' "$key_raw" | or_parse)"
+key_rem="$(printf '%s' "$key_raw" | or_parse key)"
 if [ -z "$key_rem" ]; then
   echo "claude-openrouter: key limit_remaining: UNKNOWN (could not read $OPENROUTER_API_BASE/key); refusing to launch (exit 5)." >&2
   exit 5
@@ -444,7 +448,8 @@ if [ "$key_rem" != "none" ]; then
   fi
   if awk -v k="$key_rem" -v c="$credit_rem" 'BEGIN{exit !(k+0<c+0)}'; then credit_eff="$key_rem"; credit_eff_src="key limit_remaining"; fi
 fi
-echo "claude-openrouter: effective balance \$$credit_eff ($credit_eff_src)." >&2
+credit_eff_display="$(awk -v r="$credit_eff" 'BEGIN{printf "%.2f",r}')"
+echo "claude-openrouter: effective balance \$$credit_eff_display ($credit_eff_src)." >&2
 
 command -v claude >/dev/null 2>&1 || { echo "claude-openrouter: 'claude' not found on PATH" >&2; exit 2; }
 

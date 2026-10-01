@@ -414,6 +414,31 @@ t "smaller of credit 20.00 and key 19.50 reported" 0
 # shellcheck disable=SC2016  # literal $ in the expected text
 grep -q 'effective balance \$19.50 (key limit_remaining)' "$WORK/out.txt" || { echo "FAIL: effective balance line missing"; FAILS=$((FAILS+1)); }
 
+# --- T9c: unknown JSON types and sub-cent balances must never pass admission.
+setup; KEY="or-test-123"
+write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"
+for bad in null true '""' '"20"'; do
+  printf '{"data":{"total_credits":20,"total_usage":%s}}' "$bad" > "$BIN/credits.json"
+  t "non-number credit usage $bad refuses" 5
+  printf '{"data":{"total_credits":%s,"total_usage":0}}' "$bad" > "$BIN/credits.json"
+  t "non-number total credit $bad refuses" 5
+ done
+printf '{"data":{"total_credits":20,"total_usage":0}}' > "$BIN/credits.json"
+for bad in null true '""' '"20"'; do
+  printf '{"data":{"limit":10,"limit_remaining":%s}}' "$bad" > "$BIN/key.json"
+  t "non-number key remaining $bad refuses" 5
+ done
+printf '{"data":{"limit":true,"limit_remaining":20}}' > "$BIN/key.json"
+t "non-number key limit refuses" 5
+printf '{"data":{"limit":null}}' > "$BIN/key.json"
+printf '{"data":{"total_credits":3,"total_usage":0.001}}' > "$BIN/credits.json"
+t "unrounded credit 2.999 below floor refuses" 5
+printf '{"data":{"total_credits":20,"total_usage":0}}' > "$BIN/credits.json"
+printf '{"data":{"limit":10,"limit_remaining":2.999}}' > "$BIN/key.json"
+t "unrounded key 2.999 below floor refuses" 5
+OPENROUTER_MIN_CREDIT_USD=NaN t "non-finite floor falls back to 3" 5
+OPENROUTER_MIN_CREDIT_USD=Infinity t "infinite floor falls back to 3" 5
+
 # --- T10: claude flags pass through verbatim; leading --reseed is consumed
 setup; KEY="or-test-123"
 write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"

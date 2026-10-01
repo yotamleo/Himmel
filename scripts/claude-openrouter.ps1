@@ -478,7 +478,10 @@ if (($env:LEG_LANE -eq 'openrouter') -or (-not (Test-Path -LiteralPath (Join-Pat
 # call carries the key but NO corpus content.
 $minCredit = 3.0
 $parsedMin = 0.0
-if ($env:OPENROUTER_MIN_CREDIT_USD -and [double]::TryParse($env:OPENROUTER_MIN_CREDIT_USD, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedMin)) { $minCredit = $parsedMin }
+if ($env:OPENROUTER_MIN_CREDIT_USD -and [double]::TryParse($env:OPENROUTER_MIN_CREDIT_USD, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedMin) -and -not [double]::IsNaN($parsedMin) -and -not [double]::IsInfinity($parsedMin) -and $parsedMin -ge 0) { $minCredit = $parsedMin }
+function Test-OpenRouterNumber($value) {
+  return (($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) -and -not [double]::IsNaN([double]$value) -and -not [double]::IsInfinity([double]$value))
+}
 $creditSurfaced = $false
 $remVal = 0.0
 try {
@@ -486,9 +489,9 @@ try {
     -Headers @{Authorization="Bearer $key"} -Uri "$OpenRouterApiBase/credits"
   $j = $resp.Content | ConvertFrom-Json -ErrorAction Stop
   $d = if ($j.data) { $j.data } else { $j }
-  if ($null -ne $d.total_credits -and $null -ne $d.total_usage) {
-    $remVal = [Math]::Round([double]$d.total_credits - [double]$d.total_usage, 2)
-    $creditSurfaced = $true
+  if ((Test-OpenRouterNumber $d.total_credits) -and (Test-OpenRouterNumber $d.total_usage)) {
+    $remVal = [double]$d.total_credits - [double]$d.total_usage
+    $creditSurfaced = Test-OpenRouterNumber $remVal
   }
 } catch { }
 if (-not $creditSurfaced) {
@@ -511,9 +514,9 @@ try {
     -Headers @{Authorization="Bearer $key"} -Uri "$OpenRouterApiBase/key"
   $kj = $kresp.Content | ConvertFrom-Json -ErrorAction Stop
   $kd = if ($kj.data) { $kj.data } else { $kj }
-  if ($null -eq $kd.limit) { $keyKnown = $true }
-  elseif ($null -ne $kd.limit_remaining) {
-    $keyVal = [Math]::Round([double]$kd.limit_remaining, 2)
+  if ($kd.PSObject.Properties['limit'] -and $null -eq $kd.limit) { $keyKnown = $true }
+  elseif ((Test-OpenRouterNumber $kd.limit) -and (Test-OpenRouterNumber $kd.limit_remaining)) {
+    $keyVal = [double]$kd.limit_remaining
     $keyKnown = $true
     $keyCapped = $true
   }

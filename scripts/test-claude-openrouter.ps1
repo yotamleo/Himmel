@@ -279,6 +279,33 @@ try {
   Write-KeyLimit $null
   Assert-Exit (Invoke-Launcher) 0 'null key limit (uncapped) admits'
 
+  # --- T5c: numeric JSON types and unrounded floor admission. ---
+  foreach ($bad in 'null', 'true', '""', '"20"') {
+    ('{"data":{"total_credits":20,"total_usage":' + $bad + '}}') | Set-Content -LiteralPath $CreditsFile
+    Assert-Exit (Invoke-Launcher) 5 "non-number usage $bad refuses"
+    ('{"data":{"total_credits":' + $bad + ',"total_usage":0}}') | Set-Content -LiteralPath $CreditsFile
+    Assert-Exit (Invoke-Launcher) 5 "non-number total credit $bad refuses"
+  }
+  Set-Credits 20 0
+  foreach ($bad in 'null', 'true', '""', '"20"') {
+    ('{"data":{"limit":10,"limit_remaining":' + $bad + '}}') | Set-Content -LiteralPath $KeyFile
+    Assert-Exit (Invoke-Launcher) 5 "non-number key remaining $bad refuses"
+  }
+  '{"data":{"limit":true,"limit_remaining":20}}' | Set-Content -LiteralPath $KeyFile
+  Assert-Exit (Invoke-Launcher) 5 'non-number key limit refuses'
+  Write-KeyLimit $null
+  Set-Credits 3 0.001
+  Assert-Exit (Invoke-Launcher) 5 'unrounded credit 2.999 refuses'
+  Set-Credits 20 0
+  Write-KeyLimit 2.999
+  Assert-Exit (Invoke-Launcher) 5 'unrounded key 2.999 refuses'
+  Write-KeyLimit 0
+  foreach ($floor in 'NaN', 'Infinity', '-Infinity') {
+    $env:OPENROUTER_MIN_CREDIT_USD = $floor
+    Assert-Exit (Invoke-Launcher) 5 "non-finite floor $floor falls back to 3"
+  }
+  Remove-Item Env:OPENROUTER_MIN_CREDIT_USD -ErrorAction SilentlyContinue
+
   # --- T6: claude flags pass through verbatim; a LEADING -Reseed is consumed.
   # Pins the manual flag loop (a param() block would swallow -p/-d as common
   # parameters before it ever runs). ---
