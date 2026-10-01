@@ -412,7 +412,7 @@ function main() {
   }
 
   let scanned;
-  const costEntries = () => (scanned ??= scanSkillCosts({ cwd: REPO_ROOT }).entries);
+  const costEntries = () => (scanned ??= scanSkillCosts({ cwd: REPO_ROOT, configDir: process.env.CLAUDE_CONFIG_DIR || undefined }).entries);
   let anyFailed = false;
   // Private per-run tmpdir (mkdtempSync is exclusive/unpredictable), not a
   // shared predictable path — a predictable path + non-exclusive writeFileSync
