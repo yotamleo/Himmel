@@ -1333,6 +1333,7 @@ if [ -n "$PROFILE" ]; then
         if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" --arg repo "$CONSULT_REPO_CANON" \
             '.permissions.deny = ((.permissions.deny // []) + ["Edit","Write","NotebookEdit"] | unique)
              | .permissions.allow = ["Bash(bash scripts/handover/console-kit/append-results.sh " + $doc + ":*)"]
+             | del(.permissions.additionalDirectories)
              | .sandbox = {enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
                            autoAllowBashIfSandboxed: false,
                            filesystem: {allowWrite: [$doc], denyWrite: [$repo]}}')"; then
