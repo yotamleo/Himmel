@@ -248,9 +248,13 @@ check "reader released its own lock" "no" "$([ -d "$SJ/.lock" ] && echo yes || e
 
 # a store the reader cannot lock is read lock-free, but a torn last line fails closed
 RO="$ROOT/store-ro"; mkdir "$RO"; cp "$SJ/records.jsonl" "$RO/records.jsonl"; chmod 555 "$RO"
-check "read-only store with an intact file is read" "0" "$(frc bash "$READ" --store "$RO")"
-chmod 755 "$RO"; printf '{"ticket":"HIMMEL-1"}' >> "$RO/records.jsonl"; chmod 555 "$RO"   # valid JSON, newline not yet written
-check "read-only store with a torn last line aborts" "1" "$(frc bash "$READ" --store "$RO")"
+if [ -w "$RO" ]; then
+  echo "skip: store stays writable for this user (privileged runner); lock-free read path not exercised"
+else
+  check "read-only store with an intact file is read" "0" "$(frc bash "$READ" --store "$RO")"
+  chmod 755 "$RO"; printf '{"ticket":"HIMMEL-1"}' >> "$RO/records.jsonl"; chmod 555 "$RO"   # valid JSON, newline not yet written
+  check "read-only store with a torn last line aborts" "1" "$(frc bash "$READ" --store "$RO")"
+fi
 chmod 755 "$RO"
 
 # an unknown run status aborts the whole run (gh's set only)

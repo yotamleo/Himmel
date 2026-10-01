@@ -31,7 +31,12 @@ FILE="$STORE/records.jsonl"
 # read-only mount) cannot be locked, so it is read without the lock and fails
 # closed on a last line with no newline, the mark of an append in flight.
 if [ ! -w "$STORE" ]; then
-  [ -z "$(tail -c1 "$FILE")" ] || { echo "usage-read: $FILE ends mid-line (writer active on a store this reader cannot lock); retry" >&2; exit 1; }
+  # snapshot first, then check the snapshot: checking the live file and reading it
+  # later would let an append start in between
+  SNAP="$(mktemp)"; trap 'rm -f "$SNAP"' EXIT; trap 'exit 130' INT TERM HUP
+  cat "$FILE" > "$SNAP"
+  [ -z "$(tail -c1 "$SNAP")" ] || { echo "usage-read: $FILE ends mid-line (writer active on a store this reader cannot lock); retry" >&2; exit 1; }
+  FILE="$SNAP"
 else
   LOCK="$STORE/.lock"; n=0
   until mkdir "$LOCK" 2>/dev/null; do
