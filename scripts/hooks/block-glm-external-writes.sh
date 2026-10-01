@@ -2021,13 +2021,65 @@ count_cmd() {
 # fail-closed: an unset/absent grants file or any invalid grant line leaves the
 # arm at its builtin allowance and it still denies.
 gp_shape='git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+push([[:space:]]|$)'
-gu_shape='(git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url|git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[a-z-]+)*[[:space:]]+[^[:space:];&|]*url)'
+gu_shape='(git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+remote[[:space:]]+set-url|git([[:space:]]+-[a-z-]+([[:space:]]+[^[:space:];&|]+)?)*[[:space:]]+config([[:space:]]+-[a-z-]+)*([[:space:]]+(set|add|replace-all))?([[:space:]]+-[a-z-]+)*[[:space:]]+[^[:space:];&|]*url|git[[:space:]]+([^;&|]*[[:space:]])?(-c|--config-env)[=[:space:]]*[^[:space:];&|]*insteadof=)'
 gh_shape='gh([[:space:]]|$)'
 gh_allow='gh[[:space:]]+(issue([[:space:]]|$)|pr[[:space:]]+(view|diff|checks|status|list)([[:space:]]|$)|run[[:space:]]+(view|list|watch)([[:space:]]|$))'
 net_shape='(curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm)([[:space:]]|$)'
 
 gp_total=$(count_cmd "$gp_shape"); gp_allowed=0
-gu_total=$(count_cmd "$gu_shape"); gu_allowed=0
+# Flat decode (HIMMEL-844 round 10): ONE position-free pass over the whole command, no quote
+# state. Drop every dollar-quote opener and decode every backslash escape (bash's ANSI-C set)
+# wherever it sits, so decoys and split segments cannot hide `git` or the key. A NUL escape
+# (\0 \x00 \c@ \c`) truncates a segment in bash, so the pass runs twice: NUL kept as `#`, and
+# NUL dropping everything through the next unescaped quote. Over-approximation only.
+ansic_decode() {
+    LC_ALL=C awk '
+    function hv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
+    function flat(drop,   i, out, c, e, k, v, d, mx) {
+        i = 1; out = ""
+        while (i <= n) {
+            c = substr(s, i, 1)
+            if (c == "$" && substr(s, i + 1, 1) == q) { i += 2; continue }
+            if (c != "\\") { out = out c; i++; continue }
+            e = substr(s, i + 1, 1); i += 2; v = -1
+            if ((k = index("abeEfnrtv\\\047\"?", e)) > 0) {
+                out = out substr("\007\010\033\033\014\012\015\011\013\\\047\"?", k, 1); continue
+            }
+            if (e ~ /[0-7]/) {
+                v = e + 0; d = 1
+                while (d < 3 && substr(s, i, 1) ~ /[0-7]/) { v = v * 8 + substr(s, i, 1); i++; d++ }
+                v = v % 256
+            } else if (e == "x" || e == "u" || e == "U") {
+                mx = (e == "x") ? 2 : (e == "u") ? 4 : 8; v = 0; d = 0
+                while (d < mx && hv(substr(s, i, 1)) >= 0) { v = v * 16 + hv(substr(s, i, 1)); i++; d++ }
+                if (d == 0) { out = out "\\" e; continue }
+            } else if (e == "c") {
+                v = (substr(s, i, 1) ~ /[@`]/) ? 0 : 35; i++
+            } else { out = out "\\" e; continue }
+            if (v == 0 && drop) {
+                while (i <= n) { c = substr(s, i, 1); if (c == "\\") { i += 2; continue } i++; if (c == q) break }
+                continue
+            }
+            out = out ((v > 0 && v < 128) ? sprintf("%c", v) : "#")
+        }
+        return out
+    }
+    { s = (NR > 1 ? s "\n" : "") $0 }
+    END { q = "\047"; n = length(s); printf "%s\n%s\n%s", s, flat(0), flat(1) }'
+}
+cmd_dq=$(printf '%s' "$cmd_joined" | ansic_decode | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;' | LC_ALL=C tr -d "'\"\\\\")
+# Blunt rule: decoded + dequoted + lowercased text containing `git` AND `insteadof`.
+# Accepted overmatch: `git log --grep insteadof`.
+gu_blunt=0
+case $cmd_dq in
+    *git*) case $cmd_dq in *insteadof*) gu_blunt=1 ;; esac ;;
+esac
+# Never `cmd_lc=$cmd_dq count_cmd`: a prefix assignment exports the decoded
+# text into grep's environment; past ~43 KB that is E2BIG, which `|| true`
+# reads as zero matches (fail-open vs main). Swap in-shell instead.
+_s=$cmd_lc; cmd_lc=$cmd_dq; gu_dq=$(count_cmd "$gu_shape"); cmd_lc=$_s
+gu_total=$(count_cmd "$gu_shape"); [ "$gu_dq" -gt "$gu_total" ] && gu_total=$gu_dq
+gu_total=$(( gu_total + gu_blunt )); gu_allowed=0
 gh_total=$(count_cmd "$gh_shape"); gh_allowed=$(count_cmd "$gh_allow")
 net_total=$(count_cmd "$net_shape"); net_allowed=0
 

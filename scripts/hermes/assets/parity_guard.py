@@ -929,7 +929,8 @@ _ENGINE_UNTRUSTED = re.compile(r"z\.ai|glm|zhipu|deepseek")
 EXT_GIT_PUSH = re.compile(_CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+push(?:\s|$)")
 EXT_GIT_URL = re.compile(
     _CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+"
-    r"(?:remote\s+set-url|config(?:\s+-\S+(?:\s+\S+)?)*\s+\S*url\s+\S+)")
+    r"(?:remote\s+set-url|config(?:\s+-\S+(?:\s+\S+)?)*(?:\s+(?:set|add|replace-all))?(?:\s+-\S+(?:\s+\S+)?)*\s+\S*(?i:url|insteadof)\s+\S+)"
+    r"|" + _CMDPOS + r"git(?:\.exe)?\s+(?:[^;&|]*\s)?(?:-c|--config-env)[=\s]*\S*(?i:insteadof)=")
 EXT_GH_ANY = re.compile(_CMDPOS + r"gh(?:\.exe)?(?:\s|$)")
 # Audited-lane carve-out (block-glm-external-writes.sh policy, 2026-07-03): gh
 # issue (reads AND writes — cr-deferred followups are audited gh issues) + the
@@ -958,14 +959,85 @@ def _external_writes_allowed() -> bool:
     return False  # unknown / absent engine signal -> fail-closed (refuse)
 
 
-def terminal_external_write_reason(cmd_norm: str):
+_ANSI_SIMPLE = {"a": "\x07", "b": "\x08", "e": "\x1b", "E": "\x1b", "f": "\x0c",
+                "n": "\n", "r": "\r", "t": "\t", "v": "\x0b", "\\": "\\",
+                "'": "'", '"': '"', "?": "?"}
+_ANSI_HEX = {"x": 2, "u": 4, "U": 8}
+
+
+def _ansi_c_decode(s: str) -> str:
+    """Flat decode (HIMMEL-844 round 10): ONE position-free pass over the whole command, no
+    quote state. Drops every dollar-quote opener and decodes every backslash escape wherever it
+    sits, so decoys and split segments cannot hide `git` or the key. A NUL escape (\\0 \\x00 \\c@
+    \\c`) truncates a segment in bash, so the pass runs twice: NUL kept as `#`, and NUL dropping
+    everything through the next unescaped quote. Code points >= 128 become `#`. Over-approximation
+    only: the caller's `git` + `insteadof` rule runs on both streams."""
+    streams, n = [s], len(s)  # raw first: plain `ins\teadOf` is `insteadOf` to bash
+    for drop in (False, True):
+        out, i = [], 0
+        while i < n:
+            c = s[i]
+            if c == "$" and s[i + 1:i + 2] == "'":
+                i += 2
+                continue
+            if c != "\\":
+                out.append(c)
+                i += 1
+                continue
+            e = s[i + 1:i + 2]
+            i += 2
+            if not e:
+                break
+            if e in _ANSI_SIMPLE:
+                out.append(_ANSI_SIMPLE[e])
+                continue
+            if e in "01234567":
+                v, d = int(e), 1
+                while d < 3 and s[i:i + 1] and s[i] in "01234567":
+                    v, i, d = v * 8 + int(s[i]), i + 1, d + 1
+                v %= 256
+            elif e in _ANSI_HEX:
+                v, d = 0, 0
+                while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
+                    v, i, d = v * 16 + int(s[i], 16), i + 1, d + 1
+                if d == 0:
+                    out.append("\\" + e)
+                    continue
+            elif e == "c":
+                v = 0 if s[i:i + 1] in ("@", "`") else 35
+                i += 1
+            else:
+                out.append("\\" + e)
+                continue
+            if v == 0 and drop:
+                while i < n:
+                    c = s[i]
+                    if c == "\\":
+                        i += 2
+                        continue
+                    i += 1
+                    if c == "'":
+                        break
+                continue
+            out.append(chr(v) if 0 < v < 128 else "#")
+        streams.append("".join(out))
+    return ";".join(streams)
+
+
+def terminal_external_write_reason(cmd_norm: str, raw_cmd: str = ""):
     """Return a block reason if `cmd_norm` (already norm()-ed) is an external-write
     shape (git push / remote-URL rewrite / gh PR-mutation / network CLI), else
-    None. The caller gates this on an untrusted / unknown engine."""
+    None. `raw_cmd` is the un-norm()-ed command (norm() destroys backslash escapes).
+    The caller gates this on an untrusted / unknown engine."""
     if EXT_GIT_PUSH.search(cmd_norm):
         return ("git push is refused on an untrusted/unknown engine — commit "
                 "locally; the trusted main tier / operator pushes (HIMMEL-695).")
-    if EXT_GIT_URL.search(cmd_norm):
+    # HIMMEL-844 round 7: decode every ANSI-C dollar-quote segment (bash's own escape set)
+    # from the RAW command (norm() already mangled backslashes), then delete every quote and
+    # backslash and lowercase: the words git sees. Blunt rule: `git` AND `insteadof` denies.
+    # Accepted overmatch: `git log --grep insteadof`.
+    dq_lc = re.sub(r"['\"\\]", "", _ansi_c_decode(raw_cmd or cmd_norm)).lower()
+    if EXT_GIT_URL.search(cmd_norm) or EXT_GIT_URL.search(dq_lc) or ("git" in dq_lc and "insteadof" in dq_lc):
         return ("Rewriting a git remote / push URL is refused on an untrusted/"
                 "unknown engine (HIMMEL-695).")
     if len(EXT_GH_ANY.findall(cmd_norm)) > len(EXT_GH_ALLOW.findall(cmd_norm)):
@@ -1286,7 +1358,7 @@ def _command_checks(raw_cmd: str, cmd: str, payload: dict, args: dict) -> None:
     # PR-mutation / network CLIs unless the engine is an affirmed trusted
     # main tier (fail-closed on an unknown engine).
     if not _external_writes_allowed():
-        reason = terminal_external_write_reason(cmd)
+        reason = terminal_external_write_reason(cmd, raw_cmd)
         if reason:
             block(reason)
 
