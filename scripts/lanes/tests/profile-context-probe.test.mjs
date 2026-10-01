@@ -404,3 +404,42 @@ test('manifest name != entry name: coverage, namespace extras and listing use th
   assert.equal(listingReport(ctx, ['taste-skill-core@himmel'], names)[0].skills, 1);
   assert.deepEqual(listingProblems(ctx, ['taste-skill-core@himmel'], { names }), []);
 });
+
+// HIMMEL-4072: builtin / account-synced / skills-dir plugins are environment —
+// a --settings profile cannot disable them — so they are reported, never failed.
+const baseInit = findInitEvent(parseStreamJsonLines(SAMPLE));
+const ENV_PLUGINS = [
+  { name: 'cc-plugin-agents-md', source: 'cc-plugin-agents-md@builtin' },
+  { name: 'cowork-plugin-management', source: 'cowork-plugin-management@synced' },
+  { name: 'obsidian-second-brain', source: 'obsidian-second-brain@skills-dir' },
+];
+const withEnv = () => ({
+  ...baseInit,
+  plugins: [...baseInit.plugins, ...ENV_PLUGINS],
+  skills: [...baseInit.skills, 'anthropic-skills:docx', 'cowork-plugin-management:create-cowork-plugin', 'obsidian-second-brain:obsidian-save'],
+  slash_commands: [...baseInit.slash_commands, 'anthropic-skills:docx', 'obsidian-second-brain:obsidian-save'],
+  mcp_servers: [...baseInit.mcp_servers, { name: 'plugin:obsidian-second-brain:vault', status: 'connected' }],
+});
+
+test('evaluateProfile: @builtin/@synced/@skills-dir plugins and their namespaces pass and are reported as environment', () => {
+  const { pass, problems, environment } = evaluateProfile({ enabledIds: ENABLED, initEvent: withEnv(), measuredTokens: 35098, budget: 40000 });
+  assert.deepEqual(problems, []);
+  assert.equal(pass, true);
+  for (const { source } of ENV_PLUGINS) assert.ok(environment.includes(source), `environment lists ${source}`);
+});
+
+test('evaluateProfile: an unrequested @himmel plugin still fails as bloat even beside environment plugins', () => {
+  const init = withEnv();
+  init.plugins = [...init.plugins, { name: 'stray', source: 'stray@himmel' }];
+  const { pass, problems } = evaluateProfile({ enabledIds: ENABLED, initEvent: init, measuredTokens: 35098, budget: 40000 });
+  assert.equal(pass, false);
+  assert.ok(problems.some((p) => /extra plugin/.test(p) && p.includes('stray@himmel') && !p.includes('@synced')));
+});
+
+test('evaluateProfile: a namespace from a non-environment, non-enabled plugin still fails', () => {
+  const init = withEnv();
+  init.skills = [...init.skills, 'rogue:thing'];
+  const { pass, problems } = evaluateProfile({ enabledIds: ENABLED, initEvent: init, measuredTokens: 35098, budget: 40000 });
+  assert.equal(pass, false);
+  assert.ok(problems.some((p) => p.includes('skill:rogue:thing')));
+});

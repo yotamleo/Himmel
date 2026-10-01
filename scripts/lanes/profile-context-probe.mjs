@@ -93,11 +93,24 @@ function pluginName(id, names) {
   return names?.get(id) ?? id.split('@')[0];
 }
 
+// HIMMEL-4072: builtin, account-synced and skills-dir plugins come from Claude
+// Code, the claude.ai account and ~/.claude/skills; a --settings profile cannot
+// disable them, so they are environment (reported, never failed), not bloat.
+// anthropic-skills arrives synced but has no plugins[] entry to derive from.
+const ENVIRONMENT_SOURCE = /@(builtin|synced|skills-dir)$/;
+const ENVIRONMENT_NAMESPACES = ['anthropic-skills'];
+const environmentPlugins = (initEvent, enabledIds) =>
+  (initEvent?.plugins ?? []).filter((p) => ENVIRONMENT_SOURCE.test(p.source) && !enabledIds.includes(p.source));
+export function environmentSources(initEvent, enabledIds) {
+  return environmentPlugins(initEvent, enabledIds).map((p) => p.source).sort();
+}
+
 // initEvent.plugins[].source EXACT-diffed against the resolved enabled-true
 // id set. extra = bloat (something loaded that shouldn't be); missing =
 // injection failure (a plugin the resolver enabled never actually loaded).
 export function pluginSourceDiff(initEvent, enabledIds) {
-  const actual = new Set((initEvent?.plugins ?? []).map((p) => p.source));
+  const env = new Set(environmentSources(initEvent, enabledIds));
+  const actual = new Set((initEvent?.plugins ?? []).map((p) => p.source).filter((id) => !env.has(id)));
   const expected = new Set(enabledIds);
   return {
     extra: [...actual].filter((id) => !expected.has(id)).sort(),
@@ -110,7 +123,11 @@ export function pluginSourceDiff(initEvent, enabledIds) {
 // plugin. UN-namespaced entries (no ':', or the un-namespaced user/project
 // tiers) are not this check's concern — they load regardless of profile.
 export function namespaceExtras(initEvent, enabledIds, runtimeNames) {
-  const names = new Set(enabledIds.map((id) => pluginName(id, runtimeNames)));
+  const names = new Set([
+    ...enabledIds.map((id) => pluginName(id, runtimeNames)),
+    ...ENVIRONMENT_NAMESPACES,
+    ...environmentPlugins(initEvent, enabledIds).map((p) => p.name ?? pluginName(p.source)),
+  ]);
   const extras = [];
   for (const skill of initEvent?.skills ?? []) {
     const m = /^([^:]+):/.exec(skill);
@@ -281,7 +298,7 @@ export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resul
   const problems = [];
   if (!initEvent) {
     problems.push('no init event in probe output (spawn failure, timeout, or unexpected stream shape)');
-    return { pass: false, problems };
+    return { pass: false, problems, environment: [] };
   }
   problems.push(...roleCoverageProblems(initEvent, requiredIds, runtimeNames));
   if (contextUsage !== undefined) {
@@ -303,7 +320,7 @@ export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resul
   if (!Number.isInteger(budget) || budget <= 0) problems.push('profile has no valid contextBudget (hard fail — set one before measuring)');
   else if (measuredTokens === null) problems.push('could not measure first-turn tokens (no result event / missing usage)');
   else if (measuredTokens > budget) problems.push(`first-turn tokens ${measuredTokens} exceed contextBudget ${budget}`);
-  return { pass: problems.length === 0, problems };
+  return { pass: problems.length === 0, problems, environment: environmentSources(initEvent, enabledIds) };
 }
 
 const fmtNum = (n) => (typeof n === 'number' && Number.isFinite(n) ? String(n) : 'n/a');
@@ -510,12 +527,13 @@ function main() {
 
       const requiredIds = ROLE_REQUIRES[name] ?? [];
       const runtimeNames = runtimeNamesOf(configDir);
-      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds, installedVersionsOf(configDir, REPO_ROOT), runtimeNames), runtimeNames });
+      const { pass, problems, environment } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds, installedVersionsOf(configDir, REPO_ROOT), runtimeNames), runtimeNames });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
       const need = requiredBudget(ctxRun.contextUsage, requiredIds, costEntries(), runtimeNames);
       if (need) process.stdout.write(`  budget to fit required set: skillListingBudgetFraction >= ${need.fraction} (listing ${need.listingTokens} tok + ${need.extraTokens} tok of descriptions${need.unmatched ? `; ${need.unmatched} name-only skill(s) not in the skill-cost scan, so this is a lower bound` : ''})\n`);
       for (const r of listingReport(ctxRun.contextUsage, requiredIds, runtimeNames)) process.stdout.write(`  listing ${r.plugin}: ${r.skills} skill(s), ${r.nameOnly} name-only, ${r.tokens} tok\n`);
+      if (environment.length) process.stdout.write(`  environment: ${environment.join(', ')}\n`);
       for (const p of problems) process.stdout.write(`  - ${p}\n`);
       appendLedger(name, note, pass ? 0 : 1, ledgerTarget);
       if (!pass) anyFailed = true;
