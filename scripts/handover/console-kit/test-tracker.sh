@@ -148,7 +148,10 @@ contains 'Escape closes the drill-down (HIMMEL-3990)' "$html" 'if(e.key=="Escape
 contains 'closing returns focus to the number (HIMMEL-3990)' "$html" 'opener.focus()'
 contains 'the pulse respects reduced motion (HIMMEL-3990)' "$html" '@media (prefers-reduced-motion:no-preference)'
 contains 'caps are tested by null, never truthiness: a cap of 0 is a cap (HIMMEL-3957)' "$html" 'cap==null?null:r4(cap-u)'
-contains 'the desk renders the decisions queue (HIMMEL-3990)' "$html" 'renderTiles(ds);renderDecisions(ds);renderSteer();renderVers();renderGains()'
+contains 'the dashboard renders tiles, the decisions menu, the version rail, the chart and the board (HIMMEL-3990)' "$html" 'renderTiles();renderDecisions(ds);renderRail();renderChart();renderBoard();renderAcc();renderThemes();renderGains()'
+not_contains 'the steer panel waits for the UI phase (HIMMEL-3990)' "$html" 'renderSteer'
+contains 'a done card says what it took against its estimate (HIMMEL-3990)' "$html" '"est "+(p[10]||"?")+" · took "+pl(ac[0],"leg","legs")'
+contains 'the decisions open as a menu from the masthead (HIMMEL-3990)' "$html" 'aria-controls="decp"'
 contains 'a lever words its console instruction (HIMMEL-3990)' "$html" 'lines.push("open trail "+toName)'
 contains 'a nested drill keeps the first opener (HIMMEL-3990)' "$html" '"drawer").hidden)opener=from;'
 # The new plan inputs move the freshness fingerprint; each render must itself succeed (HIMMEL-3979).
@@ -200,6 +203,7 @@ now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '%s\n' '# leg' '- brief: follows PR 1999' '## Results' '- 10:00 LIVE — started' '- 10:20 LIVE — PR 1525 open, watching CI' '- a later note naming PR 1998' >"$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md"
 printf '%s\n' '# leg' '## Results' '- 09:00 READY 1600 abc GREEN' '- 09:30 WRAPPED — merged' > "$bk/HIMMEL-6-N56-wrapped-leg-2026-10-01.md"
 printf '%s\n' '# leg' '## Results' '- 08:00 LIVE — started' > "$bk/HIMMEL-7-N57-released-leg-2026-10-01.md"
+printf '%s\n' '# leg' '## Results' '- 08:00 LIVE — started' '- 12:00 LIVE — back after a night' '- 12:10 WRAPPED — merged' > "$bk/HIMMEL-6-N60-second-leg-2026-10-01.md"
 printf '%s\n' '# leg' '- READY 1997 abc GREEN is the shape to send' '## Results' '- a note, no marker' > "$bk/HIMMEL-9-N59-brief-leg-2026-10-01.md"
 printf '{"session":"s3","handover":"%s","heartbeat":"%s"}\n' "$bk/HIMMEL-9-N59-brief-leg-2026-10-01.md" "$now" > "$hb/.locks/queue/brief.lock/owner.json"
 printf '{"session":"s1","handover":"%s","heartbeat":"%s"}\n' "$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md" "$now" > "$hb/.locks/queue/live.lock/owner.json"
@@ -212,6 +216,7 @@ contains 'a held-lock leg doc marks its ticket live with label, phase and PR (HI
 not_contains 'a WRAPPED leg is not live even while its lock lingers (HIMMEL-3990)' "$html6" '"6":["N56"'
 not_contains 'a leg doc with no held lock is not live (HIMMEL-3990)' "$html6" '"7":["N57"'
 contains 'a marker-shaped brief bullet above Results sets neither phase nor PR (HIMMEL-3990)' "$html6" '"9":["N59","LIVE",null]'
+contains 'a wrapped leg counts toward what its ticket took; a gap over 3 h is idle (HIMMEL-3990)' "$html6" '"ACT":{"6":[2,40]}'
 contains 'the live leg counts its ticket in progress in the ledger (HIMMEL-3990)' "$stdout6" '1 of 4 done (25 %), 2 in progress, 1 to do.'
 if [ "$fp4" != "$fp5" ]; then pass 'a leg starting moves the fingerprint (HIMMEL-3990)'; else fail 'a leg starting left the fingerprint'; fi
 printf '%s\n' '- 10:40 READY 1525 abc GREEN' >> "$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md"

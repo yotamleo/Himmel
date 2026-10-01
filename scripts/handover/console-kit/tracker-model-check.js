@@ -108,6 +108,19 @@ const M4 = model({ V: ['v1.0.1', 'v1.0.1b'], T: ['tooling'], CUR: 0, P: [row(40,
 eq('fold back takes trail work by best return while the parent stays in its caps (HIMMEL-3990)', nums(M4.fold(1)), [41]);
 eq('a trail whose parent has room is a decision (HIMMEL-3990)', M4.decisions().map((d) => d.type + ':' + d.i), ['fold:1']);
 
+// Estimate vs actual: a done ticket's wrapped legs and minutes, grouped by its size estimate, smallest size first.
+const sized = (r, e) => { r[10] = e; return r; };
+const M5 = model({ V: ['v1.0.1'], T: ['tooling'], CUR: 0, VC: [c3], U: [], LEG: {},
+    P: [sized(row(50, 2, 0, 1, 3), 'S'), sized(row(51, 2, 0, 1, 3), 'S'), sized(row(52, 2, 0, 1, 3), 'M–L'),
+        sized(row(53, 0, 0, 1, 3), 'S'), sized(row(54, 2, 0, 1, 3), 'S'), sized(row(55, 2, 0, 1, 3), 'XS–S')],
+    ACT: { 50: [1, 60], 51: [1, 40], 52: [2, 200], 53: [1, 10], 55: [1, 15] } });
+eq('a done ticket carries what it took; an open one does not (HIMMEL-3990)', [M5.act(M5.inV(0)[0]), M5.act(M5.inV(0)[3])], [[1, 60], null]);
+eq('accuracy groups measured done tickets by estimate, smallest first, with medians (HIMMEL-3990)',
+    M5.accuracy().map((x) => [x.size, x.n, x.med, x.legs, nums(x.rows.map((r) => r.p))]),
+    [['XS–S', 1, 15, 1, [55]], ['S', 2, 50, 1, [51, 50]], ['M–L', 1, 200, 2, [52]]]);
+eq('the in-progress column drills to every started ticket, leg or not (HIMMEL-3990)', nums(M.drill('doing', { v: 0 })), [11]);
+eq('a page without actuals measures nothing (HIMMEL-3990)', M.accuracy(), []);
+
 // The page's own data runs through the same model (the Python blob and the JS agree on shapes).
 const m = /<script type="application\/json" id="data">([\s\S]*?)<\/script>/.exec(html);
 const R = model(JSON.parse(m[1]));

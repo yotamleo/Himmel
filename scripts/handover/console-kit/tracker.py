@@ -139,8 +139,36 @@ def live_legs():
     return out
 
 
+TS_RE = re.compile(r'^- (\d{1,2}):(\d{2})\b')
+IDLE_MIN = 180
+
+
+def actuals():
+    """{ticket number: [wrapped legs, active minutes]}: what the done work actually took, to measure the estimates against.
+
+    Minutes are the gaps between a leg doc's timestamped Results bullets; a gap over IDLE_MIN is idle time, not work.
+    ponytail: bullet gaps are a proxy for leg wall time, upgrade to the PR body's leg-burn cost-eq when it is mirrored."""
+    out = {}
+    docs = glob.glob(os.path.join(HANDOVERS, 'HIMMEL-*-N*-*.md')) + glob.glob(os.path.join(HANDOVERS, 'logs', 'HIMMEL-*-N*-*.md'))
+    for p in sorted(docs):
+        m = LEG_RE.match(os.path.basename(p))
+        if not m or leg_marker(p)[0] != 'WRAPPED':
+            continue
+        try:
+            ts = [int(x.group(1)) * 60 + int(x.group(2)) for x in
+                  (TS_RE.match(l) for l in open(p, encoding='utf-8', errors='replace')) if x]
+        except OSError:
+            continue
+        mins = sum(g for g in ((b - a) % 1440 for a, b in zip(ts, ts[1:])) if g <= IDLE_MIN)
+        r = out.setdefault(int(m.group(1)), [0, 0])
+        r[0] += 1
+        r[1] += mins
+    return out
+
+
 def fingerprint():
-    """16 hex over the mirror's newest `updated:`, the plan + stage1/stage2 files' bytes and the live legs (what the page shows)."""
+    """16 hex over the mirror's newest `updated:`, the plan + stage1/stage2 files' bytes, the live legs and the wrapped
+    legs' actuals (what the page shows)."""
     upd = ''
     for p in glob.glob(os.path.join(MIRROR, 'HIMMEL-*.md')):
         for l in open(p, encoding='utf-8', errors='replace'):
@@ -154,6 +182,7 @@ def fingerprint():
     for p in plan_globs():
         h.update(open(p, 'rb').read())
     h.update(json.dumps(sorted(live_legs().items())).encode())
+    h.update(json.dumps(sorted(actuals().items())).encode())
     return h.hexdigest()[:16]
 
 
@@ -528,7 +557,7 @@ def main():
     p90 = meta.get('version_p90_fw') if isinstance(meta.get('version_p90_fw'), dict) else {}
     data = dict(gen=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), mir=upd[:16].replace('T', ' '),
                 sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, VC=version_caps(rules, vers),
-                LEG={str(n): v for n, v in sorted(legs.items())}, L=LAYERS, T=themes, P=rows,
+                LEG={str(n): v for n, v in sorted(legs.items())}, ACT={str(n): v for n, v in sorted(actuals().items())}, L=LAYERS, T=themes, P=rows,
                 U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur,
                 CAP=dict(total=rules['total'], layers=[(rules['layers'] or {}).get(l) for l in LAYERS],
                          text=capacity_text(rules, [v for v in vers if not VER_RE.match(v)],
@@ -558,11 +587,12 @@ TEMPLATE = r'''<title>Himmel Roadmap</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500&family=Geist:wght@400;500;600&family=Geist+Mono&display=swap">
 <style>
-/* HIMMEL-3990 design: "the release desk" — a release manager's dashboard. Four tiles say where the release stands; the unit
-   of the page is the decision: every risk is one card with its levers, each lever shows what it would change (before → after,
-   caps met or over) and the line to send the console — the page never acts. The versions strip reads every cap at a glance;
-   tickets live in drawers. Warm paper and ink; the only chroma is meaning (done / live / to-do / over cap); --ldn is the
-   neutral no-cap swatch (HIMMEL-3979). Serif only for what users gained; mono for keys and instructions. */
+/* HIMMEL-3990 design: "the release board" — an overview read in seconds, not a report. Versions are sequential, so they sit
+   in a side rail; picking one fills the board: a column chart of every version, the picked version as a kanban (to do /
+   in progress / done, done cards saying what the work actually took against its estimate), the estimate-vs-actual strip
+   and its themes as bars. Decisions open as a menu from the masthead; each card shows what a lever would change and the line
+   to send the console — the page never acts. Warm paper and ink; the only chroma is meaning (done / live / to-do / over
+   cap); --ldn is the neutral no-cap swatch (HIMMEL-3979). Serif only for what users gained; mono for keys. */
 :root{--bg:#f5f4ef;--surface:#fff;--ink:#1a1a17;--muted:#6e6c64;--line:#e2e0d8;--accent:#1f4fd8;--done:#2e7d4f;--live:#b45f06;
 --todo:#b9b7ae;--warn:#c2410c;--ldn:#d8d6ce;--bar:#4b4a44;--scrim:rgba(26,26,23,.28);
 --f-serif:"Newsreader","Iowan Old Style","Charter",Georgia,serif;--f-sans:"Geist",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--f-mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace}
@@ -586,7 +616,73 @@ button{font:inherit;color:inherit}
 .sw input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--surface)}
 .sw input:checked{background:var(--ink)}.sw input:checked::after{left:16px}
 .tbtn{border:1px solid var(--line);background:none;border-radius:4px;padding:3px 9px;font-size:12.5px;color:var(--muted);cursor:pointer}
-main{max-width:1200px;margin-inline:auto;padding:20px 24px 64px}
+.shell{max-width:1360px;margin-inline:auto;padding:20px 24px 64px;display:grid;grid-template-columns:220px minmax(0,1fr);gap:32px;align-items:start}
+main{min-width:0}
+#rail{position:sticky;top:60px;max-height:calc(100vh - 76px);overflow:auto;overscroll-behavior:contain;padding-right:4px}
+#rail h2{font:500 12px var(--f-sans);color:var(--muted);margin:4px 0 8px}
+.vr{all:unset;box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;align-items:center;width:100%;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:12.5px}
+.vr:hover{background:var(--surface)}.vr:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.vr[aria-current="true"]{background:var(--surface);box-shadow:inset 3px 0 0 var(--ink)}
+.vr .nm{font:500 13px var(--f-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vr.tr .nm{color:var(--muted);padding-left:12px}
+.vr .fg{color:var(--muted);white-space:nowrap}
+.vr .strip{grid-column:1/-1;height:5px}
+.mast .in{position:relative}
+.dbtn{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 6px 4px 12px;font-size:13px;cursor:pointer;display:inline-flex;gap:8px;align-items:center}
+.dbtn span{min-width:22px;padding:1px 7px;border-radius:999px;background:var(--ink);color:var(--bg);font-weight:600;font-size:12px;text-align:center}
+.dbtn.hot{border-color:var(--warn)}.dbtn.hot span{background:var(--warn)}
+.dbtn[aria-expanded="true"]{border-color:var(--ink)}
+.decp{position:absolute;right:16px;top:calc(100% + 6px);width:min(620px,calc(100vw - 32px));max-height:76vh;overflow:auto;overscroll-behavior:contain;background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:0 18px 40px rgba(0,0,0,.14);padding:2px 18px 8px}
+.decp[hidden]{display:none}.decp:focus{outline:none}
+.sec2{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:36px 0 12px}
+.sec2 h2{font:600 15px var(--f-sans);margin:0}.sec2 p{margin:0;font-size:12.5px;color:var(--muted)}
+.cols{display:flex;gap:6px;align-items:stretch;height:200px;overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 14px 10px}
+.col{all:unset;box-sizing:border-box;flex:1 0 34px;display:flex;flex-direction:column;align-items:stretch;gap:4px;cursor:pointer;border-radius:4px;min-width:34px}
+.col .cn{font:600 11.5px var(--f-sans);text-align:center;color:var(--muted)}.col .cn.x{color:var(--warn)}
+.col .well{flex:1;display:flex;flex-direction:column;justify-content:flex-end}
+.col .stk{display:flex;flex-direction:column-reverse;border-radius:3px 3px 0 0;overflow:hidden;min-height:3px;background:var(--line)}
+.col .stk i{display:block;min-height:2px}
+.col .nm{font:500 10.5px var(--f-mono);text-align:center;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:4px;border-top:1px solid var(--line)}
+.col.tr .nm{opacity:.75}
+.col:hover .stk{filter:brightness(1.08)}.col:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.col[aria-pressed="true"] .nm{color:var(--ink);font-weight:700;border-top:2px solid var(--ink)}
+.i-l{background:var(--live)}.i-s{background:color-mix(in srgb,var(--live) 45%,var(--todo))}.i-t{background:var(--todo)}.i-d,.stk .d,.thb .d{background:var(--done)}.stk .l{background:var(--live)}.stk .s{background:color-mix(in srgb,var(--live) 45%,var(--todo))}.stk .t,.thb .t{background:var(--todo)}
+.key-row{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin-top:8px}
+.key-row i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.board{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px 20px 20px}
+.board .lead{margin:0 0 14px;color:var(--muted);font-size:14px;max-width:70ch}
+.kan{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:18px}
+.kc h3{display:flex;justify-content:space-between;align-items:center;font:600 12.5px var(--f-sans);margin:0 0 8px;padding-bottom:6px;border-bottom:2px solid var(--todo)}
+.kc.prog h3{border-color:var(--live)}.kc.done h3{border-color:var(--done)}
+.kc h3 span{font-weight:500;color:var(--muted)}
+.kc .n{display:inline-block;margin-top:6px;font-size:13px}
+.kcard{all:unset;box-sizing:border-box;display:grid;gap:5px;width:100%;padding:10px 12px;margin-bottom:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);cursor:pointer}
+.kcard:hover{border-color:var(--muted)}.kcard:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.kcard .kt{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12px}
+.kcard .kt code{color:var(--ink);margin-right:auto}
+.kcard .kx{font-size:13.5px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.kcard .chip{justify-self:start}
+.took{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+.took .tb{display:block;height:4px;border-radius:2px;background:var(--line);overflow:hidden}.took .tb i{display:block;height:100%;background:var(--done)}
+.acc{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 18px}
+.ar{display:grid;grid-template-columns:7em minmax(0,1fr) 9.5em;gap:14px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.ar:last-of-type{border-bottom:0}
+.ar .as{display:flex;gap:6px;align-items:baseline}
+.atr{position:relative;height:18px;background:linear-gradient(var(--line),var(--line)) 0 50%/100% 1px no-repeat}
+.atr i{position:absolute;top:50%;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%;background:color-mix(in srgb,var(--done) 55%,transparent);border:1px solid var(--done)}
+.atr b{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--ink)}
+.ar .am{font-size:12.5px;text-align:right;white-space:nowrap}
+.aax{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);margin:4px 0 0 calc(7em + 14px);margin-right:calc(9.5em + 14px)}
+.thr{display:grid;grid-template-columns:12em minmax(0,1fr) 3.5em;gap:12px;align-items:center;padding:5px 0;font-size:13px}
+.thr .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thb{display:flex;height:10px;border-radius:2px;overflow:hidden}.thb i{display:block;height:100%}
+.thr .fact{text-align:right;margin:0}
+.duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}
+.donut{position:absolute;right:14px;top:14px;width:58px;height:58px;transform:rotate(-90deg)}
+.donut circle{fill:none;stroke-width:6}.donut .rg{stroke:var(--todo)}.donut .d{stroke:var(--done)}.donut .l{stroke:var(--live)}.donut .s{stroke:color-mix(in srgb,var(--live) 45%,var(--todo))}
+.mb{display:flex;gap:6px;align-items:flex-end;height:34px;margin-top:6px}
+.mb span{display:flex;flex-direction:column;align-items:center;gap:2px;font:500 10px var(--f-mono);color:var(--muted)}
+.mb i{display:block;width:16px;background:var(--done);border-radius:2px 2px 0 0;min-height:2px}
 h2.sec{font:500 13px var(--f-sans);color:var(--muted);margin:40px 0 0;padding-bottom:8px;border-bottom:1px solid var(--line)}
 .sum{font:500 18px/1.4 var(--f-serif);margin:12px 0 20px;max-width:62ch}
 .head{font:500 22px/1.25 var(--f-serif);margin:0 0 8px}
@@ -599,9 +695,8 @@ h2.sec{font:500 13px var(--f-sans);color:var(--muted);margin:40px 0 0;padding-bo
 .tile.hot{border-color:var(--warn)}.tile.hot .fig{color:var(--warn)}
 .tile .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
 .tile .cap{margin-top:6px}
-.desk{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:32px;align-items:start}
-.desk h2.sec{margin-top:32px}
-#vers{position:sticky;top:48px}
+.tile{position:relative}.tile.dn{padding-right:86px}
+.tile .strip{margin-top:6px}
 section:focus{outline:none}
 ol.decl{list-style:none;margin:0;padding:0}
 .card{border-bottom:1px solid var(--line);padding:14px 0}
@@ -624,15 +719,7 @@ ol.decl{list-style:none;margin:0;padding:0}
 .fall .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .copy{display:flex;gap:8px;align-items:flex-start;margin-top:12px}
 .copy pre{flex:1;min-width:0;margin:0;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:4px;font:12.5px/1.55 var(--f-mono);white-space:pre-wrap;overflow-wrap:anywhere}
-.vrow{all:unset;box-sizing:border-box;display:grid;grid-template-columns:7.2em minmax(0,1fr) auto;gap:12px;align-items:center;width:100%;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px}
-.vrow:hover .nm{text-decoration:underline;text-underline-offset:3px}
-.vrow:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.vrow.trail .nm{color:var(--muted);padding-left:14px}
-.vmore{margin-top:10px}
-.vrow .nm{font:500 13px var(--f-mono);white-space:nowrap}
-.vrow .fg{color:var(--muted);white-space:nowrap;text-align:right}
 .x{color:var(--warn)}
-.vrow .cap{margin:0}
 .cur-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--live);margin-right:6px;vertical-align:1px}
 .cap .p9{position:absolute;top:50%;width:7px;height:7px;margin:-4.5px 0 0 -4.5px;transform:rotate(45deg);border:1.5px solid var(--ink);border-radius:1px;background:var(--surface)}
 .cap .p9.x{background:var(--warn);border-color:var(--warn)}
@@ -718,17 +805,28 @@ ol.ct{list-style:none;margin:0 0 8px;padding:0}
 ol.ct li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:6px 0;border-top:1px solid var(--line);font-size:13.5px}
 ol.ct li .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 ol.ct li .v{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
-@media (max-width:900px){
+@media (max-width:1100px){
  .tiles{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
- .desk{grid-template-columns:minmax(0,1fr);gap:0}#vers{position:static}
+ .duo{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:900px){
+ .shell{grid-template-columns:minmax(0,1fr);gap:16px}
+ #rail{position:static;max-height:none;padding:0}
+ #raill{display:flex;gap:6px;overflow-x:auto;padding:0 0 4px}
+ #rail h2{display:none}
+ .vr{flex:0 0 auto;width:auto;min-width:118px;border:1px solid var(--line)}
+ .kan{grid-template-columns:minmax(0,1fr)}
 }
 @media (max-width:560px){
- main{padding:16px 16px 48px}.mast .in{padding:8px 16px}
+ .shell{padding:12px 16px 48px}.mast .in{padding:8px 16px}
  .tiles{gap:8px}.tile{padding:10px 12px}.tile .fig{font-size:22px}.tile .chips{display:none}
+ .tile.dn{padding-right:12px}.donut{width:40px;height:40px;right:10px;top:10px}
+ .board{padding:14px}.cols{height:170px;padding:10px}
+ .ar{grid-template-columns:4.6em minmax(0,1fr);row-gap:2px}.ar .am{grid-column:2;text-align:left}.aax{margin:4px 0 0 calc(4.6em + 14px)}
+ .thr{grid-template-columns:minmax(0,7em) minmax(0,1fr) 3em}
  .sum{font-size:17px}
  .wi{padding:10px}.wi .two{grid-template-columns:minmax(0,1fr)}
  .fall li{grid-template-columns:auto minmax(0,1fr);row-gap:2px}.fall li>:last-child{text-align:right}.fall .t{grid-column:1/-1;order:3}
- .vrow{grid-template-columns:6.4em minmax(0,1fr);row-gap:4px}.vrow .fg{grid-column:1/-1;text-align:left}
  .tk>summary{grid-template-columns:14px minmax(0,1fr)}.tg{grid-column:2;justify-content:flex-start;padding-top:0}
  #drawer{top:auto;left:0;width:100%;height:85vh;border-left:0;border-top:1px solid var(--line);border-radius:12px 12px 0 0}
  .dhd::before{content:"";position:absolute;left:50%;top:6px;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--line)}
@@ -737,15 +835,22 @@ ol.ct li .v{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
 </style>
 <header class="mast"><div class="in"><b>Himmel roadmap</b><span class="stamp" id="stamp"></span>
 <label class="sw" title="Hides done tickets from counts, bars and lists. Decisions and levers always weigh the full planned load."><input type="checkbox" role="switch" id="rem"> Remaining only</label>
-<button class="tbtn" id="theme" type="button">Theme</button></div></header>
-<main id="main">
+<button class="dbtn" id="decb" type="button" aria-expanded="false" aria-controls="decp">Needs your input <span id="decn">0</span></button>
+<button class="tbtn" id="theme" type="button">Theme</button>
+<section class="decp" id="decp" tabindex="-1" aria-label="Needs your input" hidden><ol class="decl" id="decl"></ol></section></div></header>
+<div class="shell" id="main">
+<nav id="rail" aria-label="Versions, in release order"><h2>Versions, in order</h2><div id="raill"></div></nav>
+<main>
 <section class="tiles" id="tiles" aria-label="Where the release stands"></section>
-<div class="desk">
-<div><section id="dec" tabindex="-1" aria-labelledby="dech"><h2 class="sec" id="dech">Needs your input</h2><ol class="decl" id="decl"></ol></section>
-<section id="steer" aria-labelledby="steerh"><h2 class="sec" id="steerh">Steer</h2><div id="steerb"></div></section></div>
-<section id="vers" aria-labelledby="versh"><h2 class="sec" id="versh">Versions</h2><div id="vlist"></div></section>
+<div class="sec2"><h2>Every version</h2><p>Tickets per version; pick a column or a rail row.</p></div>
+<div class="cols" id="cols"></div>
+<div class="key-row" id="ckey"></div>
+<section id="board" tabindex="-1" aria-labelledby="boardh"><div class="sec2"><h2 id="boardh">Board</h2><p>Open a card for the ticket.</p></div><div class="board" id="boardb"></div></section>
+<div class="duo">
+<section id="acc" tabindex="-1" aria-labelledby="acch"><div class="sec2"><h2 id="acch">Estimate vs actual</h2><p>Each dot a done ticket; the bar is the median.</p></div><div class="acc" id="accb"></div></section>
+<section aria-labelledby="themh"><div class="sec2"><h2 id="themh">Themes</h2><p>Done of total.</p></div><div id="themb"></div></section>
 </div>
-<section id="gain" tabindex="-1" aria-labelledby="gainh"><h2 class="sec" id="gainh">What users gained</h2><div class="gains" id="gains"></div></section>
+<section id="gain" tabindex="-1" aria-labelledby="gainh"><div class="sec2"><h2 id="gainh">What users gained</h2></div><div class="gains" id="gains"></div></section>
 <footer>
 <details class="fold"><summary>Terms</summary>
 <dl class="terms" id="terms"></dl></details>
@@ -754,6 +859,7 @@ ol.ct li .v{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
 <p id="prov"></p>
 </footer>
 </main>
+</div>
 <div id="scrim" hidden></div>
 <aside id="drawer" role="dialog" aria-modal="true" aria-labelledby="dh" hidden><div class="dhd"><h2 id="dh" tabindex="-1"></h2><button type="button" id="dx" aria-label="Close">×</button></div><div id="db"></div></aside>
 <script type="application/json" id="data">__DATA__</script>
@@ -814,7 +920,7 @@ function model(D){
  function drill(kind,scope,rem){
   var a=scope.v!=null?inV(scope.v,rem):scope.t!=null?inT(scope.t,rem):inTrain(rem);
   var f={all:function(){return true},done:function(p){return p[2]==2},left:function(p){return p[2]!=2},
-   live:function(p){return !!leg(p)},prog:function(p){return p[2]==1&&!leg(p)},todo:function(p){return p[2]==0}}[kind];
+   live:function(p){return !!leg(p)},prog:function(p){return p[2]==1&&!leg(p)},doing:function(p){return p[2]==1},todo:function(p){return p[2]==0}}[kind];
   return order(a.filter(f))}
  function current(rem){for(var i=0;i<V.length;i++)if(train(i)&&inV(i).some(function(p){return p[2]!=2}))return i;return null}
  // Steering (the release desk). The page cannot act: it computes what a lever would change and words the instruction.
@@ -876,9 +982,18 @@ function model(D){
  // gains(): done work per train version, newest first: what users got.
  function gains(){var g=[];for(var i=V.length-1;i>=0;i--){if(!train(i))continue;var d=order(inV(i).filter(function(p){return p[2]==2}));
   if(d.length)g.push({i:i,done:d,n:inV(i).length,s:summary(d,"theme")})}return g}
+ // act(p): what a done ticket took, [wrapped legs, active minutes]; null while open or when no wrapped leg doc names it.
+ function act(p){return p[2]==2&&D.ACT&&D.ACT[String(p[0])]||null}
+ var SZ=["XS","S","M","L","XL"];
+ function szk(e){var s=String(e).split("–");return SZ.indexOf(s[0])*10+SZ.indexOf(s[s.length-1])}
+ function med(a){var s=a.slice().sort(function(x,y){return x-y}),n=s.length;return n?(n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2):null}
+ // accuracy(): measured done tickets grouped by their size estimate, smallest first, each with its median minutes and legs.
+ function accuracy(){var g={};P.forEach(function(p){var a=act(p);if(a&&p[10])(g[p[10]]=g[p[10]]||[]).push({p:p,legs:a[0],min:a[1]})});
+  return Object.keys(g).sort(function(x,y){return szk(x)-szk(y)}).map(function(k){var r=g[k].sort(function(x,y){return x.min-y.min||x.p[0]-y.p[0]});
+   return {size:k,n:r.length,rows:r,med:med(r.map(function(x){return x.min})),legs:med(r.map(function(x){return x.legs}))}})}
  return {KIND:KIND,READY:READY,train:train,vname:vname,inV:inV,inT:inT,inTrain:inTrain,leg:leg,tally:tally,load:load,summary:summary,
   drill:drill,order:order,isUser:isUser,current:current,ld:ld,pinned:pinned,roi:roi,trail:trail,parent:parent,stats:stats,breaches:breaches,
-  peel:peel,whatIf:whatIf,fold:fold,decisions:decisions,gains:gains}}
+  peel:peel,whatIf:whatIf,fold:fold,decisions:decisions,gains:gains,act:act,accuracy:accuracy,med:med}}
 /*END MODEL*/
 var M=model(D),V=D.V.map(function(_,i){return M.vname(i)}),T=D.T,REM=false,opener=null;
 function $(i){return document.getElementById(i)}
@@ -974,19 +1089,78 @@ function bw(b){return b.what+" "+num(b.used)+" of "+num(b.cap)}
 function tile(lb,fig,sb,on,hot){var b=el("button",hot?"tile hot":"tile");b.type="button";add(b,el("span","lb",lb),el("span","fig",fig));
  if(sb!=null)b.appendChild(typeof sb=="string"?el("span","sb",sb):sb);b.addEventListener("click",function(){on(b)});return b}
 function jump(id){var s=$(id);s.scrollIntoView({block:"start"});s.focus({preventScroll:true})}
-function renderTiles(ds){var h=$("tiles"),cur=D.CUR;h.textContent="";
- if(cur!=null){var t=M.tally(M.inV(cur)),ld=M.load(cur),r=tile("Running",D.V[cur],t.done+" of "+t.n+" done · "+(ld.cap!=null?f2(ld.used)+" of "+f2(ld.cap)+" budget":"no cap"),
-  function(b){openDrill("version",{v:cur},V[cur],b)});r.appendChild(capBar(ld));h.appendChild(r)}
- else h.appendChild(tile("Running","–","Every v1.0.x ticket is done.",function(){jump("gain")}));
+function svg(t,a){var e=document.createElementNS("http://www.w3.org/2000/svg",t);for(var k in a)e.setAttribute(k,a[k]);return e}
+// donut: done / live / started arcs over the to-do ring; r 15.9155 makes the circumference 100, so a dash is a percentage.
+function donut(parts,tot,label){var s=svg("svg",{viewBox:"0 0 42 42","class":"donut",role:"img","aria-label":label}),off=0;
+ s.appendChild(svg("circle",{cx:21,cy:21,r:15.9155,"class":"rg"}));
+ parts.forEach(function(x){if(!x[1])return;var p=100*x[1]/(tot||1);s.appendChild(svg("circle",{cx:21,cy:21,r:15.9155,"class":x[0],"stroke-dasharray":p+" "+(100-p),"stroke-dashoffset":-off}));off+=p});return s}
+function fmtMin(m){return m==null?"–":m<60?Math.round(m)+" min":(Math.round(m/6)/10)+" h"}
+function renderTiles(){var h=$("tiles"),cur=D.CUR,tr=M.tally(M.inTrain());h.textContent="";
+ var g=tile("v1.0.x shipped",pct(tr.done,tr.n)+" %",tr.done+" of "+tr.n+" tickets done",function(b){openDrill("done",{train:1},"v1.0.x: shipped",b)});
+ g.className+=" dn";g.appendChild(donut([["d",tr.done],["l",tr.live],["s",tr.prog-tr.live]],tr.n,tr.done+" of "+tr.n+" done, "+tr.live+" with a leg"));h.appendChild(g);
+ if(cur!=null){var t=M.tally(M.inV(cur)),ld=M.load(cur),r=tile("Running now",D.V[cur],t.left+" left · "+(ld.cap!=null?pct(ld.used,ld.cap)+" % of its budget":"no cap"),function(){select(cur,true)});
+  add(r,strip(t),capBar(ld));h.appendChild(r)}
+ else h.appendChild(tile("Running now","–","Every v1.0.x ticket is done.",function(){jump("gain")}));
  var lv=D.P.filter(function(p){return M.leg(p)}),ch=el("span","chips");
  lv.slice(0,3).forEach(function(p){ch.appendChild(chip(M.leg(p)))});if(lv.length>3)ch.appendChild(el("span","sb","+"+(lv.length-3)));
- var mv=tile("Moving now",pl(lv.length,"leg","legs"),lv.length?null:"No leg is on a ticket.",function(b){openDrill("live",{train:1},"Legs working now",b)});
+ var mv=tile("Legs on it",String(lv.length),lv.length?null:"No leg is on a ticket.",function(b){openDrill("live",{train:1},"Legs working now",b)});
  if(lv.length)mv.appendChild(ch);h.appendChild(mv);
- var tr=M.tally(M.inTrain());
- h.appendChild(tile("Gained",tr.done+" shipped",pct(tr.done,tr.n)+" % of the v1.0.x train",function(){jump("gain")}));
- var c=[0,0,0];ds.forEach(function(d){c[d.band]++});
- h.appendChild(tile("Needs your input",pl(ds.length,"decision","decisions"),BAND.map(function(n,j){return c[j]?c[j]+" "+n.toLowerCase():null}).filter(Boolean).join(" · ")||"Nothing waits on you.",
-  function(){jump("dec")},c[0]+c[1]>0))}
+ var ac=M.accuracy(),all=[],mx=0;ac.forEach(function(x){mx=Math.max(mx,x.med);x.rows.forEach(function(r){all.push(r.min)})});
+ var e=tile("A done ticket took",fmtMin(M.med(all)),all.length?"median of "+all.length+" measured · per size:":"No wrapped leg measured yet.",function(){jump("acc")});
+ if(ac.length){var mb=el("span","mb");mb.setAttribute("role","img");mb.setAttribute("aria-label",ac.map(function(x){return x.size+" "+fmtMin(x.med)}).join(", "));
+  ac.forEach(function(x){var i=el("i");i.style.height=Math.max(2,22*x.med/(mx||1))+"px";i.title=x.size+": median "+fmtMin(x.med);mb.appendChild(add(el("span"),i,x.size))});e.appendChild(mb)}
+ h.appendChild(e)}
+// select(i): the rail, the chart and the board follow the picked version.
+var SEL=D.CUR!=null?D.CUR:0,DOPEN=false;
+function select(i,go){SEL=i;renderRail();renderChart();renderBoard();renderThemes();if(go)jump("board")}
+function renderRail(){var h=$("raill");h.textContent="";
+ V.forEach(function(_,i){var a=M.inV(i,REM),t=M.tally(a),bx=M.breaches(i,M.stats(i,M.inV(i))),b=el("button",M.parent(i)>=0?"vr tr":"vr"),nm=el("span","nm"),
+  fg=el("span",bx.length?"fg x":"fg",(bx.length?"▲ ":"")+(t.n?t.left?t.left+" left":"✓ shipped":"empty"));b.type="button";
+  if(i===SEL)b.setAttribute("aria-current","true");if(bx.length)fg.title="over cap: "+bx.map(bw).join(", ");
+  if(i===D.CUR){var cd=el("span","cur-dot");cd.title="running now";nm.appendChild(cd)}add(nm,D.V[i]);
+  add(b,nm,fg,strip(t));b.addEventListener("click",function(){select(i,true)});h.appendChild(b)})}
+// renderChart: one column per v1.0.x version, stacked done / live / started / to do, ▲ over a cap; height is the ticket count.
+function renderChart(){var h=$("cols"),idx=[],mx=1;h.textContent="";V.forEach(function(_,i){if(M.train(i)){idx.push(i);mx=Math.max(mx,M.inV(i,REM).length)}});
+ idx.forEach(function(i){var t=M.tally(M.inV(i,REM)),bx=M.breaches(i,M.stats(i,M.inV(i))),b=el("button",M.parent(i)>=0?"col tr":"col"),st=el("span","stk");b.type="button";
+  b.setAttribute("aria-pressed",i===SEL?"true":"false");
+  b.setAttribute("aria-label",D.V[i]+": "+t.done+" done, "+t.live+" with a leg, "+(t.prog-t.live)+" started, "+t.todo+" to do"+(bx.length?"; over cap":""));
+  st.style.height=(100*t.n/mx)+"%";[["d",REM?0:t.done],["l",t.live],["s",t.prog-t.live],["t",t.todo]].forEach(function(x){if(x[1]>0){var s=el("i",x[0]);s.style.flexGrow=x[1];st.appendChild(s)}});
+  add(b,el("span",bx.length?"cn x":"cn",(bx.length?"▲":"")+(t.left||"✓")),add(el("span","well"),st),el("span","nm",D.V[i].replace(/^v1\.0\./,".")));
+  b.title=D.V[i];b.addEventListener("click",function(){select(i,true)});h.appendChild(b)});
+ var k=$("ckey");k.textContent="";[["d","done"],["l","a leg is on it"],["s","started"],["t","to do"]].forEach(function(x){k.appendChild(add(el("span"),add(el("i","stk-key"),null),x[1])).firstChild.className="i-"+x[0]});
+ k.appendChild(el("span","x","▲ over a cap"))}
+function kcard(p){var b=el("button","kcard"),top=el("span","kt"),lg=M.leg(p),ac=M.act(p);b.type="button";
+ add(top,el("code",null,keyOf(p)),p[10]?el("span","sz",p[10]):null,p[12]!=null?dots(p[12]):null);add(b,top,impactText(p,el("span","kx")));
+ if(lg)b.appendChild(chip(lg));
+ if(p[2]==2){var tk=el("span","took");
+  if(ac){var bar=el("span","tb"),f=el("i");f.style.width=Math.min(100,100*ac[1]/ACTMAX)+"%";add(tk,"est "+(p[10]||"?")+" · took "+pl(ac[0],"leg","legs")+", "+fmtMin(ac[1]),add(bar,f))}
+  else tk.textContent="est "+(p[10]||"?")+" · not measured";b.appendChild(tk)}
+ b.addEventListener("click",function(){openDrill("one",{k:p[0]},keyOf(p),b)});return b}
+var ACTMAX=1;Object.keys(D.ACT||{}).forEach(function(k){ACTMAX=Math.max(ACTMAX,D.ACT[k][1])});
+function renderBoard(){var i=SEL,h=$("boardb"),a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM),kan=el("div","kan");h.textContent="";
+ $("boardh").textContent=D.V[i]+(i===D.CUR?" · running now":"");
+ add(h,headline(i,t),el("p","lead",M.summary(a,"theme").lead),add(el("div","bars"),strip(t),capBar(ld),capLine(i,ld)));
+ [["To do","todo",function(p){return p[2]==0}],["In progress","doing",function(p){return p[2]==1}],["Done","done",function(p){return p[2]==2}]].forEach(function(c){
+  if(REM&&c[1]=="done")return;var ps=M.order(a.filter(c[2])),col=el("section","kc "+(c[1]=="doing"?"prog":c[1]));
+  col.appendChild(add(el("h3"),c[0],el("span",null,String(ps.length))));ps.slice(0,6).forEach(function(p){col.appendChild(kcard(p))});
+  if(ps.length>6)col.appendChild(nb("+"+(ps.length-6)+" more",c[1],{v:i},V[i]+": "+c[0].toLowerCase()));
+  if(!ps.length)col.appendChild(el("p","fact","Nothing here."));kan.appendChild(col)});h.appendChild(kan)}
+function renderAcc(){var h=$("accb"),ac=M.accuracy(),mx=1;h.textContent="";
+ if(!ac.length){h.appendChild(el("p","fact","No done ticket has both a size estimate and a wrapped leg yet."));return}
+ ac.forEach(function(x){x.rows.forEach(function(r){mx=Math.max(mx,r.min)})});
+ ac.forEach(function(x){var r=el("div","ar"),tr=el("div","atr"),m=el("b");tr.setAttribute("role","img");
+  tr.setAttribute("aria-label",x.size+": "+pl(x.n,"ticket","tickets")+", median "+fmtMin(x.med));
+  x.rows.forEach(function(q){var d=el("i");d.style.left=(100*q.min/mx)+"%";d.title=keyOf(q.p)+": "+fmtMin(q.min)+", "+pl(q.legs,"leg","legs");tr.appendChild(d)});
+  m.style.left=(100*x.med/mx)+"%";tr.appendChild(m);
+  add(r,add(el("span","as"),el("span","sz",x.size),el("span","fact","×"+x.n)),tr,el("span","am",fmtMin(x.med)+" · "+pl(x.legs,"leg","legs")));h.appendChild(r)});
+ h.appendChild(add(el("div","aax"),el("span",null,"0"),el("span",null,fmtMin(mx))))}
+function renderThemes(){var i=SEL,h=$("themb"),a=M.inV(i,REM),g={};h.textContent="";$("themh").textContent="Themes in "+D.V[i];
+ a.forEach(function(p){var k=p[5];g[k]=g[k]||{k:k,d:0,n:0};g[k].n++;if(p[2]==2)g[k].d++});
+ var gs=Object.keys(g).map(function(k){return g[k]}).sort(function(x,y){return y.n-x.n||String(T[x.k]).localeCompare(String(T[y.k]))}).slice(0,8),mx=gs.length?gs[0].n:1;
+ gs.forEach(function(x){var bar=el("span","thb"),d=el("i","d"),l=el("i","t");d.style.width=(100*x.d/mx)+"%";l.style.width=(100*(x.n-x.d)/mx)+"%";add(bar,d,l);
+  bar.setAttribute("role","img");bar.setAttribute("aria-label",x.d+" of "+x.n+" done");
+  h.appendChild(add(el("div","thr"),nb(T[x.k],"all",{t:x.k},T[x.k]+" across v1.0.x"),bar,el("span","fact",x.d+"/"+x.n)))});
+ if(!gs.length)h.appendChild(el("p","fact","No tickets here."))}
 // copyLine: the instruction to paste to the console. The page never acts on it.
 function copyLine(lines){var w=el("div","copy"),pre=el("pre",null,lines.join("\n")),b=el("button","lv","Copy");b.type="button";
  b.addEventListener("click",function(){function sel(){var r=document.createRange();r.selectNodeContents(pre);var s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent="Selected, press copy"}
@@ -1043,41 +1217,14 @@ function body(d,li,id,paint){li.appendChild(el("span","band b"+d.band,BAND[d.ban
   if(st.lv=="place"){var b2=el("div","wi"),l2=el("ul","fall");d.u.forEach(function(x){l2.appendChild(add(el("li"),el("span"),add(el("span","t"),el("code",null,"HIMMEL-"+x[0])," ",x[1]),el("span","fact",x[3])))});
    add(b2,l2,copyLine(d.u.map(function(x){return "place HIMMEL-"+x[0]})));li.appendChild(b2)}}}
 function card(d,id){var li=el("li","card");function paint(f){li.textContent="";body(d,li,id,paint);if(f){var x=li.querySelector('[data-f="'+f+'"]');if(x)x.focus()}}paint();return li}
-function renderDecisions(ds){var ol=$("decl");ol.textContent="";$("dech").textContent="Needs your input · "+ds.length;
+function renderDecisions(ds){var ol=$("decl");ol.textContent="";$("decn").textContent=ds.length;
+ $("decb").className=ds.some(function(d){return d.band<2})?"dbtn hot":"dbtn";
  if(!ds.length){ol.appendChild(el("li","card fact","Nothing needs a decision: every cap holds, no leg waits, Jira and the plan agree."));return}
  var id={};(ALL?ds:ds.slice(0,40)).forEach(function(d){var k=d.type+":"+d.i+":"+(d.p?d.p[0]:"");id[k]=(id[k]||0)+1;ol.appendChild(card(d,k+":"+id[k]))});
  if(!ALL&&ds.length>40){var b=el("button","lv","+"+(ds.length-40)+" more");b.type="button";b.addEventListener("click",function(){ALL=true;renderDecisions(ds)});ol.appendChild(add(el("li","card"),b))}}
-// renderSteer: the running version's levers when no cap forces one. Tick tickets (lowest return first) to see what moving
-// them to the trail or cutting them to v2/v3 would change, and the line that asks the console to do it.
-var STEER={to:"trail",sel:[],all:false};
-function renderSteer(f){var h=$("steerb"),i=D.CUR;h.textContent="";if(i==null){$("steer").hidden=true;return}
- var tr=M.trail(i),cut=D.V.indexOf("v2/v3"),lv=el("div","levers"),to=STEER.to=="cut"&&cut>=0?cut:tr?tr.i:-1,toName=STEER.to=="cut"&&cut>=0?"v2/v3":tr?tr.name:"";
- $("steerh").textContent="Steer "+D.V[i];
- function pick(k){return function(){STEER.to=k;renderSteer("lv-"+k)}}
- if(tr)lv.appendChild(lever("Move to "+tr.name,pick("trail"),STEER.to=="trail","lv-trail"));
- if(cut>=0&&cut!=i)lv.appendChild(lever("Cut to v2/v3",pick("cut"),STEER.to=="cut","lv-cut"));
- add(h,el("p","fact","Take work out of "+D.V[i]+" to ship it sooner. Lowest return (impact per size) first; tickets with a leg on them stay."),lv);
- var c=M.inV(i).filter(function(p){return p[2]!=2&&p[7]!=2&&!M.leg(p)}).sort(function(x,y){return M.roi(x)-M.roi(y)||(y[6]||0)-(x[6]||0)||x[0]-y[0]}),
-  sel=c.filter(function(p){return STEER.sel.indexOf(p[0])>=0}),ul=el("ul","fall");
- (STEER.all?c:c.slice(0,8)).forEach(function(p){var cb=el("input"),lb=el("label"),k="st-"+p[0],on=STEER.sel.indexOf(p[0])>=0;cb.type="checkbox";cb.dataset.f=k;cb.checked=on;
-  cb.addEventListener("change",function(){toggle(STEER.sel,p[0]);renderSteer(k)});add(lb,cb,"move");
-  ul.appendChild(add(el("li"),lb,tline(p),el("span",on?"ovr":"fact",on?"→ "+toName:(M.pinned(p)?"pinned · ":"")+(p[10]||""))))});h.appendChild(ul);
- if(!STEER.all&&c.length>8){var m=lever("+"+(c.length-8)+" more",function(){STEER.all=true;renderSteer("lv-more")},false,"lv-more");h.appendChild(add(el("div","levers"),m))}
- if(!sel.length){h.appendChild(el("p","fact","Tick a ticket to see what the move would change."))}
- else{var box=wiBox(M.whatIf(i,sel,to),D.V[i],toName),lines=[];if(to<0)lines.push("open trail "+toName);
-  sel.forEach(function(p){if(M.pinned(p))lines.push("unpin "+keyOf(p)+" "+D.V[i]);lines.push((STEER.to=="cut"?"defer ":"move ")+keyOf(p)+" "+D.V[i]+" → "+toName)});
-  box.appendChild(copyLine(lines));h.appendChild(box)}
- if(f){var x=h.querySelector('[data-f="'+f+'"]');if(x)x.focus()}}
-// renderVers: the first 12 rows from the running version on, plus any version over a cap; the rest behind one button.
-var VALL=false;
-function renderVers(){var h=$("vlist"),shown=0,hid=0;h.textContent="";
- V.forEach(function(_,i){var a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM),tr=M.parent(i)>=0;if(!a.length&&REM)return;
-  var bx=M.breaches(i,M.stats(i,M.inV(i)));if(!VALL&&shown>=12&&!bx.length){hid++;return}shown++;
-  var b=el("button",tr?"vrow trail":"vrow"),nm=el("span","nm"),fg=el("span","fg");b.type="button";
-  if(i===D.CUR){var cd=el("span","cur-dot");cd.title="running";nm.appendChild(cd)}add(nm,(tr?"↳ ":"")+D.V[i]);
-  add(fg,t.left?t.left+" left":"shipped");if(t.live)add(fg," · "+pl(t.live,"leg","legs"));if(bx.length)add(fg," · ",el("span","x",bx.map(function(x){return x.what}).join(", ")+" over"));
-  add(b,nm,capBar(ld),fg);b.addEventListener("click",function(){openDrill("version",{v:i},V[i],b)});h.appendChild(b)});
- if(hid){var m=el("button","lv vmore","Show "+pl(hid,"later version","later versions"));m.type="button";m.addEventListener("click",function(){VALL=true;renderVers()});h.appendChild(m)}}
+// decMenu: the decisions open as a menu under the header; Esc or the button closes it.
+function decMenu(o){DOPEN=o;$("decp").hidden=!o;$("decb").setAttribute("aria-expanded",o?"true":"false");if(o){var f=$("decp").querySelector("button,input");if(f)f.focus()}}
+$("decb").addEventListener("click",function(){decMenu(!DOPEN)});
 function renderGains(){var h=$("gains");h.textContent="";
  var g=M.gains().sort(function(x,y){return y.done.filter(M.isUser).length-x.done.filter(M.isUser).length||y.done.length-x.done.length||x.i-y.i}).slice(0,4);
  if(!g.length){h.appendChild(el("p","fact","Nothing has shipped on the v1.0.x train yet."));return}
@@ -1088,7 +1235,7 @@ function renderPvj(){var a=M.inTrain(REM),dr=a.filter(function(p){return p[7]==1
  $("pvjs").textContent="Plan vs Jira: "+(dr.length+off.length?(dr.length+off.length)+" differ ›":"they agree");b.textContent="";
  if(dr.length){b.appendChild(el("p",null,pl(dr.length,"ticket is","tickets are")+" planned for one version while Jira names another."));M.order(dr).forEach(function(p){b.appendChild(ticket(p))})}
  if(off.length){b.appendChild(el("p",null,pl(off.length,"open ticket sits","open tickets sit")+" in a version in Jira but not in the plan."));M.order(off).forEach(function(p){b.appendChild(ticket(p))})}}
-function render(){var ds=M.decisions();renderTiles(ds);renderDecisions(ds);renderSteer();renderVers();renderGains();renderPvj()}
+function render(){var ds=M.decisions();renderTiles();renderDecisions(ds);renderRail();renderChart();renderBoard();renderAcc();renderThemes();renderGains();renderPvj()}
 // drawer: numbers open it; focus moves in, Tab is trapped, Esc closes and focus returns to the number that opened it.
 function openDrill(kind,scope,title,from){
  var db=$("db");db.textContent="";$("dh").textContent=title;if($("drawer").hidden)opener=from;
@@ -1111,7 +1258,7 @@ function loadView(i,db){var ld=M.load(i,REM),tb=el("table","ld"),hr=el("tr");
   d.appendChild(el("summary",null,k.kind+": "+pl(k.tickets.length,"ticket","tickets")+", "+f2(k.used)+(k.cap!=null?" of "+f2(k.cap):"")+" ›"));
   var ol=el("ol","ct");k.tickets.forEach(function(p){var li=el("li"),t=el("span","t");add(t,el("code",null,keyOf(p))," ",p[9]?p[9].replace(/^internal:\s*/i,""):p[1]);t.title=p[9]||p[1];
    add(li,t,el("span","v",M.ld(p).toFixed(3)+" · "+pct(M.ld(p),ld.used)+" %"));ol.appendChild(li)});d.appendChild(ol);db.appendChild(d)})}
-document.addEventListener("keydown",function(e){if($("drawer").hidden)return;
+document.addEventListener("keydown",function(e){if($("drawer").hidden){if(DOPEN&&e.key=="Escape"){e.preventDefault();decMenu(false);$("decb").focus()}return}
  if(e.key=="Escape"){e.preventDefault();closeDrill();return}
  if(e.key!="Tab")return;var f=[].slice.call($("drawer").querySelectorAll("button,summary,a[href],[tabindex]")).filter(function(x){return x.offsetParent!==null||x===$("dh")});
  if(!f.length)return;var i=f.indexOf(document.activeElement);
