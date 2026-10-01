@@ -170,6 +170,7 @@ Run these, in order, and write the result as the first bullet under
     baseline when its leg set changes, so neither needs a re-start; the
     `legset=`/`unwatched=` checks above then compare against the manifest.
     `## Live state` is still yours to edit by hand in this slice.
+    **Your manifest:** `{{FLEET_MANIFEST}}` — {{FLEET_MANIFEST_NOTE}}.
 11. **Open your Telegram inbox** (HIMMEL-3355). The operator can message you
     from Telegram with `/console {{SESSION_NAME}} <text>`; the bridge appends
     one line per message to your inbox file, but only if the file already

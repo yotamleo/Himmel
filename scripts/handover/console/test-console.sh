@@ -2032,4 +2032,27 @@ out76="$( cd "$tmp76/foreign-cwd" && env -u USER_SLUG -u FORGE HANDOVER_DIR="$ro
 check "76 slug ignores an inherited GIT_DIR (checkout's forge login, not GIT_DIR's user.name)" \
     "$(printf '%s\n' "$out76" | grep -c "^would-doc: $root/forge-login-75/slug76/")" "1"
 
+# 77 (HIMMEL-3989): `next` COPIES the predecessor's <stem>.fleet.json to the
+# successor's stem (copy, not rename: the outgoing waiter still reads its own),
+# and the successor stub's ACTION ZERO step 10 names the carried manifest path.
+out77="$(console new --bucket fleet77src)"
+token77="$(token_of "$out77")"
+doc77A="$root/tester/fleet77src/DEMO-nextleg-${today}A-console.md"
+doc77B="$root/tester/fleet77dst/DEMO-nextleg-${today}B-console.md"
+doc77C="$root/tester/fleet77dst2/DEMO-nextleg-${today}B-console.md"
+man77A="${doc77A%.md}.fleet.json"
+man77B="${doc77B%.md}.fleet.json"
+man77C="${doc77C%.md}.fleet.json"
+console next --bucket fleet77dst2 --doc "$doc77A" >/dev/null 2>&1
+check "77 no predecessor manifest: successor gets none (no-op)" "$([ -e "$man77C" ] && echo yes || echo no)" "no"
+check "77 no predecessor manifest: step 10 names the successor's own manifest path" \
+    "$(grep -Fc "$man77C" "$doc77C" 2>/dev/null)" "1"
+printf '{"schema":1,"legs":["/x/leg.md"]}\n' > "$man77A"
+console next --bucket fleet77dst --doc "$doc77A" >/dev/null 2>&1
+check "77 manifest is copied to the successor's stem" "$(cat "$man77B" 2>/dev/null)" '{"schema":1,"legs":["/x/leg.md"]}'
+check "77 the predecessor's manifest is left in place (copy, not rename)" "$([ -f "$man77A" ] && echo yes)" "yes"
+check "77 successor step 10 names the carried manifest path" "$(grep -Fc "$man77B" "$doc77B" 2>/dev/null)" "1"
+check "77 no unrendered {{FLEET_MANIFEST}} left in the successor doc" "$(grep -Fc '{{FLEET_MANIFEST' "$doc77B" 2>/dev/null)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc77A" "$token77" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
