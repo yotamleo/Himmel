@@ -408,13 +408,29 @@ if [ "$CONSULT" -eq 1 ]; then
                 ;;
         esac
     done
-    case "${LEG_REPO:-}${HEADED_ARM_REPO:-}" in
+    if [ "$LANE" != "native" ]; then
+        usage
+        echo "headed-arm-leg: --consult refuses --lane $LANE: the read-only envelope is native-lane only (claudex settings-deny parity is unverified, so it fails closed)" >&2
+        exit 2
+    fi
+    # The EFFECTIVE repo, derived the way headed-arm.sh derives it (LEG_REPO folds
+    # onto HEADED_ARM_REPO; neither set = the checkout this script lives in), then
+    # canonicalised so a relative or symlinked path cannot dodge the glob. An
+    # unresolvable repo fails closed.
+    _consult_raw="${LEG_REPO:-${HEADED_ARM_REPO:-$(dirname "$0")/../../..}}"
+    if ! _consult_repo="$(cd -P "$_consult_raw" 2>/dev/null && pwd -P)"; then
+        usage
+        echo "headed-arm-leg: --consult cannot resolve its repo ($_consult_raw): refusing" >&2
+        exit 2
+    fi
+    case "$_consult_repo/" in
         */.claude/worktrees/*)
             usage
-            echo "headed-arm-leg: --consult refuses a leg worktree cwd (LEG_REPO/HEADED_ARM_REPO under .claude/worktrees/): launch it from the console's own checkout" >&2
+            echo "headed-arm-leg: --consult refuses a leg worktree cwd (effective repo $_consult_repo is under .claude/worktrees/): launch it from the console's own checkout" >&2
             exit 2
             ;;
     esac
+    unset -v _consult_raw _consult_repo
 fi
 
 [ "$JUDGE" -eq 1 ] || [ "$CONSULT" -eq 1 ] && READONLY_ROLE=1
@@ -1278,8 +1294,10 @@ if [ -n "$PROFILE" ]; then
     # (HIMMEL-4014) --consult read-only envelope. The file-edit tools are denied
     # by BARE name, so no path-scoped allow can re-open them (deny wins), and the
     # session carries NO Edit allow at all. Its answer goes through exactly one
-    # Bash allow: append-results.sh on its own consult doc.
-    # ponytail: file tools denied, Bash not sandboxed (same ceiling as --judge), upgrade when a consult is observed writing outside its doc or a sandboxed-Bash primitive exists (HIMMEL-4061)
+    # Bash allow: append-results.sh on its own consult doc. The allow list is
+    # REPLACED, not appended to: a gateAllow profile (lane-impl, lane-content...)
+    # would otherwise hand the consult its ship-step allows (merge-on-green etc.).
+    # ponytail: file tools denied, one append allow, Bash otherwise classifier-gated and not sandboxed, upgrade when a consult is observed writing outside its doc or a sandboxed-Bash primitive exists (HIMMEL-4061)
     if [ "$CONSULT" -eq 1 ]; then
         if [ -z "$_leg_doc_path" ]; then
             echo "headed-arm-leg: --consult: cannot resolve the consult doc path for $DOC" >&2
@@ -1287,7 +1305,7 @@ if [ -n "$PROFILE" ]; then
         fi
         if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" \
             '.permissions.deny = ((.permissions.deny // []) + ["Edit","Write","NotebookEdit"] | unique)
-             | .permissions.allow = ((.permissions.allow // []) + ["Bash(bash scripts/handover/console-kit/append-results.sh " + $doc + ":*)"])')"; then
+             | .permissions.allow = ["Bash(bash scripts/handover/console-kit/append-results.sh " + $doc + ":*)"]')"; then
             echo "headed-arm-leg: --consult: cannot build the read-only envelope in settings JSON" >&2
             exit 2
         fi
@@ -1584,10 +1602,10 @@ if [ -n "$_ll_cache" ]; then
     [ "$RELAY" -eq 1 ] && _ll_role=relay
     [ "$JUDGE" -eq 1 ] && _ll_role=judge
     [ "$CONSULT" -eq 1 ] && _ll_role=consult
-    # HIMMEL-4014: a consult line also names who asked; every other role's line
+    # HIMMEL-4014: a consult line also names the console that launched it; every other role's line
     # keeps its exact key set (the cost cohort reader and test 28c pin it).
     _ll_asker=""
-    [ "$CONSULT" -eq 1 ] && _ll_asker=" asker=${CONSOLE_FLAG:-unknown}"
+    [ "$CONSULT" -eq 1 ] && _ll_asker=" console=${CONSOLE_FLAG:-unknown}"
     if ! ( umask 077 && mkdir -p "$_ll_cache/launch-logs" && \
         printf 'headed-arm-leg: profile=%s lane=%s model=%s role=%s session=%s launched=%s%s\n' \
             "${PROFILE:-none}" "$LANE" "${MODEL:-default}" "$_ll_role" "$NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ll_asker" \

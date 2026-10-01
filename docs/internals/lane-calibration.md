@@ -46,7 +46,7 @@ the union of the members' required ids. Role/non-additive profiles refuse as
 members. `headed-arm-leg.sh --consult` is a judge-shaped, plugin-scoped session
 with `Edit`/`Write`/`NotebookEdit` denied and a single `append-results.sh` Bash
 allow on its own doc; Bash is not sandboxed (HIMMEL-4061). Each consult's launch
-line in `launch-logs/<session>.log` carries `role=consult` and `asker=`; consult
+line in `launch-logs/<session>.log` carries `role=consult` and `console=` (the console that launched it); consult
 cost is joined later from the session transcript, not written at launch.
 
 `leg-impl` (HIMMEL-2830) is the profile a console leg gets from

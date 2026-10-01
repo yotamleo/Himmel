@@ -71,10 +71,21 @@ test('HIMMEL-4014: mcpServers is the union of the members allowlists', () => {
   reg.profiles.__m2 = { enable: [], mcpServers: ['qmd', 'context7'] };
   reg.profiles.__m3 = { enable: [] };
   assert.deepEqual(mcpServersForProfile(reg, '__m1,__m2').sort(), ['context7', 'qmd']);
-  assert.deepEqual(mcpServersForProfile(reg, '__m1,__m3'), ['qmd']);
+  // a member with no allowlist = no strip: it must never be narrowed by another
+  assert.equal(mcpServersForProfile(reg, '__m1,__m3'), undefined);
+  assert.equal(mcpServersForProfile(reg, '__m3,__m1'), undefined);
   reg.profiles.__m4 = { enable: [] };
   assert.equal(mcpServersForProfile(reg, '__m3,__m4'), undefined);
+  // an explicit [] is still a strip-everything allowlist, not "no allowlist"
+  reg.profiles.__m5 = { enable: [], mcpServers: [] };
+  assert.deepEqual(mcpServersForProfile(reg, '__m1,__m5'), ['qmd']);
 });
+
+for (const bad of ['operator', 'bare', 'console', 'console-relay', 'console-judge']) {
+  test(`HIMMEL-4014: the --mcp-servers list path refuses a non-additive member (${bad})`, () => {
+    assert.throws(() => mcpServersForProfile(REG, `design,${bad}`), /cannot be composed/);
+  });
+}
 
 test('HIMMEL-4014: skill listing runs once over the union of required ids', async () => {
   await loadListingLib();

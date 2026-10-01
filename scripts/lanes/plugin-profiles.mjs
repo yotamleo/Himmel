@@ -593,8 +593,16 @@ export function resolveProfileByName(name, opts = {}, path = REGISTRY) {
 // resolveProfile's own-property fail-closed check on an unknown name.
 export function mcpServersForProfile(registry, name) {
   if (String(name).includes(',')) {
-    const lists = name.split(',').map((m) => mcpServersForProfile(registry, m));
-    return lists.every((l) => l === undefined) ? undefined : [...new Set(lists.flatMap((l) => l ?? []))];
+    const members = name.split(',');
+    const bad = members.find((m) => NON_ADDITIVE_PROFILES.includes(m));
+    if (bad !== undefined) {
+      throw new Error(`plugin-profiles: profile "${bad}" cannot be composed in a profile list (${NON_ADDITIVE_PROFILES.join(', ')} are not additive)`);
+    }
+    const lists = members.map((m) => mcpServersForProfile(registry, m));
+    // A member with no allowlist means "no strip": it must never be narrowed by
+    // another member's list (same rule as enabledPlugins: a member never turns
+    // off another), so the union is no allowlist at all.
+    return lists.some((l) => l === undefined) ? undefined : [...new Set(lists.flat())];
   }
   const profiles = registry.profiles ?? {};
   if (!Object.hasOwn(profiles, name)) {
