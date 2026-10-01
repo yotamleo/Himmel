@@ -32,7 +32,7 @@ The CR ledger refuses a deferral without a class (nothing is written):
 
 ```bash
 scripts/cr/ledger-append.sh finding ... --verdict deferred --deferred-to <TICKET> --fu-class <escape|hardening|polish> --reason "<why>"
-scripts/cr/ledger-append.sh amend ... --set verdict=deferred --set deferred_to=<TICKET> --set fu_class=<escape|hardening|polish> --reason "<why>"
+scripts/cr/ledger-append.sh amend ... --set verdict=deferred --set deferred_to=<TICKET> --set fu_class=<escape|hardening|polish> --set "reason=<why>" --reason "<why>"
 ```
 
 `review-round.sh defer` (the three-round cap path) records `polish`: it only

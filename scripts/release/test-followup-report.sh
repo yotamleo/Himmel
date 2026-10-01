@@ -73,6 +73,11 @@ check "jira failure exits 2" "$rc" "2"
 bash "$RPT" --store "$tmp/store" >/dev/null 2>&1; rc=$?
 check "missing --version exits 1" "$rc" "1"
 
+# A zero-padded cap (08, 09) is decimal, not an invalid octal (review codex-1, round 4).
+out6="$(FOLLOWUP_JIRA_CMD="$tmp/jira" bash "$RPT" --version v9.9.9 --store "$tmp/store" --cap-pct 08 2>&1)"; rc=$?
+check "cap-pct 08: exits 0" "$rc" "0"
+has "cap-pct 08 reads as 8 pct" "$out6" "cap 8%"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$fails FAILED"
 exit 1

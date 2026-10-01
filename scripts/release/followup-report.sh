@@ -32,6 +32,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$VERSION" ] || { echo "followup-report: --version is required" >&2; exit 1; }
 case "$CAP" in ''|*[!0-9]*) echo "followup-report: --cap-pct must be an integer" >&2; exit 1 ;; esac
+CAP=$((10#$CAP))  # a leading zero (08, 09) must not read as octal
 case "$VERSION$PROJECT" in *'"'*|*\\*) echo "followup-report: refusing a quote or backslash in --version/--project" >&2; exit 1 ;; esac
 
 if [ -n "${FOLLOWUP_JIRA_CMD:-}" ]; then
