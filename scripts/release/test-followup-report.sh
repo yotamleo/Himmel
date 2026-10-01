@@ -3,7 +3,7 @@
 # No network: the jira CLI is a stub (FOLLOWUP_JIRA_CMD), the usage store a fixture.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; RPT="$HERE/followup-report.sh"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/followup-report.XXXXXX")" || exit 1; trap 'rm -rf "$tmp"' EXIT
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok - $1"; else echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); fi; }
 has() { case "$2" in *"$3"*) echo "ok - $1" ;; *) echo "FAIL - $1: missing [$3] in: $2"; fails=$((fails+1)) ;; esac; }
@@ -48,6 +48,17 @@ printf '#!/usr/bin/env bash\nprintf "HIMMEL-1\\tTask\\tDone\\tfeature\\t\\n"\n' 
 out2="$(FOLLOWUP_JIRA_CMD="$tmp/jira2" bash "$RPT" --version v1 --store "$tmp/store" 2>&1)"; rc=$?
 check "no follow-ups: exits 0" "$rc" "0"
 has "no follow-ups: hardening share 0" "$out2" "hardening-share 0% cap 20% ok"
+
+# Hardening with zero base load is OVER, never a vacuous ok (review codex-1).
+printf '#!/usr/bin/env bash\nprintf "HIMMEL-7\\tTask\\tDone\\tdeferred: x\\tfu-hardening\\n"\n' >"$tmp/jira4"; chmod +x "$tmp/jira4"
+out4="$(FOLLOWUP_JIRA_CMD="$tmp/jira4" bash "$RPT" --version v1 --store "$tmp/store" 2>&1)"
+has "zero load with hardening is OVER" "$out4" "OVER"
+
+# A share just above the cap is not hidden by integer truncation (21 of 104 = 20.19 pct vs cap 20; review codex-3).
+{ echo '#!/usr/bin/env bash'; for i in $(seq 1 104); do printf 'printf "HIMMEL-%s\\tTask\\tDone\\tfeat\\t\\n"\n' "$i"; done
+  for i in $(seq 100 120); do printf 'printf "HIMMEL-%s\\tTask\\tDone\\tdeferred: h\\tfu-hardening\\n"\n' "$i"; done; } >"$tmp/jira5"; chmod +x "$tmp/jira5"
+out5="$(FOLLOWUP_JIRA_CMD="$tmp/jira5" bash "$RPT" --version v1 --store "$tmp/store" 2>&1)"
+has "21 hardening of 104 load (20.19 pct) is over a 20 pct cap" "$out5" "OVER"
 
 # Missing store: claim A is reported unavailable, class counts still print.
 out3="$(FOLLOWUP_JIRA_CMD="$tmp/jira" bash "$RPT" --version v9.9.9 --store "$tmp/none" 2>&1)"; rc=$?

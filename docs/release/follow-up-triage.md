@@ -30,7 +30,7 @@ explicit decision recorded on the ticket. It never slips silently.
 
 The CR ledger refuses a deferral without a class (nothing is written):
 
-```
+```bash
 scripts/cr/ledger-append.sh finding ... --verdict deferred --deferred-to <TICKET> --fu-class <escape|hardening|polish> --reason "<why>"
 scripts/cr/ledger-append.sh amend ... --set verdict=deferred --set deferred_to=<TICKET> --set fu_class=<escape|hardening|polish> --reason "<why>"
 ```
@@ -43,7 +43,7 @@ person classifies. The same class goes on the follow-up ticket as its label
 
 ## The per-version report
 
-```
+```bash
 bash scripts/release/followup-report.sh --version v1.0.1c
 ```
 

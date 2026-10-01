@@ -74,8 +74,13 @@ printf '%s\n' "$counts" | grep -E '^(unclassified-followups|slipped-escapes) '
 
 hard="$(printf '%s\n' "$counts" | awk '$1=="hardening"{print $2}')"
 load="$(printf '%s\n' "$counts" | awk '$1=="load"{print $2}')"
-pct=0; [ "$load" -gt 0 ] && pct=$(( hard * 100 / load ))
-status=ok; [ "$pct" -gt "$CAP" ] && status=OVER
+pct=0
+if [ "$load" -gt 0 ]; then pct=$(( hard * 100 / load )); elif [ "$hard" -gt 0 ]; then pct=100; fi
+# Cross-multiplied, so a truncated percentage never hides a share just over the cap.
+status=ok
+if [ $(( hard * 100 )) -gt $(( CAP * load )) ]; then status=OVER; fi
+n_rows="$(printf '%s\n' "$rows" | awk -F'\t' 'NF >= 4' | wc -l | tr -d ' ')"
+[ "$n_rows" -lt 1000 ] || echo "followup-report: WARNING the Jira read hit its 1000-row limit; counts may be incomplete" >&2
 echo "hardening-share ${pct}% cap ${CAP}% ${status} (hardening ${hard} of load ${load})"
 
 # Claim A: join the usage records to this version's tickets (read only).
