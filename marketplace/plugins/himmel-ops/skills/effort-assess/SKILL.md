@@ -1,6 +1,6 @@
 ---
 name: effort-assess
-description: Estimate a ticket as a reference-class record (median, sigma, mean, P80, P30..P70 band), with alternatives and a Definition-of-Done refusal; or check a version's tail (P80/P90). PILOT. /effort-assess
+description: PILOT. Reference-class ticket estimate (median, sigma, P80) with a DoD refusal; or a version's P80/P90 tail.
 ---
 
 # effort-assess — an estimate says how sure it is (HIMMEL-3995)
