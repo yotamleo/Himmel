@@ -129,6 +129,18 @@ ROADMAP_QMD_BIN="$W/qmd" bash "$SUT" --refresh --plan-dir "$W/plan4" --out "$W/p
 [ "$rc2" != 0 ] && pass "out overlapping the plan dir: refresh non-zero" || fail "overlapping out rc=0"
 [ "$before4" = "$(cd "$W/plan4" && find . -type f | sort | xargs sha256sum | sha256sum)" ] && pass "overlapping out: plan dir intact" || fail "overlapping out destroyed the plan dir"
 
+# every path the build replaces is guarded: a plan dir that is the docs dir, or a docs.new-named dir under out
+for rel in docs docs.new; do
+    mkdir -p "$W/pg-o-$rel"; cp -r "$plan" "$W/pg-o-$rel/$rel"
+    pb="$(cd "$W/pg-o-$rel/$rel" && find . -type f | sort | xargs sha256sum | sha256sum)"
+    ROADMAP_QMD_BIN="$W/qmd" bash "$SUT" --refresh --plan-dir "$W/pg-o-$rel/$rel" --out "$W/pg-o-$rel" >/dev/null 2>&1
+    [ "$pb" = "$(cd "$W/pg-o-$rel/$rel" && find . -type f | sort | xargs sha256sum | sha256sum)" ] && pass "plan dir named $rel under out survives a refresh" || fail "plan dir named $rel was destroyed"
+done
+ROADMAP_QMD_BIN="$W/qmd" bash "$SUT" --refresh --plan-dir "$plan" --out "$mir" --watch "$mir" >/dev/null 2>&1; rc=$?
+[ "$rc" != 0 ] && pass "out inside a watch path: refused" || fail "docs under a watch path accepted"
+bash "$SUT" --refresh --plan-dir >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && pass "missing option value: exit 2" || fail "missing option value rc=$rc"
+
 # deleted docs with a kept key are stale, and a refresh restores them
 rm -rf "$out/docs"
 r="$(run --check 2>&1)"; rc=$?

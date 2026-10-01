@@ -21,14 +21,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COLLECTION=roadmap-plan
 mode="" force=0 plan="" out="${HOME:-/tmp}/.himmel/state/roadmap-plan"
 watches=()
+need() { [ $# -ge 2 ] || { echo "plan-index: $1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --refresh) mode=refresh ;;
         --check) mode=check ;;
         --force) force=1 ;;
-        --plan-dir) plan="${2:?--plan-dir needs a value}"; shift ;;
-        --out) out="${2:?--out needs a value}"; shift ;;
-        --watch) watches+=(--watch "${2:?--watch needs a value}"); shift ;;
+        --plan-dir) need "$@"; plan="$2"; shift ;;
+        --out) need "$@"; out="$2"; shift ;;
+        --watch) need "$@"; watches+=(--watch "$2"); shift ;;
         *) echo "plan-index: unknown argument $1" >&2; exit 2 ;;
     esac
     shift

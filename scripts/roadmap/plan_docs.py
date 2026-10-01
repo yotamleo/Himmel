@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 
 
 def read_tsv(path):
@@ -72,7 +73,12 @@ def group_doc(kind, name, members):
     return "\n".join(lines) + "\n"
 
 
-def build(plan, docs):
+def overlaps(a, b):
+    a, b = os.path.realpath(a), os.path.realpath(b)
+    return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
+
+
+def build(plan, docs, watches=()):
     stage1, explain = {}, {}
     for f in chunk_files(plan, "stage1", r"C\d+\.tsv"):
         for r in read_tsv(f):
@@ -84,12 +90,11 @@ def build(plan, docs):
     for p in placement:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*-[0-9]+", p["key"]):
             sys.exit("plan_docs: refusing ticket key %r (not a plain KEY-n)" % p["key"])
-    rp, rd = os.path.realpath(plan), os.path.realpath(docs)
-    if rd == rp or rd.startswith(rp + os.sep) or rp.startswith(rd + os.sep):
-        sys.exit("plan_docs: --docs %s overlaps the plan dir %s; refusing to delete it" % (docs, plan))
-    tmp = docs + ".new"
-    shutil.rmtree(tmp, ignore_errors=True)
-    os.makedirs(tmp)
+    for src in [plan] + list(watches):  # the one guard for the only path this deletes and replaces
+        if overlaps(docs, src):
+            sys.exit("plan_docs: --docs %s overlaps source input %s; refusing to replace it" % (docs, src))
+    # staging is a fresh unique dir (never a fixed sibling name), so nothing existing is ever deleted for it
+    tmp = tempfile.mkdtemp(prefix=".plan-docs-", dir=os.path.dirname(os.path.abspath(docs)))
     groups = {"version": {}, "theme": {}, "epic": {}}
     for p in placement:
         key = p["key"]
@@ -139,7 +144,7 @@ def main():
         return 0
     if not a.docs:
         ap.error("--docs required unless --emit-fp")
-    build(a.plan_dir, a.docs)
+    build(a.plan_dir, a.docs, a.watch)
     return 0
 
 
