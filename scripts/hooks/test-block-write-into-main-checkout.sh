@@ -3034,6 +3034,15 @@ check_both "83b fromW: echo | cd wt; echo x > a.txt denies (cd reached across a 
 F84_CMD="bash -c 'cd $FIX/primary || cd $FIX/wt; echo x > a.txt'"
 F84_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F84_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "84 fromW: bash -c 'cd primary || cd wt; echo x > a.txt' denies" block "$F84_JSON"
+# 85 (codex-1): a { } group after the || — the flag must survive the group's own
+# non-cd clauses, or `{ :` consumes it and the cd inside restores a false cwd.
+check_both "85 fromW: cd primary || { :; cd wt; }; echo x > a.txt denies (flag survives the group)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || { :; cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85b fromW: cd primary || { echo a; echo b; cd wt; }; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || { echo a; echo b; cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 85c (control): the flag ends with the group, so a later cd is judged normally.
+check_both "85c control: cd wt || { echo no; exit 1; }; echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || { echo no; exit 1; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.

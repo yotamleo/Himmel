@@ -504,9 +504,19 @@ _bwimc_blank_heredocs() {
 # \002, not \001: \001 is _bwimc_subst_split's stub marker, counted per clause.
 _BWIMC_PIPE=$'\002'
 _bwimc_sp_pipe=0
+# A flagged clause that opens a `{ ... }` group (`cd P || { :; cd W; }`) keeps
+# the flag for the whole group: _bwimc_sp_grp is the open-brace depth.
+_bwimc_sp_grp=0
 _bwimc_split_emit() {
     if [ "$_bwimc_sp_pipe" = 1 ] && [ -n "${1//[[:space:]]/}" ]; then
-        printf '%s%s\n' "$_BWIMC_PIPE" "$1"; _bwimc_sp_pipe=0
+        printf '%s%s\n' "$_BWIMC_PIPE" "$1"
+        local _fw="${1#"${1%%[![:space:]]*}"}"
+        _fw="${_fw%%[[:space:]]*}"
+        case "$_fw" in
+            '{') _bwimc_sp_grp=$((_bwimc_sp_grp+1)) ;;
+            '}') [ "$_bwimc_sp_grp" -gt 0 ] && _bwimc_sp_grp=$((_bwimc_sp_grp-1)) ;;
+        esac
+        [ "$_bwimc_sp_grp" -gt 0 ] || _bwimc_sp_pipe=0
     else
         printf '%s\n' "$1"
     fi
@@ -523,7 +533,7 @@ _bwimc_clause_unpipe() {
 _bwimc_split_clauses() {
     local text="$1"
     local i=0 len=${#text} c clause="" prevact=""
-    _bwimc_sp_pipe=0
+    _bwimc_sp_pipe=0 _bwimc_sp_grp=0
     _bwimc_scan_init
     while [ "$i" -lt "$len" ]; do
         c="${text:$i:1}"
