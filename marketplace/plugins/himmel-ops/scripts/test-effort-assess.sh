@@ -9,7 +9,8 @@
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 tool="$here/../skills/effort-assess/effort_assess.py"
-td="$(mktemp -d)"; trap 'rm -rf "$td"' EXIT
+td="$(mktemp -d "${TMPDIR:-/tmp}/effort-assess.XXXXXX")" || { echo "FAIL - mktemp"; exit 1; }
+trap 'rm -rf "$td"' EXIT
 fails=0
 ok(){ echo "ok - $1"; }
 bad(){ echo "FAIL - $1"; fails=$((fails+1)); }
@@ -89,6 +90,17 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["fw
 python3 "$tool" version --in "$td/ver.json" --tol 0 >"$td/v3.json" 2>/dev/null; rc=$?
 [ "$rc" -ne 0 ] && ok "tolerance 0 -> non-zero exit" || bad "tolerance 0 should disagree"
 check "tolerance 0 -> agree False" "$(jget "$td/v3.json" "d['agree']")" False
+
+# version mode refuses a refused ticket record and an empty list (HIMMEL-3995 CR round 1)
+cat >"$td/ver-refused.json" <<'EOF'
+[{"median_seq": 1.362, "sigma": 0.45}, {"median_seq": 2.0, "sigma": 0.85, "dod": {"passed": false, "failed": ["red"]}}]
+EOF
+python3 "$tool" version --in "$td/ver-refused.json" >"$td/vr.json" 2>"$td/vr.err"; rc=$?
+[ "$rc" -ne 0 ] && ok "refused record -> non-zero exit" || bad "refused record accepted by version mode"
+grep -q "red" "$td/vr.err" && ok "refused record names the failed item" || bad "refused record stderr missing item"
+echo '[]' >"$td/ver-empty.json"
+python3 "$tool" version --in "$td/ver-empty.json" >"$td/ve.json" 2>"$td/ve.err"; rc=$?
+[ "$rc" -ne 0 ] && grep -q "no ticket records" "$td/ve.err" && ok "empty list -> clear error" || bad "empty list: rc=$rc"
 
 # config: no model number lives in code
 if grep -nE '0\.681|0\.85|1\.2816|3992|20000' "$tool" >/dev/null; then bad "model constant hard-coded in effort_assess.py"; else ok "no model constants in code"; fi

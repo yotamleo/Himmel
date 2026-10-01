@@ -111,6 +111,14 @@ def version(cfg, a):
         rows = json.load(f)
     bps, z = cfg["bank_per_seq"], cfg["percentile_z"]
     tol = cfg["mc_fw_tol"] if a.tol is None else a.tol
+    if not rows:
+        sys.stderr.write("effort-assess: no ticket records in %s\n" % a.infile)
+        return 1
+    refused = [i for i, r in enumerate(rows) if r.get("dod", {}).get("passed") is False]
+    if refused:
+        sys.stderr.write("effort-assess: REFUSED records in version input (index: failed DoD items): %s\n" % "; ".join(
+            "%d: %s" % (i, ", ".join(rows[i]["dod"].get("failed", []))) for i in refused))
+        return 1
     mean = var = 0.0
     for r in rows:
         m, s = r["median_seq"] * bps, r["sigma"]
