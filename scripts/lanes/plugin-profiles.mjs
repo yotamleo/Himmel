@@ -479,13 +479,14 @@ function composeProfiles(registry, list, opts) {
 }
 
 // HIMMEL-4038: opts.skillEntries (a scanSkillCosts().entries scan) opts a caller
-// in to skillOverrides + skillListingBudgetFraction; absent = unchanged output,
+// in to skillOverrides + skillListingBudgetFraction (opts.configDir, HIMMEL-4060:
+// also scan that config dir's skills-dir command trees for the reserve); absent = unchanged output,
 // so the pure registry goldens stay byte-identical.
 function listingSettings(names, enabledPlugins, opts) {
   if (!opts.skillEntries) return {};
   const enabledIds = Object.entries(enabledPlugins).filter(([, on]) => on).map(([id]) => id);
   if (!listingLib) throw new Error('plugin-profiles: opts.skillEntries needs `await loadListingLib()` first');
-  return listingLib.skillListingSettings({ entries: opts.skillEntries, enabledIds, requiredIds: [...new Set(names.flatMap((n) => listingLib.requiredIdsFor(n)))] });
+  return listingLib.skillListingSettings({ entries: opts.skillEntries, configDir: opts.configDir, enabledIds, requiredIds: [...new Set(names.flatMap((n) => listingLib.requiredIdsFor(n)))] });
 }
 
 // HIMMEL-3567/HIMMEL-3572: the permission matcher compares literal command
@@ -739,8 +740,9 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     // HIMMEL-4038: the skill scan feeds skillOverrides + the listing budget fraction.
     await loadListingLib();
     const { scanSkillCosts } = await import('./skill-cost.mjs');
-    const skillEntries = scanSkillCosts({ cwd: process.cwd(), configDir: process.env.CLAUDE_CONFIG_DIR || undefined }).entries;
-    const settings = resolveProfileByName(name, { addPlugins, installed, anchor: anchor ?? undefined, skillEntries });
+    const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+    const skillEntries = scanSkillCosts({ cwd: process.cwd(), configDir }).entries;
+    const settings = resolveProfileByName(name, { addPlugins, installed, anchor: anchor ?? undefined, skillEntries, configDir });
     if (settings === null) process.exit(0); // operator: nothing to inject
     process.stdout.write(JSON.stringify(settings) + '\n');
   } catch (e) {

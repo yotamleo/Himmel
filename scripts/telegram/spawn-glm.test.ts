@@ -1138,6 +1138,13 @@ test("resolveProfileSettings: lane-impl → complete enabledPlugins JSON with fl
   expect(parsed.enabledPlugins["claude-obsidian@himmel"]).toBe(false); // dropped content
 });
 
+// HIMMEL-4060: the spawners pass the skill scan, as the plugin-profiles CLI does (#1565).
+test("resolveProfileSettings: a profile with required plugins carries skillOverrides + a budget fraction", () => {
+  const parsed = JSON.parse(resolveProfileSettings("lane-impl", [], "/nonexistent-cwd", []) as string);
+  expect(parsed.skillOverrides["update-config"]).toBe("name-only");
+  expect(typeof parsed.skillListingBudgetFraction).toBe("number");
+});
+
 test("resolveProfileSettings: overlay enables the named plugin", () => {
   const s = resolveProfileSettings("lane-impl", ["claude-obsidian@himmel"], "/nonexistent-cwd", []);
   expect(JSON.parse(s as string).enabledPlugins["claude-obsidian@himmel"]).toBe(true);

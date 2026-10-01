@@ -12,6 +12,7 @@
 // path: an upstream Claude Code change making skillOverrides reach plugin skills
 // (then size the fraction on the required set only).
 import { ROLE_REQUIRES } from './role-requires.mjs';
+import { pluginCacheOf, scanCommandTrees } from './skill-cost.mjs';
 
 export const DEFAULT_FRACTION = 0.01;
 export const MAX_FRACTION = 0.05;
@@ -21,8 +22,19 @@ const WINDOW = 200_000; // the binding case: 1M windows get 5x the same fraction
 // see (measured 2026-10-01: a user skills-dir plugin with 47 commands = 1850 tok,
 // a synced plugin 25 tok; neither is a SKILL.md under the plugin cache), so
 // the required skills are not starved by them.
-// ponytail: fixed 2500 tok, upgrade path: scan skills-dir command trees too.
+// A caller passing configDir gets its skills-dir command trees scanned plus a
+// small margin for the rest (a synced plugin); an unscannable configDir, or none
+// passed, falls back to the fixed constant.
+// ponytail: chars/4 estimate of the tree commands + 250 tok margin, upgrade path:
+// measure the margin against /context if the cap trips.
 const UNSCANNED_RESERVE = 2500;
+const UNSCANNED_MARGIN = 250;
+
+const commandTreeReserve = (configDir) => {
+  const cmds = configDir === undefined ? null : scanCommandTrees(configDir);
+  if (!cmds) return UNSCANNED_RESERVE;
+  return UNSCANNED_MARGIN + cmds.reduce((a, e) => a + describedTokens(e, e.tree), 0);
+};
 
 // ponytail: static list of the bundled/desktop skills seen in a measured listing
 // (2026-10-01, Claude Code 2.1.286); an override for a skill that is absent is
@@ -43,7 +55,7 @@ const describedTokens = (e, plugin) => Math.ceil((plugin.length + 1 + e.name.len
 
 // entries = scanSkillCosts().entries. Returns {} when the profile requires no
 // plugin (nothing to protect), else { skillOverrides, skillListingBudgetFraction }.
-export function skillListingSettings({ entries, enabledIds, requiredIds, window = WINDOW }) {
+export function skillListingSettings({ entries, enabledIds, requiredIds, window = WINDOW, configDir }) {
   if (!requiredIds.length) return {};
   const skillOverrides = {};
   let tokens = 0;
@@ -57,13 +69,13 @@ export function skillListingSettings({ entries, enabledIds, requiredIds, window 
   for (const id of enabledIds) {
     const plugin = pluginName(id);
     for (const e of entries) {
-      if (e.scope !== 'plugin-skills' || !e.path.includes(`/${plugin}/`)) continue;
+      if (e.scope !== 'plugin-skills' || pluginCacheOf(e.path)?.plugin !== plugin) continue;
       const key = `${plugin}:${e.name}`;
       best.set(key, Math.max(best.get(key) ?? 0, describedTokens(e, plugin)));
     }
   }
   for (const t of best.values()) tokens += t;
-  tokens += UNSCANNED_RESERVE;
+  tokens += commandTreeReserve(configDir);
   const fraction = Math.max(DEFAULT_FRACTION, Math.ceil((tokens / window) * 1000) / 1000);
   if (fraction > MAX_FRACTION) {
     throw new Error(`skill-listing: computed skillListingBudgetFraction ${fraction} exceeds the ${MAX_FRACTION} sanity cap (${tokens} tok over ${window}); refusing to emit it, check the skill scan`);

@@ -4,6 +4,9 @@
 // live claude spawn (the measured half lives in profile-context-probe.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   skillListingSettings, DEFAULT_FRACTION, MAX_FRACTION, BUILTIN_SKILL_NAMES,
 } from '../skill-listing.mjs';
@@ -50,6 +53,41 @@ test('fraction above the 0.05 sanity cap is refused, not emitted', () => {
   const entries = Array.from({ length: 20 }, (_, i) => plugin(`s${i}`, 1500, 'p1'));
   assert.equal(MAX_FRACTION, 0.05);
   assert.throws(() => skillListingSettings({ entries, enabledIds: ['p1@himmel'], requiredIds: ['p1@himmel'], window: 200000 / 2 }), /exceeds the 0\.05 sanity cap/);
+});
+
+// HIMMEL-4060 item 1: the plugin match is the plugin-cache DIRECTORY COMPONENT.
+test('fraction: a skill DIRECTORY named like an enabled plugin does not count toward that plugin', () => {
+  const decoy = { ...plugin('p1', 40000, 'other'), path: '/h/.claude/plugins/cache/himmel/other/1.0/skills/p1/SKILL.md' };
+  const s = skillListingSettings({ entries: [plugin('a', 10, 'p1'), decoy], enabledIds: ['p1@himmel'], requiredIds: ['p1@himmel'] });
+  assert.ok(s.skillListingBudgetFraction < 0.02, String(s.skillListingBudgetFraction));
+});
+
+// HIMMEL-4060 item 5: the unscanned reserve is a scan of skills-dir command trees.
+const mkConfigDir = (trees) => {
+  const dir = mkdtempSync(join(tmpdir(), 'skill-listing-'));
+  mkdirSync(join(dir, 'skills'), { recursive: true });
+  for (const [tree, files] of Object.entries(trees)) {
+    mkdirSync(join(dir, 'skills', tree, 'commands'), { recursive: true });
+    for (const [f, body] of Object.entries(files)) writeFileSync(join(dir, 'skills', tree, 'commands', f), body);
+  }
+  return dir;
+};
+const bigCmds = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`c${i}.md`, `---\ndescription: ${'x'.repeat(600)}\n---\nbody\n`]));
+const base = { entries: [plugin('a', 10, 'p1')], enabledIds: ['p1@himmel'], requiredIds: ['p1@himmel'] };
+
+test('reserve: scanned command trees raise the fraction above the fixed-constant result', () => {
+  const scanned = skillListingSettings({ ...base, configDir: mkConfigDir({ big: bigCmds }) });
+  const fixed = skillListingSettings(base);
+  assert.ok(scanned.skillListingBudgetFraction > fixed.skillListingBudgetFraction, `${scanned.skillListingBudgetFraction} vs ${fixed.skillListingBudgetFraction}`);
+});
+
+test('reserve: an empty skills dir shrinks the reserve below the fixed constant', () => {
+  const none = skillListingSettings({ ...base, configDir: mkConfigDir({}) });
+  assert.ok(none.skillListingBudgetFraction < skillListingSettings(base).skillListingBudgetFraction);
+});
+
+test('reserve: an unscannable configDir falls back to the fixed constant', () => {
+  assert.deepEqual(skillListingSettings({ ...base, configDir: '/nonexistent/claude-config-4060' }), skillListingSettings(base));
 });
 
 test('no required plugins: nothing emitted', () => {

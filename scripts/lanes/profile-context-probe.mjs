@@ -38,7 +38,7 @@ import { createRequire } from 'node:module';
 import { loadRegistry, resolveProfileByName, readEnabledPluginIds, loadListingLib } from './plugin-profiles.mjs';
 import { ledgerPath } from './verify-return.mjs';
 import { ROLE_REQUIRES } from './role-requires.mjs';
-import { scanSkillCosts } from './skill-cost.mjs';
+import { scanSkillCosts, pluginCacheOf } from './skill-cost.mjs';
 
 // The SAME interpreter resolution the wired hooks get. On Windows an unresolved
 // shell can be the WSL launcher or a 0-byte WindowsApps alias, so we need the
@@ -179,7 +179,7 @@ export function requiredBudget(contextUsage, requiredIds, costEntries) {
     for (const s of pluginSkills(contextUsage, id).filter(isNameOnlySkill)) {
       const bare = s.name.slice(plugin.length + 1);
       // several cached versions of one plugin can match: take the largest
-      const matches = costEntries.filter((e) => e.name === bare && e.path.includes(`/${plugin}/`));
+      const matches = costEntries.filter((e) => e.name === bare && pluginCacheOf(e.path)?.plugin === plugin);
       if (!matches.length) unmatched += 1;
       const chars = Math.max(0, ...matches.map((e) => e.chars));
       extraTokens += Math.max(0, Math.ceil((chars + plugin.length + 1) / 4) - s.tokens);
@@ -191,7 +191,24 @@ export function requiredBudget(contextUsage, requiredIds, costEntries) {
 // EVERY skill of a required plugin must reach the model DESCRIBED (HIMMEL-4038).
 // skillPlugins (names of plugins that expose skills in the init event) lets an
 // agent-only plugin skip the check; omitted = every required plugin has skills.
-export function listingProblems(contextUsage, requiredIds, { skillPlugins } = {}) {
+// The skills a required plugin should expose: `<plugin>:<name>` for every scanned
+// skill under the plugin's LATEST cached version (an older cached version can
+// carry skills the current one dropped). Matches the plugin-cache directory
+// component, not a path substring (HIMMEL-4060).
+export function expectedSkillNames(costEntries, requiredIds) {
+  const names = new Set();
+  for (const id of requiredIds) {
+    const plugin = pluginName(id);
+    const mine = costEntries.filter((e) => e.scope === 'plugin-skills').map((e) => ({ e, c: pluginCacheOf(e.path) })).filter((x) => x.c?.plugin === plugin);
+    const latest = mine.map((x) => x.c.version).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1);
+    for (const x of mine) if (x.c.version === latest) names.add(`${plugin}:${x.e.name}`);
+  }
+  return names;
+}
+
+// expectedSkills (a Set of `<plugin>:<name>` from expectedSkillNames) additionally
+// flags a required skill that never reached the listing at all (HIMMEL-4060).
+export function listingProblems(contextUsage, requiredIds, { skillPlugins, expectedSkills } = {}) {
   if (!requiredIds.length) return [];
   if (!contextUsage) return ['no context_usage in /context output (cannot verify the post-cap skill listing)'];
   const problems = [];
@@ -202,6 +219,9 @@ export function listingProblems(contextUsage, requiredIds, { skillPlugins } = {}
     } else {
       const bare = skills.filter(isNameOnlySkill);
       if (bare.length) problems.push(`role-required plugin ${id} has ${bare.length} of ${skills.length} skill(s) name-only in the post-cap listing (descriptions dropped by the listing budget): ${bare.map((s) => s.name).join(', ')}`);
+      const listed = new Set(skills.map((s) => s.name));
+      const absent = [...(expectedSkills ?? [])].filter((n) => n.startsWith(`${pluginName(id)}:`) && !listed.has(n));
+      if (absent.length) problems.push(`role-required plugin ${id} has ${absent.length} expected skill(s) absent from the post-cap listing: ${absent.sort().join(', ')}`);
     }
   }
   return problems;
@@ -213,7 +233,7 @@ export function countLoadedSkills(initEvent) {
 
 // The full per-profile verdict: plugin injection correctness + the
 // contextBudget ceiling. Returns { pass, problems } — problems is [] iff pass.
-export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget, contextUsage }) {
+export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget, contextUsage, expectedSkills }) {
   const problems = [];
   if (!initEvent) {
     problems.push('no init event in probe output (spawn failure, timeout, or unexpected stream shape)');
@@ -222,7 +242,7 @@ export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resul
   problems.push(...roleCoverageProblems(initEvent, requiredIds));
   if (contextUsage !== undefined) {
     const skillPlugins = new Set((initEvent.skills ?? []).map((x) => /^([^:]+):/.exec(x)?.[1]).filter(Boolean));
-    problems.push(...listingProblems(contextUsage, requiredIds, { skillPlugins }));
+    problems.push(...listingProblems(contextUsage, requiredIds, { skillPlugins, expectedSkills }));
   }
   const { extra, missing } = pluginSourceDiff(initEvent, enabledIds);
   if (extra.length) problems.push(`extra plugin(s) loaded (bloat): ${extra.join(', ')}`);
@@ -412,7 +432,8 @@ function main() {
   }
 
   let scanned;
-  const costEntries = () => (scanned ??= scanSkillCosts({ cwd: REPO_ROOT, configDir: process.env.CLAUDE_CONFIG_DIR || undefined }).entries);
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+  const costEntries = () => (scanned ??= scanSkillCosts({ cwd: REPO_ROOT, configDir }).entries);
   let anyFailed = false;
   // Private per-run tmpdir (mkdtempSync is exclusive/unpredictable), not a
   // shared predictable path — a predictable path + non-exclusive writeFileSync
@@ -422,7 +443,7 @@ function main() {
     for (const name of profileNames) {
       let settings;
       try {
-        settings = resolveProfileByName(name, { installed, skillEntries: costEntries() });
+        settings = resolveProfileByName(name, { installed, skillEntries: costEntries(), configDir });
       } catch (e) {
         process.stderr.write(`profile-context-probe: ${e.message}\n`);
         process.exitCode = 2;
@@ -444,7 +465,7 @@ function main() {
       }
 
       const requiredIds = ROLE_REQUIRES[name] ?? [];
-      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null });
+      const { pass, problems } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds) });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
       const need = requiredBudget(ctxRun.contextUsage, requiredIds, costEntries());
