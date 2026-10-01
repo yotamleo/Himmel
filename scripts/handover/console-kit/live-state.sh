@@ -91,6 +91,10 @@ while IFS=$'\t' read -r label ldoc; do
     esac
     token="$(printf '%s\n' "$out" | head -1 | jq -r '.session // empty' 2>/dev/null)"
     [ -n "$token" ] || { echo "live-state: $label: unreadable lock owner, doc not rewritten" >&2; exit 1; }
+    # The token is a field of a backtick span tick.sh splits on `:` and rejects on whitespace.
+    case "$token" in
+        *[:\`[:space:]]*) echo "live-state: $label: lock owner session has a span delimiter (colon, backtick or whitespace), doc not rewritten" >&2; exit 1 ;;
+    esac
     old="$(printf '%s\n' "$old_entries" | awk -F: -v l="$label" '$1 == l { print; exit }')"
     nonce="$(printf '%s' "$old" | cut -d: -f2)"
     pid="$(printf '%s' "$old" | cut -d: -f4)"
