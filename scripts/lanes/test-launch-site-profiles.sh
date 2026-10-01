@@ -14,6 +14,7 @@ bad() { FAIL=$((FAIL+1)); echo "FAIL: $1"; }
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/scripts"
 printf '#!/usr/bin/env bash\nclaude --model x "hi"\n' > "$T/scripts/a.sh"
+# shellcheck disable=SC2016  # $S is fixture text, not expanded here
 printf '#!/usr/bin/env bash\nclaude --settings "$S" --model x "hi"\n' > "$T/scripts/b.sh"
 printf '#!/usr/bin/env bash\n# launch-profile-ok: probe\nclaude -p "hi"\n' > "$T/scripts/c.sh"
 printf '#!/usr/bin/env bash\n# launch-profile-ok-file: probes\nclaude -p "a"\nclaude -p "b"\n' > "$T/scripts/d.sh"

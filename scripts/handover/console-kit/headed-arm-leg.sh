@@ -448,6 +448,7 @@ NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-}"
 # and is left alone). Only the explicit field is honoured here - inferring a
 # profile from the doc would silently end the unprofiled-launch refusal below.
 if [ -z "$PROFILE" ] && [ "$NO_PROFILE" -eq 0 ] && [ -f "$DOC" ]; then
+    # shellcheck disable=SC2016  # backticks in the sed regex are literal
     PROFILE="$(head -n 60 "$DOC" | sed -n -E 's/^[>* -]*profile:[[:space:]]*`?([A-Za-z0-9._-]+)`?[[:space:]]*$/\1/p' | head -n 1)"
 fi
 

@@ -192,6 +192,7 @@ done
 # not the operator's full plugin set. The file must exist and enable no plugin
 # beyond the floor (no pr-review-toolkit-himmel).
 settings_file="$(awk 'p==1{ print; exit } /^--settings$/{ p=1 }' "$work/claude-argv")"
+# shellcheck disable=SC2015  # fail exits; A && B || C is the intended guard
 [ -n "$settings_file" ] && [ -f "$settings_file" ] \
     || fail "claude route: --settings <profile file> missing or unreadable (got '$settings_file')"
 grep -q '"pr-review-toolkit-himmel@himmel":true' "$settings_file" \

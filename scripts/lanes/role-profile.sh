@@ -12,9 +12,11 @@
 # Platform: POSIX bash 3.2+.
 set -u
 DOC="${1:-}"
+# shellcheck disable=SC2015  # the braced group exits; A && B || C is the intended guard
 [ -n "$DOC" ] && [ -f "$DOC" ] || { echo "role-profile: usage: role-profile.sh <handover doc> (not a file: '$DOC')" >&2; exit 2; }
 HEAD60="$(head -n 60 "$DOC")"
 # `profile: design` / `> profile: design` / `- profile: \`design\``
+# shellcheck disable=SC2016  # backticks in the sed regex are literal
 EXPLICIT="$(printf '%s\n' "$HEAD60" | sed -n -E 's/^[>* -]*profile:[[:space:]]*`?([A-Za-z0-9._-]+)`?[[:space:]]*$/\1/p' | head -n 1)"
 if [ -n "$EXPLICIT" ]; then printf '%s\n' "$EXPLICIT"; exit 0; fi
 BASE="$(basename "$DOC")"

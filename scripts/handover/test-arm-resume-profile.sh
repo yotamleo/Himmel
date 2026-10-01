@@ -59,6 +59,7 @@ chmod +x "$STUB"/*
 arm() { PATH="$STUB:$PATH" bash "$ARM" --time "$(future_time)" --dry-run "$@" 2>&1; }
 
 # T1: a leg doc (carries a RETASK token) resumes under leg-impl.
+# shellcheck disable=SC2016  # backticks are literal doc text
 LEG=$(make_doc handover-leg.md '# leg doc' 'Your RETASK token is `M-X-1`.')
 out=$(arm --handover "$LEG"); rc=$?
 assert_rc "T1 leg doc dry-run" 0 "$rc"
@@ -72,6 +73,7 @@ assert_rc "T2 console doc dry-run" 0 "$rc"
 assert_contains "T2 console doc -> console profile file" "/console.json" "$out"
 
 # T3: an explicit `profile:` line in the doc wins over the inferred role.
+# shellcheck disable=SC2016  # backticks are literal doc text
 EXP=$(make_doc handover-explicit.md '# leg doc' 'profile: design' 'Your RETASK token is `M-X-2`.')
 out=$(arm --handover "$EXP"); rc=$?
 assert_rc "T3 explicit-profile doc dry-run" 0 "$rc"
@@ -96,6 +98,7 @@ assert_rc "T6 plain doc dry-run" 0 "$rc"
 assert_contains "T6 plain doc -> user profile file" "/user.json" "$out"
 
 # T7: the resolved settings file is real and is a complete enabledPlugins map.
+# shellcheck disable=SC2015  # echo cannot fail; A && B || C is the intended guard
 [ -f "$TMP/profiles/leg-impl.json" ] && grep -q '"enabledPlugins"' "$TMP/profiles/leg-impl.json" \
     && echo "PASS T7 resolved settings file written" \
     || { echo "FAIL T7 resolved settings file missing or malformed"; FAILED=$((FAILED + 1)); }
