@@ -290,7 +290,6 @@ function Get-LiveMapJson {
   try { $rows = @($text | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
   $map = @{}
   foreach ($row in $rows) {
-    if ($null -eq $row) { continue }
     if (-not ($row.id -is [string] -and $row.scope -is [string] -and $row.enabled -is [bool])) { return $null }
     if ($row.scope -ceq 'user') {
       if ($map.ContainsKey($row.id)) { Stop-UnrecognizedList }
