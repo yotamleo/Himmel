@@ -2,7 +2,8 @@
 # HIMMEL-4076: real read-only helper, hermetic account/key endpoints.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+W="$(mktemp -d "${TMPDIR:-/tmp}/test-openrouter-cost.XXXXXX")" || exit 1
+trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/bin" "$W/home"
 cat > "$W/bin/curl" <<'STUB'
 #!/usr/bin/env bash
