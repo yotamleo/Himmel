@@ -34,14 +34,17 @@ SINCE=""
 PRINT=0
 PROJECTS_SET=0
 
+# one shared check: a value-taking flag must be followed by a non-empty value
+need_val() { [ -n "${2:-}" ] || die "$1 needs a non-empty value"; }
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --projects) PROJECTS="${2:-}"; PROJECTS_SET=1; shift 2 ;;
-    --ledger)   LEDGER="${2:-}"; shift 2 ;;
-    --store)    STORE="${2:-}"; shift 2 ;;
-    --range)    RANGE="${2:-}"; shift 2 ;;
-    --tickets)  TICKETS="${2:-}"; shift 2 ;;
-    --since)    [ -n "${2:-}" ] || die "--since needs a value"; SINCE="$2"; shift 2 ;;
+    --projects) need_val "$@"; PROJECTS="$2"; PROJECTS_SET=1; shift 2 ;;
+    --ledger)   need_val "$@"; LEDGER="$2"; shift 2 ;;
+    --store)    need_val "$@"; STORE="$2"; shift 2 ;;
+    --range)    need_val "$@"; RANGE="$2"; shift 2 ;;
+    --tickets)  need_val "$@"; TICKETS="$2"; shift 2 ;;
+    --since)    need_val "$@"; SINCE="$2"; shift 2 ;;
     --print)    PRINT=1; shift ;;
     *) die "unknown argument: $1" ;;
   esac

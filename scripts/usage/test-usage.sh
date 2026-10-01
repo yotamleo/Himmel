@@ -95,6 +95,11 @@ check "--tickets matching nothing fails" "1" "$(sel --tickets HIMMEL-7777)"
 check "--tickets valid still works" "0" "$(sel --tickets HIMMEL-9001 --print)"
 check "--since empty fails" "1" "$(sel --since '' --print)"
 check "--range with --tickets fails" "1" "$(sel --range HIMMEL-9001..HIMMEL-9002 --tickets HIMMEL-9001 --print)"
+# every value-taking flag: empty or missing value fails closed
+for flag in --projects --ledger --store --range --tickets --since; do
+  check "$flag empty value fails" "1" "$(sel "$flag" '' --print)"
+  check "$flag missing value fails" "1" "$(sel "$flag")"
+done
 
 printf '%s\n' '{"kind":"avail","ts":"2026-01-01T03:00:00Z","branch":"feat/himmel-9001-thing","head":"h3","model":"codex","status":"unavailable"}' >> "$LEDGER"
 check "unavailable avail not a round" "2" "$(run --print | jq -r 'select(.ticket=="HIMMEL-9001")|.cr.rounds')"
