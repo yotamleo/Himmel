@@ -1003,5 +1003,20 @@ else
     fail "positive control: expected the pre-fix fence shape to invoke bash \"$expected_bad_arg\" on a set-but-empty HIMMEL_REPO (rc=$old_rc, output: $old_out) -- if this fails, the control itself is broken and (ix)/(x) above are not proven meaningful"
 fi
 
+# --- HIMMEL-4040: both twins must tell a leg to spell EVERY scripts/cr call as
+# the relative literal when cwd is a worktree root whose scripts/cr/ matches the
+# anchor (the guard-pr-check-literal.sh condition), keeping the absolute
+# spelling only for the drifted/adopter case.
+for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
+    n=$(basename "$(dirname "$f")")/$(basename "$f")
+    if grep -qF 'HIMMEL-4040: relative literal for EVERY scripts/cr call' "$f" \
+        && grep -qF "matches the anchor's" "$f" \
+        && grep -qF 'drifted or adopter case' "$f"; then
+        pass "$n: HIMMEL-4040 relative-literal-for-every-call rule present"
+    else
+        fail "$n: HIMMEL-4040 relative-literal-for-every-call rule missing -- a leg following the absolute fence is classifier-denied [Out-of-Place Publication]"
+    fi
+done
+
 echo "test-pr-check-pair: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
