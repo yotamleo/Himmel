@@ -5385,6 +5385,7 @@ else
 fi
 
 echo "== C47: a real busy loop (self-terminating, group-killed) is reported and left running =="
+# shellcheck disable=SC2016 # $SECONDS expands in the child shell
 setsid bash -c 'while [ "$SECONDS" -lt 40 ]; do :; done' hook.sh-c47-fixture &
 c47_pid=$!
 sleep 2
