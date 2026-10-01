@@ -56,9 +56,10 @@ SCRIPTS="$(cd "$HERE/.." && pwd)"              # scripts/
 #   claude-codex: 2        — proxy config validation JS; .ps1 validates natively
 #   claude-glm: 1          — GLM-specific settings surgery; .ps1 equivalent is native
 #   claude-openrouter: 1   — stdin credit-parser; .ps1 parses ConvertFrom-Json natively
+#   claude-deepseek: 0    — egress, balance, sanitizer and trust all have JS twins
 #   claude-routed: 0
 #   claude-glm-seed-check.sh: 0  (no embedded JS on either side)
-EXPECT_BASH_ONLY="claude-codex:2 claude-glm:1 claude-openrouter:1 claude-routed:0 claude-glm-seed-check.sh:0"
+EXPECT_BASH_ONLY="claude-codex:2 claude-glm:1 claude-openrouter:1 claude-deepseek:0 claude-routed:0 claude-glm-seed-check.sh:0"
 
 # Canary floors — today's counts. A pair deleted or a PS delegation dropped
 # trips these; update them CONSCIOUSLY when the twin set genuinely changes.
