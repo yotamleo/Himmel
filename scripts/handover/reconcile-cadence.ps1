@@ -20,7 +20,8 @@
 .PARAMETER IntervalMin
   Minutes between ticks (2..59, default 10). Must not be shorter than
   RECONCILE_GRACE_SECS (default 120) and must exceed
-  RECONCILE_CADENCE_TIMEOUT_SECS (default 110). Both, and any other override
+  RECONCILE_CADENCE_TIMEOUT_SECS (default 110, at least 1) plus the 10s kill
+  grace. Both, and any other override
   the tick reads, are baked into the task when set.
 
 .PARAMETER BashPath
@@ -53,9 +54,18 @@ function Resolve-GitBash {
 
 function Quote-Ps([string]$s) { "'" + ($s -replace "'", "''") + "'" }
 
+# Git's usr\bin and bin ahead of the current PATH, so the non-login bash finds
+# GNU coreutils (timeout) before System32 namesakes.
+function Get-GitPath([string]$bash) {
+    $gitRoot = Split-Path -Parent (Split-Path -Parent $bash)
+    (Join-Path $gitRoot 'usr\bin') + ';' + (Join-Path $gitRoot 'bin') + ';' + $env:PATH
+}
+
 switch ($Action) {
     'Run' {
-        & (Resolve-GitBash) $Runner run
+        $bash = Resolve-GitBash
+        $env:PATH = Get-GitPath $bash
+        & $bash $Runner run
         exit $LASTEXITCODE
     }
     'Arm' {
@@ -63,17 +73,18 @@ switch ($Action) {
         $timeoutSecs = if ($env:RECONCILE_CADENCE_TIMEOUT_SECS) { [int]$env:RECONCILE_CADENCE_TIMEOUT_SECS } else { 110 }
         $graceSecs = if ($env:RECONCILE_GRACE_SECS) { [int]$env:RECONCILE_GRACE_SECS } else { 120 }
         if ($IntervalMin * 60 -lt $graceSecs) { throw "IntervalMin $IntervalMin is shorter than RECONCILE_GRACE_SECS=${graceSecs}s" }
-        if ($IntervalMin * 60 -le $timeoutSecs) { throw "IntervalMin $IntervalMin does not exceed the ${timeoutSecs}s tick timeout" }
+        if ($timeoutSecs -lt 1) { throw "RECONCILE_CADENCE_TIMEOUT_SECS must be at least 1" }
+        if ($IntervalMin * 60 -le $timeoutSecs + 10) { throw "IntervalMin $IntervalMin does not exceed the ${timeoutSecs}s tick timeout plus 10s kill grace" }
         $bash = Resolve-GitBash
-        $gitRoot = Split-Path -Parent (Split-Path -Parent $bash)
-        $pathPrefix = (Join-Path $gitRoot 'usr\bin') + ';' + (Join-Path $gitRoot 'bin') + ';'
+        # Bake the arming PATH (node lives there), as the cron entry does.
+        $taskPath = Get-GitPath $bash
         # Bake the overrides arm validated or the tick reads, as the cron entry does.
         $envSet = ''
         foreach ($v in 'RECONCILE_GRACE_SECS', 'RECONCILE_UNPROBEABLE_CEILING_SECS', 'RECONCILE_CADENCE_TIMEOUT_SECS', 'RECONCILE_CADENCE_LOG', 'WORKER_BRIDGE_ROOT', 'BRIDGE_ROOT') {
             $val = [Environment]::GetEnvironmentVariable($v)
             if ($val) { $envSet += '$env:' + $v + ' = ' + (Quote-Ps $val) + '; ' }
         }
-        $command = $envSet + '$env:PATH = ' + (Quote-Ps $pathPrefix) + ' + $env:PATH; & ' + (Quote-Ps $bash) + ' ' + (Quote-Ps ($Runner -replace '\\', '/')) + ' run; exit $LASTEXITCODE'
+        $command = $envSet + '$env:PATH = ' + (Quote-Ps $taskPath) + '; & ' + (Quote-Ps $bash) + ' ' + (Quote-Ps ($Runner -replace '\\', '/')) + ' run; exit $LASTEXITCODE'
         $actionObj = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -WindowStyle Hidden -Command "' + ($command -replace '"', '\"') + '"')
         $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMin)
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable

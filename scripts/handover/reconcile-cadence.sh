@@ -46,6 +46,9 @@ die() { echo "ERR reconcile-cadence: $*" >&2; exit 2; }
 for v in TIMEOUT_SECS GRACE_SECS; do
     case "${!v}" in ''|*[!0-9]*) die "$v must be a non-negative integer" ;; esac
 done
+# timeout 0 disables the deadline; SIGKILL follows SIGTERM after KILL_SECS.
+[ "$TIMEOUT_SECS" -ge 1 ] || die "RECONCILE_CADENCE_TIMEOUT_SECS must be at least 1"
+KILL_SECS=10
 
 cmd_run() {
     mkdir -p "$(dirname "$LOG")" || die "cannot create log dir for $LOG"
@@ -56,7 +59,7 @@ cmd_run() {
     {
         echo "[fired $(date '+%Y-%m-%d %H:%M:%S')]"
         if command -v timeout >/dev/null 2>&1; then
-            timeout "$TIMEOUT_SECS" bash "$SCRIPT_DIR/reconcile-workers.sh" --report
+            timeout -k "$KILL_SECS" "$TIMEOUT_SECS" bash "$SCRIPT_DIR/reconcile-workers.sh" --report
         else
             bash "$SCRIPT_DIR/reconcile-workers.sh" --report
         fi
@@ -130,7 +133,7 @@ cmd_arm() {
     # A tick shorter than the grace window cannot confirm a death any sooner,
     # and one shorter than the tick timeout could overlap the previous tick.
     [ $((interval * 60)) -ge "$GRACE_SECS" ] || die "--interval-min $interval is shorter than RECONCILE_GRACE_SECS=${GRACE_SECS}s"
-    [ $((interval * 60)) -gt "$TIMEOUT_SECS" ] || die "--interval-min $interval does not exceed the ${TIMEOUT_SECS}s tick timeout"
+    [ $((interval * 60)) -gt $((10#$TIMEOUT_SECS + KILL_SECS)) ] || die "--interval-min $interval does not exceed the ${TIMEOUT_SECS}s tick timeout plus ${KILL_SECS}s kill grace"
     windows_refuse Arm
     # Without timeout a hung tick would overlap the next one.
     command -v timeout >/dev/null 2>&1 || die "timeout not on PATH; ticks would be unbounded (macOS: brew install coreutils)"

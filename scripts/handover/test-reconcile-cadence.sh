@@ -224,6 +224,11 @@ out=$(RECONCILE_GRACE_SECS=180 bash "$CADENCE" arm 2>&1)
 assert_file_contains "C11 job carries the armed grace" 'RECONCILE_GRACE_SECS=180' "$CRON_FILE"
 assert_file_contains "C11 job carries the armed bridge root" 'WORKER_BRIDGE_ROOT=' "$CRON_FILE"
 
+# --- C13: a zero tick timeout would disable the bound entirely.
+out=$(RECONCILE_CADENCE_TIMEOUT_SECS=0 bash "$CADENCE" arm 2>&1)
+rc=$?
+assert_rc "C13 zero tick timeout is refused" 2 "$rc"
+
 # --- C12: arming without a timeout binary is refused (ticks would be unbounded).
 NOTIMEOUT="$TMP/no-timeout-bin"
 mkdir -p "$NOTIMEOUT"
