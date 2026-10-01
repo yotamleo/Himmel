@@ -25,16 +25,16 @@ esac
 # Bullets look like `- HH:MM ANSWER <text>` (append-results.sh stamps the time).
 # ANSWER is a whole word: `ANSWERED ...` is not an answer bullet.
 answers="$(sed -n -E 's/^- [0-9]{2}:[0-9]{2} ANSWER([[:space:]]+(.*))?$/\2/p' "$doc")"
-# Complete = a WRAPPED bullet AFTER the last ANSWER bullet (line order in the doc).
-done_after="$(awk '/^- [0-9][0-9]:[0-9][0-9] ANSWER([ \t]|$)/ {a=NR} /^- [0-9][0-9]:[0-9][0-9] WRAPPED/ {w=NR} END {print (a && w > a) ? "yes" : "no"}' "$doc")"
-if [ -z "$answers" ] || [ "$done_after" != "yes" ]; then
-    # An ANSWER with no WRAPPED yet is a partial answer: still running.
-    # A BLOCKED AFTER the last ANSWER (or with none) is terminal, not still running.
-    blocked_after="$(awk '/^- [0-9][0-9]:[0-9][0-9] ANSWER([ \t]|$)/ {a=NR} /^- [0-9][0-9]:[0-9][0-9] BLOCKED/ {b=NR} END {print (b && b > a) ? "yes" : "no"}' "$doc")"
-    if [ "$blocked_after" = "yes" ]; then
-        echo "consult-relay: the consult ended BLOCKED without a complete answer: $doc" >&2
-        exit 4
-    fi
+# The LAST terminal marker after the last ANSWER decides: WRAPPED = complete,
+# BLOCKED = terminal failure (also with no ANSWER at all), neither = still
+# running. Both match as whole words, like ANSWER (`WRAPPEDX` / `BLOCKEDish`
+# are not markers).
+state="$(awk '/^- [0-9][0-9]:[0-9][0-9] ANSWER([ \t]|$)/ {a=1; t="none"} a && /^- [0-9][0-9]:[0-9][0-9] WRAPPED([ \t]|$)/ {t="wrapped"} /^- [0-9][0-9]:[0-9][0-9] BLOCKED([ \t]|$)/ {t="blocked"} END {print (t == "" ? "none" : t)}' "$doc")"
+if [ "$state" = "blocked" ]; then
+    echo "consult-relay: the consult ended BLOCKED without a complete answer: $doc" >&2
+    exit 4
+fi
+if [ -z "$answers" ] || [ "$state" != "wrapped" ]; then
     echo "consult-relay: no completed answer (ANSWER then WRAPPED) yet in $doc" >&2
     exit 3
 fi
