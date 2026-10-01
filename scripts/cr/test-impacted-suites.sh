@@ -535,6 +535,8 @@ mkf scripts/lib/cm-chain.sh 'true; . cm-lib.sh'
 mkf scripts/test-cm-chain.sh 'bash "$d/lib/cm-chain.sh"'
 mkf scripts/lib/cm-var.sh $'_CM="$d/cm-lib.sh"\n    . "$_CM"'
 mkf scripts/test-cm-var.sh 'bash "$d/lib/cm-var.sh"'
+mkf scripts/lib/cm-sub.sh $'(source cm-lib.sh)\n(. "$_CM")'
+mkf scripts/test-cm-sub.sh 'bash "$d/lib/cm-sub.sh"'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: comment-prose closure fixtures"
 change scripts/lib/cm-lib.sh
@@ -544,6 +546,7 @@ if ! grepq "$out" 'test-cm-asg\.sh'; then pass "a comment 'source \$var' does no
 if grepq "$out" '^scripts/test-cm-real\.sh$'; then pass "an indented real source line with a trailing comment is still followed"; else fail "indented source missed: $out"; fi
 if grepq "$out" '^scripts/test-cm-chain\.sh$'; then pass "a chained '; . x' source is still followed"; else fail "chained source missed: $out"; fi
 if grepq "$out" '^scripts/test-cm-var\.sh$'; then pass "an indented variable-sourcing file is still followed"; else fail "indented var-source missed: $out"; fi
+if grepq "$out" '^scripts/test-cm-sub\.sh$'; then pass "a subshell '(source x)' is still followed"; else fail "subshell source missed: $out"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi

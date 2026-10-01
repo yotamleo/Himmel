@@ -553,7 +553,7 @@ varsrc="$work/varsrc"   # every .sh file that sources a "$variable"
 # "# Same source and spelling as tick.sh's ...") is prose, never an edge. Only a
 # line whose first non-blank character is `#` is skipped: a `#` later in a line
 # (a quoted string, a trailing comment after a real source) never hides one.
-src_lead='(^[[:space:]]*|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
+src_lead='(^[[:space:]]*[({]?|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
 grep_rc=0
 git -c core.quotepath=off grep -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
 if [ "$grep_rc" -gt 1 ]; then
