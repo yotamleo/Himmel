@@ -9,7 +9,7 @@ since=""
 case "${1:-}" in
   '') ;;
   --since) [ "$#" -eq 2 ] || exit 2; since="$2" ;;
-  --help) echo 'usage: openrouter-cost.sh [--since launch.log] (spend is account-wide)'; exit 0 ;;
+  --help) echo 'usage: openrouter-cost.sh [--since launch.log] (spend is account-wide)'; echo 'Credits metadata can lag: an immediate --since delta can under-report spend; re-read later.'; exit 0 ;;
   *) exit 2 ;;
 esac
 unknown() { echo 'balance=? spend=?'; exit 0; }

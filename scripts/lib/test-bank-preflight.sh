@@ -255,7 +255,7 @@ fleet_verdict() {
     CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
     FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
     HIMMEL_FLEET_SLOTS="$_slots" \
-    bash "$SUT" </dev/null 2>"$W/err.log"
+    bash -o pipefail "$SUT" </dev/null 2>"$W/err.log"
 }
 
 # 4 fake legs, cap 4 (n >= CAP) -> SKIPPED-FLEET.
@@ -333,6 +333,22 @@ if grep -q 'FLEET native=1 claudex=1 openrouter=0 reserved=0 total=2/4' "$W/err.
   PASS=$((PASS+1)); echo "ok - claudex candidate named separately in the FLEET line"
 else
   FAIL=$((FAIL+1)); echo "FAIL - claudex candidate not named separately in the FLEET line"
+fi
+
+# HIMMEL-4076: explicit pipefail mode plus a large environ catches an early
+# grep exit closing tr's pipe before the producer has drained the input.
+# Production defaults to set -u only; fleet_verdict deliberately opts in.
+plarge="$W/pslarge"; mk_ps_stub_environ "$plarge" \
+  '9001:claude:CLAUDEX_LANE_OK=1:--model gpt-6.1-sol -n HIMMEL-1000-leg load doc' \
+  '9002:claude:LEG_LANE=openrouter:--model sonnet -n HIMMEL-1001-leg load doc'
+for pid in 9001 9002; do
+  awk 'BEGIN { for (i=0;i<32768;i++) printf "%cFILLER_%d=padding-padding-padding", 0, i }' >> "$plarge/proc/$pid/environ"
+done
+fleet_verdict "$plarge" HIMMEL_FLEET_CAP=4 >/dev/null
+if grep -q 'FLEET native=0 claudex=1 openrouter=1 reserved=0 total=2/4' "$W/err.log"; then
+  PASS=$((PASS+1)); echo "ok - pipefail keeps both lane labels with a large environ"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - pipefail mislabels lanes with a large environ"
 fi
 
 # codex-1 (CR review): a session with NO argument between "claude" and "-n"

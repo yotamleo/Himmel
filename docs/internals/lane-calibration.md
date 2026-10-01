@@ -35,7 +35,8 @@ the smaller of account credit and the key's `limit_remaining` is available.
 
 `scripts/lanes/openrouter-cost.sh --since <launch.log>` reads account metadata
 only and prints the effective balance plus account-wide spend since launch
-(not a per-session attribution). Tick's `or=` labels the limiting source;
+(not a per-session attribution). Credits metadata can lag: an immediate
+`--since` delta can under-report spend; re-read it later. Tick's `or=` labels the limiting source;
 `or=skip` makes no OpenRouter read when no OpenRouter leg is live, and balance
 changes never wake the console waiter. OpenRouter sessions share their own
 config namespace and can message peers there. Native consoles use the

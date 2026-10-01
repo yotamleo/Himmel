@@ -179,9 +179,9 @@ is_int "$FLEET_CAP" || FLEET_CAP=4
 # since misnaming one line's lane label is cosmetic, unlike misjudging the
 # cap.
 _fleet_lane_of() {
-  if tr '\0' '\n' < "${FLEET_PROC:-/proc}/$1/environ" 2>/dev/null | grep -qx 'CLAUDEX_LANE_OK=1'; then
+  if tr '\0' '\n' < "${FLEET_PROC:-/proc}/$1/environ" 2>/dev/null | grep -x 'CLAUDEX_LANE_OK=1' >/dev/null; then
     echo claudex
-  elif tr '\0' '\n' < "${FLEET_PROC:-/proc}/$1/environ" 2>/dev/null | grep -qx 'LEG_LANE=openrouter'; then
+  elif tr '\0' '\n' < "${FLEET_PROC:-/proc}/$1/environ" 2>/dev/null | grep -x 'LEG_LANE=openrouter' >/dev/null; then
     echo openrouter
   else
     echo native
