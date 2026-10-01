@@ -2986,10 +2986,11 @@ check "41g --consult --lane claudex refuses (exit 2)" "$rc" "2"
 rc=0; out="$(bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 # A worktree checkout refuses on the worktree rule; any checkout whose committed settings
 # carry additionalDirectories (himmel's do, HIMMEL-4069) refuses on the scope-merge rule.
-exp41g=0
-case "$HERE" in */.claude/worktrees/*) exp41g=2 ;; esac
-grep -q additionalDirectories "$HERE/../../../.claude/settings.json" 2>/dev/null && exp41g=2
+exp41g=0; want41g=""
+case "$HERE" in */.claude/worktrees/*) exp41g=2; want41g=".claude/worktrees" ;; esac
+if [ "$exp41g" = 0 ] && [ "$(jq -r '(.permissions.additionalDirectories // []) | length' "$HERE/../../../.claude/settings.json" 2>/dev/null)" -gt 0 ] 2>/dev/null; then exp41g=2; want41g="HIMMEL-4069"; fi
 check "41g derived repo refuses (worktree, or committed settings widen the sandbox)" "$rc" "$exp41g"
+[ -z "$want41g" ] || contains "41g derived repo refusal names its cause" "$out" "$want41g"
 mkdir -p "$tmp/real41/.claude/worktrees/feat+y"; ln -s "$tmp/real41/.claude/worktrees/feat+y" "$tmp/link41"
 rc=0; out="$(LEG_REPO="$tmp/link41" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4014-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41g a symlink into a worktree refuses (exit 2)" "$rc" "2"
@@ -3029,10 +3030,27 @@ done
 h41="$tmp/home41-ad"; rm -rf "$h41"; mkdir -p "$h41/.claude" "$tmp/repo41c/.claude"; rm -f "$tmp/repo41c/.claude/settings.json" "$tmp/repo41c/.claude/settings.local.json"
 rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41i a clean consult (no outer-scope widening) passes (exit 0)" "$rc" "0"
-# A malformed outer settings file is no signal, not a refusal.
+# A malformed outer settings file fails closed: refuse, naming the file.
 printf '%s' 'not json' > "$h41/.claude/settings.json"
 rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
-check "41i a malformed outer settings file is not a refusal (exit 0)" "$rc" "0"
+check "41i a malformed outer settings file refuses (exit 2)" "$rc" "2"
+contains "41i malformed refusal names the file" "$out" "$h41/.claude/settings.json"
+# Managed drop-ins, the cached server policy, and local settings at the git root / main checkout.
+wj41='{"permissions":{"additionalDirectories":["/x"]}}'
+h41="$tmp/home41-dropin"; rm -rf "$h41"; mkdir -p "$h41/.claude" "$h41/managed-settings.d"
+printf '%s' "$wj41" > "$h41/managed-settings.d/50-x.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a managed-settings.d drop-in carrying additionalDirectories refuses (exit 2)" "$rc" "2"
+h41="$tmp/home41-remote"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+printf '%s' "$wj41" > "$h41/.claude/remote-settings.json"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a remote-settings.json carrying additionalDirectories refuses (exit 2)" "$rc" "2"
+g41="$tmp/g41"; rm -rf "$g41"; mkdir -p "$g41/sub" "$g41/.claude"
+git -C "$g41" init -q
+printf '%s' "$wj41" > "$g41/.claude/settings.local.json"
+h41="$tmp/home41-git"; rm -rf "$h41"; mkdir -p "$h41/.claude"
+rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" CONSULT_MANAGED_SETTINGS="$h41/managed-none.json" LEG_REPO="$g41/sub" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i local settings at the git toplevel (LEG_REPO a subdir) refuse (exit 2)" "$rc" "2"
 # A custom CLAUDE_CONFIG_DIR is a user scope too (codex-1 round 2).
 cfg41="$tmp/cfg41"; rm -rf "$cfg41"; mkdir -p "$cfg41"
 printf '%s' '{"sandbox":{"filesystem":{"allowWrite":["/x"]}}}' > "$cfg41/settings.json"

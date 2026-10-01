@@ -1331,11 +1331,47 @@ if [ -n "$PROFILE" ]; then
                 exit 2
                 ;;
         esac
-        for _cs_f in "${CONSULT_SETTINGS_HOME:-$HOME}/.claude/settings.json" "${CLAUDE_CONFIG_DIR:-/nonexistent}/settings.json" "$CONSULT_REPO_CANON/.claude/settings.json" "$CONSULT_REPO_CANON/.claude/settings.local.json" "${CONSULT_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"; do
+        # Every scope Claude Code merges: user (home and CLAUDE_CONFIG_DIR), the cached server
+        # policy remote-settings.json, project + local settings at the cwd repo, its git
+        # toplevel and the main checkout (local settings load from the canonical git root, which
+        # a linked worktree maps to the main checkout), managed-settings.json and every
+        # managed-settings.d/*.json drop-in. CONSULT_SETTINGS_HOME / CONSULT_MANAGED_SETTINGS are
+        # test seams that are honoured in production too.
+        _cs_home="${CONSULT_SETTINGS_HOME:-$HOME}"
+        _cs_managed="${CONSULT_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"
+        _cs_roots="$CONSULT_REPO_CANON"
+        _cs_top="$(git -C "$CONSULT_REPO_CANON" rev-parse --show-toplevel 2>/dev/null)" || _cs_top=""
+        _cs_gc="$(git -C "$CONSULT_REPO_CANON" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || _cs_gc=""
+        [ -n "$_cs_top" ] && _cs_roots="$_cs_roots
+$_cs_top"
+        [ -n "$_cs_gc" ] && _cs_roots="$_cs_roots
+$(dirname "$_cs_gc")"
+        _cs_files="$_cs_home/.claude/settings.json
+$_cs_home/.claude/remote-settings.json
+${CLAUDE_CONFIG_DIR:-/nonexistent}/settings.json
+${CLAUDE_CONFIG_DIR:-/nonexistent}/remote-settings.json
+$_cs_managed"
+        for _cs_d in "$(dirname "$_cs_managed")"/managed-settings.d/*.json; do
+            _cs_files="$_cs_files
+$_cs_d"
+        done
+        while IFS= read -r _cs_r; do
+            [ -n "$_cs_r" ] || continue
+            _cs_files="$_cs_files
+$_cs_r/.claude/settings.json
+$_cs_r/.claude/settings.local.json"
+        done <<EOF_CS_ROOTS
+$_cs_roots
+EOF_CS_ROOTS
+        while IFS= read -r _cs_f; do
             [ -f "$_cs_f" ] || continue
             for _cs_k in sandbox.filesystem.allowWrite sandbox.network.allowedDomains permissions.additionalDirectories; do
-                # An unreadable or malformed file is no signal (jq fails, count stays empty).
-                _cs_n="$(jq -r --arg k "$_cs_k" 'getpath($k | split(".")) | if type == "array" then length else 0 end' "$_cs_f" 2>/dev/null)" || _cs_n=""
+                # Fail closed: an existing scope file jq cannot read (malformed, JSONC, a
+                # non-object intermediate) cannot be shown not to widen the sandbox.
+                if ! _cs_n="$(jq -r --arg k "$_cs_k" 'getpath($k | split(".")) | if type == "array" then length else 0 end' "$_cs_f" 2>/dev/null)"; then
+                    echo "headed-arm-leg: --consult: cannot parse $_cs_f, so it cannot be shown not to widen the sandbox: fix or remove it" >&2
+                    exit 2
+                fi
                 case "$_cs_n" in
                     ''|0) ;;
                     *)
@@ -1344,8 +1380,10 @@ if [ -n "$PROFILE" ]; then
                         ;;
                 esac
             done
-        done
-        unset -v _cs_f _cs_k _cs_n
+        done <<EOF_CS_FILES
+$_cs_files
+EOF_CS_FILES
+        unset -v _cs_f _cs_k _cs_n _cs_d _cs_r _cs_roots _cs_top _cs_gc _cs_files _cs_home _cs_managed
         if [ -L "$DOC" ]; then
             echo "headed-arm-leg: --consult: the consult doc must not be a symlink ($DOC): the sandbox binds the resolved file" >&2
             exit 2
