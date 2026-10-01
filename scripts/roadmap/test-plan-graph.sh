@@ -81,7 +81,7 @@ contains "edge count is exactly the plan's rows" "$py" "count True"
 contains "edges are EXTRACTED (no LLM)" "$py" "conf True"
 
 # same inputs => byte-identical graph (deterministic)
-cp "$g" "$W/g1"; run --refresh --force >/dev/null 2>&1
+cp "$g" "$W/g1"; run --refresh --force >/dev/null 2>&1 || fail "forced rebuild failed"
 cmp -s "$W/g1" "$g" && pass "deterministic: forced rebuild is byte-identical" || fail "graph differs between rebuilds"
 
 # graphify reads it: query + explain over a scratch copy, absolute --graph, tmp cwd, never `path`
@@ -127,6 +127,12 @@ r="$(run --refresh 2>&1)"; rc=$?
 rm -rf "$g"
 r="$(run --refresh 2>&1)"; contains "failed emit retried next time" "$r" "rebuilt"
 [ -f "$g" ] && pass "graph restored after retry" || fail "graph not restored"
+
+# --graph inside --docs would be deleted by the docs swap: refused before anything is written
+mkdir -p "$W/ovl/docs"
+python3 "$HERE/plan_docs.py" --plan-dir "$plan" --docs "$W/ovl/docs" --graph "$W/ovl/docs/graph.json" >/dev/null 2>&1; rc=$?
+[ "$rc" != 0 ] && pass "--graph inside --docs is refused" || fail "--graph inside --docs accepted (rc=0)"
+[ ! -e "$W/ovl/docs/graph.json" ] && pass "overlapping --graph wrote nothing" || fail "overlapping --graph was written"
 
 # a missing graph.json with a kept key is stale
 rm -f "$g"

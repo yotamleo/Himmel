@@ -133,6 +133,8 @@ def build(plan, docs, watches=(), graph=None):
         if overlaps(docs, src):
             sys.exit("plan_docs: --docs %s overlaps source input %s; refusing to replace it" % (docs, src))
     if graph:
+        if overlaps(graph, docs):  # the docs swap deletes --docs wholesale, taking a graph inside it along
+            sys.exit("plan_docs: --graph %s overlaps --docs %s; refusing to write it" % (graph, docs))
         for src in [plan] + list(watches):
             if overlaps(graph, src):
                 sys.exit("plan_docs: --graph %s overlaps source input %s; refusing to write it" % (graph, src))
