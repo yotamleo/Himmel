@@ -190,6 +190,13 @@ mkdir -p "$ROOT/fix3"
 echo '[{"number":6,"state":"OPEN","title":"HIMMEL-9001 y","headRefName":"b"}]' > "$ROOT/fix3/pr-HIMMEL-9001.json"
 echo '[{"databaseId":9,"status":"completed","conclusion":"success","createdAt":"2026-01-01T00:00:00Z","startedAt":null,"updatedAt":"2026-01-01T00:00:45Z"}]' > "$ROOT/fix3/run-b.json"
 check "missing startedAt falls back to createdAt and says so" '{"basis":"createdAt","completed":1,"runs":1,"secs":45,"state":"found"}' "$(GHFIX="$ROOT/fix3" jrun --print | jq -cS 'select(.ticket=="HIMMEL-9001")|.ci')"
+mkdir -p "$ROOT/fix4"
+echo '[{"number":7,"state":"OPEN","title":"HIMMEL-9001A decoy","headRefName":"b"}]' > "$ROOT/fix4/pr-HIMMEL-9001.json"
+check "a letter after the key is not the key (HIMMEL-9001A)" '{"state":"none"}' "$(GHFIX="$ROOT/fix4" jrun --print | jq -cS 'select(.ticket=="HIMMEL-9001")|.pr')"
+mkdir -p "$ROOT/fix5"
+echo '[{"number":8,"state":"OPEN","title":"HIMMEL-9001 z","headRefName":"b"}]' > "$ROOT/fix5/pr-HIMMEL-9001.json"
+echo '[{"databaseId":20,"status":"completed","conclusion":"success","createdAt":"2026-01-01T00:00:00Z","startedAt":"2026-01-01T00:01:00Z","updatedAt":"2026-01-01T00:00:50Z"},
+ {"databaseId":21,"status":"completed","conclusion":"success","createdAt":"2026-01-01T00:00:00Z","startedAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:05:00Z"}]' > "$ROOT/fix5/run-b.json"
 
 # the join fails closed: a failing gh writes nothing and leaves prior versions alone
 SJ="$ROOT/store-join"
@@ -200,6 +207,7 @@ frc() { rc=0; "$@" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
 check "gh auth failure exits non-zero" "1" "$(GHFAIL=1 frc jrun --store "$SJ")"
 check "wrong repo (gh error) exits non-zero" "1" "$(GHWANT_REPO=x/y frc jrun --store "$SJ")"
 check "missing gh exits non-zero" "1" "$(frc run --repo o/r --gh "$ROOT/no-such-gh" --store "$SJ")"
+check "one negative run duration aborts even when the sum is positive" "1" "$(GHFIX="$ROOT/fix5" frc jrun --store "$SJ")"
 check "gh failure left the store byte-identical" "$hj" "$(cksum < "$SJ/records.jsonl")"
 check "failed run released the lock" "no" "$([ -d "$SJ/.lock" ] && echo yes || echo no)"
 cp -R "$GHFIX" "$ROOT/fix-bad"

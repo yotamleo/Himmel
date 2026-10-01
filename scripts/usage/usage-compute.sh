@@ -206,7 +206,7 @@ join_ticket() {
   jq -e 'type == "array" and all(.[]; (.number | type == "number") and (.state | IN("OPEN","CLOSED","MERGED")) and (.title | type == "string") and (.headRefName | type == "string" and length > 0 and (startswith("-") | not)))' <<<"$prs" >/dev/null 2>&1 \
     || die "gh pr list returned an unexpected shape for $t"
   [ "$(jq 'length' <<<"$prs")" -lt 100 ] || die "gh pr list hit its 100-row limit for $t; refusing a truncated join"
-  mine="$(jq -c --arg t "$t" '[.[] | select(.title | test("(^|[^A-Z0-9])" + $t + "($|[^0-9])"; "i"))]' <<<"$prs")"
+  mine="$(jq -c --arg t "$t" '[.[] | select(.title | test("(^|[^A-Z0-9])" + $t + "($|[^A-Z0-9])"; "i"))]' <<<"$prs")"
   if [ "$(jq 'length' <<<"$mine")" = 0 ]; then
     PRJ='{"state":"none"}'; CIJ='{"state":"no-pr"}'; return 0
   fi
@@ -224,9 +224,9 @@ join_ticket() {
   # recorded fallback when any completed run lacks it (ci.basis says which)
   CIJ="$(jq -c 'unique_by(.databaseId) | [.[] | select(.status == "completed")] as $c
     | (if ($c | length) == 0 then "none" elif all($c[]; .startedAt != null) then "startedAt" else "createdAt" end) as $b
-    | {state: "found", runs: 0, completed: ($c | length), basis: $b,
-       secs: ([$c[] | (.updatedAt | fromdateiso8601) - ((if $b == "startedAt" then .startedAt else .createdAt end) | fromdateiso8601)] | add // 0)}
-    | if .secs < 0 then error("negative ci secs") else . end' <<<"$all")" || die "cannot compute ci seconds for $t"
+    | [$c[] | (.updatedAt | fromdateiso8601) - ((if $b == "startedAt" then .startedAt else .createdAt end) | fromdateiso8601)] as $d
+    | if any($d[]; . < 0) then error("negative ci duration") else . end
+    | {state: "found", runs: 0, completed: ($c | length), basis: $b, secs: ($d | add // 0)}' <<<"$all")" || die "cannot compute ci seconds for $t"
   CIJ="$(jq -c --argjson n "$(jq 'unique_by(.databaseId) | length' <<<"$all")" '.runs = $n' <<<"$CIJ")"
 }
 
