@@ -1331,7 +1331,7 @@ if [ -n "$PROFILE" ]; then
                 exit 2
                 ;;
         esac
-        for _cs_f in "${CONSULT_SETTINGS_HOME:-$HOME}/.claude/settings.json" "$CONSULT_REPO_CANON/.claude/settings.json" "$CONSULT_REPO_CANON/.claude/settings.local.json" "${CONSULT_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"; do
+        for _cs_f in "${CONSULT_SETTINGS_HOME:-$HOME}/.claude/settings.json" "${CLAUDE_CONFIG_DIR:-/nonexistent}/settings.json" "$CONSULT_REPO_CANON/.claude/settings.json" "$CONSULT_REPO_CANON/.claude/settings.local.json" "${CONSULT_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"; do
             [ -f "$_cs_f" ] || continue
             for _cs_k in sandbox.filesystem.allowWrite sandbox.network.allowedDomains permissions.additionalDirectories; do
                 # An unreadable or malformed file is no signal (jq fails, count stays empty).

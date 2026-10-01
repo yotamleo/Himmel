@@ -3028,6 +3028,12 @@ check "41i a clean consult (no outer-scope widening) passes (exit 0)" "$rc" "0"
 printf '%s' 'not json' > "$h41/.claude/settings.json"
 rc=0; out="$(CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41i a malformed outer settings file is not a refusal (exit 0)" "$rc" "0"
+# A custom CLAUDE_CONFIG_DIR is a user scope too (codex-1 round 2).
+cfg41="$tmp/cfg41"; rm -rf "$cfg41"; mkdir -p "$cfg41"
+printf '%s' '{"sandbox":{"filesystem":{"allowWrite":["/x"]}}}' > "$cfg41/settings.json"
+printf '%s' '{}' > "$h41/.claude/settings.json"
+rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg41" CONSULT_SETTINGS_HOME="$h41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-c "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i a widening CLAUDE_CONFIG_DIR settings file is refused (exit 2)" "$rc" "2"
 # (d) the live smoke test is skipped unless CONSULT_SMOKE=1.
 rc=0; out="$(bash "$HERE/smoke-consult-sandbox.sh" 2>&1)" || rc=$?
 check "41i smoke test skips by default (exit 0)" "$rc" "0"
