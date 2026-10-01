@@ -56,7 +56,31 @@ foreach ($n in 'USERPROFILE', 'OPENROUTER_API_KEY', 'CLAUDE_OPENROUTER_DOTENV_RO
   $OrigEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 
+# Hermetic credits server (node is already a hard dependency of the launcher).
+# Serves $TMP\credits.json for any GET; 500 when the file is absent. Port 0 -> the
+# chosen port is written to $TMP\port.txt.
+$CreditsFile = Join-Path $TMP 'credits.json'
+$PortFile    = Join-Path $TMP 'port.txt'
+$ServerJs    = Join-Path $TMP 'credits-server.js'
+@'
+const http = require("http"), fs = require("fs");
+const [file, portFile] = process.argv.slice(2);
+http.createServer((q, r) => {
+  try { const b = fs.readFileSync(file); r.writeHead(200, {"content-type": "application/json"}); r.end(b); }
+  catch (_) { r.writeHead(500); r.end("no balance"); }
+}).listen(0, "127.0.0.1", function () { fs.writeFileSync(portFile, String(this.address().port)); });
+'@ | Set-Content -LiteralPath $ServerJs
+function Set-Credits([double]$Total, [double]$Used) {
+  ('{"data":{"total_credits":' + $Total.ToString([Globalization.CultureInfo]::InvariantCulture) + ',"total_usage":' + $Used.ToString([Globalization.CultureInfo]::InvariantCulture) + '}}') |
+    Set-Content -LiteralPath $CreditsFile -NoNewline
+}
+Set-Credits 21 1
+$ServerProc = Start-Process node -ArgumentList @($ServerJs, $CreditsFile, $PortFile) -PassThru -WindowStyle Hidden
+for ($i = 0; $i -lt 50 -and -not (Test-Path -LiteralPath $PortFile); $i++) { Start-Sleep -Milliseconds 100 }
+$script:CreditPort = if (Test-Path -LiteralPath $PortFile) { (Get-Content -LiteralPath $PortFile -Raw).Trim() } else { '1' }
+
 function New-Sandbox {
+  Set-Credits 21 1   # default balance: $20 remaining
   # fresh sandbox: fake HOME whose ~/.claude ALREADY carries settings.json (the
   # exact fixture the round-3 regression needed), mock claude.cmd in BIN.
   $id = [Guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -107,7 +131,9 @@ function Invoke-Launcher {
   if ($script:MATRIX) { $env:CLAUDE_OPENROUTER_EGRESS_MATRIX = $script:MATRIX }
   else { Remove-Item Env:CLAUDE_OPENROUTER_EGRESS_MATRIX -ErrorAction SilentlyContinue }
   Remove-Item Env:CLAUDE_OPENROUTER_CWD -ErrorAction SilentlyContinue
-  $env:OPENROUTER_API_BASE = 'http://127.0.0.1:1/api/v1'   # fast-failing loopback -> credit UNKNOWN, no network
+  # HIMMEL-4076: the credit probe GATES the launch, so every case talks to the
+  # hermetic loopback credits server (body = $TMP\credits.json; absent -> HTTP 500 -> UNKNOWN).
+  $env:OPENROUTER_API_BASE = "http://127.0.0.1:$script:CreditPort/api/v1"
   $env:MOCK_ENV_OUT        = $ChildEnv
   $env:MOCK_ARGV_OUT       = $ArgvOut
   $env:PATH                = $BIN + [IO.Path]::PathSeparator + $OrigEnv['PATH']
@@ -210,12 +236,24 @@ try {
     if ($emptyKey) { Pass 'ANTHROPIC_API_KEY exported empty' } else { Fail 'ANTHROPIC_API_KEY not exported empty' }
   } else { Fail 'T3 launch produced no child env dump' }
 
-  # --- T5: credit probe failure is ADVISORY — loud UNKNOWN on a fast-failing
-  # loopback, launch STILL exit 0 (HIMMEL-1771: never fail open silently). ---
+  # --- T5: the credit probe is a launch GATE (HIMMEL-4076): UNKNOWN or below
+  # OPENROUTER_MIN_CREDIT_USD (default 3) -> exit 5 and claude never launches. ---
   New-Sandbox; $script:KEY = 'or-test-123'  # gitleaks:allow
   Write-AllowMatrix (Join-Path $WORK 'matrix.json'); $script:MATRIX = Join-Path $WORK 'matrix.json'
-  Assert-Exit (Invoke-Launcher) 0 'credit UNKNOWN surfaced + launch proceeds'
+  Remove-Item -LiteralPath $CreditsFile -Force
+  Assert-Exit (Invoke-Launcher) 5 'credit UNKNOWN refuses (exit 5)'
   if (FileHas $OutTxt 'remaining metered credit: UNKNOWN') { Pass 'loud UNKNOWN credit line' } else { Fail 'no loud UNKNOWN credit line' }
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched on UNKNOWN balance' } else { Pass 'claude not launched on UNKNOWN balance' }
+  Set-Credits 21 19
+  Assert-Exit (Invoke-Launcher) 5 'credit 2.00 below default floor 3 refuses (exit 5)'
+  if (FileHas $OutTxt 'below the floor') { Pass 'below-floor message' } else { Fail 'no below-floor message' }
+  Set-Credits 21 18
+  Assert-Exit (Invoke-Launcher) 0 'credit exactly 3.00 at floor launches'
+  $env:OPENROUTER_MIN_CREDIT_USD = '5'
+  Assert-Exit (Invoke-Launcher) 5 'env floor 5 refuses a 3.00 balance'
+  $env:OPENROUTER_MIN_CREDIT_USD = 'junk'
+  Assert-Exit (Invoke-Launcher) 0 'garbage floor falls back to 3 (3.00 admitted)'
+  Remove-Item Env:OPENROUTER_MIN_CREDIT_USD -ErrorAction SilentlyContinue
 
   # --- T6: claude flags pass through verbatim; a LEADING -Reseed is consumed.
   # Pins the manual flag loop (a param() block would swallow -p/-d as common
@@ -238,6 +276,8 @@ try {
   if ($script:fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$($script:fails) failure(s)" -ForegroundColor Red; exit 1 }
 }
 finally {
+  if ($ServerProc) { Stop-Process -Id $ServerProc.Id -Force -ErrorAction SilentlyContinue }
+  Remove-Item Env:OPENROUTER_MIN_CREDIT_USD -ErrorAction SilentlyContinue
   foreach ($n in $OrigEnv.Keys) {
     if ($null -eq $OrigEnv[$n]) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
     else { Set-Item "Env:$n" $OrigEnv[$n] }

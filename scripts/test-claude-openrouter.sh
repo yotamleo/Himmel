@@ -56,6 +56,17 @@ done
 exit 0
 MOCK
   chmod +x "$BIN/claude"
+  # curl stub (HIMMEL-4076): the credit probe is a launch GATE now, so every test
+  # needs a deterministic balance. Body comes from $BIN/credits.json (default: $20
+  # remaining); a missing file makes the stub fail like an unreachable API.
+  printf '{"data":{"total_credits":21,"total_usage":1}}' > "$BIN/credits.json"
+  cat > "$BIN/curl" <<'CURLSTUB'
+#!/usr/bin/env bash
+cat >/dev/null
+[ -f "$(dirname "$0")/credits.json" ] || exit 7
+cat "$(dirname "$0")/credits.json"
+CURLSTUB
+  chmod +x "$BIN/curl"
   export MOCK_ENV_OUT="$WORK/child-env.txt"
   export MOCK_ARGV_OUT="$WORK/claude-argv.txt"
 }
@@ -352,12 +363,27 @@ if [ "$t8_rc" -eq 0 ]; then echo "FAIL: broken node launched (exit 0)"; cat "$WO
 [ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude with a broken node"; FAILS=$((FAILS+1)); }
 rm -f "$BIN/node"
 
-# --- T9: credit surfacing is advisory + loud-on-unknown — a query failure prints
-# UNKNOWN and the launch STILL proceeds (exit 0). Fast-failing loopback API base.
+# --- T9: the credit probe is a launch GATE (HIMMEL-4076). An UNKNOWN balance or
+# one below OPENROUTER_MIN_CREDIT_USD (default 3) refuses with exit 5 and never
+# launches claude; a balance at/above the floor launches and prints the line.
 setup; KEY="or-test-123"
 write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"
-t "credit UNKNOWN surfaced + launch proceeds" 0
+rm -f "$BIN/credits.json"
+t "credit UNKNOWN refuses (exit 5)" 5
 grep -qi "remaining metered credit: UNKNOWN" "$WORK/out.txt" || { echo "FAIL: no loud UNKNOWN credit line"; FAILS=$((FAILS+1)); }
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude on UNKNOWN balance"; FAILS=$((FAILS+1)); }
+printf '{"data":{"total_credits":21,"total_usage":19}}' > "$BIN/credits.json"
+t "credit 2.00 below default floor 3 refuses (exit 5)" 5
+grep -q "below the floor" "$WORK/out.txt" || { echo "FAIL: no below-floor message"; FAILS=$((FAILS+1)); }
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude below floor"; FAILS=$((FAILS+1)); }
+printf '{"data":{"total_credits":21,"total_usage":18}}' > "$BIN/credits.json"
+t "credit exactly 3.00 at floor launches" 0
+grep -q 'remaining metered credit: \$3.00' "$WORK/out.txt" || { echo "FAIL: no credit line at floor"; FAILS=$((FAILS+1)); }
+OPENROUTER_MIN_CREDIT_USD=5 t "env floor 5 refuses a 3.00 balance" 5
+OPENROUTER_MIN_CREDIT_USD=1 t "env floor 1 admits a 3.00 balance" 0
+OPENROUTER_MIN_CREDIT_USD=junk t "garbage floor falls back to 3 (3.00 admitted)" 0
+printf '{"data":{"total_credits":21,"total_usage":20}}' > "$BIN/credits.json"
+OPENROUTER_MIN_CREDIT_USD=junk t "garbage floor falls back to 3 (1.00 refused)" 5
 
 # --- T10: claude flags pass through verbatim; leading --reseed is consumed
 setup; KEY="or-test-123"

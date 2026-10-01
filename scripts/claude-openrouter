@@ -9,9 +9,9 @@
 #      override for this; the matrix is the authorizing gate for a lane whose
 #      content transits a third party (OpenRouter). Reaching a Claude model
 #      THROUGH OpenRouter is NOT covered by the existing `anthropic` cell.
-#   2. Advisory remaining-credit surfacing (stderr) — OpenRouter exposes a metered
-#      balance; a query failure is reported LOUDLY as UNKNOWN, never silent
-#      (the HIMMEL-1771 fail-open-silently class).
+#   2. Remaining-credit GATE (HIMMEL-4076) — OpenRouter exposes a metered balance;
+#      below OPENROUTER_MIN_CREDIT_USD (default 3) or UNKNOWN refuses with exit 5,
+#      and an UNKNOWN is reported LOUDLY, never silent (the HIMMEL-1771 class).
 # Pin: the target model is a Claude 1M-context tier (CLAUDE_CODE_AUTO_COMPACT_WINDOW
 # = 1000000). Endpoint + slug were verified against OpenRouter's live API and
 # docs on 2026-08-15: the native Anthropic-compatible endpoint needs NO loopback
@@ -20,7 +20,7 @@
 # Everything else (PHI guard, config-dir seeding, arg handling, exit codes) is
 # behaviour-identical to claude-routed. Exit codes: 2 = missing key / claude not
 # on PATH, 3 = egress or PHI refusal (or node missing — the matrix cannot be
-# consulted), 4 = failed seed.
+# consulted), 4 = failed seed, 5 = credit below the floor or unknown.
 # shellcheck disable=SC1091  # load-dotenv.sh path issue
 set -u
 
@@ -354,13 +354,15 @@ if [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; t
   seed_with_lock
 fi
 
-# --- advisory remaining-credit surfacing (HIMMEL-1774 §4) ----------------------
-# OpenRouter exposes a metered balance at GET <OPENROUTER_API_BASE>/credits. This
-# is ADVISORY (stderr) and NEVER gates the launch (the egress matrix is the gate).
-# A query failure is reported LOUDLY as UNKNOWN, never silent (HIMMEL-1771). The
-# credits call carries the API key but NO corpus content (account metadata only),
-# and runs only AFTER the egress gate has authorized the lane. The Authorization
-# header travels via `-K -` (curl config on stdin) so the key is not in argv.
+# --- remaining-credit GATE (HIMMEL-1774 §4, hardened by HIMMEL-4076) ------------
+# OpenRouter exposes a metered balance at GET <OPENROUTER_API_BASE>/credits. The
+# key holds only a few dollars, so the probe GATES the launch: a balance below
+# OPENROUTER_MIN_CREDIT_USD (default 3; a non-numeric value falls back to 3) or an
+# UNKNOWN balance refuses with exit 5 BEFORE claude starts. The credits call
+# carries the API key but NO corpus content (account metadata only), and runs only
+# AFTER the egress gate has authorized the lane. The Authorization header travels
+# via `-K -` (curl config on stdin) so the key is not in argv.
+OPENROUTER_MIN_CREDIT_USD="${OPENROUTER_MIN_CREDIT_USD:-3}"
 credit_surfaced=0
 if command -v curl >/dev/null 2>&1; then
   credit_raw="$(printf 'header "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
@@ -374,13 +376,19 @@ let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
     if (Number.isFinite(t)&&Number.isFinite(u)) { process.stdout.write((t-u).toFixed(2)); return; } } catch(_) {}
   process.exit(2);
 });' 2>/dev/null || true)"
-  if [ -n "$credit_rem" ]; then
-    echo "claude-openrouter: remaining metered credit: \$$credit_rem (OpenRouter balance at $OPENROUTER_API_BASE/credits). Advisory only." >&2
-    credit_surfaced=1
-  fi
+  [ -n "$credit_rem" ] && credit_surfaced=1
 fi
 if [ "$credit_surfaced" -ne 1 ]; then
-  echo "claude-openrouter: remaining metered credit: UNKNOWN (could not query $OPENROUTER_API_BASE/credits). The metered balance is NOT verified — do not assume it is fine." >&2
+  echo "claude-openrouter: remaining metered credit: UNKNOWN (could not query $OPENROUTER_API_BASE/credits). The metered balance is NOT verified; refusing to launch (exit 5)." >&2
+  exit 5
+fi
+echo "claude-openrouter: remaining metered credit: \$$credit_rem (OpenRouter balance at $OPENROUTER_API_BASE/credits)." >&2
+# awk does the float compare (bash 3.2 has none); a non-numeric floor becomes 3.
+credit_floor="$OPENROUTER_MIN_CREDIT_USD"
+case "$credit_floor" in ''|.|*[!0-9.]*|*.*.*) credit_floor=3 ;; esac
+if ! awk -v r="$credit_rem" -v f="$credit_floor" 'BEGIN{exit !(r+0>=f+0)}'; then
+  echo "claude-openrouter: remaining credit \$$credit_rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$credit_floor); refusing to launch (exit 5)." >&2
+  exit 5
 fi
 
 command -v claude >/dev/null 2>&1 || { echo "claude-openrouter: 'claude' not found on PATH" >&2; exit 2; }

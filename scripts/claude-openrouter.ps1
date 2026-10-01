@@ -431,24 +431,35 @@ if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed
   Invoke-SeedWithLock
 }
 
-# --- advisory remaining-credit surfacing (HIMMEL-1774 §4) --------------------
-# Advisory (stderr); never gates the launch. A query failure is LOUDLY UNKNOWN
-# (HIMMEL-1771). Runs only AFTER the egress gate authorized the lane; the credits
+# --- remaining-credit GATE (HIMMEL-1774 §4, hardened by HIMMEL-4076) ----------
+# Twin of the bash launcher: a balance below OPENROUTER_MIN_CREDIT_USD (default 3;
+# non-numeric falls back to 3) or an UNKNOWN balance refuses with exit 5 BEFORE
+# claude starts. Runs only AFTER the egress gate authorized the lane; the credits
 # call carries the key but NO corpus content.
+$minCredit = 3.0
+$parsedMin = 0.0
+if ($env:OPENROUTER_MIN_CREDIT_USD -and [double]::TryParse($env:OPENROUTER_MIN_CREDIT_USD, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedMin)) { $minCredit = $parsedMin }
 $creditSurfaced = $false
+$remVal = 0.0
 try {
   $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -NoProxy -Method Get `
     -Headers @{Authorization="Bearer $key"} -Uri "$OpenRouterApiBase/credits"
   $j = $resp.Content | ConvertFrom-Json -ErrorAction Stop
   $d = if ($j.data) { $j.data } else { $j }
   if ($null -ne $d.total_credits -and $null -ne $d.total_usage) {
-    $rem = ([double]$d.total_credits - [double]$d.total_usage).ToString('0.00')
-    [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: `$$rem (OpenRouter balance at $OpenRouterApiBase/credits). Advisory only.")
+    $remVal = [Math]::Round([double]$d.total_credits - [double]$d.total_usage, 2)
     $creditSurfaced = $true
   }
 } catch { }
 if (-not $creditSurfaced) {
-  [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: UNKNOWN (could not query $OpenRouterApiBase/credits). The metered balance is NOT verified — do not assume it is fine.")
+  [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: UNKNOWN (could not query $OpenRouterApiBase/credits). The metered balance is NOT verified; refusing to launch (exit 5).")
+  exit 5
+}
+$rem = $remVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+[Console]::Error.WriteLine("claude-openrouter: remaining metered credit: `$$rem (OpenRouter balance at $OpenRouterApiBase/credits).")
+if ($remVal -lt $minCredit) {
+  [Console]::Error.WriteLine("claude-openrouter: remaining credit `$$rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$minCredit); refusing to launch (exit 5).")
+  exit 5
 }
 
 # --- launch: env contract mirrors the bash twin ------------------------------
