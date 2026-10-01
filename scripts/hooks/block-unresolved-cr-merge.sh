@@ -95,6 +95,9 @@ _deny() { echo "block-unresolved-cr-merge: $1" >&2; exit 2; }
 _norm() {
     printf '%s' "$1" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' -e "s/['\"\$\`{}]//g" | tr '\n' ' '
 }
+# The ONE dequote every added rule shares: strip quotes AND backslashes from the
+# word stream (`"gh"`, `\gh`, `g\h`, `"m?rge"` all become the bare word).
+_dq() { tr -d "'\"\\\\"; }
 # Monotone versus main: main's own detector runs byte for byte and every rule
 # below only ADDS a deny, so nothing main denied can pass (judge r1, C1).
 merge_re='gh[[:space:]]+pr[[:space:]]+merge'
@@ -103,6 +106,10 @@ fires=0
 printf '%s' "$cmd_old" | grep -E "$merge_re" >/dev/null && fires=1
 cmd_norm=$(_norm "$cmd")
 cmd_sq=$(_norm "$(printf '%s' "$cmd" | sed -e 's/\$[{(][^})]*[})]//g')")
+# Whole-command substring rule, ignoring segmentation: the GraphQL mutation name is
+# never legitimate in a read, so `mergepullrequest` anywhere (dequoted, lowercased)
+# denies, whatever `(` or `;` splits around it.
+printf '%s' "$cmd_norm" | tr 'A-Z' 'a-z' | grep -q 'mergepullrequest' && fires=1
 # Rule A, per segment: gh, then only flags (-R/--repo take a value) and ONE `pr`,
 # then a `merge` word; or `gh api` / `gh alias` followed by a merge-ish word
 # (`.../pulls/8/merge`, `mutation{mergePullRequest`, `alias set mm pr merge`).
@@ -152,7 +159,7 @@ fi
 # (quoted spans are dropped first; `ls *` has no gh+pr precondition).
 if [ "$fires" = "0" ]; then
     # shellcheck disable=SC2020 # five separators each map to a newline, by design
-    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g' \
+    printf '%s' "$cmd" | tr ';&|(\n' '\n\n\n\n\n' | _dq \
         | awk '{ g = 0; p = 0; s = 0
             for (i = 1; i <= NF; i++) { w = $i
                 if (w == "gh" || w ~ "/gh$") g = 1
@@ -165,19 +172,21 @@ fi
 # Positional rules for a SINGLE shell-computed word (judge r2): (R1) a literal gh
 # word, then an expansion or substitution in the subcommand position or, after
 # `pr`, in the verb position (`gh pr "$M" 1`, `gh $A 42`, `gh "$@" 42`); (R2) a
-# segment whose FIRST word is an expansion, then `api` and a merge-ish word, or a
-# PUT with a pulls/ path (`"$G" api -X PUT repos/o/r/pulls/1/merge`). `gh pr view
-# "$PR"` never reaches an expansion in those positions. Both words computed, or a
-# computed merge path (`gh api -X PUT "$U"`) stays the HIMMEL-3945 residual.
+# segment with any non-plain word (rule D's allowlist, so assignments and wrappers
+# such as `command "$G"`, `env "$G"`, `X=1 "$G"` count) before an `api` word, then a
+# merge-ish word or a PUT with a pulls/ path (`"$G" api -X PUT repos/o/r/pulls/1/merge`).
+# `gh pr view "$PR"` never reaches an expansion in those positions. Both words
+# computed, or a computed merge path (`gh api -X PUT "$U"`) stays the HIMMEL-3945
+# residual.
 if [ "$fires" = "0" ]; then
     # shellcheck disable=SC2020,SC2016 # five separators map to newlines; the sed pattern is literal
-    printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\$(/$ /g' | tr ';&|(\n' '\n\n\n\n\n' \
-        | awk -v q="'" '{ g = 0; pr = 0; skip = 0; api = 0; put = 0; pul = 0; e1 = 0
-            for (i = 1; i <= NF; i++) { w = $i; s = w; gsub("[\"" q "]", "", s)
-                if (i == 1 && s ~ /^[$`]/) e1 = 1
-                if (e1 && i > 1) { if (s == "api") { api = 1; continue }
-                    if (api) { if (s == "PUT") put = 1; if (s ~ "pulls/") pul = 1
-                        if (s ~ "merge" || (put && pul)) f = 1 } }
+    printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\$(/$ /g' | tr ';&|(\n' '\n\n\n\n\n' | _dq \
+        | awk '{ g = 0; pr = 0; skip = 0; api = 0; put = 0; pul = 0; bad = 0
+            for (i = 1; i <= NF; i++) { w = $i; s = w
+                if (bad && !api && s == "api") { api = 1; continue }
+                if (api) { if (s == "PUT") put = 1; if (s ~ "pulls/") pul = 1
+                    if (s ~ "merge" || (put && pul)) f = 1 }
+                if (s !~ "^[A-Za-z0-9_./+=-]+$") bad = 1
                 if (!g) { if (s == "gh" || s ~ "/gh$") g = 1; continue }
                 if (skip) { skip = 0; continue }
                 if (s ~ "^-") { if (s == "-R" || s == "--repo") skip = 1; continue }
@@ -193,7 +202,7 @@ fi
 # spelling needs listing.
 if [ "$fires" = "0" ] && printf '%s\n%s' "$cmd_norm" "$cmd_sq" | grep -qE '(^|[^A-Za-z0-9])merge([^A-Za-z0-9]|$|PullRequest)'; then
     # shellcheck disable=SC2020 # five separators each map to a newline, by design
-    printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' | tr ';&|(\n' '\n\n\n\n\n' | tr -d "'\"" \
+    printf '%s' "$cmd" | sed -e ':a' -e '$!N' -e '$!ba' -e 's/\\\n//g' -e 's/\\//g' | tr ';&|(\n' '\n\n\n\n\n' | _dq \
         | awk '{ pr = 0; bad = 0
             for (i = 1; i <= NF; i++) { w = $i
                 if (w ~ "^[A-Za-z0-9_./+=-]+$") {

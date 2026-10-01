@@ -292,6 +292,17 @@ for _row in "api-put|gh api -X PUT repos/o/r/pulls/42/merge" \
             "r2-graphql|G=gh; \\\"\$G\\\" api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:1}){clientMutationId}}'" \
             "verb-glob-bang|gh pr [!x]erge 42 $PIN" \
             "verb-glob-caret|gh pr [^x]erge 42 $PIN" \
+            "j1-bs-gh-bare|\\\\gh pr \$M" \
+            "j1-bs-gh-dq|\\\\gh pr \\\"\$M\\\" 1 $PIN" \
+            "j1-bs-mid-gh|g\\\\h pr \$M" \
+            "j2-command|G=gh; command \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "j2-env|G=gh; env \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "j2-nice|G=gh; nice \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "j2-assign|G=gh; X=1 \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "b1-quoted-gh-pr-glob|\\\"gh\\\" \\\"pr\\\" m?rge 42 $PIN" \
+            "b1-quoted-verb-glob|\\\"gh\\\" pr \\\"m?rge\\\" 42 $PIN" \
+            "b2-graphql-vars|gh api graphql -f 'query=mutation(\$id:ID!){mergePullRequest(input:{pullRequestId:\$id}){clientMutationId}}' -F id=ID" \
+            "b2-graphql-vars-eq|gh api graphql -f query='mutation(\$id:ID!){mergePullRequest(input:{pullRequestId:\$id}){clientMutationId}}' -F id=ID" \
             "c1-var-dq|C=\\\"gh pr merge 42\\\"; \$C" \
             "c1-var-sq|C='gh pr merge 42'; \$C" \
             "c1-eval|C=\\\"gh pr merge 42\\\"; eval \\\"\$C\\\"" \

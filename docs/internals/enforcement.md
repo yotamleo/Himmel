@@ -2627,12 +2627,16 @@ and a merge-ish word fires, where merge-ish is a literal merge word in any copy 
 a word whose literal residue is letters of `merge` (`m${X:-er}ge`,
 `$'m\x65rge'`, `gh${IFS}pr${IFS}merge`); a non-merge gh command with `$` or a
 substitution (`gh pr view "$PR"`) is untouched. (C) a segment with a gh word, a
-`pr` word and an unquoted glob word that globs to `merge` (`m?rge`, `[m]erge`, a
-bare `*`, `[!x]erge`, `[^x]erge`) fires; `ls *` has no such precondition. (E) one
+`pr` word and a glob word that globs to `merge` (`m?rge`, `[m]erge`, a bare `*`,
+`[!x]erge`, `[^x]erge`) fires, after ONE shared dequote (quotes and backslashes
+stripped: `"gh" "pr" m?rge`, `\gh pr $M`, `g\h pr $M`); `ls *` has no such
+precondition. Separately, the GraphQL mutation name `mergepullrequest` anywhere in
+the dequoted, lowercased command denies, whatever `(` or `;` splits around it. (E) one
 shell-computed word, by position: a literal `gh` word then an expansion or
 substitution in the subcommand position or, after `pr`, in the verb position
-(`gh pr "$M" 1`, `gh $A 42`, `gh "$@" 42`), or a segment whose FIRST word is an
-expansion followed by `api` and a merge-ish word or a PUT to a `pulls/` path
+(`gh pr "$M" 1`, `gh $A 42`, `gh "$@" 42`), or a segment with any non-plain word
+(rule D's allowlist, so `command`/`env`/`nice "$G"` and `X=1 "$G"` count) before an
+`api` word, followed by a merge-ish word or a PUT to a `pulls/` path
 (`G=gh; "$G" api -X PUT repos/o/r/pulls/1/merge`), fires; `gh pr view "$PR"` never
 has an expansion in those positions. Note the new deny of the GET form
 `gh api .../pulls/N/merge`, which the merge rule cannot tell from the PUT. (D) the mirror case: in a segment
@@ -2650,9 +2654,9 @@ text's own pointer). Non-merge gh (`gh pr view`, `gh api .../pulls/N`, `gh run`,
 `gh alias list`) and `git merge main && gh ...` (merge before gh) are untouched.
 A gh alias that expands to a merge and is invoked by its own name (`gh mm 8`) is
 not visible to a text detector; defining one is what the alias rule denies.
-Known residual: BOTH the program word AND the verb shell-computed (or a `bash -c`
-fed from a variable holding both), or a computed merge path such as
-`gh api -X PUT "$U"`, is undecidable by text and is not detected;
+Known residual, exactly two shapes: BOTH the program word AND the verb
+shell-computed (or a `bash -c` fed from a variable holding both), or a computed
+merge path such as `gh api -X PUT "$U"`; each is undecidable by text and is not detected;
 the structural backstop (a gh- or credential-level merge gate) is HIMMEL-3945.
 Fail closed also for the nested sources: `scripts/lib/cr-merge-gate.sh` returns 1
 (so the hook's load check denies) when one of its five helpers is missing, and the
