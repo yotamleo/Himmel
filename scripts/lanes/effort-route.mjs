@@ -21,7 +21,7 @@ export function recommend(record, cfg) {
     ({ action, effort, review, suggest_tier_design: action === 'plan-first', reason });
   const { sigma, mean_seq: mean } = record ?? {};
   const failed = record?.dod?.failed ?? [];
-  if (!Number.isFinite(sigma) || !Number.isFinite(mean)) return out('plan-first', null, false, 'record has no usable sigma/mean');
+  if (!Number.isFinite(sigma) || !Number.isFinite(mean) || sigma < 0 || mean < 0) return out('plan-first', null, false, 'record has no usable sigma/mean');
   if (record.dod?.passed === false) return out('plan-first', null, false, `estimate DoD refused (${failed.join(', ') || 'unspecified'})`);
   if (sigma >= cfg.plan_first_sigma_gte) return out('plan-first', null, false, `sigma ${sigma} >= ${cfg.plan_first_sigma_gte}: plan-first or split, no implementation leg`);
   if (record.g1 === 'yes') return out('implement', 'high', true, 'G1 work: high effort plus independent review');

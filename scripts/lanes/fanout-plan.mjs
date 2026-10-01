@@ -103,7 +103,7 @@ export function buildFanoutPlan(items, liveLanes) {
     // tool's model param would reject verbatim (codex CR, HIMMEL-1829 bundle
     // round).
     const entry = { id, type, destructive, lane: laneId, model: laneId, label: lane.label, effort: item?.effort || 'medium', why: item?.why || '' };
-    if (rec && rec.action === 'implement') Object.assign(entry, { recommended_effort: rec.effort, review: rec.review, advisory: describe(rec) });
+    if (rec) Object.assign(entry, { recommended_effort: rec.effort, review: rec.review, advisory: describe(rec) });
     plan.push(entry);
   }
   return { plan, errors };

@@ -77,3 +77,16 @@ test('fanout: a plan-first estimate does not refuse non-implementation items', (
   const { errors } = buildFanoutPlan([{ id: 'R', type: 'reasoning', estimate: FIX.too_uncertain.record }], LIVE);
   assert.deepEqual(errors, []);
 });
+
+test('fanout: a plan-first estimate on a non-implementation item still surfaces the advisory', () => {
+  const { plan } = buildFanoutPlan([{ id: 'R', type: 'reasoning', estimate: FIX.too_uncertain.record }], LIVE);
+  assert.match(plan[0].advisory, /plan-first/);
+  assert.equal(plan[0].recommended_effort, null);
+});
+
+test('negative sigma or mean is an unusable record, never an implement recommendation', () => {
+  for (const bad of [{ sigma: -0.5 }, { mean_seq: -1 }]) {
+    const r = recommend({ ...FIX.small_sure.record, ...bad }, CFG);
+    assert.equal(r.action, 'plan-first');
+  }
+});
