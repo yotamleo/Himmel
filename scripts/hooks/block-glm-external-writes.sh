@@ -2074,7 +2074,12 @@ gu_blunt=0
 case $cmd_dq in
     *git*) case $cmd_dq in *insteadof*) gu_blunt=1 ;; esac ;;
 esac
-gu_total=$(( $(cmd_lc=$cmd_dq count_cmd "$gu_shape") + gu_blunt )); gu_allowed=0
+# Never `cmd_lc=$cmd_dq count_cmd`: a prefix assignment exports the decoded
+# text into grep's environment; past ~43 KB that is E2BIG, which `|| true`
+# reads as zero matches (fail-open vs main). Swap in-shell instead.
+_s=$cmd_lc; cmd_lc=$cmd_dq; gu_dq=$(count_cmd "$gu_shape"); cmd_lc=$_s
+gu_total=$(count_cmd "$gu_shape"); [ "$gu_dq" -gt "$gu_total" ] && gu_total=$gu_dq
+gu_total=$(( gu_total + gu_blunt )); gu_allowed=0
 gh_total=$(count_cmd "$gh_shape"); gh_allowed=$(count_cmd "$gh_allow")
 net_total=$(count_cmd "$net_shape"); net_allowed=0
 

@@ -184,8 +184,12 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
     case $cmd_dq in
         *git*) case $cmd_dq in *insteadof*) gu_blunt=1 ;; esac ;;
     esac
-    if [ "$gu_blunt" -gt 0 ] ||
-       [ "$(cmd_lc=$cmd_dq count_cmd "$gu_shape")" -gt 0 ]; then
+    # Never `cmd_lc=$cmd_dq count_cmd`: a prefix assignment exports the decoded
+    # text into grep's environment, and past ~43 KB that is E2BIG, which
+    # `|| true` reads as zero matches (fail-open vs main). Swap in-shell instead.
+    gu_dq=0; _s=$cmd_lc; cmd_lc=$cmd_dq; gu_dq=$(count_cmd "$gu_shape"); cmd_lc=$_s
+    if [ "$gu_blunt" -gt 0 ] || [ "$gu_dq" -gt 0 ] ||
+       [ "$(count_cmd "$gu_shape")" -gt 0 ]; then
         deny_ext "rewriting a git remote / push URL is refused (external-write class)."
     fi
     if [ "$(count_cmd "$gh_shape")" -gt "$(count_cmd "$gh_allow")" ]; then
