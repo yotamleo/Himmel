@@ -103,6 +103,22 @@ python3 "$tool" version --in "$td/ver-empty.json" >"$td/ve.json" 2>"$td/ve.err";
 [ "$rc" -ne 0 ] && grep -q "no ticket records" "$td/ve.err" && ok "empty list -> clear error" || bad "empty list: rc=$rc"
 
 # config: no model number lives in code
-if grep -nE '0\.681|0\.85|1\.2816|3992|20000' "$tool" >/dev/null; then bad "model constant hard-coded in effort_assess.py"; else ok "no model constants in code"; fi
+grep -qE '0\.681|0\.85|1\.2816|3992|20000' "$tool"; grc=$?
+case "$grc" in
+  1) ok "no model constants in code" ;;
+  0) bad "model constant hard-coded in effort_assess.py" ;;
+  *) bad "model-constant check could not read effort_assess.py (grep rc=$grc)" ;;
+esac
+
+# blank --scope-file does not satisfy scope_files; malformed version numbers are refused (CR round 2)
+blank=(--low S --high S --g1 no --deps none --scope-file "" --red "test-x fails first" --goal G2 --alternative "keep midpoint")
+python3 "$tool" ticket "${blank[@]}" >"$td/bl.json" 2>"$td/bl.err"; rc=$?
+[ "$rc" -ne 0 ] && grep -q "scope_files" "$td/bl.err" && ok "blank scope-file fails scope_files" || bad "blank scope-file accepted (rc=$rc)"
+echo '[{"median_seq": -1, "sigma": 0.45}]' >"$td/ver-neg.json"
+python3 "$tool" version --in "$td/ver-neg.json" >/dev/null 2>"$td/vn.err"; rc=$?
+[ "$rc" -eq 1 ] && grep -q "invalid record" "$td/vn.err" && ok "negative median -> clean refusal" || bad "negative median: rc=$rc"
+echo '[{"median_seq": 1.0}]' >"$td/ver-miss.json"
+python3 "$tool" version --in "$td/ver-miss.json" >/dev/null 2>"$td/vm.err"; rc=$?
+[ "$rc" -eq 1 ] && grep -q "invalid record" "$td/vm.err" && ok "missing sigma -> clean refusal" || bad "missing sigma: rc=$rc"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

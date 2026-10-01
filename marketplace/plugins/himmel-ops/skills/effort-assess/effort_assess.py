@@ -51,7 +51,7 @@ def dod(cfg, a, median, sigma):
     """Estimate DoD checklist: {item: passed}. A refused estimate lists every failed item."""
     order, rule = cfg["size_order"], cfg["dod"]
     c = {
-        "scope_files": bool(a.scope_file),
+        "scope_files": any(f.strip() for f in a.scope_file),
         "red": bool((a.red or "").strip()),
         "g1_flag": a.g1 in ("yes", "no"),
         "deps": bool((a.deps or "").strip()),
@@ -118,6 +118,17 @@ def version(cfg, a):
     if refused:
         sys.stderr.write("effort-assess: REFUSED records in version input (index: failed DoD items): %s\n" % "; ".join(
             "%d: %s" % (i, ", ".join(rows[i]["dod"].get("failed", []))) for i in refused))
+        return 1
+    def valid(r):
+        try:
+            m, s = float(r["median_seq"]), float(r["sigma"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return math.isfinite(m) and m > 0 and math.isfinite(s) and s >= 0
+    invalid = [i for i, r in enumerate(rows) if not valid(r)]
+    if invalid:
+        sys.stderr.write("effort-assess: invalid record(s) at index %s: need finite median_seq > 0 and sigma >= 0\n"
+                         % ", ".join(map(str, invalid)))
         return 1
     mean = var = 0.0
     for r in rows:
