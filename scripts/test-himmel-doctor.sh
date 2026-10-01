@@ -178,6 +178,10 @@ export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
 # skip; dedicated C44 cases override it per invocation with their own stub.
 export HIMMEL_DOCTOR_SKILL_INDEX_QMD="$FAKEROOT/no-such-skill-qmd"
 
+# Same for C46 (HIMMEL-4037): never run the operator's real `claude plugin list`;
+# an absent seam is an INFO skip, dedicated C46 cases point it at a stub.
+export HIMMEL_DOCTOR_CLAUDE_BIN="$FAKEROOT/no-such-claude"
+
 # Keep unrelated cases from scanning this checkout's own .mcp.json files (and the
 # operator's generated mcp-profiles) for C41 (HIMMEL-2762): point the scan root at
 # an empty dir. HOME is redirected per case, so ~/.claude.json is already hermetic.
@@ -5137,6 +5141,97 @@ if grepq "$out" 'OK   C43-rtk-hook' && ! grepq "$out" 'WARN C43-rtk-hook'; then
     pass "C43 no hooks -> OK"
 else
     fail "C43 no hooks -> $(printf '%s' "$out" | grep -A1 C43)"
+fi
+rm -rf "$t"
+
+# --- C46 (HIMMEL-4037): enabledPlugins true for a plugin that is not installed -
+echo "== C46: enabled-but-not-installed plugin -> WARN naming the file =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-missing.XXXXXX")"; mkdir -p "$t/claude" "$t/home"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "enabledPlugins": { "atlassian@claude-plugins-official": true, "kept@himmel": true, "off@himmel": false } }
+EOF
+cat > "$t/claude-stub" <<'EOF'
+#!/usr/bin/env bash
+echo '[{"id":"kept@himmel","scope":"user","enabled":true}]'
+EOF
+chmod +x "$t/claude-stub"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F 'atlassian@claude-plugins-official' && grepq "$out" -F "$t/claude/settings.json"; then
+    c46="$(printf '%s' "$out" | grep -F 'C46-plugin-enabled-missing')"
+    # only the missing one is named; installed (kept) and disabled (off) are not
+    if [[ "$c46" == *kept@himmel* || "$c46" == *off@himmel* ]]; then fail "C46 names a plugin that is installed or disabled: $c46"; else
+    pass "C46 enabled-but-missing -> WARN"; fi
+else
+    fail "C46 enabled-but-missing -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+rm -rf "$t"
+
+echo "== C46: every enabled plugin installed -> OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-ok.XXXXXX")"; mkdir -p "$t/claude" "$t/home"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "enabledPlugins": { "kept@himmel": true, "atlassian@claude-plugins-official": false } }
+EOF
+cat > "$t/claude-stub" <<'EOF'
+#!/usr/bin/env bash
+echo '[{"id":"kept@himmel","scope":"user","enabled":true}]'
+EOF
+chmod +x "$t/claude-stub"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
+    pass "C46 all installed -> OK"
+else
+    fail "C46 all installed -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+rm -rf "$t"
+
+echo "== C46: empty plugin list -> every enabled entry WARNs; failing list -> INFO skip =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-empty.XXXXXX")"; mkdir -p "$t/claude" "$t/home"
+echo '{ "enabledPlugins": { "atlassian@claude-plugins-official": true } }' > "$t/claude/settings.json"
+printf '#!/usr/bin/env bash\necho "[]"\n' > "$t/claude-stub"; chmod +x "$t/claude-stub"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$t/claude-fail"; chmod +x "$t/claude-fail"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F 'atlassian@claude-plugins-official'; then
+    pass "C46 empty list -> WARN"
+else
+    fail "C46 empty list -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-fail" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
+    pass "C46 failing list -> INFO skip"
+else
+    fail "C46 failing list -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+printf '#!/usr/bin/env bash\nexit 0\n' > "$t/claude-blank"; chmod +x "$t/claude-blank"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-blank" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
+    pass "C46 blank list output -> INFO skip"
+else
+    fail "C46 blank list output -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+echo '{ not json' > "$t/claude/settings.json"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C46-plugin-enabled-missing' && grepq "$out" -F "$t/claude/settings.json" && ! grepq "$out" 'OK   C46-plugin-enabled-missing'; then
+    pass "C46 unparseable settings -> INFO naming the file, not OK"
+else
+    fail "C46 unparseable settings -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+echo '{ "enabledPlugins": { "atlassian@claude-plugins-official": true } }' > "$t/claude/settings.local.json"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F 'unparseable, not scanned' && grepq "$out" -F "$t/claude/settings.json"; then
+    pass "C46 WARN also names an unparseable file it could not scan"
+else
+    fail "C46 WARN + unparseable -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+rm -rf "$t"
+
+echo "== C46: claude not resolvable -> INFO skip =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-noclaude.XXXXXX")"; mkdir -p "$t/claude" "$t/home"
+echo '{ "enabledPlugins": { "x@y": true } }' > "$t/claude/settings.json"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
+    pass "C46 no claude -> INFO skip"
+else
+    fail "C46 no claude -> $(printf '%s' "$out" | grep -A1 C46)"
 fi
 rm -rf "$t"
 
