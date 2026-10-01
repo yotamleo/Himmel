@@ -3241,7 +3241,10 @@ check_c46_plugin_enabled_missing() {
     # A failed or non-array listing is a skip; a valid EMPTY array is a real
     # answer (nothing installed, so every enabled entry is missing).
     local list_json installed
-    if ! list_json="$("$bin" plugin list --json 2>/dev/null)" || [ -z "$list_json" ] || ! installed="$(printf '%s' "$list_json" | jq -r 'if type == "array" then .[].id // empty else error("not an array") end' 2>/dev/null | sort -u)"; then
+    # Scope-exact (HIMMEL-4046): an install counts only if it applies to this
+    # checkout, i.e. user scope (no projectPath) or a project/local install whose
+    # projectPath is this checkout. An install for another project does not.
+    if ! list_json="$("$bin" plugin list --json 2>/dev/null)" || [ -z "$list_json" ] || ! installed="$(printf '%s' "$list_json" | jq -r --arg root "$REPO_ROOT" 'if type == "array" then .[] | select((.projectPath // null) == null or .projectPath == $root) | .id // empty else error("not an array") end' 2>/dev/null | sort -u)"; then
         emit INFO C46-plugin-enabled-missing "'claude plugin list --json' failed or was not a JSON array -- scan skipped"
         return
     fi
