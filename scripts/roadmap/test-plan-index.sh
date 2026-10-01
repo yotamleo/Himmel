@@ -148,6 +148,24 @@ r="$(run --check 2>&1)"; rc=$?
 r="$(run --refresh 2>&1)"; contains "missing docs: refresh rebuilds" "$r" "rebuilt"
 [ -f "$out/docs/HIMMEL-111.md" ] && pass "missing docs: restored" || fail "docs not restored"
 
+# one deleted generated doc with a kept key is stale, and a refresh restores it (HIMMEL-4055)
+rm -f "$out/docs/HIMMEL-222.md"
+r="$(run --check 2>&1)"; rc=$?
+[ "$rc" != 0 ] && pass "one doc deleted: --check stale despite kept key" || fail "--check fresh with a doc deleted"
+r="$(run --refresh 2>&1)"; contains "one doc deleted: refresh rebuilds" "$r" "rebuilt"
+[ -f "$out/docs/HIMMEL-222.md" ] && pass "one doc deleted: restored" || fail "deleted doc not restored"
+r="$(run --check 2>&1)"; contains "after restore: fresh again" "$r" "fresh"
+
+# a changed generator makes the docs stale even when no input changed (HIMMEL-4055)
+mkdir -p "$W/gen"; cp "$HERE/plan-index.sh" "$HERE/plan_docs.py" "$W/gen/"
+grun() { QMD_CALLS="$W/gen-calls" ROADMAP_QMD_BIN="$W/qmd" bash "$W/gen/plan-index.sh" "$@" --plan-dir "$plan" --out "$W/outg" --watch "$mir"; }
+grun --refresh >/dev/null 2>&1
+r="$(grun --check 2>&1)"; contains "generator unchanged: fresh" "$r" "fresh"
+printf '\n# generator edited\n' >> "$W/gen/plan_docs.py"
+r="$(grun --check 2>&1)"; rc=$?
+[ "$rc" != 0 ] && pass "generator changed: --check stale" || fail "--check fresh after the generator changed"
+r="$(grun --refresh 2>&1)"; contains "generator changed: refresh rebuilds" "$r" "rebuilt"
+
 # a held lock refuses a concurrent refresh
 mkdir "$out/.lock"; echo seven >> "$mir/HIMMEL-111.md"
 r="$(run --refresh 2>&1)"; rc=$?

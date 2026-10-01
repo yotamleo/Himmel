@@ -10,7 +10,7 @@
 # fleet manifest. Their size+mtime joins the plan files' content hashes in the
 # change key. --out defaults to ~/.himmel/state/roadmap-plan (outside any repo or
 # vault; docs land in <out>/docs, the graphify graph.json (HIMMEL-4050) in
-# <out>/graph.json, the key in <out>/.fp). The key is written ONLY
+# <out>/graph.json, the key in <out>/.fp, the doc-name manifest in <out>/.docs). The key is written ONLY
 # after the rebuild (docs AND graph: a failed emit fails the refresh) and the qmd
 # register+embed both succeed, so a failed run is retried next time; a missing or failing qmd exits non-zero. ROADMAP_QMD_BIN
 # overrides the qmd binary (test seam).
@@ -42,9 +42,13 @@ fi
 
 want="$(python3 "$HERE/plan_docs.py" --plan-dir "$plan" --emit-fp ${watches[@]+"${watches[@]}"})"
 have="$(cat "$out/.fp" 2>/dev/null || true)"
+# manifest = hash of the generated doc names, recorded beside .fp after a rebuild (one deleted doc changes it)
+docs_manifest() { (cd "$out/docs" 2>/dev/null && find . -mindepth 1 | LC_ALL=C sort | sha256sum) || true; }
 
-# fresh = the inputs match AND the generated docs and graph.json still exist (a deleted docs dir or graph with a kept key is stale)
-fresh=0; [ "$want" = "$have" ] && [ -d "$out/docs" ] && [ -f "$out/graph.json" ] && fresh=1
+# fresh = the inputs (the generator included, via plan_docs.py's fingerprint) match AND graph.json and exactly the recorded docs still exist
+fresh=0
+if [ "$want" = "$have" ] && [ -d "$out/docs" ] && [ -f "$out/graph.json" ] \
+    && [ "$(docs_manifest)" = "$(cat "$out/.docs" 2>/dev/null || true)" ]; then fresh=1; fi
 if [ "$mode" = check ]; then
     if [ "$fresh" = 1 ]; then echo "plan-index: fresh"; exit 0; fi
     echo "plan-index: stale"; exit 1
@@ -76,5 +80,6 @@ fi
 # update rescans the files (embed alone only embeds what the index already knows)
 "$qmd" update || { echo "plan-index: qmd update failed" >&2; exit 1; }
 "$qmd" embed -c "$COLLECTION" || { echo "plan-index: qmd embed failed" >&2; exit 1; }
+docs_manifest > "$out/.docs"
 printf '%s\n' "$want" > "$out/.fp"
 echo "plan-index: rebuilt"
