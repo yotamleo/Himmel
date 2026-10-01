@@ -121,7 +121,7 @@ cmd_arm() {
         esac
     done
     case "$interval" in ''|*[!0-9]*) die "--interval-min must be an integer" ;; esac
-    [ "$interval" -ge 1 ] && [ "$interval" -le 59 ] || die "--interval-min must be 1..59"
+    if [ "$interval" -lt 1 ] || [ "$interval" -gt 59 ]; then die "--interval-min must be 1..59"; fi
     # A tick shorter than the grace window cannot confirm a death any sooner,
     # and one shorter than the tick timeout could overlap the previous tick.
     [ $((interval * 60)) -ge "$GRACE_SECS" ] || die "--interval-min $interval is shorter than RECONCILE_GRACE_SECS=${GRACE_SECS}s"

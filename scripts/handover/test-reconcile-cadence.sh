@@ -37,7 +37,7 @@ assert_file_contains() {
 
 TMP="$(mktemp -d -t reconcile-cadence.XXXXXX)" || { echo "FAIL: mktemp"; exit 1; }
 SLEEPER_PID=""
-# shellcheck disable=SC2329  # invoked by the EXIT trap below.
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below.
 cleanup() {
     [ -n "$SLEEPER_PID" ] && kill "$SLEEPER_PID" 2>/dev/null
     rm -rf "$TMP"
