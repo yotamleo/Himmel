@@ -381,6 +381,7 @@ grep -q "below the floor" "$WORK/out.txt" || { echo "FAIL: no below-floor messag
 [ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude below floor"; FAILS=$((FAILS+1)); }
 printf '{"data":{"total_credits":21,"total_usage":18}}' > "$BIN/credits.json"
 t "credit exactly 3.00 at floor launches" 0
+# shellcheck disable=SC2016  # literal $ in the expected text
 grep -q 'remaining metered credit: \$3.00' "$WORK/out.txt" || { echo "FAIL: no credit line at floor"; FAILS=$((FAILS+1)); }
 OPENROUTER_MIN_CREDIT_USD=5 t "env floor 5 refuses a 3.00 balance" 5
 OPENROUTER_MIN_CREDIT_USD=1 t "env floor 1 admits a 3.00 balance" 0
@@ -410,6 +411,7 @@ t "key with no limit (null) admits" 0
 printf '{"data":{"limit":50,"limit_remaining":19.5}}' > "$BIN/key.json"
 printf '{"data":{"total_credits":21,"total_usage":1}}' > "$BIN/credits.json"
 t "smaller of credit 20.00 and key 19.50 reported" 0
+# shellcheck disable=SC2016  # literal $ in the expected text
 grep -q 'effective balance \$19.50 (key limit_remaining)' "$WORK/out.txt" || { echo "FAIL: effective balance line missing"; FAILS=$((FAILS+1)); }
 
 # --- T10: claude flags pass through verbatim; leading --reseed is consumed
