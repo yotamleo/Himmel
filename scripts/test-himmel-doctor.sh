@@ -5215,6 +5215,13 @@ if grepq "$out" 'INFO C46-plugin-enabled-missing' && grepq "$out" -F "$t/claude/
 else
     fail "C46 unparseable settings -> $(printf '%s' "$out" | grep -A1 C46)"
 fi
+echo '{ "enabledPlugins": { "atlassian@claude-plugins-official": true } }' > "$t/claude/settings.local.json"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F 'unparseable, not scanned' && grepq "$out" -F "$t/claude/settings.json"; then
+    pass "C46 WARN also names an unparseable file it could not scan"
+else
+    fail "C46 WARN + unparseable -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
 rm -rf "$t"
 
 echo "== C46: claude not resolvable -> INFO skip =="

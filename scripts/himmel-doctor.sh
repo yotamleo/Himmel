@@ -3224,6 +3224,10 @@ check_c44_skill_index() {
 # source is findable. Scopes read: user (+ local) under CLAUDE_DIR and this
 # checkout's project/local files. ponytail: parent-directory .claude/ files
 # above the checkout are not scanned, add them if one ever bites.
+# ponytail: each file is scanned on its own, so a true entry that a
+# higher-precedence file overrides to false still WARNs (names the stale
+# source); precedence-resolved reporting is not built, add it if the noise
+# bites.
 # HIMMEL_DOCTOR_CLAUDE_BIN (test seam, mirrors C44's): the claude executable
 # that answers `plugin list --json`; a missing one is an INFO skip.
 check_c46_plugin_enabled_missing() {
@@ -3254,6 +3258,7 @@ check_c46_plugin_enabled_missing() {
         done <<< "$ids"
     done
     if [ "$n" -gt 0 ]; then
+        [ -z "$bad" ] || detail="$detail (unparseable, not scanned:$bad)"
         emit WARN C46-plugin-enabled-missing "$n plugin(s) enabled but not installed:$detail" "set them false in the named file (or 'claude plugin install <id>'); /plugin Errors tab reports the same"
     elif [ -n "$bad" ]; then
         emit INFO C46-plugin-enabled-missing "could not parse enabledPlugins in:$bad scan incomplete"
