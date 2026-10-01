@@ -3047,6 +3047,13 @@ check_both "85e fromW: cd primary || ( echo a; cd wt ); echo x > a.txt denies (n
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || ( echo a; cd $FIX/wt ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "85f control: cd wt || ( echo no; exit 1 ); echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || ( echo no; exit 1 ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 85g (codex-1 round 3): if / for compound commands after the ||.
+check_both "85g fromW: cd primary || if true; then :; cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || if true; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85h fromW: cd primary || for i in 1; do :; cd wt; done; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || for i in 1; do :; cd $FIX/wt; done; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85i control: cd wt || if true; then exit 1; fi; echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || if true; then exit 1; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 # 85c (control): the flag ends with the group, so a later cd is judged normally.
 check_both "85c control: cd wt || { echo no; exit 1; }; echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || { echo no; exit 1; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"

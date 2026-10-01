@@ -513,8 +513,9 @@ _bwimc_split_emit() {
         local _fw="${1#"${1%%[![:space:]]*}"}"
         _fw="${_fw%%[[:space:]]*}"
         case "$_fw" in
-            '{') _bwimc_sp_grp=$((_bwimc_sp_grp+1)) ;;
-            '}') [ "$_bwimc_sp_grp" -gt 0 ] && _bwimc_sp_grp=$((_bwimc_sp_grp-1)) ;;
+            # `case` is not tracked: its `pat)` arms would unbalance the ( ) count.
+            '{'|if|while|until|for|select) _bwimc_sp_grp=$((_bwimc_sp_grp+1)) ;;
+            '}'|fi|done) [ "$_bwimc_sp_grp" -gt 0 ] && _bwimc_sp_grp=$((_bwimc_sp_grp-1)) ;;
         esac
         [ "$_bwimc_sp_grp" -gt 0 ] || _bwimc_sp_pipe=0
     else
