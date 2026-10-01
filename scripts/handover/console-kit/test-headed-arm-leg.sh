@@ -2926,6 +2926,9 @@ rc=0; relay41="$(bash "$RELAY41" "$cdoc41" HIMMEL-4014-ask 2>&1)" || rc=$?
 check "41f relay: answered -> exit 0" "$rc" "0"
 contains "41f relay text carries the CONSULT-ANSWER header" "$relay41" "CONSULT-ANSWER HIMMEL-4014-ask $cdoc41"
 contains "41f relay text carries the consult's answer" "$relay41" "use easing X, see design.md:12"
+bash "$HERE/append-results.sh" "$cdoc41" "ANSWER second part, still writing" >/dev/null 2>&1 || true
+rc=0; bash "$RELAY41" "$cdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
+check "41f relay: WRAPPED before the last ANSWER -> exit 3 (partial)" "$rc" "3"
 bdoc41="$tmp/consult-blocked41.md"; printf '# consult\n\n## Results\n' > "$bdoc41"
 bash "$HERE/append-results.sh" "$bdoc41" "BLOCKED — path missing" >/dev/null 2>&1 || true
 rc=0; bash "$RELAY41" "$bdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?

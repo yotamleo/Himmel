@@ -22,7 +22,9 @@ esac
 
 # Bullets look like `- HH:MM ANSWER <text>` (append-results.sh stamps the time).
 answers="$(sed -n -E 's/^- [0-9]{2}:[0-9]{2} ANSWER[[:space:]]*(.*)$/\1/p' "$doc")"
-if [ -z "$answers" ] || ! grep -q -E '^- [0-9]{2}:[0-9]{2} WRAPPED' "$doc"; then
+# Complete = a WRAPPED bullet AFTER the last ANSWER bullet (line order in the doc).
+done_after="$(awk '/^- [0-9][0-9]:[0-9][0-9] ANSWER/ {a=NR} /^- [0-9][0-9]:[0-9][0-9] WRAPPED/ {w=NR} END {print (a && w > a) ? "yes" : "no"}' "$doc")"
+if [ -z "$answers" ] || [ "$done_after" != "yes" ]; then
     # An ANSWER with no WRAPPED yet is a partial answer: still running.
     if [ -z "$answers" ] && grep -q -E '^- [0-9]{2}:[0-9]{2} BLOCKED' "$doc"; then
         echo "consult-relay: the consult ended BLOCKED with no answer: $doc" >&2
