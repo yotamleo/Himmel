@@ -1504,10 +1504,11 @@ _settings_leaf_candidates() {
             case "$rest" in *'}'*) pat="$pre*${rest#*'}'}" ;; *) pat="$pre*$rest" ;; esac
         done
         pat=${pat//\}/*}
-        # A leaf of wildcards only (`.claude/*`) spells no settings file; it is
-        # the directory glob the older checks already judge (HIMMEL-3938: it
-        # false-denied `unzip -l a.zip .claude/*`, test 145).
-        case "$pat" in *[A-Za-z0-9]*) : ;; *) pat='' ;; esac
+        # A leaf of `*` only (`.claude/*`) is the directory glob the older
+        # checks already judge (HIMMEL-3938: it false-denied
+        # `unzip -l a.zip .claude/*`, test 145). Any other wildcard leaf
+        # (`????????.????`) can spell a settings name and is matched below.
+        case "$pat" in *[!*]*) : ;; *) pat='' ;; esac
         case "$pat" in
             *[*?[]*)
                 for n in settings.json settings.local.json; do
@@ -1840,7 +1841,10 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                 --target-directory) tnext=1; continue ;;
                 -*)
                     if [ "${OPW[v]##*/}" = cp ]; then
-                        case "$w" in -t) tnext=1 ;; -[!-]*t?*) : ;; -t*) d=${w#-t} ;; esac
+                        # the first t of a short cluster takes the rest (or the next word)
+                        case "$w" in
+                            -[!-]*) case "${w#-}" in *t*) if [ -z "${w#*t}" ]; then tnext=1; else d=${w#*t}; fi ;; esac ;;
+                        esac
                     fi
                     continue
                     ;;
