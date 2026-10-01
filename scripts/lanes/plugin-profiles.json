@@ -61,17 +61,14 @@
   "catalog": [
     "telegram@claude-plugins-official",
     "frontend-design@claude-plugins-official",
-    "vercel@claude-plugins-official",
-    "huggingface-skills@claude-plugins-official",
-    "firecrawl@claude-plugins-official",
-    "chrome-devtools-mcp@claude-plugins-official",
     "gopls-lsp@claude-plugins-official",
     "rust-analyzer-lsp@claude-plugins-official",
     "mcp-server-dev@claude-plugins-official",
-    "atomic-agents@claude-plugins-official",
     "watch@claude-video",
     "lean-skills@himmel",
     "plannotator-effective-html@himmel",
+    "impeccable@himmel",
+    "ui-ux-pro-max@ui-ux-pro-max-skill",
     "context7@claude-plugins-official",
     "code-review@claude-plugins-official",
     "code-simplifier@claude-plugins-official",
@@ -91,7 +88,6 @@
     "agent-sdk-dev@claude-plugins-official",
     "hookify@claude-plugins-official",
     "playground@claude-plugins-official",
-    "atlassian@claude-plugins-official",
     "obsidian@obsidian-skills",
     "qmd@qmd",
     "claude-obsidian@himmel",
@@ -114,9 +110,12 @@
       "contextBudget": 50000
     },
     "design": {
-      "_comment": "HIMMEL-3064: plannotator-effective-html@himmel is deliberately NOT in the always-on `user` tier -- its 6 skills (design-artifact, html, html-diagram, html-plan, html-prototype, html-wireframe) cost ~630 tok of session-start listing every session, and across 1628 local transcripts it was invoked exactly once. Design/UI work opts in via this profile instead.",
+      "_comment": "HIMMEL-3064: plannotator-effective-html@himmel is deliberately NOT in the always-on `user` tier -- its 6 skills (design-artifact, html, html-diagram, html-plan, html-prototype, html-wireframe) cost ~630 tok of session-start listing every session, and across 1628 local transcripts it was invoked exactly once. Design/UI work opts in via this profile instead. HIMMEL-4012: the profile now enables the full design pack (plannotator-effective-html, frontend-design, ui-ux-pro-max, impeccable) - it shipped with plannotator only and its test pinned exactly that, so a design leg ran with almost no design tooling. design legs also launch on the 1m context (headed-arm-leg.sh, operator ruling 2026-10-01).",
       "enable": [
-        "plannotator-effective-html@himmel"
+        "plannotator-effective-html@himmel",
+        "frontend-design@claude-plugins-official",
+        "ui-ux-pro-max@ui-ux-pro-max-skill",
+        "impeccable@himmel"
       ],
       "contextBudget": 50000
     },

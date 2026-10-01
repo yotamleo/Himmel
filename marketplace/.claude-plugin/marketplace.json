@@ -135,6 +135,21 @@
         "url": "https://github.com/plannotator"
       },
       "homepage": "https://github.com/plannotator/effective-html"
+    },
+    {
+      "name": "impeccable",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/pbakaus/impeccable.git",
+        "path": "plugin",
+        "ref": "skill-v4.3.1"
+      },
+      "description": "[pbakaus/impeccable, vendor + attribution only, no carried delta] Design fluency for frontend work: 1 skill with 23 commands and 4 agents. Upstream's own marketplace.json declares source ./plugin, so the entry points at that subdirectory (the atomic-agents entry in claude-plugins-official uses the same url + path shape). Sourced via an explicit HTTPS git url (NOT the `github` shorthand, HIMMEL-549 / HIMMEL-2837) and pinned to an immutable tag per himmel supply-chain policy (HIMMEL-3069). Enabled only by the `design` lane profile (HIMMEL-4012).",
+      "author": {
+        "name": "Paul Bakaus",
+        "url": "https://github.com/pbakaus"
+      },
+      "homepage": "https://impeccable.style"
     }
   ]
 }
