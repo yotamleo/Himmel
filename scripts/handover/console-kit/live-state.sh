@@ -53,7 +53,7 @@ while [ "$#" -gt 0 ]; do
                 [A-Za-z0-9_.-]*=?*) ;;
                 *) usage; exit 2 ;;
             esac
-            case "$2" in *[[:space:]\`:]*) echo "live-state: $1 value must have no whitespace, backtick or colon: $2" >&2; exit 2 ;; esac
+            case "$2" in *[[:space:]\`:\\]*) echo "live-state: $1 value must have no whitespace, backtick, colon or backslash: $2" >&2; exit 2 ;; esac
             if [ "$1" = --nonce ]; then nonces="$nonces$2"$'\n'; else pids="$pids$2"$'\n'; fi
             shift 2 ;;
         *) usage; exit 2 ;;
@@ -106,7 +106,7 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 
-prose="$(printf '%s\n' "$old_block" | sed -E "s/^legs:[[:space:]]*//; s/$entry_re//g" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+prose="$(printf '%s\n' "$old_block" | sed -E "s/^legs:[[:space:]]*//; s/$entry_re//g" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//; s/^none$//; s/^none //')"
 if [ -n "$new_entries" ]; then new_line="legs: $new_entries$prose"; else new_line="legs: none${prose:+ $prose}"; fi
 new_line="$(printf '%s' "$new_line" | sed -E 's/ +$//')"
 

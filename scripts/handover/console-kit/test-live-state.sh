@@ -111,5 +111,22 @@ bash "$FM" add "$HANDOVER_DIR/b/HIMMEL-nextleg-Y-console.fleet.json" "$d1" >/dev
 bash "$SCRIPT" "$HANDOVER_DIR/b/HIMMEL-nextleg-Y-console.md" --nonce N61=x >/dev/null 2>&1; rc=$?
 check '7. a doc with no legs: line is refused' 1 "$rc"
 
+# 8. a backslash in a nonce is refused (awk -v would interpret it).
+before8="$(cat "$con")"
+bash "$SCRIPT" "$con" --nonce 'N61=a\nb' >/dev/null 2>&1; rc=$?
+check '8. a backslash in --nonce is refused' 2 "$rc"
+check '8. the refused run leaves the doc untouched' "$before8" "$(cat "$con")"
+
+# 9. the `none` placeholder is not carried into a rendered line.
+con9="$HANDOVER_DIR/b/HIMMEL-nextleg-Z-console.md"
+printf '# c\n\n## Live state\n\nlegs: none\nqueue: none\n' > "$con9"
+bash "$FM" add "${con9%.md}.fleet.json" "$d1" >/dev/null 2>&1
+bash "$SCRIPT" "$con9" --nonce N61=n9 --pid N61=9 >/dev/null 2>&1
+check '9. legs: none becomes the entries alone' 'legs: `N61:n9:tok-one:9`' "$(grep '^legs:' "$con9")"
+bash "$FM" remove "${con9%.md}.fleet.json" N61 >/dev/null 2>&1
+bash "$SCRIPT" "$con9" >/dev/null 2>&1
+bash "$SCRIPT" "$con9" >/dev/null 2>&1
+check '9. an empty render is a stable single none' 'legs: none' "$(grep '^legs:' "$con9")"
+
 [ "$t1" = tok-one ] || { echo "FAIL - setup: lock token [$t1]"; fails=$((fails+1)); }
 [ "$fails" -eq 0 ] && echo "PASS" || { echo "$fails FAILED"; exit 1; }
