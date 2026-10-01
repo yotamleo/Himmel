@@ -3,13 +3,17 @@
 # append-only (HIMMEL-3994). Joins two computations that used to live apart:
 #   1. per-session tokens   -- scripts/lib/bank-attribution.sh output (HIMMEL-2764)
 #   2. CR rounds / verdicts -- the CR critic ledger (scripts/cr/ledger-append.sh)
-# Both read local files and fail closed. The PR/CI join (gh) is a follow-up.
+# Both read local files and fail closed. A third, opt-in join (HIMMEL-4030)
+# adds PR/CI facts from gh when --repo is given; it fails closed too: any gh
+# failure aborts the WHOLE run before anything is appended, and a record never
+# stores null for an unknown fact.
 # into ONE record per ticket (schema: docs/internals/usage-records.md).
 #
 # Usage:
 #   usage-compute.sh [--projects <dir>] [--ledger <file>] [--store <dir>]
 #                    [--range KEY-a..KEY-b | --tickets K1,K2]
-#                    [--since <iso>] [--print]
+#                    [--since <iso>] [--repo OWNER/NAME [--gh <executable>]]
+#                    [--print]
 #
 # Default appends changed records to <store>/records.jsonl; --print writes the
 # records to stdout and touches no store. A record carries ids and numbers
@@ -33,6 +37,8 @@ TICKETS=""
 SINCE=""
 PRINT=0
 PROJECTS_SET=0
+REPO=""
+GH=""
 
 # one shared check: a value-taking flag must be followed by a non-empty value
 need_val() { [ -n "${2:-}" ] || die "$1 needs a non-empty value"; }
@@ -45,10 +51,21 @@ while [ $# -gt 0 ]; do
     --range)    need_val "$@"; RANGE="$2"; shift 2 ;;
     --tickets)  need_val "$@"; TICKETS="$2"; shift 2 ;;
     --since)    need_val "$@"; SINCE="$2"; shift 2 ;;
+    --repo)     need_val "$@"; REPO="$2"; shift 2 ;;
+    --gh)       need_val "$@"; GH="$2"; shift 2 ;;
     --print)    PRINT=1; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# The gh join needs an explicit repo (never inferred from the cwd) and a gh
+# that is ONE executable path (a path with a space is fine; arguments are not).
+if [ -n "$GH" ] && [ -z "$REPO" ]; then die "--gh needs --repo"; fi
+if [ -n "$REPO" ]; then
+  [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "--repo must be OWNER/NAME: $REPO"
+  [ -n "$GH" ] || GH="gh"
+  command -v "$GH" >/dev/null 2>&1 || die "gh not found or not executable (one path, no arguments): $GH"
+fi
 
 # An explicit input that is missing or unreadable fails closed before anything
 # is written; a default may be absent (noted, treated as empty).
@@ -169,10 +186,58 @@ jq -n -S --rawfile table "$WORK/bank.md" --slurpfile ledger "$WORK/ledger.jsonl"
   "$BASE_PROGRAM" > "$WORK/base.json"
 if [ -n "$TICKETS" ] && [ "$(jq '[.[] | select(.ticket | startswith("_") | not)] | length' "$WORK/base.json")" = 0 ]; then die "--tickets matched no session or CR row: $TICKETS"; fi
 
+# --- 3. PR/CI join (opt-in via --repo) ---------------------------------------
+# gh JSON for one call, or die: auth, network, rate limit, a wrong repo and a
+# bad --gh all land here, and nothing has been appended yet.
+gh_json() {
+  local out
+  if ! out="$("$GH" "$@" 2>"$WORK/gh.err")"; then
+    die "gh $1 $2 failed: $(head -c 200 "$WORK/gh.err" | tr '\n' ' ')"
+  fi
+  printf '%s' "$out"
+}
+
+# Sets PRJ and CIJ for ticket $1. Unknown never becomes a value: any failure or
+# unexpected shape dies, so a stored record is either complete or absent.
+# shellcheck disable=SC2016  # jq's own $vars
+join_ticket() {
+  local t="$1" prs mine branches b runs all="[]" n
+  prs="$(gh_json pr list -R "$REPO" --search "$t in:title" --state all --json number,state,title,headRefName --limit 100)"
+  jq -e 'type == "array" and all(.[]; (.number | type == "number") and (.state | IN("OPEN","CLOSED","MERGED")) and (.title | type == "string") and (.headRefName | type == "string" and length > 0 and (startswith("-") | not)))' <<<"$prs" >/dev/null 2>&1 \
+    || die "gh pr list returned an unexpected shape for $t"
+  [ "$(jq 'length' <<<"$prs")" -lt 100 ] || die "gh pr list hit its 100-row limit for $t; refusing a truncated join"
+  mine="$(jq -c --arg t "$t" '[.[] | select(.title | test("(^|[^A-Z0-9])" + $t + "($|[^0-9])"; "i"))]' <<<"$prs")"
+  if [ "$(jq 'length' <<<"$mine")" = 0 ]; then
+    PRJ='{"state":"none"}'; CIJ='{"state":"no-pr"}'; return 0
+  fi
+  PRJ="$(jq -c '{state: "found", numbers: ([.[].number] | sort), merged: ([.[] | select(.state == "MERGED")] | length), open: ([.[] | select(.state == "OPEN")] | length), closed: ([.[] | select(.state == "CLOSED")] | length)}' <<<"$mine")"
+  branches="$(jq -r '[.[].headRefName] | unique | .[]' <<<"$mine")"
+  while IFS= read -r b; do
+    runs="$(gh_json run list -R "$REPO" --branch "$b" --limit 100 --json databaseId,status,conclusion,createdAt,startedAt,updatedAt)"
+    jq -e 'type == "array" and all(.[]; (.databaseId | type == "number") and (.status | type == "string") and (.createdAt | type == "string") and (.updatedAt | type == "string") and (.startedAt == null or (.startedAt | type == "string")))' <<<"$runs" >/dev/null 2>&1 \
+      || die "gh run list returned an unexpected shape for $t on $b"
+    n="$(jq 'length' <<<"$runs")"
+    [ "$n" -lt 100 ] || die "gh run list hit its 100-row limit for $t on $b; refusing a truncated join"
+    all="$(jq -c --argjson r "$runs" '. + $r' <<<"$all")"
+  done <<<"$branches"
+  # secs counts completed runs only; startedAt excludes queue wait, createdAt is the
+  # recorded fallback when any completed run lacks it (ci.basis says which)
+  CIJ="$(jq -c 'unique_by(.databaseId) | [.[] | select(.status == "completed")] as $c
+    | (if ($c | length) == 0 then "none" elif all($c[]; .startedAt != null) then "startedAt" else "createdAt" end) as $b
+    | {state: "found", runs: 0, completed: ($c | length), basis: $b,
+       secs: ([$c[] | (.updatedAt | fromdateiso8601) - ((if $b == "startedAt" then .startedAt else .createdAt end) | fromdateiso8601)] | add // 0)}
+    | if .secs < 0 then error("negative ci secs") else . end' <<<"$all")" || die "cannot compute ci seconds for $t"
+  CIJ="$(jq -c --argjson n "$(jq 'unique_by(.databaseId) | length' <<<"$all")" '.runs = $n' <<<"$CIJ")"
+}
+
 # --- assemble final records + digest ----------------------------------------
 : > "$WORK/records.jsonl"
 for t in $(jq -r '.[].ticket' "$WORK/base.json"); do
   rec="$(jq -cS --arg t "$t" '.[] | select(.ticket == $t)' "$WORK/base.json")"
+  if [ -n "$REPO" ] && [ "${t#_}" = "$t" ]; then
+    join_ticket "$t"
+    rec="$(printf '%s' "$rec" | jq -cS --argjson pr "$PRJ" --argjson ci "$CIJ" '. + {pr: $pr, ci: $ci}')"
+  fi
   if command -v sha256sum >/dev/null 2>&1; then dg="$(printf '%s' "$rec" | sha256sum | cut -d' ' -f1)"
   else dg="$(printf '%s' "$rec" | shasum -a 256 | cut -d' ' -f1)"; fi
   printf '%s' "$rec" | jq -cS --arg d "$dg" '. + {digest: $d}' >> "$WORK/records.jsonl"

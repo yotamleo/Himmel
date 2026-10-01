@@ -2,14 +2,15 @@
 
 One append-only record per ticket answers "what did it cost and how many review
 rounds did it take". It joins two computations that previously lived apart and
-is computed once; consumers read the store, never transcript JSONL. The PR/CI
-join (`gh`) is deliberately not here: it is a follow-up that must fail closed
-by construction.
+is computed once; consumers read the store, never transcript JSONL. A third,
+opt-in join (PR and CI facts from `gh`, HIMMEL-4030) fails closed by
+construction; see "PR/CI join" below.
 
 | Input | Source |
 |---|---|
 | per-session tokens | `scripts/lib/bank-attribution.sh` output (HIMMEL-2764), reused not re-parsed |
 | CR rounds, verdicts, estimated critic tokens | the CR critic ledger (`scripts/cr/ledger-append.sh`) |
+| PR and CI facts (opt-in) | `gh pr list` / `gh run list`, only with `--repo` |
 
 ## Commands
 
@@ -52,6 +53,32 @@ outside the tree.
 | `digest` | sha256 of the record without this field |
 
 Numbers and ids only: the store never holds message text.
+
+## PR/CI join (`--repo OWNER/NAME [--gh <executable>]`)
+
+Opt-in: without `--repo` records carry no `pr`/`ci` and nothing calls gh. The
+repo is never inferred from the cwd; every call is `gh ... -R OWNER/NAME`. `--gh`
+is ONE executable path (default `gh`; a path with a space works, arguments do
+not). Real tickets only; `_console` and `_unattributed` get no `pr`/`ci`.
+
+| Field | Values |
+|---|---|
+| `pr` | `{state:"none"}` (no PR title names the ticket), or `{state:"found", numbers[], merged, open, closed}` |
+| `ci` | `{state:"no-pr"}`, or `{state:"found", runs, completed, secs, basis}` |
+
+A title matches a ticket only on the whole key (`HIMMEL-90019` is not
+`HIMMEL-9001`). `ci` covers the runs on every matching PR's head branch,
+deduped by run id. `secs` sums `updatedAt - startedAt` over **completed** runs,
+so queue wait and in-flight runs are excluded; if any completed run lacks
+`startedAt`, all use `createdAt` and `basis` says `createdAt` (`none` when no run
+completed). "No PR" (`no-pr`) is distinct from a PR with zero runs (`runs:0`).
+
+**Fail closed.** An unknown fact is never stored: gh missing, a non-zero gh
+(auth, network, rate limit, a wrong repo), malformed or unexpected JSON, a
+100-row truncation, or a negative duration aborts the WHOLE run with exit 1
+before anything is appended; the store, and every ticket's previous version,
+is untouched and the lock is released. `usage-read.sh` takes the same store
+lock, so it never reads a torn last line.
 
 ## Idempotency and append-only
 

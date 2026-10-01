@@ -26,6 +26,19 @@ done
 FILE="$STORE/records.jsonl"
 [ -f "$FILE" ] || { echo "usage-read: no store at $FILE" >&2; exit 1; }
 
+# Take the store lock that usage-compute.sh holds while it appends, so a read
+# never sees a torn last line. A store the reader cannot write has no writer
+# either, so it is read without the lock.
+if [ -w "$STORE" ]; then
+  LOCK="$STORE/.lock"; n=0
+  until mkdir "$LOCK" 2>/dev/null; do
+    n=$((n + 1)); [ "$n" -lt 120 ] || { echo "usage-read: store locked: $LOCK (remove it if no run is active)" >&2; exit 1; }
+    sleep 0.5
+  done
+  trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+  trap 'exit 130' INT TERM HUP
+fi
+
 # shellcheck disable=SC2016  # jq's own $vars
 jq -c --arg t "$TICKET" --argjson all "$ALL" -n '
   [inputs | select($t == "" or .ticket == $t)] as $rows

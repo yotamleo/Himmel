@@ -135,4 +135,107 @@ check "concurrent runs: lock released" "no" "$([ -d "$STORE2/.lock" ] && echo ye
 # 7. no message text anywhere in the output
 check "no transcript text leaks" "0" "$(grep -c 'SECRETSENTINEL' "$STORE/records.jsonl" || true)"
 
+# 8. PR/CI join (HIMMEL-4030): a stub gh, never the network. Fixtures are files
+# the stub prints; GHFAIL / GHWANT_REPO make it fail like auth or a wrong repo.
+STUB="$ROOT/stub"; mkdir -p "$STUB" "$ROOT/dir with space"
+cat > "$STUB/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+# logs every call; fails on GHFAIL or when -R is not GHWANT_REPO
+printf '%s\n' "$*" >> "$GHLOG"
+[ -z "${GHFAIL:-}" ] || { echo "gh: auth error" >&2; exit 4; }
+repo=""; prev=""; search=""; branch=""
+for a in "$@"; do
+  [ "$prev" != "-R" ] || repo="$a"
+  [ "$prev" != "--search" ] || search="$a"
+  [ "$prev" != "--branch" ] || branch="$a"
+  prev="$a"
+done
+[ "$repo" = "${GHWANT_REPO:-o/r}" ] || { echo "gh: repository not found: $repo" >&2; exit 1; }
+case "$1 $2" in
+  "pr list")  f="$GHFIX/pr-${search%% *}.json" ;;
+  "run list") f="$GHFIX/run-$(printf '%s' "$branch" | tr '/' '_').json" ;;
+  *) echo "stub: unexpected $*" >&2; exit 2 ;;
+esac
+if [ -f "$f" ]; then cat "$f"; else echo '[]'; fi
+STUBEOF
+chmod +x "$STUB/gh"; cp "$STUB/gh" "$ROOT/dir with space/gh"
+export GHLOG="$ROOT/gh.log"; : > "$GHLOG"
+GHFIX="$ROOT/fix"; export GHFIX; mkdir -p "$GHFIX"
+cat > "$GHFIX/pr-HIMMEL-9001.json" <<'J'
+[{"number":12,"state":"CLOSED","title":"[HIMMEL-9001] retry","headRefName":"feat/himmel-9001-retry"},
+ {"number":11,"state":"MERGED","title":"[HIMMEL-9001] thing","headRefName":"feat/himmel-9001-thing"},
+ {"number":13,"state":"OPEN","title":"[HIMMEL-90019] decoy","headRefName":"feat/himmel-90019-decoy"}]
+J
+cat > "$GHFIX/run-feat_himmel-9001-thing.json" <<'J'
+[{"databaseId":1,"status":"completed","conclusion":"success","createdAt":"2026-01-01T00:00:00Z","startedAt":"2026-01-01T00:00:10Z","updatedAt":"2026-01-01T00:01:10Z"},
+ {"databaseId":2,"status":"completed","conclusion":"failure","createdAt":"2026-01-01T00:02:00Z","startedAt":"2026-01-01T00:02:00Z","updatedAt":"2026-01-01T00:02:30Z"},
+ {"databaseId":3,"status":"in_progress","conclusion":"","createdAt":"2026-01-01T00:03:00Z","startedAt":"2026-01-01T00:03:00Z","updatedAt":"2026-01-01T00:03:05Z"}]
+J
+cat > "$GHFIX/run-feat_himmel-9001-retry.json" <<'J'
+[{"databaseId":1,"status":"completed","conclusion":"success","createdAt":"2026-01-01T00:00:00Z","startedAt":"2026-01-01T00:00:10Z","updatedAt":"2026-01-01T00:01:10Z"}]
+J
+jrun() { run --repo o/r --gh "$STUB/gh" "$@"; }
+J="$(jrun --print)"
+jrec="$(printf '%s\n' "$J" | jq -c 'select(.ticket=="HIMMEL-9001")')"
+check "pr facts (decoy HIMMEL-90019 excluded, numbers sorted)" '{"closed":1,"merged":1,"numbers":[11,12],"open":0,"state":"found"}' "$(printf '%s' "$jrec" | jq -cS .pr)"
+check "ci facts (runs deduped by id, secs from startedAt, in_progress not summed)" '{"basis":"startedAt","completed":2,"runs":3,"secs":90,"state":"found"}' "$(printf '%s' "$jrec" | jq -cS .ci)"
+check "no PR: pr is none" '{"state":"none"}' "$(printf '%s\n' "$J" | jq -c 'select(.ticket=="HIMMEL-9002")|.pr')"
+check "no PR: ci is no-pr, not zero runs" '{"state":"no-pr"}' "$(printf '%s\n' "$J" | jq -c 'select(.ticket=="HIMMEL-9002")|.ci')"
+check "pseudo-tickets carry no pr/ci" "null" "$(printf '%s\n' "$J" | jq -c 'select(.ticket=="_console")|.pr')"
+check "no --repo: records carry no pr/ci" "null/null" "$(run --print | jq -r 'select(.ticket=="HIMMEL-9001")|"\(.pr)/\(.ci)"')"
+mkdir -p "$ROOT/fix2"
+echo '[{"number":5,"state":"OPEN","title":"HIMMEL-9001 x","headRefName":"b"}]' > "$ROOT/fix2/pr-HIMMEL-9001.json"
+check "a PR with zero runs is runs:0, not no-pr" '{"basis":"none","completed":0,"runs":0,"secs":0,"state":"found"}' "$(GHFIX="$ROOT/fix2" jrun --print | jq -cS 'select(.ticket=="HIMMEL-9001")|.ci')"
+mkdir -p "$ROOT/fix3"
+echo '[{"number":6,"state":"OPEN","title":"HIMMEL-9001 y","headRefName":"b"}]' > "$ROOT/fix3/pr-HIMMEL-9001.json"
+echo '[{"databaseId":9,"status":"completed","conclusion":"success","createdAt":"2026-01-01T00:00:00Z","startedAt":null,"updatedAt":"2026-01-01T00:00:45Z"}]' > "$ROOT/fix3/run-b.json"
+check "missing startedAt falls back to createdAt and says so" '{"basis":"createdAt","completed":1,"runs":1,"secs":45,"state":"found"}' "$(GHFIX="$ROOT/fix3" jrun --print | jq -cS 'select(.ticket=="HIMMEL-9001")|.ci')"
+
+# the join fails closed: a failing gh writes nothing and leaves prior versions alone
+SJ="$ROOT/store-join"
+jrun --store "$SJ" >/dev/null
+hj="$(cksum < "$SJ/records.jsonl")"
+row $LEG false 2026-01-01T00:00:20.000Z r4 1 1 1 1 >> "$SLUG/$LEG.jsonl"   # input changed: a good run WOULD append
+frc() { rc=0; "$@" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
+check "gh auth failure exits non-zero" "1" "$(GHFAIL=1 frc jrun --store "$SJ")"
+check "wrong repo (gh error) exits non-zero" "1" "$(GHWANT_REPO=x/y frc jrun --store "$SJ")"
+check "missing gh exits non-zero" "1" "$(frc run --repo o/r --gh "$ROOT/no-such-gh" --store "$SJ")"
+check "gh failure left the store byte-identical" "$hj" "$(cksum < "$SJ/records.jsonl")"
+check "failed run released the lock" "no" "$([ -d "$SJ/.lock" ] && echo yes || echo no)"
+cp -R "$GHFIX" "$ROOT/fix-bad"
+echo 'not json' > "$ROOT/fix-bad/pr-HIMMEL-9001.json"
+check "malformed pr JSON aborts" "1" "$(GHFIX="$ROOT/fix-bad" frc jrun --store "$SJ")"
+echo '{"a":1}' > "$ROOT/fix-bad/pr-HIMMEL-9001.json"
+check "non-array pr JSON aborts" "1" "$(GHFIX="$ROOT/fix-bad" frc jrun --store "$SJ")"
+cp "$GHFIX/pr-HIMMEL-9001.json" "$ROOT/fix-bad/pr-HIMMEL-9001.json"
+echo '[{"databaseId":1}]' > "$ROOT/fix-bad/run-feat_himmel-9001-thing.json"
+check "run JSON missing fields aborts" "1" "$(GHFIX="$ROOT/fix-bad" frc jrun --store "$SJ")"
+check "every abort left the store byte-identical" "$hj" "$(cksum < "$SJ/records.jsonl")"
+SF="$ROOT/store-fresh"
+check "failed run on a fresh store" "1" "$(GHFAIL=1 frc jrun --store "$SF")"
+check "failed fresh run stored nothing" "no" "$([ -e "$SF/records.jsonl" ] && echo yes || echo no)"
+check "good run still appends after the aborts" "0" "$(frc jrun --store "$SJ")"
+
+# a --gh path with a space works; the repo is pinned whatever the cwd
+: > "$GHLOG"
+check "--gh path with a space works" "0" "$(frc run --repo o/r --gh "$ROOT/dir with space/gh" --print)"
+mkdir -p "$ROOT/elsewhere"
+(cd "$ROOT/elsewhere" && jrun --print >/dev/null)
+check "gh was called" "yes" "$([ -s "$GHLOG" ] && echo yes || echo no)"
+check "every gh call pinned -R o/r" "0" "$(grep -vcE '^(pr|run) list -R o/r ' "$GHLOG" || true)"
+# join flags are validated
+check "--gh without --repo fails" "1" "$(frc run --gh "$STUB/gh" --print)"
+check "--repo malformed fails" "1" "$(frc run --repo 'not a repo' --print)"
+check "--repo empty value fails" "1" "$(frc run --repo '' --print)"
+
+# usage-read.sh waits on the store lock (no torn read) and releases it
+mkdir "$SJ/.lock"
+bash "$READ" --store "$SJ" > "$ROOT/read.out" 2>&1 & rp=$!
+sleep 1
+check "reader blocks while a writer holds the lock" "yes" "$(kill -0 "$rp" 2>/dev/null && echo yes || echo no)"
+rmdir "$SJ/.lock"
+rc=0; wait "$rp" || rc=$?
+check "reader proceeds once the lock drops" "0" "$rc"
+check "reader released its own lock" "no" "$([ -d "$SJ/.lock" ] && echo yes || echo no)"
+
 if [ "$FAIL" -eq 0 ]; then echo "PASS"; else echo "FAILED" >&2; exit 1; fi
