@@ -6,7 +6,9 @@
 #
 # Prints, for one fixVersion (see docs/release/follow-up-triage.md):
 #   - follow-ups created/done per class (labels fu-escape, fu-hardening, fu-polish)
-#   - follow-ups with no class label yet (unclassified-followups)
+#   - follow-ups with no class label yet (unclassified-followups): an ESTIMATE,
+#     found by summary keyword (follow-up, deferred, residual); there is no
+#     explicit marker yet (left to HIMMEL-4045), so load is an estimate too
 #   - slipped escapes (label fu-slipped): claim B's countable signal
 #   - hardening share of the version's load against the cap
 #   - claim A: mean CR rounds and token sums over the version's tickets, from
@@ -71,7 +73,8 @@ counts="$(printf '%s\n' "$rows" | awk -F'\t' '
 echo "followup-report version=$VERSION"
 echo "class created done"
 printf '%s\n' "$counts" | grep -E '^(escape|hardening|polish) '
-printf '%s\n' "$counts" | grep -E '^(unclassified-followups|slipped-escapes) '
+printf '%s\n' "$counts" | grep -E '^unclassified-followups ' | sed 's/$/ (estimate: summary keyword match, not a label)/'
+printf '%s\n' "$counts" | grep -E '^slipped-escapes '
 
 hard="$(printf '%s\n' "$counts" | awk '$1=="hardening"{print $2}')"
 load="$(printf '%s\n' "$counts" | awk '$1=="load"{print $2}')"
@@ -82,7 +85,7 @@ status=ok
 if [ $(( hard * 100 )) -gt $(( CAP * load )) ]; then status=OVER; fi
 n_rows="$(printf '%s\n' "$rows" | awk -F'\t' 'NF >= 4' | wc -l | tr -d ' ')"
 [ "$n_rows" -lt 1000 ] || echo "followup-report: WARNING the Jira read hit its 1000-row limit; counts may be incomplete" >&2
-echo "hardening-share ${pct}% cap ${CAP}% ${status} (hardening ${hard} of load ${load})"
+echo "hardening-share ${pct}% cap ${CAP}% ${status} (hardening ${hard} of load ${load}; load is an estimate, unlabelled follow-ups are found by keyword)"
 
 # Claim A: join the usage records to this version's tickets (read only).
 keys="$(printf '%s\n' "$rows" | awk -F'\t' 'NF >= 4 {print $1}')"

@@ -78,6 +78,14 @@ out6="$(FOLLOWUP_JIRA_CMD="$tmp/jira" bash "$RPT" --version v9.9.9 --store "$tmp
 check "cap-pct 08: exits 0" "$rc" "0"
 has "cap-pct 08 reads as 8 pct" "$out6" "cap 8%"
 
+out7="$(FOLLOWUP_JIRA_CMD="$tmp/jira" bash "$RPT" --version v9.9.9 --store "$tmp/store" --cap-pct 010 2>&1)"; rc=$?
+check "cap-pct 010: exits 0" "$rc" "0"
+has "cap-pct 010 reads as 10 pct, not octal 8" "$out7" "cap 10%"
+
+# Keyword-detected counts are estimates (HIMMEL-4047): the report says so on those lines.
+has "unclassified-followups is labelled an estimate" "$out" "unclassified-followups 1 (estimate: summary keyword match, not a label)"
+has "hardening-share notes load is estimated" "$out" "load is an estimate"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$fails FAILED"
 exit 1
