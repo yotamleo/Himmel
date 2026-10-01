@@ -5146,7 +5146,7 @@ rm -rf "$t"
 
 # --- C46 (HIMMEL-4037): enabledPlugins true for a plugin that is not installed -
 echo "== C46: enabled-but-not-installed plugin -> WARN naming the file =="
-t="$(mktemp -d "${TMPDIR:-/tmp}/c46-missing.XXXXXX")"; mkdir -p "$t/claude" "$t/home"
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-missing.XXXXXX")" || { echo "FATAL: C46 setup mktemp failed" >&2; exit 1; }; mkdir -p "$t/claude" "$t/home" || { echo "FATAL: C46 setup mkdir failed" >&2; exit 1; }
 cat > "$t/claude/settings.json" <<'EOF'
 { "enabledPlugins": { "atlassian@claude-plugins-official": true, "kept@himmel": true, "off@himmel": false } }
 EOF
@@ -5167,7 +5167,7 @@ fi
 rm -rf "$t"
 
 echo "== C46: every enabled plugin installed -> OK =="
-t="$(mktemp -d "${TMPDIR:-/tmp}/c46-ok.XXXXXX")"; mkdir -p "$t/claude" "$t/home"
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-ok.XXXXXX")" || { echo "FATAL: C46 setup mktemp failed" >&2; exit 1; }; mkdir -p "$t/claude" "$t/home" || { echo "FATAL: C46 setup mkdir failed" >&2; exit 1; }
 cat > "$t/claude/settings.json" <<'EOF'
 { "enabledPlugins": { "kept@himmel": true, "atlassian@claude-plugins-official": false } }
 EOF
@@ -5185,7 +5185,7 @@ fi
 rm -rf "$t"
 
 echo "== C46: empty plugin list -> every enabled entry WARNs; failing list -> INFO skip =="
-t="$(mktemp -d "${TMPDIR:-/tmp}/c46-empty.XXXXXX")"; mkdir -p "$t/claude" "$t/home"
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-empty.XXXXXX")" || { echo "FATAL: C46 setup mktemp failed" >&2; exit 1; }; mkdir -p "$t/claude" "$t/home" || { echo "FATAL: C46 setup mkdir failed" >&2; exit 1; }
 echo '{ "enabledPlugins": { "atlassian@claude-plugins-official": true } }' > "$t/claude/settings.json"
 printf '#!/usr/bin/env bash\necho "[]"\n' > "$t/claude-stub"; chmod +x "$t/claude-stub"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$t/claude-fail"; chmod +x "$t/claude-fail"
@@ -5224,8 +5224,29 @@ else
 fi
 rm -rf "$t"
 
+echo "== C46: install scope must match this checkout (HIMMEL-4046) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-scope.XXXXXX")" || { echo "FATAL: C46 setup mktemp failed" >&2; exit 1; }
+mkdir -p "$t/claude" "$t/home" || { echo "FATAL: C46 setup mkdir failed" >&2; exit 1; }
+echo '{ "enabledPlugins": { "scoped@himmel": true } }' > "$t/claude/settings.json"
+c46_root="$(git rev-parse --show-toplevel)"
+printf '#!/usr/bin/env bash\necho '"'"'[{"id":"scoped@himmel","scope":"project","projectPath":"/elsewhere/other-project"}]'"'"'\n' > "$t/claude-other"; chmod +x "$t/claude-other"
+printf '#!/usr/bin/env bash\necho '"'"'[{"id":"scoped@himmel","scope":"project","projectPath":"%s"}]'"'"'\n' "$c46_root" > "$t/claude-here"; chmod +x "$t/claude-here"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-other" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F 'scoped@himmel'; then
+    pass "C46 install at another project path -> WARN"
+else
+    fail "C46 install at another project path -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-here" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
+    pass "C46 install at this checkout's project path -> OK"
+else
+    fail "C46 install at this checkout's project path -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+rm -rf "$t"
+
 echo "== C46: claude not resolvable -> INFO skip =="
-t="$(mktemp -d "${TMPDIR:-/tmp}/c46-noclaude.XXXXXX")"; mkdir -p "$t/claude" "$t/home"
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-noclaude.XXXXXX")" || { echo "FATAL: C46 setup mktemp failed" >&2; exit 1; }; mkdir -p "$t/claude" "$t/home" || { echo "FATAL: C46 setup mkdir failed" >&2; exit 1; }
 echo '{ "enabledPlugins": { "x@y": true } }' > "$t/claude/settings.json"
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'INFO C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
