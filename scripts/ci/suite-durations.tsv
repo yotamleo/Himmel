@@ -107,7 +107,6 @@ scripts/ci/test-macos-breakage.sh	0
 scripts/ci/test-macos-cadence-workflow.sh	0
 scripts/ci/test-main-sweep-red-issue.sh	0
 scripts/ci/test-main-sweep-red-workflow.sh	0
-scripts/ci/test-classify-ci-red.sh	0
 scripts/ci/test-orphan-census.sh	1
 scripts/ci/test-os-verify-workflow.sh	0
 scripts/ci/test-pr-title-lint-trigger.sh	0
