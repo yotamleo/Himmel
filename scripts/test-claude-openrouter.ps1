@@ -306,6 +306,14 @@ try {
   }
   Remove-Item Env:OPENROUTER_MIN_CREDIT_USD -ErrorAction SilentlyContinue
 
+  # --- T5d: non-leg Haiku labels identify the actual override. ---
+  New-Sandbox; $script:KEY = 'or-test-123'  # gitleaks:allow
+  Write-AllowMatrix (Join-Path $WORK 'matrix.json'); $script:MATRIX = Join-Path $WORK 'matrix.json'
+  $env:OPENROUTER_HAIKU = 'anthropic/claude-haiku-4.5'
+  Assert-Exit (Invoke-Launcher) 0 'non-leg Haiku override launches'
+  if (FileHas $ChildEnv 'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME=anthropic/claude-haiku-4.5') { Pass 'Haiku label identifies override' } else { Fail 'Haiku label names the wrong model' }
+  Remove-Item Env:OPENROUTER_HAIKU -ErrorAction SilentlyContinue
+
   # --- T6: claude flags pass through verbatim; a LEADING -Reseed is consumed.
   # Pins the manual flag loop (a param() block would swallow -p/-d as common
   # parameters before it ever runs). ---

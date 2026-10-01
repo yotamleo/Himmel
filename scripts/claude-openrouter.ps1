@@ -566,7 +566,7 @@ if ($OpenRouterModel -match '^anthropic/claude-(sonnet|opus|fable)-(.+)$') {
   $family = $Matches[1]
   $orLabel = $family.Substring(0, 1).ToUpperInvariant() + $family.Substring(1) + ' ' + $Matches[2] + ' (OpenRouter)'
 }
-$env:ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  = $orLabel
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  = if ($OpenRouterHaiku -eq $OpenRouterModel) { $orLabel } else { $OpenRouterHaiku }
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = $orLabel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   = $orLabel
 # ponytail: client-side auto classifier through the gateway (HIMMEL-4086),

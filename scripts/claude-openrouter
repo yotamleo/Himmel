@@ -484,7 +484,9 @@ case "$OPENROUTER_MODEL" in
   anthropic/claude-opus-*) or_label="Opus ${OPENROUTER_MODEL#anthropic/claude-opus-} (OpenRouter)" ;;
   anthropic/claude-fable-*) or_label="Fable ${OPENROUTER_MODEL#anthropic/claude-fable-} (OpenRouter)" ;;
 esac
-export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="$or_label"
+or_haiku_label="$or_label"
+[ "$OPENROUTER_HAIKU" = "$OPENROUTER_MODEL" ] || or_haiku_label="$OPENROUTER_HAIKU"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="$or_haiku_label"
 export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="$or_label"
 export ANTHROPIC_DEFAULT_OPUS_MODEL_NAME="$or_label"
 # ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
