@@ -4,7 +4,7 @@ import { renderToolsLine } from './tools-line.js';
 import { renderSkillsLine, renderMcpLine } from './skills-mcp-line.js';
 import { renderAgentsLine } from './agents-line.js';
 import { renderTodosLine } from './todos-line.js';
-import { renderIdentityLine, renderProjectLine, renderAddedDirsLine, renderGitFilesLine, renderEnvironmentLine, renderPromptCacheLine, renderUsageLine, renderMemoryLine, renderSessionTokensLine, renderCompactionsLine, renderPromptCacheEconomicsLine, renderSessionTimeLine, } from './lines/index.js';
+import { renderIdentityLine, renderProjectLine, renderAddedDirsLine, renderGitFilesLine, renderEnvironmentLine, renderPromptCacheLine, renderCacheHitRateLine, renderUsageLine, renderMemoryLine, renderSessionTokensLine, renderCompactionsLine, renderPromptCacheEconomicsLine, renderSessionTimeLine, } from './lines/index.js';
 import { dim, RESET } from './colors.js';
 import { getTerminalWidth, UNKNOWN_TERMINAL_WIDTH } from '../utils/terminal.js';
 import { codePointCellWidth, isCjkAmbiguousWide } from './width.js';
@@ -351,6 +351,8 @@ function renderElementLine(ctx, element, labelOptions = {}) {
             return renderUsageLine(ctx, labelOptions);
         case 'promptCache':
             return renderPromptCacheLine(ctx);
+        case 'cacheHitRate':
+            return renderCacheHitRateLine(ctx);
         case 'memory':
             return renderMemoryLine(ctx, labelOptions);
         case 'environment':

@@ -7,11 +7,13 @@ export const en: Messages = {
   "label.weekly": "Weekly",
   "label.approxRam": "Approx RAM",
   "label.promptCache": "Cache",
+  "label.cacheHitRate": "Cache hit",
   "label.rules": "rules",
   "label.hooks": "hooks",
   "label.estimatedCost": "Est.",
   "label.cost": "Cost",
   "label.today": "Today",
+  "label.week": "Week",
   "label.tokens": "Tokens",
   "label.sessionStarted": "Started",
   "label.lastReply": "Last reply",
@@ -42,6 +44,7 @@ export const en: Messages = {
   "format.tokPerSec": "tok/s",
   "format.justNow": "just now",
   "format.relativeTime": "{value} ago",
+  "format.elapsed": "{value}% elapsed",
 
   // Init
   "init.initializing": "[claude-hud] Initializing...",

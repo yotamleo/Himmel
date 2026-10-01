@@ -14,14 +14,14 @@ contributions; it exists so himmel controls the pin and can carry a small delta.
 ```
 fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HIMMEL-718)
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
-pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
-pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   06c9eedb6344af24ae95e2747e441241ab21b3699df1ec51ab5b047a6f16f28c  # sha256 over VENDORED.manifest
-vendored_at:          2026-08-30
+pinned_commit:        d46bbd765c8bd54da56e0ecf17c7e649a5a0b7d1  # v0.9.0 release commit (HIMMEL-4085)
+pinned_upstream_tree: 72d8dc73bc13eb487284c5ce3e2274e79b80c97a  # git tree of pinned_commit (provenance)
+vendored_tree_hash:   5f150a2b7a21630c43a851c83382845468bc883fe853a0bee39ec885f1a0d517  # sha256 over VENDORED.manifest
+vendored_at:          2026-10-01
 ```
 
-`pinned_commit` points at the **upstream** base `939eb66` (main
-HEAD, 2 commits past v0.8.0's release tag); the vendored tree is that base **plus** himmel's `customLineCommand` delta
+`pinned_commit` points at the **upstream** base `d46bbd7` (the v0.9.0
+release commit; tag object `8ef1e5e5` peels to it); the vendored tree is that base **plus** himmel's `customLineCommand` delta
 **plus** the trimmed `CLAUDE.md` **plus** any dependabot lockfile bumps landed
 since the vendor (see **Fork delta**
 below), so `vendored_tree_hash` reflects those deltas — it is a
@@ -338,6 +338,47 @@ protected: editing it without bumping the pin trips the guard.
   himmel's `scripts/context-fill.sh` (HIMMEL-2212) needs no compat fix; its suite
   is green at this pin.
 
+- **Re-vendored to upstream v0.9.0 `d46bbd7` (HIMMEL-4085, 2026-10-01):** +38
+  commits past `939eb66` (v0.8.0 + 10), including our upstreamed #743 (context
+  cache stays fresh when `used_percentage` is 0 but `current_usage` is real) and
+  #744 (test clock pin). Upstream work absorbed: opt-in `display.showCacheHitRate`
+  (`cache-hit-rate.ts`), `display.usagePace` (`usage-pace.ts`),
+  `display.showWeeklyCost` (`daily-cost.ts` now exports `getCostTotals`),
+  `gitStatus.showWorktree`, 1-hour prompt-cache writes priced at 2x input, the
+  Claude Code version read from stdin, `CLAUDE_CONFIG_DIR`-aware `.claude.json`
+  lookup, and speed measured from API time. Carried himmel deltas all re-applied
+  by rebasing onto `d46bbd7` (config, cost, claudex-lane, session-tokens,
+  prompt-cache economics, `customLineCommand`, trimmed `CLAUDE.md`, test-isolation
+  fixes). Conflicts, all resolved by keeping both sides' features:
+  - `src/config.ts`, `src/render/lines/index.ts`, `CHANGELOG.md`: upstream's
+    `showCacheHitRate` and himmel's `showPromptCacheEconomics` coexist (different
+    rows: a session hit-rate figure vs the read/write/net/cost economics row).
+  - `src/index.ts`, `src/render/lines/cost.ts`: import lists unioned (upstream's
+    `resolveStdinClaudeCodeVersion` / `getCostTotals` plus himmel's
+    `runCustomLineCommand` / `isClaudexLane`).
+  - **Dropped as now upstream:** himmel's flat-rate cache-write computation in
+    `estimateSessionCost` (via `resolveEffectiveCachePricing`) — upstream now
+    prices 1-hour writes at 2x, so `estimateSessionCost` takes upstream's version.
+    `resolveEffectiveCachePricing` stays, but only for the economics row (flat
+    5-minute write rate; its comment now says so). Required type fix:
+    `SessionTokenUsage` gained `cacheCreationOneHourTokens`, so
+    `EMPTY_TOKENS` in `prompt-cache-economics.ts` sets it to 0.
+  - **Still carried (upstream lacks them):** the HIMMEL-2161 enterprise-alias
+    repricing and removal of the Sonnet 5 date cutover (upstream still has
+    `SONNET_5_PROMO_END_MS`), `customLineCommand`, claudex-lane labels, the
+    cache-economics rows and the session-tokens cache split.
+
+  No package was updated beyond the pin: `package.json` is byte-identical to
+  upstream and `package-lock.json` differs only by the carried `brace-expansion`
+  5.0.9 floor below. `dist/` rebuilt from source (`npm ci --ignore-scripts &&
+  npm run build`). Upstream suite in a clean env (`scripts/lib/clean-sandbox.sh`):
+  1242 tests, 1236 pass, 0 fail, 6 skipped. Run with the lane's ambient env
+  (`CLAUDE_CONFIG_DIR`, `ANTHROPIC_MODEL` set) instead and fixture-based tests
+  read the operator's real config and fail, on pristine `d46bbd7` too.
+  `src/context-cache.ts` changed (#743, frame selection only): the snapshot
+  schema, `sha256(transcript path)` key and `context-cache/` directory are
+  unchanged, so `scripts/context-fill.sh` needs no change and its suite is green.
+
 - **Dependabot SECURITY-update lockfile bumps (automated, on top of the pin):**
   `.github/dependabot.yml` deliberately does NOT list
   `/marketplace/plugins/claude-hud` — scheduled *version* updates are not wanted
@@ -350,9 +391,9 @@ protected: editing it without bumping the pin trips the guard.
   `brace-expansion` 5.0.6 → 5.0.7 (dev-only transitive, PR #1374 /
   `a386a624`, re-recorded in HIMMEL-1262); `brace-expansion` 5.0.7 → 5.0.9
   (dev-only transitive via minimatch `^5.0.2`, dependabot alert #26,
-  HIMMEL-1408) — **still carried**: upstream `939eb66` still pins
-  `brace-expansion` 5.0.6, so both the HIMMEL-2138 and HIMMEL-2274 re-vendors
-  kept the 5.0.9 floor per the re-vendor rule below rather than taking upstream's
+  HIMMEL-1408) — **still carried**: upstream `939eb66` and `d46bbd7` (v0.9.0)
+  still pin `brace-expansion` 5.0.6, so the HIMMEL-2138, HIMMEL-2274 and
+  HIMMEL-4085 re-vendors kept the 5.0.9 floor per the re-vendor rule below rather than taking upstream's
   lockfile. Dependabot does NOT run
   `check-hud-drift.sh --write`, so each such bump needs a follow-up pin re-record
   commit (`--write`, then commit `VENDORED.md` + `VENDORED.manifest`) or every

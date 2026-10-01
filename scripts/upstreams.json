@@ -30,9 +30,9 @@
       "kind": "commit_head",
       "mode": "pin",
       "tracked_repo": "jarrodwatts/claude-hud",
-      "pinned_commit": "939eb66485832dead1b0a28a954f76f7aa2bdb06",
+      "pinned_commit": "d46bbd765c8bd54da56e0ecf17c7e649a5a0b7d1",
       "tier": "A",
-      "note": "Vendored at marketplace/plugins/claude-hud (VENDORED.md); pin = main HEAD 939eb66, 10 commits past v0.8.0 (HIMMEL-2274, fork-drift issue #518). The local vendored-tree drift (our own edits) is separately guarded by scripts/statusline/check-hud-drift.sh (himmel-dev pre-commit); this entry guards UPSTREAM advance. Not in marketplace.json by design — it is the statusline renderer (wired via node), not a marketplace plugin."
+      "note": "Vendored at marketplace/plugins/claude-hud (VENDORED.md); pin = v0.9.0 release commit d46bbd7 (HIMMEL-4085). The local vendored-tree drift (our own edits) is separately guarded by scripts/statusline/check-hud-drift.sh (himmel-dev pre-commit); this entry guards UPSTREAM advance. Not in marketplace.json by design — it is the statusline renderer (wired via node), not a marketplace plugin."
     },
     {
       "name": "hermes-agent",

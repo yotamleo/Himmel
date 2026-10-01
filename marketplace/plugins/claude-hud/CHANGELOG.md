@@ -4,18 +4,47 @@ All notable changes to Claude HUD will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-01
+
 ### Added
+- `gitStatus.showWorktree` option to show the linked worktree name after the branch, e.g. `git:(feat/x) ⎇ feat-x`, read from stdin `workspace.git_worktree` (#780).
+- `display.usagePace` option to colour usage windows amber or red, marked `▲`, when they are on track to run out before they reset (#779).
+- `display.skillsMaxVisible` option to control how many skill names the skills line shows before `+N more`; `0` means unlimited, default stays 4 (#739).
+- `display.showWeeklyCost` option to show spend since the weekly quota window opened (`Week $123.45`), from the same ledger as `showDailyCost`; subscribers only (#762).
 - `display.showDailyCost` option to show today's cumulative spend across sessions (`Today $12.34`), accumulated from the native stdin `cost.total_cost_usd` into a per-day ledger that resets at local midnight (#695).
+- `display.showCacheHitRate` option to show the session's prompt-cache hit rate as `Cache hit X%` (#741).
+- Expand a leading `~` and `${VAR}` in `display.externalUsagePath` and `display.externalUsageWritePath` (#760).
+- `display.showModelScopedUsage` option to hide the per-model weekly windows (e.g. Fable) while keeping the 5h/7d windows (#728).
 - Break the session-tokens line's combined cache figure into separate cache-write and cache-read totals.
 
 ### Fixed
+- Read `.claude.json` from inside `CLAUDE_CONFIG_DIR` when it is set, as Claude Code does, so `showAuth`, `showAuthUser`, and MCP counts work with a custom config directory (#776).
 - Refresh the prompt-cache clock when a request starts rather than when its response arrives, ignoring client-side slash command records, interrupt markers, and subagent requests (#719).
 - Treat Agent `tool_result` payloads with `isAsync` or `status: async_launched` as background so the agents line stays up until the task-notification (#734).
 - Pass `--no-optional-locks` on `git diff --numstat` so a timed-out statusline poll cannot leave `.git/index.lock` behind (#726).
 - Render the prompt-cache clock as `until <time>` so the value reads as expiry, not write time (#727).
+- Price 1-hour prompt-cache writes at 2x input instead of 1.25x in the local cost estimate (#758).
+- Show the running session's Claude Code version from stdin, falling back to `claude --version`, so `CC v…` no longer sticks when `claude` is a wrapper script (#753).
+- Keep the context cache fresh when Claude Code reports `used_percentage: 0` while `current_usage` already holds real tokens, so a later empty frame no longer restores a stale percentage (#743).
+- Show the latest response's output speed from the API time it added instead of diffing tokens against wall-clock time between renders (#772).
+- Launch the Windows + Git Bash statusline through the `cmd.exe` launcher so a statusLine shell killed mid-spawn can no longer strand a suspended `node.exe`; re-run `/claude-hud:setup` to pick it up (#748).
+- Ignore `<synthetic>` assistant records when tracking the transcript model (#774).
+- Show Claude Code's generated `ai-title` as the session name when the session was never renamed (#754).
+- Decode every C-style escape git uses in quoted porcelain paths (#765).
+- Count unmerged (`UU`, `UA`) paths in git file stats (#763).
+- Translate the elapsed usage-window suffix (#768).
 - Refresh stale per-model cost-estimate pricing (enterprise plan aliases) and drop the Sonnet 5 introductory-rate cutover date, which no current pricing reference corroborates.
 
+### Security
+- Exit quietly when the setup command cannot resolve the plugin directory instead of running `dist/index.js` relative to the current project; re-run `/claude-hud:setup` to pick it up (#759).
+- Sanitize session names before display (#754).
+- Validate and read config files through a single file descriptor so a file swapped between the checks cannot bypass them (#732).
+
+### Dependencies
+- Update the development-only `@types/node` package from 26.2.0 to 26.6.2 (#775).
+
 ### Docs
+- Document the HUD scope bar in `CONTRIBUTING.md` (#738).
 - Add the ten missing config options and the absolute-path caveat for `display.externalUsagePath` to `README.zh.md` (#730).
 
 ## [0.8.0] - 2026-08-18

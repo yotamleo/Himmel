@@ -1,4 +1,5 @@
-import type { HudColorOverrides } from '../config.js';
+import type { HudColorOverrides, UsageValueMode } from '../config.js';
+import { type UsagePace } from '../usage-pace.js';
 export declare const RESET = "\u001B[0m";
 export declare function green(text: string): string;
 export declare function yellow(text: string): string;
@@ -20,7 +21,16 @@ export interface ContextThresholds {
     critical?: number;
 }
 export declare function getContextColor(percent: number, colors?: Partial<HudColorOverrides>, thresholds?: ContextThresholds): string;
-export declare function getQuotaColor(percent: number, colors?: Partial<HudColorOverrides>): string;
-export declare function quotaBar(percent: number, width?: number, colors?: Partial<HudColorOverrides>): string;
+/**
+ * Usage-window colour: the more severe of the used-percentage band and the
+ * consumption pace (when pace is given).
+ */
+export declare function getQuotaColor(percent: number, colors?: Partial<HudColorOverrides>, pace?: UsagePace | null): string;
+/**
+ * A usage window's percentage (or remaining percentage) in its quota colour,
+ * followed by a ▲ in the pace colour when pace is amber/red.
+ */
+export declare function formatQuotaPercent(percent: number | null, colors?: Partial<HudColorOverrides>, mode?: UsageValueMode, pace?: UsagePace | null): string;
+export declare function quotaBar(percent: number, width?: number, colors?: Partial<HudColorOverrides>, pace?: UsagePace | null): string;
 export declare function coloredBar(percent: number, width?: number, colors?: Partial<HudColorOverrides>, thresholds?: ContextThresholds): string;
 //# sourceMappingURL=colors.d.ts.map

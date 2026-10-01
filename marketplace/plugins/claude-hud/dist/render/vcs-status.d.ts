@@ -10,11 +10,12 @@ export interface VcsDisplayState {
     fileStats?: FileStats;
     lineDiff?: LineDiff;
     branchUrl?: string;
+    worktree?: string;
     branchOverflow: GitBranchOverflowMode;
 }
 /**
  * Resolve VCS-specific visibility once so compact and expanded layouts cannot
  * drift. jj never inherits Git-only ahead/behind or file-stat settings.
  */
-export declare function getVcsDisplayState(status: GitStatus | null, config: Pick<Partial<HudConfig>, 'gitStatus' | 'jjStatus'>): VcsDisplayState | null;
+export declare function getVcsDisplayState(status: GitStatus | null, config: Pick<Partial<HudConfig>, 'gitStatus' | 'jjStatus'>, gitWorktree?: string): VcsDisplayState | null;
 //# sourceMappingURL=vcs-status.d.ts.map

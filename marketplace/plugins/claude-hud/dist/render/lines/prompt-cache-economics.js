@@ -6,6 +6,7 @@ const EMPTY_TOKENS = {
     inputTokens: 0,
     outputTokens: 0,
     cacheCreationTokens: 0,
+    cacheCreationOneHourTokens: 0,
     cacheReadTokens: 0,
 };
 const PLACEHOLDER = '—';
