@@ -2969,6 +2969,7 @@ lbdoc41="$tmp/consult-lastblocked41.md"; printf '# consult\n\n## Results\n' > "$
 bash "$HERE/append-results.sh" "$lbdoc41" "ANSWER use easing X" >/dev/null 2>&1 || true
 bash "$HERE/append-results.sh" "$lbdoc41" "WRAPPED — answered" >/dev/null 2>&1 || true
 bash "$HERE/append-results.sh" "$lbdoc41" "BLOCKED — lost the file after wrapping" >/dev/null 2>&1 || true
+check "41f setup: ANSWER, WRAPPED and BLOCKED were all written" "$(grep -c -E '^- [0-9:]+ (ANSWER|WRAPPED|BLOCKED)' "$lbdoc41")" "3"
 rc=0; bash "$RELAY41" "$lbdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: ANSWER, WRAPPED, then BLOCKED -> exit 4 (last terminal marker decides)" "$rc" "4"
 wxdoc41="$tmp/consult-wholeword41.md"; printf '# consult\n\n## Results\n' > "$wxdoc41"
