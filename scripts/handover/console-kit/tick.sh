@@ -906,9 +906,16 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
             plan_index_summary=ok:pending
         elif mkdir -p "$pi_out" 2>/dev/null; then
             rm -f "$pi_out/.last-run"
-            # shellcheck disable=SC2016  # the -c script is single-quoted on purpose: $1/$@ belong to the detached shell
-            setsid nohup bash -c 'o=$1; shift; mkdir "$o/.launch" 2>/dev/null || exit 0; trap "rmdir \"$o/.launch\"" EXIT; if "$@">"$o/.run.log" 2>&1; then rc=0; rm -f "$o/.last-fail"; else rc=$?; tail -n 1 "$o/.run.log" >"$o/.last-fail"; fi; echo "$rc" >"$o/.last-run"' _ "$pi_out" bash "$HERE/../../roadmap/plan-index.sh" --refresh "${pi_args[@]}" </dev/null >/dev/null 2>&1 &
-            plan_index_summary=REFRESHING
+            read -r -a pi_launcher <<<"${TICK_PLAN_INDEX_LAUNCHER:-setsid nohup}"
+            pi_have=1; [ "${#pi_launcher[@]}" -gt 0 ] || pi_have=0
+            for pi_w in "${pi_launcher[@]}"; do command -v "$pi_w" >/dev/null 2>&1 || pi_have=0; done  # command -v with several operands passes if ANY exists
+            if [ "$pi_have" = 1 ]; then
+                "${pi_launcher[@]}" bash "$HERE/plan-index-launch.sh" "$pi_out" bash "$HERE/../../roadmap/plan-index.sh" --refresh "${pi_args[@]}" </dev/null >/dev/null 2>&1 &
+                plan_index_summary=REFRESHING
+            else
+                echo "no-launcher: ${pi_launcher[*]} not found" >"$pi_out/.last-fail"
+                plan_index_summary="FAIL:no-launcher"
+            fi
         else
             plan_index_summary=FAIL:no-out-dir
         fi

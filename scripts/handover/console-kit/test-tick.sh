@@ -1746,9 +1746,37 @@ STUB
     mkdir "$p4051_out/.launch"; echo 77 > "$p4051_out/.last-run"
     n4051="$(wc -l < "$p4051_calls")"
     contains 'a held launch lock reads plan-index=REFRESHING (HIMMEL-4051)' "$(TICK_PLAN_INDEX_MIN_SECS=0 t4051)" ' plan-index=REFRESHING'
-    bash -c 'o=$1; shift; mkdir "$o/.launch" 2>/dev/null || exit 0; echo clobbered > "$o/.last-run"' _ "$p4051_out"
-    [ "$(cat "$p4051_out/.last-run")" = 77 ] && [ "$(wc -l < "$p4051_calls")" = "$n4051" ] && pass 'a held launch lock blocks a duplicate refresh (HIMMEL-4051)' || fail 'duplicate refresh ran past .launch (HIMMEL-4051)'
+    # HIMMEL-4059: drive the PRODUCTION wrapper (not a hand copy); RED control: pre-change the
+    # wrapper was inline in tick.sh, so plan-index-launch.sh is absent and the first check fails
+    wrap4059="$(dirname "$SUT")/plan-index-launch.sh"
+    [ -f "$wrap4059" ] && pass 'the launch wrapper is its own script (HIMMEL-4059)' || fail 'plan-index-launch.sh is missing (HIMMEL-4059)'
+    bash "$wrap4059" "$p4051_out" bash -c 'echo clobbered > "$1/.last-run"' _ "$p4051_out"
+    [ -f "$wrap4059" ] && [ "$(cat "$p4051_out/.last-run")" = 77 ] && [ "$(wc -l < "$p4051_calls")" = "$n4051" ] && pass 'a held launch lock blocks a duplicate refresh (HIMMEL-4051)' || fail 'duplicate refresh ran past .launch (HIMMEL-4051)'
     rmdir "$p4051_out/.launch"
+    # a free .launch: the wrapper runs the command, records rc, and releases the lock
+    bash "$wrap4059" "$p4051_out" bash -c 'exit 5'
+    [ "$(cat "$p4051_out/.last-run" 2>/dev/null)" = 5 ] && [ ! -d "$p4051_out/.launch" ] && pass 'the wrapper records rc and releases .launch (HIMMEL-4059)' || fail 'wrapper did not record rc / release .launch (HIMMEL-4059)'
+    rm -f "$p4051_out/.last-run" "$p4051_out/.last-fail"
+
+    # HIMMEL-4059 item 1: an --out path with a quote and a command substitution must neither run
+    # text nor leave .launch behind (the old double-quoted trap re-parsed $o when it fired)
+    p4051_out_save="$p4051_out"
+    # shellcheck disable=SC2016  # the $( is a literal hostile path component
+    p4051_out="$p4051/o\"x\$(touch $p4051/PWNED)"
+    t4051 >/dev/null; wait4051
+    [ ! -e "$p4051/PWNED" ] && [ -f "$p4051_out/.last-run" ] && [ ! -d "$p4051_out/.launch" ] && pass 'a hostile --out path is cleaned up without running text (HIMMEL-4059)' || fail 'hostile --out path left .launch or ran text (HIMMEL-4059)'
+    p4051_out="$p4051_out_save"
+
+    # HIMMEL-4059 item 3: a launcher that is not installed reads FAIL:no-launcher and writes .last-fail
+    p4051_out="$p4051/out-nolauncher"
+    contains 'a missing launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER=no-such-launcher-4059 t4051)" ' plan-index=FAIL:no-launcher'
+    [ -s "$p4051_out/.last-fail" ] && pass 'a missing launcher writes .last-fail (HIMMEL-4059)' || fail 'no .last-fail for a missing launcher (HIMMEL-4059)'
+    # one installed word must not mask a missing one (codex-1: command -v passes if ANY operand exists)
+    rm -rf "$p4051_out"
+    contains 'a half-installed launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER='env no-such-launcher-4059' t4051)" ' plan-index=FAIL:no-launcher'
+    rm -rf "$p4051_out"
+    contains 'a blank launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER=' ' t4051)" ' plan-index=FAIL:no-launcher'
+    p4051_out="$p4051_out_save"
 else
     skip 'plan-index= rows: no python3'
 fi
