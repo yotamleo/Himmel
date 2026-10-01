@@ -118,10 +118,17 @@
 #     UNQUOTED and inside a DOUBLE-quoted span; inside a SINGLE-quoted span
 #     a backslash is LITERAL and does not prevent the closing quote, because
 #     bash has no escape there. That asymmetry is deliberate and is pinned by
-#     the suite's MIRROR rows. Not modelled: `$'...'` ANSI-C quoting, and
-#     `$(...)`/backtick nesting — a command substitution's body is scanned as
-#     ordinary text, so a redirect inside one is seen (fails toward MORE
-#     candidates, never fewer).
+#     the suite's MIRROR rows. Not modelled: `$'...'` ANSI-C quoting.
+#   - Command substitutions (HIMMEL-3622; this bullet used to claim their
+#     bodies were scanned as ordinary text, which was false inside a
+#     double-quoted span — the scanner treats the whole span as inert, so
+#     `x="$(echo hi > P/f)"` wrote into the primary unseen). Now
+#     `_bwimc_subst_split` extracts every `$(...)`/backtick body (nested ones
+#     by recursion; single-quoted text excluded) and the REDIRECT/tee arm (a)
+#     scans each as its own command, right after its clause and from that
+#     clause's cwd. Not covered: the verb arms (cp/mv/rm/
+#     touch/sed/ln/git) still do not look inside a substitution body, and
+#     `$((...))` is treated as arithmetic, never a substitution.
 #   - Interpreter bodies: heredoc payloads and `python3 -c '...'` (or any
 #     other non-shell `-c`) are NOT parsed for writes — heredoc bodies are
 #     blanked before scanning specifically so a `>` inside one (`if a > b:`)
@@ -1780,12 +1787,172 @@ _bwimc_check_interp_body() {
     _bwimc_ecwd_pushn="$_bwimc_ibody_saved_pushn"
 }
 
-_bwimc_ecwd="$_bwimc_cwd"
-_bwimc_ecwd_unres=0
-_bwimc_ecwd_pushn=0
+# _bwimc_subst_paren_end TEXT START — HIMMEL-3622. Sets _BWIMC_PEND to the index
+# of the `)` that closes a `$(` whose body begins at START (TEXT length when it
+# never closes, so an unterminated body is scanned to the end, never dropped).
+# The body is a fresh command context: a fresh scanner state, so only ACTIVE
+# parens count (a `)` inside quotes is text); a nested `$(...)` (recursively)
+# or backtick span is skipped whole, quoted or not. A `case` item's `)` is not a terminator: active `case`/`esac` words
+# are counted and a `)` inside an open `case` is skipped (an argument spelled
+# `case` over-extends the body to the end of TEXT, which only over-scans).
+# Clobbers the shared scanner state — callers save/restore it.
+_bwimc_subst_paren_end() {
+    local text="$1" j="$2" len=${#1} depth=1 ch w="" cs=0 bd=0 sq se sa
+    _bwimc_scan_init
+    while [ "$j" -lt "$len" ]; do
+        ch="${text:$j:1}"
+        # A nested substitution is parsed on its own, in or out of double
+        # quotes: its body has a quote state of its own, so the flat scan here
+        # would pair the quotes inside it wrongly and end THIS body early.
+        if [ "$_BWIMC_ESC" != 1 ] && [ "$_BWIMC_Q" != "'" ]; then
+            if [ "$ch" = '$' ] && [ "${text:$((j+1)):1}" = '(' ] && [ "${text:$((j+2)):1}" != '(' ]; then
+                sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
+                _bwimc_subst_paren_end "$text" $((j+2))
+                _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"
+                j=$((_BWIMC_PEND+1)); w=""
+                continue
+            elif [ "$ch" = '`' ]; then
+                j=$((j+1))
+                while [ "$j" -lt "$len" ] && [ "${text:$j:1}" != '`' ]; do
+                    [ "${text:$j:1}" = "\\" ] && j=$((j+1))
+                    j=$((j+1))
+                done
+                j=$((j+1)); w=""
+                continue
+            fi
+            # A `)` inside a `${...}` expansion (`${y:-)}`, `${y#)}`) is text,
+            # not the closer: count the braces and ignore parens while open.
+            if [ "$ch" = '$' ] && [ "${text:$((j+1)):1}" = '{' ]; then
+                bd=$((bd+1))
+            elif [ "$ch" = '}' ] && [ "$bd" -gt 0 ]; then
+                bd=$((bd-1))
+            fi
+        fi
+        _bwimc_scan_step "$ch"
+        if [ "$_BWIMC_ACT" = 1 ]; then
+            case "$ch" in
+                [A-Za-z0-9_]) w="$w$ch"; j=$((j+1)); continue ;;
+            esac
+            case "$w" in
+                'case') cs=$((cs+1)) ;;
+                'esac') [ "$cs" -gt 0 ] && cs=$((cs-1)) ;;
+            esac
+            w=""
+            case "$ch" in
+                '(') [ "$bd" -gt 0 ] || depth=$((depth+1)) ;;
+                ')') [ "$cs" -gt 0 ] || [ "$bd" -gt 0 ] || { depth=$((depth-1)); [ "$depth" -gt 0 ] || break; } ;;
+            esac
+        fi
+        j=$((j+1))
+    done
+    [ "$j" -le "$len" ] || j=$len
+    _BWIMC_PEND=$j
+}
+
+# _bwimc_subst_split TEXT — HIMMEL-3622. Splits TEXT into a SKELETON and the
+# bodies of its TOP-LEVEL command substitutions, `$(...)` and backtick alike:
+# _BWIMC_SKEL is TEXT with each substitution body replaced by one \001 byte
+# (`$(\001)`, backtick-\001-backtick), and _BWIMC_BODIES lists the bodies in
+# order. A substitution runs as its own command even inside a double-quoted
+# span, where the shared scanner marks every character inert — so a redirect in
+# `x="$(echo hi > P/f)"` was invisible to the redirect arm. Only a SINGLE-quoted
+# span or an escaped `$`/backtick is literal text. Each body is found with its
+# own fresh scan (so quotes inside it do not confuse the outer walk) and the
+# outer walk jumps over it; a nested body is reached when the caller splits the
+# body it got. The skeleton, not TEXT, is what gets cut into clauses: a quote
+# nested inside a double-quoted substitution pairs differently from the way the
+# scanner reads it, so clause-splitting raw TEXT tore such a body apart.
+# `$((` is arithmetic, not a substitution. Callers run this on the
+# heredoc-BLANKED text, so `git commit -m "$(cat <<'EOF' … EOF)"` yields only
+# `cat <<'EOF'` plus blank lines: message text never becomes a phantom target.
+_bwimc_subst_split() {
+    # \001 is the stub marker, so a real one in the input would be counted as a
+    # stub and consume a body in the wrong clause; bash treats it as a plain
+    # word byte, so `_` keeps every word and path boundary intact.
+    local text="${1//$'\001'/_}" i=0 len c q e body sq se sa j end
+    len=${#text}
+    _BWIMC_SKEL=""; _BWIMC_BODIES=()
+    _bwimc_scan_init
+    while [ "$i" -lt "$len" ]; do
+        c="${text:$i:1}"; q="$_BWIMC_Q"; e="$_BWIMC_ESC"
+        body=""; end=-1
+        if [ "$e" != 1 ] && [ "$q" != "'" ]; then
+            if [ "$c" = '`' ]; then
+                j=$((i+1))
+                while [ "$j" -lt "$len" ] && [ "${text:$j:1}" != '`' ]; do
+                    [ "${text:$j:1}" = "\\" ] && j=$((j+1))
+                    j=$((j+1))
+                done
+                [ "$j" -le "$len" ] || j=$len
+                # Bash drops the backslash before `$`, a backtick and `\` (and
+                # before `"` inside double quotes) in ONE left-to-right pass;
+                # a `\$(` left escaped would hide a nested body from the recursion.
+                sa="${text:$((i+1)):$((j-i-1))}"; body=""; se=0
+                while [ "$se" -lt "${#sa}" ]; do
+                    sq="${sa:$se:1}"
+                    if [ "$sq" = "\\" ]; then
+                        case "${sa:$((se+1)):1}" in
+                            '$'|'`'|"\\") se=$((se+1)) ;;
+                            '"') [ "$q" = '"' ] && se=$((se+1)) ;;
+                        esac
+                        sq="${sa:$se:1}"
+                    fi
+                    body="$body$sq"; se=$((se+1))
+                done
+                end=$j
+            elif [ "$c" = '$' ] && [ "${text:$((i+1)):1}" = '(' ] && [ "${text:$((i+2)):1}" != '(' ]; then
+                sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
+                _bwimc_subst_paren_end "$text" $((i+2))
+                _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"
+                end=$_BWIMC_PEND
+                body="${text:$((i+2)):$((end-i-2))}"
+            fi
+        fi
+        if [ "$end" -ge 0 ]; then
+            _BWIMC_BODIES+=("$body")
+            if [ "$c" = '`' ]; then
+                _BWIMC_SKEL="$_BWIMC_SKEL"'`'$'\001''`'
+            else
+                # shellcheck disable=SC2016  # literal `$(`, not an expansion
+                _BWIMC_SKEL="$_BWIMC_SKEL"'$('$'\001'')'
+            fi
+            i=$((end+1))
+            continue
+        fi
+        _BWIMC_SKEL="$_BWIMC_SKEL$c"
+        _bwimc_scan_step "$c"
+        i=$((i+1))
+    done
+}
+
+# _bwimc_redir_scan_text TEXT — arm (a), the redirect/tee per-clause walk, as a
+# function so it can recurse (HIMMEL-3622). After each clause is walked, the
+# command substitutions inside THAT clause are scanned as their own commands,
+# from the cwd state the clause left and with that state restored after, so a
+# body's `cd` never leaks out and a body sees the `cd` that preceded it.
+_bwimc_redir_scan_text() {
+local _bwimc_rclause _bwimc_rclause_sp _bwimc_rtoks _bwimc_t _bwimc_rn _bwimc_teecmd \
+    _bwimc_pfx _bwimc_pflag _bwimc_ri _bwimc_teecollect _bwimc_tee_dd _bwimc_rt \
+    _bwimc_rt2 _bwimc_skel _bwimc_sbodies _bwimc_sbi _bwimc_stubs _bwimc_sn \
+    _bwimc_sb_ecwd _bwimc_sb_unres _bwimc_sb_pushn \
+    _bwimc_pre_ecwd _bwimc_pre_unres _bwimc_pre_pushn
+_bwimc_skel="$1"; _bwimc_sbodies=(); _bwimc_sbi=0
+# shellcheck disable=SC2016  # literal `$(` is the glob pattern, not an expansion
+case "$1" in
+    *'$('*|*'`'*)
+        _bwimc_subst_split "$1"
+        _bwimc_skel="$_BWIMC_SKEL"
+        for _bwimc_sn in ${_BWIMC_BODIES[@]+"${!_BWIMC_BODIES[@]}"}; do
+            _bwimc_sbodies+=("${_BWIMC_BODIES[$_bwimc_sn]}")
+        done
+        ;;
+esac
 while IFS= read -r _bwimc_rclause; do
     [ -n "$(printf '%s' "$_bwimc_rclause" | tr -d '[:space:]')" ] || continue
     _bwimc_rclause_sp=$(_bwimc_space_before_redirects "$_bwimc_rclause")
+    # A body expands BEFORE its own clause runs, so it is judged at the cwd the
+    # clause STARTS in, not the one the clause (a `cd` it carries) leaves.
+    _bwimc_pre_ecwd="$_bwimc_ecwd"; _bwimc_pre_unres="$_bwimc_ecwd_unres"; _bwimc_pre_pushn="$_bwimc_ecwd_pushn"
     _bwimc_ecwd_track "$_bwimc_rclause_sp"
     _bwimc_rtoks=()
     while IFS= read -r _bwimc_t; do _bwimc_rtoks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_rclause_sp")
@@ -1916,7 +2083,22 @@ while IFS= read -r _bwimc_rclause; do
             _bwimc_ri=$((_bwimc_ri+1))
         fi
     done
-done < <(_bwimc_split_clauses "$_bwimc_hb")
+    # The bodies of THIS clause's stubs, in order, each as a command of its own.
+    _bwimc_stubs="${_bwimc_rclause//[!$'\001']/}"
+    _bwimc_sn=${#_bwimc_stubs}
+    while [ "$_bwimc_sn" -gt 0 ] && [ "$_bwimc_sbi" -lt "${#_bwimc_sbodies[@]}" ]; do
+        _bwimc_sb_ecwd="$_bwimc_ecwd"; _bwimc_sb_unres="$_bwimc_ecwd_unres"; _bwimc_sb_pushn="$_bwimc_ecwd_pushn"
+        _bwimc_ecwd="$_bwimc_pre_ecwd"; _bwimc_ecwd_unres="$_bwimc_pre_unres"; _bwimc_ecwd_pushn="$_bwimc_pre_pushn"
+        _bwimc_redir_scan_text "${_bwimc_sbodies[$_bwimc_sbi]}"
+        _bwimc_ecwd="$_bwimc_sb_ecwd"; _bwimc_ecwd_unres="$_bwimc_sb_unres"; _bwimc_ecwd_pushn="$_bwimc_sb_pushn"
+        _bwimc_sbi=$((_bwimc_sbi+1)); _bwimc_sn=$((_bwimc_sn-1))
+    done
+done < <(_bwimc_split_clauses "$_bwimc_skel")
+}
+_bwimc_ecwd="$_bwimc_cwd"
+_bwimc_ecwd_unres=0
+_bwimc_ecwd_pushn=0
+_bwimc_redir_scan_text "$_bwimc_hb"
 
 # ---- (g) HIMMEL-3401: git commands that rewrite a PROTECTED checkout ----
 #

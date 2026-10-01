@@ -1860,6 +1860,72 @@ check_both "74f REGRESSION CONTROL: sed -n '/\\\$(/p' f still ALLOWS" allow "$SD
 BTQ_LIT_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo 'don\`t'\",\"cwd\":\"$FIX/wt\"}}"
 check_both "74g REGRESSION CONTROL: echo 'don\`t' still ALLOWS" allow "$BTQ_LIT_JSON"
 
+# HIMMEL-3622: a redirect INSIDE a command substitution writes exactly like a
+# top-level one. The shared quote scanner marks everything inside a
+# double-quoted span inert, so `x="$(echo hi > P/f)"` hid the redirect; the
+# fix extracts every substitution body (any nesting, `$(...)` and backticks,
+# skipping single-quoted text) and runs the SAME redirect-target check on it.
+# DENY rows aim at the primary; ALLOW twins aim the identical shape at the
+# worktree so a blanket "deny anything with $(" cannot pass.
+echo "== HIMMEL-3622 redirects inside command substitutions =="
+_subst_row() { # label verdict command [cwd]
+    local j
+    j="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$3" | jq -Rs .),\"cwd\":\"${4:-$FIX/wt}\"}}"
+    check_both "$1" "$2" "$j"
+}
+_P="$FIX/primary/subst-new.txt"
+_W="$FIX/wt/subst-new.txt"
+for _t in "P|block|$_P" "W|allow|$_W"; do
+    _tag="${_t%%|*}"; _rest="${_t#*|}"; _v="${_rest%%|*}"; _f="${_rest#*|}"
+    _subst_row "75a-$_tag assignment of a dq-quoted \$(echo > f)"           "$_v" "x=\"\$(echo hi > $_f)\""
+    _subst_row "75b-$_tag echo dq-quoted \$(printf >f) (no space)"          "$_v" "echo \"\$(printf x >$_f)\""
+    _subst_row "75c-$_tag unquoted assignment \$(echo > f)"                 "$_v" "x=\$(echo hi > $_f)"
+    _subst_row "75d-$_tag backtick in dq span"                              "$_v" "x=\"\`echo hi > $_f\`\""
+    _subst_row "75e-$_tag backtick, unquoted"                               "$_v" "x=\`echo hi > $_f\`"
+    _subst_row "75f-$_tag backtick nested inside \$( ) (J1285O fail-open)"  "$_v" "x=\"\$(echo \`echo hi > $_f\`)\""
+    _subst_row "75g-$_tag \$( \$( ... > f ) ) doubly nested"                "$_v" "x=\"\$(echo \$(echo hi > $_f))\""
+    _subst_row "75h-$_tag redirect after a nested \$( ) in the same body"   "$_v" "x=\"\$(echo \$(pwd) > $_f)\""
+    _subst_row "75i-$_tag tee inside a dq-quoted \$( )"                     "$_v" "x=\"\$(echo hi | tee $_f)\""
+    _subst_row "75o-$_tag case item ) does not end the body (codex-2)"      "$_v" "x=\"\$(case a in a) echo hi > $_f ;; esac)\""
+done
+# The body runs where its clause runs: a later `cd` must not move it, and a
+# `cd` inside a body (its own subshell) must not leak out of it (codex-1).
+_PR="$FIX/primary"; _WR="$FIX/wt"
+_subst_row "75n-P body judged at its own cwd, a later cd must not move it" block "cd $_PR; x=\"\$(echo hi > subst-rel.txt)\"; cd $_WR"
+_subst_row "75n-W same shape aimed at the worktree (ALLOW)"               allow "cd $_WR; x=\"\$(echo hi > subst-rel.txt)\"; cd $_PR"
+_subst_row "75p-P a cd inside a body does not leak to the next clause"    block "cd $_PR; x=\"\$(cd $_WR)\"; echo hi > subst-rel.txt"
+_subst_row "75p-W same shape aimed at the worktree (ALLOW)"               allow "cd $_WR; x=\"\$(cd $_PR)\"; echo hi > subst-rel.txt"
+_subst_row "75q-P a cd in an outer body reaches the nested body"          block "x=\"\$(cd $_PR; echo \"\$(echo hi > subst-rel.txt)\")\""
+_subst_row "75q-W same shape aimed at the worktree (ALLOW)"               allow "x=\"\$(cd $_WR; echo \"\$(echo hi > subst-rel.txt)\")\""
+# A body expands BEFORE its own clause runs: judged at the cwd the clause
+# starts in, not the one its own cd leaves (panel round 2, codex-1).
+_subst_row "75r-P body in a cd clause runs at the pre-cd cwd (primary)"      block "cd $_WR 2>\"\$(echo hi > subst-rel.txt)\"" "$_PR"
+_subst_row "75r-W same shape, pre-cd cwd is the worktree (ALLOW)"           allow "cd $_PR 2>\"\$(echo hi > subst-rel.txt)\"" "$_WR"
+# A quoted `)` inside a quoted nested substitution must not end the outer body
+# (panel round 3, codex-1): the body has a quote state of its own.
+_subst_row "75s-P quoted paren in a nested quoted body keeps the outer body open" block "x=\"\$(cd $_PR; echo \"\$(echo \")\" > subst-rel.txt)\")\""
+_subst_row "75s-W same shape aimed at the worktree (ALLOW)"                allow "x=\"\$(cd $_WR; echo \"\$(echo \")\" > subst-rel.txt)\")\""
+_subst_row "75t-P backtick with a quoted paren inside a quoted body"       block "x=\"\$(cd $_PR; echo \`echo \")\"\` > subst-rel.txt)\""
+_subst_row "75t-W same shape aimed at the worktree (ALLOW)"                allow "x=\"\$(cd $_WR; echo \`echo \")\"\` > subst-rel.txt)\""
+_subst_row "75u-P backtick body holds an escaped \$( that Bash unescapes"  block "x=\`echo \"\\\$(echo hi > $_PR/subst-rel.txt)\"\`"
+_subst_row "75u-W same shape aimed at the worktree (ALLOW)"                allow "x=\`echo \"\\\$(echo hi > $_WR/subst-rel.txt)\"\`"
+_SOH=$'\001'
+_subst_row "75v-P a literal U+0001 byte must not consume a body"           block "echo $_SOH; cd $_PR; x=\"\$(echo hi > subst-rel.txt)\""
+_subst_row "75v-W same shape aimed at the worktree (ALLOW)"                allow "echo $_SOH; cd $_WR; x=\"\$(echo hi > subst-rel.txt)\""
+# A `)` inside a ${...} expansion is text, not the body's closer.
+_subst_row "75w-P \${y:-)} must not close the body early"                   block "x=\"\$(echo \${y:-)} > $_PR/f.txt)\""
+_subst_row "75x-P \${y#)} must not close the body early"                    block "x=\"\$(echo \${y#)} > $_PR/f.txt)\""
+_subst_row "75y-P \${y%)} must not close the body early"                    block "x=\"\$(echo \${y%)} > $_PR/f.txt)\""
+_subst_row "75w-W \${y:-)} aimed at the worktree (ALLOW)"                   allow "x=\"\$(echo \${y:-)} > $_WR/f.txt)\""
+# The heredoc idiom with target-shaped words in the body text stays ALLOW.
+_subst_row "75j commit heredoc idiom, message mentions '> file' and a paren (ALLOW)" allow "git commit -m \"\$(cat <<'EOF'
+fix: a > b (and 'it')
+EOF
+)\""
+_subst_row "75k single-quoted \$(echo > P) is literal text (ALLOW)" allow "echo '\$(echo hi > $_P)'"
+_subst_row "75l read redirect inside a substitution (ALLOW)" allow "x=\"\$(cat < $FIX/primary/existing.txt)\""
+_subst_row "75m fd-dup inside a substitution (ALLOW)" allow "x=\"\$(ls 2>&1)\""
+
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
 # WHY THIS EXISTS: three CR rounds each found one more cell of the SAME finite
