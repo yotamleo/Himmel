@@ -290,7 +290,7 @@ assert_eq "$id_d7" "critic-a-1" "r7 deferred fixture produces the expected findi
 (
     cd "$repo" || exit 1
     CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch deferred --head "$head_d7" \
-        --id "$id_d7" --set verdict=deferred --set deferred_to=HIMMEL-9007 \
+        --id "$id_d7" --set verdict=deferred --set deferred_to=HIMMEL-9007 --set fu_class=hardening \
         --set 'reason=Tracked outside this branch.' --reason 'defer the accepted follow-up'
 ) >/dev/null 2>"$tmp/d7-amend.err"
 assert_eq "$?" "0" "r7 finding accepts a tracked deferred disposition"
@@ -301,6 +301,7 @@ assert_eq "$?" "0" "r8 deferred re-raise panel run succeeds"
 assert_has "$(cat "$tmp/d8.out")" "RE-RAISE (r7 deferred)" "r8 reports the original deferred disposition"
 assert_has "$(cat "$tmp/d8.out")" "## Suggestions (0 found)" "r8 deferred re-raise is excluded from suggestion tally"
 assert_eq "$(ledger_value deferred "$head_d8" deferred_to)" "HIMMEL-9007" "r8 durable row carries the defer ticket"
+assert_eq "$(ledger_value deferred "$head_d8" fu_class)" "hardening" "r8 durable row carries the follow-up class (HIMMEL-4034)"
 
 head_d9="$(advance_head d9)"
 run_panel 9 'CACHE cleanup must retain 2 generations [scripts/cr/cache.sh:90]' sug "$tmp/d9.out" "$tmp/d9.err"

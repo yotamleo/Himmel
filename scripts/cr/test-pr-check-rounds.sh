@@ -343,6 +343,7 @@ recover_calls="$(wc -l < "$PANEL_CALLS" | tr -d ' ')"
 assert_eq "$recover_calls" "$after_missing_calls" "recovery dispositions recorded results without rerunning the panel"
 ledger="$(cat "$git_dir/cr-critic-scores.jsonl" 2>/dev/null)"
 assert_has "$ledger" '"deferred_to":"HIMMEL-9002"' "recovery records the environment-supplied ticket"
+assert_has "$ledger" '"fu_class":"polish"' "cap-deferred Suggestions are classed polish (HIMMEL-4034)"
 if [ -e "$git_dir/cr-pending/capped" ]; then fail "recovery clears the marker"; else pass "recovery clears the marker"; fi
 
 calls="$(cat "$PANEL_CALLS" 2>/dev/null)"
@@ -399,7 +400,7 @@ CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
     --text "tidy up the promote fixture delta"
 CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
     --branch promote --head "$promote_head_a" --id find-d \
-    --set verdict=deferred --set deferred_to=HIMMEL-9010 --reason "deferred by hand"
+    --set verdict=deferred --set deferred_to=HIMMEL-9010 --set fu_class=hardening --reason "deferred by hand"
 
 # (h) agreed at an earlier head, its fingerprint reappears at the clean head
 # but that reappearance is deferred, not resolved (codex-1, HIMMEL-2911 CR

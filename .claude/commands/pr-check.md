@@ -230,7 +230,7 @@ Steps:
    VERDICT [<slug>-N] = agreed|disproved|conflict|unaddressed
    ```
 
-   **A 5th verdict, `deferred`, exists for a candidate that is a REAL finding but genuinely out-of-scope for this branch (HIMMEL-2375) — never write `agreed` (which leaves a residual the panel re-raises every round, so the gate can never clear) or `disproved` (a lie) for one of these.** It is accepted ONLY with a ticket, in the form `VERDICT [<slug>-N] = deferred -> <TICKET>` (the same ticket shape `ledger-append.sh --deferred-to` requires) — a bare `deferred` with no ticket is rejected by `write-verdicts.sh` like any other malformed line. **`deferred` never blocks**: step 4's exclusion rule treats it exactly like `disproved`, so an all-deferred round still clears. This is independent of, and does not replace, the CR ledger's own `--verdict deferred --deferred-to <TICKET>` (step 4.5) — record both: this line drives the reconciliation, the ledger record is the tracked, audited disposition.
+   **A 5th verdict, `deferred`, exists for a candidate that is a REAL finding but genuinely out-of-scope for this branch (HIMMEL-2375) — never write `agreed` (which leaves a residual the panel re-raises every round, so the gate can never clear) or `disproved` (a lie) for one of these.** It is accepted ONLY with a ticket, in the form `VERDICT [<slug>-N] = deferred -> <TICKET>` (the same ticket shape `ledger-append.sh --deferred-to` requires) — a bare `deferred` with no ticket is rejected by `write-verdicts.sh` like any other malformed line. **`deferred` never blocks**: step 4's exclusion rule treats it exactly like `disproved`, so an all-deferred round still clears. This is independent of, and does not replace, the CR ledger's own `--verdict deferred --deferred-to <TICKET> --fu-class <escape|hardening|polish>` (step 4.5) — record both: this line drives the reconciliation, the ledger record is the tracked, audited disposition.
 
    These verdict lines are NOT throwaway: they are the SAME verdicts step 4's cross-check reconciles against, so adjudicating here does the step-3.5/4 work once, not twice — carry them into the step-3.5 aggregate verbatim. A candidate you cannot confirm or refute gets `unaddressed`, which counts as a blocker below (fail-closed, matching step 4), forcing a resolution before the gate can clear. On the opt-in `CR_CLAUDE_AGENTS=1` path the dispatched agents re-adjudicate the full diff in 3.5 and may add verdicts; step 4 reconciles any session-vs-agent disagreement as a `conflict` (which blocks) — so an agent disagreeing with your early call can never ship a false-clean.
 
@@ -533,9 +533,10 @@ Steps:
        --set verdict=<agreed|disproved|conflict|unaddressed> \
        --reason 'adjudicated by /pr-check step 4.5'
    ```
-   A `deferred` verdict additionally carries its ticket and the reason the gate
-   reads (`--set verdict=deferred --set deferred_to=HIMMEL-<n> --set
-   'reason=<why out of scope>'`) — see the deferral paragraph below, whose
+   A `deferred` verdict additionally carries its ticket, its follow-up class
+   and the reason the gate reads (`--set verdict=deferred --set
+   deferred_to=HIMMEL-<n> --set fu_class=<escape|hardening|polish> --set
+   'reason=<why out of scope>'`; without a class the append exits 2) — see the deferral paragraph below, whose
    `--set reason=` is a different field from `amend`'s own `--reason`.
    A `disproved` verdict on a finding whose text names a shell or platform
    (dash, bash, zsh, busybox, macOS, git-bash, ...) is refused with the generic
@@ -646,6 +647,7 @@ Steps:
    bash "<himmel_dir>/scripts/cr/ledger-append.sh" amend \
        --head <head> --id '<slug>-N' \
        --set verdict=deferred --set deferred_to=HIMMEL-<n> \
+       --set fu_class=<escape|hardening|polish> \
        --set 'reason=<why it is out of scope for this branch>' \
        --reason 'deferred by /pr-check step 4.5'
    ```
@@ -672,7 +674,7 @@ Steps:
    # reads the FINDING's reason). The whole --set operand is single-quoted,
    # not just its value: the free text after the `=` is pasted, so it is
    # shell-parsed the same way any other substituted literal is.
-   #   --set verdict=deferred --set deferred_to=HIMMEL-<n> --set 'reason=<why out of scope>'
+   #   --set verdict=deferred --set deferred_to=HIMMEL-<n> --set fu_class=<escape|hardening|polish> --set 'reason=<why out of scope>'
    ```
    `amend` APPENDS a supersede record — the ledger stays append-only and the
    correction is itself auditable. It refuses non-zero when no matching finding

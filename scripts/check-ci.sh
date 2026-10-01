@@ -452,6 +452,7 @@ pr_view() {
 . "$(cd "$(dirname "$0")" && pwd)/lib/gh-ci-cache.sh"
 # A budget wait taken in this process is bounded by --max-wait and goes through the
 # same sleep seam as every other wait here (0 = unbounded, as --max-wait 0 is).
+# shellcheck disable=SC2034  # read by the sourced lib/gh-ci-cache.sh
 CIC_MAX_WAIT="$MAX_WAIT"
 CIC_SLEEP_CMD="${CIC_SLEEP_CMD:-$CHECK_CI_SLEEP_CMD}"
 
@@ -1508,7 +1509,7 @@ _cr_outside_gate() {
             qf=${file//\'/\'\\\'\'}
             msg="$msg
   - $id [$sev] $file:$line — $title
-      bash scripts/cr/ledger-append.sh finding --head $gate_head --branch <pr-branch> --model coderabbit-outside --id $id --severity $sev --file '$qf' --line '$line' --text '$q' --verdict deferred --deferred-to <TICKET> --reason \"<why>\"   (or: --verdict disproved --reason \"<why>\")$extra"
+      bash scripts/cr/ledger-append.sh finding --head $gate_head --branch <pr-branch> --model coderabbit-outside --id $id --severity $sev --file '$qf' --line '$line' --text '$q' --verdict deferred --deferred-to <TICKET> --fu-class <escape|hardening|polish> --reason \"<why>\"   (or: --verdict disproved --reason \"<why>\")$extra"
         fi
     done <<<"$rows"
     if [ -n "$expected" ] && [ "$n_all" -ne "$expected" ]; then

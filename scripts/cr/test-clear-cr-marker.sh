@@ -1641,6 +1641,7 @@ if [ -n "$hint_head" ] && [ "$hint_head" != "$sha" ]; then pass; else fail "hint
 cmd="$hint"
 cmd=${cmd//<finding-id>/codex-1}
 cmd=${cmd//<TICKET>/HIMMEL-1327}
+cmd=${cmd//<escape|hardening|polish>/hardening}
 cmd=${cmd//<why it is out of scope here>/pre-existing}
 _amend_rc=0
 _amend_out=$(cd "$tmp" && HIMMEL_REPO="$tmp" bash -c "$cmd" 2>&1) || _amend_rc=$?

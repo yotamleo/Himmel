@@ -111,7 +111,8 @@ Act on the exit code:
   the exact head the finding was posted at (HIMMEL-3124; the recipe names it)
   — the exit-3 message prints the `ledger-append.sh finding …
   --model coderabbit-outside` recipe — `--verdict deferred` needs a tracked
-  `--deferred-to <TICKET>` AND `--reason`, `--verdict disproved` needs
+  `--deferred-to <TICKET>`, `--fu-class <escape|hardening|polish>` AND
+  `--reason`, `--verdict disproved` needs
   `--reason`; any severity. It never carries to a new head. A header count the
   parser cannot match to findings is exit `2` (check the PR body manually).
 - `4` — retired (HIMMEL-3360): no longer emitted. CodeRabbit's status being

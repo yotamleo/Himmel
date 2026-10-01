@@ -45,7 +45,7 @@ chk() {
 write_row() { # write_row <verdict> <deferred-to|""> <reason|""> [head]
     local args=(finding --branch feat/x --head "${4:-$H}" --model coderabbit-outside
         --id "$ID" --severity sug --file "$FILE" --line "$LINE" --text "$TITLE"
-        --verdict "$1")
+        --verdict "$1" --fu-class hardening)
     [ -n "$2" ] && args+=(--deferred-to "$2")
     [ -n "$3" ] && args+=(--reason "$3")
     CR_LEDGER="$LEDGER" bash "$APPEND" "${args[@]}" >/dev/null 2>"$TMP/append.err" \
@@ -118,7 +118,7 @@ chk f8-deferred-still-clears-on-prior-head-path  0 "$H" "$ID" "$FILE" "$LINE" "$
 fresh
 CR_LEDGER="$LEDGER" bash "$APPEND" finding --branch feat/x --head "$H" --model coderabbit-outside \
     --id cr-od-2b1a31ba0692 --severity imp --file marketplace/plugins/himmel-ops/README.md --line 80-91 \
-    --text x --verdict deferred --deferred-to HIMMEL-9001 --reason "tracked" >/dev/null 2>&1 \
+    --text x --verdict deferred --deferred-to HIMMEL-9001 --fu-class hardening --reason "tracked" >/dev/null 2>&1 \
     || { echo "FATAL: range-line fixture row refused"; exit 1; }
 chk d11-range-line-string-match-clears           0 "$H" cr-od-2b1a31ba0692 marketplace/plugins/himmel-ops/README.md 80-91
 chk d11b-range-start-only-not-cleared            1 "$H" cr-od-2b1a31ba0692 marketplace/plugins/himmel-ops/README.md 80
@@ -128,7 +128,7 @@ fresh                                          # the real ledger has NO row
 FORGED="$TMP/forged.jsonl"
 CR_LEDGER="$FORGED" bash "$APPEND" finding --branch feat/x --head "$H" --model coderabbit-outside \
     --id "$ID" --severity sug --file "$FILE" --line "$LINE" --text x --verdict deferred \
-    --deferred-to HIMMEL-9001 --reason "forged" >/dev/null 2>&1
+    --deferred-to HIMMEL-9001 --fu-class hardening --reason "forged" >/dev/null 2>&1
 [ -s "$FORGED" ] || { echo "FATAL: forged ledger not written"; exit 1; }
 CR_LEDGER="$FORGED" chk d12-env-pointed-forged-ledger-ignored 1 "$H" "$ID" "$FILE" "$LINE"
 # ...and the same env var must not HIDE a real row either.

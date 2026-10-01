@@ -79,7 +79,7 @@ case "$kind" in
 esac
 
 branch="" caller_branch="" head="" model="" responding_model="" id="" severity="" file="" line="" verdict="" status="" artifact="diff" perspective="off"
-prompt_chars="" response_chars="" reason="" detail="" deferred_to="" set_pairs="" attempt_num="" duration_secs="" batch_file="" text=""
+prompt_chars="" response_chars="" reason="" detail="" deferred_to="" fu_class="" set_pairs="" attempt_num="" duration_secs="" batch_file="" text=""
 round="" disposition_round=""
 crit_n="" imp_n="" sug_n="" dropped_n="" raw_path=""
 while [ $# -gt 0 ]; do case "$1" in
@@ -93,6 +93,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --prompt-chars) prompt_chars="$2"; shift 2;; --response-chars) response_chars="$2"; shift 2;;
   --reason) reason="$2"; shift 2;; --detail) detail="$2"; shift 2;;
   --deferred-to) deferred_to="$2"; shift 2;;
+  --fu-class) fu_class="$2"; shift 2;;
   --text) text="$2"; shift 2;;
   --round) round="$2"; shift 2;;
   --disposition-round) disposition_round="$2"; shift 2;;
@@ -179,6 +180,20 @@ fi
 valid_ticket() { printf '%s' "$1" | grep -qE '^[A-Z][A-Z0-9]*-[0-9]+$'; }
 if [ -n "$deferred_to" ] && ! valid_ticket "$deferred_to"; then
   echo "ledger-append.sh: --deferred-to must be a ticket key like HIMMEL-1294 (got '$deferred_to')" >&2
+  exit 2
+fi
+
+# HIMMEL-4034: every deferral carries a follow-up class so deferrals are
+# countable per version (docs/release/follow-up-triage.md). The argv `finding`
+# path and `amend` enforce it; a batch spec row (panel output) does not --
+# ponytail: batch rows are not deferrals a person classifies, add if one ever is.
+valid_fu_class() { case "$1" in escape|hardening|polish) return 0;; *) return 1;; esac; }
+if [ -n "$fu_class" ] && ! valid_fu_class "$fu_class"; then
+  echo "ledger-append.sh: --fu-class must be escape|hardening|polish (got '$fu_class')" >&2
+  exit 2
+fi
+if [ "$kind" = "finding" ] && [ -z "$batch_file" ] && { [ -n "$deferred_to" ] || [ "$verdict" = "deferred" ]; } && [ -z "$fu_class" ]; then
+  echo "ledger-append.sh: a deferral needs --fu-class escape|hardening|polish (HIMMEL-4034; see docs/release/follow-up-triage.md) - NOTHING was written" >&2
   exit 2
 fi
 
@@ -281,8 +296,8 @@ if [ "$kind" = "amend" ]; then
       # RECORD was wrong — a different field. Without this key, the deferral
       # path clear-cr-marker itself recommends is a dead end for any finding
       # originally recorded without a reason, which is most of them.
-      severity=*|head=*|verdict=*|deferred_to=*|reason=*|file=*|line=*) ;;
-      *=*) echo "ledger-append.sh: amend cannot set '${_pair%%=*}' (allowed: severity, head, verdict, deferred_to, reason, file, line)" >&2; exit 2;;
+      severity=*|head=*|verdict=*|deferred_to=*|fu_class=*|reason=*|file=*|line=*) ;;
+      *=*) echo "ledger-append.sh: amend cannot set '${_pair%%=*}' (allowed: severity, head, verdict, deferred_to, fu_class, reason, file, line)" >&2; exit 2;;
       *)   echo "ledger-append.sh: --set expects <key>=<value> (got '$_pair')" >&2; exit 2;;
     esac
     # Same eager validation as --deferred-to (glm-5): otherwise a typo'd ticket
@@ -303,6 +318,11 @@ if [ "$kind" = "amend" ]; then
       deferred_to=*)
         if ! valid_ticket "${_pair#deferred_to=}"; then
           echo "ledger-append.sh: --set deferred_to= must be a ticket key like HIMMEL-1294 (got '${_pair#deferred_to=}')" >&2
+          exit 2
+        fi ;;
+      fu_class=*)
+        if ! valid_fu_class "${_pair#fu_class=}"; then
+          echo "ledger-append.sh: --set fu_class= must be escape|hardening|polish (got '${_pair#fu_class=}')" >&2
           exit 2
         fi ;;
       severity=*)
@@ -332,6 +352,11 @@ if [ "$kind" = "amend" ]; then
         fi ;;
     esac
   done <<< "$set_pairs"
+  # HIMMEL-4034: an amend that makes a finding a deferral must classify it.
+  if printf '%s' "$set_pairs" | grep -qE '^(verdict=deferred|deferred_to=)' && ! printf '%s' "$set_pairs" | grep -q '^fu_class='; then
+    echo "ledger-append.sh: an amend that defers a finding needs --set fu_class=escape|hardening|polish (HIMMEL-4034; see docs/release/follow-up-triage.md) - NOTHING was written" >&2
+    exit 2
+  fi
   if [ "$_disproving" = 1 ]; then disproval_bar_ok "$_evidence" || exit 2; fi
   # HIMMEL-2405 (revised per AE round-2 ruling): --branch is optional. When
   # omitted, the TARGET's own branch wins over the caller's checkout branch -
@@ -475,7 +500,7 @@ FILE="$file" LINE="$line" VERDICT="$verdict" STATUS="$status" BATCH_FILE="$batch
 PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$ledger" ARTIFACT="$artifact" PERSPECTIVE="$perspective" \
 ATTEMPT_NUM="$attempt_num" DURATION_SECS="$duration_secs" ROUND="$round" DISPOSITION_ROUND="$disposition_round" \
 CRIT_N="$crit_n" IMP_N="$imp_n" SUG_N="$sug_n" DROPPED_N="$dropped_n" RAW_PATH="$raw_path" \
-REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TEXT="$raw_text" SET_PAIRS="$set_pairs" DISPROVAL_JS="$DISPROVAL_JS" node - <<'JS'
+REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" FU_CLASS="$fu_class" TEXT="$text" RAW_TEXT="$raw_text" SET_PAIRS="$set_pairs" DISPROVAL_JS="$DISPROVAL_JS" node - <<'JS'
   const fs=require("fs"), cp=require("child_process"), crypto=require("crypto"), e=process.env;
   // HIMMEL-3357: the disproved-verdict bar's text test (see DISPROVAL_JS above).
   const {measured,scan}=new Function(e.DISPROVAL_JS+"; return {measured,scan};")();
@@ -732,6 +757,7 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       // argv --detail (:325-327); a batch spec used to store it raw.
       if(spec.detail) rec.detail=scrubSecrets(String(spec.detail).replace(/[\r\n]/g," ")).slice(0,200);
       if(spec.deferred_to) rec.deferred_to=cleanFree(spec.deferred_to);
+      if(["escape","hardening","polish"].includes(spec.fu_class)) rec.fu_class=spec.fu_class;
       if(spec.round) rec.round=Number(spec.round);
       if(spec.disposition_round) rec.disposition_round=Number(spec.disposition_round);
       else if(spec.verdict&&spec.round) rec.disposition_round=Number(spec.round);
@@ -995,6 +1021,7 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     if(e.REASON) rec.reason=e.REASON;
     if(e.DETAIL) rec.detail=e.DETAIL;
     if(e.DEFERRED_TO) rec.deferred_to=e.DEFERRED_TO;
+    if(e.FU_CLASS) rec.fu_class=e.FU_CLASS;
     if(e.ROUND) rec.round=Number(e.ROUND);
     if(e.DISPOSITION_ROUND) rec.disposition_round=Number(e.DISPOSITION_ROUND);
     else if(e.VERDICT&&e.ROUND) rec.disposition_round=Number(e.ROUND);
