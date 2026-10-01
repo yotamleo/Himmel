@@ -117,6 +117,15 @@ check "changed input appends one version" "$((before + 1))" "$after"
 check "read latest turns" "3" "$(bash "$READ" --store "$STORE" --ticket HIMMEL-9001 | jq -r '.legs[]|select(.name=="HIMMEL-9001-N1-thing").turns')"
 check "read all versions" "2" "$(bash "$READ" --store "$STORE" --ticket HIMMEL-9001 --all | wc -l | tr -d ' ')"
 
+# 6b. two concurrent runs on a fresh store publish ONE record per ticket
+# (the lock spans compute+append, so the second run sees the first's line)
+STORE2="$ROOT/store2"
+run --store "$STORE2" >/dev/null & p1=$!
+run --store "$STORE2" >/dev/null & p2=$!
+wait "$p1"; wait "$p2"
+check "concurrent runs: one record per ticket" "1" "$(jq -r 'select(.ticket=="HIMMEL-9001")|.ticket' "$STORE2/records.jsonl" | wc -l | tr -d ' ')"
+check "concurrent runs: lock released" "no" "$([ -d "$STORE2/.lock" ] && echo yes || echo no)"
+
 # 7. no message text anywhere in the output
 check "no transcript text leaks" "0" "$(grep -c 'SECRETSENTINEL' "$STORE/records.jsonl" || true)"
 
