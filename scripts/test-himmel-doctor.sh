@@ -5232,8 +5232,15 @@ c46_root="$(git rev-parse --show-toplevel)"
 # JSON via jq (--arg escapes the path); the stubs cat it, so no path is embedded in shell source
 jq -nc --arg p "/elsewhere/other-project" '[{id:"scoped@himmel",scope:"project",projectPath:$p}]' > "$t/list-other.json"
 jq -nc --arg p "$c46_root" '[{id:"scoped@himmel",scope:"project",projectPath:$p}]' > "$t/list-here.json"
-printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/list-other.json"\n' > "$t/claude-other"; chmod +x "$t/claude-other"
-printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/list-here.json"\n' > "$t/claude-here"; chmod +x "$t/claude-here"
+cat > "$t/claude-other" <<'EOF'
+#!/usr/bin/env bash
+cat "$(dirname "$0")/list-other.json"
+EOF
+cat > "$t/claude-here" <<'EOF'
+#!/usr/bin/env bash
+cat "$(dirname "$0")/list-here.json"
+EOF
+chmod +x "$t/claude-other" "$t/claude-here"
 out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-other" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F 'scoped@himmel'; then
     pass "C46 install at another project path -> WARN"
