@@ -593,11 +593,11 @@ const DESIGN_ADDONS = {
   'design-motion': ['emilkowalski-skills@himmel', 'animejs-skills@himmel', 'gsap-skills@himmel',
     'lottie-motion-design@himmel', 'motion-lexicon@himmel', 'playground@claude-plugins-official'],
   'design-3d': ['threejs-skills@himmel'],
-  'design-imagegen': ['taste-skill-imagegen@himmel', 'ai-image-prompts@himmel'],
+  'design-imagegen': ['taste-skill-core@himmel', 'ai-image-prompts@himmel'],
   'design-a11y': ['platform-design-skills@himmel'],
   'design-diagram': ['diagram-design@himmel', 'builder-visual@himmel'],
   'design-slides': ['frontend-slides@himmel'],
-  'design-reference': ['design-dna@himmel', 'anydesign@himmel', 'taste-skill-styles@himmel', 'anthropic-design-skills@himmel'],
+  'design-reference': ['taste-skill-core@himmel', 'design-dna@himmel', 'anydesign@himmel', 'anthropic-design-skills@himmel'],
   'design-trial': ['hallmark@himmel'],
 };
 
@@ -617,7 +617,7 @@ test('each design add-on profile enables its set on base, never the design core 
 });
 
 test('no add-on id leaks into the design core and the superseded ui-ux-pro-max id is gone (HIMMEL-4012 PR2b)', () => {
-  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official');
+  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official' && i !== 'taste-skill-core@himmel'); // taste-skill-core is deliberately in the core AND the imagegen/reference add-ons (HIMMEL-4067)
   for (const id of addonIds) assert.ok(!REG.profiles.design.enable.includes(id), `${id} must stay out of the design core`);
   assert.ok(!REG.catalog.includes('ui-ux-pro-max@ui-ux-pro-max-skill'), 'old ui-ux-pro-max id replaced by the pinned himmel entry');
 });
@@ -631,6 +631,21 @@ test('every design kit himmel id is in the catalog, enabledPlugins:false and onD
     assert.equal(tmpl.enabledPlugins[id], false, `${id} must be enabledPlugins:false in the template`);
     assert.ok(Object.hasOwn(tmpl.onDemandPlugins, id), `${id} must be an onDemandPlugins key (install-plugins installs from it)`);
   }
+});
+
+// HIMMEL-4067: upstream ships a plugin.json for these, so strict:false + a marketplace
+// skills list is a manifest conflict (the plugin loads nothing), and the upstream default
+// skills/ dir loads in full anyway, so a subset split never restricted anything.
+test('ui-ux-pro-max and taste-skill-core are strict:true with no skills list; the taste split entries are gone (HIMMEL-4067)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const mp = JSON.parse(readFileSync(join(REPO_ROOT, 'marketplace', '.claude-plugin', 'marketplace.json'), 'utf8'));
+  const byName = new Map(mp.plugins.map((x) => [x.name, x]));
+  for (const name of ['ui-ux-pro-max', 'taste-skill-core']) {
+    assert.equal(byName.get(name)?.strict, true, `${name}: strict:true`);
+    assert.ok(!('skills' in byName.get(name)), `${name}: no marketplace skills list beside an upstream plugin.json`);
+  }
+  for (const name of ['taste-skill-imagegen', 'taste-skill-styles']) assert.ok(!byName.has(name), `${name} dropped`);
+  assert.ok(!JSON.stringify(REG).includes('taste-skill-imagegen') && !JSON.stringify(REG).includes('taste-skill-styles'), 'no profile references a dropped taste entry');
 });
 
 test('marketplace kit entries are pinned and carry an explicit skills list when strict:false (HIMMEL-4012 PR2b)', () => {

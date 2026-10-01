@@ -63,14 +63,13 @@ everywhere), ON-DEMAND (installed, disabled — `plugin-profile.sh enable
 | `ui-ux-pro-max` | UI/UX design intelligence (7 skills), himmel entry pinned to upstream tag `v2.15.0` over HTTPS (replaces the old `ui-ux-pro-max@ui-ux-pro-max-skill` install; the operator script removes it) | ON-DEMAND, `design` core (HIMMEL-4012); catalog id `ui-ux-pro-max@himmel` |
 | `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.3.1` over HTTPS as a `git-subdir` source on `plugin/` (HIMMEL-3069 precedent; a `url`+`path` source caches the whole repo and loses the agents/hooks) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
 | `emilkowalski-skills` | Emil Kowalski's design-engineering/animation skills: 10 of 13 (web only; animate-expo, mobile-native and write-swift are excluded through the entry's `skills` list, no fork). MIT, sha-pinned, `strict:false` | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
-| `taste-skill-core` | Leonxlnx/taste-skill core: taste-skill, redesign-skill, output-skill (sha-pinned, `strict:false`) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
+| `taste-skill-core` | Leonxlnx/taste-skill, all 13 upstream skills in ONE plugin (sha-pinned, `strict:true`; the former imagegen and styles split never restricted anything, HIMMEL-4067) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
 | `shadcn-mcp` | himmel wrapper plugin for the shadcn/ui registry MCP (`npx shadcn@4.21.0 mcp`, no API key; upstream ships no plugin) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
 | `animejs-skills` | Anime.js skills (root-skill repo, `skills: ["./"]`, install shape UNPROVEN, add-on only) | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `gsap-skills` | GSAP skills (8 skills, sha-pinned) | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `lottie-motion-design` | Lottie motion-design skill (sha-pinned) | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `motion-lexicon` | Motion vocabulary skill, tag `v6.0.0` | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `threejs-skills` | Three.js skills (10 skills, sha-pinned) | ON-DEMAND, `design-3d` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
-| `taste-skill-imagegen` | taste-skill imagegen set: imagegen-frontend-web, imagegen-frontend-mobile, image-to-code-skill, brandkit (same sha as core) | ON-DEMAND, `design-imagegen` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `ai-image-prompts` | AI image prompt library (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-imagegen` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `platform-design-skills` | Platform design guidelines: web, iOS, Android (sha-pinned) | ON-DEMAND, `design-a11y` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `diagram-design` | Diagram design skills (manifest-bearing upstream, sha-pinned) | ON-DEMAND, `design-diagram` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
@@ -78,7 +77,6 @@ everywhere), ON-DEMAND (installed, disabled — `plugin-profile.sh enable
 | `frontend-slides` | HTML presentation generator, `git-subdir` `plugins/frontend-slides`, tag `v2.1.0` | ON-DEMAND, `design-slides` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `design-dna` | Design DNA skill (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `anydesign` | Capture a site into a design system, tag `v0.6.0` (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
-| `taste-skill-styles` | taste-skill style packs: soft, minimalist, brutalist (same sha as core) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `anthropic-design-skills` | anthropics/skills design subset: theme-factory, brand-guidelines, canvas-design (not the source-available docx/pdf/pptx/xlsx) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `hallmark` | Nutlope/hallmark design skill (90 MB clone), opt-in trial | ON-DEMAND, `design-trial` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 

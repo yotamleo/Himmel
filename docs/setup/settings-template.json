@@ -67,7 +67,6 @@
     "lottie-motion-design@himmel": false,
     "motion-lexicon@himmel": false,
     "threejs-skills@himmel": false,
-    "taste-skill-imagegen@himmel": false,
     "ai-image-prompts@himmel": false,
     "platform-design-skills@himmel": false,
     "diagram-design@himmel": false,
@@ -75,7 +74,6 @@
     "frontend-slides@himmel": false,
     "design-dna@himmel": false,
     "anydesign@himmel": false,
-    "taste-skill-styles@himmel": false,
     "anthropic-design-skills@himmel": false,
     "hallmark@himmel": false,
     "shadcn-mcp@himmel": false,
@@ -146,7 +144,7 @@
       "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable ui-ux-pro-max@himmel`."
     },
     "taste-skill-core@himmel": {
-      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable taste-skill-core@himmel`."
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design` lane profile and the `design-imagegen` and `design-reference` add-ons (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable taste-skill-core@himmel`."
     },
     "animejs-skills@himmel": {
       "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-motion` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable animejs-skills@himmel`."
@@ -162,9 +160,6 @@
     },
     "threejs-skills@himmel": {
       "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-3d` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable threejs-skills@himmel`."
-    },
-    "taste-skill-imagegen@himmel": {
-      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-imagegen` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable taste-skill-imagegen@himmel`."
     },
     "ai-image-prompts@himmel": {
       "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-imagegen` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable ai-image-prompts@himmel`."
@@ -186,9 +181,6 @@
     },
     "anydesign@himmel": {
       "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-reference` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable anydesign@himmel`."
-    },
-    "taste-skill-styles@himmel": {
-      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-reference` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable taste-skill-styles@himmel`."
     },
     "anthropic-design-skills@himmel": {
       "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-reference` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable anthropic-design-skills@himmel`."

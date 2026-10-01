@@ -185,17 +185,8 @@
         "url": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git",
         "ref": "v2.15.0"
       },
-      "description": "[nextlevelbuilder/ui-ux-pro-max-skill, MIT, vendor + attribution only, no carried delta] UI/UX design intelligence (7 skills, local BM25 search script, no network). Replaces the unpinned ui-ux-pro-max@ui-ux-pro-max-skill install. Explicit HTTPS git url (HIMMEL-549), pinned to a release tag v2.15.0 per himmel supply-chain policy (HIMMEL-3069). Design kit, design profile (HIMMEL-4012).",
-      "strict": false,
-      "skills": [
-        "./.claude/skills/banner-design",
-        "./.claude/skills/brand",
-        "./.claude/skills/design-system",
-        "./.claude/skills/design",
-        "./.claude/skills/slides",
-        "./.claude/skills/ui-styling",
-        "./.claude/skills/ui-ux-pro-max"
-      ],
+      "description": "[nextlevelbuilder/ui-ux-pro-max-skill, MIT, vendor + attribution only, no carried delta] UI/UX design intelligence (7 skills, local BM25 search script, no network). Replaces the unpinned ui-ux-pro-max@ui-ux-pro-max-skill install. Explicit HTTPS git url (HIMMEL-549), pinned to a release tag v2.15.0 per himmel supply-chain policy (HIMMEL-3069). strict:true because upstream plugin.json declares the same 7 skills (strict:false plus a marketplace skills list is a manifest conflict that loads nothing, HIMMEL-4067). Design kit, design profile (HIMMEL-4012).",
+      "strict": true,
       "author": {
         "name": "nextlevelbuilder",
         "url": "https://github.com/nextlevelbuilder"
@@ -209,13 +200,8 @@
         "url": "https://github.com/Leonxlnx/taste-skill.git",
         "sha": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b"
       },
-      "description": "[Leonxlnx/taste-skill, MIT, vendor + attribution only, no carried delta] Taste Skill core subset (design-taste-frontend, redesign-existing-projects, full-output-enforcement). Same repo and pin as taste-skill-imagegen and taste-skill-styles: bump all three together. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha ce26fc25c0e5 per himmel supply-chain policy (HIMMEL-3069). Design kit, design profile (HIMMEL-4012).",
-      "strict": false,
-      "skills": [
-        "./skills/taste-skill",
-        "./skills/redesign-skill",
-        "./skills/output-skill"
-      ],
+      "description": "[Leonxlnx/taste-skill, MIT, vendor + attribution only, no carried delta] Taste Skill: all 13 upstream skills (taste-skill, redesign-skill, output-skill, soft/minimalist/brutalist, imagegen and image-to-code sets, brandkit, stitch). strict:true because upstream ships a plugin.json: with strict:false plus a marketplace skills list Claude Code reports a manifest conflict and loads nothing, and the upstream default skills/ directory always loads in full, so a skills subset never restricted anything (HIMMEL-4067). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha ce26fc25c0e5 per himmel supply-chain policy (HIMMEL-3069). Design kit, design profile (HIMMEL-4012).",
+      "strict": true,
       "author": {
         "name": "Leonxlnx",
         "url": "https://github.com/Leonxlnx"
@@ -327,27 +313,6 @@
         "url": "https://github.com/CloudAI-X"
       },
       "homepage": "https://github.com/CloudAI-X/threejs-skills"
-    },
-    {
-      "name": "taste-skill-imagegen",
-      "source": {
-        "source": "url",
-        "url": "https://github.com/Leonxlnx/taste-skill.git",
-        "sha": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b"
-      },
-      "description": "[Leonxlnx/taste-skill, MIT, vendor + attribution only, no carried delta] Taste Skill image-generation subset (imagegen-frontend-web/-mobile, image-to-code, brandkit). Shares the taste-skill pin. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha ce26fc25c0e5 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-imagegen profile (HIMMEL-4012).",
-      "strict": false,
-      "skills": [
-        "./skills/imagegen-frontend-web",
-        "./skills/imagegen-frontend-mobile",
-        "./skills/image-to-code-skill",
-        "./skills/brandkit"
-      ],
-      "author": {
-        "name": "Leonxlnx",
-        "url": "https://github.com/Leonxlnx"
-      },
-      "homepage": "https://github.com/Leonxlnx/taste-skill"
     },
     {
       "name": "ai-image-prompts",
@@ -470,26 +435,6 @@
         "url": "https://github.com/uxKero"
       },
       "homepage": "https://github.com/uxKero/anydesign"
-    },
-    {
-      "name": "taste-skill-styles",
-      "source": {
-        "source": "url",
-        "url": "https://github.com/Leonxlnx/taste-skill.git",
-        "sha": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b"
-      },
-      "description": "[Leonxlnx/taste-skill, MIT, vendor + attribution only, no carried delta] Taste Skill style-direction variants (high-end-visual-design, minimalist-ui, industrial-brutalist-ui). Shares the taste-skill pin. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha ce26fc25c0e5 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-reference profile (HIMMEL-4012).",
-      "strict": false,
-      "skills": [
-        "./skills/soft-skill",
-        "./skills/minimalist-skill",
-        "./skills/brutalist-skill"
-      ],
-      "author": {
-        "name": "Leonxlnx",
-        "url": "https://github.com/Leonxlnx"
-      },
-      "homepage": "https://github.com/Leonxlnx/taste-skill"
     },
     {
       "name": "anthropic-design-skills",
