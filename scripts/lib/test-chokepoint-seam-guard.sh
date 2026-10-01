@@ -273,7 +273,20 @@ assert_eq "G10 the claude environ is unreadable -> 96" "96" "$(gate "$Q5" "$GO")
 Q6="$TMP/gproc6"; mkclaude "$Q6" "$GA" PATH=/bin "HIMMEL_REPO=$GA"; rm -rf "$Q6/1"
 assert_eq "G11 a walk error past the claude match -> 96" "96" "$(gate "$Q6" "$GO" "HIMMEL_REPO=$GA")"
 Q7="$TMP/gproc7"; mkclaude "$Q7" "$GA" PATH=/bin "HIMMEL_REPO=$GA"; rm -rf "$Q7/self"
-assert_eq "G12 no /proc (non-Linux) -> ALLOW despite a mismatch" "0" "$(gate "$Q7" "$GO" HIMMEL_CONSOLE_LEG=1)"
+# HIMMEL-3921: a Linux host with no readable /proc (unshare -rm + a tmpfs over
+# /proc) is not a real platform - deny. A genuine non-Linux host stays hook-only.
+# shellcheck disable=SC2016 # $1..$3 expand in the child bash, by design
+assert_eq "G12 no /proc, Linux injected -> 96 (fails closed, host-independent)" "96" "$(HIMMEL_CONSOLE_LEG=1 bash -c '. "$1" && _csg_gate "$2" 20 "$3" Linux' _ "$GA/scripts/lib/chokepoint-seam-guard.sh" "$Q7" "$GO" 2>/dev/null; printf %s "$?")"
+# shellcheck disable=SC2016 # $1..$3 expand in the child bash, by design
+assert_eq "G12b no /proc, genuine non-Linux (Darwin) -> ALLOW" "0" "$(env -u HIMMEL_CONSOLE_LEG bash -c '. "$1" && _csg_gate "$2" 20 "$3" Darwin' _ "$GA/scripts/lib/chokepoint-seam-guard.sh" "$Q7" "$GO" 2>/dev/null; printf %s "$?")"
+# HIMMEL-3921 judge I2: a populated fake /proc (tmpfs with written stat files)
+# passes the readable check but is not a procfs mount.
+# shellcheck disable=SC2016 # $1/$2 expand in the child bash, by design
+assert_eq "G12c populated fake /proc (plain dir, not procfs) -> not a procfs" "1" "$(bash -c '. "$1" && _csg_procfs "$2"' _ "$GA/scripts/lib/chokepoint-seam-guard.sh" "$Q7" >/dev/null 2>&1; printf %s "$?")"
+if [ "$(uname -s)" = Linux ]; then
+# shellcheck disable=SC2016 # $1 expands in the child bash, by design
+assert_eq "G12d the real /proc on Linux -> procfs" "0" "$(bash -c '. "$1" && _csg_procfs /proc' _ "$GA/scripts/lib/chokepoint-seam-guard.sh" >/dev/null 2>&1; printf %s "$?")"
+fi
 Q8="$TMP/gproc8"; mkdir -p "$Q8/self"; : > "$Q8/self/stat"
 mkproc "$Q8" 1 0 systemd - /sbin/init
 mkproc "$Q8" 20 1 bash /usr/bin/bash bash

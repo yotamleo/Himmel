@@ -2446,6 +2446,41 @@ shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 `eval`/`bash -c` recursion. Bypass: `ENV_PREFIX_GUARD_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-chokepoint-env-prefix.sh`.
 
+**Text layer for detached and non-Linux launches (HIMMEL-3921).** The
+in-session seam guard (`scripts/lib/chokepoint-seam-guard.sh`, HIMMEL-3914)
+only sees calls under a claude ancestor on Linux; `setsid -f`, `at`, a
+pure-bash double-fork, `systemd-run --user`, cron and non-Linux hosts bypass
+it. The hook therefore adds a parse-free, deny-leaning scan of the raw command
+(`raw_obfuscated`, plus two arms in `raw_mention`): (1) a seam write
+(`NAME=`, `export`/`env`/`read`/`printf -v`/`declare`/...) beside a `scripts/`
+path word carrying ANY glob/brace/`$var` character after `scripts/` (no prefix
+compare or registry resolution: every quote- or escape-split spelling mis-resolved
+it, so an unrelated `scripts/hooks/*.sh` beside a write verb also denies, an
+accepted over-deny; `ls scripts/*.sh` with no write token is allowed), any
+word containing `scripts/` (relative, `./` or absolute) spelled with a `/.` or `//` segment (no
+normaliser: `scripts/lanes/../lanes/stop-w*.sh` denies), or an
+ANSI-C `$'` word naming a path or carrying any backslash escape other than the
+plain whitespace/quote ones (`\n \t \r \\ \' \" \a \b \f \v`; an allowlist, so
+`\x \u \U \c \e` and octal all count; a bare `$'\t'` is allowed), is denied (any
+clearing token of arm (3) below anywhere in the command also counts as the
+write here, with no verb or program-word anchoring); (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
+beside a chokepoint word is denied; (3) CLEARING a seam or
+`HIMMEL_CONSOLE_LEG` (ANY `unset` whatever its argument, any `export -n`,
+`declare|typeset|local +x`, `exec -<opt>`, `${!`, and any standalone
+`-u*`/`-i*`/`--u*`/`--i*`/bare `-` token, so
+`env -u NAME`/`-uNAME`/`-iu`/`$x-uNAME`/a globbed `en?` with a long option
+all deny) beside a
+chokepoint word is denied — this reverses the old "clear-and-prove" allow and
+over-denies subshell-scoped clears (the raw scan cannot model scope). The lib
+also fails closed (exit 96) on Linux when `/proc` is unreadable or is not a
+real procfs mount (`stat -f -c %T /proc` must be `proc`; a fake view via
+`unshare -rm` + tmpfs is refused); genuine non-Linux stays hook-only.
+Deliberate over-deny: `quiet-run.sh ... -- env -u X bash test` and a
+leg-launch argv whose brief text mentions `env -u` or `extdebug` deny beside
+a chokepoint word; put the control in a script file and run that instead. Residuals (ponytail): an obfuscated seam NAME beside a LITERAL
+chokepoint path (`export "$n=1"`), a program word that hides both its
+`scripts/` anchor and its glob, and S2/S4 (HIMMEL-3930).
+
 **Suite concurrency budget (HIMMEL-1818).** Test suites share a machine-wide
 semaphore (`scripts/lib/suite-semaphore.sh`): `HIMMEL_SUITE_SLOTS` slots
 (default 3) under `${TMPDIR:-/tmp}/himmel-suite-semaphore.d`. Only the two
