@@ -511,14 +511,19 @@ _bwimc_sp_pipe=0
 _bwimc_split_emit() {
     if [ -n "${1//[[:space:]]/}" ]; then
         local _fw="${1#"${1%%[![:space:]]*}"}"
-        # a leading `!` (repeatable) negates a pipeline; it must not hide the opener
-        while [ "${_fw%%[[:space:]]*}" = '!' ] && [ "$_fw" != '!' ]; do
-            _fw="${_fw#!}"; _fw="${_fw#"${_fw%%[![:space:]]*}"}"
+        # Skip EVERY leading prefix (`!`, `time [-p]`, `coproc [NAME]`, VAR=val)
+        # before the opener test, so a prefixed opener taints like a bare one.
+        local _w _pw=""
+        while :; do
+            _w="${_fw%%[[:space:]]*}"
+            case "$_w" in
+                '{'|if|while|until|for|select|case) _bwimc_sp_pipe=1; break ;;
+                '!'|time|-p|--|coproc|[A-Za-z_]*=*) ;;
+                *) [ "$_pw" = coproc ] || break ;;  # coproc NAME
+            esac
+            [ "$_w" = "$_fw" ] && break
+            _pw="$_w"; _fw="${_fw#"$_w"}"; _fw="${_fw#"${_fw%%[![:space:]]*}"}"
         done
-        _fw="${_fw%%[[:space:]]*}"
-        case "$_fw" in
-            '{'|if|while|until|for|select|case) _bwimc_sp_pipe=1 ;;
-        esac
     fi
     if [ "$_bwimc_sp_pipe" = 1 ] && [ -n "${1//[[:space:]]/}" ]; then
         printf '%s%s\n' "$_BWIMC_PIPE" "$1"

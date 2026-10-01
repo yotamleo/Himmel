@@ -3084,6 +3084,16 @@ check_both "90d control: cd wt || exit; echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || exit; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "90e control: cd wt; echo x > a.txt (cwd=wt) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 91 (AG rd7): a prefixed opener (time/coproc/!/VAR=val, any order) sets the sticky
+# taint like a bare one, so a LATER bare `cd wt` clause no longer restores the cwd.
+check_both "91 fromW: cd primary; time if false; then :; cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; time if false; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "91b fromW: cd primary; coproc if false; then :; cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; coproc if false; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "91c fromW: cd primary; ! time -p if false; then :; cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! time -p if false; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "91d fromW: cd primary; coproc N { :; }; cd wt; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; coproc N { :; }; cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
