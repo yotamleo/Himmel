@@ -112,6 +112,45 @@ if run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
 fi
 echo "ok: non-HTTPS url plugin source inside vendored marketplace detected"
 
+# Case 2c-subdir (HIMMEL-4012): a `git-subdir` plugin source (url + path, the
+# shape a plugin living in a repo subdirectory needs: a `url` source ignores
+# `path` and caches the whole repo) is hermetic iff its url is HTTPS — same
+# predicate as `url`, not an unknown source type.
+write_marketplace "$tmp/mkt_subdir" '
+    {"name": "sub", "source": {"source": "git-subdir", "url": "https://github.com/x/sub.git", "path": "plugin", "ref": "v1.0.0"}}
+'
+cat > "$tmp/tmpl.json" <<JSON
+{
+  "enabledPlugins": {
+    "plannotator-effective-html@himmel": true
+  },
+  "extraKnownMarketplaces": {
+    "himmel": {"source": {"source": "directory", "path": "$tmp/mkt_subdir"}}
+  }
+}
+JSON
+if ! run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
+  echo "FAIL: guard failed on a git-subdir plugin source with an HTTPS url"; exit 1
+fi
+echo "ok: git-subdir plugin source with an HTTPS url passes"
+write_marketplace "$tmp/mkt_subdir_ssh" '
+    {"name": "evil", "source": {"source": "git-subdir", "url": "git@github.com:x/evil.git", "path": "plugin", "ref": "v1.0.0"}}
+'
+cat > "$tmp/tmpl.json" <<JSON
+{
+  "enabledPlugins": {
+    "plannotator-effective-html@himmel": true
+  },
+  "extraKnownMarketplaces": {
+    "himmel": {"source": {"source": "directory", "path": "$tmp/mkt_subdir_ssh"}}
+  }
+}
+JSON
+if run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
+  echo "FAIL: guard passed despite a non-HTTPS git-subdir plugin source"; exit 1
+fi
+echo "ok: non-HTTPS git-subdir plugin source detected"
+
 # Case 2d (RED, HIMMEL-2846): the vendored marketplace's own marketplace.json
 # is missing -> fail loud (fail-closed), never a silent PASS.
 cat > "$tmp/tmpl.json" <<JSON

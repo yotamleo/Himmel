@@ -919,7 +919,7 @@ fi
 # own GIT_TEST_ASSUME_DIFFERENT_OWNER test hook, but that hook is not honored
 # by every git build (the public runner's git resolves the repo fine and the
 # whole case goes rc=0) — a `.git` FILE pointing at a nonexistent gitdir makes
-# rev-parse refuse ("not a git repository") on any git build, same as SC6M.
+# rev-parse refuse (a `fatal:` line) on any git build, same as SC6M.
 H_DUBIOUS="$TMP/h-dubious"
 mkdir -p "$H_DUBIOUS"
 printf 'gitdir: %s/nonexistent-gitdir\n' "$TMP" > "$H_DUBIOUS/.git"
@@ -930,8 +930,10 @@ out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
 assert_rc "SC6L dubious-ownership HOOKS_REPO_ROOT exits 2" 2 "$rc"
 assert_has "SC6L error names the hooks-repo git status as unresolved" \
     "could not confirm whether $H_DUBIOUS is a git work tree" "$out"
+# HIMMEL-4009: git 2.56 reworded this refusal ("gitfile does not point to a valid
+# repository"), so pin git's own `fatal:` line, not its wording.
 assert_has "SC6L surfaces git's own unresolved-repo message" \
-    "not a git repository" "$out"
+    "fatal:" "$out"
 assert_not_has "SC6L does not take the non-git clean-skip line" \
     "is not a git work tree — no repo-local hooks to remove" "$out"
 assert_has "SC6L later step 6 halted as a consequence" \

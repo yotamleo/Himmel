@@ -994,6 +994,59 @@ if grepq "$cov_out" -F 'scripts/hooks/check-oxlint-complexity.sh' && grepq "$cov
 if grepq "$cov_out" -E '^  gh:gitleaks/gitleaks v[0-9.]+ \([^)]*\.github/workflows/ci\.yml[^)]*\.pre-commit-config\.yaml'; then ok "pin-scan reads the ci.yml gitleaks literal into the same row as the hook rev"; else bad "ci.yml gitleaks pin not discovered with the hook rev; $(printf '%s' "$cov_out" | grep gitleaks)"; fi
 rm -rf "$W12" "$PIN_EMPTY"
 
+# 13. Non-semver tag streams + git-subdir sources (HIMMEL-4012). Hermetic: a
+#     stubbed gh serves tags/heads from a state dir; a fixture marketplace.json
+#     and plugin-upstreams.json carry the shapes under test.
+#     (a) an override with `tag_prefix` ("skill-v") compares only that stream's
+#         tags — the engine-v* stream and bare semver tags must not win;
+#     (b) a `git-subdir` source with a sha is read like a url source (HEAD
+#         compare) instead of silently vanishing from the inventory.
+W13="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-stream.XXXXXX")" || { bad "tag_prefix/git-subdir fixture: mktemp -d failed"; exit 1; }; mkdir -p "$W13/bin" "$W13/state"
+cat >"$W13/bin/gh" <<'GH'
+#!/usr/bin/env bash
+a="$*"
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+repo=$(printf '%s\n' "$a" | sed -n 's|.*repos/\([^/ ]*/[^/ ]*\)/.*|\1|p')
+case "$a" in
+  *"/compare/"*) printf '3\n'; exit 0 ;;
+  *"/tags"*) grep -E "^${repo}=" "$GHSTATE/tags" 2>/dev/null | head -1 | cut -d= -f2- | tr ',' '\n'; exit 0 ;;
+  *"commits/HEAD"*) grep -E "^${repo}=" "$GHSTATE/heads" 2>/dev/null | head -1 | cut -d= -f2; exit 0 ;;
+esac
+exit 0
+GH
+chmod +x "$W13/bin/gh"
+SUB_SHA=aaaabbbbccccdddd000011112222333344445555
+SUB_HEAD=ffffeeeeddddcccc999988887777666655554444
+printf 'o/stream-cur=engine-v0.1.9,skill-v4.3.1,skill-v4.3.0,v9.9.9\no/stream-behind=engine-v0.1.9,skill-v4.4.0,skill-v4.3.1\no/stream-none=v1.0.0\n' >"$W13/state/tags"
+printf 'o/sub-ok=%s\no/sub-behind=%s\n' "$SUB_SHA" "$SUB_HEAD" >"$W13/state/heads"
+cat >"$W13/m.json" <<JSON
+{"plugins":[
+ {"name":"stream-cur","source":{"source":"url","url":"https://github.com/o/stream-cur.git","ref":"skill-v4.3.1"}},
+ {"name":"stream-behind","source":{"source":"url","url":"https://github.com/o/stream-behind.git","ref":"skill-v4.3.1"}},
+ {"name":"stream-none","source":{"source":"url","url":"https://github.com/o/stream-none.git","ref":"skill-v4.3.1"}},
+ {"name":"sub-ok","source":{"source":"git-subdir","url":"https://github.com/o/sub-ok.git","path":"plugin","sha":"$SUB_SHA"}},
+ {"name":"sub-behind","source":{"source":"git-subdir","url":"https://github.com/o/sub-behind.git","path":"plugin","sha":"$SUB_SHA"}}
+]}
+JSON
+cat >"$W13/u.json" <<JSON
+{
+ "stream-cur":{"upstream_repo":"o/stream-cur","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v"},
+ "stream-behind":{"upstream_repo":"o/stream-behind","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v"},
+ "stream-none":{"upstream_repo":"o/stream-none","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v"}
+}
+JSON
+printf '{}' >"$W13/empty.json"
+GHSTATE="$W13/state" PATH="$W13/bin:$PATH" DRIFT_MJSON="$W13/m.json" DRIFT_UPSTREAMS="$W13/u.json" \
+  DRIFT_REGISTRY="$W13/empty.json" DRIFT_KNOWN_MARKETPLACES=/dev/null \
+  bash "$SCRIPT" >"$W13/out.txt" 2>&1
+out13="$(cat "$W13/out.txt")"
+if grepq "$out13" '^  stream-cur: CURRENT'; then ok "tag_prefix: synced to the highest skill-v tag -> CURRENT (engine-v/bare v9.9.9 ignored)"; else bad "stream-cur not CURRENT; $(grep stream-cur "$W13/out.txt")"; fi
+if grepq "$out13" '^  stream-behind: BEHIND'; then ok "tag_prefix: newer skill-v tag -> BEHIND"; else bad "stream-behind not BEHIND; $(grep stream-behind "$W13/out.txt")"; fi
+if grepq "$out13" '^  stream-none: ? no stable version tags'; then ok "tag_prefix: no tag in the stream -> UNCHECKED, never a false CURRENT"; else bad "stream-none not UNCHECKED; $(grep stream-none "$W13/out.txt")"; fi
+if grepq "$out13" '^  sub-ok: CURRENT'; then ok "git-subdir sha pin at HEAD -> CURRENT"; else bad "git-subdir sub-ok not CURRENT; $(grep sub-ok "$W13/out.txt")"; fi
+if grepq "$out13" '^  sub-behind: BEHIND'; then ok "git-subdir sha pin behind HEAD -> BEHIND"; else bad "git-subdir source missing from the pinned-remote class; $(grep sub-behind "$W13/out.txt")"; fi
+rm -rf "$W13"
+
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
 echo "all checks passed."

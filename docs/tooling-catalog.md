@@ -61,7 +61,8 @@ everywhere), ON-DEMAND (installed, disabled — `plugin-profile.sh enable
 | `plannotator-effective-html` | HTML design/UI artifact kit (design-artifact, html, html-diagram/-plan/-prototype/-wireframe) | ON-DEMAND — `design` profile only (HIMMEL-3064): measured 1 invocation in 1628 transcripts against ~630 tok/session cost, so it opts in per-dispatch instead of riding the ALWAYS tier |
 | `frontend-design` | Anthropic's frontend-design skill (official marketplace, local-path entry) | ON-DEMAND — `design` profile only (HIMMEL-4012); needs a one-time operator install |
 | `ui-ux-pro-max` | UI/UX design intelligence (7 skills under `.claude/skills/`: ui-ux-pro-max, design, design-system, brand, banner-design, slides, ui-styling) | ON-DEMAND — `design` profile only (HIMMEL-4012); catalog id `ui-ux-pro-max@ui-ux-pro-max-skill` |
-| `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.3.1` over HTTPS (HIMMEL-3069 precedent) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
+| `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.3.1` over HTTPS as a `git-subdir` source on `plugin/` (HIMMEL-3069 precedent; a `url`+`path` source caches the whole repo and loses the agents/hooks) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
+| `emilkowalski-skills` | Emil Kowalski's design-engineering/animation skills (10 skills, MIT), himmel marketplace entry sha-pinned (`strict:false` + skills list, manifest-less upstream) over HTTPS | MARKETPLACE ENTRY ONLY (HIMMEL-4012 pilot) — install row + `design-motion` profile land in PR2b |
 
 himmel's lean floor also carries `plugin-dev`, `agent-sdk-dev`, `hookify`,
 `playground`, and `atlassian` (all NOT INSTALLED) — see the full re-enable

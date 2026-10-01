@@ -205,11 +205,11 @@ check_marketplace_dir() {
       directory)
         check_marketplace_dir "$(resolve_dir_path "$dir" "$pdetail")" "$((depth + 1))" "$label > $pname" "$ancestors $dir"
         ;;
-      url)
+      url|git-subdir)
         case "$pdetail" in
           https://*) ;;
           *)
-            bad="$bad  $label > $pname (source: url, but url is not HTTPS: $pdetail)
+            bad="$bad  $label > $pname (source: $ptype, but url is not HTTPS: $pdetail)
 "
             ;;
         esac
