@@ -746,7 +746,7 @@ check "amend resolves a finding through a prior re-key" "$?" "0"
 check "the follow-up amend still keys on the ORIGINAL head" "$(L="$AM" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend");console.log(rs[rs.length-1].target_head)')" "AH1"
 
 # ── HIMMEL-1294: the deferral field ─────────────────────────────────────────
-CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH3 --model glm --id glm-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason "pre-existing, already public"
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH3 --model glm --id glm-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason "pre-existing, already public" --fu-class hardening
 check "finding stores deferred_to" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head==="AH3");console.log(o.verdict+","+o.deferred_to)')" "deferred,HIMMEL-1293"
 CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH4 --model glm --id glm-2 --severity imp --file f --line 1 --verdict deferred --deferred-to "not a ticket" 2>/dev/null
 check "a malformed --deferred-to is rejected" "$?" "2"
@@ -759,7 +759,7 @@ CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH5 --model glm --id glm-3 
 check "ticket key with a trailing non-digit is rejected (glob-vs-regex)" "$?" "2"
 CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH5 --model glm --id glm-3 --severity imp --file f --line 1 --verdict deferred --deferred-to "himmel-1" --reason r 2>/dev/null
 check "lowercase ticket key is rejected" "$?" "2"
-CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH6 --model glm --id glm-4 --severity imp --file f --line 1 --verdict deferred --deferred-to "HI-1" --reason r
+CR_LEDGER="$AM" bash "$LA" finding --branch b --head AH6 --model glm --id glm-4 --severity imp --file f --line 1 --verdict deferred --deferred-to "HI-1" --reason r --fu-class hardening
 check "a minimal well-formed ticket key is accepted" "$?" "0"
 
 # codex-1: gate 4 blocks on severity IN (crit, imp), so a typo matches neither
@@ -783,6 +783,28 @@ check "amend --set deferred_to= validates the ticket key too" "$?" "2"
 CR_LEDGER="$AM" bash "$LA" amend --branch b --head AH1 --id codex-adv-1 --set reason="out of scope for this branch" --reason "deferring after review"
 check "amend can set the finding-level reason" "$?" "0"
 check "amend --set reason lands in set, not on the amend reason" "$(L="$AM" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend");const r=rs[rs.length-1];console.log(r.set.reason+"|"+r.reason)')" "out of scope for this branch|deferring after review"
+
+# ── HIMMEL-4034: a deferral must carry a follow-up class (escape|hardening|polish) ─
+FU="$tmp/fu-class.jsonl"
+CR_LEDGER="$FU" bash "$LA" finding --branch b --head FU1 --model m --id fu-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason r 2>/dev/null
+check "finding --deferred-to without --fu-class is refused" "$?" "2"
+check "  ...and nothing was written" "$(cat "$FU" 2>/dev/null | wc -l | tr -d ' ')" "0"
+CR_LEDGER="$FU" bash "$LA" finding --branch b --head FU1 --model m --id fu-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason r --fu-class nonsense 2>/dev/null
+check "finding --fu-class outside escape|hardening|polish is refused" "$?" "2"
+CR_LEDGER="$FU" bash "$LA" finding --branch b --head FU1 --model m --id fu-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1293 --reason r --fu-class hardening
+check "finding --deferred-to with a valid --fu-class is accepted" "$?" "0"
+check "  ...and stores fu_class" "$(L="$FU" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse)[0];console.log(o.fu_class)')" "hardening"
+CR_LEDGER="$FU" bash "$LA" finding --branch b --head FU2 --model m --id fu-2 --severity imp --file f --line 1 --verdict agreed
+check "control: a non-deferral finding needs no --fu-class" "$?" "0"
+CR_LEDGER="$FU" bash "$LA" amend --branch b --head FU2 --id fu-2 --set verdict=deferred --set deferred_to=HIMMEL-1293 --set reason=r --reason x 2>/dev/null
+check "amend to a deferral without fu_class is refused" "$?" "2"
+CR_LEDGER="$FU" bash "$LA" amend --branch b --head FU2 --id fu-2 --set verdict=deferred --set deferred_to=HIMMEL-1293 --set reason=r --set fu_class=polish --reason x
+check "amend to a deferral with fu_class is accepted" "$?" "0"
+check "  ...and the amend carries fu_class" "$(L="$FU" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend");console.log(rs[rs.length-1].set.fu_class)')" "polish"
+CR_LEDGER="$FU" bash "$LA" amend --branch b --head FU2 --id fu-2 --set fu_class=bogus --reason x 2>/dev/null
+check "amend rejects an invalid fu_class" "$?" "2"
+CR_LEDGER="$FU" bash "$LA" amend --branch b --head FU2 --id fu-2 --set reason=updated --reason x
+check "control: amending only the reason needs no fu_class" "$?" "0"
 
 # ── HIMMEL-1500: `attempt` kind — per-invocation timing, NEVER deduped ──────
 AT="$tmp/attempt.jsonl"
@@ -1367,11 +1389,11 @@ check "control: batch spec.reason with no secret keeps its double spaces byte-id
 check "batch spec.reason flattens an embedded newline like --detail" "$(rs_field finding rb-6 reason)" "line one line two"
 check "control: batch spec.reason is NOT capped (a long disposition is kept whole)" "$(rs_field finding rb-7 reason | tr -d '\n' | wc -c | tr -d ' ')" "600"
 # argv paths
-CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "tracked Bearer $_c_tok"
+CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "tracked Bearer $_c_tok" --fu-class hardening
 check "argv finding --reason: Bearer<tok> is redacted" "$(rs_field finding ra-1 reason)" "tracked Bearer [REDACTED]"
-CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-2 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "tracked Bearer"$'\r\n'"$_c_tok"
+CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-2 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "tracked Bearer"$'\r\n'"$_c_tok" --fu-class hardening
 check "argv finding --reason: Bearer<CRLF><tok> is redacted" "$(rs_field finding ra-2 reason)" "tracked Bearer [REDACTED]"
-CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-3 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "plain  reason with two  spaces"
+CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-3 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "plain  reason with two  spaces" --fu-class hardening
 check "control: argv finding --reason with no secret is byte-identical" "$(rs_field finding ra-3 reason)" "plain  reason with two  spaces"
 CR_LEDGER="$RSL" bash "$LA" amend --branch b --head "$RSH" --id rb-5 --set severity=sug --reason "why Bearer $_c_tok"
 check "argv amend --reason: Bearer<tok> is redacted" "$(rs_field amend rb-5 reason)" "why Bearer [REDACTED]"
