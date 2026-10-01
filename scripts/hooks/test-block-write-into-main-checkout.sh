@@ -3003,6 +3003,108 @@ check_both "77 fromP: cd wt | cat; cp wt/src.txt xlnkdir2/ (trailing slash) deni
 check_both "78 control: cd wt | cat; cp wt/src.txt wt/xlnk (absolute wt dir) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp $FIX/wt/src.txt $FIX/wt/xlnk\",\"cwd\":\"$FIX/primary\"}}"
 
+echo "== HIMMEL-3685 (a cd reached via | or || leaves the modelled cwd UNRESOLVED) =="
+
+# 79-84: the WORKTREE-cwd half of 46. From a worktree payload cwd,
+# `cd <primary> || cd <wt>` really ends in <primary> (the first cd succeeds, so
+# the || arm never runs) but the tracker modelled the cwd as <wt> — equal to the
+# payload cwd, so no divergence, so the relative write was checked against
+# <wt> and ALLOWED. A cd/pushd reached across a | or || boundary now marks the
+# cwd unresolved, which fails closed exactly like an unresolvable cd.
+check_both "79 fromW: cd primary || cd wt; echo x > a.txt (first cd succeeds, || never runs) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "80 fromW: cd primary || cd wt; git commit -m wip (git-arm twin) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || cd $FIX/wt; git commit -m wip\",\"cwd\":\"$FIX/wt\"}}"
+check_both "81 fromW: cd wt || cd primary; echo x > a.txt (the cd reached via || is the dangerous one) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || cd $FIX/primary; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 82 (control): the idiomatic guard — the cd is FIRST in its list, only `exit`
+# follows the ||, so no cd is reached via a boundary and the cwd stays resolved.
+check_both "82 control: cd wt || exit; echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || exit; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 83/83b (decision, rd4): a cd left of a single `|` runs in a pipeline subshell,
+# so the real cwd never moves while the model would move it. The sticky taint
+# marks the cwd UNRESOLVED for both sides of a `|`; `cd <wt> | cat` from the
+# wt cwd is therefore an accepted OVER-DENY (the write would have been safe).
+check_both "83 fromW: cd wt | cat; echo x > a.txt denies (accepted over-deny: cd left of a pipe)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "83b fromW: echo | cd wt; echo x > a.txt denies (cd reached across a | boundary)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo | cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 84: the interp-body scan shares the splitter.
+F84_CMD="bash -c 'cd $FIX/primary || cd $FIX/wt; echo x > a.txt'"
+F84_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F84_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "84 fromW: bash -c 'cd primary || cd wt; echo x > a.txt' denies" block "$F84_JSON"
+# 85 (codex-1): a { } group after the || — the flag must survive the group's own
+# non-cd clauses, or `{ :` consumes it and the cd inside restores a false cwd.
+check_both "85 fromW: cd primary || { :; cd wt; }; echo x > a.txt denies (flag survives the group)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || { :; cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85b fromW: cd primary || { echo a; echo b; cd wt; }; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || { echo a; echo b; cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 85d (codex-1 round 2): same for a ( ) subshell group.
+check_both "85d fromW: cd primary || ( :; cd wt; ); echo x > a.txt denies (flag survives the subshell group)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || ( :; cd $FIX/wt; ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85e fromW: cd primary || ( echo a; cd wt ); echo x > a.txt denies (no ; before the close paren)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || ( echo a; cd $FIX/wt ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85f control: cd wt || ( echo no; exit 1 ); echo x > a.txt (cwd=wt) now denies (allowlist over-deny: parens)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || ( echo no; exit 1 ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 85g (codex-1 round 3): if / for compound commands after the ||.
+check_both "85g fromW: cd primary || if true; then :; cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || if true; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85h fromW: cd primary || for i in 1; do :; cd wt; done; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || for i in 1; do :; cd $FIX/wt; done; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "85i control: cd wt || if true; then exit 1; fi; echo x > a.txt (cwd=wt) now denies (allowlist over-deny: reserved words)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || if true; then exit 1; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 85c: allowlist (AG rd8) distrusts any command containing braces, parens or reserved words, so this former control now fails closed.
+check_both "85c control: cd wt || { echo no; exit 1; }; echo x > a.txt (cwd=wt) now denies (allowlist over-deny: braces)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || { echo no; exit 1; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 86 (codex-2 rd4): a pipeline-left cd runs in a subshell; after `cd primary` the
+# real cwd is primary, but a tracker that models the left cd would say wt.
+check_both "86 fromW: cd primary; cd wt | cat; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt | cat; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 87 (codex-1 rd4): case arms.
+check_both "87 fromW: cd primary || case x in x) :; cd wt;; esac; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || case x in x) :; cd $FIX/wt;; esac; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 88 (control): a plain && chain keeps the cwd resolved.
+check_both "88 control: cd wt && echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 89 (CR rd5): a leading `!` (repeatable) must not hide a compound opener from the taint.
+check_both "89 fromW: cd primary; ! if false; then cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "89b fromW: cd primary; ! ! if false; then cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! ! if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 90 (AG rd6, generic fail-closed): any reserved word in a cd's clause, or a cd that
+# is not the first command word, leaves the cwd unresolved (no prefix enumeration).
+check_both "90 fromW: cd primary; time if false; then cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; time if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "90b fromW: cd primary; coproc { cd wt; }; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; coproc { cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "90c fromW: cd primary; time -p cd wt; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; time -p cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "90d control: cd wt || exit; echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || exit; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "90e control: cd wt; echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 91 (AG rd7): a prefixed opener (time/coproc/!/VAR=val, any order) sets the sticky
+# taint like a bare one, so a LATER bare `cd wt` clause no longer restores the cwd.
+check_both "91 fromW: cd primary; time if false; then :; cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; time if false; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "91b fromW: cd primary; coproc if false; then :; cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; coproc if false; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "91c fromW: cd primary; ! time -p if false; then :; cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! time -p if false; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "91d fromW: cd primary; coproc N { :; }; cd wt; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; coproc N { :; }; cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 92 (AG rd8, allowlist): a cd is trusted only in a command free of reserved words,
+# braces, parens, a single `&` and a single `|`; anything else fails closed.
+check_both "92 fromW: cd primary; cd wt & echo x > a.txt denies (backgrounded cd)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt & echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "92b fromW: cd primary; function f { :; cd wt; }; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; function f { :; cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "92c fromW: cd wt || exit; echo x > a.txt still allows (control)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || exit; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "92d fromW: cd wt; echo x 2>&1 > a.txt still allows (redirect & is not a background &)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; echo x 2>&1 > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
