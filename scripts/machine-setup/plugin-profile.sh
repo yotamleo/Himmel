@@ -139,6 +139,22 @@ ONDEMAND_SPECS="$(jq -r '(.onDemandPlugins // {}) | keys[]' "$TEMPLATE" | tr -d 
 # list after a write, so the same fail-closed parse serves both. It returns 1
 # (never exits) so the caller decides — startup exits, apply() reports unverified.
 load_live() {
+  # Preferred: `claude plugin list --json` — typed rows (id, scope, enabled), no
+  # stanza grammar to trip on. A plugin installed in N projects yields N project
+  # rows (HIMMEL-4025); only the scope=user rows matter here. A CLI without
+  # --json, or a payload that is not the expected row array, falls through to
+  # the text parser below. A repeated USER row stays contradictory (fail closed).
+  LIVE_JSON="$(claude plugin list --json 2>/dev/null | tr -d '\r')" || LIVE_JSON=""
+  if [ -n "$LIVE_JSON" ] && printf '%s\n' "$LIVE_JSON" | jq -e 'type == "array" and all(.[]; (.id | type) == "string" and (.scope | type) == "string" and (.enabled | type) == "boolean")' >/dev/null 2>&1; then
+    if ! LIVE="$(printf '%s\n' "$LIVE_JSON" | jq -r '
+        [ .[] | select(.scope == "user") ] as $u
+        | if ($u | map(.id) | unique | length) != ($u | length) then error("duplicate user row")
+          else $u[] | "\(.id)\t\(if .enabled then "enabled" else "disabled" end)" end' | sort -u)"; then
+      echo "plugin-profile: 'claude plugin list --json' returned an unrecognized response — cannot read live plugin state" >&2
+      return 1
+    fi
+    return 0
+  fi
   if ! LIVE_RAW="$(claude plugin list 2>&1)"; then
     echo "plugin-profile: 'claude plugin list' failed — cannot read live plugin state:" >&2
     printf '%s\n' "$LIVE_RAW" | sed 's/^/    /' >&2
@@ -184,11 +200,15 @@ load_live() {
     }
     /^[[:space:]]*Status:/ {
       if (stage != 3 || $0 !~ /^[[:space:]]*Status:[[:space:]]+[^[:space:]]+[[:space:]]+(enabled|disabled)[[:space:]]*$/) invalid()
-      # One stanza per (spec, scope): a repeat is contradictory, never a tie-break.
-      key = spec "\t" scope
-      if (key in seen) invalid()
-      seen[key] = 1
-      if (scope == "user") print spec "\t" $3
+      # One USER stanza per spec: a repeat is contradictory, never a tie-break.
+      # Non-user rows legitimately repeat (one per project, HIMMEL-4025) and are
+      # never read, so they are not de-duplicated.
+      if (scope == "user") {
+        key = spec "\t" scope
+        if (key in seen) invalid()
+        seen[key] = 1
+        print spec "\t" $3
+      }
       stage = 0
       next
     }
