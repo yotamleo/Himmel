@@ -158,20 +158,8 @@
         "url": "https://github.com/emilkowalski/skills.git",
         "sha": "d16ebe60d09a5ba2afcb7054ede9d0a10c9f6128"
       },
-      "description": "[emilkowalski/skills, MIT, vendor + attribution only, no carried delta] Emil Kowalski's design-engineering and animation skills (animate, animation-vocabulary, emil-design-eng, find-animation-opportunities, improve-animations, review-animations, apple-design, ask-sonner, pick-ui-library, prototype). Manifest-less upstream, so the entry is strict:false with an explicit skills list. Sourced via an explicit HTTPS git url (NOT the `github` shorthand, HIMMEL-549 / HIMMEL-2837) and pinned to a full commit sha (upstream has no release tag) per himmel supply-chain policy (HIMMEL-3069). Pilot entry of the design kit (HIMMEL-4012).",
+      "description": "[emilkowalski/skills, MIT, vendor + attribution only, no carried delta] Emil Kowalski's design-engineering and animation skills: all 13 upstream skills load (the web ones plus animate-expo, mobile-native, write-swift; a marketplace skills list cannot exclude any, HIMMEL-4068). Manifest-less upstream, so the entry is strict:false with no skills list. Sourced via an explicit HTTPS git url (NOT the `github` shorthand, HIMMEL-549 / HIMMEL-2837) and pinned to a full commit sha (upstream has no release tag) per himmel supply-chain policy (HIMMEL-3069). Pilot entry of the design kit (HIMMEL-4012).",
       "strict": false,
-      "skills": [
-        "./skills/animate",
-        "./skills/animation-vocabulary",
-        "./skills/emil-design-eng",
-        "./skills/find-animation-opportunities",
-        "./skills/improve-animations",
-        "./skills/review-animations",
-        "./skills/apple-design",
-        "./skills/ask-sonner",
-        "./skills/pick-ui-library",
-        "./skills/prototype"
-      ],
       "author": {
         "name": "Emil Kowalski",
         "url": "https://github.com/emilkowalski"
@@ -233,18 +221,8 @@
         "url": "https://github.com/greensock/gsap-skills.git",
         "sha": "aed9cfd3277740755f6bfc1155c7aa645403b760"
       },
-      "description": "[greensock/gsap-skills, MIT, vendor + attribution only, no carried delta] Official GreenSock GSAP skills (core, timeline, ScrollTrigger, plugins, utils, react, frameworks, performance). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha aed9cfd32777 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-motion profile (HIMMEL-4012).",
-      "strict": false,
-      "skills": [
-        "./skills/gsap-core",
-        "./skills/gsap-frameworks",
-        "./skills/gsap-performance",
-        "./skills/gsap-plugins",
-        "./skills/gsap-react",
-        "./skills/gsap-scrolltrigger",
-        "./skills/gsap-timeline",
-        "./skills/gsap-utils"
-      ],
+      "description": "[greensock/gsap-skills, MIT, vendor + attribution only, no carried delta] Official GreenSock GSAP skills (core, timeline, ScrollTrigger, plugins, utils, react, frameworks, performance). strict:true because upstream ships a plugin.json (strict:false plus a marketplace skills list is a manifest conflict that loads nothing, HIMMEL-4068). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha aed9cfd32777 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-motion profile (HIMMEL-4012).",
+      "strict": true,
       "author": {
         "name": "greensock",
         "url": "https://github.com/greensock"
@@ -260,9 +238,6 @@
       },
       "description": "[lottiefiles/motion-design-skill, MIT, vendor + attribution only, no carried delta] LottieFiles motion-design skill. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha f9a8a041b851 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-motion profile (HIMMEL-4012).",
       "strict": false,
-      "skills": [
-        "./skills/motion-design"
-      ],
       "author": {
         "name": "lottiefiles",
         "url": "https://github.com/lottiefiles"
@@ -278,9 +253,6 @@
       },
       "description": "[Ryan-yang125/motion-lexicon, MIT, vendor + attribution only, no carried delta] Motion vocabulary skill (feeling to recipe); complements the emil skills. Explicit HTTPS git url (HIMMEL-549), pinned to a release tag v6.0.0 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-motion profile (HIMMEL-4012).",
       "strict": false,
-      "skills": [
-        "./skills/motion-lexicon"
-      ],
       "author": {
         "name": "Ryan-yang125",
         "url": "https://github.com/Ryan-yang125"
@@ -296,18 +268,6 @@
       },
       "description": "[CloudAI-X/threejs-skills, MIT per upstream README (no LICENSE file), vendor + attribution only, no carried delta] Three.js skills (animation, fundamentals, geometry, interaction, lighting, loaders, materials, postprocessing, shaders, textures). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha b1c623076c66 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-3d profile (HIMMEL-4012).",
       "strict": false,
-      "skills": [
-        "./skills/threejs-animation",
-        "./skills/threejs-fundamentals",
-        "./skills/threejs-geometry",
-        "./skills/threejs-interaction",
-        "./skills/threejs-lighting",
-        "./skills/threejs-loaders",
-        "./skills/threejs-materials",
-        "./skills/threejs-postprocessing",
-        "./skills/threejs-shaders",
-        "./skills/threejs-textures"
-      ],
       "author": {
         "name": "CloudAI-X",
         "url": "https://github.com/CloudAI-X"
@@ -339,13 +299,8 @@
         "url": "https://github.com/ehmo/platform-design-skills.git",
         "sha": "dc2be825d8b439caea78e9eaa8fb3ac23b0ff3e9"
       },
-      "description": "[ehmo/platform-design-skills, MIT, vendor + attribution only, no carried delta] Platform design guidelines skills (web, ios, android only; the other platforms are dropped to save skill listings). Accessibility source of the kit. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha dc2be825d8b4 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-a11y profile (HIMMEL-4012).",
+      "description": "[ehmo/platform-design-skills, MIT, vendor + attribution only, no carried delta] Platform design guidelines skills (all 8 upstream platforms load; a marketplace skills list cannot subset them, HIMMEL-4068). Accessibility source of the kit. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha dc2be825d8b4 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-a11y profile (HIMMEL-4012).",
       "strict": false,
-      "skills": [
-        "./skills/web",
-        "./skills/ios",
-        "./skills/android"
-      ],
       "author": {
         "name": "ehmo",
         "url": "https://github.com/ehmo"
@@ -373,12 +328,8 @@
         "url": "https://github.com/BuilderIO/skills.git",
         "sha": "eb07be67e6d924b958445f706f5ac386243df6b4"
       },
-      "description": "[BuilderIO/skills, MIT, vendor + attribution only, no carried delta] Builder.io visual-plan and visual-recap skills only (subset of 24; upstream .mcp.json is not loaded under strict:false, unverified). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha eb07be67e6d9 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-diagram profile (HIMMEL-4012).",
-      "strict": false,
-      "skills": [
-        "./skills/visual-plan",
-        "./skills/visual-recap"
-      ],
+      "description": "[BuilderIO/skills, MIT, vendor + attribution only, no carried delta] Builder.io skills: all upstream skills load, including visual-plan and visual-recap. strict:true because upstream ships a plugin.json: strict:false plus a marketplace skills list is a manifest conflict that loads nothing (HIMMEL-4068). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha eb07be67e6d9 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-diagram profile (HIMMEL-4012).",
+      "strict": true,
       "author": {
         "name": "BuilderIO",
         "url": "https://github.com/BuilderIO"
@@ -443,13 +394,8 @@
         "url": "https://github.com/anthropics/skills.git",
         "sha": "8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4"
       },
-      "description": "[anthropics/skills, Apache-2.0 per skill LICENSE.txt, vendor + attribution only, no carried delta] anthropics/skills design subset: theme-factory, brand-guidelines, canvas-design (not the source-available docx/pdf/pptx/xlsx). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 8a1541c4a3ff per himmel supply-chain policy (HIMMEL-3069). Design kit, design-reference profile (HIMMEL-4012).",
+      "description": "[anthropics/skills, Apache-2.0 per skill LICENSE.txt, vendor + attribution only, no carried delta] anthropics/skills: the whole upstream skills/ dir loads (a marketplace skills list cannot subset it, HIMMEL-4068), including the source-available docx/pdf/pptx/xlsx; the design ones are theme-factory, brand-guidelines, canvas-design. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 8a1541c4a3ff per himmel supply-chain policy (HIMMEL-3069). Design kit, design-reference profile (HIMMEL-4012).",
       "strict": false,
-      "skills": [
-        "./skills/theme-factory",
-        "./skills/brand-guidelines",
-        "./skills/canvas-design"
-      ],
       "author": {
         "name": "anthropics",
         "url": "https://github.com/anthropics"
@@ -465,9 +411,6 @@
       },
       "description": "[Nutlope/hallmark, MIT, vendor + attribution only, no carried delta] Hallmark design skill (90 MB clone). Opt-in trial profile (operator ruling: trial, not core). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 13ac0ec7e148 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-trial profile (HIMMEL-4012).",
       "strict": false,
-      "skills": [
-        "./skills/hallmark"
-      ],
       "author": {
         "name": "Nutlope",
         "url": "https://github.com/Nutlope"

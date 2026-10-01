@@ -648,7 +648,12 @@ test('ui-ux-pro-max and taste-skill-core are strict:true with no skills list; th
   assert.ok(!JSON.stringify(REG).includes('taste-skill-imagegen') && !JSON.stringify(REG).includes('taste-skill-styles'), 'no profile references a dropped taste entry');
 });
 
-test('marketplace kit entries are pinned and carry an explicit skills list when strict:false (HIMMEL-4012 PR2b)', () => {
+// HIMMEL-4068: the old form of this test demanded an explicit skills list on every strict:false entry.
+// That belief was wrong: Claude Code always loads a plugin's upstream default skills/ dir in full, so a
+// marketplace subset list restricts nothing (no-op when upstream has no plugin.json, a 'conflicting
+// manifests' load failure when it has one). The only list that does work is ['./'], which designates a
+// repo whose root is itself a SKILL.md (no skills/ dir).
+test('marketplace kit entries are pinned; a skills list is only the root-skill form ./ (HIMMEL-4012 PR2b, HIMMEL-4068)', () => {
   const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   const mp = JSON.parse(readFileSync(join(REPO_ROOT, 'marketplace', '.claude-plugin', 'marketplace.json'), 'utf8'));
   const byName = new Map(mp.plugins.map((x) => [x.name, x]));
@@ -659,11 +664,14 @@ test('marketplace kit entries are pinned and carry an explicit skills list when 
     if (typeof e.source === 'string') continue; // himmel-owned local plugin (shadcn-mcp)
     assert.match(e.source.url, /^https:\/\/github\.com\/[^/]+\/[^/]+\.git$/, `${name}: explicit HTTPS git url`);
     assert.ok(/^[0-9a-f]{40}$/.test(e.source.sha ?? '') || typeof e.source.ref === 'string', `${name}: pinned by full sha or release tag`);
-    if (e.strict === false) {
-      assert.ok(Array.isArray(e.skills) && e.skills.length > 0 && e.skills.every((k) => /^\.\//.test(k)), `${name}: strict:false needs an explicit ./ skills list`);
+    if ('skills' in e) {
+      assert.equal(e.strict, false, `${name}: a skills list beside strict:true is meaningless`);
+      assert.deepEqual(e.skills, ['./'], `${name}: a skills subset list is a no-op or a manifest conflict; only the root-skill ./ form works`);
     }
   }
-  assert.ok(!byName.get('emilkowalski-skills').skills.some((k) => /animate-expo|mobile-native|write-swift/.test(k)), 'emil excludes the 3 native-app skills');
+  for (const name of ['gsap-skills', 'builder-visual']) {
+    assert.equal(byName.get(name)?.strict, true, `${name}: upstream ships a plugin.json, so strict:true`);
+  }
 });
 
 // HIMMEL-4012 role-coverage table: what each profile's ROLE requires, so a
