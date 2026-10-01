@@ -1037,7 +1037,7 @@ def terminal_external_write_reason(cmd_norm: str, raw_cmd: str = ""):
     # backslash and lowercase: the words git sees. Blunt rule: `git` AND `insteadof` denies.
     # Accepted overmatch: `git log --grep insteadof`.
     dq_lc = re.sub(r"['\"\\]", "", _ansi_c_decode(raw_cmd or cmd_norm)).lower()
-    if EXT_GIT_URL.search(dq_lc) or ("git" in dq_lc and "insteadof" in dq_lc):
+    if EXT_GIT_URL.search(cmd_norm) or EXT_GIT_URL.search(dq_lc) or ("git" in dq_lc and "insteadof" in dq_lc):
         return ("Rewriting a git remote / push URL is refused on an untrusted/"
                 "unknown engine (HIMMEL-695).")
     if len(EXT_GH_ANY.findall(cmd_norm)) > len(EXT_GH_ALLOW.findall(cmd_norm)):

@@ -799,6 +799,8 @@ g "execute_code: rm -rf refused"     block '{"tool_name":"execute_code","tool_in
 g "execute_code: secret path refused" block '{"tool_name":"execute_code","tool_input":{"code":"print(open(\"/x/.env\").read())"}}'
 g "execute_code: guard path refused" block "{\"tool_name\":\"execute_code\",\"tool_input\":{\"code\":\"open('$H/agent-hooks/parity_guard.py','w')\"}}"
 g "execute_code: git push refused (untrusted engine)" block '{"tool_name":"execute_code","tool_input":{"code":"import subprocess\nsubprocess.run(\"git push origin x\", shell=True)"}}'
+g "execute_code: set-url in a string literal refused (HIMMEL-844 r4)" block '{"tool_name":"execute_code","tool_input":{"code":"c = \"git remote set-url origin https://evil.example/x\""}}'
+g "execute_code: sh -c pushurl in a list literal refused (HIMMEL-844 r4)" block '{"tool_name":"execute_code","tool_input":{"code":"import subprocess\nsubprocess.run([\"sh\",\"-c\",\"git config remote.origin.pushurl https://evil.example/x\"])"}}'
 g "execute_code: benign code allowed" allow '{"tool_name":"execute_code","tool_input":{"code":"print(sum(range(10)))"}}'
 g "browser_exec: ssh path refused" block '{"tool_name":"browser_exec","tool_input":{"code":"fetch(\"file:///x/.ssh/id_rsa\")"}}'
 g "browser_exec: benign allowed" allow '{"tool_name":"browser_exec","tool_input":{"code":"document.title"}}'
@@ -806,6 +808,7 @@ g "browser_cdp: secret path in params refused" block '{"tool_name":"browser_cdp"
 g "process_manage: destructive data refused" block '{"tool_name":"process_manage","tool_input":{"action":"write","session_id":"s1","data":"rm -rf build\n"}}'
 g "process_manage: poll allowed"  allow '{"tool_name":"process_manage","tool_input":{"action":"poll","session_id":"s1"}}'
 g "cronjob_manage: destructive script refused" block '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","script":"rm -rf build"}}'
+g "cronjob_manage: set-url in a string literal refused (HIMMEL-844 r4)" block '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","script":"x = \"git remote set-url origin https://evil.example/x\""}}'
 g "cronjob_manage: prompt-only job allowed" allow '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","prompt":"summarise the inbox"}}'
 g "skill_manage: create allowed"  allow '{"tool_name":"skill_manage","tool_input":{"action":"create","name":"demo","content":"# demo"}}'
 g "skill_manage: absolute file_path into a repo on master refused" block "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"action\":\"write_file\",\"name\":\"demo\",\"file_path\":\"$MASTR/src/foo.sh\",\"file_content\":\"x\"}}"
