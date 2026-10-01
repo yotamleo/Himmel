@@ -593,11 +593,11 @@ const DESIGN_ADDONS = {
   'design-motion': ['emilkowalski-skills@himmel', 'animejs-skills@himmel', 'gsap-skills@himmel',
     'lottie-motion-design@himmel', 'motion-lexicon@himmel', 'playground@claude-plugins-official'],
   'design-3d': ['threejs-skills@himmel'],
-  'design-imagegen': ['ai-image-prompts@himmel'],
+  'design-imagegen': ['taste-skill-core@himmel', 'ai-image-prompts@himmel'],
   'design-a11y': ['platform-design-skills@himmel'],
   'design-diagram': ['diagram-design@himmel', 'builder-visual@himmel'],
   'design-slides': ['frontend-slides@himmel'],
-  'design-reference': ['design-dna@himmel', 'anydesign@himmel', 'anthropic-design-skills@himmel'],
+  'design-reference': ['taste-skill-core@himmel', 'design-dna@himmel', 'anydesign@himmel', 'anthropic-design-skills@himmel'],
   'design-trial': ['hallmark@himmel'],
 };
 
@@ -617,7 +617,7 @@ test('each design add-on profile enables its set on base, never the design core 
 });
 
 test('no add-on id leaks into the design core and the superseded ui-ux-pro-max id is gone (HIMMEL-4012 PR2b)', () => {
-  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official');
+  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official' && i !== 'taste-skill-core@himmel'); // taste-skill-core is deliberately in the core AND the imagegen/reference add-ons (HIMMEL-4067)
   for (const id of addonIds) assert.ok(!REG.profiles.design.enable.includes(id), `${id} must stay out of the design core`);
   assert.ok(!REG.catalog.includes('ui-ux-pro-max@ui-ux-pro-max-skill'), 'old ui-ux-pro-max id replaced by the pinned himmel entry');
 });

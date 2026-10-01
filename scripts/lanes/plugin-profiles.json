@@ -161,6 +161,7 @@
     "design-imagegen": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
       "enable": [
+        "taste-skill-core@himmel",
         "ai-image-prompts@himmel"
       ],
       "contextBudget": 50000
@@ -190,6 +191,7 @@
     "design-reference": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
       "enable": [
+        "taste-skill-core@himmel",
         "design-dna@himmel",
         "anydesign@himmel",
         "anthropic-design-skills@himmel"
