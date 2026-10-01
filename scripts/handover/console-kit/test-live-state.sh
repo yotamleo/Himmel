@@ -147,5 +147,21 @@ bash "$tmp/kitcopy/console-kit/live-state.sh" "$con11" >/dev/null 2>&1; rc=$?
 check '11. a lock status failure refuses' 1 "$rc"
 check '11. the refused run leaves the doc untouched' "$before11" "$(cat "$con11")"
 
+# 12. a held lock whose owner is unreadable refuses and leaves the doc untouched.
+printf '#!/usr/bin/env bash\necho garbage\nexit 11\n' > "$tmp/kitcopy/queue-lock.sh"
+bash "$tmp/kitcopy/console-kit/live-state.sh" "$con11" >/dev/null 2>&1; rc=$?
+check '12. an unreadable lock owner refuses' 1 "$rc"
+check '12. the refused run leaves the doc untouched' "$before11" "$(cat "$con11")"
+
+# 13. end to end: tick.sh reads the rendered doc as livestate=ok.
+e2e="$HANDOVER_DIR/b/HIMMEL-nextleg-T-console.md"
+printf '# c\n\n## Live state\n\nlegs: none\nqueue: none\nlast GO: none\nacked: none\n' > "$e2e"
+bash "$FM" add "${e2e%.md}.fleet.json" "$d1" >/dev/null 2>&1
+bash "$SCRIPT" "$e2e" --nonce N61=n13 --pid N61=13 >/dev/null 2>&1
+mkdir -p "$tmp/tickstate"
+tick_out="$(TICK_STATE_DIR="$tmp/tickstate" TICK_TMPDIR="$tmp" TICK_LAUNCH_DIR="$tmp" bash "$HERE/tick.sh" --doc "$e2e" --token test-token --legs "$d1" 2>/dev/null)"
+case "$tick_out" in *'livestate=ok'*) r=ok ;; *) r="[$tick_out]" ;; esac
+check '13. tick.sh reads the rendered Live state as livestate=ok' ok "$r"
+
 [ "$t1" = tok-one ] || { echo "FAIL - setup: lock token [$t1]"; fails=$((fails+1)); }
 [ "$fails" -eq 0 ] && echo "PASS" || { echo "$fails FAILED"; exit 1; }

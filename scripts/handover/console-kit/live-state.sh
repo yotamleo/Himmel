@@ -90,7 +90,7 @@ while IFS=$'\t' read -r label ldoc; do
         *) echo "live-state: $label: lock status failed (rc=$rc), doc not rewritten" >&2; exit 1 ;;
     esac
     token="$(printf '%s\n' "$out" | head -1 | jq -r '.session // empty' 2>/dev/null)"
-    [ -n "$token" ] || { echo "live-state: $label: unreadable lock owner, left out" >&2; continue; }
+    [ -n "$token" ] || { echo "live-state: $label: unreadable lock owner, doc not rewritten" >&2; exit 1; }
     old="$(printf '%s\n' "$old_entries" | awk -F: -v l="$label" '$1 == l { print; exit }')"
     nonce="$(printf '%s' "$old" | cut -d: -f2)"
     pid="$(printf '%s' "$old" | cut -d: -f4)"
