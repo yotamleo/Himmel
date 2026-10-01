@@ -594,7 +594,10 @@ export function resolveProfileByName(name, opts = {}, path = REGISTRY) {
 export function mcpServersForProfile(registry, name) {
   if (String(name).includes(',')) {
     const members = name.split(',');
-    const bad = members.find((m) => NON_ADDITIVE_PROFILES.includes(m));
+    if (members.some((m) => !/^[A-Za-z0-9._-]+$/.test(m)) || new Set(members).size !== members.length) {
+      throw new Error(`plugin-profiles: malformed profile list "${name}" (names joined by single commas, no spaces, empty or repeated members)`);
+    }
+    const bad =members.find((m) => NON_ADDITIVE_PROFILES.includes(m));
     if (bad !== undefined) {
       throw new Error(`plugin-profiles: profile "${bad}" cannot be composed in a profile list (${NON_ADDITIVE_PROFILES.join(', ')} are not additive)`);
     }

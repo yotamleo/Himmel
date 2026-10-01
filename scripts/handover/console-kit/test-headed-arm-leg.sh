@@ -2960,6 +2960,11 @@ bdoc41="$tmp/consult-blocked41.md"; printf '# consult\n\n## Results\n' > "$bdoc4
 bash "$HERE/append-results.sh" "$bdoc41" "BLOCKED — path missing" >/dev/null 2>&1 || true
 rc=0; bash "$RELAY41" "$bdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: BLOCKED with no answer -> exit 4" "$rc" "4"
+pbdoc41="$tmp/consult-pblocked41.md"; printf '# consult\n\n## Results\n' > "$pbdoc41"
+bash "$HERE/append-results.sh" "$pbdoc41" "ANSWER partial" >/dev/null 2>&1 || true
+bash "$HERE/append-results.sh" "$pbdoc41" "BLOCKED — lost the file" >/dev/null 2>&1 || true
+rc=0; bash "$RELAY41" "$pbdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
+check "41f relay: BLOCKED after a partial ANSWER -> exit 4 (terminal)" "$rc" "4"
 rc=0; bash "$RELAY41" "$cdoc41" 'bad name' >/dev/null 2>&1 || rc=$?
 check "41f relay: bad asker -> exit 2" "$rc" "2"
 contains "41f relay body is quoted line by line" "$relay41" "| use easing X, see design.md:12"

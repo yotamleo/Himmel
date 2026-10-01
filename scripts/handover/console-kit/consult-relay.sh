@@ -8,7 +8,8 @@
 # Exit 0 with the text; exit 3 if the consult has not finished answering (no
 # ANSWER bullet, or no WRAPPED after it) so the console can tell "still running"
 # from "answered"; exit 4 if
-# the consult ended `BLOCKED` without an answer; exit 5 (nothing printed) if the
+# the consult ended `BLOCKED` without a complete answer (a BLOCKED after the last
+# ANSWER counts); exit 5 (nothing printed) if the
 # answer carries authority-shaped text; exit 2 on bad usage.
 set -u
 
@@ -28,8 +29,10 @@ answers="$(sed -n -E 's/^- [0-9]{2}:[0-9]{2} ANSWER([[:space:]]+(.*))?$/\2/p' "$
 done_after="$(awk '/^- [0-9][0-9]:[0-9][0-9] ANSWER([ \t]|$)/ {a=NR} /^- [0-9][0-9]:[0-9][0-9] WRAPPED/ {w=NR} END {print (a && w > a) ? "yes" : "no"}' "$doc")"
 if [ -z "$answers" ] || [ "$done_after" != "yes" ]; then
     # An ANSWER with no WRAPPED yet is a partial answer: still running.
-    if [ -z "$answers" ] && grep -q -E '^- [0-9]{2}:[0-9]{2} BLOCKED' "$doc"; then
-        echo "consult-relay: the consult ended BLOCKED with no answer: $doc" >&2
+    # A BLOCKED AFTER the last ANSWER (or with none) is terminal, not still running.
+    blocked_after="$(awk '/^- [0-9][0-9]:[0-9][0-9] ANSWER([ \t]|$)/ {a=NR} /^- [0-9][0-9]:[0-9][0-9] BLOCKED/ {b=NR} END {print (b && b > a) ? "yes" : "no"}' "$doc")"
+    if [ "$blocked_after" = "yes" ]; then
+        echo "consult-relay: the consult ended BLOCKED without a complete answer: $doc" >&2
         exit 4
     fi
     echo "consult-relay: no completed answer (ANSWER then WRAPPED) yet in $doc" >&2

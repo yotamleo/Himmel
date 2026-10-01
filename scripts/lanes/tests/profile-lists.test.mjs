@@ -81,6 +81,10 @@ test('HIMMEL-4014: mcpServers is the union of the members allowlists', () => {
   assert.deepEqual(mcpServersForProfile(reg, '__m1,__m5'), ['qmd']);
 });
 
+test('HIMMEL-4014: the --mcp-servers list path refuses duplicate members like resolveProfile', () => {
+  assert.throws(() => mcpServersForProfile(REG, 'design,design'), /malformed profile list/);
+});
+
 for (const bad of ['operator', 'bare', 'console', 'console-relay', 'console-judge']) {
   test(`HIMMEL-4014: the --mcp-servers list path refuses a non-additive member (${bad})`, () => {
     assert.throws(() => mcpServersForProfile(REG, `design,${bad}`), /cannot be composed/);
