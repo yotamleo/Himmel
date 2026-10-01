@@ -908,6 +908,7 @@ is_readonly_allowlisted() {
     first=$(printf '%s' "$c" | awk '{print $1}')
     case "$first" in
         cat|head|tail|grep|rg|diff|wc) return 0 ;;
+        ls) [ "$_RO_LS" = 1 ] && return 0; return 1 ;;
         less)
             # less -o/-O (case already folded by cmd_lc) or --log-file logs
             # the input stream to a file — a write, despite the read-only verb.
@@ -937,6 +938,9 @@ is_readonly_allowlisted() {
 # ANSI-C `$'…'` word (which spells any byte). TOK=0 sends every caller back
 # to the older whole-text scan (PowerShell always) or fails closed.
 TOK=0
+# 1 when only a glob/alias leaf (HIMMEL-3938), not a named settings file, made
+# the command a candidate: `ls` is then a read the allowlist may pass.
+_RO_LS=0
 
 # _tok_verb_write KIND REGEX — 0 (a candidate write) unless EVERY segment
 # whose text matches REGEX (the same lowercased verb pattern
@@ -1108,6 +1112,7 @@ _tok_ro_segment() {
     [ "$fk" -ge 0 ] || return 0
     case "$first" in
         cat|head|tail|grep|diff|wc|jq|rg|less|sed) ;;
+        ls) [ "$_RO_LS" = 1 ] || return 1 ;;
         git)
             case "$sub" in xdiff|xshow|xlog|xstatus|xblame) ;; *) return 1 ;; esac
             ;;
@@ -1441,6 +1446,83 @@ changes_directory() {
     [ -n "$out" ]
 }
 
+# _exp_home W — sets _EH to W with a leading $HOME, ${HOME} or ~ replaced by
+# $HOME's value (text only; the hook never sees the shell's expansion).
+_EH=''
+_exp_home() {
+    # shellcheck disable=SC2088 # `~/` is matched as the literal text typed
+    case "$1" in
+        '$HOME'|'${HOME}'|'~') _EH=${HOME:-} ;;
+        '$HOME/'*) _EH=${HOME:-}/${1#'$HOME/'} ;;
+        '${HOME}/'*) _EH=${HOME:-}/${1#'${HOME}/'} ;;
+        '~/'*) _EH=${HOME:-}/${1#'~/'} ;;
+        *) _EH=$1 ;;
+    esac
+}
+
+# _settings_leaf_candidates LEAF GLOB — sets _SLC to the settings leaf names
+# (settings.json, settings.local.json) LEAF could spell when it is not
+# literally one of them (HIMMEL-3938), empty when it cannot. Two shapes:
+#   alias  a Windows spelling of the same file, taken through a symlinked
+#          .claude: a trailing dot or space (`settings.json.`), an NTFS
+#          stream suffix (`settings.json::$DATA`, everything from the first
+#          `:`), an 8.3 short name (`SETTIN~1.JSO`; either file, so both).
+#   glob   (GLOB=1, the word carried an unquoted glob) a pattern that matches
+#          a settings name. A `{…}` group is read as `*` (a superset of its
+#          alternatives), so `sett{ings,x}.json` is `sett*.json`: deny-lean,
+#          no brace expansion (#1494/#1501 style). Case-insensitive.
+# Judged on the leaf alone; the caller resolves its directory.
+_SLC=''
+_settings_leaf_candidates() {
+    local leaf="$1" glob="$2" a pat pre rest nc=0 n
+    _SLC=''
+    case "$leaf" in
+        *[*?[]*|*'{'*|*'~'*|*:*|*.|*' ') : ;;
+        *) return 0 ;;
+    esac
+    a=${leaf%%:*}
+    while :; do
+        case "$a" in *.|*' ') a=${a%?} ;; *) break ;; esac
+    done
+    shopt -q nocasematch && nc=1
+    shopt -s nocasematch
+    if [ "$a" != "$leaf" ]; then
+        case "$a" in
+            settings.json) _SLC='settings.json' ;;
+            settings.local.json) _SLC='settings.local.json' ;;
+            settin~[0-9]*.jso) _SLC='settings.json settings.local.json' ;;
+        esac
+    elif [[ "$leaf" == settin~[0-9]*.jso ]]; then
+        _SLC='settings.json settings.local.json'
+    fi
+    if [ "$glob" = 1 ]; then
+        pat=$leaf
+        while :; do
+            case "$pat" in *'{'*) : ;; *) break ;; esac
+            pre=${pat%%'{'*}
+            rest=${pat#*'{'}
+            case "$rest" in *'}'*) pat="$pre*${rest#*'}'}" ;; *) pat="$pre*$rest" ;; esac
+        done
+        pat=${pat//\}/*}
+        # A leaf of wildcards only (`.claude/*`) spells no settings file; it is
+        # the directory glob the older checks already judge (HIMMEL-3938: it
+        # false-denied `unzip -l a.zip .claude/*`, test 145).
+        case "$pat" in *[A-Za-z0-9]*) : ;; *) pat='' ;; esac
+        case "$pat" in
+            *[*?[]*)
+                for n in settings.json settings.local.json; do
+                    # shellcheck disable=SC2053 # $pat is the glob, on purpose
+                    if [[ "$n" == $pat ]]; then
+                        case " $_SLC " in *" $n "*) : ;; *) _SLC="${_SLC:+$_SLC }$n" ;; esac
+                    fi
+                done
+                ;;
+        esac
+    fi
+    [ "$nc" = 1 ] || shopt -u nocasematch
+    return 0
+}
+
 input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
@@ -1691,6 +1773,121 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         fi
     fi
 
+    # HIMMEL-3938: three ways a live settings.json landed past the text and
+    # operand checks above, one mechanism — every word is judged for the
+    # settings files it could NAME and the directories it could land them in,
+    # each resolved through _check_one_operand (so symlinks, $HOME and the
+    # worktree exemption behave as for any other operand). A hit sets
+    # variant_dest, which makes the command live (an operand resolving to a
+    # live settings file is live by construction).
+    #   IMP-1  a glob/brace/bracket leaf (`.claude/sett{ings,x}.json`, `sett*`,
+    #          `settings.jso?`) and IMP-3 a Windows alias of the leaf
+    #          (`settings.json.`, `::$DATA`, `SETTIN~1.JSO`):
+    #          _settings_leaf_candidates names the settings leaves, whatever
+    #          the verb (`sed -i` is no write verb).
+    #   IMP-2  a recursive cp/rsync whose SOURCE directory holds
+    #          .claude/settings*.json, into a directory whose `.claude` is
+    #          live — the destination is one level ABOVE the live file, so no
+    #          operand names it.
+    # False-deny growth, accepted and named: any command word whose leaf glob
+    # or brace group CAN match a settings name under a live .claude (`cp x
+    # .claude/*`, `git add .claude/*.json`, `.claude/{a,b}.json`); a recursive
+    # cp/rsync from a settings-bearing tree into a live parent. Read-only
+    # allowlisted commands and `ls` are exempt below, as for a named settings.
+    # ponytail: a glob in the DIRECTORY part (`.cla*/settings.json`), a source
+    # tree with the settings file deeper than `<src>/.claude/`, and a case-
+    # insensitive `DLINK/` spelling (needs a case-insensitive filesystem to
+    # model) are not judged; upgrade path: a path-expanding parse (HIMMEL-3934).
+    variant_dest=0
+    _check_variant() {
+        local w="$1" glob="$2" dir leaf n sd
+        case "$w" in
+            */*) dir=${w%/*}; leaf=${w##*/}; [ -n "$dir" ] || dir=/ ;;
+            *) dir=.; leaf=$w ;;
+        esac
+        _settings_leaf_candidates "$leaf" "$glob"
+        [ -n "$_SLC" ] || return 0
+        _exp_home "$dir"
+        dir=$_EH
+        for n in $_SLC; do
+            sd=$symlink_dest
+            symlink_dest=0
+            _check_one_operand "${dir%/}/$n"
+            [ "$symlink_dest" = 0 ] || variant_dest=1
+            symlink_dest=$sd
+        done
+    }
+    # _check_tree_copy — reads OPW[] (the command's words). The destination is
+    # the `-t`/`--target-directory` argument (cp only: rsync's -t is a flag), or
+    # else the last operand; every other operand is a source.
+    _check_tree_copy() {
+        local i n=${#OPW[@]} v=-1 w d='' base hit=0 tnext=0 sd
+        local -a pos=()
+        i=0
+        while [ "$i" -lt "$n" ]; do
+            case "${OPW[i]##*/}" in cp|rsync) v=$i; break ;; esac
+            i=$((i + 1))
+        done
+        [ "$v" -ge 0 ] || return 0
+        i=$((v + 1))
+        while [ "$i" -lt "$n" ]; do
+            w=${OPW[i]}
+            i=$((i + 1))
+            if [ "$tnext" = 1 ]; then d=$w; tnext=0; continue; fi
+            case "$w" in
+                '') continue ;;
+                --target-directory=*) d=${w#*=}; continue ;;
+                --target-directory) tnext=1; continue ;;
+                -*)
+                    if [ "${OPW[v]##*/}" = cp ]; then
+                        case "$w" in -t) tnext=1 ;; -[!-]*t?*) : ;; -t*) d=${w#-t} ;; esac
+                    fi
+                    continue
+                    ;;
+            esac
+            pos[${#pos[@]}]=$w
+        done
+        if [ -z "$d" ] && [ "${#pos[@]}" -gt 0 ]; then
+            d=${pos[${#pos[@]}-1]}
+            unset "pos[${#pos[@]}-1]"
+        fi
+        [ -n "$d" ] || return 0
+        for w in ${pos[@]+"${pos[@]}"}; do
+            _exp_home "$w"
+            case "$_EH" in /*|[A-Za-z]:/*|[A-Za-z]:\\*) base=$_EH ;; *) base="$cwd/$_EH" ;; esac
+            if [ -d "$base" ] && { [ -e "$base/.claude/settings.json" ] || [ -e "$base/.claude/settings.local.json" ]; }; then
+                hit=1
+                break
+            fi
+        done
+        [ "$hit" = 1 ] || return 0
+        _exp_home "$d"
+        sd=$symlink_dest
+        symlink_dest=0
+        _check_one_operand "${_EH%/}/.claude/settings.json"
+        [ "$symlink_dest" = 0 ] || variant_dest=1
+        symlink_dest=$sd
+    }
+    OPW=()
+    OPG=()
+    if [ "$TOK" = 1 ]; then
+        if [ "$ST_N" -gt 0 ]; then
+            OPW=("${ST_W[@]}")
+            OPG=("${ST_G[@]}")
+        fi
+    else
+        case $- in *f*) _had_noglob=1 ;; *) _had_noglob=0 ;; esac
+        set -f
+        for w in $cmd_n; do OPW[${#OPW[@]}]=$w; OPG[${#OPG[@]}]=1; done
+        if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
+    fi
+    widx=0
+    while [ "$widx" -lt "${#OPW[@]}" ]; do
+        _check_variant "${OPW[widx]}" "${OPG[widx]}"
+        widx=$((widx + 1))
+    done
+    [ "$write_verb" = 0 ] || _check_tree_copy
+
     # HIMMEL-3686 item 2: a brace group in the text is refused outright
     # whenever it could hide a climb that matters — the text already names
     # a live settings file (any writer: `sed -i`, `perl -pi` and others the
@@ -1727,7 +1924,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     fi
 
     if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ] && [ "$dirdest_climb" = "0" ] \
-        && [ "$symlink_dest" = "0" ] && [ "$brace_dir_dest" = "0" ]; then
+        && [ "$symlink_dest" = "0" ] && [ "$brace_dir_dest" = "0" ] && [ "$variant_dest" = "0" ]; then
         exit 0
     fi
 
@@ -1735,7 +1932,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
 
     live=0
     if [ "$is_primary_cwd" = "1" ] || [ "$ansi_c" = "1" ] || [ "$dirdest_climb" = "1" ] \
-        || [ "$symlink_dest" = "1" ] || [ "$brace_dir_dest" = "1" ]; then
+        || [ "$symlink_dest" = "1" ] || [ "$brace_dir_dest" = "1" ] || [ "$variant_dest" = "1" ]; then
         live=1
     elif changes_directory "$cmd_lc" "$cmd_n"; then
         # The worktree-relative exemption is judged against the PreToolUse
@@ -1770,7 +1967,10 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         exit 0
     fi
 
-    if [ "$mentions_settings" = "1" ]; then
+    # A command that only reached here through a glob/alias/tree-copy leaf
+    # (variant_dest) may also be a plain `ls`, which names no file's content.
+    [ "$mentions_settings" = "1" ] || _RO_LS=1
+    if [ "$mentions_settings" = "1" ] || [ "$variant_dest" = "1" ]; then
         if [ "$TOK" = 1 ]; then
             _tok_readonly_ok && exit 0
         elif is_readonly_allowlisted "$cmd_lc"; then
@@ -1782,7 +1982,9 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         exit 0
     fi
 
-    if [ "$mentions_settings" = "1" ]; then
+    if [ "$mentions_settings" = "0" ] && [ "$variant_dest" = "1" ]; then
+        deny_message "a $tool_name command" "$cmd" "a word can spell a live settings.json/settings.local.json (a glob, brace or bracket leaf, a Windows alias such as a trailing dot, ::\$DATA or an 8.3 name, or a recursive cp/rsync of a tree carrying .claude/settings*.json into the directory above a live .claude)"
+    elif [ "$mentions_settings" = "1" ]; then
         deny_message "a $tool_name command" "$cmd" "the command text names a live settings.json/settings.local.json (worktree-relative spellings of the worktree's OWN copy are exempt; this one resolves to the primary checkout or \$HOME)"
     else
         deny_message "a $tool_name command" "$cmd" "the command targets the primary checkout's .claude/ directory itself (cp/mv/install/rsync/ln/dd/tee/truncate/tar/gtar/bsdtar/unzip, git checkout/restore, or a -t/--target-directory destination)"

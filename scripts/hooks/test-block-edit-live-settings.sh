@@ -1580,6 +1580,92 @@ assert_rc "254 ls src/{a,b}/x.ts (brace word with no climb) allows" 0 \
 assert_rc "255 jq with a brace object word and no path separator allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "jq '{a: .x, b: .y}' in.json")"
 
+# 257-290 (HIMMEL-3938, judge r2 on #1513): three pre-existing bypasses.
+# Each DENY row ALLOWed at base d43bef1bb.
+ln -s "$PRIMARY" "$WT2/plink"
+mkdir -p "$WT2/src2/.claude" "$WT2/src" "$WT2/srcloc/.claude"
+printf '{}\n' > "$WT2/src2/.claude/settings.json"
+printf '{}\n' > "$WT2/srcloc/.claude/settings.local.json"
+printf 'x\n' > "$WT2/src/a.txt"
+
+# IMP-1: a brace-, glob- or bracket-spelled settings leaf.
+assert_rc "257 sed -i .claude/sett{ings,x}.json (primary cwd) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ .claude/sett{ings,x}.json')"
+assert_rc "258 sed -i ./.claude/sett{ings,x}.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ ./.claude/sett{ings,x}.json')"
+assert_rc "259 sed -i .claude/{sett,x}ings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ .claude/{sett,x}ings.json')"
+assert_rc "260 sed -i .claude/sett*.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ .claude/sett*.json')"
+assert_rc "261 sed -i .claude/sett[i]ngs.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ .claude/sett[i]ngs.json')"
+assert_rc "262 sed -i .claude/settings.jso? denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ .claude/settings.jso?')"
+assert_rc "263 sed -i <P>/.claude/sett{ings,x}.json from a second worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "sed -i s/a/b/ $PRIMARY/.claude/sett{ings,x}.json")"
+assert_rc "264 sed -i dlink/sett{ings,x}.json denies" 2 \
+    "$(bash_rc_of "$WT2" 'sed -i s/a/b/ dlink/sett{ings,x}.json')"
+assert_rc "265 sed -i dlink/sett*.json denies" 2 \
+    "$(bash_rc_of "$WT2" 'sed -i s/a/b/ dlink/sett*.json')"
+assert_rc "266 echo x > .claude/sett*.json (redirect) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'echo x > .claude/sett*.json')"
+assert_rc "267 sed -i .claude/settings.local.jso? denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ .claude/settings.local.jso?')"
+assert_rc "268 sed -i \$HOME/.claude/sett*.json denies" 2 \
+    "$(bash_rc_of "$WT2" 'sed -i s/a/b/ $HOME/.claude/sett*.json' HOME="$FAKEHOME")"
+# controls: nothing here can become a live settings file
+assert_rc "269 rg -l foo .claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'rg -l foo .claude/')"
+assert_rc "270 ls .claude/sett* (read-only listing) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'ls .claude/sett*')"
+assert_rc "271 sed -i .claude/*.md (glob that cannot match a settings leaf) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ .claude/*.md')"
+assert_rc "272 sed -i .claude/{a,b}.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i s/a/b/ .claude/{a,b}.md')"
+assert_rc "273 sed -i sett*.json in a worktree's OWN .claude allows" 0 \
+    "$(bash_rc_of "$WT2" 'sed -i s/a/b/ .claude/sett*.json')"
+assert_rc "274 sed -i 'dlink/sett*.json' (quoted, never expanded) names no file; allows" 0 \
+    "$(bash_rc_of "$WT2" "sed -i s/a/b/ 'dlink/sett*.json'")"
+
+# IMP-2: a recursive copy whose SOURCE carries .claude/settings*.json into
+# the directory one level above a live .claude.
+assert_rc "275 cp -r src2/. plink/ denies" 2 \
+    "$(bash_rc_of "$WT2" 'cp -r src2/. plink/')"
+assert_rc "276 cp -r src2/. <P> denies" 2 \
+    "$(bash_rc_of "$WT2" "cp -r src2/. $PRIMARY")"
+assert_rc "277 rsync -a src2/ plink/ denies" 2 \
+    "$(bash_rc_of "$WT2" 'rsync -a src2/ plink/')"
+assert_rc "278 cp -r src2/. \$HOME denies" 2 \
+    "$(bash_rc_of "$WT2" 'cp -r src2/. $HOME' HOME="$FAKEHOME")"
+assert_rc "279 cp -a srcloc/. plink denies (settings.local.json source)" 2 \
+    "$(bash_rc_of "$WT2" 'cp -a srcloc/. plink')"
+assert_rc "280 cp -r -t plink src2/. denies" 2 \
+    "$(bash_rc_of "$WT2" 'cp -r -t plink src2/.')"
+assert_rc "281 cp -r src/. plink/ (no settings in src) allows" 0 \
+    "$(bash_rc_of "$WT2" 'cp -r src/. plink/')"
+assert_rc "282 cp -r src2/. dst/ (dst is no live parent) allows" 0 \
+    "$(bash_rc_of "$WT2" 'cp -r src2/. dst/')"
+assert_rc "283 cp -r src2/. . (the worktree itself) allows" 0 \
+    "$(bash_rc_of "$WT2" 'cp -r src2/. .')"
+assert_rc "284 cp -r src/. dst/ from the primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'cp -r src/. dst/')"
+
+# IMP-3: Windows leaf aliases, modelled textually (a trailing dot, an NTFS
+# stream suffix, an 8.3 short name). Case-insensitive DLINK/ needs a
+# case-insensitive filesystem and is not modelled on Linux.
+assert_rc "285 echo x > dlink/settings.json. denies" 2 \
+    "$(bash_rc_of "$WT2" 'echo x > dlink/settings.json.')"
+assert_rc "286 echo x > dlink/settings.json::\$DATA denies" 2 \
+    "$(bash_rc_of "$WT2" 'echo x > dlink/settings.json::$DATA')"
+assert_rc "287 echo x > dlink/SETTIN~1.JSO denies" 2 \
+    "$(bash_rc_of "$WT2" 'echo x > dlink/SETTIN~1.JSO')"
+assert_rc "288 sed -i s/a/b/ dlink/settings.json. denies" 2 \
+    "$(bash_rc_of "$WT2" 'sed -i s/a/b/ dlink/settings.json.')"
+assert_rc "289 echo x > dlink/other.txt. allows" 0 \
+    "$(bash_rc_of "$WT2" 'echo x > dlink/other.txt.')"
+assert_rc "290 echo x > .claude/settings.json. in a worktree's OWN .claude allows" 0 \
+    "$(bash_rc_of "$WT2" 'echo x > .claude/settings.json.')"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
