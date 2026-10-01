@@ -1034,6 +1034,17 @@ cmd_new() {
     local fill_signal="$chain_dir/sig-$session"
     local log="$chain_dir/launch-$session.log"
 
+    # HIMMEL-4058: resolve the launch line (and so the console profile) BEFORE
+    # the lock and the render, as cmd_next does before clearing its cleanup
+    # trap: a profile refusal must leave neither a rendered doc nor a held lock.
+    # The doc claimed above is still the empty placeholder, so remove it.
+    local launch_rc=0
+    launch_line=$(launch_cmd "$session" "$doc") || launch_rc=$?
+    if [ "$launch_rc" -ne 0 ]; then
+        rm -f "$doc"
+        exit "$launch_rc"
+    fi
+
     echo "doc: $doc"
     echo "session: $session"
     echo "kit: $kit"
@@ -1095,7 +1106,6 @@ cmd_new() {
 
     printf '%s\n' "$lock_out"
 
-    launch_line=$(launch_cmd "$session" "$doc") || exit $?
     echo "launch: $launch_line"
 
     if [ "$ARM" -eq 1 ]; then

@@ -1364,6 +1364,13 @@ out58n="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
     bash "$C" new --bucket rolerepo4 --arm --deadline-min 0 ) 2>&1 )" || rc58n=$?
 check "58b new --arm with an unresolvable console profile: exit 2" "$rc58n" "2"
+# HIMMEL-4058: the profile is resolved BEFORE the lock, so the refusal leaves no
+# doc and no held lock (the release token must not even have been printed).
+doc58nA="$root/tester/rolerepo4/DEMO-nextleg-${today}A-console.md"
+check "58b new refusal: no doc left behind (HIMMEL-4058)" "$([ -e "$doc58nA" ] && echo 1 || echo 0)" "0"
+check "58b new refusal: no release-token printed (HIMMEL-4058)" "$(printf '%s\n' "$out58n" | grep -c 'release-token')" "0"
+check "58b new refusal: no queue lock held (HIMMEL-4058)" \
+    "$(HANDOVER_DIR="$root" bash "$QL" status "$doc58nA" 2>&1)" "free"
 check "58b refusal: no launch line printed" "$(printf '%s\n' "$out58n" | grep -c '^launch: ')" "0"
 check "58b refusal: the arm was never started" "$([ -e "$record58b" ] && echo 1 || echo 0)" "0"
 rc58d=0
