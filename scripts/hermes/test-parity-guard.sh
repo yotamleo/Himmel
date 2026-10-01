@@ -588,6 +588,8 @@ g "round 8 double-quoted decoy" block '{"tool_name":"terminal","tool_input":{"co
 g "round 8 comment decoy" block '{"tool_name":"terminal","tool_input":{"command":"# $'"'"'\ngit config $'"'"'url.x.\\x69nsteadOf'"'"' y"}}'
 g "round 9 decoy + split executable" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config url.x.insteadOf y"}}'
 g "round 9 decoy + split executable + escaped key" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config $'"'"'url.x.\\x69nsteadOf'"'"' y"}}'
+g "round 10 codex-1 NUL via \\c@ ends the segment" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.x.instead\\c@junk'"'"'Of y"}}'
+g "round 10 codex-2 decoy + two adjacent split segments" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'$'"'"'\\x74'"'"' config url.x.insteadOf y"}}'
 g "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'"}}'
 g "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'"}}'
 g "config user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.name x"}}'

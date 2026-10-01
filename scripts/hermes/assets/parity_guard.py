@@ -965,95 +965,63 @@ _ANSI_SIMPLE = {"a": "\x07", "b": "\x08", "e": "\x1b", "E": "\x1b", "f": "\x0c",
 _ANSI_HEX = {"x": 2, "u": 4, "U": 8}
 
 
-def _ansi_c_code(code: int) -> str:
-    # NUL is "" here; the caller truncates the segment at it (bash ends a $'...' string at NUL).
-    return chr(code) if 0 <= code < 128 else "#"
-
-
-def _ansi_c_segment(s: str, i: int):
-    """Decode one ANSI-C body starting at s[i] (just past a dollar-quote opener) up to the
-    next unescaped single quote. Returns (text, next_index, closed, bad). A NUL escape ends
-    the string (bash truncates there): the rest is dropped, the text after the closing quote
-    is kept by the caller."""
-    n, seg, closed, bad = len(s), [], False, False
-    while i < n:
-        c = s[i]
-        if c == "'":
-            closed = True
-            i += 1
-            break
-        if c != "\\":
-            seg.append(c)
-            i += 1
-            continue
-        e = s[i + 1:i + 2]
-        i += 2
-        if not e:
-            bad = True
-            break
-        if e in _ANSI_SIMPLE:
-            seg.append(_ANSI_SIMPLE[e])
-        elif e in "01234567":
-            d = 1
-            v = int(e)
-            while d < 3 and s[i:i + 1] and s[i] in "01234567":
-                v = v * 8 + int(s[i])
-                i += 1
-                d += 1
-            seg.append(_ansi_c_code(v % 256))
-        elif e in _ANSI_HEX:
-            d = 0
-            v = 0
-            while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
-                v = v * 16 + int(s[i], 16)
-                i += 1
-                d += 1
-            if d == 0:
-                bad = True
-            seg.append(_ansi_c_code(v))
-        elif e == "c":
-            if i >= n:
-                bad = True
-            else:
-                i += 1
-            seg.append("#")
-        else:
-            seg.append("\\" + e)
-    text = "".join(seg)
-    return (text.split("\x00", 1)[0], i, closed, bad)
-
-
 def _ansi_c_decode(s: str) -> str:
-    """Decode every ANSI-C dollar-quote segment with bash's own finite escape set
-    (HIMMEL-844). An unterminated / undecodable segment appends ` insteadof `, so the
-    caller's `git` + `insteadof` rule denies (deny-leaning). Code points >= 128 become
-    a placeholder: only ASCII words matter to the rule. Over-approximation: there is no
-    quote-state lexer, so a decoy dollar-quote inside '...', "..." or a comment can swallow
-    a real segment in the in-line pass; every opener is therefore ALSO decoded on its own and
-    appended, and the caller's rule runs on the union."""
-    out, i, n, bad = [], 0, len(s), False
-    while i < n:
-        if not (s[i] == "$" and s[i + 1:i + 2] == "'"):
-            out.append(s[i])
-            i += 1
-            continue
-        text, i, closed, seg_bad = _ansi_c_segment(s, i + 2)
-        out.append(text)
-        if seg_bad or not closed:
-            bad = True
-    cnt = 0
-    for p in range(n - 1):
-        if s[p] == "$" and s[p + 1] == "'":
-            cnt += 1
-            if cnt > 64:
+    """Flat decode (HIMMEL-844 round 10): ONE position-free pass over the whole command, no
+    quote state. Drops every dollar-quote opener and decodes every backslash escape wherever it
+    sits, so decoys and split segments cannot hide `git` or the key. A NUL escape (\\0 \\x00 \\c@
+    \\c`) truncates a segment in bash, so the pass runs twice: NUL kept as `#`, and NUL dropping
+    everything through the next unescaped quote. Code points >= 128 become `#`. Over-approximation
+    only: the caller's `git` + `insteadof` rule runs on both streams."""
+    streams, n = [], len(s)
+    for drop in (False, True):
+        out, i = [], 0
+        while i < n:
+            c = s[i]
+            if c == "$" and s[i + 1:i + 2] == "'":
+                i += 2
                 continue
-            # one variant per opener: ONLY candidate p decoded in place, the rest left raw
-            cand, j, _closed, _bad = _ansi_c_segment(s, p + 2)
-            out.append(" " + cand + " " + s[:p] + cand + s[j:])
-    text = "".join(out)
-    if cnt > 64:
-        text += " git insteadof "
-    return text + " insteadof " if bad else text
+            if c != "\\":
+                out.append(c)
+                i += 1
+                continue
+            e = s[i + 1:i + 2]
+            i += 2
+            if not e:
+                break
+            if e in _ANSI_SIMPLE:
+                out.append(_ANSI_SIMPLE[e])
+                continue
+            if e in "01234567":
+                v, d = int(e), 1
+                while d < 3 and s[i:i + 1] and s[i] in "01234567":
+                    v, i, d = v * 8 + int(s[i]), i + 1, d + 1
+                v %= 256
+            elif e in _ANSI_HEX:
+                v, d = 0, 0
+                while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
+                    v, i, d = v * 16 + int(s[i], 16), i + 1, d + 1
+                if d == 0:
+                    out.append("\\" + e)
+                    continue
+            elif e == "c":
+                v = 0 if s[i:i + 1] in ("@", "`") else 35
+                i += 1
+            else:
+                out.append("\\" + e)
+                continue
+            if v == 0 and drop:
+                while i < n:
+                    c = s[i]
+                    if c == "\\":
+                        i += 2
+                        continue
+                    i += 1
+                    if c == "'":
+                        break
+                continue
+            out.append(chr(v) if 0 < v < 128 else "#")
+        streams.append("".join(out))
+    return ";".join(streams)
 
 
 def terminal_external_write_reason(cmd_norm: str, raw_cmd: str = ""):
