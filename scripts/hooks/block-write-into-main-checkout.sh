@@ -1256,9 +1256,21 @@ _bwimc_unq() {
 # scan runs — never via `$(…)`, which would discard the global updates in a
 # subshell.
 _bwimc_ecwd_track() {
-    local toks=() t tu i n r carg cabs craw piped="${2:-0}"
+    local toks=() t tu i n r carg cabs craw piped="${2:-0}" fenced=0 j cmdi
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
+    # HIMMEL-3685: generic fail-closed, no prefix enumeration. A standalone
+    # reserved word ANYWHERE in the clause (`time -p cd W`, `coproc { cd W; }`,
+    # `! if …`) or a cd/pushd/popd that is not the clause's first command word
+    # (past plain assignments) means the cd may not run as modelled: mark the
+    # cwd unresolved below. Accepted over-deny: `echo cd` or any clause that
+    # merely names cd/pushd/popd as an argument.
+    for ((j = 0; j < n; j++)); do
+        t=$(_bwimc_unq "${toks[$j]}")
+        case "$t" in
+            "!"|time|coproc|if|then|elif|else|"fi"|while|until|for|select|"case"|"esac"|do|"done"|function|"{"|"}"|"[["|"]]") fenced=1 ;;
+        esac
+    done
     i=0
     while [ "$i" -lt "$n" ]; do
         case "$(_bwimc_unq "${toks[$i]}")" in
@@ -1268,6 +1280,7 @@ _bwimc_ecwd_track() {
     done
     [ "$i" -lt "$n" ] || return 0
     tu=$(_bwimc_unq "${toks[$i]}")
+    cmdi=$i
     case "$tu" in
         cd|pushd)
             i=$((i+1))
@@ -1358,8 +1371,14 @@ _bwimc_ecwd_track() {
     # have run (or ran in a pipeline subshell) — whatever it modelled, the
     # real cwd is unknown, so fail closed like an unresolvable cd.
     case "$tu" in
-        cd|pushd|popd) [ "$piped" = 1 ] && _bwimc_ecwd_unres=1 ;;
+        cd|pushd|popd) [ "$piped" = 1 ] && _bwimc_ecwd_unres=1; [ "$fenced" = 1 ] && _bwimc_ecwd_unres=1 ;;
     esac
+    for ((j = 0; j < n; j++)); do
+        [ "$j" = "$cmdi" ] && continue
+        case "$(_bwimc_unq "${toks[$j]}")" in
+            cd|pushd|popd) _bwimc_ecwd_unres=1 ;;
+        esac
+    done
     return 0
 }
 

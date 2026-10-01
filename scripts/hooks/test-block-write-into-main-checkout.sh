@@ -3072,6 +3072,18 @@ check_both "89 fromW: cd primary; ! if false; then cd wt; fi; echo x > a.txt den
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "89b fromW: cd primary; ! ! if false; then cd wt; fi; echo x > a.txt denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! ! if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 90 (AG rd6, generic fail-closed): any reserved word in a cd's clause, or a cd that
+# is not the first command word, leaves the cwd unresolved (no prefix enumeration).
+check_both "90 fromW: cd primary; time if false; then cd wt; fi; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; time if false; then cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "90b fromW: cd primary; coproc { cd wt; }; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; coproc { cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "90c fromW: cd primary; time -p cd wt; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; time -p cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "90d control: cd wt || exit; echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || exit; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "90e control: cd wt; echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
