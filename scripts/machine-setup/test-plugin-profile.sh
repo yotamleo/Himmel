@@ -91,6 +91,18 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ]; then
   # `--json`: STUB_LIST_JSON is the payload; unset = a CLI without --json, so the
   # script must fall back to the text parser (every text-mode test below).
   if [ "${3:-}" = "--json" ]; then
+    # STUB_JSON_LIVE=1: derive the payload from STUB_LIVE + the write overlay (so it
+    # flips after enable/disable, like the real CLI) plus STUB_PROJECT_LIVE rows; a
+    # plain text `plugin list` then FAILS, so a silent fallback cannot pass a case.
+    if [ "${STUB_JSON_LIVE:-}" = 1 ]; then
+      echo json >> "${LIST_LOG:-/dev/null}"
+      { printf '%s\n' "${STUB_LIVE:-}"; cat "${STUB_OVERLAY:-/dev/null}" 2>/dev/null; } \
+        | awk 'NF { if (!($1 in s)) order[++n] = $1; s[$1] = $2 } END { for (i = 1; i <= n; i++) print order[i], s[order[i]] }' \
+        | jq -Rn '[inputs | split(" ") | {id: .[0], scope: "user", enabled: (.[1] == "enabled")}]' > "${STUB_OVERLAY:-/dev/null}.user"
+      printf '%s\n' "${STUB_PROJECT_LIVE:-}" \
+        | jq -Rn '[inputs | select(length > 0) | split(" ") | {id: .[0], scope: "project", enabled: (.[1] == "enabled"), projectPath: "/p1"}]' > "${STUB_OVERLAY:-/dev/null}.proj"
+      jq -s 'add' "${STUB_OVERLAY:-/dev/null}.user" "${STUB_OVERLAY:-/dev/null}.proj"; exit 0
+    fi
     if [ -n "${STUB_LIST_JSON:-}" ]; then printf '%s\n' "$STUB_LIST_JSON"; exit 0; fi
     echo "stub: unknown option '--json'" >&2; exit 1
   fi
@@ -120,6 +132,7 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ]; then
       printf 'Installed plugins:\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✔ enabled\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✔ enabled\n'
       exit 0 ;;
   esac
+  if [ "${STUB_JSON_LIVE:-}" = 1 ]; then echo "stub: text list refused in json mode" >&2; exit 3; fi
   # STUB_LIVE: newline-separated "<spec> <enabled|disabled>"; a spec named
   # here is "installed at user scope"; a spec never named is "absent".
   # STUB_OVERLAY records the enable/disable writes of THIS script run, so a
@@ -169,7 +182,7 @@ CALL_LOG="$TMP/calls.log"
 LIST_LOG="$TMP/lists.log"
 run() {  # run <args...> — drives the real script with the stub claude on PATH
   rm -f "$TMP/overlay"
-  PATH="$STUB_DIR:$PATH" CALL_LOG="$CALL_LOG" STUB_LIVE="${STUB_LIVE:-}" STUB_LIST_FAIL="${STUB_LIST_FAIL:-}" STUB_CRLF="${STUB_CRLF:-0}" STUB_LIST_MODE="${STUB_LIST_MODE:-normal}" STUB_LIST_JSON="${STUB_LIST_JSON:-}" \
+  PATH="$STUB_DIR:$PATH" CALL_LOG="$CALL_LOG" STUB_LIVE="${STUB_LIVE:-}" STUB_LIST_FAIL="${STUB_LIST_FAIL:-}" STUB_CRLF="${STUB_CRLF:-0}" STUB_LIST_MODE="${STUB_LIST_MODE:-normal}" STUB_LIST_JSON="${STUB_LIST_JSON:-}" STUB_JSON_LIVE="${STUB_JSON_LIVE:-}" \
     STUB_OVERLAY="$TMP/overlay" STUB_APPLY_MODE="${STUB_APPLY_MODE:-mutate}" STUB_LIST_FAIL_AFTER_WRITE="${STUB_LIST_FAIL_AFTER_WRITE:-}" STUB_PROJECT_LIVE="${STUB_PROJECT_LIVE:-}" LIST_LOG="$LIST_LOG" \
     bash "$script" "$@" 2>&1
 }
@@ -505,6 +518,30 @@ assert_rc "readback: successful change exits 0" 0 "$rc"
 assert_has "readback: success names the user-scope re-read" "re-read: enabled" "$out"
 assert_has "readback: success stays qualified (project/local may override)" "project/local settings may override effective state" "$out"
 assert_lines_eq "readback: the write path reads live state exactly twice" "$LIST_LOG" "list" "list"
+
+# --json path (HIMMEL-4028): the same verified apply, but BOTH the initial read and
+# the post-write re-read go through `plugin list --json` (STUB_JSON_LIVE=1 derives
+# the payload from STUB_LIVE + the write overlay, so it flips after enable/disable).
+: > "$CALL_LOG"; : > "$LIST_LOG"
+STUB_LIVE="$LIVE_OD"; STUB_JSON_LIVE=1
+out=$(run enable od-a@mkt --template "$TMPL_LF"); rc=$?
+assert_rc "--json readback: successful change exits 0" 0 "$rc"
+assert_has "--json readback: success names the user-scope re-read" "re-read: enabled" "$out"
+assert_lines_eq "--json readback: the write was issued" "$CALL_LOG" "plugin enable od-a@mkt --scope user"
+assert_lines_eq "--json readback: the write path reads live state exactly twice" "$LIST_LOG" "json" "json"
+: > "$CALL_LOG"
+STUB_APPLY_MODE=noop
+out=$(run enable od-a@mkt --template "$TMPL_LF"); rc=$?
+STUB_APPLY_MODE=
+assert_rc "--json readback: exit-0 no-op exits 1" 1 "$rc"
+assert_has "--json readback: no-op names the unchanged user state" "still disabled at user scope" "$out"
+assert_not_has "--json readback: no-op is never acknowledged as changed" "user scope changed" "$out"
+: > "$CALL_LOG"
+STUB_PROJECT_LIVE=$'od-a@mkt enabled'; STUB_APPLY_MODE=noop
+out=$(run enable od-a@mkt --template "$TMPL_LF"); rc=$?
+STUB_APPLY_MODE=; STUB_PROJECT_LIVE=
+assert_rc "--json readback: project-effective state is never read as user state" 1 "$rc"
+STUB_JSON_LIVE=
 
 # exit-0 no-op with unchanged user state: NOT acknowledged, exit 1
 : > "$CALL_LOG"
