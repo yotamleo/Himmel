@@ -43,7 +43,7 @@ fi
 want="$(python3 "$HERE/plan_docs.py" --plan-dir "$plan" --emit-fp ${watches[@]+"${watches[@]}"})"
 have="$(cat "$out/.fp" 2>/dev/null || true)"
 # manifest = hash of the generated doc names, recorded beside .fp after a rebuild (one deleted doc changes it)
-docs_manifest() { (cd "$out/docs" 2>/dev/null && ls -A | LC_ALL=C sort | sha256sum) || true; }
+docs_manifest() { (cd "$out/docs" 2>/dev/null && find . -mindepth 1 | LC_ALL=C sort | sha256sum) || true; }
 
 # fresh = the inputs (the generator included, via plan_docs.py's fingerprint) match AND graph.json and exactly the recorded docs still exist
 fresh=0
