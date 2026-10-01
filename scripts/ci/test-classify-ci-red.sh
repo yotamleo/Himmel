@@ -90,6 +90,7 @@ OUT=$(MAIN_RED_MARKER_DIR="$T/markers" CLASSIFY_DIFF_FILE="$T/unrelated.diff" \
 eq "3: an existing marker exits 0 before any diagnosis" 0 "$RC"
 has "via marker" "$OUT" "3: deciding step is the marker"
 has "pr=3" "$OUT" "3: prints the first leg's evidence"
+has "suspected MAIN-RED" "$OUT" "3: the verdict is labelled suspected, advisory"
 
 # 3a. an unreadable diff cannot show the marker still applies: PR-RED, not MAIN-RED.
 RC=0
@@ -105,6 +106,13 @@ RC=0
 OUT=$(MAIN_RED_MARKER_DIR="$T/markers" CLASSIFY_DIFF_FILE="$T/diff.txt" \
     bash "$SCRIPT" --log "$T/job.log" --job "unit tests" --case "widget parser" 2>&1) || RC=$?
 eq "3b: a marker is ignored when the PR diff references the case" 1 "$RC"
+
+# 3c. a marker does not excuse a PR that changes a lockfile.
+printf 'diff --git a/package-lock.json b/package-lock.json\n+x\n' > "$T/lock.diff"
+RC=0
+MAIN_RED_MARKER_DIR="$T/markers" CLASSIFY_DIFF_FILE="$T/lock.diff" \
+    bash "$SCRIPT" --log "$T/job.log" --job "unit tests" --case "widget parser" >/dev/null 2>&1 || RC=$?
+eq "3c: a marker is ignored when the PR changes a lockfile" 1 "$RC"
 
 # 4. usage: no --log is a usage error (64), never a verdict.
 RC=0; OUT=$(bash "$SCRIPT" --job x 2>&1) || RC=$?

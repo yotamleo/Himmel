@@ -317,9 +317,10 @@ by design.
   that already exists (a shared marker, the log against
   `scripts/ci/main-red-signatures.txt`, your diff) and never re-runs the failing
   tool. `PR-RED` (rc 1): the PR caused it — fix it at once; escalate only if the
-  fix is outside your brief. `MAIN-RED` (rc 0): a GENERAL red (an advisory, an
-  outage, a runner or registry failure, a case your diff neither touches nor
-  references) — do NOT fix it in your PR and do not loop on it. Send the console
+  fix is outside your brief. `suspected MAIN-RED` (rc 0, advisory, not proof): a
+  GENERAL red (an advisory, an outage, a runner or registry failure, a case your
+  diff neither touches nor references) — doubt it and check by hand if the
+  evidence looks thin; otherwise do NOT fix it in your PR and do not loop on it. Send the console
   one `MAIN-RED <job> <failing case>` with the evidence the script printed, then
   carry on with whatever does not depend on it; the console has it fixed once,
   and after that merges you rebase onto the new main. If you believe it is

@@ -9,7 +9,8 @@
 # An ordered cascade of FREE checks, stopping at the first decisive answer:
 #   1. MARKER     <handover root>/.locks/main-red/<job>__<case> exists: an earlier
 #                 leg already classified this job+case MAIN-RED — stop, do not
-#                 re-diagnose. Ignored when THIS PR's diff references the case (a
+#                 re-diagnose. Ignored when THIS PR changes a dependency manifest
+#                 or its diff references the case (a
 #                 marker is keyed on job+case only, so another PR's verdict must
 #                 not excuse a PR that touches the case).
 #   2. SIGNATURE  the log matches a pattern in scripts/ci/main-red-signatures.txt.
@@ -22,7 +23,8 @@
 # A signature MAIN-RED writes the marker so the next leg stops at 1; the console
 # clears it after the fix merges. Anything else is PR-RED: the leg's own.
 #
-# stdout: `MAIN-RED <job> <case> via <marker|signature|diff>: <evidence>` (rc 0)
+# stdout: `suspected MAIN-RED <job> <case> via <marker|signature|diff>: <evidence>` (rc 0;
+#         advisory, not proof: steps 2-3 are heuristics, HIMMEL-4074 hardens them)
 #         `PR-RED <job> <case>: ...`                                        (rc 1)
 # rc 64 = usage / unreadable log.
 #
@@ -71,7 +73,7 @@ marker=""
 [ -z "$mdir" ] || marker="$mdir/$(safe "$job")__$(safe "$cs")"
 
 main_red() {  # <step> <evidence>
-    echo "MAIN-RED $job $cs via $1: $2"
+    echo "suspected MAIN-RED $job $cs via $1: $2 (advisory, not proof)"
     exit 0
 }
 write_marker() {  # <evidence>
@@ -99,7 +101,7 @@ if [ "$have" = 1 ]; then
 fi
 
 # 1. MARKER — read before diagnosing anything.
-if [ -n "$marker" ] && [ -r "$marker" ] && [ "$have" = 1 ] && [ "$refs" = 0 ]; then
+if [ -n "$marker" ] && [ -r "$marker" ] && [ "$have" = 1 ] && [ "$refs" = 0 ] && [ "$deps" = 0 ]; then
     main_red marker "$(tr '\n' ' ' < "$marker")"
 fi
 
