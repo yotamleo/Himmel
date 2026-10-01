@@ -1136,6 +1136,9 @@ assert_deny "3955 env with an option beside grep -i"     "$(j "grep -i x f; env 
 assert_deny "3955 env -i beside a chokepoint word"       "$(j "env -i bash $MERGE_ON_GREEN")"
 assert_deny "3955 seam assignment beside a globbed kit path" "$(j "${MOG_VAR}=1 setsid -f bash scripts/handover/console-kit/g*.sh")"
 assert_deny "3955 env VAR=x (no long option) then a globbed kit path" "$(j "setsid -f env --ignore-environment ${MOG_VAR}=1 bash scripts/handover/console-kit/g*.sh")"
+assert_deny "3955 env option operand then -i (--chdir /tmp -i)" "$(j "/usr/bin/en? --chdir /tmp -i bash scripts/handover/console-kit/g*.sh")"
+assert_deny "3955 env option operand then -i beside a chokepoint word" "$(j "/usr/bin/en? --chdir /tmp -i bash $MERGE_ON_GREEN")"
+assert_deny "3955 env short option operand then -u"     "$(j "/usr/bin/en? -C /tmp -u HIMMEL_CONSOLE_LEG bash scripts/handover/console-kit/g*.sh")"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then

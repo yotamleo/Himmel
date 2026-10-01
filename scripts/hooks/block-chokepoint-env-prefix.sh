@@ -937,12 +937,12 @@ env_like_word() {
 # `diff -u`, `ls -i` and a `--id N` flag are not env-clearing; `env -i`,
 # `"$e" -u X`, `en? -u`, `setsid -f env -i` and `$e - bash` still are.
 env_clear_opt() {
-    local t="$1" line w w2 head hit=1 noglob=0
+    local t="$1" line w w2 prev head hit=1 noglob=0
     local opt='(^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$)'
     case $- in *f*) noglob=1 ;; esac
     set -f
     while IFS= read -r line; do
-        head=0
+        head=0 prev=''
         for w in $line; do
             w2=${w//[\'\"\\]/}
             if [[ $w2 =~ $opt ]] && { [ "$head" = 1 ] || [[ $w2 == *'$'* ]]; }; then
@@ -951,8 +951,14 @@ env_clear_opt() {
             fi
             if env_like_word "$w2"; then head=1
             else
-                case "$w2" in -*|*=*) ;; *) head=0 ;; esac
+                # A plain word right after an option is that option's operand
+                # (`env --chdir /tmp -i`), so it does not end the position.
+                case "$w2" in
+                    -*|*=*) ;;
+                    *) case "$prev" in -*=*) head=0 ;; -*) ;; *) head=0 ;; esac ;;
+                esac
             fi
+            prev=$w2
         done
     done <<<"$(printf '%s\n' "$t" | tr ';|&()`<>' '\n')"
     [ "$noglob" = 1 ] || set +f
