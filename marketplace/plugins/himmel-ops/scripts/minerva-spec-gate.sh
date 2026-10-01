@@ -20,10 +20,15 @@ missing=""
 add(){ missing="${missing}  - $1
 "; }
 
-# section_has_body <heading regex>: true when the section under that H2 has a non-blank line
+# section_has_body <heading text>: true when the section under that exact H2
+# (case-insensitive, trailing space ok) has a non-blank line. Any H1 or H2 ends
+# the section, so a later `# Notes` block is not counted as its content.
 section_has_body(){
-  awk -v re="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" '
-    /^##[[:space:]]/ { insec = (tolower($0) ~ ("^##[[:space:]]+" re)); next }
+  awk -v want="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" '
+    /^##?[[:space:]]/ {
+      h = tolower($0); sub(/^#+[[:space:]]+/, "", h); sub(/[[:space:]]+$/, "", h)
+      insec = ($0 ~ /^##[[:space:]]/ && h == want); next
+    }
     insec && $0 ~ /[^[:space:]]/ { found = 1 }
     END { exit found ? 0 : 1 }' "$spec"
 }
@@ -43,7 +48,7 @@ else
   fi
 fi
 
-section_has_body 'Alternatives' || add "alternatives: no '## Alternatives considered' section with content"
+section_has_body 'Alternatives considered' || add "alternatives: no '## Alternatives considered' section with content"
 section_has_body 'Definition of done' || add "definition of done: no '## Definition of done' section with content"
 
 if [ -n "$missing" ]; then

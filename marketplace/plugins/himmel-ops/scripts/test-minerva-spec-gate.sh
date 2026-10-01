@@ -49,4 +49,22 @@ bash "$gate" "$td/good.md" >/dev/null 2>&1 && ok "filled spec passes (absolute r
 mkspec "$td/rel.md" "Estimate record: est.json" yes yes
 bash "$gate" "$td/rel.md" >/dev/null 2>&1 && ok "filled spec passes (record relative to spec)" || bad "relative record should pass"
 
+# HIMMEL-4043: exact heading text, and a section ends at ANY H1 or H2
+mkspec_raw(){ # <file> <alt heading> <dod heading>; both sections get a body
+  { echo "# Spec"; echo; echo "Estimate record: $td/est.json"; echo
+    echo "$2"; echo "- body"; echo
+    echo "$3"; echo "- body"; echo
+  } >"$1"
+}
+mkspec_raw "$td/prefix-alt.md" "## Alternatives-not-considered" "## Definition of done"
+expect_refuse "prefix-only alternatives heading" "alternatives" "$td/prefix-alt.md"
+mkspec_raw "$td/prefix-dod.md" "## Alternatives considered" "## Definition of done later"
+expect_refuse "prefix-only DoD heading" "definition of done" "$td/prefix-dod.md"
+{ echo "# Spec"; echo; echo "Estimate record: $td/est.json"; echo
+  echo "## Alternatives considered"; echo; echo "# Notes"; echo "belongs to the H1, not to alternatives"; echo
+  echo "## Definition of done"; echo "- ok"; } >"$td/h1-end.md"
+expect_refuse "H1 ends the alternatives section" "alternatives" "$td/h1-end.md"
+mkspec_raw "$td/mixed-case.md" "## alternatives CONSIDERED" "## Definition Of Done  "
+bash "$gate" "$td/mixed-case.md" >/dev/null 2>&1 && ok "case and trailing space tolerated" || bad "case/trailing-space heading should pass"
+
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
