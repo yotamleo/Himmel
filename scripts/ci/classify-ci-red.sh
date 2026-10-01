@@ -67,7 +67,11 @@ mdir="${MAIN_RED_MARKER_DIR:-}"
 if [ -z "$mdir" ]; then
     # shellcheck source=../lib/handover-path.sh
     # shellcheck disable=SC1091
-    . "$DIR/../lib/handover-path.sh" 2>/dev/null && mdir="$(handover_root 2>/dev/null)/.locks/main-red"
+    if . "$DIR/../lib/handover-path.sh" 2>/dev/null; then
+        hroot="$(handover_root 2>/dev/null)" || hroot=""
+        # An empty root would make the marker dir /.locks/main-red: no markers instead.
+        [ -z "$hroot" ] || mdir="$hroot/.locks/main-red"
+    fi
 fi
 marker=""
 [ -z "$mdir" ] || marker="$mdir/$(safe "$job")__$(safe "$cs")"
