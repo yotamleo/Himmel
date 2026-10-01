@@ -305,6 +305,28 @@ by design.
   background (`run_in_background`) poll loop against GitHub: wait on CI with
   `scripts/check-ci.sh` in the foreground (its shared cache and rate-limit
   backoff exist so the fleet stays under one API quota).
+- **A red CI job on your PR is yours to triage (HIMMEL-4071) — and you never
+  tell the console about it, unless it is not the PR's fault.** The moment ONE
+  required job fails, do not wait for the run to end and do not report the red.
+  `scripts/check-ci.sh` prints each failed Actions job's log command; if it did
+  not, take the job id from `gh pr checks` and pull the log yourself:
+  `gh api --allow-escape-sequences repos/<o>/<r>/actions/jobs/<job-id>/logs > <scratch>`
+  (`gh run view --log-failed` refuses until the whole run ends). Then classify
+  it BEFORE touching code: `bash scripts/ci/classify-ci-red.sh --log <scratch>
+  --job <job> --case <failing case> --pr <n> --head <sha>`. It reads only data
+  that already exists (a shared marker, the log against
+  `scripts/ci/main-red-signatures.txt`, your diff) and never re-runs the failing
+  tool. `PR-RED` (rc 1): the PR caused it — fix it at once; escalate only if the
+  fix is outside your brief. `MAIN-RED` (rc 0): a GENERAL red (an advisory, an
+  outage, a runner or registry failure, a case your diff neither touches nor
+  references) — do NOT fix it in your PR and do not loop on it. Send the console
+  one `MAIN-RED <job> <failing case>` with the evidence the script printed, then
+  carry on with whatever does not depend on it; the console has it fixed once,
+  and after that merges you rebase onto the new main. If you believe it is
+  general but the script says `PR-RED`, check main by hand
+  (`gh run list -b main -w <workflow> -L 1`, then that run's job log) and report
+  `MAIN-RED? <job> <case> inconclusive` with what you saw; never re-run main's
+  job yourself.
 - On an agreed review finding, **sweep the whole class** across every site
   before the next round and report the other sites, not just the cited line. A
   review round spent enumerating instances of a class you already understood is

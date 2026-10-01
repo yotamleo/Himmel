@@ -274,7 +274,7 @@ mog_build_fixture() {
         # points at a distinct anchor tree; asserting only the exit code is
         # weaker and can pass vacuously (a fixture where the two trees agree
         # would look identical either way).
-        printf '#!/usr/bin/env bash\n: > "%s/scripts/check-ci.ran"\nexit %s\n' "$tmp" "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
+        printf '#!/usr/bin/env bash\n: > "%s/scripts/check-ci.ran"\nprintf "%%s" "${MERGE_WATCH_POST_GO:-}" > "%s/scripts/check-ci.postgo"\nexit %s\n' "$tmp" "$tmp" "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
         chmod +x "$tmp/scripts/check-ci.sh"
     fi
 
@@ -3362,6 +3362,10 @@ if HIMMEL_REPO=x env -u HIMMEL_REPO bash -c '[ -z "${HIMMEL_REPO+set}" ]'; then 
 # is that control.
 STUB_CI_RC=0 run_mog 0 "3475-a: worktree is its own anchor (byte-identical) behaves as before"
 if [ -e "$LAST_TMP/scripts/check-ci.ran" ]; then pass; else fail "3475-a: the anchor's (== worktree's) check-ci.sh never ran"; fi
+
+# HIMMEL-4071: merge-on-green runs only after the console's GO, so its check-ci
+# call is the post-GO path: the stub must see MERGE_WATCH_POST_GO=1.
+if [ "$(cat "$LAST_TMP/scripts/check-ci.postgo" 2>/dev/null)" = 1 ]; then pass; else fail "4071: merge-on-green did not mark its check-ci call post-GO (MERGE_WATCH_POST_GO=1)"; fi
 
 # Core RED-then-GREEN assertion: two DISTINCT trees. The worktree's own
 # check-ci.sh always fails; the anchor's always passes. The anchor must
