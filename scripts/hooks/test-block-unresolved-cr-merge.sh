@@ -148,6 +148,8 @@ case "$1 $2" in
     esac
     # HIMMEL-2141: a directory carrying .stub-nwo is a DIFFERENT repo's checkout.
     [ -f "$PWD/.stub-nwo" ] && { cat "$PWD/.stub-nwo"; exit 0; }
+    # HIMMEL-2141: --json url answers the repo URL (the hook compares hosts too).
+    case "$*" in *"json url"*) printf 'https://%s/%s' "${GH_STUB_HOST:-github.com}" "${GH_STUB_NWO:-o/r}"; exit 0 ;; esac
     printf '%s' "${GH_STUB_NWO:-o/r}" ;;
   *) echo '{}' ;;
 esac
@@ -207,6 +209,9 @@ PAYLOAD_CWD="$TMP/other" GH_STUB_MODE=clean t xrepo-cwd-other-refuses 2 Bash "gh
 if grep -q "project repo" "$TMP/err-xrepo-cwd-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-cwd-other-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-cwd-other-names-repos"; fi
 [ -r "$TMP/calls-xrepo-cwd-other-refuses.log" ] || { fail=$((fail+1)); echo "FAIL xrepo-calls-log-unreadable"; }
 if grep -q "^pr view" "$TMP/calls-xrepo-cwd-other-refuses.log"; then fail=$((fail+1)); echo "FAIL xrepo-cwd-other-never-looked-up-pr"; else pass=$((pass+1)); echo "ok   xrepo-cwd-other-never-looked-up-pr"; fi
+mkdir -p "$TMP/otherhost"; printf 'https://enterprise.example/o/r' > "$TMP/otherhost/.stub-nwo"
+PAYLOAD_CWD="$TMP/otherhost" GH_STUB_MODE=clean t xrepo-cwd-other-host-same-nwo-refuses 2 Bash "gh pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-cwd-other-host-same-nwo-refuses"; then pass=$((pass+1)); echo "ok   xrepo-cwd-other-host-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-cwd-other-host-names-repos"; fi
 GH_STUB_MODE=clean t xrepo-dash-R-other-refuses 2 Bash "gh pr merge 42 --squash -R x/y $PIN2141"
 if grep -q "project repo" "$TMP/err-xrepo-dash-R-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-dash-R-other-refuses-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-dash-R-other-refuses-names-repos"; fi
 GH_STUB_MODE=clean t xrepo-long-repo-other-refuses 2 Bash "gh --repo x/y pr merge 42 --squash $PIN2141"

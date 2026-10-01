@@ -399,6 +399,7 @@ _go_view() {
 # in. A selector is only meaningful inside one repo, so when the two differ the
 # lookups below would read the project repo's PR of the same number: refuse, as
 # merge-on-green.sh's same-repo guard does. An unresolvable repo refuses too.
+# Both sides are read as the repo URL, so the host takes part in the comparison.
 # CR_MERGE_GATE_OK=1 (the documented bypass) merges the other repo on purpose; the
 # lookups then carry its name explicitly instead of resolving it from a cwd.
 _nwo_key() {
@@ -412,10 +413,10 @@ _nwo_key() {
     esac
     printf '%s' "$n"
 }
-proj_nwo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || proj_nwo=""
+proj_nwo=$(gh repo view --json url --jq .url 2>/dev/null) || proj_nwo=""
 eff_nwo=$repo
 if [ -z "$eff_nwo" ] && [ -n "$cwd" ]; then
-    eff_nwo=$(cd "$cwd" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || eff_nwo=""
+    eff_nwo=$(cd "$cwd" 2>/dev/null && gh repo view --json url --jq .url 2>/dev/null) || eff_nwo=""
     [ -n "$eff_nwo" ] || _deny "cannot resolve this repo's owner/name (the merge's working directory '$cwd') — refusing (GATE INTEGRITY: PR #$sel must be read in the repo it belongs to). Pass -R <owner>/<name>, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 fi
 if [ -n "$eff_nwo" ]; then
