@@ -115,6 +115,8 @@ Adopt on evidence from a **real himmel workday**, not a synthetic demo.
 4. **Compare on outcome, not bytes.** The tool wins only if the *session*
    went better — work shipped with less friction. A token drop with
    equal-or-worse outcomes is a REJECT, not a win.
+   Where the eval ran an `effort-assess` estimate (HIMMEL-3997), record
+   estimate vs actual too: the same KPI the effort-route recommender is judged on.
 
 The before/after baseline above applies to **net-new installs**. For
 items **already in use** — our own skills/tools running every session,

@@ -20,9 +20,11 @@ export function recommend(record, cfg) {
   const out = (action, effort, review, reason) =>
     ({ action, effort, review, suggest_tier_design: action === 'plan-first', reason });
   const { sigma, mean_seq: mean } = record ?? {};
-  const failed = record?.dod?.failed ?? [];
   if (!Number.isFinite(sigma) || !Number.isFinite(mean) || sigma < 0 || mean < 0) return out('plan-first', null, false, 'record has no usable sigma/mean');
-  if (record.dod?.passed === false) return out('plan-first', null, false, `estimate DoD refused (${failed.join(', ') || 'unspecified'})`);
+  const dod = record.dod;
+  if (typeof dod?.passed !== 'boolean') return out('plan-first', null, false, 'record has no boolean dod.passed: invalid estimate record');
+  if (dod.failed !== undefined && !Array.isArray(dod.failed)) return out('plan-first', null, false, 'record dod.failed is not an array: invalid estimate record');
+  if (!dod.passed) return out('plan-first', null, false, `estimate DoD refused (${(dod.failed ?? []).join(', ') || 'unspecified'})`);
   if (sigma >= cfg.plan_first_sigma_gte) return out('plan-first', null, false, `sigma ${sigma} >= ${cfg.plan_first_sigma_gte}: plan-first or split, no implementation leg`);
   if (record.g1 === 'yes') return out('implement', 'high', true, 'G1 work: high effort plus independent review');
   if (mean > cfg.review_mean_gt) return out('implement', 'high', true, `mean ${mean.toFixed(2)} S-eq > ${cfg.review_mean_gt}: high effort plus independent review`);

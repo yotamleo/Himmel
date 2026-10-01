@@ -90,3 +90,24 @@ test('negative sigma or mean is an unusable record, never an implement recommend
     assert.equal(r.action, 'plan-first');
   }
 });
+
+test('a record with no or non-boolean dod.passed is a validation error, never implement', () => {
+  const { dod, ...noDod } = FIX.small_sure.record;
+  for (const bad of [noDod, { ...noDod, dod: {} }, { ...noDod, dod: { passed: 'yes' } }, { ...noDod, dod: { passed: 1 } }]) {
+    const r = recommend(bad, CFG);
+    assert.equal(r.action, 'plan-first');
+    assert.match(r.reason, /dod/);
+  }
+});
+
+test('dod.passed false with a non-array dod.failed does not throw', () => {
+  for (const failed of ['red', 7, {}, null, undefined]) {
+    const r = recommend({ ...FIX.small_sure.record, dod: { passed: false, failed } }, CFG);
+    assert.equal(r.action, 'plan-first');
+  }
+});
+
+test('every threshold in effort-routing.json is read by recommend()', () => {
+  const flat = (o, p = '') => Object.entries(o).flatMap(([k, v]) => k.startsWith('_') ? [] : v && typeof v === 'object' ? flat(v, `${p}${k}.`) : [`${p}${k}`]);
+  assert.deepEqual(flat(CFG).sort(), ['high.sigma_max', 'medium.mean_max', 'medium.sigma_max', 'plan_first_sigma_gte', 'review_mean_gt']);
+});
