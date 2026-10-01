@@ -133,7 +133,13 @@ export function roleCoverageProblems(initEvent, requiredIds) {
     const m = /^([^:]+):/.exec(typeof entry === 'string' ? entry : entry?.name ?? '');
     if (m) exposed.add(m[1]);
   }
-  return requiredIds.filter((id) => !exposed.has(pluginName(id))).map((id) => `role-required plugin ${id} exposes no skill, command or agent (enabled but not loaded)`);
+  // HIMMEL-4067: an MCP-only plugin (shadcn-mcp, context7) exposes a
+  // `plugin:<name>:<server>` server; any status (needs-auth included) proves it loaded.
+  for (const srv of initEvent?.mcp_servers ?? []) {
+    const m = /^plugin:([^:]+):/.exec(srv?.name ?? '');
+    if (m) exposed.add(m[1]);
+  }
+  return requiredIds.filter((id) => !exposed.has(pluginName(id))).map((id) => `role-required plugin ${id} exposes no skill, command, agent or MCP server (enabled but not loaded)`);
 }
 
 // HIMMEL-4036: `claude -p /context` replies with an assistant event carrying

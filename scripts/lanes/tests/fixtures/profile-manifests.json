@@ -60,8 +60,7 @@
       "himmel-ops@himmel",
       "lean-skills@himmel",
       "pr-review-toolkit-himmel@himmel",
-      "qmd@himmel",
-      "taste-skill-imagegen@himmel"
+      "qmd@himmel"
     ],
     "contextBudget": 50000
   },
@@ -108,8 +107,7 @@
       "himmel-ops@himmel",
       "lean-skills@himmel",
       "pr-review-toolkit-himmel@himmel",
-      "qmd@himmel",
-      "taste-skill-styles@himmel"
+      "qmd@himmel"
     ],
     "contextBudget": 50000
   },

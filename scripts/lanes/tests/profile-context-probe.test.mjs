@@ -215,6 +215,16 @@ test('roleCoverageProblems: an agent-only plugin counts as loaded', () => {
   assert.deepEqual(roleCoverageProblems(init, ['impeccable@himmel']), []);
 });
 
+test('roleCoverageProblems: an MCP-only plugin counts as loaded (HIMMEL-4067), needs-auth included', () => {
+  const init = { ...LOADED, skills: [], mcp_servers: [{ name: 'plugin:shadcn-mcp:shadcn', status: 'connected' }, { name: 'plugin:context7:context7', status: 'needs-auth' }] };
+  assert.deepEqual(roleCoverageProblems(init, ['shadcn-mcp@himmel', 'context7@claude-plugins-official']), []);
+});
+
+test('roleCoverageProblems: an un-namespaced user MCP server does not count for a plugin (HIMMEL-4067)', () => {
+  const init = { ...LOADED, skills: [], mcp_servers: [{ name: 'context7', status: 'connected' }] };
+  assert.equal(roleCoverageProblems(init, ['context7@claude-plugins-official']).length, 1);
+});
+
 test('evaluateProfile: a missing role-required skill fails the profile', () => {
   const init = { ...LOADED, skills: [] };
   const { pass, problems } = evaluateProfile({

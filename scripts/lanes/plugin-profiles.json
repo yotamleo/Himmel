@@ -105,7 +105,6 @@
     "lottie-motion-design@himmel",
     "motion-lexicon@himmel",
     "threejs-skills@himmel",
-    "taste-skill-imagegen@himmel",
     "ai-image-prompts@himmel",
     "platform-design-skills@himmel",
     "diagram-design@himmel",
@@ -113,7 +112,6 @@
     "frontend-slides@himmel",
     "design-dna@himmel",
     "anydesign@himmel",
-    "taste-skill-styles@himmel",
     "anthropic-design-skills@himmel",
     "hallmark@himmel",
     "shadcn-mcp@himmel",
@@ -163,7 +161,6 @@
     "design-imagegen": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
       "enable": [
-        "taste-skill-imagegen@himmel",
         "ai-image-prompts@himmel"
       ],
       "contextBudget": 50000
@@ -195,7 +192,6 @@
       "enable": [
         "design-dna@himmel",
         "anydesign@himmel",
-        "taste-skill-styles@himmel",
         "anthropic-design-skills@himmel"
       ],
       "contextBudget": 50000
