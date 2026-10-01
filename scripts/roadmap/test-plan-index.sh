@@ -3,7 +3,7 @@
 # ticket key returns its version/theme/goal, no change = no rebuild, a change =
 # rebuild, the source plan dir is never written, a failing/missing qmd fails the
 # refresh and leaves the fingerprint unadvanced. Fixture plan dir + stub qmd +
-# temp out dir under mktemp; never the real qmd, plan dir or ~/.himmel/state.
+# temp out dir in a scratch tempdir; never the real qmd, plan dir or ~/.himmel/state.
 #
 # PLATFORM GUARD: no .ps1 twin, by design — the roadmap tooling is operator-side
 # (the console kit it pairs with is Linux-only); this suite needs bash + python3.

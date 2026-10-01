@@ -55,7 +55,8 @@ command -v "$qmd" >/dev/null 2>&1 || { echo "plan-index: qmd not found ($qmd); n
 
 mkdir -p "$out"
 python3 "$HERE/plan_docs.py" --plan-dir "$plan" --docs "$out/docs" ${watches[@]+"${watches[@]}"}
-if ! "$qmd" collection list 2>/dev/null | grep -qF "$COLLECTION ("; then
+registered="$("$qmd" collection list 2>/dev/null | grep -F "$COLLECTION (" || true)"
+if [ -z "$registered" ]; then
     "$qmd" collection add "$out/docs" --name "$COLLECTION" || { echo "plan-index: qmd collection add failed" >&2; exit 1; }
 fi
 "$qmd" embed -c "$COLLECTION" || { echo "plan-index: qmd embed failed" >&2; exit 1; }
