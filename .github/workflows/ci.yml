@@ -675,8 +675,16 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
-          sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
-          sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at
+          # HIMMEL-4073: try the plain install first (the runner's package
+          # index is usually fresh enough); only a failure pays for an index
+          # refresh and a retry. Each branch logs which path ran.
+          if sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at; then
+            echo "at/atd install: plain install succeeded, index refresh skipped"
+          else
+            echo "at/atd install: plain install failed, falling back to index refresh + retry"
+            sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
+            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at
+          fi
           sudo systemctl enable --now atd || sudo service atd start || true
       # HIMMEL-2742: same shape as HIMMEL-2587 (lanes-and-trust-suites) — a
       # suite in this corpus (test-wizard-luna-sections.sh) shells out to bun
