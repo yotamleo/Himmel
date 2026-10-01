@@ -50,8 +50,14 @@ bash scripts/release/followup-report.sh --version v1.0.1c
 Read-only. Prints, per fixVersion:
 
 - follow-ups created and done per class, and follow-ups with no class yet
-  (`unclassified-followups`, the backfill's input);
-- the hardening share of the version's load against the cap (`ok` / `OVER`);
+  (`unclassified-followups`, the backfill's input). **This count is an
+  estimate:** an unlabelled ticket counts as a follow-up only when its summary
+  contains `follow-up`, `followup`, `deferred` or `residual`, so a follow-up
+  without those words is missed and an ordinary ticket with one is counted. An
+  explicit marker (label or link type) is left to the HIMMEL-4045 backfill;
+- the hardening share of the version's load against the cap (`ok` / `OVER`).
+  Load is the version's tickets that are neither labelled nor keyword-matched
+  as follow-ups, so the share is an estimate for the same reason;
 - **claim B, "deferral lets bad bugs through"**: `slipped-escapes`, the count
   of `fu-escape` tickets also labelled `fu-slipped`. Whoever finds that a
   deferred follow-up later caused an incident, a red CI, a denial or operator
