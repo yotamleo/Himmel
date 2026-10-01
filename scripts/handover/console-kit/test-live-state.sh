@@ -153,6 +153,14 @@ bash "$tmp/kitcopy/console-kit/live-state.sh" "$con11" >/dev/null 2>&1; rc=$?
 check '12. an unreadable lock owner refuses' 1 "$rc"
 check '12. the refused run leaves the doc untouched' "$before11" "$(cat "$con11")"
 
+# 14. an owner session carrying a span delimiter (colon, backtick, whitespace) refuses and leaves the doc untouched.
+for bad14 in 'a:b' 'a`b' 'a b'; do
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "{\\"session\\":\\"%s\\"}"\nexit 11\n' "$bad14" > "$tmp/kitcopy/queue-lock.sh"
+    bash "$tmp/kitcopy/console-kit/live-state.sh" "$con11" >/dev/null 2>&1; rc=$?
+    check "14. owner session [$bad14] refuses" 1 "$rc"
+    check "14. owner session [$bad14] leaves the doc untouched" "$before11" "$(cat "$con11")"
+done
+
 # 13. end to end: tick.sh reads the rendered doc as livestate=ok.
 e2e="$HANDOVER_DIR/b/HIMMEL-nextleg-T-console.md"
 printf '# c\n\n## Live state\n\nlegs: none\nqueue: none\nlast GO: none\nacked: none\n' > "$e2e"
