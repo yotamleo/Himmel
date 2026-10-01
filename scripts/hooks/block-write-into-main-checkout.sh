@@ -1797,7 +1797,7 @@ _bwimc_check_interp_body() {
 # `case` over-extends the body to the end of TEXT, which only over-scans).
 # Clobbers the shared scanner state — callers save/restore it.
 _bwimc_subst_paren_end() {
-    local text="$1" j="$2" len=${#1} depth=1 ch w="" cs=0 sq se sa
+    local text="$1" j="$2" len=${#1} depth=1 ch w="" cs=0 bd=0 sq se sa
     _bwimc_scan_init
     while [ "$j" -lt "$len" ]; do
         ch="${text:$j:1}"
@@ -1820,6 +1820,13 @@ _bwimc_subst_paren_end() {
                 j=$((j+1)); w=""
                 continue
             fi
+            # A `)` inside a `${...}` expansion (`${y:-)}`, `${y#)}`) is text,
+            # not the closer: count the braces and ignore parens while open.
+            if [ "$ch" = '$' ] && [ "${text:$((j+1)):1}" = '{' ]; then
+                bd=$((bd+1))
+            elif [ "$ch" = '}' ] && [ "$bd" -gt 0 ]; then
+                bd=$((bd-1))
+            fi
         fi
         _bwimc_scan_step "$ch"
         if [ "$_BWIMC_ACT" = 1 ]; then
@@ -1832,8 +1839,8 @@ _bwimc_subst_paren_end() {
             esac
             w=""
             case "$ch" in
-                '(') depth=$((depth+1)) ;;
-                ')') [ "$cs" -gt 0 ] || { depth=$((depth-1)); [ "$depth" -gt 0 ] || break; } ;;
+                '(') [ "$bd" -gt 0 ] || depth=$((depth+1)) ;;
+                ')') [ "$cs" -gt 0 ] || [ "$bd" -gt 0 ] || { depth=$((depth-1)); [ "$depth" -gt 0 ] || break; } ;;
             esac
         fi
         j=$((j+1))

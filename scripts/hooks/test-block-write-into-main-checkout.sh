@@ -1912,6 +1912,11 @@ _subst_row "75u-W same shape aimed at the worktree (ALLOW)"                allow
 _SOH=$'\001'
 _subst_row "75v-P a literal U+0001 byte must not consume a body"           block "echo $_SOH; cd $_PR; x=\"\$(echo hi > subst-rel.txt)\""
 _subst_row "75v-W same shape aimed at the worktree (ALLOW)"                allow "echo $_SOH; cd $_WR; x=\"\$(echo hi > subst-rel.txt)\""
+# A `)` inside a ${...} expansion is text, not the body's closer.
+_subst_row "75w-P \${y:-)} must not close the body early"                   block "x=\"\$(echo \${y:-)} > $_PR/f.txt)\""
+_subst_row "75x-P \${y#)} must not close the body early"                    block "x=\"\$(echo \${y#)} > $_PR/f.txt)\""
+_subst_row "75y-P \${y%)} must not close the body early"                    block "x=\"\$(echo \${y%)} > $_PR/f.txt)\""
+_subst_row "75w-W \${y:-)} aimed at the worktree (ALLOW)"                   allow "x=\"\$(echo \${y:-)} > $_WR/f.txt)\""
 # The heredoc idiom with target-shaped words in the body text stays ALLOW.
 _subst_row "75j commit heredoc idiom, message mentions '> file' and a paren (ALLOW)" allow "git commit -m \"\$(cat <<'EOF'
 fix: a > b (and 'it')
