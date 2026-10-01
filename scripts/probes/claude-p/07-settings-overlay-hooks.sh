@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # 07-settings-overlay-hooks.sh — probe 3e (HIMMEL-2178, Chain 2a).
 #
 # Question: does a `--settings <overlay.json>` on a headless `claude` `-p`

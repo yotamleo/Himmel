@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 7 (HIMMEL-2179, RETASK RTK-2179-8f3a1c): run the SAME write-a-file
 # brief twice under --permission-mode dontAsk with an allowlist phrased only
 # for Bash shapes ("Bash(echo *),Write"), and record per-run which tool the

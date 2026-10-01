@@ -668,9 +668,14 @@ console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MO
 # console must start in himmel for its project hooks and GO gate. The group
 # keeps a failed cd from falling through to claude in the wrong directory.
 launch_cmd() {
-    printf 'cd %q && { bash %q %s %s %s %s; %s claude --model %s --autocompact %s -n %s "load %s and continue"; }' \
+    # HIMMEL-4013: the printed console line carries the `console` plugin profile
+    # (--settings), like the armed launch; fails closed (no profile, no line).
+    local console_settings
+    console_settings=$(bash "$HERE/../../lanes/profile-settings.sh" console) \
+        || { err "the console plugin profile did not resolve; refusing to print a full-plugin-set console launch (HIMMEL-4013)"; exit 2; }
+    printf 'cd %q && { bash %q %s %s %s %s; %s claude --settings %q --model %s --autocompact %s -n %s "load %s and continue"; }' \
         "$repo" "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label 0)" "$console_autocompact" \
-        "$CONSOLE_LAUNCH_ENV" "$model" "$console_autocompact" "$1" "$2"
+        "$CONSOLE_LAUNCH_ENV" "$console_settings" "$model" "$console_autocompact" "$1" "$2"
 }
 
 # _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small

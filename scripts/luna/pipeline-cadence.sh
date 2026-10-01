@@ -747,6 +747,7 @@ emit_bat() {
     # --permission-mode is EXPLICIT (HIMMEL-2044): an unattended launch must not
     # inherit whatever mode the operator last saved interactively. In-repo
     # constant, no operator input, so it carries no escaping burden.
+    # launch-profile-ok: HIMMEL-4013 audited, NOT folded into a named profile: cadence-settings.json (emit_settings_fragment) is already a per-run --settings that force-enables obsidian-triage@himmel over the operator's disable and wires the cadence hooks; the .bat is written on Windows where plugin-profiles.mjs is not run at arm time
     printf 'call "%s" --model "%s" --permission-mode "%s" --settings "%s" "%s" < NUL >> "%s" 2>&1\r\n' "$claude_win_esc" "$model_esc" "$CADENCE_PERMISSION_MODE" "$settings_esc" "$prompt_esc" "$log_win_esc"
     printf 'set "FLOW_RUN_RC=%%ERRORLEVEL%%"\r\n'
     # Fail-closed fallback (coderabbit #1762): if the classifier is unavailable

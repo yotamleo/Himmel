@@ -157,6 +157,19 @@ if ! command -v claude >/dev/null 2>&1; then
     exit 2
 fi
 
+# HIMMEL-4013: the hopped-to session runs under the profile of the role that is
+# hopping, not the operator's full plugin set. HOP_PROFILE overrides; else a
+# console session (HIMMEL_CONSOLE_DOC) hops as `console`, a leg
+# (HIMMEL_CONSOLE_LEG) as `leg-impl`, anything else as `user`.
+if [ -n "${HOP_PROFILE:-}" ]; then hop_profile="$HOP_PROFILE"
+elif [ -n "${HIMMEL_CONSOLE_DOC:-}" ]; then hop_profile=console
+elif [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then hop_profile=leg-impl
+else hop_profile=user; fi
+hop_settings=$(bash "$(dirname "${BASH_SOURCE[0]}")/../lanes/profile-settings.sh" "$hop_profile") || {
+    echo "ERR hop: plugin profile '$hop_profile' did not resolve; refusing to hop into the full plugin set (HIMMEL-4013)" >&2
+    exit 2
+}
+
 # UTC timestamp for the snapshot filename. Avoid colons (Windows-hostile).
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 SNAPSHOT="$HANDOVER_ROOT/context-hop-$TS.md"
@@ -214,11 +227,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
             # always expands — use an explicit integer check.
             force_flag=""
             [ "$FORCE" -eq 1 ] && force_flag=" --force"
-            echo "DRY hop: would invoke: bash scripts/handover/arm-resume.sh --time $local_hh_mm --handover '$SNAPSHOT' --cwd '$ORIGIN_REPO'$force_flag"
+            echo "DRY hop: would invoke: bash scripts/handover/arm-resume.sh --time $local_hh_mm --handover '$SNAPSHOT' --cwd '$ORIGIN_REPO' --profile $hop_profile$force_flag"
             ;;
         print)
             echo "DRY hop: would print operator command:"
-            echo "    claude \"$RESUME_PROMPT\""
+            echo "    claude --settings '$hop_settings' \"$RESUME_PROMPT\""
             ;;
     esac
     exit 0
@@ -252,13 +265,13 @@ case "$MODE" in
         fi
         echo "hop: scheduling relaunch at $hop_time (now + ${DELAY_MINUTES}min) via arm-resume.sh"
         echo "hop: relaunched session will cd into origin repo: $ORIGIN_REPO"
-        arm_args=(--time "$hop_time" --handover "$SNAPSHOT" --cwd "$ORIGIN_REPO")
+        arm_args=(--time "$hop_time" --handover "$SNAPSHOT" --cwd "$ORIGIN_REPO" --profile "$hop_profile")
         [ "$FORCE" -eq 1 ] && arm_args+=(--force)
         if ! bash "$ORIGIN_REPO/scripts/handover/arm-resume.sh" "${arm_args[@]}"; then
             rc=$?
             echo "ERR hop: arm-resume.sh failed (rc=$rc) — snapshot written but no relaunch scheduled" >&2
             echo "    Snapshot is still at: $SNAPSHOT" >&2
-            echo "    Resume manually: claude \"$RESUME_PROMPT\"" >&2
+            echo "    Resume manually: claude --settings '$hop_settings' \"$RESUME_PROMPT\"" >&2
             exit "$rc"
         fi
         cat <<EOF
@@ -287,7 +300,7 @@ EOF
   No relaunch was scheduled (--print mode). To pick up in a fresh
   terminal:
 
-      claude "$RESUME_PROMPT"
+      claude --settings '$hop_settings' "$RESUME_PROMPT"
 
   PLEASE /exit YOUR CURRENT CLAUDE SESSION BEFORE STARTING THE
   NEW ONE so they don't compete on the same handover state.

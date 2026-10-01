@@ -273,7 +273,28 @@ DRY_RUN=0
 RESUME_CWD_OVERRIDE=""
 CHANNELS=""
 MODEL=""
+PROFILE=""
 FABLE_OK=""
+# HIMMEL-4013: the relaunched claude runs under a role-matched plugin profile
+# (--settings <file>), never the operator's full plugin set. --profile wins;
+# else the role is read from the handover doc (role-profile.sh). Resolved at
+# ARM time to a stable per-user file (an at/cron relaunch fires later) and
+# FAIL CLOSED: an unresolvable profile refuses the arm (rc 2).
+_arm_profile_settings_flag() {
+    local prof="$PROFILE" settings
+    if [ -z "$prof" ]; then
+        if [ -n "$HANDOVER_PATH" ] && [ -f "$HANDOVER_PATH" ]; then
+            prof=$(bash "$SCRIPT_DIR/../lanes/role-profile.sh" "$HANDOVER_PATH") || prof="user"
+        else
+            prof="user"
+        fi
+    fi
+    settings=$(bash "$SCRIPT_DIR/../lanes/profile-settings.sh" "$prof") || {
+        echo "ERR arm-resume: plugin profile '$prof' did not resolve; refusing to arm a relaunch with the full plugin set (HIMMEL-4013). Fix the profile or pass --profile <name>." >&2
+        exit 2
+    }
+    printf -- '--settings %s ' "$(printf '%q' "$settings")"
+}
 # HIMMEL-2658: --context resolution (arming-time 1m/standard choice, never
 # inherited from the operator's user-level model setting). Left empty means
 # "use the console/non-console default" -- resolved right after the MODEL_REASON
@@ -349,6 +370,10 @@ Optional:
                      it and relaunch PLAIN (bridge reaches Telegram on its
                      own). Override only after `bun supervisor.ts --kill`
                      with ARM_CHANNELS_OK=1. Omit for a silent relaunch.
+  --profile <name>   Plugin profile for the relaunched claude (HIMMEL-4013),
+                     applied as `--settings <resolved file>`. Omitted: the
+                     role is read from the handover doc (a `profile:` line,
+                     else console / leg-impl / user). Fails closed.
   --model <name>     Pass --model <name> to the relaunched claude (e.g.
                      opus, sonnet, haiku, or a full model id). Passed
                      through verbatim — no validation against a model
@@ -535,6 +560,13 @@ while [ $# -gt 0 ]; do
         --worktree=*)  WORKTREE_BRANCH="${1#--worktree=}"; shift ;;
         --channels)    CHANNELS="${2:-}"; shift 2 ;;
         --channels=*)  CHANNELS="${1#--channels=}"; shift ;;
+        --profile)
+            if [ $# -lt 2 ] || [ -z "$2" ] || [ "${2#-}" != "$2" ]; then
+                echo "ERR arm-resume: --profile requires a non-empty profile name" >&2
+                exit 2
+            fi
+            PROFILE="$2"; shift 2 ;;
+        --profile=*)   PROFILE="${1#--profile=}"; shift ;;
         --model)
             # Require a real value: a missing/empty value or a following
             # option (e.g. `--model --dry-run`) must error, not silently
@@ -4711,6 +4743,8 @@ _crontab_schedule() {
     # same %q-quote shape as q_model, since this is the actual cost-driving
     # lever and a skipped site here is a silent no-op on this platform.
     q_autocompact="--autocompact $(printf '%q' "$AUTOCOMPACT") "
+    # HIMMEL-4013: role-matched plugin profile, appended after the autocompact arg.
+    q_autocompact="$q_autocompact$(_arm_profile_settings_flag)" || exit 2
     # HIMMEL-3074: resolve claude ABSOLUTELY at arm time (see the function
     # header). `command -v` may return a function/alias name for a shell-level
     # `claude`; only a leading `/` is a path cron can exec, anything else
@@ -4824,6 +4858,7 @@ fi"
     # session know it IS a POSIX armed relaunch, so it can self-exit with
     # SIGTERM once its work is done and a successor (if any) is armed -- see
     # docs/handover/overnight-mode.md's Launch preamble.
+    # launch-profile-ok: q_autocompact above carries --settings (_arm_profile_settings_flag)
     local tail="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID && export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1 && ${q_automerge}$q_claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
     if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
         local q_hb q_log q_curl
@@ -5952,6 +5987,9 @@ schedule_arm() {
                 # --autocompact passthrough (HIMMEL-2658), same %q-quote shape
                 # as q_model above; always non-empty by the time this runs.
                 q_autocompact="--autocompact $(printf '%q' "$AUTOCOMPACT") "
+                # HIMMEL-4013: role-matched plugin profile (--settings <file>),
+                # appended after the autocompact arg; fails closed.
+                q_autocompact="$q_autocompact$(_arm_profile_settings_flag)" || exit 2
                 # HIMMEL_HEADROOM_PROXY (HIMMEL-901): $launch_lines is the
                 # plain 'claude ...' line unless the flag is active, in
                 # which case it becomes a livez-check-then-launch block
@@ -6006,6 +6044,7 @@ schedule_arm() {
                 # shape/rationale as the crontab runner's twin above -- lets
                 # the resumed session self-exit with SIGTERM once a
                 # successor is armed (see overnight-mode.md).
+                # launch-profile-ok: q_autocompact above carries --settings (_arm_profile_settings_flag)
                 local launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID
 export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1
 ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
@@ -6014,6 +6053,7 @@ ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
                     q_hb=$(printf '%q' "$HEADROOM_BIN")
                     q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
                     q_curl=$(printf '%q' "$HEADROOM_CURL")
+                    # launch-profile-ok: q_autocompact above carries --settings (_arm_profile_settings_flag)
                     launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID
 export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1
 $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }

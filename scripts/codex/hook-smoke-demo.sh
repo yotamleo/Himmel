@@ -439,6 +439,7 @@ if [ "$RUN_CLAUDE" = "1" ] && command -v claude >/dev/null 2>&1 && command -v jq
         (
             cd "$DEMO" || exit 2
             # headless-claude-ok: hook-chain smoke demo (HIMMEL-2000); bank-gated above, --model haiku, one read-only turn
+            # launch-profile-ok: the demo proves the PreToolUse hook chain fires; a profile would change what it measures (HIMMEL-4013)
             env "${INERT_ENV[@]}" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" "$LEG_TIMEOUT"} claude -p "$PROMPT" \
                 --model haiku --permission-mode default --output-format json
         ) > "$CL_LOG" 2>&1

@@ -568,6 +568,17 @@ if [ "$ROLE" = "console" ]; then
     CONSOLE_ENV=("HIMMEL_CONSOLE_DOC=$_console_doc" "HIMMEL_CONSOLE_WORKDIR=$(dirname -- "$SIGNAL")")
 fi
 LAUNCH_ARGV=("$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
+# HIMMEL-4013: a console arm runs under the `console` plugin profile (the
+# floor plus lean-skills; no review toolkit). A leg arm reaches here through
+# leg-claude-launcher.sh, which already prepends its own --settings, so only
+# --role console adds one. Fails closed: no profile, no console launch.
+if [ "$ROLE" = "console" ]; then
+    _console_profile_settings=$(bash "$(dirname "$0")/../lanes/profile-settings.sh" console) || {
+        echo "headed-arm.sh: the console plugin profile did not resolve; refusing to launch a console with the full plugin set (HIMMEL-4013)" >&2
+        exit 2
+    }
+    LAUNCH_ARGV=("$LAUNCHER" --settings "$_console_profile_settings" "${LAUNCH_ARGV[@]:1}")
+fi
 if [ "$HEADLESS" = "1" ]; then
     # auto is what a headed leg runs in (defaultMode=auto in the operator's
     # user settings), declared here because an unattended launch must never

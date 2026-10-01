@@ -174,6 +174,9 @@ check "5b default launch line carries --autocompact 200000" \
     "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact 200000')" "1"
 check "5b default launch line carries no --autocompact auto" \
     "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact auto')" "0"
+# HIMMEL-4013: the console launch line applies the console plugin profile.
+check "5b launch line carries --settings <console profile>" \
+    "$(printf '%s\n' "$out5b" | grep -c -- 'claude --settings [^ ]*/console.json --model ')" "1"
 out5c="$(CONSOLE_CONTEXT=1m console new --bucket dryrepo5c --dry-run)"
 check "5c CONSOLE_CONTEXT=1m launch line carries --autocompact auto" \
     "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact auto')" "1"
@@ -1444,17 +1447,17 @@ HANDOVER_DIR="$root" bash "$QL" release "$doc60bA" "$token60b" >/dev/null 2>&1
 out61a="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
 check "61 dry-run --arm launch line defaults to claude-opus-5-5" \
-    "$(printf '%s\n' "$out61a" | grep -c '^would-launch: .* claude --model claude-opus-5-5 ')" "1"
+    "$(printf '%s\n' "$out61a" | grep -c '^would-launch: .* claude --settings [^ ]* --model claude-opus-5-5 ')" "1"
 check "61 dry-run --arm launch line carries no fable model" \
     "$(printf '%s\n' "$out61a" | grep -c 'claude-fable-5-1')" "0"
 out61b="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm --model claude-fable-5-1 ) )"
 check "61 explicit --model claude-fable-5-1 still launches Fable" \
-    "$(printf '%s\n' "$out61b" | grep -c '^would-launch: .* claude --model claude-fable-5-1 ')" "1"
+    "$(printf '%s\n' "$out61b" | grep -c '^would-launch: .* claude --settings [^ ]* --model claude-fable-5-1 ')" "1"
 out61c="$( ( cd "$fixture_repo" && CONSOLE_MODEL=claude-fable-5-1 HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
 check "61 CONSOLE_MODEL=claude-fable-5-1 still launches Fable" \
-    "$(printf '%s\n' "$out61c" | grep -c '^would-launch: .* claude --model claude-fable-5-1 ')" "1"
+    "$(printf '%s\n' "$out61c" | grep -c '^would-launch: .* claude --settings [^ ]* --model claude-fable-5-1 ')" "1"
 
 record61="$tmp/record-61"
 cat > "$tmp/stub-arm-model-61.sh" <<STUB

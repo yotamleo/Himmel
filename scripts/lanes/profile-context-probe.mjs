@@ -243,6 +243,7 @@ function spawnClaude(extraArgs) {
   const args = ['-p', '--model', 'haiku', '--max-turns', '1', '--permission-mode', 'dontAsk',
     '--output-format', 'stream-json', '--verbose', ...extraArgs, BASELINE_PROMPT];
   // headless-claude-ok: HIMMEL-2189 measured profile probe
+  // launch-profile-ok: the probe passes the profile under test via extraArgs (--settings per run)
   return spawnSync('claude', args, {
     cwd: REPO_ROOT,
     encoding: 'utf8',

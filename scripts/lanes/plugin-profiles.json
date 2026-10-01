@@ -185,6 +185,12 @@
       "drop": ["pr-review-toolkit-himmel@himmel", "lean-skills@himmel"],
       "mcpServers": ["qmd"],
       "contextBudget": 35000
+    },
+    "console": {
+      "_comment": "HIMMEL-4013: a console session (console.sh new/next arm, and a resume of a console doc). Floor (handover, himmel-ops, qmd) plus base's lean-skills; drops pr-review-toolkit-himmel, which a console never runs (it dispatches legs, it does not review its own diff). gateAllow stays false: the leg-shaped gateAllow rules are for legs, and a console runs under the operator's own permission config. Not a leg profile, so it is not in plugin-profiles.mjs LEG_PROFILES.",
+      "enable": [],
+      "drop": ["pr-review-toolkit-himmel@himmel"],
+      "contextBudget": 50000
     }
   }
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 3 (HIMMEL-2179): does `--bare --add-dir <packdir>` discover a skill
 # living in <packdir>/.claude/skills/? Verify by ARTIFACT: does invoking
 # "/probe-skill" actually write skill-artifact.txt in the run cwd. Also

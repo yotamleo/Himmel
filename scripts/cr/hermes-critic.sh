@@ -339,8 +339,16 @@ run_claude_review() {
         echo "hermes-critic.sh: could not create the reviewer scratch cwd — refusing the claude route" >&2
         return 1
     fi
+    # HIMMEL-4013: a one-turn, tool-less reviewer needs no plugins — run it under
+    # the floor-only `bare` profile instead of the operator's full plugin set.
+    local critic_settings
+    if ! critic_settings="$(bash "$SCRIPT_DIR/../lanes/profile-settings.sh" bare)" || [ -z "$critic_settings" ]; then
+        echo "hermes-critic.sh: could not resolve the bare plugin profile — refusing the claude route (HIMMEL-4013)" >&2
+        rm -rf "$scratch_dir"
+        return 1
+    fi
     # headless-claude-ok: CR critic pass — this invocation IS the product (HIMMEL-2017).
-    out="$(cd "$scratch_dir" && PATH="$deduped_path" claude -p --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
+    out="$(cd "$scratch_dir" && PATH="$deduped_path" claude -p --settings "$critic_settings" --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
     crc=$?
     [ -n "$scratch_dir" ] && rm -rf "$scratch_dir"
     printf '%s' "$out" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(j.result??"")}catch(e){console.log(d)}})'
