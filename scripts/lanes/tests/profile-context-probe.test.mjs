@@ -6,14 +6,15 @@
 // is excluded from the CI node --test glob because it bills real usage.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   parseStreamJsonLines, findInitEvent, findResultEvent, firstTurnTokens,
   pluginSourceDiff, namespaceExtras, evaluateProfile, formatNote, roleCoverageProblems, countLoadedSkills,
   parseProbeArgs, resolveLedgerTarget, buildLedgerRow,
-  findContextUsage, isNameOnlySkill, listingProblems, listingReport, requiredBudget,
+  findContextUsage, isNameOnlySkill, listingProblems, expectedSkillNames, installedVersionsOf, listingReport, requiredBudget,
 } from '../profile-context-probe.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -263,9 +264,59 @@ test('listingProblems: one name-only skill among described ones FAILS and is nam
   assert.match(p[0], /impeccable@himmel.*1 of 2.*name-only.*impeccable:impeccable/s);
 });
 
+test('listingProblems: an expected-skills inventory defeats the agent-only exemption', () => {
+  const p = listingProblems(CTX([]), ['impeccable@himmel'], { skillPlugins: new Set(), expectedSkills: new Set(['impeccable:audit']) });
+  assert.match(p[0], /missing from the post-cap skill listing/);
+});
+
 test('listingProblems: a required plugin absent from the listing fails, unless it has no skills (agent-only)', () => {
   assert.match(listingProblems(CTX([]), ['impeccable@himmel'], { skillPlugins: new Set(['impeccable']) })[0], /missing from the post-cap skill listing/);
   assert.deepEqual(listingProblems(CTX([]), ['impeccable@himmel'], { skillPlugins: new Set() }), []);
+});
+
+// HIMMEL-4060 item 2: the listing is compared against the expected inventory.
+const scanned = (plugin, name, version = '1.0') => ({ scope: 'plugin-skills', name, chars: 100, path: `/h/.claude/plugins/cache/himmel/${plugin}/${version}/skills/${name}/SKILL.md` });
+
+test('expectedSkillNames: skills of the required plugin only, latest cached version only, by cache component', () => {
+  const entries = [scanned('impeccable', 'impeccable'), scanned('impeccable', 'audit'), scanned('impeccable', 'old', '0.9'),
+    scanned('other', 'x'), { ...scanned('other', 'impeccable'), path: '/h/.claude/plugins/cache/himmel/other/1.0/skills/impeccable/SKILL.md' }];
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'])].sort(), ['impeccable:audit', 'impeccable:impeccable']);
+});
+
+test('expectedSkillNames: the installed version wins over a newer cached one; unmatched installs fall back to latest', () => {
+  const entries = [scanned('impeccable', 'old-only', '0.9'), scanned('impeccable', 'new-only', '2.0')];
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable@himmel', new Set(['0.9'])]]))], ['impeccable:old-only']);
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'], new Map([['impeccable@himmel', new Set(['9.9'])]]))], ['impeccable:new-only']);
+});
+
+test('expectedSkillNames: a same-named plugin from another marketplace is not counted', () => {
+  const entries = [scanned('impeccable', 'mine'), { ...scanned('impeccable', 'theirs'), path: '/h/.claude/plugins/cache/other-mkt/impeccable/1.0/skills/theirs/SKILL.md' }];
+  assert.deepEqual([...expectedSkillNames(entries, ['impeccable@himmel'])], ['impeccable:mine']);
+});
+
+test('installedVersionsOf: reads installed_plugins.json, null when unreadable', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'inst-'));
+  try {
+    assert.equal(installedVersionsOf(dir), null);
+    mkdirSync(join(dir, 'plugins'), { recursive: true });
+    writeFileSync(join(dir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'impeccable@himmel': [
+      { scope: 'user', version: '1.0' },
+      { scope: 'project', projectPath: '/work/here', version: '0.9' },
+      { scope: 'project', projectPath: '/work/elsewhere', version: '0.5' },
+    ] } }));
+    assert.deepEqual([...installedVersionsOf(dir, '/work/here').get('impeccable@himmel')].sort(), ['0.9', '1.0']);
+    assert.deepEqual([...installedVersionsOf(dir, '/work/other').get('impeccable@himmel')], ['1.0']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('listingProblems: a required skill absent from a non-empty listing is flagged by name', () => {
+  const p = listingProblems(CTX([FULL]), ['impeccable@himmel'], { expectedSkills: new Set(['impeccable:impeccable', 'impeccable:audit']) });
+  assert.equal(p.length, 1);
+  assert.match(p[0], /impeccable@himmel.*absent.*impeccable:audit/s);
+});
+
+test('listingProblems: every expected skill present passes', () => {
+  assert.deepEqual(listingProblems(CTX([FULL]), ['impeccable@himmel'], { expectedSkills: new Set(['impeccable:impeccable']) }), []);
 });
 
 test('listingProblems: no context_usage is a problem when plugins are required', () => {

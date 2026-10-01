@@ -237,6 +237,39 @@ function findPluginSkillDirectories(root, skipped) {
   return skillDirectories;
 }
 
+// HIMMEL-4060: the plugin-cache DIRECTORY COMPONENT of a scanned path —
+// `<configDir>/plugins/cache/<marketplace>/<plugin>/<version>/...` — as
+// { marketplace, plugin, version }, or null for a path outside that layout. Matching this
+// component (not a `/<plugin>/` substring) keeps a skill directory that merely
+// shares a plugin's name from being attributed to that plugin.
+export function pluginCacheOf(path) {
+  const parts = resolve(path).split(sep);
+  for (let i = 0; i + 4 < parts.length; i++) {
+    if (parts[i] === 'plugins' && parts[i + 1] === 'cache') return { marketplace: parts[i + 2], plugin: parts[i + 3], version: parts[i + 4] };
+  }
+  return null;
+}
+
+// HIMMEL-4060: listing entries of skills-dir command trees
+// (`<configDir>/skills/<tree>/commands/*.md`, surfaced as `<tree>:<command>`),
+// which scanSkillCosts does not see. Returns null when <configDir>/skills is
+// unreadable, so the caller can fall back to a constant.
+export function scanCommandTrees(configDir) {
+  const root = join(resolve(configDir), 'skills');
+  let trees;
+  try {
+    trees = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const entries = [];
+  const skipped = [];
+  for (const tree of trees) {
+    for (const e of scanCommands(join(root, tree.name, 'commands'), 'skills-dir-commands', skipped)) entries.push({ ...e, tree: tree.name });
+  }
+  return entries;
+}
+
 export function scanSkillCosts(options = {}) {
   const cwd = resolve(options.cwd ?? process.cwd());
   const configDir = resolve(options.configDir ?? join(homedir(), '.claude'));

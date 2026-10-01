@@ -16,7 +16,9 @@ import { parseGrantFlag, composeGrantLine, nextGrantId, authorityGate, classifyS
 // HIMMEL-1040 plugin profiles: resolve the dispatch's lane profile (default
 // lane-impl) into a `--settings` payload, injected per-dispatch so the worker
 // runs lean while the operator's shared ~/.claude stays full.
-import { resolveProfileByName, parseAddPlugins, readEnabledPluginIds } from "../lanes/plugin-profiles.mjs";
+import { resolveProfileByName, parseAddPlugins, readEnabledPluginIds, loadListingLib } from "../lanes/plugin-profiles.mjs";
+import { scanSkillCosts } from "../lanes/skill-cost.mjs";
+await loadListingLib();
 // HIMMEL-1553: symptom-brief loop breaker, two-stage — at 2 reviewed rounds
 // the brief must carry an INVARIANT section; at 3+ this cheap lane is refused
 // outright (judgment-tier lane or recorded --rounds-override). Thresholds live
@@ -56,9 +58,15 @@ export const DEFAULT_LANE_PROFILE = "lane-impl";
 // the claudex lane's child config dir is claude-codex's own ~/.claude-codex, which
 // this seam cannot see (the launcher owns + seeds it after we resolve).
 export function resolveProfileSettings(profile: string, addPlugins: string[], cwd: string, installed?: string[]): string | undefined {
+  // HIMMEL-4060 (as the plugin-profiles CLI does since #1565): the skill scan feeds
+  // skillOverrides + the listing budget fraction. The listing lib is awaited once
+  // at module load below; the poller's cachebust loader never reaches this path.
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
   const settings = resolveProfileByName(profile, {
     addPlugins,
     installed: installed ?? readEnabledPluginIds(homedir(), cwd, process.env.CLAUDE_CONFIG_DIR),
+    skillEntries: scanSkillCosts({ cwd, configDir }).entries,
+    configDir,
   });
   return settings === null ? undefined : JSON.stringify(settings);
 }
