@@ -3003,6 +3003,38 @@ check_both "77 fromP: cd wt | cat; cp wt/src.txt xlnkdir2/ (trailing slash) deni
 check_both "78 control: cd wt | cat; cp wt/src.txt wt/xlnk (absolute wt dir) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; cp $FIX/wt/src.txt $FIX/wt/xlnk\",\"cwd\":\"$FIX/primary\"}}"
 
+echo "== HIMMEL-3685 (a cd reached via | or || leaves the modelled cwd UNRESOLVED) =="
+
+# 79-84: the WORKTREE-cwd half of 46. From a worktree payload cwd,
+# `cd <primary> || cd <wt>` really ends in <primary> (the first cd succeeds, so
+# the || arm never runs) but the tracker modelled the cwd as <wt> — equal to the
+# payload cwd, so no divergence, so the relative write was checked against
+# <wt> and ALLOWED. A cd/pushd reached across a | or || boundary now marks the
+# cwd unresolved, which fails closed exactly like an unresolvable cd.
+check_both "79 fromW: cd primary || cd wt; echo x > a.txt (first cd succeeds, || never runs) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "80 fromW: cd primary || cd wt; git commit -m wip (git-arm twin) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || cd $FIX/wt; git commit -m wip\",\"cwd\":\"$FIX/wt\"}}"
+check_both "81 fromW: cd wt || cd primary; echo x > a.txt (the cd reached via || is the dangerous one) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || cd $FIX/primary; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 82 (control): the idiomatic guard — the cd is FIRST in its list, only `exit`
+# follows the ||, so no cd is reached via a boundary and the cwd stays resolved.
+check_both "82 control: cd wt || exit; echo x > a.txt (cwd=wt) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || exit; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 83/83b (decision): `cd <wt> | cat` runs the cd in a pipeline subshell, so the
+# real cwd never moves. The cd is the pipeline's LEFT side, not reached across
+# a boundary, so it stays modelled: from a wt cwd the write is safe (ALLOW, and
+# correct), from a primary cwd row 50 already denies. A cd on the RIGHT of a |
+# (83b) is reached across the boundary and fails closed.
+check_both "83 fromW: cd wt | cat; echo x > a.txt allows (cd is the pipeline's left side; real cwd stays wt)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "83b fromW: echo | cd wt; echo x > a.txt denies (cd reached across a | boundary)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo | cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 84: the interp-body scan shares the splitter.
+F84_CMD="bash -c 'cd $FIX/primary || cd $FIX/wt; echo x > a.txt'"
+F84_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F84_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+check_both "84 fromW: bash -c 'cd primary || cd wt; echo x > a.txt' denies" block "$F84_JSON"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

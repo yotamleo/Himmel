@@ -492,9 +492,38 @@ _bwimc_blank_heredocs() {
 # one walk classified as an operator and another as a boundary. `||` and `|&`
 # are untouched: in both the character before the `|` is `|` or the `|` is
 # followed by `&`, never a bare `>`.
+#
+# HIMMEL-3685: a clause reached across an unquoted `|` or `||` boundary (the
+# `cd <wt>` in `cd <primary> || cd <wt>`) may never run — or, after `|`, runs in
+# a pipeline subshell — so the modelled cwd after it is a guess. Such a clause
+# is emitted with a leading $_BWIMC_PIPE sentinel byte; every consumer strips
+# it with _bwimc_clause_unpipe and passes the flag to _bwimc_ecwd_track. A flag
+# set by `|` survives the blank clause `||` yields and clears at the next
+# non-blank clause. The splitter runs in a process substitution, so the flag
+# travels in the line itself, never in a global.
+# \002, not \001: \001 is _bwimc_subst_split's stub marker, counted per clause.
+_BWIMC_PIPE=$'\002'
+_bwimc_sp_pipe=0
+_bwimc_split_emit() {
+    if [ "$_bwimc_sp_pipe" = 1 ] && [ -n "${1//[[:space:]]/}" ]; then
+        printf '%s%s\n' "$_BWIMC_PIPE" "$1"; _bwimc_sp_pipe=0
+    else
+        printf '%s\n' "$1"
+    fi
+}
+# _bwimc_clause_unpipe VARNAME — strips the sentinel from the clause held in
+# VARNAME and sets _bwimc_clause_piped to 1 or 0.
+_bwimc_clause_unpipe() {
+    local _v="${!1}"
+    case "$_v" in
+        "$_BWIMC_PIPE"*) _bwimc_clause_piped=1; printf -v "$1" '%s' "${_v#"$_BWIMC_PIPE"}" ;;
+        *) _bwimc_clause_piped=0 ;;
+    esac
+}
 _bwimc_split_clauses() {
     local text="$1"
     local i=0 len=${#text} c clause="" prevact=""
+    _bwimc_sp_pipe=0
     _bwimc_scan_init
     while [ "$i" -lt "$len" ]; do
         c="${text:$i:1}"
@@ -505,10 +534,10 @@ _bwimc_split_clauses() {
                     if [ "$prevact" = '>' ]; then
                         clause="${clause}${c}"
                     else
-                        printf '%s\n' "$clause"; clause=""
+                        _bwimc_split_emit "$clause"; clause=""; _bwimc_sp_pipe=1
                     fi
                     ;;
-                ';'|'&'|'('|"$_BWIMC_NL") printf '%s\n' "$clause"; clause="" ;;
+                ';'|'&'|'('|"$_BWIMC_NL") _bwimc_split_emit "$clause"; clause="" ;;
                 *) clause="${clause}${c}" ;;
             esac
         else
@@ -519,7 +548,7 @@ _bwimc_split_clauses() {
         if [ "$_BWIMC_ACT" = 1 ]; then prevact="$c"; else prevact=""; fi
         i=$((i+1))
     done
-    printf '%s\n' "$clause"
+    _bwimc_split_emit "$clause"
 }
 
 # Tokenize a clause into whitespace-separated words, quote-aware (a whole
@@ -1204,7 +1233,7 @@ _bwimc_unq() {
 # scan runs — never via `$(…)`, which would discard the global updates in a
 # subshell.
 _bwimc_ecwd_track() {
-    local toks=() t tu i n r carg cabs craw
+    local toks=() t tu i n r carg cabs craw piped="${2:-0}"
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
     i=0
@@ -1302,6 +1331,13 @@ _bwimc_ecwd_track() {
             ;;
         popd) _bwimc_ecwd_unres=1 ;;
     esac
+    # HIMMEL-3685: a cd/pushd/popd reached across a `|`/`||` boundary may not
+    # have run (or ran in a pipeline subshell) — whatever it modelled, the
+    # real cwd is unknown, so fail closed like an unresolvable cd.
+    case "$tu" in
+        cd|pushd|popd) [ "$piped" = 1 ] && _bwimc_ecwd_unres=1 ;;
+    esac
+    return 0
 }
 
 # Denies a RELATIVE, non-dynamic write candidate once a cd/pushd earlier in
@@ -1707,8 +1743,9 @@ _bwimc_check_interp_body() {
     _bwimc_ibody_saved_pushn="$_bwimc_ecwd_pushn"
     while IFS= read -r _bwimc_ibody_clause; do
         [ -n "$(printf '%s' "$_bwimc_ibody_clause" | tr -d '[:space:]')" ] || continue
+        _bwimc_clause_unpipe _bwimc_ibody_clause
         _bwimc_ibody_clause_sp=$(_bwimc_space_before_redirects "$_bwimc_ibody_clause")
-        _bwimc_ecwd_track "$_bwimc_ibody_clause_sp"
+        _bwimc_ecwd_track "$_bwimc_ibody_clause_sp" "$_bwimc_clause_piped"
         if _bwimc_m=$(printf '%s' "$_bwimc_ibody_clause_sp" | tr '[:upper:]' '[:lower:]' | grep -E '^[[:space:]]*git(\.exe)?([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
             _bwimc_git_commit_target "$_bwimc_ibody_clause_sp" "$_bwimc_ecwd"
             if [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ]; then
@@ -1935,7 +1972,7 @@ local _bwimc_rclause _bwimc_rclause_sp _bwimc_rtoks _bwimc_t _bwimc_rn _bwimc_te
     _bwimc_pfx _bwimc_pflag _bwimc_ri _bwimc_teecollect _bwimc_tee_dd _bwimc_rt \
     _bwimc_rt2 _bwimc_skel _bwimc_sbodies _bwimc_sbi _bwimc_stubs _bwimc_sn \
     _bwimc_sb_ecwd _bwimc_sb_unres _bwimc_sb_pushn \
-    _bwimc_pre_ecwd _bwimc_pre_unres _bwimc_pre_pushn
+    _bwimc_pre_ecwd _bwimc_pre_unres _bwimc_pre_pushn _bwimc_rclause_piped
 _bwimc_skel="$1"; _bwimc_sbodies=(); _bwimc_sbi=0
 # shellcheck disable=SC2016  # literal `$(` is the glob pattern, not an expansion
 case "$1" in
@@ -1949,11 +1986,13 @@ case "$1" in
 esac
 while IFS= read -r _bwimc_rclause; do
     [ -n "$(printf '%s' "$_bwimc_rclause" | tr -d '[:space:]')" ] || continue
+    _bwimc_clause_unpipe _bwimc_rclause
+    _bwimc_rclause_piped="$_bwimc_clause_piped"
     _bwimc_rclause_sp=$(_bwimc_space_before_redirects "$_bwimc_rclause")
     # A body expands BEFORE its own clause runs, so it is judged at the cwd the
     # clause STARTS in, not the one the clause (a `cd` it carries) leaves.
     _bwimc_pre_ecwd="$_bwimc_ecwd"; _bwimc_pre_unres="$_bwimc_ecwd_unres"; _bwimc_pre_pushn="$_bwimc_ecwd_pushn"
-    _bwimc_ecwd_track "$_bwimc_rclause_sp"
+    _bwimc_ecwd_track "$_bwimc_rclause_sp" "$_bwimc_rclause_piped"
     _bwimc_rtoks=()
     while IFS= read -r _bwimc_t; do _bwimc_rtoks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_rclause_sp")
     _bwimc_rn=${#_bwimc_rtoks[@]}
@@ -3228,6 +3267,9 @@ _bwimc_g_repoint=0
 _bwimc_g_netop=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
+    # HIMMEL-3685: this arm's own tracker already keeps every cwd a cd left
+    # behind (_bwimc_gcwd_alts), so a `|`/`||`-reached cd needs no extra flag.
+    _bwimc_clause_unpipe _bwimc_clause
     # A backtick substitution's body is its own command (`$(` is already a
     # clause break). Split quote-blind: a literal backtick inside quotes only
     # yields an extra fragment to classify (toward MORE denies, never fewer).
@@ -3244,6 +3286,7 @@ _bwimc_ecwd_unres=0
 _bwimc_ecwd_pushn=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
+    _bwimc_clause_unpipe _bwimc_clause
     _tolower_ascii "$_bwimc_clause"
     _bwimc_clause_lc="$_TOLOWER_OUT"
     # HIMMEL-2592: the verb arms tokenize the SAME pre-spaced text arm (a)
@@ -3257,7 +3300,7 @@ while IFS= read -r _bwimc_clause; do
     # a bare `cd <dir>` clause matches none of the verb regexes below, so
     # this never diverts the elif chain; it only updates _bwimc_ecwd for
     # THIS and every LATER clause in the command.
-    _bwimc_ecwd_track "$_bwimc_clause_sp"
+    _bwimc_ecwd_track "$_bwimc_clause_sp" "$_bwimc_clause_piped"
 
     # HIMMEL-1430: `grep -E` + capture instead of `grep -q` here and at every
     # verb-scan arm below — under pipefail a multi-line, >64KiB clause can
