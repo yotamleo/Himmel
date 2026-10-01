@@ -393,6 +393,37 @@ _go_view() {
     fi
     go_meta=$(cat "$go_tmp" 2>/dev/null) || go_meta=""
 }
+# HIMMEL-2141: bind the PR number to ITS repo before anything resolves it. The
+# effective repo is the explicit -R/--repo, else the repo of the payload cwd (the
+# directory `gh pr merge` will run in); the project repo is the one this hook runs
+# in. A selector is only meaningful inside one repo, so when the two differ the
+# lookups below would read the project repo's PR of the same number: refuse, as
+# merge-on-green.sh's same-repo guard does. An unresolvable repo refuses too.
+# CR_MERGE_GATE_OK=1 (the documented bypass) merges the other repo on purpose; the
+# lookups then carry its name explicitly instead of resolving it from a cwd.
+_nwo_key() {
+    local n=${1#https://}
+    n=${n#http://}; n=${n%/}; n=${n%.git}
+    case "$n" in */*/*) n=${n#*/} ;; esac
+    printf '%s' "$n" | tr '[:upper:]' '[:lower:]'
+}
+proj_nwo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || proj_nwo=""
+eff_nwo=$repo
+if [ -z "$eff_nwo" ] && [ -n "$cwd" ]; then
+    eff_nwo=$(cd "$cwd" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || eff_nwo=""
+    [ -n "$eff_nwo" ] || _deny "cannot resolve this repo's owner/name (the merge's working directory '$cwd') — refusing (GATE INTEGRITY: PR #$sel must be read in the repo it belongs to). Pass -R <owner>/<name>, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+fi
+if [ -n "$eff_nwo" ]; then
+    [ -n "$proj_nwo" ] || _deny "cannot resolve this repo's owner/name to bind PR #$sel — refusing (GATE INTEGRITY). Use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
+    if [ "$(_nwo_key "$eff_nwo")" != "$(_nwo_key "$proj_nwo")" ]; then
+        if [ "${CR_MERGE_GATE_OK:-}" = "1" ]; then
+            [ -n "$repo" ] || repo=$eff_nwo
+        else
+            _deny "this merge targets $eff_nwo, not the project repo ($proj_nwo) — PR #$sel would be read from the wrong repo — refusing (GATE INTEGRITY). Run scripts/handover/merge-on-green.sh from that repo's own checkout, or set CR_MERGE_GATE_OK=1 in the LAUNCHING shell to merge it deliberately. (For help run: gh help pr merge)"
+        fi
+    fi
+fi
+_gh_timed_out && _deny "a gh call binding PR #$sel to its repo timed out (10s bound) or could not be bounded — refusing (GATE INTEGRITY). Retry, or use scripts/handover/merge-on-green.sh. (For help run: gh help pr merge)"
 _go_view "$sel" "$repo" || go_meta=""
 go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
 go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
