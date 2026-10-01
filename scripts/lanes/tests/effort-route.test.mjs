@@ -90,3 +90,35 @@ test('negative sigma or mean is an unusable record, never an implement recommend
     assert.equal(r.action, 'plan-first');
   }
 });
+
+test('a record with no or non-boolean dod.passed is a validation error, never implement', () => {
+  const { dod, ...noDod } = FIX.small_sure.record;
+  for (const bad of [noDod, { ...noDod, dod: {} }, { ...noDod, dod: { passed: 'yes' } }, { ...noDod, dod: { passed: 1 } }]) {
+    const r = recommend(bad, CFG);
+    assert.equal(r.action, 'plan-first');
+    assert.match(r.reason, /dod/);
+  }
+});
+
+test('dod.passed false with a non-array dod.failed does not throw', () => {
+  for (const failed of ['red', 7, {}, null, undefined]) {
+    const r = recommend({ ...FIX.small_sure.record, dod: { passed: false, failed } }, CFG);
+    assert.equal(r.action, 'plan-first');
+  }
+});
+
+test('every threshold in effort-routing.json is read by recommend()', () => {
+  const rec = FIX.small_sure.record; // mean 0.995, sigma 0.45: medium under CFG
+  const probes = [
+    ['medium.mean_max', { ...CFG, medium: { ...CFG.medium, mean_max: 0.5 } }, rec],
+    ['medium.sigma_max', { ...CFG, medium: { ...CFG.medium, sigma_max: 0.1 } }, rec],
+    ['high.sigma_max', { ...CFG, high: { ...CFG.high, sigma_max: 0.1 } }, rec],
+    ['review_mean_gt', { ...CFG, review_mean_gt: 0.5 }, rec],
+    ['plan_first_sigma_gte', { ...CFG, plan_first_sigma_gte: 0.4 }, rec],
+  ];
+  for (const [name, cfg, r] of probes) {
+    assert.notDeepEqual(recommend(r, cfg), recommend(r, CFG), `${name} has no effect on routing`);
+  }
+  const keys = (o, p = '') => Object.entries(o).flatMap(([k, v]) => k.startsWith('_') ? [] : v && typeof v === 'object' ? keys(v, `${p}${k}.`) : [`${p}${k}`]);
+  assert.deepEqual(keys(CFG).sort(), probes.map(([n]) => n).sort());
+});
