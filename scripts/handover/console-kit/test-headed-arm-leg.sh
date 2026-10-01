@@ -2819,6 +2819,31 @@ else
   echo "ok - 39m a refused launch never reaches the launcher"
 fi
 
+# --- 40. HIMMEL-3997: advisory effort recommendation (never alters a launch) --
+d40="$tmp/c40"; mkdir -p "$d40"
+good40="$d40/record.json"
+printf '%s\n' '{"median_seq":2.0,"sigma":0.85,"mean_seq":2.87,"g1":"yes","dod":{"passed":true,"failed":[]}}' > "$good40"
+printf '%s\n' '{not json' > "$d40/bad.json"
+for variant in good missing bad none; do
+  doc40="$d40/doc-$variant.md"
+  case "$variant" in
+    good)    printf '%s\n' "> **Effort-record:** $good40" > "$doc40" ;;
+    missing) printf '%s\n' "> **Effort-record:** $d40/nope.json" > "$doc40" ;;
+    bad)     printf '%s\n' "> **Effort-record:** $d40/bad.json" > "$doc40" ;;
+    none)    printf '%s\n' 'no record line here' > "$doc40" ;;
+  esac
+  rc=0; out40="$(LEG_EFFORT=low bash "$SCRIPT" --dry-run --no-profile HIMMEL-40-leg "$doc40" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+  check "40 $variant: dry-run still exits 0" "$rc" "0"
+  contains "40 $variant: dry-run report still printed" "$out40" "headed-arm-leg: env IMPL_GUARD_OK="
+  case "$variant" in
+    good)    contains "40 good: advisory names high effort + review and the launching effort" "$out40" "advisory: recommended LEG_EFFORT=high + independent review before GO"
+             contains "40 good: advisory shows the launching LEG_EFFORT" "$out40" "launching LEG_EFFORT=low" ;;
+    missing) contains "40 missing: advisory unavailable" "$out40" "advisory: unavailable (record not readable" ;;
+    bad)     contains "40 bad json: advisory unavailable" "$out40" "advisory: unavailable (effort-route failed" ;;
+    none)    not_contains "40 none: no advisory line at all" "$out40" "advisory" ;;
+  esac
+done
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-headed-arm-leg.sh"
