@@ -190,6 +190,26 @@ rc=$?
 assert_rc "T18 own-checkout .env resolves rc=0" 0 "$rc"
 assert_contains "T18 snapshot under own-checkout's HANDOVER_DIR, not the foreign CWD repo" "$own/state-fixture/ownslug/context-hop-" "$out"
 
+# --- HIMMEL-4054: hop must propagate arm-resume's real exit status. The origin
+# repo is a scratch `git init` whose arm-resume.sh stub exits with a chosen rc.
+stubrepo="$TMP/stub-origin"
+mkdir -p "$stubrepo/scripts/handover" "$TMP/handovers/stub"
+( cd "$stubrepo" && git init -q )
+printf '#!/usr/bin/env bash\nexit "${STUB_ARM_RC:-0}"\n' > "$stubrepo/scripts/handover/arm-resume.sh"
+
+# T19: arm-resume refuses (rc 2) → hop exits 2 with the failure diagnostic.
+out=$(cd "$stubrepo" && STUB_ARM_RC=2 bash "$HOP" --handover-root "$TMP/handovers/stub" --message "rc-test" 2>&1)
+rc=$?
+assert_rc "T19 arm-resume rc=2 propagates" 2 "$rc"
+assert_contains "T19 diagnostic carries the real rc" "arm-resume.sh failed (rc=2)" "$out"
+assert_not_contains "T19 no CONTEXT-HOP ARMED banner on refusal" "CONTEXT-HOP ARMED" "$out"
+
+# T20: arm-resume succeeds → hop exits 0 with the banner.
+out=$(cd "$stubrepo" && STUB_ARM_RC=0 bash "$HOP" --handover-root "$TMP/handovers/stub" --message "rc-ok" 2>&1)
+rc=$?
+assert_rc "T20 arm-resume rc=0 → hop rc=0" 0 "$rc"
+assert_contains "T20 banner on success" "CONTEXT-HOP ARMED" "$out"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
