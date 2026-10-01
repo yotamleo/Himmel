@@ -14,6 +14,7 @@
 # PLATFORM GUARD: no .ps1 twin, by design. The console kit is Linux-only
 # (pgrep, atq, /tmp suite locks, and claudex/konsole); this Bash 3.2 suite
 # exercises that platform-specific script.
+# shellcheck disable=SC2015  # `[ cond ] && pass || fail`: pass() cannot fail, so A && B || C is if-then-else here
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
