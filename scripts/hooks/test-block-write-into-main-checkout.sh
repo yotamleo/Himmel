@@ -3044,17 +3044,17 @@ check_both "85d fromW: cd primary || ( :; cd wt; ); echo x > a.txt denies (flag 
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || ( :; cd $FIX/wt; ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "85e fromW: cd primary || ( echo a; cd wt ); echo x > a.txt denies (no ; before the close paren)" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || ( echo a; cd $FIX/wt ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
-check_both "85f control: cd wt || ( echo no; exit 1 ); echo x > a.txt (cwd=wt) allows" allow \
+check_both "85f control: cd wt || ( echo no; exit 1 ); echo x > a.txt (cwd=wt) now denies (allowlist over-deny: parens)" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || ( echo no; exit 1 ); echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 # 85g (codex-1 round 3): if / for compound commands after the ||.
 check_both "85g fromW: cd primary || if true; then :; cd wt; fi; echo x > a.txt denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || if true; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "85h fromW: cd primary || for i in 1; do :; cd wt; done; echo x > a.txt denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary || for i in 1; do :; cd $FIX/wt; done; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
-check_both "85i control: cd wt || if true; then exit 1; fi; echo x > a.txt (cwd=wt) allows" allow \
+check_both "85i control: cd wt || if true; then exit 1; fi; echo x > a.txt (cwd=wt) now denies (allowlist over-deny: reserved words)" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || if true; then exit 1; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
-# 85c (control): no cd follows the ||, so the cwd stays resolved.
-check_both "85c control: cd wt || { echo no; exit 1; }; echo x > a.txt (cwd=wt) allows" allow \
+# 85c: allowlist (AG rd8) distrusts any command containing braces, parens or reserved words, so this former control now fails closed.
+check_both "85c control: cd wt || { echo no; exit 1; }; echo x > a.txt (cwd=wt) now denies (allowlist over-deny: braces)" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || { echo no; exit 1; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 # 86 (codex-2 rd4): a pipeline-left cd runs in a subshell; after `cd primary` the
@@ -3094,6 +3094,16 @@ check_both "91c fromW: cd primary; ! time -p if false; then :; cd wt; fi; echo x
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; ! time -p if false; then :; cd $FIX/wt; fi; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "91d fromW: cd primary; coproc N { :; }; cd wt; echo x > a.txt denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; coproc N { :; }; cd $FIX/wt; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+# 92 (AG rd8, allowlist): a cd is trusted only in a command free of reserved words,
+# braces, parens, a single `&` and a single `|`; anything else fails closed.
+check_both "92 fromW: cd primary; cd wt & echo x > a.txt denies (backgrounded cd)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt & echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "92b fromW: cd primary; function f { :; cd wt; }; echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; function f { :; cd $FIX/wt; }; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "92c fromW: cd wt || exit; echo x > a.txt still allows (control)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt || exit; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "92d fromW: cd wt; echo x 2>&1 > a.txt still allows (redirect & is not a background &)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; echo x 2>&1 > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.

@@ -493,38 +493,72 @@ _bwimc_blank_heredocs() {
 # are untouched: in both the character before the `|` is `|` or the `|` is
 # followed by `&`, never a bare `>`.
 #
-# HIMMEL-3685: a cd the model cannot place with certainty — one reached after an
-# unquoted `|`/`||`, after a `(`, or inside an if/while/until/for/select/case/
-# `{` construct (`cd P || cd W`, `cd W | cat`, `( cd W )`, `case x in x) cd W;;`),
-# or one that is the LEFT side of a single `|` — may never run, or runs in a
-# subshell, so the modelled cwd after it is a guess. One blunt, position-free
-# rule, no grammar tracking: once any such trigger is seen the taint is sticky,
-# and every later nonblank clause is emitted with a leading $_BWIMC_PIPE
-# sentinel byte; every consumer strips it with _bwimc_clause_unpipe and passes
-# the flag to _bwimc_ecwd_track, which marks the cwd UNRESOLVED (fail closed).
-# Accepted over-deny: any cd after such a trigger, e.g. `cd W || exit; cd X`.
+# HIMMEL-3685: ALLOWLIST for trusting a cd. The tracker trusts a cd/pushd/popd
+# only as a plain simple command that starts the text or follows `;`, `&&` or a
+# newline, in a command that contains none of: a standalone reserved word (`!`
+# time coproc if then elif else fi while until for select case esac do done
+# function `{` `}` `[[` `]]`), a parenthesis, a single `&` (anything but `&&`
+# or a redirect), or a single `|`. Anything else makes the modelled cwd
+# UNRESOLVED for the rest of the command (fail closed): _bwimc_text_untrusted
+# prescans the whole text and, when it fires, EVERY clause is emitted with a
+# leading $_BWIMC_PIPE sentinel byte; every consumer strips it with
+# _bwimc_clause_unpipe and passes the flag to _bwimc_ecwd_track. A `||` is not
+# itself a disqualifier (`cd W || exit; echo x > a.txt` stays trusted), but a
+# clause reached after one is untrusted: the taint turns on there and is sticky.
+# Accepted over-deny: any cd after a `||`, any `$(...)`, `echo done`.
 # The splitter runs in a process substitution, so the taint travels in the
 # line itself, never in a global the caller reads.
 # \002, not \001: \001 is _bwimc_subst_split's stub marker, counted per clause.
 _BWIMC_PIPE=$'\002'
 _bwimc_sp_pipe=0
-_bwimc_split_emit() {
-    if [ -n "${1//[[:space:]]/}" ]; then
-        local _fw="${1#"${1%%[![:space:]]*}"}"
-        # Skip EVERY leading prefix (`!`, `time [-p]`, `coproc [NAME]`, VAR=val)
-        # before the opener test, so a prefixed opener taints like a bare one.
-        local _w _pw=""
-        while :; do
-            _w="${_fw%%[[:space:]]*}"
-            case "$_w" in
-                '{'|if|while|until|for|select|case) _bwimc_sp_pipe=1; break ;;
-                '!'|time|-p|--|coproc|[A-Za-z_]*=*) ;;
-                *) [ "$_pw" = coproc ] || break ;;  # coproc NAME
+_bwimc_text_untrusted() {
+    local text="$1" i=0 c w="" wq=0 prevact="" nx act
+    local len=${#text}
+    _bwimc_scan_init
+    while [ "$i" -lt "$len" ]; do
+        c="${text:$i:1}"
+        _bwimc_scan_step "$c"
+        act="$_BWIMC_ACT"
+        if [ "$act" = 1 ]; then
+            case "$c" in
+                '('|')') return 0 ;;
+                '&')
+                    nx="${text:$((i+1)):1}"
+                    case "$prevact$nx" in
+                        '>'*|'<'*|*'>'|'&'*|*'&') ;;
+                        *) return 0 ;;
+                    esac
+                    ;;
+                '|')
+                    nx="${text:$((i+1)):1}"
+                    if [ "$prevact" != '>' ] && [ "$prevact" != '|' ] && [ "$nx" != '|' ]; then return 0; fi
+                    ;;
             esac
-            [ "$_w" = "$_fw" ] && break
-            _pw="$_w"; _fw="${_fw#"$_w"}"; _fw="${_fw#"${_fw%%[![:space:]]*}"}"
-        done
+            case "$c" in
+                [[:space:]]|';'|'&'|'|'|"$_BWIMC_NL")
+                    if [ "$wq" = 0 ]; then
+                        case "$w" in
+                            '!'|time|coproc|if|then|elif|else|"fi"|while|until|for|select|"case"|"esac"|do|"done"|function|'{'|'}'|'[['|']]') return 0 ;;
+                        esac
+                    fi
+                    w=""; wq=0
+                    ;;
+                *) w="${w}${c}" ;;
+            esac
+            prevact="$c"
+        else
+            wq=1; prevact=""
+        fi
+        i=$((i+1))
+    done
+    if [ "$wq" = 0 ]; then
+        case "$w" in
+            '!'|time|coproc|if|then|elif|else|"fi"|while|until|for|select|"case"|"esac"|do|"done"|function|'{'|'}'|'[['|']]') return 0 ;;
+        esac
     fi
+    return 1
+}
+_bwimc_split_emit() {
     if [ "$_bwimc_sp_pipe" = 1 ] && [ -n "${1//[[:space:]]/}" ]; then
         printf '%s%s\n' "$_BWIMC_PIPE" "$1"
     else
@@ -544,6 +578,7 @@ _bwimc_split_clauses() {
     local text="$1"
     local i=0 len=${#text} c clause="" prevact=""
     _bwimc_sp_pipe=0
+    ! _bwimc_text_untrusted "$text" || _bwimc_sp_pipe=1
     _bwimc_scan_init
     while [ "$i" -lt "$len" ]; do
         c="${text:$i:1}"
@@ -554,18 +589,12 @@ _bwimc_split_clauses() {
                     if [ "$prevact" = '>' ]; then
                         clause="${clause}${c}"
                     else
-                        # A single `|` taints its own left clause too (`cd W | cat`
-                        # runs the cd in a subshell); `||` only taints what follows.
-                        if [ "$prevact" != '|' ] && [ "${text:$((i+1)):1}" != '|' ]; then
-                            _bwimc_sp_pipe=1; _bwimc_split_emit "$clause"
-                        else
-                            _bwimc_split_emit "$clause"; _bwimc_sp_pipe=1
-                        fi
+                        _bwimc_split_emit "$clause"; _bwimc_sp_pipe=1
                         clause=""
                     fi
                     ;;
                 ';'|'&'|"$_BWIMC_NL") _bwimc_split_emit "$clause"; clause="" ;;
-                '(') _bwimc_split_emit "$clause"; clause=""; _bwimc_sp_pipe=1 ;;
+                '(') _bwimc_split_emit "$clause"; clause="" ;;
                 *) clause="${clause}${c}" ;;
             esac
         else
@@ -1261,21 +1290,12 @@ _bwimc_unq() {
 # scan runs — never via `$(…)`, which would discard the global updates in a
 # subshell.
 _bwimc_ecwd_track() {
-    local toks=() t tu i n r carg cabs craw piped="${2:-0}" fenced=0 j cmdi
+    local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
-    # HIMMEL-3685: generic fail-closed, no prefix enumeration. A standalone
-    # reserved word ANYWHERE in the clause (`time -p cd W`, `coproc { cd W; }`,
-    # `! if …`) or a cd/pushd/popd that is not the clause's first command word
-    # (past plain assignments) means the cd may not run as modelled: mark the
-    # cwd unresolved below. Accepted over-deny: `echo cd` or any clause that
-    # merely names cd/pushd/popd as an argument.
-    for ((j = 0; j < n; j++)); do
-        t=$(_bwimc_unq "${toks[$j]}")
-        case "$t" in
-            "!"|time|coproc|if|then|elif|else|"fi"|while|until|for|select|"case"|"esac"|do|"done"|function|"{"|"}"|"[["|"]]") fenced=1 ;;
-        esac
-    done
+    # HIMMEL-3685: a cd/pushd/popd that is not the clause's first command word
+    # (past plain assignments) is not a plain simple cd: mark the cwd unresolved
+    # below. Accepted over-deny: any clause that merely names cd as an argument.
     i=0
     while [ "$i" -lt "$n" ]; do
         case "$(_bwimc_unq "${toks[$i]}")" in
@@ -1376,7 +1396,7 @@ _bwimc_ecwd_track() {
     # have run (or ran in a pipeline subshell) — whatever it modelled, the
     # real cwd is unknown, so fail closed like an unresolvable cd.
     case "$tu" in
-        cd|pushd|popd) [ "$piped" = 1 ] && _bwimc_ecwd_unres=1; [ "$fenced" = 1 ] && _bwimc_ecwd_unres=1 ;;
+        cd|pushd|popd) [ "$piped" = 1 ] && _bwimc_ecwd_unres=1 ;;
     esac
     for ((j = 0; j < n; j++)); do
         [ "$j" = "$cmdi" ] && continue
