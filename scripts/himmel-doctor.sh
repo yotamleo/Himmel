@@ -3270,6 +3270,45 @@ check_c46_plugin_enabled_missing() {
     fi
 }
 
+# --- C47-runaway-procs: long-lived himmel-shaped process pegging a core (HIMMEL-3959) ---
+# Runaway qmd queries and orphaned hook.sh fixtures ran ~99 % CPU for hours unnoticed.
+# WARN on a current-user process older than HIMMEL_DOCTOR_RUNAWAY_MIN_AGE_MIN (30) at
+# >= HIMMEL_DOCTOR_RUNAWAY_CPU_PCT (90) whose cmdline is qmd / hook.sh / bash scripts/.
+# Report only (pid, etime, %CPU, cmdline); never kills. Seam: HIMMEL_DOCTOR_RUNAWAY_PS.
+# ponytail: ps pcpu is the lifetime average, not a short sample, and the optional
+# reparented-to-init clause is not built; add either if a miss bites (HIMMEL-3959).
+check_c47_runaway_procs() {  # t13b-ok: doctor row that reads ps only, kills nothing
+    local ps_bin="${HIMMEL_DOCTOR_RUNAWAY_PS:-ps}"
+    local min_age="${HIMMEL_DOCTOR_RUNAWAY_MIN_AGE_MIN:-30}" cpu_min="${HIMMEL_DOCTOR_RUNAWAY_CPU_PCT:-90}"
+    local rows pid etime pcpu args secs d hms found=0 shown=0
+    case "$min_age" in ''|*[!0-9]*) min_age=30 ;; esac
+    case "$cpu_min" in ''|*[!0-9]*) cpu_min=90 ;; esac
+    min_age=$((10#$min_age)); cpu_min=$((10#$cpu_min))
+    command -v "$ps_bin" >/dev/null 2>&1 || return 0
+    rows="$("$ps_bin" -U "$(id -un)" -o pid= -o etime= -o pcpu= -o args= 2>/dev/null)" || return 0
+    while read -r pid etime pcpu args; do
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        case "$args" in *qmd*|*hook.sh*|*"bash scripts/"*) ;; *) continue ;; esac
+        # etime is [[dd-]hh:]mm:ss
+        d=0; hms="$etime"
+        case "$etime" in *-*) d="${etime%%-*}"; hms="${etime#*-}" ;; esac
+        case "$hms" in *:*:*) ;; *) hms="0:$hms" ;; esac
+        secs=$(( 10#$d * 86400 + 10#${hms%%:*} * 3600 + 10#$(echo "$hms" | cut -d: -f2) * 60 + 10#${hms##*:} ))
+        [ "$secs" -ge $((min_age * 60)) ] || continue
+        case "${pcpu%%.*}" in ''|*[!0-9]*) continue ;; esac
+        [ "$((10#${pcpu%%.*}))" -ge "$cpu_min" ] || continue
+        found=$((found+1))
+        [ "$shown" -lt 5 ] || continue
+        shown=$((shown+1))
+        emit WARN C47-runaway-procs "pid $pid up $etime at ${pcpu}% CPU: ${args:0:160}" "report only, nothing is killed; inspect it and kill it yourself if it is stuck (thresholds: HIMMEL_DOCTOR_RUNAWAY_MIN_AGE_MIN=$min_age, HIMMEL_DOCTOR_RUNAWAY_CPU_PCT=$cpu_min)"  # t13b-ok: doctor report text, kills nothing
+    done <<< "$rows"
+    if [ "$found" -eq 0 ]; then
+        emit OK C47-runaway-procs "no himmel-shaped process older than ${min_age}m is pegging a core (>= ${cpu_min}% CPU)"
+    elif [ "$found" -gt "$shown" ]; then
+        emit INFO C47-runaway-procs "$((found - shown)) more runaway process(es) not listed"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3319,6 +3358,7 @@ check_c43_rtk_bare_hook
 check_c44_skill_index
 check_c45_qmd_daemon  # t13b-ok: doctor row that reads ps only, starts nothing
 check_c46_plugin_enabled_missing
+check_c47_runaway_procs  # t13b-ok: doctor row that reads ps only, kills nothing
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

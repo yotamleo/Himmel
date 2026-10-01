@@ -168,6 +168,9 @@ export HIMMEL_DOCTOR_QMD_CURL="$FAKEROOT/no-such-curl"
 # Same for C45-qmd-daemon (HIMMEL-3062): never read the operator's real qmd
 # pidfile; dedicated cases point this seam at a fixture.
 export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
+# Same for C47-runaway-procs (HIMMEL-3959): never scan the operator's real
+# process table; an absent ps seam makes C47 silent, dedicated cases stub it.
+export HIMMEL_DOCTOR_RUNAWAY_PS="$FAKEROOT/no-such-ps"
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -5330,6 +5333,70 @@ if grepq "$out" 'INFO C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index';
 else
     fail "C44 qmd absent -> $(printf '%s' "$out" | grep -A1 C44)"
 fi
+
+# --- C47-runaway-procs (HIMMEL-3959): long-lived himmel-shaped process pegging a core --
+# WARN (report only, never kill) on a current-user process older than
+# HIMMEL_DOCTOR_RUNAWAY_MIN_AGE_MIN (default 30) whose ps CPU is >=
+# HIMMEL_DOCTOR_RUNAWAY_CPU_PCT (default 90) and whose cmdline is himmel-shaped
+# (qmd, hook.sh, bash scripts/). Seam: HIMMEL_DOCTOR_RUNAWAY_PS (the ps binary;
+# the stub prints C47_ROWS, lines of `pid etime pcpu args`).
+c47_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c47.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c47_t/home" "$c47_t/claude"
+# shellcheck disable=SC2016 # the stub expands C47_ROWS at ITS run time
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${C47_ROWS:-}"\n' > "$c47_t/ps"
+chmod +x "$c47_t/ps"
+c47_run() { # <rows>; threshold overrides are inherited from the caller's env
+    PATH="$FAKEBIN:$PATH" C47_ROWS="$1" HIMMEL_DOCTOR_RUNAWAY_PS="$c47_t/ps" \
+        CLAUDE_DIR="$c47_t/claude" HOME="$c47_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C47: old + hot + himmel-shaped -> WARN naming pid, etime, %CPU, cmdline (RED) =="
+out="$(c47_run '  4242 02:10:05 99.7 bun /x/qmd/dist/cli.js query foo')"
+if grepq "$out" 'WARN C47-runaway-procs' && grepq "$out" -F 'pid 4242' && grepq "$out" -F '02:10:05' && grepq "$out" -F '99.7' && grepq "$out" -F 'qmd/dist/cli.js query foo'; then
+    pass "C47 runaway qmd -> WARN with pid/etime/%CPU/cmdline"
+else
+    fail "C47 runaway qmd -> $(printf '%s' "$out" | grep -A1 C47)"
+fi
+
+echo "== C47: young, cool, or foreign cmdlines are skipped; a hook.sh runaway is kept =="
+out="$(c47_run '  1 00:05:00 99.0 bun qmd query
+  2 3-01:00:00 12.0 bun qmd query
+  3 05:00:00 99.0 /usr/bin/firefox
+  4 05:00:00 95.0 bash /x/hook.sh')"
+if ! grepq "$out" -F 'pid 1 ' && ! grepq "$out" -F 'pid 2 ' && ! grepq "$out" -F 'pid 3 ' && grepq "$out" -F 'pid 4 '; then
+    pass "C47 filters young/cool/foreign rows, keeps the hook.sh runaway"
+else
+    fail "C47 filtering -> $(printf '%s' "$out" | grep -A3 C47)"
+fi
+out="$(c47_run '  2 3-01:00:00 12.0 bun qmd query')"
+if grepq "$out" 'OK   C47-runaway-procs' && ! grepq "$out" 'WARN C47'; then
+    pass "C47 nothing runaway -> OK"
+else
+    fail "C47 clean -> $(printf '%s' "$out" | grep -A1 C47)"
+fi
+
+echo "== C47: thresholds are env-overridable =="
+out="$(HIMMEL_DOCTOR_RUNAWAY_MIN_AGE_MIN=1 c47_run '  1 00:05:00 99.0 bun qmd query')"
+out_cpu="$(HIMMEL_DOCTOR_RUNAWAY_CPU_PCT=10 c47_run '  2 3-01:00:00 12.0 bun qmd query')"
+if grepq "$out" 'WARN C47-runaway-procs' && grepq "$out_cpu" 'WARN C47-runaway-procs'; then
+    pass "C47 age and CPU thresholds honour their env overrides"
+else
+    fail "C47 overrides -> age=[$(printf '%s' "$out" | grep C47)] cpu=[$(printf '%s' "$out_cpu" | grep C47)]"
+fi
+
+echo "== C47: a real busy loop (self-terminating, group-killed) is reported and left running =="
+setsid bash -c 'while [ "$SECONDS" -lt 40 ]; do :; done' hook.sh-c47-fixture &
+c47_pid=$!
+sleep 2
+out="$(HIMMEL_DOCTOR_RUNAWAY_MIN_AGE_MIN=0 HIMMEL_DOCTOR_RUNAWAY_PS=ps CLAUDE_DIR="$c47_t/claude" HOME="$c47_t/home" bash "$DOC" --no-color 2>&1)"
+c47_alive=no; kill -0 "$c47_pid" 2>/dev/null && c47_alive=yes
+kill -- "-$c47_pid" 2>/dev/null; kill "$c47_pid" 2>/dev/null; wait "$c47_pid" 2>/dev/null
+if grepq "$out" 'WARN C47-runaway-procs' && grepq "$out" -F "pid $c47_pid" && [ "$c47_alive" = yes ]; then
+    pass "C47 reports a live busy loop and leaves it running"
+else
+    fail "C47 real loop -> alive=$c47_alive $(printf '%s' "$out" | grep -A1 C47)"
+fi
+rm -rf "$c47_t"
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
