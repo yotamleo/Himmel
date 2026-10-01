@@ -1818,21 +1818,26 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             symlink_dest=$sd
         done
     }
-    # _check_tree_copy — reads OPW[] (the command's words). The destination is
-    # the `-t`/`--target-directory` argument (cp only: rsync's -t is a flag), or
-    # else the last operand; every other operand is a source.
-    _check_tree_copy() {
-        local i n=${#OPW[@]} v=-1 w d='' base hit=0 tnext=0 sd
+    # _tree_copy_seg V — judges the cp/rsync at OPW[V], reading only its own
+    # segment (a later `; echo done` is not its destination). The destination
+    # is the `-t`/`--target-directory` argument (cp only: rsync's -t is a
+    # flag), or else the last operand; every other operand is a source.
+    _tree_copy_seg() {
+        local v=$1 i n=${#OPW[@]} w d='' base hit=0 tnext=0 sd
         local -a pos=()
-        i=0
-        while [ "$i" -lt "$n" ]; do
-            case "${OPW[i]##*/}" in cp|rsync) v=$i; break ;; esac
-            i=$((i + 1))
-        done
-        [ "$v" -ge 0 ] || return 0
         i=$((v + 1))
         while [ "$i" -lt "$n" ]; do
             w=${OPW[i]}
+            if [ "$TOK" = 1 ]; then
+                [ "${ST_S[i]}" = "${ST_S[v]}" ] || break
+                if [ -n "${ST_RO[i]}" ]; then i=$((i + 1)); continue; fi
+            else
+                case "$w" in
+                    ';'|'&'|'&&'|'|'|'||'|'|&') break ;;
+                    *'>'*|*'<'*) i=$((i + 1)); continue ;;
+                    *[\;\&\|]) w=${w%?}; i=$n ;;
+                esac
+            fi
             i=$((i + 1))
             if [ "$tnext" = 1 ]; then d=$w; tnext=0; continue; fi
             case "$w" in
@@ -1871,6 +1876,13 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         _check_one_operand "${_EH%/}/.claude/settings.json"
         [ "$symlink_dest" = 0 ] || variant_dest=1
         symlink_dest=$sd
+    }
+    _check_tree_copy() {
+        local i=0 n=${#OPW[@]}
+        while [ "$i" -lt "$n" ]; do
+            case "${OPW[i]##*/}" in cp|rsync) _tree_copy_seg "$i" ;; esac
+            i=$((i + 1))
+        done
     }
     OPW=()
     OPG=()

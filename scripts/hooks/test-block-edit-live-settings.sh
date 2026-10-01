@@ -1645,6 +1645,10 @@ assert_rc "291 cp -rt plink src2/. (glued -rt cluster) denies" 2 \
     "$(bash_rc_of "$WT2" 'cp -rt plink src2/.')"
 assert_rc "292 sed -i dlink/????????.???? (all-? leaf) denies" 2 \
     "$(bash_rc_of "$WT2" 'sed -i s/a/b/ dlink/????????.????')"
+assert_rc "293 cp -r src2/. plink/; echo done (later segment) denies" 2 \
+    "$(bash_rc_of "$WT2" 'cp -r src2/. plink/; echo done')"
+assert_rc "294 cp -r src2/. plink/ 2>/dev/null (redirect word) denies" 2 \
+    "$(bash_rc_of "$WT2" 'cp -r src2/. plink/ 2>/dev/null')"
 assert_rc "281 cp -r src/. plink/ (no settings in src) allows" 0 \
     "$(bash_rc_of "$WT2" 'cp -r src/. plink/')"
 assert_rc "282 cp -r src2/. dst/ (dst is no live parent) allows" 0 \
