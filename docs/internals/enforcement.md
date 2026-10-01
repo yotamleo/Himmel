@@ -2489,10 +2489,12 @@ beside a chokepoint word is denied; (3) CLEARING a seam or
 `-u*`/`-i*`/`--u*`/`--i*`/bare `-` token in env position (HIMMEL-3955: the
 token follows an env-like word, `env`, a `$var`/brace word or a glob that
 matches `env`, with only option and `NAME=val` words between, in the same
-simple command, split only on `;` `|` `&` and newline, a redirection word
-and its operand not ending the position; text holding `$(`, a backtick, `<(`,
-`>(`, a backslash-newline or a zsh paren glob skips this relief and takes the
-plain whole-text match, so the relief never loosens the old deny; `grep -i`, `sed -i`, `diff -u`, `ls -i`, `sort -u` and a
+simple command; the relief is an ALLOWLIST (`relief_off`): it runs only when
+the whole command is plain words (`[A-Za-z0-9_./=:@%+,-]+`) joined by spaces or
+tabs, and any quote, backslash, `$`, backtick, redirection, separator, paren,
+brace, glob metachar or newline takes the old plain whole-text match, so the
+relief never loosens the old deny (a glob-path `grep -i … scripts/hooks/*.sh`
+therefore still denies); `grep -i`, `sed -i`, `diff -u`, `ls -i`, `sort -u` and a
 `--id N` flag are not env-clearing), so
 `env -u NAME`/`-uNAME`/`-iu`/`$x-uNAME`/a globbed `en?` with a long option
 all deny) beside a

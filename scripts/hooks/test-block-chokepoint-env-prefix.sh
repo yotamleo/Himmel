@@ -1119,15 +1119,15 @@ assert_allow "3921 r11 grep over a scripts glob, no write token" "$(j "grep x sc
 assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
 # HIMMEL-3955: the standalone -u*/-i*/--u*/--i*/bare - token counts only in env
 # position (after an env-like word), so these ordinary commands stop over-denying.
-assert_allow "3955 ledger-append amend: --id, --set k=v, ? in the reason" "$(j "bash scripts/cr/ledger-append.sh amend --id 4 --set verdict=deferred --set deferred_to=HIMMEL-3929 --reason \"see scripts/hooks/x? why?\"")"
-assert_allow "3955 grep -i over a scripts glob"      "$(j "grep -i foo scripts/hooks/*.sh")"
-assert_allow "3955 sed -i over a scripts glob (not a seam or env write)" "$(j "sed -i s/a/b/ scripts/hooks/*.sh")"
-assert_allow "3955 diff -u over a scripts glob"      "$(j "diff -u scripts/a.sh scripts/b*.sh")"
-assert_allow "3955 ls -i / sort -u over a scripts glob" "$(j "ls -i scripts/hooks/*.sh; sort -u scripts/hooks/*.sh")"
+assert_deny "3955 no relief (glob/quote), main verdict: ledger-append amend: --id, --set k=v, ? in the reason" "$(j "bash scripts/cr/ledger-append.sh amend --id 4 --set verdict=deferred --set deferred_to=HIMMEL-3929 --reason \"see scripts/hooks/x? why?\"")"
+assert_deny "3955 no relief (glob/quote), main verdict: grep -i over a scripts glob"      "$(j "grep -i foo scripts/hooks/*.sh")"
+assert_deny "3955 no relief (glob/quote), main verdict: sed -i over a scripts glob (not a seam or env write)" "$(j "sed -i s/a/b/ scripts/hooks/*.sh")"
+assert_deny "3955 no relief (glob/quote), main verdict: diff -u over a scripts glob"      "$(j "diff -u scripts/a.sh scripts/b*.sh")"
+assert_deny "3955 no relief (glob/quote), main verdict: ls -i / sort -u over a scripts glob" "$(j "ls -i scripts/hooks/*.sh; sort -u scripts/hooks/*.sh")"
 assert_allow "3955 grep -n of a chokepoint file"     "$(j "grep -n deferred scripts/cr/clear-cr-marker.sh")"
 assert_allow "3955 grep -i beside a chokepoint word" "$(j "grep -i deferred scripts/cr/clear-cr-marker.sh")"
 assert_allow "3955 diff -u beside a chokepoint word" "$(j "diff -u $MERGE_ON_GREEN /tmp/x.sh")"
-assert_allow "3955 --long-option VAR=x argument, no chokepoint named" "$(j "bash scripts/cr/ledger-append.sh amend --set ${MOG_VAR}=1 --reason \"scripts/hooks/x?\"")"
+assert_deny "3955 no relief (glob/quote), main verdict: --long-option VAR=x argument, no chokepoint named" "$(j "bash scripts/cr/ledger-append.sh amend --set ${MOG_VAR}=1 --reason \"scripts/hooks/x?\"")"
 # 3955 controls: env position still denies, including beside a plain program word.
 assert_deny "3955 env -i, then a globbed kit path"       "$(j "setsid -f env -i bash scripts/handover/console-kit/g*.sh")"
 assert_deny "3955 env -i after grep in another segment"  "$(j "grep x f; env -i bash scripts/handover/console-kit/g*.sh")"
@@ -1157,6 +1157,10 @@ assert_deny "3955 zsh en(v|x) -i"         "$(j '/usr/bin/en(v|x) -i bash scripts
 assert_deny "3955 zsh (env) -i"           "$(j '/usr/bin/(env) -i bash scripts/handover/console-kit/go.sh')"
 assert_deny "3955 env name split by backslash-newline" "$(j "/usr/bin/e${BSNL}nv -i bash scripts/handover/console-kit/g*.sh")"
 assert_deny "3955 seam arm after 2>/dev/null --debug" "$(j '/usr/bin/en? 2>/dev/null --debug ARMAUTOMERGE=1 bash scripts/h*/m*.sh')"
+# The relief is an ALLOWLIST: only plain unquoted words, no glob, redirection or
+# separator. Anything else takes main's plain match.
+assert_deny "3955 attached redirection hides the env word" "$(j '/usr/bin/en?>/dev/null -i bash scripts/handover/console-kit/g*.sh')"
+assert_deny "3955 quoted operand with a space, then -i" "$(j '/usr/bin/en? --chdir "/tmp/a b" -i bash scripts/handover/console-kit/g*.sh')"
 # Substitution shapes fail closed (main's plain match): the relief never runs there.
 # shellcheck disable=SC2016 # the $( is probe text, not an expansion
 assert_deny "3955 env, \$(true; true), -i" "$(j '/usr/bin/en? $(true; true) -i bash scripts/handover/console-kit/g*.sh')"
