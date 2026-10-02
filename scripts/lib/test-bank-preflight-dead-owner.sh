@@ -83,9 +83,14 @@ if (
   mkdir -p "$SLOTS/.admit"
   printf '%s\n' "$$" > "$SLOTS/.admit/pid"
   _fleet_live_names="$(printf '%s\n' HIMMEL-9001-test; seq 1 30000)"
+  # Invoked indirectly by the extracted production helper.
+  # shellcheck disable=SC2317,SC2329
   _fleet_census() { return 0; }
+  # shellcheck disable=SC2317,SC2329
   _fleet_admit_hook() { :; }
+  # shellcheck disable=SC2317,SC2329
   _fleet_gate_take() { _fleet_gate_fence="$W/fence"; mkdir -p "$_fleet_gate_fence"; }
+  # shellcheck disable=SC2317,SC2329
   _fleet_gate_drop() { rm -rf "$W/fence"; }
   _fleet_reclaim_dead_reservation "$SLOTS/HIMMEL-9001-test/" "$dead" "$(cat "$SLOTS/HIMMEL-9001-test/expires")" HIMMEL-9001-test HIMMEL-9001-test
 ); then
