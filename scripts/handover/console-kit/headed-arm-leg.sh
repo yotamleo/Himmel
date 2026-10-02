@@ -774,10 +774,6 @@ if [ -n "$PROFILE" ]; then
         exit 2
     fi
 fi
-# HIMMEL-4094: carry the resolved profile into every lane for leg-burn records.
-if [ -n "$PROFILE" ] && [ "$NO_PROFILE" -eq 0 ]; then
-    leg_propagate_env HIMMEL_LEG_PROFILE "$PROFILE"
-fi
 # Only the immediate headed-arm renderer reads these; never child launcher-env.
 export HEADED_ARM_CONTEXT_PROFILE="$PROFILE"
 _CONTEXT_BRIEF_REASON="$(grep -m1 -E '^> \*\*Context:\*\* 1m — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* 1m — operator-ruling: //; s/^[[:space:]]+//; s/[[:space:]]+$//')"

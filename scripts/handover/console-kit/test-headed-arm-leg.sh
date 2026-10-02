@@ -2661,13 +2661,6 @@ contains "31a launcher-env carries HIMMEL_CONSOLE_LEG=1" "$lenv29a" "HIMMEL_CONS
 contains "31a launcher-env carries IMPL_GUARD_OK=1" "$lenv29a" "IMPL_GUARD_OK=1"
 contains "31a launcher-env carries INLINE_IMPL_OK=1" "$lenv29a" "INLINE_IMPL_OK=1"
 contains "31a launcher-env carries HIMMEL_LEAN_LEG=1" "$lenv29a" "HIMMEL_LEAN_LEG=1"
-contains "31a launcher-env carries the resolved leg profile" "$lenv29a" "HIMMEL_LEG_PROFILE=leg-impl"
-for profile_lane in native claudex openrouter deepseek; do
-    profile_out="$(bash "$SCRIPT" --dry-run --lane "$profile_lane" --profile leg-impl HIMMEL-9999-leg-profile some/doc.md /tmp/nosig 99999999999 "$tmp/profile-$profile_lane.log" 2>&1)"
-    contains "$profile_lane propagates resolved profile" "$profile_out" "HIMMEL_LEG_PROFILE=leg-impl"
-    profile_out="$(bash "$SCRIPT" --dry-run --lane "$profile_lane" --no-profile HIMMEL-9999-leg-profile some/doc.md /tmp/nosig 99999999999 "$tmp/no-profile-$profile_lane.log" 2>&1)"
-    not_contains "$profile_lane no-profile propagates no profile" "$profile_out" "HIMMEL_LEG_PROFILE="
-done
 
 # 31b. A caller-preset HEADED_ARM_LAUNCHER_ENV is preserved (appended to, not
 # replaced) and wins on a name clash - leg_propagate_env only ever adds a NAME
