@@ -84,6 +84,10 @@ if ($IsWindows) {
 $Runner = Join-Path $Scratch 'same-process.ps1'
 $RunnerText = @'
 $Before = [Environment]::GetEnvironmentVariables('Process')
+# Fail before invoking the launcher unless ordinary native PATH resolution
+# selects the fixture. A host's real curl must never service this smoke test.
+$SelectedCurl = Get-Command curl -CommandType Application -ErrorAction Stop
+if ($SelectedCurl.Source -cne $args[1]) { throw 'Hermetic setup refused: curl did not resolve to the fixture' }
 & $args[0]
 if ($LASTEXITCODE -ne 0) { throw 'Real launcher failed before environment assertion' }
 foreach ($Name in @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')) {
@@ -96,7 +100,8 @@ $OriginalToolPath = $ToolPath
 $ToolPath = $Bin + [System.IO.Path]::PathSeparator + $ToolPath
 $Extra = @{ DEEPSEEK_API_KEY='ds-ps-hermetic-secret'; HIMMEL_DEEPSEEK_INFERENCE_OK='1'; CLAUDE_DEEPSEEK_DOTENV_ROOT=$Work; ANTHROPIC_BASE_URL='https://native.invalid'; ANTHROPIC_MODEL='native-model'; ANTHROPIC_AUTH_TOKEN='native-token'; CLAUDE_CONFIG_DIR='native-config' }
 if ($IsWindows) { $Extra['PATHEXT'] = '.COM;.EXE;.BAT;.CMD' }
-$Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher) $Extra
+$ExpectedCurl = Join-Path $Bin $(if ($IsWindows) { 'curl.cmd' } else { 'curl' })
+$Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $Extra
 $ToolPath = $OriginalToolPath
 if ($Result.Code -ne 0 -or $Result.Output.Contains('ds-ps-hermetic-secret')) { throw "Same-process environment restoration failed: $($Result.Output)" }
 $Count++
