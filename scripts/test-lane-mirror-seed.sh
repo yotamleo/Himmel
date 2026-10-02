@@ -63,9 +63,12 @@ sanitize_settings() { cp "$1" "$2"; }
 seed_stamp() { printf 'fixture\\n'; }
 if [ "$2" = change ]; then
  seed_after_leaves() { printf 'changed during copy\\n' > "$HOME/.claude/RTK.md"; }
+elif [ "$2" != stable ]; then
+ change_rel="$2"
+ seed_after_leaves() { printf '{"concurrent":true}\\n' > "$HOME/.claude/$change_rel"; }
 fi
-if [ "$2" = change ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then seed_config_dir; fi
-`,'mirror-test',path.join(scripts,'lane-mirror-seed.sh'),changeSource?'change':'stable'],{env:{...f.env,CONFIG_DIR:f.dir},encoding:'utf8',timeout:15000});
+if [ "$2" != stable ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then seed_config_dir; fi
+`,'mirror-test',path.join(scripts,'lane-mirror-seed.sh'),typeof changeSource==='string'?changeSource:changeSource?'change':'stable'],{env:{...f.env,CONFIG_DIR:f.dir},encoding:'utf8',timeout:15000});
  assert.strictEqual(r.status,want,'mirror exit '+r.status+' want '+want+'; '+r.stderr);
  return r;
 }
@@ -151,7 +154,112 @@ fs.renameSync=function(from,to){
  const result=cp.spawnSync(process.execPath,['-e','('+stealRace.toString()+')(process.argv[1],JSON.parse(process.argv[2])).catch(e=>{console.error(e.message);process.exitCode=1;})',scripts,JSON.stringify(f)],{encoding:'utf8',timeout:20000});
  assert.strictEqual(result.status,0,result.stderr);
 }
+function helperRun(f, body, want=0) {
+ const r=cp.spawnSync('bash',['-eu','-c',`. "$1"
+seed_fail() { echo "$1" >&2; exit 4; }
+SEED_LANE=fixture; LOCK="$CONFIG_DIR.seed-lock"; SEED_LOCK_STALE=60; SEED_LOCK_TIMEOUT=0; RESEED=1
+${body}`,'helper-test',path.join(scripts,'lane-mirror-seed.sh')],{env:{...f.env,CONFIG_DIR:f.dir},encoding:'utf8',timeout:15000});
+ assert.strictEqual(r.status,want,'helper exit '+r.status+' want '+want+'; '+r.stderr);
+ return r;
+}
 try {
+ test('helper: orphaned pending directory for reused PID does not block acquisition',()=>{
+  const f=setup('mirror');
+  helperRun(f,`mkdir "$LOCK.pending.$$"
+printf 'orphan\\n' > "$LOCK.pending.$$/owner"
+seed_config_dir() { :; }
+seed_with_lock
+[ "$(cat "$LOCK.pending.$$/owner")" = orphan ]`);
+ });
+ test('helper: failed second identity check removes only its planted owner',()=>{
+  const f=setup('mirror'),p=lock(f,2147483647,'linux:1'),preload=path.join(f.root,'plant-owner.cjs');
+  fs.unlinkSync(path.join(p,'owner'));
+  fs.writeFileSync(preload,`const fs=require('fs'),path=require('path'),write=fs.writeFileSync,open=fs.openSync;
+const lock=process.env.CONFIG_DIR+'.seed-lock',owner=path.join(lock,'owner');let swapped=false;
+function swap(p,flags) { if(!swapped && p===owner && flags==='wx') { swapped=true;fs.renameSync(lock,lock+'.held');fs.mkdirSync(lock); } }
+fs.writeFileSync=function(p,data,opts){swap(p,opts&&opts.flag);return write.apply(this,arguments);};
+fs.openSync=function(p,flags){swap(p,flags);return open.apply(this,arguments);};\n`);
+  f.env.NODE_OPTIONS='--require='+preload;
+  helperRun(f,'SEED_LOCK_IDENTITY="$(lane_seed_lock_identity)"; lane_seed_retire_lock',1);
+  assert(fs.existsSync(p+'.held'),'owner-plant race did not execute');
+  assert(!fs.existsSync(path.join(p,'owner')),'retirement left its planted owner in fresh lock');
+  assert(fs.existsSync(p),'fresh lock removed');
+ });
+ for(const legacy of [false,true]) {
+  test('helper: stale check rejects identity swapped during '+(legacy?'legacy recovery':'owner liveness'),()=>{
+   const f=setup('mirror'),p=lock(f,process.pid,'linux:0');
+   if(legacy)fs.unlinkSync(path.join(p,'owner'));
+   const age=new Date(Date.now()-300000);fs.utimesSync(p,age,age);
+   helperRun(f,`${legacy?'seed_legacy_lock_stale':'seed_process_start'}() {
+mv "$LOCK" "$LOCK.held"
+mkdir "$LOCK"
+printf 'fixture\\n' > "$LOCK/owner"
+printf 'linux:1'
+}
+seed_lock_is_stale`,1);
+   assert(fs.existsSync(p+'.held'),'stale-check identity swap did not execute');
+   assert(fs.existsSync(path.join(p,'owner')),'fresh acquisition lost');
+  });
+ }
+ test('helper: copied private directories retain source access restrictions',()=>{
+  const f=mirrorSetup(),src=path.join(f.home,'.claude','hooks');
+  fs.chmodSync(src,0o700);fs.chmodSync(path.join(src,'sub'),0o500);
+  try {
+   mirrorRun(f);
+   assert.strictEqual(fs.statSync(path.join(f.dir,'hooks')).mode&0o777,0o700,'private tree became public');
+   assert.strictEqual(fs.statSync(path.join(f.dir,'hooks','sub')).mode&0o777,0o500,'read-only subtree mode changed');
+  } finally {
+   fs.chmodSync(path.join(src,'sub'),0o700);
+   const dst=path.join(f.dir,'hooks','sub');if(fs.existsSync(dst))fs.chmodSync(dst,0o700);
+  }
+ });
+ for(const [kind,target] of [['directory','sub'],['file','sub/x.sh'],['dangling','missing-target']]) {
+  test('helper: preserves '+kind+' symlink and its target while copying',()=>{
+   const f=mirrorSetup(),src=path.join(f.home,'.claude','hooks',kind),dst=path.join(f.dir,'hooks',kind);
+   fs.symlinkSync(target,src,kind==='directory'?'dir':'file');
+   mirrorRun(f);
+   assert(fs.lstatSync(dst).isSymbolicLink(),'copier dereferenced '+kind+' link');
+   assert.strictEqual(fs.readlinkSync(dst),target,'symlink target changed');
+   if(kind==='dangling')assert(!fs.existsSync(dst),'dangling link unexpectedly resolved');
+  });
+ }
+ test('helper: destination symlink creation failure still refuses completion',()=>{
+  const f=mirrorSetup();fs.symlinkSync('sub/x.sh',path.join(f.home,'.claude','hooks','linked'));
+  const preload=path.join(f.root,'unwritable-link.cjs');
+  fs.writeFileSync(preload,'require("fs").symlinkSync=()=>{throw Object.assign(Error("fixture destination denied"),{code:"EACCES"});};\n');
+  f.env.NODE_OPTIONS='--require='+preload;
+  mirrorRun(f,4);assert(!fs.existsSync(path.join(f.dir,'.seeded')),'failed destination published completion');
+ });
+ for(const kind of ['fifo','socket','cycle','unreadable']) {
+  test('helper: tolerates '+kind+' seed entry with a diagnostic',()=>{
+   const f=mirrorSetup(),p=path.join(f.home,'.claude','hooks',kind);
+   if(kind==='fifo')assert.strictEqual(cp.spawnSync('mkfifo',[p]).status,0);
+   if(kind==='socket')assert.strictEqual(cp.spawnSync(process.execPath,['-e','require("net").createServer().listen(process.argv[1],()=>process.exit(0))',p]).status,0);
+   if(kind==='cycle')fs.symlinkSync('.',p,'dir');
+   if(kind==='unreadable') {
+    fs.writeFileSync(p,'private');
+    const preload=path.join(f.root,'unreadable.cjs');
+    fs.writeFileSync(preload,`const fs=require('fs'),read=fs.readFileSync;fs.readFileSync=function(p){if(p===${JSON.stringify(p)})throw Object.assign(Error('fixture unreadable'),{code:'EACCES'});return read.apply(this,arguments);};\n`);
+    f.env.NODE_OPTIONS='--require='+preload;
+   }
+   const r=mirrorRun(f);
+   assert(r.stderr.includes('hooks/'+kind),'skipped path not reported: '+r.stderr);
+   const dst=path.join(f.dir,'hooks',kind);
+   if(kind==='cycle') {
+    assert(fs.lstatSync(dst).isSymbolicLink(),'cycle was not preserved as a link');
+    assert.strictEqual(fs.readlinkSync(dst),'.','cycle target changed');
+   } else assert(!fs.existsSync(dst),'unsupported entry copied');
+   assert.strictEqual(fs.readFileSync(path.join(f.dir,'hooks/sub/x.sh'),'utf8'),'fixture: hooks/sub/x.sh\n');
+  });
+ }
+ for(const rel of ['settings.json','plugins/marketplaces/sub/x.json']) {
+  test('helper: concurrent write to '+rel+' completes and next launch reseeds',()=>{
+   const f=mirrorSetup();mirrorRun(f);mirrorRun(f,0,rel);
+   assert(fs.existsSync(path.join(f.dir,'.seeded')),'tolerated copy lacks completion');
+   mirrorRun(f);
+   assert.strictEqual(fs.readFileSync(path.join(f.dir,rel),'utf8'),'{"concurrent":true}\n');
+  });
+ }
  for(const rel of mirrorFiles) {
   test('helper: copies '+rel,()=>{const f=mirrorSetup();mirrorRun(f);assert.strictEqual(fs.readFileSync(path.join(f.dir,rel),'utf8'),rel.endsWith('.json')?'{}\n':'fixture: '+rel+'\n');});
   test('helper: changed '+rel+' reseeds with preserved mtimes',()=>{const f=mirrorSetup();mirrorRun(f);const p=path.join(f.home,'.claude',rel),s=fs.statSync(p);fs.writeFileSync(p,rel.endsWith('.json')?'{"changed":true}\n':'changed: '+rel+'\n');fs.utimesSync(p,s.atime,s.mtime);mirrorRun(f);assert.strictEqual(fs.readFileSync(path.join(f.dir,rel),'utf8'),rel.endsWith('.json')?'{"changed":true}\n':'changed: '+rel+'\n');});

@@ -9,26 +9,60 @@ seed_after_mirror() { :; }
 lane_seed_fingerprint() {
   node -e '
 const fs=require("fs"), path=require("path"), crypto=require("crypto");
-const root=process.argv[1], hash=crypto.createHash("sha256");
-function walk(rel,ancestors=new Set()) {
+const root=process.argv[1], only=process.argv[2], destination=process.argv[3], hash=crypto.createHash("sha256"), strict=crypto.createHash("sha256");
+// Completion tolerates settings/marketplace writes; freshness still hashes all bytes.
+function record(rel,data) {
+  hash.update(data);
+  const portable=rel.split(path.sep).join("/");
+  if(portable!=="settings.json" && portable!=="plugins/marketplaces" && !portable.startsWith("plugins/marketplaces/")) strict.update(data);
+}
+function skip(rel,reason) {
+  record(rel,"skipped\n"); console.error("lane mirror: skipping "+rel+" ("+reason+")");
+}
+function walk(rel,ancestors=new Set(),dst) {
   const p=path.join(root,rel);
-  hash.update(JSON.stringify(rel)+"\n");
-  let s;
-  try { s=fs.lstatSync(p); } catch(e) { if(e.code==="ENOENT") { hash.update("absent\n"); return; } throw e; }
-  if(s.isSymbolicLink()) { hash.update("link\n"+JSON.stringify(fs.readlinkSync(p))+"\n"); try { s=fs.statSync(p); } catch(e) { if(e.code==="ENOENT") { hash.update("dangling\n"); return; } throw e; } }
-  if(s.isDirectory()) {
-    const real=fs.realpathSync(p); if(ancestors.has(real)) throw Error("cyclic seed source: "+rel);
-    const next=new Set(ancestors); next.add(real);
-    hash.update("dir\n"); for(const name of fs.readdirSync(p).sort()) walk(path.join(rel,name),next);
+  record(rel,JSON.stringify(rel)+"\n");
+  let s, link, real, names, data;
+  try {
+    s=fs.lstatSync(p);
+    if(s.isSymbolicLink()) {
+      link=fs.readlinkSync(p);
+      // POSIX copies preserve links; win32 retains dereferencing to avoid symlink privilege requirements.
+      if(dst && process.platform!=="win32") { fs.symlinkSync(link,dst); return; }
+      s=fs.statSync(p);
+    }
+    if(s.isDirectory()) {
+      real=fs.realpathSync(p);
+      if(ancestors.has(real)) { skip(rel,"symlink cycle"); return; }
+      names=fs.readdirSync(p).sort();
+    } else if(s.isFile()) { data=fs.readFileSync(p); }
+    else { skip(rel,"special file"); return; }
+  } catch(e) {
+    if(dst && link!==undefined && process.platform!=="win32") throw e;
+    if(["ENOENT","ENOTDIR","EACCES","EPERM","ELOOP"].includes(e.code)) {
+      if(e.code==="ENOENT" && !link) { record(rel,"absent\n"); return; }
+      skip(rel,e.code); return;
+    }
+    throw e;
   }
-  else if(s.isFile()) { hash.update("file\n"+s.mode+"\n"+s.size+"\n"); hash.update(fs.readFileSync(p)); }
-  else { throw Error("unsupported seed source: "+rel); }
+  if(link!==undefined) record(rel,"link\n"+JSON.stringify(link)+"\n");
+  if(s.isDirectory()) {
+    const next=new Set(ancestors); next.add(real);
+    record(rel,"dir\n");
+    if(dst) fs.mkdirSync(dst,{recursive:true,mode:0o700});
+    for(const name of names) walk(path.join(rel,name),next,dst&&path.join(dst,name));
+    if(dst) fs.chmodSync(dst,s.mode&0o777);
+  } else {
+    record(rel,"file\n"+s.mode+"\n"+data.length+"\n"); record(rel,data);
+    if(dst) fs.writeFileSync(dst,data,{mode:s.mode&0o777});
+  }
 }
 try {
-  for(const rel of ["settings.json","CLAUDE.md","RTK.md","commands","skills","hooks","agents","plugins/installed_plugins.json","plugins/known_marketplaces.json","plugins/marketplaces","plugins/claude-hud/config.json","claude-hud.json"]) walk(rel);
-  process.stdout.write(hash.digest("hex"));
-} catch(e) { console.error("lane mirror fingerprint: "+e.message); process.exit(4); }
-' "${HOME}/.claude"
+  if(only) walk(only,new Set(),destination);
+  else for(const rel of ["settings.json","CLAUDE.md","RTK.md","commands","skills","hooks","agents","plugins/installed_plugins.json","plugins/known_marketplaces.json","plugins/marketplaces","plugins/claude-hud/config.json","claude-hud.json"]) walk(rel);
+  process.stdout.write(hash.digest("hex")+":"+strict.digest("hex"));
+} catch(e) { console.error("lane mirror fingerprint/copy: "+e.message); process.exit(4); }
+' "${HOME}/.claude" "${1:-}" "${2:-}"
 }
 
 seed_config_dir() {
@@ -52,7 +86,7 @@ seed_config_dir() {
   seed_after_leaves
   for d in commands skills hooks agents; do
     rm -rf "${CONFIG_DIR:?}/$d" || seed_fail "clear stale $d"
-    [ ! -d "$SRC/$d" ] || cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"
+    [ ! -d "$SRC/$d" ] || lane_seed_fingerprint "$d" "$CONFIG_DIR/$d" > /dev/null || seed_fail "copy $d"
   done
   for p in installed_plugins.json known_marketplaces.json; do
     if [ -f "$SRC/plugins/$p" ]; then
@@ -62,7 +96,7 @@ seed_config_dir() {
     fi
   done
   rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear stale plugins/marketplaces"
-  [ ! -d "$SRC/plugins/marketplaces" ] || cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"
+  [ ! -d "$SRC/plugins/marketplaces" ] || lane_seed_fingerprint plugins/marketplaces "$CONFIG_DIR/plugins/marketplaces" > /dev/null || seed_fail "copy plugins/marketplaces"
   if [ -f "$SRC/plugins/claude-hud/config.json" ]; then
     mkdir -p "$CONFIG_DIR/plugins/claude-hud" || seed_fail "create $CONFIG_DIR/plugins/claude-hud"
     cp "$SRC/plugins/claude-hud/config.json" "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "copy plugins/claude-hud/config.json"
@@ -74,7 +108,8 @@ seed_config_dir() {
   else
     rm -f "${CONFIG_DIR:?}/claude-hud.json" || seed_fail "remove stale claude-hud.json"
   fi
-  [ "$(lane_seed_fingerprint)" = "$seed_fingerprint" ] || seed_fail "mirror a source that changed during seeding; re-run"
+  current_seed_fingerprint="$(lane_seed_fingerprint)" || seed_fail "fingerprint the copied source"
+  [ "${current_seed_fingerprint#*:}" = "${seed_fingerprint#*:}" ] || seed_fail "mirror a source that changed during seeding; re-run"
   printf '%s\n' "$seed_fingerprint" > "$CONFIG_DIR/.seed-fingerprint" || seed_fail "write the seed fingerprint"
   seed_stamp > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
 }
@@ -149,10 +184,21 @@ try {
   const s=fs.lstatSync(lock,{bigint:true});
   if(!s.isDirectory() || s.dev+":"+s.ino!==identity) process.exit(1);
   // Populate empty legacy locks without overwriting a published owner.
-  try { fs.writeFileSync(path.join(lock,"owner"),"retired legacy seed lock\n",{flag:"wx"}); }
-  catch(e) { if(e.code!=="EEXIST") throw e; }
+  const owner=path.join(lock,"owner"); let planted;
+  try {
+    const fd=fs.openSync(owner,"wx");
+    try { fs.writeFileSync(fd,"retired legacy seed lock\n"); planted=fs.fstatSync(fd,{bigint:true}); }
+    finally { fs.closeSync(fd); }
+  } catch(e) { if(e.code!=="EEXIST") throw e; }
   const checked=fs.lstatSync(lock,{bigint:true});
-  if(!checked.isDirectory() || checked.dev+":"+checked.ino!==identity) process.exit(1);
+  if(!checked.isDirectory() || checked.dev+":"+checked.ino!==identity) {
+    if(planted) {
+      const current=fs.lstatSync(owner,{bigint:true});
+      // ponytail: path-based lstat-then-unlink window (Node has no unlinkat); upgrade via HIMMEL-4093.
+      if(current.dev===planted.dev && current.ino===planted.ino) fs.unlinkSync(owner);
+    }
+    process.exit(1);
+  }
   fs.renameSync(lock,retired);
 } catch(e) { process.exit(1); }
 ' "$LOCK" "$SEED_LOCK_IDENTITY"
@@ -167,17 +213,19 @@ seed_lock_is_stale() {
   lock_age=$(( $(date +%s) - lock_mt ))
   [ "$lock_age" -ge "$SEED_LOCK_STALE" ] || return 1
   # New locks publish ownership atomically; retain age-based legacy recovery.
-  if [ ! -r "$LOCK/owner" ]; then seed_legacy_lock_stale "$lock_age"; return 0; fi
-  if ! { IFS= read -r owner_pid; IFS= read -r owner_start; } 2>/dev/null < "$LOCK/owner"; then
-    seed_legacy_lock_stale "$lock_age"; return 0
+  if [ ! -r "$LOCK/owner" ] || ! { IFS= read -r owner_pid; IFS= read -r owner_start; } 2>/dev/null < "$LOCK/owner"; then
+    seed_legacy_lock_stale "$lock_age"
+  else
+    case "$owner_pid" in ''|*[!0-9]*|0) owner_pid='' ;; esac
+    case "$owner_start" in linux:[0-9]*|ps:?*) ;; *) owner_pid='' ;; esac
+    if [ -z "$owner_pid" ]; then
+      seed_legacy_lock_stale "$lock_age"
+    elif kill -0 "$owner_pid" 2>/dev/null; then
+      live_start="$(seed_process_start "$owner_pid")" || return 1
+      [ "$live_start" != "$owner_start" ] || return 1
+    fi
   fi
-  case "$owner_pid" in ''|*[!0-9]*|0) seed_legacy_lock_stale "$lock_age"; return 0 ;; esac
-  case "$owner_start" in linux:[0-9]*|ps:?*) ;; *) seed_legacy_lock_stale "$lock_age"; return 0 ;; esac
-  if kill -0 "$owner_pid" 2>/dev/null; then
-    live_start="$(seed_process_start "$owner_pid")" || return 1
-    [ "$live_start" != "$owner_start" ] || return 1
-  fi
-  return 0
+  [ "$(lane_seed_lock_identity)" = "$SEED_LOCK_IDENTITY" ]
 }
 
 seed_release_lock() {
@@ -207,7 +255,7 @@ seed_with_lock() {
   local seed_lock_ticks seed_lock_max mkdir_err own_start
   own_start="$(seed_process_start "$$")" || seed_fail "read the seed-lock owner start time"
   SEED_LOCK_OWNER="$(printf '%s\n%s' "$$" "$own_start")"
-  SEED_LOCK_CANDIDATE="$LOCK.pending.$$"
+  SEED_LOCK_CANDIDATE="$LOCK.pending.$$.$RANDOM.$RANDOM"
   trap 'seed_lock_cleanup' EXIT
   mkdir "$SEED_LOCK_CANDIDATE" || seed_fail "create the seed-lock candidate"
   printf '%s\n' "$SEED_LOCK_OWNER" > "$SEED_LOCK_CANDIDATE/owner" || seed_fail "record seed-lock ownership"

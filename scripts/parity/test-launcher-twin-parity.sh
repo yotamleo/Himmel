@@ -315,7 +315,16 @@ function psShapeViolations(s) {
     // A different, unreserved identity must also fail its final comparison.
     if (run(fresh.dev + ':' + (fresh.ino + 1n)).status === 0) throw Error('changed identity was retired');
     if (!fs.existsSync(path.join(lock, 'owner'))) throw Error('identity mismatch moved fresh lock');
-    console.log('ok: PS retirement JS preserves fresh acquisition after two stale snapshots, including empty legacy lock');
+    fs.unlinkSync(path.join(lock, 'owner'));
+    const planted = cp.spawnSync(process.execPath, ['-e', `
+const fixtureFs=require("fs"),write=fixtureFs.writeFileSync,open=fixtureFs.openSync;let swapped=false;
+function swap(p,flags) { if(!swapped && p===path.join(lock,"owner") && flags==="wx") { swapped=true;fs.renameSync(lock,lock+".held");fs.mkdirSync(lock); } }
+fixtureFs.writeFileSync=function(p,data,opts){swap(p,opts&&opts.flag);return write.apply(this,arguments);};
+fixtureFs.openSync=function(p,flags){swap(p,flags);return open.apply(this,arguments);};
+` + retire.js, lock, fresh.dev + ':' + fresh.ino], {encoding:'utf8'});
+    if (!fs.existsSync(lock + '.held')) throw Error('owner-plant race injection did not execute: ' + planted.stderr);
+    if (planted.status === 0 || fs.existsSync(path.join(lock, 'owner'))) throw Error('failed identity check left a planted owner in fresh lock');
+    console.log('ok: PS retirement JS preserves fresh acquisition and removes its planted owner on identity mismatch');
   } catch (e) { fail('PS seed retirement: ' + e.message); }
   finally { fs.rmSync(root, {recursive:true, force:true}); }
 }
