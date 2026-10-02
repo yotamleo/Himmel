@@ -19,7 +19,12 @@ function walk(rel,ancestors=new Set(),dst) {
   let s, link, real, names, data;
   try {
     s=fs.lstatSync(p);
-    if(s.isSymbolicLink()) { link=fs.readlinkSync(p); s=fs.statSync(p); }
+    if(s.isSymbolicLink()) {
+      link=fs.readlinkSync(p);
+      // POSIX copies preserve links; win32 retains dereferencing to avoid symlink privilege requirements.
+      if(dst && process.platform!=="win32") { fs.symlinkSync(link,dst); return; }
+      s=fs.statSync(p);
+    }
     if(s.isDirectory()) {
       real=fs.realpathSync(p);
       if(ancestors.has(real)) { skip(rel,"symlink cycle"); return; }
@@ -27,6 +32,7 @@ function walk(rel,ancestors=new Set(),dst) {
     } else if(s.isFile()) { data=fs.readFileSync(p); }
     else { skip(rel,"special file"); return; }
   } catch(e) {
+    if(dst && link!==undefined && process.platform!=="win32") throw e;
     if(["ENOENT","ENOTDIR","EACCES","EPERM","ELOOP"].includes(e.code)) {
       if(e.code==="ENOENT" && !link) { record(rel,"absent\n"); return; }
       skip(rel,e.code); return;
@@ -178,6 +184,7 @@ try {
   if(!checked.isDirectory() || checked.dev+":"+checked.ino!==identity) {
     if(planted) {
       const current=fs.lstatSync(owner,{bigint:true});
+      // ponytail: path-based lstat-then-unlink window (Node has no unlinkat); upgrade via HIMMEL-4093.
       if(current.dev===planted.dev && current.ino===planted.ino) fs.unlinkSync(owner);
     }
     process.exit(1);

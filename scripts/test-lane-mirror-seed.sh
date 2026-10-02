@@ -213,8 +213,25 @@ seed_lock_is_stale`,1);
    const dst=path.join(f.dir,'hooks','sub');if(fs.existsSync(dst))fs.chmodSync(dst,0o700);
   }
  });
+ for(const [kind,target] of [['directory','sub'],['file','sub/x.sh'],['dangling','missing-target']]) {
+  test('helper: preserves '+kind+' symlink and its target while copying',()=>{
+   const f=mirrorSetup(),src=path.join(f.home,'.claude','hooks',kind),dst=path.join(f.dir,'hooks',kind);
+   fs.symlinkSync(target,src,kind==='directory'?'dir':'file');
+   mirrorRun(f);
+   assert(fs.lstatSync(dst).isSymbolicLink(),'copier dereferenced '+kind+' link');
+   assert.strictEqual(fs.readlinkSync(dst),target,'symlink target changed');
+   if(kind==='dangling')assert(!fs.existsSync(dst),'dangling link unexpectedly resolved');
+  });
+ }
+ test('helper: destination symlink creation failure still refuses completion',()=>{
+  const f=mirrorSetup();fs.symlinkSync('sub/x.sh',path.join(f.home,'.claude','hooks','linked'));
+  const preload=path.join(f.root,'unwritable-link.cjs');
+  fs.writeFileSync(preload,'require("fs").symlinkSync=()=>{throw Object.assign(Error("fixture destination denied"),{code:"EACCES"});};\n');
+  f.env.NODE_OPTIONS='--require='+preload;
+  mirrorRun(f,4);assert(!fs.existsSync(path.join(f.dir,'.seeded')),'failed destination published completion');
+ });
  for(const kind of ['fifo','socket','cycle','unreadable']) {
-  test('helper: skips '+kind+' seed entry with a diagnostic',()=>{
+  test('helper: tolerates '+kind+' seed entry with a diagnostic',()=>{
    const f=mirrorSetup(),p=path.join(f.home,'.claude','hooks',kind);
    if(kind==='fifo')assert.strictEqual(cp.spawnSync('mkfifo',[p]).status,0);
    if(kind==='socket')assert.strictEqual(cp.spawnSync(process.execPath,['-e','require("net").createServer().listen(process.argv[1],()=>process.exit(0))',p]).status,0);
@@ -227,7 +244,11 @@ seed_lock_is_stale`,1);
    }
    const r=mirrorRun(f);
    assert(r.stderr.includes('hooks/'+kind),'skipped path not reported: '+r.stderr);
-   assert(!fs.existsSync(path.join(f.dir,'hooks',kind)),'unsupported entry copied');
+   const dst=path.join(f.dir,'hooks',kind);
+   if(kind==='cycle') {
+    assert(fs.lstatSync(dst).isSymbolicLink(),'cycle was not preserved as a link');
+    assert.strictEqual(fs.readlinkSync(dst),'.','cycle target changed');
+   } else assert(!fs.existsSync(dst),'unsupported entry copied');
    assert.strictEqual(fs.readFileSync(path.join(f.dir,'hooks/sub/x.sh'),'utf8'),'fixture: hooks/sub/x.sh\n');
   });
  }
