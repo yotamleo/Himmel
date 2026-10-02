@@ -3,7 +3,7 @@
 # Contract: fail on absence, undocumented installs, stale prose, malformed input;
 # no existing suite compares this boundary. JSON/cache arguments serve real
 # station checks too; no test-only production seam or live operator state.
-set -euo pipefail
+set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 - "$ROOT" <<'PY'
 import json

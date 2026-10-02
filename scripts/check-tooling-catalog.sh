@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HIMMEL-4019: compare documented availability with an explicit installation
 # observation. No implicit HOME access, network, installs or enablement changes.
-set -euo pipefail
+set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 - "$ROOT/docs/tooling-catalog.md" "$@" <<'PY'
 import argparse
