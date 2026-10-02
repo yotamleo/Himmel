@@ -327,6 +327,37 @@ by design.
   merges you rebase onto the new main. If you suspect it is general but the data
   does not settle it, report `MAIN-RED? <job> <case> inconclusive` with what you
   saw.
+- **Merge-forward (HIMMEL-4112, corrected by HIMMEL-4114).** A leg never merges,
+  or merges forward past, a red its own change introduced. Merge-forward cures
+  ONLY a red inherited from a broken base — one already red when you were cut
+  and green on main now. Anything you cannot prove inherited is yours to fix
+  (the "A red CI job on your PR is yours to triage" default above). Prove it
+  with three job files, each `<job><TAB><conclusion>` (from
+  `gh run view <id> --json jobs`): `--pr` your PR's run; `--main-base` main's
+  push run AT YOUR MERGE-BASE (`git merge-base origin/main HEAD`, then
+  `gh run list --commit <sha>`); `--main-latest` main's latest push run. Run
+  `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --base-sha <merge-base> --main-base-sha <the base run's headSha>`
+  (the job files carry no sha; the two sha flags make the script refuse a base
+  run that is not your merge-base — pass both, or both are your duty). Exit 0
+  `ALLOW` (every red job was red at the base AND is green on latest) = you may,
+  once, `git fetch origin main` then `git merge origin/main` — a merge commit;
+  never rebase, never force-push — citing both main run ids in a Results
+  bullet. Exit 1 `REFUSE` (a job green at the base is your own red; a job red
+  or absent on either main run is unproven) = do NOT merge forward; fix it, or
+  report `BLOCKED` / `MAIN-RED` per the rule above. Exit 3 = nothing red. Once
+  per PR: a second merge-forward goes to the console. After it, `/pr-check` and
+  CI run again at the new head.
+- **Never write "CI verifies" for a suite you have not looked up
+  (HIMMEL-4112).** `bash scripts/handover/suite-coverage.sh <suite>...` reads
+  `scripts/ci/run-shell-tests.sh` itself and says per suite: runs in PR CI /
+  nightly only / not run in CI (SKIP_LIST) / superseded by its wrappers. A
+  SKIP_LIST suite is **uncovered** — name it that, and say what you ran by hand
+  instead. Run it for every suite your PR claims CI covers.
+- **A timing-sensitive suite gets a loaded budget, not an idle one
+  (HIMMEL-4112).** A suite that times out only under fleet load is a budget
+  defect: measure it alone and as concurrent runs, set the budget to the
+  loaded figure x2 (the `run-shell-tests.sh` rule), and record the numbers in
+  a Results bullet. Never retry it until it passes.
 - On an agreed review finding, **sweep the whole class** across every site
   before the next round and report the other sites, not just the cited line. A
   review round spent enumerating instances of a class you already understood is
