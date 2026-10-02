@@ -201,6 +201,18 @@ seed_lock_is_stale`,1);
    assert(fs.existsSync(path.join(p,'owner')),'fresh acquisition lost');
   });
  }
+ test('helper: copied private directories retain source access restrictions',()=>{
+  const f=mirrorSetup(),src=path.join(f.home,'.claude','hooks');
+  fs.chmodSync(src,0o700);fs.chmodSync(path.join(src,'sub'),0o500);
+  try {
+   mirrorRun(f);
+   assert.strictEqual(fs.statSync(path.join(f.dir,'hooks')).mode&0o777,0o700,'private tree became public');
+   assert.strictEqual(fs.statSync(path.join(f.dir,'hooks','sub')).mode&0o777,0o500,'read-only subtree mode changed');
+  } finally {
+   fs.chmodSync(path.join(src,'sub'),0o700);
+   const dst=path.join(f.dir,'hooks','sub');if(fs.existsSync(dst))fs.chmodSync(dst,0o700);
+  }
+ });
  for(const kind of ['fifo','socket','cycle','unreadable']) {
   test('helper: skips '+kind+' seed entry with a diagnostic',()=>{
    const f=mirrorSetup(),p=path.join(f.home,'.claude','hooks',kind);

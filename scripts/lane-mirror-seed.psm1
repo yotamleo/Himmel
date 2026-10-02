@@ -37,8 +37,9 @@ function walk(rel,ancestors=new Set(),dst) {
   if(s.isDirectory()) {
     const next=new Set(ancestors); next.add(real);
     record(rel,"dir\n");
-    if(dst) fs.mkdirSync(dst,{recursive:true});
+    if(dst) fs.mkdirSync(dst,{recursive:true,mode:0o700});
     for(const name of names) walk(path.join(rel,name),next,dst&&path.join(dst,name));
+    if(dst) fs.chmodSync(dst,s.mode&0o777);
   } else {
     record(rel,"file\n"+s.mode+"\n"+data.length+"\n"); record(rel,data);
     if(dst) fs.writeFileSync(dst,data,{mode:s.mode&0o777});
