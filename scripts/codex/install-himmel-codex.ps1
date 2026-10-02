@@ -66,7 +66,7 @@ $Codex = $null
 if ($env:CODEX_BIN) {
   if (Test-Path $env:CODEX_BIN) { $Codex = $env:CODEX_BIN }
   else { Write-Error "codex CLI not found (CODEX_BIN set to non-existent path)"; exit 1 }
-} elseif (Get-Command codex -ErrorAction SilentlyContinue) {
+} elseif (Get-Command codex -CommandType Application -ErrorAction SilentlyContinue) {
   $Codex = (Get-Command codex -CommandType Application | Select-Object -First 1).Source
 }
 if (-not $Codex) { Write-Error "codex CLI not found (set CODEX_BIN, or install Codex)"; exit 1 }

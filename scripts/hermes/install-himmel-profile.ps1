@@ -48,7 +48,7 @@ if (-not (Test-Path $HomeDir)) { throw "hermes home not found at $HomeDir — is
 # --- resolve hermes CLI ---
 $Hermes = $null
 if ($env:HERMES_BIN -and (Test-Path $env:HERMES_BIN)) { $Hermes = $env:HERMES_BIN }
-elseif (Get-Command hermes -ErrorAction SilentlyContinue) { $Hermes = (Get-Command hermes -CommandType Application | Select-Object -First 1).Source }
+elseif (Get-Command hermes -CommandType Application -ErrorAction SilentlyContinue) { $Hermes = (Get-Command hermes -CommandType Application | Select-Object -First 1).Source }
 else {
   foreach ($p in @("$HomeDir/hermes-agent/venv/Scripts/hermes.exe","$HomeDir/hermes-agent/venv/bin/hermes")) {
     if (Test-Path $p) { $Hermes = $p; break }
@@ -116,7 +116,7 @@ if ($LASTEXITCODE -ne 0) { throw "sync_model_aliases.py failed (exit $LASTEXITCO
 # 5. wire himmel_agent's pre_tool_call hook -> parity_guard (full set), plus the
 #    END-side on_session_finalize chain (HIMMEL-2021) when node and this repo are
 #    both resolvable. Paths are already native here (twin of the .sh cygpath step).
-$NodeBin = if (Get-Command node -ErrorAction SilentlyContinue) { (Get-Command node -CommandType Application | Select-Object -First 1).Source } else { $null }
+$NodeBin = if (Get-Command node -CommandType Application -ErrorAction SilentlyContinue) { (Get-Command node -CommandType Application | Select-Object -First 1).Source } else { $null }
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 if ($NodeBin -and (Test-Path (Join-Path $RepoRoot "scripts/hooks/run-hook-with-bash.js"))) {
   & $Py $Wire set $HaConfig $GuardDest $Py $NodeBin $RepoRoot
