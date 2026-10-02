@@ -29,7 +29,7 @@
 //                       no CLI flag at all.
 //   (nothing set)        no ledger write — the safe default.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -93,23 +93,64 @@ function pluginName(id, names) {
   return names?.get(id) ?? id.split('@')[0];
 }
 
-// HIMMEL-4072: builtin, account-synced and skills-dir plugins come from Claude
-// Code, the claude.ai account and ~/.claude/skills; a --settings profile cannot
-// disable them, so they are environment (reported, never failed), not bloat.
-// anthropic-skills arrives synced but has no plugins[] entry to derive from.
-const ENVIRONMENT_SOURCE = /@(builtin|synced|skills-dir)$/;
+// HIMMEL-4072: builtin and account-synced plugins come from Claude Code and the
+// claude.ai account; a --settings profile cannot disable them, so they are
+// environment (reported, never failed), not bloat. anthropic-skills arrives
+// synced but has no plugins[] entry to derive from.
+// HIMMEL-4018: a skills-dir plugin (~/.claude/skills) is NOT environment: it is
+// ours to remove, and until it is a plugin no profile can control it, so
+// userScopeProblems fails it. Its namespace stays allowed so it is reported once.
+const ENVIRONMENT_SOURCE = /@(builtin|synced)$/;
+const USER_SCOPE_SOURCE = /@skills-dir$/;
 const ENVIRONMENT_NAMESPACES = ['anthropic-skills'];
 const environmentPlugins = (initEvent, enabledIds) =>
   (initEvent?.plugins ?? []).filter((p) => ENVIRONMENT_SOURCE.test(p.source) && !enabledIds.includes(p.source));
+const userScopePlugins = (initEvent, enabledIds) =>
+  (initEvent?.plugins ?? []).filter((p) => USER_SCOPE_SOURCE.test(p.source) && !enabledIds.includes(p.source));
 export function environmentSources(initEvent, enabledIds) {
   return environmentPlugins(initEvent, enabledIds).map((p) => p.source).sort();
+}
+
+// HIMMEL-4018: skill dirs under <configDir>/skills load in every session, bare
+// included, whatever enabledPlugins says. Dotdirs (.trash), files and `synced`
+// (Claude Code's own claude.ai account-sync cache, environment) are not ours.
+// A symlink to a skill dir (a manual link) loads too, so it is followed with
+// statSync; a dangling link (ENOENT) or a link to a file loads nothing and is
+// skipped. Only a missing path is ever treated as empty: any other read or stat
+// error propagates, so an uninspectable skill cannot pass as clean.
+export function userScopeSkillDirs(configDir) {
+  const root = join(configDir, 'skills');
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch (e) {
+    if (e?.code === 'ENOENT') return [];
+    throw e;
+  }
+  const isDir = (d) => {
+    if (d.isDirectory()) return true;
+    if (!d.isSymbolicLink()) return false;
+    try { return statSync(join(root, d.name)).isDirectory(); } catch (e) {
+      if (e?.code === 'ENOENT') return false;
+      throw e;
+    }
+  };
+  return entries.filter((d) => !d.name.startsWith('.') && d.name !== 'synced' && isDir(d)).map((d) => d.name).sort();
+}
+
+// One problem per source of user-scope skills: the init event's skills-dir
+// plugins (what actually loaded) and the dirs on disk (what would load).
+export function userScopeProblems(initEvent, enabledIds, userScopeDirs = []) {
+  const problems = [];
+  const loaded = userScopePlugins(initEvent, enabledIds).map((p) => p.source).sort();
+  if (loaded.length) problems.push(`user-scope skill(s) loaded from ~/.claude/skills, which no profile controls: ${loaded.join(', ')} (package as a himmel plugin, then remove the user-scope copy)`);
+  if (userScopeDirs.length) problems.push(`user-scope skill dir(s) present under ~/.claude/skills (load in every session, bare included): ${userScopeDirs.join(', ')}`);
+  return problems;
 }
 
 // initEvent.plugins[].source EXACT-diffed against the resolved enabled-true
 // id set. extra = bloat (something loaded that shouldn't be); missing =
 // injection failure (a plugin the resolver enabled never actually loaded).
 export function pluginSourceDiff(initEvent, enabledIds) {
-  const env = new Set(environmentSources(initEvent, enabledIds));
+  const env = new Set([...environmentSources(initEvent, enabledIds), ...userScopePlugins(initEvent, enabledIds).map((p) => p.source)]);
   const actual = new Set((initEvent?.plugins ?? []).map((p) => p.source).filter((id) => !env.has(id)));
   const expected = new Set(enabledIds);
   return {
@@ -127,6 +168,7 @@ export function namespaceExtras(initEvent, enabledIds, runtimeNames) {
     ...enabledIds.map((id) => pluginName(id, runtimeNames)),
     ...ENVIRONMENT_NAMESPACES,
     ...environmentPlugins(initEvent, enabledIds).map((p) => p.name ?? pluginName(p.source)),
+    ...userScopePlugins(initEvent, enabledIds).map((p) => p.name ?? pluginName(p.source)),
   ]);
   const extras = [];
   for (const skill of initEvent?.skills ?? []) {
@@ -294,12 +336,13 @@ export function countLoadedSkills(initEvent) {
 
 // The full per-profile verdict: plugin injection correctness + the
 // contextBudget ceiling. Returns { pass, problems } — problems is [] iff pass.
-export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget, contextUsage, expectedSkills, runtimeNames }) {
+export function evaluateProfile({ enabledIds, requiredIds = [], initEvent, resultEvent, measuredTokens, budget, contextUsage, expectedSkills, runtimeNames, userScopeDirs }) {
   const problems = [];
   if (!initEvent) {
     problems.push('no init event in probe output (spawn failure, timeout, or unexpected stream shape)');
     return { pass: false, problems, environment: [] };
   }
+  problems.push(...userScopeProblems(initEvent, enabledIds, userScopeDirs));
   problems.push(...roleCoverageProblems(initEvent, requiredIds, runtimeNames));
   if (contextUsage !== undefined) {
     const skillPlugins = new Set((initEvent.skills ?? []).map((x) => /^([^:]+):/.exec(x)?.[1]).filter(Boolean));
@@ -527,7 +570,7 @@ function main() {
 
       const requiredIds = ROLE_REQUIRES[name] ?? [];
       const runtimeNames = runtimeNamesOf(configDir);
-      const { pass, problems, environment } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds, installedVersionsOf(configDir, REPO_ROOT), runtimeNames), runtimeNames });
+      const { pass, problems, environment } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds, installedVersionsOf(configDir, REPO_ROOT), runtimeNames), runtimeNames, userScopeDirs: userScopeSkillDirs(configDir) });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');
       const need = requiredBudget(ctxRun.contextUsage, requiredIds, costEntries(), runtimeNames);

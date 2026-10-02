@@ -582,6 +582,21 @@ test('design profile enables the full design pack (HIMMEL-4012)', () => {
   }
 });
 
+// HIMMEL-4018: obsidian-second-brain was a user-scope skill that loaded in every
+// session. As a plugin it is catalogued (so every profile resolves it false) and
+// enabled by no named profile: it loads only for the operator (null profile) or
+// an explicit `--add-plugins` / `/profile enable`.
+test('obsidian-second-brain@himmel is catalogued and enabled by no named profile (HIMMEL-4018)', () => {
+  const id = 'obsidian-second-brain@himmel';
+  assert.ok(REG.catalog.includes(id));
+  for (const [name, def] of Object.entries(REG.profiles)) {
+    if (def === null) continue; // operator: everything installed
+    const p = resolveProfile(REG, name, { installed: [] }).enabledPlugins;
+    assert.equal(p[id], false, `${name} must not enable ${id}`);
+  }
+  assert.equal(resolveProfile(REG, 'user', { installed: [], addPlugins: [id] }).enabledPlugins[id], true);
+});
+
 // HIMMEL-4012 PR2b: the design core plus the add-on kit profiles. The core is
 // the always-with-design set; every add-on stacks on base only (never on the
 // core), so an unproven manifest-less shape in an add-on cannot break
