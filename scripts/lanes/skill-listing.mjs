@@ -62,7 +62,7 @@ const describedTokens = (e, plugin) => Math.ceil((plugin.length + 1 + e.name.len
 // plugin.json name Claude lists a strict:true plugin's skills under, which sets
 // each listing line's length (HIMMEL-4068); the cache DIRECTORY (entry name)
 // still selects the entries.
-export function skillListingSettings({ entries, enabledIds, requiredIds, window = WINDOW, configDir, runtimeNames = configDir === undefined ? undefined : runtimeNamesOf(configDir) }) {
+export function skillListingSettings({ entries, enabledIds, requiredIds, window = WINDOW, configDir, cwd, runtimeNames = configDir === undefined ? undefined : runtimeNamesOf(configDir, cwd) }) {
   if (!requiredIds.length) return {};
   const skillOverrides = {};
   let tokens = 0;

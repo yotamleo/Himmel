@@ -66,7 +66,7 @@ export function resolveProfileSettings(profile: string, addPlugins: string[], cw
     addPlugins,
     installed: installed ?? readEnabledPluginIds(homedir(), cwd, process.env.CLAUDE_CONFIG_DIR),
     skillEntries: scanSkillCosts({ cwd, configDir }).entries,
-    configDir,
+    configDir, cwd,
   });
   return settings === null ? undefined : JSON.stringify(settings);
 }
