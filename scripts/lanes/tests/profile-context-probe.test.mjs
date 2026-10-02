@@ -6,7 +6,7 @@
 // is excluded from the CI node --test glob because it bills real usage.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -489,6 +489,18 @@ test('userScopeSkillDirs follows symlinks to skill dirs (manual links load too);
     symlinkSync(join(dir, 'elsewhere', 'a-file'), join(dir, 'skills', 'file-link'));
     assert.deepEqual(userScopeSkillDirs(dir), ['linked-skill']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('userScopeSkillDirs propagates a non-ENOENT stat error on a symlinked skill dir instead of passing clean', { skip: process.getuid?.() === 0 }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uss-'));
+  const locked = join(dir, 'locked');
+  try {
+    mkdirSync(join(locked, 'skill'), { recursive: true });
+    mkdirSync(join(dir, 'skills'), { recursive: true });
+    symlinkSync(join(locked, 'skill'), join(dir, 'skills', 'hidden-skill'));
+    chmodSync(locked, 0o000);
+    assert.throws(() => userScopeSkillDirs(dir), (e) => e.code === 'EACCES');
+  } finally { chmodSync(locked, 0o755); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('evaluateProfile: user-scope skill dirs on disk fail the profile; none passes', () => {

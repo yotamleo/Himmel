@@ -115,9 +115,9 @@ export function environmentSources(initEvent, enabledIds) {
 // included, whatever enabledPlugins says. Dotdirs (.trash), files and `synced`
 // (Claude Code's own claude.ai account-sync cache, environment) are not ours.
 // A symlink to a skill dir (a manual link) loads too, so it is followed with
-// statSync; a dangling link or a link to a file loads nothing and is skipped.
-// Only an absent skills dir is empty: any other read error propagates, so an
-// unreadable dir cannot pass as clean.
+// statSync; a dangling link (ENOENT) or a link to a file loads nothing and is
+// skipped. Only a missing path is ever treated as empty: any other read or stat
+// error propagates, so an uninspectable skill cannot pass as clean.
 export function userScopeSkillDirs(configDir) {
   const root = join(configDir, 'skills');
   let entries;
@@ -128,7 +128,10 @@ export function userScopeSkillDirs(configDir) {
   const isDir = (d) => {
     if (d.isDirectory()) return true;
     if (!d.isSymbolicLink()) return false;
-    try { return statSync(join(root, d.name)).isDirectory(); } catch { return false; }
+    try { return statSync(join(root, d.name)).isDirectory(); } catch (e) {
+      if (e?.code === 'ENOENT') return false;
+      throw e;
+    }
   };
   return entries.filter((d) => !d.name.startsWith('.') && d.name !== 'synced' && isDir(d)).map((d) => d.name).sort();
 }
