@@ -32,4 +32,8 @@ scan "runClaudexSharedDispatch literal is allowed" "Jira: runClaudexSharedDispat
 scan "longer hex token still flagged" "secret = ${sha}6dcfd2469d17afd771" flag
 scan "mixed-case 40-char token still flagged" "secret = 6DCFD2469d17afd771a77f90a37fd0f122b8e857" flag
 
-[ $fails -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }
+if [ $fails -eq 0 ]; then
+  echo "all passed"
+else
+  echo "$fails failed"; exit 1
+fi
