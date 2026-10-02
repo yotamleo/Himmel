@@ -98,7 +98,7 @@ assert_rc "T6 plain doc dry-run" 0 "$rc"
 assert_contains "T6 plain doc -> user profile file" "/user.json" "$out"
 
 # T7: the resolved settings file is real and is a complete enabledPlugins map.
-LEGF=$(bash "$SCRIPT_DIR/../lanes/profile-settings.sh" leg-impl)
+LEGF=$(find "$TMP/profiles" -name leg-impl.json -type f | head -1)   # written by the arm calls above, not regenerated here
 # shellcheck disable=SC2015  # echo cannot fail; A && B || C is the intended guard
 [ -f "$LEGF" ] && grep -q '"enabledPlugins"' "$LEGF" \
     && echo "PASS T7 resolved settings file written" \
