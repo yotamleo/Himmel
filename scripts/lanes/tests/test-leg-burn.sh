@@ -42,6 +42,8 @@ fail() { FAIL=$((FAIL + 1)); echo "FAIL $1"; }
 eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1: expected '$3', got '$2'"; fi; }
 has() { case "$2" in *"$3"*) pass "$1";; *) fail "$1: '$3' not in '$2'";; esac; }
 
+unset HIMMEL_LEG_PROFILE 2>/dev/null || true
+
 # --- the whole line, pinned -------------------------------------------------
 out=$(bash "$BURN" "$FIXTURE"); rc=$?
 eq "fixture exits 0" "$rc" "0"
@@ -75,6 +77,28 @@ eq "default output matches --raw except the four k-rounded counters" "$out" \
 
 out_raw_env=$(LEG_BURN_RAW=1 bash "$BURN" "$FIXTURE")
 eq "LEG_BURN_RAW=1 env is equivalent to --raw" "$out_raw_env" "$out_raw"
+
+# --- HIMMEL-4094: profile is optional, validated, and always the last field ---
+profile_out=$(HIMMEL_LEG_PROFILE=leg-impl bash "$BURN" "$FIXTURE")
+eq "env profile appends only the last field" "$profile_out" "$out profile=leg-impl"
+profile_out=$(HIMMEL_LEG_PROFILE=leg-impl bash "$BURN" --profile design,design-motion "$FIXTURE")
+eq "explicit profile overrides env and accepts a profile list" "$profile_out" "$out profile=design,design-motion"
+profile_out=$(bash "$BURN" --raw --profile leg-impl "$FIXTURE")
+eq "--raw before --profile preserves exact integers" "$profile_out" "$out_raw profile=leg-impl"
+profile_out=$(bash "$BURN" --profile leg-impl --raw "$FIXTURE")
+eq "--raw after --profile preserves exact integers" "$profile_out" "$out_raw profile=leg-impl"
+profile_out=$(bash "$BURN" --profile A_1.b-2,c "$FIXTURE")
+eq "all allowed profile characters survive unchanged" "$profile_out" "$out profile=A_1.b-2,c"
+for bad_profile in 'bad profile' 'bad/profile' 'bad=profile' 'bad;profile' ''; do
+    bash "$BURN" --profile "$bad_profile" "$FIXTURE" >/dev/null 2>&1; profile_rc=$?
+    eq "invalid explicit profile '$bad_profile' exits 2" "$profile_rc" "2"
+done
+HIMMEL_LEG_PROFILE='bad profile' bash "$BURN" "$FIXTURE" >/dev/null 2>&1; profile_rc=$?
+eq "invalid env profile exits 2" "$profile_rc" "2"
+bash "$BURN" --profile >/dev/null 2>&1; profile_rc=$?
+eq "missing profile value exits 2" "$profile_rc" "2"
+profile_out=$(HIMMEL_LEG_PROFILE= bash "$BURN" "$FIXTURE")
+eq "empty env profile leaves output byte-identical" "$profile_out" "$out"
 
 # --- the dedupe is the point ------------------------------------------------
 # 6 assistant ROWS, 4 message IDS. Counting rows would report calls=6 and
