@@ -491,7 +491,7 @@ test('userScopeSkillDirs follows symlinks to skill dirs (manual links load too);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('userScopeSkillDirs propagates a non-ENOENT stat error on a symlinked skill dir instead of passing clean', { skip: process.getuid?.() === 0 }, () => {
+test('userScopeSkillDirs propagates a non-ENOENT stat error on a symlinked skill dir instead of passing clean', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'uss-'));
   const locked = join(dir, 'locked');
   try {
