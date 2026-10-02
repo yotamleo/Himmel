@@ -3,7 +3,7 @@
 # PLATFORM GUARD: bank-preflight is a POSIX shell path; no PowerShell twin.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-W="$(mktemp -d)" || exit 1
+W="$(mktemp -d "${TMPDIR:-/tmp}/bank-openrouter.XXXXXX")" || exit 1
 trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/repo/scripts/lib" "$W/repo/scripts/lanes" "$W/home" "$W/proc"
 cp "$REPO/scripts/lib/"*.sh "$W/repo/scripts/lib/"

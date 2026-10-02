@@ -3,7 +3,7 @@
 # PLATFORM GUARD: fleet admission uses the POSIX shell/tmpfs path.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-W="$(mktemp -d)" || exit 1
+W="$(mktemp -d "${TMPDIR:-/tmp}/bank-dead-owner.XXXXXX")" || exit 1
 trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/repo/scripts/lib" "$W/repo/scripts/lanes" "$W/home" "$W/proc"
 cp "$REPO/scripts/lib/"*.sh "$W/repo/scripts/lib/"
@@ -74,5 +74,24 @@ printf '%s\n' claude > "$W/proc/9001/comm"
 printf 'claude\0-n\0HIMMEL-9001-test\0work\0' > "$W/proc/9001/cmdline"
 seed session "$dead"
 check 'dead owner with a live named session never admits past cap' SKIPPED-FLEET "$(run session)"
+# Exercise the reclaim helper with a large fresh census: grep must drain it.
+awk '/^_fleet_reclaim_dead_reservation\(\)/,/^}/' "$REPO/scripts/lib/bank-preflight.sh" > "$W/reclaim.sh"
+seed large-census "$dead"
+if (
+  source "$W/reclaim.sh"
+  SLOTS="$W/large-census"
+  mkdir -p "$SLOTS/.admit"
+  printf '%s\n' "$$" > "$SLOTS/.admit/pid"
+  _fleet_live_names="$(printf '%s\n' HIMMEL-9001-test; seq 1 30000)"
+  _fleet_census() { return 0; }
+  _fleet_admit_hook() { :; }
+  _fleet_gate_take() { _fleet_gate_fence="$W/fence"; mkdir -p "$_fleet_gate_fence"; }
+  _fleet_gate_drop() { rm -rf "$W/fence"; }
+  _fleet_reclaim_dead_reservation "$SLOTS/HIMMEL-9001-test/" "$dead" "$(cat "$SLOTS/HIMMEL-9001-test/expires")" HIMMEL-9001-test HIMMEL-9001-test
+); then
+  echo 'FAIL - large census live name was reclaimed'; fails=$((fails+1))
+else
+  check 'large census live name keeps reservation' present "$(if [ -d "$W/large-census/HIMMEL-9001-test" ]; then echo present; else echo absent; fi)"
+fi
 printf 'test-bank-preflight-dead-owner: %s failures\n' "$fails"
 [ "$fails" -eq 0 ]

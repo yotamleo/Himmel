@@ -662,8 +662,8 @@ _fleet_reclaim_dead_reservation() {
      [ "$(cat "${dir}expires" 2>/dev/null)" = "$expires" ] &&
      [ "$(cat "${dir}name" 2>/dev/null)" = "$sname" ] &&
      ! kill -0 "$owner" 2>/dev/null; then
-    if ! { [ -n "$name" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$name"; } &&
-       ! { [ -n "$sname" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$sname"; }; then
+    if ! { [ -n "$name" ] && printf '%s\n' "$_fleet_live_names" | grep -xF "$name" >/dev/null; } &&
+       ! { [ -n "$sname" ] && printf '%s\n' "$_fleet_live_names" | grep -xF "$sname" >/dev/null; }; then
       # Rename through our fence: a paused holder cannot act after gate break.
       if mv "${dir%/}" "$fence/reservation" 2>/dev/null; then
         rm -rf "$fence/reservation" 2>/dev/null
