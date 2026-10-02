@@ -313,6 +313,8 @@ RUN_LEG_DEFAULT_ARGS="--profile leg-impl"
 # shellcheck disable=SC2086  # deliberately word-split: zero, one or several flags.
 run_leg() {
   local stubdir="$1" repo="$2" name="$3" model="${4:-}" preflight="${5:-$PROCEED_PREFLIGHT}"
+  # Dynamic paths stay separate from RUN_LEG_ARGS's fixed, word-split flags.
+  if [ -n "${6:-}" ]; then set -- --fleet "$6"; else set --; fi
   # codex-1 (round 7): clear any IMPL_GUARD_OK inherited from the launching
   # shell (e.g. running this suite from inside an already-armed leg) before
   # invoking the wrapper, so case 10's propagation assertion can only pass
@@ -323,7 +325,7 @@ run_leg() {
   HEADED_ARM_LEG_PREFLIGHT="$preflight" \
   KONSOLE_CMD="$stubdir/konsole" PGREP_CMD="$stubdir/pgrep" \
   LEG_REPO="$repo" HEADED_ARM_LOCK_DIR="$stubdir/locks" HEADED_ARM_PROC="$stubdir/proc" \
-    ${RUN_LEG_WRAP-} bash "$SCRIPT" ${RUN_LEG_ARGS-$RUN_LEG_DEFAULT_ARGS} "$name" "$some_doc" "$stubdir/signal-never" "$PAST" "$stubdir/log" "$model"
+    ${RUN_LEG_WRAP-} bash "$SCRIPT" ${RUN_LEG_ARGS-$RUN_LEG_DEFAULT_ARGS} "$@" "$name" "$some_doc" "$stubdir/signal-never" "$PAST" "$stubdir/log" "$model"
 }
 
 # --- 1-2. usage/arg-shape ---------------------------------------------------
@@ -731,9 +733,11 @@ cat > "$ceiling_reg" <<'CEILING_EOF'
 CEILING_EOF
 d8profile="$tmp/c8profile"; mk_launch_stubs "$d8profile" "HIMMEL-4021-ceiling"; mkdir -p "$tmp/repo8profile"
 rc=0
-PLUGIN_PROFILES_REGISTRY="$ceiling_reg" LEG_CONTEXT='' RUN_LEG_ARGS="--profile design --fleet $tmp/profile-fleet.json" \
-  run_leg "$d8profile" "$tmp/repo8profile" "HIMMEL-4021-ceiling" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
-check 'fleet: real headed-arm renderer adds doc with profile ceiling intact' "$some_doc" "$(jq -r '.legs[].doc' "$tmp/profile-fleet.json" 2>/dev/null)"
+mkdir -p "$tmp/profile fleet"
+PLUGIN_PROFILES_REGISTRY="$ceiling_reg" LEG_CONTEXT='' RUN_LEG_ARGS='--profile design' \
+  run_leg "$d8profile" "$tmp/repo8profile" "HIMMEL-4021-ceiling" "claude-sonnet-5" \
+  "$PROCEED_PREFLIGHT" "$tmp/profile fleet/manifest.json" >/dev/null 2>&1 || rc=$?
+check 'fleet: real renderer preserves a spaced manifest path and profile ceiling' "$some_doc" "$(jq -r '.legs[].doc' "$tmp/profile fleet/manifest.json" 2>/dev/null)"
 wait_record "$d8profile" || true
 rec8profile="$(cat "$d8profile/record" 2>/dev/null || true)"
 check "profile numeric ceiling: full launch succeeds" "$rc" "0"
