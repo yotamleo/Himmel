@@ -278,6 +278,7 @@ jobs:
             echo "::error::DeepSeek PowerShell suite did not report success"; exit 1
           fi
       - name: Codex PowerShell launcher suite (ubuntu)
+        if: always()
         shell: bash
         run: |
           set -o pipefail

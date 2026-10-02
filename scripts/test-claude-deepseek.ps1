@@ -14,9 +14,9 @@ $HomeDir = Join-Path $Scratch 'home'
 $Work = Join-Path $Scratch 'work'
 [System.IO.Directory]::CreateDirectory($HomeDir) | Out-Null
 [System.IO.Directory]::CreateDirectory($Work) | Out-Null
-$Pwsh = (Get-Command pwsh).Source
-$Node = (Get-Command node).Source
-$Git = (Get-Command git).Source
+$Pwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+$Node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+$Git = (Get-Command git -CommandType Application | Select-Object -First 1).Source
 $ToolPath = ((Split-Path $Node -Parent),(Split-Path $Git -Parent),[Environment]::GetEnvironmentVariable('SystemRoot')) -join [System.IO.Path]::PathSeparator
 function Run-Clean([string]$Exe, [string[]]$Argv, [hashtable]$Extra) {
     $Info = [System.Diagnostics.ProcessStartInfo]::new()
@@ -102,6 +102,7 @@ $ToolPath = $Bin + [System.IO.Path]::PathSeparator + $ToolPath
 $Extra = @{ DEEPSEEK_API_KEY='ds-ps-hermetic-secret'; HIMMEL_DEEPSEEK_INFERENCE_OK='1'; CLAUDE_DEEPSEEK_DOTENV_ROOT=$Work; ANTHROPIC_BASE_URL='https://native.invalid'; ANTHROPIC_MODEL='native-model'; ANTHROPIC_AUTH_TOKEN='native-token'; CLAUDE_CONFIG_DIR='native-config' }
 if ($IsWindows) { $Extra['PATHEXT'] = '.COM;.EXE;.BAT;.CMD' }
 $ExpectedCurl = Join-Path $Bin $(if ($IsWindows) { 'curl.cmd' } else { 'curl' })
+Write-Host "Fixture executables: node=$Node; git=$Git; pwsh=$Pwsh; curl=$ExpectedCurl"
 $Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $Extra
 foreach ($Name in @('CLAUDE_LANE_SEED_LOCK_TIMEOUT','CLAUDE_LANE_SEED_LOCK_STALE')) {
     foreach ($Value in @('invalid','-1','1.5',' 1','2147483648')) {
