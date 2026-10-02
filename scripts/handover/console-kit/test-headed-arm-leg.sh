@@ -528,7 +528,7 @@ check "brief profile: design line selects design: exit 0" "$rc" "0"
 contains "brief profile: design line names the profile source" "$out" "context=1m (profile design contextMode 1m)"
 rc=0; out="$(LEG_PROFILE='' LEG_CONTEXT='' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$rule_doc" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "explicit --profile overrides the brief line: exit 0" "$rc" "0"
-not_contains "explicit --profile leg-impl overrides the brief's design" "$out" "operator-ruling"
+not_contains "explicit --profile leg-impl overrides the brief's design" "$out" "context=1m"
 rule_doc2="$tmp/rule-brief-none.md"
 printf '%s\n' '# fixture brief' 'no profile field here' > "$rule_doc2"
 rc=0; out="$(LEG_PROFILE='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$rule_doc2" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
