@@ -14,7 +14,7 @@ import {
   parseStreamJsonLines, findInitEvent, findResultEvent, firstTurnTokens,
   pluginSourceDiff, namespaceExtras, evaluateProfile, formatNote, roleCoverageProblems, countLoadedSkills,
   parseProbeArgs, resolveLedgerTarget, buildLedgerRow,
-  findContextUsage, isNameOnlySkill, listingProblems, expectedSkillNames, installedVersionsOf, listingReport, requiredBudget, runtimeNamesOf,
+  findContextUsage, userScopeSkillDirs, isNameOnlySkill, listingProblems, expectedSkillNames, installedVersionsOf, listingReport, requiredBudget, runtimeNamesOf,
 } from '../profile-context-probe.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -411,17 +411,16 @@ const baseInit = findInitEvent(parseStreamJsonLines(SAMPLE));
 const ENV_PLUGINS = [
   { name: 'cc-plugin-agents-md', source: 'cc-plugin-agents-md@builtin' },
   { name: 'cowork-plugin-management', source: 'cowork-plugin-management@synced' },
-  { name: 'obsidian-second-brain', source: 'obsidian-second-brain@skills-dir' },
 ];
+const SKILLS_DIR_PLUGIN = { name: 'obsidian-second-brain', source: 'obsidian-second-brain@skills-dir' };
 const withEnv = () => ({
   ...baseInit,
   plugins: [...baseInit.plugins, ...ENV_PLUGINS],
-  skills: [...baseInit.skills, 'anthropic-skills:docx', 'cowork-plugin-management:create-cowork-plugin', 'obsidian-second-brain:obsidian-save'],
-  slash_commands: [...baseInit.slash_commands, 'anthropic-skills:docx', 'obsidian-second-brain:obsidian-save'],
-  mcp_servers: [...baseInit.mcp_servers, { name: 'plugin:obsidian-second-brain:vault', status: 'connected' }],
+  skills: [...baseInit.skills, 'anthropic-skills:docx', 'cowork-plugin-management:create-cowork-plugin'],
+  slash_commands: [...baseInit.slash_commands, 'anthropic-skills:docx'],
 });
 
-test('evaluateProfile: @builtin/@synced/@skills-dir plugins and their namespaces pass and are reported as environment', () => {
+test('evaluateProfile: @builtin/@synced plugins and their namespaces pass and are reported as environment', () => {
   const { pass, problems, environment } = evaluateProfile({ enabledIds: ENABLED, initEvent: withEnv(), measuredTokens: 35098, budget: 40000 });
   assert.deepEqual(problems, []);
   assert.equal(pass, true);
@@ -442,4 +441,47 @@ test('evaluateProfile: a namespace from a non-environment, non-enabled plugin st
   const { pass, problems } = evaluateProfile({ enabledIds: ENABLED, initEvent: init, measuredTokens: 35098, budget: 40000 });
   assert.equal(pass, false);
   assert.ok(problems.some((p) => p.includes('skill:rogue:thing')));
+});
+
+// HIMMEL-4018: a user-scope skill (~/.claude/skills) ignores enabledPlugins and
+// loads in every session, so a profile cannot control it: the probe FAILS on one.
+test('evaluateProfile: a @skills-dir plugin (user-scope skill) fails the profile', () => {
+  const init = withEnv();
+  init.plugins = [...init.plugins, SKILLS_DIR_PLUGIN];
+  init.skills = [...init.skills, 'obsidian-second-brain:obsidian-save'];
+  const { pass, problems } = evaluateProfile({ enabledIds: ENABLED, initEvent: init, measuredTokens: 35098, budget: 40000 });
+  assert.equal(pass, false);
+  assert.equal(problems.length, 1, problems.join('; '));
+  assert.ok(/user-scope skill/.test(problems[0]) && problems[0].includes('obsidian-second-brain@skills-dir'));
+});
+
+test('evaluateProfile: a plugin-controlled obsidian-second-brain@himmel is not a user-scope skill', () => {
+  const ids = [...ENABLED, 'obsidian-second-brain@himmel'];
+  const init = withEnv();
+  init.plugins = [...init.plugins, { name: 'obsidian-second-brain', source: 'obsidian-second-brain@himmel' }];
+  init.skills = [...init.skills, 'obsidian-second-brain:obsidian-save'];
+  const { pass, problems } = evaluateProfile({ enabledIds: ids, initEvent: init, measuredTokens: 35098, budget: 40000 });
+  assert.deepEqual(problems, []);
+  assert.equal(pass, true);
+});
+
+test('userScopeSkillDirs lists the skill dirs under <configDir>/skills, ignoring dotdirs and files; absent dir is empty', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uss-'));
+  try {
+    assert.deepEqual(userScopeSkillDirs(dir), []);
+    mkdirSync(join(dir, 'skills', 'find-docs'), { recursive: true });
+    mkdirSync(join(dir, 'skills', 'graphify'), { recursive: true });
+    mkdirSync(join(dir, 'skills', '.trash'), { recursive: true });
+    mkdirSync(join(dir, 'skills', 'synced'), { recursive: true }); // Claude Code's account-sync cache, not a user skill
+    writeFileSync(join(dir, 'skills', 'README.md'), 'x');
+    assert.deepEqual(userScopeSkillDirs(dir), ['find-docs', 'graphify']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('evaluateProfile: user-scope skill dirs on disk fail the profile; none passes', () => {
+  const base = { enabledIds: ENABLED, initEvent: withEnv(), measuredTokens: 35098, budget: 40000 };
+  const bad = evaluateProfile({ ...base, userScopeDirs: ['find-docs', 'graphify'] });
+  assert.equal(bad.pass, false);
+  assert.ok(bad.problems.some((p) => /user-scope skill/.test(p) && p.includes('find-docs') && p.includes('graphify')));
+  assert.equal(evaluateProfile({ ...base, userScopeDirs: [] }).pass, true);
 });

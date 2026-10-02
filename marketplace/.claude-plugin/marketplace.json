@@ -431,6 +431,22 @@
         "shadcn",
         "mcp"
       ]
+    },
+    {
+      "name": "obsidian-second-brain",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/eugeniughelbur/obsidian-second-brain.git",
+        "ref": "v0.17.0"
+      },
+      "description": "[eugeniughelbur/obsidian-second-brain, MIT, vendor + attribution only, no carried delta] Obsidian vault memory: 47 slash commands plus a `vault` MCP server (uv, no key). Replaces the user-scope ~/.claude/skills/obsidian-second-brain copy, which ignored enabledPlugins and loaded ~2.2k tok of listing into every session including bare (HIMMEL-4018). Explicit HTTPS git url (HIMMEL-549), pinned to release tag v0.17.0 (commit 87fe5437c44fffafb5188566d458891651536d4e) per himmel supply-chain policy (HIMMEL-3069). strict:true: upstream plugin.json declares the commands dir and the MCP server. Opt-in only: no lane profile enables it; the operator profile (everything installed) and `/profile enable` do.",
+      "strict": true,
+      "author": {
+        "name": "Eugeniu Ghelbur",
+        "url": "https://github.com/eugeniughelbur"
+      },
+      "homepage": "https://github.com/eugeniughelbur/obsidian-second-brain",
+      "license": "MIT"
     }
   ]
 }
