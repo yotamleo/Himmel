@@ -24,7 +24,7 @@ function Run-Clean([string]$Exe, [string[]]$Argv, [hashtable]$Extra) {
     $Info.UseShellExecute = $false
     $Info.RedirectStandardOutput = $true
     $Info.RedirectStandardError = $true
-    $Info.WorkingDirectory = $Work
+    $Info.WorkingDirectory = Split-Path $PSScriptRoot -Parent
     foreach ($Arg in $Argv) { $Info.ArgumentList.Add($Arg) }
     $Info.Environment.Clear()
     $Info.Environment['HOME'] = $HomeDir
@@ -64,5 +64,40 @@ $Count++
 [System.IO.File]::WriteAllText($Config,'{malformed')
 $Result = Run-Clean $Node @('-e',$SeedJs,$Config,$Primary) @{}
 if ($Result.Code -ne 4 -or [System.IO.File]::ReadAllText($Config) -ne '{malformed') { throw 'Malformed config was not refused unmodified' }
+$Count++
+# Actual same-process invocation: fake executables are the network/model
+# boundaries, while the real launcher must restore native routing afterwards.
+$Bin = Join-Path $Scratch 'bin'
+[System.IO.Directory]::CreateDirectory($Bin) | Out-Null
+$CurlJs = Join-Path $Bin 'curl-mock.js'
+$ClaudeJs = Join-Path $Bin 'claude-mock.js'
+[System.IO.File]::WriteAllText($CurlJs, 'require("fs").readFileSync(0,"utf8");console.log(JSON.stringify({is_available:true,balance_infos:[{currency:"USD",total_balance:"50.00"}]}));')
+[System.IO.File]::WriteAllText($ClaudeJs, 'if(process.env.ANTHROPIC_BASE_URL!=="https://api.deepseek.com/anthropic"||process.env.ANTHROPIC_MODEL!=="deepseek-flash[1m]")process.exit(9);')
+if ($IsWindows) {
+    [System.IO.File]::WriteAllText((Join-Path $Bin 'curl.cmd'), "@echo off`r`n`"$Node`" `"$CurlJs`" %*`r`n")
+    [System.IO.File]::WriteAllText((Join-Path $Bin 'claude.cmd'), "@echo off`r`n`"$Node`" `"$ClaudeJs`" %*`r`n")
+} else {
+    [System.IO.File]::WriteAllText((Join-Path $Bin 'curl'), "#!/bin/sh`nexec `"$Node`" `"$CurlJs`" `"`$@`"`n")
+    [System.IO.File]::WriteAllText((Join-Path $Bin 'claude'), "#!/bin/sh`nexec `"$Node`" `"$ClaudeJs`" `"`$@`"`n")
+    & chmod +x (Join-Path $Bin 'curl') (Join-Path $Bin 'claude')
+}
+$Runner = Join-Path $Scratch 'same-process.ps1'
+$RunnerText = @'
+$Before = [Environment]::GetEnvironmentVariables('Process')
+& $args[0]
+if ($LASTEXITCODE -ne 0) { throw 'Real launcher failed before environment assertion' }
+foreach ($Name in @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')) {
+    $After = [Environment]::GetEnvironmentVariable($Name,'Process')
+    if ($After -cne $Before[$Name]) { throw ('Leaked launcher environment: ' + $Name) }
+}
+'@
+[System.IO.File]::WriteAllText($Runner,$RunnerText)
+$OriginalToolPath = $ToolPath
+$ToolPath = $Bin + [System.IO.Path]::PathSeparator + $ToolPath
+$Extra = @{ DEEPSEEK_API_KEY='ds-ps-hermetic-secret'; HIMMEL_DEEPSEEK_INFERENCE_OK='1'; CLAUDE_DEEPSEEK_DOTENV_ROOT=$Work; ANTHROPIC_BASE_URL='https://native.invalid'; ANTHROPIC_MODEL='native-model'; ANTHROPIC_AUTH_TOKEN='native-token'; CLAUDE_CONFIG_DIR='native-config' }
+if ($IsWindows) { $Extra['PATHEXT'] = '.COM;.EXE;.BAT;.CMD' }
+$Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher) $Extra
+$ToolPath = $OriginalToolPath
+if ($Result.Code -ne 0 -or $Result.Output.Contains('ds-ps-hermetic-secret')) { throw "Same-process environment restoration failed: $($Result.Output)" }
 $Count++
 Write-Host "$Count PowerShell smoke cases passed; scratch preserved at $Scratch"

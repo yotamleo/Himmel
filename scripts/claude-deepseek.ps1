@@ -4,6 +4,12 @@
 # allowlist into this lane only; native ~/.claude remains read-only.
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+# Script invocation shares the caller process environment. Save every variable
+# this lane changes before key loading, and restore even on refusal or failure.
+$LaneEnvNames = @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')
+$SavedLaneEnv = [Environment]::GetEnvironmentVariables('Process')
+try {
 $Here = $PSScriptRoot
 $RepoRoot = Split-Path $Here -Parent
 $ConfigDir = Join-Path $HOME '.claude-deepseek'
@@ -37,7 +43,7 @@ const fs=require("fs"), path=require("path");
 const fail=s=>{console.error("claude-deepseek: REFUSED - "+s);process.exit(3);};
 try {
  const M=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
- const cwd=fs.realpathSync(process.env.CLAUDE_DEEPSEEK_CWD||process.cwd());
+ const cwd=fs.realpathSync(process.cwd());
  const under=root=>{if(!root)return false;const r=fs.realpathSync(root);return cwd===r||cwd.startsWith(r+path.sep);};
  // Ancestor markers also fence nested workspaces (including .salus-profile).
  for(let p=cwd;;p=path.dirname(p)) {
@@ -306,3 +312,12 @@ $env:CLAUDE_CONFIG_DIR = $ConfigDir
 [Console]::Error.WriteLine("claude-deepseek: lane=deepseek model=$env:ANTHROPIC_MODEL labels=$env:ANTHROPIC_DEFAULT_OPUS_MODEL_NAME/$env:ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME balance=$Balance USD (start snapshot; session cost is balance delta)")
 & claude @PassArgs
 exit $LASTEXITCODE
+} finally {
+    foreach ($Name in $LaneEnvNames) {
+        if ($SavedLaneEnv.Contains($Name)) {
+            [Environment]::SetEnvironmentVariable($Name, [string]$SavedLaneEnv[$Name], 'Process')
+        } else {
+            [Environment]::SetEnvironmentVariable($Name, $null, 'Process')
+        }
+    }
+}
