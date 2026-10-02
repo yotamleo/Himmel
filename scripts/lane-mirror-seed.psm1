@@ -62,6 +62,24 @@ try {
   return $result
 }
 
+function Set-LaneSeedDirectoryWritable([string]$Path) {
+  # Only mirrored directories need write permission for removal; never follow links.
+  $WritableJs = @'
+const fs=require("fs"), path=require("path");
+function walk(p) {
+  let s;
+  try { s=fs.lstatSync(p); } catch(e) { if(e.code==="ENOENT") return; throw e; }
+  if(!s.isDirectory()) return;
+  fs.chmodSync(p,(s.mode&0o777)|0o200);
+  for(const name of fs.readdirSync(p)) walk(path.join(p,name));
+}
+try { walk(process.argv[1]); }
+catch(e) { console.error("lane mirror permissions: "+e.message); process.exit(4); }
+'@
+  & node -e $WritableJs $Path
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to make stale mirrored directories writable' }
+}
+
 function Copy-LaneSeedConfig($Seed) {
   $ErrorActionPreference = 'Stop'
   $src = Join-Path $Seed.HomeDir '.claude'
@@ -92,6 +110,7 @@ function Copy-LaneSeedConfig($Seed) {
     }
     foreach ($d in 'commands', 'skills', 'hooks', 'agents', 'plugins/marketplaces') {
       $dst = Join-Path $dir $d
+      Set-LaneSeedDirectoryWritable $dst
       if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
       $p = Join-Path $src $d
       if (Test-Path -LiteralPath $p -PathType Container) {

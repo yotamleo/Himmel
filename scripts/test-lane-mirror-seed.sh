@@ -213,6 +213,37 @@ seed_lock_is_stale`,1);
    const dst=path.join(f.dir,'hooks','sub');if(fs.existsSync(dst))fs.chmodSync(dst,0o700);
   }
  });
+ for(const rel of ['commands','skills','hooks','agents','plugins/marketplaces']) {
+  test('helper: reseeds read-only '+rel+' directories without changing source modes',()=>{
+   const f=mirrorSetup(),src=path.join(f.home,'.claude',rel),dst=path.join(f.dir,rel);
+   const file=rel==='hooks'?'x.sh':rel==='plugins/marketplaces'?'x.json':'x.md';
+   fs.chmodSync(src,0o500);fs.chmodSync(path.join(src,'sub'),0o500);
+   try {
+    mirrorRun(f);
+    fs.writeFileSync(path.join(src,'sub',file),'updated read-only tree\n');
+    mirrorRun(f);
+    assert.strictEqual(fs.readFileSync(path.join(dst,'sub',file),'utf8'),'updated read-only tree\n');
+    for(const p of [src,path.join(src,'sub'),dst,path.join(dst,'sub')]) {
+     assert.strictEqual(fs.statSync(p).mode&0o777,0o500,'read-only mode changed: '+p);
+    }
+   } finally {
+    for(const p of [src,path.join(src,'sub'),dst,path.join(dst,'sub')])if(fs.existsSync(p))fs.chmodSync(p,0o700);
+   }
+  });
+ }
+ test('helper: clearing stale directories never chmods symlink targets',()=>{
+  const f=mirrorSetup(),outside=path.join(f.root,'outside'),src=path.join(f.home,'.claude','hooks');
+  fs.mkdirSync(outside);fs.writeFileSync(path.join(outside,'private'),'private\n',{mode:0o400});
+  fs.symlinkSync(outside,path.join(src,'linked'),'dir');fs.chmodSync(outside,0o500);
+  try {
+   mirrorRun(f);
+   fs.writeFileSync(path.join(src,'sub','x.sh'),'changed\n');
+   mirrorRun(f);
+   assert.strictEqual(fs.statSync(outside).mode&0o777,0o500,'external directory mode changed');
+   assert.strictEqual(fs.statSync(path.join(outside,'private')).mode&0o777,0o400,'external file mode changed');
+   assert.strictEqual(fs.readFileSync(path.join(outside,'private'),'utf8'),'private\n','external file changed');
+  } finally { fs.chmodSync(outside,0o700); }
+ });
  for(const [kind,target] of [['directory','sub'],['file','sub/x.sh'],['dangling','missing-target']]) {
   test('helper: preserves '+kind+' symlink and its target while copying',()=>{
    const f=mirrorSetup(),src=path.join(f.home,'.claude','hooks',kind),dst=path.join(f.dir,'hooks',kind);
