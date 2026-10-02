@@ -1276,6 +1276,7 @@ noprof="$(LEG_PROFILE='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg s
 noprof_lines="$(printf '%s\n' "$noprof" | wc -l | tr -d '[:space:]')"
 check "no --profile: dry-run report is still exactly three lines" "$noprof_lines" "3"
 not_contains "no --profile: dry-run report has no profile line" "$noprof" "profile="
+not_contains "--no-profile: no profile name is propagated" "$noprof" "HIMMEL_LEG_PROFILE="
 
 prof="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
 prof_lines="$(printf '%s\n' "$prof" | wc -l | tr -d '[:space:]')"
@@ -1283,6 +1284,7 @@ check "--profile: dry-run report adds exactly one line" "$prof_lines" "4"
 contains "--profile: dry-run names the profile, the settings path and the lean flag" "$prof" \
   "profile=leg-impl settings=$tmp/HIMMEL-9999-leg.leg-settings.json"
 contains "--profile: dry-run reports lean=1" "$prof" "lean=1"
+contains "--profile: resolved profile name is propagated" "$prof" "HIMMEL_LEG_PROFILE=leg-impl"
 if [ -e "$tmp/HIMMEL-9999-leg.leg-settings.json" ]; then
   echo "FAIL - --profile: --dry-run wrote the settings file (it must only report)"; fails=$((fails+1))
 else

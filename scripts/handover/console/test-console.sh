@@ -1666,6 +1666,7 @@ cat > "$tmp/stub-arm-66.sh" <<STUB
 # happens not to print".
 {
     printf 'LEG_PROFILE_SETTINGS=%s\n' "\${LEG_PROFILE_SETTINGS+set}"
+    printf 'HIMMEL_LEG_PROFILE=%s\n' "\${HIMMEL_LEG_PROFILE+set}"
     printf 'HIMMEL_CONSOLE_LEG=%s\n' "\${HIMMEL_CONSOLE_LEG+set}"
     printf 'LEG_LANE=%s\n' "\${LEG_LANE+set}"
     printf 'OPENROUTER_MODEL=%s\n' "\${OPENROUTER_MODEL+set}"
@@ -1686,6 +1687,7 @@ KONSOLE_STUB
 chmod +x "$tmp/konsole-66"
 
 out66b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HIMMEL_LEG_PROFILE=leg-impl \
     LEG_PROFILE_SETTINGS=/leaked-66/settings.json LEG_PROFILE_PREFACE=/leaked-66/preface.md \
     LEG_PROFILE_MCP_CONFIG=/leaked-66/mcp.json LEG_CLAUDE_BIN=/leaked-66/claude \
     HIMMEL_LEAN_LEG=1 HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=leaked-console-66 \
@@ -1731,6 +1733,8 @@ check "67 armed child's own environment strips LEG_LANE" \
     "$(grep -c '^LEG_LANE=set$' "$tmp/child-env-66.txt")" "0"
 check "67 armed child's own environment strips OPENROUTER_MODEL" \
     "$(grep -c '^OPENROUTER_MODEL=set$' "$tmp/child-env-66.txt")" "0"
+check "67 armed child's own environment strips HIMMEL_LEG_PROFILE" \
+    "$(grep -c '^HIMMEL_LEG_PROFILE=set$' "$tmp/child-env-66.txt")" "0"
 
 # --- 68: --project <dir> -- a console for a repo that is NOT this himmel
 # checkout (the himmel-ops plugin's /console, run from e.g. ~/Websites). The

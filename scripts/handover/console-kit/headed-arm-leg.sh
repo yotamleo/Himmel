@@ -891,6 +891,10 @@ for _leg_env_scrub in $(console_context_leg_env_unset_names); do
 done
 unset -v _leg_env_scrub
 
+if [ -n "$PROFILE" ]; then
+    leg_propagate_env HIMMEL_LEG_PROFILE "$PROFILE"
+fi
+
 # HIMMEL-3795: the scrub above just dropped any inherited LEG_CLAUDE_BIN, var
 # and token, unconditionally. test-headed-arm-leg.sh's --headless suite
 # (run_headless(), case 29) needs a way to point leg-claude-launcher.sh's
