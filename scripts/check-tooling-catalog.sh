@@ -46,12 +46,18 @@ try:
     section = text.split(start, 1)[1].split(end, 1)[0]
     documented = {}
     for line in section.splitlines():
-        if not line.startswith('| `'):
+        line = line.strip()
+        if not line:
             continue
-        cells = [v.strip() for v in line.strip().strip('|').split('|')]
-        if len(cells) != 2:
+        cells = [v.strip() for v in line.strip('|').split('|')]
+        if not line.startswith('|') or not line.endswith('|') or len(cells) != 2:
             raise ValueError(f'invalid inventory row: {line}')
-        plugin_id, status = cells[0].strip('`'), cells[1]
+        if cells == ['Plugin ID', 'Installation'] or all(re.fullmatch(r':?-+:?', v) for v in cells):
+            continue
+        quoted_id = re.fullmatch(r'`([^`]+)`', cells[0])
+        if not quoted_id:
+            raise ValueError(f'invalid inventory row: {line}')
+        plugin_id, status = quoted_id.group(1), cells[1]
         if not id_re.fullmatch(plugin_id) or status not in ('INSTALLED', 'NOT INSTALLED'):
             raise ValueError(f'invalid inventory row: {line}')
         if plugin_id in documented:

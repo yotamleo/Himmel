@@ -68,6 +68,19 @@ with tempfile.TemporaryDirectory(prefix='tooling-catalog-') as tmp:
     run('full IDs distinguish marketplaces', ['code-review@other'], one, 1, 'code-review@other: catalog=MISSING')
     run('duplicate rows rejected', [], table([('qmd@qmd', 'NOT INSTALLED')] * 2), 1, 'duplicate inventory ID')
     run('unknown state rejected', [], table([('qmd@qmd', 'MAYBE')]), 1, 'invalid inventory row')
+    # A malformed absent-ID claim must fail, not disappear behind a valid row.
+    # Existing malformed-state tests retain the opening backtick and miss this.
+    for label, row in (
+        ('unquoted ID', '| qmd@qmd | INSTALLED |'),
+        ('missing opening backtick', '| qmd@qmd` | INSTALLED |'),
+        ('missing closing backtick', '| `qmd@qmd | INSTALLED |'),
+        ('missing opening pipe', '`qmd@qmd` | INSTALLED |'),
+        ('missing closing pipe', '| `qmd@qmd` | INSTALLED'),
+        ('non-table claim', 'qmd@qmd INSTALLED'),
+    ):
+        malformed = table([('code-review@claude-plugins-official', 'INSTALLED')]).replace(
+            '<!-- /plugin-installation-inventory -->', row + '\n<!-- /plugin-installation-inventory -->')
+        run(f'{label} rejected', ['code-review@claude-plugins-official'], malformed, 1, 'invalid inventory row')
     run('missing inventory rejected', [], '# empty', 1, 'exactly one plugin installation inventory')
     run('empty inventory rejected', [], table([]), 1, 'inventory is empty')
     run('invalid installed IDs rejected', ['not-an-id'], one, 1, 'array of plugin@marketplace IDs')
