@@ -52,8 +52,11 @@ if [ "$rc" -eq 2 ]; then pass "missing runner exits 2"; else bad "missing runner
 timeout 5 bash "$SC" scripts/x/test-x.sh --runner >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then pass "trailing --runner without a value exits 2 (no hang)"; else bad "trailing --runner without a value exits 2 (rc=$rc)"; fi
-out=$(bash "$SC" scripts/nope/test-nonexistent.sh 2>&1)
+out=$(bash "$SC" scripts/nope/test-nonexistent.sh 2>&1); rc=$?
 expect "real: a nonexistent suite is unknown, not 'runs in PR CI'" 'unknown' "$out"
+if [ "$rc" -eq 3 ]; then pass "unknown suite exits 3"; else bad "unknown suite exits 3 (rc=$rc)"; fi
+out=$(bash "$SC" scripts/handover/suite-coverage.sh 2>&1)
+expect "real: an existing non-test file is unknown" 'unknown' "$out"
 printf 'not a runner\n' > "$tmp/junk.sh"
 bash "$SC" --runner "$tmp/junk.sh" scripts/x/test-x.sh >/dev/null 2>&1
 rc=$?

@@ -11,7 +11,8 @@
 #   nightly only (extended tier, cap Ns)       SUITE_TIER_DEFAULT "extended"
 #   runs in PR CI (cap Ns)                     everything else
 # The cap is the runner's own _suite_timeout_for answer, evaluated, not parsed.
-# Exit 0 = every suite classified, 2 = usage / unreadable runner.
+# Exit 0 = every suite classified, 2 = usage / unreadable or unintelligible
+# runner, 3 = at least one suite is unknown (printed as such).
 set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 runner="$HERE/../ci/run-shell-tests.sh"
@@ -58,6 +59,7 @@ entry_for() {
   return 1
 }
 
+rc=0
 for s in "${suites[@]}"; do
   s="${s#./}"
   if line="$(entry_for "$skip_list" "$s")"; then
@@ -68,11 +70,17 @@ for s in "${suites[@]}"; do
     else
       echo "$s: not run in CI (SKIP_LIST) — uncovered; never write \"CI verifies\" for it —${reason}"
     fi
-  elif [ "$default_runner" -eq 1 ] && [ ! -f "$HERE/../../$s" ]; then
-    echo "$s: unknown — no such suite file in this repo; coverage cannot be stated"
-  elif line="$(entry_for "$tier_list" "$s")" && [ "$(awk '{print $2}' <<< "$line")" = extended ]; then
-    echo "$s: nightly only (extended tier, cap $(cap "$s")s) — not in per-PR CI"
+  elif [ "$default_runner" -eq 1 ] && { [ ! -f "$HERE/../../$s" ] || [[ "$(basename "$s")" != test-*.sh ]]; }; then
+    echo "$s: unknown — not an existing test-*.sh suite in this repo; coverage cannot be stated"
+    rc=3
   else
-    echo "$s: runs in PR CI (cap $(cap "$s")s)"
+    c="$(cap "$s")"
+    case "$c" in ''|*[!0-9]*) echo "suite-coverage.sh: could not evaluate the runner's cap for $s" >&2; exit 2 ;; esac
+    if line="$(entry_for "$tier_list" "$s")" && [ "$(awk '{print $2}' <<< "$line")" = extended ]; then
+      echo "$s: nightly only (extended tier, cap ${c}s) — not in per-PR CI"
+    else
+      echo "$s: runs in PR CI (cap ${c}s)"
+    fi
   fi
 done
+exit "$rc"
