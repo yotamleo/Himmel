@@ -84,13 +84,6 @@ if ($IsWindows) {
 $Runner = Join-Path $Scratch 'same-process.ps1'
 $RunnerText = @'
 $Before = [Environment]::GetEnvironmentVariables('Process')
-# Temporary CI diagnosis of PowerShell null-to-string argument binding.
-$ProbeName = 'HIMMEL_DEEPSEEK_NULL_BINDING_PROBE'
-[Environment]::SetEnvironmentVariable($ProbeName, 'present', 'Process')
-[Environment]::SetEnvironmentVariable($ProbeName, $null, 'Process')
-Write-Host "Null argument leaves present=$([Environment]::GetEnvironmentVariables('Process').Contains($ProbeName)); pwsh=$($PSVersionTable.PSVersion); runtime=$([System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)"
-[Environment]::SetEnvironmentVariable($ProbeName, [NullString]::Value, 'Process')
-Write-Host "NullString argument leaves present=$([Environment]::GetEnvironmentVariables('Process').Contains($ProbeName))"
 # Fail before invoking the launcher unless ordinary native PATH resolution
 # selects the fixture. A host's real curl must never service this smoke test.
 $CurlMatches = @(Get-Command curl -CommandType Application -ErrorAction Stop)

@@ -188,7 +188,8 @@ exit $LASTEXITCODE
         if ($SavedLaneEnv.Contains($Name)) {
             [Environment]::SetEnvironmentVariable($Name, [string]$SavedLaneEnv[$Name], 'Process')
         } else {
-            [Environment]::SetEnvironmentVariable($Name, $null, 'Process')
+            # PowerShell coerces $null to an empty string for this overload.
+            [Environment]::SetEnvironmentVariable($Name, [NullString]::Value, 'Process')
         }
     }
 }
