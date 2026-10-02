@@ -562,6 +562,10 @@ $env:ANTHROPIC_MODEL                = $CodexModel
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $CodexHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $CodexModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $CodexModel
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+# https://code.claude.com/docs/en/llm-gateway-protocol#feature-pass-through
+$env:CLAUDE_CODE_AUTO_MODE_SERVER = '0'
 $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $CodexContextWindow
 # HIMMEL-1887: AUTO_COMPACT_WINDOW only sets the compaction THRESHOLD; this
 # declares the model's window. Claude Code resolves the effective compact

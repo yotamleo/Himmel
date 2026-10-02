@@ -425,6 +425,10 @@ esac
 
 command -v claude >/dev/null 2>&1 || { echo "claude-glm: 'claude' not found on PATH" >&2; exit 5; }
 
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+# https://code.claude.com/docs/en/llm-gateway-protocol#feature-pass-through
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
 exec env \
   ANTHROPIC_BASE_URL="$GLM_BASE_URL" \
   ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \

@@ -62,7 +62,8 @@ t "missing key exits 2" 2
 
 # --- T2: key set -> exit 0 and all eight env vars reach the child
 setup; KEY="zai-test-123"
-t "launch with key" 0
+CLAUDE_CODE_AUTO_MODE_SERVER=1 t "launch with key" 0
+grep -qxF 'CLAUDE_CODE_AUTO_MODE_SERVER=0' "$WORK/child-env.txt" || { echo "FAIL: child env missing CLAUDE_CODE_AUTO_MODE_SERVER=0"; FAILS=$((FAILS+1)); }
 for pair in \
   "ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" \
   "ANTHROPIC_AUTH_TOKEN=zai-test-123" \
