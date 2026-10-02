@@ -156,7 +156,7 @@ cp "$HERE/../../lanes/lib/claude-sessions.sh" "$W/repo/scripts/lanes/lib/claude-
 cat > "$W/repo/scripts/lib/bank-preflight.sh" <<'STUB'
 #!/usr/bin/env bash
 [ -z "${STUB_PF_SEEN:-}" ] || printf 'ledger=%s launch=%s\n' "${CADENCE_BANK_LEDGER:-unset}" "${CADENCE_BANK_LAUNCH:-unset}" > "$STUB_PF_SEEN"
-printf '%s\n' "${STUB_FLEET_LINE-bank-preflight: FLEET native=1 claudex=0 reserved=0 total=1/8}" >&2
+printf '%s\n' "${STUB_FLEET_LINE-bank-preflight: FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/8}" >&2
 printf 'PROCEED\n'
 STUB
 
@@ -190,7 +190,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip denials=none ciq=unknown plan-index=skip'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip denials=none ciq=unknown plan-index=skip or=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -1780,6 +1780,25 @@ STUB
 else
     skip 'plan-index= rows: no python3'
 fi
+
+# HIMMEL-4076: removing the fleet-based skip would read a metered account
+# without a live OpenRouter leg; missing the field hides its effective floor.
+cat > "$W/repo/scripts/lanes/openrouter-cost.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'read\n' >> "$OR_READS"
+printf '%s\n' "${OR_READING-balance=7.50:key-limit_remaining spend=?}"
+STUB
+export OR_READS="$W/or-reads"
+contains 'no live OpenRouter leg shows or=skip' \
+  "$(STUB_FLEET_LINE='bank-preflight: FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/8' bash "$SUT")" ' or=skip'
+[ ! -e "$OR_READS" ] && pass 'no OpenRouter leg skips all cost reads' || fail 'cost helper read without OpenRouter leg'
+contains 'live OpenRouter leg surfaces smaller key cap and label' \
+  "$(STUB_FLEET_LINE='bank-preflight: FLEET native=1 claudex=0 openrouter=1 reserved=0 total=2/8' bash "$SUT")" ' or=7.50:key-limit_remaining'
+[ -f "$OR_READS" ] && pass 'live OpenRouter leg reads cost helper' || fail 'no balance read for OpenRouter leg'
+contains 'unknown balance is honest' \
+  "$(OR_READING='balance=? spend=?' STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT")" ' or=?'
+contains 'verbose labels metered balance' \
+  "$(STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT" --verbose)" 'OpenRouter: 7.50:key-limit_remaining'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

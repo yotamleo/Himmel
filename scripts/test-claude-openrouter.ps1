@@ -56,7 +56,43 @@ foreach ($n in 'USERPROFILE', 'OPENROUTER_API_KEY', 'CLAUDE_OPENROUTER_DOTENV_RO
   $OrigEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 
+# Hermetic credits server (node is already a hard dependency of the launcher).
+# Serves $TMP\credits.json for any GET; 500 when the file is absent. Port 0 -> the
+# chosen port is written to $TMP\port.txt.
+$CreditsFile = Join-Path $TMP 'credits.json'
+$PortFile    = Join-Path $TMP 'port.txt'
+$ServerJs    = Join-Path $TMP 'credits-server.js'
+@'
+const http = require("http"), fs = require("fs");
+const [file, portFile, keyFile] = process.argv.slice(2);
+http.createServer((q, r) => {
+  try { const b = fs.readFileSync(/\/key$/.test(q.url) ? keyFile : file); r.writeHead(200, {"content-type": "application/json"}); r.end(b); }
+  catch (_) { r.writeHead(500); r.end("no balance"); }
+}).listen(0, "127.0.0.1", function () { fs.writeFileSync(portFile, String(this.address().port)); });
+'@ | Set-Content -LiteralPath $ServerJs
+function Set-Credits([double]$Total, [double]$Used) {
+  ('{"data":{"total_credits":' + $Total.ToString([Globalization.CultureInfo]::InvariantCulture) + ',"total_usage":' + $Used.ToString([Globalization.CultureInfo]::InvariantCulture) + '}}') |
+    Set-Content -LiteralPath $CreditsFile -NoNewline
+}
+$KeyFile = Join-Path $TMP 'key.json'
+# Set-KeyLimit: $null = uncapped key (limit null); a number = limit_remaining.
+function Set-KeyLimit($Remaining) {
+  if ($null -eq $Remaining) { '{"data":{"limit":null,"limit_remaining":null}}' }
+  else { '{"data":{"limit":50,"limit_remaining":' + ([double]$Remaining).ToString([Globalization.CultureInfo]::InvariantCulture) + '}}' }
+}
+function Write-KeyLimit($Remaining) { Set-KeyLimit $Remaining | Set-Content -LiteralPath $KeyFile -NoNewline }
+Set-Credits 21 1
+Write-KeyLimit $null
+# -WindowStyle exists only on Windows PowerShell editions; pwsh on Linux/macOS rejects the parameter.
+$ServerStyle = @{}
+if ($IsWindows) { $ServerStyle.WindowStyle = 'Hidden' }
+$ServerProc = Start-Process node -ArgumentList @($ServerJs, $CreditsFile, $PortFile, $KeyFile) -PassThru @ServerStyle
+for ($i = 0; $i -lt 50 -and -not (Test-Path -LiteralPath $PortFile); $i++) { Start-Sleep -Milliseconds 100 }
+$script:CreditPort = if (Test-Path -LiteralPath $PortFile) { (Get-Content -LiteralPath $PortFile -Raw).Trim() } else { '1' }
+
 function New-Sandbox {
+  Set-Credits 21 1   # default balance: $20 remaining
+  Write-KeyLimit $null   # default: uncapped key
   # fresh sandbox: fake HOME whose ~/.claude ALREADY carries settings.json (the
   # exact fixture the round-3 regression needed), mock claude.cmd in BIN.
   $id = [Guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -107,7 +143,9 @@ function Invoke-Launcher {
   if ($script:MATRIX) { $env:CLAUDE_OPENROUTER_EGRESS_MATRIX = $script:MATRIX }
   else { Remove-Item Env:CLAUDE_OPENROUTER_EGRESS_MATRIX -ErrorAction SilentlyContinue }
   Remove-Item Env:CLAUDE_OPENROUTER_CWD -ErrorAction SilentlyContinue
-  $env:OPENROUTER_API_BASE = 'http://127.0.0.1:1/api/v1'   # fast-failing loopback -> credit UNKNOWN, no network
+  # HIMMEL-4076: the credit probe GATES the launch, so every case talks to the
+  # hermetic loopback credits server (body = $TMP\credits.json; absent -> HTTP 500 -> UNKNOWN).
+  $env:OPENROUTER_API_BASE = "http://127.0.0.1:$script:CreditPort/api/v1"
   $env:MOCK_ENV_OUT        = $ChildEnv
   $env:MOCK_ARGV_OUT       = $ArgvOut
   $env:PATH                = $BIN + [IO.Path]::PathSeparator + $OrigEnv['PATH']
@@ -210,12 +248,74 @@ try {
     if ($emptyKey) { Pass 'ANTHROPIC_API_KEY exported empty' } else { Fail 'ANTHROPIC_API_KEY not exported empty' }
   } else { Fail 'T3 launch produced no child env dump' }
 
-  # --- T5: credit probe failure is ADVISORY — loud UNKNOWN on a fast-failing
-  # loopback, launch STILL exit 0 (HIMMEL-1771: never fail open silently). ---
+  # --- T5: the credit probe is a launch GATE (HIMMEL-4076): UNKNOWN or below
+  # OPENROUTER_MIN_CREDIT_USD (default 3) -> exit 5 and claude never launches. ---
   New-Sandbox; $script:KEY = 'or-test-123'  # gitleaks:allow
   Write-AllowMatrix (Join-Path $WORK 'matrix.json'); $script:MATRIX = Join-Path $WORK 'matrix.json'
-  Assert-Exit (Invoke-Launcher) 0 'credit UNKNOWN surfaced + launch proceeds'
+  Remove-Item -LiteralPath $CreditsFile -Force
+  Assert-Exit (Invoke-Launcher) 5 'credit UNKNOWN refuses (exit 5)'
   if (FileHas $OutTxt 'remaining metered credit: UNKNOWN') { Pass 'loud UNKNOWN credit line' } else { Fail 'no loud UNKNOWN credit line' }
+  if (Test-Path -LiteralPath $ChildEnv) { Fail 'claude launched on UNKNOWN balance' } else { Pass 'claude not launched on UNKNOWN balance' }
+  Set-Credits 21 19
+  Assert-Exit (Invoke-Launcher) 5 'credit 2.00 below default floor 3 refuses (exit 5)'
+  if (FileHas $OutTxt 'below the floor') { Pass 'below-floor message' } else { Fail 'no below-floor message' }
+  Set-Credits 21 18
+  Assert-Exit (Invoke-Launcher) 0 'credit exactly 3.00 at floor launches'
+  $env:OPENROUTER_MIN_CREDIT_USD = '5'
+  Assert-Exit (Invoke-Launcher) 5 'env floor 5 refuses a 3.00 balance'
+  $env:OPENROUTER_MIN_CREDIT_USD = 'junk'
+  Assert-Exit (Invoke-Launcher) 0 'garbage floor falls back to 3 (3.00 admitted)'
+  Remove-Item Env:OPENROUTER_MIN_CREDIT_USD -ErrorAction SilentlyContinue
+
+  # --- T5b: the per-key monthly cap (GET /key) gates too (HIMMEL-4076). ---
+  Set-Credits 21 1
+  Write-KeyLimit 1.5
+  Assert-Exit (Invoke-Launcher) 5 'key limit_remaining 1.50 below floor refuses (exit 5)'
+  if (FileHas $OutTxt 'key limit_remaining') { Pass 'refusal names the key limit' } else { Fail 'refusal does not name the key limit' }
+  Write-KeyLimit 0
+  Assert-Exit (Invoke-Launcher) 5 'key limit exhausted refuses (exit 5)'
+  Remove-Item -LiteralPath $KeyFile -Force
+  Assert-Exit (Invoke-Launcher) 5 'key endpoint unreadable refuses (exit 5)'
+  Write-KeyLimit 19.5
+  Assert-Exit (Invoke-Launcher) 0 'key limit_remaining 19.50 admits'
+  if (FileHas $OutTxt 'effective balance $19.50 (key limit_remaining)') { Pass 'smaller of credit and key reported' } else { Fail 'effective balance line missing' }
+  Write-KeyLimit $null
+  Assert-Exit (Invoke-Launcher) 0 'null key limit (uncapped) admits'
+
+  # --- T5c: numeric JSON types and unrounded floor admission. ---
+  foreach ($bad in 'null', 'true', '""', '"20"') {
+    ('{"data":{"total_credits":20,"total_usage":' + $bad + '}}') | Set-Content -LiteralPath $CreditsFile
+    Assert-Exit (Invoke-Launcher) 5 "non-number usage $bad refuses"
+    ('{"data":{"total_credits":' + $bad + ',"total_usage":0}}') | Set-Content -LiteralPath $CreditsFile
+    Assert-Exit (Invoke-Launcher) 5 "non-number total credit $bad refuses"
+  }
+  Set-Credits 20 0
+  foreach ($bad in 'null', 'true', '""', '"20"') {
+    ('{"data":{"limit":10,"limit_remaining":' + $bad + '}}') | Set-Content -LiteralPath $KeyFile
+    Assert-Exit (Invoke-Launcher) 5 "non-number key remaining $bad refuses"
+  }
+  '{"data":{"limit":true,"limit_remaining":20}}' | Set-Content -LiteralPath $KeyFile
+  Assert-Exit (Invoke-Launcher) 5 'non-number key limit refuses'
+  Write-KeyLimit $null
+  Set-Credits 3 0.001
+  Assert-Exit (Invoke-Launcher) 5 'unrounded credit 2.999 refuses'
+  Set-Credits 20 0
+  Write-KeyLimit 2.999
+  Assert-Exit (Invoke-Launcher) 5 'unrounded key 2.999 refuses'
+  Write-KeyLimit 0
+  foreach ($floor in 'NaN', 'Infinity', '-Infinity') {
+    $env:OPENROUTER_MIN_CREDIT_USD = $floor
+    Assert-Exit (Invoke-Launcher) 5 "non-finite floor $floor falls back to 3"
+  }
+  Remove-Item Env:OPENROUTER_MIN_CREDIT_USD -ErrorAction SilentlyContinue
+
+  # --- T5d: non-leg Haiku labels identify the actual override. ---
+  New-Sandbox; $script:KEY = 'or-test-123'  # gitleaks:allow
+  Write-AllowMatrix (Join-Path $WORK 'matrix.json'); $script:MATRIX = Join-Path $WORK 'matrix.json'
+  $env:OPENROUTER_HAIKU = 'anthropic/claude-haiku-4.5'
+  Assert-Exit (Invoke-Launcher) 0 'non-leg Haiku override launches'
+  if (FileHas $ChildEnv 'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME=anthropic/claude-haiku-4.5') { Pass 'Haiku label identifies override' } else { Fail 'Haiku label names the wrong model' }
+  Remove-Item Env:OPENROUTER_HAIKU -ErrorAction SilentlyContinue
 
   # --- T6: claude flags pass through verbatim; a LEADING -Reseed is consumed.
   # Pins the manual flag loop (a param() block would swallow -p/-d as common
@@ -238,6 +338,8 @@ try {
   if ($script:fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$($script:fails) failure(s)" -ForegroundColor Red; exit 1 }
 }
 finally {
+  if ($ServerProc) { Stop-Process -Id $ServerProc.Id -Force -ErrorAction SilentlyContinue }
+  Remove-Item Env:OPENROUTER_MIN_CREDIT_USD -ErrorAction SilentlyContinue
   foreach ($n in $OrigEnv.Keys) {
     if ($null -eq $OrigEnv[$n]) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
     else { Set-Item "Env:$n" $OrigEnv[$n] }

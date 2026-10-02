@@ -1667,6 +1667,8 @@ cat > "$tmp/stub-arm-66.sh" <<STUB
 {
     printf 'LEG_PROFILE_SETTINGS=%s\n' "\${LEG_PROFILE_SETTINGS+set}"
     printf 'HIMMEL_CONSOLE_LEG=%s\n' "\${HIMMEL_CONSOLE_LEG+set}"
+    printf 'LEG_LANE=%s\n' "\${LEG_LANE+set}"
+    printf 'OPENROUTER_MODEL=%s\n' "\${OPENROUTER_MODEL+set}"
     printf 'HEADED_ARM_REQUIRED_AUTOCOMPACT=%s\n' "\${HEADED_ARM_REQUIRED_AUTOCOMPACT+set}"
 } > "$tmp/child-env-66.txt"
 exec "$REPO_REAL/scripts/handover/headed-arm.sh" --dry-run "\$@"
@@ -1688,6 +1690,7 @@ out66b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     LEG_PROFILE_MCP_CONFIG=/leaked-66/mcp.json LEG_CLAUDE_BIN=/leaked-66/claude \
     HIMMEL_LEAN_LEG=1 HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=leaked-console-66 \
     LEG_EFFORT=high CLAUDE_CODE_EFFORT_LEVEL=high CLAUDEX_LANE_OK=1 \
+    LEG_LANE=openrouter OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 \
     CR_TRIGGER_SUPPRESS=1 IMPL_GUARD_OK=1 INLINE_IMPL_OK=1 HIMMEL_READ_CLAMP_LINES=4000 \
     HIMMEL_CONSOLE_RELAY=1 \
     HEADED_ARM_LAUNCHER=/leaked-66/leg-claude-launcher.sh HEADED_ARM_RECORDER=1 \
@@ -1724,6 +1727,10 @@ propagated67="$(grep -v -E '^[[:space:]]*#' "$REPO_REAL/scripts/handover/console
 strip_list67="$( ( . "$REPO_REAL/scripts/lib/console-context.sh"; console_context_leg_env_unset_names ) | sort -u)"
 missing67="$(comm -23 <(printf '%s\n' "$propagated67") <(printf '%s\n' "$strip_list67"))"
 check "67 every leg_propagate_env name in headed-arm-leg.sh is in the strip list" "$missing67" ""
+check "67 armed child's own environment strips LEG_LANE" \
+    "$(grep -c '^LEG_LANE=set$' "$tmp/child-env-66.txt")" "0"
+check "67 armed child's own environment strips OPENROUTER_MODEL" \
+    "$(grep -c '^OPENROUTER_MODEL=set$' "$tmp/child-env-66.txt")" "0"
 
 # --- 68: --project <dir> -- a console for a repo that is NOT this himmel
 # checkout (the himmel-ops plugin's /console, run from e.g. ~/Websites). The

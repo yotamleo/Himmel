@@ -255,7 +255,7 @@ fleet_verdict() {
     CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
     FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
     HIMMEL_FLEET_SLOTS="$_slots" \
-    bash "$SUT" </dev/null 2>"$W/err.log"
+    bash -o pipefail "$SUT" </dev/null 2>"$W/err.log"
 }
 
 # 4 fake legs, cap 4 (n >= CAP) -> SKIPPED-FLEET.
@@ -298,7 +298,7 @@ check "3 legs, cap=2 (HIMMEL_FLEET_CAP override) -> SKIPPED-FLEET" SKIPPED-FLEET
 # no environ files (mk_ps_stub only writes comm), so every candidate falls
 # back to "native" (the safe default for an unreadable/missing environ).
 fleet_verdict "$p3" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=3 claudex=0 reserved=0 total=3/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=3 claudex=0 openrouter=0 reserved=0 total=3/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - FLEET n/CAP printed on a PROCEED call"
 else
   FAIL=$((FAIL+1)); echo "FAIL - FLEET n/CAP not printed on a PROCEED call"
@@ -329,10 +329,26 @@ pclaudex="$W/psclaudex"; mk_ps_stub_environ "$pclaudex" \
   '9001:claude:HOME=/home/x,CLAUDEX_LANE_OK=1:--model gpt-6.1-sol -n HIMMEL-1000-leg load doc' \
   '9002:claude:HOME=/home/x:--model claude-opus-5 -n HIMMEL-1001-leg load doc'
 fleet_verdict "$pclaudex" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=1 claudex=1 reserved=0 total=2/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=1 claudex=1 openrouter=0 reserved=0 total=2/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - claudex candidate named separately in the FLEET line"
 else
   FAIL=$((FAIL+1)); echo "FAIL - claudex candidate not named separately in the FLEET line"
+fi
+
+# HIMMEL-4076: explicit pipefail mode plus a large environ catches an early
+# grep exit closing tr's pipe before the producer has drained the input.
+# Production defaults to set -u only; fleet_verdict deliberately opts in.
+plarge="$W/pslarge"; mk_ps_stub_environ "$plarge" \
+  '9001:claude:CLAUDEX_LANE_OK=1:--model gpt-6.1-sol -n HIMMEL-1000-leg load doc' \
+  '9002:claude:LEG_LANE=openrouter:--model sonnet -n HIMMEL-1001-leg load doc'
+for pid in 9001 9002; do
+  awk 'BEGIN { for (i=0;i<32768;i++) printf "%cFILLER_%d=padding-padding-padding", 0, i }' >> "$plarge/proc/$pid/environ"
+done
+fleet_verdict "$plarge" HIMMEL_FLEET_CAP=4 >/dev/null
+if grep -q 'FLEET native=0 claudex=1 openrouter=1 reserved=0 total=2/4' "$W/err.log"; then
+  PASS=$((PASS+1)); echo "ok - pipefail keeps both lane labels with a large environ"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - pipefail mislabels lanes with a large environ"
 fi
 
 # codex-1 (CR review): a session with NO argument between "claude" and "-n"
@@ -455,7 +471,7 @@ check "4 legs, cap=4, no CADENCE_BANK_LAUNCH -> PROCEED (read-only, not refused)
 # refusal is gated, never the visibility.
 # shellcheck disable=SC1007  # deliberate empty-string prefix assignment, not a typo'd `VAR =`
 FLEET_VERDICT_LAUNCH= fleet_verdict "$p4" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=4 claudex=0 reserved=0 total=4/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=4 claudex=0 openrouter=0 reserved=0 total=4/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - a plain read still prints the FLEET line"
 else
   FAIL=$((FAIL+1)); echo "FAIL - a plain read suppressed the FLEET line"
@@ -605,5 +621,34 @@ _noto_verdict="$(PATH="$NOTO_BIN" CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SK
 check "no timeout binary -> PROCEED, codex read skipped (never unbounded)" PROCEED "$_noto_verdict"
 case "$(bank_line)" in *' codex=?') PASS=$((PASS+1)); echo "ok - no timeout binary -> codex=?" ;;
   *) FAIL=$((FAIL+1)); echo "FAIL - no timeout binary: '$(bank_line)'" ;; esac
+
+# HIMMEL-4076: metered legs use the backend credit floor, never either bank.
+# Removing the lane branch must refuse this 99% fixture; removing fleet
+# admission must incorrectly admit the full-fleet fixture below.
+printf '%s' "$(stamp_account "$(fx 99 99 "$NOW" "")")" > "$W/c.json"
+OR_STATUS="$(stub_status openrouter-status "echo called >> '$W/or-status-calls'" "echo 'claudex spent measured weekly used=99% free=1%'")"
+check "OpenRouter lane, native bank 99 -> PROCEED" PROCEED \
+  "$(CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
+     CADENCE_BANK_LEDGER="$W/ledger.jsonl" FLEET_PS_CMD="$NO_FLEET" \
+     LEG_LANE=openrouter CADENCE_BANK_LANE=openrouter CADENCE_BANK_STATUS_CMD="$OR_STATUS" \
+       bash "$SUT" </dev/null 2>"$W/err.log")"
+check "OpenRouter skips codex status read" absent "$(if [ -e "$W/or-status-calls" ]; then echo present; else echo absent; fi)"
+check "native lane without lane env, native bank 99 -> SKIPPED-BANK" SKIPPED-BANK \
+  "$(env -u LEG_LANE -u CADENCE_BANK_LANE CADENCE_BANK_CACHE="$W/c.json" \
+     CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" \
+     FLEET_PS_CMD="$NO_FLEET" CADENCE_BANK_STATUS_CMD="$OR_STATUS" \
+       bash "$SUT" </dev/null 2>"$W/err.log")"
+check "OpenRouter launch still refuses fleet at cap" SKIPPED-FLEET \
+  "$(fleet_verdict "$p4" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=openrouter LEG_LANE=openrouter)"
+por="$W/psopenrouter"; mk_ps_stub_environ "$por" \
+  '9001:claude:LEG_LANE=openrouter:--model sonnet -n HIMMEL-1000-leg load doc' \
+  '9002:claude:CLAUDEX_LANE_OK=1:--model gpt-6.1-sol -n HIMMEL-1001-leg load doc' \
+  '9003:claude:HOME=/home/x:--model claude-opus-5 -n HIMMEL-1002-leg load doc'
+fleet_verdict "$por" HIMMEL_FLEET_CAP=4 >/dev/null
+check "fleet reports all three lanes and total" \
+  'bank-preflight: FLEET native=1 claudex=1 openrouter=1 reserved=0 total=3/4' \
+  "$(grep '^bank-preflight: FLEET ' "$W/err.log")"
+check "OpenRouter processes count toward fleet refusal" SKIPPED-FLEET \
+  "$(fleet_verdict "$por" HIMMEL_FLEET_CAP=3 CADENCE_BANK_LANE=openrouter)"
 
 echo "passed=$PASS failed=$FAIL"; [ "$FAIL" -eq 0 ]

@@ -392,6 +392,42 @@ function Test-SeedLockStale {
   } catch { return $false }
 }
 
+function Invoke-LegTrustSeed {
+  # Only the primary checkout is trusted, under the existing seed lock.
+  $savedGitEnv = @{}
+  try {
+    foreach ($name in 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE') {
+      $savedGitEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+      [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+    $common = & git -C $RepoRoot rev-parse --path-format=absolute --git-common-dir
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve primary checkout for leg trust' }
+    $primary = Split-Path -Parent $common
+  } finally {
+    foreach ($name in $savedGitEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedGitEnv[$name], 'Process') }
+  }
+  $trustJs = @'
+const fs=require("fs"), p=process.argv[1], root=process.argv[2];
+try {
+  const j=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};
+  const object=v=>v && typeof v==="object" && !Array.isArray(v);
+  if (!object(j) || (j.projects!==undefined && !object(j.projects))) throw Error("invalid lane config object");
+  j.projects=j.projects||{};
+  const project=j.projects[root]||{};
+  if (!object(project)) throw Error("invalid primary project object");
+  if (j.hasCompletedOnboarding===true && project.hasTrustDialogAccepted===true) process.exit(0);
+  j.hasCompletedOnboarding=true;
+  project.hasTrustDialogAccepted=true;
+  j.projects[root]=project;
+  const temp=p+".tmp."+process.pid;
+  fs.writeFileSync(temp,JSON.stringify(j,null,2)+"\n",{mode:0o600});
+  fs.renameSync(temp,p);
+} catch(e) { console.error("claude-openrouter: leg onboarding seed failed: "+e.message); process.exit(4); }
+'@
+  & node -e $trustJs (Join-Path $ConfigDir '.claude.json') $primary
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to seed leg onboarding and primary-root trust' }
+}
+
 function Invoke-SeedWithLock {
   $ticks = 0
   $maxTicks = $SeedLockTimeout * 2
@@ -421,35 +457,87 @@ function Invoke-SeedWithLock {
     if ($Reseed -or (-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or (Test-ConfigSeedStale)) {
       Copy-SeedConfig
     }
+    if ($env:LEG_LANE -eq 'openrouter') { Invoke-LegTrustSeed }
+  } catch {
+    [Console]::Error.WriteLine("claude-openrouter: leg seed failed: $($_.Exception.Message)")
+    exit 4
   } finally {
     try { [System.IO.Directory]::Delete($Lock) }
     catch { [Console]::Error.WriteLine("claude-openrouter: WARNING - failed to release seed lock $Lock (not empty or busy); it self-heals via stale steal after ${SeedLockStale}s but concurrent launches wait/time out until then.") }
   }
 }
 
-if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
+if (($env:LEG_LANE -eq 'openrouter') -or (-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
   Invoke-SeedWithLock
 }
 
-# --- advisory remaining-credit surfacing (HIMMEL-1774 §4) --------------------
-# Advisory (stderr); never gates the launch. A query failure is LOUDLY UNKNOWN
-# (HIMMEL-1771). Runs only AFTER the egress gate authorized the lane; the credits
+# --- remaining-credit GATE (HIMMEL-1774 §4, hardened by HIMMEL-4076) ----------
+# Twin of the bash launcher: a balance below OPENROUTER_MIN_CREDIT_USD (default 3;
+# non-numeric falls back to 3) or an UNKNOWN balance refuses with exit 5 BEFORE
+# claude starts. Runs only AFTER the egress gate authorized the lane; the credits
 # call carries the key but NO corpus content.
+$minCredit = 3.0
+$parsedMin = 0.0
+if ($env:OPENROUTER_MIN_CREDIT_USD -and [double]::TryParse($env:OPENROUTER_MIN_CREDIT_USD, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedMin) -and -not [double]::IsNaN($parsedMin) -and -not [double]::IsInfinity($parsedMin) -and $parsedMin -ge 0) { $minCredit = $parsedMin }
+function Test-OpenRouterNumber($value) {
+  return (($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) -and -not [double]::IsNaN([double]$value) -and -not [double]::IsInfinity([double]$value))
+}
 $creditSurfaced = $false
+$remVal = 0.0
 try {
   $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -NoProxy -Method Get `
     -Headers @{Authorization="Bearer $key"} -Uri "$OpenRouterApiBase/credits"
   $j = $resp.Content | ConvertFrom-Json -ErrorAction Stop
   $d = if ($j.data) { $j.data } else { $j }
-  if ($null -ne $d.total_credits -and $null -ne $d.total_usage) {
-    $rem = ([double]$d.total_credits - [double]$d.total_usage).ToString('0.00')
-    [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: `$$rem (OpenRouter balance at $OpenRouterApiBase/credits). Advisory only.")
-    $creditSurfaced = $true
+  if ((Test-OpenRouterNumber $d.total_credits) -and (Test-OpenRouterNumber $d.total_usage)) {
+    $remVal = [double]$d.total_credits - [double]$d.total_usage
+    $creditSurfaced = Test-OpenRouterNumber $remVal
   }
 } catch { }
 if (-not $creditSurfaced) {
-  [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: UNKNOWN (could not query $OpenRouterApiBase/credits). The metered balance is NOT verified — do not assume it is fine.")
+  [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: UNKNOWN (could not query $OpenRouterApiBase/credits). The metered balance is NOT verified; refusing to launch (exit 5).")
+  exit 5
 }
+$rem = $remVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+[Console]::Error.WriteLine("claude-openrouter: remaining metered credit: `$$rem (OpenRouter balance at $OpenRouterApiBase/credits).")
+if ($remVal -lt $minCredit) {
+  [Console]::Error.WriteLine("claude-openrouter: remaining credit `$$rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$minCredit); refusing to launch (exit 5).")
+  exit 5
+}
+# Per-key monthly cap (GET /key): null limit = uncapped; unreadable or
+# limit_remaining under the floor refuses (exit 5). Twin of the bash gate.
+$keyKnown = $false
+$keyCapped = $false
+$keyVal = 0.0
+try {
+  $kresp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -NoProxy -Method Get `
+    -Headers @{Authorization="Bearer $key"} -Uri "$OpenRouterApiBase/key"
+  $kj = $kresp.Content | ConvertFrom-Json -ErrorAction Stop
+  $kd = if ($kj.data) { $kj.data } else { $kj }
+  if ($kd.PSObject.Properties['limit'] -and $null -eq $kd.limit) { $keyKnown = $true }
+  elseif ((Test-OpenRouterNumber $kd.limit) -and (Test-OpenRouterNumber $kd.limit_remaining)) {
+    $keyVal = [double]$kd.limit_remaining
+    $keyKnown = $true
+    $keyCapped = $true
+  }
+} catch { }
+if (-not $keyKnown) {
+  [Console]::Error.WriteLine("claude-openrouter: key limit_remaining: UNKNOWN (could not read $OpenRouterApiBase/key); refusing to launch (exit 5).")
+  exit 5
+}
+$effVal = $remVal
+$effSrc = 'credit'
+if ($keyCapped) {
+  $krem = $keyVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+  [Console]::Error.WriteLine("claude-openrouter: key limit_remaining: `$$krem (OpenRouter per-key cap at $OpenRouterApiBase/key).")
+  if ($keyVal -lt $minCredit) {
+    [Console]::Error.WriteLine("claude-openrouter: key limit_remaining `$$krem is below the floor (OPENROUTER_MIN_CREDIT_USD=$minCredit) or exhausted; refusing to launch (exit 5).")
+    exit 5
+  }
+  if ($keyVal -lt $remVal) { $effVal = $keyVal; $effSrc = 'key limit_remaining' }
+}
+$eff = $effVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+[Console]::Error.WriteLine("claude-openrouter: effective balance `$$eff ($effSrc).")
 
 # --- launch: env contract mirrors the bash twin ------------------------------
 # ANTHROPIC_API_KEY is DELIBERATELY set EMPTY — load-bearing, not cosmetic: an
@@ -465,9 +553,28 @@ $env:ANTHROPIC_BASE_URL             = $OpenRouterAnthropicBaseUrl
 $env:ANTHROPIC_AUTH_TOKEN           = $key
 $env:ANTHROPIC_API_KEY              = ''
 $env:ANTHROPIC_MODEL                = $OpenRouterModel
+if ($env:LEG_LANE -eq 'openrouter') {
+  $OpenRouterHaiku = $OpenRouterModel
+  if ($OpenRouterModel -like 'anthropic/claude-sonnet-*') { $env:ANTHROPIC_MODEL = 'sonnet' }
+  elseif ($OpenRouterModel -like 'anthropic/claude-opus-*') { $env:ANTHROPIC_MODEL = 'opus' }
+}
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $OpenRouterHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $OpenRouterModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $OpenRouterModel
+$orLabel = $OpenRouterModel
+if ($OpenRouterModel -match '^anthropic/claude-(sonnet|opus|fable)-(.+)$') {
+  $family = $Matches[1]
+  $orLabel = $family.Substring(0, 1).ToUpperInvariant() + $family.Substring(1) + ' ' + $Matches[2] + ' (OpenRouter)'
+}
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  = if ($OpenRouterHaiku -eq $OpenRouterModel) { $orLabel } else { $OpenRouterHaiku }
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = $orLabel
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   = $orLabel
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+$env:CLAUDE_CODE_AUTO_MODE_SERVER = '0'
+if ($env:LEG_LANE -eq 'openrouter') {
+  [Console]::Error.WriteLine("claude-openrouter: lane=openrouter slug=$OpenRouterModel alias=$($env:ANTHROPIC_MODEL) labels=$orLabel")
+}
 $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $OpenRouterContextWindow
 $env:CLAUDE_CONFIG_DIR              = $ConfigDir
 

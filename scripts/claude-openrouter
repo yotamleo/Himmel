@@ -9,9 +9,9 @@
 #      override for this; the matrix is the authorizing gate for a lane whose
 #      content transits a third party (OpenRouter). Reaching a Claude model
 #      THROUGH OpenRouter is NOT covered by the existing `anthropic` cell.
-#   2. Advisory remaining-credit surfacing (stderr) — OpenRouter exposes a metered
-#      balance; a query failure is reported LOUDLY as UNKNOWN, never silent
-#      (the HIMMEL-1771 fail-open-silently class).
+#   2. Remaining-credit GATE (HIMMEL-4076) — OpenRouter exposes a metered balance;
+#      below OPENROUTER_MIN_CREDIT_USD (default 3) or UNKNOWN refuses with exit 5,
+#      and an UNKNOWN is reported LOUDLY, never silent (the HIMMEL-1771 class).
 # Pin: the target model is a Claude 1M-context tier (CLAUDE_CODE_AUTO_COMPACT_WINDOW
 # = 1000000). Endpoint + slug were verified against OpenRouter's live API and
 # docs on 2026-08-15: the native Anthropic-compatible endpoint needs NO loopback
@@ -20,7 +20,7 @@
 # Everything else (PHI guard, config-dir seeding, arg handling, exit codes) is
 # behaviour-identical to claude-routed. Exit codes: 2 = missing key / claude not
 # on PATH, 3 = egress or PHI refusal (or node missing — the matrix cannot be
-# consulted), 4 = failed seed.
+# consulted), 4 = failed seed, 5 = credit below the floor or unknown.
 # shellcheck disable=SC1091  # load-dotenv.sh path issue
 set -u
 
@@ -327,6 +327,34 @@ seed_lock_is_stale() {
   [ "$(( $(date +%s) - lock_mt ))" -ge "$SEED_LOCK_STALE" ]
 }
 
+seed_leg_trust() {
+  # The dispatch authorizes only this launcher's primary checkout, not an
+  # arbitrary inherited cwd. The existing seed lock serializes this update.
+  # shellcheck source=lib/git-clean.sh
+  . "$HERE/lib/git-clean.sh"
+  or_common="$(git_clean -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || seed_fail "resolve the primary checkout for leg trust"
+  or_primary="$(dirname "$or_common")"
+  node -e '
+const fs=require("fs"), p=process.argv[1], root=process.argv[2];
+try {
+  const j=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};
+  const object=v=>v && typeof v==="object" && !Array.isArray(v);
+  if (!object(j) || (j.projects!==undefined && !object(j.projects))) throw Error("invalid lane config object");
+  j.projects=j.projects||{};
+  const project=j.projects[root]||{};
+  if (!object(project)) throw Error("invalid primary project object");
+  if (j.hasCompletedOnboarding===true && project.hasTrustDialogAccepted===true) process.exit(0);
+  j.hasCompletedOnboarding=true;
+  project.hasTrustDialogAccepted=true;
+  j.projects[root]=project;
+  const temp=p+".tmp."+process.pid;
+  fs.writeFileSync(temp,JSON.stringify(j,null,2)+"\n",{mode:0o600});
+  fs.renameSync(temp,p);
+} catch(e) { console.error("claude-openrouter: leg onboarding seed failed: "+e.message); process.exit(4); }
+' "$CONFIG_DIR/.claude.json" "$or_primary" || seed_fail "seed leg onboarding and primary-root trust"
+}
+
 seed_with_lock() {
   seed_lock_ticks=0
   seed_lock_max=$(( SEED_LOCK_TIMEOUT * 2 ))
@@ -346,21 +374,24 @@ seed_with_lock() {
   if [ "$RESEED" -eq 1 ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then
     seed_config_dir
   fi
+  [ "${LEG_LANE:-}" != openrouter ] || seed_leg_trust
   trap - EXIT
   rmdir "$LOCK" 2>/dev/null || echo "claude-openrouter: WARNING - failed to release seed lock $LOCK (not empty or busy); it self-heals via stale steal after ${SEED_LOCK_STALE}s but concurrent launches wait/time out until then." >&2
 }
 
-if [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then
+if [ "${LEG_LANE:-}" = openrouter ] || [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then
   seed_with_lock
 fi
 
-# --- advisory remaining-credit surfacing (HIMMEL-1774 §4) ----------------------
-# OpenRouter exposes a metered balance at GET <OPENROUTER_API_BASE>/credits. This
-# is ADVISORY (stderr) and NEVER gates the launch (the egress matrix is the gate).
-# A query failure is reported LOUDLY as UNKNOWN, never silent (HIMMEL-1771). The
-# credits call carries the API key but NO corpus content (account metadata only),
-# and runs only AFTER the egress gate has authorized the lane. The Authorization
-# header travels via `-K -` (curl config on stdin) so the key is not in argv.
+# --- remaining-credit GATE (HIMMEL-1774 §4, hardened by HIMMEL-4076) ------------
+# OpenRouter exposes a metered balance at GET <OPENROUTER_API_BASE>/credits. The
+# key holds only a few dollars, so the probe GATES the launch: a balance below
+# OPENROUTER_MIN_CREDIT_USD (default 3; a non-numeric value falls back to 3) or an
+# UNKNOWN balance refuses with exit 5 BEFORE claude starts. The credits call
+# carries the API key but NO corpus content (account metadata only), and runs only
+# AFTER the egress gate has authorized the lane. The Authorization header travels
+# via `-K -` (curl config on stdin) so the key is not in argv.
+OPENROUTER_MIN_CREDIT_USD="${OPENROUTER_MIN_CREDIT_USD:-3}"
 credit_surfaced=0
 if command -v curl >/dev/null 2>&1; then
   credit_raw="$(printf 'header "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
@@ -368,20 +399,57 @@ if command -v curl >/dev/null 2>&1; then
   # Parse total_credits - total_usage → remaining. node returns the number on
   # stdout (exit 0) only on a clean parse of the expected shape; anything else
   # exits nonzero and the launcher reports UNKNOWN.
-  credit_rem="$(printf '%s' "$credit_raw" | node -e '
+  # The same block also parses GET /key (HIMMEL-4076): {limit, limit_remaining};
+  # a null limit prints "none" (uncapped), a capped key prints limit_remaining.
+  or_parse() { node -e '
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
-  try { const j=JSON.parse(s); const d=j.data||j; const t=Number(d.total_credits), u=Number(d.total_usage);
-    if (Number.isFinite(t)&&Number.isFinite(u)) { process.stdout.write((t-u).toFixed(2)); return; } } catch(_) {}
+  try { const j=JSON.parse(s); const d=j.data||j;
+    if (process.argv[1]==="credits") {
+      const t=d.total_credits, u=d.total_usage;
+      if (Number.isFinite(t)&&Number.isFinite(u)&&Number.isFinite(t-u)) { process.stdout.write(String(t-u)); return; }
+    } else {
+      if (d.limit===null) { process.stdout.write("none"); return; }
+      if (Number.isFinite(d.limit)&&Number.isFinite(d.limit_remaining)) { process.stdout.write(String(d.limit_remaining)); return; }
+    } } catch(_) {}
   process.exit(2);
-});' 2>/dev/null || true)"
-  if [ -n "$credit_rem" ]; then
-    echo "claude-openrouter: remaining metered credit: \$$credit_rem (OpenRouter balance at $OPENROUTER_API_BASE/credits). Advisory only." >&2
-    credit_surfaced=1
-  fi
+});' "$1" 2>/dev/null || true; }
+  credit_rem="$(printf '%s' "$credit_raw" | or_parse credits)"
+  [ -n "$credit_rem" ] && credit_surfaced=1
 fi
 if [ "$credit_surfaced" -ne 1 ]; then
-  echo "claude-openrouter: remaining metered credit: UNKNOWN (could not query $OPENROUTER_API_BASE/credits). The metered balance is NOT verified — do not assume it is fine." >&2
+  echo "claude-openrouter: remaining metered credit: UNKNOWN (could not query $OPENROUTER_API_BASE/credits). The metered balance is NOT verified; refusing to launch (exit 5)." >&2
+  exit 5
 fi
+credit_display="$(awk -v r="$credit_rem" 'BEGIN{printf "%.2f",r}')"
+echo "claude-openrouter: remaining metered credit: \$$credit_display (OpenRouter balance at $OPENROUTER_API_BASE/credits)." >&2
+# awk does the float compare (bash 3.2 has none); a non-numeric floor becomes 3.
+credit_floor="$OPENROUTER_MIN_CREDIT_USD"
+case "$credit_floor" in ''|.|*[!0-9.]*|*.*.*) credit_floor=3 ;; esac
+if ! awk -v r="$credit_rem" -v f="$credit_floor" 'BEGIN{exit !(r+0>=f+0)}'; then
+  echo "claude-openrouter: remaining credit \$$credit_rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$credit_floor); refusing to launch (exit 5)." >&2
+  exit 5
+fi
+# Per-key monthly cap (GET /key): /credits cannot see it, and an exhausted cap
+# answers 403 mid-session. Uncapped (limit null -> "none") passes; an unreadable
+# answer or limit_remaining under the same floor refuses.
+key_raw="$(printf 'header "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
+  | curl -s -m 5 --noproxy '*' -K - "$OPENROUTER_API_BASE/key" 2>/dev/null || true)"
+key_rem="$(printf '%s' "$key_raw" | or_parse key)"
+if [ -z "$key_rem" ]; then
+  echo "claude-openrouter: key limit_remaining: UNKNOWN (could not read $OPENROUTER_API_BASE/key); refusing to launch (exit 5)." >&2
+  exit 5
+fi
+credit_eff="$credit_rem"; credit_eff_src="credit"
+if [ "$key_rem" != "none" ]; then
+  echo "claude-openrouter: key limit_remaining: \$$key_rem (OpenRouter per-key cap at $OPENROUTER_API_BASE/key)." >&2
+  if ! awk -v r="$key_rem" -v f="$credit_floor" 'BEGIN{exit !(r+0>=f+0)}'; then
+    echo "claude-openrouter: key limit_remaining \$$key_rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$credit_floor) or exhausted; refusing to launch (exit 5)." >&2
+    exit 5
+  fi
+  if awk -v k="$key_rem" -v c="$credit_rem" 'BEGIN{exit !(k+0<c+0)}'; then credit_eff="$key_rem"; credit_eff_src="key limit_remaining"; fi
+fi
+credit_eff_display="$(awk -v r="$credit_eff" 'BEGIN{printf "%.2f",r}')"
+echo "claude-openrouter: effective balance \$$credit_eff_display ($credit_eff_src)." >&2
 
 command -v claude >/dev/null 2>&1 || { echo "claude-openrouter: 'claude' not found on PATH" >&2; exit 2; }
 
@@ -399,9 +467,34 @@ export ANTHROPIC_BASE_URL="$OPENROUTER_ANTHROPIC_BASE_URL"
 export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
 export ANTHROPIC_API_KEY=""
 export ANTHROPIC_MODEL="$OPENROUTER_MODEL"
+if [ "${LEG_LANE:-}" = openrouter ]; then
+  OPENROUTER_HAIKU="$OPENROUTER_MODEL"
+  case "$OPENROUTER_MODEL" in
+    anthropic/claude-sonnet-*) export ANTHROPIC_MODEL=sonnet ;;
+    anthropic/claude-opus-*) export ANTHROPIC_MODEL=opus ;;
+  esac
+fi
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$OPENROUTER_HAIKU"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$OPENROUTER_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$OPENROUTER_MODEL"
+# Labels are cosmetic; all three aliases execute the pinned leg tier.
+or_label="$OPENROUTER_MODEL"
+case "$OPENROUTER_MODEL" in
+  anthropic/claude-sonnet-*) or_label="Sonnet ${OPENROUTER_MODEL#anthropic/claude-sonnet-} (OpenRouter)" ;;
+  anthropic/claude-opus-*) or_label="Opus ${OPENROUTER_MODEL#anthropic/claude-opus-} (OpenRouter)" ;;
+  anthropic/claude-fable-*) or_label="Fable ${OPENROUTER_MODEL#anthropic/claude-fable-} (OpenRouter)" ;;
+esac
+or_haiku_label="$or_label"
+[ "$OPENROUTER_HAIKU" = "$OPENROUTER_MODEL" ] || or_haiku_label="$OPENROUTER_HAIKU"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="$or_haiku_label"
+export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="$or_label"
+export ANTHROPIC_DEFAULT_OPUS_MODEL_NAME="$or_label"
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
+if [ "${LEG_LANE:-}" = openrouter ]; then
+  echo "claude-openrouter: lane=openrouter slug=$OPENROUTER_MODEL alias=$ANTHROPIC_MODEL labels=$or_label" >&2
+fi
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$OPENROUTER_CONTEXT_WINDOW"
 export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
 exec claude "$@"

@@ -191,6 +191,8 @@ console_context_leg_env_unset_names() {
         HIMMEL_CONSOLE_RELAY \
         CLAUDE_CODE_EFFORT_LEVEL \
         CLAUDEX_LANE_OK \
+        LEG_LANE \
+        OPENROUTER_MODEL \
         LEG_PROFILE_SETTINGS \
         LEG_PROFILE_PREFACE \
         LEG_PROFILE_MCP_CONFIG \

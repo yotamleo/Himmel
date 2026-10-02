@@ -56,6 +56,20 @@ done
 exit 0
 MOCK
   chmod +x "$BIN/claude"
+  # curl stub (HIMMEL-4076): the credit probe is a launch GATE now, so every test
+  # needs a deterministic balance. Body comes from $BIN/credits.json (default: $20
+  # remaining); a missing file makes the stub fail like an unreachable API.
+  printf '{"data":{"total_credits":21,"total_usage":1}}' > "$BIN/credits.json"
+  printf '{"data":{"limit":null,"limit_remaining":null}}' > "$BIN/key.json"
+cat > "$BIN/curl" <<'CURLSTUB'
+#!/usr/bin/env bash
+cat >/dev/null
+for last in "$@"; do :; done
+case "$last" in */key) f=key.json ;; *) f=credits.json ;; esac
+[ -f "$(dirname "$0")/$f" ] || exit 7
+cat "$(dirname "$0")/$f"
+CURLSTUB
+  chmod +x "$BIN/curl"
   export MOCK_ENV_OUT="$WORK/child-env.txt"
   export MOCK_ARGV_OUT="$WORK/claude-argv.txt"
 }
@@ -352,12 +366,88 @@ if [ "$t8_rc" -eq 0 ]; then echo "FAIL: broken node launched (exit 0)"; cat "$WO
 [ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude with a broken node"; FAILS=$((FAILS+1)); }
 rm -f "$BIN/node"
 
-# --- T9: credit surfacing is advisory + loud-on-unknown — a query failure prints
-# UNKNOWN and the launch STILL proceeds (exit 0). Fast-failing loopback API base.
+# --- T9: the credit probe is a launch GATE (HIMMEL-4076). An UNKNOWN balance or
+# one below OPENROUTER_MIN_CREDIT_USD (default 3) refuses with exit 5 and never
+# launches claude; a balance at/above the floor launches and prints the line.
 setup; KEY="or-test-123"
 write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"
-t "credit UNKNOWN surfaced + launch proceeds" 0
+rm -f "$BIN/credits.json"
+t "credit UNKNOWN refuses (exit 5)" 5
 grep -qi "remaining metered credit: UNKNOWN" "$WORK/out.txt" || { echo "FAIL: no loud UNKNOWN credit line"; FAILS=$((FAILS+1)); }
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude on UNKNOWN balance"; FAILS=$((FAILS+1)); }
+printf '{"data":{"total_credits":21,"total_usage":19}}' > "$BIN/credits.json"
+t "credit 2.00 below default floor 3 refuses (exit 5)" 5
+grep -q "below the floor" "$WORK/out.txt" || { echo "FAIL: no below-floor message"; FAILS=$((FAILS+1)); }
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude below floor"; FAILS=$((FAILS+1)); }
+printf '{"data":{"total_credits":21,"total_usage":18}}' > "$BIN/credits.json"
+t "credit exactly 3.00 at floor launches" 0
+# shellcheck disable=SC2016  # literal $ in the expected text
+grep -q 'remaining metered credit: \$3.00' "$WORK/out.txt" || { echo "FAIL: no credit line at floor"; FAILS=$((FAILS+1)); }
+OPENROUTER_MIN_CREDIT_USD=5 t "env floor 5 refuses a 3.00 balance" 5
+OPENROUTER_MIN_CREDIT_USD=1 t "env floor 1 admits a 3.00 balance" 0
+OPENROUTER_MIN_CREDIT_USD=junk t "garbage floor falls back to 3 (3.00 admitted)" 0
+printf '{"data":{"total_credits":21,"total_usage":20}}' > "$BIN/credits.json"
+OPENROUTER_MIN_CREDIT_USD=junk t "garbage floor falls back to 3 (1.00 refused)" 5
+
+# --- T9b: the per-key MONTHLY cap (GET /key limit_remaining) gates too (HIMMEL-4076):
+# a 403 "Key limit exceeded" hit a real probe while /credits still showed $19+.
+# limit null = no cap (launch); an unreadable /key refuses; limit_remaining under
+# the floor or exhausted refuses; otherwise the smaller figure is reported.
+setup; KEY="or-test-123"
+write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"
+printf '{"data":{"limit":10,"limit_remaining":1.5}}' > "$BIN/key.json"
+t "key limit_remaining 1.50 below floor refuses (exit 5)" 5
+grep -q "key limit_remaining" "$WORK/out.txt" || { echo "FAIL: refusal does not name the key limit"; FAILS=$((FAILS+1)); }
+[ ! -f "$WORK/child-env.txt" ] || { echo "FAIL: launched claude with key cap under floor"; FAILS=$((FAILS+1)); }
+printf '{"data":{"limit":10,"limit_remaining":0}}' > "$BIN/key.json"
+t "key limit exhausted refuses (exit 5)" 5
+rm -f "$BIN/key.json"
+t "key endpoint unreadable refuses (exit 5)" 5
+printf '{"data":{"limit":10,"limit_remaining":9}}' > "$BIN/key.json"
+t "key limit_remaining 9.00 admits and is reported" 0
+grep -q 'key limit_remaining' "$WORK/out.txt" || { echo "FAIL: key limit not reported"; FAILS=$((FAILS+1)); }
+printf '{"data":{"limit":null,"limit_remaining":null}}' > "$BIN/key.json"
+t "key with no limit (null) admits" 0
+printf '{"data":{"limit":50,"limit_remaining":19.5}}' > "$BIN/key.json"
+printf '{"data":{"total_credits":21,"total_usage":1}}' > "$BIN/credits.json"
+t "smaller of credit 20.00 and key 19.50 reported" 0
+# shellcheck disable=SC2016  # literal $ in the expected text
+grep -q 'effective balance \$19.50 (key limit_remaining)' "$WORK/out.txt" || { echo "FAIL: effective balance line missing"; FAILS=$((FAILS+1)); }
+
+# --- T9c: unknown JSON types and sub-cent balances must never pass admission.
+setup; KEY="or-test-123"
+write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"
+for bad in null true '""' '"20"'; do
+  printf '{"data":{"total_credits":20,"total_usage":%s}}' "$bad" > "$BIN/credits.json"
+  t "non-number credit usage $bad refuses" 5
+  printf '{"data":{"total_credits":%s,"total_usage":0}}' "$bad" > "$BIN/credits.json"
+  t "non-number total credit $bad refuses" 5
+ done
+printf '{"data":{"total_credits":20,"total_usage":0}}' > "$BIN/credits.json"
+for bad in null true '""' '"20"'; do
+  printf '{"data":{"limit":10,"limit_remaining":%s}}' "$bad" > "$BIN/key.json"
+  t "non-number key remaining $bad refuses" 5
+ done
+printf '{"data":{"limit":true,"limit_remaining":20}}' > "$BIN/key.json"
+t "non-number key limit refuses" 5
+printf '{"data":{"limit":null}}' > "$BIN/key.json"
+printf '{"data":{"total_credits":3,"total_usage":0.001}}' > "$BIN/credits.json"
+t "unrounded credit 2.999 below floor refuses" 5
+printf '{"data":{"total_credits":20,"total_usage":0}}' > "$BIN/credits.json"
+printf '{"data":{"limit":10,"limit_remaining":2.999}}' > "$BIN/key.json"
+t "unrounded key 2.999 below floor refuses" 5
+OPENROUTER_MIN_CREDIT_USD=NaN t "non-finite floor falls back to 3" 5
+OPENROUTER_MIN_CREDIT_USD=Infinity t "infinite floor falls back to 3" 5
+
+# --- T9d: non-leg Haiku overrides retain their own identity in the label.
+setup; KEY="or-test-123"
+write_allow_matrix "$WORK/matrix.json"; MATRIX="$WORK/matrix.json"
+OPENROUTER_HAIKU=anthropic/claude-haiku-4.5 t "non-leg Haiku override launches" 0
+if grep -qx 'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME=anthropic/claude-haiku-4.5' "$WORK/child-env.txt"; then
+  echo 'ok: non-leg Haiku label identifies its actual override'
+else
+  echo 'FAIL: non-leg Haiku label names the wrong model'; FAILS=$((FAILS+1))
+fi
 
 # --- T10: claude flags pass through verbatim; leading --reseed is consumed
 setup; KEY="or-test-123"

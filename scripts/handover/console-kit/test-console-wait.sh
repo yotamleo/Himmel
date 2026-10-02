@@ -67,8 +67,8 @@ export HIMMEL_DENIAL_ACK_DIR="$WORK/acks"
 
 # tick_line <legs> <board> [hb] [prs]: a tick line whose action fields are set.
 tick_line() {
-    printf 'TICK 03:00 hb=%s legs=%s livestate=ok procs=2 models=x ceiling=ok atq=0 suites=0alive/0dead prs=%s bank=5h8/wk15/codex=? fill=40 tails=N1:LIVE inbox=none tick=UNKNOWN fleet=3/15 capacity=ok gql=4000/04:00 orphans=none nonces=ok legset=ok board=%s denials=none\n' \
-        "${3:-1m}" "$1" "${4:-#10}" "$2" > "$STUB/tick.line"
+    printf 'TICK 03:00 hb=%s legs=%s livestate=ok procs=2 models=x ceiling=ok atq=0 suites=0alive/0dead prs=%s bank=5h8/wk15/codex=? fill=40 tails=N1:LIVE inbox=none tick=UNKNOWN fleet=3/15 capacity=ok gql=4000/04:00 orphans=none nonces=ok legset=ok board=%s denials=none or=%s\n' \
+        "${3:-1m}" "$1" "${4:-#10}" "$2" "${5:-skip}" > "$STUB/tick.line"
 }
 reset_stub() { rm -f "$STUB/tick.rc" "$STUB/tick.blip" "$STUB/tick.churn" "$STUB/tick.sleep" "$STUB/tick.failafter" "$STUB/tick.ignoreterm"; tick_line "N1:FRESH" "ok"; printf 'PROCEED\n' > "$STUB/bank"; }
 
@@ -180,13 +180,13 @@ check "(b3724x) a fresh denial after an expiry wakes again" "0" "$rc"
 
 # --- (c) noise fields do not wake: hb, board age, prs unchanged ------------
 reset_stub
-tick_line "N1:FRESH" "STALE:5m" "1m"
+tick_line "N1:FRESH" "STALE:5m" "1m" '#10' '7.50:key-limit_remaining'
 I="$(new_inbox c)"
 start "$I" "$WORK/c.out" --legs "N1.md"
 wait_hb "$I" || fail "(c) no baseline heartbeat"
-tick_line "N1:FRESH" "STALE:9m" "7m"
+tick_line "N1:FRESH" "STALE:9m" "7m" '#10' '0.00:key-limit_remaining'
 wait_exit "$WPID"
-check "(c) a heartbeat or board-age change does not wake" "running" "$rc"
+check "(c) heartbeat, board age or exhausted OpenRouter credit does not wake" "running" "$rc"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 check "(c) a TERM is logged as the exit reason" "yes" "$(grep -q 'exit=signal-TERM' "$I.wait" && echo yes)"
 

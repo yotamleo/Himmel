@@ -23,6 +23,25 @@ The live per-machine inventory is **`/lanes`** (derived from
 `/lanes` does not list. The tier semantics below are invariant; the inventory
 is data.
 
+### Metered OpenRouter legs
+
+`headed-arm-leg.sh --lane openrouter` (or `LEG_LANE=openrouter`) uses
+`scripts/claude-openrouter` with a pinned Sonnet 5.5 default. A fresh session
+start measured about **0.17 USD**; even a short reply pays the initial prompt
+cost. Fleet admission still applies, but native Claude and codex subscription
+banks do not. The backend refuses unknown credit or key-limit readings and
+an effective balance below `OPENROUTER_MIN_CREDIT_USD` (default **3 USD**):
+the smaller of account credit and the key's `limit_remaining` is available.
+
+`scripts/lanes/openrouter-cost.sh --since <launch.log>` reads account metadata
+only and prints the effective balance plus account-wide spend since launch
+(not a per-session attribution). Credits metadata can lag: an immediate
+`--since` delta can under-report spend; re-read it later. Tick's `or=` labels the limiting source;
+`or=skip` makes no OpenRouter read when no OpenRouter leg is live, and balance
+changes never wake the console waiter. OpenRouter sessions share their own
+config namespace and can message peers there. Native consoles use the
+handover document/file inbox bridge, not cross-namespace `SendMessage`.
+
 ### Plugin profiles: `lane-impl` is not the operator console
 
 `operator` is the no-override sentinel: it injects no plugin settings and
