@@ -327,7 +327,7 @@ while :; do
         --no-profile) NO_PROFILE=1; shift ;;
         --headless) HEADLESS=1; shift ;;
         --fleet)
-            [ "$#" -ge 2 ] && [ -n "$2" ] || { usage; exit 2; }
+            if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then usage; exit 2; fi
             FLEET_MANIFEST="$2"; shift 2 ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,

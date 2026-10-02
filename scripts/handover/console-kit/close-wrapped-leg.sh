@@ -71,7 +71,7 @@ usage() {
 
 FLEET_MANIFEST=""
 if [ "${1:-}" = --fleet ]; then
-    [ "$#" -ge 2 ] && [ -n "$2" ] || { usage; exit 2; }
+    if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then usage; exit 2; fi
     FLEET_MANIFEST="$2"; shift 2
 fi
 
