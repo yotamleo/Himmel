@@ -126,7 +126,40 @@ seed_legacy_lock_stale() {
   echo "${SEED_LANE}: reclaiming legacy/unreadable seed lock $LOCK (age ${1}s)." >&2
 }
 
+lane_seed_lock_identity() {
+  node -e '
+const fs=require("fs");
+try {
+  const s=fs.lstatSync(process.argv[1],{bigint:true});
+  if(!s.isDirectory() || s.ino===0n) process.exit(1);
+  process.stdout.write(s.dev+":"+s.ino);
+} catch(e) { process.exit(1); }
+' "$LOCK"
+}
+
+lane_seed_retire_lock() {
+  # Keep a non-empty destination named for the checked inode. Two contenders
+  # delayed even after rechecking target the SAME destination; only one rename
+  # can succeed. No pre-rename reservation can strand a lock after a crash.
+  node -e '
+const fs=require("fs"), path=require("path"), lock=process.argv[1], identity=process.argv[2];
+try {
+  if(!/^[0-9]+:[1-9][0-9]*$/.test(identity)) process.exit(1);
+  const retired=lock+".stale."+identity.replace(":",".");
+  const s=fs.lstatSync(lock,{bigint:true});
+  if(!s.isDirectory() || s.dev+":"+s.ino!==identity) process.exit(1);
+  // Populate empty legacy locks without overwriting a published owner.
+  try { fs.writeFileSync(path.join(lock,"owner"),"retired legacy seed lock\n",{flag:"wx"}); }
+  catch(e) { if(e.code!=="EEXIST") throw e; }
+  const checked=fs.lstatSync(lock,{bigint:true});
+  if(!checked.isDirectory() || checked.dev+":"+checked.ino!==identity) process.exit(1);
+  fs.renameSync(lock,retired);
+} catch(e) { process.exit(1); }
+' "$LOCK" "$SEED_LOCK_IDENTITY"
+}
+
 seed_lock_is_stale() {
+  SEED_LOCK_IDENTITY="$(lane_seed_lock_identity)" || return 1
   [ -d "$LOCK" ] || return 1
   local lock_mt lock_age owner_pid='' owner_start='' live_start
   lock_mt="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null)"
@@ -181,11 +214,7 @@ seed_with_lock() {
   seed_lock_ticks=0
   seed_lock_max=$(( SEED_LOCK_TIMEOUT * 2 ))
   while ! mkdir_err="$(lane_seed_publish_lock "$SEED_LOCK_CANDIDATE" "$LOCK" 2>&1)"; do
-    # ponytail: preexisting stale-check/rename race between delayed contenders;
-    # upgrade path: HIMMEL-4093 for atomic retirement.
-    if seed_lock_is_stale && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
-      rm -f "$LOCK.stale.$$/owner" 2>/dev/null || true
-      rmdir "$LOCK.stale.$$" 2>/dev/null || true
+    if seed_lock_is_stale && lane_seed_retire_lock; then
       continue
     fi
     if [ "$seed_lock_ticks" -ge "$seed_lock_max" ]; then

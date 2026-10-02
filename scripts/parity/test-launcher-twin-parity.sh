@@ -283,6 +283,43 @@ function psShapeViolations(s) {
   mustThrow('ps: unterminated here-string', "$J = @'\nconst x=1;\nnode -e $J\n", psJsBlocks);
 })();
 
+// HIMMEL-4093: execute the PS twin's actual Node blocks, not merely compare
+// two copies that could lose the same safety predicate. No pwsh is required
+// for this embedded-JS case; PS control flow still needs its own smoke suite.
+{
+  const cp = require('child_process');
+  const blocks = psJsBlocks(fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.psm1'), 'utf8'));
+  const identity = blocks.find(b => b.var === '$IdentityJs');
+  const retire = blocks.find(b => b.var === '$RetireJs');
+  const root = fs.mkdtempSync(path.join(require('os').tmpdir(), 'seed-retire-parity-'));
+  try {
+    if (!identity || !retire) throw Error('PS immutable-identity/retirement blocks missing');
+    const lock = path.join(root, 'mirror.seed-lock');
+    fs.mkdirSync(lock); // Legacy lock is empty: retirement must still stay non-empty.
+    const checked = cp.spawnSync(process.execPath, ['-e', identity.js, lock], {encoding:'utf8'});
+    if (checked.status !== 0) throw Error('PS identity lookup failed');
+    const observed = checked.stdout;
+    const run = id => cp.spawnSync(process.execPath, ['-e', retire.js, lock, id], {encoding:'utf8'});
+    const failed = cp.spawnSync(process.execPath, ['-e', 'require("fs").renameSync=()=>{throw Object.assign(Error("fixture rename failure"),{code:"EIO"});};\n' + retire.js, lock, observed], {encoding:'utf8'});
+    if (failed.status === 0 || !fs.existsSync(lock)) throw Error('retirement failure injection did not leave the stale lock');
+    if (run(observed).status !== 0) throw Error('first stale contender could not recover failed retirement');
+    const retired = lock + '.stale.' + observed.replace(':', '.');
+    if (!fs.readdirSync(retired).length) throw Error('empty retirement allows replacement');
+    const old = fs.statSync(retired, {bigint:true});
+    if (old.dev + ':' + old.ino !== observed) throw Error('retired immutable identity changed');
+    fs.mkdirSync(lock); // Fresh acquirer publishes a populated lock.
+    fs.writeFileSync(path.join(lock, 'owner'), 'fresh');
+    const fresh = fs.statSync(lock, {bigint:true});
+    if (run(observed).status === 0) throw Error('second delayed stale contender stole the fresh lock');
+    if (fs.statSync(lock, {bigint:true}).ino !== fresh.ino || fs.readFileSync(path.join(lock, 'owner'), 'utf8') !== 'fresh') throw Error('fresh lock did not survive');
+    // A different, unreserved identity must also fail its final comparison.
+    if (run(fresh.dev + ':' + (fresh.ino + 1n)).status === 0) throw Error('changed identity was retired');
+    if (!fs.existsSync(path.join(lock, 'owner'))) throw Error('identity mismatch moved fresh lock');
+    console.log('ok: PS retirement JS preserves fresh acquisition after two stale snapshots, including empty legacy lock');
+  } catch (e) { fail('PS seed retirement: ' + e.message); }
+  finally { fs.rmSync(root, {recursive:true, force:true}); }
+}
+
 // Enumerate twin pairs from disk: every scripts/claude-*.ps1 whose stem has a
 // regular-file bash sibling (claude-<stem> or claude-<stem>.sh).
 const pairs = [];

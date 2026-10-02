@@ -69,6 +69,88 @@ if [ "$2" = change ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; the
  assert.strictEqual(r.status,want,'mirror exit '+r.status+' want '+want+'; '+r.stderr);
  return r;
 }
+// Delay both contenders after their real stale check using the sourced helper's
+// existing function seam; file handshakes, not elapsed time, order the race.
+async function stealRace(scripts, f) {
+ const fs=require('fs'), path=require('path'), cp=require('child_process'), assert=require('assert');
+ const children=[];
+ const shell=`
+. "$1"
+seed_fail() { echo "$1" >&2; exit 4; }
+SEED_LANE="$LANE"; LOCK="$CONFIG_DIR.seed-lock"; SEED_LOCK_STALE=60; SEED_LOCK_TIMEOUT=0; RESEED=1
+seed_config_dir() { :; }
+if [ "$ROLE" = fresh ]; then
+ seed_after_mirror() { touch "$RACE/fresh.ready"; while [ ! -f "$RACE/fresh.go" ]; do sleep 0.01; done; }
+else
+ eval "$(declare -f seed_lock_is_stale | sed '1s/seed_lock_is_stale/race_original_stale/')"
+ seed_lock_is_stale() {
+  race_original_stale || return 1
+  if [ "$WINDOW" = checked ]; then
+   touch "$RACE/$ROLE.ready"
+   while [ ! -f "$RACE/$ROLE.go" ]; do sleep 0.01; done
+  else
+   touch "$RACE/$ROLE.checked"
+   while [ ! -f "$RACE/checked.go" ]; do sleep 0.01; done
+  fi
+ }
+fi
+seed_with_lock
+`;
+ function spawn(role) {
+  const child=cp.spawn('bash',['-eu','-c',shell,'race',path.join(scripts,'lane-mirror-seed.sh')],{env:{...f.env,CONFIG_DIR:f.dir,LANE:f.lane,RACE:f.root,ROLE:role,WINDOW:f.window||'checked'}});
+  const result={child,code:null,stderr:''};children.push(result);
+  child.stderr.on('data',s=>{result.stderr+=s;});child.on('exit',code=>{result.code=code;});
+  return result;
+ }
+ async function wait(check, name) {
+  const end=Date.now()+10000;
+  while(!check()) { assert(Date.now()<end,'handshake timeout: '+name);await new Promise(r=>setTimeout(r,10)); }
+ }
+ const go=role=>fs.writeFileSync(path.join(f.root,role+'.go'),'');
+ try {
+  const first=spawn('first'), second=spawn('second');
+  if(f.window==='rename') {
+   await wait(()=>fs.existsSync(path.join(f.root,'first.checked'))&&fs.existsSync(path.join(f.root,'second.checked')),'two stale checks');
+   go('checked');
+  }
+  await wait(()=>fs.existsSync(path.join(f.root,'first.ready'))&&fs.existsSync(path.join(f.root,'second.ready')),'two stale checks');
+  go('first');await wait(()=>first.code!==null,'first retires and releases');assert.strictEqual(first.code,0,first.stderr);
+  const fresh=spawn('fresh');await wait(()=>fs.existsSync(path.join(f.root,'fresh.ready')),'fresh acquisition');
+  const lock=f.dir+'.seed-lock', before=fs.statSync(lock), owner=fs.readFileSync(path.join(lock,'owner'),'utf8');
+  go('second');await wait(()=>second.code!==null,'delayed contender');
+  assert(fs.existsSync(lock),'fresh lock was stolen by delayed contender');
+  assert.strictEqual(fs.statSync(lock).ino,before.ino,'fresh lock inode changed');
+  assert.strictEqual(fs.readFileSync(path.join(lock,'owner'),'utf8'),owner,'fresh ownership changed');
+  assert.strictEqual(second.code,4,'delayed contender acquired fresh lock: '+second.stderr);
+  go('fresh');await wait(()=>fresh.code!==null,'fresh release');assert.strictEqual(fresh.code,0,fresh.stderr);
+ } finally {
+  for(const role of ['first','second','fresh','checked'])go(role);
+  for(const r of children)if(r.code===null)r.child.kill();
+  await Promise.all(children.map(r=>r.code!==null?Promise.resolve():new Promise(resolve=>r.child.once('exit',resolve))));
+ }
+}
+function raceRun(f, window='checked', legacy=false) {
+ const p=lock(f,2147483647,'linux:1');
+ if(legacy) { fs.unlinkSync(path.join(p,'owner'));const old=new Date(Date.now()-300000);fs.utimesSync(p,old,old); }
+ f.window=window;
+ if(window==='rename') {
+  // Test-only preload delays the actual syscall AFTER its final identity stat.
+  // Both contenders have already checked the same inode when readiness fires.
+  const preload=path.join(f.root,'delay-rename.cjs');
+  fs.writeFileSync(preload,`const fs=require('fs'),path=require('path'),rename=fs.renameSync;
+fs.renameSync=function(from,to){
+ if(String(to).includes('.stale.') && ['first','second'].includes(process.env.ROLE)) {
+  const role=process.env.ROLE, root=process.env.RACE, deadline=Date.now()+10000;
+  fs.writeFileSync(path.join(root,role+'.ready'),'');
+  while(!fs.existsSync(path.join(root,role+'.go'))){if(Date.now()>deadline)throw Error('rename handshake timeout');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}
+ }
+ return rename.apply(this,arguments);
+};\n`);
+  f.env.NODE_OPTIONS='--require='+preload;
+ }
+ const result=cp.spawnSync(process.execPath,['-e','('+stealRace.toString()+')(process.argv[1],JSON.parse(process.argv[2])).catch(e=>{console.error(e.message);process.exitCode=1;})',scripts,JSON.stringify(f)],{encoding:'utf8',timeout:20000});
+ assert.strictEqual(result.status,0,result.stderr);
+}
 try {
  for(const rel of mirrorFiles) {
   test('helper: copies '+rel,()=>{const f=mirrorSetup();mirrorRun(f);assert.strictEqual(fs.readFileSync(path.join(f.dir,rel),'utf8'),rel.endsWith('.json')?'{}\n':'fixture: '+rel+'\n');});
@@ -79,6 +161,18 @@ try {
  }
  test('helper: a source changed during copy refuses completion',()=>{const f=mirrorSetup();mirrorRun(f);const r=mirrorRun(f,4,true);assert(r.stderr.includes('source that changed during seeding'));assert(!fs.existsSync(path.join(f.dir,'.seeded')),'failed copy published completion');});
  for(const lane of ['codex','openrouter','deepseek']) {
+  test(lane+': two delayed stale contenders preserve a fresh acquisition',()=>raceRun(setup(lane)));
+  test(lane+': two contenders delayed after final stat cannot rename the fresh lock',()=>raceRun(setup(lane),'rename'));
+  test(lane+': empty legacy retirement stays non-empty across delayed renames',()=>raceRun(setup(lane),'rename',true));
+  test(lane+': failed retirement can be recovered by the next contender',()=>{
+   const f=setup(lane);lock(f,2147483647,'linux:1');
+   const preload=path.join(f.root,'fail-retirement.cjs');
+   fs.writeFileSync(preload,`const fs=require('fs'),rename=fs.renameSync;
+fs.renameSync=function(from,to){if(String(to).includes('.stale.'))throw Object.assign(Error('fixture retirement failure'),{code:'EIO'});return rename.apply(this,arguments);};\n`);
+   f.env.NODE_OPTIONS='--require='+preload;run(f,4);
+   delete f.env.NODE_OPTIONS;run(f);
+   assert(!fs.existsSync(f.dir+'.seed-lock'),'stale lock became permanently unrecoverable');
+  });
   test(lane+': nested in-file edit reseeds even with preserved mtimes',()=>{const f=setup(lane);run(f);const p=path.join(f.home,'.claude','hooks','sub','x.sh'),s=fs.statSync(p);fs.writeFileSync(p,'new\n');fs.utimesSync(p,s.atime,s.mtime);run(f);assert.strictEqual(fs.readFileSync(path.join(f.dir,'hooks','sub','x.sh'),'utf8'),'new\n');});
   test(lane+': edits through symlinked mirror trees reseed',()=>{const f=setup(lane),src=path.join(f.home,'.claude','hooks'),target=path.join(f.root,'linked-hooks');fs.renameSync(src,target);fs.symlinkSync(target,src,'dir');run(f);const before=fs.readFileSync(path.join(f.dir,'.seed-fingerprint'),'utf8');fs.writeFileSync(path.join(target,'sub','x.sh'),'new linked content\n');run(f);assert.notStrictEqual(fs.readFileSync(path.join(f.dir,'.seed-fingerprint'),'utf8'),before,'symlink target content omitted from freshness');});
   test(lane+': old live-owner lock is not stolen',()=>{const f=setup(lane),p=lock(f,process.pid,start(process.pid));run(f,4);assert(fs.existsSync(p));assert.strictEqual(fs.readFileSync(path.join(p,'owner'),'utf8'),process.pid+'\n'+start(process.pid)+'\n');assert(!fs.existsSync(path.join(f.dir,'.seeded')));});

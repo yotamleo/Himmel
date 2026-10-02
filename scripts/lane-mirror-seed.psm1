@@ -113,7 +113,46 @@ function Test-LaneConfigSeedStale($Seed) {
   } catch { return $true }
 }
 
+function Get-LaneSeedLockIdentity($Seed) {
+  $IdentityJs = @'
+const fs=require("fs");
+try {
+  const s=fs.lstatSync(process.argv[1],{bigint:true});
+  if(!s.isDirectory() || s.ino===0n) process.exit(1);
+  process.stdout.write(s.dev+":"+s.ino);
+} catch(e) { process.exit(1); }
+'@
+  $identity = & node -e $IdentityJs "$($Seed.ConfigDir).seed-lock"
+  if ($LASTEXITCODE -ne 0) { return $null }
+  return $identity
+}
+
+function Move-LaneSeedLockStale($Seed) {
+  # Keep a non-empty destination named for the checked inode. Two contenders
+  # delayed even after rechecking target the SAME destination; only one rename
+  # can succeed. No pre-rename reservation can strand a lock after a crash.
+  $RetireJs = @'
+const fs=require("fs"), path=require("path"), lock=process.argv[1], identity=process.argv[2];
+try {
+  if(!/^[0-9]+:[1-9][0-9]*$/.test(identity)) process.exit(1);
+  const retired=lock+".stale."+identity.replace(":",".");
+  const s=fs.lstatSync(lock,{bigint:true});
+  if(!s.isDirectory() || s.dev+":"+s.ino!==identity) process.exit(1);
+  // Populate empty legacy locks without overwriting a published owner.
+  try { fs.writeFileSync(path.join(lock,"owner"),"retired legacy seed lock\n",{flag:"wx"}); }
+  catch(e) { if(e.code!=="EEXIST") throw e; }
+  const checked=fs.lstatSync(lock,{bigint:true});
+  if(!checked.isDirectory() || checked.dev+":"+checked.ino!==identity) process.exit(1);
+  fs.renameSync(lock,retired);
+} catch(e) { process.exit(1); }
+'@
+  & node -e $RetireJs "$($Seed.ConfigDir).seed-lock" $Seed.LockIdentity
+  return ($LASTEXITCODE -eq 0)
+}
+
 function Test-LaneSeedLockStale($Seed) {
+  $Seed.LockIdentity = Get-LaneSeedLockIdentity $Seed
+  if (-not $Seed.LockIdentity) { return $false }
   $lock = "$($Seed.ConfigDir).seed-lock"
   if (-not (Test-Path -LiteralPath $lock -PathType Container)) { return $false }
   try {
@@ -166,17 +205,8 @@ try {
       if ($LASTEXITCODE -ne 0) { throw 'Seed lock is held or cannot be published' }
       break
     } catch {
-      if (Test-LaneSeedLockStale $Seed) {
-        try {
-          # ponytail: preexisting stale-check/rename race between delayed contenders;
-          # upgrade path: HIMMEL-4093 for atomic retirement.
-          Rename-Item -LiteralPath $lock -NewName ((Split-Path -Leaf $lock) + ".stale.$PID") -ErrorAction Stop
-          try {
-            Remove-Item -LiteralPath (Join-Path "$lock.stale.$PID" 'owner') -Force -ErrorAction Stop
-            [System.IO.Directory]::Delete("$lock.stale.$PID")
-          } catch { }
-          continue
-        } catch { }
+      if ((Test-LaneSeedLockStale $Seed) -and (Move-LaneSeedLockStale $Seed)) {
+        continue
       }
       if ($ticks -ge ($Seed.LockTimeout * 2)) {
         [Console]::Error.WriteLine("$($Seed.Lane): timed out after $($Seed.LockTimeout)s waiting for the config-dir seed lock ($lock).")
