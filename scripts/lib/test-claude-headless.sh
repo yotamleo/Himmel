@@ -370,9 +370,15 @@ for l in claude-openrouter claude-codex; do
   } > "$MINI/scripts/$l"
   chmod +x "$MINI/scripts/$l"
 done
+# A native fallback must never reach a real binary: a fake `claude` first on PATH
+# records itself and fails, so a regression is loud and the test asserts it never ran.
+mkdir -p "$W/fakebin"
+# shellcheck disable=SC2016  # stub body is written literally
+printf '%s\n' '#!/usr/bin/env bash' 'echo invoked > "$NATIVE_SEEN"' 'exit 97' > "$W/fakebin/claude"
+chmod +x "$W/fakebin/claude"
 lane_run() { # <lane> <tag> -> rc; no HIMMEL_CLAUDE_BIN
-  rm -f "$W/lane-seen-$2"
-  HIMMEL_CLAUDE_LANE="$1" LANE_SEEN="$W/lane-seen-$2" FAKE_ARGV_OUT="$W/lane-argv-$2" FAKE_ARTIFACT="$W/lane-art-$2" \
+  rm -f "$W/lane-seen-$2" "$W/native-seen"
+  PATH="$W/fakebin:$PATH" NATIVE_SEEN="$W/native-seen" HIMMEL_CLAUDE_LANE="$1" LANE_SEEN="$W/lane-seen-$2" FAKE_ARGV_OUT="$W/lane-argv-$2" FAKE_ARTIFACT="$W/lane-art-$2" \
     bash "$MINI/scripts/lib/claude-headless.sh" --role test-role --ticket HIMMEL-4082 --worktree "$WORKTREE" \
     --cwd "$WORKTREE" --artifact "$W/lane-art-$2" --permission-mode default --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
 }
@@ -386,6 +392,7 @@ check "17 lane argv keeps -p and json output" "2" \
   "$(grep -c -x -E -- '-p|json' "$W/lane-argv-or")"
 lane_run bogus bg; check_ne "17 unknown lane refuses" "0" "$?"
 check "17 unknown lane launched nothing" "" "$(cat "$W/lane-seen-bg" 2>/dev/null)"
+check "17 unknown lane never fell back to native claude" "" "$(cat "$W/native-seen" 2>/dev/null)"
 rm -f "$LIVE_DIR"/*.json
 
 echo "--- $PASS passed, $FAIL failed, $SKIP skipped ---"

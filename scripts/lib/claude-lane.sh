@@ -7,8 +7,12 @@
 #   claudex                                   -> <repo>/scripts/claude-codex
 # Anything else refuses (rc 2) — never a silent fallback to native. The lane
 # launchers exec `claude "$@"`, so a site keeps its own flags, permission mode
-# and --output-format json parsing. Each launcher consults the egress matrix
-# itself; a site must still only opt in where the data it sends is allowed.
+# and --output-format json parsing. This seam does NO egress check. claude-codex
+# runs no egress-matrix check, only cwd-based guards (.salus walk, phi-roots,
+# egress-denylist). claude-openrouter classifies the corpus by cwd; at the wired
+# sites the cwd is a TMPDIR scratch dir, so it reads corpus=unknown and refuses
+# (rc 3) today. Neither guard sees the reviewed repo: do not rely on a launcher
+# for egress at these sites.
 # bash 3.2-safe.
 # shellcheck disable=SC2034  # CLAUDE_LANE_CMD is read by the sourcing site
 claude_lane_resolve() {

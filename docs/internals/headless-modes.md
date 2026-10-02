@@ -124,9 +124,13 @@ runs the plain `claude` binary with byte-identical argv; `openrouter` runs
 `scripts/claude-openrouter` and `claudex` runs `scripts/claude-codex` (both
 `exec claude "$@"`, so a site keeps its permission mode and `--output-format
 json` parsing). Any other value refuses with rc 2 — never a silent fallback to
-native. A lane launcher consults the egress matrix itself, and a site opts in
-only where the data it sends is allowed (code and diffs: yes; vault content:
-stays native). Wired today: the `claude-headless.sh` chokepoint (used by the CR
+native. The seam does no egress check, and neither launcher is an egress gate at
+these sites: `claude-codex` runs no egress-matrix check, only cwd-based guards
+(`.salus` walk, phi-roots, egress-denylist); `claude-openrouter` classifies the
+corpus by cwd, and both wired sites run `claude` from a TMPDIR scratch dir, so
+it reads corpus=unknown and refuses (rc 3) today. Neither guard sees the
+reviewed repo, so operators must not rely on the launcher for egress here.
+Vault content stays native. Wired today: the `claude-headless.sh` chokepoint (used by the CR
 floor reviewer; `HIMMEL_CLAUDE_BIN` still wins, for tests) and the
 `hermes-critic.sh --route claude` pass. Other sites are follow-up.
 
