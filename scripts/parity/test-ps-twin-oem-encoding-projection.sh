@@ -53,7 +53,7 @@ for ((i=1; i<=55; i++)); do
 done
 # These are structural controls only. Hide pwsh rather than executing copied
 # behavioural fixtures (which require a real subject twin and Windows console).
-for tool in bash dirname git grep sort cut sed head awk sha256sum shasum openssl; do
+for tool in bash dirname git grep sort cut sed head awk sha256sum shasum openssl mktemp rm rmdir; do
   resolved="$(command -v "$tool" || true)"
   [ -z "$resolved" ] || ln -s "$resolved" "$TMP/bin/$tool"
 done
