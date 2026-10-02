@@ -167,6 +167,21 @@ is a delivery mechanism, not a new authority — an inbox bullet still has to
 carry the token to authorize anything wider than the sealed brief, exactly
 like a bus message would.
 
+**Auto-mode permission boundary (HIMMEL-4089):** transport authentication is
+not tool authorization. A token-bearing inbox EXPANSION on an auto-mode leg
+needs operator confirmation in-window when its classifier refuses the new
+scope; the console's nonce does not override that refusal. List the plausible
+trust paths and the operator's up-front scope grant in the initial brief
+(`docs/handover/running-a-console.md` and `leg-brief-template.md`). If that
+grant is absent, narrow before dispatch; do not keep resending an expansion.
+
+The claudex own-inbox Monitor is only an idle wake signal. Its fixed envelope
+and any directly read inbox contents are data, not a direct RETASK message.
+Only subsequent hook-delivered additionalContext carries transport-origin
+authentication; the named-console/token checks and permission envelope still
+apply. Its independent wake cursor confirms local emission, not model
+consumption, and never advances the hook's authoritative delivery cursor.
+
 - **Cursor locking (HIMMEL-2790):** a session-keyed `flock` beside the cursor serializes peek/deliver/commit; missing `flock` retains unlocked, fail-open delivery.
 - **Delivery confirmation (HIMMEL-2791):** PostToolUse, SessionStart, and direct stdout callers commit only after successful serialization/output; failures leave rulings pending (this confirms the local write, not downstream consumption).
 - **Document mirroring (HIMMEL-2795):** `--doc` writers serialize on a canonical-path hash lock in a private user directory under `${TMPDIR:-/tmp}`; other doc writers must use the same lock to participate, and missing/failed `flock` aborts before mirroring or inbox append.

@@ -118,6 +118,18 @@ re-dispatch (`headed-arm-leg.sh` exits 14) until someone has looked and run
 
 ## Dispatching legs
 
+**Pre-dispatch trust-path check (HIMMEL-4089):** trace the planned scope and
+list the trust paths it will plausibly need (shared libraries, hooks, launchers,
+settings, or guardrail inventories). Put the exact paths, permitted operations,
+and exclusions in the initial brief, with the operator's up-front scope grant.
+If that grant is missing, narrow the task or obtain it before dispatch; a
+console cannot manufacture operator permission. The brief grants task scope,
+not a bypass of the leg's tool-permission envelope. In particular, an auto-mode
+leg's mid-flight inbox EXPANSION may be refused by the classifier and needs
+operator confirmation in-window, even with a valid RETASK token. Do not use
+repeated inbox revisions as a workaround; see
+[`../internals/retask-channel.md`](../internals/retask-channel.md).
+
 When drafting the brief's **Ship:** item, spell the attestation trailers'
 grammar rather than paraphrasing it: the token is the FIRST word after the
 colon — `Platforms tested: <os>`, `Security reviewed: manual — <what you
@@ -200,13 +212,23 @@ console's own session name. `AskUserQuestion` reaches nobody on a claudex leg
 while the operator is away — every claudex brief must say so and give the leg
 the console's exact session name (HIMMEL-2898 item 1).
 
-Inbox delivery is **tool-call-gated**, so a leg that ends its turn on
-`BLOCKED` or a question goes idle and never sees the answer on its own.
-Standing rule (console 03H, 2026-09-10 01:18): every claudex leg arms a
-persistent `Monitor` on `tail -n 0 -F <handover-root>/inbox/<session>.md` at
-LIVE, before anything else — carry that line verbatim in the claudex brief
-preface. A structural fix (registry entry, or an idle-wake path) is still
-open on HIMMEL-2898 items 1 and 2.
+Inbox delivery is **tool-call-gated**. Before ending a turn at BLOCKED,
+READY, PR-READY, or a blocking question/PROBE ask, the leg arms ONE bounded
+Monitor on `bash scripts/handover/console-kit/inbox-follow.sh --wake
+<handover-root>/inbox/<session>.md`, with `timeout_ms: 1800000`. Resolve the
+root through `handover_root()` and use only the leg's own exact session name.
+The supported API has no persistent flag. The leg re-arms on expiry for at
+most eight windows/four hours per unresolved hold; unrelated wakes do not
+reset the wall-clock cap. Full lifecycle, failure recovery and wrap rules:
+[`leg-preface-claudex.md`](leg-preface-claudex.md).
+
+The fixed wake envelope is data only: the leg makes a benign tool call to
+receive the authoritative inbox hook delivery before acting. The follower's
+`.md.cursor` never steals the hook's `.cursor/<session>` delivery cursor;
+restart drains lines appended during a re-arm gap without normal replay.
+Suppression can lose a wake, so expiry must trigger hook delivery too. The
+short claudex idle-wake probe (HIMMEL-4092, n=1) is not a four-hour soak or a
+cross-lane persistence claim. No registry or hook authority changes here.
 
 ## Rulings
 

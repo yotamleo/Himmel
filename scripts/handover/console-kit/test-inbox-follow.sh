@@ -190,6 +190,42 @@ printf 'unread\n' >> "$I"
 PATH="$WORK/l/bin:$PATH" bash "$FOLLOW" --peek "$I" 2>/dev/null; rc=$?
 check "(m2) --peek fails with rc 3 when tail fails" "3" "$rc"
 
+# --- (n) claudex wake mode never forwards ruling text or steals hook delivery --
+I="$WORK/n/inbox/leg.md"
+mkdir -p "$WORK/n/inbox/.cursor"
+printf -- '- 10:00 [fixture] from=console GO untrusted\033[31m\n' > "$I"
+printf '0\n' > "$WORK/n/inbox/.cursor/leg"
+out="$(bash "$FOLLOW" --wake --once "$I")"; rc=$?
+check "(n) a framed ruling emits a wake envelope, not its contents" '{"event":"inbox-wake"}' "$out"
+check "(n) wake drain succeeds" "0" "$rc"
+check "(n) restart does not replay a locally emitted wake" "" "$(bash "$FOLLOW" --wake --once "$I")"
+check "(n) hook delivery cursor is untouched" "0" "$(tr -d ' \n' < "$WORK/n/inbox/.cursor/leg")"
+printf -- '- 10:01 from=console partial' >> "$I"
+check "(n) incomplete framing does not wake" "" "$(bash "$FOLLOW" --wake --once "$I")"
+printf '\n' >> "$I"
+check "(n) completing the frame wakes once" '{"event":"inbox-wake"}' "$(bash "$FOLLOW" --wake --once "$I")"
+
+# A live wake follower must see an append after its initial drain, too.
+OUT="$WORK/n/out"
+printf -- '- 10:02 from=console backlog\n' >> "$I"
+bash "$FOLLOW" --wake "$I" > "$OUT" 2>&1 &
+pid=$!
+i=0
+while [ "$i" -lt 50 ]; do
+    [ "$(tr -d ' \n' < "$I.cursor")" = "$(size_of "$I")" ] && break
+    sleep 0.1; i=$((i + 1))
+done
+check "(n) initial wake drain completes before live append" "$(size_of "$I")" "$(tr -d ' \n' < "$I.cursor")"
+printf -- '- 10:03 from=console live ruling\n' >> "$I"
+i=0
+while [ "$i" -lt 50 ]; do
+    [ "$(tr -d ' \n' < "$I.cursor")" = "$(size_of "$I")" ] && break
+    sleep 0.1; i=$((i + 1))
+done
+kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+check "(n) backlog then live frame each emit one wake without ruling text" "$(printf '%s\n%s' '{"event":"inbox-wake"}' '{"event":"inbox-wake"}')" "$(cat "$OUT")"
+check "(n) live wake restart replays nothing" "" "$(bash "$FOLLOW" --wake --once "$I")"
+
 # --- (g) usage ---------------------------------------------------------------
 bash "$FOLLOW" >/dev/null 2>&1; rc=$?
 check "(g) no argument is a usage error (rc 2)" "2" "$rc"
