@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# HIMMEL-4091: exercise real launchers; only network and Claude are stubbed.
-# Breaks caught: nested content stranded by directory mtimes, live-lock theft,
-# dead-owner recovery lost, and PID reuse mistaken for the original owner.
+# HIMMEL-4091 / HIMMEL-4096: shared mirror contract and real launchers.
+# Breaks caught: omitted copies/deletions, source changes during seeding,
+# nested content stranded by mtimes, live-lock theft, and dead-owner/PID reuse.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
-bash "$HERE/lib/clean-sandbox.sh" -- node - "$HERE" <<'NODE'
+# Optional scripts copy lets mutation checks leave the real helper untouched.
+bash "$HERE/lib/clean-sandbox.sh" -- node - "${1:-$HERE}" <<'NODE'
 const fs=require('fs'), path=require('path'), cp=require('child_process'), assert=require('assert');
 const scripts=process.argv[2], roots=[];
 let passed=0, failed=0;
@@ -43,7 +44,40 @@ function lock(f,pid,birth,old=true) {
  const p=f.dir+'.seed-lock';fs.mkdirSync(p);fs.writeFileSync(path.join(p,'owner'),pid+'\n'+birth+'\n');
  const age=new Date(Date.now()-(old?300000:0));fs.utimesSync(p,age,age);return p;
 }
+// Explicit allowlist, independent of the helper's fingerprint/copy loops.
+const mirrorFiles=['settings.json','CLAUDE.md','RTK.md','commands/sub/x.md','skills/sub/x.md','hooks/sub/x.sh','agents/sub/x.md','plugins/installed_plugins.json','plugins/known_marketplaces.json','plugins/marketplaces/sub/x.json','plugins/claude-hud/config.json','claude-hud.json'];
+const mirrorEntries=['settings.json','CLAUDE.md','RTK.md','commands','skills','hooks','agents','plugins/installed_plugins.json','plugins/known_marketplaces.json','plugins/marketplaces','plugins/claude-hud/config.json','claude-hud.json'];
+function mirrorSetup() {
+ const f=setup('mirror');
+ for(const rel of mirrorFiles) {
+  const p=path.join(f.home,'.claude',rel);fs.mkdirSync(path.dirname(p),{recursive:true});
+  fs.writeFileSync(p,rel.endsWith('.json')?'{}\n':'fixture: '+rel+'\n');
+ }
+ fs.mkdirSync(f.dir,{recursive:true});return f;
+}
+function mirrorRun(f, want=0, changeSource=false) {
+ const r=cp.spawnSync('bash',['-eu','-c',`
+. "$1"
+seed_fail() { echo "$1" >&2; exit 4; }
+sanitize_settings() { cp "$1" "$2"; }
+seed_stamp() { printf 'fixture\\n'; }
+if [ "$2" = change ]; then
+ seed_after_leaves() { printf 'changed during copy\\n' > "$HOME/.claude/RTK.md"; }
+fi
+if [ "$2" = change ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then seed_config_dir; fi
+`,'mirror-test',path.join(scripts,'lane-mirror-seed.sh'),changeSource?'change':'stable'],{env:{...f.env,CONFIG_DIR:f.dir},encoding:'utf8',timeout:15000});
+ assert.strictEqual(r.status,want,'mirror exit '+r.status+' want '+want+'; '+r.stderr);
+ return r;
+}
 try {
+ for(const rel of mirrorFiles) {
+  test('helper: copies '+rel,()=>{const f=mirrorSetup();mirrorRun(f);assert.strictEqual(fs.readFileSync(path.join(f.dir,rel),'utf8'),rel.endsWith('.json')?'{}\n':'fixture: '+rel+'\n');});
+  test('helper: changed '+rel+' reseeds with preserved mtimes',()=>{const f=mirrorSetup();mirrorRun(f);const p=path.join(f.home,'.claude',rel),s=fs.statSync(p);fs.writeFileSync(p,rel.endsWith('.json')?'{"changed":true}\n':'changed: '+rel+'\n');fs.utimesSync(p,s.atime,s.mtime);mirrorRun(f);assert.strictEqual(fs.readFileSync(path.join(f.dir,rel),'utf8'),rel.endsWith('.json')?'{"changed":true}\n':'changed: '+rel+'\n');});
+ }
+ for(const rel of mirrorEntries) {
+  test('helper: deleted source removes target '+rel,()=>{const f=mirrorSetup();mirrorRun(f);assert(fs.existsSync(path.join(f.dir,rel)),'target must exist before deletion');fs.rmSync(path.join(f.home,'.claude',rel),{recursive:true});mirrorRun(f);assert(!fs.existsSync(path.join(f.dir,rel)),'stale target '+rel);assert(fs.existsSync(path.join(f.dir,'.seeded')),'deletion reseed completed');});
+ }
+ test('helper: a source changed during copy refuses completion',()=>{const f=mirrorSetup();mirrorRun(f);const r=mirrorRun(f,4,true);assert(r.stderr.includes('source that changed during seeding'));assert(!fs.existsSync(path.join(f.dir,'.seeded')),'failed copy published completion');});
  for(const lane of ['codex','openrouter','deepseek']) {
   test(lane+': nested in-file edit reseeds even with preserved mtimes',()=>{const f=setup(lane);run(f);const p=path.join(f.home,'.claude','hooks','sub','x.sh'),s=fs.statSync(p);fs.writeFileSync(p,'new\n');fs.utimesSync(p,s.atime,s.mtime);run(f);assert.strictEqual(fs.readFileSync(path.join(f.dir,'hooks','sub','x.sh'),'utf8'),'new\n');});
   test(lane+': edits through symlinked mirror trees reseed',()=>{const f=setup(lane),src=path.join(f.home,'.claude','hooks'),target=path.join(f.root,'linked-hooks');fs.renameSync(src,target);fs.symlinkSync(target,src,'dir');run(f);const before=fs.readFileSync(path.join(f.dir,'.seed-fingerprint'),'utf8');fs.writeFileSync(path.join(target,'sub','x.sh'),'new linked content\n');run(f);assert.notStrictEqual(fs.readFileSync(path.join(f.dir,'.seed-fingerprint'),'utf8'),before,'symlink target content omitted from freshness');});
