@@ -36,6 +36,7 @@ require('fs').writeFileSync(process.env.CHILD_CAPTURE,JSON.stringify({argv:proce
  const r=cp.spawnSync(twin==='bash'?'bash':'node',args,{cwd,env,encoding:'utf8'});
  const control=kind.endsWith('control');assert.strictEqual(r.status,control?0:3,r.stderr);
  assert(!(r.stdout+r.stderr).includes('marker-test-secret'),'secret in output');
+ if(control&&twin==='bash')assert(fs.existsSync(capture),'allowed workspace did not launch Claude');
  if(!control){assert(!fs.existsSync(capture),'Claude launched in a vault');assert(!fs.existsSync(curlCapture),'network reached before vault refusal');assert(/vault corpus|luna-personal/.test(r.stderr),'missing vault classification');}
  if(fs.existsSync(capture))assert(!fs.readFileSync(capture,'utf8').includes('marker-test-secret'),'secret in Claude argv');
  if(fs.existsSync(curlCapture))assert(!fs.readFileSync(curlCapture,'utf8').includes('marker-test-secret'),'secret in curl argv');
