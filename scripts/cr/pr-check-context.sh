@@ -797,7 +797,7 @@ scripts/observability/session-run-hook.ts scripts/observability/session-run-ledg
 scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh
 scripts/guardrails/egress-matrix-eval.mjs scripts/guardrails/egress-matrix.json
 scripts/statusline/usage-cache-producer.sh
-scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs
+scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs scripts/lanes/openrouter-cost.sh
 scripts/lanes/resolve.mjs scripts/lanes/check.mjs scripts/lanes/probe.mjs scripts/lanes/set-lane-override.mjs scripts/lanes/profile-managed.cjs
 scripts/observability/quota-sources.ts
 scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts
@@ -820,7 +820,7 @@ cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails
     ':(top)scripts/hermes/invoke.sh' ':(top)scripts/hermes/egress-gate.sh'
     ':(top)scripts/guardrails/egress-matrix-eval.mjs' ':(top)scripts/guardrails/egress-matrix.json'
     ':(top)scripts/statusline/usage-cache-producer.sh'
-    ':(top)scripts/lanes/bank-status.ts' ':(top)scripts/lanes/bank-status-core.mjs' ':(top)scripts/lanes/funded-max-pct.mjs'
+    ':(top)scripts/lanes/bank-status.ts' ':(top)scripts/lanes/bank-status-core.mjs' ':(top)scripts/lanes/funded-max-pct.mjs' ':(top)scripts/lanes/openrouter-cost.sh'
     ':(top)scripts/lanes/resolve.mjs' ':(top)scripts/lanes/check.mjs' ':(top)scripts/lanes/probe.mjs'
     ':(top)scripts/lanes/set-lane-override.mjs' ':(top)scripts/lanes/profile-managed.cjs'
     ':(top)scripts/observability/quota-sources.ts'

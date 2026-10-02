@@ -157,7 +157,7 @@ cat > "$W/repo/scripts/lib/bank-preflight.sh" <<'STUB'
 #!/usr/bin/env bash
 [ -z "${STUB_PF_SEEN:-}" ] || printf 'ledger=%s launch=%s\n' "${CADENCE_BANK_LEDGER:-unset}" "${CADENCE_BANK_LAUNCH:-unset}" > "$STUB_PF_SEEN"
 printf '%s\n' "${STUB_FLEET_LINE-bank-preflight: FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/8}" >&2
-printf 'PROCEED\n'
+printf '%s\n' "${STUB_PF_VERDICT:-PROCEED}"
 STUB
 
 chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/repo/scripts/lanes/leg-burn.sh" "$W/repo/scripts/lanes/ceiling-conformance.sh" "$W/repo/scripts/lib/bank-preflight.sh" "$W/bin/"*
@@ -1799,6 +1799,13 @@ contains 'unknown balance is honest' \
   "$(OR_READING='balance=? spend=?' STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT")" ' or=?'
 contains 'verbose labels metered balance' \
   "$(STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT" --verbose)" 'OpenRouter: 7.50:key-limit_remaining'
+
+contains 'OpenRouter tick bank is the lane verdict, not subscription usage' \
+  "$(CADENCE_BANK_LANE=openrouter STUB_PF_VERDICT=SKIPPED-BANK bash "$SUT")" ' bank=openrouter:SKIPPED-BANK '
+contains 'OpenRouter leg marker selects lane verdict' \
+  "$(CADENCE_BANK_LANE='' LEG_LANE=openrouter STUB_PF_VERDICT=BANK-UNKNOWN bash "$SUT")" ' bank=openrouter:BANK-UNKNOWN '
+contains 'OpenRouter funded verdict surfaces without changing raw balance' \
+  "$(CADENCE_BANK_LANE=openrouter STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT")" ' bank=openrouter:PROCEED '
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

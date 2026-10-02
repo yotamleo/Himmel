@@ -45,4 +45,9 @@ check 'malformed credit is unknown' 'balance=? spend=?' "$(run)"
 check 'no runtime config seeded' absent "$(if [ -e "$HOME/.claude-openrouter" ]; then echo present; else echo absent; fi)"
 if grep -qvE -- '^.*https://fixture.invalid/api/(credits|key)$' "$CALLS"; then FAIL=$((FAIL+1)); echo 'FAIL - inference or unexpected endpoint called'; else PASS=$((PASS+1)); echo 'ok - account endpoints only'; fi
 if grep -q test-secret "$W/err" "$CALLS"; then FAIL=$((FAIL+1)); echo 'FAIL - key exposed'; else PASS=$((PASS+1)); echo 'ok - key absent from output and argv'; fi
+export CREDITS='{"data":{"total_credits":10,"total_usage":0}}' KEY='{"data":{"limit":10,"limit_remaining":2.999}}'
+check 'raw mode preserves sub-floor key balance' 'balance=2.999:key-limit_remaining spend=?' "$(run --raw)"
+check 'display mode remains byte-identical and rounded' 'balance=3.00:key-limit_remaining spend=?' "$(run)"
+export CREDITS='{"data":{"total_credits":2.999,"total_usage":0}}' KEY='{"data":{"limit":null}}'
+check 'raw mode preserves sub-floor credit balance' 'balance=2.999:credit spend=?' "$(run --raw)"
 echo "passed=$PASS failed=$FAIL"; [ "$FAIL" -eq 0 ]

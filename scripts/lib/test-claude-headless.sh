@@ -9,6 +9,8 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="$REPO/scripts/lib/claude-headless.sh"
 PASS=0; FAIL=0; SKIP=0
 W="$(mktemp -d -t claude-headless-test.XXXXXX)"; trap 'rm -rf "$W"' EXIT
+# A bank read can prune dead reservations; never inspect the real slot root.
+export HIMMEL_FLEET_SLOTS="$W/fleet-slots" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=native
 
 # HIMMEL-1712: bank-preflight now distrusts a cache whose account doesn't
 # match the current identity — synthesize one so mk_bank_cache's fixture

@@ -5,9 +5,10 @@
 # PLATFORM GUARD: Bash helper for the Linux console tick; no PowerShell twin.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-since=""
+since=""; raw=0
 case "${1:-}" in
   '') ;;
+  --raw) [ "$#" -eq 1 ] || exit 2; raw=1 ;;
   --since) [ "$#" -eq 2 ] || exit 2; since="$2" ;;
   --help) echo 'usage: openrouter-cost.sh [--since launch.log] (spend is account-wide)'; echo 'Credits metadata can lag: an immediate --since delta can under-report spend; re-read later.'; exit 0 ;;
   *) exit 2 ;;
@@ -42,7 +43,11 @@ balance="$credit"; source=credit
 if [ "$key" != none ] && awk -v k="$key" -v c="$credit" 'BEGIN{exit !(k<c)}'; then
   balance="$key"; source='key-limit_remaining'
 fi
-balance="$(awk -v n="$balance" 'BEGIN{printf "%.2f",n}')"
+# HIMMEL-4081: the gate must not round 2.999 up to a three-dollar floor.
+# Default display output stays byte-identical for tick and existing consumers.
+if [ "$raw" -eq 0 ]; then
+  balance="$(awk -v n="$balance" 'BEGIN{printf "%.2f",n}')"
+fi
 spend='?'
 if [ -n "$since" ] && [ -r "$since" ]; then
   start="$(sed -n 's/^.*claude-openrouter: remaining metered credit: \$\([0-9][0-9.]*\) .*/\1/p' "$since" | head -n 1)"

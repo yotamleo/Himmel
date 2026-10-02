@@ -5,6 +5,8 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="$REPO/scripts/lib/bank-preflight.sh"
 PASS=0; FAIL=0
 W="$(mktemp -d -t bank-preflight.XXXXXX)"; trap 'rm -rf "$W"' EXIT
+# All bank reads prune reservations, so isolate even bank-only cases.
+export HIMMEL_FLEET_SLOTS="$W/fleet-slots" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=native
 
 # NO_FLEET: an empty-output ps stub, isolating every bank-only case below
 # from this machine's OWN running fleet (a real `ps -eo args` would count
@@ -627,11 +629,17 @@ case "$(bank_line)" in *' codex=?') PASS=$((PASS+1)); echo "ok - no timeout bina
 # admission must incorrectly admit the full-fleet fixture below.
 printf '%s' "$(stamp_account "$(fx 99 99 "$NOW" "")")" > "$W/c.json"
 OR_STATUS="$(stub_status openrouter-status "echo called >> '$W/or-status-calls'" "echo 'claudex spent measured weekly used=99% free=1%'")"
+# Keep this funded-lane fixture independent of real keys, balances and HTTP.
+mkdir -p "$W/openrouter-repo/scripts/lib" "$W/openrouter-repo/scripts/lanes"
+cp "$REPO/scripts/lib/"*.sh "$W/openrouter-repo/scripts/lib/"
+printf '%s\n' '#!/usr/bin/env bash' "echo 'balance=10.00:credit spend=?'" \
+  > "$W/openrouter-repo/scripts/lanes/openrouter-cost.sh"
 check "OpenRouter lane, native bank 99 -> PROCEED" PROCEED \
   "$(CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
      CADENCE_BANK_LEDGER="$W/ledger.jsonl" FLEET_PS_CMD="$NO_FLEET" \
      LEG_LANE=openrouter CADENCE_BANK_LANE=openrouter CADENCE_BANK_STATUS_CMD="$OR_STATUS" \
-       bash "$SUT" </dev/null 2>"$W/err.log")"
+     OPENROUTER_MIN_CREDIT_USD=3 \
+       bash "$W/openrouter-repo/scripts/lib/bank-preflight.sh" </dev/null 2>"$W/err.log")"
 check "OpenRouter skips codex status read" absent "$(if [ -e "$W/or-status-calls" ]; then echo present; else echo absent; fi)"
 check "native lane without lane env, native bank 99 -> SKIPPED-BANK" SKIPPED-BANK \
   "$(env -u LEG_LANE -u CADENCE_BANK_LANE CADENCE_BANK_CACHE="$W/c.json" \
