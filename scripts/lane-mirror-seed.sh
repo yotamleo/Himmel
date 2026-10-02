@@ -117,18 +117,24 @@ seed_process_start() {
   fi
 }
 
+seed_legacy_lock_stale() {
+  echo "${SEED_LANE}: reclaiming legacy/unreadable seed lock $LOCK (age ${1}s)." >&2
+}
+
 seed_lock_is_stale() {
   [ -d "$LOCK" ] || return 1
-  local lock_mt owner_pid owner_start live_start
+  local lock_mt lock_age owner_pid='' owner_start='' live_start
   lock_mt="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null)"
   [ -n "$lock_mt" ] || return 1
-  [ "$(( $(date +%s) - lock_mt ))" -ge "$SEED_LOCK_STALE" ] || return 1
-  # An ownerless lock may be between mkdir and recording ownership. Do not
-  # reclaim it: legacy/unreadable metadata requires manual removal, not a guess.
-  [ -r "$LOCK/owner" ] || return 1
-  { IFS= read -r owner_pid; IFS= read -r owner_start; } < "$LOCK/owner" || return 1
-  case "$owner_pid" in ''|*[!0-9]*|0) return 1 ;; esac
-  [ -n "$owner_start" ] || return 1
+  lock_age=$(( $(date +%s) - lock_mt ))
+  [ "$lock_age" -ge "$SEED_LOCK_STALE" ] || return 1
+  # New locks publish ownership atomically; retain age-based legacy recovery.
+  if [ ! -r "$LOCK/owner" ]; then seed_legacy_lock_stale "$lock_age"; return 0; fi
+  if ! { IFS= read -r owner_pid; IFS= read -r owner_start; } 2>/dev/null < "$LOCK/owner"; then
+    seed_legacy_lock_stale "$lock_age"; return 0
+  fi
+  case "$owner_pid" in ''|*[!0-9]*|0) seed_legacy_lock_stale "$lock_age"; return 0 ;; esac
+  case "$owner_start" in linux:[0-9]*|ps:?*) ;; *) seed_legacy_lock_stale "$lock_age"; return 0 ;; esac
   if kill -0 "$owner_pid" 2>/dev/null; then
     live_start="$(seed_process_start "$owner_pid")" || return 1
     [ "$live_start" != "$owner_start" ] || return 1
@@ -142,13 +148,34 @@ seed_release_lock() {
   rmdir "$LOCK"
 }
 
+lane_seed_publish_lock() {
+  # Publish a populated directory atomically, never mv's directory nesting.
+  node -e '
+const fs=require("fs"), candidate=process.argv[1], lock=process.argv[2];
+try {
+  try { fs.lstatSync(lock); process.exit(1); } catch(e) { if(e.code!=="ENOENT") throw e; }
+  fs.renameSync(candidate,lock);
+} catch(e) { console.error("lane seed-lock publish: "+e.message); process.exit(1); }
+' "$1" "$2"
+}
+
+seed_lock_cleanup() {
+  seed_release_lock 2>/dev/null || true
+  rm -f "$SEED_LOCK_CANDIDATE/owner" 2>/dev/null || true
+  rmdir "$SEED_LOCK_CANDIDATE" 2>/dev/null || true
+}
+
 seed_with_lock() {
   local seed_lock_ticks seed_lock_max mkdir_err own_start
   own_start="$(seed_process_start "$$")" || seed_fail "read the seed-lock owner start time"
   SEED_LOCK_OWNER="$(printf '%s\n%s' "$$" "$own_start")"
+  SEED_LOCK_CANDIDATE="$LOCK.pending.$$"
+  trap 'seed_lock_cleanup' EXIT
+  mkdir "$SEED_LOCK_CANDIDATE" || seed_fail "create the seed-lock candidate"
+  printf '%s\n' "$SEED_LOCK_OWNER" > "$SEED_LOCK_CANDIDATE/owner" || seed_fail "record seed-lock ownership"
   seed_lock_ticks=0
   seed_lock_max=$(( SEED_LOCK_TIMEOUT * 2 ))
-  while ! mkdir_err="$(mkdir "$LOCK" 2>&1)"; do
+  while ! mkdir_err="$(lane_seed_publish_lock "$SEED_LOCK_CANDIDATE" "$LOCK" 2>&1)"; do
     if seed_lock_is_stale && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
       rm -f "$LOCK.stale.$$/owner" 2>/dev/null || true
       rmdir "$LOCK.stale.$$" 2>/dev/null || true
@@ -160,8 +187,7 @@ seed_with_lock() {
     sleep 0.5
     seed_lock_ticks=$(( seed_lock_ticks + 1 ))
   done
-  printf '%s\n' "$SEED_LOCK_OWNER" > "$LOCK/owner" || { rmdir "$LOCK" 2>/dev/null; seed_fail "record seed-lock ownership"; }
-  trap 'seed_release_lock 2>/dev/null' EXIT
+  # The public lock already contains its owner; no mkdir/write crash window.
   if [ "$RESEED" -eq 1 ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then
     seed_config_dir
   fi

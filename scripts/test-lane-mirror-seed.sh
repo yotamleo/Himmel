@@ -9,7 +9,11 @@ const fs=require('fs'), path=require('path'), cp=require('child_process'), asser
 const scripts=process.argv[2], roots=[];
 let passed=0, failed=0;
 function test(name, fn) { try { fn(); passed++; console.log('ok: '+name); } catch(e) { failed++; console.error('FAIL: '+name+' — '+e.message); } }
-function start(pid) { return 'linux:'+fs.readFileSync('/proc/'+pid+'/stat','utf8').replace(/^.*\) /,'').split(' ')[19]; }
+function start(pid) {
+ const stat='/proc/'+pid+'/stat';
+ if(fs.existsSync(stat))return 'linux:'+fs.readFileSync(stat,'utf8').replace(/^.*\) /,'').split(' ')[19];
+ return 'ps:'+cp.execFileSync('ps',['-p',String(pid),'-o','lstart='],{encoding:'utf8'}).replace(/\n$/,'');
+}
 function setup(lane) {
  const root=fs.mkdtempSync(path.join(process.env.TMPDIR,'mirror-seed-')); roots.push(root);
  const home=path.join(root,'home'), bin=path.join(root,'bin'), work=path.join(root,'work');
@@ -25,7 +29,7 @@ process.stdout.write(last.endsWith('/user/balance')?JSON.stringify({is_available
 `,{mode:0o755});
  const matrix=path.join(root,'matrix.json');
  fs.writeFileSync(matrix,JSON.stringify({providers:{openrouter:{region:'US'},deepseek:{region:'CN'}},rules:['openrouter','deepseek'].map(provider=>({corpus:'himmel-code',provider,purpose:'inference',verdict:'allow'})),default:'deny'}));
- const env={...process.env,HOME:home,PATH:bin+':'+process.env.PATH,CLIPROXY_API_KEY:'fixture',OPENROUTER_API_KEY:'fixture',DEEPSEEK_API_KEY:'fixture',HIMMEL_DEEPSEEK_INFERENCE_OK:'1',CLAUDE_CODEX_DOTENV_ROOT:work,CLAUDE_OPENROUTER_DOTENV_ROOT:work,CLAUDE_DEEPSEEK_DOTENV_ROOT:work,CLAUDE_OPENROUTER_EGRESS_MATRIX:matrix,CLAUDE_DEEPSEEK_EGRESS_MATRIX:matrix,CLAUDE_LANE_SEED_LOCK_TIMEOUT:'0',CLAUDE_LANE_SEED_LOCK_STALE:'1',CHILD_MARKER:path.join(root,'child')};
+ const env={...process.env,HOME:home,PATH:bin+':'+process.env.PATH,CLIPROXY_API_KEY:'fixture',OPENROUTER_API_KEY:'fixture',DEEPSEEK_API_KEY:'fixture',HIMMEL_DEEPSEEK_INFERENCE_OK:'1',CLAUDE_CODEX_DOTENV_ROOT:work,CLAUDE_OPENROUTER_DOTENV_ROOT:work,CLAUDE_DEEPSEEK_DOTENV_ROOT:work,CLAUDE_OPENROUTER_EGRESS_MATRIX:matrix,CLAUDE_DEEPSEEK_EGRESS_MATRIX:matrix,CLAUDE_LANE_SEED_LOCK_TIMEOUT:'0',CLAUDE_LANE_SEED_LOCK_STALE:'60',CHILD_MARKER:path.join(root,'child')};
  return {root,home,lane,env,dir:path.join(home,'.claude-'+lane)};
 }
 function run(f, want=0) {
@@ -33,6 +37,7 @@ function run(f, want=0) {
  const r=cp.spawnSync('bash',[path.join(scripts,'claude-'+f.lane)],{env:f.env,cwd:path.dirname(scripts),encoding:'utf8',timeout:15000});
  assert.strictEqual(r.status,want,'exit '+r.status+' want '+want+'; '+r.stderr);
  assert.strictEqual(fs.existsSync(f.env.CHILD_MARKER),want===0,'launch boundary');
+ return r;
 }
 function lock(f,pid,birth,old=true) {
  const p=f.dir+'.seed-lock';fs.mkdirSync(p);fs.writeFileSync(path.join(p,'owner'),pid+'\n'+birth+'\n');
@@ -44,6 +49,20 @@ try {
   test(lane+': old live-owner lock is not stolen',()=>{const f=setup(lane),p=lock(f,process.pid,start(process.pid));run(f,4);assert(fs.existsSync(p));assert.strictEqual(fs.readFileSync(path.join(p,'owner'),'utf8'),process.pid+'\n'+start(process.pid)+'\n');assert(!fs.existsSync(path.join(f.dir,'.seeded')));});
   test(lane+': old dead-owner lock is stolen',()=>{const f=setup(lane);lock(f,2147483647,'linux:1');run(f);assert(!fs.existsSync(f.dir+'.seed-lock'));assert(fs.existsSync(path.join(f.dir,'.seeded')));});
   test(lane+': recycled PID with different start is dead',()=>{const f=setup(lane);lock(f,process.pid,'linux:0');run(f);assert(!fs.existsSync(f.dir+'.seed-lock'));});
+  test(lane+': interrupted directory creation never publishes an ownerless lock',()=>{
+   const f=setup(lane);f.env.REAL_TEST_PATH=process.env.PATH;
+   fs.writeFileSync(path.join(f.root,'bin','mkdir'),`#!/usr/bin/env node
+const cp=require('child_process'), args=process.argv.slice(2);
+const r=cp.spawnSync('mkdir',args,{env:{...process.env,PATH:process.env.REAL_TEST_PATH}});
+if(r.status!==0)process.exit(r.status||1);
+process.exit(args.some(a=>a.includes('.seed-lock'))?42:0);
+`,{mode:0o755});
+   run(f,4);
+   const p=f.dir+'.seed-lock';
+   assert(!fs.existsSync(p)||fs.existsSync(path.join(p,'owner')),'published ownerless lock after failed mkdir');
+  });
+  test(lane+': old legacy ownerless lock is stolen',()=>{const f=setup(lane),p=lock(f,2147483647,'linux:1');fs.unlinkSync(path.join(p,'owner'));const age=new Date(Date.now()-300000);fs.utimesSync(p,age,age);const r=run(f);assert(!fs.existsSync(p));assert(r.stderr.includes(p)&&/age [0-9]+s/.test(r.stderr),'legacy recovery path/age not logged');});
+  test(lane+': young legacy ownerless lock is not stolen',()=>{const f=setup(lane),p=lock(f,2147483647,'linux:1',false);fs.unlinkSync(path.join(p,'owner'));run(f,4);assert(fs.existsSync(p));});
   test(lane+': young dead-owner lock is not stolen',()=>{const f=setup(lane);lock(f,2147483647,'linux:1',false);run(f,4);assert(fs.existsSync(f.dir+'.seed-lock'));});
   test(lane+': auto-reseed opt-out preserves nested old content',()=>{const f=setup(lane);run(f);fs.writeFileSync(path.join(f.home,'.claude','hooks','sub','x.sh'),'new\n');f.env.CLAUDE_LANE_AUTO_RESEED='0';run(f);assert.strictEqual(fs.readFileSync(path.join(f.dir,'hooks','sub','x.sh'),'utf8'),'old\n');});
  }

@@ -69,9 +69,10 @@ function Copy-LaneSeedConfig($Seed) {
       } elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
     }
     if ((Get-LaneSeedFingerprint $Seed) -ne $fingerprint) { throw 'Source changed during seeding; re-run' }
-    Set-Content -LiteralPath (Join-Path $dir '.seed-fingerprint') -Value $fingerprint -Encoding utf8NoBOM
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText((Join-Path $dir '.seed-fingerprint'), "$fingerprint`n", $utf8)
     # Preserve Codex's version/model stamp; other lanes retain the empty marker.
-    Set-Content -LiteralPath (Join-Path $dir '.seeded') -Value $Seed.Stamp -Encoding utf8NoBOM
+    [System.IO.File]::WriteAllText((Join-Path $dir '.seeded'), "$($Seed.Stamp)`n", $utf8)
   } catch {
     [Console]::Error.WriteLine("$($Seed.Lane): FAILED to seed config dir ($($_.Exception.Message)). Refusing to launch with a half-seeded config dir.")
     exit 4
@@ -114,8 +115,12 @@ function Test-LaneSeedLockStale($Seed) {
   try {
     $age = ([DateTime]::UtcNow - (Get-Item -Force -LiteralPath $lock).LastWriteTimeUtc).TotalSeconds
     if ($age -lt $Seed.LockStale) { return $false }
-    $owner = @(Get-Content -LiteralPath (Join-Path $lock 'owner') -ErrorAction Stop)
-    if ($owner.Count -ne 2 -or $owner[0] -notmatch '^[1-9][0-9]*$' -or $owner[1] -notmatch '^ticks:[0-9]+$') { return $false }
+    $owner = @()
+    try { $owner = @(Get-Content -LiteralPath (Join-Path $lock 'owner') -ErrorAction Stop) } catch { }
+    if ($owner.Count -ne 2 -or $owner[0] -notmatch '^[1-9][0-9]*$' -or $owner[1] -notmatch '^ticks:[0-9]+$') {
+      [Console]::Error.WriteLine("$($Seed.Lane): reclaiming legacy/unreadable seed lock $lock (age $([int]$age)s).")
+      return $true
+    }
     $process = Get-Process -Id ([int]$owner[0]) -ErrorAction SilentlyContinue
     if ($null -eq $process) { return $true }
     return ("ticks:$($process.StartTime.ToUniversalTime().Ticks)" -ne $owner[1])
@@ -135,9 +140,28 @@ function Invoke-LaneSeedWithLock($Seed, [bool]$Reseed, [scriptblock]$AfterMirror
   $lock = "$($Seed.ConfigDir).seed-lock"
   $ticks = 0
   $owner = "$PID`nticks:$((Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks)`n"
+  $candidate = "$lock.pending.$PID.$([Guid]::NewGuid().ToString('N'))"
+  $PublishJs = @'
+const fs=require("fs"), candidate=process.argv[1], lock=process.argv[2];
+try {
+  try { fs.lstatSync(lock); process.exit(1); } catch(e) { if(e.code!=="ENOENT") throw e; }
+  fs.renameSync(candidate,lock);
+} catch(e) { console.error("lane seed-lock publish: "+e.message); process.exit(1); }
+'@
+  try {
+    New-Item -ItemType Directory -Path $candidate -ErrorAction Stop | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $candidate 'owner'), $owner, (New-Object System.Text.UTF8Encoding($false)))
+  } catch {
+    [Console]::Error.WriteLine("$($Seed.Lane): FAILED to prepare seed-lock ownership: $($_.Exception.Message)")
+    exit 4
+  }
+  try {
   while ($true) {
-    try { New-Item -ItemType Directory -Path $lock -ErrorAction Stop | Out-Null; break }
-    catch {
+    try {
+      & node -e $PublishJs $candidate $lock
+      if ($LASTEXITCODE -ne 0) { throw 'Seed lock is held or cannot be published' }
+      break
+    } catch {
       if (Test-LaneSeedLockStale $Seed) {
         try {
           Rename-Item -LiteralPath $lock -NewName ((Split-Path -Leaf $lock) + ".stale.$PID") -ErrorAction Stop
@@ -156,8 +180,6 @@ function Invoke-LaneSeedWithLock($Seed, [bool]$Reseed, [scriptblock]$AfterMirror
       $ticks++
     }
   }
-  try {
-    [System.IO.File]::WriteAllText((Join-Path $lock 'owner'), $owner, (New-Object System.Text.UTF8Encoding($false)))
     if ($Reseed -or (-not (Test-Path -LiteralPath (Join-Path $Seed.ConfigDir '.seeded'))) -or (Test-LaneConfigSeedStale $Seed)) { Copy-LaneSeedConfig $Seed }
     if ($AfterMirror) { & $AfterMirror }
   } catch {
@@ -166,6 +188,12 @@ function Invoke-LaneSeedWithLock($Seed, [bool]$Reseed, [scriptblock]$AfterMirror
   } finally {
     try { Remove-LaneSeedLock $Seed $owner }
     catch { [Console]::Error.WriteLine("$($Seed.Lane): WARNING - failed to release seed lock $lock (not empty or busy).") }
+    if (Test-Path -LiteralPath $candidate) {
+      try {
+        Remove-Item -LiteralPath (Join-Path $candidate 'owner') -Force -ErrorAction Stop
+        [System.IO.Directory]::Delete($candidate)
+      } catch { }
+    }
   }
 }
 
