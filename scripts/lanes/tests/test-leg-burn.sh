@@ -97,7 +97,7 @@ HIMMEL_LEG_PROFILE='bad profile' bash "$BURN" "$FIXTURE" >/dev/null 2>&1; profil
 eq "invalid env profile exits 2" "$profile_rc" "2"
 bash "$BURN" --profile >/dev/null 2>&1; profile_rc=$?
 eq "missing profile value exits 2" "$profile_rc" "2"
-profile_out=$(HIMMEL_LEG_PROFILE= bash "$BURN" "$FIXTURE")
+profile_out=$(HIMMEL_LEG_PROFILE='' bash "$BURN" "$FIXTURE")
 eq "empty env profile leaves output byte-identical" "$profile_out" "$out"
 
 # --- the dedupe is the point ------------------------------------------------
