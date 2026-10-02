@@ -330,7 +330,10 @@ fixtureFs.openSync=function(p,flags){swap(p,flags);return open.apply(this,argume
 }
 
 // HIMMEL-4096: execute the PS permission block on real read-only directories.
-{
+// Windows chmod has no POSIX owner/execute bits; exact modes apply only on POSIX.
+if (process.platform === 'win32') {
+  console.log('SKIP: PS permission JS POSIX-mode regression on Windows');
+} else {
   const cp = require('child_process');
   const blocks = psJsBlocks(fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.psm1'), 'utf8'));
   const writable = blocks.find(b => b.var === '$WritableJs');
