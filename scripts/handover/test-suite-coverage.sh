@@ -6,7 +6,7 @@ set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SC="$HERE/suite-coverage.sh"
 REAL="$HERE/../ci/run-shell-tests.sh"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/suite-coverage.XXXXXX")" || exit 1; trap 'rm -rf "$tmp"' EXIT
 fail=0
 pass() { echo "ok: $1"; }
 bad() { echo "FAIL: $1"; [ -n "${2:-}" ] && printf '    got: %s\n' "$2"; fail=1; }

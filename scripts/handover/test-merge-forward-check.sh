@@ -4,7 +4,7 @@
 set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MF="$HERE/merge-forward-check.sh"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/merge-forward-check.XXXXXX")" || exit 1; trap 'rm -rf "$tmp"' EXIT
 fail=0
 ok() { echo "ok: $1"; }
 bad() { echo "FAIL: $1"; [ -n "${2:-}" ] && printf '    got: %s\n' "$2"; fail=1; }
