@@ -88,7 +88,8 @@
 # headed-arm.sh's own exit codes (0-9 and 13), since this wrapper never
 # reaches headed-arm.sh in any of these cases.
 #
-# --lane (HIMMEL-2782 / HIMMEL-4076): native (default), claudex or openrouter.
+# --lane (HIMMEL-2782 / HIMMEL-4076 / HIMMEL-4084): native (default), claudex,
+# openrouter or deepseek (see lane_registry below; glm refuses).
 # OpenRouter uses HEADED_ARM_LEG_OPENROUTER_BIN (default ../../claude-openrouter),
 # the same recorder/profile shim, a pinned Sonnet 5.5 slug and LEG_LANE=openrouter.
 # Its backend credit floor replaces subscription-bank admission, not fleet admission.
@@ -224,7 +225,7 @@ HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
 export HEADED_ARM_UNAME
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--ignore-denials] [--lane native|claudex|openrouter] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--ignore-denials] [--lane native|claudex|openrouter|deepseek] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 # leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
@@ -331,7 +332,7 @@ while :; do
             # `--lane` again forever. Require a value before consuming it.
             if [ "$#" -lt 2 ]; then
                 usage
-                echo "headed-arm-leg: --lane requires a value (native, claudex or openrouter)" >&2
+                echo "headed-arm-leg: --lane requires a value (native, claudex, openrouter or deepseek)" >&2
                 exit 2
             fi
             LANE="$2"; shift 2 ;;
@@ -460,14 +461,45 @@ if [ "$NO_PROFILE" -eq 1 ] && [ -n "$PROFILE" ]; then
     exit 2
 fi
 
-case "$LANE" in
-    native|claudex|openrouter) ;;
-    *)
-        usage
-        echo "headed-arm-leg: unknown lane: $LANE (expected native, claudex or openrouter)" >&2
-        exit 2
-        ;;
-esac
+# Lane registry (HIMMEL-4084): one row per lane, ONE code path below. A row
+# gives the launcher binary (LANE_BIN_NAME under scripts/, LANE_BIN_OVERRIDE
+# is its test seam), the console channel (sendmessage = native SendMessage,
+# file = document + file inbox, LANE_PREFACE names its leg-preface-<x>.md) and
+# the admission gate (LANE_BANK_GATE is the CADENCE_BANK_LANE bank-preflight
+# checks). The default model stays with each lane's block below; deepseek takes
+# it from the launcher's own export. glm refuses until it has a launcher
+# contract. An unknown lane is a usage error, never a fallback to native.
+# ponytail: bank-preflight.sh has no deepseek row, so deepseek rides its
+# backend-gated "openrouter" gate (the launcher checks balance itself) and the
+# fleet census labels it native; upgrade path = a deepseek row there.
+lane_registry() {
+    LANE_BIN_NAME=""; LANE_BIN_OVERRIDE=""; LANE_CHANNEL=sendmessage
+    LANE_PREFACE=""; LANE_BANK_GATE="$1"; LANE_REFUSE=""
+    case "$1" in
+        native) ;;
+        claudex)
+            LANE_BIN_NAME=claude-codex; LANE_BIN_OVERRIDE="${HEADED_ARM_LEG_CLAUDEX_BIN:-}"
+            LANE_CHANNEL=file; LANE_PREFACE=claudex ;;
+        openrouter)
+            LANE_BIN_NAME=claude-openrouter; LANE_BIN_OVERRIDE="${HEADED_ARM_LEG_OPENROUTER_BIN:-}"
+            LANE_CHANNEL=file; LANE_PREFACE=openrouter ;;
+        deepseek)
+            LANE_BIN_NAME=claude-deepseek; LANE_BIN_OVERRIDE="${HEADED_ARM_LEG_DEEPSEEK_BIN:-}"
+            LANE_CHANNEL=file; LANE_PREFACE=claudex; LANE_BANK_GATE=openrouter ;;
+        glm) LANE_REFUSE="glm has no launcher contract yet (the GLM slice of HIMMEL-4084 has not landed)" ;;
+        *) return 1 ;;
+    esac
+}
+if ! lane_registry "$LANE"; then
+    usage
+    echo "headed-arm-leg: unknown lane: $LANE (expected native, claudex, openrouter or deepseek)" >&2
+    exit 2
+fi
+if [ -n "$LANE_REFUSE" ]; then
+    usage
+    echo "headed-arm-leg: --lane $LANE refused: $LANE_REFUSE" >&2
+    exit 2
+fi
 
 # --console (HIMMEL-3435): charset-checked here because it is an explicit,
 # user-typed flag - same refuse-on-bad-input stance as --lane/--profile
@@ -1124,8 +1156,8 @@ fi
 
 # claudex lane (HIMMEL-2782): see the --lane header comment above.
 if [ "$LANE" = "claudex" ]; then
-    CLAUDEX_BIN="${HEADED_ARM_LEG_CLAUDEX_BIN:-$HERE/../../claude-codex}"
-    export HEADED_ARM_LAUNCHER="$CLAUDEX_BIN"
+    LANE_BIN="${LANE_BIN_OVERRIDE:-$HERE/../../$LANE_BIN_NAME}"
+    export HEADED_ARM_LAUNCHER="$LANE_BIN"
     leg_propagate_env CLAUDEX_LANE_OK 1
     leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "${LEG_EFFORT:-medium}"
     export HEADED_ARM_RECORDER=1
@@ -1149,12 +1181,30 @@ if [ "$LANE" = "openrouter" ]; then
         anthropic/claude-fable-5.1) MODEL="$OR_MODEL" ;;
         *) echo "headed-arm-leg: unsupported OpenRouter model: $OR_MODEL (no verified 1M slug; Haiku is not a leg tier)" >&2; exit 2 ;;
     esac
-    OR_BIN="${HEADED_ARM_LEG_OPENROUTER_BIN:-$HERE/../../claude-openrouter}"
-    export HEADED_ARM_LAUNCHER="$OR_BIN"
+    LANE_BIN="${LANE_BIN_OVERRIDE:-$HERE/../../$LANE_BIN_NAME}"
+    export HEADED_ARM_LAUNCHER="$LANE_BIN"
     leg_env_drop_token OPENROUTER_MODEL
     leg_propagate_env OPENROUTER_MODEL "$OR_MODEL"
     leg_propagate_env LEG_LANE openrouter
     leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "${LEG_EFFORT:-medium}"
+    export HEADED_ARM_RECORDER=1
+fi
+
+# DeepSeek (HIMMEL-4084): the launcher owns egress, balance floor, model pins
+# and effort, so this block only routes to it. The default model is read from
+# the launcher's own `export ANTHROPIC_MODEL=` line, never invented here; a
+# launcher without one fails closed.
+if [ "$LANE" = "deepseek" ]; then
+    LANE_BIN="${LANE_BIN_OVERRIDE:-$HERE/../../$LANE_BIN_NAME}"
+    export HEADED_ARM_LAUNCHER="$LANE_BIN"
+    if [ -z "$MODEL" ]; then
+        MODEL="$(sed -n "s/^export ANTHROPIC_MODEL='\\(.*\\)'\$/\\1/p" "$LANE_BIN" 2>/dev/null | head -n 1)"
+        if [ -z "$MODEL" ]; then
+            echo "headed-arm-leg: --lane deepseek: no default model (no ANTHROPIC_MODEL export in $LANE_BIN); pass a model" >&2
+            exit 2
+        fi
+    fi
+    leg_propagate_env LEG_LANE deepseek
     export HEADED_ARM_RECORDER=1
 fi
 
@@ -1541,14 +1591,10 @@ fi
 # HIMMEL-2953: every claudex leg gets its document-channel coordination
 # rules, even without a profile. Claude accepts one preface file, so a
 # profiled leg gets its own concatenation, with the lane override last.
-if [ "$LANE" = "claudex" ] || [ "$LANE" = "openrouter" ]; then
-    CLAUDEX_PREFACE="$HERE/../../../docs/handover/leg-preface-$LANE.md"
+if [ "$LANE_CHANNEL" = "file" ]; then
+    CLAUDEX_PREFACE="$HERE/../../../docs/handover/leg-preface-$LANE_PREFACE.md"
     export HEADED_ARM_LAUNCHER="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
-    if [ "$LANE" = "openrouter" ]; then
-        leg_propagate_env LEG_CLAUDE_BIN "$OR_BIN"
-    else
-        leg_propagate_env LEG_CLAUDE_BIN "$CLAUDEX_BIN"
-    fi
+    leg_propagate_env LEG_CLAUDE_BIN "$LANE_BIN"
     for _leg_need in "$CLAUDEX_PREFACE" "$HEADED_ARM_LAUNCHER"; do
         if [ ! -f "$_leg_need" ]; then
             echo "headed-arm-leg: --lane claudex: required file missing: $_leg_need" >&2
@@ -1610,7 +1656,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     fi
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"
-    if [ "$LANE" = "claudex" ] || [ "$LANE" = "openrouter" ]; then
+    if [ "$LANE_CHANNEL" = "file" ]; then
         printf ' exec-target=%s preface=%s recorder=%s' "$LEG_CLAUDE_BIN" "$LEG_PROFILE_PREFACE" "$HEADED_ARM_RECORDER"
     fi
     printf '\n'
@@ -1647,7 +1693,7 @@ if [ -n "$PROFILE" ]; then
         exit 2
     fi
     chmod 600 "$PROFILE_SETTINGS" 2>/dev/null || true
-    if [ "$LANE" = "claudex" ] || [ "$LANE" = "openrouter" ]; then
+    if [ "$LANE_CHANNEL" = "file" ]; then
         if ! cat "$LEG_PREFACE" "$CLAUDEX_PREFACE" > "$LEG_PROFILE_PREFACE"; then
             echo "headed-arm-leg: --lane $LANE: cannot write preface to $LEG_PROFILE_PREFACE" >&2
             exit 2
@@ -1708,7 +1754,7 @@ if [ -f "$BANK_PREFLIGHT" ]; then
     # HIMMEL-2789: this call launches a leg, so it declares launch intent —
     # the fleet cap must be able to actually refuse it, unlike a plain
     # bank-status READ.
-    preflight_token="$(CADENCE_BANK_LEG="$NAME" CADENCE_BANK_LANE="$LANE" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_CALLER_PID="$$" FLEET_RESERVE_TTL="$_arm_fleet_ttl" bash "$BANK_PREFLIGHT" 2>>"$LOG")"
+    preflight_token="$(CADENCE_BANK_LEG="$NAME" CADENCE_BANK_LANE="$LANE_BANK_GATE" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_CALLER_PID="$$" FLEET_RESERVE_TTL="$_arm_fleet_ttl" bash "$BANK_PREFLIGHT" 2>>"$LOG")"
     if [ "$preflight_token" = SKIPPED-FLEET ]; then
         # HIMMEL-2774: NOT a reservation release here — bank-preflight.sh
         # only ever returns SKIPPED-FLEET from its admission block itself
