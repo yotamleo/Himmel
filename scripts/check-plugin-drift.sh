@@ -19,6 +19,10 @@
 #           version than the one our fork is merged to. (claude-obsidian -> AgriciDaniel.)
 #           This sub-case also makes tag-name refs (e.g. v1.9.2-himmel.1) work —
 #           we never compare a tag name to a SHA.
+#      Sidecar entries with standalone:true (HIMMEL-4019) also track reviewed
+#      adoption targets for dormant external installs absent from our marketplace:
+#      ref vs HEAD for track:head, synced_base vs tags for track:release. These
+#      are target pins, not a claim that a station's installed cache was updated.
 #   2. Vendored forks — any marketplace/plugins/<p>/UPSTREAM_PIN that carries the
 #      generic fields `upstream_repo` / `upstream_path` / `upstream_sha256`. Drift
 #      = the recorded sha256 != the sha256 of that upstream file fetched now.
@@ -326,6 +330,21 @@ for p in m.get("plugins", []):
         print("|".join([p["name"], repo_of(s), ref,
                         o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", ""),
                         o.get("tag_prefix", "")]))
+# HIMMEL-4019: dormant installs live in other marketplaces, not ours. Track
+# their reviewed adoption targets without changing any install or live setting.
+market_names = {p["name"] for p in m.get("plugins", [])}
+for name, o in ups.items():
+    if not isinstance(o, dict) or o.get("standalone") is not True:
+        continue
+    if name in market_names:
+        raise ValueError(f"standalone upstream duplicates marketplace entry: {name}")
+    repo, ref, track = o.get("upstream_repo", ""), o.get("ref", ""), o.get("track", "")
+    if not repo or not ref or track not in ("release", "head"):
+        raise ValueError(f"invalid standalone upstream: {name}")
+    release = track == "release"
+    print("|".join([name, repo, ref, repo if release else "",
+                    "release" if release else "", o.get("synced_base", "") if release else "",
+                    o.get("tag_prefix", "")]))
 PY
   pins_out="$(python3 -c "$_pins_py" "$MJSON" "$UPSTREAMS" 2>/dev/null | tr -d '\r')"
   pins_rc=$?  # pipefail makes this the pipeline's status (= python3's, if it failed)
