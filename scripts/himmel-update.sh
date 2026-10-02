@@ -1368,7 +1368,10 @@ EOF
     done
     # HIMMEL-4088: registry-driven probe-tool rows — any id the fixed list above
     # does not name, in the order sync_probe_tools wrote them.
-    for id in $(cut -d'|' -f1 "$VER_FILE" 2>/dev/null | grep -vxE 'himmel|plugins|jira_cli|qmd_fork|hermes|luna_template|cli_proxy|node|npm|bun|pm' | awk '!seen[$0]++'); do
+    local extra_ids
+    extra_ids=$(cut -d'|' -f1 "$VER_FILE" 2>/dev/null | grep -vxE 'himmel|plugins|jira_cli|qmd_fork|hermes|luna_template|cli_proxy|node|npm|bun|pm' | awk '!seen[$0]++')
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
         row=$(grep "^$id|" "$VER_FILE" | tail -1)
         IFS='|' read -r _ inst avail state note <<EOF
 $row
@@ -1376,7 +1379,9 @@ EOF
         [ "$state" = "behind" ] && behind=$((behind + 1))
         [ "$state" = "unknown" ] && unknown=$((unknown + 1))
         printf '    %-14s %-8s %-30s %-30s %s\n' "$id" "$state" "$inst" "$avail" "$note"
-    done
+    done <<EOF
+$extra_ids
+EOF
     echo ""
     echo "    $behind behind, $unknown undetermined."
     [ "$behind" -eq 0 ] || return 1

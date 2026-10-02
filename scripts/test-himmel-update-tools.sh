@@ -54,14 +54,17 @@ if ! { cp "$SCRIPT" "$CLONE/scripts/himmel-update.sh" \
 fi
 
 # --check fetches the checkout's upstream first, so give it a local bare origin.
-git init --bare --quiet "$TMP/upstream.git" \
+if git init --bare --quiet "$TMP/upstream.git" \
     && git -C "$CLONE" config user.email test@test.test \
     && git -C "$CLONE" config user.name Test \
     && git -C "$CLONE" remote add origin "$TMP/upstream.git" \
     && git -C "$CLONE" commit --quiet --allow-empty -m init \
     && git -C "$CLONE" push --quiet origin HEAD 2>/dev/null \
-    && git -C "$CLONE" branch --quiet -u "origin/$(git -C "$CLONE" rev-parse --abbrev-ref HEAD)" \
-    || { echo "FAIL: mock origin setup" >&2; exit 1; }
+    && git -C "$CLONE" branch --quiet -u "origin/$(git -C "$CLONE" rev-parse --abbrev-ref HEAD)"; then
+    :
+else
+    echo "FAIL: mock origin setup" >&2; exit 1
+fi
 
 STATE="$TMP/state"     # one file per fake tool: its installed version
 BIN="$TMP/bin"
@@ -74,6 +77,7 @@ mkdir -p "$STATE" "$BIN" || exit 1
 # .fail it exits 1 and leaves the version where it was.
 for t in alpha beta; do
     printf '#!/bin/sh\ncat "%s/%s"\n' "$STATE" "$t" > "$BIN/$t"
+    # shellcheck disable=SC2016 # $STUB_LATEST must expand when the stub runs
     printf '#!/bin/sh\necho "%s-up ran" >> "%s"\n[ -f "%s/%s.fail" ] && exit 1\nprintf "%%s\\n" "$STUB_LATEST" > "%s/%s"\n' \
         "$t" "$LOG" "$STATE" "$t" "$STATE" "$t" > "$BIN/$t-up"
     chmod +x "$BIN/$t" "$BIN/$t-up"
@@ -124,7 +128,7 @@ run() {
     OUT="$(cd "$CLONE" && PATH="$BIN:/usr/bin:/bin" STATE_DIR="$STATE" STUB_LATEST="2.0.0" \
         DRIFT_REGISTRY="$TMP/registry.json" bash scripts/himmel-update.sh "$@" 2>&1)" || RC=$?
 }
-ran() { [ -f "$LOG" ] && cat "$LOG" || true; }
+ran() { if [ -f "$LOG" ]; then cat "$LOG"; fi; }
 
 echo "--only tools: a BEHIND unattended tool is upgraded and re-probed"
 write_registry true true
