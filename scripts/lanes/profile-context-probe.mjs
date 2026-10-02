@@ -38,7 +38,7 @@ import { createRequire } from 'node:module';
 import { loadRegistry, resolveProfileByName, readEnabledPluginIds, loadListingLib } from './plugin-profiles.mjs';
 import { ledgerPath } from './verify-return.mjs';
 import { ROLE_REQUIRES } from './role-requires.mjs';
-import { scanSkillCosts, pluginCacheOf, runtimeNamesOf } from './skill-cost.mjs';
+import { scanSkillCosts, pluginCacheOf, runtimeNamesOf, installApplies } from './skill-cost.mjs';
 
 export { runtimeNamesOf };
 
@@ -272,7 +272,7 @@ export function installedVersionsOf(configDir, cwd) {
     const out = new Map();
     for (const [key, installs] of Object.entries(doc.plugins ?? {})) {
       const versions = (Array.isArray(installs) ? installs : [])
-        .filter((i) => i?.scope === 'user' || (cwd && i?.projectPath === cwd))
+        .filter((i) => installApplies(i, cwd))
         .map((i) => String(i?.version ?? '')).filter(Boolean)
         // HIMMEL-4064: an install whose cache dir is gone is not what the session loads (falls back to latest)
         .filter((v) => key.includes('@') && existsSync(join(configDir, 'plugins', 'cache', key.split('@')[1], key.split('@')[0], v)));
@@ -569,7 +569,7 @@ function main() {
       }
 
       const requiredIds = ROLE_REQUIRES[name] ?? [];
-      const runtimeNames = runtimeNamesOf(configDir);
+      const runtimeNames = runtimeNamesOf(configDir, REPO_ROOT);
       const { pass, problems, environment } = evaluateProfile({ enabledIds, requiredIds, initEvent: run.initEvent, resultEvent: run.resultEvent, measuredTokens: run.measured, budget, contextUsage: ctxRun.contextUsage ?? null, expectedSkills: expectedSkillNames(costEntries(), requiredIds, installedVersionsOf(configDir, REPO_ROOT), runtimeNames), runtimeNames, userScopeDirs: userScopeSkillDirs(configDir) });
       const note = `${formatNote(name, { pass, measured: run.measured, budget, baseline })} skills=${countLoadedSkills(run.initEvent)} required=${requiredIds.length}`;
       process.stdout.write(note + '\n');

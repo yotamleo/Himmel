@@ -393,6 +393,35 @@ test('runtimeNamesOf: resolves the namespace from the installed plugin.json name
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// HIMMEL-4070: runtimeNamesOf applies the same scope/projectPath filter as installedVersionsOf.
+test('runtimeNamesOf: ignores a foreign-project install whose manifest name differs', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rtnames-scope-'));
+  try {
+    const manifest = (sub, name) => {
+      const p = join(dir, sub);
+      mkdirSync(join(p, '.claude-plugin'), { recursive: true });
+      writeFileSync(join(p, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }));
+      return p;
+    };
+    const foreign = manifest('foreign', 'foreign-name');
+    const here = manifest('here', 'here-name');
+    const user = manifest('user', 'user-name');
+    mkdirSync(join(dir, 'plugins'), { recursive: true });
+    writeFileSync(join(dir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: {
+      'p@himmel': [
+        { scope: 'project', projectPath: '/work/elsewhere', installPath: foreign },
+        { scope: 'project', projectPath: '/work/here', installPath: here },
+        { scope: 'user', installPath: user },
+      ],
+      'only-foreign@himmel': [{ scope: 'project', projectPath: '/work/elsewhere', installPath: foreign }],
+    } }));
+    assert.equal(runtimeNamesOf(dir, '/work/here').get('p@himmel'), 'here-name');
+    assert.equal(runtimeNamesOf(dir, '/work/other').get('p@himmel'), 'user-name');
+    assert.equal(runtimeNamesOf(dir).get('p@himmel'), 'user-name');
+    assert.equal(runtimeNamesOf(dir, '/work/other').has('only-foreign@himmel'), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('manifest name != entry name: coverage, namespace extras and listing use the runtime name', () => {
   const names = new Map([['taste-skill-core@himmel', 'taste-skill']]);
   const init = { ...LOADED, skills: ['taste-skill:minimalist'] };
