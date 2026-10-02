@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # inbox-follow.sh — HIMMEL-3356. Gap-free follow of a console's Telegram inbox.
 #
-#   inbox-follow.sh [--once|--peek] <inbox-file>
+#   inbox-follow.sh [--wake] [--once|--peek] <inbox-file>
+#
+# --wake emits a fixed JSON wake envelope per complete line, never inbox text
+# (HIMMEL-4089). On claudex, use only the leg's own inbox from handover_root()
+# plus its launch session name. This .md.cursor is independent of the hook's
+# .cursor/<session> delivery cursor: a wake is not authoritative delivery or
+# model acknowledgement. Monitor suppression may lose a wake; inspect pending
+# hook delivery on every expiry before re-arming.
 #
 # The console armed `tail -n0 -F <inbox>` under a 30-min Monitor and re-armed it
 # on expiry, so a line the bridge appended between the expiry and the re-arm was
@@ -41,13 +48,14 @@ set -u
 LC_ALL=C   # ${#line} must count bytes: the cursor is a byte offset
 export LC_ALL
 
-once=0; peek=0
+once=0; peek=0; wake=0
+if [ "${1:-}" = "--wake" ]; then wake=1; shift; fi
 case "${1:-}" in
     --once) once=1; shift ;;
     --peek) peek=1; shift ;;
 esac
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
-    echo "usage: inbox-follow.sh [--once|--peek] <inbox-file>" >&2
+    echo "usage: inbox-follow.sh [--wake] [--once|--peek] <inbox-file>" >&2
     exit 2
 fi
 inbox="$1"
@@ -87,7 +95,11 @@ drain() {
     # empty drain (--once exiting 0 having delivered nothing).
     set -o pipefail
     tail -c +$((cur + 1)) "$inbox" | while IFS= read -r line; do
-        printf '%s\n' "$line" || exit 1
+        if [ "$wake" = 1 ]; then
+            printf '%s\n' '{"event":"inbox-wake"}' || exit 1
+        else
+            printf '%s\n' "$line" || exit 1
+        fi
         cur=$((cur + ${#line} + 1))
         save_cursor "$cur" || exit 1
     done || { echo "inbox-follow: cannot drain $inbox" >&2; return 1; }

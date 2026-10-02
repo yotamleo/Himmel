@@ -82,6 +82,13 @@ template_version: 3
 > paths and what to take from each. Name what is private and must never reach
 > the tree.>
 
+> **Trust paths (pre-dispatch, HIMMEL-4089):** <exact paths the planned scope
+> plausibly needs; permitted read/write operations and exclusions; the
+> operator's up-front scope grant, or explicitly none needed. A brief grants
+> scope, not tool permissions. If authorization is missing, narrow before
+> dispatch; an auto-mode inbox EXPANSION needs operator confirmation in-window,
+> not merely a RETASK token.>
+
 > **Contract:**
 > 1. LIVE; paste `git log -1 --format=%H` and the base-ancestor check. Write
 >    the bullet with `scripts/handover/console-kit/append-results.sh <doc>
