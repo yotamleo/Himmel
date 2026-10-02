@@ -82,6 +82,13 @@ with tempfile.TemporaryDirectory(prefix='tooling-catalog-') as tmp:
             '<!-- /plugin-installation-inventory -->', row + '\n<!-- /plugin-installation-inventory -->')
         run(f'{label} rejected', ['code-review@claude-plugins-official'], malformed, 1, 'invalid inventory row')
     run('missing inventory rejected', [], '# empty', 1, 'exactly one plugin installation inventory')
+    reversed_markers = one.replace('<!-- plugin-installation-inventory -->', 'SWAP').replace(
+        '<!-- /plugin-installation-inventory -->', '<!-- plugin-installation-inventory -->').replace(
+        'SWAP', '<!-- /plugin-installation-inventory -->')
+    # Keep valid rows after the reversed start; the old split accepted them.
+    reversed_markers += '| `code-review@claude-plugins-official` | INSTALLED |\n'
+    run('reversed inventory markers rejected', ['code-review@claude-plugins-official'],
+        reversed_markers, 1, 'inventory end marker must follow start marker')
     run('empty inventory rejected', [], table([]), 1, 'inventory is empty')
     run('invalid installed IDs rejected', ['not-an-id'], one, 1, 'array of plugin@marketplace IDs')
     run('malformed registry rejected', {'plugins': []}, one, 1, 'plugins object of record arrays')

@@ -43,6 +43,8 @@ try:
     start, end = '<!-- plugin-installation-inventory -->', '<!-- /plugin-installation-inventory -->'
     if text.count(start) != 1 or text.count(end) != 1:
         raise ValueError('catalog must contain exactly one plugin installation inventory')
+    if text.index(end) < text.index(start):
+        raise ValueError('inventory end marker must follow start marker')
     section = text.split(start, 1)[1].split(end, 1)[0]
     documented = {}
     for line in section.splitlines():
