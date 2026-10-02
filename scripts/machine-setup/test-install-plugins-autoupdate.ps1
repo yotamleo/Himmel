@@ -107,7 +107,7 @@ $SF = Join-Path $Work '.claude\settings.local.json'
 }
 '@ | Set-Content -Path $SF
 
-$Pwsh = (Get-Command pwsh).Source
+$Pwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 $SavedPath = $env:PATH
 
 # Set-Location in the child so the script's $PWD (hence the local settings path)

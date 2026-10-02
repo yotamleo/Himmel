@@ -60,7 +60,7 @@ if %errorlevel%==0 exit /b 23
 exit /b 0
 "@
 
-  $realPwsh = (Get-Command pwsh -CommandType Application).Source
+  $realPwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
   $oldPath = $env:Path
   $oldLog = $env:ADOPT_STUB_LOG
   $env:Path = "$StubDir;$env:SystemRoot\System32;$env:SystemRoot"

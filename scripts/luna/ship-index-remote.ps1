@@ -74,7 +74,7 @@ function Fail($code, $msg) {
 # swap-failure path -- a failed ship must not leave the receiver's search
 # service DOWN just because the swap did not happen (CR finding [codex-1]).
 function Start-QmdDaemon {
-    $qmd = (Get-Command qmd -ErrorAction SilentlyContinue).Source
+    $qmd = (Get-Command qmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if (-not $qmd) { return $null }
     $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$qmd`" mcp --keep-models" }
     if ($r.ReturnValue -ne 0) { return $null }

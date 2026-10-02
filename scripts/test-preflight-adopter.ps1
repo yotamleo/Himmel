@@ -67,7 +67,7 @@ if (Test-Path $RealJiraNodeModules) {
     Move-Item -Path $RealJiraNodeModules -Destination $NodeModulesBackup
 }
 
-$realPwsh = (Get-Command pwsh -CommandType Application).Source
+$realPwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 $oldPath = $env:Path
 
 try {

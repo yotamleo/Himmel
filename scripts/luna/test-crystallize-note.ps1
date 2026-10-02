@@ -4,7 +4,7 @@
 $ErrorActionPreference = 'Stop'
 $CRYS = Join-Path $PSScriptRoot 'crystallize-note.ps1'
 $STUB = Join-Path $PSScriptRoot '..\hooks\testdata\bin\claude-stub.ps1'
-$PWSH = (Get-Command pwsh).Source
+$PWSH = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 $script:fails = 0
 function Pass([string]$m) { "PASS: $m" }
 function Fail([string]$m) { "FAIL: $m"; $script:fails++ }
