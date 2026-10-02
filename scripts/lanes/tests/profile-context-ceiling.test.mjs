@@ -68,6 +68,8 @@ test('leg launcher reads a numeric design ceiling rather than hard-coding auto',
   const result = launch(fixture(t), 'design');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /autocompact=400000/);
+  assert.match(result.stdout, /context=1m \(profile design contextMode 1m\)/);
+  assert.doesNotMatch(result.stdout, /operator-ruling/);
 });
 test('brief explanation alone does not elevate a standard profile', (t) => {
   const f = fixture(t);
@@ -97,6 +99,21 @@ test('leg launcher refuses malformed autocompact even on dry-run', (t) => {
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.match(result.stderr, /autocompact/);
 });
+for (const extra of [
+  { HEADED_ARM_CONTEXT_PROFILE: 'design' },
+  { HEADED_ARM_CONTEXT_PROFILE: 'design', HEADED_ARM_LEG_PROFILES: join(ROOT, 'scripts/lanes/plugin-profiles.mjs') },
+]) {
+  test(`direct console refuses ambient profile opt-in ${JSON.stringify(extra)}`, (t) => {
+    const f = fixture(t);
+    const result = spawnSync(BASH_BIN, [join(ROOT, 'scripts/handover/headed-arm.sh'), '--dry-run',
+      'HIMMEL-4094-console-fixture', join(f.dir, 'brief.md'), join(f.dir, 'signal'),
+      '99999999999', join(f.dir, 'launch.log'), 'claude-sonnet-5-5', '1m'],
+    { cwd: f.dir, env: { ...f.env, ...extra }, encoding: 'utf8', timeout: 20000 });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /refusing 1m context/);
+  });
+}
+
 test('headed console launcher validates the profile before rendering argv', (t) => {
   const r = registry(); r.profiles.console.autocompact = '200000';
   const f = fixture(t, r);

@@ -71,8 +71,12 @@ if ! host_modes_stick; then
   host_skip "headed-arm.sh's claim-lock root needs a chmod/mkdir -m 0700 that sticks; this host's modes do not"
   exit 0
 fi
-# Copied/mutant renderers still use the real resolver against fixture inputs.
-export HEADED_ARM_LEG_PROFILES="$HERE/../lanes/plugin-profiles.mjs"
+# Copied/mutant renderers get a sibling resolver like the real tree; ambient
+# HEADED_ARM_LEG_PROFILES is deliberately ignored by direct console arms.
+fixture_profiles() {
+  mkdir -p "$1/lanes"
+  cp "$HERE/../lanes/plugin-profiles.mjs" "$HERE/../lanes/plugin-profiles.json" "$1/lanes/"
+}
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()        { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
@@ -325,6 +329,22 @@ if [ -e "$d1c/record" ]; then echo "FAIL - positional 1m without env: no konsole
 else echo "ok - positional 1m without env: no konsole record"; fi
 if [ -e "$d1c/locks" ]; then echo "FAIL - positional 1m without env: no lock dir created"; fails=$((fails+1))
 else echo "ok - positional 1m without env: no lock dir created"; fi
+
+# HIMMEL-4094: ambient leg profile inputs do not authorize a direct console arm.
+for ambient in profile resolver both stale; do
+  ambient_env=(-u HEADED_ARM_CONTEXT_PROFILE -u HEADED_ARM_LEG_PROFILES -u HEADED_ARM_CONTEXT_PID)
+  case "$ambient" in
+    profile) ambient_env+=(HEADED_ARM_CONTEXT_PROFILE=design) ;;
+    resolver) ambient_env+=(HEADED_ARM_LEG_PROFILES=/nonexistent/ambient-resolver.mjs) ;;
+    both) ambient_env+=(HEADED_ARM_CONTEXT_PROFILE=design HEADED_ARM_LEG_PROFILES="$HERE/../lanes/plugin-profiles.mjs") ;;
+    stale) ambient_env+=(HEADED_ARM_CONTEXT_PROFILE=design HEADED_ARM_LEG_PROFILES="$HERE/../lanes/plugin-profiles.mjs" HEADED_ARM_CONTEXT_PID=1) ;;
+  esac
+  rc=0
+  out="$(env -u CONSOLE_CONTEXT "${ambient_env[@]}" \
+    bash "$SCRIPT" --dry-run HIMMEL-4094-console some/doc.md /tmp/nosig 99999999999 "$tmp/ambient-$ambient.log" claude-sonnet-5 1m 2>&1)" || rc=$?
+  check "ambient profile inputs ($ambient): refuse direct 1m arm" "$rc" "2"
+  contains "ambient profile inputs ($ambient): require console opt-in" "$out" "refusing 1m context"
+done
 
 # --- 1d (HIMMEL-2973). positional 1m WITH the env is accepted ---------------
 d1d="$tmp/c1d"; mk_stub "$d1d" 1 alive "HIMMEL-9999d-leg"
@@ -1548,6 +1568,7 @@ mutant36="$mutant36dir/scripts/handover/headed-arm.sh"
 # shellcheck disable=SC2016 # single-quoted sed script; $RECORDER must stay literal
 sed 's/if \[ "\$RECORDER" = "1" \]; then/if true; then/' "$SCRIPT" > "$mutant36"
 cp "$HERE/../lib/console-context.sh" "$mutant36dir/scripts/lib/console-context.sh"
+fixture_profiles "$mutant36dir/scripts"
 chmod 755 "$mutant36"
 d37="$tmp/c37"; mk_stub "$d37" 1 alive "HIMMEL-red36"
 mrc36=0
@@ -1790,6 +1811,7 @@ cp "$SCRIPT" "$d43/bare/headed-arm.sh"
 # lone copy needs that sibling to reach the konsole-default resolution at all.
 # konsole-macos.sh is still deliberately absent -- that is what this case proves.
 cp "$HERE/../lib/console-context.sh" "$d43/lib/console-context.sh"
+fixture_profiles "$d43"
 mk_stub "$d43" 1 alive
 out43=$(HEADED_ARM_UNAME=Darwin PGREP_CMD="$d43/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43/locks" \
   bash "$d43/bare/headed-arm.sh" "HIMMEL-mac43" "doc43.md" "$d43/signal-never" "$PAST" "$d43/log" 2>&1)
@@ -1813,6 +1835,7 @@ cp "$SCRIPT" "$d43b/bare/headed-arm.sh"
 # lone copy needs that sibling to reach the konsole-default resolution at all.
 # konsole-macos.sh is still deliberately absent -- that is what this case proves.
 cp "$HERE/../lib/console-context.sh" "$d43b/lib/console-context.sh"
+fixture_profiles "$d43b"
 mk_stub "$d43b" 1 alive
 # HIMMEL-3484: pinning KONSOLE_CMD exercised the OVERRIDE, not the Linux
 # default this row names. KONSOLE_CMD is now unset and the default's bare
@@ -1841,6 +1864,7 @@ not_contains "43b Linux default: never mentions the macOS shim" "$out43b" "konso
 d43c="$tmp/c43c"; mkdir -p "$d43c/bare" "$d43c/lib"
 cp "$SCRIPT" "$d43c/bare/headed-arm.sh"
 cp "$HERE/../lib/console-context.sh" "$d43c/lib/console-context.sh"
+fixture_profiles "$d43c"
 mk_stub "$d43c" 1 alive
 out43c=$(env -u KONSOLE_CMD -u HEADED_ARM_UNAME PATH="$d43c:$PATH" PGREP_CMD="$d43c/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43c/locks" \
   bash "$d43c/bare/headed-arm.sh" "HIMMEL-mac43c" "doc43c.md" "$d43c/signal-never" "$PAST" "$d43c/log" 2>&1)
@@ -2089,6 +2113,7 @@ d42="$tmp/c42"; mkdir -p "$d42/bare" "$d42/lib"
 cp "$SCRIPT" "$d42/bare/headed-arm.sh"
 # HIMMEL-2975: the lone copy needs its ../lib sibling to get this far at all.
 cp "$HERE/../lib/console-context.sh" "$d42/lib/console-context.sh"
+fixture_profiles "$d42"
 mk_stub "$d42" 1 alive
 # A shim that WOULD record a launch, so "nothing was launched" is a real
 # assertion rather than a missing-file tautology.

@@ -758,6 +758,7 @@ PROFILES_MJS="${HEADED_ARM_LEG_PROFILES:-$HERE/../../lanes/plugin-profiles.mjs}"
 CONTEXT="standard"
 RESOLVED_AUTOCOMPACT="200000"
 DESIGN_CONTEXT_REASON=""
+CONTEXT_SOURCE="operator-ruling"
 if [ -n "$PROFILE" ]; then
     if ! _leg_context_json="$(node "$PROFILES_MJS" "$PROFILE" --context)" \
         || ! CONTEXT="$(printf '%s' "$_leg_context_json" | jq -er '.contextMode | select(. == "standard" or . == "1m")')" \
@@ -766,7 +767,8 @@ if [ -n "$PROFILE" ]; then
         exit 2
     fi
     if [ "$CONTEXT" = "1m" ]; then
-        DESIGN_CONTEXT_REASON="$PROFILE profile (explicit contextMode 1m; HIMMEL-4021)"
+        CONTEXT_SOURCE="profile $PROFILE contextMode 1m"
+        DESIGN_CONTEXT_REASON="$CONTEXT_SOURCE"
     elif [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
         echo "headed-arm-leg: standard profile must resolve autocompact 200000" >&2
         exit 2
@@ -779,6 +781,7 @@ if [ "${LEG_CONTEXT:-}" = "1m" ]; then
     CONTEXT="1m"
     RESOLVED_AUTOCOMPACT="auto"
     # An env override needs its own brief ruling, even on a design profile.
+    CONTEXT_SOURCE="operator-ruling"
     DESIGN_CONTEXT_REASON="$_CONTEXT_BRIEF_REASON"
 fi
 
@@ -925,7 +928,6 @@ leg_env_drop_token HEADED_ARM_LEG_CLAUDE_BIN
 CONTEXT_REASON=""
 if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
     CONTEXT_REASON="$DESIGN_CONTEXT_REASON"
-    [ -n "$CONTEXT_REASON" ] || CONTEXT_REASON="$(grep -m1 -E '^> \*\*Context:\*\* 1m — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* 1m — operator-ruling: //')"
     CONTEXT_REASON="$(printf '%s' "$CONTEXT_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$CONTEXT_REASON" ]; then
         echo "headed-arm-leg: refusing leg launch: resolved argv lacks the required --autocompact 200000 ceiling (got --autocompact $RESOLVED_AUTOCOMPACT). unset LEG_CONTEXT and retry, or add '> **Context:** 1m — operator-ruling: <reason>' to $DOC for a sanctioned opt-in; use a console arm, not a leg, for unsanctioned 1m context." >&2
@@ -1689,10 +1691,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
     if [ -n "$TIER_GATE" ]; then
         printf 'headed-arm-leg: tier=%s tier-category=%s tier-reason=%s\n' "$TIER_GATE" "$TIER_CATEGORY" "$TIER_REASON"
     fi
-    # Printed ONLY for a sanctioned 1m Context-line opt-in, same guarantee
+    # Printed ONLY for a profile default or sanctioned 1m Context-line opt-in,
     # shape as the Tier-gate line above.
     if [ -n "$CONTEXT_REASON" ]; then
-        printf 'headed-arm-leg: context=1m (operator-ruling) context-reason=%s\n' "$CONTEXT_REASON"
+        printf 'headed-arm-leg: context=1m (%s) context-reason=%s\n' "$CONTEXT_SOURCE" "$CONTEXT_REASON"
     fi
     # Printed ONLY under --headless, same guarantee shape as --relay above.
     if [ "$HEADLESS" -eq 1 ]; then
@@ -1816,7 +1818,7 @@ fi
 # HIMMEL-3581: same reasoning as the TIER_GATE line above - headed-arm.sh's
 # own "armed:" line never sees CONTEXT_REASON, so log it ourselves.
 if [ -n "$CONTEXT_REASON" ]; then
-    echo "$(date +%F_%T) headed-arm-leg: context=1m (operator-ruling) context-reason=$CONTEXT_REASON" >> "$LOG"
+    echo "$(date +%F_%T) headed-arm-leg: context=1m ($CONTEXT_SOURCE) context-reason=$CONTEXT_REASON" >> "$LOG"
 fi
 
 # HIMMEL-3270: record what this launch WAS, where a cohort query can find it
@@ -1864,4 +1866,6 @@ if [ "$HEADLESS" -eq 1 ] && [ -n "$_ll_cache" ]; then
     export HEADED_ARM_LAUNCH_RECORD="$_ll_cache/launch-logs/$NAME.log"
 fi
 
+# Paired with this exec's PID: headed-arm.sh ignores stale ambient values.
+export HEADED_ARM_CONTEXT_PID="$$" HEADED_ARM_LEG_PROFILES="$PROFILES_MJS"
 exec "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"

@@ -460,7 +460,9 @@ HIMMEL-2764 attribution table (out of scope here, and unchanged).
 Context mode used to be set once, station-wide, by a `[1m]` suffix on the
 user-level `model` key in `~/.claude/settings.json`. It is now chosen **per arm**
 via `--context 1m|standard` (`arm-resume.sh`, and the 7th positional of
-`headed-arm.sh`). Defaults (HIMMEL-2975 T6): **every arm → `standard`.** A
+`headed-arm.sh`). The baseline default (HIMMEL-2975 T6) is **`standard`**;
+the headed launchers now use per-profile defaults (HIMMEL-4021), including
+`design`'s declared `1m` mode and numeric ceiling, without an operator override. A
 console arm (launched through `console.sh`, which has no `--context` flag of
 its own) can still opt into `1m` via `CONSOLE_CONTEXT=1m` in the launching
 shell.
@@ -468,8 +470,9 @@ shell.
 `--context` drives two independent levers, because measurement showed one of
 them alone is a no-op on this account:
 
-- `1m` → append `[1m]` to the model id **where the id accepts it**, and pass
-  `--autocompact auto`.
+- `1m` → append `[1m]` to the model id **where the id accepts it**. Explicit
+  operator overrides pass `--autocompact auto`; a headed profile default passes
+  that profile's declared numeric `autocompact` ceiling.
 - `standard` → no suffix, and pass `--autocompact 200000`.
 
 **Method for everything below** (2026-09-07, zero API spend): throwaway sessions

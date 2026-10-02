@@ -399,9 +399,16 @@ NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-op
 # it has no non-console callers, unlike arm-resume.sh's handover-name test.
 # HIMMEL-4021: the profile is validated before any wait/claim/launch. Legs
 # supply their selected profile; a direct console arm resolves console.
-_context_profile="${HEADED_ARM_CONTEXT_PROFILE:-console}"
-_context_profiles="${HEADED_ARM_LEG_PROFILES:-$(dirname "$0")/../lanes/plugin-profiles.mjs}"
-unset HEADED_ARM_CONTEXT_PROFILE
+_context_profile="console"
+_context_profiles="$(dirname "$0")/../lanes/plugin-profiles.mjs"
+# The leg wrapper execs this renderer in the same process. An inherited marker
+# belongs to a different PID, so ambient profile/resolver variables cannot opt
+# a direct console arm into 1m. This guards ambient leakage, not a hostile shell.
+if [ "${HEADED_ARM_CONTEXT_PID:-}" = "$$" ]; then
+    _context_profile="${HEADED_ARM_CONTEXT_PROFILE:-console}"
+    _context_profiles="${HEADED_ARM_LEG_PROFILES:-$_context_profiles}"
+fi
+unset HEADED_ARM_CONTEXT_PROFILE HEADED_ARM_LEG_PROFILES HEADED_ARM_CONTEXT_PID
 if ! _context_json="$(node "$_context_profiles" "$_context_profile" --context)" \
     || ! _profile_mode="$(printf '%s' "$_context_json" | jq -er '.contextMode | select(. == "standard" or . == "1m")')" \
     || ! _profile_autocompact="$(printf '%s' "$_context_json" | jq -er '.autocompact | select(type == "number" and . >= 200000 and . <= 1000000 and floor == .)')"; then
@@ -451,6 +458,9 @@ fi
 # Strip any [1m] suffix the caller may have typed into MODEL directly, so
 # `standard` can guarantee its absence and `1m` never doubles it.
 MODEL="$(console_context_strip_1m_suffix "$MODEL")"
+if [ "$CONTEXT" = "1m" ] && [ "$_profile_mode" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+    _headed_context_source="profile $_context_profile contextMode 1m"
+fi
 AUTOCOMPACT="$_profile_autocompact"
 if [ "$CONTEXT" = "standard" ]; then
     AUTOCOMPACT="200000"
