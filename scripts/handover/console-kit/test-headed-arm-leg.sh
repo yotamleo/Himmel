@@ -114,6 +114,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/headed-arm-leg.sh"
 HEADED_ARM="$HERE/../headed-arm.sh"
+export HEADED_ARM_LEG_PROFILES="$HERE/../../lanes/plugin-profiles.mjs"
+unset HIMMEL_CONSOLE_DOC 2>/dev/null || true
 # shellcheck source=scripts/lib/timeout-bin.sh
 # shellcheck disable=SC1091
 . "$HERE/../../lib/timeout-bin.sh"
@@ -679,6 +681,23 @@ not_contains "full launch, native lane (default): no script(1) tty wrapper" "$re
 # this now genuinely exercises the wrapper's own LEG_REPO->HEADED_ARM_REPO
 # fold on the real (non-dry) path, not just headed-arm.sh's own seam.
 contains "full launch: LEG_REPO folds into HEADED_ARM_REPO, reaches --workdir" "$rec8" "--workdir $tmp/repo8"
+
+# HIMMEL-4021: full renderer reads a non-default numeric 1m ceiling from a
+# fake registry, not the old design-name / auto branch. Konsole only records.
+ceiling_reg="$tmp/ceiling-registry.json"
+cat > "$ceiling_reg" <<'CEILING_EOF'
+{"floor":["qmd@himmel"],"catalog":["qmd@himmel"],"profiles":{"operator":null,"design":{"enable":[],"contextBudget":50000,"contextMode":"1m","autocompact":400000}}}
+CEILING_EOF
+d8profile="$tmp/c8profile"; mk_launch_stubs "$d8profile" "HIMMEL-4021-ceiling"; mkdir -p "$tmp/repo8profile"
+rc=0
+PLUGIN_PROFILES_REGISTRY="$ceiling_reg" LEG_CONTEXT='' RUN_LEG_ARGS='--profile design' \
+  run_leg "$d8profile" "$tmp/repo8profile" "HIMMEL-4021-ceiling" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d8profile" || true
+rec8profile="$(cat "$d8profile/record" 2>/dev/null || true)"
+check "profile numeric ceiling: full launch succeeds" "$rc" "0"
+contains "profile numeric ceiling: renderer carries 400000" "$rec8profile" "--autocompact 400000"
+not_contains "profile numeric ceiling: no hard-coded auto" "$rec8profile" "--autocompact auto"
+contains "profile numeric ceiling: model has 1m mode" "$rec8profile" "claude-sonnet-5[1m]"
 
 # codex-1 (round 3): a caller passing an ALREADY-SUFFIXED model
 # (claude-sonnet-5[1m]) under the DEFAULT (standard) context must still end
@@ -1601,6 +1620,7 @@ printf '%s\n' "${CLAUDEX_LANE_OK:-}" "${CLAUDE_CODE_EFFORT_LEVEL:-}" > "$(dirnam
 CLAUDEX_EOF
 cat > "$composed/profiles.mjs" <<'PROFILE_EOF'
 switch (process.argv[3]) {
+  case '--context': console.log('{"contextMode":"standard","autocompact":200000}'); break;
   case '--mcp-servers': console.log('["qmd"]'); break;
   case '--mcp-config': console.log('{"mcpServers":{"qmd":{"type":"http","url":"http://localhost:8181/mcp"}}}'); break;
   default: console.log('{"enabledPlugins":{},"permissions":{"allow":["Bash(bash \\"$HIMMEL_REPO/scripts/handover/merge-on-green.sh\\":*)"]}}');

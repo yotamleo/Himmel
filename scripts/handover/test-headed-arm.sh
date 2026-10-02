@@ -71,6 +71,8 @@ if ! host_modes_stick; then
   host_skip "headed-arm.sh's claim-lock root needs a chmod/mkdir -m 0700 that sticks; this host's modes do not"
   exit 0
 fi
+# Copied/mutant renderers still use the real resolver against fixture inputs.
+export HEADED_ARM_LEG_PROFILES="$HERE/../lanes/plugin-profiles.mjs"
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()        { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }

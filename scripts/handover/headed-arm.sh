@@ -397,12 +397,30 @@ NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-op
 # distinction costs nothing and matches how arm-resume.sh tells explicit
 # from default. This launcher is always console-class (is_console=1) --
 # it has no non-console callers, unlike arm-resume.sh's handover-name test.
+# HIMMEL-4021: the profile is validated before any wait/claim/launch. Legs
+# supply their selected profile; a direct console arm resolves console.
+_context_profile="${HEADED_ARM_CONTEXT_PROFILE:-console}"
+_context_profiles="${HEADED_ARM_LEG_PROFILES:-$(dirname "$0")/../lanes/plugin-profiles.mjs}"
+unset HEADED_ARM_CONTEXT_PROFILE
+if ! _context_json="$(node "$_context_profiles" "$_context_profile" --context)" \
+    || ! _profile_mode="$(printf '%s' "$_context_json" | jq -er '.contextMode | select(. == "standard" or . == "1m")')" \
+    || ! _profile_autocompact="$(printf '%s' "$_context_json" | jq -er '.autocompact | select(type == "number" and . >= 200000 and . <= 1000000 and floor == .)')"; then
+    echo "headed-arm: profile context resolver failed; refusing launch" >&2
+    exit 2
+fi
+if [ "$_profile_mode" = "standard" ] && [ "$_profile_autocompact" != "200000" ]; then
+    echo "headed-arm: standard profile must resolve autocompact 200000" >&2
+    exit 2
+fi
 if [ "$#" -ge 7 ]; then
     CONTEXT="$7"
     _headed_context_source=$(console_context_source_label 1)
 else
     console_context_default 1 "${CONSOLE_CONTEXT:-}"
     CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    if [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+        CONTEXT="$_profile_mode"
+    fi
     # HIMMEL-3279/3282: the source word (an env opt-in spells `explicit` too)
     # is the shared one arm-resume.sh emits, so the two paths cannot disagree.
     _headed_context_source=$(console_context_source_label 0)
@@ -418,7 +436,7 @@ fi
 # set in the launching shell. A resolved CONTEXT of 1m always means that
 # check already passed (the `elif` above only reaches 1m when it did), so
 # this only ever fires for an explicit positional `1m` without the env.
-if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ] && [ "$_profile_mode" != "1m" ]; then
     usage
     echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
     exit 2
@@ -433,12 +451,17 @@ fi
 # Strip any [1m] suffix the caller may have typed into MODEL directly, so
 # `standard` can guarantee its absence and `1m` never doubles it.
 MODEL="$(console_context_strip_1m_suffix "$MODEL")"
-AUTOCOMPACT="$(console_context_autocompact "$CONTEXT")"
+AUTOCOMPACT="$_profile_autocompact"
+if [ "$CONTEXT" = "standard" ]; then
+    AUTOCOMPACT="200000"
+elif [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
+    AUTOCOMPACT="auto"
+fi
 if [ "$CONTEXT" = "1m" ]; then
     if [ "$_headed_model_is_fable" -eq 1 ]; then
         # Measured fact: the CLI silently strips [1m] for Fable-family
         # models -- never claim to have set 1m context on one.
-        CONTEXT_REASON="context=1m ($_headed_context_source); model=$MODEL is Fable-family -- the CLI silently strips a [1m] suffix there, so it is NOT applied (autocompact=auto still is)"
+        CONTEXT_REASON="context=1m ($_headed_context_source); model=$MODEL is Fable-family -- the CLI silently strips a [1m] suffix there, so it is NOT applied (autocompact=$AUTOCOMPACT still is)"
     else
         MODEL="${MODEL}[1m]"
         CONTEXT_REASON="context=1m ($_headed_context_source); model=$MODEL"
