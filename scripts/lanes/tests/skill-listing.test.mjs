@@ -155,6 +155,45 @@ test('resolveProfile: a profile with no required plugins (bare) gets no override
   assert.deepEqual(Object.keys(r), ['enabledPlugins']);
 });
 
+// HIMMEL-4060: omitting cwd at either forwarding seam loses project runtime names.
+const scopedListingFixture = () => {
+  const configDir = mkConfigDir({});
+  const cwd = join(configDir, 'checkout');
+  mkdirSync(cwd);
+  const plugins = {};
+  for (const [id, scope, projectPath, name] of [
+    ['p1@himmel', 'user', undefined, 'user-runtime'],
+    ['lean-skills@himmel', 'project', cwd, 'x'.repeat(300)],
+    ['foreign@himmel', 'project', join(configDir, 'other-checkout'), 'y'.repeat(1500)],
+  ]) {
+    const installPath = join(configDir, 'plugins', id);
+    mkdirSync(join(installPath, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(installPath, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }));
+    plugins[id] = [{ scope, projectPath, installPath }];
+  }
+  writeFileSync(join(configDir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins }));
+  const entries = ['p1', 'lean-skills', 'foreign'].flatMap((p) =>
+    Array.from({ length: 8 }, (_, i) => plugin(`s${i}`, 1000, p)));
+  return { configDir, cwd, entries };
+};
+
+test('fraction: cwd includes the matching project runtime name but excludes foreign installs', () => {
+  const fixture = scopedListingFixture();
+  const args = { ...fixture, enabledIds: ['p1@himmel', 'lean-skills@himmel', 'foreign@himmel'], requiredIds: ['lean-skills@himmel'] };
+  const current = skillListingSettings(args).skillListingBudgetFraction;
+  const userOnly = skillListingSettings({ ...args, cwd: undefined }).skillListingBudgetFraction;
+  assert.ok(current > userOnly, `${current} vs ${userOnly}`);
+  assert.equal(skillListingSettings({ ...args, cwd: join(fixture.configDir, 'unrelated') }).skillListingBudgetFraction, userOnly);
+});
+
+test('resolveProfile: forwards cwd to the project-scoped listing calculation', () => {
+  const fixture = scopedListingFixture();
+  const args = { configDir: fixture.configDir, cwd: fixture.cwd, skillEntries: fixture.entries };
+  const current = resolveProfile(registry, 'user', args).skillListingBudgetFraction;
+  const userOnly = resolveProfile(registry, 'user', { ...args, cwd: undefined }).skillListingBudgetFraction;
+  assert.ok(current > userOnly, `${current} vs ${userOnly}`);
+});
+
 // HIMMEL-4068: the listing line is `<manifest name>:<skill> ...`, and the manifest
 // name (strict:true) can differ from the marketplace entry name the cache dir carries.
 test('fraction: a plugin listed under a longer manifest name costs more than under its entry name', () => {

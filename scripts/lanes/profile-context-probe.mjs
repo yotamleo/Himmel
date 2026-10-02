@@ -547,7 +547,7 @@ function main() {
     for (const name of profileNames) {
       let settings;
       try {
-        settings = resolveProfileByName(name, { installed, skillEntries: costEntries(), configDir });
+        settings = resolveProfileByName(name, { installed, skillEntries: costEntries(), configDir, cwd: REPO_ROOT });
       } catch (e) {
         process.stderr.write(`profile-context-probe: ${e.message}\n`);
         process.exitCode = 2;

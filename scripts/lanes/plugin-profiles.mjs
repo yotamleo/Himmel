@@ -486,7 +486,7 @@ function listingSettings(names, enabledPlugins, opts) {
   if (!opts.skillEntries) return {};
   const enabledIds = Object.entries(enabledPlugins).filter(([, on]) => on).map(([id]) => id);
   if (!listingLib) throw new Error('plugin-profiles: opts.skillEntries needs `await loadListingLib()` first');
-  return listingLib.skillListingSettings({ entries: opts.skillEntries, configDir: opts.configDir, enabledIds, requiredIds: [...new Set(names.flatMap((n) => listingLib.requiredIdsFor(n)))] });
+  return listingLib.skillListingSettings({ entries: opts.skillEntries, configDir: opts.configDir, cwd: opts.cwd, enabledIds, requiredIds: [...new Set(names.flatMap((n) => listingLib.requiredIdsFor(n)))] });
 }
 
 // HIMMEL-3567/HIMMEL-3572: the permission matcher compares literal command
@@ -742,7 +742,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     const { scanSkillCosts } = await import('./skill-cost.mjs');
     const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
     const skillEntries = scanSkillCosts({ cwd: process.cwd(), configDir }).entries;
-    const settings = resolveProfileByName(name, { addPlugins, installed, anchor: anchor ?? undefined, skillEntries, configDir });
+    const settings = resolveProfileByName(name, { addPlugins, installed, anchor: anchor ?? undefined, skillEntries, configDir, cwd: process.cwd() });
     if (settings === null) process.exit(0); // operator: nothing to inject
     process.stdout.write(JSON.stringify(settings) + '\n');
   } catch (e) {
