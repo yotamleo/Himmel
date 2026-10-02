@@ -10,13 +10,17 @@ lane_seed_fingerprint() {
   node -e '
 const fs=require("fs"), path=require("path"), crypto=require("crypto");
 const root=process.argv[1], hash=crypto.createHash("sha256");
-function walk(rel) {
+function walk(rel,ancestors=new Set()) {
   const p=path.join(root,rel);
   hash.update(JSON.stringify(rel)+"\n");
   let s;
   try { s=fs.lstatSync(p); } catch(e) { if(e.code==="ENOENT") { hash.update("absent\n"); return; } throw e; }
-  if(s.isSymbolicLink()) { hash.update("link\n"+JSON.stringify(fs.readlinkSync(p))+"\n"); }
-  else if(s.isDirectory()) { hash.update("dir\n"); for(const name of fs.readdirSync(p).sort()) walk(path.join(rel,name)); }
+  if(s.isSymbolicLink()) { hash.update("link\n"+JSON.stringify(fs.readlinkSync(p))+"\n"); try { s=fs.statSync(p); } catch(e) { if(e.code==="ENOENT") { hash.update("dangling\n"); return; } throw e; } }
+  if(s.isDirectory()) {
+    const real=fs.realpathSync(p); if(ancestors.has(real)) throw Error("cyclic seed source: "+rel);
+    const next=new Set(ancestors); next.add(real);
+    hash.update("dir\n"); for(const name of fs.readdirSync(p).sort()) walk(path.join(rel,name),next);
+  }
   else if(s.isFile()) { hash.update("file\n"+s.mode+"\n"+s.size+"\n"); hash.update(fs.readFileSync(p)); }
   else { throw Error("unsupported seed source: "+rel); }
 }
@@ -176,6 +180,8 @@ seed_with_lock() {
   seed_lock_ticks=0
   seed_lock_max=$(( SEED_LOCK_TIMEOUT * 2 ))
   while ! mkdir_err="$(lane_seed_publish_lock "$SEED_LOCK_CANDIDATE" "$LOCK" 2>&1)"; do
+    # ponytail: preexisting stale-check/rename race between delayed contenders;
+    # upgrade path: HIMMEL-4093 for atomic retirement.
     if seed_lock_is_stale && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
       rm -f "$LOCK.stale.$$/owner" 2>/dev/null || true
       rmdir "$LOCK.stale.$$" 2>/dev/null || true

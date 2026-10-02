@@ -4,13 +4,17 @@ function Get-LaneSeedFingerprint($Seed) {
   $FingerprintJs = @'
 const fs=require("fs"), path=require("path"), crypto=require("crypto");
 const root=process.argv[1], hash=crypto.createHash("sha256");
-function walk(rel) {
+function walk(rel,ancestors=new Set()) {
   const p=path.join(root,rel);
   hash.update(JSON.stringify(rel)+"\n");
   let s;
   try { s=fs.lstatSync(p); } catch(e) { if(e.code==="ENOENT") { hash.update("absent\n"); return; } throw e; }
-  if(s.isSymbolicLink()) { hash.update("link\n"+JSON.stringify(fs.readlinkSync(p))+"\n"); }
-  else if(s.isDirectory()) { hash.update("dir\n"); for(const name of fs.readdirSync(p).sort()) walk(path.join(rel,name)); }
+  if(s.isSymbolicLink()) { hash.update("link\n"+JSON.stringify(fs.readlinkSync(p))+"\n"); try { s=fs.statSync(p); } catch(e) { if(e.code==="ENOENT") { hash.update("dangling\n"); return; } throw e; } }
+  if(s.isDirectory()) {
+    const real=fs.realpathSync(p); if(ancestors.has(real)) throw Error("cyclic seed source: "+rel);
+    const next=new Set(ancestors); next.add(real);
+    hash.update("dir\n"); for(const name of fs.readdirSync(p).sort()) walk(path.join(rel,name),next);
+  }
   else if(s.isFile()) { hash.update("file\n"+s.mode+"\n"+s.size+"\n"); hash.update(fs.readFileSync(p)); }
   else { throw Error("unsupported seed source: "+rel); }
 }
@@ -164,6 +168,8 @@ try {
     } catch {
       if (Test-LaneSeedLockStale $Seed) {
         try {
+          # ponytail: preexisting stale-check/rename race between delayed contenders;
+          # upgrade path: HIMMEL-4093 for atomic retirement.
           Rename-Item -LiteralPath $lock -NewName ((Split-Path -Leaf $lock) + ".stale.$PID") -ErrorAction Stop
           try {
             Remove-Item -LiteralPath (Join-Path "$lock.stale.$PID" 'owner') -Force -ErrorAction Stop
