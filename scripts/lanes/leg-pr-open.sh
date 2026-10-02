@@ -119,8 +119,12 @@ compute_leg_burn_line() {
         fi
     fi
 
+    local profile="${HIMMEL_LEG_PROFILE:-}"
+    case "$profile" in
+        ''|*[!A-Za-z0-9._,-]*) profile=unknown ;;
+    esac
     local raw
-    if ! raw=$("$HERE/leg-burn.sh" "${transcript:-$session}" 2>&1); then
+    if ! raw=$("$HERE/leg-burn.sh" --profile "$profile" "${transcript:-$session}" 2>&1); then
         echo "WARN leg-pr-open: leg-burn.sh failed for '${transcript:-$session}': $raw" >&2
         # HIMMEL-3572 (CodeRabbit): never publish the local transcript path
         # into the PR body — it carries the operator's home dir, username and
@@ -146,7 +150,7 @@ compute_leg_burn_line() {
         return 0
     fi
 
-    echo "leg-burn: calls=$calls avg-ctx=$avg_ctx first-turn=$first_turn compactions=$compactions cost-eq=$cost_eq"
+    echo "leg-burn: calls=$calls avg-ctx=$avg_ctx first-turn=$first_turn compactions=$compactions cost-eq=$cost_eq profile=$profile"
 }
 
 burn_line=$(compute_leg_burn_line)
