@@ -8,6 +8,16 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.64] — 2026-10-02
+
+### Fixed
+- `.gitleaks.toml`: allowlist an anchored 40-hex commit SHA and the exact
+  literal `runClaudexSharedDispatch`, both false positives that stalled the
+  autosync commit (HIMMEL-4087).
+- `.pre-commit-config.yaml`: `check-json` skips `handovers/**/verdicts/`, and
+  the `shellcheck` exclude covers `specs/plan/<KEY>/tools/`, so a fresh vault no
+  longer stalls on judge evidence or plan tooling (HIMMEL-4087).
+
 ## [0.4.63] — 2026-09-29
 
 ### Fixed
