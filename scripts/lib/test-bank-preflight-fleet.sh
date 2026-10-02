@@ -76,7 +76,9 @@ run_pf() {
   # informational case into a launch. "$@" comes after, so a case's own
   # explicit assignment still overrides these defaults (env: later
   # duplicate assignments win).
-  env FLEET_CAP_OK= CADENCE_BANK_LAUNCH= "$@" HIMMEL_FLEET_SLOTS="$slots" FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
+  # The suite is the simulated launcher and remains alive between calls.
+  # A default preflight-subshell owner would correctly be reclaimed as dead.
+  env FLEET_CAP_OK= CADENCE_BANK_LAUNCH= CADENCE_BANK_CALLER_PID="$$" "$@" HIMMEL_FLEET_SLOTS="$slots" FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
     CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" \
     bash "$SUT" </dev/null 2>>"$W/err.log"
 }

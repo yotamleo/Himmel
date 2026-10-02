@@ -5,6 +5,8 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="$REPO/scripts/lib/bank-preflight.sh"
 PASS=0; FAIL=0
 W="$(mktemp -d -t bank-preflight.XXXXXX)"; trap 'rm -rf "$W"' EXIT
+# All bank reads prune reservations, so isolate even bank-only cases.
+export HIMMEL_FLEET_SLOTS="$W/fleet-slots" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=native
 
 # NO_FLEET: an empty-output ps stub, isolating every bank-only case below
 # from this machine's OWN running fleet (a real `ps -eo args` would count

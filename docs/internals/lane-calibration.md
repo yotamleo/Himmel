@@ -32,6 +32,12 @@ cost. Fleet admission still applies, but native Claude and codex subscription
 banks do not. The backend refuses unknown credit or key-limit readings and
 an effective balance below `OPENROUTER_MIN_CREDIT_USD` (default **3 USD**):
 the smaller of account credit and the key's `limit_remaining` is available.
+`bank-preflight.sh` selects this gate via `CADENCE_BANK_LANE=openrouter`
+(or `LEG_LANE=openrouter`), reusing the balance helper and the same floor:
+`PROCEED` at/above the floor, `SKIPPED-BANK` below it, `BANK-UNKNOWN` when
+unmeasurable. Tick's `bank=openrouter:<verdict>` reports that lane verdict;
+its separate `or=` reading remains informational. Native and claudex bank
+paths are unchanged (HIMMEL-4081).
 
 `scripts/lanes/openrouter-cost.sh --since <launch.log>` reads account metadata
 only and prints the effective balance plus account-wide spend since launch

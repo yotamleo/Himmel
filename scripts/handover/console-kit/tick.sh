@@ -973,7 +973,13 @@ fi
 # and the ledger goes to /dev/null so a tick writes no cadence-ledger row.
 # ponytail: bank-preflight still takes its fleet admission lock and prunes
 # expired/consumed reservations while it counts, exactly as any bank read does.
-fleet_out="$(CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null bash "$REPO/scripts/lib/bank-preflight.sh" 2>&1 >/dev/null)" || fleet_out=""
+fleet_out="$(CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null bash "$REPO/scripts/lib/bank-preflight.sh" 2>&1)" || fleet_out=""
+# HIMMEL-4081: bank= uses the selected lane's own preflight verdict. Keep
+# or= below informational; it never stands in for the bank admission gate.
+if [ "${CADENCE_BANK_LANE:-${LEG_LANE:-native}}" = openrouter ]; then
+    or_verdict="$(printf '%s\n' "$fleet_out" | grep -E '^(PROCEED|SKIPPED-BANK|BANK-UNKNOWN|SKIPPED-FLEET)$' | tail -n 1)"
+    bank="openrouter:${or_verdict:-BANK-UNKNOWN}"
+fi
 fleet_total="$(printf '%s\n' "$fleet_out" | sed -n 's/^bank-preflight: FLEET .*total=\([0-9][0-9]*\)\/\([0-9][0-9]*\)$/\1 \2/p' | tail -n 1)"
 underfill_min="${TICK_UNDERFILL_MIN:-10}"
 case "$underfill_min" in ''|*[!0-9]*) underfill_min=10 ;; esac

@@ -68,7 +68,7 @@ LAUNCH_INTENT="${CADENCE_BANK_LAUNCH:-}"
 # codex weekly bank instead (scripts/lanes/bank-status.ts's "claudex" row) —
 # a claudex leg must never be refused by the Claude subscription bank, a
 # different bucket entirely.
-LANE="${CADENCE_BANK_LANE:-native}"
+LANE="${CADENCE_BANK_LANE:-${LEG_LANE:-native}}"
 
 is_num() { case "$1" in ''|*[!0-9.]*) return 1 ;; *.*.*) return 1 ;; *[0-9]*) return 0 ;; *) return 1 ;; esac; }
 is_int() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
@@ -646,6 +646,34 @@ FLEET_CANDIDATES
   return 0
 }
 
+# HIMMEL-4089: early reclaim only for a confirmed dead owner with no live
+# named session. Admission already serializes reservations; use its fenced
+# reclaim gate as well, rechecking identity and liveness before the rename.
+_fleet_reclaim_dead_reservation() {
+  local dir="$1" owner="$2" expires="$3" name="$4" sname="$5" gate="$SLOTS/.admit.reclaim" fence rc=1
+  case "$owner" in ''|0|*[!0-9]*) return 1 ;; esac
+  kill -0 "$owner" 2>/dev/null && return 1
+  _fleet_gate_take "$gate" || return 1
+  fence="$_fleet_gate_fence"
+  _fleet_admit_hook reservation-pre-verify "$dir"
+  if [ "$(cat "$SLOTS/.admit/pid" 2>/dev/null)" = "$$" ] &&
+     [ "$(cat "${dir}pid" 2>/dev/null)" = "$owner" ] &&
+     [ "$(cat "${dir}expires" 2>/dev/null)" = "$expires" ] &&
+     [ "$(cat "${dir}name" 2>/dev/null)" = "$sname" ] &&
+     ! kill -0 "$owner" 2>/dev/null && _fleet_census; then
+    if ! { [ -n "$name" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$name"; } &&
+       ! { [ -n "$sname" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$sname"; }; then
+      # Rename through our fence: a paused holder cannot act after gate break.
+      if mv "${dir%/}" "$fence/reservation" 2>/dev/null; then
+        rm -rf "$fence/reservation" 2>/dev/null
+        rc=0
+      fi
+    fi
+  fi
+  _fleet_gate_drop "$gate" "$fence"
+  return "$rc"
+}
+
 if ! _fleet_census; then
   echo "bank-preflight: fleet process census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than silently permitting an unbounded launch" >&2
   echo "bank-preflight: FLEET ?/$FLEET_CAP" >&2
@@ -817,6 +845,10 @@ if [ "$_fleet_admitted" -eq 1 ]; then
         rm -rf "$_fleet_resv" 2>/dev/null
         continue
       fi
+      _fleet_resv_owner="$(cat "${_fleet_resv}pid" 2>/dev/null)" || _fleet_resv_owner=""
+      if _fleet_reclaim_dead_reservation "$_fleet_resv" "$_fleet_resv_owner" "$_fleet_resv_expires" "$_fleet_resv_name" "$_fleet_resv_sname"; then
+        continue
+      fi
       fleet_reserved=$((fleet_reserved + 1))
     done
     fleet_n=$((fleet_n + fleet_reserved))
@@ -982,11 +1014,28 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   _fleet_release_admit "$SLOTS/.admit"
 fi
 
-# HIMMEL-4076: fleet admission above applies to every lane. OpenRouter's
-# backend gates on credits and key limit_remaining; neither subscription
-# bank applies, and no bank probe or fabricated utilization is needed here.
+# HIMMEL-4081: use the shared effective balance (credit vs key cap), never
+# the subscription bank. The launcher uses the same floor, default three USD.
 if [ "$LANE" = openrouter ]; then
-  echo "bank-preflight: openrouter lane — leg=$LEG proceeding to backend credit floor" >&2
+  _or_floor="${OPENROUTER_MIN_CREDIT_USD:-3}"
+  is_num "$_or_floor" || _or_floor=3
+  _or_cost="$(bash "$REPO/scripts/lanes/openrouter-cost.sh" 2>/dev/null)" || _or_cost=""
+  _or_balance="${_or_cost%% *}"
+  case "$_or_balance" in
+    balance=*:credit|balance=*:key-limit_remaining)
+      _or_balance="${_or_balance#balance=}"
+      _or_balance="${_or_balance%:*}"
+      ;;
+    *) _or_balance="" ;;
+  esac
+  if ! is_num "${_or_balance#-}"; then
+    echo "bank-preflight: openrouter effective balance unknown — leg=$LEG refusing" >&2
+    emit BANK-UNKNOWN
+  fi
+  echo "bank-preflight: openrouter balance=$_or_balance floor=$_or_floor leg=$LEG" >&2
+  if ! awk -v b="$_or_balance" -v f="$_or_floor" 'BEGIN{exit !(b>=f)}'; then
+    emit SKIPPED-BANK
+  fi
   emit PROCEED
 fi
 
