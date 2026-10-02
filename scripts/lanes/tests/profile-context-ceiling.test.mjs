@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import * as PP from '../plugin-profiles.mjs';
+import { BASH_BIN } from './lib/resolve-bash.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const registry = () => ({
@@ -30,7 +31,7 @@ function fixture(t, reg = registry()) {
     HIMMEL_DENIAL_ACK_DIR: join(dir, 'acks'), XDG_RUNTIME_DIR: dir } };
 }
 function launch(f, profile, extra = {}) {
-  return spawnSync('bash', [join(ROOT, 'scripts/handover/console-kit/headed-arm-leg.sh'),
+  return spawnSync(BASH_BIN, [join(ROOT, 'scripts/handover/console-kit/headed-arm-leg.sh'),
     '--dry-run', '--profile', profile, 'HIMMEL-4021-fixture', join(f.dir, 'brief.md'),
     join(f.dir, 'signal'), '99999999999', join(f.dir, 'launch.log'), 'claude-sonnet-5-5'],
   { cwd: f.dir, env: { ...f.env, ...extra }, encoding: 'utf8', timeout: 20000 });
@@ -81,7 +82,7 @@ test('leg launcher refuses malformed autocompact even on dry-run', (t) => {
 test('headed console launcher validates the profile before rendering argv', (t) => {
   const r = registry(); r.profiles.console.autocompact = '200000';
   const f = fixture(t, r);
-  const result = spawnSync('bash', [join(ROOT, 'scripts/handover/headed-arm.sh'), '--dry-run',
+  const result = spawnSync(BASH_BIN, [join(ROOT, 'scripts/handover/headed-arm.sh'), '--dry-run',
     'HIMMEL-4021-console-fixture', join(f.dir, 'brief.md'), join(f.dir, 'signal'),
     '99999999999', join(f.dir, 'launch.log')], { cwd: f.dir, env: f.env, encoding: 'utf8' });
   assert.equal(result.status, 2, result.stdout + result.stderr);
