@@ -300,10 +300,12 @@ function psShapeViolations(s) {
     if (checked.status !== 0) throw Error('PS identity lookup failed');
     const observed = checked.stdout;
     const run = id => cp.spawnSync(process.execPath, ['-e', retire.js, lock, id], {encoding:'utf8'});
-    if (run(observed).status !== 0) throw Error('first stale contender did not retire');
+    const failed = cp.spawnSync(process.execPath, ['-e', 'require("fs").renameSync=()=>{throw Object.assign(Error("fixture rename failure"),{code:"EIO"});};\n' + retire.js, lock, observed], {encoding:'utf8'});
+    if (failed.status === 0 || !fs.existsSync(lock)) throw Error('retirement failure injection did not leave the stale lock');
+    if (run(observed).status !== 0) throw Error('first stale contender could not recover failed retirement');
     const retired = lock + '.stale.' + observed.replace(':', '.');
     if (!fs.readdirSync(retired).length) throw Error('empty retirement allows replacement');
-    const old = fs.statSync(path.join(retired, 'lock'), {bigint:true});
+    const old = fs.statSync(retired, {bigint:true});
     if (old.dev + ':' + old.ino !== observed) throw Error('retired immutable identity changed');
     fs.mkdirSync(lock); // Fresh acquirer publishes a populated lock.
     fs.writeFileSync(path.join(lock, 'owner'), 'fresh');

@@ -128,18 +128,22 @@ try {
 }
 
 function Move-LaneSeedLockStale($Seed) {
-  # Reserve each checked identity exactly once. Keep the reservation and the
-  # retired inode: even a contender delayed after rechecking cannot rename twice.
+  # Keep a non-empty destination named for the checked inode. Two contenders
+  # delayed even after rechecking target the SAME destination; only one rename
+  # can succeed. No pre-rename reservation can strand a lock after a crash.
   $RetireJs = @'
 const fs=require("fs"), path=require("path"), lock=process.argv[1], identity=process.argv[2];
 try {
   if(!/^[0-9]+:[1-9][0-9]*$/.test(identity)) process.exit(1);
   const retired=lock+".stale."+identity.replace(":",".");
-  fs.mkdirSync(retired);
-  fs.writeFileSync(path.join(retired,"reserved"),identity,{flag:"wx"});
   const s=fs.lstatSync(lock,{bigint:true});
   if(!s.isDirectory() || s.dev+":"+s.ino!==identity) process.exit(1);
-  fs.renameSync(lock,path.join(retired,"lock"));
+  // Populate empty legacy locks without overwriting a published owner.
+  try { fs.writeFileSync(path.join(lock,"owner"),"retired legacy seed lock\n",{flag:"wx"}); }
+  catch(e) { if(e.code!=="EEXIST") throw e; }
+  const checked=fs.lstatSync(lock,{bigint:true});
+  if(!checked.isDirectory() || checked.dev+":"+checked.ino!==identity) process.exit(1);
+  fs.renameSync(lock,retired);
 } catch(e) { process.exit(1); }
 '@
   & node -e $RetireJs "$($Seed.ConfigDir).seed-lock" $Seed.LockIdentity
