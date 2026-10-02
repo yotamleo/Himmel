@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 # Script invocation shares the caller process environment. Save every variable
 # this lane changes before key loading, and restore even on refusal or failure.
-$LaneEnvNames = @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')
+$LaneEnvNames = @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_MAX_CONTEXT_TOKENS','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')
 $SavedLaneEnv = [Environment]::GetEnvironmentVariables('Process')
 try {
 $Here = $PSScriptRoot
@@ -48,6 +48,8 @@ try {
  // Ancestor markers also fence nested workspaces (including .salus-profile).
  for(let p=cwd;;p=path.dirname(p)) {
   if(fs.existsSync(path.join(p,".salus"))||fs.existsSync(path.join(p,".salus-profile"))) fail("PHI-marked workspace");
+  const marker=path.join(p,".obsidian");
+  if(fs.existsSync(marker)&&fs.statSync(marker).isDirectory())fail("vault corpus");
   if(path.dirname(p)===p)break;
  }
  for(const name of ["phi-roots","egress-denylist"]) {
@@ -244,8 +246,18 @@ try {
 '@
 # --- config-dir seed concurrency lock (HIMMEL-830) ---------------------------
 $Lock            = "$ConfigDir.seed-lock"
-$SeedLockTimeout = if ($env:CLAUDE_LANE_SEED_LOCK_TIMEOUT) { [int]$env:CLAUDE_LANE_SEED_LOCK_TIMEOUT } else { 60 }
-$SeedLockStale   = if ($env:CLAUDE_LANE_SEED_LOCK_STALE) { [int]$env:CLAUDE_LANE_SEED_LOCK_STALE } else { 120 }
+function Read-SeedLockSeconds([string]$Name, [int]$Default) {
+  $Raw = [Environment]::GetEnvironmentVariable($Name, 'Process')
+  if ($null -eq $Raw) { return $Default }
+  $Seconds = 0
+  if ($Raw -notmatch '^[0-9]+$' -or -not [int]::TryParse($Raw, [ref]$Seconds)) {
+    [Console]::Error.WriteLine("claude-deepseek: invalid seed setting $Name; expected a nonnegative integer.")
+    exit 4
+  }
+  return $Seconds
+}
+$SeedLockTimeout = Read-SeedLockSeconds 'CLAUDE_LANE_SEED_LOCK_TIMEOUT' 60
+$SeedLockStale   = Read-SeedLockSeconds 'CLAUDE_LANE_SEED_LOCK_STALE' 120
 
 function Test-SeedLockStale {
   if (-not (Test-Path -LiteralPath $Lock -PathType Container)) { return $false }
@@ -297,7 +309,7 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { [Console]::Error.
 $env:ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic'
 $env:ANTHROPIC_AUTH_TOKEN = $env:DEEPSEEK_API_KEY
 $env:ANTHROPIC_API_KEY = ''
-$env:ANTHROPIC_MODEL = 'deepseek-flash[1m]'
+$env:ANTHROPIC_MODEL = 'sonnet'
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL = 'deepseek-flash[1m]'
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'deepseek-flash[1m]'
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'deepseek-flash'
@@ -305,7 +317,9 @@ $env:ANTHROPIC_DEFAULT_OPUS_MODEL_NAME = 'DeepSeek Flash 1M'
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = 'DeepSeek Flash 1M'
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME = 'DeepSeek Flash'
 $env:CLAUDE_CODE_SUBAGENT_MODEL = 'deepseek-flash'
-$env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = '786432'
+$ContextWindow = '786432'
+$env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $ContextWindow
+$env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = $ContextWindow
 $env:CLAUDE_CODE_EFFORT_LEVEL = 'max'
 # ponytail: gateway lacks safeguard results, remove after HIMMEL-4086 verifies support.
 $env:CLAUDE_CODE_AUTO_MODE_SERVER = '0'

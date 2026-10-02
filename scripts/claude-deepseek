@@ -34,6 +34,8 @@ try {
  // Ancestor markers also fence nested workspaces (including .salus-profile).
  for(let p=cwd;;p=path.dirname(p)) {
   if(fs.existsSync(path.join(p,".salus"))||fs.existsSync(path.join(p,".salus-profile"))) fail("PHI-marked workspace");
+  const marker=path.join(p,".obsidian");
+  if(fs.existsSync(marker)&&fs.statSync(marker).isDirectory())fail("vault corpus");
   if(path.dirname(p)===p)break;
  }
  for(const name of ["phi-roots","egress-denylist"]) {
@@ -205,11 +207,12 @@ try {
 rmdir "$LOCK" || seed_fail 'release seed lock'
 trap - EXIT
 command -v claude >/dev/null 2>&1 || { echo 'claude-deepseek: claude missing from PATH.' >&2; exit 2; }
-# Explicit slugs avoid Claude opus alias routing to V4 Pro rates.
+# Route the recognized alias to Flash, never the provider opus/V4 Pro alias.
+CONTEXT_WINDOW=786432
 export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
 export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
 export ANTHROPIC_API_KEY=''
-export ANTHROPIC_MODEL='deepseek-flash[1m]'
+export ANTHROPIC_MODEL=sonnet
 export ANTHROPIC_DEFAULT_OPUS_MODEL='deepseek-flash[1m]'
 export ANTHROPIC_DEFAULT_SONNET_MODEL='deepseek-flash[1m]'
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash
@@ -217,7 +220,8 @@ export ANTHROPIC_DEFAULT_OPUS_MODEL_NAME='DeepSeek Flash 1M'
 export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME='DeepSeek Flash 1M'
 export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME='DeepSeek Flash'
 export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-flash
-export CLAUDE_CODE_AUTO_COMPACT_WINDOW=786432
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CONTEXT_WINDOW"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CONTEXT_WINDOW"
 export CLAUDE_CODE_EFFORT_LEVEL=max
 # ponytail: gateway lacks safeguard results, remove after HIMMEL-4086 verifies support.
 export CLAUDE_CODE_AUTO_MODE_SERVER=0
