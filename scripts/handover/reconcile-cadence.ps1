@@ -44,7 +44,7 @@ $Runner = Join-Path $PSScriptRoot 'reconcile-cadence.sh'
 
 function Resolve-GitBash {
     if ($BashPath) { return $BashPath }
-    $git = (Get-Command git.exe -ErrorAction Stop).Source
+    $git = (Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     # <GitRoot>\cmd\git.exe or <GitRoot>\bin\git.exe -> <GitRoot>\bin\bash.exe
     $gitRoot = Split-Path -Parent (Split-Path -Parent $git)
     $bash = Join-Path $gitRoot 'bin\bash.exe'

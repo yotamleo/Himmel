@@ -115,6 +115,10 @@ non_claude_lane=""
 case "${ANTHROPIC_BASE_URL:-}" in
     *api.z.ai*) non_claude_lane="ANTHROPIC_BASE_URL=api.z.ai" ;;
 esac
+# Match the launcher's configured proxy exactly, not arbitrary loopback URLs.
+if [ -z "$non_claude_lane" ] && [ "${ANTHROPIC_BASE_URL:-}" = "${CODEX_PROXY_BASE_URL:-http://127.0.0.1:8317}" ]; then
+    non_claude_lane="ANTHROPIC_BASE_URL=codex proxy"
+fi
 if [ -z "$non_claude_lane" ] && [ -n "${HERMES_ENGINE:-}" ]; then
     non_claude_lane="HERMES_ENGINE set"
 fi

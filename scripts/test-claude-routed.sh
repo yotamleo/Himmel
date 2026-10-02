@@ -58,7 +58,8 @@ t "missing key exits 2" 2
 # 20128) + auth from OMNIROUTE_API_KEY + config dir ~/.claude-routed. Tier aliases
 # stay the GLM values (the router config defines these aliases).
 setup; KEY="omni-test-123"
-t "launch with key" 0
+CLAUDE_CODE_AUTO_MODE_SERVER=1 t "launch with key" 0
+grep -qxF 'CLAUDE_CODE_AUTO_MODE_SERVER=0' "$WORK/child-env.txt" || { echo "FAIL: child env missing CLAUDE_CODE_AUTO_MODE_SERVER=0"; FAILS=$((FAILS+1)); }
 for pair in \
   "ANTHROPIC_BASE_URL=http://127.0.0.1:20128" \
   "ANTHROPIC_AUTH_TOKEN=omni-test-123" \

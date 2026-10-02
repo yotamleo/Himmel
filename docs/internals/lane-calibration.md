@@ -39,6 +39,19 @@ unmeasurable. Tick's `bank=openrouter:<verdict>` reports that lane verdict;
 its separate `or=` reading remains informational. Native and claudex bank
 paths are unchanged (HIMMEL-4081).
 
+The launcher keeps the session pin (`OPENROUTER_MODEL`) separate from subagent
+tiers: `OPENROUTER_HAIKU` defaults to `anthropic/claude-haiku-4.5` (200k context),
+`OPENROUTER_SONNET` to `anthropic/claude-sonnet-5.5` (1M), and `OPENROUTER_OPUS`
+to `anthropic/claude-opus-5.5` (1M). Each independently overrides its
+`ANTHROPIC_DEFAULT_*_MODEL` export, including in managed legs. Tier overrides
+must exactly match the launcher's offline synchronous Claude catalog snapshot, verified
+against the public OpenRouter model list on **2026-10-02**; unknown or malformed
+slugs (including asynchronous `:batch` variants) refuse with exit 2 before
+key resolution or any network access. Newly
+listed slugs require refreshing both launcher twins' allowlists; launch does
+not fetch the model list. A session uses a family alias only when that alias
+resolves to its exact pin, otherwise it retains the explicit session slug.
+
 `scripts/lanes/openrouter-cost.sh --since <launch.log>` reads account metadata
 only and prints the effective balance plus account-wide spend since launch
 (not a per-session attribution). Credits metadata can lag: an immediate

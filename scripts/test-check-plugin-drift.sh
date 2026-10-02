@@ -1045,6 +1045,25 @@ if grepq "$out13" '^  stream-behind: BEHIND'; then ok "tag_prefix: newer skill-v
 if grepq "$out13" '^  stream-none: ? no stable version tags'; then ok "tag_prefix: no tag in the stream -> UNCHECKED, never a false CURRENT"; else bad "stream-none not UNCHECKED; $(grep stream-none "$W13/out.txt")"; fi
 if grepq "$out13" '^  sub-ok: CURRENT'; then ok "git-subdir sha pin at HEAD -> CURRENT"; else bad "git-subdir sub-ok not CURRENT; $(grep sub-ok "$W13/out.txt")"; fi
 if grepq "$out13" '^  sub-behind: BEHIND'; then ok "git-subdir sha pin behind HEAD -> BEHIND"; else bad "git-subdir source missing from the pinned-remote class; $(grep sub-behind "$W13/out.txt")"; fi
+# HIMMEL-4019: standalone adoption targets must be checked even when absent
+# from our marketplace. Reuse the same gh boundary and state fixture.
+printf '{"plugins":[]}' >"$W13/m.json"
+cat >"$W13/u.json" <<JSON
+{
+ "candidate-release-current":{"standalone":true,"upstream_repo":"o/stream-cur","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v","ref":"$SUB_SHA"},
+ "candidate-release-behind":{"standalone":true,"upstream_repo":"o/stream-behind","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v","ref":"$SUB_SHA"},
+ "candidate-head-current":{"standalone":true,"upstream_repo":"o/sub-ok","track":"head","ref":"$SUB_SHA"},
+ "candidate-head-behind":{"standalone":true,"upstream_repo":"o/sub-behind","track":"head","ref":"$SUB_SHA"}
+}
+JSON
+out14="$(GHSTATE="$W13/state" PATH="$W13/bin:$PATH" DRIFT_MJSON="$W13/m.json" DRIFT_UPSTREAMS="$W13/u.json" DRIFT_REGISTRY="$W13/empty.json" DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$SCRIPT" 2>&1)"; rc14=$?
+for verdict in 'candidate-release-current: CURRENT' 'candidate-release-behind: BEHIND' 'candidate-head-current: CURRENT' 'candidate-head-behind: BEHIND'; do
+  if grepq "$out14" -F "$verdict"; then ok "standalone target: $verdict"; else bad "standalone target missing verdict: $verdict; $out14"; fi
+done
+if [ "$rc14" -eq 2 ]; then ok "standalone drift exits 2"; else bad "standalone drift rc=$rc14; expected 2"; fi
+printf '{"bad":{"standalone":true,"upstream_repo":"o/sub-ok","track":"typo","ref":"%s"}}' "$SUB_SHA" >"$W13/u.json"
+out14="$(GHSTATE="$W13/state" PATH="$W13/bin:$PATH" DRIFT_MJSON="$W13/m.json" DRIFT_UPSTREAMS="$W13/u.json" DRIFT_REGISTRY="$W13/empty.json" DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$SCRIPT" 2>&1)"; rc14=$?
+if [ "$rc14" -eq 3 ] && grepq "$out14" 'parse failed'; then ok "invalid standalone track is INCOMPLETE, never current"; else bad "invalid standalone target rc=$rc14; $out14"; fi
 rm -rf "$W13"
 
 echo ""

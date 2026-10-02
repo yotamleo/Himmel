@@ -51,7 +51,7 @@ if "%1"=="-m" if "%2"=="pre_commit" if "%3"=="install" exit /b 17
 exit /b 0
 "@
 
-  $realPwsh = (Get-Command pwsh -CommandType Application).Source
+  $realPwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
   $oldPath = $env:Path
   $oldRoot = $env:SETUP_FAKE_ROOT
   $oldHome = $env:HOME

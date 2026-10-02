@@ -263,6 +263,20 @@ jobs:
       # authoritative check a bypassed or skipped local hook can no longer
       # dodge (HIMMEL-3025 is exactly the kind of leak this surfaces).
       - run: bash scripts/hooks/check-hook-lib-suites.sh
+      # HIMMEL-4096: .ps1 suites are invisible to run-shell-tests.sh. Ubuntu
+      # runners ship pwsh; require positive completion and reject suite skips.
+      # DeepSeek wiring remains deferred until its PS balance path is fixed.
+      - name: Codex PowerShell launcher suite (ubuntu)
+        shell: bash
+        run: |
+          set -o pipefail
+          pwsh -NoProfile -File scripts/test-claude-codex.ps1 | tee codex-ps.log
+          if grep -q '^SKIP' codex-ps.log; then
+            echo "::error::Codex PowerShell suite SKIPPED — a SKIP is not a pass"; exit 1
+          fi
+          if ! grep -q '^ALL PASS$' codex-ps.log; then
+            echo "::error::Codex PowerShell suite did not report success"; exit 1
+          fi
 
   guardrail-matrices:
     # HIMMEL-1522: the egress matrix decides whether a corpus may leave the
@@ -676,6 +690,8 @@ jobs:
         # is 13 (it was 10 when the whole step was refresh + install).
         timeout-minutes: 13
         run: |
+          started=$SECONDS
+          trap 'echo "at/atd install: duration_seconds=$((SECONDS - started))"' EXIT
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
           # HIMMEL-4073: try the plain install first (the runner's package
           # index is usually fresh enough); only a failure pays for an index

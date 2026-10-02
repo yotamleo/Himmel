@@ -35,5 +35,31 @@
     "upstream_repo": "uxKero/anydesign",
     "track": "release",
     "synced_base": "v0.6.0"
+  },
+  "superpowers": {
+    "standalone": true,
+    "upstream_repo": "obra/superpowers",
+    "track": "release",
+    "synced_base": "v6.4.2",
+    "ref": "8ca22dba9a94f28898bbce59f2537ff4d87c747d"
+  },
+  "mattpocock-skills": {
+    "standalone": true,
+    "upstream_repo": "mattpocock/skills",
+    "track": "head",
+    "ref": "d81f3a183412e71a5b1e84ca21bc1a35eea03a60"
+  },
+  "coderabbit": {
+    "standalone": true,
+    "upstream_repo": "coderabbitai/skills",
+    "track": "head",
+    "ref": "59945da347a93f9937d3fb09f5ba81a16010351f"
+  },
+  "ponytail": {
+    "standalone": true,
+    "upstream_repo": "DietrichGebert/ponytail",
+    "track": "release",
+    "synced_base": "v4.10.0",
+    "ref": "1d95ff7d39de12d87014ea40d4e22201bddc501b"
   }
 }

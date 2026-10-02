@@ -20,7 +20,7 @@ $ScriptDir = $PSScriptRoot
 $Launcher  = Join-Path $ScriptDir 'claude-routed.ps1'
 # Directory holding pwsh itself — a PATH that keeps pwsh (needed to spawn the
 # launcher) but drops node lets T17 simulate "node absent entirely".
-$PwshDir   = Split-Path -Parent (Get-Command pwsh -ErrorAction Stop).Source
+$PwshDir   = Split-Path -Parent (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
 $script:fails = 0
 function Pass($m) { Write-Host "  ok: $m" }
@@ -530,7 +530,7 @@ try {
   # HIMMEL-1426: resolve pwsh by absolute path so Start-Process doesn't fall
   # back to ShellExecute bare-name resolution (the "how do you want to open
   # this file?" picker). Same idiom as the $PwshDir line at the top of the file.
-  $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
+  $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
   $pa = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -NoNewWindow -PassThru
   $pb = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -NoNewWindow -PassThru
   $pa.WaitForExit(); $pb.WaitForExit()

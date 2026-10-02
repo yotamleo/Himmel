@@ -570,6 +570,10 @@ export ANTHROPIC_MODEL="$CODEX_MODEL"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CODEX_HAIKU"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$CODEX_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$CODEX_MODEL"
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+# https://code.claude.com/docs/en/llm-gateway-protocol#feature-pass-through
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CODEX_CONTEXT_WINDOW"
 # HIMMEL-1887: AUTO_COMPACT_WINDOW sets the compaction THRESHOLD; it does not
 # declare the model's window. Claude Code resolves the effective compact window

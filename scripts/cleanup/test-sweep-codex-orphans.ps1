@@ -480,7 +480,7 @@ if (-not $writerIsWindows) {
     [void](New-Item -ItemType Directory -Path $leaseTestDir -Force)
     [void](New-Item -ItemType Directory -Path $registryLeaseDir -Force)
     Set-Content -LiteralPath $brokerScript -Value 'setInterval(() => {}, 1000);' -Encoding UTF8
-    $nodePath = (Get-Command node -ErrorAction Stop).Source
+    $nodePath = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $brokerArgs = "$brokerScript serve --endpoint `"pipe:\\.\pipe\cxc-$leaseToken-codex-app-server`" --cwd `"$RepoRoot`""
     $brokerProc = Start-Process -FilePath $nodePath -ArgumentList $brokerArgs -WorkingDirectory $RepoRoot -NoNewWindow -PassThru
     $writerArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$LeaseWriter`" -ClientPid $PID -HeartbeatSeconds 1 -LeaseDir `"$registryLeaseDir`""

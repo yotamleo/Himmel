@@ -198,6 +198,15 @@ never force-release on the flag alone.
 `tick.sh --legs-from <manifest>` (HIMMEL-3748) reads the same absolute docs
 from a fleet manifest that `console-kit/fleet-manifest.sh add|remove` keeps,
 re-read every sample, so a dispatch or wrap needs no waiter re-start.
+Pass `--fleet <manifest>` before the positional arguments to
+`console-kit/headed-arm-leg.sh` and `console-kit/close-wrapped-leg.sh` to keep
+that manifest updated automatically: launch adds its doc only after a successful
+handoff; close removes its doc only on a successful close (including benign
+prune skips). Failed/refused launches and closes leave the manifest unchanged.
+Without the flag, both verbs keep their existing behavior. Dry-run launches
+never update the manifest. An update failure returns nonzero and reports that
+the launch/close already happened; it does not undo it. Nonces remain console-only
+inputs to `live-state.sh --nonce`, never sourced from the manifest.
 
 ## Claudex legs: the inbox is the only channel
 

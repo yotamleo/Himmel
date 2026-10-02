@@ -448,6 +448,10 @@ $env:ANTHROPIC_MODEL              = $RoutedModel
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $RoutedHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $RoutedModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $RoutedModel
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+# https://code.claude.com/docs/en/llm-gateway-protocol#feature-pass-through
+$env:CLAUDE_CODE_AUTO_MODE_SERVER = '0'
 $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $RoutedContextWindow
 $env:CLAUDE_CONFIG_DIR            = $ConfigDir
 

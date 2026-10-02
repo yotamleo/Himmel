@@ -11,7 +11,7 @@ trap 'rm -rf "$TMP"' EXIT
 # Hermetic lane/env knobs: operator overrides from the RUNNING session must not
 # change the shipped-default contract exercised below. Test 1b and individual
 # cases re-set the values they cover explicitly.
-unset ANTHROPIC_BASE_URL HERMES_ENGINE CODEX_ADAPTER CODEX_THREAD_ID
+unset ANTHROPIC_BASE_URL CODEX_PROXY_BASE_URL HERMES_ENGINE CODEX_ADAPTER CODEX_THREAD_ID
 unset AUTO_ARM_DISABLE AUTO_ARM_THRESHOLD AUTO_ARM_CACHE AUTO_ARM_STATE_DIR
 unset AUTO_ARM_CHECK_INTERVAL AUTO_ARM_MAX_CACHE_AGE AUTO_ARM_MAX_ARM_FAILURES
 unset AUTO_ARM_STALE_ESCALATE_AGE AUTO_ARM_STALE_MIN_CHECKS AUTO_ARM_BIN
@@ -141,6 +141,42 @@ do
     assert_file "$desc pass-through does not arm" absent "$ARM_LOG"
     assert_grep "$desc pass-through emits lane note" "non-Claude lane" "$STDERR_LOG"
 done
+
+# Removing exact proxy detection must block the claudex cases; broadening it
+# to every loopback URL must fail the unrelated/default-with-override controls.
+echo "Test 1c: claudex proxy matching at Claude seven_day 97%"
+for spec in \
+    'default|http://127.0.0.1:8317||0' \
+    'configured|http://localhost:9321|http://localhost:9321|0' \
+    'remote|https://codex-proxy.example.test|https://codex-proxy.example.test|0' \
+    'native|||2' \
+    'native-configured||http://localhost:9321|2' \
+    'unrelated|http://127.0.0.1:8318||2' \
+    'overridden-default|http://127.0.0.1:8317|http://localhost:9321|2'
+do
+    IFS='|' read -r desc base proxy expected <<EOF
+$spec
+EOF
+    S="$TMP/s1c-$desc"; mkdir -p "$S"
+    C="$TMP/c1c-$desc.json"; write_cache "$C" 30 97
+    H="$TMP/handovers1c-$desc"; mkdir -p "$H"
+    rm -f "$ARM_LOG" "$STDERR_LOG"
+    ANTHROPIC_BASE_URL="$base" CODEX_PROXY_BASE_URL="$proxy" \
+        AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" \
+        AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" HANDOVER_DIR="$H" \
+        CLAUDE_PROJECT_DIR="" bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+    assert_rc "$desc proxy selection" "$expected" $?
+    if [ "$expected" = "0" ]; then
+        assert_file "$desc skips throttle work" absent "$S/auto-arm-last-check"
+        assert_file "$desc does not arm" absent "$ARM_LOG"
+        assert_grep "$desc emits proxy lane note" 'ANTHROPIC_BASE_URL=codex proxy' "$STDERR_LOG"
+    else
+        assert_file "$desc retains native throttle work" present "$S/auto-arm-last-check"
+        assert_file "$desc arms native wind-down" present "$ARM_LOG"
+        assert_grep "$desc blocks with instructions" 'ACTION REQUIRED' "$STDERR_LOG"
+    fi
+done
+rm -f "$ARM_LOG"
 
 echo "Test 2: below threshold — no arm, throttle marker touched"
 S="$TMP/s2"; mkdir -p "$S"
