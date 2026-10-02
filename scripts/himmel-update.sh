@@ -1422,13 +1422,20 @@ import json, sys
 try:
     reg = json.load(open(sys.argv[1], encoding="utf-8"))
 except Exception:
-    sys.exit(0)
+    sys.exit(3)
 for e in reg.get("entries", []):
     up = e.get("upgrade")
     if e.get("kind") == "tag_release" and e.get("mode") == "probe" and isinstance(up, dict) and up.get("command"):
         print("%s\x1f%s" % (e.get("name", ""), "true" if up.get("unattended") is True else "false"))
 PY
-) || entries=""
+) || {
+        # An unreadable registry is undetermined, not "none declared": say so and
+        # leave an `unknown` row so --versions exits 3 instead of reading clean.
+        echo "    registry unreadable ($registry) — probe tools undetermined."
+        _probe_tool_row registry skipped "unreadable: $registry"
+        _ver_row registry - - unknown "unreadable: $registry"
+        return 0
+    }
     if [ -z "$entries" ]; then
         echo "    none declared in the registry."
         return 0

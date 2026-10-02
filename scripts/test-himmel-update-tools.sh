@@ -192,6 +192,16 @@ reset 2.0.0 2.0.0
 run --versions
 check_lacks "no behind tool row" 'alpha .*behind' "$OUT"
 
+echo "an unreadable registry is undetermined, not 'none declared'"
+printf '{not json' > "$TMP/registry.json"
+reset 1.0.0 2.0.0
+run --only tools
+check_has   "says the registry is unreadable" 'registry unreadable' "$OUT"
+check_lacks "does not claim none declared" 'none declared' "$OUT"
+check_eq    "no upgrade ran" "" "$(ran)"
+run --versions
+check_has   "--versions shows an unknown registry row" 'registry .*unknown' "$OUT"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
