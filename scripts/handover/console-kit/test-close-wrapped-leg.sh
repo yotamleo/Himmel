@@ -275,6 +275,46 @@ exact_count "no-worktree: kill called exactly once with the matched pid" "$calls
 not_contains "no-worktree: clean.sh not called" "$calls6" "clean.sh"
 check "no-worktree: exactly two calls logged (subtree check + kill, no other pid signaled)" "$(wc -l < "$CALLS" | tr -d ' ')" "2"
 
+# HIMMEL-3748: removing the successful-close manifest update must fail this.
+fleet_manifest="$W/fleet.json"
+bash "$HERE/fleet-manifest.sh" add "$fleet_manifest" "$DOC" "$W/HIMMEL-9-N2-other.md"
+rc=0; out=$(run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+check 'fleet: successful no-worktree close returns zero' 0 "$rc"
+check 'fleet: close removes only its own doc' "$W/HIMMEL-9-N2-other.md" "$(jq -r '.legs[].doc' "$fleet_manifest")"
+bash "$HERE/fleet-manifest.sh" add "$fleet_manifest" "$DOC"
+fleet_before="$(cat "$fleet_manifest")"
+mkdoc '- 10:00 LIVE - not wrapped'
+rc=0; out=$(run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+check 'fleet: refused close preserves status' 4 "$rc"
+check 'fleet: refused close keeps manifest unchanged' "$fleet_before" "$(cat "$fleet_manifest")"
+mkdoc '- 10:00 WRAPPED - done'
+rc=0; out=$(CWL_KILL_FAIL=1 run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+check 'fleet: failed signal preserves status' 1 "$rc"
+check 'fleet: failed signal keeps manifest unchanged' "$fleet_before" "$(cat "$fleet_manifest")"
+
+# Each successful prune exit must retire its doc; a failed prune must not.
+for fleet_mode in ok not-candidate in-use fail; do
+    bash "$HERE/fleet-manifest.sh" add "$fleet_manifest" "$DOC"
+    mkdoc '- 10:00 WRAPPED - done' "worktree: \`$WT/.claude/worktrees/demo\`"
+    rc=0; out=$(CWL_CLEAN_MODE="$fleet_mode" run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+    fleet_present="$(jq --arg d "$DOC" 'any(.legs[]; .doc == $d)' "$fleet_manifest")"
+    if [ "$fleet_mode" = fail ]; then
+        check 'fleet: failed prune status' 1 "$rc"
+        check 'fleet: failed prune keeps doc' true "$fleet_present"
+    else
+        check "fleet: $fleet_mode prune success" 0 "$rc"
+        check "fleet: $fleet_mode prune retires doc" false "$fleet_present"
+    fi
+done
+printf '%s\n' 'invalid manifest' > "$fleet_manifest"
+mkdoc '- 10:00 WRAPPED - done'
+rc=0; out=$(run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+check 'fleet: update failure returns nonzero after close' 1 "$rc"
+contains 'fleet: update failure reports session already closed' "$out" 'session closed but fleet manifest update failed'
+check 'fleet: invalid manifest never overwritten' 'invalid manifest' "$(cat "$fleet_manifest")"
+rc=0; run --fleet >/dev/null 2>&1 || rc=$?
+check 'fleet: missing flag value refuses' 2 "$rc"
+
 # --- 7. 1 match, 2 worktree paths -------------------------------------------------
 mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`" "worktree: \`$W/wt/.claude/worktrees/other\`"
 reset_calls
