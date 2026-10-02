@@ -69,6 +69,7 @@ lane_seed_make_writable() {
   # Only mirrored directories need write permission for removal; never follow links.
   node -e '
 const fs=require("fs"), path=require("path");
+// ponytail: pathname lstat-then-chmod walk can race a concurrent non-cooperating replacement (Node has no portable fd-relative traversal), revisit under HIMMEL-4096 if mirror dirs become shared-writer.
 function walk(p) {
   let s;
   try { s=fs.lstatSync(p); } catch(e) { if(e.code==="ENOENT") return; throw e; }
