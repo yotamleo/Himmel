@@ -112,7 +112,28 @@ exit $LASTEXITCODE
 $ProbeResult = Run-Clean $Pwsh @('-NoProfile','-File',$CurlProbe,$ExpectedCurl) $Extra
 if ($ProbeResult.Code -ne 0 -or -not $ProbeResult.Output.Contains('"total_balance":"50.00"')) { throw "Curl fixture probe failed: $($ProbeResult.Code) $($ProbeResult.Output)" }
 Write-Host 'Curl fixture probe returned a passing balance'
+# Temporary CI diagnosis: inspect only fixture JSON, never the API key.
+$BalanceProbe = Join-Path $Scratch 'balance-probe.ps1'
+[System.IO.File]::WriteAllText($BalanceProbe, @'
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$source = Get-Content -LiteralPath $args[1] -Raw
+$match = [regex]::Match($source, "(?s)\`$BalanceJs = @'\r?\n(.*?)\r?\n'@")
+if (-not $match.Success) { throw 'Balance predicate not found' }
+$raw = 'fixture probe input' | & $args[0]
+Write-Host "Fixture curl exit=$LASTEXITCODE; raw=$raw"
+$raw | & node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log("Pipeline prefix="+JSON.stringify([...s].slice(0,4).map(c=>c.codePointAt(0)))));'
+$balance = ($raw | & node -e $match.Groups[1].Value | Out-String).Trim()
+Write-Host "Actual balance predicate exit=$LASTEXITCODE; balance=$balance"
+'@)
+$Diagnosis = Run-Clean $Pwsh @('-NoProfile','-File',$BalanceProbe,$ExpectedCurl,$Launcher) $Extra
+Write-Host $Diagnosis.Output
+# HIMMEL-4099: passing curl JSON must reach the real launcher's balance log.
+# This fails before seed-setting cases if the native pipeline corrupts JSON.
 $Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $Extra
+if ($Result.Code -ne 0 -or -not $Result.Output.Contains('balance=50.00 USD')) { throw "Passing balance refused by real launcher: $($Result.Code) $($Result.Output)" }
+$Count++
 foreach ($Name in @('CLAUDE_LANE_SEED_LOCK_TIMEOUT','CLAUDE_LANE_SEED_LOCK_STALE')) {
     foreach ($Value in @('invalid','-1','1.5',' 1','2147483648')) {
         $InvalidEnv = $Extra.Clone()

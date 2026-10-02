@@ -278,6 +278,18 @@ jobs:
             echo "::error::Codex PowerShell suite did not report success"; exit 1
           fi
 
+      - name: DeepSeek PowerShell launcher suite (ubuntu)
+        shell: bash
+        run: |
+          set -o pipefail
+          pwsh -NoProfile -File scripts/test-claude-deepseek.ps1 | tee deepseek-ps.log
+          if grep -q '^SKIP' deepseek-ps.log; then
+            echo "::error::DeepSeek PowerShell suite SKIPPED — a SKIP is not a pass"; exit 1
+          fi
+          if ! grep -q '^[0-9][0-9]* PowerShell smoke cases passed' deepseek-ps.log; then
+            echo "::error::DeepSeek PowerShell suite did not report success"; exit 1
+          fi
+
   guardrail-matrices:
     # HIMMEL-1522: the egress matrix decides whether a corpus may leave the
     # machine and the voice policy decides what a spoken request may do. Both
