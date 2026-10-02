@@ -50,7 +50,7 @@ if [ -n "$bsha" ] && [ "$bsha" != "$msha" ]; then
   exit 1
 fi
 
-if awk -F'\t' 'NF && NF != 2 {exit 1}' "$pr"; then :; else
+if awk -F'\t' 'NF && (NF != 2 || $2 !~ /^[a-z_]+$/) {exit 1}' "$pr"; then :; else
   echo "usage: --pr file has a malformed row (want <job><TAB><conclusion>): a skipped row could hide a red" >&2
   exit 2
 fi

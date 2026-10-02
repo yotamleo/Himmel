@@ -69,6 +69,8 @@ fi
 # a malformed PR row must not be silently ignored (it could hide a red)
 set3 'a\tfailure\nb failure\n' 'a\tfailure\nb\tfailure\n' 'a\tsuccess\nb\tsuccess\n'
 run "malformed PR row (no tab): usage error, never ALLOW" 2 'malformed'
+set3 'a\tfailure\nb\tfailure \n' 'a\tfailure\nb\tfailure\n' 'a\tsuccess\nb\tsuccess\n'
+run "malformed conclusion (trailing space): usage error, never ALLOW" 2 'malformed'
 
 bash "$MF" --pr "$tmp/pr" --main "$tmp/pr" >/dev/null 2>&1
 rc=$?

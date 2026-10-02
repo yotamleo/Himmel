@@ -63,6 +63,11 @@ expect "real: a nonexistent suite is unknown, not 'runs in PR CI'" 'unknown' "$o
 if [ "$rc" -eq 3 ]; then pass "unknown suite exits 3"; else bad "unknown suite exits 3 (rc=$rc)"; fi
 out=$(bash "$SC" scripts/handover/suite-coverage.sh 2>&1)
 expect "real: an existing non-test file is unknown" 'unknown' "$out"
+# a runner with SKIP_LIST and the cap function but no SUITE_TIER_DEFAULT table is unintelligible
+awk '/^SUITE_TIER_DEFAULT="/ {skip=1} !skip {print} skip && /^"$/ {skip=0}' "$tmp/runner.sh" > "$tmp/no-tier.sh"
+bash "$SC" --runner "$tmp/no-tier.sh" scripts/x/test-x.sh >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 2 ]; then pass "runner without a SUITE_TIER_DEFAULT table exits 2"; else bad "runner without a SUITE_TIER_DEFAULT table exits 2 (rc=$rc)"; fi
 printf 'not a runner\n' > "$tmp/junk.sh"
 bash "$SC" --runner "$tmp/junk.sh" scripts/x/test-x.sh >/dev/null 2>&1
 rc=$?

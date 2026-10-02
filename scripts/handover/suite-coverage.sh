@@ -36,8 +36,8 @@ tier_list="$(table SUITE_TIER_DEFAULT)"
 
 # cap <suite> — evaluate the runner's own per-suite timeout function.
 cap_fn="$(awk '/^_suite_timeout_for\(\) \{/ {on=1} on {print} on && /^}/ {exit}' "$runner")"
-if [ -z "$skip_list" ] || [ -z "$cap_fn" ]; then
-  echo "suite-coverage.sh: $runner has no SKIP_LIST table or _suite_timeout_for — not a run-shell-tests.sh this helper understands" >&2
+if [ -z "$skip_list" ] || [ -z "$tier_list" ] || [ -z "$cap_fn" ]; then
+  echo "suite-coverage.sh: $runner has no SKIP_LIST / SUITE_TIER_DEFAULT table or _suite_timeout_for — not a run-shell-tests.sh this helper understands" >&2
   exit 2
 fi
 cap() {
