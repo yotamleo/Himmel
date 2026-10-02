@@ -84,6 +84,13 @@ if ($IsWindows) {
 $Runner = Join-Path $Scratch 'same-process.ps1'
 $RunnerText = @'
 $Before = [Environment]::GetEnvironmentVariables('Process')
+# Temporary CI diagnosis of PowerShell null-to-string argument binding.
+$ProbeName = 'HIMMEL_DEEPSEEK_NULL_BINDING_PROBE'
+[Environment]::SetEnvironmentVariable($ProbeName, 'present', 'Process')
+[Environment]::SetEnvironmentVariable($ProbeName, $null, 'Process')
+Write-Host "Null argument leaves present=$([Environment]::GetEnvironmentVariables('Process').Contains($ProbeName)); pwsh=$($PSVersionTable.PSVersion); runtime=$([System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)"
+[Environment]::SetEnvironmentVariable($ProbeName, [NullString]::Value, 'Process')
+Write-Host "NullString argument leaves present=$([Environment]::GetEnvironmentVariables('Process').Contains($ProbeName))"
 # Fail before invoking the launcher unless ordinary native PATH resolution
 # selects the fixture. A host's real curl must never service this smoke test.
 $CurlMatches = @(Get-Command curl -CommandType Application -ErrorAction Stop)
@@ -92,6 +99,8 @@ if ($args.Count -gt 2 -and $args[2] -cnotin $CurlMatches.Source) { throw 'Two-cu
 & $args[0]
 if ($LASTEXITCODE -ne 0) { throw 'Real launcher failed before environment assertion' }
 foreach ($Name in @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_MAX_CONTEXT_TOKENS','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')) {
+    $AfterEnv = [Environment]::GetEnvironmentVariables('Process')
+    if ($AfterEnv.Contains($Name) -ne $Before.Contains($Name)) { throw ('Leaked launcher environment presence: ' + $Name) }
     $After = [Environment]::GetEnvironmentVariable($Name,'Process')
     if ($After -cne $Before[$Name]) { throw ('Leaked launcher environment: ' + $Name) }
 }
@@ -116,6 +125,13 @@ Write-Host 'Curl fixture probe returned a passing balance'
 # This fails before seed-setting cases if the native pipeline corrupts JSON.
 $Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $Extra
 if ($Result.Code -ne 0 -or -not $Result.Output.Contains('balance=50.00 USD')) { throw "Passing balance refused by real launcher: $($Result.Code) $($Result.Output)" }
+$Count++
+# Restore pre-existing credentials and an explicitly empty routing value too.
+$PreservedEnv = $Extra.Clone()
+$PreservedEnv['ANTHROPIC_API_KEY'] = 'native-api-key'
+$PreservedEnv['CLAUDE_CODE_AUTO_MODE_SERVER'] = ''
+$Preserved = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $PreservedEnv
+if ($Preserved.Code -ne 0 -or $Preserved.Output.Contains('ds-ps-hermetic-secret')) { throw "Pre-existing environment restoration failed: $($Preserved.Code) $($Preserved.Output)" }
 $Count++
 # A BOM-free pipeline must not weaken UNKNOWN, unavailable, or floor refusals.
 foreach ($Response in @('not json','{}','null','{"is_available":false,"balance_infos":[{"currency":"USD","total_balance":"50.00"}]}','{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"2.99"}]}','{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"NaN"}]}')) {
