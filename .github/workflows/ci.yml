@@ -690,6 +690,8 @@ jobs:
         # is 13 (it was 10 when the whole step was refresh + install).
         timeout-minutes: 13
         run: |
+          started=$SECONDS
+          trap 'echo "at/atd install: duration_seconds=$((SECONDS - started))"' EXIT
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
           # HIMMEL-4073: try the plain install first (the runner's package
           # index is usually fresh enough); only a failure pays for an index
