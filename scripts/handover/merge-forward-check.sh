@@ -17,8 +17,8 @@ set -uo pipefail
 pr=""; main=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --pr) pr="${2:-}"; shift 2 ;;
-    --main) main="${2:-}"; shift 2 ;;
+    --pr) [ $# -ge 2 ] || { pr=""; break; }; pr="$2"; shift 2 ;;
+    --main) [ $# -ge 2 ] || { main=""; break; }; main="$2"; shift 2 ;;
     *) pr=""; break ;;
   esac
 done

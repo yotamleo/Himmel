@@ -43,5 +43,9 @@ bash "$MF" --pr "$tmp/none" --main "$tmp/main" >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then ok "unreadable input exits 2"; else bad "unreadable input exits 2"; fi
 
+timeout 5 bash "$MF" --pr "$tmp/pr" --main >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 2 ]; then ok "trailing --main without a value exits 2 (no hang)"; else bad "trailing --main without a value exits 2 (rc=$rc)"; fi
+
 [ "$fail" -eq 0 ] && echo "PASS: merge-forward-check" || echo "FAIL: merge-forward-check"
 exit "$fail"

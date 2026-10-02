@@ -15,14 +15,15 @@
 set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 runner="$HERE/../ci/run-shell-tests.sh"
+default_runner=1
 suites=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --runner) runner="${2:-}"; shift 2 ;;
+    --runner) [ $# -ge 2 ] || break; runner="$2"; default_runner=0; shift 2 ;;
     *) suites+=("$1"); shift ;;
   esac
 done
-if [ ! -r "$runner" ] || [ "${#suites[@]}" -eq 0 ]; then
+if [ $# -gt 0 ] || [ ! -r "$runner" ] || [ "${#suites[@]}" -eq 0 ]; then
   echo "usage: suite-coverage.sh [--runner <run-shell-tests.sh>] <suite-path>..." >&2
   exit 2
 fi
@@ -34,6 +35,10 @@ tier_list="$(table SUITE_TIER_DEFAULT)"
 
 # cap <suite> — evaluate the runner's own per-suite timeout function.
 cap_fn="$(awk '/^_suite_timeout_for\(\) \{/ {on=1} on {print} on && /^}/ {exit}' "$runner")"
+if [ -z "$skip_list" ] || [ -z "$cap_fn" ]; then
+  echo "suite-coverage.sh: $runner has no SKIP_LIST table or _suite_timeout_for — not a run-shell-tests.sh this helper understands" >&2
+  exit 2
+fi
 cap() {
   # shellcheck disable=SC2317,SC2329,SC2034 # _suite_num and the vars are read by the eval'd runner function
   ( _suite_num() { printf '%s' "$2"; }
@@ -63,7 +68,9 @@ for s in "${suites[@]}"; do
     else
       echo "$s: not run in CI (SKIP_LIST) — uncovered; never write \"CI verifies\" for it —${reason}"
     fi
-  elif entry_for "$tier_list" "$s" >/dev/null; then
+  elif [ "$default_runner" -eq 1 ] && [ ! -f "$HERE/../../$s" ]; then
+    echo "$s: unknown — no such suite file in this repo; coverage cannot be stated"
+  elif line="$(entry_for "$tier_list" "$s")" && [ "$(awk '{print $2}' <<< "$line")" = extended ]; then
     echo "$s: nightly only (extended tier, cap $(cap "$s")s) — not in per-PR CI"
   else
     echo "$s: runs in PR CI (cap $(cap "$s")s)"

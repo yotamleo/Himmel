@@ -49,6 +49,16 @@ bash "$SC" --runner "$tmp/none.sh" scripts/x/test-x.sh >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then pass "missing runner exits 2"; else bad "missing runner exits 2"; fi
 
+timeout 5 bash "$SC" scripts/x/test-x.sh --runner >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 2 ]; then pass "trailing --runner without a value exits 2 (no hang)"; else bad "trailing --runner without a value exits 2 (rc=$rc)"; fi
+out=$(bash "$SC" scripts/nope/test-nonexistent.sh 2>&1)
+expect "real: a nonexistent suite is unknown, not 'runs in PR CI'" 'unknown' "$out"
+printf 'not a runner\n' > "$tmp/junk.sh"
+bash "$SC" --runner "$tmp/junk.sh" scripts/x/test-x.sh >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 2 ]; then pass "incompatible runner exits 2"; else bad "incompatible runner exits 2 (rc=$rc)"; fi
+
 out=$(bash "$SC" --runner "$REAL" scripts/test-install-symmetry-vm.sh 2>&1)
 expect "real: install-symmetry-vm not run in CI" 'not run in CI' "$out"
 out=$(bash "$SC" --runner "$REAL" scripts/handover/test-arm-resume.sh 2>&1)
