@@ -86,8 +86,9 @@ $RunnerText = @'
 $Before = [Environment]::GetEnvironmentVariables('Process')
 # Fail before invoking the launcher unless ordinary native PATH resolution
 # selects the fixture. A host's real curl must never service this smoke test.
-$SelectedCurl = Get-Command curl -CommandType Application -ErrorAction Stop
-if ($SelectedCurl.Source -cne $args[1]) { throw 'Hermetic setup refused: curl did not resolve to the fixture' }
+$CurlMatches = @(Get-Command curl -CommandType Application -ErrorAction Stop)
+if ($CurlMatches[0].Source -cne $args[1]) { throw 'Hermetic setup refused: curl did not resolve to the fixture' }
+if ($args.Count -gt 2 -and $args[2] -cnotin $CurlMatches.Source) { throw 'Two-curl setup refused: decoy did not resolve as an application' }
 & $args[0]
 if ($LASTEXITCODE -ne 0) { throw 'Real launcher failed before environment assertion' }
 foreach ($Name in @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_MAX_CONTEXT_TOKENS','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')) {
@@ -111,8 +112,23 @@ foreach ($Name in @('CLAUDE_LANE_SEED_LOCK_TIMEOUT','CLAUDE_LANE_SEED_LOCK_STALE
         $Count++
     }
 }
-$ToolPath = $OriginalToolPath
 if ($Result.Code -ne 0 -or $Result.Output.Contains('ds-ps-hermetic-secret')) { throw "Same-process environment restoration failed: $($Result.Output)" }
+$Count++
+# HIMMEL-4096: a second native curl must not turn .Source into an array or
+# displace the first PATH match. The decoy fails if the launcher selects it.
+$DecoyBin = Join-Path $Scratch 'decoy-bin'
+[System.IO.Directory]::CreateDirectory($DecoyBin) | Out-Null
+$DecoyCurl = Join-Path $DecoyBin $(if ($IsWindows) { 'curl.cmd' } else { 'curl' })
+if ($IsWindows) {
+    [System.IO.File]::WriteAllText($DecoyCurl, "@echo off`r`necho DECOY_CURL_INVOKED 1>&2`r`nexit /b 99`r`n")
+} else {
+    [System.IO.File]::WriteAllText($DecoyCurl, "#!/bin/sh`nprintf 'DECOY_CURL_INVOKED\\n' >&2`nexit 99`n")
+    & chmod +x $DecoyCurl
+}
+$ToolPath = $Bin + [System.IO.Path]::PathSeparator + $DecoyBin + [System.IO.Path]::PathSeparator + $OriginalToolPath
+$Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl,$DecoyCurl) $Extra
+$ToolPath = $OriginalToolPath
+if ($Result.Code -ne 0 -or $Result.Output.Contains('DECOY_CURL_INVOKED') -or $Result.Output.Contains('ds-ps-hermetic-secret')) { throw "First curl on PATH was not used safely: $($Result.Output)" }
 $Count++
 # HIMMEL-4091: exercise the real shared PS mirror/lock without a network or
 # model process. These cases run on pwsh hosts; Linux without pwsh skips them.

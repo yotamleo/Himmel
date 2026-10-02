@@ -84,7 +84,7 @@ $Matrix = if ($env:CLAUDE_DEEPSEEK_EGRESS_MATRIX) { $env:CLAUDE_DEEPSEEK_EGRESS_
 if ($LASTEXITCODE -ne 0) { exit 3 }
 # Resolve the native application by ordinary PATH order, like bash. Naming
 # curl.exe first would skip a hermetic curl.cmd fixture on Windows.
-$CurlCommand = Get-Command curl -CommandType Application -ErrorAction SilentlyContinue
+$CurlCommand = Get-Command curl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $CurlCommand) { [Console]::Error.WriteLine('claude-deepseek: balance UNKNOWN (curl missing).'); exit 5 }
 if ($env:DEEPSEEK_API_KEY -match '[\r\n"\\]') { [Console]::Error.WriteLine('claude-deepseek: invalid API key format.'); exit 2 }
 $Raw = ('header = "Authorization: Bearer ' + $env:DEEPSEEK_API_KEY + '"') | & $CurlCommand.Source -fsS --max-time 10 --noproxy '*' -K - https://api.deepseek.com/user/balance 2>$null
