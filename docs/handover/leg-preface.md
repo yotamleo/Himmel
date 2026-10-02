@@ -327,6 +327,29 @@ by design.
   merges you rebase onto the new main. If you suspect it is general but the data
   does not settle it, report `MAIN-RED? <job> <case> inconclusive` with what you
   saw.
+- **Merge-forward (HIMMEL-4112) — the one sanctioned base move, needing no
+  console ruling.** When the PR is red ONLY on jobs that are green on
+  origin/main's latest push run (main was fixed after you were cut), you may,
+  once, `git fetch origin main` then `git merge origin/main` — a merge commit;
+  never rebase, never force-push — and cite the main run id in a Results
+  bullet. Decide it with data, not memory: write each run's jobs to a file as
+  `<job><TAB><conclusion>` (from `gh run view <id> --json jobs`), then
+  `bash scripts/handover/merge-forward-check.sh --pr <pr-file> --main <main-file>`.
+  Exit 0 `ALLOW` = go; exit 1 `REFUSE` (a red job is also red on main, or
+  absent from it) = do NOT merge forward, report `BLOCKED` (or `MAIN-RED` per
+  the rule above); exit 3 = nothing red. Once per PR: a second merge-forward
+  goes to the console. After it, `/pr-check` and CI run again at the new head.
+- **Never write "CI verifies" for a suite you have not looked up
+  (HIMMEL-4112).** `bash scripts/handover/suite-coverage.sh <suite>...` reads
+  `scripts/ci/run-shell-tests.sh` itself and says per suite: runs in PR CI /
+  nightly only / not run in CI (SKIP_LIST) / superseded by its wrappers. A
+  SKIP_LIST suite is **uncovered** — name it that, and say what you ran by hand
+  instead. Run it for every suite your PR claims CI covers.
+- **A timing-sensitive suite gets a loaded budget, not an idle one
+  (HIMMEL-4112).** A suite that times out only under fleet load is a budget
+  defect: measure it alone and as three concurrent runs, set the budget to the
+  loaded figure x2 (the `run-shell-tests.sh` rule), and record the numbers in
+  a Results bullet. Never retry it until it passes.
 - On an agreed review finding, **sweep the whole class** across every site
   before the next round and report the other sites, not just the cited line. A
   review round spent enumerating instances of a class you already understood is
