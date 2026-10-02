@@ -479,13 +479,13 @@ lane_registry() {
         native) ;;
         claudex)
             LANE_BIN_NAME=claude-codex; LANE_BIN_OVERRIDE="${HEADED_ARM_LEG_CLAUDEX_BIN:-}"
-            LANE_CHANNEL=file; LANE_PREFACE=claudex ;;
+            LANE_CHANNEL="file"; LANE_PREFACE=claudex ;;
         openrouter)
             LANE_BIN_NAME=claude-openrouter; LANE_BIN_OVERRIDE="${HEADED_ARM_LEG_OPENROUTER_BIN:-}"
-            LANE_CHANNEL=file; LANE_PREFACE=openrouter ;;
+            LANE_CHANNEL="file"; LANE_PREFACE=openrouter ;;
         deepseek)
             LANE_BIN_NAME=claude-deepseek; LANE_BIN_OVERRIDE="${HEADED_ARM_LEG_DEEPSEEK_BIN:-}"
-            LANE_CHANNEL=file; LANE_PREFACE=claudex; LANE_BANK_GATE=openrouter ;;
+            LANE_CHANNEL="file"; LANE_PREFACE=claudex; LANE_BANK_GATE=openrouter ;;
         glm) LANE_REFUSE="glm has no launcher contract yet (the GLM slice of HIMMEL-4084 has not landed)" ;;
         *) return 1 ;;
     esac
