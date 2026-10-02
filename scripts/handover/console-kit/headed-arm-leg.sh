@@ -1198,7 +1198,8 @@ if [ "$LANE" = "deepseek" ]; then
     LANE_BIN="${LANE_BIN_OVERRIDE:-$HERE/../../$LANE_BIN_NAME}"
     export HEADED_ARM_LAUNCHER="$LANE_BIN"
     if [ -z "$MODEL" ]; then
-        MODEL="$(sed -n "s/^export ANTHROPIC_MODEL='\\(.*\\)'\$/\\1/p" "$LANE_BIN" 2>/dev/null | head -n 1)"
+        # single-quoted, double-quoted or bare; the quotes are stripped
+        MODEL="$(sed -n -e 's/^export ANTHROPIC_MODEL=\(.*\)$/\1/p' "$LANE_BIN" 2>/dev/null | head -n 1 | sed -e "s/^'\\(.*\\)'\$/\\1/" -e 's/^"\(.*\)"$/\1/')"
         if [ -z "$MODEL" ]; then
             echo "headed-arm-leg: --lane deepseek: no default model (no ANTHROPIC_MODEL export in $LANE_BIN); pass a model" >&2
             exit 2
