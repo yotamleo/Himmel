@@ -76,8 +76,9 @@ because the measured leg floor is schema-shaped, not roster-shaped (~40k of a
 sibling profiles for docs or upstream work would either resolve to `bare` and
 break `/pr-check` — whose CR gate dispatches
 `pr-review-toolkit-himmel:code-reviewer` — or duplicate `leg-impl` exactly. What
-distinguishes it is `contextBudget: 35000`, the number a leg is expected to
-start under; measure a real leg against it with `scripts/lanes/leg-burn.sh`.
+distinguishes it is the legacy `contextBudget: 35000` target, **not a
+measured attainable floor**. The HIMMEL-4021 audit below retains it for lack of
+three attributable legs; measure a real leg with `scripts/lanes/leg-burn.sh`.
 
 `gateAllow` (HIMMEL-2959) is one registry-level list of validated Bash rules;
 `lane-impl`, `leg-impl`, `lane-review`, and `lane-content` opt in with
@@ -477,7 +478,66 @@ launched with a per-session `--settings` overlay whose `statusLine` command was
 statusline stdin — `model.id`, `model.display_name`, and
 `context_window.context_window_size` — without an API turn.
 
-**`design` legs (HIMMEL-4012):** `headed-arm-leg.sh --profile design` resolves `context=1m` on its own (operator ruling: no early compaction on design legs), with no `LEG_CONTEXT` or brief line. Every other profile keeps the 200000 pin, and a bare `LEG_CONTEXT=1m` is still refused.
+**Per-profile ceilings (HIMMEL-4021).** `plugin-profiles.json` declares
+`contextMode` (`standard` or `1m`) and integer-token `autocompact`;
+`plugin-profiles.mjs <profile> --context` returns those fields separately from
+Claude settings JSON. Absent fields default to `standard` / `200000`, including
+the null `operator` sentinel. Both `headed-arm-leg.sh` and `headed-arm.sh`
+validate this output before launching. A composed list takes the largest
+member ceiling, and `1m` only when a member explicitly declares it.
+
+`design` declares `1m` / `1000000` (HIMMEL-4012: no early compaction), so a
+design leg needs no env or brief override. All other profiles, including design
+kit add-ons launched alone, remain `standard` / `200000`. Integer ceilings below
+200000 or above 1000000, malformed fields and unknown profiles refuse; a
+standard profile cannot declare a ceiling above 200000. Child autocompact
+inheritance remains **UNMEASURED**: no real session was launched for this audit.
+
+The sanctioned brief line `> **Context:** 1m — operator-ruling: <reason>`
+remains a per-leg override to `auto`, as does `CONSOLE_CONTEXT=1m` for a console.
+A bare `LEG_CONTEXT=1m` without a reasoned brief line still refuses. Launch logs
+record the resolved profile, ceiling and context source; argv must match the
+profile plus the sanctioned override. The older `arm-resume.sh` context API is
+unchanged; the profile defaults here apply to the two headed launchers.
+
+### Context-budget evidence audit — 2026-10-02 (HIMMEL-4021)
+
+Read-only collection: `gh pr list --state merged --search leg-burn --limit 1000
+--json number,body,mergedAt`. Of **813** returned bodies, **738** contain numeric
+`leg-burn` lines. There are **739** leg records: #1113 explicitly records its
+original leg and a separate N369 finish leg. One record per measurement line,
+not one per appearance of the words `leg-burn`; unavailable and nonnumeric
+placeholders are excluded. Merged dates span **2026-09-12 through 2026-10-02
+(UTC)**, PR numbers **#643–#1604** (not every PR in that interval is a sample).
+
+These bodies do not unambiguously state the measured author's profile.
+`--profile` references describe tests or shipped launch behavior, and a sample
+`profile=... session=...-dry` launch record is not author attribution. They
+are therefore an **unassigned** cohort, never imputed to `leg-impl` by ticket
+subject, date or a launcher default. Its **85,715 calls** yield call-weighted
+`avg-ctx` **122,348 tokens** (`sum(calls * avg-ctx) / sum(calls)`), session-mean
+`avg-ctx` **115,408**, and session-mean `first-turn` **65,281**. Published `k`
+values have 100-token precision; aggregates are rounded to whole tokens, not
+claims of exact underlying usage. This is Q8 data, **not authorization to lower
+the relay ceiling**.
+
+| Profile cohort | Attributable merged legs (n) | Existing profile observation | Budget decision |
+|---|---:|---|---|
+| `leg-impl` | 0 | 70,500 first-turn, HIMMEL-2935 / #777 (73,000 control) | keep 35,000 |
+| `telegram` | 0 | 32,541 first-turn, HIMMEL-2961 / #680 | keep 45,000 |
+| `lane-impl`, `lane-review`, `lane-content`, `bare` (each) | 0 | none | keep 45,000 each |
+| `console-relay`, `console-judge` (each) | 0 | none | keep 35,000 each |
+| `user`, `design`, `console` (each) | 0 | none | keep 50,000 each |
+| `design-motion`, `design-3d`, `design-imagegen`, `design-a11y`, `design-diagram`, `design-slides`, `design-reference`, `design-trial` (each) | 0 | none | keep 50,000 each |
+| `operator` | 0 | null sentinel, no budget | unchanged |
+
+The two historical observations come from the registry's existing `_comment`s;
+their source PRs merged 2026-09-17 (#777) and 2026-09-12 (#680). Neither is three
+measured legs, and no per-profile `avg-ctx` can be inferred from them. Thus
+**every contextBudget is retained under the n below 3 rule**, even where the
+legacy target is demonstrably too low. A follow-up must put a profile field in
+the `leg-burn` measurement line to enable honest per-profile recalibration;
+adding that telemetry is outside this PR.
 
 ### Which model strings accept the `[1m]` suffix
 
@@ -555,7 +615,7 @@ measured** — do not assume a `standard` leg makes its children compact early.
 | lane | default mode | override |
 |---|---|---|
 | console arm (`*-console.md`) | `standard` | `CONSOLE_CONTEXT=1m` |
-| leg / worker arm | `standard` | none — the resolved argv must carry `--autocompact 200000` |
+| headed leg / worker arm | profile default (`design`: `1m` / 1000000; others: `standard` / 200000) | reasoned brief Context line; bare `LEG_CONTEXT=1m` refuses |
 | subagent of either | inherits the parent | none — set it on the parent's arm |
 
 Given that, the console-side mitigation is a lean parent (HIMMEL-2975's

@@ -118,6 +118,7 @@
     "shadcn-mcp@himmel",
     "emilkowalski-skills@himmel"
   ],
+  "_comment_contextBudget": "HIMMEL-4021 calibration audit 2026-10-02: 813 merged PR bodies searched; 738 bodies contain numeric leg-burn (739 leg records, including two explicitly separate legs in #1113), none names its author's profile unambiguously. Every profile has n=0 attributable merged legs and retains contextBudget under the n<3 rule; user/design/design-* /lane-* /bare/console-relay/console-judge/console have no additional profile-specific observation here. leg-impl has one historical 70500 first-turn observation (HIMMEL-2935, #777); telegram has one 32541 observation (HIMMEL-2961, #680). These probes are not three measured legs. Sources/date range, aggregation and exclusions: docs/internals/lane-calibration.md, HIMMEL-4021 audit. Operator stays null and resolves standard/200000 by default. No child autocompact inheritance measurement was made: UNMEASURED.",
   "profiles": {
     "operator": null,
     "user": {
@@ -125,7 +126,10 @@
       "enable": [
         "lean-skills@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design": {
       "_comment": "HIMMEL-3064: plannotator-effective-html@himmel is deliberately NOT in the always-on `user` tier -- its 6 skills (design-artifact, html, html-diagram, html-plan, html-prototype, html-wireframe) cost ~630 tok of session-start listing every session, and across 1628 local transcripts it was invoked exactly once. Design/UI work opts in via this profile instead. HIMMEL-4012: the profile now enables the full design pack (plannotator-effective-html, frontend-design, ui-ux-pro-max, impeccable) - it shipped with plannotator only and its test pinned exactly that, so a design leg ran with almost no design tooling. design legs also launch on the 1m context (headed-arm-leg.sh, operator ruling 2026-10-01). HIMMEL-4012 PR2b: the core is 7 members (adds taste-skill-core, shadcn-mcp, context7; ui-ux-pro-max is now the pinned himmel entry). The kit add-ons after this profile (design-motion ... design-trial) each stack on base ONLY, never on this core: until HIMMEL-4014 composes profiles, a design leg adds one with `--profile design --add-plugins <ids>`. Root-skill repos (animejs, ai-image-prompts, design-dna, anydesign: `skills: [\"./\"]`, install shape UNPROVEN) live only in add-ons so an unproven shape cannot break `--profile design`.",
@@ -138,7 +142,10 @@
         "shadcn-mcp@himmel",
         "context7@claude-plugins-official"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "1m",
+      "autocompact": 1000000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. No existing profile-specific measurement; see docs/internals/lane-calibration.md."
     },
     "design-motion": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
@@ -150,14 +157,20 @@
         "motion-lexicon@himmel",
         "playground@claude-plugins-official"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design-3d": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
       "enable": [
         "threejs-skills@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design-imagegen": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
@@ -165,14 +178,20 @@
         "taste-skill-core@himmel",
         "ai-image-prompts@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design-a11y": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
       "enable": [
         "platform-design-skills@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design-diagram": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
@@ -180,14 +199,20 @@
         "diagram-design@himmel",
         "builder-visual@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design-slides": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
       "enable": [
         "frontend-slides@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design-reference": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
@@ -197,30 +222,42 @@
         "anydesign@himmel",
         "anthropic-design-skills@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design-trial": {
       "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
       "enable": [
         "hallmark@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "lane-impl": {
       "gateAllow": true,
       "enable": [
         "pr-review-toolkit-himmel@himmel"
       ],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "leg-impl": {
       "gateAllow": true,
-      "_comment": "HIMMEL-2830 / HIMMEL-2928 lever 1. Resolves to the same plugin set as lane-impl TODAY and that is deliberate, not an oversight: the differentiator is contextBudget. A headed leg re-pays its whole fixed context on every API call of a session that runs for hours, so its budget is the measured leg target (35000), not the lane-worker default (45000). Do NOT \"dedupe\" this into lane-impl — a lane worker and a headed leg are different callers with different floors, and headed-arm-leg.sh --profile names this one. Sibling profiles leg-docs and leg-upstream were designed and DROPPED: leg-docs would resolve to bare AND break /pr-check (its CR gate dispatches the pr-review-toolkit-himmel:code-reviewer agent, which a docs leg needs too), and /drift-fix, /fork-resync and /upstream-file are repo-local .claude/commands/*.md, not plugin-borne, so leg-upstream would be a second name for this exact manifest. mcpServers (HIMMEL-2935, lever 1 second half): --strict-mcp-config strips EVERY MCP server not named here, including plugin-bundled ones — qmd is named because it is the one MCP tool this profile's own plugin set (pr-review-toolkit-himmel + the floor's qmd@himmel) actually needs; graphify/obsidian-vault/context7 are USER-level servers a leg never touches. MEASURED (RED control, HIMMEL-2935): removing them saved only 2.5k of first-turn context (73.0k to 70.5k) — they were NOT the bulk of the floor; #642's ~40k tool/MCP-schema estimate is dominated by built-in tool schemas and skill/agent listings this lever cannot touch. Lever 1 is exhausted at that number; do not chase the remaining floor here.",
+      "_comment": "HIMMEL-2830 / HIMMEL-2928 lever 1. Resolves to the same plugin set as lane-impl TODAY and that is deliberate, not an oversight: the differentiator is contextBudget. A headed leg re-pays its whole fixed context on every API call of a session that runs for hours, so its budget is the legacy leg target (35000), not the lane-worker default (45000); HIMMEL-4021 retains this unmet target because the merged PR bodies cannot attribute three legs to this profile. Do NOT \"dedupe\" this into lane-impl — a lane worker and a headed leg are different callers with different floors, and headed-arm-leg.sh --profile names this one. Sibling profiles leg-docs and leg-upstream were designed and DROPPED: leg-docs would resolve to bare AND break /pr-check (its CR gate dispatches the pr-review-toolkit-himmel:code-reviewer agent, which a docs leg needs too), and /drift-fix, /fork-resync and /upstream-file are repo-local .claude/commands/*.md, not plugin-borne, so leg-upstream would be a second name for this exact manifest. mcpServers (HIMMEL-2935, lever 1 second half): --strict-mcp-config strips EVERY MCP server not named here, including plugin-bundled ones — qmd is named because it is the one MCP tool this profile's own plugin set (pr-review-toolkit-himmel + the floor's qmd@himmel) actually needs; graphify/obsidian-vault/context7 are USER-level servers a leg never touches. MEASURED (RED control, HIMMEL-2935): removing them saved only 2.5k of first-turn context (73.0k to 70.5k) — they were NOT the bulk of the floor; #642's ~40k tool/MCP-schema estimate is dominated by built-in tool schemas and skill/agent listings this lever cannot touch. Lever 1 is exhausted at that number; do not chase the remaining floor here.",
       "enable": [
         "pr-review-toolkit-himmel@himmel"
       ],
       "mcpServers": ["qmd"],
-      "contextBudget": 35000
+      "contextBudget": 35000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "lane-review": {
       "gateAllow": true,
@@ -232,7 +269,10 @@
         "Edit",
         "NotebookEdit"
       ],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "lane-content": {
       "gateAllow": true,
@@ -241,7 +281,10 @@
         "claude-obsidian@himmel",
         "obsidian-triage@himmel"
       ],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "telegram": {
       "gateAllow": false,
@@ -251,11 +294,17 @@
         "obsidian-triage@himmel"
       ],
       "mcpServers": ["qmd"],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "bare": {
       "enable": [],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "console-relay": {
       "gateAllow": true,
@@ -263,20 +312,29 @@
       "enable": [],
       "drop": ["pr-review-toolkit-himmel@himmel", "lean-skills@himmel"],
       "mcpServers": [],
-      "contextBudget": 35000
+      "contextBudget": 35000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "console-judge": {
       "_comment": "HIMMEL-3133 / design §3.2: a judge session, launched via headed-arm-leg.sh --judge (\"the judge is a leg\"). drop removes the same two non-floor ids console-relay drops above (pr-review-toolkit-himmel@himmel, lean-skills@himmel) -- a judge reads and writes a verdict, it does not implement or ship. Deliberately no gateAllow, unlike console-relay: a judge's few gate-shaped calls (inbox-send.sh, queue-lock.sh, write-verdicts.sh) take the ordinary classifier path rather than being pre-approved wholesale -- its custody rule is \"transport is the disk\" (a verdict file), not a permission grant, so this name does NOT belong in plugin-profiles.mjs's LEG_PROFILES set (:29, its only reader) and that file is not touched for this profile. mcpServers names only qmd, same reasoning as leg-impl/telegram above: the one MCP tool a judge's evidence-gathering actually needs; graphify/obsidian-vault/context7 are USER-level servers a judge never touches.",
       "enable": [],
       "drop": ["pr-review-toolkit-himmel@himmel", "lean-skills@himmel"],
       "mcpServers": ["qmd"],
-      "contextBudget": 35000
+      "contextBudget": 35000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "console": {
       "_comment": "HIMMEL-4013: a console session (console.sh new/next arm, and a resume of a console doc). Floor (handover, himmel-ops, qmd) plus base's lean-skills; drops pr-review-toolkit-himmel, which a console never runs (it dispatches legs, it does not review its own diff). gateAllow stays false: the leg-shaped gateAllow rules are for legs, and a console runs under the operator's own permission config. Not a leg profile, so it is not in plugin-profiles.mjs LEG_PROFILES.",
       "enable": [],
       "drop": ["pr-review-toolkit-himmel@himmel"],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     }
   }
 }

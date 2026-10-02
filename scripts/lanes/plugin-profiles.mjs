@@ -258,6 +258,16 @@ function validateProfileSpec(errors, name, spec, catalogSet, floorSet) {
     const mcpOk = Array.isArray(spec.mcpServers) && spec.mcpServers.every((s) => typeof s === 'string' && s.length > 0);
     if (!mcpOk) errors.push(`profile "${name}" mcpServers must be an array of non-empty strings`);
   }
+  // HIMMEL-4021: legacy registries default to standard / 200000. A higher
+  // ceiling requires an explicit 1m profile; lower ceilings await Q8 evidence.
+  if (spec.contextMode !== undefined && !['standard', '1m'].includes(spec.contextMode)) {
+    errors.push(`profile "${name}" contextMode must be standard or 1m`);
+  }
+  if (spec.autocompact !== undefined && (!Number.isSafeInteger(spec.autocompact)
+    || spec.autocompact < 200000 || spec.autocompact > 1000000
+    || (spec.contextMode !== '1m' && spec.autocompact !== 200000))) {
+    errors.push(`profile "${name}" autocompact must be an integer from 200000 to 1000000; only contextMode 1m may exceed 200000`);
+  }
   // contextBudget (HIMMEL-2189) — the first-turn token ceiling the measured
   // probe asserts against, so it is REQUIRED on every non-operator profile
   // (a missing budget would let a lane's context footprint grow unnoticed).
@@ -449,6 +459,19 @@ export function resolveProfile(registry, name, opts = {}) {
     return { enabledPlugins, permissions: { allow }, ...listingSettings([name], enabledPlugins, opts) };
   }
   return { enabledPlugins, ...listingSettings([name], enabledPlugins, opts) };
+}
+
+// HIMMEL-4021: sibling output, never extra Claude settings keys. Resolve the
+// names through the same composition gate, then take the largest declared cap.
+export function contextForProfile(registry, name) {
+  const errors = validateRegistry(registry);
+  if (errors.length) throw new Error(`plugin-profiles: registry invalid:\n  - ${errors.join('\n  - ')}`);
+  resolveProfile(registry, name);
+  const specs = name.split(',').map((member) => registry.profiles[member]);
+  return {
+    contextMode: specs.some((spec) => spec?.contextMode === '1m') ? '1m' : 'standard',
+    autocompact: Math.max(...specs.map((spec) => spec?.autocompact ?? 200000)),
+  };
 }
 
 // HIMMEL-4014: profiles that cannot be members of a `--profile a,b` list: operator
@@ -690,6 +713,11 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     }
     const name = argv[0];
     if (!name) die(2, 'usage: plugin-profiles.mjs <profile> [--add-plugins a@m,b@m] | --mcp-servers | --mcp-config | --list | --validate');
+    if (argv[1] === '--context') {
+      if (argv.length > 2) die(2, `plugin-profiles: unknown argument "${argv[2]}"`);
+      process.stdout.write(JSON.stringify(contextForProfile(loadRegistry(), name)) + '\n');
+      process.exit(0);
+    }
     if (argv[1] === '--mcp-servers') {
       if (argv.length > 2) die(2, `plugin-profiles: unknown argument "${argv[2]}"`);
       const registry = loadRegistry();

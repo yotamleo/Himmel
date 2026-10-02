@@ -754,17 +754,32 @@ unset -v _leg_rcwd _leg_rcwd_phys _leg_vroot _leg_vroot_phys
 # operator ruling (2026-10-01) that early compaction hurts design work, so no
 # LEG_CONTEXT or brief Context line is needed; every other profile keeps the
 # 200000 ceiling and a bare LEG_CONTEXT=1m is still refused below.
+PROFILES_MJS="${HEADED_ARM_LEG_PROFILES:-$HERE/../../lanes/plugin-profiles.mjs}"
+CONTEXT="standard"
+RESOLVED_AUTOCOMPACT="200000"
 DESIGN_CONTEXT_REASON=""
-case ",$PROFILE," in
-*,design,*)
-    DESIGN_CONTEXT_REASON="design profile (HIMMEL-4012 operator ruling: no early compaction on design legs)" ;;
-esac
-if [ "${LEG_CONTEXT:-}" = "1m" ] || [ -n "$DESIGN_CONTEXT_REASON" ]; then
+if [ -n "$PROFILE" ]; then
+    if ! _leg_context_json="$(node "$PROFILES_MJS" "$PROFILE" --context)" \
+        || ! CONTEXT="$(printf '%s' "$_leg_context_json" | jq -er '.contextMode | select(. == "standard" or . == "1m")')" \
+        || ! RESOLVED_AUTOCOMPACT="$(printf '%s' "$_leg_context_json" | jq -er '.autocompact | select(type == "number" and . >= 200000 and . <= 1000000 and floor == .)')"; then
+        echo "headed-arm-leg: --profile $PROFILE: context resolver failed; refusing launch" >&2
+        exit 2
+    fi
+    if [ "$CONTEXT" = "1m" ]; then
+        DESIGN_CONTEXT_REASON="$PROFILE profile (explicit contextMode 1m; HIMMEL-4021)"
+    elif [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
+        echo "headed-arm-leg: standard profile must resolve autocompact 200000" >&2
+        exit 2
+    fi
+fi
+# Only the immediate headed-arm renderer reads these; never child launcher-env.
+export HEADED_ARM_CONTEXT_PROFILE="$PROFILE"
+_CONTEXT_BRIEF_REASON="$(grep -m1 -E '^> \*\*Context:\*\* 1m — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* 1m — operator-ruling: //; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+if [ "${LEG_CONTEXT:-}" = "1m" ] || [ -n "$_CONTEXT_BRIEF_REASON" ]; then
     CONTEXT="1m"
     RESOLVED_AUTOCOMPACT="auto"
-else
-    CONTEXT="standard"
-    RESOLVED_AUTOCOMPACT="200000"
+    # An env override needs its own brief ruling, even on a design profile.
+    DESIGN_CONTEXT_REASON="$_CONTEXT_BRIEF_REASON"
 fi
 
 # HIMMEL-3139: console-only knobs that must never reach a leg's own process,
@@ -926,7 +941,7 @@ if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
     # for the one sanctioned exec below, not a change to that scrub. Any
     # further headed-arm-leg.sh launch this leg itself makes re-scrubs it
     # from scratch, so no ambient leak survives past this one call.
-    export CONSOLE_CONTEXT=1m
+    [ "$RESOLVED_AUTOCOMPACT" != "auto" ] || export CONSOLE_CONTEXT=1m
 fi
 
 # HIMMEL-2976: an Opus or Fable leg costs materially more per turn than the
@@ -1665,9 +1680,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # absent and the dry-run report is byte-identical to the pre-HIMMEL-2830
     # one, matching the argv guarantee it describes.
     if [ -n "$PROFILE" ]; then
-        printf 'headed-arm-leg: profile=%s settings=%s preface=%s contract=%s lean=%s mcp=%s mcp-config=%s\n' \
+        printf 'headed-arm-leg: profile=%s settings=%s preface=%s contract=%s lean=%s mcp=%s mcp-config=%s autocompact=%s\n' \
             "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$PROFILE_CONTRACT" "$HIMMEL_LEAN_LEG" \
-            "$MCP_NAMES_JSON" "${LEG_PROFILE_MCP_CONFIG:-<none>}"
+            "$MCP_NAMES_JSON" "${LEG_PROFILE_MCP_CONFIG:-<none>}" "$RESOLVED_AUTOCOMPACT"
     fi
     # Printed ONLY for an Opus/Fable model that cleared the tier gate above;
     # absent for Sonnet/Haiku, matching the argv-report guarantee pattern above.
