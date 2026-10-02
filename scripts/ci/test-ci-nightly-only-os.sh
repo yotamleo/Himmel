@@ -184,10 +184,12 @@ else
 fi
 # HIMMEL-4077: a swallowed install failure or an update-only fallback leaves
 # `at` absent and lets scheduler tests silently exercise the crontab path.
-if grep -E 'apt-get install ' <<< "$step" | grep -Eq '\|\|[[:space:]]*true([[:space:];]|$)'; then
+if grep -Eq 'apt-get install .*\|\|[[:space:]]*true([[:space:];]|$)' <<< "$step"; then
   bad "shell-unit-shard: at/atd install swallows an apt-get install failure with || true"
-else
+elif [ "$?" -eq 1 ]; then
   ok "shell-unit-shard: no apt-get install failure is swallowed with || true"
+else
+  bad "shell-unit-shard: cannot check at/atd install for swallowed failures"
 fi
 fallback="$(awk '/^ *else$/ {f=1; next} f && /^ *fi$/ {f=0} f' <<< "$step")"
 fallback_upd_ln="$(grep -n 'apt-get update' <<< "$fallback" | head -1 | cut -d: -f1)"
