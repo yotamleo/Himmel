@@ -298,8 +298,17 @@ if (pairs.length === 0) fail('no launcher twin pairs discovered under ' + script
 
 let pairsWithJs = 0, matchedPs = 0, totalBashOnly = 0;
 for (const [bashFile, psFile] of pairs) {
-  const bs = fs.readFileSync(path.join(scriptsDir, bashFile), 'utf8');
-  const ps = fs.readFileSync(path.join(scriptsDir, psFile), 'utf8');
+  let bs = fs.readFileSync(path.join(scriptsDir, bashFile), 'utf8');
+  let ps = fs.readFileSync(path.join(scriptsDir, psFile), 'utf8');
+  // HIMMEL-4091: compare the executing shared seed, including the caller's
+  // lane-specific sanitizer passed into the module. Never exempt moved JS.
+  if (['claude-codex', 'claude-openrouter', 'claude-deepseek'].includes(bashFile)) {
+    if (!bs.includes('. "$HERE/lane-mirror-seed.sh"') || !ps.includes("Import-Module (Join-Path $PSScriptRoot 'lane-mirror-seed.psm1')")) {
+      fail(bashFile + ': shared mirror seed is not loaded by both twins');
+    }
+    bs += '\n' + fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.sh'), 'utf8');
+    ps += '\n' + fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.psm1'), 'utf8');
+  }
   bashShapeViolations(bs).forEach(() => fail(bashFile + ': double-quoted `node -e "..."` — an embedded-JS shape this parity check cannot compare; use the single-quoted form'));
   psShapeViolations(ps).forEach(() => fail(psFile + ': literal `node -e \'...\'`/`"..."` — a PS embedded-JS shape this check cannot compare; assign a here-string and pass the $var'));
   let bb, pb;

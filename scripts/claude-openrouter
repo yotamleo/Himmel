@@ -253,88 +253,13 @@ seed_fail() { # $1 = failing-operation detail — abort seeding, never mark it s
   exit 4
 }
 
-seed_config_dir() {
-  # Transactional: the .seeded sentinel is removed FIRST and (re)written LAST, so
-  # ANY failure — first seed OR --reseed — leaves no sentinel and the next launch
-  # re-seeds.
-  rm -f "$CONFIG_DIR/.seeded"
-  SRC="${HOME}/.claude"
-  mkdir -p "$CONFIG_DIR/plugins" || seed_fail "create $CONFIG_DIR/plugins"
-  if [ -f "$SRC/settings.json" ]; then
-    sanitize_settings "$SRC/settings.json" "$CONFIG_DIR/settings.json" \
-      || seed_fail "sanitize settings.json (node missing/broken?)"
-  else
-    rm -f "$CONFIG_DIR/settings.json" || seed_fail "remove stale settings.json"
-  fi
-  for f in CLAUDE.md RTK.md; do
-    if [ -f "$SRC/$f" ]; then
-      cp "$SRC/$f" "$CONFIG_DIR/$f" || seed_fail "copy $f"
-    else
-      rm -f "$CONFIG_DIR/$f" || seed_fail "remove stale $f"
-    fi
-  done
-  for d in commands skills hooks agents; do
-    rm -rf "${CONFIG_DIR:?}/$d" || seed_fail "clear stale $d"
-    [ -d "$SRC/$d" ] && { cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"; }
-  done
-  for p in installed_plugins.json known_marketplaces.json; do
-    if [ -f "$SRC/plugins/$p" ]; then
-      cp "$SRC/plugins/$p" "$CONFIG_DIR/plugins/$p" || seed_fail "copy plugins/$p"
-    else
-      rm -f "$CONFIG_DIR/plugins/$p" || seed_fail "remove stale plugins/$p"
-    fi
-  done
-  rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear stale plugins/marketplaces"
-  [ -d "$SRC/plugins/marketplaces" ] && { cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
-  if [ -f "$SRC/plugins/claude-hud/config.json" ]; then
-    mkdir -p "$CONFIG_DIR/plugins/claude-hud" || seed_fail "create $CONFIG_DIR/plugins/claude-hud"
-    cp "$SRC/plugins/claude-hud/config.json" "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "copy plugins/claude-hud/config.json"
-  else
-    rm -f "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
-  fi
-  # HIMMEL-3334: the un-swept claude-hud config path, alongside the legacy one above.
-  if [ -f "$SRC/claude-hud.json" ]; then
-    cp "$SRC/claude-hud.json" "$CONFIG_DIR/claude-hud.json" || seed_fail "copy claude-hud.json"
-  else
-    rm -f "$CONFIG_DIR/claude-hud.json" || seed_fail "remove stale claude-hud.json"
-  fi
-  : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
-}
-
-# Staleness-aware reseed (HIMMEL-819): re-mirror on plain launch when a tracked
-# source drifted or was deleted. Opt-out: CLAUDE_LANE_AUTO_RESEED=0.
-config_seed_stale() {
-  [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
-  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json claude-hud.json; do
-    if [ -f "${HOME}/.claude/$s" ]; then
-      if [ "${HOME}/.claude/$s" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
-    elif [ -f "$CONFIG_DIR/$s" ]; then
-      return 0
-    fi
-  done
-  for d in commands skills hooks agents plugins/marketplaces; do
-    if [ -d "${HOME}/.claude/$d" ]; then
-      [ -d "$CONFIG_DIR/$d" ] || return 0
-      if [ "${HOME}/.claude/$d" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
-    elif [ -d "$CONFIG_DIR/$d" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Concurrency lock (HIMMEL-830): serialize concurrent same-lane reseeds so two
-# launches cannot interleave seed_config_dir's rm/cp into a torn config dir.
+# shellcheck source=lane-mirror-seed.sh
+[ -r "$HERE/lane-mirror-seed.sh" ] || seed_fail 'load shared mirror seed'
+. "$HERE/lane-mirror-seed.sh"
+SEED_LANE=claude-openrouter
 LOCK="$CONFIG_DIR.seed-lock"
 SEED_LOCK_TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"
 SEED_LOCK_STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"
-
-seed_lock_is_stale() {
-  [ -d "$LOCK" ] || return 1
-  lock_mt="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null)"
-  [ -n "$lock_mt" ] || return 1
-  [ "$(( $(date +%s) - lock_mt ))" -ge "$SEED_LOCK_STALE" ]
-}
 
 seed_leg_trust() {
   # The dispatch authorizes only this launcher's primary checkout, not an
@@ -364,28 +289,8 @@ try {
 ' "$CONFIG_DIR/.claude.json" "$or_primary" || seed_fail "seed leg onboarding and primary-root trust"
 }
 
-seed_with_lock() {
-  seed_lock_ticks=0
-  seed_lock_max=$(( SEED_LOCK_TIMEOUT * 2 ))
-  while ! mkdir_err="$(mkdir "$LOCK" 2>&1)"; do
-    if seed_lock_is_stale && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
-      rmdir "$LOCK.stale.$$" 2>/dev/null || true
-      continue
-    fi
-    if [ "$seed_lock_ticks" -ge "$seed_lock_max" ]; then
-      echo "claude-openrouter: timed out after ${SEED_LOCK_TIMEOUT}s waiting for the config-dir seed lock ($LOCK). If no other claude-openrouter launch of this lane is seeding, remove that dir, or tune CLAUDE_LANE_SEED_LOCK_TIMEOUT / CLAUDE_LANE_SEED_LOCK_STALE; last mkdir error: $mkdir_err" >&2
-      exit 4
-    fi
-    sleep 0.5
-    seed_lock_ticks=$(( seed_lock_ticks + 1 ))
-  done
-  trap 'rmdir "$LOCK" 2>/dev/null' EXIT
-  if [ "$RESEED" -eq 1 ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then
-    seed_config_dir
-  fi
+seed_after_mirror() {
   [ "${LEG_LANE:-}" != openrouter ] || seed_leg_trust
-  trap - EXIT
-  rmdir "$LOCK" 2>/dev/null || echo "claude-openrouter: WARNING - failed to release seed lock $LOCK (not empty or busy); it self-heals via stale steal after ${SEED_LOCK_STALE}s but concurrent launches wait/time out until then." >&2
 }
 
 if [ "${LEG_LANE:-}" = openrouter ] || [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then

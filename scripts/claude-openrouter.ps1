@@ -277,129 +277,20 @@ if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) 
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 '@
 
-function Copy-SeedConfig {
-  $src = Join-Path $HomeDir '.claude'
-  $sentinel = Join-Path $ConfigDir '.seeded'
-  try {
-    Remove-Item -LiteralPath $sentinel -Force -ErrorAction Stop
-  } catch [System.Management.Automation.ItemNotFoundException] {
-    # already absent — goal reached.
-  } catch {
-    [Console]::Error.WriteLine("claude-openrouter: FAILED to clear stale .seeded sentinel ($($_.Exception.Message)). Refusing to reseed while a stale sentinel remains. Fix the cause and re-run (or rm -rf ~/.claude-openrouter).")
-    exit 4
-  }
-  # The config dir must exist BEFORE the sanitizer below, which writes its
-  # output to $ConfigDir/settings.json — on a first launch $ConfigDir does not
-  # exist yet, so creating it later made seeding fail and misreport the cause as
-  # "node missing/broken" (CR round 3, codex-1). Kept in its own handler so a
-  # creation failure still surfaces as the documented exit-4 seed failure rather
-  # than an unhandled error under $ErrorActionPreference='Stop' (codex-3).
-  try {
-    New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir 'plugins') | Out-Null
-  } catch {
-    [Console]::Error.WriteLine("claude-openrouter: FAILED to create the config dir $ConfigDir ($($_.Exception.Message)). Refusing to launch with an unseeded config dir. Fix the cause and re-run.")
-    exit 4
-  }
-  $settings = Join-Path $src 'settings.json'
-  if (Test-Path -LiteralPath $settings) {
-    $sanitized = $false
-    try {
-      & node -e $SanitizerJs $settings (Join-Path $ConfigDir 'settings.json')
-      $sanitized = ($LASTEXITCODE -eq 0)
-    } catch { $sanitized = $false }
-    if (-not $sanitized) {
-      [Console]::Error.WriteLine('claude-openrouter: FAILED to sanitize settings.json (node missing/broken?). Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-openrouter).')
-      exit 4
-    }
-  }
-  try {
-    if (-not (Test-Path -LiteralPath $settings)) {
-      $dst = Join-Path $ConfigDir 'settings.json'
-      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
-    }
-    foreach ($f in 'CLAUDE.md', 'RTK.md') {
-      $p = Join-Path $src $f
-      $dp = Join-Path $ConfigDir $f
-      if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $dp -Force }
-      elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
-    }
-    foreach ($d in 'commands', 'skills', 'hooks', 'agents') {
-      $dst = Join-Path $ConfigDir $d
-      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
-      $p = Join-Path $src $d
-      if (Test-Path -LiteralPath $p -PathType Container) { Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force }
-    }
-    foreach ($p in 'installed_plugins.json', 'known_marketplaces.json') {
-      $sp = Join-Path $src (Join-Path 'plugins' $p)
-      $dp = Join-Path $ConfigDir (Join-Path 'plugins' $p)
-      if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination $dp -Force }
-      elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
-    }
-    $mdst = Join-Path $ConfigDir (Join-Path 'plugins' 'marketplaces')
-    if (Test-Path -LiteralPath $mdst) { Remove-Item -LiteralPath $mdst -Recurse -Force }
-    $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
-    if (Test-Path -LiteralPath $mp -PathType Container) { Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force }
-    $hudCfg = Join-Path $src (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
-    $hudDst = Join-Path $ConfigDir (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
-    if (Test-Path -LiteralPath $hudCfg) {
-      New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir (Join-Path 'plugins' 'claude-hud')) | Out-Null
-      Copy-Item -LiteralPath $hudCfg -Destination $hudDst -Force
-    } elseif (Test-Path -LiteralPath $hudDst) {
-      Remove-Item -LiteralPath $hudDst -Force
-    }
-    # HIMMEL-3334: the un-swept claude-hud config path, alongside the legacy one above.
-    $hudNewSrc = Join-Path $src 'claude-hud.json'
-    $hudNewDst = Join-Path $ConfigDir 'claude-hud.json'
-    if (Test-Path -LiteralPath $hudNewSrc) {
-      Copy-Item -LiteralPath $hudNewSrc -Destination $hudNewDst -Force
-    } elseif (Test-Path -LiteralPath $hudNewDst) {
-      Remove-Item -LiteralPath $hudNewDst -Force
-    }
-    New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
-  } catch {
-    [Console]::Error.WriteLine("claude-openrouter: FAILED to seed config dir ($($_.Exception.Message)). Refusing to launch with a half-seeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-openrouter).")
-    exit 4
-  }
+Import-Module (Join-Path $PSScriptRoot 'lane-mirror-seed.psm1') -Force
+$LaneSeed = @{
+  HomeDir = $HomeDir; ConfigDir = $ConfigDir; Lane = 'claude-openrouter'
+  SanitizerJs = $SanitizerJs; Stamp = ''; StampRequired = $false; LeafOnly = $false
 }
-
-function Test-ConfigSeedStale {
-  if ($env:CLAUDE_LANE_AUTO_RESEED -eq '0') { return $false }
-  try {
-    $sentinel = Join-Path $ConfigDir '.seeded'
-    if (-not (Test-Path -LiteralPath $sentinel)) { return $false }
-    $sentinelTime = (Get-Item -Force -LiteralPath $sentinel).LastWriteTimeUtc
-    $src = Join-Path $HomeDir '.claude'
-    foreach ($rel in @('settings.json', 'CLAUDE.md', 'RTK.md', (Join-Path 'plugins' 'installed_plugins.json'), (Join-Path 'plugins' 'known_marketplaces.json'), (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json')), 'claude-hud.json')) {
-      $s = Join-Path $src $rel
-      $d = Join-Path $ConfigDir $rel
-      if (Test-Path -LiteralPath $s) {
-        if ((Get-Item -LiteralPath $s).LastWriteTimeUtc -gt $sentinelTime) { return $true }
-      } elseif (Test-Path -LiteralPath $d) { return $true }
-    }
-    foreach ($rel in @('commands', 'skills', 'hooks', 'agents', (Join-Path 'plugins' 'marketplaces'))) {
-      $s = Join-Path $src $rel
-      $d = Join-Path $ConfigDir $rel
-      if (Test-Path -LiteralPath $s -PathType Container) {
-        if (-not (Test-Path -LiteralPath $d -PathType Container)) { return $true }
-        if ((Get-Item -LiteralPath $s).LastWriteTimeUtc -gt $sentinelTime) { return $true }
-      } elseif (Test-Path -LiteralPath $d -PathType Container) { return $true }
-    }
-    return $false
-  } catch { return $false }
-}
+function Test-ConfigSeedStale { Test-LaneConfigSeedStale $LaneSeed }
 
 # --- config-dir seed concurrency lock (HIMMEL-830) ---------------------------
 $Lock            = "$ConfigDir.seed-lock"
 $SeedLockTimeout = if ($env:CLAUDE_LANE_SEED_LOCK_TIMEOUT) { [int]$env:CLAUDE_LANE_SEED_LOCK_TIMEOUT } else { 60 }
 $SeedLockStale   = if ($env:CLAUDE_LANE_SEED_LOCK_STALE) { [int]$env:CLAUDE_LANE_SEED_LOCK_STALE } else { 120 }
 
-function Test-SeedLockStale {
-  if (-not (Test-Path -LiteralPath $Lock -PathType Container)) { return $false }
-  try {
-    $age = ([DateTime]::UtcNow - (Get-Item -Force -LiteralPath $Lock).LastWriteTimeUtc).TotalSeconds
-    return ($age -ge $SeedLockStale)
-  } catch { return $false }
-}
+$LaneSeed.LockTimeout = $SeedLockTimeout
+$LaneSeed.LockStale = $SeedLockStale
 
 function Invoke-LegTrustSeed {
   # Only the primary checkout is trusted, under the existing seed lock.
@@ -438,41 +329,8 @@ try {
 }
 
 function Invoke-SeedWithLock {
-  $ticks = 0
-  $maxTicks = $SeedLockTimeout * 2
-  $lastAcquireErr = ''
-  while ($true) {
-    try {
-      New-Item -ItemType Directory -Path $Lock -ErrorAction Stop | Out-Null
-      break
-    } catch {
-      $lastAcquireErr = $_.Exception.Message
-      if (Test-SeedLockStale) {
-        try {
-          Rename-Item -LiteralPath $Lock -NewName ((Split-Path -Leaf $Lock) + ".stale.$PID") -ErrorAction Stop
-          try { [System.IO.Directory]::Delete("$Lock.stale.$PID") } catch { }
-          continue
-        } catch { }
-      }
-      if ($ticks -ge $maxTicks) {
-        [Console]::Error.WriteLine("claude-openrouter: timed out after ${SeedLockTimeout}s waiting for the config-dir seed lock ($Lock). If no other claude-openrouter launch of this lane is seeding, remove that dir, or tune CLAUDE_LANE_SEED_LOCK_TIMEOUT / CLAUDE_LANE_SEED_LOCK_STALE; last acquire error: $lastAcquireErr")
-        exit 4
-      }
-      Start-Sleep -Milliseconds 500
-      $ticks++
-    }
-  }
-  try {
-    if ($Reseed -or (-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or (Test-ConfigSeedStale)) {
-      Copy-SeedConfig
-    }
+  Invoke-LaneSeedWithLock $LaneSeed $Reseed {
     if ($env:LEG_LANE -eq 'openrouter') { Invoke-LegTrustSeed }
-  } catch {
-    [Console]::Error.WriteLine("claude-openrouter: leg seed failed: $($_.Exception.Message)")
-    exit 4
-  } finally {
-    try { [System.IO.Directory]::Delete($Lock) }
-    catch { [Console]::Error.WriteLine("claude-openrouter: WARNING - failed to release seed lock $Lock (not empty or busy); it self-heals via stale steal after ${SeedLockStale}s but concurrent launches wait/time out until then.") }
   }
 }
 
