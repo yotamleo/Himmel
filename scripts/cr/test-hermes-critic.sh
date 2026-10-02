@@ -252,7 +252,8 @@ for l in claude-openrouter claude-codex; do
     chmod +x "$mini/scripts/$l"
 done
 CLAUDE_ARGV_CAPTURE="$work/native-argv" PATH="$bindir:$PATH" \
-    bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>&1
+    bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>&1 \
+    || fail "native baseline run failed"
 for lane in openrouter claudex; do
     l=claude-openrouter; [ "$lane" = claudex ] && l=claude-codex
     : > "$work/lane-argv"; rm -f "$work/lane-seen"
