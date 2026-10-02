@@ -178,6 +178,42 @@ EOF
 done
 rm -f "$ARM_LOG"
 
+# HIMMEL-4106: the z.ai lane matches by host, not by substring. A URL that only
+# CONTAINS api.z.ai (path, query, lookalike host, userinfo) is the Claude bank.
+echo "Test 1d: z.ai host matching at Claude seven_day 97%"
+for spec in \
+    'real|https://api.z.ai/api/anthropic|0' \
+    'bare-host|https://api.z.ai|0' \
+    'query|https://evil.example/?api.z.ai|2' \
+    'path|https://evil.example/api.z.ai|2' \
+    'lookalike-host|https://api.z.ai.evil.example/api/anthropic|2' \
+    'bare-lookalike|https://api.z.ai.evil.example|2' \
+    'userinfo|https://api.z.ai@evil.example/|2'
+do
+    IFS='|' read -r desc base expected <<EOF
+$spec
+EOF
+    S="$TMP/s1d-$desc"; mkdir -p "$S"
+    C="$TMP/c1d-$desc.json"; write_cache "$C" 30 97
+    H="$TMP/handovers1d-$desc"; mkdir -p "$H"
+    rm -f "$ARM_LOG" "$STDERR_LOG"
+    ANTHROPIC_BASE_URL="$base" \
+        AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" \
+        AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" HANDOVER_DIR="$H" \
+        CLAUDE_PROJECT_DIR="" bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+    assert_rc "$desc z.ai selection" "$expected" $?
+    if [ "$expected" = "0" ]; then
+        assert_file "$desc skips throttle work" absent "$S/auto-arm-last-check"
+        assert_file "$desc does not arm" absent "$ARM_LOG"
+        assert_grep "$desc emits z.ai lane note" 'ANTHROPIC_BASE_URL=api.z.ai' "$STDERR_LOG"
+    else
+        assert_file "$desc retains native throttle work" present "$S/auto-arm-last-check"
+        assert_file "$desc arms native wind-down" present "$ARM_LOG"
+        assert_grep "$desc blocks with instructions" 'ACTION REQUIRED' "$STDERR_LOG"
+    fi
+done
+rm -f "$ARM_LOG"
+
 echo "Test 2: below threshold — no arm, throttle marker touched"
 S="$TMP/s2"; mkdir -p "$S"
 C="$TMP/c2.json"; write_cache "$C" 30 14
