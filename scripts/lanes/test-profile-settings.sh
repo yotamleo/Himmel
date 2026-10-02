@@ -9,7 +9,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 PS="$HERE/profile-settings.sh"
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/profile-settings.XXXXXX")
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/profile-settings.XXXXXX") && [ -d "$TMP" ] || { echo "FAIL mktemp"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 export HIMMEL_PROFILE_SETTINGS_DIR="$TMP/profiles"
 FAILED=0
@@ -36,7 +36,8 @@ B=$(PLUGIN_PROFILES_REGISTRY="$TMP/registry-b.json" bash "$PS" user); rc=$?
 [ "$rc" = 0 ] && ok "T3 registry B resolves" || bad "T3 rc=$rc"
 [ "$B" != "$A1" ] && ok "T3 different content -> different path" || bad "T3 same path for different content: $B"
 [ "$(cat "$A1")" = "$A1_BEFORE" ] && ok "T4 first file untouched by the second resolution" || bad "T4 first file was rewritten"
-[ -f "$B" ] && ! cmp -s "$A1" "$B" && ok "T4 second file holds the second content" || bad "T4 second file missing or equal"
+cmp -s "$A1" "$B"; cmp_rc=$?
+[ -f "$B" ] && [ "$cmp_rc" = 1 ] && ok "T4 second file holds the second content" || bad "T4 second file missing, equal or cmp error (rc=$cmp_rc)"
 
 bash "$PS" no-such-profile >/dev/null 2>&1; rc=$?
 [ "$rc" = 2 ] && ok "T5 unknown profile fails closed (rc=2)" || bad "T5 rc=$rc"
