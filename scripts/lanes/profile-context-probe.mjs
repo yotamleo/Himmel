@@ -29,7 +29,7 @@
 //                       no CLI flag at all.
 //   (nothing set)        no ledger write — the safe default.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -114,11 +114,23 @@ export function environmentSources(initEvent, enabledIds) {
 // HIMMEL-4018: skill dirs under <configDir>/skills load in every session, bare
 // included, whatever enabledPlugins says. Dotdirs (.trash), files and `synced`
 // (Claude Code's own claude.ai account-sync cache, environment) are not ours.
+// A symlink to a skill dir (a manual link) loads too, so it is followed with
+// statSync; a dangling link or a link to a file loads nothing and is skipped.
+// Only an absent skills dir is empty: any other read error propagates, so an
+// unreadable dir cannot pass as clean.
 export function userScopeSkillDirs(configDir) {
-  try {
-    return readdirSync(join(configDir, 'skills'), { withFileTypes: true })
-      .filter((d) => d.isDirectory() && !d.name.startsWith('.') && d.name !== 'synced').map((d) => d.name).sort();
-  } catch { return []; }
+  const root = join(configDir, 'skills');
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch (e) {
+    if (e?.code === 'ENOENT') return [];
+    throw e;
+  }
+  const isDir = (d) => {
+    if (d.isDirectory()) return true;
+    if (!d.isSymbolicLink()) return false;
+    try { return statSync(join(root, d.name)).isDirectory(); } catch { return false; }
+  };
+  return entries.filter((d) => !d.name.startsWith('.') && d.name !== 'synced' && isDir(d)).map((d) => d.name).sort();
 }
 
 // One problem per source of user-scope skills: the init event's skills-dir

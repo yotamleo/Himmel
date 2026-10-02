@@ -6,7 +6,7 @@
 // is excluded from the CI node --test glob because it bills real usage.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -475,6 +475,19 @@ test('userScopeSkillDirs lists the skill dirs under <configDir>/skills, ignoring
     mkdirSync(join(dir, 'skills', 'synced'), { recursive: true }); // Claude Code's account-sync cache, not a user skill
     writeFileSync(join(dir, 'skills', 'README.md'), 'x');
     assert.deepEqual(userScopeSkillDirs(dir), ['find-docs', 'graphify']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('userScopeSkillDirs follows symlinks to skill dirs (manual links load too); a dangling link or a link to a file is ignored', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uss-'));
+  try {
+    mkdirSync(join(dir, 'elsewhere', 'linked-skill'), { recursive: true });
+    writeFileSync(join(dir, 'elsewhere', 'a-file'), 'x');
+    mkdirSync(join(dir, 'skills'), { recursive: true });
+    symlinkSync(join(dir, 'elsewhere', 'linked-skill'), join(dir, 'skills', 'linked-skill'));
+    symlinkSync(join(dir, 'elsewhere', 'gone'), join(dir, 'skills', 'dangling'));
+    symlinkSync(join(dir, 'elsewhere', 'a-file'), join(dir, 'skills', 'file-link'));
+    assert.deepEqual(userScopeSkillDirs(dir), ['linked-skill']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
