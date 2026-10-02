@@ -54,7 +54,7 @@ if ($env:CLAUDE_CONFIG_DIR) {
 
 # Resolve claude (test override wins). No claude -> leave the mechanical note.
 $bin = $env:CRYSTALLIZE_CLAUDE_BIN
-if (-not $bin) { $bin = (Get-Command claude -ErrorAction SilentlyContinue).Source }
+if (-not $bin) { $bin = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
 if (-not $bin) { exit 0 }
 
 # Concurrency cap — never pile up N claude processes for N session-ends.

@@ -56,7 +56,7 @@ function Invoke-Guard {
         [hashtable]$Env = @{}
     )
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName  = (Get-Command pwsh).Source
+    $psi.FileName  = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
     $argStr = "-NoProfile -NonInteractive -File `"$SCRIPT`""
     if ($ScriptArgs.Count -gt 0) { $argStr += ' ' + ($ScriptArgs -join ' ') }
     $psi.Arguments = $argStr
