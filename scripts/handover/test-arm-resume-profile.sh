@@ -98,8 +98,9 @@ assert_rc "T6 plain doc dry-run" 0 "$rc"
 assert_contains "T6 plain doc -> user profile file" "/user.json" "$out"
 
 # T7: the resolved settings file is real and is a complete enabledPlugins map.
+LEGF=$(bash "$SCRIPT_DIR/../lanes/profile-settings.sh" leg-impl)
 # shellcheck disable=SC2015  # echo cannot fail; A && B || C is the intended guard
-[ -f "$TMP/profiles/leg-impl.json" ] && grep -q '"enabledPlugins"' "$TMP/profiles/leg-impl.json" \
+[ -f "$LEGF" ] && grep -q '"enabledPlugins"' "$LEGF" \
     && echo "PASS T7 resolved settings file written" \
     || { echo "FAIL T7 resolved settings file missing or malformed"; FAILED=$((FAILED + 1)); }
 

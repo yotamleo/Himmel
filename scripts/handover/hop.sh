@@ -81,6 +81,7 @@ MODE=schedule
 DRY_RUN=0
 FORCE=0
 HANDOVER_ROOT=""
+HOP_DOC=""
 
 # Capture ORIGIN repo BEFORE any work — this is the repo claude should
 # run from in the relaunched session. The snapshot lives under the
@@ -94,7 +95,7 @@ fi
 usage() {
     cat <<'EOF'
 Usage: hop.sh [--message <text>] [--delay <minutes>] [--print] [--dry-run] [--force]
-              [--handover-root <dir>]
+              [--handover-root <dir>] [--doc <handover doc>]
 
 Mid-session jump to a fresh claude session. Writes a context-hop
 snapshot then either schedules a relaunch via arm-resume.sh (default)
@@ -103,6 +104,10 @@ or prints the command to run manually (--print).
 Default: writes the snapshot under the resolved handover root
 (<HANDOVER_DIR or repo/handovers>/<USER_SLUG>/context-hop-<ts>.md), then
 schedules a relaunch in 2 minutes via arm-resume.sh.
+
+--doc <file> names the hopping session's own handover doc; the hopped-to
+session's plugin profile is derived from it (scripts/lanes/role-profile.sh).
+Default: $HIMMEL_CONSOLE_DOC when it is a file. HOP_PROFILE, when set, wins.
 EOF
 }
 
@@ -118,6 +123,8 @@ while [ $# -gt 0 ]; do
         --force)           FORCE=1; shift ;;
         --handover-root)   HANDOVER_ROOT="${2:-}"; shift 2 ;;
         --handover-root=*) HANDOVER_ROOT="${1#--handover-root=}"; shift ;;
+        --doc)             HOP_DOC="${2:-}"; shift 2 ;;
+        --doc=*)           HOP_DOC="${1#--doc=}"; shift ;;
         -h|--help)         usage; exit 0 ;;
         *)                 echo "ERR hop: unknown arg: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -158,10 +165,21 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 
 # HIMMEL-4013: the hopped-to session runs under the profile of the role that is
-# hopping, not the operator's full plugin set. HOP_PROFILE overrides; else a
-# console session (HIMMEL_CONSOLE_DOC) hops as `console`, a leg
-# (HIMMEL_CONSOLE_LEG) as `leg-impl`, anything else as `user`.
+# hopping, not the operator's full plugin set. Precedence (HIMMEL-4033):
+# HOP_PROFILE; else the role read from the hopping session's handover doc (--doc,
+# or HIMMEL_CONSOLE_DOC when it is a file) via role-profile.sh, so a design or
+# reviewer leg keeps its profile; else role env: a console session
+# (HIMMEL_CONSOLE_DOC) hops as `console`, a leg (HIMMEL_CONSOLE_LEG) as
+# `leg-impl`, anything else as `user`.
+[ -z "$HOP_DOC" ] && [ -f "${HIMMEL_CONSOLE_DOC:-}" ] && HOP_DOC="$HIMMEL_CONSOLE_DOC"
+if [ -n "$HOP_DOC" ] && [ ! -f "$HOP_DOC" ]; then
+    echo "ERR hop: --doc is not a file: $HOP_DOC" >&2
+    exit 1
+fi
 if [ -n "${HOP_PROFILE:-}" ]; then hop_profile="$HOP_PROFILE"
+elif [ -n "$HOP_DOC" ]; then
+    hop_profile=$(bash "$SCRIPT_DIR/../lanes/role-profile.sh" "$HOP_DOC" 2>/dev/null) || hop_profile=""
+    [ -n "$hop_profile" ] || { echo "ERR hop: could not derive a profile from $HOP_DOC" >&2; exit 2; }
 elif [ -n "${HIMMEL_CONSOLE_DOC:-}" ]; then hop_profile=console
 elif [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then hop_profile=leg-impl
 else hop_profile=user; fi
