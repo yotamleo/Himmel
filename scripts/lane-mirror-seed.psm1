@@ -1,29 +1,56 @@
 # Shared PowerShell lane mirror/lock (HIMMEL-4091). No credentials/history copied.
 # The caller's state retains its sanitizer, identity stamp and trust policy.
-function Get-LaneSeedFingerprint($Seed) {
+function Get-LaneSeedFingerprint($Seed, [string]$Relative = '', [string]$Destination = '') {
   $FingerprintJs = @'
 const fs=require("fs"), path=require("path"), crypto=require("crypto");
-const root=process.argv[1], hash=crypto.createHash("sha256");
-function walk(rel,ancestors=new Set()) {
+const root=process.argv[1], only=process.argv[2], destination=process.argv[3], hash=crypto.createHash("sha256"), strict=crypto.createHash("sha256");
+// Completion tolerates settings/marketplace writes; freshness still hashes all bytes.
+function record(rel,data) {
+  hash.update(data);
+  const portable=rel.split(path.sep).join("/");
+  if(portable!=="settings.json" && portable!=="plugins/marketplaces" && !portable.startsWith("plugins/marketplaces/")) strict.update(data);
+}
+function skip(rel,reason) {
+  record(rel,"skipped\n"); console.error("lane mirror: skipping "+rel+" ("+reason+")");
+}
+function walk(rel,ancestors=new Set(),dst) {
   const p=path.join(root,rel);
-  hash.update(JSON.stringify(rel)+"\n");
-  let s;
-  try { s=fs.lstatSync(p); } catch(e) { if(e.code==="ENOENT") { hash.update("absent\n"); return; } throw e; }
-  if(s.isSymbolicLink()) { hash.update("link\n"+JSON.stringify(fs.readlinkSync(p))+"\n"); try { s=fs.statSync(p); } catch(e) { if(e.code==="ENOENT") { hash.update("dangling\n"); return; } throw e; } }
-  if(s.isDirectory()) {
-    const real=fs.realpathSync(p); if(ancestors.has(real)) throw Error("cyclic seed source: "+rel);
-    const next=new Set(ancestors); next.add(real);
-    hash.update("dir\n"); for(const name of fs.readdirSync(p).sort()) walk(path.join(rel,name),next);
+  record(rel,JSON.stringify(rel)+"\n");
+  let s, link, real, names, data;
+  try {
+    s=fs.lstatSync(p);
+    if(s.isSymbolicLink()) { link=fs.readlinkSync(p); s=fs.statSync(p); }
+    if(s.isDirectory()) {
+      real=fs.realpathSync(p);
+      if(ancestors.has(real)) { skip(rel,"symlink cycle"); return; }
+      names=fs.readdirSync(p).sort();
+    } else if(s.isFile()) { data=fs.readFileSync(p); }
+    else { skip(rel,"special file"); return; }
+  } catch(e) {
+    if(["ENOENT","ENOTDIR","EACCES","EPERM","ELOOP"].includes(e.code)) {
+      if(e.code==="ENOENT" && !link) { record(rel,"absent\n"); return; }
+      skip(rel,e.code); return;
+    }
+    throw e;
   }
-  else if(s.isFile()) { hash.update("file\n"+s.mode+"\n"+s.size+"\n"); hash.update(fs.readFileSync(p)); }
-  else { throw Error("unsupported seed source: "+rel); }
+  if(link!==undefined) record(rel,"link\n"+JSON.stringify(link)+"\n");
+  if(s.isDirectory()) {
+    const next=new Set(ancestors); next.add(real);
+    record(rel,"dir\n");
+    if(dst) fs.mkdirSync(dst,{recursive:true});
+    for(const name of names) walk(path.join(rel,name),next,dst&&path.join(dst,name));
+  } else {
+    record(rel,"file\n"+s.mode+"\n"+data.length+"\n"); record(rel,data);
+    if(dst) fs.writeFileSync(dst,data,{mode:s.mode&0o777});
+  }
 }
 try {
-  for(const rel of ["settings.json","CLAUDE.md","RTK.md","commands","skills","hooks","agents","plugins/installed_plugins.json","plugins/known_marketplaces.json","plugins/marketplaces","plugins/claude-hud/config.json","claude-hud.json"]) walk(rel);
-  process.stdout.write(hash.digest("hex"));
-} catch(e) { console.error("lane mirror fingerprint: "+e.message); process.exit(4); }
+  if(only) walk(only,new Set(),destination);
+  else for(const rel of ["settings.json","CLAUDE.md","RTK.md","commands","skills","hooks","agents","plugins/installed_plugins.json","plugins/known_marketplaces.json","plugins/marketplaces","plugins/claude-hud/config.json","claude-hud.json"]) walk(rel);
+  process.stdout.write(hash.digest("hex")+":"+strict.digest("hex"));
+} catch(e) { console.error("lane mirror fingerprint/copy: "+e.message); process.exit(4); }
 '@
-  $result = & node -e $FingerprintJs (Join-Path $Seed.HomeDir '.claude')
+  $result = & node -e $FingerprintJs (Join-Path $Seed.HomeDir '.claude') $Relative $Destination
   if ($LASTEXITCODE -ne 0) { throw 'Failed to fingerprint the seed source' }
   return $result
 }
@@ -61,7 +88,7 @@ function Copy-LaneSeedConfig($Seed) {
       if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
       $p = Join-Path $src $d
       if (Test-Path -LiteralPath $p -PathType Container) {
-        Copy-Item -LiteralPath $p -Destination (Split-Path -Parent $dst) -Recurse -Force
+        Get-LaneSeedFingerprint $Seed $d $dst | Out-Null
       }
     }
     foreach ($f in 'plugins/installed_plugins.json', 'plugins/known_marketplaces.json', 'plugins/claude-hud/config.json', 'claude-hud.json') {
@@ -72,7 +99,8 @@ function Copy-LaneSeedConfig($Seed) {
         Copy-Item -LiteralPath $p -Destination $dp -Force
       } elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
     }
-    if ((Get-LaneSeedFingerprint $Seed) -ne $fingerprint) { throw 'Source changed during seeding; re-run' }
+    $currentFingerprint = Get-LaneSeedFingerprint $Seed
+    if ($currentFingerprint.Split(':')[1] -ne $fingerprint.Split(':')[1]) { throw 'Source changed during seeding; re-run' }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText((Join-Path $dir '.seed-fingerprint'), "$fingerprint`n", $utf8)
     # Preserve Codex's version/model stamp; other lanes retain the empty marker.
@@ -139,10 +167,20 @@ try {
   const s=fs.lstatSync(lock,{bigint:true});
   if(!s.isDirectory() || s.dev+":"+s.ino!==identity) process.exit(1);
   // Populate empty legacy locks without overwriting a published owner.
-  try { fs.writeFileSync(path.join(lock,"owner"),"retired legacy seed lock\n",{flag:"wx"}); }
-  catch(e) { if(e.code!=="EEXIST") throw e; }
+  const owner=path.join(lock,"owner"); let planted;
+  try {
+    const fd=fs.openSync(owner,"wx");
+    try { fs.writeFileSync(fd,"retired legacy seed lock\n"); planted=fs.fstatSync(fd,{bigint:true}); }
+    finally { fs.closeSync(fd); }
+  } catch(e) { if(e.code!=="EEXIST") throw e; }
   const checked=fs.lstatSync(lock,{bigint:true});
-  if(!checked.isDirectory() || checked.dev+":"+checked.ino!==identity) process.exit(1);
+  if(!checked.isDirectory() || checked.dev+":"+checked.ino!==identity) {
+    if(planted) {
+      const current=fs.lstatSync(owner,{bigint:true});
+      if(current.dev===planted.dev && current.ino===planted.ino) fs.unlinkSync(owner);
+    }
+    process.exit(1);
+  }
   fs.renameSync(lock,retired);
 } catch(e) { process.exit(1); }
 '@
@@ -162,11 +200,11 @@ function Test-LaneSeedLockStale($Seed) {
     try { $owner = @(Get-Content -LiteralPath (Join-Path $lock 'owner') -ErrorAction Stop) } catch { }
     if ($owner.Count -ne 2 -or $owner[0] -notmatch '^[1-9][0-9]*$' -or $owner[1] -notmatch '^ticks:[0-9]+$') {
       [Console]::Error.WriteLine("$($Seed.Lane): reclaiming legacy/unreadable seed lock $lock (age $([int]$age)s).")
-      return $true
+    } else {
+      $process = Get-Process -Id ([int]$owner[0]) -ErrorAction SilentlyContinue
+      if ($null -ne $process -and "ticks:$($process.StartTime.ToUniversalTime().Ticks)" -eq $owner[1]) { return $false }
     }
-    $process = Get-Process -Id ([int]$owner[0]) -ErrorAction SilentlyContinue
-    if ($null -eq $process) { return $true }
-    return ("ticks:$($process.StartTime.ToUniversalTime().Ticks)" -ne $owner[1])
+    return ((Get-LaneSeedLockIdentity $Seed) -eq $Seed.LockIdentity)
   } catch { return $false }
 }
 
