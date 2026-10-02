@@ -103,14 +103,24 @@ for (const extra of [
   { HEADED_ARM_CONTEXT_PROFILE: 'design' },
   { HEADED_ARM_CONTEXT_PROFILE: 'design', HEADED_ARM_LEG_PROFILES: join(ROOT, 'scripts/lanes/plugin-profiles.mjs') },
 ]) {
-  test(`direct console refuses ambient profile opt-in ${JSON.stringify(extra)}`, (t) => {
+  test(`direct console ignores ambient profile inputs ${JSON.stringify(extra)}`, (t) => {
     const f = fixture(t);
-    const result = spawnSync(BASH_BIN, [join(ROOT, 'scripts/handover/headed-arm.sh'), '--dry-run',
-      'HIMMEL-4094-console-fixture', join(f.dir, 'brief.md'), join(f.dir, 'signal'),
-      '99999999999', join(f.dir, 'launch.log'), 'claude-sonnet-5-5', '1m'],
-    { cwd: f.dir, env: { ...f.env, ...extra }, encoding: 'utf8', timeout: 20000 });
-    assert.equal(result.status, 2, result.stdout + result.stderr);
-    assert.match(result.stderr, /refusing 1m context/);
+    // Dry-run validates these binaries but never executes them.
+    f.env.KONSOLE_CMD = BASH_BIN;
+    f.env.PGREP_CMD = BASH_BIN;
+    const launchConsole = (env) => spawnSync(BASH_BIN,
+      [join(ROOT, 'scripts/handover/headed-arm.sh'), '--dry-run',
+        'HIMMEL-4094-console-fixture', join(f.dir, 'brief.md'), join(f.dir, 'signal'),
+        '99999999999', join(f.dir, 'launch.log'), 'claude-sonnet-5-5'],
+      { cwd: f.dir, env, encoding: 'utf8', timeout: 20000 });
+    const baseline = launchConsole(f.env);
+    const result = launchConsole({ ...f.env, ...extra });
+    assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
+    assert.match(baseline.stdout, /context=1m \(default\)/);
+    assert.match(baseline.stdout, /--autocompact auto/);
+    assert.equal(result.status, baseline.status, result.stdout + result.stderr);
+    assert.equal(result.stdout, baseline.stdout);
+    assert.equal(result.stderr, baseline.stderr);
   });
 }
 

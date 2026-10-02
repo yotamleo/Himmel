@@ -293,15 +293,12 @@ contains "happy path: carries the session name via -n"  "$rec1" "-n HIMMEL-9999-
 contains     "happy path: carries the default model (Opus parent, HIMMEL-3079)" "$rec1" "claude-opus-5-5"
 not_contains "happy path: default model is not Fable"   "$rec1" "claude-fable-5-1"
 contains "happy path: doc reaches the prompt"            "$rec1" "load some/handover-doc.md and continue"
-# HIMMEL-2973: default [context] is now `standard` (--autocompact 200000) --
-# the console arm path is the biggest cache-read cost driver on the fleet
-# (2026-09-12 cost audit), and 1m context is now an explicit opt-in via
-# CONSOLE_CONTEXT=1m in the launching shell, never the bare default.
-contains     "happy path: default context passes autocompact 200000" "$rec1" "--autocompact 200000"
-not_contains "happy path: default context has no autocompact auto"   "$rec1" "--autocompact auto"
-not_contains "happy path: default model carries no [1m] suffix" "$rec1" "[1m]"
+# HIMMEL-3884: direct consoles default to 1m/auto with honest provenance.
+contains     "happy path: default context passes autocompact auto" "$rec1" "--autocompact auto"
+not_contains "happy path: default context has no autocompact 200000" "$rec1" "--autocompact 200000"
+contains "happy path: default model carries [1m] suffix" "$rec1" "[1m]"
 log1="$(cat "$d1/log" 2>/dev/null || true)"
-contains "happy path: log records the default context (standard)" "$log1" "context=standard (default)"
+contains "happy path: log records the default context (1m)" "$log1" "context=1m (default)"
 
 # --- 1b (HIMMEL-2973). CONSOLE_CONTEXT=1m opts into 1m without a positional -
 d1b="$tmp/c1b"; mk_stub "$d1b" 1 alive "HIMMEL-9999b-leg"
@@ -318,19 +315,20 @@ log1b="$(cat "$d1b/log" 2>/dev/null || true)"
 contains     "CONSOLE_CONTEXT=1m: log spells the source (explicit)" "$log1b" "context=1m (explicit)"
 not_contains "CONSOLE_CONTEXT=1m: log no longer spells the mechanism as the source" "$log1b" "(CONSOLE_CONTEXT=1m)"
 
-# --- 1c (HIMMEL-2973). positional 1m WITHOUT the env is refused up front ----
+# --- 1c (HIMMEL-3884). positional 1m needs no environment workaround ----
 d1c="$tmp/c1c"; mk_stub "$d1c" 1 alive "HIMMEL-9999c-leg"
 outc1c=$(env -u CONSOLE_CONTEXT KONSOLE_CMD="$d1c/konsole" PGREP_CMD="$d1c/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d1c/locks" HEADED_ARM_PROC="$d1c/proc" \
-    bash "$SCRIPT" "HIMMEL-9999c-leg" "some/handover-doc.md" "$d1c/signal-never" "$PAST" "$d1c/log" claude-opus-5 1m 2>&1)
+    bash "$SCRIPT" --dry-run "HIMMEL-9999c-leg" "some/handover-doc.md" "$d1c/signal-never" "$PAST" "$d1c/log" claude-opus-5 1m 2>&1)
 rcc1c=$?
-check    "positional 1m without env: exit 2" "$rcc1c" "2"
-contains "positional 1m without env: names CONSOLE_CONTEXT=1m" "$outc1c" "CONSOLE_CONTEXT=1m"
-if [ -e "$d1c/record" ]; then echo "FAIL - positional 1m without env: no konsole record"; fails=$((fails+1))
-else echo "ok - positional 1m without env: no konsole record"; fi
-if [ -e "$d1c/locks" ]; then echo "FAIL - positional 1m without env: no lock dir created"; fails=$((fails+1))
-else echo "ok - positional 1m without env: no lock dir created"; fi
+check "positional 1m without env: exit 0" "$rcc1c" "0"
+contains "positional 1m without env: explicit source" "$outc1c" "context=1m (explicit)"
+contains "positional 1m without env: auto" "$outc1c" "--autocompact auto"
+outc1c=$(CONSOLE_CONTEXT=standard run_headed_arm "$d1c" "$REPO" "HIMMEL-9999c-leg" "some/handover-doc.md" "$d1c/signal-never" "$PAST" claude-opus-5 standard 2>&1)
+check "positional standard: exit 0" "$?" "0"
+wait_record "$d1c" || true
+contains "positional standard: argv opts down" "$(cat "$d1c/record" 2>/dev/null || true)" "--autocompact 200000"
 
-# HIMMEL-4094: ambient leg profile inputs do not authorize a direct console arm.
+# HIMMEL-4094/3884: ambient leg profiles cannot override a console opt-down.
 for ambient in profile resolver both stale; do
   ambient_env=(-u HEADED_ARM_CONTEXT_PROFILE -u HEADED_ARM_LEG_PROFILES -u HEADED_ARM_CONTEXT_PID)
   case "$ambient" in
@@ -340,10 +338,11 @@ for ambient in profile resolver both stale; do
     stale) ambient_env+=(HEADED_ARM_CONTEXT_PROFILE=design HEADED_ARM_LEG_PROFILES="$HERE/../lanes/plugin-profiles.mjs" HEADED_ARM_CONTEXT_PID=1) ;;
   esac
   rc=0
-  out="$(env -u CONSOLE_CONTEXT "${ambient_env[@]}" \
-    bash "$SCRIPT" --dry-run HIMMEL-4094-console some/doc.md /tmp/nosig 99999999999 "$tmp/ambient-$ambient.log" claude-sonnet-5 1m 2>&1)" || rc=$?
-  check "ambient profile inputs ($ambient): refuse direct 1m arm" "$rc" "2"
-  contains "ambient profile inputs ($ambient): require console opt-in" "$out" "refusing 1m context"
+  out="$(env -u CONSOLE_CONTEXT "${ambient_env[@]}" KONSOLE_CMD="$BASH" PGREP_CMD="$BASH" \
+    bash "$SCRIPT" --dry-run HIMMEL-4094-console some/doc.md /tmp/nosig 99999999999 "$tmp/ambient-$ambient.log" claude-sonnet-5 standard 2>&1)" || rc=$?
+  check "ambient profile inputs ($ambient): direct standard arm succeeds" "$rc" "0"
+  contains "ambient profile inputs ($ambient): console opt-down wins" "$out" "--autocompact 200000"
+  not_contains "ambient profile inputs ($ambient): no profile 1m ceiling" "$out" "--autocompact 600000"
 done
 
 # --- 1d (HIMMEL-2973). positional 1m WITH the env is accepted ---------------
@@ -373,9 +372,9 @@ if [ -s "$d1e/record" ]; then echo "ok - durable record, default: konsole IS inv
 else echo "FAIL - durable record, default: konsole IS invoked (precondition)"; fails=$((fails+1)); fi
 rec1e="$(cat "$d1e/cache/launch-logs/HIMMEL-9999e-console.log" 2>/dev/null || true)"
 contains "durable record, default: names the role"    "$rec1e" "headed-arm: role=console session=HIMMEL-9999e-console "
-contains "durable record, default: records the mode"  "$rec1e" " context=standard "
+contains "durable record, default: records the mode"  "$rec1e" " context=1m "
 contains "durable record, default: records the source" "$rec1e" " source=default "
-contains "durable record, default: records autocompact" "$rec1e" " autocompact=200000 "
+contains "durable record, default: records autocompact" "$rec1e" " autocompact=auto "
 
 d1f="$tmp/c1f"; mk_stub "$d1f" 1 alive "HIMMEL-9999f-console"; mkdir -p "$d1f/cache"
 rc1f=0

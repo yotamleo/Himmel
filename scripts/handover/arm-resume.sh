@@ -404,9 +404,9 @@ Optional:
                      Fable-family model — the CLI strips it there) and
                      passes --autocompact auto; standard strips any
                      [1m] suffix and passes --autocompact 200000.
-                     Default: standard on every arm, console or not
-                     (HIMMEL-2975); a console-class arm can still opt into
-                     1m via CONSOLE_CONTEXT=1m in the launching shell. The
+                     Default: 1m for consoles (HIMMEL-3884), standard for
+                     non-console arms. CONSOLE_CONTEXT=standard opts a
+                     console down; explicit --context overrides it. The
                      resolved mode, its source (explicit vs. default) and
                      the effective autocompact value are always echoed to
                      the arm log.
@@ -1022,15 +1022,9 @@ echo "arm-resume: $MODEL_REASON"
 # changing. Reuses _arm_is_console and _arm_model_is_fable, already computed
 # above for the MODEL_REASON block -- do not recompute either.
 #
-# HIMMEL-2975: every arm defaults to `standard` now -- a console-class arm
-# used to default to `1m` unconditionally, the largest single measured
-# saving in the cost program going unrealized every time one armed with no
-# --context. console_context_default() (scripts/lib/console-context.sh)
-# also gives CONSOLE_CONTEXT=1m in the launching shell a way to opt a
-# console arm back into 1m without an explicit --context -- arm-resume.sh
-# had no CONSOLE_CONTEXT support at all before this ticket; adding it here
-# is what keeps the opt-in reachable now that the bare default no longer
-# gets you there by accident.
+# HIMMEL-3884: consoles default to 1m; non-console arms remain standard.
+# The shared resolver honors CONSOLE_CONTEXT=standard as a console-only
+# opt-down. An explicit --context takes precedence over both.
 if [ -z "$CONTEXT_MODE" ]; then
     console_context_default "$_arm_is_console" "${CONSOLE_CONTEXT:-}"
     CONTEXT_MODE="$CONSOLE_CONTEXT_RESOLVED_MODE"

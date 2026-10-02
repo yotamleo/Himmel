@@ -83,11 +83,15 @@ usage() {
     cat <<'USAGE'
 usage: console.sh new  [--name <slug>] [--arm] [--dry-run] [--model <m>]
                        [--bucket <b>] [--prefix <P>] [--project <dir>]
-                       [--deadline-min <n>]
+                       [--deadline-min <n>] [--context <1m|standard>]
        console.sh next [--doc <path>] [--date <YYYY-MM-DD>] [--name <slug>]
                        [--arm] [--dry-run] [--model <m>] [--bucket <b>]
                        [--prefix <P>] [--project <dir>] [--deadline-min <n>]
+                       [--context <1m|standard>]
        console.sh -h|--help
+
+Consoles default to 1m. --context overrides CONSOLE_CONTEXT and the default;
+--context standard or CONSOLE_CONTEXT=standard opts down to 200000.
 
 --name on next selects which console succession to continue; defaults to the name
 implied by --doc's own basename when --doc is given and --name is not,
@@ -262,6 +266,9 @@ do_arm() {
     # only load there. Legs for the project are dispatched into it
     # explicitly with LEG_REPO=<project> (headed-arm-leg.sh), never by the
     # console inheriting a repo override.
+    if [ "$CONTEXT_GIVEN" -eq 1 ]; then
+        export CONSOLE_CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    fi
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
         bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
@@ -286,6 +293,8 @@ NAME_GIVEN=0
 ARM=0
 DRY_RUN=0
 MODEL=""
+CONTEXT=""
+CONTEXT_GIVEN=0
 BUCKET=""
 PREFIX=""
 PROJECT_ARG=""
@@ -319,6 +328,15 @@ while [ "$#" -gt 0 ]; do
         --dry-run) DRY_RUN=1; shift ;;
         --model) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; MODEL="$2"; shift 2 ;;
         --model=*) MODEL="${1#--model=}"; shift ;;
+        --context)
+            if [ "$#" -lt 2 ] || ! console_context_valid "$2"; then
+                err "--context must be 1m or standard"; exit 2
+            fi
+            CONTEXT="$2"; CONTEXT_GIVEN=1; shift 2 ;;
+        --context=*)
+            CONTEXT="${1#--context=}"
+            console_context_valid "$CONTEXT" || { err "--context must be 1m or standard"; exit 2; }
+            CONTEXT_GIVEN=1; shift ;;
         --bucket) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; BUCKET="$2"; shift 2 ;;
         --bucket=*) BUCKET="${1#--bucket=}"; shift ;;
         --prefix) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; PREFIX="$2"; shift 2 ;;
@@ -644,15 +662,18 @@ state_dir="$root/$slug/$bucket"
 # Fable is the escalation target, reached only via --model / CONSOLE_MODEL.
 model="${MODEL:-${CONSOLE_MODEL:-claude-opus-5-5}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
-# HIMMEL-2973 (genuinely shared as of HIMMEL-2975 T6): do_arm passes
-# headed-arm.sh no [context] positional, so headed-arm.sh's own default
-# resolution decides the launch's --autocompact value; this calls the same
-# scripts/lib/console-context.sh resolver headed-arm.sh does, purely for the
-# printed launch/would-launch lines below to show the value that will
-# actually be used -- the printed line and the launched value can no longer
-# drift apart, same CONSOLE_CONTEXT=1m opt-in headed-arm.sh honours.
-console_context_default 1 "${CONSOLE_CONTEXT:-}"
+# HIMMEL-3884: resolve once for both printed and armed launches. An explicit
+# --context overrides the console-only environment choice and 1m default.
+if [ "$CONTEXT_GIVEN" -eq 1 ]; then
+    CONSOLE_CONTEXT_RESOLVED_MODE="$CONTEXT"
+else
+    console_context_default 1 "${CONSOLE_CONTEXT:-}"
+fi
 console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MODE")"
+launch_model="$(console_context_strip_1m_suffix "$model")"
+if [ "$CONSOLE_CONTEXT_RESOLVED_MODE" = 1m ] && ! console_context_model_is_fable "$launch_model"; then
+    launch_model="${launch_model}[1m]"
+fi
 
 # launch_cmd <session> <doc> -- the command line printed for an operator to
 # paste. HIMMEL-3299: no launcher runs for it, so the console's durable launch
@@ -673,9 +694,9 @@ launch_cmd() {
     local console_settings
     console_settings=$(bash "$HERE/../../lanes/profile-settings.sh" console) \
         || { err "the console plugin profile did not resolve; refusing to print a full-plugin-set console launch (HIMMEL-4013)"; exit 2; }
-    printf 'cd %q && { bash %q %s %s %s %s; %s claude --settings %q --model %s --autocompact %s -n %s "load %s and continue"; }' \
-        "$repo" "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label 0)" "$console_autocompact" \
-        "$CONSOLE_LAUNCH_ENV" "$console_settings" "$model" "$console_autocompact" "$1" "$2"
+    printf 'cd %q && { bash %q %s %s %s %s; %s claude --settings %q --model %q --autocompact %s -n %s "load %s and continue"; }' \
+        "$repo" "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label "$CONTEXT_GIVEN")" "$console_autocompact" \
+        "$CONSOLE_LAUNCH_ENV" "$console_settings" "$launch_model" "$console_autocompact" "$1" "$2"
 }
 
 # _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small

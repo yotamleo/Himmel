@@ -30,12 +30,10 @@
 # context-window choice, same two measured levers as
 # scripts/handover/arm-resume.sh's --context (the [1m] model-id suffix,
 # silently a no-op on a Fable-family model, and the actual cost-driving
-# --autocompact auto|200000). Defaults to `standard` (200000): the 2026-09-12
-# cost audit found Fable consoles launched with the old 1m default averaging
-# 241-275k tokens/turn, ~40% of a console's context per shift, so 1m context
-# now requires CONSOLE_CONTEXT=1m set in the LAUNCHING shell -- an explicit
-# operator opt-in, refused otherwise (same shape as the HIMMEL-2779 leg-side
-# REQUIRED_AUTOCOMPACT refusal below).
+# --autocompact auto|200000). Direct consoles default to `1m` (auto),
+# HIMMEL-3884's console-class exemption from HIMMEL-2975. A positional
+# `standard` or CONSOLE_CONTEXT=standard opts down to 200000. Leg-wrapper
+# launches retain their profile mode and existing ceiling guard.
 # Run detached, so it outlives the session that armed it:
 #   setsid nohup bash scripts/handover/headed-arm.sh ... >/dev/null 2>&1 &
 #
@@ -387,11 +385,10 @@ fi
 NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-opus-5-5}"
 # HIMMEL-2973 (default re-pinned by HIMMEL-2975 T6, resolution now shared
 # via scripts/lib/console-context.sh): --context resolution, arming-time
-# only (see the header comment above). Defaults to `standard`
-# (--autocompact 200000): the console arm path is the largest cache-read
-# cost driver on the fleet (2026-09-12 cost audit), so 1m is now an explicit
-# operator opt-in via CONSOLE_CONTEXT=1m in the LAUNCHING shell, never the
-# bare default. $#-ge 7 (not just "${7:-}" non-empty) is what distinguishes
+# only (see the header comment above). Direct consoles default to 1m/auto;
+# non-console wrapper profiles retain their configured mode. A positional
+# choice overrides CONSOLE_CONTEXT and the default. $#-ge 7 (not just
+# "${7:-}" non-empty) is what distinguishes
 # an explicit empty-string 7th positional from "omitted" for the log line
 # below -- nothing currently passes an empty string here, but the
 # distinction costs nothing and matches how arm-resume.sh tells explicit
@@ -425,7 +422,7 @@ if [ "$#" -ge 7 ]; then
 else
     console_context_default 1 "${CONSOLE_CONTEXT:-}"
     CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
-    if [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+    if [ "$_context_profile" != "console" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
         CONTEXT="$_profile_mode"
     fi
     # HIMMEL-3279/3282: the source word (an env opt-in spells `explicit` too)
@@ -437,13 +434,9 @@ if ! console_context_valid "$CONTEXT"; then
     echo "headed-arm: context must be 1m or standard, got: $CONTEXT" >&2
     exit 2
 fi
-# HIMMEL-2973: 1m is an explicit operator opt-in -- refuse before the claim
-# lock or konsole is ever touched (same refusal shape as the HIMMEL-2779
-# leg-side REQUIRED_AUTOCOMPACT check below) unless CONSOLE_CONTEXT=1m was
-# set in the launching shell. A resolved CONTEXT of 1m always means that
-# check already passed (the `elif` above only reaches 1m when it did), so
-# this only ever fires for an explicit positional `1m` without the env.
-if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ] && [ "$_profile_mode" != "1m" ]; then
+# HIMMEL-3884: direct consoles may select 1m without an env opt-in.
+# Keep the existing non-console profile guard for leg-wrapper launches.
+if [ "$_context_profile" != "console" ] && [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ] && [ "$_profile_mode" != "1m" ]; then
     usage
     echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
     exit 2
@@ -458,13 +451,13 @@ fi
 # Strip any [1m] suffix the caller may have typed into MODEL directly, so
 # `standard` can guarantee its absence and `1m` never doubles it.
 MODEL="$(console_context_strip_1m_suffix "$MODEL")"
-if [ "$CONTEXT" = "1m" ] && [ "$_profile_mode" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+if [ "$_context_profile" != "console" ] && [ "$CONTEXT" = "1m" ] && [ "$_profile_mode" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
     _headed_context_source="profile $_context_profile contextMode 1m"
 fi
 AUTOCOMPACT="$_profile_autocompact"
 if [ "$CONTEXT" = "standard" ]; then
     AUTOCOMPACT="200000"
-elif [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
+elif [ "$_context_profile" = "console" ] || [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
     AUTOCOMPACT="auto"
 fi
 if [ "$CONTEXT" = "1m" ]; then
