@@ -187,16 +187,6 @@ the shards, and locally run that once (it exits non-zero on any npm/network fail
 Suites that fail under the runner are quarantined on `SKIP_LIST` with a ticket ID
 (HIMMEL-3196 for the marketplace set) — never silently.
 
-**A `SKIP_LIST` suite is "uncovered", never "CI verifies" (HIMMEL-4112).** CI does
-not run it, so a PR or handover that cites CI as its evidence is citing nothing.
-Look it up instead of recalling it: `bash scripts/handover/suite-coverage.sh
-<suite>...` parses `run-shell-tests.sh` (SKIP_LIST, the `extended` tier table and
-the per-suite cap function) and answers per suite — runs in PR CI / nightly only
-(extended tier) / not run in CI (SKIP_LIST) / superseded by its `--only` wrappers
-(e.g. `test-arm-resume.sh` → `test-arm-resume-fast.sh` per PR and
-`test-arm-resume-1879.sh` nightly at a 1700 s cap). Nothing in that answer is
-hand-copied, so it cannot drift from the runner.
-
 ## Shard assignment — the duration ledger (HIMMEL-2894)
 
 `--shard <i>/<n>` splits the corpus across CI's `shell-unit-shard` matrix. The
