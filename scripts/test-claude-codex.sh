@@ -43,6 +43,16 @@ run_launcher() {
   fi
 }
 
+# HIMMEL-4086: the gateway must force client-side classification even when
+# the parent enables server-side auto mode. Removing the export breaks this.
+setup
+cat > "$BIN/claude" <<'MOCK'
+#!/usr/bin/env bash
+env > "$HOME/child-env.txt"
+MOCK
+CLAUDE_CODE_AUTO_MODE_SERVER=1 run_launcher "gateway forces client-side auto mode"
+grep -qxF 'CLAUDE_CODE_AUTO_MODE_SERVER=0' "$FAKEHOME/child-env.txt" || { echo "FAIL: child env missing CLAUDE_CODE_AUTO_MODE_SERVER=0"; FAILS=$((FAILS + 1)); }
+
 # HIMMEL-2626: like run_launcher, but for cases that must exit NONZERO — an
 # expected exit code plus a substring the combined stdout+stderr must contain
 # (an empty needle skips the substring check).
