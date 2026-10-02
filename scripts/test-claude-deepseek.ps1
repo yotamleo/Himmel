@@ -114,4 +114,48 @@ foreach ($Name in @('CLAUDE_LANE_SEED_LOCK_TIMEOUT','CLAUDE_LANE_SEED_LOCK_STALE
 $ToolPath = $OriginalToolPath
 if ($Result.Code -ne 0 -or $Result.Output.Contains('ds-ps-hermetic-secret')) { throw "Same-process environment restoration failed: $($Result.Output)" }
 $Count++
+# HIMMEL-4091: exercise the real shared PS mirror/lock without a network or
+# model process. These cases run on pwsh hosts; Linux without pwsh skips them.
+$MirrorRunner = Join-Path $Scratch 'mirror-seed.ps1'
+$MirrorText = @'
+param([string]$Scripts, [string]$Root, [string]$Case)
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $Scripts 'lane-mirror-seed.psm1') -Force
+$homeDir = Join-Path $Root $Case
+$src = Join-Path $homeDir '.claude'
+$dir = Join-Path $homeDir '.claude-deepseek'
+$nested = Join-Path $src 'hooks/sub/x.sh'
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $nested) | Out-Null
+[System.IO.File]::WriteAllText($nested, 'old')
+$source = Get-Content -LiteralPath (Join-Path $Scripts 'claude-deepseek.ps1') -Raw
+$match = [regex]::Match($source, "(?s)\`$SanitizerJs = @'\r?\n(.*?)\r?\n'@")
+if (-not $match.Success) { throw 'Cannot find launcher sanitizer' }
+$seed = @{HomeDir=$homeDir; ConfigDir=$dir; Lane='claude-deepseek'; SanitizerJs=$match.Groups[1].Value; Stamp=''; StampRequired=$false; LeafOnly=$false; LockTimeout=0; LockStale=1}
+Copy-LaneSeedConfig $seed
+if ($Case -eq 'nested') {
+  $time = (Get-Item -LiteralPath $nested).LastWriteTimeUtc
+  [System.IO.File]::WriteAllText($nested, 'new')
+  (Get-Item -LiteralPath $nested).LastWriteTimeUtc = $time
+  Invoke-LaneSeedWithLock $seed $false $null
+  if ([System.IO.File]::ReadAllText((Join-Path $dir 'hooks/sub/x.sh')) -ne 'new') { throw 'Nested content remained stale' }
+} else {
+  $lock = "$dir.seed-lock"
+  New-Item -ItemType Directory -Path $lock | Out-Null
+  $ownerPid = if ($Case -eq 'dead') { 2147483647 } else { $PID }
+  $birth = if ($Case -eq 'live') { (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks } else { 0 }
+  [System.IO.File]::WriteAllText((Join-Path $lock 'owner'), "$ownerPid`nticks:$birth`n")
+  (Get-Item -LiteralPath $lock).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-5)
+  Invoke-LaneSeedWithLock $seed $true $null
+  if ($Case -eq 'live') { throw 'A live owner was stolen' }
+  if (Test-Path -LiteralPath $lock) { throw 'Dead/recycled owner lock was not released' }
+}
+'@
+[System.IO.File]::WriteAllText($MirrorRunner, $MirrorText)
+foreach ($Case in 'nested', 'live', 'dead', 'recycled') {
+    $Result = Run-Clean $Pwsh @('-NoProfile','-File',$MirrorRunner,$PSScriptRoot,$Scratch,$Case) @{}
+    $Want = if ($Case -eq 'live') { 4 } else { 0 }
+    if ($Result.Code -ne $Want) { throw "Shared PS seed $Case failed: $($Result.Code) $($Result.Output)" }
+    if ($Case -eq 'live' -and -not (Test-Path -LiteralPath (Join-Path $Scratch 'live/.claude-deepseek.seed-lock/owner'))) { throw 'Live owner metadata was removed' }
+    $Count++
+}
 Write-Host "$Count PowerShell smoke cases passed; scratch preserved at $Scratch"

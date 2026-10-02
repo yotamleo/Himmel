@@ -20,6 +20,7 @@ fi
 [ -n "${DEEPSEEK_API_KEY-}" ] || { echo 'claude-deepseek: DEEPSEEK_API_KEY missing; set it or add it to the primary .env.' >&2; exit 2; }
 command -v node >/dev/null 2>&1 || { echo 'claude-deepseek: node required; failing closed.' >&2; exit 3; }
 RESEED=0
+# shellcheck disable=SC2034 # RESEED is consumed by the sourced mirror-seed library.
 if [ "${1-}" = --reseed ]; then RESEED=1; shift; fi
 
 # Authorize explicit provider inference cells, preserving first-match denial,
@@ -98,94 +99,24 @@ if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) 
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 ' "$1" "$2"
 }
-seed_config_dir() {
-  # Transactional: the .seeded sentinel is removed FIRST and (re)written LAST, so
-  # ANY failure — first seed OR --reseed — leaves no sentinel and the next launch
-  # re-seeds.
-  rm -f "${CONFIG_DIR:?}/.seeded"
-  SRC="${HOME}/.claude"
-  mkdir -p "$CONFIG_DIR/plugins" || seed_fail "create $CONFIG_DIR/plugins"
-  if [ -f "$SRC/settings.json" ]; then
-    sanitize_settings "$SRC/settings.json" "$CONFIG_DIR/settings.json" \
-      || seed_fail "sanitize settings.json (node missing/broken?)"
-  else
-    rm -f "${CONFIG_DIR:?}/settings.json" || seed_fail "remove stale settings.json"
-  fi
-  for f in CLAUDE.md RTK.md; do
-    if [ -f "$SRC/$f" ]; then
-      cp "$SRC/$f" "$CONFIG_DIR/$f" || seed_fail "copy $f"
-    else
-      rm -f "${CONFIG_DIR:?}/$f" || seed_fail "remove stale $f"
-    fi
-  done
-  for d in commands skills hooks agents; do
-    rm -rf "${CONFIG_DIR:?}/$d" || seed_fail "clear stale $d"
-    [ -d "$SRC/$d" ] && { cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"; }
-  done
-  for p in installed_plugins.json known_marketplaces.json; do
-    if [ -f "$SRC/plugins/$p" ]; then
-      cp "$SRC/plugins/$p" "$CONFIG_DIR/plugins/$p" || seed_fail "copy plugins/$p"
-    else
-      rm -f "${CONFIG_DIR:?}/plugins/$p" || seed_fail "remove stale plugins/$p"
-    fi
-  done
-  rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear stale plugins/marketplaces"
-  [ -d "$SRC/plugins/marketplaces" ] && { cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
-  if [ -f "$SRC/plugins/claude-hud/config.json" ]; then
-    mkdir -p "$CONFIG_DIR/plugins/claude-hud" || seed_fail "create $CONFIG_DIR/plugins/claude-hud"
-    cp "$SRC/plugins/claude-hud/config.json" "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "copy plugins/claude-hud/config.json"
-  else
-    rm -f "${CONFIG_DIR:?}/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
-  fi
-  # HIMMEL-3334: the un-swept claude-hud config path, alongside the legacy one above.
-  if [ -f "$SRC/claude-hud.json" ]; then
-    cp "$SRC/claude-hud.json" "$CONFIG_DIR/claude-hud.json" || seed_fail "copy claude-hud.json"
-  else
-    rm -f "${CONFIG_DIR:?}/claude-hud.json" || seed_fail "remove stale claude-hud.json"
-  fi
-  : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
-}
-
-# Staleness-aware reseed (HIMMEL-819): re-mirror on plain launch when a tracked
-# source drifted or was deleted. Opt-out: CLAUDE_LANE_AUTO_RESEED=0.
-config_seed_stale() {
-  [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
-  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json claude-hud.json; do
-    if [ -f "${HOME}/.claude/$s" ]; then
-      if [ "${HOME}/.claude/$s" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
-    elif [ -f "$CONFIG_DIR/$s" ]; then
-      return 0
-    fi
-  done
-  for d in commands skills hooks agents plugins/marketplaces; do
-    if [ -d "${HOME}/.claude/$d" ]; then
-      [ -d "$CONFIG_DIR/$d" ] || return 0
-      if [ "${HOME}/.claude/$d" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
-    elif [ -d "$CONFIG_DIR/$d" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-# Shared sibling seed-lock protocol; trust updates always run under the lock.
+# shellcheck source=lane-mirror-seed.sh
+[ -r "$HERE/lane-mirror-seed.sh" ] || seed_fail 'load shared mirror seed'
+. "$HERE/lane-mirror-seed.sh"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LANE=claude-deepseek
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 LOCK="$CONFIG_DIR.seed-lock"
 TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"
 STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"
 case "$TIMEOUT" in ''|*[!0-9]*) seed_fail 'invalid seed timeout' ;; esac
 case "$STALE" in ''|*[!0-9]*) seed_fail 'invalid seed stale age' ;; esac
-TIMEOUT=$((10#$TIMEOUT)); STALE=$((10#$STALE))
-ticks=0
-while ! mkdir "$LOCK" 2>/dev/null; do
-  mt="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null)"
-  if [ -n "$mt" ] && [ "$(( $(date +%s) - mt ))" -ge "$STALE" ] && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
-    rmdir "$LOCK.stale.$$" 2>/dev/null || true
-    continue
-  fi
-  [ "$ticks" -lt "$((TIMEOUT * 2))" ] || seed_fail 'seed-lock timeout'
-  sleep 0.5; ticks=$((ticks + 1))
-done
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
-if [ "$RESEED" -eq 1 ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then seed_config_dir; fi
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LOCK_TIMEOUT=$((10#$TIMEOUT))
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LOCK_STALE=$((10#$STALE))
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LOCK_RELEASE_FATAL=1
+seed_after_mirror() {
 # shellcheck source=lib/git-clean.sh
 . "$HERE/lib/git-clean.sh"
 common="$(git_clean -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || seed_fail 'resolve primary checkout'
@@ -204,8 +135,9 @@ try {
  fs.writeFileSync(temp,JSON.stringify(j,null,2)+"\n",{mode:0o600});fs.renameSync(temp,p);
 }catch(e){console.error("claude-deepseek: onboarding seed failed: "+e.message);process.exit(4);}
 ' "$CONFIG_DIR/.claude.json" "$(dirname "$common")" || seed_fail 'onboarding and primary trust'
-rmdir "$LOCK" || seed_fail 'release seed lock'
-trap - EXIT
+}
+# DeepSeek always serializes onboarding/trust, even when the mirror is fresh.
+seed_with_lock
 command -v claude >/dev/null 2>&1 || { echo 'claude-deepseek: claude missing from PATH.' >&2; exit 2; }
 # Route the recognized alias to Flash, never the provider opus/V4 Pro alias.
 CONTEXT_WINDOW=786432
