@@ -70,6 +70,22 @@ assert_rc "T1 unknown profile fails closed" 2 "$rc"
 out=$(env HIMMEL_CONSOLE_DOC=/x/doc.md bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --dry-run 2>&1)
 assert_contains "T2 schedule hop hands arm-resume the profile" "--profile console" "$out"
 
+# HIMMEL-4033: the profile is derived from the hopping session's handover doc
+# (role-profile.sh, as arm-resume does) when HOP_PROFILE is unset; env wins.
+printf '# leg\n> profile: design\nRETASK token T-x\n' > "$TMP/design-leg.md"
+printf '# leg\nRETASK token T-x\n' > "$TMP/plain-leg.md"
+out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --doc "$TMP/design-leg.md" --message m --print --dry-run 2>&1)
+assert_contains "T1b --doc with an explicit profile hops as design" "/design.json'" "$out"
+out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --doc "$TMP/plain-leg.md" --message m --print --dry-run 2>&1)
+assert_contains "T1b --doc leg doc hops as leg-impl" "/leg-impl.json'" "$out"
+out=$(env HIMMEL_CONSOLE_DOC="$TMP/design-leg.md" bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --print --dry-run 2>&1)
+assert_contains "T1b HIMMEL_CONSOLE_DOC file is read for its role" "/design.json'" "$out"
+out=$(env HOP_PROFILE=bare bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --doc "$TMP/design-leg.md" --message m --print --dry-run 2>&1)
+assert_contains "T1b HOP_PROFILE beats the doc" "/bare.json'" "$out"
+out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --doc "$TMP/no-such-doc.md" --message m --print --dry-run 2>&1)
+rc=$?
+assert_rc "T1b missing --doc is a usage error" 1 "$rc"
+
 # T2: --schedule (default) --dry-run — should mention arm-resume.sh
 out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message "test" --dry-run 2>&1)
 rc=$?
