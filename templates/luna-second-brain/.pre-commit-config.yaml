@@ -44,7 +44,11 @@ repos:
         files: '\.(sh|ps1|yaml|yml|json|toml)$'
         exclude: '^\.manifest\.json$'
       - id: check-yaml
+      # Judge/VM verdict evidence is raw captured output (a capture of a file
+      # the run found absent is legitimately empty), not config. Validating it
+      # can stall every vault commit.
       - id: check-json
+        exclude: '^handovers/.*/verdicts/'
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1
@@ -75,7 +79,11 @@ repos:
         # scratch scripts and launch artefacts a session leaves behind. One
         # failing scratch .sh there refused every later commit, silently, for
         # hours (HIMMEL-3851).
-        exclude: ^handovers/.*/(specs/(console-kit-[^/]+|reports/[^/]*-artifacts)|verdicts|logs)/
+        #
+        # Plan tooling (specs/plan/<KEY>/tools/) is the same class: ad-hoc
+        # launch/render scripts a roadmap console leaves behind; info-level
+        # findings there can stall every vault commit.
+        exclude: ^handovers/.*/(specs/(console-kit-[^/]+|reports/[^/]*-artifacts|plan/[^/]+/tools)|verdicts|logs)/
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
