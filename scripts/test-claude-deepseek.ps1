@@ -103,6 +103,15 @@ $Extra = @{ DEEPSEEK_API_KEY='ds-ps-hermetic-secret'; HIMMEL_DEEPSEEK_INFERENCE_
 if ($IsWindows) { $Extra['PATHEXT'] = '.COM;.EXE;.BAT;.CMD' }
 $ExpectedCurl = Join-Path $Bin $(if ($IsWindows) { 'curl.cmd' } else { 'curl' })
 Write-Host "Fixture executables: node=$Node; git=$Git; pwsh=$Pwsh; curl=$ExpectedCurl"
+$CurlProbe = Join-Path $Scratch 'curl-probe.ps1'
+[System.IO.File]::WriteAllText($CurlProbe, @'
+$ErrorActionPreference = 'Stop'
+'fixture probe input' | & $args[0]
+exit $LASTEXITCODE
+'@)
+$ProbeResult = Run-Clean $Pwsh @('-NoProfile','-File',$CurlProbe,$ExpectedCurl) $Extra
+if ($ProbeResult.Code -ne 0 -or -not $ProbeResult.Output.Contains('"total_balance":"50.00"')) { throw "Curl fixture probe failed: $($ProbeResult.Code) $($ProbeResult.Output)" }
+Write-Host 'Curl fixture probe returned a passing balance'
 $Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $Extra
 foreach ($Name in @('CLAUDE_LANE_SEED_LOCK_TIMEOUT','CLAUDE_LANE_SEED_LOCK_STALE')) {
     foreach ($Value in @('invalid','-1','1.5',' 1','2147483648')) {
