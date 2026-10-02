@@ -56,9 +56,19 @@ set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
 rm -f "$tmp/latest"
 run "latest file missing: usage error, never ALLOW" 2 'usage'
 
-timeout 5 bash "$MF" --pr "$tmp/pr" --main-base "$tmp/pr" --main-latest >/dev/null 2>&1
-rc=$?
-if [ "$rc" -eq 2 ]; then ok "trailing --main-latest without a value exits 2 (no hang)"; else bad "trailing --main-latest without a value exits 2 (rc=$rc)"; fi
+# shellcheck source=../lib/timeout-bin.sh
+. "$HERE/../lib/timeout-bin.sh"
+if [ -n "$_TIMEOUT_BIN" ]; then
+  "$_TIMEOUT_BIN" 5 bash "$MF" --pr "$tmp/pr" --main-base "$tmp/pr" --main-latest >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 2 ]; then ok "trailing --main-latest without a value exits 2 (no hang)"; else bad "trailing --main-latest without a value exits 2 (rc=$rc)"; fi
+else
+  echo "SKIP: trailing --main-latest no-hang row (no timeout binary)"
+fi
+
+# a malformed PR row must not be silently ignored (it could hide a red)
+set3 'a\tfailure\nb failure\n' 'a\tfailure\nb\tfailure\n' 'a\tsuccess\nb\tsuccess\n'
+run "malformed PR row (no tab): usage error, never ALLOW" 2 'malformed'
 
 bash "$MF" --pr "$tmp/pr" --main "$tmp/pr" >/dev/null 2>&1
 rc=$?

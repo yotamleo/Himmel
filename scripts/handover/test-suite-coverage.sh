@@ -49,9 +49,15 @@ bash "$SC" --runner "$tmp/none.sh" scripts/x/test-x.sh >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then pass "missing runner exits 2"; else bad "missing runner exits 2"; fi
 
-timeout 5 bash "$SC" scripts/x/test-x.sh --runner >/dev/null 2>&1
-rc=$?
-if [ "$rc" -eq 2 ]; then pass "trailing --runner without a value exits 2 (no hang)"; else bad "trailing --runner without a value exits 2 (rc=$rc)"; fi
+# shellcheck source=../lib/timeout-bin.sh
+. "$HERE/../lib/timeout-bin.sh"
+if [ -n "$_TIMEOUT_BIN" ]; then
+  "$_TIMEOUT_BIN" 5 bash "$SC" scripts/x/test-x.sh --runner >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 2 ]; then pass "trailing --runner without a value exits 2 (no hang)"; else bad "trailing --runner without a value exits 2 (rc=$rc)"; fi
+else
+  echo "SKIP: trailing --runner no-hang row (no timeout binary)"
+fi
 out=$(bash "$SC" scripts/nope/test-nonexistent.sh 2>&1); rc=$?
 expect "real: a nonexistent suite is unknown, not 'runs in PR CI'" 'unknown' "$out"
 if [ "$rc" -eq 3 ]; then pass "unknown suite exits 3"; else bad "unknown suite exits 3 (rc=$rc)"; fi

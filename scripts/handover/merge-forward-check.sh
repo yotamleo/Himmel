@@ -24,6 +24,10 @@
 # Exit 0 = ALLOW  1 = REFUSE  2 = usage / unreadable input
 #      3 = nothing red on the PR; no merge-forward needed
 # Red = failure | timed_out | startup_failure.
+# ponytail: inheritance is matched by job name, not by failing case, so a job that
+# fails different tests on the base and the PR still reads as inherited; the leg
+# compares the failed-job logs itself before merging forward, upgrade path is a
+# per-case comparison if that ever bites.
 set -uo pipefail
 pr=""; base=""; latest=""; bsha=""; msha=""; bad=0
 while [ $# -gt 0 ]; do
@@ -44,6 +48,11 @@ fi
 if [ -n "$bsha" ] && [ "$bsha" != "$msha" ]; then
   echo "REFUSE — the --main-base run is for $msha, not the PR's merge-base $bsha: it proves nothing about the base. Report BLOCKED; do not merge forward."
   exit 1
+fi
+
+if awk -F'\t' 'NF && NF != 2 {exit 1}' "$pr"; then :; else
+  echo "usage: --pr file has a malformed row (want <job><TAB><conclusion>): a skipped row could hide a red" >&2
+  exit 2
 fi
 
 reds="$(awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print $1}' "$pr")"
