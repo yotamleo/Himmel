@@ -75,10 +75,11 @@ printf 'claude\0-n\0HIMMEL-9001-test\0work\0' > "$W/proc/9001/cmdline"
 seed session "$dead"
 check 'dead owner with a live named session never admits past cap' SKIPPED-FLEET "$(run session)"
 # Exercise the reclaim helper with a large fresh census: grep must drain it.
-awk '/^_fleet_reclaim_dead_reservation\(\)/,/^}/' "$REPO/scripts/lib/bank-preflight.sh" > "$W/reclaim.sh"
+awk '/^_fleet_reclaim_dead_reservation\(\)/,/^}/' "$REPO/scripts/lib/bank-preflight.sh" > "$W/reclaim.sh" || exit 1
 seed large-census "$dead"
-if (
-  source "$W/reclaim.sh"
+(
+  source "$W/reclaim.sh" || exit 2
+  declare -F _fleet_reclaim_dead_reservation >/dev/null || exit 2
   SLOTS="$W/large-census"
   mkdir -p "$SLOTS/.admit"
   printf '%s\n' "$$" > "$SLOTS/.admit/pid"
@@ -93,10 +94,9 @@ if (
   # shellcheck disable=SC2317,SC2329
   _fleet_gate_drop() { rm -rf "$W/fence"; }
   _fleet_reclaim_dead_reservation "$SLOTS/HIMMEL-9001-test/" "$dead" "$(cat "$SLOTS/HIMMEL-9001-test/expires")" HIMMEL-9001-test HIMMEL-9001-test
-); then
-  echo 'FAIL - large census live name was reclaimed'; fails=$((fails+1))
-else
-  check 'large census live name keeps reservation' present "$(if [ -d "$W/large-census/HIMMEL-9001-test" ]; then echo present; else echo absent; fi)"
-fi
+)
+reclaim_rc=$?
+check 'large census helper returns expected refusal' 1 "$reclaim_rc"
+check 'large census live name keeps reservation' present "$(if [ -d "$W/large-census/HIMMEL-9001-test" ]; then echo present; else echo absent; fi)"
 printf 'test-bank-preflight-dead-owner: %s failures\n' "$fails"
 [ "$fails" -eq 0 ]
