@@ -53,7 +53,8 @@ New-Item -ItemType Directory -Force -Path $TMP | Out-Null
 $OrigEnv = @{}
 foreach ($n in 'USERPROFILE', 'OPENROUTER_API_KEY', 'CLAUDE_OPENROUTER_DOTENV_ROOT', 'CLAUDE_OPENROUTER_EGRESS_MATRIX',
                'CLAUDE_OPENROUTER_CWD', 'OPENROUTER_API_BASE', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH',
-               'OPENROUTER_MODEL', 'OPENROUTER_HAIKU', 'OPENROUTER_SONNET', 'OPENROUTER_OPUS', 'LEG_LANE') {
+               'OPENROUTER_MODEL', 'OPENROUTER_HAIKU', 'OPENROUTER_SONNET', 'OPENROUTER_OPUS', 'LEG_LANE',
+               'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE') {
   $OrigEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 
@@ -352,6 +353,25 @@ try {
     }
   }
   Remove-Item Env:OPENROUTER_MODEL, Env:LEG_LANE -ErrorAction SilentlyContinue
+
+  # Managed trust must unset Git overrides, not create empty native variables.
+  New-Sandbox; $script:KEY = 'or-test-123'  # gitleaks:allow
+  Write-AllowMatrix (Join-Path $WORK 'matrix.json'); $script:MATRIX = Join-Path $WORK 'matrix.json'
+  $env:LEG_LANE = 'openrouter'
+  $gitNames = @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE')
+  foreach ($name in $gitNames) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+  Assert-Exit (Invoke-Launcher) 0 'managed trust with absent Git overrides launches'
+  foreach ($name in $gitNames) {
+    if (FileHas $ChildEnv "$name=") { Fail "absent $name became set" } else { Pass "$name remains absent" }
+  }
+  foreach ($name in $gitNames) { Set-Item -LiteralPath "Env:$name" -Value (Join-Path $WORK "poison-$name") }
+  Assert-Exit (Invoke-Launcher) 0 'managed trust ignores poisoned Git overrides'
+  foreach ($name in $gitNames) {
+    $pair = "$name=" + (Join-Path $WORK "poison-$name")
+    if (FileHas $ChildEnv $pair) { Pass "$name restored unchanged" } else { Fail "$name was not restored" }
+    Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+  }
+  Remove-Item Env:LEG_LANE -ErrorAction SilentlyContinue
 
   # --- T6: claude flags pass through verbatim; a LEADING -Reseed is consumed.
   # Pins the manual flag loop (a param() block would swallow -p/-d as common

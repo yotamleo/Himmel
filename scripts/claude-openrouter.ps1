@@ -327,14 +327,17 @@ function Invoke-LegTrustSeed {
   $savedGitEnv = @{}
   try {
     foreach ($name in 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE') {
-      $savedGitEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-      [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+      # Explicit provider removal avoids passing an empty GIT_DIR to native Git.
+      if (Test-Path -LiteralPath "Env:$name") {
+        $savedGitEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        Remove-Item -LiteralPath "Env:$name"
+      }
     }
     $common = & git -C $RepoRoot rev-parse --path-format=absolute --git-common-dir
     if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve primary checkout for leg trust' }
     $primary = Split-Path -Parent $common
   } finally {
-    foreach ($name in $savedGitEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedGitEnv[$name], 'Process') }
+    foreach ($name in $savedGitEnv.Keys) { Set-Item -LiteralPath "Env:$name" -Value $savedGitEnv[$name] }
   }
   $trustJs = @'
 const fs=require("fs"), p=process.argv[1], root=process.argv[2];
