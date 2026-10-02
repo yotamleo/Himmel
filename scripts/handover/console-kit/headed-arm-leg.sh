@@ -775,7 +775,7 @@ fi
 # Only the immediate headed-arm renderer reads these; never child launcher-env.
 export HEADED_ARM_CONTEXT_PROFILE="$PROFILE"
 _CONTEXT_BRIEF_REASON="$(grep -m1 -E '^> \*\*Context:\*\* 1m — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* 1m — operator-ruling: //; s/^[[:space:]]+//; s/[[:space:]]+$//')"
-if [ "${LEG_CONTEXT:-}" = "1m" ] || [ -n "$_CONTEXT_BRIEF_REASON" ]; then
+if [ "${LEG_CONTEXT:-}" = "1m" ]; then
     CONTEXT="1m"
     RESOLVED_AUTOCOMPACT="auto"
     # An env override needs its own brief ruling, even on a design profile.

@@ -493,9 +493,10 @@ kit add-ons launched alone, remain `standard` / `200000`. Integer ceilings below
 standard profile cannot declare a ceiling above 200000. Child autocompact
 inheritance remains **UNMEASURED**: no real session was launched for this audit.
 
-The sanctioned brief line `> **Context:** 1m — operator-ruling: <reason>`
-remains a per-leg override to `auto`, as does `CONSOLE_CONTEXT=1m` for a console.
-A bare `LEG_CONTEXT=1m` without a reasoned brief line still refuses. Launch logs
+`LEG_CONTEXT=1m` plus the sanctioned brief line
+`> **Context:** 1m — operator-ruling: <reason>` remains a per-leg override to
+`auto`, as does `CONSOLE_CONTEXT=1m` for a console. The brief line alone does
+not elevate a standard profile; a bare `LEG_CONTEXT=1m` without it refuses. Launch logs
 record the resolved profile, ceiling and context source; argv must match the
 profile plus the sanctioned override. The older `arm-resume.sh` context API is
 unchanged; the profile defaults here apply to the two headed launchers.
@@ -615,7 +616,7 @@ measured** — do not assume a `standard` leg makes its children compact early.
 | lane | default mode | override |
 |---|---|---|
 | console arm (`*-console.md`) | `standard` | `CONSOLE_CONTEXT=1m` |
-| headed leg / worker arm | profile default (`design`: `1m` / 1000000; others: `standard` / 200000) | reasoned brief Context line; bare `LEG_CONTEXT=1m` refuses |
+| headed leg / worker arm | profile default (`design`: `1m` / 1000000; others: `standard` / 200000) | `LEG_CONTEXT=1m` plus reasoned brief Context line; either alone does not enable 1m |
 | subagent of either | inherits the parent | none — set it on the parent's arm |
 
 Given that, the console-side mitigation is a lean parent (HIMMEL-2975's

@@ -69,6 +69,24 @@ test('leg launcher reads a numeric design ceiling rather than hard-coding auto',
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /autocompact=400000/);
 });
+test('brief explanation alone does not elevate a standard profile', (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, 'brief.md'), '> **Context:** 1m — operator-ruling: fixture authorization\n');
+  const result = launch(f, 'leg-impl');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /autocompact=200000/);
+});
+test('LEG_CONTEXT plus a brief explanation permits the sanctioned override', (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, 'brief.md'), '> **Context:** 1m — operator-ruling: fixture authorization\n');
+  const result = launch(f, 'leg-impl', { LEG_CONTEXT: '1m' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /autocompact=auto/);
+});
+test('a design profile still refuses LEG_CONTEXT without a brief explanation', (t) => {
+  const result = launch(fixture(t), 'design', { LEG_CONTEXT: '1m' });
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+});
 test('bare LEG_CONTEXT=1m on a standard profile remains refused', (t) => {
   const result = launch(fixture(t), 'leg-impl', { LEG_CONTEXT: '1m' });
   assert.equal(result.status, 2, result.stdout + result.stderr);
