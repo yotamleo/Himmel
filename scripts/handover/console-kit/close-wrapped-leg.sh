@@ -7,7 +7,9 @@
 # doc is free AND its own last Results marker-bullet is WRAPPED. It never
 # kills a pid it cannot independently prove belongs to that leg.
 #
-# Usage: close-wrapped-leg.sh <leg-doc>
+# Usage: close-wrapped-leg.sh [--fleet <manifest>] <leg-doc>
+# --fleet removes the doc after a successful close, including benign prune skips.
+# A manifest update failure returns 1 after the session has already closed.
 #
 # Refuses (nothing signaled) unless:
 #   - `queue-lock.sh status <leg-doc>` reports free (rc=0);
@@ -64,7 +66,22 @@ CLEAN_SH="${CLEAN_SH_BIN:-$HERE/../../clean.sh}"
 WRAP_SUBTREE_CHECK="${WRAP_SUBTREE_CHECK_BIN:-$HERE/../wrap-subtree-check.sh}"
 
 usage() {
-    echo "usage: close-wrapped-leg.sh <leg-doc>" >&2
+    echo "usage: close-wrapped-leg.sh [--fleet <manifest>] <leg-doc>" >&2
+}
+
+FLEET_MANIFEST=""
+if [ "${1:-}" = --fleet ]; then
+    [ "$#" -ge 2 ] && [ -n "$2" ] || { usage; exit 2; }
+    FLEET_MANIFEST="$2"; shift 2
+fi
+
+# Only successful close exits retire the leg; refusals and failed pruning keep it.
+close_success() {
+    if [ -n "$FLEET_MANIFEST" ] && ! bash "$HERE/fleet-manifest.sh" remove "$FLEET_MANIFEST" "$DOC"; then
+        echo "close-wrapped-leg: session closed but fleet manifest update failed: $FLEET_MANIFEST" >&2
+        exit 1
+    fi
+    exit 0
 }
 
 if [ "$#" -ne 1 ]; then
@@ -262,7 +279,7 @@ worktrees=$(grep -oE "/[^\` ]*/\.claude/worktrees/[^\`) ]+" "$DOC" | sort -u)
 wt_count=$(printf '%s\n' "$worktrees" | grep -c . || true)
 if [ "$wt_count" -ne 1 ]; then
     echo "close-wrapped-leg: doc names $wt_count worktree path(s) - skipping the prune, never guessing" >&2
-    exit 0
+    close_success
 fi
 WT="$worktrees"
 
@@ -288,9 +305,9 @@ if [ "$rc" -ne 0 ]; then
     fi
     if [ "$benign" -eq 1 ]; then
         echo "close-wrapped-leg: worktree $WT not pruned (see message above) - not a failure, retry --only shortly"
-        exit 0
+        close_success
     fi
     echo "close-wrapped-leg: clean.sh --only $WT --only-allow-unmerged failed (rc=$rc)" >&2
     exit 1
 fi
-exit 0
+close_success

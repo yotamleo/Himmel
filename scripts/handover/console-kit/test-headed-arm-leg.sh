@@ -263,6 +263,47 @@ printf '%s\n' '#!/usr/bin/env bash' \
   'echo SKIPPED-BANK' > "$SKIPPED_BANK_PREFLIGHT"
 chmod 755 "$SKIPPED_BANK_PREFLIGHT"
 
+# HIMMEL-3748: deleting the post-handoff add must fail these manifest assertions.
+# The target is a fixture: never launch a real leg or edit a live manifest.
+fleet_doc="$tmp/HIMMEL-3748-N7-fleet.md"
+fleet_manifest="$tmp/fleet.json"
+printf '%s\n' '# fleet fixture' > "$fleet_doc"
+fleet_target="$tmp/fleet-target.sh"
+cat > "$fleet_target" <<'FLEET_TARGET'
+#!/usr/bin/env bash
+[ ! -e "$FLEET_TEST_MANIFEST" ] || exit 9
+exit "${FLEET_TEST_RC:-0}"
+FLEET_TARGET
+chmod +x "$fleet_target"
+fleet_launch() {
+  FLEET_TEST_MANIFEST="$fleet_manifest" HEADED_ARM_LEG_TARGET="$fleet_target" \
+    HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" bash "$SCRIPT" \
+    --no-profile --fleet "$fleet_manifest" "$@" \
+    HIMMEL-3748-N7-fleet "$fleet_doc" "$tmp/fleet-signal" "$PAST" "$tmp/fleet-log" claude-sonnet-5-5
+}
+rc=0; out="$(fleet_launch 2>&1)" || rc=$?
+check 'fleet: successful handoff returns zero' 0 "$rc"
+check 'fleet: successful handoff adds exactly the leg doc' "$fleet_doc" "$(jq -r '.legs[].doc' "$fleet_manifest" 2>/dev/null)"
+rm -f "$fleet_manifest"
+rc=0; out="$(FLEET_TEST_RC=7 fleet_launch 2>&1)" || rc=$?
+check 'fleet: failed target status is preserved' 7 "$rc"
+check 'fleet: failed target leaves manifest absent' no "$([ -e "$fleet_manifest" ] && echo yes || echo no)"
+rc=0; out="$(fleet_launch --dry-run 2>&1)" || rc=$?
+check 'fleet: dry run succeeds without adding' 0 "$rc"
+check 'fleet: dry run leaves manifest absent' no "$([ -e "$fleet_manifest" ] && echo yes || echo no)"
+rc=0; out="$(HEADED_ARM_LEG_PREFLIGHT="$SKIPPED_FLEET_PREFLIGHT" \
+  HEADED_ARM_LEG_TARGET="$fleet_target" bash "$SCRIPT" --no-profile --fleet "$fleet_manifest" \
+  HIMMEL-3748-N7-fleet "$fleet_doc" "$tmp/fleet-signal" "$PAST" "$tmp/fleet-log" claude-sonnet-5-5 2>&1)" || rc=$?
+check 'fleet: admission refusal preserves status' 10 "$rc"
+check 'fleet: admission refusal leaves manifest absent' no "$([ -e "$fleet_manifest" ] && echo yes || echo no)"
+
+fleet_manifest="$tmp/no-such-directory/fleet.json"
+rc=0; out="$(fleet_launch 2>&1)" || rc=$?
+check 'fleet: update failure returns nonzero after handoff' 1 "$rc"
+contains 'fleet: update failure reports launch already handed off' "$out" 'launch handed off but fleet manifest update failed'
+rc=0; out="$(bash "$SCRIPT" --fleet 2>&1)" || rc=$?
+check 'fleet: missing flag value refuses' 2 "$rc"
+
 # RUN_LEG_ARGS (HIMMEL-3267): the leading profile flags. Default is a REAL
 # profile - a launch that no longer exists unprofiled is the shape a console
 # dispatches - and only a case whose subject IS the unprofiled path sets
@@ -690,8 +731,9 @@ cat > "$ceiling_reg" <<'CEILING_EOF'
 CEILING_EOF
 d8profile="$tmp/c8profile"; mk_launch_stubs "$d8profile" "HIMMEL-4021-ceiling"; mkdir -p "$tmp/repo8profile"
 rc=0
-PLUGIN_PROFILES_REGISTRY="$ceiling_reg" LEG_CONTEXT='' RUN_LEG_ARGS='--profile design' \
+PLUGIN_PROFILES_REGISTRY="$ceiling_reg" LEG_CONTEXT='' RUN_LEG_ARGS="--profile design --fleet $tmp/profile-fleet.json" \
   run_leg "$d8profile" "$tmp/repo8profile" "HIMMEL-4021-ceiling" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+check 'fleet: real headed-arm renderer adds doc with profile ceiling intact' "$some_doc" "$(jq -r '.legs[].doc' "$tmp/profile-fleet.json" 2>/dev/null)"
 wait_record "$d8profile" || true
 rec8profile="$(cat "$d8profile/record" 2>/dev/null || true)"
 check "profile numeric ceiling: full launch succeeds" "$rc" "0"

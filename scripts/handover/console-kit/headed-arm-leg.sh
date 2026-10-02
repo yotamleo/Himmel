@@ -24,7 +24,7 @@
 # versioned script: LEG_REPO now maps onto headed-arm.sh's own
 # HEADED_ARM_REPO seam instead of a second, parallel repo-root variable.
 #
-# Usage: headed-arm-leg.sh [--dry-run] <session-name> <handover-doc> \
+# Usage: headed-arm-leg.sh [--dry-run] [--fleet <manifest>] <session-name> <handover-doc> \
 #                           <signal-file> <deadline-epoch> <log> [model]
 # Run detached, same as headed-arm.sh itself:
 #   setsid nohup bash headed-arm-leg.sh ... >/dev/null 2>&1 &
@@ -225,7 +225,7 @@ HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
 export HEADED_ARM_UNAME
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--ignore-denials] [--lane native|claudex|openrouter|deepseek] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--fleet <manifest>] [--ignore-denials] [--lane native|claudex|openrouter|deepseek] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 # leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
@@ -316,6 +316,7 @@ HEADLESS=0
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
 CONSOLE_FLAG=""
+FLEET_MANIFEST=""
 while :; do
     case "${1:-}" in
         --dry-run) DRY_RUN=1; shift ;;
@@ -325,6 +326,9 @@ while :; do
         --ignore-denials) IGNORE_DENIALS=1; shift ;;
         --no-profile) NO_PROFILE=1; shift ;;
         --headless) HEADLESS=1; shift ;;
+        --fleet)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || { usage; exit 2; }
+            FLEET_MANIFEST="$2"; shift 2 ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,
             # so `shift 2` fails (rc=1) and shifts NOTHING under `set -u`
@@ -1872,4 +1876,16 @@ fi
 
 # Paired with this exec's PID: headed-arm.sh ignores stale ambient values.
 export HEADED_ARM_CONTEXT_PID="$$" HEADED_ARM_LEG_PROFILES="$PROFILES_MJS"
+if [ -n "$FLEET_MANIFEST" ]; then
+    # Keep headed-arm.sh's profile/context handoff paired to its own exec PID.
+    bash -c 'export HEADED_ARM_CONTEXT_PID="$$"; exec "$@"' bash \
+        "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
+    launch_rc=$?
+    [ "$launch_rc" -eq 0 ] || exit "$launch_rc"
+    if ! bash "$HERE/fleet-manifest.sh" add "$FLEET_MANIFEST" "$DOC"; then
+        echo "headed-arm-leg: launch handed off but fleet manifest update failed: $FLEET_MANIFEST" >&2
+        exit 1
+    fi
+    exit 0
+fi
 exec "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
