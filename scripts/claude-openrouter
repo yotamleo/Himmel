@@ -256,9 +256,13 @@ seed_fail() { # $1 = failing-operation detail — abort seeding, never mark it s
 # shellcheck source=lane-mirror-seed.sh
 [ -r "$HERE/lane-mirror-seed.sh" ] || seed_fail 'load shared mirror seed'
 . "$HERE/lane-mirror-seed.sh"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_LANE=claude-openrouter
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 LOCK="$CONFIG_DIR.seed-lock"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_LOCK_TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_LOCK_STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"
 
 seed_leg_trust() {

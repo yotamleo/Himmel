@@ -110,6 +110,7 @@ seed_process_start() {
   if [ -r "/proc/$1/stat" ]; then
     IFS= read -r process_stat < "/proc/$1/stat" || return 1
     process_stat="${process_stat##*) }"
+    # shellcheck disable=SC2086 # Split the numeric /proc fields after removing the command name.
     set -- $process_stat
     [ "$#" -ge 20 ] || return 1
     shift 19

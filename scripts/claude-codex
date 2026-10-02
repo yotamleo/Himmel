@@ -372,7 +372,9 @@ codex_stanza_model() {
 # shellcheck source=lane-mirror-seed.sh
 [ -r "$HERE/lane-mirror-seed.sh" ] || seed_fail 'load shared mirror seed'
 . "$HERE/lane-mirror-seed.sh"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_LANE=claude-codex
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_STAMP_REQUIRED=1
 seed_stamp() { printf '%s|%s\n' "$SEED_VERSION" "$(codex_stanza_model)"; }
 seed_after_leaves() {
@@ -393,8 +395,11 @@ Your backend model is $stanza_model (OpenAI, via the local CLIProxyAPI codex pro
 EOF
   fi
 }
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 LOCK="$CONFIG_DIR.seed-lock"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_LOCK_TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_LOCK_STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"
 
 # HIMMEL-1037: a --preflight-only probe never launches claude, so it needs no

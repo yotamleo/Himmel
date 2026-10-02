@@ -20,6 +20,7 @@ fi
 [ -n "${DEEPSEEK_API_KEY-}" ] || { echo 'claude-deepseek: DEEPSEEK_API_KEY missing; set it or add it to the primary .env.' >&2; exit 2; }
 command -v node >/dev/null 2>&1 || { echo 'claude-deepseek: node required; failing closed.' >&2; exit 3; }
 RESEED=0
+# shellcheck disable=SC2034 # RESEED is consumed by the sourced mirror-seed library.
 if [ "${1-}" = --reseed ]; then RESEED=1; shift; fi
 
 # Authorize explicit provider inference cells, preserving first-match denial,
@@ -101,13 +102,19 @@ fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 # shellcheck source=lane-mirror-seed.sh
 [ -r "$HERE/lane-mirror-seed.sh" ] || seed_fail 'load shared mirror seed'
 . "$HERE/lane-mirror-seed.sh"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_LANE=claude-deepseek
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 LOCK="$CONFIG_DIR.seed-lock"
 TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"
 STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"
 case "$TIMEOUT" in ''|*[!0-9]*) seed_fail 'invalid seed timeout' ;; esac
 case "$STALE" in ''|*[!0-9]*) seed_fail 'invalid seed stale age' ;; esac
-SEED_LOCK_TIMEOUT=$((10#$TIMEOUT)); SEED_LOCK_STALE=$((10#$STALE))
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LOCK_TIMEOUT=$((10#$TIMEOUT))
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LOCK_STALE=$((10#$STALE))
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
 SEED_LOCK_RELEASE_FATAL=1
 seed_after_mirror() {
 # shellcheck source=lib/git-clean.sh
