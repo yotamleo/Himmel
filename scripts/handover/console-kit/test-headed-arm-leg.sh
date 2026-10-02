@@ -509,7 +509,7 @@ done
 # env var or brief line; every other profile keeps the 200000 ceiling.
 rc=0; out="$(LEG_CONTEXT='' bash "$SCRIPT" --dry-run --profile design HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run --profile design: exit 0" "$rc" "0"
-contains "dry-run --profile design: reports context=1m (operator-ruling)" "$out" "context=1m (operator-ruling)"
+contains "dry-run --profile design: names the profile source" "$out" "context=1m (profile design contextMode 1m)"
 ends_with "dry-run --profile design: context=1m" "$out" "1m"
 rc=0; out="$(LEG_CONTEXT='' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run --profile leg-impl: exit 0" "$rc" "0"
@@ -525,7 +525,7 @@ rule_doc="$tmp/rule-brief-design.md"
 printf '%s\n' '# fixture brief' '> profile: design' > "$rule_doc"
 rc=0; out="$(LEG_PROFILE='' LEG_CONTEXT='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$rule_doc" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "brief profile: design line selects design: exit 0" "$rc" "0"
-contains "brief profile: design line selects design (1m operator-ruling)" "$out" "context=1m (operator-ruling)"
+contains "brief profile: design line names the profile source" "$out" "context=1m (profile design contextMode 1m)"
 rc=0; out="$(LEG_PROFILE='' LEG_CONTEXT='' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$rule_doc" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "explicit --profile overrides the brief line: exit 0" "$rc" "0"
 not_contains "explicit --profile leg-impl overrides the brief's design" "$out" "operator-ruling"
@@ -698,6 +698,10 @@ check "profile numeric ceiling: full launch succeeds" "$rc" "0"
 contains "profile numeric ceiling: renderer carries 400000" "$rec8profile" "--autocompact 400000"
 not_contains "profile numeric ceiling: no hard-coded auto" "$rec8profile" "--autocompact auto"
 contains "profile numeric ceiling: model has 1m mode" "$rec8profile" "claude-sonnet-5[1m]"
+log8profile="$(cat "$d8profile/log" 2>/dev/null || true)"
+contains "profile numeric ceiling: wrapper names profile source" "$log8profile" "headed-arm-leg: context=1m (profile design contextMode 1m)"
+contains "profile numeric ceiling: renderer names profile source" "$log8profile" "context=1m (profile design contextMode 1m); model="
+not_contains "profile numeric ceiling: not an operator ruling" "$log8profile" "operator-ruling"
 
 # codex-1 (round 3): a caller passing an ALREADY-SUFFIXED model
 # (claude-sonnet-5[1m]) under the DEFAULT (standard) context must still end
