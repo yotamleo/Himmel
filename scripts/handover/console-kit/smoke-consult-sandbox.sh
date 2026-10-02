@@ -57,7 +57,8 @@ doc="$scratch/consult.md"; sibling="$scratch/sibling.md"
 printf '# consult\n\n## Results\n' > "$doc"
 printf 'untouched\n' > "$sibling"
 mkdir -p "$work/home/.claude"
-jq -n --arg c "touch $work/canary-fired" '{hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $c}]}]}}' > "$work/home/.claude/settings.json" \
+canary_cmd="touch '$work/canary-fired'"
+jq -n --arg c "$canary_cmd" '{hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $c}]}]}}' > "$work/home/.claude/settings.json" \
     || { echo "FAIL smoke-consult-sandbox: jq"; exit 1; }
 doc="$(cd -P "$scratch" && pwd -P)/consult.md"; sibling="$(cd -P "$scratch" && pwd -P)/sibling.md"
 
@@ -94,7 +95,7 @@ wait "$launch_pid" 2>/dev/null || true
 if [ "$(cat "$work/nss" 2>/dev/null)" != "LEG_PROFILE_NO_SETTING_SOURCES=1" ]; then
     echo "FAIL smoke-consult-sandbox: the launcher did not hand the shim LEG_PROFILE_NO_SETTING_SOURCES=1"; exit 1
 fi
-if [ "$(jq -c --arg c "touch $work/canary-fired" '[.hooks.PreToolUse[]?.hooks[]?.command | select(. == $c)] | length' "$settings")" != 1 ]; then
+if [ "$(jq -c --arg c "$canary_cmd" '[.hooks.PreToolUse[]?.hooks[]?.command | select(. == $c)] | length' "$settings")" != 1 ]; then
     echo "FAIL smoke-consult-sandbox: the canary user-scope hook was not carried into the consult settings"; exit 1
 fi
 
