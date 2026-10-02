@@ -867,6 +867,41 @@ for bad_or_model in claude-haiku-4-5 gpt-6.1-sol claude-sonnet-99-9 anthropic/cl
   contains "openrouter: refusal explains model mapping" "$out" "OpenRouter model"
 done
 
+# HIMMEL-4084 slice 3: lane registry. deepseek is admitted with its own
+# launcher, the launcher's own default model and LEG_LANE=deepseek; glm is a
+# registry row that refuses until it has a launcher contract; unknown stays 2.
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --lane deepseek HIMMEL-9999-ds "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/ds.log" 2>&1)" || rc=$?
+check "deepseek: registry admits the lane" "$rc" "0"
+contains "deepseek: lane reported" "$out" "lane=deepseek"
+contains "deepseek: launcher is claude-deepseek" "$out" "claude-deepseek"
+contains "deepseek: LEG_LANE exported" "$out" "LEG_LANE=deepseek"
+contains "deepseek: recorder enabled" "$out" "recorder=1"
+not_contains "deepseek: no codex env" "$out" "CLAUDEX_LANE_OK"
+ds_stub="$tmp/ds-stub"; printf "#!/bin/sh\nexport ANTHROPIC_MODEL='stub-model'\nexit 0\n" > "$ds_stub"; chmod +x "$ds_stub"
+rc=0; out="$(HEADED_ARM_LEG_DEEPSEEK_BIN="$ds_stub" bash "$SCRIPT" --dry-run --no-profile --lane deepseek HIMMEL-9999-ds "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/ds.log" 2>&1)" || rc=$?
+check "deepseek: launcher seam honoured" "$rc" "0"
+contains "deepseek: seam path is the exec target" "$out" "exec-target=$ds_stub"
+contains "deepseek: seam launcher's model is the default" "$out" " stub-model "
+printf '#!/bin/sh\nexport ANTHROPIC_MODEL=bare-model\nexit 0\n' > "$ds_stub"
+rc=0; out="$(HEADED_ARM_LEG_DEEPSEEK_BIN="$ds_stub" bash "$SCRIPT" --dry-run --no-profile --lane deepseek HIMMEL-9999-ds "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/ds.log" 2>&1)" || rc=$?
+check "deepseek: bare export is read" "$rc" "0"
+contains "deepseek: bare export value is the default" "$out" " bare-model "
+printf '#!/bin/sh\nexport ANTHROPIC_MODEL="dq-model[1m]"\nexit 0\n' > "$ds_stub"
+rc=0; out="$(HEADED_ARM_LEG_DEEPSEEK_BIN="$ds_stub" bash "$SCRIPT" --dry-run --no-profile --lane deepseek HIMMEL-9999-ds "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/ds.log" 2>&1)" || rc=$?
+check "deepseek: double-quoted export is read" "$rc" "0"
+contains "deepseek: double-quoted value is the default, quotes stripped" "$out" " dq-model[1m] "
+printf '#!/bin/sh\nexit 0\n' > "$ds_stub"
+rc=0; out="$(HEADED_ARM_LEG_DEEPSEEK_BIN="$ds_stub" bash "$SCRIPT" --dry-run --no-profile --lane deepseek HIMMEL-9999-ds "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/ds.log" 2>&1)" || rc=$?
+check "deepseek: launcher without a model export fails closed" "$rc" "2"
+contains "deepseek: fail-closed names the missing export" "$out" "no default model"
+rc=0; out="$(LEG_LANE=deepseek bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-ds "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/ds.log" 2>&1)" || rc=$?
+check "deepseek: ambient lane composes with profile" "$rc" "0"
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --lane glm HIMMEL-9999-glm "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/glm.log" 2>&1)" || rc=$?
+check "glm: refused until it has a launcher" "$rc" "2"
+contains "glm: refusal says why" "$out" "no launcher contract yet"
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --lane bogus HIMMEL-9999-x "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/x.log" 2>&1)" || rc=$?
+check "registry: unknown lane still exits 2" "$rc" "2"
+
 # Actual backend boundary: curl and Claude are hermetic executables. These
 # checks catch overwritten pins, missing labels and a first-action billing dialog.
 or_home="$tmp/or-home"; or_bin="$tmp/or-bin"
