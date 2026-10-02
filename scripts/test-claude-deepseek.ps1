@@ -71,7 +71,7 @@ $Bin = Join-Path $Scratch 'bin'
 [System.IO.Directory]::CreateDirectory($Bin) | Out-Null
 $CurlJs = Join-Path $Bin 'curl-mock.js'
 $ClaudeJs = Join-Path $Bin 'claude-mock.js'
-[System.IO.File]::WriteAllText($CurlJs, 'require("fs").readFileSync(0,"utf8");console.log(JSON.stringify({is_available:true,balance_infos:[{currency:"USD",total_balance:"50.00"}]}));')
+[System.IO.File]::WriteAllText($CurlJs, 'require("fs").readFileSync(0,"utf8");console.log(process.env.BALANCE_RESPONSE||JSON.stringify({is_available:true,balance_infos:[{currency:"USD",total_balance:"50.00"}]}));process.exit(Number(process.env.CURL_EXIT||0));')
 [System.IO.File]::WriteAllText($ClaudeJs, 'if(process.env.ANTHROPIC_BASE_URL!=="https://api.deepseek.com/anthropic"||process.env.ANTHROPIC_MODEL!=="sonnet"||process.env.ANTHROPIC_DEFAULT_SONNET_MODEL!=="deepseek-flash[1m]"||process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW!=="786432"||process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS!=="786432")process.exit(9);')
 if ($IsWindows) {
     [System.IO.File]::WriteAllText((Join-Path $Bin 'curl.cmd'), "@echo off`r`n`"$Node`" `"$CurlJs`" %*`r`n")
@@ -112,27 +112,30 @@ exit $LASTEXITCODE
 $ProbeResult = Run-Clean $Pwsh @('-NoProfile','-File',$CurlProbe,$ExpectedCurl) $Extra
 if ($ProbeResult.Code -ne 0 -or -not $ProbeResult.Output.Contains('"total_balance":"50.00"')) { throw "Curl fixture probe failed: $($ProbeResult.Code) $($ProbeResult.Output)" }
 Write-Host 'Curl fixture probe returned a passing balance'
-# Temporary CI diagnosis: inspect only fixture JSON, never the API key.
-$BalanceProbe = Join-Path $Scratch 'balance-probe.ps1'
-[System.IO.File]::WriteAllText($BalanceProbe, @'
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-$source = Get-Content -LiteralPath $args[1] -Raw
-$match = [regex]::Match($source, "(?s)\`$BalanceJs = @'\r?\n(.*?)\r?\n'@")
-if (-not $match.Success) { throw 'Balance predicate not found' }
-$raw = 'fixture probe input' | & $args[0]
-Write-Host "Fixture curl exit=$LASTEXITCODE; raw=$raw"
-$raw | & node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log("Pipeline prefix="+JSON.stringify([...s].slice(0,4).map(c=>c.codePointAt(0)))));'
-$balance = ($raw | & node -e $match.Groups[1].Value | Out-String).Trim()
-Write-Host "Actual balance predicate exit=$LASTEXITCODE; balance=$balance"
-'@)
-$Diagnosis = Run-Clean $Pwsh @('-NoProfile','-File',$BalanceProbe,$ExpectedCurl,$Launcher) $Extra
-Write-Host $Diagnosis.Output
 # HIMMEL-4099: passing curl JSON must reach the real launcher's balance log.
 # This fails before seed-setting cases if the native pipeline corrupts JSON.
 $Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $Extra
 if ($Result.Code -ne 0 -or -not $Result.Output.Contains('balance=50.00 USD')) { throw "Passing balance refused by real launcher: $($Result.Code) $($Result.Output)" }
+$Count++
+# A BOM-free pipeline must not weaken UNKNOWN, unavailable, or floor refusals.
+foreach ($Response in @('not json','{}','null','{"is_available":false,"balance_infos":[{"currency":"USD","total_balance":"50.00"}]}','{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"2.99"}]}','{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"NaN"}]}')) {
+    $RefusalEnv = $Extra.Clone()
+    $RefusalEnv['BALANCE_RESPONSE'] = $Response
+    $Refusal = Run-Clean $Pwsh @('-NoProfile','-File',$Launcher) $RefusalEnv
+    if ($Refusal.Code -ne 5 -or -not $Refusal.Output.Contains('balance below floor, unavailable or UNKNOWN') -or $Refusal.Output.Contains('ds-ps-hermetic-secret')) { throw "Invalid balance was not refused safely: $Response $($Refusal.Code) $($Refusal.Output)" }
+    $Count++
+}
+foreach ($Setting in @(@{ CURL_EXIT='99' }, @{ DEEPSEEK_MIN_BALANCE_USD='51' })) {
+    $RefusalEnv = $Extra.Clone()
+    foreach ($Name in $Setting.Keys) { $RefusalEnv[$Name] = $Setting[$Name] }
+    $Refusal = Run-Clean $Pwsh @('-NoProfile','-File',$Launcher) $RefusalEnv
+    if ($Refusal.Code -ne 5 -or -not $Refusal.Output.Contains('balance below floor, unavailable or UNKNOWN') -or $Refusal.Output.Contains('ds-ps-hermetic-secret')) { throw "Curl failure or custom floor was not refused safely: $($Refusal.Code) $($Refusal.Output)" }
+    $Count++
+}
+$FloorEnv = $Extra.Clone()
+$FloorEnv['BALANCE_RESPONSE'] = '{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"3.00"}]}'
+$FloorResult = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $FloorEnv
+if ($FloorResult.Code -ne 0 -or -not $FloorResult.Output.Contains('balance=3.00 USD') -or $FloorResult.Output.Contains('ds-ps-hermetic-secret')) { throw "Exact balance floor refused: $($FloorResult.Code) $($FloorResult.Output)" }
 $Count++
 foreach ($Name in @('CLAUDE_LANE_SEED_LOCK_TIMEOUT','CLAUDE_LANE_SEED_LOCK_STALE')) {
     foreach ($Value in @('invalid','-1','1.5',' 1','2147483648')) {
