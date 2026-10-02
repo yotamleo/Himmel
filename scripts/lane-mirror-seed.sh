@@ -65,6 +65,23 @@ try {
 ' "${HOME}/.claude" "${1:-}" "${2:-}"
 }
 
+lane_seed_make_writable() {
+  # Only mirrored directories need write permission for removal; never follow links.
+  node -e '
+const fs=require("fs"), path=require("path");
+// ponytail: pathname lstat-then-chmod walk can race a concurrent non-cooperating replacement (Node has no portable fd-relative traversal), revisit under HIMMEL-4096 if mirror dirs become shared-writer.
+function walk(p) {
+  let s;
+  try { s=fs.lstatSync(p); } catch(e) { if(e.code==="ENOENT") return; throw e; }
+  if(!s.isDirectory()) return;
+  fs.chmodSync(p,(s.mode&0o777)|0o200);
+  for(const name of fs.readdirSync(p)) walk(path.join(p,name));
+}
+try { walk(process.argv[1]); }
+catch(e) { console.error("lane mirror permissions: "+e.message); process.exit(4); }
+' "$1"
+}
+
 seed_config_dir() {
   # Remove the completion marker FIRST; fingerprint and sentinel are written LAST.
   rm -f "${CONFIG_DIR:?}/.seeded" || seed_fail "clear the stale .seeded sentinel"
@@ -85,6 +102,7 @@ seed_config_dir() {
   done
   seed_after_leaves
   for d in commands skills hooks agents; do
+    lane_seed_make_writable "${CONFIG_DIR:?}/$d" || seed_fail "make stale $d directories writable"
     rm -rf "${CONFIG_DIR:?}/$d" || seed_fail "clear stale $d"
     [ ! -d "$SRC/$d" ] || lane_seed_fingerprint "$d" "$CONFIG_DIR/$d" > /dev/null || seed_fail "copy $d"
   done
@@ -95,6 +113,7 @@ seed_config_dir() {
       rm -f "${CONFIG_DIR:?}/plugins/$p" || seed_fail "remove stale plugins/$p"
     fi
   done
+  lane_seed_make_writable "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "make stale plugins/marketplaces directories writable"
   rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear stale plugins/marketplaces"
   [ ! -d "$SRC/plugins/marketplaces" ] || lane_seed_fingerprint plugins/marketplaces "$CONFIG_DIR/plugins/marketplaces" > /dev/null || seed_fail "copy plugins/marketplaces"
   if [ -f "$SRC/plugins/claude-hud/config.json" ]; then

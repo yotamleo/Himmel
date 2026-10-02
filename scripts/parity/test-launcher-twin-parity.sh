@@ -329,6 +329,40 @@ fixtureFs.openSync=function(p,flags){swap(p,flags);return open.apply(this,argume
   finally { fs.rmSync(root, {recursive:true, force:true}); }
 }
 
+// HIMMEL-4096: execute the PS permission block on real read-only directories.
+// Windows chmod has no POSIX owner/execute bits; exact modes apply only on POSIX.
+if (process.platform === 'win32') {
+  console.log('SKIP: PS permission JS POSIX-mode regression on Windows');
+} else {
+  const cp = require('child_process');
+  const blocks = psJsBlocks(fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.psm1'), 'utf8'));
+  const writable = blocks.find(b => b.var === '$WritableJs');
+  const root = fs.mkdtempSync(path.join(require('os').tmpdir(), 'seed-writable-parity-'));
+  const mirror = path.join(root, 'mirror'), sub = path.join(mirror, 'sub'), outside = path.join(root, 'outside');
+  try {
+    if (!writable) throw Error('PS directory permission block missing');
+    fs.mkdirSync(mirror); fs.mkdirSync(sub); fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(sub, 'private'), 'private', {mode:0o400});
+    fs.symlinkSync(outside, path.join(sub, 'linked'), 'dir');
+    for (const p of [mirror, sub, outside]) fs.chmodSync(p, 0o500);
+    const run = p => cp.spawnSync(process.execPath, ['-e', writable.js, p], {encoding:'utf8'});
+    for (const p of [mirror, path.join(sub, 'linked'), path.join(root, 'missing')]) {
+      const result = run(p);
+      if (result.status !== 0) throw Error('permission restoration failed: ' + result.stderr);
+    }
+    for (const p of [mirror, sub]) if ((fs.statSync(p).mode & 0o777) !== 0o700) throw Error('mirrored directory not owner-writable');
+    if ((fs.statSync(outside).mode & 0o777) !== 0o500) throw Error('symlink target chmodded');
+    if ((fs.statSync(path.join(sub, 'private')).mode & 0o777) !== 0o400) throw Error('file mode changed');
+    fs.rmSync(mirror, {recursive:true});
+    if (!fs.existsSync(outside)) throw Error('symlink target removed');
+    console.log('ok: PS permission JS restores directory write access without following links or changing files');
+  } catch (e) { fail('PS seed directory permissions: ' + e.message); }
+  finally {
+    for (const p of [mirror, sub, outside]) if (fs.existsSync(p)) fs.chmodSync(p, 0o700);
+    fs.rmSync(root, {recursive:true, force:true});
+  }
+}
+
 // Enumerate twin pairs from disk: every scripts/claude-*.ps1 whose stem has a
 // regular-file bash sibling (claude-<stem> or claude-<stem>.sh).
 const pairs = [];
