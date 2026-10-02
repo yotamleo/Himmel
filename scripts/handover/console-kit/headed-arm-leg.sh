@@ -837,7 +837,8 @@ unset -v _leg_env_scrub
 # and the token forwarded to the actually-launched leg. Scrubbing both, once,
 # before any branch, means every path starts clean and the existing
 # leg_propagate_env calls are the only thing that can set them again.
-for _leg_env_scrub in LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG; do
+# LEG_PROFILE_NO_SETTING_SOURCES (HIMMEL-4069) rides the same scrub: only --consult sets it.
+for _leg_env_scrub in LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_PROFILE_NO_SETTING_SOURCES; do
     unset -v "$_leg_env_scrub"
     leg_env_drop_token "$_leg_env_scrub"
 done
@@ -1424,12 +1425,13 @@ if [ -n "$PROFILE" ]; then
     # is enough) plus Claude Code's own temp dirs; the doc's parent dir (the shared
     # handover bucket) is never granted, and the additionalDirectories grant above is
     # skipped under --consult because Claude Code turns those into sandbox write roots.
-    # The repo is denied. Outer settings scopes MERGE their arrays into the consult's
-    # (HIMMEL-4066): sandbox allowWrite, network allowedDomains and permissions.additionalDirectories
-    # (a sandbox write root: himmel's own project settings list the luna vault) are refused at
-    # arm time below. A doc inside the repo is always denied, so it is refused too.
+    # The repo is denied. Outer settings scopes would MERGE their write roots into the
+    # consult's (HIMMEL-4066: himmel's own project additionalDirectories list the luna vault),
+    # so the consult loads none of the user/project/local scopes (HIMMEL-4069, below) and the
+    # managed ones that still load are refused when they widen it. A doc inside the repo is
+    # always denied, so it is refused too.
     # ponytail: Bash sandboxed to the doc file plus Claude Code's temp dirs, reads open (no denyRead) and the symlink check is launch-time, upgrade to denyRead once the smoke test proves plugin reads survive (HIMMEL-4066 follow-ups)
-    # ponytail: refuses every consult in a repo whose committed settings grant additionalDirectories (himmel itself), upgrade path HIMMEL-4069
+    # ponytail: user/project/local scopes are not loaded, so only their hooks, deny/ask rules and env are carried (their allow rules, statusLine, plugin marketplaces and other keys are not), upgrade path a follow-up ticket when a consult needs another carried key
     if [ "$CONSULT" -eq 1 ]; then
         case "$_leg_doc_path/" in
             "$CONSULT_REPO_CANON"/*)
@@ -1437,12 +1439,19 @@ if [ -n "$PROFILE" ]; then
                 exit 2
                 ;;
         esac
-        # Every scope Claude Code merges: user (home and CLAUDE_CONFIG_DIR), the cached server
-        # policy remote-settings.json, project + local settings at the cwd repo, its git
-        # toplevel and the main checkout (local settings load from the canonical git root, which
-        # a linked worktree maps to the main checkout), managed-settings.json and every
-        # managed-settings.d/*.json drop-in. CONSULT_SETTINGS_HOME / CONSULT_MANAGED_SETTINGS are
-        # test seams that are honoured in production too.
+        # (HIMMEL-4069) The consult launches with `--setting-sources ""` (the shim maps
+        # LEG_PROFILE_NO_SETTING_SOURCES=1 to it), so Claude Code loads NO user, project or
+        # local scope: none of their additionalDirectories, Edit allows or sandbox keys can
+        # become a sandbox write root. Proven live by smoke-consult-sandbox.sh. Those scopes'
+        # hooks, deny/ask rules and env are CARRIED into the consult's own settings instead,
+        # and nothing else of them is (env keys named CLAUDE_* are dropped: they configure
+        # Claude Code itself). The scopes that still load under --setting-sources and outrank
+        # --settings - managed-settings.json, every managed-settings.d/*.json drop-in and the
+        # cached server policy remote-settings.json - are scanned and refused below.
+        # Carried: user (home, then CLAUDE_CONFIG_DIR's: carrying both only adds guards), then project, then local
+        # settings at the cwd repo, its git toplevel and the main checkout. A carried file jq
+        # cannot read refuses: its guard hooks cannot be carried. CONSULT_SETTINGS_HOME /
+        # CONSULT_MANAGED_SETTINGS are test seams that are honoured in production too.
         _cs_home="${CONSULT_SETTINGS_HOME:-$HOME}"
         _CS_SAFE_SANDBOX='["sandbox.enabled","sandbox.failIfUnavailable"]'
         case "$(uname -s)" in
@@ -1459,28 +1468,54 @@ if [ -n "$PROFILE" ]; then
 $_cs_top"
         [ -n "$_cs_gc" ] && _cs_roots="$_cs_roots
 $(dirname "$_cs_gc")"
-        _cs_files="$_cs_home/.claude/settings.json
-$_cs_home/.claude/remote-settings.json
-${CLAUDE_CONFIG_DIR:-/nonexistent}/settings.json
-${CLAUDE_CONFIG_DIR:-/nonexistent}/remote-settings.json
-$_cs_managed"
-        _cs_mgd="$_cs_managed
+        _cs_files="$_cs_managed
 $_cs_home/.claude/remote-settings.json
 ${CLAUDE_CONFIG_DIR:-/nonexistent}/remote-settings.json"
         for _cs_d in "$(dirname "$_cs_managed")"/managed-settings.d/*.json; do
-            _cs_mgd="$_cs_mgd
-$_cs_d"
             _cs_files="$_cs_files
 $_cs_d"
         done
+        _cs_user="$_cs_home/.claude/settings.json"
+        [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$_cs_home/.claude" ] && _cs_user="$_cs_user
+$CLAUDE_CONFIG_DIR/settings.json"
+        _cs_seen=""; _cs_proj=""; _cs_local=""
         while IFS= read -r _cs_r; do
             [ -n "$_cs_r" ] || continue
-            _cs_files="$_cs_files
-$_cs_r/.claude/settings.json
+            case "
+$_cs_seen
+" in *"
+$_cs_r
+"*) continue ;; esac
+            _cs_seen="$_cs_seen
+$_cs_r"
+            _cs_proj="$_cs_proj
+$_cs_r/.claude/settings.json"
+            _cs_local="$_cs_local
 $_cs_r/.claude/settings.local.json"
         done <<EOF_CS_ROOTS
 $_cs_roots
 EOF_CS_ROOTS
+        _cs_carry=()
+        while IFS= read -r _cs_f; do
+            [ -f "$_cs_f" ] || continue
+            if ! jq -e 'type == "object"' "$_cs_f" >/dev/null 2>&1; then
+                echo "headed-arm-leg: --consult: cannot parse $_cs_f, so its hooks and deny rules cannot be carried into the consult: fix or remove it" >&2
+                exit 2
+            fi
+            _cs_carry+=("$_cs_f")
+        done <<EOF_CS_CARRY
+$_cs_user$_cs_proj$_cs_local
+EOF_CS_CARRY
+        # stdin is /dev/null so an empty carry list reads nothing (jq would otherwise wait on stdin).
+        if ! _cs_carried="$(jq -n '[inputs] | {
+              hooks: (reduce (.[] | (.hooks // {}) | to_entries[]) as $h ({}; .[$h.key] = ((.[$h.key] // []) + $h.value))),
+              deny: [.[] | (.permissions.deny // [])[]],
+              ask: [.[] | (.permissions.ask // [])[]],
+              env: (reduce .[] as $s ({}; . + ($s.env // {})) | with_entries(select(.key | startswith("CLAUDE_") | not)))}' \
+              ${_cs_carry[@]+"${_cs_carry[@]}"} </dev/null 2>/dev/null)"; then
+            echo "headed-arm-leg: --consult: cannot carry the hooks, deny rules and env of: ${_cs_carry[*]-} (a hooks, permissions or env key of the wrong type): fix it" >&2
+            exit 2
+        fi
         while IFS= read -r _cs_f; do
             [ -f "$_cs_f" ] || continue
             # ALLOWLIST: refuse (a) any Edit/Write/NotebookEdit permissions.allow rule (merged into
@@ -1501,29 +1536,27 @@ EOF_CS_ROOTS
                 exit 2
             fi
             if [ -n "$_cs_n" ]; then
-                echo "headed-arm-leg: --consult: $_cs_f carries $_cs_n, which merges into the consult's sandbox and would widen it: remove or scope it (or launch the consult from a context that does not load it). A user scope with Edit allows cannot run consults until they are scoped; additionalDirectories becomes a sandbox write root and no confinement is proven yet: HIMMEL-4069" >&2
+                echo "headed-arm-leg: --consult: managed scope $_cs_f carries $_cs_n, which still loads under --setting-sources, merges into the consult's sandbox and would widen it: remove or scope it" >&2
                 exit 2
             fi
             # MANAGED scopes outrank the consult's own --settings, so the pins below cannot beat
             # them: refuse a managed scope that turns on env scrub (its sandbox adds allowWrite
             # /home /tmp /var ...), sets a permissive defaultMode, or carries a policyHelper(s).
-            if printf '%s\n' "$_cs_mgd" | grep -Fxq -- "$_cs_f"; then
-                if ! _cs_n="$(jq -r '
-                    first(
-                      ((.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB // empty) | tostring | ascii_downcase
-                        | select(. != "" and . != "0" and . != "false") | "env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
-                      ((.permissions.defaultMode // empty) | select(. == "bypassPermissions" or . == "acceptEdits")
-                        | "permissions.defaultMode " + .),
-                      ((.. | objects | keys[] | select(. == "policyHelper" or . == "policyHelpers"))
-                        | "key " + .)
-                    ) // empty' "$_cs_f" 2>/dev/null)"; then
-                    echo "headed-arm-leg: --consult: cannot parse $_cs_f, so it cannot be shown not to widen the sandbox: fix or remove it" >&2
-                    exit 2
-                fi
-                if [ -n "$_cs_n" ]; then
-                    echo "headed-arm-leg: --consult: managed scope $_cs_f carries $_cs_n, which the consult's own settings cannot override and would widen the sandbox or its permissions: HIMMEL-4066" >&2
-                    exit 2
-                fi
+            if ! _cs_n="$(jq -r '
+                first(
+                  ((.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB // empty) | tostring | ascii_downcase
+                    | select(. != "" and . != "0" and . != "false") | "env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
+                  ((.permissions.defaultMode // empty) | select(. == "bypassPermissions" or . == "acceptEdits")
+                    | "permissions.defaultMode " + .),
+                  ((.. | objects | keys[] | select(. == "policyHelper" or . == "policyHelpers"))
+                    | "key " + .)
+                ) // empty' "$_cs_f" 2>/dev/null)"; then
+                echo "headed-arm-leg: --consult: cannot parse $_cs_f, so it cannot be shown not to widen the sandbox: fix or remove it" >&2
+                exit 2
+            fi
+            if [ -n "$_cs_n" ]; then
+                echo "headed-arm-leg: --consult: managed scope $_cs_f carries $_cs_n, which the consult's own settings cannot override and would widen the sandbox or its permissions: HIMMEL-4066" >&2
+                exit 2
             fi
         done <<EOF_CS_FILES
 $_cs_files
@@ -1542,7 +1575,7 @@ EOF_CS_FILES
                 exit 2
             fi
         done
-        unset -v _cs_f _CS_SAFE_SANDBOX _cs_n _cs_d _cs_r _cs_roots _cs_top _cs_gc _cs_files _cs_home _cs_managed _cs_mgd
+        unset -v _cs_f _CS_SAFE_SANDBOX _cs_n _cs_d _cs_r _cs_roots _cs_top _cs_gc _cs_files _cs_home _cs_managed _cs_user _cs_seen _cs_proj _cs_local _cs_carry
         if [ -L "$DOC" ]; then
             echo "headed-arm-leg: --consult: the consult doc must not be a symlink ($DOC): the sandbox binds the resolved file" >&2
             exit 2
@@ -1551,18 +1584,21 @@ EOF_CS_FILES
             echo "headed-arm-leg: --consult: cannot resolve the consult doc path for $DOC" >&2
             exit 2
         fi
-        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" --arg repo "$CONSULT_REPO_CANON" \
-            '.permissions.deny = ((.permissions.deny // []) + ["Edit","Write","NotebookEdit"] | unique)
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg doc "$_leg_doc_path" --arg repo "$CONSULT_REPO_CANON" --argjson c "$_cs_carried" \
+            '.hooks = (reduce ((.hooks // {}) | to_entries[]) as $h ($c.hooks; .[$h.key] = ((.[$h.key] // []) + $h.value)))
+             | .permissions.deny = ((.permissions.deny // []) + $c.deny + ["Edit","Write","NotebookEdit"] | unique)
+             | if ($c.ask | length) > 0 then .permissions.ask = ((.permissions.ask // []) + $c.ask | unique) else . end
              | .permissions.allow = ["Bash(bash scripts/handover/console-kit/append-results.sh " + $doc + ":*)"]
              | del(.permissions.additionalDirectories)
              | .permissions.defaultMode = "auto"
-             | .env = ((.env // {}) + {CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0"})
+             | .env = ($c.env + (.env // {}) + {CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0"})
              | .sandbox = {enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
                            autoAllowBashIfSandboxed: false,
                            filesystem: {allowWrite: [$doc], denyWrite: [$repo]}}')"; then
             echo "headed-arm-leg: --consult: cannot build the read-only envelope in settings JSON" >&2
             exit 2
         fi
+        unset -v _cs_carried
     fi
     unset -v _leg_doc_path _leg_handover_dir_norm
     # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
@@ -1591,6 +1627,9 @@ EOF_CS_FILES
     # preface; content is written only at real-launch time further down.
     LEG_PROFILE_PREFACE="$(dirname "$LOG")/$NAME.leg-preface.md"
     leg_propagate_env LEG_PROFILE_PREFACE "$LEG_PROFILE_PREFACE"
+    # (HIMMEL-4069) The consult loads no user/project/local scope: the shim turns this into
+    # `--setting-sources ""`, which only narrows. Its hooks, deny/ask and env were carried above.
+    [ "$CONSULT" -eq 1 ] && leg_propagate_env LEG_PROFILE_NO_SETTING_SOURCES 1
     export HEADED_ARM_LAUNCHER="$LEG_SHIM"
     # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
     # the exact value 1 leans - the hooks are fail-open by construction.

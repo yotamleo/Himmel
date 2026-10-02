@@ -35,12 +35,17 @@ call `AskUserQuestion`** (it parks you and blocks your inbox) and **never call
 
 **A partial sandbox, not a guarantee.** The envelope removes the file-edit
 tools, and Bash runs in Claude Code's sandbox: writes go to your consult doc
-file plus Claude Code's own temp dirs, the repo is write-denied, and the network
-follows the merged settings (a user or project scope can widen it, HIMMEL-4066), so
-arming refuses a consult while any settings scope carries an Edit/Write/NotebookEdit
-allow rule, a non-empty permissions.additionalDirectories, or any sandbox key outside
-a small safe set (an unknown key refuses; HIMMEL-4069). A station whose user scope
-carries Edit allows cannot run consults until they are scoped.
+file plus Claude Code's own temp dirs, and the repo is write-denied. You launch
+with `--setting-sources ""` (HIMMEL-4069): no user, project or local settings
+scope loads, so none of their `additionalDirectories`, Edit allows or sandbox
+keys can become a write root or widen the network. Their hooks, deny and ask
+rules and env (minus `CLAUDE_*` keys) are carried into your own settings
+instead; nothing else of them is, so their allow rules, status line and plugin
+marketplaces are absent. A managed scope still loads and outranks your settings,
+so arming refuses a managed scope that carries an Edit/Write/NotebookEdit allow
+rule, a non-empty permissions.additionalDirectories, or any sandbox key outside a
+small safe set (an unknown key refuses). `smoke-consult-sandbox.sh` proves this
+live, with a RED control.
 The consult's own settings pin `permissions.defaultMode` to `auto` (the
 classifier-gated mode this preface describes; never `bypassPermissions` or
 `acceptEdits`) and `env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` to `0` (scrub mode adds

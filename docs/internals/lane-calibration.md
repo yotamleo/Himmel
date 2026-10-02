@@ -77,7 +77,7 @@ union, the union of the `mcpServers` allowlists, and ONE skill-listing pass over
 the union of the members' required ids. Role/non-additive profiles refuse as
 members. `headed-arm-leg.sh --consult` is a judge-shaped, plugin-scoped session
 with `Edit`/`Write`/`NotebookEdit` denied and a single `append-results.sh` Bash
-allow on its own doc; Bash runs in Claude Code's sandbox, writes confined to the doc file plus temp dirs, reads open (HIMMEL-4061, hardening HIMMEL-4066). Each consult's launch
+allow on its own doc; Bash runs in Claude Code's sandbox, writes confined to the doc file plus temp dirs, reads open (HIMMEL-4061, hardening HIMMEL-4066); it launches with `--setting-sources ""` so no user/project/local scope's write roots load, with their hooks, deny/ask and env carried instead (HIMMEL-4069). Each consult's launch
 line in `launch-logs/<session>.log` carries `role=consult` and `console=` (the console that launched it); consult
 cost is joined later from the session transcript, not written at launch.
 
