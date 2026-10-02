@@ -8,7 +8,15 @@ trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/repo/scripts/lib" "$W/repo/scripts/lanes" "$W/home" "$W/proc"
 cp "$REPO/scripts/lib/"*.sh "$W/repo/scripts/lib/"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "balance=10.00:credit spend=?"' > "$W/repo/scripts/lanes/openrouter-cost.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'cat "$PS_DATA"' > "$W/ps"
+cat > "$W/ps" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${PS_COUNTER:-}" ]; then
+  n="$(cat "$PS_COUNTER" 2>/dev/null)"; n="${n:-0}"
+  n=$((n+1)); printf '%s\n' "$n" > "$PS_COUNTER"
+  [ "$n" -ne 3 ] || printf '%s\n' "$PS_OWNER" > "$PS_SWAP/pid"
+fi
+cat "$PS_DATA"
+STUB
 chmod +x "$W/ps"
 : > "$W/ps.data"
 # A completed child gives a real dead PID, not an assumed-unused constant.
@@ -39,6 +47,9 @@ check 'unverifiable owner is not reclaimed early' SKIPPED-FLEET "$(run invalid)"
 # Reused PID must conservatively protect the slot even if not a claude owner.
 seed reused "$$"
 check 'reused live PID keeps reservation' SKIPPED-FLEET "$(run reused)"
+seed census-swap "$dead"
+check 'owner changed during fresh census keeps reservation' SKIPPED-FLEET "$(run census-swap PS_COUNTER="$W/ps-counter" PS_OWNER="$$" PS_SWAP="$W/census-swap/HIMMEL-9001-test")"
+check 'live replacement owner remains on disk' "$$" "$(cat "$W/census-swap/HIMMEL-9001-test/pid")"
 cat > "$W/swap-name" <<'STUB'
 #!/usr/bin/env bash
 [ "$1" = reservation-pre-verify ] || exit 0

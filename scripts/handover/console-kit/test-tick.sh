@@ -1803,7 +1803,7 @@ contains 'verbose labels metered balance' \
 contains 'OpenRouter tick bank is the lane verdict, not subscription usage' \
   "$(CADENCE_BANK_LANE=openrouter STUB_PF_VERDICT=SKIPPED-BANK bash "$SUT")" ' bank=openrouter:SKIPPED-BANK '
 contains 'OpenRouter leg marker selects lane verdict' \
-  "$(CADENCE_BANK_LANE= LEG_LANE=openrouter STUB_PF_VERDICT=BANK-UNKNOWN bash "$SUT")" ' bank=openrouter:BANK-UNKNOWN '
+  "$(CADENCE_BANK_LANE='' LEG_LANE=openrouter STUB_PF_VERDICT=BANK-UNKNOWN bash "$SUT")" ' bank=openrouter:BANK-UNKNOWN '
 contains 'OpenRouter funded verdict surfaces without changing raw balance' \
   "$(CADENCE_BANK_LANE=openrouter STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT")" ' bank=openrouter:PROCEED '
 

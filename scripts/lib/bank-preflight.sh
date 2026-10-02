@@ -656,11 +656,12 @@ _fleet_reclaim_dead_reservation() {
   _fleet_gate_take "$gate" || return 1
   fence="$_fleet_gate_fence"
   _fleet_admit_hook reservation-pre-verify "$dir"
-  if [ "$(cat "$SLOTS/.admit/pid" 2>/dev/null)" = "$$" ] &&
+  if _fleet_census &&
+     [ "$(cat "$SLOTS/.admit/pid" 2>/dev/null)" = "$$" ] &&
      [ "$(cat "${dir}pid" 2>/dev/null)" = "$owner" ] &&
      [ "$(cat "${dir}expires" 2>/dev/null)" = "$expires" ] &&
      [ "$(cat "${dir}name" 2>/dev/null)" = "$sname" ] &&
-     ! kill -0 "$owner" 2>/dev/null && _fleet_census; then
+     ! kill -0 "$owner" 2>/dev/null; then
     if ! { [ -n "$name" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$name"; } &&
        ! { [ -n "$sname" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$sname"; }; then
       # Rename through our fence: a paused holder cannot act after gate break.
@@ -1019,7 +1020,7 @@ fi
 if [ "$LANE" = openrouter ]; then
   _or_floor="${OPENROUTER_MIN_CREDIT_USD:-3}"
   is_num "$_or_floor" || _or_floor=3
-  _or_cost="$(bash "$REPO/scripts/lanes/openrouter-cost.sh" 2>/dev/null)" || _or_cost=""
+  _or_cost="$(bash "$REPO/scripts/lanes/openrouter-cost.sh" --raw 2>/dev/null)" || _or_cost=""
   _or_balance="${_or_cost%% *}"
   case "$_or_balance" in
     balance=*:credit|balance=*:key-limit_remaining)

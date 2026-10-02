@@ -9,7 +9,11 @@ mkdir -p "$W/repo/scripts/lib" "$W/repo/scripts/lanes" "$W/home" "$W/proc"
 cp "$REPO/scripts/lib/"*.sh "$W/repo/scripts/lib/"
 cat > "$W/repo/scripts/lanes/openrouter-cost.sh" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "${OR_READING:-balance=? spend=?}"
+if [ "${1:-}" = --raw ] && [ -n "${OR_RAW:-}" ]; then
+  printf '%s\n' "$OR_RAW"
+else
+  printf '%s\n' "${OR_READING:-balance=? spend=?}"
+fi
 STUB
 cat > "$W/ps" <<'STUB'
 #!/usr/bin/env bash
@@ -22,6 +26,7 @@ check() {
   actual="$(env HOME="$W/home" HIMMEL_FLEET_CAP=4 HIMMEL_FLEET_SLOTS="$W/slots" FLEET_PS_CMD="$W/ps" FLEET_PROC="$W/proc" CADENCE_BANK_LEDGER="$W/ledger" CADENCE_BANK_LAUNCH= CADENCE_BANK_LANE=openrouter "$@" bash "$W/repo/scripts/lib/bank-preflight.sh" 2>"$W/err")"
   if [ "$actual" = "$expected" ]; then echo "ok - $label"; else echo "FAIL - $label: expected $expected got $actual"; fails=$((fails+1)); fi
 }
+check 'unrounded sub-floor balance refuses' SKIPPED-BANK OR_READING='balance=3.00:key-limit_remaining spend=?' OR_RAW='balance=2.999:key-limit_remaining spend=?'
 check 'key cap below default floor refuses' SKIPPED-BANK OR_READING='balance=0.50:key-limit_remaining spend=?'
 check 'credit below default floor refuses' SKIPPED-BANK OR_READING='balance=2.99:credit spend=?'
 check 'exact floor proceeds' PROCEED OR_READING='balance=3.00:key-limit_remaining spend=?'
