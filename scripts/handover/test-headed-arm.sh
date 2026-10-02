@@ -338,7 +338,7 @@ for ambient in profile resolver both stale; do
     stale) ambient_env+=(HEADED_ARM_CONTEXT_PROFILE=design HEADED_ARM_LEG_PROFILES="$HERE/../lanes/plugin-profiles.mjs" HEADED_ARM_CONTEXT_PID=1) ;;
   esac
   rc=0
-  out="$(env -u CONSOLE_CONTEXT "${ambient_env[@]}" \
+  out="$(env -u CONSOLE_CONTEXT "${ambient_env[@]}" KONSOLE_CMD="$BASH" PGREP_CMD="$BASH" \
     bash "$SCRIPT" --dry-run HIMMEL-4094-console some/doc.md /tmp/nosig 99999999999 "$tmp/ambient-$ambient.log" claude-sonnet-5 standard 2>&1)" || rc=$?
   check "ambient profile inputs ($ambient): direct standard arm succeeds" "$rc" "0"
   contains "ambient profile inputs ($ambient): console opt-down wins" "$out" "--autocompact 200000"

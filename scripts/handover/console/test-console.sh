@@ -297,7 +297,7 @@ log7B="$tmp/work/tester-armrepo-${root_digest}/launch-${session7B}.log"
 cat > "$tmp/stub-arm.sh" <<'STUB'
 #!/usr/bin/env bash
 [ "$1" = --role ] && shift 2
-echo "armed: name=$1 doc=$2 signal=$3 deadline=$4 context=${7:-default}" >> "$5"
+echo "armed: name=$1 doc=$2 signal=$3 deadline=$4 context=${7:-${CONSOLE_CONTEXT:-default}}" >> "$5"
 STUB
 chmod +x "$tmp/stub-arm.sh"
 
@@ -308,7 +308,7 @@ out7b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PRO
     bash "$C" next --bucket armrepo --arm --deadline-min 0 --context standard ) )"
 check "7 next --arm reports armed" "$(printf '%s\n' "$out7b" | grep -c '^armed: ')" "1"
 check "7 arm log written" "$([ -f "$log7B" ] && echo yes)" "yes"
-check "3884 explicit context reaches actual arm argv" "$(grep -c 'context=standard$' "$log7B")" "1"
+check "3884 explicit context reaches actual arm input" "$(grep -c 'context=standard$' "$log7B")" "1"
 check "3884 explicit context agrees with printed launch" "$(printf '%s\n' "$out7b" | grep -c -- 'standard explicit 200000')" "1"
 check "7 arm log carries armed/signal/deadline/session" \
     "$(grep -cE "armed: name=${session7B} doc=.* signal=.*sig-${session7B} deadline=[0-9]+" "$log7B" 2>/dev/null)" "1"

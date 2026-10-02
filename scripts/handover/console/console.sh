@@ -266,14 +266,15 @@ do_arm() {
     # only load there. Legs for the project are dispatched into it
     # explicitly with LEG_REPO=<project> (headed-arm-leg.sh), never by the
     # console inheriting a repo override.
-    set -- "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
-    [ "$CONTEXT_GIVEN" -eq 0 ] || set -- "$@" "$CONSOLE_CONTEXT_RESOLVED_MODE"
+    if [ "$CONTEXT_GIVEN" -eq 1 ]; then
+        export CONSOLE_CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    fi
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
-        bash "$@"
+        bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
-        setsid nohup bash "$@" >/dev/null 2>&1 &
+        setsid nohup bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     else
-        nohup bash "$@" >/dev/null 2>&1 &
+        nohup bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     fi
     echo "armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
     echo "arm-log: $log"
