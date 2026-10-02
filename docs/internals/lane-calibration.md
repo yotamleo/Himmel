@@ -123,8 +123,8 @@ follow-up to this lever.
 resolves for every cold `claude` spawn dispatched from a Telegram message,
 via `resolveProfileSettings` (the same seam `spawn-claudex.ts` already uses)
 plus a poller-local `--mcp-config`/`--strict-mcp-config` helper built from
-`mcpServersForProfile`/`collectMcpServerDefs`. Its plugin set mirrors
-`lane-content` (floor + `claude-obsidian` + `obsidian-triage` +
+`mcpServersForProfile`/`collectMcpServerDefs`. Its plugin set is
+`lane-content` minus `claude-obsidian` (HIMMEL-4020: floor + `obsidian-triage` +
 `pr-review-toolkit-himmel`) and its `mcpServers: ["qmd"]` matches `leg-impl`'s
 allowlist. Measured (`profile-context-probe.mjs`): `telegram` = 32541
 first-turn tokens against `contextBudget: 45000`, below the unleaned
