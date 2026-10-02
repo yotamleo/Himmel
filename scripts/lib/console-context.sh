@@ -100,29 +100,27 @@ console_context_autocompact() {
 
 # console_context_default <is_console 0|1> <console_context_env value>
 #
-# Only for the no-explicit-value path -- a caller with an explicit
-# --context/positional value never calls this. HIMMEL-2975: every arm
-# defaults to `standard` now (previously a console-class arm defaulted to
-# `1m`, the largest single measured saving in the cost program going
-# unrealized). CONSOLE_CONTEXT=1m in the launching shell is the one
-# remaining way a console-class arm opts back into 1m without an explicit
-# value -- non-console callers pass is_console=0 and the env is ignored,
-# same as before this file existed.
+# Only for the no-explicit-value path. HIMMEL-3884 exempts consoles from
+# HIMMEL-2975's standard default: consoles default to 1m, with
+# CONSOLE_CONTEXT=standard opting down. Non-console arms remain standard
+# and ignore the environment. A valid env choice is explicit provenance.
 # shellcheck disable=SC2034  # output-contract globals, read by sourcing callers (arm-resume.sh, headed-arm.sh, console.sh)
 console_context_default() {
-    if [ "$1" -eq 1 ] && [ "$2" = "1m" ]; then
+    CONSOLE_CONTEXT_RESOLVED_MODE="standard"
+    CONSOLE_CONTEXT_RESOLVED_SOURCE="default"
+    if [ "$1" -eq 1 ]; then
         CONSOLE_CONTEXT_RESOLVED_MODE="1m"
-        CONSOLE_CONTEXT_RESOLVED_SOURCE="console-context-env"
-    else
-        CONSOLE_CONTEXT_RESOLVED_MODE="standard"
-        CONSOLE_CONTEXT_RESOLVED_SOURCE="default"
+        if console_context_valid "$2"; then
+            CONSOLE_CONTEXT_RESOLVED_MODE="$2"
+            CONSOLE_CONTEXT_RESOLVED_SOURCE="console-context-env"
+        fi
     fi
 }
 
 # console_context_source_label <explicit_given 0|1> -- prints the source word
 # both arming paths log and record: `explicit` when the mode was named
-# (--context / the launcher's positional) OR opted into with CONSOLE_CONTEXT=1m
-# (a 1m arm is always that opt-in, the mechanism is not lost), else `default`.
+# (--context / the launcher's positional) OR selected with CONSOLE_CONTEXT
+# (1m or standard), else `default`.
 # Spec 2973 sec 2.4 keys on `context=1m (explicit)`. HIMMEL-3282: arm-resume.sh
 # used to spell this from its own prose while headed-arm.sh spelled `(explicit)`,
 # so a reader keying on the spec attributed one path and silently skipped the

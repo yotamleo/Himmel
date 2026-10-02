@@ -167,13 +167,12 @@ after5="$(find "$root" -type f | sort)"
 check "5 dry-run writes nothing" "$before5" "$after5"
 check "5 dry-run prints would-doc" "$(printf '%s\n' "$out5" | grep -c '^would-doc: ')" "1"
 
-# --- 5b (HIMMEL-2973): the printed launch line defaults to --autocompact
-# 200000, and CONSOLE_CONTEXT=1m in the launching shell flips it to auto.
-out5b="$(console new --bucket dryrepo5b --dry-run)"
-check "5b default launch line carries --autocompact 200000" \
-    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact 200000')" "1"
-check "5b default launch line carries no --autocompact auto" \
-    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact auto')" "0"
+# --- 5b (HIMMEL-3884): consoles default to 1m/auto, not standard.
+out5b="$(unset CONSOLE_CONTEXT; console new --bucket dryrepo5b --dry-run)"
+check "5b default launch line carries --autocompact auto" \
+    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact auto')" "1"
+check "5b default launch line carries no --autocompact 200000" \
+    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact 200000')" "0"
 # HIMMEL-4013: the console launch line applies the console plugin profile.
 check "5b launch line carries --settings <console profile>" \
     "$(printf '%s\n' "$out5b" | grep -c -- 'claude --settings [^ ]*/console.json --model ')" "1"
@@ -182,6 +181,33 @@ check "5c CONSOLE_CONTEXT=1m launch line carries --autocompact auto" \
     "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact auto')" "1"
 check "5c CONSOLE_CONTEXT=1m launch line carries no --autocompact 200000" \
     "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact 200000')" "0"
+
+# HIMMEL-3884: catch console default regressions and ignored CLI overrides.
+out3884="$(unset CONSOLE_CONTEXT; console next --bucket demorepo --doc "$docA" --dry-run)"
+check "3884 next defaults to --autocompact auto" \
+    "$(printf '%s\n' "$out3884" | grep -c -- '--autocompact auto')" "1"
+check "3884 next records 1m default auto" \
+    "$(printf '%s\n' "$out3884" | grep -c -- "record-launch.sh DEMO-nextleg-${today}B-console 1m default auto")" "1"
+for command3884 in new next; do
+    out3884="$(CONSOLE_CONTEXT=1m console "$command3884" --bucket demorepo --context standard --dry-run)"
+    check "3884 $command3884 --context standard overrides env" \
+        "$(printf '%s\n' "$out3884" | grep -c -- '--autocompact 200000')" "1"
+    check "3884 $command3884 standard source is explicit" \
+        "$(printf '%s\n' "$out3884" | grep -c -- 'standard explicit 200000')" "1"
+    out3884="$(CONSOLE_CONTEXT=standard console "$command3884" --bucket demorepo --context=1m --dry-run)"
+    check "3884 $command3884 --context=1m overrides env" \
+        "$(printf '%s\n' "$out3884" | grep -c -- '1m explicit auto')" "1"
+    rc3884=0
+    out3884="$(console "$command3884" --bucket demorepo --context bogus --dry-run 2>&1)" || rc3884=$?
+    check "3884 $command3884 bogus context refused" "$rc3884" "2"
+    check "3884 $command3884 bogus diagnostic" \
+        "$(printf '%s\n' "$out3884" | grep -c -- '--context must be 1m or standard')" "1"
+done
+out3884="$(CONSOLE_CONTEXT=standard console new --bucket dry3884 --dry-run)"
+check "3884 env opt-down is explicit" \
+    "$(printf '%s\n' "$out3884" | grep -c -- 'standard explicit 200000')" "1"
+resolved3884="$(. "$REPO_REAL/scripts/lib/console-context.sh"; console_context_default 0 1m; printf '%s %s' "$CONSOLE_CONTEXT_RESOLVED_MODE" "$CONSOLE_CONTEXT_RESOLVED_SOURCE")"
+check "3884 non-console ignores env and stays standard" "$resolved3884" "standard default"
 
 # --- 5d (HIMMEL-3081): the printed launch line must clear the inherited
 # child-session marker. An operator pastes this line into a terminal that was
@@ -271,17 +297,19 @@ log7B="$tmp/work/tester-armrepo-${root_digest}/launch-${session7B}.log"
 cat > "$tmp/stub-arm.sh" <<'STUB'
 #!/usr/bin/env bash
 [ "$1" = --role ] && shift 2
-echo "armed: name=$1 doc=$2 signal=$3 deadline=$4" >> "$5"
+echo "armed: name=$1 doc=$2 signal=$3 deadline=$4 context=${7:-default}" >> "$5"
 STUB
 chmod +x "$tmp/stub-arm.sh"
 
 out7a="$(console new --bucket armrepo)"
 token7a="$(token_of "$out7a")"
 out7b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
-    CONSOLE_HEADED_ARM="$tmp/stub-arm.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
-    bash "$C" next --bucket armrepo --arm --deadline-min 0 ) )"
+    CONSOLE_HEADED_ARM="$tmp/stub-arm.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" CONSOLE_CONTEXT=1m \
+    bash "$C" next --bucket armrepo --arm --deadline-min 0 --context standard ) )"
 check "7 next --arm reports armed" "$(printf '%s\n' "$out7b" | grep -c '^armed: ')" "1"
 check "7 arm log written" "$([ -f "$log7B" ] && echo yes)" "yes"
+check "3884 explicit context reaches actual arm argv" "$(grep -c 'context=standard$' "$log7B")" "1"
+check "3884 explicit context agrees with printed launch" "$(printf '%s\n' "$out7b" | grep -c -- 'standard explicit 200000')" "1"
 check "7 arm log carries armed/signal/deadline/session" \
     "$(grep -cE "armed: name=${session7B} doc=.* signal=.*sig-${session7B} deadline=[0-9]+" "$log7B" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc7A" "$token7a" >/dev/null 2>&1
@@ -1491,7 +1519,7 @@ HANDOVER_DIR="$root" bash "$QL" release "$doc60bA" "$token60b" >/dev/null 2>&1
 out61a="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
 check "61 dry-run --arm launch line defaults to claude-opus-5-5" \
-    "$(printf '%s\n' "$out61a" | grep -c '^would-launch: .* claude --settings [^ ]* --model claude-opus-5-5 ')" "1"
+    "$(printf '%s\n' "$out61a" | grep -cF -- '--model claude-opus-5-5\[1m\] ')" "1"
 check "61 dry-run --arm launch line carries no fable model" \
     "$(printf '%s\n' "$out61a" | grep -c 'claude-fable-5-1')" "0"
 out61b="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
@@ -1562,13 +1590,13 @@ rm -f "$tmp/claude-argv-63"
 run_launch_line "$out63a"
 row63a="$(cat "$LL63/$S63.log" 2>/dev/null || true)"
 case "$row63a" in
-    "headed-arm: role=console session=$S63 context=standard source=default autocompact=200000 launched="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) r63a=match ;;
+    "headed-arm: role=console session=$S63 context=1m source=default autocompact=auto launched="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) r63a=match ;;
     *) r63a="nomatch: [$row63a]" ;;
 esac
 check "63a running the pasted line writes one console row: context, source, autocompact, launched" "$r63a" "match"
 argv63a="$(cat "$tmp/claude-argv-63" 2>/dev/null || true)"
 contains() { case "$1" in *"$2"*) echo "ok - $3" ;; *) echo "FAIL - $3: [$1] lacks [$2]"; fails=$((fails+1)) ;; esac; }
-contains "$argv63a" "--autocompact 200000 -n $S63" "63a the row's autocompact is the value claude was launched with"
+contains "$argv63a" "--autocompact auto -n $S63" "63a the row's autocompact is the value claude was launched with"
 contains "$argv63a" "row-existed" "63a the row was already there when claude started"
 HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63a/$S63.md" "$token63a" >/dev/null 2>&1
 

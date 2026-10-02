@@ -72,14 +72,17 @@ Finally it prints the launch line. Run it in a terminal of its own:
 ```text
 env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
     CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 \
-    claude --model <model> --autocompact 200000 -n <session-name> "load <doc> and continue"
+    claude --model '<model>[1m]' --autocompact auto -n <session-name> "load <doc> and continue"
 ```
 
-`--autocompact 200000` is the default (HIMMEL-2973 — the largest cache-read
-cost driver on the fleet was Fable consoles compacting only near the 1M
-window). Set `CONSOLE_CONTEXT=1m` in the launching shell before running
-`console new`/`next` to opt into the old `--autocompact auto` behavior; the
-printed launch line reflects whichever is resolved.
+Consoles default to 1m context with `--autocompact auto` (HIMMEL-3884,
+console-class exemption from HIMMEL-2975). Both `console new` and `next`
+accept `--context 1m|standard`, which overrides the environment and default.
+Use `--context standard` or `CONSOLE_CONTEXT=standard` in the launching shell
+to opt down to `--autocompact 200000`. The printed launch line and armed
+launch use the same resolved choice. Fable-family models retain their existing
+handling: the CLI strips `[1m]`, so the suffix is not applied; autocompact still
+is. Legs and non-console arms keep their standard default.
 
 A console wants a real TTY. A session launched without one exits at the first
 idle cross-session message.

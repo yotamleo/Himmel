@@ -27,8 +27,11 @@ bash scripts/handover/console/console.sh $ARGUMENTS
   tokens in one turn.
 - `--arm` — also arm the session headed via `scripts/handover/headed-arm.sh`,
   on a signal file plus a deadline; prints the arm log path. Launches with
-  `--autocompact 200000` by default (HIMMEL-2973); set `CONSOLE_CONTEXT=1m`
-  in the launching shell to opt into `--autocompact auto` instead.
+  1m context with `--autocompact auto` by default (HIMMEL-3884).
+- `--context 1m|standard` — on `new` or `next`, override the default and
+  environment choice. `--context standard` (or `CONSOLE_CONTEXT=standard`
+  in the launching shell) opts down to `--autocompact 200000`.
+  Non-console arms keep their standard default.
 - `--dry-run` — print what it would write, prefixed `would-`, and touch nothing.
 - `--project <dir>` — a repo other than this himmel checkout: bucket/prefix
   derive from it instead of himmel's own repo basename/`JIRA_PROJECT_KEY`, and
