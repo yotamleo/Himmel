@@ -38,15 +38,10 @@ check() {  # <description> <expected-substring> <actual-output>
 # run a shell function directly, so it's exported and invoked via `bash -c`;
 # falls back to an unbounded direct call when `timeout` isn't available
 # (same graceful-degrade convention as check-plugin-drift.sh).
-# Budget (HIMMEL-4112): the WHOLE suite measured 52s alone and 40/40/53s as
-# three concurrent runs (2026-10-03), and the four bounded calls share that
-# time, so one call's worst loaded figure is <= 53s. Rule: loaded x2 --
-# 53 * 2 = 106, rounded up to 120. The old 60s sat inside the loaded figure's
-# noise and timed out under fleet load without any defect.
 run_hermes_check_bounded() {
   if [ -n "$_TIMEOUT_BIN" ]; then
     export -f update_hermes
-    HERMES_HOME="$1" "$_TIMEOUT_BIN" 120 bash -c 'update_hermes check' 2>&1
+    HERMES_HOME="$1" "$_TIMEOUT_BIN" 60 bash -c 'update_hermes check' 2>&1
   else
     HERMES_HOME="$1" update_hermes check 2>&1
   fi
