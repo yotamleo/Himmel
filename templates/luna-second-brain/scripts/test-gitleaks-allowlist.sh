@@ -30,7 +30,8 @@ scan "bare 40-hex SHA is allowed" "secret = $sha" clean
 scan "40-hex SHA with trailing punctuation is allowed" "secret = $sha." clean
 scan "runClaudexSharedDispatch literal is allowed" "Jira: runClaudexSharedDispatch" clean
 scan "longer hex token still flagged" "secret = ${sha}6dcfd2469d17afd771" flag
-scan "mixed-case 40-char token still flagged" "secret = 6DCFD2469d17afd771a77f90a37fd0f122b8e857" flag
+upper="$(printf '%s' "${sha:0:8}" | tr 'a-f' 'A-F')${sha:8}"
+scan "mixed-case 40-char token still flagged" "secret = $upper" flag
 
 if [ $fails -eq 0 ]; then
   echo "all passed"
