@@ -342,7 +342,7 @@ try {
         $pair = "ANTHROPIC_DEFAULT_${tier}_${suffix}=anthropic/claude-sonnet-4.6"
         if (FileHas $ChildEnv $pair) { Pass $pair } else { Fail "override missing $pair" }
       }
-      foreach ($bad in 'anthropic/claude-not-listed', 'anthropic/claude-sonnet-5.5:extended', ' sonnet', 'Anthropic/claude-sonnet-5.5', 'anthropic/claude-sonnet-5.5;exit') {
+      foreach ($bad in 'anthropic/claude-not-listed', 'anthropic/claude-sonnet-5.5:batch', 'anthropic/claude-sonnet-5.5:extended', ' sonnet', 'Anthropic/claude-sonnet-5.5', 'anthropic/claude-sonnet-5.5;exit') {
         [Environment]::SetEnvironmentVariable("OPENROUTER_$tier", $bad)
         Remove-Item -LiteralPath $ChildEnv -ErrorAction SilentlyContinue
         Assert-Exit (Invoke-Launcher) 2 "$tier invalid slug ($lane): $bad"

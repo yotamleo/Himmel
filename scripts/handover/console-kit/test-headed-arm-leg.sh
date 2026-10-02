@@ -947,6 +947,8 @@ case "$last" in
 esac
 OR_CURL
 chmod 755 "$or_bin/claude" "$or_bin/curl"
+# These fixtures check defaults, not ambient operator overrides.
+unset OPENROUTER_HAIKU OPENROUTER_SONNET OPENROUTER_OPUS
 printf '%s' '{"providers":{"openrouter":{}},"rules":[{"corpus":"*","provider":"openrouter","purpose":"inference","verdict":"allow"}]}' > "$tmp/or-matrix.json"
 rc=0; out="$(HOME="$or_home" PATH="$or_bin:$PATH" LEG_LANE=openrouter OPENROUTER_API_KEY=hermetic-fixture OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 OPENROUTER_HAIKU=wrong CLAUDE_OPENROUTER_EGRESS_MATRIX="$tmp/or-matrix.json" bash "$HERE/../../claude-openrouter" --model sonnet 2>&1)" || rc=$?
 check "openrouter backend: invalid tier refuses" "$rc" "2"

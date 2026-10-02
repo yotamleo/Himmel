@@ -468,7 +468,7 @@ for lane in standalone openrouter; do
     LEG_LANE="$lane" t "$tier override ($lane)" 0
     grep -qxF "ANTHROPIC_DEFAULT_${tier}_MODEL=anthropic/claude-sonnet-4.6" "$WORK/child-env.txt" || { echo "FAIL: $tier override lost"; FAILS=$((FAILS+1)); }
     grep -qxF "ANTHROPIC_DEFAULT_${tier}_MODEL_NAME=anthropic/claude-sonnet-4.6" "$WORK/child-env.txt" || { echo "FAIL: $tier override label wrong"; FAILS=$((FAILS+1)); }
-    for bad in anthropic/claude-not-listed 'anthropic/claude-sonnet-5.5:extended' ' sonnet' 'Anthropic/claude-sonnet-5.5' 'anthropic/claude-sonnet-5.5;exit'; do
+    for bad in anthropic/claude-not-listed 'anthropic/claude-sonnet-5.5:batch' 'anthropic/claude-sonnet-5.5:extended' ' sonnet' 'Anthropic/claude-sonnet-5.5' 'anthropic/claude-sonnet-5.5;exit'; do
       export "OPENROUTER_$tier=$bad"
       rm -f "$WORK/child-env.txt"
       LEG_LANE="$lane" t "$tier invalid slug ($lane): $bad" 2

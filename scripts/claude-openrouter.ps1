@@ -48,29 +48,22 @@ $OpenRouterAnthropicBaseUrl = if ($env:OPENROUTER_ANTHROPIC_BASE_URL) { $env:OPE
 #   anthropic/claude-fable-5  (the judgment/taste escalation tier)
 #   anthropic/claude-opus-5-fast
 #   anthropic/claude-sonnet-5
-# ':batch' variants exist for async pricing — opt in deliberately, never default.
+# ':batch' variants are asynchronous and unsupported by interactive tier overrides.
 $OpenRouterModel         = if ($env:OPENROUTER_MODEL) { $env:OPENROUTER_MODEL } else { 'anthropic/claude-opus-5.5' }
 # Independent subagent tiers (HIMMEL-4083), catalog verified 2026-10-02.
 $OpenRouterHaiku         = if ($env:OPENROUTER_HAIKU) { $env:OPENROUTER_HAIKU } else { 'anthropic/claude-haiku-4.5' }
 $OpenRouterSonnet        = if ($env:OPENROUTER_SONNET) { $env:OPENROUTER_SONNET } else { 'anthropic/claude-sonnet-5.5' }
 $OpenRouterOpus          = if ($env:OPENROUTER_OPUS) { $env:OPENROUTER_OPUS } else { 'anthropic/claude-opus-5.5' }
-# ponytail: offline Claude catalog snapshot (2026-10-02), refresh this allowlist
+# ponytail: offline synchronous Claude catalog snapshot (2026-10-02), refresh this allowlist
 # and its bash twin when adopting a newly listed OpenRouter Claude slug.
 $KnownTierSlugs = @(
-  'anthropic/claude-sonnet-5.5', 'anthropic/claude-sonnet-5.5:batch',
-  'anthropic/claude-opus-5.5', 'anthropic/claude-opus-5.5:batch',
-  'anthropic/claude-fable-5.1', 'anthropic/claude-fable-5.1:batch',
-  'anthropic/claude-opus-5', 'anthropic/claude-opus-5:batch',
-  'anthropic/claude-sonnet-5', 'anthropic/claude-sonnet-5:batch',
-  'anthropic/claude-fable-5', 'anthropic/claude-fable-5:batch',
-  'anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.8:batch',
-  'anthropic/claude-opus-4.7', 'anthropic/claude-opus-4.7:batch',
-  'anthropic/claude-sonnet-4.6', 'anthropic/claude-sonnet-4.6:batch',
-  'anthropic/claude-opus-4.6', 'anthropic/claude-opus-4.6:batch',
-  'anthropic/claude-opus-4.5', 'anthropic/claude-opus-4.5:batch',
-  'anthropic/claude-haiku-4.5', 'anthropic/claude-haiku-4.5:batch',
-  'anthropic/claude-sonnet-4.5', 'anthropic/claude-sonnet-4.5:batch',
-  'anthropic/claude-opus-4.1', 'anthropic/claude-opus-4.1:batch',
+  'anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5',
+  'anthropic/claude-fable-5.1', 'anthropic/claude-opus-5',
+  'anthropic/claude-sonnet-5', 'anthropic/claude-fable-5',
+  'anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.7',
+  'anthropic/claude-sonnet-4.6', 'anthropic/claude-opus-4.6',
+  'anthropic/claude-opus-4.5', 'anthropic/claude-haiku-4.5',
+  'anthropic/claude-sonnet-4.5', 'anthropic/claude-opus-4.1',
   'anthropic/claude-sonnet-4'
 )
 function Assert-TierSlug([string]$Name, [string]$Slug) {
