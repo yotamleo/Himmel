@@ -9,16 +9,16 @@ CONFIG="$ROOT/.gitleaks.toml"
 [ -f "$CONFIG" ] || { echo "FAIL: $CONFIG not found"; exit 1; }
 command -v gitleaks >/dev/null 2>&1 || { echo "SKIP: gitleaks not installed"; exit 0; }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/gitleaks-allowlist.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 fails=0
 
 # scan <name> <line> <expect: clean|flag>
 scan() {
   printf '%s\n' "$2" > "$TMP/f.txt"
-  gitleaks dir "$TMP/f.txt" --config "$CONFIG" --no-banner --redact >/dev/null 2>&1
+  gitleaks dir "$TMP/f.txt" --config "$CONFIG" --no-banner --redact --exit-code 42 >/dev/null 2>&1
   rc=$?
-  if { [ "$3" = clean ] && [ $rc -eq 0 ]; } || { [ "$3" = flag ] && [ $rc -ne 0 ]; }; then
+  if { [ "$3" = clean ] && [ $rc -eq 0 ]; } || { [ "$3" = flag ] && [ $rc -eq 42 ]; }; then
     echo "PASS: $1"
   else
     echo "FAIL: $1 (rc=$rc, expected $3)"; fails=$((fails + 1))
