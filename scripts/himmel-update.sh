@@ -686,6 +686,11 @@ STATUS_luna_template="not-attempted"; DETAIL_luna_template=""
 # it has no fixed row: print_status_table adds one only when sync_graphify set
 # STATUS_graphify — today only for the uv-missing skip (HIMMEL-3077).
 STATUS_graphify="";                   DETAIL_graphify=""
+# HIMMEL-4088: probe-mode station tools (rtk, twitter-cli, ...) are advisory too.
+# Their count is registry-driven, so rows accumulate here as "name|status|detail"
+# lines (written by sync_probe_tools, read back by print_status_table) instead of
+# one fixed STATUS_/DETAIL_ pair each.
+PROBE_TOOL_ROWS=""
 
 # 1. checkout pull. The real `git pull --ff-only` (apply only — --check mode
 #    has its own read-only fetch+rev-list reporting above and sets STATUS_pull
@@ -1146,6 +1151,13 @@ EOF
     if [ -n "$STATUS_graphify" ]; then
         printf '    %-14s %-14s %s\n' "graphify" "$STATUS_graphify" "$DETAIL_graphify"
     fi
+    local pt_name pt_status pt_detail
+    while IFS='|' read -r pt_name pt_status pt_detail; do
+        [ -n "$pt_name" ] || continue
+        printf '    %-14s %-14s %s\n' "$pt_name" "$pt_status" "$pt_detail"
+    done <<EOF
+$PROBE_TOOL_ROWS
+EOF
 }
 
 # ─── --versions report plumbing (HIMMEL-3400) ────────────────────────────────
@@ -1354,12 +1366,124 @@ EOF
         [ "$state" = "unknown" ] && unknown=$((unknown + 1))
         printf '    %-14s %-8s %-30s %-30s %s\n' "$id" "$state" "$inst" "$avail" "$note"
     done
+    # HIMMEL-4088: registry-driven probe-tool rows — any id the fixed list above
+    # does not name, in the order sync_probe_tools wrote them.
+    for id in $(cut -d'|' -f1 "$VER_FILE" 2>/dev/null | grep -vxE 'himmel|plugins|jira_cli|qmd_fork|hermes|luna_template|cli_proxy|node|npm|bun|pm' | awk '!seen[$0]++'); do
+        row=$(grep "^$id|" "$VER_FILE" | tail -1)
+        IFS='|' read -r _ inst avail state note <<EOF
+$row
+EOF
+        [ "$state" = "behind" ] && behind=$((behind + 1))
+        [ "$state" = "unknown" ] && unknown=$((unknown + 1))
+        printf '    %-14s %-8s %-30s %-30s %s\n' "$id" "$state" "$inst" "$avail" "$note"
+    done
     echo ""
     echo "    $behind behind, $unknown undetermined."
     [ "$behind" -eq 0 ] || return 1
     [ "$unknown" -eq 0 ] || return 3
     return 0
 }
+
+# ─── probe-mode station tools (HIMMEL-4088) ──────────────────────────────────
+# Registry tag_release/probe entries that declare an `upgrade` block (rtk,
+# twitter-cli) name a binary installed on THIS machine. Only the nightly
+# drift-fix cadence used to upgrade them, so with that cadence unarmed an
+# operator's /himmel-update said "everything current" while the drift guard
+# still read them BEHIND.
+#
+# The guard is the single source of "BEHIND + latest": it runs ONCE and its
+# `<name>: BEHIND (... latest tag vX; installed Y ...)` line is parsed, so there
+# is no second copy of the probe / latest-release logic here. The upgrade itself
+# is apply-tool-upgrade.sh, which re-probes and only reports success if the
+# version strictly advanced. Entries marked `unattended: false` are operator
+# gated: the one-command manual upgrade is printed, never run. Advisory: a
+# failure fills a `failed` row and returns 1 for `--only tools`, but the callers
+# in the update chain swallow it.
+#   sync_probe_tools check | apply
+sync_probe_tools() {
+    local mode="$1" registry guard upgrader entries drift_out
+    local name unattended line latest inst manual out rc failed=0
+    registry="${DRIFT_REGISTRY:-$ROOT/scripts/upstreams.json}"
+    guard="$ROOT/scripts/check-plugin-drift.sh"
+    upgrader="$ROOT/scripts/upstreams/apply-tool-upgrade.sh"
+    echo ""
+    echo "==> probe-mode station tools (HIMMEL-4088)"
+    if [ ! -f "$registry" ] || [ ! -f "$guard" ] || [ ! -f "$upgrader" ] || ! command -v python3 >/dev/null 2>&1; then
+        echo "    skip: registry, drift guard, apply-tool-upgrade.sh or python3 not available."
+        return 0
+    fi
+    entries=$(python3 - "$registry" <<'PY' 2>/dev/null | tr -d '\r'
+import json, sys
+try:
+    reg = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+for e in reg.get("entries", []):
+    up = e.get("upgrade")
+    if e.get("kind") == "tag_release" and e.get("mode") == "probe" and isinstance(up, dict) and up.get("command"):
+        print("%s\x1f%s" % (e.get("name", ""), "true" if up.get("unattended") is True else "false"))
+PY
+) || entries=""
+    if [ -z "$entries" ]; then
+        echo "    none declared in the registry."
+        return 0
+    fi
+    drift_out=$(bash "$guard" 2>&1) || true
+    while IFS=$'\x1f' read -r name unattended; do
+        [ -n "$name" ] || continue
+        line=$(printf '%s\n' "$drift_out" | grep -F -- "  $name: " | head -1)
+        case "$line" in
+            "  $name: CURRENT"*)
+                inst=$(printf '%s' "$line" | sed -n 's/.*installed \([^ )]*\).*/\1/p')
+                _probe_tool_row "$name" up-to-date "${inst:-current}"
+                _ver_row "$name" "${inst:--}" "${inst:--}" current
+                continue ;;
+            "  $name: BEHIND"*) ;;
+            *)
+                inst="${line#*"$name": }"
+                if [ -z "$line" ]; then
+                    inst="not reported by the drift guard (gh unavailable?)"
+                fi
+                _probe_tool_row "$name" skipped "$inst"
+                case "$line" in
+                    *"not installed"*) _ver_row "$name" - - n/a "not installed" ;;
+                    *)                 _ver_row "$name" - - unknown "$inst" ;;
+                esac
+                continue ;;
+        esac
+        latest=$(printf '%s' "$line" | sed -n 's/.*latest tag v\{0,1\}\([^;) ]*\).*/\1/p')
+        inst=$(printf '%s' "$line" | sed -n 's/.*installed \([^ )]*\).*/\1/p')
+        manual="bash scripts/upstreams/apply-tool-upgrade.sh $name $latest"
+        if [ "$unattended" != "true" ]; then
+            echo "    $name $inst -> $latest is operator-gated (upgrade.unattended is not true); run: $manual"
+            _probe_tool_row "$name" skipped "$inst -> $latest operator-gated — run: $manual"
+            _ver_row "$name" "$inst" "$latest" behind "operator-gated — run: $manual"
+            continue
+        fi
+        _ver_row "$name" "$inst" "$latest" behind "run /himmel-update to upgrade"
+        if [ "$mode" = "check" ]; then
+            _probe_tool_row "$name" skipped "$inst -> $latest update available — run without --check to upgrade"
+            continue
+        fi
+        rc=0
+        out=$(bash "$upgrader" "$name" "$latest" --unattended 2>&1) || rc=$?
+        case "$rc" in
+            0) _probe_tool_row "$name" updated "$(printf '%s\n' "$out" | grep '^UPGRADE ' | tail -1 | cut -d' ' -f3-)" ;;
+            1) _probe_tool_row "$name" up-to-date "$(_last_line_trimmed "$out")" ;;
+            3) _probe_tool_row "$name" skipped "$(_last_line_trimmed "$out")" ;;
+            *)
+                failed=1
+                echo "    $name upgrade failed (rc=$rc) — $(_last_line_trimmed "$out")"
+                echo "    retry by hand: $manual"
+                _probe_tool_row "$name" failed "rc=$rc — $(_last_line_trimmed "$out")" ;;
+        esac
+    done <<EOF
+$entries
+EOF
+    return "$failed"
+}
+
+_probe_tool_row() { PROBE_TOOL_ROWS="${PROBE_TOOL_ROWS}$1|$2|${3//|//}"$'\n'; }
 
 # ─── graphify pin sync (HIMMEL-1048) ─────────────────────────────────────────
 # Best-effort advisory: roll an EXISTING graphify install forward to the pinned
@@ -2209,7 +2333,8 @@ Usage: scripts/himmel-update.sh [MODE]
 
 Update the himmel checkout and every component it manages. With no MODE it runs
 the real update: pull, marketplace re-sync, jira CLI rebuild, qmd fork, hermes,
-luna template, then the advisory steps (cli-proxy-api, codex, toolchain).
+luna template, then the advisory steps (cli-proxy-api, codex, toolchain,
+probe-mode station tools such as rtk and twitter-cli).
 
 Modes:
   (none)              run the real update
@@ -2218,7 +2343,7 @@ Modes:
                       marked; read-only. Exit 0 all current, 1 any behind,
                       3 none behind but some could not be determined
   --only <item>       run ONE step: pull marketplace jira_cli qmd_fork hermes
-                      luna_template graphify cli_proxy marketplaces toolchain
+                      luna_template graphify cli_proxy marketplaces toolchain tools
   --plugins-check     just the plugin install-state report; no git, no network
   -h, --help          this text
 
@@ -2333,7 +2458,7 @@ fi
 if [ "${1:-}" = "--only" ]; then
     only_item="${2:-}"
     if [ -z "$only_item" ]; then
-        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain" >&2
+        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain tools" >&2
         exit 2
     fi
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
@@ -2365,8 +2490,9 @@ if [ "${1:-}" = "--only" ]; then
         cli_proxy)     sync_cli_proxy || only_rc=1 ;;
         marketplaces)  sync_marketplaces ;;
         toolchain)     report_toolchain apply ;;
+        tools)         sync_probe_tools apply || only_rc=1 ;;
         *)
-            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain" >&2
+            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain tools" >&2
             exit 2 ;;
     esac
     report_qmd_daemon_restart
@@ -2402,6 +2528,7 @@ if [ "${1:-}" = "--versions" ]; then
         update_luna_template check || true
         sync_cli_proxy check || true
         report_toolchain check || true
+        sync_probe_tools check || true
         _ver_pm_rows
     } >/dev/null 2>&1
     versions_rc=0
@@ -2448,6 +2575,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     report_cadence_stale
     report_qmd_bun_missing
     report_toolchain check
+    sync_probe_tools check || true
     report_guardrail_block
     print_status_table
     exit 0
@@ -2626,6 +2754,8 @@ offer_retired_plugin_removal apply
 report_cadence_stale
 report_qmd_bun_missing
 report_toolchain apply
+# HIMMEL-4088: `|| true` — a failed tool upgrade is advisory, never aborts the update.
+sync_probe_tools apply || true
 report_guardrail_block
 report_dependency_readiness
 backfill_user_claude_md
