@@ -22,10 +22,10 @@ while [ $# -gt 0 ]; do
     *) suites+=("$1"); shift ;;
   esac
 done
-[ -r "$runner" ] && [ "${#suites[@]}" -gt 0 ] || {
+if [ ! -r "$runner" ] || [ "${#suites[@]}" -eq 0 ]; then
   echo "usage: suite-coverage.sh [--runner <run-shell-tests.sh>] <suite-path>..." >&2
   exit 2
-}
+fi
 
 # table <VAR> — the body of the runner's `VAR="…"` block, entries one per line.
 table() { awk -v v="$1" '$0 == v "=\"" {on=1; next} on && $0 == "\"" {exit} on' "$runner"; }
@@ -35,6 +35,7 @@ tier_list="$(table SUITE_TIER_DEFAULT)"
 # cap <suite> — evaluate the runner's own per-suite timeout function.
 cap_fn="$(awk '/^_suite_timeout_for\(\) \{/ {on=1} on {print} on && /^}/ {exit}' "$runner")"
 cap() {
+  # shellcheck disable=SC2317,SC2329,SC2034 # _suite_num and the vars are read by the eval'd runner function
   ( _suite_num() { printf '%s' "$2"; }
     SUITE_TIMEOUT_EXPLICIT=''; SUITE_TIMEOUT=600
     eval "$cap_fn"; _suite_timeout_for "$1" ) 2>/dev/null

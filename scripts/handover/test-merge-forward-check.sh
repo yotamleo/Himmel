@@ -40,7 +40,8 @@ printf 'a\tsuccess\n' > "$tmp/main"
 run "timed_out counts as red: ALLOW" 0 'ALLOW.*a'
 
 bash "$MF" --pr "$tmp/none" --main "$tmp/main" >/dev/null 2>&1
-[ $? -eq 2 ] && ok "unreadable input exits 2" || bad "unreadable input exits 2"
+rc=$?
+if [ "$rc" -eq 2 ]; then ok "unreadable input exits 2"; else bad "unreadable input exits 2"; fi
 
 [ "$fail" -eq 0 ] && echo "PASS: merge-forward-check" || echo "FAIL: merge-forward-check"
 exit "$fail"

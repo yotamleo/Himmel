@@ -46,7 +46,8 @@ expect "./-spelled path matches" 'not run in CI' "$out"
 out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/vm/pre-test-vm.sh 2>&1)
 expect "suffix match respects the / boundary" 'runs in PR CI' "$out"
 bash "$SC" --runner "$tmp/none.sh" scripts/x/test-x.sh >/dev/null 2>&1
-[ $? -eq 2 ] && pass "missing runner exits 2" || bad "missing runner exits 2"
+rc=$?
+if [ "$rc" -eq 2 ]; then pass "missing runner exits 2"; else bad "missing runner exits 2"; fi
 
 out=$(bash "$SC" --runner "$REAL" scripts/test-install-symmetry-vm.sh 2>&1)
 expect "real: install-symmetry-vm not run in CI" 'not run in CI' "$out"

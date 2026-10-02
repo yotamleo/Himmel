@@ -22,10 +22,10 @@ while [ $# -gt 0 ]; do
     *) pr=""; break ;;
   esac
 done
-[ -r "$pr" ] && [ -r "$main" ] || {
+if [ ! -r "$pr" ] || [ ! -r "$main" ]; then
   echo "usage: merge-forward-check.sh --pr <file> --main <file>" >&2
   exit 2
-}
+fi
 
 reds="$(awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print $1}' "$pr")"
 [ -n "$reds" ] || { echo "nothing red on the PR — no merge-forward needed"; exit 3; }
