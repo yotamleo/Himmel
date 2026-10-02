@@ -116,6 +116,20 @@ identical to `--bg` — see the citations above; the difference is entirely in
 how the process is launched (konsole vs `--bg`), not in what it costs or
 what it's allowed to do.
 
+## Lane seam: `HIMMEL_CLAUDE_LANE` (HIMMEL-4082)
+
+Headless `claude -p` spawn sites pick their launcher through
+`scripts/lib/claude-lane.sh` (`claude_lane_resolve`). Unset, empty or `native`
+runs the plain `claude` binary with byte-identical argv; `openrouter` runs
+`scripts/claude-openrouter` and `claudex` runs `scripts/claude-codex` (both
+`exec claude "$@"`, so a site keeps its permission mode and `--output-format
+json` parsing). Any other value refuses with rc 2 — never a silent fallback to
+native. A lane launcher consults the egress matrix itself, and a site opts in
+only where the data it sends is allowed (code and diffs: yes; vault content:
+stays native). Wired today: the `claude-headless.sh` chokepoint (used by the CR
+floor reviewer; `HIMMEL_CLAUDE_BIN` still wins, for tests) and the
+`hermes-critic.sh --route claude` pass. Other sites are follow-up.
+
 ## Audit: existing `# headless-claude-ok:` sites
 
 Full marker inventory: `git grep -n 'headless-claude-ok:'`. Call sites are

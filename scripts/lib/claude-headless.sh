@@ -380,9 +380,16 @@ lock_release
 JSON_SCHEMA=""
 if [ -n "$JSON_SCHEMA_FILE" ]; then JSON_SCHEMA="$(cat "$JSON_SCHEMA_FILE")"; fi
 
-CLAUDE_BIN="${HIMMEL_CLAUDE_BIN:-claude}"
+# HIMMEL-4082: HIMMEL_CLAUDE_BIN (tests) wins; else the lane seam picks the
+# launcher (unset/native = plain `claude`, unchanged; unknown lane refuses).
+if [ -n "${HIMMEL_CLAUDE_BIN:-}" ]; then
+  CLAUDE_LANE_CMD=("$HIMMEL_CLAUDE_BIN")
+else
+  # shellcheck source=scripts/lib/claude-lane.sh
+  . "$SCRIPT_DIR/claude-lane.sh" && claude_lane_resolve "$REPO_ROOT" || exit 2
+fi
 # launch-profile-ok: profile-agnostic chokepoint; its callers own the plugin-profile choice (HIMMEL-4013)
-CMD=("$CLAUDE_BIN" -p --output-format json --permission-mode "$PERMISSION_MODE" --max-turns "$MAX_TURNS")
+CMD=("${CLAUDE_LANE_CMD[@]}" -p --output-format json --permission-mode "$PERMISSION_MODE" --max-turns "$MAX_TURNS")
 [ -z "$MODEL" ] || CMD+=(--model "$MODEL")
 [ -z "$ALLOWED_TOOLS" ] || CMD+=(--allowedTools "$ALLOWED_TOOLS")
 if [ -n "$SETTINGS" ]; then

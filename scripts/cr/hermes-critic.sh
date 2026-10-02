@@ -347,8 +347,15 @@ run_claude_review() {
         rm -rf "$scratch_dir"
         return 1
     fi
+    # HIMMEL-4082: lane seam — unset/native is plain `claude`; unknown lane refuses.
+    # shellcheck source=../lib/claude-lane.sh
+    # shellcheck disable=SC1091
+    if ! . "$SCRIPT_DIR/../lib/claude-lane.sh" || ! claude_lane_resolve "$SCRIPT_DIR/../.."; then
+        rm -rf "$scratch_dir"
+        return 1
+    fi
     # headless-claude-ok: CR critic pass — this invocation IS the product (HIMMEL-2017).
-    out="$(cd "$scratch_dir" && PATH="$deduped_path" claude -p --settings "$critic_settings" --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
+    out="$(cd "$scratch_dir" && PATH="$deduped_path" "${CLAUDE_LANE_CMD[@]}" -p --settings "$critic_settings" --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
     crc=$?
     [ -n "$scratch_dir" ] && rm -rf "$scratch_dir"
     printf '%s' "$out" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(j.result??"")}catch(e){console.log(d)}})'

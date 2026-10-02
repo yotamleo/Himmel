@@ -228,6 +228,48 @@ rc=$?
 grep -q "bank preflight returned SKIPPED-BANK" "$work/err8b" || fail "exhausted bank: stderr did not name the bank refusal"
 echo "  ok" >&2
 
+# 8c. HIMMEL-4082 lane seam: HIMMEL_CLAUDE_LANE routes the claude pass through a
+#     lane launcher with the SAME argv; an unknown lane refuses (no fallback).
+#     A mini tree: cr/ copied (so the script's repo root is the mini tree), the
+#     rest of scripts/ symlinked, the two launchers replaced by capturing stubs.
+echo "test: claude route honours HIMMEL_CLAUDE_LANE" >&2
+mini="$work/mini"
+real_scripts="$(cd "$SCRIPT_DIR/.." && pwd)"
+mkdir -p "$mini/scripts"
+for e in "$real_scripts"/*; do
+    n="$(basename "$e")"
+    case "$n" in cr|claude-openrouter|claude-codex) ;; *) ln -s "$e" "$mini/scripts/$n" ;; esac
+done
+cp -R "$SCRIPT_DIR" "$mini/scripts/cr"
+for l in claude-openrouter claude-codex; do
+    {
+        echo '#!/usr/bin/env bash'
+        echo "echo $l > \"\$LANE_CAPTURE\""
+        # shellcheck disable=SC2016  # stub body is written literally
+        printf '%s\n' 'printf "%s\n" "$@" > "$CLAUDE_ARGV_CAPTURE"'
+        sed -n '/^printf .%s. .{"type":"result"/p' "$bindir/claude"
+    } > "$mini/scripts/$l"
+    chmod +x "$mini/scripts/$l"
+done
+CLAUDE_ARGV_CAPTURE="$work/native-argv" PATH="$bindir:$PATH" \
+    bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>&1
+for lane in openrouter claudex; do
+    l=claude-openrouter; [ "$lane" = claudex ] && l=claude-codex
+    : > "$work/lane-argv"; rm -f "$work/lane-seen"
+    HIMMEL_CLAUDE_LANE="$lane" LANE_CAPTURE="$work/lane-seen" CLAUDE_ARGV_CAPTURE="$work/lane-argv" PATH="$bindir:$PATH" \
+        bash "$mini/scripts/cr/hermes-critic.sh" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err" \
+        || fail "lane $lane: critic run failed: $(head -c 400 "$work/lane-err")"
+    [ "$(cat "$work/lane-seen" 2>/dev/null)" = "$l" ] || fail "lane $lane: launcher $l was not used"
+    cmp -s "$work/lane-argv" "$work/native-argv" || fail "lane $lane: argv differs from the native claude argv"
+done
+: > "$work/claude-argv"
+HIMMEL_CLAUDE_LANE=bogus CLAUDE_ARGV_CAPTURE="$work/claude-argv" PATH="$bindir:$PATH" \
+    bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/err8c"
+rc=$?
+[ "$rc" -ne 0 ] || fail "unknown lane: expected a refusal, got rc=0"
+[ ! -s "$work/claude-argv" ] || fail "unknown lane: claude was launched anyway (silent fallback)"
+echo "  ok" >&2
+
 # 9. --route claude, claude transport failure → exit 3 carrying CLAUDE's rc
 #    (not the node unwrap's, which is always 0).
 echo "test: claude route propagates the CLI rc" >&2
