@@ -52,7 +52,8 @@ New-Item -ItemType Directory -Force -Path $TMP | Out-Null
 # snapshot env mutated per-invocation; restored in the outer finally
 $OrigEnv = @{}
 foreach ($n in 'USERPROFILE', 'OPENROUTER_API_KEY', 'CLAUDE_OPENROUTER_DOTENV_ROOT', 'CLAUDE_OPENROUTER_EGRESS_MATRIX',
-               'CLAUDE_OPENROUTER_CWD', 'OPENROUTER_API_BASE', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH') {
+               'CLAUDE_OPENROUTER_CWD', 'OPENROUTER_API_BASE', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH',
+               'OPENROUTER_MODEL', 'OPENROUTER_HAIKU', 'OPENROUTER_SONNET', 'OPENROUTER_OPUS', 'LEG_LANE') {
   $OrigEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 
@@ -91,6 +92,9 @@ for ($i = 0; $i -lt 50 -and -not (Test-Path -LiteralPath $PortFile); $i++) { Sta
 $script:CreditPort = if (Test-Path -LiteralPath $PortFile) { (Get-Content -LiteralPath $PortFile -Raw).Trim() } else { '1' }
 
 function New-Sandbox {
+  foreach ($name in 'OPENROUTER_MODEL', 'OPENROUTER_HAIKU', 'OPENROUTER_SONNET', 'OPENROUTER_OPUS', 'LEG_LANE') {
+    [Environment]::SetEnvironmentVariable($name, $null)
+  }
   Set-Credits 21 1   # default balance: $20 remaining
   Write-KeyLimit $null   # default: uncapped key
   # fresh sandbox: fake HOME whose ~/.claude ALREADY carries settings.json (the
@@ -237,8 +241,8 @@ try {
         'ANTHROPIC_BASE_URL=https://openrouter.ai/api',
         'ANTHROPIC_AUTH_TOKEN=or-test-123',
         'ANTHROPIC_MODEL=anthropic/claude-opus-5.5',
-        'ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-opus-5.5',
-        'ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-opus-5.5',
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-4.5',
+        'ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-5.5',
         'ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-5.5',
         'CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000',
         ('CLAUDE_CONFIG_DIR=' + (Join-Path $FAKEHOME '.claude-openrouter')))) {
@@ -316,6 +320,38 @@ try {
   Assert-Exit (Invoke-Launcher) 0 'non-leg Haiku override launches'
   if (FileHas $ChildEnv 'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME=anthropic/claude-haiku-4.5') { Pass 'Haiku label identifies override' } else { Fail 'Haiku label names the wrong model' }
   Remove-Item Env:OPENROUTER_HAIKU -ErrorAction SilentlyContinue
+
+  # --- HIMMEL-4083: independent defaults, overrides and exact slug refusal. ---
+  New-Sandbox; $script:KEY = 'or-test-123'  # gitleaks:allow
+  Write-AllowMatrix (Join-Path $WORK 'matrix.json'); $script:MATRIX = Join-Path $WORK 'matrix.json'
+  foreach ($lane in 'standalone', 'openrouter') {
+    $env:LEG_LANE = $lane
+    $env:OPENROUTER_MODEL = 'anthropic/claude-sonnet-5'
+    Assert-Exit (Invoke-Launcher) 0 "independent tiers ($lane)"
+    foreach ($pair in 'ANTHROPIC_MODEL=anthropic/claude-sonnet-5',
+                       'ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-4.5',
+                       'ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-5.5',
+                       'ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-5.5') {
+      if (FileHas $ChildEnv $pair) { Pass $pair } else { Fail "independent tier missing $pair" }
+    }
+    foreach ($tier in 'HAIKU', 'SONNET', 'OPUS') {
+      [Environment]::SetEnvironmentVariable("OPENROUTER_$tier", 'anthropic/claude-sonnet-4.6')
+      Assert-Exit (Invoke-Launcher) 0 "$tier override ($lane)"
+      foreach ($suffix in 'MODEL', 'MODEL_NAME') {
+        $pair = "ANTHROPIC_DEFAULT_${tier}_${suffix}=anthropic/claude-sonnet-4.6"
+        if (FileHas $ChildEnv $pair) { Pass $pair } else { Fail "override missing $pair" }
+      }
+      foreach ($bad in 'anthropic/claude-not-listed', 'anthropic/claude-sonnet-5.5:extended', ' sonnet', 'Anthropic/claude-sonnet-5.5', 'anthropic/claude-sonnet-5.5;exit') {
+        [Environment]::SetEnvironmentVariable("OPENROUTER_$tier", $bad)
+        Remove-Item -LiteralPath $ChildEnv -ErrorAction SilentlyContinue
+        Assert-Exit (Invoke-Launcher) 2 "$tier invalid slug ($lane): $bad"
+        if (FileHas $OutTxt "unknown or malformed OPENROUTER_$tier") { Pass 'clear slug refusal' } else { Fail 'missing slug refusal diagnostic' }
+        if (Test-Path -LiteralPath $ChildEnv) { Fail 'invalid tier launched claude' } else { Pass 'invalid tier never launched claude' }
+      }
+      [Environment]::SetEnvironmentVariable("OPENROUTER_$tier", $null)
+    }
+  }
+  Remove-Item Env:OPENROUTER_MODEL, Env:LEG_LANE -ErrorAction SilentlyContinue
 
   # --- T6: claude flags pass through verbatim; a LEADING -Reseed is consumed.
   # Pins the manual flag loop (a param() block would swallow -p/-d as common

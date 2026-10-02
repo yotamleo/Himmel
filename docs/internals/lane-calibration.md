@@ -33,6 +33,18 @@ banks do not. The backend refuses unknown credit or key-limit readings and
 an effective balance below `OPENROUTER_MIN_CREDIT_USD` (default **3 USD**):
 the smaller of account credit and the key's `limit_remaining` is available.
 
+The launcher keeps the session pin (`OPENROUTER_MODEL`) separate from subagent
+tiers: `OPENROUTER_HAIKU` defaults to `anthropic/claude-haiku-4.5` (200k context),
+`OPENROUTER_SONNET` to `anthropic/claude-sonnet-5.5` (1M), and `OPENROUTER_OPUS`
+to `anthropic/claude-opus-5.5` (1M). Each independently overrides its
+`ANTHROPIC_DEFAULT_*_MODEL` export, including in managed legs. Tier overrides
+must exactly match the launcher's offline Claude catalog snapshot, verified
+against the public OpenRouter model list on **2026-10-02**; unknown or malformed
+slugs refuse with exit 2 before key resolution or any network access. Newly
+listed slugs require refreshing both launcher twins' allowlists; launch does
+not fetch the model list. A session uses a family alias only when that alias
+resolves to its exact pin, otherwise it retains the explicit session slug.
+
 `scripts/lanes/openrouter-cost.sh --since <launch.log>` reads account metadata
 only and prints the effective balance plus account-wide spend since launch
 (not a per-session attribution). Credits metadata can lag: an immediate

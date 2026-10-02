@@ -43,7 +43,37 @@ OPENROUTER_ANTHROPIC_BASE_URL="${OPENROUTER_ANTHROPIC_BASE_URL:-https://openrout
 #   anthropic/claude-sonnet-5
 # `:batch` variants exist for async pricing — opt in deliberately, never default.
 OPENROUTER_MODEL="${OPENROUTER_MODEL:-anthropic/claude-opus-5.5}"
-OPENROUTER_HAIKU="${OPENROUTER_HAIKU:-$OPENROUTER_MODEL}"
+# Independent subagent tiers (HIMMEL-4083), verified against the public catalog
+# 2026-10-02. Haiku is 200k; Sonnet and Opus are 1M. Session pin stays separate.
+OPENROUTER_HAIKU="${OPENROUTER_HAIKU:-anthropic/claude-haiku-4.5}"
+OPENROUTER_SONNET="${OPENROUTER_SONNET:-anthropic/claude-sonnet-5.5}"
+OPENROUTER_OPUS="${OPENROUTER_OPUS:-anthropic/claude-opus-5.5}"
+# ponytail: offline Claude catalog snapshot (2026-10-02), refresh this allowlist
+# and its PowerShell twin when adopting a newly listed OpenRouter Claude slug.
+validate_tier() { # $1 env name, $2 slug; exact membership rejects malformed input.
+  case "$2" in
+    anthropic/claude-sonnet-5.5|anthropic/claude-sonnet-5.5:batch|\
+    anthropic/claude-opus-5.5|anthropic/claude-opus-5.5:batch|\
+    anthropic/claude-fable-5.1|anthropic/claude-fable-5.1:batch|\
+    anthropic/claude-opus-5|anthropic/claude-opus-5:batch|\
+    anthropic/claude-sonnet-5|anthropic/claude-sonnet-5:batch|\
+    anthropic/claude-fable-5|anthropic/claude-fable-5:batch|\
+    anthropic/claude-opus-4.8|anthropic/claude-opus-4.8:batch|\
+    anthropic/claude-opus-4.7|anthropic/claude-opus-4.7:batch|\
+    anthropic/claude-sonnet-4.6|anthropic/claude-sonnet-4.6:batch|\
+    anthropic/claude-opus-4.6|anthropic/claude-opus-4.6:batch|\
+    anthropic/claude-opus-4.5|anthropic/claude-opus-4.5:batch|\
+    anthropic/claude-haiku-4.5|anthropic/claude-haiku-4.5:batch|\
+    anthropic/claude-sonnet-4.5|anthropic/claude-sonnet-4.5:batch|\
+    anthropic/claude-opus-4.1|anthropic/claude-opus-4.1:batch|\
+    anthropic/claude-sonnet-4) return 0 ;;
+  esac
+  echo "claude-openrouter: unknown or malformed $1 slug; use a Claude slug from the launcher catalog snapshot (2026-10-02), or update the snapshot before adopting a new model. Refusing to launch." >&2
+  exit 2
+}
+validate_tier OPENROUTER_HAIKU "$OPENROUTER_HAIKU"
+validate_tier OPENROUTER_SONNET "$OPENROUTER_SONNET"
+validate_tier OPENROUTER_OPUS "$OPENROUTER_OPUS"
 # OPENROUTER_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (export block
 # below) so Claude Code budgets against the real 1M tier instead of its ~200k
 # default for an unrecognized slug.
@@ -386,16 +416,16 @@ export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
 export ANTHROPIC_API_KEY=""
 export ANTHROPIC_MODEL="$OPENROUTER_MODEL"
 if [ "${LEG_LANE:-}" = openrouter ]; then
-  OPENROUTER_HAIKU="$OPENROUTER_MODEL"
+  # Use an alias only when it resolves to the exact session pin.
   case "$OPENROUTER_MODEL" in
-    anthropic/claude-sonnet-*) export ANTHROPIC_MODEL=sonnet ;;
-    anthropic/claude-opus-*) export ANTHROPIC_MODEL=opus ;;
+    anthropic/claude-sonnet-*) [ "$OPENROUTER_MODEL" != "$OPENROUTER_SONNET" ] || export ANTHROPIC_MODEL=sonnet ;;
+    anthropic/claude-opus-*) [ "$OPENROUTER_MODEL" != "$OPENROUTER_OPUS" ] || export ANTHROPIC_MODEL=opus ;;
   esac
 fi
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$OPENROUTER_HAIKU"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="$OPENROUTER_MODEL"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="$OPENROUTER_MODEL"
-# Labels are cosmetic; all three aliases execute the pinned leg tier.
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$OPENROUTER_SONNET"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$OPENROUTER_OPUS"
+# Labels identify the actual model each alias executes.
 or_label="$OPENROUTER_MODEL"
 case "$OPENROUTER_MODEL" in
   anthropic/claude-sonnet-*) or_label="Sonnet ${OPENROUTER_MODEL#anthropic/claude-sonnet-} (OpenRouter)" ;;
@@ -405,8 +435,12 @@ esac
 or_haiku_label="$or_label"
 [ "$OPENROUTER_HAIKU" = "$OPENROUTER_MODEL" ] || or_haiku_label="$OPENROUTER_HAIKU"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="$or_haiku_label"
-export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="$or_label"
-export ANTHROPIC_DEFAULT_OPUS_MODEL_NAME="$or_label"
+or_sonnet_label="$OPENROUTER_SONNET"
+or_opus_label="$OPENROUTER_OPUS"
+[ "$OPENROUTER_SONNET" != "$OPENROUTER_MODEL" ] || or_sonnet_label="$or_label"
+[ "$OPENROUTER_OPUS" != "$OPENROUTER_MODEL" ] || or_opus_label="$or_label"
+export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="$or_sonnet_label"
+export ANTHROPIC_DEFAULT_OPUS_MODEL_NAME="$or_opus_label"
 # ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
 # remove this temporary switch when safeguards/safeguard_results pass through.
 export CLAUDE_CODE_AUTO_MODE_SERVER=0
