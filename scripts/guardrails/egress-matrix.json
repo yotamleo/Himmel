@@ -1,7 +1,7 @@
 {
   "version": 1,
   "jira": "HIMMEL-766",
-  "updated": "2026-08-29",
+  "updated": "2026-10-02",
   "doc": "docs/internals/egress-matrix.md",
   "semantics": {
     "evaluation": "first-match-wins over `rules`, then `default`. '*' matches any value.",
@@ -27,7 +27,7 @@
     "local-speech": { "region": "local", "note": "on-machine speech only — STT via whisper.cpp (push-to-talk) and faster-whisper/CTranslate2 (the always-listening jarvis loop), TTS via chatterbox, all under ~/.himmel. Zero egress; named as a real provider so the voice-audio allow cell is an explicit decision rather than a wildcard gap" },
     "anthropic": { "region": "US", "note": "the operating harness itself (Claude sessions natively read the vaults); recording status quo, not a widening" },
     "openai-codex": { "region": "US", "note": "codex via hermes, paid usage bank" },
-    "deepseek": { "region": "CN", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): dropped from vault + handover-state egress — bad extraction/enrichment results. Prior ratifications (2026-07-05, HIMMEL-343, HIMMEL-833) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code)." },
+    "deepseek": { "region": "CN", "note": "HIMMEL-4084 operator ruling 2026-10-02: himmel-code and handover-state INFERENCE supported only under the station process-environment opt-in HIMMEL_DEEPSEEK_INFERENCE_OK=1; shipped default denies that inference lane. Vault corpora remain denied. DE-LISTED extraction/enrichment 2026-07-22 (HIMMEL-1257): prior HIMMEL-343/HIMMEL-833 ratifications remain reversed and their explicit deny cells are unchanged. Other public-code wildcard purposes unaffected." },
     "zai-glm": { "region": "CN", "note": "DE-LISTED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP): dropped from vault + handover-state egress — the GLM Coding Plan auto-renew was cancelled 2026-08-12 and the plan lapsed 2026-08-17, so the lane is gone. Prior ratifications (HIMMEL-1122 extraction, HIMMEL-1167 enrichment, the luna-clippings §4.2 exception and the handover-state brief-scoped cell) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code — the `--backend glm` remap in refresh-graph-map.sh still serves it)." },
     "openrouter": { "region": "US", "note": "OpenRouter metered aggregation (scripts/claude-openrouter — Claude 1M tier on the metered path, HIMMEL-1774). Declared as its OWN provider, same capability slot as the other cloud engines but a DIFFERENT provider and trust boundary: content transits OpenRouter before the model vendor, so reaching a Claude model through it is NOT covered by the anthropic cell. The launcher consults this matrix as a HARD gate (no --force bypass) and requires an EXPLICIT provider:\"openrouter\" rule — a wildcard allow does not authorize the lane" },
     "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): not pursuing the HIMMEL-765 pilot — bad results. Vault/handover cells demoted to explicit deny; himmel-code wildcard unaffected (public code)." },
@@ -80,6 +80,18 @@
       "corpus": "himmel-code", "provider": "openrouter", "purpose": "inference",
       "verdict": "allow",
       "why": "HIMMEL-1774 operator ruling: ALLOW himmel-code on the OpenRouter metered Claude 1M lane (scripts/claude-openrouter). Explicit row — himmel-code is also covered by the wildcard allow below, but the launcher's hard gate authorizes ONLY on an explicit provider:\"openrouter\" rule, so this row is what switches the lane from inert to usable. Scoped to inference (the launcher's only purpose); extraction/embedding stay default-deny"
+    },
+    {
+      "corpus": "himmel-code", "provider": "deepseek", "purpose": "inference",
+      "verdict": "conditional",
+      "condition": "HIMMEL_DEEPSEEK_INFERENCE_OK=1",
+      "why": "HIMMEL-4084 operator ruling 2026-10-02: DeepSeek inference is station opt-in, denied unless the launching process environment carries the literal flag value 1. The launcher verifies this condition; .env is a key store, not an opt-in source. Vault and PHI cells remain denied. Adopters may restrict this cell."
+    },
+    {
+      "corpus": "handover-state", "provider": "deepseek", "purpose": "inference",
+      "verdict": "conditional",
+      "condition": "HIMMEL_DEEPSEEK_INFERENCE_OK=1",
+      "why": "HIMMEL-4084 operator ruling 2026-10-02: substrate-shaped DeepSeek sessions may read/write work artifacts only under the explicit station process-environment flag. This inference cell does not reopen extraction or enrichment; nested vault handovers still classify as vaults."
     },
     {
       "corpus": "himmel-code", "provider": "*", "purpose": "*",

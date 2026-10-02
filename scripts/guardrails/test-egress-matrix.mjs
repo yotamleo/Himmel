@@ -273,8 +273,8 @@ assert(evaluate("salus", "moonshot", "extraction").effective === "deny",
   "salus x moonshot x extraction must be hard denied");
 assert(evaluate("himmel-code", "openai-codex", "inference").effective === "allow",
   "himmel-code x codex impl lane must stay allowed");
-assert(evaluate("himmel-code", "deepseek", "inference").effective === "allow",
-  "himmel-code x deepseek stays allow — de-listing is for private-content egress, not public code (wildcard)");
+assert(evaluate("himmel-code", "deepseek", "extraction").effective === "allow",
+  "himmel-code x deepseek extraction stays public-code wildcard allow; inference is station-gated (HIMMEL-4084)");
 assert(evaluate("luna-personal", "zai-glm", "inference").rule === null,
   "luna-personal x zai-glm x inference must still fall through to DEFAULT deny — the HIMMEL-2224 de-listing adds explicit deny rows only for the four cells that were open, it does not invent new rows");
 assert(evaluate("luna-personal", "deepseek", "embedding").effective === "deny",
@@ -323,6 +323,20 @@ assert(evaluate("luna-personal", "openrouter", "enrichment").effective === "deny
   "luna-personal x openrouter x enrichment must deny");
 assert(evaluate("handover-state", "openrouter", "embedding").effective === "deny",
   "handover-state x openrouter x embedding must deny (no bulk pipelines over the transit vendor)");
+
+// HIMMEL-4084: only the DeepSeek launcher's approved station condition may
+// authorize inference. Generic consumers still see conditional, not allow.
+for (const corpus of ["himmel-code", "handover-state"]) {
+  const { effective, rule } = evaluate(corpus, "deepseek", "inference");
+  assert(effective === "conditional", `${corpus} DeepSeek inference needs station opt-in`);
+  assert(rule && rule.corpus === corpus && rule.provider === "deepseek" &&
+    rule.purpose === "inference" && rule.condition === "HIMMEL_DEEPSEEK_INFERENCE_OK=1",
+    `${corpus} DeepSeek inference must use its explicit station condition`);
+}
+for (const corpus of ["luna-personal", "luna-clippings", "salus", "voice-audio"]) {
+  assert(evaluate(corpus, "deepseek", "inference").effective === "deny",
+    `${corpus} DeepSeek inference stays denied`);
+}
 
 if (failures > 0) {
   console.error(`egress-matrix: ${failures} invariant failure(s)`);
