@@ -48,9 +48,32 @@ $OpenRouterAnthropicBaseUrl = if ($env:OPENROUTER_ANTHROPIC_BASE_URL) { $env:OPE
 #   anthropic/claude-fable-5  (the judgment/taste escalation tier)
 #   anthropic/claude-opus-5-fast
 #   anthropic/claude-sonnet-5
-# ':batch' variants exist for async pricing — opt in deliberately, never default.
+# ':batch' variants are asynchronous and unsupported by interactive tier overrides.
 $OpenRouterModel         = if ($env:OPENROUTER_MODEL) { $env:OPENROUTER_MODEL } else { 'anthropic/claude-opus-5.5' }
-$OpenRouterHaiku         = if ($env:OPENROUTER_HAIKU) { $env:OPENROUTER_HAIKU } else { $OpenRouterModel }
+# Independent subagent tiers (HIMMEL-4083), catalog verified 2026-10-02.
+$OpenRouterHaiku         = if ($env:OPENROUTER_HAIKU) { $env:OPENROUTER_HAIKU } else { 'anthropic/claude-haiku-4.5' }
+$OpenRouterSonnet        = if ($env:OPENROUTER_SONNET) { $env:OPENROUTER_SONNET } else { 'anthropic/claude-sonnet-5.5' }
+$OpenRouterOpus          = if ($env:OPENROUTER_OPUS) { $env:OPENROUTER_OPUS } else { 'anthropic/claude-opus-5.5' }
+# ponytail: offline synchronous Claude catalog snapshot (2026-10-02), refresh this allowlist
+# and its bash twin when adopting a newly listed OpenRouter Claude slug.
+$KnownTierSlugs = @(
+  'anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5',
+  'anthropic/claude-fable-5.1', 'anthropic/claude-opus-5',
+  'anthropic/claude-sonnet-5', 'anthropic/claude-fable-5',
+  'anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.7',
+  'anthropic/claude-sonnet-4.6', 'anthropic/claude-opus-4.6',
+  'anthropic/claude-opus-4.5', 'anthropic/claude-haiku-4.5',
+  'anthropic/claude-sonnet-4.5', 'anthropic/claude-opus-4.1',
+  'anthropic/claude-sonnet-4'
+)
+function Assert-TierSlug([string]$Name, [string]$Slug) {
+  if ($KnownTierSlugs -ccontains $Slug) { return }
+  [Console]::Error.WriteLine("claude-openrouter: unknown or malformed $Name slug; use a Claude slug from the launcher catalog snapshot (2026-10-02), or update the snapshot before adopting a new model. Refusing to launch.")
+  exit 2
+}
+Assert-TierSlug 'OPENROUTER_HAIKU' $OpenRouterHaiku
+Assert-TierSlug 'OPENROUTER_SONNET' $OpenRouterSonnet
+Assert-TierSlug 'OPENROUTER_OPUS' $OpenRouterOpus
 $OpenRouterContextWindow = if ($env:OPENROUTER_CONTEXT_WINDOW) { $env:OPENROUTER_CONTEXT_WINDOW } else { '1000000' }
 $OpenRouterApiBase       = if ($env:OPENROUTER_API_BASE) { $env:OPENROUTER_API_BASE } else { 'https://openrouter.ai/api/v1' }
 
@@ -297,14 +320,17 @@ function Invoke-LegTrustSeed {
   $savedGitEnv = @{}
   try {
     foreach ($name in 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE') {
-      $savedGitEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-      [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+      # Explicit provider removal avoids passing an empty GIT_DIR to native Git.
+      if (Test-Path -LiteralPath "Env:$name") {
+        $savedGitEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        Remove-Item -LiteralPath "Env:$name"
+      }
     }
     $common = & git -C $RepoRoot rev-parse --path-format=absolute --git-common-dir
     if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve primary checkout for leg trust' }
     $primary = Split-Path -Parent $common
   } finally {
-    foreach ($name in $savedGitEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedGitEnv[$name], 'Process') }
+    foreach ($name in $savedGitEnv.Keys) { Set-Item -LiteralPath "Env:$name" -Value $savedGitEnv[$name] }
   }
   $trustJs = @'
 const fs=require("fs"), p=process.argv[1], root=process.argv[2];
@@ -421,21 +447,21 @@ $env:ANTHROPIC_AUTH_TOKEN           = $key
 $env:ANTHROPIC_API_KEY              = ''
 $env:ANTHROPIC_MODEL                = $OpenRouterModel
 if ($env:LEG_LANE -eq 'openrouter') {
-  $OpenRouterHaiku = $OpenRouterModel
-  if ($OpenRouterModel -like 'anthropic/claude-sonnet-*') { $env:ANTHROPIC_MODEL = 'sonnet' }
-  elseif ($OpenRouterModel -like 'anthropic/claude-opus-*') { $env:ANTHROPIC_MODEL = 'opus' }
+  # Use an alias only when it resolves to the exact session pin.
+  if ($OpenRouterModel -like 'anthropic/claude-sonnet-*' -and $OpenRouterModel -ceq $OpenRouterSonnet) { $env:ANTHROPIC_MODEL = 'sonnet' }
+  elseif ($OpenRouterModel -like 'anthropic/claude-opus-*' -and $OpenRouterModel -ceq $OpenRouterOpus) { $env:ANTHROPIC_MODEL = 'opus' }
 }
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $OpenRouterHaiku
-$env:ANTHROPIC_DEFAULT_SONNET_MODEL = $OpenRouterModel
-$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $OpenRouterModel
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL = $OpenRouterSonnet
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $OpenRouterOpus
 $orLabel = $OpenRouterModel
 if ($OpenRouterModel -match '^anthropic/claude-(sonnet|opus|fable)-(.+)$') {
   $family = $Matches[1]
   $orLabel = $family.Substring(0, 1).ToUpperInvariant() + $family.Substring(1) + ' ' + $Matches[2] + ' (OpenRouter)'
 }
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  = if ($OpenRouterHaiku -eq $OpenRouterModel) { $orLabel } else { $OpenRouterHaiku }
-$env:ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = $orLabel
-$env:ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   = $orLabel
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = if ($OpenRouterSonnet -ceq $OpenRouterModel) { $orLabel } else { $OpenRouterSonnet }
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   = if ($OpenRouterOpus -ceq $OpenRouterModel) { $orLabel } else { $OpenRouterOpus }
 # ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
 # remove this temporary switch when safeguards/safeguard_results pass through.
 $env:CLAUDE_CODE_AUTO_MODE_SERVER = '0'

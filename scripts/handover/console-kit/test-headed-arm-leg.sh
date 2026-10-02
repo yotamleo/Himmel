@@ -947,14 +947,22 @@ case "$last" in
 esac
 OR_CURL
 chmod 755 "$or_bin/claude" "$or_bin/curl"
+# These fixtures check defaults, not ambient operator overrides.
+unset OPENROUTER_HAIKU OPENROUTER_SONNET OPENROUTER_OPUS
 printf '%s' '{"providers":{"openrouter":{}},"rules":[{"corpus":"*","provider":"openrouter","purpose":"inference","verdict":"allow"}]}' > "$tmp/or-matrix.json"
 rc=0; out="$(HOME="$or_home" PATH="$or_bin:$PATH" LEG_LANE=openrouter OPENROUTER_API_KEY=hermetic-fixture OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 OPENROUTER_HAIKU=wrong CLAUDE_OPENROUTER_EGRESS_MATRIX="$tmp/or-matrix.json" bash "$HERE/../../claude-openrouter" --model sonnet 2>&1)" || rc=$?
+check "openrouter backend: invalid tier refuses" "$rc" "2"
+contains "openrouter backend: invalid tier diagnostic" "$out" "unknown or malformed OPENROUTER_HAIKU"
+not_contains "openrouter backend: invalid tier never executes Claude" "$out" 'ANTHROPIC_MODEL=sonnet'
+rc=0; out="$(HOME="$or_home" PATH="$or_bin:$PATH" LEG_LANE=openrouter OPENROUTER_API_KEY=hermetic-fixture OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 CLAUDE_OPENROUTER_EGRESS_MATRIX="$tmp/or-matrix.json" bash "$HERE/../../claude-openrouter" --model sonnet 2>&1)" || rc=$?
 check "openrouter backend: launches stub" "$rc" "0"
 contains "openrouter backend: model alias Sonnet" "$out" "ANTHROPIC_MODEL=sonnet"
-for tier in HAIKU SONNET OPUS; do
-    contains "openrouter backend: $tier model pinned" "$out" "ANTHROPIC_DEFAULT_${tier}_MODEL=anthropic/claude-sonnet-5.5"
-    contains "openrouter backend: $tier label" "$out" "ANTHROPIC_DEFAULT_${tier}_MODEL_NAME=Sonnet 5.5 (OpenRouter)"
-done
+contains "openrouter backend: HAIKU model independent" "$out" "ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-4.5"
+contains "openrouter backend: HAIKU label" "$out" "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME=anthropic/claude-haiku-4.5"
+contains "openrouter backend: SONNET model pinned" "$out" "ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-5.5"
+contains "openrouter backend: SONNET label" "$out" "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME=Sonnet 5.5 (OpenRouter)"
+contains "openrouter backend: OPUS model independent" "$out" "ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-5.5"
+contains "openrouter backend: OPUS label" "$out" "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME=anthropic/claude-opus-5.5"
 contains "openrouter backend: client auto classifier" "$out" "CLAUDE_CODE_AUTO_MODE_SERVER=0"
 contains "openrouter backend: credit and cap minimum logged" "$out" "effective balance \$12.00 (key limit_remaining)"
 
