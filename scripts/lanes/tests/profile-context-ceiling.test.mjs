@@ -105,6 +105,9 @@ for (const extra of [
 ]) {
   test(`direct console ignores ambient profile inputs ${JSON.stringify(extra)}`, (t) => {
     const f = fixture(t);
+    // Dry-run validates these binaries but never executes them.
+    f.env.KONSOLE_CMD = BASH_BIN;
+    f.env.PGREP_CMD = BASH_BIN;
     const launchConsole = (env) => spawnSync(BASH_BIN,
       [join(ROOT, 'scripts/handover/headed-arm.sh'), '--dry-run',
         'HIMMEL-4094-console-fixture', join(f.dir, 'brief.md'), join(f.dir, 'signal'),
