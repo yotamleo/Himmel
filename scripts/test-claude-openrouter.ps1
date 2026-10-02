@@ -83,7 +83,10 @@ function Set-KeyLimit($Remaining) {
 function Write-KeyLimit($Remaining) { Set-KeyLimit $Remaining | Set-Content -LiteralPath $KeyFile -NoNewline }
 Set-Credits 21 1
 Write-KeyLimit $null
-$ServerProc = Start-Process node -ArgumentList @($ServerJs, $CreditsFile, $PortFile, $KeyFile) -PassThru -WindowStyle Hidden
+# -WindowStyle exists only on Windows PowerShell editions; pwsh on Linux/macOS rejects the parameter.
+$ServerStyle = @{}
+if ($IsWindows) { $ServerStyle.WindowStyle = 'Hidden' }
+$ServerProc = Start-Process node -ArgumentList @($ServerJs, $CreditsFile, $PortFile, $KeyFile) -PassThru @ServerStyle
 for ($i = 0; $i -lt 50 -and -not (Test-Path -LiteralPath $PortFile); $i++) { Start-Sleep -Milliseconds 100 }
 $script:CreditPort = if (Test-Path -LiteralPath $PortFile) { (Get-Content -LiteralPath $PortFile -Raw).Trim() } else { '1' }
 
