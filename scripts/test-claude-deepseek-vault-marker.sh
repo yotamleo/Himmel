@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # HIMMEL-4084: marker classification must beat an ancestor handover root and
 # caller CWD overrides. Execute both launchers and their actual PS egress JS.
-set -eu
-HERE="$(cd "$(dirname "$0")" && pwd)"
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)" || exit 2
 bash "$HERE/lib/clean-sandbox.sh" -- node - "$HERE" <<'NODE'
 const fs=require('fs'),path=require('path'),cp=require('child_process'),assert=require('assert');
 const scripts=process.argv[2],roots=[];
