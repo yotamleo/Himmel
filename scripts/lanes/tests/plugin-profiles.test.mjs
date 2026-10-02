@@ -325,6 +325,14 @@ test('lane-content adds obsidian on top of the impl floor', () => {
   assert.equal(p['skill-creator@claude-plugins-official'], false);
 });
 
+test('telegram drops claude-obsidian but keeps the plugins the bridge actually calls (HIMMEL-4020)', () => {
+  const { enabledPlugins: p } = resolveProfile(REG, 'telegram');
+  assert.equal(p['claude-obsidian@himmel'], false);
+  assert.equal(p['obsidian-triage@himmel'], true);
+  assert.equal(p['pr-review-toolkit-himmel@himmel'], true);
+  assert.equal(p['telegram-himmel@himmel'], false);
+});
+
 test('per-dispatch overlay enables a plugin over the base profile', () => {
   const { enabledPlugins: p } = resolveProfile(REG, 'lane-impl', { addPlugins: ['claude-obsidian@himmel'] });
   assert.equal(p['claude-obsidian@himmel'], true); // overlaid on

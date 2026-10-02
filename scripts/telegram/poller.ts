@@ -1104,8 +1104,8 @@ export function hasReadOnlyFloor(cwd: string): boolean {
   return false;
 }
 // HIMMEL-2961: the bridge's own lean plugin profile — see plugin-profiles.json's
-// "telegram" entry for the full enable/mcpServers rationale (obsidian-triage +
-// claude-obsidian cover the Telegram content workload; telegram-himmel and
+// "telegram" entry for the full enable/mcpServers rationale (obsidian-triage
+// covers the Telegram content workload; telegram-himmel and
 // luna-correlate are deliberately excluded; qmd is the sole mcpServers entry).
 const TELEGRAM_PROFILE = "telegram";
 
