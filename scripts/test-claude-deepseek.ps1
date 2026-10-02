@@ -72,7 +72,7 @@ $Bin = Join-Path $Scratch 'bin'
 $CurlJs = Join-Path $Bin 'curl-mock.js'
 $ClaudeJs = Join-Path $Bin 'claude-mock.js'
 [System.IO.File]::WriteAllText($CurlJs, 'require("fs").readFileSync(0,"utf8");console.log(JSON.stringify({is_available:true,balance_infos:[{currency:"USD",total_balance:"50.00"}]}));')
-[System.IO.File]::WriteAllText($ClaudeJs, 'if(process.env.ANTHROPIC_BASE_URL!=="https://api.deepseek.com/anthropic"||process.env.ANTHROPIC_MODEL!=="deepseek-flash[1m]")process.exit(9);')
+[System.IO.File]::WriteAllText($ClaudeJs, 'if(process.env.ANTHROPIC_BASE_URL!=="https://api.deepseek.com/anthropic"||process.env.ANTHROPIC_MODEL!=="sonnet"||process.env.ANTHROPIC_DEFAULT_SONNET_MODEL!=="deepseek-flash[1m]"||process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW!=="786432"||process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS!=="786432")process.exit(9);')
 if ($IsWindows) {
     [System.IO.File]::WriteAllText((Join-Path $Bin 'curl.cmd'), "@echo off`r`n`"$Node`" `"$CurlJs`" %*`r`n")
     [System.IO.File]::WriteAllText((Join-Path $Bin 'claude.cmd'), "@echo off`r`n`"$Node`" `"$ClaudeJs`" %*`r`n")
@@ -90,7 +90,7 @@ $SelectedCurl = Get-Command curl -CommandType Application -ErrorAction Stop
 if ($SelectedCurl.Source -cne $args[1]) { throw 'Hermetic setup refused: curl did not resolve to the fixture' }
 & $args[0]
 if ($LASTEXITCODE -ne 0) { throw 'Real launcher failed before environment assertion' }
-foreach ($Name in @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')) {
+foreach ($Name in @('HOME','DEEPSEEK_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL','ANTHROPIC_DEFAULT_SONNET_MODEL','ANTHROPIC_DEFAULT_HAIKU_MODEL','ANTHROPIC_DEFAULT_OPUS_MODEL_NAME','ANTHROPIC_DEFAULT_SONNET_MODEL_NAME','ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME','CLAUDE_CODE_SUBAGENT_MODEL','CLAUDE_CODE_AUTO_COMPACT_WINDOW','CLAUDE_CODE_MAX_CONTEXT_TOKENS','CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_AUTO_MODE_SERVER','CLAUDE_CONFIG_DIR')) {
     $After = [Environment]::GetEnvironmentVariable($Name,'Process')
     if ($After -cne $Before[$Name]) { throw ('Leaked launcher environment: ' + $Name) }
 }
@@ -102,6 +102,15 @@ $Extra = @{ DEEPSEEK_API_KEY='ds-ps-hermetic-secret'; HIMMEL_DEEPSEEK_INFERENCE_
 if ($IsWindows) { $Extra['PATHEXT'] = '.COM;.EXE;.BAT;.CMD' }
 $ExpectedCurl = Join-Path $Bin $(if ($IsWindows) { 'curl.cmd' } else { 'curl' })
 $Result = Run-Clean $Pwsh @('-NoProfile','-File',$Runner,$Launcher,$ExpectedCurl) $Extra
+foreach ($Name in @('CLAUDE_LANE_SEED_LOCK_TIMEOUT','CLAUDE_LANE_SEED_LOCK_STALE')) {
+    foreach ($Value in @('invalid','-1','1.5',' 1','2147483648')) {
+        $InvalidEnv = $Extra.Clone()
+        $InvalidEnv[$Name] = $Value
+        $InvalidResult = Run-Clean $Pwsh @('-NoProfile','-File',$Launcher) $InvalidEnv
+        if ($InvalidResult.Code -ne 4 -or $InvalidResult.Output.Contains('ds-ps-hermetic-secret')) { throw "Invalid seed setting did not exit 4: $Name $Value $($InvalidResult.Output)" }
+        $Count++
+    }
+}
 $ToolPath = $OriginalToolPath
 if ($Result.Code -ne 0 -or $Result.Output.Contains('ds-ps-hermetic-secret')) { throw "Same-process environment restoration failed: $($Result.Output)" }
 $Count++

@@ -222,8 +222,17 @@ const cwd=process.env.CLAUDE_OPENROUTER_CWD || process.cwd();
 // under(): equality counts (launching FROM the himmel checkout root itself is
 // himmel-code, not "unknown" — a root-equal cwd must classify, not fall through).
 const under=(root)=>{ try { const c=path.resolve(cwd).toLowerCase(), r=path.resolve(root).toLowerCase(); return !!root && (c===r || c.startsWith(r+path.sep)); } catch(_) { return false; } };
+// Marker detection uses the real cwd, never the caller-supplied test override.
+let vaultMarker=false;
+try {
+ for(let p=fs.realpathSync(process.cwd());;p=path.dirname(p)) {
+  const marker=path.join(p,".obsidian");
+  if(fs.existsSync(marker)&&fs.statSync(marker).isDirectory()){vaultMarker=true;break;}
+  if(path.dirname(p)===p)break;
+ }
+} catch(_) { console.error("claude-openrouter: cannot verify vault markers — failing closed."); process.exit(3); }
 let corpus;
-if (under(process.env.LUNA_VAULT_PATH) || under(process.env.LUNA_VAULT)) corpus="luna-personal";
+if (vaultMarker || under(process.env.LUNA_VAULT_PATH) || under(process.env.LUNA_VAULT)) corpus="luna-personal";
 else if (under(process.env.HANDOVER_DIR)) corpus="handover-state";
 else if (under(repoRoot)) corpus="himmel-code";
 else corpus="unknown";
