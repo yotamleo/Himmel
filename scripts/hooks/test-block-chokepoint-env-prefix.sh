@@ -1340,6 +1340,12 @@ for F in "bash -o \"errexit\" g?.sh" "bash -o 'errexit' g?.sh" "bash +o \"errexi
     assert_deny "4157 cd then quoted option value, slash-less glob: $F" "$(j "cd scripts/$CK; $UL $F")"
 done
 assert_allow "4157 quoted -o value on a plain basename" "$(j "export FOO=1; bash -o \"errexit\" go.sh")"
+# Each o/O in a short cluster takes its own value (codex-1, round 5).
+for F in "bash -eo errexit g?.sh" "bash +eo errexit g?.sh" "bash -Oe extglob g?.sh" "bash -eO extglob g?.sh" \
+         "bash -oo errexit nounset g?.sh" "bash -oO errexit extglob g?.sh" "bash -xo 'errexit' g?.sh"; do
+    assert_deny "4157 cd then clustered -o value, slash-less glob: $F" "$(j "cd scripts/$CK; $UL $F")"
+done
+assert_allow "4157 clustered -o value on a plain basename" "$(j "export FOO=1; bash -eo errexit go.sh")"
 # A keyword, precommand, assignment prefix or $( also puts source/. in
 # command position (CR on #1685: then source g*.sh).
 for F in "source g*.sh" ". g?.sh" "if true; then source g*.sh; fi" "while :; do . g?.sh; done" \

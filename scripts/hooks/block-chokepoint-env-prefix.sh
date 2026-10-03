@@ -1133,9 +1133,10 @@ raw_obfuscated() {
     # `source` counts as any word. The shell may be an absolute path
     # (/bin/bash) or quoted ('bash').
     kw='(then|do|else|elif|if|while|until|time|builtin|command|eval|\{|!|[[:alnum:]_]+=[^[:blank:]]*)'
-    # An option value may be quoted, blanks and all (-o "errexit").
+    # An option value may be quoted, blanks and all (-o "errexit"); each
+    # o/O in a short cluster takes its own value (-eo errexit, -oo a b).
     ov="(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ}|[^[:blank:]\"$SQ]+)+"
-    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][oO][[:blank:]]+${ov}|--(rcfile|init-file)[[:blank:]]+${ov}|--[^[:blank:]]*|-[^-c[:blank:]]*|\+[^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
+    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][^-c[:blank:]]*[oO][^c[:blank:]]*([[:blank:]]+${ov})+|--(rcfile|init-file)[[:blank:]]+${ov}|--[^[:blank:]]*|-[^-c[:blank:]]*|\+[^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
     [ "$obf$pobf" = 00 ] && return 0
     clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     if [ "$obf" = 0 ]; then
