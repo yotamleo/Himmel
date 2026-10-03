@@ -127,6 +127,14 @@ printf 'j\\101\tfailure\n' > "$tmp/pr"; printf 'jA\tfailure\n' > "$tmp/base"; pr
 printf 'j\\101\tc1\n' > "$tmp/pr-cases"; printf 'jA\tc1\n' > "$tmp/base-cases"
 run "PR job literal j\\101 vs base job jA: REFUSE (no escape processing)" 1 'REFUSE.*absent'
 
+# numeric-looking names must compare as strings: case 01 is not case 1, job 01 is not job 1
+set3 'shard-3\tfailure\n' 'shard-3\tfailure\n' 'shard-3\tsuccess\n'
+printf 'shard-3\t01\n' > "$tmp/pr-cases"; printf 'shard-3\t1\n' > "$tmp/base-cases"
+run "PR case 01 vs base case 1: REFUSE (string compare)" 1 'REFUSE.*shard-3.*01'
+printf '01\tfailure\n' > "$tmp/pr"; printf '1\tfailure\n' > "$tmp/base"; printf '1\tsuccess\n01\tsuccess\n' > "$tmp/latest"
+printf '01\tc1\n' > "$tmp/pr-cases"; printf '1\tc1\n' > "$tmp/base-cases"
+run "PR job 01 vs base job 1: REFUSE (string compare)" 1 'REFUSE.*01'
+
 # input errors
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
 rm -f "$tmp/base"
