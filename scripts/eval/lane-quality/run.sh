@@ -115,19 +115,28 @@ metered_read() { # prints the metered lane's balance in USD, "?" if unreadable, 
 # gateway slug (costBasis no longer "unknown"), or add a row per model adopted.
 # The metered balance fell 12-16% more than list price in the first live
 # sweeps, so the repriced cost carries a 1.2 markup to keep --max-usd a real cap.
+# Claude Code's figure was exactly 5x list price on every live task, whatever
+# the token mix. The per-call factor (BUDGET_FACTOR) relies on that ratio, so a
+# run that reports any other ratio leaves the cost unknown and stops the sweep.
 PRICES='{"anthropic/claude-haiku-4.5":[1,5,1.25,0.1]}'
 METERED_MARKUP=1.2
+REPORTED_RATIO=5
 
 agent_cost() { # $1 result json -> the agent's real cost in USD, or null
   if [ "$LANE" = native ]; then jq -r '.total_cost_usd // null' "$1"; return; fi
-  jq -r --argjson p "$PRICES" --argjson mk "$METERED_MARKUP" '
-    if (.modelUsage // {}) == {} then null
+  jq -r --argjson p "$PRICES" --argjson mk "$METERED_MARKUP" --argjson rr "$REPORTED_RATIO" '
+    .total_cost_usd as $rep
+    | if (.modelUsage // {}) == {} then null
     else [.modelUsage | to_entries[] | $p[.key] as $r
           | if $r == null then null
             else ((.value.inputTokens // 0) * $r[0] + (.value.outputTokens // 0) * $r[1]
                   + (.value.cacheCreationInputTokens // 0) * $r[2] + (.value.cacheReadInputTokens // 0) * $r[3]) / 1000000
             end]
-         | if any(. == null) then null else add * $mk end
+         | if any(. == null) then null
+           else add as $list
+             | if $list > 0 and $rep != null and ($rep / $list - $rr | fabs) > 0.05 then null
+               else $list * $mk end
+           end
     end' "$1"
 }
 
@@ -294,8 +303,9 @@ cmd_run() {
     METERED_PROBE="${LQ_METERED_PROBE:-$REPO/scripts/lanes/openrouter-cost.sh}"
     TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude-openrouter/projects}"
     # The sweep cap counts real (repriced) spend. The per-call cap is in Claude
-    # Code's own units, which over-count the real charge about 4.3x, so a factor
-    # of 4 stops a call before it can spend more than the real remainder.
+    # Code's own units, REPORTED_RATIO (5) times list price, and the real charge
+    # is at most METERED_MARKUP (1.2) times list, so a factor of 4 stops a call
+    # at 4/5 x 1.2 = 0.96 of the real remainder.
     BUDGET_FACTOR=4
     echo "lane-quality: openrouter agent budget factor $BUDGET_FACTOR (Claude Code over-counts the gateway slug; --max-usd counts real spend)" >&2
   fi
