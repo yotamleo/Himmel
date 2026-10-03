@@ -139,10 +139,14 @@ for f in "${files[@]}"; do
     fi
     is_exempt "$f" && continue
 
-    # HIMMEL-3980: a leading `#` is a comment everywhere EXCEPT JS/TS, where it is a
-    # private-field sigil (`#worker = spawnSync(`) and must stay code.
-    case "$f" in
-        *.js|*.mjs|*.cjs|*.jsx|*.ts|*.mts|*.cts|*.tsx) hash_cmt=0 ;;
+    # HIMMEL-3980: a leading `#` is a comment ONLY in known `#`-comment languages
+    # (allowlist). Anywhere else — JS/TS and the files that host them (.vue, .svelte,
+    # .astro, .html, .mdx) — it is a private-field sigil (`#worker = spawnSync(`)
+    # and must stay code, so an unknown type fails toward catching the call.
+    # An extensionless basename (scripts, Makefile-style files) counts as `#`-commented.
+    case "${f##*/}" in
+        *.py|*.sh|*.bash|*.zsh|*.rb|*.yaml|*.yml|*.toml|*.pl|*.r|*.R|*.ps1) hash_cmt=1 ;;
+        *.*) hash_cmt=0 ;;
         *) hash_cmt=1 ;;
     esac
 

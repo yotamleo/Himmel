@@ -307,6 +307,14 @@ printf "%s\n%s\n%s\n" "  #worker = spawnSync(" "  'claude', args);" "}" > "$TMP/
 rc=$(run_hook "cm_priv.mjs")
 assert_rc "T37p JS #private field initializer spawn, unmarked" 1 "$rc"
 
+# T37q (judge J1644): `#` is a comment only in an allowlist of `#`-comment languages, so
+# JS-hosting files (.vue .svelte .astro .html .mdx) keep it as code → BLOCK
+for ext in vue svelte astro html mdx; do
+    printf "%s\n%s\n%s\n%s\n" "class A {" "  #worker = spawnSync(" '    "claude", args);' "}" > "$TMP/cm_priv.$ext"
+    rc=$(run_hook "cm_priv.$ext")
+    assert_rc "T37q #private field spawn in .$ext, unmarked" 1 "$rc"
+done
+
 printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* run it */" "  'claude', args);" > "$TMP/cm_blk.mjs"
 rc=$(run_hook "cm_blk.mjs")
 assert_rc "T37d block-comment line before program, unmarked" 1 "$rc"
