@@ -1863,6 +1863,8 @@ _dc_can_be_claude() {
 # ponytail: a name built only from a variable or substitution (`~/$X`,
 # `~/$(printf .claude)`) is not folded, it can name anything; a fold-time
 # reading would deny every `$(pwd)/x`. Upgrade path: HIMMEL-4220.
+# ponytail: DC_DOTS reads only the command text, so a dotglob/GLOB_DOTS left
+# on by the shell profile is unseen and `~/*/x` passes. Upgrade path: HIMMEL-4222.
 _dc_name_fold() {
     local t=$1 out='' m c pw keep=''
     # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
