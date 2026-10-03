@@ -551,13 +551,22 @@ case "$verb" in
                     */rules/branches/*) rk=RULES; rpat='/rules/branches/' ;;
                     *) rk=RULESET; rpat='/rulesets/' ;;
                 esac
+                # HIMMEL-3857 — STUB_RULESET_JSON_<id> (numeric id) overrides the
+                # shared STUB_RULESET_JSON for that one ruleset, so a case can make
+                # only ONE contributing ruleset weak. Unset = the shared body.
+                json_var="STUB_${rk}_JSON"
+                rid="${api_path##*/}"
+                case "$rk|$rid" in
+                    RULESET\|*[!0-9]*|RULESET\|) ;;
+                    RULESET\|*) id_var="STUB_RULESET_JSON_$rid"; [ -n "${!id_var+x}" ] && json_var="$id_var" ;;
+                esac
                 n=$(grep -c "$rpat" "$GH_LOG" 2>/dev/null || echo 1)
                 if [ "${n:-1}" -le 1 ]; then
-                    fail_var="STUB_${rk}_FAIL"; json_var="STUB_${rk}_JSON"
+                    fail_var="STUB_${rk}_FAIL"
                     [ "${!fail_var:-0}" = "1" ] && { echo "gh: $rk unreadable" >&2; exit 1; }
                     json_val="${!json_var:-}"
                 else
-                    fail_var="STUB_${rk}_PREMERGE_FAIL"; json_var="STUB_${rk}_JSON"; pm_var="STUB_${rk}_JSON_PREMERGE"
+                    fail_var="STUB_${rk}_PREMERGE_FAIL"; pm_var="STUB_${rk}_JSON_PREMERGE"
                     [ "${!fail_var:-0}" = "1" ] && { echo "gh: $rk unreadable" >&2; exit 1; }
                     json_val="${!pm_var-${!json_var:-}}"
                 fi
@@ -1161,12 +1170,30 @@ if [ "$have_jq_2869" = "1" ]; then
     r3 "no rules at all" '[]' "$R_SET"
 
     # 3808-3b. One contributing ruleset strong, a SECOND (with checks) has a bypass
-    # actor: every contributing ruleset must be clean.
+    # actor: every contributing ruleset must be clean. Per-id bodies (HIMMEL-3857)
+    # so ONLY ruleset 2 carries the bypass — ruleset 1 is read clean first.
     STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
         STUB_RULES_JSON='[{"type":"required_status_checks","ruleset_id":1,"parameters":{"required_status_checks":[{"context":"a"}]}},{"type":"required_status_checks","ruleset_id":2,"parameters":{"required_status_checks":[{"context":"b"}]}}]' \
-        STUB_RULESET_JSON='{"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' \
-        run_mog 12 "3808-3b: a bypass actor on any contributing ruleset → exit 12"
+        STUB_RULESET_JSON_1='{"id":1,"enforcement":"active","bypass_actors":[]}' \
+        STUB_RULESET_JSON_2='{"id":2,"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' \
+        run_mog 12 "3808-3b: a bypass actor on the second contributing ruleset only → exit 12"
     assert_gh_lacks "3808-3b: no merge attempted" "pr merge"
+    assert_audit_has "3808-3b: ruleset 1 read clean" "ruleset=1:enforcement=active,bypass_actors=0"
+    assert_audit_has "3808-3b: ruleset 2 refused on its bypass actor" "ruleset=2:enforcement=active,bypass_actors=1"
+
+    # 3808-3c. A bypass actor on a ruleset with NO required_status_checks rule
+    # cannot skip a required check: ruleset 1 strong, ruleset 2 bypassable but
+    # contributing only a pull_request rule → accept (HIMMEL-3857).
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="rs3c" \
+        STUB_PROTECTION_FAIL=1 STUB_PROTECTION_PREMERGE_FAIL=1 \
+        STUB_RULES_JSON='[{"type":"required_status_checks","ruleset_id":1,"parameters":{"required_status_checks":[{"context":"a"}]}},{"type":"pull_request","ruleset_id":2}]' \
+        STUB_RULESET_JSON_1='{"id":1,"enforcement":"active","bypass_actors":[]}' \
+        STUB_RULESET_JSON_2='{"id":2,"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' \
+        run_mog 0 "3808-3c: bypass actor on a ruleset without required checks → merged"
+    assert_merge_has "3808-3c: merge pins the certified sha" "--match-head-commit rs3c"
+    assert_gh_has "3808-3c: reads the strong ruleset" "api repos/yotamleo/Himmel/rulesets/1"
+    assert_gh_lacks "3808-3c: never reads the non-contributing ruleset" "api repos/yotamleo/Himmel/rulesets/2"
+    assert_audit_has "3808-3c: audit names the ruleset source" "source=ruleset"
 
     # 3808-4. API errors fail closed.
     STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
