@@ -18,11 +18,12 @@
 #     the payload's `cwd`),
 #   - a per-row timeout; a row that outlasts it is killed (process group) and
 #     flagged TIMEOUT RISK.
-# Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE (and friends) are stripped up
-# front so no `git -C` call -- ours or a hook's -- can be redirected into a
-# real repo, and the whole GIT_CONFIG* family is stripped with global+system
-# config pinned empty, so no inherited core.hooksPath can execute real hooks
-# on our scratch commit. The real primary checkout is never cwd, never written.
+# Every launched subprocess -- a hook under test, our scratch git -- runs under
+# a positive-ALLOWLIST environment (_sandbox_env), so no inherited execution or
+# redirection seam (BASH_ENV/ENV, LD_PRELOAD, GIT_TEMPLATE_DIR, GIT_DIR,
+# GIT_CONFIG*/core.hooksPath, ...) can steer it out of the sandbox; anything
+# not on the allowlist is closed by default. The real primary checkout is never
+# cwd and is never written.
 #
 # A hook source is given either as a path to a .sh file, or as `sha:PATH` where
 # PATH is a repo-relative hook path materialised from that git SHA into a
@@ -63,13 +64,48 @@ from concurrent.futures import ThreadPoolExecutor
 PLACEHOLDER = "@PRIMARY@"
 
 
-def run_git(args, cwd=None, check=True):
+def run_git(args, cwd=None, check=True, env=None):
     p = subprocess.run(["git"] + args, cwd=cwd, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
+                       stderr=subprocess.PIPE, env=env)
     if check and p.returncode != 0:
         raise RuntimeError("git %s failed: %s" % (
             " ".join(args), p.stderr.decode("utf-8", "replace")))
     return p.stdout.decode("utf-8", "replace").strip()
+
+
+# A positive ALLOWLIST is the structural fix for sandbox-escape-via-environment
+# (HIMMEL-4168, round 6). Popping named seam variables one at a time never
+# converges: BASH_ENV and ENV make bash source an arbitrary script at startup;
+# LD_PRELOAD/LD_* inject a shared object; GIT_TEMPLATE_DIR makes `git init`
+# copy external hooks into the scratch .git; GIT_DIR/GIT_CONFIG* redirect git
+# at a real repo or a real core.hooksPath. Every launched subprocess -- a hook
+# under test, and our scratch git -- starts from this list ONLY, so a seam we
+# have not enumerated is closed by default rather than open until a later round
+# names it. The list is benign, realistic operational variables a guard may
+# legitimately read; it contains NO variable that can cause code execution or
+# redirect git. GIT_CONFIG_GLOBAL/SYSTEM are forced to an empty file so even a
+# real /etc/gitconfig core.hooksPath is not honored.
+_ENV_ALLOW = (
+    "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+    "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "TZ", "TMPDIR", "TMP", "TEMP",
+    "TERM", "SHELL", "USER", "LOGNAME", "HOSTNAME", "HIMMEL_REPO",
+)
+
+
+def _sandbox_env(**overrides):
+    """A hermetic environment for a launched subprocess: allowlist + overrides.
+
+    Starts from an EMPTY environment, copies only _ENV_ALLOW keys present in
+    os.environ, pins global+system git config empty, then applies the caller's
+    overrides (HOME, HANDOVER_DIR, CLAUDE_PROJECT_DIR). Nothing outside the
+    allowlist -- no BASH_ENV/ENV/LD_PRELOAD/GIT_TEMPLATE_DIR/GIT_DIR/... --
+    reaches the child.
+    """
+    env = {k: os.environ[k] for k in _ENV_ALLOW if k in os.environ}
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    env.update(overrides)
+    return env
 
 
 def materialise_hook(spec, repo, dest_dir):
@@ -168,8 +204,10 @@ def make_scratch_primary(parent):
     """A throwaway git repo on branch main standing in for the primary."""
     repo = os.path.join(parent, "scratch-primary")
     os.makedirs(repo, exist_ok=True)
-    env = dict(os.environ)
-    env["HOME"] = parent
+    # hermetic env: an inherited GIT_TEMPLATE_DIR would make `git init` copy
+    # external hooks into this repo that the seed commit then runs, so the
+    # scratch git runs under the allowlist like the hooks do.
+    env = _sandbox_env(HOME=parent)
 
     def _git(args):
         r = subprocess.run(["git", "-C", repo] + args, env=env,
@@ -189,7 +227,7 @@ def make_scratch_primary(parent):
         fh.write("seed\n")
     _git(["add", "-A"])
     _git(["commit", "-q", "-m", "chore: seed"])
-    branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo)
+    branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, env=env)
     if branch != "main":
         raise RuntimeError("scratch-primary is on %r, expected 'main'" % branch)
     return repo
@@ -225,15 +263,16 @@ def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
         "tool_input": {"command": payload_cmd},
         "cwd": cwd,
     })
-    env = dict(os.environ)
-    env["HOME"] = home
-    env["HANDOVER_DIR"] = handover
-    env["CLAUDE_PROJECT_DIR"] = os.path.dirname(os.path.dirname(
-        os.path.dirname(hook_path)))
-    # strip any inherited bypass seams so the corpus measures the guard itself
-    for k in ("EDIT_ON_MAIN_OK", "DESTRUCTIVE_OK", "EDIT_LIVE_SETTINGS_OK",
-              "ENV_PREFIX_GUARD_OK", "QMD_UNBOUNDED_OK"):
-        env.pop(k, None)
+    # hermetic env (allowlist): no BASH_ENV/ENV/LD_PRELOAD to run code before
+    # the hook reads stdin, no GIT_* redirect, and the inherited bypass seams
+    # (EDIT_ON_MAIN_OK etc.) are absent by construction, so the corpus measures
+    # the guard itself.
+    env = _sandbox_env(
+        HOME=home,
+        HANDOVER_DIR=handover,
+        CLAUDE_PROJECT_DIR=os.path.dirname(os.path.dirname(
+            os.path.dirname(hook_path))),
+    )
     t0 = time.time()
     p = subprocess.Popen(["bash", hook_path], stdin=subprocess.PIPE,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -266,13 +305,13 @@ def main(argv):
     ap.add_argument("--no-json", action="store_true")
     args = ap.parse_args(argv)
 
-    # Inherited Git location overrides (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
-    # and friends) take precedence over `git -C`, so a stray one in the
-    # caller's environment would redirect our scratch init/add/commit -- and a
-    # hook's own git calls -- into a REAL repository, defeating the whole
-    # "never touch the primary" isolation. Strip them once here; every
-    # subprocess below inherits this scrubbed os.environ (env=dict(os.environ)
-    # copies it after the scrub).
+    # Launched subprocesses (the hook under test, the scratch git) get the
+    # strict allowlist env from _sandbox_env. This scrub covers the remaining
+    # AMBIENT git reads against the judge's --repo (materialise's ls-tree/show),
+    # which run under os.environ: inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE
+    # (and friends) take precedence over `git -C`, so a stray one would redirect
+    # those reads into a REAL repository. Strip the location + config families
+    # here so no ambient git call can be steered off the judge's repo either.
     for _k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         os.environ.pop(_k, None)

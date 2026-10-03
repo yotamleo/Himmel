@@ -164,6 +164,69 @@ else fail "hookspath: diff did not complete clean, exit $RC_HP (sentinel check w
 if [ ! -e "$SENTHP" ]; then pass "hookspath: inherited core.hooksPath did not fire on scratch commit"
 else fail "hookspath: scratch commit executed inherited core.hooksPath hook ($SENTHP created)"; fi
 
+# --- 1d. allowlist env: named escape seams never reach a launched subprocess -
+# codex (round 6): a blocklist is whack-a-mole. diff launches hooks and the
+# scratch git under a positive allowlist, so BASH_ENV/ENV (bash sources them at
+# startup), LD_PRELOAD and GIT_TEMPLATE_DIR cannot reach a child. A probe hook
+# dumps its own environment; prove none of the four seams survive. Benign
+# corpus so the deny positive-control does not fire (base==head always allows).
+python3 "$GEN" --seed 7 -o "$TMP/benign-probe.jsonl"
+ENVDUMP="$TMP/envdump"
+cat > "$TMP/probe-hook.sh" <<HK
+#!/usr/bin/env bash
+cat >/dev/null
+env > "$ENVDUMP"
+exit 0
+HK
+chmod +x "$TMP/probe-hook.sh"
+BASH_ENV=/tmp/seam-bashenv ENV=/tmp/seam-env LD_PRELOAD=/tmp/seam.so \
+GIT_TEMPLATE_DIR=/tmp/seam-template \
+  python3 "$DIFF" --base "$TMP/probe-hook.sh" --head "$TMP/probe-hook.sh" \
+  --corpus "$TMP/benign-probe.jsonl" --jobs 1 >/dev/null 2>&1; RC_AL=$?
+if [ "$RC_AL" = "0" ]; then pass "allowlist: diff ran to completion (exit 0)"
+else fail "allowlist: diff did not complete clean, exit $RC_AL (seam checks would be vacuous)"; fi
+for seam in BASH_ENV ENV LD_PRELOAD GIT_TEMPLATE_DIR; do
+  if [ -e "$ENVDUMP" ] && grep -q "^$seam=" "$ENVDUMP"; then
+    fail "allowlist: $seam leaked into launched hook env"
+  else pass "allowlist: $seam scrubbed from launched hook env"; fi
+done
+
+# --- 1e. inherited GIT_TEMPLATE_DIR must NOT seed the scratch repo's hooks ----
+# codex (round 6): `git init` copies GIT_TEMPLATE_DIR/hooks into the new .git,
+# which the seed commit then runs. The allowlist drops it; prove a planted
+# template hook never fires on the scratch commit.
+TMPL="$TMP/evil-template"
+mkdir -p "$TMPL/hooks"
+SENTTD="$TMP/sentinel-template"
+cat > "$TMPL/hooks/pre-commit" <<HK
+#!/usr/bin/env bash
+: > "$SENTTD"
+HK
+chmod +x "$TMPL/hooks/pre-commit"
+GIT_TEMPLATE_DIR="$TMPL" python3 "$DIFF" \
+        --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 1 >/dev/null 2>&1; RC_TD=$?
+if [ "$RC_TD" = "0" ]; then pass "template-dir: diff ran to completion (exit 0)"
+else fail "template-dir: diff did not complete clean, exit $RC_TD (sentinel check would be vacuous)"; fi
+if [ ! -e "$SENTTD" ]; then pass "template-dir: inherited GIT_TEMPLATE_DIR did not seed scratch hooks"
+else fail "template-dir: scratch init copied+ran a template hook ($SENTTD created)"; fi
+
+# --- 1f. inherited BASH_ENV must NOT be sourced when the hook's bash starts ---
+# codex (round 6): non-interactive bash sources $BASH_ENV before the script, so
+# an inherited one runs arbitrary code before the hook reads a fixture. The
+# allowlist drops it; prove the planted startup script never runs.
+SENTBE="$TMP/sentinel-bashenv"
+cat > "$TMP/bashenv-script.sh" <<HK
+: > "$SENTBE"
+HK
+BASH_ENV="$TMP/bashenv-script.sh" python3 "$DIFF" \
+        --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 1 >/dev/null 2>&1; RC_BE=$?
+if [ "$RC_BE" = "0" ]; then pass "bash-env: diff ran to completion (exit 0)"
+else fail "bash-env: diff did not complete clean, exit $RC_BE (sentinel check would be vacuous)"; fi
+if [ ! -e "$SENTBE" ]; then pass "bash-env: inherited BASH_ENV not sourced by hook bash"
+else fail "bash-env: hook bash sourced inherited BASH_ENV ($SENTBE created)"; fi
+
 # --- 2c. each invocation gets a fresh HOME/primary (no cross-run contamination)
 # codex-2: a hook that writes state must not leak into another row or the other
 # side of the comparison. This stub denies (exit 2) iff a PRIOR run in the same
