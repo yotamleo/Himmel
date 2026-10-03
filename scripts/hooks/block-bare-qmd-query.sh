@@ -212,7 +212,8 @@ qmd_words() {
                                     v=-1 k=1
                                 fi
                                 ;;
-                            c) v=1 k=3 ;;
+                            # \c<x> is <x> & 0x1f, so @, ` and space give NUL.
+                            c) case "${s:i+2:1}" in '@'|'`'|' ') v=0 ;; *) v=1 ;; esac; k=3 ;;
                             a|b|e|E|f|n|r|t|v) v=1 k=2 ;;
                             '\'|"'"|'"'|'?') v=-2 k=2 ;;
                             *) k=1 ;;

@@ -97,6 +97,9 @@ deny "qmd \$'\\x71uery' x"
 deny "qmd \$'q\\165ery' x"
 deny "qmd \$'\\u0071uery' x"
 deny "qmd \$'query\\x00 notes' x"
+deny "qmd \$'query\\c@ notes' x"
+deny "qmd \$'query\\c\` notes' x"
+deny "qmd \$'query\\c  notes' x"
 deny 'qmd \query x'
 deny 'qmd Q\UERY x'
 deny 'q"md" query x'
