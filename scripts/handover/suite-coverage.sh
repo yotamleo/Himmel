@@ -40,10 +40,13 @@ if [ -z "$skip_list" ] || [ -z "$tier_list" ] || [ -z "$cap_fn" ]; then
   echo "suite-coverage.sh: $runner has no SKIP_LIST / SUITE_TIER_DEFAULT table or _suite_timeout_for — not a run-shell-tests.sh this helper understands" >&2
   exit 2
 fi
+# shellcheck disable=SC2016 # a literal pattern for the runner's own source line
+default_line="$(grep -m1 '^SUITE_TIMEOUT=\$(_suite_num SUITE_TIMEOUT ' "$runner")"
 cap() {
-  # shellcheck disable=SC2317,SC2329,SC2034 # _suite_num and the vars are read by the eval'd runner function
+  # shellcheck disable=SC2317,SC2329,SC2034 # _suite_num and the vars are read by the eval'd runner code
   ( _suite_num() { printf '%s' "$2"; }
-    SUITE_TIMEOUT_EXPLICIT=''; SUITE_TIMEOUT=600
+    SUITE_TIMEOUT_EXPLICIT=''; SUITE_TIMEOUT=''
+    [ -n "$default_line" ] && eval "$default_line"   # the runner's own default, its single source
     eval "$cap_fn"; _suite_timeout_for "$1" ) 2>/dev/null
 }
 
