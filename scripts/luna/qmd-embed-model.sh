@@ -150,7 +150,7 @@ capability() {
     fi
     case "$mem_kib" in ''|*[!0-9]*) mem_kib=0 ;; esac
     local gpu_note="no usable GPU"
-    [ -n "$vram" ] && gpu_note="GPU has only ${vram} MiB VRAM"
+    if [ -n "$vram" ]; then gpu_note="GPU has only ${vram} MiB VRAM"; fi
     if [ "$mem_kib" -ge "$MIN_RAM_KIB" ]; then
         CAP_REASON="$gpu_note, $((mem_kib / 1024)) MiB RAM: CPU query embedding only"; CAP_CLASS=query
     else
@@ -180,7 +180,7 @@ compare_index() {
     fi
     if [ -z "$models" ]; then say "index has no vectors yet; nothing to compare"; return 0; fi
     while IFS= read -r m; do
-        [ -n "$m" ] && [ "$m" != "$want" ] && bad="$bad $m"
+        if [ -n "$m" ] && [ "$m" != "$want" ]; then bad="$bad $m"; fi
     done <<<"$models"
     if [ -n "$bad" ]; then
         {
@@ -366,7 +366,7 @@ cmd_swap() {
     if [ -f "$live" ]; then
         ln "$live" "$backup" 2>/dev/null || cp -p "$live" "$backup" || die 5 "could not keep a backup of the live index"
     fi
-    [ -f "$cfg" ] && cp -p "$cfg" "$cfg.pre-swap-$ts"
+    if [ -f "$cfg" ]; then cp -p "$cfg" "$cfg.pre-swap-$ts"; fi
     mv -f "$copy" "$live" || die 5 "the rename failed; the live index is unchanged (backup at $backup)"
     rm -f "$copy-wal" "$copy-shm" "$live-shm"
     write_yml_embed "$cfg" "$uri"

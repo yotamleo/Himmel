@@ -34,7 +34,7 @@ fi
 GEMMA='hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf'
 QWEN='hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf'
 
-TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/test-qmd-embed-model.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
 STUBS="$TMP_ROOT/stubs"
 mkdir -p "$STUBS"
 
