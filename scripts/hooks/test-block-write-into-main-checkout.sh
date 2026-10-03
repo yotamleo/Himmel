@@ -1911,7 +1911,8 @@ _subst_row "75u-P backtick body holds an escaped \$( that Bash unescapes"  block
 _subst_row "75u-W same shape aimed at the worktree (ALLOW)"                allow "x=\`echo \"\\\$(echo hi > $_WR/subst-rel.txt)\"\`"
 _SOH=$'\001'
 _subst_row "75v-P a literal U+0001 byte must not consume a body"           block "echo $_SOH; cd $_PR; x=\"\$(echo hi > subst-rel.txt)\""
-_subst_row "75v-W same shape aimed at the worktree (ALLOW)"                allow "echo $_SOH; cd $_WR; x=\"\$(echo hi > subst-rel.txt)\""
+# HIMMEL-4010: a raw marker byte now fails closed anywhere (row 76zz)
+_subst_row "75v-W same shape aimed at the worktree (DENY: marker byte)"    block "echo $_SOH; cd $_WR; x=\"\$(echo hi > subst-rel.txt)\""
 # A `)` inside a ${...} expansion is text, not the body's closer.
 _subst_row "75w-P \${y:-)} must not close the body early"                   block "x=\"\$(echo \${y:-)} > $_PR/f.txt)\""
 _subst_row "75x-P \${y#)} must not close the body early"                    block "x=\"\$(echo \${y#)} > $_PR/f.txt)\""
@@ -1996,6 +1997,16 @@ _subst_row "76zt non-leading \$(pwd) never reads as x./ (ALLOW)"           allow
 _subst_row "76zw \$\$ is the PID, so \$\$'\\' is a plain quote (DENY)"       block "echo \$\$'\\' > $_PR/f # '"
 _subst_row "76zx \$\$\$'…' is PID then ANSI-C (DENY)"                       block "echo \$\$\$'\\'' > $_PR/f"
 _subst_row "76zy \$\$'b' in a worktree target (ALLOW)"                       allow "echo x > $_WR/a\$\$'b'"
+# raw marker bytes: a decoy `sl_` is what the old byte-to-_ rename resolved to
+mkdir -p "$_WR/sl_"
+for _b in 001 002 003 004 005 016; do ln -s "$_PR" "$_WR/sl$(printf '%b' "\\0$_b")"; done
+_subst_row "76zz raw 0x01 behind a \$(…) redirect (DENY)"   block "echo \$(true) > $_WR/sl"$'\001'"/n"
+_subst_row "76zza raw 0x02 in a target (DENY)"              block "echo x > $_WR/sl"$'\002'"/n"
+_subst_row "76zzb raw 0x03 in a verb target (DENY)"         block "touch $_WR/sl"$'\003'"/n"
+_subst_row "76zzc raw 0x04 in a target (DENY)"              block "echo x > $_WR/sl"$'\004'"/n"
+_subst_row "76zzd raw 0x05 behind a \$(…) redirect (DENY)"  block "echo \$(true) > $_WR/sl"$'\005'"/n"
+_subst_row "76zze raw 0x0e in a verb target (DENY)"         block "touch $_WR/sl"$'\016'"/n"
+_subst_row "76zzf decoy sl_ itself stays a worktree path (ALLOW)" allow "touch $_WR/sl_/n"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 

@@ -1099,6 +1099,7 @@ _bwimc_deny() {
         repointed-remote) why="it runs a remote operation in a command that repoints a remote (a -c remote/url/protocol/core.sshCommand key, a GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, or git remote add|set-url), which can reach the primary under an innocent name (failing closed)" ;;
         unresolved-heredoc) why="a heredoc opener's terminator was never found in the command (failing closed — text after it cannot be safely classified)" ;;
         unresolved-cd) why="a cd/pushd target in this command could not be resolved (failing closed — a later relative write cannot be classified against an unknown cwd, HIMMEL-3648)" ;;
+        marker-byte) why="the command carries a raw control byte (0x01-0x05 or 0x0e) the scanner uses as an internal marker, so its targets cannot be classified (failing closed; spell the byte as \$'\\xNN' instead)" ;;
         unsafe-interp-body) why="an eval/bash -c/sh -c/zsh -c argument contains a write-shaped token whose target cannot be proven to stay outside the primary (failing closed, HIMMEL-3648)" ;;
     esac
     {
@@ -1743,6 +1744,14 @@ _bwimc_cwd_check_direct() {
 
 _bwimc_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
 [ -n "$_bwimc_cwd" ] || _bwimc_cwd="$PWD"
+
+# HIMMEL-4010: the scan parks stubs, clause brackets and decoded chars as
+# \001-\005 and \016 markers, so a command carrying one of those raw bytes
+# cannot be classified (a symlink named with one reads as another name).
+case "$cmd" in
+    *[$'\001'$'\002'$'\003'$'\004'$'\005'$'\016']*)
+        _bwimc_deny "marker-byte" "(raw control byte in command)" "" "" ;;
+esac
 
 _bwimc_hb=$(_bwimc_blank_heredocs "$cmd")
 
