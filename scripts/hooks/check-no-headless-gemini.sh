@@ -30,11 +30,30 @@ set -uo pipefail
 # only: `\bgemini\b` followed by space-then-flag.
 PATTERN='(^|[^A-Za-z0-9_-])gemini[[:space:]]+(-p|--prompt|--bg)($|[^A-Za-z0-9_-])'
 
+# HIMMEL-4124: argv-array spawns keep the flags in a separate array
+# (`spawnSync('gemini', args)`), so PATTERN cannot see `-p`. Parity with the
+# claude twin: the spawn pattern and its multi-line join are shared from
+# lib/headless-spawn-join.sh. `gemini.exe` and the npm shim `gemini.cmd`
+# (Windows) count as the literal too. Fail closed if the lib cannot load.
+_join_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/headless-spawn-join.sh"
+# shellcheck source=lib/headless-spawn-join.sh
+if ! { [ -r "$_join_lib" ] && . "$_join_lib"; } 2>/dev/null; then
+    echo "check-no-headless-gemini: cannot load $_join_lib — refusing" >&2
+    exit 1
+fi
+SPAWN_PATTERN=$(headless_spawn_pattern 'gemini(\.exe|\.cmd)?')
+# A call may span lines: the join window runs at most SPAWN_WINDOW code lines.
+SPAWN_WINDOW=8
+
 # Self-test: a known-positive sample must match. Catches accidental
 # regex de-anchoring or syntax break before the gate quietly approves
 # every commit.
 if ! printf 'gemini -p "test"\n' | grep -E "$PATTERN" >/dev/null 2>&1; then
     echo "check-no-headless-gemini: PATTERN failed self-test — refusing" >&2
+    exit 1
+fi
+if ! printf 'spawnSync("gemini", args)\n' | grep -E "$SPAWN_PATTERN" >/dev/null 2>&1; then
+    echo "check-no-headless-gemini: SPAWN_PATTERN failed self-test — refusing" >&2
     exit 1
 fi
 
@@ -96,6 +115,10 @@ fi
 violations=()
 for f in "${files[@]}"; do
     [ -f "$f" ] || continue
+    if [ ! -r "$f" ]; then
+        violations+=("$f:unreadable")
+        continue
+    fi
     is_exempt "$f" && continue
 
     # grep -n prints lineno:line; iterate matches to check opt-in marker
@@ -105,12 +128,15 @@ for f in "${files[@]}"; do
         if ! has_optin_marker "$f" "$line_no"; then
             violations+=("$f:$line_no")
         fi
-    done < <(grep -En "$PATTERN" -- "$f" 2>/dev/null)
+    done < <({
+        grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" -- "$f" 2>/dev/null
+        headless_spawn_join "$f" "$SPAWN_PATTERN" "$SPAWN_WINDOW" headless-gemini-ok
+    } | sort -n -u)
 done
 
 if [ "${#violations[@]}" -gt 0 ]; then
     {
-        echo "check-no-headless-gemini: headless 'gemini -p' / '--prompt' / '--bg' call(s) without opt-in marker:"
+        echo "check-no-headless-gemini: headless 'gemini -p' / '--prompt' / '--bg' call(s), or spawn(\"gemini\", …) argv spawns, without opt-in marker:"
         for v in "${violations[@]}"; do
             echo "    $v"
         done
@@ -125,6 +151,8 @@ if [ "${#violations[@]}" -gt 0 ]; then
         echo "line or the line immediately above:"
         echo "    # headless-gemini-ok: <one-line reason>"
         echo "    gemini --prompt \"\$prompt\""
+        echo "For a multi-line call the marker may sit on any line from the one above"
+        echo "the call's opening line through the reported (program) line."
         echo ""
         echo "Refs: HIMMEL-157 (mirrors HIMMEL-128 no-headless-claude)."
     } >&2
