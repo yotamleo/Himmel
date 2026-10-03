@@ -48,7 +48,7 @@ P="2026-06-27"
 PP="2026-06-26"
 N="2026-06-29"
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/daily-report.XXXXXX")" || exit 1
 trap 'rm -rf "$tmp"' EXIT
 V="$tmp/vault"
 mkdir -p "$V/Clippings/_evidence" "$V/50-Journal/Daily" "$V/60-Maps" "$V/_Templates"
@@ -210,21 +210,21 @@ assert "exactly one video line" "1" "$(grep -c 'video [0-9]' "$DAILY")"
 echo "Test 4: ranked suggested actions cite their clips"
 has "suggested actions heading" "$DAILY" "### Suggested actions"
 fold=$(grep -F 'Fold [[Clippings/_evidence/clip-a' "$DAILY")
-if printf '%s' "$fold" | grep -qF 'into [[60-Maps/Claude-Code-MOC]]'; then f=yes; else f=no; fi
+if grep -qF 'into [[60-Maps/Claude-Code-MOC]]' <<< "$fold"; then f=yes; else f=no; fi
 assert "fold action targets the tag-matched MOC  [$fold]" "yes" "$f"
-if printf '%s' "$fold" | grep -qE '^- \[ \] .*<!-- act:[0-9a-f]{8} since:2026-06-28 -->$'; then f=yes; else f=no; fi
+if grep -qE '^- \[ \] .*<!-- act:[0-9a-f]{8} since:2026-06-28 -->$' <<< "$fold"; then f=yes; else f=no; fi
 assert "fold action is an unchecked item with act marker" "yes" "$f"
 has "evaluate-tool action for the github clip, with rubric link" "$DAILY" "Evaluate tool [[Clippings/_evidence/clip-b|nvidia/openshell]]"
 has "rubric link" "$DAILY" "docs/tool-adoption/rubric.md"
 has "no-target clip gets an archive action" "$DAILY" "Archive [[Clippings/_evidence/clip-c|Talk on eval design]]"
 first=$(sed -n '/^### Suggested actions$/,/^### /p' "$DAILY" | grep -m1 '^- \[')
-if printf '%s' "$first" | grep -qF 'Archive'; then f=archive-first; else f=ok; fi
+if grep -qF 'Archive' <<< "$first"; then f=archive-first; else f=ok; fi
 assert "archive ranks below fold/evaluate" "ok" "$f"
 
 echo "Test 5: carry-over"
 has "carried-over heading" "$DAILY" "### Carried over"
 carry=$(grep -F 'act:aaaa1111' "$DAILY")
-if printf '%s' "$carry" | grep -qF -- '- [ ] (2d) Fold [[Clippings/x]] into [[60-Maps/Old-MOC]] <!-- act:aaaa1111 since:2026-06-26 -->'; then f=yes; else f=no; fi
+if grep -qF -- '- [ ] (2d) Fold [[Clippings/x]] into [[60-Maps/Old-MOC]] <!-- act:aaaa1111 since:2026-06-26 -->' <<< "$carry"; then f=yes; else f=no; fi
 assert "open prior action carried with age 2d  [$carry]" "yes" "$f"
 lacks "done action not carried" "$DAILY" "act:bbbb2222"
 lacks "dismissed action not carried" "$DAILY" "act:cccc3333"
@@ -234,8 +234,9 @@ echo "Test 6: re-run is byte-identical; a tick on today's report survives"
 sha1=$(sha256sum "$DAILY" | cut -d' ' -f1)
 node "$TOOL" --vault "$V" --date "$D" >/dev/null 2>&1
 assert "byte-identical re-run" "$sha1" "$(sha256sum "$DAILY" | cut -d' ' -f1)"
-sed -i 's/^- \[ \] Fold \[\[Clippings\/_evidence\/clip-a/- [x] Fold [[Clippings\/_evidence\/clip-a/' "$DAILY"
-sed -i 's/^- \[ \] Archive \[\[Clippings\/_evidence\/clip-c/- [-] Archive [[Clippings\/_evidence\/clip-c/' "$DAILY"
+sed -e 's/^- \[ \] Fold \[\[Clippings\/_evidence\/clip-a/- [x] Fold [[Clippings\/_evidence\/clip-a/' \
+    -e 's/^- \[ \] Archive \[\[Clippings\/_evidence\/clip-c/- [-] Archive [[Clippings\/_evidence\/clip-c/' \
+    "$DAILY" > "$tmp/ticked.md" && mv "$tmp/ticked.md" "$DAILY"
 node "$TOOL" --vault "$V" --date "$D" >/dev/null 2>&1
 has "done tick survives the re-run" "$DAILY" "- [x] Fold [[Clippings/_evidence/clip-a"
 has "dismissed mark survives the re-run" "$DAILY" "- [-] Archive [[Clippings/_evidence/clip-c"
@@ -281,7 +282,7 @@ done
 node "$TOOL" --vault "$V" --date "$B" >/dev/null 2>&1
 BD="$V/50-Journal/Daily/$B.md"
 fold=$(grep -F 'into [[60-Maps/Claude-Code-MOC]]' "$BD")
-if printf '%s' "$fold" | grep -qF 'and 1 more into'; then f=yes; else f=no; fi
+if grep -qF 'and 1 more into' <<< "$fold"; then f=yes; else f=no; fi
 assert "fold over 4 clips names 3 and says 'and 1 more'" "yes" "$f"
 assert "fold line cites exactly 3 links" "3" "$(printf '%s' "$fold" | grep -o '\[\[Clippings' | wc -l | tr -d ' ')"
 has "long title shortened with an ellipsis" "$BD" "|busy 1 word word"
