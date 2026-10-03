@@ -722,7 +722,7 @@ SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
 # that holds the leg doc, never in the cwd repo's stub.
 LR_STATE="$W/lr-state"; LR_STUB="$W/lr-stub"
 mkdir -p "$LR_STATE/handovers/u/himmel" "$LR_STUB/handovers"
-git -C "$LR_STUB" init -q 2>/dev/null
+git -C "$LR_STUB" init -q 2>/dev/null || { echo "FAIL: case 26 setup: git init in $LR_STUB"; exit 1; }
 printf '{"repos":{"state":{"path":"%s","user":"u"}}}\n' "$LR_STATE" > "$W/lr-registry.json"
 LR_STEM="HIMMEL-9-N7-rootcase-2026-01-01"
 DOC_SAVE="$DOC"; SESSION_SAVE="$SESSION_NAME"
