@@ -1119,7 +1119,8 @@ assert_allow "3921 r11 grep over a scripts glob, no write token" "$(j "grep x sc
 assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN --jira-transition")"
 # HIMMEL-3955: the standalone -u*/-i*/--u*/--i*/bare - token counts only in env
 # position (after an env-like word), so these ordinary commands stop over-denying.
-assert_deny "3955 no relief (glob/quote), main verdict: ledger-append amend: --id, --set k=v, ? in the reason" "$(j "bash scripts/cr/ledger-append.sh amend --id 4 --set verdict=deferred --set deferred_to=HIMMEL-3929 --reason \"see scripts/hooks/x? why?\"")"
+# HIMMEL-4095: this was denied only because --id read as --i*; it is not env-clearing.
+assert_allow "4095 no relief (glob/quote): ledger-append amend: --id, --set k=v, ? in the reason" "$(j "bash scripts/cr/ledger-append.sh amend --id 4 --set verdict=deferred --set deferred_to=HIMMEL-3929 --reason \"see scripts/hooks/x? why?\"")"
 assert_deny "3955 no relief (glob/quote), main verdict: grep -i over a scripts glob"      "$(j "grep -i foo scripts/hooks/*.sh")"
 assert_deny "3955 no relief (glob/quote), main verdict: sed -i over a scripts glob (not a seam or env write)" "$(j "sed -i s/a/b/ scripts/hooks/*.sh")"
 assert_deny "3955 no relief (glob/quote), main verdict: diff -u over a scripts glob"      "$(j "diff -u scripts/a.sh scripts/b*.sh")"
@@ -1180,6 +1181,31 @@ assert_deny "3955 quoted operand with a space, then -i" "$(j '/usr/bin/en? --chd
 assert_deny "3955 env, \$(true; true), -i" "$(j '/usr/bin/en? $(true; true) -i bash scripts/handover/console-kit/g*.sh')"
 # shellcheck disable=SC2016 # the $( is probe text, not an expansion
 assert_deny "3955 seam in \$( ) after long option" "$(j 'echo --flag $(ARMAUTOMERGE=1 bash scripts/h*/m*.sh)')"
+
+# HIMMEL-4095: a long option merely STARTING with i or u is not env-clearing.
+# The leg N997 shape (unchanged environment) was denied as --impacted = --i*.
+assert_allow "4095 quiet-run suite -- run-shell-tests.sh --impacted" "$(j "bash $QR suite -- bash scripts/ci/run-shell-tests.sh --impacted 5b0decc27..HEAD")"
+assert_allow "4095 run-shell-tests.sh --impacted (bare)"            "$(j "bash scripts/ci/run-shell-tests.sh --impacted origin/main..HEAD")"
+assert_allow "4095 --update beside a chokepoint word"               "$(j "bash $QR suite -- bash scripts/x.sh --update")"
+assert_allow "4095 --unsorted / --ignored beside a chokepoint word" "$(j "bash $QR suite -- bash scripts/x.sh --unsorted --ignored")"
+# Counter-examples: every env-clearing spelling stays denied, abbreviated,
+# attached, quoted or split included (GNU getopt_long accepts any unique prefix).
+assert_deny "4095 env --ignore-environment beside quiet-run"      "$(j "env --ignore-environment bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env --ignore (abbrev) beside quiet-run"         "$(j "/usr/bin/en? --ignore bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env --i (abbrev) beside quiet-run"              "$(j "/usr/bin/en? --i bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env --unset=X beside quiet-run"                 "$(j "/usr/bin/en? --unset=HIMMEL_SUITE_SLOTS bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env --unset X beside quiet-run"                 "$(j "/usr/bin/en? --unset HIMMEL_SUITE_SLOTS bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env --un=X (abbrev) beside quiet-run"           "$(j "/usr/bin/en? --un=HIMMEL_SUITE_SLOTS bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env -u X beside quiet-run"                      "$(j "/usr/bin/en? -u HIMMEL_SUITE_SLOTS bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env -i beside quiet-run"                        "$(j "/usr/bin/en? -i bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env -iu X (combined short) beside quiet-run"    "$(j "/usr/bin/en? -iu HIMMEL_SUITE_SLOTS bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 env bare - beside quiet-run"                    "$(j "/usr/bin/en? - bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 --ig\"\"nore-environment (quote split)"         "$(j "/usr/bin/en? --ig\"\"nore-environment bash $QR suite -- bash scripts/x.sh")"
+# shellcheck disable=SC2016 # the ${x} is probe text, not an expansion
+assert_deny "4095 --ig\${x}nore-environment (var split)"          "$(j '/usr/bin/en? --ig${x}nore-environment bash scripts/quiet-run.sh suite -- bash scripts/x.sh')"
+assert_deny "4095 --i* glob beside quiet-run"                     "$(j "/usr/bin/en? --i* bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 --unsetenv beside quiet-run"                    "$(j "bwrap --unsetenv HIMMEL_SUITE_SLOTS --dev-bind / / bash $QR suite -- bash scripts/x.sh")"
+assert_deny "4095 --impacted does not mask a later env -i"        "$(j "bash scripts/ci/run-shell-tests.sh --impacted a..b; /usr/bin/en? -i bash $QR suite -- bash scripts/x.sh")"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then

@@ -74,6 +74,39 @@
       "note": "Installed CLI at ~/.local/bin/twitter (consumed by the telegram clipper). Tier A (proactive). UNCHECKED if twitter absent / --version yields no parseable version."
     },
     {
+      "name": "ast-grep",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "ast-grep/ast-grep",
+      "synced_base": "0.45.3",
+      "version_pin": {
+        "file": "scripts/machine-setup/install-code-kit-clis.sh",
+        "template": "AST_GREP_VERSION:-{version}"
+      },
+      "tier": "A",
+      "note": "HIMMEL-4024 opt-in code kit CLI (structural search/rewrite, MIT, 0 listing tokens), installed by scripts/machine-setup/install-code-kit-clis.sh via npm @ast-grep/cli. Pinned at release tag 0.45.3 (commit 979c143639e3588c31f563091e69398683ed34f0 per HIMMEL-4017 resource-map); version_pin lets the nightly bump rewrite the install pin and synced_base together."
+    },
+    {
+      "name": "shfmt",
+      "kind": "tag_release",
+      "mode": "probe",
+      "tracked_repo": "mvdan/sh",
+      "version_command": "shfmt --version",
+      "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z.-]*",
+      "tier": "B",
+      "note": "HIMMEL-4024 opt-in code kit CLI (shell formatter), installed from the system package manager by scripts/machine-setup/install-code-kit-clis.sh, so distro-versioned: BEHIND is the normal steady state and report-only (no upgrade command). UNCHECKED if shfmt is absent."
+    },
+    {
+      "name": "bats",
+      "kind": "tag_release",
+      "mode": "probe",
+      "tracked_repo": "bats-core/bats-core",
+      "version_command": "bats --version",
+      "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z.-]*",
+      "tier": "B",
+      "note": "HIMMEL-4024 opt-in code kit CLI (bash test runner), installed from the system package manager by scripts/machine-setup/install-code-kit-clis.sh, so distro-versioned: BEHIND is the normal steady state and report-only (no upgrade command). UNCHECKED if bats is absent."
+    },
+    {
       "name": "luna-calendar",
       "kind": "tag_release",
       "mode": "base",

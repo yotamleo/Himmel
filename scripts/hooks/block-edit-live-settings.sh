@@ -1016,6 +1016,29 @@ _tok_verb_write() {
     return 1
 }
 
+# _tok_ln_write REGEX — 0 (a candidate write) unless every word matching the
+# `ln` REGEX is a plain short-flag cluster of another program (`rg -ln`,
+# `git grep -ln`; HIMMEL-3961): a word of only `-` and [a-z0-9], with no live
+# `$`, no glob/brace and no redirect. Any other match — `ln`, `/bin/ln`,
+# `l\n`, `{ln,…}`, `a=ln`, `${a}ln`, `xargs ln` — is the verb, and a text
+# match that no word accounts for (a comment) is a write too, as is TOK=0.
+_tok_ln_write() {
+    local re=$1 k w hit=0
+    [ "$TOK" = 1 ] || return 0
+    k=0
+    while [ "$k" -lt "$ST_N" ]; do
+        w=${ST_LW[k]}
+        if [[ $w =~ $re ]]; then
+            hit=1
+            [[ $w =~ ^-[a-z0-9]+$ ]] || return 0
+            [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] && [ -z "${ST_RO[k]}" ] || return 0
+        fi
+        k=$((k + 1))
+    done
+    [ "$hit" = 1 ] || return 0
+    return 1
+}
+
 # _tok_sensitive_name NAME — an assignment that can change what a later
 # read-only command runs or reads: the loader, locale, pager, config-home and
 # shell-behaviour variables, and each allowlisted tool's own environment.
@@ -1289,8 +1312,17 @@ _unzip_verb_mode() {
 # cross-worktree `-C` reference, not this check.
 has_write_verb_or_target_flag() {
     local c="$1" n="$2" out seg
-    out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee|truncate)([^a-z0-9_]|$)') || true
+    out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|dd|tee|truncate)([^a-z0-9_]|$)') || true
     [ -n "$out" ] && return 0
+
+    # ln is judged per word on Bash (_tok_ln_write, HIMMEL-3961), so another
+    # program's `-ln` flag cluster is not read as the link verb.
+    local re_ln='(^|[^a-z0-9_])ln([^a-z0-9_]|$)'
+    out=$(printf '%s' "$c" | grep -E "$re_ln") || true
+    if [ -n "$out" ]; then
+        [ "$tool_name" = Bash ] || return 0
+        _tok_ln_write "$re_ln" && return 0
+    fi
 
     # A Bash command is judged per segment from its tokens (_tok_verb_write,
     # HIMMEL-3564): a Bash command the tokenizer could not vouch for (TOK=0)

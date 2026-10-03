@@ -733,6 +733,33 @@ Task 8 checklist**.
 
 ---
 
+## Opt-in role kits (HIMMEL-4024, from the HIMMEL-4017 research)
+
+Kits are plugin profiles that stack on base and compose per task with
+`--profile a,b` (HIMMEL-4014), e.g. `--profile leg-impl,code`. No other
+profile enables a kit member. Keyed items belong to HIMMEL-4015. This is the
+code kit; the content/research and ops kits follow separately.
+
+| Profile | Members | Listing cost | Use |
+|---------|---------|--------------|-----|
+| `code` | `typescript-lsp`, `pyright-lsp`, `code-simplifier` (all `@claude-plugins-official`) | ~0.2k | a leg on a typed TS/Python repo; the language-server binary must exist on the machine |
+| `code-ui` | `playwright@claude-plugins-official` (MCP) | est 3-5k, unmeasured | browser-driven e2e, UI lanes only |
+
+CLI tools of the code kit (0 listing tokens, not plugins), installed by
+`scripts/machine-setup/install-code-kit-clis.sh` (`--dry-run` to preview):
+
+| Tool | Install | Drift row (`scripts/upstreams.json`) |
+|------|---------|--------------------------------------|
+| `ast-grep` 0.45.3 (structural search/rewrite, MIT) | npm `@ast-grep/cli`, pinned | `ast-grep`, `tag_release` base, auto-bumpable via `version_pin` |
+| `shfmt` (shell formatter) | system package manager | `shfmt`, probe, report-only |
+| `bats` (bash test runner) | system package manager | `bats`, probe, report-only |
+
+The plugin members are already tracked: `claude-plugins-official` is a
+dynamically discovered marketplace in the drift report, so they need no
+`upstreams.json` row of their own.
+
+---
+
 <a id="lane-plugin-profiles"></a>
 
 ## Lane plugin profiles (`scripts/lanes/plugin-profiles.{json,mjs}`, HIMMEL-1040)

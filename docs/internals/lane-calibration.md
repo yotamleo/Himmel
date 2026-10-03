@@ -875,6 +875,71 @@ to one operator-supplied ticket without a subsequent correction review.
 Critical and Important findings remain blocking at every round, and every fresh
 head still requires its own review even after the branch has reached the cap.
 
+## Lane-quality eval harness (HIMMEL-4090)
+
+Routing should follow measured quality per lane and model.
+`scripts/eval/lane-quality/run.sh` is the measuring tool. It runs the same
+frozen task set against one lane and model, so adding a model adds one run and
+one row. Phase 1 ships the harness and proves it on the native lane. It makes
+**no routing claim yet**: the table and the per-task-type routing come in
+phase 2, once every lane has run.
+
+**Tasks** (`tasks/<id>/`): four himmel-shaped jobs, each with a `prompt.md`
+(all the agent sees), a hidden `accept.sh`, and a `reference/` solution:
+
+| Task | Shape |
+|---|---|
+| `shell-red-green` | a new shell script plus its RED/GREEN test; acceptance also runs the agent's test against a stub, which it must catch |
+| `doc-plus-code` | a new flag on a fixture script plus the matching README change |
+| `hook-refusal` | a PreToolUse hook that refuses curl-into-shell and fails closed on bad input |
+| `finding-verify` | two review findings, one real and one not; verdicts must cite the deciding line |
+
+Each task runs in a fresh detached worktree at the pinned `BASE_SHA`, with the
+task's `fixture/` committed on top under a fixed author and date. The suite
+`test-lane-quality.sh` checks that every `accept.sh` fails on the untouched
+fixture and passes on the reference.
+
+**Per task, `runs.jsonl` records:**
+
+- the acceptance result (`accept_passed`/`accept_total`);
+- a **blind judge** score. Opus, given no tools, rates correctness, scope
+  discipline, test quality and honesty from 1 to 5. It sees the task, the diff
+  and the agent's final report with every model and lane name redacted. It
+  never sees the acceptance result, so the two signals stay independent;
+- wall time, turns, tool calls (deduplicated by id) and compactions. A single
+  headless run cannot hand off, so handoffs are measured only when a lane is
+  driven through its leg launcher (phase 2, HIMMEL-4089);
+- cost: the agent's `total_cost_usd`, which on a subscription lane is the
+  API-price equivalent, and the account-wide five-hour bank reading before and
+  after. Any other session running at the same time lands in that delta, so
+  run sweeps on a quiet fleet;
+- friction: permission denials, hook denials, out-of-scope paths, and
+  `peeked`, which flags a transcript that touched the hidden tests.
+
+**Run a lane:**
+
+```bash
+bash scripts/eval/lane-quality/run.sh run --lane native --model claude-haiku-4-5-20251001
+bash scripts/eval/lane-quality/run.sh table ~/.himmel/eval/lane-quality/<run-id>
+```
+
+Every task is bank-preflighted before its agent call
+(`scripts/lib/bank-preflight.sh`; anything but `PROCEED` stops the sweep with
+exit 75). Each agent and judge call is pinned to
+native auth and declares its permission mode: `auto` for the agent, as legs
+run, and `dontAsk` with no tools for the judge. `--max-usd` (default 3) caps
+the sweep. No task starts once the summed `total_cost_usd` reaches the cap, and
+each agent call gets the remainder as `--max-budget-usd`.
+
+**The other lanes are phase 2.** `--lane openrouter|deepseek|claudex` exits 3:
+these lanes are metered or bill another bank, and running them needs the
+operator's go. Wiring each one means three things. The launch needs the lane's
+environment (the OpenRouter or DeepSeek base URL and key, or the claudex
+launcher) in place of the native-auth pin. The spend check reads the metered
+balance before and after, and reads it again after the credit endpoint's lag
+(`scripts/lanes/openrouter-cost.sh --since`). And the lane needs a floor below
+which it refuses to start.
+
 ## Escalation shape
 
 The parent does not have to be the top model — an Opus parent spawns a Fable
