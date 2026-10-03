@@ -144,6 +144,25 @@ E
 qmd $"query" x'
 deny "echo \$((1<<2)); qmd \$'\\x71uery' x"
 deny "echo $(printf 'a%.0s' $(seq 1 17000)); qmd \$'\\x71uery' x"
+# A verb ending a nested -c string: its closing quote ends the word (J1666b).
+deny "bash -c 'qmd query'"
+deny 'bash -c "qmd search"'
+deny "sh -c 'qmd vsearch'"
+deny "timeout 5 bash -c 'qmd query'"
+deny "zsh -c \"qmd query''\""
+deny "sh -c 'qmd --index foo query'"
+deny 'echo "x; qmd query"'
+deny "qmd query\"x\"; bash -c 'qmd query'"
+deny "echo \"\$(echo \"'\")\"; bash -c 'qmd query'"
+# \$"…" is a quote too, in every reading.
+deny 'q$"m"d query x'
+deny 'q$"md" query x'
+deny 'cat <<E
+hi
+E
+q$"md" query x'
+deny 'echo $((1<<2)); q$"md" query x'
+deny "echo $(printf 'a%.0s' $(seq 1 17000)); q\$\"md\" query x"
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'

@@ -100,13 +100,14 @@ cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
 crude=${cmd//\\$'\n'/}
 crude=$(printf '%s' "$crude" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
 crude=${crude//\$\'/\'}
+crude=${crude//\$\"/\"}
 # shellcheck disable=SC1003 # a literal backslash in the tr set
 crude=$(printf '%s' "$crude" | LC_ALL=C tr -d '"'\''\\')
 
 # Cheap pre-filter: no `qmd` anywhere, even with the quotes removed, and no
-# `$'…'` that could decode to it — nothing to check.
+# `$'…'` or `$"…"` that could spell it — nothing to check.
 case "$cmd_lc$crude" in
-    *qmd*|*\$\'*) ;;
+    *qmd*|*\$\'*|*\$\"*) ;;
     *) exit 0 ;;
 esac
 
@@ -120,6 +121,8 @@ esac
 # a command boundary or a quote. Unquoted text, `$(…)` and backticks
 # (including those inside "…") print as they are, a newline as `;`, and a
 # comment is dropped. Nothing is expanded: `$x` prints as `$x`.
+# A second line, after a `:`, lists the offset of every quote byte that
+# does not open a string: one closing a string, or data inside quotes.
 # Returns 1 for what it does not model — an unterminated quote or `$(`, a
 # heredoc (`<<`), a command over 16 KiB — and the caller falls back.
 # ponytail: a word of empty quotes alone vanishes, so `qmd "" query x` reads
@@ -127,7 +130,7 @@ esac
 # shellcheck disable=SC1003,SC2016 # literal backslash, $ and ` bytes
 qmd_words() {
     local LC_ALL=C
-    local s="$1" out='' ctx='' top='' c c2 d v i=0 n ws=1 drop k
+    local s="$1" out='' ctx='' top='' c c2 d v i=0 n ws=1 drop k qp=''
     n=${#s}
     [ "$n" -le 16384 ] || return 1
     while [ "$i" -lt "$n" ]; do
@@ -135,6 +138,7 @@ qmd_words() {
         c2=${s:i+1:1}
         top=''
         [ -z "$ctx" ] || top=${ctx:${#ctx}-1:1}
+        case "$top$c" in [SD]\'|[SD]\") qp="$qp $i" ;; esac
         if [ "$top" = S ]; then
             if [ "$c" = "'" ]; then ctx=${ctx%?}; else _qw_q "$c"; fi
             i=$((i + 1))
@@ -203,6 +207,7 @@ qmd_words() {
                     while :; do
                         [ "$i" -lt "$n" ] || return 1
                         c=${s:i:1}
+                        case "$c" in "'"|'"') qp="$qp $i" ;; esac
                         [ "$c" = "'" ] && { i=$((i + 1)); break; }
                         if [ "$c" != '\' ]; then
                             [ "$drop" = 1 ] || _qw_q "$c"
@@ -291,7 +296,7 @@ qmd_words() {
         esac
     done
     [ -z "$ctx" ] || return 1
-    printf '%s' "$out"
+    printf '%s\n:%s' "$out" "$qp"
 }
 # _qw_q C — append a quoted or escaped byte to qmd_words' output.
 _qw_q() {
@@ -323,10 +328,15 @@ QMDOPTS='('"${SEP}"'-[^[:space:]]+('"${SEP}${QMDOPTVAL}"')?)*'
 QMDVERB='(query|search|vsearch)'
 BARE="${CMDPOS}${QMDPROG}${QMDOPTS}${SEP}"'('"${QMDVERB}"'|"'"${QMDVERB}"'"|'\''('"${QMDVERB}"')'\'')'
 BOUND='([^[:alnum:]_-]|$)'
-# On the raw text a quote after the verb continues the word (`qmd "query""
-# notes"` is the one argument `query notes`), so it is no boundary there; the
-# normalised words below decide whether that word is still the verb.
+# On the raw text a quote that OPENS a string after the verb continues the
+# word (`qmd "query"" notes"` is the one argument `query notes`), so it is no
+# boundary there; the normalised words decide whether that word is still the
+# verb. Every other quote (one closing a string, as in a nested `bash -c`
+# string ending in the verb, or one that is data inside quotes) stays a
+# boundary, as on main: a raw match ending at such a quote (BAREEND, tested
+# on the text before it) denies.
 RAWBOUND='([^[:alnum:]_"'\''-]|$)'
+BAREEND="$BARE"'$'
 
 # Two readings, deny on either (HIMMEL-4121). The raw text keeps what quote
 # removal hides — a separator or a nested `bash -c "qmd query"` inside quoted
@@ -350,11 +360,17 @@ AQ_PROG='[^[:space:];&|]*'$'\001''[^[:space:];&|]*'
 AQ_ARGS="${CMDPOS}${QMDPROG}[[:space:]][^;&|]*"$'\001'
 AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\001'"|${QMDVERB})"
 deny=0
-if words=$(qmd_words "$cmd"); then
+if res=$(qmd_words "$cmd"); then
+    words=${res%%$'\n'*}
     words_lc=$(printf '%s' "$words" | LC_ALL=C tr '[:upper:]' '[:lower:]')
     if [[ $words_lc =~ $BARE$BOUND ]] || [[ $cmd_lc =~ $BARE$RAWBOUND ]]; then
         deny=1
     fi
+    for p in ${res#*$'\n:'}; do
+        [ "$deny" = 0 ] || break
+        case "${cmd_lc:0:p}" in *query|*search) ;; *) continue ;; esac
+        if [[ ${cmd_lc:0:p} =~ $BAREEND ]]; then deny=1; fi
+    done
 elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
     deny=1
 else
