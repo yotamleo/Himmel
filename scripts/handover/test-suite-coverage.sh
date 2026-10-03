@@ -47,7 +47,8 @@ out=$(bash "$SC" --runner "$tmp/runner.sh" --root "$tmp" scripts/big/test-big.sh
 expect "superseded by a missing wrapper is uncovered" 'uncovered.*test-big-slow.sh \(missing\)' "$out" 0
 if grep -q 'carry the coverage' <<< "$out"; then bad "missing wrapper must not claim the coverage" "$out"; else pass "missing wrapper claims no coverage"; fi
 : > "$tmp/scripts/big/test-big-slow.sh"
-sed 's|^scripts/vm/test-vm.sh .*|&\nscripts/big/test-big-slow.sh  # skipped too|' "$tmp/runner.sh" > "$tmp/runner-skipwrap.sh"
+sed 's|^scripts/vm/test-vm.sh .*|&\
+scripts/big/test-big-slow.sh  # skipped too|' "$tmp/runner.sh" > "$tmp/runner-skipwrap.sh"
 out=$(bash "$SC" --runner "$tmp/runner-skipwrap.sh" --root "$tmp" scripts/big/test-big.sh 2>&1); rc=$?
 expect "superseded by a SKIP_LIST wrapper is uncovered" 'uncovered.*test-big-slow.sh \(in SKIP_LIST\)' "$out" 0
 out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/slow/test-slow.sh 2>&1); rc=$?
