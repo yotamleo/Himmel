@@ -530,8 +530,11 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
                 if [ -n "$span_doc" ] && [ -f "$span_doc" ]; then
                     # The LATEST acceptance bullet's INCOMING session (the first
                     # name after the colon, not the one after `replaces`) must
-                    # be exactly this console.
-                    accepted="$(sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' "$span_doc" 2>/dev/null | tail -n 1)"
+                    # be exactly this console. Only the `## Results` section
+                    # is read (HIMMEL-3264): an acceptance-shaped line quoted
+                    # above it, or under a later `## ` heading, confirms
+                    # nothing.
+                    accepted="$(awk '/^## /{ r = ($0 ~ /^## Results/) } r' "$span_doc" 2>/dev/null | sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' | tail -n 1)"
                 fi
                 if [ -n "$accepted" ] && [ "$accepted" = "$console_stem" ]; then
                     relayed_csv="$(csv_add "$relayed_csv" "$span_leg")"
