@@ -103,6 +103,42 @@ eq "SIGTERM to runner (trap child): rc 143" 143 "$?"
 if [ -s "$W/t4b-term" ]; then pass "runner SIGTERM: child got SIGTERM first"; else fail "runner SIGTERM: child never got SIGTERM"; fi
 check_gone t4b "runner SIGTERM (trap child)"
 
+# In-process cases: load the runner as a module and patch one seam.
+cat > "$W/inproc.py" <<'INPROC'
+import importlib.util, os, signal, subprocess, sys, time
+spec = importlib.util.spec_from_file_location("hr", sys.argv[1])
+hr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hr)
+mode, w, child = sys.argv[2], sys.argv[3], sys.argv[4]
+if mode == "popen-signal":
+    # A signal lands after the child exists but before Popen returns.
+    real = subprocess.Popen
+    def popen(*a, **k):
+        real(*a, **k)
+        for _ in range(50):
+            if os.path.exists(os.path.join(w, "t7-session.pid")):
+                break
+            time.sleep(0.1)
+        raise hr.Stop(signal.SIGTERM)
+    hr.subprocess.Popen = popen
+    sys.exit(hr.main(["--deadline", "60", "--", "bash", child, w, "hang", "t7"]))
+if mode == "survivor":
+    # A descendant SIGKILL cannot remove: the sweep must not report success.
+    hr.SWEEP_SECS = 0.3
+    hr.descendants = lambda root: [4194305]
+    sys.exit(hr.main(["--deadline", "5", "--", "true"]))
+INPROC
+
+# 7. a signal during Popen still sweeps the child and both grandchildren.
+python3 "$W/inproc.py" "$SUT" popen-signal "$W" "$W/child.sh" >/dev/null 2>&1
+eq "signal during Popen: rc 143" 143 "$?"
+check_gone t7 "signal during Popen"
+
+# 8. a descendant that outlives the sweep is reported, rc 125.
+err=$(python3 "$W/inproc.py" "$SUT" survivor "$W" "$W/child.sh" 2>&1 >/dev/null); rc=$?
+eq "sweep survivor: rc 125" 125 "$rc"
+case "$err" in *4194305*) pass "sweep survivor: pid named" ;; *) fail "sweep survivor: pid not named ($err)" ;; esac
+
 # 5. the sweep reaches only the runner's own descendants.
 if alive "$bystander"; then pass "bystander untouched"; else fail "bystander was killed"; fi
 

@@ -21,7 +21,9 @@ What this runner does:
     --kill-after grace, exit 128+signal;
   * whatever happened -- deadline, signal or a normal exit -- it then SIGKILLs
     every process still descended from the runner, escaped sessions included,
-    and reaps them before it exits. Otherwise it exits with CMD's own code.
+    and reaps them before it exits. Otherwise it exits with CMD's own code;
+  * if a descendant is still alive after the sweep gives up, it names the
+    survivors on stderr and exits 125, whatever CMD returned.
 
 Only this runner's own descendants are ever signalled. Linux only (prctl,
 /proc). Wrap the WHOLE harness, not each hook call: a harness's per-call
@@ -39,6 +41,7 @@ import sys
 import time
 
 PR_SET_CHILD_SUBREAPER = 36
+SWEEP_SECS = 10
 USAGE = "usage: harness-run.py --deadline SEC [--kill-after SEC] -- CMD [ARG...]"
 
 
@@ -120,10 +123,12 @@ def reap():
 
 
 def sweep(pgid):
-    """SIGKILL the child's group and every remaining descendant; reap them."""
-    signal_group(pgid, signal.SIGKILL)
+    """SIGKILL the child's group (if known) and every remaining descendant;
+    reap them. Returns the descendants still alive when it gives up."""
+    if pgid is not None:
+        signal_group(pgid, signal.SIGKILL)
     swept = set()
-    end = time.monotonic() + 10
+    end = time.monotonic() + SWEEP_SECS
     while time.monotonic() < end:
         reap()
         left = descendants(os.getpid())
@@ -136,9 +141,12 @@ def sweep(pgid):
             except (ProcessLookupError, PermissionError):
                 pass
         time.sleep(0.05)
+    reap()
+    left = descendants(os.getpid())
     swept.discard(pgid)
     if swept:
         print("harness-run: swept %d leftover descendant(s)" % len(swept), file=sys.stderr)
+    return left
 
 
 def stop_group(child, kill_after):
@@ -148,6 +156,30 @@ def stop_group(child, kill_after):
         child.wait(timeout=kill_after)
     except subprocess.TimeoutExpired:
         pass
+
+
+def ignore_signals():
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_IGN)
+
+
+def supervise(cmd, deadline, kill_after, box):
+    """Run CMD to its exit or the deadline; box receives the Popen object."""
+    try:
+        box.append(subprocess.Popen(cmd, start_new_session=True))
+        child = box[0]
+        try:
+            rc = child.wait(timeout=deadline)
+            return 128 - rc if rc < 0 else rc
+        except subprocess.TimeoutExpired:
+            print("harness-run: deadline %ss hit, stopping %s" % (deadline, cmd[0]), file=sys.stderr)
+            stop_group(child, kill_after)
+            return 124
+    except Stop as stop:
+        ignore_signals()
+        if box:
+            stop_group(box[0], kill_after)
+        return 128 + stop.signum
 
 
 def main(argv):
@@ -161,30 +193,24 @@ def main(argv):
         return 2
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, on_signal)
-    child = None
+    box = []
     try:
-        child = subprocess.Popen(cmd, start_new_session=True)
-        try:
-            rc = child.wait(timeout=deadline)
-            return 128 - rc if rc < 0 else rc
-        except subprocess.TimeoutExpired:
-            print("harness-run: deadline %ss hit, stopping %s" % (deadline, cmd[0]), file=sys.stderr)
-            stop_group(child, kill_after)
-            return 124
+        rc = supervise(cmd, deadline, kill_after, box)
     except Stop as stop:
-        if child is not None:
-            for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-                signal.signal(sig, signal.SIG_IGN)
-            stop_group(child, kill_after)
-        return 128 + stop.signum
+        rc = 128 + stop.signum
     except OSError as err:
         print("harness-run: cannot start %s: %s" % (cmd[0], err), file=sys.stderr)
-        return 127
+        rc = 127
     finally:
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            signal.signal(sig, signal.SIG_IGN)
-        if child is not None:
-            sweep(child.pid)
+        ignore_signals()
+        # Sweep even when Popen never returned a child: a signal can land after
+        # the fork, and the /proc walk finds that child without its pid.
+        left = sweep(box[0].pid if box else None)
+    if left:
+        print("harness-run: %d descendant(s) survived SIGKILL: %s"
+              % (len(left), " ".join(str(p) for p in left)), file=sys.stderr)
+        return 125
+    return rc
 
 
 if __name__ == "__main__":

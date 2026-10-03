@@ -26,6 +26,10 @@
 # reparented yet), then prints `killed=<pid,…>`. Only processes that pass
 # every test above, or that descend from one, are ever signalled.
 # Seam: HOOK_REAPER_KILL (the kill command; default `kill`).
+# ponytail: the pids come from one ps snapshot, so a descendant that exits
+# between the snapshot and the kill can have its pid reused by another
+# same-uid process; upgrade = signal through pidfds opened at selection
+# time (HIMMEL-4195).
 # PLATFORM GUARD: no .ps1 twin, by design. Linux-only (procps ps), like the
 # rest of the console kit. Bash 3.2-compatible.
 set -uo pipefail
