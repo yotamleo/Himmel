@@ -1414,6 +1414,22 @@ and the failure was purely the wrapper's read timeout. Fall back to raw REST
 the vault's indexed content — never to a stale on-disk grep, which reads a
 copy the live vault may have since changed.
 
+## Obsidian hangs on bulk file churn inside the vault
+
+Obsidian watches every file under the vault root, including gitignored paths
+and paths in its own "Excluded files" list. Each create or delete is a vault
+event, and the renderer pins at 100 % CPU replaying them against its cached
+index. Hundreds of thousands of generated files (judge scratch, a
+`graphify-out/` of about 21k files) froze it. So did moving 22k files OUT of
+the vault while it ran, after which the restart stuck on "loading cache"
+because the IndexedDB cache was stale.
+
+**Close Obsidian before any bulk move or delete of more than about 1k files in
+the vault**, and keep bulk generators out of the vault tree. Recovery: close it,
+move `~/.config/obsidian/IndexedDB` aside (do not delete it), then start
+Obsidian again. The cache rebuild took about 45 s for 46k files. Measure its
+CPU with `top -b -n 2`, not `ps -o pcpu`, which reports a lifetime average.
+
 ## Patching a shell script through a python heredoc silently corrupts bytes
 
 Editing a `.sh` file via `python3 - <<'PY' ... PY` instead of a text-editing
