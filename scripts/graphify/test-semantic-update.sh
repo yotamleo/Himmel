@@ -13,7 +13,7 @@ FAILS=0
 pass() { echo "  ok: $1"; }
 fail() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 
-WS="$(mktemp -d)"; trap 'rm -rf "$WS"' EXIT
+WS="$(mktemp -d "${TMPDIR:-/tmp}/test-semantic-update.XXXXXX")" || exit 1; trap 'rm -rf "$WS"' EXIT
 REPO="$WS/repo"
 mkdir -p "$REPO/scripts/graphify" "$REPO/scripts/lib" "$WS/bin" "$WS/tmp" "$WS/glm"
 for f in semantic-update.sh semantic-merge.py harden-graph.py harden-allowlist.json; do
