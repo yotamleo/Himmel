@@ -479,9 +479,11 @@ node -e '
     for (const [br, g] of order){
       const run = fmt(g[1] - g[0]);
       // wait = first gate - earliest worker dispatch of that same branch
+      // A worker leg is the RAW shared_branch (no @<head> suffix), so compare it
+      // as-is; only gate labels carry the suffix branch() strips (HIMMEL-4202).
       let waitStr = "n/a";
       let best = null;
-      for (const o of sessions.values()) if (o.disp && branch(o.leg) === br && (!best || o.disp.ms < best)) best = o.disp.ms;
+      for (const o of sessions.values()) if (o.disp && o.leg === br && (!best || o.disp.ms < best)) best = o.disp.ms;
       if (best !== null) waitStr = fmt(g[0] - best);
       const name = br.length > 34 ? br.slice(0,33)+"…" : br;
       process.stdout.write(`  ${name.padEnd(34)} run=${run.padEnd(8)} wait-to-first=${waitStr}\n`);

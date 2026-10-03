@@ -1831,14 +1831,19 @@ printf '%s\n' '#!/usr/bin/env bash' ': > "$(dirname "$0")/ran"' > "$fake4152/bin
 cp "$fake4152/bin/claude" "$fake4152/home/.local/bin/claude"
 chmod 755 "$fake4152/bin/claude" "$fake4152/home/.local/bin/claude"
 rm -f "$fake4152/bin/ran" "$fake4152/home/.local/bin/ran"
-(unset LEG_CLAUDE_BIN; PATH="$fake4152/bin:$PATH" HOME="$fake4152/home" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES=1 \
-  bash "$SHIM" --version) >/dev/null 2>&1 || true
+rc=0; out="$(unset LEG_CLAUDE_BIN; PATH="$fake4152/bin:$PATH" HOME="$fake4152/home" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES=1 \
+  bash "$SHIM" --version 2>&1)" || rc=$?
+# HIMMEL-4154: a broken launcher also runs no fake, so assert the outcome too: the pinned
+# claude's own rc 0, or the specific no-pinned-claude refusal (rc 2), nothing else.
+check "shim 4152: =1 outcome is the pinned claude (rc 0) or the no-pinned-claude refusal (rc 2)" \
+  "$({ [ "$rc" = 0 ] || { [ "$rc" = 2 ] && grepq "$out" -F -e "no claude on the pinned PATH"; }; } && echo ok || echo "rc=$rc")" "ok"
 check "shim 4152: =1 never execs a claude placed early on the caller's PATH" "$([ -e "$fake4152/bin/ran" ] && echo ran || echo not-run)" "not-run"
 check "shim 4152: =1 never execs a claude in the caller's \$HOME/.local/bin" "$([ -e "$fake4152/home/.local/bin/ran" ] && echo ran || echo not-run)" "not-run"
 # Counter-example: without the consult marker the caller's PATH claude still runs, unchanged.
 rm -f "$fake4152/bin/ran"
-(unset LEG_CLAUDE_BIN; PATH="$fake4152/bin:$PATH" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES='' \
-  bash "$SHIM" --version) >/dev/null 2>&1 || true
+rc=0; (unset LEG_CLAUDE_BIN; PATH="$fake4152/bin:$PATH" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES='' \
+  bash "$SHIM" --version) >/dev/null 2>&1 || rc=$?
+check "shim 4152: no marker, the shim exits with the PATH claude's rc 0" "$rc" "0"
 check "shim 4152: no marker, the caller's PATH claude still runs" "$([ -e "$fake4152/bin/ran" ] && echo ran || echo not-run)" "ran"
 
 # 18-resolve. A tiny fixture registry exercises all four allowlist shapes

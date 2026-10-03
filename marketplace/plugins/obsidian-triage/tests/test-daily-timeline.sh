@@ -16,7 +16,7 @@
 #   - a second same-day run is byte-identical (no duplicate, no double-count).
 #   - pre-existing daily-note content (`## Actions from clips`, journal) preserved.
 #   - CRLF notes keep CRLF.
-#   - a missing daily note is a no-op (exit 0, no phantom file).
+#   - a missing daily note is created (HIMMEL-4182; the report is in test-daily-report.sh).
 
 set -u -o pipefail
 
@@ -193,13 +193,14 @@ assert "CRLF endings preserved after upsert" "yes" "$f"
 if grep -c '^## Clip pipeline' "$CRLF_DAILY" >/dev/null && [ "$(grep -c 'Clip pipeline' "$CRLF_DAILY")" = "1" ]; then f=yes; else f=no; fi
 assert "CRLF note got exactly one pipeline section" "yes" "$f"
 
-# ── Missing daily note → no-op, no phantom ───────────────────────────────────
-echo "Test 10: missing daily note is a no-op (exit 0, no phantom file)"
+# ── Missing daily note → created (HIMMEL-4182: the daily report needs it) ────
+echo "Test 10: missing daily note is created with the pipeline section (exit 0)"
 node "$TOOL" --vault "$tmp" --date "2030-01-01" >/dev/null 2>&1
 rc=$?
 assert "exit 0 on missing daily note" "0" "$rc"
 if [ -f "$tmp/50-Journal/Daily/2030-01-01.md" ]; then f=created; else f=absent; fi
-assert "no phantom daily note created" "absent" "$f"
+assert "missing daily note created" "created" "$f"
+assert "created note has one pipeline section" "1" "$(grep -c '^## Clip pipeline$' "$tmp/50-Journal/Daily/2030-01-01.md" 2>/dev/null)"
 
 # ── State-truth: a reverted stub (page gone) drops from the recount ──────────
 echo "Test 11: a created-then-reverted stub (page deleted) is NOT listed (no dangling backref)"

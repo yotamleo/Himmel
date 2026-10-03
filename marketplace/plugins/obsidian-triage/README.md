@@ -215,6 +215,23 @@ the clip so it parks as caption-only; a **partial** enrichment writes what
 survived, is marked `media_enrichment_status: partial`, and keeps
 `x_media_pending` for retry. Command runbook: `commands/x-media-enrich.md`.
 
+**Subtitles-first transcripts (HIMMEL-4107).** Before whisper, the rung pulls
+the platform's English subtitles with `yt-dlp` (manual track preferred over auto;
+**no cookies needed**), cleans the VTT (tags/timestamps stripped, adjacent
+rolling duplicates collapsed, no global dedupe, sentence paragraphs) and uses it
+when coverage is at least `--min-sub-coverage` (default 90 percent of the video
+duration). No track or low coverage falls back to the gallery-dl -> ffmpeg ->
+whisper path, which is the only one that needs `~/.luna/cookies/twitter.txt`. A
+clip with no twimg ref (e.g. filed from Telegram) is probed once via fxtwitter
+(`tweet.media.videos[].duration`); no video stamps `media_probe_at` +
+`media_probe_result: no-video` and is never re-probed. Provenance lands in the
+frontmatter (`media_transcript_source`: `platform-subs` / `auto-subs` /
+`whisper-<model>` / `none`, `media_video_duration_s`, `media_transcript_coverage`)
+and as a `<!-- source: platform-subs (en), coverage 100%, 38:02 -->` line in the
+`### Transcript` block. `tools/transcribe.py` gained an optional
+`X_TRANSCRIBE_META_FILE` side channel (last segment end) so whisper coverage is
+measurable; its stdout is unchanged.
+
 One-time setup mirrors the IG rung (burner X account, Cookie-Editor export to
 `~/.luna/cookies/twitter.txt` `chmod 600`, `gallery-dl` + `ffmpeg`, pre-fetched
 whisper model). `--include-evidence` and `--include-done` are **orthogonal pool
@@ -274,9 +291,29 @@ ledger — so it is idempotent by construction: re-running the same day UPDATES 
 one section, never appends a second or double-counts (bi-temporal: clips carry
 `date_clipped`, subjects their own `date`, the daily note anchors *when* review
 / promotion happened). Triage calls it once after Phase 5; `/synthesize-stubs`
-calls it after a live `--apply`. A missing daily note is a no-op (Phase 5 owns
-creation — no phantom file). Section surgery is byte/CRLF-preserving
+calls it after a live `--apply`. A missing daily note is created from
+`_Templates/Daily-Note.md` (HIMMEL-4182). Section surgery is byte/CRLF-preserving
 (`tools/lib/daily-timeline.mjs`).
+
+**Daily report (HIMMEL-4182).** The same run upserts a `## Daily report` section
+(`tools/lib/daily-report.mjs`) so the day's intake turns into decisions:
+
+- **Sources:** `_evidence/` clips with `triaged_at: <date>`, grouped by
+  `evidence_kind`: link, title, and a one-line why (the first sentence of
+  `## The Idea`, else of the first prose line). A clip carrying HIMMEL-4107's
+  `media_video_duration_s` also gets a video line (duration, transcript
+  coverage and source). A day with no intake gets `- No intake on <date>.`
+- **Suggested actions:** deterministic, no model. One per clip, first rule
+  wins: failed harvest → archive; a tag/source naming himmel|luna|salus → file a
+  ticket; a GitHub source or `tools` kind → evaluate the tool (against
+  `docs/tool-adoption/rubric.md`); a tag shared with a `60-Maps/` MOC → fold
+  into it (clips sharing a MOC merge); else archive. Ranked (archive last, then
+  more clips, then engagement), top 7. Proposals only: nothing edits another note.
+- **Markers:** `- [ ] … <!-- act:<id> since:<date> -->`. `[x]` = done, `[-]` =
+  dismissed. A tick on today's report survives re-runs.
+- **Carry-over:** an action still unchecked in the prior 14 day notes, and not
+  ticked or dismissed in any of them, is re-listed under `### Carried over`
+  with its age, until it is resolved.
 
 **Telegram promotion feedback (LUNA-91).** A telegram capture is **inbox-state by
 folder placement** — top-level in `Clippings/` with no `processed:`/`lifecycle:`
@@ -403,7 +440,9 @@ A `tests/test-synthesize-invariants.sh` covers the synthesize-side invariants (p
 
 `tests/test-roadmap-aggregate.sh` (LUNA-59) covers the roadmap aggregator: per-source parsers (daily action items, `_deferred.md` sections, synthesis `## Proposed vault change`, promotion-candidate frontmatter, component inventory), CLI JSON shape + counts, `_done`-exclusion, empty-source graceful, and vault validation. Pure Node — no `bun install` needed.
 
-`tests/test-daily-timeline.sh` (LUNA-90) is the fixture-gated acceptance test for the daily `## Clip pipeline` timeline: correct captured/reviewed-by-kind/promoted/densified counts anchored to the target date, byte-identical second-run idempotency, in-place refresh on state change, CRLF preservation, missing-note no-op, and the triage/synthesize runbook wiring. Pure Node.
+`tests/test-daily-timeline.sh` (LUNA-90) is the fixture-gated acceptance test for the daily `## Clip pipeline` timeline: correct captured/reviewed-by-kind/promoted/densified counts anchored to the target date, byte-identical second-run idempotency, in-place refresh on state change, CRLF preservation, missing-note creation, and the triage/synthesize runbook wiring. Pure Node.
+
+`tests/test-daily-report.sh` (HIMMEL-4182) is the fixture-vault acceptance test for the `## Daily report` section: sources grouped by kind with why and video lines, ranked actions citing their clips, carry-over with age (done, dismissed and older-ticked actions dropped), byte-identical re-run with ticks preserved, the no-intake line in a created note, CRLF, and shortened titles / capped citations. Pure Node.
 
 `tests/test-telegram-digest.sh` + `tests/test-synthesize-telegram-digest.sh` + `tests/test-telegram-clip-inbox.sh` (LUNA-91) cover the promotion digest (one batched reply per chat — not per promotion — distinct-subject dedup, non-telegram/suppression exclusion, reply threading), its end-to-end emission from `synthesize-stubs --apply` (digest file written, stale-cleared on no-op re-run, suppressed under `--no-telegram-digest`), and the telegram-clip inbox-state contract (no `processed:`/`lifecycle:` marker, `telegram_chat_id` provenance). Pure Node.
 

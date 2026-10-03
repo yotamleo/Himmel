@@ -303,6 +303,7 @@ else
     # above (codex-15), just missed here. An apostrophe in either value
     # breaks the string literal, and a crafted value injects python
     # statements. Both now travel through sys.argv instead.
+    # shellcheck disable=SC2034  # read by vm_ssh/vm_scp in the sourced lib
     GUEST_USER=$("$HIMMEL_VM_PYTHON" -c '
 import json, sys
 d = json.load(open(sys.argv[1]))

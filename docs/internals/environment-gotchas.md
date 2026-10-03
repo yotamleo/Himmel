@@ -383,6 +383,16 @@ Mitigations:
   `model_refusal_fallback` before blaming the arm environment — refusal flags
   on routine harness code are typically false positives.
 
+Preserved-thinking cost (HIMMEL-3875; read matrix reported by the ticket from
+the Anthropic preserved-thinking docs, not independently verified): the
+fallback continues the **same** session on another model, and a model can only
+read some other models' thinking blocks — Opus 5.5 can't read Fable blocks,
+Sonnet 5.5 can't read Opus 5.5 or Fable blocks, and nothing reads Sonnet 5.5
+blocks (Sonnet 5.5 thinking is also account-bound). After a cross-model
+fallback the earlier thinking is **silently dropped** and may be re-thought,
+costing tokens; auto-compact does not restore it. Nothing breaks — Claude Code
+handles the drop internally — so this is a cost, not an error.
+
 ## `claude --bare` never reads OAuth/keychain — use `--safe-mode` for a hookless run
 
 `claude -p --bare` on subscription (Max/Pro) auth reports "Not logged in"

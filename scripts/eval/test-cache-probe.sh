@@ -76,10 +76,18 @@ scenario idle-none inconclusive 2 idle-gap
 # cold gap is not TTL evidence: both are excluded, as the invalidation mode does.
 scenario idle-compaction-lookalike ttl-consistent 0 idle-gap
 has "idle-compaction-lookalike: the compaction pair is excluded" "$LAST_OUT" "cold-expected=1 cold-rewrote=1 warm-expected=3 warm-rewrote=0"
+# An early 1h write followed by 5m-only writes: the TTL is the last write's tier
+# (300s), so a 20-minute gap that rewrote is expected-cold, not a warm miss.
+scenario ttl-last-write ttl-consistent 0 idle-gap
+has "ttl-last-write: the TTL comes from the last cache write" "$LAST_OUT" "session	300	2	2	3	0"
 
 # --- first-turn: does a new session start warm ------------------------------
 scenario first-turn-warm warm-start 0 first-turn
 scenario first-turn-cold cold-start 1 first-turn
+# A <synthetic> zero-usage row ahead of the first real request is not the first
+# turn: the warm real one is.
+scenario synthetic-first-turn warm-start 0 first-turn
+has "synthetic-first-turn: the first real turn is counted" "$LAST_OUT" "session	warm	2	80000	300"
 
 # --- usage errors exit 64, and never with a verdict --------------------------
 out=$(bash "$PROBE" 2>&1); rc=$?

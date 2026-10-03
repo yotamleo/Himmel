@@ -5,8 +5,8 @@
 # WHY: the runbook's structural-persistence contract (HIMMEL-1219 rounds 3-5)
 # has the orchestrating session persist adjudication VERDICT lines to
 # <git-common-dir>/cr-prior-blocking/<branch> (step 3.2 phase A) and
-# <git-common-dir>/cr-aggregate-verdicts/<branch> (step 4), so phase B's
-# conserve-or-run decision and step 4's orphan-check DERIVE their blocking
+# <git-common-dir>/cr-aggregate-verdicts/<branch> (step 4), so step 4's
+# exclusion rule and orphan-check DERIVE their blocking
 # counts from a file instead of trusting the session's own prose. In
 # auto-mode the classifier denies the inline `cat > ... <<EOF` heredoc write
 # shape those fences used, so the structural signal silently degraded to

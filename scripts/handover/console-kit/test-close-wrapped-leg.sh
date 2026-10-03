@@ -533,6 +533,14 @@ FRESH4="$PROJDIR4/sess-fresh.jsonl"
     printf '%s\n' "{\"timestamp\":\"2026-06-17T00:00:00Z\",\"cwd\":\"$ESW_SB4/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\"}]}}"
     yes '{"padding":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}' 2>/dev/null | head -c 1000000 || true
 } > "$FRESH4"
+# the `|| true` above only absorbs `yes`'s SIGPIPE; assert the fixtures were
+# genuinely generated, else this case passes without exercising scale (HIMMEL-3740).
+fixture_ok=yes
+[ "$(wc -c < "$FRESH4")" -ge 1000000 ] || fixture_ok=no
+for stale in "$PROJDIR4"/stale-*.jsonl; do
+    [ -s "$stale" ] || fixture_ok=no
+done
+check "timing-guard: padded fresh transcript (>=1MB) and stale decoys generated" "$fixture_ok" "yes"
 mkdoc "- 10:00 WRAPPED - done"
 reset_calls
 start_ts=$(date +%s)

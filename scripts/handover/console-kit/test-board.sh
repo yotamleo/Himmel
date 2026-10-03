@@ -227,6 +227,16 @@ contains 'a READY-TO-OPEN leg awaits the console' "$html" 'data-need="N6"'
 # tail === 'FINDING' before lostLock, so the lock text never rendered.
 contains 'a FINDING leg with a lost lock still shows the lock (issue #1336)' "$html" '<b>N12</b> FINDING — needs a ruling · lock STALE — lost or stale'
 contains 'the Live-state decisions: line renders as open operator decisions' "$html" 'widen the fleet cap to 20?'
+# HIMMEL-3944: a ';' inside parentheses does not split a decision.
+DOCD="$B/HIMMEL-nextleg-2026-09-21V-console-d.md"
+sed 's/^decisions: .*/decisions: A (x; y); B?/' "$DOC" > "$DOCD"  # gnu-ok: console kit is Linux-only
+PATH="$W/bin:$PATH" BOARD_TICK="$W/bin/tick-stub" TICK_ARGV_LOG="$W/argv-d.log" \
+    BOARD_SESSIONS="$W/bin/sessions-empty.sh" \
+    GH_OPEN="$W/open.json" GH_MERGED="$W/merged.json" GH_EPIC="$W/epic.json" GH_VIEW="$W/view" \
+    node "$SUT" --doc "$DOCD" --repo "$W/repo" --out "$W/d-board.html" >/dev/null 2>"$W/stderr.log"
+dpanel="$(sed -n '/Open operator decisions/,/<\/section>/p' "$W/d-board.html")"
+same 'a parenthetical ; keeps one decision whole: exactly two items (HIMMEL-3944)' "$(printf '%s\n' "$dpanel" | grep -c '<li>')" '2'
+contains 'the parenthetical decision renders whole (HIMMEL-3944)' "$dpanel" '<li>A (x; y)</li>'
 
 # --- epics: merged/total from the declared total + the merged PRs citing the key
 contains 'a declared epic shows merged/total' "$html" 'data-epic="HIMMEL-3332" data-merged="2" data-total="4"'
