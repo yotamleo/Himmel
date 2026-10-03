@@ -26,7 +26,7 @@ setup() { # fresh sandbox: fake HOME with minimal ~/.claude, mock claude in BIN
   FAKEHOME="$(mktemp -d)"; WORK="$(mktemp -d)"; BIN="$(mktemp -d)"
   PORT=""   # default: launcher falls back to its documented default port 20128
   mkdir -p "$FAKEHOME/.claude"
-  printf '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","HIMMEL_INITIATIVE":"1"}}' \
+  printf '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","CLAUDE_CODE_AUTO_MODE_SERVER":"1","HIMMEL_INITIATIVE":"1"}}' \
     > "$FAKEHOME/.claude/settings.json"
   printf 'secret' > "$FAKEHOME/.claude/.credentials.json"
   mkdir -p "$FAKEHOME/.claude/plugins/claude-hud"
@@ -123,7 +123,7 @@ t "deleted new-path hud source mirrors removal" 0
 node -e "
 const s=require(process.argv[1]+'/.claude-routed/settings.json');
 if('model' in s) { console.error('model key survived'); process.exit(1); }
-for (const k of Object.keys(s.env||{})) if (k.startsWith('ANTHROPIC_')) { console.error('env.'+k+' survived'); process.exit(1); }
+for (const k of Object.keys(s.env||{})) if (k.startsWith('ANTHROPIC_') || k.toUpperCase()==='CLAUDE_CODE_AUTO_MODE_SERVER') { console.error('env.'+k+' survived'); process.exit(1); }
 if ((s.env||{}).HIMMEL_INITIATIVE!=='1') { console.error('non-ANTHROPIC env entry lost'); process.exit(1); }
 " "$FAKEHOME" || { echo "FAIL: settings sanitization"; FAILS=$((FAILS+1)); }
 
