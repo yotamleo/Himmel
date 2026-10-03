@@ -197,6 +197,8 @@ for a relay that is not coming.
 - **Do the work yourself** unless your brief says otherwise. Delegate only what
   is genuinely independent and sizeable; never spawn a subagent to verify your
   own work.
+- **No unrequested features, tests or files** — keep the diff to what the
+  brief asks.
 - **Token discipline.** Batch every independent tool call of a step into ONE
   turn. Never emit a text-only turn between tool calls. Read files by line
   range, not whole. Your fixed context is re-paid on every API call of a
