@@ -1401,7 +1401,7 @@ Plugins live at `~/.claude/plugins/`. Different install methods per plugin — r
 
 | Plugin | Source | Install method | Why |
 |--------|--------|----------------|-----|
-| `obsidian-second-brain` | `eugeniughelbur/obsidian-second-brain` | manual clone (NOT in himmel marketplace) | Daily notes, kanban, ADRs, vault operating manual |
+| `obsidian-second-brain` | himmel marketplace (sources `eugeniughelbur/obsidian-second-brain`, tag-pinned) | `claude plugin install obsidian-second-brain@himmel` after adding himmel marketplace. Never clone it into `~/.claude/skills/`: a user-scope copy ignores `enabledPlugins` and loads into every session (HIMMEL-4018) | Daily notes, kanban, ADRs, vault operating manual. Opt-in: no named profile enables it; `/profile enable` does |
 | `handover` | himmel marketplace | `/plugin install` after adding himmel marketplace | Handover doc workflows for cross-session continuity |
 | `obsidian-triage` (LUNA-3) | himmel marketplace | `/plugin install` after adding himmel marketplace | Autonomous triage of Web Clipper output: `/triage-clips` + `/synthesize-clips`. Required only if you set up the Web Clipper templates in §5a |
 | `obsidian` (Steph Ango's skills) | himmel marketplace (sources `kepano/obsidian-skills`, SHA-pinned) | `/plugin install` after adding himmel marketplace | `obsidian-markdown`, `obsidian-bases`, `json-canvas`, `obsidian-cli`, `defuddle`. `obsidian-triage` can use `obsidian-markdown` for proper OFM when editing clipped notes (recommended, not required — fallback documented in the command body) |
@@ -1601,14 +1601,16 @@ you ever want the per-turn review back.
 ### Install sequence
 
 ```bash
-# 1. obsidian-second-brain — manual clone (no marketplace); Claude Code loads
-#    user skills from ~/.claude/skills/, not ~/.claude/plugins/ (HIMMEL-2891)
-git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/skills/obsidian-second-brain
-
-# 2. himmel marketplace (carries handover + obsidian-triage + claude-obsidian)
+# himmel marketplace (carries handover + obsidian-triage + claude-obsidian
+# + obsidian-second-brain)
 # inside Claude Code:
 #   /plugin marketplace add yotamleo/himmel
 #   /plugin install handover
+#
+#   # Optional — obsidian-second-brain, tag-pinned (HIMMEL-4018). Install it as
+#   # a plugin, never as a clone under ~/.claude/skills/: a user-scope copy
+#   # ignores enabledPlugins and loads into every session, bare included.
+#   /plugin install obsidian-second-brain   # = claude plugin install obsidian-second-brain@himmel
 #
 #   # Optional — Web Clipper triage stack (skip if §5a was skipped)
 #   /plugin install obsidian-triage
@@ -1619,7 +1621,7 @@ git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/skil
 
 After restoring plugins, verify skills load:
 ```
-/obsidian-daily            # from obsidian-second-brain
+/obsidian-daily            # from obsidian-second-brain, once installed and enabled
 /triage-clips --dry-run    # from obsidian-triage; should exit 0 with "no Clippings/" or per-clip preview
 ```
 
