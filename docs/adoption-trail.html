@@ -869,9 +869,20 @@ bash ~/himmel/scripts/adopt.sh --profile core --scope project --dry-run</pre>
         you type inside a Claude Code session, starting with
         <span class="mono">/</span>) &mdash; only the script it wraps. So
         instead ask it to run
-        <span class="mono">bash scripts/worktree.sh feat/try-himmel</span>
-        and ask again; the edit now goes through in the new worktree. Leave
-        with <span class="mono">/exit</span>.</p>
+        <span class="mono">bash scripts/worktree.sh feat/try-himmel</span>.
+        On success it prints a line beginning
+        <span class="mono">OK new-worktree: feat/try-himmel &rarr; &lt;path&gt;</span>
+        where the path ends in
+        <span class="mono">.claude/worktrees/feat+try-himmel</span>. The
+        script does not move the running session into that folder, so asking
+        again from the same session is still refused. Leave with
+        <span class="mono">/exit</span>, then relaunch inside the printed
+        path:</p>
+        <pre class="cmd">cd &lt;path&gt;
+claude</pre>
+        <p>Ask again for <span class="mono">hello.txt</span>; the edit now
+        goes through in the new worktree. Leave with
+        <span class="mono">/exit</span>.</p>
       </li>
 
       <li>
