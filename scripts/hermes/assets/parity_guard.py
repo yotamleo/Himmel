@@ -165,8 +165,9 @@ _ASSIGN = r"[a-z0-9_]+=(?:'[^']*'|\"[^\"]*\"|[^\s|;&]*)"
 # HIMMEL-4134: parity with the .sh grammar (scripts/guardrails/lib.sh
 # guard_cmdpos_grammar, HIMMEL-3983/3984): a compound keyword or a function
 # body's `{` starts a command (`) {` too), and so do the exec-style wrappers
-# exec, timeout, nohup, nice, time and xargs, each with its own flags.
-_VAL = r"\s+[^-\s]\S*"
+# exec, timeout, nohup, nice, time and xargs, each with its own flags. A flag
+# value may be quoted with a space in it (`exec -a 'my proc' shutdown`).
+_VAL = r"\s+(?:'[^']*'|\"[^\"]*\"|[^-\s]\S*)"
 _CMDPOS_DESTRUCTIVE = (
     r"(?:^|[;&|(`\n]|\)\s*\{)\s*"
     + r"(?:(?:" + _ASSIGN
