@@ -33,7 +33,10 @@
 #                   the extension and the post-settle round get the leftover.
 #                   A deadline hit with checks still pending and nothing failed
 #                   is exit 2 with a `DEADLINE-PENDING` verdict line (not an
-#                   error: re-invoke). Before HIMMEL-4131 N was a per-round cap
+#                   error: re-invoke; exit 7 instead under
+#                   CHECK_CI_DISTINCT_DEADLINE=1, HIMMEL-4136). A value below
+#                   --settle is a usage error (exit 64, HIMMEL-4136): the settle
+#                   wait alone would outlast it. Before HIMMEL-4131 N was a per-round cap
 #                   (default 900,
 #                   HIMMEL-2907 — the measured slowest shell-unit shard runs
 #                   12m16s-12m45s; 0 = unbounded, today's behaviour). HIMMEL-2062: CodeRabbit
@@ -51,8 +54,8 @@
 # (scripts/lib/gh-ci-cache.sh) — N concurrent waiters on one PR cost ONE fetch
 # per TTL — and the watch is scripts/lib/check-ci-watch.sh (adaptive interval)
 # instead of gh's own --watch. On a rate-limit 403, or when the remaining
-# budget is under the floor, it sleeps until the reset (bounded by --max-wait)
-# and prints one line. Exit codes and gate decisions are unchanged. Knobs (env):
+# budget is under the floor, it sleeps until the reset (bounded by what is left
+# of --max-wait, HIMMEL-4136) and prints one line. Exit codes and gate decisions are unchanged. Knobs (env):
 #   CHECK_CI_CACHE=0            legacy path: gh's own --watch, no cache
 #   CHECK_CI_CACHE_DIR          default $HOME/.himmel/state/ci-cache
 #   CHECK_CI_CACHE_TTL          poll-read TTL, default 60
@@ -112,6 +115,9 @@
 #       disproved needs a reason; a disposition never carries to a new head),
 #       then re-run
 #   4 — retired (HIMMEL-3360) — no longer emitted.
+#   7 — only under CHECK_CI_DISTINCT_DEADLINE=1 (HIMMEL-4136): the
+#       DEADLINE-PENDING verdict that is otherwise exit 2 — nothing failed, checks
+#       still pending at the --max-wait deadline. Never a red (that stays 1).
 #   5 — GitHub will BLOCK this merge and waiting cannot fix it (HIMMEL-3381): a
 #       check the base branch REQUIRES (rulesets via rules/branches, unioned
 #       with classic protection contexts) never reported within --grace, or the
@@ -149,6 +155,9 @@
 #                            it to `:` so a simulated poll costs no real seconds
 #   CHECK_CI_MAX_WAIT      — default for --max-wait (flag wins; default 900, 0 =
 #                            unbounded; HIMMEL-2062, raised in HIMMEL-2907)
+#   CHECK_CI_DISTINCT_DEADLINE=1 — a DEADLINE-PENDING verdict exits 7 instead of
+#                            2 (HIMMEL-4136), so a caller that re-runs on it
+#                            (merge-on-green) never re-runs on any other exit 2
 #   CHECK_CI_WATCH_INTERVAL — seconds between `gh pr checks --watch` polls
 #                            (default 30; gh's own default is 10). HIMMEL-3190.
 #   CHECK_CI_PROBE_INTERVAL — seconds between watch_decidable probes (default 60;
@@ -200,14 +209,18 @@ exit codes: 0 = checks green + all review threads resolved
                 required-check set could not be read (fails closed). One MERGE-BLOCKED line + one operator DM.
             6 = every gate passed but GitHub's mergeStateStatus refuses the merge (BLOCKED/BEHIND/DIRTY/DRAFT
                 through --grace; HIMMEL-3473). CLEAN/HAS_HOOKS/UNSTABLE pass; UNKNOWN or unreadable = 2.
+            7 = only under CHECK_CI_DISTINCT_DEADLINE=1 (HIMMEL-4136): checks still pending at the --max-wait
+                deadline (the DEADLINE-PENDING verdict that is otherwise 2). Never a red.
+            --max-wait below --settle is a usage error (64, HIMMEL-4136).
 env: CR_PROFILE=none skips reading CodeRabbit's status + body findings entirely (repos without CodeRabbit)
      CR_APP=1|0 forces that same read on/off, overriding the automatic probe (see scripts/lib/cr-available.sh)
      CHECK_CI_SLEEP_CMD replaces the command every wall-clock wait runs (default sleep; hermetic suites set it to :)
      CHECK_CI_MAX_WAIT sets --max-wait's default (default 900 seconds, 0 = unbounded; HIMMEL-2062, raised in HIMMEL-2907)
+     CHECK_CI_DISTINCT_DEADLINE=1 makes a DEADLINE-PENDING verdict exit 7 instead of 2 (HIMMEL-4136)
      CHECK_CI_WATCH_INTERVAL / CHECK_CI_PROBE_INTERVAL set the watch poll (default 30 s) and the early-stop probe (default 60 s)
        cadence — the GitHub GraphQL budget is shared by every leg on the box (HIMMEL-3190)
      GraphQL budget exhausted: check-ci sleeps until X-Ratelimit-Reset (bounded by --max-wait) instead of failing; exit
-       codes keep their meaning (a reset beyond --max-wait is exit 2). GH_BUDGET_PREFLIGHT=0 skips the one preflight call.
+       codes keep their meaning (a reset beyond what is left of --max-wait is exit 2). GH_BUDGET_PREFLIGHT=0 skips the one preflight call.
 note: "armed" above means CodeRabbit's status + body findings are read at the head — DISARMED by default. On a
       repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
       CR_APP=1|0 overrides; CR_PROFILE=none outranks both. On a disarmed repo the CodeRabbit-conditional
@@ -328,6 +341,13 @@ case "$MAX_WAIT" in
     ''|*[!0-9]*) echo "check-ci: --max-wait must be a non-negative integer, got '$MAX_WAIT'" >&2; exit 64 ;;
 esac
 MAX_WAIT=$((10#$MAX_WAIT))   # a leading zero (08) must not read as octal below
+# HIMMEL-4136: the settle wait comes out of the same deadline, so a deadline
+# shorter than it can never certify green — every run would exit 2. Refuse the
+# combination here (flags or the env defaults alike) instead.
+if [ "$MAX_WAIT" -gt 0 ] && [ "$MAX_WAIT" -lt "$SETTLE" ]; then
+    echo "check-ci: --max-wait (${MAX_WAIT}s) is below --settle (${SETTLE}s) — the settle wait alone would outlast the deadline, so no run could go green. Raise --max-wait, lower --settle, or pass --max-wait 0 (unbounded)" >&2
+    exit 64
+fi
 
 # HIMMEL-4131: --max-wait bounds the WHOLE run, not each watch round. RUN_START
 # anchors one deadline; _budget_left is what remains of it (0 once spent).
@@ -335,6 +355,28 @@ RUN_START=$SECONDS
 _budget_left() {
     local left=$((MAX_WAIT - (SECONDS - RUN_START)))
     [ "$left" -lt 0 ] && left=0
+    echo "$left"
+}
+
+# HIMMEL-4136: a DEADLINE-PENDING verdict exits 2 like every other "cannot
+# evaluate", unless the caller opts in with CHECK_CI_DISTINCT_DEADLINE=1 — then
+# it exits 7, so merge-on-green can re-run the watch on a slow-but-healthy CI
+# without also re-running on a gh error or a moved head. Only the two
+# DEADLINE-PENDING sites call this; a red is exit 1 either way.
+_deadline_exit() {
+    if [ "${CHECK_CI_DISTINCT_DEADLINE:-0}" = 1 ]; then exit 7; fi
+    exit 2
+}
+
+# HIMMEL-4136: a GraphQL-budget wait is bounded by what is LEFT of --max-wait,
+# not the whole of it, so the rate-limit waits stay inside the run's deadline.
+# Prints the bound to hand the budget helper (0 = unbounded, as --max-wait 0
+# is); rc 1 = the deadline is already spent, so no wait may be taken at all.
+_rl_bound() {
+    local left
+    if [ "$MAX_WAIT" -eq 0 ]; then echo 0; return 0; fi
+    left=$(_budget_left)
+    [ "$left" -gt 0 ] || return 1
     echo "$left"
 }
 
@@ -360,13 +402,15 @@ RL_RECOVERIES=0
 # preflight saw a healthy budget so waiting would not help): the caller keeps
 # its original fail-closed exit.
 _rl_recover() {
+    local bound
     [ "$RL_RECOVERIES" -ge 3 ] && return 1
-    ghb_wait_for_budget "$MAX_WAIT" "$CHECK_CI_SLEEP_CMD" || return 1
+    bound=$(_rl_bound) || return 1
+    ghb_wait_for_budget "$bound" "$CHECK_CI_SLEEP_CMD" || return 1
     [ "$GHB_WAITED" -eq 1 ] || return 1
     RL_RECOVERIES=$((RL_RECOVERIES + 1))
     return 0
 }
-if ! ghb_wait_for_budget "$MAX_WAIT" "$CHECK_CI_SLEEP_CMD"; then
+if ! rl_bound=$(_rl_bound) || ! ghb_wait_for_budget "$rl_bound" "$CHECK_CI_SLEEP_CMD"; then
     echo "check-ci: GitHub GraphQL budget exhausted and the reset is beyond --max-wait (${MAX_WAIT}s) — cannot evaluate the gate; re-run after the reset" >&2
     exit 2
 fi
@@ -469,18 +513,29 @@ pr_view() {
 # shellcheck source=scripts/lib/gh-ci-cache.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "$0")" && pwd)/lib/gh-ci-cache.sh"
-# A budget wait taken in this process is bounded by --max-wait and goes through the
+# A budget wait taken in this process is bounded by what is LEFT of --max-wait
+# (HIMMEL-4136; _cic_get_bounded sets it before each read) and goes through the
 # same sleep seam as every other wait here (0 = unbounded, as --max-wait 0 is).
 # shellcheck disable=SC2034  # read by the sourced lib/gh-ci-cache.sh
 CIC_MAX_WAIT="$MAX_WAIT"
 CIC_SLEEP_CMD="${CIC_SLEEP_CMD:-$CHECK_CI_SLEEP_CMD}"
+# _cic_get_bounded <ttl> — cic_get with its budget wait bounded by the deadline
+# left. The lib reads 0 as unbounded, so a spent deadline hands it 1.
+_cic_get_bounded() {
+    CIC_MAX_WAIT=0
+    if [ "$MAX_WAIT" -gt 0 ]; then
+        CIC_MAX_WAIT=$(_budget_left)
+        [ "$CIC_MAX_WAIT" -lt 1 ] && CIC_MAX_WAIT=1
+    fi
+    cic_get "$1"
+}
 
 # pr_rows <ttl> — "<bucket>\t<name>" per check. Cached mode reads (or fetches once
 # for the whole fleet) a head-bound snapshot no older than <ttl> seconds; legacy
 # mode is the one direct gh call it always was. rc 1 = unreadable.
 pr_rows() {
     if [ "$CACHE_ON" -eq 1 ]; then
-        cic_get "$1" || return 1
+        _cic_get_bounded "$1" || return 1
         [ -z "$CIC_ROWS" ] || printf '%s\n' "$CIC_ROWS"
         return 0
     fi
@@ -1141,7 +1196,7 @@ watch_round() {
             return $?
         fi
         echo "check-ci: DEADLINE-PENDING — the ${MAX_WAIT}s --max-wait deadline passed with nothing failed (not an error): watch cap reached with non-CodeRabbit checks still pending (${pending_names:-unnamed}) — cannot evaluate the gate; re-run (raise --max-wait). Do NOT infer state from log absence — verify directly: gh pr view <PR> --json state (HIMMEL-2206)" >&2
-        exit 2
+        _deadline_exit
     fi
 
     return 0
@@ -1170,7 +1225,7 @@ if [ "$THREADS_ONLY" -eq 0 ]; then
             # Same three outcomes the direct probe below yields: rows = checks
             # exist (rc 0, or a red the watch will report), an error = its text on
             # stderr, nothing = "no checks reported".
-            if cic_get "$CACHE_TTL"; then
+            if _cic_get_bounded "$CACHE_TTL"; then
                 err=""; rc=0
                 [ -n "$CIC_ROWS" ] || { err="no checks reported"; rc=1; }
             else
@@ -1680,7 +1735,7 @@ if [ "$SETTLE" -gt 0 ]; then
         # The deadline cut the settle window short: a green now would certify a
         # check set late registrars never had their window to join. Not an error.
         echo "check-ci: DEADLINE-PENDING — the ${MAX_WAIT}s --max-wait deadline left only ${settle_for}s of the ${SETTLE}s settle window; not certifying an incomplete check set (not an error, re-invoke)" >&2
-        exit 2
+        _deadline_exit
     fi
     watch_round
 fi
