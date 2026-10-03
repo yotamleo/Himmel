@@ -467,6 +467,26 @@ heredoc_herestring_then_real="echo <<< 'EOF' && cat <<'REAL' > /tmp/y
 rm -rf /tmp/x
 REAL"
 assert_rc "3029d <<< here-string does not shadow a later real heredoc" 0 "$(run_case "$(j_bash "$heredoc_herestring_then_real")")"
+# HIMMEL-4126: an opener inside a quote opened on an EARLIER line is quoted
+# text, not a heredoc; the lines after it run, so the rm must be scanned.
+# shellcheck disable=SC2016  # literal quote/$ payloads are the point
+assert_rc "4126a opener inside a carried ' quote" 2 "$(run_case "$(j_bash $'echo \'\ncat <<"EOF"\n\'\nrm -rf d\nEOF')")"
+assert_rc "4126b continued opener inside a carried ' quote" 2 "$(run_case "$(j_bash $'echo \'\ncat <<"EOF" \\\nEOF\n\'\nrm -rf d\nEOF')")"
+assert_rc "4126c escaped \\\" keeps the \" quote open" 2 "$(run_case "$(j_bash $'echo "a\\"\ncat <<\'EOF\'\n"\nrm -rf d\nEOF')")"
+assert_rc "4126d a ' inside a comment opens nothing" 2 "$(run_case "$(j_bash $'# \'\necho \'\ncat <<"EOF"\n\'\nrm -rf d\nEOF')")"
+assert_rc "4126e an earlier masked opener's body is not code" 2 "$(run_case "$(j_bash $'echo "#"; cat <<\'A\'\n\'\nA\necho \'\ncat <<"X"\n\'\nrm -rf d\nX')")"
+assert_rc "4126f an earlier unquoted heredoc body is not code" 2 "$(run_case "$(j_bash $'cat <<A\n\'\nA\necho \'\ncat <<"X"\n\'\nrm -rf d\nX')")"
+assert_rc "4126g \$\$' is not an ANSI-C quote" 2 "$(run_case "$(j_bash $'echo $$\'\\\' \'\ncat <<"EOF"\n\'\nrm -rf d\nEOF')")"
+assert_rc "4126h a lone CR does not end a comment" 2 "$(run_case "$(j_bash $'# x\r\'\necho \'\ncat <<"EOF"\n\'\nrm -rf d\nEOF')")"
+assert_rc "4126i a quote nested in \"\$( )\" " 2 "$(run_case "$(j_bash $'x="$(echo ")\ncat <<\'EOF\'\n")"\nrm -rf d\nEOF')")"
+# Ordinary heredocs keep their body stripped (an rm in the body is data).
+assert_rc "4126 cat <<'EOF' to f, rm in body" 0 "$(run_case "$(j_bash $'cat <<\'EOF\' > f\nrm -rf build\nEOF')")"
+assert_rc "4126 git commit -F - heredoc" 0 "$(run_case "$(j_bash $'git commit -F - <<\'EOF\'\nfix: rm -rf build\nEOF')")"
+assert_rc "4126 cat <<EOF with \$var" 0 "$(run_case "$(j_bash $'cat <<EOF\n$HOME\nEOF')")"
+assert_rc "4126 heredoc after a one-line ' quote" 0 "$(run_case "$(j_bash $'echo \'a b\'\ncat <<\'EOF\' > f\nrm -rf build\nEOF')")"
+assert_rc "4126 heredoc after a \"it's\" line" 0 "$(run_case "$(j_bash $'echo "it\'s"\ncat <<\'EOF\' > f\nrm -rf build\nEOF')")"
+assert_rc "4126 two heredocs, rm in the second body" 0 "$(run_case "$(j_bash $'cat <<\'A\' > f\nx\nA\ncat <<\'B\' > g\nrm -rf build\nB')")"
+assert_rc "4126 heredoc inside \$( )" 0 "$(run_case "$(j_bash $'git commit -m "$(cat <<\'EOF\'\nfix: thing\nEOF\n)"')")"
 # HIMMEL-3030: no-heredoc path now sets rm_scrub="$cmd_lc" directly instead of
 # re-deriving it via the printf|tr|tr pipeline. cmd_lc folds CR and LF to ';'
 # independently in one `tr` pass; the old pipeline folded CR->LF first, then
@@ -647,6 +667,10 @@ assert_rc "whitespace-only stdin" 2 "$(run_case '   ')"
 # tostring-based allow.)
 assert_rc "array command + rm -rf" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":["rm -rf /tmp/x"]}}')"
 assert_rc "object command + rm -rf" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":{"x":"rm -rf /tmp/x"}}}')"
+# HIMMEL-3986: jq's `//` treats a present false as absent; select on the key.
+assert_rc "command:false + cmd:ls" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":false,"cmd":"ls"}}')"
+# A null command still reads cmd, as `//` did: never allow what main refused.
+assert_rc "command:null + cmd:rm -rf" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":null,"cmd":"rm -rf /tmp/x"}}')"
 
 # HIMMEL-3650: recursive rm spelled with quoted/escaped flag characters. The
 # flag test also runs on a quote/backslash-stripped copy, so these deny like `rm -r`.
