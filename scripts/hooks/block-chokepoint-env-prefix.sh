@@ -1121,8 +1121,10 @@ raw_obfuscated() {
     set +f
     # A slash-less glob word as the SCRIPT operand of a shell or `source`
     # (cd into the directory, then bash g?.sh) names a script the same way.
-    # Only the first non-option operand counts (-o/-O take a value; a -c
-    # word runs a command string, which needs a path or PATH to reach one).
+    # Only the first non-option operand counts (-o/-O, --rcfile and
+    # --init-file take a value; a short cluster holding c runs a command
+    # string, which needs a path or PATH to reach one). Any other --long
+    # option, and a bare --, is skipped (J1685: --norc, --restricted).
     d=${t//\$\(\(/}
     d=${d//\$\(/}
     d=${d//\$\{/}
@@ -1131,7 +1133,7 @@ raw_obfuscated() {
     # `source` counts as any word. The shell may be an absolute path
     # (/bin/bash) or quoted ('bash').
     kw='(then|do|else|elif|if|while|until|time|builtin|command|eval|\{|!|[[:alnum:]_]+=[^[:blank:]]*)'
-    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][oO][[:blank:]]+[[:alnum:]_]+|[-+][^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
+    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][oO][[:blank:]]+[[:alnum:]_]+|--(rcfile|init-file)[[:blank:]]+[^[:blank:]]+|--[^[:blank:]]*|-[^-c[:blank:]]*|\+[^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
     [ "$obf$pobf" = 00 ] && return 0
     clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     if [ "$obf" = 0 ]; then
