@@ -37,11 +37,17 @@ if [ -z "$intent" ]; then
 fi
 
 print_rebuild_remedy() {
-    cat >&2 <<'EOF'
+    # Print the EFFECTIVE index dir (same default as build-skill-index.sh), so
+    # a customised SKILL_INDEX_DIR gets a remedy that rebuilds where it reads.
+    # %q-quote it: the heredoc is unquoted only to splice this one value in,
+    # and $q's text is emitted verbatim (no re-expansion) to stderr.
+    local q
+    q="$(printf '%q' "${SKILL_INDEX_DIR:-$HOME/.claude/skill-index}")"
+    cat >&2 <<EOF
 skill-find: the 'skills' qmd collection is missing or empty — /skill-find
 would otherwise silently fall back to guessing skill/command names. Rebuild it:
-  bash scripts/skill-index/build-skill-index.sh
-  bash -c 'source scripts/lib/qmd-bin.sh; qmd_cmd ingest --collection skills "$HOME/.claude/skill-index"'
+  bash scripts/skill-index/build-skill-index.sh --out $q
+  bash -c 'source scripts/lib/qmd-bin.sh; qmd_cmd ingest --collection skills "\$1"' _ $q
 EOF
 }
 
