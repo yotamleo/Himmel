@@ -6082,6 +6082,11 @@ fi"
                 # non-console relaunch).
                 at_safety_child="${at_safety_child}unset HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_WORKDIR
 "
+                # HIMMEL-4118 F2: same always-clear for the launch-seam vars a
+                # leg or consult carries (LEG_PROFILE_NO_SETTING_SOURCES, the
+                # shim, its binary), so the resumed session never inherits them.
+                at_safety_child="${at_safety_child}unset $(console_context_launch_seam_env_names | tr '\n' ' ')
+"
                 if [ -n "$CONSOLE_PRECOMPACT_DOC" ]; then
                     at_safety_child="${at_safety_child}export HIMMEL_CONSOLE_DOC=$(printf '%q' "$CONSOLE_PRECOMPACT_DOC") HIMMEL_CONSOLE_WORKDIR=$(printf '%q' "$CONSOLE_PRECOMPACT_WORKDIR")
 "

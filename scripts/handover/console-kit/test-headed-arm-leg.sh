@@ -1806,6 +1806,22 @@ rm -f "$tmp/shim-argv"
   bash "$SHIM" --model claude-sonnet-5 "load doc") || true
 check "shim: LEG_PROFILE_NO_SETTING_SOURCES unset adds no --setting-sources" \
   "$(cat "$tmp/shim-argv" 2>/dev/null || true)" "[--model][claude-sonnet-5][load doc]"
+# HIMMEL-4118 F1: under =1 the final argv must keep the empty list. A caller argv that names
+# --setting-sources again (last wins) would re-load the scopes, so the shim refuses, execs nothing.
+for over in '--setting-sources user,project' '--setting-sources=user'; do
+  rm -f "$tmp/shim-argv"; rc=0
+  # shellcheck disable=SC2086 # $over splits into the flag and its value on purpose
+  LEG_CLAUDE_BIN="$shim_argv" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES=1 \
+    bash "$SHIM" --model claude-sonnet-5 $over "load doc" 2>/dev/null || rc=$?
+  check "shim: =1 with a caller '$over' refuses (exit 2)" "$rc" "2"
+  check "shim: =1 with a caller '$over' execs nothing" "$(cat "$tmp/shim-argv" 2>/dev/null || true)" ""
+done
+# Counter-example: without the consult marker a caller --setting-sources passes through untouched.
+rm -f "$tmp/shim-argv"
+LEG_CLAUDE_BIN="$shim_argv" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES='' \
+  bash "$SHIM" --setting-sources user "load doc" || true
+check "shim: no marker, a caller --setting-sources passes through" \
+  "$(cat "$tmp/shim-argv" 2>/dev/null || true)" "[--setting-sources][user][load doc]"
 
 # 18-resolve. A tiny fixture registry exercises all four allowlist shapes
 # (empty/named/unknown/absent) without touching the shipped leg-impl entry.
@@ -3276,6 +3292,18 @@ check "41i a consult doc inside the repo refuses (exit 2)" "$rc" "2"
 contains "41i in-repo refusal says why" "$out" "inside the repo"
 rc=0; out="$(LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4066-a "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41i a consult doc outside the repo still passes (exit 0)" "$rc" "0"
+# HIMMEL-4118 F1: the consult is confined only by the in-repo shim, so a HEADED_ARM_LEG_SHIM
+# pointing anywhere else (here: a stub that would exec claude without --setting-sources) refuses.
+printf '%s\n' '#!/usr/bin/env bash' 'exec claude "$@"' > "$tmp/other-shim41.sh"
+rc=0; out="$(HEADED_ARM_LEG_SHIM="$tmp/other-shim41.sh" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4118-f1 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4118 a consult with a foreign HEADED_ARM_LEG_SHIM refuses (exit 2)" "$rc" "2"
+contains "41i-4118 the foreign-shim refusal names the seam" "$out" "refuses HEADED_ARM_LEG_SHIM"
+# Counter-examples: the override naming the real shim (via a non-canonical spelling) still
+# passes, and a NON-consult profiled launch keeps honouring a foreign shim (test seam).
+rc=0; out="$(HEADED_ARM_LEG_SHIM="$HERE/../console-kit/../../lanes/leg-claude-launcher.sh" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4118-f1 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4118 a consult whose shim override resolves to the real shim passes (exit 0)" "$rc" "0"
+rc=0; out="$(HEADED_ARM_LEG_SHIM="$tmp/other-shim41.sh" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4118-f1 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+not_contains "41i-4118 a non-consult launch does not refuse a foreign shim" "$out" "refuses HEADED_ARM_LEG_SHIM"
 # (b) the ponytail text no longer claims one writable file.
 check "41i ponytail no longer says 'one writable file'" "$(grep -c 'one writable file' "$SCRIPT")" "0"
 # (c) HIMMEL-4069: the consult launches with `--setting-sources ""`, so a user, project or

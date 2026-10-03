@@ -99,6 +99,17 @@ fi
 
 if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ]; then
     PRE+=(--setting-sources "")
+    # (HIMMEL-4118 F1) The consult is confined only if the FINAL argv carries
+    # `--setting-sources ""` and nothing after it names the flag again (the
+    # last occurrence wins, so a caller-built `--setting-sources user,project`
+    # would load the scopes this exists to cut). Refuse rather than launch.
+    for _nss_arg in "$@"; do
+        case "$_nss_arg" in
+            --setting-sources|--setting-sources=*)
+                echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_NO_SETTING_SOURCES=1 (a consult) but the caller's argv names --setting-sources again, which would override the empty list and load the user/project/local scopes" >&2
+                exit 2 ;;
+        esac
+    done
 fi
 
 exec "$CLAUDE_BIN" ${PRE[@]+"${PRE[@]}"} "$@"
