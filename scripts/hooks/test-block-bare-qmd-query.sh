@@ -154,6 +154,18 @@ deny "sh -c 'qmd --index foo query'"
 deny 'echo "x; qmd query"'
 deny "qmd query\"x\"; bash -c 'qmd query'"
 deny "echo \"\$(echo \"'\")\"; bash -c 'qmd query'"
+# ... and so does a QUOTED verb ending it (J1666d).
+deny "bash -c 'qmd \"query\"'"
+deny 'sh -c "qmd '"'search'"'"'
+deny 'echo "x; qmd '"'query'"'"'
+deny "zsh -c 'qmd \"vsearch\"'"
+deny 'bash -c "qmd '"'vsearch'"'"'
+deny "sh -c 'qmd \"search\"'"
+deny "timeout 5 bash -c 'qmd \"query\"'"
+deny "env FOO=1 sh -c 'qmd --index foo \"search\"'"
+deny "nice -n 5 bash -c 'qmd \"vsearch\"'"
+deny "cd /tmp && bash -c 'qmd \"query\"'"
+deny "x=ü bash -c 'qmd \"query\"'"
 # \$"…" is a quote too, in every reading.
 deny 'q$"m"d query x'
 deny 'q$"md" query x'

@@ -343,7 +343,8 @@ BAREEND="$BARE"'$'
 qp_deny() {
     local LC_ALL=C p
     for p in $1; do
-        case "${cmd_lc:0:p}" in *query|*search) ;; *) continue ;; esac
+        # A verb quoted inside the string ends in its own quote (J1666d).
+        case "${cmd_lc:0:p}" in *query|*search|*query[\"\']|*search[\"\']) ;; *) continue ;; esac
         [[ ${cmd_lc:0:p} =~ $BAREEND ]] && return 0
     done
     return 1
