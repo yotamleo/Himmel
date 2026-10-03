@@ -232,6 +232,7 @@ cmd_run() {
   esac
   awk -v m="$MAX_USD" 'BEGIN{exit !(m+0 > 0)}' || die "--max-usd must be a positive number"
   case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
+  [ "$TIMEOUT" -gt 0 ] || die "--timeout must be positive (0 disables timeout)"
 
   CLAUDE_BIN="${LQ_CLAUDE_BIN:-claude}"
   REPO="${LQ_REPO:-$(dirname "$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)")}"

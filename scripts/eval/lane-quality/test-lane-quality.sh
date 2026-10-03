@@ -186,6 +186,10 @@ check "an agent run of unknown cost stops the sweep" '[ "$(wc -l <"$TMP/out9/run
 LQ_FAKE_NOJSON=1 bash "$RUN" run --lane native --model m --tasks shell-red-green --out "$TMP/out11" >"$TMP/run11.log" 2>&1
 check "no judge call after an agent run of unknown cost" '[ ! -s "$TMP/fake.log.judge" ] && [ "$(jq -s ".[0].judge" "$TMP/out11/runs.jsonl")" = null ]'
 
+if bash "$RUN" run --lane native --model m --tasks shell-red-green --no-judge --timeout 0 --out "$TMP/out12" >"$TMP/run12.log" 2>&1; then
+  bad "--timeout 0 is refused"
+else check "--timeout 0 is refused" '[ ! -s "$TMP/out12/runs.jsonl" ]'; fi
+
 echo "4. table"
 bash "$RUN" table "$TMP/out1" >"$TMP/table.md" 2>&1
 check "table has a row per task" '[ "$(grep -c "| native | claude-haiku-4-5 |" "$TMP/table.md")" -ge 2 ]'
