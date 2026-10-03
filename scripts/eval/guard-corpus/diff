@@ -54,6 +54,14 @@
 # deny-expected seeds but the base denied none of them (the positive control
 # never fired, so a clean result proves nothing). Two broken hooks, and a
 # corpus that demonstrated no deny coverage, must never read as clean.
+# Exit 4 = VACUOUS (HIMMEL-4219): deny-expected rows exist and NEITHER side
+# denied any, so the hook fails open on both (typically a missing data
+# dependency); a "0 regressions" there is not a pass. A `VACUOUS:` line prints.
+#
+# DATA DEPS. Each side is materialised as a TREE, not a file: the hook plus
+# scripts/hooks, scripts/guardrails, scripts/lib and the top-level files of
+# scripts/ (e.g. chokepoints.json), per side (git sha export or a copy of that
+# checkout). CHOKEPOINT_REGISTRY is pinned to the side's own registry copy.
 #
 # USAGE
 #   diff --base <hook|sha:path> --head <hook|sha:path> --corpus FILE
@@ -169,6 +177,13 @@ def _find_scripts_root(hook_path):
 
 def _copy_tree(scripts_root, dest_dir):
     dest_scripts = os.path.join(dest_dir, "scripts")
+    os.makedirs(dest_scripts, exist_ok=True)
+    # top-level data files (scripts/chokepoints.json, ...): a hook that reads
+    # one beside itself fails open on BOTH sides without it (HIMMEL-4219).
+    for name in os.listdir(scripts_root):
+        s = os.path.join(scripts_root, name)
+        if os.path.isfile(s):
+            shutil.copy2(s, os.path.join(dest_scripts, name))
     for sub in ("hooks", "guardrails", "lib"):
         s = os.path.join(scripts_root, sub)
         if os.path.isdir(s):
@@ -179,14 +194,19 @@ def _copy_tree(scripts_root, dest_dir):
 def _materialise_tree(repo, sha, dest_dir):
     dest_scripts = os.path.join(dest_dir, "scripts")
     os.makedirs(dest_scripts, exist_ok=True)
-    for sub in ("hooks", "guardrails", "lib"):
+    # "" = the top-level files of scripts/ (non-recursive, blobs only); the
+    # three subtrees are exported recursively (HIMMEL-4219).
+    for sub in ("", "hooks", "guardrails", "lib"):
         # keep the tree's mode (not --name-only): a 100755 helper copied as
         # 0644 would fail only on the sha-materialised side when invoked
         # directly, distorting the base/head comparison (vs _copy_tree, which
         # preserves modes via copytree).
+        if sub:
+            ls_args = ["ls-tree", "-r", sha, "scripts/%s" % sub]
+        else:
+            ls_args = ["ls-tree", sha, "scripts/"]
         listing = subprocess.run(
-            ["git", "-C", repo, "ls-tree", "-r",
-             "%s" % sha, "scripts/%s" % sub],
+            ["git", "-C", repo] + ls_args,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         # A failed listing (bad sha, unreadable repo) must not pass silently as
         # an empty subtree: an incomplete hook dependency tree could let the
@@ -198,6 +218,8 @@ def _materialise_tree(repo, sha, dest_dir):
         for line in listing.stdout.decode("utf-8", "replace").splitlines():
             meta, rel = line.split("\t", 1)
             mode = meta.split()[0]
+            if meta.split()[1] != "blob":
+                continue  # a subtree entry of the non-recursive top listing
             blob = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (sha, rel)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             # a file the listing names but `show` cannot read is a broken tree,
@@ -280,16 +302,22 @@ def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
     # the hook reads stdin, no GIT_* redirect, and the inherited bypass seams
     # (EDIT_ON_MAIN_OK etc.) are absent by construction, so the corpus measures
     # the guard itself.
-    env = _sandbox_env(
+    tree_root = os.path.dirname(os.path.dirname(os.path.dirname(hook_path)))
+    overrides = dict(
         HOME=home,
         HANDOVER_DIR=handover,
         # anchor HIMMEL_REPO at the per-row scratch primary (cwd), never the
         # real checkout: a hook that resolves helpers/state off it stays inside
         # the throwaway, and base and head see the identical sandbox anchor.
         HIMMEL_REPO=cwd,
-        CLAUDE_PROJECT_DIR=os.path.dirname(os.path.dirname(
-            os.path.dirname(hook_path))),
+        CLAUDE_PROJECT_DIR=tree_root,
     )
+    # each side reads ITS OWN registry copy (never an inherited path): set only
+    # when the materialised tree carries one (HIMMEL-4219).
+    registry = os.path.join(tree_root, "scripts", "chokepoints.json")
+    if os.path.isfile(registry):
+        overrides["CHOKEPOINT_REGISTRY"] = registry
+    env = _sandbox_env(**overrides)
     t0 = time.time()
     p = subprocess.Popen(["bash", hook_path], stdin=subprocess.PIPE,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -309,7 +337,14 @@ def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
 
 
 def main(argv):
-    ap = argparse.ArgumentParser(prog="diff", add_help=True)
+    ap = argparse.ArgumentParser(
+        prog="diff", add_help=True,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="exit codes: 0 clean; 1 base-deny/head-allow regression; "
+               "2 setup error or empty corpus; 3 inconclusive (odd rc, "
+               "timeout kill, or deny seeds the base never denied); "
+               "4 VACUOUS (deny-expected rows, neither side denied any: the "
+               "hook fails open, e.g. a missing data dependency).")
     ap.add_argument("--base", required=True, help="hook path or sha:REL/PATH")
     ap.add_argument("--head", required=True, help="hook path or sha:REL/PATH")
     ap.add_argument("--corpus", required=True, help="JSONL from gen")
@@ -446,6 +481,11 @@ def main(argv):
         deny_allowed_both = [r for r in deny_expected
                              if r["base"] == 0 and r["head"] == 0]
         no_deny_control = bool(deny_expected) and not deny_fired
+        # VACUOUS: deny seeds exist and NEITHER side denied any -- a hook that
+        # fails open (missing data dependency, broken registry) on both sides
+        # reads as 0 regressions but proved nothing (HIMMEL-4219).
+        head_fired = [r for r in deny_expected if r["head"] == 2]
+        vacuous = bool(deny_expected) and not deny_fired and not head_fired
 
         print("guard-corpus diff: %d rows" % len(results))
         print("  base-deny/head-allow (REGRESSION): %d" % len(regressions))
@@ -472,6 +512,11 @@ def main(argv):
             print("    DENY-MISSED idx=%d family=%s transform=%s "
                   "(both hooks allowed a deny-expected row)"
                   % (r["idx"], r["family"], r["transform"]))
+        if vacuous:
+            print("VACUOUS: %d deny-expected row(s) and NEITHER base nor head "
+                  "denied any; the hook likely fails open (missing data "
+                  "dependency?) on both sides, so 0 regressions proves nothing"
+                  % len(deny_expected))
 
         if not args.no_json:
             print("JSON " + json.dumps(dict(
@@ -486,6 +531,9 @@ def main(argv):
         # never validly exercised the guard, so it is inconclusive, not clean.
         if odd:
             return 3
+        # distinct from 3: both sides ran cleanly yet neither denied a seed.
+        if vacuous:
+            return 4
         # deny seeds supplied but the base denied none: the positive control
         # never fired, so the "no regression" result proves nothing.
         if no_deny_control:

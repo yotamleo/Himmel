@@ -3352,6 +3352,53 @@ _r4138 "84i commit -m 'a NL touch primary' stays denied (raw reading, pin)" bloc
 _r4138 "84j git commit -m multi-line message (ALLOW)"                  allow 'git -C @W@ commit --allow-empty -m '"'"'fix: x\n\nbody it is\n'"'"''
 }
 
+echo "== HIMMEL-4198/4174/4177 non-plain \$((…)), array values, continuations, case/esac tokens =="
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+# HIMMEL-4198: a `$((…))` value holding `|`, `&`, `&&`, `$(…)` or a backtick,
+# and a backslash-newline in a value, no longer hide the write verb after it.
+_r4138 "86a x=\$((1|2)) touch primary"                                 block 'x=$((1|2)) touch @P@/f'
+_r4138 "86b x=\$(( \$(echo 1) )) touch primary"                        block 'x=$(( $(echo 1) )) touch @P@/f'
+_r4138 "86c x=\$((1&2)) cp into the primary"                           block 'x=$((1&2)) cp @W@/README.md @P@/f'
+_r4138 "86d x=\$((1 && 2)) touch primary"                              block 'x=$((1 && 2)) touch @P@/f'
+_r4138 "86e x=\$((\`echo 1\`)) touch primary"                          block 'x=$((`echo 1`)) touch @P@/f'
+_r4138 "86f x=\\ NL 1 touch primary (line continuation)"              block 'x=\\n1 touch @P@/f'
+_r4138 "86g x=\$((1|2)) rm in the primary"                             block 'x=$((1|2)) rm @P@/README.md'
+_r4138 "86h x=\$((1|2)) sed -i in the primary"                         block 'x=$((1|2)) sed -i s/a/b/ @P@/README.md'
+_r4138 "86i x=\"\$((1|2))\" touch primary"                             block 'x="$((1|2))" touch @P@/f'
+_r4138 "86j x=\$((1|2)) y=\$((3&4)) touch primary"                     block 'x=$((1|2)) y=$((3&4)) touch @P@/f'
+_r4138 "86k x=1\\ NL y=2 touch primary"                               block 'x=1 \\ny=2 touch @P@/f'
+_subst_row "86l x=\$((1|2)) touch primary, cwd /tmp"                   block "x=\$((1|2)) touch $_PR/f" /tmp
+_subst_row "86m x=\$(( \$(echo 1) )) touch ./f, cwd the primary"       block 'x=$(( $(echo 1) )) touch ./f' "$_PR"
+_subst_row "86n x=\$((1&2)) cp into the primary, cwd /tmp"             block "x=\$((1&2)) cp /tmp/a $_PR/f" /tmp
+_subst_row "86o x=\\ NL 1 touch primary, cwd /tmp"                    block "x=\\"$'\n'"1 touch $_PR/f" /tmp
+_subst_row "86p x=\$((1|2)) touch ./f, cwd the primary"                block 'x=$((1|2)) touch ./f' "$_PR"
+_r4138 "86q x=\$((1|2)) touch worktree (ALLOW)"                        allow 'x=$((1|2)) touch @W@/f'
+_r4138 "86r x=\\ NL 1 touch worktree (ALLOW)"                         allow 'x=\\n1 touch @W@/f'
+_r4138 "86s echo '\$((1|2)) touch primary' is text (ALLOW)"            allow 'echo '"'"'x=$((1|2)) touch @P@/f'"'"''
+# The same join reaches a continuation anywhere in the command, not only in
+# an assignment value: bash removes every unquoted backslash-newline.
+_r4138 "86t cp a \\ NL primary/f"                                     block 'cp @W@/README.md \\n@P@/f'
+_r4138 "86u tou\\ NL ch primary/f"                                    block 'tou\\nch @P@/f'
+_r4138 "86v touch \\ NL primary/f"                                    block 'touch \\n@P@/f'
+_r4138 "86w echo x >\\ NL primary/f"                                  block 'echo x >\\n@P@/f'
+_r4138 "86x sed -i \\ NL s/a/b/ primary/README.md"                    block 'sed -i \\ns/a/b/ @P@/README.md'
+_r4138 "86y touch \\ NL worktree/f (ALLOW)"                           allow 'touch \\n@W@/f'
+_r4138 "86z echo '\\ NL' touch primary stays text (ALLOW)"            allow 'echo '"'"'a\\n'"'"'touch @P@/f'
+# HIMMEL-4174: an array value `(…)` is one word, not a subshell break.
+_r4138 "87a x=(a b) touch primary"                                     block 'x=(a b) touch @P@/x'
+_r4138 "87b x+=(a b) touch primary"                                    block 'x+=(a b) touch @P@/x'
+_r4138 "87c x=(a) y=\$((1|2)) touch primary"                           block 'x=(a) y=$((1|2)) touch @P@/x'
+_subst_row "87d x=(a b) touch primary, cwd /tmp"                       block "x=(a b) touch $_PR/x" /tmp
+_subst_row "87e x=(a b) touch ./x, cwd the primary"                    block 'x=(a b) touch ./x' "$_PR"
+_r4138 "87f x=(a b) touch worktree (ALLOW)"                            allow 'x=(a b) touch @W@/x'
+# HIMMEL-4177: only a case/esac TOKEN makes the nested reading fall back,
+# so `showcase` no longer lets a body apostrophe hide a later write.
+_r4138 "88a dq \$(echo showcase; cat <<E it's E); touch primary"       block 'x="$(echo showcase; cat <<E\nit'"'"'s\nE\n)"; touch @P@/f'
+_r4138 "88b dq \$(echo lowercase-esacs; cat <<E it's E); touch primary" block 'x="$(echo lowercase esacs; cat <<E\nit'"'"'s\nE\n)"; touch @P@/f'
+_r4138 "88c dq \$(echo showcase; cat <<E it's E); touch worktree (ALLOW)" allow 'x="$(echo showcase; cat <<E\nit'"'"'s\nE\n)"; touch @W@/f'
+}
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

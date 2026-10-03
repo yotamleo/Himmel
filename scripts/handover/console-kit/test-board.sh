@@ -527,6 +527,38 @@ mrun >/dev/null; rc=$?
 contains 'an invalid manifest falls back to the scan, rc 0' "rc=$rc" 'rc=0'
 contains 'an invalid manifest is reported on stderr, not silently ignored' "$(cat "$W/stderr.log")" 'fleet manifest'
 
+# --- cost today (HIMMEL-4217): one line from the leg cost ledger, never fatal
+LC="$W/leg-cost.jsonl"
+lcrow() { printf '{"date":"%s","leg":"N1","ticket":"HIMMEL-1","class":"%s","cost_eq":%s}\n' "$1" "$2" "$3"; }
+TODAY="$(date +%F)"
+{
+    lcrow "$TODAY" shepherd 100000
+    lcrow "$TODAY" shepherd 300000
+    lcrow "$TODAY" impl 2000000
+    lcrow 2020-01-01 shepherd 99999999
+    printf 'not json\n'
+} > "$LC"
+LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
+same 'cost line: render still succeeds, rc 0' "$rc" "0"
+costhtml="$(cat "$M/board.html")"
+contains 'cost line: counts only today legs (3, not the 2020 row)' "$costhtml" 'data-cost-legs="3"'
+contains 'cost line: total cost-eq' "$costhtml" '2.4M cost-eq'
+contains 'cost line: median per class (even n is the mean of the middle two)' "$costhtml" 'shepherd 200k'
+contains 'cost line: second class' "$costhtml" 'impl 2.0M'
+LEG_COST_LEDGER="$W/no-such-ledger.jsonl" mrun >/dev/null; rc=$?
+same 'cost line: absent ledger, rc 0' "$rc" "0"
+lacks 'cost line: absent ledger renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+mkdir -p "$W/ledger-is-a-dir.jsonl"
+LEG_COST_LEDGER="$W/ledger-is-a-dir.jsonl" mrun >/dev/null; rc=$?
+same 'cost line: unreadable ledger, rc 0' "$rc" "0"
+lacks 'cost line: unreadable ledger renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+{ lcrow "$TODAY" constructor 5000; lcrow "$TODAY" __proto__ 7000; } > "$LC"
+LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
+contains 'cost line: class names like constructor/__proto__ do not suppress the line' "$(cat "$M/board.html")" 'data-cost-legs="2"'
+printf 'not json\n' > "$LC"
+LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
+lacks 'cost line: a ledger with no usable row today renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
 contains 'no --doc is a usage error (rc 2)' "rc=$rc" 'rc=2'
