@@ -1228,6 +1228,16 @@ assert_deny "4130 /. then a backslash"                "$(j "printf x; bash scrip
 assert_deny "4130 /. then a \$var (empty -> /./)"     "$(j 'printf x; bash scripts/.$v/x.sh')"
 assert_deny "4130 /. then a brace"                    "$(j "printf x; bash /r/.{a,}/scripts/x.sh")"
 assert_deny "4130 worktree path beside a seam assignment and /./" "$(j "${MOG_VAR}=1 setsid -f bash $WT/scripts/./x.sh")"
+# Only a LITERAL dot-directory segment is relieved: an expansion, glob or
+# quote inside the segment (before scripts/) can still resolve anywhere.
+# shellcheck disable=SC2016 # the $s / ${s} are probe text, not expansions
+assert_deny "4130 \${var} inside a dot-dir segment"    "$(j 'printf x; bash /r/.claude${s}/scripts/x.sh')"
+# shellcheck disable=SC2016
+assert_deny "4130 \$var inside a dot-dir segment"      "$(j 'printf x; bash /r/.claude$s/scripts/x.sh')"
+assert_deny "4130 glob inside a dot-dir segment"       "$(j "printf x; bash /r/.c*/scripts/x.sh")"
+assert_deny "4130 quote inside a dot-dir segment"      "$(j "printf x; bash /r/.cl'a'ude/scripts/x.sh")"
+# shellcheck disable=SC2016
+assert_deny "4130 tainted dot-dir before an identical literal one" "$(j 'printf x; bash /.ab$x/.ab/scripts/x.sh')"
 
 # HIMMEL-4130 (HIMMEL-3986 sweep): a PRESENT non-string .command must not
 # fall through to .cmd -- `//` treats false like null, so the hook judged

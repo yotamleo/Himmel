@@ -1047,7 +1047,8 @@ seam_assigned() {
 # close it by registering the assembled path forms or by the structural guard
 # once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr write=0 obf=0 SQ="'"
+    local t="$1" w rest v wv clr d dotdir write=0 obf=0 SQ="'"
+    dotdir='^(.*)/\.[[:alnum:]_][[:alnum:]_.+-]*(/.*|)$'
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
     set -f
@@ -1072,12 +1073,17 @@ raw_obfuscated() {
                 # Blunt, no normaliser: any word containing scripts/ (absolute,
                 # ./, or with a leading directory) spelled with a `/.`
                 # (`/./`, `/../`) or `//` segment can name any path, so it counts.
-                # HIMMEL-4130: a `/.` followed by a name character (a dot
-                # DIRECTORY: /.claude/, /.git/) is not a traversal, so every
-                # absolute worktree path stops counting. Any other next char
-                # (`.` `/` a quote, `\`, `$`, `{`, end of word) still counts.
+                # HIMMEL-4130: a wholly LITERAL dot-directory segment
+                # (/.claude/, /.git/) is not a traversal, so every absolute
+                # worktree path stops counting. Strip those segments (the
+                # rightmost first, by its exact position, never a by-value
+                # replace that could hit an earlier copy), then any `/.` left
+                # still counts: /./ /../ a trailing /. or /.., and a dot
+                # segment carrying a quote, `\`, `$`, `{` or a glob.
                 case "$w" in *//*) obf=1 ;; esac
-                [[ $w =~ /\.([^[:alnum:]_]|$) ]] && obf=1
+                d=$w
+                while [[ $d =~ $dotdir ]]; do d="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+                case "$d" in *'/.'*) obf=1 ;; esac
                 case "$rest" in
                     *[\*\?\[\{\$]*) obf=1 ;;
                 esac ;;
