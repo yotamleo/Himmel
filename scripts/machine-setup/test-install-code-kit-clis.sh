@@ -13,7 +13,7 @@ trap 'rm -rf "$STUBS"' EXIT
 for t in npm apt-get; do printf '#!/bin/sh\nexit 0\n' > "$STUBS/$t"; chmod +x "$STUBS/$t"; done
 for t in bash grep dirname sh env; do ln -s "$(command -v "$t")" "$STUBS/$t" 2>/dev/null || true; done
 
-out="$(PATH="$STUBS" bash "$SCRIPT" --dry-run 2>&1)"; rc=$?
+out="$(unset AST_GREP_VERSION; PATH="$STUBS" bash "$SCRIPT" --dry-run 2>&1)"; rc=$?
 if [ "$rc" = 0 ]; then ok "dry-run exits 0"; else bad "dry-run rc=$rc: $out"; fi
 # The pin literal is rewritten by the drift bump, so read it from the script rather than hardcoding it.
 # shellcheck disable=SC2016 # the ${...} is literal text to match in the script, not an expansion
