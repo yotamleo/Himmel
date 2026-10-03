@@ -1143,6 +1143,39 @@ _wrapper_opt_arg() {
     return 1
 }
 
+# _wrapper_npos — after the exec wrapper $wname, wpos is the count of its own
+# operands before the command: timeout DURATION and taskset MASK take one,
+# whatever its shape (`timeout .5`, `timeout inf`, `taskset ff`; HIMMEL-4149,
+# J1680), so the word after it is the command. Reads the caller's wname and
+# sets its wpos.
+_wrapper_npos() {
+    case "$wname" in timeout|taskset) wpos=1 ;; *) wpos=0 ;; esac
+}
+
+# _wrapper_pos WORD_LC — sets the caller's oparg when WORD is the wrapper's
+# option argument, a bare number (a count or duration), or one of its own
+# operands (_wrapper_npos). A word skipped this way is still judged when it
+# is itself an unjudged command word, so the skip can only over-deny.
+_wrapper_pos() {
+    [ "$oparg" = 1 ] && return 0
+    case "$1" in
+        -*) ;;
+        *) [ "$wpos" -gt 0 ] && wpos=$((wpos - 1)) oparg=1 ;;
+    esac
+    case "$1" in [0-9]*) oparg=1 ;; esac
+    return 0
+}
+
+# _wrapper_pos_opt OPT_LC — taskset's `-c`/`--cpu-list` (alone or in a
+# cluster) takes the cpu list as its argument, so no mask operand follows.
+_wrapper_pos_opt() {
+    [ "$wname" = taskset ] || return 0
+    case "$1" in
+        --cpu-list*|-[!-]*c*) wpos=0 ;;
+    esac
+    return 0
+}
+
 # _uj_dir_itself WORD_LC — 0 when a destination operand can be the `.claude`
 # directory itself: it names one (mentions_dot_claude_dir_dest) and nothing
 # fixed follows it — `~/.claude`, `~/.claude/.`, a glob, brace, expansion or
@@ -1269,20 +1302,21 @@ _uj_text_dests() {
 }
 
 _tok_unjudged_verb() {
-    local k sg cur=-1 done_seg=0 wrapped=0 wname='' oparg=0 txt ntxt w g sc=0 nog=0 i n skip all
+    local k sg cur=-1 done_seg=0 wrapped=0 wname='' oparg=0 wpos=0 txt ntxt w g sc=0 nog=0 i n skip all
     local -a pieces
     UJ_DEST=()
     if [ "$TOK" = 1 ]; then
         k=0
         while [ "$k" -lt "$ST_N" ]; do
             sg=${ST_S[k]}
-            if [ "$sg" != "$cur" ]; then cur=$sg done_seg=0 wrapped=0 oparg=0; fi
+            if [ "$sg" != "$cur" ]; then cur=$sg done_seg=0 wrapped=0 oparg=0 wpos=0; fi
             g=${ST_G[k]}
             if [ "$done_seg" = 0 ] && [ -z "${ST_RO[k]}" ] && [ "${ST_A[k]}" = 0 ]; then
                 # a bare word after an argument-taking wrapper option is its
-                # argument, and a bare number a wrapper's count or duration
+                # argument, a bare number a wrapper's count or duration, and
+                # the first operand of timeout/taskset its duration or mask
                 if [ "$wrapped" != 0 ]; then
-                    case "${ST_LW[k]}" in [0-9]*) oparg=1 ;; esac
+                    _wrapper_pos "${ST_LW[k]}"
                 fi
                 if [ "$oparg" = 1 ]; then
                     oparg=0
@@ -1295,7 +1329,10 @@ _tok_unjudged_verb() {
                     if:0:0|then:0:0|else:0:0|elif:0:0|do:0:0|while:0:0|until:0:0|'!:0:0'|'{:0:0') ;;
                     # `--` ends the wrapper's options: the next word is the command
                     --:?:1) wrapped=2 ;;
-                    -*:?:1) ! _wrapper_opt_arg "$wname" "${ST_LW[k]}" || oparg=1 ;;
+                    -*:?:1)
+                        _wrapper_pos_opt "${ST_LW[k]}"
+                        ! _wrapper_opt_arg "$wname" "${ST_LW[k]}" || oparg=1
+                        ;;
                     [a-z_]*=*:?:[12]) ;;
                     *)
                         done_seg=1 sc=0
@@ -1303,7 +1340,8 @@ _tok_unjudged_verb() {
                         if ! _unjudged_cmd_word "${ST_W[k]}" "${ST_X[k]}" "$g"; then
                             case "${ST_LW[k]}" in
                                 env|sudo|doas|xargs|command|builtin|exec|nohup|nice|ionice|timeout|stdbuf|setsid|taskset|chrt|unbuffer|time|noglob|nocorrect)
-                                    wrapped=1 wname=${ST_LW[k]} done_seg=0 ;;
+                                    wrapped=1 wname=${ST_LW[k]} done_seg=0
+                                    _wrapper_npos ;;
                             esac
                         else
                             _uj_tok_dests "$k" "$sc" && return 0
@@ -1342,11 +1380,11 @@ EOF
         set -- ${pieces[i]}
         [ "$nog" = 1 ] || set +f
         nw=$#
-        wrapped=0 oparg=0
+        wrapped=0 oparg=0 wpos=0
         while [ $# -gt 0 ]; do
             w=0; case "$1" in *'$'*) w=1 ;; esac
             g=0; case "$1" in *[*?[\{\(]*) g=1 ;; esac
-            [ "$wrapped" = 0 ] || case "$1" in [0-9]*) oparg=1 ;; esac
+            [ "$wrapped" = 0 ] || _wrapper_pos "$1"
             if [ "$oparg" = 1 ]; then
                 oparg=0
                 if ! _unjudged_cmd_word "$1" "$w" "$g"; then shift; continue; fi
@@ -1356,10 +1394,12 @@ EOF
                 [a-z_]*=*:?) shift ;;
                 --:1) shift; wrapped=2 ;;
                 -*:1)
-                    ! _wrapper_opt_arg "$wname" "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" || oparg=1
+                    w=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+                    _wrapper_pos_opt "$w"
+                    ! _wrapper_opt_arg "$wname" "$w" || oparg=1
                     shift ;;
                 env:?|sudo:?|doas:?|xargs:?|command:?|builtin:?|exec:?|nohup:?|nice:?|ionice:?|timeout:?|stdbuf:?|setsid:?|taskset:?|chrt:?|unbuffer:?|time:?|noglob:?|nocorrect:?)
-                    wname=$1; shift; wrapped=1 ;;
+                    wname=$1; shift; wrapped=1; _wrapper_npos ;;
                 *) break ;;
             esac
         done
@@ -1572,19 +1612,26 @@ mentions_dot_claude_dir_dest() {
 # and a group with neither, or an unclosed one, stays literal text as bash
 # leaves it; groups nest. A `$name`/`${…}` is any text. With _DC_XONLY=1 (a
 # word whose globs are all quoted) only a `$` expands and the glob, brace and
-# bracket characters are literal. The result is matched against `.claude`,
-# ignoring case. A component without such a character is literal text and is
-# left to the callers' own matching.
+# bracket characters are literal. A zsh group (`.cl(a|x)ude`, `.c(l)aude`)
+# is an alternation too, zsh's extendedglob `#` is any text, and a `^` or `~`
+# makes the rest any text (HIMMEL-4156, J1680) — each a superset of what zsh
+# matches, so the fold can only over-deny. The result is matched against
+# `.claude`, ignoring case. A component without such a character is literal
+# text and is left to the callers' own matching.
 _dc_can_be_claude() {
-    local c=$1 i=0 n=${#1} ch pat='' depth=0 r eg=0 nc=0 gs xo=${_DC_XONLY:-0}
+    local c=$1 i=0 j n=${#1} ch pat='' depth=0 pd=0 r eg=0 nc=0 gs xo=${_DC_XONLY:-0}
     local -a gsa=() cma=()
-    case "$xo:$c" in 1:*'$'*|0:*'*'*|0:*'?'*|0:*'['*|0:*'{'*|0:*'$'*) ;; *) return 1 ;; esac
+    case "$xo:$c" in
+        1:*'$'*|0:*'*'*|0:*'?'*|0:*'['*|0:*'{'*|0:*'$'*) ;;
+        0:*'('*|0:*'#'*|0:*'^'*|0:*'~'*) ;;
+        *) return 1 ;;
+    esac
     while [ "$i" -lt "$n" ]; do
         ch=${c:i:1}
         i=$((i + 1))
         if [ "$xo" = 1 ]; then
             case "$ch" in
-                '{'|'}'|','|'*'|'?'|'['|']') pat="$pat\\$ch"; continue ;;
+                '{'|'}'|','|'*'|'?'|'['|']'|'('|')'|'|'|'#'|'^'|'~') pat="$pat\\$ch"; continue ;;
             esac
         fi
         case "$ch" in
@@ -1608,6 +1655,44 @@ _dc_can_be_claude() {
                 else
                     pat="$pat}"
                 fi
+                ;;
+            '[')
+                # a bracket expression is copied whole, so its `^`/`!`
+                # negation and any `(|#~` in it stay bracket members, not
+                # zsh operators; a `$` in it may expand to any member
+                j=$i
+                case "${c:j:1}" in '!'|'^') j=$((j + 1)) ;; esac
+                [ "${c:j:1}" = ']' ] && j=$((j + 1))
+                while [ "$j" -lt "$n" ] && [ "${c:j:1}" != ']' ]; do j=$((j + 1)); done
+                if [ "$j" -ge "$n" ]; then
+                    pat="$pat\\["
+                else
+                    case "${c:i:j-i}" in
+                        *'$'*) pat="$pat?" ;;
+                        *) pat="$pat[${c:i:j-i+1}" ;;
+                    esac
+                    i=$((j + 1))
+                fi
+                ;;
+            '(') pd=$((pd + 1)) pat="$pat@(" ;;
+            ')')
+                if [ "$pd" -gt 0 ]; then
+                    pd=$((pd - 1)) pat="$pat)"
+                else
+                    pat="$pat\\)"
+                fi
+                ;;
+            '|')
+                if [ "$pd" -gt 0 ]; then
+                    pat="$pat|"
+                else
+                    pat="$pat\\|"
+                fi
+                ;;
+            '#') pat="$pat*" ;;
+            '^'|'~')
+                pat="$pat*"
+                [ "$pd" = 0 ] && [ "$depth" = 0 ] && break
                 ;;
             ',')
                 if [ "$depth" -gt 0 ]; then
@@ -1642,6 +1727,8 @@ _dc_can_be_claude() {
         r=${r//'@('/'{'}
         pat="${pat:0:gs}${r//'|'/,}"
     fi
+    # an unclosed zsh group is closed, so the pattern stays well formed
+    while [ "$pd" -gt 0 ]; do pd=$((pd - 1)) pat="$pat)"; done
     shopt -q extglob && eg=1
     shopt -q nocasematch && nc=1
     shopt -s extglob nocasematch
@@ -1661,12 +1748,14 @@ _dc_can_be_claude() {
 # component starts after a `/`, a space, `=`, `:`, a shell operator or a
 # leading short option (`-t.c?aude`), and begins with `.` or `{`: a glob that
 # begins with `*`, `?` or `[` never matches a dot-name (bash and zsh both need
-# the leading `.` spelled), so `cp src/* d/` is left alone.
+# the leading `.` spelled), so `cp src/* d/` is left alone. A component takes
+# in zsh groups, two deep, `|` included (`.cl(a|x)ude`).
 _dc_name_fold() {
     local t=$1 out='' m c pw
     # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
-    local re='(^-[A-Za-z0-9]*|[[:space:]]-[A-Za-z0-9]*|^|[/[:space:]=:<>|;&(`])([.{][^/[:space:];&|<>()`]*)'
-    local pre='[.{][^/[:space:]]*[][*?{}$]'
+    local re='(^-[A-Za-z0-9]*|[[:space:]]-[A-Za-z0-9]*|^|[/[:space:]=:<>|;&(`])([.{]([^/[:space:];&|<>()`]|\[[^]/[:space:]]*\]|\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\))*)'
+    # shellcheck disable=SC2016 # a literal `$(` in a regex bracket, not expansion
+    local pre='[.{][^/[:space:]]*[][*?{}$(#^~]'
     _DCF=$1
     [[ $t =~ $pre ]] || return 0
     while [[ $t =~ $re ]]; do
@@ -1687,6 +1776,39 @@ _dc_name_fold() {
         [ -n "$m" ] || break
     done
     _DCF=$out$t
+}
+
+# _dc_unquoted TEXT — _DCU is TEXT with each quoted span ('…', "…" and a
+# backslash-escaped character) written as `*`: it is literal to the shell,
+# but it may sit inside a name (`.c'l'(a)ude`), so it stands for any text and
+# a name it is part of can still fold.
+_dc_unquoted() {
+    local s=$1 i=0 n=${#1} ch q=''
+    _DCU=''
+    while [ "$i" -lt "$n" ]; do
+        ch=${s:i:1}
+        i=$((i + 1))
+        case "$q" in
+            "'")
+                [ "$ch" = "'" ] && q='' && _DCU=$_DCU'*'
+                ;;
+            '"')
+                case "$ch" in
+                    '\') i=$((i + 1)) ;;
+                    '"') q='' _DCU=$_DCU'*' ;;
+                esac
+                ;;
+            *)
+                case "$ch" in
+                    "'"|'"') q=$ch ;;
+                    '\') i=$((i + 1)) _DCU=$_DCU'*' ;;
+                    *) _DCU=$_DCU$ch ;;
+                esac
+                ;;
+        esac
+    done
+    # an unclosed quote runs to the end
+    [ -z "$q" ] || _DCU=$_DCU'*'
 }
 
 # _verb_segment TEXT VERB_GREP_PATTERN — the single shell "segment" of TEXT
@@ -2114,6 +2236,21 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # (HIMMEL-4156), in each lowercased word and in the text. A quoted glob
     # never expands, so when the tokenizer vouches only a word carrying an
     # unquoted glob or a live `$` folds, and the text folds only if one did.
+    # A zsh group or extendedglob operator in such a component (`~/.cl(a|x)ude`)
+    # is a syntax error or literal text to bash, so the tokenizer's reading is
+    # not what zsh runs: when one can be `.claude`, the text layer judges the
+    # folded text (J1680).
+    # Only unquoted text counts: a quoted `(` is literal in both shells, so a
+    # quoted regex (`grep -E 'cp .*(a|b)'`) is not a group.
+    # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
+    dc_zre='(^|[/[:space:]=:<>|;&(`])[.{][^/[:space:];&|<>()`]*[(#^~]'
+    if [ "$TOK" = 1 ] && [[ $cmd_lc =~ $dc_zre ]]; then
+        _dc_unquoted "$ST_LOWER"
+        if [[ $_DCU =~ $dc_zre ]]; then
+            _dc_name_fold "$_DCU"
+            [ "$_DCF" = "$_DCU" ] || TOK=0
+        fi
+    fi
     dc_fold=1
     if [ "$TOK" = 1 ]; then
         dc_fold=0 widx=0
