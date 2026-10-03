@@ -1052,7 +1052,7 @@ seam_assigned() {
 # -i) beside an anchor-less path, and zsh <-> numeric ranges (the tr splits
 # at <); close them with the structural guard once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr d u kw cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 SQ="'"
+    local t="$1" w rest v wv clr d u kw ov cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 SQ="'"
     case "$t" in *'('*) xg=1 ;; esac
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
@@ -1133,7 +1133,9 @@ raw_obfuscated() {
     # `source` counts as any word. The shell may be an absolute path
     # (/bin/bash) or quoted ('bash').
     kw='(then|do|else|elif|if|while|until|time|builtin|command|eval|\{|!|[[:alnum:]_]+=[^[:blank:]]*)'
-    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][oO][[:blank:]]+[[:alnum:]_]+|--(rcfile|init-file)[[:blank:]]+[^[:blank:]]+|--[^[:blank:]]*|-[^-c[:blank:]]*|\+[^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
+    # An option value may be quoted, blanks and all (-o "errexit").
+    ov="(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ}|[^[:blank:]\"$SQ]+)+"
+    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][oO][[:blank:]]+${ov}|--(rcfile|init-file)[[:blank:]]+${ov}|--[^[:blank:]]*|-[^-c[:blank:]]*|\+[^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
     [ "$obf$pobf" = 00 ] && return 0
     clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     if [ "$obf" = 0 ]; then

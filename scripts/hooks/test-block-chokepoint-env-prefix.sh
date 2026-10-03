@@ -1334,6 +1334,12 @@ assert_deny "4157 J1685: --norc before a bank-preflight glob" "$(j "cd scripts/l
 assert_deny "4157 J1685: --rcfile X before a quiet-run glob" "$(j "cd scripts; ${QR_VAR}=99 bash --rcfile /dev/null qu?et-run.sh")"
 assert_allow "4157 -c with a glob command string is not a script operand" "$(j "cd scripts/$CK; $UL sh -c 'g?.sh'")"
 assert_allow "4157 --norc on a plain basename" "$(j "export FOO=1; bash --norc go.sh")"
+# A quoted option value is still one value (codex-1, round 4).
+for F in "bash -o \"errexit\" g?.sh" "bash -o 'errexit' g?.sh" "bash +o \"errexit\" g?.sh" \
+         "bash -O \"extglob\" g?.sh" "bash --rcfile '/dev/null x' g?.sh" "bash --init-file \"a b\" g?.sh"; do
+    assert_deny "4157 cd then quoted option value, slash-less glob: $F" "$(j "cd scripts/$CK; $UL $F")"
+done
+assert_allow "4157 quoted -o value on a plain basename" "$(j "export FOO=1; bash -o \"errexit\" go.sh")"
 # A keyword, precommand, assignment prefix or $( also puts source/. in
 # command position (CR on #1685: then source g*.sh).
 for F in "source g*.sh" ". g?.sh" "if true; then source g*.sh; fi" "while :; do . g?.sh; done" \
