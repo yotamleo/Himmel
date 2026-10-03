@@ -17,7 +17,8 @@ out="$(PATH="$STUBS" bash "$SCRIPT" --dry-run 2>&1)"; rc=$?
 if [ "$rc" = 0 ]; then ok "dry-run exits 0"; else bad "dry-run rc=$rc: $out"; fi
 # The pin literal is rewritten by the drift bump, so read it from the script rather than hardcoding it.
 # shellcheck disable=SC2016 # the ${...} is literal text to match in the script, not an expansion
-PIN="$(sed -n's/^AST_GREP_VERSION="\${AST_GREP_VERSION:-\(.*\)}"$/\1/p' "$SCRIPT")"
+PIN="$(sed -n 's/^AST_GREP_VERSION="\${AST_GREP_VERSION:-\(.*\)}"$/\1/p' "$SCRIPT")"
+case "$PIN" in [0-9]*.[0-9]*.[0-9]*) ok "pin extracted: $PIN" ;; *) bad "could not extract the pin from the script: '$PIN'" ;; esac
 case "$out" in *"would run: npm install -g @ast-grep/cli@$PIN"*) ok "ast-grep pinned to $PIN" ;; *) bad "no pinned npm install ($PIN): $out" ;; esac
 case "$out" in *"would run: sudo apt-get install -y shfmt bats"*) ok "shfmt + bats via apt" ;; *) bad "no apt install line: $out" ;; esac
 
