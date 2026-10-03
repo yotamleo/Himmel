@@ -13,7 +13,7 @@
 #
 # Platform guard: no .ps1 twin, by design - the ledger writer is the Linux-only
 # console kit. POSIX bash 3.2+ and jq.
-set -u
+set -u -o pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SINCE=""

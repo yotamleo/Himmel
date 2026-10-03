@@ -46,6 +46,9 @@ rc=0; run --by bogus >/dev/null || rc=$?
 check "bad --by is a usage error (rc 2)" "$rc" "2"
 rc=0; LEG_COST_LEDGER="$W/none.jsonl" bash "$SUT" >/dev/null 2>&1 || rc=$?
 check "absent ledger is an error (rc 1)" "$rc" "1"
+mkdir "$W/dir.jsonl"
+rc=0; LEG_COST_LEDGER="$W/dir.jsonl" bash "$SUT" >/dev/null 2>&1 || rc=$?
+check "unreadable ledger (a directory) is an error, not an empty report" "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
 
 if [ "$fails" -eq 0 ]; then echo "PASS - test-leg-cost-report.sh"; exit 0; fi
 echo "FAIL - test-leg-cost-report.sh ($fails failure(s))"
