@@ -1051,7 +1051,12 @@ raw_obfuscated() {
                 # Blunt, no normaliser: any word containing scripts/ (absolute,
                 # ./, or with a leading directory) spelled with a `/.`
                 # (`/./`, `/../`) or `//` segment can name any path, so it counts.
-                case "$w" in *'/.'*|*//*) obf=1 ;; esac
+                # HIMMEL-4130: a `/.` followed by a name character (a dot
+                # DIRECTORY: /.claude/, /.git/) is not a traversal, so every
+                # absolute worktree path stops counting. Any other next char
+                # (`.` `/` a quote, `\`, `$`, `{`, end of word) still counts.
+                case "$w" in *//*) obf=1 ;; esac
+                [[ $w =~ /\.([^[:alnum:]_]|$) ]] && obf=1
                 case "$rest" in
                     *[\*\?\[\{\$]*) obf=1 ;;
                 esac ;;
@@ -1059,6 +1064,9 @@ raw_obfuscated() {
     done
     set +f
     [ "$obf" = 1 ] || return 0
+    # ponytail: the verb scan also matches inside a quoted argument value
+    # (--set 'reason=...exec...'), skipping quoted spans is a parse rule;
+    # HIMMEL-4135 tracks a proven-safe shape or the HIMMEL-3930 structural parse.
     [[ $t =~ $wv ]] && write=1
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
     # or verb): standalone -u*/-i*/--unset*/--ignore-environment/bare -, declare/typeset +x,

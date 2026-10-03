@@ -1207,6 +1207,28 @@ assert_deny "4095 --i* glob beside quiet-run"                     "$(j "/usr/bin
 assert_deny "4095 --unsetenv beside quiet-run"                    "$(j "bwrap --unsetenv HIMMEL_SUITE_SLOTS --dev-bind / / bash $QR suite -- bash scripts/x.sh")"
 assert_deny "4095 --impacted does not mask a later env -i"        "$(j "bash scripts/ci/run-shell-tests.sh --impacted a..b; /usr/bin/en? -i bash $QR suite -- bash scripts/x.sh")"
 
+# HIMMEL-4130: a dot-DIRECTORY segment (/.claude/, /.git/: `/.` then a name
+# character) is not a traversal, so an absolute worktree path is not obfuscated.
+WT=/home/u/himmel/.claude/worktrees/fix+x
+assert_allow "4130 worktree ledger-append amend, exec in a quoted reason" "$(j "bash $WT/scripts/cr/ledger-append.sh amend --id 3 --set verdict=fixed --reason 'the exec line moved'")"
+assert_allow "4130 grep beside unset/exec in a .claude worktree path" "$(j "grep -n 'unset exec' $WT/scripts/hooks/x.sh")"
+assert_allow "4130 read beside a .git dir path under scripts/" "$(j "read -r l; cat /r/.git/x/scripts/y.sh")"
+# Every traversal spelling still counts, beside a seam write, with no glob.
+assert_deny "4130 scripts/./ beside a write verb"     "$(j "printf x; bash scripts/./x.sh")"
+assert_deny "4130 scripts/../ beside a write verb"    "$(j "printf x; bash scripts/../x.sh")"
+assert_deny "4130 scripts// beside a write verb"      "$(j "printf x; bash scripts//x.sh")"
+assert_deny "4130 scripts/a/../b beside a write verb" "$(j "printf x; bash scripts/a/../b.sh")"
+assert_deny "4130 scripts/ trailing /. beside a write verb"  "$(j "printf x; ls scripts/a/.")"
+assert_deny "4130 scripts/ trailing /.. beside a write verb" "$(j "printf x; ls scripts/a/..")"
+assert_deny "4130 worktree path with a /../ segment"  "$(j "printf x; bash $WT/scripts/a/../x.sh")"
+assert_deny "4130 /.claude/../ is a traversal"        "$(j "printf x; bash /r/.claude/../scripts/x.sh")"
+assert_deny "4130 /. then a quote can join to /./"    "$(j "printf x; bash scripts/.'/'x.sh")"
+assert_deny "4130 /. then a backslash"                "$(j "printf x; bash scripts/.\\/x.sh")"
+# shellcheck disable=SC2016 # the $v is probe text, not an expansion
+assert_deny "4130 /. then a \$var (empty -> /./)"     "$(j 'printf x; bash scripts/.$v/x.sh')"
+assert_deny "4130 /. then a brace"                    "$(j "printf x; bash /r/.{a,}/scripts/x.sh")"
+assert_deny "4130 worktree path beside a seam assignment and /./" "$(j "${MOG_VAR}=1 setsid -f bash $WT/scripts/./x.sh")"
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
