@@ -97,14 +97,18 @@ assert_rc "T11 dangling symlink skipped" 0 "$(run_hook dangling.txt)"
 # T12-T15: hostile names must be scanned, not read as awk assignment / stdin / option
 printf 'requests==2.0\n' > "$TMP/x=1.txt"
 assert_rc "T12 name=value filename unhashed" 1 "$(run_hook x=1.txt)"
+assert_out "T12 names the missing hash" yes "without --hash=sha256"
 printf 'requests==2.0\n' > "$TMP/-"
 assert_rc "T13 file named - unhashed" 1 "$(run_hook -)"
+assert_out "T13 names the missing hash" yes "without --hash=sha256"
 rm -f "$TMP/-"
 printf 'requests==2.0\n' > "$TMP/--"
 assert_rc "T14 file named -- unhashed" 1 "$(run_hook --)"
+assert_out "T14 names the missing hash" yes "without --hash=sha256"
 rm -f "$TMP/--"
 printf 'requests==2.0\n' > "$TMP/-lead.txt"
 assert_rc "T15 file named -lead.txt unhashed" 1 "$(run_hook -lead.txt)"
+assert_out "T15 names the missing hash" yes "without --hash=sha256"
 
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
