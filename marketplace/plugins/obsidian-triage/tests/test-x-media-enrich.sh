@@ -1053,6 +1053,10 @@ HOME="$H2" run_tool "$TH" --min-sub-coverage 80 >"$tmp/th.out" 2>"$tmp/th.err"
 c="$TH/Clippings/clip.md"
 grep -q '^media_transcript_source: platform-subs$' "$c" && a=ok || a=no
 assert "--min-sub-coverage 80 accepts 40/46 = 87 percent subs (default 90 would not)" ok "$a"
+RD="$tmp/vault-round"; make_x_vault "$RD" 1905 ""
+X_TEST_YT_DURATION=44.6 X_TEST_FXT_COUNT="$tmp/fxt-r.count" HOME="$H2" run_tool "$RD" >"$tmp/rd.out" 2>"$tmp/rd.err"
+grep -q '^media_transcript_source: platform-subs$' "$RD/Clippings/clip.md" && a=subs || a=other
+assert "89.7 percent coverage is below the default 90 (no rounding up)" other "$a"
 AU="$tmp/vault-auto"; make_x_vault "$AU" 1904 ""
 export X_TEST_YT_MODE=subs X_TEST_YT_AUTO_ONLY=1 X_TEST_YT_DURATION=40 X_TEST_FXT_COUNT="$tmp/fxt-a.count"
 HOME="$H2" run_tool "$AU" >"$tmp/au.out" 2>"$tmp/au.err"
@@ -1086,6 +1090,13 @@ assert "malformed payload stamps nothing (retried next run)" unstamped "$a"
 echo '{"code":200,"tweet":{"media":"oops"}}' > "$FXB"
 X_TEST_FXT_JSON="$FXB" X_TEST_FXT_COUNT="$tmp/fxt-b.count" HOME="$H2" run_tool "$BV" >"$tmp/bv2.out" 2>"$tmp/bv2.err"
 assert "non-object media does not abort the batch (exit 0)" 0 "$?"
+for bad in '{"code":200,"tweet":{"media":[]}}' '{"code":200,"tweet":{"media":{"videos":{}}}}'; do
+  echo "$bad" > "$FXB"
+  : > "$tmp/fxt-b.count"
+  X_TEST_FXT_JSON="$FXB" X_TEST_FXT_COUNT="$tmp/fxt-b.count" HOME="$H2" run_tool "$BV" >"$tmp/bv4.out" 2>"$tmp/bv4.err"
+  grep -q '^media_probe_at:' "$BV/Clippings/clip.md" && a=stamped || a=unstamped
+  assert "wrong-typed media/videos is a retryable error, no stamp ($bad)" unstamped "$a"
+done
 for root in null '[]' '7'; do
   echo "$root" > "$FXB"
   X_TEST_FXT_JSON="$FXB" X_TEST_FXT_COUNT="$tmp/fxt-b.count" HOME="$H2" run_tool "$BV" >"$tmp/bv3.out" 2>"$tmp/bv3.err"

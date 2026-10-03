@@ -478,9 +478,16 @@ def fxt_probe(x: dict):
     if data.get("code") != 200 or not isinstance(tweet, dict):
         return "error", None
     try:
-        media = tweet.get("media") or {}
-        videos = media.get("videos") or []
-        photos = media.get("photos") or []
+        media = tweet.get("media")
+        if media is None:
+            media = {}
+        videos = media.get("videos")
+        photos = media.get("photos")
+        # present-but-wrong-typed (e.g. "media": [], "videos": {}) is malformed,
+        # not "no media": probing again beats a permanent no-video stamp.
+        if not all(v is None or isinstance(v, list) for v in (videos, photos)):
+            return "error", None
+        videos, photos = videos or [], photos or []
         if not videos:
             return "no-video", None
         total = sum(float(v.get("duration") or 0) for v in videos)
@@ -589,8 +596,9 @@ def fetch_subs(x: dict, min_coverage: float, duration_hint):
         duration = durations[0] if durations else duration_hint
         if not text or not duration:
             continue
-        coverage = min(100, int(round(last_end / duration * 100)))
-        if coverage < min_coverage:
+        raw_cov = min(100.0, last_end / duration * 100)
+        coverage = int(round(raw_cov))
+        if raw_cov < min_coverage:      # unrounded: 89.6% is not 90%
             print(f"yt-dlp(subs): {source} coverage {coverage}% below "
                   f"{min_coverage:g}%; using whisper", file=sys.stderr)
             continue
