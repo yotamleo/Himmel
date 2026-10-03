@@ -1973,6 +1973,11 @@ _subst_row "76zb \$(date) suffix under /tmp from the primary (ALLOW)"      allow
 _subst_row "76zc \$(pwd) prefix of a sibling name (ALLOW)"                 allow "echo x > \"\$(pwd)n\"" "$_PR"
 _subst_row "76zd git rev-parse in a body, output to /tmp (ALLOW)"          allow "echo \"\$(git -C $_PR rev-parse HEAD)\" > /tmp/h"
 _subst_row "76ze \$((1+2)) arithmetic is not a body (ALLOW)"                allow "echo \$((1+2)) > $_W"
+_subst_row "76zf \$'…' inside double quotes is a literal name (ALLOW)"     allow "echo x > \"\$'$_P'\""
+_subst_row "76zg \$'…' inside single quotes is a literal name (ALLOW)"     allow "echo x > '\$'\"'$_P'\""
+_subst_row "76zh quoted \$(pwd) continued into a sibling name (ALLOW)"     allow "echo x > \"\$(pwd)\"n/f" "$_PR"
+_subst_row "76zi quoted \$(pwd) then /n (DENY)"                            block "echo x > \"\$(pwd)\"/n" "$_PR"
+_subst_row "76zj quoted \`pwd\` at the token end then /n (DENY)"            block "cd $_PR; echo x > \"\`pwd\`\"/n"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
