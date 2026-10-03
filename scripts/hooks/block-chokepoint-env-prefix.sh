@@ -1095,7 +1095,7 @@ raw_obfuscated() {
                 case "$d" in *'/.'*) obf=1 ;; esac
                 # HIMMEL-4157: zsh extendedglob # ^ ~ count like * ? [ {.
                 case "$rest" in
-                    *[\*\?\[\{\$\#\^\~]*) obf=1 ;;
+                    *[\*\?\[\{\$\#^\~]*) obf=1 ;;
                 esac ;;
         esac
     done
@@ -1116,7 +1116,7 @@ raw_obfuscated() {
         case "$w" in */*) ;; *) continue ;; esac
         w=${w//\$\(/}
         w=${w//\$\{/}
-        case "${w#[#~]}" in *[\*\?\[\{\(\#\^\~]*) pobf=1 ;; esac
+        case "${w#[#~]}" in *[\*\?\[\{\(\#^\~]*) pobf=1 ;; esac
     done
     set +f
     # A slash-less glob word as the SCRIPT operand of a shell or `source`
