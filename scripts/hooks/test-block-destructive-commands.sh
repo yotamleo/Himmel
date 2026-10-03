@@ -479,6 +479,15 @@ assert_rc "4126f an earlier unquoted heredoc body is not code" 2 "$(run_case "$(
 assert_rc "4126g \$\$' is not an ANSI-C quote" 2 "$(run_case "$(j_bash $'echo $$\'\\\' \'\ncat <<"EOF"\n\'\nrm -rf d\nEOF')")"
 assert_rc "4126h a lone CR does not end a comment" 2 "$(run_case "$(j_bash $'# x\r\'\necho \'\ncat <<"EOF"\n\'\nrm -rf d\nEOF')")"
 assert_rc "4126i a quote nested in \"\$( )\" " 2 "$(run_case "$(j_bash $'x="$(echo ")\ncat <<\'EOF\'\n")"\nrm -rf d\nEOF')")"
+# J1664: a masked opener keeps the space main's strip puts after it, so a
+# flag glued to the opener (`rm <<'EOF'-rf d`) still matches as main's did.
+assert_rc "4126j masked <<'EOF'-rf after a backtick line" 2 "$(run_case "$(j_bash $'echo `x`\nrm <<\'EOF\'-rf d\nEOF')")"
+assert_rc "4126k masked <<\"EOF\"-rf after a backtick line" 2 "$(run_case "$(j_bash $'echo `x`\nrm <<"EOF"-rf d\nEOF')")"
+assert_rc "4126l masked <<'EOF''-rf' after a backtick line" 2 "$(run_case "$(j_bash $'echo `x`\nrm <<\'EOF\'\'-rf\' d\nEOF')")"
+assert_rc "4126m masked <<'EOF'-rf after a \$'x' line" 2 "$(run_case "$(j_bash $'echo $\'x\'\nrm <<\'EOF\'-rf d\nEOF')")"
+# A masked opener can let an earlier heredoc take the rm line as its body;
+# main denied this, so the head must too (never allow what main refused).
+assert_rc "4126n masked opener's line taken by an earlier heredoc" 2 "$(run_case "$(j_bash $'cat <<"EOF"\nrm <<\'EOF\'${IFS}-rf d\nEOF')")"
 # Ordinary heredocs keep their body stripped (an rm in the body is data).
 assert_rc "4126 cat <<'EOF' to f, rm in body" 0 "$(run_case "$(j_bash $'cat <<\'EOF\' > f\nrm -rf build\nEOF')")"
 assert_rc "4126 git commit -F - heredoc" 0 "$(run_case "$(j_bash $'git commit -F - <<\'EOF\'\nfix: rm -rf build\nEOF')")"

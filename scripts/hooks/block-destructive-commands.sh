@@ -374,6 +374,9 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
     _hd_lone_cr=
     _hd_nocrlf="${cmd//$'\r\n'/}"
     [[ $_hd_nocrlf == *$'\r'* ]] && _hd_lone_cr=1
+    # Strips rm_scrub_raw in place. With _hd_check_carried set it also applies
+    # the HIMMEL-4126 disqualifier and sets _hd_carried_hit when that fires.
+    _hd_strip() {
     _hd_budget=8
     while [ "$_hd_budget" -gt 0 ] && [[ $rm_scrub_raw == *'<<'* ]]; do
         _hd_budget=$((_hd_budget - 1))
@@ -387,6 +390,9 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             break
         fi
         _hd_prefix="${rm_scrub_raw%%"$_hd_opener"*}"
+        # rm_scrub_raw is exactly prefix + opener + rest, so the rest is taken
+        # by offset: `${rm_scrub_raw#"$_hd_prefix"...}` matched the prefix as a
+        # pattern, quadratic in its length (seconds at 90 KB; J1664 note 2).
         # A third `<` right before this match means the "<<" matched here is
         # actually the tail of a `<<<` here-string operator, not a heredoc
         # redirect. Bash never reads a body for `<<<` - its whole "value" is
@@ -396,7 +402,7 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         # equal the here-string's word (HIMMEL-3029). Disqualify with the same
         # mask-and-continue mechanism as the mid-quote/comment cases below.
         if [[ $_hd_prefix == *'<' ]]; then
-            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw:${#_hd_prefix}+${#_hd_opener}}"
             continue
         fi
         # An opener sitting inside an OPEN quote on its own physical line is
@@ -429,11 +435,12 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         _hd_sq="${_hd_line_prefix//[^\']/}"
         _hd_dq="${_hd_line_prefix//[^\"]/}"
         _hd_hash="${_hd_line_prefix//[^#]/}"
-        if (( ${#_hd_sq} % 2 == 1 || ${#_hd_dq} % 2 == 1 )) || [[ -n $_hd_hash ]] || ! _hd_carried_clean "$_hd_prefix"; then
-            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+        if (( ${#_hd_sq} % 2 == 1 || ${#_hd_dq} % 2 == 1 )) || [[ -n $_hd_hash ]] ||
+            { [ -n "$_hd_check_carried" ] && ! _hd_carried_clean "$_hd_prefix" && _hd_carried_hit=1; }; then
+            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw:${#_hd_prefix}+${#_hd_opener}}"
             continue
         fi
-        _hd_tail="${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+        _hd_tail="${rm_scrub_raw:${#_hd_prefix}+${#_hd_opener}}"
         # HIMMEL-3991 (judge J1643): bash joins a backslash-newline on the
         # opener line before it reads the body, so `cat <<'EOF' \<NL>/dev/null`
         # starts its body a line later. Join first, or the strip below takes
@@ -480,6 +487,18 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             break
         fi
     done
+    }
+    # J1664: the disqualifier masks an opener main stripped, and a later
+    # heredoc can then take lines main scanned. When it fired, also scan
+    # main's strip of the same text, so the head never allows what main
+    # refused. The `;` line keeps the two copies apart through the join.
+    _hd_in="$rm_scrub_raw" _hd_check_carried=1 _hd_carried_hit=
+    _hd_strip
+    if [ -n "$_hd_carried_hit" ]; then
+        _hd_head="$rm_scrub_raw" rm_scrub_raw="$_hd_in" _hd_check_carried=
+        _hd_strip
+        rm_scrub_raw="${_hd_head}"$'\n;\n'"${rm_scrub_raw}"
+    fi
 fi
 rm_scrub="${rm_scrub_raw//$'\n'/;}"
 fi
