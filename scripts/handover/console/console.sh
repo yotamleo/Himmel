@@ -1052,6 +1052,9 @@ cmd_new() {
     set +C
     [ "$claimed" -eq 1 ] || { err "all letters A-Z, AA-ZZ (past ZZ) are taken for today's '$name' console in $state_dir"; exit 1; }
     local session="${prefix}-nextleg-${date}${letter}-${name}"
+    # HIMMEL-4204: the Telegram inbox, resolved here (same default as
+    # arm-resume.sh / bus.ts) so step 10/11 print a literal, runnable path.
+    local inbox="${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/${session}.md"
     local fill_signal="$chain_dir/sig-$session"
     local log="$chain_dir/launch-$session.log"
 
@@ -1113,6 +1116,7 @@ cmd_new() {
         PREDECESSOR "none — first console of the chain" \
         PREDECESSOR_HANDOFF "none" \
         SESSION_NAME "$session" \
+        INBOX "$inbox" \
         HANDOVER_ROOT "$root" \
         STATE_DIR "$state_dir" \
         REPO "$repo" \
@@ -1269,6 +1273,9 @@ cmd_next() {
 
     local doc="$state_dir/${prefix}-nextleg-${successor_date}${successor_letter}-${name}.md"
     local session="${prefix}-nextleg-${successor_date}${successor_letter}-${name}"
+    # HIMMEL-4204: the Telegram inbox, resolved here (same default as
+    # arm-resume.sh / bus.ts) so step 10/11 print a literal, runnable path.
+    local inbox="${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/${session}.md"
     # HANDOFF sits beside the predecessor's OWN doc, not in $state_dir — a
     # --doc pointing outside $state_dir (a different bucket, a different
     # root entirely) must still get its HANDOFF written next to it.
@@ -1365,6 +1372,7 @@ cmd_next() {
         PREDECESSOR "$predecessor_base" \
         PREDECESSOR_HANDOFF "$predecessor_handoff_ref" \
         SESSION_NAME "$session" \
+        INBOX "$inbox" \
         HANDOVER_ROOT "$root" \
         STATE_DIR "$state_dir" \
         REPO "$repo" \

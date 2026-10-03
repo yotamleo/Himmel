@@ -53,6 +53,11 @@ export HIMMELCTL_CACHE_DIR="$tmp/himmelctl-cache"
 # operator's real registry (Do-Not: tests use scratch copies only).
 export HANDOVER_REGISTRY="$tmp/no-registry-for-this-suite.json"
 
+# HIMMEL-4204: console.sh renders the resolved inbox path into every doc. Pin
+# BRIDGE_ROOT under $tmp for the WHOLE suite so no doc embeds the operator's
+# real home directory (case 8 scans the temp root for private strings).
+export BRIDGE_ROOT="$tmp/bridge"
+
 fails=0
 check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
@@ -119,6 +124,15 @@ docB="$root/tester/demorepo/DEMO-nextleg-${today}B-console.md"
 out1="$(console new --bucket demorepo)"
 check "1 new writes the console doc" "$([ -f "$docA" ] && echo yes)" "yes"
 check "2 doc has no surviving placeholder" "$(grep -c '{{' "$docA" 2>/dev/null)" "0"
+# HIMMEL-4204: the step-10/11 commands carry the RESOLVED literal inbox path,
+# never a ${BRIDGE_ROOT:-...} expansion guard-pr-check-literal denies.
+check "2b doc has no BRIDGE_ROOT expansion" "$(grep -c 'BRIDGE_ROOT' "$docA" 2>/dev/null)" "0"
+# shellcheck disable=SC2016  # literal, unexpanded on purpose
+check "2b step-10/11 commands carry no \${ expansion" "$(grep -E 'console-wait.sh|`: >> ' "$docA" 2>/dev/null | grep -cF '${')" "0"
+check "2b doc names the BRIDGE_ROOT override inbox literally" "$(grep -cF "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}A-console.md" "$docA" 2>/dev/null)" "3"
+docInboxDefault="$root/tester/inboxdefault/DEMO-nextleg-${today}A-console.md"
+( unset BRIDGE_ROOT; HOME="$tmp/inboxhome" console new --bucket inboxdefault >/dev/null 2>&1 )
+check "2c unset BRIDGE_ROOT renders the HOME default inbox literally" "$(grep -cF "$tmp/inboxhome/.claude/handover/bridge/consoles/DEMO-nextleg-${today}A-console.md" "$docInboxDefault" 2>/dev/null)" "3"
 
 check "3 new prints release-token" "$(printf '%s\n' "$out1" | grep -c '^release-token: ')" "1"
 token1="$(token_of "$out1")"
@@ -240,6 +254,8 @@ check "6 next writes successor stub" "$([ -f "$doc6B" ] && echo yes)" "yes"
 check "6 next writes predecessor HANDOFF" "$([ -f "$handoff6A" ] && echo yes)" "yes"
 check "6 successor stub names the predecessor" "$(grep -c "DEMO-nextleg-${today}A-console.md" "$doc6B")" "1"
 check "6 successor has no surviving placeholder" "$(grep -c '{{' "$doc6B" 2>/dev/null)" "0"
+check "6 successor has no BRIDGE_ROOT expansion" "$(grep -c 'BRIDGE_ROOT' "$doc6B" 2>/dev/null)" "0"
+check "6 successor names its inbox literally" "$(grep -cF "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}B-console.md" "$doc6B" 2>/dev/null)" "3"
 check "6 handoff has no surviving placeholder" "$(grep -c '{{' "$handoff6A" 2>/dev/null)" "0"
 
 # --- 6c (HIMMEL-3266): the GENERATED stub and HANDOFF must not tell the
