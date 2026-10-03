@@ -321,8 +321,73 @@ python3 "$GEN" --seed 1 --seeds-file "$TMP/miss-seeds.txt" -o "$TMP/miss-corpus.
 OUT6=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
         --corpus "$TMP/miss-corpus.jsonl" --jobs 4 2>&1); RC6=$?
 has "deny-control: warning present" "$OUT6" "NO deny-side coverage"
-if [ "$RC6" = "3" ]; then pass "deny-control: no base deny => inconclusive exit 3"
-else fail "deny-control: expected exit 3, got $RC6"; fi
+# HIMMEL-4219: neither side denied => VACUOUS, the distinct exit 4 (was 3).
+has "deny-control: VACUOUS line" "$OUT6" "VACUOUS: "
+if [ "$RC6" = "4" ]; then pass "deny-control: neither side denies => VACUOUS exit 4"
+else fail "deny-control: expected exit 4, got $RC6"; fi
+# the base never denies but the head DOES: not vacuous, still inconclusive (3).
+python3 "$DIFF" --base "$TMP/head-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 >/dev/null 2>&1; RC6B=$?
+if [ "$RC6B" = "3" ]; then pass "deny-control: base never denies, head does => exit 3"
+else fail "deny-control: expected exit 3 for base-allow/head-deny, got $RC6B"; fi
+
+# --- 6b. HIMMEL-4219: data deps materialised per side, VACUOUS flagged --------
+# (a) a planted hook that FAILS OPEN without its registry. Copied alone (the old
+# way: no scripts/ tree beside it) its registry is missing, it allows every row,
+# and the run must read VACUOUS, not clean.
+cat > "$TMP/regdep-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+reg="${CHOKEPOINT_REGISTRY:-$d/../chokepoints.json}"
+input=$(cat)
+[ -r "$reg" ] || exit 0
+case "$input" in *SENTINEL_DENY*) exit 2 ;; esac
+exit 0
+STUB
+chmod +x "$TMP/regdep-hook.sh"
+OUT6A=$(python3 "$DIFF" --base "$TMP/regdep-hook.sh" --head "$TMP/regdep-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC6A=$?
+has "vacuous: planted fail-open hook flagged" "$OUT6A" "VACUOUS: "
+if [ "$RC6A" = "4" ]; then pass "vacuous: standalone hook without registry => exit 4"
+else fail "vacuous: expected exit 4, got $RC6A"; fi
+# control: the same hook inside a scripts/ tree that carries the registry
+# denies, so the run is not vacuous (proves the copy is what changes the result).
+mkdir -p "$TMP/planted/scripts/hooks"
+cp "$TMP/regdep-hook.sh" "$TMP/planted/scripts/hooks/regdep-hook.sh"
+printf '{}\n' > "$TMP/planted/scripts/chokepoints.json"
+python3 "$DIFF" --base "$TMP/planted/scripts/hooks/regdep-hook.sh" \
+        --head "$TMP/planted/scripts/hooks/regdep-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 >/dev/null 2>&1; RC6C=$?
+if [ "$RC6C" = "0" ]; then pass "vacuous-control: registry copied into the tree => exit 0"
+else fail "vacuous-control: expected exit 0 with registry in tree, got $RC6C"; fi
+
+# (b) the REAL block-chokepoint-env-prefix.sh, base (git sha) vs the same head
+# (path), denies its deny seed rows: the registry resolves per side, so the run
+# is not vacuous. Seeds are the hook suite's own registry-pair shape.
+REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
+if git -C "$REPO_ROOT" cat-file -e "HEAD:scripts/hooks/block-chokepoint-env-prefix.sh" 2>/dev/null \
+   && command -v jq >/dev/null 2>&1; then
+  cat > "$TMP/choke-seeds.txt" <<SEEDS
+env-prefix	deny	CR_REQUIRE_CROSS_MODEL=1 bash scripts/cr/clear-cr-marker.sh --list
+env-prefix	deny	env CR_REQUIRE_CROSS_MODEL=x bash scripts/cr/clear-cr-marker.sh
+exec-probe	allow	touch $TMP/choke-must-not-exist
+SEEDS
+  python3 "$GEN" --seed 1 --seeds-file "$TMP/choke-seeds.txt" -o "$TMP/choke-corpus.jsonl"
+  OUT6D=$(python3 "$DIFF" \
+      --base "sha:HEAD:scripts/hooks/block-chokepoint-env-prefix.sh" \
+      --head "$REPO_ROOT/scripts/hooks/block-chokepoint-env-prefix.sh" \
+      --corpus "$TMP/choke-corpus.jsonl" --repo "$REPO_ROOT" --jobs 4 2>&1); RC6D=$?
+  hasnt "real-hook: not vacuous" "$OUT6D" "VACUOUS: "
+  hasnt "real-hook: base denied its seeds" "$OUT6D" "(base denied 0;"
+  if [ "$RC6D" = "0" ]; then pass "real-hook: base-vs-same-head denies seeds, exit 0"
+  else fail "real-hook: expected exit 0, got $RC6D"; fi
+  # (c) the no-exec guarantee holds on the tree-materialised path too: the
+  # touch row above was piped to the hook, never run.
+  if [ -e "$TMP/choke-must-not-exist" ]; then fail "real-hook: diff EXECUTED a row (sentinel created)"
+  else pass "real-hook: no row was executed"; fi
+else
+  echo "SKIP real-hook (hook not in HEAD or jq missing)"
+fi
 
 # --- 7. a malformed corpus is a setup error (exit 2), never a regression ----
 # CodeRabbit: json.loads on a truncated line, or a row missing
