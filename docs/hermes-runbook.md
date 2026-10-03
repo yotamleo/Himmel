@@ -167,6 +167,14 @@ profile with `hermes profile use himmel_agent` (or the generated wrapper).
 `SOUL.md` is identity only — project specifics (repo conventions, vault rules)
 stay in each context's `AGENTS.md` / `CLAUDE.md` / vault `_CLAUDE.md`.
 
+**`hermes profile use` is sticky, and `hermes config set` follows it.** Once a
+profile is active, `hermes config set KEY VAL` without `-p` writes to that
+profile (for example `himmel_agent`), not to `default`. Pass `-p default` (or
+the profile you mean) every time. To update hermes itself, run `hermes update
+--yes --no-gateway-restart`: it never starts a gateway you have stopped. A plain
+`git fetch` inside the install checkout can crash, because the install is a
+`tree:0` partial clone and git's `pack-objects` hits an internal BUG there.
+
 **Tier coupling — capability follows the model, not the other way round.**
 A weaker free-tier model holding the full `parity_guard` (write code, run git,
 open PRs) is risky, and the pre-tool guard can't tell at call time which model
