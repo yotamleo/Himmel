@@ -363,13 +363,15 @@ qp_deny() {
 # shellcheck disable=SC1003 # a literal backslash in the tr set
 ansi_q() {
     local t=${cmd//\\$'\n'/}
-    t=${t//\$\'/$'\001'}
-    t=${t//\$\"/$'\001'}
+    t=${t//\$\'/$'\002'}
+    t=${t//\$\"/$'\002'}
     printf '%s' "$t" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;' | LC_ALL=C tr -d '"'\''\\'
 }
-AQ_PROG='[^[:space:];&|]*'$'\001''[^[:space:];&|]*'
-AQ_ARGS="${CMDPOS}${QMDPROG}[[:space:]][^;&|]*"$'\001'
-AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\001'"|${QMDVERB})"
+# The sentinel is 0x02, not 0x01: bash 3.2's =~ drops a literal 0x01 (its
+# internal CTLESC) from the regex, fixed only in bash 4.2.14.
+AQ_PROG='[^[:space:];&|]*'$'\002''[^[:space:];&|]*'
+AQ_ARGS="${CMDPOS}${QMDPROG}[[:space:]][^;&|]*"$'\002'
+AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\002'"|${QMDVERB})"
 deny=0
 if res=$(qmd_words "$cmd"); then
     words=${res%%$'\n'*}
