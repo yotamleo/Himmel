@@ -1798,8 +1798,10 @@ _bwimc_ansic_ambig() {
                 while [ "${#h}" -lt 3 ]; do
                     case "${s:$k:1}" in [0-7]) h="$h${s:$k:1}"; k=$((k+1)) ;; *) break ;; esac
                 done
-                case "$h" in *[!0]*) : ;; *) nul=1 ;; esac ;;
-            c) [ "${s:$k:1}" = '@' ] && nul=1; k=$((k+1)) ;;
+                # The byte wraps mod 256, so `\400` is a NUL as well as `\0`.
+                [ $((8#$h & 255)) = 0 ] && nul=1 ;;
+            # bash masks the control char to 5 bits: `\c@`, `\c`` and `\c ` are all NUL.
+            c) case "${s:$k:1}" in '@'|'`'|' ') nul=1 ;; esac; k=$((k+1)) ;;
         esac
         [ "$nul" = 1 ] || continue
         if [ "$k" -lt "${#s}" ]; then

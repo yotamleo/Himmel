@@ -3280,6 +3280,11 @@ _r4138 "81a \\x00 ends the name inside the primary"                     block "e
 _r4138 "81b \\0 ends the name inside the primary"                       block "echo x > \$'@P@/f\\0/../../zz'"
 _r4138 "81c NUL at the span end, word continues"                       block "echo x > \$'@P@/f\\0'/../../zz"
 _r4138 "81d read -d \$'\\0' stays allowed (ALLOW)"                      allow "while IFS= read -r -d \$'\\0' f; do :; done < /dev/null"
+# CR codex-1: octal wraps mod 256 and bash masks \c to 5 bits, so these are NUL too.
+_r4138 "81e \\400 ends the name inside the primary"                     block "echo x > \$'@P@/f\\400/../../zz'"
+_r4138 "81f \\c\` ends the name inside the primary"                     block "echo x > \$'@P@/f\\c\`/../../zz'"
+_r4138 "81g \\c<space> ends the name inside the primary"                block "echo x > \$'@P@/f\\c /../../zz'"
+_r4138 "81h \\377 stays a byte, worktree write (ALLOW)"                 allow "echo x > \$'@W@/f\\377/../zz'"
 }
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
