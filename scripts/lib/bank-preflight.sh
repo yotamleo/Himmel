@@ -781,10 +781,12 @@ if [ "$_fleet_admitted" -eq 1 ]; then
     for _fleet_debris in "$SLOTS"/.admit.stale.* "$SLOTS"/.admit.reclaim.broken.*; do
       [ -d "$_fleet_debris" ] || continue
       _fleet_debris_seen="$(cat "$_fleet_debris/seen" 2>/dev/null)" || _fleet_debris_seen=""
+      # HIMMEL-4125: bounded digits, read base 10 — a leading zero ("08") is not
+      # octal, and an overlong string is a corrupt stamp (re-stamped, kept).
       case "$_fleet_debris_seen" in
-        ''|*[!0-9]*) printf '%s\n' "$_fleet_now" > "$_fleet_debris/seen" 2>/dev/null; continue ;;
+        ''|*[!0-9]*|????????????*) printf '%s\n' "$_fleet_now" > "$_fleet_debris/seen" 2>/dev/null; continue ;;
       esac
-      [ $((_fleet_now - _fleet_debris_seen)) -ge "${FLEET_ADMIT_DEBRIS_SECS:-600}" ] && rm -rf "$_fleet_debris" 2>/dev/null
+      [ $((_fleet_now - 10#$_fleet_debris_seen)) -ge "${FLEET_ADMIT_DEBRIS_SECS:-600}" ] && rm -rf "$_fleet_debris" 2>/dev/null
     done
     for _fleet_resv in "$SLOTS"/*/; do
       [ -d "$_fleet_resv" ] || continue

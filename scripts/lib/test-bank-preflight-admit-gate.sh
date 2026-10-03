@@ -695,5 +695,24 @@ check "(n) recently-seen debris is kept" present "$([ -e "$slots_n/.admit.stale.
 check "(n) a live reservation is untouched and counted" "present 1" \
   "$([ -e "$slots_n/HIMMEL-resv" ] && echo present || echo gone) $(grep -c 'reserved=1 total=1/4' "$W/n.err")"
 
+# --- (o) HIMMEL-4125: a leading-zero debris stamp is decimal, not octal -------
+# `08` / `0000000008` are invalid octal, so an unguarded `$((now - seen))` dies
+# with "value too great for base". Read base 10 it is a long-ago stamp: pruned.
+# Must still REFUSE: an overlong digit string (a corrupt stamp) is never
+# trusted as an age — it is re-stamped and the debris kept.
+slots_o="$W/slots-o"; rm -rf "$slots_o"
+mkdir -p "$slots_o/.admit.stale.1.1" "$slots_o/.admit.stale.2.2"
+builtin printf '%s\n' 0000000008 > "$slots_o/.admit.stale.1.1/seen"
+builtin printf '%s\n' 000000000000000000000000000001 > "$slots_o/.admit.stale.2.2/seen"
+env -u FLEET_ADMIT_TEST_HOOK FLEET_CAP_OK= CADENCE_BANK_LAUNCH= HIMMEL_FLEET_SLOTS="$slots_o" FLEET_PS_CMD="$W/ps/ps" FLEET_PROC="$W/ps/proc" \
+  CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" HIMMEL_FLEET_CAP=4 \
+  bash "$SUT" </dev/null >"$W/o.out" 2>"$W/o.err"
+check "(o) the run completes to a PROCEED verdict" PROCEED "$(cat "$W/o.out")"
+check "(o) leading-zero stamp raises no arithmetic error" absent "$(if grep -q 'value too great' "$W/o.err"; then echo present; else echo absent; fi)"
+check "(o) leading-zero long-seen debris is pruned" gone "$([ -e "$slots_o/.admit.stale.1.1" ] && echo present || echo gone)"
+check "(o) overlong stamp is refused: debris kept" present "$([ -e "$slots_o/.admit.stale.2.2" ] && echo present || echo gone)"
+check "(o) overlong stamp is re-stamped to a nonempty numeric value within the production bound" bounded \
+  "$(case "$(cat "$slots_o/.admit.stale.2.2/seen" 2>/dev/null)" in (''|*[!0-9]*|????????????*) echo unbounded ;; (*) echo bounded ;; esac)"
+
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]
