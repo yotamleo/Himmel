@@ -28,6 +28,21 @@
 # command boundary and is a false DENY — the safe direction — and variable
 # indirection (`q=qmd; $q query`) is a miss.
 #
+# HIMMEL-4121: the regex also runs over the command's words after bash-style
+# quote removal (qmd_words below), so a verb or program spelled through
+# quote-splitting (`qmd "qu"ery`), `$'…'` (`qmd $'\x71uery'`) or a backslash
+# (`qmd \query`, `q"md" query`) is refused, and `qmd "query"" notes"` — the
+# one argument `query notes` — is not.
+# ponytail: the verb in a variable (`v=query; qmd "$v" x`) is still a miss —
+# nothing is expanded; closing it needs value tracking, revisit if an agent is
+# seen spelling the verb that way (HIMMEL-4121).
+# ponytail: a nested shell string (`bash -c "qmd q\"uery\" x"`) is matched on
+# its raw text only, one level deep; normalise the -c argument too if that
+# spelling turns up (HIMMEL-4121). A heredoc makes qmd_words decline and the
+# quote-stripped text decide, which over-denies; the shared tokenizer
+# (scripts/hooks/lib/shell-tokenize.sh, HIMMEL-912) models heredocs and can
+# replace qmd_words once a third inlined copy is wired into its sync suite.
+#
 # ponytail: Bash only — a PowerShell `qmd query` is unguarded; wire a
 # PowerShell twin if a Windows station starts running qmd ad hoc (HIMMEL-3960).
 #
@@ -78,12 +93,181 @@ esac
 
 # Lower-case and fold newlines to ';' so the anchors below see one line.
 cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
+# The same text with every quote and backslash deleted: `q"md"`, `\qmd` and
+# `$'qmd'` all read `qmd` here.
+crude=${cmd_lc//\$\'/\'}
+# shellcheck disable=SC1003 # a literal backslash in the tr set
+crude=$(printf '%s' "$crude" | LC_ALL=C tr -d '"'\''\\')
 
-# Cheap pre-filter: no `qmd` anywhere, nothing to check.
-case "$cmd_lc" in
-    *qmd*) ;;
+# Cheap pre-filter: no `qmd` anywhere, even with the quotes removed, and no
+# `$'…'` that could decode to it — nothing to check.
+case "$cmd_lc$crude" in
+    *qmd*|*\$\'*) ;;
     *) exit 0 ;;
 esac
+
+# qmd_words CMD — print CMD with each word's quotes and escapes removed the
+# way bash removes them (HIMMEL-4121), so `qmd "qu"ery`, `qmd $'\x71uery'`,
+# `qmd \query` and `q"md" query` all print `qmd query`, while
+# `qmd "query"" notes"` prints `qmd query_notes` — one word, not the verb.
+# A byte that came from inside quotes, an escape or `$'…'` prints as itself
+# when it is a plain character and as `_` when it is a blank, a quote, a
+# backslash or a shell operator, so quoted data never reads as a word break,
+# a command boundary or a quote. Unquoted text, `$(…)` and backticks
+# (including those inside "…") print as they are, a newline as `;`, and a
+# comment is dropped. Nothing is expanded: `$x` prints as `$x`.
+# Returns 1 for what it does not model — an unterminated quote or `$(`, a
+# heredoc (`<<`), a command over 16 KiB — and the caller falls back.
+# shellcheck disable=SC1003,SC2016 # literal backslash, $ and ` bytes
+qmd_words() {
+    local LC_ALL=C
+    local s="$1" out='' ctx='' top='' c c2 d v i=0 n ws=1 drop k
+    n=${#s}
+    [ "$n" -le 16384 ] || return 1
+    while [ "$i" -lt "$n" ]; do
+        c=${s:i:1}
+        c2=${s:i+1:1}
+        top=''
+        [ -z "$ctx" ] || top=${ctx:${#ctx}-1:1}
+        if [ "$top" = S ]; then
+            if [ "$c" = "'" ]; then ctx=${ctx%?}; else _qw_q "$c"; fi
+            i=$((i + 1))
+            continue
+        fi
+        if [ "$top" = D ]; then
+            case "$c" in
+                '"') ctx=${ctx%?}; i=$((i + 1)) ;;
+                '\')
+                    case "$c2" in
+                        '$'|'`'|'"'|'\') _qw_q "$c2"; i=$((i + 2)) ;;
+                        $'\n') i=$((i + 2)) ;;
+                        *) _qw_q '\'; i=$((i + 1)) ;;
+                    esac
+                    ;;
+                '$')
+                    if [ "$c2" = '(' ]; then
+                        out=$out'$('; ctx=${ctx}P; ws=1; i=$((i + 2))
+                    else
+                        out=$out'$'; i=$((i + 1))
+                    fi
+                    ;;
+                '`') out=$out'`'; ctx=${ctx}B; ws=1; i=$((i + 1)) ;;
+                *) _qw_q "$c"; i=$((i + 1)) ;;
+            esac
+            continue
+        fi
+        # Unquoted: the top level, or a `$(…)` / backtick opened inside "…".
+        case "$c" in
+            "'") ctx=${ctx}S; ws=0; i=$((i + 1)) ;;
+            '"') ctx=${ctx}D; ws=0; i=$((i + 1)) ;;
+            '\')
+                case "$c2" in
+                    $'\n') ;;
+                    '') _qw_q '\' ;;
+                    *) _qw_q "$c2"; ws=0 ;;
+                esac
+                i=$((i + 2))
+                ;;
+            '$')
+                ws=0
+                if [ "$c2" = '"' ]; then
+                    ctx=${ctx}D; i=$((i + 2))
+                elif [ "$c2" = "'" ]; then
+                    # ANSI-C quoting: decode bash's escapes. A NUL ends the
+                    # word's value; the rest of the `$'…'` is dropped.
+                    i=$((i + 2)) drop=0
+                    while :; do
+                        [ "$i" -lt "$n" ] || return 1
+                        c=${s:i:1}
+                        [ "$c" = "'" ] && { i=$((i + 1)); break; }
+                        if [ "$c" != '\' ]; then
+                            [ "$drop" = 1 ] || _qw_q "$c"
+                            i=$((i + 1))
+                            continue
+                        fi
+                        c2=${s:i+1:1}
+                        v=-1 k=0
+                        case "$c2" in
+                            [0-7])
+                                d=$c2 k=2
+                                while [ "$k" -lt 4 ]; do
+                                    case "${s:i+k:1}" in [0-7]) d=$d${s:i+k:1}; k=$((k + 1)) ;; *) break ;; esac
+                                done
+                                v=$(( 8#$d & 255 ))
+                                ;;
+                            x|u|U)
+                                case "$c2" in x) d=2 ;; u) d=4 ;; U) d=8 ;; esac
+                                v='' k=2
+                                while [ "$k" -lt $((d + 2)) ]; do
+                                    case "${s:i+k:1}" in [0-9a-fA-F]) v=$v${s:i+k:1}; k=$((k + 1)) ;; *) break ;; esac
+                                done
+                                if [ -n "$v" ]; then
+                                    v=$(( 16#$v ))
+                                    [ "$c2" != x ] || v=$(( v & 255 ))
+                                else
+                                    v=-1 k=1
+                                fi
+                                ;;
+                            c) v=1 k=3 ;;
+                            a|b|e|E|f|n|r|t|v) v=1 k=2 ;;
+                            '\'|"'"|'"'|'?') v=-2 k=2 ;;
+                            *) k=1 ;;
+                        esac
+                        if [ "$drop" = 0 ]; then
+                            if [ "$v" -eq 0 ]; then
+                                drop=1
+                            elif [ "$v" -eq -2 ]; then
+                                _qw_q "$c2"
+                            elif [ "$v" -gt 32 ] && [ "$v" -lt 127 ]; then
+                                printf -v d '%03o' "$v"
+                                printf -v d '%b' "\\0$d"
+                                _qw_q "$d"
+                            elif [ "$v" -ne -1 ]; then
+                                out=${out}_
+                            else
+                                _qw_q '\'
+                            fi
+                        fi
+                        i=$((i + k))
+                    done
+                else
+                    out=$out'$'; i=$((i + 1))
+                fi
+                ;;
+            '#')
+                if [ "$ws" = 1 ]; then
+                    while [ "$i" -lt "$n" ] && [ "${s:i:1}" != $'\n' ]; do i=$((i + 1)); done
+                else
+                    out=$out'#'; i=$((i + 1))
+                fi
+                ;;
+            '<')
+                if [ "$c2" = '<' ]; then
+                    [ "${s:i+2:1}" = '<' ] || return 1
+                    out=$out'<<<'; i=$((i + 3))
+                else
+                    out=$out'<'; i=$((i + 1))
+                fi
+                ws=1
+                ;;
+            '(') [ "$top" != P ] || ctx=${ctx}P; out=$out'('; ws=1; i=$((i + 1)) ;;
+            ')') [ "$top" != P ] || ctx=${ctx%?}; out=$out')'; ws=1; i=$((i + 1)) ;;
+            '`') [ "$top" != B ] || ctx=${ctx%?}; out=$out'`'; ws=1; i=$((i + 1)) ;;
+            $'\n'|$'\r') out=$out';'; ws=1; i=$((i + 1)) ;;
+            ' '|$'\t'|';'|'&'|'|'|'>') out=$out$c; ws=1; i=$((i + 1)) ;;
+            *) out=$out$c; ws=0; i=$((i + 1)) ;;
+        esac
+    done
+    [ -z "$ctx" ] || return 1
+    printf '%s' "$out"
+}
+# _qw_q C — append a quoted or escaped byte to qmd_words' output.
+_qw_q() {
+    case "$1" in
+        [[:alnum:]./~@:,+=%^-]) out=$out$1 ;;
+        *) out=${out}_ ;;
+    esac
+}
 
 # EXEPFX / ASSIGN / SEP are block-git-stash.sh's, verbatim.
 EXEPFX='["'\'']?([a-z]:)?([^[:space:]|;&`"'\'']*[/\\])?'
@@ -105,9 +289,30 @@ QMDOPTS='('"${SEP}"'-[^[:space:]]+('"${SEP}${QMDOPTVAL}"')?)*'
 # quote, so it is still the verb. The quotes must match around the verb alone,
 # so `qmd "query notes"` (one argument, not the verb) is not refused.
 QMDVERB='(query|search|vsearch)'
-BARE="${CMDPOS}${QMDPROG}${QMDOPTS}${SEP}"'('"${QMDVERB}"'|"'"${QMDVERB}"'"|'\''('"${QMDVERB}"')'\'')([^[:alnum:]_-]|$)'
+BARE="${CMDPOS}${QMDPROG}${QMDOPTS}${SEP}"'('"${QMDVERB}"'|"'"${QMDVERB}"'"|'\''('"${QMDVERB}"')'\'')'
+BOUND='([^[:alnum:]_-]|$)'
+# On the raw text a quote after the verb continues the word (`qmd "query""
+# notes"` is the one argument `query notes`), so it is no boundary there; the
+# normalised words below decide whether that word is still the verb.
+RAWBOUND='([^[:alnum:]_"'\''-]|$)'
 
-if [[ $cmd_lc =~ $BARE ]]; then
+# Two readings, deny on either (HIMMEL-4121). The raw text keeps what quote
+# removal hides — a separator or a nested `bash -c "qmd query"` inside quoted
+# data. The normalised words see the verb and program bash will run after its
+# quote removal. When the normaliser declines (a heredoc, an unterminated
+# quote), the raw text falls back to the pre-HIMMEL-4121 match plus the
+# quote-stripped text, which over-denies rather than misses.
+deny=0
+if words=$(qmd_words "$cmd"); then
+    words_lc=$(printf '%s' "$words" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    if [[ $words_lc =~ $BARE$BOUND ]] || [[ $cmd_lc =~ $BARE$RAWBOUND ]]; then
+        deny=1
+    fi
+elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
+    deny=1
+fi
+
+if [ "$deny" = 1 ]; then
     bounded="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)/qmd-bounded.sh"
     cat >&2 <<DENY
 block-bare-qmd-query: a bare qmd query/search/vsearch is refused (HIMMEL-3956).

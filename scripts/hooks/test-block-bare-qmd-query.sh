@@ -87,6 +87,34 @@ deny 'qmd "vsearch" x'
 deny "qmd --index luna 'query' x"
 deny "timeout 60 qmd 'query' x"
 deny 'bun ~/.himmel/qmd-fork/src/cli/qmd.ts "search" x'
+# HIMMEL-4121: bash removes quotes and escapes before qmd sees a word, so a
+# verb or program spelled through them is still the verb or program.
+deny 'qmd "qu"ery x'
+deny 'qmd q"uery" x'
+deny "qmd qu''ery x"
+deny "qmd \$'query' x"
+deny "qmd \$'\\x71uery' x"
+deny "qmd \$'q\\165ery' x"
+deny "qmd \$'\\u0071uery' x"
+deny "qmd \$'query\\x00 notes' x"
+deny 'qmd \query x'
+deny 'qmd Q\UERY x'
+deny 'q"md" query x'
+deny "\\qmd search x"
+deny "\$'qmd' vsearch x"
+deny 'qmd query"" x'
+deny "qmd query'' x"
+deny 'qmd "query"$(true) x'
+deny 'qmd --index "lu"na q"uery" x'
+deny "timeout 60 q'md' qu\"ery\" x"
+deny 'cd /tmp && q"md" "qu"ery x'
+deny 'echo "$(qmd q"uery" x)"'
+deny 'out="`qmd q"uery" x`"'
+deny 'bun ~/.himmel/qmd-fork/src/cli/q"md".ts "se"arch x'
+deny "echo don't # it's a comment
+qmd q\"uery\" x"
+deny 'qmd qu\
+ery x'
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
@@ -114,6 +142,16 @@ allow "qmd 'search the vault' y"
 allow 'echo qmd "query" x'
 allow 'grep -rn "qmd \"query\"" scripts/'
 allow "bash scripts/lib/qmd-bounded.sh 'query' -c luna x"
+# HIMMEL-4121: a word that only STARTS with a quoted verb is a longer word.
+allow 'qmd "query"" notes" y'
+allow "qmd 'query'' notes' y"
+allow 'qmd query" notes" y'
+allow "qmd \$'query notes' y"
+allow "qmd \$'query\\tnotes' y"
+allow 'qmd "query"x y'
+allow 'echo q"md" "qu"ery x'
+allow 'grep -rn "q\"md\" q\"uery\"" scripts/'
+allow 'printf "%s\n" "a; qmd" status'
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \
