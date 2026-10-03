@@ -418,5 +418,19 @@ append "$(format_totals_line "$all_reads" "$all_writes" "$all_inputs" "$all_outp
 
 fi # _econ_enabled
 
+# ── Doctor segment (HIMMEL-4251): FAIL/WARN counts from the daily doctor-cadence
+# state file. Read-only and one small file: no doctor run here. Silent when the
+# file is absent, malformed or clean (0 FAIL 0 WARN).
+doc_counts="$(cat "${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}/counts" 2>/dev/null || true)"
+case "$doc_counts" in
+    fail=[0-9]*" warn="[0-9]*)
+        doc_fail="${doc_counts#fail=}"; doc_fail="${doc_fail%% *}"
+        doc_warn="${doc_counts##*warn=}"
+        case "$doc_fail$doc_warn" in
+            *[!0-9]*) ;;
+            *) [ "$((10#$doc_fail + 10#$doc_warn))" -gt 0 ] && append "$(printf 'doctor  %s FAIL  %s WARN' "$doc_fail" "$doc_warn")" ;;
+        esac ;;
+esac
+
 printf '%s\n' "$lines"
 exit 0

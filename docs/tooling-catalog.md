@@ -1868,6 +1868,20 @@ should monitor it daily not as a puller and with tokens"). Pure bash + `gh` +
   a dormant flag, since the launch surface (mission-doc generation, model pin,
   workspace pre-trust) is real scope for an already-sized leg. Arming is
   operator-invoked: `bash scripts/upstreams/upstream-watch-cadence.sh arm`.
+- `scripts/doctor-cadence.sh run|arm|status|disarm` (HIMMEL-4251) — the daily
+  `himmel-doctor` run, so a standing FAIL is seen in a day, not nine
+  (HIMMEL-4243). `run` executes the doctor from the **primary** checkout
+  (resolved through git-common-dir; a worktree run gives false C16 reds) and
+  keeps `last.tsv` / `prev.tsv` / `counts` under
+  `~/.himmel/state/doctor-cadence/`. A FAIL, or a WARN id absent from the
+  previous run, goes to Telegram through `scripts/luna/cadence-alert.sh`; the
+  first-ever run is a baseline (FAILs only); a doctor that prints no Summary
+  line alerts too. `hud-custom-lines.sh` shows `doctor  N FAIL  M WARN` from
+  `counts` (read-only, silent when absent or clean). Registered in
+  `cadence-registry.json` as `doctor`; cron only (Windows is parked).
+  Report-only: repair is `himmel-update`'s drift pass (HIMMEL-4246). Arming is
+  operator-invoked: `bash scripts/doctor-cadence.sh arm`. Test:
+  `scripts/test-doctor-cadence.sh`.
 
 ---
 

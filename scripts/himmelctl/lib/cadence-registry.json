@@ -50,6 +50,14 @@
       "recommended": false
     },
     {
+      "id": "doctor",
+      "label": "himmel-doctor daily check",
+      "script": "scripts/doctor-cadence.sh",
+      "description": "daily himmel-doctor run from the primary checkout; a FAIL or a new WARN goes to Telegram and the statusline shows the counts — report only, fixes nothing (HIMMEL-4251). Cron only (Linux/macOS)",
+      "requires": "none",
+      "recommended": false
+    },
+    {
       "id": "repo-sync",
       "label": "repo sync + stale-worktree cleanup",
       "script": "scripts/sync/repo-sync-cadence.sh",
