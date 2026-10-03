@@ -504,7 +504,9 @@ assert_deny_unres "1813: \\c on the stop-worker chokepoint"  "$(j "env -S '${SW_
 assert_deny_unres "1813: other escape (\\t)"                 "$(j "env -S 'bash $MERGE_ON_GREEN\\t'")"
 assert_deny_unres "1813: backslash inside single quotes"     "$(j "env -S \"bash '$MERGE_ON_GREEN\\\\c'\"")"
 assert_deny_unres "1813: \\_ inside double quotes"           "$(j "env -S '\"${MOG_VAR}=1\\_\" bash $MERGE_ON_GREEN'")"
-assert_deny_unres "1813: mid-word #"                         "$(j "env -S 'bash $MERGE_ON_GREEN#'")"
+# HIMMEL-4157: a mid-word # in a path is a zsh extendedglob operator (go.sh#
+# = go.s + zero or more h), so the text layer now denies it first.
+assert_deny "1813: mid-word #"                               "$(j "env -S 'bash $MERGE_ON_GREEN#'")"
 assert_deny_unres "1813: \${VARNAME} expansion"              "$(j "env -S '\${HM_1813_X} bash $MERGE_ON_GREEN'")"
 assert_deny_unres "1813: newline inside the -S string"        "$(j "env -S '${MOG_VAR}=1 bash"$'\n'"$MERGE_ON_GREEN\\c'")"
 assert_deny_unres "1813: ; inside the -S string"              "$(j "env -S 'true;bash $MERGE_ON_GREEN\\c'")"
@@ -1292,6 +1294,58 @@ assert_allow "4148 grouping basename with no seam write"              "$(j "bash
 assert_allow "4148 grep alternation under scripts/ with no write"     "$(j "grep -E 'scripts/(a|b)' notes.txt")"
 # shellcheck disable=SC2016 # $(pwd) is probe text, not an expansion
 assert_allow "4148 \$(pwd) before scripts/ beside printf"             "$(j 'printf x; bash "$(pwd)/scripts/x.sh"')"
+
+# HIMMEL-4157 (judge J1677): a glob or grouping can hide the scripts/ anchor
+# itself, and zsh extendedglob has non-paren operators (# ## ^ ~). Each was
+# execution-verified under zsh -c to run go.sh with HIMMEL_CONSOLE_LEG dropped.
+# A metachar in ANY segment of a path word now counts, scripts/ or not.
+CK=handover/console-kit
+UL="env -u HIMMEL_CONSOLE_LEG"
+XG="setopt extendedglob; $UL"
+for P in /r/w /r/w/. "$WT2" ./x; do
+    assert_deny "4157 scr(ipts)/ hides the anchor under $P"     "$(j "$UL $P/scr(ipts)/$CK/g(o).sh")"
+    assert_deny "4157 (scripts)/ hides the anchor under $P"     "$(j "$UL $P/(scripts)/$CK/g(o).sh")"
+    assert_deny "4157 {scripts,x}/ hides the anchor under $P"   "$(j "$UL $P/{scripts,x}/$CK/g(o).sh")"
+    assert_deny "4157 scrip?s/ + g?.sh under $P"                "$(j "$UL $P/scrip?s/$CK/g?.sh")"
+    assert_deny "4157 scrip#ts/ (extendedglob) under $P"        "$(j "$XG $P/scrip#ts/$CK/go.sh")"
+    assert_deny "4157 extendedglob gg#o.sh under $P"            "$(j "$XG $P/scripts/$CK/gg#o.sh")"
+    assert_deny "4157 extendedglob g#o.sh under $P"             "$(j "$XG $P/scripts/$CK/g#o.sh")"
+    assert_deny "4157 extendedglob go##.sh under $P"            "$(j "$XG $P/scripts/$CK/go##.sh")"
+    assert_deny "4157 extendedglob ^x.sh under $P"              "$(j "$XG $P/scripts/$CK/^x.sh")"
+    assert_deny "4157 extendedglob g*~x.sh under $P"            "$(j "$XG $P/scripts/$CK/g*~x.sh")"
+done
+assert_deny "4157 cd then ./g?.sh (no scripts/ in the word)"   "$(j "cd scripts/$CK; $UL ./g?.sh")"
+assert_deny "4157 cd then ./g(o).sh"                           "$(j "cd scripts/$CK; $UL ./g(o).sh")"
+for F in "bash g?.sh" "bash g(o).sh" "bash *o.sh" "sh -e {g,x}o.sh" "zsh ^x.sh"; do
+    assert_deny "4157 cd then slash-less glob: $F" "$(j "cd scripts/$CK; $UL $F")"
+done
+for F in "source g*.sh" ". g?.sh"; do
+    assert_deny "4157 cd then sourced slash-less glob: $F" "$(j "cd scripts/$CK; unset HIMMEL_CONSOLE_LEG; $F")"
+done
+assert_allow "4157 a prose '. (' is not a sourced glob" "$(j "echo 'unset HIMMEL_CONSOLE_LEG, done . (see x)'")"
+assert_allow "4157 bash on a plain basename" "$(j "export FOO=1; bash go.sh")"
+# shellcheck disable=SC2016 # $D is probe text, not an expansion
+assert_deny "4157 \$D/g*.sh (anchor in a variable)"            "$(j 'D=scripts/handover/console-kit; env -u HIMMEL_CONSOLE_LEG $D/g*.sh')"
+assert_deny "4157 m(erge-on-green).sh + seam prefix, hidden anchor" "$(j "${MOG_VAR}=1 bash /r/w/scr(ipts)/handover/m(erge-on-green).sh")"
+# Controls: no seam write, or a metachar outside any path word, stays allowed.
+# The anchor-less arm: each writer form of a seam NAME, and each env-clearing
+# form, denies beside a hidden-anchor path; a READ of the name does not.
+HP="bash /r/w/scr(ipts)/handover/m(erge-on-green).sh"
+for F in "unset $MOG_VAR" "unset -v $MOG_VAR" "export $MOG_VAR=x" "declare -x $MOG_VAR=1" \
+         "mapfile -t $MOG_VAR < f" "read $MOG_VAR < f" "printf -v $MOG_VAR x" "(( $MOG_VAR = 1 ))" \
+         ": \${$MOG_VAR:=x}" "for $MOG_VAR in x; do :; done" "n=$MOG_VAR; unset \$n" \
+         "n=$MOG_VAR; env -u \$n true" "env -i true" "env - true" "export -n $MOG_VAR" \
+         "env --unset=$MOG_VAR true" "n=x; export \"\${n}Y=1\"" "n=x; declare -x \$n=1" \
+         "n=x; printf -v \"\$n\" 1"; do
+    assert_deny "4157 anchor-less arm: $F" "$(j "$F; $HP")"
+done
+assert_allow "4157 anchor-less arm: a \$NAME read is not a write" "$(j "echo \$$MOG_VAR; $HP")"
+assert_allow "4157 anchor-less arm: a == test is not a write"     "$(j "[[ \$$MOG_VAR == x ]] && $HP")"
+assert_allow "4157 anchor-less arm: export X=\$(...) is not a dynamic name" "$(j "export FOO=\$(date); $HP")"
+assert_allow "4157 hidden anchor with no seam write"           "$(j "bash /r/w/scr(ipts)/$CK/g(o).sh 1 abc")"
+assert_allow "4157 HEAD^ beside export"                        "$(j "export FOO=1; git show HEAD^")"
+assert_allow "4157 ~/ home path beside export"                 "$(j "export FOO=1; ls ~/notes")"
+assert_allow "4157 a # comment beside export"                  "$(j "export FOO=1 # set foo")"
 
 # HIMMEL-4130 (HIMMEL-3986 sweep): a PRESENT non-string .command must not
 # fall through to .cmd -- `//` treats false like null, so the hook judged

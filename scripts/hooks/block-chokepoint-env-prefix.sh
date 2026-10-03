@@ -1042,14 +1042,17 @@ seam_assigned() {
 # declare/typeset/readonly/let/eval word (the verb alone denies, so the
 # obfuscated seam NAME -- export "$n=1" -- is covered when the path is also
 # obfuscated; an obfuscated NAME beside a LITERAL chokepoint path stays a
-# residual of this layer). ponytail: a program word that hides BOTH its
-# `scripts/` anchor and its glob (`$D/m*.sh`, a word assembled from
-# variables, or `cd` into the directory then `./g?.sh` / `./g(o).sh`) is not
-# a scripts/ word, so only the basename backstop sees it;
-# close it by registering the assembled path forms or by the structural guard
-# once HIMMEL-3930 lands.
+# residual of this layer). HIMMEL-4157 closed a glob or grouping that hides
+# the anchor (scr(ipts)/, (scripts)/, {scripts,x}/, scrip?s/, `cd` then
+# ./g?.sh, ./g(o).sh or bash g?.sh, $D/g*.sh) and the zsh extendedglob
+# operators # ## ^ ~: any path word with a metachar in any segment, and any
+# glob word handed to a shell or `source`, now counts (second loop below).
+# ponytail: still open -- a word assembled wholly from variables ($D/$B, no
+# metachar), an obfuscated seam NAME or an obfuscated env word (/usr/bin/en?
+# -i) beside an anchor-less path, and zsh <-> numeric ranges (the tr splits
+# at <); close them with the structural guard once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr d cw='/.claude/worktrees/' xg=0 write=0 obf=0 SQ="'"
+    local t="$1" w rest v wv clr d u cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 SQ="'"
     case "$t" in *'('*) xg=1 ;; esac
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
@@ -1090,8 +1093,9 @@ raw_obfuscated() {
                     d=${w//"$cw"/\/}
                 fi
                 case "$d" in *'/.'*) obf=1 ;; esac
+                # HIMMEL-4157: zsh extendedglob # ^ ~ count like * ? [ {.
                 case "$rest" in
-                    *[\*\?\[\{\$]*) obf=1 ;;
+                    *[\*\?\[\{\$\#\^\~]*) obf=1 ;;
                 esac ;;
         esac
     done
@@ -1100,11 +1104,74 @@ raw_obfuscated() {
     # (#i)GO.sh -- this station's Bash runs zsh -c, which globs them to the
     # chokepoint) left every piece plain. Re-split keeping the parens: any `(`
     # after scripts/ in a word counts, like the glob characters above.
+    # HIMMEL-4157: a glob or grouping can hide the scripts/ anchor itself
+    # (scr(ipts)/, {scripts,x}/, scrip?s/, or cd then ./g?.sh), and zsh
+    # extendedglob adds non-paren operators (g#o.sh, go##.sh, ^x.sh, g*~x.sh).
+    # So ANY path word (one holding a `/`) with a glob, grouping or
+    # extendedglob metachar in any segment counts, scripts/ or not. Only a
+    # leading `~` (home) or `#` (comment) is exempt, and `$(` / `${` are
+    # expansions, not groupings (a $var alone stays the ponytail residual).
     for w in $(printf '%s' "$t" | tr ';|&<>' '     '); do
         case "$w" in *scripts/*) case "${w#*scripts/}" in *'('*) obf=1 ;; esac ;; esac
+        case "$w" in */*) ;; *) continue ;; esac
+        w=${w//\$\(/}
+        w=${w//\$\{/}
+        case "${w#[#~]}" in *[\*\?\[\{\(\#\^\~]*) pobf=1 ;; esac
     done
     set +f
-    [ "$obf" = 1 ] || return 0
+    # A slash-less glob word as the SCRIPT operand of a shell or `source`
+    # (cd into the directory, then bash g?.sh) names a script the same way.
+    # Only the first non-option operand counts (-o/-O take a value; a -c
+    # word runs a command string, which needs a path or PATH to reach one).
+    d=${t//\$\(\(/}
+    d=${d//\$\(/}
+    d=${d//\$\{/}
+    # `.` and `source` count only in command position (prose has ". (").
+    [[ $d =~ ((^|[^[:alnum:]_./-])(bash|sh|zsh|dash|ksh|mksh)([[:blank:]]+([-+][oO][[:blank:]]+[[:alnum:]_]+|[-+][^c[:blank:]]*))*|(^|[\;\|\&\(\`$NL])[[:blank:]]*(source|\.))[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
+    [ "$obf$pobf" = 00 ] && return 0
+    clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
+    if [ "$obf" = 0 ]; then
+        # The anchor-less arm needs stronger evidence than a write VERB: a glob
+        # or regex beside printf/read/export is everyday text (the verb set
+        # newly denied 7,777 of 261,405 real-history commands; this arm 615).
+        # So it denies on the console marker NAME anywhere, a seam NAME
+        # written (below), an env-clearing option beside an `env` word, unset
+        # or env -u of a non-literal name, an export/declare/let NAME= or
+        # printf -v whose name is assembled ($n, `cmd`), export -n, declare
+        # +x, exec -, ${!, or bash startup state; names are read quote-,
+        # backslash- and ${}-joined, as raw_mention reads them. ponytail: a
+        # seam name assembled for read/mapfile/getopts/for (read "$n") beside
+        # an anchor-less path is not seen; close it with the HIMMEL-3930 parse.
+        u=${t//[\'\"\\]/}
+        rest=$u
+        while [[ $rest =~ ^(.*)\$\{[^}]*\}(.*)$ ]]; do rest="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+        u="$u$NL$rest"
+        local seg="[^;|&$NL]*" nl="(^|[^[:alnum:]_])"
+        [[ $t =~ $clr ]] && write=1
+        [[ $u =~ ${nl}(BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug|HIMMEL_CONSOLE_LEG)([^[:alnum:]_]|$) ]] && write=1
+        # unset / env -u with a NON-literal operand ($n, `cmd`, zsh unset -m
+        # pattern); a literal seam operand is caught by the name scan below.
+        [[ $u =~ ${nl}unset[[:blank:]]${seg}([\$\`]|-[[:alnum:]]*m) ]] && write=1
+        [[ $u =~ ${nl}(export|declare|typeset|readonly|local|let)([[:blank:]]${seg})?[[:blank:]][^=[:blank:]]*[\$\`][^[:blank:]]*= ]] && write=1
+        [[ $u =~ ${nl}printf[[:blank:]]+-v[[:blank:]]*[\$\`] ]] && write=1
+        # env clearing: -i / --i(gnore-environment) / a bare - anywhere in the
+        # env word's segment, or -u / --u(nset) with a non-literal operand.
+        [[ $u =~ (^|[^[:alnum:]_.-])env([[:blank:]]${seg})?[[:blank:]]-(-?i|[[:alnum:]]*i|[[:blank:]]|$) ]] && write=1
+        [[ $u =~ (^|[^[:alnum:]_.-])env([[:blank:]]${seg})?[[:blank:]](-[[:alnum:]]*u|--u[[:alnum:]-]*)[=[:blank:]]*[^[:blank:]]*[\$\`] ]] && write=1
+        # A seam NAME counts when assigned (NAME=, NAME+=, NAME = in (( )),
+        # ${NAME:=}; a $NAME / ${NAME read and a == test do not) or after a
+        # writer word or option in the same segment (unset, export, read,
+        # declare, typeset, local, readonly, let, mapfile, readarray, getopts,
+        # for, select, printf -v, env -u, export -n).
+        for v in $ALL_SEAM_VARS; do
+            case "$v" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+            [[ $u =~ (^|[^[:alnum:]_\$\{])${v}[+]?= || $u =~ \$\{${v}:?= ]] && write=1
+            [[ $u =~ (^|[^[:alnum:]_\$\{])${v}[[:blank:]]*([-+*/%^\|\&]|<<|>>)?=([^=]|$) ]] && write=1
+            [[ $u =~ ${nl}(unset|export|read|declare|typeset|local|readonly|let|mapfile|readarray|getopts|for|select|-[[:alnum:]]*[vun]|--unset)([=[:blank:]]${seg})?[^[:alnum:]_]${v}([^[:alnum:]_]|$) ]] && write=1
+        done
+        [ "$write" = 1 ] || return 0
+        deny_text_layer "names a seam or clears the environment beside a path with a glob or grouping in a segment"
+    fi
     # ponytail: the verb scan also matches inside a quoted argument value
     # (--set 'reason=...exec...'), skipping quoted spans is a parse rule;
     # HIMMEL-4135 tracks a proven-safe shape or the HIMMEL-3930 structural parse.
@@ -1117,7 +1184,6 @@ raw_obfuscated() {
     # standalone -u*/-i*/--unset*/--ignore-environment/bare - token counts only in env position
     # (env_clear_opt, HIMMEL-3955); a seam NAME= counts as an assignment, not
     # as a --long-option's value (seam_assigned).
-    clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     [[ $t =~ $clr ]] && write=1
     env_clear_opt "$t" && write=1
     for v in $ALL_SEAM_VARS; do
