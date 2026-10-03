@@ -1069,7 +1069,7 @@ SC="$tmp/vault-stalecov"; make_x_vault "$SC" 1906 ""
 sed 's/^type: tweet$/type: tweet\nmedia_transcript_coverage: 88/' "$SC/Clippings/clip.md" > "$tmp/sc.md" && cp "$tmp/sc.md" "$SC/Clippings/clip.md"
 grep -q '^media_transcript_coverage: 88$' "$SC/Clippings/clip.md" && a=ok || a=no
 assert "stale-coverage fixture seeded (88)" ok "$a"
-X_TEST_YT_MODE=none X_TEST_WHISPER_END= X_TEST_FXT_COUNT="$tmp/fxt-sc.count" run_tool "$SC" >"$tmp/sc.out" 2>"$tmp/sc.err"
+X_TEST_YT_MODE=none X_TEST_WHISPER_END='' X_TEST_FXT_COUNT="$tmp/fxt-sc.count" run_tool "$SC" >"$tmp/sc.out" 2>"$tmp/sc.err"
 c="$SC/Clippings/clip.md"
 grep -q '^media_transcript_source: whisper-base$' "$c" && a=ok || a=no
 assert "stale-coverage retry went through whisper" ok "$a"
