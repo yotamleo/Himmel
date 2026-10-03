@@ -88,6 +88,19 @@ g "git push force" block '{"tool_name":"terminal","tool_input":{"command":"git p
 g "rm -rf"         block '{"tool_name":"terminal","tool_input":{"command":"rm -rf build"}}'
 g "plain rm"       allow '{"tool_name":"terminal","tool_input":{"command":"rm tmp.txt"}}'
 g "schtasks"       block '{"tool_name":"terminal","tool_input":{"command":"schtasks /delete /tn X"}}'
+# HIMMEL-4134: the compound keywords and exec-style wrappers the shell hook's
+# CMDPOS carries (HIMMEL-3983/3984) start a command here too.
+g "nohup shutdown"        block '{"tool_name":"terminal","tool_input":{"command":"nohup shutdown now"}}'
+g "timeout 5 reboot"      block '{"tool_name":"terminal","tool_input":{"command":"timeout -s KILL 5 reboot"}}'
+g "exec -a 'q v' shutdown" block '{"tool_name":"terminal","tool_input":{"command":"exec -a '"'"'custom process'"'"' shutdown now"}}'
+g "nice -n \"1 2\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"nice -n \"1 0\" reboot"}}'
+g "xargs -0 taskkill"     block '{"tool_name":"terminal","tool_input":{"command":"ls | xargs -0 taskkill /f"}}'
+g "then shutdown"         block '{"tool_name":"terminal","tool_input":{"command":"if true; then shutdown now; fi"}}'
+g "do format"             block '{"tool_name":"terminal","tool_input":{"command":"for x in a; do format c:; done"}}'
+g "f() { reboot; }"       block '{"tool_name":"terminal","tool_input":{"command":"f() { reboot; }"}}'
+g "echo do shutdown"      allow '{"tool_name":"terminal","tool_input":{"command":"echo do shutdown"}}'
+g "jq {format}"           allow '{"tool_name":"terminal","tool_input":{"command":"jq {format: .x} f"}}'
+g "fix(x) shutdown text"  allow '{"tool_name":"terminal","tool_input":{"command":"echo fix(x) shutdown flow"}}'
 # HIMMEL-1141: schtasks /query is read-only (allowed); other mutating verbs refused.
 g "schtasks /query allowed"      allow '{"tool_name":"terminal","tool_input":{"command":"schtasks /query /fo LIST /v"}}'
 g "schtasks.exe /query allowed"  allow '{"tool_name":"terminal","tool_input":{"command":"schtasks.exe /query"}}'

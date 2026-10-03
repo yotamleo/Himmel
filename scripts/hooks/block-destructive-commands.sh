@@ -252,9 +252,25 @@ if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails
 fi
 guard_cmdpos_grammar
 # HIMMEL-3984: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
-# --exec/--exec-batch) runs is at command position too. The flag is matched
-# wherever it sits, with no check that find or fd launched it: over-deny only.
-RMPOS="(${CMDPOS}|[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+${CMDPOS_PFX})"
+# --exec/--exec-batch) runs is at command position too.
+# The flag is matched wherever it sits, with no check that find or fd launched
+# it: it is also the only catch for an rm that a wrapper CMDPOS does not model
+# runs (`watch -x rm`, `stdbuf -o0 -ok rm`, `strace -x rm`). Over-deny only.
+# HIMMEL-4134: an ALLOWLIST is the one exception. A command that is a single
+# echo, printf or : with plain words only (no separator, redirect, quote,
+# backslash, expansion, glob or brace) runs nothing, so `echo x -exec rm -rf y`
+# is text. Add a command word only with a reason it can never execute one.
+# ponytail: the bracket classes, `=~` patterns and the HIMMEL-3983/3984/4146
+# additions are run on Linux bash 5 only (no macOS bash 3.2 here, Git Bash
+# parked, HIMMEL-4102), upgrade path HIMMEL-4134 item 3: run this suite on a
+# macOS station under /bin/bash.
+_rmpos_flag='[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+'"${CMDPOS_PFX}"
+_rmpos_text='^[[:space:]]*(echo|printf|:)([[:space:]][^];&|<>(){}`$\"*?[!#~'"'"']*)?$'
+if [[ $cmd_lc =~ $_rmpos_text ]]; then
+    RMPOS="(${CMDPOS})"
+else
+    RMPOS="(${CMDPOS}|${_rmpos_flag})"
+fi
 # HIMMEL-3984: `find -delete` is a recursive delete of its own. The gap is
 # unbounded, like RM_RECURSIVE_PAT's, so a quoted `;` cannot hide the flag.
 FIND_DELETE_PAT="${CMDPOS}"'find(\.exe)?([[:space:]].*)?[[:space:]]-delete([^[:alnum:]_-]|$)'
@@ -327,12 +343,17 @@ FIND_DELETE_PAT="${CMDPOS}"'find(\.exe)?([[:space:]].*)?[[:space:]]-delete([^[:a
 # data (any <<, or an @@ mask other than a here-string's <@@), and a lone CR
 # in $cmd (bash reads it as a character; here it is already a newline). It
 # only ever disqualifies, so it can never strip more than before.
+# HIMMEL-4146: an unquoted ${, $(( or $[ is skipped to its closer only when
+# it closes before any quote, backslash, $, backtick, # or newline (every
+# character the N state acts on, so the skip never walks past one: zsh reads
+# `$((true)#)` as a subshell plus a comment); one left open (or holding any of
+# those) returns 1, as does a $[ inside "...".
 _hd_carried_clean() {
-    local s=$1 i=0 n st=N c p=$'\n'
+    local s=$1 i=0 n st=N c p=$'\n' o cl d
     s="${s//<<</}"
     s="${s//<@@/}"
     case $s in *'<<'*|*'@@'*|*'`'*) return 1 ;; esac
-    [[ $s == *[\'\"]* ]] || return 0
+    [[ $s == *[\'\"\$]* ]] || return 0
     [ -z "$_hd_lone_cr" ] || return 1
     n=${#s}
     while [ "$i" -lt "$n" ]; do
@@ -345,6 +366,29 @@ _hd_carried_clean() {
                     \\) [ "${s:i+1:1}" = $'\n' ] && c=$p; i=$((i + 1)) ;;
                     \') [ "$p" = '$' ] && return 1; st=S ;;
                     \") st=D ;;
+                    '$')
+                        o=${s:i+1:1}
+                        case $o in
+                            '{'*) cl='}' ;;
+                            '['*) cl=']' ;;
+                            '('*) [ "${s:i+2:1}" = '(' ] && cl=')' || o= ;;
+                            *) o= ;;
+                        esac
+                        if [ -n "$o" ]; then
+                            d=0
+                            i=$((i + 1))
+                            while [ "$i" -lt "$n" ]; do
+                                c=${s:i:1}
+                                case $c in
+                                    "$o") d=$((d + 1)) ;;
+                                    "$cl") d=$((d - 1)); [ "$d" -eq 0 ] && break ;;
+                                    [\'\"\\\$\`\#]|$'\n') return 1 ;;
+                                esac
+                                i=$((i + 1))
+                            done
+                            [ "$d" -eq 0 ] || return 1
+                        fi
+                        ;;
                     \#)
                         case $p in
                             [[:space:]]|';'|'&'|'|'|'(') st=C ;;
@@ -358,7 +402,7 @@ _hd_carried_clean() {
                 case $c in
                     \\) i=$((i + 1)) ;;
                     \") st=N ;;
-                    '$') case ${s:i+1:1} in '('|'{') return 1 ;; esac ;;
+                    '$') case ${s:i+1:1} in '('|'{'|'[') return 1 ;; esac ;;
                 esac
                 ;;
             C) [ "$c" = $'\n' ] && st=N ;;
