@@ -81,7 +81,7 @@ sid="sess-$t"
   echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu2","is_error":true,"content":"PreToolUse:Bash hook error: refusing"}]}}'
   echo '{"type":"system","subtype":"compact_boundary"}'
 } >"$LQ_TRANSCRIPTS/p/$sid.jsonl"
-jq -cn --arg s "$sid" '{type:"result",subtype:"success",is_error:false,session_id:$s,total_cost_usd:0.5,num_turns:3,duration_ms:1000,permission_denials:[{tool_name:"Bash"}],result:"Done by claude-haiku-4-5 via openrouter on the native lane; tests pass."}'
+jq -cn --arg s "$sid" --argjson mu "${LQ_FAKE_MU:-null}" '{type:"result",subtype:"success",is_error:false,session_id:$s,total_cost_usd:0.5,num_turns:3,duration_ms:1000,permission_denials:[{tool_name:"Bash"}],result:"Done by claude-haiku-4-5 via openrouter on the native lane; tests pass."} + (if $mu == null then {} else {modelUsage: $mu} end) + (if $ENV.LQ_FAKE_NOCOST then {total_cost_usd: null} else {} end)'
 FAKE
 chmod +x "$TMP/bin/claude"
 # LQ_FAKE_PROCEED_N=<n>: only the first n calls PROCEED (counted in LQ_FAKE_CALLS).
@@ -137,12 +137,59 @@ LQ_FAKE_TOKEN=SKIPPED-BANK bash "$RUN" run --lane native --model m --no-judge --
 rc=$?
 check "bank refusal exits non-zero" '[ "$rc" -ne 0 ]'
 check "bank refusal launches nothing" '[ ! -s "$TMP/fake.log" ]'
-for lane in openrouter deepseek claudex; do
+for lane in deepseek claudex; do
   bash "$RUN" run --lane "$lane" --model m --out "$TMP/out-$lane" >"$TMP/run-$lane.log" 2>&1
   rc=$?
-  check "$lane lane refused in phase 1 (exit 3)" '[ "$rc" -eq 3 ]'
+  check "$lane lane refused (exit 3)" '[ "$rc" -eq 3 ]'
 done
 check "refused lanes launch nothing" '[ ! -s "$TMP/fake.log" ]'
+
+# openrouter (phase 2): the agent goes through the lane launcher, the judge
+# stays native, and the metered balance is read before and after each task.
+printf '#!/usr/bin/env bash\necho "$*" >>"$LQ_FAKE_LOG.launcher"\nexec "$LQ_CLAUDE_BIN" "$@"\n' >"$TMP/bin/claude-openrouter"
+printf '#!/usr/bin/env bash\necho "balance=8.9070935:credit spend=?"\n' >"$TMP/bin/orcost"
+chmod +x "$TMP/bin/claude-openrouter" "$TMP/bin/orcost"
+: >"$TMP/fake.log.launcher"
+# Claude Code misprices an unrecognized gateway slug, so the harness reprices
+# modelUsage at list rates: 50k in, 4k out, 16k cache-write, 100k cache-read
+# at Haiku 4.5 rates is 0.10 USD (0.12 with the 1.2 metered markup), against
+# a reported 0.50.
+MU_HAIKU='{"anthropic/claude-haiku-4.5":{"inputTokens":50000,"outputTokens":4000,"cacheCreationInputTokens":16000,"cacheReadInputTokens":100000}}'
+LQ_FAKE_MU="$MU_HAIKU" LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model haiku --tasks shell-red-green --max-usd 2 --out "$TMP/out15" >"$TMP/run15.log" 2>&1
+rc=$?
+check "openrouter lane runs" '[ "$rc" -eq 0 ] && [ "$(wc -l <"$TMP/out15/runs.jsonl" | tr -d " ")" = 1 ]'
+check "openrouter agent goes through the lane launcher" 'grep -q -- "--permission-mode auto" "$TMP/fake.log.launcher"'
+check "openrouter judge stays native" '! grep -q -- "--json-schema" "$TMP/fake.log.launcher" && [ "$(jq -s ".[0].judge.correctness" "$TMP/out15/runs.jsonl")" = 4 ]'
+check "metered balance recorded" '[ "$(jq -s -r ".[0].metered_before" "$TMP/out15/runs.jsonl")" = 8.9070935 ]'
+check "native rows carry no metered balance" '[ "$(jq -s ".[0].metered_before" "$R")" = null ]'
+check "openrouter cost repriced from modelUsage" 'jq -s ".[0].cost_usd" "$TMP/out15/runs.jsonl" | awk "{exit !(\$1 > 0.1199 && \$1 < 0.1201)}" && [ "$(jq -s ".[0].reported_cost_usd" "$TMP/out15/runs.jsonl")" = 0.5 ]'
+check "openrouter outer budget scaled by a logged factor" 'grep -q -- "--max-budget-usd 8.00" "$TMP/fake.log.launcher" && grep -q "budget factor 4" "$TMP/run15.log"'
+: >"$TMP/fake.log.launcher"
+LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model sonnet --tasks shell-red-green --out "$TMP/out17" >"$TMP/run17.log" 2>&1
+check "openrouter refuses an unpriced model before launch" 'grep -q "haiku only" "$TMP/run17.log" && [ ! -s "$TMP/fake.log.launcher" ]'
+LQ_FAKE_MU='{"x/unpriced":{"inputTokens":1,"outputTokens":1,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}' \
+  LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out16" >"$TMP/run16.log" 2>&1
+check "an unpriced openrouter model stops the sweep" '[ "$(wc -l <"$TMP/out16/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run16.log"'
+# 25k input tokens is 0.025 USD at list, so a reported 0.50 is 20x, not the 5x
+# the per-call factor relies on: the cost is unknown and the sweep stops.
+LQ_FAKE_MU='{"anthropic/claude-haiku-4.5":{"inputTokens":25000,"outputTokens":0,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}' \
+  LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out18" >"$TMP/run18.log" 2>&1
+check "an off-ratio reported cost stops the openrouter sweep" '[ "$(wc -l <"$TMP/out18/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run18.log"'
+# Zero priced tokens or no reported cost leaves the 5x ratio unchecked, so the
+# cost is unknown and the sweep stops.
+LQ_FAKE_MU='{"anthropic/claude-haiku-4.5":{"inputTokens":0,"outputTokens":0,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}' \
+  LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out19" >"$TMP/run19.log" 2>&1
+check "a zero-token openrouter run stops the sweep" '[ "$(wc -l <"$TMP/out19/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run19.log"'
+LQ_FAKE_NOCOST=1 LQ_FAKE_MU='{"anthropic/claude-haiku-4.5":{"inputTokens":25000,"outputTokens":4000,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}' \
+  LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out20" >"$TMP/run20.log" 2>&1
+check "a missing reported cost stops the openrouter sweep" '[ "$(wc -l <"$TMP/out20/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run20.log"'
+: >"$TMP/fake.log"
 LQ_FAKE_PROCEED_N=1 LQ_FAKE_CALLS="$TMP/calls" bash "$RUN" run --lane native --model m --tasks shell-red-green \
   --no-judge --out "$TMP/out14" >"$TMP/run14.log" 2>&1
 rc=$?

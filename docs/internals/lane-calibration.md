@@ -931,14 +931,38 @@ run, and `dontAsk` with no tools for the judge. `--max-usd` (default 3) caps
 the sweep. No task starts once the summed `total_cost_usd` reaches the cap, and
 each agent call gets the remainder as `--max-budget-usd`.
 
-**The other lanes are phase 2.** `--lane openrouter|deepseek|claudex` exits 3:
-these lanes are metered or bill another bank, and running them needs the
-operator's go. Wiring each one means three things. The launch needs the lane's
-environment (the OpenRouter or DeepSeek base URL and key, or the claudex
-launcher) in place of the native-auth pin. The spend check reads the metered
-balance before and after, and reads it again after the credit endpoint's lag
-(`scripts/lanes/openrouter-cost.sh --since`). And the lane needs a floor below
-which it refuses to start.
+**OpenRouter (phase 2).** The operator approved this lane.
+`--lane openrouter --model haiku` runs the agent through
+`scripts/claude-openrouter`, so the launcher's egress matrix, its PHI guard
+and its credit floor all apply (credit below the floor or unknown means no
+launch). The alias resolves to the launcher's pinned OpenRouter slug. Other
+models are refused before launch until they get a price row. The judge still
+runs native.
+
+Claude Code does not recognize the gateway slug (`anthropic/claude-haiku-4.5`
+logs `unrecognized_model`, with `costBasis: unknown`), and its
+`total_cost_usd` is exactly 5x list price, whatever the token mix. One task
+reported 2.09 USD where its tokens cost about 0.42 at list price. So on this lane `cost_usd` is repriced
+from `modelUsage` tokens at list prices (a `PRICES` table in `run.sh`), and
+the Claude Code figure is kept as `reported_cost_usd`. `--max-usd` caps that
+real spend. The per-call `--max-budget-usd` is in Claude Code's units, scaled
+by a logged factor of 4, which stops a call before the real remainder is
+spent. That bound relies on the 5x ratio. An unpriced model, a run with no
+reported cost or no priced tokens, or a reported cost that is not 5x its list
+price, leaves the cost unknown and stops the sweep.
+
+Each row records `metered_before` and `metered_after`, which are
+`openrouter-cost.sh --raw` balances. The credit endpoint lags, so a per-task
+delta can under-report. Re-read the account balance after the sweep before
+quoting its spend. The balance is the real figure. In the first live sweeps
+it fell 12-16% more than the list-price repricing (2.00 against 1.75 on one
+sweep), so the repriced cost carries a 1.2 markup.
+
+**Not enabled.** `--lane deepseek|claudex` exits 3.
+- DeepSeek also needs the station opt-in `HIMMEL_DEEPSEEK_INFERENCE_OK=1`,
+  exported in the launching shell, and it runs as its own leg once the
+  operator sets it.
+- claudex bills another bank and was not part of the approval.
 
 ## Escalation shape
 
