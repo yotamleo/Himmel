@@ -1822,6 +1822,24 @@ LEG_CLAUDE_BIN="$shim_argv" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_P
   bash "$SHIM" --setting-sources user "load doc" || true
 check "shim: no marker, a caller --setting-sources passes through" \
   "$(cat "$tmp/shim-argv" 2>/dev/null || true)" "[--setting-sources][user][load doc]"
+# HIMMEL-4152: under =1 the caller's PATH (and HOME) must not pick which claude runs: a fake
+# early on PATH, or in $HOME/.local/bin, never execs. The shim resolves claude from a pinned
+# PATH instead, or refuses when none is there (a CI runner). --version keeps a real one inert.
+fake4152="$tmp/fake4152"; mkdir -p "$fake4152/bin" "$fake4152/home/.local/bin"
+# shellcheck disable=SC2016 # literal $0 belongs to the stub script, not this one
+printf '%s\n' '#!/usr/bin/env bash' ': > "$(dirname "$0")/ran"' > "$fake4152/bin/claude"
+cp "$fake4152/bin/claude" "$fake4152/home/.local/bin/claude"
+chmod 755 "$fake4152/bin/claude" "$fake4152/home/.local/bin/claude"
+rm -f "$fake4152/bin/ran" "$fake4152/home/.local/bin/ran"
+(unset LEG_CLAUDE_BIN; PATH="$fake4152/bin:$PATH" HOME="$fake4152/home" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES=1 \
+  bash "$SHIM" --version) >/dev/null 2>&1 || true
+check "shim 4152: =1 never execs a claude placed early on the caller's PATH" "$([ -e "$fake4152/bin/ran" ] && echo ran || echo not-run)" "not-run"
+check "shim 4152: =1 never execs a claude in the caller's \$HOME/.local/bin" "$([ -e "$fake4152/home/.local/bin/ran" ] && echo ran || echo not-run)" "not-run"
+# Counter-example: without the consult marker the caller's PATH claude still runs, unchanged.
+rm -f "$fake4152/bin/ran"
+(unset LEG_CLAUDE_BIN; PATH="$fake4152/bin:$PATH" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES='' \
+  bash "$SHIM" --version) >/dev/null 2>&1 || true
+check "shim 4152: no marker, the caller's PATH claude still runs" "$([ -e "$fake4152/bin/ran" ] && echo ran || echo not-run)" "ran"
 
 # 18-resolve. A tiny fixture registry exercises all four allowlist shapes
 # (empty/named/unknown/absent) without touching the shipped leg-impl entry.
@@ -3336,6 +3354,19 @@ check "41i-4142 a consult with symlinked-dir overrides naming the real files pas
 contains "41i-4142 the exported launcher is the canonical shim" "$out" "launcher=$shim_canon41 "
 not_contains "41i-4142 the exported launcher is not the symlinked spelling" "$out" "launcher=$tmp/lanes-link41"
 contains "41i-4142 the exec target is the canonical headed-arm.sh" "$out" "would exec: $target_canon41 "
+# HIMMEL-4152: a PATH token in the launcher env would pick which claude the shim runs, so a
+# consult refuses it; a non-consult launch keeps passing it through (unchanged).
+rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 PATH=$tmp/fake4152/bin:/usr/bin:/bin" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4152-p "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4152 a consult with a PATH token in HEADED_ARM_LAUNCHER_ENV refuses (exit 2)" "$rc" "2"
+contains "41i-4152 the PATH-token refusal names it" "$out" "refuses a PATH token"
+rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 PATH=$tmp/fake4152/bin:/usr/bin:/bin" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4152-p "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4152 a non-consult launch with a PATH token still passes (exit 0)" "$rc" "0"
+# HIMMEL-4152: with HEADED_ARM_LEG_TARGET unset, a consult's default target is canonicalised
+# too, so a script reached through a symlinked kit directory still execs the real headed-arm.sh.
+ln -sfn "$(cd -P "$HERE" && pwd -P)" "$tmp/kit-link4152"
+rc=0; out="$(unset HEADED_ARM_LEG_TARGET; LEG_REPO="$tmp/repo41c" bash "$tmp/kit-link4152/headed-arm-leg.sh" --dry-run --consult --profile design-motion HIMMEL-4152-t "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4152 a consult via a symlinked kit dir passes (exit 0)" "$rc" "0"
+contains "41i-4152 the default exec target is the canonical headed-arm.sh" "$out" "would exec: $target_canon41 "
 # (b) the ponytail text no longer claims one writable file.
 check "41i ponytail no longer says 'one writable file'" "$(grep -c 'one writable file' "$SCRIPT")" "0"
 # (c) HIMMEL-4069: the consult launches with `--setting-sources ""`, so a user, project or

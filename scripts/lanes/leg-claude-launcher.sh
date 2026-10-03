@@ -68,6 +68,34 @@ set -u
 
 CLAUDE_BIN="${LEG_CLAUDE_BIN:-claude}"
 
+# (HIMMEL-4152) Under a consult the caller's PATH must not pick the binary: a
+# foreign `claude` first on PATH could ignore `--setting-sources ""`. Resolve it
+# once from a pinned PATH whose home part comes from the passwd entry, not $HOME
+# (also caller-set). LEG_CLAUDE_BIN stays the suite's seam: headed-arm-leg.sh
+# scrubs it (var + token) and refuses its HEADED_ARM_LEG_CLAUDE_BIN source
+# before a consult launches, so no consult reaches here with it set.
+# ponytail: a claude installed only outside these dirs (nvm, a custom npm
+# prefix) refuses; upgrade path = an operator-recorded binary path, if one is
+# ever kept outside the caller's reach.
+if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ] && [ -z "${LEG_CLAUDE_BIN:-}" ]; then
+    _pin_user="$(PATH=/usr/bin:/bin; id -un 2>/dev/null)" || _pin_user=""
+    _pin_home=""
+    case "$_pin_user" in
+        ''|[-+]*|*[!A-Za-z0-9._-]*) ;;
+        *) eval "_pin_home=~$_pin_user" ;;
+    esac
+    case "$_pin_home" in /*) ;; *) _pin_home="" ;; esac
+    _pin_path="${_pin_home:+$_pin_home/.local/bin:}/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+    CLAUDE_BIN="$(PATH="$_pin_path"; command -v claude 2>/dev/null)" || CLAUDE_BIN=""
+    case "$CLAUDE_BIN" in
+        /*) ;;
+        *)
+            echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_NO_SETTING_SOURCES=1 (a consult) but no claude on the pinned PATH ($_pin_path); a consult never runs the caller's PATH claude" >&2
+            exit 2 ;;
+    esac
+    unset -v _pin_user _pin_home _pin_path
+fi
+
 PRE=()
 
 if [ -n "${LEG_PROFILE_SETTINGS:-}" ]; then

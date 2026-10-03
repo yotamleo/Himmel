@@ -466,9 +466,11 @@ if [ "$CONSULT" -eq 1 ]; then
     for _consult_pair in "HEADED_ARM_LEG_TARGET ../headed-arm.sh" "HEADED_ARM_LEG_PROFILES ../../lanes/plugin-profiles.mjs"; do
         _consult_var="${_consult_pair%% *}"; _consult_rel="${_consult_pair#* }"
         _consult_val="${!_consult_var:-}"
-        [ -n "$_consult_val" ] || continue
-        _consult_got="$(cd -P "$(dirname "$_consult_val")" 2>/dev/null && pwd -P)/$(basename "$_consult_val")"
         _consult_want="$(cd -P "$_consult_kit/$(dirname "$_consult_rel")" && pwd -P)/$(basename "$_consult_rel")"
+        # (HIMMEL-4152) Unset = the in-repo default, pinned to the same canonical
+        # path: the default spelling is built from $0, which a symlink can reach.
+        _consult_got="$_consult_want"
+        [ -z "$_consult_val" ] || _consult_got="$(cd -P "$(dirname "$_consult_val")" 2>/dev/null && pwd -P)/$(basename "$_consult_val")"
         if [ "$_consult_got" != "$_consult_want" ]; then
             echo "headed-arm-leg: --consult refuses $_consult_var=$_consult_val: only $_consult_want is the in-repo file a consult may run" >&2
             exit 2
@@ -476,6 +478,21 @@ if [ "$CONSULT" -eq 1 ]; then
         printf -v "$_consult_var" '%s' "$_consult_want"
     done
     unset -v _consult_kit _consult_pair _consult_var _consult_rel _consult_val _consult_got _consult_want
+    # (HIMMEL-4152) A PATH token reaches the shim's environment and would pick
+    # which claude it runs; the shim pins its own PATH under a consult, and the
+    # token refuses here too rather than ride along.
+    set -f
+    for _consult_tok in ${HEADED_ARM_LAUNCHER_ENV:-}; do
+        case "$_consult_tok" in
+            PATH=*)
+                set +f
+                echo "headed-arm-leg: --consult refuses a PATH token in HEADED_ARM_LAUNCHER_ENV ($_consult_tok): a consult's claude comes from a pinned PATH, never the caller's" >&2
+                exit 2
+                ;;
+        esac
+    done
+    set +f
+    unset -v _consult_tok
 fi
 
 [ "$JUDGE" -eq 1 ] || [ "$CONSULT" -eq 1 ] && READONLY_ROLE=1
