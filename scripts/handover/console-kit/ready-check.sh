@@ -404,7 +404,9 @@ else
             cov_key=$(printf '%s\n' "$cov_def" | grep -oE '[A-Za-z][A-Za-z0-9]*-[0-9]+$' | tr '[:lower:]' '[:upper:]')
             if cov_out=$(jira_get "$cov_key"); then
                 cov_status=$(printf '%s\n' "$cov_out" | head -n 1 | cut -f3)
-                if printf '%s\n' "$cov_status" | grep -qiE '^(done|closed|resolved|won.?t do)$'; then
+                if [ -z "$cov_status" ]; then
+                    cov_bad="$cov_bad; $cov_key UNKNOWN (jira returned no status)"
+                elif printf '%s\n' "$cov_status" | grep -qiE '^(done|closed|resolved|won.?t do)$'; then
                     cov_bad="$cov_bad; $cov_key already $cov_status"
                 fi
             elif printf '%s\n' "$cov_out" | grep -qiE '404|does not exist'; then
@@ -412,7 +414,8 @@ else
             else
                 cov_bad="$cov_bad; $cov_key UNKNOWN (jira get failed)"
             fi
-        elif ! printf '%s\n' "$cov_line" | grep -qiE '(^|[^[:alnum:]])done([^[:alnum:]]|$)'; then
+        elif ! printf '%s\n' "$cov_line" | grep -qiE '(^|[^[:alnum:]])done[^[:alnum:]]*$' \
+            || printf '%s\n' "$cov_line" | grep -qiE '(not|n.t)[[:space:]]+done'; then
             cov_bad="$cov_bad; unmarked line: $(printf '%s' "$cov_line" | cut -c1-60)"
         fi
     done <<EOF

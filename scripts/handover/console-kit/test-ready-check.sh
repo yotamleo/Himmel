@@ -78,6 +78,7 @@ if [ -z "$st" ]; then
     echo "jira: get $2 failed: HTTP 404: Issue does not exist or you do not have permission to see it." >&2
     exit 1
 fi
+[ "$st" = "BLANK" ] && st=""
 printf '%s\tTask\t%s\tsummary\n' "$2" "$st"
 STUB
 chmod +x "$tmp/bin/jira-stub"
@@ -91,7 +92,7 @@ GREEN_COMMITS='[{"messageHeadline":"feat(x): [HIMMEL-1] add thing","messageBody"
 GREEN_FILES="scripts/handover/console-kit/ready-check.sh"
 GREEN_BODY='## Summary\nthing\n\n## Ticket coverage\n- ask one: done\n- ask two: done\n\n## Test plan\nx\n'
 JIRA_DB="$tmp/jira.db"
-printf 'HIMMEL-50\tTo Do\nHIMMEL-51\tDone\nHIMMEL-52\tClosed\nHIMMEL-53\tWon'"'"'t Do\n' > "$JIRA_DB"
+printf 'HIMMEL-50\tTo Do\nHIMMEL-51\tDone\nHIMMEL-52\tClosed\nHIMMEL-53\tWon'"'"'t Do\nHIMMEL-54\tBLANK\n' > "$JIRA_DB"
 
 seed_ledger_ok() {
     printf '{"kind":"avail","ts":"2026-01-01T00:00:00Z","branch":"b","head":"%s","model":"codex","status":"ok"}\n' "$SHA" > "$LEDGER"
@@ -372,6 +373,30 @@ reset_stubs
 STUB_BODY='## Ticket coverage\n'
 rc=0; out="$(run)" || rc=$?
 check "coverage empty section: exit 1" "$rc" "1"
+
+# codex-1: `done` must be the line's terminal disposition, not a substring
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: not done\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage 'not done': exit 1" "$rc" "1"
+contains "coverage 'not done': check 7 fails" "$out" "[FAIL] 7."
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done pending verification\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage 'done pending verification': exit 1" "$rc" "1"
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done.\n- ask two: **done**\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage 'done.' / bold done: exit 0" "$rc" "0"
+
+# codex-2: a successful jira get with a blank status is UNKNOWN, never open
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: deferred -> HIMMEL-54\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage blank jira status: exit 1" "$rc" "1"
+contains "coverage blank jira status: reads UNKNOWN" "$out" "UNKNOWN"
 
 # --- 8. HIMMEL-3533: TICKET_ID_PATTERN / JIRA_PROJECT_KEY must resolve from
 # ready-check.sh's OWN checkout, never the caller's CWD repo. Fixture mirrors
