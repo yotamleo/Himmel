@@ -1171,7 +1171,7 @@ _wrapper_pos() {
 _wrapper_pos_opt() {
     [ "$wname" = taskset ] || return 0
     case "$1" in
-        --cpu-list*|-[!-]*c*) wpos=0 ;;
+        --cpu-list*|-c*|-[!-]*c*) wpos=0 ;;
     esac
     return 0
 }
@@ -1712,7 +1712,15 @@ _dc_can_be_claude() {
             '$')
                 case "${c:i:1}" in
                     '{')
-                        while [ "$i" -lt "$n" ] && [ "${c:i:1}" != '}' ]; do i=$((i + 1)); done
+                        # skip the whole expansion, nested `${…}` included
+                        j=0
+                        while [ "$i" -lt "$n" ]; do
+                            case "${c:i:1}" in
+                                '{') j=$((j + 1)) ;;
+                                '}') j=$((j - 1)); [ "$j" = 0 ] && break ;;
+                            esac
+                            i=$((i + 1))
+                        done
                         i=$((i + 1))
                         ;;
                     [A-Za-z_])

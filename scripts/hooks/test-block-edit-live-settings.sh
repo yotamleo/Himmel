@@ -2118,6 +2118,21 @@ assert_rc "473 taskset -c 0 cat ~/.claude/x allows" 0 \
     "$(bash_rc_of "$PRIMARY" 'taskset -c 0 cat ~/.claude/x' HOME="$FAKEHOME")"
 assert_rc "474 timeout inf ls ~/.claude/ allows" 0 \
     "$(bash_rc_of "$PRIMARY" 'timeout inf ls ~/.claude/' HOME="$FAKEHOME")"
+# CR round 3 (codex-1): a standalone `-c` takes the cpu list, so no mask
+# operand follows and a wrapper after the list is still read as the command
+assert_rc "488 taskset -c 0 sudo -u root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'taskset -c 0 sudo -u root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "489 nested worktree taskset -c 0 sudo -u root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'taskset -c 0 sudo -u root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "490 taskset -c0 sudo -u root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'taskset -c0 sudo -u root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "491 taskset -c 0 sudo cat ~/.claude/x allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'taskset -c 0 sudo cat ~/.claude/x' HOME="$FAKEHOME")"
+# CR round 3 (codex-2): a nested `${…}` expansion is skipped as one unit
+assert_rc "492 nested worktree ln -sf \$SJ ~/.cl\${X:-\${Y:-a}}ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl\${X:-\${Y:-a}}ude" HOME="$FAKEHOME")"
+assert_rc "493 primary ln -sf \$SJ ~/.cl\${X:-\${Y:-a}}ude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.cl\${X:-\${Y:-a}}ude" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
