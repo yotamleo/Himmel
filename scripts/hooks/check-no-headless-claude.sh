@@ -182,10 +182,12 @@ for f in "${files[@]}"; do
                 for (i = 1; i <= NR; i++) {
                     if (skip[i]) continue
                     d = depth(C[i]); if (d <= 0) continue
-                    j = i; J = C[i]; hit = 0
-                    while (d > 0 && j < NR && j < i + win) {
+                    j = i; J = C[i]; hit = 0; n = 0
+                    # the window counts CODE lines only, so interleaved comments cannot exhaust it
+                    while (d > 0 && j < NR && n < win) {
                         j++
                         if (skip[j]) continue
+                        n++
                         J = J " " C[j]; d += depth(C[j])
                         if (!hit && J ~ re) { hit = j }
                     }

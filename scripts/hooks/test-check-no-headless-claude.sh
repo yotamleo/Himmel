@@ -341,6 +341,15 @@ printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* a */ /* ) */ 'claude'," "  ar
 rc=$(run_hook "cm_two.mjs")
 assert_rc "T37l two block comments then program, unmarked" 1 "$rc"
 
+# T37m (codex-1 r3): ten interleaved comment lines must not exhaust the window → BLOCK
+{
+    echo "const r = spawnSync("
+    for n in 1 2 3 4 5 6 7 8 9 10; do echo "  // c$n"; done
+    echo "  'claude', args);"
+} > "$TMP/cm_many.mjs"
+rc=$(run_hook "cm_many.mjs")
+assert_rc "T37m ten comment lines between ( and program, unmarked" 1 "$rc"
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")
