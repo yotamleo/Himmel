@@ -96,8 +96,11 @@ BEGIN {
     a = $0
     for (i = 0; i < 3; i++) sub(/^[ \t]*[^ \t]+[ \t]+/, "", a)
     # Anchored on the wrapper shape so a command that merely MENTIONS a
-    # snapshot path (a grep for this very thing) is not counted.
-    if (a ~ /^[^ ]*(bash|zsh|sh) -c (source|\.) [^ ]*shell-snapshots\/snapshot-(bash|zsh)-/) wrap[++nw] = pid
+    # snapshot path (a grep for this very thing) is not counted. The console
+    # own waiter (the whole eval is one bash .../console-wait.sh call, with
+    # plain-word args, no shell operators, ending the command) is intentional, not an orphan
+    # (HIMMEL-3941); a command that merely mentions the name still is.
+    if (a ~ /^[^ ]*(bash|zsh|sh) -c (source|\.) [^ ]*shell-snapshots\/snapshot-(bash|zsh)-/ && a !~ /&& eval [\047"]bash [\047"]?([^ ]*\/)?console-wait\.sh( [A-Za-z0-9_.\/=: +-]*)?[\047"]?$/) wrap[++nw] = pid
 }
 END {
     for (i = 1; i <= nw; i++) {
