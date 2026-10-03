@@ -1232,32 +1232,33 @@ _bwimc_check_glob_operand() {
 # HIMMEL-4010: a target built from a command substitution (a _bwimc_subst_split
 # stub) is not dropped either. A leading `$(pwd)`/backtick-pwd stub (\005) is
 # the cwd, so it becomes `.` when a `/`, a `"/`, or the token end (quoted or
-# not) follows it.
+# not) follows it; a pwd stub anywhere else is just another stub.
 # Any other stub's output is unknown, so the token's static prefix decides:
 # the directory it names (`P/n$(date)` = P/, `f$(date)` = the cwd) is checked
 # as a write-through directory, like a glob's prefix.
 # ponytail: a target that STARTS with a non-pwd substitution (`"$(mktemp)"`)
-# or a `$VAR`, or whose substitution output climbs out with `..`, is not
-# resolved — the same dynamic-operand residual as `$VAR` (HIMMEL-2526 §2);
+# or a `$VAR`, or whose substitution output climbs out with `..` or names a
+# symlink (`/tmp/x$(pwd)/f`), is checked only as far as its static prefix —
+# the same dynamic-operand residual as `$VAR` (HIMMEL-2526 §2);
 # revisit only with a real expansion model.
 _bwimc_check_target() {
-    local raw="$1" cwd="$2" mode="${3:-follow}" abs eff pfx h
+    local raw="$1" cwd="$2" mode="${3:-follow}" abs eff pfx h lq="" rest
     case "$raw" in
         *$'\005'*|*$'\001'*)
+            # Only a LEADING pwd stub is the cwd (`/tmp/x$(pwd)/f` is not
+            # `/tmp/x./f`), and only when `/`, `"/`, a closing `"` or the
+            # token end follows it: `"$(pwd)"n` continues into a sibling name.
+            # Everything else falls to the static-prefix rule below.
+            case "$raw" in '"'*) lq='"'; rest="${raw#\"}" ;; *) rest="$raw" ;; esac
             # shellcheck disable=SC2016  # literal `$(`, not an expansion
-            raw="${raw//'$('$'\005'')/'/./}"
-            # shellcheck disable=SC2016
-            raw="${raw//'$('$'\005'')"/'/.\"/}"
-            raw="${raw//'`'$'\005''`/'/./}"
-            raw="${raw//'`'$'\005''`"/'/.\"/}"
-            # a closing quote ends the pwd only at the token end; `"$(pwd)"n`
-            # continues it into a sibling name, left to the static-prefix rule
-            # shellcheck disable=SC2016
-            case "$raw" in *'$('$'\005'')"') raw="${raw%'$('$'\005'')"'}.\"" ;; esac
-            case "$raw" in *'`'$'\005''`"') raw="${raw%'`'$'\005''`"'}.\"" ;; esac
-            # shellcheck disable=SC2016
-            case "$raw" in *'$('$'\005'')') raw="${raw%'$('$'\005'')'}." ;; esac
-            case "$raw" in *'`'$'\005''`') raw="${raw%'`'$'\005''`'}." ;; esac
+            case "$rest" in
+                '$('$'\005'')'*) rest="${rest#'$('$'\005'')'}" ;;
+                '`'$'\005''`'*) rest="${rest#'`'$'\005''`'}" ;;
+                *) rest=$'\001' ;;
+            esac
+            case "$rest" in
+                ''|/*|'"'|'"/'*) raw="$lq.$rest" ;;
+            esac
             case "$raw" in
                 *$'\005'*|*$'\001'*)
                     # shellcheck disable=SC2016
