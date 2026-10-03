@@ -63,6 +63,14 @@ case "$prompt" in
   *block-curl-pipe*) t=hook-refusal ;; *) t=finding-verify ;;
 esac
 bash "$LQ_FAKE_RUN" materialize "$t" "$PWD" --reference >/dev/null
+# Misbehaviour knobs: a candidate that hangs, a commit outside lq-work/, and a
+# bank that runs dry during the agent call.
+[ -z "${LQ_FAKE_HANG:-}" ] || printf '#!/usr/bin/env bash\nsleep 10\n' >lq-work/semver-cmp.sh
+if [ -n "${LQ_FAKE_COMMIT:-}" ]; then
+  echo x >stray.txt
+  git add stray.txt lq-work && git -c user.name=t -c user.email=t@t commit -qm stray --no-verify
+fi
+[ -z "${LQ_FAKE_DRAIN:-}" ] || echo SKIPPED-BANK >"$LQ_FAKE_DRAIN"
 sid="sess-$t"
 {
   echo '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"tu1","name":"Read","input":{"file_path":"lq-work/x"}}]}}'
@@ -74,7 +82,7 @@ sid="sess-$t"
 jq -cn --arg s "$sid" '{type:"result",subtype:"success",is_error:false,session_id:$s,total_cost_usd:0.5,num_turns:3,duration_ms:1000,permission_denials:[{tool_name:"Bash"}],result:"Done by claude-haiku-4-5 via openrouter; tests pass."}'
 FAKE
 chmod +x "$TMP/bin/claude"
-printf '#!/usr/bin/env bash\necho "bank-preflight: five_hour=${LQ_FAKE_5H:-10.0} seven_day=3.0" >&2\necho "${LQ_FAKE_TOKEN:-PROCEED}"\n' >"$TMP/bin/preflight"
+printf '#!/usr/bin/env bash\necho "bank-preflight: five_hour=${LQ_FAKE_5H:-10.0} seven_day=3.0" >&2\ncat "${LQ_FAKE_DRAIN:-/nonexistent}" 2>/dev/null || echo "${LQ_FAKE_TOKEN:-PROCEED}"\n' >"$TMP/bin/preflight"
 chmod +x "$TMP/bin/preflight"
 
 export LQ_CLAUDE_BIN="$TMP/bin/claude" LQ_PREFLIGHT="$TMP/bin/preflight" LQ_REPO="$TMP/repo" \
@@ -103,6 +111,8 @@ check "judge packet hides the lane" '[ -s "$TMP/fake.log.judge" ] && ! grep -qi 
 check "judge packet carries the diff" 'grep -q "semver-cmp" "$TMP/fake.log.judge"'
 check "agent call declares a permission mode" 'grep -q -- "--permission-mode auto" "$TMP/fake.log"'
 check "worktrees removed" '[ -z "$(ls -A "$TMP/work" 2>/dev/null)" ]'
+check "judge cost counts toward the budget" 'grep -q "spent 1.0400 USD" "$TMP/run1.log"'
+check "judge call is budget-capped" 'grep -- "--json-schema" "$TMP/fake.log" | grep -q -- "--max-budget-usd"'
 
 echo "3. guards"
 bash "$RUN" run --lane native --model m --max-usd 0.6 --no-judge --out "$TMP/out2" >"$TMP/run2.log" 2>&1
@@ -119,6 +129,29 @@ for lane in openrouter deepseek claudex; do
   check "$lane lane refused in phase 1 (exit 3)" '[ "$rc" -eq 3 ]'
 done
 check "refused lanes launch nothing" '[ ! -s "$TMP/fake.log" ]'
+
+start=$(date +%s)
+LQ_FAKE_HANG=1 LQ_FAKE_COMMIT=1 bash "$RUN" run --lane native --model m --tasks shell-red-green --timeout 3 \
+  --no-judge --out "$TMP/out4" >"$TMP/run4.log" 2>&1
+took=$(( $(date +%s) - start ))
+R4="$TMP/out4/runs.jsonl"
+check "a hanging candidate is cut off by the timeout" '[ "$took" -lt 25 ]'
+check "a killed acceptance run still records its row" '[ "$(wc -l <"$R4" 2>/dev/null | tr -d " ")" = 1 ]'
+check "a killed acceptance run is not ok" '[ "$(jq -s ".[0].accept_ok" "$R4")" = false ]'
+check "a committed out-of-scope file is caught" '[ "$(jq -s -r ".[0].out_of_scope[0]" "$R4")" = stray.txt ]'
+
+: >"$TMP/fake.log.judge"
+LQ_FAKE_DRAIN="$TMP/drain" bash "$RUN" run --lane native --model m --tasks shell-red-green,finding-verify \
+  --out "$TMP/out5" >"$TMP/run5.log" 2>&1
+rc=$?
+check "a bank drained mid-task skips the judge" '[ ! -s "$TMP/fake.log.judge" ] && [ "$(jq -s ".[0].judge" "$TMP/out5/runs.jsonl")" = null ]'
+check "a bank drained mid-task stops the sweep" '[ "$rc" -eq 75 ] && [ "$(wc -l <"$TMP/out5/runs.jsonl" | tr -d " ")" = 1 ]'
+
+: >"$TMP/blocked"
+LQ_WORK_ROOT="$TMP/blocked" bash "$RUN" run --lane native --model m --tasks shell-red-green --no-judge \
+  --out "$TMP/out6" >"$TMP/run6.log" 2>&1
+rc=$?
+check "a failed worktree add fails the sweep" '[ "$rc" -ne 0 ] && ! grep -q "lane-quality: done" "$TMP/run6.log"'
 
 echo "4. table"
 bash "$RUN" table "$TMP/out1" >"$TMP/table.md" 2>&1

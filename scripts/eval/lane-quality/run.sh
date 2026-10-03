@@ -109,8 +109,13 @@ transcript_metrics() { # $1 = transcript or empty -> JSON object
         peeked: ($tu | map(.input | tostring) | any(test("eval/lane-quality"))) }' "$1"
 }
 
-judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out dir -> judge JSON on stdout
-  local task="$1" wt="$2" fix="$3" report="$4" od="$5" jdir packet
+judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out dir, $6 budget -> judge JSON on stdout
+  local task="$1" wt="$2" fix="$3" report="$4" od="$5" budget="$6" jdir packet tok
+  read -r tok _ <<<"$(bank_read)"
+  if [ "$tok" != PROCEED ]; then
+    echo "lane-quality: bank preflight said $tok; judge skipped" >"$od/$task.judge.err"
+    echo null; return 0
+  fi
   jdir="$(mktemp -d "${TMPDIR:-/tmp}/lq-judge.XXXXXX")" || { echo null; return 0; }
   packet="$od/$task.judge-packet.md"
   git -C "$wt" add -A
@@ -126,9 +131,9 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
   (
     cd "$jdir" || exit 1
     native_auth_pin_env || exit 1
-    # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted by the sweep, no tools, explicit permission mode
+    # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted above, no tools, explicit permission mode, budget-capped
     "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
-      --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
+      --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
   ) >"$od/$task.judge.json" 2>"$od/$task.judge.err"
   rm -rf "$jdir"
   jq -c '(.structured_output // (.result | fromjson? ) // null) as $s
@@ -161,11 +166,14 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   tr=""
   [ -n "$sid" ] && tr="$(find "$TRANSCRIPTS" -name "$sid.jsonl" -print 2>/dev/null | head -1)"
   metrics="$(transcript_metrics "$tr")"
-  bash "$TASKS/$task/accept.sh" "$wt" "$fix" >"$OUT/$task.accept.log" 2>&1; acc_rc=$?
+  timeout "$TIMEOUT" bash "$TASKS/$task/accept.sh" "$wt" "$fix" >"$OUT/$task.accept.log" 2>&1; acc_rc=$?
   acc_line="$(grep -E '^accept: [0-9]+/[0-9]+$' "$OUT/$task.accept.log" | tail -1)"
-  scope="$(git -C "$wt" status --porcelain --untracked-files=all | cut -c4- | grep -v '^lq-work/' | jq -R . | jq -sc .)"
+  # Staged against the fixture commit, so a file the agent committed counts too.
+  git -C "$wt" add -A
+  scope="$(git -C "$wt" diff --cached --name-only "$fix" | grep -v '^lq-work/' | jq -R . | jq -sc .)"
+  remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" -v c="$(jq -r '.total_cost_usd // 0' "$res")" 'BEGIN{r = m - s - c; printf "%.2f", (r > 0.01 ? r : 0.01)}')"
   jres=null
-  [ "$NO_JUDGE" -eq 1 ] || jres="$(judge "$task" "$wt" "$fix" "$OUT/$task.report.md" "$OUT")"
+  [ "$NO_JUDGE" -eq 1 ] || jres="$(judge "$task" "$wt" "$fix" "$OUT/$task.report.md" "$OUT" "$remaining")"
   [ -n "$jres" ] || jres=null
   if [ "$KEEP" -eq 0 ]; then git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1; fi
   jq -nc --arg run "$RUN_ID" --arg lane "$LANE" --arg model "$MODEL" --arg effort "$EFFORT" --arg task "$task" \
@@ -178,11 +186,11 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
         cost_usd: ($r.total_cost_usd // null), bank_5h_before: $b0, bank_5h_after: $b1,
         permission_denials: (($r.permission_denials // []) | length), is_error: ($r.is_error // null),
         subtype: ($r.subtype // null),
-        accept_passed: ($acc | capture("(?<p>[0-9]+)/").p? | tonumber? // 0),
-        accept_total: ($acc | capture("/(?<t>[0-9]+)").t? | tonumber? // 0),
+        accept_passed: (($acc | capture("(?<p>[0-9]+)/").p? | tonumber?) // 0),
+        accept_total: (($acc | capture("/(?<t>[0-9]+)").t? | tonumber?) // 0),
         accept_ok: ($accrc == 0), scope_ok: ($scope | length == 0), out_of_scope: $scope,
         judge: $j, kept_worktree: $wt } + $m' >>"$OUT/runs.jsonl"
-  jq -r '.total_cost_usd // 0' "$res"
+  jq -r --argjson j "$jres" '(.total_cost_usd // 0) + ($j.cost_usd? // 0)' "$res"
 }
 
 cmd_run() {
@@ -242,7 +250,8 @@ cmd_run() {
       exit 75
     fi
     echo "lane-quality: task $t"
-    cost="$(run_task "$t" | tail -1)"
+    cost="$(run_task "$t")" || die "task '$t' failed; see $OUT"
+    cost="$(printf '%s\n' "$cost" | tail -1)"
     SPENT="$(awk -v s="$SPENT" -v c="${cost:-0}" 'BEGIN{printf "%.4f", s + c}')"
   done
   echo "lane-quality: done, spent $SPENT USD (API-price equivalent); rows in $OUT/runs.jsonl"

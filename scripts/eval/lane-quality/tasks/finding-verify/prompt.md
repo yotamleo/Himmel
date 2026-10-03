@@ -9,8 +9,8 @@ not fix anything.
 
 Write your verdicts to `lq-work/verdicts.json`, exactly this shape:
 
-    {"F1": {"verdict": "real", "evidence": "<path>:<line>"},
-     "F2": {"verdict": "not-real", "evidence": "<path>:<line>"}}
+    {"F1": {"verdict": "<real|not-real>", "evidence": "<path>:<line>"},
+     "F2": {"verdict": "<real|not-real>", "evidence": "<path>:<line>"}}
 
 `verdict` is `real` or `not-real`; `evidence` is the repository-relative path
 and the line number of the code that decides it. The example values above are

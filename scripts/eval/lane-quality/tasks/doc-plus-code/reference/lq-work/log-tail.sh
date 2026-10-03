@@ -16,10 +16,9 @@ done
 case "$n" in ''|*[!0-9]*) echo "log-tail: -n must be a non-negative integer" >&2; exit 64 ;; esac
 [ -r "$1" ] || { echo "log-tail: cannot read $1" >&2; exit 66; }
 if [ "$have_pat" -eq 1 ]; then
-  matches="$(grep -E -- "$pat" "$1")"; rc=$?
+  grep -E -- "$pat" </dev/null; rc=$?
   [ "$rc" -le 1 ] || { echo "log-tail: invalid pattern '$pat'" >&2; exit 64; }
-  [ -n "$matches" ] || exit 0
-  printf '%s\n' "$matches" | tail -n "$n"
+  grep -E -- "$pat" "$1" | tail -n "$n"
 else
   tail -n "$n" -- "$1"
 fi
