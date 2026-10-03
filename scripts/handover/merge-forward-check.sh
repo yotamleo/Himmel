@@ -39,6 +39,10 @@
 # given, so a wrong list can still mislead; upgrade path is parsing the failed
 # job logs here if that ever bites.
 set -uo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/git-clean.sh
+. "$SCRIPT_DIR/../lib/git-clean.sh"
+git_env_scrub
 pr=""; base=""; latest=""; prc=""; bc=""; bsha=""; msha=""; lsha=""; psha=""; bad=0
 while [ $# -gt 0 ]; do
   case "$1" in
