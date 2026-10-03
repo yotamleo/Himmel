@@ -160,25 +160,29 @@ for f in "${files[@]}"; do
             # depth nor joins the window — otherwise it can sit between the open paren
             # and the program literal and hide the call. Code AFTER a closing `*/` on
             # the same line is kept (C[] holds the code remainder, L[] the raw line).
-            {
-                L[NR] = $0; s = $0; skip[NR] = 0
-                if (inblk) {
-                    if (match(s, /\*\//)) { s = substr(s, RSTART + 2); inblk = 0 }
-                    else s = ""
-                    cmt = 1
-                } else cmt = 0
-                # peel leading comments off the remainder until real code (or nothing) is left
-                while (!inblk) {
-                    if (s ~ /^[[:space:]]*(\/\/|#)/) { s = ""; cmt = 1; break }
-                    if (s !~ /^[[:space:]]*\/\*/) break
-                    cmt = 1; sub(/^[[:space:]]*\/\*/, "", s)
-                    if (match(s, /\*\//)) s = substr(s, RSTART + 2)
-                    else { s = ""; inblk = 1 }
-                }
-                skip[NR] = (cmt && s ~ /^[[:space:]]*$/)
-                C[NR] = s
-            }
+            # A `/*` with no `*/` within the window is NOT a comment (it may sit in a
+            # string), so a stray one stays code and cannot blank the rest of the file.
+            { L[NR] = $0 }
             END {
+                for (i = 1; i <= NR; ) {
+                    s = L[i]; cmt = 0
+                    # peel leading comments until real code (or nothing) is left
+                    while (1) {
+                        if (s ~ /^[[:space:]]*(\/\/|#)/) { s = ""; cmt = 1; break }
+                        if (s !~ /^[[:space:]]*\/\*/) break
+                        t = s; sub(/^[[:space:]]*\/\*/, "", t)
+                        if (match(t, /\*\//)) { s = substr(t, RSTART + 2); cmt = 1; continue }
+                        q = 0
+                        for (m = i + 1; m <= NR && m <= i + win; m++)
+                            if (L[m] ~ /\*\//) { q = m; break }
+                        if (!q) break
+                        for (m = i; m < q; m++) { skip[m] = 1; C[m] = "" }
+                        i = q; match(L[i], /\*\//); s = substr(L[i], RSTART + 2); cmt = 1
+                    }
+                    skip[i] = (cmt && s ~ /^[[:space:]]*$/)
+                    C[i] = s
+                    i++
+                }
                 for (i = 1; i <= NR; i++) {
                     if (skip[i]) continue
                     d = depth(C[i]); if (d <= 0) continue

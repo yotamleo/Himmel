@@ -350,6 +350,19 @@ assert_rc "T37l two block comments then program, unmarked" 1 "$rc"
 rc=$(run_hook "cm_many.mjs")
 assert_rc "T37m ten comment lines between ( and program, unmarked" 1 "$rc"
 
+# T37n (codex-1 r4): a stray unterminated /* (e.g. inside a template literal) must not
+# blank the rest of the file — a later unmarked spawn is still caught → BLOCK
+{
+    echo 'const s = `'
+    echo "/* not a comment, never closed"
+    echo '`;'
+    for n in 1 2 3 4 5 6 7 8 9 10; do echo "x$n();"; done
+    echo "const r = spawnSync("
+    echo "  'claude', args);"
+} > "$TMP/cm_unterm.mjs"
+rc=$(run_hook "cm_unterm.mjs")
+assert_rc "T37n unterminated /* does not hide a later unmarked spawn" 1 "$rc"
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")
