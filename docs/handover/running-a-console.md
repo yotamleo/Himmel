@@ -51,6 +51,15 @@ then writes `<root>/<user>/<bucket>/<PREFIX>-nextleg-<date>A-console.md` from
 [`console-template.md`](console-template.md). A second `new` on the same day
 writes `…B-console.md` — it never overwrites.
 
+**Keep the `-console` suffix in a scoped name:** `--name roadmap-console`, not
+`--name roadmap`. The suffix is load-bearing. `console-compact-reinject.sh`
+re-injects the live state after a compaction only for a session whose
+launch-time `-n` name ends in `-console`, and `/rename` does not change that
+name. `next` derives the successor's name from its `--doc`, so a doc without
+the suffix hands the mistake down the chain. To fix a mis-named console, copy
+its doc to a `…-console.md` path, take the lock on the new path, release the
+old one, and leave a pointer stub behind.
+
 It then acquires the queue lock on that document and prints the
 `release-token:` line. **That token belongs to the console you are about to
 launch** — record it in the console's first Results bullet, because releasing
@@ -155,6 +164,26 @@ many readers but exactly one writer per artifact. And **every dispatch names an
 explicit model**: an unnamed one draws on the scarcer parent quota. Tier and
 effort guidance, including the console's own wake-up budget, is in
 [`../internals/lane-calibration.md`](../internals/lane-calibration.md).
+
+Three pre-launch checks that each cost a console a dead leg when skipped:
+
+- **An old backlog bug may already be fixed.** Before dispatching a leg on a
+  bug filed weeks ago, check that it still reproduces on current main: read
+  the code the ticket names and look for a regression test that covers it.
+  Many have been fixed in passing. Batch the check in one read-only agent pass
+  (still open, fixed, or partial, each with file:line evidence), and verify any
+  "fixed" claim yourself before you close the ticket.
+- **The Tier line needs a literal em-dash.** An Opus or Fable leg launches only
+  if its brief carries `> **Tier:** opus — <category>: <reason>`. With an ASCII
+  hyphen in place of the em-dash, `headed-arm-leg.sh` refuses: no launch log,
+  nothing in `pgrep`. `--dry-run` an Opus or Fable launch first and look for
+  `refusing` in its output.
+- **Design-profile legs may need interactive MCP auth.** A leg launched on the
+  composed `design` profiles can stop on a by-hand auth prompt for the
+  `agent-native` and `context7` MCP servers. Unattended, that looks like a hung
+  leg. Do not arm a design-profile leg unattended (`--arm`, at-jobs, overnight)
+  until you have confirmed the auth persists.
+
 Pass **`--profile leg-impl`** (HIMMEL-2830) on a native-lane leg: it narrows
 the leg's plugin set, appends the standing rules from
 [`leg-preface.md`](leg-preface.md) to its system prompt — which is why the v3
@@ -254,6 +283,18 @@ not — that asymmetry is deliberate, so a halt can never be argued away. Full
 threat model and the verbatim block:
 [`../internals/retask-channel.md`](../internals/retask-channel.md).
 
+**A ruling that widens what a leg may do is refused by the leg's own auto-mode
+classifier**, for example an extra push, or SKIP verdicts in place of a suite
+that a guard blocked. The refusal is correct: a console ruling is not user
+consent. Narrow the ask instead (run each suite on its own, with no runner
+flags), or do the step from the console, for example push the leg's verified
+head yourself and then tell it to continue.
+
+**Address `inbox-send.sh` by the leg's real session name**, the `-n` it was
+launched with (see its launch log). That name may lack the doc's date suffix.
+A ruling sent to the wrong name is never delivered and raises no error, so run
+`inbox-send.sh --pending` after sending.
+
 ## Merges
 
 `READY <pr> <head> GREEN` → the console verifies independently (all check-runs
@@ -279,6 +320,12 @@ call stays the console's own, which the script says on its last line. On a
 PR that is already `MERGED`, GitHub reports `mergeStateStatus: UNKNOWN`
 permanently, so check 1 always fails there — that is expected, not a bug;
 the script's domain is a PR that has not yet merged.
+
+The CR ledger is keyed by head sha, so **every push needs its own review
+round**, even a one-line fix after a judge's NO-GO. A ruling of "no new
+`/pr-check` panel" leaves check 4 with no row to find, and the marker-clear
+script refuses when no critic answered at that head. Word the ruling as "one
+`/pr-check` round at the new head; only Critical or Important findings block".
 
 A PR on HIMMEL-2973/2976/2928/2974/2975 is READY only if its body cites
 `HIMMEL-2977 "GATE <previous lever> PASS <date>"` (for 2973:
