@@ -107,7 +107,7 @@ headless_spawn_join() {
                 if (!ok) print hit ":" L[hit]
             }
         }
-        END { scan(0); scan(1) }' "$f" 2>/dev/null ||
+        END { scan(0); scan(1) }' 2>/dev/null <"$f" ||
         # A join that could not run (awk missing or erroring) proves nothing clean:
         # report line 0, which no marker can cover, so the gate fails closed.
         echo "0:headless spawn join failed"

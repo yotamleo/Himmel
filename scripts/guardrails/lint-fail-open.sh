@@ -539,10 +539,19 @@ total=$(( ${#shell_files[@]} + ${#js_files[@]} ))
 # Report paths are repo-root-relative and forward-slashed: readable from any
 # cwd, and stable across Git Bash / drive-letter forms. The scans run from
 # $root so the relative paths resolve.
+#
+# HIMMEL-4132: a slash-free path goes out as `./name` — awk reads a bare
+# `x=1.sh` operand as a variable assignment and `-` as stdin, so either would
+# be silently skipped and the scan would pass on a file it never read.
 rel() {
+    local r
     case "$1" in
-        "$root"/*) printf '%s' "${1#"$root"/}" ;;
-        *) printf '%s' "$1" ;;
+        "$root"/*) r="${1#"$root"/}" ;;
+        *) r="$1" ;;
+    esac
+    case "$r" in
+        */*) printf '%s' "$r" ;;
+        *) printf './%s' "$r" ;;
     esac
 }
 report_shell=()

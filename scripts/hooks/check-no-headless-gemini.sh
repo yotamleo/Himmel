@@ -90,12 +90,12 @@ is_exempt() {
 has_optin_marker() {
     local file="$1" line_no="$2"
     # Same-line marker (comment on the call line itself)
-    if sed -n "${line_no}p" "$file" 2>/dev/null | grep -q 'headless-gemini-ok'; then
+    if sed -n "${line_no}p" 2>/dev/null <"$file" | grep -q 'headless-gemini-ok'; then
         return 0
     fi
     # Preceding-line marker (within 1 line above the call)
     if [ "$line_no" -gt 1 ]; then
-        if sed -n "$((line_no - 1))p" "$file" 2>/dev/null | grep -q 'headless-gemini-ok'; then
+        if sed -n "$((line_no - 1))p" 2>/dev/null <"$file" | grep -q 'headless-gemini-ok'; then
             return 0
         fi
     fi
@@ -129,7 +129,7 @@ for f in "${files[@]}"; do
             violations+=("$f:$line_no")
         fi
     done < <({
-        grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" -- "$f" 2>/dev/null
+        grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" 2>/dev/null <"$f"
         headless_spawn_join "$f" "$SPAWN_PATTERN" "$SPAWN_WINDOW" headless-gemini-ok
     } | sort -n -u)
 done

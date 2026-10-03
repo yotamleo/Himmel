@@ -238,6 +238,18 @@ chmod +x "$TMP/badawk/awk"
 rc=$(cd "$TMP" && PATH="$TMP/badawk:$PATH" bash "$HOOK" "interactive.sh" >/dev/null 2>&1; echo "$?")
 assert_rc "T30 a failing join (awk rc!=0) fails closed" 1 "$rc"
 
+# T31 (HIMMEL-4132): a name=value staged filename must not read as an awk
+# assignment (awk would read stdin and the multi-line join would pass) → BLOCK
+printf "%s\n" 'const r = spawnSync(' '  "gemini",' '  args)' > "$TMP/gemini_x=1.js"
+rc=$(run_hook "gemini_x=1.js" </dev/null)
+assert_rc "T31 multi-line spawn in a name=value filename unmarked" 1 "$rc"
+
+# T32 (HIMMEL-4132): a file named '-' must not read as stdin → BLOCK
+printf "%s\n" 'gemini -p "summarize"' > "$TMP/-"
+rc=$(run_hook "-" </dev/null)
+assert_rc "T32 headless call in a file named - unmarked" 1 "$rc"
+rm -f "$TMP/-"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
