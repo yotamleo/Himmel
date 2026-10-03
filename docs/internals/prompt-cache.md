@@ -16,7 +16,8 @@ the tree, and the exact re-run commands.
   <https://platform.claude.com/docs/en/build-with-claude/preserved-thinking>,
   not independently verified here): on Fable 5.1, Opus 5.5, Sonnet 5.5 and
   Mythos 5.1 the API validates each thinking block's signature against the
-  prefix before it. **Edits that invalidate thinking also restart the cache**:
+  prefix before it; an edit to that prefix is a 400 on accounts created after 2026-08-31
+  (older accounts only log it). **Edits that invalidate thinking also restart the cache**:
   editing an earlier message, changing the system prompt or tools, or clearing
   tool results. The cache-safe shape is therefore **append-only messages with a
   fixed system prompt and fixed tools** (audit row 10).
