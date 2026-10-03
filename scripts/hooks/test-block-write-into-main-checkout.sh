@@ -1988,6 +1988,9 @@ _subst_row "76zp same name, not a symlink: sl_x is absent (ALLOW)"         allow
 _subst_row "76zq non-leading \$(pwd) is not the cwd (ALLOW)"               allow "echo x > /tmp/x\$(pwd)/f" "$_PR"
 _subst_row "76zr non-leading \$(pwd) under the primary (DENY)"             block "echo x > $_PR/x\$(pwd)/f"
 _subst_row "76zs \$(pwd)\"/n\" quote after the slash (DENY)"                block "echo x > \$(pwd)\"/n\"" "$_PR"
+ln -s "$_PR" "$_WR/sl"$'\016'
+_subst_row "76zu decoded \\x0e is a byte, not a sentinel (DENY)"            block "echo x > \$'$_WR/sl\\x0e/n'"
+_subst_row "76zv raw 0x0e byte in a plain target (DENY)"                     block "echo x > $_WR/sl"$'\016'"/n"
 ln -s "$_PR" "$_WR/x."
 _subst_row "76zt non-leading \$(pwd) never reads as x./ (ALLOW)"           allow "echo x > $_WR/x\$(pwd)/f"
 

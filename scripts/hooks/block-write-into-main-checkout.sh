@@ -817,7 +817,11 @@ _bwimc_expand_token_raw() {
     local Q="\"'"
     # HIMMEL-4010: an ANSI-C `$'…'` span names the path its decoded text spells
     # (`> $'<primary>/f'`); undecoded, its `$` made the target look dynamic.
-    case "$t" in *"\$'"*) t=$(_bwimc_ansic_spans "$t") ;; esac
+    # A real \016 is doubled either way, so _bwimc_unsent cannot misread it.
+    case "$t" in
+        *"\$'"*) t=$(_bwimc_ansic_spans "$t") ;;
+        *$'\016'*) t="${t//$'\016'/$'\016\016'}" ;;
+    esac
     t=$(printf '%s' "$t" | sed -E "s/^[$Q]+//; s/[$Q]+\$//; s#/[$Q]+#/#g; s#[$Q]+/#/#g")
     # Trim leading/trailing whitespace and drop a WHITESPACE-ONLY candidate
     # here, before the emptiness check below. Pass A's quoted-operand regex
@@ -854,17 +858,24 @@ _bwimc_expand_token() {
 }
 
 # _bwimc_unsent TEXT — HIMMEL-4010: the literal chars _bwimc_ansic_spans
-# parked as \016-\025 sentinels, restored.
+# parked as \016+letter sentinels (and \016\016 for a real \016), restored.
 _bwimc_unsent() {
-    local t="$1"
-    case "$t" in
-        *[$'\016\017\020\021\022\023\024\025']*)
-            t="${t//$'\016'/'$'}"; t="${t//$'\017'/'`'}"
-            t="${t//$'\020'/'"'}"; t="${t//$'\021'/\'}"
-            t="${t//$'\022'/'\'}"; t="${t//$'\023'/'*'}"
-            t="${t//$'\024'/'?'}"; t="${t//$'\025'/'['}" ;;
-    esac
-    printf '%s' "$t"
+    local t="$1" o="" k=0 c
+    case "$t" in *$'\016'*) : ;; *) printf '%s' "$t"; return 0 ;; esac
+    while [ "$k" -lt "${#t}" ]; do
+        c="${t:$k:1}"
+        if [ "$c" = $'\016' ]; then
+            k=$((k+1))
+            case "${t:$k:1}" in
+                d) c='$' ;; b) c='`' ;; q) c='"' ;; a) c="'" ;;
+                e) c="\\" ;; s) c='*' ;; m) c='?' ;; l) c='[' ;;
+                $'\016') c=$'\016' ;;
+                *) c=$'\016'"${t:$k:1}" ;;
+            esac
+        fi
+        o="$o$c"; k=$((k+1))
+    done
+    printf '%s' "$o"
 }
 
 # _bwimc_glob_prefix RAW — HIMMEL-2592 RETASK rule B. A `glob` operand is not
@@ -1340,15 +1351,19 @@ _bwimc_ansic() {
 # by the text it decodes to; everything else is left as it is. Only an
 # UNQUOTED `$'` opens a span: inside "…" or '…' the `$'` is literal text.
 _bwimc_ansic_spans() {
-    local t="$1" o="" c k=0 q s=""
+    local t="$1" o="" c k=0 q s="" n
     while [ "$k" -lt "${#t}" ]; do
         c="${t:$k:1}"
+        # a real \016 is the sentinel escape, so it is doubled (_bwimc_unsent)
+        [ "$c" = $'\016' ] && c=$'\016\016'
         if [ "$s" = "'" ]; then
             [ "$c" = "'" ] && s=""
             o="$o$c"; k=$((k+1)); continue
         fi
         if [ "$c" = "\\" ]; then
-            o="$o$c${t:$((k+1)):1}"; k=$((k+2)); continue
+            n="${t:$((k+1)):1}"
+            [ "$n" = $'\016' ] && n=$'\016\016'
+            o="$o$c$n"; k=$((k+2)); continue
         fi
         if [ "$c" = '"' ]; then
             if [ "$s" = '"' ]; then s=""; else s='"'; fi
@@ -1365,14 +1380,16 @@ _bwimc_ansic_spans() {
             done
             k=$((k+1))
             # decoded text is LITERAL: a `$`, backtick, quote, `\` or glob
-            # char in it names itself, so it rides as a \016-\025 sentinel
-            # past the quote strip and the dynamic check; _bwimc_unsent puts
-            # the real char back before the path is resolved
+            # char in it names itself, so it rides as a \016+letter sentinel
+            # (a real \016 as \016\016) past the quote strip and the dynamic
+            # check; _bwimc_unsent puts the real char back before the path is
+            # resolved
             q=$(_bwimc_ansic "$q")
-            q="${q//'$'/$'\016'}"; q="${q//'`'/$'\017'}"
-            q="${q//'"'/$'\020'}"; q="${q//\'/$'\021'}"
-            q="${q//'\'/$'\022'}"; q="${q//'*'/$'\023'}"
-            q="${q//'?'/$'\024'}"; q="${q//'['/$'\025'}"
+            q="${q//$'\016'/$'\016\016'}"
+            q="${q//'$'/$'\016'd}"; q="${q//'`'/$'\016'b}"
+            q="${q//'"'/$'\016'q}"; q="${q//\'/$'\016'a}"
+            q="${q//\\/$'\016'e}"; q="${q//'*'/$'\016's}"
+            q="${q//'?'/$'\016'm}"; q="${q//'['/$'\016'l}"
             o="$o$q"
             continue
         fi
