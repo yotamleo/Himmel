@@ -84,7 +84,7 @@ materialize() {
 
 # Redact every model and lane name before the judge sees a byte.
 redact() {
-  sed -E 's/(anthropic|claude|opus|sonnet|haiku|fable|gpt[-_.a-z0-9]*|codex|claudex|openai|deepseek|openrouter|gemini|glm|kimi|qwen|llama|mistral)/[redacted]/Ig; s/\[redacted\]([-_.]*[0-9][-_.0-9]*)?/[redacted]/g'
+  sed -E 's/(anthropic|claude|opus|sonnet|haiku|fable|gpt[-_.a-z0-9]*|codex|claudex|openai|deepseek|openrouter|gemini|glm|kimi|qwen|llama|mistral)/[redacted]/Ig; s/\bnative\b/[redacted]/Ig;s/\[redacted\]([-_.]*[0-9][-_.0-9]*)?/[redacted]/g'
 }
 
 bank_read() { # prints "<token> <five_hour>"

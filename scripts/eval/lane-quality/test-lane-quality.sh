@@ -81,7 +81,7 @@ sid="sess-$t"
   echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu2","is_error":true,"content":"PreToolUse:Bash hook error: refusing"}]}}'
   echo '{"type":"system","subtype":"compact_boundary"}'
 } >"$LQ_TRANSCRIPTS/p/$sid.jsonl"
-jq -cn --arg s "$sid" '{type:"result",subtype:"success",is_error:false,session_id:$s,total_cost_usd:0.5,num_turns:3,duration_ms:1000,permission_denials:[{tool_name:"Bash"}],result:"Done by claude-haiku-4-5 via openrouter; tests pass."}'
+jq -cn --arg s "$sid" '{type:"result",subtype:"success",is_error:false,session_id:$s,total_cost_usd:0.5,num_turns:3,duration_ms:1000,permission_denials:[{tool_name:"Bash"}],result:"Done by claude-haiku-4-5 via openrouter on the native lane; tests pass."}'
 FAKE
 chmod +x "$TMP/bin/claude"
 # LQ_FAKE_PROCEED_N=<n>: only the first n calls PROCEED (counted in LQ_FAKE_CALLS).
@@ -119,6 +119,7 @@ check "scope ok" '[ "$(jq -s "map(select(.scope_ok)) | length" "$R")" = 2 ]'
 check "judge scores recorded" '[ "$(jq -s ".[0].judge.correctness" "$R")" = 4 ]'
 check "judge packet hides the model" '[ -s "$TMP/fake.log.judge" ] && ! grep -qi "haiku" "$TMP/fake.log.judge"'
 check "judge packet hides the lane" '[ -s "$TMP/fake.log.judge" ] && ! grep -qi "openrouter" "$TMP/fake.log.judge"'
+check "judge packet hides the native lane" '[ -s "$TMP/fake.log.judge" ] && ! grep -qiw "native" "$TMP/fake.log.judge"'
 check "judge packet carries the diff" 'grep -q "semver-cmp" "$TMP/fake.log.judge"'
 check "agent call declares a permission mode" 'grep -q -- "--permission-mode auto" "$TMP/fake.log"'
 check "worktrees removed" '[ -z "$(ls -A "$TMP/work" 2>/dev/null)" ]'
