@@ -94,6 +94,8 @@ g "nohup shutdown"        block '{"tool_name":"terminal","tool_input":{"command"
 g "timeout 5 reboot"      block '{"tool_name":"terminal","tool_input":{"command":"timeout -s KILL 5 reboot"}}'
 g "exec -a 'q v' shutdown" block '{"tool_name":"terminal","tool_input":{"command":"exec -a '"'"'custom process'"'"' shutdown now"}}'
 g "nice -n \"1 2\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"nice -n \"1 0\" reboot"}}'
+g "sudo -u 'a b' shutdown" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u '"'"'a b'"'"' shutdown now"}}'
+g "env -C \"a b\" reboot"  block '{"tool_name":"terminal","tool_input":{"command":"env -C \"my dir\" reboot"}}'
 g "xargs -0 taskkill"     block '{"tool_name":"terminal","tool_input":{"command":"ls | xargs -0 taskkill /f"}}'
 g "then shutdown"         block '{"tool_name":"terminal","tool_input":{"command":"if true; then shutdown now; fi"}}'
 g "do format"             block '{"tool_name":"terminal","tool_input":{"command":"for x in a; do format c:; done"}}'

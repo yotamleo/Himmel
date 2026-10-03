@@ -494,7 +494,9 @@ guard_cmdpos_grammar() {
     # HIMMEL-3984: exec-style wrappers (shapes from block-graphify-egress.sh).
     # A flag's optional value only ever over-matches; the bare-flag branch
     # is always there, so a value-shaped atom is never hidden.
-    local val='[[:space:]]+[^-[:space:]][^[:space:]]*'
+    # HIMMEL-4150: the value may be quoted and hold a space (`exec -a 'a b'`),
+    # the shape ASSIGN uses; parity_guard.py's _VAL is the twin.
+    local val='[[:space:]]+('\''[^'\'']*'\''|"[^"]*"|[^-[:space:]][^[:space:]]*)'
     local wrap='sudo([[:space:]]+-[^[:space:]]+('"$val"')?)*|env([[:space:]]+(-[^[:space:]]+('"$val"')?|'"$ASSIGN"'))*|exec([[:space:]]+(-a'"$val"'|-[^[:space:]]+))*|timeout([[:space:]]+-[^[:space:]]+('"$val"')?)*'"$val"'|nohup([[:space:]]+--)?|nice([[:space:]]+(-n'"$val"'|--a[a-z-]*'"$val"'|-[^[:space:]]+))*|time([[:space:]]+(-[of]'"$val"'|--[of][a-z-]*'"$val"'|-[^[:space:]]+))*|xargs([[:space:]]+(-[adeilnps]'"$val"'|--[admp][a-z-]*'"$val"'|-[^[:space:]]+))*|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*'
     # CMDPOS_PFX is the run after the separator, for a caller that anchors it
     # behind its own launcher (find -exec in block-destructive-commands.sh).

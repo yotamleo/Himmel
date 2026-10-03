@@ -172,8 +172,8 @@ _CMDPOS_DESTRUCTIVE = (
     r"(?:^|[;&|(`\n]|\)\s*\{)\s*"
     + r"(?:(?:" + _ASSIGN
     + r"|(?:do|then|else|elif|if|while|until|function\s+\S+|!|\{)"
-    + r"|" + _EXE_PREFIX + r"(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*"   # sudo + flags, each with an optional value token (CR r6/r7)
-    + r"|env(?:\s+(?:-\S+(?:\s+[^-\s]\S*)?|" + _ASSIGN + r"))*"      # env + flags(+value)/assignments (CR r6/r7)
+    + r"|" + _EXE_PREFIX + r"(?:sudo(?:\s+-\S+(?:" + _VAL + r")?)*"   # sudo + flags, each with an optional value token (CR r6/r7; quoted HIMMEL-4150)
+    + r"|env(?:\s+(?:-\S+(?:" + _VAL + r")?|" + _ASSIGN + r"))*"      # env + flags(+value)/assignments (CR r6/r7; quoted HIMMEL-4150)
     + r"|exec(?:\s+(?:-a" + _VAL + r"|-\S+))*"
     + r"|timeout(?:\s+-\S+(?:" + _VAL + r")?)*" + _VAL
     + r"|nohup(?:\s+--)?"
