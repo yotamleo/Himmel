@@ -120,12 +120,46 @@ python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
 if [ "$RC_EMPTY" = "2" ]; then pass "empty-corpus: refused (exit 2)"
 else fail "empty-corpus: expected exit 2, got $RC_EMPTY"; fi
 
+# --- 1b. inherited GIT_DIR must not redirect the scratch git setup -----------
+# codex-1: GIT_DIR/GIT_WORK_TREE/... override `git -C`, so a stray one in the
+# environment could send scratch init/add/commit into a real repo. diff strips
+# them; prove a sentinel GIT_DIR is never created by the scratch setup.
+SENTGD="$TMP/sentinel-gitdir"
+GIT_DIR="$SENTGD" python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 1 >/dev/null 2>&1
+if [ ! -e "$SENTGD" ]; then pass "git-env: inherited GIT_DIR did not redirect scratch git"
+else fail "git-env: scratch git honored inherited GIT_DIR ($SENTGD created)"; fi
+
+# --- 2c. each invocation gets a fresh HOME/primary (no cross-run contamination)
+# codex-2: a hook that writes state must not leak into another row or the other
+# side of the comparison. This stub denies (exit 2) iff a PRIOR run in the same
+# HOME planted a marker; with per-invocation fresh HOME it never sees one, so
+# every run allows and nothing is spuriously denied. Benign-only corpus (no
+# expect=deny rows) so the deny positive-control check does not fire.
+cat > "$TMP/contaminate-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+if [ -e "$HOME/.seen" ]; then exit 2; fi
+: > "$HOME/.seen"
+exit 0
+STUB
+chmod +x "$TMP/contaminate-hook.sh"
+python3 "$GEN" --seed 1 -o "$TMP/benign.jsonl"
+OUT2C=$(python3 "$DIFF" --base "$TMP/contaminate-hook.sh" --head "$TMP/contaminate-hook.sh" \
+        --corpus "$TMP/benign.jsonl" --jobs 1 2>&1); RC2C=$?
+has "isolation: no cross-run contamination" "$OUT2C" "newly-denied: 0"
+has "isolation: no stray denials" "$OUT2C" "(REGRESSION): 0"
+if [ "$RC2C" = "0" ]; then pass "isolation: fresh HOME per invocation (exit 0)"
+else fail "isolation: shared HOME contaminated runs, exit $RC2C"; fi
+
 # --- 4. no code path execs a generated command (sentinel-file assertion) ------
 # A seed that WOULD create a sentinel file if ever executed. diff must NOT run
 # it; the file must not exist afterward. The hook only reads stdin.
 SENT="$TMP/must-not-exist"
+# expect=allow so the deny positive-control check (section 6) is not triggered
+# here; this section only proves the command is never EXECUTED.
 cat > "$TMP/exec-seeds.txt" <<SEEDS
-planted	deny	touch $SENT
+planted	allow	touch $SENT
 SEEDS
 python3 "$GEN" --seed 1 --seeds-file "$TMP/exec-seeds.txt" -o "$TMP/exec-corpus.jsonl"
 python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
@@ -148,6 +182,20 @@ N=$(grep -c '"family": "supplied"' "$TMP/sf.jsonl")
 if [ "$N" -ge 2 ]; then pass "seeds-file: transforms applied to supplied seed ($N rows)"
 else fail "seeds-file: expected >=2 supplied rows, got $N"; fi
 has "seeds-file: placeholder preserved" "$(cat "$TMP/sf.jsonl")" "PLACEHOLDER"
+
+# --- 6. deny-expected rows the base never denies => inconclusive (exit 3) ----
+# codex-3: if a judge supplies deny seeds but the base denies NONE, the deny
+# positive control never fired, so "no regression" proves nothing. A clean
+# exit 0 would be a false "reviewed clean"; diff must report it (exit 3).
+cat > "$TMP/miss-seeds.txt" <<'SEEDS'
+planted-miss	deny	echo harmless
+SEEDS
+python3 "$GEN" --seed 1 --seeds-file "$TMP/miss-seeds.txt" -o "$TMP/miss-corpus.jsonl"
+OUT6=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/miss-corpus.jsonl" --jobs 4 2>&1); RC6=$?
+has "deny-control: warning present" "$OUT6" "NO deny-side coverage"
+if [ "$RC6" = "3" ]; then pass "deny-control: no base deny => inconclusive exit 3"
+else fail "deny-control: expected exit 3, got $RC6"; fi
 
 echo "----"
 echo "guard-corpus: $PASS passed, $FAIL failed"

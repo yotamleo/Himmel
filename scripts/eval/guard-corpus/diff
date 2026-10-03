@@ -8,14 +8,19 @@
 # primary checkout, so there is deliberately no code path here that executes a
 # row's command. The only subprocess this tool launches is `bash <hook-copy>`.
 #
-# ISOLATION. Every hook run gets:
-#   - a scratch HOME and HANDOVER_DIR under a per-invocation tempdir,
-#   - cwd set to a throwaway scratch git repo on branch `main` that stands in
-#     for the primary checkout (the row's @PRIMARY@ token is substituted with
-#     this repo's path and also passed as the payload's `cwd`),
+# ISOLATION. Every hook run gets its OWN fresh sandbox (base and head each, per
+# row -- never shared), so a hook that writes state cannot contaminate another
+# row or the other side of a comparison, and concurrent rows cannot race:
+#   - a private HOME and HANDOVER_DIR under a per-invocation tempdir,
+#   - cwd set to a per-invocation COPY of a throwaway scratch git repo on
+#     branch `main` that stands in for the primary checkout (the row's
+#     @PRIMARY@ token is substituted with that copy's path and also passed as
+#     the payload's `cwd`),
 #   - a per-row timeout; a row that outlasts it is killed (process group) and
 #     flagged TIMEOUT RISK.
-# The real primary checkout is never the cwd and is never written.
+# Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE (and friends) are stripped up
+# front so no `git -C` call -- ours or a hook's -- can be redirected into a
+# real repo. The real primary checkout is never the cwd and is never written.
 #
 # A hook source is given either as a path to a .sh file, or as `sha:PATH` where
 # PATH is a repo-relative hook path materialised from that git SHA into a
@@ -27,10 +32,15 @@
 #   - newly-denied rows          (head denies what base allowed)
 #   - rc other than 0 or 2
 #   - TIMEOUT RISK rows (wall time over --timeout-warn, default 5s)
-# Exit 0 clean, 1 if any base-deny/head-allow row exists, 2 on setup error,
-# 3 if the run was inconclusive (any hook errored or was hard-killed, i.e. an
-# rc outside {0,2}) and no regression was seen -- two broken hooks must never
-# read as a clean verdict.
+#   - deny-expected coverage: of the rows a judge marked expect=deny, how many
+#     the BASE actually denied (the positive control), and any a judge marked
+#     deny that BOTH hooks allowed
+# Exit 0 clean, 1 if any base-deny/head-allow row exists, 2 on setup error (or
+# an empty corpus), 3 if the run was inconclusive and no regression was seen:
+# any hook errored or was hard-killed (rc outside {0,2}), OR a judge supplied
+# deny-expected seeds but the base denied none of them (the positive control
+# never fired, so a clean result proves nothing). Two broken hooks, and a
+# corpus that demonstrated no deny coverage, must never read as clean.
 #
 # USAGE
 #   diff --base <hook|sha:path> --head <hook|sha:path> --corpus FILE
@@ -174,6 +184,25 @@ def make_scratch_primary(parent):
     return repo
 
 
+def _fresh_sandbox(template_primary, parent):
+    """An isolated (primary, HOME, HANDOVER_DIR) triple for ONE hook run.
+
+    Each hook invocation gets its own copy of the scratch primary plus an
+    empty HOME and HANDOVER_DIR, so a hook that writes state cannot contaminate
+    another row or the other side of the base/head comparison, and concurrent
+    rows cannot race on shared paths. Returns (primary, home, handover,
+    sandbox_dir); the caller removes sandbox_dir when the run is done.
+    """
+    sand = tempfile.mkdtemp(prefix="gc-inv.", dir=parent)
+    primary = os.path.join(sand, "primary")
+    shutil.copytree(template_primary, primary)
+    home = os.path.join(sand, "home")
+    handover = os.path.join(sand, "handover")
+    os.makedirs(home)
+    os.makedirs(handover)
+    return primary, home, handover, sand
+
+
 def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
     """Pipe a JSON payload to the hook on stdin. Returns (rc, wall_seconds).
 
@@ -226,6 +255,17 @@ def main(argv):
     ap.add_argument("--no-json", action="store_true")
     args = ap.parse_args(argv)
 
+    # Inherited Git location overrides (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
+    # and friends) take precedence over `git -C`, so a stray one in the
+    # caller's environment would redirect our scratch init/add/commit -- and a
+    # hook's own git calls -- into a REAL repository, defeating the whole
+    # "never touch the primary" isolation. Strip them once here; every
+    # subprocess below inherits this scrubbed os.environ (env=dict(os.environ)
+    # copies it after the scrub).
+    for _k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+               "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+        os.environ.pop(_k, None)
+
     with open(args.corpus, "r", encoding="utf-8") as fh:
         corpus = [json.loads(line) for line in fh if line.strip()]
 
@@ -246,23 +286,28 @@ def main(argv):
         try:
             base_hook = materialise_hook(args.base, args.repo, base_dir)
             head_hook = materialise_hook(args.head, args.repo, head_dir)
-            primary = make_scratch_primary(workdir)
+            # built ONCE as a template; each invocation copies it (see
+            # _fresh_sandbox) so no two runs share a primary.
+            template = make_scratch_primary(workdir)
         except RuntimeError as e:
             print("guard-corpus diff: setup error: %s" % e, file=sys.stderr)
             return 2
-        home = os.path.join(workdir, "home")
-        handover = os.path.join(workdir, "handover")
-        os.makedirs(home, exist_ok=True)
-        os.makedirs(handover, exist_ok=True)
+
+        def _run_side(hook, raw_cmd):
+            prim, home, handover, sand = _fresh_sandbox(template, workdir)
+            try:
+                cmd = raw_cmd.replace(PLACEHOLDER, prim)
+                return run_one_hook(hook, cmd, prim, home, handover,
+                                    args.timeout_run)
+            finally:
+                shutil.rmtree(sand, ignore_errors=True)
 
         def one(idx_row):
             idx, row = idx_row
-            cmd = row["tool_input"]["command"].replace(PLACEHOLDER, primary)
-            rb, tb = run_one_hook(base_hook, cmd, primary, home, handover,
-                                  args.timeout_run)
-            rh, th = run_one_hook(head_hook, cmd, primary, home, handover,
-                                  args.timeout_run)
-            return dict(idx=idx, cmd=cmd, family=row.get("family"),
+            raw = row["tool_input"]["command"]
+            rb, tb = _run_side(base_hook, raw)
+            rh, th = _run_side(head_hook, raw)
+            return dict(idx=idx, cmd=raw, family=row.get("family"),
                         transform=row.get("transform"), expect=row.get("expect"),
                         base=rb, head=rh, tb=tb, th=th)
 
@@ -282,6 +327,15 @@ def main(argv):
                if r["base"] not in (0, 2) or r["head"] not in (0, 2)]
         slow = [r for r in results
                if max(r["tb"], r["th"]) >= args.timeout_warn]
+        # deny-side positive control: of the rows the judge marked expect=deny,
+        # how many did the BASE actually deny? If a judge supplied deny seeds
+        # but none fired, the corpus proved no deny coverage and a clean 0
+        # would be a false "reviewed clean" -- make it inconclusive (exit 3).
+        deny_expected = [r for r in results if r.get("expect") == "deny"]
+        deny_fired = [r for r in deny_expected if r["base"] == 2]
+        deny_allowed_both = [r for r in deny_expected
+                             if r["base"] == 0 and r["head"] == 0]
+        no_deny_control = bool(deny_expected) and not deny_fired
 
         print("guard-corpus diff: %d rows" % len(results))
         print("  base-deny/head-allow (REGRESSION): %d" % len(regressions))
@@ -299,17 +353,32 @@ def main(argv):
         for r in slow[:50]:
             print("    TIMEOUT-RISK idx=%d tb=%.2f th=%.2f transform=%s"
                   % (r["idx"], r["tb"], r["th"], r["transform"]))
+        print("  deny-expected rows: %d (base denied %d; allowed by both: %d)"
+              % (len(deny_expected), len(deny_fired), len(deny_allowed_both)))
+        if no_deny_control:
+            print("    WARNING: no deny-expected row was denied by base -- "
+                  "this corpus demonstrated NO deny-side coverage")
+        for r in deny_allowed_both[:50]:
+            print("    DENY-MISSED idx=%d family=%s transform=%s "
+                  "(both hooks allowed a deny-expected row)"
+                  % (r["idx"], r["family"], r["transform"]))
 
         if not args.no_json:
             print("JSON " + json.dumps(dict(
                 rows=len(results), regressions=len(regressions),
-                newly_denied=len(newly), odd_rc=len(odd), timeout_risk=len(slow))))
+                newly_denied=len(newly), odd_rc=len(odd), timeout_risk=len(slow),
+                deny_expected=len(deny_expected), deny_base_fired=len(deny_fired),
+                deny_allowed_both=len(deny_allowed_both))))
 
         if regressions:
             return 1
         # odd includes rc=="TIMEOUT" (hard kill) and any error rc: such a run
         # never validly exercised the guard, so it is inconclusive, not clean.
         if odd:
+            return 3
+        # deny seeds supplied but the base denied none: the positive control
+        # never fired, so the "no regression" result proves nothing.
+        if no_deny_control:
             return 3
         return 0
     finally:
