@@ -2078,12 +2078,19 @@ leaving a *different* `+`-prefixed refspec in the same push unprotected.
 Recognizes a bounded set of launcher wrappers
 (`sudo`, `env`, `cmd /c`, `powershell`/`pwsh -c`) and an executable-path
 prefix, so a wrapped or path-qualified form (`/usr/bin/env rm -rf /`,
-`C:\…\format.exe`) is refused like the bare name. Routine git/gh/mv/cp,
-non-recursive `rm`, `curl` without a remote-exec pipe, and normal
-`git status`/`commit`/`push` are all allowed.
+`C:\…\format.exe`) is refused like the bare name. HIMMEL-3984/3983 widened
+command position to the exec-style wrappers `exec`, `timeout`, `nohup`,
+`nice`, `time` and `xargs` (with their flags), to the compound keywords
+(`do`, `then`, `else`, `elif`, `if`, `while`, `until`, `!`, `{`, `(`, a
+function body), and to a `find`/`fd` exec flag (`-exec`, `-execdir`, `-ok`,
+`-x`, `--exec-batch`); `find … -delete` is refused as a recursive delete.
+Routine git/gh/mv/cp, non-recursive `rm`, `curl` without a remote-exec pipe,
+and normal `git status`/`commit`/`push` are all allowed.
 
 Deliberately NOT a general shell parser: quoted-payload wrappers (`bash -c
-"rm -rf /"`, `xargs`, `nohup` chains) are an accepted residual gap — this
+"rm -rf /"`, `su -c`, `env -S`) and the wrappers listed in the `ponytail:`
+note on `guard_cmdpos_grammar` (`setsid`, `stdbuf`, `flock`, …) are an
+accepted residual gap — this
 hook plus the auto-mode classifier are the outer defense layers, not an
 arms race against every wrapper permutation. Fails CLOSED on missing `jq`
 or malformed/truncated JSON (a security floor, not a convenience hook — the
