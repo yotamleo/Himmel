@@ -257,7 +257,7 @@ guard_cmdpos_grammar
 RMPOS="(${CMDPOS}|[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+${CMDPOS_PFX})"
 # HIMMEL-3984: `find -delete` is a recursive delete of its own. The gap is
 # unbounded, like RM_RECURSIVE_PAT's, so a quoted `;` cannot hide the flag.
-FIND_DELETE_PAT="${CMDPOS}"'find(\.exe)?[[:space:]].*[[:space:]]-delete([^[:alnum:]_-]|$)'
+FIND_DELETE_PAT="${CMDPOS}"'find(\.exe)?([[:space:]].*)?[[:space:]]-delete([^[:alnum:]_-]|$)'
 # HIMMEL-2834: the three rm checks below run against rm_scrub, not cmd_lc.
 # The old anchor was a bare word boundary `(^|[^[:alnum:]_.-])`, which matches
 # the literal ANYWHERE in the command string, not just where a command is
