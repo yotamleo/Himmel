@@ -895,6 +895,9 @@ cat > "$W12/bin/curl" <<'CURL'
 #!/usr/bin/env bash
 for last; do :; done
 pkg="${last#https://registry.npmjs.org/}"; pkg="${pkg%/latest}"
+case "$last" in https://pypi.org/pypi/*) pkg="${last#https://pypi.org/pypi/}"; pkg="${pkg%/json}"
+  ver=$(grep -E "^${pkg}=" "$PINSTATE/pypi" 2>/dev/null | head -1 | cut -d= -f2); [ -n "$ver" ] || exit 22
+  printf '{"info":{"version":"%s"}}\n' "$ver"; exit 0 ;; esac
 ver=$(grep -E "^${pkg}=" "$PINSTATE/npm" 2>/dev/null | head -1 | cut -d= -f2)
 [ -n "$ver" ] || ver="${PINSTATE_DEFAULT:-}"
 [ -n "$ver" ] || exit 22
@@ -949,7 +952,10 @@ jobs:
     steps:
       - uses: owner/act@v3
       - uses: owner/act2@v1
+      - run: python -m pip install --disable-pip-version-check pypi-stale==1.0.0
+      - run: python -m pip install pypi-fresh==2.0.0
 YML
+printf 'pypi-stale=1.2.0\npypi-fresh=2.0.0\n' > "$W12/state/pypi"
 printf '#!/usr/bin/env bash\nOXLINT_VERSION=1.0.0\n' > "$W12/root/scripts/hooks/h.sh"
 # A vendored upstream tree (VENDORED.md marker): its pins follow upstream, not npm-latest.
 mkdir -p "$W12/root/vend"; printf 'vend-pkg=9.0.0\n' >> "$W12/state/npm"
@@ -974,8 +980,9 @@ if grepq "$pin_sec" '^  npm:unreach-pkg .*UNCHECKED'; then ok "pin-scan: unreach
 if grepq "$pin_sec" '^  npm:oxlint 1\.0\.0 (scripts/hooks/h\.sh): BEHIND'; then ok "pin-scan: OXLINT_VERSION= literal watched -> BEHIND"; else bad "oxlint literal not BEHIND; $(printf '%s' "$pin_sec" | grep oxlint)"; fi
 if grepq "$pin_sec" '^  gh:owner/hookrepo v1\.0\.0 (\.pre-commit-config\.yaml): BEHIND'; then ok "pin-scan: stale pre-commit rev -> BEHIND"; else bad "hookrepo not BEHIND"; fi
 if grepq "$pin_sec" '^  gh:owner/heldrepo v1\.0\.0 .*: HELD'; then ok "pin-scan: recorded hold -> HELD, not drift"; else bad "heldrepo not HELD"; fi
-if grepq "$pin_sec" '^  gh:owner/act v3 .*: CURRENT'; then ok "pin-scan: major-only action pin tracks its major -> CURRENT"; else bad "act@v3 not CURRENT"; fi
-if grepq "$pin_sec" '^  gh:owner/act2 v1 .*: BEHIND'; then ok "pin-scan: action a major behind -> BEHIND"; else bad "act2@v1 not BEHIND"; fi
+if grepq "$pin_sec" 'owner/act'; then bad "pin-scan reported a workflow uses: pin; Dependabot owns those; $(printf '%s' "$pin_sec" | grep owner/act)"; else ok "pin-scan skips workflow uses: pins (Dependabot github-actions owns them)"; fi
+if grepq "$pin_sec" '^  pypi:pypi-stale 1\.0\.0 (\.github/workflows/w\.yml): BEHIND'; then ok "pin-scan: stale workflow pip == pin -> BEHIND"; else bad "pypi-stale not BEHIND; $(printf '%s' "$pin_sec" | grep pypi-stale)"; fi
+if grepq "$pin_sec" '^  pypi:pypi-fresh 2\.0\.0 .*: CURRENT'; then ok "pin-scan: current workflow pip == pin -> CURRENT"; else bad "pypi-fresh not CURRENT"; fi
 if grepq "$pin_sec" '^  npm:vend-pkg 1\.0\.0 (vend): VENDORED'; then ok "pin-scan: pin inside a VENDORED.md tree -> VENDORED, not BEHIND npm-latest"; else bad "vend-pkg not VENDORED; $(printf '%s' "$pin_sec" | grep vend-pkg)"; fi
 if [ "$pin_rc" -eq 2 ]; then ok "pin-scan drift run exits 2"; else bad "pin-scan drift run rc=$pin_rc; expected 2"; fi
 # A hold expires when upstream ships something newer than the one reviewed.
@@ -1065,6 +1072,36 @@ printf '{"bad":{"standalone":true,"upstream_repo":"o/sub-ok","track":"typo","ref
 out14="$(GHSTATE="$W13/state" PATH="$W13/bin:$PATH" DRIFT_MJSON="$W13/m.json" DRIFT_UPSTREAMS="$W13/u.json" DRIFT_REGISTRY="$W13/empty.json" DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$SCRIPT" 2>&1)"; rc14=$?
 if [ "$rc14" -eq 3 ] && grepq "$out14" 'parse failed'; then ok "invalid standalone track is INCOMPLETE, never current"; else bad "invalid standalone target rc=$rc14; $out14"; fi
 rm -rf "$W13"
+
+# 15. Registry tag_prefix on a latest_source=release entry (HIMMEL-4258): bun
+#     publishes `bun-v1.4.3`, which the bare-version release match rejected as
+#     UNCHECKED. tag_prefix strips the stream prefix so synced_base stays a bare
+#     version (what .bun-version holds) and the BEHIND line names a bare version
+#     apply-drift-bump.sh can take as-is.
+W15="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-w15.XXXXXX")" || { echo "mktemp -d failed" >&2; exit 1; }; mkdir -p "$W15/bin"
+cat > "$W15/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+case "$*" in
+  *"/releases/latest"*) printf 'bun-v1.4.3\n'; exit 0 ;;
+esac
+exit 0
+GH
+chmod +x "$W15/bin/gh"
+printf '{"plugins":[]}' >"$W15/m.json"; printf '{}' >"$W15/u.json"
+for base in 1.4.2 1.4.3; do
+  cat > "$W15/reg.json" <<JSON
+{"entries":[{"name":"bun-pin","kind":"tag_release","mode":"base","tracked_repo":"oven-sh/bun","synced_base":"$base","latest_source":"release","tag_prefix":"bun-v","tier":"A"}]}
+JSON
+  out15="$(PATH="$W15/bin:$PATH" DRIFT_REGISTRY="$W15/reg.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W15/m.json" DRIFT_UPSTREAMS="$W15/u.json" bash "$SCRIPT" 2>&1)"
+  line15="$(printf '%s' "$out15" | grep 'bun-pin')"
+  if [ "$base" = 1.4.2 ]; then
+    if grepq "$line15" 'BEHIND.*1\.4\.3'; then ok "release tag_prefix: bun-v1.4.3 vs 1.4.2 -> BEHIND naming the bare 1.4.3"; else bad "bun-pin not BEHIND; $line15"; fi
+  else
+    if grepq "$line15" 'CURRENT'; then ok "release tag_prefix: bun-v1.4.3 vs 1.4.3 -> CURRENT"; else bad "bun-pin not CURRENT; $line15"; fi
+  fi
+done
+rm -rf "$W15"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi

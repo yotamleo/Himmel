@@ -129,11 +129,24 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 > Fail-open when gh is absent; exit 2 on drift (cadence-armable). Run it on
 > demand or arm it like `pipeline-cadence`. Since HIMMEL-3807 it also scans
 > every third-party pin in the repo (`scripts/upstreams/pin-scan.py`): npm/bun
-> dependencies at their lockfile version, pre-commit revs, workflow `uses:`, the
-> gitleaks `ver=` literal and `OXLINT_VERSION=` in `scripts/hooks`. Discovery is
-> by scanning, so a new pin is watched with no registry edit; a bump held back on
-> purpose goes in `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream
-> ships something newer than the release reviewed).
+> dependencies at their lockfile version, pre-commit revs, the gitleaks `ver=`
+> literal, workflow `pip install pkg==ver` pins and `OXLINT_VERSION=` in
+> `scripts/hooks`. Discovery is by scanning, so a new pin is watched with no
+> registry edit; a bump held back on purpose goes in
+> `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream ships
+> something newer than the release reviewed).
+>
+> **CI tool pins (HIMMEL-4258):** every CI tool version is exact, with one owner
+> per pin. CI's bun is the repo-root `.bun-version` (every `setup-bun` step uses
+> `bun-version-file`, so setup-bun builds the release URL instead of listing bun's
+> tags through api.github.com, whose 503 killed jobs before any test ran); the
+> `bun-ci` row in `scripts/upstreams.json` (`tag_prefix: bun-v`) lets the nightly
+> `/drift-fix` bump it. Dependabot owns npm manifests and workflow `uses:`
+> (`.github/dependabot.yml` records the split), so pin-scan no longer reports
+> actions. Left floating on purpose: `setup-node` `'22'` (an LTS line, not an
+> exact version, with no drift row able to track a major line), `npm i -g npm@^11`
+> (a deliberate floor, HIMMEL-2573), `apt-get install at` and the runner-image
+> shellcheck/pwsh (the image owns them).
 
 > **Boundary ownership:** which optimizer owns which token boundary (rtk vs
 > MCP-output vs cache vs routing) is governed by
