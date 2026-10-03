@@ -32,8 +32,11 @@ fi
 echo "unexpected ps argv: \$*" >&2; exit 3
 STUB
 # shellcheck disable=SC2016  # $* and $KILL_LOG must reach the stub literally
-printf '#!/usr/bin/env bash\necho "$*" >> "$KILL_LOG"\n' > "$W/bin/killstub"
-chmod +x "$W/bin/ps" "$W/bin/killstub"
+printf '#!/usr/bin/env bash\necho "$*" >> "$KILL_LOG"\nexit "${KILL_RC:-0}"\n' > "$W/bin/killstub"
+# A failing awk, for the analysis-failure case.
+mkdir -p "$W/badbin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$W/badbin/awk"
+chmod +x "$W/bin/ps" "$W/bin/killstub" "$W/badbin/awk"
 
 # 501: the incident shape (5h, 89 %, under the systemd --user subreaper) and
 # 502 its own looping $(…) subshell (parent 501, so not itself reparented);
@@ -80,6 +83,16 @@ lacks '--cpu 90 drops the 89.5 % copy' "$out" 'pid=501 '
 out="$(PS_FAIL=1 run)"; rc=$?
 eq 'unreadable process table: ?' 'hook-copies=?' "$out"
 eq 'unreadable process table: rc 3' 3 "$rc"
+
+rm -f "$W/kill.log"
+out="$(KILL_RC=1 run --kill)"; rc=$?
+eq '--kill failing: rc 3' 3 "$rc"
+contains '--kill failing: says so' "$out" 'kill-failed=501,502,503'
+lacks '--kill failing: never claims killed=' "$out" 'killed='
+
+out="$(PATH="$W/badbin:$PATH" run)"; rc=$?
+eq 'failing analysis: ?' 'hook-copies=?' "$out"
+eq 'failing analysis: rc 3' 3 "$rc"
 
 run --bogus >/dev/null 2>&1
 eq 'unknown flag: rc 2' 2 "$?"

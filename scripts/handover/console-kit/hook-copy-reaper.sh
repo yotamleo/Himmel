@@ -17,8 +17,9 @@
 #
 # Output: one `pid=<pid> age=<n>m cpu=<pct> script=<path>` row per copy, then
 # `hook-copies=<n>`; `hook-copies=none` when there are none, or
-# `hook-copies=?` when the process table cannot be read.
-# Exit status: 0 none, 1 found, 2 usage, 3 the process table could not be read.
+# `hook-copies=?` when the process table cannot be read or analysed.
+# Exit status: 0 none, 1 found, 2 usage, 3 the process table could not be
+# read or analysed, or --kill failed (`kill-failed=<pid,…>`).
 #
 # REPORT-ONLY by default. --kill (opt-in) SIGKILLs each counted copy together
 # with its descendants (its looping $(…) subshells are children of it, not
@@ -82,7 +83,7 @@ result=$(printf '%s\n' "$table" | awk -v min="$min" -v cpu="$cpu" '
             tree(p)
         }
         print "kill" out
-    }')
+    }') || { echo 'hook-copies=?'; exit 3; }
 
 rows=$(printf '%s\n' "$result" | sed '$d')
 targets=$(printf '%s\n' "$result" | sed -n '$s/^kill *//p')
@@ -94,7 +95,11 @@ printf '%s\n' "$rows"
 echo "hook-copies=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')"
 if [ "$do_kill" = 1 ]; then
     # shellcheck disable=SC2086  # targets is a list of pids, split on purpose
-    "${HOOK_REAPER_KILL:-kill}" -KILL $targets
-    echo "killed=$(printf '%s' "$targets" | tr ' ' ',')"
+    if "${HOOK_REAPER_KILL:-kill}" -KILL $targets; then
+        echo "killed=$(printf '%s' "$targets" | tr ' ' ',')"
+    else
+        echo "kill-failed=$(printf '%s' "$targets" | tr ' ' ',')"
+        exit 3
+    fi
 fi
 exit 1

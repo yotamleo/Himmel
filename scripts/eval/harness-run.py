@@ -17,8 +17,8 @@ What this runner does:
   * starts CMD in its own process group;
   * on the deadline: SIGTERM to that group, then SIGKILL after --kill-after
     seconds (the `timeout -s TERM --kill-after` contract), exit 124;
-  * on SIGTERM / SIGINT / SIGHUP to the runner itself: the same sweep, exit
-    128+signal;
+  * on SIGTERM / SIGINT / SIGHUP to the runner itself: the same TERM, then
+    --kill-after grace, exit 128+signal;
   * whatever happened -- deadline, signal or a normal exit -- it then SIGKILLs
     every process still descended from the runner, escaped sessions included,
     and reaps them before it exits. Otherwise it exits with CMD's own code.
@@ -31,6 +31,7 @@ are then orphaned as before. Give the outer tool call a longer timeout than
 --deadline + --kill-after; a cgroup scope is the upgrade if that still bites.
 """
 import ctypes
+import math
 import os
 import signal
 import subprocess
@@ -68,7 +69,12 @@ def parse(argv):
             i += 2
     except (IndexError, ValueError):
         return None
-    if deadline is None or deadline <= 0 or kill_after < 0 or not cmd:
+    if deadline is None or not cmd:
+        return None
+    # nan / inf would silently disable the deadline.
+    if not (math.isfinite(deadline) and math.isfinite(kill_after)):
+        return None
+    if deadline <= 0 or kill_after < 0:
         return None
     return deadline, kill_after, cmd
 
@@ -135,6 +141,15 @@ def sweep(pgid):
         print("harness-run: swept %d leftover descendant(s)" % len(swept), file=sys.stderr)
 
 
+def stop_group(child, kill_after):
+    """SIGTERM the child's group, then give it up to kill_after seconds."""
+    signal_group(child.pid, signal.SIGTERM)
+    try:
+        child.wait(timeout=kill_after)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def main(argv):
     parsed = parse(argv)
     if parsed is None:
@@ -154,13 +169,13 @@ def main(argv):
             return 128 - rc if rc < 0 else rc
         except subprocess.TimeoutExpired:
             print("harness-run: deadline %ss hit, stopping %s" % (deadline, cmd[0]), file=sys.stderr)
-            signal_group(child.pid, signal.SIGTERM)
-            try:
-                child.wait(timeout=kill_after)
-            except subprocess.TimeoutExpired:
-                pass
+            stop_group(child, kill_after)
             return 124
     except Stop as stop:
+        if child is not None:
+            for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                signal.signal(sig, signal.SIG_IGN)
+            stop_group(child, kill_after)
         return 128 + stop.signum
     except OSError as err:
         print("harness-run: cannot start %s: %s" % (cmd[0], err), file=sys.stderr)

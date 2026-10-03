@@ -48,6 +48,9 @@ setsid sleep 302 & echo $! > "$d/$3-session.pid"
 echo $$ > "$d/$3-child.pid"
 case "$mode" in
     hang) while :; do :; done ;;
+    trap) trap 'echo term > "$d/$3-term"; exit 0' TERM
+          echo ready > "$d/$3-ready"
+          while :; do sleep 0.1; done ;;
     *) exit "$mode" ;;
 esac
 CHILD
@@ -90,6 +93,16 @@ wait "$runner"
 eq "SIGTERM to runner: rc 143" 143 "$?"
 check_gone t4 "runner SIGTERM"
 
+# 4b. the runner's own SIGTERM gives the child a graceful TERM first.
+python3 "$SUT" --deadline 60 --kill-after 5 -- bash "$W/child.sh" "$W" trap t4b >/dev/null 2>&1 &
+runner=$!
+for _ in $(seq 1 50); do [ -s "$W/t4b-ready" ] && break; sleep 0.1; done
+kill -TERM "$runner"
+wait "$runner"
+eq "SIGTERM to runner (trap child): rc 143" 143 "$?"
+if [ -s "$W/t4b-term" ]; then pass "runner SIGTERM: child got SIGTERM first"; else fail "runner SIGTERM: child never got SIGTERM"; fi
+check_gone t4b "runner SIGTERM (trap child)"
+
 # 5. the sweep reaches only the runner's own descendants.
 if alive "$bystander"; then pass "bystander untouched"; else fail "bystander was killed"; fi
 
@@ -98,6 +111,12 @@ python3 "$SUT" -- true >/dev/null 2>&1
 eq "missing --deadline: rc 2" 2 "$?"
 python3 "$SUT" --deadline 5 >/dev/null 2>&1
 eq "missing command: rc 2" 2 "$?"
+for bad in nan inf -inf; do
+    python3 "$SUT" --deadline "$bad" -- true >/dev/null 2>&1
+    eq "--deadline $bad: rc 2" 2 "$?"
+    python3 "$SUT" --deadline 5 --kill-after "$bad" -- true >/dev/null 2>&1
+    eq "--kill-after $bad: rc 2" 2 "$?"
+done
 
 kill "$bystander" 2>/dev/null
 if [ "$fails" -eq 0 ]; then echo "PASS: harness-run"; exit 0; fi
