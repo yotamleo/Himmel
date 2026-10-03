@@ -115,5 +115,17 @@ check "non-whitelisted notes.md not archived" "$(jq -r --arg id "$DEAD" 'select(
 check "live dir has no manifest row" "$(jq -r --arg id "$LIVE" 'select(.id==$id)|.id' "$M" | wc -l | tr -d ' ')" 0
 check "young judge dir has no manifest row" "$(jq -r 'select(.id=="j9001")|.id' "$M" | wc -l | tr -d ' ')" 0
 
+echo "== 9. an archive target that already exists with DIFFERENT content: dir kept, earlier copy untouched =="
+build_tree; rm -rf "$ARCH"
+pre="$ARCH/$(date +%Y-%m)/judge-corpus/j9002/corpus-b.jsonl"
+mkdir -p "${pre%/*}"; printf 'earlier archive, different bytes\n' > "$pre"
+want="$(sha256sum "$pre" | cut -d' ' -f1)"
+out="$(reap --apply)"; rc=$?
+[ "$rc" -ne 0 ] && echo "ok - collision exits non-zero" || { echo "FAIL - collision rc=$rc"; fails=$((fails+1)); }
+exists "colliding judge dir is kept" "$ROOT/claude-$(id -u)/j9002"
+exists "its source file is kept" "$ROOT/claude-$(id -u)/j9002/corpus-b.jsonl"
+check "earlier archive copy is byte-identical" "$(sha256sum "$pre" | cut -d' ' -f1)" "$want"
+contains "collision is reported as a failed preserve" "$out" "preserve failed"
+
 echo
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILURE(S)"; exit 1; }
