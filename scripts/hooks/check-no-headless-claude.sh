@@ -164,15 +164,18 @@ for f in "${files[@]}"; do
                 L[NR] = $0; s = $0; skip[NR] = 0
                 if (inblk) {
                     if (match(s, /\*\//)) { s = substr(s, RSTART + 2); inblk = 0 }
-                    else { s = "" }
-                    skip[NR] = (s ~ /^[[:space:]]*$/)
-                } else if (s ~ /^[[:space:]]*(\/\/|#)/) {
-                    s = ""; skip[NR] = 1
-                } else if (s ~ /^[[:space:]]*\/\*/) {
-                    sub(/^[[:space:]]*\/\*/, "", s)
-                    if (match(s, /\*\//)) s = substr(s, RSTART + 2); else { s = ""; inblk = 1 }
-                    skip[NR] = (s ~ /^[[:space:]]*$/)
+                    else s = ""
+                    cmt = 1
+                } else cmt = 0
+                # peel leading comments off the remainder until real code (or nothing) is left
+                while (!inblk) {
+                    if (s ~ /^[[:space:]]*(\/\/|#)/) { s = ""; cmt = 1; break }
+                    if (s !~ /^[[:space:]]*\/\*/) break
+                    cmt = 1; sub(/^[[:space:]]*\/\*/, "", s)
+                    if (match(s, /\*\//)) s = substr(s, RSTART + 2)
+                    else { s = ""; inblk = 1 }
                 }
+                skip[NR] = (cmt && s ~ /^[[:space:]]*$/)
                 C[NR] = s
             }
             END {

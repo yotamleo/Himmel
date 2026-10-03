@@ -332,6 +332,15 @@ printf "%s\n%s\n%s\n%s\n%s\n" "const r = spawnSync(" "  /* headless-claude-ok: x
 rc=$(run_hook "cm_ml_ok.mjs")
 assert_rc "T37j marker inside a multi-line block comment covers the call" 0 "$rc"
 
+# T37k (codex-1 r2): a trailing comment after a closing */ must not feed depth
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* note */ // )" "  'claude', args);" > "$TMP/cm_trail.mjs"
+rc=$(run_hook "cm_trail.mjs")
+assert_rc "T37k block comment then line comment with ), unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* a */ /* ) */ 'claude'," "  args);" > "$TMP/cm_two.mjs"
+rc=$(run_hook "cm_two.mjs")
+assert_rc "T37l two block comments then program, unmarked" 1 "$rc"
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")
