@@ -42,7 +42,7 @@ PY
 }
 
 echo "[test-ci-tool-pins] lint control (a fixture that MUST be flagged)"
-FIX=$(mktemp -d) || exit 1
+FIX=$(mktemp -d "${TMPDIR:-/tmp}/ci-tool-pins.XXXXXX") || exit 1
 cat > "$FIX/bad.yml" <<'YML'
 jobs:
   a:
@@ -68,7 +68,7 @@ rm -rf "$FIX"
 echo "[test-ci-tool-pins] every setup-bun step in .github/workflows is pinned"
 total=0
 for wf in "$ROOT"/.github/workflows/*.yml; do
-  n=$(grep -cE '^\s*-\s+uses:\s*oven-sh/setup-bun@' "$wf")
+  n=$(grep -cE '^[[:space:]]*-[[:space:]]+uses:[[:space:]]*oven-sh/setup-bun@' "$wf")
   total=$((total + n))
   flagged=$(unpinned_setup_bun "$wf" | tr '\n' ' ')
   if [ -n "$flagged" ]; then bad "$(basename "$wf"): unpinned setup-bun at line(s) $flagged"; fi
