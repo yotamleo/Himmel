@@ -38,7 +38,7 @@ run() { # run <path-dir> [args...] -> stdout in $OUT, rc in $RC
 
 # 1. dry-run plans every step and exits 0.
 run "$EMPTY" --dry-run
-[ "$RC" -eq 0 ] && ok "dry-run exits 0" || bad "dry-run rc=$RC: $OUT"
+if [ "$RC" -eq 0 ]; then ok "dry-run exits 0"; else bad "dry-run rc=$RC: $OUT"; fi
 for step in shellcheck at pre-commit jira-dist obsidian-deps env; do
   case "$OUT" in *"step=$step "*) ok "dry-run plans step $step" ;; *) bad "dry-run omits step $step: $OUT" ;; esac
 done
@@ -68,12 +68,12 @@ case "$OUT" in *"step=plugins action=experiment"*) ok "--with-plugins plans the 
 
 # 7. an unknown flag is refused (rc 2) rather than silently ignored.
 run "$EMPTY" --nope
-[ "$RC" -eq 2 ] && ok "unknown flag exits 2" || bad "unknown flag rc=$RC"
+if [ "$RC" -eq 2 ]; then ok "unknown flag exits 2"; else bad "unknown flag rc=$RC"; fi
 
 # 8. syntax + lint.
-bash -n "$SETUP" && ok "bash -n clean" || bad "bash -n failed"
+if bash -n "$SETUP"; then ok "bash -n clean"; else bad "bash -n failed"; fi
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$SETUP" >/dev/null 2>&1 && ok "shellcheck clean" || bad "shellcheck findings"
+  if shellcheck "$SETUP" >/dev/null 2>&1; then ok "shellcheck clean"; else bad "shellcheck findings"; fi
 else
   echo "SKIP - shellcheck not installed here"
 fi

@@ -25,9 +25,9 @@ printf -- '---\nname: decoy\ndescription: d\n---\n' > "$SK/decoy/SKILL.md"
 
 OUTD="$TMP/out"
 OUT="$(HIMMEL_CLOUD_SKILLS_DIR="$SK" HIMMEL_CLOUD_SKILLS_LIST="alpha" bash "$PKG" --out "$OUTD" 2>&1)"; RC=$?
-[ "$RC" -eq 0 ] && ok "packaging exits 0" || bad "rc=$RC: $OUT"
-[ -f "$OUTD/alpha.zip" ] && ok "alpha.zip written" || bad "alpha.zip missing: $OUT"
-[ ! -e "$OUTD/decoy.zip" ] && ok "unlisted skill not packaged" || bad "decoy.zip packaged"
+if [ "$RC" -eq 0 ]; then ok "packaging exits 0"; else bad "rc=$RC: $OUT"; fi
+if [ -f "$OUTD/alpha.zip" ]; then ok "alpha.zip written"; else bad "alpha.zip missing: $OUT"; fi
+if [ ! -e "$OUTD/decoy.zip" ]; then ok "unlisted skill not packaged"; else bad "decoy.zip packaged"; fi
 
 LIST="$(python3 -c 'import sys,zipfile; print("\n".join(sorted(zipfile.ZipFile(sys.argv[1]).namelist())))' "$OUTD/alpha.zip" 2>&1)"
 case "$LIST" in *"alpha/SKILL.md"*) ok "SKILL.md sits at alpha/SKILL.md" ;; *) bad "zip layout: $LIST" ;; esac
@@ -35,15 +35,15 @@ case "$LIST" in *"alpha/sub/extra.md"*) ok "supporting files included" ;; *) bad
 
 # A listed skill that does not exist must fail loudly, not produce a partial bundle.
 OUT="$(HIMMEL_CLOUD_SKILLS_DIR="$SK" HIMMEL_CLOUD_SKILLS_LIST="alpha ghost" bash "$PKG" --out "$TMP/out2" 2>&1)"; RC=$?
-[ "$RC" -ne 0 ] && ok "missing skill fails" || bad "missing skill passed: $OUT"
+if [ "$RC" -ne 0 ]; then ok "missing skill fails"; else bad "missing skill passed: $OUT"; fi
 
 # The shipped default list names only skills that exist in the real tree.
 OUT="$(bash "$PKG" --list 2>&1)"; RC=$?
-[ "$RC" -eq 0 ] && ok "--list resolves the default skills" || bad "--list rc=$RC: $OUT"
+if [ "$RC" -eq 0 ]; then ok "--list resolves the default skills"; else bad "--list rc=$RC: $OUT"; fi
 
-bash -n "$PKG" && ok "bash -n clean" || bad "bash -n failed"
+if bash -n "$PKG"; then ok "bash -n clean"; else bad "bash -n failed"; fi
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$PKG" >/dev/null 2>&1 && ok "shellcheck clean" || bad "shellcheck findings"
+  if shellcheck "$PKG" >/dev/null 2>&1; then ok "shellcheck clean"; else bad "shellcheck findings"; fi
 else
   echo "SKIP - shellcheck not installed here"
 fi
