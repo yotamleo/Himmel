@@ -84,7 +84,16 @@ sid="sess-$t"
 jq -cn --arg s "$sid" '{type:"result",subtype:"success",is_error:false,session_id:$s,total_cost_usd:0.5,num_turns:3,duration_ms:1000,permission_denials:[{tool_name:"Bash"}],result:"Done by claude-haiku-4-5 via openrouter; tests pass."}'
 FAKE
 chmod +x "$TMP/bin/claude"
-printf '#!/usr/bin/env bash\necho "bank-preflight: five_hour=${LQ_FAKE_5H:-10.0} seven_day=3.0" >&2\ncat "${LQ_FAKE_DRAIN:-/nonexistent}" 2>/dev/null || echo "${LQ_FAKE_TOKEN:-PROCEED}"\n' >"$TMP/bin/preflight"
+# LQ_FAKE_PROCEED_N=<n>: only the first n calls PROCEED (counted in LQ_FAKE_CALLS).
+cat >"$TMP/bin/preflight" <<'FAKE'
+#!/usr/bin/env bash
+echo "bank-preflight: five_hour=${LQ_FAKE_5H:-10.0} seven_day=3.0" >&2
+if [ -n "${LQ_FAKE_PROCEED_N:-}" ]; then
+  echo x >>"$LQ_FAKE_CALLS"
+  [ "$(wc -l <"$LQ_FAKE_CALLS")" -le "$LQ_FAKE_PROCEED_N" ] || { echo SKIPPED-BANK; exit 0; }
+fi
+cat "${LQ_FAKE_DRAIN:-/nonexistent}" 2>/dev/null || echo "${LQ_FAKE_TOKEN:-PROCEED}"
+FAKE
 chmod +x "$TMP/bin/preflight"
 
 export LQ_CLAUDE_BIN="$TMP/bin/claude" LQ_PREFLIGHT="$TMP/bin/preflight" LQ_REPO="$TMP/repo" \
@@ -133,6 +142,10 @@ for lane in openrouter deepseek claudex; do
   check "$lane lane refused in phase 1 (exit 3)" '[ "$rc" -eq 3 ]'
 done
 check "refused lanes launch nothing" '[ ! -s "$TMP/fake.log" ]'
+LQ_FAKE_PROCEED_N=1 LQ_FAKE_CALLS="$TMP/calls" bash "$RUN" run --lane native --model m --tasks shell-red-green \
+  --no-judge --out "$TMP/out14" >"$TMP/run14.log" 2>&1
+rc=$?
+check "a bank refusal during task setup launches no agent" '[ "$rc" -eq 75 ] && [ ! -s "$TMP/fake.log" ]'
 
 start=$(date +%s)
 LQ_FAKE_HANG=1 LQ_FAKE_COMMIT=1 bash "$RUN" run --lane native --model m --tasks shell-red-green --timeout 3 \

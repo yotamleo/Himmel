@@ -142,7 +142,12 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   mkdir -p "$WORK_ROOT"
   git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $task"
   fix="$(materialize "$task" "$wt")" || die "fixture for $task failed"
-  bank0="$(bank_read)"; bank0="${bank0#* }"
+  bank0="$(bank_read)"
+  if [ "${bank0%% *}" != PROCEED ]; then
+    git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1
+    echo "bank-refused ${bank0%% *}"; return 0
+  fi
+  bank0="${bank0#* }"
   remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" 'BEGIN{printf "%.2f", m - s}')"
   start="$(date +%s)"
   (
@@ -266,6 +271,10 @@ cmd_run() {
     echo "lane-quality: task $t"
     cost="$(run_task "$t")" || die "task '$t' failed; see $OUT"
     cost="$(printf '%s\n' "$cost" | tail -1)"
+    case "$cost" in bank-refused*)
+      echo "lane-quality: bank preflight said ${cost#bank-refused }; '$t' not launched" >&2
+      exit 75 ;;
+    esac
     if [ "$cost" = unknown ]; then
       echo "lane-quality: task '$t' left its cost unknown (agent or judge killed?); stopping the sweep, spend so far is a lower bound" >&2
       break
