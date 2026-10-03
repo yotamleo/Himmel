@@ -142,7 +142,7 @@ qmd_words() {
         fi
         if [ "$top" = D ]; then
             case "$c" in
-                '"') ctx=${ctx%?}; i=$((i + 1)) ;;
+                '"') ctx=${ctx%?}; ws=0; i=$((i + 1)) ;;
                 '\')
                     case "$c2" in
                         '$'|'`'|'"'|'\') _qw_q "$c2"; i=$((i + 2)) ;;
@@ -280,8 +280,11 @@ qmd_words() {
                 ws=1
                 ;;
             '(') [ "$top" != P ] || ctx=${ctx}P; out=$out'('; ws=1; i=$((i + 1)) ;;
-            ')') [ "$top" != P ] || ctx=${ctx%?}; out=$out')'; ws=1; i=$((i + 1)) ;;
-            '`') [ "$top" != B ] || ctx=${ctx%?}; out=$out'`'; ws=1; i=$((i + 1)) ;;
+            # A `#` right after `)` or a backtick (closing a substitution
+            # continues its word) is read as no comment: more text read can
+            # only add denials.
+            ')') [ "$top" != P ] || ctx=${ctx%?}; out=$out')'; ws=0; i=$((i + 1)) ;;
+            '`') [ "$top" != B ] || ctx=${ctx%?}; out=$out'`'; ws=0; i=$((i + 1)) ;;
             $'\n'|$'\r') out=$out';'; ws=1; i=$((i + 1)) ;;
             ' '|$'\t'|';'|'&'|'|'|'>') out=$out$c; ws=1; i=$((i + 1)) ;;
             *) out=$out$c; ws=0; i=$((i + 1)) ;;

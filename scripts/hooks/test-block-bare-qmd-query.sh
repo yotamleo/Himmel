@@ -120,6 +120,11 @@ deny "echo don't # it's a comment
 qmd q\"uery\" x"
 deny 'qmd qu\
 ery x'
+# A `#` that continues a word after a quote or a substitution is no comment.
+deny 'echo "$(true)"#x; qmd q"uery" x'
+deny 'echo $(true)#x; qmd q"uery" x'
+deny 'echo `true`#x; qmd q"uery" x'
+deny 'echo "a"#x; qmd q"uery" x'
 # zsh (the Bash tool's shell here) drops the backslash of an unknown $'\X'.
 deny "qmd \$'\\query' x"
 deny "qmd \$'quer\\y' x"
