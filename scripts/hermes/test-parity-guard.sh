@@ -155,6 +155,7 @@ if [ $((SECONDS - t0)) -gt 5 ]; then
   echo "  FAIL: find anchors x3000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
 # A "(" run is an anchor at every paren; the exe-prefix run must not rescan it
 # (10 KB took 16.6s at head, 3.1s at base, vs the 10s fail-open timeout).
+# shellcheck disable=SC2016 # literal "$(" is the payload, not an expansion
 for opener in '(' '$('; do
   t0=$SECONDS
   pad="echo "; i=0
