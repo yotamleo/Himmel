@@ -318,18 +318,18 @@ README's fork-delta section).
 
 ### obsidian-second-brain (HIMMEL-4018: now the `obsidian-second-brain@himmel` plugin)
 
-> The install notes below describe the retired manual install (v0.8, user-scope
-> link). The plugin entry above supersedes it; remove the user-scope copy with
-> the operator steps in HIMMEL-4018's PR. The research-toolkit decision below
-> still stands.
+> The manual install (v0.8, a clone linked into `~/.claude/skills/`) is
+> retired: a user-scope copy ignores `enabledPlugins` and loads into every
+> session. Never re-create it; if one is present, move it out of
+> `~/.claude/skills/` (the profile probe fails while it is there). The
+> research-toolkit decision below still stands.
 
 **Repo:** `eugeniughelbur/obsidian-second-brain`
-**Install path:** `~/.claude/plugins/obsidian-second-brain/` (cloned)
-**Skill link:** `~/.claude/skills/obsidian-second-brain`
-**Commands:** 33 slash commands installed to `~/.claude/commands/` (5 research-toolkit
+**Install:** `claude plugin install obsidian-second-brain@himmel` (himmel marketplace, pinned to upstream tag `v0.17.0`)
+**Enable:** opt-in. No named profile enables it; `/profile enable` or the operator profile does
+**Commands:** 47 slash commands from the plugin (5 research-toolkit
 commands are NOT adopted — see Research toolkit line below)
-**Version:** v0.8 (May 2026) | **Installed:** 2026-05-16
-**Update:** `git pull` in `~/.claude/plugins/obsidian-second-brain/`
+**Update:** bump the tag pin in `marketplace/.claude-plugin/marketplace.json`, then `claude plugin marketplace update himmel`
 **Research toolkit:** NOT ADOPTED (proposed 2026-07-29, pending ADR sign-off) —
 operator confirmed no active XAI/Grok or Perplexity subscription. A
 `~/.config/obsidian-second-brain/.env`
