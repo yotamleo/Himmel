@@ -456,9 +456,9 @@ export function resolveProfile(registry, name, opts = {}) {
         if (rule && !allow.includes(rule)) allow.push(rule);
       }
     }
-    return { enabledPlugins, permissions: { allow }, ...listingSettings([name], enabledPlugins, opts) };
+    return { enabledPlugins, permissions: { allow }, ...listingSettings(registry, [name], enabledPlugins, opts) };
   }
-  return { enabledPlugins, ...listingSettings([name], enabledPlugins, opts) };
+  return { enabledPlugins, ...listingSettings(registry, [name], enabledPlugins, opts) };
 }
 
 // HIMMEL-4021: sibling output, never extra Claude settings keys. Resolve the
@@ -498,18 +498,21 @@ function composeProfiles(registry, list, opts) {
   const enabledPlugins = {};
   for (const r of resolved) for (const [id, on] of Object.entries(r.enabledPlugins)) enabledPlugins[id] = enabledPlugins[id] || on;
   const allow = [...new Set(resolved.flatMap((r) => r.permissions?.allow ?? []))];
-  return { enabledPlugins, ...(allow.length ? { permissions: { allow } } : {}), ...listingSettings(members, enabledPlugins, opts) };
+  return { enabledPlugins, ...(allow.length ? { permissions: { allow } } : {}), ...listingSettings(registry, members, enabledPlugins, opts) };
 }
 
 // HIMMEL-4038: opts.skillEntries (a scanSkillCosts().entries scan) opts a caller
 // in to skillOverrides + skillListingBudgetFraction (opts.configDir, HIMMEL-4060:
 // also scan that config dir's skills-dir command trees for the reserve); absent = unchanged output,
 // so the pure registry goldens stay byte-identical.
-function listingSettings(names, enabledPlugins, opts) {
+// HIMMEL-4116: the budget fraction is sized against the profile's own window (a 1m
+// contextMode is 1_000_000), not the skill-listing default of 200k.
+function listingSettings(registry, names, enabledPlugins, opts) {
   if (!opts.skillEntries) return {};
   const enabledIds = Object.entries(enabledPlugins).filter(([, on]) => on).map(([id]) => id);
   if (!listingLib) throw new Error('plugin-profiles: opts.skillEntries needs `await loadListingLib()` first');
-  return listingLib.skillListingSettings({ entries: opts.skillEntries, configDir: opts.configDir, cwd: opts.cwd, enabledIds, requiredIds: [...new Set(names.flatMap((n) => listingLib.requiredIdsFor(n)))] });
+  const window = names.some((n) => registry.profiles[n]?.contextMode === '1m') ? 1_000_000 : undefined;
+  return listingLib.skillListingSettings({ entries: opts.skillEntries, window, configDir: opts.configDir, cwd: opts.cwd, enabledIds, requiredIds: [...new Set(names.flatMap((n) => listingLib.requiredIdsFor(n)))] });
 }
 
 // HIMMEL-3567/HIMMEL-3572: the permission matcher compares literal command
