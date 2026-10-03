@@ -1131,7 +1131,7 @@ raw_obfuscated() {
     # `source` counts as any word. The shell may be an absolute path
     # (/bin/bash) or quoted ('bash').
     kw='(then|do|else|elif|if|while|until|time|builtin|command|eval|\{|!|[[:alnum:]_]+=[^[:blank:]]*)'
-    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][oO][[:blank:]]+[[:alnum:]_]+|[-+][^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*($kw[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
+    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][oO][[:blank:]]+[[:alnum:]_]+|[-+][^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
     [ "$obf$pobf" = 00 ] && return 0
     clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     if [ "$obf" = 0 ]; then

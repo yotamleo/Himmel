@@ -89,7 +89,7 @@ assert_deny() {  # assert_deny <label> <json>
     decision=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
     CASES=$((CASES + 1))
     if [ "$RC" = "2" ] && [ "$decision" = "deny" ] \
-       && printf '%s' "$ERR" | grep -q "LAUNCHING shell"; then
+       && grep -q "LAUNCHING shell" <<<"$ERR"; then  # a here-string: piping into grep -q races SIGPIPE under pipefail
         echo "PASS $label (denied, message names the launching-shell convention)"
     else
         echo "FAIL $label -- expected rc=2 + permissionDecision=deny + launching-shell message, got rc=$RC decision='$decision'"
@@ -487,7 +487,7 @@ assert_deny_unres() {  # assert_deny_unres <label> <json>
     decision=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
     CASES=$((CASES + 1))
     if [ "$RC" = "2" ] && [ "$decision" = "deny" ] \
-       && printf '%s' "$ERR" | grep -qE "cannot be fully resolved|together with its seam variable or an env -S"; then  # pipefail-ok: ERR is one short deny message, far under the pipe buffer (same shape as assert_deny)
+       && grep -qE "cannot be fully resolved|together with its seam variable or an env -S" <<<"$ERR"; then
         echo "PASS $label (denied as unresolvable)"
     else
         echo "FAIL $label -- expected rc=2 + permissionDecision=deny + unresolvable message, got rc=$RC decision='$decision'"
