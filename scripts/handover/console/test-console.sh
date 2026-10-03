@@ -131,7 +131,10 @@ check "2b doc has no BRIDGE_ROOT expansion" "$(grep -c 'BRIDGE_ROOT' "$docA" 2>/
 check "2b step-10/11 commands carry no \${ expansion" "$(grep -E 'console-wait.sh|`: >> ' "$docA" 2>/dev/null | grep -cF '${')" "0"
 check "2b doc names the BRIDGE_ROOT override inbox literally" "$(grep -cF "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}A-console.md" "$docA" 2>/dev/null)" "3"
 docInboxDefault="$root/tester/inboxdefault/DEMO-nextleg-${today}A-console.md"
-( unset BRIDGE_ROOT; HOME="$tmp/inboxhome" console new --bucket inboxdefault >/dev/null 2>&1 )
+outInbox="$( unset BRIDGE_ROOT; HOME="$tmp/inboxhome" console new --bucket inboxdefault 2>&1 )"
+tokenInbox="$(token_of "$outInbox")"
+# Release now: a held lock's owner files carry the host name (case 8 leak scan).
+HANDOVER_DIR="$root" bash "$QL" release "$docInboxDefault" "$tokenInbox" >/dev/null 2>&1
 check "2c unset BRIDGE_ROOT renders the HOME default inbox literally" "$(grep -cF "$tmp/inboxhome/.claude/handover/bridge/consoles/DEMO-nextleg-${today}A-console.md" "$docInboxDefault" 2>/dev/null)" "3"
 
 check "3 new prints release-token" "$(printf '%s\n' "$out1" | grep -c '^release-token: ')" "1"
@@ -357,7 +360,7 @@ leak_free() {
 # every such line must carry a token this run actually saw `new` print — an
 # unrelated
 # leak, or a line that merely LOOKS token-shaped, still fails loudly.
-known_tokens=("$token1" "$token4" "$token6a" "$token6ba" "$token7a")
+known_tokens=("$token1" "$token4" "$token6a" "$token6ba" "$token7a" "$tokenInbox")
 token_residual() {
     local token
     for token in "$@"; do
