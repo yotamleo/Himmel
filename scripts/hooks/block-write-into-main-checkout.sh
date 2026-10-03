@@ -153,8 +153,15 @@
 #     behind a wrapper (`nice`, `timeout 5`, `env FOO=1`, `command eval`,
 #     `flock L -c`, ...) has its body scanned like a plain `bash -c` (the
 #     `wrap` kind of `_bwimc_check_interp_body`). Known residuals:
-#     `script -c` and `env -S` bodies; a `case` item `)` inside `$(…)`; a
-#     newline inside a quoted span splits a clause in transport (HIMMEL-4143).
+#     `script -c` and `env -S` bodies; a `case` item `)` inside `$(…)`.
+#     HIMMEL-4143/4145: extra readings (mode 1) carry a newline inside a
+#     quoted span as \006, so it does not split a clause, on text whose
+#     heredoc bodies inside a dq-quoted `$(…)` are blanked too. The raw
+#     readings (mode 0) still run: their line split resyncs the quote scan
+#     after a body the blanker cannot parse, so the extra readings only ADD
+#     denials. HIMMEL-4153: leading assignment words are skipped before the
+#     verb arms read the command word (a wrapper AFTER them, `x=1 nice
+#     touch`, is the same residual as `nice touch`).
 #   - `-T`/`--no-target-directory` IS modelled now (RETASK correction,
 #     HIMMEL-2592 round 6 codex-2 — this bullet used to say the opposite):
 #     for `mv` it forces the destination to plain ENTRY resolution instead
@@ -324,6 +331,7 @@ fi
 # string to Bash) clears _BWIMC_DL, so it scans as a plain quote; carry the
 # state across the continuation (HIMMEL-4133).
 _BWIMC_NL=$'\n'
+_BWIMC_NLENC=0
 
 _bwimc_scan_init() {
     _BWIMC_Q=""
@@ -398,8 +406,24 @@ _bwimc_scan_step() {
 # residual _bwimc_split_clauses/_bwimc_tokenize carry. Its failure direction
 # here is a MISSED blanking (a phantom target from heredoc text), i.e. a
 # false positive, never a bypass.
+#
+# HIMMEL-4145: with a second argument `nest`, a `$(` inside a double-quoted
+# span opens CODE again (bash reads `"$(cat <<'EOF' … EOF )"` as a command
+# substitution whose heredoc body is literal), so a `<<` there is an opener
+# and its body is blanked — an apostrophe in a commit message can no longer
+# open a phantom quote that swallows a later `; touch P/f`. The caller runs
+# it as an EXTRA reading beside the flat one, so it can only add denials.
+# Anything the nested walk cannot follow with confidence (a comment,
+# backtick, `${`, case/esac or an unbalanced paren inside the substitution,
+# or an opener left unresolved) makes it print the flat reading instead.
+# ponytail: a case/esac, comment, backtick or `${` inside that `$(…)` falls
+# back to the flat reading, so a body apostrophe there still hides a later
+# write as before; count case arms the way _bwimc_subst_paren_end does if a
+# real command hits it (HIMMEL-4145).
 _bwimc_blank_heredocs() {
-    local text="$1"
+    local text="$1" nest="${2:-}"
+    local nl=0 unsure=0 ncode=""
+    local -a pd=()
     local out="" line
     local active=0 dashmode=0 term="" pend_term="" pend_dash=0
     local i len c prev rest check tab
@@ -427,7 +451,24 @@ _bwimc_blank_heredocs() {
         i=0; len=${#line}; prev=""
         while [ "$i" -lt "$len" ]; do
             c="${line:$i:1}"
+            if [ -n "$nest" ] && [ "$_BWIMC_Q" = '"' ] && [ "$_BWIMC_ESC" = 0 ] && [ "$c" = '$' ] \
+               && [ "${line:$((i+1)):1}" = '(' ] && [ "${line:$((i+2)):1}" != '(' ]; then
+                nl=$((nl+1)); pd[nl]=1; _BWIMC_Q=""; _BWIMC_DL=0
+                prev='('; i=$((i+2)); continue
+            fi
             _bwimc_scan_step "$c"
+            [ "$nl" -eq 0 ] || ncode="${ncode}${c}"
+            if [ "$nl" -gt 0 ] && [ "$_BWIMC_ACT" = 1 ]; then
+                case "$c" in
+                    '#'|'`') unsure=1 ;;
+                    '(') pd[nl]=$((pd[nl]+1)) ;;
+                    ')')
+                        pd[nl]=$((pd[nl]-1))
+                        if [ "${pd[nl]}" -eq 0 ]; then
+                            nl=$((nl-1)); _BWIMC_Q='"'; prev="$c"; i=$((i+1)); continue
+                        fi ;;
+                esac
+            fi
             if [ "$_BWIMC_ACT" = 1 ]; then
                 case "$c" in
                     '#')
@@ -498,8 +539,17 @@ _bwimc_blank_heredocs() {
         # backslash is line continuation, and consuming the newline here is
         # what stops the NEXT line's first character being read as escaped.
         [ "$active" = 1 ] || _bwimc_scan_step "$_BWIMC_NL"
+        [ "$nl" -eq 0 ] || ncode="${ncode}"$'\n'
         out="${out}${line}"$'\n'
     done <<< "$text"
+    if [ -n "$nest" ]; then
+        # shellcheck disable=SC2016  # literal `${` is the glob pattern
+        case "$ncode" in *case*|*esac*|*'${'*) unsure=1 ;; esac
+        if [ "$unsure" = 1 ] || [ "$nl" -ne 0 ] || [ "$active" = 1 ] || [ -n "$pend_term" ]; then
+            _bwimc_blank_heredocs "$text"
+            return
+        fi
+    fi
     # HIMMEL-3621: a heredoc opener whose terminator was never matched
     # (`active=1` at end of input) or whose opener continuation never
     # resolved (`pend_term` still set) means every line since the opener was
@@ -606,6 +656,88 @@ _bwimc_clause_unpipe() {
         *) _bwimc_clause_piped=0 ;;
     esac
 }
+# _bwimc_arith_end TEXT I — TEXT[I] is the first `(` of `$((`. Succeeds, with
+# _BWIMC_AE at the closing `))`'s second `)`, only for PLAIN arithmetic: the
+# paren that drops the depth back to 1 is immediately followed by `)`, and
+# the span carries no quote, backslash, backtick, `$(`, stub, newline or
+# `;&|` — anything else returns 1 and the caller keeps today's break, so
+# `$((touch P/f) )` and `$((echo a); touch P/f)` still split (HIMMEL-4153).
+_bwimc_arith_end() {
+    local t="$1" j=$(($2 + 2)) d=2 n=${#1} ch
+    while [ "$j" -lt "$n" ]; do
+        ch="${t:$j:1}"
+        case "$ch" in
+            '(') [ "${t:$((j-1)):1}" != '$' ] || return 1; d=$((d+1)) ;;
+            ')')
+                d=$((d-1))
+                if [ "$d" -eq 1 ]; then
+                    [ "${t:$((j+1)):1}" = ')' ] || return 1
+                    _BWIMC_AE=$((j+1)); return 0
+                fi ;;
+            "'"|'"'|\\|'`'|';'|'&'|'|'|$'\001'|$'\005'|$'\n') return 1 ;;
+        esac
+        j=$((j+1))
+    done
+    return 1
+}
+# _bwimc_strip_assign TEXT — sets _BWIMC_SA to TEXT with its leading
+# assignment words removed (HIMMEL-4153), so the verb arms' `^verb` anchors
+# see the command word: `x=1 touch P/f`, `a[1<<2]=1 touch P/f`,
+# `x=$(echo hi) touch P/f` and `x="a b" touch P/f` all reach the touch arm.
+# A word counts as an assignment only when it starts NAME[…]?+?= with NAME
+# `[A-Za-z_][A-Za-z0-9_]*`; its value runs to the first ACTIVE blank outside
+# (), {}, [] and backticks. Stops at the first word that is not one. A word
+# that only LOOKS like an assignment changes nothing the shell would not
+# also read as one, and an unstripped prefix is today's behaviour.
+_bwimc_strip_assign() {
+    local t="$1" n=${#1} i=0 j c d bt st pd
+    _BWIMC_SA="$t"
+    while :; do
+        while [ "$i" -lt "$n" ] && { [ "${t:$i:1}" = ' ' ] || [ "${t:$i:1}" = $'\t' ]; }; do i=$((i+1)); done
+        j=$i
+        case "${t:$j:1}" in [A-Za-z_]) ;; *) return 0 ;; esac
+        while [ "$j" -lt "$n" ]; do case "${t:$j:1}" in [A-Za-z0-9_]) j=$((j+1)) ;; *) break ;; esac; done
+        if [ "${t:$j:1}" = '[' ]; then
+            d=0
+            while [ "$j" -lt "$n" ]; do
+                c="${t:$j:1}"
+                case "$c" in '[') d=$((d+1)) ;; ']') d=$((d-1)) ;; "'"|'"'|\\|'`'|$'\n') return 0 ;; esac
+                j=$((j+1))
+                [ "$d" -gt 0 ] || break
+            done
+            [ "$d" -eq 0 ] || return 0
+        fi
+        [ "${t:$j:1}" != '+' ] || j=$((j+1))
+        [ "${t:$j:1}" = '=' ] || return 0
+        # Only `(` (array, `$(`, `$((`) and `${` nest in a value; a bare `[`
+        # or `{` is a literal (`x=[ touch P/f` runs touch). `st` is the
+        # stack of expected closers, so `}` cannot close a `$(`.
+        j=$((j+1)); st=""; bt=0; pd=0
+        _bwimc_scan_init
+        while [ "$j" -lt "$n" ]; do
+            c="${t:$j:1}"
+            _bwimc_scan_step "$c"
+            if [ "$_BWIMC_ACT" = 1 ]; then
+                case "$c" in
+                    ' '|$'\t') [ -n "$st" ] || [ "$bt" = 1 ] || break ;;
+                    '(') st=")$st" ;;
+                    '{') [ "$pd" = 0 ] || st="}$st" ;;
+                    ')'|'}') [ "${st:0:1}" != "$c" ] || st="${st:1}" ;;
+                    '`') bt=$((1 - bt)) ;;
+                esac
+                # `$$` is the PID: its second `$` opens nothing
+                if [ "$c" = '$' ] && [ "$pd" = 0 ]; then pd=1; else pd=0; fi
+            else
+                pd=0
+            fi
+            j=$((j+1))
+        done
+        # an unterminated quote or nesting: leave the text as it was
+        if [ -n "$_BWIMC_Q" ] || [ -n "$st" ] || [ "$bt" = 1 ]; then return 0; fi
+        i=$j
+        _BWIMC_SA="${t:$i}"
+    done
+}
 # _bwimc_split_clauses TEXT [skel] — with `skel` (TEXT is a _bwimc_subst_split
 # skeleton), the `(` of a `$(` STUB is not a break, so a target built from a
 # substitution (`f$(date)`) stays one token (HIMMEL-4010).
@@ -632,12 +764,24 @@ _bwimc_split_clauses() {
                 '(')
                     if [ -n "$skel" ] && [ "$prevact" = '$' ] && { [ "${text:$((i+1)):1}" = $'\001' ] || [ "${text:$((i+1)):1}" = $'\005' ]; }; then
                         clause="${clause}${c}"
+                    elif [ "$prevact" = '$' ] && [ "${text:$((i+1)):1}" = '(' ] && _bwimc_arith_end "$text" "$i"; then
+                        # HIMMEL-4153: a plain `$((…))` is arithmetic, not a
+                        # subshell — keep it in the clause so `x=$((1<<2))
+                        # touch P/f` stays ONE clause with its verb.
+                        clause="${clause}${text:$i:$((_BWIMC_AE - i + 1))}"
+                        i=$((_BWIMC_AE + 1)); prevact=')'; continue
                     else
                         _bwimc_split_emit "$clause"; clause=""
                     fi
                     ;;
                 *) clause="${clause}${c}" ;;
             esac
+        elif [ "$c" = "$_BWIMC_NL" ] && [ -n "$_BWIMC_Q" ] && [ "$_BWIMC_NLENC" = 1 ]; then
+            # HIMMEL-4143: a newline inside a quoted span is part of the
+            # word, not a clause break — carry it as \006 so the clause
+            # stays one line in transport (`echo 'a⏎' > P/f` keeps its
+            # redirect). Only in a mode-1 reading (_BWIMC_NLENC=1).
+            clause="${clause}"$'\006'
         else
             clause="${clause}${c}"
         fi
@@ -832,7 +976,7 @@ _bwimc_space_before_redirects() {
 # expanded text of a glob token. _bwimc_expand_token is that plus the
 # rejection, and is what every ordinary candidate path still calls.
 _bwimc_expand_token_raw() {
-    local t="$1"
+    local t="${1//$'\006'/$'\n'}"
     local Q="\"'"
     # HIMMEL-4010: an ANSI-C `$'…'` span names the path its decoded text spells
     # (`> $'<primary>/f'`); undecoded, its `$` made the target look dynamic.
@@ -1117,7 +1261,7 @@ _bwimc_deny() {
         repointed-remote) why="it runs a remote operation in a command that repoints a remote (a -c remote/url/protocol/core.sshCommand key, a GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, or git remote add|set-url), which can reach the primary under an innocent name (failing closed)" ;;
         unresolved-heredoc) why="a heredoc opener's terminator was never found in the command (failing closed — text after it cannot be safely classified)" ;;
         unresolved-cd) why="a cd/pushd target in this command could not be resolved (failing closed — a later relative write cannot be classified against an unknown cwd, HIMMEL-3648)" ;;
-        marker-byte) why="the command carries a raw control byte (0x01-0x05 or 0x0e) the scanner uses as an internal marker, so its targets cannot be classified (failing closed; spell the byte as \$'\\xNN' instead)" ;;
+        marker-byte) why="the command carries a raw control byte (0x01-0x06 or 0x0e) the scanner uses as an internal marker, so its targets cannot be classified (failing closed; spell the byte as \$'\\xNN' instead)" ;;
         shell-ambiguous) why="bash and zsh (or bash versions) read a \$'…' span in it differently, so its target cannot be classified (failing closed, HIMMEL-4138)" ;;
         unsafe-interp-body) why="an eval/bash -c/sh -c/zsh -c argument contains a write-shaped token whose target cannot be proven to stay outside the primary (failing closed, HIMMEL-3648)" ;;
     esac
@@ -1428,6 +1572,9 @@ _bwimc_ansic_spans() {
 
 _bwimc_unq() {
     local t="$1" o="" c k=0 q
+    # HIMMEL-4143: a newline inside a quoted span travels as \006 in clause
+    # transport (_bwimc_split_clauses); the word itself carries the newline.
+    t="${t//$'\006'/$'\n'}"
     case "$t" in
         *\$\'*|*\$\"*)
             while [ "$k" -lt "${#t}" ]; do
@@ -2002,7 +2149,7 @@ _bwimc_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/
 # \001-\005 and \016 markers, so a command carrying one of those raw bytes
 # cannot be classified (a symlink named with one reads as another name).
 case "$cmd" in
-    *[$'\001'$'\002'$'\003'$'\004'$'\005'$'\016']*)
+    *[$'\001'$'\002'$'\003'$'\004'$'\005'$'\006'$'\016']*)
         _bwimc_deny "marker-byte" "(raw control byte in command)" "" "" ;;
 esac
 
@@ -2013,8 +2160,25 @@ _bwimc_hb=$(_bwimc_blank_heredocs "$cmd")
 # with its comments removed when that differs, so a command denies when
 # EITHER reading writes into the primary.
 _bwimc_strip_comments "$_bwimc_hb"
-_bwimc_readings=("$_bwimc_hb")
-[ "$_BWIMC_NC" = "$_bwimc_hb" ] || _bwimc_readings+=("$_BWIMC_NC")
+_bwimc_readings=("$_bwimc_hb"); _bwimc_rmodes=(0)
+[ "$_BWIMC_NC" = "$_bwimc_hb" ] || { _bwimc_readings+=("$_BWIMC_NC"); _bwimc_rmodes+=(0); }
+# HIMMEL-4145/4143: the readings above keep the raw newline transport (mode
+# 0) exactly as before. Two more run in mode 1, where a newline inside a
+# quoted span travels as \006 (_bwimc_split_clauses), on text whose heredoc
+# bodies inside a double-quoted `$(…)` are also blanked — so neither a body
+# apostrophe nor a quoted newline can hide a write. They only ADD readings:
+# the raw split still resynchronises the quote scan line by line where a
+# body the flat blanker cannot parse (`<<\E`) leaves a stray quote open.
+# ponytail: a long quoted multi-line span is one long clause here, so a
+# multi-line single-quoted message costs about 2x the char scan of base (no
+# size gate: padding past one would reopen HIMMEL-4143), perf fix HIMMEL-4164.
+_bwimc_hbn=$(_bwimc_blank_heredocs "$cmd" nest)
+case "$_bwimc_hbn" in
+    *"$_BWIMC_NL"*)
+        _bwimc_readings+=("$_bwimc_hbn"); _bwimc_rmodes+=(1)
+        _bwimc_strip_comments "$_bwimc_hbn"
+        [ "$_BWIMC_NC" = "$_bwimc_hbn" ] || { _bwimc_readings+=("$_BWIMC_NC"); _bwimc_rmodes+=(1); } ;;
+esac
 
 # ---- (a) redirect / tee, per-clause quote-aware token walk ----
 #
@@ -2678,7 +2842,9 @@ while IFS= read -r _bwimc_rclause; do
 done < <(_bwimc_split_clauses "$_bwimc_skel" skel)
 }
 _BWIMC_WRAP_RE='(^|[[:space:]/])(bash|sh|zsh|dash|ksh|su|runuser|flock|eval)(\.exe)?([[:space:]]|$)'
-for _bwimc_hb in "${_bwimc_readings[@]}"; do
+for _bwimc_ri in "${!_bwimc_readings[@]}"; do
+_bwimc_hb="${_bwimc_readings[$_bwimc_ri]}"
+_BWIMC_NLENC="${_bwimc_rmodes[$_bwimc_ri]}"
 _bwimc_ecwd="$_bwimc_cwd"
 _bwimc_ecwd_unres=0
 _bwimc_ecwd_pushn=0
@@ -2842,6 +3008,9 @@ _bwimc_ansic() {
 # over-classifies.
 _bwimc_unq() {
     local t="$1" o="" c k=0 q
+    # HIMMEL-4143: a newline inside a quoted span travels as \006 in clause
+    # transport (_bwimc_split_clauses); the word itself carries the newline.
+    t="${t//$'\006'/$'\n'}"
     case "$t" in
         *\$\'*|*\$\"*)
             while [ "$k" -lt "${#t}" ]; do
@@ -3901,6 +4070,15 @@ while IFS= read -r _bwimc_clause; do
     # this never diverts the elif chain; it only updates _bwimc_ecwd for
     # THIS and every LATER clause in the command.
     _bwimc_ecwd_track "$_bwimc_clause_sp" "$_bwimc_clause_piped"
+    # HIMMEL-4153: the verb arms read the command word AFTER any leading
+    # assignment words (ecwd tracking above keeps the whole clause — it
+    # already treats an assignment prefix as unresolved).
+    _bwimc_strip_assign "$_bwimc_clause"
+    if [ "$_BWIMC_SA" != "$_bwimc_clause" ]; then
+        _tolower_ascii "$_BWIMC_SA"
+        _bwimc_clause_lc="$_TOLOWER_OUT"
+        _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_BWIMC_SA")
+    fi
 
     # HIMMEL-1430: `grep -E` + capture instead of `grep -q` here and at every
     # verb-scan arm below — under pipefail a multi-line, >64KiB clause can

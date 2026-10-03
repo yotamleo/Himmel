@@ -3214,10 +3214,10 @@ _r4138 "78a comment with a quote inside \$(…)"                         block '
 _r4138 "78b comment with a quote inside a dq-quoted \$(…)"             block 'x="$(echo hi # it'"'"'s\n)"; touch @P@/f'
 _r4138 "78c comment with a quote inside backticks"                     block 'x=`echo hi # it'"'"'s\n`; touch @P@/f'
 _r4138 "78d top-level comments pairing a quote around a write"         block ': # '"'"'\necho x > @P@/f\n: # '"'"''
-# 78e (a comment in $(…) in a multi-line bash -c body) rides HIMMEL-4143, the
-# quoted-newline clause-transport gap. 78p pins the split case that gap
-# denies today only by accident; no change here may make it allow.
-_r4138 "78p bash -c body with a newline before a write (pin, HIMMEL-4143)" block 'bash -c "echo hi\ntouch @P@/f"'
+# 78e (a comment in $(…) in a multi-line bash -c body) sits with the
+# HIMMEL-4143 rows below. 78p: the body newline now reaches the body scan as a
+# real newline, which splits the body there.
+_r4138 "78p bash -c body with a newline before a write (HIMMEL-4143)"  block 'bash -c "echo hi\ntouch @P@/f"'
 # The strip copies a heredoc body through verbatim (speed); a shift is no opener.
 _r4138 "78q ((x<<2)) is a shift, comment pair still stripped"            block '((x<<2))\n# '"'"'\necho x > @P@/f\n# '"'"'\n2'
 _r4138 "78r \$[x<<2] is a shift, comment pair still stripped"            block 'echo $[1<<2]\n# '"'"'\necho x > @P@/f\n# '"'"'\n2'
@@ -3285,6 +3285,71 @@ _r4138 "81e \\400 ends the name inside the primary"                     block "e
 _r4138 "81f \\c\` ends the name inside the primary"                     block "echo x > \$'@P@/f\\c\`/../../zz'"
 _r4138 "81g \\c<space> ends the name inside the primary"                block "echo x > \$'@P@/f\\c /../../zz'"
 _r4138 "81h \\377 stays a byte, worktree write (ALLOW)"                 allow "echo x > \$'@W@/f\\377/../zz'"
+}
+
+echo "== HIMMEL-4153/4145/4143 assignment prefix, nested heredoc bodies, quoted newlines =="
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+# HIMMEL-4153: leading NAME=value / NAME[…]=value words are skipped before the
+# verb arms read the command word, and a plain `$((…))` no longer splits.
+_r4138 "82a x=1 touch primary"                                         block 'x=1 touch @P@/x'
+_r4138 "82b x=\$((1<<2)) touch primary"                                block 'x=$((1<<2)) touch @P@/x'
+_r4138 "82c a[1<<2]=1 touch primary"                                   block 'a[1<<2]=1 touch @P@/x'
+_r4138 "82d x=\$(echo hi) touch primary"                               block 'x=$(echo hi) touch @P@/x'
+_r4138 "82e x=\"a b\" touch primary"                                   block 'x="a b" touch @P@/x'
+_r4138 "82f x=1 y=2 touch primary"                                     block 'x=1 y=2 touch @P@/x'
+_r4138 "82g x+=1 touch primary"                                        block 'x+=1 touch @P@/x'
+_r4138 "82h x=1 cp into the primary"                                   block 'x=1 cp @W@/README.md @P@/x'
+_r4138 "82i x=1 rm in the primary"                                     block 'x=1 rm @P@/README.md'
+_r4138 "82j a[\$((1<<2))]=1 touch primary"                             block 'a[$((1<<2))]=1 touch @P@/x'
+_r4138 "82k x=\`echo hi\` touch primary"                               block 'x=`echo hi` touch @P@/x'
+_r4138 "82l x=1 sed -i in the primary"                                 block 'x=1 sed -i s/a/b/ @P@/README.md'
+_r4138 "82m x=1 git -C primary commit"                                 block 'x=1 git -C @P@ commit --allow-empty -m m'
+_r4138 "82n \$((touch …) ) is a subshell, still split"                 block 'echo $((touch @P@/x) )'
+_r4138 "82o \$((echo a); touch …) is a subshell, still split"          block 'echo $((echo a); touch @P@/x)'
+_r4138 "82p x=1 touch worktree (ALLOW)"                                allow 'x=1 touch @W@/x'
+_r4138 "82q x=\$((1<<2)) touch worktree (ALLOW)"                       allow 'x=$((1<<2)) touch @W@/x'
+_r4138 "82r a[1<<2]=1 touch worktree (ALLOW)"                          allow 'a[1<<2]=1 touch @W@/x'
+_r4138 "82s bare assignment (ALLOW)"                                   allow 'x=1'
+_r4138 "82t FOO=1 git -C worktree commit (ALLOW)"                      allow 'FOO=1 git -C @W@ commit --allow-empty -m m'
+# Only `(` and `${` nest in an assignment value; a bare `[` or `{` is a
+# literal, so the value ends at the next blank and the verb is read.
+_r4138 "85a x=[ touch primary (bare [ is literal)"                     block 'x=[ touch @P@/x'
+_r4138 "85b x={ touch primary (bare { is literal)"                     block 'x={ touch @P@/x'
+_r4138 "85c x=a[b touch primary"                                       block 'x=a[b touch @P@/x'
+_r4138 "85d x=\\\${ touch primary (escaped \$ is literal)"             block 'x=\${ touch @P@/x'
+_r4138 "85e x=\$\${ touch primary (PID then literal {)"                block 'x=$${ touch @P@/x'
+_r4138 "85f x=\${a:- b} touch primary (\${ nests)"                     block 'x=${a:- b} touch @P@/x'
+_r4138 "85g x=\$(echo }) touch primary"                                block 'x=$(echo }) touch @P@/x'
+_r4138 "85i x=[ touch worktree (ALLOW)"                                allow 'x=[ touch @W@/x'
+_r4138 "85j x=\${a:- b} git -C worktree commit (ALLOW)"                allow 'x=${a:- b} git -C @W@ commit --allow-empty -m m'
+# HIMMEL-4145: a heredoc body inside a dq-quoted `$(…)` is blanked in an
+# extra reading, so a body apostrophe cannot swallow a later write.
+_r4138 "83a dq \$(cat <<E it's E); touch primary"                      block 'x="$(cat <<E\nit'"'"'s\nE\n)"; touch @P@/f'
+_r4138 "83b dq \$(cat <<E # it's E); touch primary"                    block 'x="$(cat <<E\n# it'"'"'s\nE\n)"; touch @P@/f'
+_r4138 "83c commit idiom with it's, then touch primary"                block 'git -C @W@ commit --allow-empty -m "$(cat <<'"'"'EOF'"'"'\nfix: it'"'"'s done\nEOF\n)"; touch @P@/f'
+_r4138 "83d dq <<- tab body with it's; touch primary"                  block 'x="$(cat <<-E\n\tit'"'"'s\n\tE\n)"; touch @P@/f'
+_r4138 "83e dq body with a backtick; touch primary"                    block 'x="$(cat <<E\nuse `x\nE\n)"; touch @P@/f'
+_r4138 "83f dq body with a dquote; touch primary"                      block 'x="$(cat <<E\nsay "hi\nE\n)"; touch @P@/f'
+_r4138 "83g write inside \$(…) after the heredoc"                      block 'x="$(cat <<E\nhi\nE\necho x > @P@/f\n)"'
+_r4138 "83h nested dq \$(…) twice, it's; touch primary"                block 'x="$(echo "$(cat <<E\nit'"'"'s\nE\n)")"; touch @P@/f'
+_r4138 "83j \\\$( in dq is text, a body never opens"                   block 'x="\$(cat <<E"; touch @P@/f; echo "E"'
+_r4138 "83k commit idiom with it's (ALLOW)"                            allow 'git -C @W@ commit --allow-empty -m "$(cat <<'"'"'EOF'"'"'\nfix: it'"'"'s done\nEOF\n)"'
+_r4138 "83l dq it's, then touch worktree (ALLOW)"                      allow 'x="$(cat <<E\nit'"'"'s\nE\n)"; touch @W@/f'
+_r4138 "83m redirect text in the body stays denied (flat reading, pin)" block 'x="$(cat <<E\na > @P@/f\nE\n)"'
+# HIMMEL-4143: a newline inside a quoted span travels as \006, so a clause is
+# never split mid-word (and the raw byte is a marker, denied).
+_r4138 "84a echo 'a NL' > primary"                                     block 'echo '"'"'a\n'"'"' > @P@/f'
+_r4138 "84b echo \"a NL b\" > primary"                                 block 'echo "a\nb" > @P@/f'
+_r4138 "84c bash -c \"echo 'hi NL'; touch primary\""              block 'bash -c "echo '"'"'hi\n'"'"'; touch @P@/f"'
+_r4138 "84d bash -c 'x=\$(echo hi NL); touch primary'"                 block 'bash -c '"'"'x=$(echo hi\n); touch @P@/f'"'"''
+_r4138 "78e comment with a quote in \$(…) in a multi-line bash -c"     block 'bash -c "x=\$(echo hi # it'"'"'s\n); touch @P@/f"'
+_r4138 "84e touch 'primary/a NL b'"                                    block 'touch '"'"'@P@/a\nb'"'"''
+_r4138 "84f a raw 0x06 byte is a marker"                               block 'echo x > @W@/a'$'\006''b'
+_r4138 "84g echo 'a NL' > worktree (ALLOW)"                            allow 'echo '"'"'a\n'"'"' > @W@/f'
+_r4138 "84h bash -c \"echo 'hi NL'; touch worktree\" (ALLOW)"     allow 'bash -c "echo '"'"'hi\n'"'"'; touch @W@/f"'
+_r4138 "84i commit -m 'a NL touch primary' stays denied (raw reading, pin)" block 'git -C @W@ commit --allow-empty -m '"'"'a\ntouch @P@/f'"'"''
+_r4138 "84j git commit -m multi-line message (ALLOW)"                  allow 'git -C @W@ commit --allow-empty -m '"'"'fix: x\n\nbody it is\n'"'"''
 }
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
