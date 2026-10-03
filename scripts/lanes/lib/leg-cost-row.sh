@@ -5,7 +5,7 @@
 # appends the row at wrap; the ledger lives at
 # <handover root>/.ledger/leg-cost.jsonl (override: LEG_COST_LEDGER).
 #
-#   leg_cost_ledger_path             prints the ledger path
+#   leg_cost_ledger_path [doc|stem]  prints the ledger path (under the doc's root)
 #   leg_cost_row <transcript> <leg doc path | leg stem>
 #                                    prints ONE compact JSON row, rc 1 + stderr
 #                                    on a meter failure. PR and the `class:` /
@@ -25,12 +25,39 @@ _LCR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/leg-identity.sh
 . "$_LCR_HERE/../../lib/leg-identity.sh"
 
+# _lcr_doc_root <doc | stem> - the deepest known handover root holding the doc,
+# resolved the way queue-lock.sh keys a lock (HANDOVER_DIR + registry). Prints
+# nothing when no known root holds it. A subshell: queue-lock.sh sets shell
+# options and defines many helpers.
+_lcr_doc_root() {
+    (
+        # shellcheck source=scripts/handover/queue-lock.sh
+        . "$_LCR_HERE/../../handover/queue-lock.sh" || exit 1
+        _ql_canon_doc "$1" || exit 1
+        best=""
+        while IFS= read -r r; do
+            case "$_QL_DOC" in
+                "$r"/*) [ "${#r}" -gt "${#best}" ] && best="$r" ;;
+            esac
+        done <<EOF
+$(_ql_roots_all)
+EOF
+        [ -n "$best" ] && printf '%s\n' "$best"
+        exit 0
+    ) 2>/dev/null
+}
+
+# leg_cost_ledger_path [doc | stem] - the ledger lives under the handover root
+# that holds the leg doc, so a console run from another repo (or with
+# HANDOVER_DIR unset) never writes into that repo's handovers/ stub
+# (HIMMEL-4231). No doc, or one no known root holds: handover_root.
 leg_cost_ledger_path() {
     if [ -n "${LEG_COST_LEDGER:-}" ]; then printf '%s\n' "$LEG_COST_LEDGER"; return 0; fi
     # shellcheck source=scripts/lib/handover-path.sh
     . "$_LCR_HERE/../../lib/handover-path.sh" || return 1
-    local root
-    root=$(handover_root) || return 1
+    local root=""
+    [ -n "${1:-}" ] && root=$(_lcr_doc_root "$1")
+    [ -n "$root" ] || root=$(handover_root) || return 1
     printf '%s/.ledger/leg-cost.jsonl\n' "$root"
 }
 

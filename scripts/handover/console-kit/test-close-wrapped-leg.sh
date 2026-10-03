@@ -202,7 +202,7 @@ run() { # run <doc> - runs the script under test with every stub wired
     # <repo-root>/handovers, creating REAL handovers/.locks/ state in
     # whatever checkout this suite runs from (HIMMEL-3667).
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
-        HANDOVER_DIR="$W/handover-root" \
+        HANDOVER_DIR="${CWL_HANDOVER_DIR-$W/handover-root}" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
         WRAP_SUBTREE_CHECK_BIN="$SUBTREE_STUB" \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
@@ -714,6 +714,30 @@ reset_calls
 rc=0; out=$(LEG_COST_LEDGER="/proc/no-such-dir/x.jsonl" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
 check "ledger-unwritable: close still rc 0" "$rc" "0"
 contains "ledger-unwritable: WARNs" "$out" "WARN"
+SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
+
+# --- 26: ledger root follows the DOC, not the cwd (HIMMEL-4231) ---------------
+# HANDOVER_DIR unset and cwd a repo with its own handovers/ stub (a console
+# running from the himmel checkout): the row must land under the handover root
+# that holds the leg doc, never in the cwd repo's stub.
+LR_STATE="$W/lr-state"; LR_STUB="$W/lr-stub"
+mkdir -p "$LR_STATE/handovers/u/himmel" "$LR_STUB/handovers"
+git -C "$LR_STUB" init -q 2>/dev/null
+printf '{"repos":{"state":{"path":"%s","user":"u"}}}\n' "$LR_STATE" > "$W/lr-registry.json"
+LR_STEM="HIMMEL-9-N7-rootcase-2026-01-01"
+DOC_SAVE="$DOC"; SESSION_SAVE="$SESSION_NAME"
+DOC="$LR_STATE/handovers/u/himmel/$LR_STEM.md"; SESSION_NAME="$LR_STEM"
+mkcmdline 211 claude -n "$SESSION_NAME" work
+pgrep_x_stub 211
+printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\",\"timestamp\":\"2026-10-03T00:00:00Z\"}" > "$LC_PROJ/sess-lr1.jsonl"
+asst m1 10 1000 2000 100 >> "$LC_PROJ/sess-lr1.jsonl"
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(cd "$LR_STUB" && CWL_HANDOVER_DIR="" HANDOVER_REGISTRY="$W/lr-registry.json" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-root: rc 0" "$rc" "0"
+check "ledger-root: row lands under the doc's handover root" "$(grep -c sess-lr1 "$LR_STATE/handovers/.ledger/leg-cost.jsonl" 2>/dev/null)" "1"
+check "ledger-root: nothing in the cwd repo's stub" "$([ -e "$LR_STUB/handovers/.ledger" ] && echo present || echo absent)" "absent"
+pgrep_x_stub 210
 SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------

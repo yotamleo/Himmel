@@ -277,7 +277,7 @@ fi
 if [ -n "$TRANSCRIPT" ]; then
     if ! . "$HERE/../../lanes/lib/leg-cost-row.sh"; then
         echo "close-wrapped-leg: WARN cannot load leg-cost-row.sh - no cost ledger row" >&2
-    elif ! ledger=$(leg_cost_ledger_path); then
+    elif ! ledger=$(leg_cost_ledger_path "$DOC"); then
         echo "close-wrapped-leg: WARN cannot resolve the cost ledger path - no cost ledger row" >&2
     elif [ -f "$ledger" ] && grep -qF "\"session\":\"$(basename "$TRANSCRIPT" .jsonl)\"" "$ledger"; then
         echo "close-wrapped-leg: cost ledger already has a row for this transcript"
