@@ -75,8 +75,9 @@ CLAUDE_BIN="${LEG_CLAUDE_BIN:-claude}"
 # scrubs it (var + token) and refuses its HEADED_ARM_LEG_CLAUDE_BIN source
 # before a consult launches, so no consult reaches here with it set.
 # ponytail: a claude installed only outside these dirs (nvm, a custom npm
-# prefix) refuses; upgrade path = an operator-recorded binary path, if one is
-# ever kept outside the caller's reach.
+# prefix) refuses, and a name found in none of the pinned dirs still falls
+# through to the caller's PATH; upgrade path = an operator-recorded binary
+# path, if one is ever kept outside the caller's reach.
 if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ] && [ -z "${LEG_CLAUDE_BIN:-}" ]; then
     _pin_user="$(PATH=/usr/bin:/bin; id -un 2>/dev/null)" || _pin_user=""
     _pin_home=""
@@ -86,6 +87,7 @@ if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ] && [ -z "${LEG_CLAUDE_BIN:-}" ]
     esac
     case "$_pin_home" in /*) ;; *) _pin_home="" ;; esac
     _pin_path="${_pin_home:+$_pin_home/.local/bin:}/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+    # shellcheck disable=SC2030  # the lookup PATH is subshell-local on purpose
     CLAUDE_BIN="$(PATH="$_pin_path"; command -v claude 2>/dev/null)" || CLAUDE_BIN=""
     case "$CLAUDE_BIN" in
         /*) ;;
@@ -93,6 +95,12 @@ if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ] && [ -z "${LEG_CLAUDE_BIN:-}" ]
             echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_NO_SETTING_SOURCES=1 (a consult) but no claude on the pinned PATH ($_pin_path); a consult never runs the caller's PATH claude" >&2
             exit 2 ;;
     esac
+    # An npm-installed claude is a `#!/usr/bin/env node` script, and claude
+    # spawns helpers by name: put the pinned dirs first so those resolve there
+    # too. The caller's dirs stay after them for the consult's own tools.
+    # shellcheck disable=SC2031  # the lookup above never touched this PATH
+    PATH="$_pin_path:$PATH"
+    export PATH
     unset -v _pin_user _pin_home _pin_path
 fi
 
