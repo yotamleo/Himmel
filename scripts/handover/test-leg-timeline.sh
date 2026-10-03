@@ -395,6 +395,23 @@ contains "gate avail row for '@'-branch" "$out" "avail codex"
 # "feat/x@y" survives on the run= line (first-'@' split would truncate to "feat/x").
 matches "'@'-branch shown intact in gate run" "$out" 'feat/x@y.*run='
 
+# HIMMEL-4202: a worker whose shared_branch contains '@' must match its gate
+# branch for wait-to-first. The worker leg is the RAW branch (no @<head>), so
+# only the gate label may be suffix-stripped; cutting the worker's last '@' too
+# turned feat/x@y into feat/x and printed n/a. dispatch 02:00, first gate 02:01.
+mkdir -p "$ROOT/at-claudex/at-1"
+cat > "$ROOT/at-claudex/at-1/meta.json" <<'EOF'
+{"status":"done","started_at":"2026-08-03T02:00:00Z","lane":"codex","task_name":"at-1","shared_branch":"feat/x@y","exit_code":0}
+EOF
+out=$(env LEG_TIMELINE_WORKER_GLM="$ROOT/no-glm" \
+          LEG_TIMELINE_WORKER_CLAUDEX="$ROOT/at-claudex" \
+          LEG_TIMELINE_CR_LEDGER="$ROOT/at-cr.jsonl" \
+          LEG_TIMELINE_CHAIN_LEDGER="$ROOT/no-ledger.md" \
+      bash "$LT" 2026-08-03T00:00 2>&1); rc=$?
+check "'@'-branch worker exit 0" "$rc" "0"
+matches "'@'-branch worker wait-to-first = 1m00s" "$out" 'feat/x@y.*wait-to-first=1m00s'
+not_contains "'@'-branch worker wait-to-first not n/a" "$out" "wait-to-first=n/a"
+
 # ===========================================================================
 # HIMMEL-3533: .env read must come from leg-timeline.sh's OWN checkout, never
 # the caller's CWD repo. Fixture mirrors test-bank-preflight-dotenv-root.sh: a
