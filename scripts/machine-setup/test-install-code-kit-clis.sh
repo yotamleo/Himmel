@@ -8,7 +8,7 @@ ok() { PASS=$((PASS + 1)); echo "PASS: $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "FAIL: $1"; }
 
 # A PATH holding only stubs: npm + apt-get present, ast-grep/shfmt/bats absent.
-STUBS="$(mktemp -d)"
+STUBS="$(mktemp -d "${TMPDIR:-/tmp}/code-kit-stubs.XXXXXX")" || exit 1
 trap 'rm -rf "$STUBS"' EXIT
 for t in npm apt-get; do printf '#!/bin/sh\nexit 0\n' > "$STUBS/$t"; chmod +x "$STUBS/$t"; done
 for t in bash grep dirname sh env; do ln -s "$(command -v "$t")" "$STUBS/$t" 2>/dev/null || true; done

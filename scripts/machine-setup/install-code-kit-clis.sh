@@ -22,7 +22,9 @@ run() {
   if [ "$DRY" = 1 ]; then echo "would run: $*"; else "$@"; fi
 }
 
-if command -v ast-grep >/dev/null 2>&1 && ast-grep --version 2>/dev/null | grep -qF "$AST_GREP_VERSION"; then
+ast_grep_ver=""
+if command -v ast-grep >/dev/null 2>&1; then ast_grep_ver="$(ast-grep --version 2>/dev/null || true)"; fi
+if [ -n "$ast_grep_ver" ] && [[ "$ast_grep_ver" == *"$AST_GREP_VERSION"* ]]; then
   echo "ast-grep $AST_GREP_VERSION already installed"
 elif command -v npm >/dev/null 2>&1; then
   run npm install -g "@ast-grep/cli@${AST_GREP_VERSION}"
