@@ -185,6 +185,10 @@ assert_rc "whitespace-only stdin" 2 "$(run_case '   ')"
 # fire on old -- `tostring` doesn't reproduce it, so explicit fail-closed
 # is the correct fix, not a tostring-based allow.)
 assert_rc "array command + stash drop" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":["git stash drop"]}}')"
+# HIMMEL-3986: jq's `//` treats a present false as absent; select on the key.
+assert_rc "command:false + cmd:ls" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":false,"cmd":"ls"}}')"
+# A null command still reads cmd, as `//` did: never allow what main refused.
+assert_rc "command:null + cmd:stash drop" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":null,"cmd":"git stash drop"}}')"
 
 # --- BYPASS case ---
 assert_rc "GIT_STASH_OK bypass"       0 "$(run_case "$(j_bash 'git stash drop')" "GIT_STASH_OK=1")"
