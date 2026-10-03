@@ -1501,7 +1501,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 # reap pass below, permanently blocking reap of an otherwise
                 # clean husk.
                 if ! date +%s > "$stray_q_dest.himmel-quarantined-at" 2>/dev/null; then
-                    echo "WARN clean-garden: failed to write quarantine timestamp for $stray_q_dest — it will never be reaped automatically (inspect by hand, then add the sidecar or rm -rf it yourself once satisfied)" >&2
+                    echo "WARN clean-garden: failed to write quarantine timestamp for $stray_q_dest — it may not be reaped automatically (if the sidecar is absent it never will be; inspect by hand, then add the sidecar or rm -rf it yourself once satisfied)" >&2
                 fi
                 echo "clean-garden: quarantined stray husk $stray_dir -> $stray_q_dest (restore: mv '$stray_q_dest' '$stray_dir')"
                 log "  quarantined stray husk: $stray_dir -> $stray_q_dest"
