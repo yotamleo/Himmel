@@ -228,8 +228,11 @@ export function readLaneQuotaTargets(lanesPath: string): LaneQuotaTargets {
   } catch {
     return out;
   }
+  // First-wins dedupe: a repeated lane id would emit colliding {lane,bank,window} series.
+  const seen = new Set<string>();
   for (const lane of registry?.lanes ?? []) {
-    if (typeof lane?.id !== "string" || !lane.id) continue;
+    if (typeof lane?.id !== "string" || !lane.id || seen.has(lane.id)) continue;
+    seen.add(lane.id);
     const bank = lane.quota?.bank;
     if (typeof bank === "string" && (BANK_IDS as readonly string[]).includes(bank)) {
       out.withBank.push({ lane: lane.id, bank: bank as BankId });
