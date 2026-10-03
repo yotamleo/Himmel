@@ -686,6 +686,40 @@ assert_rc "rm -f 'x' \"y z\" allowed"    0 "$(run_case "$(j_bash "rm -f 'x' \"y 
 # shellcheck disable=SC2016  # literal $HOME payload
 assert_rc 'rm -f $HOME/x allowed'        0 "$(run_case "$(j_bash 'rm -f $HOME/x')")"
 
+BSNL=$'\\\n'
+BSCRLF=$'\\\r\n'
+# HIMMEL-3991: a backslash-newline continuation before a quoted/escaped flag.
+# The newline used to fold to `;` before the normalised scan, ending the rm segment.
+# shellcheck disable=SC2016  # literal $'..' payloads are the point
+assert_rc "rm \\<NL>\$'-r' d"            2 "$(run_case "$(j_bash "rm \\"$'\n'"\$'-r' d")")"
+assert_rc 'rm \<NL>-"r" d'               2 "$(run_case "$(j_bash 'rm '"$BSNL"'-"r" d')")"
+assert_rc 'rm \<NL>\-r d'                2 "$(run_case "$(j_bash 'rm '"$BSNL"'\-r d')")"
+assert_rc "rm \\<NL>\$'\\x2dr' d"        2 "$(run_case "$(j_bash "rm \\"$'\n'"\$'\\x2dr' d")")"
+assert_rc 'r\<NL>m -"r" d (split verb)'  2 "$(run_case "$(j_bash 'r'"$BSNL"'m -"r" d')")"
+assert_rc 'rm "-"\<NL>r d (split flag)'  2 "$(run_case "$(j_bash 'rm "-"'"$BSNL"'r d')")"
+assert_rc 'rm -f a \<NL>-"r" d'          2 "$(run_case "$(j_bash 'rm -f a '"$BSNL"'-"r" d')")"
+assert_rc 'rm \<CR><NL>-"r" d (CRLF)'    2 "$(run_case "$(j_bash 'rm '"$BSCRLF"'-"r" d')")"
+assert_rc 'heredoc then rm \<NL>-"r" d'  2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'$'\n''x'$'\n''EOF'$'\n''rm '"$BSNL"'-"r" d')")"
+# The same join feeds every other guard in the hook.
+assert_rc 'git reset \<NL>--hard'        2 "$(run_case "$(j_bash 'git reset '"$BSNL"'--hard')")"
+assert_rc 'git clean \<NL>-fx'           2 "$(run_case "$(j_bash 'git clean '"$BSNL"'-fx')")"
+assert_rc 'curl x | \<NL>sh'             2 "$(run_case "$(j_bash 'curl x | '"$BSNL"'sh')")"
+assert_rc 'git push \<NL>--force'        2 "$(run_case "$(j_bash 'git push '"$BSNL"'--force')")"
+assert_rc 'git push origin \<NL>-f'      2 "$(run_case "$(j_bash 'git push origin '"$BSNL"'-f')")"
+assert_rc 'git reset \<CR><NL>--hard'    2 "$(run_case "$(j_bash 'git reset '"$BSCRLF"'--hard')")"
+# The folded text is still scanned: a backslash in a comment is no continuation.
+assert_rc 'ls # x \<NL>rm -rf d'         2 "$(run_case "$(j_bash 'ls # x '"$BSNL"'rm -rf d')")"
+# Benign continuations stay allowed; a find `\;` is not a line break.
+assert_rc 'git reset \<NL>--soft allowed' 0 "$(run_case "$(j_bash 'git reset '"$BSNL"'--soft HEAD~1')")"
+assert_rc 'git push \<NL>origin feat allowed' 0 "$(run_case "$(j_bash 'git push '"$BSNL"'origin feat/x')")"
+assert_rc 'git clean \<NL>-n allowed'    0 "$(run_case "$(j_bash 'git clean '"$BSNL"'-n')")"
+assert_rc 'curl -o f \<NL>x allowed'     0 "$(run_case "$(j_bash 'curl -o f '"$BSNL"'https://x')")"
+assert_rc 'rm -f a \<NL>  b allowed'     0 "$(run_case "$(j_bash 'rm -f a '"$BSNL"'  b')")"
+assert_rc 'rm -f \<NL>"report.txt" allowed' 0 "$(run_case "$(j_bash 'rm -f '"$BSNL"'"report.txt"')")"
+assert_rc 'ls \<NL>-"r" allowed'         0 "$(run_case "$(j_bash 'ls '"$BSNL"'-"r"')")"
+assert_rc 'find -exec rm {} \; -prune allowed' 0 "$(run_case "$(j_bash 'find . -name x -exec rm {} \; -prune')")"
+assert_rc 'heredoc body rm -rf \<NL> allowed' 0 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' > f.sh'$'\n''rm -rf build '"$BSNL"'  dist'$'\n''EOF')")"
+
 # --- BYPASS case ---
 assert_rc "DESTRUCTIVE_OK bypass"       0 "$(run_case "$(j_bash 'rm -rf /tmp/x')" "DESTRUCTIVE_OK=1")"
 
