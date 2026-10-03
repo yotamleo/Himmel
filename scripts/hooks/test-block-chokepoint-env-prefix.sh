@@ -1270,6 +1270,29 @@ assert_deny "4130 dquote basename + split seam name, worktree path"    "$(j 'n=A
 # shellcheck disable=SC2016
 assert_deny "4130 squote basename + split seam name, worktree path"    "$(j "n=ARMAUTO; export \"\${n}MERGE=1\"; bash $WP/merge-on-g'r'een.sh")"
 
+# HIMMEL-4148: zsh (this station's Bash) globs a grouping / alternation /
+# glob-flag basename -- g(o).sh runs go.sh -- but tr split the word at `(`,
+# so on a PLAIN path neither the glob scan nor the basename backstop saw it
+# (judge J1663b). A `(` after scripts/ in a word now counts as obfuscation.
+PP=/r/w/scripts
+assert_deny "4148 zsh grouping g(o).sh + env -u, plain path"          "$(j "env -u HIMMEL_CONSOLE_LEG $PP/handover/console-kit/g(o).sh")"
+assert_deny "4148 zsh grouping (go).sh + env -u, plain path"          "$(j "env -u HIMMEL_CONSOLE_LEG $PP/handover/console-kit/(go).sh")"
+assert_deny "4148 zsh alternation g(o|zz).sh + env -u, plain path"    "$(j "env -u HIMMEL_CONSOLE_LEG $PP/handover/console-kit/g(o|zz).sh")"
+assert_deny "4148 zsh glob flag (#i)GO.sh + env -u, plain path"       "$(j "env -u HIMMEL_CONSOLE_LEG $PP/handover/console-kit/(#i)GO.sh")"
+assert_deny "4148 zsh grouping go.s(h) + env -u, plain path"          "$(j "env -u HIMMEL_CONSOLE_LEG $PP/handover/console-kit/go.s(h)")"
+assert_deny "4148 zsh grouping, relative scripts/ path"               "$(j "env -u HIMMEL_CONSOLE_LEG scripts/handover/console-kit/g(o).sh")"
+assert_deny "4148 zsh grouping m(erge-on-green).sh + seam prefix"     "$(j "${MOG_VAR}=1 bash $PP/handover/m(erge-on-green).sh")"
+assert_deny "4148 zsh grouping q(uiet-run).sh + seam prefix"          "$(j "HIMMEL_SUITE_SLOTS=9 bash $PP/q(uiet-run).sh suite -- bash x")"
+assert_deny "4148 zsh grouping s(top-worker).sh + seam prefix"        "$(j "${SW_VAR}=0 bash $PP/lanes/s(top-worker).sh")"
+assert_deny "4148 zsh grouping q(uiet-run).sh + seam prefix, worktree path"  "$(j "HIMMEL_SUITE_SLOTS=9 bash $WT2/scripts/q(uiet-run).sh suite -- bash x")"
+assert_deny "4148 zsh grouping s(top-worker).sh + seam prefix, worktree path" "$(j "${SW_VAR}=0 bash $WT2/scripts/lanes/s(top-worker).sh")"
+assert_deny "4148 zsh grouping g(o).sh + env -u, /./ dot path"        "$(j "env -u HIMMEL_CONSOLE_LEG /r/w/./scripts/handover/console-kit/g(o).sh")"
+# Controls: a `(` with no write verb, or one before scripts/ only, stays allowed.
+assert_allow "4148 grouping basename with no seam write"              "$(j "bash $PP/handover/console-kit/g(o).sh 1 abc")"
+assert_allow "4148 grep alternation under scripts/ with no write"     "$(j "grep -E 'scripts/(a|b)' notes.txt")"
+# shellcheck disable=SC2016 # $(pwd) is probe text, not an expansion
+assert_allow "4148 \$(pwd) before scripts/ beside printf"             "$(j 'printf x; bash "$(pwd)/scripts/x.sh"')"
+
 # HIMMEL-4130 (HIMMEL-3986 sweep): a PRESENT non-string .command must not
 # fall through to .cmd -- `//` treats false like null, so the hook judged
 # the benign .cmd text. A non-string .command now fails closed; a null or

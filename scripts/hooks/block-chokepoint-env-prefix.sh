@@ -1044,7 +1044,8 @@ seam_assigned() {
 # obfuscated; an obfuscated NAME beside a LITERAL chokepoint path stays a
 # residual of this layer). ponytail: a program word that hides BOTH its
 # `scripts/` anchor and its glob (`$D/m*.sh`, a word assembled from
-# variables) is not a scripts/ word, so only the basename backstop sees it;
+# variables, or `cd` into the directory then `./g?.sh` / `./g(o).sh`) is not
+# a scripts/ word, so only the basename backstop sees it;
 # close it by registering the assembled path forms or by the structural guard
 # once HIMMEL-3930 lands.
 raw_obfuscated() {
@@ -1094,11 +1095,21 @@ raw_obfuscated() {
                 esac ;;
         esac
     done
+    # HIMMEL-4148: the tr above splits a word at `(`, so a zsh grouping,
+    # alternation or glob flag in the basename (g(o).sh, (go).sh, go.s(h),
+    # (#i)GO.sh -- this station's Bash runs zsh -c, which globs them to the
+    # chokepoint) left every piece plain. Re-split keeping the parens: any `(`
+    # after scripts/ in a word counts, like the glob characters above.
+    for w in $(printf '%s' "$t" | tr ';|&<>' '     '); do
+        case "$w" in *scripts/*) case "${w#*scripts/}" in *'('*) obf=1 ;; esac ;; esac
+    done
     set +f
     [ "$obf" = 1 ] || return 0
     # ponytail: the verb scan also matches inside a quoted argument value
     # (--set 'reason=...exec...'), skipping quoted spans is a parse rule;
     # HIMMEL-4135 tracks a proven-safe shape or the HIMMEL-3930 structural parse.
+    # Not even --reason '<no quote inside>' is safe on raw text: in
+    # echo $'a --reason ' ; export SEAM=1 ; echo 'b' that "value" is live code.
     [[ $t =~ $wv ]] && write=1
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
     # or verb): standalone -u*/-i*/--unset*/--ignore-environment/bare -, declare/typeset +x,
