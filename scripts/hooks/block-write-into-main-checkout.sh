@@ -305,6 +305,9 @@ fi
 # closed it and the last one opened a span that hid the rest of the command
 # (`echo $'\'' > <primary>/f`). _BWIMC_DL is 1 when the previous character was
 # an active `$` (not the second `$` of `$$`, the PID); a caller that jumps over a substitution body clears it.
+# ponytail: a backslash-newline between `$` and `'` (`$\<LF>'…'`, one ANSI-C
+# string to Bash) clears _BWIMC_DL, so it scans as a plain quote; carry the
+# state across the continuation (HIMMEL-4133).
 _BWIMC_NL=$'\n'
 
 _bwimc_scan_init() {
