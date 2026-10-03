@@ -378,8 +378,10 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         # opener line before it reads the body, so `cat <<'EOF' \<NL>/dev/null`
         # starts its body a line later. Join first, or the strip below takes
         # `/dev/null` as the body and ends on the wrong line, hiding what
-        # follows. A CRLF continuation arrives here as `\`+LF+LF. Only an odd
-        # trailing backslash run continues the line; `\\` is an escaped one.
+        # follows. Only an odd trailing backslash run continues the line; `\\`
+        # is an escaped one. Bash reads `\`+CR as an escaped CR, not a
+        # continuation, and `\r` is already `\n` here, so with any `\`+CR in
+        # the command a join is unsafe: fail closed (judge J1643b).
         while [[ $_hd_tail == *$'\n'* ]]; do
             _hd_l="${_hd_tail%%$'\n'*}"
             _hd_bs="${_hd_l##*[!\\]}"
@@ -388,8 +390,8 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             # continuation; rather than model that, strip nothing more and
             # scan the rest as-is (fail closed).
             [[ $_hd_l == *[\#\'\"\`]* ]] && break 2
+            [[ $cmd == *$'\\\r'* ]] && break 2
             _hd_rest="${_hd_tail#*$'\n'}"
-            [[ $cmd == *"$_bscrlf"* && $_hd_rest == $'\n'* ]] && _hd_rest="${_hd_rest#$'\n'}"
             _hd_tail="${_hd_l%\\}${_hd_rest}"
         done
         if [[ $_hd_tail != *$'\n'* ]]; then

@@ -705,6 +705,8 @@ assert_rc 'heredoc then rm \<CR><NL>-"r" d' 2 "$(run_case "$(j_bash 'cat <<'\''E
 assert_rc 'heredoc opener \<NL> then r\<NL>m -rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' '"$BSNL"'/dev/null'$'\n''EOF'$'\n''r'"$BSNL"'m -rf d')")"
 assert_rc 'heredoc opener \<NL> then rm -\<NL>rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' '"$BSNL"'/dev/null'$'\n''EOF'$'\n''rm -'"$BSNL"'rf d')")"
 assert_rc 'heredoc opener \<CR><NL> then r\<NL>m -rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' '"$BSCRLF"'/dev/null'$'\r\n''EOF'$'\r\n''r'"$BSCRLF"'m -rf d')")"
+# Bash reads backslash-CR as an escaped CR, not a continuation: fail closed (judge J1643b).
+assert_rc 'heredoc opener \<CR><NL>EOF then rm -rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' '"$BSCRLF"'EOF'$'\n''rm -rf d'$'\n''EOF'$'\n')")"
 # An even backslash run is an escaped backslash, not a continuation: the body is the next line.
 assert_rc 'heredoc opener x\\<NL> then rm -rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' x'"\\\\"$'\n''EOF'$'\n''rm -rf d'$'\n''EOF')")"
 # A backslash in a comment (or quote) on the opener line is no continuation: fail closed, strip nothing.
