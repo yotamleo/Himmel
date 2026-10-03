@@ -215,6 +215,23 @@ the clip so it parks as caption-only; a **partial** enrichment writes what
 survived, is marked `media_enrichment_status: partial`, and keeps
 `x_media_pending` for retry. Command runbook: `commands/x-media-enrich.md`.
 
+**Subtitles-first transcripts (HIMMEL-4107).** Before whisper, the rung pulls
+the platform's English subtitles with `yt-dlp` (manual track preferred over auto;
+**no cookies needed**), cleans the VTT (tags/timestamps stripped, adjacent
+rolling duplicates collapsed, no global dedupe, sentence paragraphs) and uses it
+when coverage is at least `--min-sub-coverage` (default 90 percent of the video
+duration). No track or low coverage falls back to the gallery-dl -> ffmpeg ->
+whisper path, which is the only one that needs `~/.luna/cookies/twitter.txt`. A
+clip with no twimg ref (e.g. filed from Telegram) is probed once via fxtwitter
+(`tweet.media.videos[].duration`); no video stamps `media_probe_at` +
+`media_probe_result: no-video` and is never re-probed. Provenance lands in the
+frontmatter (`media_transcript_source`: `platform-subs` / `auto-subs` /
+`whisper-<model>` / `none`, `media_video_duration_s`, `media_transcript_coverage`)
+and as a `<!-- source: platform-subs (en), coverage 100%, 38:02 -->` line in the
+`### Transcript` block. `tools/transcribe.py` gained an optional
+`X_TRANSCRIBE_META_FILE` side channel (last segment end) so whisper coverage is
+measurable; its stdout is unchanged.
+
 One-time setup mirrors the IG rung (burner X account, Cookie-Editor export to
 `~/.luna/cookies/twitter.txt` `chmod 600`, `gallery-dl` + `ffmpeg`, pre-fetched
 whisper model). `--include-evidence` and `--include-done` are **orthogonal pool

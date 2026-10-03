@@ -100,6 +100,29 @@ g "xargs -0 taskkill"     block '{"tool_name":"terminal","tool_input":{"command"
 g "then shutdown"         block '{"tool_name":"terminal","tool_input":{"command":"if true; then shutdown now; fi"}}'
 g "do format"             block '{"tool_name":"terminal","tool_input":{"command":"for x in a; do format c:; done"}}'
 g "f() { reboot; }"       block '{"tool_name":"terminal","tool_input":{"command":"f() { reboot; }"}}'
+# HIMMEL-4158: mixed quoted/bare, ANSI-C and escaped value words; quoted flag words.
+g "sudo -u 'a b'c shutdown" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u '"'"'a b'"'"'c shutdown"}}'
+g "sudo -u a' b' reboot"    block '{"tool_name":"terminal","tool_input":{"command":"sudo -u a'"'"' b'"'"' reboot"}}'
+g "exec -a 'a b'c shutdown" block '{"tool_name":"terminal","tool_input":{"command":"exec -a '"'"'a b'"'"'c shutdown"}}'
+g "nice -n 'a b'c reboot"   block '{"tool_name":"terminal","tool_input":{"command":"nice -n '"'"'a b'"'"'c reboot"}}'
+g "sudo -u \$'a b' reboot"  block '{"tool_name":"terminal","tool_input":{"command":"sudo -u $'"'"'a b'"'"' reboot"}}'
+# shellcheck disable=SC1003  # '\\' is a JSON-escaped backslash inside $'..', not a quote escape
+g "sudo -u \$'a\\' b' reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u $'"'"'a\\'"'"' b'"'"' reboot"}}'
+g "sudo -u \"a\\\" b\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u \"a\\\" b\" reboot"}}'
+g "sudo -u a\\ b reboot"    block '{"tool_name":"terminal","tool_input":{"command":"sudo -u a\\ b reboot"}}'
+g "sudo -u'a b c' reboot"   block '{"tool_name":"terminal","tool_input":{"command":"sudo -u'"'"'a b c'"'"' reboot"}}'
+g "sudo -u 'a b'c ls"       allow '{"tool_name":"terminal","tool_input":{"command":"sudo -u '"'"'a b'"'"'c ls"}}'
+g "sudo -u \"a b\\\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u \"a b\\\" reboot"}}'
+# HIMMEL-4158: overlapping readings of one flag run stay linear; a backtracking
+# regex took minutes on these (the hermes hook timeout is 10s).
+for rep in "-u 'a' " '-u"x ' '-u "x -u " ' "-u 'x -u ' "; do
+  cmd="sudo "; i=0
+  while [ "$i" -lt 30 ]; do cmd="$cmd$rep"; i=$((i + 1)); done
+  t0=$SECONDS
+  g "sudo ${rep}x30 (linear)" allow "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + "zz"}}))' "$cmd")"
+  if [ $((SECONDS - t0)) -gt 5 ]; then
+    echo "  FAIL: sudo ${rep}x30 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+done
 g "echo do shutdown"      allow '{"tool_name":"terminal","tool_input":{"command":"echo do shutdown"}}'
 g "jq {format}"           allow '{"tool_name":"terminal","tool_input":{"command":"jq {format: .x} f"}}'
 g "fix(x) shutdown text"  allow '{"tool_name":"terminal","tool_input":{"command":"echo fix(x) shutdown flow"}}'
@@ -131,7 +154,7 @@ g "chained ; Start-ScheduledTask refused" block '{"tool_name":"terminal","tool_i
 # folds "\" to "/" — pinned so it stays that way.
 g "module-qualified Register- refused" block '{"tool_name":"terminal","tool_input":{"command":"ScheduledTasks\\Register-ScheduledTask -TaskName X"}}'
 # CR r8: script-block form. "{" is a LOCAL anchor for the scheduled-task rules
-# only — it cannot join the shared _CMDPOS_DESTRUCTIVE (see the residual note).
+# only — it cannot join the shared _cmdpos_destructive (see the residual note).
 g "scriptblock Register- refused"     block '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { Register-ScheduledTask -TaskName X }"}}'
 g "scriptblock COM refused"           block '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { New-Object -ComObject Schedule.Service }"}}'
 g "scriptblock Get-ScheduledTask allowed" allow '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { Get-ScheduledTask -TaskName X }"}}'

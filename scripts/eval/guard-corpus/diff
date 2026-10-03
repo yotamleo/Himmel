@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+# scripts/eval/guard-corpus/diff - run a guard-corpus JSONL through two hook
+# copies (base vs head) and report regressions (HIMMEL-4168).
+#
+# NO EXEC MODE. This tool NEVER runs a corpus row as a command. Each row is
+# piped to a hook copy on STDIN as the hook's JSON input; the hook, not this
+# tool, decides. J1672c's exec step once escaped its fixture and wrote into the
+# primary checkout, so there is deliberately no code path here that executes a
+# row's command. The only subprocess this tool launches is `bash <hook-copy>`.
+#
+# ISOLATION. Every hook run gets its OWN fresh sandbox (base and head each, per
+# row -- never shared), so a hook that writes state cannot contaminate another
+# row or the other side of a comparison, and concurrent rows cannot race:
+#   - a private HOME and HANDOVER_DIR under a per-invocation tempdir,
+#   - cwd set to a per-invocation COPY of a throwaway scratch git repo on
+#     branch `main` that stands in for the primary checkout (the row's
+#     @PRIMARY@ token is substituted with that copy's path and also passed as
+#     the payload's `cwd`),
+#   - a per-row timeout; a row that outlasts it is killed (process group) and
+#     flagged TIMEOUT RISK.
+# Every launched subprocess -- a hook under test, our scratch git -- runs under
+# a positive-ALLOWLIST environment (_sandbox_env), so no inherited execution or
+# redirection seam (BASH_ENV/ENV, LD_PRELOAD, GIT_TEMPLATE_DIR, GIT_DIR,
+# GIT_CONFIG*/core.hooksPath, ...) can steer it out of the sandbox; anything
+# not on the allowlist is closed by default. The real primary checkout is never
+# cwd and is never written.
+#
+# ponytail: the per-row sandbox copies HOME, HANDOVER_DIR and the scratch
+# primary (cwd), but the materialised hook/dependency TREE (base_dir/head_dir)
+# is built once and shared across rows, so a hook that writes state beside its
+# own script could contaminate later rows or race concurrent ones; and a few
+# residual diff exit-code edges remain (invalid-UTF-8 corpus -> uncaught
+# UnicodeDecodeError instead of setup-error 2). These residual hardening items,
+# plus the gen transform-fidelity and test-assertion follow-ups, are tracked in
+# HIMMEL-4179 -- upgrade path: copy the hook tree per invocation too, fold the
+# UTF-8 decode into the corpus-read exit-2 handler.
+#
+# A hook source is given either as a path to a .sh file, or as `sha:PATH` where
+# PATH is a repo-relative hook path materialised from that git SHA into a
+# scratch dir via `git show`. Both forms are copied into the scratch tree so
+# the hook's sibling lib lookups resolve against a copy, not the live tree.
+#
+# REPORT (stdout, human lines + a trailing JSON summary unless --no-json):
+#   - base-deny/head-allow rows  (the headline regression: head lost a deny)
+#   - newly-denied rows          (head denies what base allowed)
+#   - rc other than 0 or 2
+#   - TIMEOUT RISK rows (wall time over --timeout-warn, default 5s)
+#   - deny-expected coverage: of the rows a judge marked expect=deny, how many
+#     the BASE actually denied (the positive control), and any a judge marked
+#     deny that BOTH hooks allowed
+# Exit 0 clean, 1 if any base-deny/head-allow row exists, 2 on setup error (or
+# an empty corpus), 3 if the run was inconclusive and no regression was seen:
+# any hook errored or was hard-killed (rc outside {0,2}), OR a judge supplied
+# deny-expected seeds but the base denied none of them (the positive control
+# never fired, so a clean result proves nothing). Two broken hooks, and a
+# corpus that demonstrated no deny coverage, must never read as clean.
+#
+# USAGE
+#   diff --base <hook|sha:path> --head <hook|sha:path> --corpus FILE
+#        [--repo DIR] [--timeout-run SECS] [--timeout-warn SECS] [--jobs N]
+#        [--no-json]
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+PLACEHOLDER = "@PRIMARY@"
+
+
+def run_git(args, cwd=None, check=True, env=None):
+    p = subprocess.run(["git"] + args, cwd=cwd, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, env=env)
+    if check and p.returncode != 0:
+        raise RuntimeError("git %s failed: %s" % (
+            " ".join(args), p.stderr.decode("utf-8", "replace")))
+    return p.stdout.decode("utf-8", "replace").strip()
+
+
+# A positive ALLOWLIST is the structural fix for sandbox-escape-via-environment
+# (HIMMEL-4168, round 6). Popping named seam variables one at a time never
+# converges: BASH_ENV and ENV make bash source an arbitrary script at startup;
+# LD_PRELOAD/LD_* inject a shared object; GIT_TEMPLATE_DIR makes `git init`
+# copy external hooks into the scratch .git; GIT_DIR/GIT_CONFIG* redirect git
+# at a real repo or a real core.hooksPath. Every launched subprocess -- a hook
+# under test, and our scratch git -- starts from this list ONLY, so a seam we
+# have not enumerated is closed by default rather than open until a later round
+# names it. The list is benign, realistic operational variables a guard may
+# legitimately read; it contains NO variable that can cause code execution or
+# redirect git. GIT_CONFIG_GLOBAL/SYSTEM are forced to an empty file so even a
+# real /etc/gitconfig core.hooksPath is not honored.
+# HIMMEL_REPO is deliberately NOT inherited: a hook that anchors on it would
+# resolve helpers or state against the REAL checkout. run_one_hook overrides it
+# to the per-row scratch primary instead, so the anchor points at the throwaway.
+_ENV_ALLOW = (
+    "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+    "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "TZ", "TMPDIR", "TMP", "TEMP",
+    "TERM", "SHELL", "USER", "LOGNAME", "HOSTNAME",
+)
+
+
+def _sandbox_env(**overrides):
+    """A hermetic environment for a launched subprocess: allowlist + overrides.
+
+    Starts from an EMPTY environment, copies only _ENV_ALLOW keys present in
+    os.environ, pins global+system git config empty, then applies the caller's
+    overrides (HOME, HANDOVER_DIR, CLAUDE_PROJECT_DIR). Nothing outside the
+    allowlist -- no BASH_ENV/ENV/LD_PRELOAD/GIT_TEMPLATE_DIR/GIT_DIR/... --
+    reaches the child.
+    """
+    env = {k: os.environ[k] for k in _ENV_ALLOW if k in os.environ}
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    env.update(overrides)
+    return env
+
+
+def materialise_hook(spec, repo, dest_dir):
+    """Return a path to a runnable hook copy, plus a dir to clean up.
+
+    spec is either a filesystem path to a .sh, or `sha:repo-relative-path`.
+    The hook is copied into dest_dir alongside a copy of scripts/hooks/ and
+    scripts/guardrails/ so its sibling `source` lookups resolve to copies.
+    """
+    if spec.startswith("sha:"):
+        sha, rel = spec[4:].split(":", 1) if ":" in spec[4:] else (spec[4:], None)
+        if rel is None:
+            raise RuntimeError("sha spec needs sha:REL/PATH form: " + spec)
+        blob = subprocess.run(
+            ["git", "-C", repo, "show", "%s:%s" % (sha, rel)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if blob.returncode != 0:
+            raise RuntimeError("git show %s:%s failed: %s" % (
+                sha, rel, blob.stderr.decode("utf-8", "replace")))
+        # materialise the whole scripts/hooks + scripts/guardrails tree at sha
+        _materialise_tree(repo, sha, dest_dir)
+        hook_path = os.path.join(dest_dir, rel)
+        with open(hook_path, "wb") as fh:
+            fh.write(blob.stdout)
+        return hook_path
+    # plain path: if the hook lives under a scripts/ tree, copy the sibling
+    # hooks/guardrails/lib dirs so its `source ../guardrails/lib.sh` resolves
+    # against copies; otherwise (a standalone stub) just copy the one file.
+    src_hook = os.path.abspath(spec)
+    hooks_root = _find_scripts_root(src_hook)
+    if hooks_root is not None:
+        _copy_tree(hooks_root, dest_dir)
+        rel = os.path.relpath(src_hook, os.path.dirname(hooks_root))
+        return os.path.join(dest_dir, rel)
+    dst = os.path.join(dest_dir, os.path.basename(src_hook))
+    shutil.copyfile(src_hook, dst)
+    return dst
+
+
+def _find_scripts_root(hook_path):
+    d = os.path.dirname(hook_path)
+    while d and d != "/":
+        if os.path.basename(d) == "scripts":
+            return d
+        d = os.path.dirname(d)
+    return None
+
+
+def _copy_tree(scripts_root, dest_dir):
+    dest_scripts = os.path.join(dest_dir, "scripts")
+    for sub in ("hooks", "guardrails", "lib"):
+        s = os.path.join(scripts_root, sub)
+        if os.path.isdir(s):
+            shutil.copytree(s, os.path.join(dest_scripts, sub),
+                            dirs_exist_ok=True)
+
+
+def _materialise_tree(repo, sha, dest_dir):
+    dest_scripts = os.path.join(dest_dir, "scripts")
+    os.makedirs(dest_scripts, exist_ok=True)
+    for sub in ("hooks", "guardrails", "lib"):
+        # keep the tree's mode (not --name-only): a 100755 helper copied as
+        # 0644 would fail only on the sha-materialised side when invoked
+        # directly, distorting the base/head comparison (vs _copy_tree, which
+        # preserves modes via copytree).
+        listing = subprocess.run(
+            ["git", "-C", repo, "ls-tree", "-r",
+             "%s" % sha, "scripts/%s" % sub],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # A failed listing (bad sha, unreadable repo) must not pass silently as
+        # an empty subtree: an incomplete hook dependency tree could let the
+        # materialised hook mis-decide (e.g. allow where it should deny) and
+        # read as a false clean. Fail loud -> caught as a setup error (exit 2).
+        if listing.returncode != 0:
+            raise RuntimeError("git ls-tree %s scripts/%s failed: %s" % (
+                sha, sub, listing.stderr.decode("utf-8", "replace").strip()))
+        for line in listing.stdout.decode("utf-8", "replace").splitlines():
+            meta, rel = line.split("\t", 1)
+            mode = meta.split()[0]
+            blob = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (sha, rel)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # a file the listing names but `show` cannot read is a broken tree,
+            # not a file to skip -- same fail-loud reasoning as the listing.
+            if blob.returncode != 0:
+                raise RuntimeError("git show %s:%s failed: %s" % (
+                    sha, rel, blob.stderr.decode("utf-8", "replace").strip()))
+            dst = os.path.join(dest_dir, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "wb") as fh:
+                fh.write(blob.stdout)
+            if mode == "100755":
+                os.chmod(dst, 0o755)
+
+
+def make_scratch_primary(parent):
+    """A throwaway git repo on branch main standing in for the primary."""
+    repo = os.path.join(parent, "scratch-primary")
+    os.makedirs(repo, exist_ok=True)
+    # hermetic env: an inherited GIT_TEMPLATE_DIR would make `git init` copy
+    # external hooks into this repo that the seed commit then runs, so the
+    # scratch git runs under the allowlist like the hooks do.
+    env = _sandbox_env(HOME=parent)
+
+    def _git(args):
+        r = subprocess.run(["git", "-C", repo] + args, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if r.returncode != 0:
+            raise RuntimeError("scratch-primary setup failed: git %s: %s" % (
+                " ".join(args), r.stderr.decode("utf-8", "replace").strip()))
+
+    # An unchecked git setup would leave the scratch repo not a work tree (or
+    # not on main), silently voiding the main-checkout guard's coverage while
+    # the differential still reported success. Check every step, and confirm
+    # the result before any hook runs against it.
+    _git(["init", "-q", "-b", "main"])
+    _git(["config", "user.email", "x@example.com"])
+    _git(["config", "user.name", "x"])
+    with open(os.path.join(repo, "seed.txt"), "w") as fh:
+        fh.write("seed\n")
+    _git(["add", "-A"])
+    _git(["commit", "-q", "-m", "chore: seed"])
+    branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, env=env)
+    if branch != "main":
+        raise RuntimeError("scratch-primary is on %r, expected 'main'" % branch)
+    return repo
+
+
+def _fresh_sandbox(template_primary, parent):
+    """An isolated (primary, HOME, HANDOVER_DIR) triple for ONE hook run.
+
+    Each hook invocation gets its own copy of the scratch primary plus an
+    empty HOME and HANDOVER_DIR, so a hook that writes state cannot contaminate
+    another row or the other side of the base/head comparison, and concurrent
+    rows cannot race on shared paths. Returns (primary, home, handover,
+    sandbox_dir); the caller removes sandbox_dir when the run is done.
+    """
+    sand = tempfile.mkdtemp(prefix="gc-inv.", dir=parent)
+    primary = os.path.join(sand, "primary")
+    shutil.copytree(template_primary, primary)
+    home = os.path.join(sand, "home")
+    handover = os.path.join(sand, "handover")
+    os.makedirs(home)
+    os.makedirs(handover)
+    return primary, home, handover, sand
+
+
+def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
+    """Pipe a JSON payload to the hook on stdin. Returns (rc, wall_seconds).
+
+    rc is the hook's exit code, or the string 'TIMEOUT'. Nothing from the
+    payload is ever executed; the only process launched is bash <hook_path>.
+    """
+    payload = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": payload_cmd},
+        "cwd": cwd,
+    })
+    # hermetic env (allowlist): no BASH_ENV/ENV/LD_PRELOAD to run code before
+    # the hook reads stdin, no GIT_* redirect, and the inherited bypass seams
+    # (EDIT_ON_MAIN_OK etc.) are absent by construction, so the corpus measures
+    # the guard itself.
+    env = _sandbox_env(
+        HOME=home,
+        HANDOVER_DIR=handover,
+        # anchor HIMMEL_REPO at the per-row scratch primary (cwd), never the
+        # real checkout: a hook that resolves helpers/state off it stays inside
+        # the throwaway, and base and head see the identical sandbox anchor.
+        HIMMEL_REPO=cwd,
+        CLAUDE_PROJECT_DIR=os.path.dirname(os.path.dirname(
+            os.path.dirname(hook_path))),
+    )
+    t0 = time.time()
+    p = subprocess.Popen(["bash", hook_path], stdin=subprocess.PIPE,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, cwd=cwd, env=env)
+    try:
+        p.communicate(payload.encode("utf-8", "surrogateescape"),
+                      timeout=timeout_run)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.wait()
+        rc = "TIMEOUT"
+    return rc, time.time() - t0
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="diff", add_help=True)
+    ap.add_argument("--base", required=True, help="hook path or sha:REL/PATH")
+    ap.add_argument("--head", required=True, help="hook path or sha:REL/PATH")
+    ap.add_argument("--corpus", required=True, help="JSONL from gen")
+    ap.add_argument("--repo", default=".", help="repo for sha: specs")
+    ap.add_argument("--timeout-run", type=float, default=15.0,
+                    help="per-row hard timeout (kills the hook)")
+    ap.add_argument("--timeout-warn", type=float, default=5.0,
+                    help="wall time over this => TIMEOUT RISK")
+    ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--no-json", action="store_true")
+    args = ap.parse_args(argv)
+
+    # Launched subprocesses (the hook under test, the scratch git) get the
+    # strict allowlist env from _sandbox_env. This scrub covers the remaining
+    # AMBIENT git reads against the judge's --repo (materialise's ls-tree/show),
+    # which run under os.environ: inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE
+    # (and friends) take precedence over `git -C`, so a stray one would redirect
+    # those reads into a REAL repository. Strip the location + config families
+    # here so no ambient git call can be steered off the judge's repo either.
+    for _k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+               "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+        os.environ.pop(_k, None)
+
+    # Inherited Git CONFIG overrides are a second, nastier redirect: a
+    # GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM file, or a GIT_CONFIG_COUNT +
+    # GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n set, can carry core.hooksPath, which
+    # would make our scratch `git commit` (and a hook's own git calls) EXECUTE
+    # real hooks living outside the sandbox. Stripping the location family above
+    # does not touch these. Drop the whole GIT_CONFIG* family, then pin global
+    # and system config to an empty file so no external config -- hooksPath
+    # included -- is honored by any git we or the hook run.
+    for _k in list(os.environ):
+        if _k == "GIT_CONFIG" or _k.startswith("GIT_CONFIG_"):
+            os.environ.pop(_k, None)
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
+
+    # A corrupt/truncated JSON line (json.JSONDecodeError) or an unreadable
+    # corpus (OSError) is a SETUP error, not a regression. Left uncaught, the
+    # exception makes Python exit 1 -- the documented regression code -- so a
+    # judge would read a broken corpus as a confirmed regression. Catch it and
+    # return 2.
+    try:
+        with open(args.corpus, "r", encoding="utf-8") as fh:
+            raw_rows = [(n, json.loads(line))
+                        for n, line in enumerate(fh, 1) if line.strip()]
+    except (OSError, json.JSONDecodeError) as exc:
+        print("guard-corpus diff: cannot read corpus %s: %s" % (args.corpus, exc),
+              file=sys.stderr)
+        return 2
+
+    # Validate the row shape at load time, for the same reason: a row missing
+    # tool_input.command would raise KeyError/TypeError inside the worker and
+    # again exit 1. A malformed row is a setup error -> exit 2.
+    corpus = []
+    for lineno, row in raw_rows:
+        try:
+            cmd = row["tool_input"]["command"]
+        except (TypeError, KeyError):
+            cmd = None
+        if not isinstance(cmd, str):
+            print("guard-corpus diff: corpus %s line %d: missing string "
+                  "tool_input.command" % (args.corpus, lineno), file=sys.stderr)
+            return 2
+        corpus.append(row)
+
+    # An empty corpus exercises no hook, so a clean exit 0 here would be a
+    # false "reviewed clean" for a judge who generated nothing or pointed at
+    # the wrong file. Refuse it (fail-closed) rather than certify zero rows.
+    if not corpus:
+        print("guard-corpus diff: corpus %s has no rows" % args.corpus,
+              file=sys.stderr)
+        return 2
+
+    workdir = tempfile.mkdtemp(prefix="guard-corpus-diff.")
+    try:
+        base_dir = os.path.join(workdir, "base")
+        head_dir = os.path.join(workdir, "head")
+        try:
+            os.makedirs(base_dir)
+            os.makedirs(head_dir)
+            base_hook = materialise_hook(args.base, args.repo, base_dir)
+            head_hook = materialise_hook(args.head, args.repo, head_dir)
+            # built ONCE as a template; each invocation copies it (see
+            # _fresh_sandbox) so no two runs share a primary.
+            template = make_scratch_primary(workdir)
+        except (RuntimeError, OSError) as e:
+            # OSError too: a failed mkdir/copy (missing filesystem hook, full
+            # disk) is a setup failure, not a confirmed base-deny/head-allow
+            # regression -- exit 2, never the regression code 1.
+            print("guard-corpus diff: setup error: %s" % e, file=sys.stderr)
+            return 2
+
+        def _run_side(hook, raw_cmd):
+            prim, home, handover, sand = _fresh_sandbox(template, workdir)
+            try:
+                cmd = raw_cmd.replace(PLACEHOLDER, prim)
+                return run_one_hook(hook, cmd, prim, home, handover,
+                                    args.timeout_run)
+            finally:
+                shutil.rmtree(sand, ignore_errors=True)
+
+        def one(idx_row):
+            idx, row = idx_row
+            raw = row["tool_input"]["command"]
+            rb, tb = _run_side(base_hook, raw)
+            rh, th = _run_side(head_hook, raw)
+            return dict(idx=idx, cmd=raw, family=row.get("family"),
+                        transform=row.get("transform"), expect=row.get("expect"),
+                        base=rb, head=rh, tb=tb, th=th)
+
+        with ThreadPoolExecutor(args.jobs) as ex:
+            results = list(ex.map(one, enumerate(corpus)))
+
+        # A regression is a CLEAN base-deny paired with a CLEAN head-allow.
+        # Require head == 0 (a genuine allow), not merely "head != 2": a head
+        # that errored (rc 1) or was killed ("TIMEOUT") did NOT allow the
+        # command, it failed to run, so it is inconclusive (caught by `odd`
+        # below, exit 3), never a confirmed regression. Same for `newly`:
+        # require a CLEAN base-allow, so a base error/timeout is not misread
+        # as a clean allow that the head then denied.
+        regressions = [r for r in results if r["base"] == 2 and r["head"] == 0]
+        newly = [r for r in results if r["head"] == 2 and r["base"] == 0]
+        odd = [r for r in results
+               if r["base"] not in (0, 2) or r["head"] not in (0, 2)]
+        slow = [r for r in results
+               if max(r["tb"], r["th"]) >= args.timeout_warn]
+        # deny-side positive control: of the rows the judge marked expect=deny,
+        # how many did the BASE actually deny? If a judge supplied deny seeds
+        # but none fired, the corpus proved no deny coverage and a clean 0
+        # would be a false "reviewed clean" -- make it inconclusive (exit 3).
+        deny_expected = [r for r in results if r.get("expect") == "deny"]
+        deny_fired = [r for r in deny_expected if r["base"] == 2]
+        deny_allowed_both = [r for r in deny_expected
+                             if r["base"] == 0 and r["head"] == 0]
+        no_deny_control = bool(deny_expected) and not deny_fired
+
+        print("guard-corpus diff: %d rows" % len(results))
+        print("  base-deny/head-allow (REGRESSION): %d" % len(regressions))
+        for r in regressions:
+            print("    REGRESSION idx=%d family=%s transform=%s base=%s head=%s"
+                  % (r["idx"], r["family"], r["transform"], r["base"], r["head"]))
+        print("  newly-denied: %d" % len(newly))
+        for r in newly[:50]:
+            print("    NEWLY-DENIED idx=%d family=%s transform=%s"
+                  % (r["idx"], r["family"], r["transform"]))
+        print("  rc not in {0,2}: %d" % len(odd))
+        for r in odd[:50]:
+            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["base"], r["head"]))
+        print("  TIMEOUT RISK (>= %.1fs): %d" % (args.timeout_warn, len(slow)))
+        for r in slow[:50]:
+            print("    TIMEOUT-RISK idx=%d tb=%.2f th=%.2f transform=%s"
+                  % (r["idx"], r["tb"], r["th"], r["transform"]))
+        print("  deny-expected rows: %d (base denied %d; allowed by both: %d)"
+              % (len(deny_expected), len(deny_fired), len(deny_allowed_both)))
+        if no_deny_control:
+            print("    WARNING: no deny-expected row was denied by base -- "
+                  "this corpus demonstrated NO deny-side coverage")
+        for r in deny_allowed_both[:50]:
+            print("    DENY-MISSED idx=%d family=%s transform=%s "
+                  "(both hooks allowed a deny-expected row)"
+                  % (r["idx"], r["family"], r["transform"]))
+
+        if not args.no_json:
+            print("JSON " + json.dumps(dict(
+                rows=len(results), regressions=len(regressions),
+                newly_denied=len(newly), odd_rc=len(odd), timeout_risk=len(slow),
+                deny_expected=len(deny_expected), deny_base_fired=len(deny_fired),
+                deny_allowed_both=len(deny_allowed_both))))
+
+        if regressions:
+            return 1
+        # odd includes rc=="TIMEOUT" (hard kill) and any error rc: such a run
+        # never validly exercised the guard, so it is inconclusive, not clean.
+        if odd:
+            return 3
+        # deny seeds supplied but the base denied none: the positive control
+        # never fired, so the "no regression" result proves nothing.
+        if no_deny_control:
+            return 3
+        return 0
+    except (RuntimeError, OSError) as e:
+        # A per-row sandbox copy (disk exhaustion) or hook launch (missing bash)
+        # raises inside the worker pool and ex.map re-raises it here. That is a
+        # setup failure of the harness, not a confirmed base-deny/head-allow
+        # regression -- return the setup-error code 2, never the uncaught exit 1
+        # that would falsely certify a regression.
+        print("guard-corpus diff: run error: %s" % e, file=sys.stderr)
+        return 2
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

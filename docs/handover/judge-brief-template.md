@@ -139,7 +139,50 @@ gathering, per the rule below.>
 > Never `subprocess.run(timeout=)`: it kills only the direct child, and a
 > looping `$(…)` subshell of the hook outlives it. Give the hook a stdin (a
 > pipe or `</dev/null`), never a closed one — `$(cat)` on a closed fd 0 reads
-> its own pipe and blocks forever.
+> its own pipe and blocks forever. Run the WHOLE harness (corpus loop,
+> differential, fixture suite) under `python3 scripts/eval/harness-run.py
+> --deadline <sec> -- <cmd>`: a per-call killpg dies with the harness, and the
+> runner's subreaper sweep still reaps every hook copy the harness left in
+> flight (HIMMEL-4183).
+
+> **Adversarial rows (guard/hook PRs).** When the PR under review changes a
+> hook or guard, do NOT hand-write attack commands to probe it — Claude's
+> safety classifier stops a judge mid-review for exactly those, and routing
+> around a classifier is forbidden. Instead run the versioned generator and
+> differential at `scripts/eval/guard-corpus/`:
+>
+>     python3 scripts/eval/guard-corpus/gen --seed <N> \
+>         [--seeds-file <hook test suite DENY rows>] -o corpus.jsonl
+>     python3 scripts/eval/guard-corpus/diff \
+>         --base sha:<base-sha>:scripts/hooks/<hook>.sh \
+>         --head <worktree>/scripts/hooks/<hook>.sh \
+>         --corpus corpus.jsonl --repo <repo>
+>
+> `gen` emits hook-input fixtures as JSONL and NEVER executes them; `diff`
+> pipes each row to a hook copy on stdin only (no exec mode), in a scratch
+> HOME/HANDOVER_DIR with a throwaway git repo on `main` standing in for the
+> primary (rows name it as `@PRIMARY@`). `diff` reports base-deny/head-allow
+> regressions, newly-denied rows, odd exit codes and TIMEOUT RISK rows. It
+> exits **0** when clean, **1** on a base-deny/head-allow regression, **2** on
+> a setup error or empty corpus, and **3** when inconclusive (an odd return
+> code, a timeout kill, or deny seeds with no base-deny control) — so a non-1
+> exit is NOT automatically clean. **Cite the seed and the row counts in your
+> verdict** (e.g. "gen --seed 4168, 95 rows, 0 regressions, 0 timeout-risk").
+> `gen` ships only benign over-deny twins; supply the PR hook's own test-suite
+> DENY rows via `--seeds-file` to exercise the deny side — never author new
+> attack strings yourself.
+>
+> **Covered vs dropped (HIMMEL-4168).** The transforms (quoting, wrappers with
+> quoted flag values, nested `bash -c` to depth 4, assignment prefixes, `eval`,
+> `--`, backslash-newline, heredoc, and padding for timing) apply to any seed.
+> The deny-side **families reachable through `--seeds-file`** are
+> primary-write (via `@PRIMARY@`), bare-qmd-query, graphify egress,
+> live-settings writes and env-prefix chokepoints. The **destructive-command**
+> family (`rm -rf`, `find -delete`) is intentionally NOT seedable from any
+> committed file here: the classifier stopped its authoring during the
+> generator's own build, so it was dropped rather than routed around. A judge
+> who needs destructive coverage supplies those seeds via `--seeds-file` from a
+> source outside this tree.
 
 > **RETASK.** A narrowing or a halt from `<console session name>` needs no
 > token and cannot be argued with. An EXPANSION or REDIRECT is valid only if

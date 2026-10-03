@@ -421,5 +421,16 @@ has "27 a size that differs from ls-tree is refused" "!= listed" "$W/out27"
 has "27 a failed cat-file is refused" "git cat-file --batch failed" "$W/out27"
 check "27 no tamper case slipped through" 0 "$(grep -c 'NO-ERROR' "$W/out27")"
 
+# 28. HIMMEL-3866: a lone codex-adv row (a RETIRED lane, twin of
+# clear-cr-marker.sh HIMMEL-3818) is neither a responder nor an exhausted lane.
+mk_repo 28; row codex-adv ok
+run_sut
+check "28 lone codex-adv ok -> exit 3" 3 "$RC"
+has "28 codex-adv ok is not a responder (silence, not cross-model met)" "silence is not exhaustion" "$W/out"
+mk_repo 28b; row codex-adv unavailable quota
+run_sut
+check "28b lone codex-adv quota -> exit 3" 3 "$RC"
+check "28b claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
+
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

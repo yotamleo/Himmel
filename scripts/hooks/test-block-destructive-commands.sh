@@ -887,8 +887,25 @@ assert_rc "xargs -I '{ }' rm -r"         2 "$(run_case "$(j_bash "ls | xargs -I 
 assert_rc 'xargs -d "a b" rm -r'         2 "$(run_case "$(j_bash 'ls | xargs -d "a b" rm -r')")"
 assert_rc "nohup exec -a 'a b' rm -r"    2 "$(run_case "$(j_bash "nohup exec -a 'a b' rm -r d")")"
 assert_rc "then exec -a 'a b' rm -r"     2 "$(run_case "$(j_bash "if true; then exec -a 'a b' rm -r d; fi")")"
-# Not covered: `nice -n '1 0' find d -delete`. The find -delete check reads
-# rm_norm, which has every quote stripped, so '1 0' is two bare words there.
+# HIMMEL-4158: the find -delete check also reads the text with its quotes kept,
+# so a quoted wrapper value stays one word.
+assert_rc "nice -n '1 0' find -delete"   2 "$(run_case "$(j_bash "nice -n '1 0' find d -delete")")"
+assert_rc "exec -a 'a b' find -delete"   2 "$(run_case "$(j_bash "exec -a 'a b' find d -delete")")"
+# HIMMEL-4158: a value word may be built from quoted ('…', "…", $'…'),
+# escaped and bare segments; a flag word may carry a quoted value too.
+assert_rc "sudo -u 'a b'c rm -rf"        2 "$(run_case "$(j_bash "sudo -u 'a b'c rm -rf /x")")"
+assert_rc "sudo -u a' b' rm -rf"         2 "$(run_case "$(j_bash "sudo -u a' b' rm -rf /x")")"
+assert_rc "exec -a 'a b'c shutdown"      2 "$(run_case "$(j_bash "exec -a 'a b'c shutdown")")"
+assert_rc "nice -n 'a b'c reboot"        2 "$(run_case "$(j_bash "nice -n 'a b'c reboot")")"
+assert_rc "sudo -u \$'a b' rm -rf"       2 "$(run_case "$(j_bash "sudo -u \$'a b' rm -rf /x")")"
+assert_rc "sudo -u \$'a\\' b' shutdown"  2 "$(run_case "$(j_bash "sudo -u \$'a\\' b' shutdown")")"
+assert_rc 'sudo -u "a\" b" shutdown'     2 "$(run_case "$(j_bash 'sudo -u "a\" b" shutdown')")"
+assert_rc 'sudo -u a\ b shutdown'        2 "$(run_case "$(j_bash 'sudo -u a\ b shutdown')")"
+assert_rc "sudo -u'a b c' shutdown"      2 "$(run_case "$(j_bash "sudo -u'a b c' shutdown")")"
+assert_rc 'sudo -u "a b\" shutdown'      2 "$(run_case "$(j_bash 'sudo -u "a b\" shutdown')")"
+assert_rc "env --chdir='x y z' reboot"   2 "$(run_case "$(j_bash "env --chdir='x y z' reboot")")"
+assert_rc "sudo -u 'a b'c ls allowed"    0 "$(run_case "$(j_bash "sudo -u 'a b'c ls -r d")")"
+assert_rc "nice -n '1 0' find allowed"   0 "$(run_case "$(j_bash "nice -n '1 0' find d -name x")")"
 assert_rc "exec -a 'a b' format c:"      2 "$(run_case "$(j_bash "exec -a 'a b' format c:")")"
 assert_rc "exec -a 'a b' ls -r allowed"  0 "$(run_case "$(j_bash "exec -a 'a b' ls -r d")")"
 assert_rc 'nice -n "1 0" make allowed'   0 "$(run_case "$(j_bash 'nice -n "1 0" make -r')")"

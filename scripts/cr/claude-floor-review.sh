@@ -106,7 +106,7 @@ unlocked=$(LEDGER="$ledger" FULL_SHA="$head" CRITICS="$SCRIPT_DIR/critics.json" 
       let o; try { o = JSON.parse(l); } catch (_) { continue; }
       if (o.kind !== "avail" || typeof o.head !== "string" || o.head.length < 7 || !e.FULL_SHA.startsWith(o.head)) continue;
       const m = (typeof o.model === "string" ? o.model : "").trim().toLowerCase();
-      if (!m || m === "claude" || m === "claude-floor") continue;
+      if (!m || m === "claude" || m === "claude-floor" || m === "codex-adv") continue;
       const st = (typeof o.status === "string" ? o.status : "").trim().toLowerCase();
       if (st === "ok") crossOk = true;
       lanes.set(m, { st, r: (typeof o.reason === "string" ? o.reason : "").trim().toLowerCase() });

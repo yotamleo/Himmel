@@ -6,6 +6,7 @@ Invoked by ig-media-fetch.py via:
 
 No network at call time beyond the one-time model-weights fetch uv/faster-whisper
 performs on first use (cached under the HF cache dir thereafter). CPU int8."""
+import os
 import sys
 
 def main():
@@ -17,8 +18,14 @@ def main():
     from faster_whisper import WhisperModel
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, _info = model.transcribe(wav)
+    segments = list(segments)
     text = " ".join(seg.text.strip() for seg in segments).strip()
     sys.stdout.write(text + "\n")
+    # Optional side channel (x-media-fetch HIMMEL-4107): last segment end, seconds.
+    meta = os.environ.get("X_TRANSCRIBE_META_FILE")
+    if meta and segments:
+        with open(meta, "w") as f:
+            f.write(str(max(seg.end for seg in segments)))
 
 if __name__ == "__main__":
     main()
