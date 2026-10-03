@@ -98,8 +98,11 @@ export function sourceFromClip(link, content) {
   };
 }
 
-export function actionId(verb, target, links) {
-  return sha256(`${verb}|${target}|${[...links].sort().join(",")}`).slice(0, 8);
+/** Keyed on what the action does and the day it was suggested, not on which
+ *  clips it cites: a clip joining a fold later that day keeps its id, so a
+ *  tick already made on it survives the re-run. */
+export function actionId(verb, target, date) {
+  return sha256(`${verb}|${target}|${date}`).slice(0, 8);
 }
 
 /**
@@ -107,10 +110,11 @@ export function actionId(verb, target, links) {
  * failed harvest → archive; tag/source names a repo → file a ticket; github
  * source or `tools` kind → evaluate the tool; a tag shared with a MOC → fold
  * into it (clips sharing a MOC merge into one action); else archive.
- * `mocs` = [{ link, tags:[...] }]. Ranked: archive last, then more cited clips,
- * then engagement, then text. Returns [{ id, text, links }].
+ * `mocs` = [{ link, tags:[...] }]. Ids in `seen` are dropped before the
+ * MAX_ACTIONS cap. Ranked: archive last, then more cited clips, then
+ * engagement, then text. Returns [{ id, text, links }].
  */
-export function suggestActions(sources, mocs) {
+export function suggestActions(sources, mocs, { date = "", seen = new Set() } = {}) {
   const byKey = new Map();
   const add = (verb, target, src, render, weight) => {
     const key = `${verb}|${target}`;
@@ -140,13 +144,13 @@ export function suggestActions(sources, mocs) {
     const shown = srcs.slice(0, CITED_MAX).map((x) => wikilink(x.link, x.title)).join(", ");
     const more = srcs.length > CITED_MAX ? ` and ${srcs.length - CITED_MAX} more` : "";
     return {
-      id: actionId(a.verb, a.target, links),
+      id: actionId(a.verb, a.target, date),
       text: a.render(shown + more),
       links,
       weight: a.weight,
       likes: srcs.reduce((n, x) => n + x.likes, 0),
     };
-  });
+  }).filter((a) => !seen.has(a.id));
   actions.sort((a, b) =>
     a.weight - b.weight || b.links.length - a.links.length || b.likes - a.likes || a.text.localeCompare(b.text));
   return actions.slice(0, MAX_ACTIONS).map(({ id, text, links }) => ({ id, text, links }));

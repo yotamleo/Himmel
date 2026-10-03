@@ -137,7 +137,7 @@ function buildReport(vault, date, content, eol) {
   }
   const { carried, seen } = carryOver(prior);
   const sources = reportSources(vault, date);
-  const actions = suggestActions(sources, listMocs(vault)).filter((a) => !seen.has(a.id));
+  const actions = suggestActions(sources, listMocs(vault), { date, seen });
   const marks = new Map(parseItems(sectionLines(content, REPORT_HEADING)).map((it) => [it.id, it.mark]));
   return { section: renderReportSection({ date, sources, actions, carried, marks }, eol), sources, actions, carried };
 }

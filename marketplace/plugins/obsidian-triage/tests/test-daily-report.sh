@@ -289,6 +289,40 @@ has "long title shortened with an ellipsis" "$BD" "|busy 1 word word"
 if grep -qE '\|busy 1 [^]]{78,}\]\]' "$BD"; then f=long; else f=short; fi
 assert "displayed title is at most 80 chars" "short" "$f"
 
+echo "Test 10: a tick on a fold survives a clip joining the fold the same day"
+sed -e 's/^- \[ \] \(Fold .*into \[\[60-Maps\/Claude-Code-MOC\]\]\)/- [x] \1/' "$BD" > "$tmp/ticked.md" && mv "$tmp/ticked.md" "$BD"
+cat > "$V/Clippings/_evidence/busy-5.md" <<EOF
+---
+title: "busy 5"
+tags:
+  - claude-code
+triaged_at: $B
+evidence_kind:
+  - concepts
+---
+Busy clip number 5.
+EOF
+node "$TOOL" --vault "$V" --date "$B" >/dev/null 2>&1
+fold=$(grep -F 'into [[60-Maps/Claude-Code-MOC]]' "$BD")
+if grep -qF 'and 2 more into' <<< "$fold"; then f=yes; else f=no; fi
+assert "fold now counts the fifth clip  [$fold]" "yes" "$f"
+if grep -qF -- '- [x] Fold' <<< "$fold"; then f=kept; else f=lost; fi
+assert "done tick kept after the fold grew" "kept" "$f"
+
+echo "Test 11: the action cap is applied after already-seen actions are dropped"
+cat > "$tmp/cap.mjs" <<EOF
+import { suggestActions } from "$PLUGIN_DIR/tools/lib/daily-report.mjs";
+const srcs = Array.from({ length: 8 }, (_, i) => ({
+  link: \`c/\${i}\`, title: \`t\${i}\`, kind: "concepts", kinds: ["concepts"], tags: [],
+  source: "", harvestStatus: "", likes: 0, why: "", video: null,
+}));
+const all = suggestActions(srcs, [], { date: "$B" });
+const seen = new Set([all[0].id]);
+const got = suggestActions(srcs, [], { date: "$B", seen });
+console.log(got.length, got.some((a) => seen.has(a.id)) ? "seen-kept" : "seen-dropped");
+EOF
+assert "seen action dropped and seven still offered" "7 seen-dropped" "$(node "$tmp/cap.mjs" 2>&1)"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -gt 0 ] && exit 1 || exit 0
