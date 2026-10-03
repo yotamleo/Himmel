@@ -50,4 +50,6 @@ check 'raw mode preserves sub-floor key balance' 'balance=2.999:key-limit_remain
 check 'display mode remains byte-identical and rounded' 'balance=3.00:key-limit_remaining spend=?' "$(run)"
 export CREDITS='{"data":{"total_credits":2.999,"total_usage":0}}' KEY='{"data":{"limit":null}}'
 check 'raw mode preserves sub-floor credit balance' 'balance=2.999:credit spend=?' "$(run --raw)"
+help_text="$(run --help)"
+check '--help documents --raw' yes "$(case "$help_text" in *--raw*) echo yes ;; *) echo no ;; esac)"
 echo "passed=$PASS failed=$FAIL"; [ "$FAIL" -eq 0 ]
