@@ -68,6 +68,39 @@ set -u
 
 CLAUDE_BIN="${LEG_CLAUDE_BIN:-claude}"
 
+# (HIMMEL-4152) Under a consult the caller's PATH must not pick the binary: a
+# foreign `claude` first on PATH could ignore `--setting-sources ""`. Resolve it
+# once from the pinned PATH in consult-env.sh (its home part comes from the
+# passwd entry, not the caller-set $HOME). A consult reaches here through
+# leg-claude-launcher-consult.sh, which already ran this on an absolute
+# `bash -p` with the startup variables and exported functions stripped, so
+# `type -P` below is a plain PATH search. LEG_CLAUDE_BIN stays the suite's
+# seam: headed-arm-leg.sh scrubs it (var + token) and refuses its
+# HEADED_ARM_LEG_CLAUDE_BIN source before a consult launches, so no consult
+# reaches here with it set. The ponytail for the pinned dirs is in consult-env.sh.
+if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ] && [ -z "${LEG_CLAUDE_BIN:-}" ]; then
+    # shellcheck source=consult-env.sh
+    if ! . "${BASH_SOURCE[0]%/*}/consult-env.sh"; then
+        echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_NO_SETTING_SOURCES=1 (a consult) but consult-env.sh did not load" >&2
+        exit 2
+    fi
+    _pin_path="$(consult_pin_path)"
+    # shellcheck disable=SC2030  # the lookup PATH is subshell-local on purpose
+    CLAUDE_BIN="$(PATH="$_pin_path"; type -P claude 2>/dev/null)" || CLAUDE_BIN=""
+    case "$CLAUDE_BIN" in
+        /*) ;;
+        *)
+            echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_NO_SETTING_SOURCES=1 (a consult) but no claude on the pinned PATH ($_pin_path); a consult never runs the caller's PATH claude" >&2
+            exit 2 ;;
+    esac
+    # An npm-installed claude is a `#!/usr/bin/env node` script, and claude
+    # spawns helpers by name: the consult runs on the pinned PATH alone, so
+    # neither can resolve through a caller-chosen dir.
+    PATH="$_pin_path"
+    export PATH
+    unset -v _pin_path
+fi
+
 PRE=()
 
 if [ -n "${LEG_PROFILE_SETTINGS:-}" ]; then
