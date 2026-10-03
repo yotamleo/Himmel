@@ -10,7 +10,7 @@
 #
 # Flow: fence --eval (salus / any DENY refuses before anything is copied) ->
 # content-hash plan against <out>/semantic-manifest.json -> no change = no-op
-# (no bank, no copy) -> promote lock (the HIMMEL-910 protocol ast-update.sh and
+# (no bank, no copy) -> promote lock, re-planned under it (the HIMMEL-910 protocol ast-update.sh and
 # refresh-graph-map.sh share) -> bank-preflight -> scratch copy of the changed
 # files only (+ `.graphify-corpus` marker + seeded semantic cache) ->
 # `graphify extract --no-cluster` -> semantic-merge.py merge -> harden-graph.py.
@@ -115,13 +115,28 @@ done
 PROMOTE_LOCK_HELD=1
 printf '%s\n' "$PROMOTE_LOCK_TOKEN" > "$PROMOTE_LOCK/owner"
 date -u +%s > "$PROMOTE_LOCK/acquired"
+# Re-plan under the lock: another run may have promoted (or the corpus moved)
+# while we waited, and the pre-lock plan would re-extract a stale batch.
+"${MERGE[@]}" plan --root "$CORPUS_ROOT" --out "$OUT_DIR" --max-files "$MAX_FILES" --plan "$PLAN"
+read -r N_BATCH N_DELETED < <(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(len(p["batch"]),len(p["deleted"]))' "$PLAN")
+if [ "$N_BATCH" -eq 0 ] && [ "$N_DELETED" -eq 0 ]; then
+  echo "semantic-update: corpus '$NAME' unchanged since the last semantic pass -- no-op"
+  exit 0
+fi
 
 TOKENS_IN=0 TOKENS_OUT=0 START="$(date +%s)"
 SCRATCH="$WORK/corpus"
 if [ "$N_BATCH" -gt 0 ]; then
   case "$BACKEND" in
     claude|claude-cli)
-      verdict="$(CADENCE_BANK_LEG="graphmap-semantic-$NAME" bash "$REPO_ROOT/scripts/lib/bank-preflight.sh" || true)"
+      # Fail-open by bank-preflight's own contract; bounded and loud like
+      # refresh-graph-map.sh, so a hung or silent preflight is visible.
+      _bound=()
+      if command -v timeout >/dev/null 2>&1; then _bound=(timeout -k 10 120); fi
+      verdict="$(CADENCE_BANK_LEG="graphmap-semantic-$NAME" ${_bound[@]+"${_bound[@]}"} bash "$REPO_ROOT/scripts/lib/bank-preflight.sh" || true)"
+      if [ -z "$verdict" ]; then
+        echo "semantic-update: WARN bank-preflight gave no verdict (timed out or failed) -- proceeding UNGUARDED" >&2
+      fi
       if [ "$verdict" = "SKIPPED-BANK" ]; then
         echo "semantic-update: bank at/over threshold -- extraction SKIPPED for '$NAME', nothing touched" >&2
         exit 3

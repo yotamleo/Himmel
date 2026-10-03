@@ -191,14 +191,22 @@ def cmd_merge(a):
         if e.get("source") in live_ids and e.get("target") in live_ids:
             g[ekey].append(e)
             edges_added += 1
-    g["hyperedges"].extend(h for h in new_hyper if any(m in live_ids for m in h.get("nodes", [])))
-    write_json_atomic(graph_path, g)
+    # Hyperedge members follow their nodes: prune removed ids, and drop a
+    # hyperedge left with fewer than two members.
+    hyper = []
+    for h in g["hyperedges"] + new_hyper:
+        h["nodes"] = [m for m in h.get("nodes", []) if m in live_ids]
+        if len(h["nodes"]) >= 2:
+            hyper.append(h)
+    g["hyperedges"] = hyper
 
+    # Manifest first (it reads and hashes), so a failure there leaves graph.json untouched.
     files = manifest_files(a.out)
     for rel in plan["deleted"]:
         files.pop(rel, None)
     for rel in batch - set(failed):
         files[rel] = sha256(os.path.join(a.scratch, rel))
+    write_json_atomic(graph_path, g)
     write_json_atomic(os.path.join(a.out, MANIFEST), {"version": 1, "files": files})
 
     run = {

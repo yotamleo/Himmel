@@ -190,5 +190,39 @@ got=$(ids "$C14")
 python3 -c 'import json,sys;sys.exit("a.md" in json.load(open(sys.argv[1]))["files"])' "$C14/graphify-out/semantic-manifest.json" \
   && pass "T14 a.md unstamped" || fail "T14 a.md stamped"
 
+echo "T15: a bank preflight with no verdict proceeds, but says so loudly"
+C15="$WS/c15"; new_corpus "$C15"; : > "$WS/bank"
+out=$(run --name t15 --corpus-root "$C15" --corpus-class himmel-code); rc=$?
+rm -f "$WS/bank"
+case "$out" in *UNGUARDED*) [ "$rc" -eq 0 ] && pass "T15 empty verdict warned" || fail "T15 rc=$rc: $out" ;;
+  *) fail "T15 no UNGUARDED warning (rc=$rc): $out" ;; esac
+
+echo "T16: the plan is taken under the promote lock (a change reverted while waiting is a no-op)"
+C16="$WS/c16"; new_corpus "$C16"
+run --name t16 --corpus-root "$C16" --corpus-class himmel-code --seed-manifest > /dev/null
+printf 'alpha2\n' > "$C16/a.md"; mkdir "$C16/graphify-out/.promote.lock"; : > "$WS/calls.log"
+GRAPHIFY_SEMANTIC_LOCK_WAIT=30 run --name t16 --corpus-root "$C16" --corpus-class himmel-code > "$WS/t16.out" &
+bgpid=$!
+sleep 2; printf 'alpha\n' > "$C16/a.md"; rmdir "$C16/graphify-out/.promote.lock"
+wait "$bgpid"; rc=$?
+grep -q 'no-op' "$WS/t16.out" && ! grep -q '^graphify' "$WS/calls.log" && [ "$rc" -eq 0 ] \
+  && pass "T16 re-planned under the lock" || fail "T16 (rc=$rc): $(cat "$WS/t16.out") calls: $(cat "$WS/calls.log")"
+
+echo "T17: hyperedge members removed with their nodes; a hyperedge left under 2 members is dropped"
+C17="$WS/c17"; new_corpus "$C17"
+python3 - "$C17/graphify-out/graph.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1]))
+g["hyperedges"] = [
+    {"id": "h3", "label": "keep", "nodes": ["stale_a", "code_a", "head_a.md"], "_origin": "semantic", "source_file": "x.md"},
+    {"id": "h2", "label": "drop", "nodes": ["stale_a", "code_a"], "_origin": "semantic", "source_file": "x.md"}]
+json.dump(g, open(sys.argv[1], "w"))
+PY
+run --name t17 --corpus-root "$C17" --corpus-class himmel-code --seed-manifest > /dev/null
+printf 'alpha2\n' > "$C17/a.md"
+out=$(run --name t17 --corpus-root "$C17" --corpus-class himmel-code); rc=$?
+got=$(python3 -c 'import json,sys;g=json.load(open(sys.argv[1]));print(";".join(h["id"]+"="+",".join(h["nodes"]) for h in g["hyperedges"]))' "$C17/graphify-out/graph.json")
+[ "$rc" -eq 0 ] && [ "$got" = "h3=code_a,head_a.md" ] && pass "T17 hyperedges pruned" || fail "T17 (rc=$rc) '$got': $out"
+
 echo
 [ "$FAILS" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$FAILS FAILED"; exit 1; }
