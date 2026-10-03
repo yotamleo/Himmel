@@ -358,6 +358,14 @@ if grep -qE '^- \[x\] Archive .*lone' "$ED"; then f=kept; else f=lost; fi
 assert "ticked archive survives seven higher-ranked actions" "kept" "$f"
 assert "still at most seven suggested actions" "7" "$(grep -cE '^- \[.\] (Archive|Evaluate|Fold|File)' "$ED")"
 
+echo "Test 13: an impossible calendar date is refused before any note is created"
+node "$TOOL" --vault "$V" --date "2026-13-01" >/dev/null 2>&1
+assert "exit 1 on 2026-13-01" "1" "$?"
+if [ -e "$V/50-Journal/Daily/2026-13-01.md" ]; then f=created; else f=none; fi
+assert "no note created for 2026-13-01" "none" "$f"
+node "$TOOL" --vault "$V" --date "2026-02-30" >/dev/null 2>&1
+assert "exit 1 on 2026-02-30" "1" "$?"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -gt 0 ] && exit 1 || exit 0

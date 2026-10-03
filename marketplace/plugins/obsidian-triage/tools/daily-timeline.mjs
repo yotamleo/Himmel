@@ -92,6 +92,11 @@ function shiftDate(date, n) {
   return new Date(Date.parse(`${date}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 }
 
+/** YYYY-MM-DD naming a real day: refuses 2026-13-01 and 2026-02-30 before a note is created for it. */
+function isCalendarDate(date) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(`${date}T00:00:00Z`)) && shiftDate(date, 0) === date;
+}
+
 /** Report sources: _evidence/ clips with `triaged_at: <date>`. */
 function reportSources(vault, date) {
   const dir = path.join(vault, "Clippings", "_evidence");
@@ -259,7 +264,7 @@ function ledgerSubjects(vault, date) {
 function main() {
   const a = parseArgs(process.argv.slice(2));
   if (!a.vault) die(1, "usage: daily-timeline.mjs --vault <path> --date YYYY-MM-DD [--daily <path>]");
-  if (!a.date || !/^\d{4}-\d{2}-\d{2}$/.test(a.date)) die(1, "missing/invalid --date (YYYY-MM-DD)");
+  if (!a.date || !isCalendarDate(a.date)) die(1, "missing/invalid --date (YYYY-MM-DD)");
 
   let daily = resolveDaily(a.vault, a.date, a.daily);
   const created = !daily;
