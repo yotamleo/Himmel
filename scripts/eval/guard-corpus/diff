@@ -481,6 +481,14 @@ def main(argv):
         if no_deny_control:
             return 3
         return 0
+    except (RuntimeError, OSError) as e:
+        # A per-row sandbox copy (disk exhaustion) or hook launch (missing bash)
+        # raises inside the worker pool and ex.map re-raises it here. That is a
+        # setup failure of the harness, not a confirmed base-deny/head-allow
+        # regression -- return the setup-error code 2, never the uncaught exit 1
+        # that would falsely certify a regression.
+        print("guard-corpus diff: run error: %s" % e, file=sys.stderr)
+        return 2
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

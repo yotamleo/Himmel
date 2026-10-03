@@ -399,6 +399,24 @@ python3 "$DIFF" --base "$TMP/anchor-hook.sh" --head "$TMP/anchor-hook.sh" \
 if [ "$RC9" = "0" ]; then pass "sandbox-anchor: HIMMEL_REPO points at scratch primary => exit 0"
 else fail "sandbox-anchor: expected exit 0 (sandbox anchor), got $RC9"; fi
 
+# CodeRabbit round 10 (codex-1): a per-row sandbox copy or hook launch that
+# raises (disk exhaustion, a missing bash) escapes the worker pool and, with no
+# except on the run loop, terminated Python with exit 1 -- the confirmed-
+# regression code -- for a harness failure. It must map to setup-error exit 2.
+# Trigger it deterministically: run diff under a PATH that has git (so setup
+# succeeds) but no bash, so the per-row Popen(["bash",...]) raises
+# FileNotFoundError. Pre-fix that is an uncaught exit 1; post-fix it is exit 2.
+PY3="$(command -v python3)"
+GIT3="$(command -v git)"
+mkdir -p "$TMP/nobash-path"
+ln -sf "$GIT3" "$TMP/nobash-path/git"
+printf '{"tool_input":{"command":"echo hi"}}\n' > "$TMP/run-err-corpus.jsonl"
+env PATH="$TMP/nobash-path" "$PY3" "$DIFF" --base "$TMP/base-hook.sh" \
+        --head "$TMP/base-hook.sh" --corpus "$TMP/run-err-corpus.jsonl" \
+        --jobs 1 >/dev/null 2>&1; RC10=$?
+if [ "$RC10" = "2" ]; then pass "run-error: worker launch failure => exit 2 (not regression 1)"
+else fail "run-error: expected exit 2 for worker launch failure, got $RC10"; fi
+
 echo "----"
 echo "guard-corpus: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
