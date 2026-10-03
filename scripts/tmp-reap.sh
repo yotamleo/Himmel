@@ -20,8 +20,8 @@
 #
 # ponytail: liveness sees same-uid processes only (/proc of other users is
 # unreadable), and the whitelist is name-based; widen if a kind goes missing
-# (HIMMEL-4224 follow-ups). A dry-run over ~50k leaked dirs takes ~10 min (a du
-# and a stat per dir); batch them if the leak is not fixed at the callers.
+# (HIMMEL-4224 follow-ups). Fixture names with whitespace are not handled (the
+# families are mktemp names); session/judge dirs still cost a du and stat each.
 # shellcheck disable=SC2086  # word-splitting a /proc line and a jq row into positionals is the point
 set -u
 
@@ -168,16 +168,38 @@ if [ -d "$CLAUDE_ROOT" ]; then
         consider 2 judge "${d##*/}" "$d" "$JUDGE_AGE" 0
     done
 fi
+# Fixtures: one find per family (no per-dir process) and one batched du. An old
+# fixture with a process cwd/fd under it is kept.
+fix_total=0; fix_reaped=0
 for fam in $FAMILIES; do
-    for d in "$TMP_ROOT"/$fam; do
-        [ -O "$d" ] || continue
-        consider 1 fixture "${d##*/}" "$d" "$FIXTURE_AGE" 0
+    list=""; n=0
+    # shellcheck disable=SC2044  # mktemp family names carry no whitespace (see ponytail above)
+    for d in $(find "$TMP_ROOT" -maxdepth 1 -type d -name "$fam" -user "$(id -un)" -mmin +$((FIXTURE_AGE / 60)) 2>/dev/null); do
+        in_use "$d" && continue
+        list="$list$d
+"
+        n=$((n+1))
     done
+    all="$(find "$TMP_ROOT" -maxdepth 1 -type d -name "$fam" -user "$(id -un)" 2>/dev/null | wc -l | tr -d ' ')"
+    kept=$((all - n))
+    if [ "$n" -eq 0 ]; then
+        [ "$kept" -eq 0 ] || printf 'KEEP fixture  %s: %d kept (young or in use)\n' "$fam" "$kept"
+        continue
+    fi
+    kb="$(printf '%s' "$list" | tr '\n' '\0' | xargs -0 du -sck 2>/dev/null | tail -1 | cut -f1)"
+    fix_total=$((fix_total + ${kb:-0}))
+    if [ "$APPLY" = 1 ]; then
+        printf '%s' "$list" | tr '\n' '\0' | xargs -0 rm -rf --
+        fix_reaped=$((fix_reaped + n))
+        printf 'REAP fixture  %s: %d dir(s), %sK; %d kept\n' "$fam" "$n" "${kb:-0}" "$kept"
+    else
+        printf 'REAP fixture  %s: %d dir(s), %sK; %d kept (dry-run)\n' "$fam" "$n" "${kb:-0}" "$kept"
+    fi
 done
 
 # fixtures, then judge dirs, then session scratch; biggest first inside a tier
 SORTED="$(printf '%s\n' "$CANDS" | grep -v '^$' | sort -k1,1n -k2,2nr)"
-total=0; reaped=0; failed=0
+total=$fix_total; reaped=$fix_reaped; failed=0
 while read -r tier kb kind id path; do
     [ -n "$path" ] || continue
     total=$((total + kb))
