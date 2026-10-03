@@ -1048,6 +1048,8 @@ _tok_ln_write() {
 # spells nothing they know cannot be cleared as a non-write: fail closed
 # rather than emulate a PATH lookup.
 _unjudged_cmd_word() {
+    # the test commands write nothing; `[` reads as a glob to the tokenizer
+    case "$1" in '['|'[['|test) return 1 ;; esac
     [ "$2" = 0 ] && [ "$3" = 0 ] || return 0
     case "$1" in
         -*) return 0 ;;
@@ -1069,17 +1071,26 @@ _unjudged_cmd_word() {
 # _tok_unjudged_verb CMD_LC CMD_N — 0 when some segment's command word (the
 # first word that is not an assignment, a redirect target or a reserved word,
 # its bin-dir name read in its original case from CMD_N or the tokens) is
-# unjudged (_unjudged_cmd_word) AND that segment names a `.claude` directory
-# (mentions_dot_claude_dir_dest). Scoped to the segment so an unrelated
-# `$EDITOR` beside a `.claude` read elsewhere stays allowed. A segment the
+# unjudged (_unjudged_cmd_word) AND one of its DESTINATION operands — a
+# redirect target, a `-t`/`--target-directory` value or its last positional
+# (_uj_tok_dests) — can be the `.claude` directory itself (_uj_dir_itself).
+# A mere mention (`graphify query x ~/.claude/projects`, a script run from
+# under `~/.claude`) is not a destination. Every destination is also left in
+# UJ_DEST for the main flow's climb and symlink scan, so `$L -sf X ../../`
+# from a nested worktree is judged as `ln -sf X ../../` is. A segment the
 # tokenizer ended at `(` is zsh's glob grouping glued to the word
 # (`/bin/c(p|q)` runs /bin/cp under zsh), so its word counts as a glob and
-# its scope runs to the end of the command; in bash that shape is only a
-# function definition (`f() …`), denied too when a `.claude` dir follows.
+# every word to the end of the command is a destination; in bash that shape
+# is only a function definition (`f() …`), denied too.
 # TOK=0 splits the text on `;`, `&`, `|` and newlines instead, takes each
-# piece's first word, and judges that piece, or the text from it to the end
-# when the word carries a `(`. There a lone `-`, `--`, `*` or `+` (a markdown
-# bullet in a heredoc body) is not judged.
+# piece's first word, and reads the same destinations from that piece's words
+# (_uj_text_dests), or every word to the end when the word carries a `(`.
+# There a lone `-`, `--`, `*` or `+` (a markdown bullet in a heredoc body) is
+# not judged.
+# ponytail: a concrete path deeper under `.claude/` is not a destination (the
+# settings-name rule judges a settings leaf whatever the verb), and an
+# option-argument of an unknown command could be one; upgrade path: J1676
+# ruling — widen _uj_dir_itself only on a reported plant through such a path.
 # An exec wrapper (`env`, `sudo`, `xargs`, `nohup`, `timeout`, zsh's `noglob`
 # …) hands its operand on as the command, so after one the first word that
 # is not a flag, an assignment or a number is judged as the command word too;
@@ -1115,9 +1126,154 @@ _wrapper_opt_arg() {
     return 1
 }
 
+# _uj_dir_itself WORD_LC — 0 when a destination operand can be the `.claude`
+# directory itself: it names one (mentions_dot_claude_dir_dest) and nothing
+# fixed follows it — `~/.claude`, `~/.claude/.`, a glob, brace, expansion or
+# `..` after it. A concrete path deeper under `.claude/` is not the directory
+# (check_claude_dir_target's own reading); a settings leaf is judged by the
+# settings-name rule whatever the verb.
+_uj_dir_itself() {
+    local r
+    mentions_dot_claude_dir_dest "$1" || return 1
+    has_traversal_dots "$1" && return 0
+    r=${1##*.claude}
+    case "$r" in
+        *[!/.]*) ;;
+        *) return 0 ;;
+    esac
+    case "$r" in
+        /*) ;;
+        *) return 0 ;;
+    esac
+    case "$r" in
+        *[*?[\{\$\`\(]*) return 0 ;;
+    esac
+    return 1
+}
+
+# _uj_dest WORD WORD_LC — record a destination operand of an unjudged command
+# word for the main flow's operand (climb/symlink) scan; 0 when it can be the
+# `.claude` directory itself.
+_uj_dest() {
+    UJ_DEST[${#UJ_DEST[@]}]=$1
+    _uj_dir_itself "$2"
+}
+
+# _uj_tok_dests K SC — the destination operands of the command word at token
+# K: every redirect target in its segment, a `-t`/`--target-directory` value,
+# and its last positional operand; with SC=1 (the zsh `(` split, whose words
+# cannot be placed) every word to the end. 0 when one is the `.claude` dir.
+_uj_tok_dests() {
+    local k=$1 sc=$2 sg=${ST_S[$1]} w=0 last=-1 tnext=0 hit=1 lw rem
+    while [ "$w" -lt "$ST_N" ]; do
+        if [ "${ST_S[w]}" = "$sg" ] || { [ "$sc" = 1 ] && [ "${ST_S[w]}" -gt "$sg" ]; }; then
+            lw=${ST_LW[w]}
+            if [ -n "${ST_RO[w]}" ]; then
+                case "${ST_RO[w]}" in *'>'*) _uj_dest "${ST_W[w]}" "$lw" && hit=0 ;; esac
+            elif [ "$w" -le "$k" ]; then
+                :
+            elif [ "$sc" = 1 ] || [ "$tnext" = 1 ]; then
+                tnext=0
+                _uj_dest "${ST_W[w]}" "$lw" && hit=0
+            else
+                case "$lw" in
+                    -t|--target-directory) tnext=1 ;;
+                    --t*=*)
+                        # shellcheck disable=SC2194 # is the option a prefix of it
+                        case --target-directory in
+                            "${lw%%=*}"*) _uj_dest "${ST_W[w]#*=}" "${lw#*=}" && hit=0 ;;
+                        esac
+                        ;;
+                    --*) ;;
+                    -*t*)
+                        rem=${lw#-*t}
+                        if [ -z "$rem" ]; then tnext=1
+                        else _uj_dest "${ST_W[w]#-*t}" "$rem" && hit=0
+                        fi
+                        ;;
+                    -*) ;;
+                    *) last=$w ;;
+                esac
+            fi
+        fi
+        w=$((w + 1))
+    done
+    if [ "$last" != -1 ]; then
+        _uj_dest "${ST_W[last]}" "${ST_LW[last]}" && hit=0
+    fi
+    return "$hit"
+}
+
+# _uj_text_dests SKIP ALL TEXT_LC TEXT_N — _uj_tok_dests without tokens: the
+# words of TEXT after the first SKIP, `>`-glued or following a `>` word, a
+# `-t` value and the last positional; ALL=1 takes every word. TEXT_N is the
+# same text in its original case, used for the recorded operand when its
+# words line up with TEXT_LC's.
+_uj_text_dests() {
+    local skip=$1 all=$2 i=0 n last='' tnext=0 hit=1 lw rem nog=0
+    local -a lws nws
+    case $- in *f*) nog=1 ;; esac
+    set -f
+    # shellcheck disable=SC2206 # split into words, globbing off
+    lws=($3)
+    # shellcheck disable=SC2206
+    nws=($4)
+    [ "$nog" = 1 ] || set +f
+    n=${#lws[@]}
+    [ "${#nws[@]}" = "$n" ] || nws=(${lws[@]+"${lws[@]}"})
+    while [ "$i" -lt "$n" ]; do
+        lw=${lws[i]}
+        if [ "$tnext" = 1 ]; then
+            tnext=0
+            _uj_dest "${nws[i]}" "$lw" && hit=0
+        else
+            case "$lw" in
+                *'>'*)
+                    rem=${lw##*>}
+                    if [ -z "$rem" ]; then tnext=1
+                    else _uj_dest "${nws[i]##*>}" "$rem" && hit=0
+                    fi
+                    ;;
+                *)
+                    if [ "$i" -lt "$skip" ]; then
+                        :
+                    elif [ "$all" = 1 ]; then
+                        _uj_dest "${nws[i]}" "$lw" && hit=0
+                    else
+                        case "$lw" in
+                            -t|--target-directory) tnext=1 ;;
+                            --t*=*)
+                                # shellcheck disable=SC2194 # is the option a prefix of it
+                                case --target-directory in
+                                    "${lw%%=*}"*) _uj_dest "${nws[i]#*=}" "${lw#*=}" && hit=0 ;;
+                                esac
+                                ;;
+                            --*) ;;
+                            -*t*)
+                                rem=${lw#-*t}
+                                if [ -z "$rem" ]; then tnext=1
+                                else _uj_dest "${nws[i]#-*t}" "$rem" && hit=0
+                                fi
+                                ;;
+                            -*) ;;
+                            *) last=$i ;;
+                        esac
+                    fi
+                    ;;
+            esac
+        fi
+        i=$((i + 1))
+    done
+    if [ -n "$last" ]; then
+        _uj_dest "${nws[last]}" "${lws[last]}" && hit=0
+    fi
+    return "$hit"
+}
+
 _tok_unjudged_verb() {
-    local k sg cur=-1 done_seg=0 wrapped=0 wname='' oparg=0 txt w g sc=0 nog=0 i n
+    local k sg cur=-1 done_seg=0 wrapped=0 wname='' oparg=0 txt ntxt w g sc=0 nog=0 i n skip all
     local -a pieces
+    UJ_DEST=()
     if [ "$TOK" = 1 ]; then
         k=0
         while [ "$k" -lt "$ST_N" ]; do
@@ -1152,15 +1308,7 @@ _tok_unjudged_verb() {
                                     wrapped=1 wname=${ST_LW[k]} done_seg=0 ;;
                             esac
                         else
-                            txt='' w=0
-                            while [ "$w" -lt "$ST_N" ]; do
-                                if [ "${ST_S[w]}" = "$sg" ] \
-                                    || { [ "$sc" = 1 ] && [ "${ST_S[w]}" -gt "$sg" ]; }; then
-                                    txt="$txt ${ST_LW[w]}"
-                                fi
-                                w=$((w + 1))
-                            done
-                            mentions_dot_claude_dir_dest "$txt" && return 0
+                            _uj_tok_dests "$k" "$sc" && return 0
                         fi
                         ;;
                 esac
@@ -1217,7 +1365,7 @@ EOF
                 *) break ;;
             esac
         done
-        cw=${1:--}
+        cw=${1:--} skip=$((nw - $# + 1))
         if [ "$nok" = 1 ] && [ $# -gt 0 ]; then
             k=$((nw - $#))
             set -f
@@ -1232,17 +1380,19 @@ EOF
                 w=0; case "$cw" in *'$'*) w=1 ;; esac
                 g=0; case "$cw" in *[*?[\{\(]*) g=1 ;; esac
                 if _unjudged_cmd_word "$cw" "$w" "$g"; then
-                    # the zsh `(` split runs on past the piece
-                    txt=${pieces[i]} k=$((i + 1))
+                    # the zsh `(` split runs on past the piece, every word a
+                    # possible destination
+                    txt=${pieces[i]} ntxt=${npieces[i]} all=0 k=$((i + 1))
                     case "$cw" in
-                        *'('*) ;;
+                        *'('*) all=1 ;;
                         *) k=$n ;;
                     esac
                     while [ "$k" -lt "$n" ]; do
-                        txt="$txt ${pieces[k]}"
+                        txt="$txt ${pieces[k]}" ntxt="$ntxt ${npieces[k]}"
                         k=$((k + 1))
                     done
-                    mentions_dot_claude_dir_dest "$txt" && return 0
+                    [ "$nok" = 1 ] || ntxt=$txt
+                    _uj_text_dests "$skip" "$all" "$txt" "$ntxt" && return 0
                 fi
                 ;;
         esac
@@ -1866,6 +2016,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     esac
 
     write_verb=0
+    UJ_DEST=()
     has_write_verb_or_target_flag "$cmd_lc" "$cmd_n" && write_verb=1
 
     dir_dest=0
@@ -2022,6 +2173,14 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                 set +f
             fi
         fi
+    fi
+    # HIMMEL-4119: an unjudged command word (`$L`, `-ln`, `/bin/l?`) that is not
+    # a write verb by its text alone still has its destination operands
+    # climb- and symlink-checked, as a write verb's would be.
+    if [ "$write_verb" = 0 ]; then
+        for w in ${UJ_DEST[@]+"${UJ_DEST[@]}"}; do
+            _check_write_operand "$w"
+        done
     fi
 
     # HIMMEL-3938: three ways a live settings.json landed past the text and
