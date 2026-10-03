@@ -10,7 +10,7 @@ case "${1:-}" in
   '') ;;
   --raw) [ "$#" -eq 1 ] || exit 2; raw=1 ;;
   --since) [ "$#" -eq 2 ] || exit 2; since="$2" ;;
-  --help) echo 'usage: openrouter-cost.sh [--since launch.log] (spend is account-wide)'; echo 'Credits metadata can lag: an immediate --since delta can under-report spend; re-read later.'; exit 0 ;;
+  --help) echo 'usage: openrouter-cost.sh [--since launch.log | --raw] (spend is account-wide)'; echo '--raw (internal): print the balance at full precision, unrounded, for gate callers.'; echo 'Credits metadata can lag: an immediate --since delta can under-report spend; re-read later.'; exit 0 ;;
   *) exit 2 ;;
 esac
 unknown() { echo 'balance=? spend=?'; exit 0; }
