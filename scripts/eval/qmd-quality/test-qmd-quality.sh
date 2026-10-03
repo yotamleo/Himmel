@@ -53,7 +53,11 @@ mkdir -p "$TMP/xdg/qmd/models"
 out=$(XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --index "$TMP/idx.sqlite" --out "$TMP/o3" 2>&1); rc=$?
 eq "wrapper: an uncached model is refused (no network)" "$rc" "3"
 has "wrapper: the refusal names the missing model" "$out" "embeddinggemma-300M-Q8_0.gguf"
-[ ! -e "$TMP/o3/index.sqlite" ] && pass "wrapper: nothing is snapshotted before the model check" || fail "wrapper: snapshot made before refusal"
+if [ ! -e "$TMP/o3/index.sqlite" ]; then
+  pass "wrapper: nothing is snapshotted before the model check"
+else
+  fail "wrapper: snapshot made before refusal"
+fi
 
 echo "test-qmd-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
