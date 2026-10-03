@@ -3312,6 +3312,17 @@ _r4138 "82q x=\$((1<<2)) touch worktree (ALLOW)"                       allow 'x=
 _r4138 "82r a[1<<2]=1 touch worktree (ALLOW)"                          allow 'a[1<<2]=1 touch @W@/x'
 _r4138 "82s bare assignment (ALLOW)"                                   allow 'x=1'
 _r4138 "82t FOO=1 git -C worktree commit (ALLOW)"                      allow 'FOO=1 git -C @W@ commit --allow-empty -m m'
+# Only `(` and `${` nest in an assignment value; a bare `[` or `{` is a
+# literal, so the value ends at the next blank and the verb is read.
+_r4138 "85a x=[ touch primary (bare [ is literal)"                     block 'x=[ touch @P@/x'
+_r4138 "85b x={ touch primary (bare { is literal)"                     block 'x={ touch @P@/x'
+_r4138 "85c x=a[b touch primary"                                       block 'x=a[b touch @P@/x'
+_r4138 "85d x=\\\${ touch primary (escaped \$ is literal)"             block 'x=\${ touch @P@/x'
+_r4138 "85e x=\$\${ touch primary (PID then literal {)"                block 'x=$${ touch @P@/x'
+_r4138 "85f x=\${a:- b} touch primary (\${ nests)"                     block 'x=${a:- b} touch @P@/x'
+_r4138 "85g x=\$(echo }) touch primary"                                block 'x=$(echo }) touch @P@/x'
+_r4138 "85i x=[ touch worktree (ALLOW)"                                allow 'x=[ touch @W@/x'
+_r4138 "85j x=\${a:- b} git -C worktree commit (ALLOW)"                allow 'x=${a:- b} git -C @W@ commit --allow-empty -m m'
 # HIMMEL-4145: a heredoc body inside a dq-quoted `$(…)` is blanked in an
 # extra reading, so a body apostrophe cannot swallow a later write.
 _r4138 "83a dq \$(cat <<E it's E); touch primary"                      block 'x="$(cat <<E\nit'"'"'s\nE\n)"; touch @P@/f'

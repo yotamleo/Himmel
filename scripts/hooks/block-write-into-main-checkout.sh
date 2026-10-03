@@ -690,7 +690,7 @@ _bwimc_arith_end() {
 # that only LOOKS like an assignment changes nothing the shell would not
 # also read as one, and an unstripped prefix is today's behaviour.
 _bwimc_strip_assign() {
-    local t="$1" n=${#1} i=0 j c d bt
+    local t="$1" n=${#1} i=0 j c d bt st pd
     _BWIMC_SA="$t"
     while :; do
         while [ "$i" -lt "$n" ] && { [ "${t:$i:1}" = ' ' ] || [ "${t:$i:1}" = $'\t' ]; }; do i=$((i+1)); done
@@ -709,23 +709,31 @@ _bwimc_strip_assign() {
         fi
         [ "${t:$j:1}" != '+' ] || j=$((j+1))
         [ "${t:$j:1}" = '=' ] || return 0
-        j=$((j+1)); d=0; bt=0
+        # Only `(` (array, `$(`, `$((`) and `${` nest in a value; a bare `[`
+        # or `{` is a literal (`x=[ touch P/f` runs touch). `st` is the
+        # stack of expected closers, so `}` cannot close a `$(`.
+        j=$((j+1)); st=""; bt=0; pd=0
         _bwimc_scan_init
         while [ "$j" -lt "$n" ]; do
             c="${t:$j:1}"
             _bwimc_scan_step "$c"
             if [ "$_BWIMC_ACT" = 1 ]; then
                 case "$c" in
-                    ' '|$'\t') [ "$d" -gt 0 ] || [ "$bt" = 1 ] || break ;;
-                    '('|'{'|'[') d=$((d+1)) ;;
-                    ')'|'}'|']') [ "$d" -eq 0 ] || d=$((d-1)) ;;
+                    ' '|$'\t') [ -n "$st" ] || [ "$bt" = 1 ] || break ;;
+                    '(') st=")$st" ;;
+                    '{') [ "$pd" = 0 ] || st="}$st" ;;
+                    ')'|'}') [ "${st:0:1}" != "$c" ] || st="${st:1}" ;;
                     '`') bt=$((1 - bt)) ;;
                 esac
+                # `$$` is the PID: its second `$` opens nothing
+                if [ "$c" = '$' ] && [ "$pd" = 0 ]; then pd=1; else pd=0; fi
+            else
+                pd=0
             fi
             j=$((j+1))
         done
         # an unterminated quote or nesting: leave the text as it was
-        if [ -n "$_BWIMC_Q" ] || [ "$d" -gt 0 ] || [ "$bt" = 1 ]; then return 0; fi
+        if [ -n "$_BWIMC_Q" ] || [ -n "$st" ] || [ "$bt" = 1 ]; then return 0; fi
         i=$j
         _BWIMC_SA="${t:$i}"
     done
