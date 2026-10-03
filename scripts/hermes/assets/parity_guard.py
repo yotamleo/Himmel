@@ -157,7 +157,9 @@ _CMDPOS = r"(?:^|[;&|(\n])\s*"
 # documented limits are intentional.
 # Bounded executable-path prefix: optional quote + optional drive letter +
 # one slash-terminated segment run. "/" only — norm() folds "\" to "/".
-_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:[^\s|;&`\"']*/)?"
+# The run stops at "(": "(" is a command-position anchor, so a "((((…" run
+# otherwise rescans the rest of the run from every anchor (quadratic, HIMMEL-4190).
+_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:[^\s|;&(`\"']*/)?"
 # Quote-aware assignment (CR r5): FOO='a b' / FOO="a b" / FOO=bare. Shared by
 # the env-prefix assignment tolerance and the leading env-assignment prefix so
 # a quoted value's space does not drop the verb out of command position.

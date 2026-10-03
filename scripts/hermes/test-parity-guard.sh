@@ -153,6 +153,16 @@ while [ "$i" -lt 3000 ]; do pad="$pad; find -delet -delet -delet -delet -delet";
 g "find anchors x3000 then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + "; docker run --privileged alpine"}}))' "$pad")"
 if [ $((SECONDS - t0)) -gt 5 ]; then
   echo "  FAIL: find anchors x3000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+# A "(" run is an anchor at every paren; the exe-prefix run must not rescan it
+# (10 KB took 16.6s at head, 3.1s at base, vs the 10s fail-open timeout).
+for opener in '(' '$('; do
+  t0=$SECONDS
+  pad="echo "; i=0
+  while [ "$i" -lt 10000 ]; do pad="$pad$opener"; i=$((i + 1)); done
+  g "${opener}x10000 -delete then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + " -delete; docker run --privileged alpine"}}))' "$pad")"
+  if [ $((SECONDS - t0)) -gt 3 ]; then
+    echo "  FAIL: ${opener}x10000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+done
 g "-delete before find"     allow '{"tool_name":"terminal","tool_input":{"command":"echo -delete; find d -print"}}'
 g "echo do shutdown"      allow '{"tool_name":"terminal","tool_input":{"command":"echo do shutdown"}}'
 g "jq {format}"           allow '{"tool_name":"terminal","tool_input":{"command":"jq {format: .x} f"}}'
