@@ -11,6 +11,7 @@ if [ $# -eq 0 ]; then
 fi
 
 fail=0
+unhashed=0   # the regenerate hint only helps when a file was read and lacked hashes
 for file in "$@"; do
     [ -f "$file" ] || continue
     [ -r "$file" ] || { echo "ERROR: $file is unreadable" >&2; fail=1; continue; }
@@ -45,10 +46,11 @@ for file in "$@"; do
         # Indent every line of $bad by two spaces (parameter expansion, no sed).
         printf '  %s\n' "${bad//$'\n'/$'\n'  }" >&2
         fail=1
+        unhashed=1
     fi
 done
 
-if [ $fail -ne 0 ]; then
+if [ $unhashed -ne 0 ]; then
     echo "" >&2
     echo "Regenerate the file with hashes:" >&2
     echo "  uv pip compile pyproject.toml -o requirements.txt --generate-hashes" >&2

@@ -122,6 +122,16 @@ if [ "$LINT_RC" -eq 1 ] && grep -q 'unreadable-config' "$OUT"; then
 else
     fail "name=value path: expected exit 1 naming unreadable-config, got $LINT_RC" "$(cat "$OUT")"
 fi
+
+# HIMMEL-4137: an `ident=` directory makes `a=b/x.sh` an awk assignment too.
+mkdir -p "$NV_DIR/a=b"
+cp "$FIX/instance1-unreadable-denylist.sh.fxt" "$NV_DIR/a=b/x.sh.fxt"
+LINT_RC=$(cd "$NV_DIR" && bash "$LINT" "a=b/x.sh.fxt" > "$OUT" 2>&1 </dev/null; echo "$?")
+if [ "$LINT_RC" -eq 1 ] && grep -q 'unreadable-config' "$OUT"; then
+    pass "ident= directory path fires"
+else
+    fail "ident= directory path: expected exit 1 naming unreadable-config, got $LINT_RC" "$(cat "$OUT")"
+fi
 rm -rf "$NV_DIR"
 
 printf '\nCase 5: the real guard surfaces are clean (the standing assertion)\n'
