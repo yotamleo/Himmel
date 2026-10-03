@@ -83,8 +83,14 @@ echo keep >"$TMP/o4/index.sqlite"
 out=$(XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --golden "$FIX/golden.jsonl" --index "$TMP/o4/index.sqlite" --out "$TMP/o4" 2>&1); rc=$?
 eq "wrapper: --index equal to the snapshot target is refused" "$rc" "64"
 eq "wrapper: the source index survives that refusal" "$(cat "$TMP/o4/index.sqlite" 2>/dev/null)" "keep"
-out=$(timeout 10 bash "$HERE/qmd-quality.sh" --out "$TMP/o5" --index 2>&1); rc=$?
-eq "wrapper: a value flag with no value is a usage error, not a hang" "$rc" "64"
+# shellcheck source=../../lib/timeout-bin.sh
+. "$HERE/../../lib/timeout-bin.sh" 2>/dev/null
+if [ -n "$_TIMEOUT_BIN" ]; then
+  out=$("$_TIMEOUT_BIN" 10 bash "$HERE/qmd-quality.sh" --out "$TMP/o5" --index 2>&1); rc=$?
+  eq "wrapper: a value flag with no value is a usage error, not a hang" "$rc" "64"
+else
+  echo "SKIP wrapper: valueless flag (no timeout binary to bound the row)"
+fi
 out=$(XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --golden "$FIX/golden.jsonl" --index "$TMP/idx.sqlite" --out "$TMP/o6" --modes "" 2>&1); rc=$?
 eq "wrapper: an empty --modes is a usage error" "$rc" "64"
 for bad in 0 -5 abc; do
