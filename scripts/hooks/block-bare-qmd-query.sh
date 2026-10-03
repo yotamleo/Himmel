@@ -242,11 +242,18 @@ qmd_words() {
                             # zsh's \C-<x> and \M-<x> give one control or meta
                             # byte, and a bare \C or \M, or one with nothing
                             # after its `-`, gives nothing. Bash keeps them as
-                            # `\C`, never the verb.
+                            # `\C`, never the verb. zsh's \C-<x> is <x> & 0x1f,
+                            # so \C-i is a tab and \C-j a newline in dec.
                             C|M)
                                 case "${s:i+2:1}${s:i+3:1}" in
                                     -"'"|-'\'|-) v=-3 k=3 ;;
-                                    -?) v=1 k=4 ;;
+                                    -?)
+                                        v=1 k=4
+                                        if [ "$c2" = C ]; then
+                                            printf -v dv '%d' "'${s:i+3:1}"; dv=$(( dv & 31 ))
+                                            [ "$dv" = 9 ] || [ "$dv" = 10 ] || dv=''
+                                        fi
+                                        ;;
                                     *) v=-3 k=2 ;;
                                 esac
                                 ;;

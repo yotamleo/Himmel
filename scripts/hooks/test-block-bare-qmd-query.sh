@@ -239,6 +239,11 @@ deny "qmd \$'\\C-'\"vsearch\""
 deny "qmd \$'sear\\ch' x"
 deny "bash -c \$'qmd sear\\ch'"
 deny "qmd \$'sear\\c'h"
+# zsh's \C-i is a tab: a word break in a nested string.
+deny "zsh -c \$'qmd\\C-iquery x'"
+deny "zsh -c \$'qmd\\C-Iquery x'"
+deny "zsh -c \$'qmd \\C-iquery x'"
+allow "zsh -c \$'echo \\C-i hi'; qmd status"
 # A redirection between the shell and its -c does not end the scan.
 deny "bash </dev/null -c 'qmd \"qu\"ery x'"
 deny "bash < /dev/null -c 'qmd \"qu\"ery x'"
