@@ -253,24 +253,23 @@ fi
 guard_cmdpos_grammar
 # HIMMEL-3984: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
 # --exec/--exec-batch) runs is at command position too.
-# HIMMEL-4134: the flag counts only when the command holds a launcher that may
-# have spelled find or fd: the substring find, fd or bfs (find's clone),
-# parallel (its -X runs a command), sh (`bash -exec rm` is `bash -e -x -e -c
-# rm`, and ssh runs its tail remotely), or a quote, backslash, $, backtick or
-# glob char that could hide one (`f""ind`, `$f`, `fi?d`). Anywhere in the
-# command, before the flag or not: over-deny only, and one linear scan (a
-# `launcher.*flag` regex backtracks quadratically). So `echo x -exec rm -rf y`
-# is text.
+# The flag is matched wherever it sits, with no check that find or fd launched
+# it: it is also the only catch for an rm that a wrapper CMDPOS does not model
+# runs (`watch -x rm`, `stdbuf -o0 -ok rm`, `strace -x rm`). Over-deny only.
+# HIMMEL-4134: an ALLOWLIST is the one exception. A command that is a single
+# echo, printf or : with plain words only (no separator, redirect, quote,
+# backslash, expansion, glob or brace) runs nothing, so `echo x -exec rm -rf y`
+# is text. Add a command word only with a reason it can never execute one.
 # ponytail: the bracket classes, `=~` patterns and the HIMMEL-3983/3984/4146
 # additions are run on Linux bash 5 only (no macOS bash 3.2 here, Git Bash
 # parked, HIMMEL-4102), upgrade path HIMMEL-4134 item 3: run this suite on a
 # macOS station under /bin/bash.
 _rmpos_flag='[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+'"${CMDPOS_PFX}"
-_rmpos_launcher="(find|fd|bfs|parallel|sh|[\"'\\\$\`*?[])"
-if [[ $cmd_lc =~ $_rmpos_launcher ]]; then
-    RMPOS="(${CMDPOS}|${_rmpos_flag})"
-else
+_rmpos_text='^[[:space:]]*(echo|printf|:)([[:space:]][^];&|<>(){}`$\"*?[!#~'"'"']*)?$'
+if [[ $cmd_lc =~ $_rmpos_text ]]; then
     RMPOS="(${CMDPOS})"
+else
+    RMPOS="(${CMDPOS}|${_rmpos_flag})"
 fi
 # HIMMEL-3984: `find -delete` is a recursive delete of its own. The gap is
 # unbounded, like RM_RECURSIVE_PAT's, so a quoted `;` cannot hide the flag.

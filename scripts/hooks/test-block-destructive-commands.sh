@@ -851,11 +851,35 @@ assert_rc 'find . -name x allowed'       0 "$(run_case "$(j_bash 'find . -name x
 assert_rc 'find . -exec ls -r allowed'   0 "$(run_case "$(j_bash 'find . -exec ls -r {} +')")"
 assert_rc 'find -exec rm -f {} + allowed' 0 "$(run_case "$(j_bash 'find . -name x -exec rm -f {} +')")"
 assert_rc 'find -name deleted allowed'   0 "$(run_case "$(j_bash 'find . -name deleted')")"
-# HIMMEL-4134: -exec/-x is an executor flag only after find, fd or bfs. With
-# none of those words before it, and no quote or expansion that could spell
-# one, the flag is just text.
+# HIMMEL-4134: -exec/-x is text only in a lone echo, printf or : with plain
+# words (the allowlist). Every other command keeps the unanchored flag check.
 assert_rc 'echo x -exec rm -rf y allowed' 0 "$(run_case "$(j_bash 'echo x -exec rm -rf y')")"
-assert_rc 'do_thing -x rm -rf allowed'   0 "$(run_case "$(j_bash 'do_thing -x rm -rf')")"
+assert_rc 'printf x -x rm -rf y allowed' 0 "$(run_case "$(j_bash 'printf x -x rm -rf y')")"
+assert_rc ': x -ok rm -rf y allowed'     0 "$(run_case "$(j_bash ': x -ok rm -rf y')")"
+assert_rc 'do_thing -x rm -rf denied'    2 "$(run_case "$(j_bash 'do_thing -x rm -rf')")"
+assert_rc 'echo x; watch -x rm denied'   2 "$(run_case "$(j_bash 'echo x; watch -x rm -rf d')")"
+assert_rc 'echo x | watch -x rm denied'  2 "$(run_case "$(j_bash 'echo x | watch -x rm -rf d')")"
+assert_rc 'echo "x" -exec rm denied'     2 "$(run_case "$(j_bash 'echo "x" -exec rm -rf y')")"
+# shellcheck disable=SC2016  # literal $(...) is the point of this case
+assert_rc 'echo $(x -exec rm) denied'    2 "$(run_case "$(j_bash 'echo $(watch -x rm -rf d)')")"
+assert_rc 'echo x && strace -x rm denied' 2 "$(run_case "$(j_bash 'echo x && strace -x rm -rf d')")"
+# A wrapper CMDPOS does not model still runs the rm (J1675 reproducers).
+assert_rc 'watch -x rm -rf'              2 "$(run_case "$(j_bash 'watch -x rm -rf d')")"
+assert_rc 'watch --exec rm -rf'          2 "$(run_case "$(j_bash 'watch --exec rm -rf d')")"
+assert_rc 'watch -exec rm -rf'           2 "$(run_case "$(j_bash 'watch -exec rm -rf d')")"
+assert_rc 'watch -n1 -x rm -rf'          2 "$(run_case "$(j_bash 'watch -n1 -x rm -rf d')")"
+assert_rc 'x=1 watch -x rm -rf'          2 "$(run_case "$(j_bash 'x=1 watch -x rm -rf d')")"
+assert_rc '! watch -x rm -rf'            2 "$(run_case "$(j_bash '! watch -x rm -rf d')")"
+assert_rc 'time watch -x rm -rf'         2 "$(run_case "$(j_bash 'time watch -x rm -rf d')")"
+assert_rc 'timeout 5 watch -x rm -rf'    2 "$(run_case "$(j_bash 'timeout 5 watch -x rm -rf d')")"
+assert_rc 'nohup watch -x rm -rf'        2 "$(run_case "$(j_bash 'nohup watch -x rm -rf d')")"
+assert_rc 'nice watch -x rm -rf'         2 "$(run_case "$(j_bash 'nice watch -x rm -rf d')")"
+assert_rc 'exec watch -x rm -rf'         2 "$(run_case "$(j_bash 'exec watch -x rm -rf d')")"
+assert_rc 'env watch -x rm -rf'          2 "$(run_case "$(j_bash 'env watch -x rm -rf d')")"
+assert_rc 'command watch -x rm -rf'      2 "$(run_case "$(j_bash 'command watch -x rm -rf d')")"
+assert_rc 'stdbuf -o0 -ok rm -rf'        2 "$(run_case "$(j_bash 'stdbuf -o0 -ok rm -rf d')")"
+assert_rc 'strace -x rm -rf'             2 "$(run_case "$(j_bash 'strace -x rm -rf d')")"
+assert_rc 'setsid -x rm -rf'             2 "$(run_case "$(j_bash 'setsid -x rm -rf d')")"
 # A real find/fd launch still denies, behind wrappers too.
 assert_rc 'command find -exec rm -rf'    2 "$(run_case "$(j_bash 'command find . -exec rm -rf {} +')")"
 assert_rc 'sudo find -exec rm -rf'       2 "$(run_case "$(j_bash 'sudo find . -exec rm -rf {} +')")"
@@ -879,7 +903,8 @@ assert_rc "echo 'a -ok rm \\-r d"        2 "$(run_case "$(j_bash "echo 'a -ok rm
 assert_rc 'commit "x -exec rm -"r" d'    2 "$(run_case "$(j_bash 'git commit -m "x -exec rm -"r" d')")"
 # Quoted text that documents the hook: pinned as main decides it. A quoted
 # `;` reads as a separator (deny); a quoted rm with no separator before it
-# is text (allow).
+# is text (allow), so the ticket's quoted-rm over-deny is not present on main.
+assert_rc 'commit "rm -rf is blocked" allowed' 0 "$(run_case "$(j_bash 'git commit -m "doc: rm -rf is blocked"')")"
 assert_rc 'commit "guard; then rm -rf" denied' 2 "$(run_case "$(j_bash 'git commit -m "fix: guard; then rm -rf is denied"')")"
 assert_rc 'commit "x; then shutdown" denied' 2 "$(run_case "$(j_bash 'git commit -m "x; then shutdown later"')")"
 assert_rc 'commit "echo x -exec rm -rf" denied' 2 "$(run_case "$(j_bash 'git commit -m "echo x -exec rm -rf y"')")"
