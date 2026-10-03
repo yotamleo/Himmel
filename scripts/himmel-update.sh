@@ -559,7 +559,8 @@ _drift_ctl() {
 _drift_rows() {
     node -e '
 const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
-for (const i of r.items || []) {
+if (!r || !Array.isArray(r.items)) process.exit(1);
+for (const i of r.items) {
   const bad = i.severity === "red" || i.severity === "degraded";
   const armedOff = i.id === "graphmap-cadence" && i.desired === false && i.actual === "present";
   if (bad || armedOff) console.log([i.id, armedOff ? "armed-off" : i.severity, i.desired, i.actual, String(i.detail || "").replace(/\s+/g, " ").slice(0, 240)].join("\t"));
@@ -661,7 +662,7 @@ EOF
             case "$crc" in
                 0) _drift_add "codex plugin-unregistered persists after install-himmel-codex.sh" "bash scripts/codex/install-himmel-codex.sh, then restart codex" ;;
                 1) echo "    converged codex plugin registration" ;;
-                *) echo "    codex registration not verified (startup-health failed without a plugin verdict) — not claiming a fix" >&2 ;;
+                *) _drift_add "codex registration not verified after install-himmel-codex.sh (startup-health failed without a plugin verdict)" "bash scripts/codex/startup-health.sh, then restart codex" ;;
             esac
         fi
     fi

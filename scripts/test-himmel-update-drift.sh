@@ -62,6 +62,7 @@ cat > "$CTL" <<'STUB'
 case "$1" in
   status)
     if [ -f "$FIX/bad-recheck" ] && [ -s "$FIX/ensure.log" ]; then echo "not json"; exit 0; fi
+    if [ -f "$FIX/empty-recheck" ] && [ -s "$FIX/ensure.log" ]; then echo "{}"; exit 0; fi
     items=""
     if [ ! -f "$FIX/hooks/pre-commit" ]; then
       items='{"id":"pre-commit-hooks","kind":"hook","desired":true,"actual":"degraded","severity":"degraded","detail":"missing hook type(s): pre-commit"}'
@@ -84,7 +85,7 @@ run_update() { # run_update <only-item>; sets OUT / RC
     OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="/usr/bin:/bin:$PATH" \
         bash scripts/himmel-update.sh --only "$1" 2>&1)" || RC=$?
 }
-reset_fix() { rm -f "$FIX/hooks/pre-commit" "$FIX/ensure.log" "$FIX/no-cred" "$FIX/bad-recheck"; }
+reset_fix() { rm -f "$FIX/hooks/pre-commit" "$FIX/ensure.log" "$FIX/no-cred" "$FIX/bad-recheck" "$FIX/empty-recheck"; }
 
 echo "drift pass: allow-listed item converges, credential red is reported (HIMMEL-4246)"
 reset_fix
@@ -163,6 +164,7 @@ reset_fix; : > "$FIX/hooks/pre-commit"; : > "$FIX/no-cred"; rm -f "$FIX/codex-re
 RC=0; OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="$TMP/stubbin:/usr/bin:/bin:$PATH" bash scripts/himmel-update.sh --only drift 2>&1)" || RC=$?
 if grep -q 'converged codex' <<< "$OUT"; then assert_fail "claimed codex converged on an unverifiable health run: $OUT"; else assert_pass "no codex convergence claim when health is unverifiable"; fi
 grep -q 'not verified' <<< "$OUT" && assert_pass "unverified codex state is reported" || assert_fail "no not-verified note: $OUT"
+if grep -q 'no unconverged drift' <<< "$OUT"; then assert_fail "unverified codex state concluded no drift: $OUT"; else assert_pass "unverified codex state stays in the DRIFT block"; fi
 rm -f "$FIX/codex-install-breaks" "$FIX/codex-broken"
 
 echo "malformed status after ensure: prior drift rows are kept, no convergence claim"
@@ -172,6 +174,13 @@ if grep -qi 'converged pre-commit-hooks' <<< "$OUT"; then assert_fail "claimed c
 grep -q 're-check after ensure failed' <<< "$OUT" && assert_pass "re-check failure reported" || assert_fail "no re-check failure note: $OUT"
 grep -q 'luna-sources' <<< "$OUT" && assert_pass "earlier drift rows survive the failed re-check" || assert_fail "drift rows lost: $OUT"
 rm -f "$FIX/bad-recheck"
+
+echo "structurally invalid status ({}) after ensure is a failed re-check, not an empty drift list"
+reset_fix; : > "$FIX/empty-recheck"
+run_update drift
+if grep -q 'converged pre-commit-hooks' <<< "$OUT"; then assert_fail "claimed convergence on a {} re-check: $OUT"; else assert_pass "no convergence claim on a {} re-check"; fi
+grep -q 'luna-sources' <<< "$OUT" && assert_pass "drift rows survive a {} re-check" || assert_fail "drift rows lost on {}: $OUT"
+rm -f "$FIX/empty-recheck"
 
 echo ""
 echo "Results: $pass passed, $fail failed"
