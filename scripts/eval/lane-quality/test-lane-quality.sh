@@ -54,6 +54,7 @@ cat >"$TMP/bin/claude" <<'FAKE'
 echo "$*" >>"$LQ_FAKE_LOG"
 case " $* " in *" --json-schema "*)
   cat >>"$LQ_FAKE_LOG.judge"
+  [ -z "${LQ_FAKE_JUDGE_HANG:-}" ] || sleep 10
   echo '{"type":"result","is_error":false,"total_cost_usd":0.02,"structured_output":{"correctness":4,"scope_discipline":4,"test_quality":4,"honesty":4,"notes":"n"}}'
   exit 0 ;;
 esac
@@ -71,6 +72,7 @@ if [ -n "${LQ_FAKE_COMMIT:-}" ]; then
   git add stray.txt lq-work && git -c user.name=t -c user.email=t@t commit -qm stray --no-verify
 fi
 [ -z "${LQ_FAKE_DRAIN:-}" ] || echo SKIPPED-BANK >"$LQ_FAKE_DRAIN"
+[ -z "${LQ_FAKE_NOJSON:-}" ] || exit 124
 sid="sess-$t"
 {
   echo '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"tu1","name":"Read","input":{"file_path":"lq-work/x"}}]}}'
@@ -113,6 +115,8 @@ check "agent call declares a permission mode" 'grep -q -- "--permission-mode aut
 check "worktrees removed" '[ -z "$(ls -A "$TMP/work" 2>/dev/null)" ]'
 check "judge cost counts toward the budget" 'grep -q "spent 1.0400 USD" "$TMP/run1.log"'
 check "judge call is budget-capped" 'grep -- "--json-schema" "$TMP/fake.log" | grep -q -- "--max-budget-usd"'
+check "judge packet hides the model version" '! grep -q "4-5" "$TMP/fake.log.judge"'
+check "a clean agent result keeps is_error false" '[ "$(jq -s ".[0].is_error" "$R")" = false ]'
 
 echo "3. guards"
 bash "$RUN" run --lane native --model m --max-usd 0.6 --no-judge --out "$TMP/out2" >"$TMP/run2.log" 2>&1
@@ -152,6 +156,20 @@ LQ_WORK_ROOT="$TMP/blocked" bash "$RUN" run --lane native --model m --tasks shel
   --out "$TMP/out6" >"$TMP/run6.log" 2>&1
 rc=$?
 check "a failed worktree add fails the sweep" '[ "$rc" -ne 0 ] && ! grep -q "lane-quality: done" "$TMP/run6.log"'
+
+: >"$TMP/fake.log.judge"
+bash "$RUN" run --lane native --model m --tasks shell-red-green --max-usd 0.5 --out "$TMP/out7" >"$TMP/run7.log" 2>&1
+check "no judge call once the agent spent the whole budget" '[ ! -s "$TMP/fake.log.judge" ] && [ "$(jq -s ".[0].judge" "$TMP/out7/runs.jsonl")" = null ]'
+
+start=$(date +%s)
+LQ_FAKE_JUDGE_HANG=1 bash "$RUN" run --lane native --model m --tasks shell-red-green --timeout 3 \
+  --out "$TMP/out8" >"$TMP/run8.log" 2>&1
+took=$(( $(date +%s) - start ))
+check "a hanging judge is cut off by the timeout" '[ "$took" -lt 9 ] && [ "$(wc -l <"$TMP/out8/runs.jsonl" | tr -d " ")" = 1 ]'
+
+LQ_FAKE_NOJSON=1 bash "$RUN" run --lane native --model m --tasks shell-red-green,finding-verify --no-judge \
+  --out "$TMP/out9" >"$TMP/run9.log" 2>&1
+check "an agent run of unknown cost stops the sweep" '[ "$(wc -l <"$TMP/out9/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run9.log"'
 
 echo "4. table"
 bash "$RUN" table "$TMP/out1" >"$TMP/table.md" 2>&1

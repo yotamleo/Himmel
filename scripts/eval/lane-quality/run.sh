@@ -84,7 +84,7 @@ materialize() {
 
 # Redact every model and lane name before the judge sees a byte.
 redact() {
-  sed -E 's/(anthropic|claude|opus|sonnet|haiku|fable|gpt[-_.a-z0-9]*|codex|claudex|openai|deepseek|openrouter|gemini|glm|kimi|qwen|llama|mistral)/[redacted]/Ig'
+  sed -E 's/(anthropic|claude|opus|sonnet|haiku|fable|gpt[-_.a-z0-9]*|codex|claudex|openai|deepseek|openrouter|gemini|glm|kimi|qwen|llama|mistral)/[redacted]/Ig; s/\[redacted\]([-_.]*[0-9][-_.0-9]*)?/[redacted]/g'
 }
 
 bank_read() { # prints "<token> <five_hour>"
@@ -132,7 +132,7 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
     cd "$jdir" || exit 1
     native_auth_pin_env || exit 1
     # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted above, no tools, explicit permission mode, budget-capped
-    "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
+    timeout "$TIMEOUT" "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
       --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
   ) >"$od/$task.judge.json" 2>"$od/$task.judge.err"
   rm -rf "$jdir"
@@ -171,9 +171,15 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   # Staged against the fixture commit, so a file the agent committed counts too.
   git -C "$wt" add -A
   scope="$(git -C "$wt" diff --cached --name-only "$fix" | grep -v '^lq-work/' | jq -R . | jq -sc .)"
-  remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" -v c="$(jq -r '.total_cost_usd // 0' "$res")" 'BEGIN{r = m - s - c; printf "%.2f", (r > 0.01 ? r : 0.01)}')"
+  remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" -v c="$(jq -r '.total_cost_usd // 0' "$res")" 'BEGIN{printf "%.2f", m - s - c}')"
   jres=null
-  [ "$NO_JUDGE" -eq 1 ] || jres="$(judge "$task" "$wt" "$fix" "$OUT/$task.report.md" "$OUT" "$remaining")"
+  if [ "$NO_JUDGE" -eq 0 ]; then
+    if awk -v r="$remaining" 'BEGIN{exit !(r >= 0.01)}'; then
+      jres="$(judge "$task" "$wt" "$fix" "$OUT/$task.report.md" "$OUT" "$remaining")"
+    else
+      echo "lane-quality: budget spent by the agent; judge skipped" >"$OUT/$task.judge.err"
+    fi
+  fi
   [ -n "$jres" ] || jres=null
   if [ "$KEEP" -eq 0 ]; then git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1; fi
   jq -nc --arg run "$RUN_ID" --arg lane "$LANE" --arg model "$MODEL" --arg effort "$EFFORT" --arg task "$task" \
@@ -184,13 +190,15 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
     | { run_id: $run, lane: $lane, model: $model, effort: $effort, task: $task, base_sha: $base, fixture_sha: $fix,
         wall_s: $wall, duration_ms: ($r.duration_ms // null), num_turns: ($r.num_turns // null),
         cost_usd: ($r.total_cost_usd // null), bank_5h_before: $b0, bank_5h_after: $b1,
-        permission_denials: (($r.permission_denials // []) | length), is_error: ($r.is_error // null),
+        permission_denials: (($r.permission_denials // []) | length),
+        is_error: (if $r | has("is_error") then $r.is_error else null end),
         subtype: ($r.subtype // null),
         accept_passed: (($acc | capture("(?<p>[0-9]+)/").p? | tonumber?) // 0),
         accept_total: (($acc | capture("/(?<t>[0-9]+)").t? | tonumber?) // 0),
         accept_ok: ($accrc == 0), scope_ok: ($scope | length == 0), out_of_scope: $scope,
         judge: $j, kept_worktree: $wt } + $m' >>"$OUT/runs.jsonl"
-  jq -r --argjson j "$jres" '(.total_cost_usd // 0) + ($j.cost_usd? // 0)' "$res"
+  # "unknown" when the agent left no cost (killed by the timeout): the sweep stops.
+  jq -r --argjson j "$jres" 'if .total_cost_usd == null then "unknown" else .total_cost_usd + ($j.cost_usd? // 0) end' "$res"
 }
 
 cmd_run() {
@@ -252,6 +260,10 @@ cmd_run() {
     echo "lane-quality: task $t"
     cost="$(run_task "$t")" || die "task '$t' failed; see $OUT"
     cost="$(printf '%s\n' "$cost" | tail -1)"
+    if [ "$cost" = unknown ]; then
+      echo "lane-quality: task '$t' left its cost unknown (agent killed?); stopping the sweep, spend so far is a lower bound" >&2
+      break
+    fi
     SPENT="$(awk -v s="$SPENT" -v c="${cost:-0}" 'BEGIN{printf "%.4f", s + c}')"
   done
   echo "lane-quality: done, spent $SPENT USD (API-price equivalent); rows in $OUT/runs.jsonl"
