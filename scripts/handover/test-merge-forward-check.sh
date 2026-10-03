@@ -27,7 +27,7 @@ runraw() {
   if [ "$rc" -eq "$want" ] && grep -Eq -- "$re" <<< "$out"; then ok "$d"; else bad "$d (rc=$rc, want $want)" "$out"; fi
 }
 # run = runraw with valid sha flags; later flags in "$@" override these
-run() { local d="$1" want="$2" re="$3"; shift 3; runraw "$d" "$want" "$re" --base-sha abc123 --main-base-sha abc123 --latest-sha "$TIP" "$@"; }
+run() { local d="$1" want="$2" re="$3" mb; shift 3; mb="$(git -C "$tmp/work" merge-base origin/main HEAD)"; runraw "$d" "$want" "$re" --base-sha "$mb" --main-base-sha "$mb" --latest-sha "$TIP" "$@"; }
 # set3 writes the three job files; each red row gets the one case `c1` in the case files
 set3() {
   printf '%b' "$1" > "$tmp/pr"; printf '%b' "$2" > "$tmp/base"; printf '%b' "$3" > "$tmp/latest"
@@ -67,6 +67,9 @@ runraw "no sha flags at all: usage, never ALLOW" 2 'usage'
 runraw "empty --base-sha and --main-base-sha: usage, never ALLOW" 2 'usage' --base-sha '' --main-base-sha '' --latest-sha "$TIP"
 runraw "--base-sha without --main-base-sha: usage" 2 'usage' --base-sha abc123 --latest-sha "$TIP"
 runraw "--main-base-sha without --base-sha: usage" 2 'usage' --main-base-sha abc123 --latest-sha "$TIP"
+
+# the stated base must be the real merge-base of origin/main and HEAD, not any equal pair
+run "--base-sha and --main-base-sha agree but are not the merge-base: REFUSE" 1 'REFUSE.*not the merge-base' --base-sha abc123 --main-base-sha abc123
 
 # F3: the latest run must be origin/main's tip
 runraw "--latest-sha omitted: usage, never ALLOW" 2 'usage' --base-sha abc123 --main-base-sha abc123
@@ -134,6 +137,11 @@ set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\tfailure\n'
 run "malformed latest row (three fields): usage error, never ALLOW" 2 'malformed'
 set3 'a\tfailure\n' 'a failure\n' 'a\tsuccess\n'
 run "malformed base row (no tab): usage error, never REFUSE-by-accident" 2 'malformed'
+
+# an empty job name must not hide a red as "nothing red"
+set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
+printf '\tfailure\n' > "$tmp/pr"
+run "PR row with an empty job name: usage error, never nothing-red" 2 'malformed'
 
 # duplicate job names: one green row on latest must not hide a red one
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\na\tfailure\n'

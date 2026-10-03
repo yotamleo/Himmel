@@ -25,10 +25,11 @@
 # a job green at the base, a job red on latest main, a PR job with no recorded
 # failing case or with a case the base run did not fail.
 # The job files carry no commit sha, so the shas are REQUIRED and non-empty:
-# --base-sha (`git merge-base origin/main HEAD`) must equal --main-base-sha (the
-# base run's headSha from `gh run list --commit`), and --latest-sha (the latest
-# run's headSha) must equal `git rev-parse origin/main` after a fetch, run from
-# the leg's own repo, so an older run cannot stand in for the base or for latest.
+# --base-sha must equal `git merge-base origin/main HEAD` (computed here, after a
+# fetch, from the leg's own repo) and --main-base-sha (the base run's headSha
+# from `gh run list --commit`); --latest-sha (the latest run's headSha) must equal
+# `git rev-parse origin/main`, so an older run cannot stand in for the base or
+# for latest.
 # Exit 0 = ALLOW  1 = REFUSE  2 = usage / unreadable input
 #      3 = nothing red on the PR; no merge-forward needed
 # Red = failure | timed_out | startup_failure.
@@ -61,7 +62,7 @@ if [ "$bsha" != "$msha" ]; then
 fi
 
 for f in "$pr" "$base" "$latest"; do
-  if awk -F'\t' 'NF && (NF != 2 || $2 !~ /^(success|failure|cancelled|skipped|neutral|timed_out|startup_failure|action_required|stale)$/) {exit 1}' "$f"; then :; else
+  if awk -F'\t' 'NF && (NF != 2 || $1 == "" || $2 !~ /^(success|failure|cancelled|skipped|neutral|timed_out|startup_failure|action_required|stale)$/) {exit 1}' "$f"; then :; else
     echo "usage: $f has a malformed row (want <job><TAB><conclusion>): a skipped or misread row could hide a red" >&2
     exit 2
   fi
@@ -82,6 +83,15 @@ if ! git fetch --quiet origin main 2>/dev/null || ! tip="$(git rev-parse --verif
 fi
 if [ "$lsha" != "$tip" ]; then
   echo "REFUSE — the --main-latest run is for $lsha, but origin/main is $tip: an older run is not latest main. Fetch the newest completed push run; do not merge forward."
+  exit 1
+fi
+
+if ! mb="$(git merge-base origin/main HEAD 2>/dev/null)"; then
+  echo "usage: cannot compute the merge-base of origin/main and HEAD in $(pwd)" >&2
+  exit 2
+fi
+if [ "$bsha" != "$mb" ]; then
+  echo "REFUSE — --base-sha $bsha is not the merge-base of origin/main and HEAD ($mb): the base run must be the one at the real merge-base. Report BLOCKED; do not merge forward."
   exit 1
 fi
 
