@@ -832,6 +832,9 @@ _bwimc_expand_token_raw() {
     # false DENY on an ordinary command. Fail OPEN on this one candidate
     # (return 1), matching every other unparseable-candidate path here —
     # scanning continues on every other candidate in the same command.
+    # ponytail: edge whitespace and newlines in a real name (a symlink `f ` or
+    # `nl<LF>` into the primary) are lost here and in $(…) captures, so the
+    # write is checked under the wrong name; carry them as sentinels (HIMMEL-4129).
     t="${t#"${t%%[![:space:]]*}"}"
     t="${t%"${t##*[![:space:]]}"}"
     [ -n "$t" ] || return 1
