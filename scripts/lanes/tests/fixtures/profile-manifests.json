@@ -209,5 +209,29 @@
       "qmd@himmel"
     ],
     "contextBudget": 35000
+  },
+  "code": {
+    "enabled": [
+      "code-simplifier@claude-plugins-official",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "pyright-lsp@claude-plugins-official",
+      "qmd@himmel",
+      "typescript-lsp@claude-plugins-official"
+    ],
+    "contextBudget": 35000
+  },
+  "code-ui": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "playwright@claude-plugins-official",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
   }
 }

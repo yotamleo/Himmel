@@ -18,6 +18,11 @@ export const ROLE_REQUIRES = {
   'design-reference': ['taste-skill-core@himmel', 'design-dna@himmel', 'anydesign@himmel',
     'anthropic-design-skills@himmel'],
   'design-trial': ['hallmark@himmel'],
+  // typescript-lsp and pyright-lsp are enabled by `code` too but cannot be listed here: an LSP
+  // plugin exposes no skill, command, agent or MCP server, so the coverage check could never see
+  // it. The probe's plugins[] source diff still fails the profile if either does not load.
+  code: ['code-simplifier@claude-plugins-official'],
+  'code-ui': ['playwright@claude-plugins-official'],
   'lane-impl': ['pr-review-toolkit-himmel@himmel'],
   'leg-impl': ['pr-review-toolkit-himmel@himmel'],
   'lane-review': ['pr-review-toolkit-himmel@himmel'],
