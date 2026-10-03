@@ -2144,6 +2144,17 @@ assert_rc "497 primary ln -sf \$SJ ~/.cx#laude denies" 2 \
     "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.cx#laude" HOME="$FAKEHOME")"
 assert_rc "498 nested worktree ln -sf \$SJ ~/.cx#onfig allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cx#onfig" HOME="$FAKEHOME")"
+# CR round 6: a POSIX class is one bracket member; a zsh glob flag matches anything
+assert_rc "499 nested worktree ln -sf \$SJ ~/.c[[:alpha:]]#laude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c[[:alpha:]]#laude" HOME="$FAKEHOME")"
+assert_rc "500 nested worktree ln -sf \$SJ ~/.(#i)claude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.(#i)claude" HOME="$FAKEHOME")"
+assert_rc "501 nested worktree cp \$SJ ~/.(#a1)xlaude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/.(#a1)xlaude/" HOME="$FAKEHOME")"
+assert_rc "502 nested worktree ln -sf \$SJ ~/.c[[:alpha:]]aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c[[:alpha:]]aude" HOME="$FAKEHOME")"
+assert_rc "503 nested worktree ln -sf \$SJ ~/.c[[:digit:]]aude allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c[[:digit:]]aude" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

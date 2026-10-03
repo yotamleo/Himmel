@@ -1666,7 +1666,18 @@ _dc_can_be_claude() {
                 j=$i
                 case "${c:j:1}" in '!'|'^') j=$((j + 1)) ;; esac
                 [ "${c:j:1}" = ']' ] && j=$((j + 1))
-                while [ "$j" -lt "$n" ] && [ "${c:j:1}" != ']' ]; do j=$((j + 1)); done
+                while [ "$j" -lt "$n" ] && [ "${c:j:1}" != ']' ]; do
+                    # a `[:alpha:]` class (or `[.x.]`, `[=x=]`) is one member
+                    case "${c:j:2}" in
+                        '[:'|'[.'|'[=')
+                            ch=${c:j+1:1}
+                            j=$((j + 2))
+                            while [ "$j" -lt "$n" ] && [ "${c:j:2}" != "$ch]" ]; do j=$((j + 1)); done
+                            j=$((j + 1))
+                            ;;
+                    esac
+                    j=$((j + 1))
+                done
                 if [ "$j" -ge "$n" ]; then
                     pat="$pat\\["
                 else
@@ -1678,6 +1689,8 @@ _dc_can_be_claude() {
                 fi
                 ;;
             '(')
+                # a zsh `(#i)` / `(#a1)` glob flag can match any name
+                [ "${c:i:1}" = '#' ] && return 0
                 psa[pd]=$p0
                 pd=$((pd + 1))
                 # the bash extglob pass keeps an `@*?+!` operator before the
