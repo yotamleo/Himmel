@@ -23,12 +23,16 @@ import re, sys
 
 lines = open(sys.argv[1]).read().splitlines()
 for i, ln in enumerate(lines):
-    m = re.match(r"^(\s*)-\s+uses:\s*oven-sh/setup-bun@", ln)
-    if not m:
+    if not re.match(r"^\s*(-\s+)?uses:\s*oven-sh/setup-bun@", ln):
         continue
-    indent = len(m.group(1))
+    # The step starts at the nearest `- ` line at or above, whichever key
+    # (`uses:` or `name:`) it carries.
+    s = i
+    while s > 0 and not re.match(r"^\s*-\s", lines[s]):
+        s -= 1
+    indent = len(lines[s]) - len(lines[s].lstrip())
     block = []
-    for nxt in lines[i + 1:]:
+    for nxt in lines[s + 1:]:
         if nxt.strip() and (len(nxt) - len(nxt.lstrip())) <= indent:
             break
         block.append(nxt)
@@ -60,9 +64,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+  c:
+    steps:
+      - name: named step
+        uses: oven-sh/setup-bun@v2
 YML
 got=$(unpinned_setup_bun "$FIX/bad.yml" | tr '\n' ' ')
-if [ "$got" = "4 8 " ]; then ok "unpinned and 'latest' steps flagged, file/exact pins pass"; else bad "lint control wrong: flagged '$got' expected '4 8 '"; fi
+if [ "$got" = "4 8 20 " ]; then ok "unpinned, 'latest' and named steps flagged, file/exact pins pass"; else bad "lint control wrong: flagged '$got' expected '4 8 20 '"; fi
+if unpinned_setup_bun "$FIX/missing.yml" >/dev/null 2>&1; then bad "lint reported success on an unreadable file"; else ok "lint fails (not clean) on an unreadable file"; fi
 rm -rf "$FIX"
 
 echo "[test-ci-tool-pins] every setup-bun step in .github/workflows is pinned"
@@ -71,7 +80,8 @@ for wf in "$ROOT"/.github/workflows/*.yml "$ROOT"/.github/workflows/*.yaml; do
   [ -f "$wf" ] || continue
   n=$(grep -cE '^[[:space:]]*-[[:space:]]+uses:[[:space:]]*oven-sh/setup-bun@' "$wf")
   total=$((total + n))
-  flagged=$(unpinned_setup_bun "$wf" | tr '\n' ' ')
+  if ! flagged=$(unpinned_setup_bun "$wf"); then bad "$(basename "$wf"): the lint itself failed"; continue; fi
+  flagged=$(printf '%s' "$flagged" | tr '\n' ' ')
   if [ -n "$flagged" ]; then bad "$(basename "$wf"): unpinned setup-bun at line(s) $flagged"; fi
 done
 if [ "$total" -ge 1 ]; then ok "scanned $total setup-bun step(s)"; else bad "found no setup-bun step: the scan is vacuous"; fi

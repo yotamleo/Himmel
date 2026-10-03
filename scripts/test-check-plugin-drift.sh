@@ -952,7 +952,7 @@ jobs:
     steps:
       - uses: owner/act@v3
       - uses: owner/act2@v1
-      - run: python -m pip install --disable-pip-version-check pypi-stale==1.0.0 pypi-second==3.0.0
+      - run: python -m pip install --disable-pip-version-check pypi-stale==1.0.0 pypi-second==3.0.0 pypi-dev==1.2.3.dev1
       - run: python -m pip install pypi-fresh==2.0.0
 YML
 printf 'pypi-stale=1.2.0\npypi-fresh=2.0.0\npypi-second=3.0.0\n' > "$W12/state/pypi"
@@ -984,6 +984,7 @@ if grepq "$pin_sec" 'owner/act'; then bad "pin-scan reported a workflow uses: pi
 if grepq "$pin_sec" '^  pypi:pypi-stale 1\.0\.0 (\.github/workflows/w\.yml): BEHIND'; then ok "pin-scan: stale workflow pip == pin -> BEHIND"; else bad "pypi-stale not BEHIND; $(printf '%s' "$pin_sec" | grep pypi-stale)"; fi
 if grepq "$pin_sec" '^  pypi:pypi-fresh 2\.0\.0 .*: CURRENT'; then ok "pin-scan: current workflow pip == pin -> CURRENT"; else bad "pypi-fresh not CURRENT"; fi
 if grepq "$pin_sec" '^  pypi:pypi-second 3\.0\.0 .*: CURRENT'; then ok "pin-scan: second == pin on one pip install line is also scanned"; else bad "pypi-second not discovered"; fi
+if grepq "$pin_sec" 'pypi:pypi-dev'; then bad "a .dev version suffix was truncated and reported"; else ok "pin-scan: a pip pin with a version suffix is not misreported"; fi
 if grepq "$pin_sec" '^  npm:vend-pkg 1\.0\.0 (vend): VENDORED'; then ok "pin-scan: pin inside a VENDORED.md tree -> VENDORED, not BEHIND npm-latest"; else bad "vend-pkg not VENDORED; $(printf '%s' "$pin_sec" | grep vend-pkg)"; fi
 if [ "$pin_rc" -eq 2 ]; then ok "pin-scan drift run exits 2"; else bad "pin-scan drift run rc=$pin_rc; expected 2"; fi
 # A hold expires when upstream ships something newer than the one reviewed.
