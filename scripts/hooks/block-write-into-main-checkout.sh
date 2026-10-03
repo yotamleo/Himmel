@@ -850,6 +850,20 @@ _bwimc_expand_token() {
     case "$t" in
         *'$'*|*'`'*|*'*'*|*'?'*|*'['*) return 1 ;;
     esac
+    _bwimc_unsent "$t"
+}
+
+# _bwimc_unsent TEXT — HIMMEL-4010: the literal chars _bwimc_ansic_spans
+# parked as \016-\025 sentinels, restored.
+_bwimc_unsent() {
+    local t="$1"
+    case "$t" in
+        *[$'\016\017\020\021\022\023\024\025']*)
+            t="${t//$'\016'/'$'}"; t="${t//$'\017'/'`'}"
+            t="${t//$'\020'/'"'}"; t="${t//$'\021'/\'}"
+            t="${t//$'\022'/'\'}"; t="${t//$'\023'/'*'}"
+            t="${t//$'\024'/'?'}"; t="${t//$'\025'/'['}" ;;
+    esac
     printf '%s' "$t"
 }
 
@@ -878,7 +892,7 @@ _bwimc_glob_prefix() {
         */*) head="${head%/*}/" ;;
         *) head="./" ;;
     esac
-    printf '%s' "$head"
+    _bwimc_unsent "$head"
 }
 
 # Resolve a raw candidate token to an absolute path against CWD (the TOOL
@@ -1255,6 +1269,7 @@ _bwimc_check_target() {
                         */*) pfx="${pfx%/*}/" ;;
                         *) pfx="./" ;;
                     esac
+                    pfx=$(_bwimc_unsent "$pfx")
                     _bwimc_cd_guard "$pfx"
                     case "$pfx" in
                         /*|[A-Za-z]:/*|[A-Za-z]:\\*) abs="$pfx" ;;
@@ -1349,10 +1364,15 @@ _bwimc_ansic_spans() {
             done
             k=$((k+1))
             # decoded text is LITERAL: a `$`, backtick, quote, `\` or glob
-            # char in it names itself, so it becomes `_` — later stages would
-            # otherwise read it as dynamic (fail open) or strip it
+            # char in it names itself, so it rides as a \016-\025 sentinel
+            # past the quote strip and the dynamic check; _bwimc_unsent puts
+            # the real char back before the path is resolved
             q=$(_bwimc_ansic "$q")
-            o="$o${q//[\$\`\"\'\\\*\?\[]/_}"
+            q="${q//'$'/$'\016'}"; q="${q//'`'/$'\017'}"
+            q="${q//'"'/$'\020'}"; q="${q//\'/$'\021'}"
+            q="${q//'\'/$'\022'}"; q="${q//'*'/$'\023'}"
+            q="${q//'?'/$'\024'}"; q="${q//'['/$'\025'}"
+            o="$o$q"
             continue
         fi
         o="$o$c"; k=$((k+1))

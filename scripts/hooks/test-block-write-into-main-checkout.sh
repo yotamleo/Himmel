@@ -1982,6 +1982,9 @@ _subst_row "76zk \$'…' target with a literal \$ in its name (DENY)"        blo
 _subst_row "76zl \$'…' target with a literal * in its name (DENY)"         block "echo x > \$'$_PR/a*b'"
 _subst_row "76zm same literal \$ name in the worktree (ALLOW)"              allow "echo x > \$'$_WR/\$HOME-x'"
 _subst_row "76zn \$'…' decoded quote makes a sibling name (ALLOW)"         allow "echo x > \$'$_PR\\x22/f'"
+ln -s "$_PR" "$_WR/sl\$x"
+_subst_row "76zo \$'…' through a worktree symlink named sl\$x (DENY)"     block "echo x > \$'$_WR/sl\$x/n'"
+_subst_row "76zp same name, not a symlink: sl_x is absent (ALLOW)"         allow "echo x > \$'$_WR/sl_x/n'"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
