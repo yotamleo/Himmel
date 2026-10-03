@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
     *) bad=1; break ;;
   esac
 done
-if [ "$bad" -eq 1 ] || [ ! -r "$pr" ] || [ ! -r "$base" ] || [ ! -r "$latest" ] \
+if [ "$bad" -eq 1 ] || [ ! -f "$pr" ] || [ ! -r "$pr" ] || [ ! -r "$base" ] || [ ! -r "$latest" ] \
    || [ ! -r "$prc" ] || [ ! -r "$bc" ] || [ -z "$bsha" ] || [ -z "$msha" ] || [ -z "$lsha" ] || [ -z "$psha" ]; then
   echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> (all required, shas non-empty)" >&2
   exit 2
@@ -81,7 +81,11 @@ for f in "$prc" "$bc"; do
   fi
 done
 
-reds="$(awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print $1}' "$pr")"
+# a parse failure here must not read as "nothing red": it is an input error
+if ! reds="$(awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print $1}' "$pr")"; then
+  echo "usage: cannot parse $pr: a failed read must not pass as nothing red" >&2
+  exit 2
+fi
 [ -n "$reds" ] || { echo "nothing red on the PR — no merge-forward needed"; exit 3; }
 
 if ! git fetch --quiet origin main 2>/dev/null || ! tip="$(git rev-parse --verify --quiet origin/main)"; then

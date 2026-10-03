@@ -38,8 +38,19 @@ EOF
 
 out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/vm/test-vm.sh 2>&1); rc=$?
 expect "SKIP_LIST suite is uncovered, never verified" 'not run in CI.*uncovered' "$out" 0
-out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/big/test-big.sh 2>&1); rc=$?
+mkdir -p "$tmp/scripts/big"; : > "$tmp/scripts/big/test-big-fast.sh"; : > "$tmp/scripts/big/test-big-slow.sh"
+out=$(bash "$SC" --runner "$tmp/runner.sh" --root "$tmp" scripts/big/test-big.sh 2>&1); rc=$?
 expect "superseded suite names its wrappers" 'superseded by .*test-big-fast.sh.*test-big-slow.sh' "$out" 0
+# HIMMEL-4113: a wrapper that is missing, or itself in SKIP_LIST, carries no coverage
+rm "$tmp/scripts/big/test-big-slow.sh"
+out=$(bash "$SC" --runner "$tmp/runner.sh" --root "$tmp" scripts/big/test-big.sh 2>&1); rc=$?
+expect "superseded by a missing wrapper is uncovered" 'uncovered.*test-big-slow.sh \(missing\)' "$out" 0
+if grep -q 'carry the coverage' <<< "$out"; then bad "missing wrapper must not claim the coverage" "$out"; else pass "missing wrapper claims no coverage"; fi
+: > "$tmp/scripts/big/test-big-slow.sh"
+sed 's|^scripts/vm/test-vm.sh .*|&\
+scripts/big/test-big-slow.sh  # skipped too|' "$tmp/runner.sh" > "$tmp/runner-skipwrap.sh"
+out=$(bash "$SC" --runner "$tmp/runner-skipwrap.sh" --root "$tmp" scripts/big/test-big.sh 2>&1); rc=$?
+expect "superseded by a SKIP_LIST wrapper is uncovered" 'uncovered.*test-big-slow.sh \(in SKIP_LIST\)' "$out" 0
 out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/slow/test-slow.sh 2>&1); rc=$?
 expect "extended tier is nightly only with its cap" 'nightly only.*1700' "$out" 0
 out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/plain/test-plain.sh 2>&1); rc=$?
@@ -74,7 +85,12 @@ awk '/^SUITE_TIER_DEFAULT="/ {skip=1} !skip {print} skip && /^"$/ {skip=0}' "$tm
 bash "$SC" --runner "$tmp/no-tier.sh" scripts/x/test-x.sh >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then pass "runner without a SUITE_TIER_DEFAULT table exits 2"; else bad "runner without a SUITE_TIER_DEFAULT table exits 2 (rc=$rc)"; fi
-printf 'not a runner\n' > "$tmp/junk.sh"
+# an unterminated table swallows the rest of the runner: unparseable, not merely long
+sed '/^SUITE_TIER_DEFAULT="/,$ {/^"$/d}' "$tmp/runner.sh" > "$tmp/open-tier.sh"
+bash "$SC" --runner "$tmp/open-tier.sh" scripts/x/test-x.sh >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 2 ]; then pass "unterminated SUITE_TIER_DEFAULT table exits 2"; else bad "unterminated SUITE_TIER_DEFAULT table exits 2 (rc=$rc)"; fi
+printf 'not a runner\n'> "$tmp/junk.sh"
 bash "$SC" --runner "$tmp/junk.sh" scripts/x/test-x.sh >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then pass "incompatible runner exits 2"; else bad "incompatible runner exits 2 (rc=$rc)"; fi
