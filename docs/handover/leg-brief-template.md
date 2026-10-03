@@ -109,7 +109,13 @@ template_version: 3
 >    run `leg-burn.sh` by hand (HIMMEL-3572). **`completes-ticket: yes|no`** — does this PR finish the
 >    cited ticket? `yes` → the leg merges with `--jira-transition`; `no` (the
 >    ticket spans further PRs, sibling slices, or work owed outside any PR) →
->    it omits the flag. <Anything else unusual: a PR body that must carry other
+>    it omits the flag. **The PR body carries a `## Ticket coverage` section**
+>    (HIMMEL-4207): one list line per ask of each cited ticket, each ending
+>    `done` or `deferred → HIMMEL-<n>` (`->` also accepted), e.g.
+>    `- ask one: done` / `- ask two: deferred → HIMMEL-1234`. A deferred key
+>    must exist and still be open; `ready-check.sh` item 7 FAILs a missing
+>    section, an unmarked line, or a deferral to a nonexistent or Done/Closed
+>    ticket, so file the follow-up before you write the line. <Anything else unusual: a PR body that must carry other
 >    specific numbers, a public-CI wait, a second ticket to comment on but
 >    leave open.>
 
