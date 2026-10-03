@@ -108,6 +108,20 @@ env PATH="$SCHED_STUB:$PATH" OSTYPE=linux-gnu LEG_PROFILE_NO_SETTING_SOURCES= ba
     --handover "$HANDOVER" --dry-run >/dev/null 2>&1 || rc=$?
 assert_eq "S3 an empty LEG_PROFILE_NO_SETTING_SOURCES still arms (exit 0)" "0" "$rc"
 
+# HIMMEL-4163: the read-only --list-temp-arms sweep arms nothing, so a consult may run it,
+# but ONLY as the sole argument; every other mode, or the flag beside one, still refuses.
+rc=0
+OUT4=$(env PATH="$SCHED_STUB:$PATH" OSTYPE=linux-gnu LEG_PROFILE_NO_SETTING_SOURCES=1 bash "$ARM" --list-temp-arms 2>&1) || rc=$?
+case "$OUT4" in *"refusing to arm from inside a consult"*) echo "FAIL S4 --list-temp-arms refused in a consult: $OUT4"; FAILED=$((FAILED + 1)) ;; *) echo "PASS S4 --list-temp-arms is not refused in a consult" ;; esac
+case "$rc" in 0|16|18) echo "PASS S4 sweep ran (exit $rc)" ;; *) echo "FAIL S4 sweep exit $rc"; FAILED=$((FAILED + 1)) ;; esac
+for combo in "--list-temp-arms --dry-run" "--dry-run --list-temp-arms" "--list-temp-arms --time 23:59" "--list-temp-arms --force" "--time 23:59 --handover $HANDOVER --dry-run"; do
+    rc=0
+    # shellcheck disable=SC2086
+    OUT5=$(env PATH="$SCHED_STUB:$PATH" OSTYPE=linux-gnu LEG_PROFILE_NO_SETTING_SOURCES=1 bash "$ARM" $combo 2>&1) || rc=$?
+    assert_eq "S4 consult + '$combo' refuses (exit 2)" "2" "$rc"
+    case "$OUT5" in *"refusing to arm from inside a consult"*) echo "PASS S4 '$combo' refusal says why" ;; *) echo "FAIL S4 '$combo' refusal text missing: $OUT5"; FAILED=$((FAILED + 1)) ;; esac
+done
+
 echo "---"
 if [ "$FAILED" -gt 0 ]; then echo "FAILED: $FAILED case(s)"; exit 1; fi
 echo "PASS all cases"
