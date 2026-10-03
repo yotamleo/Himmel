@@ -304,7 +304,7 @@ fi
 # string holding a quote. Read as a plain single-quoted span, its middle `'`
 # closed it and the last one opened a span that hid the rest of the command
 # (`echo $'\'' > <primary>/f`). _BWIMC_DL is 1 when the previous character was
-# an active `$`; a caller that jumps over a substitution body clears it.
+# an active `$` (not the second `$` of `$$`, the PID); a caller that jumps over a substitution body clears it.
 _BWIMC_NL=$'\n'
 
 _bwimc_scan_init() {
@@ -337,7 +337,8 @@ _bwimc_scan_step() {
         \\) _BWIMC_ESC=1; _BWIMC_ACT=0 ;;
         "'") if [ "$dl" = 1 ]; then _BWIMC_Q=A; else _BWIMC_Q="'"; fi; _BWIMC_ACT=0 ;;
         '"') _BWIMC_Q="$c"; _BWIMC_ACT=0 ;;
-        '$') _BWIMC_ACT=1; _BWIMC_DL=1 ;;
+        # `$$` is the PID expansion: its second `$` opens nothing
+        '$') _BWIMC_ACT=1; [ "$dl" = 1 ] || _BWIMC_DL=1 ;;
         *) _BWIMC_ACT=1 ;;
     esac
     return 0
@@ -1374,6 +1375,10 @@ _bwimc_ansic_spans() {
         fi
         if [ -z "$s" ] && [ "$c" = "'" ]; then
             s="'"; o="$o$c"; k=$((k+1)); continue
+        fi
+        # `$$` is the PID expansion, so a `'` after it is a plain quote
+        if [ -z "$s" ] && [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = '$' ]; then
+            o="$o\$\$"; k=$((k+2)); continue
         fi
         if [ -z "$s" ] && [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = "'" ]; then
             k=$((k+2)); q=""

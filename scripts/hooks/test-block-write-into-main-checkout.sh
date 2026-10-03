@@ -1993,6 +1993,9 @@ _subst_row "76zu decoded \\x0e is a byte, not a sentinel (DENY)"            bloc
 _subst_row "76zv raw 0x0e byte in a plain target (DENY)"                     block "echo x > $_WR/sl"$'\016'"/n"
 ln -s "$_PR" "$_WR/x."
 _subst_row "76zt non-leading \$(pwd) never reads as x./ (ALLOW)"           allow "echo x > $_WR/x\$(pwd)/f"
+_subst_row "76zw \$\$ is the PID, so \$\$'\\' is a plain quote (DENY)"       block "echo \$\$'\\' > $_PR/f # '"
+_subst_row "76zx \$\$\$'…' is PID then ANSI-C (DENY)"                       block "echo \$\$\$'\\'' > $_PR/f"
+_subst_row "76zy \$\$'b' in a worktree target (ALLOW)"                       allow "echo x > $_WR/a\$\$'b'"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
