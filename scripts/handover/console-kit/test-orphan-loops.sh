@@ -48,8 +48,9 @@ chmod +x "$W/bin/pgrep" "$W/bin/ps"
 # >1 day old; 207 sits under a nested shell 300 whose parent is the session;
 # 206 merely MENTIONS a snapshot path inside a bash -c string -> not a wrapper;
 # 208 is the console's own console-wait.sh waiter -> exempt (HIMMEL-3941);
-# 209-212 only mention console-wait.sh (before a sleep, nested in a quoted
-# echo, as console-wait.sh.bak, or as other-console-wait.sh) -> still orphans.
+# 209-213 only mention console-wait.sh (before a sleep, nested in a quoted
+# echo or eval, as console-wait.sh.bak, or as other-console-wait.sh) -> still
+# orphans.
 cat > "$W/ps.txt" <<'FIX'
     1     0 40-00:00:01 /sbin/init
   101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
@@ -66,6 +67,7 @@ cat > "$W/ps.txt" <<'FIX'
   210   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-h.sh && eval 'echo "eval '\''bash scripts/handover/console-kit/console-wait.sh"; sleep 99999'
   211   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-i.sh && eval 'bash scripts/handover/console-kit/console-wait.sh.bak'
   212   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-j.sh && eval 'bash /tmp/other-console-wait.sh'
+  213   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-k.sh && eval "echo hi && eval 'bash /p/console-wait.sh'; sleep 99999"
 FIX
 
 run() { # run [args...] — stdout of the SUT under the hermetic seams
@@ -75,7 +77,7 @@ run() { # run [args...] — stdout of the SUT under the hermetic seams
 
 out="$(run)"; rc=$?
 eq 'default: exact one-line inventory joined to owner names (>=30m)' \
-    'orphans=HIMMEL-111-N61:7/1560m,orphan:1/300m' "$out"
+    'orphans=HIMMEL-111-N61:8/1560m,orphan:1/300m' "$out"
 eq 'default: rc 0' 0 "$rc"
 
 out="$(TICK_ORPHAN_MIN=200 run)"
@@ -93,6 +95,7 @@ lacks '--list omits a process that only mentions a snapshot path' "$out" 'pid=20
 lacks '--list omits the sleep child and the session itself' "$out" 'pid=202'
 lacks '--list omits the console-wait.sh wrapper (HIMMEL-3941)' "$out" 'pid=208'
 contains '--list still counts other-console-wait.sh (no path boundary)' "$out" 'pid=212'
+contains '--list still counts a nested eval that only quotes the waiter' "$out" 'pid=213'
 contains '--list still counts a wrapper that only mentions console-wait.sh' "$out" 'pid=209'
 contains '--list still counts a quoted eval mention' "$out" 'pid=210'
 contains '--list still counts console-wait.sh.bak' "$out" 'pid=211'
