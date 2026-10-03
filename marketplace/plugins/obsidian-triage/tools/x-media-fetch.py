@@ -436,6 +436,14 @@ def fmt_duration(seconds) -> str:
 PROBE_VIDEO = ("video", "video+media")
 
 
+def _pct(s: str) -> float:
+    """argparse type: a finite percentage in [0, 100]."""
+    v = float(s)
+    if not 0 <= v <= 100:     # also rejects NaN
+        raise argparse.ArgumentTypeError(f"{s!r} is not a percentage in 0..100")
+    return v
+
+
 def fxt_probe(x: dict):
     """ONE api.fxtwitter.com call for an X status. Returns (result, duration_s):
     "video" (a lone video; + summed duration, None when fxtwitter gave none),
@@ -1046,7 +1054,7 @@ def parse_args(argv):
     ap.add_argument("--include-done", action="store_true",
                     help="also scan _done/ graduated clips (the backfill pass)")
     ap.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
-    ap.add_argument("--min-sub-coverage", type=float,
+    ap.add_argument("--min-sub-coverage", type=_pct,
                     default=DEFAULT_MIN_SUB_COVERAGE, metavar="PCT",
                     help="use platform subtitles only when they cover at least "
                          "this percent of the video, else fall back to whisper")

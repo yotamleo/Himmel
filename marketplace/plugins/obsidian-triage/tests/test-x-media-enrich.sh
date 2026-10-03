@@ -1091,6 +1091,10 @@ for root in null '[]' '7'; do
   X_TEST_FXT_JSON="$FXB" X_TEST_FXT_COUNT="$tmp/fxt-b.count" HOME="$H2" run_tool "$BV" >"$tmp/bv3.out" 2>"$tmp/bv3.err"
   assert "non-object JSON root ($root) does not abort the batch (exit 0)" 0 "$?"
 done
+for pct in -5 101 nan; do
+  run_tool "$BV" --dry-run --min-sub-coverage "$pct" >"$tmp/pct.out" 2>"$tmp/pct.err"
+  assert "--min-sub-coverage $pct is rejected (exit 2)" 2 "$?"
+done
 
 # --- Test 14: doc-contract -------------------------------------------------
 echo "Test 14: /x-media-enrich runbook + catalog + README doc-contract"
