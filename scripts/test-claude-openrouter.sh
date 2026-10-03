@@ -234,6 +234,7 @@ t "deleted new-path hud source mirrors removal" 0
 
 # --- HIMMEL-4098: a settings env CLAUDE_CODE_AUTO_MODE_SERVER beats the launcher export, so the seed must strip it
 [ -f "$FAKEHOME/.claude-openrouter/settings.json" ] || { echo "FAIL: seeded settings.json missing"; FAILS=$((FAILS+1)); }
+grep -q "HIMMEL_INITIATIVE" "$FAKEHOME/.claude-openrouter/settings.json" || { echo "FAIL: seeded settings.json unreadable or lost the kept env key (matcher control)"; FAILS=$((FAILS+1)); }
 ! grep -q "CLAUDE_CODE_AUTO_MODE_SERVER" "$FAKEHOME/.claude-openrouter/settings.json" 2>/dev/null || { echo "FAIL: env.CLAUDE_CODE_AUTO_MODE_SERVER survived the seed"; FAILS=$((FAILS+1)); }
 
 # --- T3b: model pin — the pinned model is a Claude slug AND the window is the 1M
