@@ -1879,6 +1879,7 @@ _dc_name_fold() {
         # a literal `.claude` already reads as `.claude`; a span after it
         # ends it as before, so doc text (`$HOME/.claude`, `~/.claude`) keeps
         # its words apart
+        # shellcheck disable=SC2016 # literal backtick and `$(` pattern bytes, not expansion
         case "$c" in
             .claude'`'*|.claude'$('*) t=${c#.claude}$t c=.claude ;;
         esac
@@ -1899,6 +1900,7 @@ _dc_name_fold() {
         # a name led by a substitution folds when literal text follows the
         # span (`$(printf .cl)aude`, HIMMEL-4171); a bare span (`$(pwd)/x`,
         # `${a:+$a,}$w`) is a variable-built path (the header ponytail)
+        # shellcheck disable=SC1083,SC2016 # literal `$(`/`${`/`{` pattern bytes, not expansion
         case "$c" in
             '$('*|'${'*|'`'*)
                 case "${c##*[\`)\}]}" in [A-Za-z0-9._*?[{-]*) ;; *) pw= ;; esac ;;
