@@ -708,7 +708,7 @@ rc=0; out=$(LEG_BURN_BIN="$LC_BAD" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) 
 check "ledger-fail: close still rc 0 when leg-burn fails" "$rc" "0"
 contains "ledger-fail: WARNs" "$out" "WARN"
 exact_count "ledger-fail: TERM still sent" "$(cat "$CALLS")" "kill -TERM 210" "1"
-check "ledger-fail: no row written" "$(cat "$LC_LEDGER" 2>/dev/null | wc -l | tr -d ' ')" "0"
+check "ledger-fail: no row written" "$([ -e "$LC_LEDGER" ] && { wc -l < "$LC_LEDGER" | tr -d ' '; } || echo 0)" "0"
 # an unwritable ledger location also only WARNs
 reset_calls
 rc=0; out=$(LEG_COST_LEDGER="/proc/no-such-dir/x.jsonl" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
