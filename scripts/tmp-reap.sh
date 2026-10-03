@@ -49,7 +49,11 @@ MONTH="$(date +%Y-%m)"
 FAMILIES="mog-run.* mog-home.* himmel-git-empty-template.* himmel-fixture.* himmel-prov.* capguard-* poller-* cr-floor-probe-* clean-sandbox.* rt-tarball-out.*"
 
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo "$NOW"; }
-sha() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$1" | cut -d' ' -f1; }
+sha() { # sha256 hex of a file, non-zero when neither tool can read it
+    local s
+    s="$(sha256sum "$1" 2>/dev/null)" || s="$(shasum -a 256 "$1" 2>/dev/null)" || return 1
+    printf '%s\n' "${s%% *}"
+}
 size_kb() { du -sk "$1" 2>/dev/null | cut -f1; }
 
 # /proc/<pid>/stat field 22 (starttime), taken after the last ')' so a comm with spaces cannot shift it.
@@ -82,12 +86,15 @@ $1
 "*) return 0 ;; esac; return 1; }
 
 # Every cwd / open-fd path of a process, filtered to the scanned roots once.
-OPEN_PATHS="$(
-    for p in /proc/[0-9]*; do
-        readlink "$p/cwd" 2>/dev/null
-        for fd in "$p"/fd/*; do [ -e "$fd" ] && readlink "$fd" 2>/dev/null; done
-    done | grep -F "$TMP_ROOT/" | sort -u
-)"
+census() {
+    OPEN_PATHS="$(
+        for p in /proc/[0-9]*; do
+            readlink "$p/cwd" 2>/dev/null
+            for fd in "$p"/fd/*; do [ -e "$fd" ] && readlink "$fd" 2>/dev/null; done
+        done | grep -F "$TMP_ROOT/" | sort -u
+    )"
+}
+census
 in_use() { # a process cwd or open fd at or under $1
     local p
     [ -n "$OPEN_PATHS" ] || return 1
@@ -120,19 +127,21 @@ manifest_row() { # src dest sha bytes id kind
 }
 
 preserve() { # <dir> <id>; 0 only when every copy verified and a manifest row exists for <id>
-    local dir="$1" id="$2" f rel k dest sum n=0
+    local dir="$1" id="$2" f rel k dest sum n=0 files
     mkdir -p "$ARCHIVE" 2>/dev/null && : >> "$MANIFEST" 2>/dev/null || return 1
+    # a failed or partial scan must not read as "nothing left to keep"
+    files="$(whitelist_files "$dir")" || return 1
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         k="$(file_kind "${f##*/}")"; [ -n "$k" ] || continue
         rel="${f#"$dir"/}"
         dest="$ARCHIVE/$MONTH/$k/$id/$rel"
         mkdir -p "${dest%/*}" && cp -p "$f" "$dest" && cmp -s "$f" "$dest" || return 1
-        sum="$(sha "$dest")"
+        sum="$(sha "$dest")" && [ -n "$sum" ] || return 1
         manifest_row "$f" "$dest" "$sum" "$(wc -c < "$dest" | tr -d ' ')" "$id" "$k" || return 1
         n=$((n+1))
     done <<EOF
-$(whitelist_files "$dir")
+$files
 EOF
     # nothing worth keeping is still a completed preserve pass: record it, so the refusal rule has a row to check
     [ "$n" -gt 0 ] || manifest_row "$dir" "" "" 0 "$id" none || return 1
@@ -170,7 +179,7 @@ if [ -d "$CLAUDE_ROOT" ]; then
 fi
 # Fixtures: one find per family (no per-dir process) and one batched du. An old
 # fixture with a process cwd/fd under it is kept.
-fix_total=0; fix_reaped=0
+fix_total=0; fix_reaped=0; fix_failed=0
 for fam in $FAMILIES; do
     list=""; n=0
     # shellcheck disable=SC2044  # mktemp family names carry no whitespace (see ponytail above)
@@ -189,9 +198,13 @@ for fam in $FAMILIES; do
     kb="$(printf '%s' "$list" | tr '\n' '\0' | xargs -0 du -sck 2>/dev/null | tail -1 | cut -f1)"
     fix_total=$((fix_total + ${kb:-0}))
     if [ "$APPLY" = 1 ]; then
-        printf '%s' "$list" | tr '\n' '\0' | xargs -0 rm -rf --
-        fix_reaped=$((fix_reaped + n))
-        printf 'REAP fixture  %s: %d dir(s), %sK; %d kept\n' "$fam" "$n" "${kb:-0}" "$kept"
+        if printf '%s' "$list" | tr '\n' '\0' | xargs -0 rm -rf --; then
+            fix_reaped=$((fix_reaped + n))
+            printf 'REAP fixture  %s: %d dir(s), %sK; %d kept\n' "$fam" "$n" "${kb:-0}" "$kept"
+        else
+            fix_failed=$((fix_failed + 1))
+            printf 'SKIP fixture  %s: rm failed for some of %d dir(s), not counted as reaped\n' "$fam" "$n"
+        fi
     else
         printf 'REAP fixture  %s: %d dir(s), %sK; %d kept (dry-run)\n' "$fam" "$n" "${kb:-0}" "$kept"
     fi
@@ -199,12 +212,20 @@ done
 
 # fixtures, then judge dirs, then session scratch; biggest first inside a tier
 SORTED="$(printf '%s\n' "$CANDS" | grep -v '^$' | sort -k1,1n -k2,2nr)"
-total=$fix_total; reaped=$fix_reaped; failed=0
+# classification took minutes on a big /tmp: re-take the cwd/fd view once before deleting.
+# ponytail: a full /proc walk costs ~10 s, so it is once per run, not per dir; a dir that
+# goes live within the archive loop itself is not re-checked (HIMMEL-4224 follow-up).
+[ "$APPLY" = 1 ] && census
+total=$fix_total; reaped=$fix_reaped; failed=$fix_failed
 while read -r tier kb kind id path; do
     [ -n "$path" ] || continue
     total=$((total + kb))
     if [ "$APPLY" = 0 ]; then
         printf 'REAP %-8s %8sK %s (dry-run)\n' "$kind" "$kb" "$path"
+        continue
+    fi
+    if in_use "$path"; then
+        printf 'SKIP %-8s %8sK %s (became active, kept)\n' "$kind" "$kb" "$path"
         continue
     fi
     if [ "$kind" != fixture ] && ! preserve "$path" "$id"; then
