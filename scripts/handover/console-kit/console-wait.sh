@@ -6,8 +6,10 @@
 # A console used to arm two `Monitor` loops (the Telegram inbox follower and
 # tick.sh). The Monitor tool caps an arm at 30 min, so every expiry woke a
 # full-context console turn only to re-arm. This replaces both: the console
-# runs it ONCE with Bash `run_in_background`, which has no such cap and
-# re-invokes the session when the command exits. It stays silent while nothing
+# runs it ONCE with Bash `run_in_background` AND `timeout: 7200000` (both
+# required: the default background limit is also 30 min and killed a waiter
+# once, HIMMEL-3940); the harness re-invokes the session when the command
+# exits. It stays silent while nothing
 # happens and exits, printing one WAKE block, on the first real event:
 #
 #   WAKE telegram               unread lines in <inbox-file> (the bridge's
