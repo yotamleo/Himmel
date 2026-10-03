@@ -258,14 +258,35 @@ IFS= read -r -d '' input 2>/dev/null || true
 # type error, a DIFFERENT failure than "field is null" and swallowed by the
 # same `|| true`, silently blanking tool AND cmd. `tostring` is a no-op on
 # an already-string value.
-result=$(jq -r '((.tool_name // "")|tostring) + "\n" + ((.tool_input.command // .tool_input.cmd // "")|tostring)' <<<"$input" 2>/dev/null || true)
+# HIMMEL-4130 (HIMMEL-3986 sweep): `.command // .cmd` fell through to .cmd
+# on a PRESENT but false .command, so the hook judged text the harness does
+# not run. Only a null/absent .command falls back to .cmd; a non-string one
+# is flagged on line 2 and fails closed below.
+result=$(jq -r '(.tool_input // {}) as $t | ((.tool_name // "")|tostring) + "\n"
+    + (if ($t | has("command")) and $t.command != null
+       then (if ($t.command | type) == "string" then "s\n" + $t.command else "x\n" end)
+       else "s\n" + (($t.cmd // "")|tostring) end)' <<<"$input" 2>/dev/null || true)
 tool="${result%%$'\n'*}"
 tool="${tool%$'\r'}"
 cmd="${result#*$'\n'}"
+kind="${cmd%%$'\n'*}"
+cmd="${cmd#*$'\n'}"
 case "$tool" in
     Bash|PowerShell|"") ;;
     *) exit 0 ;;
 esac
+if [ "$kind" = "x" ]; then
+    msg="block-chokepoint-env-prefix: refusing a ${tool:-tool} call whose tool_input.command is present but not a string, so the text that runs cannot be checked.
+
+    Send the command as a JSON string. To bypass this guard intentionally,
+    set ENV_PREFIX_GUARD_OK=1 in the LAUNCHING shell (a per-call prefix does
+    not reach a hook process); restart without it to re-enable the guard."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: tool_input.command is not a string -- refusing"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+fi
 
 [ -n "$cmd" ] || exit 0
 # HIMMEL-1813: the untouched command, newlines included, for the

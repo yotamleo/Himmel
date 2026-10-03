@@ -1229,6 +1229,19 @@ assert_deny "4130 /. then a \$var (empty -> /./)"     "$(j 'printf x; bash scrip
 assert_deny "4130 /. then a brace"                    "$(j "printf x; bash /r/.{a,}/scripts/x.sh")"
 assert_deny "4130 worktree path beside a seam assignment and /./" "$(j "${MOG_VAR}=1 setsid -f bash $WT/scripts/./x.sh")"
 
+# HIMMEL-4130 (HIMMEL-3986 sweep): a PRESENT non-string .command must not
+# fall through to .cmd -- `//` treats false like null, so the hook judged
+# the benign .cmd text. A non-string .command now fails closed; a null or
+# absent one still falls back to .cmd.
+jc() { printf '{"tool_name":"Bash","tool_input":{"command":%s,"cmd":%s}}' "$1" "$(printf '%s' "$2" | jq -Rs .)"; }
+assert_deny  "4130 command:false with a benign cmd fails closed"  "$(jc false 'echo ok')"
+assert_deny  "4130 command:0 with a benign cmd fails closed"      "$(jc 0 'echo ok')"
+assert_deny  "4130 command:[...] fails closed"                    "$(jc '["echo ok"]' 'echo ok')"
+assert_deny  "4130 command:{} fails closed"                       "$(jc '{}' 'echo ok')"
+assert_deny  "4130 command:null falls back to a seam-prefixed cmd" "$(jc null "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
+assert_allow "4130 command:null falls back to a benign cmd"       "$(jc null 'echo ok')"
+assert_allow "4130 string command wins over a seam-prefixed cmd"  "$(jc '"echo ok"' "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
