@@ -109,13 +109,12 @@ cat > "$ROOT/state/tester/himmel/specs/plan/2026-07-28-chain-ledger.md" <<'EOF'
 RESOLVED_ROOT 2026-08-03T01:35:00Z via-handover-root
 EOF
 
-# Common env override prefix for the script.
-ENVOFF="LEG_TIMELINE_WORKER_GLM=$ROOT/glm-sessions LEG_TIMELINE_WORKER_CLAUDEX=$ROOT/claudex-sessions LEG_TIMELINE_CR_LEDGER=$ROOT/cr-critic-scores.jsonl LEG_TIMELINE_CHAIN_LEDGER=$ROOT/chain-ledger.md"
+# Common env overrides for the script, one VAR=val per array entry.
+ENVOFF=("LEG_TIMELINE_WORKER_GLM=$ROOT/glm-sessions" "LEG_TIMELINE_WORKER_CLAUDEX=$ROOT/claudex-sessions" "LEG_TIMELINE_CR_LEDGER=$ROOT/cr-critic-scores.jsonl" "LEG_TIMELINE_CHAIN_LEDGER=$ROOT/chain-ledger.md")
 
-# run_lt: invoke leg-timeline.sh against the full-source fixtures. $ENVOFF is
-# INTENTIONALLY word-split into env's VAR=val args — SC2086 disabled for that.
-# shellcheck disable=SC2086
-run_lt() { env $ENVOFF bash "$LT" "$@"; }
+# run_lt: invoke leg-timeline.sh against the full-source fixtures. ENVOFF is an
+# array so fixture paths containing spaces stay intact (HIMMEL-1504).
+run_lt() { env "${ENVOFF[@]}" bash "$LT" "$@"; }
 
 # ===========================================================================
 # 1. Happy path — all three sources present, since 2026-08-03T00:00 (UTC).
@@ -416,6 +415,21 @@ mkdir -p "$foreign/nested"
 out=$(cd "$foreign/nested" && env -u HANDOVER_DIR -u USER_SLUG bash "$own/scripts/handover/leg-timeline.sh" 2026-08-03T00:00 2>&1); rc=$?
 check "own-checkout .env resolves rc=0" "$rc" "0"
 contains "own-checkout's HANDOVER_DIR used, not the foreign CWD repo" "$out" "$own/state-fixture/ownslug"
+
+# ===========================================================================
+# HIMMEL-1504: run_lt must pass env overrides whose fixture paths contain a
+# space intact — a word-split override string broke them into stray args.
+# ===========================================================================
+echo "--- 9. run_lt env overrides survive spaced fixture paths ---"
+sp="$ROOT/sp ace"
+mkdir -p "$sp"
+cp -rp "$ROOT/glm-sessions" "$ROOT/claudex-sessions" "$ROOT/cr-critic-scores.jsonl" "$ROOT/chain-ledger.md" "$sp/"
+out=$(ENVOFF=("LEG_TIMELINE_WORKER_GLM=$sp/glm-sessions" "LEG_TIMELINE_WORKER_CLAUDEX=$sp/claudex-sessions" "LEG_TIMELINE_CR_LEDGER=$sp/cr-critic-scores.jsonl" "LEG_TIMELINE_CHAIN_LEDGER=$sp/chain-ledger.md")
+      run_lt 2026-08-03T00:00 2>&1); rc=$?
+check "spaced-path run_lt exit 0" "$rc" "0"
+contains "spaced-path worker land row" "$out" "land done rc=0"
+contains "spaced-path gate avail row"  "$out" "avail codex"
+contains "spaced-path ledger event"    "$out" "BASELINE"
 
 # ===========================================================================
 # Footer.
