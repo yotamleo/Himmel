@@ -74,25 +74,25 @@
 #      migrated here to avoid duplicating coverage.
 #
 # New primary content — the provider invariant: every member of every
-# profile in .claude/mcp-profiles/profiles.json must resolve to EITHER (i) a
-# key in build-mcp-profiles.mjs's PLUGIN_SERVERS map, OR (ii) an item in
-# manifest.json whose probe is {type:"mcp-registered", server:<member>} AND
-# which ALSO carries a real `install` descriptor that actually provisions
-# that server — EXCEPT members on the in-checker OPERATOR_PROVIDED allow-list
-# (machine-local servers the operator registers by hand in ~/.claude.json —
-# himmel does not guarantee them; currently obsidian-vault and onepassword).
+# profile in .claude/mcp-profiles/profiles.json must resolve to EITHER a key
+# in build-mcp-profiles.mjs's PLUGIN_SERVERS map OR the in-checker
+# OPERATOR_PROVIDED allow-list (machine-local servers the operator registers
+# by hand in ~/.claude.json — himmel does not guarantee them; currently
+# obsidian-vault and onepassword). The manifest is NOT a provider source.
 #
-# Criterion (ii) is intentionally NARROWER than "carries an mcp-registered
-# probe" alone — that broader version is exactly what let the graphify
-# ruling above through: a `mcp-registered` probe DETECTS an existing
-# registration, it does not PERFORM one, so probe presence alone is not
-# proof of provisioning. `graphify` must FAIL this invariant (RED control #3
-# below) and must NEVER be laundered onto OPERATOR_PROVIDED — it isn't
-# operator-provided either, it's simply unprovisioned. Today NO manifest
-# item satisfies the tightened (ii) (tokensave-mcp, the one item that used
-# to carry both fields, was removed by this same ticket) — that is CORRECT,
-# not a bug to paper over; the rule stands ready for a future item that
-# genuinely provisions its own MCP registration.
+# A former criterion (ii) — a manifest item with an mcp-registered probe plus
+# an `install` descriptor — was dropped by HIMMEL-2657: install truthiness is
+# not proof the descriptor registers an MCP server (a config-type descriptor
+# would satisfy it while registering nothing), and no manifest item satisfied
+# it anyway after the tokensave removal, so it was an unreachable branch. A
+# mcp-registered probe DETECTS an existing registration, it does not PERFORM
+# one, so probe presence was never proof of provisioning (that gap is exactly
+# what let the graphify ruling above through). `graphify` must FAIL this
+# invariant (RED control #3 below) and must NEVER be laundered onto
+# OPERATOR_PROVIDED — it isn't operator-provided either, it's simply
+# unprovisioned. A future item that genuinely provisions its own MCP
+# registration should reintroduce the criterion with a closed vocabulary of
+# registering install types (RED control #4 is the negative control).
 #
 # Without the allow-list this invariant is RED on 2 of 5 profiles the day it
 # lands, since nothing in himmel provisions those two (manifest.json's
@@ -166,9 +166,8 @@ pluginServerKeysCsv=$(printf '%s' "$pluginServerKeys" | paste -sd, -)
 checker="$work/check-providers.js"
 cat > "$checker" <<'JS'
 // Provider invariant: every profiles.json member must resolve to a
-// PLUGIN_SERVERS key, a manifest.json item that both DETECTS (mcp-registered
-// probe) and PROVISIONS (a real `install` descriptor) that server, or the
-// OPERATOR_PROVIDED allow-list. Hermetic — never reads ~/.claude.json.
+// PLUGIN_SERVERS key or the OPERATOR_PROVIDED allow-list (HIMMEL-2657 dropped
+// the manifest criterion). Hermetic — never reads ~/.claude.json.
 const fs = require('fs');
 // Machine-local servers the operator registers by hand in ~/.claude.json;
 // himmel provisions neither, so they are exempt from the provider check by
@@ -178,22 +177,11 @@ const fs = require('fs');
 // `install` descriptor) — the console was explicit that this must fail
 // loudly (RED control #3), never be laundered onto this allow-list.
 const OPERATOR_PROVIDED = ['obsidian-vault', 'onepassword'];
-const [, , profilesPath, manifestPath, pluginServerKeysCsv] = process.argv;
+// argv[3] (the manifest path) is still passed by callers but deliberately
+// unread — the manifest is not a provider source (HIMMEL-2657).
+const [, , profilesPath, , pluginServerKeysCsv] = process.argv;
 const profiles = JSON.parse(fs.readFileSync(profilesPath, 'utf8')).profiles;
-const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 const pluginServers = new Set(pluginServerKeysCsv.split(',').filter(Boolean));
-// Criterion (ii), TIGHTENED: an mcp-registered probe alone is not proof of
-// provisioning — it DETECTS an existing registration, it does not PERFORM
-// one (this over-broad version is exactly what let the bad graphify ruling
-// through). Require a real `install` descriptor too. No current manifest
-// item satisfies both (tokensave-mcp, the one item that used to, was
-// removed by this same ticket) — correct, not a bug: the rule stands ready
-// for a future item that genuinely provisions its own MCP registration.
-const manifestMcpServers = new Set(
-  manifest.items
-    .filter((i) => i.probe && i.probe.type === 'mcp-registered' && i.install)
-    .map((i) => i.probe.server)
-);
 const failures = [];
 for (const [profile, members] of Object.entries(profiles)) {
   // CR fix (codex-2): an empty profile passes the per-member loop below
@@ -208,21 +196,20 @@ for (const [profile, members] of Object.entries(profiles)) {
   for (const member of members) {
     if (OPERATOR_PROVIDED.includes(member)) continue;
     if (pluginServers.has(member)) continue;
-    if (manifestMcpServers.has(member)) continue;
-    failures.push(`${profile}: "${member}" has no provider (not in PLUGIN_SERVERS, not manifest-provisioned mcp-registered, not OPERATOR_PROVIDED)`);
+    failures.push(`${profile}: "${member}" has no provider (not in PLUGIN_SERVERS, not OPERATOR_PROVIDED)`);
   }
 }
 if (failures.length) {
   console.error(failures.join('\n'));
   process.exit(1);
 }
-console.log('OK: every profile member is provided by PLUGIN_SERVERS, the manifest, or OPERATOR_PROVIDED');
+console.log('OK: every profile member is provided by PLUGIN_SERVERS or OPERATOR_PROVIDED');
 JS
 
 # ── case invariant: the REAL profiles.json satisfies the provider invariant ─
 outInv=$("$node_bin" "$(winpath "$checker")" "$(winpath "$profiles_path")" "$(winpath "$manifest_path")" "$pluginServerKeysCsv" 2>&1) \
   || fail "provider invariant: the real profiles.json should satisfy it, got: $outInv"
-echo "ok: case invariant — every real profiles.json member resolves to PLUGIN_SERVERS, a manifest mcp-registered item, or OPERATOR_PROVIDED"
+echo "ok: case invariant — every real profiles.json member resolves to PLUGIN_SERVERS or OPERATOR_PROVIDED"
 
 # ── RED control (mandatory): a profile member with NO provider and NOT on
 # the allow-list must fail the checker — proves the invariant can go red ───
@@ -267,5 +254,21 @@ redGraphifyMatch=$(printf '%s' "$outRedGraphify" | grep -F '"graphify" has no pr
 [ -n "$redGraphifyMatch" ] \
   || fail "RED control #3: the failure should name graphify, got: $outRedGraphify"
 echo "ok: RED control #3 — minimal:[\"graphify\"] (the reverted ruling) fails the checker, naming it: $outRedGraphify"
+
+# ── RED control #4 (mandatory, HIMMEL-2657 negative control): a manifest item
+# carrying an mcp-registered probe PLUS an install descriptor that registers
+# nothing (type:"config") must NOT count as a provider — install truthiness is
+# not proof of MCP registration, so the manifest is no provider source at all ─
+redInstallManifest="$work/manifest-red-config-install.json"
+jq '.items += [{"id":"fake-config-mcp","probe":{"type":"mcp-registered","server":"fake-config-mcp"},"install":{"type":"config"}}]' \
+  "$manifest_path" > "$redInstallManifest"
+redInstallProfiles="$work/profiles-red-config-install.json"
+jq '.profiles.minimal += ["fake-config-mcp"]' "$profiles_path" > "$redInstallProfiles"
+outRedInstall=$("$node_bin" "$(winpath "$checker")" "$(winpath "$redInstallProfiles")" "$(winpath "$redInstallManifest")" "$pluginServerKeysCsv" 2>&1) && \
+  fail "RED control #4: an mcp-registered item with a non-provisioning install descriptor should have FAILED the checker, but it exited 0: $outRedInstall"
+redInstallMatch=$(printf '%s' "$outRedInstall" | grep -F '"fake-config-mcp" has no provider' || true)
+[ -n "$redInstallMatch" ] \
+  || fail "RED control #4: the failure should name fake-config-mcp, got: $outRedInstall"
+echo "ok: RED control #4 — an mcp-registered item with a config-type install descriptor is not a provider: $outRedInstall"
 
 echo "PASS"
