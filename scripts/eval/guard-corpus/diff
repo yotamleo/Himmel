@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+# scripts/eval/guard-corpus/diff - run a guard-corpus JSONL through two hook
+# copies (base vs head) and report regressions (HIMMEL-4168).
+#
+# NO EXEC MODE. This tool NEVER runs a corpus row as a command. Each row is
+# piped to a hook copy on STDIN as the hook's JSON input; the hook, not this
+# tool, decides. J1672c's exec step once escaped its fixture and wrote into the
+# primary checkout, so there is deliberately no code path here that executes a
+# row's command. The only subprocess this tool launches is `bash <hook-copy>`.
+#
+# ISOLATION. Every hook run gets:
+#   - a scratch HOME and HANDOVER_DIR under a per-invocation tempdir,
+#   - cwd set to a throwaway scratch git repo on branch `main` that stands in
+#     for the primary checkout (the row's @PRIMARY@ token is substituted with
+#     this repo's path and also passed as the payload's `cwd`),
+#   - a per-row timeout; a row that outlasts it is killed (process group) and
+#     flagged TIMEOUT RISK.
+# The real primary checkout is never the cwd and is never written.
+#
+# A hook source is given either as a path to a .sh file, or as `sha:PATH` where
+# PATH is a repo-relative hook path materialised from that git SHA into a
+# scratch dir via `git show`. Both forms are copied into the scratch tree so
+# the hook's sibling lib lookups resolve against a copy, not the live tree.
+#
+# REPORT (stdout, human lines + a trailing JSON summary unless --no-json):
+#   - base-deny/head-allow rows  (the headline regression: head lost a deny)
+#   - newly-denied rows          (head denies what base allowed)
+#   - rc other than 0 or 2
+#   - TIMEOUT RISK rows (wall time over --timeout-warn, default 5s)
+# Exit 0 clean, 1 if any base-deny/head-allow row exists, 2 on setup error.
+#
+# USAGE
+#   diff --base <hook|sha:path> --head <hook|sha:path> --corpus FILE
+#        [--repo DIR] [--timeout-run SECS] [--timeout-warn SECS] [--jobs N]
+#        [--no-json]
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+PLACEHOLDER = "@PRIMARY@"
+
+
+def run_git(args, cwd=None, check=True):
+    p = subprocess.run(["git"] + args, cwd=cwd, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE)
+    if check and p.returncode != 0:
+        raise RuntimeError("git %s failed: %s" % (
+            " ".join(args), p.stderr.decode("utf-8", "replace")))
+    return p.stdout.decode("utf-8", "replace").strip()
+
+
+def materialise_hook(spec, repo, dest_dir):
+    """Return a path to a runnable hook copy, plus a dir to clean up.
+
+    spec is either a filesystem path to a .sh, or `sha:repo-relative-path`.
+    The hook is copied into dest_dir alongside a copy of scripts/hooks/ and
+    scripts/guardrails/ so its sibling `source` lookups resolve to copies.
+    """
+    if spec.startswith("sha:"):
+        sha, rel = spec[4:].split(":", 1) if ":" in spec[4:] else (spec[4:], None)
+        if rel is None:
+            raise RuntimeError("sha spec needs sha:REL/PATH form: " + spec)
+        blob = subprocess.run(
+            ["git", "-C", repo, "show", "%s:%s" % (sha, rel)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if blob.returncode != 0:
+            raise RuntimeError("git show %s:%s failed: %s" % (
+                sha, rel, blob.stderr.decode("utf-8", "replace")))
+        # materialise the whole scripts/hooks + scripts/guardrails tree at sha
+        _materialise_tree(repo, sha, dest_dir)
+        hook_path = os.path.join(dest_dir, rel)
+        with open(hook_path, "wb") as fh:
+            fh.write(blob.stdout)
+        return hook_path
+    # plain path: if the hook lives under a scripts/ tree, copy the sibling
+    # hooks/guardrails/lib dirs so its `source ../guardrails/lib.sh` resolves
+    # against copies; otherwise (a standalone stub) just copy the one file.
+    src_hook = os.path.abspath(spec)
+    hooks_root = _find_scripts_root(src_hook)
+    if hooks_root is not None:
+        _copy_tree(hooks_root, dest_dir)
+        rel = os.path.relpath(src_hook, os.path.dirname(hooks_root))
+        return os.path.join(dest_dir, rel)
+    dst = os.path.join(dest_dir, os.path.basename(src_hook))
+    shutil.copyfile(src_hook, dst)
+    return dst
+
+
+def _find_scripts_root(hook_path):
+    d = os.path.dirname(hook_path)
+    while d and d != "/":
+        if os.path.basename(d) == "scripts":
+            return d
+        d = os.path.dirname(d)
+    return None
+
+
+def _copy_tree(scripts_root, dest_dir):
+    dest_scripts = os.path.join(dest_dir, "scripts")
+    for sub in ("hooks", "guardrails", "lib"):
+        s = os.path.join(scripts_root, sub)
+        if os.path.isdir(s):
+            shutil.copytree(s, os.path.join(dest_scripts, sub),
+                            dirs_exist_ok=True)
+
+
+def _materialise_tree(repo, sha, dest_dir):
+    dest_scripts = os.path.join(dest_dir, "scripts")
+    os.makedirs(dest_scripts, exist_ok=True)
+    for sub in ("hooks", "guardrails", "lib"):
+        files = subprocess.run(
+            ["git", "-C", repo, "ls-tree", "-r", "--name-only",
+             "%s" % sha, "scripts/%s" % sub],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        ).stdout.decode("utf-8", "replace").splitlines()
+        for rel in files:
+            blob = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (sha, rel)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if blob.returncode != 0:
+                continue
+            dst = os.path.join(dest_dir, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "wb") as fh:
+                fh.write(blob.stdout)
+
+
+def make_scratch_primary(parent):
+    """A throwaway git repo on branch main standing in for the primary."""
+    repo = os.path.join(parent, "scratch-primary")
+    os.makedirs(repo, exist_ok=True)
+    env = dict(os.environ)
+    env["HOME"] = parent
+    for args in (["init", "-q", "-b", "main"],
+                 ["config", "user.email", "x@example.com"],
+                 ["config", "user.name", "x"]):
+        subprocess.run(["git", "-C", repo] + args, env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(os.path.join(repo, "seed.txt"), "w") as fh:
+        fh.write("seed\n")
+    subprocess.run(["git", "-C", repo, "add", "-A"], env=env,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "chore: seed"],
+                   env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return repo
+
+
+def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
+    """Pipe a JSON payload to the hook on stdin. Returns (rc, wall_seconds).
+
+    rc is the hook's exit code, or the string 'TIMEOUT'. Nothing from the
+    payload is ever executed; the only process launched is bash <hook_path>.
+    """
+    payload = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": payload_cmd},
+        "cwd": cwd,
+    })
+    env = dict(os.environ)
+    env["HOME"] = home
+    env["HANDOVER_DIR"] = handover
+    env["CLAUDE_PROJECT_DIR"] = os.path.dirname(os.path.dirname(
+        os.path.dirname(hook_path)))
+    # strip any inherited bypass seams so the corpus measures the guard itself
+    for k in ("EDIT_ON_MAIN_OK", "DESTRUCTIVE_OK", "EDIT_LIVE_SETTINGS_OK",
+              "ENV_PREFIX_GUARD_OK", "QMD_UNBOUNDED_OK"):
+        env.pop(k, None)
+    t0 = time.time()
+    p = subprocess.Popen(["bash", hook_path], stdin=subprocess.PIPE,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, cwd=cwd, env=env)
+    try:
+        p.communicate(payload.encode("utf-8", "surrogateescape"),
+                      timeout=timeout_run)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.wait()
+        rc = "TIMEOUT"
+    return rc, time.time() - t0
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="diff", add_help=True)
+    ap.add_argument("--base", required=True, help="hook path or sha:REL/PATH")
+    ap.add_argument("--head", required=True, help="hook path or sha:REL/PATH")
+    ap.add_argument("--corpus", required=True, help="JSONL from gen")
+    ap.add_argument("--repo", default=".", help="repo for sha: specs")
+    ap.add_argument("--timeout-run", type=float, default=15.0,
+                    help="per-row hard timeout (kills the hook)")
+    ap.add_argument("--timeout-warn", type=float, default=5.0,
+                    help="wall time over this => TIMEOUT RISK")
+    ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--no-json", action="store_true")
+    args = ap.parse_args(argv)
+
+    with open(args.corpus, "r", encoding="utf-8") as fh:
+        corpus = [json.loads(line) for line in fh if line.strip()]
+
+    workdir = tempfile.mkdtemp(prefix="guard-corpus-diff.")
+    try:
+        base_dir = os.path.join(workdir, "base")
+        head_dir = os.path.join(workdir, "head")
+        os.makedirs(base_dir)
+        os.makedirs(head_dir)
+        base_hook = materialise_hook(args.base, args.repo, base_dir)
+        head_hook = materialise_hook(args.head, args.repo, head_dir)
+        primary = make_scratch_primary(workdir)
+        home = os.path.join(workdir, "home")
+        handover = os.path.join(workdir, "handover")
+        os.makedirs(home, exist_ok=True)
+        os.makedirs(handover, exist_ok=True)
+
+        def one(idx_row):
+            idx, row = idx_row
+            cmd = row["tool_input"]["command"].replace(PLACEHOLDER, primary)
+            rb, tb = run_one_hook(base_hook, cmd, primary, home, handover,
+                                  args.timeout_run)
+            rh, th = run_one_hook(head_hook, cmd, primary, home, handover,
+                                  args.timeout_run)
+            return dict(idx=idx, cmd=cmd, family=row.get("family"),
+                        transform=row.get("transform"), expect=row.get("expect"),
+                        base=rb, head=rh, tb=tb, th=th)
+
+        with ThreadPoolExecutor(args.jobs) as ex:
+            results = list(ex.map(one, enumerate(corpus)))
+
+        regressions = [r for r in results if r["base"] == 2 and r["head"] not in (2,)]
+        newly = [r for r in results if r["head"] == 2 and r["base"] not in (2,)]
+        odd = [r for r in results
+               if r["base"] not in (0, 2) or r["head"] not in (0, 2)]
+        slow = [r for r in results
+               if max(r["tb"], r["th"]) >= args.timeout_warn]
+
+        print("guard-corpus diff: %d rows" % len(results))
+        print("  base-deny/head-allow (REGRESSION): %d" % len(regressions))
+        for r in regressions:
+            print("    REGRESSION idx=%d family=%s transform=%s base=%s head=%s"
+                  % (r["idx"], r["family"], r["transform"], r["base"], r["head"]))
+        print("  newly-denied: %d" % len(newly))
+        for r in newly[:50]:
+            print("    NEWLY-DENIED idx=%d family=%s transform=%s"
+                  % (r["idx"], r["family"], r["transform"]))
+        print("  rc not in {0,2}: %d" % len(odd))
+        for r in odd[:50]:
+            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["base"], r["head"]))
+        print("  TIMEOUT RISK (>= %.1fs): %d" % (args.timeout_warn, len(slow)))
+        for r in slow[:50]:
+            print("    TIMEOUT-RISK idx=%d tb=%.2f th=%.2f transform=%s"
+                  % (r["idx"], r["tb"], r["th"], r["transform"]))
+
+        if not args.no_json:
+            print("JSON " + json.dumps(dict(
+                rows=len(results), regressions=len(regressions),
+                newly_denied=len(newly), odd_rc=len(odd), timeout_risk=len(slow))))
+
+        return 1 if regressions else 0
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

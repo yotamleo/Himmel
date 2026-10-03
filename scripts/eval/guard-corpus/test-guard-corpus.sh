@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# scripts/eval/guard-corpus/test-guard-corpus.sh - suite for gen + diff
+# (HIMMEL-4168). Proves:
+#   1. gen is deterministic (same seed + seeds file => same bytes)
+#   2. diff flags a planted base-deny/head-allow row, using two tiny STUB hooks
+#      (never a real hook)
+#   3. diff flags a planted slow stub as a TIMEOUT RISK
+#   4. neither tool ever execs a generated command (a sentinel-file assertion)
+#   5. gen --seeds-file applies transforms to a supplied (benign) seed
+#
+# The stub hooks here deny on a harmless sentinel token so no attack string is
+# authored. Run via:
+#   bash scripts/quiet-run.sh suite -- bash scripts/eval/guard-corpus/test-guard-corpus.sh
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+GEN="$HERE/gen"
+DIFF="$HERE/diff"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/guard-corpus-test.XXXXXX")" || {
+  echo "mktemp -d failed" >&2; exit 1; }
+trap 'rm -rf "$TMP"' EXIT
+
+PASS=0; FAIL=0
+pass() { PASS=$((PASS + 1)); echo "PASS $1"; }
+fail() { FAIL=$((FAIL + 1)); echo "FAIL $1"; }
+has() { case "$2" in *"$3"*) pass "$1";; *) fail "$1: '$3' not in output";; esac; }
+hasnt() { case "$2" in *"$3"*) fail "$1: unexpected '$3' in output";; *) pass "$1";; esac; }
+
+# --- 1. determinism -----------------------------------------------------------
+python3 "$GEN" --seed 4168 -o "$TMP/a.jsonl"
+python3 "$GEN" --seed 4168 -o "$TMP/b.jsonl"
+if cmp -s "$TMP/a.jsonl" "$TMP/b.jsonl"; then pass "determinism: same seed, same bytes"
+else fail "determinism: same seed produced different bytes"; fi
+python3 "$GEN" --seed 9999 -o "$TMP/c.jsonl"
+if cmp -s "$TMP/a.jsonl" "$TMP/c.jsonl"; then
+  fail "determinism-control: different seed MUST differ (pad filler)"
+else pass "determinism-control: different seed differs"; fi
+
+# --- stub hooks: deny (exit 2) iff the payload command contains SENTINEL ------
+# These stand in for a real guard. SENTINEL is a harmless token, not an attack.
+mkdir -p "$TMP/scripts/hooks"
+cat > "$TMP/base-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+input=$(cat)
+case "$input" in *SENTINEL_DENY*) exit 2 ;; esac
+exit 0
+STUB
+# head hook: the REGRESSION - it no longer denies SENTINEL_DENY (allows it).
+cat > "$TMP/head-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 0
+STUB
+# slow hook: sleeps past the warn threshold.
+cat > "$TMP/slow-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+sleep 2
+exit 0
+STUB
+chmod +x "$TMP/base-hook.sh" "$TMP/head-hook.sh" "$TMP/slow-hook.sh"
+
+# A tiny corpus carrying one deny-expected sentinel row + benign rows.
+cat > "$TMP/seeds.txt" <<'SEEDS'
+planted	deny	echo SENTINEL_DENY
+SEEDS
+python3 "$GEN" --seed 1 --seeds-file "$TMP/seeds.txt" -o "$TMP/corpus.jsonl"
+
+# --- 2. planted base-deny/head-allow is flagged -------------------------------
+OUT=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/head-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC=$?
+has "regression: flagged" "$OUT" "base-deny/head-allow (REGRESSION): "
+hasnt "regression: not zero" "$OUT" "(REGRESSION): 0"
+if [ "$RC" = "1" ]; then pass "regression: exit code 1"
+else fail "regression: expected exit 1, got $RC"; fi
+
+# control: base vs base (identical) => zero regressions, exit 0
+OUT2=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC2=$?
+has "regression-control: zero" "$OUT2" "(REGRESSION): 0"
+if [ "$RC2" = "0" ]; then pass "regression-control: exit 0"
+else fail "regression-control: expected exit 0, got $RC2"; fi
+
+# --- 3. planted slow stub flagged TIMEOUT RISK --------------------------------
+OUT3=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/slow-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 --timeout-warn 1 2>&1)
+hasnt "timeout: flagged" "$OUT3" "TIMEOUT RISK (>= 1.0s): 0"
+has "timeout: line present" "$OUT3" "TIMEOUT-RISK idx="
+
+# --- 4. no code path execs a generated command (sentinel-file assertion) ------
+# A seed that WOULD create a sentinel file if ever executed. diff must NOT run
+# it; the file must not exist afterward. The hook only reads stdin.
+SENT="$TMP/must-not-exist"
+cat > "$TMP/exec-seeds.txt" <<SEEDS
+planted	deny	touch $SENT
+SEEDS
+python3 "$GEN" --seed 1 --seeds-file "$TMP/exec-seeds.txt" -o "$TMP/exec-corpus.jsonl"
+python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/exec-corpus.jsonl" --jobs 4 >/dev/null 2>&1
+if [ -e "$SENT" ]; then fail "no-exec: diff EXECUTED a generated command (sentinel created)"
+else pass "no-exec: no generated command was executed"; fi
+
+# --- 5. gen --seeds-file applies transforms to a supplied seed ----------------
+cat > "$TMP/one-seed.txt" <<'SEEDS'
+supplied	allow	touch PLACEHOLDER
+SEEDS
+python3 "$GEN" --seed 1 --seeds-file "$TMP/one-seed.txt" -o "$TMP/sf.jsonl"
+N=$(grep -c '"family": "supplied"' "$TMP/sf.jsonl")
+# one seed x (len(TRANSFORMS)+pad) rows; just assert more than one variant.
+if [ "$N" -ge 2 ]; then pass "seeds-file: transforms applied to supplied seed ($N rows)"
+else fail "seeds-file: expected >=2 supplied rows, got $N"; fi
+has "seeds-file: placeholder preserved" "$(cat "$TMP/sf.jsonl")" "PLACEHOLDER"
+
+echo "----"
+echo "guard-corpus: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

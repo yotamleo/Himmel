@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+# scripts/eval/guard-corpus/gen - deterministic adversarial fixture generator
+# for guard/hook PRs (HIMMEL-4168, operator option b, 2026-10-03).
+#
+# WHAT THIS IS. An independent judge reviewing a guard/hook PR needs a corpus
+# of hook-input fixtures to feed base vs head and watch for a regression. When
+# a judge WRITES those attack-shaped commands by hand, Claude's safety
+# classifier sometimes stops the review mid-turn, and the standing rule is
+# never to route around a classifier. This generator produces the same
+# coverage as DATA: it composes commands from seed verbs x transform functions,
+# writes them into a JSONL fixture file, and NEVER executes them. `diff` (the
+# sibling tool) pipes each row to a hook copy on stdin; there is no exec path
+# in either tool.
+#
+# SCOPE (narrowed, 2026-10-03). This generator ships NO built-in attack seeds.
+# Its built-in seeds are the benign twins only (ls, git status, grep, echo as
+# data, a heredoc commit message) used to measure a guard's OVER-deny. Any
+# deny-expected seed comes from the judge via `--seeds-file`: a judge points it
+# at the DENY rows a hook's own test suite already carries, so no new attack
+# command is ever authored or committed here. The transforms below apply to
+# whatever seeds are present, benign or supplied; the families a corpus covers
+# are therefore exactly the families in the seeds file the judge chooses, plus
+# the benign twins built in. The classifier stopped the authoring of built-in
+# attack seeds for every family during this leg's run, so none are built in;
+# this is the fail-safe narrowing, not a gap in the tool.
+#
+# PLACEHOLDER. A seed that must target the primary checkout writes the literal
+# token @PRIMARY@; `diff` substitutes the path of a throwaway scratch git repo
+# that stands in for the primary, so no row ever names the real checkout.
+#
+# ROW SCHEMA (JSONL, one object per line):
+#   {"tool_name":"Bash","tool_input":{"command":<str>},
+#    "family":<str>,"seed_verb":<str>,"transform":<str>,"expect":<deny|allow|either>}
+#
+# DETERMINISM. Same seed + same seeds file => byte-identical output. Ordering
+# is a fixed enumeration (seed index, then transform index); the only use of
+# the RNG is choosing padding filler words, seeded from --seed.
+#
+# USAGE
+#   gen [--seed N] [--seeds-file PATH] [--pad-bytes N] [-o OUT]
+#   gen --list-transforms
+#
+# A --seeds-file is UTF-8 text, one seed per line. Blank lines and lines
+# starting with '#' are ignored. A line may be either a bare command (tagged
+# family=supplied, verb=supplied, expect=either) or a tab-separated triple
+#   <family>\t<expect>\t<command>
+# where expect is deny|allow|either. The command may contain @PRIMARY@.
+
+import argparse
+import json
+import random
+import sys
+
+# --------------------------------------------------------------------------
+# Benign built-in seeds (the over-deny twins). Each is (family, verb, expect,
+# command). These are harmless by construction: a guard that denies any of
+# them is over-matching, which is exactly what a judge wants to measure.
+# --------------------------------------------------------------------------
+BENIGN_SEEDS = [
+    ("benign", "ls", "allow", "ls -la"),
+    ("benign", "git-status", "allow", "git status"),
+    ("benign", "grep", "allow", "grep -rn needle src"),
+    ("benign", "echo-data", "allow", "echo 'this is just data, not a command'"),
+    # a heredoc commit message carrying apostrophes - the shape that has
+    # tripped quote-walking guards (HIMMEL-4138), but entirely benign.
+    ("benign", "heredoc-commit", "allow",
+     "git commit -F - <<'EOF'\nfix: it's a message, don't block me\nEOF"),
+]
+
+# --------------------------------------------------------------------------
+# Transforms. Each takes a seed command string and returns a transformed one.
+# They only re-spell the seed; applied to a benign seed the result is benign,
+# applied to a judge-supplied deny seed the result is the adversarial variant.
+# All are pure and deterministic given their inputs.
+# --------------------------------------------------------------------------
+
+SQ = chr(39)   # '
+DQ = chr(34)   # "
+BS = chr(92)   # backslash
+
+
+def _first_token(cmd):
+    """Split a command into (first word, rest-including-leading-space)."""
+    i = 0
+    while i < len(cmd) and cmd[i] != " ":
+        i += 1
+    return cmd[:i], cmd[i:]
+
+
+def t_identity(cmd):
+    return cmd
+
+
+def t_quote_single_firsttok(cmd):
+    # Re-spell the first token by single-quoting one interior character:
+    #   touch -> t'o'uch  (shell-identical, defeats naive substring matching)
+    head, rest = _first_token(cmd)
+    if len(head) < 2:
+        return cmd
+    return head[:1] + SQ + head[1:2] + SQ + head[2:] + rest
+
+
+def t_quote_double_firsttok(cmd):
+    head, rest = _first_token(cmd)
+    if len(head) < 2:
+        return cmd
+    return head[:1] + DQ + head[1:2] + DQ + head[2:] + rest
+
+
+def t_quote_backslash_firsttok(cmd):
+    head, rest = _first_token(cmd)
+    if len(head) < 2:
+        return cmd
+    return head[:1] + BS + head[1:2] + head[2:] + rest
+
+
+def t_assign_prefix(cmd):
+    return "FOO=1 BAR=2 " + cmd
+
+
+def _wrap_nest(cmd, shell="bash", flag="-c", quote=SQ):
+    body = cmd.replace(quote, quote + BS + quote + quote) if quote == SQ else cmd
+    return shell + " " + flag + " " + quote + body + quote
+
+
+def t_nest_bash_c_sq(cmd):
+    return _wrap_nest(cmd, "bash", "-c", SQ)
+
+
+def t_nest_bash_lc_sq(cmd):
+    return _wrap_nest(cmd, "bash", "-lc", SQ)
+
+
+def t_nest_sh_ec_sq(cmd):
+    return _wrap_nest(cmd, "sh", "-ec", SQ)
+
+
+def t_nest_depth2(cmd):
+    return _wrap_nest(_wrap_nest(cmd, "bash", "-c", SQ), "zsh", "-c", DQ)
+
+
+def t_nest_depth4(cmd):
+    c = cmd
+    for sh, fl, q in (("bash", "-c", SQ), ("sh", "-c", DQ),
+                      ("zsh", "-c", SQ), ("bash", "-lc", DQ)):
+        c = _wrap_nest(c, sh, fl, q)
+    return c
+
+
+def t_wrap_env_quoted_flag(cmd):
+    return "env 'FOO=a b'c " + cmd
+
+
+def t_wrap_timeout(cmd):
+    return "timeout -s KILL '5' " + cmd
+
+
+def t_wrap_nice(cmd):
+    return "nice -n '5' " + cmd
+
+
+def t_wrap_exec_a(cmd):
+    head, rest = _first_token(cmd)
+    return "exec -a '" + head + "' " + cmd
+
+
+def t_wrap_xargs(cmd):
+    return "echo x | xargs -I{} " + cmd
+
+
+def t_eval(cmd):
+    return "eval " + SQ + cmd.replace(SQ, SQ + BS + SQ + SQ) + SQ
+
+
+def t_ddash(cmd):
+    return "-- " + cmd
+
+
+def t_backslash_newline(cmd):
+    head, rest = _first_token(cmd)
+    return head + " " + BS + "\n" + rest.lstrip()
+
+
+TRANSFORMS = [
+    ("identity", t_identity),
+    ("quote_single_firsttok", t_quote_single_firsttok),
+    ("quote_double_firsttok", t_quote_double_firsttok),
+    ("quote_backslash_firsttok", t_quote_backslash_firsttok),
+    ("assign_prefix", t_assign_prefix),
+    ("nest_bash_c_sq", t_nest_bash_c_sq),
+    ("nest_bash_lc_sq", t_nest_bash_lc_sq),
+    ("nest_sh_ec_sq", t_nest_sh_ec_sq),
+    ("nest_depth2", t_nest_depth2),
+    ("nest_depth4", t_nest_depth4),
+    ("wrap_env_quoted_flag", t_wrap_env_quoted_flag),
+    ("wrap_timeout", t_wrap_timeout),
+    ("wrap_nice", t_wrap_nice),
+    ("wrap_exec_a", t_wrap_exec_a),
+    ("wrap_xargs", t_wrap_xargs),
+    ("eval", t_eval),
+    ("ddash", t_ddash),
+    ("backslash_newline", t_backslash_newline),
+]
+
+# padding transform is handled separately so --pad-bytes can parametrise it.
+PAD_WORDS = ["lorem", "ipsum", "dolor", "sit", "amet", "fix", "the", "hook",
+             "see", "pr", "note", "wip", "todo", "xxx", "foo", "bar"]
+
+
+def transform_names():
+    return [n for n, _ in TRANSFORMS] + ["pad"]
+
+
+def _pad_prefix(rng, nbytes):
+    out = []
+    size = 0
+    while size < nbytes:
+        w = rng.choice(PAD_WORDS)
+        out.append(w)
+        size += len(w) + 1
+    # as a shell no-op comment so the padding never changes the command's effect
+    return "# " + " ".join(out) + "\n"
+
+
+def load_seeds(path):
+    seeds = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.rstrip("\n")
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if "\t" in line:
+                parts = line.split("\t", 2)
+                if len(parts) == 3:
+                    family, expect, cmd = parts
+                    expect = expect.strip()
+                    if expect not in ("deny", "allow", "either"):
+                        expect = "either"
+                    seeds.append((family.strip() or "supplied", "supplied",
+                                  expect, cmd))
+                    continue
+            seeds.append(("supplied", "supplied", "either", line))
+    return seeds
+
+
+def rows(seeds, seed, pad_bytes):
+    rng = random.Random(seed)
+    for family, verb, expect, cmd in seeds:
+        for tname, fn in TRANSFORMS:
+            yield {
+                "tool_name": "Bash",
+                "tool_input": {"command": fn(cmd)},
+                "family": family,
+                "seed_verb": verb,
+                "transform": tname,
+                "expect": expect,
+            }
+        # padding variant last, so pad filler is the only RNG consumer
+        yield {
+            "tool_name": "Bash",
+            "tool_input": {"command": _pad_prefix(rng, pad_bytes) + cmd},
+            "family": family,
+            "seed_verb": verb,
+            "transform": "pad",
+            "expect": expect,
+        }
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="gen", add_help=True)
+    ap.add_argument("--seed", type=int, default=4168)
+    ap.add_argument("--seeds-file", default=None,
+                    help="UTF-8 file of extra seeds, one per line "
+                         "(bare command, or family<TAB>expect<TAB>command)")
+    ap.add_argument("--pad-bytes", type=int, default=256,
+                    help="filler bytes for the 'pad' transform (timing probe)")
+    ap.add_argument("-o", "--out", default="-",
+                    help="output JSONL path, or - for stdout")
+    ap.add_argument("--list-transforms", action="store_true")
+    args = ap.parse_args(argv)
+
+    if args.list_transforms:
+        for n in transform_names():
+            print(n)
+        return 0
+
+    seeds = list(BENIGN_SEEDS)
+    if args.seeds_file:
+        seeds += load_seeds(args.seeds_file)
+
+    fh = sys.stdout if args.out == "-" else open(args.out, "w", encoding="utf-8")
+    try:
+        for row in rows(seeds, args.seed, args.pad_bytes):
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    finally:
+        if fh is not sys.stdout:
+            fh.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
