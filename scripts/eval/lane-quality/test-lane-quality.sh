@@ -152,7 +152,8 @@ chmod +x "$TMP/bin/claude-openrouter" "$TMP/bin/orcost"
 : >"$TMP/fake.log.launcher"
 # Claude Code misprices an unrecognized gateway slug, so the harness reprices
 # modelUsage at list rates: 50k in, 4k out, 16k cache-write, 100k cache-read
-# at Haiku 4.5 rates is 0.10 USD, against a reported 0.50.
+# at Haiku 4.5 rates is 0.10 USD (0.12 with the 1.2 metered markup), against
+# a reported 0.50.
 MU_HAIKU='{"anthropic/claude-haiku-4.5":{"inputTokens":50000,"outputTokens":4000,"cacheCreationInputTokens":16000,"cacheReadInputTokens":100000}}'
 LQ_FAKE_MU="$MU_HAIKU" LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
   --model haiku --tasks shell-red-green --max-usd 2 --out "$TMP/out15" >"$TMP/run15.log" 2>&1
@@ -162,8 +163,12 @@ check "openrouter agent goes through the lane launcher" 'grep -q -- "--permissio
 check "openrouter judge stays native" '! grep -q -- "--json-schema" "$TMP/fake.log.launcher" && [ "$(jq -s ".[0].judge.correctness" "$TMP/out15/runs.jsonl")" = 4 ]'
 check "metered balance recorded" '[ "$(jq -s -r ".[0].metered_before" "$TMP/out15/runs.jsonl")" = 8.9070935 ]'
 check "native rows carry no metered balance" '[ "$(jq -s ".[0].metered_before" "$R")" = null ]'
-check "openrouter cost repriced from modelUsage" '[ "$(jq -s ".[0].cost_usd" "$TMP/out15/runs.jsonl")" = 0.1 ] && [ "$(jq -s ".[0].reported_cost_usd" "$TMP/out15/runs.jsonl")" = 0.5 ]'
-check "openrouter outer budget scaled by a logged factor" 'grep -q -- "--max-budget-usd 12.00" "$TMP/fake.log.launcher" && grep -q "budget factor 6" "$TMP/run15.log"'
+check "openrouter cost repriced from modelUsage" 'jq -s ".[0].cost_usd" "$TMP/out15/runs.jsonl" | awk "{exit !(\$1 > 0.1199 && \$1 < 0.1201)}" && [ "$(jq -s ".[0].reported_cost_usd" "$TMP/out15/runs.jsonl")" = 0.5 ]'
+check "openrouter outer budget scaled by a logged factor" 'grep -q -- "--max-budget-usd 8.00" "$TMP/fake.log.launcher" && grep -q "budget factor 4" "$TMP/run15.log"'
+: >"$TMP/fake.log.launcher"
+LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model sonnet --tasks shell-red-green --out "$TMP/out17" >"$TMP/run17.log" 2>&1
+check "openrouter refuses an unpriced model before launch" 'grep -q "haiku only" "$TMP/run17.log" && [ ! -s "$TMP/fake.log.launcher" ]'
 LQ_FAKE_MU='{"x/unpriced":{"inputTokens":1,"outputTokens":1,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}' \
   LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
   --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out16" >"$TMP/run16.log" 2>&1

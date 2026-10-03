@@ -113,18 +113,21 @@ metered_read() { # prints the metered lane's balance in USD, "?" if unreadable, 
 # repriced here from modelUsage; an unpriced model leaves the cost unknown and
 # stops the sweep. Upgrade path: drop this table once Claude Code prices the
 # gateway slug (costBasis no longer "unknown"), or add a row per model adopted.
+# The metered balance fell 12-16% more than list price in the first live
+# sweeps, so the repriced cost carries a 1.2 markup to keep --max-usd a real cap.
 PRICES='{"anthropic/claude-haiku-4.5":[1,5,1.25,0.1]}'
+METERED_MARKUP=1.2
 
 agent_cost() { # $1 result json -> the agent's real cost in USD, or null
   if [ "$LANE" = native ]; then jq -r '.total_cost_usd // null' "$1"; return; fi
-  jq -r --argjson p "$PRICES" '
+  jq -r --argjson p "$PRICES" --argjson mk "$METERED_MARKUP" '
     if (.modelUsage // {}) == {} then null
     else [.modelUsage | to_entries[] | $p[.key] as $r
           | if $r == null then null
             else ((.value.inputTokens // 0) * $r[0] + (.value.outputTokens // 0) * $r[1]
                   + (.value.cacheCreationInputTokens // 0) * $r[2] + (.value.cacheReadInputTokens // 0) * $r[3]) / 1000000
             end]
-         | if any(. == null) then null else add end
+         | if any(. == null) then null else add * $mk end
     end' "$1"
 }
 
@@ -285,13 +288,15 @@ cmd_run() {
   # The judge always runs native; a metered lane's agent goes through its launcher.
   AGENT_BIN="$CLAUDE_BIN"; METERED_PROBE=""; BUDGET_FACTOR=1; TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude/projects}"
   if [ "$LANE" = openrouter ]; then
+    # Only a priced model can be capped; refuse the rest before any spend.
+    [ "$MODEL" = haiku ] || die "--lane openrouter supports --model haiku only (the one model with a PRICES row); got '$MODEL'"
     AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/claude-openrouter}"
     METERED_PROBE="${LQ_METERED_PROBE:-$REPO/scripts/lanes/openrouter-cost.sh}"
     TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude-openrouter/projects}"
-    # The sweep cap counts real (repriced) spend; the per-call cap is an outer
-    # net in Claude Code's own over-counted units, wide enough not to stop a run
-    # below the real cap and still bounding a runaway.
-    BUDGET_FACTOR=6
+    # The sweep cap counts real (repriced) spend. The per-call cap is in Claude
+    # Code's own units, which over-count the real charge about 4.3x, so a factor
+    # of 4 stops a call before it can spend more than the real remainder.
+    BUDGET_FACTOR=4
     echo "lane-quality: openrouter agent budget factor $BUDGET_FACTOR (Claude Code over-counts the gateway slug; --max-usd counts real spend)" >&2
   fi
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$LANE-$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9.-' '_')"

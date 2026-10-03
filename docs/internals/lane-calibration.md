@@ -932,11 +932,12 @@ the sweep. No task starts once the summed `total_cost_usd` reaches the cap, and
 each agent call gets the remainder as `--max-budget-usd`.
 
 **OpenRouter (phase 2).** The operator approved this lane.
-`--lane openrouter --model haiku|sonnet|opus` runs the agent through
+`--lane openrouter --model haiku` runs the agent through
 `scripts/claude-openrouter`, so the launcher's egress matrix, its PHI guard
 and its credit floor all apply (credit below the floor or unknown means no
-launch). The alias resolves to the launcher's pinned OpenRouter slug. The judge
-still runs native.
+launch). The alias resolves to the launcher's pinned OpenRouter slug. Other
+models are refused before launch until they get a price row. The judge still
+runs native.
 
 Claude Code does not recognize the gateway slug (`anthropic/claude-haiku-4.5`
 logs `unrecognized_model`, with `costBasis: unknown`), and its
@@ -944,8 +945,9 @@ logs `unrecognized_model`, with `costBasis: unknown`), and its
 tokens cost about 0.42 at list price. So on this lane `cost_usd` is repriced
 from `modelUsage` tokens at list prices (a `PRICES` table in `run.sh`), and
 the Claude Code figure is kept as `reported_cost_usd`. `--max-usd` caps that
-real spend. The per-call `--max-budget-usd` stays an outer net, scaled by a
-logged factor of 6. An unpriced model leaves the cost unknown and stops the
+real spend. The per-call `--max-budget-usd` is in Claude Code's units, scaled
+by a logged factor of 4, which stops a call before the real remainder is
+spent. An unpriced model leaves the cost unknown and stops the
 sweep.
 
 Each row records `metered_before` and `metered_after`, which are
@@ -953,7 +955,7 @@ Each row records `metered_before` and `metered_after`, which are
 delta can under-report. Re-read the account balance after the sweep before
 quoting its spend. The balance is the real figure. In the first live sweeps
 it fell 12-16% more than the list-price repricing (2.00 against 1.75 on one
-sweep), so leave that much headroom under `--max-usd`.
+sweep), so the repriced cost carries a 1.2 markup.
 
 **Not enabled.** `--lane deepseek|claudex` exits 3.
 - DeepSeek also needs the station opt-in `HIMMEL_DEEPSEEK_INFERENCE_OK=1`,
