@@ -100,6 +100,8 @@ deny "qmd \$'query\\x00 notes' x"
 deny 'qmd \query x'
 deny 'qmd Q\UERY x'
 deny 'q"md" query x'
+deny 'q\
+md query x'
 deny "\\qmd search x"
 deny "\$'qmd' vsearch x"
 deny 'qmd query"" x'

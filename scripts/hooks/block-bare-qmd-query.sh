@@ -95,8 +95,11 @@ esac
 # Lower-case and fold newlines to ';' so the anchors below see one line.
 cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
 # The same text with every quote and backslash deleted: `q"md"`, `\qmd` and
-# `$'qmd'` all read `qmd` here.
-crude=${cmd_lc//\$\'/\'}
+# `$'qmd'` all read `qmd` here. A backslash-newline is folded first, as bash
+# folds it, so `q\<newline>md` reads `qmd` too.
+crude=${cmd//\\$'\n'/}
+crude=$(printf '%s' "$crude" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
+crude=${crude//\$\'/\'}
 # shellcheck disable=SC1003 # a literal backslash in the tr set
 crude=$(printf '%s' "$crude" | LC_ALL=C tr -d '"'\''\\')
 
