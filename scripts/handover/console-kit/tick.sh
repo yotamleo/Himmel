@@ -272,6 +272,7 @@ fi
 # lock_status itself (procs=, closable, held_legs) is untouched.
 nolive_min="${TICK_NOLIVE_MIN:-10}"
 case "$nolive_min" in ''|*[!0-9]*) nolive_min=10 ;; esac
+nolive_min=$((10#$nolive_min))
 
 # launch_dir_default: the console work dir the <name>.launch.log files live in.
 launch_dir_default() {
@@ -296,7 +297,7 @@ leg_start_epoch() {
     if [ -z "$t" ]; then
         armed="$(find "$(launch_dir_default)" -maxdepth 2 -name '*.launch.log' -exec grep -hF ' armed: name=' {} + 2>/dev/null)"  # gnu-ok: Linux-only kit
         line="$(printf '%s\n' "$armed" | awk -v d="doc=$doc" -v c=",$cands," '
-            { n = $3; sub(/^name=/, "", n); if (index(c, "," n ",") || index($0, " " d " ")) last = $1 }
+            { n = $3; sub(/^name=/, "", n); if (index(c, "," n ",") || index($0, " " d " ")) { if ($1 > last) last = $1 } }
             END { if (last != "") print last }')"
         if [ -n "$line" ]; then
             t="$(date -d "${line/_/ }" +%s 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
@@ -320,7 +321,9 @@ leg_forked() {
         done < <(find "$dir" -maxdepth 2 -name '*.jsonl' -mmin "-${TICK_FORK_WINDOW_MIN:-1440}" -exec grep -lF "\"customTitle\":\"$cand\"" {} + 2>/dev/null)  # gnu-ok: Linux-only kit
     done
     [ -n "$newest" ] || return 1
-    tail -n 5 "$newest" 2>/dev/null | grep -q '"type":"continued-in"'  # pipefail-ok: tail -n 5 is a few lines, far under the pipe buffer, so no SIGPIPE
+    # the last record that is not a trailing cost-state: a resumed session appends
+    # assistant/user records after its continued-in, so only the final one counts.
+    grep -v '"type":"cost-state"' "$newest" 2>/dev/null | tail -n 1 | grep -q '"type":"continued-in"'  # pipefail-ok: tail reads its input to EOF and grep -q sees one line, so no SIGPIPE upstream
 }
 
 legs_summary=""
@@ -380,10 +383,10 @@ for leg in $LEGS_SPLIT; do
     # threshold baselines already NOLIVE and the waiter stays silent for it;
     # upgrade = wake on first sight of a NOLIVE, if that ever bites.
     leg_label_state="$lock_status"
-    if [ -f "$leg_doc" ] && [ "$lock_status" = FREE ] && [ "$tail_status" != WRAPPED ]; then
+    if [ -f "$leg_doc" ] && [ "$lock_status" = FREE ] && [ "$tail_status" = "?" ]; then
         if leg_forked "$leg_cands"; then
             leg_label_state=FORKED
-        elif [ "$tail_status" = "?" ]; then
+        else
             leg_t="$(leg_start_epoch "$leg_doc" "$leg_cands")"
             if [ -n "$leg_t" ] && [ $(( $(date +%s) - leg_t )) -ge $(( nolive_min * 60 )) ]; then
                 leg_label_state=NOLIVE

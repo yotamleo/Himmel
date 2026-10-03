@@ -140,6 +140,28 @@ rm -f "$W/projects/p/s2.jsonl"
 printf '%s\n' '- 10:00 WRAPPED — done' >> "$fk"
 check 'a wrapped leg is never FORKED' 'N908:WRAPPED' "$(field legs "$(run_from "$(manifest "$fk:30")")")"
 
+# a leg that has written any marker bullet is never relabelled FORKED
+mk="$(mkleg 912-N912-markerfork '- 10:00 LIVE — working')"
+printf '%s\n' '{"type":"custom-title","customTitle":"HIMMEL-9912-N912-markerfork","sessionId":"s5"}' '{"type":"continued-in","sessionId":"s5"}' > "$W/projects/p/s5.jsonl"
+check 'a LIVE leg whose transcript ended in continued-in is not relabelled FORKED' 'N912:FREE' "$(field legs "$(run_from "$(manifest "$mk:1")")")"
+# a resumed session appends records after continued-in: not forked
+rs="$(mkleg 913-N913-resumed)"
+printf '%s\n' '{"type":"custom-title","customTitle":"HIMMEL-9913-N913-resumed","sessionId":"s6"}' '{"type":"continued-in","sessionId":"s6"}' '{"type":"assistant","sessionId":"s6"}' '{"type":"cost-state","sessionId":"s6"}' > "$W/projects/p/s6.jsonl"
+check 'a transcript that resumed after continued-in is not FORKED' 'N913:FREE' "$(field legs "$(run_from "$(manifest "$rs:1")")")"
+
+# --- threshold parsing and launch-log ordering --------------------------------
+export TICK_NOLIVE_MIN=08
+check 'a leading-zero TICK_NOLIVE_MIN is decimal, not an octal error (9 min is NOLIVE)' 'N901:NOLIVE' "$(field legs "$(run_from "$(manifest "$old:9")")")"
+unset TICK_NOLIVE_MIN
+ln="$(mkleg 914-N914-logorder)"
+touch -d '30 minutes ago' "$ln"
+{
+    printf '%s armed: name=HIMMEL-9914-N914-logorder doc=%s signal=x deadline=y role=leg\n' "$(/bin/date -d '40 minutes ago' +%F_%T)" "$ln"  # gnu-ok: Linux-only kit
+    printf '%s armed: name=HIMMEL-9914-N914-logorder doc=%s signal=x deadline=y role=leg\n' "$(/bin/date -d '2 minutes ago' +%F_%T)" "$ln"  # gnu-ok: Linux-only kit
+} > "$W/console-work/chain/b.launch.log"
+check 'the newest armed: timestamp wins over an older one (2 min ago is FREE)' 'N914:FREE' "$(field legs "$(bash "$SUT" --legs "$ln" 2>/dev/null)")"
+rm -f "$W/console-work/chain/b.launch.log"
+
 # --- the waiter wakes when legs= moves FREE -> NOLIVE / FREE -> FORKED -------
 STUB="$W/stub"; mkdir -p "$STUB"
 cat > "$STUB/tick.sh" <<'EOF'
