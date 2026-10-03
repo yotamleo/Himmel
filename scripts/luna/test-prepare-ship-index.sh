@@ -187,6 +187,12 @@ if (mode === 'mixed') {
   db.prepare("UPDATE content_vectors SET model = 'm2' WHERE hash = 'h_himmel' AND seq = 1").run();
 }
 
+if (mode === 'nocols') {
+  // HIMMEL-4232: qmd's CLI keeps collections in index.yml and can leave
+  // store_collections EMPTY; the documents table still names each collection.
+  db.exec('DELETE FROM store_collections');
+}
+
 if (mode === 'orphans') {
   // Pre-existing vec0 orphans with NO content_vectors row — the 22,895-row
   // situation that was GC'd by hand on 2026-07-23. These must be gone after.
@@ -431,5 +437,21 @@ assert_eq "vec0 table dropped (a receiver on another dimension recreates it)" "0
 assert_eq "documents kept" "2" "$(q "$OUT_LEX" 'select count(*) c from documents')"
 assert_eq "after.models is empty" '[]' "$(printf '%s' "$out" | models_of)"
 assert_eq "SOURCE vectors untouched" "8" "$(q "$SRC_MIX" 'select count(*) c from content_vectors')"
+
+# ============================================================================
+echo "TEST: an empty store_collections falls back to the documents' collections"
+# ============================================================================
+SRC_NOCOL="$TMP_ROOT/src-nocols.sqlite"
+OUT_NOCOL="$TMP_ROOT/out-nocols.sqlite"
+mkfix "$SRC_NOCOL" nocols
+rc=0; out=$(node "$SCRIPT" --src "$SRC_NOCOL" --out "$OUT_NOCOL" --collections himmel,luna 2>&1) || rc=$?
+assert_rc "empty store_collections: reconcile rc 0" 0 "$rc"
+assert_eq "empty store_collections: only kept documents survive" "0" \
+  "$(q "$OUT_NOCOL" "select count(*) c from documents where collection not in ('himmel','luna')")"
+assert_eq "empty store_collections: kept documents present" "2" "$(q "$OUT_NOCOL" 'select count(*) c from documents')"
+rm -f "$OUT_NOCOL"
+rc=0; out=$(node "$SCRIPT" --src "$SRC_NOCOL" --out "$OUT_NOCOL" --collections himmel,nosuch 2>&1) || rc=$?
+assert_rc "empty store_collections: a collection in neither source still refuses" 1 "$rc"
+assert_contains "empty store_collections: names the missing collection" "nosuch" "$out"
 
 summary

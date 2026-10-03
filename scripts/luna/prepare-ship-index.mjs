@@ -225,7 +225,13 @@ if (!hasAd) {
          'documents. Refusing to ship.');
 }
 
-const srcCollections = source.prepare('select name from store_collections order by name').all().map(r => r.name);
+let srcCollections = source.prepare('select name from store_collections order by name').all().map(r => r.name);
+// qmd's CLI keeps collections in index.yml and can leave store_collections
+// empty (HIMMEL-4232). Only then, the documents table names the collections.
+if (srcCollections.length === 0) {
+  srcCollections = source.prepare(
+    'select distinct collection c from documents where collection is not null order by c').all().map(r => r.c);
+}
 stats.sourceCollections = srcCollections;
 
 // Refuse to invent collections on the receiver. If the receiver asks for a
