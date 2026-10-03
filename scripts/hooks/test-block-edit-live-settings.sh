@@ -2133,6 +2133,17 @@ assert_rc "492 nested worktree ln -sf \$SJ ~/.cl\${X:-\${Y:-a}}ude denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl\${X:-\${Y:-a}}ude" HOME="$FAKEHOME")"
 assert_rc "493 primary ln -sf \$SJ ~/.cl\${X:-\${Y:-a}}ude denies" 2 \
     "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.cl\${X:-\${Y:-a}}ude" HOME="$FAKEHOME")"
+# CR round 5 (codex-1): zsh `x#` is zero or more of the atom before it
+assert_rc "494 nested worktree ln -sf \$SJ ~/.cx#laude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cx#laude" HOME="$FAKEHOME")"
+assert_rc "495 nested worktree ln -sf \$SJ ~/.c[x]#laude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c[x]#laude" HOME="$FAKEHOME")"
+assert_rc "496 nested worktree ln -sf \$SJ ~/.c(xy)#laude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c(xy)#laude" HOME="$FAKEHOME")"
+assert_rc "497 primary ln -sf \$SJ ~/.cx#laude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.cx#laude" HOME="$FAKEHOME")"
+assert_rc "498 nested worktree ln -sf \$SJ ~/.cx#onfig allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cx#onfig" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

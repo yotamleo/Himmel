@@ -1620,7 +1620,8 @@ mentions_dot_claude_dir_dest() {
 # text and is left to the callers' own matching.
 _dc_can_be_claude() {
     local c=$1 i=0 j n=${#1} ch pat='' depth=0 pd=0 r eg=0 nc=0 gs xo=${_DC_XONLY:-0}
-    local -a gsa=() cma=()
+    local p0 la=''
+    local -a gsa=() cma=() psa=()
     case "$xo:$c" in
         1:*'$'*|0:*'*'*|0:*'?'*|0:*'['*|0:*'{'*|0:*'$'*) ;;
         0:*'('*|0:*'#'*|0:*'^'*|0:*'~'*) ;;
@@ -1629,6 +1630,7 @@ _dc_can_be_claude() {
     while [ "$i" -lt "$n" ]; do
         ch=${c:i:1}
         i=$((i + 1))
+        p0=${#pat}
         if [ "$xo" = 1 ]; then
             case "$ch" in
                 '{'|'}'|','|'*'|'?'|'['|']'|'('|')'|'|'|'#'|'^'|'~') pat="$pat\\$ch"; continue ;;
@@ -1652,6 +1654,7 @@ _dc_can_be_claude() {
                             *) pat="${pat:0:gs}{${pat:gs+2}}" ;;
                         esac
                     fi
+                    p0=$gs
                 else
                     pat="$pat}"
                 fi
@@ -1675,6 +1678,7 @@ _dc_can_be_claude() {
                 fi
                 ;;
             '(')
+                psa[pd]=$p0
                 pd=$((pd + 1))
                 # the bash extglob pass keeps an `@*?+!` operator before the
                 # group; the zsh pass reads it as text before a plain group
@@ -1686,6 +1690,7 @@ _dc_can_be_claude() {
             ')')
                 if [ "$pd" -gt 0 ]; then
                     pd=$((pd - 1)) pat="$pat)"
+                    p0=${psa[pd]}
                 else
                     pat="$pat\\)"
                 fi
@@ -1697,7 +1702,15 @@ _dc_can_be_claude() {
                     pat="$pat\\|"
                 fi
                 ;;
-            '#') pat="$pat*" ;;
+            '#')
+                # zsh `x#` is zero or more of the atom before it, so that
+                # atom becomes `*`; a `(#…)` glob flag is any text
+                case "$la:${c:i-2:1}" in
+                    :*|*:'(') pat="$pat*" ;;
+                    *) pat="${pat:0:la}*" ;;
+                esac
+                p0=$la
+                ;;
             '^'|'~')
                 pat="$pat*"
                 [ "$pd" = 0 ] && [ "$depth" = 0 ] && break
@@ -1735,6 +1748,7 @@ _dc_can_be_claude() {
                 ;;
             *) pat="$pat$ch" ;;
         esac
+        la=$p0
     done
     # an unclosed brace group is literal text, its commas included
     if [ "$depth" -gt 0 ]; then
