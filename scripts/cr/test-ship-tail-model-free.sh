@@ -24,8 +24,11 @@ SHIP_TAIL_FILES=(
 # test's failure mode doesn't depend on that gate's file. Broadened past that
 # gate's immediately-after-`claude` match so a flag appearing after other
 # flags on the same invocation (`claude --output-format json -p`) still trips
-# it.
-PATTERN='(^|[^A-Za-z0-9_-])claude([^A-Za-z0-9_-].*)?[^A-Za-z0-9_-](-p|--print|--bg)($|[^A-Za-z0-9_-])'
+# it. The span between `claude` and the flag is limited to whitespace-separated
+# argv-like tokens (no quotes, `;`, `|`, `&` or `#`), so an unrelated `claude`
+# mention can't pair with a later, unrelated `-p` on the same line
+# (HIMMEL-3727).
+PATTERN='(^|[^A-Za-z0-9_-])claude([[:space:]]+[^[:space:]'\''";|&#]+)*[[:space:]]+(-p|--print|--bg)($|[^A-Za-z0-9_-])'
 
 pass=0
 fail=0
@@ -84,6 +87,19 @@ else
     got2="sed-error"
 fi
 check "$got2" "matched" "T3 line-continuation-split headless call in fixture is caught"
+
+# --- Negative: an unrelated `claude` mention, unrelated text, then a later
+# `-p` on the same line is not an invocation and must not pair up into a
+# false positive (HIMMEL-3727). ----------------------------------------------
+fixture3="$tmp/negative.sh"
+printf '%s\n' 'echo "see claude docs"; grep -p foo bar.txt' >"$fixture3"
+
+if grep -En "$PATTERN" -- "$fixture3" >/dev/null 2>&1; then
+    got3="matched"
+else
+    got3="no-match"
+fi
+check "$got3" "no-match" "T4 unrelated claude mention + later -p on one line is not flagged"
 
 # --- Real assertion: none of the named ship-tail files contain a headless
 # call today. -----------------------------------------------------------
