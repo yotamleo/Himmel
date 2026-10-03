@@ -299,6 +299,25 @@ else
     bad "exec -a name-wrapped invocation: rc=$rc out=$out"
 fi
 
+# HIMMEL-4158: a wrapper value quoted with a space (or built from quoted and
+# bare segments) must not hide graphify from command position.
+for w in "exec -a 'a b'" "sudo -u 'a b'" "env -C 'x y'" "nice -n '1 0'" \
+         "timeout -s 'K L' 5" "time -o 'a b'" "stdbuf -o 'a b'" "sudo -u 'a b'c" \
+         "sudo -u \$'a b'" "sudo -u'a b c'" "exec -a \"a b\""; do
+    out="$(run_hook "$w graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<< "$out"; then
+        ok "a $w-wrapped invocation reaches the fence"
+    else
+        bad "$w-wrapped invocation: rc=$rc out=$out"
+    fi
+done
+out="$(run_hook "sudo -u 'a b' ls graphify" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<< "$out"; then
+    ok "a quoted-value wrapper around another command does not reach the fence"
+else
+    bad "quoted-value wrapper around ls: rc=$rc out=$out"
+fi
+
 # HIMMEL-2610 (G1): nice/time's long-option alternatives used to be bare
 # literals (--adjustment/--output/--format), so a GNU-unambiguous abbreviation
 # fell through to the generic bare-flag alternative and left the flag's VALUE

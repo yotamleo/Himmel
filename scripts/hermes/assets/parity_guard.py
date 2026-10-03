@@ -161,34 +161,98 @@ _EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:[^\s|;&`\"']*/)?"
 # Quote-aware assignment (CR r5): FOO='a b' / FOO="a b" / FOO=bare. Shared by
 # the env-prefix assignment tolerance and the leading env-assignment prefix so
 # a quoted value's space does not drop the verb out of command position.
-_ASSIGN = r"[a-z0-9_]+=(?:'[^']*'|\"[^\"]*\"|[^\s|;&]*)"
+_ASSIGNS = (r"[a-z0-9_]+='[^']*'", r"[a-z0-9_]+=\"[^\"]*\"", r"[a-z0-9_]+=[^\s|;&]*")
 # HIMMEL-4134: parity with the .sh grammar (scripts/guardrails/lib.sh
 # guard_cmdpos_grammar, HIMMEL-3983/3984): a compound keyword or a function
 # body's `{` starts a command (`) {` too), and so do the exec-style wrappers
 # exec, timeout, nohup, nice, time and xargs, each with its own flags. A flag
 # value may be quoted with a space in it (`exec -a 'my proc' shutdown`).
-_VAL = r"\s+(?:'[^']*'|\"[^\"]*\"|[^-\s]\S*)"
-_CMDPOS_DESTRUCTIVE = (
-    r"(?:^|[;&|(`\n]|\)\s*\{)\s*"
-    + r"(?:(?:" + _ASSIGN
-    + r"|(?:do|then|else|elif|if|while|until|function\s+\S+|!|\{)"
-    + r"|" + _EXE_PREFIX + r"(?:sudo(?:\s+-\S+(?:" + _VAL + r")?)*"   # sudo + flags, each with an optional value token (CR r6/r7; quoted HIMMEL-4150)
-    + r"|env(?:\s+(?:-\S+(?:" + _VAL + r")?|" + _ASSIGN + r"))*"      # env + flags(+value)/assignments (CR r6/r7; quoted HIMMEL-4150)
-    + r"|exec(?:\s+(?:-a" + _VAL + r"|-\S+))*"
-    + r"|timeout(?:\s+-\S+(?:" + _VAL + r")?)*" + _VAL
-    + r"|nohup(?:\s+--)?"
-    + r"|nice(?:\s+(?:-n" + _VAL + r"|--a[a-z-]*" + _VAL + r"|-\S+))*"
-    + r"|time(?:\s+(?:-[of]" + _VAL + r"|--[of][a-z-]*" + _VAL + r"|-\S+))*"
-    + r"|xargs(?:\s+(?:-[adeilnps]" + _VAL + r"|--[admp][a-z-]*" + _VAL + r"|-\S+))*"
-    + r"|cmd(?:\.exe)?(?:\s+/\w+(?::\w+)?)*\s+/c"        # cmd accepts /d /s /e:on … before /c (CR r3)
-    + r"|(?:powershell|pwsh)(?:\.exe)?(?:\s+-\S+)*\s+-c\w*"
-    + r"))\s+)*"
-    + _EXE_PREFIX
+# HIMMEL-4158: a value is one shell word of concatenated segments ('…', "…",
+# $'…', \x, bare) and a flag word may hold them too (`-u'a b'`); the old
+# whitespace-run and HIMMEL-4150 quoted atoms stay as alternatives, so the set
+# only grows. Twin of lib.sh CMDVAL / CMDFLG. Every reading is its own pattern
+# with one possible length; _cmdpos_destructive below walks them over a set of
+# (state, position) pairs instead of one regex, because a backtracking regex
+# over overlapping readings (`sudo -u"x -u"x …`, `sudo -u "x -u " …`) is
+# exponential on a non-match, where the .sh ERE is not.
+_QSEG = (r"'[^']*'|\"(?:[^\"\\]|\\[\s\S])*\"|\$'(?:[^'\\]|\\[\s\S])*'"
+         r"|\\[\s\S]|\$(?!')")
+_SEG = r"(?:" + _QSEG + r"|[^\s'\"\\$])"
+_WORD = r"(?:" + _QSEG + r"|[^-\s'\"\\$])" + _SEG + r"*"
+_VALS = (r"\s+" + _WORD + r"(?=\s|$)", r"\s+'[^']*'", r"\s+\"[^\"]*\"", r"\s+[^-\s]\S*")
+_FLGS = (r"-" + _SEG + r"+(?=\s|$)", r"-\S+")
+_FLG_VALS = tuple(f + v for f in _FLGS for v in ("",) + _VALS)
+
+
+def _with_val(*flags: str) -> tuple:
+    return tuple(f + v for f in flags for v in _VALS)
+
+
+# Each wrapper: (heads, steps, exits). A head follows _EXE_PREFIX, a step is
+# one more flag (+value) after whitespace, and an exit ends the wrapper in
+# command position (a bare one is just the whitespace).
+_WRAPPERS = (
+    (("sudo",), _FLG_VALS, ()),                              # sudo + flags, each with an optional value token (CR r6/r7; quoted HIMMEL-4150)
+    (("env",), _FLG_VALS + _ASSIGNS, ()),                    # env + flags(+value)/assignments (CR r6/r7; quoted HIMMEL-4150)
+    (("exec",), _with_val("-a") + _FLGS, ()),
+    (("timeout",), _FLG_VALS, _VALS),
+    (("nohup", r"nohup\s+--"), (), ()),
+    (("nice",), _with_val("-n", "--a[a-z-]*") + _FLGS, ()),
+    (("time",), _with_val("-[of]", "--[of][a-z-]*") + _FLGS, ()),
+    (("xargs",), _with_val("-[adeilnps]", "--[admp][a-z-]*") + _FLGS, ()),
+    ((r"cmd(?:\.exe)?",), (r"/\w+(?::\w+)?",), (r"\s+/c",)),   # cmd accepts /d /s /e:on … before /c (CR r3)
+    ((r"(?:powershell|pwsh)(?:\.exe)?",), (r"-\S+",), (r"\s+-c\w*",)),
 )
+_CMDPOS_ANCHOR = re.compile(r"(?:^|[;&|(`\n]|\)\s*\{)\s*")
+_CMDPOS_UNITS = tuple(re.compile(u + r"\s+") for u in _ASSIGNS + (
+    r"(?:do|then|else|elif|if|while|until|function\s+\S+|!|\{)",))
+_CMDPOS_WRAPS = tuple(
+    (tuple(re.compile(_EXE_PREFIX + h) for h in heads),
+     tuple(re.compile(r"\s+" + st) for st in steps),
+     tuple(re.compile(x + r"\s+") for x in (exits or ("",))))
+    for heads, steps, exits in _WRAPPERS)
+
+
+def _cmdpos_destructive(text: str) -> bool:
+    """True when a _CMDPOS_VERBS atom sits in command position: after an
+    anchor and any run of assignments, keywords and wrappers (with their
+    flags). The same grammar the .sh CMDPOS spells as one ERE."""
+    todo = [(-1, m.end()) for m in _CMDPOS_ANCHOR.finditer(text)]
+    seen = set()
+    while todo:
+        state = todo.pop()
+        if state in seen:
+            continue
+        seen.add(state)
+        w, p = state
+        if w < 0:
+            if _CMDPOS_VERBS.match(text, p):
+                return True
+            todo += [(-1, m.end()) for u in _CMDPOS_UNITS if (m := u.match(text, p))]
+            todo += [(i, m.end()) for i, (heads, _, _) in enumerate(_CMDPOS_WRAPS)
+                     for h in heads if (m := h.match(text, p))]
+        else:
+            _, steps, exits = _CMDPOS_WRAPS[w]
+            todo += [(w, m.end()) for st in steps if (m := st.match(text, p))]
+            todo += [(-1, m.end()) for x in exits if (m := x.match(text, p))]
+    return False
+
 
 # ScheduledTasks module WRITE verbs (HIMMEL-1821). Shared by the two anchors
 # the rule below applies it under; mirrors the .sh hook's SCHEDVERBS.
 _SCHED_VERBS = r"(?:register|unregister|set|start|stop|disable|enable)-scheduledtask(?:[^A-Za-z0-9_.-]|$)"
+
+# Bare command-name atoms refused in command position (_cmdpos_destructive).
+_CMDPOS_VERBS = re.compile(
+    _EXE_PREFIX + r"(?:"
+    + r"(?:(?:format|diskpart|bcdedit)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)|mkfs)"
+    + r"|schtasks(?:\.exe)?\s+(/create|/change|/delete|/end|/run|/config)(?:[^A-Za-z0-9_.-]|$)"    # protects scheduled jobs (mutations only)
+    + r"|" + _SCHED_VERBS
+    + r"|(?:taskkill|stop-process|pskill)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r"|(?:shutdown|reboot|logoff)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r"|(?:icacls|takeown)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r")"
+)
 
 # Catastrophic / shared-machine / irreversible classes only.
 # Routine git, gh, mv, cp, and non-recursive rm are intentionally NOT here.
@@ -196,11 +260,9 @@ TERMINAL_DESTRUCTIVE = re.compile(
     r"\brm\b[^|;&\n]*(?:\s|\$\{ifs\})[\"']?-\w*r"   # recursive rm (rm -r/-rf/-Rf); tolerates a quoted flag + ${IFS} separator (HIMMEL-851 U2/U3)
     + r"|\brm\b[^|;&\n]*--recursive"
     + r"|\b(del|erase|rd|rmdir)\b[^|;&\n]*/s(?:[^A-Za-z0-9_.-]|$)"  # recursive Windows delete; /s bound to the switch, not a path prefix like /scripts (HIMMEL-851 U1)
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:(?:format|diskpart|bcdedit)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)|mkfs)"
     + r"|\bcipher\s+/w"
     # HIMMEL-1141 verb split: schtasks /query is read-only (cadence diagnostic),
     # so only the mutating verbs are refused. Mirrors the .sh hook schtasks line.
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"schtasks(?:\.exe)?\s+(/create|/change|/delete|/end|/run|/config)(?:[^A-Za-z0-9_.-]|$)"    # protects scheduled jobs (mutations only)
     # HIMMEL-1821: same capability, other spellings — the PowerShell
     # ScheduledTasks module drives the Task Scheduler COM API and never
     # launches schtasks.exe, so the CLI line alone guards one spelling out of
@@ -225,10 +287,10 @@ TERMINAL_DESTRUCTIVE = re.compile(
     # parenthesised -ComObject ('Schedule.Service') form is refused.
     # Both scheduled-task rules also take a LOCAL script-block anchor "{"
     # (CR r8) so ForEach-Object { Register-ScheduledTask … } is refused; "{"
-    # cannot go into the shared _CMDPOS_DESTRUCTIVE without refusing
+    # cannot go into the shared _cmdpos_destructive without refusing
     # jq '{format: .x}', but no JSON key is spelled <verb>-scheduledtask.
     # RESIDUAL (CR r3/r4/r5), the shared no-general-parser limit of
-    # _CMDPOS_DESTRUCTIVE rather than anything these rules introduced —
+    # _cmdpos_destructive rather than anything these rules introduced —
     # measured: brace script blocks for the SHARED atoms (ForEach-Object
     # { schtasks /create … }, { shutdown … }, { taskkill … } are all allowed
     # today, exactly as before this change), string indirection
@@ -239,18 +301,19 @@ TERMINAL_DESTRUCTIVE = re.compile(
     # A tokenizer closes these, a wider regex does not (HIMMEL-912). Mirrors
     # the .sh hook's ScheduledTasks + Schedule.Service lines
     # (lockstep, HIMMEL-754).
-    + r"|" + _CMDPOS_DESTRUCTIVE + _SCHED_VERBS
     + r"|(?:^|[{])\s*[\"']?" + _SCHED_VERBS
     + r"|(?:^|[|;&(={`\n])\s*new-object[^|;&\n]*-c[a-z0-9]*\s*[:=]?\s*[(\"']*schedule\.service(?:[^A-Za-z0-9_.-]|$)"
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:taskkill|stop-process|pskill)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r"|\bkill\s+-9"
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:shutdown|reboot|logoff)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r"|\breg\s+(add|delete)\b"
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:icacls|takeown)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r"|\bgit\s+push\b[^|;&\n]*(--force|--force-with-lease|\s-f\b)"
     + r"|\bgit\s+(reset\s+--hard|clean\s+-\w*f|filter-branch)\b"
     + r"|\bcurl[^|;&]*\|\s*(ba)?sh|\bwget[^|;&]*\|\s*(ba)?sh"
 )
+
+
+def _terminal_destructive(text: str) -> bool:
+    return bool(TERMINAL_DESTRUCTIVE.search(text)) or _cmdpos_destructive(text)
+
 
 # Container privesc shapes (block-docker-privesc parity, HIMMEL-731). Membership
 # in the docker group is root-equivalent, so a docker/podman run|exec|create that
@@ -1335,7 +1398,10 @@ def _command_checks(raw_cmd: str, cmd: str, payload: dict, args: dict) -> None:
     if TERMINAL_FORBIDDEN_PATHS.search(cmd):
         block("Shell access to secret paths, the guard hook, or Claude "
               "Code's home is forbidden — use the file tools for those.")
-    if TERMINAL_DESTRUCTIVE.search(cmd):
+    # HIMMEL-4158: norm() turns `\` into `/`, which hides a shell escape in a
+    # wrapper value (`sudo -u a\ b reboot`); also read the raw text then.
+    if _terminal_destructive(cmd) or (
+            "\\" in raw_cmd and _terminal_destructive(raw_cmd.strip().lower())):
         block("Catastrophic command class refused (recursive deletion, "
               "disk/scheduler/process/registry mutation, force-push, "
               "remote-exec). Ask the operator if genuinely needed.")
