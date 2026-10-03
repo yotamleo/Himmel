@@ -1076,45 +1076,73 @@ _unjudged_cmd_word() {
 # its scope runs to the end of the command; in bash that shape is only a
 # function definition (`f() …`), denied too when a `.claude` dir follows.
 # TOK=0 splits the text on `;`, `&`, `|` and newlines instead, takes each
-# piece's first word, counts a `(` in it as a glob, and judges the text from
-# that piece to the end. There a lone `-`, `--`, `*` or `+` (a markdown
-# bullet in a heredoc body) is not judged.
+# piece's first word, and judges that piece, or the text from it to the end
+# when the word carries a `(` or the piece ends in a `\` continuation. There
+# a lone `-`, `--`, `*` or `+` (a markdown bullet in a heredoc body) is not
+# judged.
 # An exec wrapper (`env`, `sudo`, `xargs`, `nohup`, `timeout`, zsh's `noglob`
 # …) hands its operand on as the command, so after one the first word that
-# is not a flag, an assignment or a number is judged as the command word too,
-# and so is every glob or expansion word in that segment that does not
-# itself name `.claude` (`sudo -u root /bin/c? …`).
-# ponytail: an operand that follows an option's own argument
-# (`sudo -u root /opt/t/plant …`) and a command a program runs from its
-# arguments (`find -exec`, `sh -c '…'`) are not judged; upgrade path: an
-# exec-wrapper option table, if such a plant is seen.
+# is not a flag, an assignment or a number is judged as the command word too.
+# A bare word right after a wrapper option that takes an argument
+# (_wrapper_opt_arg: `sudo -u root`) is that argument, not the command; a
+# word there that is itself unjudged is still judged, so the table can only
+# over-deny, never hide one.
+# ponytail: an argument-taking wrapper option missing from the table, and a
+# command a program runs from its arguments (`find -exec`, `sh -c '…'`), are
+# not judged; upgrade path: extend _wrapper_opt_arg when such a plant is seen.
+
+# _wrapper_opt_arg WRAPPER OPT_LC — 0 when the exec wrapper's option takes the
+# next word as its argument. OPT_LC is lowercased, so `-U`/`-u` share a row.
+_wrapper_opt_arg() {
+    case "$1:$2" in
+        sudo:-u|sudo:-g|sudo:-h|sudo:-p|sudo:-c|sudo:-d|sudo:-r|sudo:-t|sudo:-a \
+        |sudo:--user|sudo:--group|sudo:--host|sudo:--prompt|sudo:--close-from \
+        |sudo:--chdir|sudo:--role|sudo:--type|sudo:--other-user \
+        |sudo:--command-timeout|sudo:--chroot|sudo:--auth-type|sudo:--login-class \
+        |doas:-u|doas:-c \
+        |env:-u|env:-c|env:-s|env:--unset|env:--chdir|env:--split-string \
+        |timeout:-s|timeout:-k|timeout:--signal|timeout:--kill-after \
+        |nice:-n|nice:--adjustment \
+        |ionice:-c|ionice:-n|ionice:-p|ionice:-u|ionice:--class|ionice:--classdata \
+        |stdbuf:-i|stdbuf:-o|stdbuf:-e \
+        |xargs:-i|xargs:-l|xargs:-n|xargs:-p|xargs:-s|xargs:-d|xargs:-e|xargs:-a \
+        |xargs:--arg-file|xargs:--delimiter|xargs:--max-args|xargs:--max-procs \
+        |xargs:--max-chars|xargs:--max-lines|xargs:--process-slot-var \
+        |exec:-a|time:-f|time:-o|time:--format|time:--output|taskset:-c|chrt:-p)
+            return 0 ;;
+    esac
+    return 1
+}
+
 _tok_unjudged_verb() {
-    local k sg cur=-1 done_seg=0 wrapped=0 txt w g sc=0 nog=0 i n
+    local k sg cur=-1 done_seg=0 wrapped=0 wname='' oparg=0 txt w g sc=0 nog=0 i n
     local -a pieces
     if [ "$TOK" = 1 ]; then
         k=0
         while [ "$k" -lt "$ST_N" ]; do
             sg=${ST_S[k]}
-            if [ "$sg" != "$cur" ]; then cur=$sg done_seg=0 wrapped=0; fi
+            if [ "$sg" != "$cur" ]; then cur=$sg done_seg=0 wrapped=0 oparg=0; fi
             g=${ST_G[k]}
-            if [ "$wrapped" = 1 ] && [ -z "${ST_RO[k]}" ] \
-                && { [ "$g" = 1 ] || [ "${ST_X[k]}" = 1 ]; }; then
-                case "${ST_LW[k]}" in
-                    *.claude*) ;;
-                    *) done_seg=0 ;;
-                esac
-            fi
             if [ "$done_seg" = 0 ] && [ -z "${ST_RO[k]}" ] && [ "${ST_A[k]}" = 0 ]; then
+                # a bare word after an argument-taking wrapper option is its argument
+                if [ "$oparg" = 1 ]; then
+                    oparg=0
+                    if ! _unjudged_cmd_word "${ST_LW[k]}" "${ST_X[k]}" "$g"; then
+                        k=$((k + 1))
+                        continue
+                    fi
+                fi
                 case "${ST_LW[k]}:${ST_Q[k]}:$wrapped" in
                     if:0:0|then:0:0|else:0:0|elif:0:0|do:0:0|while:0:0|until:0:0|'!:0:0'|'{:0:0'|time:0:0) ;;
-                    -*:?:1|[a-z_]*=*:?:1|[0-9]*:?:1) ;;
+                    -*:?:1) ! _wrapper_opt_arg "$wname" "${ST_LW[k]}" || oparg=1 ;;
+                    [a-z_]*=*:?:1|[0-9]*:?:1) ;;
                     *)
                         done_seg=1 sc=0
                         [ "${ST_SEP[sg]}" != '(' ] || g=1 sc=1
                         if ! _unjudged_cmd_word "${ST_LW[k]}" "${ST_X[k]}" "$g"; then
                             case "${ST_LW[k]}" in
                                 env|sudo|doas|xargs|command|builtin|exec|nohup|nice|ionice|timeout|stdbuf|setsid|taskset|chrt|unbuffer|time|noglob|nocorrect)
-                                    wrapped=1 done_seg=0 ;;
+                                    wrapped=1 wname=${ST_LW[k]} done_seg=0 ;;
                             esac
                         else
                             txt='' w=0
@@ -1148,34 +1176,38 @@ EOF
         # shellcheck disable=SC2086 # split the piece into words, globbing off
         set -- ${pieces[i]}
         [ "$nog" = 1 ] || set +f
-        wrapped=0
+        wrapped=0 oparg=0
         while [ $# -gt 0 ]; do
+            w=0; case "$1" in *'$'*) w=1 ;; esac
+            g=0; case "$1" in *[*?[\{\(]*) g=1 ;; esac
+            if [ "$oparg" = 1 ]; then
+                oparg=0
+                if ! _unjudged_cmd_word "$1" "$w" "$g"; then shift; continue; fi
+            fi
             case "$1:$wrapped" in
                 if:?|then:?|else:?|elif:?|do:?|while:?|until:?|'!:'?|'{:'?|'(:'?|time:?) shift ;;
                 [a-z_]*=*:?) shift ;;
-                -*:1|[0-9]*:1) shift ;;
+                -*:1)
+                    ! _wrapper_opt_arg "$wname" "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" || oparg=1
+                    shift ;;
+                [0-9]*:1) shift ;;
                 env:?|sudo:?|doas:?|xargs:?|command:?|builtin:?|exec:?|nohup:?|nice:?|ionice:?|timeout:?|stdbuf:?|setsid:?|taskset:?|chrt:?|unbuffer:?|noglob:?|nocorrect:?)
-                    shift; wrapped=1 ;;
+                    wname=$1; shift; wrapped=1 ;;
                 *) break ;;
             esac
         done
-        # a wrapped glob or expansion word that names no .claude stands in
-        # for the operand, as on the token path
-        if [ "$wrapped" = 1 ]; then
-            for w in "$@"; do
-                case "$w" in
-                    *.claude*) ;;
-                    *[*?[\{\(\$]*) set -- "$w"; break ;;
-                esac
-            done
-        fi
         case "${1:--}" in
             -|--|'*'|+) ;;
             *)
                 w=0; case "$1" in *'$'*) w=1 ;; esac
                 g=0; case "$1" in *[*?[\{\(]*) g=1 ;; esac
                 if _unjudged_cmd_word "$1" "$w" "$g"; then
-                    txt='' k=$i
+                    # the zsh `(` split and a `\` continuation run on past the piece
+                    txt=${pieces[i]} k=$((i + 1))
+                    case "$1:${pieces[i]}" in
+                        *'('*:*|*\\) ;;
+                        *) k=$n ;;
+                    esac
                     while [ "$k" -lt "$n" ]; do
                         txt="$txt ${pieces[k]}"
                         k=$((k + 1))

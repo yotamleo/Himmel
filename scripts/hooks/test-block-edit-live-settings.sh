@@ -1778,6 +1778,23 @@ assert_rc "337 /tmp/ls -sf x ~/.claude/ (read name outside a bin dir) denies" 2 
     "$(bash_rc_of "$PRIMARY" '/tmp/ls -sf x ~/.claude/' HOME="$FAKEHOME")"
 assert_rc "338 /bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md allows" 0 \
     "$(bash_rc_of "$PRIMARY" '/bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+# A wrapper option's bare argument is skipped, so the word after it is the
+# command; a wrapped read's own glob arguments are not command words.
+assert_rc "339 sudo -u root /opt/t/plant x ~/.claude/ (after an option argument) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -u root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "340 sudo cat /tmp/*.txt ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sudo cat /tmp/*.txt ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+assert_rc "341 heredoc, then sudo -u root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nsudo -u root /opt/t/plant x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "342 heredoc, then sudo cat /tmp/*.txt ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nsudo cat /tmp/*.txt ~/.claude/CLAUDE.md')" HOME="$FAKEHOME")"
+# Without tokens a plain glob judges its own piece; `(` and `\` run on.
+assert_rc "343 heredoc, then /bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md')" HOME="$FAKEHOME")"
+assert_rc "344 heredoc, then /bin/c(p|q) a /tmp/b; cat ~/.claude/x denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c(p|q) a /tmp/b; cat ~/.claude/x')" HOME="$FAKEHOME")"
+assert_rc "345 heredoc, then a continued /opt/t/plant line to ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/opt/t/plant a \\\\\n ~/.claude/x')" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
