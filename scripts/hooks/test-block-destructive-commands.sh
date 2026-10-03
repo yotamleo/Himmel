@@ -700,6 +700,7 @@ assert_rc 'rm "-"\<NL>r d (split flag)'  2 "$(run_case "$(j_bash 'rm "-"'"$BSNL"
 assert_rc 'rm -f a \<NL>-"r" d'          2 "$(run_case "$(j_bash 'rm -f a '"$BSNL"'-"r" d')")"
 assert_rc 'rm \<CR><NL>-"r" d (CRLF)'    2 "$(run_case "$(j_bash 'rm '"$BSCRLF"'-"r" d')")"
 assert_rc 'heredoc then rm \<NL>-"r" d'  2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'$'\n''x'$'\n''EOF'$'\n''rm '"$BSNL"'-"r" d')")"
+assert_rc 'heredoc then rm \<CR><NL>-"r" d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'$'\r\n''x'$'\r\n''EOF'$'\r\n''rm '"$BSCRLF"'-"r" d')")"
 # The same join feeds every other guard in the hook.
 assert_rc 'git reset \<NL>--hard'        2 "$(run_case "$(j_bash 'git reset '"$BSNL"'--hard')")"
 assert_rc 'git clean \<NL>-fx'           2 "$(run_case "$(j_bash 'git clean '"$BSNL"'-fx')")"

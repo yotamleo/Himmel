@@ -458,13 +458,15 @@ fi
 # `rm \<NL>-"r" d` ends the rm segment before the quoted flag. Run the scans
 # below on a joined copy too (see cmd_lc_join). With a heredoc, the copy is
 # joined after the body strip, where `\r` is already `\n`, so a CRLF
-# continuation is joined only when there is no heredoc.
+# continuation arrives there as `\`+LF+LF and is dropped as that pair.
 rm_join="$rm_scrub"
 if [[ $cmd_lc_join != "$cmd_lc" ]]; then
     if [[ $cmd_lc != *'<<'* ]]; then
         rm_join="$cmd_lc_join"
     else
-        rm_join="${rm_scrub_raw//"$_bsnl"/}"
+        rm_join="$rm_scrub_raw"
+        [[ $cmd == *"$_bscrlf"* ]] && rm_join="${rm_join//"$_bsnl"$'\n'/}"
+        rm_join="${rm_join//"$_bsnl"/}"
         rm_join="${rm_join//$'\n'/;}"
     fi
 fi
