@@ -126,5 +126,5 @@ if [ -n "$blocked" ]; then
   echo "REFUSE — red not proven inherited-and-fixed: $blocked. Report BLOCKED; do not merge forward."
   exit 1
 fi
-echo "ALLOW — every red job was red on the merge-base run with the same failing cases and is green on latest main: $(paste -sd, - <<< "$reds" | sed 's/,/, /g'). One 'git fetch origin main' + 'git merge origin/main' (merge commit; never rebase or force-push), citing both main run ids in a Results bullet."
+echo "ALLOW — every red job was red on the merge-base run with the same failing cases and is green on latest main: $(paste -sd, - <<< "$reds" | sed 's/,/, /g'). One 'git merge $tip' (the origin/main tip just validated and fetched; never 'origin/main' again, it may have moved; merge commit; never rebase or force-push), citing both main run ids in a Results bullet."
 exit 0

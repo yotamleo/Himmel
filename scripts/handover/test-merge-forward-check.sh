@@ -80,6 +80,7 @@ git -C "$tmp/work" push -q origin main 2>/dev/null
 run "origin/main moved on after the latest run: REFUSE" 1 'REFUSE.*not latest main'
 TIP="$(git -C "$tmp/work" rev-parse HEAD)"
 run "--latest-sha equals the fetched origin/main: ALLOW" 0 'ALLOW'
+run "ALLOW names the validated tip to merge, not a fresh origin/main" 0 "git merge $TIP"
 out=$(cd "$tmp" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha a --main-base-sha a --latest-sha "$TIP" 2>&1); rc=$?
 if [ "$rc" -eq 2 ]; then ok "outside a repo with origin/main: usage, never ALLOW"; else bad "outside a repo exits 2 (rc=$rc)" "$out"; fi
 

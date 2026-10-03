@@ -348,7 +348,8 @@ by design.
   `git rev-parse origin/main` after its own fetch). Exit 0
   `ALLOW` (every red job was red at the base with the same failing cases AND is
   green on latest) lets you,
-  once, `git fetch origin main` then `git merge origin/main` — a merge commit;
+  once, `git merge <the tip sha the ALLOW line prints>` (not `origin/main`, which
+  may have moved since the check) — a merge commit;
   never rebase, never force-push — citing both main run ids in a Results
   bullet. Exit 1 `REFUSE` (a job green or absent at the base, or a failing case
   the base did not fail, is your own red; a job red or absent on latest main,
