@@ -54,7 +54,7 @@ while [ $# -gt 0 ]; do
     *) echo "semantic-update: unknown argument '$1'" >&2; usage ;;
   esac
 done
-[ -n "$NAME" ] && [ -n "$CORPUS_ROOT" ] && [ -n "$CORPUS_CLASS" ] || usage
+if [ -z "$NAME" ] || [ -z "$CORPUS_ROOT" ] || [ -z "$CORPUS_CLASS" ]; then usage; fi
 case "$NAME" in *[!A-Za-z0-9._-]*) echo "semantic-update: --name must match [A-Za-z0-9._-]+" >&2; exit 1 ;; esac
 case "$MAX_FILES" in ''|*[!0-9]*|0) echo "semantic-update: --max-files must be a positive integer (got '$MAX_FILES')" >&2; exit 1 ;; esac
 [ -d "$CORPUS_ROOT" ] || { echo "semantic-update: --corpus-root '$CORPUS_ROOT' is not a directory" >&2; exit 1; }
