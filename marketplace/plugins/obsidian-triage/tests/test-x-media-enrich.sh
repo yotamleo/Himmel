@@ -1086,6 +1086,11 @@ assert "malformed payload stamps nothing (retried next run)" unstamped "$a"
 echo '{"code":200,"tweet":{"media":"oops"}}' > "$FXB"
 X_TEST_FXT_JSON="$FXB" X_TEST_FXT_COUNT="$tmp/fxt-b.count" HOME="$H2" run_tool "$BV" >"$tmp/bv2.out" 2>"$tmp/bv2.err"
 assert "non-object media does not abort the batch (exit 0)" 0 "$?"
+for root in null '[]' '7'; do
+  echo "$root" > "$FXB"
+  X_TEST_FXT_JSON="$FXB" X_TEST_FXT_COUNT="$tmp/fxt-b.count" HOME="$H2" run_tool "$BV" >"$tmp/bv3.out" 2>"$tmp/bv3.err"
+  assert "non-object JSON root ($root) does not abort the batch (exit 0)" 0 "$?"
+done
 
 # --- Test 14: doc-contract -------------------------------------------------
 echo "Test 14: /x-media-enrich runbook + catalog + README doc-contract"

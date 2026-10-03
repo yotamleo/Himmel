@@ -462,6 +462,8 @@ def fxt_probe(x: dict):
             return "gone", None
         print(f"fxtwitter probe {x['shortcode']}: {str(e)[:120]}", file=sys.stderr)
         return "error", None
+    if not isinstance(data, dict):
+        return "error", None
     if data.get("code") == 404:
         return "gone", None
     tweet = data.get("tweet")
