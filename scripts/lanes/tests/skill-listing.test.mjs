@@ -203,3 +203,20 @@ test('fraction: a plugin listed under a longer manifest name costs more than und
   const longer = skillListingSettings({ ...base, runtimeNames: new Map([['p1@himmel', 'x'.repeat(300)]]) }).skillListingBudgetFraction;
   assert.ok(longer > same, `${longer} vs ${same}`);
 });
+
+// HIMMEL-4116: the window is the profile's own (contextMode 1m = 1_000_000), not a fixed 200k.
+const bigEntries = Array.from({ length: 20 }, (_, i) => plugin(`s${i}`, 2500, 'lean-skills'));
+const regWindow = (contextMode) => ({ ...registry, profiles: { ...registry.profiles, user: { enable: ['lean-skills@himmel'], contextMode, ...(contextMode === '1m' ? { autocompact: 1000000 } : {}) } } });
+
+test('resolveProfile: a 1m contextMode profile sizes the fraction against 1_000_000', () => {
+  const r = resolveProfile(regWindow('1m'), 'user', { skillEntries: bigEntries });
+  assert.ok(r.skillListingBudgetFraction > 0.01 && r.skillListingBudgetFraction < 0.02, String(r.skillListingBudgetFraction));
+});
+
+test('resolveProfile: the same listing on a standard profile still trips the 0.05 cap', () => {
+  assert.throws(() => resolveProfile(regWindow('standard'), 'user', { skillEntries: bigEntries }), /exceeds the 0\.05 sanity cap/);
+});
+
+test('skillListingSettings: no window passed defaults to 200k', () => {
+  assert.throws(() => skillListingSettings({ entries: bigEntries, enabledIds: ['lean-skills@himmel'], requiredIds: ['lean-skills@himmel'] }), /exceeds the 0\.05 sanity cap/);
+});
