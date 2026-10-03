@@ -119,7 +119,16 @@ def t_assign_prefix(cmd):
 
 
 def _wrap_nest(cmd, shell="bash", flag="-c", quote=SQ):
-    body = cmd.replace(quote, quote + BS + quote + quote) if quote == SQ else cmd
+    if quote == SQ:
+        body = cmd.replace(SQ, SQ + BS + SQ + SQ)
+    else:
+        # double-quote context: escape every char bash treats as special
+        # inside "..." so the wrapped body stays a byte-equivalent re-spelling
+        # of the seed instead of silently expanding or breaking. Backslash
+        # first, so the escapes we add below are not themselves re-escaped.
+        body = cmd
+        for ch in (BS, DQ, "$", "`"):
+            body = body.replace(ch, BS + ch)
     return shell + " " + flag + " " + quote + body + quote
 
 
@@ -173,7 +182,10 @@ def t_eval(cmd):
 
 
 def t_ddash(cmd):
-    return "-- " + cmd
+    # `--` only means "end of options" after a command that consumes it; a
+    # bare `-- cmd` tries to run a command literally named `--`. Put it after
+    # env, which accepts `--` and then execs the seed unchanged.
+    return "env -- " + cmd
 
 
 def t_backslash_newline(cmd):

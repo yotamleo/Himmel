@@ -87,6 +87,20 @@ OUT3=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/slow-hook.sh" \
 hasnt "timeout: flagged" "$OUT3" "TIMEOUT RISK (>= 1.0s): 0"
 has "timeout: line present" "$OUT3" "TIMEOUT-RISK idx="
 
+# --- 3b. two broken hooks (rc=1 everywhere) => inconclusive, exit 3 ----------
+# codex-1: a run where no base exit code is 2 and hooks error must NOT read as
+# a clean verdict (exit 0); it is inconclusive (exit 3).
+cat > "$TMP/broken-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+STUB
+chmod +x "$TMP/broken-hook.sh"
+python3 "$DIFF" --base "$TMP/broken-hook.sh" --head "$TMP/broken-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 >/dev/null 2>&1; RC_BRK=$?
+if [ "$RC_BRK" = "3" ]; then pass "inconclusive: two broken hooks exit 3 (not clean)"
+else fail "inconclusive: expected exit 3, got $RC_BRK"; fi
+
 # --- 4. no code path execs a generated command (sentinel-file assertion) ------
 # A seed that WOULD create a sentinel file if ever executed. diff must NOT run
 # it; the file must not exist afterward. The hook only reads stdin.
@@ -96,7 +110,12 @@ planted	deny	touch $SENT
 SEEDS
 python3 "$GEN" --seed 1 --seeds-file "$TMP/exec-seeds.txt" -o "$TMP/exec-corpus.jsonl"
 python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
-        --corpus "$TMP/exec-corpus.jsonl" --jobs 4 >/dev/null 2>&1
+        --corpus "$TMP/exec-corpus.jsonl" --jobs 4 >/dev/null 2>&1; RC_NX=$?
+# the sentinel-absent check is vacuous if diff crashed in setup before
+# processing the corpus, so also assert the run actually completed clean
+# (base vs base identical => exit 0).
+if [ "$RC_NX" = "0" ]; then pass "no-exec: diff ran to completion (exit 0)"
+else fail "no-exec: diff did not complete clean, exit $RC_NX (sentinel check would be vacuous)"; fi
 if [ -e "$SENT" ]; then fail "no-exec: diff EXECUTED a generated command (sentinel created)"
 else pass "no-exec: no generated command was executed"; fi
 

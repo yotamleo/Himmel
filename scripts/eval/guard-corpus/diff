@@ -27,7 +27,10 @@
 #   - newly-denied rows          (head denies what base allowed)
 #   - rc other than 0 or 2
 #   - TIMEOUT RISK rows (wall time over --timeout-warn, default 5s)
-# Exit 0 clean, 1 if any base-deny/head-allow row exists, 2 on setup error.
+# Exit 0 clean, 1 if any base-deny/head-allow row exists, 2 on setup error,
+# 3 if the run was inconclusive (any hook errored or was hard-killed, i.e. an
+# rc outside {0,2}) and no regression was seen -- two broken hooks must never
+# read as a clean verdict.
 #
 # USAGE
 #   diff --base <hook|sha:path> --head <hook|sha:path> --corpus FILE
@@ -116,12 +119,18 @@ def _materialise_tree(repo, sha, dest_dir):
     dest_scripts = os.path.join(dest_dir, "scripts")
     os.makedirs(dest_scripts, exist_ok=True)
     for sub in ("hooks", "guardrails", "lib"):
-        files = subprocess.run(
-            ["git", "-C", repo, "ls-tree", "-r", "--name-only",
+        # keep the tree's mode (not --name-only): a 100755 helper copied as
+        # 0644 would fail only on the sha-materialised side when invoked
+        # directly, distorting the base/head comparison (vs _copy_tree, which
+        # preserves modes via copytree).
+        entries = subprocess.run(
+            ["git", "-C", repo, "ls-tree", "-r",
              "%s" % sha, "scripts/%s" % sub],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         ).stdout.decode("utf-8", "replace").splitlines()
-        for rel in files:
+        for line in entries:
+            meta, rel = line.split("\t", 1)
+            mode = meta.split()[0]
             blob = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (sha, rel)],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             if blob.returncode != 0:
@@ -130,6 +139,8 @@ def _materialise_tree(repo, sha, dest_dir):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(dst, "wb") as fh:
                 fh.write(blob.stdout)
+            if mode == "100755":
+                os.chmod(dst, 0o755)
 
 
 def make_scratch_primary(parent):
@@ -138,17 +149,28 @@ def make_scratch_primary(parent):
     os.makedirs(repo, exist_ok=True)
     env = dict(os.environ)
     env["HOME"] = parent
-    for args in (["init", "-q", "-b", "main"],
-                 ["config", "user.email", "x@example.com"],
-                 ["config", "user.name", "x"]):
-        subprocess.run(["git", "-C", repo] + args, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _git(args):
+        r = subprocess.run(["git", "-C", repo] + args, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if r.returncode != 0:
+            raise RuntimeError("scratch-primary setup failed: git %s: %s" % (
+                " ".join(args), r.stderr.decode("utf-8", "replace").strip()))
+
+    # An unchecked git setup would leave the scratch repo not a work tree (or
+    # not on main), silently voiding the main-checkout guard's coverage while
+    # the differential still reported success. Check every step, and confirm
+    # the result before any hook runs against it.
+    _git(["init", "-q", "-b", "main"])
+    _git(["config", "user.email", "x@example.com"])
+    _git(["config", "user.name", "x"])
     with open(os.path.join(repo, "seed.txt"), "w") as fh:
         fh.write("seed\n")
-    subprocess.run(["git", "-C", repo, "add", "-A"], env=env,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "chore: seed"],
-                   env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _git(["add", "-A"])
+    _git(["commit", "-q", "-m", "chore: seed"])
+    branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo)
+    if branch != "main":
+        raise RuntimeError("scratch-primary is on %r, expected 'main'" % branch)
     return repo
 
 
@@ -213,9 +235,13 @@ def main(argv):
         head_dir = os.path.join(workdir, "head")
         os.makedirs(base_dir)
         os.makedirs(head_dir)
-        base_hook = materialise_hook(args.base, args.repo, base_dir)
-        head_hook = materialise_hook(args.head, args.repo, head_dir)
-        primary = make_scratch_primary(workdir)
+        try:
+            base_hook = materialise_hook(args.base, args.repo, base_dir)
+            head_hook = materialise_hook(args.head, args.repo, head_dir)
+            primary = make_scratch_primary(workdir)
+        except RuntimeError as e:
+            print("guard-corpus diff: setup error: %s" % e, file=sys.stderr)
+            return 2
         home = os.path.join(workdir, "home")
         handover = os.path.join(workdir, "handover")
         os.makedirs(home, exist_ok=True)
@@ -264,7 +290,13 @@ def main(argv):
                 rows=len(results), regressions=len(regressions),
                 newly_denied=len(newly), odd_rc=len(odd), timeout_risk=len(slow))))
 
-        return 1 if regressions else 0
+        if regressions:
+            return 1
+        # odd includes rc=="TIMEOUT" (hard kill) and any error rc: such a run
+        # never validly exercised the guard, so it is inconclusive, not clean.
+        if odd:
+            return 3
+        return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
