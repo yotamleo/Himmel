@@ -384,6 +384,10 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             _hd_l="${_hd_tail%%$'\n'*}"
             _hd_bs="${_hd_l##*[!\\]}"
             (( ${#_hd_bs} % 2 == 1 )) || break
+            # Inside a comment or quote a trailing backslash may be no
+            # continuation; rather than model that, strip nothing more and
+            # scan the rest as-is (fail closed).
+            [[ $_hd_l == *[\#\'\"\`]* ]] && break 2
             _hd_rest="${_hd_tail#*$'\n'}"
             [[ $cmd == *"$_bscrlf"* && $_hd_rest == $'\n'* ]] && _hd_rest="${_hd_rest#$'\n'}"
             _hd_tail="${_hd_l%\\}${_hd_rest}"
