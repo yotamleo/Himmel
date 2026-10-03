@@ -288,6 +288,37 @@ case "$out" in
     *) echo "FAIL T36 error text silent on multi-line marker placement"; FAILED=$((FAILED + 1)) ;;
 esac
 
+# T37 (HIMMEL-3980): a pure-comment line between the open paren and the program
+# literal must not hide the call from the join → BLOCK; marker → CLEAN
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // run it" "  'claude', args);" > "$TMP/cm.mjs"
+rc=$(run_hook "cm.mjs")
+assert_rc "T37 comment line between ( and program, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // step 1) run it" "  'claude', args);" > "$TMP/cm_unbal.mjs"
+rc=$(run_hook "cm_unbal.mjs")
+assert_rc "T37b comment with unbalanced ) between ( and program, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "subprocess.run(" "    # run it" '    ["claude", *a])' > "$TMP/cm.py"
+rc=$(run_hook "cm.py")
+assert_rc "T37c python # comment line before program, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* run it */" "  'claude', args);" > "$TMP/cm_blk.mjs"
+rc=$(run_hook "cm_blk.mjs")
+assert_rc "T37d block-comment line before program, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n%s\n" "const r = spawnSync(" "  // headless-claude-ok: probe" "  // run it" "  'claude', args);" > "$TMP/cm_ok.mjs"
+rc=$(run_hook "cm_ok.mjs")
+assert_rc "T37e marker inside the interleaved comments covers the call" 0 "$rc"
+
+printf "%s\n%s\n%s\n" "// headless-claude-ok: probe" "const r = spawnSync(" "  // run it" > "$TMP/cm_ok2.mjs"
+printf "%s\n" "  'claude', args);" >> "$TMP/cm_ok2.mjs"
+rc=$(run_hook "cm_ok2.mjs")
+assert_rc "T37f marker above the call line, comment between, covers it" 0 "$rc"
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // run it" "  'git', ['claude']);" > "$TMP/cm_git.mjs"
+rc=$(run_hook "cm_git.mjs")
+assert_rc "T37g comment between, claude not the program" 0 "$rc"
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")

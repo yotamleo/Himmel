@@ -155,13 +155,20 @@ for f in "${files[@]}"; do
                 t = s; c = gsub(/[)\]}]/, "&", t)
                 return o - c
             }
+            # HIMMEL-3980: a pure-comment line (`//`, `#`, `/*`) is not code, so it
+            # neither opens/closes depth nor joins the window — otherwise it can sit
+            # between the open paren and the program literal and hide the call.
+            function comment(s) { return s ~ /^[[:space:]]*(\/\/|#|\/\*)/ }
             { L[NR] = $0 }
             END {
                 for (i = 1; i <= NR; i++) {
+                    if (comment(L[i])) continue
                     d = depth(L[i]); if (d <= 0) continue
                     j = i; J = L[i]; hit = 0
                     while (d > 0 && j < NR && j < i + win) {
-                        j++; J = J " " L[j]; d += depth(L[j])
+                        j++
+                        if (comment(L[j])) continue
+                        J = J " " L[j]; d += depth(L[j])
                         if (!hit && J ~ re) { hit = j }
                     }
                     if (!hit) continue
