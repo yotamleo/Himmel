@@ -314,6 +314,10 @@ for ext in vue svelte astro html mdx; do
     rc=$(run_hook "cm_priv.$ext")
     assert_rc "T37q #private field spawn in .$ext, unmarked" 1 "$rc"
 done
+# T37r (codex-1 r9): an extensionless file is not classified, so `#` stays code → BLOCK
+printf "%s\n%s\n%s\n%s\n" "class A {" "  #worker = spawnSync(" '    "claude", args);' "}" > "$TMP/cm_priv_noext"
+rc=$(run_hook "cm_priv_noext")
+assert_rc "T37r #private field spawn in an extensionless file, unmarked" 1 "$rc"
 
 printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* run it */" "  'claude', args);" > "$TMP/cm_blk.mjs"
 rc=$(run_hook "cm_blk.mjs")

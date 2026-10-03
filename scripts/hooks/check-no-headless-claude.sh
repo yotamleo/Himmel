@@ -143,11 +143,10 @@ for f in "${files[@]}"; do
     # (allowlist). Anywhere else — JS/TS and the files that host them (.vue, .svelte,
     # .astro, .html, .mdx) — it is a private-field sigil (`#worker = spawnSync(`)
     # and must stay code, so an unknown type fails toward catching the call.
-    # An extensionless basename (scripts, Makefile-style files) counts as `#`-commented.
+    # An extensionless file is not classified (it may be a Node script), so it stays code.
     case "${f##*/}" in
         *.py|*.sh|*.bash|*.zsh|*.rb|*.yaml|*.yml|*.toml|*.pl|*.r|*.R|*.ps1) hash_cmt=1 ;;
-        *.*) hash_cmt=0 ;;
-        *) hash_cmt=1 ;;
+        *) hash_cmt=0 ;;
     esac
 
     # grep -n prints lineno:line; iterate matches to check opt-in marker
