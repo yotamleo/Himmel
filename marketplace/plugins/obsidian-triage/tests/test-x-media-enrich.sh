@@ -959,6 +959,19 @@ assert "cue text cannot forge a heading at line start" none "$a"
 grep -qF 'slides-pending-digest' "$tmp/clean.out" && a=present || a=absent
 assert "forged control comment stripped from cue text" absent "$a"
 
+run_tool --clean-vtt "$SCRIPT_DIR/fixtures/x-subs/overlap.en.vtt" >"$tmp/ov.out" 2>"$tmp/ov.err"
+assert "overlap --clean-vtt exit 0" 0 "$?"
+n="$(grep -o 'We ship' "$tmp/ov.out" | wc -l | tr -d ' ')"
+assert "prefix-overlap cues collapse (We ship once)" 1 "$n"
+n="$(grep -o 'every day\.' "$tmp/ov.out" | wc -l | tr -d ' ')"
+assert "suffix/prefix-overlap cues collapse (every day. once)" 1 "$n"
+grep -qF 'We ship every day. Then we test.' "$tmp/ov.out" && a=ok || a=no
+assert "overlap-collapsed cues join into running text" ok "$a"
+n="$(grep -o 'Right\.' "$tmp/ov.out" | wc -l | tr -d ' ')"
+assert "overlap collapse keeps a legitimate non-adjacent repeat (Right. twice)" 2 "$n"
+grep -qF 'and the the end.' "$tmp/ov.out" && a=ok || a=no
+assert "single-word overlap is not collapsed (and the the end.)" ok "$a"
+
 echo "Test 18: probe selection (fxtwitter seam)"
 H2="$tmp/home2"; mkdir -p "$H2"   # NO cookie file: the subs path must not need one
 FXV="$tmp/fxt-video.json"; FXN="$tmp/fxt-novideo.json"
@@ -1047,6 +1060,18 @@ grep -q '^media_transcript_coverage: 75$' "$c" && a=ok || a=no
 assert "whisper coverage = last segment end / duration (30/40 = 75)" ok "$a"
 grep -q '^media_video_duration_s: 40$' "$c" && a=ok || a=no
 assert "probe duration kept through the fallback" ok "$a"
+SC="$tmp/vault-stalecov"; make_x_vault "$SC" 1906 ""
+sed 's/^type: tweet$/type: tweet\nmedia_transcript_coverage: 88/' "$SC/Clippings/clip.md" > "$tmp/sc.md" && cp "$tmp/sc.md" "$SC/Clippings/clip.md"
+grep -q '^media_transcript_coverage: 88$' "$SC/Clippings/clip.md" && a=ok || a=no
+assert "stale-coverage fixture seeded (88)" ok "$a"
+X_TEST_YT_MODE=none X_TEST_WHISPER_END= X_TEST_FXT_COUNT="$tmp/fxt-sc.count" run_tool "$SC" >"$tmp/sc.out" 2>"$tmp/sc.err"
+c="$SC/Clippings/clip.md"
+grep -q '^media_transcript_source: whisper-base$' "$c" && a=ok || a=no
+assert "stale-coverage retry went through whisper" ok "$a"
+grep -qF 'coverage unknown' "$c" && a=ok || a=no
+assert "stale-coverage retry provenance says coverage unknown" ok "$a"
+grep -q '^media_transcript_coverage:' "$c" && a=present || a=absent
+assert "stale media_transcript_coverage dropped when new transcript has none" absent "$a"
 TH="$tmp/vault-thresh"; make_x_vault "$TH" 1903 ""
 export X_TEST_YT_DURATION=46 X_TEST_FXT_COUNT="$tmp/fxt-t.count"
 HOME="$H2" run_tool "$TH" --min-sub-coverage 80 >"$tmp/th.out" 2>"$tmp/th.err"
