@@ -288,6 +288,7 @@ Notes a future reader needs:
   *faster* than the 600K one, which is what compaction upstream of the model
   looks like. `context.overflow` for this lane is already `compact-continue`;
   900000 stays the declared operating window on that basis, unchanged — it was already an operator ruling/measurement (HIMMEL-1833) before ox-alpha, and these probes establish ACCEPTANCE at that size, not a verified usable window.
+- **Turns compacted by `compact-continue` lose their thinking** (HIMMEL-3875 preserved-thinking change; reported by the ticket, not independently verified) — no thinking blocks survive compaction, so later turns may re-think that work at token cost.
 - **`--toolsets fs` is not a hermes toolset** — it exits 2 in ~1s with
   `ignoring unknown --toolsets entries: fs`. Use `coding`.
 - **Recommended `CRITIC_TIMEOUT_SECS` for a hermes critic row: 180s**

@@ -139,7 +139,61 @@ gathering, per the rule below.>
 > Never `subprocess.run(timeout=)`: it kills only the direct child, and a
 > looping `$(…)` subshell of the hook outlives it. Give the hook a stdin (a
 > pipe or `</dev/null`), never a closed one — `$(cat)` on a closed fd 0 reads
-> its own pipe and blocks forever.
+> its own pipe and blocks forever. Run the WHOLE harness (corpus loop,
+> differential, fixture suite) under `python3 scripts/eval/harness-run.py
+> --deadline <sec> -- <cmd>`: a per-call killpg dies with the harness, and the
+> runner's subreaper sweep still reaps every hook copy the harness left in
+> flight (HIMMEL-4183).
+
+> **Adversarial rows (guard/hook PRs).** When the PR under review changes a
+> hook or guard, do NOT hand-write attack commands to probe it — Claude's
+> safety classifier stops a judge mid-review for exactly those, and routing
+> around a classifier is forbidden. Instead run the versioned generator and
+> differential at `scripts/eval/guard-corpus/`:
+>
+>     python3 scripts/eval/guard-corpus/gen --seed <N> \
+>         [--seeds-file <hook test suite DENY rows>] -o corpus.jsonl
+>     python3 scripts/eval/guard-corpus/diff \
+>         --base sha:<base-sha>:scripts/hooks/<hook>.sh \
+>         --head <worktree>/scripts/hooks/<hook>.sh \
+>         --corpus corpus.jsonl --repo <repo>
+>
+> `gen` emits hook-input fixtures as JSONL and NEVER executes them; `diff`
+> pipes each row to a hook copy on stdin only (no exec mode), in a scratch
+> HOME/HANDOVER_DIR with a throwaway git repo on `main` standing in for the
+> primary (rows name it as `@PRIMARY@`). `diff` reports base-deny/head-allow
+> regressions, newly-denied rows, odd exit codes and TIMEOUT RISK rows. It
+> exits **0** when clean, **1** on a base-deny/head-allow regression, **2** on
+> a setup error or empty corpus, **3** when inconclusive (an odd return
+> code, a timeout kill, or deny seeds with no base-deny control), and **4**
+> when VACUOUS (deny-expected rows and neither side denied any, so the hook
+> fails open, usually a missing data dependency; a `VACUOUS:` line prints) — so
+> a non-1 exit is NOT automatically clean. Each side is materialised as a tree
+> (`scripts/` data files such as `chokepoints.json` included). **Cite the seed and the row counts in your
+> verdict** (e.g. "gen --seed 4168, 95 rows, 0 regressions, 0 timeout-risk").
+> `gen` ships only benign over-deny twins; supply the PR hook's own test-suite
+> DENY rows via `--seeds-file` to exercise the deny side — never author new
+> attack strings yourself.
+>
+> **Covered vs dropped (HIMMEL-4168).** The transforms (quoting, wrappers with
+> quoted flag values, nested `bash -c` to depth 4, assignment prefixes, `eval`,
+> `--`, backslash-newline, heredoc, and padding for timing) apply to any seed.
+> The deny-side **families reachable through `--seeds-file`** are
+> primary-write (via `@PRIMARY@`), bare-qmd-query, graphify egress,
+> live-settings writes and env-prefix chokepoints. The **destructive-command**
+> family (`rm -rf`, `find -delete`) is intentionally NOT seedable from any
+> committed file here: the classifier stopped its authoring during the
+> generator's own build, so it was dropped rather than routed around. A judge
+> who needs destructive coverage supplies those seeds via `--seeds-file` from a
+> source outside this tree.
+
+> **Ticket coverage (PR-review judges, HIMMEL-4207).** When the question is
+> whether a PR may merge, read the PR body's `## Ticket coverage` section against
+> the cited ticket's body and the diff, and answer: is every ask of the cited
+> ticket(s) done in the diff or deferred to an open ticket? A `done` line the
+> diff does not support, an ask with no line, or a `deferred` line whose key is
+> missing or already Done is a NO-GO line in your verdict. The console puts the
+> ticket body and the PR body in `## Evidence`.
 
 > **RETASK.** A narrowing or a halt from `<console session name>` needs no
 > token and cannot be argued with. An EXPANSION or REDIRECT is valid only if
@@ -182,4 +236,5 @@ gathering, per the rule below.>
 | "Checkpoint to disk as you go" | The standard `--autocompact 200000` pin is too small for a design-grade question (design spec §3.2); a judge holding its reasoning only in context loses it at compaction. |
 | Scratch lives outside the handover root | Judges extract whole repo trees; under a vault-resident handover root they are indexed by Obsidian despite `.gitignore` (HIMMEL-3705: 843k files, 16 GB). `/tmp` is ruled out because it can be tmpfs. |
 | Per-child scratch subdirectory | Parallel evidence-gatherers sharing one directory overwrite or interleave each other's output. |
+| Ticket coverage block | Three of 14 cloud PRs closed tickets Done with asks undone because the brief scoped them out and no judge asked whether the PR did every ask of the ticket it closes (HIMMEL-4207). |
 | Fixtures under a group deadline | A judge's `subprocess.run(timeout=60)` fixture runner killed only the hook's direct `bash`; six looping `$(…)` subshells of a pre-merge hook revision ran on at 99.5 % CPU for ~3h45m (HIMMEL-3956). |

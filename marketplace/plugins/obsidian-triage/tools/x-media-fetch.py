@@ -34,6 +34,21 @@ pbs.twimg.com/media/ reference and which carry no media_enriched_at: marker:
 Downloader NEVER prints cookie contents. Media/audio/transcripts never leave the
 machine. Run under `uv run --python 3.12` (Windows python3 is a flaky Store stub).
 
+HIMMEL-4107 - subtitles first, with provenance:
+  - A clip with no twimg body reference and no media_probe_at gets ONE
+    api.fxtwitter.com probe (within --limit): a video stamps media_probe_result:
+    video + media_video_duration_s and the clip proceeds; none stamps
+    media_probe_result: no-video + media_probe_at so it is never re-probed
+    (frontmatter-only, scoped-G-3).
+  - For a video clip, yt-dlp --skip-download tries the platform's English
+    subtitle track (manual first, then auto) into the cache; the VTT is cleaned and
+    used when its coverage (last cue end / duration) reaches --min-sub-coverage.
+    That path needs NO cookies. Otherwise the gallery-dl -> ffmpeg -> whisper path
+    runs as before, and the cookie file is demanded only then.
+  - media_transcript_source / media_video_duration_s / media_transcript_coverage
+    and a `<!-- source: ... -->` line under ### Transcript record where the text
+    came from and how much of the video it covers.
+
 Exit codes: 0 run completed (may include failed/partial clips), 1 bad usage,
 2 preflight (missing gallery-dl/ffmpeg or cookie file), 3 scoped-G-3 verify
 failed / reverted (used by --apply-digest and --flag-screen).
@@ -41,12 +56,16 @@ failed / reverted (used by --apply-digest and --flag-screen).
 import argparse
 import datetime
 import hashlib
+import html
+import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -75,6 +94,11 @@ FFMPEG_TIMEOUT = int(os.environ.get("X_MEDIA_FFMPEG_TIMEOUT", "300"))
 # soundless_video_frame's frame-extract subprocess.
 FRAME_TIMEOUT = int(os.environ.get("X_MEDIA_FRAME_TIMEOUT", str(FFMPEG_TIMEOUT)))
 WHISPER_TIMEOUT = 1800
+YTDLP_TIMEOUT = int(os.environ.get("X_MEDIA_YTDLP_TIMEOUT", "180"))
+FXT_TIMEOUT = 20
+FXT_BASE = "https://api.fxtwitter.com"
+DEFAULT_MIN_SUB_COVERAGE = 90
+PARA_WORDS = 80   # reflow: close a paragraph at the first sentence end past this
 
 # x.com / twitter.com /<user>/status/<id> (mobile. and www. tolerated).
 X_URL_RE = re.compile(
@@ -87,7 +111,12 @@ TWIMG_MEDIA_RE = re.compile(r"video\.twimg\.com|pbs\.twimg\.com/media/")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
 
-MEDIA_KEYS = ["media_enriched_at", "media_enrichment_status", "media_last_error"]
+MEDIA_KEYS = ["media_enriched_at", "media_enrichment_status", "media_last_error",
+              "media_probe_at", "media_probe_result", "media_video_duration_s",
+              "media_transcript_source", "media_transcript_coverage"]
+# A key absent from `markers` is KEPT for these (a later write must not drop the
+# probe / provenance stamps); for the original three it stays dropped as before.
+PRESERVE_KEYS = set(MEDIA_KEYS[3:])
 HARVEST_FLAG_KEYS = ["harvest_flag", "harvest_flag_detail"]
 
 
@@ -155,6 +184,17 @@ def is_x_source(src: str):
             "url": f"https://x.com/{user}/status/{status_id}"}
 
 
+def _single_twimg_video(body: str) -> bool:
+    """True when the body's video.twimg.com refs name exactly one video id
+    (resolution variants share an id). A ref with no parseable id is unknown,
+    so not single: the subs-only path cannot prove it covers every video."""
+    refs = re.findall(r"video\.twimg\.com[^\s\"')<>]*", body)
+    ids = {m.group(1) for r in refs
+           if (m := re.match(r"video\.twimg\.com/[^/]+/([^/.?]+)", r))}
+    return bool(refs) and len(ids) == 1 and all(
+        re.match(r"video\.twimg\.com/[^/]+/[^/.?]+", r) for r in refs)
+
+
 def _has_twimg_media(body: str) -> bool:
     """The clip body references at least one downloadable X media item."""
     return TWIMG_MEDIA_RE.search(body) is not None
@@ -180,6 +220,9 @@ def upsert_media_markers(fm_raw: str, markers: dict) -> str:
             out.append(line)
             continue
         seen.add(matched)
+        if matched not in markers and matched in PRESERVE_KEYS:
+            out.append(line)
+            continue
         if markers.get(matched) is None:
             continue
         out.append(f"{matched}: {markers[matched]}")
@@ -351,7 +394,7 @@ def _media_dir(vault: Path, slug: str) -> Path:
 
 
 def write_markers(path: Path, text: str, fm_raw: str, body: str, has_crlf: bool,
-                  status: str, error: str, permanent: bool):
+                  status: str, error: str, permanent: bool, extra: dict = None):
     """Write frontmatter-only with media enrichment markers. Re-reads after the
     write and verifies the BODY is byte-for-byte identical to the pre-write body
     (Scoped-G-3) and that the frontmatter parses carrying every marker key just
@@ -367,6 +410,7 @@ def write_markers(path: Path, text: str, fm_raw: str, body: str, has_crlf: bool,
         markers["media_last_error"] = error
     if permanent:
         markers["media_enriched_at"] = TODAY
+    markers.update(extra or {})
     new_fm_raw = upsert_media_markers(fm_raw, markers)
     if permanent:
         new_fm_raw = drop_x_media_pending(new_fm_raw)
@@ -381,6 +425,213 @@ def write_markers(path: Path, text: str, fm_raw: str, body: str, has_crlf: bool,
         write_clip(path, text, has_crlf)   # revert outside-region drift
         return False
     return True
+
+
+# --- video probe + platform subtitles (HIMMEL-4107) --------------------------
+def fmt_duration(seconds) -> str:
+    s = int(seconds)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+PROBE_VIDEO = ("video", "video+media")
+
+
+def _pct(s: str) -> float:
+    """argparse type: a finite percentage in [0, 100]."""
+    v = float(s)
+    if not 0 <= v <= 100:     # also rejects NaN
+        raise argparse.ArgumentTypeError(f"{s!r} is not a percentage in 0..100")
+    return v
+
+
+def fxt_probe(x: dict):
+    """ONE api.fxtwitter.com call for an X status. Returns (result, duration_s):
+    "video" (a lone video; + summed duration, None when fxtwitter gave none),
+    "video+media" (photos or several videos), "no-video",
+    "gone" (the post is 404 - permanent, like no-video) or "error" (transient:
+    the caller stamps NOTHING so the clip is probed again). Seam:
+    X_MEDIA_FXT_CMD runs "<cmd> <api-url>" and reads the JSON from its stdout."""
+    m = X_URL_RE.match(x["url"])
+    url = f"{FXT_BASE}/{m.group(1)}/status/{x['shortcode']}"
+    try:
+        override = os.environ.get("X_MEDIA_FXT_CMD")
+        if override:
+            p = subprocess.run(shlex.split(override) + [url], capture_output=True,
+                               text=True, timeout=FXT_TIMEOUT)
+            raw = p.stdout
+        else:
+            req = urllib.request.Request(url, headers={
+                "Accept": "application/json", "User-Agent": "x-media-fetch/1.0"})
+            with urllib.request.urlopen(req, timeout=FXT_TIMEOUT) as r:
+                raw = r.read().decode("utf-8", "replace")
+        data = json.loads(raw)
+    except Exception as e:
+        if getattr(e, "code", None) == 404:
+            return "gone", None
+        print(f"fxtwitter probe {x['shortcode']}: {str(e)[:120]}", file=sys.stderr)
+        return "error", None
+    if not isinstance(data, dict):
+        return "error", None
+    if data.get("code") == 404:
+        return "gone", None
+    tweet = data.get("tweet")
+    if data.get("code") != 200 or not isinstance(tweet, dict):
+        return "error", None
+    try:
+        media = tweet.get("media")
+        if media is None:
+            media = {}
+        videos = media.get("videos")
+        photos = media.get("photos")
+        # present-but-wrong-typed (e.g. "media": [], "videos": {}) is malformed,
+        # not "no media": probing again beats a permanent no-video stamp.
+        if not all(v is None or isinstance(v, list) for v in (videos, photos)):
+            return "error", None
+        videos, photos = videos or [], photos or []
+        if not videos:
+            return "no-video", None
+        total = sum(float(v.get("duration") or 0) for v in videos)
+        dur = int(round(total)) if total > 0 else None
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return "error", None   # malformed payload: transient, probed again
+    # A lone video is the subs-only case; photos or extra videos still need the
+    # gallery-dl media path, so they get their own result.
+    return ("video" if len(videos) == 1 and not photos else "video+media"), dur
+
+
+TAG_RE = re.compile(r"<[^>]*>")
+CUE_RE = re.compile(
+    r"^(?:\d+:)?\d{2}:\d{2}\.\d{3}\s+-->\s+(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})")
+
+
+def clean_vtt(vtt: str):
+    """Clean a WebVTT track to sentence-bounded paragraphs. Returns
+    (text, last_cue_end_s). Strips every inline tag (<X-word-ms ...>, <c>,
+    <00:00:01.000>), the WEBVTT header, NOTE/STYLE blocks, cue ids and timing
+    lines, and collapses the suffix/prefix overlap between ADJACENT cues only
+    (rolling captions; >= 2 words, or the whole cue) - no global seen-set, so a
+    short line that legitimately recurs survives. Cue text
+    is untrusted (the post author writes it): tags/comments are stripped after
+    entity-decoding too, and a paragraph never starts with a markdown control
+    character."""
+    lines, last_end, in_cue, prev_full = [], 0.0, False, []
+    for raw in vtt.replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        m = CUE_RE.match(line)
+        if m:
+            h, mm, ss, ms = m.groups()
+            last_end = max(last_end,
+                           int(h or 0) * 3600 + int(mm) * 60 + int(ss) + int(ms) / 1000)
+            in_cue = True
+            continue
+        if not line:
+            in_cue = False
+            continue
+        if not in_cue:        # header, NOTE/STYLE/REGION blocks, cue identifiers
+            continue
+        t = TAG_RE.sub("", html.unescape(TAG_RE.sub("", line))).replace("<", "")
+        t = re.sub(r"\s+", " ", t).strip()
+        if not t:
+            continue
+        full = words = t.split()
+        # Rolling captions: the next cue repeats the tail of the previous FULL
+        # cue (not its emitted remainder). Drop that overlap - at least 2 words
+        # (or the whole cue, the identical-adjacent case) so a single shared
+        # word survives.
+        for k in range(min(len(prev_full), len(words)), 0, -1):
+            if prev_full[-k:] == words[:k] and (k >= 2 or k == len(words)):
+                words = words[k:]
+                break
+        prev_full = full
+        if words:
+            lines.append(" ".join(words))
+    sentences = []
+    for s in re.split(r"(?<=[.!?])\s+", " ".join(lines)):
+        words = s.split()
+        for i in range(0, len(words), 2 * PARA_WORDS):   # unpunctuated auto-subs
+            sentences.append(" ".join(words[i:i + 2 * PARA_WORDS]))
+    paras, cur, n = [], [], 0
+    for s in sentences:
+        if not s:
+            continue
+        cur.append(s)
+        n += len(s.split())
+        if n >= PARA_WORDS:
+            paras.append(" ".join(cur))
+            cur, n = [], 0
+    if cur:
+        paras.append(" ".join(cur))
+    paras = ["\\" + p if p[:1] in "#>-`|" else p for p in paras]
+    return "\n\n".join(paras), last_end
+
+
+def fetch_subs(x: dict, min_coverage: float, duration_hint):
+    """Try the post's English platform subtitle track via yt-dlp --skip-download
+    (no cookies, no media download). Manual track first, then auto. Returns
+    {"index","text","source","lang","coverage","duration"} or None (no yt-dlp, no
+    track, several videos, unknown duration, or coverage below `min_coverage`) -
+    the caller then takes the gallery-dl -> whisper path."""
+    yt = shutil.which("yt-dlp")
+    if not yt:
+        return None
+    d = cache_root() / f"{x['shortcode']}-subs"
+    for source, flag in (("platform-subs", "--write-subs"),
+                         ("auto-subs", "--write-auto-subs")):
+        if d.exists():
+            shutil.rmtree(d)
+        d.mkdir(parents=True)
+        cmd = [yt, "--skip-download", flag, "--sub-langs", "en.*",
+               "--sub-format", "vtt", "--no-simulate", "--print", "duration",
+               "--no-warnings", "-o", str(d / "%(id)s"), x["url"]]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=YTDLP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            print("yt-dlp(subs): timed out", file=sys.stderr)
+            return None
+        vtts = sorted(d.glob("*.vtt"))
+        if proc.returncode != 0 or not vtts:
+            if proc.returncode != 0:
+                _emit_stderr_tail("yt-dlp(subs)", proc.stderr)
+            continue
+        if len({v.name.split(".")[0] for v in vtts}) > 1:
+            print("yt-dlp(subs): several videos in one post; using whisper",
+                  file=sys.stderr)
+            return None
+        vtt = next((v for v in vtts if v.name.endswith(".en.vtt")), vtts[0])
+        text, last_end = clean_vtt(vtt.read_text(encoding="utf-8", errors="replace"))
+        durations = []
+        for ln in proc.stdout.split("\n"):
+            try:
+                durations.append(float(ln.strip()))
+            except ValueError:
+                pass
+        duration = durations[0] if durations else duration_hint
+        if not text or not duration:
+            continue
+        raw_cov = min(100.0, last_end / duration * 100)
+        coverage = int(round(raw_cov))
+        if raw_cov < min_coverage:      # unrounded: 89.6% is not 90%
+            print(f"yt-dlp(subs): {source} coverage {coverage}% below "
+                  f"{min_coverage:g}%; using whisper", file=sys.stderr)
+            continue
+        parts = vtt.stem.split(".", 1)
+        return {"index": 1, "text": text, "source": source,
+                "lang": parts[1] if len(parts) > 1 else "en",
+                "coverage": coverage, "duration": int(round(duration))}
+    return None
+
+
+def prov_line(t: dict) -> str:
+    """The one provenance comment under ### Transcript: where the text came from
+    and how much of the video it covers."""
+    src = t["source"] + (f" ({t['lang']})" if t.get("lang") else "")
+    parts = [src,
+             f"coverage {t['coverage']}%" if t.get("coverage") is not None
+             else "coverage unknown"]
+    if t.get("duration"):
+        parts.append(fmt_duration(t["duration"]))
+    return "<!-- source: " + ", ".join(parts) + " -->"
 
 
 # --- video transcript (ffmpeg WAV + faster-whisper via uv) ------------------
@@ -404,23 +655,33 @@ def extract_wav(video: Path, wav: Path) -> bool:
     return wav.is_file()
 
 
-def whisper_transcribe(wav: Path, model: str):
+def whisper_transcribe(wav: Path, model: str, meta=None):
     """Run the sibling transcribe.py under `uv run --python 3.12` with
-    faster-whisper; return the stripped stdout transcript, or None on failure."""
+    faster-whisper; return the stripped stdout transcript, or None on failure.
+    When `meta` is a dict, the last segment end (seconds, from the helper's
+    X_TRANSCRIBE_META_FILE side channel) lands in meta["end_s"] if available."""
     helper = Path(__file__).with_name("transcribe.py")
     uv = shutil.which("uv")
     if not uv:
         return None
     cmd = [uv, "run", "--python", "3.12", "--with", "faster-whisper",
            "python", str(helper), str(wav), model]
+    meta_path = wav.with_suffix(".meta")
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=WHISPER_TIMEOUT)
+                           timeout=WHISPER_TIMEOUT,
+                           env={**os.environ,
+                                "X_TRANSCRIBE_META_FILE": str(meta_path)})
     except subprocess.TimeoutExpired:
         return None
     if p.returncode != 0:
         _emit_stderr_tail("whisper", p.stderr)
         return None
+    if meta is not None:
+        try:
+            meta["end_s"] = float(meta_path.read_text().strip())
+        except (OSError, ValueError):
+            pass
     return p.stdout.strip() or None
 
 
@@ -497,9 +758,12 @@ def transcribe_videos(videos, model):
             if not extract_wav(video, wav):
                 failed.append(idx)
                 continue
-            text = whisper_transcribe(wav, model)
+            meta = {}
+            text = whisper_transcribe(wav, model, meta)
             if text:
-                out.append({"index": idx, "text": text})
+                out.append({"index": idx, "text": text,
+                            "source": f"whisper-{model}",
+                            "end_s": meta.get("end_s")})
             else:
                 failed.append(idx)
     return out, failed
@@ -567,10 +831,11 @@ def render_crawled(transcripts, slide_embeds, caption):
             # This full-media label is intentionally decoupled from render_slides'
             # compact slide-XX filenames; unified numbering is deferred (parity
             # with the IG rung's HIMMEL-791 note).
-            lines += ["### Transcript", f"**Item {t['index']} (video):**",
-                      t["text"], ""]
+            lines += ["### Transcript"] + ([t["prov"]] if t.get("prov") else []) \
+                + [f"**Item {t['index']} (video):**", t["text"], ""]
         else:
-            lines += ["### Transcript", t["text"], ""]
+            lines += ["### Transcript"] + ([t["prov"]] if t.get("prov") else []) \
+                + [t["text"], ""]
     if slide_embeds:
         lines += ["### Slides"] + slide_embeds + ["<!-- slides-pending-digest -->", ""]
     while lines and lines[-1] == "":
@@ -669,7 +934,7 @@ def _splice_crawled(body: str, section: str) -> str:
 
 def write_crawled(path: Path, text: str, fm_raw: str, body: str, section: str,
                   has_crlf: bool, status: str = "ok", last_error: str = "null",
-                  enriched: bool = True) -> bool:
+                  enriched: bool = True, extra: dict = None) -> bool:
     """Splice the ## Crawled content section into `body`, write the media_*
     markers, then re-read and verify: the new body is exactly what we wrote, the
     frontmatter still parses carrying every marker, and everything OUTSIDE the
@@ -689,6 +954,7 @@ def write_crawled(path: Path, text: str, fm_raw: str, body: str, section: str,
     }
     if enriched:
         markers["media_enriched_at"] = TODAY
+    markers.update(extra or {})   # provenance stamps (HIMMEL-4107)
     new_fm_raw = upsert_media_markers(fm_raw, markers)
     if enriched:
         new_fm_raw = drop_x_media_pending(new_fm_raw)
@@ -700,7 +966,7 @@ def write_crawled(path: Path, text: str, fm_raw: str, body: str, section: str,
     disk_fm, _, disk_body, disk_present = parse_frontmatter(disk_text)
     ok = (disk_present
           and disk_body == new_body
-          and all(k in disk_fm for k in markers)
+          and all((k in disk_fm) == (v is not None) for k, v in markers.items())
           and _strip_crawled(body) == _strip_crawled(disk_body))
     if not ok:
         write_clip(path, text, has_crlf)   # revert outside-region drift
@@ -746,9 +1012,58 @@ def is_selected(fm: dict, fm_raw: str, body: str):
         return None
     if already_media_enriched(fm_raw):
         return None
-    if not _has_twimg_media(body):
+    if not _has_twimg_media(body) and fm.get("media_probe_result") not in PROBE_VIDEO:
+        return None     # a probed-video clip stays selectable until enriched
+    return x
+
+
+def is_probe_candidate(fm: dict, fm_raw: str, body: str):
+    """HIMMEL-4107: an X clip with no media_enriched_at, no twimg body reference
+    and no media_probe_at yet - one fxtwitter call decides whether it has a video.
+    Once stamped (video or no-video) it is never probed again."""
+    x = is_x_source(fm.get("source", ""))
+    if not x or already_media_enriched(fm_raw) or _has_twimg_media(body):
+        return None
+    if fm.get("media_probe_at"):
         return None
     return x
+
+
+def write_probe(path: Path, text: str, fm_raw: str, body: str, has_crlf: bool,
+                markers: dict) -> bool:
+    """Frontmatter-only probe stamp, scoped-G-3: re-read and require the body
+    byte-identical and every marker present; revert and return False otherwise."""
+    new_fm_raw = upsert_media_markers(fm_raw, markers)
+    write_clip(path, f"---\n{new_fm_raw}\n---\n{body}", has_crlf)
+    disk_text, _ = read_clip(path)
+    disk_fm, _, disk_body, disk_present = parse_frontmatter(disk_text)
+    if not (disk_present and disk_body == body
+            and all(k in disk_fm for k in markers)):
+        write_clip(path, text, has_crlf)
+        return False
+    return True
+
+
+def probe_clip(p: Path, x: dict, relpath: str) -> str:
+    """Probe one clip and stamp the result. Returns the fxtwitter result, or
+    "error" when nothing was (or could be) stamped."""
+    result, duration = fxt_probe(x)
+    if result == "error":
+        print(f"? {relpath}: probe failed (will retry next run)")
+        return "error"
+    text, has_crlf = read_clip(p)
+    _fm, fm_raw, body, present = parse_frontmatter(text)
+    if not present:
+        return "error"
+    markers = {"media_probe_at": TODAY, "media_probe_result": result}
+    if result in PROBE_VIDEO and duration:
+        markers["media_video_duration_s"] = duration
+    if not write_probe(p, text, fm_raw, body, has_crlf, markers):
+        print(f"marker write REVERTED - probe NOT recorded for {relpath}",
+              file=sys.stderr)
+        return "error"
+    print(f"? {relpath}: probe {markers['media_probe_result']}")
+    return result
 
 
 def parse_args(argv):
@@ -760,6 +1075,12 @@ def parse_args(argv):
     ap.add_argument("--include-done", action="store_true",
                     help="also scan _done/ graduated clips (the backfill pass)")
     ap.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
+    ap.add_argument("--min-sub-coverage", type=_pct,
+                    default=DEFAULT_MIN_SUB_COVERAGE, metavar="PCT",
+                    help="use platform subtitles only when they cover at least "
+                         "this percent of the video, else fall back to whisper")
+    ap.add_argument("--clean-vtt", type=Path, default=None, metavar="VTT",
+                    help="print the cleaned transcript of a VTT file and exit")
     ap.add_argument("--apply-digest", type=Path, default=None, metavar="CLIP")
     ap.add_argument("--digest-file", type=Path, default=None, metavar="FILE")
     ap.add_argument("--repair-provenance", type=Path, default=None, metavar="CLIP")
@@ -781,7 +1102,6 @@ def enrich_batch(args, selected, matched_total, remaining):
     clip whose media only PARTIALLY survived is written honestly as
     media_enrichment_status: partial and KEEPS x_media_pending for retry."""
     import time
-    cf = preflight()
     enriched = 0
     partial = 0
     failed = 0
@@ -790,7 +1110,26 @@ def enrich_batch(args, selected, matched_total, remaining):
         try:
             if RATE_LIMIT_S > 0:
                 time.sleep(RATE_LIMIT_S)
-            files, error = download_media(x, cf)
+            # HIMMEL-4107: platform subtitles first (cookie-free); gallery-dl +
+            # whisper only when no usable track exists, and the cookie/binary
+            # preflight is demanded only then.
+            text0, _crlf0 = read_clip(p)
+            fm0, _raw0, body0, present0 = parse_frontmatter(text0)
+            fm0 = fm0 or {}
+            try:
+                dur_hint = int(fm0.get("media_video_duration_s", ""))
+            except ValueError:
+                dur_hint = None
+            subs = None
+            if (present0 and not re.search(r"pbs\.twimg\.com/media/", body0)
+                    and (_single_twimg_video(body0)
+                         or fm0.get("media_probe_result") == "video")):
+                subs = fetch_subs(x, args.min_sub_coverage, dur_hint)
+            if subs:
+                files, error = [], None
+            else:
+                cf = preflight()
+                files, error = download_media(x, cf)
             if error:
                 text, has_crlf = read_clip(p)
                 fm, fm_raw, body, present = parse_frontmatter(text)
@@ -813,6 +1152,15 @@ def enrich_batch(args, selected, matched_total, remaining):
             transcripts, videos_failed = (
                 transcribe_videos(videos, args.whisper_model) if videos
                 else ([], []))
+            if subs:
+                transcripts, videos_failed, expected_videos = [subs], [], 1
+            elif len(transcripts) == 1:
+                t0 = transcripts[0]
+                t0["duration"] = dur_hint
+                if dur_hint and t0.get("end_s") is not None:
+                    t0["coverage"] = min(100, int(round(t0["end_s"] / dur_hint * 100)))
+            for t in transcripts:
+                t["prov"] = prov_line(t)
             # Soundless-video screenshot fallback: a failed video with NO audio
             # stream (GIF-like tweet_video) becomes a slide screenshot in tweet
             # order instead of a failed transcript.
@@ -875,7 +1223,9 @@ def enrich_batch(args, selected, matched_total, remaining):
                 # Nothing survived transcode/recompress -> retryable, no ok marker.
                 if not write_markers(p, text, fm_raw, body, has_crlf,
                                      status="failed", error="no_media_content",
-                                     permanent=False):
+                                     permanent=False,
+                                     extra=({"media_transcript_source": "none"}
+                                            if expected_videos else None)):
                     print(f"marker write REVERTED - failure NOT recorded for "
                           f"{relpath}", file=sys.stderr)
                 print(f"x {relpath}: no transcript/slides")
@@ -884,6 +1234,22 @@ def enrich_batch(args, selected, matched_total, remaining):
             # Caption: the tweet text already lives in the harvested clip body;
             # this rung adds media only, so pass None (no duplication).
             section = render_crawled(transcripts, slide_embeds, None)
+            extra = {}
+            if transcripts and len({t["source"] for t in transcripts}) == 1:
+                extra["media_transcript_source"] = transcripts[0]["source"]
+            if transcripts:
+                # None drops a stale key a partial retry would otherwise preserve.
+                extra["media_transcript_coverage"] = None
+            if len(transcripts) == 1:
+                t1 = transcripts[0]
+                if t1.get("duration"):
+                    extra["media_video_duration_s"] = t1["duration"]
+                if t1.get("coverage") is not None:
+                    extra["media_transcript_coverage"] = t1["coverage"]
+            src_note = (f" [{transcripts[0]['source']}"
+                        + (f" {transcripts[0]['coverage']}%"
+                           if transcripts[0].get("coverage") is not None else "")
+                        + "]" if len(transcripts) == 1 else "")
             is_partial = (len(slide_embeds) < expected_images
                           or len(transcripts) < expected_videos)
             if is_partial:
@@ -891,7 +1257,7 @@ def enrich_batch(args, selected, matched_total, remaining):
                 ok = write_crawled(p, text, fm_raw, body, section, has_crlf,
                                    status="partial",
                                    last_error="partial_media:" + descriptor,
-                                   enriched=False)
+                                   enriched=False, extra=extra)
                 if ok:
                     print(f"~ {relpath}: partial "
                           f"({len(slide_embeds)}/{expected_images} slides"
@@ -903,9 +1269,10 @@ def enrich_batch(args, selected, matched_total, remaining):
                     _cleanup_orphan_media(media_dir, slide_embeds,
                                           media_pre_existed, relpath)
                     failed += 1
-            elif write_crawled(p, text, fm_raw, body, section, has_crlf):
+            elif write_crawled(p, text, fm_raw, body, section, has_crlf,
+                               extra=extra):
                 print(f"v {relpath}: {len(slide_embeds)} slides{qual_suffix} + "
-                      f"{len(transcripts)} transcript")
+                      f"{len(transcripts)} transcript{src_note}")
                 enriched += 1
             else:
                 _cleanup_orphan_media(media_dir, slide_embeds,
@@ -1189,11 +1556,15 @@ def main():
         sys.exit(run_repair_provenance(args.repair_provenance))
     if args.flag_screen is not None:
         sys.exit(run_flag_screen(args.flag_screen, args.detail))
+    if args.clean_vtt is not None:
+        print(clean_vtt(args.clean_vtt.read_text(encoding="utf-8",
+                                                 errors="replace"))[0])
+        sys.exit(0)
     if args.vault is None or not args.vault.is_dir():
         print("x-media-fetch: vault path required (or not a dir)", file=sys.stderr)
         sys.exit(1)
     clips = find_clips(args.vault, args.include_evidence, args.include_done)
-    selected = []
+    cands = []        # (path, x, needs_probe), in vault order; --limit caps THIS list
     for p in clips:
         try:
             text, has_crlf = read_clip(p)
@@ -1204,15 +1575,24 @@ def main():
             continue
         x = is_selected(fm, fm_raw, body)
         if x:
-            selected.append((p, x))
-    matched_total = len(selected)
-    selected = selected[: args.limit] if args.limit > 0 else selected
-    remaining = matched_total - len(selected)
+            cands.append((p, x, False))
+        else:
+            x = is_probe_candidate(fm, fm_raw, body)
+            if x:
+                cands.append((p, x, True))
+    matched_total = len(cands)
+    cands = cands[: args.limit] if args.limit > 0 else cands
+    remaining = matched_total - len(cands)
 
     if args.dry_run:
+        selected = [(p, x) for p, x, probe in cands if not probe]
         for p, x in selected:
             print(f"PLAN {p.relative_to(args.vault).as_posix()} -- "
                   f"would fetch status/{x['shortcode']} [dry-run]")
+        nprobe = len(cands) - len(selected)
+        if nprobe:
+            print(f"x-media-fetch: {nprobe} clip(s) would be probed via "
+                  f"fxtwitter (no probe in --dry-run)")
         print(f"\nx-media-fetch: {len(selected)} selected, 0 enriched "
               f"(dry_run=True)")
         if remaining > 0:
@@ -1220,6 +1600,19 @@ def main():
                   f"processed, {remaining} remaining (capped by --limit; pass "
                   f"--limit 0 for all)")
         sys.exit(0)
+
+    import time
+    selected, probed = [], 0
+    for p, x, probe in cands:
+        if probe:
+            if RATE_LIMIT_S > 0:
+                time.sleep(RATE_LIMIT_S)
+            probed += 1
+            if probe_clip(p, x, p.relative_to(args.vault).as_posix()) not in PROBE_VIDEO:
+                continue
+        selected.append((p, x))
+    if probed:
+        print(f"x-media-fetch: probed {probed}, {len(selected)} selected")
 
     if not selected:
         # No-op run: report the standard summary and exit 0 WITHOUT preflight - a

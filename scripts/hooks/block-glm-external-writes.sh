@@ -2032,40 +2032,79 @@ gp_total=$(count_cmd "$gp_shape"); gp_allowed=0
 # wherever it sits, so decoys and split segments cannot hide `git` or the key. A NUL escape
 # (\0 \x00 \c@ \c`) truncates a segment in bash, so the pass runs twice: NUL kept as `#`, and
 # NUL dropping everything through the next unescaped quote. Over-approximation only.
+# HIMMEL-4032 adds a fourth, quote-aware stream (words()): bash decodes escapes ONLY inside
+# a dollar-quote body; outside one a backslash quotes the next char (`ns\teadOf` is
+# `nsteadOf`, not a TAB); continuations are already joined upstream. Mixing both hid the key
+# from every flat stream. Added beside the other three, never instead of them: deny-only.
 ansic_decode() {
     LC_ALL=C awk '
     function hv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
-    function flat(drop,   i, out, c, e, k, v, d, mx) {
+    # dec(): decode the escape whose backslash sits at I; advance I past it. NUL=1 on a NUL.
+    function dec(   e, k, v, d, mx) {
+        e = substr(s, I + 1, 1); I += 2; NUL = 0
+        if ((k = index("abeEfnrtv\\\047\"?", e)) > 0)
+            return substr("\007\010\033\033\014\012\015\011\013\\\047\"?", k, 1)
+        if (e ~ /[0-7]/) {
+            v = e + 0; d = 1
+            while (d < 3 && substr(s, I, 1) ~ /[0-7]/) { v = v * 8 + substr(s, I, 1); I++; d++ }
+            v = v % 256
+        } else if (e == "x" || e == "u" || e == "U") {
+            mx = (e == "x") ? 2 : (e == "u") ? 4 : 8; v = 0; d = 0
+            while (d < mx && hv(substr(s, I, 1)) >= 0) { v = v * 16 + hv(substr(s, I, 1)); I++; d++ }
+            if (d == 0) return "\\" e
+        } else if (e == "c") {
+            v = (substr(s, I, 1) ~ /[@`]/) ? 0 : 35; I++
+        } else return "\\" e
+        if (v == 0) NUL = 1
+        return (v > 0 && v < 128) ? sprintf("%c", v) : "#"
+    }
+    # skipq(i): from i, skip through the next unescaped single quote; return the index after.
+    function skipq(i,   c) {
+        while (i <= n) { c = substr(s, i, 1); if (c == "\\") { i += 2; continue } i++; if (c == q) break }
+        return i
+    }
+    function flat(drop,   i, out, c, r) {
         i = 1; out = ""
         while (i <= n) {
             c = substr(s, i, 1)
             if (c == "$" && substr(s, i + 1, 1) == q) { i += 2; continue }
             if (c != "\\") { out = out c; i++; continue }
-            e = substr(s, i + 1, 1); i += 2; v = -1
-            if ((k = index("abeEfnrtv\\\047\"?", e)) > 0) {
-                out = out substr("\007\010\033\033\014\012\015\011\013\\\047\"?", k, 1); continue
+            I = i; r = dec(); i = I
+            if (NUL && drop) { i = skipq(i); continue }
+            out = out r
+        }
+        return out
+    }
+    # words(): the quote-aware stream. st 0 = bare, 1 = single, 2 = double, 3 = dollar-quote.
+    function words(   i, out, c, e, r, st) {
+        i = 1; out = ""; st = 0
+        while (i <= n) {
+            c = substr(s, i, 1)
+            if (st == 1) { if (c == q) st = 0; else out = out c; i++; continue }
+            if (st == 3) {
+                if (c == q) { st = 0; i++; continue }
+                if (c != "\\") { out = out c; i++; continue }
+                I = i; r = dec(); i = I
+                if (NUL) { i = skipq(i); st = 0; continue }
+                out = out r; continue
             }
-            if (e ~ /[0-7]/) {
-                v = e + 0; d = 1
-                while (d < 3 && substr(s, i, 1) ~ /[0-7]/) { v = v * 8 + substr(s, i, 1); i++; d++ }
-                v = v % 256
-            } else if (e == "x" || e == "u" || e == "U") {
-                mx = (e == "x") ? 2 : (e == "u") ? 4 : 8; v = 0; d = 0
-                while (d < mx && hv(substr(s, i, 1)) >= 0) { v = v * 16 + hv(substr(s, i, 1)); i++; d++ }
-                if (d == 0) { out = out "\\" e; continue }
-            } else if (e == "c") {
-                v = (substr(s, i, 1) ~ /[@`]/) ? 0 : 35; i++
-            } else { out = out "\\" e; continue }
-            if (v == 0 && drop) {
-                while (i <= n) { c = substr(s, i, 1); if (c == "\\") { i += 2; continue } i++; if (c == q) break }
-                continue
+            if (c == "\\") {
+                e = substr(s, i + 1, 1)
+                if (e == "\n") { i += 2; continue }
+                if (e == "\r" && substr(s, i + 2, 1) == "\n") { i += 3; continue }
+                out = out e; i += 2; continue
             }
-            out = out ((v > 0 && v < 128) ? sprintf("%c", v) : "#")
+            if (st == 2) { if (c == "\"") st = 0; else out = out c; i++; continue }
+            if (c == q) { st = 1; i++; continue }
+            if (c == "\"") { st = 2; i++; continue }
+            if (c == "$" && substr(s, i + 1, 1) == q) { st = 3; i += 2; continue }
+            if (c == "$" && substr(s, i + 1, 1) == "\"") { i++; continue }
+            out = out c; i++
         }
         return out
     }
     { s = (NR > 1 ? s "\n" : "") $0 }
-    END { q = "\047"; n = length(s); printf "%s\n%s\n%s", s, flat(0), flat(1) }'
+    END { q = "\047"; n = length(s); printf "%s\n%s\n%s\n%s", s, flat(0), flat(1), words() }'
 }
 cmd_dq=$(printf '%s' "$cmd_joined" | ansic_decode | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;' | LC_ALL=C tr -d "'\"\\\\")
 # Blunt rule: decoded + dequoted + lowercased text containing `git` AND `insteadof`.

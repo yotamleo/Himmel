@@ -186,6 +186,193 @@ deny_u8 "echo é; bash -c 'qmd query'"
 deny_u8 'bash -c "echo ü; qmd search"'
 deny_u8 "bash -c 'echo 日本; qmd query'"
 deny_u8 "x=ü bash -c 'qmd query'"
+# HIMMEL-4140: more program positions — zsh's =cmd, a case arm, eval.
+deny '=qmd query x'
+deny 'env =qmd search x'
+deny 'case a in a) qmd query x;; esac'
+deny 'case a in (a|b) qmd vsearch x;; esac'
+deny 'eval qmd query x'
+deny "eval 'qmd \"qu\"ery x'"
+deny 'command eval "qmd \"search\" x"'
+# HIMMEL-4140 / HIMMEL-4151: a nested -c string is decoded like a top-level
+# word (ANSI-C, backslash, adjacent quotes) and read again as a command.
+deny "sh -c 'qmd \"qu\"ery x'"
+deny "bash -c \$'qmd query'"
+deny "bash -c \$'qmd \\x71uery x'"
+deny 'bash -c qmd\ query'
+deny 'bash -ec "qmd q\"uery\" x"'
+deny "bash -c \"bash -c 'qmd \\\"qu\\\"ery'\""
+deny 'sh -c "$(echo qmd) query"'
+deny 'sh -c "`echo qmd` query"'
+# The same substitution in program position at the top level (J1684b).
+deny '$(echo qmd) query x'
+deny '`echo qmd` query x'
+deny '$(printf qmd) query x'
+deny 'true; $(echo qmd) search y'
+allow 'cd "$(git rev-parse --show-toplevel)" && qmd status'
+allow 'echo "$(date)"; qmd status'
+deny 'case a in a) $(echo qmd) query x;; esac'
+# The `)` or backtick closing one substitution is not a boundary for the next.
+allow 'printf "%s %s" "$(grep -c a qmd.sh)" "$(grep -c b qmd.sh)"'
+allow 'echo qmd; x `a` `b`'
+allow 'echo qmd; x $(a) `b`'
+# coproc runs its command like any wrapper.
+deny 'coproc qmd query x'
+deny 'coproc foo { qmd query x; }'
+allow 'coproc qmd status'
+# A nested string naming qmd that the normaliser cannot read is refused.
+deny "bash -c 'cat <<E
+x
+E
+qmd q\"uery\" x'"
+# J1666e: nested spellings both base and #1666 allowed, each ran a bare verb.
+deny "nice sh -c 'qmd \\vse'\"arch;echo\""
+deny "bash -c \$'qmd --index foo query\"\";'"
+deny "bash -c 'echo é; qmd '\\''search'\\'';echo'"
+deny "env bash -c \$'qmd --index foo query\"\";'; echo é"
+deny_u8 "bash -c 'echo é; qmd '\\''search'\\'';echo'"
+# zsh's ANSI-C escapes: \C-<end>, a bare \C or \M give nothing, and \c<x> is
+# a plain `c<x>` (the J1666d corpus, run under zsh).
+deny "cd /tmp && q\"md\" \$'\\C-'query x"
+deny "qmd \$'\\M'search x"
+deny "qmd \$'\\C-'\"vsearch\""
+deny "qmd \$'sear\\ch' x"
+deny "bash -c \$'qmd sear\\ch'"
+deny "qmd \$'sear\\c'h"
+# zsh's \C-i is a tab: a word break in a nested string.
+deny "zsh -c \$'qmd\\C-iquery x'"
+deny "zsh -c \$'qmd\\C-Iquery x'"
+deny "zsh -c \$'qmd \\C-iquery x'"
+allow "zsh -c \$'echo \\C-i hi'; qmd status"
+# A redirection between the shell and its -c does not end the scan.
+deny "bash <\"\$(bash -c 'qmd \"qu\"ery x')\" -c true"
+deny "bash </dev/null -c 'qmd \"qu\"ery x'"
+deny "bash < /dev/null -c 'qmd \"qu\"ery x'"
+deny "bash 2>/dev/null -c 'qmd \"qu\"ery x'"
+deny "bash &>/dev/null -c 'qmd \"qu\"ery x'"
+deny "bash >&2 -c 'qmd \"qu\"ery x'"
+deny "bash -e <<<x -c 'qmd \"qu\"ery x'"
+deny "eval </dev/null 'qmd \"qu\"ery x'"
+deny "eval 2>/dev/null 'qmd \"qu\"ery x'"
+deny "eval {fd}>/dev/null 'qmd \"qu\"ery x'"
+deny "eval 2>/dev/null qmd query x"
+deny "eval -- 'qmd \"qu\"ery x'"
+deny "eval -- qmd query x"
+deny "bash 2>/dev/null -c 2>&1 'qmd \"qu\"ery x'"
+# A substitution among the words before -c runs in the outer shell.
+deny "bash \"\$(bash -c 'qmd \"qu\"ery')\""
+deny "bash -x \"\$(sh -c 'qmd q\"uery\"')\""
+deny "bash -o pipefail \`sh -c 'qmd q\"uery\"'\` -c true"
+# bash runs its first operand as a script, found on PATH, so a substitution
+# there is a program: `bash "$(printf qmd)" query x` runs qmd.
+deny "bash -o pipefail \"\$(printf x)\" -c 'qmd status'"
+deny 'bash "$(printf qmd)" query x'
+# HIMMEL-4166: other shells and launchers run a nested string too.
+deny "rbash -c 'qmd query x'"
+deny "mksh -c 'qmd query x'"
+deny "ash -c 'qmd query x'"
+deny "fish -c 'qmd query x'"
+deny "fish --command='qmd query x'"
+deny "fish -c 'qmd \"qu\"ery x'"
+deny "su -c 'qmd query x'"
+deny "su - u -c 'qmd \"qu\"ery x'"
+deny "su u --command='qmd query x'"
+deny "su -C 'qmd query x'"
+deny "su u --session-command 'qmd query x'"
+deny "runuser u --session-command='qmd \"qu\"ery x'"
+deny "script -c 'qmd query x' /dev/null"
+deny "script -qc 'qmd query x' /dev/null"
+deny "script -q -c 'qmd \"qu\"ery x' /dev/null"
+deny "env -S'qmd query x'"
+deny "env -S'qmd' query x"
+deny "env --split-string='qmd \"qu\"ery x'"
+# A shell reading its program from stdin: a here-string, or a pipe.
+deny "bash <<< 'qmd query x'"
+deny "sh <<<'qmd \"qu\"ery x'"
+deny "echo 'qmd query x' | sh"
+deny "printf '%s\\n' 'qmd \"qu\"ery x' | bash"
+deny 'echo qmd query x | sh -s'
+deny "echo 'qmd query x' |& sh"
+deny "echo 'qmd query x' | cat | sh"
+deny "echo 'qmd query x' | tr a a |& tee /dev/null | bash"
+deny "bash -c sh <<< 'qmd query x'"
+deny "echo 'qmd query x' | timeout 5 bash"
+deny "source /dev/stdin <<< 'qmd query x'"
+deny "env -i -S'qmd query x'"
+# "$@" indirection: the program or the verb in a positional parameter.
+deny 'set -- qmd query x; "$@"'
+deny 'f() { "$@"; }; f qmd query x'
+deny 'set -- query x; qmd "$@"'
+# HIMMEL-4218: wrappers that run their arguments as a program.
+deny 'watch qmd query x'
+deny 'watch -n 5 qmd query x'
+deny "watch 'qmd query x'"
+deny "watch -n 5 'qmd \"qu\"ery x'"
+deny 'flock /tmp/l qmd query x'
+deny 'flock -w 5 /tmp/l qmd query x'
+deny 'flock -x /tmp/l qmd query x'
+deny "flock /tmp/l -c 'qmd query x'"
+deny 'systemd-run --user qmd query x'
+deny 'systemd-run --user --scope -p MemoryMax=1G qmd query x'
+deny 'unbuffer qmd query x'
+deny 'unbuffer -p qmd search x'
+deny 'parallel qmd query ::: x y'
+deny "parallel 'qmd query {}' ::: x y"
+deny "parallel -j 2 'qmd \"qu\"ery {}' ::: x"
+# An alias for qmd, and sourcing a substitution, fail closed.
+deny 'alias q=qmd; q query x'
+deny "alias q='qmd'; q search x"
+deny 'source <(echo qmd query x)'
+deny '. <(echo qmd query x)'
+deny 'bash <(echo qmd query x)'
+# ... while the same launchers running anything else stay allowed.
+allow "fish -c 'qmd status'"
+allow "su -c 'qmd status'"
+allow "script -qc 'qmd status' /dev/null"
+allow "env -S'qmd status'"
+allow "bash <<< 'qmd status'"
+allow "echo 'qmd status' | sh"
+allow 'echo qmd query x | grep qmd'
+allow 'watch -n 5 qmd status'
+allow 'flock /tmp/l qmd update'
+allow 'systemd-run --user qmd embed'
+allow "parallel 'qmd get {}' ::: a b"
+allow "alias s='qmd status'; s"
+allow 'source <(echo qmd status)'
+allow 'set -- a b; "$@"; qmd status'
+allow 'env -- printf "%s %s" "$(grep -c a qmd.sh)" "$(grep -c b qmd.sh)"'
+
+# The nested scan is linear: padding with shell words must not push the hook
+# past the chain's budget, where it would be skipped instead of deciding.
+# timed RC LABEL CMD — assert the exit code and a wall time under 1 s
+# (EPOCHREALTIME is bash 5; without it, SECONDS bounds it to 2 s).
+timed() {
+    local want=$1 label=$2 input t0 t1 rc ms
+    input=$(j_bash "$3")
+    t0=${EPOCHREALTIME:-$SECONDS}
+    rc=$(run_case "$input")
+    t1=${EPOCHREALTIME:-$SECONDS}
+    assert_rc "$label" "$want" "$rc"
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        ms=$(( (${t1/[.,]/} - ${t0/[.,]/}) / 1000 ))
+    else
+        ms=$(( (t1 - t0) * 1000 ))
+        if [ "$ms" -le 1000 ]; then ms=0; fi
+    fi
+    if [ "$ms" -lt 1000 ]; then
+        echo "PASS $label in ${ms}ms"
+    else
+        echo "FAIL $label took ${ms}ms (budget 1000ms)"
+        FAILED=$((FAILED + 1))
+    fi
+}
+pad_sh=$(printf 'sh %.0s' $(seq 700))
+pad_w=$(printf 'w %.0s' $(seq 2000))
+timed 2 'deny: 700 sh words, then a nested -c' "echo ${pad_sh}; bash -ec \"qmd q\\\"uery\\\" x\""
+timed 2 'deny: 700 sh words before a nested -c' "echo ${pad_sh}bash -c 'qmd \"qu\"ery x'"
+timed 0 'allow: qmd status, then 700 sh words' "qmd status; echo ${pad_sh}"
+timed 0 'allow: qmd status, then 2000 words' "qmd status; echo ${pad_w}"
+timed 0 'allow: qmd status, bash -c and 2000 words' "qmd status; bash -c 'echo \$0' ${pad_w}"
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
@@ -225,6 +412,20 @@ allow 'grep -rn "q\"md\" q\"uery\"" scripts/'
 allow 'printf "%s\n" "a; qmd" status'
 # `<<` inside $((…)) is a shift, not a heredoc: the words are still read.
 allow "echo \$((1<<2)); qmd \$'query notes' y"
+# HIMMEL-4140 / HIMMEL-4151: a decoded nested string is still read as words.
+allow "bash -c 'qmd status'"
+allow "bash -c \$'qmd \\x73tatus'"
+allow "eval 'qmd \"query notes\" y'"
+allow 'case a in a) qmd status;; esac'
+allow 'echo =qmd query'
+# One it cannot read that does not name qmd gets the fallback readings.
+allow "qmd status; bash -c 'echo \$(( \$(date +%s) - 1 ))'"
+allow "qmd status; bash -c 'echo \"\$(( \$(date +%s) - 1 ))\"'"
+allow "qmd status; printf \$'a\\cIb\\C-xc'"
+allow "bash </dev/null -c 'qmd status' 2>&1"
+allow "qmd status; bash -c 'IFS=\$'\"'\"'\\t'\"'\"' read -r a <<E
+x
+E'"
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \

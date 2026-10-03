@@ -264,6 +264,68 @@ if [ -n "$LEGS_FROM" ]; then
     LEGS_SPLIT="$legs_union"
 fi
 
+# HIMMEL-4234: a leg that never went LIVE (a backgrounded or forked launch that
+# lost its preface, so it never took its lock or wrote a bullet) holds the same
+# FREE a lost lock does, forever, so the waiter's key never moved and nothing
+# woke the console. NOLIVE is FREE plus a clock; FORKED is FREE plus a
+# transcript that ended in a continued-in record. Both are legs= labels only --
+# lock_status itself (procs=, closable, held_legs) is untouched.
+nolive_min="${TICK_NOLIVE_MIN:-10}"
+case "$nolive_min" in ''|*[!0-9]*) nolive_min=10 ;; esac
+nolive_min=$((10#$nolive_min))
+
+# launch_dir_default: the console work dir the <name>.launch.log files live in.
+launch_dir_default() {
+    if [ -n "${TICK_LAUNCH_DIR:-}" ]; then
+        printf '%s\n' "$TICK_LAUNCH_DIR"
+    elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/himmel-console" ]; then
+        printf '%s\n' "$XDG_RUNTIME_DIR/himmel-console"
+    else
+        printf '%s\n' "${TMPDIR:-/tmp}/himmel-console-$(id -u)"
+    fi
+}
+
+# leg_start_epoch <leg doc> <candidate names, comma list> -- when the leg was
+# dispatched: the fleet manifest's `added` time, else the newest launch-log
+# `armed:` line naming the doc or a candidate session, else the doc's mtime.
+leg_start_epoch() {
+    local doc="$1" cands="$2" t="" ts line armed
+    if [ -n "$LEGS_FROM" ] && [ -r "$LEGS_FROM" ]; then
+        ts="$(jq -r --arg d "$doc" '[.legs[] | select(.doc == $d) | .added][0] // empty' "$LEGS_FROM" 2>/dev/null)" || ts=""
+        [ -z "$ts" ] || t="$(date -d "$ts" +%s 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
+    fi
+    if [ -z "$t" ]; then
+        armed="$(find "$(launch_dir_default)" -maxdepth 2 -name '*.launch.log' -exec grep -hF ' armed: name=' {} + 2>/dev/null)"  # gnu-ok: Linux-only kit
+        line="$(printf '%s\n' "$armed" | awk -v d="doc=$doc" -v c=",$cands," '
+            { n = $3; sub(/^name=/, "", n); if (index(c, "," n ",") || index($0, " " d " ")) { if ($1 > last) last = $1 } }
+            END { if (last != "") print last }')"
+        if [ -n "$line" ]; then
+            t="$(date -d "${line/_/ }" +%s 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
+        fi
+    fi
+    [ -n "$t" ] || t="$(stat -c %Y "$doc" 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
+    printf '%s' "$t"
+}
+
+# leg_forked <candidate names, comma list> -- succeeds when the newest session
+# transcript whose custom-title IS one of the names ends in a continued-in
+# record. The title is the only link (the harness writes it from `claude -n`);
+# no transcript found = not forked, never a guess.
+leg_forked() {
+    local dir="${TICK_PROJECTS_DIR:-$HOME/.claude/projects}" cand f newest=""
+    [ -d "$dir" ] || return 1
+    for cand in ${1//,/ }; do
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if [ -z "$newest" ] || [ "$f" -nt "$newest" ]; then newest="$f"; fi
+        done < <(find "$dir" -maxdepth 2 -name '*.jsonl' -mmin "-${TICK_FORK_WINDOW_MIN:-1440}" -exec grep -lF "\"customTitle\":\"$cand\"" {} + 2>/dev/null)  # gnu-ok: Linux-only kit
+    done
+    [ -n "$newest" ] || return 1
+    # the last record that is not a trailing cost-state: a resumed session appends
+    # assistant/user records after its continued-in, so only the final one counts.
+    grep -v '"type":"cost-state"' "$newest" 2>/dev/null | tail -n 1 | grep -q '"type":"continued-in"'  # pipefail-ok: tail reads its input to EOF and grep -q sees one line, so no SIGPIPE upstream
+}
+
 legs_summary=""
 tails_summary=""
 leg_docmap=""
@@ -314,7 +376,24 @@ for leg in $LEGS_SPLIT; do
     else
         printf 'tick: no such leg doc: %s\n' "$leg_doc" >&2
     fi
-    legs_summary="$(csv_add "$legs_summary" "$label:$lock_status")"
+    # HIMMEL-4234: FREE with no marker bullet ever (tails ?) is a leg that never
+    # went LIVE; that, or a transcript that ended in continued-in, shows in legs=
+    # in place of FREE. A wrapped or marker-bearing leg is never relabelled.
+    # ponytail: the clock is dispatch time, so a leg first listed after the
+    # threshold baselines already NOLIVE and the waiter stays silent for it;
+    # upgrade = wake on first sight of a NOLIVE, if that ever bites.
+    leg_label_state="$lock_status"
+    if [ -f "$leg_doc" ] && [ "$lock_status" = FREE ] && [ "$tail_status" = "?" ]; then
+        if leg_forked "$leg_cands"; then
+            leg_label_state=FORKED
+        else
+            leg_t="$(leg_start_epoch "$leg_doc" "$leg_cands")"
+            if [ -n "$leg_t" ] && [ $(( $(date +%s) - leg_t )) -ge $(( nolive_min * 60 )) ]; then
+                leg_label_state=NOLIVE
+            fi
+        fi
+    fi
+    legs_summary="$(csv_add "$legs_summary" "$label:$leg_label_state")"
     tails_summary="$(csv_add "$tails_summary" "$label:$tail_status")"
     leg_docmap="$leg_docmap$label=$leg_doc"$'\n'
     leg_candmap="$leg_candmap$label"$'\t'"$lock_status"$'\t'"$leg_cands"$'\n'
@@ -530,8 +609,11 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
                 if [ -n "$span_doc" ] && [ -f "$span_doc" ]; then
                     # The LATEST acceptance bullet's INCOMING session (the first
                     # name after the colon, not the one after `replaces`) must
-                    # be exactly this console.
-                    accepted="$(sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' "$span_doc" 2>/dev/null | tail -n 1)"
+                    # be exactly this console. Only the `## Results` section
+                    # is read (HIMMEL-3264): an acceptance-shaped line quoted
+                    # above it, or under a later `## ` heading, confirms
+                    # nothing.
+                    accepted="$(awk '/^## /{ r = ($0 ~ /^## Results([[:space:]]|$)/) } r' "$span_doc" 2>/dev/null | sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' | tail -n 1)"
                 fi
                 if [ -n "$accepted" ] && [ "$accepted" = "$console_stem" ]; then
                     relayed_csv="$(csv_add "$relayed_csv" "$span_leg")"
@@ -992,14 +1074,7 @@ if [ -n "$fleet_total" ]; then
     # real window start (the sig- file is touched again at release, and lock
     # dirs are re-stamped by every heartbeat). The dir is fleet-wide, like the
     # census, so any console's recent launch counts as capacity being filled.
-    launch_dir="${TICK_LAUNCH_DIR:-}"
-    if [ -z "$launch_dir" ]; then
-        if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/himmel-console" ]; then
-            launch_dir="$XDG_RUNTIME_DIR/himmel-console"
-        else
-            launch_dir="${TMPDIR:-/tmp}/himmel-console-$(id -u)"
-        fi
-    fi
+    launch_dir="$(launch_dir_default)"
     recent_launch="$(find "$launch_dir" -maxdepth 2 -name '*.launch.log' -mmin "-$underfill_min" 2>/dev/null | head -n 1)"  # gnu-ok: console kit is Linux/KDE-only (headed-arm.sh); the launch logs it reads exist nowhere else
     if [ $((10#$fleet_live)) -ge $((10#$fleet_cap)) ] || [ -n "$recent_launch" ]; then
         capacity=ok
