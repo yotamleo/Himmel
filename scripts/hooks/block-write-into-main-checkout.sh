@@ -1348,7 +1348,11 @@ _bwimc_ansic_spans() {
                 q="$q${t:$k:1}"; k=$((k+1))
             done
             k=$((k+1))
-            o="$o$(_bwimc_ansic "$q")"
+            # decoded text is LITERAL: a `$`, backtick, quote, `\` or glob
+            # char in it names itself, so it becomes `_` — later stages would
+            # otherwise read it as dynamic (fail open) or strip it
+            q=$(_bwimc_ansic "$q")
+            o="$o${q//[\$\`\"\'\\\*\?\[]/_}"
             continue
         fi
         o="$o$c"; k=$((k+1))

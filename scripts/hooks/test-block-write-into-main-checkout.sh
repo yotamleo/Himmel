@@ -1978,6 +1978,10 @@ _subst_row "76zg \$'…' inside single quotes is a literal name (ALLOW)"     all
 _subst_row "76zh quoted \$(pwd) continued into a sibling name (ALLOW)"     allow "echo x > \"\$(pwd)\"n/f" "$_PR"
 _subst_row "76zi quoted \$(pwd) then /n (DENY)"                            block "echo x > \"\$(pwd)\"/n" "$_PR"
 _subst_row "76zj quoted \`pwd\` at the token end then /n (DENY)"            block "cd $_PR; echo x > \"\`pwd\`\"/n"
+_subst_row "76zk \$'…' target with a literal \$ in its name (DENY)"        block "echo x > \$'$_PR/\$HOME-x'"
+_subst_row "76zl \$'…' target with a literal * in its name (DENY)"         block "echo x > \$'$_PR/a*b'"
+_subst_row "76zm same literal \$ name in the worktree (ALLOW)"              allow "echo x > \$'$_WR/\$HOME-x'"
+_subst_row "76zn \$'…' decoded quote makes a sibling name (ALLOW)"         allow "echo x > \$'$_PR\\x22/f'"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
