@@ -36,7 +36,18 @@ for i, ln in enumerate(lines):
         if nxt.strip() and (len(nxt) - len(nxt.lstrip())) <= indent:
             break
         block.append(nxt)
-    text = "\n".join(block)
+    # Only the action inputs count: a bun-version under env: pins nothing.
+    w = next((k for k, b in enumerate(block) if re.match(r"^\s*with:\s*$", b)), None)
+    if w is None:
+        print(i + 1)
+        continue
+    with_indent = len(block[w]) - len(block[w].lstrip())
+    inputs = []
+    for b in block[w + 1:]:
+        if b.strip() and (len(b) - len(b.lstrip())) <= with_indent:
+            break
+        inputs.append(b)
+    text = "\n".join(inputs)
     if re.search(r"^\s*bun-version-file:\s*\.bun-version\s*$", text, re.M):
         continue
     if re.search(r"^\s*bun-version:\s*['\"]?\d+\.\d+\.\d+['\"]?\s*$", text, re.M):
@@ -68,9 +79,12 @@ jobs:
     steps:
       - name: named step
         uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2
+        env:
+          bun-version: 1.4.2
 YML
 got=$(unpinned_setup_bun "$FIX/bad.yml" | tr '\n' ' ')
-if [ "$got" = "4 8 20 " ]; then ok "unpinned, 'latest' and named steps flagged, file/exact pins pass"; else bad "lint control wrong: flagged '$got' expected '4 8 20 '"; fi
+if [ "$got" = "4 8 20 21 " ]; then ok "unpinned, 'latest', named and env-only steps flagged, file/exact pins pass"; else bad "lint control wrong: flagged '$got' expected '4 8 20 21 '"; fi
 if unpinned_setup_bun "$FIX/missing.yml" >/dev/null 2>&1; then bad "lint reported success on an unreadable file"; else ok "lint fails (not clean) on an unreadable file"; fi
 rm -rf "$FIX"
 
@@ -87,7 +101,7 @@ done
 if [ "$total" -ge 1 ]; then ok "scanned $total setup-bun step(s)"; else bad "found no setup-bun step: the scan is vacuous"; fi
 
 echo "[test-ci-tool-pins] .bun-version is an exact semver"
-if [ -f "$ROOT/.bun-version" ] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' "$ROOT/.bun-version"; then ok ".bun-version holds a bare x.y.z"; else bad ".bun-version missing or not a bare x.y.z"; fi
+if [ -f "$ROOT/.bun-version" ] && [ "$(grep -c '' "$ROOT/.bun-version")" -eq 1 ] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' "$ROOT/.bun-version"; then ok ".bun-version holds a bare x.y.z"; else bad ".bun-version missing or not a bare x.y.z"; fi
 
 echo "[test-ci-tool-pins] .bun-version and the drift registry agree"
 reg=$(python3 -c "
