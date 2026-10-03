@@ -422,9 +422,13 @@ def fmt_duration(seconds) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+PROBE_VIDEO = ("video", "video+media")
+
+
 def fxt_probe(x: dict):
     """ONE api.fxtwitter.com call for an X status. Returns (result, duration_s):
-    "video" (+ summed duration, None when fxtwitter gave none), "no-video",
+    "video" (a lone video; + summed duration, None when fxtwitter gave none),
+    "video+media" (photos or several videos), "no-video",
     "gone" (the post is 404 - permanent, like no-video) or "error" (transient:
     the caller stamps NOTHING so the clip is probed again). Seam:
     X_MEDIA_FXT_CMD runs "<cmd> <api-url>" and reads the JSON from its stdout."""
@@ -456,7 +460,11 @@ def fxt_probe(x: dict):
     if not videos:
         return "no-video", None
     total = sum(float(v.get("duration") or 0) for v in videos)
-    return "video", (int(round(total)) if total > 0 else None)
+    dur = int(round(total)) if total > 0 else None
+    # A lone video is the subs-only case; photos or extra videos still need the
+    # gallery-dl media path, so they get their own result.
+    photos = (tweet.get("media") or {}).get("photos") or []
+    return ("video" if len(videos) == 1 and not photos else "video+media"), dur
 
 
 TAG_RE = re.compile(r"<[^>]*>")
@@ -958,7 +966,7 @@ def is_selected(fm: dict, fm_raw: str, body: str):
         return None
     if already_media_enriched(fm_raw):
         return None
-    if not _has_twimg_media(body) and fm.get("media_probe_result") != "video":
+    if not _has_twimg_media(body) and fm.get("media_probe_result") not in PROBE_VIDEO:
         return None     # a probed-video clip stays selectable until enriched
     return x
 
@@ -1002,7 +1010,7 @@ def probe_clip(p: Path, x: dict, relpath: str) -> str:
     if not present:
         return "error"
     markers = {"media_probe_at": TODAY, "media_probe_result": result}
-    if result == "video" and duration:
+    if result in PROBE_VIDEO and duration:
         markers["media_video_duration_s"] = duration
     if not write_probe(p, text, fm_raw, body, has_crlf, markers):
         print(f"marker write REVERTED - probe NOT recorded for {relpath}",
@@ -1551,7 +1559,7 @@ def main():
             if RATE_LIMIT_S > 0:
                 time.sleep(RATE_LIMIT_S)
             probed += 1
-            if probe_clip(p, x, p.relative_to(args.vault).as_posix()) != "video":
+            if probe_clip(p, x, p.relative_to(args.vault).as_posix()) not in PROBE_VIDEO:
                 continue
         selected.append((p, x))
     if probed:

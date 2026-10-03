@@ -114,7 +114,8 @@ coverage is below `--min-sub-coverage` (default 90). An X clip with NO twimg ref
 and no `media_probe_at` (e.g. Telegram-filed) gets ONE fxtwitter probe (within
 `--limit`): a video stamps `media_video_duration_s` and proceeds; otherwise it
 stamps `media_probe_at` + `media_probe_result: no-video` and is never re-probed.
-`--dry-run` makes no probe call. Every transcript carries
+A post with photos or several videos stamps `media_probe_result: video+media`
+and takes the gallery-dl path (never subs-only). `--dry-run` makes no probe call. Every transcript carries
 `media_transcript_source` (`platform-subs` | `auto-subs` | `whisper-<model>` |
 `none`), `media_video_duration_s`, `media_transcript_coverage` and a
 `<!-- source: ..., coverage N%, M:SS -->` line under `### Transcript`.

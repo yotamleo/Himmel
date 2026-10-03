@@ -1005,6 +1005,17 @@ assert "second no-video run exit 0" 0 "$?"
 [ "$(wc -l < "$tmp/fxt-n.count" | tr -d ' ')" = 1 ] && a=ok || a=no
 assert "second run does not re-probe (stub call counter == 1)" ok "$a"
 assert "no-video clip byte-identical on re-run" "$sha1" "$(sha256sum "$c" | cut -d' ' -f1)"
+FXM="$tmp/fxt-mixed.json"
+echo '{"code":200,"tweet":{"media":{"photos":[{"type":"photo"}],"videos":[{"type":"video","duration":40.4}]}}}' > "$FXM"
+emit_gallery_dl video.mp4
+PM="$tmp/vault-mixed"; make_x_vault "$PM" 1805 ""
+export X_TEST_FXT_JSON="$FXM" X_TEST_FXT_COUNT="$tmp/fxt-m.count" X_TEST_YT_MODE=subs X_TEST_YT_DURATION=40
+HOME="$H2" run_tool "$PM" >"$tmp/mixed.out" 2>"$tmp/mixed.err"
+c="$PM/Clippings/clip.md"
+grep -q '^media_transcript_source: platform-subs$' "$c" && a=subs || a=other
+assert "photo+video post does NOT take the subs-only path" other "$a"
+grep -q '^media_probe_result: video+media$' "$c" && a=ok || a=no
+assert "photo+video post stamped media_probe_result: video+media" ok "$a"
 PD="$tmp/vault-dry"; make_x_vault "$PD" 1804 ""
 : > "$tmp/fxt-d.count"; X_TEST_FXT_COUNT="$tmp/fxt-d.count" HOME="$H2" run_tool "$PD" --dry-run >"$tmp/dry-probe.out" 2>&1
 grep -q 'clip.md' "$tmp/dry-probe.out" && a=present || a=absent
@@ -1037,11 +1048,11 @@ assert "whisper coverage = last segment end / duration (30/40 = 75)" ok "$a"
 grep -q '^media_video_duration_s: 40$' "$c" && a=ok || a=no
 assert "probe duration kept through the fallback" ok "$a"
 TH="$tmp/vault-thresh"; make_x_vault "$TH" 1903 ""
-export X_TEST_YT_DURATION=44 X_TEST_FXT_COUNT="$tmp/fxt-t.count"
+export X_TEST_YT_DURATION=46 X_TEST_FXT_COUNT="$tmp/fxt-t.count"
 HOME="$H2" run_tool "$TH" --min-sub-coverage 80 >"$tmp/th.out" 2>"$tmp/th.err"
 c="$TH/Clippings/clip.md"
 grep -q '^media_transcript_source: platform-subs$' "$c" && a=ok || a=no
-assert "--min-sub-coverage 80 accepts 40/44 = 90 percent subs" ok "$a"
+assert "--min-sub-coverage 80 accepts 40/46 = 87 percent subs (default 90 would not)" ok "$a"
 AU="$tmp/vault-auto"; make_x_vault "$AU" 1904 ""
 export X_TEST_YT_MODE=subs X_TEST_YT_AUTO_ONLY=1 X_TEST_YT_DURATION=40 X_TEST_FXT_COUNT="$tmp/fxt-a.count"
 HOME="$H2" run_tool "$AU" >"$tmp/au.out" 2>"$tmp/au.err"
