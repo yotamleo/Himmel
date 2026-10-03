@@ -103,7 +103,7 @@ Run these, in order, and write the result as the first bullet under
     **Bash tool's `run_in_background: true` AND `timeout: 7200000`** — both
     are required: the default background limit (30 min) killed a waiter once
     (HIMMEL-3940). The harness re-invokes you when the command exits:
-    `bash "{{KIT}}/console-wait.sh" "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md" --doc "<this file>" --token <your token> --legs "<absolute leg docs>"`
+    `bash "{{KIT}}/console-wait.sh" "{{INBOX}}" --doc "<this file>" --token <your token> --legs "<absolute leg docs>"`
     (everything after the inbox path is passed to `tick.sh` unchanged). It is
     silent while nothing happens and **exits on the first real event**,
     printing one block: `WAKE telegram` plus the operator's line(s), or
@@ -182,8 +182,9 @@ Run these, in order, and write the result as the first bullet under
     one line per message to your inbox file, but only if the file already
     exists — creating it is what tells the bridge a console is listening. The
     waiter (step 10) creates it on start; to open it before that, run
-    `: >> "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"`
-    (create the `consoles/` directory first if it is absent). The waiter reads
+    `: >> "{{INBOX}}"`
+    (the bridge root's `consoles/{{SESSION_NAME}}.md`, resolved when this doc
+    was rendered; create the `consoles/` directory first if it is absent). The waiter reads
     it through `inbox-follow.sh --once`, which keeps a read cursor next to the
     inbox (`<inbox>.cursor`): a line the bridge appended while no waiter ran is
     delivered by the next start, and a re-start does not replay delivered lines
@@ -345,7 +346,7 @@ re-arm.
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
-| telegram | 1 s poll, event-driven | **Runs inside the step-10 waiter.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`, the inbox being `${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md`. The waiter drains it each second with `inbox-follow.sh --once` and wakes you with `WAKE telegram` plus the line(s). The persisted read cursor (`<inbox>.cursor`, a byte offset) means a line appended while no waiter ran is delivered on the next start, and delivered lines are not replayed (at-least-once: a waiter killed mid-emit can repeat one line) (HIMMEL-3356). The file must exist before the bridge will write to it (step 11). See step 11 for the authority these lines carry and how to reply |
+| telegram | 1 s poll, event-driven | **Runs inside the step-10 waiter.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`, the inbox being `{{INBOX}}`. The waiter drains it each second with `inbox-follow.sh --once` and wakes you with `WAKE telegram` plus the line(s). The persisted read cursor (`<inbox>.cursor`, a byte offset) means a line appended while no waiter ran is delivered on the next start, and delivered lines are not replayed (at-least-once: a waiter killed mid-emit can repeat one line) (HIMMEL-3356). The file must exist before the bridge will write to it (step 11). See step 11 for the authority these lines carry and how to reply |
 
 The three polling monitors are plain Bash loops over already-versioned inputs;
 write them in the session scratchpad, not in the repo. The context-fill probe
