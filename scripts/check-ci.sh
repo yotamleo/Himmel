@@ -1675,6 +1675,12 @@ if [ "$SETTLE" -gt 0 ]; then
         [ "$settle_for" -gt "$settle_left" ] && settle_for=$settle_left
     fi
     [ "$settle_for" -gt 0 ] && "$CHECK_CI_SLEEP_CMD" "$settle_for"
+    if [ "$settle_for" -lt "$SETTLE" ]; then
+        # The deadline cut the settle window short: a green now would certify a
+        # check set late registrars never had their window to join. Not an error.
+        echo "check-ci: DEADLINE-PENDING — the ${MAX_WAIT}s --max-wait deadline left only ${settle_for}s of the ${SETTLE}s settle window; not certifying an incomplete check set (not an error, re-invoke)" >&2
+        exit 2
+    fi
     watch_round
 fi
 

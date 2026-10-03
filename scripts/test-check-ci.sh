@@ -2066,6 +2066,23 @@ fi
 assert_err_has "extending once" "4131-c the extension started inside the deadline"
 assert_err_has "DEADLINE-PENDING" "4131-c the verdict says pending, not broken"
 
+# 4131-d — a deadline shorter than the settle window must not certify green: the
+# late-registering check set never had its window (codex-1, round 1).
+POLL_OVERRIDE=1
+SETTLE_OVERRIDE=5
+SLEEP_CMD_OVERRIDE="sleep"
+t0=$SECONDS
+run green-then-slow --max-wait 2
+t_elapsed=$((SECONDS - t0))
+assert_rc 2 "4131-d a deadline cutting the settle window short is rc 2, never green"
+assert_err_has "settle window" "4131-d the verdict names the truncated settle window"
+assert_err_has "DEADLINE-PENDING" "4131-d the verdict says pending, not broken"
+if [ "$t_elapsed" -le 3 ]; then
+    pass "4131-d the truncated settle stays inside --max-wait"
+else
+    fail "4131-d the truncated settle stays inside --max-wait" "elapsed=${t_elapsed}s want <=3s for --max-wait 2"
+fi
+
 # 2907-c — negative control: a FAILED check alongside a pending one at cap
 # must red_exit immediately (the failed-bucket probe is checked before the
 # extend decision) — no WAITING notice, no extension.
@@ -2774,5 +2791,5 @@ assert_grep_lacks "3473-g --threads-only makes no mergeStateStatus read" "found 
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 192 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 192"; exit 1; fi
+if [ "$COUNT" -ne 193 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 193"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
