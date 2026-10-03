@@ -288,9 +288,9 @@ claude_stub_url="$TMP/claude-logging-stub-url"
 make_claude_logging_stub "$claude_stub_url" "$log_url"
 
 rc=0
-out_url=$(USERPROFILE='' HOME="$fake_home_url" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_url" HERMES_HOME="$TMP/no-hermes" \
+USERPROFILE='' HOME="$fake_home_url" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_url" HERMES_HOME="$TMP/no-hermes" \
       CLAUDE_USER_SETTINGS="$fake_home_url/.claude/settings.json" \
-      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" >/dev/null 2>&1 || rc=$?
 log_url_content="$(cat "$log_url")"
 assert_contains "updates the url-sourced @himmel plugin" "plugin update obsidian-second-brain@himmel" "$log_url_content"
 assert_contains "updates the git-subdir-sourced @himmel plugin" "plugin update mono-sub@himmel" "$log_url_content"
