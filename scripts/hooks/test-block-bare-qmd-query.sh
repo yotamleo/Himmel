@@ -245,6 +245,7 @@ deny "zsh -c \$'qmd\\C-Iquery x'"
 deny "zsh -c \$'qmd \\C-iquery x'"
 allow "zsh -c \$'echo \\C-i hi'; qmd status"
 # A redirection between the shell and its -c does not end the scan.
+deny "bash <\"\$(bash -c 'qmd \"qu\"ery x')\" -c true"
 deny "bash </dev/null -c 'qmd \"qu\"ery x'"
 deny "bash < /dev/null -c 'qmd \"qu\"ery x'"
 deny "bash 2>/dev/null -c 'qmd \"qu\"ery x'"

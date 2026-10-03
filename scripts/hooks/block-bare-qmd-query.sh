@@ -472,7 +472,8 @@ qmd_nested() {
             done
             if [ "$e" -ge "$n" ]; then break; fi
             # A redirection (`<f`, `2>&1`, `&>f`, `<<<w`) sits anywhere among
-            # the words: step over its operator and drop its target word.
+            # the words: step over its operator and drop its target word,
+            # after checking any substitution in it.
             if [[ ${w:e:2} == '&>' ]] || [[ ${w:e:1} == [\<\>] ]]; then
                 while [ "$e" -lt "$n" ]; do
                     case "${w:e:1}" in '<'|'>'|'&'|'|') e=$((e + 1)) ;; *) break ;; esac
@@ -502,6 +503,10 @@ qmd_nested() {
             e=$j
             if [ "$rd" = 1 ]; then
                 rd=0
+                if [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; then
+                    qmd_check "$t" $((depth + 1))
+                    if [ "$deny" = 1 ]; then return 0; fi
+                fi
             elif [[ ${w:e:1} == [\<\>] ]] && [[ $t =~ ^([0-9]+|\{[[:alpha:]_][[:alnum:]_]*\})$ ]]; then
                 # The fd of a redirection (`2>f`, `{fd}<f`), not a word.
                 :
