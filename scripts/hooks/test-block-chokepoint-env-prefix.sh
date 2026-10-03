@@ -1316,7 +1316,8 @@ for P in /r/w /r/w/. "$WT2" ./x; do
 done
 assert_deny "4157 cd then ./g?.sh (no scripts/ in the word)"   "$(j "cd scripts/$CK; $UL ./g?.sh")"
 assert_deny "4157 cd then ./g(o).sh"                           "$(j "cd scripts/$CK; $UL ./g(o).sh")"
-for F in "bash g?.sh" "bash g(o).sh" "bash *o.sh" "sh -e {g,x}o.sh" "zsh ^x.sh"; do
+for F in "bash g?.sh" "bash g(o).sh" "bash *o.sh" "sh -e {g,x}o.sh" "zsh ^x.sh" \
+         "/bin/bash g?.sh" "/usr/bin/zsh g(o).sh" "'bash' g?.sh" "\"sh\" g*.sh"; do
     assert_deny "4157 cd then slash-less glob: $F" "$(j "cd scripts/$CK; $UL $F")"
 done
 for F in "source g*.sh" ". g?.sh"; do

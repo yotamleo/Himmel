@@ -1127,7 +1127,8 @@ raw_obfuscated() {
     d=${d//\$\(/}
     d=${d//\$\{/}
     # `.` and `source` count only in command position (prose has ". (").
-    [[ $d =~ ((^|[^[:alnum:]_./-])(bash|sh|zsh|dash|ksh|mksh)([[:blank:]]+([-+][oO][[:blank:]]+[[:alnum:]_]+|[-+][^c[:blank:]]*))*|(^|[\;\|\&\(\`$NL])[[:blank:]]*(source|\.))[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
+    # The shell may be an absolute path (/bin/bash) or quoted ('bash').
+    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh)[\"$SQ]?([[:blank:]]+([-+][oO][[:blank:]]+[[:alnum:]_]+|[-+][^c[:blank:]]*))*|(^|[\;\|\&\(\`$NL])[[:blank:]]*(source|\.))[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
     [ "$obf$pobf" = 00 ] && return 0
     clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     if [ "$obf" = 0 ]; then
