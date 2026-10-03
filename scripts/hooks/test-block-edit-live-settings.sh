@@ -2155,6 +2155,17 @@ assert_rc "502 nested worktree ln -sf \$SJ ~/.c[[:alpha:]]aude denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c[[:alpha:]]aude" HOME="$FAKEHOME")"
 assert_rc "503 nested worktree ln -sf \$SJ ~/.c[[:digit:]]aude allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c[[:digit:]]aude" HOME="$FAKEHOME")"
+# CR round 7 (codex-2): a wrapper option keeps its case, `sudo -H` takes none
+assert_rc "504 sudo -Hu root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -Hu root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "505 nested worktree sudo -Hu root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'sudo -Hu root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "506 sudo -Pu root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -Pu root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "507 env -S /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'env -S /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "508 sudo -Hu root cat ~/.claude/x allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -Hu root cat ~/.claude/x' HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
