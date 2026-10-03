@@ -344,8 +344,10 @@ FIND_DELETE_PAT="${CMDPOS}"'find(\.exe)?([[:space:]].*)?[[:space:]]-delete([^[:a
 # in $cmd (bash reads it as a character; here it is already a newline). It
 # only ever disqualifies, so it can never strip more than before.
 # HIMMEL-4146: an unquoted ${, $(( or $[ is skipped to its closer only when
-# it closes before any quote, backslash, $, backtick or newline; one left
-# open (or holding any of those) returns 1, as does a $[ inside "...".
+# it closes before any quote, backslash, $, backtick, # or newline (every
+# character the N state acts on, so the skip never walks past one: zsh reads
+# `$((true)#)` as a subshell plus a comment); one left open (or holding any of
+# those) returns 1, as does a $[ inside "...".
 _hd_carried_clean() {
     local s=$1 i=0 n st=N c p=$'\n' o cl d
     s="${s//<<</}"
@@ -380,7 +382,7 @@ _hd_carried_clean() {
                                 case $c in
                                     "$o") d=$((d + 1)) ;;
                                     "$cl") d=$((d - 1)); [ "$d" -eq 0 ] && break ;;
-                                    [\'\"\\\$\`]|$'\n') return 1 ;;
+                                    [\'\"\\\$\`\#]|$'\n') return 1 ;;
                                 esac
                                 i=$((i + 1))
                             done

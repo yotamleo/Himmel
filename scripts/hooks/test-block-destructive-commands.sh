@@ -508,6 +508,11 @@ assert_rc "4146f opener inside a carried \$((" 2 "$(run_case "$(j_bash $'echo $(
 assert_rc "4146g opener inside a carried \$[" 2 "$(run_case "$(j_bash $'echo $[1+\ncat <<\'EOF\'\n]\nrm -rf d\nEOF')")"
 assert_rc "4146h opener inside a carried \${a[']}'" 2 "$(run_case "$(j_bash $'a=(x); echo ${a[\']}\'\ncat <<\'EOF\'\n]}\nrm -rf d\nEOF')")"
 assert_rc "4146i opener on the line of an open \${x:-" 2 "$(run_case "$(j_bash $'echo ${x:- cat <<\'EOF\'\n}\nrm -rf d\nEOF')")"
+# J1675b: the skip must not walk past a # (zsh reads `$((true)` as a
+# subshell, so the # opens a comment and the quotes pair differently).
+assert_rc "4146j # inside a skipped \$((" 2 "$(run_case "$(j_bash $'echo $((true)#)\'\n\'"\'"cat <<\'EOF\'\n"\nrm -rf d\n)\nEOF\n')")"
+assert_rc "4146k # inside a skipped \$(( (EOF before ))" 2 "$(run_case "$(j_bash $'echo $((true)#)\'\n\'"\'"cat <<\'EOF\'\n"\nrm -rf d\nEOF\n)\n')")"
+assert_rc "4146l # inside a skipped \$[" 2 "$(run_case "$(j_bash $'\'q\' $[1)#]\n: cat <<\'EOF\'\nrm -rf d\nEOF\n')")"
 # A closed expansion before the opener keeps the body stripped.
 assert_rc "4146 heredoc after a closed \${HOME}" 0 "$(run_case "$(j_bash $'d=${HOME}/x\ncat <<\'EOF\' > "$d"\nrm -rf build\nEOF')")"
 assert_rc "4146 heredoc after a closed \$((1+2))" 0 "$(run_case "$(j_bash $'n=$((1+2))\ncat <<\'EOF\' > f\nrm -rf build\nEOF')")"
