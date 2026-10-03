@@ -1320,7 +1320,11 @@ for F in "bash g?.sh" "bash g(o).sh" "bash *o.sh" "sh -e {g,x}o.sh" "zsh ^x.sh" 
          "/bin/bash g?.sh" "/usr/bin/zsh g(o).sh" "'bash' g?.sh" "\"sh\" g*.sh"; do
     assert_deny "4157 cd then slash-less glob: $F" "$(j "cd scripts/$CK; $UL $F")"
 done
-for F in "source g*.sh" ". g?.sh"; do
+# A keyword, precommand, assignment prefix or $( also puts source/. in
+# command position (CR on #1685: then source g*.sh).
+for F in "source g*.sh" ". g?.sh" "if true; then source g*.sh; fi" "while :; do . g?.sh; done" \
+         "if :; then :; else . g?.sh; fi" "{ . g?.sh; }" "! . g?.sh" "x=\$(. g?.sh)" \
+         "FOO=1 . g?.sh" "builtin source g*.sh" "command . g?.sh" "eval . g?.sh" "time . g?.sh"; do
     assert_deny "4157 cd then sourced slash-less glob: $F" "$(j "cd scripts/$CK; unset HIMMEL_CONSOLE_LEG; $F")"
 done
 assert_allow "4157 a prose '. (' is not a sourced glob" "$(j "echo 'unset HIMMEL_CONSOLE_LEG, done . (see x)'")"
