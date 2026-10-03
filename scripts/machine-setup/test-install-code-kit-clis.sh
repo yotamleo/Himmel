@@ -15,7 +15,10 @@ for t in bash grep dirname sh env; do ln -s "$(command -v "$t")" "$STUBS/$t" 2>/
 
 out="$(PATH="$STUBS" bash "$SCRIPT" --dry-run 2>&1)"; rc=$?
 if [ "$rc" = 0 ]; then ok "dry-run exits 0"; else bad "dry-run rc=$rc: $out"; fi
-case "$out" in *"would run: npm install -g @ast-grep/cli@0.45.3"*) ok "ast-grep pinned to 0.45.3" ;; *) bad "no pinned npm install: $out" ;; esac
+# The pin literal is rewritten by the drift bump, so read it from the script rather than hardcoding it.
+# shellcheck disable=SC2016 # the ${...} is literal text to match in the script, not an expansion
+PIN="$(sed -n's/^AST_GREP_VERSION="\${AST_GREP_VERSION:-\(.*\)}"$/\1/p' "$SCRIPT")"
+case "$out" in *"would run: npm install -g @ast-grep/cli@$PIN"*) ok "ast-grep pinned to $PIN" ;; *) bad "no pinned npm install ($PIN): $out" ;; esac
 case "$out" in *"would run: sudo apt-get install -y shfmt bats"*) ok "shfmt + bats via apt" ;; *) bad "no apt install line: $out" ;; esac
 
 out="$(AST_GREP_VERSION=9.9.9 PATH="$STUBS" bash "$SCRIPT" --dry-run 2>&1)"

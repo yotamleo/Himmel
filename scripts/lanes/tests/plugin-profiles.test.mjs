@@ -1498,8 +1498,10 @@ test('HIMMEL-4024: code kit CLIs (ast-grep, shfmt, bats) have drift rows, a cata
   const up = JSON.parse(readFileSync(join(root, 'scripts', 'upstreams.json'), 'utf8'));
   const cat = readFileSync(join(root, 'docs', 'tooling-catalog.md'), 'utf8');
   const byName = new Map(up.entries.map((e) => [e.name, e]));
-  assert.equal(byName.get('ast-grep')?.synced_base, '0.45.3');
-  assert.match(readFileSync(join(root, byName.get('ast-grep')?.version_pin?.file ?? 'missing'), 'utf8'), /AST_GREP_VERSION:-0\.45\.3/);
+  // The nightly bump rewrites synced_base and the install pin together, so assert they agree, not a literal.
+  const astGrep = byName.get('ast-grep');
+  assert.match(astGrep?.synced_base ?? '', /^\d+\.\d+\.\d+$/);
+  assert.ok(readFileSync(join(root, astGrep?.version_pin?.file ?? 'missing'), 'utf8').includes(`AST_GREP_VERSION:-${astGrep.synced_base}`), 'install pin matches synced_base');
   for (const n of ['shfmt', 'bats']) assert.ok(byName.has(n), `${n} drift row`);
   for (const n of ['ast-grep', 'shfmt', 'bats', '`code`', '`code-ui`']) assert.ok(cat.includes(n), `catalog mentions ${n}`);
   assert.ok(existsSync(join(root, 'scripts', 'machine-setup', 'install-code-kit-clis.sh')), 'install step');

@@ -12,6 +12,7 @@ set -euo pipefail
 
 AST_GREP_VERSION="${AST_GREP_VERSION:-0.45.3}"
 DRY=0
+INCOMPLETE=0
 case "${1:-}" in
   --dry-run) DRY=1 ;;
   '') ;;
@@ -24,12 +25,13 @@ run() {
 
 ast_grep_ver=""
 if command -v ast-grep >/dev/null 2>&1; then ast_grep_ver="$(ast-grep --version 2>/dev/null || true)"; fi
-if [ -n "$ast_grep_ver" ] && [[ "$ast_grep_ver" == *"$AST_GREP_VERSION"* ]]; then
+if [ "${ast_grep_ver##* }" = "$AST_GREP_VERSION" ]; then
   echo "ast-grep $AST_GREP_VERSION already installed"
 elif command -v npm >/dev/null 2>&1; then
   run npm install -g "@ast-grep/cli@${AST_GREP_VERSION}"
 else
   echo "install-code-kit-clis: npm not found, skipping ast-grep" >&2
+  INCOMPLETE=1
 fi
 
 missing=""
@@ -49,4 +51,6 @@ elif command -v pacman >/dev/null 2>&1; then
   run sudo pacman -S --needed --noconfirm $missing
 else
   echo "install-code-kit-clis: no supported package manager, install${missing} by hand" >&2
+  INCOMPLETE=1
 fi
+[ "$DRY" = 1 ] || [ "$INCOMPLETE" = 0 ]
