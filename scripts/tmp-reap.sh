@@ -34,6 +34,8 @@ case "${1:-}" in
     *) usage >&2; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { echo "tmp-reap: jq is required" >&2; exit 2; }
+# liveness is read from /proc: without it nothing can be proven dead, so never apply
+if [ "$APPLY" = 1 ] && [ ! -r /proc/self/stat ]; then echo "tmp-reap: /proc is unreadable, refusing --apply" >&2; exit 2; fi
 
 TMP_ROOT="${TMP_REAP_TMP_ROOT:-/tmp}"
 CLAUDE_ROOT="$TMP_ROOT/claude-$(id -u)"
@@ -136,6 +138,8 @@ preserve() { # <dir> <id>; 0 only when every copy verified and a manifest row ex
         k="$(file_kind "${f##*/}")"; [ -n "$k" ] || continue
         rel="${f#"$dir"/}"
         dest="$ARCHIVE/$MONTH/$k/$id/$rel"
+        # never overwrite an earlier, different copy (a reused judge id): refuse, so the dir is kept
+        if [ -e "$dest" ] && ! cmp -s "$f" "$dest"; then return 1; fi
         mkdir -p "${dest%/*}" && cp -p "$f" "$dest" && cmp -s "$f" "$dest" || return 1
         sum="$(sha "$dest")" && [ -n "$sum" ] || return 1
         manifest_row "$f" "$dest" "$sum" "$(wc -c < "$dest" | tr -d ' ')" "$id" "$k" || return 1
@@ -179,6 +183,7 @@ if [ -d "$CLAUDE_ROOT" ]; then
 fi
 # Fixtures: one find per family (no per-dir process) and one batched du. An old
 # fixture with a process cwd/fd under it is kept.
+[ "$APPLY" = 1 ] && census   # fresh view: session classification above may have taken a while
 fix_total=0; fix_reaped=0; fix_failed=0
 for fam in $FAMILIES; do
     list=""; n=0
@@ -248,7 +253,9 @@ if [ "$APPLY" = 1 ] && [ -d "$CLAUDE_ROOT" ]; then
         id="${f##*/cache-break-state-}"; id="${id%.json}"
         dest="$ARCHIVE/$MONTH/cache-break/$id/${f##*/}"
         [ -f "$dest" ] && continue
-        mkdir -p "${dest%/*}" 2>/dev/null && cp -p "$f" "$dest" 2>/dev/null && manifest_row "$f" "$dest" "$(sha "$dest")" "$(wc -c < "$dest" | tr -d ' ')" "$id" cache-break
+        if ! { mkdir -p "${dest%/*}" 2>/dev/null && cp -p "$f" "$dest" 2>/dev/null && manifest_row "$f" "$dest" "$(sha "$dest")" "$(wc -c < "$dest" | tr -d ' ')" "$id" cache-break; }; then
+            printf 'SKIP cache-break %s (archive failed)\n' "$f"; failed=$((failed+1))
+        fi
     done
 fi
 
