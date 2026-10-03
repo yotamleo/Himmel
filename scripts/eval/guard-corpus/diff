@@ -133,18 +133,27 @@ def _materialise_tree(repo, sha, dest_dir):
         # 0644 would fail only on the sha-materialised side when invoked
         # directly, distorting the base/head comparison (vs _copy_tree, which
         # preserves modes via copytree).
-        entries = subprocess.run(
+        listing = subprocess.run(
             ["git", "-C", repo, "ls-tree", "-r",
              "%s" % sha, "scripts/%s" % sub],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        ).stdout.decode("utf-8", "replace").splitlines()
-        for line in entries:
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # A failed listing (bad sha, unreadable repo) must not pass silently as
+        # an empty subtree: an incomplete hook dependency tree could let the
+        # materialised hook mis-decide (e.g. allow where it should deny) and
+        # read as a false clean. Fail loud -> caught as a setup error (exit 2).
+        if listing.returncode != 0:
+            raise RuntimeError("git ls-tree %s scripts/%s failed: %s" % (
+                sha, sub, listing.stderr.decode("utf-8", "replace").strip()))
+        for line in listing.stdout.decode("utf-8", "replace").splitlines():
             meta, rel = line.split("\t", 1)
             mode = meta.split()[0]
             blob = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (sha, rel)],
-                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # a file the listing names but `show` cannot read is a broken tree,
+            # not a file to skip -- same fail-loud reasoning as the listing.
             if blob.returncode != 0:
-                continue
+                raise RuntimeError("git show %s:%s failed: %s" % (
+                    sha, rel, blob.stderr.decode("utf-8", "replace").strip()))
             dst = os.path.join(dest_dir, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(dst, "wb") as fh:

@@ -126,7 +126,12 @@ else fail "empty-corpus: expected exit 2, got $RC_EMPTY"; fi
 # them; prove a sentinel GIT_DIR is never created by the scratch setup.
 SENTGD="$TMP/sentinel-gitdir"
 GIT_DIR="$SENTGD" python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
-        --corpus "$TMP/corpus.jsonl" --jobs 1 >/dev/null 2>&1
+        --corpus "$TMP/corpus.jsonl" --jobs 1 >/dev/null 2>&1; RC_GD=$?
+# assert the run COMPLETED cleanly first: a setup crash (exit 2) would leave
+# SENTGD absent for the wrong reason, making the sentinel check vacuous. base
+# vs base on a corpus whose deny seed the base denies => exit 0.
+if [ "$RC_GD" = "0" ]; then pass "git-env: diff ran to completion (exit 0)"
+else fail "git-env: diff did not complete clean, exit $RC_GD (sentinel check would be vacuous)"; fi
 if [ ! -e "$SENTGD" ]; then pass "git-env: inherited GIT_DIR did not redirect scratch git"
 else fail "git-env: scratch git honored inherited GIT_DIR ($SENTGD created)"; fi
 
@@ -182,6 +187,36 @@ N=$(grep -c '"family": "supplied"' "$TMP/sf.jsonl")
 if [ "$N" -ge 2 ]; then pass "seeds-file: transforms applied to supplied seed ($N rows)"
 else fail "seeds-file: expected >=2 supplied rows, got $N"; fi
 has "seeds-file: placeholder preserved" "$(cat "$TMP/sf.jsonl")" "PLACEHOLDER"
+
+# --- 5b. xargs transform is not applied to a stdin-consuming (heredoc) seed ---
+# codex-3: xargs feeds its own stdin to the wrapped command, hijacking a
+# heredoc seed's input and making the row's expect label unreliable. The
+# built-in heredoc-commit seed must never appear xargs-wrapped.
+python3 "$GEN" --seed 4168 -o "$TMP/def.jsonl"
+NX=$(python3 - "$TMP/def.jsonl" <<'PY'
+import json, sys
+n = 0
+for line in open(sys.argv[1]):
+    c = json.loads(line)["tool_input"]["command"]
+    if "xargs" in c and "<<" in c:
+        n += 1
+print(n)
+PY
+)
+if [ "$NX" = "0" ]; then pass "xargs-transform: not applied to heredoc seed"
+else fail "xargs-transform: $NX xargs-wrapped heredoc row(s) emitted"; fi
+
+# --- 5c. a bogus sha base is a setup error, never a silent partial tree -------
+# codex-1: materialise must fail loud on an unreadable sha rather than run an
+# incomplete hook tree. A nonexistent sha => setup error (exit 2).
+GITREPO="$TMP/gitrepo"
+mkdir -p "$GITREPO"
+( cd "$GITREPO" && git init -q && git -c user.email=x@x -c user.name=x commit -q --allow-empty -m init ) >/dev/null 2>&1
+python3 "$DIFF" --base "sha:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef:scripts/hooks/x.sh" \
+        --head "$TMP/base-hook.sh" --corpus "$TMP/corpus.jsonl" --repo "$GITREPO" \
+        >/dev/null 2>&1; RC_SHA=$?
+if [ "$RC_SHA" = "2" ]; then pass "sha-materialise: bogus sha is a setup error (exit 2)"
+else fail "sha-materialise: expected exit 2, got $RC_SHA"; fi
 
 # --- 6. deny-expected rows the base never denies => inconclusive (exit 3) ----
 # codex-3: if a judge supplies deny seeds but the base denies NONE, the deny
