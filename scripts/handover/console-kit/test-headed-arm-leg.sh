@@ -3459,6 +3459,85 @@ for m4152 in startup fn; do
     *) check "41k-4152 [$m4152] direct entry ends in the pinned claude or a refusal (rc=$rc out=$out)" bad ok ;;
   esac
 done
+# HIMMEL-4159 (J1678b): loader and node preload tokens in the launcher env would run caller
+# code inside the consult's process tree, so a consult refuses each; a non-consult launch
+# passes them through (unchanged).
+for tok4159 in "LD_PRELOAD=$tmp/x.so" "LD_LIBRARY_PATH=$tmp" "LD_AUDIT=$tmp/x.so" "NODE_OPTIONS=--require=$tmp/x.js"; do
+  rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 $tok4159" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4159-p "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i-4159 a consult with a '${tok4159%%=*}' token in HEADED_ARM_LAUNCHER_ENV refuses (exit 2)" "$rc" "2"
+  contains "41i-4159 the '${tok4159%%=*}' refusal names a preload token" "$out" "refuses a loader or node preload token"
+  rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 $tok4159" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4159-p "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i-4159 a non-consult launch with a '${tok4159%%=*}' token still passes (exit 0)" "$rc" "0"
+done
+# HIMMEL-4159 (J1678b): a token that is not NAME=VALUE becomes `env`'s command operand at the
+# launch site, so a consult refuses it; a non-consult dry run is unchanged.
+for tok4159 in "$tmp/evil4159" "1X=1" "FOO-BAR=1" "=1" "-i"; do
+  rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="X=1 $tok4159" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4159-s "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i-4159 a consult with the non-NAME=VALUE token '$tok4159' refuses (exit 2)" "$rc" "2"
+  contains "41i-4159 the '$tok4159' refusal names the token shape" "$out" "refuses a token that is not NAME=VALUE"
+done
+rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="X=1 $tmp/evil4159" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4159-s "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4159 a non-consult dry run with a non-NAME=VALUE token still passes (exit 0)" "$rc" "0"
+# HIMMEL-4159: a real consult launch (stub konsole) with a no-`=` token naming a fake binary
+# refuses before anything runs: no konsole, and the fake binary never runs.
+atk4159="$tmp/atk4159"; rm -rf "$atk4159"; mkdir -p "$atk4159"
+# shellcheck disable=SC2016 # literal $0 belongs to the stub script
+printf '%s\n' '#!/bin/sh' ': > "$(dirname "$0")/evil-ran"' > "$atk4159/evil"
+chmod 755 "$atk4159/evil"
+d4159="$tmp/c4159-shape"; mk_launch_stubs "$d4159" "HIMMEL-4159-shape"
+rc=0
+(
+  IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' HEADED_ARM_LAUNCHER_ENV="X=1 $atk4159/evil" \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d4159/konsole" PGREP_CMD="$d4159/pgrep" \
+  LEG_REPO="$tmp/repo41c" HEADED_ARM_LOCK_DIR="$d4159/locks" HEADED_ARM_PROC="$d4159/proc" \
+    /usr/bin/bash "$SCRIPT" --consult --profile design-motion --console HIMMEL-4014-console "HIMMEL-4159-shape" "$some_doc" "$d4159/signal-never" "$PAST" "$d4159/log" >/dev/null 2>&1
+) || rc=$?
+wait_record "$d4159" || true
+check "41k-4159 [shape] a consult launch with a no-'=' token refuses (exit 2)" "$rc" "2"
+check "41k-4159 [shape] the konsole never ran" "$([ -e "$d4159/record" ] && echo ran || echo not-run)" "not-run"
+not_contains "41k-4159 [shape] the fake binary never reaches a launch line" "$(cat "$d4159/record" 2>/dev/null || true)" "$atk4159/evil"
+check "41k-4159 [shape] the fake binary never ran" "$([ -e "$atk4159/evil-ran" ] && echo ran || echo not-run)" "not-run"
+# HIMMEL-4159: a real consult launch with a hostile caller loader/node runtime: NODE_OPTIONS
+# requiring a marker module, an LD_PRELOAD and an LD_LIBRARY_PATH. None reaches the konsole env
+# (headed-arm.sh's own environment), and the marker never runs in headed-arm.sh's node: it logs
+# only when its parent is headed-arm.sh or a launcher, since headed-arm-leg.sh is the caller's
+# own process. The preload is libc (already mapped, so a no-op): a lib that cannot load makes
+# the loader warn on stderr, which headed-arm-leg.sh's own 2>&1 captures read as JSON, so the
+# caller refuses before any launch. LD_AUDIT has no loadable no-op, so the token rows above and
+# the scrub row below carry it.
+# shellcheck disable=SC2016 # literal JS for the marker module
+printf '%s\n' 'const fs=require("fs");let p="";try{p=fs.readFileSync("/proc/"+process.ppid+"/cmdline","utf8")}catch(e){}' \
+  'if(/\/headed-arm\.sh|leg-claude-launcher/.test(p))fs.appendFileSync(process.env.ATK4159+"/node-log",p+"\n")' > "$atk4159/marker.js"
+d4159="$tmp/c4159-ld"; mk_launch_stubs "$d4159" "HIMMEL-4159-ld"
+cp "$atk4152/konsole" "$d4159/konsole"
+rm -f "$atk4159/node-log"
+rc=0
+(
+  # shellcheck disable=SC2030 # the hostile runtime is subshell-local by design
+  export ATK4159="$atk4159" NODE_OPTIONS="--require=$atk4159/marker.js" LD_PRELOAD=libc.so.6 LD_LIBRARY_PATH="$atk4159"
+  IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d4159/konsole" PGREP_CMD="$d4159/pgrep" \
+  LEG_REPO="$tmp/repo41c" HEADED_ARM_LOCK_DIR="$d4159/locks" HEADED_ARM_PROC="$d4159/proc" \
+    /usr/bin/bash "$SCRIPT" --consult --profile design-motion --console HIMMEL-4014-console "HIMMEL-4159-ld" "$some_doc" "$d4159/signal-never" "$PAST" "$d4159/log" >/dev/null 2>&1
+) || rc=$?
+wait_record "$d4159" || true
+check "41k-4159 [ld] hostile loader/node runtime consult launch: exit 0" "$rc" "0"
+envf4159="$(cat "$d4159/env-full" 2>/dev/null || true)"
+check "41k-4159 [ld] the konsole ran (the env check below is not vacuous)" "$([ -e "$d4159/record" ] && echo ran || echo not-run)" "ran"
+for v4159 in LD_PRELOAD LD_LIBRARY_PATH NODE_OPTIONS; do
+  check "41k-4159 [ld] the konsole env carries no $v4159" "$(printf '%s\n' "$envf4159" | grep -c "^$v4159=")" "0"
+done
+check "41k-4159 [ld] the NODE_OPTIONS marker never ran in headed-arm.sh's node" "$(cat "$atk4159/node-log" 2>/dev/null || true)" ""
+# HIMMEL-4159: the scrub list both consult entries use drops all four from a child's env.
+scrub4159="$(
+  # shellcheck disable=SC2031 # a fresh subshell-local hostile runtime, not the one above
+  export LD_PRELOAD="$atk4159/nonexistent-preload.so" LD_AUDIT="$atk4159/nonexistent-audit.so" LD_LIBRARY_PATH="$atk4159" NODE_OPTIONS="--require=$atk4159/marker.js"
+  . "$HERE/../../lanes/consult-env.sh" && consult_scrub_args && /usr/bin/env "${CONSULT_SCRUB[@]}" /usr/bin/env 2>/dev/null
+)"
+check "41k-4159 consult_scrub_args drops LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT and NODE_OPTIONS" \
+  "$(printf '%s\n' "$scrub4159" | grep -cE '^(LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|NODE_OPTIONS)=')" "0"
 # (b) the ponytail text no longer claims one writable file.
 check "41i ponytail no longer says 'one writable file'" "$(grep -c 'one writable file' "$SCRIPT")" "0"
 # (c) HIMMEL-4069: the consult launches with `--setting-sources ""`, so a user, project or
