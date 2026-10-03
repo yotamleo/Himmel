@@ -47,7 +47,8 @@ chmod +x "$W/bin/pgrep" "$W/bin/ps"
 # default threshold); 204 parent 999 is not in the table -> unowned; 205 is
 # >1 day old; 207 sits under a nested shell 300 whose parent is the session;
 # 206 merely MENTIONS a snapshot path inside a bash -c string -> not a wrapper;
-# 208 is the console's own console-wait.sh waiter -> exempt (HIMMEL-3941).
+# 208 is the console's own console-wait.sh waiter -> exempt (HIMMEL-3941);
+# 209 only mentions console-wait.sh before a sleep -> still an orphan.
 cat > "$W/ps.txt" <<'FIX'
     1     0 40-00:00:01 /sbin/init
   101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
@@ -60,6 +61,7 @@ cat > "$W/ps.txt" <<'FIX'
   300   101    46:00:00 /usr/bin/zsh
   207   300       45:00 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-5-e.sh && eval 'sleep 99999'
   208   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-f.sh && eval 'bash scripts/handover/console-kit/console-wait.sh'
+  209   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-g.sh && eval 'echo console-wait.sh; sleep 99999'
 FIX
 
 run() { # run [args...] — stdout of the SUT under the hermetic seams
@@ -69,7 +71,7 @@ run() { # run [args...] — stdout of the SUT under the hermetic seams
 
 out="$(run)"; rc=$?
 eq 'default: exact one-line inventory joined to owner names (>=30m)' \
-    'orphans=HIMMEL-111-N61:3/1560m,orphan:1/300m' "$out"
+    'orphans=HIMMEL-111-N61:4/1560m,orphan:1/300m' "$out"
 eq 'default: rc 0' 0 "$rc"
 
 out="$(TICK_ORPHAN_MIN=200 run)"
@@ -86,6 +88,7 @@ lacks '--list omits a young wrapper' "$out" 'pid=203'
 lacks '--list omits a process that only mentions a snapshot path' "$out" 'pid=206'
 lacks '--list omits the sleep child and the session itself' "$out" 'pid=202'
 lacks '--list omits the console-wait.sh wrapper (HIMMEL-3941)' "$out" 'pid=208'
+contains '--list still counts a wrapper that only mentions console-wait.sh' "$out" 'pid=209'
 
 out="$(PS_FAIL=1 run)"; rc=$?
 eq 'a failing ps reads orphans=? and never fails the caller' 'orphans=?' "$out"
