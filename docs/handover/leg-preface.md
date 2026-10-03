@@ -324,7 +324,7 @@ by design.
   fix it in your PR and do not loop on it. Send the console one
   `MAIN-RED <job> <failing case>` with that evidence, then carry on with
   whatever does not depend on it; the console has it fixed once, and after that
-  merges you merge origin/main forward (never rebase, never force-push). If you suspect it is general but the data
+  merges you merge forward per the merge-forward rule below (never rebase, never force-push). If you suspect it is general but the data
   does not settle it, report `MAIN-RED? <job> <case> inconclusive` with what you
   saw.
 - **Merge-forward (HIMMEL-4112, corrected by HIMMEL-4114).** A leg never merges,

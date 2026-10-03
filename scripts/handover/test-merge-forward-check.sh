@@ -11,6 +11,9 @@ fail=0
 ok() { echo "ok: $1"; }
 bad() { echo "FAIL: $1"; [ -n "${2:-}" ] && printf '    got: %s\n' "$2"; fail=1; }
 
+# a hook may export repo-location variables; they must not redirect the fixture's git calls
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+
 # a repo whose origin/main the script fetches and compares against --latest-sha
 git init -q --bare -b main "$tmp/origin.git"
 git init -q -b main "$tmp/work"
@@ -86,8 +89,8 @@ run "origin/main moved on after the latest run: REFUSE" 1 'REFUSE.*not latest ma
 TIP="$(git -C "$tmp/work" rev-parse HEAD)"
 run "--latest-sha equals the fetched origin/main: ALLOW" 0 'ALLOW'
 run "ALLOW names the validated tip to merge, not a fresh origin/main" 0 "git merge $TIP"
-out=$(cd "$tmp" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha a --main-base-sha a --latest-sha "$TIP" 2>&1); rc=$?
-if [ "$rc" -eq 2 ]; then ok "outside a repo with origin/main: usage, never ALLOW"; else bad "outside a repo exits 2 (rc=$rc)" "$out"; fi
+out=$(cd "$tmp" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha a --main-base-sha a --latest-sha "$TIP" --pr-sha p 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'cannot fetch origin main' <<< "$out"; then ok "outside a repo with origin/main: repo check fails, usage, never ALLOW"; else bad "outside a repo exits 2 on the fetch check (rc=$rc)" "$out"; fi
 
 # F2: a shard that fails the base's case AND one of its own is the PR's own red
 set3 'shard-3\tfailure\n' 'shard-3\tfailure\n' 'shard-3\tsuccess\n'
@@ -113,6 +116,16 @@ run "PR case file missing: usage error, never ALLOW" 2 'usage'
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
 rm -f "$tmp/base-cases"
 run "base case file missing: usage error, never ALLOW" 2 'usage'
+
+# awk -v would read a literal \101 as A: names must be compared as written
+set3 'shard-3\tfailure\n' 'shard-3\tfailure\n' 'shard-3\tsuccess\n'
+printf 'shard-3\t\\101\n' > "$tmp/pr-cases"; printf 'shard-3\tA\n' > "$tmp/base-cases"
+run "PR case literal \\101 vs base case A: REFUSE (no escape processing)" 1 'REFUSE.*shard-3'
+printf 'shard-3\t\\101\n' > "$tmp/pr-cases"; printf 'shard-3\t\\101\n' > "$tmp/base-cases"
+run "PR case literal \\101 equal to the base's literal \\101: ALLOW" 0 'ALLOW.*shard-3'
+printf 'j\\101\tfailure\n' > "$tmp/pr"; printf 'jA\tfailure\n' > "$tmp/base"; printf 'jA\tsuccess\nj\\101\tsuccess\n' > "$tmp/latest"
+printf 'j\\101\tc1\n' > "$tmp/pr-cases"; printf 'jA\tc1\n' > "$tmp/base-cases"
+run "PR job literal j\\101 vs base job jA: REFUSE (no escape processing)" 1 'REFUSE.*absent'
 
 # input errors
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'

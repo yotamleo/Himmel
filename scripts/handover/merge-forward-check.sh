@@ -114,8 +114,8 @@ fi
 blocked=""
 while IFS= read -r job; do
   # a job name may repeat: base counts if ANY row is red, latest only if EVERY row is success
-  b="$(awk -F'\t' -v j="$job" '$1==j && ($2=="failure"||$2=="timed_out"||$2=="startup_failure") {print $2; f=1; exit} $1==j && !s {s=$2} END {if (!f && s) print s}' "$base")"
-  l="$(awk -F'\t' -v j="$job" '$1==j && $2!="success" {print $2; f=1; exit} $1==j {s=1} END {if (!f && s) print "success"}' "$latest")"
+  b="$(J="$job" awk -F'\t' '$1==ENVIRON["J"] && ($2=="failure"||$2=="timed_out"||$2=="startup_failure") {print $2; f=1; exit} $1==ENVIRON["J"] && !s {s=$2} END {if (!f && s) print s}' "$base")"
+  l="$(J="$job" awk -F'\t' '$1==ENVIRON["J"] && $2!="success" {print $2; f=1; exit} $1==ENVIRON["J"] {s=1} END {if (!f && s) print "success"}' "$latest")"
   case "$b" in failure|timed_out|startup_failure) inherited=1 ;; *) inherited=0 ;; esac
   if [ "$inherited" -ne 1 ]; then
     blocked="${blocked:+$blocked, }$job (base: ${b:-absent} — not inherited, the PR's own red)"
@@ -124,14 +124,14 @@ while IFS= read -r job; do
     blocked="${blocked:+$blocked, }$job (latest main: ${l:-absent} — not proven fixed)"
     continue
   fi
-  pcases="$(awk -F'\t' -v j="$job" '$1==j {print $2}' "$prc")"
+  pcases="$(J="$job" awk -F'\t' '$1==ENVIRON["J"] {print $2}' "$prc")"
   if [ -z "$pcases" ]; then
     blocked="${blocked:+$blocked, }$job (no failing case recorded for the PR's job — cannot prove it inherited)"
     continue
   fi
   extra=""
   while IFS= read -r c; do
-    awk -F'\t' -v j="$job" -v c="$c" '$1==j && $2==c {f=1} END {exit !f}' "$bc" || extra="${extra:+$extra; }$c"
+    J="$job" C="$c" awk -F'\t' '$1==ENVIRON["J"] && $2==ENVIRON["C"] {f=1} END {exit !f}' "$bc" || extra="${extra:+$extra; }$c"
   done <<< "$pcases"
   if [ -n "$extra" ]; then
     blocked="${blocked:+$blocked, }$job (failing case not failing at the base: $extra — the PR's own red)"
