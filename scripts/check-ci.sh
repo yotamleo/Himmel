@@ -327,6 +327,7 @@ esac
 case "$MAX_WAIT" in
     ''|*[!0-9]*) echo "check-ci: --max-wait must be a non-negative integer, got '$MAX_WAIT'" >&2; exit 64 ;;
 esac
+MAX_WAIT=$((10#$MAX_WAIT))   # a leading zero (08) must not read as octal below
 
 # HIMMEL-4131: --max-wait bounds the WHOLE run, not each watch round. RUN_START
 # anchors one deadline; _budget_left is what remains of it (0 once spent).

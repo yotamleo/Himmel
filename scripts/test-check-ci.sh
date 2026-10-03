@@ -2066,6 +2066,11 @@ fi
 assert_err_has "extending once" "4131-c the extension started inside the deadline"
 assert_err_has "DEADLINE-PENDING" "4131-c the verdict says pending, not broken"
 
+# 4131-e — a leading-zero --max-wait is decimal (08 is not an octal error).
+SETTLE_OVERRIDE=0
+run register-then-green --max-wait 08
+assert_rc 0 "4131-e --max-wait 08 reads as decimal 8, not an octal arithmetic error"
+
 # 4131-d — a deadline shorter than the settle window must not certify green: the
 # late-registering check set never had its window (codex-1, round 1).
 POLL_OVERRIDE=1
@@ -2791,5 +2796,5 @@ assert_grep_lacks "3473-g --threads-only makes no mergeStateStatus read" "found 
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 193 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 193"; exit 1; fi
+if [ "$COUNT" -ne 194 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 194"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
