@@ -75,9 +75,9 @@ CLAUDE_BIN="${LEG_CLAUDE_BIN:-claude}"
 # scrubs it (var + token) and refuses its HEADED_ARM_LEG_CLAUDE_BIN source
 # before a consult launches, so no consult reaches here with it set.
 # ponytail: a claude installed only outside these dirs (nvm, a custom npm
-# prefix) refuses, and a name found in none of the pinned dirs still falls
-# through to the caller's PATH; upgrade path = an operator-recorded binary
-# path, if one is ever kept outside the caller's reach.
+# prefix) refuses, and a tool found in none of the pinned dirs is unreachable
+# from the consult; upgrade path = an operator-recorded binary path and tool
+# dirs, if one is ever kept outside the caller's reach.
 if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ] && [ -z "${LEG_CLAUDE_BIN:-}" ]; then
     _pin_user="$(PATH=/usr/bin:/bin; id -un 2>/dev/null)" || _pin_user=""
     _pin_home=""
@@ -96,10 +96,9 @@ if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ] && [ -z "${LEG_CLAUDE_BIN:-}" ]
             exit 2 ;;
     esac
     # An npm-installed claude is a `#!/usr/bin/env node` script, and claude
-    # spawns helpers by name: put the pinned dirs first so those resolve there
-    # too. The caller's dirs stay after them for the consult's own tools.
-    # shellcheck disable=SC2031  # the lookup above never touched this PATH
-    PATH="$_pin_path:$PATH"
+    # spawns helpers by name: the consult runs on the pinned PATH alone, so
+    # neither can resolve through a caller-chosen dir.
+    PATH="$_pin_path"
     export PATH
     unset -v _pin_user _pin_home _pin_path
 fi
