@@ -43,13 +43,20 @@ consult_pin_bash() {
 
 # consult_scrub_args: set CONSULT_SCRUB to the `env -u` arguments that drop
 # every bash startup input (the startup files, the option imports, the xtrace
-# prompt) and every exported function from the environment. Read from the raw
-# environment, not `declare -Fx`, so it also catches a function a `bash -p`
-# did not import. A value line that merely looks like a name only adds a
-# harmless extra -u.
+# prompt), the loader and node preload inputs (HIMMEL-4159: LD_PRELOAD,
+# LD_LIBRARY_PATH, LD_AUDIT, NODE_OPTIONS) and every exported function from the
+# environment. Read from the raw environment, not `declare -Fx`, so it also
+# catches a function a `bash -p` did not import. A value line that merely looks
+# like a name only adds a harmless extra -u.
+#
+# ponytail: a denylist of the inputs known to run caller code (the loader's
+# code-loading variables and NODE_OPTIONS); a subtler loader or runtime input
+# (GCONV_PATH, NODE_PATH) still rides along; upgrade path = an allowlisted
+# `env -i` environment for the consult, if one is ever found that matters.
 consult_scrub_args() {
     local _cp_line
-    CONSULT_SCRUB=(-u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u PS4 -u CDPATH -u GLOBIGNORE)
+    CONSULT_SCRUB=(-u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u PS4 -u CDPATH -u GLOBIGNORE
+        -u LD_PRELOAD -u LD_LIBRARY_PATH -u LD_AUDIT -u NODE_OPTIONS)
     while IFS= read -r _cp_line; do
         case "$_cp_line" in
             BASH_FUNC_*=*) CONSULT_SCRUB+=(-u "${_cp_line%%=*}") ;;

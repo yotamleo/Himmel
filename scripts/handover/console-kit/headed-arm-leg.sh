@@ -484,6 +484,11 @@ if [ "$CONSULT" -eq 1 ]; then
     # startup files, the option imports, the xtrace prompt, an exported
     # function) would run caller code inside the launcher's bash; the consult
     # entry strips them anyway, and they refuse here so the intent is visible.
+    # (HIMMEL-4159) A loader or node preload token (LD_PRELOAD, LD_LIBRARY_PATH,
+    # LD_AUDIT, NODE_OPTIONS) would load caller code into every binary the
+    # consult runs; same treatment. A token that is not NAME=VALUE becomes
+    # `env`'s command operand (or an option) at headed-arm.sh's launch site, so
+    # it would run as the session command: it refuses too.
     set -f
     for _consult_tok in ${HEADED_ARM_LAUNCHER_ENV:-}; do
         case "$_consult_tok" in
@@ -495,6 +500,19 @@ if [ "$CONSULT" -eq 1 ]; then
             BASH_ENV=*|ENV=*|SHELLOPTS=*|BASHOPTS=*|PS4=*|CDPATH=*|GLOBIGNORE=*|BASH_FUNC_*)
                 set +f
                 echo "headed-arm-leg: --consult refuses a bash startup token in HEADED_ARM_LAUNCHER_ENV (${_consult_tok%%=*}): a consult's launcher runs on a clean bash" >&2
+                exit 2
+                ;;
+            LD_PRELOAD=*|LD_LIBRARY_PATH=*|LD_AUDIT=*|NODE_OPTIONS=*)
+                set +f
+                echo "headed-arm-leg: --consult refuses a loader or node preload token in HEADED_ARM_LAUNCHER_ENV (${_consult_tok%%=*}): a consult's binaries load no caller code" >&2
+                exit 2
+                ;;
+        esac
+        # Spelled-out classes, not ranges: a range is locale-dependent in a glob.
+        case "${_consult_tok%%=*}" in
+            "$_consult_tok"|''|[0123456789]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*)
+                set +f
+                echo "headed-arm-leg: --consult refuses a token that is not NAME=VALUE in HEADED_ARM_LAUNCHER_ENV ($_consult_tok): the launch site would run it as a command" >&2
                 exit 2
                 ;;
         esac
