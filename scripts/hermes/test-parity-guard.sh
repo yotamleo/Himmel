@@ -144,6 +144,16 @@ for rep in "-u 'a' " '-u"x ' '-u "x -u " ' "-u 'x -u ' "; do
   if [ $((SECONDS - t0)) -gt 5 ]; then
     echo "  FAIL: sudo ${rep}x30 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
 done
+# HIMMEL-4190: the find -delete scan is linear too. 3000 `find` anchors with no
+# -delete, then a later-checked denied command: quadratic re-scans pushed the
+# head past the 10s hook timeout (which fails open) where base blocked in 0.1s.
+t0=$SECONDS
+pad="echo hi"; i=0
+while [ "$i" -lt 3000 ]; do pad="$pad; find -delet -delet -delet -delet -delet"; i=$((i + 1)); done
+g "find anchors x3000 then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + "; docker run --privileged alpine"}}))' "$pad")"
+if [ $((SECONDS - t0)) -gt 5 ]; then
+  echo "  FAIL: find anchors x3000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+g "-delete before find"     allow '{"tool_name":"terminal","tool_input":{"command":"echo -delete; find d -print"}}'
 g "echo do shutdown"      allow '{"tool_name":"terminal","tool_input":{"command":"echo do shutdown"}}'
 g "jq {format}"           allow '{"tool_name":"terminal","tool_input":{"command":"jq {format: .x} f"}}'
 g "fix(x) shutdown text"  allow '{"tool_name":"terminal","tool_input":{"command":"echo fix(x) shutdown flow"}}'

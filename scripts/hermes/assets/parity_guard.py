@@ -259,9 +259,11 @@ _CMDPOS_VERBS = re.compile(
 )
 # HIMMEL-4190: `find -delete` is a recursive delete of its own. Twin of the .sh
 # FIND_DELETE_PAT: the gap is unbounded (a `;` in it too), so a quoted `;`
-# cannot hide the flag.
-_FIND_DELETE = re.compile(
-    _EXE_PREFIX + r"find(?:\.exe)?(?:\s(?s:.*))?\s-delete(?:[^A-Za-z0-9_-]|$)")
+# cannot hide the flag. Linear here: find the last -delete once, then ask for a
+# bounded `find` verb at command position in the text up to it (an unbounded
+# gap re-scanned at every anchor was quadratic and ran the 10s hook timeout out).
+_DELETE_FLAG = re.compile(r"\s-delete(?=[^A-Za-z0-9_-]|$)")
+_FIND_VERB = re.compile(_EXE_PREFIX + r"find(?:\.exe)?(?=\s)")
 
 # Catastrophic / shared-machine / irreversible classes only.
 # Routine git, gh, mv, cp, and non-recursive rm are intentionally NOT here.
@@ -330,8 +332,12 @@ def _find_delete(raw: str) -> bool:
         src = re.sub(r"[\r\n]", ";", src)
         bare = re.sub(r"[\"'\\]", "", re.sub(r"\$([\"'])", r"\1", src)).replace("\t", " ")
         bare = re.sub(r" {2,}", " ", bare)
-        if _cmdpos_match(src, _FIND_DELETE) or _cmdpos_match(bare, _FIND_DELETE):
-            return True
+        for text in (src, bare):
+            last = None
+            for last in _DELETE_FLAG.finditer(text):
+                pass
+            if last and _cmdpos_match(text[:last.start() + 1], _FIND_VERB):
+                return True
     return False
 
 
