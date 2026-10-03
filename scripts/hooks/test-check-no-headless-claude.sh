@@ -294,7 +294,7 @@ printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // run it" "  'claude', args);" 
 rc=$(run_hook "cm.mjs")
 assert_rc "T37 comment line between ( and program, unmarked" 1 "$rc"
 
-printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // step 1) run it" "  'claude', args);" > "$TMP/cm_unbal.mjs"
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // step (1) run it" "  'claude', args);" > "$TMP/cm_unbal.mjs"
 rc=$(run_hook "cm_unbal.mjs")
 assert_rc "T37b comment with unbalanced ) between ( and program, unmarked" 1 "$rc"
 
@@ -358,11 +358,34 @@ rc=$(run_hook "cm_ml_ok.mjs")
 assert_rc "T37j marker inside a multi-line block comment covers the call" 0 "$rc"
 
 # T37k (codex-1 r2): a trailing comment after a closing */ must not feed depth
-printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* note */ // )" "  'claude', args);" > "$TMP/cm_trail.mjs"
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* note */ // (x)" "  'claude', args);" > "$TMP/cm_trail.mjs"
 rc=$(run_hook "cm_trail.mjs")
-assert_rc "T37k block comment then line comment with ), unmarked" 1 "$rc"
+assert_rc "T37k block comment then balanced line comment, unmarked" 1 "$rc"
 
-printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* a */ /* ) */ 'claude'," "  args);" > "$TMP/cm_two.mjs"
+# T37v/w (judge J1644c): a leading `//` in .py is floor division, so a wrapped line that
+# starts with it and opens a paren is code, not a comment → BLOCK
+printf "%s\n%s\n%s\n%s\n%s\n" "width = (" "    total" "    // len(subprocess.run(" '        ["claude", "-p", q], capture_output=True).stdout)' ")" > "$TMP/fd2.py"
+rc=$(run_hook "fd2.py")
+assert_rc "T37v python // floor division opening subprocess.run(, unmarked" 1 "$rc"
+printf "%s\n%s\n%s\n" "n = (total" "    // subprocess.run(" '        ["claude", "-p"]).returncode)' > "$TMP/floordiv.py"
+rc=$(run_hook "floordiv.py")
+assert_rc "T37w python // floor division then program, unmarked" 1 "$rc"
+
+# T37x (judge J1644c): for EVERY comment kind, a line that OPENS the paren is never skipped
+# (a skip applies only at net bracket depth 0) → BLOCK
+for kind in "//:mjs" "#:py" "/* ( */ spawnSync(:mjs"; do
+    case "$kind" in
+        "//:mjs") first="    // spawnSync(" ;;
+        "#:py") first="    # spawnSync(" ;;
+        *) first="    /* ( */ spawnSync(" ;;
+    esac
+    ext=${kind##*:}
+    printf "%s\n%s\n%s\n" "x = [" "$first" "    'claude', args);" > "$TMP/cm_open.$ext"
+    rc=$(run_hook "cm_open.$ext")
+    assert_rc "T37x comment kind '${kind%:*}' opening a paren is not skipped" 1 "$rc"
+done
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* a */ /* b */ 'claude'," "  args);" > "$TMP/cm_two.mjs"
 rc=$(run_hook "cm_two.mjs")
 assert_rc "T37l two block comments then program, unmarked" 1 "$rc"
 
