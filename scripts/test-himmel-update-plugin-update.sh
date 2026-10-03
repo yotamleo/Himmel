@@ -254,6 +254,57 @@ else
     assert_fail "check mode never removes plugin-cache temp_git_* dirs — was removed — out: $out_sweep_check"
 fi
 
+echo "Test: url-sourced @himmel plugins update, checkout-sourced ones do not (HIMMEL-4127)"
+make_mock_clone
+mkdir -p "$CHECKOUT_DIR/marketplace/.claude-plugin"
+cat > "$CHECKOUT_DIR/marketplace/.claude-plugin/marketplace.json" <<'EOF'
+{
+  "name": "himmel",
+  "plugins": [
+    { "name": "qmd", "source": "./plugins/qmd" },
+    { "name": "obsidian-second-brain",
+      "source": { "source": "url", "url": "https://example.invalid/osb.git", "ref": "v1" } },
+    { "name": "mono-sub",
+      "source": { "source": "git-subdir", "url": "https://example.invalid/m.git", "path": "p", "ref": "v1" } }
+  ]
+}
+EOF
+fake_home_url="$TMP/fake-home-url"
+mkdir -p "$fake_home_url/.claude"
+cat > "$fake_home_url/.claude/settings.json" <<'EOF'
+{
+  "enabledPlugins": {
+    "qmd@himmel": true,
+    "obsidian-second-brain@himmel": true,
+    "mono-sub@himmel": false,
+    "unlisted@himmel": true,
+    "ponytail@ponytail": true
+  }
+}
+EOF
+log_url="$TMP/claude-invocations-url.log"
+: > "$log_url"
+claude_stub_url="$TMP/claude-logging-stub-url"
+make_claude_logging_stub "$claude_stub_url" "$log_url"
+
+rc=0
+USERPROFILE='' HOME="$fake_home_url" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_url" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_url/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" >/dev/null 2>&1 || rc=$?
+log_url_content="$(cat "$log_url")"
+assert_contains "updates the url-sourced @himmel plugin" "plugin update obsidian-second-brain@himmel" "$log_url_content"
+assert_contains "updates the git-subdir-sourced @himmel plugin" "plugin update mono-sub@himmel" "$log_url_content"
+assert_contains "still updates the non-@himmel plugin" "plugin update ponytail@ponytail" "$log_url_content"
+assert_not_contains "never updates the checkout-sourced @himmel plugin" "plugin update qmd@himmel" "$log_url_content"
+assert_not_contains "never updates an @himmel plugin absent from the manifest" "plugin update unlisted@himmel" "$log_url_content"
+
+: > "$log_url"
+out_url_check=$(USERPROFILE='' HOME="$fake_home_url" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_url" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_url/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
+assert_contains "check mode lists the url-sourced @himmel plugin" "obsidian-second-brain@himmel" "$out_url_check"
+assert_not_contains "check mode does not list the checkout-sourced plugin as would-update" "      qmd@himmel" "$out_url_check"
+
 echo ""
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

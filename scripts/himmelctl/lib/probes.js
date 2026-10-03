@@ -131,17 +131,6 @@ function probeFileExists(item, ctx) {
     const resolved = path.resolve(raw.replace('{vaultPath}', ctx.targetPath));
     return { actual: fs.existsSync(resolved) ? 'present' : 'absent', detail: resolved };
   }
-  // {homePath} (HIMMEL-1100): mirrors {vaultPath} for a fixed, known location
-  // that is neither repoRoot nor targetPath — a manually-cloned plugin under
-  // $HOME (e.g. obsidian-second-brain, cloned by hand per docs/setup/
-  // new-machine.md, never copied/scaffolded by any himmel script). Resolves
-  // the same way mcpConfigPath()/resolveConfigFile() already do elsewhere in
-  // this file: ctx.env.HOME first, else os.homedir().
-  if (raw.indexOf('{homePath}') !== -1) {
-    const home = (ctx.env && ctx.env.HOME) || os.homedir();
-    const resolved = path.resolve(raw.replace('{homePath}', home));
-    return { actual: fs.existsSync(resolved) ? 'present' : 'absent', detail: resolved };
-  }
   const base = (ctx.scope === 'user' || REPO_ROOT_FILE_EXISTS_IDS.has(item.id)) ? ctx.repoRoot : ctx.targetPath;
   const resolved = path.resolve(base, raw);
   if (!fs.existsSync(resolved)) return { actual: 'absent', detail: resolved };
