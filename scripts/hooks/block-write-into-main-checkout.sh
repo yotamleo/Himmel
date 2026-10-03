@@ -1931,7 +1931,7 @@ _bwimc_strip_comments() {
                 esac ;;
             '<')
                 # A heredoc opener: its body is literal text, not comments, so
-                # it is copied through below. Without this a `#` in a commit
+                # it is blanked below, never stripped. Without this a `#` in a commit
                 # message inside `"$(cat <<'EOF'…)"` made a second reading of
                 # the whole command (twice the scan time for nothing).
                 if [ "$hdok" = 1 ] && [ "$nx" = '<' ] && [ "${t:$((k+2)):1}" != '<' ] && [ "${t:$((k-1)):1}" != '<' ]; then
@@ -1956,15 +1956,19 @@ _bwimc_strip_comments() {
                     # Copy each pending body through its terminator line. A
                     # terminator never found copies nothing: the lines are
                     # then stripped as commands, an extra reading only.
+                    # The body lines are blanked, only the terminator kept: a
+                    # quote in a body the first reading's blanker missed
+                    # (`<<\E`, `<<$E`) cannot open a span here (J1672).
                     j=$((k+1)); body=""; found=1
                     for hi in "${!hd[@]}"; do
                         found=0
                         while [ "$j" -lt "$n" ]; do
                             line="${t:$j}"; line="${line%%$'\n'*}"
-                            j=$((j+${#line}+1)); body="$body$line"$'\n'
+                            j=$((j+${#line}+1))
                             chk="$line"
                             if [ "${hdd[$hi]}" = 1 ]; then while [ "${chk:0:1}" = $'\t' ]; do chk="${chk#?}"; done; fi
-                            [ "$chk" = "${hd[$hi]}" ] && { found=1; break; }
+                            [ "$chk" = "${hd[$hi]}" ] && { body="$body$line"$'\n'; found=1; break; }
+                            body="$body"$'\n'
                         done
                         [ "$found" = 1 ] || break
                     done
@@ -4816,10 +4820,12 @@ while IFS= read -r _bwimc_clause; do
     # Checked after the chain, never instead of an arm, so it cannot take a
     # clause away from one; a shell word inside a quoted argument is not a
     # token of its own and finds nothing. The prefilter reads the clause
-    # with quotes and backslashes removed, so `'bash'`, `ba''sh` and `b\ash`
-    # reach the token scan, which unquotes each word itself.
-    _bwimc_wq="${_bwimc_clause_lc//[\'\"\\]/}"
-    if [ "$_bwimc_interp_seen" = 0 ] && [[ "$_bwimc_wq" =~ $_BWIMC_WRAP_RE ]]; then
+    # with quotes, backslashes and `$` removed, so `'bash'`, `ba''sh`,
+    # `b\ash`, `$'bash'` and `$"bash"` reach the token scan, which unquotes
+    # (and ANSI-C decodes) each word itself. An escape inside `$'…'` can spell
+    # any name (`$'\x62ash'`), so a clause with one always takes the scan.
+    _bwimc_wq="${_bwimc_clause_lc//[\$\'\"\\]/}"
+    if [ "$_bwimc_interp_seen" = 0 ] && { [[ "$_bwimc_wq" =~ $_BWIMC_WRAP_RE ]] || [[ "$_bwimc_clause_lc" == *"\$'"* ]]; }; then
         _bwimc_check_interp_body "$_bwimc_clause_sp" wrap
     fi
 done < <(_bwimc_verb_clauses "$_bwimc_hb")

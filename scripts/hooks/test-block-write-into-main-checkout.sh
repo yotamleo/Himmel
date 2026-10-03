@@ -3250,6 +3250,27 @@ _r4138 "79h nice b\\ash -c into the primary"                           block "ni
 _r4138 "79i 'bash' -c with no wrapper into the primary"                block "'bash' -c 'echo x > @P@/f'"
 _r4138 "79j nice 'eval' into the primary"                              block "nice 'eval' 'echo x > @P@/f'"
 _r4138 "79k nice 'bash' -c into the worktree (ALLOW)"                  allow "nice 'bash' -c 'echo x > @W@/f'"
+# J1672: a \$'…' or \$\"…\" spelling of the shell name (bash and zsh decode it).
+_r4138 "79l nice \$'bash' -c into the primary"                         block "nice \$'bash' -c 'touch @P@/x'"
+_r4138 "79m env \$'sh' -c into the primary"                            block "env \$'sh' -c 'touch @P@/x'"
+_r4138 "79n timeout 5 \$'bash' -c into the primary"                    block "timeout 5 \$'bash' -c 'touch @P@/x'"
+_r4138 "79o nice ba\$'sh' -c into the primary"                         block "nice ba\$'sh' -c 'touch @P@/x'"
+_r4138 "79p nice /bin/\$'bash' -c into the primary"                    block "nice /bin/\$'bash' -c 'touch @P@/x'"
+_r4138 "79q nice \$''bash -c into the primary"                         block "nice \$''bash -c 'touch @P@/x'"
+_r4138 "79r \$'bash' -c with no wrapper into the primary"              block "\$'bash' -c 'touch @P@/x'"
+_r4138 "79s \$'eval' into the primary"                                 block "\$'eval' 'touch @P@/x'"
+_r4138 "79t nice \$'\\x62ash' -c (a hex escape) into the primary"      block "nice \$'\\x62ash' -c 'touch @P@/x'"
+_r4138 "79u nice \$\"bash\" -c into the primary"                       block "nice \$\"bash\" -c 'touch @P@/x'"
+_r4138 "79v command \$'eval' into the primary"                         block "command \$'eval' 'touch @P@/x'"
+_r4138 "79w nice \$'bash' -c into the worktree (ALLOW)"                allow "nice \$'bash' -c 'touch @W@/x'"
+_r4138 "79x nice \$'\\x62ash' -c into the worktree (ALLOW)"            allow "nice \$'\\x62ash' -c 'touch @W@/x'"
+# J1672: the comment reading blanks heredoc bodies, so a delimiter spelling
+# the first reading's blanker misses cannot carry a quote past the body.
+_r4138 "78z <<\\E body with a commented quote, then touch"            block 'x=$(cat <<\E\n# '"'"'\nE\n); touch @P@/x'
+_r4138 "78za <<\$E body with a commented quote, then touch"           block 'x=$(cat <<$E\n# '"'"'\n$E\n); touch @P@/x'
+_r4138 "78zb <<\${x} body with a commented quote, then touch"         block 'x=$(cat <<${x}\n# '"'"'\n${x}\n); touch @P@/x'
+_r4138 "78zc <<'#' body with a commented quote, then touch"           block 'x=$(cat <<'"'"'#'"'"'\n# '"'"'\n#\n); touch @P@/x'
+_r4138 "78zd <<\\E body with a commented quote, worktree (ALLOW)"     allow 'x=$(cat <<\E\n# '"'"'\nE\n); touch @W@/x'
 # (4) bash 5.3 decodes \x{2f} as /, bash 5.2 keeps \x{ and zsh reads NUL.
 _r4138 "80a \$'\\x{2f}' prefix of a primary path"                        block "echo > \$'\\x{2f}'@P@/f"
 _r4138 "80b \$'\\x{2f}' aimed at the worktree (ambiguous: fail closed)"  block "echo > \$'\\x{2f}'@W@/f"
