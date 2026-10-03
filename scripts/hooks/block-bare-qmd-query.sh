@@ -614,12 +614,13 @@ qmd_nested() {
                 scr=" ${v#"${BASH_REMATCH[0]}"}"
             elif [ "$hasc" = 0 ]; then
                 # The string is the first word after an option cluster
-                # holding c (`-c`, `-ec`, `-lc`) or a `--command`; the later
+                # holding c or su's C (`-c`, `-ec`, `-lc`, `-C`) or a
+                # `--command` / su's `--session-command`; the later
                 # words ($0 and its arguments) are read too — more reading
                 # only adds denials.
-                if [ "$mode" = sh ] && [[ $t =~ ^-[[:alpha:]]*c[[:alpha:]]*$ || $t == --command ]]; then
+                if [ "$mode" = sh ] && [[ $t =~ ^-[[:alpha:]]*[cC][[:alpha:]]*$ || $t =~ ^--(session-)?command$ ]]; then
                     hasc=1
-                elif [ "$mode" = sh ] && [[ $t == --command=* ]]; then
+                elif [ "$mode" = sh ] && [[ $t =~ ^--(session-)?command= ]]; then
                     hasc=1
                     qmd_check "${v#*=}" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
