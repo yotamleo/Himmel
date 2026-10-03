@@ -140,6 +140,21 @@
 #     through the same destination check as every other arm, so a dynamic
 #     ($VAR, `cmd`) token inside one is the same unresolved-token residual
 #     _bwimc_check_target already accepts everywhere else.
+#   - HIMMEL-4138: where bash and zsh read a command differently, the hook
+#     fails closed instead of picking one reading. (1) A comment (`#` at a
+#     word start) can hide a quote from one reading and not the other, so
+#     every phase runs twice: once on the text as written and once with its
+#     comments stripped (`_bwimc_strip_comments`). It denies if EITHER
+#     reading writes into the primary. (2) A `$'…'` span bash and zsh decode
+#     differently is denied outright as `shell-ambiguous`: `$$'…\…'` (zsh
+#     reads ANSI-C after the second `$`, bash does not), `\x{H}` (bash 5.3
+#     decodes it, older bash and zsh do not), and a NUL escape that ends a
+#     name before the word does (`_bwimc_ambig_check`). (3) A shell or eval
+#     behind a wrapper (`nice`, `timeout 5`, `env FOO=1`, `command eval`,
+#     `flock L -c`, ...) has its body scanned like a plain `bash -c` (the
+#     `wrap` kind of `_bwimc_check_interp_body`). Known residuals:
+#     `script -c` and `env -S` bodies; a `case` item `)` inside `$(…)`; a
+#     newline inside a quoted span splits a clause in transport (HIMMEL-4143).
 #   - `-T`/`--no-target-directory` IS modelled now (RETASK correction,
 #     HIMMEL-2592 round 6 codex-2 — this bullet used to say the opposite):
 #     for `mv` it forces the destination to plain ENTRY resolution instead
@@ -1103,6 +1118,7 @@ _bwimc_deny() {
         unresolved-heredoc) why="a heredoc opener's terminator was never found in the command (failing closed — text after it cannot be safely classified)" ;;
         unresolved-cd) why="a cd/pushd target in this command could not be resolved (failing closed — a later relative write cannot be classified against an unknown cwd, HIMMEL-3648)" ;;
         marker-byte) why="the command carries a raw control byte (0x01-0x05 or 0x0e) the scanner uses as an internal marker, so its targets cannot be classified (failing closed; spell the byte as \$'\\xNN' instead)" ;;
+        shell-ambiguous) why="bash and zsh (or bash versions) read a \$'…' span in it differently, so its target cannot be classified (failing closed, HIMMEL-4138)" ;;
         unsafe-interp-body) why="an eval/bash -c/sh -c/zsh -c argument contains a write-shaped token whose target cannot be proven to stay outside the primary (failing closed, HIMMEL-3648)" ;;
     esac
     {
@@ -1743,6 +1759,229 @@ _bwimc_cwd_check_direct() {
     _bwimc_check_abs "$1" "cwd:$1 (git commit)"
 }
 
+# _bwimc_ansic_ambig SPAN NEXT — HIMMEL-4138. SPAN is the raw text of one
+# `$'…'` span, NEXT the character after its closing quote. Denies when the
+# shells decode it differently in a way that can move a path:
+#   - `\x{` + hex digit: bash 5.3 decodes `\x{2f}` as `/`, bash <= 5.2 keeps
+#     `\x{` literal and zsh reads a NUL;
+#   - a NUL escape (`\0`, `\x00`, `\x` with no digits in zsh, `\u0000`,
+#     `\c@`): bash drops the rest of the SPAN, zsh the rest of the WORD, and
+#     the scan reads a literal char. Only a NUL that ends the span AND the word
+#     (`read -d $'\0'`, `IFS=$'\0'`) reads the same in all three, so it stays.
+_bwimc_ansic_ambig() {
+    local s="$1" nx="$2" k=0 d h nul
+    while [ "$k" -lt "${#s}" ]; do
+        if [ "${s:$k:1}" != "\\" ]; then k=$((k+1)); continue; fi
+        d="${s:$((k+1)):1}"; k=$((k+2)); nul=0
+        case "$d" in
+            x)
+                if [ "${s:$k:1}" = '{' ]; then
+                    case "${s:$((k+1)):1}" in
+                        [0-9A-Fa-f]) _bwimc_deny "shell-ambiguous" "\$'$s'" "(\\x{…} decodes three ways)" "" ;;
+                    esac
+                    nul=1
+                else
+                    h=""
+                    while [ "${#h}" -lt 2 ]; do
+                        case "${s:$k:1}" in [0-9A-Fa-f]) h="$h${s:$k:1}"; k=$((k+1)) ;; *) break ;; esac
+                    done
+                    case "$h" in ''|0|00) nul=1 ;; esac
+                fi ;;
+            u|U)
+                h=""
+                while [ "${#h}" -lt "$([ "$d" = u ] && echo 4 || echo 8)" ]; do
+                    case "${s:$k:1}" in [0-9A-Fa-f]) h="$h${s:$k:1}"; k=$((k+1)) ;; *) break ;; esac
+                done
+                case "$h" in ''|*[!0]*) [ -n "$h" ] || nul=1 ;; *) nul=1 ;; esac ;;
+            [0-7])
+                h="$d"
+                while [ "${#h}" -lt 3 ]; do
+                    case "${s:$k:1}" in [0-7]) h="$h${s:$k:1}"; k=$((k+1)) ;; *) break ;; esac
+                done
+                case "$h" in *[!0]*) : ;; *) nul=1 ;; esac ;;
+            c) [ "${s:$k:1}" = '@' ] && nul=1; k=$((k+1)) ;;
+        esac
+        [ "$nul" = 1 ] || continue
+        if [ "$k" -lt "${#s}" ]; then
+            _bwimc_deny "shell-ambiguous" "\$'$s'" "(a NUL escape inside the span ends the name early)" ""
+        fi
+        case "$nx" in
+            ''|' '|$'\t'|$'\n'|';'|'&'|'|'|'('|')'|'<'|'>') : ;;
+            *) _bwimc_deny "shell-ambiguous" "\$'$s'$nx" "(a NUL escape ends the name before the word does)" "" ;;
+        esac
+    done
+}
+
+# _bwimc_ambig_check TEXT — HIMMEL-4138. Walks TEXT as one command (the same
+# quote/escape scanner every arm uses) and denies at each unquoted `'` that
+# follows a run of active `$` when bash and zsh read the span after it
+# differently. An even run (`$$'…'`) is the PID then a plain quote to bash, an
+# ANSI-C span to zsh: the readings differ exactly when the span holds a `\`.
+# An odd run is ANSI-C to both and goes to _bwimc_ansic_ambig. Callers run it
+# on every command text: arm (a) per (sub)command body, and every
+# eval/`sh -c` body.
+_bwimc_ambig_check() {
+    local t="$1" k=0 n c run=0 j s _BWIMC_Q _BWIMC_ESC _BWIMC_ACT _BWIMC_DL
+    case "$t" in *"\$'"*) : ;; *) return 0 ;; esac
+    n=${#t}
+    _bwimc_scan_init
+    while [ "$k" -lt "$n" ]; do
+        c="${t:$k:1}"
+        if [ "$c" = "'" ] && [ "$run" -gt 0 ] && [ -z "$_BWIMC_Q" ] && [ "$_BWIMC_ESC" = 0 ]; then
+            j=$((k+1)); s=""
+            while [ "$j" -lt "$n" ] && [ "${t:$j:1}" != "'" ]; do
+                if [ "${t:$j:1}" = "\\" ]; then s="$s${t:$j:2}"; j=$((j+2)); else s="$s${t:$j:1}"; j=$((j+1)); fi
+            done
+            if [ $((run % 2)) = 0 ]; then
+                case "$s" in
+                    *\\*) _bwimc_deny "shell-ambiguous" "\$\$'$s'" "(\$\$' is a plain quote to bash, ANSI-C to zsh)" "" ;;
+                esac
+            else
+                _bwimc_ansic_ambig "$s" "${t:$((j+1)):1}"
+            fi
+        fi
+        _bwimc_scan_step "$c"
+        if [ "$c" = '$' ] && [ "$_BWIMC_ACT" = 1 ]; then run=$((run+1)); else run=0; fi
+        k=$((k+1))
+    done
+}
+
+# _bwimc_strip_comments TEXT — HIMMEL-4138. Sets _BWIMC_NC to TEXT with every
+# shell comment removed (from an unquoted `#` at the start of a word to the end
+# of its line), the second reading the scan below runs. The scanner itself
+# does not know comments, so a quote inside one (`$(echo hi # it's⏎)`) opened
+# a span that hid every later command. This is the bash/zsh `-c` reading:
+# a comment starts after start, blank, newline, `;&|()<>`, a `$(` or a
+# backtick, never mid-word, never inside `${…}`, `$((…))`, quotes, or right
+# after the `)`/backtick that closes a substitution (`$(true)#a` is a word).
+# Only ever an EXTRA reading: the unstripped text is still scanned, so a
+# misread here can add a deny, never remove one.
+# ponytail: a `case` item's `)` inside `$(…)` closes the body early here, so a
+# comment after it stays unstripped (the old reading), HIMMEL-4138.
+_bwimc_strip_comments() {
+    local t="$1" o="" k=0 n c nx st="C" top prev="" run=0
+    local hdok=1 hd=() hdd=() hi j w q1 q2 dash body line chk found
+    _BWIMC_NC="$t"
+    case "$t" in
+        \#*|*[[:space:]\;\&\|\(\)\<\>\`]\#*) : ;;
+        *) return 0 ;;
+    esac
+    # `((x<<2))` and `$[x<<2]` shift, they open no heredoc: with either in the
+    # text no body is copied through (every line stays strippable).
+    # shellcheck disable=SC2016  # literal `$[` is the glob pattern
+    if [[ "$t" =~ (^|[^$])\(\( ]]; then hdok=0; fi
+    case "$t" in *'$['*) hdok=0 ;; esac
+    n=${#t}
+    while [ "$k" -lt "$n" ]; do
+        c="${t:$k:1}"; top="${st:$((${#st}-1)):1}"
+        case "$top" in
+            S) o="$o$c"; k=$((k+1)); [ "$c" = "'" ] && st="${st%?}"; prev=w; continue ;;
+            A)
+                if [ "$c" = "\\" ]; then o="$o${t:$k:2}"; k=$((k+2)); continue; fi
+                o="$o$c"; k=$((k+1)); [ "$c" = "'" ] && st="${st%?}"; prev=w; continue ;;
+        esac
+        if [ "$c" = "\\" ]; then o="$o${t:$k:2}"; k=$((k+2)); prev=w; run=0; continue; fi
+        if [ "$top" = D ]; then
+            case "$c" in '"'|'$'|'`') : ;; *) o="$o$c"; k=$((k+1)); continue ;; esac
+        fi
+        nx="${t:$((k+1)):1}"
+        case "$c" in
+            '$')
+                if [ "$nx" = '(' ] && [ "${t:$((k+2)):1}" = '(' ]; then
+                    st="${st}RR"; o="$o\$(("; k=$((k+3)); prev=w; run=0; continue
+                elif [ "$nx" = '(' ]; then
+                    st="${st}c"; o="$o\$("; k=$((k+2)); prev='('; run=0; continue
+                elif [ "$nx" = '{' ]; then
+                    st="${st}P"; o="$o\${"; k=$((k+2)); prev=w; run=0; continue
+                fi
+                o="$o$c"; k=$((k+1)); prev=w; run=$((run+1)); continue ;;
+            '`')
+                if [ "$top" = B ]; then st="${st%?}"; prev=w; else st="${st}B"; prev=''; fi
+                o="$o$c"; k=$((k+1)); run=0; continue ;;
+            '"')
+                if [ "$top" = D ]; then st="${st%?}"; else st="${st}D"; fi
+                o="$o$c"; k=$((k+1)); prev=w; run=0; continue ;;
+            "'")
+                if [ $((run % 2)) = 1 ]; then st="${st}A"; else st="${st}S"; fi
+                o="$o$c"; k=$((k+1)); prev=w; run=0; continue ;;
+        esac
+        run=0
+        case "$top" in
+            P)
+                case "$c" in '{') st="${st}P" ;; '}') st="${st%?}" ;; esac
+                o="$o$c"; k=$((k+1)); prev=w; continue ;;
+            R)
+                case "$c" in '(') st="${st}R" ;; ')') st="${st%?}" ;; esac
+                o="$o$c"; k=$((k+1)); prev=w; continue ;;
+        esac
+        case "$c" in
+            '#')
+                case "$prev" in
+                    ''|' '|$'\t'|$'\n'|';'|'&'|'|'|'('|')'|'<'|'>')
+                        while [ "$k" -lt "$n" ] && [ "${t:$k:1}" != $'\n' ]; do k=$((k+1)); done
+                        continue ;;
+                esac
+                prev=w ;;
+            '(') st="${st}p"; prev='(' ;;
+            ')')
+                case "$top" in
+                    c) st="${st%?}"; prev=w ;;
+                    p) st="${st%?}"; prev=')' ;;
+                    *) prev=')' ;;
+                esac ;;
+            '<')
+                # A heredoc opener: its body is literal text, not comments, so
+                # it is copied through below. Without this a `#` in a commit
+                # message inside `"$(cat <<'EOF'…)"` made a second reading of
+                # the whole command (twice the scan time for nothing).
+                if [ "$hdok" = 1 ] && [ "$nx" = '<' ] && [ "${t:$((k+2)):1}" != '<' ] && [ "${t:$((k-1)):1}" != '<' ]; then
+                    j=$((k+2)); dash=0
+                    [ "${t:$j:1}" = '-' ] && { dash=1; j=$((j+1)); }
+                    while [ "${t:$j:1}" = ' ' ] || [ "${t:$j:1}" = $'\t' ]; do j=$((j+1)); done
+                    w=""
+                    while [ "$j" -lt "$n" ]; do
+                        case "${t:$j:1}" in [[:space:]]|';'|'&'|'|'|'('|')'|'<'|'>') break ;; esac
+                        w="$w${t:$j:1}"; j=$((j+1))
+                    done
+                    q1="${w//[!\']/}"; q2="${w//[!\"]/}"
+                    if [ $(( ${#q1} % 2 )) = 0 ] && [ $(( ${#q2} % 2 )) = 0 ] && [ -n "${w//[\'\"\\]/}" ]; then
+                        hd+=("${w//[\'\"\\]/}"); hdd+=("$dash")
+                        o="$o${t:$k:$((j-k))}"; k=$j; prev=w; continue
+                    fi
+                fi
+                prev="$c" ;;
+            $'\n')
+                prev="$c"
+                if [ "${#hd[@]}" -gt 0 ]; then
+                    # Copy each pending body through its terminator line. A
+                    # terminator never found copies nothing: the lines are
+                    # then stripped as commands, an extra reading only.
+                    j=$((k+1)); body=""; found=1
+                    for hi in "${!hd[@]}"; do
+                        found=0
+                        while [ "$j" -lt "$n" ]; do
+                            line="${t:$j}"; line="${line%%$'\n'*}"
+                            j=$((j+${#line}+1)); body="$body$line"$'\n'
+                            chk="$line"
+                            if [ "${hdd[$hi]}" = 1 ]; then while [ "${chk:0:1}" = $'\t' ]; do chk="${chk#?}"; done; fi
+                            [ "$chk" = "${hd[$hi]}" ] && { found=1; break; }
+                        done
+                        [ "$found" = 1 ] || break
+                    done
+                    hd=(); hdd=()
+                    if [ "$found" = 1 ]; then
+                        [ "$j" -le "$n" ] || { body="${body%?}"; j=$n; }
+                        o="$o$c$body"; k=$j; continue
+                    fi
+                fi ;;
+            ' '|$'\t'|';'|'&'|'|'|'>') prev="$c" ;;
+            *) prev=w ;;
+        esac
+        o="$o$c"; k=$((k+1))
+    done
+    _BWIMC_NC="$o"
+}
+
 # --------------------------------------------------------------- scan
 
 _bwimc_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
@@ -1757,6 +1996,14 @@ case "$cmd" in
 esac
 
 _bwimc_hb=$(_bwimc_blank_heredocs "$cmd")
+
+# HIMMEL-4138: a comment can hide a quote from the scanner, which knows no
+# comments. Every arm below runs once on the text as written and once more
+# with its comments removed when that differs, so a command denies when
+# EITHER reading writes into the primary.
+_bwimc_strip_comments "$_bwimc_hb"
+_bwimc_readings=("$_bwimc_hb")
+[ "$_BWIMC_NC" = "$_bwimc_hb" ] || _bwimc_readings+=("$_BWIMC_NC")
 
 # ---- (a) redirect / tee, per-clause quote-aware token walk ----
 #
@@ -1939,14 +2186,34 @@ _bwimc_is_shc_cflag() {
 # is not further modelled — same residual _bwimc_check_target already
 # accepts for every other arm (HIMMEL-3648).
 _bwimc_check_interp_body() {
-    local kind="$2" toks=() t t2 n i cidx body="" _bwimc_ibody_clause="" \
+    local kind="$2" toks=() t t2 n i j0 cidx body="" _bwimc_ibody_clause="" _bwimc_ib_text="" _bwimc_ib_texts=() \
         _bwimc_ibody_clause_sp="" _bwimc_ibc_toks=() _bwimc_ibc_n=0 _bwimc_m="" \
         _bwimc_ibody_saved_ecwd="" _bwimc_ibody_saved_unres=""
     toks=()
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
+    # HIMMEL-4138: KIND `wrap` — the shell or eval sits behind a wrapper
+    # (`nice`, `timeout 5`, `env FOO=1`, `FOO=1`, `sudo -n`, `xargs`, …), so
+    # find the first token that IS one (unquoted, any path, any case, `.exe`)
+    # and read the body after it. `su`/`runuser`/`flock` run their `-c`
+    # string through a shell too. No such token: nothing to scan.
+    j0=1
+    if [ "$kind" = wrap ]; then
+        kind=""; i=0
+        while [ "$i" -lt "$n" ]; do
+            t=$(_bwimc_unq "${toks[$i]}"); t="${t##*/}"
+            _tolower_ascii "$t"; t="${_TOLOWER_OUT%.exe}"
+            case "$t" in
+                eval) kind="eval"; break ;;
+                bash|sh|zsh|dash|ksh|su|runuser|flock) kind=shc; break ;;
+            esac
+            i=$((i+1))
+        done
+        [ -n "$kind" ] || return 0
+        j0=$((i+1))
+    fi
     if [ "$kind" = eval ]; then
-        i=1
+        i=$j0
         while [ "$i" -lt "$n" ]; do
             [ -n "$body" ] && body="$body "
             body="$body$(_bwimc_unq "${toks[$i]}")"
@@ -1954,7 +2221,7 @@ _bwimc_check_interp_body() {
         done
     else
         cidx=-1
-        i=1
+        i=$j0
         while [ "$i" -lt "$n" ]; do
             _bwimc_is_shc_cflag "$(_bwimc_unq "${toks[$i]}")" && { cidx=$((i+1)); break; }
             i=$((i+1))
@@ -1962,6 +2229,7 @@ _bwimc_check_interp_body() {
         [ "$cidx" -ge 0 ] && [ "$cidx" -lt "$n" ] && body=$(_bwimc_unq "${toks[$cidx]}")
     fi
     [ -n "$body" ] || return 0
+    _bwimc_ambig_check "$body"
     case "$body" in
         *'>'*) : ;;
         *) case "$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')" in
@@ -1986,6 +2254,14 @@ _bwimc_check_interp_body() {
     _bwimc_ibody_saved_ecwd="$_bwimc_ecwd"
     _bwimc_ibody_saved_unres="$_bwimc_ecwd_unres"
     _bwimc_ibody_saved_pushn="$_bwimc_ecwd_pushn"
+    # HIMMEL-4138: the body once as written, once with its comments removed.
+    _bwimc_strip_comments "$body"
+    _bwimc_ib_texts=("$body")
+    [ "$_BWIMC_NC" = "$body" ] || _bwimc_ib_texts+=("$_BWIMC_NC")
+    for _bwimc_ib_text in "${_bwimc_ib_texts[@]}"; do
+    _bwimc_ecwd="$_bwimc_ibody_saved_ecwd"
+    _bwimc_ecwd_unres="$_bwimc_ibody_saved_unres"
+    _bwimc_ecwd_pushn="$_bwimc_ibody_saved_pushn"
     while IFS= read -r _bwimc_ibody_clause; do
         [ -n "$(printf '%s' "$_bwimc_ibody_clause" | tr -d '[:space:]')" ] || continue
         _bwimc_clause_unpipe _bwimc_ibody_clause
@@ -2063,7 +2339,8 @@ _bwimc_check_interp_body() {
             esac
             i=$((i+1))
         done
-    done < <(_bwimc_split_clauses "$body")
+    done < <(_bwimc_split_clauses "$_bwimc_ib_text")
+    done
     _bwimc_ecwd="$_bwimc_ibody_saved_ecwd"
     _bwimc_ecwd_unres="$_bwimc_ibody_saved_unres"
     _bwimc_ecwd_pushn="$_bwimc_ibody_saved_pushn"
@@ -2228,6 +2505,7 @@ local _bwimc_rclause _bwimc_rclause_sp _bwimc_rtoks _bwimc_t _bwimc_rn _bwimc_te
     _bwimc_sb_ecwd _bwimc_sb_unres _bwimc_sb_pushn \
     _bwimc_pre_ecwd _bwimc_pre_unres _bwimc_pre_pushn _bwimc_rclause_piped
 _bwimc_skel="$1"; _bwimc_sbodies=(); _bwimc_sbi=0
+_bwimc_ambig_check "$1"
 # shellcheck disable=SC2016  # literal `$(` is the glob pattern, not an expansion
 case "$1" in
     *'$('*|*'`'*)
@@ -2388,6 +2666,8 @@ while IFS= read -r _bwimc_rclause; do
     done
 done < <(_bwimc_split_clauses "$_bwimc_skel" skel)
 }
+_BWIMC_WRAP_RE='(^|[[:space:]/])(bash|sh|zsh|dash|ksh|su|runuser|flock|eval)(\.exe)?([[:space:]]|$)'
+for _bwimc_hb in "${_bwimc_readings[@]}"; do
 _bwimc_ecwd="$_bwimc_cwd"
 _bwimc_ecwd_unres=0
 _bwimc_ecwd_pushn=0
@@ -3597,6 +3877,7 @@ while IFS= read -r _bwimc_clause; do
     _bwimc_clause_unpipe _bwimc_clause
     _tolower_ascii "$_bwimc_clause"
     _bwimc_clause_lc="$_TOLOWER_OUT"
+    _bwimc_interp_seen=0
     # HIMMEL-2592: the verb arms tokenize the SAME pre-spaced text arm (a)
     # does, so all arms share ONE tokenization and a redirect operator is a
     # token of its own everywhere. Recorded consequence: `cp src >/primary/f`
@@ -3821,6 +4102,7 @@ while IFS= read -r _bwimc_clause; do
         fi
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*eval([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+        _bwimc_interp_seen=1
         _bwimc_check_interp_body "$_bwimc_clause_sp" eval
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?(bash|sh|zsh|dash|ksh)(\.exe)?([[:space:]]+[^[:space:]]+)*[[:space:]]+-[a-z]*c[a-z]*([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
@@ -3842,6 +4124,7 @@ while IFS= read -r _bwimc_clause; do
         # skipped. Widened to accept ANY intervening token, flag or not;
         # _bwimc_is_shc_cflag still does the precise per-token check, so
         # this stays a coarse, over-inclusive prefilter only.
+        _bwimc_interp_seen=1
         _bwimc_check_interp_body "$_bwimc_clause_sp" shc
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(install|rsync)(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
@@ -4527,7 +4810,17 @@ while IFS= read -r _bwimc_clause; do
         _bwimc_cwd_check_sourced "$_bwimc_ecwd"
         _bwimc_cwd_check_sourced "$_bwimc_cwd"
     fi
+    # HIMMEL-4138: a shell or eval behind a wrapper (`nice bash -c`,
+    # `timeout 5 sh -c`, `env FOO=1 bash -c`, `command eval`, `flock L -c`)
+    # matched none of the anchored arms above, so its body went unscanned.
+    # Checked after the chain, never instead of an arm, so it cannot take a
+    # clause away from one; a shell word inside a quoted argument is not a
+    # token of its own and finds nothing.
+    if [ "$_bwimc_interp_seen" = 0 ] && [[ "$_bwimc_clause_lc" =~ $_BWIMC_WRAP_RE ]]; then
+        _bwimc_check_interp_body "$_bwimc_clause_sp" wrap
+    fi
 done < <(_bwimc_verb_clauses "$_bwimc_hb")
+done  # HIMMEL-4138 readings
 
 if [ "$_bwimc_sourced" = 1 ]; then
     return 0
