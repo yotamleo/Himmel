@@ -28,7 +28,12 @@ run_hook() {
 
 assert_out() {
     local label="$1" present="$2" pattern="$3"
-    if grep -q -- "$pattern" "$TMP/out"; then got=yes; else got=no; fi
+    grep -q -- "$pattern" "$TMP/out"
+    case $? in
+        0) got=yes ;;
+        1) got=no ;;
+        *) echo "FAIL $label — grep errored on $TMP/out"; FAILED=$((FAILED + 1)); return 0 ;;
+    esac
     if [ "$got" = "$present" ]; then
         echo "PASS $label"
     else
