@@ -42,13 +42,18 @@ usage() {
 }
 
 while [ "$#" -gt 0 ]; do
+  # A value flag with nothing after it would make `shift 2` fail and loop forever.
   case "$1" in
-    --index) INDEX="${2:-}"; shift 2 ;;
-    --out) OUT="${2:-}"; shift 2 ;;
-    --golden) GOLDEN="${2:-}"; shift 2 ;;
-    --modes) MODES="${2:-}"; shift 2 ;;
-    --scope) SCOPE="${2:-}"; shift 2 ;;
-    --candidate-limit) CAND="${2:-}"; shift 2 ;;
+    --index | --out | --golden | --modes | --scope | --candidate-limit)
+      [ "$#" -ge 2 ] || { echo "qmd-quality: $1 needs a value" >&2; usage; } ;;
+  esac
+  case "$1" in
+    --index) INDEX="$2"; shift 2 ;;
+    --out) OUT="$2"; shift 2 ;;
+    --golden) GOLDEN="$2"; shift 2 ;;
+    --modes) MODES="$2"; shift 2 ;;
+    --scope) SCOPE="$2"; shift 2 ;;
+    --candidate-limit) CAND="$2"; shift 2 ;;
     --no-snapshot) SNAPSHOT=0; shift ;;
     -h | --help) usage ;;
     *) echo "qmd-quality: unknown argument '$1'" >&2; usage ;;
@@ -59,6 +64,11 @@ done
 [ -n "$OUT" ] || { echo "qmd-quality: --out <dir> is required" >&2; exit 64; }
 [ -f "$INDEX" ] || { echo "qmd-quality: no index at '$INDEX'" >&2; exit 64; }
 [ -f "$GOLDEN" ] || { echo "qmd-quality: no golden set at '$GOLDEN'" >&2; exit 64; }
+# The snapshot step removes <out>/index.sqlite first; it must never be the source.
+if [ "$SNAPSHOT" -eq 1 ] && [ "$INDEX" -ef "$OUT/index.sqlite" ]; then
+  echo "qmd-quality: --index is the snapshot target $OUT/index.sqlite; pick another --out" >&2
+  exit 64
+fi
 
 # hf:<user>/<repo>/<file> is cached by qmd as hf_<user>_<file>.
 model_file() {

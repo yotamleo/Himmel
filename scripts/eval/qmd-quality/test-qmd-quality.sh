@@ -45,7 +45,7 @@ eq "score: a duplicate golden id is refused" "$rc" "2"
 # --- latency.ts: median and p90 per mode, input order irrelevant --------------
 out=$(bun "$HERE/latency.ts" --runs "$FIX/latency-runs.jsonl" 2>&1); rc=$?
 eq "latency: exit code" "$rc" "0"
-has "latency: lex n=4 median=30 p90=40" "$out" "$(printf 'lex\t4\t30\t40')"
+has "latency: lex n=4 median=25 (mean of the middle two) p90=40" "$out" "$(printf 'lex\t4\t25\t40')"
 has "latency: vec single row" "$out" "$(printf 'vec\t1\t5\t5')"
 bun "$HERE/latency.ts" >/dev/null 2>&1; rc=$?
 eq "latency: missing --runs is a usage error" "$rc" "2"
@@ -66,6 +66,13 @@ if [ ! -e "$TMP/o3/index.sqlite" ]; then
 else
   fail "wrapper: snapshot made before refusal"
 fi
+mkdir -p "$TMP/o4"
+echo keep >"$TMP/o4/index.sqlite"
+out=$(XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --index "$TMP/o4/index.sqlite" --out "$TMP/o4" 2>&1); rc=$?
+eq "wrapper: --index equal to the snapshot target is refused" "$rc" "64"
+eq "wrapper: the source index survives that refusal" "$(cat "$TMP/o4/index.sqlite" 2>/dev/null)" "keep"
+out=$(timeout 10 bash "$HERE/qmd-quality.sh" --out "$TMP/o5" --index 2>&1); rc=$?
+eq "wrapper: a value flag with no value is a usage error, not a hang" "$rc" "64"
 
 echo "test-qmd-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
