@@ -258,14 +258,36 @@ IFS= read -r -d '' input 2>/dev/null || true
 # type error, a DIFFERENT failure than "field is null" and swallowed by the
 # same `|| true`, silently blanking tool AND cmd. `tostring` is a no-op on
 # an already-string value.
-result=$(jq -r '((.tool_name // "")|tostring) + "\n" + ((.tool_input.command // .tool_input.cmd // "")|tostring)' <<<"$input" 2>/dev/null || true)
+# HIMMEL-4130 (HIMMEL-3986 sweep): `.command // .cmd` fell through to .cmd
+# on a PRESENT but false .command, so the hook judged text the harness does
+# not run. Only a null/absent .command falls back to .cmd; a non-string one
+# is flagged on line 2 and fails closed below.
+result=$(jq -r '(.tool_input // {}) as $t | ((.tool_name // "")|tostring) + "\n"
+    + (if ($t | has("command")) and $t.command != null
+       then (if ($t.command | type) == "string" then "s\n" + $t.command else "x\n" end)
+       else "s\n" + (($t.cmd // "")|tostring) end)' <<<"$input" 2>/dev/null || true)
 tool="${result%%$'\n'*}"
 tool="${tool%$'\r'}"
 cmd="${result#*$'\n'}"
+kind="${cmd%%$'\n'*}"
+kind="${kind%$'\r'}"
+cmd="${cmd#*$'\n'}"
 case "$tool" in
     Bash|PowerShell|"") ;;
     *) exit 0 ;;
 esac
+if [ "$kind" = "x" ]; then
+    msg="block-chokepoint-env-prefix: refusing a ${tool:-tool} call whose tool_input.command is present but not a string, so the text that runs cannot be checked.
+
+    Send the command as a JSON string. To bypass this guard intentionally,
+    set ENV_PREFIX_GUARD_OK=1 in the LAUNCHING shell (a per-call prefix does
+    not reach a hook process); restart without it to re-enable the guard."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: tool_input.command is not a string -- refusing"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+fi
 
 [ -n "$cmd" ] || exit 0
 # HIMMEL-1813: the untouched command, newlines included, for the
@@ -1026,7 +1048,8 @@ seam_assigned() {
 # close it by registering the assembled path forms or by the structural guard
 # once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr write=0 obf=0 SQ="'"
+    local t="$1" w rest v wv clr d cw='/.claude/worktrees/' xg=0 write=0 obf=0 SQ="'"
+    case "$t" in *'('*) xg=1 ;; esac
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
     set -f
@@ -1051,7 +1074,21 @@ raw_obfuscated() {
                 # Blunt, no normaliser: any word containing scripts/ (absolute,
                 # ./, or with a leading directory) spelled with a `/.`
                 # (`/./`, `/../`) or `//` segment can name any path, so it counts.
-                case "$w" in *'/.'*|*//*) obf=1 ;; esac
+                # HIMMEL-4130: the worktree dot directory `/.claude/worktrees/`
+                # is not a traversal, so a plain absolute worktree path stops
+                # counting. It is stripped only from a wholly plain word
+                # ([A-Za-z0-9_./+-]; `+` because worktree dirs are fix+slug) in
+                # a text with no `(` at all: the tr above splits a word at `(`,
+                # so zsh grouping (`g(o).sh`), extglob (`@(x)`) and glob
+                # qualifiers would otherwise look plain (judges J1663, J1663b).
+                # Every other `/.` still counts: /./ /../ a trailing /. or /..,
+                # any other dot directory, and anything quoted or escaped.
+                case "$w" in *//*) obf=1 ;; esac
+                d=$w
+                if [ "$xg" = 0 ] && [[ $w =~ ^[A-Za-z0-9_./+-]+$ ]]; then
+                    d=${w//"$cw"/\/}
+                fi
+                case "$d" in *'/.'*) obf=1 ;; esac
                 case "$rest" in
                     *[\*\?\[\{\$]*) obf=1 ;;
                 esac ;;
@@ -1059,6 +1096,9 @@ raw_obfuscated() {
     done
     set +f
     [ "$obf" = 1 ] || return 0
+    # ponytail: the verb scan also matches inside a quoted argument value
+    # (--set 'reason=...exec...'), skipping quoted spans is a parse rule;
+    # HIMMEL-4135 tracks a proven-safe shape or the HIMMEL-3930 structural parse.
     [[ $t =~ $wv ]] && write=1
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
     # or verb): standalone -u*/-i*/--unset*/--ignore-environment/bare -, declare/typeset +x,

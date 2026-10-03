@@ -1207,6 +1207,91 @@ assert_deny "4095 --i* glob beside quiet-run"                     "$(j "/usr/bin
 assert_deny "4095 --unsetenv beside quiet-run"                    "$(j "bwrap --unsetenv HIMMEL_SUITE_SLOTS --dev-bind / / bash $QR suite -- bash scripts/x.sh")"
 assert_deny "4095 --impacted does not mask a later env -i"        "$(j "bash scripts/ci/run-shell-tests.sh --impacted a..b; /usr/bin/en? -i bash $QR suite -- bash scripts/x.sh")"
 
+# HIMMEL-4130: the worktree dot directory /.claude/worktrees/ is not a
+# traversal, so a plain absolute worktree path is not obfuscated.
+WT=/home/u/himmel/.claude/worktrees/fix+x
+assert_allow "4130 worktree ledger-append amend, exec in a quoted reason" "$(j "bash $WT/scripts/cr/ledger-append.sh amend --id 3 --set verdict=fixed --reason 'the exec line moved'")"
+assert_allow "4130 grep beside unset/exec in a .claude worktree path" "$(j "grep -n 'unset exec' $WT/scripts/hooks/x.sh")"
+# Only /.claude/worktrees/ is relieved; any other dot directory still counts.
+assert_deny "4130 read beside a .git dir path is not relieved"   "$(j "read -r l; cat /r/.git/x/scripts/y.sh")"
+assert_deny "4130 a .x dot dir is not relieved"                  "$(j "printf x; bash /r/.x/scripts/y.sh")"
+assert_deny "4130 a .a.b dot dir is not relieved"                "$(j "printf x; bash /r/.a.b/scripts/y.sh")"
+assert_deny "4130 /.claude/ without worktrees/ is not relieved"  "$(j "printf x; bash /r/.claude/scripts/y.sh")"
+# zsh grouping, alternation and glob qualifiers carry no extglob opener, but
+# tr splits the word at `(` so it looked plain (judge J1663b NO-GO): any `(`
+# in the text turns the relief off.
+WT2=/home/u/r/.claude/worktrees/fix+a
+assert_deny "4130 zsh grouping g(o).sh + env -u, worktree path"       "$(j "env -u HIMMEL_CONSOLE_LEG $WT2/scripts/handover/console-kit/g(o).sh")"
+assert_deny "4130 zsh grouping (go).sh + env -u, worktree path"       "$(j "env -u HIMMEL_CONSOLE_LEG $WT2/scripts/handover/console-kit/(go).sh")"
+assert_deny "4130 zsh alternation g(o|zz).sh + env -u, worktree path" "$(j "env -u HIMMEL_CONSOLE_LEG $WT2/scripts/handover/console-kit/g(o|zz).sh")"
+assert_deny "4130 zsh glob flag (#i)GO.sh + env -u, worktree path"    "$(j "env -u HIMMEL_CONSOLE_LEG $WT2/scripts/handover/console-kit/(#i)GO.sh")"
+assert_deny "4130 zsh grouping m(erge-on-green).sh + seam prefix"     "$(j "${MOG_VAR}=1 bash $WT2/scripts/handover/m(erge-on-green).sh")"
+# Every traversal spelling still counts, beside a seam write, with no glob.
+assert_deny "4130 scripts/./ beside a write verb"     "$(j "printf x; bash scripts/./x.sh")"
+assert_deny "4130 scripts/../ beside a write verb"    "$(j "printf x; bash scripts/../x.sh")"
+assert_deny "4130 scripts// beside a write verb"      "$(j "printf x; bash scripts//x.sh")"
+assert_deny "4130 scripts/a/../b beside a write verb" "$(j "printf x; bash scripts/a/../b.sh")"
+assert_deny "4130 scripts/ trailing /. beside a write verb"  "$(j "printf x; ls scripts/a/.")"
+assert_deny "4130 scripts/ trailing /.. beside a write verb" "$(j "printf x; ls scripts/a/..")"
+assert_deny "4130 worktree path with a /../ segment"  "$(j "printf x; bash $WT/scripts/a/../x.sh")"
+assert_deny "4130 /.claude/../ is a traversal"        "$(j "printf x; bash /r/.claude/../scripts/x.sh")"
+assert_deny "4130 /. then a quote can join to /./"    "$(j "printf x; bash scripts/.'/'x.sh")"
+assert_deny "4130 /. then a backslash"                "$(j "printf x; bash scripts/.\\/x.sh")"
+# shellcheck disable=SC2016 # the $v is probe text, not an expansion
+assert_deny "4130 /. then a \$var (empty -> /./)"     "$(j 'printf x; bash scripts/.$v/x.sh')"
+assert_deny "4130 /. then a brace"                    "$(j "printf x; bash /r/.{a,}/scripts/x.sh")"
+assert_deny "4130 worktree path beside a seam assignment and /./" "$(j "${MOG_VAR}=1 setsid -f bash $WT/scripts/./x.sh")"
+# Only a LITERAL dot-directory segment is relieved: an expansion, glob or
+# quote inside the segment (before scripts/) can still resolve anywhere.
+# shellcheck disable=SC2016 # the $s / ${s} are probe text, not expansions
+assert_deny "4130 \${var} inside a dot-dir segment"    "$(j 'printf x; bash /r/.claude${s}/scripts/x.sh')"
+# shellcheck disable=SC2016
+assert_deny "4130 \$var inside a dot-dir segment"      "$(j 'printf x; bash /r/.claude$s/scripts/x.sh')"
+assert_deny "4130 glob inside a dot-dir segment"       "$(j "printf x; bash /r/.c*/scripts/x.sh")"
+assert_deny "4130 quote inside a dot-dir segment"      "$(j "printf x; bash /r/.cl'a'ude/scripts/x.sh")"
+# shellcheck disable=SC2016
+assert_deny "4130 tainted dot-dir before an identical literal one" "$(j 'printf x; bash /.ab$x/.ab/scripts/x.sh')"
+# The relief applies only when the whole scripts/ word is otherwise plain
+# ([A-Za-z0-9_./-]): an extglob, backslash or quote in the basename was denied
+# on main only through the incidental /.claude match (judge J1663 NO-GO).
+WP=/r/.claude/worktrees/w/scripts/handover
+assert_deny "4130 extglob @() basename + export seam, worktree path" "$(j "shopt -s extglob
+export ${MOG_VAR}=1; bash $WP/@(merge-on-green).sh")"
+assert_deny "4130 extglob @() basename + seam prefix, worktree path"  "$(j "${MOG_VAR}=1 bash $WP/@(merge-on-green).sh")"
+assert_deny "4130 extglob @() basename + env -u, worktree path"       "$(j "env -u HIMMEL_CONSOLE_LEG bash $WP/@(merge-on-green).sh")"
+assert_deny "4130 extglob +() basename + export seam, worktree path"  "$(j "export ${MOG_VAR}=1; bash $WP/+(merge-on-green).sh")"
+assert_deny "4130 extglob !() basename + export seam, worktree path"  "$(j "export ${MOG_VAR}=1; bash $WP/!(x).sh")"
+assert_deny "4130 extglob +() basename under a fix+slug worktree"     "$(j "export ${MOG_VAR}=1; bash $WT/scripts/handover/+(merge-on-green).sh")"
+assert_deny "4130 extglob @() split at its paren under a fix+slug worktree" "$(j "${MOG_VAR}=1 bash $WT/scripts/handover/@(merge-on-green).sh")"
+# shellcheck disable=SC2016 # ${n} is probe text, not an expansion
+assert_deny "4130 backslash basename + split seam name, worktree path" "$(j 'n=ARMAUTO; export "${n}MERGE=1"; bash '"$WP"'/merge-on-gr\een.sh')"
+# shellcheck disable=SC2016
+assert_deny "4130 dquote basename + split seam name, worktree path"    "$(j 'n=ARMAUTO; export "${n}MERGE=1"; bash '"$WP"'/merge-on-g"r"een.sh')"
+# shellcheck disable=SC2016
+assert_deny "4130 squote basename + split seam name, worktree path"    "$(j "n=ARMAUTO; export \"\${n}MERGE=1\"; bash $WP/merge-on-g'r'een.sh")"
+
+# HIMMEL-4130 (HIMMEL-3986 sweep): a PRESENT non-string .command must not
+# fall through to .cmd -- `//` treats false like null, so the hook judged
+# the benign .cmd text. A non-string .command now fails closed; a null or
+# absent one still falls back to .cmd.
+jc() { printf '{"tool_name":"Bash","tool_input":{"command":%s,"cmd":%s}}' "$1" "$(printf '%s' "$2" | jq -Rs .)"; }
+assert_deny  "4130 command:false with a benign cmd fails closed"  "$(jc false 'echo ok')"
+assert_deny  "4130 command:0 with a benign cmd fails closed"      "$(jc 0 'echo ok')"
+assert_deny  "4130 command:[...] fails closed"                    "$(jc '["echo ok"]' 'echo ok')"
+assert_deny  "4130 command:{} fails closed"                       "$(jc '{}' 'echo ok')"
+assert_deny  "4130 command:null falls back to a seam-prefixed cmd" "$(jc null "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
+assert_allow "4130 command:null falls back to a benign cmd"       "$(jc null 'echo ok')"
+assert_allow "4130 string command wins over a seam-prefixed cmd"  "$(jc '"echo ok"' "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
+# A CRLF-emitting jq (Git Bash) must not turn the non-string flag `x` into
+# `x\r` and fall through to the benign .cmd (judge J1663 note 1).
+CRLF_JQ_DIR=$(mktemp -d) || { echo "FAIL: mktemp for the CRLF jq shim" >&2; exit 1; }
+REAL_JQ=$(command -v jq)
+printf '#!/bin/bash\n"%s" "$@" | sed "s/\\$/\\r/"\n' "$REAL_JQ" >"$CRLF_JQ_DIR/jq"
+chmod +x "$CRLF_JQ_DIR/jq"
+assert_allow "4130 CRLF jq: string command still allowed (shim control)" "$(jc '"echo ok"' 'echo ok')" "PATH=$CRLF_JQ_DIR:$PATH"
+assert_deny  "4130 CRLF jq: command:false still fails closed"            "$(jc false 'echo ok')" "PATH=$CRLF_JQ_DIR:$PATH"
+rm -rf "$CRLF_JQ_DIR"
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
