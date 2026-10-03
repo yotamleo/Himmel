@@ -90,13 +90,13 @@ leg_cost_row() {
     stem="${ref##*/}"; stem="${stem%.md}"
     label=$(leg_label "$stem")
     ticket=$(printf '%s' "$stem" | sed -nE 's/^([A-Za-z]+-[0-9]+).*/\1/p')
-    if [ -f "$ref" ]; then
+    if [ -f "$ref" ]; then # fail-open-ok: cost-ledger metadata, not a guard decision
         pr=$(sed -nE 's/^- [0-9:]+ READY[^0-9]*#?([0-9]+).*/\1/p' "$ref" | tail -n 1)
         class=$(_lcr_front "$ref" class)
         profile=$(_lcr_front "$ref" profile)
     fi
     case "$stem" in *-cloud-shepherd*) class=shepherd ;; esac
-    case "$class" in shepherd|impl|investigation|judge) ;; *) class=unknown ;; esac
+    case "$class" in shepherd|impl|investigation|judge) ;; *) class=unknown ;; esac # fail-open-ok: cost-ledger metadata, not a guard decision
     [ -n "$profile" ] || profile=unknown
     jq -nc --arg date "$(date +%F)" --arg leg "$label" --arg ticket "$ticket" --arg pr "$pr" \
         --arg model "${model:-unknown}" --arg profile "$profile" --arg class "$class" \
