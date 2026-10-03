@@ -508,12 +508,13 @@ def clean_vtt(vtt: str):
     """Clean a WebVTT track to sentence-bounded paragraphs. Returns
     (text, last_cue_end_s). Strips every inline tag (<X-word-ms ...>, <c>,
     <00:00:01.000>), the WEBVTT header, NOTE/STYLE blocks, cue ids and timing
-    lines, and collapses ADJACENT duplicate cue text only (rolling captions) - no
-    global seen-set, so a short line that legitimately recurs survives. Cue text
+    lines, and collapses the suffix/prefix overlap between ADJACENT cues only
+    (rolling captions; >= 2 words, or the whole cue) - no global seen-set, so a
+    short line that legitimately recurs survives. Cue text
     is untrusted (the post author writes it): tags/comments are stripped after
     entity-decoding too, and a paragraph never starts with a markdown control
     character."""
-    lines, last_end, in_cue = [], 0.0, False
+    lines, last_end, in_cue, prev_full = [], 0.0, False, []
     for raw in vtt.replace("\r\n", "\n").split("\n"):
         line = raw.strip()
         m = CUE_RE.match(line)
@@ -530,8 +531,20 @@ def clean_vtt(vtt: str):
             continue
         t = TAG_RE.sub("", html.unescape(TAG_RE.sub("", line))).replace("<", "")
         t = re.sub(r"\s+", " ", t).strip()
-        if t and not (lines and lines[-1] == t):
-            lines.append(t)
+        if not t:
+            continue
+        full = words = t.split()
+        # Rolling captions: the next cue repeats the tail of the previous FULL
+        # cue (not its emitted remainder). Drop that overlap - at least 2 words
+        # (or the whole cue, the identical-adjacent case) so a single shared
+        # word survives.
+        for k in range(min(len(prev_full), len(words)), 0, -1):
+            if prev_full[-k:] == words[:k] and (k >= 2 or k == len(words)):
+                words = words[k:]
+                break
+        prev_full = full
+        if words:
+            lines.append(" ".join(words))
     sentences = []
     for s in re.split(r"(?<=[.!?])\s+", " ".join(lines)):
         words = s.split()
@@ -953,7 +966,7 @@ def write_crawled(path: Path, text: str, fm_raw: str, body: str, section: str,
     disk_fm, _, disk_body, disk_present = parse_frontmatter(disk_text)
     ok = (disk_present
           and disk_body == new_body
-          and all(k in disk_fm for k in markers)
+          and all((k in disk_fm) == (v is not None) for k, v in markers.items())
           and _strip_crawled(body) == _strip_crawled(disk_body))
     if not ok:
         write_clip(path, text, has_crlf)   # revert outside-region drift
@@ -1224,6 +1237,9 @@ def enrich_batch(args, selected, matched_total, remaining):
             extra = {}
             if transcripts and len({t["source"] for t in transcripts}) == 1:
                 extra["media_transcript_source"] = transcripts[0]["source"]
+            if transcripts:
+                # None drops a stale key a partial retry would otherwise preserve.
+                extra["media_transcript_coverage"] = None
             if len(transcripts) == 1:
                 t1 = transcripts[0]
                 if t1.get("duration"):

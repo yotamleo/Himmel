@@ -1,0 +1,8 @@
+{"id":"g1","mode":"lex","ranked":["a/x.md","a/m.md"]}
+{"id":"g2","mode":"lex","ranked":["a/m.md","a/n.md","a/z.md"]}
+{"id":"g3","mode":"lex","ranked":[]}
+{"id":"g1","mode":"vec","ranked":["a/1.md","a/2.md","a/3.md","a/4.md","a/5.md","a/x.md"]}
+{"id":"g2","mode":"vec","ranked":["A/Y.MD"]}
+{"id":"g3","mode":"vec","ranked":["b/o.md","b/q.md"]}
+{"id":"g1","mode":"hybrid","ranked":["a/x.md"]}
+{"id":"g2","mode":"hybrid","ranked":["a/y.md"]}

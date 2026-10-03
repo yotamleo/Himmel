@@ -267,6 +267,80 @@ deny "bash -o pipefail \`sh -c 'qmd q\"uery\"'\` -c true"
 # there is a program: `bash "$(printf qmd)" query x` runs qmd.
 deny "bash -o pipefail \"\$(printf x)\" -c 'qmd status'"
 deny 'bash "$(printf qmd)" query x'
+# HIMMEL-4166: other shells and launchers run a nested string too.
+deny "rbash -c 'qmd query x'"
+deny "mksh -c 'qmd query x'"
+deny "ash -c 'qmd query x'"
+deny "fish -c 'qmd query x'"
+deny "fish --command='qmd query x'"
+deny "fish -c 'qmd \"qu\"ery x'"
+deny "su -c 'qmd query x'"
+deny "su - u -c 'qmd \"qu\"ery x'"
+deny "su u --command='qmd query x'"
+deny "su -C 'qmd query x'"
+deny "su u --session-command 'qmd query x'"
+deny "runuser u --session-command='qmd \"qu\"ery x'"
+deny "script -c 'qmd query x' /dev/null"
+deny "script -qc 'qmd query x' /dev/null"
+deny "script -q -c 'qmd \"qu\"ery x' /dev/null"
+deny "env -S'qmd query x'"
+deny "env -S'qmd' query x"
+deny "env --split-string='qmd \"qu\"ery x'"
+# A shell reading its program from stdin: a here-string, or a pipe.
+deny "bash <<< 'qmd query x'"
+deny "sh <<<'qmd \"qu\"ery x'"
+deny "echo 'qmd query x' | sh"
+deny "printf '%s\\n' 'qmd \"qu\"ery x' | bash"
+deny 'echo qmd query x | sh -s'
+deny "echo 'qmd query x' |& sh"
+deny "echo 'qmd query x' | cat | sh"
+deny "echo 'qmd query x' | tr a a |& tee /dev/null | bash"
+deny "bash -c sh <<< 'qmd query x'"
+deny "echo 'qmd query x' | timeout 5 bash"
+deny "source /dev/stdin <<< 'qmd query x'"
+deny "env -i -S'qmd query x'"
+# "$@" indirection: the program or the verb in a positional parameter.
+deny 'set -- qmd query x; "$@"'
+deny 'f() { "$@"; }; f qmd query x'
+deny 'set -- query x; qmd "$@"'
+# HIMMEL-4218: wrappers that run their arguments as a program.
+deny 'watch qmd query x'
+deny 'watch -n 5 qmd query x'
+deny "watch 'qmd query x'"
+deny "watch -n 5 'qmd \"qu\"ery x'"
+deny 'flock /tmp/l qmd query x'
+deny 'flock -w 5 /tmp/l qmd query x'
+deny 'flock -x /tmp/l qmd query x'
+deny "flock /tmp/l -c 'qmd query x'"
+deny 'systemd-run --user qmd query x'
+deny 'systemd-run --user --scope -p MemoryMax=1G qmd query x'
+deny 'unbuffer qmd query x'
+deny 'unbuffer -p qmd search x'
+deny 'parallel qmd query ::: x y'
+deny "parallel 'qmd query {}' ::: x y"
+deny "parallel -j 2 'qmd \"qu\"ery {}' ::: x"
+# An alias for qmd, and sourcing a substitution, fail closed.
+deny 'alias q=qmd; q query x'
+deny "alias q='qmd'; q search x"
+deny 'source <(echo qmd query x)'
+deny '. <(echo qmd query x)'
+deny 'bash <(echo qmd query x)'
+# ... while the same launchers running anything else stay allowed.
+allow "fish -c 'qmd status'"
+allow "su -c 'qmd status'"
+allow "script -qc 'qmd status' /dev/null"
+allow "env -S'qmd status'"
+allow "bash <<< 'qmd status'"
+allow "echo 'qmd status' | sh"
+allow 'echo qmd query x | grep qmd'
+allow 'watch -n 5 qmd status'
+allow 'flock /tmp/l qmd update'
+allow 'systemd-run --user qmd embed'
+allow "parallel 'qmd get {}' ::: a b"
+allow "alias s='qmd status'; s"
+allow 'source <(echo qmd status)'
+allow 'set -- a b; "$@"; qmd status'
+allow 'env -- printf "%s %s" "$(grep -c a qmd.sh)" "$(grep -c b qmd.sh)"'
 
 # The nested scan is linear: padding with shell words must not push the hook
 # past the chain's budget, where it would be skipped instead of deciding.
