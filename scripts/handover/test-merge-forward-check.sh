@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # scripts/handover/test-merge-forward-check.sh — HIMMEL-4114. Fixture-driven
 # coverage of merge-forward-check.sh: ALLOW only a red inherited from the
-# merge-base and fixed on latest main; a red the PR introduced never passes.
+# merge-base, failing the same cases, and fixed on latest main; a red the PR
+# introduced never passes.
 set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MF="${MF:-$HERE/merge-forward-check.sh}"
@@ -9,14 +10,30 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/merge-forward-check.XXXXXX")" || exit 1; trap 
 fail=0
 ok() { echo "ok: $1"; }
 bad() { echo "FAIL: $1"; [ -n "${2:-}" ] && printf '    got: %s\n' "$2"; fail=1; }
-# run <desc> <expected-rc> <expected-ere> [extra args] -- uses $tmp/{pr,base,latest}
-run() {
+
+# a repo whose origin/main the script fetches and compares against --latest-sha
+git init -q --bare -b main "$tmp/origin.git"
+git init -q -b main "$tmp/work"
+git -C "$tmp/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
+git -C "$tmp/work" remote add origin "$tmp/origin.git"
+git -C "$tmp/work" push -q origin main 2>/dev/null
+TIP="$(git -C "$tmp/work" rev-parse HEAD)"
+
+# runraw <desc> <expected-rc> <expected-ere> [args] -- uses $tmp/{pr,base,latest,pr-cases,base-cases}
+runraw() {
   local d="$1" want="$2" re="$3" out rc
   shift 3
-  out=$(bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" "$@" 2>&1); rc=$?
+  out=$(cd "$tmp/work" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" "$@" 2>&1); rc=$?
   if [ "$rc" -eq "$want" ] && grep -Eq -- "$re" <<< "$out"; then ok "$d"; else bad "$d (rc=$rc, want $want)" "$out"; fi
 }
-set3() { printf '%b' "$1" > "$tmp/pr"; printf '%b' "$2" > "$tmp/base"; printf '%b' "$3" > "$tmp/latest"; }
+# run = runraw with valid sha flags; later flags in "$@" override these
+run() { local d="$1" want="$2" re="$3"; shift 3; runraw "$d" "$want" "$re" --base-sha abc123 --main-base-sha abc123 --latest-sha "$TIP" "$@"; }
+# set3 writes the three job files; each red row gets the one case `c1` in the case files
+set3() {
+  printf '%b' "$1" > "$tmp/pr"; printf '%b' "$2" > "$tmp/base"; printf '%b' "$3" > "$tmp/latest"
+  awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print $1"\tc1"}' "$tmp/pr" > "$tmp/pr-cases"
+  awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print $1"\tc1"}' "$tmp/base" > "$tmp/base-cases"
+}
 
 # the defect (HIMMEL-4114): green at base, red on the PR, green on latest = the PR's own red
 set3 'shell-tests\tfailure\nlint\tsuccess\n' 'shell-tests\tsuccess\nlint\tsuccess\n' 'shell-tests\tsuccess\nlint\tsuccess\n'
@@ -43,13 +60,53 @@ run "red on latest main too: REFUSE" 1 'REFUSE.*a.*not proven fixed'
 set3 'a\tsuccess\nb\tskipped\n' 'a\tsuccess\n' 'a\tsuccess\n'
 run "nothing red: no merge-forward needed" 3 'nothing red'
 
-# base run sha check
+# F1: the base run sha check is mandatory
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
-run "base run sha equals the merge-base: ALLOW" 0 'ALLOW' --base-sha abc123 --main-base-sha abc123
 run "base run sha differs from the merge-base: REFUSE" 1 'REFUSE.*merge-base' --base-sha abc123 --main-base-sha def456
-run "--base-sha without --main-base-sha: usage" 2 'usage' --base-sha abc123
+runraw "no sha flags at all: usage, never ALLOW" 2 'usage'
+runraw "empty --base-sha and --main-base-sha: usage, never ALLOW" 2 'usage' --base-sha '' --main-base-sha '' --latest-sha "$TIP"
+runraw "--base-sha without --main-base-sha: usage" 2 'usage' --base-sha abc123 --latest-sha "$TIP"
+runraw "--main-base-sha without --base-sha: usage" 2 'usage' --main-base-sha abc123 --latest-sha "$TIP"
+
+# F3: the latest run must be origin/main's tip
+runraw "--latest-sha omitted: usage, never ALLOW" 2 'usage' --base-sha abc123 --main-base-sha abc123
+runraw "--latest-sha empty: usage, never ALLOW" 2 'usage' --base-sha abc123 --main-base-sha abc123 --latest-sha ''
+run "--latest-sha is not origin/main: REFUSE (an older run posing as latest)" 1 'REFUSE.*not latest main' --latest-sha deadbeef
+git -C "$tmp/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+git -C "$tmp/work" push -q origin main 2>/dev/null
+run "origin/main moved on after the latest run: REFUSE" 1 'REFUSE.*not latest main'
+TIP="$(git -C "$tmp/work" rev-parse HEAD)"
+run "--latest-sha equals the fetched origin/main: ALLOW" 0 'ALLOW'
+out=$(cd "$tmp" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha a --main-base-sha a --latest-sha "$TIP" 2>&1); rc=$?
+if [ "$rc" -eq 2 ]; then ok "outside a repo with origin/main: usage, never ALLOW"; else bad "outside a repo exits 2 (rc=$rc)" "$out"; fi
+
+# F2: a shard that fails the base's case AND one of its own is the PR's own red
+set3 'shard-3\tfailure\n' 'shard-3\tfailure\n' 'shard-3\tsuccess\n'
+printf 'shard-3\tX\nshard-3\tY\n' > "$tmp/pr-cases"; printf 'shard-3\tX\n' > "$tmp/base-cases"
+run "PR shard fails X (inherited) and Y (its own), base fails only X: REFUSE" 1 'REFUSE.*shard-3.*Y'
+printf 'shard-3\tX\n' > "$tmp/pr-cases"
+run "PR shard fails exactly the base's case: ALLOW" 0 'ALLOW.*shard-3'
+printf 'shard-3\tX\n' > "$tmp/pr-cases"; printf 'shard-3\tX\nshard-3\tZ\n' > "$tmp/base-cases"
+run "PR cases a subset of the base's (base fails more): ALLOW" 0 'ALLOW.*shard-3'
+printf 'shard-3\tY\n' > "$tmp/pr-cases"; printf 'shard-3\tX\n' > "$tmp/base-cases"
+run "PR fails a different case than the base: REFUSE" 1 'REFUSE.*shard-3.*Y'
+: > "$tmp/pr-cases"
+run "no failing case recorded for the red PR job: REFUSE" 1 'REFUSE.*shard-3.*no failing case'
+printf 'shard-3\tX\n' > "$tmp/pr-cases"; printf 'other-shard\tX\n' > "$tmp/base-cases"
+run "the base's case belongs to another job: REFUSE" 1 'REFUSE.*shard-3.*X'
+printf 'shard-3\tX\nbroken\n' > "$tmp/pr-cases"
+run "malformed PR case row: usage error, never ALLOW" 2 'malformed'
+printf 'shard-3\tX\n' > "$tmp/pr-cases"; printf 'shard-3\t\n' > "$tmp/base-cases"
+run "empty case name at base: usage error, never ALLOW" 2 'malformed'
+set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
+rm -f "$tmp/pr-cases"
+run "PR case file missing: usage error, never ALLOW" 2 'usage'
+set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
+rm -f "$tmp/base-cases"
+run "base case file missing: usage error, never ALLOW" 2 'usage'
 
 # input errors
+set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
 rm -f "$tmp/base"
 run "base file missing: usage error, never ALLOW" 2 'usage'
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'

@@ -44,6 +44,9 @@ check() {  # <description> <expected-substring> <actual-output>
 # three other suites took 116s. The four bounded calls share the suite's time,
 # so one call's worst figure is <= 116s. Rule: loaded x2 -- 116 * 2 = 232,
 # rounded up to 240.
+# ponytail: cases 3/4 make real calls to github.com, so 240s covers network
+# variance as well as fleet load, not load alone; upgrade path is pointing
+# those cases at a local bare remote (HIMMEL-4117).
 run_hermes_check_bounded() {
   if [ -n "$_TIMEOUT_BIN" ]; then
     export -f update_hermes

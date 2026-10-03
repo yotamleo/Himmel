@@ -5,48 +5,57 @@
 # Merge-forward cures ONLY a red inherited from a broken base.
 #
 #   merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file>
-#                          [--base-sha <sha> --main-base-sha <sha>]
+#                          --pr-cases <file> --base-cases <file>
+#                          --base-sha <sha> --main-base-sha <sha> --latest-sha <sha>
 #
-# Each file is one run's job list, one `<job name><TAB><conclusion>` per line
+# Each job file is one run's job list, one `<job name><TAB><conclusion>` per line
 # (e.g. from `gh run view <id> --json jobs`):
 #   --pr           the PR's own CI run
 #   --main-base    main's push run AT THE PR's MERGE-BASE commit
 #   --main-latest  main's latest completed push run
-# ALLOW only if EVERY red PR job is red on --main-base (so it was inherited)
-# AND success on --main-latest (so main has since been fixed). Everything else
-# REFUSES: a job missing from either main run, a job green at the base (that
-# red is the PR's own), a job red on latest main.
-# The job files carry no commit sha, so the caller proves the base run is the
-# right one: pass --base-sha (`git merge-base origin/main HEAD`) and
-# --main-base-sha (the base run's headSha from `gh run list --commit`); they
-# must be equal. Passing one without the other is a usage error. Omitting both
-# leaves the check to the caller (documented in docs/handover/leg-preface.md).
+# Each case file lists the failing cases of a run, one `<job><TAB><case>` per
+# line, read from the failed-job logs:
+#   --pr-cases     the PR run's failing cases      --base-cases  the base run's
+# ALLOW only if EVERY red PR job is red on --main-base (so it was inherited),
+# every failing case of that PR job is among the base run's failing cases for
+# the same job (a PR shard runs only the impacted suites and main shards run the
+# full sweep, so a matching job name alone proves nothing: an extra failing case
+# is the PR's own red), AND the job is success on --main-latest (so main has
+# since been fixed). Everything else REFUSES: a job missing from either main run,
+# a job green at the base, a job red on latest main, a PR job with no recorded
+# failing case or with a case the base run did not fail.
+# The job files carry no commit sha, so the shas are REQUIRED and non-empty:
+# --base-sha (`git merge-base origin/main HEAD`) must equal --main-base-sha (the
+# base run's headSha from `gh run list --commit`), and --latest-sha (the latest
+# run's headSha) must equal `git rev-parse origin/main` after a fetch, run from
+# the leg's own repo, so an older run cannot stand in for the base or for latest.
 # Exit 0 = ALLOW  1 = REFUSE  2 = usage / unreadable input
 #      3 = nothing red on the PR; no merge-forward needed
 # Red = failure | timed_out | startup_failure.
-# ponytail: inheritance is matched by job name, not by failing case, so a job that
-# fails different tests on the base and the PR still reads as inherited. An ALLOW
-# is therefore necessary, not sufficient: the leg must also show the PR's failed
-# job fails the SAME case as the base run (docs/handover/leg-preface.md); upgrade
-# path is a per-case comparison here if that ever bites.
+# ponytail: the case lists are extracted from logs by the caller and taken as
+# given, so a wrong list can still mislead; upgrade path is parsing the failed
+# job logs here if that ever bites.
 set -uo pipefail
-pr=""; base=""; latest=""; bsha=""; msha=""; bad=0
+pr=""; base=""; latest=""; prc=""; bc=""; bsha=""; msha=""; lsha=""; bad=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --pr) [ $# -ge 2 ] || { bad=1; break; }; pr="$2"; shift 2 ;;
     --main-base) [ $# -ge 2 ] || { bad=1; break; }; base="$2"; shift 2 ;;
     --main-latest) [ $# -ge 2 ] || { bad=1; break; }; latest="$2"; shift 2 ;;
+    --pr-cases) [ $# -ge 2 ] || { bad=1; break; }; prc="$2"; shift 2 ;;
+    --base-cases) [ $# -ge 2 ] || { bad=1; break; }; bc="$2"; shift 2 ;;
     --base-sha) [ $# -ge 2 ] || { bad=1; break; }; bsha="$2"; shift 2 ;;
     --main-base-sha) [ $# -ge 2 ] || { bad=1; break; }; msha="$2"; shift 2 ;;
+    --latest-sha) [ $# -ge 2 ] || { bad=1; break; }; lsha="$2"; shift 2 ;;
     *) bad=1; break ;;
   esac
 done
 if [ "$bad" -eq 1 ] || [ ! -r "$pr" ] || [ ! -r "$base" ] || [ ! -r "$latest" ] \
-   || { [ -n "$bsha" ] && [ -z "$msha" ]; } || { [ -z "$bsha" ] && [ -n "$msha" ]; }; then
-  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> [--base-sha <sha> --main-base-sha <sha>]" >&2
+   || [ ! -r "$prc" ] || [ ! -r "$bc" ] || [ -z "$bsha" ] || [ -z "$msha" ] || [ -z "$lsha" ]; then
+  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> (all required, shas non-empty)" >&2
   exit 2
 fi
-if [ -n "$bsha" ] && [ "$bsha" != "$msha" ]; then
+if [ "$bsha" != "$msha" ]; then
   echo "REFUSE — the --main-base run is for $msha, not the PR's merge-base $bsha: it proves nothing about the base. Report BLOCKED; do not merge forward."
   exit 1
 fi
@@ -57,9 +66,24 @@ for f in "$pr" "$base" "$latest"; do
     exit 2
   fi
 done
+for f in "$prc" "$bc"; do
+  if awk -F'\t' 'NF && (NF != 2 || $1 == "" || $2 == "") {exit 1}' "$f"; then :; else
+    echo "usage: $f has a malformed row (want <job><TAB><case>): a misread case could hide the PR's own red" >&2
+    exit 2
+  fi
+done
 
 reds="$(awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print $1}' "$pr")"
 [ -n "$reds" ] || { echo "nothing red on the PR — no merge-forward needed"; exit 3; }
+
+if ! git fetch --quiet origin main 2>/dev/null || ! tip="$(git rev-parse --verify --quiet origin/main)"; then
+  echo "usage: cannot fetch origin main from $(pwd): the --latest-sha check needs the leg's own repo" >&2
+  exit 2
+fi
+if [ "$lsha" != "$tip" ]; then
+  echo "REFUSE — the --main-latest run is for $lsha, but origin/main is $tip: an older run is not latest main. Fetch the newest completed push run; do not merge forward."
+  exit 1
+fi
 
 blocked=""
 while IFS= read -r job; do
@@ -69,8 +93,22 @@ while IFS= read -r job; do
   case "$b" in failure|timed_out|startup_failure) inherited=1 ;; *) inherited=0 ;; esac
   if [ "$inherited" -ne 1 ]; then
     blocked="${blocked:+$blocked, }$job (base: ${b:-absent} — not inherited, the PR's own red)"
+    continue
   elif [ "$l" != "success" ]; then
     blocked="${blocked:+$blocked, }$job (latest main: ${l:-absent} — not proven fixed)"
+    continue
+  fi
+  pcases="$(awk -F'\t' -v j="$job" '$1==j {print $2}' "$prc")"
+  if [ -z "$pcases" ]; then
+    blocked="${blocked:+$blocked, }$job (no failing case recorded for the PR's job — cannot prove it inherited)"
+    continue
+  fi
+  extra=""
+  while IFS= read -r c; do
+    awk -F'\t' -v j="$job" -v c="$c" '$1==j && $2==c {f=1} END {exit !f}' "$bc" || extra="${extra:+$extra; }$c"
+  done <<< "$pcases"
+  if [ -n "$extra" ]; then
+    blocked="${blocked:+$blocked, }$job (failing case not failing at the base: $extra — the PR's own red)"
   fi
 done <<< "$reds"
 
@@ -78,5 +116,5 @@ if [ -n "$blocked" ]; then
   echo "REFUSE — red not proven inherited-and-fixed: $blocked. Report BLOCKED; do not merge forward."
   exit 1
 fi
-echo "ALLOW — every red job was red on the merge-base run and is green on latest main: $(paste -sd, - <<< "$reds" | sed 's/,/, /g'). One 'git fetch origin main' + 'git merge origin/main' (merge commit; never rebase or force-push), citing both main run ids in a Results bullet."
+echo "ALLOW — every red job was red on the merge-base run with the same failing cases and is green on latest main: $(paste -sd, - <<< "$reds" | sed 's/,/, /g'). One 'git fetch origin main' + 'git merge origin/main' (merge commit; never rebase or force-push), citing both main run ids in a Results bullet."
 exit 0
