@@ -39,7 +39,7 @@
 # ponytail: a nested shell string (`bash -c "qmd q\"uery\" x"`) is matched on
 # its raw text only, one level deep; normalise the -c argument too if that
 # spelling turns up (HIMMEL-4121). A heredoc makes qmd_words decline and the
-# quote-stripped text decide, which over-denies; the shared tokenizer
+# coarser fallback readings below decide; the shared tokenizer
 # (scripts/hooks/lib/shell-tokenize.sh, HIMMEL-912) models heredocs and can
 # replace qmd_words once a third inlined copy is wired into its sync suite.
 #
@@ -176,6 +176,24 @@ qmd_words() {
                 ws=0
                 if [ "$c2" = '"' ]; then
                     ctx=${ctx}D; i=$((i + 2))
+                elif [ "$c2" = '(' ] && [ "${s:i+2:1}" = '(' ]; then
+                    # $((…)) is arithmetic, so a `<<` in it is a shift, not
+                    # a heredoc. Its value is a number and prints as 0. One
+                    # holding a quote, a backslash, a backtick or `$(`, or
+                    # not closed by an adjacent `))`, is declined.
+                    k=$((i + 3)) d=2
+                    while [ "$d" -gt 0 ]; do
+                        [ "$k" -lt "$n" ] || return 1
+                        case "${s:k:1}" in
+                            '(') d=$((d + 1)) ;;
+                            ')') d=$((d - 1)) ;;
+                            "'"|'"'|'\'|'`') return 1 ;;
+                            '$') [ "${s:k+1:1}" != '(' ] || return 1 ;;
+                        esac
+                        k=$((k + 1))
+                    done
+                    [ "${s:k-2:1}" = ')' ] || return 1
+                    out=${out}0; i=$k
                 elif [ "$c2" = "'" ]; then
                     # ANSI-C quoting: decode bash's escapes. A NUL ends the
                     # word's value; the rest of the `$'…'` is dropped.
@@ -216,7 +234,11 @@ qmd_words() {
                             c) case "${s:i+2:1}" in '@'|'`'|' ') v=0 ;; *) v=1 ;; esac; k=3 ;;
                             a|b|e|E|f|n|r|t|v) v=1 k=2 ;;
                             '\'|"'"|'"'|'?') v=-2 k=2 ;;
-                            *) k=1 ;;
+                            # An unknown escape: bash keeps `\X`, zsh (the
+                            # Bash tool's shell on some stations) drops the
+                            # backslash. Bash's word is never the verb, so
+                            # zsh's reading is the one to check.
+                            *) v=-2 k=2 ;;
                         esac
                         if [ "$drop" = 0 ]; then
                             if [ "$v" -eq 0 ]; then
@@ -305,8 +327,23 @@ RAWBOUND='([^[:alnum:]_"'\''-]|$)'
 # removal hides — a separator or a nested `bash -c "qmd query"` inside quoted
 # data. The normalised words see the verb and program bash will run after its
 # quote removal. When the normaliser declines (a heredoc, an unterminated
-# quote), the raw text falls back to the pre-HIMMEL-4121 match plus the
-# quote-stripped text, which over-denies rather than misses.
+# quote, over 16 KiB), three readings stand in for it: the pre-HIMMEL-4121
+# raw match; the quote-stripped text, which catches quote-splitting and
+# backslashes; and, because that text cannot decode `$'…'` or `$"…"`, a deny
+# for a qmd program with either in its arguments, or for a program word
+# spelled with one and followed by one or a verb. It is not a parser: it
+# over-denies some commands and can still miss a spelling only full parsing
+# would decode.
+# shellcheck disable=SC1003 # a literal backslash in the tr set
+ansi_q() {
+    local t=${cmd//\\$'\n'/}
+    t=${t//\$\'/$'\001'}
+    t=${t//\$\"/$'\001'}
+    printf '%s' "$t" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;' | LC_ALL=C tr -d '"'\''\\'
+}
+AQ_PROG='[^[:space:];&|]*'$'\001''[^[:space:];&|]*'
+AQ_ARGS="${CMDPOS}${QMDPROG}[[:space:]][^;&|]*"$'\001'
+AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\001'"|${QMDVERB})"
 deny=0
 if words=$(qmd_words "$cmd"); then
     words_lc=$(printf '%s' "$words" | LC_ALL=C tr '[:upper:]' '[:lower:]')
@@ -315,6 +352,11 @@ if words=$(qmd_words "$cmd"); then
     fi
 elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
     deny=1
+else
+    aq=$(ansi_q)
+    if [[ $aq =~ $AQ_ARGS ]] || [[ $aq =~ $AQ_WORD ]]; then
+        deny=1
+    fi
 fi
 
 if [ "$deny" = 1 ]; then

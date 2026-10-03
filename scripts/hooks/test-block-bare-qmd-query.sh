@@ -120,6 +120,25 @@ deny "echo don't # it's a comment
 qmd q\"uery\" x"
 deny 'qmd qu\
 ery x'
+# zsh (the Bash tool's shell here) drops the backslash of an unknown $'\X'.
+deny "qmd \$'\\query' x"
+deny "qmd \$'quer\\y' x"
+deny "qmd \$'v\\search' x"
+# A command qmd_words declines must not fall back to a text blind to $'…'/$"…".
+deny "cat <<E
+hi
+E
+qmd \$'\\x71uery' x"
+deny "cat <<E
+hi
+E
+qmd \$'\\161uery' x"
+deny 'cat <<E
+hi
+E
+qmd $"query" x'
+deny "echo \$((1<<2)); qmd \$'\\x71uery' x"
+deny "echo $(printf 'a%.0s' $(seq 1 17000)); qmd \$'\\x71uery' x"
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
@@ -157,6 +176,8 @@ allow 'qmd "query"x y'
 allow 'echo q"md" "qu"ery x'
 allow 'grep -rn "q\"md\" q\"uery\"" scripts/'
 allow 'printf "%s\n" "a; qmd" status'
+# `<<` inside $((…)) is a shift, not a heredoc: the words are still read.
+allow "echo \$((1<<2)); qmd \$'query notes' y"
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \
