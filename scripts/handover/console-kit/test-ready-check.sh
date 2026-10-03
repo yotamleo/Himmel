@@ -254,6 +254,17 @@ rc=0; out="$(run)" || rc=$?
 check "files-unreadable: exit 1" "$rc" "1"
 contains "files-unreadable: check 5 fails" "$out" "[FAIL] 5. cannot read PR files"
 
+# --- 5e. check 5 reads ONLY the first commit (HIMMEL-4128) --------------
+# A docs-only first commit with the trailers on a LATER commit (what a PR-body
+# or follow-up-commit "recovery" amounts to) must still FAIL: the stuck-playbook
+# recovery is a recut, not a trailer added after the fact.
+reset_stubs
+STUB_COMMITS='[{"messageHeadline":"docs: [HIMMEL-1] note","messageBody":""},{"messageHeadline":"fix(x): [HIMMEL-2] code","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"}]'
+rc=0; out="$(run)" || rc=$?
+check "later-commit-trailers: exit 1" "$rc" "1"
+contains "later-commit-trailers: check 5 fails (platforms)" "$out" "missing 'Platforms tested:'"
+contains "later-commit-trailers: check 5 fails (security)" "$out" "missing 'Security reviewed:'"
+
 # --- 6. check 6 fails: a commit subject with no ticket ID ---------------
 reset_stubs
 STUB_COMMITS='[{"messageHeadline":"feat(x): [HIMMEL-1] add thing","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"},{"messageHeadline":"fix(x): tweak with no ticket","messageBody":""}]'
