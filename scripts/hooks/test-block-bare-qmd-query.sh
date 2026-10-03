@@ -237,6 +237,11 @@ deny "eval 2>/dev/null qmd query x"
 deny "eval -- 'qmd \"qu\"ery x'"
 deny "eval -- qmd query x"
 deny "bash 2>/dev/null -c 2>&1 'qmd \"qu\"ery x'"
+# A substitution among the words before -c runs in the outer shell.
+deny "bash \"\$(bash -c 'qmd \"qu\"ery')\""
+deny "bash -x \"\$(sh -c 'qmd q\"uery\"')\""
+deny "bash -o pipefail \`sh -c 'qmd q\"uery\"'\` -c true"
+allow "bash -o pipefail \"\$(printf x)\" -c 'qmd status'"
 
 # The nested scan is linear: padding with shell words must not push the hook
 # past the chain's budget, where it would be skipped instead of deciding.

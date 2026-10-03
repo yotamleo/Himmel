@@ -499,6 +499,10 @@ qmd_nested() {
                 # arguments) are read too — more reading only adds denials.
                 if [[ $t =~ ^-[[:alpha:]]*c[[:alpha:]]*$ ]]; then
                     hasc=1
+                elif [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; then
+                    # A substitution runs in the outer shell: check its text.
+                    qmd_check "$t" $((depth + 1))
+                    if [ "$deny" = 1 ]; then return 0; fi
                 else
                     # Another shell or eval word before any -c: hand it back
                     # to the outer loop, so no word is scanned twice.
