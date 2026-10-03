@@ -399,11 +399,11 @@ else
     cov_bad=""
     while IFS= read -r cov_line; do
         [ -n "$cov_line" ] || continue
-        cov_def=$(printf '%s\n' "$cov_line" | grep -ioE 'deferred[[:space:]]*(→|->)[[:space:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+' || true)
+        cov_def=$(printf '%s\n' "$cov_line" | grep -ioE 'deferred[[:space:]]*(→|->)[^[:alnum:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+[^[:alnum:]]*$' || true)
         if [ -n "$cov_def" ]; then
-            cov_key=$(printf '%s\n' "$cov_def" | grep -oE '[A-Za-z][A-Za-z0-9]*-[0-9]+$' | tr '[:lower:]' '[:upper:]')
+            cov_key=$(printf '%s\n' "$cov_def" | grep -oE '[A-Za-z][A-Za-z0-9]*-[0-9]+' | tr '[:lower:]' '[:upper:]')
             if cov_out=$(jira_get "$cov_key"); then
-                cov_status=$(printf '%s\n' "$cov_out" | head -n 1 | cut -f3)
+                cov_status=$(printf '%s\n' "$cov_out" | head -n 1 | awk -F'\t' 'NF >= 3 { print $3 }')
                 if [ -z "$cov_status" ]; then
                     cov_bad="$cov_bad; $cov_key UNKNOWN (jira returned no status)"
                 elif printf '%s\n' "$cov_status" | grep -qiE '^(done|closed|resolved|won.?t do)$'; then
