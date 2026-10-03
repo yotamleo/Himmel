@@ -108,8 +108,25 @@ esac
 # anchor on `$` (end-of-string), and a herestring's synthetic trailing newline
 # would fold to an extra trailing ';' that a `$`-anchored pattern does not expect.
 cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
+# HIMMEL-3991: the shell drops a backslash-newline pair before it splits words,
+# but the fold above turns that newline into `;`, so `git reset \<NL>--hard`
+# reads as two commands. cmd_lc_join drops each pair (`\` + LF, or `\` + CRLF
+# for Windows jq text mode) BEFORE the fold. It is a SECOND scan source, never
+# a replacement: a backslash inside a comment or single quotes is not a
+# continuation (`ls # x \<NL>rm -rf d` still runs the rm), so cmd_lc keeps
+# every match it had and the join only ever adds denies. A typed `\;` (find's
+# `-exec rm {} \;`) is not a line break and stays put.
+_bsnl=$'\\\n'
+_bscrlf=$'\\\r\n'
+cmd_lc_join="$cmd_lc"
+if [[ $cmd == *"$_bsnl"* || $cmd == *"$_bscrlf"* ]]; then
+    cmd_lc_join=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    cmd_lc_join="${cmd_lc_join//"$_bscrlf"/}"
+    cmd_lc_join="${cmd_lc_join//"$_bsnl"/}"
+    cmd_lc_join="${cmd_lc_join//[$'\r\n']/;}"
+fi
 
-# contains ERE -> true iff $cmd_lc matches ERE.
+# contains ERE -> true iff $cmd_lc (or its joined twin cmd_lc_join) matches ERE.
 #
 # HIMMEL-1741: this was `printf '%s' "$cmd_lc" | grep -Eq "$1"` — a fork PAIR
 # (subshell + grep) per call, and the deny floor below calls it 18 times, so
@@ -130,7 +147,7 @@ cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
 # unchanged. Equivalence is pinned per-rule in the paired test suite.
 contains() {
     local re="$1"
-    [[ $cmd_lc =~ $re ]]
+    [[ $cmd_lc =~ $re ]] || [[ $cmd_lc_join =~ $re ]]
 }
 
 deny() {
@@ -357,6 +374,26 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             continue
         fi
         _hd_tail="${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+        # HIMMEL-3991 (judge J1643): bash joins a backslash-newline on the
+        # opener line before it reads the body, so `cat <<'EOF' \<NL>/dev/null`
+        # starts its body a line later. Join first, or the strip below takes
+        # `/dev/null` as the body and ends on the wrong line, hiding what
+        # follows. Only an odd trailing backslash run continues the line; `\\`
+        # is an escaped one. Bash reads `\`+CR as an escaped CR, not a
+        # continuation, and `\r` is already `\n` here, so with any `\`+CR in
+        # the command a join is unsafe: fail closed (judge J1643b).
+        while [[ $_hd_tail == *$'\n'* ]]; do
+            _hd_l="${_hd_tail%%$'\n'*}"
+            _hd_bs="${_hd_l##*[!\\]}"
+            (( ${#_hd_bs} % 2 == 1 )) || break
+            # Inside a comment or quote a trailing backslash may be no
+            # continuation; rather than model that, strip nothing more and
+            # scan the rest as-is (fail closed).
+            [[ $_hd_l == *[\#\'\"\`]* ]] && break 2
+            [[ $cmd == *$'\\\r'* ]] && break 2
+            _hd_rest="${_hd_tail#*$'\n'}"
+            _hd_tail="${_hd_l%\\}${_hd_rest}"
+        done
         if [[ $_hd_tail != *$'\n'* ]]; then
             break
         fi
@@ -437,12 +474,32 @@ fi
 # backslash (`$'\x2dr'`, `$'\055r'`) is unresolvable and denies outright.
 # Over-deny only: `rm -- -r` (a file literally named -r) and
 # `rm "my -r file"` deny - the word-level fix is HIMMEL-912.
+# HIMMEL-3991: rm_scrub has the continuation newline folded to `;`, so
+# `rm \<NL>-"r" d` ends the rm segment before the quoted flag. Run the scans
+# below on a joined copy too (see cmd_lc_join). With a heredoc, the copy is
+# joined after the body strip, where `\r` is already `\n`, so a CRLF
+# continuation arrives there as `\`+LF+LF and is dropped as that pair.
+rm_join="$rm_scrub"
+if [[ $cmd_lc_join != "$cmd_lc" ]]; then
+    if [[ $cmd_lc != *'<<'* ]]; then
+        rm_join="$cmd_lc_join"
+    else
+        rm_join="$rm_scrub_raw"
+        [[ $cmd == *"$_bscrlf"* ]] && rm_join="${rm_join//"$_bsnl"$'\n'/}"
+        rm_join="${rm_join//"$_bsnl"/}"
+        rm_join="${rm_join//$'\n'/;}"
+    fi
+fi
+_rm_srcs=("$rm_scrub")
+[[ $rm_join != "$rm_scrub" ]] && _rm_srcs+=("$rm_join")
 _sq="'"
 RM_ANSIC_ESC_PAT="(^|[^[:alnum:]_.-])rm(\\.exe)?([^|;&]*)\\\$${_sq}[^${_sq}]*\\\\"
-if [[ $rm_scrub =~ $RM_ANSIC_ESC_PAT ]]; then
+RM_OPT_DOLLAR_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})-[^[:space:]|;&]*\$'
+for _rm_src in "${_rm_srcs[@]}"; do
+if [[ $_rm_src =~ $RM_ANSIC_ESC_PAT ]]; then
     deny "recursive rm (ANSI-C escape in rm argument)"
 fi
-rm_norm="${rm_scrub//\$[\"\']/}"
+rm_norm="${_rm_src//\$[\"\']/}"
 rm_norm="${rm_norm//[\"\'\\]/}"
 rm_norm="${rm_norm//$'\t'/ }"
 while [[ $rm_norm == *'  '* ]]; do rm_norm="${rm_norm//  / }"; done
@@ -452,10 +509,10 @@ _cmd_n=8
 while (( _cmd_n-- > 0 )) && [[ $rm_norm =~ $_cmd_pat ]]; do
     rm_norm="${rm_norm/"${BASH_REMATCH[0]}"/rm}"
 done
-RM_OPT_DOLLAR_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})-[^[:space:]|;&]*\$'
 if [[ $rm_norm =~ $RM_R_PAT ]] || [[ $rm_norm =~ $RM_RECURSIVE_PAT ]] || [[ $rm_norm =~ $RM_OPT_DOLLAR_PAT ]]; then
     deny "recursive rm (quote/escape-normalised)"
 fi
+done
 # HIMMEL-2610 J1267R R1: the quote/comment/`--`-terminator scan above has no
 # model of backslash escaping, so an escaped char can fake any of its
 # boundaries - an escaped space can pose as the real space around a `--`
@@ -466,18 +523,23 @@ fi
 # above), fail closed: a backslash anywhere between `rm` and a `--r...` flag
 # in the same command segment is denied outright.
 RM_RECURSIVE_ESC_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*\\[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
-if [[ $rm_scrub =~ $RM_RECURSIVE_ESC_PAT ]]; then
+# Like every rm scan, this runs on both the folded and the joined text (HIMMEL-3991).
+for _rm_src in "${_rm_srcs[@]}"; do
+if [[ $_rm_src =~ $RM_RECURSIVE_ESC_PAT ]]; then
     deny "recursive rm (escaped)"
 fi
+done
 # Backslash-newline continuation: newlines are already folded to ';' above, so
 # `rm \<newline>-rf` becomes `rm \;-rf` here - the literal backslash before the
 # folded separator is the tell (HIMMEL-851 U3). `;+` (not a single `;`): on
 # Windows, jq's text-mode stdout turns the JSON-decoded `\n` into `\r\n`, so
 # ONE real newline folds to TWO semicolons here - tolerate either.
 RM_CONT_PAT="${CMDPOS}"'rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'
-if [[ $rm_scrub =~ $RM_CONT_PAT ]]; then
+for _rm_src in "${_rm_srcs[@]}"; do
+if [[ $_rm_src =~ $RM_CONT_PAT ]]; then
     deny "recursive rm (line continuation)"
 fi
+done
 # /s is bound to the switch (space/another switch/end), not a path prefix -
 # `rd /scripts` must not false-trip on the "/s" substring (HIMMEL-851 U1).
 if contains '(^|[^[:alnum:]_.-])(del|erase|rd|rmdir)(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*/s([^[:alnum:]_.-]|$)'; then
@@ -809,7 +871,7 @@ if contains '(^|[^[:alnum:]_.-])git(\.exe)?[[:space:]]+push([^[:alnum:]_.-]|$)';
                 deny "force push"
             fi
         fi
-    done <<< "${cmd_lc//[;|&]/$'\n'}"
+    done <<< "${cmd_lc//[;|&]/$'\n'}"$'\n'"${cmd_lc_join//[;|&]/$'\n'}"
 fi
 if contains '(^|[^[:alnum:]_.-])git(\.exe)?[[:space:]]+reset[[:space:]]+--hard([^[:alnum:]_-]|$)'; then
     deny "git reset --hard"
