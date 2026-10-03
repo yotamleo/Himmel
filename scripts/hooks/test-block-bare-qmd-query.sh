@@ -186,6 +186,43 @@ deny_u8 "echo é; bash -c 'qmd query'"
 deny_u8 'bash -c "echo ü; qmd search"'
 deny_u8 "bash -c 'echo 日本; qmd query'"
 deny_u8 "x=ü bash -c 'qmd query'"
+# HIMMEL-4140: more program positions — zsh's =cmd, a case arm, eval.
+deny '=qmd query x'
+deny 'env =qmd search x'
+deny 'case a in a) qmd query x;; esac'
+deny 'case a in (a|b) qmd vsearch x;; esac'
+deny 'eval qmd query x'
+deny "eval 'qmd \"qu\"ery x'"
+deny 'command eval "qmd \"search\" x"'
+# HIMMEL-4140 / HIMMEL-4151: a nested -c string is decoded like a top-level
+# word (ANSI-C, backslash, adjacent quotes) and read again as a command.
+deny "sh -c 'qmd \"qu\"ery x'"
+deny "bash -c \$'qmd query'"
+deny "bash -c \$'qmd \\x71uery x'"
+deny 'bash -c qmd\ query'
+deny 'bash -ec "qmd q\"uery\" x"'
+deny "bash -c \"bash -c 'qmd \\\"qu\\\"ery'\""
+deny 'sh -c "$(echo qmd) query"'
+deny 'sh -c "`echo qmd` query"'
+# A nested string naming qmd that the normaliser cannot read is refused.
+deny "bash -c 'cat <<E
+x
+E
+qmd q\"uery\" x'"
+# J1666e: nested spellings both base and #1666 allowed, each ran a bare verb.
+deny "nice sh -c 'qmd \\vse'\"arch;echo\""
+deny "bash -c \$'qmd --index foo query\"\";'"
+deny "bash -c 'echo é; qmd '\\''search'\\'';echo'"
+deny "env bash -c \$'qmd --index foo query\"\";'; echo é"
+deny_u8 "bash -c 'echo é; qmd '\\''search'\\'';echo'"
+# zsh's ANSI-C escapes: \C-<end>, a bare \C or \M give nothing, and \c<x> is
+# a plain `c<x>` (the J1666d corpus, run under zsh).
+deny "cd /tmp && q\"md\" \$'\\C-'query x"
+deny "qmd \$'\\M'search x"
+deny "qmd \$'\\C-'\"vsearch\""
+deny "qmd \$'sear\\ch' x"
+deny "bash -c \$'qmd sear\\ch'"
+deny "qmd \$'sear\\c'h"
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
@@ -225,6 +262,19 @@ allow 'grep -rn "q\"md\" q\"uery\"" scripts/'
 allow 'printf "%s\n" "a; qmd" status'
 # `<<` inside $((…)) is a shift, not a heredoc: the words are still read.
 allow "echo \$((1<<2)); qmd \$'query notes' y"
+# HIMMEL-4140 / HIMMEL-4151: a decoded nested string is still read as words.
+allow "bash -c 'qmd status'"
+allow "bash -c \$'qmd \\x73tatus'"
+allow "eval 'qmd \"query notes\" y'"
+allow 'case a in a) qmd status;; esac'
+allow 'echo =qmd query'
+# One it cannot read that does not name qmd gets the fallback readings.
+allow "qmd status; bash -c 'echo \$(( \$(date +%s) - 1 ))'"
+allow "qmd status; bash -c 'echo \"\$(( \$(date +%s) - 1 ))\"'"
+allow "qmd status; printf \$'a\\cIb\\C-xc'"
+allow "qmd status; bash -c 'IFS=\$'\"'\"'\\t'\"'\"' read -r a <<E
+x
+E'"
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \

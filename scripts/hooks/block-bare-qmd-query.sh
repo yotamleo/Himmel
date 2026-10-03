@@ -92,25 +92,6 @@ esac
 
 [ -z "$cmd" ] && exit 0
 
-# Lower-case and fold newlines to ';' so the anchors below see one line.
-cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
-# The same text with every quote and backslash deleted: `q"md"`, `\qmd` and
-# `$'qmd'` all read `qmd` here. A backslash-newline is folded first, as bash
-# folds it, so `q\<newline>md` reads `qmd` too.
-crude=${cmd//\\$'\n'/}
-crude=$(printf '%s' "$crude" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
-crude=${crude//\$\'/\'}
-crude=${crude//\$\"/\"}
-# shellcheck disable=SC1003 # a literal backslash in the tr set
-crude=$(printf '%s' "$crude" | LC_ALL=C tr -d '"'\''\\')
-
-# Cheap pre-filter: no `qmd` anywhere, even with the quotes removed, and no
-# `$'…'` or `$"…"` that could spell it — nothing to check.
-case "$cmd_lc$crude" in
-    *qmd*|*\$\'*|*\$\"*) ;;
-    *) exit 0 ;;
-esac
-
 # qmd_words CMD — print CMD with each word's quotes and escapes removed the
 # way bash removes them (HIMMEL-4121), so `qmd "qu"ery`, `qmd $'\x71uery'`,
 # `qmd \query` and `q"md" query` all print `qmd query`, while
@@ -125,12 +106,16 @@ esac
 # does not open a string: one closing a string, or data inside quotes.
 # Returns 1 for what it does not model — an unterminated quote or `$(`, a
 # heredoc (`<<`), a command over 16 KiB — and the caller falls back.
+# A third line, after the second newline and up to a closing `.`, is the
+# decoded text (HIMMEL-4151): the same bytes as the first line, one for one,
+# but a quoted or escaped byte prints as the byte itself — the value bash
+# hands the program — so a word's span in the first line is its value here.
 # ponytail: a word of empty quotes alone vanishes, so `qmd "" query x` reads
 # `qmd query x` and is over-denied; emit a placeholder for it (HIMMEL-4141).
 # shellcheck disable=SC1003,SC2016 # literal backslash, $ and ` bytes
 qmd_words() {
     local LC_ALL=C
-    local s="$1" out='' ctx='' top='' c c2 d v i=0 n ws=1 drop k qp=''
+    local s="$1" out='' dec='' ctx='' top='' c c2 d v dv i=0 n ws=1 drop k qp=''
     n=${#s}
     [ "$n" -le 16384 ] || return 1
     while [ "$i" -lt "$n" ]; do
@@ -156,12 +141,12 @@ qmd_words() {
                     ;;
                 '$')
                     if [ "$c2" = '(' ]; then
-                        out=$out'$('; ctx=${ctx}P; ws=1; i=$((i + 2))
+                        out=$out'$(' dec=$dec'$('; ctx=${ctx}P; ws=1; i=$((i + 2))
                     else
-                        out=$out'$'; i=$((i + 1))
+                        out=$out'$' dec=$dec'$'; i=$((i + 1))
                     fi
                     ;;
-                '`') out=$out'`'; ctx=${ctx}B; ws=1; i=$((i + 1)) ;;
+                '`') out=$out'`' dec=$dec'`'; ctx=${ctx}B; ws=1; i=$((i + 1)) ;;
                 *) _qw_q "$c"; i=$((i + 1)) ;;
             esac
             continue
@@ -199,7 +184,7 @@ qmd_words() {
                         k=$((k + 1))
                     done
                     [ "${s:k-2:1}" = ')' ] || return 1
-                    out=${out}0; i=$k
+                    out=${out}0 dec=${dec}0; i=$k
                 elif [ "$c2" = "'" ]; then
                     # ANSI-C quoting: decode bash's escapes. A NUL ends the
                     # word's value; the rest of the `$'…'` is dropped.
@@ -215,7 +200,7 @@ qmd_words() {
                             continue
                         fi
                         c2=${s:i+1:1}
-                        v=-1 k=0
+                        v=-1 k=0 dv=''
                         case "$c2" in
                             [0-7])
                                 d=$c2 k=2
@@ -237,9 +222,39 @@ qmd_words() {
                                     v=-1 k=1
                                 fi
                                 ;;
-                            # \c<x> is <x> & 0x1f, so @, ` and space give NUL.
-                            c) case "${s:i+2:1}" in '@'|'`'|' ') v=0 ;; *) v=1 ;; esac; k=3 ;;
-                            a|b|e|E|f|n|r|t|v) v=1 k=2 ;;
+                            # \c<x> is <x> & 0x1f in bash, so @, ` and space
+                            # give NUL; zsh reads it as a plain `c<x>`. Bash's
+                            # control byte can never be part of the verb, so
+                            # zsh's reading is the one to check, except where
+                            # bash ends the word (NUL) or breaks it (tab,
+                            # newline). `\c'` ends the string in zsh only, so
+                            # the shells split the words differently: decline.
+                            c)
+                                case "${s:i+2:1}" in
+                                    "'"|'') return 1 ;;
+                                    '@'|'`'|' ') v=0 k=3 ;;
+                                    *)
+                                        printf -v dv '%d' "'${s:i+2:1}"; dv=$(( dv & 31 ))
+                                        if [ "$dv" = 9 ] || [ "$dv" = 10 ]; then v=1 k=3; else v=-2 k=2 dv=''; fi
+                                        ;;
+                                esac
+                                ;;
+                            # zsh's \C-<x> and \M-<x> give one control or meta
+                            # byte, and a bare \C or \M, or one with nothing
+                            # after its `-`, gives nothing. Bash keeps them as
+                            # `\C`, never the verb.
+                            C|M)
+                                case "${s:i+2:1}${s:i+3:1}" in
+                                    -"'"|-'\'|-) v=-3 k=3 ;;
+                                    -?) v=1 k=4 ;;
+                                    *) v=-3 k=2 ;;
+                                esac
+                                ;;
+                            # dv is the byte the decoded text (dec) gets; a
+                            # newline or a tab is a word break in it.
+                            n) v=1 k=2 dv=10 ;;
+                            t) v=1 k=2 dv=9 ;;
+                            a|b|e|E|f|r|v) v=1 k=2 ;;
                             '\'|"'"|'"'|'?') v=-2 k=2 ;;
                             # An unknown escape: bash keeps `\X`, zsh (the
                             # Bash tool's shell on some stations) drops the
@@ -250,6 +265,8 @@ qmd_words() {
                         if [ "$drop" = 0 ]; then
                             if [ "$v" -eq 0 ]; then
                                 drop=1
+                            elif [ "$v" -eq -3 ]; then
+                                :
                             elif [ "$v" -eq -2 ]; then
                                 _qw_q "$c2"
                             elif [ "$v" -gt 32 ] && [ "$v" -lt 127 ]; then
@@ -258,6 +275,14 @@ qmd_words() {
                                 _qw_q "$d"
                             elif [ "$v" -ne -1 ]; then
                                 out=${out}_
+                                [ -n "$dv" ] || dv=$v
+                                if [ "$dv" -gt 0 ] && [ "$dv" -lt 127 ]; then
+                                    printf -v d '%03o' "$dv"
+                                    printf -v d '%b' "\\0$d"
+                                    dec=$dec$d
+                                else
+                                    dec=$dec'?'
+                                fi
                             else
                                 _qw_q '\'
                             fi
@@ -265,38 +290,38 @@ qmd_words() {
                         i=$((i + k))
                     done
                 else
-                    out=$out'$'; i=$((i + 1))
+                    out=$out'$' dec=$dec'$'; i=$((i + 1))
                 fi
                 ;;
             '#')
                 if [ "$ws" = 1 ]; then
                     while [ "$i" -lt "$n" ] && [ "${s:i:1}" != $'\n' ]; do i=$((i + 1)); done
                 else
-                    out=$out'#'; i=$((i + 1))
+                    out=$out'#' dec=$dec'#'; i=$((i + 1))
                 fi
                 ;;
             '<')
                 if [ "$c2" = '<' ]; then
                     [ "${s:i+2:1}" = '<' ] || return 1
-                    out=$out'<<<'; i=$((i + 3))
+                    out=$out'<<<' dec=$dec'<<<'; i=$((i + 3))
                 else
-                    out=$out'<'; i=$((i + 1))
+                    out=$out'<' dec=$dec'<'; i=$((i + 1))
                 fi
                 ws=1
                 ;;
-            '(') [ "$top" != P ] || ctx=${ctx}P; out=$out'('; ws=1; i=$((i + 1)) ;;
+            '(') [ "$top" != P ] || ctx=${ctx}P; out=$out'(' dec=$dec'('; ws=1; i=$((i + 1)) ;;
             # A `#` right after `)` or a backtick (closing a substitution
             # continues its word) is read as no comment: more text read can
             # only add denials.
-            ')') [ "$top" != P ] || ctx=${ctx%?}; out=$out')'; ws=0; i=$((i + 1)) ;;
-            '`') [ "$top" != B ] || ctx=${ctx%?}; out=$out'`'; ws=0; i=$((i + 1)) ;;
-            $'\n'|$'\r') out=$out';'; ws=1; i=$((i + 1)) ;;
-            ' '|$'\t'|';'|'&'|'|'|'>') out=$out$c; ws=1; i=$((i + 1)) ;;
-            *) out=$out$c; ws=0; i=$((i + 1)) ;;
+            ')') [ "$top" != P ] || ctx=${ctx%?}; out=$out')' dec=$dec')'; ws=0; i=$((i + 1)) ;;
+            '`') [ "$top" != B ] || ctx=${ctx%?}; out=$out'`' dec=$dec'`'; ws=0; i=$((i + 1)) ;;
+            $'\n'|$'\r') out=$out';' dec=$dec';'; ws=1; i=$((i + 1)) ;;
+            ' '|$'\t'|';'|'&'|'|'|'>') out=$out$c dec=$dec$c; ws=1; i=$((i + 1)) ;;
+            *) out=$out$c dec=$dec$c; ws=0; i=$((i + 1)) ;;
         esac
     done
     [ -z "$ctx" ] || return 1
-    printf '%s\n:%s' "$out" "$qp"
+    printf '%s\n:%s\n%s.' "$out" "$qp" "$dec"
 }
 # _qw_q C — append a quoted or escaped byte to qmd_words' output.
 _qw_q() {
@@ -304,6 +329,7 @@ _qw_q() {
         [[:alnum:]./~@:,+=%^-]) out=$out$1 ;;
         *) out=${out}_ ;;
     esac
+    dec=$dec$1
 }
 
 # EXEPFX / ASSIGN / SEP are block-git-stash.sh's, verbatim.
@@ -313,9 +339,12 @@ SEP='([[:space:]]|\\[[:space:]]*;+)+[[:space:]]*'
 # A run of options, each optionally taking ONE non-dash value (`-n 10`, `-k 5`).
 OPTV='([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*'
 # Wrappers that run their argument as a program. timeout takes its duration.
-WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|exec|time|xargs|(ba|z|da|k)?sh(\.exe)?)'"$OPTV"
+WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|exec|eval|time|xargs|(ba|z|da|k)?sh(\.exe)?)'"$OPTV"
 WRAP="($WRAP|timeout${OPTV}[[:space:]]+[0-9.]+[smhd]?|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|$ASSIGN))*|if|then|else|elif|do|while|until|!)"
-CMDPOS='(^|[|;&(`{])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX$WRAP"')[[:space:]]+)*'"$EXEPFX"
+# A case arm's `)` is a command position too, and zsh runs `=qmd` as the
+# qmd its PATH finds (HIMMEL-4140).
+CMDREST='[[:space:]]*(('"$ASSIGN"'|=?'"$EXEPFX$WRAP"')[[:space:]]+)*=?'"$EXEPFX"
+CMDPOS='(^|[|;&()`{])'"$CMDREST"
 # The program: qmd itself, or a JS runtime handed qmd's entry point.
 RUNTIME='((bun|node|bunx|npx|deno)(\.exe)?["'\'']?'"$OPTV"'[[:space:]]+((run|x)[[:space:]]+)?'"$EXEPFX"')?'
 QMDPROG="${RUNTIME}"'qmd(\.(ts|js|mjs|cjs|exe|cmd))?["'\'']?'
@@ -373,22 +402,151 @@ ansi_q() {
 AQ_PROG='[^[:space:];&|]*'$'\002''[^[:space:];&|]*'
 AQ_ARGS="${CMDPOS}${QMDPROG}[[:space:]][^;&|]*"$'\002'
 AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\002'"|${QMDVERB})"
+# HIMMEL-4140 / HIMMEL-4151: a nested shell runs its -c string, and eval its
+# words joined by blanks, through the same quote removal again. The decoded
+# value of each such word is read as a command, and its own nested strings in
+# turn, to a depth of four; a deeper one is refused. A nested string that
+# names qmd and that the normaliser cannot read, or one whose program
+# position holds a command substitution (`sh -c "$(echo qmd) query"`), is
+# refused rather than guessed; one that cannot be read and does not name qmd
+# gets the top-level fallback readings.
+# Any word naming a shell counts, not only one in program position: a mention
+# (`echo bash -c 'qmd query'`) reads as a nested command too, the safe
+# direction.
+# Its boundary has no `(`: inside "…" qmd_words reads `$((` as `$(` and `(`,
+# so `"$(( $(date +%s) - 1 ))"` would read as a substitution program.
+SUBPROG='(^|[|;&)`{])'"$CMDREST"'(\$\(|`)'
+NESTSEP=' '$'\t'';&|()`<>'
+# qmd_nested WORDS DEC DEPTH — run qmd_check on what each nested shell or
+# eval in WORDS (qmd_words' first line, lower-cased) would run, spelled as in
+# DEC (its decoded line). Sets deny=1 on the first refusal.
+# shellcheck disable=SC2016 # literal $ and ` bytes
+qmd_nested() {
+    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr
+    n=${#w}
+    while [ "$i" -lt "$n" ]; do
+        case "$NESTSEP" in *"${w:i:1}"*) i=$((i + 1)); continue ;; esac
+        j=$i
+        while [ "$j" -lt "$n" ]; do
+            case "$NESTSEP" in *"${w:j:1}"*) break ;; esac
+            j=$((j + 1))
+        done
+        t=${w:i:j-i}
+        i=$j
+        t=${t#=}
+        t=${t##*/}
+        case "$t" in
+            sh|bash|zsh|dash|ksh|sh.exe|bash.exe|zsh.exe|dash.exe|ksh.exe) mode='sh' ;;
+            eval) mode='eval' ;;
+            *) continue ;;
+        esac
+        # The words that follow, to the end of the simple command. A word
+        # keeps a `$(…)` or backtick substitution in it whole, blanks and all.
+        e=$i hasc=0 scr=''
+        while :; do
+            while [ "$e" -lt "$n" ]; do
+                case "${w:e:1}" in ' '|$'\t') e=$((e + 1)) ;; *) break ;; esac
+            done
+            if [ "$e" -ge "$n" ]; then break; fi
+            case "${w:e:1}" in ';'|'&'|'|'|'('|')'|'<'|'>') break ;; esac
+            j=$e pd=0 bq=0
+            while [ "$j" -lt "$n" ]; do
+                c=${w:j:1}
+                if [ "$bq" = 1 ]; then
+                    if [ "$c" = '`' ]; then bq=0; fi
+                elif [ "$pd" -gt 0 ]; then
+                    case "$c" in '(') pd=$((pd + 1)) ;; ')') pd=$((pd - 1)) ;; esac
+                elif [ "$c" = '$' ] && [ "${w:j+1:1}" = '(' ]; then
+                    pd=1 j=$((j + 1))
+                elif [ "$c" = '`' ]; then
+                    bq=1
+                else
+                    case "$c" in ' '|$'\t'|';'|'&'|'|'|'('|')'|'<'|'>') break ;; esac
+                fi
+                j=$((j + 1))
+            done
+            t=${w:e:j-e}
+            v=${dec:e:j-e}
+            e=$j
+            if [ "$mode" = eval ]; then
+                scr="$scr $v"
+            elif [ "$hasc" = 0 ]; then
+                # The string is the first word after an option cluster
+                # holding c (`-c`, `-ec`, `-lc`); the later words ($0 and its
+                # arguments) are read too — more reading only adds denials.
+                if [[ $t =~ ^-[[:alpha:]]*c[[:alpha:]]*$ ]]; then hasc=1; fi
+            else
+                qmd_check "$v" $((depth + 1))
+                if [ "$deny" = 1 ]; then return 0; fi
+            fi
+        done
+        if [ -n "$scr" ]; then
+            qmd_check "$scr" $((depth + 1))
+            if [ "$deny" = 1 ]; then return 0; fi
+        fi
+    done
+    return 0
+}
+
+# qmd_check CMD DEPTH — set deny=1 when CMD runs a bare search verb. DEPTH is
+# 0 for the tool call's command and counts nested strings. It always returns
+# 0 and is called bare, so set -e still stops the hook (and the EXIT trap
+# denies) on a failure inside it.
+qmd_check() {
+    local cmd=$1 depth=$2 cmd_lc crude res words words_lc dec aq
+    if [ "$depth" -gt 4 ]; then deny=1; return 0; fi
+    # Lower-case and fold newlines to ';' so the anchors below see one line.
+    cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
+    # The same text with every quote and backslash deleted: `q"md"`, `\qmd` and
+    # `$'qmd'` all read `qmd` here. A backslash-newline is folded first, as bash
+    # folds it, so `q\<newline>md` reads `qmd` too.
+    crude=${cmd//\\$'\n'/}
+    crude=$(printf '%s' "$crude" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
+    crude=${crude//\$\'/\'}
+    crude=${crude//\$\"/\"}
+    # shellcheck disable=SC1003 # a literal backslash in the tr set
+    crude=$(printf '%s' "$crude" | LC_ALL=C tr -d '"'\''\\')
+
+    # Cheap pre-filter: no `qmd` anywhere, even with the quotes removed, and no
+    # `$'…'` or `$"…"` that could spell it — nothing to check.
+    case "$cmd_lc$crude" in
+        *qmd*|*\$\'*|*\$\"*) ;;
+        *) return 0 ;;
+    esac
+    if res=$(qmd_words "$cmd"); then
+        words=${res%%$'\n'*}
+        res=${res#*$'\n'}
+        dec=${res#*$'\n'}
+        dec=${dec%.}
+        res=${res%%$'\n'*}
+        words_lc=$(printf '%s' "$words" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+        if [[ $words_lc =~ $BARE$BOUND ]] || [[ $cmd_lc =~ $BARE$RAWBOUND ]]; then
+            deny=1
+        elif qp_deny "${res#:}"; then
+            deny=1
+        elif [ "$depth" -gt 0 ] && [[ $words_lc =~ $SUBPROG ]]; then
+            deny=1
+        else
+            qmd_nested "$words_lc" "$dec" "$depth"
+        fi
+    elif [ "$depth" -gt 0 ] && [[ $crude == *qmd* ]]; then
+        deny=1
+    elif [[ $cmd == *"\\c'"* ]] && [[ $crude == *qmd* ]]; then
+        # qmd_words declines an ANSI-C `\c'`: bash and zsh split it apart.
+        deny=1
+    elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
+        deny=1
+    else
+        aq=$(ansi_q)
+        if [[ $aq =~ $AQ_ARGS ]] || [[ $aq =~ $AQ_WORD ]]; then
+            deny=1
+        fi
+    fi
+    return 0
+}
+
 deny=0
-if res=$(qmd_words "$cmd"); then
-    words=${res%%$'\n'*}
-    words_lc=$(printf '%s' "$words" | LC_ALL=C tr '[:upper:]' '[:lower:]')
-    if [[ $words_lc =~ $BARE$BOUND ]] || [[ $cmd_lc =~ $BARE$RAWBOUND ]]; then
-        deny=1
-    fi
-    if [ "$deny" = 0 ] && qp_deny "${res#*$'\n:'}"; then deny=1; fi
-elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
-    deny=1
-else
-    aq=$(ansi_q)
-    if [[ $aq =~ $AQ_ARGS ]] || [[ $aq =~ $AQ_WORD ]]; then
-        deny=1
-    fi
-fi
+qmd_check "$cmd" 0
 
 if [ "$deny" = 1 ]; then
     bounded="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)/qmd-bounded.sh"
