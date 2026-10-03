@@ -422,7 +422,7 @@ NESTSEP=' '$'\t'';&|()`<>'
 # DEC (its decoded line). Sets deny=1 on the first refusal.
 # shellcheck disable=SC2016 # literal $ and ` bytes
 qmd_nested() {
-    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr
+    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr rd
     n=${#w}
     while [ "$i" -lt "$n" ]; do
         case "$NESTSEP" in *"${w:i:1}"*) i=$((i + 1)); continue ;; esac
@@ -442,13 +442,22 @@ qmd_nested() {
         esac
         # The words that follow, to the end of the simple command. A word
         # keeps a `$(…)` or backtick substitution in it whole, blanks and all.
-        e=$i hasc=0 scr=''
+        e=$i hasc=0 scr='' rd=0
         while :; do
             while [ "$e" -lt "$n" ]; do
                 case "${w:e:1}" in ' '|$'\t') e=$((e + 1)) ;; *) break ;; esac
             done
             if [ "$e" -ge "$n" ]; then break; fi
-            case "${w:e:1}" in ';'|'&'|'|'|'('|')'|'<'|'>') break ;; esac
+            # A redirection (`<f`, `2>&1`, `&>f`, `<<<w`) sits anywhere among
+            # the words: step over its operator and drop its target word.
+            if [[ ${w:e:2} == '&>' ]] || [[ ${w:e:1} == [\<\>] ]]; then
+                while [ "$e" -lt "$n" ]; do
+                    case "${w:e:1}" in '<'|'>'|'&'|'|') e=$((e + 1)) ;; *) break ;; esac
+                done
+                rd=1
+                continue
+            fi
+            case "${w:e:1}" in ';'|'&'|'|'|'('|')') break ;; esac
             j=$e pd=0 bq=0
             while [ "$j" -lt "$n" ]; do
                 c=${w:j:1}
@@ -468,7 +477,9 @@ qmd_nested() {
             t=${w:e:j-e}
             v=${dec:e:j-e}
             e=$j
-            if [ "$mode" = eval ]; then
+            if [ "$rd" = 1 ]; then
+                rd=0
+            elif [ "$mode" = eval ]; then
                 scr="$scr $v"
             elif [ "$hasc" = 0 ]; then
                 # The string is the first word after an option cluster

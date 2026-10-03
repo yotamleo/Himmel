@@ -223,6 +223,14 @@ deny "qmd \$'\\C-'\"vsearch\""
 deny "qmd \$'sear\\ch' x"
 deny "bash -c \$'qmd sear\\ch'"
 deny "qmd \$'sear\\c'h"
+# A redirection between the shell and its -c does not end the scan.
+deny "bash </dev/null -c 'qmd \"qu\"ery x'"
+deny "bash < /dev/null -c 'qmd \"qu\"ery x'"
+deny "bash 2>/dev/null -c 'qmd \"qu\"ery x'"
+deny "bash &>/dev/null -c 'qmd \"qu\"ery x'"
+deny "bash >&2 -c 'qmd \"qu\"ery x'"
+deny "bash -e <<<x -c 'qmd \"qu\"ery x'"
+deny "eval </dev/null 'qmd \"qu\"ery x'"
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
@@ -272,6 +280,7 @@ allow 'echo =qmd query'
 allow "qmd status; bash -c 'echo \$(( \$(date +%s) - 1 ))'"
 allow "qmd status; bash -c 'echo \"\$(( \$(date +%s) - 1 ))\"'"
 allow "qmd status; printf \$'a\\cIb\\C-xc'"
+allow "bash </dev/null -c 'qmd status' 2>&1"
 allow "qmd status; bash -c 'IFS=\$'\"'\"'\\t'\"'\"' read -r a <<E
 x
 E'"
