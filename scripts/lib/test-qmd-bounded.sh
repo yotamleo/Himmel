@@ -13,6 +13,9 @@ LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=qmd-bounded.sh
 # shellcheck disable=SC1091
 . "$LIB_DIR/qmd-bounded.sh"
+# shellcheck source=timeout-bin.sh
+# shellcheck disable=SC1091
+. "$LIB_DIR/timeout-bin.sh"
 
 FAILED=0
 assert_eq() {
@@ -59,6 +62,32 @@ pid_of() {
 
 export QMD_KILL_GRACE_SECS=1
 
+# HIMMEL-4011: an outer deadline for every case that exercises a hang. If
+# qmd_bounded regresses so it never returns, the case is killed here and FAILS
+# instead of hanging the suite before its assertions and the EXIT cleanup run.
+# 124 is also qmd_bounded's own deadline rc, so the outer firing is detected by
+# elapsed time. Without a timeout binary the case runs unbounded.
+OUTER_SECS=${QMD_TEST_OUTER_SECS:-20}
+[ -n "$_TIMEOUT_BIN" ] || echo "NOTE no timeout binary: hanging cases run without an outer deadline"
+outer() {
+    local s rc
+    s=$(date +%s)
+    if [ -n "$_TIMEOUT_BIN" ]; then
+        "$_TIMEOUT_BIN" -k 2 "$OUTER_SECS" "$@"; rc=$?
+    else
+        "$@"; rc=$?
+    fi
+    if [ -n "$_TIMEOUT_BIN" ] && [ $(( $(date +%s) - s )) -ge "$OUTER_SECS" ]; then
+        echo "FAIL outer deadline (${OUTER_SECS}s) fired: $1 ..."
+        FAILED=$((FAILED + 1))
+    fi
+    return "$rc"
+}
+# qmd_bounded as an executable, so `outer` (a timeout binary) can bound it.
+BOUNDED="$TMP/bounded.sh"
+printf '%s\n' '#!/usr/bin/env bash' ". \"$LIB_DIR/qmd-bounded.sh\"" 'qmd_bounded "$@"' >"$BOUNDED"
+chmod +x "$BOUNDED"
+
 # Precondition (the bug): plain timeout returns and the grandchild lives on.
 # Needs GNU timeout; macOS ships none and Git Bash may resolve timeout.exe.
 case "$(timeout --version 2>/dev/null)" in
@@ -72,7 +101,7 @@ esac
 
 # T1: the deadline kills the whole group, grandchild included, and rc is 124.
 start=$(date +%s)
-qmd_bounded 1 "$TRAMP" "$TMP/t1.pid"; rc=$?
+outer "$BOUNDED" 1 "$TRAMP" "$TMP/t1.pid"; rc=$?
 took=$(( $(date +%s) - start ))
 gc=$(pid_of "$TMP/t1.pid")
 assert_eq "T1 deadline -> rc 124" "124" "$rc"
@@ -112,7 +141,7 @@ assert_eq "T2d no sleep/mktemp on PATH: runs unbounded" "fast|0" "$out|$rc"
 # T2e: an errexit caller (qmd-reindex, qmd-staleness) still gets rc 124 and
 # no grandchild — a non-zero wait must not abort the subshell early.
 rm -f "$TMP/t2e.pid"
-( set -e; qmd_bounded 1 "$TRAMP" "$TMP/t2e.pid" ); rc=$?
+outer bash -c 'set -e; . "$1"; qmd_bounded 1 "$2" "$3"' _ "$LIB_DIR/qmd-bounded.sh" "$TRAMP" "$TMP/t2e.pid"; rc=$?
 gc=$(pid_of "$TMP/t2e.pid")
 assert_eq "T2e errexit caller: deadline -> rc 124" "124" "$rc"
 assert_eq "T2e errexit caller: grandchild is dead" "dead" "$(alive "$gc")"
@@ -139,7 +168,7 @@ EXITER="$TMP/exiter.sh"
 printf '%s\n' '#!/bin/sh' '( trap "" TERM; exec sleep 30 ) &' 'echo $! >"$1"' 'exit 0' >"$EXITER"
 chmod +x "$EXITER"
 rm -f "$TMP/t2g.pid"
-qmd_bounded 30 "$EXITER" "$TMP/t2g.pid"; rc=$?
+outer "$BOUNDED" 30 "$EXITER" "$TMP/t2g.pid"; rc=$?
 gc=$(pid_of "$TMP/t2g.pid")
 assert_eq "T2g launcher exits early: its own rc" "0" "$rc"
 assert_eq "T2g launcher exits early: leftover child is dead" "dead" "$(alive "$gc")"
@@ -159,12 +188,8 @@ mkdir -p "$TMP/bin" "$TMP/bun"
 printf '#!/bin/sh\nexec "%s" "%s"\n' "$TRAMP" "$TMP/t5.pid" >"$TMP/bin/qmd"
 chmod +x "$TMP/bin/qmd"
 start=$(date +%s)
-( PATH="$TMP/bin:$PATH" BUN_INSTALL="$TMP/bun" QMD_TIMEOUT_SECS=1
-  export PATH BUN_INSTALL QMD_TIMEOUT_SECS
-  # shellcheck source=qmd-bin.sh
-  # shellcheck disable=SC1091
-  . "$LIB_DIR/qmd-bin.sh"
-  qmd_cmd query x ); rc=$?
+PATH="$TMP/bin:$PATH" BUN_INSTALL="$TMP/bun" QMD_TIMEOUT_SECS=1 \
+    outer bash -c '. "$1"; qmd_cmd query x' _ "$LIB_DIR/qmd-bin.sh"; rc=$?
 took=$(( $(date +%s) - start ))
 gc=$(pid_of "$TMP/t5.pid")
 assert_eq "T5 qmd_cmd hits the QMD_TIMEOUT_SECS deadline -> rc 124" "124" "$rc"
@@ -183,7 +208,7 @@ t6_case() {
     shift
     rm -f "$TMP/t6.pid"
     start=$(date +%s)
-    QMD_TIMEOUT_SECS=1 "$@" </dev/null >/dev/null 2>&1
+    QMD_TIMEOUT_SECS=1 outer "$@" </dev/null >/dev/null 2>&1
     took=$(( $(date +%s) - start ))
     gc=$(pid_of "$TMP/t6.pid")
     assert_eq "T6 $label called the hanging qmd" "yes" "$([ -n "$gc" ] && echo yes || echo no)"
@@ -212,7 +237,7 @@ cp "$TMP/t5.pid" "$TMP/t5-done.pid"
 rm -f "$TMP/t5.pid"
 start=$(date +%s)
 PATH="$TMP/bin:$PATH" BUN_INSTALL="$TMP/bun" QMD_TIMEOUT_SECS=1 \
-    bash "$LIB_DIR/qmd-bounded.sh" query x </dev/null >/dev/null 2>&1; rc=$?
+    outer bash "$LIB_DIR/qmd-bounded.sh" query x </dev/null >/dev/null 2>&1; rc=$?
 took=$(( $(date +%s) - start ))
 gc=$(pid_of "$TMP/t5.pid")
 assert_eq "T7c CLI hits the deadline -> rc 124" "124" "$rc"
