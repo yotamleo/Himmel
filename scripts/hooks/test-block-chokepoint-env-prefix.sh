@@ -1238,6 +1238,24 @@ assert_deny "4130 glob inside a dot-dir segment"       "$(j "printf x; bash /r/.
 assert_deny "4130 quote inside a dot-dir segment"      "$(j "printf x; bash /r/.cl'a'ude/scripts/x.sh")"
 # shellcheck disable=SC2016
 assert_deny "4130 tainted dot-dir before an identical literal one" "$(j 'printf x; bash /.ab$x/.ab/scripts/x.sh')"
+# The relief applies only when the whole scripts/ word is otherwise plain
+# ([A-Za-z0-9_./-]): an extglob, backslash or quote in the basename was denied
+# on main only through the incidental /.claude match (judge J1663 NO-GO).
+WP=/r/.claude/worktrees/w/scripts/handover
+assert_deny "4130 extglob @() basename + export seam, worktree path" "$(j "shopt -s extglob
+export ${MOG_VAR}=1; bash $WP/@(merge-on-green).sh")"
+assert_deny "4130 extglob @() basename + seam prefix, worktree path"  "$(j "${MOG_VAR}=1 bash $WP/@(merge-on-green).sh")"
+assert_deny "4130 extglob @() basename + env -u, worktree path"       "$(j "env -u HIMMEL_CONSOLE_LEG bash $WP/@(merge-on-green).sh")"
+assert_deny "4130 extglob +() basename + export seam, worktree path"  "$(j "export ${MOG_VAR}=1; bash $WP/+(merge-on-green).sh")"
+assert_deny "4130 extglob !() basename + export seam, worktree path"  "$(j "export ${MOG_VAR}=1; bash $WP/!(x).sh")"
+assert_deny "4130 extglob +() basename under a fix+slug worktree"     "$(j "export ${MOG_VAR}=1; bash $WT/scripts/handover/+(merge-on-green).sh")"
+assert_deny "4130 extglob @() split at its paren under a fix+slug worktree" "$(j "${MOG_VAR}=1 bash $WT/scripts/handover/@(merge-on-green).sh")"
+# shellcheck disable=SC2016 # ${n} is probe text, not an expansion
+assert_deny "4130 backslash basename + split seam name, worktree path" "$(j 'n=ARMAUTO; export "${n}MERGE=1"; bash '"$WP"'/merge-on-gr\een.sh')"
+# shellcheck disable=SC2016
+assert_deny "4130 dquote basename + split seam name, worktree path"    "$(j 'n=ARMAUTO; export "${n}MERGE=1"; bash '"$WP"'/merge-on-g"r"een.sh')"
+# shellcheck disable=SC2016
+assert_deny "4130 squote basename + split seam name, worktree path"    "$(j "n=ARMAUTO; export \"\${n}MERGE=1\"; bash $WP/merge-on-g'r'een.sh")"
 
 # HIMMEL-4130 (HIMMEL-3986 sweep): a PRESENT non-string .command must not
 # fall through to .cmd -- `//` treats false like null, so the hook judged
@@ -1251,6 +1269,15 @@ assert_deny  "4130 command:{} fails closed"                       "$(jc '{}' 'ec
 assert_deny  "4130 command:null falls back to a seam-prefixed cmd" "$(jc null "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
 assert_allow "4130 command:null falls back to a benign cmd"       "$(jc null 'echo ok')"
 assert_allow "4130 string command wins over a seam-prefixed cmd"  "$(jc '"echo ok"' "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
+# A CRLF-emitting jq (Git Bash) must not turn the non-string flag `x` into
+# `x\r` and fall through to the benign .cmd (judge J1663 note 1).
+CRLF_JQ_DIR=$(mktemp -d) || { echo "FAIL: mktemp for the CRLF jq shim" >&2; exit 1; }
+REAL_JQ=$(command -v jq)
+printf '#!/bin/bash\n"%s" "$@" | sed "s/\\$/\\r/"\n' "$REAL_JQ" >"$CRLF_JQ_DIR/jq"
+chmod +x "$CRLF_JQ_DIR/jq"
+assert_allow "4130 CRLF jq: string command still allowed (shim control)" "$(jc '"echo ok"' 'echo ok')" "PATH=$CRLF_JQ_DIR:$PATH"
+assert_deny  "4130 CRLF jq: command:false still fails closed"            "$(jc false 'echo ok')" "PATH=$CRLF_JQ_DIR:$PATH"
+rm -rf "$CRLF_JQ_DIR"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
