@@ -137,12 +137,28 @@ LQ_FAKE_TOKEN=SKIPPED-BANK bash "$RUN" run --lane native --model m --no-judge --
 rc=$?
 check "bank refusal exits non-zero" '[ "$rc" -ne 0 ]'
 check "bank refusal launches nothing" '[ ! -s "$TMP/fake.log" ]'
-for lane in openrouter deepseek claudex; do
+for lane in deepseek claudex; do
   bash "$RUN" run --lane "$lane" --model m --out "$TMP/out-$lane" >"$TMP/run-$lane.log" 2>&1
   rc=$?
-  check "$lane lane refused in phase 1 (exit 3)" '[ "$rc" -eq 3 ]'
+  check "$lane lane refused (exit 3)" '[ "$rc" -eq 3 ]'
 done
 check "refused lanes launch nothing" '[ ! -s "$TMP/fake.log" ]'
+
+# openrouter (phase 2): the agent goes through the lane launcher, the judge
+# stays native, and the metered balance is read before and after each task.
+printf '#!/usr/bin/env bash\necho "$*" >>"$LQ_FAKE_LOG.launcher"\nexec "$LQ_CLAUDE_BIN" "$@"\n' >"$TMP/bin/claude-openrouter"
+printf '#!/usr/bin/env bash\necho "balance=8.9070935:credit spend=?"\n' >"$TMP/bin/orcost"
+chmod +x "$TMP/bin/claude-openrouter" "$TMP/bin/orcost"
+: >"$TMP/fake.log.launcher"
+LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model haiku --tasks shell-red-green --out "$TMP/out15" >"$TMP/run15.log" 2>&1
+rc=$?
+check "openrouter lane runs" '[ "$rc" -eq 0 ] && [ "$(wc -l <"$TMP/out15/runs.jsonl" | tr -d " ")" = 1 ]'
+check "openrouter agent goes through the lane launcher" 'grep -q -- "--permission-mode auto" "$TMP/fake.log.launcher"'
+check "openrouter judge stays native" '! grep -q -- "--json-schema" "$TMP/fake.log.launcher" && [ "$(jq -s ".[0].judge.correctness" "$TMP/out15/runs.jsonl")" = 4 ]'
+check "metered balance recorded" '[ "$(jq -s -r ".[0].metered_before" "$TMP/out15/runs.jsonl")" = 8.9070935 ]'
+check "native rows carry no metered balance" '[ "$(jq -s ".[0].metered_before" "$R")" = null ]'
+: >"$TMP/fake.log"
 LQ_FAKE_PROCEED_N=1 LQ_FAKE_CALLS="$TMP/calls" bash "$RUN" run --lane native --model m --tasks shell-red-green \
   --no-judge --out "$TMP/out14" >"$TMP/run14.log" 2>&1
 rc=$?

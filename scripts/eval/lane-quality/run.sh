@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/eval/lane-quality/run.sh - lane-quality eval (HIMMEL-4090, phase 1).
+# scripts/eval/lane-quality/run.sh - lane-quality eval (HIMMEL-4090).
 #
 # Runs the same frozen task set against one lane and model, and records per
 # task: the hidden acceptance result, a blind judge score, wall time, tool
@@ -8,7 +8,7 @@
 #
 # Usage:
 #   run.sh list
-#   run.sh run --lane native --model <model> [--tasks a,b] [--effort <level>]
+#   run.sh run --lane native|openrouter --model <model> [--tasks a,b] [--effort <level>]
 #              [--max-usd <usd>] [--timeout <sec>] [--judge-model <model>]
 #              [--no-judge] [--keep] [--out <dir>]
 #   run.sh table <run-dir>...
@@ -21,8 +21,14 @@
 # the diff and the agent's final report with every model and lane name
 # redacted, and never the acceptance result: the two signals stay independent.
 #
-# Lanes: phase 1 runs `native` only. openrouter, deepseek and claudex exit 3:
-# they are metered or on another bank, and phase 2 needs the operator's go.
+# Lanes: `native` and `openrouter` (phase 2, operator-approved). An openrouter
+# agent runs through scripts/claude-openrouter (its egress, PHI and credit
+# gates apply), and its metered balance is read before and after each task;
+# the judge always runs native. deepseek and claudex exit 3 until the
+# operator opts in (deepseek needs a station opt-in in the launching shell).
+# ponytail: OpenRouter credit metadata lags, so a per-task balance delta can
+# under-report; read the sweep's account delta again later for the total.
+# Upgrade path: per-generation cost from OpenRouter's generation API.
 #
 # Budget: --max-usd (default 3) caps the sweep. The agent's reported
 # total_cost_usd is summed after each task; no further task starts once the
@@ -34,7 +40,7 @@
 # ~/.himmel/eval/lane-quality/<run-id>/ by default.
 #
 # Test seams (env): LQ_CLAUDE_BIN, LQ_PREFLIGHT, LQ_REPO, LQ_BASE_SHA,
-# LQ_WORK_ROOT, LQ_TRANSCRIPTS.
+# LQ_WORK_ROOT, LQ_TRANSCRIPTS, LQ_LANE_BIN, LQ_METERED_PROBE.
 #
 # ponytail: the bank reading is the account-wide five-hour percent, so any
 # other session running during a task lands in its delta; run a sweep on a
@@ -95,6 +101,11 @@ bank_read() { # prints "<token> <five_hour>"
   echo "${tok:-BANK-UNKNOWN} ${five:-?}"
 }
 
+metered_read() { # prints the metered lane's balance in USD, "?" if unreadable, nothing on native
+  [ -n "$METERED_PROBE" ] || return 0
+  bash "$METERED_PROBE" --raw 2>/dev/null | sed -n 's/^balance=\([0-9.]*\):.*/\1/p' | grep . || echo '?'
+}
+
 transcript_metrics() { # $1 = transcript or empty -> JSON object
   if [ -z "$1" ] || [ ! -r "$1" ]; then
     echo '{"tool_calls":null,"compactions":null,"hook_denials":null,"peeked":null}'; return
@@ -138,7 +149,7 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
 }
 
 run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
-  local task="$1" wt fix start end bank0 bank1 res sid tr metrics acc_line acc_rc scope jres remaining tok judged=0
+  local task="$1" wt fix start end bank0 bank1 met0 met1 res sid tr metrics acc_line acc_rc scope jres remaining tok judged=0
   wt="$WORK_ROOT/lq-$RUN_ID-$task"
   mkdir -p "$WORK_ROOT"
   git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $task"
@@ -148,19 +159,19 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
     git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1
     echo "bank-refused ${bank0%% *}"; return 0
   fi
-  bank0="${bank0#* }"
+  bank0="${bank0#* }"; met0="$(metered_read)"
   remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" 'BEGIN{printf "%.2f", m - s}')"
   start="$(date +%s)"
   (
     cd "$wt" || exit 1
     native_auth_pin_env || exit 1
     # headless-claude-ok: HIMMEL-4090 lane-quality agent run, bank-preflighted per sweep, explicit permission mode, budget-capped
-    # launch-profile-ok: HIMMEL-4090 the eval measures the lane's own default config, not a leg profile
-    timeout "$TIMEOUT" "$CLAUDE_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
+    # launch-profile-ok: HIMMEL-4090 the eval measures the lane's own default config (claude or the lane launcher in $AGENT_BIN), not a leg profile
+    timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
       --output-format json --max-budget-usd "$remaining" ${EFFORT:+--effort "$EFFORT"}
   ) >"$OUT/$task.result.json" 2>"$OUT/$task.stderr"
   end="$(date +%s)"
-  bank1="$(bank_read)"; bank1="${bank1#* }"
+  bank1="$(bank_read)"; bank1="${bank1#* }"; met1="$(metered_read)"
   res="$OUT/$task.result.json"
   jq -e . "$res" >/dev/null 2>&1 || echo '{"is_error":true,"subtype":"harness-no-json"}' >"$res"
   jq -r '.result // ""' "$res" >"$OUT/$task.report.md"
@@ -191,13 +202,14 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   [ -n "$jres" ] || jres=null
   if [ "$KEEP" -eq 0 ]; then git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1; fi
   jq -nc --arg run "$RUN_ID" --arg lane "$LANE" --arg model "$MODEL" --arg effort "$EFFORT" --arg task "$task" \
-    --arg base "$BASE_SHA" --arg fix "$fix" --argjson wall "$((end - start))" --arg b0 "$bank0" --arg b1 "$bank1" \
+    --arg base "$BASE_SHA" --arg fix "$fix" --argjson wall "$((end - start))" --arg b0 "$bank0" --arg b1 "$bank1" --arg m0 "$met0" --arg m1 "$met1" \
     --arg acc "$acc_line" --argjson accrc "$acc_rc" --argjson scope "$scope" --argjson m "$metrics" \
     --argjson j "$jres" --arg wt "$( [ "$KEEP" -eq 1 ] && echo "$wt" )" --slurpfile r "$res" '
     $r[0] as $r
     | { run_id: $run, lane: $lane, model: $model, effort: $effort, task: $task, base_sha: $base, fixture_sha: $fix,
         wall_s: $wall, duration_ms: ($r.duration_ms // null), num_turns: ($r.num_turns // null),
         cost_usd: ($r.total_cost_usd // null), bank_5h_before: $b0, bank_5h_after: $b1,
+        metered_before: (if $m0 == "" then null else $m0 end), metered_after: (if $m1 == "" then null else $m1 end),
         permission_denials: (($r.permission_denials // []) | length),
         is_error: (if $r | has("is_error") then $r.is_error else null end),
         subtype: ($r.subtype // null),
@@ -231,11 +243,11 @@ cmd_run() {
   done
   [ -n "$MODEL" ] || die "--model is required"
   case "$LANE" in
-    native) ;;
-    openrouter|deepseek|claudex)
-      echo "lane-quality: lane '$LANE' is phase 2 (HIMMEL-4090): it needs the operator's go; see docs/internals/lane-calibration.md" >&2
+    native|openrouter) ;;
+    deepseek|claudex)
+      echo "lane-quality: lane '$LANE' is not enabled (HIMMEL-4090): it needs the operator's go; see docs/internals/lane-calibration.md" >&2
       exit 3 ;;
-    *) die "--lane must be native (phase 1); got '$LANE'" ;;
+    *) die "--lane must be native or openrouter; got '$LANE'" ;;
   esac
   awk -v m="$MAX_USD" 'BEGIN{exit !(m+0 > 0)}' || die "--max-usd must be a positive number"
   case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
@@ -246,7 +258,13 @@ cmd_run() {
   PREFLIGHT="${LQ_PREFLIGHT:-$REPO/scripts/lib/bank-preflight.sh}"
   BASE_SHA="${LQ_BASE_SHA:-$(tr -d '[:space:]' <"$HERE/BASE_SHA")}"
   WORK_ROOT="${LQ_WORK_ROOT:-$REPO/.claude/worktrees}"
-  TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude/projects}"
+  # The judge always runs native; a metered lane's agent goes through its launcher.
+  AGENT_BIN="$CLAUDE_BIN"; METERED_PROBE=""; TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude/projects}"
+  if [ "$LANE" = openrouter ]; then
+    AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/claude-openrouter}"
+    METERED_PROBE="${LQ_METERED_PROBE:-$REPO/scripts/lanes/openrouter-cost.sh}"
+    TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude-openrouter/projects}"
+  fi
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$LANE-$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9.-' '_')"
   OUT="${OUT:-$HOME/.himmel/eval/lane-quality/$RUN_ID}"
   mkdir -p "$OUT" || die "cannot create $OUT"
@@ -290,14 +308,15 @@ cmd_table() {
   [ $# -ge 1 ] || die "table needs at least one run directory"
   local d files=""
   for d in "$@"; do [ -r "$d/runs.jsonl" ] || die "no runs.jsonl in $d"; files="$files $d/runs.jsonl"; done
-  echo '| lane | model | task | accept | judge C/S/T/H | wall s | tool calls | compactions | cost USD | 5h bank | denials perm/hook | peeked |'
-  echo '|---|---|---|---|---|---|---|---|---|---|---|---|'
+  echo '| lane | model | task | accept | judge C/S/T/H | wall s | tool calls | compactions | cost USD | 5h bank | metered USD | denials perm/hook | peeked |'
+  echo '|---|---|---|---|---|---|---|---|---|---|---|---|---|'
   # shellcheck disable=SC2086
   jq -r '
     def n: if . == null then "?" else tostring end;
     "| \(.lane) | \(.model) | \(.task) | \(.accept_passed)/\(.accept_total)\(if .accept_ok then "" else " ✗" end) | "
     + (if .judge == null then "–" else "\(.judge.correctness)/\(.judge.scope_discipline)/\(.judge.test_quality)/\(.judge.honesty)" end)
     + " | \(.wall_s) | \(.tool_calls | n) | \(.compactions | n) | \(.cost_usd | n) | \(.bank_5h_before)→\(.bank_5h_after) | "
+    + (if .metered_before == null then "–" else "\(.metered_before)→\(.metered_after)" end) + " | "
     + "\(.permission_denials)/\(.hook_denials | n) | \(.peeked | n) |"' $files
 }
 
