@@ -137,9 +137,10 @@ template_version: 3
 ## What the console must also do (2026-09-13)
 
 - (a) One plan task per leg, plus the stage-worker rule: run the context-fill
-  probe after every completed step (ruling A1) — at ≥60 % fill, or on noticing
-  a compaction, the leg commits what is done and hands off to a `b`-suffixed
-  successor brief rather than continuing.
+  probe after every completed step (ruling A1) — at ≥75 % fill the leg commits
+  what is done and hands off to a `b`-suffixed successor brief rather than
+  continuing. A compaction alone is not a hand-off: the leg's `--autocompact`
+  ceiling is the backstop (HIMMEL-4089).
 - (b) The console creates the leg's worktree before arming it, never after.
 - (c) Holding for the console's `GO` ends the leg's turn — never a Bash sleep
   loop; a leg that blocks in one never wakes to receive it.

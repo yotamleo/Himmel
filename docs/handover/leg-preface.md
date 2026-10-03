@@ -429,9 +429,13 @@ for you). The closable-window banner is the output of
 `WITHHELD:` lists the pids still alive — TaskStop them and re-run; never type
 the banner by hand, and never send `WRAPPED` on a `WITHHELD:` result.
 
-**Context ≥ 60 %:** write `…legN<n>b-…-RESUME.md`, message the console, stop.
+**Context ≥ 75 %:** write `…legN<n>b-…-RESUME.md`, message the console, stop.
 Run the context-fill probe after **every** completed step, not only when you
-notice growth (ruling A1) — that is what catches the ≥60 % threshold in time.
+notice growth (ruling A1) — that is what catches the ≥75 % threshold in time.
+Your launch always carries an `--autocompact` ceiling, so a compaction is a
+backstop, not lost work: if one fires first, re-read this doc and your
+handover doc and carry on (HIMMEL-4089: 309 of 349 compacted legs still
+wrapped, and no observed compaction fired below 157k of 200k).
 
 ## How your turns end
 
@@ -461,7 +465,7 @@ The stops that are wanted are the ones where nothing can move without the
 console, or where the thing blocking you is deliberately protected from you:
 holding for the console's `GO` after `READY`; a `BLOCKED`, or a `FINDING` whose
 ruling every remaining step depends on, already sent; `WRAPPED` and exit; the
-≥ 60 % context hand-off. None of this overrides the need for confirmation on
+≥ 75 % context hand-off. None of this overrides the need for confirmation on
 risky or destructive actions.
 
 **The GO-hold is the only permitted hold (HIMMEL-3095).** A blocker owned by
