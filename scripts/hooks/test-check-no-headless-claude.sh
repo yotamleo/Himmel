@@ -432,6 +432,65 @@ printf "%s\n" "Do not spawnSync('claude', args) without a marker." > "$TMP/docs/
 rc=$(run_hook "docs/spawn.md")
 assert_rc "T28 docs/ still exempt for argv form" 0 "$rc"
 
+# T38a-T38g (HIMMEL-4123): comment text and blank lines must not break the join → BLOCK
+printf "%s\n" 'subprocess.run(' '    # note )' '    ["claude", *a])' > "$TMP/u_hash.py"
+rc=$(run_hook "u_hash.py")
+assert_rc "T38a # comment with ) between ( and [\"claude\" unmarked" 1 "$rc"
+
+printf "%s\n" 'subprocess.run(  # (' '    ["claude", *a])' > "$TMP/u_trail.py"
+rc=$(run_hook "u_trail.py")
+assert_rc "T38b trailing # ( comment on the open line unmarked" 1 "$rc"
+
+printf "%s\n" 'const r = spawnSync(  // )' '  "claude", args);' > "$TMP/u_trail.mjs"
+rc=$(run_hook "u_trail.mjs")
+assert_rc "T38c trailing // ) comment on the open line unmarked" 1 "$rc"
+
+printf "%s\n" 'const p = Bun.spawn({ // )' '  cmd: ["claude", "-p"],' '});' > "$TMP/u_bun.ts"
+rc=$(run_hook "u_bun.ts")
+assert_rc "T38d Bun.spawn({ // ) / cmd: [\"claude\" unmarked" 1 "$rc"
+
+printf "%s\n" 'os.spawnv(os.P_WAIT,  # )' '    "claude", args)' > "$TMP/u_spawnv.py"
+rc=$(run_hook "u_spawnv.py")
+assert_rc "T38e os.spawnv(mode, # ) / \"claude\" unmarked" 1 "$rc"
+
+{
+    echo "const r = spawnSync("
+    for n in 1 2 3 4 5 6 7 8 9 10; do echo ""; done
+    echo "  'claude', args);"
+} > "$TMP/u_blank.mjs"
+rc=$(run_hook "u_blank.mjs")
+assert_rc "T38f ten blank lines between ( and program, unmarked" 1 "$rc"
+
+printf "%s\n" 'const r = spawnSync( /* ) */' '  "claude", args);' > "$TMP/u_block.mjs"
+rc=$(run_hook "u_block.mjs")
+assert_rc "T38g trailing /* ) */ comment on the open line unmarked" 1 "$rc"
+
+# T38h-T38j: the comment-stripped pass adds no false deny → CLEAN
+printf "%s\n" 'subprocess.run(  # "claude" is not run here' '    ["git", "log"])' > "$TMP/u_ok_name.py"
+rc=$(run_hook "u_ok_name.py")
+assert_rc "T38h binary named only in a comment" 0 "$rc"
+
+printf "%s\n" '# headless-claude-ok: batch job' 'subprocess.run(  # (' '    ["claude", *a])' > "$TMP/u_ok_mark.py"
+rc=$(run_hook "u_ok_mark.py")
+assert_rc "T38i marker still covers a call with a bracketed comment" 0 "$rc"
+
+printf "%s\n" 'x = a // b; run(  // (' '  "git", ["claude"]);' > "$TMP/u_ok_arg.mjs"
+rc=$(run_hook "u_ok_arg.mjs")
+assert_rc "T38j claude as an argument after a stripped comment" 0 "$rc"
+
+# T39 (HIMMEL-4124): the shared join lib missing → fail closed, even on a clean file → BLOCK
+mkdir -p "$TMP/nolib"
+cp "$HOOK" "$TMP/nolib/check-no-headless-claude.sh"
+rc=$(cd "$TMP" && bash "$TMP/nolib/check-no-headless-claude.sh" "interactive.sh" >/dev/null 2>&1; echo "$?")
+assert_rc "T39 missing lib/headless-spawn-join.sh fails closed" 1 "$rc"
+
+# T40 (HIMMEL-4124 CR): the join itself failing (awk missing or erroring) → fail closed, even on a clean file → BLOCK
+mkdir -p "$TMP/badawk"
+printf '%s\n' '#!/bin/sh' 'exit 2' > "$TMP/badawk/awk"
+chmod +x "$TMP/badawk/awk"
+rc=$(cd "$TMP" && PATH="$TMP/badawk:$PATH" bash "$HOOK" "interactive.sh" >/dev/null 2>&1; echo "$?")
+assert_rc "T40 a failing join (awk rc!=0) fails closed" 1 "$rc"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
