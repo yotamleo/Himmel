@@ -21,18 +21,28 @@
  *
  *   node daily-timeline.mjs --vault <path> --date YYYY-MM-DD [--daily <path>]
  *
- * A missing daily note is a NO-OP (exit 0, no phantom file): the triage runbook
- * Phase 5 owns daily-note creation; this tool only annotates an existing note.
+ * It also upserts the `## Daily report` section (HIMMEL-4182): that day's
+ * triaged sources, ranked deterministic suggested actions, and a carry-over of
+ * unacted actions from the prior REPORT_LOOKBACK_DAYS day notes (see
+ * ./lib/daily-report.mjs).
  *
- * Dependency-light: pure node + ./lib/{frontmatter,daily-timeline}.mjs.
+ * A missing daily note is CREATED (HIMMEL-4182) from `_Templates/Daily-Note.md`
+ * with `{{date}}` filled in (a minimal note when there is no template), so a
+ * no-intake day still gets its "No intake" line and its carry-over.
+ *
+ * Dependency-light: pure node + ./lib/{frontmatter,daily-timeline,daily-report}.mjs.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { parse, fmScalar, fmList } from "./lib/frontmatter.mjs";
 import { renderPipelineSection, upsertSection, PIPELINE_HEADING } from "./lib/daily-timeline.mjs";
+import {
+  REPORT_HEADING, sourceFromClip, suggestActions, sectionLines, parseItems, carryOver, renderReportSection,
+} from "./lib/daily-report.mjs";
 
 const SELF = "daily-timeline.mjs";
+const REPORT_LOOKBACK_DAYS = 14;
 const out = (s) => process.stdout.write(s + "\n");
 const err = (s) => process.stderr.write(s + "\n");
 function die(code, msg) { err(`${SELF}: ${msg}`); process.exit(code); }
@@ -61,6 +71,75 @@ function resolveDaily(vault, date, override) {
     if (fs.existsSync(c) && fs.statSync(c).isFile()) return c;
   }
   return null;
+}
+
+/** Create the missing daily note for <date> from the vault template; returns its path. */
+function createDaily(vault, date, override) {
+  const target = override || path.join(vault, "50-Journal", "Daily", `${date}.md`);
+  let body;
+  try {
+    body = fs.readFileSync(path.join(vault, "_Templates", "Daily-Note.md"), "utf8").replace(/\{\{date\}\}/g, date);
+  } catch {
+    body = `---\ndate: ${date}\ntype: daily\n---\n\n# ${date}\n`;
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, body, { flag: "wx" });
+  return target;
+}
+
+/** YYYY-MM-DD shifted by n days (calendar arithmetic, no timezone). */
+function shiftDate(date, n) {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+}
+
+/** Report sources: _evidence/ clips with `triaged_at: <date>`. */
+function reportSources(vault, date) {
+  const dir = path.join(vault, "Clippings", "_evidence");
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  const sources = [];
+  for (const e of entries) {
+    if (!e.isFile() || !e.name.endsWith(".md")) continue;
+    let content;
+    try { content = fs.readFileSync(path.join(dir, e.name), "utf8"); } catch { continue; }
+    const { lines, bounds } = parse(content);
+    if (!bounds || fmScalar(lines, bounds.close, "triaged_at") !== date) continue;
+    sources.push(sourceFromClip(`Clippings/_evidence/${e.name.replace(/\.md$/, "")}`, content));
+  }
+  return sources;
+}
+
+/** MOCs in 60-Maps/ (`type: moc`) with their tags: the fold targets. */
+function listMocs(vault) {
+  const dir = path.join(vault, "60-Maps");
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  const mocs = [];
+  for (const e of entries) {
+    if (!e.isFile() || !e.name.endsWith(".md")) continue;
+    let content;
+    try { content = fs.readFileSync(path.join(dir, e.name), "utf8"); } catch { continue; }
+    const { lines, bounds } = parse(content);
+    if (!bounds || fmScalar(lines, bounds.close, "type") !== "moc") continue;
+    const tags = fmList(lines, bounds.close, "tags").filter((t) => t !== "moc");
+    if (tags.length) mocs.push({ link: `60-Maps/${e.name.replace(/\.md$/, "")}`, tags });
+  }
+  return mocs;
+}
+
+/** Render the `## Daily report` section for <date> against the note's current content. */
+function buildReport(vault, date, content, eol) {
+  const prior = [];
+  for (let n = REPORT_LOOKBACK_DAYS; n >= 1; n--) {
+    const p = resolveDaily(vault, shiftDate(date, -n), null);
+    if (!p) continue;
+    prior.push(parseItems(sectionLines(fs.readFileSync(p, "utf8"), REPORT_HEADING)));
+  }
+  const { carried, seen } = carryOver(prior);
+  const sources = reportSources(vault, date);
+  const actions = suggestActions(sources, listMocs(vault)).filter((a) => !seen.has(a.id));
+  const marks = new Map(parseItems(sectionLines(content, REPORT_HEADING)).map((it) => [it.id, it.mark]));
+  return { section: renderReportSection({ date, sources, actions, carried, marks }, eol), sources, actions, carried };
 }
 
 /** Frontmatter scalar reader for a file (or "" when unreadable / no frontmatter). */
@@ -180,11 +259,9 @@ function main() {
   if (!a.vault) die(1, "usage: daily-timeline.mjs --vault <path> --date YYYY-MM-DD [--daily <path>]");
   if (!a.date || !/^\d{4}-\d{2}-\d{2}$/.test(a.date)) die(1, "missing/invalid --date (YYYY-MM-DD)");
 
-  const daily = resolveDaily(a.vault, a.date, a.daily);
-  if (!daily) {
-    out(`${SELF}: no daily note for ${a.date} — nothing to annotate (Phase 5 creates it first)`);
-    process.exit(0);
-  }
+  let daily = resolveDaily(a.vault, a.date, a.daily);
+  const created = !daily;
+  if (created) daily = createDaily(a.vault, a.date, a.daily);
 
   const metrics = {
     captured: countCaptured(a.vault, a.date),
@@ -195,12 +272,15 @@ function main() {
   const content = fs.readFileSync(daily, "utf8");
   const eol = content.includes("\r\n") ? "\r\n" : "\n";
   const section = renderPipelineSection(metrics, eol);
-  const next = upsertSection(content, PIPELINE_HEADING, section);
+  const withPipeline = upsertSection(content, PIPELINE_HEADING, section);
+  const report = buildReport(a.vault, a.date, withPipeline, eol);
+  const next = upsertSection(withPipeline, REPORT_HEADING, report.section);
   if (next !== content) fs.writeFileSync(daily, next);
 
   out(
-    `${SELF}: ${path.relative(a.vault, daily)} — captured ${metrics.captured}, ` +
-    `reviewed ${metrics.reviewed.total}, promoted ${metrics.promoted.length}, densified ${metrics.densified.length}`,
+    `${SELF}: ${path.relative(a.vault, daily)}${created ? " (created)" : ""} — captured ${metrics.captured}, ` +
+    `reviewed ${metrics.reviewed.total}, promoted ${metrics.promoted.length}, densified ${metrics.densified.length}; ` +
+    `report: sources ${report.sources.length}, actions ${report.actions.length}, carried ${report.carried.length}`,
   );
   process.exit(0);
 }
