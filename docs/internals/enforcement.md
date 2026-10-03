@@ -2193,7 +2193,11 @@ so a `timeout N qmd query …` kills node and orphans the bun child; five such
 orphans ran at ~99 % CPU for ~15 h. Refuses `qmd query|search|vsearch` at
 COMMAND POSITION (the `block-git-stash.sh` grammar, widened to wrappers such as
 `timeout`, `env`, `nice`, `setsid`, `xargs`, `sh -c` and a `bun`/`node`/`npx`
-runtime prefix, and stepping over global options before the verb). Other verbs
+runtime prefix, and stepping over global options before the verb). The match
+also runs over the command's words after bash quote removal (HIMMEL-4121), so
+`qmd "qu"ery`, `qmd $'query'`, `qmd \query` and `q"md" query` are refused while
+`qmd "query"" notes"` (one non-verb word) passes; a verb held in a variable is
+still a miss (ponytail in the hook). Other verbs
 (`status`, `update`, `embed`, `get`) and non-command-position text
 (`grep 'qmd query' log`) pass. The deny names the bounded replacement,
 `bash scripts/lib/qmd-bounded.sh <verb> …` (deadline `$QMD_TIMEOUT_SECS`, else
