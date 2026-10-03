@@ -139,7 +139,11 @@ gathering, per the rule below.>
 > Never `subprocess.run(timeout=)`: it kills only the direct child, and a
 > looping `$(…)` subshell of the hook outlives it. Give the hook a stdin (a
 > pipe or `</dev/null`), never a closed one — `$(cat)` on a closed fd 0 reads
-> its own pipe and blocks forever.
+> its own pipe and blocks forever. Run the WHOLE harness (corpus loop,
+> differential, fixture suite) under `python3 scripts/eval/harness-run.py
+> --deadline <sec> -- <cmd>`: a per-call killpg dies with the harness, and the
+> runner's subreaper sweep still reaps every hook copy the harness left in
+> flight (HIMMEL-4183).
 
 > **RETASK.** A narrowing or a halt from `<console session name>` needs no
 > token and cannot be argued with. An EXPANSION or REDIRECT is valid only if
