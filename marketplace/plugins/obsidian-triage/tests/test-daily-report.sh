@@ -358,6 +358,13 @@ if grep -qE '^- \[x\] Archive .*lone' "$ED"; then f=kept; else f=lost; fi
 assert "ticked archive survives seven higher-ranked actions" "kept" "$f"
 assert "still at most seven suggested actions" "7" "$(grep -cE '^- \[.\] (Archive|Evaluate|Fold|File)' "$ED")"
 
+echo "Test 14: a ticked action keeps its line after its clip leaves the day"
+rm "$V/Clippings/_evidence/lone.md"
+node "$TOOL" --vault "$V" --date "$E" >/dev/null 2>&1
+if grep -qE '^- \[x\] Archive .*lone' "$ED"; then f=kept; else f=lost; fi
+assert "ticked archive kept after lone.md is gone" "kept" "$f"
+assert "still at most seven suggested actions" "7" "$(grep -cE '^- \[.\] (Archive|Evaluate|Fold|File)' "$ED")"
+
 echo "Test 13: an impossible calendar date is refused before any note is created"
 node "$TOOL" --vault "$V" --date "2026-13-01" >/dev/null 2>&1
 assert "exit 1 on 2026-13-01" "1" "$?"

@@ -111,12 +111,14 @@ export function actionId(verb, target, date) {
  * source or `tools` kind → evaluate the tool; a tag shared with a MOC → fold
  * into it (clips sharing a MOC merge into one action); else archive.
  * `mocs` = [{ link, tags:[...] }]. Ids in `seen` are dropped before the
- * MAX_ACTIONS cap; ids in `pinned` (already resolved on today's report) rank
- * first, so a later, better suggestion cannot push a tick off the note.
- * Then: archive last, more cited clips, engagement, text.
- * Returns [{ id, text, links }].
+ * MAX_ACTIONS cap. `kept` = the [{ id, text }] items already resolved on
+ * today's report: they always stay, first and in their order, with refreshed
+ * text when regenerated and their old text when not, so neither a better
+ * suggestion nor a removed clip can take a tick off the note. The rest fill
+ * the remaining slots, ranked: archive last, more cited clips, engagement,
+ * text. Returns [{ id, text, links }].
  */
-export function suggestActions(sources, mocs, { date = "", seen = new Set(), pinned = new Set() } = {}) {
+export function suggestActions(sources, mocs, { date = "", seen = new Set(), kept = [] } = {}) {
   const byKey = new Map();
   const add = (verb, target, src, render, weight) => {
     const key = `${verb}|${target}`;
@@ -154,8 +156,12 @@ export function suggestActions(sources, mocs, { date = "", seen = new Set(), pin
     };
   }).filter((a) => !seen.has(a.id));
   actions.sort((a, b) =>
-    pinned.has(b.id) - pinned.has(a.id) || a.weight - b.weight || b.links.length - a.links.length || b.likes - a.likes || a.text.localeCompare(b.text));
-  return actions.slice(0, MAX_ACTIONS).map(({ id, text, links }) => ({ id, text, links }));
+    a.weight - b.weight || b.links.length - a.links.length || b.likes - a.likes || a.text.localeCompare(b.text));
+  const byId = new Map(actions.map((a) => [a.id, a]));
+  const keptIds = new Set(kept.map((k) => k.id));
+  const head = kept.map((k) => byId.get(k.id) || { id: k.id, text: k.text, links: [] });
+  const rest = actions.filter((a) => !keptIds.has(a.id)).slice(0, Math.max(0, MAX_ACTIONS - head.length));
+  return [...head, ...rest].map(({ id, text, links }) => ({ id, text, links }));
 }
 
 /** The lines of the `heading` section (heading excluded), or [] if absent. */
