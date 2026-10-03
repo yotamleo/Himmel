@@ -70,14 +70,15 @@ fi
 
 # Input handling is block-git-stash.sh's (HIMMEL-2123): builtin `read` rather
 # than a `cat` substitution, blank or malformed stdin fails closed, and a
-# present non-string `command` is an error rather than a silent allow.
+# present non-string `command` is an error rather than a silent allow; a
+# `command: null` falls through to `cmd` rather than reading as empty.
 input=""
 IFS= read -r -d '' input 2>/dev/null || true
 case "$input" in
     *[![:space:]]*) ;;
     *) echo "block-bare-qmd-query: empty/blank stdin - failing closed" >&2; exit 2 ;;
 esac
-if ! result=$(jq -r 'if (. == null or . == false) then error("bad-shape") else ((try (.tool_input | if has("command") then .command else .cmd end) catch null) as $c | if ($c != null and ($c|type) != "string") then error("non-string-command") else (((try (.tool_name) catch null) // "" | tostring) + "\n" + ($c // "")) end) end' <<<"$input" 2>/dev/null); then
+if ! result=$(jq -r 'if (. == null or . == false) then error("bad-shape") else ((try (.tool_input | if has("command") and .command != null then .command else .cmd end) catch null) as $c | if ($c != null and ($c|type) != "string") then error("non-string-command") else (((try (.tool_name) catch null) // "" | tostring) + "\n" + ($c // "")) end) end' <<<"$input" 2>/dev/null); then
     echo "block-bare-qmd-query: malformed/truncated JSON on stdin - failing closed" >&2
     exit 2
 fi

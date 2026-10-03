@@ -165,6 +165,9 @@ assert_rc "deny: command false beside a string cmd" 2 \
     "$(run_case '{"tool_name":"Bash","tool_input":{"command":false,"cmd":"ls"}}')"
 assert_rc "deny: non-string command" 2 \
     "$(run_case '{"tool_name":"Bash","tool_input":{"command":7}}')"
+# A present `command: null` must not read as empty while `cmd` carries the verb.
+assert_rc "deny: command null beside a qmd query cmd" 2 \
+    "$(run_case '{"tool_name":"Bash","tool_input":{"command":null,"cmd":"qmd query x"}}')"
 
 # The deny text names the bounded replacement.
 msg=$(printf '%s' "$(j_bash 'qmd query x')" | env -u QMD_UNBOUNDED_OK bash "$HOOK" 2>&1 >/dev/null)
