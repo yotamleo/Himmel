@@ -110,12 +110,7 @@ transcript_metrics() { # $1 = transcript or empty -> JSON object
 }
 
 judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out dir, $6 budget -> judge JSON on stdout
-  local task="$1" wt="$2" fix="$3" report="$4" od="$5" budget="$6" jdir packet tok
-  read -r tok _ <<<"$(bank_read)"
-  if [ "$tok" != PROCEED ]; then
-    echo "lane-quality: bank preflight said $tok; judge skipped" >"$od/$task.judge.err"
-    echo null; return 0
-  fi
+  local task="$1" wt="$2" fix="$3" report="$4" od="$5" budget="$6" jdir packet
   jdir="$(mktemp -d "${TMPDIR:-/tmp}/lq-judge.XXXXXX")" || { echo null; return 0; }
   packet="$od/$task.judge-packet.md"
   git -C "$wt" add -A
@@ -131,7 +126,7 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
   (
     cd "$jdir" || exit 1
     native_auth_pin_env || exit 1
-    # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted above, no tools, explicit permission mode, budget-capped
+    # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted by run_task, no tools, explicit permission mode, budget-capped
     timeout "$TIMEOUT" "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
       --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
   ) >"$od/$task.judge.json" 2>"$od/$task.judge.err"
@@ -142,7 +137,7 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
 }
 
 run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
-  local task="$1" wt fix start end bank0 bank1 res sid tr metrics acc_line acc_rc scope jres remaining
+  local task="$1" wt fix start end bank0 bank1 res sid tr metrics acc_line acc_rc scope jres remaining tok judged=0
   wt="$WORK_ROOT/lq-$RUN_ID-$task"
   mkdir -p "$WORK_ROOT"
   git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $task"
@@ -174,8 +169,12 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" -v c="$(jq -r '.total_cost_usd // 0' "$res")" 'BEGIN{printf "%.2f", m - s - c}')"
   jres=null
   if [ "$NO_JUDGE" -eq 0 ]; then
-    if awk -v r="$remaining" 'BEGIN{exit !(r >= 0.01)}'; then
+    read -r tok _ <<<"$(bank_read)"
+    if [ "$tok" != PROCEED ]; then
+      echo "lane-quality: bank preflight said $tok; judge skipped" >"$OUT/$task.judge.err"
+    elif awk -v r="$remaining" 'BEGIN{exit !(r >= 0.01)}'; then
       jres="$(judge "$task" "$wt" "$fix" "$OUT/$task.report.md" "$OUT" "$remaining")"
+      judged=1
     else
       echo "lane-quality: budget spent by the agent; judge skipped" >"$OUT/$task.judge.err"
     fi
@@ -197,8 +196,11 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
         accept_total: (($acc | capture("/(?<t>[0-9]+)").t? | tonumber?) // 0),
         accept_ok: ($accrc == 0), scope_ok: ($scope | length == 0), out_of_scope: $scope,
         judge: $j, kept_worktree: $wt } + $m' >>"$OUT/runs.jsonl"
-  # "unknown" when the agent left no cost (killed by the timeout): the sweep stops.
-  jq -r --argjson j "$jres" 'if .total_cost_usd == null then "unknown" else .total_cost_usd + ($j.cost_usd? // 0) end' "$res"
+  # "unknown" when the agent, or a judge that was launched, left no cost
+  # (killed by the timeout, or failed): the sweep stops.
+  jq -r --argjson j "$jres" --argjson judged "$judged" '
+    if .total_cost_usd == null or ($judged == 1 and ($j.cost_usd? // null) == null) then "unknown"
+    else .total_cost_usd + ($j.cost_usd? // 0) end' "$res"
 }
 
 cmd_run() {
@@ -238,6 +240,7 @@ cmd_run() {
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$LANE-$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9.-' '_')"
   OUT="${OUT:-$HOME/.himmel/eval/lane-quality/$RUN_ID}"
   mkdir -p "$OUT" || die "cannot create $OUT"
+  OUT="$(cd "$OUT" && pwd)" || die "cannot resolve $OUT"
   # shellcheck source=../../lib/native-auth-pin.sh
   . "$HERE/../../lib/native-auth-pin.sh" || die "cannot source native-auth-pin.sh"
   git -C "$REPO" cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || die "base sha $BASE_SHA not in $REPO"
@@ -261,7 +264,7 @@ cmd_run() {
     cost="$(run_task "$t")" || die "task '$t' failed; see $OUT"
     cost="$(printf '%s\n' "$cost" | tail -1)"
     if [ "$cost" = unknown ]; then
-      echo "lane-quality: task '$t' left its cost unknown (agent killed?); stopping the sweep, spend so far is a lower bound" >&2
+      echo "lane-quality: task '$t' left its cost unknown (agent or judge killed?); stopping the sweep, spend so far is a lower bound" >&2
       break
     fi
     SPENT="$(awk -v s="$SPENT" -v c="${cost:-0}" 'BEGIN{printf "%.4f", s + c}')"

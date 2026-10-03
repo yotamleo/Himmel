@@ -162,10 +162,14 @@ bash "$RUN" run --lane native --model m --tasks shell-red-green --max-usd 0.5 --
 check "no judge call once the agent spent the whole budget" '[ ! -s "$TMP/fake.log.judge" ] && [ "$(jq -s ".[0].judge" "$TMP/out7/runs.jsonl")" = null ]'
 
 start=$(date +%s)
-LQ_FAKE_JUDGE_HANG=1 bash "$RUN" run --lane native --model m --tasks shell-red-green --timeout 3 \
+LQ_FAKE_JUDGE_HANG=1 bash "$RUN" run --lane native --model m --tasks shell-red-green,finding-verify --timeout 3 \
   --out "$TMP/out8" >"$TMP/run8.log" 2>&1
 took=$(( $(date +%s) - start ))
 check "a hanging judge is cut off by the timeout" '[ "$took" -lt 9 ] && [ "$(wc -l <"$TMP/out8/runs.jsonl" | tr -d " ")" = 1 ]'
+check "a judge of unknown cost stops the sweep" 'grep -q "cost unknown" "$TMP/run8.log"'
+
+(cd "$TMP" && bash "$RUN" run --lane native --model m --tasks shell-red-green --out out10) >"$TMP/run10.log" 2>&1
+check "a relative --out still reaches the judge" '[ "$(jq -s ".[0].judge.correctness" "$TMP/out10/runs.jsonl")" = 4 ]'
 
 LQ_FAKE_NOJSON=1 bash "$RUN" run --lane native --model m --tasks shell-red-green,finding-verify --no-judge \
   --out "$TMP/out9" >"$TMP/run9.log" 2>&1
