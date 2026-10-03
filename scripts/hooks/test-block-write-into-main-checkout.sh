@@ -1911,7 +1911,8 @@ _subst_row "75u-P backtick body holds an escaped \$( that Bash unescapes"  block
 _subst_row "75u-W same shape aimed at the worktree (ALLOW)"                allow "x=\`echo \"\\\$(echo hi > $_WR/subst-rel.txt)\"\`"
 _SOH=$'\001'
 _subst_row "75v-P a literal U+0001 byte must not consume a body"           block "echo $_SOH; cd $_PR; x=\"\$(echo hi > subst-rel.txt)\""
-_subst_row "75v-W same shape aimed at the worktree (ALLOW)"                allow "echo $_SOH; cd $_WR; x=\"\$(echo hi > subst-rel.txt)\""
+# HIMMEL-4010: a raw marker byte now fails closed anywhere (row 76zz)
+_subst_row "75v-W same shape aimed at the worktree (DENY: marker byte)"    block "echo $_SOH; cd $_WR; x=\"\$(echo hi > subst-rel.txt)\""
 # A `)` inside a ${...} expansion is text, not the body's closer.
 _subst_row "75w-P \${y:-)} must not close the body early"                   block "x=\"\$(echo \${y:-)} > $_PR/f.txt)\""
 _subst_row "75x-P \${y#)} must not close the body early"                    block "x=\"\$(echo \${y#)} > $_PR/f.txt)\""
@@ -1925,6 +1926,87 @@ EOF
 _subst_row "75k single-quoted \$(echo > P) is literal text (ALLOW)" allow "echo '\$(echo hi > $_P)'"
 _subst_row "75l read redirect inside a substitution (ALLOW)" allow "x=\"\$(cat < $FIX/primary/existing.txt)\""
 _subst_row "75m fd-dup inside a substitution (ALLOW)" allow "x=\"\$(ls 2>&1)\""
+
+# HIMMEL-4010: three residual gaps in the same substitution scan.
+# (1) An ANSI-C `$'…'` span ends only at an UNESCAPED `'`; the plain
+#     single-quote rule ended it at `\'` and flipped every later quote.
+# (2) A target computed from a substitution: `$(pwd)` is the cwd, any other
+#     substitution's static prefix names the directory written into.
+# (3) The verb arms (cp/mv/sed -i/tee/rm/touch, git) now see substitution
+#     bodies, at the cwd the body runs in.
+# DENY rows aim at the primary; each ALLOW twin aims the same shape at the
+# worktree, and the read controls must keep allowing.
+echo "== HIMMEL-4010 ANSI-C quotes, computed targets, verbs in substitution bodies =="
+for _t in "P|block|$_P|$_PR" "W|allow|$_W|$_WR"; do
+    _tag="${_t%%|*}"; _rest="${_t#*|}"; _v="${_rest%%|*}"; _rest="${_rest#*|}"; _f="${_rest%%|*}"; _d="${_rest#*|}"
+    _subst_row "76a-$_tag \$'\\'' before a redirect (ANSI-C escaped quote)"   "$_v" "echo \$'\\'' > $_f"
+    _subst_row "76b-$_tag \$'\\'' inside a dq-quoted body"                    "$_v" "x=\"\$(echo \$'\\'' > $_f)\""
+    _subst_row "76c-$_tag \$'a\\'b' mid-word"                                 "$_v" "echo \$'a\\'b' > $_f"
+    _subst_row "76d-$_tag ANSI-C quoted target"                               "$_v" "echo x > \$'$_f'"
+    _subst_row "76e-$_tag \$(pwd)/ target"                                    "$_v" "echo x > \"\$(pwd)/subst-new.txt\"" "$_d"
+    _subst_row "76f-$_tag backtick pwd target"                                "$_v" "echo x > \`pwd\`/subst-new.txt" "$_d"
+    _subst_row "76g-$_tag relative name with a \$(date) suffix"               "$_v" "echo x > f\$(date +%s)" "$_d"
+    _subst_row "76h-$_tag absolute path with a \$(date) suffix"               "$_v" "echo x > $_f\$(date +%s)"
+    _subst_row "76i-$_tag cp to a \$(pwd)/ destination"                       "$_v" "cp $FIX/wt/a.txt \"\$(pwd)/subst-new.txt\"" "$_d"
+    _subst_row "76j-$_tag cp in a dq-quoted body"                             "$_v" "x=\"\$(cp $FIX/wt/a.txt $_f)\""
+    _subst_row "76k-$_tag mv in a dq-quoted body"                             "$_v" "x=\"\$(mv $FIX/wt/a.txt $_f)\""
+    _subst_row "76l-$_tag sed -i in a dq-quoted body"                         "$_v" "x=\"\$(sed -i s/a/b/ $_f)\""
+    _subst_row "76m-$_tag tee in a dq-quoted body"                            "$_v" "x=\"\$(tee $_f)\""
+    _subst_row "76n-$_tag cp in a backtick body"                              "$_v" "x=\`cp $FIX/wt/a.txt $_f\`"
+    _subst_row "76o-$_tag touch in a backtick inside dq"                      "$_v" "echo \"\`touch $_f\`\""
+    _subst_row "76p-$_tag rm in a dq-quoted body"                             "$_v" "x=\"\$(rm $_f)\""
+    _subst_row "76q-$_tag cd then cp in a body, relative destination"         "$_v" "x=\"\$(cd $_d; cp $FIX/wt/a.txt subst-new.txt)\""
+    _subst_row "76r-$_tag git checkout -b in a dq-quoted body"                "$_v" "x=\"\$(git -C $_d checkout -b subst-zz)\""
+done
+# A cd inside a body stays inside it (its own subshell).
+_subst_row "76s-P a body's cd does not leak to the next verb clause"       block "cd $_PR; x=\"\$(cd $_WR)\"; cp a.txt subst-new.txt"
+_subst_row "76s-W same shape aimed at the worktree (ALLOW)"               allow "cd $_WR; x=\"\$(cd $_PR)\"; cp a.txt subst-new.txt"
+# Read controls: none of these write the primary.
+_subst_row "76t ANSI-C quote that closes cleanly, no redirect (ALLOW)"     allow "echo \$'it\\'s > fine'"
+_subst_row "76u literal \$'x' inside double quotes (ALLOW)"                allow "echo \"\$'x'\" > $_W"
+_subst_row "76v x=\$(cat f) (ALLOW)"                                       allow "x=\$(cat f)" "$_PR"
+_subst_row "76w echo \"\$(date)\" > /tmp/x (ALLOW)"                         allow "echo \"\$(date)\" > /tmp/x" "$_PR"
+_subst_row "76x ls \$(pwd) in the primary (ALLOW)"                         allow "ls \$(pwd)" "$_PR"
+_subst_row "76y cp out of the primary in a body (ALLOW)"                   allow "x=\"\$(cp $_PR/f.txt $_W)\""
+_subst_row "76z sed -n in a body (ALLOW)"                                  allow "x=\"\$(sed -n p $_PR/f.txt)\""
+_subst_row "76za \$(mktemp) target from the primary (ALLOW)"               allow "echo x > \"\$(mktemp)\"" "$_PR"
+_subst_row "76zb \$(date) suffix under /tmp from the primary (ALLOW)"      allow "echo x > /tmp/x\$(date +%s)" "$_PR"
+_subst_row "76zc \$(pwd) prefix of a sibling name (ALLOW)"                 allow "echo x > \"\$(pwd)n\"" "$_PR"
+_subst_row "76zd git rev-parse in a body, output to /tmp (ALLOW)"          allow "echo \"\$(git -C $_PR rev-parse HEAD)\" > /tmp/h"
+_subst_row "76ze \$((1+2)) arithmetic is not a body (ALLOW)"                allow "echo \$((1+2)) > $_W"
+_subst_row "76zf \$'…' inside double quotes is a literal name (ALLOW)"     allow "echo x > \"\$'$_P'\""
+_subst_row "76zg \$'…' inside single quotes is a literal name (ALLOW)"     allow "echo x > '\$'\"'$_P'\""
+_subst_row "76zh quoted \$(pwd) continued into a sibling name (ALLOW)"     allow "echo x > \"\$(pwd)\"n/f" "$_PR"
+_subst_row "76zi quoted \$(pwd) then /n (DENY)"                            block "echo x > \"\$(pwd)\"/n" "$_PR"
+_subst_row "76zj quoted \`pwd\` at the token end then /n (DENY)"            block "cd $_PR; echo x > \"\`pwd\`\"/n"
+_subst_row "76zk \$'…' target with a literal \$ in its name (DENY)"        block "echo x > \$'$_PR/\$HOME-x'"
+_subst_row "76zl \$'…' target with a literal * in its name (DENY)"         block "echo x > \$'$_PR/a*b'"
+_subst_row "76zm same literal \$ name in the worktree (ALLOW)"              allow "echo x > \$'$_WR/\$HOME-x'"
+_subst_row "76zn \$'…' decoded quote makes a sibling name (ALLOW)"         allow "echo x > \$'$_PR\\x22/f'"
+ln -s "$_PR" "$_WR/sl\$x"
+_subst_row "76zo \$'…' through a worktree symlink named sl\$x (DENY)"     block "echo x > \$'$_WR/sl\$x/n'"
+_subst_row "76zp same name, not a symlink: sl_x is absent (ALLOW)"         allow "echo x > \$'$_WR/sl_x/n'"
+_subst_row "76zq non-leading \$(pwd) is not the cwd (ALLOW)"               allow "echo x > /tmp/x\$(pwd)/f" "$_PR"
+_subst_row "76zr non-leading \$(pwd) under the primary (DENY)"             block "echo x > $_PR/x\$(pwd)/f"
+_subst_row "76zs \$(pwd)\"/n\" quote after the slash (DENY)"                block "echo x > \$(pwd)\"/n\"" "$_PR"
+ln -s "$_PR" "$_WR/sl"$'\016'
+_subst_row "76zu decoded \\x0e is a byte, not a sentinel (DENY)"            block "echo x > \$'$_WR/sl\\x0e/n'"
+_subst_row "76zv raw 0x0e byte in a plain target (DENY)"                     block "echo x > $_WR/sl"$'\016'"/n"
+ln -s "$_PR" "$_WR/x."
+_subst_row "76zt non-leading \$(pwd) never reads as x./ (ALLOW)"           allow "echo x > $_WR/x\$(pwd)/f"
+_subst_row "76zw \$\$ is the PID, so \$\$'\\' is a plain quote (DENY)"       block "echo \$\$'\\' > $_PR/f # '"
+_subst_row "76zx \$\$\$'…' is PID then ANSI-C (DENY)"                       block "echo \$\$\$'\\'' > $_PR/f"
+_subst_row "76zy \$\$'b' in a worktree target (ALLOW)"                       allow "echo x > $_WR/a\$\$'b'"
+# raw marker bytes: a decoy `sl_` is what the old byte-to-_ rename resolved to
+mkdir -p "$_WR/sl_"
+for _b in 001 002 003 004 005 016; do ln -s "$_PR" "$_WR/sl$(printf '%b' "\\0$_b")"; done
+_subst_row "76zz raw 0x01 behind a \$(…) redirect (DENY)"   block "echo \$(true) > $_WR/sl"$'\001'"/n"
+_subst_row "76zza raw 0x02 in a target (DENY)"              block "echo x > $_WR/sl"$'\002'"/n"
+_subst_row "76zzb raw 0x03 in a verb target (DENY)"         block "touch $_WR/sl"$'\003'"/n"
+_subst_row "76zzc raw 0x04 in a target (DENY)"              block "echo x > $_WR/sl"$'\004'"/n"
+_subst_row "76zzd raw 0x05 behind a \$(…) redirect (DENY)"  block "echo \$(true) > $_WR/sl"$'\005'"/n"
+_subst_row "76zze raw 0x0e in a verb target (DENY)"         block "touch $_WR/sl"$'\016'"/n"
+_subst_row "76zzf decoy sl_ itself stays a worktree path (ALLOW)" allow "touch $_WR/sl_/n"
 
 echo "== HIMMEL-2592 GENERATED GRAMMAR MATRIX (the real interpreter is the oracle) =="
 
