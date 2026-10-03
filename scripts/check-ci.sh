@@ -25,7 +25,16 @@
 #                   watch can go green before a slower workflow has created
 #                   its check run at all. One settle round bounds that window;
 #                   a workflow that registers even later is out of scope.
-#   --max-wait <sec> bound on each `gh pr checks --watch` round (default 900,
+#   --max-wait <sec> bound on the WHOLE run's waiting (HIMMEL-4131): one deadline
+#                   from script start covers the watch rounds, the HIMMEL-2907
+#                   extension and the settle wait, so total wall time is N plus
+#                   the fixed --grace-bounded probes, never a multiple of N. A
+#                   round that may still be extended takes half of what is left;
+#                   the extension and the post-settle round get the leftover.
+#                   A deadline hit with checks still pending and nothing failed
+#                   is exit 2 with a `DEADLINE-PENDING` verdict line (not an
+#                   error: re-invoke). Before HIMMEL-4131 N was a per-round cap
+#                   (default 900,
 #                   HIMMEL-2907 — the measured slowest shell-unit shard runs
 #                   12m16s-12m45s; 0 = unbounded, today's behaviour). HIMMEL-2062: CodeRabbit
 #                   leaves its rollup row "pending"/"Review queued" long after
@@ -318,6 +327,15 @@ esac
 case "$MAX_WAIT" in
     ''|*[!0-9]*) echo "check-ci: --max-wait must be a non-negative integer, got '$MAX_WAIT'" >&2; exit 64 ;;
 esac
+
+# HIMMEL-4131: --max-wait bounds the WHOLE run, not each watch round. RUN_START
+# anchors one deadline; _budget_left is what remains of it (0 once spent).
+RUN_START=$SECONDS
+_budget_left() {
+    local left=$((MAX_WAIT - (SECONDS - RUN_START)))
+    [ "$left" -lt 0 ] && left=0
+    echo "$left"
+}
 
 if ! command -v gh >/dev/null 2>&1; then
     echo "check-ci: gh CLI not found on PATH" >&2
@@ -816,6 +834,18 @@ watch_round() {
     # rc + non-empty stderr → cannot evaluate (exit 2); nonzero rc + empty
     # stderr → red_exit.
     local err_file err wpid stopped failed rc_file gh_pid_file gh_pid_recorded _gh_pid_wait
+    # HIMMEL-4131: this round's cap comes out of the ONE run deadline. A round
+    # that may still be extended takes half of what is left, so the extension
+    # keeps a real window inside the same total; the last round takes it all.
+    # --max-wait 0 (unbounded) is untouched.
+    local WATCH_CAP=0 LIB_CAP left_now
+    if [ "$MAX_WAIT" -gt 0 ]; then
+        left_now=$(_budget_left)
+        if [ "$extend_ok" -eq 1 ]; then WATCH_CAP=$(((left_now + 1) / 2)); else WATCH_CAP=$left_now; fi
+    fi
+    # The cache lib reads 0 as unbounded, so a spent budget hands it 1.
+    LIB_CAP=$WATCH_CAP
+    [ "$MAX_WAIT" -gt 0 ] && [ "$LIB_CAP" -lt 1 ] && LIB_CAP=1
     err_file=$(mktemp) || { echo "check-ci: mktemp failed — cannot evaluate the gate" >&2; exit 2; }
     rc_file="$err_file.rc"
     gh_pid_file="$err_file.ghpid"
@@ -873,7 +903,7 @@ watch_round() {
                 # HIMMEL-3850: the cache-backed loop stands in for gh's own --watch
                 # (which polls per watcher and cannot be cached); same exit contract.
                 exec env CHECK_CI_WATCH_INTERVAL="$WATCH_INTERVAL" CHECK_CI_WATCH_INTERVAL_MAX="$WATCH_INTERVAL_MAX" \
-                    CHECK_CI_CACHE_HEAD="$cache_head" CHECK_CI_MAX_WAIT="$MAX_WAIT" CIC_NOTICE_FD=1 \
+                    CHECK_CI_CACHE_HEAD="$cache_head" CHECK_CI_MAX_WAIT="$LIB_CAP" CIC_NOTICE_FD=1 \
                     bash "$(cd "$(dirname "$0")" && pwd)/lib/check-ci-watch.sh" ${selector:+"$selector"}
             elif [ -n "$selector" ]; then exec gh pr checks "$selector" --watch --fail-fast --interval "$WATCH_INTERVAL"
             else exec gh pr checks --watch --fail-fast --interval "$WATCH_INTERVAL"
@@ -925,8 +955,8 @@ watch_round() {
         sleep_for=$POLL
         if [ "$MAX_WAIT" -gt 0 ]; then
             elapsed=$((SECONDS - watch_start))
-            if [ "$elapsed" -ge "$MAX_WAIT" ]; then stopped=cap; break; fi
-            remaining=$((MAX_WAIT - elapsed))
+            if [ "$elapsed" -ge "$WATCH_CAP" ]; then stopped=cap; break; fi
+            remaining=$((WATCH_CAP - elapsed))
             [ "$remaining" -lt "$sleep_for" ] && sleep_for=$remaining
         fi
         # Floor at 1s (codex-1, HIMMEL-2062 CR round 2): CHECK_CI_POLL_INTERVAL=0
@@ -940,7 +970,7 @@ watch_round() {
         [ "$sleep_for" -lt 1 ] && sleep_for=1
         "$CHECK_CI_SLEEP_CMD" "$sleep_for"
         [ -f "$rc_file" ] && break
-        if [ "$MAX_WAIT" -gt 0 ] && [ $((SECONDS - watch_start)) -ge "$MAX_WAIT" ]; then stopped=cap; break; fi
+        if [ "$MAX_WAIT" -gt 0 ] && [ $((SECONDS - watch_start)) -ge "$WATCH_CAP" ]; then stopped=cap; break; fi
         if [ "$last_probe" -lt 0 ] || [ $((SECONDS - last_probe)) -ge "$PROBE_INTERVAL" ]; then
             last_probe=$SECONDS
             if watch_decidable; then stopped=decidable; break; fi
@@ -1073,7 +1103,7 @@ watch_round() {
     wait "$wpid" 2>/dev/null || :
     rm -f "$err_file" "$rc_file" "$gh_pid_file" "$rc_file.tmp" "$gh_pid_file.tmp"
     if [ "$stopped" = cap ]; then
-        echo "check-ci: watch cap reached (${MAX_WAIT}s) — evaluating now (HIMMEL-2062); if this repeats, verify state directly: gh pr view <PR> --json state" >&2
+        echo "check-ci: watch cap reached (${WATCH_CAP}s) — evaluating now (HIMMEL-2062); if this repeats, verify state directly: gh pr view <PR> --json state" >&2
     else
         echo "check-ci: every non-CodeRabbit check is terminal — ending the watch early (HIMMEL-2062)" >&2
     fi
@@ -1109,7 +1139,7 @@ watch_round() {
             watch_round 0
             return $?
         fi
-        echo "check-ci: watch cap reached with non-CodeRabbit checks still pending (${pending_names:-unnamed}) — cannot evaluate the gate; re-run (raise --max-wait). Do NOT infer state from log absence — verify directly: gh pr view <PR> --json state (HIMMEL-2206)" >&2
+        echo "check-ci: DEADLINE-PENDING — the ${MAX_WAIT}s --max-wait deadline passed with nothing failed (not an error): watch cap reached with non-CodeRabbit checks still pending (${pending_names:-unnamed}) — cannot evaluate the gate; re-run (raise --max-wait). Do NOT infer state from log absence — verify directly: gh pr view <PR> --json state (HIMMEL-2206)" >&2
         exit 2
     fi
 
@@ -1638,7 +1668,13 @@ watch_round
 # Settle round (codex-adv-1): give slow-registering check runs time to appear,
 # then watch again — round 2 waits for (or fails fast on) any late arrivals.
 if [ "$SETTLE" -gt 0 ]; then
-    "$CHECK_CI_SLEEP_CMD" "$SETTLE"
+    # HIMMEL-4131: the settle wait comes out of the same --max-wait deadline.
+    settle_for=$SETTLE
+    if [ "$MAX_WAIT" -gt 0 ]; then
+        settle_left=$(_budget_left)
+        [ "$settle_for" -gt "$settle_left" ] && settle_for=$settle_left
+    fi
+    [ "$settle_for" -gt 0 ] && "$CHECK_CI_SLEEP_CMD" "$settle_for"
     watch_round
 fi
 
