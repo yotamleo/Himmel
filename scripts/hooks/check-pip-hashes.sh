@@ -22,29 +22,29 @@ for file in "$@"; do
     # trailing `\` continuations. Join those into one logical line per package
     # before checking that every package line carries --hash=sha256:.
     bad=$(awk '
-        {
+        function check(joined,   l) {
+            l = joined
             # A `#` at line start or after whitespace opens a comment; a hash
             # inside one must not satisfy the check (HIMMEL-4144).
-            sub(/(^|[[:space:]])#.*$/, "")
-            buf = buf $0
+            sub(/(^|[[:space:]])#.*$/, "", l)
+            if (l ~ /^[[:space:]]*$/) return        # blank
+            if (l ~ /^[[:space:]]*-/) return        # pip directive (-r, -c, --index-url, ...)
+            if (l !~ /--hash=sha256:/) print NR ": " l
         }
-        /\\$/ { sub(/\\[[:space:]]*$/, " ", buf); next }
         {
-            line = buf
-            buf = ""
-            if (line ~ /^[[:space:]]*$/) next       # blank
-            if (line ~ /^[[:space:]]*#/) next       # comment
-            if (line ~ /^[[:space:]]*-/) next       # pip directive (-r, -c, --index-url, ...)
-            if (line !~ /--hash=sha256:/) print NR ": " line
+            # Same order as pip join_lines: a continuation is decided on the
+            # RAW line, so a line whose backslash is followed by a comment does
+            # not continue; a full-line comment ends the logical line; comments
+            # are stripped from the JOINED line (HIMMEL-4144).
+            if ($0 ~ /^[[:space:]]*#/) { if (buf != "") check(buf); buf = ""; next }
+            buf = buf $0
+            if ($0 ~ /\\$/) { sub(/\\[[:space:]]*$/, " ", buf); next }
+            check(buf); buf = ""
         }
         END {
             # Flush a trailing buffer left dangling by a final \ continuation
             # at EOF (otherwise that line would silently skip validation).
-            if (buf ~ /[^[:space:]]/) {
-                if (buf ~ /^[[:space:]]*#/) ; else
-                if (buf ~ /^[[:space:]]*-/) ; else
-                if (buf !~ /--hash=sha256:/) print NR ": " buf
-            }
+            if (buf != "") check(buf)
         }
     ' <"$file")  # stdin, not an operand: awk reads `requirements=x.txt` as an assignment (HIMMEL-4132)
 

@@ -113,6 +113,19 @@ assert_rc "T17 real hash plus comment passes" 0 "$(run_hook real-and-comment.txt
 printf 'requests==2.0 \\\n    %s \\\n    %s\n' "$H" "$H" > "$TMP/multi.txt"
 assert_rc "T17 multi-hash continuation passes" 0 "$(run_hook multi.txt)"
 
+# T18: a backslash followed by a comment is NOT a continuation (pip decides on
+# the raw line), so the next line is its own, unhashed, requirement.
+printf '%s \\\\ #c\nbar==2\n' "$H" > "$TMP/c1.txt"
+assert_rc "T18 hash then double-backslash comment, bar unhashed" 1 "$(run_hook c1.txt)"
+printf -- '--require-hashes \\\\ #c\nbar==2\n' > "$TMP/c2.txt"
+assert_rc "T18 --require-hashes double-backslash comment, bar unhashed" 1 "$(run_hook c2.txt)"
+printf 'foo==1 %s \\\\ #c\nbar==2\n' "$H" > "$TMP/c3.txt"
+assert_rc "T18 foo hashed double-backslash comment, bar unhashed" 1 "$(run_hook c3.txt)"
+printf 'foo==1 %s \\ #c\nbar==2\n' "$H" > "$TMP/c4.txt"
+assert_rc "T18 single-backslash comment, bar unhashed" 1 "$(run_hook c4.txt)"
+printf 'foo==1 %s \\ #c\nbar==2 %s\n' "$H" "$H" > "$TMP/c5.txt"
+assert_rc "T18 same shape with bar hashed passes" 0 "$(run_hook c5.txt)"
+
 # T12-T15: hostile names must be scanned, not read as awk assignment / stdin / option
 printf 'requests==2.0\n' > "$TMP/x=1.txt"
 assert_rc "T12 name=value filename unhashed" 1 "$(run_hook x=1.txt)"
