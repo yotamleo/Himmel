@@ -87,6 +87,105 @@ deny 'qmd "vsearch" x'
 deny "qmd --index luna 'query' x"
 deny "timeout 60 qmd 'query' x"
 deny 'bun ~/.himmel/qmd-fork/src/cli/qmd.ts "search" x'
+# HIMMEL-4121: bash removes quotes and escapes before qmd sees a word, so a
+# verb or program spelled through them is still the verb or program.
+deny 'qmd "qu"ery x'
+deny 'qmd q"uery" x'
+deny "qmd qu''ery x"
+deny "qmd \$'query' x"
+deny "qmd \$'\\x71uery' x"
+deny "qmd \$'q\\165ery' x"
+deny "qmd \$'\\u0071uery' x"
+deny "qmd \$'query\\x00 notes' x"
+deny "qmd \$'query\\c@ notes' x"
+deny "qmd \$'query\\c\` notes' x"
+deny "qmd \$'query\\c  notes' x"
+deny 'qmd \query x'
+deny 'qmd Q\UERY x'
+deny 'q"md" query x'
+deny 'q\
+md query x'
+deny "\\qmd search x"
+deny "\$'qmd' vsearch x"
+deny 'qmd query"" x'
+deny "qmd query'' x"
+deny 'qmd "query"$(true) x'
+deny 'qmd --index "lu"na q"uery" x'
+deny "timeout 60 q'md' qu\"ery\" x"
+deny 'cd /tmp && q"md" "qu"ery x'
+deny 'echo "$(qmd q"uery" x)"'
+deny 'out="`qmd q"uery" x`"'
+deny 'bun ~/.himmel/qmd-fork/src/cli/q"md".ts "se"arch x'
+deny "echo don't # it's a comment
+qmd q\"uery\" x"
+deny 'qmd qu\
+ery x'
+# A `#` that continues a word after a quote or a substitution is no comment.
+deny 'echo "$(true)"#x; qmd q"uery" x'
+deny 'echo $(true)#x; qmd q"uery" x'
+deny 'echo `true`#x; qmd q"uery" x'
+deny 'echo "a"#x; qmd q"uery" x'
+# zsh (the Bash tool's shell here) drops the backslash of an unknown $'\X'.
+deny "qmd \$'\\query' x"
+deny "qmd \$'quer\\y' x"
+deny "qmd \$'v\\search' x"
+# A command qmd_words declines must not fall back to a text blind to $'…'/$"…".
+deny "cat <<E
+hi
+E
+qmd \$'\\x71uery' x"
+deny "cat <<E
+hi
+E
+qmd \$'\\161uery' x"
+deny 'cat <<E
+hi
+E
+qmd $"query" x'
+deny "echo \$((1<<2)); qmd \$'\\x71uery' x"
+deny "echo $(printf 'a%.0s' $(seq 1 17000)); qmd \$'\\x71uery' x"
+# A verb ending a nested -c string: its closing quote ends the word (J1666b).
+deny "bash -c 'qmd query'"
+deny 'bash -c "qmd search"'
+deny "sh -c 'qmd vsearch'"
+deny "timeout 5 bash -c 'qmd query'"
+deny "zsh -c \"qmd query''\""
+deny "sh -c 'qmd --index foo query'"
+deny 'echo "x; qmd query"'
+deny "qmd query\"x\"; bash -c 'qmd query'"
+deny "echo \"\$(echo \"'\")\"; bash -c 'qmd query'"
+# ... and so does a QUOTED verb ending it (J1666d).
+deny "bash -c 'qmd \"query\"'"
+deny 'sh -c "qmd '"'search'"'"'
+deny 'echo "x; qmd '"'query'"'"'
+deny "zsh -c 'qmd \"vsearch\"'"
+deny 'bash -c "qmd '"'vsearch'"'"'
+deny "sh -c 'qmd \"search\"'"
+deny "timeout 5 bash -c 'qmd \"query\"'"
+deny "env FOO=1 sh -c 'qmd --index foo \"search\"'"
+deny "nice -n 5 bash -c 'qmd \"vsearch\"'"
+deny "cd /tmp && bash -c 'qmd \"query\"'"
+deny "x=ü bash -c 'qmd \"query\"'"
+# \$"…" is a quote too, in every reading.
+deny 'q$"m"d query x'
+deny 'q$"md" query x'
+deny 'cat <<E
+hi
+E
+q$"md" query x'
+deny 'echo $((1<<2)); q$"md" query x'
+deny "echo $(printf 'a%.0s' $(seq 1 17000)); q\$\"md\" query x"
+# Quote offsets are bytes: a multibyte character before them must not shift
+# them under a UTF-8 locale (J1666c).
+U8=$(locale -a 2>/dev/null | grep -iE -m1 '^(c|en_us)\.utf-?8$')
+deny_u8() {
+    if [ -z "$U8" ]; then echo "SKIP deny (no UTF-8 locale): $1"; return; fi
+    assert_rc "deny ($U8): $1" 2 "$(run_case "$(j_bash "$1")" "LC_ALL=$U8")"
+}
+deny_u8 "echo é; bash -c 'qmd query'"
+deny_u8 'bash -c "echo ü; qmd search"'
+deny_u8 "bash -c 'echo 日本; qmd query'"
+deny_u8 "x=ü bash -c 'qmd query'"
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
@@ -114,6 +213,18 @@ allow "qmd 'search the vault' y"
 allow 'echo qmd "query" x'
 allow 'grep -rn "qmd \"query\"" scripts/'
 allow "bash scripts/lib/qmd-bounded.sh 'query' -c luna x"
+# HIMMEL-4121: a word that only STARTS with a quoted verb is a longer word.
+allow 'qmd "query"" notes" y'
+allow "qmd 'query'' notes' y"
+allow 'qmd query" notes" y'
+allow "qmd \$'query notes' y"
+allow "qmd \$'query\\tnotes' y"
+allow 'qmd "query"x y'
+allow 'echo q"md" "qu"ery x'
+allow 'grep -rn "q\"md\" q\"uery\"" scripts/'
+allow 'printf "%s\n" "a; qmd" status'
+# `<<` inside $((…)) is a shift, not a heredoc: the words are still read.
+allow "echo \$((1<<2)); qmd \$'query notes' y"
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \
@@ -127,6 +238,9 @@ assert_rc "deny: command false beside a string cmd" 2 \
     "$(run_case '{"tool_name":"Bash","tool_input":{"command":false,"cmd":"ls"}}')"
 assert_rc "deny: non-string command" 2 \
     "$(run_case '{"tool_name":"Bash","tool_input":{"command":7}}')"
+# A present `command: null` must not read as empty while `cmd` carries the verb.
+assert_rc "deny: command null beside a qmd query cmd" 2 \
+    "$(run_case '{"tool_name":"Bash","tool_input":{"command":null,"cmd":"qmd query x"}}')"
 
 # The deny text names the bounded replacement.
 msg=$(printf '%s' "$(j_bash 'qmd query x')" | env -u QMD_UNBOUNDED_OK bash "$HOOK" 2>&1 >/dev/null)
