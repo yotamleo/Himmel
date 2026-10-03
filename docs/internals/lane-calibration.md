@@ -938,6 +938,16 @@ and its credit floor all apply (credit below the floor or unknown means no
 launch). The alias resolves to the launcher's pinned OpenRouter slug. The judge
 still runs native.
 
+Claude Code does not recognize the gateway slug (`anthropic/claude-haiku-4.5`
+logs `unrecognized_model`, with `costBasis: unknown`), and its
+`total_cost_usd` over-counts about 5x. One task reported 2.09 USD where its
+tokens cost about 0.42 at list price. So on this lane `cost_usd` is repriced
+from `modelUsage` tokens at list prices (a `PRICES` table in `run.sh`), and
+the Claude Code figure is kept as `reported_cost_usd`. `--max-usd` caps that
+real spend. The per-call `--max-budget-usd` stays an outer net, scaled by a
+logged factor of 6. An unpriced model leaves the cost unknown and stops the
+sweep.
+
 Each row records `metered_before` and `metered_after`, which are
 `openrouter-cost.sh --raw` balances. The credit endpoint lags, so a per-task
 delta can under-report. Re-read the account balance after the sweep before

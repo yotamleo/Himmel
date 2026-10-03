@@ -106,6 +106,28 @@ metered_read() { # prints the metered lane's balance in USD, "?" if unreadable, 
   bash "$METERED_PROBE" --raw 2>/dev/null | sed -n 's/^balance=\([0-9.]*\):.*/\1/p' | grep . || echo '?'
 }
 
+# List prices in USD per million tokens: input, output, cache write, cache read.
+# ponytail: Claude Code does not recognize the OpenRouter slug
+# anthropic/claude-haiku-4.5 ([claude-code:unrecognized_model], costBasis
+# unknown) and over-counts its total_cost_usd about 5x, so a metered lane is
+# repriced here from modelUsage; an unpriced model leaves the cost unknown and
+# stops the sweep. Upgrade path: drop this table once Claude Code prices the
+# gateway slug (costBasis no longer "unknown"), or add a row per model adopted.
+PRICES='{"anthropic/claude-haiku-4.5":[1,5,1.25,0.1]}'
+
+agent_cost() { # $1 result json -> the agent's real cost in USD, or null
+  if [ "$LANE" = native ]; then jq -r '.total_cost_usd // null' "$1"; return; fi
+  jq -r --argjson p "$PRICES" '
+    if (.modelUsage // {}) == {} then null
+    else [.modelUsage | to_entries[] | $p[.key] as $r
+          | if $r == null then null
+            else ((.value.inputTokens // 0) * $r[0] + (.value.outputTokens // 0) * $r[1]
+                  + (.value.cacheCreationInputTokens // 0) * $r[2] + (.value.cacheReadInputTokens // 0) * $r[3]) / 1000000
+            end]
+         | if any(. == null) then null else add end
+    end' "$1"
+}
+
 transcript_metrics() { # $1 = transcript or empty -> JSON object
   if [ -z "$1" ] || [ ! -r "$1" ]; then
     echo '{"tool_calls":null,"compactions":null,"hook_denials":null,"peeked":null}'; return
@@ -149,7 +171,7 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
 }
 
 run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
-  local task="$1" wt fix start end bank0 bank1 met0 met1 res sid tr metrics acc_line acc_rc scope jres remaining tok judged=0
+  local task="$1" wt fix start end bank0 bank1 met0 met1 acost outer res sid tr metrics acc_line acc_rc scope jres remaining tok judged=0
   wt="$WORK_ROOT/lq-$RUN_ID-$task"
   mkdir -p "$WORK_ROOT"
   git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $task"
@@ -161,6 +183,7 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   fi
   bank0="${bank0#* }"; met0="$(metered_read)"
   remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" 'BEGIN{printf "%.2f", m - s}')"
+  outer="$(awk -v r="$remaining" -v f="$BUDGET_FACTOR" 'BEGIN{printf "%.2f", r * f}')"
   start="$(date +%s)"
   (
     cd "$wt" || exit 1
@@ -168,13 +191,14 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
     # headless-claude-ok: HIMMEL-4090 lane-quality agent run, bank-preflighted per sweep, explicit permission mode, budget-capped
     # launch-profile-ok: HIMMEL-4090 the eval measures the lane's own default config (claude or the lane launcher in $AGENT_BIN), not a leg profile
     timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
-      --output-format json --max-budget-usd "$remaining" ${EFFORT:+--effort "$EFFORT"}
+      --output-format json --max-budget-usd "$outer" ${EFFORT:+--effort "$EFFORT"}
   ) >"$OUT/$task.result.json" 2>"$OUT/$task.stderr"
   end="$(date +%s)"
   bank1="$(bank_read)"; bank1="${bank1#* }"; met1="$(metered_read)"
   res="$OUT/$task.result.json"
   jq -e . "$res" >/dev/null 2>&1 || echo '{"is_error":true,"subtype":"harness-no-json"}' >"$res"
   jq -r '.result // ""' "$res" >"$OUT/$task.report.md"
+  acost="$(agent_cost "$res")"
   sid="$(jq -r '.session_id // ""' "$res")"
   tr=""
   [ -n "$sid" ] && tr="$(find "$TRANSCRIPTS" -name "$sid.jsonl" -print 2>/dev/null | head -1)"
@@ -184,13 +208,13 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   # Staged against the fixture commit, so a file the agent committed counts too.
   git -C "$wt" add -A
   scope="$(git -C "$wt" diff --cached --name-only "$fix" | grep -v '^lq-work/' | jq -R . | jq -sc .)"
-  remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" -v c="$(jq -r '.total_cost_usd // 0' "$res")" 'BEGIN{printf "%.2f", m - s - c}')"
+  remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" -v c="$( [ "$acost" = null ] && echo 0 || echo "$acost" )" 'BEGIN{printf "%.2f", m - s - c}')"
   jres=null
   if [ "$NO_JUDGE" -eq 0 ]; then
     read -r tok _ <<<"$(bank_read)"
     if [ "$tok" != PROCEED ]; then
       echo "lane-quality: bank preflight said $tok; judge skipped" >"$OUT/$task.judge.err"
-    elif [ "$(jq -r '.total_cost_usd // "null"' "$res")" = null ]; then
+    elif [ "$acost" = null ]; then
       echo "lane-quality: agent cost unknown, budget cannot be bounded; judge skipped" >"$OUT/$task.judge.err"
     elif awk -v r="$remaining" 'BEGIN{exit !(r >= 0.01)}'; then
       jres="$(judge "$task" "$wt" "$fix" "$OUT/$task.report.md" "$OUT" "$remaining")"
@@ -202,13 +226,13 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   [ -n "$jres" ] || jres=null
   if [ "$KEEP" -eq 0 ]; then git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1; fi
   jq -nc --arg run "$RUN_ID" --arg lane "$LANE" --arg model "$MODEL" --arg effort "$EFFORT" --arg task "$task" \
-    --arg base "$BASE_SHA" --arg fix "$fix" --argjson wall "$((end - start))" --arg b0 "$bank0" --arg b1 "$bank1" --arg m0 "$met0" --arg m1 "$met1" \
+    --arg base "$BASE_SHA" --arg fix "$fix" --argjson wall "$((end - start))" --arg b0 "$bank0" --arg b1 "$bank1" --arg m0 "$met0" --arg m1 "$met1" --argjson ac "$acost" \
     --arg acc "$acc_line" --argjson accrc "$acc_rc" --argjson scope "$scope" --argjson m "$metrics" \
     --argjson j "$jres" --arg wt "$( [ "$KEEP" -eq 1 ] && echo "$wt" )" --slurpfile r "$res" '
     $r[0] as $r
     | { run_id: $run, lane: $lane, model: $model, effort: $effort, task: $task, base_sha: $base, fixture_sha: $fix,
         wall_s: $wall, duration_ms: ($r.duration_ms // null), num_turns: ($r.num_turns // null),
-        cost_usd: ($r.total_cost_usd // null), bank_5h_before: $b0, bank_5h_after: $b1,
+        cost_usd: $ac, reported_cost_usd: ($r.total_cost_usd // null), bank_5h_before: $b0, bank_5h_after: $b1,
         metered_before: (if $m0 == "" then null else $m0 end), metered_after: (if $m1 == "" then null else $m1 end),
         permission_denials: (($r.permission_denials // []) | length),
         is_error: (if $r | has("is_error") then $r.is_error else null end),
@@ -219,9 +243,9 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
         judge: $j, kept_worktree: $wt } + $m' >>"$OUT/runs.jsonl" || die "$task: could not record its runs.jsonl row"
   # "unknown" when the agent, or a judge that was launched, left no cost
   # (killed by the timeout, or failed): the sweep stops.
-  jq -r --argjson j "$jres" --argjson judged "$judged" '
-    if .total_cost_usd == null or ($judged == 1 and ($j.cost_usd? // null) == null) then "unknown"
-    else .total_cost_usd + ($j.cost_usd? // 0) end' "$res"
+  jq -nr --argjson ac "$acost" --argjson j "$jres" --argjson judged "$judged" '
+    if $ac == null or ($judged == 1 and ($j.cost_usd? // null) == null) then "unknown"
+    else $ac + ($j.cost_usd? // 0) end'
 }
 
 cmd_run() {
@@ -259,11 +283,16 @@ cmd_run() {
   BASE_SHA="${LQ_BASE_SHA:-$(tr -d '[:space:]' <"$HERE/BASE_SHA")}"
   WORK_ROOT="${LQ_WORK_ROOT:-$REPO/.claude/worktrees}"
   # The judge always runs native; a metered lane's agent goes through its launcher.
-  AGENT_BIN="$CLAUDE_BIN"; METERED_PROBE=""; TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude/projects}"
+  AGENT_BIN="$CLAUDE_BIN"; METERED_PROBE=""; BUDGET_FACTOR=1; TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude/projects}"
   if [ "$LANE" = openrouter ]; then
     AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/claude-openrouter}"
     METERED_PROBE="${LQ_METERED_PROBE:-$REPO/scripts/lanes/openrouter-cost.sh}"
     TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude-openrouter/projects}"
+    # The sweep cap counts real (repriced) spend; the per-call cap is an outer
+    # net in Claude Code's own over-counted units, wide enough not to stop a run
+    # below the real cap and still bounding a runaway.
+    BUDGET_FACTOR=6
+    echo "lane-quality: openrouter agent budget factor $BUDGET_FACTOR (Claude Code over-counts the gateway slug; --max-usd counts real spend)" >&2
   fi
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$LANE-$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9.-' '_')"
   OUT="${OUT:-$HOME/.himmel/eval/lane-quality/$RUN_ID}"
