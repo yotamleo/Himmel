@@ -182,6 +182,9 @@ check "a relative --out still reaches the judge" '[ "$(jq -s ".[0].judge.correct
 LQ_FAKE_NOJSON=1 bash "$RUN" run --lane native --model m --tasks shell-red-green,finding-verify --no-judge \
   --out "$TMP/out9" >"$TMP/run9.log" 2>&1
 check "an agent run of unknown cost stops the sweep" '[ "$(wc -l <"$TMP/out9/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run9.log"'
+: >"$TMP/fake.log.judge"
+LQ_FAKE_NOJSON=1 bash "$RUN" run --lane native --model m --tasks shell-red-green --out "$TMP/out11" >"$TMP/run11.log" 2>&1
+check "no judge call after an agent run of unknown cost" '[ ! -s "$TMP/fake.log.judge" ] && [ "$(jq -s ".[0].judge" "$TMP/out11/runs.jsonl")" = null ]'
 
 echo "4. table"
 bash "$RUN" table "$TMP/out1" >"$TMP/table.md" 2>&1

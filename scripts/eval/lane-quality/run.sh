@@ -172,6 +172,8 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
     read -r tok _ <<<"$(bank_read)"
     if [ "$tok" != PROCEED ]; then
       echo "lane-quality: bank preflight said $tok; judge skipped" >"$OUT/$task.judge.err"
+    elif [ "$(jq -r '.total_cost_usd // "null"' "$res")" = null ]; then
+      echo "lane-quality: agent cost unknown, budget cannot be bounded; judge skipped" >"$OUT/$task.judge.err"
     elif awk -v r="$remaining" 'BEGIN{exit !(r >= 0.01)}'; then
       jres="$(judge "$task" "$wt" "$fix" "$OUT/$task.report.md" "$OUT" "$remaining")"
       judged=1
