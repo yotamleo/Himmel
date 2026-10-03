@@ -1902,6 +1902,90 @@ assert_rc "389 /opt/t/plant --into=~/.claude x denies" 2 \
 assert_rc "390 nested worktree \$L -sf X ../../ -b denies" 2 \
     "$(bash_rc_of "$NESTED_WT" '$L -sf X ../../ -b')"
 
+# HIMMEL-4156: a glob, bracket, brace or `$` spelling of the `.claude` name is
+# `.claude`, from every cwd — from a nested worktree these planted the home
+# settings file, since only a literal home `.claude` read as live there.
+SJ=/tmp/s/settings.json
+assert_rc "391 nested worktree ln -sf \$SJ ~/.c?aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c?aude" HOME="$FAKEHOME")"
+assert_rc "392 nested worktree ln -sf \$SJ ~/.cl*/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl*/" HOME="$FAKEHOME")"
+assert_rc "393 nested worktree ln -sf \$SJ ~/.c[l]aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c[l]aude" HOME="$FAKEHOME")"
+assert_rc "394 nested worktree cp \$SJ ~/.c?aude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/.c?aude/" HOME="$FAKEHOME")"
+assert_rc "395 nested worktree ln -sf \$SJ ~/.cl{a,}ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl{a,}ude" HOME="$FAKEHOME")"
+assert_rc "396 nested worktree ln -sf \$SJ \$HOME/.cla{ude,x}/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ \$HOME/.cla{ude,x}/" HOME="$FAKEHOME")"
+assert_rc "397 nested worktree ln -sf \$SJ ~/{x,{.claude,y}}/ (nested brace) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/{x,{.claude,y}}/" HOME="$FAKEHOME")"
+assert_rc "398 nested worktree ln -sf \$SJ ~/.cl\$X denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl\$X" HOME="$FAKEHOME")"
+assert_rc "399 nested worktree cp -t ~/.c[[:alpha:]]aude \$SJ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp -t ~/.c[[:alpha:]]aude $SJ" HOME="$FAKEHOME")"
+assert_rc "400 nested worktree echo {} > ~/.c?aude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo {} > ~/.c?aude/settings.json' HOME="$FAKEHOME")"
+assert_rc "401 nested worktree ln -sf \$SJ <abs home>/.c?aude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ $FAKEHOME/.c?aude/" HOME="$FAKEHOME")"
+assert_rc "402 nested worktree ln -sf \$SJ ../../../.c?aude/ (the primary's) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ../../../.c?aude/")"
+assert_rc "403 nested worktree mv x ~/.c?aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'mv x ~/.c?aude' HOME="$FAKEHOME")"
+assert_rc "404 nested worktree /opt/t/plant x ~/.cl*/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" '/opt/t/plant x ~/.cl*/' HOME="$FAKEHOME")"
+assert_rc "405 primary mv x ~/.c?aude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'mv x ~/.c?aude' HOME="$FAKEHOME")"
+assert_rc "406 primary /opt/t/plant x ~/.cl*/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant x ~/.cl*/' HOME="$FAKEHOME")"
+assert_rc "407 primary ln -sf \$SJ ~/.c?aude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.c?aude" HOME="$FAKEHOME")"
+assert_rc "408 primary /opt/t/plant x ./.c?aude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant x ./.c?aude/' HOME="$FAKEHOME")"
+assert_rc "409 heredoc, then nested worktree ln -sf \$SJ ~/.c?aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "$(printf 'cat <<EOF\nhi\nEOF\nln -sf %s ~/.c?aude' "$SJ")" HOME="$FAKEHOME")"
+# A glob never matching a dot-name, a quoted glob, regex text and JSON braces
+# are not `.claude`, and reads through a glob name stay reads.
+assert_rc "410 nested worktree ln -sf a ~/?claude/ (leading ? skips dot-names) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'ln -sf a ~/?claude/' HOME="$FAKEHOME")"
+assert_rc "411 nested worktree cp a '~/.c?aude/' (quoted, literal) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp a '~/.c?aude/'" HOME="$FAKEHOME")"
+assert_rc "412 nested worktree ls ~/.c* allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'ls ~/.c*' HOME="$FAKEHOME")"
+assert_rc "413 nested worktree cat ~/.c?aude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cat ~/.c?aude/CLAUDE.md' HOME="$FAKEHOME")"
+assert_rc "414 primary sed -i \"s|^HOOK=.*|HOOK=\$S|\" f allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sed -i "s|^HOOK=.*|HOOK=$S|" f' HOME="$FAKEHOME")"
+assert_rc "415 primary printf JSON {…} > /tmp/p.json allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"x\"}}' > /tmp/p.json" HOME="$FAKEHOME")"
+assert_rc "416 primary git commit heredoc naming handovers/.*/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nmatch ^handovers/.*/ only\nEOF\n)"')" HOME="$FAKEHOME")"
+assert_rc "417 nested worktree cp src/* d/ allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp src/* d/' HOME="$FAKEHOME")"
+
+# HIMMEL-4149: an exec wrapper's option argument, alone or at the end of a
+# short-option cluster, is skipped before the command word is picked.
+assert_rc "418 env -u X /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'env -u X /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "419 timeout -s KILL 5 /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'timeout -s KILL 5 /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "420 nice -n 5 /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'nice -n 5 /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "421 sudo -iu root /opt/t/plant x ~/.claude/ (cluster) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -iu root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "422 nested worktree sudo -iu root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'sudo -iu root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "423 nested worktree sudo -u root /opt/t/plant x ~/.c?aude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'sudo -u root /opt/t/plant x ~/.c?aude/' HOME="$FAKEHOME")"
+assert_rc "424 heredoc, then sudo -iu root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nsudo -iu root /opt/t/plant x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "425 sudo -iu root cat ~/.claude/x allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -iu root cat ~/.claude/x' HOME="$FAKEHOME")"
+assert_rc "426 env -u X cat ~/.claude/x allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'env -u X cat ~/.claude/x' HOME="$FAKEHOME")"
+assert_rc "427 timeout -s KILL 5 cat ~/.claude/x allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'timeout -s KILL 5 cat ~/.claude/x' HOME="$FAKEHOME")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

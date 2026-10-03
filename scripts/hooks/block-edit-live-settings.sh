@@ -1105,6 +1105,24 @@ _unjudged_cmd_word() {
 # _wrapper_opt_arg WRAPPER OPT_LC — 0 when the exec wrapper's option takes the
 # next word as its argument. OPT_LC is lowercased, so `-U`/`-u` share a row.
 _wrapper_opt_arg() {
+    local o=$2 i=1 ch
+    # A short-option cluster (`sudo -iu root`, HIMMEL-4149): as getopt reads
+    # it, the first letter that takes an argument takes the rest of the
+    # cluster, or the next word when it is the cluster's last letter.
+    case "$o" in
+        --*|-?) ;;
+        -*)
+            while [ "$i" -lt "${#o}" ]; do
+                ch=${o:i:1}
+                i=$((i + 1))
+                if _wrapper_opt_arg "$1" "-$ch"; then
+                    [ "$i" = "${#o}" ] && return 0
+                    return 1
+                fi
+            done
+            return 1
+            ;;
+    esac
     case "$1:$2" in
         sudo:-u|sudo:-g|sudo:-h|sudo:-p|sudo:-c|sudo:-d|sudo:-r|sudo:-t|sudo:-a \
         |sudo:--user|sudo:--group|sudo:--host|sudo:--prompt|sudo:--close-from \
@@ -1548,6 +1566,129 @@ mentions_dot_claude_dir_dest() {
     [ -n "$out" ]
 }
 
+# _dc_can_be_claude COMPONENT — 0 when one path component that carries a glob,
+# brace, bracket or `$` can expand to `.claude` (HIMMEL-4156). A brace group
+# with a comma becomes an extglob alternation, a sequence (`{a..z}`) any text,
+# and a group with neither, or an unclosed one, stays literal text as bash
+# leaves it; groups nest. A `$name`/`${…}` is any text. With _DC_XONLY=1 (a
+# word whose globs are all quoted) only a `$` expands and the glob, brace and
+# bracket characters are literal. The result is matched against `.claude`,
+# ignoring case. A component without such a character is literal text and is
+# left to the callers' own matching.
+_dc_can_be_claude() {
+    local c=$1 i=0 n=${#1} ch pat='' depth=0 r eg=0 nc=0 gs xo=${_DC_XONLY:-0}
+    local -a gsa=() cma=()
+    case "$xo:$c" in 1:*'$'*|0:*'*'*|0:*'?'*|0:*'['*|0:*'{'*|0:*'$'*) ;; *) return 1 ;; esac
+    while [ "$i" -lt "$n" ]; do
+        ch=${c:i:1}
+        i=$((i + 1))
+        if [ "$xo" = 1 ]; then
+            case "$ch" in
+                '{'|'}'|','|'*'|'?'|'['|']') pat="$pat\\$ch"; continue ;;
+            esac
+        fi
+        case "$ch" in
+            '{')
+                gsa[depth]=${#pat} cma[depth]=0
+                depth=$((depth + 1))
+                pat="$pat@("
+                ;;
+            '}')
+                if [ "$depth" -gt 0 ]; then
+                    depth=$((depth - 1))
+                    gs=${gsa[depth]}
+                    if [ "${cma[depth]}" = 1 ]; then
+                        pat="$pat)"
+                    else
+                        case "${pat:gs+2}" in
+                            *..*) pat="${pat:0:gs}*" ;;
+                            *) pat="${pat:0:gs}{${pat:gs+2}}" ;;
+                        esac
+                    fi
+                else
+                    pat="$pat}"
+                fi
+                ;;
+            ',')
+                if [ "$depth" -gt 0 ]; then
+                    pat="$pat|" cma[depth - 1]=1
+                else
+                    pat="$pat,"
+                fi
+                ;;
+            '$')
+                case "${c:i:1}" in
+                    '{')
+                        while [ "$i" -lt "$n" ] && [ "${c:i:1}" != '}' ]; do i=$((i + 1)); done
+                        i=$((i + 1))
+                        ;;
+                    [A-Za-z_])
+                        while [ "$i" -lt "$n" ]; do
+                            case "${c:i:1}" in [A-Za-z0-9_]) i=$((i + 1)) ;; *) break ;; esac
+                        done
+                        ;;
+                    '') pat="$pat\$"; continue ;;
+                    *) i=$((i + 1)) ;;
+                esac
+                pat="$pat*"
+                ;;
+            *) pat="$pat$ch" ;;
+        esac
+    done
+    # an unclosed brace group is literal text, its commas included
+    if [ "$depth" -gt 0 ]; then
+        gs=${gsa[0]}
+        r=${pat:gs}
+        r=${r//'@('/'{'}
+        pat="${pat:0:gs}${r//'|'/,}"
+    fi
+    shopt -q extglob && eg=1
+    shopt -q nocasematch && nc=1
+    shopt -s extglob nocasematch
+    r=1
+    # shellcheck disable=SC2053 # $pat is the pattern, on purpose
+    [[ .claude == $pat ]] && r=0
+    [ "$eg" = 1 ] || shopt -u extglob
+    [ "$nc" = 1 ] || shopt -u nocasematch
+    return "$r"
+}
+
+# _dc_name_fold TEXT — _DCF is TEXT with every path component that can expand
+# to `.claude` (_dc_can_be_claude) written as the literal `.claude`, so every
+# rule below judges `~/.c?aude`, `~/.cl*/`, `~/.c[l]aude` and `~/.cl{a,}ude`
+# as it judges `~/.claude` (HIMMEL-4156: they planted a home settings file
+# from a nested-worktree cwd, where only a literal home `.claude` is live). A
+# component starts after a `/`, a space, `=`, `:`, a shell operator or a
+# leading short option (`-t.c?aude`), and begins with `.` or `{`: a glob that
+# begins with `*`, `?` or `[` never matches a dot-name (bash and zsh both need
+# the leading `.` spelled), so `cp src/* d/` is left alone.
+_dc_name_fold() {
+    local t=$1 out='' m c pw
+    # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
+    local re='(^-[A-Za-z0-9]*|[[:space:]]-[A-Za-z0-9]*|^|[/[:space:]=:<>|;&(`])([.{][^/[:space:];&|<>()`]*)'
+    local pre='[.{][^/[:space:]]*[][*?{}$]'
+    _DCF=$1
+    [[ $t =~ $pre ]] || return 0
+    while [[ $t =~ $re ]]; do
+        m=${BASH_REMATCH[0]}
+        c=${BASH_REMATCH[2]}
+        out=$out${t%%"$m"*}${BASH_REMATCH[1]}
+        t=${t#*"$m"}
+        # under a plain relative directory (`handovers/.*/`) a component is
+        # never the home or primary `.claude`; a `/`, `~`, `$` or `.` root
+        # or a `..` climb can be
+        pw=x
+        if [ "${BASH_REMATCH[1]}" = / ]; then
+            pw=${out##*[[:space:]=:<>|;&(\`]}
+            case "$pw" in [/~\$.]*|*../*) pw=x ;; esac
+        fi
+        [ "$pw" = x ] && _dc_can_be_claude "$c" && c=.claude
+        out=$out$c
+        [ -n "$m" ] || break
+    done
+    _DCF=$out$t
+}
+
 # _verb_segment TEXT VERB_GREP_PATTERN — the single shell "segment" of TEXT
 # containing a match for VERB_GREP_PATTERN, split on `;`, `&` (covers `&&`
 # too — each `&` is its own split point), `|` and `#` (HIMMEL-3499, third
@@ -1969,6 +2110,29 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # cmd_n keeps its case for the `-C` flag test; everything else matches
     # the lowercased text.
     cmd_lc=$(printf '%s' "$cmd_n" | tr '[:upper:]' '[:lower:]')
+    # A glob/brace spelling of a `.claude` component counts as `.claude`
+    # (HIMMEL-4156), in each lowercased word and in the text. A quoted glob
+    # never expands, so when the tokenizer vouches only a word carrying an
+    # unquoted glob or a live `$` folds, and the text folds only if one did.
+    dc_fold=1
+    if [ "$TOK" = 1 ]; then
+        dc_fold=0 widx=0
+        while [ "$widx" -lt "$ST_N" ]; do
+            if [ "${ST_G[widx]}" = 1 ] || [ "${ST_X[widx]}" = 1 ]; then
+                _DC_XONLY=1
+                [ "${ST_G[widx]}" = 0 ] || _DC_XONLY=0
+                _dc_name_fold "${ST_LW[widx]}"
+                _DC_XONLY=0
+                [ "$_DCF" = "${ST_LW[widx]}" ] || dc_fold=1
+                ST_LW[widx]=$_DCF
+            fi
+            widx=$((widx + 1))
+        done
+    fi
+    if [ "$dc_fold" = 1 ]; then
+        _dc_name_fold "$cmd_lc"
+        cmd_lc=$_DCF
+    fi
 
     mentions_settings=0
     case "$cmd_lc" in
@@ -2184,7 +2348,9 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # .claude/*`, `git add .claude/*.json`, `.claude/{a,b}.json`); a recursive
     # cp/rsync from a settings-bearing tree into a live parent. Read-only
     # allowlisted commands and `ls` are exempt below, as for a named settings.
-    # ponytail: a glob in the DIRECTORY part (`.cla*/settings.json`), a source
+    # A glob in the `.claude` component itself (`.cla*/settings.json`) is
+    # folded to `.claude` before this runs (_dc_name_fold, HIMMEL-4156).
+    # ponytail: a glob in another DIRECTORY component, a source
     # tree with the settings file deeper than `<src>/.claude/`, and a case-
     # insensitive `DLINK/` spelling (needs a case-insensitive filesystem to
     # model) are not judged; upgrade path: a path-expanding parse (HIMMEL-3934).
@@ -2197,7 +2363,8 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         esac
         _settings_leaf_candidates "$leaf" "$glob"
         [ -n "$_SLC" ] || return 0
-        _exp_home "$dir"
+        _dc_name_fold "$dir"
+        _exp_home "$_DCF"
         dir=$_EH
         for n in $_SLC; do
             sd=$symlink_dest
