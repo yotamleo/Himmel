@@ -316,10 +316,15 @@ try {
   //    NULL, so one such row makes `hash_seq NOT IN (...)` NULL for every row
   //    and the orphan GC deletes nothing — silently, with the convergence
   //    self-check below then failing for a reason that points elsewhere.
-  db.prepare(
-    'DELETE FROM vectors_vec WHERE NOT EXISTS (' +
-    "SELECT 1 FROM content_vectors cv WHERE cv.hash IS NOT NULL AND cv.seq IS NOT NULL " +
-    "AND cv.hash || '_' || cv.seq = vectors_vec.hash_seq)").run();
+  //    Skipped under --strip-vectors, which drops the whole table below: the
+  //    concatenated key cannot use an index, so on a full index this GC alone
+  //    runs for most of an hour.
+  if (!stripVectors) {
+    db.prepare(
+      'DELETE FROM vectors_vec WHERE NOT EXISTS (' +
+      "SELECT 1 FROM content_vectors cv WHERE cv.hash IS NOT NULL AND cv.seq IS NOT NULL " +
+      "AND cv.hash || '_' || cv.seq = vectors_vec.hash_seq)").run();
+  }
   // 6. --strip-vectors (HIMMEL-4232): a receiver on a different embed model
   //    gets BM25 only. The vec0 TABLE goes, not just its rows: it is declared
   //    float[<source dims>], and qmd refuses to embed into a table of another
