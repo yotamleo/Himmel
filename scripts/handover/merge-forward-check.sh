@@ -25,9 +25,10 @@
 #      3 = nothing red on the PR; no merge-forward needed
 # Red = failure | timed_out | startup_failure.
 # ponytail: inheritance is matched by job name, not by failing case, so a job that
-# fails different tests on the base and the PR still reads as inherited; the leg
-# compares the failed-job logs itself before merging forward, upgrade path is a
-# per-case comparison if that ever bites.
+# fails different tests on the base and the PR still reads as inherited. An ALLOW
+# is therefore necessary, not sufficient: the leg must also show the PR's failed
+# job fails the SAME case as the base run (docs/handover/leg-preface.md); upgrade
+# path is a per-case comparison here if that ever bites.
 set -uo pipefail
 pr=""; base=""; latest=""; bsha=""; msha=""; bad=0
 while [ $# -gt 0 ]; do
@@ -50,7 +51,7 @@ if [ -n "$bsha" ] && [ "$bsha" != "$msha" ]; then
   exit 1
 fi
 
-if awk -F'\t' 'NF && (NF != 2 || $2 !~ /^[a-z_]+$/) {exit 1}' "$pr"; then :; else
+if awk -F'\t' 'NF && (NF != 2 || $2 !~ /^(success|failure|cancelled|skipped|neutral|timed_out|startup_failure|action_required|stale)$/) {exit 1}' "$pr"; then :; else
   echo "usage: --pr file has a malformed row (want <job><TAB><conclusion>): a skipped row could hide a red" >&2
   exit 2
 fi
@@ -60,8 +61,9 @@ reds="$(awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print
 
 blocked=""
 while IFS= read -r job; do
-  b="$(awk -F'\t' -v j="$job" '$1==j {print $2; exit}' "$base")"
-  l="$(awk -F'\t' -v j="$job" '$1==j {print $2; exit}' "$latest")"
+  # a job name may repeat: base counts if ANY row is red, latest only if EVERY row is success
+  b="$(awk -F'\t' -v j="$job" '$1==j && ($2=="failure"||$2=="timed_out"||$2=="startup_failure") {print $2; f=1; exit} $1==j && !s {s=$2} END {if (!f && s) print s}' "$base")"
+  l="$(awk -F'\t' -v j="$job" '$1==j && $2!="success" {print $2; f=1; exit} $1==j {s=1} END {if (!f && s) print "success"}' "$latest")"
   case "$b" in failure|timed_out|startup_failure) inherited=1 ;; *) inherited=0 ;; esac
   if [ "$inherited" -ne 1 ]; then
     blocked="${blocked:+$blocked, }$job (base: ${b:-absent} — not inherited, the PR's own red)"

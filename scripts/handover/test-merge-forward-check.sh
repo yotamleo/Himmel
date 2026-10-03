@@ -71,6 +71,14 @@ set3 'a\tfailure\nb failure\n' 'a\tfailure\nb\tfailure\n' 'a\tsuccess\nb\tsucces
 run "malformed PR row (no tab): usage error, never ALLOW" 2 'malformed'
 set3 'a\tfailure\nb\tfailure \n' 'a\tfailure\nb\tfailure\n' 'a\tsuccess\nb\tsuccess\n'
 run "malformed conclusion (trailing space): usage error, never ALLOW" 2 'malformed'
+set3 'a\tfailure\nb\tfailed\n' 'a\tfailure\nb\tfailure\n' 'a\tsuccess\nb\tsuccess\n'
+run "unknown conclusion value: usage error, never ALLOW" 2 'malformed'
+
+# duplicate job names: one green row on latest must not hide a red one
+set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\na\tfailure\n'
+run "duplicate job on latest, one row red: REFUSE" 1 'REFUSE.*a.*not proven fixed'
+set3 'a\tfailure\n' 'a\tsuccess\na\tfailure\n' 'a\tsuccess\n'
+run "duplicate job at base, one row red: inherited, ALLOW" 0 'ALLOW.*a'
 
 bash "$MF" --pr "$tmp/pr" --main "$tmp/pr" >/dev/null 2>&1
 rc=$?

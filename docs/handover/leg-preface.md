@@ -339,7 +339,11 @@ by design.
   `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --base-sha <merge-base> --main-base-sha <the base run's headSha>`
   (the job files carry no sha; the two sha flags make the script refuse a base
   run that is not your merge-base — pass both, or both are your duty). Exit 0
-  `ALLOW` (every red job was red at the base AND is green on latest) = you may,
+  `ALLOW` (every red job was red at the base AND is green on latest) matches by
+  job NAME only, so it is necessary, not sufficient: also read the failed-job
+  log of your PR's run and of the base run and show, in a Results bullet, that
+  they fail the SAME case — a different failing case is your own red. With both
+  shown you may,
   once, `git fetch origin main` then `git merge origin/main` — a merge commit;
   never rebase, never force-push — citing both main run ids in a Results
   bullet. Exit 1 `REFUSE` (a job green at the base is your own red; a job red
