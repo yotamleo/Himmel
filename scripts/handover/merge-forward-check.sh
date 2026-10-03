@@ -51,10 +51,12 @@ if [ -n "$bsha" ] && [ "$bsha" != "$msha" ]; then
   exit 1
 fi
 
-if awk -F'\t' 'NF && (NF != 2 || $2 !~ /^(success|failure|cancelled|skipped|neutral|timed_out|startup_failure|action_required|stale)$/) {exit 1}' "$pr"; then :; else
-  echo "usage: --pr file has a malformed row (want <job><TAB><conclusion>): a skipped row could hide a red" >&2
-  exit 2
-fi
+for f in "$pr" "$base" "$latest"; do
+  if awk -F'\t' 'NF && (NF != 2 || $2 !~ /^(success|failure|cancelled|skipped|neutral|timed_out|startup_failure|action_required|stale)$/) {exit 1}' "$f"; then :; else
+    echo "usage: $f has a malformed row (want <job><TAB><conclusion>): a skipped or misread row could hide a red" >&2
+    exit 2
+  fi
+done
 
 reds="$(awk -F'\t' '$2=="failure"||$2=="timed_out"||$2=="startup_failure" {print $1}' "$pr")"
 [ -n "$reds" ] || { echo "nothing red on the PR — no merge-forward needed"; exit 3; }

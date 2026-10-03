@@ -73,6 +73,10 @@ set3 'a\tfailure\nb\tfailure \n' 'a\tfailure\nb\tfailure\n' 'a\tsuccess\nb\tsucc
 run "malformed conclusion (trailing space): usage error, never ALLOW" 2 'malformed'
 set3 'a\tfailure\nb\tfailed\n' 'a\tfailure\nb\tfailure\n' 'a\tsuccess\nb\tsuccess\n'
 run "unknown conclusion value: usage error, never ALLOW" 2 'malformed'
+set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\tfailure\n'
+run "malformed latest row (three fields): usage error, never ALLOW" 2 'malformed'
+set3 'a\tfailure\n' 'a failure\n' 'a\tsuccess\n'
+run "malformed base row (no tab): usage error, never REFUSE-by-accident" 2 'malformed'
 
 # duplicate job names: one green row on latest must not hide a red one
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\na\tfailure\n'
