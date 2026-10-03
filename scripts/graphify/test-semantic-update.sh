@@ -16,6 +16,9 @@ fail() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 WS="$(mktemp -d "${TMPDIR:-/tmp}/test-semantic-update.XXXXXX")" || exit 1; trap 'rm -rf "$WS"' EXIT
 REPO="$WS/repo"
 mkdir -p "$REPO/scripts/graphify" "$REPO/scripts/lib" "$WS/bin" "$WS/tmp" "$WS/glm"
+# Other tools share TMPDIR (handover-path.sh's arm-resume-cache.* in CI): the
+# scratch checks look only for this script's own graphify-semantic-* dirs.
+mkdir "$WS/tmp/arm-resume-cache.foreign"
 for f in semantic-update.sh semantic-merge.py harden-graph.py harden-allowlist.json; do
   cp "$HERE/$f" "$REPO/scripts/graphify/$f" 2>/dev/null || true
 done
@@ -93,20 +96,21 @@ EOF
 }
 run() { PATH="$WS/bin:$PATH" bash "$SCRIPT" "$@" 2>&1; }
 ids() { python3 -c 'import json,sys;print(" ".join(sorted(n["id"] for n in json.load(open(sys.argv[1]))["nodes"])))' "$1/graphify-out/graph.json"; }
+scratch() { find "$WS/tmp" -maxdepth 1 -name 'graphify-semantic-*'; }
 lastrun() { tail -1 "$1/graphify-out/semantic-runs.jsonl" | python3 -c "import json,sys;print(json.load(sys.stdin)['$2'])"; }
 
 echo "T1: salus root refuses before any copy (exit 2, no scratch, no graphify, no bank)"
 C1="$WS/c1"; new_corpus "$C1"; touch "$C1/.salus"; : > "$WS/calls.log"
 out=$(run --name t1 --corpus-root "$C1" --corpus-class himmel-code); rc=$?
 [ "$rc" -eq 2 ] && pass "T1 exit 2" || fail "T1 exit 2 (got $rc): $out"
-[ -z "$(ls -A "$WS/tmp")" ] && pass "T1 no scratch dir created" || fail "T1 scratch created: $(ls "$WS/tmp")"
+[ -z "$(scratch)" ] && pass "T1 no scratch dir created" || fail "T1 scratch created: $(scratch)"
 [ -s "$WS/calls.log" ] && fail "T1 graphify/bank invoked: $(cat "$WS/calls.log")" || pass "T1 nothing invoked"
 [ -e "$C1/graphify-out/semantic-manifest.json" ] && fail "T1 manifest written" || pass "T1 no manifest"
 
 echo "T2: an asserted salus class on a plain root also refuses (exit 2, no scratch)"
 C2="$WS/c2"; new_corpus "$C2"; : > "$WS/calls.log"
 out=$(run --name t2 --corpus-root "$C2" --corpus-class salus); rc=$?
-[ "$rc" -eq 2 ] && [ -z "$(ls -A "$WS/tmp")" ] && [ ! -s "$WS/calls.log" ] \
+[ "$rc" -eq 2 ] && [ -z "$(scratch)" ] && [ ! -s "$WS/calls.log" ] \
   && pass "T2 exit 2, nothing created or invoked" || fail "T2 (rc=$rc): $out"
 
 echo "T3: first run, cap 2 of 3 changed -> batch 2, backlog 1, stale node replaced"
@@ -120,7 +124,7 @@ got=$(ids "$C3")
   || fail "T3 JSONL: $(tail -1 "$C3/graphify-out/semantic-runs.jsonl")"
 [ "$(lastrun "$C3" tokens_in)" = 1234 ] && pass "T3 tokens parsed" || fail "T3 tokens: $(tail -1 "$C3/graphify-out/semantic-runs.jsonl")"
 [ -f "$C3/graphify-out/cache/semantic/new.json" ] && pass "T3 cache copied back" || fail "T3 cache not copied back"
-[ -z "$(ls -A "$WS/tmp")" ] && pass "T3 scratch cleaned" || fail "T3 scratch left: $(ls "$WS/tmp")"
+[ -z "$(scratch)" ] && pass "T3 scratch cleaned" || fail "T3 scratch left: $(scratch)"
 
 echo "T4: second run drains the backlog"
 out=$(run --name t3 --corpus-root "$C3" --corpus-class himmel-code --max-files 2); rc=$?
