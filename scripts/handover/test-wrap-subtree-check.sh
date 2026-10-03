@@ -332,7 +332,7 @@ FIX
 out="$(run "$W/hud-tree.txt" 101 2>&1)"; rc=$?
 eq 'a fresh claude-hud statusline subtree is harness: rc 0 (HIMMEL-4139)' 0 "$rc"
 contains 'the hud subtree prints CLOSABLE, all five counted (HIMMEL-4139)' "$out" 'CLOSABLE: no non-harness process under claude pid 101 (5 harness-owned children ignored)'
-contains 'the hud root is name-matched (HIMMEL-4139)' "$out" "ignored pid=400 ppid=101 etime=00:00 why=name-match cmd=node $HUD"
+contains 'the hud root is name-matched (HIMMEL-4139)' "$out" "ignored pid=400 ppid=101 etime=00:00 why=statusline-chain cmd=node $HUD"
 contains 'a hud descendant inherits the ignore (HIMMEL-4139)' "$out" 'ignored pid=404 '
 # The same subtree beside genuine leftovers: only the leftovers withhold.
 {
@@ -369,6 +369,82 @@ lacks 'a decoy never prints CLOSABLE (HIMMEL-4139)' "$out" 'CLOSABLE:'
 out="$(run "$W/dirty.txt" 101 2>&1)"
 lacks 'WITHHELD text does not tell the leg to TaskStop every process listed (HIMMEL-4139)' "$out" 'still alive under claude pid 101 — TaskStop every'
 contains 'WITHHELD text limits TaskStop to what the leg started (HIMMEL-4139)' "$out" 'TaskStop only what you started'
+
+# HIMMEL-4161: the whole per-render statusline chain is exempt as a subtree whose
+# EVERY member matches a tight install-path anchor — also when the claude-hud node
+# is not in the table (a render caught mid-way), and real `timeout N` / `$(…)`
+# subshell shapes. A non-chain process anywhere in the subtree still withholds.
+SL=/home/u/himmel/scripts
+one_row() { # <name> <row>: fixture of the session plus one row under it
+    printf '    1     0 40-00:00:01 /sbin/init\n  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work\n%s\n' "$2" > "$W/$1.txt"
+}
+# (a) each chain member alone, directly under the session.
+one_row chain-a1 "  500   101       00:00 node $HUD"
+one_row chain-a2 "  500   101       00:00 bash $SL/statusline/hud-custom-lines.sh"
+one_row chain-a3 "  500   101       00:00 bash $SL/where-are-we/statusline-segment.sh --cwd /home/u/himmel/.claude/worktrees/fix+x"
+one_row chain-a4 "  500   101       00:00 timeout 3 bash $SL/where-are-we/statusline-segment.sh --cwd /home/u/w"
+one_row chain-a5 "  500   101       00:00 /usr/bin/node $SL/where-are-we/provision.mjs slice --ledger /home/u/himmel/.where-are-we/ledger.jsonl --for HIMMEL-4161"
+one_row chain-a6 "  500   101       00:00 timeout 3 /usr/bin/node $SL/where-are-we/provision.mjs slice --ledger /l --for K-1"
+for n in a1 a2 a3 a4 a5 a6; do
+    out="$(run "$W/chain-$n.txt" 101 2>&1)"; rc=$?
+    eq "chain member $n alone is exempt: rc 0 (HIMMEL-4161)" 0 "$rc"
+    contains "chain member $n alone prints CLOSABLE (HIMMEL-4161)" "$out" 'CLOSABLE: no non-harness process under claude pid 101 (1 harness-owned children ignored)'
+done
+# (b) the chain nested as it really nests, with `timeout` and `$(…)` subshells
+# (same argv as their parent), and the hud node absent from the table.
+cat > "$W/chain-full.txt" <<FIX
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  500   101       00:00 node $HUD
+  501   500       00:00 bash $SL/statusline/hud-custom-lines.sh
+  502   501       00:00 bash $SL/statusline/hud-custom-lines.sh
+  503   502       00:00 timeout 3 bash $SL/where-are-we/statusline-segment.sh --cwd /home/u/w
+  504   503       00:00 bash $SL/where-are-we/statusline-segment.sh --cwd /home/u/w
+  505   504       00:00 bash $SL/where-are-we/statusline-segment.sh --cwd /home/u/w
+  506   505       00:00 timeout 3 /usr/bin/node $SL/where-are-we/provision.mjs slice --ledger /l --for K-1
+  507   506       00:00 /usr/bin/node $SL/where-are-we/provision.mjs slice --ledger /l --for K-1
+FIX
+out="$(run "$W/chain-full.txt" 101 2>&1)"; rc=$?
+eq 'the full nested statusline chain is exempt: rc 0 (HIMMEL-4161)' 0 "$rc"
+contains 'the full chain prints CLOSABLE, all eight counted (HIMMEL-4161)' "$out" 'CLOSABLE: no non-harness process under claude pid 101 (8 harness-owned children ignored)'
+grep -v ' node /home/u/himmel/marketplace' "$W/chain-full.txt" | sed 's/^  501   500/  501   101/' > "$W/chain-nohud.txt"
+out="$(run "$W/chain-nohud.txt" 101 2>&1)"; rc=$?
+eq 'the chain without its hud node is exempt too: rc 0 (HIMMEL-4161)' 0 "$rc"
+# (c) a non-chain child anywhere withholds, and only it (plus anything under it).
+{ cat "$W/chain-full.txt"; printf '  510   500       00:00 sleep 100\n'; } > "$W/chain-extra-under-hud.txt"
+out="$(run "$W/chain-extra-under-hud.txt" 101 2>&1)"; rc=$?
+eq 'a non-chain child of the hud node withholds: rc 1 (HIMMEL-4161)' 1 "$rc"
+contains 'exactly the extra child withholds (HIMMEL-4161)' "$out" 'WITHHELD: 1 process(es) still alive under claude pid 101'
+contains 'the extra child is named (HIMMEL-4161)' "$out" '  pid=510 ppid='
+{ cat "$W/chain-full.txt"; printf '  511   505       00:00 sleep 100\n'; } > "$W/chain-extra-deep.txt"
+out="$(run "$W/chain-extra-deep.txt" 101 2>&1)"; rc=$?
+eq 'a non-chain child deep in the chain withholds: rc 1 (HIMMEL-4161)' 1 "$rc"
+contains 'the deep extra child is named (HIMMEL-4161)' "$out" '  pid=511 ppid='
+# A chain member beneath a non-chain parent: the parent withholds, the member is
+# NOT laundered by its own shape.
+printf '  520   101    00:10:00 sleep 100\n  521   520       00:00 bash %s/statusline/hud-custom-lines.sh\n' "$SL" > "$W/chain-under-sleep.rows"
+{ printf '    1     0 40-00:00:01 /sbin/init\n  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work\n'; cat "$W/chain-under-sleep.rows"; } > "$W/chain-under-sleep.txt"
+out="$(run "$W/chain-under-sleep.txt" 101 2>&1)"; rc=$?
+eq 'a chain member under a non-chain parent withholds: rc 1 (HIMMEL-4161)' 1 "$rc"
+contains 'both the parent and the member are named (HIMMEL-4161)' "$out" 'WITHHELD: 2 process(es)'
+# (d) look-alike paths all withhold.
+cat > "$W/chain-decoys.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  530   101    00:10:00 bash /tmp/statusline-segment.sh
+  531   101    00:10:00 bash /home/u/x/where-are-we/statusline-segment.sh --cwd /w
+  532   101    00:10:00 bash /home/u/himmel/scripts/statusline/hud-custom-lines.sh --serve
+  533   101    00:10:00 bash /home/u/evil/../himmel/scripts/statusline/hud-custom-lines.sh
+  534   101    00:10:00 node /home/u/himmel/scripts/where-are-we/provision.mjs ledger
+  535   101    00:10:00 node /home/u/himmel/scripts/where-are-we/provision.mjs
+  536   101    00:10:00 python3 /home/u/himmel/scripts/where-are-we/provision.mjs slice
+  537   101    00:10:00 bash scripts/statusline/hud-custom-lines.sh
+  538   101    00:10:00 bash /home/u/himmel/scripts/where-are-we/statusline-segment.sh.bak
+FIX
+out="$(run "$W/chain-decoys.txt" 101 2>&1)"; rc=$?
+eq 'look-alike chain paths all withhold: rc 1 (HIMMEL-4161)' 1 "$rc"
+contains 'all nine look-alikes withhold (HIMMEL-4161)' "$out" 'WITHHELD: 9 process(es) still alive under claude pid 101'
+lacks 'a look-alike never prints CLOSABLE (HIMMEL-4161)' "$out" 'CLOSABLE:'
 
 # fx3: the SAME tool call that starts a background job also runs the check —
 # a shell wrapper backgrounds `caffeinate -i ./long-job.sh` and the check
