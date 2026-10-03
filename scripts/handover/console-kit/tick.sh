@@ -288,15 +288,16 @@ launch_dir_default() {
 # dispatched: the fleet manifest's `added` time, else the newest launch-log
 # `armed:` line naming the doc or a candidate session, else the doc's mtime.
 leg_start_epoch() {
-    local doc="$1" cands="$2" t="" ts line
+    local doc="$1" cands="$2" t="" ts line armed
     if [ -n "$LEGS_FROM" ] && [ -r "$LEGS_FROM" ]; then
         ts="$(jq -r --arg d "$doc" '[.legs[] | select(.doc == $d) | .added][0] // empty' "$LEGS_FROM" 2>/dev/null)" || ts=""
         [ -z "$ts" ] || t="$(date -d "$ts" +%s 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
     fi
     if [ -z "$t" ]; then
-        line="$(find "$(launch_dir_default)" -maxdepth 2 -name '*.launch.log' -exec grep -hF ' armed: name=' {} + 2>/dev/null | awk -v d="doc=$doc" -v c=",$cands," '
+        armed="$(find "$(launch_dir_default)" -maxdepth 2 -name '*.launch.log' -exec grep -hF ' armed: name=' {} + 2>/dev/null)"  # gnu-ok: Linux-only kit
+        line="$(printf '%s\n' "$armed" | awk -v d="doc=$doc" -v c=",$cands," '
             { n = $3; sub(/^name=/, "", n); if (index(c, "," n ",") || index($0, " " d " ")) last = $1 }
-            END { if (last != "") print last }')"  # gnu-ok: Linux-only kit (find -maxdepth)
+            END { if (last != "") print last }')"
         if [ -n "$line" ]; then
             t="$(date -d "${line/_/ }" +%s 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
         fi
