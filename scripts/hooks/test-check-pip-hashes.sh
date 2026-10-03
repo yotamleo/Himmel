@@ -4,7 +4,7 @@ set -uo pipefail
 
 HOOK="$(cd "$(dirname "$0")" && pwd)/check-pip-hashes.sh"
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/pip-hashes-test.XXXXXX") || exit 1
 trap 'chmod 644 "$TMP/unreadable.txt" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 FAILED=0
