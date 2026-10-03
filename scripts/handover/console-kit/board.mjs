@@ -152,7 +152,20 @@ const epicsDeclared = liveField('epics').split(/[,\s]+/).filter(Boolean).map((e)
 }).filter(Boolean);
 // A version name lands inside a JQL string: only a plain release token is accepted.
 const versionsDeclared = liveField('versions').split(/[,\s]+/).filter((v) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(v));
-const decisions = liveField('decisions').split(';').map((d) => d.trim()).filter((d) => d && d !== 'none');
+// Split on ';' only at parenthesis depth 0, so "A (x; y); B?" -> ["A (x; y)", "B?"] (HIMMEL-3944).
+const splitTopLevel = (s) => {
+    const out = [];
+    let depth = 0;
+    let cur = '';
+    for (const ch of s) {
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth = Math.max(0, depth - 1);
+        if (ch === ';' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+    }
+    out.push(cur);
+    return out;
+};
+const decisions = splitTopLevel(liveField('decisions')).map((d) => d.trim()).filter((d) => d && d !== 'none');
 const queueLine = liveField('queue');
 const lastGo = liveField('last GO').replace(/`/g, '');
 const consoleResults = section('## Results').filter((l) => l.startsWith('- ')).slice(-8);
