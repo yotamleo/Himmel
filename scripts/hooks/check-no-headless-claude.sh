@@ -155,20 +155,35 @@ for f in "${files[@]}"; do
                 t = s; c = gsub(/[)\]}]/, "&", t)
                 return o - c
             }
-            # HIMMEL-3980: a pure-comment line (`//`, `#`, `/*`) is not code, so it
-            # neither opens/closes depth nor joins the window — otherwise it can sit
-            # between the open paren and the program literal and hide the call.
-            function comment(s) { return s ~ /^[[:space:]]*(\/\/|#|\/\*)/ }
-            { L[NR] = $0 }
+            # HIMMEL-3980: a pure-comment line (`//`, `#`, or a `/* … */` block
+            # comment, single- or multi-line) is not code, so it neither opens/closes
+            # depth nor joins the window — otherwise it can sit between the open paren
+            # and the program literal and hide the call. Code AFTER a closing `*/` on
+            # the same line is kept (C[] holds the code remainder, L[] the raw line).
+            {
+                L[NR] = $0; s = $0; skip[NR] = 0
+                if (inblk) {
+                    if (match(s, /\*\//)) { s = substr(s, RSTART + 2); inblk = 0 }
+                    else { s = "" }
+                    skip[NR] = (s ~ /^[[:space:]]*$/)
+                } else if (s ~ /^[[:space:]]*(\/\/|#)/) {
+                    s = ""; skip[NR] = 1
+                } else if (s ~ /^[[:space:]]*\/\*/) {
+                    sub(/^[[:space:]]*\/\*/, "", s)
+                    if (match(s, /\*\//)) s = substr(s, RSTART + 2); else { s = ""; inblk = 1 }
+                    skip[NR] = (s ~ /^[[:space:]]*$/)
+                }
+                C[NR] = s
+            }
             END {
                 for (i = 1; i <= NR; i++) {
-                    if (comment(L[i])) continue
-                    d = depth(L[i]); if (d <= 0) continue
-                    j = i; J = L[i]; hit = 0
+                    if (skip[i]) continue
+                    d = depth(C[i]); if (d <= 0) continue
+                    j = i; J = C[i]; hit = 0
                     while (d > 0 && j < NR && j < i + win) {
                         j++
-                        if (comment(L[j])) continue
-                        J = J " " L[j]; d += depth(L[j])
+                        if (skip[j]) continue
+                        J = J " " C[j]; d += depth(C[j])
                         if (!hit && J ~ re) { hit = j }
                     }
                     if (!hit) continue

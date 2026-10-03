@@ -319,6 +319,19 @@ printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // run it" "  'git', ['claude'])
 rc=$(run_hook "cm_git.mjs")
 assert_rc "T37g comment between, claude not the program" 0 "$rc"
 
+# T37h (codex-1): code AFTER a closing */ on the comment's own line is still code → BLOCK
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* note */ 'claude'," "  args);" > "$TMP/cm_tail.mjs"
+rc=$(run_hook "cm_tail.mjs")
+assert_rc "T37h block comment then program on the same line, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n%s\n%s\n" "const r = spawnSync(" "  /* a" "     b */ 'claude'," "  args);" "" > "$TMP/cm_ml.mjs"
+rc=$(run_hook "cm_ml.mjs")
+assert_rc "T37i multi-line block comment closing before the program, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n%s\n%s\n" "const r = spawnSync(" "  /* headless-claude-ok: x" "     still comment */" "  'claude', args);" "" > "$TMP/cm_ml_ok.mjs"
+rc=$(run_hook "cm_ml_ok.mjs")
+assert_rc "T37j marker inside a multi-line block comment covers the call" 0 "$rc"
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")
