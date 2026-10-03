@@ -379,6 +379,26 @@ PY
 if [ "$EXEC_OK" = "ok" ]; then pass "exec_a: wraps simple seed, skips compound seed"
 else fail "exec_a: $EXEC_OK"; fi
 
+# CodeRabbit round 9 (codex-1): HIMMEL_REPO must NOT reach a hook from the real
+# checkout -- a hook anchoring on it would resolve helpers/state off the primary.
+# diff pins it to the per-row scratch primary (cwd, path ending /primary). This
+# stub exits 0 only when HIMMEL_REPO ends in /primary, else a non-0/2 rc so diff
+# reports ODD-RC and exits 3. Pre-fix (HIMMEL_REPO inherited = real checkout) the
+# stub exits 7 => diff exit 3; post-fix it is the sandbox anchor => diff exit 0.
+cat > "$TMP/anchor-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$HIMMEL_REPO" in
+  */primary) exit 0 ;;
+  *) exit 7 ;;
+esac
+STUB
+chmod +x "$TMP/anchor-hook.sh"
+printf '{"tool_input":{"command":"echo hi"}}\n' > "$TMP/anchor-corpus.jsonl"
+python3 "$DIFF" --base "$TMP/anchor-hook.sh" --head "$TMP/anchor-hook.sh" \
+        --corpus "$TMP/anchor-corpus.jsonl" --jobs 1 >/dev/null 2>&1; RC9=$?
+if [ "$RC9" = "0" ]; then pass "sandbox-anchor: HIMMEL_REPO points at scratch primary => exit 0"
+else fail "sandbox-anchor: expected exit 0 (sandbox anchor), got $RC9"; fi
+
 echo "----"
 echo "guard-corpus: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

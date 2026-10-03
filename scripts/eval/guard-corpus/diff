@@ -85,10 +85,13 @@ def run_git(args, cwd=None, check=True, env=None):
 # legitimately read; it contains NO variable that can cause code execution or
 # redirect git. GIT_CONFIG_GLOBAL/SYSTEM are forced to an empty file so even a
 # real /etc/gitconfig core.hooksPath is not honored.
+# HIMMEL_REPO is deliberately NOT inherited: a hook that anchors on it would
+# resolve helpers or state against the REAL checkout. run_one_hook overrides it
+# to the per-row scratch primary instead, so the anchor points at the throwaway.
 _ENV_ALLOW = (
     "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
     "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "TZ", "TMPDIR", "TMP", "TEMP",
-    "TERM", "SHELL", "USER", "LOGNAME", "HOSTNAME", "HIMMEL_REPO",
+    "TERM", "SHELL", "USER", "LOGNAME", "HOSTNAME",
 )
 
 
@@ -270,6 +273,10 @@ def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
     env = _sandbox_env(
         HOME=home,
         HANDOVER_DIR=handover,
+        # anchor HIMMEL_REPO at the per-row scratch primary (cwd), never the
+        # real checkout: a hook that resolves helpers/state off it stays inside
+        # the throwaway, and base and head see the identical sandbox anchor.
+        HIMMEL_REPO=cwd,
         CLAUDE_PROJECT_DIR=os.path.dirname(os.path.dirname(
             os.path.dirname(hook_path))),
     )
