@@ -106,6 +106,7 @@ def cls($p; $c; $comp; $ttl):
 def mean(k): if length == 0 then 0 else ((map(.[k]) | add) / length | floor) end;
 
 [ .[] | select(.type == "assistant" and .message.usage != null and .message.id != null)
+  | select(.message.model != "<synthetic>" and any(.message.usage | .input_tokens, .cache_read_input_tokens, .cache_creation_input_tokens, .cache_creation; . != null))
   | { id: .message.id, t: secs,
       in: (.message.usage.input_tokens // 0),
       cr: (.message.usage.cache_read_input_tokens // 0),

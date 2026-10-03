@@ -56,6 +56,11 @@ has "ttl-expiry: classed ttl, not invalidated" "$LAST_OUT" "a	ttl"
 scenario late-rewrite-unrelated not-invalidated 0 invalidation --event "$EVENT"
 has "late-rewrite-unrelated: classed kept" "$LAST_OUT" "a	kept"
 
+# A <synthetic> row (zero usage) and a row with no token fields are not turns:
+# both are skipped, so the counts and means come from the six real turns only.
+scenario synthetic-row-invalidation not-invalidated 0 invalidation --event "$EVENT"
+has "synthetic-row-invalidation: only real turns counted" "$LAST_OUT" "session	kept	3	3	80283	316	81276	310	120"
+
 # --- the event forms --------------------------------------------------------
 scenario no-invalidation not-invalidated 0 invalidation --event 2026-01-01T00:10:00Z
 : > "$TMP/event-file"
