@@ -29,7 +29,9 @@ dedupe_dir="${CADENCE_ALERT_DEDUPE_DIR:-$state/cadence-alert-sent}"
 send_cmd="${CADENCE_ALERT_SEND_CMD:-$_here/vault-stall-alert.sh}"
 
 # A leg or reason becomes part of a sentinel filename: keep it to safe bytes.
-_slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+# No `.` survives, so `<leg>.<reason>` splits unambiguously and `clear a`
+# cannot match leg `a.b`'s sentinels.
+_slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'; }
 
 case "${1:-}" in
     fail)

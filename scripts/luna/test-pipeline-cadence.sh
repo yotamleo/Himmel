@@ -1499,6 +1499,12 @@ reset_alerts
 CADENCE_ALERT_SEND_CMD=false bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
 bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
 assert_rc "a failed send leaves no sentinel, so the next failure retries" 1 "$(count_lines "$ALERT_SENDS")"
+# Clearing leg `a` must not re-arm leg `a.b`: `.` is the leg/reason delimiter.
+reset_alerts
+bash "$SCRIPT_DIR/cadence-alert.sh" fail a.b rc-1 /x.log
+bash "$SCRIPT_DIR/cadence-alert.sh" clear a
+bash "$SCRIPT_DIR/cadence-alert.sh" fail a.b rc-1 /x.log
+assert_rc "clearing one leg leaves a dotted sibling's dedupe intact" 1 "$(count_lines "$ALERT_SENDS")"
 
 # Test C15d: bounded retry/resume for a transient upstream API error (HIMMEL-1152)
 # The 2026-07-17 harvest died 48 minutes in on `API Error: Server error
