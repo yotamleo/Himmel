@@ -402,6 +402,10 @@ contains 'an acceptance bullet above ## Results confirms nothing' "$(DOC="$kdoc"
 printf '%s\n' '# leg' '## Results' '- LIVE — working' '## Notes' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
 contains 'an acceptance bullet under a section after ## Results confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '## ResultsArchive' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
+contains 'a heading that merely starts with Results is not the Results section' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 printf '%s\n' '# leg' '- LIVE — working' > "$n61doc"
 
 # shellcheck disable=SC2016  # backtick leg span, literal fixture text

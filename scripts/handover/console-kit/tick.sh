@@ -534,7 +534,7 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
                     # is read (HIMMEL-3264): an acceptance-shaped line quoted
                     # above it, or under a later `## ` heading, confirms
                     # nothing.
-                    accepted="$(awk '/^## /{ r = ($0 ~ /^## Results/) } r' "$span_doc" 2>/dev/null | sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' | tail -n 1)"
+                    accepted="$(awk '/^## /{ r = ($0 ~ /^## Results([[:space:]]|$)/) } r' "$span_doc" 2>/dev/null | sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' | tail -n 1)"
                 fi
                 if [ -n "$accepted" ] && [ "$accepted" = "$console_stem" ]; then
                     relayed_csv="$(csv_add "$relayed_csv" "$span_leg")"
