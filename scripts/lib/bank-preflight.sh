@@ -669,12 +669,13 @@ _fleet_reclaim_dead_reservation() {
     # the window, so every failure delays the reclaim, never hastens it.
     now=$(date +%s)
     grace="${FLEET_RECLAIM_GRACE_SECS:-60}"
-    case "$grace" in ''|*[!0-9]*) grace=60 ;; esac
+    # Bounded digits, read base 10: a leading zero ("08") is not octal here.
+    case "$grace" in ''|*[!0-9]*|??????????*) grace=60 ;; esac
     seen="$(cat "${dir}dead_seen" 2>/dev/null)" || seen=""
     case "$seen" in
-      ''|*[!0-9]*) printf '%s\n' "$now" > "${dir}dead_seen" 2>/dev/null; seen=$now ;;
+      ''|*[!0-9]*|????????????*) printf '%s\n' "$now" > "${dir}dead_seen" 2>/dev/null; seen=$now ;;
     esac
-    if [ $((now - seen)) -ge "$grace" ] &&
+    if [ $((now - 10#$seen)) -ge $((10#$grace)) ] &&
        ! { [ -n "$name" ] && printf '%s\n' "$_fleet_live_names" | grep -xF "$name" >/dev/null; } &&
        ! { [ -n "$sname" ] && printf '%s\n' "$_fleet_live_names" | grep -xF "$sname" >/dev/null; }; then
       # Rename through our fence: a paused holder cannot act after gate break.

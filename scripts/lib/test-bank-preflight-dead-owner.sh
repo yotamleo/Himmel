@@ -94,6 +94,10 @@ check 'non-numeric grace falls back to the default and refuses' SKIPPED-FLEET "$
 seed grace-corrupt "$exited7"
 printf '%s\n' garbage > "$W/grace-corrupt/HIMMEL-9001-test/dead_seen"
 check 'corrupt death stamp restarts the grace window' SKIPPED-FLEET "$(run grace-corrupt FLEET_RECLAIM_GRACE_SECS=60)"
+seed grace-octal "$exited7"
+printf '%s\n' 08 > "$W/grace-octal/HIMMEL-9001-test/dead_seen"
+check 'leading-zero stamp reads as decimal, not octal' PROCEED "$(run grace-octal FLEET_RECLAIM_GRACE_SECS=08)"
+check 'leading-zero stamp raises no arithmetic error' absent "$(if grep -q 'value too great' "$W/err"; then echo present; else echo absent; fi)"
 # Exercise the reclaim helper with a large fresh census: grep must drain it.
 awk '/^_fleet_reclaim_dead_reservation\(\)/,/^}/' "$REPO/scripts/lib/bank-preflight.sh" > "$W/reclaim.sh" || exit 1
 seed large-census "$dead"
