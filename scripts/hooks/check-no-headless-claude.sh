@@ -175,22 +175,22 @@ for f in "${files[@]}"; do
             # ponytail: a MULTI-line block comment is not recognised (its lines stay
             # code, as before this change), so a `)` inside one can still close the
             # depth early; fixing it needs per-language lexing, no ticket (trigger: a
-            # reported evasion). Likewise a comment holding an UNBALANCED bracket stays
-            # code (same as main), so a `)` in it can still close the depth early:
-            # HIMMEL-4123.
+            # reported evasion). Likewise a comment holding ANY bracket stays code (same
+            # as main), so a `)` in it can still close the depth early: HIMMEL-4123.
             {
                 L[NR] = $0; s = $0; cmt = 0
                 # peel leading comments until real code (or nothing) is left
                 while (1) {
-                    # EVERY comment skip applies only at net bracket depth 0 (it opens and
-                    # closes nothing), so a skipped line cannot change the depth. A comment
-                    # marker is code in some host language (`//` is floor division in
-                    # Python/YAML, `#` a private-field sigil in JS), so a line that opens
-                    # or closes a bracket stays code, exactly as before this change.
-                    if ((s ~ /^[[:space:]]*\/\// || (hash && s ~ /^[[:space:]]*#/)) && depth(s) == 0) { s = ""; cmt = 1; break }
+                    # EVERY comment skip applies only to a line holding NO bracket character
+                    # at all. A comment marker is code in some host language (`//` is floor
+                    # division in Python/YAML, `#` a private-field sigil in JS), and a line
+                    # like `// b); run(` nets to depth 0 yet closes one paren and opens the
+                    # spawn paren. A bracket-free line cannot touch the paren structure, so
+                    # any line with a bracket stays code, exactly as before this change.
+                    if ((s ~ /^[[:space:]]*\/\// || (hash && s ~ /^[[:space:]]*#/)) && s !~ /[(\[{)\]}]/) { s = ""; cmt = 1; break }
                     if (s !~ /^[[:space:]]*\/\*/) break
                     t = s; sub(/^[[:space:]]*\/\*/, "", t)
-                    if (!match(t, /\*\//) || depth(substr(t, 1, RSTART - 1)) != 0) break
+                    if (!match(t, /\*\//) || substr(t, 1, RSTART - 1) ~ /[(\[{)\]}]/) break
                     s = substr(t, RSTART + 2); cmt = 1
                 }
                 skip[NR] = (cmt && s ~ /^[[:space:]]*$/)
