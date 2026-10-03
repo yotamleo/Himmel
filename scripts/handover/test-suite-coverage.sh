@@ -10,8 +10,11 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/suite-coverage.XXXXXX")" || exit 1; trap 'rm -
 fail=0
 pass() { echo "ok: $1"; }
 bad() { echo "FAIL: $1"; [ -n "${2:-}" ] && printf '    got: %s\n' "$2"; fail=1; }
-expect() {  # <desc> <ere> <actual>
-  if grep -Eq -- "$2" <<< "$3"; then pass "$1"; else bad "$1" "$3"; fi
+# expect <desc> <ere> <actual> [want-rc]: verdict text AND, when given, exit status ($rc of the call just made)
+expect() {
+  if ! grep -Eq -- "$2" <<< "$3"; then bad "$1" "$3"
+  elif [ -n "${4:-}" ] && [ "${rc:-}" != "$4" ]; then bad "$1 (rc=${rc:-?}, want $4)" "$3"
+  else pass "$1"; fi
 }
 
 cat > "$tmp/runner.sh" <<'EOF'
@@ -33,18 +36,21 @@ scripts/slow/test-slow.sh  extended  # measured 843s
 "
 EOF
 
-out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/vm/test-vm.sh 2>&1)
-expect "SKIP_LIST suite is uncovered, never verified" 'not run in CI.*uncovered' "$out"
-out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/big/test-big.sh 2>&1)
-expect "superseded suite names its wrappers" 'superseded by .*test-big-fast.sh.*test-big-slow.sh' "$out"
-out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/slow/test-slow.sh 2>&1)
-expect "extended tier is nightly only with its cap" 'nightly only.*1700' "$out"
-out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/plain/test-plain.sh 2>&1)
-expect "unlisted suite runs in PR CI" 'runs in PR CI' "$out"
-out=$(bash "$SC" --runner "$tmp/runner.sh" ./scripts/vm/test-vm.sh 2>&1)
-expect "./-spelled path matches" 'not run in CI' "$out"
-out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/vm/pre-test-vm.sh 2>&1)
-expect "suffix match respects the / boundary" 'runs in PR CI' "$out"
+out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/vm/test-vm.sh 2>&1); rc=$?
+expect "SKIP_LIST suite is uncovered, never verified" 'not run in CI.*uncovered' "$out" 0
+out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/big/test-big.sh 2>&1); rc=$?
+expect "superseded suite names its wrappers" 'superseded by .*test-big-fast.sh.*test-big-slow.sh' "$out" 0
+out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/slow/test-slow.sh 2>&1); rc=$?
+expect "extended tier is nightly only with its cap" 'nightly only.*1700' "$out" 0
+out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/plain/test-plain.sh 2>&1); rc=$?
+expect "unlisted suite runs in PR CI" 'runs in PR CI' "$out" 0
+out=$(bash "$SC" --runner "$tmp/runner.sh" ./scripts/vm/test-vm.sh 2>&1); rc=$?
+expect "./-spelled path matches" 'not run in CI' "$out" 0
+out=$(bash "$SC" --runner "$tmp/runner.sh" scripts/vm/pre-test-vm.sh 2>&1); rc=$?
+expect "suffix match respects the / boundary" 'runs in PR CI' "$out" 0
+sed 's/SUITE_TIMEOUT:-600}" 600)/SUITE_TIMEOUT:-777}" 777)/' "$tmp/runner.sh" > "$tmp/runner-777.sh"
+out=$(bash "$SC" --runner "$tmp/runner-777.sh" scripts/plain/test-plain.sh 2>&1); rc=$?
+expect "cap reads the runner's own default, not a hardcoded 600" 'runs in PR CI \(cap 777s\)' "$out" 0
 bash "$SC" --runner "$tmp/none.sh" scripts/x/test-x.sh >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then pass "missing runner exits 2"; else bad "missing runner exits 2"; fi
@@ -59,10 +65,10 @@ else
   echo "SKIP: trailing --runner no-hang row (no timeout binary)"
 fi
 out=$(bash "$SC" scripts/nope/test-nonexistent.sh 2>&1); rc=$?
-expect "real: a nonexistent suite is unknown, not 'runs in PR CI'" 'unknown' "$out"
+expect "real: a nonexistent suite is unknown, not 'runs in PR CI'" 'unknown' "$out" 3
 if [ "$rc" -eq 3 ]; then pass "unknown suite exits 3"; else bad "unknown suite exits 3 (rc=$rc)"; fi
-out=$(bash "$SC" scripts/handover/suite-coverage.sh 2>&1)
-expect "real: an existing non-test file is unknown" 'unknown' "$out"
+out=$(bash "$SC" scripts/handover/suite-coverage.sh 2>&1); rc=$?
+expect "real: an existing non-test file is unknown" 'unknown' "$out" 3
 # a runner with SKIP_LIST and the cap function but no SUITE_TIER_DEFAULT table is unintelligible
 awk '/^SUITE_TIER_DEFAULT="/ {skip=1} !skip {print} skip && /^"$/ {skip=0}' "$tmp/runner.sh" > "$tmp/no-tier.sh"
 bash "$SC" --runner "$tmp/no-tier.sh" scripts/x/test-x.sh >/dev/null 2>&1
@@ -73,12 +79,12 @@ bash "$SC" --runner "$tmp/junk.sh" scripts/x/test-x.sh >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then pass "incompatible runner exits 2"; else bad "incompatible runner exits 2 (rc=$rc)"; fi
 
-out=$(bash "$SC" --runner "$REAL" scripts/test-install-symmetry-vm.sh 2>&1)
-expect "real: install-symmetry-vm not run in CI" 'not run in CI' "$out"
-out=$(bash "$SC" --runner "$REAL" scripts/handover/test-arm-resume.sh 2>&1)
-expect "real: arm-resume superseded by both wrappers" 'superseded by .*test-arm-resume-fast.sh.*test-arm-resume-1879.sh' "$out"
-out=$(bash "$SC" --runner "$REAL" scripts/handover/test-arm-resume-1879.sh 2>&1)
-expect "real: arm-resume-1879 runs with a 1700s cap" '1700' "$out"
+out=$(bash "$SC" --runner "$REAL" scripts/test-install-symmetry-vm.sh 2>&1); rc=$?
+expect "real: install-symmetry-vm not run in CI" 'not run in CI' "$out" 0
+out=$(bash "$SC" --runner "$REAL" scripts/handover/test-arm-resume.sh 2>&1); rc=$?
+expect "real: arm-resume superseded by both wrappers" 'superseded by .*test-arm-resume-fast.sh.*test-arm-resume-1879.sh' "$out" 0
+out=$(bash "$SC" --runner "$REAL" scripts/handover/test-arm-resume-1879.sh 2>&1); rc=$?
+expect "real: arm-resume-1879 runs with a 1700s cap" '1700' "$out" 0
 
 [ "$fail" -eq 0 ] && echo "PASS: suite-coverage" || echo "FAIL: suite-coverage"
 exit "$fail"
