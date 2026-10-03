@@ -117,7 +117,8 @@ metered_read() { # prints the metered lane's balance in USD, "?" if unreadable, 
 # sweeps, so the repriced cost carries a 1.2 markup to keep --max-usd a real cap.
 # Claude Code's figure was exactly 5x list price on every live task, whatever
 # the token mix. The per-call factor (BUDGET_FACTOR) relies on that ratio, so a
-# run that reports any other ratio leaves the cost unknown and stops the sweep.
+# run that reports any other ratio, no cost or no priced tokens leaves the cost
+# unknown and stops the sweep.
 PRICES='{"anthropic/claude-haiku-4.5":[1,5,1.25,0.1]}'
 METERED_MARKUP=1.2
 REPORTED_RATIO=5
@@ -134,7 +135,7 @@ agent_cost() { # $1 result json -> the agent's real cost in USD, or null
             end]
          | if any(. == null) then null
            else add as $list
-             | if $list > 0 and $rep != null and ($rep / $list - $rr | fabs) > 0.05 then null
+             | if $list <= 0 or $rep == null or ($rep / $list - $rr | fabs) > 0.05 then null
                else $list * $mk end
            end
     end' "$1"

@@ -947,9 +947,9 @@ from `modelUsage` tokens at list prices (a `PRICES` table in `run.sh`), and
 the Claude Code figure is kept as `reported_cost_usd`. `--max-usd` caps that
 real spend. The per-call `--max-budget-usd` is in Claude Code's units, scaled
 by a logged factor of 4, which stops a call before the real remainder is
-spent. That bound relies on the 5x ratio, so an unpriced model, or a run whose
-reported cost is not 5x its list price, leaves the cost unknown and stops the
-sweep.
+spent. That bound relies on the 5x ratio. An unpriced model, a run with no
+reported cost or no priced tokens, or a reported cost that is not 5x its list
+price, leaves the cost unknown and stops the sweep.
 
 Each row records `metered_before` and `metered_after`, which are
 `openrouter-cost.sh --raw` balances. The credit endpoint lags, so a per-task

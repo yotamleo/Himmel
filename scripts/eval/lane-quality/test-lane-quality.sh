@@ -81,7 +81,7 @@ sid="sess-$t"
   echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu2","is_error":true,"content":"PreToolUse:Bash hook error: refusing"}]}}'
   echo '{"type":"system","subtype":"compact_boundary"}'
 } >"$LQ_TRANSCRIPTS/p/$sid.jsonl"
-jq -cn --arg s "$sid" --argjson mu "${LQ_FAKE_MU:-null}" '{type:"result",subtype:"success",is_error:false,session_id:$s,total_cost_usd:0.5,num_turns:3,duration_ms:1000,permission_denials:[{tool_name:"Bash"}],result:"Done by claude-haiku-4-5 via openrouter on the native lane; tests pass."} + (if $mu == null then {} else {modelUsage: $mu} end)'
+jq -cn --arg s "$sid" --argjson mu "${LQ_FAKE_MU:-null}" '{type:"result",subtype:"success",is_error:false,session_id:$s,total_cost_usd:0.5,num_turns:3,duration_ms:1000,permission_denials:[{tool_name:"Bash"}],result:"Done by claude-haiku-4-5 via openrouter on the native lane; tests pass."} + (if $mu == null then {} else {modelUsage: $mu} end) + (if $ENV.LQ_FAKE_NOCOST then {total_cost_usd: null} else {} end)'
 FAKE
 chmod +x "$TMP/bin/claude"
 # LQ_FAKE_PROCEED_N=<n>: only the first n calls PROCEED (counted in LQ_FAKE_CALLS).
@@ -179,6 +179,16 @@ LQ_FAKE_MU='{"anthropic/claude-haiku-4.5":{"inputTokens":25000,"outputTokens":0,
   LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
   --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out18" >"$TMP/run18.log" 2>&1
 check "an off-ratio reported cost stops the openrouter sweep" '[ "$(wc -l <"$TMP/out18/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run18.log"'
+# Zero priced tokens or no reported cost leaves the 5x ratio unchecked, so the
+# cost is unknown and the sweep stops.
+LQ_FAKE_MU='{"anthropic/claude-haiku-4.5":{"inputTokens":0,"outputTokens":0,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}' \
+  LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out19" >"$TMP/run19.log" 2>&1
+check "a zero-token openrouter run stops the sweep" '[ "$(wc -l <"$TMP/out19/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run19.log"'
+LQ_FAKE_NOCOST=1 LQ_FAKE_MU='{"anthropic/claude-haiku-4.5":{"inputTokens":25000,"outputTokens":4000,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}' \
+  LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
+  --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out20" >"$TMP/run20.log" 2>&1
+check "a missing reported cost stops the openrouter sweep" '[ "$(wc -l <"$TMP/out20/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run20.log"'
 : >"$TMP/fake.log"
 LQ_FAKE_PROCEED_N=1 LQ_FAKE_CALLS="$TMP/calls" bash "$RUN" run --lane native --model m --tasks shell-red-green \
   --no-judge --out "$TMP/out14" >"$TMP/run14.log" 2>&1
