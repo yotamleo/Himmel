@@ -106,6 +106,7 @@ g "sudo -u a' b' reboot"    block '{"tool_name":"terminal","tool_input":{"comman
 g "exec -a 'a b'c shutdown" block '{"tool_name":"terminal","tool_input":{"command":"exec -a '"'"'a b'"'"'c shutdown"}}'
 g "nice -n 'a b'c reboot"   block '{"tool_name":"terminal","tool_input":{"command":"nice -n '"'"'a b'"'"'c reboot"}}'
 g "sudo -u \$'a b' reboot"  block '{"tool_name":"terminal","tool_input":{"command":"sudo -u $'"'"'a b'"'"' reboot"}}'
+# shellcheck disable=SC1003  # '\\' is a JSON-escaped backslash inside $'..', not a quote escape
 g "sudo -u \$'a\\' b' reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u $'"'"'a\\'"'"' b'"'"' reboot"}}'
 g "sudo -u \"a\\\" b\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u \"a\\\" b\" reboot"}}'
 g "sudo -u a\\ b reboot"    block '{"tool_name":"terminal","tool_input":{"command":"sudo -u a\\ b reboot"}}'
