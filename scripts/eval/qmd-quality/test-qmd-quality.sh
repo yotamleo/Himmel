@@ -42,6 +42,14 @@ cat "$FIX/golden.jsonl" "$FIX/golden.jsonl" >"$TMP/dup.jsonl"
 bun "$HERE/score.ts" --golden "$TMP/dup.jsonl" --runs "$FIX/runs.jsonl" >/dev/null 2>&1; rc=$?
 eq "score: a duplicate golden id is refused" "$rc" "2"
 
+# --- latency.ts: median and p90 per mode, input order irrelevant --------------
+out=$(bun "$HERE/latency.ts" --runs "$FIX/latency-runs.jsonl" 2>&1); rc=$?
+eq "latency: exit code" "$rc" "0"
+has "latency: lex n=4 median=30 p90=40" "$out" "$(printf 'lex\t4\t30\t40')"
+has "latency: vec single row" "$out" "$(printf 'vec\t1\t5\t5')"
+bun "$HERE/latency.ts" >/dev/null 2>&1; rc=$?
+eq "latency: missing --runs is a usage error" "$rc" "2"
+
 # --- qmd-quality.sh: refusals before any qmd/model load -----------------------
 out=$(bash "$HERE/qmd-quality.sh" --out "$TMP/o1" 2>&1); rc=$?
 eq "wrapper: no --index is a usage error" "$rc" "64"
