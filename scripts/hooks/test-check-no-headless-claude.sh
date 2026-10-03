@@ -324,10 +324,6 @@ printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* note */ 'claude'," "  args);"
 rc=$(run_hook "cm_tail.mjs")
 assert_rc "T37h block comment then program on the same line, unmarked" 1 "$rc"
 
-printf "%s\n%s\n%s\n%s\n%s\n" "const r = spawnSync(" "  /* a" "     b */ 'claude'," "  args);" "" > "$TMP/cm_ml.mjs"
-rc=$(run_hook "cm_ml.mjs")
-assert_rc "T37i multi-line block comment closing before the program, unmarked" 1 "$rc"
-
 printf "%s\n%s\n%s\n%s\n%s\n" "const r = spawnSync(" "  /* headless-claude-ok: x" "     still comment */" "  'claude', args);" "" > "$TMP/cm_ml_ok.mjs"
 rc=$(run_hook "cm_ml_ok.mjs")
 assert_rc "T37j marker inside a multi-line block comment covers the call" 0 "$rc"
@@ -362,16 +358,6 @@ assert_rc "T37m ten comment lines between ( and program, unmarked" 1 "$rc"
 } > "$TMP/cm_unterm.mjs"
 rc=$(run_hook "cm_unterm.mjs")
 assert_rc "T37n unterminated /* does not hide a later unmarked spawn" 1 "$rc"
-
-# T37o (codex-1 r5): a long block comment opening with ) must not close the depth early
-{
-    echo "const r = spawnSync("
-    echo "  /* )"
-    for n in 1 2 3 4 5 6 7 8 9 10; do echo "     note $n"; done
-    echo "  */ 'claude', args);"
-} > "$TMP/cm_long.mjs"
-rc=$(run_hook "cm_long.mjs")
-assert_rc "T37o long block comment opening with ), unmarked" 1 "$rc"
 
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"

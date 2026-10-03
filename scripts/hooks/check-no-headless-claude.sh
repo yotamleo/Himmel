@@ -155,37 +155,31 @@ for f in "${files[@]}"; do
                 t = s; c = gsub(/[)\]}]/, "&", t)
                 return o - c
             }
-            # HIMMEL-3980: a pure-comment line (`//`, `#`, or a `/* … */` block
-            # comment, single- or multi-line) is not code, so it neither opens/closes
-            # depth nor joins the window — otherwise it can sit between the open paren
-            # and the program literal and hide the call. Code AFTER a closing `*/` on
-            # the same line is kept (C[] holds the code remainder, L[] the raw line).
-            # A `/*` with no `*/` within 200 lines is NOT a comment (it may sit in a
-            # string), so a stray one stays code and cannot blank the rest of the file.
-            # ponytail: a block comment over 200 lines stays code and a stray `/*` can
-            # blank up to 200 lines, a real parser would need per-language lexing, no
-            # ticket (trigger: a reported evasion).
-            { L[NR] = $0 }
-            END {
-                for (i = 1; i <= NR; ) {
-                    s = L[i]; cmt = 0
-                    # peel leading comments until real code (or nothing) is left
-                    while (1) {
-                        if (s ~ /^[[:space:]]*(\/\/|#)/) { s = ""; cmt = 1; break }
-                        if (s !~ /^[[:space:]]*\/\*/) break
-                        t = s; sub(/^[[:space:]]*\/\*/, "", t)
-                        if (match(t, /\*\//)) { s = substr(t, RSTART + 2); cmt = 1; continue }
-                        q = 0
-                        for (m = i + 1; m <= NR && m <= i + 200; m++)
-                            if (L[m] ~ /\*\//) { q = m; break }
-                        if (!q) break
-                        for (m = i; m < q; m++) { skip[m] = 1; C[m] = "" }
-                        i = q; match(L[i], /\*\//); s = substr(L[i], RSTART + 2); cmt = 1
-                    }
-                    skip[i] = (cmt && s ~ /^[[:space:]]*$/)
-                    C[i] = s
-                    i++
+            # HIMMEL-3980: a pure-comment line (`//`, `#`, or a one-line `/* … */`
+            # block comment) is not code, so it neither opens/closes depth nor joins
+            # the window — otherwise it can sit between the open paren and the program
+            # literal and hide the call. Code AFTER a closing `*/` on the same line is
+            # kept (C[] holds the code remainder, L[] the raw line). Comments are
+            # judged per line: a `/*` with no `*/` on its line stays code, so a stray
+            # one (e.g. inside a string) can never blank later lines.
+            # ponytail: a MULTI-line block comment is not recognised (its lines stay
+            # code, as before this change), so a `)` inside one can still close the
+            # depth early; fixing it needs per-language lexing, no ticket (trigger: a
+            # reported evasion).
+            {
+                L[NR] = $0; s = $0; cmt = 0
+                # peel leading comments until real code (or nothing) is left
+                while (1) {
+                    if (s ~ /^[[:space:]]*(\/\/|#)/) { s = ""; cmt = 1; break }
+                    if (s !~ /^[[:space:]]*\/\*/) break
+                    t = s; sub(/^[[:space:]]*\/\*/, "", t)
+                    if (!match(t, /\*\//)) break
+                    s = substr(t, RSTART + 2); cmt = 1
                 }
+                skip[NR] = (cmt && s ~ /^[[:space:]]*$/)
+                C[NR] = s
+            }
+            END {
                 for (i = 1; i <= NR; i++) {
                     if (skip[i]) continue
                     d = depth(C[i]); if (d <= 0) continue
