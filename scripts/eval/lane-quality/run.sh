@@ -197,7 +197,7 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
         accept_passed: (($acc | capture("(?<p>[0-9]+)/").p? | tonumber?) // 0),
         accept_total: (($acc | capture("/(?<t>[0-9]+)").t? | tonumber?) // 0),
         accept_ok: ($accrc == 0), scope_ok: ($scope | length == 0), out_of_scope: $scope,
-        judge: $j, kept_worktree: $wt } + $m' >>"$OUT/runs.jsonl"
+        judge: $j, kept_worktree: $wt } + $m' >>"$OUT/runs.jsonl" || die "$task: could not record its runs.jsonl row"
   # "unknown" when the agent, or a judge that was launched, left no cost
   # (killed by the timeout, or failed): the sweep stops.
   jq -r --argjson j "$jres" --argjson judged "$judged" '

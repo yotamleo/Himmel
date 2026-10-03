@@ -190,6 +190,11 @@ if bash "$RUN" run --lane native --model m --tasks shell-red-green --no-judge --
   bad "--timeout 0 is refused"
 else check "--timeout 0 is refused" '[ ! -s "$TMP/out12/runs.jsonl" ]'; fi
 
+mkdir -p "$TMP/out13/runs.jsonl"
+if bash "$RUN" run --lane native --model m --tasks shell-red-green --no-judge --out "$TMP/out13" >"$TMP/run13.log" 2>&1; then
+  bad "an unrecordable row fails the sweep"
+else ok "an unrecordable row fails the sweep"; fi
+
 echo "4. table"
 bash "$RUN" table "$TMP/out1" >"$TMP/table.md" 2>&1
 check "table has a row per task" '[ "$(grep -c "| native | claude-haiku-4-5 |" "$TMP/table.md")" -ge 2 ]'
