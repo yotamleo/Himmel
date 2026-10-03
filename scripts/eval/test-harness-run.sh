@@ -27,7 +27,7 @@ alive() {
 }
 
 # Belt and braces: whatever a failing case leaves behind is killed on exit.
-# shellcheck disable=SC2329  # invoked by the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap
 cleanup() {
     local f p
     for f in "$W"/*.pid; do
