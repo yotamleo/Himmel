@@ -3409,7 +3409,7 @@ pin4152="$(. "$HERE/../../lanes/consult-env.sh" && consult_pin_path)"
 atk4152_env() {
   export ATK4152="$atk4152"
   if [ "$1" = fn ]; then
-    # shellcheck disable=SC2329 # exported, invoked by the child shells under test
+    # shellcheck disable=SC2317,SC2329 # exported, invoked by the child shells under test
     command() { case "$0" in */headed-arm.sh|*leg-claude-launcher*) printf '%s\n' "$0" >> "$ATK4152/fn-log" ;; esac; builtin command "$@"; }
     export -f command
   else
