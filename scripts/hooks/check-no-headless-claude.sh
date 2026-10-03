@@ -180,7 +180,9 @@ for f in "${files[@]}"; do
                 L[NR] = $0; s = $0; cmt = 0
                 # peel leading comments until real code (or nothing) is left
                 while (1) {
-                    if (s ~ /^[[:space:]]*\/\// || (hash && s ~ /^[[:space:]]*#/)) { s = ""; cmt = 1; break }
+                    # a `#` line is skipped only at net bracket depth 0 (it opens and closes
+                    # nothing): JS hosted in a .yml/.sh/.py file can open a paren on a `#` line
+                    if (s ~ /^[[:space:]]*\/\// || (hash && s ~ /^[[:space:]]*#/ && depth(s) == 0)) { s = ""; cmt = 1; break }
                     if (s !~ /^[[:space:]]*\/\*/) break
                     t = s; sub(/^[[:space:]]*\/\*/, "", t)
                     if (!match(t, /\*\//)) break

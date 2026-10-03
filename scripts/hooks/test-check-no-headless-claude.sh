@@ -319,6 +319,18 @@ printf "%s\n%s\n%s\n%s\n" "class A {" "  #worker = spawnSync(" '    "claude", ar
 rc=$(run_hook "cm_priv_noext")
 assert_rc "T37r #private field spawn in an extensionless file, unmarked" 1 "$rc"
 
+# T37s/t/u (judge J1644b): JS hosted INSIDE an allowlisted file — a `#` line that OPENS a
+# paren is code, not a comment (a `#` line is skipped only at net bracket depth 0) → BLOCK
+printf "%s\n%s\n%s\n%s\n%s\n" "script: |" "  class A {" "    #worker = spawnSync(" '      "claude", args);' "  }" > "$TMP/cm_host.yml"
+rc=$(run_hook "cm_host.yml")
+assert_rc "T37s JS #private spawn in a .yml github-script block, unmarked" 1 "$rc"
+printf "%s\n%s\n%s\n%s\n%s\n" "cat > x.js <<EOF" "class A {" "  #worker = spawnSync(" '    "claude", args);' "}" > "$TMP/cm_host.sh"
+rc=$(run_hook "cm_host.sh")
+assert_rc "T37t JS #private spawn in a .sh heredoc, unmarked" 1 "$rc"
+printf "%s\n%s\n%s\n%s\n%s\n" 'JS = """' "class A {" "  #worker = spawnSync(" '    "claude", args);' "}" > "$TMP/cm_host.py"
+rc=$(run_hook "cm_host.py")
+assert_rc "T37u JS #private spawn in a .py triple-quoted string, unmarked" 1 "$rc"
+
 printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* run it */" "  'claude', args);" > "$TMP/cm_blk.mjs"
 rc=$(run_hook "cm_blk.mjs")
 assert_rc "T37d block-comment line before program, unmarked" 1 "$rc"
