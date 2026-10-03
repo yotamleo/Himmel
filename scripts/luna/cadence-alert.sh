@@ -11,8 +11,8 @@
 # Telegram ONCE through the existing sender (vault-stall-alert.sh, i.e. the
 # merge-block-alert.sh -> console-route.ts bridge path). A repeat of the same
 # leg+reason appends again but does not re-send until `clear` — a completed
-# run of that leg — re-arms it. A send that fails drops its dedupe sentinel so
-# the next failure retries the DM.
+# run of that leg — re-arms it. The dedupe sentinel is written only after a
+# delivered send, so a failed send means the next failure retries the DM.
 #
 # Seams: CADENCE_ALERT_FILE (default ~/.himmel/state/cadence-alerts.log),
 # CADENCE_ALERT_DEDUPE_DIR (default ~/.himmel/state/cadence-alert-sent),
@@ -38,11 +38,15 @@ case "${1:-}" in
         printf '%s %s %s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$leg" "$reason" "$log" >> "$alert_file" \
             || echo "cadence-alert: could not append to $alert_file" >&2
         sentinel="$dedupe_dir/$(_slug "$leg").$(_slug "$reason")"
-        # noclobber makes the create atomic: only the first failure since the
-        # last clear wins the right to send.
-        if ( set -C; : > "$sentinel" ) 2>/dev/null; then
-            if ! "$send_cmd" "cadence leg failed: $leg $reason (log: $log)"; then
-                rm -f "$sentinel"
+        # The sentinel is written only AFTER a delivered send: an unwritable
+        # dedupe dir, a failed send or an interrupted one never suppresses the
+        # next alert. Two concurrent failures of one leg could both send; one
+        # runner per leg per night makes that a harmless double DM at worst.
+        if [ ! -e "$sentinel" ]; then
+            if "$send_cmd" "cadence leg failed: $leg $reason (log: $log)"; then
+                : > "$sentinel" 2>/dev/null \
+                    || echo "cadence-alert: could not record dedupe sentinel $sentinel" >&2
+            else
                 echo "cadence-alert: Telegram send failed for $leg $reason" >&2
             fi
         fi

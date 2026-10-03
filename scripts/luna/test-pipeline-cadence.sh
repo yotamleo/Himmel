@@ -1483,6 +1483,23 @@ FETCH_HEALTH_STUB_RC=3 sh "$FIRE_DIR/pipeline-fetch-health.sh" || true
 assert_rc "a clean probe clears the dedupe, so the next bad probe sends" 2 "$(count_lines "$ALERT_SENDS")"
 use_claude ok
 
+# The helper itself: an unwritable dedupe dir must not swallow the send, and
+# the dedupe sentinel is written only after a delivered send, so a send that
+# fails or is interrupted leaves nothing behind to suppress the next alert.
+reset_alerts
+: > "$TMP_ROOT/not-a-dir"
+CADENCE_ALERT_DEDUPE_DIR="$TMP_ROOT/not-a-dir/sent" bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
+assert_rc "unwritable dedupe dir still sends" 1 "$(count_lines "$ALERT_SENDS")"
+reset_alerts
+printf '#!/bin/sh\nls "%s" | wc -l | tr -d " " >> "%s"\n' "$CADENCE_ALERT_DEDUPE_DIR" "$ALERT_SENDS" > "$TMP_ROOT/alert-send-peek"
+chmod +x "$TMP_ROOT/alert-send-peek"
+CADENCE_ALERT_SEND_CMD="$TMP_ROOT/alert-send-peek" bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
+assert_rc "no dedupe sentinel exists while the send is in flight" 0 "$(cat "$ALERT_SENDS")"
+reset_alerts
+CADENCE_ALERT_SEND_CMD=false bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
+bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
+assert_rc "a failed send leaves no sentinel, so the next failure retries" 1 "$(count_lines "$ALERT_SENDS")"
+
 # Test C15d: bounded retry/resume for a transient upstream API error (HIMMEL-1152)
 # The 2026-07-17 harvest died 48 minutes in on `API Error: Server error
 # mid-response.` with 7 clips already recorded, and nothing retried it. Text
