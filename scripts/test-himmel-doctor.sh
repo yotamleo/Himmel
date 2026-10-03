@@ -5414,7 +5414,9 @@ if command -v sqlite3 >/dev/null 2>&1; then
     c48_run() { # <configured embed uri, empty = default>
         if [ -n "$1" ]; then printf 'models:\n  embed: %s\n' "$1" > "$c48_t/home/.config/qmd/index.yml"
         else rm -f "$c48_t/home/.config/qmd/index.yml"; fi
-        PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_QMD_INDEX="$c48_t/index.sqlite" \
+        # CI runners export XDG_CONFIG_HOME, which would point past the fixture HOME.
+        env -u QMD_CONFIG_DIR -u XDG_CONFIG_HOME -u QMD_EMBED_MODEL \
+            PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_QMD_INDEX="$c48_t/index.sqlite" \
             CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1
     }
 

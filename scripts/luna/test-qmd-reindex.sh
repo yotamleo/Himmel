@@ -180,6 +180,9 @@ export HOME="$TMP_ROOT/home"
 mkdir -p "$HOME"
 export USERPROFILE="$HOME"
 export BUN_INSTALL="$TMP_ROOT/bun-none"
+# The embed-model precheck resolves qmd's config the way qmd does; CI runners
+# export XDG_CONFIG_HOME, which would point it past the fixture HOME.
+unset QMD_CONFIG_DIR XDG_CONFIG_HOME XDG_CACHE_HOME INDEX_PATH QMD_EMBED_MODEL
 
 # ============================================================================
 # Argument handling
