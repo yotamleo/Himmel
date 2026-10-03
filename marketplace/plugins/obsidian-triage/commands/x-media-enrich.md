@@ -104,6 +104,22 @@ items) go through whisper only and NEVER enter the vault - the video stays in th
 GIF-like video (a `tweet_video` with no audio) is screenshotted to its first
 frame and copied in as a slide instead.
 
+**Subtitles first, with provenance (HIMMEL-4107).** A video is transcribed from
+its platform subtitles before any whisper run: `yt-dlp` fetches English VTT
+(manual track preferred over auto), which is cookie-free, and the cleaner strips
+tags/timestamps, collapses adjacent rolling duplicates only, and reflows to
+sentence paragraphs. Whisper (gallery-dl -> ffmpeg -> faster-whisper, the only
+path that needs burner cookies) runs only when there is no track or subtitle
+coverage is below `--min-sub-coverage` (default 90). An X clip with NO twimg ref
+and no `media_probe_at` (e.g. Telegram-filed) gets ONE fxtwitter probe (within
+`--limit`): a video stamps `media_video_duration_s` and proceeds; otherwise it
+stamps `media_probe_at` + `media_probe_result: no-video` and is never re-probed.
+`--dry-run` makes no probe call. Every transcript carries
+`media_transcript_source` (`platform-subs` | `auto-subs` | `whisper-<model>` |
+`none`), `media_video_duration_s`, `media_transcript_coverage` and a
+`<!-- source: ..., coverage N%, M:SS -->` line under `### Transcript`.
+`--clean-vtt FILE` prints the cleaned text of one VTT (debug).
+
 ### Step 3 - Slide digest (agent reads images/frames, tool writes)
 
 Scan the vault **vault-wide** for every clip whose body carries the

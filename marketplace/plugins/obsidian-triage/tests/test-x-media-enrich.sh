@@ -31,6 +31,7 @@ cat > "$tmp/bin/uv" <<'STUB'
 case "$*" in
   *transcribe.py*)
     if [ -n "${X_TEST_NO_AUDIO:-}" ]; then exit 0; fi
+    [ -n "${X_TRANSCRIBE_META_FILE:-}" ] && [ -n "${X_TEST_WHISPER_END:-}" ] && echo "$X_TEST_WHISPER_END" > "$X_TRANSCRIBE_META_FILE"
     exec echo "THIS IS THE FIXED TRANSCRIPT" ;;
   *)
     while [ $# -gt 0 ] && [ "$1" != "python" ]; do shift; done
@@ -107,6 +108,39 @@ if not "%~2"=="" ( shift & goto findlast )
 type nul > "%~1"
 exit /b 0
 STUB
+
+# --- yt-dlp + fxtwitter-cmd stubs (HIMMEL-4107; bash only, Windows parked) ---
+# yt-dlp stub: X_TEST_YT_MODE=none (default: no track) | subs | short (both copy the
+# fixture VTT next to the -o template; the caller sets the duration it prints).
+# X_TEST_YT_AUTO_ONLY=1 serves a track only on the --write-auto-subs pass.
+cat > "$tmp/bin/yt-dlp" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "${X_TEST_YT_LOG:-/dev/null}"
+out=""; auto=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) shift; out="$1" ;; --write-auto-subs) auto=1 ;; esac
+  shift
+done
+case "${X_TEST_YT_MODE:-none}" in
+  subs|short)
+    [ -n "${X_TEST_YT_AUTO_ONLY:-}" ] && [ -z "$auto" ] && exit 0
+    d="$(dirname "$out")"; mkdir -p "$d"
+    cp "$X_TEST_VTT" "$d/999.en.vtt"
+    echo "${X_TEST_YT_DURATION:-40}" ;;
+esac
+exit 0
+STUB
+chmod +x "$tmp/bin/yt-dlp"
+# fxtwitter seam (X_MEDIA_FXT_CMD): the tool runs "<cmd> <api-url>"; the stub counts
+# calls in X_TEST_FXT_COUNT and answers from X_TEST_FXT_JSON.
+cat > "$tmp/bin/fxt-stub" <<'STUB'
+#!/usr/bin/env bash
+echo x >> "${X_TEST_FXT_COUNT:-/dev/null}"
+cat "${X_TEST_FXT_JSON:-/dev/null}"
+STUB
+chmod +x "$tmp/bin/fxt-stub"
+export X_MEDIA_FXT_CMD="$tmp/bin/fxt-stub"
+export X_TEST_VTT="$SCRIPT_DIR/fixtures/x-subs/sample.en.vtt"
 
 # gallery-dl stub factory: emits the named files into -D dest (bash + .bat).
 # shellcheck disable=SC2016
@@ -908,6 +942,121 @@ assert "repair-provenance rejects decorated ### Slides heading (exit 1)" 1 "$?"
 assert "decorated-heading repair clip byte-identical (no write)" "$sha_rh" "$(sha256sum "$RH/Clippings/clip.md" | cut -d' ' -f1)"
 grep -qF "<!-- media-enriched" "$RH/Clippings/clip.md" && a=no || a=ok
 assert "no x-media provenance stamped on decorated ### Slides heading" ok "$a"
+
+# --- Test 17: HIMMEL-4107 subtitles-first transcripts ----------------------
+echo "Test 17: VTT cleaner"
+run_tool --clean-vtt "$X_TEST_VTT" >"$tmp/clean.out" 2>"$tmp/clean.err"
+assert "--clean-vtt exit 0" 0 "$?"
+assert "cleaned text has no <...> tags" 0 "$(grep -c '<' "$tmp/clean.out")"
+n="$(grep -o 'this is great & fun\.' "$tmp/clean.out" | wc -l | tr -d ' ')"
+assert "rolling duplicate cues collapse (this is great once)" 1 "$n"
+n="$(grep -o 'We ship every day\.' "$tmp/clean.out" | wc -l | tr -d ' ')"
+assert "rolling two-line duplicate collapses (We ship once)" 1 "$n"
+n="$(grep -o 'Right\.' "$tmp/clean.out" | wc -l | tr -d ' ')"
+assert "non-adjacent repeat of a short line survives (Right. twice)" 2 "$n"
+grep -q '^#' "$tmp/clean.out" && a=heading || a=none
+assert "cue text cannot forge a heading at line start" none "$a"
+grep -qF 'slides-pending-digest' "$tmp/clean.out" && a=present || a=absent
+assert "forged control comment stripped from cue text" absent "$a"
+
+echo "Test 18: probe selection (fxtwitter seam)"
+H2="$tmp/home2"; mkdir -p "$H2"   # NO cookie file: the subs path must not need one
+FXV="$tmp/fxt-video.json"; FXN="$tmp/fxt-novideo.json"
+echo '{"code":200,"tweet":{"media":{"videos":[{"type":"video","duration":40.4}]}}}' > "$FXV"
+echo '{"code":200,"tweet":{"media":{"photos":[{"type":"photo"}]}}}' > "$FXN"
+PV="$tmp/vault-probe"; make_x_vault "$PV" 1801 ""
+export X_TEST_FXT_JSON="$FXV" X_TEST_FXT_COUNT="$tmp/fxt-v.count" X_TEST_YT_MODE=subs X_TEST_YT_DURATION=40 X_TEST_YT_LOG="$tmp/yt-v.log"
+HOME="$H2" run_tool "$PV" >"$tmp/probe.out" 2>"$tmp/probe.err"
+assert "probe+subs run exit 0 without cookies" 0 "$?"
+c="$PV/Clippings/clip.md"
+grep -q '^media_video_duration_s: 40$' "$c" && a=ok || a=no
+assert "media_video_duration_s stamped (40)" ok "$a"
+grep -q '^media_transcript_source: platform-subs$' "$c" && a=ok || a=no
+assert "media_transcript_source: platform-subs" ok "$a"
+grep -q '^media_transcript_coverage: 100$' "$c" && a=ok || a=no
+assert "media_transcript_coverage: 100" ok "$a"
+grep -q '^media_enriched_at:' "$c" && a=ok || a=no
+assert "subs clip media_enriched_at stamped" ok "$a"
+grep -qF '<!-- source: platform-subs (en), coverage 100%, 0:40 -->' "$c" && a=ok || a=no
+assert "provenance line in ### Transcript block" ok "$a"
+grep -qF 'Hi, my name' "$c" && a=ok || a=no
+assert "cleaned subtitle text written into clip" ok "$a"
+grep -q '^x_media_pending:' "$c" && a=present || a=absent
+assert "no x_media_pending after subs success" absent "$a"
+[ "$(wc -l < "$tmp/fxt-v.count" | tr -d ' ')" = 1 ] && a=ok || a=no
+assert "fxtwitter probed exactly once" ok "$a"
+
+PN="$tmp/vault-noprobe"; make_x_vault "$PN" 1802 ""
+export X_TEST_FXT_JSON="$FXN" X_TEST_FXT_COUNT="$tmp/fxt-n.count"
+HOME="$H2" run_tool "$PN" >"$tmp/noprobe.out" 2>"$tmp/noprobe.err"
+assert "no-video probe run exit 0" 0 "$?"
+c="$PN/Clippings/clip.md"
+grep -q '^media_probe_result: no-video$' "$c" && a=ok || a=no
+assert "media_probe_result: no-video stamped" ok "$a"
+grep -q '^media_probe_at: ' "$c" && a=ok || a=no
+assert "media_probe_at stamped" ok "$a"
+grep -q '^media_enriched_at:' "$c" && a=present || a=absent
+assert "no-video clip NOT enriched" absent "$a"
+grep -q '^### Transcript' "$c" && a=present || a=absent
+assert "no-video clip gets no transcript" absent "$a"
+sha1="$(sha256sum "$c" | cut -d' ' -f1)"
+HOME="$H2" run_tool "$PN" >"$tmp/noprobe2.out" 2>&1
+assert "second no-video run exit 0" 0 "$?"
+[ "$(wc -l < "$tmp/fxt-n.count" | tr -d ' ')" = 1 ] && a=ok || a=no
+assert "second run does not re-probe (stub call counter == 1)" ok "$a"
+assert "no-video clip byte-identical on re-run" "$sha1" "$(sha256sum "$c" | cut -d' ' -f1)"
+PD="$tmp/vault-dry"; make_x_vault "$PD" 1804 ""
+: > "$tmp/fxt-d.count"; X_TEST_FXT_COUNT="$tmp/fxt-d.count" HOME="$H2" run_tool "$PD" --dry-run >"$tmp/dry-probe.out" 2>&1
+grep -q 'clip.md' "$tmp/dry-probe.out" && a=present || a=absent
+assert "dry-run neither plans a text-only clip" absent "$a"
+[ ! -s "$tmp/fxt-d.count" ] && a=ok || a=no
+assert "dry-run makes no fxtwitter call" ok "$a"
+
+echo "Test 19: whisper fallback (no track / low coverage)"
+emit_gallery_dl video.mp4
+FB="$tmp/vault-fb"; make_x_vault "$FB" 1901 ""
+export X_TEST_FXT_JSON="$FXV" X_TEST_FXT_COUNT="$tmp/fxt-f.count" X_TEST_YT_MODE=none
+run_tool "$FB" >"$tmp/fb.out" 2>"$tmp/fb.err"
+assert "no-track fallback run exit 0" 0 "$?"
+c="$FB/Clippings/clip.md"
+grep -q '^media_transcript_source: whisper-base$' "$c" && a=ok || a=no
+assert "no subtitle track -> media_transcript_source: whisper-base" ok "$a"
+grep -qF 'THIS IS THE FIXED TRANSCRIPT' "$c" && a=ok || a=no
+assert "whisper transcript written" ok "$a"
+grep -qF '<!-- source: whisper-base, coverage unknown, 0:40 -->' "$c" && a=ok || a=no
+assert "whisper provenance line (coverage unknown without a segment end)" ok "$a"
+LC="$tmp/vault-lowcov"; make_x_vault "$LC" 1902 ""
+export X_TEST_YT_MODE=short X_TEST_YT_DURATION=100 X_TEST_WHISPER_END=30 X_TEST_FXT_COUNT="$tmp/fxt-l.count"
+run_tool "$LC" >"$tmp/lc.out" 2>"$tmp/lc.err"
+assert "low-coverage run exit 0" 0 "$?"
+c="$LC/Clippings/clip.md"
+grep -q '^media_transcript_source: whisper-base$' "$c" && a=ok || a=no
+assert "subs coverage 40 percent (below 90) -> whisper fallback" ok "$a"
+grep -q '^media_transcript_coverage: 75$' "$c" && a=ok || a=no
+assert "whisper coverage = last segment end / duration (30/40 = 75)" ok "$a"
+grep -q '^media_video_duration_s: 40$' "$c" && a=ok || a=no
+assert "probe duration kept through the fallback" ok "$a"
+TH="$tmp/vault-thresh"; make_x_vault "$TH" 1903 ""
+export X_TEST_YT_DURATION=44 X_TEST_FXT_COUNT="$tmp/fxt-t.count"
+HOME="$H2" run_tool "$TH" --min-sub-coverage 80 >"$tmp/th.out" 2>"$tmp/th.err"
+c="$TH/Clippings/clip.md"
+grep -q '^media_transcript_source: platform-subs$' "$c" && a=ok || a=no
+assert "--min-sub-coverage 80 accepts 40/44 = 90 percent subs" ok "$a"
+AU="$tmp/vault-auto"; make_x_vault "$AU" 1904 ""
+export X_TEST_YT_MODE=subs X_TEST_YT_AUTO_ONLY=1 X_TEST_YT_DURATION=40 X_TEST_FXT_COUNT="$tmp/fxt-a.count"
+HOME="$H2" run_tool "$AU" >"$tmp/au.out" 2>"$tmp/au.err"
+grep -q '^media_transcript_source: auto-subs$' "$AU/Clippings/clip.md" && a=ok || a=no
+assert "auto-only track -> media_transcript_source: auto-subs" ok "$a"
+unset X_TEST_YT_MODE X_TEST_YT_AUTO_ONLY X_TEST_YT_DURATION X_TEST_WHISPER_END X_TEST_FXT_JSON X_TEST_FXT_COUNT X_TEST_YT_LOG
+
+echo "Test 20: clip body twimg ref + subs still cookie-free"
+TW="$tmp/vault-twsubs"; make_x_vault "$TW" 2001 "$VIDEO_MEDIA"
+X_TEST_YT_MODE=subs X_TEST_YT_DURATION=40 HOME="$H2" run_tool "$TW" >"$tmp/tw.out" 2>"$tmp/tw.err"
+assert "twimg-ref clip with subs exit 0 without cookies" 0 "$?"
+grep -q '^media_transcript_source: platform-subs$' "$TW/Clippings/clip.md" && a=ok || a=no
+assert "twimg-ref clip takes platform subs (duration from yt-dlp)" ok "$a"
+grep -q '^media_video_duration_s: 40$' "$TW/Clippings/clip.md" && a=ok || a=no
+assert "duration stamped from yt-dlp when not probed" ok "$a"
 
 # --- Test 14: doc-contract -------------------------------------------------
 echo "Test 14: /x-media-enrich runbook + catalog + README doc-contract"
