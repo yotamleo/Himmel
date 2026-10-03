@@ -503,6 +503,13 @@ rc=$(run_hook "-" </dev/null)
 assert_rc "T42 headless call in a file named - unmarked" 1 "$rc"
 rm -f "$TMP/-"
 
+# T43 (HIMMEL-4137): a correctly MARKED file named -lead.js must read as ALLOW,
+# not as an option (pins the leading-dash false-positive fix) → CLEAN
+printf "%s\n" 'spawnSync("claude", ["-p", prompt]); // headless-claude-ok: batch job' > "$TMP/-lead.js"
+rc=$(run_hook "-lead.js" </dev/null)
+assert_rc "T43 marked headless call in a file named -lead.js" 0 "$rc"
+rm -f "$TMP/-lead.js"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
