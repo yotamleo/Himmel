@@ -80,9 +80,10 @@ Mirror only the three that matter, not all twenty.
 
 **(c) Repo SessionStart guard-presence check.** A `CLAUDE_CODE_REMOTE`-only hook that
 verifies the expected guard set is wired (the scripts exist, the runner resolves) and,
-on a miss, exits 2 with a message so the session stops loudly instead of running
-unguarded. It also prints one line naming which guards are live, which answers the
-unknown above for free. It does not add a guard; it makes an absent guard visible.
+on a miss, prints a loud warning into the session context. A SessionStart hook cannot
+halt a session (exit 2 only surfaces stderr), so this makes an absent guard visible; it
+does not stop anything. It also prints one line naming which guards are live, which
+answers the unknown above for free. It does not add a guard.
 Cost: one new hook script plus one `.claude/settings.json` stanza.
 
 ## Recommendation: (c) first, then (b) for three hooks; (a) as an experiment only

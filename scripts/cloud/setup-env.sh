@@ -7,7 +7,10 @@
 #       && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh
 #
 # (the box runs BEFORE the session's repo clone exists, hence the throwaway
-# clone). Full paste instructions: docs/handover/cloud-brief-template.md.
+# clone). The apt/pip steps land system-wide; the Jira dist and obsidian deps
+# build inside that throwaway clone, so a session that needs them re-runs this
+# script from its own clone (idempotent, the system steps skip as present).
+# Full paste instructions: docs/handover/cloud-brief-template.md.
 #
 # Runs as root on Ubuntu 24.04. The platform caches a setup that finishes in
 # about 5 minutes, so every step is idempotent (skip when already present) and
@@ -86,7 +89,7 @@ JIRA_DIR="$ROOT/scripts/jira"
 if [ -f "$JIRA_DIR/dist/index.js" ]; then
   plan jira-dist skip "built"
 else
-  run_step jira-dist build "npm ci + tsc" -- sh -c "cd '$JIRA_DIR' && $TMO 240 npm ci --no-audit --no-fund && npm run build"
+  run_step jira-dist build "npm ci + tsc" -- sh -c "cd '$JIRA_DIR' && $TMO 240 npm ci --no-audit --no-fund && $TMO 120 npm run build"
 fi
 
 # 5. obsidian-triage tool deps (js-yaml + playwright) the marketplace suites import.
@@ -94,7 +97,7 @@ OT="$ROOT/marketplace/plugins/obsidian-triage/tools"
 if [ -d "$OT/node_modules" ]; then
   plan obsidian-deps skip "present"
 elif [ -f "$OT/ensure-deps.sh" ] || [ "$DRY" -eq 1 ]; then
-  run_step obsidian-deps install "ensure-deps.sh" -- bash "$OT/ensure-deps.sh"
+  run_step obsidian-deps install "ensure-deps.sh" -- $TMO 240 bash "$OT/ensure-deps.sh"
 else
   plan obsidian-deps skip "no ensure-deps.sh in this tree"
 fi

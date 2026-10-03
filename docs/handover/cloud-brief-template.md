@@ -62,14 +62,16 @@ merge. The cloud session ships a PR and stops.
    1. Read `CLAUDE.md` and the named files in full before editing.
    2. Edit ONLY the named files; keep the diff minimal and in the surrounding style.
    3. Write the new or changed test FIRST and show it RED without the fix, then
-      green. Run `shellcheck` on every `.sh` file touched. Then run the impacted
-      suites: `bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell`
+      green. Run `shellcheck` on every `.sh` file touched.
+   4. Create branch `<type>/himmel-<n>-<slug>` from `main`.
+   5. Make exactly ONE commit, never amend. Then, before pushing, run the
+      impacted suites (the selector reads the COMMITTED range, so it sees
+      nothing before the commit): `bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell`
       lists every suite that references a changed file, and
       `bash scripts/ci/run-shell-tests.sh --impacted origin/main..HEAD` runs
       them. Do not run only the one test the ticket names. Report rc and the
-      PASS/FAIL tail of each.
-   4. Create branch `<type>/himmel-<n>-<slug>` from `main`.
-   5. Make exactly ONE commit, never amend:
+      PASS/FAIL tail of each. A red suite is fixed in a NEW commit, never an
+      amend.
 
           <type>: [HIMMEL-<n>] <subject>
 
