@@ -2329,6 +2329,24 @@ check "HIMMEL-2052: EVERY critic's spool reaches the ledger, not just the first"
     "$(node -e 'const fs=require("fs");const rs=fs.readFileSync(process.argv[1],"utf8").trim().split("\n").filter(Boolean).map(JSON.parse).filter(r=>r.kind==="finding");console.log([...new Set(rs.map(r=>r.model))].sort().join(","))' "$P2052_LEDGER" 2>/dev/null)" \
     "batchy,batchy2"
 
+# HIMMEL-3492: a failed PANEL_SPOOL_DIR mktemp must abort with exit 2 before any
+# member runs — never leave the spool dir empty so avail./finding. rows land
+# at the filesystem root. The stub fails ONLY the spool mktemp and delegates
+# every other call to the real binary.
+M3492_BIN="$tmp/m3492-bin"; mkdir -p "$M3492_BIN"
+M3492_REAL="$(command -v mktemp)"
+cat > "$M3492_BIN/mktemp" <<STUBEOF
+#!/usr/bin/env bash
+case "\$*" in *critic-panel-spool.*) exit 1 ;; esac
+exec "$M3492_REAL" "\$@"
+STUBEOF
+chmod +x "$M3492_BIN/mktemp"
+m3492_err="$(printf '%s' "$DIFF" | PATH="$M3492_BIN:$PATH" CRITICS_JSON="$tmp/critics-all.json" \
+    CRITIC_FIRST_PASS="$STUB" bash "$PANEL" 2>&1 >/dev/null)"
+m3492_rc=$?
+check "HIMMEL-3492: failed spool mktemp exits 2" "$m3492_rc" "2"
+check_contains "HIMMEL-3492: failed spool mktemp names the failure" "$m3492_err" "critic-panel: mktemp failed"
+
 if [ "$fails" -eq 0 ]; then
     if [ "$_skips" -gt 0 ]; then
         echo "ALL PASS ($_skips skipped)"
