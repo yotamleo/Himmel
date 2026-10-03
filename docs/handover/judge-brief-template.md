@@ -164,9 +164,12 @@ gathering, per the rule below.>
 > primary (rows name it as `@PRIMARY@`). `diff` reports base-deny/head-allow
 > regressions, newly-denied rows, odd exit codes and TIMEOUT RISK rows. It
 > exits **0** when clean, **1** on a base-deny/head-allow regression, **2** on
-> a setup error or empty corpus, and **3** when inconclusive (an odd return
-> code, a timeout kill, or deny seeds with no base-deny control) — so a non-1
-> exit is NOT automatically clean. **Cite the seed and the row counts in your
+> a setup error or empty corpus, **3** when inconclusive (an odd return
+> code, a timeout kill, or deny seeds with no base-deny control), and **4**
+> when VACUOUS (deny-expected rows and neither side denied any, so the hook
+> fails open, usually a missing data dependency; a `VACUOUS:` line prints) — so
+> a non-1 exit is NOT automatically clean. Each side is materialised as a tree
+> (`scripts/` data files such as `chokepoints.json` included). **Cite the seed and the row counts in your
 > verdict** (e.g. "gen --seed 4168, 95 rows, 0 regressions, 0 timeout-risk").
 > `gen` ships only benign over-deny twins; supply the PR hook's own test-suite
 > DENY rows via `--seeds-file` to exercise the deny side — never author new
