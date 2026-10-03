@@ -65,7 +65,7 @@ bash scripts/luna/qmd-embed-model.sh check
 ```
 
 `swap` refuses unless the copy sits in the same directory as the live index, holds
-exactly one model, no daemon is running, and no write-ahead log is pending. It
+exactly one model, no qmd daemon, update or embed is running, and no write-ahead log is pending. It
 keeps the old index as `index.sqlite.pre-swap-<timestamp>` and the old config as
 `index.yml.pre-swap-<timestamp>`, and prints the rollback commands if its
 post-swap check fails. Delete the `.pre-swap-` files once you are satisfied.

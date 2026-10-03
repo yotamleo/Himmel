@@ -199,8 +199,10 @@ compare_index() {
     return 0
 }
 
+# A qmd process that holds or writes the live index: the MCP daemon, or an
+# update/embed run (the scheduled reindex).
 daemon_running() {
-    pgrep -f 'qmd(\.js)? mcp' >/dev/null 2>&1
+    pgrep -f 'qmd(\.js)? (mcp|update|embed)' >/dev/null 2>&1
 }
 
 # --- subcommands -------------------------------------------------------------
@@ -231,8 +233,15 @@ cmd_set() {
         esac
     fi
     idx="$(index_file)"
-    if [ -f "$idx" ] && command -v sqlite3 >/dev/null 2>&1; then
-        m="$(index_models "$idx" || true)"
+    if [ -f "$idx" ]; then
+        m=""
+        if ! command -v sqlite3 >/dev/null 2>&1 || ! m="$(index_models "$idx")"; then
+            if [ "$force" -eq 1 ]; then
+                warn "cannot read the model of the index at $idx; --force given, writing anyway"
+            else
+                die 4 "cannot read the model of the index at $idx (sqlite3 missing, or not a qmd index), so a mismatch cannot be ruled out. Pass --force to write anyway."
+            fi
+        fi
         if [ -n "$m" ] && [ "$(printf '%s\n' "$m" | grep -vxF -- "$uri" | head -1)" != "" ]; then
             if [ "$force" -eq 1 ]; then
                 warn "the index at $idx holds vectors from another model; it now MISMATCHES until a matching index is swapped in or shipped here"
@@ -354,7 +363,7 @@ cmd_swap() {
     [ "$n" -eq 1 ] || die 2 "the copy must hold vectors from exactly one model (found $n)"
     uri="$models"
     if daemon_running; then
-        die 2 "a qmd mcp daemon is running; it holds the live index open. Stop it first (qmd mcp stop, and any MCP client), then re-run swap"
+        die 2 "a qmd process (mcp daemon, update or embed) is running; it holds the live index open. Stop it first (qmd mcp stop, any MCP client, and wait out a scheduled reindex), then re-run swap"
     fi
     for s in "$live-wal" "$copy-wal"; do
         [ ! -s "$s" ] || die 2 "$s is not empty: a process still has that database open, or it was not closed cleanly. Run 'qmd status' once to checkpoint it, then retry"

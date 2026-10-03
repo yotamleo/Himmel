@@ -38,10 +38,13 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/test-qmd-embed-model.XXXXXX")" || { echo 
 STUBS="$TMP_ROOT/stubs"
 mkdir -p "$STUBS"
 
-# pgrep stub: "running" when $FAKE_DAEMON=1.
+# pgrep stub: matches its pattern against $FAKE_PROC (FAKE_DAEMON=1 is a
+# running `qmd mcp`).
 cat >"$STUBS/pgrep" <<'EOF'
 #!/usr/bin/env bash
-[ "${FAKE_DAEMON:-0}" = 1 ]
+proc="${FAKE_PROC:-}"
+if [ "${FAKE_DAEMON:-0}" = 1 ]; then proc="node /x/qmd.js mcp"; fi
+[ -n "$proc" ] && printf '%s\n' "$proc" | grep -qE -- "${!#}"
 EOF
 # nvidia-smi stub: prints $FAKE_VRAM MiB, or fails when it is empty.
 cat >"$STUBS/fake-smi" <<'EOF'
@@ -122,6 +125,14 @@ rc=0; out=$(run env QMD_EMBED_MODEL="$QWEN" bash "$SCRIPT" check 2>&1) || rc=$?
 assert_rc "QMD_EMBED_MODEL is honoured when the config sets none" 0 "$rc"
 rc=0; out=$(run bash "$SCRIPT" check --index "$(IDX)" 2>&1) || rc=$?
 assert_rc "without the env the default (gemma) mismatches a qwen index" 3 "$rc"
+
+new_home 5b
+printf 'not a database' >"$(IDX)"
+rc=0; out=$(run env FAKE_VRAM=24564 bash "$SCRIPT" set qwen 2>&1) || rc=$?
+assert_rc "set refuses when the index's model cannot be read" 4 "$rc"
+assert_not_contains "the config is not written" "$QWEN" "$(cat "$(CFG)" 2>/dev/null)"
+rc=0; out=$(run env FAKE_VRAM=24564 bash "$SCRIPT" set qwen --force 2>&1) || rc=$?
+assert_rc "set --force writes past an unreadable index" 0 "$rc"
 
 echo "== capability"
 new_home 6
@@ -207,6 +218,10 @@ assert_rc "reembed refuses the live index as --copy" 2 "$rc"
 echo "== swap"
 rc=0; out=$(run env FAKE_DAEMON=1 bash "$SCRIPT" swap --copy "$copy" 2>&1) || rc=$?
 assert_rc "swap refuses while a qmd mcp daemon runs" 2 "$rc"
+rc=0; out=$(run env FAKE_PROC="node /x/qmd.js embed" bash "$SCRIPT" swap --copy "$copy" 2>&1) || rc=$?
+assert_rc "swap refuses while a qmd embed writes the index" 2 "$rc"
+rc=0; out=$(run env FAKE_PROC="qmd update" bash "$SCRIPT" swap --copy "$copy" 2>&1) || rc=$?
+assert_rc "swap refuses while a qmd update writes the index" 2 "$rc"
 mkdir -p "$H/elsewhere"; cp "$copy" "$H/elsewhere/c.sqlite"
 rc=0; out=$(run bash "$SCRIPT" swap --copy "$H/elsewhere/c.sqlite" 2>&1) || rc=$?
 assert_rc "swap refuses a copy outside the live index's directory" 2 "$rc"
