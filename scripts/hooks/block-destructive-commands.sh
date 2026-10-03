@@ -251,6 +251,13 @@ if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails
     exit 2
 fi
 guard_cmdpos_grammar
+# HIMMEL-3984: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
+# --exec/--exec-batch) runs is at command position too. The flag is matched
+# wherever it sits, with no check that find or fd launched it: over-deny only.
+RMPOS="(${CMDPOS}|[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+${CMDPOS_PFX})"
+# HIMMEL-3984: `find -delete` is a recursive delete of its own. The gap is
+# unbounded, like RM_RECURSIVE_PAT's, so a quoted `;` cannot hide the flag.
+FIND_DELETE_PAT="${CMDPOS}"'find(\.exe)?[[:space:]].*[[:space:]]-delete([^[:alnum:]_-]|$)'
 # HIMMEL-2834: the three rm checks below run against rm_scrub, not cmd_lc.
 # The old anchor was a bare word boundary `(^|[^[:alnum:]_.-])`, which matches
 # the literal ANYWHERE in the command string, not just where a command is
@@ -426,7 +433,7 @@ fi
 # Separator before the flag tolerates a real space OR a lowercased ${IFS}
 # token (a common word-split bypass), and the flag itself tolerates one
 # leading quote char - both `-rf` and `"-rf"`/`'-rf'` trip it (HIMMEL-851 U2/U3).
-RM_R_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})['\''"]?-[[:alnum:]_]*r'
+RM_R_PAT="${RMPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})['\''"]?-[[:alnum:]_]*r'
 if [[ $rm_scrub =~ $RM_R_PAT ]]; then
     deny "recursive rm"
 fi
@@ -459,7 +466,7 @@ fi
 # `rm -f x $(ls --reverse)` and `rm -- --rfile` all deny again) plus a few of
 # its later false-DENY-avoidance rounds (comment-vs-mid-word-# among them) -
 # the false-DENY relief is deferred to HIMMEL-3636, not re-fixed here.
-RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$).*--r[a-z-]*([^[:alnum:]_-]|$)'
+RM_RECURSIVE_PAT="${RMPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$).*--r[a-z-]*([^[:alnum:]_-]|$)'
 if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
     deny "recursive rm"
 fi
@@ -494,7 +501,7 @@ _rm_srcs=("$rm_scrub")
 [[ $rm_join != "$rm_scrub" ]] && _rm_srcs+=("$rm_join")
 _sq="'"
 RM_ANSIC_ESC_PAT="(^|[^[:alnum:]_.-])rm(\\.exe)?([^|;&]*)\\\$${_sq}[^${_sq}]*\\\\"
-RM_OPT_DOLLAR_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})-[^[:space:]|;&]*\$'
+RM_OPT_DOLLAR_PAT="${RMPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})-[^[:space:]|;&]*\$'
 for _rm_src in "${_rm_srcs[@]}"; do
 if [[ $_rm_src =~ $RM_ANSIC_ESC_PAT ]]; then
     deny "recursive rm (ANSI-C escape in rm argument)"
@@ -512,6 +519,9 @@ done
 if [[ $rm_norm =~ $RM_R_PAT ]] || [[ $rm_norm =~ $RM_RECURSIVE_PAT ]] || [[ $rm_norm =~ $RM_OPT_DOLLAR_PAT ]]; then
     deny "recursive rm (quote/escape-normalised)"
 fi
+if [[ $rm_norm =~ $FIND_DELETE_PAT ]]; then
+    deny "recursive delete (find -delete)"
+fi
 done
 # HIMMEL-2610 J1267R R1: the quote/comment/`--`-terminator scan above has no
 # model of backslash escaping, so an escaped char can fake any of its
@@ -522,7 +532,7 @@ done
 # extend the scan to model every escape shape (whack-a-mole across the rounds
 # above), fail closed: a backslash anywhere between `rm` and a `--r...` flag
 # in the same command segment is denied outright.
-RM_RECURSIVE_ESC_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*\\[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
+RM_RECURSIVE_ESC_PAT="${RMPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*\\[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
 # Like every rm scan, this runs on both the folded and the joined text (HIMMEL-3991).
 for _rm_src in "${_rm_srcs[@]}"; do
 if [[ $_rm_src =~ $RM_RECURSIVE_ESC_PAT ]]; then
@@ -534,7 +544,7 @@ done
 # folded separator is the tell (HIMMEL-851 U3). `;+` (not a single `;`): on
 # Windows, jq's text-mode stdout turns the JSON-decoded `\n` into `\r\n`, so
 # ONE real newline folds to TWO semicolons here - tolerate either.
-RM_CONT_PAT="${CMDPOS}"'rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'
+RM_CONT_PAT="${RMPOS}"'rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'
 for _rm_src in "${_rm_srcs[@]}"; do
 if [[ $_rm_src =~ $RM_CONT_PAT ]]; then
     deny "recursive rm (line continuation)"
