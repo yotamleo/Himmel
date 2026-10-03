@@ -647,7 +647,7 @@ EOF
             echo "    would run scripts/codex/install-himmel-codex.sh (codex plugin-unregistered)"
         else
             echo "    codex plugin-unregistered — running scripts/codex/install-himmel-codex.sh"
-            [ -f "$cinstaller" ] && bash "$cinstaller" >/dev/null 2>&1 || true
+            if [ -f "$cinstaller" ]; then bash "$cinstaller" >/dev/null 2>&1 || true; fi
             if _codex_unregistered "$health"; then
                 _drift_add "codex plugin-unregistered persists after install-himmel-codex.sh" "bash scripts/codex/install-himmel-codex.sh, then restart codex"
             else
