@@ -543,6 +543,7 @@ _bwimc_blank_heredocs() {
         out="${out}${line}"$'\n'
     done <<< "$text"
     if [ -n "$nest" ]; then
+        # shellcheck disable=SC2016  # literal `${` is the glob pattern
         case "$ncode" in *case*|*esac*|*'${'*) unsure=1 ;; esac
         if [ "$unsure" = 1 ] || [ "$nl" -ne 0 ] || [ "$active" = 1 ] || [ -n "$pend_term" ]; then
             _bwimc_blank_heredocs "$text"
