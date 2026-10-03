@@ -365,6 +365,17 @@ if grep -qE '^- \[x\] Archive .*lone' "$ED"; then f=kept; else f=lost; fi
 assert "ticked archive kept after lone.md is gone" "kept" "$f"
 assert "still at most seven suggested actions" "7" "$(grep -cE '^- \[.\] (Archive|Evaluate|Fold|File)' "$ED")"
 
+echo "Test 15: ticking a carried item does not copy it into today's suggestions"
+F="2026-07-07"
+node "$TOOL" --vault "$V" --date "$F" >/dev/null 2>&1
+FD="$V/50-Journal/Daily/$F.md"
+cid=$(grep -m1 -oE '^- \[ \] \([0-9]+d\) .*act:[0-9a-f]{8}' "$FD" | grep -oE '[0-9a-f]{8}$')
+sed -e "s/^- \[ \] \(.*act:$cid \)/- [x] \1/" "$FD" > "$tmp/ticked.md" && mv "$tmp/ticked.md" "$FD"
+node "$TOOL" --vault "$V" --date "$F" >/dev/null 2>&1
+assert "carried id $cid listed once after rerun" "1" "$(grep -c "act:$cid " "$FD")"
+if grep -qE "^- \[x\] \([0-9]+d\) .*act:$cid since:" "$FD" && ! grep -qF "act:$cid since:$F" "$FD"; then f=kept; else f=lost; fi
+assert "tick stays on the carried line with its original since" "kept" "$f"
+
 echo "Test 13: an impossible calendar date is refused before any note is created"
 node "$TOOL" --vault "$V" --date "2026-13-01" >/dev/null 2>&1
 assert "exit 1 on 2026-13-01" "1" "$?"
