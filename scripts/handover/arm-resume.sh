@@ -742,6 +742,16 @@ if [ "$AUTOMERGE" -eq 1 ] && [ "$NO_AUTOMERGE" -eq 1 ]; then
     exit 2
 fi
 
+# HIMMEL-4142 S3: a consult is confined only by headed-arm-leg.sh --consult's
+# `--setting-sources ""`, which no arm-resume launch path carries (and the at body
+# clears the seam, HIMMEL-4118 F2), so a re-armed consult would start unconfined.
+# Fail closed: a session carrying the consult marker never arms. A consult is a
+# short question; the console relaunches one with headed-arm-leg.sh if it must.
+if [ -n "${LEG_PROFILE_NO_SETTING_SOURCES:-}" ]; then
+    echo "ERR arm-resume: refusing to arm from inside a consult (LEG_PROFILE_NO_SETTING_SOURCES is set): no arm-resume launch carries the consult's --setting-sources confinement; relaunch it with headed-arm-leg.sh --consult" >&2
+    exit 2
+fi
+
 # ---------------------------------------------------------------------------
 # HIMMEL-1365 -- temp/scratch-path detection.
 #

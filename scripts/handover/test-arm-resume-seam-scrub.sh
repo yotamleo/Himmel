@@ -93,6 +93,21 @@ for v in $KEEP; do
     assert_eq "S2 the resumed session keeps $v" "$v=set" "$(printf '%s\n' "$R" | grep "^$v=")"
 done
 
+# HIMMEL-4142 S3: clearing the seam (above) leaves a resumed consult as a bare, UNconfined
+# claude, so arm-resume refuses to arm from inside a consult at all (fail closed).
+rc=0
+OUT3=$(env PATH="$SCHED_STUB:$PATH" OSTYPE=linux-gnu LEG_PROFILE_NO_SETTING_SOURCES=1 bash "$ARM" --time "$(future_time)" \
+        --handover "$HANDOVER" --dry-run 2>&1) || rc=$?
+assert_eq "S3 arm-resume from inside a consult refuses (exit 2)" "2" "$rc"
+case "$OUT3" in *"refusing to arm from inside a consult"*) echo "PASS S3 refusal says why" ;; *) echo "FAIL S3 refusal text missing: $OUT3"; FAILED=$((FAILED + 1)) ;; esac
+case "$OUT3" in *"would at -t"*) echo "FAIL S3 an at body was still produced"; FAILED=$((FAILED + 1)) ;; *) echo "PASS S3 no at body" ;; esac
+# Counter-example: an empty value is not a consult (the shim confines only on exactly 1,
+# but any non-empty value refuses, fail closed); empty still arms.
+rc=0
+env PATH="$SCHED_STUB:$PATH" OSTYPE=linux-gnu LEG_PROFILE_NO_SETTING_SOURCES= bash "$ARM" --time "$(future_time)" \
+    --handover "$HANDOVER" --dry-run >/dev/null 2>&1 || rc=$?
+assert_eq "S3 an empty LEG_PROFILE_NO_SETTING_SOURCES still arms (exit 0)" "0" "$rc"
+
 echo "---"
 if [ "$FAILED" -gt 0 ]; then echo "FAILED: $FAILED case(s)"; exit 1; fi
 echo "PASS all cases"

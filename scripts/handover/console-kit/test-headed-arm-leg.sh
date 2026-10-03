@@ -3304,6 +3304,38 @@ rc=0; out="$(HEADED_ARM_LEG_SHIM="$HERE/../console-kit/../../lanes/leg-claude-la
 check "41i-4118 a consult whose shim override resolves to the real shim passes (exit 0)" "$rc" "0"
 rc=0; out="$(HEADED_ARM_LEG_SHIM="$tmp/other-shim41.sh" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4118-f1 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 not_contains "41i-4118 a non-consult launch does not refuse a foreign shim" "$out" "refuses HEADED_ARM_LEG_SHIM"
+# HIMMEL-4142 S1: the other caller-chosen seams are the same class as F1's shim. A consult
+# refuses HEADED_ARM_LEG_CLAUDE_BIN outright (the shim would exec it with the confining argv,
+# which a foreign binary can ignore) and a TARGET/PROFILES that is not the in-repo file.
+rc=0; out="$(HEADED_ARM_LEG_CLAUDE_BIN="$tmp/other-claude41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4142-s1 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4142 a consult with HEADED_ARM_LEG_CLAUDE_BIN refuses (exit 2)" "$rc" "2"
+contains "41i-4142 the CLAUDE_BIN refusal names the seam" "$out" "refuses HEADED_ARM_LEG_CLAUDE_BIN"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$tmp/other-target41.sh"
+printf '%s\n' 'console.log("{}")' > "$tmp/other-profiles41.mjs"
+for sv41 in "HEADED_ARM_LEG_TARGET $tmp/other-target41.sh" "HEADED_ARM_LEG_PROFILES $tmp/other-profiles41.mjs"; do
+  sn41="${sv41%% *}"; sp41="${sv41#* }"
+  rc=0; out="$(env "$sn41=$sp41" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4142-s1 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i-4142 a consult with a foreign $sn41 refuses (exit 2)" "$rc" "2"
+  contains "41i-4142 the foreign $sn41 refusal names the seam" "$out" "refuses $sn41"
+done
+# Counter-examples: a non-consult launch keeps honouring every seam, and a consult whose
+# TARGET/PROFILES override resolves to the in-repo file (non-canonical spelling) passes.
+rc=0; out="$(HEADED_ARM_LEG_CLAUDE_BIN="$tmp/other-claude41" HEADED_ARM_LEG_TARGET="$tmp/other-target41.sh" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4142-s1 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4142 a non-consult launch with foreign CLAUDE_BIN/TARGET still passes (exit 0)" "$rc" "0"
+not_contains "41i-4142 a non-consult launch refuses no seam" "$out" "--consult refuses"
+rc=0; out="$(HEADED_ARM_LEG_TARGET="$HERE/../console-kit/../headed-arm.sh" HEADED_ARM_LEG_PROFILES="$HERE/../console-kit/../../lanes/plugin-profiles.mjs" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4142-s1 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4142 a consult whose TARGET/PROFILES resolve to the in-repo files passes (exit 0)" "$rc" "0"
+# HIMMEL-4142 S2 (TOCTOU): an override reached through a symlinked directory passes the
+# canonical check, so what runs must be the CANONICAL path, never the retargetable spelling.
+ln -sfn "$(cd -P "$HERE/../../lanes" && pwd -P)" "$tmp/lanes-link41"
+ln -sfn "$(cd -P "$HERE/.." && pwd -P)" "$tmp/handover-link41"
+shim_canon41="$(cd -P "$HERE/../../lanes" && pwd -P)/leg-claude-launcher.sh"
+target_canon41="$(cd -P "$HERE/.." && pwd -P)/headed-arm.sh"
+rc=0; out="$(HEADED_ARM_LEG_SHIM="$tmp/lanes-link41/leg-claude-launcher.sh" HEADED_ARM_LEG_TARGET="$tmp/handover-link41/headed-arm.sh" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4142-s2 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4142 a consult with symlinked-dir overrides naming the real files passes (exit 0)" "$rc" "0"
+contains "41i-4142 the exported launcher is the canonical shim" "$out" "launcher=$shim_canon41 "
+not_contains "41i-4142 the exported launcher is not the symlinked spelling" "$out" "launcher=$tmp/lanes-link41"
+contains "41i-4142 the exec target is the canonical headed-arm.sh" "$out" "would exec: $target_canon41 "
 # (b) the ponytail text no longer claims one writable file.
 check "41i ponytail no longer says 'one writable file'" "$(grep -c 'one writable file' "$SCRIPT")" "0"
 # (c) HIMMEL-4069: the consult launches with `--setting-sources ""`, so a user, project or
