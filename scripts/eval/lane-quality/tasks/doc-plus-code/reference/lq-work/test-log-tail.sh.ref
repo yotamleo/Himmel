@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Reference test (HIMMEL-4090). Stored as .ref so CI does not discover it.
 S="$(cd "$(dirname "$0")" && pwd)/log-tail.sh"
-L="$(mktemp)" && printf '%s\n' a ERR1 b ERR2 >"$L" || { echo "FAIL setup"; exit 1; }
+L="$(mktemp)" || { echo "FAIL setup"; exit 1; }
+printf '%s\n' a ERR1 b ERR2 >"$L" || { echo "FAIL setup"; exit 1; }
 fail=0
 [ "$(bash "$S" --grep ERR -n 1 "$L")" = ERR2 ] || { echo "FAIL grep"; fail=1; }
 [ -z "$(bash "$S" --grep zzz "$L")" ] || { echo "FAIL nomatch"; fail=1; }
