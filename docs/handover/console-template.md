@@ -100,8 +100,9 @@ Run these, in order, and write the result as the first bullet under
     `telegram` Monitor loops). Loops are pure code, never model turns: a
     `Monitor` arm is capped at 30 min, and every expiry woke this full-context
     session only to re-arm it. Instead, run `console-wait.sh` **once** with the
-    **Bash tool's `run_in_background: true`** — no 30-min cap, and the harness
-    re-invokes you when the command exits:
+    **Bash tool's `run_in_background: true` AND `timeout: 7200000`** — both
+    are required: the default background limit (30 min) killed a waiter once
+    (HIMMEL-3940). The harness re-invokes you when the command exits:
     `bash "{{KIT}}/console-wait.sh" "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md" --doc "<this file>" --token <your token> --legs "<absolute leg docs>"`
     (everything after the inbox path is passed to `tick.sh` unchanged). It is
     silent while nothing happens and **exits on the first real event**,
