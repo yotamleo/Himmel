@@ -135,6 +135,35 @@ else fail "git-env: diff did not complete clean, exit $RC_GD (sentinel check wou
 if [ ! -e "$SENTGD" ]; then pass "git-env: inherited GIT_DIR did not redirect scratch git"
 else fail "git-env: scratch git honored inherited GIT_DIR ($SENTGD created)"; fi
 
+# --- 1c. inherited core.hooksPath must NOT fire on the scratch commit ---------
+# codex-1 (round 5): stripping GIT_DIR/WORK_TREE alone is not isolation --
+# GIT_CONFIG_GLOBAL/SYSTEM (and the GIT_CONFIG_COUNT/KEY/VALUE set) can carry
+# core.hooksPath, which git would honor on our scratch `git commit`, executing
+# a real hook outside the sandbox. diff now scrubs the whole GIT_CONFIG* family
+# and pins global+system config empty. Plant a global config whose hooksPath
+# fires a sentinel and prove the scratch commit never runs it.
+EVILHOOKS="$TMP/evil-hooks"
+mkdir -p "$EVILHOOKS"
+SENTHP="$TMP/sentinel-hookspath"
+cat > "$EVILHOOKS/pre-commit" <<HK
+#!/usr/bin/env bash
+: > "$SENTHP"
+HK
+chmod +x "$EVILHOOKS/pre-commit"
+cat > "$TMP/evil-gitconfig" <<CFG
+[core]
+	hooksPath = $EVILHOOKS
+CFG
+GIT_CONFIG_GLOBAL="$TMP/evil-gitconfig" python3 "$DIFF" \
+        --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 1 >/dev/null 2>&1; RC_HP=$?
+# complete-run guard: a setup crash would leave SENTHP absent for the wrong
+# reason, making the sentinel check vacuous. base vs base => exit 0.
+if [ "$RC_HP" = "0" ]; then pass "hookspath: diff ran to completion (exit 0)"
+else fail "hookspath: diff did not complete clean, exit $RC_HP (sentinel check would be vacuous)"; fi
+if [ ! -e "$SENTHP" ]; then pass "hookspath: inherited core.hooksPath did not fire on scratch commit"
+else fail "hookspath: scratch commit executed inherited core.hooksPath hook ($SENTHP created)"; fi
+
 # --- 2c. each invocation gets a fresh HOME/primary (no cross-run contamination)
 # codex-2: a hook that writes state must not leak into another row or the other
 # side of the comparison. This stub denies (exit 2) iff a PRIOR run in the same

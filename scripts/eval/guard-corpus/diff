@@ -20,7 +20,9 @@
 #     flagged TIMEOUT RISK.
 # Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE (and friends) are stripped up
 # front so no `git -C` call -- ours or a hook's -- can be redirected into a
-# real repo. The real primary checkout is never the cwd and is never written.
+# real repo, and the whole GIT_CONFIG* family is stripped with global+system
+# config pinned empty, so no inherited core.hooksPath can execute real hooks
+# on our scratch commit. The real primary checkout is never cwd, never written.
 #
 # A hook source is given either as a path to a .sh file, or as `sha:PATH` where
 # PATH is a repo-relative hook path materialised from that git SHA into a
@@ -274,6 +276,20 @@ def main(argv):
     for _k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         os.environ.pop(_k, None)
+
+    # Inherited Git CONFIG overrides are a second, nastier redirect: a
+    # GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM file, or a GIT_CONFIG_COUNT +
+    # GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n set, can carry core.hooksPath, which
+    # would make our scratch `git commit` (and a hook's own git calls) EXECUTE
+    # real hooks living outside the sandbox. Stripping the location family above
+    # does not touch these. Drop the whole GIT_CONFIG* family, then pin global
+    # and system config to an empty file so no external config -- hooksPath
+    # included -- is honored by any git we or the hook run.
+    for _k in list(os.environ):
+        if _k == "GIT_CONFIG" or _k.startswith("GIT_CONFIG_"):
+            os.environ.pop(_k, None)
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
 
     with open(args.corpus, "r", encoding="utf-8") as fh:
         corpus = [json.loads(line) for line in fh if line.strip()]
