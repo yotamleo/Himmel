@@ -47,6 +47,12 @@ eq "score: a duplicate golden id is refused" "$rc" "2"
 out=$(bun "$HERE/score.ts" --golden "$FIX/golden.jsonl" --runs "$TMP/all-err.jsonl" 2>&1); rc=$?
 eq "score: a mode where every query errored is refused" "$rc" "2"
 has "score: the refusal names the mode" "$out" "auto"
+# Empty inputs measure nothing; a header-only report must not read as success.
+: >"$TMP/empty.jsonl"
+bun "$HERE/score.ts" --golden "$FIX/golden.jsonl" --runs "$TMP/empty.jsonl" >/dev/null 2>&1; rc=$?
+eq "score: an empty runs file is refused" "$rc" "2"
+bun "$HERE/score.ts" --golden "$TMP/empty.jsonl" --runs "$FIX/runs.jsonl" >/dev/null 2>&1; rc=$?
+eq "score: an empty golden set is refused" "$rc" "2"
 
 # --- latency.ts: median and p90 per mode, input order irrelevant --------------
 out=$(bun "$HERE/latency.ts" --runs "$FIX/latency-runs.jsonl" 2>&1); rc=$?

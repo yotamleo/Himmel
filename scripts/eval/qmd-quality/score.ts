@@ -27,6 +27,7 @@ export function readJsonl<T>(path: string): T[] {
 }
 
 export function validateGolden(golden: Golden[]): string | null {
+  if (golden.length === 0) return "golden set is empty";
   const seen = new Set<string>();
   for (const g of golden) {
     if (!g.id || seen.has(g.id)) return `duplicate or empty golden id: '${g.id}'`;
@@ -105,6 +106,10 @@ if (import.meta.main) {
   const bad = validateGolden(golden);
   if (bad) {
     console.error(`score: ${bad}`);
+    process.exit(2);
+  }
+  if (runs.length === 0) {
+    console.error("score: runs file is empty; nothing was measured");
     process.exit(2);
   }
   // One erroring query is a measured refusal; a mode where all of them errored
