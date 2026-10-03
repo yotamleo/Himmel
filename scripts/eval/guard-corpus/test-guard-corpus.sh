@@ -101,6 +101,25 @@ python3 "$DIFF" --base "$TMP/broken-hook.sh" --head "$TMP/broken-hook.sh" \
 if [ "$RC_BRK" = "3" ]; then pass "inconclusive: two broken hooks exit 3 (not clean)"
 else fail "inconclusive: expected exit 3, got $RC_BRK"; fi
 
+# --- 3c. base-deny + head-ERROR is inconclusive, never a regression ----------
+# codex-1: a regression is base-deny paired with a CLEAN head-allow (rc 0). A
+# head that errored (rc 1) did not allow the command, so base-deny/head-error
+# must read as inconclusive (exit 3), not a confirmed regression (exit 1).
+OUT3C=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/broken-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC3C=$?
+has "base-deny/head-error: no regression" "$OUT3C" "(REGRESSION): 0"
+if [ "$RC3C" = "3" ]; then pass "base-deny/head-error: inconclusive exit 3"
+else fail "base-deny/head-error: expected exit 3, got $RC3C"; fi
+
+# --- 2b. an empty corpus is refused, never certified clean -------------------
+# codex-2: zero rows exercise no hook; a clean exit 0 would be a false
+# "reviewed clean". diff must refuse it (exit 2).
+: > "$TMP/empty-corpus.jsonl"
+python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/empty-corpus.jsonl" --jobs 4 >/dev/null 2>&1; RC_EMPTY=$?
+if [ "$RC_EMPTY" = "2" ]; then pass "empty-corpus: refused (exit 2)"
+else fail "empty-corpus: expected exit 2, got $RC_EMPTY"; fi
+
 # --- 4. no code path execs a generated command (sentinel-file assertion) ------
 # A seed that WOULD create a sentinel file if ever executed. diff must NOT run
 # it; the file must not exist afterward. The hook only reads stdin.

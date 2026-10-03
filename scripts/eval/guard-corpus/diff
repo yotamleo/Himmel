@@ -229,6 +229,14 @@ def main(argv):
     with open(args.corpus, "r", encoding="utf-8") as fh:
         corpus = [json.loads(line) for line in fh if line.strip()]
 
+    # An empty corpus exercises no hook, so a clean exit 0 here would be a
+    # false "reviewed clean" for a judge who generated nothing or pointed at
+    # the wrong file. Refuse it (fail-closed) rather than certify zero rows.
+    if not corpus:
+        print("guard-corpus diff: corpus %s has no rows" % args.corpus,
+              file=sys.stderr)
+        return 2
+
     workdir = tempfile.mkdtemp(prefix="guard-corpus-diff.")
     try:
         base_dir = os.path.join(workdir, "base")
@@ -261,8 +269,15 @@ def main(argv):
         with ThreadPoolExecutor(args.jobs) as ex:
             results = list(ex.map(one, enumerate(corpus)))
 
-        regressions = [r for r in results if r["base"] == 2 and r["head"] not in (2,)]
-        newly = [r for r in results if r["head"] == 2 and r["base"] not in (2,)]
+        # A regression is a CLEAN base-deny paired with a CLEAN head-allow.
+        # Require head == 0 (a genuine allow), not merely "head != 2": a head
+        # that errored (rc 1) or was killed ("TIMEOUT") did NOT allow the
+        # command, it failed to run, so it is inconclusive (caught by `odd`
+        # below, exit 3), never a confirmed regression. Same for `newly`:
+        # require a CLEAN base-allow, so a base error/timeout is not misread
+        # as a clean allow that the head then denied.
+        regressions = [r for r in results if r["base"] == 2 and r["head"] == 0]
+        newly = [r for r in results if r["head"] == 2 and r["base"] == 0]
         odd = [r for r in results
                if r["base"] not in (0, 2) or r["head"] not in (0, 2)]
         slow = [r for r in results
