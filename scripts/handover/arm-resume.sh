@@ -548,6 +548,7 @@ EOF
 # Arg parsing — accept --flag <value> or --flag=<value>, any order,
 # unknown flags are rejected loudly. Avoids the v1 "$3 == --force"
 # positional trap.
+ARGC_AT_START=$#
 while [ $# -gt 0 ]; do
     case "$1" in
         --time)        RESUME_TIME="${2:-}"; _TIME_GIVEN=1; shift 2 ;;
@@ -747,7 +748,14 @@ fi
 # clears the seam, HIMMEL-4118 F2), so a re-armed consult would start unconfined.
 # Fail closed: a session carrying the consult marker never arms. A consult is a
 # short question; the console relaunches one with headed-arm-leg.sh if it must.
-if [ -n "${LEG_PROFILE_NO_SETTING_SOURCES:-}" ]; then
+# HIMMEL-4163: the read-only --list-temp-arms sweep arms nothing, so it alone passes,
+# and only as the SOLE argument (the flag beside any other mode or arm arg still refuses).
+# ponytail: the consult is identified by this env var alone, so a consult that unsets
+# LEG_PROFILE_NO_SETTING_SOURCES is not recognised here; the consult's deny rules and
+# sandbox bound that, upgrade path = a process-ancestry check or a consult-workdir
+# token file, trigger = an exploit beyond the sandbox (HIMMEL-4163).
+if [ -n "${LEG_PROFILE_NO_SETTING_SOURCES:-}" ] \
+    && ! { [ "${LIST_TEMP_ARMS:-0}" -eq 1 ] && [ "$ARGC_AT_START" -eq 1 ]; }; then
     echo "ERR arm-resume: refusing to arm from inside a consult (LEG_PROFILE_NO_SETTING_SOURCES is set): no arm-resume launch carries the consult's --setting-sources confinement; relaunch it with headed-arm-leg.sh --consult" >&2
     exit 2
 fi
