@@ -61,6 +61,7 @@ cat > "$CTL" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
   status)
+    if [ -f "$FIX/bad-recheck" ] && [ -s "$FIX/ensure.log" ]; then echo "not json"; exit 0; fi
     items=""
     if [ ! -f "$FIX/hooks/pre-commit" ]; then
       items='{"id":"pre-commit-hooks","kind":"hook","desired":true,"actual":"degraded","severity":"degraded","detail":"missing hook type(s): pre-commit"}'
@@ -83,7 +84,7 @@ run_update() { # run_update <only-item>; sets OUT / RC
     OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="/usr/bin:/bin:$PATH" \
         bash scripts/himmel-update.sh --only "$1" 2>&1)" || RC=$?
 }
-reset_fix() { rm -f "$FIX/hooks/pre-commit" "$FIX/ensure.log" "$FIX/no-cred"; }
+reset_fix() { rm -f "$FIX/hooks/pre-commit" "$FIX/ensure.log" "$FIX/no-cred" "$FIX/bad-recheck"; }
 
 echo "drift pass: allow-listed item converges, credential red is reported (HIMMEL-4246)"
 reset_fix
@@ -141,11 +142,13 @@ printf '#!/bin/sh\nexit 0\n' > "$TMP/stubbin/codex"; chmod +x "$TMP/stubbin/code
 cat > "$CLONE/scripts/codex/startup-health.sh" <<'STUB'
 #!/usr/bin/env bash
 if [ -f "$FIX/codex-registered" ]; then exit 0; fi
+if [ -f "$FIX/codex-broken" ]; then echo "boom"; exit 3; fi
 echo "WARN plugin-unregistered: telegram-himmel@himmel missing"; exit 1
 STUB
 cat > "$CLONE/scripts/codex/install-himmel-codex.sh" <<'STUB'
 #!/usr/bin/env bash
-echo install >> "$FIX/codex-install.log"; : > "$FIX/codex-registered"
+echo install >> "$FIX/codex-install.log"
+if [ -f "$FIX/codex-install-breaks" ]; then : > "$FIX/codex-broken"; else : > "$FIX/codex-registered"; fi
 STUB
 reset_fix; : > "$FIX/hooks/pre-commit"; : > "$FIX/no-cred"; rm -f "$FIX/codex-registered" "$FIX/codex-install.log"
 RC=0; OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="$TMP/stubbin:/usr/bin:/bin:$PATH" bash scripts/himmel-update.sh --only drift-check 2>&1)" || RC=$?
@@ -154,6 +157,21 @@ grep -q 'plugin-unregistered' <<< "$OUT" && assert_pass "check: reports the unre
 RC=0; OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="$TMP/stubbin:/usr/bin:/bin:$PATH" bash scripts/himmel-update.sh --only drift 2>&1)" || RC=$?
 [ -f "$FIX/codex-install.log" ] && assert_pass "apply: ran install-himmel-codex.sh" || assert_fail "apply did not run the codex installer: $OUT"
 if grep -q 'DRIFT' <<< "$OUT"; then assert_fail "converged codex registration still in DRIFT: $OUT"; else assert_pass "apply: codex drift converged, no DRIFT block"; fi
+
+echo "codex: health failing without a plugin verdict after install is not a fix claim"
+reset_fix; : > "$FIX/hooks/pre-commit"; : > "$FIX/no-cred"; rm -f "$FIX/codex-registered" "$FIX/codex-install.log" "$FIX/codex-broken"; : > "$FIX/codex-install-breaks"
+RC=0; OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="$TMP/stubbin:/usr/bin:/bin:$PATH" bash scripts/himmel-update.sh --only drift 2>&1)" || RC=$?
+if grep -q 'converged codex' <<< "$OUT"; then assert_fail "claimed codex converged on an unverifiable health run: $OUT"; else assert_pass "no codex convergence claim when health is unverifiable"; fi
+grep -q 'not verified' <<< "$OUT" && assert_pass "unverified codex state is reported" || assert_fail "no not-verified note: $OUT"
+rm -f "$FIX/codex-install-breaks" "$FIX/codex-broken"
+
+echo "malformed status after ensure: prior drift rows are kept, no convergence claim"
+reset_fix; : > "$FIX/bad-recheck"
+run_update drift
+if grep -qi 'converged pre-commit-hooks' <<< "$OUT"; then assert_fail "claimed convergence on a failed re-check: $OUT"; else assert_pass "no convergence claim on a failed re-check"; fi
+grep -q 're-check after ensure failed' <<< "$OUT" && assert_pass "re-check failure reported" || assert_fail "no re-check failure note: $OUT"
+grep -q 'luna-sources' <<< "$OUT" && assert_pass "earlier drift rows survive the failed re-check" || assert_fail "drift rows lost: $OUT"
+rm -f "$FIX/bad-recheck"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

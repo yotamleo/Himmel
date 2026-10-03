@@ -571,10 +571,13 @@ _drift_add() { DRIFT_LINES="${DRIFT_LINES}$1
 "; }
 
 # Captured, not piped: under pipefail `grep -q` closing early can SIGPIPE the producer.
+# 0 = plugin-unregistered reported; 1 = health exited 0 without it (registered);
+# 2 = health failed without the marker (cannot tell — never claim a fix on it).
 _codex_unregistered() {
-    local out; out="$(bash "$1" 2>/dev/null || true)"
+    local out rc=0; out="$(bash "$1" 2>/dev/null)" || rc=$?
     case "$out" in *plugin-unregistered*) return 0 ;; esac
-    return 1
+    [ "$rc" -eq 0 ] && return 1
+    return 2
 }
 
 report_drift() {
@@ -595,12 +598,18 @@ report_drift() {
             fi
             echo "    converging $id: himmelctl ensure --items $id --yes"
             _drift_ctl ensure --items "$id" --yes >/dev/null 2>&1 || true
-            if json="$(_drift_ctl status --json 2>/dev/null)" && pending="$(printf '%s' "$json" | _drift_rows)" \
-                && ! grep -q "^$id	" <<< "$pending"; then
-                echo "    converged $id"
-                converged="$converged $id"
+            # A failed re-check keeps the last valid rows (never clears them).
+            local rejson renew
+            if rejson="$(_drift_ctl status --json 2>/dev/null)" && renew="$(printf '%s' "$rejson" | _drift_rows)"; then
+                pending="$renew"
+                if grep -q "^$id	" <<< "$pending"; then
+                    echo "    $id still drifted after ensure" >&2
+                else
+                    echo "    converged $id"
+                    converged="$converged $id"
+                fi
             else
-                echo "    $id still drifted after ensure" >&2
+                echo "    $id: re-check after ensure failed — not claiming convergence" >&2
             fi
         done
         while IFS="$(printf '\t')" read -r id sev _ _ detail; do
@@ -648,11 +657,12 @@ EOF
         else
             echo "    codex plugin-unregistered — running scripts/codex/install-himmel-codex.sh"
             if [ -f "$cinstaller" ]; then bash "$cinstaller" >/dev/null 2>&1 || true; fi
-            if _codex_unregistered "$health"; then
-                _drift_add "codex plugin-unregistered persists after install-himmel-codex.sh" "bash scripts/codex/install-himmel-codex.sh, then restart codex"
-            else
-                echo "    converged codex plugin registration"
-            fi
+            local crc=0; _codex_unregistered "$health" || crc=$?
+            case "$crc" in
+                0) _drift_add "codex plugin-unregistered persists after install-himmel-codex.sh" "bash scripts/codex/install-himmel-codex.sh, then restart codex" ;;
+                1) echo "    converged codex plugin registration" ;;
+                *) echo "    codex registration not verified (startup-health failed without a plugin verdict) — not claiming a fix" >&2 ;;
+            esac
         fi
     fi
 
