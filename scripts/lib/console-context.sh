@@ -194,6 +194,7 @@ console_context_leg_env_unset_names() {
         LEG_PROFILE_SETTINGS \
         LEG_PROFILE_PREFACE \
         LEG_PROFILE_MCP_CONFIG \
+        LEG_PROFILE_NO_SETTING_SOURCES \
         HIMMEL_LEG_PROFILE \
         LEG_CLAUDE_BIN \
         HIMMEL_LEAN_LEG \

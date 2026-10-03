@@ -48,6 +48,12 @@
 #                           ~/.claude.json user-level ones this exists to cut,
 #                           which is exactly why the file is never hand-typed
 #                           (see plugin-profiles.mjs's collectMcpServerDefs).
+#   LEG_PROFILE_NO_SETTING_SOURCES (HIMMEL-4069) exactly 1 -> --setting-sources ""
+#                           (an empty list: no user, project or local settings
+#                           scope loads, only --settings and managed policy).
+#                           Set only by headed-arm-leg.sh --consult, whose
+#                           sandbox those scopes' write roots would widen. It
+#                           only ever loads LESS (clause 4).
 # Seam: LEG_CLAUDE_BIN overrides the `claude` binary this execs (default:
 # `claude` from PATH). headed-arm-leg.sh sets it to scripts/claude-codex on
 # the claudex lane so all profile flags reach that backend (HIMMEL-2962);
@@ -89,6 +95,10 @@ if [ -n "${LEG_PROFILE_MCP_CONFIG:-}" ]; then
         exit 2
     fi
     PRE+=(--mcp-config "$LEG_PROFILE_MCP_CONFIG" --strict-mcp-config)
+fi
+
+if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ]; then
+    PRE+=(--setting-sources "")
 fi
 
 exec "$CLAUDE_BIN" ${PRE[@]+"${PRE[@]}"} "$@"
