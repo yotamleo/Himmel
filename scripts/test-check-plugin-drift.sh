@@ -952,10 +952,10 @@ jobs:
     steps:
       - uses: owner/act@v3
       - uses: owner/act2@v1
-      - run: python -m pip install --disable-pip-version-check pypi-stale==1.0.0
+      - run: python -m pip install --disable-pip-version-check pypi-stale==1.0.0 pypi-second==3.0.0
       - run: python -m pip install pypi-fresh==2.0.0
 YML
-printf 'pypi-stale=1.2.0\npypi-fresh=2.0.0\n' > "$W12/state/pypi"
+printf 'pypi-stale=1.2.0\npypi-fresh=2.0.0\npypi-second=3.0.0\n' > "$W12/state/pypi"
 printf '#!/usr/bin/env bash\nOXLINT_VERSION=1.0.0\n' > "$W12/root/scripts/hooks/h.sh"
 # A vendored upstream tree (VENDORED.md marker): its pins follow upstream, not npm-latest.
 mkdir -p "$W12/root/vend"; printf 'vend-pkg=9.0.0\n' >> "$W12/state/npm"
@@ -983,6 +983,7 @@ if grepq "$pin_sec" '^  gh:owner/heldrepo v1\.0\.0 .*: HELD'; then ok "pin-scan:
 if grepq "$pin_sec" 'owner/act'; then bad "pin-scan reported a workflow uses: pin; Dependabot owns those; $(printf '%s' "$pin_sec" | grep owner/act)"; else ok "pin-scan skips workflow uses: pins (Dependabot github-actions owns them)"; fi
 if grepq "$pin_sec" '^  pypi:pypi-stale 1\.0\.0 (\.github/workflows/w\.yml): BEHIND'; then ok "pin-scan: stale workflow pip == pin -> BEHIND"; else bad "pypi-stale not BEHIND; $(printf '%s' "$pin_sec" | grep pypi-stale)"; fi
 if grepq "$pin_sec" '^  pypi:pypi-fresh 2\.0\.0 .*: CURRENT'; then ok "pin-scan: current workflow pip == pin -> CURRENT"; else bad "pypi-fresh not CURRENT"; fi
+if grepq "$pin_sec" '^  pypi:pypi-second 3\.0\.0 .*: CURRENT'; then ok "pin-scan: second == pin on one pip install line is also scanned"; else bad "pypi-second not discovered"; fi
 if grepq "$pin_sec" '^  npm:vend-pkg 1\.0\.0 (vend): VENDORED'; then ok "pin-scan: pin inside a VENDORED.md tree -> VENDORED, not BEHIND npm-latest"; else bad "vend-pkg not VENDORED; $(printf '%s' "$pin_sec" | grep vend-pkg)"; fi
 if [ "$pin_rc" -eq 2 ]; then ok "pin-scan drift run exits 2"; else bad "pin-scan drift run rc=$pin_rc; expected 2"; fi
 # A hold expires when upstream ships something newer than the one reviewed.

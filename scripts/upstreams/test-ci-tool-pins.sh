@@ -67,7 +67,8 @@ rm -rf "$FIX"
 
 echo "[test-ci-tool-pins] every setup-bun step in .github/workflows is pinned"
 total=0
-for wf in "$ROOT"/.github/workflows/*.yml; do
+for wf in "$ROOT"/.github/workflows/*.yml "$ROOT"/.github/workflows/*.yaml; do
+  [ -f "$wf" ] || continue
   n=$(grep -cE '^[[:space:]]*-[[:space:]]+uses:[[:space:]]*oven-sh/setup-bun@' "$wf")
   total=$((total + n))
   flagged=$(unpinned_setup_bun "$wf" | tr '\n' ' ')
@@ -88,7 +89,12 @@ for e in json.load(open(sys.argv[1]))['entries']:
 if [ -n "$reg" ] && [ "$reg" = "$(tr -d '[:space:]' < "$ROOT/.bun-version")" ]; then ok "synced_base $reg matches .bun-version"; else bad "bun-ci synced_base '$reg' != .bun-version"; fi
 
 echo "[test-ci-tool-pins] pip installs in workflows are pinned"
-if grep -nE 'pip install .*pre-commit($|[^=-])' "$ROOT"/.github/workflows/*.yml >/dev/null; then bad "an unpinned 'pip install pre-commit' remains"; else ok "pre-commit pip installs are pinned"; fi
+grep -nE 'pip install .*pre-commit($|[^=-])' "$ROOT"/.github/workflows/*.yml >/dev/null 2>&1
+case $? in
+  0) bad "an unpinned 'pip install pre-commit' remains" ;;
+  1) ok "pre-commit pip installs are pinned" ;;
+  *) bad "grep failed scanning workflows for pip installs" ;;
+esac
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "[test-ci-tool-pins] all checks passed"; exit 0; fi

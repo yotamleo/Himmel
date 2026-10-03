@@ -108,8 +108,9 @@ def discover(root):
             # `uses: o/r@ref` is deliberately NOT scanned: Dependabot's
             # github-actions ecosystem owns action bumps (one owner per pin,
             # HIMMEL-4258).
-            for m in re.finditer(r"pip install\b[^\n]*?(?<![\w.=-])([A-Za-z0-9_.-]+)==(\d+(?:\.\d+)*)\b", text):
-                add("pypi", m.group(1), m.group(2), r)
+            for pm in re.finditer(r"pip install\b[^\n]*", text):
+                for m in re.finditer(r"(?<![\w.=-])([A-Za-z0-9_.-]+)==(\d+(?:\.\d+)*)\b", pm.group(0)):
+                    add("pypi", m.group(1), m.group(2), r)
             if "gitleaks/gitleaks/releases/download" in text:
                 for m in re.finditer(r"^\s*ver=(\d+\.\d+\.\d+)\s*$", text, re.M):
                     add("gh", "gitleaks/gitleaks", "v" + m.group(1), r)
