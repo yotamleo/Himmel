@@ -1891,6 +1891,16 @@ assert_rc "385 heredoc, then /bin/c(p|q) a /tmp/b; cat ~/.claude/x allows" 0 \
     "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c(p|q) a /tmp/b; cat ~/.claude/x')" HOME="$FAKEHOME")"
 assert_rc "386 heredoc, then /opt/t/plant x ~/.claude denies" 2 \
     "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/opt/t/plant x ~/.claude')" HOME="$FAKEHOME")"
+# CR round 6 codex-1: an option argument after the destination hides it from
+# a last-operand reading, so every operand is a possible destination.
+assert_rc "387 /bin/c? -r /tmp/p/* ~/.claude --suffix .bak denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/c? -r /tmp/p/* ~/.claude --suffix .bak' HOME="$FAKEHOME")"
+assert_rc "388 heredoc, then /bin/c? -r /tmp/p/* ~/.claude --suffix .bak denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c? -r /tmp/p/* ~/.claude --suffix .bak')" HOME="$FAKEHOME")"
+assert_rc "389 /opt/t/plant --into=~/.claude x denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant --into=~/.claude x' HOME="$FAKEHOME")"
+assert_rc "390 nested worktree \$L -sf X ../../ -b denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" '$L -sf X ../../ -b')"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

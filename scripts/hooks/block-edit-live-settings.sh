@@ -1071,8 +1071,8 @@ _unjudged_cmd_word() {
 # _tok_unjudged_verb CMD_LC CMD_N — 0 when some segment's command word (the
 # first word that is not an assignment, a redirect target or a reserved word,
 # its bin-dir name read in its original case from CMD_N or the tokens) is
-# unjudged (_unjudged_cmd_word) AND one of its DESTINATION operands — a
-# redirect target, a `-t`/`--target-directory` value or its last positional
+# unjudged (_unjudged_cmd_word) AND one of its possible DESTINATION operands —
+# a redirect target, any operand that is not an option, an option's `=VALUE`
 # (_uj_tok_dests) — can be the `.claude` directory itself (_uj_dir_itself).
 # A mere mention (`graphify query x ~/.claude/projects`, a script run from
 # under `~/.claude`) is not a destination. Every destination is also left in
@@ -1088,9 +1088,8 @@ _unjudged_cmd_word() {
 # There a lone `-`, `--`, `*` or `+` (a markdown bullet in a heredoc body) is
 # not judged.
 # ponytail: a concrete path deeper under `.claude/` is not a destination (the
-# settings-name rule judges a settings leaf whatever the verb), and an
-# option-argument of an unknown command could be one; upgrade path: J1676
-# ruling — widen _uj_dir_itself only on a reported plant through such a path.
+# settings-name rule judges a settings leaf whatever the verb); upgrade path:
+# J1676 ruling — widen _uj_dir_itself only on a reported plant through one.
 # An exec wrapper (`env`, `sudo`, `xargs`, `nohup`, `timeout`, zsh's `noglob`
 # …) hands its operand on as the command, so after one the first word that
 # is not a flag, an assignment or a number is judged as the command word too;
@@ -1159,12 +1158,15 @@ _uj_dest() {
     _uj_dir_itself "$2"
 }
 
-# _uj_tok_dests K SC — the destination operands of the command word at token
-# K: every redirect target in its segment, a `-t`/`--target-directory` value,
-# and its last positional operand; with SC=1 (the zsh `(` split, whose words
-# cannot be placed) every word to the end. 0 when one is the `.claude` dir.
+# _uj_tok_dests K SC — the possible destination operands of the command word
+# at token K: every redirect target in its segment, every operand that is not
+# an option, an `--opt=VALUE` value and a `-t` value glued to its flag. Which
+# operand an unknown command writes to cannot be read from its options
+# (`… ~/.claude --suffix .bak`), so none is ruled out. With SC=1 (the zsh `(`
+# split, whose words cannot be placed) every word to the end. 0 when one is
+# the `.claude` dir.
 _uj_tok_dests() {
-    local k=$1 sc=$2 sg=${ST_S[$1]} w=0 last=-1 tnext=0 hit=1 lw rem
+    local k=$1 sc=$2 sg=${ST_S[$1]} w=0 hit=1 lw rem
     while [ "$w" -lt "$ST_N" ]; do
         if [ "${ST_S[w]}" = "$sg" ] || { [ "$sc" = 1 ] && [ "${ST_S[w]}" -gt "$sg" ]; }; then
             lw=${ST_LW[w]}
@@ -1172,45 +1174,34 @@ _uj_tok_dests() {
                 case "${ST_RO[w]}" in *'>'*) _uj_dest "${ST_W[w]}" "$lw" && hit=0 ;; esac
             elif [ "$w" -le "$k" ]; then
                 :
-            elif [ "$sc" = 1 ] || [ "$tnext" = 1 ]; then
-                tnext=0
+            elif [ "$sc" = 1 ]; then
                 _uj_dest "${ST_W[w]}" "$lw" && hit=0
             else
                 case "$lw" in
-                    -t|--target-directory) tnext=1 ;;
-                    --t*=*)
-                        # shellcheck disable=SC2194 # is the option a prefix of it
-                        case --target-directory in
-                            "${lw%%=*}"*) _uj_dest "${ST_W[w]#*=}" "${lw#*=}" && hit=0 ;;
-                        esac
-                        ;;
+                    -*=*) _uj_dest "${ST_W[w]#*=}" "${lw#*=}" && hit=0 ;;
                     --*) ;;
-                    -*t*)
+                    -*t?*)
                         rem=${lw#-*t}
-                        if [ -z "$rem" ]; then tnext=1
-                        else _uj_dest "${ST_W[w]#-*t}" "$rem" && hit=0
-                        fi
+                        _uj_dest "${ST_W[w]#-*t}" "$rem" && hit=0
                         ;;
                     -*) ;;
-                    *) last=$w ;;
+                    *) _uj_dest "${ST_W[w]}" "$lw" && hit=0 ;;
                 esac
             fi
         fi
         w=$((w + 1))
     done
-    if [ "$last" != -1 ]; then
-        _uj_dest "${ST_W[last]}" "${ST_LW[last]}" && hit=0
-    fi
     return "$hit"
 }
 
 # _uj_text_dests SKIP ALL TEXT_LC TEXT_N — _uj_tok_dests without tokens: the
-# words of TEXT after the first SKIP, `>`-glued or following a `>` word, a
-# `-t` value and the last positional; ALL=1 takes every word. TEXT_N is the
+# words of TEXT after the first SKIP, `>`-glued or following a `>` word, and
+# every operand, `--opt=VALUE` value and glued `-t` value; ALL=1 takes every
+# word. TEXT_N is the
 # same text in its original case, used for the recorded operand when its
 # words line up with TEXT_LC's.
 _uj_text_dests() {
-    local skip=$1 all=$2 i=0 n last='' tnext=0 hit=1 lw rem nog=0
+    local skip=$1 all=$2 i=0 n tnext=0 hit=1 lw rem nog=0
     local -a lws nws
     case $- in *f*) nog=1 ;; esac
     set -f
@@ -1241,22 +1232,14 @@ _uj_text_dests() {
                         _uj_dest "${nws[i]}" "$lw" && hit=0
                     else
                         case "$lw" in
-                            -t|--target-directory) tnext=1 ;;
-                            --t*=*)
-                                # shellcheck disable=SC2194 # is the option a prefix of it
-                                case --target-directory in
-                                    "${lw%%=*}"*) _uj_dest "${nws[i]#*=}" "${lw#*=}" && hit=0 ;;
-                                esac
-                                ;;
+                            -*=*) _uj_dest "${nws[i]#*=}" "${lw#*=}" && hit=0 ;;
                             --*) ;;
-                            -*t*)
+                            -*t?*)
                                 rem=${lw#-*t}
-                                if [ -z "$rem" ]; then tnext=1
-                                else _uj_dest "${nws[i]#-*t}" "$rem" && hit=0
-                                fi
+                                _uj_dest "${nws[i]#-*t}" "$rem" && hit=0
                                 ;;
                             -*) ;;
-                            *) last=$i ;;
+                            *) _uj_dest "${nws[i]}" "$lw" && hit=0 ;;
                         esac
                     fi
                     ;;
@@ -1264,9 +1247,6 @@ _uj_text_dests() {
         fi
         i=$((i + 1))
     done
-    if [ -n "$last" ]; then
-        _uj_dest "${nws[last]}" "${lws[last]}" && hit=0
-    fi
     return "$hit"
 }
 
