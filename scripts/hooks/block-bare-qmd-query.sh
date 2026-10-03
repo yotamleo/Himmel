@@ -343,6 +343,8 @@ WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|exec|eval|
 WRAP="($WRAP|timeout${OPTV}[[:space:]]+[0-9.]+[smhd]?|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|$ASSIGN))*|if|then|else|elif|do|while|until|!)"
 # A case arm's `)` is a command position too, and zsh runs `=qmd` as the
 # qmd its PATH finds (HIMMEL-4140).
+# ponytail: any `)` opens a command, so `echo "$(x)"qmd query` over-denies;
+# telling a case arm from a substitution's close is HIMMEL-4172.
 CMDREST='[[:space:]]*(('"$ASSIGN"'|=?'"$EXEPFX$WRAP"')[[:space:]]+)*=?'"$EXEPFX"
 CMDPOS='(^|[|;&()`{])'"$CMDREST"
 # The program: qmd itself, or a JS runtime handed qmd's entry point.
