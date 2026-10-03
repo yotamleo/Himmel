@@ -1082,7 +1082,8 @@ _unjudged_cmd_word() {
 # judged.
 # An exec wrapper (`env`, `sudo`, `xargs`, `nohup`, `timeout`, zsh's `noglob`
 # …) hands its operand on as the command, so after one the first word that
-# is not a flag, an assignment or a number is judged as the command word too.
+# is not a flag, an assignment or a number is judged as the command word too;
+# after a `--` a flag-shaped word is the command (`env -- -ln …`).
 # A bare word right after a wrapper option that takes an argument
 # (_wrapper_opt_arg: `sudo -u root`) is that argument, not the command; a
 # word there that is itself unjudged is still judged, so the table can only
@@ -1133,9 +1134,11 @@ _tok_unjudged_verb() {
                     fi
                 fi
                 case "${ST_LW[k]}:${ST_Q[k]}:$wrapped" in
-                    if:0:0|then:0:0|else:0:0|elif:0:0|do:0:0|while:0:0|until:0:0|'!:0:0'|'{:0:0'|time:0:0) ;;
+                    if:0:0|then:0:0|else:0:0|elif:0:0|do:0:0|while:0:0|until:0:0|'!:0:0'|'{:0:0') ;;
+                    # `--` ends the wrapper's options: the next word is the command
+                    --:?:1) wrapped=2 ;;
                     -*:?:1) ! _wrapper_opt_arg "$wname" "${ST_LW[k]}" || oparg=1 ;;
-                    [a-z_]*=*:?:1|[0-9]*:?:1) ;;
+                    [a-z_]*=*:?:[12]|[0-9]*:?:[12]) ;;
                     *)
                         done_seg=1 sc=0
                         [ "${ST_SEP[sg]}" != '(' ] || g=1 sc=1
@@ -1185,13 +1188,14 @@ EOF
                 if ! _unjudged_cmd_word "$1" "$w" "$g"; then shift; continue; fi
             fi
             case "$1:$wrapped" in
-                if:?|then:?|else:?|elif:?|do:?|while:?|until:?|'!:'?|'{:'?|'(:'?|time:?) shift ;;
+                if:?|then:?|else:?|elif:?|do:?|while:?|until:?|'!:'?|'{:'?|'(:'?) shift ;;
                 [a-z_]*=*:?) shift ;;
+                --:1) shift; wrapped=2 ;;
                 -*:1)
                     ! _wrapper_opt_arg "$wname" "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" || oparg=1
                     shift ;;
-                [0-9]*:1) shift ;;
-                env:?|sudo:?|doas:?|xargs:?|command:?|builtin:?|exec:?|nohup:?|nice:?|ionice:?|timeout:?|stdbuf:?|setsid:?|taskset:?|chrt:?|unbuffer:?|noglob:?|nocorrect:?)
+                [0-9]*:[12]) shift ;;
+                env:?|sudo:?|doas:?|xargs:?|command:?|builtin:?|exec:?|nohup:?|nice:?|ionice:?|timeout:?|stdbuf:?|setsid:?|taskset:?|chrt:?|unbuffer:?|time:?|noglob:?|nocorrect:?)
                     wname=$1; shift; wrapped=1 ;;
                 *) break ;;
             esac

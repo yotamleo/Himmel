@@ -1795,6 +1795,17 @@ assert_rc "344 heredoc, then /bin/c(p|q) a /tmp/b; cat ~/.claude/x denies" 2 \
     "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c(p|q) a /tmp/b; cat ~/.claude/x')" HOME="$FAKEHOME")"
 assert_rc "345 heredoc, then a continued /opt/t/plant line to ~/.claude/ denies" 2 \
     "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/opt/t/plant a \\\\\n ~/.claude/x')" HOME="$FAKEHOME")"
+# `--` ends a wrapper's options, and `time` wraps its command.
+assert_rc "346 env -- -ln -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'env -- -ln -sf x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "347 heredoc, then env -- -ln -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nenv -- -ln -sf x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "348 time -p ls ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'time -p ls ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "349 heredoc, then time -p ls ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\ntime -p ls ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "350 time /bin/c? a ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'time /bin/c? a ~/.claude/' HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
