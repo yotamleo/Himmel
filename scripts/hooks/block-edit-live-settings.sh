@@ -1774,6 +1774,9 @@ _dc_can_be_claude() {
 # begins with `*`, `?` or `[` never matches a dot-name (bash and zsh both need
 # the leading `.` spelled), so `cp src/* d/` is left alone. A component takes
 # in zsh groups, two deep, `|` included (`.cl(a|x)ude`).
+# ponytail: a component led by `$`, a quote, or (under dotglob/GLOB_DOTS) a
+# glob is not folded, HIMMEL-4165 / HIMMEL-4167 widen the leading set after
+# measuring the over-deny on real traffic.
 _dc_name_fold() {
     local t=$1 out='' m c pw
     # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
