@@ -12,6 +12,14 @@ the tree, and the exact re-run commands.
   level and everything after it. Default TTL is 5 minutes and refreshes on each
   use; a 1-hour tier exists (write 2× base, 5-minute write 1.25×, read 0.1×).
   Official: <https://platform.claude.com/docs/en/build-with-claude/prompt-caching>.
+- Preserved thinking (HIMMEL-3875; reported by the ticket from
+  <https://platform.claude.com/docs/en/build-with-claude/preserved-thinking>,
+  not independently verified here): on Fable 5.1, Opus 5.5, Sonnet 5.5 and
+  Mythos 5.1 the API validates each thinking block's signature against the
+  prefix before it. **Edits that invalidate thinking also restart the cache**:
+  editing an earlier message, changing the system prompt or tools, or clearing
+  tool results. The cache-safe shape is therefore **append-only messages with a
+  fixed system prompt and fixed tools** (audit row 10).
 - `MEMORY.md` and `CLAUDE.md` are read at session start (and after compaction)
   and live in that session's **message history**. Editing either on disk does
   not touch a running session's already-built prompt, so it cannot invalidate
@@ -46,8 +54,9 @@ TRUE / FALSE / UNVERIFIED, each with the eval scenario (a fixture in
 | 7 | a cache-read collapse after a compaction or a long idle is not an external invalidation (the reading the probe applies) | **TRUE** — measured, not assumed | L1 classed 1 session `compacted`; fixtures | `compaction-lookalike`, `ttl-expiry`, `late-rewrite-unrelated`, `idle-compaction-lookalike` |
 | 8 | "the 76.5% read-ratio / `<40%` = structural issue" figures (`token-economy.md`) | **UNVERIFIED** — one-tweet heuristics from another workspace; himmel's measured 98.2% neither confirms nor refutes the threshold | — | none (no fixture: a threshold from elsewhere) |
 | 9 | "one extra cache write (~4k tokens) per session started or compacted after an index edit" (this doc, `SKILL.md` rail 6) | **UNVERIFIED** — an estimate from the index size, not a measured delta | — | none; ponytail: an estimate, upgrade path = a probe mode that diffs first-turn `cache_creation` before/after an edit (HIMMEL-3837 follow-up) |
+| 10 | "edits that invalidate thinking also restart the prompt cache; append-only with fixed system and tools is the cache-safe shape" (this doc, HIMMEL-3875) | **UNVERIFIED** — reported by the ticket from the preserved-thinking docs page, not measured | — | none; ponytail: ticket-reported, upgrade path = a `scripts/eval/cache-probe.sh` scenario that edits an earlier turn / the system prompt and asserts the rewrite |
 
-Counts: 3 TRUE, 4 FALSE (all fixed), 2 UNVERIFIED (noted, not guessed).
+Counts: 3 TRUE, 4 FALSE (all fixed), 3 UNVERIFIED (noted, not guessed).
 Unrelated caches (gh, graphify, qmd, npm, `USAGE_CACHE_TTL`,
 `QMD_STALENESS_CACHE_TTL`) were ruled out: none is a prompt-cache claim.
 
