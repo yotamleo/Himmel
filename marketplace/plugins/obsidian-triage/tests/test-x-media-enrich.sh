@@ -1068,6 +1068,24 @@ grep -q '^media_transcript_source: platform-subs$' "$TW/Clippings/clip.md" && a=
 assert "twimg-ref clip takes platform subs (duration from yt-dlp)" ok "$a"
 grep -q '^media_video_duration_s: 40$' "$TW/Clippings/clip.md" && a=ok || a=no
 assert "duration stamped from yt-dlp when not probed" ok "$a"
+TM="$tmp/vault-twmulti"
+make_x_vault "$TM" 2002 "$VIDEO_MEDIA"'<video src="https://video.twimg.com/ext_tw_video/999/pu/vid/avc1/1280x720/zzz.mp4"></video>'
+emit_gallery_dl video.mp4
+X_TEST_YT_MODE=subs X_TEST_YT_DURATION=40 HOME="$H2" run_tool "$TM" >"$tmp/tm.out" 2>"$tmp/tm.err"
+grep -q '^media_transcript_source: platform-subs$' "$TM/Clippings/clip.md" && a=subs || a=other
+assert "two distinct video refs do NOT take the subs-only path" other "$a"
+
+echo "Test 21: malformed fxtwitter payload is a retryable probe error"
+FXB="$tmp/fxt-bad.json"
+echo '{"code":200,"tweet":{"media":{"videos":[{"duration":"abc"}]}}}' > "$FXB"
+BV="$tmp/vault-badprobe"; make_x_vault "$BV" 2101 ""
+X_TEST_FXT_JSON="$FXB" X_TEST_FXT_COUNT="$tmp/fxt-b.count" HOME="$H2" run_tool "$BV" >"$tmp/bv.out" 2>"$tmp/bv.err"
+assert "malformed duration does not abort the batch (exit 0)" 0 "$?"
+grep -q '^media_probe_at:' "$BV/Clippings/clip.md" && a=stamped || a=unstamped
+assert "malformed payload stamps nothing (retried next run)" unstamped "$a"
+echo '{"code":200,"tweet":{"media":"oops"}}' > "$FXB"
+X_TEST_FXT_JSON="$FXB" X_TEST_FXT_COUNT="$tmp/fxt-b.count" HOME="$H2" run_tool "$BV" >"$tmp/bv2.out" 2>"$tmp/bv2.err"
+assert "non-object media does not abort the batch (exit 0)" 0 "$?"
 
 # --- Test 14: doc-contract -------------------------------------------------
 echo "Test 14: /x-media-enrich runbook + catalog + README doc-contract"

@@ -184,6 +184,17 @@ def is_x_source(src: str):
             "url": f"https://x.com/{user}/status/{status_id}"}
 
 
+def _single_twimg_video(body: str) -> bool:
+    """True when the body's video.twimg.com refs name exactly one video id
+    (resolution variants share an id). A ref with no parseable id is unknown,
+    so not single: the subs-only path cannot prove it covers every video."""
+    refs = re.findall(r"video\.twimg\.com[^\s\"')<>]*", body)
+    ids = {m.group(1) for r in refs
+           if (m := re.match(r"video\.twimg\.com/[^/]+/([^/.?]+)", r))}
+    return bool(refs) and len(ids) == 1 and all(
+        re.match(r"video\.twimg\.com/[^/]+/[^/.?]+", r) for r in refs)
+
+
 def _has_twimg_media(body: str) -> bool:
     """The clip body references at least one downloadable X media item."""
     return TWIMG_MEDIA_RE.search(body) is not None
@@ -456,14 +467,18 @@ def fxt_probe(x: dict):
     tweet = data.get("tweet")
     if data.get("code") != 200 or not isinstance(tweet, dict):
         return "error", None
-    videos = (tweet.get("media") or {}).get("videos") or []
-    if not videos:
-        return "no-video", None
-    total = sum(float(v.get("duration") or 0) for v in videos)
-    dur = int(round(total)) if total > 0 else None
+    try:
+        media = tweet.get("media") or {}
+        videos = media.get("videos") or []
+        photos = media.get("photos") or []
+        if not videos:
+            return "no-video", None
+        total = sum(float(v.get("duration") or 0) for v in videos)
+        dur = int(round(total)) if total > 0 else None
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return "error", None   # malformed payload: transient, probed again
     # A lone video is the subs-only case; photos or extra videos still need the
     # gallery-dl media path, so they get their own result.
-    photos = (tweet.get("media") or {}).get("photos") or []
     return ("video" if len(videos) == 1 and not photos else "video+media"), dur
 
 
@@ -1076,7 +1091,7 @@ def enrich_batch(args, selected, matched_total, remaining):
                 dur_hint = None
             subs = None
             if (present0 and not re.search(r"pbs\.twimg\.com/media/", body0)
-                    and ("video.twimg.com" in body0
+                    and (_single_twimg_video(body0)
                          or fm0.get("media_probe_result") == "video")):
                 subs = fetch_subs(x, args.min_sub_coverage, dur_hint)
             if subs:
