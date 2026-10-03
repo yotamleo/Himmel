@@ -3005,6 +3005,31 @@ check_c45_qmd_daemon() {  # t13b-ok: doctor row that reads ps only, starts nothi
     fi
 }
 
+# --- C48-qmd-embed-model: index vectors vs the configured embed model (HIMMEL-4232)
+# qmd stores the embed model per vector but searches without filtering by it, so
+# a configured model that differs from the index's returns errors (a dimension
+# change) or silent garbage (same dimension). This row WARNs; qmd-reindex.sh
+# refuses to run on a mismatch. Silent when there is no index (qmd unused here).
+# Reads the index read-only through scripts/luna/qmd-embed-model.sh check.
+# Test seam: HIMMEL_DOCTOR_QMD_INDEX (default INDEX_PATH, else
+# ${XDG_CACHE_HOME:-~/.cache}/qmd/index.sqlite, where qmd keeps it).
+check_c48_qmd_embed_model() {
+    local idx="${HIMMEL_DOCTOR_QMD_INDEX:-${INDEX_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/qmd/index.sqlite}}"
+    local tool out rc=0 want have
+    tool="$(dirname "${BASH_SOURCE[0]}")/luna/qmd-embed-model.sh"
+    [ -f "$idx" ] && [ -f "$tool" ] || return 0
+    out="$(bash "$tool" check --index "$idx" 2>&1)" || rc=$?
+    case "$rc" in
+        0) emit OK C48-qmd-embed-model "${out#qmd-embed-model: }" ;;
+        3)
+            want="$(printf '%s\n' "$out" | sed -n 's/^ *configured : //p')"
+            have="$(printf '%s\n' "$out" | sed -n 's/^ *index has  : *//p')"
+            emit WARN C48-qmd-embed-model "qmd index vectors come from '$have' but the configured embed model is '$want' -- vector search returns errors or garbage" \
+                "bash scripts/luna/qmd-embed-model.sh check   # then reembed + swap, or set the config back (docs/internals/qmd-embed-model.md)" ;;
+        *) emit INFO C48-qmd-embed-model "could not verify the qmd index's embed model (rc $rc) -- check skipped" ;;
+    esac
+}
+
 # --- C41: MCP server credential on the command line (HIMMEL-2762) ---------------
 # An MCP server entry launched as `npm exec <server> --api-key <key>` puts the key
 # in argv, so any local user reads it via ps or /proc/<pid>/cmdline, and it lands
@@ -3359,6 +3384,7 @@ check_c44_skill_index
 check_c45_qmd_daemon  # t13b-ok: doctor row that reads ps only, starts nothing
 check_c46_plugin_enabled_missing
 check_c47_runaway_procs  # t13b-ok: doctor row that reads ps only, kills nothing
+check_c48_qmd_embed_model
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

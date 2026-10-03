@@ -43,6 +43,7 @@
 # Usage:
 #   bash scripts/luna/ship-index.sh [--host <ssh-host>] [--no-reindex]
 #       [--collections a,b] [--no-graph] [--keep-staging] [--dry-run]
+#       [--lexical-only]
 #
 #   --host <h>          ssh host to ship to            (default: win2)
 #   --no-reindex        skip the local qmd-reindex step (ship what exists)
@@ -56,6 +57,8 @@
 #                       the minimal PATH schtasks/cron fire with, so the run dies
 #                       at rc 3 having shipped nothing (HIMMEL-1286).
 #   --qmd-js <path>     script arg for --qmd-bin, when qmd is bun-served
+#   --lexical-only      strip every vector and ship BM25 only, for a receiver
+#                       configured with a different embed model (HIMMEL-4232)
 #
 # Exit codes:
 #   0  shipped + verified
@@ -79,6 +82,8 @@
 #      exit fires AFTER it completes, so a graph-leg failure (7) is reported
 #      instead when both happened (7 is more code-specific; the restore
 #      failure was already printed as a WARN either way).
+#   9  embed-model MISMATCH, or the receiver's model could not be read
+#      (HIMMEL-4232) — nothing uploaded; the refusal names the two ways out
 set -euo pipefail
 
 HOST="win2"
@@ -86,6 +91,7 @@ DO_REINDEX=1
 DO_GRAPH=1
 KEEP_STAGING=0
 DRY_RUN=0
+LEXICAL_ONLY=0
 COLLECTIONS=""
 # Pinned qmd, forwarded to the reindex leg (HIMMEL-1286). Empty = let
 # qmd-reindex.sh resolve qmd itself, which is correct interactively and WRONG
@@ -122,7 +128,7 @@ usage() {
     cat <<'EOF'
 Usage: ship-index.sh [--host <ssh-host>] [--no-reindex] [--collections a,b]
                      [--no-graph] [--keep-staging] [--dry-run]
-                     [--qmd-bin <path>] [--qmd-js <path>]
+                     [--qmd-bin <path>] [--qmd-js <path>] [--lexical-only]
 
 --qmd-bin/--qmd-js pin the qmd handed to the reindex leg. Pass them from any
 SCHEDULED context: the resolver needs bun or qmd on PATH, and a scheduler's
@@ -144,8 +150,15 @@ proxy. Never written on a genuine receiver-side failure. Best-effort: a
 stamp-write failure only warns, it never turns a verified receipt into a
 reported failure.
 
+HIMMEL-4232: the artifact's embed model must equal the receiver's configured
+one (qmd status there), or the receiver's vector search returns garbage. A
+mismatch, or a receiver model that cannot be read, refuses before upload (rc 9)
+and names the ways out: switch the receiver's model (if it can query-embed), or
+re-run with --lexical-only, which strips every vector and ships BM25 only.
+
 Exit: 0 ok | 1 usage | 2 prereq | 3 reindex | 4 prepare | 5 upload
       6 receiver | 7 graph leg | 8 shipped+verified but HTTP restore failed
+      9 embed-model mismatch / receiver model unreadable (nothing uploaded)
 EOF
 }
 
@@ -190,6 +203,7 @@ while [ $# -gt 0 ]; do
         --no-graph)      DO_GRAPH=0; shift ;;
         --keep-staging)  KEEP_STAGING=1; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
+        --lexical-only)  LEXICAL_ONLY=1; shift ;;
         -h|--help)       usage; exit 0 ;;
         *)
             echo "ERR ship-index: unknown arg: $1" >&2
@@ -344,6 +358,37 @@ remote_collections() {
         | paste -sd, - || true
 }
 
+# --- embed-model pre-flight (HIMMEL-4232) -----------------------------------
+# qmd keeps the model per vector but searches without filtering by it, so an
+# artifact embedded with a model other than the receiver's configured one
+# returns garbage there (or errors on a dimension change). qmd status prints
+# the configured model as an org/repo link; compare in that form.
+hf_link() {
+    case "$1" in
+        hf:*/*/*) local r="${1#hf:}"; local org="${r%%/*}"; r="${r#*/}"; printf 'https://huggingface.co/%s/%s' "$org" "${r%%/*}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+model_name() {
+    case "$1" in
+        *embeddinggemma*) echo gemma ;;
+        *Qwen3-Embedding*) echo qwen ;;
+        *) echo "$1" ;;
+    esac
+}
+remote_embed_model() {
+    ssh "$HOST" 'qmd status' 2>/dev/null | tr -d '\r' \
+        | sed -n 's/^ *Embedding: *\([^ ]*\).*/\1/p' | head -1 || true
+}
+# Query-capable = enough RAM to embed a query on CPU (scripts/luna/qmd-embed-model.sh).
+remote_query_capable() {
+    local bytes
+    bytes="$(ssh "$HOST" 'powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"' 2>/dev/null \
+        | tr -d '\r' | head -1 || true)"
+    case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$bytes" -ge 4294967296 ]
+}
+
 if [ "$DRY_RUN" -eq 1 ]; then
     say "DRY RUN — nothing will be built, copied, or changed"
     say "  host              : $HOST"
@@ -382,7 +427,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
         say "  collections       : (would query the receiver's 'qmd collection list')"
     fi
     say "  would run         : $REINDEX_SCRIPT"
-    say "  would run         : node $PREPARE_SCRIPT --src $LOCAL_INDEX --out <staging> --collections <set>"
+    if [ "$LEXICAL_ONLY" -eq 1 ]; then
+        say "  embed model       : LEXICAL-ONLY — every vector stripped, receiver gets BM25 only"
+        say "  would run         : node $PREPARE_SCRIPT --src $LOCAL_INDEX --out <staging> --collections <set> --strip-vectors"
+    else
+        say "  embed model       : would compare the artifact's model with the receiver's 'qmd status' (refuse on mismatch)"
+        say "  would run         : node $PREPARE_SCRIPT --src $LOCAL_INDEX --out <staging> --collections <set>"
+    fi
     # The real upload writes per-invocation RUN_TAG-suffixed remote names (a
     # dot, the PID+epoch run tag, then a dot before the extension) so two
     # concurrent ships can't overwrite each other. The tag is inherently
@@ -436,6 +487,13 @@ if [ -z "$COLLECTIONS" ]; then
 else
     say "      using explicit override: $COLLECTIONS"
 fi
+REMOTE_MODEL=""
+if [ "$LEXICAL_ONLY" -eq 0 ]; then
+    REMOTE_MODEL="$(remote_embed_model)"
+    [ -n "$REMOTE_MODEL" ] || die 9 \
+        "could not read the embed model configured on '$HOST' ('qmd status' there) — refusing to ship vectors it may not match. Fix qmd there, or re-run with --lexical-only."
+    say "      receiver embed model: $REMOTE_MODEL"
+fi
 
 # --- 3. prepare the artifact -------------------------------------------------
 say "[3/5] preparing the shippable artifact (reconcile + vec0 GC + VACUUM)"
@@ -444,7 +502,9 @@ rm -f "$STAGING"
 STAGING="$STAGING.sqlite"
 
 PREP_JSON=""
-PREP_JSON="$(node "$PREPARE_SCRIPT" --src "$LOCAL_INDEX" --out "$STAGING" --collections "$COLLECTIONS" --json)" \
+prep_args=(--src "$LOCAL_INDEX" --out "$STAGING" --collections "$COLLECTIONS" --json)
+[ "$LEXICAL_ONLY" -eq 0 ] || prep_args+=(--strip-vectors)
+PREP_JSON="$(node "$PREPARE_SCRIPT" "${prep_args[@]}")" \
     || die 4 "prepare-ship-index failed — NOTHING shipped"
 
 SHIP_DOCS="$(printf '%s' "$PREP_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).after.documents))}catch{process.stdout.write("-1")}})')"
@@ -458,6 +518,23 @@ SHIP_VECS="$(printf '%s' "$PREP_JSON" | node -e 'let s="";process.stdin.on("data
 case "$SHIP_DOCS" in ''|*[!0-9]*) die 4 "prepare-ship-index returned an unusable document count ('$SHIP_DOCS') — refusing to ship with the post-swap verification disabled" ;; esac
 case "$SHIP_VECS" in ''|*[!0-9]*) die 4 "prepare-ship-index returned an unusable vector count ('$SHIP_VECS') — refusing to ship with the post-swap verification disabled" ;; esac
 say "      staged: ${SHIP_DOCS} documents / ${SHIP_VECS} vectors"
+
+if [ "$LEXICAL_ONLY" -eq 1 ]; then
+    say "      LEXICAL-ONLY: vectors stripped; vector search on '$HOST' returns nothing until a matching index is shipped"
+else
+    # One model per artifact (prepare refuses a mix); none = no vectors at all.
+    SHIP_MODEL="$(printf '%s' "$PREP_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const m=JSON.parse(s).after.models;process.stdout.write(Array.isArray(m)?m.join(","):"?")}catch{process.stdout.write("?")}})')"
+    [ "$SHIP_MODEL" != "?" ] || die 4 "prepare-ship-index did not report the artifact's embed model — refusing to ship unverified vectors"
+    if [ -n "$SHIP_MODEL" ] && [ "$(hf_link "$SHIP_MODEL")" != "$REMOTE_MODEL" ]; then
+        name="$(model_name "$SHIP_MODEL")"
+        if remote_query_capable; then
+            ways="on $HOST run 'bash scripts/luna/qmd-embed-model.sh set $name --force', or re-run this ship with --lexical-only"
+        else
+            ways="$HOST cannot query-embed (under 4 GiB RAM or unreadable), so re-run this ship with --lexical-only"
+        fi
+        die 9 "EMBED MODEL MISMATCH — the artifact is embedded with $SHIP_MODEL but '$HOST' is configured for $REMOTE_MODEL; NOTHING uploaded. Way out: $ways."
+    fi
+fi
 
 # --- 4. upload ---------------------------------------------------------------
 say "[4/5] uploading to $HOST"
@@ -492,9 +569,11 @@ say "[5/5] running the receiver-side swap on $HOST"
 # Single-quoted OUTER, double-quoted INNER — the one quoting shape that survives
 # Git-Bash -> ssh -> cmd.exe -> powershell. No nested \" anywhere.
 remote_rc=0
+LEXICAL_FLAG=""
+[ "$LEXICAL_ONLY" -eq 0 ] || LEXICAL_FLAG=" -LexicalOnly"
 # shellcheck disable=SC2029  # client-side expansion is INTENDED: the paths and
 # counts are resolved HERE and baked into the command the receiver runs.
-ssh "$HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File \"$REMOTE_PS1\" -Staged \"$REMOTE_STAGED\" -Target \"$REMOTE_INDEX\" -ExpectDocs $SHIP_DOCS -ExpectVectors $SHIP_VECS -EnsureScript \"$REMOTE_ENSURE\"" || remote_rc=$?
+ssh "$HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File \"$REMOTE_PS1\" -Staged \"$REMOTE_STAGED\" -Target \"$REMOTE_INDEX\" -ExpectDocs $SHIP_DOCS -ExpectVectors $SHIP_VECS -EnsureScript \"$REMOTE_ENSURE\"$LEXICAL_FLAG" || remote_rc=$?
 
 # Receiver rc 6: the PRIMARY contract (swap + plain daemon + verify) fully
 # succeeded on the receiver -- only its secondary, best-effort HTTP-singleton

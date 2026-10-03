@@ -171,6 +171,9 @@ export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
 # Same for C47-runaway-procs (HIMMEL-3959): never scan the operator's real
 # process table; an absent ps seam makes C47 silent, dedicated cases stub it.
 export HIMMEL_DOCTOR_RUNAWAY_PS="$FAKEROOT/no-such-ps"
+# Same for C48-qmd-embed-model (HIMMEL-4232): never read the operator's real
+# qmd index; an absent index makes C48 silent, dedicated cases point at a fixture.
+export HIMMEL_DOCTOR_QMD_INDEX="$FAKEROOT/no-such-index.sqlite"
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -5398,6 +5401,50 @@ else
     fail "C47 real loop -> alive=$c47_alive $(printf '%s' "$out" | grep -A1 C47)"
 fi
 rm -rf "$c47_t"
+
+# --- C48-qmd-embed-model (HIMMEL-4232): index vectors vs the configured model --
+# A configured embed model that differs from the model the index's vectors came
+# from returns garbage on vec search (or fails on a dimension change). The row
+# WARNs; qmd-reindex.sh refuses. Seam: HIMMEL_DOCTOR_QMD_INDEX (the index file);
+# the configured model comes from the fixture HOME's ~/.config/qmd/index.yml.
+if command -v sqlite3 >/dev/null 2>&1; then
+    c48_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c48.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+    mkdir -p "$c48_t/home/.config/qmd" "$c48_t/claude"
+    sqlite3 "$c48_t/index.sqlite" "CREATE TABLE content_vectors(hash TEXT, seq INT, model TEXT); INSERT INTO content_vectors VALUES('h',0,'hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf');"
+    c48_run() { # <configured embed uri, empty = default>
+        if [ -n "$1" ]; then printf 'models:\n  embed: %s\n' "$1" > "$c48_t/home/.config/qmd/index.yml"
+        else rm -f "$c48_t/home/.config/qmd/index.yml"; fi
+        PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_QMD_INDEX="$c48_t/index.sqlite" \
+            CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1
+    }
+
+    echo "== C48-qmd-embed-model: index model matches the default -> OK (RED) =="
+    out="$(c48_run '')"
+    if grepq "$out" 'OK   C48-qmd-embed-model' && grepq "$out" -F 'embeddinggemma'; then
+        pass "C48 matching model -> OK naming the model"
+    else
+        fail "C48 match -> $(printf '%s' "$out" | grep -A1 C48)"
+    fi
+
+    echo "== C48-qmd-embed-model: configured qwen over a gemma index -> WARN =="
+    out="$(c48_run 'hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf')"
+    if grepq "$out" 'WARN C48-qmd-embed-model' && grepq "$out" -F 'qmd-embed-model.sh'; then
+        pass "C48 mismatch -> WARN naming the fix script"
+    else
+        fail "C48 mismatch -> $(printf '%s' "$out" | grep -A1 C48)"
+    fi
+
+    echo "== C48-qmd-embed-model: no index -> silent =="
+    out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'C48-qmd-embed-model'; then
+        fail "C48 no index -> $(printf '%s' "$out" | grep -A1 C48)"
+    else
+        pass "C48 no index -> silent"
+    fi
+    rm -rf "$c48_t"
+else
+    pass "C48 skipped: sqlite3 not installed"
+fi
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
