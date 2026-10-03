@@ -20,12 +20,13 @@
 # <git-common-dir>/cr-aggregate-verdicts/<branch>. A phase-A candidate with no
 # matching aggregate VERDICT line is a candidate the carry-forward DROPPED, and
 # is treated fail-closed as `unaddressed` -- the caller adds the printed count to
-# its Critical count (N). Uses the SAME VERDICT-line id parse as phase B's awk,
-# so the phase-A ID set here is identical to the set phase B counted from.
+# its Critical count (N). Uses the SAME VERDICT-line id parse as step 4's
+# exclusion rule, so the phase-A ID set here is identical to the set step 4
+# counts from (/pr-check has had no phase B since HIMMEL-2704).
 #
 # Fail-open / fail-closed, unchanged from the fence:
 #   * missing / empty / unreadable prior-blocking file -> no phase-A candidates
-#     to reconcile -> 0 orphans (fail-open, matching phase B).
+#     to reconcile -> 0 orphans (fail-open, matching step 4).
 #   * aggregate file missing/empty WHILE prior-blocking has candidates -> EVERY
 #     phase-A candidate is an orphan (fail-closed: a forgotten aggregate write
 #     reads as "every candidate unaddressed").
@@ -39,7 +40,7 @@
 #
 # Output:
 #   stdout -- exactly one line: `orphan-check: <N> unaddressed phase-A candidate(s)`
-#   stderr -- one line per orphan id (operator diagnostic, like phase B's).
+#   stderr -- one line per orphan id (operator diagnostic).
 #
 # Exit codes:
 #   0  check ran (N may be zero or non-zero -- N is the SIGNAL, not the rc)
@@ -86,7 +87,7 @@ if [ -s "$prior_file" ]; then
                 }
             close(agg)
         }
-        # Main input = prior-blocking (phase-A) file. SAME parse as phase B.
+        # Main input = prior-blocking (phase-A) file. SAME parse as step 4.
         /^VERDICT \[/ {
             id = $(0)
             sub(/^VERDICT \[/, "", id); sub(/\].*/, "", id)
@@ -96,8 +97,8 @@ if [ -s "$prior_file" ]; then
     ' "$prior_file" 2>/dev/null) || orphan_out=""
     orphan_count=$(printf '%s\n' "$orphan_out" | awk -F'=' '/^ORPHAN_COUNT=/{print $(2); exit}')
     case "$orphan_count" in ''|*[!0-9]*) orphan_count=0 ;; esac
-    # Surface each orphan ID to the operator (stderr, like phase B's
-    # diagnostics) -- a phase-A candidate dropped from the carry-forward.
+    # Surface each orphan ID to the operator (stderr diagnostics) -- a
+    # phase-A candidate dropped from the carry-forward.
     printf '%s\n' "$orphan_out" | while read -r oline; do
         case "$oline" in
             ORPHAN_COUNT=*) ;;
