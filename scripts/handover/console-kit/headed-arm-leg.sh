@@ -452,6 +452,30 @@ if [ "$CONSULT" -eq 1 ]; then
     fi
     CONSULT_REPO_CANON="$_consult_repo"
     unset -v _consult_raw _consult_repo
+    # (HIMMEL-4142 S1) Same class as F1's shim refusal below: a caller-chosen seam
+    # can launch the consult unconfined. HEADED_ARM_LEG_CLAUDE_BIN has no in-repo
+    # value (the shim would exec it with `--setting-sources ""`, which a foreign
+    # binary can ignore), so it refuses outright. TARGET and PROFILES must resolve
+    # to the in-repo file, and are then pinned to that CANONICAL path so a
+    # symlinked directory cannot be retargeted between this check and their use.
+    if [ -n "${HEADED_ARM_LEG_CLAUDE_BIN:-}" ]; then
+        echo "headed-arm-leg: --consult refuses HEADED_ARM_LEG_CLAUDE_BIN=$HEADED_ARM_LEG_CLAUDE_BIN: a consult runs the PATH claude, which honours its --setting-sources confinement" >&2
+        exit 2
+    fi
+    _consult_kit="$(cd -P "$(dirname "$0")" && pwd -P)"
+    for _consult_pair in "HEADED_ARM_LEG_TARGET ../headed-arm.sh" "HEADED_ARM_LEG_PROFILES ../../lanes/plugin-profiles.mjs"; do
+        _consult_var="${_consult_pair%% *}"; _consult_rel="${_consult_pair#* }"
+        _consult_val="${!_consult_var:-}"
+        [ -n "$_consult_val" ] || continue
+        _consult_got="$(cd -P "$(dirname "$_consult_val")" 2>/dev/null && pwd -P)/$(basename "$_consult_val")"
+        _consult_want="$(cd -P "$_consult_kit/$(dirname "$_consult_rel")" && pwd -P)/$(basename "$_consult_rel")"
+        if [ "$_consult_got" != "$_consult_want" ]; then
+            echo "headed-arm-leg: --consult refuses $_consult_var=$_consult_val: only $_consult_want is the in-repo file a consult may run" >&2
+            exit 2
+        fi
+        printf -v "$_consult_var" '%s' "$_consult_want"
+    done
+    unset -v _consult_kit _consult_pair _consult_var _consult_rel _consult_val _consult_got _consult_want
 fi
 
 [ "$JUDGE" -eq 1 ] || [ "$CONSULT" -eq 1 ] && READONLY_ROLE=1
@@ -1245,13 +1269,16 @@ if [ -n "$PROFILE" ]; then
     # (HIMMEL-4118 F1) A consult is confined only by the shim mapping
     # LEG_PROFILE_NO_SETTING_SOURCES=1 to `--setting-sources ""`, so a shim
     # override pointing anywhere else would load the scopes unconfined: refuse it.
-    if [ "$CONSULT" -eq 1 ] && [ -n "${HEADED_ARM_LEG_SHIM:-}" ]; then
+    # (HIMMEL-4142 S2) What is exported as the launcher is the CANONICAL path, not
+    # the caller's spelling, which a symlinked directory could retarget after this.
+    if [ "$CONSULT" -eq 1 ]; then
         _consult_shim="$(cd -P "$(dirname "$LEG_SHIM")" 2>/dev/null && pwd -P)/$(basename "$LEG_SHIM")"
         _consult_shim_want="$(cd -P "$HERE/../../lanes" && pwd -P)/leg-claude-launcher.sh"
         if [ "$_consult_shim" != "$_consult_shim_want" ]; then
-            echo "headed-arm-leg: --consult refuses HEADED_ARM_LEG_SHIM=$HEADED_ARM_LEG_SHIM: only $_consult_shim_want applies the consult's --setting-sources confinement" >&2
+            echo "headed-arm-leg: --consult refuses HEADED_ARM_LEG_SHIM=${HEADED_ARM_LEG_SHIM:-}: only $_consult_shim_want applies the consult's --setting-sources confinement" >&2
             exit 2
         fi
+        LEG_SHIM="$_consult_shim"
         unset -v _consult_shim _consult_shim_want
     fi
     # --judge (HIMMEL-3133): the leg preface tells a read-only judge to
