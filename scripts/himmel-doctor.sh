@@ -3309,6 +3309,22 @@ check_c47_runaway_procs() {  # t13b-ok: doctor row that reads ps only, kills not
     fi
 }
 
+# --- C48-tmp-usage: /tmp at 80 % or more (HIMMEL-4224) --------------------------
+# On 2026-10-03 the /tmp tmpfs filled and fleet Bash hit ENOSPC. WARN at >= 80 % used
+# and name scripts/tmp-reap.sh (dry-run by default) as the remedy. Report only.
+# Seam: HIMMEL_DOCTOR_TMP_DF (a df stand-in printing `df -P /tmp` output).
+check_c48_tmp_usage() {
+    local df_bin="${HIMMEL_DOCTOR_TMP_DF:-df}" pct
+    command -v "$df_bin" >/dev/null 2>&1 || return 0
+    pct="$("$df_bin" -P /tmp 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')"
+    case "$pct" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$((10#$pct))" -ge 80 ]; then
+        emit WARN C48-tmp-usage "/tmp is ${pct}% full (warn at 80%)" "run: bash $REPO_ROOT/scripts/tmp-reap.sh (dry-run lists what it would archive and reap), then re-run it with --apply"
+    else
+        emit OK C48-tmp-usage "/tmp is ${pct}% full (warn at 80%)"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3359,6 +3375,7 @@ check_c44_skill_index
 check_c45_qmd_daemon  # t13b-ok: doctor row that reads ps only, starts nothing
 check_c46_plugin_enabled_missing
 check_c47_runaway_procs  # t13b-ok: doctor row that reads ps only, kills nothing
+check_c48_tmp_usage
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

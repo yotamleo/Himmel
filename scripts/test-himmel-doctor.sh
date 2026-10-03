@@ -171,6 +171,9 @@ export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
 # Same for C47-runaway-procs (HIMMEL-3959): never scan the operator's real
 # process table; an absent ps seam makes C47 silent, dedicated cases stub it.
 export HIMMEL_DOCTOR_RUNAWAY_PS="$FAKEROOT/no-such-ps"
+# Same for C48-tmp-usage (HIMMEL-4224): never read the operator's real /tmp
+# fill level; an absent df seam makes C48 silent, dedicated cases stub it.
+export HIMMEL_DOCTOR_TMP_DF="$FAKEROOT/no-such-df"
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -5398,6 +5401,40 @@ else
     fail "C47 real loop -> alive=$c47_alive $(printf '%s' "$out" | grep -A1 C47)"
 fi
 rm -rf "$c47_t"
+
+# --- C48-tmp-usage (HIMMEL-4224): /tmp at 80 % or more -> WARN naming tmp-reap.sh ---
+c48_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c48.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c48_t/home" "$c48_t/claude"
+# shellcheck disable=SC2016 # the stub expands C48_PCT at ITS run time
+printf '#!/usr/bin/env bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\\ntmpfs 100 %%s 20 %%s%%%% /tmp\\n" "${C48_PCT:-0}" "${C48_PCT:-0}"\n' > "$c48_t/df"
+chmod +x "$c48_t/df"
+c48_run() { # <pct>
+PATH="$FAKEBIN:$PATH" C48_PCT="$1" HIMMEL_DOCTOR_TMP_DF="$c48_t/df" \
+CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1
+}
+echo "== C48: /tmp at 80 % or more -> WARN naming scripts/tmp-reap.sh =="
+for c48_pct in 80 93; do
+out="$(c48_run "$c48_pct")"
+if grepq "$out" "WARN C48-tmp-usage" && grepq "$out" -F "${c48_pct}% full" && grepq "$out" -F 'scripts/tmp-reap.sh'; then
+    pass "C48 ${c48_pct}% -> WARN with the tmp-reap.sh remedy"
+else
+    fail "C48 ${c48_pct}% -> $(printf '%s' "$out" | grep -A1 C48)"
+fi
+done
+echo "== C48: /tmp below 80 % -> OK, no WARN =="
+out="$(c48_run 79)"
+if grepq "$out" 'OK   C48-tmp-usage' && ! grepq "$out" 'WARN C48'; then
+    pass "C48 79% -> OK"
+else
+    fail "C48 79% -> $(printf '%s' "$out" | grep -A1 C48)"
+fi
+out="$(PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_TMP_DF="$c48_t/no-such-df" CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'C48-tmp-usage'; then
+    pass "C48 absent df seam -> silent"
+else
+    fail "C48 absent df -> $(printf '%s' "$out" | grep C48)"
+fi
+rm -rf "$c48_t"
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
