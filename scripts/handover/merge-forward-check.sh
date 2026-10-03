@@ -7,6 +7,7 @@
 #   merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file>
 #                          --pr-cases <file> --base-cases <file>
 #                          --base-sha <sha> --main-base-sha <sha> --latest-sha <sha>
+#                          --pr-sha <sha>
 #
 # Each job file is one run's job list, one `<job name><TAB><conclusion>` per line
 # (e.g. from `gh run view <id> --json jobs`):
@@ -29,7 +30,8 @@
 # fetch, from the leg's own repo) and --main-base-sha (the base run's headSha
 # from `gh run list --commit`); --latest-sha (the latest run's headSha) must equal
 # `git rev-parse origin/main`, so an older run cannot stand in for the base or
-# for latest.
+# for latest. --pr-sha (the PR run's headSha) must equal `git rev-parse HEAD`, so an
+# older PR run cannot stand in for the current head.
 # Exit 0 = ALLOW  1 = REFUSE  2 = usage / unreadable input
 #      3 = nothing red on the PR; no merge-forward needed
 # Red = failure | timed_out | startup_failure.
@@ -37,7 +39,7 @@
 # given, so a wrong list can still mislead; upgrade path is parsing the failed
 # job logs here if that ever bites.
 set -uo pipefail
-pr=""; base=""; latest=""; prc=""; bc=""; bsha=""; msha=""; lsha=""; bad=0
+pr=""; base=""; latest=""; prc=""; bc=""; bsha=""; msha=""; lsha=""; psha=""; bad=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --pr) [ $# -ge 2 ] || { bad=1; break; }; pr="$2"; shift 2 ;;
@@ -48,12 +50,13 @@ while [ $# -gt 0 ]; do
     --base-sha) [ $# -ge 2 ] || { bad=1; break; }; bsha="$2"; shift 2 ;;
     --main-base-sha) [ $# -ge 2 ] || { bad=1; break; }; msha="$2"; shift 2 ;;
     --latest-sha) [ $# -ge 2 ] || { bad=1; break; }; lsha="$2"; shift 2 ;;
+    --pr-sha) [ $# -ge 2 ] || { bad=1; break; }; psha="$2"; shift 2 ;;
     *) bad=1; break ;;
   esac
 done
 if [ "$bad" -eq 1 ] || [ ! -r "$pr" ] || [ ! -r "$base" ] || [ ! -r "$latest" ] \
-   || [ ! -r "$prc" ] || [ ! -r "$bc" ] || [ -z "$bsha" ] || [ -z "$msha" ] || [ -z "$lsha" ]; then
-  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> (all required, shas non-empty)" >&2
+   || [ ! -r "$prc" ] || [ ! -r "$bc" ] || [ -z "$bsha" ] || [ -z "$msha" ] || [ -z "$lsha" ] || [ -z "$psha" ]; then
+  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> (all required, shas non-empty)" >&2
   exit 2
 fi
 if [ "$bsha" != "$msha" ]; then
@@ -92,6 +95,15 @@ if ! mb="$(git merge-base origin/main HEAD 2>/dev/null)"; then
 fi
 if [ "$bsha" != "$mb" ]; then
   echo "REFUSE — --base-sha $bsha is not the merge-base of origin/main and HEAD ($mb): the base run must be the one at the real merge-base. Report BLOCKED; do not merge forward."
+  exit 1
+fi
+
+if ! head="$(git rev-parse --verify --quiet HEAD)"; then
+  echo "usage: cannot resolve HEAD in $(pwd)" >&2
+  exit 2
+fi
+if [ "$psha" != "$head" ]; then
+  echo "REFUSE — the --pr run is for $psha, but HEAD is $head: an older PR run proves nothing about the current head. Wait for the run of HEAD; do not merge forward."
   exit 1
 fi
 

@@ -342,7 +342,7 @@ by design.
   sweep, so a matching job name proves nothing: EVERY failing case of your PR's
   job must appear among the base run's failing cases, and any extra failing case
   is your own red. Run
-  `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --pr-cases <f> --base-cases <f> --base-sha <merge-base> --main-base-sha <the base run's headSha> --latest-sha <the latest run's headSha>`
+  `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --pr-cases <f> --base-cases <f> --base-sha <merge-base> --main-base-sha <the base run's headSha> --latest-sha <the latest run's headSha> --pr-sha <the PR run's headSha, must be your HEAD>`
   (every flag is required; the job files carry no sha, so the script refuses a
   base run that is not your merge-base and a latest run that is not
   `git rev-parse origin/main` after its own fetch). Exit 0
