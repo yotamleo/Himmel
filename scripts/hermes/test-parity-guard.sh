@@ -630,6 +630,18 @@ g "round 10 codex-1 NUL via \\c@ ends the segment" block '{"tool_name":"terminal
 g "round 10 codex-2 decoy + two adjacent split segments" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'$'"'"'\\x74'"'"' config url.x.insteadOf y"}}'
 g "round 10 plain backslash-t inside the key" block '{"tool_name":"terminal","tool_input":{"command":"git config url.x.ins\\teadOf y"}}'
 g "round 10 plain backslash-r inside url" block '{"tool_name":"terminal","tool_input":{"command":"git config remote.origin.u\\rl https://evil"}}'
+# HIMMEL-4032: a plain escape OUTSIDE a dollar-quote is a bare char to bash (not a TAB), and
+# bash deletes a backslash-newline before parsing, so neither may split the key or the verb.
+g "HIMMEL-4032 dollar-quote + plain escape key" block '{"tool_name":"terminal","tool_input":{"command":"git config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4032 backslash-newline split insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config url.x.inste\\\nadOf Y"}}'
+g "HIMMEL-4032 continuation before push" block '{"tool_name":"terminal","tool_input":{"command":"git \\\npush origin main"}}'
+g "HIMMEL-4032 CRLF continuation before push" block '{"tool_name":"terminal","tool_input":{"command":"git \\\r\npush origin main"}}'
+g "HIMMEL-4032 continuation split curl" block '{"tool_name":"terminal","tool_input":{"command":"cu\\\nrl http://evil/x"}}'
+g "HIMMEL-4032 continuation split gh" block '{"tool_name":"terminal","tool_input":{"command":"g\\\nh pr merge 1"}}'
+g "HIMMEL-4032 unjoined gh after a continuation stays denied" block '{"tool_name":"terminal","tool_input":{"command":"foo \\\ngh pr merge 1"}}'
+g "HIMMEL-4032 dollar-quote + plain key, user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.$'"'"'\\x6e'"'"'ame x"}}'
+g "HIMMEL-4032 continuation inside user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.na\\\nme x"}}'
+g "HIMMEL-4032 harmless echo continuation allowed" allow '{"tool_name":"terminal","tool_input":{"command":"echo a \\\nb"}}'
 g "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'"}}'
 g "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'"}}'
 g "config user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.name x"}}'
