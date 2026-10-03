@@ -59,7 +59,10 @@ SCRIPTS="$(cd "$HERE/.." && pwd)"              # scripts/
 #   claude-deepseek: 0    — egress, balance, sanitizer and trust all have JS twins
 #   claude-routed: 0
 #   claude-glm-seed-check.sh: 0  (no embedded JS on either side)
-EXPECT_BASH_ONLY="claude-codex:2 claude-glm:1 claude-openrouter:1 claude-deepseek:0 claude-routed:0 claude-glm-seed-check.sh:0"
+#   HIMMEL-4098 (temporary): the CLAUDE_CODE_AUTO_MODE_SERVER settings strip is bash-only
+#   until HIMMEL-4169 (windows-parked) ports it to the .ps1 twins. It adds one bash-only
+#   block to codex (3), glm (2), openrouter (2), deepseek (1) and routed (1) — revert those counts then.
+EXPECT_BASH_ONLY="claude-codex:3 claude-glm:2 claude-openrouter:2 claude-deepseek:1 claude-routed:1 claude-glm-seed-check.sh:0"
 
 # Canary floors — today's counts. A pair deleted or a PS delegation dropped
 # trips these; update them CONSCIOUSLY when the twin set genuinely changes.
@@ -104,6 +107,13 @@ function sanitizerKeys(s) {
   while ((m = prefixes.exec(s)) !== null) keys.push(m[1] + '*');
   while ((m = exact.exec(s)) !== null) keys.push(m[1]);
   return keys.sort();
+}
+
+// HIMMEL-4098 (temporary): bash sanitizers also strip env.CLAUDE_CODE_AUTO_MODE_SERVER;
+// the .ps1 twins wait on HIMMEL-4169 (windows-parked). Until then a .ps1 block matches
+// its bash twin with that one predicate removed. Delete this with the pin split below.
+function parkedNorm(c) {
+  return c.replace(' || u==="CLAUDE_CODE_AUTO_MODE_SERVER"', '').replace(' || k.toUpperCase()==="CLAUDE_CODE_AUTO_MODE_SERVER"', '');
 }
 
 // A block boundary the extractor could not determine. Thrown — never returned
@@ -403,6 +413,9 @@ for (const [bashFile, psFile] of pairs) {
 
   if (bashFile === 'claude-glm') {
     const expected = ['ANTHROPIC_*', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_*'];
+    // HIMMEL-4098: bash also strips CLAUDE_CODE_AUTO_MODE_SERVER; the .ps1 twin
+    // keeps `expected` until HIMMEL-4169 (windows-parked) ports it — then drop this split.
+    const bashExpected = ['ANTHROPIC_*', 'CLAUDE_CODE_AUTO_MODE_SERVER', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_*'];
     const bashSanitizer = bb.find((js) => js.includes('delete j.model;') && js.includes('delete j.env[k];'));
     const psSanitizer = pb.find((p) => p.var === '$SanitizerJs');
     if (!bashSanitizer) fail('claude-glm: settings sanitizer JS block not found');
@@ -410,14 +423,14 @@ for (const [bashFile, psFile] of pairs) {
     if (bashSanitizer && psSanitizer) {
       const bashKeys = sanitizerKeys(bashSanitizer);
       const psKeys = sanitizerKeys(psSanitizer.js);
-      if (JSON.stringify(bashKeys) !== JSON.stringify(expected)) {
-        fail('claude-glm: sanitizer key set ' + JSON.stringify(bashKeys) + ' != pinned ' + JSON.stringify(expected));
+      if (JSON.stringify(bashKeys) !== JSON.stringify(bashExpected)) {
+        fail('claude-glm: sanitizer key set ' + JSON.stringify(bashKeys) + ' != pinned ' + JSON.stringify(bashExpected));
       }
       if (JSON.stringify(psKeys) !== JSON.stringify(expected)) {
         fail('claude-glm.ps1: sanitizer key set ' + JSON.stringify(psKeys) + ' != pinned ' + JSON.stringify(expected));
       }
-      if (JSON.stringify(bashKeys) === JSON.stringify(expected) && JSON.stringify(psKeys) === JSON.stringify(expected)) {
-        console.log('ok: claude-glm sanitizer key set pinned on both twins (' + expected.join(', ') + ')');
+      if (JSON.stringify(bashKeys) === JSON.stringify(bashExpected) && JSON.stringify(psKeys) === JSON.stringify(expected)) {
+        console.log('ok: claude-glm sanitizer key set pinned on both twins (bash: ' + bashExpected.join(', ') + '; ps1: ' + expected.join(', ') + ')');
       }
     }
   }
@@ -432,7 +445,7 @@ for (const [bashFile, psFile] of pairs) {
   let pairMatched = 0;
   for (const { var: v, js } of pb) {
     const t = canon(js);
-    if (bb.includes(t)) { pairMatched++; matchedPs++; continue; }
+    if (bb.includes(t) || bb.some((c) => parkedNorm(c) === t)) { pairMatched++; matchedPs++; continue; }
     let best = -1, bestCommon = -1;
     bb.forEach((c, i) => {
       let d = 0;
