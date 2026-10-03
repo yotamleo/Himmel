@@ -1048,10 +1048,8 @@ seam_assigned() {
 # close it by registering the assembled path forms or by the structural guard
 # once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr d dotdir xgre xg=0 write=0 obf=0 SQ="'"
-    dotdir='^(.*)/\.[[:alnum:]_][[:alnum:]_.+-]*(/.*|)$'
-    xgre='[?*+@!][(]'
-    [[ $t =~ $xgre ]] && xg=1
+    local t="$1" w rest v wv clr d cw='/.claude/worktrees/' xg=0 write=0 obf=0 SQ="'"
+    case "$t" in *'('*) xg=1 ;; esac
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
     set -f
@@ -1076,21 +1074,19 @@ raw_obfuscated() {
                 # Blunt, no normaliser: any word containing scripts/ (absolute,
                 # ./, or with a leading directory) spelled with a `/.`
                 # (`/./`, `/../`) or `//` segment can name any path, so it counts.
-                # HIMMEL-4130: a wholly LITERAL dot-directory segment
-                # (/.claude/, /.git/) is not a traversal, so every absolute
-                # worktree path stops counting. Strip those segments (the
-                # rightmost first, by its exact position, never a by-value
-                # replace that could hit an earlier copy), then any `/.` left
-                # still counts: /./ /../ a trailing /. or /.., and a dot
-                # segment carrying a quote, `\`, `$`, `{` or a glob. The relief
-                # applies only to a wholly plain word ([A-Za-z0-9_./+-]; `+`
-                # because worktree dirs are fix+slug) in a text with no extglob
-                # opener (the tr above splits `@(`/`+(` off the word): a quote,
-                # backslash or extglob keeps main's blunt /. rule (judge J1663).
+                # HIMMEL-4130: the worktree dot directory `/.claude/worktrees/`
+                # is not a traversal, so a plain absolute worktree path stops
+                # counting. It is stripped only from a wholly plain word
+                # ([A-Za-z0-9_./+-]; `+` because worktree dirs are fix+slug) in
+                # a text with no `(` at all: the tr above splits a word at `(`,
+                # so zsh grouping (`g(o).sh`), extglob (`@(x)`) and glob
+                # qualifiers would otherwise look plain (judges J1663, J1663b).
+                # Every other `/.` still counts: /./ /../ a trailing /. or /..,
+                # any other dot directory, and anything quoted or escaped.
                 case "$w" in *//*) obf=1 ;; esac
                 d=$w
                 if [ "$xg" = 0 ] && [[ $w =~ ^[A-Za-z0-9_./+-]+$ ]]; then
-                    while [[ $d =~ $dotdir ]]; do d="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+                    d=${w//"$cw"/\/}
                 fi
                 case "$d" in *'/.'*) obf=1 ;; esac
                 case "$rest" in

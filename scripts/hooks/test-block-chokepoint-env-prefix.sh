@@ -1207,12 +1207,25 @@ assert_deny "4095 --i* glob beside quiet-run"                     "$(j "/usr/bin
 assert_deny "4095 --unsetenv beside quiet-run"                    "$(j "bwrap --unsetenv HIMMEL_SUITE_SLOTS --dev-bind / / bash $QR suite -- bash scripts/x.sh")"
 assert_deny "4095 --impacted does not mask a later env -i"        "$(j "bash scripts/ci/run-shell-tests.sh --impacted a..b; /usr/bin/en? -i bash $QR suite -- bash scripts/x.sh")"
 
-# HIMMEL-4130: a dot-DIRECTORY segment (/.claude/, /.git/: `/.` then a name
-# character) is not a traversal, so an absolute worktree path is not obfuscated.
+# HIMMEL-4130: the worktree dot directory /.claude/worktrees/ is not a
+# traversal, so a plain absolute worktree path is not obfuscated.
 WT=/home/u/himmel/.claude/worktrees/fix+x
 assert_allow "4130 worktree ledger-append amend, exec in a quoted reason" "$(j "bash $WT/scripts/cr/ledger-append.sh amend --id 3 --set verdict=fixed --reason 'the exec line moved'")"
 assert_allow "4130 grep beside unset/exec in a .claude worktree path" "$(j "grep -n 'unset exec' $WT/scripts/hooks/x.sh")"
-assert_allow "4130 read beside a .git dir path under scripts/" "$(j "read -r l; cat /r/.git/x/scripts/y.sh")"
+# Only /.claude/worktrees/ is relieved; any other dot directory still counts.
+assert_deny "4130 read beside a .git dir path is not relieved"   "$(j "read -r l; cat /r/.git/x/scripts/y.sh")"
+assert_deny "4130 a .x dot dir is not relieved"                  "$(j "printf x; bash /r/.x/scripts/y.sh")"
+assert_deny "4130 a .a.b dot dir is not relieved"                "$(j "printf x; bash /r/.a.b/scripts/y.sh")"
+assert_deny "4130 /.claude/ without worktrees/ is not relieved"  "$(j "printf x; bash /r/.claude/scripts/y.sh")"
+# zsh grouping, alternation and glob qualifiers carry no extglob opener, but
+# tr splits the word at `(` so it looked plain (judge J1663b NO-GO): any `(`
+# in the text turns the relief off.
+WT2=/home/u/r/.claude/worktrees/fix+a
+assert_deny "4130 zsh grouping g(o).sh + env -u, worktree path"       "$(j "env -u HIMMEL_CONSOLE_LEG $WT2/scripts/handover/console-kit/g(o).sh")"
+assert_deny "4130 zsh grouping (go).sh + env -u, worktree path"       "$(j "env -u HIMMEL_CONSOLE_LEG $WT2/scripts/handover/console-kit/(go).sh")"
+assert_deny "4130 zsh alternation g(o|zz).sh + env -u, worktree path" "$(j "env -u HIMMEL_CONSOLE_LEG $WT2/scripts/handover/console-kit/g(o|zz).sh")"
+assert_deny "4130 zsh glob flag (#i)GO.sh + env -u, worktree path"    "$(j "env -u HIMMEL_CONSOLE_LEG $WT2/scripts/handover/console-kit/(#i)GO.sh")"
+assert_deny "4130 zsh grouping m(erge-on-green).sh + seam prefix"     "$(j "${MOG_VAR}=1 bash $WT2/scripts/handover/m(erge-on-green).sh")"
 # Every traversal spelling still counts, beside a seam write, with no glob.
 assert_deny "4130 scripts/./ beside a write verb"     "$(j "printf x; bash scripts/./x.sh")"
 assert_deny "4130 scripts/../ beside a write verb"    "$(j "printf x; bash scripts/../x.sh")"
