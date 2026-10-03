@@ -45,7 +45,10 @@ can't certify an incomplete check set (default 30, `--settle 0` disables,
 e.g. `bash scripts/check-ci.sh 1150 --settle 60`). `--threads-only` runs
 just the review-thread gate — that's how `/pr-check` step 4.8 reuses this
 implementation. `--max-wait <sec>` (default 900, `CHECK_CI_MAX_WAIT` env,
-0 = unbounded) bounds each `gh pr checks --watch` round — CodeRabbit's own
+0 = unbounded) bounds the WHOLE run's waiting with one deadline (watch rounds,
+the one-time extension and the `--settle` wait share it, HIMMEL-4131; a deadline
+hit with checks still pending and nothing failed exits 2 with a
+`DEADLINE-PENDING` line — not an error, re-invoke) — CodeRabbit's own
 rollup CHECK can sit "pending" long after every other check, so the watch is
 supervised and stopped early once the verdict no longer depends on any
 non-CodeRabbit check still pending, or at this cap, whichever comes first

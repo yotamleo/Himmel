@@ -638,7 +638,7 @@ case " $* " in
             # shapes (0 failed) — the cap/decidable path must not misread the
             # generic default (1 failed, meant for the red-confirm caller) as
             # a red verdict. blocking-cap-red is the one case that IS red.
-            blocking-cr-decidable|blocking-cap-pending|blocking-cr-substring|blocking-cap-extend) echo 0 ;;
+            blocking-cr-decidable|blocking-cap-pending|blocking-cr-substring|blocking-cap-extend|green-then-slow) echo 0 ;;
             blocking-cap-red) echo 1 ;;
             *) echo 1 ;;
         esac
@@ -736,6 +736,16 @@ case "$GH_STUB_MODE" in
             w=$(cat "$GH_STUB_WATCH" 2>/dev/null); w=${w:-0}
             echo $((w+1)) > "$GH_STUB_WATCH"
             if [ "$w" -eq 0 ]; then sleep 3; fi
+            echo "All checks were successful"; exit 0
+        fi
+        exit 8 ;;
+    green-then-slow)
+        # HIMMEL-4131: the first watch is instantly green (the settle path is then
+        # taken); every later watch runs past any cap the suite sets.
+        if [ "$is_watch" -eq 1 ]; then
+            w=$(cat "$GH_STUB_WATCH" 2>/dev/null); w=${w:-0}
+            echo $((w+1)) > "$GH_STUB_WATCH"
+            if [ "$w" -ge 1 ]; then sleep 8; fi
             echo "All checks were successful"; exit 0
         fi
         exit 8 ;;
@@ -2000,7 +2010,7 @@ fi
 # extension (round 1 hits the cap with the check still running; round 2 —
 # the extension — resolves green). Today this is rc 2; after the fix rc 0,
 # with the WAITING notice naming the count and the still-pending job.
-run blocking-cap-extend --max-wait 1
+run blocking-cap-extend --max-wait 2
 assert_rc 0 "2907-a a slow-but-healthy shard resolves after the one-time extension"
 assert_err_has "WAITING 1 pending (unit-tests) — extending once (HIMMEL-2907)" "2907-a WAITING notice names the pending count and job"
 assert_out_has "all checks green + all review threads resolved" "2907-a eventual green verdict"
@@ -2018,6 +2028,65 @@ else
     fail "2907-b extends exactly once, not infinitely" "WAITING appeared $waiting_count times, want 1"
 fi
 assert_err_has "still pending (unit-tests)" "2907-b the exit-2 line names the pending job"
+assert_err_has "DEADLINE-PENDING" "2907-b the exit-2 line names a deadline-with-pending, not an error (HIMMEL-4131)"
+
+# --- HIMMEL-4131: --max-wait bounds the WHOLE run ---------------------------
+# Real sleeps: elapsed wall time is the signal. Each stub watch runs 3s+ (8s for
+# green-then-slow after its first), so a per-round cap would stack rounds.
+
+# 4131-b — an instantly green round 1, then settle, then a slow round 2: the
+# settle wait and round 2 share the deadline. Per-round caps took ~2+2+2 = 6s+.
+POLL_OVERRIDE=1
+SETTLE_OVERRIDE=3
+SLEEP_CMD_OVERRIDE="sleep"
+t0=$SECONDS
+run green-then-slow --max-wait 3
+t_elapsed=$((SECONDS - t0))
+assert_rc 2 "4131-b settle + slow round 2 hits the deadline with pending, rc 2"
+assert_err_has "DEADLINE-PENDING" "4131-b the verdict names the deadline-with-pending"
+if [ "$t_elapsed" -le 5 ]; then
+    pass "4131-b settle and round 2 share the --max-wait deadline"
+else
+    fail "4131-b settle and round 2 share the --max-wait deadline" "elapsed=${t_elapsed}s want <=5s for --max-wait 3"
+fi
+
+# 4131-c — the deadline lands mid-extension: round 1 takes half, the extension
+# is cut at the deadline while still pending, and the verdict says pending.
+POLL_OVERRIDE=1
+SLEEP_CMD_OVERRIDE="sleep"
+t0=$SECONDS
+run blocking-cap-pending --max-wait 2
+t_elapsed=$((SECONDS - t0))
+assert_rc 2 "4131-c deadline mid-extension rc 2"
+if [ "$t_elapsed" -le 3 ]; then
+    pass "4131-c --max-wait bounds cap + extension together"
+else
+    fail "4131-c --max-wait bounds cap + extension together" "elapsed=${t_elapsed}s want <=3s for --max-wait 2 (per-round caps took ~4s)"
+fi
+assert_err_has "extending once" "4131-c the extension started inside the deadline"
+assert_err_has "DEADLINE-PENDING" "4131-c the verdict says pending, not broken"
+
+# 4131-e — a leading-zero --max-wait is decimal (08 is not an octal error).
+SETTLE_OVERRIDE=0
+run register-then-green --max-wait 08
+assert_rc 0 "4131-e --max-wait 08 reads as decimal 8, not an octal arithmetic error"
+
+# 4131-d — a deadline shorter than the settle window must not certify green: the
+# late-registering check set never had its window (codex-1, round 1).
+POLL_OVERRIDE=1
+SETTLE_OVERRIDE=5
+SLEEP_CMD_OVERRIDE="sleep"
+t0=$SECONDS
+run green-then-slow --max-wait 2
+t_elapsed=$((SECONDS - t0))
+assert_rc 2 "4131-d a deadline cutting the settle window short is rc 2, never green"
+assert_err_has "settle window" "4131-d the verdict names the truncated settle window"
+assert_err_has "DEADLINE-PENDING" "4131-d the verdict says pending, not broken"
+if [ "$t_elapsed" -le 3 ]; then
+    pass "4131-d the truncated settle stays inside --max-wait"
+else
+    fail "4131-d the truncated settle stays inside --max-wait" "elapsed=${t_elapsed}s want <=3s for --max-wait 2"
+fi
 
 # 2907-c — negative control: a FAILED check alongside a pending one at cap
 # must red_exit immediately (the failed-bucket probe is checked before the
@@ -2727,5 +2796,5 @@ assert_grep_lacks "3473-g --threads-only makes no mergeStateStatus read" "found 
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 190 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 190"; exit 1; fi
+if [ "$COUNT" -ne 194 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 194"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
