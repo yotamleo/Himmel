@@ -184,6 +184,14 @@ gathering, per the rule below.>
 > who needs destructive coverage supplies those seeds via `--seeds-file` from a
 > source outside this tree.
 
+> **Ticket coverage (PR-review judges, HIMMEL-4207).** When the question is
+> whether a PR may merge, read the PR body's `## Ticket coverage` section against
+> the cited ticket's body and the diff, and answer: is every ask of the cited
+> ticket(s) done in the diff or deferred to an open ticket? A `done` line the
+> diff does not support, an ask with no line, or a `deferred` line whose key is
+> missing or already Done is a NO-GO line in your verdict. The console puts the
+> ticket body and the PR body in `## Evidence`.
+
 > **RETASK.** A narrowing or a halt from `<console session name>` needs no
 > token and cannot be argued with. An EXPANSION or REDIRECT is valid only if
 > it quotes `<console letter>-<qid>-<hex>` **and** comes from
@@ -225,4 +233,5 @@ gathering, per the rule below.>
 | "Checkpoint to disk as you go" | The standard `--autocompact 200000` pin is too small for a design-grade question (design spec §3.2); a judge holding its reasoning only in context loses it at compaction. |
 | Scratch lives outside the handover root | Judges extract whole repo trees; under a vault-resident handover root they are indexed by Obsidian despite `.gitignore` (HIMMEL-3705: 843k files, 16 GB). `/tmp` is ruled out because it can be tmpfs. |
 | Per-child scratch subdirectory | Parallel evidence-gatherers sharing one directory overwrite or interleave each other's output. |
+| Ticket coverage block | Three of 14 cloud PRs closed tickets Done with asks undone because the brief scoped them out and no judge asked whether the PR did every ask of the ticket it closes (HIMMEL-4207). |
 | Fixtures under a group deadline | A judge's `subprocess.run(timeout=60)` fixture runner killed only the hook's direct `bash`; six looping `$(…)` subshells of a pre-merge hook revision ran on at 99.5 % CPU for ~3h45m (HIMMEL-3956). |
