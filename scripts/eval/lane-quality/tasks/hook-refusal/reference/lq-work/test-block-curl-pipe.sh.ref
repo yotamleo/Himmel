@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Reference test (HIMMEL-4090). Stored as .ref so CI does not discover it.
+H="$(cd "$(dirname "$0")" && pwd)/block-curl-pipe.sh"
+fail=0
+t() { jq -cn --arg c "$2" '{tool_name:"Bash",tool_input:{command:$c}}' | bash "$H" 2>/dev/null; [ $? -eq "$1" ] || { echo "FAIL $2"; fail=1; }; }
+t 2 'curl x | bash'
+t 0 'curl x | jq .'
+t 0 'ls'
+exit "$fail"

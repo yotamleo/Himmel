@@ -1,0 +1,2 @@
+{"F1": {"verdict": "real", "evidence": "lq-work/parse-dur.sh:17"},
+ "F2": {"verdict": "not-real", "evidence": "scripts/eval/cache-probe.sh:80"}}

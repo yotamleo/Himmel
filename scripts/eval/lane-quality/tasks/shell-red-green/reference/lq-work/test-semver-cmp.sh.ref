@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Reference test (HIMMEL-4090). Stored as .ref so CI does not discover it.
+S="$(cd "$(dirname "$0")" && pwd)/semver-cmp.sh"
+fail=0
+check() { got="$(bash "$S" "$1" "$2" 2>/dev/null)"; [ "$got" = "$3" ] || { echo "FAIL $1 $2: $got"; fail=1; }; }
+check 1.2.3 1.2.3 0
+check 1.2.3 1.2.4 -1
+check 1.10.0 1.9.9 1
+bash "$S" 1.2 1.2.3 2>/dev/null; [ $? -eq 64 ] || { echo "FAIL malformed"; fail=1; }
+exit "$fail"
