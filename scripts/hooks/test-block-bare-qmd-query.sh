@@ -80,6 +80,13 @@ deny 'git status
 qmd query x'
 deny 'qmd \
   query x'
+# HIMMEL-4011: a quoted verb is still the verb.
+deny 'qmd "query" x'
+deny "qmd 'search' x"
+deny 'qmd "vsearch" x'
+deny "qmd --index luna 'query' x"
+deny "timeout 60 qmd 'query' x"
+deny 'bun ~/.himmel/qmd-fork/src/cli/qmd.ts "search" x'
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
@@ -98,6 +105,15 @@ allow "git log --grep 'qmd search'"
 allow 'echo qmd query'
 allow 'git status'
 allow 'qmd queryx'
+# HIMMEL-4011 counter-examples: quoting must not widen the match past the verb.
+allow 'qmd "status"'
+allow "qmd 'queryx' y"
+allow 'qmd "query-notes" y'
+allow 'qmd "query notes" y'
+allow "qmd 'search the vault' y"
+allow 'echo qmd "query" x'
+allow 'grep -rn "qmd \"query\"" scripts/'
+allow "bash scripts/lib/qmd-bounded.sh 'query' -c luna x"
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \

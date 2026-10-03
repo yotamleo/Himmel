@@ -237,6 +237,26 @@
       "autocompact": 200000,
       "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
+    "code": {
+      "_comment": "HIMMEL-4024 opt-in code kit (HIMMEL-4017 resource-map): language servers (typescript-lsp, pyright-lsp: the server binary must exist on the machine) plus code-simplifier, ~0.2k listing in all. Stacks on base only; compose per task with `--profile leg-impl,code` (HIMMEL-4014). The CLIs of this kit (ast-grep, shfmt, bats) are not plugins: scripts/machine-setup/install-code-kit-clis.sh. No other profile enables these.",
+      "enable": [
+        "typescript-lsp@claude-plugins-official",
+        "pyright-lsp@claude-plugins-official",
+        "code-simplifier@claude-plugins-official"
+      ],
+      "contextBudget": 35000,
+      "contextMode": "standard",
+      "autocompact": 200000
+    },
+    "code-ui": {
+      "_comment": "HIMMEL-4024 opt-in code kit, UI add-on: the playwright MCP (est 3-5k of tool schemas, unmeasured) is the one meaningful delta of the kit, so it is its own profile rather than part of `code`. Compose with `--profile lane-impl,code-ui` for browser-driven e2e.",
+      "enable": [
+        "playwright@claude-plugins-official"
+      ],
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000
+    },
     "lane-impl": {
       "gateAllow": true,
       "enable": [

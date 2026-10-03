@@ -952,16 +952,23 @@ env_like_word() {
     [ "$base" = env ]
 }
 
-# env_clear_opt <text> -- HIMMEL-3955. rc 0 when a standalone -u*/-i*/--u*/--i*/
+# env_clear_opt <text> -- HIMMEL-3955. rc 0 when a standalone -u*/-i*/--unset*/--ignore-environment/
 # bare - token sits in env position: after an `env` word with only option and
 # NAME=val words between (any other plain word, e.g. grep/sed/diff/ls/sort/bash,
 # ends the position). So `grep -i`, `sed -i`, `diff -u`, `ls -i` and a `--id N`
 # flag are not env-clearing; `env -i`, `/usr/bin/env -u X` and
 # `setsid -f env -i` still are. Any text relief_off keeps out takes main's
 # whole-text match.
+# HIMMEL-4095: a LONG option counts only when it is a prefix of
+# ignore-environment or unset (GNU getopt_long takes any unique prefix: --i,
+# --ign, --un=X) ending at a non-word character (space, =, end, or a quote, $,
+# backslash or glob that may splice more on), or when it starts with the whole
+# word (--unsetenv, --unset-env, --unset-environment). So --impacted, --update
+# and --ignored are not env-clearing; every short -u*/-i* and bare - still is.
 env_clear_opt() { # <text> [<text the allowlist gates on; default <text>>]
     local t="$1" w prev head=0 hit=1
-    local opt='(^|[^[:alnum:]_-]|\$[[:alnum:]_]+)-(-?[ui]|[[:space:]]|$)'
+    local long='(ignore-environment|unset)[[:alnum:]_-]*|(i|ig|ign|igno|ignor|ignore|ignore-|ignore-e|ignore-en|ignore-env|ignore-envi|ignore-envir|ignore-enviro|ignore-environ|ignore-environm|ignore-environme|ignore-environmen|u|un|uns|unse)([^[:alnum:]_-]|$)'
+    local opt="(^|[^[:alnum:]_-]|\\\$[[:alnum:]_]+)-([ui]|[[:space:]]|\$|-($long))"
     if relief_off "${2-$t}"; then [[ $t =~ $opt ]]; return; fi
     prev=''
     for w in $t; do
@@ -1054,9 +1061,9 @@ raw_obfuscated() {
     [ "$obf" = 1 ] || return 0
     [[ $t =~ $wv ]] && write=1
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
-    # or verb): standalone -u*/-i*/--u*/--i*/bare -, declare/typeset +x,
+    # or verb): standalone -u*/-i*/--unset*/--ignore-environment/bare -, declare/typeset +x,
     # export -n, exec -<opt>, ${! (same set as raw_mention's clear arm). The
-    # standalone -u*/-i*/--u*/--i*/bare - token counts only in env position
+    # standalone -u*/-i*/--unset*/--ignore-environment/bare - token counts only in env position
     # (env_clear_opt, HIMMEL-3955); a seam NAME= counts as an assignment, not
     # as a --long-option's value (seam_assigned).
     clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
@@ -1157,11 +1164,11 @@ raw_mention() {
             || $t == *\$\{!* \
             || $t =~ (^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n \
             || $t =~ (^|[^[:alnum:]_-])unset([^[:alnum:]_]|$) ]] \
-            && deny_text_layer "drops or rewrites the environment (unset of anything, declare +x, exec -c, \${!, export -n, -u/-i/--u*/--i*/bare -) beside a sanctioned chokepoint"
-        # The standalone -u*/-i*/--u*/--i*/bare - token counts only in env
+            && deny_text_layer "drops or rewrites the environment (unset of anything, declare +x, exec -c, \${!, export -n, -u/-i/--unset*/--ignore-environment/bare -) beside a sanctioned chokepoint"
+        # The standalone -u*/-i*/--unset*/--ignore-environment/bare - token counts only in env
         # position (HIMMEL-3955): grep -i, sed -i, diff -u, a --id flag do not.
         env_clear_opt "$t" "$1" \
-            && deny_text_layer "drops or rewrites the environment (unset of anything, declare +x, exec -c, \${!, export -n, -u/-i/--u*/--i*/bare -) beside a sanctioned chokepoint"
+            && deny_text_layer "drops or rewrites the environment (unset of anything, declare +x, exec -c, \${!, export -n, -u/-i/--unset*/--ignore-environment/bare -) beside a sanctioned chokepoint"
     done <<<"$REG_LINES"
     return 0
 }

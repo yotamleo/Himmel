@@ -1461,3 +1461,48 @@ test('HIMMEL-1033: the atlassian guard detects a profile that enables it (contro
   bad.profiles.__probe = { enable: [ATLASSIAN] };
   assert.deepEqual(noProfileEnablesAtlassian(bad), ['__probe']);
 });
+
+// HIMMEL-4024: the opt-in code kit. `code` (LSPs + code-simplifier, 0-150 listing tokens) and
+// `code-ui` (playwright MCP, the one meaningful delta) each stack on base only, so they compose
+// per task: `--profile leg-impl,code`. No profile enables them by default.
+const CODE_KIT = {
+  code: ['typescript-lsp@claude-plugins-official', 'pyright-lsp@claude-plugins-official', 'code-simplifier@claude-plugins-official'],
+  'code-ui': ['playwright@claude-plugins-official'],
+};
+
+test('HIMMEL-4024: each code kit profile enables its set on base and nothing else', () => {
+  for (const [name, ids] of Object.entries(CODE_KIT)) {
+    assert.ok(REG.profiles[name], `profile ${name} missing`);
+    assert.deepEqual([...REG.profiles[name].enable].sort(), [...ids].sort(), `${name} members`);
+    const { enabledPlugins: p } = resolveProfile(REG, name, { installed: [] });
+    for (const id of ids) assert.equal(p[id], true, `${name} must enable ${id}`);
+    assert.equal(p['lean-skills@himmel'], true, `${name} inherits base`);
+    assert.equal(REG.profiles[name].contextMode, 'standard');
+  }
+});
+
+test('HIMMEL-4024: no non-kit profile enables a code kit plugin; the kit composes with leg-impl', () => {
+  const kitIds = Object.values(CODE_KIT).flat();
+  for (const [name, def] of Object.entries(REG.profiles)) {
+    if (def === null || name in CODE_KIT) continue;
+    const p = resolveProfile(REG, name, { installed: [] }).enabledPlugins;
+    for (const id of kitIds) assert.notEqual(p[id], true, `${name} must not enable ${id}`);
+  }
+  const both = resolveProfile(REG, 'leg-impl,code,code-ui', { installed: [] }).enabledPlugins;
+  for (const id of kitIds) assert.equal(both[id], true, id);
+  assert.equal(both['pr-review-toolkit-himmel@himmel'], true);
+});
+
+test('HIMMEL-4024: code kit CLIs (ast-grep, shfmt, bats) have drift rows, a catalog entry and an install step', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const up = JSON.parse(readFileSync(join(root, 'scripts', 'upstreams.json'), 'utf8'));
+  const cat = readFileSync(join(root, 'docs', 'tooling-catalog.md'), 'utf8');
+  const byName = new Map(up.entries.map((e) => [e.name, e]));
+  // The nightly bump rewrites synced_base and the install pin together, so assert they agree, not a literal.
+  const astGrep = byName.get('ast-grep');
+  assert.match(astGrep?.synced_base ?? '', /^\d+\.\d+\.\d+$/);
+  assert.ok(readFileSync(join(root, astGrep?.version_pin?.file ?? 'missing'), 'utf8').includes(`AST_GREP_VERSION:-${astGrep.synced_base}`), 'install pin matches synced_base');
+  for (const n of ['shfmt', 'bats']) assert.ok(byName.has(n), `${n} drift row`);
+  for (const n of ['ast-grep', 'shfmt', 'bats', '`code`', '`code-ui`']) assert.ok(cat.includes(n), `catalog mentions ${n}`);
+  assert.ok(existsSync(join(root, 'scripts', 'machine-setup', 'install-code-kit-clis.sh')), 'install step');
+});

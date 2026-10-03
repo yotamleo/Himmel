@@ -650,7 +650,7 @@ FLEET_CANDIDATES
 # named session. Admission already serializes reservations; use its fenced
 # reclaim gate as well, rechecking identity and liveness before the rename.
 _fleet_reclaim_dead_reservation() {
-  local dir="$1" owner="$2" expires="$3" name="$4" sname="$5" gate="$SLOTS/.admit.reclaim" fence rc=1
+  local dir="$1" owner="$2" expires="$3" name="$4" sname="$5" gate="$SLOTS/.admit.reclaim" fence rc=1 now grace seen
   case "$owner" in ''|0|*[!0-9]*) return 1 ;; esac
   kill -0 "$owner" 2>/dev/null && return 1
   _fleet_gate_take "$gate" || return 1
@@ -662,7 +662,21 @@ _fleet_reclaim_dead_reservation() {
      [ "$(cat "${dir}expires" 2>/dev/null)" = "$expires" ] &&
      [ "$(cat "${dir}name" 2>/dev/null)" = "$sname" ] &&
      ! kill -0 "$owner" 2>/dev/null; then
-    if ! { [ -n "$name" ] && printf '%s\n' "$_fleet_live_names" | grep -xF "$name" >/dev/null; } &&
+    # HIMMEL-4115: a dead owner is not proof the launch failed — headed-arm.sh
+    # exits 7 when the session is not visible after ~5 s, yet it can come up
+    # later. Hold the slot for FLEET_RECLAIM_GRACE_SECS (default 60) from the
+    # first pass that saw the owner dead. A missing or corrupt stamp restarts
+    # the window, so every failure delays the reclaim, never hastens it.
+    now=$(date +%s)
+    grace="${FLEET_RECLAIM_GRACE_SECS:-60}"
+    # Bounded digits, read base 10: a leading zero ("08") is not octal here.
+    case "$grace" in ''|*[!0-9]*|??????????*) grace=60 ;; esac
+    seen="$(cat "${dir}dead_seen" 2>/dev/null)" || seen=""
+    case "$seen" in
+      ''|*[!0-9]*|????????????*) printf '%s\n' "$now" > "${dir}dead_seen" 2>/dev/null; seen=$now ;;
+    esac
+    if [ $((now - 10#$seen)) -ge $((10#$grace)) ] &&
+       ! { [ -n "$name" ] && printf '%s\n' "$_fleet_live_names" | grep -xF "$name" >/dev/null; } &&
        ! { [ -n "$sname" ] && printf '%s\n' "$_fleet_live_names" | grep -xF "$sname" >/dev/null; }; then
       # Rename through our fence: a paused holder cannot act after gate break.
       if mv "${dir%/}" "$fence/reservation" 2>/dev/null; then

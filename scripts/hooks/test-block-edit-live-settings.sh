@@ -1675,6 +1675,44 @@ assert_rc "289 echo x > dlink/other.txt. allows" 0 \
 assert_rc "290 echo x > .claude/settings.json. in a worktree's OWN .claude allows" 0 \
     "$(bash_rc_of "$WT2" 'echo x > .claude/settings.json.')"
 
+# HIMMEL-3961: `ln` is the link verb only as a word of its own, never inside
+# another program's short-flag cluster (`rg -ln`); git grep pathspecs are reads.
+assert_rc "295 rg -ln foo \$HOME/.claude/skills (flag cluster, not ln) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'rg -ln foo $HOME/.claude/skills' HOME="$FAKEHOME")"
+assert_rc "296 grep -ln foo \$HOME/.claude/skills allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'grep -ln foo $HOME/.claude/skills' HOME="$FAKEHOME")"
+assert_rc "297 git grep -n foo -- .claude from the primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'git grep -n foo -- .claude')"
+assert_rc "298 git grep -ln foo -- .claude from the primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'git grep -ln foo -- .claude')"
+# Counter-examples: every real link/copy/move onto a live settings file still denies.
+assert_rc "299 ln -s x \$HOME/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'ln -s x $HOME/.claude/settings.json' HOME="$FAKEHOME")"
+assert_rc "300 /bin/ln -sf x \$HOME/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/ln -sf x $HOME/.claude/settings.json' HOME="$FAKEHOME")"
+assert_rc "301 ln -s x .claude/settings.json from the primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'ln -s x .claude/settings.json')"
+assert_rc "302 rg -ln foo \$HOME/.claude/skills; ln -s x \$HOME/.claude (later segment) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'rg -ln foo $HOME/.claude/skills; ln -s x $HOME/.claude' HOME="$FAKEHOME")"
+assert_rc "303 sudo ln -s x \$HOME/.claude/settings.json (wrapped verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo ln -s x $HOME/.claude/settings.json' HOME="$FAKEHOME")"
+assert_rc "304 find -exec ln -s x \$HOME/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'find . -name x -exec ln -sf {} $HOME/.claude/settings.json \;' HOME="$FAKEHOME")"
+assert_rc "305 l\\n -s x \$HOME/.claude/settings.json (escaped verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'l\n -s x $HOME/.claude/settings.json' HOME="$FAKEHOME")"
+assert_rc "306 {ln,-s,x,\$HOME/.claude/settings.json} (brace verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '{ln,-s,x,$HOME/.claude/settings.json}' HOME="$FAKEHOME")"
+assert_rc "307 a=ln; \$a -s x \$HOME/.claude/settings.json (variable verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'a=ln; $a -s x $HOME/.claude/settings.json' HOME="$FAKEHOME")"
+assert_rc "308 \${a}ln -s x \$HOME/.claude/settings.json (expansion-glued verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '${a}ln -s x $HOME/.claude/settings.json' HOME="$FAKEHOME")"
+assert_rc "309 cp x \$HOME/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'cp x $HOME/.claude/settings.json' HOME="$FAKEHOME")"
+assert_rc "310 mv x \$HOME/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'mv x $HOME/.claude/settings.json' HOME="$FAKEHOME")"
+assert_rc "311 rg -ln foo -- \$HOME/.claude (flag-cluster ln + dir) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'rg -ln foo -- $HOME/.claude' HOME="$FAKEHOME")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
