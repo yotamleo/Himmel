@@ -341,6 +341,17 @@ python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
 if [ "$RC7B" = "2" ]; then pass "malformed-corpus: row missing command => exit 2"
 else fail "malformed-corpus: expected exit 2 for missing command, got $RC7B"; fi
 
+# CodeRabbit round 8 (codex-2): a setup failure (a missing hook file, a failed
+# mkdir/copy) raises OSError, not RuntimeError. Caught only RuntimeError, it
+# escaped as Python exit 1 -- the confirmed-regression code -- on a corpus that
+# was never reviewed. A nonexistent plain --base path makes materialise_hook's
+# shutil.copyfile raise FileNotFoundError (an OSError); that must be exit 2.
+printf '{"tool_input":{"command":"echo hi"}}\n' > "$TMP/one-row.jsonl"
+python3 "$DIFF" --base "$TMP/does-not-exist.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/one-row.jsonl" --jobs 1 >/dev/null 2>&1; RC7C=$?
+if [ "$RC7C" = "2" ]; then pass "setup-error: missing hook file => exit 2 (not regression 1)"
+else fail "setup-error: expected exit 2 for missing hook, got $RC7C"; fi
+
 # --- 8. exec_a transform re-spells SIMPLE commands only ----------------------
 # CodeRabbit: `exec -a NAME cmd` replaces the shell with a single command, so a
 # compound seed would lose list elements after the first and change meaning

@@ -371,15 +371,18 @@ def main(argv):
     try:
         base_dir = os.path.join(workdir, "base")
         head_dir = os.path.join(workdir, "head")
-        os.makedirs(base_dir)
-        os.makedirs(head_dir)
         try:
+            os.makedirs(base_dir)
+            os.makedirs(head_dir)
             base_hook = materialise_hook(args.base, args.repo, base_dir)
             head_hook = materialise_hook(args.head, args.repo, head_dir)
             # built ONCE as a template; each invocation copies it (see
             # _fresh_sandbox) so no two runs share a primary.
             template = make_scratch_primary(workdir)
-        except RuntimeError as e:
+        except (RuntimeError, OSError) as e:
+            # OSError too: a failed mkdir/copy (missing filesystem hook, full
+            # disk) is a setup failure, not a confirmed base-deny/head-allow
+            # regression -- exit 2, never the regression code 1.
             print("guard-corpus diff: setup error: %s" % e, file=sys.stderr)
             return 2
 
