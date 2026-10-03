@@ -1097,7 +1097,107 @@ def _ansi_c_decode(s: str) -> str:
                 continue
             out.append(chr(v) if 0 < v < 128 else "#")
         streams.append("".join(out))
+    streams.append(_bash_words(s))
     return ";".join(streams)
+
+
+def _ansi_c_one(s: str, i: int):
+    """Decode the escape whose backslash sits at s[i]; return (text, next index, is_nul)."""
+    e = s[i + 1:i + 2]
+    i += 2
+    if e in _ANSI_SIMPLE and e:
+        return _ANSI_SIMPLE[e], i, False
+    if e and e in "01234567":
+        v, d = int(e), 1
+        while d < 3 and s[i:i + 1] and s[i] in "01234567":
+            v, i, d = v * 8 + int(s[i]), i + 1, d + 1
+        v %= 256
+    elif e in _ANSI_HEX and e:
+        v, d = 0, 0
+        while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
+            v, i, d = v * 16 + int(s[i], 16), i + 1, d + 1
+        if d == 0:
+            return "\\" + e, i, False
+    elif e == "c":
+        v = 0 if s[i:i + 1] in ("@", "`") else 35
+        i += 1
+    else:
+        return "\\" + e, i, False
+    return (chr(v) if 0 < v < 128 else "#"), i, v == 0
+
+
+def _bash_words(s: str) -> str:
+    """HIMMEL-4032, the quote-aware fourth stream: bash decodes escapes ONLY inside a
+    dollar-quote body; outside one a backslash quotes the next char (`ns\\teadOf` is
+    `nsteadOf`, not a TAB) and a backslash-newline is deleted. A NUL ends the dollar-quote
+    body. Added beside the flat streams, never instead of them: deny-only."""
+    out, i, n, st = [], 0, len(s), 0  # st 0 bare, 1 single, 2 double, 3 dollar-quote
+    while i < n:
+        c = s[i]
+        if st == 1:
+            if c == "'":
+                st = 0
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if st == 3:
+            if c == "'":
+                st, i = 0, i + 1
+                continue
+            if c != "\\":
+                out.append(c)
+                i += 1
+                continue
+            r, i, nul = _ansi_c_one(s, i)
+            if nul:
+                while i < n:
+                    c = s[i]
+                    if c == "\\":
+                        i += 2
+                        continue
+                    i += 1
+                    if c == "'":
+                        break
+                st = 0
+                continue
+            out.append(r)
+            continue
+        if c == "\\":
+            if s[i + 1:i + 2] == "\n":
+                i += 2
+            elif s[i + 1:i + 3] == "\r\n":
+                i += 3
+            else:
+                out.append(s[i + 1:i + 2])
+                i += 2
+            continue
+        if st == 2:
+            if c == '"':
+                st = 0
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if c == "'":
+            st = 1
+        elif c == '"':
+            st = 2
+        elif c == "$" and s[i + 1:i + 2] == "'":
+            st, i = 3, i + 1
+        elif not (c == "$" and s[i + 1:i + 2] == '"'):
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# HIMMEL-4032: bash deletes a backslash-newline before parsing; an ODD trailing run only (an
+# even run is a literal backslash and a real boundary). `\r` after the backslash = CRLF.
+_LINE_CONT = re.compile(r"(?<!\\)((?:\\\\)*)\\\r?\n")
+
+
+def _join_continuations(s: str) -> str:
+    return _LINE_CONT.sub(r"\1", s)
 
 
 def terminal_external_write_reason(cmd_norm: str, raw_cmd: str = ""):
@@ -1105,7 +1205,10 @@ def terminal_external_write_reason(cmd_norm: str, raw_cmd: str = ""):
     shape (git push / remote-URL rewrite / gh PR-mutation / network CLI), else
     None. `raw_cmd` is the un-norm()-ed command (norm() destroys backslash escapes).
     The caller gates this on an untrusted / unknown engine."""
-    if EXT_GIT_PUSH.search(cmd_norm):
+    # HIMMEL-4032: every arm also reads a continuation-joined copy and refuses if EITHER text
+    # does (deny-only, so `foo \<newline>gh pr merge` stays refused as before).
+    texts = (cmd_norm, norm(_join_continuations(raw_cmd or cmd_norm)))
+    if any(EXT_GIT_PUSH.search(t) for t in texts):
         return ("git push is refused on an untrusted/unknown engine — commit "
                 "locally; the trusted main tier / operator pushes (HIMMEL-695).")
     # HIMMEL-844 round 7: decode every ANSI-C dollar-quote segment (bash's own escape set)
@@ -1113,14 +1216,15 @@ def terminal_external_write_reason(cmd_norm: str, raw_cmd: str = ""):
     # backslash and lowercase: the words git sees. Blunt rule: `git` AND `insteadof` denies.
     # Accepted overmatch: `git log --grep insteadof`.
     dq_lc = re.sub(r"['\"\\]", "", _ansi_c_decode(raw_cmd or cmd_norm)).lower()
-    if EXT_GIT_URL.search(cmd_norm) or EXT_GIT_URL.search(dq_lc) or ("git" in dq_lc and "insteadof" in dq_lc):
+    if (any(EXT_GIT_URL.search(t) for t in texts) or EXT_GIT_URL.search(dq_lc)
+            or ("git" in dq_lc and "insteadof" in dq_lc)):
         return ("Rewriting a git remote / push URL is refused on an untrusted/"
                 "unknown engine (HIMMEL-695).")
-    if len(EXT_GH_ANY.findall(cmd_norm)) > len(EXT_GH_ALLOW.findall(cmd_norm)):
+    if any(len(EXT_GH_ANY.findall(t)) > len(EXT_GH_ALLOW.findall(t)) for t in texts):
         return ("gh is limited on an untrusted/unknown engine: issue ops + "
                 "pr/run reads only; PR mutations belong to the trusted main "
                 "tier (HIMMEL-695).")
-    if EXT_NET.search(cmd_norm):
+    if any(EXT_NET.search(t) for t in texts):
         return ("Network CLIs are refused on an untrusted/unknown engine — "
                 "chores are repo-local (HIMMEL-695).")
     return None
