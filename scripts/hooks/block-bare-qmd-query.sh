@@ -26,7 +26,7 @@
 # not a shell parser, with the siblings' residuals in both directions: a
 # separator inside quoted data (`git commit -m "a; qmd query b"`) reads as a
 # command boundary and is a false DENY — the safe direction — and variable
-# indirection (`q=qmd; $q query`) is a miss.
+# indirection (`q=qmd; $q query`) is a miss (HIMMEL-4178).
 #
 # HIMMEL-4121: the regex also runs over the command's words after bash-style
 # quote removal (qmd_words below), so a verb or program spelled through
@@ -34,14 +34,14 @@
 # (`qmd \query`, `q"md" query`) is refused, and `qmd "query"" notes"` — the
 # one argument `query notes` — is not.
 # ponytail: the verb in a variable (`v=query; qmd "$v" x`) is still a miss —
-# nothing is expanded; closing it needs value tracking, revisit if an agent is
-# seen spelling the verb that way (HIMMEL-4121).
-# ponytail: a nested shell string (`bash -c "qmd q\"uery\" x"`) is matched on
-# its raw text only, one level deep; normalise the -c argument too if that
-# spelling turns up (HIMMEL-4121). A heredoc makes qmd_words decline and the
-# coarser fallback readings below decide; the shared tokenizer
-# (scripts/hooks/lib/shell-tokenize.sh, HIMMEL-912) models heredocs and can
-# replace qmd_words once a third inlined copy is wired into its sync suite.
+# nothing is expanded; closing it needs value tracking (HIMMEL-4178).
+# ponytail: nested strings (`-c`, eval) are decoded and re-read to depth four
+# (HIMMEL-4151), but only for sh/bash/zsh/dash/ksh and eval; other shells and
+# launchers (`su -c`, `env -S`, stdin-fed shells) are HIMMEL-4166. A heredoc
+# makes qmd_words decline and the coarser fallback readings below decide; the
+# shared tokenizer (scripts/hooks/lib/shell-tokenize.sh, HIMMEL-912) models
+# heredocs and can replace qmd_words once a third inlined copy is wired into
+# its sync suite.
 #
 # ponytail: Bash only — a PowerShell `qmd query` is unguarded; wire a
 # PowerShell twin if a Windows station starts running qmd ad hoc (HIMMEL-3960).
@@ -339,7 +339,7 @@ SEP='([[:space:]]|\\[[:space:]]*;+)+[[:space:]]*'
 # A run of options, each optionally taking ONE non-dash value (`-n 10`, `-k 5`).
 OPTV='([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*'
 # Wrappers that run their argument as a program. timeout takes its duration.
-WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|exec|eval|time|xargs|(ba|z|da|k)?sh(\.exe)?)'"$OPTV"
+WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|exec|eval|coproc|time|xargs|(ba|z|da|k)?sh(\.exe)?)'"$OPTV"
 WRAP="($WRAP|timeout${OPTV}[[:space:]]+[0-9.]+[smhd]?|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|$ASSIGN))*|if|then|else|elif|do|while|until|!)"
 # A case arm's `)` is a command position too, and zsh runs `=qmd` as the
 # qmd its PATH finds (HIMMEL-4140).
@@ -411,7 +411,9 @@ AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\002'"|${QMDVERB})"
 # names qmd and that the normaliser cannot read, or one whose program
 # position holds a command substitution (`sh -c "$(echo qmd) query"`), is
 # refused rather than guessed; one that cannot be read and does not name qmd
-# gets the top-level fallback readings.
+# gets the top-level fallback readings. At the top level a substitution in
+# program position is refused only when the command names qmd
+# (`$(echo qmd) query x`).
 # Any word naming a shell counts, not only one in program position: a mention
 # (`echo bash -c 'qmd query'`) reads as a nested command too, the safe
 # direction.
@@ -579,7 +581,7 @@ qmd_check() {
             deny=1
         elif qp_deny "${res#:}"; then
             deny=1
-        elif [ "$depth" -gt 0 ] && [[ $words_lc =~ $SUBPROG ]]; then
+        elif [[ $words_lc =~ $SUBPROG ]] && { [ "$depth" -gt 0 ] || [[ $crude == *qmd* ]]; }; then
             deny=1
         else
             qmd_nested "$words_lc" "$dec" "$depth"

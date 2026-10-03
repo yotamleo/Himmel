@@ -204,6 +204,17 @@ deny 'bash -ec "qmd q\"uery\" x"'
 deny "bash -c \"bash -c 'qmd \\\"qu\\\"ery'\""
 deny 'sh -c "$(echo qmd) query"'
 deny 'sh -c "`echo qmd` query"'
+# The same substitution in program position at the top level (J1684b).
+deny '$(echo qmd) query x'
+deny '`echo qmd` query x'
+deny '$(printf qmd) query x'
+deny 'true; $(echo qmd) search y'
+allow 'cd "$(git rev-parse --show-toplevel)" && qmd status'
+allow 'echo "$(date)"; qmd status'
+# coproc runs its command like any wrapper.
+deny 'coproc qmd query x'
+deny 'coproc foo { qmd query x; }'
+allow 'coproc qmd status'
 # A nested string naming qmd that the normaliser cannot read is refused.
 deny "bash -c 'cat <<E
 x
@@ -241,7 +252,10 @@ deny "bash 2>/dev/null -c 2>&1 'qmd \"qu\"ery x'"
 deny "bash \"\$(bash -c 'qmd \"qu\"ery')\""
 deny "bash -x \"\$(sh -c 'qmd q\"uery\"')\""
 deny "bash -o pipefail \`sh -c 'qmd q\"uery\"'\` -c true"
-allow "bash -o pipefail \"\$(printf x)\" -c 'qmd status'"
+# bash runs its first operand as a script, found on PATH, so a substitution
+# there is a program: `bash "$(printf qmd)" query x` runs qmd.
+deny "bash -o pipefail \"\$(printf x)\" -c 'qmd status'"
+deny 'bash "$(printf qmd)" query x'
 
 # The nested scan is linear: padding with shell words must not push the hook
 # past the chain's budget, where it would be skipped instead of deciding.
