@@ -3244,6 +3244,12 @@ _r4138 "79b flock -c write into the primary"                           block "fl
 _r4138 "79c su -c write into the primary"                              block "su -c 'echo x > @P@/f'"
 _r4138 "79d builtin eval write into the worktree (ALLOW)"              allow "builtin eval 'echo x > @W@/f'"
 _r4138 "79e a quoted 'nice bash -c' in a commit message (ALLOW)"       allow "git -C @W@ commit --allow-empty -m 'nice bash -c x'"
+_r4138 "79f nice 'bash' -c (a quoted shell name) into the primary"     block "nice 'bash' -c 'echo x > @P@/f'"
+_r4138 "79g nice ba''sh -c into the primary"                           block "nice ba''sh -c 'echo x > @P@/f'"
+_r4138 "79h nice b\\ash -c into the primary"                           block "nice b\\ash -c 'echo x > @P@/f'"
+_r4138 "79i 'bash' -c with no wrapper into the primary"                block "'bash' -c 'echo x > @P@/f'"
+_r4138 "79j nice 'eval' into the primary"                              block "nice 'eval' 'echo x > @P@/f'"
+_r4138 "79k nice 'bash' -c into the worktree (ALLOW)"                  allow "nice 'bash' -c 'echo x > @W@/f'"
 # (4) bash 5.3 decodes \x{2f} as /, bash 5.2 keeps \x{ and zsh reads NUL.
 _r4138 "80a \$'\\x{2f}' prefix of a primary path"                        block "echo > \$'\\x{2f}'@P@/f"
 _r4138 "80b \$'\\x{2f}' aimed at the worktree (ambiguous: fail closed)"  block "echo > \$'\\x{2f}'@W@/f"

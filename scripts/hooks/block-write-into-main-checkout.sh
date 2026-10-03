@@ -4815,8 +4815,11 @@ while IFS= read -r _bwimc_clause; do
     # matched none of the anchored arms above, so its body went unscanned.
     # Checked after the chain, never instead of an arm, so it cannot take a
     # clause away from one; a shell word inside a quoted argument is not a
-    # token of its own and finds nothing.
-    if [ "$_bwimc_interp_seen" = 0 ] && [[ "$_bwimc_clause_lc" =~ $_BWIMC_WRAP_RE ]]; then
+    # token of its own and finds nothing. The prefilter reads the clause
+    # with quotes and backslashes removed, so `'bash'`, `ba''sh` and `b\ash`
+    # reach the token scan, which unquotes each word itself.
+    _bwimc_wq="${_bwimc_clause_lc//[\'\"\\]/}"
+    if [ "$_bwimc_interp_seen" = 0 ] && [[ "$_bwimc_wq" =~ $_BWIMC_WRAP_RE ]]; then
         _bwimc_check_interp_body "$_bwimc_clause_sp" wrap
     fi
 done < <(_bwimc_verb_clauses "$_bwimc_hb")
