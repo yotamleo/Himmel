@@ -479,8 +479,12 @@ qmd_nested() {
             e=$j
             if [ "$rd" = 1 ]; then
                 rd=0
+            elif [[ ${w:e:1} == [\<\>] ]] && [[ $t =~ ^([0-9]+|\{[[:alpha:]_][[:alnum:]_]*\})$ ]]; then
+                # The fd of a redirection (`2>f`, `{fd}<f`), not a word.
+                :
             elif [ "$mode" = eval ]; then
-                scr="$scr $v"
+                # eval takes one option, the `--` that ends its options.
+                if [ -n "$scr" ] || [ "$t" != '--' ]; then scr="$scr $v"; fi
             elif [ "$hasc" = 0 ]; then
                 # The string is the first word after an option cluster
                 # holding c (`-c`, `-ec`, `-lc`); the later words ($0 and its

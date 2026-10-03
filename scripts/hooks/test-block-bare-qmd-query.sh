@@ -231,6 +231,12 @@ deny "bash &>/dev/null -c 'qmd \"qu\"ery x'"
 deny "bash >&2 -c 'qmd \"qu\"ery x'"
 deny "bash -e <<<x -c 'qmd \"qu\"ery x'"
 deny "eval </dev/null 'qmd \"qu\"ery x'"
+deny "eval 2>/dev/null 'qmd \"qu\"ery x'"
+deny "eval {fd}>/dev/null 'qmd \"qu\"ery x'"
+deny "eval 2>/dev/null qmd query x"
+deny "eval -- 'qmd \"qu\"ery x'"
+deny "eval -- qmd query x"
+deny "bash 2>/dev/null -c 2>&1 'qmd \"qu\"ery x'"
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
