@@ -1052,8 +1052,13 @@ _unjudged_cmd_word() {
     case "$1" in
         -*) return 0 ;;
         */*)
-            case "${1##*/}" in
-                cat|head|tail|grep|rg|diff|wc|ls|less|jq|git) return 1 ;;
+            # only a system bin dir vouches for the name: `/tmp/ls` is not ls
+            case "${1%/*}" in
+                /bin|/usr/bin|/usr/local/bin|/opt/homebrew/bin)
+                    case "${1##*/}" in
+                        cat|head|tail|grep|rg|diff|wc|ls|less|jq|git) return 1 ;;
+                    esac
+                    ;;
             esac
             return 0
             ;;
@@ -1084,7 +1089,7 @@ _unjudged_cmd_word() {
 # arguments (`find -exec`, `sh -c '…'`) are not judged; upgrade path: an
 # exec-wrapper option table, if such a plant is seen.
 _tok_unjudged_verb() {
-    local k sg cur=-1 done_seg=0 wrapped=0 txt w g nog=0 i n
+    local k sg cur=-1 done_seg=0 wrapped=0 txt w g sc=0 nog=0 i n
     local -a pieces
     if [ "$TOK" = 1 ]; then
         k=0
@@ -1104,8 +1109,8 @@ _tok_unjudged_verb() {
                     if:0:0|then:0:0|else:0:0|elif:0:0|do:0:0|while:0:0|until:0:0|'!:0:0'|'{:0:0'|time:0:0) ;;
                     -*:?:1|[a-z_]*=*:?:1|[0-9]*:?:1) ;;
                     *)
-                        done_seg=1
-                        [ "${ST_SEP[sg]}" != '(' ] || g=1
+                        done_seg=1 sc=0
+                        [ "${ST_SEP[sg]}" != '(' ] || g=1 sc=1
                         if ! _unjudged_cmd_word "${ST_LW[k]}" "${ST_X[k]}" "$g"; then
                             case "${ST_LW[k]}" in
                                 env|sudo|doas|xargs|command|builtin|exec|nohup|nice|ionice|timeout|stdbuf|setsid|taskset|chrt|unbuffer|time|noglob|nocorrect)
@@ -1115,7 +1120,7 @@ _tok_unjudged_verb() {
                             txt='' w=0
                             while [ "$w" -lt "$ST_N" ]; do
                                 if [ "${ST_S[w]}" = "$sg" ] \
-                                    || { [ "$g" = 1 ] && [ "${ST_S[w]}" -gt "$sg" ]; }; then
+                                    || { [ "$sc" = 1 ] && [ "${ST_S[w]}" -gt "$sg" ]; }; then
                                     txt="$txt ${ST_LW[w]}"
                                 fi
                                 w=$((w + 1))

@@ -1772,6 +1772,12 @@ assert_rc "335 sudo cat ~/.claude/CLAUDE.md allows" 0 \
     "$(bash_rc_of "$PRIMARY" 'sudo cat ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
 assert_rc "336 xargs cat ~/.claude/* (glob naming .claude) allows" 0 \
     "$(bash_rc_of "$PRIMARY" 'xargs cat ~/.claude/*' HOME="$FAKEHOME")"
+# A read tool's name vouches only from a system bin dir, and an ordinary glob
+# judges its own segment, not the ones after it.
+assert_rc "337 /tmp/ls -sf x ~/.claude/ (read name outside a bin dir) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/tmp/ls -sf x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "338 /bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '/bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
