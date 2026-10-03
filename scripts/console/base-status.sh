@@ -78,8 +78,18 @@ fi
 # never matches a real single-slash path) and silently certify everything
 # under it clean. Word-split rebuild (fence paths carry no spaces, same
 # assumption arm-resume.sh's own space-separated fence: forwarding makes).
+#
+# Likewise strip a leading ./ (HIMMEL-2421): gh lists paths without one, so
+# "./scripts/hooks" would match nothing. A bare "." (or "./", or empty after
+# stripping) is the repo root — normalized to "." which _touches_fence
+# treats as matching every path.
 _fence_args=""
-for _f in "$@"; do _fence_args="$_fence_args ${_f%/}"; done
+for _f in "$@"; do
+    _f="${_f%/}"
+    _f="${_f#./}"
+    [ -n "$_f" ] || _f="."
+    _fence_args="$_fence_args $_f"
+done
 # shellcheck disable=SC2086
 set -- $_fence_args
 unset _fence_args _f
@@ -136,7 +146,7 @@ fi
 # reopened here (4th panel round on this ticket).
 _touches_fence() {
     printf '%s' "$1" | jq -e --arg f "$2" \
-        'any(.[]?; .path == $f or (.path | startswith($f + "/")))' >/dev/null 2>&1
+        'any(.[]?; $f == "." or .path == $f or (.path | startswith($f + "/")))' >/dev/null 2>&1
 }
 
 # A tested scan root COVERS a fence only when it IS the fence or an ancestor
