@@ -127,6 +127,7 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
     cd "$jdir" || exit 1
     native_auth_pin_env || exit 1
     # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted by run_task, no tools, explicit permission mode, budget-capped
+    # launch-profile-ok: HIMMEL-4090 the judge runs with --tools "", so no tool profile applies
     timeout "$TIMEOUT" "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
       --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
   ) >"$od/$task.judge.json" 2>"$od/$task.judge.err"
@@ -154,6 +155,7 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
     cd "$wt" || exit 1
     native_auth_pin_env || exit 1
     # headless-claude-ok: HIMMEL-4090 lane-quality agent run, bank-preflighted per sweep, explicit permission mode, budget-capped
+    # launch-profile-ok: HIMMEL-4090 the eval measures the lane's own default config, not a leg profile
     timeout "$TIMEOUT" "$CLAUDE_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
       --output-format json --max-budget-usd "$remaining" ${EFFORT:+--effort "$EFFORT"}
   ) >"$OUT/$task.result.json" 2>"$OUT/$task.stderr"
