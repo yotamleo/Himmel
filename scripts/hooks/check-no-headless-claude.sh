@@ -104,12 +104,12 @@ is_exempt() {
 has_optin_marker() {
     local file="$1" line_no="$2"
     # Same-line marker (comment on the call line itself)
-    if sed -n "${line_no}p" "$file" 2>/dev/null | grep -q 'headless-claude-ok'; then
+    if sed -n "${line_no}p" 2>/dev/null <"$file" | grep -q 'headless-claude-ok'; then
         return 0
     fi
     # Preceding-line marker (within 1 line above the call)
     if [ "$line_no" -gt 1 ]; then
-        if sed -n "$((line_no - 1))p" "$file" 2>/dev/null | grep -q 'headless-claude-ok'; then
+        if sed -n "$((line_no - 1))p" 2>/dev/null <"$file" | grep -q 'headless-claude-ok'; then
             return 0
         fi
     fi
@@ -143,7 +143,7 @@ for f in "${files[@]}"; do
             violations+=("$f:$line_no")
         fi
     done < <({
-        grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" -- "$f" 2>/dev/null
+        grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" 2>/dev/null <"$f"
         headless_spawn_join "$f" "$SPAWN_PATTERN" "$SPAWN_WINDOW" headless-claude-ok
     } | sort -n -u)
 done
@@ -165,8 +165,8 @@ native_auth_pin_advisory() {
         else
             # Direct self-test inputs are real files outside the index.
             [ -f "$f" ] || continue
-            grep -q 'headless-claude-ok' -- "$f" 2>/dev/null || continue
-            grep -q 'native-auth-pin' -- "$f" 2>/dev/null && continue
+            grep -q 'headless-claude-ok' 2>/dev/null <"$f" || continue
+            grep -q 'native-auth-pin' 2>/dev/null <"$f" && continue
         fi
         echo "check-no-headless-claude: ADVISORY - $f carries a '# headless-claude-ok:' marker but never references native-auth-pin; a marked headless site that inherits an ambient ANTHROPIC_BASE_URL is silently proxied off native auth (operator ruling 2026-08-17). Source scripts/lib/native-auth-pin.sh and call native_auth_pin_env before the launch (PowerShell sites: scripts/lib/native-auth-pin.ps1). Advisory only, not blocking." >&2
     done

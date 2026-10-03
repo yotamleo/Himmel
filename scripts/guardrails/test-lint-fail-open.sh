@@ -113,6 +113,17 @@ if [ "$LINT_RC" -eq 2 ]; then pass "extensionless file exits 2"; else fail "exte
 run_lint --no-such-flag
 if [ "$LINT_RC" -eq 2 ]; then pass "unknown flag exits 2"; else fail "unknown flag: expected exit 2, got $LINT_RC" "$(cat "$OUT")"; fi
 
+printf '\nCase 4b: a slash-free name=value path is scanned, not read as an awk assignment (HIMMEL-4132)\n'
+NV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lint-nv.XXXXXX")" || exit 1
+cp "$FIX/instance1-unreadable-denylist.sh.fxt" "$NV_DIR/x=1.sh.fxt"
+LINT_RC=$(cd "$NV_DIR" && bash "$LINT" "x=1.sh.fxt" > "$OUT" 2>&1 </dev/null; echo "$?")
+if [ "$LINT_RC" -eq 1 ] && grep -q 'unreadable-config' "$OUT"; then
+    pass "name=value path fires"
+else
+    fail "name=value path: expected exit 1 naming unreadable-config, got $LINT_RC" "$(cat "$OUT")"
+fi
+rm -rf "$NV_DIR"
+
 printf '\nCase 5: the real guard surfaces are clean (the standing assertion)\n'
 run_lint
 if [ "$LINT_RC" -eq 0 ]; then

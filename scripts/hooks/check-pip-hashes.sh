@@ -13,6 +13,7 @@ fi
 fail=0
 for file in "$@"; do
     [ -f "$file" ] || continue
+    [ -r "$file" ] || { echo "ERROR: $file is unreadable" >&2; fail=1; continue; }
 
     # `--generate-hashes` writes each pin across multiple physical lines using
     # trailing `\` continuations. Join those into one logical line per package
@@ -37,7 +38,7 @@ for file in "$@"; do
                 if (buf !~ /--hash=sha256:/) print NR ": " buf
             }
         }
-    ' "$file")
+    ' <"$file")  # stdin, not an operand: awk reads `requirements=x.txt` as an assignment (HIMMEL-4132)
 
     if [ -n "$bad" ]; then
         echo "ERROR: $file has package lines without --hash=sha256: pins:" >&2
