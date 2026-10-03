@@ -478,9 +478,10 @@ function removeTempBestEffort(tmp) {
 // null when the file was absent. Non-fatal by design: a ledger fault must never
 // fail a config save (residue over breakage), it only warns.
 //
-// ponytail: a pre-existing config.json that does not parse is treated as
-// absent here (every section recorded as created), so an uninstall would
-// remove sections that did exist in the unreadable file.
+// ponytail: a pre-existing config.json that does not parse as an object has an
+// unknown pre-state, so save() records no sections for it at all and uninstall
+// leaves the whole file in place (residue over breakage); revisit if an
+// operator reports such residue — recording it would need a raw-bytes backup.
 function recordSections(p, prior, doc, fileCreated) {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   for (const key of Object.keys(doc)) {
