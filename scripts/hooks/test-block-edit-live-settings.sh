@@ -1713,6 +1713,66 @@ assert_rc "310 mv x \$HOME/.claude/settings.json denies" 2 \
 assert_rc "311 rg -ln foo -- \$HOME/.claude (flag-cluster ln + dir) allows" 0 \
     "$(bash_rc_of "$PRIMARY" 'rg -ln foo -- $HOME/.claude' HOME="$FAKEHOME")"
 
+# HIMMEL-4119: a segment's command word the hook cannot read as a known program
+# (a glob, an expansion, a flag-shaped word, a path to an unknown program) is a
+# write verb when that segment names a `.claude` directory: fail closed.
+assert_rc "312 /bin/l? -sf /tmp/d/* ~/.claude/ (glob verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/l? -sf /tmp/d/* ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "313 -ln -sf /tmp/d/x ~/.claude/ (flag-shaped command word) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '-ln -sf /tmp/d/x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "314 /bin/c? x ~/.claude/ (glob verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/c? x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "315 \$V x ~/.claude/ (expansion verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '$V x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "316 /opt/t/plant x ~/.claude/ (unknown path verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "317 X=1 /bin/[l]n -sf x ~/.claude (assignment prefix, glob verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'X=1 /bin/[l]n -sf x ~/.claude' HOME="$FAKEHOME")"
+assert_rc "318 cat a; /bin/l? -sf x .claude/ from the primary (later segment) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'cat a; /bin/l? -sf x .claude/')"
+assert_rc "319 /bin/l{n,} -sf x ~/.claude/ (brace verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/l{n,} -sf x ~/.claude/' HOME="$FAKEHOME")"
+# Benign reads under .claude stay allowed: a known program, by name or by path,
+# with globs only in its arguments; and an unjudgeable word in a segment that
+# names no .claude directory.
+assert_rc "320 ls ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'ls ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "321 /usr/bin/ls ~/.claude/ (known program by path) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '/usr/bin/ls ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "322 head -5 ~/.claude/skills/* (glob argument) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'head -5 ~/.claude/skills/*' HOME="$FAKEHOME")"
+assert_rc "323 /usr/bin/grep -rn foo ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '/usr/bin/grep -rn foo ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "324 cat ~/.claude/CLAUDE.md; /bin/c? a /tmp/b (no .claude in that segment) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'cat ~/.claude/CLAUDE.md; /bin/c? a /tmp/b' HOME="$FAKEHOME")"
+assert_rc "325 rg -ln foo ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'rg -ln foo ~/.claude/' HOME="$FAKEHOME")"
+# zsh reads a `(` glued to a word as glob grouping (`/bin/c(p|q)` is /bin/cp),
+# where the tokenizer ends the segment; and a heredoc (TOK=0) is judged on text.
+assert_rc "326 /bin/c(p|q) x ~/.claude/ (zsh glob grouping) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/c(p|q) x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "327 /bin/l(n|#x) x ~/.claude/ (zsh grouping, tokenizer fails) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/l(n|#x) x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "328 heredoc, then /bin/l? -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/l? -sf x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "329 heredoc of markdown bullets naming ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat > /tmp/n.md <<EOF\n- see ~/.claude/\n* and ~/.claude/x\nEOF')" HOME="$FAKEHOME")"
+assert_rc "330 (cat ~/.claude/CLAUDE.md) subshell read allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '(cat ~/.claude/CLAUDE.md)' HOME="$FAKEHOME")"
+# An exec wrapper hands its operand on as the command.
+assert_rc "331 sudo /bin/c? a ~/.claude/ (wrapped glob verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo /bin/c? a ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "332 sudo -u root /bin/c? a ~/.claude/ (wrapper option argument) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -u root /bin/c? a ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "333 env -i A=b /opt/t/plant a ~/.claude/ (wrapped unknown path) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'env -i A=b /opt/t/plant a ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "334 heredoc, then timeout 5 /bin/c? a ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\ntimeout 5 /bin/c? a ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "335 sudo cat ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sudo cat ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+assert_rc "336 xargs cat ~/.claude/* (glob naming .claude) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'xargs cat ~/.claude/*' HOME="$FAKEHOME")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

@@ -1039,6 +1039,151 @@ _tok_ln_write() {
     return 1
 }
 
+# _unjudged_cmd_word WORD HAS_EXPANSION HAS_GLOB — 0 when a segment's command
+# word cannot be read as a program this hook judges (HIMMEL-4119): a glob or
+# brace (`/bin/l?`, `/bin/l{n,}`), a live expansion (`$v`), a flag-shaped word
+# (`-ln`, which runs only when an executable of that name is on PATH), or a
+# path to a program other than a known read-only one (`/opt/t/plant`;
+# `/usr/bin/ls` stays a read). The verb lists match spellings, so a word that
+# spells nothing they know cannot be cleared as a non-write: fail closed
+# rather than emulate a PATH lookup.
+_unjudged_cmd_word() {
+    [ "$2" = 0 ] && [ "$3" = 0 ] || return 0
+    case "$1" in
+        -*) return 0 ;;
+        */*)
+            case "${1##*/}" in
+                cat|head|tail|grep|rg|diff|wc|ls|less|jq|git) return 1 ;;
+            esac
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# _tok_unjudged_verb CMD_LC — 0 when some segment's command word (the first
+# word that is not an assignment, a redirect target or a reserved word) is
+# unjudged (_unjudged_cmd_word) AND that segment names a `.claude` directory
+# (mentions_dot_claude_dir_dest). Scoped to the segment so an unrelated
+# `$EDITOR` beside a `.claude` read elsewhere stays allowed. A segment the
+# tokenizer ended at `(` is zsh's glob grouping glued to the word
+# (`/bin/c(p|q)` runs /bin/cp under zsh), so its word counts as a glob and
+# its scope runs to the end of the command; in bash that shape is only a
+# function definition (`f() …`), denied too when a `.claude` dir follows.
+# TOK=0 splits the text on `;`, `&`, `|` and newlines instead, takes each
+# piece's first word, counts a `(` in it as a glob, and judges the text from
+# that piece to the end. There a lone `-`, `--`, `*` or `+` (a markdown
+# bullet in a heredoc body) is not judged.
+# An exec wrapper (`env`, `sudo`, `xargs`, `nohup`, `timeout`, zsh's `noglob`
+# …) hands its operand on as the command, so after one the first word that
+# is not a flag, an assignment or a number is judged as the command word too,
+# and so is every glob or expansion word in that segment that does not
+# itself name `.claude` (`sudo -u root /bin/c? …`).
+# ponytail: an operand that follows an option's own argument
+# (`sudo -u root /opt/t/plant …`) and a command a program runs from its
+# arguments (`find -exec`, `sh -c '…'`) are not judged; upgrade path: an
+# exec-wrapper option table, if such a plant is seen.
+_tok_unjudged_verb() {
+    local k sg cur=-1 done_seg=0 wrapped=0 txt w g nog=0 i n
+    local -a pieces
+    if [ "$TOK" = 1 ]; then
+        k=0
+        while [ "$k" -lt "$ST_N" ]; do
+            sg=${ST_S[k]}
+            if [ "$sg" != "$cur" ]; then cur=$sg done_seg=0 wrapped=0; fi
+            g=${ST_G[k]}
+            if [ "$wrapped" = 1 ] && [ -z "${ST_RO[k]}" ] \
+                && { [ "$g" = 1 ] || [ "${ST_X[k]}" = 1 ]; }; then
+                case "${ST_LW[k]}" in
+                    *.claude*) ;;
+                    *) done_seg=0 ;;
+                esac
+            fi
+            if [ "$done_seg" = 0 ] && [ -z "${ST_RO[k]}" ] && [ "${ST_A[k]}" = 0 ]; then
+                case "${ST_LW[k]}:${ST_Q[k]}:$wrapped" in
+                    if:0:0|then:0:0|else:0:0|elif:0:0|do:0:0|while:0:0|until:0:0|'!:0:0'|'{:0:0'|time:0:0) ;;
+                    -*:?:1|[a-z_]*=*:?:1|[0-9]*:?:1) ;;
+                    *)
+                        done_seg=1
+                        [ "${ST_SEP[sg]}" != '(' ] || g=1
+                        if ! _unjudged_cmd_word "${ST_LW[k]}" "${ST_X[k]}" "$g"; then
+                            case "${ST_LW[k]}" in
+                                env|sudo|doas|xargs|command|builtin|exec|nohup|nice|ionice|timeout|stdbuf|setsid|taskset|chrt|unbuffer|time|noglob|nocorrect)
+                                    wrapped=1 done_seg=0 ;;
+                            esac
+                        else
+                            txt='' w=0
+                            while [ "$w" -lt "$ST_N" ]; do
+                                if [ "${ST_S[w]}" = "$sg" ] \
+                                    || { [ "$g" = 1 ] && [ "${ST_S[w]}" -gt "$sg" ]; }; then
+                                    txt="$txt ${ST_LW[w]}"
+                                fi
+                                w=$((w + 1))
+                            done
+                            mentions_dot_claude_dir_dest "$txt" && return 0
+                        fi
+                        ;;
+                esac
+            fi
+            k=$((k + 1))
+        done
+        return 1
+    fi
+    n=0
+    while IFS= read -r txt; do
+        pieces[n]=$txt
+        n=$((n + 1))
+    done <<EOF
+$(printf '%s\n' "$1" | tr ';&|' '\n')
+EOF
+    case $- in *f*) nog=1 ;; esac
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        set -f
+        # shellcheck disable=SC2086 # split the piece into words, globbing off
+        set -- ${pieces[i]}
+        [ "$nog" = 1 ] || set +f
+        wrapped=0
+        while [ $# -gt 0 ]; do
+            case "$1:$wrapped" in
+                if:?|then:?|else:?|elif:?|do:?|while:?|until:?|'!:'?|'{:'?|'(:'?|time:?) shift ;;
+                [a-z_]*=*:?) shift ;;
+                -*:1|[0-9]*:1) shift ;;
+                env:?|sudo:?|doas:?|xargs:?|command:?|builtin:?|exec:?|nohup:?|nice:?|ionice:?|timeout:?|stdbuf:?|setsid:?|taskset:?|chrt:?|unbuffer:?|noglob:?|nocorrect:?)
+                    shift; wrapped=1 ;;
+                *) break ;;
+            esac
+        done
+        # a wrapped glob or expansion word that names no .claude stands in
+        # for the operand, as on the token path
+        if [ "$wrapped" = 1 ]; then
+            for w in "$@"; do
+                case "$w" in
+                    *.claude*) ;;
+                    *[*?[\{\(\$]*) set -- "$w"; break ;;
+                esac
+            done
+        fi
+        case "${1:--}" in
+            -|--|'*'|+) ;;
+            *)
+                w=0; case "$1" in *'$'*) w=1 ;; esac
+                g=0; case "$1" in *[*?[\{\(]*) g=1 ;; esac
+                if _unjudged_cmd_word "$1" "$w" "$g"; then
+                    txt='' k=$i
+                    while [ "$k" -lt "$n" ]; do
+                        txt="$txt ${pieces[k]}"
+                        k=$((k + 1))
+                    done
+                    mentions_dot_claude_dir_dest "$txt" && return 0
+                fi
+                ;;
+        esac
+        i=$((i + 1))
+    done
+    return 1
+}
+
 # _tok_sensitive_name NAME — an assignment that can change what a later
 # read-only command runs or reads: the loader, locale, pager, config-home and
 # shell-behaviour variables, and each allowlisted tool's own environment.
@@ -1356,6 +1501,12 @@ has_write_verb_or_target_flag() {
         seg=$(_verb_segment "$c" "$re_co")
         out=$(printf '%s' "$seg" | grep -E '(^|[^a-z0-9_])git([^a-z0-9_]|$)') || true
         [ -n "$out" ] && return 0
+    fi
+
+    # A command word no verb list can read (HIMMEL-4119), in a segment that
+    # names a .claude directory, is a write: fail closed.
+    if [ "$tool_name" = Bash ]; then
+        _tok_unjudged_verb "$c" && return 0
     fi
 
     return 1
