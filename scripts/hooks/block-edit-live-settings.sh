@@ -1039,6 +1039,348 @@ _tok_ln_write() {
     return 1
 }
 
+# _unjudged_cmd_word WORD HAS_EXPANSION HAS_GLOB — 0 when a segment's command
+# word cannot be read as a program this hook judges (HIMMEL-4119): a glob or
+# brace (`/bin/l?`, `/bin/l{n,}`), a live expansion (`$v`), a flag-shaped word
+# (`-ln`, which runs only when an executable of that name is on PATH), or a
+# path to a program other than a known read-only one (`/opt/t/plant`;
+# `/usr/bin/ls` stays a read). The verb lists match spellings, so a word that
+# spells nothing they know cannot be cleared as a non-write: fail closed
+# rather than emulate a PATH lookup.
+_unjudged_cmd_word() {
+    # the test commands write nothing; `[` reads as a glob to the tokenizer
+    case "$1" in '['|'[['|test) return 1 ;; esac
+    [ "$2" = 0 ] && [ "$3" = 0 ] || return 0
+    case "$1" in
+        -*) return 0 ;;
+        */*)
+            # only a system bin dir vouches for the name: `/tmp/ls` is not ls
+            case "${1%/*}" in
+                /bin|/usr/bin|/usr/local/bin|/opt/homebrew/bin)
+                    case "${1##*/}" in
+                        cat|head|tail|grep|rg|diff|wc|ls|less|jq|git) return 1 ;;
+                    esac
+                    ;;
+            esac
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# _tok_unjudged_verb CMD_LC CMD_N — 0 when some segment's command word (the
+# first word that is not an assignment, a redirect target or a reserved word,
+# its bin-dir name read in its original case from CMD_N or the tokens) is
+# unjudged (_unjudged_cmd_word) AND one of its possible DESTINATION operands —
+# a redirect target, any operand that is not an option, an option's `=VALUE`
+# (_uj_tok_dests) — can be the `.claude` directory itself (_uj_dir_itself).
+# A mere mention (`graphify query x ~/.claude/projects`, a script run from
+# under `~/.claude`) is not a destination. Every destination is also left in
+# UJ_DEST for the main flow's climb and symlink scan, so `$L -sf X ../../`
+# from a nested worktree is judged as `ln -sf X ../../` is. A segment the
+# tokenizer ended at `(` is zsh's glob grouping glued to the word
+# (`/bin/c(p|q)` runs /bin/cp under zsh), so its word counts as a glob and
+# every word to the end of the command is a destination; in bash that shape
+# is only a function definition (`f() …`), denied too.
+# TOK=0 splits the text on `;`, `&`, `|` and newlines instead, takes each
+# piece's first word, and reads the same destinations from that piece's words
+# (_uj_text_dests), or every word to the end when the word carries a `(`.
+# There a lone `-`, `--`, `*` or `+` (a markdown bullet in a heredoc body) is
+# not judged.
+# ponytail: a concrete path deeper under `.claude/` is not a destination (the
+# settings-name rule judges a settings leaf whatever the verb); upgrade path:
+# J1676 ruling — widen _uj_dir_itself only on a reported plant through one.
+# An exec wrapper (`env`, `sudo`, `xargs`, `nohup`, `timeout`, zsh's `noglob`
+# …) hands its operand on as the command, so after one the first word that
+# is not a flag, an assignment or a number is judged as the command word too;
+# after a `--` a flag-shaped word is the command (`env -- -ln …`).
+# A bare word right after a wrapper option that takes an argument
+# (_wrapper_opt_arg: `sudo -u root`) is that argument, not the command; a
+# word there that is itself unjudged is still judged, so the table can only
+# over-deny, never hide one.
+# ponytail: an argument-taking wrapper option missing from the table, and a
+# command a program runs from its arguments (`find -exec`, `sh -c '…'`), are
+# not judged; upgrade path: extend _wrapper_opt_arg when such a plant is seen.
+
+# _wrapper_opt_arg WRAPPER OPT_LC — 0 when the exec wrapper's option takes the
+# next word as its argument. OPT_LC is lowercased, so `-U`/`-u` share a row.
+_wrapper_opt_arg() {
+    case "$1:$2" in
+        sudo:-u|sudo:-g|sudo:-h|sudo:-p|sudo:-c|sudo:-d|sudo:-r|sudo:-t|sudo:-a \
+        |sudo:--user|sudo:--group|sudo:--host|sudo:--prompt|sudo:--close-from \
+        |sudo:--chdir|sudo:--role|sudo:--type|sudo:--other-user \
+        |sudo:--command-timeout|sudo:--chroot|sudo:--auth-type|sudo:--login-class \
+        |doas:-u|doas:-c \
+        |env:-u|env:-c|env:-s|env:--unset|env:--chdir|env:--split-string \
+        |timeout:-s|timeout:-k|timeout:--signal|timeout:--kill-after \
+        |nice:-n|nice:--adjustment \
+        |ionice:-c|ionice:-n|ionice:-p|ionice:-u|ionice:--class|ionice:--classdata \
+        |stdbuf:-i|stdbuf:-o|stdbuf:-e \
+        |xargs:-i|xargs:-l|xargs:-n|xargs:-p|xargs:-s|xargs:-d|xargs:-e|xargs:-a \
+        |xargs:--arg-file|xargs:--delimiter|xargs:--max-args|xargs:--max-procs \
+        |xargs:--max-chars|xargs:--max-lines|xargs:--process-slot-var \
+        |exec:-a|time:-f|time:-o|time:--format|time:--output|taskset:-c|chrt:-p)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# _uj_dir_itself WORD_LC — 0 when a destination operand can be the `.claude`
+# directory itself: it names one (mentions_dot_claude_dir_dest) and nothing
+# fixed follows it — `~/.claude`, `~/.claude/.`, a glob, brace, expansion or
+# `..` after it. A concrete path deeper under `.claude/` is not the directory
+# (check_claude_dir_target's own reading); a settings leaf is judged by the
+# settings-name rule whatever the verb.
+_uj_dir_itself() {
+    local r
+    mentions_dot_claude_dir_dest "$1" || return 1
+    has_traversal_dots "$1" && return 0
+    r=${1##*.claude}
+    case "$r" in
+        *[!/.]*) ;;
+        *) return 0 ;;
+    esac
+    case "$r" in
+        /*) ;;
+        *) return 0 ;;
+    esac
+    case "$r" in
+        *[*?[\{\$\`\(]*) return 0 ;;
+    esac
+    return 1
+}
+
+# _uj_dest WORD WORD_LC — record a destination operand of an unjudged command
+# word for the main flow's operand (climb/symlink) scan; 0 when it can be the
+# `.claude` directory itself.
+_uj_dest() {
+    UJ_DEST[${#UJ_DEST[@]}]=$1
+    _uj_dir_itself "$2"
+}
+
+# _uj_tok_dests K SC — the possible destination operands of the command word
+# at token K: every redirect target in its segment, every operand that is not
+# an option, an `--opt=VALUE` value and a `-t` value glued to its flag. Which
+# operand an unknown command writes to cannot be read from its options
+# (`… ~/.claude --suffix .bak`), so none is ruled out. With SC=1 (the zsh `(`
+# split, whose words cannot be placed) every word to the end. 0 when one is
+# the `.claude` dir.
+_uj_tok_dests() {
+    local k=$1 sc=$2 sg=${ST_S[$1]} w=0 hit=1 lw rem
+    while [ "$w" -lt "$ST_N" ]; do
+        if [ "${ST_S[w]}" = "$sg" ] || { [ "$sc" = 1 ] && [ "${ST_S[w]}" -gt "$sg" ]; }; then
+            lw=${ST_LW[w]}
+            if [ -n "${ST_RO[w]}" ]; then
+                case "${ST_RO[w]}" in *'>'*) _uj_dest "${ST_W[w]}" "$lw" && hit=0 ;; esac
+            elif [ "$w" -le "$k" ]; then
+                :
+            elif [ "$sc" = 1 ]; then
+                _uj_dest "${ST_W[w]}" "$lw" && hit=0
+            else
+                case "$lw" in
+                    -*=*) _uj_dest "${ST_W[w]#*=}" "${lw#*=}" && hit=0 ;;
+                    --*) ;;
+                    -*t?*)
+                        rem=${lw#-*t}
+                        _uj_dest "${ST_W[w]#-*t}" "$rem" && hit=0
+                        ;;
+                    -*) ;;
+                    *) _uj_dest "${ST_W[w]}" "$lw" && hit=0 ;;
+                esac
+            fi
+        fi
+        w=$((w + 1))
+    done
+    return "$hit"
+}
+
+# _uj_text_dests SKIP ALL TEXT_LC TEXT_N — _uj_tok_dests without tokens: the
+# words of TEXT after the first SKIP, `>`-glued or following a `>` word, and
+# every operand, `--opt=VALUE` value and glued `-t` value; ALL=1 takes every
+# word. TEXT_N is the
+# same text in its original case, used for the recorded operand when its
+# words line up with TEXT_LC's.
+_uj_text_dests() {
+    local skip=$1 all=$2 i=0 n tnext=0 hit=1 lw rem nog=0
+    local -a lws nws
+    case $- in *f*) nog=1 ;; esac
+    set -f
+    # shellcheck disable=SC2206 # split into words, globbing off
+    lws=($3)
+    # shellcheck disable=SC2206
+    nws=($4)
+    [ "$nog" = 1 ] || set +f
+    n=${#lws[@]}
+    [ "${#nws[@]}" = "$n" ] || nws=(${lws[@]+"${lws[@]}"})
+    while [ "$i" -lt "$n" ]; do
+        lw=${lws[i]}
+        if [ "$tnext" = 1 ]; then
+            tnext=0
+            _uj_dest "${nws[i]}" "$lw" && hit=0
+        else
+            case "$lw" in
+                *'>'*)
+                    rem=${lw##*>}
+                    if [ -z "$rem" ]; then tnext=1
+                    else _uj_dest "${nws[i]##*>}" "$rem" && hit=0
+                    fi
+                    ;;
+                *)
+                    if [ "$i" -lt "$skip" ]; then
+                        :
+                    elif [ "$all" = 1 ]; then
+                        _uj_dest "${nws[i]}" "$lw" && hit=0
+                    else
+                        case "$lw" in
+                            -*=*) _uj_dest "${nws[i]#*=}" "${lw#*=}" && hit=0 ;;
+                            --*) ;;
+                            -*t?*)
+                                rem=${lw#-*t}
+                                _uj_dest "${nws[i]#-*t}" "$rem" && hit=0
+                                ;;
+                            -*) ;;
+                            *) _uj_dest "${nws[i]}" "$lw" && hit=0 ;;
+                        esac
+                    fi
+                    ;;
+            esac
+        fi
+        i=$((i + 1))
+    done
+    return "$hit"
+}
+
+_tok_unjudged_verb() {
+    local k sg cur=-1 done_seg=0 wrapped=0 wname='' oparg=0 txt ntxt w g sc=0 nog=0 i n skip all
+    local -a pieces
+    UJ_DEST=()
+    if [ "$TOK" = 1 ]; then
+        k=0
+        while [ "$k" -lt "$ST_N" ]; do
+            sg=${ST_S[k]}
+            if [ "$sg" != "$cur" ]; then cur=$sg done_seg=0 wrapped=0 oparg=0; fi
+            g=${ST_G[k]}
+            if [ "$done_seg" = 0 ] && [ -z "${ST_RO[k]}" ] && [ "${ST_A[k]}" = 0 ]; then
+                # a bare word after an argument-taking wrapper option is its
+                # argument, and a bare number a wrapper's count or duration
+                if [ "$wrapped" != 0 ]; then
+                    case "${ST_LW[k]}" in [0-9]*) oparg=1 ;; esac
+                fi
+                if [ "$oparg" = 1 ]; then
+                    oparg=0
+                    if ! _unjudged_cmd_word "${ST_W[k]}" "${ST_X[k]}" "$g"; then
+                        k=$((k + 1))
+                        continue
+                    fi
+                fi
+                case "${ST_LW[k]}:${ST_Q[k]}:$wrapped" in
+                    if:0:0|then:0:0|else:0:0|elif:0:0|do:0:0|while:0:0|until:0:0|'!:0:0'|'{:0:0') ;;
+                    # `--` ends the wrapper's options: the next word is the command
+                    --:?:1) wrapped=2 ;;
+                    -*:?:1) ! _wrapper_opt_arg "$wname" "${ST_LW[k]}" || oparg=1 ;;
+                    [a-z_]*=*:?:[12]) ;;
+                    *)
+                        done_seg=1 sc=0
+                        [ "${ST_SEP[sg]}" != '(' ] || g=1 sc=1
+                        if ! _unjudged_cmd_word "${ST_W[k]}" "${ST_X[k]}" "$g"; then
+                            case "${ST_LW[k]}" in
+                                env|sudo|doas|xargs|command|builtin|exec|nohup|nice|ionice|timeout|stdbuf|setsid|taskset|chrt|unbuffer|time|noglob|nocorrect)
+                                    wrapped=1 wname=${ST_LW[k]} done_seg=0 ;;
+                            esac
+                        else
+                            _uj_tok_dests "$k" "$sc" && return 0
+                        fi
+                        ;;
+                esac
+            fi
+            k=$((k + 1))
+        done
+        return 1
+    fi
+    # npieces: the same pieces in the original case ($2), for the bin-dir
+    # name check; nok=0 drops back to the lowercased word if they misalign
+    local cw nw nok=1
+    local -a npieces
+    n=0
+    while IFS= read -r txt; do
+        pieces[n]=$txt
+        n=$((n + 1))
+    done <<EOF
+$(printf '%s\n' "$1" | tr ';&|' '\n')
+EOF
+    nw=0
+    while IFS= read -r txt; do
+        npieces[nw]=$txt
+        nw=$((nw + 1))
+    done <<EOF
+$(printf '%s\n' "${2:-$1}" | tr ';&|' '\n')
+EOF
+    [ "$nw" = "$n" ] || nok=0
+    case $- in *f*) nog=1 ;; esac
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        set -f
+        # shellcheck disable=SC2086 # split the piece into words, globbing off
+        set -- ${pieces[i]}
+        [ "$nog" = 1 ] || set +f
+        nw=$#
+        wrapped=0 oparg=0
+        while [ $# -gt 0 ]; do
+            w=0; case "$1" in *'$'*) w=1 ;; esac
+            g=0; case "$1" in *[*?[\{\(]*) g=1 ;; esac
+            [ "$wrapped" = 0 ] || case "$1" in [0-9]*) oparg=1 ;; esac
+            if [ "$oparg" = 1 ]; then
+                oparg=0
+                if ! _unjudged_cmd_word "$1" "$w" "$g"; then shift; continue; fi
+            fi
+            case "$1:$wrapped" in
+                if:?|then:?|else:?|elif:?|do:?|while:?|until:?|'!:'?|'{:'?|'(:'?) shift ;;
+                [a-z_]*=*:?) shift ;;
+                --:1) shift; wrapped=2 ;;
+                -*:1)
+                    ! _wrapper_opt_arg "$wname" "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" || oparg=1
+                    shift ;;
+                env:?|sudo:?|doas:?|xargs:?|command:?|builtin:?|exec:?|nohup:?|nice:?|ionice:?|timeout:?|stdbuf:?|setsid:?|taskset:?|chrt:?|unbuffer:?|time:?|noglob:?|nocorrect:?)
+                    wname=$1; shift; wrapped=1 ;;
+                *) break ;;
+            esac
+        done
+        cw=${1:--} skip=$((nw - $# + 1))
+        if [ "$nok" = 1 ] && [ $# -gt 0 ]; then
+            k=$((nw - $#))
+            set -f
+            # shellcheck disable=SC2086 # the same piece, original case
+            set -- ${npieces[i]}
+            [ "$nog" = 1 ] || set +f
+            if [ $# = "$nw" ]; then shift "$k"; cw=$1; fi
+        fi
+        case "$cw" in
+            -|--|'*'|+) ;;
+            *)
+                w=0; case "$cw" in *'$'*) w=1 ;; esac
+                g=0; case "$cw" in *[*?[\{\(]*) g=1 ;; esac
+                if _unjudged_cmd_word "$cw" "$w" "$g"; then
+                    # the zsh `(` split runs on past the piece, every word a
+                    # possible destination
+                    txt=${pieces[i]} ntxt=${npieces[i]} all=0 k=$((i + 1))
+                    case "$cw" in
+                        *'('*) all=1 ;;
+                        *) k=$n ;;
+                    esac
+                    while [ "$k" -lt "$n" ]; do
+                        txt="$txt ${pieces[k]}" ntxt="$ntxt ${npieces[k]}"
+                        k=$((k + 1))
+                    done
+                    [ "$nok" = 1 ] || ntxt=$txt
+                    _uj_text_dests "$skip" "$all" "$txt" "$ntxt" && return 0
+                fi
+                ;;
+        esac
+        i=$((i + 1))
+    done
+    return 1
+}
+
 # _tok_sensitive_name NAME — an assignment that can change what a later
 # read-only command runs or reads: the loader, locale, pager, config-home and
 # shell-behaviour variables, and each allowlisted tool's own environment.
@@ -1358,6 +1700,12 @@ has_write_verb_or_target_flag() {
         [ -n "$out" ] && return 0
     fi
 
+    # A command word no verb list can read (HIMMEL-4119), in a segment that
+    # names a .claude directory, is a write: fail closed.
+    if [ "$tool_name" = Bash ]; then
+        _tok_unjudged_verb "$c" "$n" && return 0
+    fi
+
     return 1
 }
 
@@ -1648,6 +1996,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     esac
 
     write_verb=0
+    UJ_DEST=()
     has_write_verb_or_target_flag "$cmd_lc" "$cmd_n" && write_verb=1
 
     dir_dest=0
@@ -1804,6 +2153,14 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                 set +f
             fi
         fi
+    fi
+    # HIMMEL-4119: an unjudged command word (`$L`, `-ln`, `/bin/l?`) that is not
+    # a write verb by its text alone still has its destination operands
+    # climb- and symlink-checked, as a write verb's would be.
+    if [ "$write_verb" = 0 ]; then
+        for w in ${UJ_DEST[@]+"${UJ_DEST[@]}"}; do
+            _check_write_operand "$w"
+        done
     fi
 
     # HIMMEL-3938: three ways a live settings.json landed past the text and

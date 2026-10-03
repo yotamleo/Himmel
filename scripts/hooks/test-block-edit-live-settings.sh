@@ -1713,6 +1713,195 @@ assert_rc "310 mv x \$HOME/.claude/settings.json denies" 2 \
 assert_rc "311 rg -ln foo -- \$HOME/.claude (flag-cluster ln + dir) allows" 0 \
     "$(bash_rc_of "$PRIMARY" 'rg -ln foo -- $HOME/.claude' HOME="$FAKEHOME")"
 
+# HIMMEL-4119: a segment's command word the hook cannot read as a known program
+# (a glob, an expansion, a flag-shaped word, a path to an unknown program) is a
+# write verb when that segment names a `.claude` directory: fail closed.
+assert_rc "312 /bin/l? -sf /tmp/d/* ~/.claude/ (glob verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/l? -sf /tmp/d/* ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "313 -ln -sf /tmp/d/x ~/.claude/ (flag-shaped command word) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '-ln -sf /tmp/d/x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "314 /bin/c? x ~/.claude/ (glob verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/c? x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "315 \$V x ~/.claude/ (expansion verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '$V x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "316 /opt/t/plant x ~/.claude/ (unknown path verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "317 X=1 /bin/[l]n -sf x ~/.claude (assignment prefix, glob verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'X=1 /bin/[l]n -sf x ~/.claude' HOME="$FAKEHOME")"
+assert_rc "318 cat a; /bin/l? -sf x .claude/ from the primary (later segment) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'cat a; /bin/l? -sf x .claude/')"
+assert_rc "319 /bin/l{n,} -sf x ~/.claude/ (brace verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/l{n,} -sf x ~/.claude/' HOME="$FAKEHOME")"
+# Benign reads under .claude stay allowed: a known program, by name or by path,
+# with globs only in its arguments; and an unjudgeable word in a segment that
+# names no .claude directory.
+assert_rc "320 ls ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'ls ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "321 /usr/bin/ls ~/.claude/ (known program by path) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '/usr/bin/ls ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "322 head -5 ~/.claude/skills/* (glob argument) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'head -5 ~/.claude/skills/*' HOME="$FAKEHOME")"
+assert_rc "323 /usr/bin/grep -rn foo ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '/usr/bin/grep -rn foo ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "324 cat ~/.claude/CLAUDE.md; /bin/c? a /tmp/b (no .claude in that segment) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'cat ~/.claude/CLAUDE.md; /bin/c? a /tmp/b' HOME="$FAKEHOME")"
+assert_rc "325 rg -ln foo ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'rg -ln foo ~/.claude/' HOME="$FAKEHOME")"
+# zsh reads a `(` glued to a word as glob grouping (`/bin/c(p|q)` is /bin/cp),
+# where the tokenizer ends the segment; and a heredoc (TOK=0) is judged on text.
+assert_rc "326 /bin/c(p|q) x ~/.claude/ (zsh glob grouping) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/c(p|q) x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "327 /bin/l(n|#x) x ~/.claude/ (zsh grouping, tokenizer fails) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/l(n|#x) x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "328 heredoc, then /bin/l? -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/l? -sf x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "329 heredoc of markdown bullets naming ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat > /tmp/n.md <<EOF\n- see ~/.claude/\n* and ~/.claude/x\nEOF')" HOME="$FAKEHOME")"
+assert_rc "330 (cat ~/.claude/CLAUDE.md) subshell read allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '(cat ~/.claude/CLAUDE.md)' HOME="$FAKEHOME")"
+# An exec wrapper hands its operand on as the command.
+assert_rc "331 sudo /bin/c? a ~/.claude/ (wrapped glob verb) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo /bin/c? a ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "332 sudo -u root /bin/c? a ~/.claude/ (wrapper option argument) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -u root /bin/c? a ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "333 env -i A=b /opt/t/plant a ~/.claude/ (wrapped unknown path) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'env -i A=b /opt/t/plant a ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "334 heredoc, then timeout 5 /bin/c? a ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\ntimeout 5 /bin/c? a ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "335 sudo cat ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sudo cat ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+assert_rc "336 xargs cat ~/.claude/* (glob naming .claude) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'xargs cat ~/.claude/*' HOME="$FAKEHOME")"
+# A read tool's name vouches only from a system bin dir, and an ordinary glob
+# judges its own segment, not the ones after it.
+assert_rc "337 /tmp/ls -sf x ~/.claude/ (read name outside a bin dir) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/tmp/ls -sf x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "338 /bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '/bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+# A wrapper option's bare argument is skipped, so the word after it is the
+# command; a wrapped read's own glob arguments are not command words.
+assert_rc "339 sudo -u root /opt/t/plant x ~/.claude/ (after an option argument) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo -u root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "340 sudo cat /tmp/*.txt ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'sudo cat /tmp/*.txt ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+assert_rc "341 heredoc, then sudo -u root /opt/t/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nsudo -u root /opt/t/plant x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "342 heredoc, then sudo cat /tmp/*.txt ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nsudo cat /tmp/*.txt ~/.claude/CLAUDE.md')" HOME="$FAKEHOME")"
+# Without tokens a plain glob judges its own piece; `(` and `\` run on.
+assert_rc "343 heredoc, then /bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c? a /tmp/b; cat ~/.claude/CLAUDE.md')" HOME="$FAKEHOME")"
+assert_rc "344 heredoc, then /bin/c(p|q) a /tmp/b; cat ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c(p|q) a /tmp/b; cat ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "345 heredoc, then a continued /opt/t/plant line to ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/opt/t/plant a \\\\\n ~/.claude/')" HOME="$FAKEHOME")"
+# `--` ends a wrapper's options, and `time` wraps its command.
+assert_rc "346 env -- -ln -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'env -- -ln -sf x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "347 heredoc, then env -- -ln -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nenv -- -ln -sf x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "348 time -p ls ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'time -p ls ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "349 heredoc, then time -p ls ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\ntime -p ls ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "350 time /bin/c? a ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'time /bin/c? a ~/.claude/' HOME="$FAKEHOME")"
+# A wrapper skips only a bare number, and a bin-dir name vouches in its own case.
+assert_rc "351 sudo 123/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo 123/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "352 heredoc, then sudo 123/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nsudo 123/plant x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "353 timeout 5 cat ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'timeout 5 cat ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+assert_rc "354 /usr/bin/LS -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/usr/bin/LS -sf x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "355 heredoc, then /usr/bin/LS -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/usr/bin/LS -sf x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "356 heredoc, then /usr/bin/ls ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/usr/bin/ls ~/.claude/')" HOME="$FAKEHOME")"
+# J1676: the test commands write nothing, and an unjudged command word is a
+# write only through a destination operand (the last positional, a -t value,
+# a redirect) that is the .claude directory itself; a mere argument naming a
+# path under .claude, or a script living there, stays allowed.
+assert_rc "357 [ -d ~/.claude ] && ls ~/.claude allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '[ -d ~/.claude ] && ls ~/.claude' HOME="$FAKEHOME")"
+assert_rc "358 [[ -d ~/.claude ]] allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '[[ -d ~/.claude ]]' HOME="$FAKEHOME")"
+assert_rc "359 if [ -f ~/.claude/CLAUDE.md ]; then cat …; fi allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'if [ -f ~/.claude/CLAUDE.md ]; then cat ~/.claude/CLAUDE.md; fi' HOME="$FAKEHOME")"
+assert_rc "360 ! [ -d ~/.claude ] allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '! [ -d ~/.claude ]' HOME="$FAKEHOME")"
+# shellcheck disable=SC2088 # the tilde is the hook input, unexpanded
+assert_rc "361 ~/.local/bin/graphify query x ~/.claude/projects allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '~/.local/bin/graphify query x ~/.claude/projects' HOME="$FAKEHOME")"
+assert_rc "362 ./scripts/x --memory ~/.claude/projects/m allows" 0 \
+    "$(bash_rc_of "$PRIMARY" './scripts/x --memory ~/.claude/projects/m' HOME="$FAKEHOME")"
+# shellcheck disable=SC2088 # the tilde is the hook input, unexpanded
+assert_rc "363 ~/.claude/pipeline-cadence/pipeline-fetch-health.sh (script under .claude) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '~/.claude/pipeline-cadence/pipeline-fetch-health.sh' HOME="$FAKEHOME")"
+assert_rc "364 \$EDITOR ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '$EDITOR ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+assert_rc "365 cat \"\$(git rev-parse --show-toplevel)/.claude/x.md\" allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'cat "$(git rev-parse --show-toplevel)/.claude/x.md"' HOME="$FAKEHOME")"
+assert_rc "366 heredoc, then [ -d ~/.claude ] && ls ~/.claude allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n[ -d ~/.claude ] && ls ~/.claude')" HOME="$FAKEHOME")"
+assert_rc "367 heredoc, then \$EDITOR ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n$EDITOR ~/.claude/CLAUDE.md')" HOME="$FAKEHOME")"
+# A destination that is the .claude dir still denies: a -t value, a `/.` tail,
+# a glob after `.claude/`, a redirect target.
+assert_rc "368 /opt/t/plant -t ~/.claude x (-t destination) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant -t ~/.claude x' HOME="$FAKEHOME")"
+assert_rc "369 /bin/l? -sf x ~/.claude/. denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/l? -sf x ~/.claude/.' HOME="$FAKEHOME")"
+assert_rc "370 \$V x ~/.claude/{,.} (brace after .claude/) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '$V x ~/.claude/{,.}' HOME="$FAKEHOME")"
+assert_rc "371 heredoc, then /opt/t/plant -t ~/.claude x denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/opt/t/plant -t ~/.claude x')" HOME="$FAKEHOME")"
+# From a nested worktree `../../` is the primary's live .claude: an unjudged
+# command word's destination gets the same climb scan a write verb's does.
+assert_rc "372 nested worktree \$L -sf X ../../ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" '$L -sf X ../../')"
+assert_rc "373 nested worktree -ln -sf X ../../ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" '-ln -sf X ../../')"
+assert_rc "374 nested worktree /bin/l? -sf X ../../ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" '/bin/l? -sf X ../../')"
+assert_rc "375 nested worktree heredoc, then /bin/l? -sf X ../../ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/l? -sf X ../../')")"
+assert_rc "376 nested worktree ./scripts/x out.txt allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" './scripts/x out.txt')"
+# J1676: a destination is the .claude directory itself, in each of its forms;
+# a concrete path deeper under it is not one.
+assert_rc "377 /opt/t/plant x ~/.claude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant x ~/.claude' HOME="$FAKEHOME")"
+assert_rc "378 -ln -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '-ln -sf x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "379 \$V x ~/.claude/* denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '$V x ~/.claude/*' HOME="$FAKEHOME")"
+assert_rc "380 /bin/l? -sf x ~/.claude/\$D denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/l? -sf x ~/.claude/$D' HOME="$FAKEHOME")"
+assert_rc "381 /opt/t/plant x ~/.claude/a/.. denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant x ~/.claude/a/..' HOME="$FAKEHOME")"
+assert_rc "382 /opt/t/plant x --target-directory=~/.claude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant x --target-directory=~/.claude' HOME="$FAKEHOME")"
+assert_rc "383 /opt/t/plant x ~/.claude/projects/m allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant x ~/.claude/projects/m' HOME="$FAKEHOME")"
+assert_rc "384 [ -d ~/.claude ] allows" 0 \
+    "$(bash_rc_of "$PRIMARY" '[ -d ~/.claude ]' HOME="$FAKEHOME")"
+assert_rc "385 heredoc, then /bin/c(p|q) a /tmp/b; cat ~/.claude/x allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c(p|q) a /tmp/b; cat ~/.claude/x')" HOME="$FAKEHOME")"
+assert_rc "386 heredoc, then /opt/t/plant x ~/.claude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/opt/t/plant x ~/.claude')" HOME="$FAKEHOME")"
+# CR round 6 codex-1: an option argument after the destination hides it from
+# a last-operand reading, so every operand is a possible destination.
+assert_rc "387 /bin/c? -r /tmp/p/* ~/.claude --suffix .bak denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/bin/c? -r /tmp/p/* ~/.claude --suffix .bak' HOME="$FAKEHOME")"
+assert_rc "388 heredoc, then /bin/c? -r /tmp/p/* ~/.claude --suffix .bak denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/bin/c? -r /tmp/p/* ~/.claude --suffix .bak')" HOME="$FAKEHOME")"
+assert_rc "389 /opt/t/plant --into=~/.claude x denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/opt/t/plant --into=~/.claude x' HOME="$FAKEHOME")"
+assert_rc "390 nested worktree \$L -sf X ../../ -b denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" '$L -sf X ../../ -b')"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
