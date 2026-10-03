@@ -227,6 +227,19 @@ bullet can be wrong — recover the real one from
 `IDLE-HELD?` is heartbeat age, not death: a leg inside a long foreground suite
 makes no tool calls. Verify with `pgrep` against the leg's session name;
 never force-release on the flag alone.
+**`NOLIVE` and `FORKED` (HIMMEL-4234).** A leg that never took its lock or wrote
+a marker bullet reads `FREE` forever, so the waiter's key never moved and the
+console was never woken. `legs=` now shows `<N>:NOLIVE` once a leg with no held
+lock and no marker bullet at all is older than `TICK_NOLIVE_MIN` minutes
+(default 10), counted from the fleet manifest's `added` time, else the launch
+log's `armed:` line, else the doc's mtime; the change from `FREE` wakes the
+waiter. `<N>:FORKED` means the leg's session transcript (found only by its
+`custom-title`, never guessed) ends in a `continued-in` record: the session was
+forked or backgrounded into another one, usually without its preface. A
+`WRAPPED`, `READY`, `LIVE`, `BLOCKED` or held-lock leg is never either. Act on
+both the same way: `ListAgents`, then `SendMessage` the leg its lock command
+(`queue-lock.sh acquire <its doc>`), your console session name and its RETASK
+token; if it is gone, relaunch it.
 `tick.sh --legs-from <manifest>` (HIMMEL-3748) reads the same absolute docs
 from a fleet manifest that `console-kit/fleet-manifest.sh add|remove` keeps,
 re-read every sample, so a dispatch or wrap needs no waiter re-start.
