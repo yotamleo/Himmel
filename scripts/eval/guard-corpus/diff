@@ -25,6 +25,16 @@
 # not on the allowlist is closed by default. The real primary checkout is never
 # cwd and is never written.
 #
+# ponytail: the per-row sandbox copies HOME, HANDOVER_DIR and the scratch
+# primary (cwd), but the materialised hook/dependency TREE (base_dir/head_dir)
+# is built once and shared across rows, so a hook that writes state beside its
+# own script could contaminate later rows or race concurrent ones; and a few
+# residual diff exit-code edges remain (invalid-UTF-8 corpus -> uncaught
+# UnicodeDecodeError instead of setup-error 2). These residual hardening items,
+# plus the gen transform-fidelity and test-assertion follow-ups, are tracked in
+# HIMMEL-4179 -- upgrade path: copy the hook tree per invocation too, fold the
+# UTF-8 decode into the corpus-read exit-2 handler.
+#
 # A hook source is given either as a path to a .sh file, or as `sha:PATH` where
 # PATH is a repo-relative hook path materialised from that git SHA into a
 # scratch dir via `git show`. Both forms are copied into the scratch tree so
