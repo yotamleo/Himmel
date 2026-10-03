@@ -47,6 +47,12 @@
 #      scripts/ci/check-commit-range.sh's `git rev-list --no-merges`. Parent
 #      count, not subject text, is the exemption signal.
 #
+#   7. Ticket coverage (HIMMEL-4207): the PR body carries a `## Ticket coverage`
+#      section, one list line per ask, each `done` or `deferred → HIMMEL-<n>`
+#      (`->` accepted). FAIL on a missing/empty section, an unmarked line, a
+#      deferred key that does not exist or is already Done/Closed/Resolved/
+#      Won't Do. A Jira error reads UNKNOWN and fails — never a PASS.
+#
 # Owner/repo are derived from `gh repo view --json owner,name`, never hard-
 # coded (so this runs the same in any clone/fork). It writes nothing — no
 # ledger rows, no GO files, no PR comments.
@@ -359,6 +365,63 @@ else
         echo "[PASS] 6. every commit subject carries a ticket ID"
     else
         echo "[FAIL] 6. commit subject(s) missing a ticket ID: $(printf '%s' "$missing" | tr '\n' ';' | sed 's/;$//')"
+        mark_fail
+    fi
+fi
+
+# ── 7. ticket coverage (HIMMEL-4207) ────────────────────────────────────────
+# A PR can close its ticket Done with asks undone (HIMMEL-4202/4204/4196). The
+# body must carry a `## Ticket coverage` section, one list line per ask of each
+# cited ticket, each marked `done` or `deferred → <KEY>` (`->` also accepted).
+# Whether a line's "done" is TRUE stays the console's diff read; this check
+# makes an unaccounted ask structurally visible and a deferral real: every
+# deferred key must exist and still be open. A Jira error reads UNKNOWN and
+# fails — never a PASS. JIRA_CMD overrides the CLI (tests), like GH_CMD.
+jira_get() {
+    if [ -n "${JIRA_CMD:-}" ]; then
+        "$JIRA_CMD" get "$1" 2>&1
+    else
+        cov_primary=$(cd "$(dirname "$0")" && cd "$(git rev-parse --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd)
+        node "$cov_primary/scripts/jira/dist/index.js" get "$1" 2>&1
+    fi
+}
+
+cov_body=$("$GH" pr view "$PR" --repo "$nwo" --json body --jq '.body' 2>/dev/null | tr -d '\r')
+cov_section=$(printf '%s\n' "$cov_body" | awk '
+    /^##[ \t]+[Tt]icket [Cc]overage[ \t]*$/ { f = 1; next }
+    f && /^#/ { exit }
+    f')
+cov_lines=$(printf '%s\n' "$cov_section" | grep -E '^[[:space:]]*([-*]|[0-9]+[.)])[[:space:]]' || true)
+if [ -z "$cov_lines" ]; then
+    echo "[FAIL] 7. PR body has no '## Ticket coverage' section with list lines (one per ask: done | deferred → HIMMEL-<n>)"
+    mark_fail
+else
+    cov_bad=""
+    while IFS= read -r cov_line; do
+        [ -n "$cov_line" ] || continue
+        cov_def=$(printf '%s\n' "$cov_line" | grep -ioE 'deferred[[:space:]]*(→|->)[[:space:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+' || true)
+        if [ -n "$cov_def" ]; then
+            cov_key=$(printf '%s\n' "$cov_def" | grep -oE '[A-Za-z][A-Za-z0-9]*-[0-9]+$' | tr '[:lower:]' '[:upper:]')
+            if cov_out=$(jira_get "$cov_key"); then
+                cov_status=$(printf '%s\n' "$cov_out" | head -n 1 | cut -f3)
+                if printf '%s\n' "$cov_status" | grep -qiE '^(done|closed|resolved|won.?t do)$'; then
+                    cov_bad="$cov_bad; $cov_key already $cov_status"
+                fi
+            elif printf '%s\n' "$cov_out" | grep -qiE '404|does not exist'; then
+                cov_bad="$cov_bad; $cov_key does not exist"
+            else
+                cov_bad="$cov_bad; $cov_key UNKNOWN (jira get failed)"
+            fi
+        elif ! printf '%s\n' "$cov_line" | grep -qiE '(^|[^[:alnum:]])done([^[:alnum:]]|$)'; then
+            cov_bad="$cov_bad; unmarked line: $(printf '%s' "$cov_line" | cut -c1-60)"
+        fi
+    done <<EOF
+$cov_lines
+EOF
+    if [ -z "$cov_bad" ]; then
+        echo "[PASS] 7. ticket coverage: every ask is done or deferred to an open ticket"
+    else
+        echo "[FAIL] 7. ticket coverage:${cov_bad#;}"
         mark_fail
     fi
 fi
