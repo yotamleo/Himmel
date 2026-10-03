@@ -90,9 +90,41 @@ else
 fi
 chmod 644 "$TMP/unreadable.txt"
 
-# T11: dangling symlink → skipped like a missing file (pins current behaviour)
+# T11: dangling symlink → BLOCK, naming the file (HIMMEL-4144)
 ln -s "$TMP/nowhere" "$TMP/dangling.txt"
-assert_rc "T11 dangling symlink skipped" 0 "$(run_hook dangling.txt)"
+assert_rc "T11 dangling symlink blocks" 1 "$(run_hook dangling.txt)"
+assert_out "T11 names the file" yes 'dangling.txt does not exist'
+
+# T16: missing file → BLOCK, naming it. A deleted file never reaches the hook
+# (pre-commit passes only existing staged files), so its siblings still pass.
+assert_rc "T16 missing file blocks" 1 "$(run_hook missing.txt)"
+assert_out "T16 names the file" yes 'missing.txt does not exist'
+assert_out "T16 prints no regenerate hint" no 'Regenerate the file with hashes'
+assert_rc "T16 missing + hashed still blocks" 1 "$(run_hook hashed.txt missing.txt)"
+assert_rc "T16 hashed alone (deleted sibling not passed) passes" 0 "$(run_hook hashed.txt)"
+
+# T17: a hash only inside a comment does not count (HIMMEL-4144)
+printf 'requests==2.0 # %s\n' "$H" > "$TMP/trail-comment.txt"
+assert_rc "T17 trailing-comment hash blocks" 1 "$(run_hook trail-comment.txt)"
+printf 'requests==2.0 \\\n    # %s\n' "$H" > "$TMP/cont-comment.txt"
+assert_rc "T17 comment-line hash in continuation blocks" 1 "$(run_hook cont-comment.txt)"
+printf 'requests==2.0 %s # pinned\n' "$H" > "$TMP/real-and-comment.txt"
+assert_rc "T17 real hash plus comment passes" 0 "$(run_hook real-and-comment.txt)"
+printf 'requests==2.0 \\\n    %s \\\n    %s\n' "$H" "$H" > "$TMP/multi.txt"
+assert_rc "T17 multi-hash continuation passes" 0 "$(run_hook multi.txt)"
+
+# T18: a backslash followed by a comment is NOT a continuation (pip decides on
+# the raw line), so the next line is its own, unhashed, requirement.
+printf '%s \\\\ #c\nbar==2\n' "$H" > "$TMP/c1.txt"
+assert_rc "T18 hash then double-backslash comment, bar unhashed" 1 "$(run_hook c1.txt)"
+printf -- '--require-hashes \\\\ #c\nbar==2\n' > "$TMP/c2.txt"
+assert_rc "T18 --require-hashes double-backslash comment, bar unhashed" 1 "$(run_hook c2.txt)"
+printf 'foo==1 %s \\\\ #c\nbar==2\n' "$H" > "$TMP/c3.txt"
+assert_rc "T18 foo hashed double-backslash comment, bar unhashed" 1 "$(run_hook c3.txt)"
+printf 'foo==1 %s \\ #c\nbar==2\n' "$H" > "$TMP/c4.txt"
+assert_rc "T18 single-backslash comment, bar unhashed" 1 "$(run_hook c4.txt)"
+printf 'foo==1 %s \\ #c\nbar==2 %s\n' "$H" "$H" > "$TMP/c5.txt"
+assert_rc "T18 same shape with bar hashed passes" 0 "$(run_hook c5.txt)"
 
 # T12-T15: hostile names must be scanned, not read as awk assignment / stdin / option
 printf 'requests==2.0\n' > "$TMP/x=1.txt"
