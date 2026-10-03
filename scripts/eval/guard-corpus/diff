@@ -330,8 +330,34 @@ def main(argv):
     os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
     os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
 
-    with open(args.corpus, "r", encoding="utf-8") as fh:
-        corpus = [json.loads(line) for line in fh if line.strip()]
+    # A corrupt/truncated JSON line (json.JSONDecodeError) or an unreadable
+    # corpus (OSError) is a SETUP error, not a regression. Left uncaught, the
+    # exception makes Python exit 1 -- the documented regression code -- so a
+    # judge would read a broken corpus as a confirmed regression. Catch it and
+    # return 2.
+    try:
+        with open(args.corpus, "r", encoding="utf-8") as fh:
+            raw_rows = [(n, json.loads(line))
+                        for n, line in enumerate(fh, 1) if line.strip()]
+    except (OSError, json.JSONDecodeError) as exc:
+        print("guard-corpus diff: cannot read corpus %s: %s" % (args.corpus, exc),
+              file=sys.stderr)
+        return 2
+
+    # Validate the row shape at load time, for the same reason: a row missing
+    # tool_input.command would raise KeyError/TypeError inside the worker and
+    # again exit 1. A malformed row is a setup error -> exit 2.
+    corpus = []
+    for lineno, row in raw_rows:
+        try:
+            cmd = row["tool_input"]["command"]
+        except (TypeError, KeyError):
+            cmd = None
+        if not isinstance(cmd, str):
+            print("guard-corpus diff: corpus %s line %d: missing string "
+                  "tool_input.command" % (args.corpus, lineno), file=sys.stderr)
+            return 2
+        corpus.append(row)
 
     # An empty corpus exercises no hook, so a clean exit 0 here would be a
     # false "reviewed clean" for a judge who generated nothing or pointed at

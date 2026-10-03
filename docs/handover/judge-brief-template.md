@@ -158,8 +158,11 @@ gathering, per the rule below.>
 > pipes each row to a hook copy on stdin only (no exec mode), in a scratch
 > HOME/HANDOVER_DIR with a throwaway git repo on `main` standing in for the
 > primary (rows name it as `@PRIMARY@`). `diff` reports base-deny/head-allow
-> regressions, newly-denied rows, odd exit codes and TIMEOUT RISK rows; it
-> exits 1 if any regression exists. **Cite the seed and the row counts in your
+> regressions, newly-denied rows, odd exit codes and TIMEOUT RISK rows. It
+> exits **0** when clean, **1** on a base-deny/head-allow regression, **2** on
+> a setup error or empty corpus, and **3** when inconclusive (an odd return
+> code, a timeout kill, or deny seeds with no base-deny control) — so a non-1
+> exit is NOT automatically clean. **Cite the seed and the row counts in your
 > verdict** (e.g. "gen --seed 4168, 95 rows, 0 regressions, 0 timeout-risk").
 > `gen` ships only benign over-deny twins; supply the PR hook's own test-suite
 > DENY rows via `--seeds-file` to exercise the deny side — never author new

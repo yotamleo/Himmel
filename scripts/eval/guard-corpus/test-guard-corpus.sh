@@ -324,6 +324,50 @@ has "deny-control: warning present" "$OUT6" "NO deny-side coverage"
 if [ "$RC6" = "3" ]; then pass "deny-control: no base deny => inconclusive exit 3"
 else fail "deny-control: expected exit 3, got $RC6"; fi
 
+# --- 7. a malformed corpus is a setup error (exit 2), never a regression ----
+# CodeRabbit: json.loads on a truncated line, or a row missing
+# tool_input.command, raised an uncaught exception -> Python exit 1, which is
+# the REGRESSION code, so a broken corpus read as a confirmed regression. Both
+# must be setup errors (exit 2).
+printf 'this is not json\n' > "$TMP/corrupt.jsonl"
+python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/corrupt.jsonl" --jobs 1 >/dev/null 2>&1; RC7A=$?
+if [ "$RC7A" = "2" ]; then pass "malformed-corpus: corrupt JSON line => exit 2"
+else fail "malformed-corpus: expected exit 2 for corrupt JSON, got $RC7A"; fi
+
+printf '{"tool_input":{}}\n' > "$TMP/nocmd.jsonl"
+python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
+        --corpus "$TMP/nocmd.jsonl" --jobs 1 >/dev/null 2>&1; RC7B=$?
+if [ "$RC7B" = "2" ]; then pass "malformed-corpus: row missing command => exit 2"
+else fail "malformed-corpus: expected exit 2 for missing command, got $RC7B"; fi
+
+# --- 8. exec_a transform re-spells SIMPLE commands only ----------------------
+# CodeRabbit: `exec -a NAME cmd` replaces the shell with a single command, so a
+# compound seed would lose list elements after the first and change meaning
+# while keeping its expect label. The transform must leave compound seeds
+# unwrapped, and must escape a quoted first token.
+cat > "$TMP/exec-seeds.txt" <<'SEEDS'
+simple	deny	echo-x hi
+compound	deny	echo a && echo b
+SEEDS
+python3 "$GEN" --seed 1 --seeds-file "$TMP/exec-seeds.txt" -o "$TMP/exec-corpus.jsonl"
+EXEC_OK=$(python3 - "$TMP/exec-corpus.jsonl" <<'PY'
+import json, sys
+simple_wrapped = False
+bad_compound = 0
+for line in open(sys.argv[1]):
+    c = json.loads(line)["tool_input"]["command"]
+    if c.startswith("exec -a "):
+        if any(op in c for op in ("&&", "||", ";", "|")):
+            bad_compound += 1
+        if "echo-x" in c:
+            simple_wrapped = True
+print("ok" if (simple_wrapped and bad_compound == 0) else "bad:%d simple:%s" % (bad_compound, simple_wrapped))
+PY
+)
+if [ "$EXEC_OK" = "ok" ]; then pass "exec_a: wraps simple seed, skips compound seed"
+else fail "exec_a: $EXEC_OK"; fi
+
 echo "----"
 echo "guard-corpus: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

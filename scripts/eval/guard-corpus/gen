@@ -169,7 +169,17 @@ def t_wrap_nice(cmd):
 
 
 def t_wrap_exec_a(cmd):
+    # `exec -a NAME cmd` REPLACES the shell with a single command, so a
+    # compound seed (a && b, a; b, a | b, a & b) would lose every list element
+    # after the first and change meaning while keeping the seed's expect label
+    # -- unreliable for a judge-supplied deny seed. Re-spell only simple
+    # commands; the other transforms still cover compound seeds. The head is
+    # single-quote-escaped the same way t_eval escapes its input, so a first
+    # token containing a quote does not break the quoting.
+    if any(op in cmd for op in ("&&", "||", ";", "|", "\n", "&")):
+        return cmd
     head, rest = _first_token(cmd)
+    head = head.replace(SQ, SQ + BS + SQ + SQ)
     return "exec -a '" + head + "' " + cmd
 
 
