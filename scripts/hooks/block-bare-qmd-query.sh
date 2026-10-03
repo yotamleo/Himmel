@@ -337,6 +337,17 @@ BOUND='([^[:alnum:]_-]|$)'
 # on the text before it) denies.
 RAWBOUND='([^[:alnum:]_"'\''-]|$)'
 BAREEND="$BARE"'$'
+# qp_deny OFFSETS — succeed when the raw text up to one of qmd_words' quote
+# offsets ends in a bare verb. The offsets count bytes, so the slice must
+# too: under a UTF-8 locale a multibyte character would shift it (J1666c).
+qp_deny() {
+    local LC_ALL=C p
+    for p in $1; do
+        case "${cmd_lc:0:p}" in *query|*search) ;; *) continue ;; esac
+        [[ ${cmd_lc:0:p} =~ $BAREEND ]] && return 0
+    done
+    return 1
+}
 
 # Two readings, deny on either (HIMMEL-4121). The raw text keeps what quote
 # removal hides — a separator or a nested `bash -c "qmd query"` inside quoted
@@ -366,11 +377,7 @@ if res=$(qmd_words "$cmd"); then
     if [[ $words_lc =~ $BARE$BOUND ]] || [[ $cmd_lc =~ $BARE$RAWBOUND ]]; then
         deny=1
     fi
-    for p in ${res#*$'\n:'}; do
-        [ "$deny" = 0 ] || break
-        case "${cmd_lc:0:p}" in *query|*search) ;; *) continue ;; esac
-        if [[ ${cmd_lc:0:p} =~ $BAREEND ]]; then deny=1; fi
-    done
+    if [ "$deny" = 0 ] && qp_deny "${res#*$'\n:'}"; then deny=1; fi
 elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
     deny=1
 else

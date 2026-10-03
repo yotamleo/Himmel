@@ -163,6 +163,17 @@ E
 q$"md" query x'
 deny 'echo $((1<<2)); q$"md" query x'
 deny "echo $(printf 'a%.0s' $(seq 1 17000)); q\$\"md\" query x"
+# Quote offsets are bytes: a multibyte character before them must not shift
+# them under a UTF-8 locale (J1666c).
+U8=$(locale -a 2>/dev/null | grep -i -m1 '^c\.utf-\{0,1\}8$\|^en_us\.utf-\{0,1\}8$')
+deny_u8() {
+    if [ -z "$U8" ]; then echo "SKIP deny (no UTF-8 locale): $1"; return; fi
+    assert_rc "deny ($U8): $1" 2 "$(run_case "$(j_bash "$1")" "LC_ALL=$U8")"
+}
+deny_u8 "echo é; bash -c 'qmd query'"
+deny_u8 'bash -c "echo ü; qmd search"'
+deny_u8 "bash -c 'echo 日本; qmd query'"
+deny_u8 "x=ü bash -c 'qmd query'"
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
