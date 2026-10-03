@@ -374,6 +374,18 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             continue
         fi
         _hd_tail="${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+        # HIMMEL-3991 (judge J1643): bash joins a backslash-newline on the
+        # opener line before it reads the body, so `cat <<'EOF' \<NL>/dev/null`
+        # starts its body a line later. Join first, or the strip below takes
+        # `/dev/null` as the body and ends on the wrong line, hiding what
+        # follows. A CRLF continuation arrives here as `\`+LF+LF.
+        while [[ $_hd_tail == *$'\n'* ]]; do
+            _hd_l="${_hd_tail%%$'\n'*}"
+            [[ $_hd_l == *\\ ]] || break
+            _hd_rest="${_hd_tail#*$'\n'}"
+            [[ $cmd == *"$_bscrlf"* && $_hd_rest == $'\n'* ]] && _hd_rest="${_hd_rest#$'\n'}"
+            _hd_tail="${_hd_l%\\}${_hd_rest}"
+        done
         if [[ $_hd_tail != *$'\n'* ]]; then
             break
         fi
@@ -503,18 +515,23 @@ done
 # above), fail closed: a backslash anywhere between `rm` and a `--r...` flag
 # in the same command segment is denied outright.
 RM_RECURSIVE_ESC_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*\\[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
-if [[ $rm_scrub =~ $RM_RECURSIVE_ESC_PAT ]]; then
+# Like every rm scan, this runs on both the folded and the joined text (HIMMEL-3991).
+for _rm_src in "${_rm_srcs[@]}"; do
+if [[ $_rm_src =~ $RM_RECURSIVE_ESC_PAT ]]; then
     deny "recursive rm (escaped)"
 fi
+done
 # Backslash-newline continuation: newlines are already folded to ';' above, so
 # `rm \<newline>-rf` becomes `rm \;-rf` here - the literal backslash before the
 # folded separator is the tell (HIMMEL-851 U3). `;+` (not a single `;`): on
 # Windows, jq's text-mode stdout turns the JSON-decoded `\n` into `\r\n`, so
 # ONE real newline folds to TWO semicolons here - tolerate either.
 RM_CONT_PAT="${CMDPOS}"'rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'
-if [[ $rm_scrub =~ $RM_CONT_PAT ]]; then
+for _rm_src in "${_rm_srcs[@]}"; do
+if [[ $_rm_src =~ $RM_CONT_PAT ]]; then
     deny "recursive rm (line continuation)"
 fi
+done
 # /s is bound to the switch (space/another switch/end), not a path prefix -
 # `rd /scripts` must not false-trip on the "/s" substring (HIMMEL-851 U1).
 if contains '(^|[^[:alnum:]_.-])(del|erase|rd|rmdir)(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*/s([^[:alnum:]_.-]|$)'; then
