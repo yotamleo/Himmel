@@ -514,7 +514,7 @@ def clean_vtt(vtt: str):
     is untrusted (the post author writes it): tags/comments are stripped after
     entity-decoding too, and a paragraph never starts with a markdown control
     character."""
-    lines, last_end, in_cue = [], 0.0, False
+    lines, last_end, in_cue, prev_full = [], 0.0, False, []
     for raw in vtt.replace("\r\n", "\n").split("\n"):
         line = raw.strip()
         m = CUE_RE.match(line)
@@ -533,16 +533,16 @@ def clean_vtt(vtt: str):
         t = re.sub(r"\s+", " ", t).strip()
         if not t:
             continue
-        words = t.split()
-        if lines:
-            prev = lines[-1].split()
-            # Rolling captions: the next cue repeats the tail of the previous
-            # one. Drop that overlap - at least 2 words (or the whole cue, which
-            # is the identical-adjacent case) so a single shared word survives.
-            for k in range(min(len(prev), len(words)), 0, -1):
-                if prev[-k:] == words[:k] and (k >= 2 or k == len(words)):
-                    words = words[k:]
-                    break
+        full = words = t.split()
+        # Rolling captions: the next cue repeats the tail of the previous FULL
+        # cue (not its emitted remainder). Drop that overlap - at least 2 words
+        # (or the whole cue, the identical-adjacent case) so a single shared
+        # word survives.
+        for k in range(min(len(prev_full), len(words)), 0, -1):
+            if prev_full[-k:] == words[:k] and (k >= 2 or k == len(words)):
+                words = words[k:]
+                break
+        prev_full = full
         if words:
             lines.append(" ".join(words))
     sentences = []

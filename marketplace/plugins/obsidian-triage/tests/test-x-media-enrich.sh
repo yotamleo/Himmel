@@ -972,6 +972,11 @@ assert "overlap collapse keeps a legitimate non-adjacent repeat (Right. twice)" 
 grep -qF 'and the the end.' "$tmp/ov.out" && a=ok || a=no
 assert "single-word overlap is not collapsed (and the the end.)" ok "$a"
 
+grep -qF 'Ship it every day now' "$tmp/ov.out" && a=ok || a=no
+assert "three-cue rolling chain collapses against the full previous cue" ok "$a"
+n="$(grep -o 'Ship it' "$tmp/ov.out" | wc -l | tr -d ' ')"
+assert "three-cue rolling chain keeps Ship it once" 1 "$n"
+
 echo "Test 18: probe selection (fxtwitter seam)"
 H2="$tmp/home2"; mkdir -p "$H2"   # NO cookie file: the subs path must not need one
 FXV="$tmp/fxt-video.json"; FXN="$tmp/fxt-novideo.json"
