@@ -552,6 +552,9 @@ mkdir -p "$W/ledger-is-a-dir.jsonl"
 LEG_COST_LEDGER="$W/ledger-is-a-dir.jsonl" mrun >/dev/null; rc=$?
 same 'cost line: unreadable ledger, rc 0' "$rc" "0"
 lacks 'cost line: unreadable ledger renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+{ lcrow "$TODAY" constructor 5000; lcrow "$TODAY" __proto__ 7000; } > "$LC"
+LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
+contains 'cost line: class names like constructor/__proto__ do not suppress the line' "$(cat "$M/board.html")" 'data-cost-legs="2"'
 printf 'not json\n' > "$LC"
 LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
 lacks 'cost line: a ledger with no usable row today renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'

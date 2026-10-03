@@ -478,7 +478,7 @@ const costSection = (() => {
         if (!ledger) return '';
         const d = new Date();
         const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const byClass = {};
+        const byClass = Object.create(null);
         let n = 0;
         let total = 0;
         for (const line of readFileSync(ledger, 'utf8').split('\n')) {
