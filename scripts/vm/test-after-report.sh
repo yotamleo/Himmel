@@ -342,7 +342,7 @@ DIED_MID_SUITE_FIXTURE="$WORK/guest-suite-died.log"
 cat >"$DIED_MID_SUITE_FIXTURE" <<'LOGEOF'
 [PASS] scripts/test-example-one.sh (rc=0, 4s)
 [PASS] scripts/test-example-two.sh (rc=0, 9s)
-EXITCODE=124
+EXITCODE=0
 LOGEOF
 
 cat >"$FAKE_SSH" <<'SSHEOF'
@@ -868,7 +868,8 @@ fi
 # ==" must NOT post a "PASS: 0 / FAIL: 0"-shaped comment — that is
 # indistinguishable from a genuinely clean, empty run. The posted comment
 # must contain NO PASS line at all and must say plainly that no verdict
-# exists.
+# exists. HIMMEL-2689: the fixture carries EXITCODE=0 on purpose — "no
+# verdict" must still exit non-zero, never share an exit code with a pass.
 # =====================================================================
 if [ -n "$PYTHON_BIN" ]; then
     FAKE_VBOX_STATE="$WORK/vbox-t3c"
@@ -894,6 +895,7 @@ if [ -n "$PYTHON_BIN" ]; then
         GH_CMD="$FAKE_GH" GUEST_LOG_FIXTURE="$GUEST_LOG_FIXTURE" FAKE_VBOX_STATE="$FAKE_VBOX_STATE" \
         FAKE_GUEST_LOG="$FAKE_GUEST_LOG" FAKE_GH_CALLS="$FAKE_GH_CALLS" HIMMEL_VM_AR_RAM_MB=64 \
         bash "$SCRIPT" "feat/HIMMEL-2623-vm-after-report" 4242 2>&1)
+    t3c_rc=$?
     kill "$listener_pid" 2>/dev/null || true
     wait "$listener_pid" 2>/dev/null || true
     # Reset for later tests that expect the ordinary clean fixture.
@@ -901,12 +903,13 @@ if [ -n "$PYTHON_BIN" ]; then
     export GUEST_LOG_FIXTURE
 
     posted_body=$(cat "$FAKE_GH_CALLS" 2>/dev/null || true)
-    if [ -s "$FAKE_GH_CALLS" ] \
+    if [ "$t3c_rc" -ne 0 ] \
+       && [ -s "$FAKE_GH_CALLS" ] \
        && ! grep -qE '^ PASS: ' <<< "$posted_body" \
        && grep -qi "DIED-BEFORE-SUMMARY" <<< "$posted_body"; then
-        pass "T3c a guest run that died mid-suite posts NO PASS line and states plainly that no verdict exists"
+        pass "T3c a guest run that died mid-suite (EXITCODE=0) exits non-zero, posts NO PASS line and states plainly that no verdict exists"
     else
-        fail_case "T3c — posted body:"
+        fail_case "T3c — rc=$t3c_rc posted body:"
         printf '%s\n' "$posted_body" | sed 's/^/    /'
         printf 'T3c — after-report.sh own output:\n' >&2
         printf '%s\n' "$t3c_out" | sed 's/^/    /' >&2
