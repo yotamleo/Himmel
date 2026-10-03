@@ -1812,9 +1812,13 @@ sync_marketplaces() {
 # installed content, so a plugin sourced from its own remote (ponytail,
 # scroll-world, superpowers, …) just sits stale even after every marketplace
 # refresh. This runs the missing step: `claude plugin update <spec>` for every
-# installed non-@himmel plugin. @himmel plugins are excluded — their content
-# is this checkout, already re-read by `claude plugin marketplace update
-# himmel` (chain item 2), so a separate `plugin update` there is redundant.
+# installed non-@himmel plugin. A checkout-sourced @himmel plugin (marketplace
+# `source` is a "./plugins/x" string) is excluded — its content is this
+# checkout, already re-read by `claude plugin marketplace update himmel`
+# (chain item 2), so a separate `plugin update` there is redundant. A
+# url/git-subdir-sourced @himmel plugin (marketplace `source` is an object,
+# e.g. obsidian-second-brain) is NOT the checkout and is updated like any
+# other remote plugin (HIMMEL-4127).
 # Advisory + failure-isolated, same as sync_marketplaces: one plugin failing
 # to update must never abort the others or the update. MUST run before
 # reconcile_plugins, so a plugin update can never leave a floor-`false` plugin
@@ -1837,12 +1841,17 @@ update_installed_plugins() {
         return 0
     fi
     local specs
-    specs="$(jq -r '.enabledPlugins // {} | keys[] | select(endswith("@himmel") | not)' "$settings" 2>/dev/null)" || {
+    local manifest="$ROOT/marketplace/.claude-plugin/marketplace.json" remote_names='[]'
+    if [ -f "$manifest" ]; then
+        remote_names="$(jq -c '[.plugins[]? | select(.source | type == "object") | .name]' "$manifest" 2>/dev/null)" || remote_names='[]'
+    fi
+    specs="$(jq -r --argjson remote "$remote_names" '.enabledPlugins // {} | keys[]
+        | select((endswith("@himmel") | not) or (sub("@himmel$"; "") as $n | $remote | index($n)))' "$settings" 2>/dev/null)" || {
         echo "    skip: could not read enabledPlugins from $settings."
         return 0
     }
     if [ -z "$specs" ]; then
-        echo "    no non-@himmel plugins installed."
+        echo "    no remote-sourced plugins installed."
         return 0
     fi
     if [ "$mode" = "check" ]; then

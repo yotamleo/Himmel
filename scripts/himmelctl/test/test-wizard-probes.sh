@@ -90,8 +90,8 @@
 #                  no usable allow rule (degraded, would gate out every DM/
 #                  group); token + a real allowFrom or a groups-only
 #                  access.json (present).
-#   file-exists {homePath} (HIMMEL-1100) obsidian-second-brain — present/
-#                  absent, mirroring {vaultPath}'s existing pattern.
+#   settings-key (HIMMEL-4127) obsidian-second-brain plugin — present/
+#                  absent (a stale skills-dir clone alone reads absent).
 #   cmd:codex_provisioned (HIMMEL-1100) codex-cli — pure JS, no spawn: CODEX_BIN
 #                  override semantics (unusable override = absent, no PATH
 #                  fallback) / plain PATH resolution / binary-resolves-but-
@@ -2804,12 +2804,13 @@ echo "$outLunaEmpty" | jq -e '.actual == "absent"' >/dev/null \
   || fail "luna-sources: an empty sources list should read absent: (got: $outLunaEmpty)"
 echo "ok: luna-sources — an empty configured-sources list reads absent"
 
-# ── file-exists: {homePath} placeholder (obsidian-second-brain) — HIMMEL-1100
-# HIMMEL-2891: the skill is deployed (and loaded by Claude Code) from
-# ~/.claude/skills/, never ~/.claude/plugins/ — the probe path was pointed at
-# a location nothing ever clones to; a plugins-dir fixture here reads absent
-# post-fix (RED control for the probe-path fix).
-osb_home_present="$work/osb-home-present"; mkdir -p "$osb_home_present/.claude/skills/obsidian-second-brain/.git"
+# ── settings-key: obsidian-second-brain plugin (HIMMEL-4127)
+# obsidian-second-brain is now a url-sourced @himmel marketplace plugin
+# (HIMMEL-4018), installed with `claude plugin install obsidian-second-brain@himmel`;
+# the old ~/.claude/skills manual clone is no longer what the probe checks.
+# A stale skills-dir clone alone reads absent (RED control).
+osb_home_present="$work/osb-home-present"; mkdir -p "$osb_home_present/.claude"
+printf '{"enabledPlugins":{"obsidian-second-brain@himmel":true}}\n' > "$osb_home_present/.claude/settings.json"
 outOSBp=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
@@ -2818,9 +2819,9 @@ const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user
   env: Object.assign({}, process.env, { HOME: '$(winpath "$osb_home_present")' }) };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
-echo "$outOSBp" | jq -e '.actual == "present"' >/dev/null || fail "file-exists {homePath} (obsidian-second-brain) present: (got: $outOSBp)"
+echo "$outOSBp" | jq -e '.actual == "present"' >/dev/null || fail "settings-key enabledPlugins (obsidian-second-brain) present: (got: $outOSBp)"
 
-osb_home_absent="$work/osb-home-absent"; mkdir -p "$osb_home_absent"
+osb_home_absent="$work/osb-home-absent"; mkdir -p "$osb_home_absent/.claude/skills/obsidian-second-brain/.git"
 outOSBa=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
@@ -2829,8 +2830,8 @@ const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user
   env: Object.assign({}, process.env, { HOME: '$(winpath "$osb_home_absent")' }) };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
-echo "$outOSBa" | jq -e '.actual == "absent"' >/dev/null || fail "file-exists {homePath} (obsidian-second-brain) absent: (got: $outOSBa)"
-echo "ok: file-exists {homePath} placeholder (obsidian-second-brain) present/absent"
+echo "$outOSBa" | jq -e '.actual == "absent"' >/dev/null || fail "settings-key enabledPlugins (obsidian-second-brain) absent: (got: $outOSBa)"
+echo "ok: settings-key enabledPlugins (obsidian-second-brain) present/absent"
 
 # ── cmd:codex_provisioned (codex-cli) — HIMMEL-1100 ─────────────────────────
 # CR fix (round 3, codex-adv-2): the fixture must plant a himmel-marketplace

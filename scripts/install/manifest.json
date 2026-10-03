@@ -412,7 +412,7 @@
       "scopes": ["user"],
       "profiles": ["luna", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "{homePath}/.claude/skills/obsidian-second-brain/.git" },
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins.obsidian-second-brain@himmel", "expect": true },
       "removable": "full-offboard-only",
       "offboard": "advise"
     },

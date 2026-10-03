@@ -396,15 +396,14 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
         severity = 'n/a';
         detail = `${probe.detail} — opt-in (bash scripts/setup-hooks.sh --guardrail-mode global --yes, or run 'himmelctl ensure' interactively to consent + auto-wire)`;
       }
-      // HIMMEL-1100/2891: obsidian-second-brain is a MANUAL clone only — no
-      // himmel script ever installs it (docs/setup/new-machine.md: "manual
-      // clone, NOT in himmel marketplace"), the same "no automated path
-      // exists" shape as graphify-mcp/doc-guard-map above. It is cloned to
-      // ~/.claude/skills/ — that is where Claude Code loads user skills
-      // from; a ~/.claude/plugins/ clone would never be read (HIMMEL-2891).
+      // HIMMEL-1100/4127: obsidian-second-brain is an opt-in url-sourced
+      // plugin in the himmel marketplace (HIMMEL-4018) — no himmel script
+      // installs it, the same "no automated path exists" shape as
+      // graphify-mcp/doc-guard-map above. The operator installs it with
+      // `claude plugin install`; himmel-update keeps it current.
       if (item.id === 'obsidian-second-brain') {
         severity = 'n/a';
-        detail = `${probe.detail} — opt-in (manual clone: git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/skills/obsidian-second-brain)`;
+        detail = `${probe.detail} — opt-in (claude plugin install obsidian-second-brain@himmel; update: claude plugin update obsidian-second-brain@himmel)`;
       }
       // HIMMEL-1100 round 5 (glm-3): gemini-cli is an optional second-opinion
       // lane (gemini-subagent, /x-read family), not core tooling every
