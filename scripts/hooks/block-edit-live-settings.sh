@@ -1102,9 +1102,11 @@ _unjudged_cmd_word() {
 # command a program runs from its arguments (`find -exec`, `sh -c '…'`), are
 # not judged; upgrade path: extend _wrapper_opt_arg when such a plant is seen.
 
-# _wrapper_opt_arg WRAPPER OPT — 0 when the exec wrapper's option takes the
-# next word as its argument. OPT keeps its case: `sudo -H` takes none and
-# `sudo -h` takes a host, so `-Hu root` is read as `-H -u root`.
+# _wrapper_opt_arg WRAPPER OPT_LC — 0 when the exec wrapper's option takes the
+# next word as its argument. OPT_LC is lowercased, so `-U`/`-u` share a row.
+# ponytail: lowercasing reads `sudo -Hu root` as `-h u`, so `root` is judged
+# as the command; HIMMEL-4175 judges both case readings (a case-exact table
+# alone turns `sudo -H root /opt/t/plant` from deny to allow).
 _wrapper_opt_arg() {
     local o=$2 i=1 ch
     # A short-option cluster (`sudo -iu root`, HIMMEL-4149): as getopt reads
@@ -1125,19 +1127,17 @@ _wrapper_opt_arg() {
             ;;
     esac
     case "$1:$2" in
-        sudo:-u|sudo:-g|sudo:-h|sudo:-p|sudo:-c|sudo:-r|sudo:-t|sudo:-a \
-        |sudo:-U|sudo:-C|sudo:-D|sudo:-R|sudo:-T \
+        sudo:-u|sudo:-g|sudo:-h|sudo:-p|sudo:-c|sudo:-d|sudo:-r|sudo:-t|sudo:-a \
         |sudo:--user|sudo:--group|sudo:--host|sudo:--prompt|sudo:--close-from \
         |sudo:--chdir|sudo:--role|sudo:--type|sudo:--other-user \
         |sudo:--command-timeout|sudo:--chroot|sudo:--auth-type|sudo:--login-class \
-        |doas:-u|doas:-C \
-        |env:-u|env:-C|env:-S|env:--unset|env:--chdir|env:--split-string \
+        |doas:-u|doas:-c \
+        |env:-u|env:-c|env:-s|env:--unset|env:--chdir|env:--split-string \
         |timeout:-s|timeout:-k|timeout:--signal|timeout:--kill-after \
         |nice:-n|nice:--adjustment \
-        |ionice:-c|ionice:-n|ionice:-p|ionice:-P|ionice:-u|ionice:--class|ionice:--classdata \
+        |ionice:-c|ionice:-n|ionice:-p|ionice:-u|ionice:--class|ionice:--classdata \
         |stdbuf:-i|stdbuf:-o|stdbuf:-e \
-        |xargs:-i|xargs:-l|xargs:-n|xargs:-s|xargs:-d|xargs:-e|xargs:-a \
-        |xargs:-I|xargs:-L|xargs:-E|xargs:-P \
+        |xargs:-i|xargs:-l|xargs:-n|xargs:-p|xargs:-s|xargs:-d|xargs:-e|xargs:-a \
         |xargs:--arg-file|xargs:--delimiter|xargs:--max-args|xargs:--max-procs \
         |xargs:--max-chars|xargs:--max-lines|xargs:--process-slot-var \
         |exec:-a|time:-f|time:-o|time:--format|time:--output|taskset:-c|chrt:-p)
@@ -1169,7 +1169,7 @@ _wrapper_pos() {
     return 0
 }
 
-# _wrapper_pos_opt OPT — taskset's `-c`/`--cpu-list` (alone or in a
+# _wrapper_pos_opt OPT_LC — taskset's `-c`/`--cpu-list` (alone or in a
 # cluster) takes the cpu list as its argument, so no mask operand follows.
 _wrapper_pos_opt() {
     [ "$wname" = taskset ] || return 0
@@ -1333,8 +1333,8 @@ _tok_unjudged_verb() {
                     # `--` ends the wrapper's options: the next word is the command
                     --:?:1) wrapped=2 ;;
                     -*:?:1)
-                        _wrapper_pos_opt "${ST_W[k]}"
-                        ! _wrapper_opt_arg "$wname" "${ST_W[k]}" || oparg=1
+                        _wrapper_pos_opt "${ST_LW[k]}"
+                        ! _wrapper_opt_arg "$wname" "${ST_LW[k]}" || oparg=1
                         ;;
                     [a-z_]*=*:?:[12]) ;;
                     *)
@@ -1397,8 +1397,9 @@ EOF
                 [a-z_]*=*:?) shift ;;
                 --:1) shift; wrapped=2 ;;
                 -*:1)
-                    _wrapper_pos_opt "$1"
-                    ! _wrapper_opt_arg "$wname" "$1" || oparg=1
+                    w=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+                    _wrapper_pos_opt "$w"
+                    ! _wrapper_opt_arg "$wname" "$w" || oparg=1
                     shift ;;
                 env:?|sudo:?|doas:?|xargs:?|command:?|builtin:?|exec:?|nohup:?|nice:?|ionice:?|timeout:?|stdbuf:?|setsid:?|taskset:?|chrt:?|unbuffer:?|time:?|noglob:?|nocorrect:?)
                     wname=$1; shift; wrapped=1; _wrapper_npos ;;
