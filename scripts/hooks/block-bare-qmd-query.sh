@@ -488,7 +488,8 @@ qmd_nested() {
     fi
     # lb is the last command boundary seen; pipe, while set, is the offset of
     # the lone `|` (or `|&`) that feeds the current command, and pfrom the
-    # boundary before it, so the pipe's producer is dec[pfrom+1, pipe).
+    # boundary before the pipeline's first command, so the producer is every
+    # stage before the pipe, dec[pfrom+1, pipe) (`echo … | cat | sh`).
     local lb=-1 pipe='' pfrom=-1
     while [ "$i" -lt "$n" ]; do
         c=${w:i:1}
@@ -501,7 +502,8 @@ qmd_nested() {
                 case "$c" in
                     '|')
                         if [ "${w:i+1:1}" != '|' ] && [ "$k" != '|' ]; then
-                            pipe=$i pfrom=$lb
+                            [ -n "$pipe" ] || pfrom=$lb
+                            pipe=$i
                         else
                             pipe=''
                         fi
