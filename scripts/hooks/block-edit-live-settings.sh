@@ -1669,7 +1669,7 @@ _dc_can_be_claude() {
                 else
                     case "${c:i:j-i}" in
                         *'$'*) pat="$pat?" ;;
-                        *) pat="$pat[${c:i:j-i+1}" ;;
+                        *) pat="${pat}[${c:i:j-i+1}" ;;
                     esac
                     i=$((j + 1))
                 fi
@@ -1794,14 +1794,14 @@ _dc_unquoted() {
                 ;;
             '"')
                 case "$ch" in
-                    '\') i=$((i + 1)) ;;
+                    \\) i=$((i + 1)) ;;
                     '"') q='' _DCU=$_DCU'*' ;;
                 esac
                 ;;
             *)
                 case "$ch" in
                     "'"|'"') q=$ch ;;
-                    '\') i=$((i + 1)) _DCU=$_DCU'*' ;;
+                    \\) i=$((i + 1)) _DCU=$_DCU'*' ;;
                     *) _DCU=$_DCU$ch ;;
                 esac
                 ;;
