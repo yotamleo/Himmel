@@ -109,6 +109,8 @@ allow 'qmd queryx'
 allow 'qmd "status"'
 allow "qmd 'queryx' y"
 allow 'qmd "query-notes" y'
+allow 'qmd "query notes" y'
+allow "qmd 'search the vault' y"
 allow 'echo qmd "query" x'
 allow 'grep -rn "qmd \"query\"" scripts/'
 allow "bash scripts/lib/qmd-bounded.sh 'query' -c luna x"

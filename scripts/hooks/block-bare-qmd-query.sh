@@ -102,9 +102,10 @@ QMDPROG="${RUNTIME}"'qmd(\.(ts|js|mjs|cjs|exe|cmd))?["'\'']?'
 QMDOPTVAL='('\''[^'\'']*'\''|"[^"]*"|[^-[:space:]][^[:space:]]*)'
 QMDOPTS='('"${SEP}"'-[^[:space:]]+('"${SEP}${QMDOPTVAL}"')?)*'
 # The verb may be quoted (`qmd "query" x`, HIMMEL-4011); the shell strips the
-# quote, so it is still the verb. The closing quote is a non-word char, so the
-# trailing boundary already accepts it.
-BARE="${CMDPOS}${QMDPROG}${QMDOPTS}${SEP}"'["'\'']?(query|search|vsearch)([^[:alnum:]_-]|$)'
+# quote, so it is still the verb. The quotes must match around the verb alone,
+# so `qmd "query notes"` (one argument, not the verb) is not refused.
+QMDVERB='(query|search|vsearch)'
+BARE="${CMDPOS}${QMDPROG}${QMDOPTS}${SEP}"'('"${QMDVERB}"'|"'"${QMDVERB}"'"|'\''('"${QMDVERB}"')'\'')([^[:alnum:]_-]|$)'
 
 if [[ $cmd_lc =~ $BARE ]]; then
     bounded="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)/qmd-bounded.sh"
