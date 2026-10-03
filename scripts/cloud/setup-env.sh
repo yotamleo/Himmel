@@ -50,6 +50,7 @@ done
 ROOT="${HIMMEL_CLOUD_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 TIMEOUT_MS=600000   # the cloud's Bash maximum; the default is 2 minutes
 failed=0
+TMO=timeout   # gnu-ok: runs only on the Ubuntu 24.04 cloud VM (GNU coreutils, apt)
 
 have() { command -v "$1" >/dev/null 2>&1; }
 plan() { echo "step=$1 action=$2${3:+ $3}"; }
@@ -63,9 +64,9 @@ run_step() {
 }
 
 apt_install() { # apt_install <pkg>: plain install first, refresh only on failure
-  timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 "$1" \
-    || { timeout 120 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=60 \
-         && timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 "$1"; }
+  $TMO 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 "$1" \
+    || { $TMO 120 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=60 \
+         && $TMO 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 "$1"; }
 }
 
 # 1-2. apt packages. `at` ships without a running atd here; the suites only need the binary.
@@ -77,7 +78,7 @@ done
 if have pre-commit; then
   plan pre-commit skip "present"
 else
-  run_step pre-commit install "pip" -- timeout 120 python3 -m pip install --disable-pip-version-check --break-system-packages pre-commit
+  run_step pre-commit install "pip" -- $TMO 120 python3 -m pip install --disable-pip-version-check --break-system-packages pre-commit
 fi
 
 # 4. Jira CLI dist: deps + tsc, offline-capable after install, no secret.
@@ -85,7 +86,7 @@ JIRA_DIR="$ROOT/scripts/jira"
 if [ -f "$JIRA_DIR/dist/index.js" ]; then
   plan jira-dist skip "built"
 else
-  run_step jira-dist build "npm ci + tsc" -- sh -c "cd '$JIRA_DIR' && timeout 240 npm ci --no-audit --no-fund && npm run build"
+  run_step jira-dist build "npm ci + tsc" -- sh -c "cd '$JIRA_DIR' && $TMO 240 npm ci --no-audit --no-fund && npm run build"
 fi
 
 # 5. obsidian-triage tool deps (js-yaml + playwright) the marketplace suites import.
@@ -109,9 +110,9 @@ fi
 if [ "$PLUGINS" -eq 1 ]; then
   if have claude; then
     run_step plugins experiment "marketplace add + install" -- sh -c "
-      timeout 120 claude plugin marketplace add '$ROOT/marketplace' &&
-      timeout 120 claude plugin install himmel-ops@himmel &&
-      timeout 120 claude plugin install lean-skills@himmel"
+      $TMO 120 claude plugin marketplace add '$ROOT/marketplace' &&
+      $TMO 120 claude plugin install himmel-ops@himmel &&
+      $TMO 120 claude plugin install lean-skills@himmel"
   else
     plan plugins experiment "claude CLI absent in the setup VM: result is NO"
   fi
