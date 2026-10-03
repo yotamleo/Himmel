@@ -13,8 +13,10 @@
 # Full paste instructions: docs/handover/cloud-brief-template.md.
 #
 # Runs as root on Ubuntu 24.04. The platform caches a setup that finishes in
-# about 5 minutes, so every step is idempotent (skip when already present) and
-# every network call is bounded by `timeout`.
+# about 5 minutes. Every step is idempotent (skip when already present) and every
+# network call is bounded by `timeout`, but those bounds are per-call ceilings: a
+# cold run with failing mirrors can exceed 5 minutes and then simply is not
+# cached. A normal cold run is well inside it.
 #
 # What a himmel cloud session needs that the image lacks: shellcheck (cloud
 # briefs tell the session to lint), `at` and pre-commit (suites reach for them),

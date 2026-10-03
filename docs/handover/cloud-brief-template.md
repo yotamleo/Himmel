@@ -60,10 +60,11 @@ merge. The cloud session ships a PR and stops.
    numbers marked approximate ("find the code by its text"). Name the files.
 4. **`## How to do it`** — numbered:
    1. Read `CLAUDE.md` and the named files in full before editing.
-   2. Edit ONLY the named files; keep the diff minimal and in the surrounding style.
-   3. Write the new or changed test FIRST and show it RED without the fix, then
+   2. Create branch `<type>/himmel-<n>-<slug>` from `main` BEFORE any edit (the
+      repo's edit-on-main guard denies edits on `main`).
+   3. Edit ONLY the named files; keep the diff minimal and in the surrounding style.
+   4. Write the new or changed test FIRST and show it RED without the fix, then
       green. Run `shellcheck` on every `.sh` file touched.
-   4. Create branch `<type>/himmel-<n>-<slug>` from `main`.
    5. Make exactly ONE commit, never amend. Then, before pushing, run the
       impacted suites (the selector reads the COMMITTED range, so it sees
       nothing before the commit): `bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell`
