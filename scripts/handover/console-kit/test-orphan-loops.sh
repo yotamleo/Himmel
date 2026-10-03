@@ -68,6 +68,8 @@ cat > "$W/ps.txt" <<'FIX'
   211   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-i.sh && eval 'bash scripts/handover/console-kit/console-wait.sh.bak'
   212   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-j.sh && eval 'bash /tmp/other-console-wait.sh'
   213   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-k.sh && eval "echo hi && eval 'bash /p/console-wait.sh'; sleep 99999"
+  214   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-l.sh && eval 'bash /p/console-wait.sh ; sleep 99999'
+  215   101    03:00:00 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-6-m.sh && eval 'bash /p/console-wait.sh --timeout 600'
 FIX
 
 run() { # run [args...] — stdout of the SUT under the hermetic seams
@@ -77,7 +79,7 @@ run() { # run [args...] — stdout of the SUT under the hermetic seams
 
 out="$(run)"; rc=$?
 eq 'default: exact one-line inventory joined to owner names (>=30m)' \
-    'orphans=HIMMEL-111-N61:8/1560m,orphan:1/300m' "$out"
+    'orphans=HIMMEL-111-N61:9/1560m,orphan:1/300m' "$out"
 eq 'default: rc 0' 0 "$rc"
 
 out="$(TICK_ORPHAN_MIN=200 run)"
@@ -96,6 +98,8 @@ lacks '--list omits the sleep child and the session itself' "$out" 'pid=202'
 lacks '--list omits the console-wait.sh wrapper (HIMMEL-3941)' "$out" 'pid=208'
 contains '--list still counts other-console-wait.sh (no path boundary)' "$out" 'pid=212'
 contains '--list still counts a nested eval that only quotes the waiter' "$out" 'pid=213'
+contains '--list still counts a waiter call chained with a shell operator' "$out" 'pid=214'
+lacks '--list omits the waiter called with plain flag args' "$out" 'pid=215'
 contains '--list still counts a wrapper that only mentions console-wait.sh' "$out" 'pid=209'
 contains '--list still counts a quoted eval mention' "$out" 'pid=210'
 contains '--list still counts console-wait.sh.bak' "$out" 'pid=211'
