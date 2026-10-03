@@ -13,7 +13,7 @@ PASS=0
 FAIL=0
 TMP_ROOT=""
 # shellcheck disable=SC2329,SC2317
-cleanup() { [ -n "$TMP_ROOT" ] && rm -rf "$TMP_ROOT" 2>/dev/null || true; }
+cleanup() { if [ -n "$TMP_ROOT" ]; then rm -rf "$TMP_ROOT" 2>/dev/null || true; fi; }
 trap cleanup EXIT
 
 pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
