@@ -951,7 +951,9 @@ sweep.
 Each row records `metered_before` and `metered_after`, which are
 `openrouter-cost.sh --raw` balances. The credit endpoint lags, so a per-task
 delta can under-report. Re-read the account balance after the sweep before
-quoting its spend.
+quoting its spend. The balance is the real figure. In the first live sweeps
+it fell 12-16% more than the list-price repricing (2.00 against 1.75 on one
+sweep), so leave that much headroom under `--max-usd`.
 
 **Not enabled.** `--lane deepseek|claudex` exits 3.
 - DeepSeek also needs the station opt-in `HIMMEL_DEEPSEEK_INFERENCE_OK=1`,
