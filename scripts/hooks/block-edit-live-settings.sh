@@ -1066,8 +1066,9 @@ _unjudged_cmd_word() {
     return 1
 }
 
-# _tok_unjudged_verb CMD_LC — 0 when some segment's command word (the first
-# word that is not an assignment, a redirect target or a reserved word) is
+# _tok_unjudged_verb CMD_LC CMD_N — 0 when some segment's command word (the
+# first word that is not an assignment, a redirect target or a reserved word,
+# its bin-dir name read in its original case from CMD_N or the tokens) is
 # unjudged (_unjudged_cmd_word) AND that segment names a `.claude` directory
 # (mentions_dot_claude_dir_dest). Scoped to the segment so an unrelated
 # `$EDITOR` beside a `.claude` read elsewhere stays allowed. A segment the
@@ -1077,9 +1078,8 @@ _unjudged_cmd_word() {
 # function definition (`f() …`), denied too when a `.claude` dir follows.
 # TOK=0 splits the text on `;`, `&`, `|` and newlines instead, takes each
 # piece's first word, and judges that piece, or the text from it to the end
-# when the word carries a `(` or the piece ends in a `\` continuation. There
-# a lone `-`, `--`, `*` or `+` (a markdown bullet in a heredoc body) is not
-# judged.
+# when the word carries a `(`. There a lone `-`, `--`, `*` or `+` (a markdown
+# bullet in a heredoc body) is not judged.
 # An exec wrapper (`env`, `sudo`, `xargs`, `nohup`, `timeout`, zsh's `noglob`
 # …) hands its operand on as the command, so after one the first word that
 # is not a flag, an assignment or a number is judged as the command word too;
@@ -1125,10 +1125,14 @@ _tok_unjudged_verb() {
             if [ "$sg" != "$cur" ]; then cur=$sg done_seg=0 wrapped=0 oparg=0; fi
             g=${ST_G[k]}
             if [ "$done_seg" = 0 ] && [ -z "${ST_RO[k]}" ] && [ "${ST_A[k]}" = 0 ]; then
-                # a bare word after an argument-taking wrapper option is its argument
+                # a bare word after an argument-taking wrapper option is its
+                # argument, and a bare number a wrapper's count or duration
+                if [ "$wrapped" != 0 ]; then
+                    case "${ST_LW[k]}" in [0-9]*) oparg=1 ;; esac
+                fi
                 if [ "$oparg" = 1 ]; then
                     oparg=0
-                    if ! _unjudged_cmd_word "${ST_LW[k]}" "${ST_X[k]}" "$g"; then
+                    if ! _unjudged_cmd_word "${ST_W[k]}" "${ST_X[k]}" "$g"; then
                         k=$((k + 1))
                         continue
                     fi
@@ -1138,11 +1142,11 @@ _tok_unjudged_verb() {
                     # `--` ends the wrapper's options: the next word is the command
                     --:?:1) wrapped=2 ;;
                     -*:?:1) ! _wrapper_opt_arg "$wname" "${ST_LW[k]}" || oparg=1 ;;
-                    [a-z_]*=*:?:[12]|[0-9]*:?:[12]) ;;
+                    [a-z_]*=*:?:[12]) ;;
                     *)
                         done_seg=1 sc=0
                         [ "${ST_SEP[sg]}" != '(' ] || g=1 sc=1
-                        if ! _unjudged_cmd_word "${ST_LW[k]}" "${ST_X[k]}" "$g"; then
+                        if ! _unjudged_cmd_word "${ST_W[k]}" "${ST_X[k]}" "$g"; then
                             case "${ST_LW[k]}" in
                                 env|sudo|doas|xargs|command|builtin|exec|nohup|nice|ionice|timeout|stdbuf|setsid|taskset|chrt|unbuffer|time|noglob|nocorrect)
                                     wrapped=1 wname=${ST_LW[k]} done_seg=0 ;;
@@ -1165,6 +1169,10 @@ _tok_unjudged_verb() {
         done
         return 1
     fi
+    # npieces: the same pieces in the original case ($2), for the bin-dir
+    # name check; nok=0 drops back to the lowercased word if they misalign
+    local cw nw nok=1
+    local -a npieces
     n=0
     while IFS= read -r txt; do
         pieces[n]=$txt
@@ -1172,6 +1180,14 @@ _tok_unjudged_verb() {
     done <<EOF
 $(printf '%s\n' "$1" | tr ';&|' '\n')
 EOF
+    nw=0
+    while IFS= read -r txt; do
+        npieces[nw]=$txt
+        nw=$((nw + 1))
+    done <<EOF
+$(printf '%s\n' "${2:-$1}" | tr ';&|' '\n')
+EOF
+    [ "$nw" = "$n" ] || nok=0
     case $- in *f*) nog=1 ;; esac
     i=0
     while [ "$i" -lt "$n" ]; do
@@ -1179,10 +1195,12 @@ EOF
         # shellcheck disable=SC2086 # split the piece into words, globbing off
         set -- ${pieces[i]}
         [ "$nog" = 1 ] || set +f
+        nw=$#
         wrapped=0 oparg=0
         while [ $# -gt 0 ]; do
             w=0; case "$1" in *'$'*) w=1 ;; esac
             g=0; case "$1" in *[*?[\{\(]*) g=1 ;; esac
+            [ "$wrapped" = 0 ] || case "$1" in [0-9]*) oparg=1 ;; esac
             if [ "$oparg" = 1 ]; then
                 oparg=0
                 if ! _unjudged_cmd_word "$1" "$w" "$g"; then shift; continue; fi
@@ -1194,22 +1212,30 @@ EOF
                 -*:1)
                     ! _wrapper_opt_arg "$wname" "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" || oparg=1
                     shift ;;
-                [0-9]*:[12]) shift ;;
                 env:?|sudo:?|doas:?|xargs:?|command:?|builtin:?|exec:?|nohup:?|nice:?|ionice:?|timeout:?|stdbuf:?|setsid:?|taskset:?|chrt:?|unbuffer:?|time:?|noglob:?|nocorrect:?)
                     wname=$1; shift; wrapped=1 ;;
                 *) break ;;
             esac
         done
-        case "${1:--}" in
+        cw=${1:--}
+        if [ "$nok" = 1 ] && [ $# -gt 0 ]; then
+            k=$((nw - $#))
+            set -f
+            # shellcheck disable=SC2086 # the same piece, original case
+            set -- ${npieces[i]}
+            [ "$nog" = 1 ] || set +f
+            if [ $# = "$nw" ]; then shift "$k"; cw=$1; fi
+        fi
+        case "$cw" in
             -|--|'*'|+) ;;
             *)
-                w=0; case "$1" in *'$'*) w=1 ;; esac
-                g=0; case "$1" in *[*?[\{\(]*) g=1 ;; esac
-                if _unjudged_cmd_word "$1" "$w" "$g"; then
-                    # the zsh `(` split and a `\` continuation run on past the piece
+                w=0; case "$cw" in *'$'*) w=1 ;; esac
+                g=0; case "$cw" in *[*?[\{\(]*) g=1 ;; esac
+                if _unjudged_cmd_word "$cw" "$w" "$g"; then
+                    # the zsh `(` split runs on past the piece
                     txt=${pieces[i]} k=$((i + 1))
-                    case "$1:${pieces[i]}" in
-                        *'('*:*|*\\) ;;
+                    case "$cw" in
+                        *'('*) ;;
                         *) k=$n ;;
                     esac
                     while [ "$k" -lt "$n" ]; do
@@ -1547,7 +1573,7 @@ has_write_verb_or_target_flag() {
     # A command word no verb list can read (HIMMEL-4119), in a segment that
     # names a .claude directory, is a write: fail closed.
     if [ "$tool_name" = Bash ]; then
-        _tok_unjudged_verb "$c" && return 0
+        _tok_unjudged_verb "$c" "$n" && return 0
     fi
 
     return 1

@@ -1806,6 +1806,19 @@ assert_rc "349 heredoc, then time -p ls ~/.claude/ allows" 0 \
     "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\ntime -p ls ~/.claude/')" HOME="$FAKEHOME")"
 assert_rc "350 time /bin/c? a ~/.claude/ denies" 2 \
     "$(bash_rc_of "$PRIMARY" 'time /bin/c? a ~/.claude/' HOME="$FAKEHOME")"
+# A wrapper skips only a bare number, and a bin-dir name vouches in its own case.
+assert_rc "351 sudo 123/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'sudo 123/plant x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "352 heredoc, then sudo 123/plant x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\nsudo 123/plant x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "353 timeout 5 cat ~/.claude/CLAUDE.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" 'timeout 5 cat ~/.claude/CLAUDE.md' HOME="$FAKEHOME")"
+assert_rc "354 /usr/bin/LS -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" '/usr/bin/LS -sf x ~/.claude/' HOME="$FAKEHOME")"
+assert_rc "355 heredoc, then /usr/bin/LS -sf x ~/.claude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/usr/bin/LS -sf x ~/.claude/')" HOME="$FAKEHOME")"
+assert_rc "356 heredoc, then /usr/bin/ls ~/.claude/ allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "$(printf 'cat <<EOF\nhi\nEOF\n/usr/bin/ls ~/.claude/')" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
