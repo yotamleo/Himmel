@@ -139,6 +139,13 @@ for f in "${files[@]}"; do
     fi
     is_exempt "$f" && continue
 
+    # HIMMEL-3980: a leading `#` is a comment everywhere EXCEPT JS/TS, where it is a
+    # private-field sigil (`#worker = spawnSync(`) and must stay code.
+    case "$f" in
+        *.js|*.mjs|*.cjs|*.jsx|*.ts|*.mts|*.cts|*.tsx) hash_cmt=0 ;;
+        *) hash_cmt=1 ;;
+    esac
+
     # grep -n prints lineno:line; iterate matches to check opt-in marker
     # per-match so a single intentional call doesn't waive others.
     while IFS=: read -r line_no _; do
@@ -148,8 +155,8 @@ for f in "${files[@]}"; do
         fi
     done < <({
         grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" -- "$f" 2>/dev/null
-        SPAWN_RE="$SPAWN_PATTERN" SPAWN_WIN="$SPAWN_WINDOW" awk '
-            BEGIN { re = ENVIRON["SPAWN_RE"]; win = ENVIRON["SPAWN_WIN"] + 0 }
+        HASH_CMT="$hash_cmt" SPAWN_RE="$SPAWN_PATTERN" SPAWN_WIN="$SPAWN_WINDOW" awk '
+            BEGIN { re = ENVIRON["SPAWN_RE"]; win = ENVIRON["SPAWN_WIN"] + 0; hash = ENVIRON["HASH_CMT"] + 0 }
             function depth(s,   t, o, c) {
                 t = s; o = gsub(/[(\[{]/, "&", t)
                 t = s; c = gsub(/[)\]}]/, "&", t)
@@ -170,7 +177,7 @@ for f in "${files[@]}"; do
                 L[NR] = $0; s = $0; cmt = 0
                 # peel leading comments until real code (or nothing) is left
                 while (1) {
-                    if (s ~ /^[[:space:]]*(\/\/|#)/) { s = ""; cmt = 1; break }
+                    if (s ~ /^[[:space:]]*\/\// || (hash && s ~ /^[[:space:]]*#/)) { s = ""; cmt = 1; break }
                     if (s !~ /^[[:space:]]*\/\*/) break
                     t = s; sub(/^[[:space:]]*\/\*/, "", t)
                     if (!match(t, /\*\//)) break

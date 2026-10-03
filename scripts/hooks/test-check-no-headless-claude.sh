@@ -302,6 +302,11 @@ printf "%s\n%s\n%s\n" "subprocess.run(" "    # run it" '    ["claude", *a])' > "
 rc=$(run_hook "cm.py")
 assert_rc "T37c python # comment line before program, unmarked" 1 "$rc"
 
+# T37p (codex-1 r7): a leading # in JS/TS is a private-field sigil, not a comment → BLOCK
+printf "%s\n%s\n%s\n" "  #worker = spawnSync(" "  'claude', args);" "}" > "$TMP/cm_priv.mjs"
+rc=$(run_hook "cm_priv.mjs")
+assert_rc "T37p JS #private field initializer spawn, unmarked" 1 "$rc"
+
 printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* run it */" "  'claude', args);" > "$TMP/cm_blk.mjs"
 rc=$(run_hook "cm_blk.mjs")
 assert_rc "T37d block-comment line before program, unmarked" 1 "$rc"
