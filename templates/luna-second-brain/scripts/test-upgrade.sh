@@ -1849,9 +1849,9 @@ assert_eq "T68 stamp NOT advanced" "1.2.0" "$(t53_stamp_version)"
 # it, so the buggy loop re-matched --keep forever. Bounded so a regression
 # here fails the suite instead of hanging it. Resolves `timeout` or (macOS
 # with brew coreutils) `gtimeout` inline rather than sourcing himmel's
-# scripts/lib/timeout-bin.sh: this template is a self-contained repo that
-# propagates to the public luna-brain repo, which has no scripts/lib/ of
-# its own to source.
+# scripts/lib/timeout-bin.sh: this template is self-contained — it ships
+# inside the public Himmel repo but is copied out standalone, so it must
+# not source himmel's scripts/lib/.
 t69_timeout_bin=""
 for t69_bin in timeout gtimeout; do
     if command -v "$t69_bin" >/dev/null 2>&1; then
