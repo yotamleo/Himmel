@@ -238,6 +238,38 @@ deny "eval -- 'qmd \"qu\"ery x'"
 deny "eval -- qmd query x"
 deny "bash 2>/dev/null -c 2>&1 'qmd \"qu\"ery x'"
 
+# The nested scan is linear: padding with shell words must not push the hook
+# past the chain's budget, where it would be skipped instead of deciding.
+# timed RC LABEL CMD — assert the exit code and a wall time under 1 s
+# (EPOCHREALTIME is bash 5; without it, SECONDS bounds it to 2 s).
+timed() {
+    local want=$1 label=$2 input t0 t1 rc ms
+    input=$(j_bash "$3")
+    t0=${EPOCHREALTIME:-$SECONDS}
+    rc=$(run_case "$input")
+    t1=${EPOCHREALTIME:-$SECONDS}
+    assert_rc "$label" "$want" "$rc"
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        ms=$(( (${t1/[.,]/} - ${t0/[.,]/}) / 1000 ))
+    else
+        ms=$(( (t1 - t0) * 1000 ))
+        if [ "$ms" -le 1000 ]; then ms=0; fi
+    fi
+    if [ "$ms" -lt 1000 ]; then
+        echo "PASS $label in ${ms}ms"
+    else
+        echo "FAIL $label took ${ms}ms (budget 1000ms)"
+        FAILED=$((FAILED + 1))
+    fi
+}
+pad_sh=$(printf 'sh %.0s' $(seq 700))
+pad_w=$(printf 'w %.0s' $(seq 2000))
+timed 2 'deny: 700 sh words, then a nested -c' "echo ${pad_sh}; bash -ec \"qmd q\\\"uery\\\" x\""
+timed 2 'deny: 700 sh words before a nested -c' "echo ${pad_sh}bash -c 'qmd \"qu\"ery x'"
+timed 0 'allow: qmd status, then 700 sh words' "qmd status; echo ${pad_sh}"
+timed 0 'allow: qmd status, then 2000 words' "qmd status; echo ${pad_w}"
+timed 0 'allow: qmd status, bash -c and 2000 words' "qmd status; bash -c 'echo \$0' ${pad_w}"
+
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
 allow 'bash /home/u/himmel/scripts/lib/qmd-bounded.sh search x'

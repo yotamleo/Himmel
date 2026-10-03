@@ -417,6 +417,7 @@ AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\002'"|${QMDVERB})"
 # so `"$(( $(date +%s) - 1 ))"` would read as a substitution program.
 SUBPROG='(^|[|;&)`{])'"$CMDREST"'(\$\(|`)'
 NESTSEP=' '$'\t'';&|()`<>'
+NESTWORD='(^|[^[:alnum:]_.-])(sh|bash|zsh|dash|ksh|eval)(\.exe)?([^[:alnum:]_.-]|$)'
 # qmd_nested WORDS DEC DEPTH — run qmd_check on what each nested shell or
 # eval in WORDS (qmd_words' first line, lower-cased) would run, spelled as in
 # DEC (its decoded line). Sets deny=1 on the first refusal.
@@ -424,6 +425,13 @@ NESTSEP=' '$'\t'';&|()`<>'
 qmd_nested() {
     local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr rd
     n=${#w}
+    # bash copies $w on every index below, so the scan is quadratic in its
+    # length: a long command holding a shell or eval word is refused, not
+    # scanned against the chain's budget.
+    if [ "$n" -gt 8192 ]; then
+        if [[ $w =~ $NESTWORD ]]; then deny=1; fi
+        return 0
+    fi
     while [ "$i" -lt "$n" ]; do
         case "$NESTSEP" in *"${w:i:1}"*) i=$((i + 1)); continue ;; esac
         j=$i
@@ -489,12 +497,29 @@ qmd_nested() {
                 # The string is the first word after an option cluster
                 # holding c (`-c`, `-ec`, `-lc`); the later words ($0 and its
                 # arguments) are read too — more reading only adds denials.
-                if [[ $t =~ ^-[[:alpha:]]*c[[:alpha:]]*$ ]]; then hasc=1; fi
+                if [[ $t =~ ^-[[:alpha:]]*c[[:alpha:]]*$ ]]; then
+                    hasc=1
+                else
+                    # Another shell or eval word before any -c: hand it back
+                    # to the outer loop, so no word is scanned twice.
+                    c=${t#=}
+                    case "${c##*/}" in
+                        sh|bash|zsh|dash|ksh|sh.exe|bash.exe|zsh.exe|dash.exe|ksh.exe|eval)
+                            e=$((j - ${#t}))
+                            break ;;
+                    esac
+                fi
             else
-                qmd_check "$v" $((depth + 1))
+                # A word with no q, `$` or backtick cannot spell qmd.
+                case "$v" in
+                    *[qQ]*|*'$'*|*'`'*) qmd_check "$v" $((depth + 1)) ;;
+                esac
                 if [ "$deny" = 1 ]; then return 0; fi
             fi
         done
+        # Every word to here was read above (eval's in $scr): resume after
+        # them, so the scan stays linear in the length of the command.
+        i=$e
         if [ -n "$scr" ]; then
             qmd_check "$scr" $((depth + 1))
             if [ "$deny" = 1 ]; then return 0; fi
@@ -509,7 +534,10 @@ qmd_nested() {
 # denies) on a failure inside it.
 qmd_check() {
     local cmd=$1 depth=$2 cmd_lc crude res words words_lc dec aq
-    if [ "$depth" -gt 4 ]; then deny=1; return 0; fi
+    # A work bound, refused when hit: the chain skips a member past its
+    # budget, so a slow scan must deny rather than run out the clock.
+    checks=$((checks + 1))
+    if [ "$depth" -gt 4 ] || [ "$checks" -gt 64 ]; then deny=1; return 0; fi
     # Lower-case and fold newlines to ';' so the anchors below see one line.
     cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
     # The same text with every quote and backslash deleted: `q"md"`, `\qmd` and
@@ -528,6 +556,12 @@ qmd_check() {
         *qmd*|*\$\'*|*\$\"*) ;;
         *) return 0 ;;
     esac
+    # Nested strings share one byte budget, so four levels of a long string
+    # cannot each pay a full scan.
+    if [ "$depth" -gt 0 ]; then
+        nested=$((nested + ${#cmd}))
+        if [ "$nested" -gt 8192 ]; then deny=1; return 0; fi
+    fi
     if res=$(qmd_words "$cmd"); then
         words=${res%%$'\n'*}
         res=${res#*$'\n'}
@@ -560,7 +594,7 @@ qmd_check() {
     return 0
 }
 
-deny=0
+deny=0 checks=0 nested=0
 qmd_check "$cmd" 0
 
 if [ "$deny" = 1 ]; then
