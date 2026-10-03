@@ -413,13 +413,17 @@ AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\002'"|${QMDVERB})"
 # refused rather than guessed; one that cannot be read and does not name qmd
 # gets the top-level fallback readings. At the top level a substitution in
 # program position is refused only when the command names qmd
-# (`$(echo qmd) query x`).
+# (`$(echo qmd) query x`). There a `)` or backtick usually closes the
+# previous substitution (`x "$(a)" "$(b)"`), so SUBTOP drops both from the
+# boundary, and keeps `)` only in a command holding a `case` word.
 # Any word naming a shell counts, not only one in program position: a mention
 # (`echo bash -c 'qmd query'`) reads as a nested command too, the safe
 # direction.
 # Its boundary has no `(`: inside "…" qmd_words reads `$((` as `$(` and `(`,
 # so `"$(( $(date +%s) - 1 ))"` would read as a substitution program.
 SUBPROG='(^|[|;&)`{])'"$CMDREST"'(\$\(|`)'
+SUBTOP='(^|[|;&{])'"$CMDREST"'(\$\(|`)'
+CASEWORD='(^|[^[:alnum:]_])case[[:space:]]'
 NESTSEP=' '$'\t'';&|()`<>'
 NESTWORD='(^|[^[:alnum:]_.-])(sh|bash|zsh|dash|ksh|eval)(\.exe)?([^[:alnum:]_.-]|$)'
 # qmd_nested WORDS DEC DEPTH — run qmd_check on what each nested shell or
@@ -581,7 +585,10 @@ qmd_check() {
             deny=1
         elif qp_deny "${res#:}"; then
             deny=1
-        elif [[ $words_lc =~ $SUBPROG ]] && { [ "$depth" -gt 0 ] || [[ $crude == *qmd* ]]; }; then
+        elif [ "$depth" -gt 0 ] && [[ $words_lc =~ $SUBPROG ]]; then
+            deny=1
+        elif [[ $crude == *qmd* ]] && { [[ $words_lc =~ $SUBTOP ]] ||
+            { [[ $words_lc =~ $CASEWORD ]] && [[ $words_lc =~ $SUBPROG ]]; }; }; then
             deny=1
         else
             qmd_nested "$words_lc" "$dec" "$depth"

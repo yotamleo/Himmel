@@ -211,6 +211,11 @@ deny '$(printf qmd) query x'
 deny 'true; $(echo qmd) search y'
 allow 'cd "$(git rev-parse --show-toplevel)" && qmd status'
 allow 'echo "$(date)"; qmd status'
+deny 'case a in a) $(echo qmd) query x;; esac'
+# The `)` or backtick closing one substitution is not a boundary for the next.
+allow 'printf "%s %s" "$(grep -c a qmd.sh)" "$(grep -c b qmd.sh)"'
+allow 'echo qmd; x `a` `b`'
+allow 'echo qmd; x $(a) `b`'
 # coproc runs its command like any wrapper.
 deny 'coproc qmd query x'
 deny 'coproc foo { qmd query x; }'
