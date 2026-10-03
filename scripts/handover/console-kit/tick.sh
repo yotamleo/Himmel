@@ -296,7 +296,7 @@ leg_start_epoch() {
     if [ -z "$t" ]; then
         line="$(find "$(launch_dir_default)" -maxdepth 2 -name '*.launch.log' -exec grep -hF ' armed: name=' {} + 2>/dev/null | awk -v d="doc=$doc" -v c=",$cands," '
             { n = $3; sub(/^name=/, "", n); if (index(c, "," n ",") || index($0, " " d " ")) last = $1 }
-            END { if (last != "") print last }')"
+            END { if (last != "") print last }')"  # gnu-ok: Linux-only kit (find -maxdepth)
         if [ -n "$line" ]; then
             t="$(date -d "${line/_/ }" +%s 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
         fi
@@ -319,7 +319,7 @@ leg_forked() {
         done < <(find "$dir" -maxdepth 2 -name '*.jsonl' -mmin "-${TICK_FORK_WINDOW_MIN:-1440}" -exec grep -lF "\"customTitle\":\"$cand\"" {} + 2>/dev/null)  # gnu-ok: Linux-only kit
     done
     [ -n "$newest" ] || return 1
-    tail -n 5 "$newest" 2>/dev/null | grep -q '"type":"continued-in"'
+    tail -n 5 "$newest" 2>/dev/null | grep -q '"type":"continued-in"'  # pipefail-ok: tail -n 5 is a few lines, far under the pipe buffer, so no SIGPIPE
 }
 
 legs_summary=""

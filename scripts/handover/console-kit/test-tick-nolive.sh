@@ -116,7 +116,7 @@ touch -d '30 minutes ago' "$nm"
 check 'no manifest, no launch log: the doc mtime starts the clock (old = NOLIVE)' 'N907:NOLIVE' "$(field legs "$(bash "$SUT" --legs "$nm" 2>/dev/null)")"
 touch "$nm"
 check 'no manifest, no launch log: a fresh doc is still FREE' 'N907:FREE' "$(field legs "$(bash "$SUT" --legs "$nm" 2>/dev/null)")"
-ts="$(/bin/date -d '40 minutes ago' +%F_%T)"
+ts="$(/bin/date -d '40 minutes ago' +%F_%T)"  # gnu-ok: Linux-only kit
 printf '%s armed: name=HIMMEL-9907-N907-nomanifest doc=%s signal=x deadline=y role=leg\n' "$ts" "$nm" > "$W/console-work/chain/a.launch.log"
 check 'the launch log armed: line (older than the fresh doc) starts the clock' 'N907:NOLIVE' "$(field legs "$(bash "$SUT" --legs "$nm" 2>/dev/null)")"
 rm -f "$W/console-work/chain/a.launch.log"
