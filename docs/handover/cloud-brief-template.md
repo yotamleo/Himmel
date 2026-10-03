@@ -105,11 +105,15 @@ completes-ticket: yes|no
 - **One line per ask** of each cited ticket, each `done` or `deferred → HIMMEL-<n>`
   (HIMMEL-4207: the console's ready-check fails a missing section, a deferred key
   that does not exist and one already Done). The cloud session cannot reach Jira,
-  so the console names the follow-up keys in the brief (`## The change`); an ask
-  the brief does not cover and the session cannot finish is marked
-  `deferred → (console to file)`, and the console files it before GO.
-- `completes-ticket: yes` only when the PR finishes every ask; otherwise `no`.
-  The shepherd passes `--jira-transition` to the merge only on `yes`.
+  so the console files a follow-up ticket for every ask the brief scopes out
+  BEFORE writing the brief and names each key in `## The change`; the session
+  writes it as `deferred → HIMMEL-<n>`. An ask is never silently dropped: no
+  key to name means the ask belongs in the brief, not outside it. An ask the
+  session finds mid-task and cannot finish is reported in its closing summary
+  and the shepherd files the key before GO.
+- `completes-ticket: yes` only when every ask is either `done` or `deferred →`
+  an open follow-up key the shepherd confirms before passing
+  `--jira-transition`; otherwise `no`.
 - The PR title and the commit carry the ticket ID (`check-commit-msg`, CI range gate).
 
 ## Launching

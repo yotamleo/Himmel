@@ -1,0 +1,3 @@
+{"id":"g1","query":"first question","lex":"first","collections":["a"],"expect":["a/x.md"]}
+{"id":"g2","query":"second question","lex":"second","collections":["a"],"expect":["a/y.md","a/z.md"]}
+{"id":"g3","query":"third question","lex":"third","collections":["b"],"expect":["b/q.md"]}

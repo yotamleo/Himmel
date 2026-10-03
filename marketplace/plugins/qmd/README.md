@@ -33,16 +33,23 @@ operators lives in the himmel repo at `scripts/qmd/ensure-qmd-daemon.ps1`.
 
 The plugin **name stays `qmd`** and the server **name stays `qmd`**, so the
 skill reference (`qmd:qmd`) and the MCP tool prefix
-(`mcp__plugin_qmd_qmd__*`) are identical to upstream in NAME — the one
-intentional content delta below (the skill's `allowed-tools` line) is the
-second fork delta; everything else in the skill tree is verbatim upstream.
+(`mcp__plugin_qmd_qmd__*`) are identical to upstream in NAME — the
+intentional content deltas below are the skill's other fork deltas;
+everything else in the skill tree is verbatim upstream.
 
-The `skills/qmd/` skill is copied from upstream with ONE line changed (the
-upstream `release` skill, which is qmd-repo maintenance tooling, is not
-vendored): the skill's `allowed-tools` gains `mcp__plugin_qmd_qmd__*` —
-upstream allows only `mcp__qmd__*`, which does not match the plugin-scoped
-tool prefix the plugin itself produces (pre-existing upstream mismatch;
-harmless there, fixed here since we own the copy).
+The `skills/qmd/` skill is copied from upstream (the upstream `release`
+skill, which is qmd-repo maintenance tooling, is not vendored) with two
+content deltas:
+
+- **One line changed:** the skill's `allowed-tools` gains
+  `mcp__plugin_qmd_qmd__*` — upstream allows only `mcp__qmd__*`, which does
+  not match the plugin-scoped tool prefix the plugin itself produces
+  (pre-existing upstream mismatch; harmless there, fixed here since we own the
+  copy).
+- **One section added:** `What works here (himmel fork, measured)`, under
+  `Collection Filtering` (HIMMEL-4184) — query guidance measured on himmel's
+  own collections with `scripts/eval/qmd-quality/qmd-quality.sh`; re-run that
+  eval before changing it.
 
 ## Freshness & lifecycle
 
@@ -92,4 +99,5 @@ tobi/qmd#1030). When that merges, HIMMEL-3982 pins back to `tobi/qmd` and
 dropped an earlier fork the same way). This
 plugin's **manifest + skill** stay pinned separately and are low-churn.
 Re-sync `skills/qmd/` from `tobi/qmd` if the upstream search skill changes
-materially; re-sync the CLI clone per `docs/setup/new-machine.md`.
+materially, keeping both skill deltas above; re-sync the CLI clone per
+`docs/setup/new-machine.md`.

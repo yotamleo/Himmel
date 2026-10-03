@@ -944,17 +944,31 @@ wt25="$tmp/fake-himmel-wt-large"
   git add -A
   git commit -q -m "touch scripts/cr for T25"
   blob="$(git hash-object -w --stdin < /dev/null)"
+  # HIMMEL-3878: every plumbing step fails loudly here - an unchecked failure
+  # used to surface only downstream as "fixture diff is only 27 bytes".
+  case "$blob" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) echo "FAIL: T25 fixture blob id empty/invalid ('$blob')"; exit 1 ;;
+  esac
+  # Input goes to a file first so a failing mktree cannot SIGPIPE the printf
+  # loop, and mktree's own rc is checked rather than lost in a pipeline.
   {
     git ls-tree HEAD
     for i in $(seq 1 300); do
       long_name="zzz_filler_$(printf '%03d' "$i")_$(printf 'x%.0s' $(seq 1 230))"
       printf '100644 blob %s\t%s\n' "$blob" "$long_name"
     done
-  } | git mktree > "$tmp/t25-tree.txt"
+  } > "$tmp/t25-mktree-in.txt"
+  git mktree < "$tmp/t25-mktree-in.txt" > "$tmp/t25-tree.txt" || { echo "FAIL: T25 fixture git mktree failed (rc=$?)"; exit 1; }
   new_tree="$(cat "$tmp/t25-tree.txt")"
+  case "$new_tree" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) echo "FAIL: T25 fixture tree id empty/invalid ('$new_tree')"; exit 1 ;;
+  esac
   new_commit="$(git commit-tree "$new_tree" -p HEAD -m "T25 large diff, never checked out")"
+  [ -n "$new_commit" ] || { echo "FAIL: T25 fixture git commit-tree produced no commit id"; exit 1; }
   git update-ref refs/heads/t25-large "$new_commit"
-)
+) || fail=1
 head25="$(cd "$wt25" && git rev-parse HEAD)"
 diff_bytes="$(cd "$wt25" && git diff --name-only main...HEAD | wc -c)"
 if [ "$diff_bytes" -le 65536 ]; then
