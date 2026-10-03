@@ -414,7 +414,7 @@ _bwimc_scan_step() {
 # open a phantom quote that swallows a later `; touch P/f`. The caller runs
 # it as an EXTRA reading beside the flat one, so it can only add denials.
 # Anything the nested walk cannot follow with confidence (a comment,
-# backtick, `${`, case/esac or an unbalanced paren inside the substitution,
+# backtick, `${`, a case/esac word or an unbalanced paren inside the substitution,
 # or an opener left unresolved) makes it print the flat reading instead.
 # ponytail: a case/esac, comment, backtick or `${` inside that `$(…)` falls
 # back to the flat reading, so a body apostrophe there still hides a later
@@ -544,7 +544,9 @@ _bwimc_blank_heredocs() {
     done <<< "$text"
     if [ -n "$nest" ]; then
         # shellcheck disable=SC2016  # literal `${` is the glob pattern
-        case "$ncode" in *case*|*esac*|*'${'*) unsure=1 ;; esac
+        case "$ncode" in *'${'*) unsure=1 ;; esac
+        # HIMMEL-4177: case/esac as WORDS only, so `showcase` keeps this reading
+        [[ ! "$ncode" =~ (^|[^A-Za-z0-9_])(case|esac)([^A-Za-z0-9_]|$) ]] || unsure=1
         if [ "$unsure" = 1 ] || [ "$nl" -ne 0 ] || [ "$active" = 1 ] || [ -n "$pend_term" ]; then
             _bwimc_blank_heredocs "$text"
             return
@@ -737,6 +739,48 @@ _bwimc_strip_assign() {
         i=$j
         _BWIMC_SA="${t:$i}"
     done
+}
+# _bwimc_assign_flat TEXT — HIMMEL-4198/4174. Sets _BWIMC_AF to TEXT with
+# every balanced `$((…))` span and every `NAME=(…)`/`NAME+=(…)` array value
+# replaced by `0`, and every backslash-newline joined, outside single quotes.
+# The splitter breaks at a `$((` that is not plain arithmetic (so
+# `$((echo a); touch P/f)` still splits) and at an array `(`, which hides the
+# verb after `x=$((1|2))` or `x=(a b)`. The caller adds the result as an EXTRA
+# reading beside the unflattened one, so it can only add denials: the spans'
+# own contents are still read where they were. An unclosed span leaves TEXT
+# unchanged (no extra reading, today's behaviour).
+_BWIMC_BSNL=$'\\\n'
+_bwimc_assign_flat() {
+    local t="$1" n=${#1} i=0 c o="" sq se sa st
+    _BWIMC_AF="$t"
+    # shellcheck disable=SC2016  # literal `$((` is the glob pattern
+    case "$t" in *'$(('*|*'=('*|*"$_BWIMC_BSNL"*) ;; *) return 0 ;; esac
+    _bwimc_scan_init
+    while [ "$i" -lt "$n" ]; do
+        c="${t:$i:1}"
+        if [ "$_BWIMC_ESC" != 1 ] && [ "$_BWIMC_Q" != "'" ] && [ "$_BWIMC_Q" != A ]; then
+            if [ "$c" = "\\" ] && [ "${t:$((i+1)):1}" = "$_BWIMC_NL" ]; then
+                i=$((i+2)); continue
+            fi
+            st=-1
+            if [ "$c" = '$' ] && [ "${t:$((i+1)):2}" = '((' ]; then
+                st=$((i+2))
+            elif [ "$c" = '(' ] && [ -z "$_BWIMC_Q" ] && [ "${o:$((${#o}-1))}" = '=' ] \
+                 && [[ "${o:$((${#o} > 64 ? ${#o} - 64 : 0))}" =~ (^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*\+?=$ ]]; then
+                st=$((i+1))
+            fi
+            if [ "$st" -ge 0 ]; then
+                sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
+                _bwimc_subst_paren_end "$t" "$st"
+                _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"; _BWIMC_DL=0
+                [ "$_BWIMC_PEND" -lt "$n" ] || return 0
+                o="${o}0"; i=$((_BWIMC_PEND+1)); continue
+            fi
+        fi
+        _bwimc_scan_step "$c"
+        o="$o$c"; i=$((i+1))
+    done
+    _BWIMC_AF="$o"
 }
 # _bwimc_split_clauses TEXT [skel] — with `skel` (TEXT is a _bwimc_subst_split
 # skeleton), the `(` of a `$(` STUB is not a break, so a target built from a
@@ -2841,6 +2885,13 @@ while IFS= read -r _bwimc_rclause; do
     done
 done < <(_bwimc_split_clauses "$_bwimc_skel" skel)
 }
+# HIMMEL-4198/4174: each reading again with `$((…))`/array values flattened
+# and continuations joined, so the verb after `x=$((1|2))` or `x=(a b)` shows.
+for _bwimc_afi in "${!_bwimc_readings[@]}"; do
+    _bwimc_assign_flat "${_bwimc_readings[$_bwimc_afi]}"
+    [ "$_BWIMC_AF" = "${_bwimc_readings[$_bwimc_afi]}" ] \
+        || { _bwimc_readings+=("$_BWIMC_AF"); _bwimc_rmodes+=("${_bwimc_rmodes[$_bwimc_afi]}"); }
+done
 _BWIMC_WRAP_RE='(^|[[:space:]/])(bash|sh|zsh|dash|ksh|su|runuser|flock|eval)(\.exe)?([[:space:]]|$)'
 for _bwimc_ri in "${!_bwimc_readings[@]}"; do
 _bwimc_hb="${_bwimc_readings[$_bwimc_ri]}"
