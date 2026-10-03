@@ -40,7 +40,11 @@
 # string (`su -c`, `script -c`, `flock -c`, `env -S`, watch, parallel) and a
 # shell's here-string (HIMMEL-4166); what a shell reads from a pipe or a
 # process substitution, and an alias for qmd, cannot be read and fail closed
-# on naming qmd and a verb. A shell fed by a file (`sh <f`) is unread. A heredoc
+# on naming qmd and a verb. A shell fed by a file (`sh <f`) is unread.
+# ponytail: the launcher set above is not complete — sg, tmux, screen, at,
+# `builtin exec`, setpriv, unshare, nsenter, chroot, firejail, bwrap, strace
+# and other prefix wrappers, and elvish/nu/xonsh/pwsh `-c`, run qmd
+# unguarded; residual launchers → HIMMEL-4244. A heredoc
 # makes qmd_words decline and the coarser fallback readings below decide; the
 # shared tokenizer (scripts/hooks/lib/shell-tokenize.sh, HIMMEL-912) models
 # heredocs and can replace qmd_words once a third inlined copy is wired into
@@ -654,6 +658,8 @@ qmd_nested() {
         i=$e
         # A shell or source with no -c string, fed by a pipe, runs the
         # producer's output: refuse a producer naming a verb.
+        # ponytail: a shell word anywhere in the consumer counts (`… | grep -v
+        # sh` is over-denied), consumer-program-only matching → HIMMEL-4245.
         if [ -n "$piped" ] && [ "$hasc" = 0 ] && { [ "$mode" = sh ] || [ "$mode" = src ]; } &&
             names_verb "${dec:pfrom+1:piped-pfrom-1}"; then
             deny=1
