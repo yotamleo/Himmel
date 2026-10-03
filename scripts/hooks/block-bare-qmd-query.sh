@@ -122,6 +122,8 @@ esac
 # comment is dropped. Nothing is expanded: `$x` prints as `$x`.
 # Returns 1 for what it does not model — an unterminated quote or `$(`, a
 # heredoc (`<<`), a command over 16 KiB — and the caller falls back.
+# ponytail: a word of empty quotes alone vanishes, so `qmd "" query x` reads
+# `qmd query x` and is over-denied; emit a placeholder for it (HIMMEL-4141).
 # shellcheck disable=SC1003,SC2016 # literal backslash, $ and ` bytes
 qmd_words() {
     local LC_ALL=C
