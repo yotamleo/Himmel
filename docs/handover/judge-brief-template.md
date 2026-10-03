@@ -189,8 +189,8 @@ gathering, per the rule below.>
 > the cited ticket's body and the diff, and answer: is every ask of the cited
 > ticket(s) done in the diff or deferred to an open ticket? A `done` line the
 > diff does not support, an ask with no line, or a `deferred` line whose key is
-> missing or already Done is a NO-GO line in your verdict. Put the ticket body
-> and the PR body in `## Evidence`; the judge has no Jira access of its own.
+> missing or already Done is a NO-GO line in your verdict. The console puts the
+> ticket body and the PR body in `## Evidence`.
 
 > **RETASK.** A narrowing or a halt from `<console session name>` needs no
 > token and cannot be argued with. An EXPANSION or REDIRECT is valid only if
