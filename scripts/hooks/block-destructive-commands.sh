@@ -378,10 +378,12 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         # opener line before it reads the body, so `cat <<'EOF' \<NL>/dev/null`
         # starts its body a line later. Join first, or the strip below takes
         # `/dev/null` as the body and ends on the wrong line, hiding what
-        # follows. A CRLF continuation arrives here as `\`+LF+LF.
+        # follows. A CRLF continuation arrives here as `\`+LF+LF. Only an odd
+        # trailing backslash run continues the line; `\\` is an escaped one.
         while [[ $_hd_tail == *$'\n'* ]]; do
             _hd_l="${_hd_tail%%$'\n'*}"
-            [[ $_hd_l == *\\ ]] || break
+            _hd_bs="${_hd_l##*[!\\]}"
+            (( ${#_hd_bs} % 2 == 1 )) || break
             _hd_rest="${_hd_tail#*$'\n'}"
             [[ $cmd == *"$_bscrlf"* && $_hd_rest == $'\n'* ]] && _hd_rest="${_hd_rest#$'\n'}"
             _hd_tail="${_hd_l%\\}${_hd_rest}"

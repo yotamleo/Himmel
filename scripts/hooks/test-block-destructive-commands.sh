@@ -705,6 +705,8 @@ assert_rc 'heredoc then rm \<CR><NL>-"r" d' 2 "$(run_case "$(j_bash 'cat <<'\''E
 assert_rc 'heredoc opener \<NL> then r\<NL>m -rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' '"$BSNL"'/dev/null'$'\n''EOF'$'\n''r'"$BSNL"'m -rf d')")"
 assert_rc 'heredoc opener \<NL> then rm -\<NL>rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' '"$BSNL"'/dev/null'$'\n''EOF'$'\n''rm -'"$BSNL"'rf d')")"
 assert_rc 'heredoc opener \<CR><NL> then r\<NL>m -rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' '"$BSCRLF"'/dev/null'$'\r\n''EOF'$'\r\n''r'"$BSCRLF"'m -rf d')")"
+# An even backslash run is an escaped backslash, not a continuation: the body is the next line.
+assert_rc 'heredoc opener x\\<NL> then rm -rf d' 2 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' x'"\\\\"$'\n''EOF'$'\n''rm -rf d'$'\n''EOF')")"
 assert_rc 'heredoc opener \<NL> body rm -rf allowed' 0 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' '"$BSNL"'> f.txt'$'\n''rm -rf build'$'\n''EOF')")"
 # The same join feeds every other guard in the hook.
 assert_rc 'git reset \<NL>--hard'        2 "$(run_case "$(j_bash 'git reset '"$BSNL"'--hard')")"
