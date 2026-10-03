@@ -73,16 +73,12 @@
 # same tradeoff as mcp-server remains at the narrower anchor: a genuine
 # `caffeinate` binary invoked with no job is still exempt by name alone, no
 # new mechanism to fix it here.
-# ponytail: GH #1337 also reported a `claude-hud` statusline tree false
-# WITHHELD. A `claude-hud`-by-path exemption was tried and rejected on this
-# same PR's re-judge: `^([^ ]*/)?(node|bun) [^ ]*/claude-hud/[^ ]*` exempted
-# ANY node/bun script under any directory merely named claude-hud (and all
-# its descendants) — `node /repo/claude-hud/server.js`, a claude-hud checkout
-# running its own test suite, etc. — a false-CLOSABLE regression, not a
-# narrower anchor. The claude-hud half is deliberately NOT fixed here;
-# tracked as HIMMEL-3723 (path-anchored to the actual `.claude` install,
-# rejecting `..`, and checking the real statusLine launch shape) linked to
-# #1337, which stays open until that follow-up lands.
+# GH #1337 also reported a `claude-hud` statusline tree false WITHHELD. A loose
+# by-path exemption (`^([^ ]*/)?(node|bun) [^ ]*/claude-hud/[^ ]*`) was rejected
+# on that PR's re-judge: it exempted ANY node/bun script under any directory
+# merely named claude-hud. HIMMEL-4139 fixed it with the tight anchor in hud_re:
+# exactly `node <abs>/marketplace/plugins/claude-hud/dist/index.js`, no args, no
+# `/..` — the real statusLine launch shape (see hud_re below).
 #
 # READ-ONLY: this script never signals a process. Bash 3.2-compatible.
 # WRAP_SUBTREE_SELF overrides the pid treated as "this script" (test seam).
@@ -113,13 +109,21 @@ case "$window" in
 esac
 harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp)( |\$)|^([^ ]*/)?caffeinate( -[a-z]+( [0-9]+)?)*\$}"
 
+# HIMMEL-4139: the claude-hud statusLine refresh. Its real launch is `sh -c [ -f P ]
+# && exec node P || true`, so argv is exactly `node <abs>/marketplace/plugins/
+# claude-hud/dist/index.js` (no args); everything it spawns inherits the ignore by
+# the walk-up. Anchored to that install shape, plus a `/..` check in awk
+# (isharness) — a directory merely named claude-hud is NOT exempt (HIMMEL-3723).
+# No backslashes: the value crosses awk -v.
+hud_re='^([^ ]*/)?node /[^ ]*/marketplace/plugins/claude-hud/dist/index[.]js$'
+
 ps_out="$(ps -eo pid=,ppid=,etime=,args= 2>/dev/null)" || ps_out=""
 if [ -z "$ps_out" ]; then
     printf 'WITHHELD: cannot read the process table (ps failed) — not declaring CLOSABLE\n'
     exit 2
 fi
 
-result="$(printf '%s\n' "$ps_out" | awk -v root="$root" -v self="$self" -v hre="$harness_re" -v win="$window" '
+result="$(printf '%s\n' "$ps_out" | awk -v root="$root" -v self="$self" -v hre="$harness_re" -v hud="$hud_re" -v win="$window" '
 function iswrap(a) {
     return a ~ /^[^ ]*(bash|zsh|sh) -c (source|\.) [^ ]*shell-snapshots\/snapshot-(bash|zsh)-/
 }
@@ -130,6 +134,7 @@ function isclaude(a,   t, n, b) {
 }
 function isharness(p) {
     if (iswrap(arg[p])) return 0
+    if (arg[p] ~ hud && index(arg[p], "/..") == 0) return 1
     return arg[p] ~ hre
 }
 # [[DD-]HH:]MM:SS -> seconds; -1 for anything else (fails closed in isearly)
@@ -231,7 +236,7 @@ if [ "$count" -eq 0 ]; then
     fi
     exit 0
 fi
-printf 'WITHHELD: %s process(es) still alive under claude pid %s — TaskStop every background task and agent you spawned, then re-run (never stop a process you did not start, e.g. a session MCP server: report it to the console instead)\n' "$count" "$found"
+printf 'WITHHELD: %s process(es) still alive under claude pid %s — TaskStop only what you started (background tasks, agents you spawned), then re-run; never stop a process you did not start, e.g. a session MCP server or the statusline refresh: report it to the console instead\n' "$count" "$found"
 printf '%s\n' "$result" | sed -n '/^  pid=/p'
 printf '%s\n' "$result" | sed -n '/^  ignored pid=/p'
 exit 1

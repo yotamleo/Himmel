@@ -312,6 +312,64 @@ contains 'the claude-hud-path decoy withholds (J1355P)' "$out" '  pid=340 ppid='
 contains "the decoy's own child withholds too (J1355P)" "$out" '  pid=341 ppid='
 lacks 'no claude-hud exemption remains (J1355P)' "$out" 'why=name-match cmd=node /repo/claude-hud'
 
+# HIMMEL-4139 (closes the claude-hud half of #1337 / HIMMEL-3723): the real
+# statusLine refresh (`sh -c [ -f P ] && exec node P || true`, so argv is
+# `node <repo>/marketplace/plugins/claude-hud/dist/index.js`) re-spawns every few
+# seconds under the session, with hud-custom-lines.sh, statusline-segment.sh and
+# a `timeout 3 node …/provision.mjs slice` beneath it, all at etime 00:00. That
+# whole subtree is harness; the path anchor is the exact install shape, not any
+# directory named claude-hud (the J1355P decoy above stays withheld).
+HUD=/home/u/himmel/marketplace/plugins/claude-hud/dist/index.js
+cat > "$W/hud-tree.txt" <<FIX
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  400   101       00:00 node $HUD
+  401   400       00:00 bash /home/u/himmel/scripts/statusline/hud-custom-lines.sh
+  402   401       00:00 bash /home/u/himmel/scripts/where-are-we/statusline-segment.sh
+  403   402       00:00 timeout 3 node /home/u/himmel/scripts/where-are-we/provision.mjs slice
+  404   403       00:00 node /home/u/himmel/scripts/where-are-we/provision.mjs slice
+FIX
+out="$(run "$W/hud-tree.txt" 101 2>&1)"; rc=$?
+eq 'a fresh claude-hud statusline subtree is harness: rc 0 (HIMMEL-4139)' 0 "$rc"
+contains 'the hud subtree prints CLOSABLE, all five counted (HIMMEL-4139)' "$out" 'CLOSABLE: no non-harness process under claude pid 101 (5 harness-owned children ignored)'
+contains 'the hud root is name-matched (HIMMEL-4139)' "$out" "ignored pid=400 ppid=101 etime=00:00 why=name-match cmd=node $HUD"
+contains 'a hud descendant inherits the ignore (HIMMEL-4139)' "$out" 'ignored pid=404 '
+# The same subtree beside genuine leftovers: only the leftovers withhold.
+{
+    cat "$W/hud-tree.txt"
+    cat <<'FIX'
+  410   101    00:10:00 sleep 100
+  411   101    00:10:00 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-5-e.sh && eval 'while true; do sleep 5; done'
+FIX
+} > "$W/hud-plus-leftovers.txt"
+out="$(run "$W/hud-plus-leftovers.txt" 101 2>&1)"; rc=$?
+eq 'hud subtree plus a leg sleep and loop still withholds: rc 1 (HIMMEL-4139)' 1 "$rc"
+contains 'exactly the two leftovers withhold (HIMMEL-4139)' "$out" 'WITHHELD: 2 process(es) still alive under claude pid 101'
+contains 'the leg sleep is named (HIMMEL-4139)' "$out" '  pid=410 ppid='
+contains 'the leg loop wrapper is named (HIMMEL-4139)' "$out" '  pid=411 ppid='
+lacks 'the hud root is not listed as withheld (HIMMEL-4139)' "$out" '  pid=400 ppid='
+# Near-misses of the anchor must NOT be exempt: `..` segment, extra argv, a
+# non-absolute path, a different plugin dir, a different file, a non-node program.
+cat > "$W/hud-decoys.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  420   101    00:10:00 node /home/u/evil/../himmel/marketplace/plugins/claude-hud/dist/index.js
+  421   101    00:10:00 node /home/u/himmel/marketplace/plugins/claude-hud/dist/index.js --serve
+  422   101    00:10:00 node marketplace/plugins/claude-hud/dist/index.js
+  423   101    00:10:00 node /home/u/himmel/marketplace/plugins/other/dist/index.js
+  424   101    00:10:00 node /home/u/himmel/marketplace/plugins/claude-hud/dist/server.js
+  425   101    00:10:00 python3 /home/u/himmel/marketplace/plugins/claude-hud/dist/index.js
+  426   101    00:10:00 node /home/u/himmel/x/claude-hud/dist/index.js
+FIX
+out="$(run "$W/hud-decoys.txt" 101 2>&1)"; rc=$?
+eq 'near-miss hud paths all withhold: rc 1 (HIMMEL-4139)' 1 "$rc"
+contains 'all seven near-misses withhold (HIMMEL-4139)' "$out" 'WITHHELD: 7 process(es) still alive under claude pid 101'
+lacks 'a decoy never prints CLOSABLE (HIMMEL-4139)' "$out" 'CLOSABLE:'
+# The WITHHELD text does not order a leg to stop what it did not start.
+out="$(run "$W/dirty.txt" 101 2>&1)"
+lacks 'WITHHELD text does not tell the leg to TaskStop every process listed (HIMMEL-4139)' "$out" 'still alive under claude pid 101 — TaskStop every'
+contains 'WITHHELD text limits TaskStop to what the leg started (HIMMEL-4139)' "$out" 'TaskStop only what you started'
+
 # fx3: the SAME tool call that starts a background job also runs the check —
 # a shell wrapper backgrounds `caffeinate -i ./long-job.sh` and the check
 # itself with `&`, both children of one wrapper. The job must withhold even
