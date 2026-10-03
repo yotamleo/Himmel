@@ -3,7 +3,8 @@
 # (HIMMEL-4206). Paste it into the environment's "Setup script" box as
 #
 #     #!/bin/bash
-#     git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
+#     rm -rf /tmp/himmel-setup \
+#       && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
 #       && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh
 #
 # (the box runs BEFORE the session's repo clone exists, hence the throwaway
@@ -108,7 +109,8 @@ fi
 export BASH_DEFAULT_TIMEOUT_MS="$TIMEOUT_MS" BASH_MAX_TIMEOUT_MS="$TIMEOUT_MS"
 plan env export "BASH_DEFAULT_TIMEOUT_MS=$TIMEOUT_MS BASH_MAX_TIMEOUT_MS=$TIMEOUT_MS"
 if [ "$DRY" -eq 0 ] && [ -d /etc/profile.d ] && [ -w /etc/profile.d ]; then
-  printf 'export BASH_DEFAULT_TIMEOUT_MS=%s\nexport BASH_MAX_TIMEOUT_MS=%s\n' "$TIMEOUT_MS" "$TIMEOUT_MS" > /etc/profile.d/himmel-cloud.sh
+  printf 'export BASH_DEFAULT_TIMEOUT_MS=%s\nexport BASH_MAX_TIMEOUT_MS=%s\n' "$TIMEOUT_MS" "$TIMEOUT_MS" > /etc/profile.d/himmel-cloud.sh \
+    || { echo "setup-env: could not persist the Bash timeouts to /etc/profile.d" >&2; failed=$((failed + 1)); }
 fi
 
 # 7. EXPERIMENT (slice 7): plugins into ~/.claude. Off unless asked.

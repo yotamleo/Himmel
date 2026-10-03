@@ -25,7 +25,8 @@ merge. The cloud session ships a PR and stops.
 
    ```bash
    #!/bin/bash
-   git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
+   rm -rf /tmp/himmel-setup \
+     && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
      && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh
    ```
 
