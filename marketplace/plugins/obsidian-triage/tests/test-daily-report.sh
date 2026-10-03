@@ -40,7 +40,12 @@ has() { # desc file fixed-string
     if grep -qF -- "$3" "$2"; then assert "$1" yes yes; else assert "$1" yes no; fi
 }
 lacks() { # desc file fixed-string
-    if grep -qF -- "$3" "$2"; then assert "$1" absent present; else assert "$1" absent absent; fi
+    grep -qF -- "$3" "$2"
+    case $? in
+        1) assert "$1" absent absent ;;
+        0) assert "$1" absent present ;;
+        *) assert "$1" absent "grep-error" ;;
+    esac
 }
 
 D="2026-06-28"
@@ -322,6 +327,36 @@ const got = suggestActions(srcs, [], { date: "$B", seen });
 console.log(got.length, got.some((a) => seen.has(a.id)) ? "seen-kept" : "seen-dropped");
 EOF
 assert "seen action dropped and seven still offered" "7 seen-dropped" "$(node "$tmp/cap.mjs" 2>&1)"
+
+echo "Test 12: a ticked action outranked later that day keeps its line and its tick"
+E="2026-07-06"
+cat > "$V/Clippings/_evidence/lone.md" <<EOF
+---
+title: "lone"
+triaged_at: $E
+evidence_kind:
+  - concepts
+---
+A lone clip.
+EOF
+node "$TOOL" --vault "$V" --date "$E" >/dev/null 2>&1
+ED="$V/50-Journal/Daily/$E.md"
+sed -e 's/^- \[ \] \(Archive .*lone\)/- [x] \1/' "$ED" > "$tmp/ticked.md" && mv "$tmp/ticked.md" "$ED"
+for i in 1 2 3 4 5 6 7; do
+    cat > "$V/Clippings/_evidence/tool-$i.md" <<EOF
+---
+title: "tool $i"
+triaged_at: $E
+evidence_kind:
+  - tools
+---
+Tool number $i.
+EOF
+done
+node "$TOOL" --vault "$V" --date "$E" >/dev/null 2>&1
+if grep -qE '^- \[x\] Archive .*lone' "$ED"; then f=kept; else f=lost; fi
+assert "ticked archive survives seven higher-ranked actions" "kept" "$f"
+assert "still at most seven suggested actions" "7" "$(grep -cE '^- \[.\] (Archive|Evaluate|Fold|File)' "$ED")"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

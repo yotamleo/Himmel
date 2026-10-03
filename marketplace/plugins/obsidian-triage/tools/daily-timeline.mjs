@@ -38,7 +38,7 @@ import path from "node:path";
 import { parse, fmScalar, fmList } from "./lib/frontmatter.mjs";
 import { renderPipelineSection, upsertSection, PIPELINE_HEADING } from "./lib/daily-timeline.mjs";
 import {
-  REPORT_HEADING, sourceFromClip, suggestActions, sectionLines, parseItems, carryOver, renderReportSection,
+  REPORT_HEADING, sourceFromClip, suggestActions, sectionLines, parseItems, carryOver, renderReportSection, isResolved,
 } from "./lib/daily-report.mjs";
 
 const SELF = "daily-timeline.mjs";
@@ -137,8 +137,10 @@ function buildReport(vault, date, content, eol) {
   }
   const { carried, seen } = carryOver(prior);
   const sources = reportSources(vault, date);
-  const actions = suggestActions(sources, listMocs(vault), { date, seen });
-  const marks = new Map(parseItems(sectionLines(content, REPORT_HEADING)).map((it) => [it.id, it.mark]));
+  const today = parseItems(sectionLines(content, REPORT_HEADING));
+  const pinned = new Set(today.filter((it) => isResolved(it.mark)).map((it) => it.id));
+  const actions = suggestActions(sources, listMocs(vault), { date, seen, pinned });
+  const marks = new Map(today.map((it) => [it.id, it.mark]));
   return { section: renderReportSection({ date, sources, actions, carried, marks }, eol), sources, actions, carried };
 }
 

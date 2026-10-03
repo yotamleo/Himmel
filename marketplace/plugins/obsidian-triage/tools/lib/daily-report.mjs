@@ -111,10 +111,12 @@ export function actionId(verb, target, date) {
  * source or `tools` kind → evaluate the tool; a tag shared with a MOC → fold
  * into it (clips sharing a MOC merge into one action); else archive.
  * `mocs` = [{ link, tags:[...] }]. Ids in `seen` are dropped before the
- * MAX_ACTIONS cap. Ranked: archive last, then more cited clips, then
- * engagement, then text. Returns [{ id, text, links }].
+ * MAX_ACTIONS cap; ids in `pinned` (already resolved on today's report) rank
+ * first, so a later, better suggestion cannot push a tick off the note.
+ * Then: archive last, more cited clips, engagement, text.
+ * Returns [{ id, text, links }].
  */
-export function suggestActions(sources, mocs, { date = "", seen = new Set() } = {}) {
+export function suggestActions(sources, mocs, { date = "", seen = new Set(), pinned = new Set() } = {}) {
   const byKey = new Map();
   const add = (verb, target, src, render, weight) => {
     const key = `${verb}|${target}`;
@@ -152,7 +154,7 @@ export function suggestActions(sources, mocs, { date = "", seen = new Set() } = 
     };
   }).filter((a) => !seen.has(a.id));
   actions.sort((a, b) =>
-    a.weight - b.weight || b.links.length - a.links.length || b.likes - a.likes || a.text.localeCompare(b.text));
+    pinned.has(b.id) - pinned.has(a.id) || a.weight - b.weight || b.links.length - a.links.length || b.likes - a.likes || a.text.localeCompare(b.text));
   return actions.slice(0, MAX_ACTIONS).map(({ id, text, links }) => ({ id, text, links }));
 }
 
@@ -177,7 +179,7 @@ export function parseItems(lines) {
   return items;
 }
 
-const isResolved = (mark) => mark === "x" || mark === "X" || mark === "-";
+export const isResolved = (mark) => mark === "x" || mark === "X" || mark === "-";
 
 /**
  * Carry-over from prior reports, given oldest → newest as arrays of item
