@@ -16,7 +16,7 @@ cited_line() {
   path="${ev%%:*}"; line="${ev##*:}"
   [ "$path" = "$2" ] || return 1
   case "$line" in ''|*[!0-9]*) return 1 ;; esac
-  sed -n "${line}p" "$WT/$path" | grep -Eq -- "$3"
+  grep -Eq -- "$3" <<<"$(sed -n "${line}p" "$WT/$path")"
 }
 
 accept_ok verdicts-valid-json jq -e 'type == "object"' "$V"
