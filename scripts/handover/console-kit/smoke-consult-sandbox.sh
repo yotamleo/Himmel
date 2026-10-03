@@ -11,7 +11,9 @@
 #   1. the append to the consult doc (append-results.sh) lands;
 #   2. a sandboxed write to a SIBLING file in the same bucket does NOT land;
 #   3. a sandboxed write inside the repo does NOT land;
-#   4. a hook CARRIED from a user scope the consult no longer loads fires.
+#   4. a hook CARRIED from a user scope the consult no longer loads fires;
+#   5. a PLUGIN hook (himmel-ops, enabled only via the profile's enabledPlugins) fires
+#      (HIMMEL-4118 F3).
 # The user scope is a scratch home (CONSULT_SETTINGS_HOME) holding only that canary hook;
 # the project scope is the real one. It spends bank (headless claude draws the same bank
 # as interactive use: two runs), so it is SKIPPED unless CONSULT_SMOKE=1 and the bank
@@ -127,6 +129,7 @@ prompt="Run exactly these three commands, each as its own separate Bash call, in
 # The confined run: exactly what the shim builds for a consult (LEG_PROFILE_NO_SETTING_SOURCES=1).
 # headless-claude-ok: opt-in live check of the consult Bash sandbox (HIMMEL-4066); bank preflight above, explicit --permission-mode, parsed --output-format json
 ( cd "$primary" && LEG_CLAUDE_BIN=claude LEG_PROFILE_SETTINGS="$work/probe-settings.json" LEG_PROFILE_NO_SETTING_SOURCES=1 \
+    HIMMEL_HOOK_INTEGRITY_DIR="$work/plugin-canary" \
     bash "$SHIM" -p --model claude-sonnet-5-5 --permission-mode default --output-format json "$prompt" ) > "$work/claude.json" 2> "$work/claude.err" || true
 
 fail=0
@@ -134,6 +137,15 @@ if grep -q 'LIVE smoke-ok' "$doc"; then echo "ok - the append to the consult doc
 if [ "$(cat "$sibling")" = "untouched" ]; then echo "ok - the sibling file in the bucket is untouched"; else echo "FAIL - a sandboxed write reached a SIBLING file in the bucket"; fail=1; fi
 if [ ! -e "$probe" ]; then echo "ok - no file was written inside the repo"; else echo "FAIL - a sandboxed write reached the repo"; fail=1; fi
 if [ -e "$work/canary-fired" ]; then echo "ok - the carried user-scope PreToolUse hook fired"; else echo "FAIL - the carried user-scope PreToolUse hook did NOT fire"; fail=1; fi
+# Plugin-hook canary (HIMMEL-4118 F3): himmel-ops' SessionStart record-hook-integrity.sh is
+# wired ONLY in the plugin's hooks.json (never in a settings scope, so it is not carried), and
+# writes its pin file under HIMMEL_HOOK_INTEGRITY_DIR. A pin file in that fresh dir proves the
+# plugin's hooks load under `--setting-sources ""`, via the profile's enabledPlugins alone.
+if [ -n "$(find "$work/plugin-canary" -type f 2>/dev/null | head -n 1)" ]; then
+    echo "ok - the himmel-ops plugin hook (record-hook-integrity.sh) fired under the confined run"
+else
+    echo "FAIL - the himmel-ops plugin hook did NOT fire under the confined run (plugin hooks may not load under --setting-sources \"\")"; fail=1
+fi
 # Not vacuous: the model must have ATTEMPTED BOTH sibling and repo probes and seen the
 # sandbox refuse each (two refusal lines), not merely one refusal phrase.
 result="$(jq -r '.result // ""' "$work/claude.json" 2>/dev/null)"

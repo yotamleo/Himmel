@@ -1242,6 +1242,18 @@ fi
 if [ -n "$PROFILE" ]; then
     PROFILES_MJS="${HEADED_ARM_LEG_PROFILES:-$HERE/../../lanes/plugin-profiles.mjs}"
     LEG_SHIM="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
+    # (HIMMEL-4118 F1) A consult is confined only by the shim mapping
+    # LEG_PROFILE_NO_SETTING_SOURCES=1 to `--setting-sources ""`, so a shim
+    # override pointing anywhere else would load the scopes unconfined: refuse it.
+    if [ "$CONSULT" -eq 1 ] && [ -n "${HEADED_ARM_LEG_SHIM:-}" ]; then
+        _consult_shim="$(cd -P "$(dirname "$LEG_SHIM")" 2>/dev/null && pwd -P)/$(basename "$LEG_SHIM")"
+        _consult_shim_want="$(cd -P "$HERE/../../lanes" && pwd -P)/leg-claude-launcher.sh"
+        if [ "$_consult_shim" != "$_consult_shim_want" ]; then
+            echo "headed-arm-leg: --consult refuses HEADED_ARM_LEG_SHIM=$HEADED_ARM_LEG_SHIM: only $_consult_shim_want applies the consult's --setting-sources confinement" >&2
+            exit 2
+        fi
+        unset -v _consult_shim _consult_shim_want
+    fi
     # --judge (HIMMEL-3133): the leg preface tells a read-only judge to
     # implement and ship, which is wrong for the role. HEADED_ARM_LEG_PREFACE
     # stays the higher-precedence test seam either branch honors - only the

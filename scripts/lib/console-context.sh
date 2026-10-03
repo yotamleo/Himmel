@@ -42,6 +42,8 @@
 #   console_context_leg_env_unset_names      -- prints, one per line, every var a
 #                                                leg sets on itself that must never
 #                                                reach a console it arms (HIMMEL-3568)
+#   console_context_launch_seam_env_names    -- prints the subset of that list that
+#                                                only shapes a launch (HIMMEL-4118)
 
 console_context_valid() {
     case "$1" in
@@ -203,5 +205,25 @@ console_context_leg_env_unset_names() {
         HEADED_ARM_REQUIRED_AUTOCOMPACT \
         HEADED_ARM_LAUNCHER \
         HEADED_ARM_RECORDER \
+        HEADED_ARM_LAUNCHER_ENV
+}
+
+# console_context_launch_seam_env_names -- prints, one per line, the names in
+# the list above that only choose HOW a later headed-arm launch builds its
+# claude argv (the shim, its binary and its profile flags), never who the
+# session is or which guards it runs under. arm-resume.sh clears exactly these
+# in its `at` job body (HIMMEL-4118 F2): `at` snapshots the submitter's env, so
+# an arm made from inside a consult would otherwise hand the resumed session
+# LEG_PROFILE_NO_SETTING_SOURCES and friends. The rest of the list stays live
+# there on purpose: HIMMEL_CONSOLE_LEG turns leg-only guard hooks ON and
+# HANDOVER_DIR names the root, so clearing them would widen, not narrow.
+console_context_launch_seam_env_names() {
+    printf '%s\n' \
+        LEG_PROFILE_SETTINGS \
+        LEG_PROFILE_PREFACE \
+        LEG_PROFILE_MCP_CONFIG \
+        LEG_PROFILE_NO_SETTING_SOURCES \
+        LEG_CLAUDE_BIN \
+        HEADED_ARM_LAUNCHER \
         HEADED_ARM_LAUNCHER_ENV
 }
