@@ -63,6 +63,12 @@ run "red on latest main too: REFUSE" 1 'REFUSE.*a.*not proven fixed'
 set3 'a\tsuccess\nb\tskipped\n' 'a\tsuccess\n' 'a\tsuccess\n'
 run "nothing red: no merge-forward needed" 3 'nothing red'
 
+# HIMMEL-4113: awk skips a directory with rc 0, which would read as "nothing red"
+set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
+rm -f "$tmp/pr"; mkdir "$tmp/pr"
+run "PR job file is a directory (unparseable): usage, never 'nothing red'" 2 'usage'
+rmdir "$tmp/pr"
+
 # F1: the base run sha check is mandatory
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
 run "base run sha differs from the merge-base: REFUSE" 1 'REFUSE.*merge-base' --base-sha abc123 --main-base-sha def456
