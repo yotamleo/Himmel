@@ -288,6 +288,140 @@ case "$out" in
     *) echo "FAIL T36 error text silent on multi-line marker placement"; FAILED=$((FAILED + 1)) ;;
 esac
 
+# T37 (HIMMEL-3980): a pure-comment line between the open paren and the program
+# literal must not hide the call from the join → BLOCK; marker → CLEAN
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // run it" "  'claude', args);" > "$TMP/cm.mjs"
+rc=$(run_hook "cm.mjs")
+assert_rc "T37 comment line between ( and program, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // step 1 run it" "  'claude', args);" > "$TMP/cm_unbal.mjs"
+rc=$(run_hook "cm_unbal.mjs")
+assert_rc "T37b bracket-free // comment between ( and program, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "subprocess.run(" "    # run it" '    ["claude", *a])' > "$TMP/cm.py"
+rc=$(run_hook "cm.py")
+assert_rc "T37c python # comment line before program, unmarked" 1 "$rc"
+
+# T37p (codex-1 r7): a leading # in JS/TS is a private-field sigil, not a comment → BLOCK
+printf "%s\n%s\n%s\n" "  #worker = spawnSync(" "  'claude', args);" "}" > "$TMP/cm_priv.mjs"
+rc=$(run_hook "cm_priv.mjs")
+assert_rc "T37p JS #private field initializer spawn, unmarked" 1 "$rc"
+
+# T37q (judge J1644): `#` is a comment only in an allowlist of `#`-comment languages, so
+# JS-hosting files (.vue .svelte .astro .html .mdx) keep it as code → BLOCK
+for ext in vue svelte astro html mdx; do
+    printf "%s\n%s\n%s\n%s\n" "class A {" "  #worker = spawnSync(" '    "claude", args);' "}" > "$TMP/cm_priv.$ext"
+    rc=$(run_hook "cm_priv.$ext")
+    assert_rc "T37q #private field spawn in .$ext, unmarked" 1 "$rc"
+done
+# T37r (codex-1 r9): an extensionless file is not classified, so `#` stays code → BLOCK
+printf "%s\n%s\n%s\n%s\n" "class A {" "  #worker = spawnSync(" '    "claude", args);' "}" > "$TMP/cm_priv_noext"
+rc=$(run_hook "cm_priv_noext")
+assert_rc "T37r #private field spawn in an extensionless file, unmarked" 1 "$rc"
+
+# T37s/t/u (judge J1644b): JS hosted INSIDE an allowlisted file — a `#` line that OPENS a
+# paren is code, not a comment (a `#` line is skipped only at net bracket depth 0) → BLOCK
+printf "%s\n%s\n%s\n%s\n%s\n" "script: |" "  class A {" "    #worker = spawnSync(" '      "claude", args);' "  }" > "$TMP/cm_host.yml"
+rc=$(run_hook "cm_host.yml")
+assert_rc "T37s JS #private spawn in a .yml github-script block, unmarked" 1 "$rc"
+printf "%s\n%s\n%s\n%s\n%s\n" "cat > x.js <<EOF" "class A {" "  #worker = spawnSync(" '    "claude", args);' "}" > "$TMP/cm_host.sh"
+rc=$(run_hook "cm_host.sh")
+assert_rc "T37t JS #private spawn in a .sh heredoc, unmarked" 1 "$rc"
+printf "%s\n%s\n%s\n%s\n%s\n" 'JS = """' "class A {" "  #worker = spawnSync(" '    "claude", args);' "}" > "$TMP/cm_host.py"
+rc=$(run_hook "cm_host.py")
+assert_rc "T37u JS #private spawn in a .py triple-quoted string, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* run it */" "  'claude', args);" > "$TMP/cm_blk.mjs"
+rc=$(run_hook "cm_blk.mjs")
+assert_rc "T37d block-comment line before program, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n%s\n" "const r = spawnSync(" "  // headless-claude-ok: probe" "  // run it" "  'claude', args);" > "$TMP/cm_ok.mjs"
+rc=$(run_hook "cm_ok.mjs")
+assert_rc "T37e marker inside the interleaved comments covers the call" 0 "$rc"
+
+printf "%s\n%s\n%s\n" "// headless-claude-ok: probe" "const r = spawnSync(" "  // run it" > "$TMP/cm_ok2.mjs"
+printf "%s\n" "  'claude', args);" >> "$TMP/cm_ok2.mjs"
+rc=$(run_hook "cm_ok2.mjs")
+assert_rc "T37f marker above the call line, comment between, covers it" 0 "$rc"
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  // run it" "  'git', ['claude']);" > "$TMP/cm_git.mjs"
+rc=$(run_hook "cm_git.mjs")
+assert_rc "T37g comment between, claude not the program" 0 "$rc"
+
+# T37h (codex-1): code AFTER a closing */ on the comment's own line is still code → BLOCK
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* note */ 'claude'," "  args);" > "$TMP/cm_tail.mjs"
+rc=$(run_hook "cm_tail.mjs")
+assert_rc "T37h block comment then program on the same line, unmarked" 1 "$rc"
+
+printf "%s\n%s\n%s\n%s\n%s\n" "const r = spawnSync(" "  /* headless-claude-ok: x" "     still comment */" "  'claude', args);" "" > "$TMP/cm_ml_ok.mjs"
+rc=$(run_hook "cm_ml_ok.mjs")
+assert_rc "T37j marker inside a multi-line block comment covers the call" 0 "$rc"
+
+# T37k (codex-1 r2): a trailing comment after a closing */ must not feed depth
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* note */ // x" "  'claude', args);" > "$TMP/cm_trail.mjs"
+rc=$(run_hook "cm_trail.mjs")
+assert_rc "T37k block comment then bracket-free line comment, unmarked" 1 "$rc"
+
+# T37v/w (judge J1644c): a leading `//` in .py is floor division, so a wrapped line that
+# starts with it and opens a paren is code, not a comment → BLOCK
+printf "%s\n%s\n%s\n%s\n%s\n" "width = (" "    total" "    // len(subprocess.run(" '        ["claude", "-p", q], capture_output=True).stdout)' ")" > "$TMP/fd2.py"
+rc=$(run_hook "fd2.py")
+assert_rc "T37v python // floor division opening subprocess.run(, unmarked" 1 "$rc"
+printf "%s\n%s\n%s\n" "n = (total" "    // subprocess.run(" '        ["claude", "-p"]).returncode)' > "$TMP/floordiv.py"
+rc=$(run_hook "floordiv.py")
+assert_rc "T37w python // floor division then program, unmarked" 1 "$rc"
+
+# T37x (judge J1644c): for EVERY comment kind, a line that OPENS the paren is never skipped
+# (a skip applies only to a line with no bracket character) → BLOCK
+for kind in "//:mjs" "#:py" "/* ( */ spawnSync(:mjs"; do
+    case "$kind" in
+        "//:mjs") first="    // spawnSync(" ;;
+        "#:py") first="    # spawnSync(" ;;
+        *) first="    /* ( */ spawnSync(" ;;
+    esac
+    ext=${kind##*:}
+    printf "%s\n%s\n%s\n" "x = [" "$first" "    'claude', args);" > "$TMP/cm_open.$ext"
+    rc=$(run_hook "cm_open.$ext")
+    assert_rc "T37x comment kind '${kind%:*}' opening a paren is not skipped" 1 "$rc"
+done
+
+# T37y (judge J1644d): a line that nets to depth 0 but CLOSES the outer paren and then OPENS
+# the spawn paren (`// b); run(`) holds brackets, so it is never skipped, for every kind → BLOCK
+printf "%s\n%s\n%s\n" "total = (a" "         // b) + subprocess.run(" '    ["claude", "-p"]).returncode' > "$TMP/fdclose.py"
+printf "%s\n%s\n%s\n" "x = (a" "    // b); subprocess.run(" '    ["claude", "-p"])' > "$TMP/fdsemi.py"
+printf "%s\n%s\n%s\n" "const ok = (o" "  #x in o); spawnSync(" '  "claude", ["-p"])' > "$TMP/priv.yml"
+printf "%s\n%s\n%s\n" "total = (a" "    /* b) */ + subprocess.run(" '    ["claude", "-p"]).returncode' > "$TMP/blockclose.py"
+for name in fdclose.py fdsemi.py priv.yml blockclose.py; do
+    rc=$(run_hook "$name")
+    assert_rc "T37y close-then-open comment line in $name is not skipped" 1 "$rc"
+done
+
+printf "%s\n%s\n%s\n" "const r = spawnSync(" "  /* a */ /* b */ 'claude'," "  args);" > "$TMP/cm_two.mjs"
+rc=$(run_hook "cm_two.mjs")
+assert_rc "T37l two block comments then program, unmarked" 1 "$rc"
+
+# T37m (codex-1 r3): ten interleaved comment lines must not exhaust the window → BLOCK
+{
+    echo "const r = spawnSync("
+    for n in 1 2 3 4 5 6 7 8 9 10; do echo "  // c$n"; done
+    echo "  'claude', args);"
+} > "$TMP/cm_many.mjs"
+rc=$(run_hook "cm_many.mjs")
+assert_rc "T37m ten comment lines between ( and program, unmarked" 1 "$rc"
+
+# T37n (codex-1 r4): a stray unterminated /* (e.g. inside a template literal) must not
+# blank the rest of the file — a later unmarked spawn is still caught → BLOCK
+{
+    echo 'const s = `'
+    echo "/* not a comment, never closed"
+    echo '`;'
+    for n in 1 2 3 4 5 6 7 8 9 10; do echo "x$n();"; done
+    echo "const r = spawnSync("
+    echo "  'claude', args);"
+} > "$TMP/cm_unterm.mjs"
+rc=$(run_hook "cm_unterm.mjs")
+assert_rc "T37n unterminated /* does not hide a later unmarked spawn" 1 "$rc"
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")
