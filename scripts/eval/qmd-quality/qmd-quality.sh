@@ -64,6 +64,10 @@ done
 [ -n "$OUT" ] || { echo "qmd-quality: --out <dir> is required" >&2; exit 64; }
 [ -f "$INDEX" ] || { echo "qmd-quality: no index at '$INDEX'" >&2; exit 64; }
 [ -f "$GOLDEN" ] || { echo "qmd-quality: no golden set at '$GOLDEN'" >&2; exit 64; }
+[ -n "$MODES" ] || { echo "qmd-quality: --modes is empty; nothing would be evaluated" >&2; exit 64; }
+case "$CAND" in
+  '' | *[!0-9]* | 0*) echo "qmd-quality: --candidate-limit must be a positive integer, got '$CAND'" >&2; exit 64 ;;
+esac
 # The snapshot step removes <out>/index.sqlite first; it must never be the source.
 if [ "$SNAPSHOT" -eq 1 ] && [ "$INDEX" -ef "$OUT/index.sqlite" ]; then
   echo "qmd-quality: --index is the snapshot target $OUT/index.sqlite; pick another --out" >&2

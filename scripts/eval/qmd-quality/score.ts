@@ -11,11 +11,12 @@
 //   mrr            mean of 1/rank of the first expected doc (0 when absent)
 //   missing        golden queries with no run row for that mode (scored 0)
 // Paths compare case-blind: qmd lowercases the paths it indexes.
-// Exit 0 scored, 2 bad input (unreadable file, no expect doc, duplicate id).
+// Exit 0 scored, 2 bad input (unreadable file, no expect doc, duplicate id,
+// or a mode where every query errored).
 import { readFileSync } from "node:fs";
 
 export type Golden = { id: string; query: string; collections: string[]; expect: string[] };
-export type Run = { id: string; mode: string; ranked: string[] };
+export type Run = { id: string; mode: string; ranked: string[]; error?: string };
 export type Row = { mode: string; collection: string; n: number; hit1: number; hit5: number; mrr: number; missing: number };
 
 export function readJsonl<T>(path: string): T[] {
@@ -104,6 +105,13 @@ if (import.meta.main) {
   const bad = validateGolden(golden);
   if (bad) {
     console.error(`score: ${bad}`);
+    process.exit(2);
+  }
+  // One erroring query is a measured refusal; a mode where all of them errored
+  // is a broken run (model, SDK or index), and scoring it would read as zero.
+  const broken = [...new Set(runs.map((r) => r.mode))].filter((m) => runs.every((r) => r.mode !== m || r.error));
+  if (broken.length) {
+    console.error(`score: every query errored in mode(s) ${broken.join(",")}; refusing to score a broken run`);
     process.exit(2);
   }
   console.log(formatTsv(score(golden, runs)));

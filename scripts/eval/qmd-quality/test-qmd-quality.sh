@@ -41,6 +41,12 @@ eq "score: a golden row with no expect doc is refused" "$rc" "2"
 cat "$FIX/golden.jsonl" "$FIX/golden.jsonl" >"$TMP/dup.jsonl"
 bun "$HERE/score.ts" --golden "$TMP/dup.jsonl" --runs "$FIX/runs.jsonl" >/dev/null 2>&1; rc=$?
 eq "score: a duplicate golden id is refused" "$rc" "2"
+# A mode whose every query errored is a broken run, not a quality of zero.
+{ cat "$FIX/runs.jsonl"
+  printf '{"id":"g%s","mode":"auto","ranked":[],"ms":1,"error":"model load failed"}\n' 1 2 3; } >"$TMP/all-err.jsonl"
+out=$(bun "$HERE/score.ts" --golden "$FIX/golden.jsonl" --runs "$TMP/all-err.jsonl" 2>&1); rc=$?
+eq "score: a mode where every query errored is refused" "$rc" "2"
+has "score: the refusal names the mode" "$out" "auto"
 
 # --- latency.ts: median and p90 per mode, input order irrelevant --------------
 out=$(bun "$HERE/latency.ts" --runs "$FIX/latency-runs.jsonl" 2>&1); rc=$?
@@ -73,6 +79,12 @@ eq "wrapper: --index equal to the snapshot target is refused" "$rc" "64"
 eq "wrapper: the source index survives that refusal" "$(cat "$TMP/o4/index.sqlite" 2>/dev/null)" "keep"
 out=$(timeout 10 bash "$HERE/qmd-quality.sh" --out "$TMP/o5" --index 2>&1); rc=$?
 eq "wrapper: a value flag with no value is a usage error, not a hang" "$rc" "64"
+out=$(XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --index "$TMP/idx.sqlite" --out "$TMP/o6" --modes "" 2>&1); rc=$?
+eq "wrapper: an empty --modes is a usage error" "$rc" "64"
+for bad in 0 -5 abc; do
+  out=$(XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --index "$TMP/idx.sqlite" --out "$TMP/o7" --candidate-limit "$bad" 2>&1); rc=$?
+  eq "wrapper: --candidate-limit $bad is a usage error" "$rc" "64"
+done
 
 echo "test-qmd-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
