@@ -1860,7 +1860,8 @@ _bwimc_ambig_check() {
 # comment after it stays unstripped (the old reading), HIMMEL-4138.
 _bwimc_strip_comments() {
     local t="$1" o="" k=0 n c nx st="C" top prev="" run=0
-    local hdok=1 hd=() hdd=() hi j w q1 q2 dash body line chk found
+    local hdok=1 hd=() hdd=() hdk=() hi j w q1 q2 dash body line chk found
+    local hdre="^(\"[A-Za-z_][A-Za-z0-9_]*\"|'[A-Za-z_][A-Za-z0-9_]*'|[A-Za-z_][A-Za-z0-9_]*)\$"
     _BWIMC_NC="$t"
     case "$t" in
         \#*|*[[:space:]\;\&\|\(\)\<\>\`]\#*) : ;;
@@ -1931,7 +1932,7 @@ _bwimc_strip_comments() {
                 esac ;;
             '<')
                 # A heredoc opener: its body is literal text, not comments, so
-                # it is blanked below, never stripped. Without this a `#` in a commit
+                # it is never stripped. Without this a `#` in a commit
                 # message inside `"$(cat <<'EOF'…)"` made a second reading of
                 # the whole command (twice the scan time for nothing).
                 if [ "$hdok" = 1 ] && [ "$nx" = '<' ] && [ "${t:$((k+2)):1}" != '<' ] && [ "${t:$((k-1)):1}" != '<' ]; then
@@ -1946,6 +1947,7 @@ _bwimc_strip_comments() {
                     q1="${w//[!\']/}"; q2="${w//[!\"]/}"
                     if [ $(( ${#q1} % 2 )) = 0 ] && [ $(( ${#q2} % 2 )) = 0 ] && [ -n "${w//[\'\"\\]/}" ]; then
                         hd+=("${w//[\'\"\\]/}"); hdd+=("$dash")
+                        if [[ "$w" =~ $hdre ]]; then hdk+=(1); else hdk+=(0); fi
                         o="$o${t:$k:$((j-k))}"; k=$j; prev=w; continue
                     fi
                 fi
@@ -1956,9 +1958,12 @@ _bwimc_strip_comments() {
                     # Copy each pending body through its terminator line. A
                     # terminator never found copies nothing: the lines are
                     # then stripped as commands, an extra reading only.
-                    # The body lines are blanked, only the terminator kept: a
-                    # quote in a body the first reading's blanker missed
-                    # (`<<\E`, `<<$E`) cannot open a span here (J1672).
+                    # A delimiter _bwimc_blank_heredocs cannot parse (`<<\E`,
+                    # `<<$E`, `<<'#'`) left its body unblanked in the first
+                    # reading, so a quote there could open a span over a later
+                    # write: that body is dropped here, terminator kept
+                    # (J1672). A plain one is copied, so this reading stays
+                    # identical to the first and is skipped.
                     j=$((k+1)); body=""; found=1
                     for hi in "${!hd[@]}"; do
                         found=0
@@ -1968,11 +1973,11 @@ _bwimc_strip_comments() {
                             chk="$line"
                             if [ "${hdd[$hi]}" = 1 ]; then while [ "${chk:0:1}" = $'\t' ]; do chk="${chk#?}"; done; fi
                             [ "$chk" = "${hd[$hi]}" ] && { body="$body$line"$'\n'; found=1; break; }
-                            body="$body"$'\n'
+                            [ "${hdk[$hi]}" = 1 ] && body="$body$line"$'\n'
                         done
                         [ "$found" = 1 ] || break
                     done
-                    hd=(); hdd=()
+                    hd=(); hdd=(); hdk=()
                     if [ "$found" = 1 ]; then
                         [ "$j" -le "$n" ] || { body="${body%?}"; j=$n; }
                         o="$o$c$body"; k=$j; continue
