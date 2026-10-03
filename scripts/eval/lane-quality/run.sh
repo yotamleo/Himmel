@@ -67,17 +67,17 @@ materialize() {
   if [ "$mode" = --reference ]; then
     src="$TASKS/$task/reference"
     [ -d "$src" ] || return 0
-    cp -R "$src/." "$dir/"
-    while IFS= read -r f; do mv "$f" "${f%.ref}"; done < <(find "$dir/lq-work" -name '*.ref' 2>/dev/null)
+    cp -R "$src/." "$dir/" || die "cannot copy the $task reference"
+    while IFS= read -r f; do mv "$f" "${f%.ref}" || die "cannot rename $f"; done < <(find "$dir/lq-work" -name '*.ref' 2>/dev/null)
     return 0
   fi
   src="$TASKS/$task/fixture"
   if [ -d "$src" ]; then
-    cp -R "$src/." "$dir/"
-    git -C "$dir" add -A
+    cp -R "$src/." "$dir/" || die "cannot copy the $task fixture"
+    git -C "$dir" add -A || die "cannot stage the $task fixture"
     GIT_AUTHOR_DATE='2026-01-01T00:00:00Z' GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' \
       git -C "$dir" -c user.name=lane-quality -c user.email=lane-quality@invalid \
-      -c commit.gpgsign=false commit -q --no-verify -m "lane-quality fixture: $task"
+      -c commit.gpgsign=false commit -q --no-verify -m "lane-quality fixture: $task" || die "cannot commit the $task fixture"
   fi
   git -C "$dir" rev-parse HEAD
 }
@@ -141,7 +141,7 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   wt="$WORK_ROOT/lq-$RUN_ID-$task"
   mkdir -p "$WORK_ROOT"
   git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $task"
-  fix="$(materialize "$task" "$wt")"
+  fix="$(materialize "$task" "$wt")" || die "fixture for $task failed"
   bank0="$(bank_read)"; bank0="${bank0#* }"
   remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" 'BEGIN{printf "%.2f", m - s}')"
   start="$(date +%s)"

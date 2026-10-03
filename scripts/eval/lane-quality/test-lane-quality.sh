@@ -157,6 +157,14 @@ LQ_WORK_ROOT="$TMP/blocked" bash "$RUN" run --lane native --model m --tasks shel
 rc=$?
 check "a failed worktree add fails the sweep" '[ "$rc" -ne 0 ] && ! grep -q "lane-quality: done" "$TMP/run6.log"'
 
+RO="$TMP/ro"
+git init -q "$RO" && git -C "$RO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+chmod -R a-w "$RO/.git/objects"
+bash "$RUN" materialize finding-verify "$RO" >"$TMP/mat.log" 2>&1
+rc=$?
+chmod -R u+w "$RO/.git/objects"
+check "a fixture that cannot be committed fails materialize" '[ "$rc" -ne 0 ]'
+
 : >"$TMP/fake.log.judge"
 bash "$RUN" run --lane native --model m --tasks shell-red-green --max-usd 0.5 --out "$TMP/out7" >"$TMP/run7.log" 2>&1
 check "no judge call once the agent spent the whole budget" '[ ! -s "$TMP/fake.log.judge" ] && [ "$(jq -s ".[0].judge" "$TMP/out7/runs.jsonl")" = null ]'
