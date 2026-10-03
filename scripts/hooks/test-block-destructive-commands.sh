@@ -497,6 +497,20 @@ assert_rc "4126 heredoc after a one-line ' quote" 0 "$(run_case "$(j_bash $'echo
 assert_rc "4126 heredoc after a \"it's\" line" 0 "$(run_case "$(j_bash $'echo "it\'s"\ncat <<\'EOF\' > f\nrm -rf build\nEOF')")"
 assert_rc "4126 two heredocs, rm in the second body" 0 "$(run_case "$(j_bash $'cat <<\'A\' > f\nx\nA\ncat <<\'B\' > g\nrm -rf build\nB')")"
 assert_rc "4126 heredoc inside \$( )" 0 "$(run_case "$(j_bash $'git commit -m "$(cat <<\'EOF\'\nfix: thing\nEOF\n)"')")"
+# HIMMEL-4146: an opener inside an unquoted ${, $(( or $[ left open on an
+# earlier line is part of that expansion's text; the lines after it run.
+assert_rc "4146a opener inside a carried \${x#" 2 "$(run_case "$(j_bash $'echo ${x#\ncat <<\'EOF\'\n}\nrm -rf d\nEOF')")"
+assert_rc "4146b opener inside a carried \${x:-" 2 "$(run_case "$(j_bash $'echo ${x:-\ncat <<\'EOF\'\n}\nrm -rf d\nEOF')")"
+assert_rc "4146c opener inside a carried \${x#'}'" 2 "$(run_case "$(j_bash $'echo ${x#\'}\'\ncat <<\'EOF\'\n}\nrm -rf d\nEOF')")"
+assert_rc "4146d opener inside a carried \${x#\"}\"" 2 "$(run_case "$(j_bash $'echo ${x#"}"\ncat <<\'EOF\'\n}\nrm -rf d\nEOF')")"
+assert_rc "4146e opener inside a carried \${(s:':)x}'" 2 "$(run_case "$(j_bash $'echo ${(s:\':)x}\'\ncat <<\'EOF\'\n}\nrm -rf d\nEOF')")"
+assert_rc "4146f opener inside a carried \$((" 2 "$(run_case "$(j_bash $'echo $((1+\ncat <<\'EOF\'\n))\nrm -rf d\nEOF')")"
+assert_rc "4146g opener inside a carried \$[" 2 "$(run_case "$(j_bash $'echo $[1+\ncat <<\'EOF\'\n]\nrm -rf d\nEOF')")"
+assert_rc "4146h opener inside a carried \${a[']}'" 2 "$(run_case "$(j_bash $'a=(x); echo ${a[\']}\'\ncat <<\'EOF\'\n]}\nrm -rf d\nEOF')")"
+assert_rc "4146i opener on the line of an open \${x:-" 2 "$(run_case "$(j_bash $'echo ${x:- cat <<\'EOF\'\n}\nrm -rf d\nEOF')")"
+# A closed expansion before the opener keeps the body stripped.
+assert_rc "4146 heredoc after a closed \${HOME}" 0 "$(run_case "$(j_bash $'d=${HOME}/x\ncat <<\'EOF\' > "$d"\nrm -rf build\nEOF')")"
+assert_rc "4146 heredoc after a closed \$((1+2))" 0 "$(run_case "$(j_bash $'n=$((1+2))\ncat <<\'EOF\' > f\nrm -rf build\nEOF')")"
 # HIMMEL-3030: no-heredoc path now sets rm_scrub="$cmd_lc" directly instead of
 # re-deriving it via the printf|tr|tr pipeline. cmd_lc folds CR and LF to ';'
 # independently in one `tr` pass; the old pipeline folded CR->LF first, then
@@ -837,6 +851,40 @@ assert_rc 'find . -name x allowed'       0 "$(run_case "$(j_bash 'find . -name x
 assert_rc 'find . -exec ls -r allowed'   0 "$(run_case "$(j_bash 'find . -exec ls -r {} +')")"
 assert_rc 'find -exec rm -f {} + allowed' 0 "$(run_case "$(j_bash 'find . -name x -exec rm -f {} +')")"
 assert_rc 'find -name deleted allowed'   0 "$(run_case "$(j_bash 'find . -name deleted')")"
+# HIMMEL-4134: -exec/-x is an executor flag only after find, fd or bfs. With
+# none of those words before it, and no quote or expansion that could spell
+# one, the flag is just text.
+assert_rc 'echo x -exec rm -rf y allowed' 0 "$(run_case "$(j_bash 'echo x -exec rm -rf y')")"
+assert_rc 'do_thing -x rm -rf allowed'   0 "$(run_case "$(j_bash 'do_thing -x rm -rf')")"
+# A real find/fd launch still denies, behind wrappers too.
+assert_rc 'command find -exec rm -rf'    2 "$(run_case "$(j_bash 'command find . -exec rm -rf {} +')")"
+assert_rc 'sudo find -exec rm -rf'       2 "$(run_case "$(j_bash 'sudo find . -exec rm -rf {} +')")"
+assert_rc 'nohup find -exec rm -rf'      2 "$(run_case "$(j_bash 'nohup find . -exec rm -rf {} +')")"
+assert_rc 'xargs find -exec rm -rf'      2 "$(run_case "$(j_bash 'ls | xargs find -exec rm -rf {} +')")"
+assert_rc 'find -name "a;b" -exec rm -rf' 2 "$(run_case "$(j_bash 'find . -name "a;b" -exec rm -rf {} +')")"
+assert_rc 'f""ind -exec rm -rf'          2 "$(run_case "$(j_bash 'f""ind . -exec rm -rf {} +')")"
+assert_rc '\find -exec rm -rf'           2 "$(run_case "$(j_bash '\find . -exec rm -rf {} +')")"
+# shellcheck disable=SC2016  # literal $F launcher is the point of this case
+assert_rc '$F . -exec rm -rf'          2 "$(run_case "$(j_bash '$F . -exec rm -rf {} +')")"
+assert_rc '/usr/bin/fi?d -exec rm -rf'   2 "$(run_case "$(j_bash '/usr/bin/fi?d . -exec rm -rf {} +')")"
+assert_rc 'gfind -exec rm -rf'           2 "$(run_case "$(j_bash 'gfind . -exec rm -rf {} +')")"
+assert_rc 'fdfind -x rm -rf'             2 "$(run_case "$(j_bash 'fdfind -x rm -rf')")"
+assert_rc 'bfs -exec rm -rf'             2 "$(run_case "$(j_bash 'bfs . -exec rm -rf {} +')")"
+assert_rc 'bash -exec rm (-e -x -e -c)'  2 "$(run_case "$(j_bash 'bash -exec rm -rf d')")"
+assert_rc 'sh -x rm script on PATH'      2 "$(run_case "$(j_bash 'sh -x rm -rf d')")"
+assert_rc 'parallel -X rm -rf'           2 "$(run_case "$(j_bash 'parallel -X rm -rf ::: d')")"
+assert_rc 'xargs -x rm -rf'              2 "$(run_case "$(j_bash 'ls | xargs -x rm -rf')")"
+# The quote-normalised scan strips the quote that keeps the flag live.
+assert_rc "echo 'a -ok rm \\-r d"        2 "$(run_case "$(j_bash "echo 'a -ok rm \\-r d")")"
+assert_rc 'commit "x -exec rm -"r" d'    2 "$(run_case "$(j_bash 'git commit -m "x -exec rm -"r" d')")"
+# Quoted text that documents the hook: pinned as main decides it. A quoted
+# `;` reads as a separator (deny); a quoted rm with no separator before it
+# is text (allow).
+assert_rc 'commit "guard; then rm -rf" denied' 2 "$(run_case "$(j_bash 'git commit -m "fix: guard; then rm -rf is denied"')")"
+assert_rc 'commit "x; then shutdown" denied' 2 "$(run_case "$(j_bash 'git commit -m "x; then shutdown later"')")"
+assert_rc 'commit "echo x -exec rm -rf" denied' 2 "$(run_case "$(j_bash 'git commit -m "echo x -exec rm -rf y"')")"
+assert_rc 'commit "find -delete" allowed' 0 "$(run_case "$(j_bash 'git commit -m "docs: find -delete is now refused"')")"
+assert_rc 'commit "xargs rm -rf" allowed' 0 "$(run_case "$(j_bash 'git commit -m "a xargs rm -rf b"')")"
 assert_rc 'xargs echo allowed'           0 "$(run_case "$(j_bash 'ls | xargs echo')")"
 assert_rc 'xargs rm -f allowed'          0 "$(run_case "$(j_bash 'ls | xargs rm -f')")"
 assert_rc 'for; do echo allowed'         0 "$(run_case "$(j_bash 'for f in x; do echo; done')")"

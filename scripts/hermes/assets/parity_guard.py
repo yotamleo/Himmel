@@ -162,11 +162,23 @@ _EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:[^\s|;&`\"']*/)?"
 # the env-prefix assignment tolerance and the leading env-assignment prefix so
 # a quoted value's space does not drop the verb out of command position.
 _ASSIGN = r"[a-z0-9_]+=(?:'[^']*'|\"[^\"]*\"|[^\s|;&]*)"
+# HIMMEL-4134: parity with the .sh grammar (scripts/guardrails/lib.sh
+# guard_cmdpos_grammar, HIMMEL-3983/3984): a compound keyword or a function
+# body's `{` starts a command (`) {` too), and so do the exec-style wrappers
+# exec, timeout, nohup, nice, time and xargs, each with its own flags.
+_VAL = r"\s+[^-\s]\S*"
 _CMDPOS_DESTRUCTIVE = (
-    r"(?:^|[;&|(`\n])\s*"
+    r"(?:^|[;&|(`\n]|\)\s*\{)\s*"
     + r"(?:(?:" + _ASSIGN
+    + r"|(?:do|then|else|elif|if|while|until|function\s+\S+|!|\{)"
     + r"|" + _EXE_PREFIX + r"(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*"   # sudo + flags, each with an optional value token (CR r6/r7)
     + r"|env(?:\s+(?:-\S+(?:\s+[^-\s]\S*)?|" + _ASSIGN + r"))*"      # env + flags(+value)/assignments (CR r6/r7)
+    + r"|exec(?:\s+(?:-a" + _VAL + r"|-\S+))*"
+    + r"|timeout(?:\s+-\S+(?:" + _VAL + r")?)*" + _VAL
+    + r"|nohup(?:\s+--)?"
+    + r"|nice(?:\s+(?:-n" + _VAL + r"|--a[a-z-]*" + _VAL + r"|-\S+))*"
+    + r"|time(?:\s+(?:-[of]" + _VAL + r"|--[of][a-z-]*" + _VAL + r"|-\S+))*"
+    + r"|xargs(?:\s+(?:-[adeilnps]" + _VAL + r"|--[admp][a-z-]*" + _VAL + r"|-\S+))*"
     + r"|cmd(?:\.exe)?(?:\s+/\w+(?::\w+)?)*\s+/c"        # cmd accepts /d /s /e:on … before /c (CR r3)
     + r"|(?:powershell|pwsh)(?:\.exe)?(?:\s+-\S+)*\s+-c\w*"
     + r"))\s+)*"
