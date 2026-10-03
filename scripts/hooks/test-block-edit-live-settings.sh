@@ -2066,6 +2066,18 @@ assert_rc "481 nested worktree ln -sf \$SJ ~/.[(c]laude denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.[(c]laude" HOME="$FAKEHOME")"
 assert_rc "482 primary ln -sf \$SJ ~/.[(c]laude denies" 2 \
     "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.[(c]laude" HOME="$FAKEHOME")"
+# a bash extglob operator group is read by bash's rules too (codex-1)
+assert_rc "483 nested worktree ln -sf \$SJ ~/.@(claude|config) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.@(claude|config)" HOME="$FAKEHOME")"
+assert_rc "484 primary ln -sf \$SJ ~/.@(claude|config) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.@(claude|config)" HOME="$FAKEHOME")"
+assert_rc "485 nested worktree cp \$SJ ~/.!(x)/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/.!(x)/" HOME="$FAKEHOME")"
+assert_rc "486 nested worktree ln -sf \$SJ ~/.c+(l)aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c+(l)aude" HOME="$FAKEHOME")"
+# a negation that excludes the only way to spell `.claude` stays allowed
+assert_rc "487 nested worktree ln -sf \$SJ ~/.!(c)laude allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.!(c)laude" HOME="$FAKEHOME")"
 
 # HIMMEL-4149 (J1680): timeout's duration and taskset's mask are the
 # wrapper's own first operand whatever its shape (`.5`, `inf`, `ff`), so

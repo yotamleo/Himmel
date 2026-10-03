@@ -1674,7 +1674,15 @@ _dc_can_be_claude() {
                     i=$((j + 1))
                 fi
                 ;;
-            '(') pd=$((pd + 1)) pat="$pat@(" ;;
+            '(')
+                pd=$((pd + 1))
+                # the bash extglob pass keeps an `@*?+!` operator before the
+                # group; the zsh pass reads it as text before a plain group
+                case "${_DC_EXTG:-0}:${c:i-2:1}" in
+                    1:[@*?+!]) [ "$i" -ge 2 ] && pat="$pat(" || pat="$pat@(" ;;
+                    *) pat="$pat@(" ;;
+                esac
+                ;;
             ')')
                 if [ "$pd" -gt 0 ]; then
                     pd=$((pd - 1)) pat="$pat)"
@@ -1737,6 +1745,14 @@ _dc_can_be_claude() {
     [[ .claude == $pat ]] && r=0
     [ "$eg" = 1 ] || shopt -u extglob
     [ "$nc" = 1 ] || shopt -u nocasematch
+    # a bash extglob operator group (`.@(claude|x)`, `.!(x)`) is judged by
+    # bash's own reading too, so the component denies if either shell can
+    # expand it to `.claude` (HIMMEL-4156 codex-1)
+    if [ "$r" = 1 ] && [ "${_DC_EXTG:-0}" = 0 ] && [ "$xo" = 0 ]; then
+        case "$c" in
+            *[@*?+!]'('*) _DC_EXTG=1 _dc_can_be_claude "$c" && r=0 ;;
+        esac
+    fi
     return "$r"
 }
 
