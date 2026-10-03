@@ -99,7 +99,7 @@ BEGIN {
     # snapshot path (a grep for this very thing) is not counted. The console
     # own waiter (eval bash .../console-wait.sh) is intentional, not an
     # orphan (HIMMEL-3941); a command that merely mentions the name still is.
-    if (a ~ /^[^ ]*(bash|zsh|sh) -c (source|\.) [^ ]*shell-snapshots\/snapshot-(bash|zsh)-/ && a !~ /eval [\047"]bash [\047"]?[^ ]*console-wait\.sh([ \047"]|$)/) wrap[++nw] = pid
+    if (a ~ /^[^ ]*(bash|zsh|sh) -c (source|\.) [^ ]*shell-snapshots\/snapshot-(bash|zsh)-/ && a !~ /eval [\047"]bash [\047"]?([^ ]*\/)?console-wait\.sh([ \047"]|$)/) wrap[++nw] = pid
 }
 END {
     for (i = 1; i <= nw; i++) {
