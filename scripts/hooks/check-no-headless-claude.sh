@@ -160,8 +160,11 @@ for f in "${files[@]}"; do
             # depth nor joins the window — otherwise it can sit between the open paren
             # and the program literal and hide the call. Code AFTER a closing `*/` on
             # the same line is kept (C[] holds the code remainder, L[] the raw line).
-            # A `/*` with no `*/` within the window is NOT a comment (it may sit in a
+            # A `/*` with no `*/` within 200 lines is NOT a comment (it may sit in a
             # string), so a stray one stays code and cannot blank the rest of the file.
+            # ponytail: a block comment over 200 lines stays code and a stray `/*` can
+            # blank up to 200 lines, a real parser would need per-language lexing, no
+            # ticket (trigger: a reported evasion).
             { L[NR] = $0 }
             END {
                 for (i = 1; i <= NR; ) {
@@ -173,7 +176,7 @@ for f in "${files[@]}"; do
                         t = s; sub(/^[[:space:]]*\/\*/, "", t)
                         if (match(t, /\*\//)) { s = substr(t, RSTART + 2); cmt = 1; continue }
                         q = 0
-                        for (m = i + 1; m <= NR && m <= i + win; m++)
+                        for (m = i + 1; m <= NR && m <= i + 200; m++)
                             if (L[m] ~ /\*\//) { q = m; break }
                         if (!q) break
                         for (m = i; m < q; m++) { skip[m] = 1; C[m] = "" }

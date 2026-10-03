@@ -363,6 +363,16 @@ assert_rc "T37m ten comment lines between ( and program, unmarked" 1 "$rc"
 rc=$(run_hook "cm_unterm.mjs")
 assert_rc "T37n unterminated /* does not hide a later unmarked spawn" 1 "$rc"
 
+# T37o (codex-1 r5): a long block comment opening with ) must not close the depth early
+{
+    echo "const r = spawnSync("
+    echo "  /* )"
+    for n in 1 2 3 4 5 6 7 8 9 10; do echo "     note $n"; done
+    echo "  */ 'claude', args);"
+} > "$TMP/cm_long.mjs"
+rc=$(run_hook "cm_long.mjs")
+assert_rc "T37o long block comment opening with ), unmarked" 1 "$rc"
+
 # T30: os.spawn* takes a mode argument before the program → BLOCK
 printf "%s\n" 'os.spawnlp(os.P_WAIT, "claude", "claude", *a)' > "$TMP/osspawn.py"
 rc=$(run_hook "osspawn.py")
