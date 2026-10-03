@@ -484,6 +484,13 @@ cp "$HOOK" "$TMP/nolib/check-no-headless-claude.sh"
 rc=$(cd "$TMP" && bash "$TMP/nolib/check-no-headless-claude.sh" "interactive.sh" >/dev/null 2>&1; echo "$?")
 assert_rc "T39 missing lib/headless-spawn-join.sh fails closed" 1 "$rc"
 
+# T40 (HIMMEL-4124 CR): the join itself failing (awk missing or erroring) → fail closed, even on a clean file → BLOCK
+mkdir -p "$TMP/badawk"
+printf '%s\n' '#!/bin/sh' 'exit 2' > "$TMP/badawk/awk"
+chmod +x "$TMP/badawk/awk"
+rc=$(cd "$TMP" && PATH="$TMP/badawk:$PATH" bash "$HOOK" "interactive.sh" >/dev/null 2>&1; echo "$?")
+assert_rc "T40 a failing join (awk rc!=0) fails closed" 1 "$rc"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
