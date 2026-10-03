@@ -56,7 +56,8 @@ while [ $# -gt 0 ]; do
 done
 if [ -z "$NAME" ] || [ -z "$CORPUS_ROOT" ] || [ -z "$CORPUS_CLASS" ]; then usage; fi
 case "$NAME" in *[!A-Za-z0-9._-]*) echo "semantic-update: --name must match [A-Za-z0-9._-]+" >&2; exit 1 ;; esac
-case "$MAX_FILES" in ''|*[!0-9]*|0) echo "semantic-update: --max-files must be a positive integer (got '$MAX_FILES')" >&2; exit 1 ;; esac
+case "$MAX_FILES" in ''|*[!0-9]*) MAX_FILES=0 ;; *) MAX_FILES=$((10#$MAX_FILES)) ;; esac
+[ "$MAX_FILES" -gt 0 ] || { echo "semantic-update: --max-files must be a positive integer" >&2; exit 1; }
 [ -d "$CORPUS_ROOT" ] || { echo "semantic-update: --corpus-root '$CORPUS_ROOT' is not a directory" >&2; exit 1; }
 CORPUS_ROOT="$(cd "$CORPUS_ROOT" && pwd -P)"
 # ponytail: only the default out dir, a GRAPHIFY_OUT override is refused; add it if a corpus ever needs one.
@@ -79,10 +80,6 @@ if [ "$SEED" -eq 0 ]; then
 fi
 
 [ -f "$OUT_DIR/graph.json" ] || { echo "semantic-update: no $OUT_DIR/graph.json -- run the AST pass (ast-update.sh) first" >&2; exit 1; }
-if [ "$SEED" -eq 1 ]; then
-  "${MERGE[@]}" seed --root "$CORPUS_ROOT" --out "$OUT_DIR"
-  exit 0
-fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/graphify-semantic-$NAME-XXXXXX")"
 PROMOTE_LOCK="$OUT_DIR/.promote.lock" PROMOTE_LOCK_HELD=0 PROMOTE_LOCK_TOKEN="$$-$RANDOM"
@@ -93,36 +90,45 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-PLAN="$WORK/plan.json"
-"${MERGE[@]}" plan --root "$CORPUS_ROOT" --out "$OUT_DIR" --max-files "$MAX_FILES" --plan "$PLAN"
-read -r N_BATCH N_DELETED < <(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(len(p["batch"]),len(p["deleted"]))' "$PLAN")
-if [ "$N_BATCH" -eq 0 ] && [ "$N_DELETED" -eq 0 ]; then
-  echo "semantic-update: corpus '$NAME' unchanged since the last semantic pass -- no-op"
-  exit 0
-fi
-[ "$DRY" -eq 0 ] || { echo "semantic-update: --dry-run, stopping before the bank and the copy"; exit 0; }
 
 # Promote lock, same protocol as ast-update.sh (mkdir arbiter, owner token,
 # acquired stamp). Bounded wait, then skip: the next run retries.
-_waited=0
-until mkdir "$PROMOTE_LOCK" 2>/dev/null; do
-  if [ "$_waited" -ge "${GRAPHIFY_SEMANTIC_LOCK_WAIT:-120}" ]; then
-    echo "semantic-update: SKIPPED -- promote lock $PROMOTE_LOCK held by another graph refresh" >&2
-    exit 4
-  fi
-  sleep 5; _waited=$((_waited + 5))
-done
-PROMOTE_LOCK_HELD=1
-printf '%s\n' "$PROMOTE_LOCK_TOKEN" > "$PROMOTE_LOCK/owner"
-date -u +%s > "$PROMOTE_LOCK/acquired"
-# Re-plan under the lock: another run may have promoted (or the corpus moved)
-# while we waited, and the pre-lock plan would re-extract a stale batch.
-"${MERGE[@]}" plan --root "$CORPUS_ROOT" --out "$OUT_DIR" --max-files "$MAX_FILES" --plan "$PLAN"
-read -r N_BATCH N_DELETED < <(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(len(p["batch"]),len(p["deleted"]))' "$PLAN")
-if [ "$N_BATCH" -eq 0 ] && [ "$N_DELETED" -eq 0 ]; then
-  echo "semantic-update: corpus '$NAME' unchanged since the last semantic pass -- no-op"
+acquire_promote_lock() {
+  local waited=0
+  until mkdir "$PROMOTE_LOCK" 2>/dev/null; do
+    if [ "$waited" -ge "${GRAPHIFY_SEMANTIC_LOCK_WAIT:-120}" ]; then
+      echo "semantic-update: SKIPPED -- promote lock $PROMOTE_LOCK held by another graph refresh" >&2
+      exit 4
+    fi
+    sleep 5; waited=$((waited + 5))
+  done
+  PROMOTE_LOCK_HELD=1
+  printf '%s\n' "$PROMOTE_LOCK_TOKEN" > "$PROMOTE_LOCK/owner"
+  date -u +%s > "$PROMOTE_LOCK/acquired"
+}
+
+if [ "$SEED" -eq 1 ]; then
+  [ "$DRY" -eq 0 ] || { echo "semantic-update: --dry-run, not stamping the manifest"; exit 0; }
+  acquire_promote_lock
+  "${MERGE[@]}" seed --root "$CORPUS_ROOT" --out "$OUT_DIR"
   exit 0
 fi
+
+PLAN="$WORK/plan.json"
+plan_or_noop() {
+  "${MERGE[@]}" plan --root "$CORPUS_ROOT" --out "$OUT_DIR" --max-files "$MAX_FILES" --plan "$PLAN"
+  read -r N_BATCH N_DELETED < <(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(len(p["batch"]),len(p["deleted"]))' "$PLAN")
+  if [ "$N_BATCH" -eq 0 ] && [ "$N_DELETED" -eq 0 ]; then
+    echo "semantic-update: corpus '$NAME' unchanged since the last semantic pass -- no-op"
+    exit 0
+  fi
+}
+plan_or_noop
+[ "$DRY" -eq 0 ] || { echo "semantic-update: --dry-run, stopping before the bank and the copy"; exit 0; }
+acquire_promote_lock
+# Re-plan under the lock: another run may have promoted (or the corpus moved)
+# while we waited, and the pre-lock plan would re-extract a stale batch.
+plan_or_noop
 
 TOKENS_IN=0 TOKENS_OUT=0 START="$(date +%s)"
 SCRATCH="$WORK/corpus"
@@ -176,7 +182,7 @@ fi
 
 "${MERGE[@]}" merge --name "$NAME" --out "$OUT_DIR" --scratch "$SCRATCH" --plan "$PLAN" \
   --runtime-s "$(( $(date +%s) - START ))" --tokens-in "$TOKENS_IN" --tokens-out "$TOKENS_OUT" \
-  || { echo "semantic-update: merge refused -- graph and manifest untouched" >&2; exit 2; }
+  || { echo "semantic-update: merge failed -- the batch stays unstamped and re-extracts next run" >&2; exit 2; }
 if [ -d "$SCRATCH/graphify-out/cache/semantic" ]; then
   mkdir -p "$OUT_DIR/cache/semantic"
   cp -R "$SCRATCH/graphify-out/cache/semantic/." "$OUT_DIR/cache/semantic/"
