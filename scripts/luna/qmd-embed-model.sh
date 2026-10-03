@@ -82,7 +82,7 @@ model_uri() {
 yml_embed() {
     [ -f "$1" ] || return 0
     awk '
-        /^[^[:space:]#]/ { inmodels = ($0 ~ /^models:[[:space:]]*$/) ; next }
+        /^[^[:space:]#]/ { inmodels = ($0 ~ /^models:[[:space:]]*(#.*)?$/) ; next }
         inmodels && /^[[:space:]]+embed:/ {
             v = $0; sub(/^[[:space:]]+embed:[[:space:]]*/, "", v)
             sub(/[[:space:]]+#.*$/, "", v); gsub(/^["\047]|["\047]$/, "", v)
@@ -108,7 +108,7 @@ write_yml_embed() {
             function emit() { print "  embed: " uri; done = 1 }
             /^[^[:space:]#]/ {
                 if (inmodels && !done) emit()
-                inmodels = ($0 ~ /^models:[[:space:]]*$/)
+                inmodels = ($0 ~ /^models:[[:space:]]*(#.*)?$/)
                 print; next
             }
             inmodels && /^[[:space:]]+embed:/ { if (!done) emit(); next }
@@ -116,9 +116,9 @@ write_yml_embed() {
             END {
                 if (inmodels && !done) emit()
                 else if (!done) { print "models:"; emit() }
-            }' "$file" >"$tmp"
+            }' "$file" >"$tmp" || { rm -f "$tmp"; return 1; }
     else
-        printf 'models:\n  embed: %s\n' "$uri" >"$tmp"
+        printf 'models:\n  embed: %s\n' "$uri" >"$tmp" || return 1
     fi
     mv -f "$tmp" "$file"
 }
@@ -369,7 +369,8 @@ cmd_swap() {
     if [ -f "$cfg" ]; then cp -p "$cfg" "$cfg.pre-swap-$ts"; fi
     mv -f "$copy" "$live" || die 5 "the rename failed; the live index is unchanged (backup at $backup)"
     rm -f "$copy-wal" "$copy-shm" "$live-shm"
-    write_yml_embed "$cfg" "$uri"
+    write_yml_embed "$cfg" "$uri" \
+        || die 5 "the index was swapped but the config write failed. Roll back: mv -f '$backup' '$live' && cp -p '$cfg.pre-swap-$ts' '$cfg'"
     local rc=0
     compare_index "$live" "$uri" || rc=$?
     if [ "$rc" -ne 0 ]; then

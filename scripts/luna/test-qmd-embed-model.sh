@@ -174,6 +174,16 @@ cfg="$(cat "$(CFG)")"
 assert_contains "set appends a models block when absent" "models:
   embed: $GEMMA" "$cfg"
 
+new_home 10b
+make_index "$(IDX)" 1024 "$QWEN"
+printf 'models: # per machine\n  embed: %s\n' "$QWEN" >"$(CFG)"
+rc=0; out=$(run bash "$SCRIPT" check 2>&1) || rc=$?
+assert_rc "a commented models: line is still read" 0 "$rc"
+run bash "$SCRIPT" set gemma --force >/dev/null 2>&1
+cfg="$(cat "$(CFG)")"
+assert_contains "set rewrites embed under a commented models: line" "embed: $GEMMA" "$cfg"
+assert_rc "set leaves one models block" 1 "$(grep -c '^models:' "$(CFG)")"
+
 echo "== reembed"
 new_home 11
 make_index "$(IDX)" 768 "$GEMMA" "$GEMMA"

@@ -315,10 +315,12 @@ try {
     "SELECT 1 FROM content_vectors cv WHERE cv.hash IS NOT NULL AND cv.seq IS NOT NULL " +
     "AND cv.hash || '_' || cv.seq = vectors_vec.hash_seq)").run();
   // 6. --strip-vectors (HIMMEL-4232): a receiver on a different embed model
-  //    gets BM25 only. Both halves go, so the vec self-check below still holds.
+  //    gets BM25 only. The vec0 TABLE goes, not just its rows: it is declared
+  //    float[<source dims>], and qmd refuses to embed into a table of another
+  //    dimension, while it recreates a missing one at the receiver's own size.
   if (stripVectors) {
     db.prepare('DELETE FROM content_vectors').run();
-    db.prepare('DELETE FROM vectors_vec').run();
+    db.exec('DROP TABLE vectors_vec');
   }
   db.exec('COMMIT');
 } catch (e) {
@@ -349,7 +351,7 @@ stats.after = {
   documents: count('select count(*) c from documents where active = 1'),
   content: count('select count(*) c from content'),
   contentVectors: count('select count(*) c from content_vectors'),
-  vectors: count('select count(*) c from vectors_vec'),
+  vectors: stripVectors ? 0 : count('select count(*) c from vectors_vec'),
   // The embed model(s) the shipped vectors came from (HIMMEL-4232). ship-index.sh
   // compares this with the receiver's configured model before uploading.
   models: db.prepare('select distinct model from content_vectors order by model').all().map(r => r.model),

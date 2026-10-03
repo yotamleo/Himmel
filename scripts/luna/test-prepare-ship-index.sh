@@ -427,7 +427,7 @@ OUT_LEX="$TMP_ROOT/out-lexical.sqlite"
 rc=0; out=$(node "$SCRIPT" --src "$SRC_MIX" --out "$OUT_LEX" --collections himmel,luna --strip-vectors --json 2>&1) || rc=$?
 assert_rc "strip-vectors rc 0 (even from a mixed source)" 0 "$rc"
 assert_eq "no content_vectors left" "0" "$(q "$OUT_LEX" 'select count(*) c from content_vectors')"
-assert_eq "no vec0 rows left" "0" "$(q "$OUT_LEX" 'select count(*) c from vectors_vec')"
+assert_eq "vec0 table dropped (a receiver on another dimension recreates it)" "0" "$(q "$OUT_LEX" "select count(*) c from sqlite_master where name = 'vectors_vec'")"
 assert_eq "documents kept" "2" "$(q "$OUT_LEX" 'select count(*) c from documents')"
 assert_eq "after.models is empty" '[]' "$(printf '%s' "$out" | models_of)"
 assert_eq "SOURCE vectors untouched" "8" "$(q "$SRC_MIX" 'select count(*) c from content_vectors')"

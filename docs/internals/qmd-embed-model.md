@@ -91,7 +91,9 @@ receiver's model cannot be read, the ship refuses before uploading anything
   least 4 GiB of RAM): on the receiver, `bash scripts/luna/qmd-embed-model.sh set
   <model> --force`, then ship again;
 - **ship lexical-only**: `bash scripts/luna/ship-index.sh --lexical-only` strips
-  every vector from the artifact (`prepare-ship-index.mjs --strip-vectors`). The
+  every vector from the artifact (`prepare-ship-index.mjs --strip-vectors`) and
+  drops the vector table, so the receiver's model can recreate it at its own
+  dimension. The
   receiver gets BM25 search only, until it embeds with its own model or a
   matching index is shipped. It is never silent: the ship says `LEXICAL-ONLY`,
   and the receiver's post-swap verify expects zero vectors.

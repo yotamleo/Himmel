@@ -363,6 +363,8 @@ remote_collections() {
 # artifact embedded with a model other than the receiver's configured one
 # returns garbage there (or errors on a dimension change). qmd status prints
 # the configured model as an org/repo link; compare in that form.
+# ponytail: two GGUFs in one HF repo (another quant) compare equal, revisit if a
+# second file from the gemma or qwen repo becomes an option.
 hf_link() {
     case "$1" in
         hf:*/*/*) local r="${1#hf:}"; local org="${r%%/*}"; r="${r#*/}"; printf 'https://huggingface.co/%s/%s' "$org" "${r%%/*}" ;;
