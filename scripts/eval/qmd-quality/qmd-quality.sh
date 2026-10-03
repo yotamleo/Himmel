@@ -104,8 +104,8 @@ fi
 
 # The SDK runs llama.cpp in-process; a bun blocked in native code ignores
 # SIGTERM (HIMMEL-3956), so each mode gets qmd_bounded's whole-group deadline.
-# One process per mode: a rerank run after other modes in the same process
-# has been seen to stall in native code, and a fresh process does not.
+# One process per mode, each under its own deadline, so a stalled mode (seen
+# while a GPU clock tune was active) is named and stops the run promptly.
 # shellcheck source=scripts/lib/qmd-bounded.sh
 . "$HERE/../../lib/qmd-bounded.sh"
 : >"$OUT/runs.jsonl"
