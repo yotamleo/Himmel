@@ -353,7 +353,7 @@ lacks 'the hud root is not listed as withheld (HIMMEL-4139)' "$out" '  pid=400 p
 cat > "$W/hud-decoys.txt" <<'FIX'
     1     0 40-00:00:01 /sbin/init
   101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
-  420   101    00:10:00 node /home/u/himmel/marketplace/plugins/claude-hud/dist/../../evil/index.js
+  420   101    00:10:00 node /home/u/evil/../himmel/marketplace/plugins/claude-hud/dist/index.js
   421   101    00:10:00 node /home/u/himmel/marketplace/plugins/claude-hud/dist/index.js --serve
   422   101    00:10:00 node marketplace/plugins/claude-hud/dist/index.js
   423   101    00:10:00 node /home/u/himmel/marketplace/plugins/other/dist/index.js
