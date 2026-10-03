@@ -108,6 +108,15 @@ bash scripts/himmel-update.sh               # from a shell, in the himmel checko
 node scripts/himmelctl/bin.js update        # thin wrapper, same engine
 ```
 
+Every update ends with an **installer-drift pass** (HIMMEL-4246; `--only drift`,
+read-only twin `--only drift-check`, also run by `--check`). It runs
+`himmelctl status --json`, converges the allow-listed items (today
+`pre-commit-hooks`, via `himmelctl ensure --items <id> --yes`) and re-checks, then
+prints everything it could not converge — credentials such as a `luna-sources`
+re-auth, a leaked `url.*.insteadOf` in the repo's local git config (WARN with the
+unset command, never auto-deleted), a codex `plugin-unregistered` that the
+installer did not fix — in a loud **DRIFT** block with a remedy line.
+
 `scripts/himmel-update.sh` (HIMMEL-893), in **apply mode** (no `--check`),
 refuses to run against a **dirty checkout** (uncommitted changes) — commit or
 stash first, then re-run. (The read-only `--check` mode does not reject a dirty
