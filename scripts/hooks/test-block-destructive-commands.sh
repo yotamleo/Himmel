@@ -488,6 +488,7 @@ assert_rc "4126m masked <<'EOF'-rf after a \$'x' line" 2 "$(run_case "$(j_bash $
 # A masked opener can let an earlier heredoc take the rm line as its body;
 # main denied this, so the head must too (never allow what main refused).
 assert_rc "4126n masked opener's line taken by an earlier heredoc" 2 "$(run_case "$(j_bash $'cat <<"EOF"\nrm <<\'EOF\'${IFS}-rf d\nEOF')")"
+assert_rc "4126o a \\-newline before # still starts a comment" 2 "$(run_case "$(j_bash $'echo \'x\'\n\\\n# \'\necho \'\ncat <<"EOF"\n\'\nrm -rf d\nEOF')")"
 # Ordinary heredocs keep their body stripped (an rm in the body is data).
 assert_rc "4126 cat <<'EOF' to f, rm in body" 0 "$(run_case "$(j_bash $'cat <<\'EOF\' > f\nrm -rf build\nEOF')")"
 assert_rc "4126 git commit -F - heredoc" 0 "$(run_case "$(j_bash $'git commit -F - <<\'EOF\'\nfix: rm -rf build\nEOF')")"

@@ -340,7 +340,9 @@ _hd_carried_clean() {
         case $st in
             N)
                 case $c in
-                    \\) i=$((i + 1)) ;;
+                    # A \-newline is removed, so what came before it still
+                    # decides whether a following # starts a comment.
+                    \\) [ "${s:i+1:1}" = $'\n' ] && c=$p; i=$((i + 1)) ;;
                     \') [ "$p" = '$' ] && return 1; st=S ;;
                     \") st=D ;;
                     \#)
