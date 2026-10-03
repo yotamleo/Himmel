@@ -1797,7 +1797,7 @@ runner_path_snapshot() {
 # arrive pre-quoted with printf %q.
 # shellcheck disable=SC2016  # single-quoted $log/$(date)/_rc are emitted literally for the runner's own /bin/sh to expand at fire time
 emit_runner() {
-    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_path="${7:-}" q_model="${8:-}" flow="${9:-}" q_flow_lib="${10:-}" q_bank_lib="${11:-}" q_gate_lib="${12:-}" q_alert_lib="${13:-}"
+    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_path="${7:-}" q_model="${8:-}" flow="${9:-}" q_flow_lib="${10:-}" q_bank_lib="${11:-}" q_gate_lib="${12:-}" q_alert_lib="${13:-}" q_timeline="${14:-}"
     local q_task q_flow
     q_task=$(printf '%q' "$name")
     q_flow=$(printf '%q' "$flow")
@@ -1896,6 +1896,14 @@ emit_runner() {
     # reason emit_bat documents.
     if [ -n "$q_gate_lib" ]; then
         printf '    { [ "$_flow_outcome" = complete ] && %s --stamp .; } || true\n' "$q_gate_lib"
+    fi
+    # HIMMEL-4182: refresh the day note's `## Clip pipeline` + `## Daily report`
+    # sections after the leg. Must-not-abort: it runs after _rc / _flow_outcome
+    # are final and writes only its own _tl_rc, so a failing timeline logs and
+    # the runner's exit code and the LEG-FAILED logic above are untouched.
+    if [ -n "$q_timeline" ]; then
+        printf '    _tl_rc=0; node %s --vault %s --date "$(date +%%Y-%%m-%%d)" || _tl_rc=$?\n' "$q_timeline" "$q_vault"
+        printf '    if [ "$_tl_rc" != 0 ]; then echo "[daily-timeline failed rc=$_tl_rc - continuing]"; fi\n'
     fi
     printf '} >> "$log" 2>&1\n'
     # HIMMEL-1716: parked (zero rc, no marker) exits 3 so cron/the operator
@@ -2065,7 +2073,7 @@ cron_arm() {
         fi
     fi
 
-    local q_vault q_claude q_python q_fetch_script q_runner_path q_flow_lib q_bank_lib q_gate_lib q_alert_lib q_harvest_prompt q_synth_prompt q_health_prompt q_log_fetch_health q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
+    local q_vault q_claude q_python q_fetch_script q_runner_path q_flow_lib q_bank_lib q_gate_lib q_alert_lib q_timeline q_harvest_prompt q_synth_prompt q_health_prompt q_log_fetch_health q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
     q_vault=$(printf '%q' "$VAULT")
     q_claude=$(printf '%q' "$claude_bin")
     q_python=$(printf '%q' "$python_bin")
@@ -2074,6 +2082,7 @@ cron_arm() {
     q_bank_lib=$(printf '%q' "$BANK_PREFLIGHT")
     q_gate_lib=$(printf '%q' "$SYNTH_GATE")
     q_alert_lib=$(printf '%q' "$CADENCE_ALERT")
+    q_timeline=$(printf '%q' "$HIMMEL_ROOT/marketplace/plugins/obsidian-triage/tools/daily-timeline.mjs")
     # Shared arm-time PATH snapshot (HIMMEL-2840) — one helper, both emitters,
     # so they can no longer disagree about what a cadence runner's PATH is.
     q_runner_path=$(runner_path_snapshot "$PATH" "$node_dir")
@@ -2130,9 +2139,9 @@ cron_arm() {
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_FETCH_HEALTH:"
         emit_fetch_health_runner "$q_python" "$q_fetch_script" "$q_log_fetch_health" "$q_runner_path" "$q_env_file" "$q_flow_lib" "$q_alert_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HARVEST:"
-        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_runner_path" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" | sed 's/^/    /'
+        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_runner_path" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" "$q_timeline" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_SYNTH:"
-        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_runner_path" "$q_synth_model" "pipeline-synthesize" "$q_flow_lib" "$q_bank_lib" "$q_gate_lib" "$q_alert_lib" | sed 's/^/    /'
+        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_runner_path" "$q_synth_model" "pipeline-synthesize" "$q_flow_lib" "$q_bank_lib" "$q_gate_lib" "$q_alert_lib" "$q_timeline" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HEALTH:"
         emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_runner_path" "$q_health_model" "pipeline-health" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would add crontab entries:"
@@ -2159,8 +2168,8 @@ cron_arm() {
     local tmp_settings="$SETTINGS_FRAGMENT.tmp.$$"
     emit_settings_fragment "$AUTO_APPROVE_HOOK" > "$tmp_settings"
     emit_fetch_health_runner "$q_python" "$q_fetch_script" "$q_log_fetch_health" "$q_runner_path" "$q_env_file" "$q_flow_lib" "$q_alert_lib" > "$tmp_fetch_health"
-    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_runner_path" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" > "$tmp_harvest"
-    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_runner_path" "$q_synth_model"   "pipeline-synthesize" "$q_flow_lib" "$q_bank_lib" "$q_gate_lib" "$q_alert_lib" > "$tmp_synth"
+    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_runner_path" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" "$q_timeline" > "$tmp_harvest"
+    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_runner_path" "$q_synth_model"   "pipeline-synthesize" "$q_flow_lib" "$q_bank_lib" "$q_gate_lib" "$q_alert_lib" "$q_timeline" > "$tmp_synth"
     emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_runner_path" "$q_health_model"  "pipeline-health" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" > "$tmp_health"
     chmod +x "$tmp_fetch_health" "$tmp_harvest" "$tmp_synth" "$tmp_health"
 
