@@ -346,8 +346,8 @@ by design.
   shown you may,
   once, `git fetch origin main` then `git merge origin/main` — a merge commit;
   never rebase, never force-push — citing both main run ids in a Results
-  bullet. Exit 1 `REFUSE` (a job green at the base is your own red; a job red
-  or absent on either main run is unproven) = do NOT merge forward; fix it, or
+  bullet. Exit 1 `REFUSE` (a job green or absent at the base is your own
+  red; a job red or absent on latest main is unproven) = do NOT merge forward; fix it, or
   report `BLOCKED` / `MAIN-RED` per the rule above. Exit 3 = nothing red. Once
   per PR: a second merge-forward goes to the console. After it, `/pr-check` and
   CI run again at the new head.
