@@ -711,8 +711,8 @@ check "(o) the run completes to a PROCEED verdict" PROCEED "$(cat "$W/o.out")"
 check "(o) leading-zero stamp raises no arithmetic error" absent "$(if grep -q 'value too great' "$W/o.err"; then echo present; else echo absent; fi)"
 check "(o) leading-zero long-seen debris is pruned" gone "$([ -e "$slots_o/.admit.stale.1.1" ] && echo present || echo gone)"
 check "(o) overlong stamp is refused: debris kept" present "$([ -e "$slots_o/.admit.stale.2.2" ] && echo present || echo gone)"
-check "(o) overlong stamp is re-stamped to a bounded value" bounded \
-  "$(case "$(cat "$slots_o/.admit.stale.2.2/seen" 2>/dev/null)" in (??????????????*) echo unbounded ;; (*) echo bounded ;; esac)"
+check "(o) overlong stamp is re-stamped to a nonempty numeric value within the production bound" bounded \
+  "$(case "$(cat "$slots_o/.admit.stale.2.2/seen" 2>/dev/null)" in (''|*[!0-9]*|????????????*) echo unbounded ;; (*) echo bounded ;; esac)"
 
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]
