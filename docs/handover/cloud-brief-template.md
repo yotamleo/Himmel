@@ -111,9 +111,9 @@ completes-ticket: yes|no
   key to name means the ask belongs in the brief, not outside it. An ask the
   session finds mid-task and cannot finish is reported in its closing summary
   and the shepherd files the key before GO.
-- `completes-ticket: yes` only when every ask is `done`; any `deferred` line
-  means `no` (or a `yes` whose every deferral names an open follow-up key, which
-  the shepherd confirms before passing `--jira-transition`).
+- `completes-ticket: yes` only when every ask is either `done` or `deferred →`
+  an open follow-up key the shepherd confirms before passing
+  `--jira-transition`; otherwise `no`.
 - The PR title and the commit carry the ticket ID (`check-commit-msg`, CI range gate).
 
 ## Launching
