@@ -3533,9 +3533,12 @@ check "41k-4159 [ld] the NODE_OPTIONS marker never ran in headed-arm.sh's node" 
 # HIMMEL-4159: the scrub list both consult entries use drops all four from a child's env.
 scrub4159="$(
   # shellcheck disable=SC2031 # a fresh subshell-local hostile runtime, not the one above
-  export LD_PRELOAD="$atk4159/nonexistent-preload.so" LD_AUDIT="$atk4159/nonexistent-audit.so" LD_LIBRARY_PATH="$atk4159" NODE_OPTIONS="--require=$atk4159/marker.js"
+  export LD_PRELOAD="$atk4159/nonexistent-preload.so" LD_AUDIT="$atk4159/nonexistent-audit.so" LD_LIBRARY_PATH="$atk4159" NODE_OPTIONS="--require=$atk4159/marker.js" KEEP4159=kept
   . "$HERE/../../lanes/consult-env.sh" && consult_scrub_args && /usr/bin/env "${CONSULT_SCRUB[@]}" /usr/bin/env 2>/dev/null
 )"
+# The child env was captured (a failed source or env leaves it empty, which the check below would pass).
+check "41k-4159 the scrubbed child env was captured (a kept variable survives)" \
+  "$(printf '%s\n' "$scrub4159" | grep -c '^KEEP4159=kept$')" "1"
 check "41k-4159 consult_scrub_args drops LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT and NODE_OPTIONS" \
   "$(printf '%s\n' "$scrub4159" | grep -cE '^(LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|NODE_OPTIONS)=')" "0"
 # (b) the ponytail text no longer claims one writable file.
