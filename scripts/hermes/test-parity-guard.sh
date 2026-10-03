@@ -113,6 +113,27 @@ g "sudo -u a\\ b reboot"    block '{"tool_name":"terminal","tool_input":{"comman
 g "sudo -u'a b c' reboot"   block '{"tool_name":"terminal","tool_input":{"command":"sudo -u'"'"'a b c'"'"' reboot"}}'
 g "sudo -u 'a b'c ls"       allow '{"tool_name":"terminal","tool_input":{"command":"sudo -u '"'"'a b'"'"'c ls"}}'
 g "sudo -u \"a b\\\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u \"a b\\\" reboot"}}'
+# HIMMEL-4190: `find ... -delete` is a recursive delete of its own (the .sh
+# FIND_DELETE_PAT twin), bare and behind a wrapper, with a quoted wrapper value.
+g "find d -delete"          block '{"tool_name":"terminal","tool_input":{"command":"find d -delete"}}'
+g "find -name x -delete"    block '{"tool_name":"terminal","tool_input":{"command":"find . -name x -delete"}}'
+g "find.exe d -delete"      block '{"tool_name":"terminal","tool_input":{"command":"find.exe d -delete"}}'
+g "ls; find d -delete"      block '{"tool_name":"terminal","tool_input":{"command":"ls; find d -delete"}}'
+g "find d -delete; x"       block '{"tool_name":"terminal","tool_input":{"command":"find d -delete; echo ok"}}'
+g "find ';' -delete"        block '{"tool_name":"terminal","tool_input":{"command":"find d -name '"'"';'"'"' -delete"}}'
+g "nice find -delete"       block '{"tool_name":"terminal","tool_input":{"command":"nice find d -delete"}}'
+g "nice -n 'a b' find -delete" block '{"tool_name":"terminal","tool_input":{"command":"nice -n '"'"'1 0'"'"' find d -delete"}}'
+g "sudo -u \"a b\" find -delete" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u \"a b\" find d -delete"}}'
+g "timeout 5 find -delete"  block '{"tool_name":"terminal","tool_input":{"command":"timeout 5 find d -delete"}}'
+g "env X=1 find -delete"    block '{"tool_name":"terminal","tool_input":{"command":"env X=1 find d -delete"}}'
+g "/usr/bin/find -delete"   block '{"tool_name":"terminal","tool_input":{"command":"/usr/bin/find d -delete"}}'
+g "then find -delete"       block '{"tool_name":"terminal","tool_input":{"command":"if true; then find d -delete; fi"}}'
+g "find -deleted"           allow '{"tool_name":"terminal","tool_input":{"command":"find d -name x -deleted"}}'
+g "find -delete-x"          allow '{"tool_name":"terminal","tool_input":{"command":"find d -delete-x"}}'
+g "find -print"             allow '{"tool_name":"terminal","tool_input":{"command":"find d -name x -print"}}'
+g "echo find -delete"       allow '{"tool_name":"terminal","tool_input":{"command":"echo find d -delete"}}'
+g "grep find -delete"       allow '{"tool_name":"terminal","tool_input":{"command":"grep find -delete notes.txt"}}'
+g "findx -delete"           allow '{"tool_name":"terminal","tool_input":{"command":"findx d -delete"}}'
 # HIMMEL-4158: overlapping readings of one flag run stay linear; a backtracking
 # regex took minutes on these (the hermes hook timeout is 10s).
 for rep in "-u 'a' " '-u"x ' '-u "x -u " ' "-u 'x -u ' "; do

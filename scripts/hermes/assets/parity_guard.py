@@ -213,8 +213,8 @@ _CMDPOS_WRAPS = tuple(
     for heads, steps, exits in _WRAPPERS)
 
 
-def _cmdpos_destructive(text: str) -> bool:
-    """True when a _CMDPOS_VERBS atom sits in command position: after an
+def _cmdpos_match(text: str, verbs) -> bool:
+    """True when a `verbs` atom sits in command position: after an
     anchor and any run of assignments, keywords and wrappers (with their
     flags). The same grammar the .sh CMDPOS spells as one ERE."""
     todo = [(-1, m.end()) for m in _CMDPOS_ANCHOR.finditer(text)]
@@ -226,7 +226,7 @@ def _cmdpos_destructive(text: str) -> bool:
         seen.add(state)
         w, p = state
         if w < 0:
-            if _CMDPOS_VERBS.match(text, p):
+            if verbs.match(text, p):
                 return True
             todo += [(-1, m.end()) for u in _CMDPOS_UNITS if (m := u.match(text, p))]
             todo += [(i, m.end()) for i, (heads, _, _) in enumerate(_CMDPOS_WRAPS)
@@ -236,6 +236,10 @@ def _cmdpos_destructive(text: str) -> bool:
             todo += [(w, m.end()) for st in steps if (m := st.match(text, p))]
             todo += [(-1, m.end()) for x in exits if (m := x.match(text, p))]
     return False
+
+
+def _cmdpos_destructive(text: str) -> bool:
+    return _cmdpos_match(text, _CMDPOS_VERBS)
 
 
 # ScheduledTasks module WRITE verbs (HIMMEL-1821). Shared by the two anchors
@@ -253,6 +257,11 @@ _CMDPOS_VERBS = re.compile(
     + r"|(?:icacls|takeown)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r")"
 )
+# HIMMEL-4190: `find -delete` is a recursive delete of its own. Twin of the .sh
+# FIND_DELETE_PAT: the gap is unbounded (a `;` in it too), so a quoted `;`
+# cannot hide the flag.
+_FIND_DELETE = re.compile(
+    _EXE_PREFIX + r"find(?:\.exe)?(?:\s(?s:.*))?\s-delete(?:[^A-Za-z0-9_-]|$)")
 
 # Catastrophic / shared-machine / irreversible classes only.
 # Routine git, gh, mv, cp, and non-recursive rm are intentionally NOT here.
@@ -309,6 +318,21 @@ TERMINAL_DESTRUCTIVE = re.compile(
     + r"|\bgit\s+(reset\s+--hard|clean\s+-\w*f|filter-branch)\b"
     + r"|\bcurl[^|;&]*\|\s*(ba)?sh|\bwget[^|;&]*\|\s*(ba)?sh"
 )
+
+
+def _find_delete(raw: str) -> bool:
+    """HIMMEL-4190, twin of the .sh rm scans: newlines fold to `;`, a
+    backslash-newline pair is dropped on a second copy, and each copy is read
+    with its quotes and backslashes kept and dropped, so `"find" d '-delete'`
+    reads as `find d -delete`."""
+    low = raw.lower()
+    for src in (low, _join_continuations(low)):
+        src = re.sub(r"[\r\n]", ";", src)
+        bare = re.sub(r"[\"'\\]", "", re.sub(r"\$([\"'])", r"\1", src)).replace("\t", " ")
+        bare = re.sub(r" {2,}", " ", bare)
+        if _cmdpos_match(src, _FIND_DELETE) or _cmdpos_match(bare, _FIND_DELETE):
+            return True
+    return False
 
 
 def _terminal_destructive(text: str) -> bool:
@@ -1504,7 +1528,7 @@ def _command_checks(raw_cmd: str, cmd: str, payload: dict, args: dict) -> None:
               "Code's home is forbidden — use the file tools for those.")
     # HIMMEL-4158: norm() turns `\` into `/`, which hides a shell escape in a
     # wrapper value (`sudo -u a\ b reboot`); also read the raw text then.
-    if _terminal_destructive(cmd) or (
+    if _terminal_destructive(cmd) or _find_delete(raw_cmd) or (
             "\\" in raw_cmd and _terminal_destructive(raw_cmd.strip().lower())):
         block("Catastrophic command class refused (recursive deletion, "
               "disk/scheduler/process/registry mutation, force-push, "
