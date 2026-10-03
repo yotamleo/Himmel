@@ -29,9 +29,13 @@ has() {  # has <label> <file> <fixed needle>
     if grep -qF -- "$3" "$2"; then pass "$1"; else fail "$1 (missing '$3')"; fi
 }
 lacks() {  # lacks <label> <file> <extended regex>
-    local hit
-    hit="$(grep -nE -- "$3" "$2" | head -n 1)"
-    if [ -z "$hit" ]; then pass "$1"; else fail "$1 (found: $hit)"; fi
+    local hit rc
+    hit="$(grep -nE -m 1 -- "$3" "$2")"; rc=$?
+    case "$rc" in
+        1) pass "$1" ;;
+        0) fail "$1 (found: $hit)" ;;
+        *) fail "$1 (grep rc=$rc)" ;;  # a grep error is never a clean absence
+    esac
 }
 
 for f in "$PREFACE" "$BRIEF" "$CALIB"; do
