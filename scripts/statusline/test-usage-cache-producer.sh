@@ -393,7 +393,7 @@ run_test "(18) HIMMEL-1712 CR (panel round 9, codex-2): OAuth fetch is skipped, 
 '
 
 run_test "(18b) HIMMEL-3729: an identity flip DURING the OAuth fetch discards the fetched numbers instead of stamping them under the pinned account" '
-  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-18b.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-18b.XXXXXX") || exit 1; export HOME="$W/home"; mkdir -p "$HOME";
   printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
   export USAGE_OAUTH_TTL=0;
