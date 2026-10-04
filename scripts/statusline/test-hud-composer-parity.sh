@@ -25,6 +25,9 @@ fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-4363: the doctor segment reads the operator's real counts file (now
+# fresh after every doctor run), so pin an empty state dir for hermeticity.
+export HIMMEL_DOCTOR_STATE_DIR="$TMP/doctor-state"
 
 # ── Case 1: static no-spawn — no detached fork in the composer OR the segment ─
 # The whole leak class is the detached rebuild/refresh; the render-path files
